@@ -51,7 +51,7 @@ const FLead kLeads[] = {
 
 #if WITH_EDITOR
 // A bone's reference-pose position in component space, or false when the bone isn't there.
-bool RefBonePosition(const FReferenceSkeleton& Skeleton, const TCHAR* Name, FVector& Out)
+bool LeadRefBonePosition(const FReferenceSkeleton& Skeleton, const TCHAR* Name, FVector& Out)
 {
 	int32 Bone = Skeleton.FindBoneIndex(Name);
 	if (Bone == INDEX_NONE)
@@ -69,12 +69,12 @@ bool RefBonePosition(const FReferenceSkeleton& Skeleton, const TCHAR* Name, FVec
 
 // The yaw that turns the mesh to face +X, from where its eyes sit relative to its head (the same
 // rule as the demo map's).
-float FacingYaw(const USkeletalMesh& Mesh)
+float LeadFacingYaw(const USkeletalMesh& Mesh)
 {
 	FVector Head, EyeL, EyeR;
 	const FReferenceSkeleton& Skeleton = Mesh.GetRefSkeleton();
-	if (!RefBonePosition(Skeleton, TEXT("head"), Head) || !RefBonePosition(Skeleton, TEXT("eye_l"), EyeL)
-		|| !RefBonePosition(Skeleton, TEXT("eye_r"), EyeR))
+	if (!LeadRefBonePosition(Skeleton, TEXT("head"), Head) || !LeadRefBonePosition(Skeleton, TEXT("eye_l"), EyeL)
+		|| !LeadRefBonePosition(Skeleton, TEXT("eye_r"), EyeR))
 	{
 		return 0.f;
 	}
@@ -183,7 +183,7 @@ int32 UFTBuildLeadsWorldCommandlet::Main(const FString& Params)
 	for (int32 i = 0; i < UE_ARRAY_COUNT(kLeads); ++i)
 	{
 		const FLead& Lead = kLeads[i];
-		const float Yaw = FacingYaw(*Meshes[i]);
+		const float Yaw = LeadFacingYaw(*Meshes[i]);
 		AFTCharacterPreview* Preview =
 			World->SpawnActor<AFTCharacterPreview>(FVector(0, Lead.Y, 0), FRotator(0, Yaw, 0), Spawn);
 		Preview->SetActorLabel(Lead.Label);

@@ -134,3 +134,6 @@ UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildLeadsWorld -NullRHI -unatte
   - The skirt tubes are weighted pelvis-to-thighs, so they swing through the legs in a wide stride.
 - **Scale:** the height is the top of the skull. Hair adds to it: Third reaches 1.82 m.
 - **Duy:** the optional notebook under his arm was left out.
+- **Materials:**
+  - FTImportCharacter moves every imported glTF material instance onto `/Game/Characters/Shared/Materials/M_FTCharacter`. That is a plain master with `BaseColor`, `Metallic`, `Roughness`, `Emissive` and `EmissiveStrength`, plus the skeletal mesh and morph target usages. The Interchange master in the plugin has neither usage, and plugin content can't be saved.
+  - Unresolved: a minimized `-game` run with `HighResShot` in `-ExecCmds` still draws the characters in the default grey material. That run only reaches a few frames before the shot, so the shaders are probably not compiled yet, but this isn't confirmed. Judge the colours in the editor viewport or in Play.
