@@ -99,7 +99,13 @@ FTStyleFns F;
 const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
 
 float2 pix = GetPixelPosition(Parameters);
+// Post-process shaders have the output viewport; the other permutations UE compiles for a post-process
+// material (a base-pass preview) only have the view.
+#if POST_PROCESS_MATERIAL
 float2 invView = PostProcessOutput_ViewportSizeInverse;
+#else
+float2 invView = View.ViewSizeAndInvSize.zw;
+#endif
 float2 viewSize = 1.0 / max(invView, float2(1e-6, 1e-6));
 float2 vuv = pix * invView;
 // newengine's patterns use gl_FragCoord (y up); flip so stroke directions match.
