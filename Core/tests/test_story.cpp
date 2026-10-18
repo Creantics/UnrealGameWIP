@@ -1,5 +1,6 @@
 #include "ftcore/StoryDatabase.h"
 #include "ftcore/StoryRunner.h"
+#include "ftcore/StorySave.h"
 
 #include "AllocCounter.h"
 
@@ -463,4 +464,54 @@ TEST_CASE("story runner gives up on a loop of empty scenes") {
     CHECK(r.start());
     CHECK(r.finished());
     CHECK(r.stalled());
+}
+
+TEST_CASE("story save keeps the cursor and the changed flags") {
+    Fixture f;
+    StoryRunner r(&f.db);
+    StorySave s;
+    CHECK_FALSE(captureStory(r, s)); // idle: nothing to save
+    r.start();
+    r.advance();
+    r.advance();
+    r.skipHold();
+    REQUIRE(r.state() == StoryRunner::State::Choice);
+    r.choose(1);
+    REQUIRE(r.state() == StoryRunner::State::Gameplay);
+    REQUIRE(r.setFlag("F_COUNT", FlagValue::integer(-7)));
+
+    REQUIRE(captureStory(r, s));
+    CHECK(s.scene == "SC-A");
+    CHECK(s.beat == 10);
+    REQUIRE(s.flags.size() == 2); // F_BOOL is still at its default
+    CHECK(s.flags[0].id == "F_COUNT");
+    CHECK(s.flags[0].kind == FlagValue::Kind::Int);
+    CHECK(s.flags[0].number == -7);
+    CHECK(s.flags[1].id == "F_ENUM");
+    CHECK(s.flags[1].kind == FlagValue::Kind::String);
+    CHECK(s.flags[1].text == "SAT");
+
+    StoryRunner q(&f.db);
+    q.start("SC-C"); // sets F_BOOL; applying the save resets it
+    StoryLoadReport report;
+    REQUIRE(applyStory(s, q, &report));
+    CHECK(report.skippedFlags.empty());
+    CHECK(q.state() == StoryRunner::State::Gameplay);
+    CHECK(q.param("enemy") == "wolf");
+    CHECK(q.flag("F_COUNT") == FlagValue::integer(-7));
+    CHECK(f.db.flagString(q.flag("F_ENUM")) == "SAT");
+    CHECK_FALSE(q.flag("F_BOOL").truthy());
+
+    // A save from an older script: a flag and a string value it no longer has.
+    StorySave old = s;
+    old.flags.push_back({"F_GONE", FlagValue::Kind::Bool, 1, {}});
+    old.flags.push_back({"F_ENUM", FlagValue::Kind::String, 0, "RETIRED"});
+    REQUIRE(applyStory(old, q, &report));
+    REQUIRE(report.skippedFlags.size() == 2);
+    CHECK(report.skippedFlags[0] == "F_GONE");
+    CHECK(f.db.flagString(q.flag("F_ENUM")) == "SAT"); // the earlier entry still applied
+
+    old.scene = "SC-NOPE";
+    CHECK_FALSE(applyStory(old, q));
+    CHECK(q.state() == StoryRunner::State::Idle);
 }

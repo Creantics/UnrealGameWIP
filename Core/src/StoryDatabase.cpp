@@ -82,6 +82,10 @@ bool StoryDatabase::parseFlagValue(std::string_view text, FlagValue& out) const 
             return true;
         }
     }
+    return findFlagString(text, out);
+}
+
+bool StoryDatabase::findFlagString(std::string_view text, FlagValue& out) const {
     for (std::size_t i = 0; i < flagStrings_.size(); ++i)
         if (view(flagStrings_[i]) == text) {
             out = {static_cast<std::int64_t>(i), FlagValue::Kind::String};

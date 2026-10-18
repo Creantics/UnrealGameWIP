@@ -169,6 +169,9 @@ public:
     // allocates: not meant for per-frame use.
     FTCORE_API std::string formatFlagValue(FlagValue v) const;
     FTCORE_API bool parseFlagValue(std::string_view text, FlagValue& out) const;
+    // The string flag value with this text (even one that reads like a number). False when the
+    // script never uses it.
+    FTCORE_API bool findFlagString(std::string_view text, FlagValue& out) const;
 
     std::size_t cueCount() const { return cues_.size(); }
     const CueDef& cue(std::uint32_t i) const { return cues_[i]; }

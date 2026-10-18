@@ -36,6 +36,7 @@ add_library(ftcore STATIC
     src/Conductor.cpp
     src/StoryDatabase.cpp
     src/StoryRunner.cpp
+    src/StorySave.cpp
     src/TurnQueue.cpp
     src/Version.cpp
 )
