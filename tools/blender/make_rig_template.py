@@ -110,6 +110,8 @@ def make_face_clips(arm, head):
             kb.keyframe_insert("value", frame=f)
     for kb in keys.key_blocks:
         kb.value = 0.0
+    rc.bake_linear(act)  # LINEAR, not Bezier: UE Interchange drops CUBICSPLINE samplers
+    rc.bake_linear(act2)
     return act, act2
 
 
@@ -197,6 +199,8 @@ def check_glb(path, n_shapes):
     assert joints == rs.JOINT_NAMES, "skin joint order differs from the canonical order"
     anims = sorted(a["name"] for a in doc.get("animations", []))
     paths = sorted({c["target"]["path"] for a in doc.get("animations", []) for c in a["channels"]})
+    interp = {s.get("interpolation", "LINEAR") for a in doc.get("animations", []) for s in a["samplers"]}
+    assert interp == {"LINEAR"}, "non-LINEAR samplers: %r" % sorted(interp)
     return {"primitives": len(m["primitives"]), "joints": len(joints), "animations": anims, "paths": paths}
 
 

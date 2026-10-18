@@ -90,6 +90,21 @@ def body_joints(arm):
     return [b.name for b in arm.pose.bones if b.name not in face]
 
 
+def bake_linear(action):
+    """Rewrites every curve of `action` as LINEAR keys on each integer frame, sampled from the curve as
+    authored, so the motion is unchanged at frame resolution. Bezier keys export as glTF CUBICSPLINE
+    samplers, which UE 5.8 Interchange rejects as corrupt (it expects the wrong output count)."""
+    for fc in iter_fcurves(action):
+        lo, hi = (int(round(v)) for v in fc.range())
+        vals = [fc.evaluate(f) for f in range(lo, hi + 1)]
+        fc.keyframe_points.clear()
+        fc.keyframe_points.add(len(vals))
+        for kp, f, v in zip(fc.keyframe_points, range(lo, hi + 1), vals):
+            kp.co = (f, v)
+            kp.interpolation = "LINEAR"
+        fc.update()
+
+
 def make_rom_action(arm, joints=None):
     """The ROM clip (§10.2): one canonical pose every ROM_STEP_FRAMES frames, linear between."""
     joints = joints or body_joints(arm)
@@ -112,6 +127,7 @@ def make_tpose_action(arm, joints=None):
     set_pose(arm, rig_spec.expand_pose(rig_spec.TPOSE))
     key_all_rotations(arm, 0, joints)
     key_all_rotations(arm, 1, joints)
+    bake_linear(act)
     reset_pose(arm)
     return act
 

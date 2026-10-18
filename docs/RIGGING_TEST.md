@@ -29,7 +29,7 @@ UnrealEditor-Cmd ForgottenThird.uproject -run=FTImportCharacter -Source=Data/Mod
 
 - It imports through Interchange and saves the assets under `Content/Characters/ProofHead/proof_head/`: the mesh, skeleton, physics asset, materials and four clips (`face_jaw`, `rom`, `tpose`, `face_blink`).
 - Then it checks the rig and logs `N/7 face bones` and `N/56 face shapes bound`. It exits with 1 if a face bone or a shape's morph is missing.
-- The first run gave 7/7 bones and 56/56 shapes. The log also shows harmless "glTF sampler corrupt" warnings for the clips.
+- The first run gave 7/7 bones and 56/56 shapes. That run also logged 83 "glTF sampler corrupt" warnings, one per CUBICSPLINE sampler; the re-exported file has none (see "Clip check" below).
 
 ## 3. Put it in the demo map
 
@@ -73,9 +73,12 @@ UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildRig -Mesh=/Game/Characters/
 Both arguments are optional; these are the defaults. Rerunning replaces both assets.
 
 - **Clip check.** It first logs every AnimSequence in the mesh's folder: frames, bone tracks that move, tracks off the bind pose, and float curves that change. For proof_head:
-  - `rom`: 440 frames, 14.67 s, 81 bone tracks, 60 of them move. Imported correctly.
-  - `tpose`, `face_jaw`, `face_blink`: 1 frame, no tracks, no curves. **Empty.**
-- **Why the three clips are empty.** The 83 "glTF sampler corrupt" import warnings are exactly the 83 CUBICSPLINE samplers in the file (tpose 81, face_jaw 1, face_blink 1); `rom` uses LINEAR keys and imports fine. UE 5.8's Interchange checks `Input.Count != 3 * Output.Count` for cubic splines (`Engine/Plugins/Interchange/Runtime/Source/Import/Private/Gltf/InterchangeGltfAnimation.cpp`, `ValidateChannelSampler`). The glTF 2.0 rule is the reverse: a cubic-spline output holds three values (in-tangent, value, out-tangent) per input key. The file follows the spec (2 keys -> 6 values, 3 -> 9, blink 3 keys x 56 morphs -> 504), so this is an engine bug and every spec-valid cubic channel is dropped. The fix is on the export side: export these clips with LINEAR interpolation (or sample them) in newengine, or collapse each cubic triple to its middle value in a small glb post-process step. The rig doesn't need these clips, since it is built from the mesh's reference pose (the A-pose).
+  - `rom`: 440 frames, 14.67 s, 81 bone tracks, 60 of them move.
+  - `tpose`: 1 frame, 81 bone tracks, 4 off the bind pose (a held pose, so none move).
+  - `face_jaw`: 12 frames, 1 bone track that moves.
+  - `face_blink`: 8 frames, 2 float curves that change (the two blink shapes).
+- **Fixed: three clips used to import empty.** The export now writes LINEAR samplers only. `rig_common.bake_linear` resamples the Bezier curves of `tpose`, `face_jaw` and `face_blink` to one LINEAR key per frame, so the motion is unchanged at frame resolution, and `make_rig_template.check_glb` asserts that no sampler is CUBICSPLINE. Before the fix, `tpose`, `face_jaw` and `face_blink` had 1 frame, no tracks and no curves. The cause is below.
+- **Why the three clips were empty.** The 83 "glTF sampler corrupt" import warnings are exactly the 83 CUBICSPLINE samplers in the file (tpose 81, face_jaw 1, face_blink 1); `rom` uses LINEAR keys and imports fine. UE 5.8's Interchange checks `Input.Count != 3 * Output.Count` for cubic splines (`Engine/Plugins/Interchange/Runtime/Source/Import/Private/Gltf/InterchangeGltfAnimation.cpp`, `ValidateChannelSampler`). The glTF 2.0 rule is the reverse: a cubic-spline output holds three values (in-tangent, value, out-tangent) per input key. The file follows the spec (2 keys -> 6 values, 3 -> 9, blink 3 keys x 56 morphs -> 504), so this is an engine bug and every spec-valid cubic channel is dropped. The fix is on the export side: `tools/blender` here now exports LINEAR (see above). newengine's `tools/blender` still writes CUBICSPLINE and needs the same change. The rig doesn't need these clips, since it is built from the mesh's reference pose (the A-pose).
 - **IK Rig** `Content/Characters/ProofHead/Rig/IK_proof_head`: the auto-characterizer matched the UE4 Mannequin template (48 bones, score 0.95, none missing). Retarget root `pelvis`, root motion bone `root`. 21 chains, all valid:
   - `Spine` spine_01-03, `Neck` neck_01-02, `Head`
   - `LeftClavicle`/`RightClavicle`, `LeftArm`/`RightArm` upperarm -> hand (goals `LeftHandIK`/`RightHandIK`)
