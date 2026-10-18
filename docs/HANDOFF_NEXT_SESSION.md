@@ -7,7 +7,7 @@ Private notes (character references, concept-art review, script status) are in `
 ## Resume here (updated 2026-10-18)
 
 - **Phase:** S, the story gate, from `docs/ROADMAP.md`. No game building happens until every part scores at least 4.9/5 and two whole-script readers each give at least 9/10.
-- **Status:** Draft 64: all five parts now pass the 4.9 bar (mean 4.98). Remaining for Phase S: a bible edit pass, a cross-part pass, then two whole-script readers at 9/10 or more (newengine, local only).
+- **Status:** Draft 64 passed all five parts (mean 4.98), but both whole-script readers gave 8/10, citing the same two structural issues. Draft 65 targets those two issues, then two fresh readers (newengine, local only).
 - **Next action:** read the private handoff's Resume block and continue the step in flight. Once the story is final, the user wants an animation made with the /motion skill that tells the story from start to finish (keep it local; see the private handoff).
 - **Allowed in this repo during Phase S:** merging the two waiting branches (below), once their diffs are read and the gate passes. Nothing else.
 - **User actions open:** the leak purge, and the GitHub billing fix (see `docs/PLAN.md`).
