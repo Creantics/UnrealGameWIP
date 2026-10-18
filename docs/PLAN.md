@@ -24,7 +24,20 @@ The "dialogue loop" that the handoff lists is already covered by StoryRunner's d
 - `Data/Rig/face_presets.json` is a copy of newengine's `assets/rig/face_presets.json`. Until the F10 face review, the newengine file is the source of truth. If it changes there, copy it over again.
 - `Data/Rig/emotion_map.json` is a draft with unreviewed weights.
 
-## A. Decisions only you can make
+## Decisions
+
+From 2026-10-18, the advisor makes these calls and the user steps in only to change one. The advisor was rate-limited when this section was written, so the rulings below are **proposed, not yet confirmed by the advisor**. Each line will be updated once it confirms or changes it.
+
+| # | Decision | Proposed ruling | Status |
+|---|---|---|---|
+| A1 | Faces | Stylised characters with ARKit-52 shapes (the handoff's recommendation). Lip-sync tracks map directly. | proposed |
+| A2 | CI | The user fixes the GitHub spending limit when convenient. Until then, the local gate (ctest plus UBT) is the authority. | proposed; needs the user's account |
+| A3 | Save format | A Core JSON text codec for `StorySave`, tested here. The Unreal `USaveGame` stores that string. | proposed |
+| A4 | Dialogue | Run the critique loop on 04b, 04c and 04e until they converge, using the draft56 rubric. VO waits until all five parts are final, as the user asked. | proposed |
+| A5 | Remote URL | Leave it, since redirects work. | proposed |
+| D | Python | Install Python 3 on this PC so the tools can run locally. | proposed; needs the user's install |
+
+## A. Open decisions (background)
 
 Everything else branches on these.
 
