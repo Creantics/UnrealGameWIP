@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace ftcore {
@@ -49,5 +50,15 @@ FTCORE_API bool captureStory(const StoryRunner& runner, StorySave& out);
 // (StoryRunner::restore: the saved beat is entered again). False when the saved scene does not
 // exist; the runner is then stopped.
 FTCORE_API bool applyStory(const StorySave& save, StoryRunner& runner, StoryLoadReport* report = nullptr);
+
+// ---- JSON text ----
+// {"format":1,"scene":"SC-A","beat":4,"flags":[{"id":"F","kind":"int","number":3,"text":""}]}
+// kind is "bool", "int" or "string". Every field is required; unknown extra fields are ignored.
+
+// UTF-8 JSON text for the save.
+FTCORE_API std::string encodeStorySave(const StorySave& save);
+// False on bad JSON, an unknown format version, or a missing / wrong-typed field; `*error` then
+// says why and `out` is left untouched.
+FTCORE_API bool decodeStorySave(std::string_view text, StorySave& out, std::string* error = nullptr);
 
 } // namespace ftcore
