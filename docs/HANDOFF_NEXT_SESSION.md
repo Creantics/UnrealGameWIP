@@ -7,7 +7,7 @@ Private notes (character references, concept-art review, script status) are in `
 ## Resume here (updated 2026-10-18)
 
 - **Phase:** S, the story gate, from `docs/ROADMAP.md`. No game building happens until every part scores at least 4.9/5 and two whole-script readers each give at least 9/10.
-- **Status:** the Draft 64 revision runs in newengine, which is local only. Its round and scores are in the private handoff.
+- **Status:** Draft 64 round 1 revisions and bible rulings are done (newengine, local only). Blind critics are grading now. Rounds and scores are in the private handoff.
 - **Next action:** read the private handoff's Resume block, then continue the current revision round.
 - **Allowed in this repo during Phase S:** merging the two waiting branches (below), once their diffs are read and the gate passes. Nothing else.
 - **User actions open:** the leak purge, and the GitHub billing fix (see `docs/PLAN.md`).
