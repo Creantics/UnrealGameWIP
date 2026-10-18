@@ -33,17 +33,24 @@ Fine hand-sculpted organic detail (pores, cloth folds, a likeness) is still a jo
 
 ## Rigged characters
 
-newengine's `tools/blender/` (D:\Projects\newengine) holds the rig pipeline:
-- `make_rig_template.py` builds `proof_head` on the 87-bone canonical skeleton, with all 56 face shapes.
-- `rig_validate.py`, `rigify` mapping and the `bake_to_canonical` tools are there too.
+The rig pipeline was copied from newengine's `tools/blender/` on 2026-10-18. These files are still kept in step with newengine, which remains their source of truth.
 
-Run it in place:
+| Script | What it does |
+|---|---|
+| `make_rig_template.py` | Builds `proof_head` on the 87-bone canonical skeleton, with all 56 face shapes, plus its `.expected.json` and `.rigexpect.json`. |
+| `make_all.py` | Builds the example assets: the `hero` character, `crate_prop` and the `yard` level. |
+| `make_character.py`, `make_prop.py`, `make_level.py` | One example asset each. |
+| `rig_spec.py`, `face_spec.py`, `rig_common.py` | The canonical skeleton and face definitions the others share. |
+| `rig_validate.py` | Checks a rigged character against the rig rules. |
+| `rig_fit.py`, `fit_canonical.py`, `bake_to_canonical.py`, `retarget_maps/` | Fit the canonical skeleton to a character and bake Rigify rigs onto it. |
+| `ne_blender.py` | Shared helpers: scene reset and glTF export profiles. |
 
 ```
-blender -b --factory-startup --python-exit-code 1 --python D:\Projects\newengine\tools\blender\make_rig_template.py -- --out <dir>
+blender -b --factory-startup --python-exit-code 1 --python tools/blender/make_rig_template.py -- --out <dir>
+blender -b --factory-startup --python-exit-code 1 --python tools/blender/make_all.py -- --out <dir>
 ```
 
-It reproduced `proof_head.glb` here (745 KB, 56 shapes, 87 joints). The export settings for hand-made characters are in [RIGGING_TEST.md](RIGGING_TEST.md#later-characters-blender-export).
+Both ran from this repo on Blender 5.0.1. `proof_head.glb` came out at 745,624 bytes, the same size as the copy in `Data/Models/`, with 56 shapes and 87 joints. The export settings for hand-made characters are in [RIGGING_TEST.md](RIGGING_TEST.md#later-characters-blender-export).
 
 ## Into Unreal
 
