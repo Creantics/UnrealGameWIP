@@ -1,0 +1,50 @@
+{
+  "name": "stretched_sparks",
+  "emitters": [
+    {
+      "name": "sparks",
+      "bursts": [{ "time": 0.0, "count": 60 }, { "time": 0.45, "count": 20 }],
+      "duration": 1.1,
+      "loop": true,
+      "maxParticles": 200,
+      "lifetime": [0.5, 1.0],
+      "shape": "cone",
+      "radius": 0.05,
+      "coneAngle": 55,
+      "speed": [2.5, 7.0],
+      "gravity": [0, -9.0, 0],
+      "drag": 0.8,
+      "startSize": [0.035, 0.06],
+      "sizeOverLife": [{ "t": 0, "v": 1.0 }, { "t": 1, "v": 0.4 }],
+      "colorOverLife": [
+        { "t": 0, "color": [2.4, 2.0, 1.2, 1] },
+        { "t": 0.5, "color": [2.0, 0.9, 0.25, 1] },
+        { "t": 1, "color": [1.2, 0.25, 0.05, 0] }
+      ],
+      "blend": "additive",
+      "sprite": "spark",
+      "softness": 0.0,
+      "renderMode": "stretched",
+      "lengthScale": 2.0,
+      "speedScale": 0.045,
+      "sortMode": "none"
+    },
+    {
+      "name": "shockwave",
+      "bursts": [{ "time": 0.0, "count": 1 }],
+      "duration": 1.1,
+      "loop": true,
+      "maxParticles": 4,
+      "lifetime": 0.45,
+      "startSize": 0.4,
+      "sizeOverLife": [{ "t": 0, "v": 0.3 }, { "t": 1, "v": 4.0 }],
+      "colorOverLife": [
+        { "t": 0, "color": [1.8, 1.0, 0.4, 0.7] },
+        { "t": 1, "color": [1.0, 0.3, 0.1, 0.0] }
+      ],
+      "blend": "additive",
+      "softness": 0.0,
+      "renderMode": "horizontal"
+    }
+  ]
+}
