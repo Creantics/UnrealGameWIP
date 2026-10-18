@@ -7,8 +7,8 @@ Private notes (character references, concept-art review, script status) are in `
 ## Resume here (updated 2026-10-18)
 
 - **Phase:** S, the story gate, from `docs/ROADMAP.md`. No game building happens until every part scores at least 4.9/5 and two whole-script readers each give at least 9/10.
-- **Status:** Draft 67 (one more outline-led pass, with a hard stop) is revised and cross-checked. Two fresh blind readers are running now. If either reader is under 9, report the plateau to the user and stop (newengine, local only). The per-part bar is re-graded after the readers pass. The boss count is 15; update ROADMAP at Phase S exit.
-- **Next action:** read the private handoff's Resume block and continue the step in flight. Once the story is final, the user wants an animation made with the /motion skill that tells the story from start to finish (keep it local; see the private handoff).
+- **Status:** Phase S gate not met. Draft 67 readers gave 8 and 7.8, after two structural passes; reader scores have stayed near 8 for five drafts. A plateau report is written (private; newengine, local only): the blocker is design-level repetition in the middle acts, which prose passes cannot reach. The per-part 4.9 re-grade is outstanding, and the boss count is 15 pending the decision.
+- **Next action:** wait for the user's plateau decision before launching any story agents. Recommended: keep the gate and run a design-level pass after the weekly usage reset. The alternative is to build on the current draft. The /motion story animation waits for the final story (keep it local; see the private handoff).
 - **Allowed in this repo during Phase S:** merging the two waiting branches (below), once their diffs are read and the gate passes. Nothing else.
 - **User actions open:** the leak purge, and the GitHub billing fix (see `docs/PLAN.md`).
 
