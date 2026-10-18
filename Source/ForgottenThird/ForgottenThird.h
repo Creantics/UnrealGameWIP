@@ -4,3 +4,5 @@
 
 #include "CoreMinimal.h"
 
+
+FORGOTTENTHIRD_API DECLARE_LOG_CATEGORY_EXTERN(LogForgottenThird, Log, All);
