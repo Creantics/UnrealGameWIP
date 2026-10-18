@@ -114,7 +114,8 @@ FTCORE_API std::vector<std::uint8_t> serializeFaceTrack(const FaceTrack& track);
 //
 // Allocation: setExpression / play / update / setMicro and the output calls never allocate (play()
 // resolves channel names into a fixed table). Determinism: blinks come from a xorshift32 seeded in
-// the constructor (the seed is hashed first, so seeds 1, 2, 3... still blink apart), so a seed and a dt sequence give the same weights on every platform.
+// the constructor (the seed is hashed first, so seeds 1, 2, 3... still blink apart), so a seed and
+// a dt sequence give the same weights on every platform.
 class FacePlayer {
 public:
     static constexpr std::size_t kMaxTrackChannels = kMaxFaceShapes + 8;
