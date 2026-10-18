@@ -173,6 +173,7 @@ public:
                           std::span<const FaceCue> cues = {}, float fade = 0.25f);
     // The same with the line's delivery: the blend time comes from the pace, and the blink rate,
     // head motion, contour and volume follow it until the next speak or listen.
+    // (Pass cues as a span: speak(a, b, i, {}) alone is ambiguous between the two overloads.)
     FTCORE_API bool speak(std::string_view primary, std::string_view secondary, int intensity,
                           const FaceDelivery& delivery, std::span<const FaceCue> cues = {});
     // Starts listening: the current pose decays to rest under the speaker's emotion, mirrored when
@@ -194,8 +195,9 @@ public:
     float headNod() const { return nod_; }         // 0..1 envelope times headMotion(); the owner maps it to neck_02
     FTCORE_API float headMotion() const;           // the profile's head-motion scale, times the pace's while speaking
     const FacePreset& pose() const { return pose_; } // the expression pose given to the player
-    // Delivery outputs (neutral while listening): the pace's 0..1 position, blink factor and blend
-    // time, and the volume's jaw aperture scale for unbaked lines (see the top of this file).
+    // Delivery outputs: the pace's 0..1 position, blink factor (1 while listening or at an unknown
+    // pace) and blend time (mid-range at an unknown pace), and the volume's jaw aperture scale (1 while
+    // listening) for unbaked lines (see the top of this file).
     float pace() const { return pace_; }
     FTCORE_API float paceBlinkScale() const;
     FTCORE_API float blendTime() const;
@@ -211,7 +213,6 @@ private:
     void startFlash();
     void startFlutter(float late);
     void runCues(float now);
-    void updateContour(float dt);
     float paceLerp(float slow, float fast) const { return slow + (fast - slow) * pace_; }
 
     const FaceShapeSet* set_;
