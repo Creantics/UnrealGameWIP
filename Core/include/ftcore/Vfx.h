@@ -424,13 +424,6 @@ struct VfxNiagaraEmitter {
     float noiseStrength = 0.f;  // cm/s
     float noiseFrequency = 0.f; // Niagara units (samples position * frequency / 50)
 
-    // RotateAroundPoint (horizontal circle about orbitCenter)
-    bool rotateAroundPoint = false;
-    float orbitRate = 0.f; // degrees per particle lifetime (the module multiplies by normalised age)
-    VfxRange orbitRadius;
-    VfxRange orbitPhase; // radians
-    VfxVec3 orbitCenter;
-
     // ScaleSpriteSize / ScaleColor (empty: module off)
     std::vector<VfxKey> sizeOverLife;
     std::vector<VfxColorStop> colorOverLife;
@@ -462,5 +455,18 @@ struct VfxNiagaraPlan {
 
 // Builds the plan for `effect` (which importVfxEffect accepted).
 FTCORE_API void planVfxNiagara(const VfxEffect& effect, VfxNiagaraPlan& out);
+
+// Runtime knobs every built Niagara system exposes as user parameters ("User.<name>"); UFTVfxComponent
+// fills them. Each multiplies a module value, so 1 leaves the effect as authored.
+inline constexpr const char* kVfxUserSpeedScale = "SpeedScale"; // float: every start velocity
+inline constexpr const char* kVfxUserShapeScale = "ShapeScale"; // vector: the spawn shape (per axis, cm stay cm)
+
+struct VfxUserParameters {
+    float speedScale = 1.f;
+    float shapeScale = 1.f; // uniform
+};
+
+// Clamps each knob to [0, 10]; a non-finite value becomes 1.
+FTCORE_API VfxUserParameters sanitizeVfxUserParameters(VfxUserParameters p);
 
 } // namespace ftcore

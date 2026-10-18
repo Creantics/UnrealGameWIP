@@ -22,6 +22,8 @@
 #include "FTCharacterPreview.h"
 #include "FTStyleController.h"
 #include "FTStyleParameters.h"
+#include "FTVfxComponent.h"
+#include "NiagaraSystem.h"
 #include "GameFramework/PlayerStart.h"
 #include "HAL/FileManager.h"
 #include "Materials/MaterialInterface.h"
@@ -261,6 +263,39 @@ int32 UFTBuildDemoWorldCommandlet::Main(const FString& Params)
 	SpawnProp(World, Spawn, Cone, Grey, TEXT("PropCone"), FVector(-130, -230, 40), FVector(0.6f, 0.6f, 0.8f));
 	SpawnProp(World, Spawn, Cube, Grey, TEXT("PropFarBlock"), FVector(-1500, 450, 150), FVector(3.f), 35.f);
 	SpawnProp(World, Spawn, Cylinder, Grey, TEXT("PropFarTower"), FVector(-1200, -700, 300), FVector(1.2f, 1.2f, 6.f));
+
+	// Effects beside the character, off the line between it and the player start (which looks along -X
+	// from x = 250): one on each side and one behind. -NoVfx leaves them out.
+	if (!FParse::Param(*Params, TEXT("NoVfx")))
+	{
+		struct FPlacement
+		{
+			const TCHAR* Effect;
+			FVector Location;
+		};
+		const FPlacement Placements[] = {
+			{TEXT("ember_swirl"), FVector(30, 150, 0)},
+			{TEXT("heal_ring"), FVector(20, -170, 2)},
+			{TEXT("smoke"), FVector(-160, -90, 0)},
+		};
+		for (const FPlacement& Place : Placements)
+		{
+			const FName Effect(Place.Effect);
+			UNiagaraSystem* System = LoadObject<UNiagaraSystem>(nullptr, *UFTVfxComponent::SystemPath(Effect));
+			if (!System)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildDemoWorld: %s is missing; run FTBuildVfx first (or pass -NoVfx)."),
+					*UFTVfxComponent::SystemPath(Effect));
+				World->DestroyWorld(false);
+				return 1;
+			}
+			AFTVfxActor* Actor = World->SpawnActor<AFTVfxActor>(Place.Location, FRotator::ZeroRotator, Spawn);
+			Actor->GetVfx()->Effect = Effect;
+			Actor->GetVfx()->System = System;
+			Actor->SetActorLabel(FString::Printf(TEXT("Vfx_%s"), Place.Effect));
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildDemoWorld: placed %d effects."), static_cast<int32>(UE_ARRAY_COUNT(Placements)));
+	}
 
 	// The level's own post-process: unbound, priority 0, no overrides. Grade the scene here; the style
 	// controller sits above it.

@@ -1032,42 +1032,13 @@ void planShapeAndVelocity(const VfxEmitter& e, VfxNiagaraEmitter& p) {
     }
     }
 
-    // Orbital velocity about the vertical axis: RotateAroundPoint (a horizontal circle about the centre).
+    // Orbital velocity: Niagara's RotateAroundPoint module exists, but the 5.8 Lightweight simulation
+    // shader doesn't run it (its include is commented out), so the particles keep their spawn shape and
+    // don't circle.
     if (vol.enabled) {
-        const float omega = vol.orbital[1].mean();
-        if (omega != 0.f) {
-            const VfxVec3 center = vfxToUnreal(vol.offset);
-            const float meanLife = e.lifetime.mean();
-            bool mapped = true;
-            if (e.shape == VfxShape::Ring) {
-                p.orbitRadius = {e.innerRadius * kVfxUnrealUnitsPerMetre, r};
-                p.orbitPhase = {0.f, 2.f * kPi};
-                p.shape = VfxNiagaraShape::None; // the module places the particles on the circle
-            } else if (e.shape == VfxShape::Point) {
-                const float dx = -center.x, dy = -center.y;
-                const float radius = std::sqrt(dx * dx + dy * dy);
-                p.orbitRadius = {radius, radius};
-                const float phase = radius > 0.f ? std::atan2(dy, dx) : 0.f;
-                p.orbitPhase = {phase, phase};
-            } else {
-                mapped = false;
-                p.gaps.push_back("velocityOverLifetime.orbital: only mapped for point and ring shapes");
-            }
-            if (mapped) {
-                p.rotateAroundPoint = true;
-                p.orbitCenter = center;
-                // Degrees per lifetime (the module scales by normalised age). The axis swap mirrors, so
-                // a turn about newengine's +Y is the opposite turn about Unreal's +Z.
-                p.orbitRate = -omega * kDegPerRad * meanLife;
-                const VfxRange life = curveRange(e.lifetime, 1.f);
-                if (life.lo != life.hi)
-                    p.gaps.push_back("velocityOverLifetime.orbital: angular speed is exact at the mean lifetime only");
-                if (!vol.orbital[1].isConstant())
-                    p.gaps.push_back("velocityOverLifetime.orbital: a curve; its mean is used");
-            }
-        }
-        if (vol.orbital[0].mean() != 0.f || vol.orbital[2].mean() != 0.f)
-            p.gaps.push_back("velocityOverLifetime.orbital: rotation about horizontal axes is not mapped");
+        if (vol.orbital[0].mean() != 0.f || vol.orbital[1].mean() != 0.f || vol.orbital[2].mean() != 0.f)
+            p.gaps.push_back(
+                "velocityOverLifetime.orbital: not mapped (the Lightweight simulation shader has no RotateAroundPoint)");
         if (!(vol.radial == VfxCurve{}))
             p.gaps.push_back("velocityOverLifetime.radial: not mapped");
     }
@@ -1223,7 +1194,6 @@ void planSubEmitters(const VfxEffect& effect, VfxNiagaraPlan& plan) {
             const VfxVec3 at = expectedDeathPosition(parent, pp);
             child.shapeOffset = at;
             child.pointOrigin = add(child.pointOrigin, at);
-            if (child.rotateAroundPoint) child.orbitCenter = add(child.orbitCenter, at);
             if (child.shape == VfxNiagaraShape::None && !isZero(at)) {
                 child.shape = VfxNiagaraShape::Sphere; // ShapeLocation carries the offset
                 child.sphereRadius = 0.1f;
@@ -1257,10 +1227,9 @@ void planBounds(VfxNiagaraEmitter& p) {
     for (const VfxKey& k : p.sizeOverLife) sizeScale = std::max(sizeScale, k.v);
     const float stretch = std::max(1.f, std::max(p.maxScale.y, p.minScale.y));
     const float reach = extent + vmax * travel + p.noiseStrength * t +
-                        (p.rotateAroundPoint ? std::max(p.orbitRadius.hi, p.orbitRadius.lo) : 0.f) +
                         0.5f * p.spriteSize.hi * sizeScale * stretch;
     const VfxVec3 g = scale(add(p.gravity, p.acceleration), 0.5f * t * t);
-    const VfxVec3 c = add(p.shapeOffset, p.rotateAroundPoint ? p.orbitCenter : VfxVec3{});
+    const VfxVec3 c = p.shapeOffset;
     p.boundsMin = add(c, {std::min(0.f, g.x) - reach, std::min(0.f, g.y) - reach, std::min(0.f, g.z) - reach});
     p.boundsMax = add(c, {std::max(0.f, g.x) + reach, std::max(0.f, g.y) + reach, std::max(0.f, g.z) + reach});
 }
@@ -1290,6 +1259,13 @@ void planVfxNiagara(const VfxEffect& effect, VfxNiagaraPlan& out) {
         if (p.loop) out.loops = true;
         else out.duration = std::max(out.duration, p.loopDuration + p.lifetime.hi);
     }
+}
+
+VfxUserParameters sanitizeVfxUserParameters(VfxUserParameters p) {
+    auto clean = [](float v) { return std::isfinite(v) ? std::clamp(v, 0.f, 10.f) : 1.f; };
+    p.speedScale = clean(p.speedScale);
+    p.shapeScale = clean(p.shapeScale);
+    return p;
 }
 
 } // namespace ftcore

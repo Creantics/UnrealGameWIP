@@ -251,7 +251,7 @@ TEST_CASE("vfx: coordinates map to Unreal centimetres, Z up") {
     CHECK(vfxToUnreal({1.f, 2.f, 3.f}) == VfxVec3{100.f, 300.f, 200.f});
 }
 
-TEST_CASE("vfx: Niagara plan for heal_ring orbits a ring, mirrored") {
+TEST_CASE("vfx: Niagara plan for heal_ring spawns on a ring; the orbit is a gap") {
     VfxEffect e;
     REQUIRE(loadEffect("heal_ring", e));
     VfxNiagaraPlan plan;
@@ -261,14 +261,11 @@ TEST_CASE("vfx: Niagara plan for heal_ring orbits a ring, mirrored") {
     CHECK(plan.loops);
     CHECK(p.loop);
     CHECK(p.rate == doctest::Approx(70.f));
-    CHECK(p.rotateAroundPoint);
-    // 2.5 rad/s about newengine +Y over a 1.7 s mean lifetime, turned the other way about Unreal +Z.
-    CHECK(p.orbitRate == doctest::Approx(-2.5f * 180.f / kPi * 1.7f).epsilon(0.001));
-    CHECK(p.orbitRadius.lo == doctest::Approx(95.f));
-    CHECK(p.orbitRadius.hi == doctest::Approx(100.f));
-    CHECK(p.orbitPhase.lo == 0.f);
-    CHECK(p.orbitPhase.hi == doctest::Approx(2.f * kPi)); // radians
-    CHECK(p.shape == VfxNiagaraShape::None);
+    // Lightweight emitters cannot orbit (no RotateAroundPoint in the simulation shader): the ring stays.
+    CHECK(anyGap(p, "orbital"));
+    CHECK(p.shape == VfxNiagaraShape::Ring);
+    CHECK(p.ringRadius == doctest::Approx(100.f));
+    CHECK(p.discCoverage == doctest::Approx(0.05f));
     CHECK(p.velocity == VfxNiagaraVelocity::Linear);
     CHECK(p.linearLo == p.linearHi);
     CHECK(p.linearLo.x == 0.f);
@@ -359,4 +356,16 @@ TEST_CASE("vfx: one-shot plans report their duration") {
     CHECK(plan.duration == doctest::Approx(1.3f));
     CHECK(plan.emitters[0].velocity == VfxNiagaraVelocity::None);
     CHECK(plan.emitters[0].shape == VfxNiagaraShape::None);
+}
+
+TEST_CASE("vfx: user parameters are clamped") {
+    VfxUserParameters p;
+    p.speedScale = -2.f;
+    p.shapeScale = std::nanf("");
+    p = sanitizeVfxUserParameters(p);
+    CHECK(p.speedScale == 0.f);
+    CHECK(p.shapeScale == 1.f);
+    p.speedScale = 50.f;
+    CHECK(sanitizeVfxUserParameters(p).speedScale == 10.f);
+    CHECK(sanitizeVfxUserParameters(VfxUserParameters{}).speedScale == 1.f);
 }
