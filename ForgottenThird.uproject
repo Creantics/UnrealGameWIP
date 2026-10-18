@@ -5,6 +5,11 @@
 	"Description": "",
 	"Modules": [
 		{
+			"Name": "ForgottenCore",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
 			"Name": "ForgottenThird",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"
