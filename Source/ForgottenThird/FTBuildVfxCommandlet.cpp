@@ -54,7 +54,7 @@ FString PackageFile(const FString& Package)
 	return FPackageName::LongPackageNameToFilename(Package, FPackageName::GetAssetPackageExtension());
 }
 
-bool Save(UPackage* Package, UObject* Asset)
+bool SaveVfxAsset(UPackage* Package, UObject* Asset)
 {
 	FAssetRegistryModule::AssetCreated(Asset);
 	Package->MarkPackageDirty();
@@ -114,7 +114,7 @@ FString MaterialPackage(const FSpriteMaterialSpec& Spec)
 }
 
 template <typename T>
-T* AddExpression(UMaterial* Material, int32 X, int32 Y)
+T* AddVfxExpression(UMaterial* Material, int32 X, int32 Y)
 {
 	T* Expression = NewObject<T>(Material, NAME_None, RF_Transactional);
 	Material->GetExpressionCollection().AddExpression(Expression);
@@ -128,7 +128,7 @@ T* AddExpression(UMaterial* Material, int32 X, int32 Y)
 UMaterialExpressionCustom* AddCustom(UMaterial* Material, int32 Y, const TCHAR* Description, ECustomMaterialOutputType Type,
 	const FString& Code, UMaterialExpression* Color, UMaterialExpression* Mask)
 {
-	UMaterialExpressionCustom* Custom = AddExpression<UMaterialExpressionCustom>(Material, -300, Y);
+	UMaterialExpressionCustom* Custom = AddVfxExpression<UMaterialExpressionCustom>(Material, -300, Y);
 	Custom->Description = Description;
 	Custom->OutputType = Type;
 	Custom->Code = Code;
@@ -150,10 +150,10 @@ UMaterial* BuildSpriteMaterial(UPackage* Package, const FSpriteMaterialSpec& Spe
 	Material->SetShadingModel(MSM_Unlit);
 	Material->SetUsageByFlag(MATUSAGE_NiagaraSprites, true);
 
-	UMaterialExpressionTextureCoordinate* UV = AddExpression<UMaterialExpressionTextureCoordinate>(Material, -900, 0);
-	UMaterialExpressionParticleColor* Color = AddExpression<UMaterialExpressionParticleColor>(Material, -900, 150);
+	UMaterialExpressionTextureCoordinate* UV = AddVfxExpression<UMaterialExpressionTextureCoordinate>(Material, -900, 0);
+	UMaterialExpressionParticleColor* Color = AddVfxExpression<UMaterialExpressionParticleColor>(Material, -900, 150);
 
-	UMaterialExpressionCustom* Mask = AddExpression<UMaterialExpressionCustom>(Material, -600, 0);
+	UMaterialExpressionCustom* Mask = AddVfxExpression<UMaterialExpressionCustom>(Material, -600, 0);
 	Mask->Description = Spec.bSpark ? TEXT("SparkMask") : TEXT("SoftMask");
 	Mask->OutputType = CMOT_Float1;
 	Mask->Code = Spec.bSpark ? SparkMaskCode : SoftMaskCode;
@@ -754,7 +754,7 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 		UMaterial* Material = BuildSpriteMaterial(Package, SpriteMaterials[I]);
 		Materials[I] = Material;
 		FAssetCompilingManager::Get().FinishAllCompilation();
-		bOk &= Save(Package, Material);
+		bOk &= SaveVfxAsset(Package, Material);
 	}
 	if (!bOk)
 	{
@@ -772,7 +772,7 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 			return 1;
 		}
 		FAssetCompilingManager::Get().FinishAllCompilation();
-		if (!Save(Package, System))
+		if (!SaveVfxAsset(Package, System))
 		{
 			return 1;
 		}
