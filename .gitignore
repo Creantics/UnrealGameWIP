@@ -24,3 +24,6 @@ Core/build*/
 
 # Story text stays out of this public repo (CLAUDE.md). Copy it from newengine assets/story.
 Data/Story/
+
+# Python bytecode (Blender scripts)
+__pycache__/
