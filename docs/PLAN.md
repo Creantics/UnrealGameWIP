@@ -50,7 +50,7 @@ From 2026-10-18, the advisor makes these calls and the user steps in only to cha
 | A1 | Faces | Stylised characters with ARKit-52 shapes. Lip-sync tracks map directly. |
 | A2 | CI | The user fixes the GitHub spending limit when convenient. Until then, the local gate (ctest plus UBT) is the authority. |
 | A3 | Save format | A Core JSON text codec for `StorySave`. The Unreal `USaveGame` stores that string. Done. |
-| A4 | Dialogue | The critique loop on 04b, 04c and 04e is story work, so it's deferred out of the porting and rigging-test push. VO waits until all five parts are final. |
+| A4 | Dialogue | All five parts are final as of Draft 63 (newengine, local). Next, move the importer and the VO list from Draft 55 to Draft 63; until then the game loads Draft 55. VO starts after that. |
 | A5 | Remote URL | Leave it, since redirects work. |
 | D | Python | Install Python 3 now (winget). Done. |
 | — | Merging | Session branches merge into main after their diff is read and the gate passes. Merged branches are deleted locally and on origin, and their sessions archived. |
