@@ -18,8 +18,8 @@ public class ForgottenThird : ModuleRules
 
 		if (Target.bBuildEditor)
 		{
-			// The demo-world and character-import commandlets.
-			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry", "AssetTools" });
+			// The demo-world, character-import and rig commandlets.
+			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry", "AssetTools", "IKRig", "IKRigEditor", "Slate", "SlateCore" });
 		}
 
 		// Uncomment if you are using Slate UI
