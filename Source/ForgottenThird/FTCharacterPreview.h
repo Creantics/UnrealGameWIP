@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // A character on a stand, for rigging tests: a skeletal mesh driven by UFTFaceComponent, cycling
 // through the face's expression presets so every morph target can be checked by eye. Set Body's
@@ -24,7 +24,7 @@ public:
 
 	// Step through CycleExpressions, holding each for CycleSeconds.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview")
-	bool bCycleExpressions = true;
+	bool bAutoCycle = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview", meta = (ClampMin = "0.1"))
 	float CycleSeconds = 2.f;

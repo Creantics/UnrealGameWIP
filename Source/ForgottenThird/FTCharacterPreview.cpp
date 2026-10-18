@@ -1,4 +1,4 @@
-#include "FTCharacterPreview.h"
+﻿#include "FTCharacterPreview.h"
 
 #include "Components/SkeletalMeshComponent.h"
 #include "FTFaceComponent.h"
@@ -34,7 +34,7 @@ void AFTCharacterPreview::BeginPlay()
 	}
 	Current = 0;
 	Held = 0.f;
-	if (bCycleExpressions && CycleExpressions.Num() > 0)
+	if (bAutoCycle && CycleExpressions.Num() > 0)
 	{
 		ShowExpression(0);
 	}
@@ -44,7 +44,7 @@ void AFTCharacterPreview::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
-	if (!bCycleExpressions || CycleExpressions.Num() == 0)
+	if (!bAutoCycle || CycleExpressions.Num() == 0)
 	{
 		return;
 	}

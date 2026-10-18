@@ -17,6 +17,7 @@
 #include "Engine/World.h"
 #include "FTCharacterPreview.h"
 #include "GameFramework/PlayerStart.h"
+#include "HAL/FileManager.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
@@ -39,8 +40,14 @@ UFTBuildDemoWorldCommandlet::UFTBuildDemoWorldCommandlet()
 int32 UFTBuildDemoWorldCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
+	// Start from nothing: loading the old map into the package would clash with the new world.
+	const FString File = FPackageName::LongPackageNameToFilename(kDemoMap, FPackageName::GetMapPackageExtension());
+	if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildDemoWorld: couldn't replace %s."), *File);
+		return 1;
+	}
 	UPackage* Package = CreatePackage(kDemoMap);
-	Package->FullyLoad();
 
 	UWorld* World = UWorld::CreateWorld(EWorldType::Inactive, false, TEXT("Demo"), Package);
 	if (!World)
@@ -102,7 +109,6 @@ int32 UFTBuildDemoWorldCommandlet::Main(const FString& Params)
 	FAssetRegistryModule::AssetCreated(World);
 	Package->MarkPackageDirty();
 
-	const FString File = FPackageName::LongPackageNameToFilename(kDemoMap, FPackageName::GetMapPackageExtension());
 	FSavePackageArgs Save;
 	Save.TopLevelFlags = RF_Public | RF_Standalone;
 	Save.SaveFlags = SAVE_NoError;
