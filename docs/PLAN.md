@@ -39,7 +39,7 @@ From 2026-10-18, the advisor makes these calls and the user steps in only to cha
 | — | Merging | Session branches merge into main after their diff is read and the gate passes. |
 | — | Editor launches | Only `UnrealEditor-Cmd -run=<Commandlet>`, never the interactive editor unattended. Always run it in the background with a hard timeout, and check for live editor processes before each UBT build. |
 
-`Data/Story/` is a copy of newengine `assets/story/`. As with the face presets, newengine is the source of truth until the story is final.
+`Data/Story/` is a local, gitignored copy of newengine `assets/story/`. This repo is public, so story text is never committed. Copy it over by hand on each machine. newengine is the source of truth.
 
 ## A. Open decisions (background)
 
