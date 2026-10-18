@@ -17,7 +17,7 @@ State on 2026-10-18 (origin/main at ef99ba1). The Core porting is done. The demo
 
 ## Where things stand
 
-**Core** (plain C++20, 129 tests outside Unreal):
+**Core** (plain C++20, 167 tests outside Unreal):
 - Battle, TurnQueue
 - ComboGenerator / ComboSequence
 - Conductor and Calibration
