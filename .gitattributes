@@ -13,13 +13,28 @@
 *.ogg filter=lfs diff=lfs merge=lfs -text
 *.mp4 filter=lfs diff=lfs merge=lfs -text
 *.nface filter=lfs diff=lfs merge=lfs -text
+*.mp3 filter=lfs diff=lfs merge=lfs -text
+*.flac filter=lfs diff=lfs merge=lfs -text
+*.mov filter=lfs diff=lfs merge=lfs -text
+*.obj filter=lfs diff=lfs merge=lfs -text
+*.abc filter=lfs diff=lfs merge=lfs -text
+*.hdr filter=lfs diff=lfs merge=lfs -text
+*.ttf filter=lfs diff=lfs merge=lfs -text
+*.otf filter=lfs diff=lfs merge=lfs -text
+*.zip filter=lfs diff=lfs merge=lfs -text
 
 # Text stays text, with normalized line endings.
 *.cpp text
 *.h text
 *.cs text
+*.ps1 text eol=crlf
+*.sh text eol=lf
 *.ini text
 *.json text
 *.md text
 *.uproject text
 *.uplugin text
+*.py text
+*.txt text
+*.yml text
+*.cmake text
