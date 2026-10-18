@@ -26,16 +26,20 @@ The "dialogue loop" that the handoff lists is already covered by StoryRunner's d
 
 ## Decisions
 
-From 2026-10-18, the advisor makes these calls and the user steps in only to change one. The advisor was rate-limited when this section was written, so the rulings below are **proposed, not yet confirmed by the advisor**. Each line will be updated once it confirms or changes it.
+From 2026-10-18, the advisor makes these calls and the user steps in only to change one.
 
-| # | Decision | Proposed ruling | Status |
-|---|---|---|---|
-| A1 | Faces | Stylised characters with ARKit-52 shapes (the handoff's recommendation). Lip-sync tracks map directly. | proposed |
-| A2 | CI | The user fixes the GitHub spending limit when convenient. Until then, the local gate (ctest plus UBT) is the authority. | proposed; needs the user's account |
-| A3 | Save format | A Core JSON text codec for `StorySave`, tested here. The Unreal `USaveGame` stores that string. | proposed |
-| A4 | Dialogue | Run the critique loop on 04b, 04c and 04e until they converge, using the draft56 rubric. VO waits until all five parts are final, as the user asked. | proposed |
-| A5 | Remote URL | Leave it, since redirects work. | proposed |
-| D | Python | Install Python 3 on this PC so the tools can run locally. | proposed; needs the user's install |
+| # | Decision | Ruling (advisor) |
+|---|---|---|
+| A1 | Faces | Stylised characters with ARKit-52 shapes. Lip-sync tracks map directly. |
+| A2 | CI | The user fixes the GitHub spending limit when convenient. Until then, the local gate (ctest plus UBT) is the authority. |
+| A3 | Save format | A Core JSON text codec for `StorySave`. The Unreal `USaveGame` stores that string. |
+| A4 | Dialogue | The critique loop on 04b, 04c and 04e is story work, so it's deferred out of the porting and rigging-test push. VO waits until all five parts are final. |
+| A5 | Remote URL | Leave it, since redirects work. |
+| D | Python | Install Python 3 now (winget). |
+| — | Merging | Session branches merge into main after their diff is read and the gate passes. |
+| — | Editor launches | Only `UnrealEditor-Cmd -run=<Commandlet>`, never the interactive editor unattended. Always run it in the background with a hard timeout, and check for live editor processes before each UBT build. |
+
+`Data/Story/` is a copy of newengine `assets/story/`. As with the face presets, newengine is the source of truth until the story is final.
 
 ## A. Open decisions (background)
 

@@ -16,7 +16,7 @@ class FORGOTTENTHIRD_API UFTGameInstance : public UGameInstance
 public:
 	// story.json and scenes/<id>.json. Relative paths are relative to the project folder.
 	UPROPERTY(Config, EditDefaultsOnly, BlueprintReadOnly, Category = "Story")
-	FString StoryDir = TEXT("Data/story");
+	FString StoryDir = TEXT("Data/Story");
 
 	virtual void Init() override;
 

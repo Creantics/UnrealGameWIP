@@ -12,6 +12,16 @@ public class ForgottenThird : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });
 
+		// The game reads its JSON data (story, face presets, emotion map) from the project's Data/
+		// folder at run time. Stage it next to the packaged game at the same relative path.
+		RuntimeDependencies.Add("$(ProjectDir)/Data/...", StagedFileType.NonUFS);
+
+		if (Target.bBuildEditor)
+		{
+			// The demo-world commandlet saves packages.
+			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry" });
+		}
+
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
 		
