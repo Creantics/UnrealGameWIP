@@ -19,11 +19,13 @@ namespace {
 
 constexpr float kDt = 1.f / 60.f;
 
-// One shape per layer the direction treats differently, plus the brow shapes a flick drives.
+// One shape per layer the direction treats differently, plus the brow shapes a flick drives and
+// the shapes the delivery (contour, volume) drives.
 struct MiniRig {
     FaceShapeSet set;
     EmotionMap map;
     int browIn = -1, browOutL = -1, browOutR = -1, cheek = -1, blinkL = -1, jaw = -1, pressL = -1, smileL = -1;
+    int browDownL = -1, pressR = -1, stretchL = -1;
 
     MiniRig() {
         set.addShape("browInnerUp", FaceLayer::Upper);
@@ -35,6 +37,11 @@ struct MiniRig {
         set.addShape("jawOpen", FaceLayer::MouthArticulation);
         set.addShape("mouthPressLeft", FaceLayer::MouthArticulation);
         set.addShape("mouthSmileLeft", FaceLayer::MouthTone);
+        set.addShape("browDownLeft", FaceLayer::Upper);
+        set.addShape("browDownRight", FaceLayer::Upper);
+        set.addShape("mouthPressRight", FaceLayer::MouthArticulation);
+        set.addShape("mouthStretchLeft", FaceLayer::MouthTone);
+        set.addShape("mouthStretchRight", FaceLayer::MouthTone);
         const std::array<FaceShapeWeight, 2> warm{{{"mouthSmileLeft", 1.f}, {"cheekSquintLeft", 0.5f}}};
         const std::array<FaceShapeWeight, 2> sad{{{"browInnerUp", 1.f}, {"jawOpen", 0.2f}}};
         const std::array<FaceShapeWeight, 2> contempt{{{"mouthSmileLeft", 0.6f}, {"browOuterUpLeft", 0.4f}}};
@@ -55,6 +62,9 @@ struct MiniRig {
         jaw = set.find("jawOpen");
         pressL = set.find("mouthPressLeft");
         smileL = set.find("mouthSmileLeft");
+        browDownL = set.find("browDownLeft");
+        pressR = set.find("mouthPressRight");
+        stretchL = set.find("mouthStretchLeft");
     }
 };
 
@@ -403,6 +413,259 @@ TEST_CASE("listening: glance-aways per phrase, nods on // when warm") {
     CHECK(dir.headNod() > 0.5f);
 }
 
+FaceDelivery delivery(float wpm, FaceVolume volume = FaceVolume::Conversational, std::string_view contour = "flat",
+                      float duration = 0.f) {
+    FaceDelivery d;
+    d.paceWpm = wpm;
+    d.volume = volume;
+    d.duration = duration;
+    REQUIRE(parsePitchContourChain(contour, d));
+    return d;
+}
+
+TEST_CASE("delivery vocabulary parses") {
+    FaceVolume v{};
+    CHECK(parseFaceVolume("whisper", v));
+    CHECK(v == FaceVolume::Whisper);
+    CHECK(parseFaceVolume("shout", v));
+    CHECK(v == FaceVolume::Shout);
+    CHECK_FALSE(parseFaceVolume("loud", v));
+    CHECK(volumeJawScale(FaceVolume::Whisper) == doctest::Approx(0.5f));
+    CHECK(volumeJawScale(FaceVolume::Soft) == doctest::Approx(0.8f));
+    CHECK(volumeJawScale(FaceVolume::Conversational) == doctest::Approx(1.f));
+    CHECK(volumeJawScale(FaceVolume::Raised) == doctest::Approx(1.15f));
+    CHECK(volumeJawScale(FaceVolume::Shout) == doctest::Approx(1.3f));
+
+    CHECK(paceBandWpm("very slow") == doctest::Approx(92.5f));
+    CHECK(paceBandWpm("normal") == doctest::Approx(140.f));
+    CHECK(paceBandWpm("rushed") == doctest::Approx(205.f));
+    CHECK(paceBandWpm("brisk") == 0.f);
+
+    PitchContour c{};
+    for (const std::string_view word : {"falling", "rising", "flat", "arc", "dipping", "breaking", "climbing", "stepped",
+                                        "trailing", "clipped", "lilting"})
+        CHECK(parsePitchContour(word, c));
+    CHECK_FALSE(parsePitchContour("wobbly", c));
+
+    FaceDelivery d;
+    REQUIRE(parsePitchContourChain("stepped>climbing > falling", d));
+    REQUIRE(d.contourCount == 3);
+    CHECK(d.contours[0] == PitchContour::Stepped);
+    CHECK(d.contours[1] == PitchContour::Climbing);
+    CHECK(d.contours[2] == PitchContour::Falling);
+    CHECK_FALSE(parsePitchContourChain("rising>wobbly", d));
+    CHECK(d.contourCount == 0);
+    CHECK_FALSE(parsePitchContourChain("rising>", d));
+    CHECK_FALSE(parsePitchContourChain("", d));
+    CHECK_FALSE(parsePitchContourChain("flat>flat>flat>flat>flat", d));
+    CHECK(parsePitchContourChain("flat>flat>flat>flat", d));
+}
+
+TEST_CASE("pace: blink rate x0.8-1.2, blend time 400-150 ms, head motion") {
+    MiniRig r;
+    {
+        FacePlayer player(r.set);
+        FaceDirector dir(r.set, r.map, player);
+        dir.speak("warm", "", 3, delivery(80.f));
+        CHECK(dir.pace() == doctest::Approx(0.f));
+        CHECK(dir.paceBlinkScale() == doctest::Approx(0.8f));
+        CHECK(dir.blendTime() == doctest::Approx(0.4f));
+        CHECK(dir.headMotion() == doctest::Approx(0.7f));
+        dir.speak("warm", "", 3, delivery(300.f)); // past the fast end: clamped
+        CHECK(dir.pace() == doctest::Approx(1.f));
+        CHECK(dir.paceBlinkScale() == doctest::Approx(1.2f));
+        CHECK(dir.blendTime() == doctest::Approx(0.15f));
+        CHECK(dir.headMotion() == doctest::Approx(1.3f));
+        dir.speak("warm", "", 3, FaceDelivery{}); // unknown pace: neutral
+        CHECK(dir.paceBlinkScale() == 1.f);
+        CHECK(dir.headMotion() == 1.f);
+        dir.speak("warm", "", 3, delivery(230.f));
+        dir.listen("", 3); // listening drops the line's pace
+        CHECK(dir.paceBlinkScale() == 1.f);
+        CHECK(dir.headMotion() == 1.f);
+    }
+    // A still profile stays still at any pace; the pace scales the profile's head motion.
+    {
+        FacePlayer player(r.set);
+        FaceDirector dir(r.set, r.map, player);
+        ContainmentProfile still;
+        still.headMotion = 0.f;
+        dir.setProfile(&still);
+        dir.speak("warm", "", 3, delivery(230.f));
+        CHECK(dir.headMotion() == 0.f);
+        ContainmentProfile half;
+        half.headMotion = 0.5f;
+        dir.setProfile(&half);
+        dir.speak("warm", "", 3, delivery(230.f));
+        CHECK(dir.headMotion() == doctest::Approx(0.65f));
+        const FaceCue cues[] = {{0.f, 0.2f, FaceCueKind::Emphasis}};
+        dir.speak("warm", "", 3, delivery(230.f), cues);
+        float peak = 0.f;
+        for (int f = 0; f < 30; ++f) {
+            dir.tick(kDt);
+            peak = std::max(peak, dir.headNod());
+        }
+        CHECK(peak == doctest::Approx(0.65f).epsilon(0.02)); // the nod follows the paced head motion
+    }
+    // The blend time is the expression crossfade: a slow line is still fading in when a fast one is done.
+    const auto smileAfter = [&](float wpm, float seconds) {
+        FacePlayer player(r.set);
+        FaceDirector dir(r.set, r.map, player);
+        dir.speak("warm", "", 5, delivery(wpm));
+        run(dir, player, seconds);
+        return at(player.weights(), r.smileL);
+    };
+    CHECK(smileAfter(230.f, 0.2f) == doctest::Approx(1.f));
+    CHECK(smileAfter(80.f, 0.2f) < 0.8f);
+    CHECK(smileAfter(80.f, 0.45f) == doctest::Approx(1.f));
+}
+
+TEST_CASE("pace scales the blink rate on top of the profile's, and listening restores it") {
+    MiniRig r;
+    const auto countBlinks = [&](float wpm, bool listenFirst) {
+        FacePlayer player(r.set, 99u);
+        FaceDirector dir(r.set, r.map, player, 99u);
+        ContainmentProfile p;
+        p.blinkRate = 0.5f;
+        dir.setProfile(&p);
+        dir.speak("warm", "", 3, delivery(wpm));
+        if (listenFirst) dir.listen("", 3);
+        int n = 0;
+        bool was = false;
+        for (int f = 0; f < 60 * 900; ++f) {
+            dir.tick(kDt);
+            player.update(kDt);
+            if (player.blinkActive() && !was) ++n;
+            was = player.blinkActive();
+        }
+        return n;
+    };
+    const int slow = countBlinks(80.f, false), fast = countBlinks(230.f, false), listening = countBlinks(230.f, true);
+    CHECK(slow > 50);
+    CHECK(static_cast<float>(fast) / static_cast<float>(slow) == doctest::Approx(1.5f).epsilon(0.15));
+    CHECK(static_cast<float>(listening) / static_cast<float>(fast) == doctest::Approx(1.f / 1.2f).epsilon(0.15));
+}
+
+TEST_CASE("pitch contour: rising lifts the brows, falling settles them, clipped presses") {
+    MiniRig r;
+    FacePlayer player(r.set);
+    FaceDirector dir(r.set, r.map, player);
+
+    dir.speak("warm", "", 3, delivery(140.f, FaceVolume::Conversational, "rising"));
+    CHECK(dir.contour() == PitchContour::Rising);
+    run(dir, player, 0.05f);
+    CHECK(at(dir.micro(), r.browIn) < 0.1f); // eases in, no pop
+    run(dir, player, 2.f);
+    CHECK(at(dir.micro(), r.browIn) == doctest::Approx(0.25f).epsilon(0.01));
+    CHECK(at(dir.micro(), r.browOutL) == doctest::Approx(0.25f).epsilon(0.01));
+    CHECK(at(dir.micro(), r.browDownL) == 0.f);
+    CHECK(at(player.weights(), r.browIn) == doctest::Approx(0.25f).epsilon(0.01)); // shows through the upper layer
+
+    dir.speak("warm", "", 3, delivery(140.f, FaceVolume::Conversational, "falling"));
+    run(dir, player, 3.f);
+    CHECK(at(dir.micro(), r.browIn) < 0.01f);
+    CHECK(at(dir.micro(), r.browDownL) == doctest::Approx(0.15f).epsilon(0.01));
+
+    dir.listen("", 3); // the contour brows ease out
+    run(dir, player, 3.f);
+    CHECK(at(dir.micro(), r.browDownL) < 0.01f);
+    CHECK(dir.contour() == PitchContour::Flat);
+
+    // Contours without a spec'd face effect do nothing.
+    for (const std::string_view word : {"flat", "stepped", "lilting", "arc", "trailing"}) {
+        dir.speak("warm", "", 3, delivery(140.f, FaceVolume::Conversational, word));
+        run(dir, player, 1.f);
+        for (const int s : {r.browIn, r.browDownL, r.blinkL}) CHECK(at(dir.micro(), s) == 0.f);
+    }
+
+    FaceDirector plain(r.set, r.map, player);
+    plain.speak("warm", "", 3, delivery(140.f));
+    const float press = at(plain.pose().weights, r.pressL);
+    dir.speak("warm", "", 3, delivery(140.f, FaceVolume::Conversational, "stepped>clipped"));
+    CHECK(at(dir.pose().weights, r.pressL) == doctest::Approx(press + 0.3f));
+    CHECK(at(dir.pose().weights, r.pressR) == doctest::Approx(0.3f));
+}
+
+TEST_CASE("pitch contour: breaking flutters the lids at its start and at each pause") {
+    MiniRig r;
+    FacePlayer player(r.set);
+    player.setBlinking(false);
+    FaceDirector dir(r.set, r.map, player, 3u);
+    const FaceCue cues[] = {{1.f, 0.f, FaceCueKind::Pause}};
+    dir.speak("sad", "", 3, delivery(140.f, FaceVolume::Conversational, "breaking"), cues);
+    const auto bursts = [&](float from, float to, float& peak) {
+        int closes = 0;
+        bool up = false;
+        float prev = 0.f;
+        peak = 0.f;
+        for (float t = from; t < to; t += kDt) {
+            dir.tick(kDt);
+            player.update(kDt);
+            const float w = at(dir.micro(), r.blinkL);
+            peak = std::max(peak, w);
+            if (w > prev && !up && w > 0.2f) {
+                ++closes;
+                up = true;
+            }
+            if (w < 0.05f) up = false;
+            prev = w;
+        }
+        return closes;
+    };
+    float peak = 0.f;
+    const int first = bursts(0.f, 0.6f, peak);
+    CHECK(first >= 2);
+    CHECK(first <= 3);
+    CHECK(peak == doctest::Approx(0.35f).epsilon(0.05));
+    CHECK(at(player.weights(), r.blinkL) < 0.05f); // over by now
+    CHECK(bursts(0.6f, 0.95f, peak) == 0);
+    const int second = bursts(0.95f, 1.6f, peak);
+    CHECK(second >= 2);
+    CHECK(second <= 3);
+}
+
+TEST_CASE("pitch contour: a chain plays in equal parts of the line") {
+    MiniRig r;
+    FacePlayer player(r.set);
+    FaceDirector dir(r.set, r.map, player);
+    dir.speak("warm", "", 3, delivery(140.f, FaceVolume::Conversational, "rising>falling", 2.f));
+    run(dir, player, 0.9f);
+    CHECK(dir.contour() == PitchContour::Rising);
+    run(dir, player, 0.3f);
+    CHECK(dir.contour() == PitchContour::Falling);
+    run(dir, player, 3.f); // past the end: the last part holds
+    CHECK(dir.contour() == PitchContour::Falling);
+    CHECK(at(dir.micro(), r.browDownL) == doctest::Approx(0.15f).epsilon(0.02));
+
+    // Without a duration the first part plays throughout.
+    dir.speak("warm", "", 3, delivery(140.f, FaceVolume::Conversational, "rising>falling"));
+    run(dir, player, 3.f);
+    CHECK(dir.contour() == PitchContour::Rising);
+}
+
+TEST_CASE("volume: mouthStretch at raised and shout; the jaw scale is an output only") {
+    MiniRig r;
+    FacePlayer player(r.set);
+    FaceDirector dir(r.set, r.map, player);
+    const auto line = [&](FaceVolume v) {
+        dir.speak("sad", "", 3, delivery(140.f, v));
+        return dir.pose();
+    };
+    const FacePreset conversational = line(FaceVolume::Conversational);
+    CHECK(dir.jawScale() == doctest::Approx(1.f));
+    CHECK(at(conversational.weights, r.stretchL) == 0.f);
+    CHECK(at(line(FaceVolume::Whisper).weights, r.stretchL) == 0.f);
+    CHECK(dir.jawScale() == doctest::Approx(0.5f));
+    CHECK(at(line(FaceVolume::Soft).weights, r.stretchL) == 0.f);
+    CHECK(at(line(FaceVolume::Raised).weights, r.stretchL) == doctest::Approx(0.15f));
+    const FacePreset shout = line(FaceVolume::Shout);
+    CHECK(at(shout.weights, r.stretchL) == doctest::Approx(0.3f));
+    CHECK(dir.jawScale() == doctest::Approx(1.3f));
+    CHECK(at(shout.weights, r.jaw) == at(conversational.weights, r.jaw)); // baked tracks carry the jaw scale
+    dir.listen("", 3);
+    CHECK(dir.jawScale() == 1.f);
+}
+
 TEST_CASE("face direction is deterministic per seed") {
     MiniRig r;
     const ContainmentProfile devin = devinLike(r.set);
@@ -414,7 +677,8 @@ TEST_CASE("face direction is deterministic per seed") {
         dir.setProfile(&devin);
         std::size_t k = 0;
         for (int line = 0; line < 4; ++line) {
-            dir.speak("warm", "sad", 5, cues);
+            if (line % 2) dir.speak("warm", "sad", 5, cues);
+            else dir.speak("warm", "sad", 5, delivery(170.f, FaceVolume::Raised, "rising>breaking>clipped", 3.f), cues);
             run(dir, player, 3.f);
             snaps[k++] = player.weights();
             dir.listen("warm", 3);
@@ -448,7 +712,7 @@ TEST_CASE("face direction does not allocate per frame") {
     const auto before = ftcore_test::allocStats().count;
     for (int line = 0; line < 3; ++line) {
         resolveContainedEmotion(r.set, r.map, &devin, "warm", "sad", 4, out, &excess);
-        dir.speak("warm", "sad", 5, cues);
+        dir.speak("warm", "sad", 5, delivery(170.f, FaceVolume::Shout, "breaking>rising", 3.f), cues);
         run(dir, player, 3.f);
         dir.listen("sad", 3);
         dir.speakerPhrase();
