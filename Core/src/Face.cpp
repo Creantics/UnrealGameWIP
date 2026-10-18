@@ -238,8 +238,18 @@ float FacePlayer::nextRandom() {
 
 void FacePlayer::scheduleBlink() {
     blinkClock_ = 0.f;
-    nextBlink_ = kBlinkMinGap + kBlinkGapRange * nextRandom();
+    nextBlink_ = (kBlinkMinGap + kBlinkGapRange * nextRandom()) / blinkRate_;
 }
+
+void FacePlayer::setBlinkRate(float scale) { blinkRate_ = std::clamp(scale, 0.05f, 20.f); }
+
+void FacePlayer::requestBlink() {
+    if (blinking_ && blinkPhase_ < 0.f && blinkHold_ <= 0.f) blinkPhase_ = 0.f;
+}
+
+void FacePlayer::holdBlinks(float seconds) { blinkHold_ = std::max(blinkHold_, seconds); }
+
+float FacePlayer::timeToNextBlink() const { return blinkPhase_ >= 0.f ? 0.f : std::max(0.f, nextBlink_ - blinkClock_); }
 
 void FacePlayer::setExpression(const FacePreset* preset, float intensity, float fade) {
     exprFrom_ = expr_;
@@ -288,6 +298,8 @@ void FacePlayer::setMicro(int shape, float weight) {
 
 void FacePlayer::clearMicro() { micro_.fill(0.f); }
 
+void FacePlayer::setDirectedMicro(const FaceWeights& weights) { directed_ = weights; }
+
 void FacePlayer::sampleTrack() {
     vis_.fill(0.f);
     tongue_ = {};
@@ -332,7 +344,7 @@ void FacePlayer::update(float dt) {
     float blink = 0.f;
     if (blinking_) {
         blinkClock_ += dt;
-        if (blinkPhase_ < 0.f && blinkClock_ >= nextBlink_) blinkPhase_ = 0.f;
+        if (blinkPhase_ < 0.f && blinkClock_ >= nextBlink_ && blinkHold_ <= 0.f) blinkPhase_ = 0.f;
         if (blinkPhase_ >= 0.f) {
             blinkPhase_ += dt;
             const float p = blinkPhase_;
@@ -345,7 +357,8 @@ void FacePlayer::update(float dt) {
             }
         }
     }
-    microAll_ = micro_;
+    blinkHold_ = std::max(0.f, blinkHold_ - dt);
+    for (std::size_t i = 0; i < kMaxFaceShapes; ++i) microAll_[i] = clamp01(micro_[i] + directed_[i]);
     for (const int b : {set_->blinkLeft, set_->blinkRight})
         if (b >= 0) microAll_[static_cast<std::size_t>(b)] = std::max(microAll_[static_cast<std::size_t>(b)], blink);
     composeFace(*set_, expr_, vis_, speech_, microAll_, out_);

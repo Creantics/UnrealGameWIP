@@ -132,7 +132,20 @@ public:
     // Micro layer (gaze darts, twitches): set by gameplay, held until changed.
     FTCORE_API void setMicro(int shape, float weight);
     FTCORE_API void clearMicro();
+    // A second micro layer for the face direction (FaceDirection.h), added to the one above.
+    FTCORE_API void setDirectedMicro(const FaceWeights& weights);
     void setBlinking(bool on) { blinking_ = on; }
+    // Blink rate multiplier (1 = the default 2-6 s gaps, 0.5 = half as many blinks). Takes effect
+    // from the next scheduled blink.
+    FTCORE_API void setBlinkRate(float scale);
+    // Starts a blink now unless one is running or blinks are held.
+    FTCORE_API void requestBlink();
+    // No blink starts for the next `seconds` (a running one finishes); a due blink waits for the
+    // hold to end. A hold extends an earlier one, never shortens it.
+    FTCORE_API void holdBlinks(float seconds);
+    // Seconds until the next scheduled blink starts (0 while one runs or is overdue).
+    FTCORE_API float timeToNextBlink() const;
+    bool blinkActive() const { return blinkPhase_ >= 0.f; }
 
     FTCORE_API void update(float dt);
 
@@ -153,7 +166,7 @@ private:
     void sampleTrack();
 
     const FaceShapeSet* set_;
-    FaceWeights exprFrom_{}, exprTo_{}, expr_{}, vis_{}, micro_{}, microAll_{}, out_{};
+    FaceWeights exprFrom_{}, exprTo_{}, expr_{}, vis_{}, micro_{}, directed_{}, microAll_{}, out_{};
     float fadeTime_ = 0.f, fadeDuration_ = 0.f;
     const FaceTrack* track_ = nullptr;
     float trackTime_ = 0.f;
@@ -162,7 +175,7 @@ private:
     float speechTarget_ = 0.f, speech_ = 0.f;
     FaceVec3 tongue_;
     bool blinking_ = true;
-    float blinkClock_ = 0.f, nextBlink_ = 0.f, blinkPhase_ = -1.f;
+    float blinkClock_ = 0.f, nextBlink_ = 0.f, blinkPhase_ = -1.f, blinkRate_ = 1.f, blinkHold_ = 0.f;
     std::uint32_t rng_;
 };
 

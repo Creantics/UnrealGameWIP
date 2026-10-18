@@ -14,8 +14,8 @@
 // cheeks, and it isn't scaled by intensity. `cap` is the character's containment cap (1 = none).
 // Play the result at full intensity: player.setExpression(&out, 5.f, fade).
 //
-// Not covered here (rigging_plan §7.2): per-character containment shape changes beyond the cap,
-// micro-expression flashes, the listening state, emphasis brow flicks and pause blink slots.
+// Containment profiles, micro-expression flashes, the listening state, emphasis brow flicks and
+// pause blink slots are in FaceDirection.h.
 
 #include "ftcore/Api.h"
 #include "ftcore/Face.h"
@@ -34,6 +34,7 @@ struct EmotionDef {
     int base = -1;            // index into FaceShapeSet::expressions
     float weight = 1.f;       // of the base pose
     FaceWeights modifiers{};  // added on top, indexed like FaceShapeSet::shapes
+    bool mirrors = true;      // a listener mirrors it (warmth, sadness); contempt does not (§7.4)
 };
 
 struct EmotionMap {
@@ -49,12 +50,17 @@ struct EmotionMap {
 // 0.2 per intensity step (1..5, clamped), capped at `cap`.
 FTCORE_API float emotionIntensityWeight(int intensity, float cap = 1.f);
 
+// Adds k * pose(def) into out, on every shape or only on Upper and Eyes shapes. No allocation.
+FTCORE_API void addEmotionPose(const FaceShapeSet& set, const EmotionDef& def, float k, bool upperOnly,
+                               FaceWeights& out);
+
 // Writes the composed pose into out.weights (out.name is left alone). An empty secondary means
 // none. False when a non-empty name isn't in the map: that part is then left out. No allocation.
 FTCORE_API bool resolveEmotion(const FaceShapeSet& set, const EmotionMap& map, std::string_view primary,
                                std::string_view secondary, int intensity, float cap, FacePreset& out);
 
-// Loads emotion_map.json: {"emotions": [{"name", "base", "weight"?, "add"?: {shape: weight}}]}.
+// Loads emotion_map.json: {"emotions": [{"name", "base", "weight"?, "add"?: {shape: weight},
+// "mirror"?: bool (default true)}]}.
 // Names resolve against `set`, which must be finished. False (and `*error`) on bad JSON or a bad
 // entry; `out` is then empty. Load time only.
 FTCORE_API bool importEmotionMap(std::string_view json, const FaceShapeSet& set, EmotionMap& out,
