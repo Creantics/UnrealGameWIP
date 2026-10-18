@@ -7,7 +7,7 @@ Private notes (character references, concept-art review, script status) are in `
 ## Resume here (updated 2026-10-18)
 
 - **Phase:** S, the story gate, from `docs/ROADMAP.md`. No game building happens until every part scores at least 4.9/5 and two whole-script readers each give at least 9/10.
-- **Status:** Draft 64 round 4 is partly graded: 04a and 04c are locked above 4.9; 04d gets a tie-break re-grade and 04e a re-grade after small fixes, with 04b still being graded (newengine, local only). Scores are in the private handoff.
+- **Status:** Draft 64: three of five parts now pass the 4.9 bar and are locked. Fresh critics are re-grading the last two (newengine, local only). Scores are in the private handoff.
 - **Next action:** read the private handoff's Resume block and continue the round in flight.
 - **Allowed in this repo during Phase S:** merging the two waiting branches (below), once their diffs are read and the gate passes. Nothing else.
 - **User actions open:** the leak purge, and the GitHub billing fix (see `docs/PLAN.md`).
