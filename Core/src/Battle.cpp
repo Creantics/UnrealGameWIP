@@ -107,7 +107,7 @@ void Battle::beginTurn(double now) {
     skillIndex_.reset();
     targets_.clear();
     shares_.clear();
-    emit({.type = EventType::TurnStarted, .source = actor_, .time = now});
+    emit({.type = EventType::TurnStarted, .source = actor_, .time = now, .label = {}});
     if (combatants_[actor_].team == Team::Party)
         phase_ = Phase::AwaitingCommand;
     else
@@ -264,7 +264,7 @@ void Battle::resolveDefenseNote(const NoteResult& r, double now) {
     s.taken += taken;
     if (blocked > 0)
         emit({.type = EventType::Blocked, .source = actor_, .target = s.target, .amount = blocked, .grade = r.grade,
-              .beat = r.index, .time = now});
+              .beat = r.index, .time = now, .label = {}});
     if (taken > 0) dealDamage(actor_, s.target, taken, r.grade, r.index, now);
 }
 
@@ -295,7 +295,7 @@ void Battle::finishSkill(double now) {
         if (d.alive() && combatants_[actor_].alive()) {
             const int dmg = std::max(1, static_cast<int>(std::lround(damage(d, combatants_[actor_], tuning_.counterPower))));
             d.ap = std::min(d.ap + tuning_.apOnCounter, d.maxAp);
-            emit({.type = EventType::Counter, .source = defender, .target = actor_, .amount = dmg, .time = now});
+            emit({.type = EventType::Counter, .source = defender, .target = actor_, .amount = dmg, .time = now, .label = {}});
             dealDamage(defender, actor_, dmg, Grade::Perfect, combo_.size(), now);
             if (phase_ == Phase::Victory || phase_ == Phase::Defeat) return;
         }
@@ -316,10 +316,10 @@ void Battle::dealDamage(CombatantId source, CombatantId target, int amount, Grad
     if (!t.alive() || amount <= 0) return;
     t.hp = std::max(0, t.hp - amount);
     emit({.type = EventType::Hit, .source = source, .target = target, .amount = amount, .grade = grade, .beat = beat,
-          .time = now});
+          .time = now, .label = {}});
     if (!t.alive()) {
         queue_.remove(target);
-        emit({.type = EventType::Downed, .source = source, .target = target, .time = now});
+        emit({.type = EventType::Downed, .source = source, .target = target, .time = now, .label = {}});
         checkEnd(now);
     }
 }
@@ -328,12 +328,12 @@ bool Battle::checkEnd(double now) {
     if (phase_ == Phase::Victory || phase_ == Phase::Defeat) return true;
     if (livingCount(Team::Enemies) == 0) {
         phase_ = Phase::Victory;
-        emit({.type = EventType::Victory, .time = now});
+        emit({.type = EventType::Victory, .time = now, .label = {}});
         return true;
     }
     if (livingCount(Team::Party) == 0) {
         phase_ = Phase::Defeat;
-        emit({.type = EventType::Defeat, .time = now});
+        emit({.type = EventType::Defeat, .time = now, .label = {}});
         return true;
     }
     return false;
