@@ -559,7 +559,7 @@ TEST_CASE("a save taken anywhere in the real script loads into a runner that pla
     REQUIRE(r.start());
     // Save at every scene entry and every 37th move; load into a fresh runner, then drive both with the
     // same inputs and compare cursor and flags after every move until the next save point.
-    int moves = 0, saves = 0, badCapture = 0, badApply = 0, badResave = 0, diverged = 0;
+    int moves = 0, saves = 0, badCapture = 0, badApply = 0, badResave = 0, diverged = 0, badCodec = 0;
     std::uint32_t lastEpoch = ~0u;
     bool tracking = false;
     while (!r.finished() && moves < 200000) {
@@ -569,6 +569,11 @@ TEST_CASE("a save taken anywhere in the real script loads into a runner that pla
             if (!captureStory(r, save)) {
                 ++badCapture;
                 break;
+            }
+            {
+                StorySave decoded;
+                std::string err;
+                if (!decodeStorySave(encodeStorySave(save), decoded, &err) || !sameSave(save, decoded)) ++badCodec;
             }
             loaded.setDatabase(&s.db);
             StoryLoadReport report;
@@ -594,6 +599,7 @@ TEST_CASE("a save taken anywhere in the real script loads into a runner that pla
     CHECK(badCapture == 0);
     CHECK(badApply == 0);
     CHECK(badResave == 0);
+    CHECK(badCodec == 0);
     CHECK(diverged == 0);
     CHECK(saves >= static_cast<int>(s.db.sceneCount()) / 2);
     MESSAGE(saves << " saves round-tripped over " << moves << " moves");
@@ -701,4 +707,80 @@ TEST_CASE("SC-10-HE1 sets one F_CH_RECUT_* flag per choice") {
     CHECK(s.db.flagString(r.flag("F_CH_RECUT_HOLD")) == "SHORT");
     CHECK(s.db.flagString(r.flag("F_CH_RECUT_SOUNDBED")) == "COLD_HUM");
     CHECK(r.flag("F_HE_RECUT_DONE").truthy());
+}
+
+// ---- save JSON codec ------------------------------------------------------------------------------
+
+namespace {
+
+StorySave sampleSave() {
+    StorySave s;
+    s.scene = "SC-\"A\"\\\n\t\x01 é 日本";
+    s.beat = 4000000000u;
+    s.flags.push_back({"F_BOOL", FlagValue::Kind::Bool, 1, ""});
+    s.flags.push_back({"F_COUNT", FlagValue::Kind::Int, -9223372036854775807ll - 1, ""});
+    s.flags.push_back({"F_MAX", FlagValue::Kind::Int, 9223372036854775807ll, ""});
+    s.flags.push_back({"F_ENUM", FlagValue::Kind::String, 2, "SA\"T\\ \r\n\x1f ü"});
+    return s;
+}
+
+} // namespace
+
+TEST_CASE("save codec round-trips escapes, extremes and an empty save") {
+    const StorySave s = sampleSave();
+    StorySave out;
+    std::string err;
+    REQUIRE_MESSAGE(decodeStorySave(encodeStorySave(s), out, &err), err);
+    CHECK(sameSave(s, out));
+    StorySave empty, out2 = s;
+    REQUIRE(decodeStorySave(encodeStorySave(empty), out2, &err));
+    CHECK(sameSave(empty, out2));
+}
+
+TEST_CASE("save codec: truncated text is refused at every byte and leaves out untouched") {
+    const StorySave s = sampleSave();
+    const std::string text = encodeStorySave(s);
+    const StorySave marker = [] { StorySave m; m.scene = "keep"; m.beat = 7; return m; }();
+    for (std::size_t n = 0; n < text.size(); ++n) {
+        StorySave out = marker;
+        std::string err;
+        CHECK_FALSE(decodeStorySave(std::string_view(text).substr(0, n), out, &err));
+        CHECK_FALSE(err.empty());
+        CHECK(sameSave(out, marker));
+    }
+}
+
+TEST_CASE("save codec refuses a bad version, missing fields and wrong types") {
+    const StorySave marker = [] { StorySave m; m.scene = "keep"; return m; }();
+    const char* bad[] = {
+        R"({"format":2,"scene":"A","beat":0,"flags":[]})",
+        R"({"format":"1","scene":"A","beat":0,"flags":[]})",
+        R"({"scene":"A","beat":0,"flags":[]})",
+        R"({"format":1,"beat":0,"flags":[]})",
+        R"({"format":1,"scene":3,"beat":0,"flags":[]})",
+        R"({"format":1,"scene":"A","beat":"0","flags":[]})",
+        R"({"format":1,"scene":"A","beat":-1,"flags":[]})",
+        R"({"format":1,"scene":"A","beat":1.5,"flags":[]})",
+        R"({"format":1,"scene":"A","beat":4294967296,"flags":[]})",
+        R"({"format":1,"scene":"A","beat":0})",
+        R"({"format":1,"scene":"A","beat":0,"flags":{}})",
+        R"({"format":1,"scene":"A","beat":0,"flags":[3]})",
+        R"({"format":1,"scene":"A","beat":0,"flags":[{"kind":"int","number":1,"text":""}]})",
+        R"({"format":1,"scene":"A","beat":0,"flags":[{"id":"F","kind":"float","number":1,"text":""}]})",
+        R"({"format":1,"scene":"A","beat":0,"flags":[{"id":"F","kind":"int","number":"1","text":""}]})",
+        R"({"format":1,"scene":"A","beat":0,"flags":[{"id":"F","kind":"int","number":1}]})",
+        R"({"format":1,"scene":"A","beat":0,"flags":[{"id":"F","kind":"int","number":1,"text":null}]})",
+        R"([])", R"(null)", "", "garbage",
+    };
+    for (const char* text : bad) {
+        StorySave out = marker;
+        std::string err;
+        INFO(text);
+        CHECK_FALSE(decodeStorySave(text, out, &err));
+        CHECK_FALSE(err.empty());
+        CHECK(sameSave(out, marker));
+    }
+    StorySave ok;
+    CHECK(decodeStorySave(R"({"format":1,"scene":"A","beat":0,"flags":[],"extra":{"x":1}})", ok, nullptr));
+    CHECK_FALSE(decodeStorySave("{", ok, nullptr)); // no error sink: must not crash
 }
