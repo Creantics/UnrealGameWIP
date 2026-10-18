@@ -50,6 +50,10 @@ For the newengine Rigify characters, export to glTF (or FBX) and run the same tw
 - **Face bones:** `jaw`, then `tongue_01`, `tongue_02` and `tongue_03` under it, and `eye_l` and `eye_r` under `head`.
 - Leave out normal deltas on the face shapes (proxy-normal region), per the toon-normals note in rigging_plan §5.
 
+## Result (2026-10-18, proof_head)
+
+Passed: the expressions cycled, the lids blinked and the jaw moved in Play. The body and the tongue were not judged yet.
+
 ## What should move
 
 - **Body:** the A-pose stands still and nothing explodes. Look for skinning errors at the shoulders, elbows, hips and knees.

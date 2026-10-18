@@ -1,16 +1,15 @@
 # Plan: from Core library to first playable
 
-State on 2026-10-18 (origin/main at f549578). The Core porting is done. The demo map is built by code, and its game shaders are cooked. The next step is the first rigging test (`docs/RIGGING_TEST.md`), which needs the user at the keyboard.
+State on 2026-10-18 (origin/main at dbe2069). The Core porting is done. The demo map is built by code, and its game shaders are cooked. **The first rigging test passed on 2026-10-18.**
+- `proof_head.glb` was imported by `FTImportCharacter`: 7/7 face bones and 56/56 face shapes.
+- `FTBuildDemoWorld -Mesh=` placed it in `Demo`.
+- In Play, the user saw the expressions cycle, the blinks, and the jaw move.
 
 ## Needs the user
 
-1. **Purge the story text from GitHub history.**
-   - Commit 3628738 (committed 00:48 −04:00) pushed `Data/Story/`, the full script, to this public repo. f549578 (01:11) stopped tracking it, but it's still in history.
-   - Removing it means rewriting history and force-pushing, which only the user may do. The steps are in the session report below.
+1. **Ask GitHub Support to purge commit 362873808ae789806f186b5e554748f27caeb109.** History was rewritten and force-pushed, but GitHub keeps the commit reachable by its SHA.
 2. **GitHub billing.** CI never starts because of the spending limit. Until it's fixed, the local gate is the authority.
-3. **First interactive editor open.** The editor compiles its own shaders the first time (a few minutes) and then opens `Demo`. Click Play and the conductor, the story and the preview actor's face component all tick.
-4. **The rigging test** in `docs/RIGGING_TEST.md`: Blender export, FBX import, set the mesh on `CharacterPreview`.
-5. **On any other machine:** copy newengine `assets/story/` to `Data/Story/`. It's gitignored.
+3. **On any other machine:** copy newengine `assets/story/` to `Data/Story/`. It's gitignored.
 
 ## Where things stand
 
@@ -92,6 +91,6 @@ Then ask GitHub Support to purge cached views of the removed commits, and check 
 - **The demo world** (d0e2a80, a657604):
   - The commandlet ran cleanly four times. A rerun crash on a duplicate WorldSettings was fixed by replacing the old file.
   - The Windows cook of the demo map compiled 17,666 shaders in about 6 minutes.
-- IK Rig and Control Rig are enabled, and `docs/RIGGING_TEST.md` is written.
+- IK Rig and Control Rig are enabled. The rigging test in `docs/RIGGING_TEST.md` passed with proof_head.
 - **Branches:** 8 local and 6 remote branches deleted, 8 finished sessions archived. Only `main` is left.
 - Tests went from 105 to 129. The UBT editor build succeeded.
