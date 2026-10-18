@@ -35,7 +35,10 @@ add_library(ftcore STATIC
     src/ComboSequence.cpp
     src/Conductor.cpp
     src/Face.cpp
+    src/FaceImport.cpp
+    src/Json.cpp
     src/StoryDatabase.cpp
+    src/StoryImport.cpp
     src/StoryRunner.cpp
     src/StorySave.cpp
     src/TurnQueue.cpp
@@ -70,12 +73,18 @@ if(FTCORE_BUILD_TESTS)
         tests/test_combo.cpp
         tests/test_conductor.cpp
         tests/test_face.cpp
-        tests/test_face.cpp
+        tests/test_face_import.cpp
+        tests/test_json.cpp
         tests/test_story.cpp
+        tests/test_story_import.cpp
         tests/test_turnqueue.cpp
         tests/test_version.cpp
     )
     target_link_libraries(ftcore_tests PRIVATE ftcore doctest::doctest ftcore_warnings)
+    # The real-data tests read the newengine checkout's assets in place (skipped when absent).
+    set(FTCORE_NEWENGINE_ASSETS "${CMAKE_CURRENT_SOURCE_DIR}/../../newengine/assets" CACHE PATH
+        "newengine assets folder (story script, face presets, golden data) for the real-data tests")
+    target_compile_definitions(ftcore_tests PRIVATE FTCORE_TEST_ASSET_DIR="${FTCORE_NEWENGINE_ASSETS}")
     if(MSVC)
         target_compile_options(ftcore_tests PRIVATE /EHsc)
     endif()

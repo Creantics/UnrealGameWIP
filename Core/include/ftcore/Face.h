@@ -4,8 +4,8 @@
 // layering math, baked lip-sync tracks (.nface) and a player that turns them into one weight per
 // shape plus jaw / tongue angles.
 //
-// Core has no JSON reader, so the owner fills a FaceShapeSet from face_presets.json (addShape /
-// addViseme / addExpression, then finish()). The owner also applies the output: weights() to the
+// importFaceShapeSet (FaceImport.h) fills a FaceShapeSet from face_presets.json through addShape /
+// addViseme / addExpression and finish(). The owner applies the output: weights() to the
 // mesh's morph targets (bindMesh / writeMeshWeights), and jawDeg() / tongueDeg() as rotations
 // about each joint's local +X from its rest pose.
 

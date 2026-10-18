@@ -12,8 +12,8 @@
 //   if (!b.finish(db, &error)) ...;   // allocates: build at load time only
 //   ftcore::StoryRunner runner(&db);
 //
-// Core has no JSON reader: whoever loads the script (an Unreal importer, a tool, a test) feeds the
-// builder. Everything is resolved by finish(): scene / flag / cue ids to indices, choice targets,
+// importStory (StoryImport.h) feeds the builder from the story script JSON; a tool or a test can
+// also feed it directly. Everything is resolved by finish(): scene / flag / cue ids to indices, choice targets,
 // `end` targets and the scene that follows each scene in chapter order. After that every query
 // returns views into storage owned by the database and nothing allocates.
 //
