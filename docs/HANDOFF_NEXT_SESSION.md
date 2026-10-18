@@ -7,7 +7,7 @@ Private notes (character references, concept-art review, script status) are in `
 ## Resume here (updated 2026-10-18)
 
 - **Phase:** S, the story gate, from `docs/ROADMAP.md`. No game building happens until every part scores at least 4.9/5 and two whole-script readers each give at least 9/10.
-- **Status:** Draft 66 started. The user lifted the plateau stop and Fable ruled on the reveal approach. An outline pass (scene merges and cuts) runs first, then revisers, then two fresh readers (newengine, local only).
+- **Status:** Draft 66 is in revision. The outline is approved; Acts II and III are done. Act IV and the Finale are being revised now, then a cross-part check and two fresh readers (newengine, local only). The boss count drops from 16 to 15; update ROADMAP at Phase S exit.
 - **Next action:** read the private handoff's Resume block and continue the step in flight. Once the story is final, the user wants an animation made with the /motion skill that tells the story from start to finish (keep it local; see the private handoff).
 - **Allowed in this repo during Phase S:** merging the two waiting branches (below), once their diffs are read and the gate passes. Nothing else.
 - **User actions open:** the leak purge, and the GitHub billing fix (see `docs/PLAN.md`).
