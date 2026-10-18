@@ -392,9 +392,6 @@ SceneRun playScene(StoryRunner& r, std::string_view id, Pick pick) {
     return run;
 }
 
-constexpr const char* kExchangeScenes[] = {"SC-09-HE1", "SC-10-HE1", "SC-13-HE1", "SC-15-HE1",
-                                           "SC-15-HE2", "SC-18-Q1",  "SC-21-HE1"};
-
 } // namespace
 
 TEST_CASE("real story script loads and plays to the end") {
@@ -605,108 +602,210 @@ TEST_CASE("a save taken anywhere in the real script loads into a runner that pla
     MESSAGE(saves << " saves round-tripped over " << moves << " moves");
 }
 
-// ---- dialogue exchanges (the former MINI beats, newengine docs/story_mini_dialogue.md) -----------
+// ---- dialogue exchanges (synthetic fixture: placeholder text only, independent of any story draft) ----------
 
-TEST_CASE("the former MINI beats are dialogue exchanges in the real script") {
-    FTCORE_REQUIRE_REAL_STORY(s);
-    const StoryDatabase& db = s.db;
-    for (const char* id : kExchangeScenes) {
+namespace {
+
+constexpr const char* kExchangeStory = R"J({
+  "format": 1, "title": "Exchange fixture", "start": "SC-TEST-1",
+  "chapters": [ { "id": "01", "title": "Chapter 1 · Test", "scenes": ["SC-TEST-1", "SC-TEST-2", "SC-TEST-3"] } ],
+  "flags": [ { "id": "F_TEST_DONE", "default": false }, { "id": "F_TEST_SCORE", "default": 0 },
+             { "id": "F_TEST_PINS", "default": 0 }, { "id": "F_TEST_BOOL", "default": false },
+             { "id": "F_TEST_ENUM", "default": "UNSET" }, { "id": "F_TEST_COUNT", "default": 0 },
+             { "id": "F_TEST_MODE", "default": "UNSET" } ]
+})J";
+
+// Two ask-twice ladders (a miss moves on to a correction line, the retry ends the ladder) and a score that
+// counts the ladders answered right on the first try (a descending require chain, beats 9-14).
+constexpr const char* kExchangeScene1 = R"J({
+  "id": "SC-TEST-1", "title": "Test one", "chapter": "01", "world": "Test", "location": "Room", "time": "day", "mode": "ENG",
+  "beats": [
+    { "type": "flag", "op": "clear", "id": "F_TEST_SCORE" },
+    { "type": "line", "id": "TX-TEST-1-001", "speaker": "ONE", "text": "Test line 1", "loc": "story.SC-TEST-1.TX-TEST-1-001" },
+    { "type": "choice", "label": "Prompt A", "loc": "story.SC-TEST-1.c001", "scripted": false, "options": [
+        { "text": "Option A", "loc": "story.SC-TEST-1.c001.o1", "effects": [], "next": null, "miss": true },
+        { "text": "Option B", "loc": "story.SC-TEST-1.c001.o2", "effects": [ { "op": "set", "id": "F_TEST_SCORE", "value": 1 } ], "next": 6 } ] },
+    { "type": "line", "id": "TX-TEST-1-002", "speaker": "TWO", "text": "Test line 2", "loc": "story.SC-TEST-1.TX-TEST-1-002" },
+    { "type": "choice", "label": "Prompt A again", "loc": "story.SC-TEST-1.c002", "scripted": false, "options": [
+        { "text": "Option C", "loc": "story.SC-TEST-1.c002.o1", "effects": [], "next": null, "miss": true },
+        { "text": "Option D", "loc": "story.SC-TEST-1.c002.o2", "effects": [], "next": null } ] },
+    { "type": "line", "id": "TX-TEST-1-003", "speaker": "TWO", "text": "Test line 3", "loc": "story.SC-TEST-1.TX-TEST-1-003" },
+    { "type": "choice", "label": "Prompt B", "loc": "story.SC-TEST-1.c003", "scripted": false, "options": [
+        { "text": "Option E", "loc": "story.SC-TEST-1.c003.o1", "effects": [], "next": null, "miss": true },
+        { "text": "Option F", "loc": "story.SC-TEST-1.c003.o2", "effects": [], "next": 9 } ] },
+    { "type": "line", "id": "TX-TEST-1-004", "speaker": "TWO", "text": "Test line 4", "loc": "story.SC-TEST-1.TX-TEST-1-004" },
+    { "type": "choice", "label": "Prompt B again", "loc": "story.SC-TEST-1.c004", "scripted": false, "options": [
+        { "text": "Option G", "loc": "story.SC-TEST-1.c004.o1", "effects": [], "next": 15, "miss": true },
+        { "text": "Option H", "loc": "story.SC-TEST-1.c004.o2", "effects": [], "next": 15 } ] },
+    { "type": "flag", "op": "require", "id": "F_TEST_SCORE", "value": 1 },
+    { "type": "flag", "op": "set", "id": "F_TEST_SCORE", "value": 2 },
+    { "type": "flag", "op": "end" },
+    { "type": "flag", "op": "require", "id": "F_TEST_SCORE", "value": 0 },
+    { "type": "flag", "op": "set", "id": "F_TEST_SCORE", "value": 1 },
+    { "type": "flag", "op": "end" },
+    { "type": "flag", "op": "set", "id": "F_TEST_DONE", "value": true },
+    { "type": "end" }
+  ] })J";
+
+// Pins pre-fill part of the exchange: with F_TEST_PINS = 2 a scripted pick replaces the first ladder.
+constexpr const char* kExchangeScene2 = R"J({
+  "id": "SC-TEST-2", "title": "Test two", "chapter": "01", "world": "Test", "location": "Room", "time": "day", "mode": "ENG",
+  "beats": [
+    { "type": "flag", "op": "require", "id": "F_TEST_PINS", "value": 2 },
+    { "type": "choice", "label": "Prompt P", "loc": "story.SC-TEST-2.c001", "scripted": true, "options": [
+        { "text": "Option P", "loc": "story.SC-TEST-2.c001.o1", "effects": [], "next": 7 } ] },
+    { "type": "flag", "op": "end" },
+    { "type": "choice", "label": "Prompt Q", "loc": "story.SC-TEST-2.c002", "scripted": false, "options": [
+        { "text": "Option Q1", "loc": "story.SC-TEST-2.c002.o1", "effects": [], "next": null, "miss": true },
+        { "text": "Option Q2", "loc": "story.SC-TEST-2.c002.o2", "effects": [], "next": 7 } ] },
+    { "type": "line", "id": "TX-TEST-2-001", "speaker": "ONE", "text": "Test line 5", "loc": "story.SC-TEST-2.TX-TEST-2-001" },
+    { "type": "choice", "label": "Prompt Q again", "loc": "story.SC-TEST-2.c003", "scripted": false, "options": [
+        { "text": "Option Q3", "loc": "story.SC-TEST-2.c003.o1", "effects": [], "next": null, "miss": true },
+        { "text": "Option Q4", "loc": "story.SC-TEST-2.c003.o2", "effects": [], "next": 7 } ] },
+    { "type": "line", "id": "TX-TEST-2-002", "speaker": "ONE", "text": "Test line 6", "loc": "story.SC-TEST-2.TX-TEST-2-002" },
+    { "type": "choice", "label": "Prompt R", "loc": "story.SC-TEST-2.c004", "scripted": false, "options": [
+        { "text": "Option R1", "loc": "story.SC-TEST-2.c004.o1", "effects": [], "next": null, "miss": true },
+        { "text": "Option R2", "loc": "story.SC-TEST-2.c004.o2", "effects": [], "next": null } ] },
+    { "type": "end" }
+  ] })J";
+
+// Four choices, each option setting its own flag (bool, enum, counter, enum).
+constexpr const char* kExchangeScene3 = R"J({
+  "id": "SC-TEST-3", "title": "Test three", "chapter": "01", "world": "Test", "location": "Room", "time": "day", "mode": "ENG",
+  "beats": [
+    { "type": "choice", "label": "Prompt 1", "loc": "story.SC-TEST-3.c001", "scripted": false, "options": [
+        { "text": "Option 1a", "loc": "story.SC-TEST-3.c001.o1", "effects": [ { "op": "set", "id": "F_TEST_BOOL", "value": true } ], "next": null },
+        { "text": "Option 1b", "loc": "story.SC-TEST-3.c001.o2", "effects": [ { "op": "set", "id": "F_TEST_BOOL", "value": false } ], "next": null } ] },
+    { "type": "choice", "label": "Prompt 2", "loc": "story.SC-TEST-3.c002", "scripted": false, "options": [
+        { "text": "Option 2a", "loc": "story.SC-TEST-3.c002.o1", "effects": [ { "op": "set", "id": "F_TEST_ENUM", "value": "ALPHA" } ], "next": null },
+        { "text": "Option 2b", "loc": "story.SC-TEST-3.c002.o2", "effects": [ { "op": "set", "id": "F_TEST_ENUM", "value": "BETA" } ], "next": null } ] },
+    { "type": "choice", "label": "Prompt 3", "loc": "story.SC-TEST-3.c003", "scripted": false, "options": [
+        { "text": "Option 3a", "loc": "story.SC-TEST-3.c003.o1", "effects": [ { "op": "set", "id": "F_TEST_COUNT", "value": 7 } ], "next": null },
+        { "text": "Option 3b", "loc": "story.SC-TEST-3.c003.o2", "effects": [ { "op": "set", "id": "F_TEST_COUNT", "value": 9 } ], "next": null } ] },
+    { "type": "choice", "label": "Prompt 4", "loc": "story.SC-TEST-3.c004", "scripted": false, "options": [
+        { "text": "Option 4a", "loc": "story.SC-TEST-3.c004.o1", "effects": [ { "op": "set", "id": "F_TEST_MODE", "value": "COLD" } ], "next": null },
+        { "text": "Option 4b", "loc": "story.SC-TEST-3.c004.o2", "effects": [ { "op": "set", "id": "F_TEST_MODE", "value": "WARM" } ], "next": null } ] },
+    { "type": "end" }
+  ] })J";
+
+struct ExchangeFixture {
+    StoryDatabase db;
+    ExchangeFixture() {
+        const std::array<std::string_view, 3> scenes{kExchangeScene1, kExchangeScene2, kExchangeScene3};
+        std::string err;
+        REQUIRE_MESSAGE(importStory(kExchangeStory, scenes, db, &err, nullptr), err);
+    }
+};
+
+} // namespace
+
+TEST_CASE("dialogue exchanges import their wrong answers as miss options") {
+    ExchangeFixture f;
+    const StoryDatabase& db = f.db;
+    for (const char* id : {"SC-TEST-1", "SC-TEST-2"}) {
         CAPTURE(id);
         const std::uint32_t si = db.findScene(id);
         REQUIRE(si != kNone);
         const Scene& sc = db.scene(si);
-        int choices = 0, misses = 0, minis = 0, hiddenMini = 0;
+        int choices = 0, misses = 0, scripted = 0;
         for (std::uint32_t b = 0; b < sc.beatCount; ++b) {
             const Beat& beat = db.beat(sc, b);
-            if (beat.type == BeatType::Gameplay && beat.kind == GameplayKind::Mini) ++minis;
-            if (beat.type == BeatType::Direction && beat.hidden && db.view(beat.note) == "MINI") ++hiddenMini;
             if (beat.type != BeatType::Choice) continue;
             ++choices;
+            scripted += beat.scripted ? 1 : 0;
             CHECK(beat.optionCount <= 4);
-            for (std::uint32_t o = 0; o < beat.optionCount; ++o) misses += db.option(beat, o).miss ? 1 : 0;
+            int here = 0;
+            for (std::uint32_t o = 0; o < beat.optionCount; ++o) here += db.option(beat, o).miss ? 1 : 0;
+            CHECK(here < static_cast<int>(beat.optionCount)); // never a choice of wrong answers only
+            misses += here;
         }
-        CHECK(minis == 0);      // no mini-game hand-off left
-        CHECK(hiddenMini >= 1); // the original notation is kept as a designer note
         CHECK(choices >= 2);
-        if (std::string_view(id) != "SC-10-HE1") CHECK(misses > 0); // SC-10: no wrong answers
+        CHECK(misses > 0);
+        CHECK(scripted <= 1);
     }
+    // A miss is never the automatic player's default; the runner reports it as returning.
+    StoryRunner r(&db);
+    REQUIRE(r.restore({"SC-TEST-1", 2}));
+    REQUIRE(r.state() == StoryRunner::State::Choice);
+    CHECK(r.optionReturns(0));
+    CHECK_FALSE(r.optionReturns(1));
+    CHECK(r.defaultOption() == 1);
 }
 
 TEST_CASE("dialogue exchanges set their flags whichever way the player answers") {
-    FTCORE_REQUIRE_REAL_STORY(s);
-    struct Done {
-        const char* scene;
-        const char* flags[2];
-    };
-    constexpr Done kDone[] = {
-        {"SC-09-HE1", {"F_HE_MARGINALIA_DONE", nullptr}},
-        {"SC-10-HE1", {"F_HE_RECUT_DONE", nullptr}},
-        {"SC-13-HE1", {"F_HE_LANTERN_GUARD_DONE", nullptr}},
-        {"SC-15-HE1", {"F_HE_CARRY_DONE", nullptr}},
-        {"SC-15-HE2", {"F_HE_AMENDMENT_DONE", nullptr}},
-        {"SC-18-Q1", {nullptr, nullptr}},
-        {"SC-21-HE1", {"F_HE_HOME_RESISTS_MINA_DONE", "F_HE_HOME_RESISTS_LATTICE_DONE"}},
-    };
-    StoryRunner r(&s.db);
+    ExchangeFixture f;
+    StoryRunner r(&f.db);
     for (const Pick pick : {Pick::Right, Pick::MissThenRight, Pick::AlwaysMiss}) {
-        for (const Done& d : kDone) {
-            CAPTURE(d.scene);
-            CAPTURE(static_cast<int>(pick));
-            r.resetFlags();
-            const SceneRun run = playScene(r, d.scene, pick);
-            CHECK(run.left); // no loop: three misses get the answer supplied and the exchange moves on
+        CAPTURE(static_cast<int>(pick));
+        r.resetFlags();
+        const SceneRun run = playScene(r, "SC-TEST-1", pick);
+        CHECK(run.left); // no loop: a miss moves on to the correction and the exchange carries on
+        if (pick == Pick::Right) {
+            CHECK(run.choices == 2);
+            CHECK(run.misses == 0);
+        } else {
             CHECK(run.choices >= 2);
-            if (pick == Pick::Right) CHECK(run.misses == 0);
-            else if (std::string_view(d.scene) != "SC-10-HE1") CHECK(run.misses > 0);
-            for (const char* f : d.flags)
-                if (f) CHECK(r.flag(f).truthy());
+            CHECK(run.misses > 0);
         }
+        CHECK(r.flag("F_TEST_DONE").truthy());
     }
 }
 
-TEST_CASE("SC-13-HE1 counts first-try triage calls in F_HE_LANTERN_GUARD_SCORE") {
-    FTCORE_REQUIRE_REAL_STORY(s);
-    StoryRunner r(&s.db);
+TEST_CASE("a first-try score flag counts first-try correct calls") {
+    ExchangeFixture f;
+    StoryRunner r(&f.db);
     r.resetFlags();
-    playScene(r, "SC-13-HE1", Pick::Right);
-    CHECK(r.flag("F_HE_LANTERN_GUARD_SCORE") == FlagValue::integer(3));
+    const SceneRun right = playScene(r, "SC-TEST-1", Pick::Right);
+    CHECK(right.choices == 2);
+    CHECK(r.flag("F_TEST_SCORE") == FlagValue::integer(2));
     r.resetFlags();
-    CHECK(r.setFlag("F_HE_LANTERN_GUARD_SCORE", FlagValue::integer(2))); // a replay starts from zero
-    const SceneRun miss = playScene(r, "SC-13-HE1", Pick::AlwaysMiss);
-    CHECK(miss.misses == 9); // three ladders, three misses each: the answer is supplied every time
-    CHECK(r.flag("F_HE_LANTERN_GUARD_SCORE") == FlagValue::integer(0));
-    CHECK(r.flag("F_HE_LANTERN_GUARD_DONE").truthy());
+    CHECK(r.setFlag("F_TEST_SCORE", FlagValue::integer(2))); // a replay starts from zero
+    const SceneRun miss = playScene(r, "SC-TEST-1", Pick::AlwaysMiss);
+    CHECK(miss.misses == 4); // two ladders, two misses each
+    CHECK(r.flag("F_TEST_SCORE") == FlagValue::integer(0));
+    CHECK(r.flag("F_TEST_DONE").truthy());
     r.resetFlags();
-    playScene(r, "SC-13-HE1", Pick::MissThenRight); // miss, then right on the retry: no smudge for a retry
-    CHECK(r.flag("F_HE_LANTERN_GUARD_SCORE") == FlagValue::integer(0));
+    playScene(r, "SC-TEST-1", Pick::MissThenRight); // miss, then right on the retry: no credit for a retry
+    CHECK(r.flag("F_TEST_SCORE") == FlagValue::integer(0));
 }
 
-TEST_CASE("SC-18-Q1: pinned clues pre-fill the hands column") {
-    FTCORE_REQUIRE_REAL_STORY(s);
-    StoryRunner r(&s.db);
+TEST_CASE("pinned clues pre-fill an exchange: fewer wrong answers and choices") {
+    ExchangeFixture f;
+    StoryRunner r(&f.db);
     r.resetFlags();
-    const SceneRun unpinned = playScene(r, "SC-18-Q1", Pick::AlwaysMiss);
+    const SceneRun unpinned = playScene(r, "SC-TEST-2", Pick::AlwaysMiss);
     r.resetFlags();
-    CHECK(r.setFlag("F_CH_DIAGRAM_PINS", FlagValue::integer(2)));
-    const SceneRun pinned = playScene(r, "SC-18-Q1", Pick::AlwaysMiss);
+    CHECK(r.setFlag("F_TEST_PINS", FlagValue::integer(2)));
+    const SceneRun pinned = playScene(r, "SC-TEST-2", Pick::AlwaysMiss);
     CHECK(unpinned.left);
     CHECK(pinned.left);
-    CHECK(unpinned.misses == 6); // laugh + taps ladders
-    CHECK(pinned.misses == 3);   // laugh only: the taps are a scripted pick
-    CHECK(pinned.choices == unpinned.choices - 2); // three asks become one scripted pick
+    CHECK(unpinned.misses == 3); // Q, Q again and R
+    CHECK(pinned.misses == 1);   // R only: Q is a scripted pick
+    CHECK(pinned.choices == unpinned.choices - 1); // two asks become one scripted pick
 }
 
-TEST_CASE("SC-10-HE1 sets one F_CH_RECUT_* flag per choice") {
-    FTCORE_REQUIRE_REAL_STORY(s);
-    StoryRunner r(&s.db);
+TEST_CASE("an exchange scene sets one flag per choice") {
+    ExchangeFixture f;
+    StoryRunner r(&f.db);
     r.resetFlags();
-    const SceneRun run = playScene(r, "SC-10-HE1", Pick::Right);
+    const SceneRun run = playScene(r, "SC-TEST-3", Pick::Right); // the first option each time
     CHECK(run.choices == 4);
-    CHECK(s.db.flagString(r.flag("F_CH_RECUT_START")) == "FROM_THE_FREEZE");
-    CHECK(r.flag("F_CH_RECUT_SPEECH") == FlagValue::boolean(true));
-    CHECK(s.db.flagString(r.flag("F_CH_RECUT_HOLD")) == "SHORT");
-    CHECK(s.db.flagString(r.flag("F_CH_RECUT_SOUNDBED")) == "COLD_HUM");
-    CHECK(r.flag("F_HE_RECUT_DONE").truthy());
+    CHECK(r.flag("F_TEST_BOOL") == FlagValue::boolean(true));
+    CHECK(f.db.flagString(r.flag("F_TEST_ENUM")) == "ALPHA");
+    CHECK(r.flag("F_TEST_COUNT") == FlagValue::integer(7));
+    CHECK(f.db.flagString(r.flag("F_TEST_MODE")) == "COLD");
+
+    // The second option of each choice sets its own value instead.
+    r.resetFlags();
+    REQUIRE(r.restore({"SC-TEST-3", 0}));
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(r.state() == StoryRunner::State::Choice);
+        CHECK(r.choose(1));
+    }
+    CHECK(r.flag("F_TEST_BOOL") == FlagValue::boolean(false));
+    CHECK(f.db.flagString(r.flag("F_TEST_ENUM")) == "BETA");
+    CHECK(r.flag("F_TEST_COUNT") == FlagValue::integer(9));
+    CHECK(f.db.flagString(r.flag("F_TEST_MODE")) == "WARM");
 }
 
 // ---- save JSON codec ------------------------------------------------------------------------------
