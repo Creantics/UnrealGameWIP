@@ -133,7 +133,7 @@ public:
     float microRate() const { return microRate_; } // flashes per second while speaking
     const FaceWeights& micro() const { return micro_; } // the directed micro layer last tick
     float headNod() const { return nod_; }         // 0..1 envelope times headMotion(); the owner maps it to neck_02
-    float headMotion() const;                      // the profile's head-motion scale
+    FTCORE_API float headMotion() const;           // the profile's head-motion scale
     const FacePreset& pose() const { return pose_; } // the expression pose given to the player
 
 private:
