@@ -18,8 +18,8 @@ public class ForgottenThird : ModuleRules
 
 		if (Target.bBuildEditor)
 		{
-			// The demo-world commandlet saves packages.
-			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry" });
+			// The demo-world and character-import commandlets.
+			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry", "AssetTools" });
 		}
 
 		// Uncomment if you are using Slate UI

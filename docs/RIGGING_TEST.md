@@ -14,33 +14,41 @@ The goal is to bring one character into the demo map, see its body skin correctl
   - Its `Preview` settings control this: cycle on/off, seconds per expression, intensity, and the list of expressions.
 - **The IK Rig and Control Rig plugins** are enabled for the retargeting step that follows this test.
 
-## 1. Blender export
+## 1. The test model: proof_head
 
-Use the newengine Rigify character and export to FBX (or glTF), set as follows:
-- **Deform bones only.** Export the `DEF-` bones and leave out the `ORG-`, `MCH-` and control bones. Flatten B-Bones to single bones first, since Unreal skins with plain bones.
-- **Bind pose is the A-pose** (newengine `docs/rigging_plan.md` §4): upper arms 45° down, elbows bent 10°. Apply all transforms. Scale 1.0, with +Z up.
-- **Shape keys on.** The face mesh carries the ARKit-52 names plus the house shapes (`mouthSmileNoCheek`, `lipsTogetherSoft`, `eyeLidTension`, `jawOpen_x_mouthSmile`), spelled exactly as in `face_presets.json`. Anything spelled differently is skipped (there is a log line per unmatched morph).
-- **Face bones:** `jaw`, then `tongue_01`, `tongue_02` and `tongue_03` under it, and `eye_l` and `eye_r` under `head`.
-- Leave out normal deltas on the face shapes (proxy-normal region), per the toon-normals note in rigging_plan §5.
+The first test uses `Data/Models/proof_head.glb`, the newengine proof head (from `assets/models/rig/`).
+- It has a full deform skeleton (87 bones), including `head`, `jaw`, `tongue_01..03`, `eye_l` and `eye_r`.
+- Its 56 morph targets are named exactly as in `face_presets.json`.
+- No Blender step is needed for it.
 
-## 2. Import into Unreal
+## 2. Import and rig check (no editor clicks)
 
-These steps need the interactive editor, at the keyboard.
+```
+UnrealEditor-Cmd ForgottenThird.uproject -run=FTImportCharacter -Source=Data/Models/proof_head.glb -Dest=/Game/Characters/ProofHead -NullRHI -unattended -nopause -nosplash
+```
 
-1. Drag the file into `Content/Characters/<Name>/`.
-2. Import settings:
-   - Skeletal Mesh on, a new skeleton, and **Import Morph Targets on**.
-   - Import Animations off.
-   - Normals: Import Normals and Tangents.
-   - Use T0 As Reference Pose off (the file's bind pose is the A-pose).
-3. Check that the asset's Morph Target preview lists the shapes by their ARKit names.
+- It imports through Interchange and saves the assets under `Content/Characters/ProofHead/proof_head/`: the mesh, skeleton, physics asset, materials and four clips (`face_jaw`, `rom`, `tpose`, `face_blink`).
+- Then it checks the rig and logs `N/7 face bones` and `N/56 face shapes bound`. It exits with 1 if a face bone or a shape's morph is missing.
+- The first run gave 7/7 bones and 56/56 shapes. The log also shows harmless "glTF sampler corrupt" warnings for the clips.
 
 ## 3. Put it in the demo map
 
-1. Open `Demo` (the editor opens it at startup).
-2. Select **CharacterPreview**. In Details, set **Body → Skeletal Mesh Asset** to the imported mesh.
-3. Rotate the actor if the character doesn't face the `PlayerStart` (+X).
-4. Save the map. This is the one hand edit. Then click Play.
+```
+UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildDemoWorld -Mesh=/Game/Characters/ProofHead/proof_head/SkeletalMeshes/proof_head.proof_head -NullRHI -unattended -nopause -nosplash
+```
+
+- `-Mesh=` sets `CharacterPreview`'s `Body` mesh.
+- It also turns the actor so that the eyes face the `PlayerStart` (+X). The yaw comes from where the eye bones sit relative to the head bone, which was -90° for proof_head.
+- Then open the editor (it opens `Demo`) and click Play.
+
+## Later characters (Blender export)
+
+For the newengine Rigify characters, export to glTF (or FBX) and run the same two commandlets. Export settings:
+- **Deform bones only.** Export the `DEF-` bones and leave out the `ORG-`, `MCH-` and control bones. Flatten B-Bones to single bones first, since Unreal skins with plain bones.
+- **Bind pose is the A-pose** (newengine `docs/rigging_plan.md` §4): upper arms 45° down, elbows bent 10°. Apply all transforms. Scale 1.0, with +Z up.
+- **Shape keys on.** The face mesh carries the ARKit-52 names plus the house shapes (`mouthSmileNoCheek`, `lipsTogetherSoft`, `eyeLidTension`, `jawOpen_x_mouthSmile`), spelled exactly as in `face_presets.json`. The import commandlet names any that are missing.
+- **Face bones:** `jaw`, then `tongue_01`, `tongue_02` and `tongue_03` under it, and `eye_l` and `eye_r` under `head`.
+- Leave out normal deltas on the face shapes (proxy-normal region), per the toon-normals note in rigging_plan §5.
 
 ## What should move
 
@@ -54,5 +62,5 @@ These steps need the interactive editor, at the keyboard.
 
 ## Shaders
 
-- The cook (`-run=Cook -TargetPlatform=Windows`) compiles the game's shaders for the demo map and stages `Data/`.
+- The cook (`-run=Cook -TargetPlatform=Windows`) compiles the game's shaders for the demo map. Staging `Data/` next to the packaged game needs `BuildCookRun -stage`, which is not proven yet.
 - The editor still compiles its own shader set the first time it opens interactively, which takes a few minutes on this PC. Later opens use the DDC.

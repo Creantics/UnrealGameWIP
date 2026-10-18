@@ -6,11 +6,13 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/ExponentialHeightFogComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/ExponentialHeightFog.h"
+#include "Engine/SkeletalMesh.h"
 #include "Engine/SkyLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
@@ -27,6 +29,45 @@
 namespace
 {
 const TCHAR* const kDemoMap = TEXT("/Game/Maps/Demo");
+
+#if WITH_EDITOR
+// A bone's reference-pose position in component space, or false when the bone isn't there.
+bool RefBonePosition(const FReferenceSkeleton& Skeleton, const TCHAR* Name, FVector& Out)
+{
+	int32 Bone = Skeleton.FindBoneIndex(Name);
+	if (Bone == INDEX_NONE)
+	{
+		return false;
+	}
+	FTransform Pose = FTransform::Identity;
+	for (; Bone != INDEX_NONE; Bone = Skeleton.GetParentIndex(Bone))
+	{
+		Pose = Pose * Skeleton.GetRefBonePose()[Bone];
+	}
+	Out = Pose.GetLocation();
+	return true;
+}
+
+// The yaw that turns the mesh to face +X, from where its eyes sit relative to its head. Zero when
+// the mesh has no eye or head bones.
+float FacingYaw(const USkeletalMesh& Mesh)
+{
+	FVector Head, EyeL, EyeR;
+	const FReferenceSkeleton& Skeleton = Mesh.GetRefSkeleton();
+	if (!RefBonePosition(Skeleton, TEXT("head"), Head) || !RefBonePosition(Skeleton, TEXT("eye_l"), EyeL)
+		|| !RefBonePosition(Skeleton, TEXT("eye_r"), EyeR))
+	{
+		return 0.f;
+	}
+	FVector Forward = (EyeL + EyeR) * 0.5f - Head;
+	Forward.Z = 0;
+	if (Forward.IsNearlyZero())
+	{
+		return 0.f;
+	}
+	return -FMath::RadiansToDegrees(FMath::Atan2(Forward.Y, Forward.X));
+}
+#endif
 }
 
 UFTBuildDemoWorldCommandlet::UFTBuildDemoWorldCommandlet()
@@ -102,6 +143,23 @@ int32 UFTBuildDemoWorldCommandlet::Main(const FString& Params)
 	// looking back along -X.
 	AFTCharacterPreview* Preview = World->SpawnActor<AFTCharacterPreview>(FVector::ZeroVector, FRotator::ZeroRotator, Spawn);
 	Preview->SetActorLabel(TEXT("CharacterPreview"));
+
+	// -Mesh=<object path> puts a skeletal mesh on the preview and turns it to face the player.
+	FString MeshPath;
+	if (FParse::Value(*Params, TEXT("Mesh="), MeshPath))
+	{
+		USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, *MeshPath);
+		if (!Mesh)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildDemoWorld: couldn't load skeletal mesh %s."), *MeshPath);
+			World->DestroyWorld(false);
+			return 1;
+		}
+		Preview->GetBody()->SetSkeletalMesh(Mesh);
+		const float Yaw = FacingYaw(*Mesh);
+		Preview->SetActorRotation(FRotator(0, Yaw, 0));
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildDemoWorld: preview uses %s, yaw %.1f."), *Mesh->GetPathName(), Yaw);
+	}
 
 	APlayerStart* Start = World->SpawnActor<APlayerStart>(FVector(250, 0, 160), FRotator(0, 180, 0), Spawn);
 	Start->SetActorLabel(TEXT("PlayerStart"));
