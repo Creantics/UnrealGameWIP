@@ -28,4 +28,18 @@ inline bool readAsset(const std::string& rel, std::string& out) {
     return true;
 }
 
+// A file under this repo's Data/ folder (FTCORE_PROJECT_DATA_DIR), or false when it cannot be read.
+inline bool readProjectData(const std::string& rel, std::string& out) {
+#if defined(FTCORE_PROJECT_DATA_DIR)
+    std::ifstream f(std::string(FTCORE_PROJECT_DATA_DIR) + "/" + rel, std::ios::binary);
+#else
+    std::ifstream f(rel, std::ios::binary);
+#endif
+    if (!f) return false;
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    out = ss.str();
+    return true;
+}
+
 } // namespace ftcore_test
