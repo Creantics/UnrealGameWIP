@@ -66,5 +66,13 @@ Passed: the expressions cycled, the lids blinked and the jaw moved in Play. The 
 
 ## Shaders
 
-- The cook (`-run=Cook -TargetPlatform=Windows`) compiles the game's shaders for the demo map. Staging `Data/` next to the packaged game needs `BuildCookRun -stage`, which is not proven yet.
+- The cook (`-run=Cook -TargetPlatform=Windows`) compiles the game's shaders for the demo map.
+- **`Data/` is staged with the packaged game (proven 2026-10-18).** `RunUAT BuildCookRun -platform=Win64 -clientconfig=Development -cook -stage -unattended -stagingdirectory=<dir>` gave BUILD SUCCESSFUL with 0 cook errors. In `<dir>\Windows\ForgottenThird\`, which is `FPaths::ProjectDir()` in the packaged game, these were staged as loose NonUFS files, and `Manifest_NonUFSFiles_Win64.txt` lists them:
+  - `ForgottenThird/Data/Rig/face_presets.json`
+  - `ForgottenThird/Data/Rig/emotion_map.json`
+  - `ForgottenThird/Data/Rig/containment_profiles.json`
+  - `ForgottenThird/Data/Models/proof_head.glb`
+  - `ForgottenThird/Data/Story/...`: all 99 local files (gitignored, so only on machines that have the copy)
+- `$(ProjectDir)/Data/...` is expanded when the **game target is built**, and the file list goes into `Binaries/Win64/ForgottenThird.target`. Staging reads that receipt. A new or renamed file under `Data/` only stages after the game target is built again (drop `-skipbuild`).
+- A fresh worktree has Git LFS pointer stubs in `Content/`, and the cook fails with "Invalid value for PACKAGE_FILE_TAG". Run `git lfs pull` first.
 - The editor still compiles its own shader set the first time it opens interactively, which takes a few minutes on this PC. Later opens use the DDC.
