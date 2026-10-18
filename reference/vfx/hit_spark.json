@@ -1,0 +1,127 @@
+{
+  "name": "hit_spark",
+  "emitters": [
+    {
+      "name": "sparks",
+      "bursts": [
+        {
+          "time": 0.0,
+          "count": 28
+        }
+      ],
+      "duration": 0.1,
+      "maxParticles": 64,
+      "lifetime": [
+        0.25,
+        0.55
+      ],
+      "shape": "sphere",
+      "radius": 0.08,
+      "speed": [
+        3.0,
+        7.0
+      ],
+      "gravity": [
+        0.0,
+        -9.0,
+        0.0
+      ],
+      "drag": 2.5,
+      "startSize": [
+        0.07,
+        0.14
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0.0,
+          "v": 1.0
+        },
+        {
+          "t": 1.0,
+          "v": 0.1
+        }
+      ],
+      "colorOverLife": [
+        {
+          "t": 0.0,
+          "color": [
+            2.0,
+            1.8,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "t": 0.5,
+          "color": [
+            1.6,
+            0.8,
+            0.2,
+            0.9
+          ]
+        },
+        {
+          "t": 1.0,
+          "color": [
+            1.0,
+            0.2,
+            0.05,
+            0.0
+          ]
+        }
+      ],
+      "blend": "additive",
+      "sprite": "spark",
+      "stretch": 0.05,
+      "stretchMax": 7.0,
+      "softness": 0.0
+    },
+    {
+      "name": "flash",
+      "bursts": [
+        {
+          "time": 0.0,
+          "count": 1
+        }
+      ],
+      "duration": 0.1,
+      "maxParticles": 2,
+      "lifetime": 0.14,
+      "shape": "point",
+      "startSize": 0.9,
+      "sizeOverLife": [
+        {
+          "t": 0.0,
+          "v": 0.5
+        },
+        {
+          "t": 1.0,
+          "v": 1.2
+        }
+      ],
+      "colorOverLife": [
+        {
+          "t": 0.0,
+          "color": [
+            1.5,
+            1.4,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "t": 1.0,
+          "color": [
+            1.0,
+            0.6,
+            0.2,
+            0.0
+          ]
+        }
+      ],
+      "blend": "additive",
+      "sprite": "soft",
+      "softness": 0.0
+    }
+  ]
+}

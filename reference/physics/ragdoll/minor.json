@@ -1,0 +1,30 @@
+{
+  "name": "minor",
+  "useAuthoredKo": true,
+  "maxLinearVelocity": 3.0,
+  "maxAngularVelocity": 8,
+  "linearDamping": 1.2,
+  "angularDamping": 3.0,
+  "jointFriction": 6.0,
+  "friction": 1.0,
+  "restitution": 0.0,
+  "positionSteps": 4,
+  "velocitySteps": 10,
+  "koImpulseScale": 0.3,
+  "hitImpulseScale": 0.3,
+  "hitHold": 0.08,
+  "hitBlendOut": 0.3,
+  "motor": { "frequency": 8, "damping": 1, "maxTorque": 300 },
+  "defaultLimits": { "type": "swingTwist", "normalHalfCone": 0.15, "planeHalfCone": 0.15, "twistMin": -0.1, "twistMax": 0.1 },
+  "limits": {
+    "head": { "normalHalfCone": 0.25, "planeHalfCone": 0.25, "twistMin": -0.25, "twistMax": 0.25 },
+    "upperArm.L": { "normalHalfCone": 0.6, "planeHalfCone": 0.6, "twistMin": -0.3, "twistMax": 0.3 },
+    "upperArm.R": { "normalHalfCone": 0.6, "planeHalfCone": 0.6, "twistMin": -0.3, "twistMax": 0.3 },
+    "foreArm.L": { "type": "hinge", "minAngle": -1.2, "maxAngle": 0.05 },
+    "foreArm.R": { "type": "hinge", "minAngle": -1.2, "maxAngle": 0.05 },
+    "thigh.L": { "normalHalfCone": 0.2, "planeHalfCone": 0.5, "twistMin": -0.15, "twistMax": 0.15 },
+    "thigh.R": { "normalHalfCone": 0.2, "planeHalfCone": 0.5, "twistMin": -0.15, "twistMax": 0.15 },
+    "shin.L": { "type": "hinge", "minAngle": -0.05, "maxAngle": 1.2 },
+    "shin.R": { "type": "hinge", "minAngle": -0.05, "maxAngle": 1.2 }
+  }
+}

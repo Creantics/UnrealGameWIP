@@ -1,0 +1,130 @@
+{
+  "name": "speed_sparks",
+  "emitters": [
+    {
+      "name": "sparks",
+      "bursts": [
+        {
+          "time": 0.0,
+          "count": 40
+        },
+        {
+          "time": 0.6,
+          "count": 25
+        }
+      ],
+      "duration": 1.2,
+      "loop": true,
+      "maxParticles": 160,
+      "lifetime": [
+        0.5,
+        0.9
+      ],
+      "shape": "sphere",
+      "radius": 0.05,
+      "speed": [
+        2.0,
+        8.0
+      ],
+      "gravity": [
+        0,
+        -6,
+        0
+      ],
+      "drag": 1.0,
+      "startSize": [
+        0.06,
+        0.1
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "t": 0.7,
+          "color": [
+            1,
+            1,
+            1,
+            0.9
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            1,
+            1,
+            1,
+            0
+          ]
+        }
+      ],
+      "blend": "additive",
+      "sprite": "spark",
+      "stretch": 0.06,
+      "stretchMax": 8.0,
+      "softness": 0.0,
+      "limitVelocity": {
+        "speed": 6.0,
+        "dampen": 0.5
+      },
+      "colorBySpeed": {
+        "color": [
+          {
+            "t": 0,
+            "color": [
+              1.6,
+              0.25,
+              0.05,
+              1
+            ]
+          },
+          {
+            "t": 0.5,
+            "color": [
+              2.0,
+              1.3,
+              0.4,
+              1
+            ]
+          },
+          {
+            "t": 1,
+            "color": [
+              1.6,
+              1.9,
+              2.6,
+              1
+            ]
+          }
+        ],
+        "range": [
+          0.5,
+          6.0
+        ]
+      },
+      "sizeBySpeed": {
+        "size": [
+          {
+            "t": 0,
+            "v": 0.5
+          },
+          {
+            "t": 1,
+            "v": 1.3
+          }
+        ],
+        "range": [
+          0.5,
+          6.0
+        ]
+      }
+    }
+  ]
+}

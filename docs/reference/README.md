@@ -12,6 +12,8 @@ doesn't apply here (see `docs/HANDOFF_UE.md` in newengine).
 | [rigging.md](rigging.md), [rigging_plan.md](rigging_plan.md) | Face layering and the measured numbers. Body-rig parts are superseded by Rigify -> IK Rig / IK Retargeter. |
 | [briefs/eyes_rigify_addendum.md](briefs/eyes_rigify_addendum.md) | Keep: DEF-only export, flatten bbones, A-pose, one metarig per character, shared base-body topology. Drop: the 128-joint budget, the canonical skeleton, ne_blender, ne_rig_check. |
 | [style_packs.md](style_packs.md) | The four world styles. To rebuild as Unreal post-process materials. |
+| [vfx.md](vfx.md), [particles_plan.md](particles_plan.md) | The particle module model behind `reference/vfx/*.json`. Rebuild as Niagara. |
+| [physics_plan.md](physics_plan.md) | The physics plan behind `reference/physics/`. Rebuild as Chaos. |
 
 ## Path mapping
 

@@ -1,0 +1,39 @@
+{
+  "name": "falling_leaves",
+  "emitters": [
+    {
+      "name": "leaves",
+      "rate": 12,
+      "loop": true,
+      "maxParticles": 96,
+      "lifetime": [5.0, 6.5],
+      "shape": "box",
+      "boxHalfExtents": [1.4, 0.1, 0.7],
+      "speed": 0.0,
+      "velocityMin": [-0.15, -0.65, -0.1],
+      "velocityMax": [0.35, -0.45, 0.1],
+      "startSize": [0.2, 0.3],
+      "startRotation": [0, 6.28],
+      "angularVelocity": [-2.2, 2.2],
+      "startColor": {
+        "between": [[0.95, 0.42, 0.12, 1], [0.85, 0.7, 0.2, 1]]
+      },
+      "colorOverLife": [
+        { "t": 0, "color": [1, 1, 1, 0] },
+        { "t": 0.06, "color": [1, 1, 1, 1] },
+        { "t": 0.9, "color": [1, 1, 1, 1] },
+        { "t": 1, "color": [1, 1, 1, 0] }
+      ],
+      "blend": "alpha",
+      "renderMode": "mesh",
+      "mesh": "leaf",
+      "sortMode": "distance",
+      "noise": {
+        "strength": 0.7,
+        "frequency": 0.5,
+        "scrollSpeed": 0.3,
+        "rotationAmount": 1.0
+      }
+    }
+  ]
+}
