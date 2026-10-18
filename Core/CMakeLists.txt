@@ -30,8 +30,10 @@ endif()
 
 add_library(ftcore STATIC
     src/Battle.cpp
+    src/Calibration.cpp
     src/ComboGenerator.cpp
     src/ComboSequence.cpp
+    src/Conductor.cpp
     src/TurnQueue.cpp
     src/Version.cpp
 )
@@ -62,6 +64,7 @@ if(FTCORE_BUILD_TESTS)
         tests/AllocHook.cpp
         tests/test_battle.cpp
         tests/test_combo.cpp
+        tests/test_conductor.cpp
         tests/test_turnqueue.cpp
         tests/test_version.cpp
     )
