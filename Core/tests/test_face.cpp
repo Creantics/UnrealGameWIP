@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -234,6 +235,19 @@ TEST_CASE("face blinks are seeded and deterministic") {
     quiet.setBlinking(false);
     for (int i = 0; i < 700; ++i) quiet.update(0.01f);
     CHECK(at(quiet.weights(), m.blinkL) == doctest::Approx(0.f));
+}
+
+TEST_CASE("small consecutive seeds give spread-out first blinks") {
+    // Characters often get seeds 1, 2, 3...; unhashed, these all first blinked at about 2.0 s.
+    MiniFace m;
+    std::array<float, 8> first{};
+    for (std::uint32_t seed = 1; seed <= first.size(); ++seed) first[seed - 1] = FacePlayer(m.set, seed).timeToNextBlink();
+    const auto [lo, hi] = std::minmax_element(first.begin(), first.end());
+    CHECK(*lo >= 2.f);
+    CHECK(*hi <= 6.f);
+    CHECK(*hi - *lo > 2.f);
+    for (std::size_t i = 0; i < first.size(); ++i)
+        for (std::size_t j = i + 1; j < first.size(); ++j) CHECK(std::fabs(first[i] - first[j]) > 0.05f);
 }
 
 TEST_CASE("face player binds mesh targets by name") {

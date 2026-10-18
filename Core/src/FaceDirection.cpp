@@ -2,6 +2,8 @@
 
 #include "ftcore/Json.h"
 
+#include "SeedMix.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -15,17 +17,6 @@ bool setError(std::string* error, std::string msg) {
 }
 
 float clamp01(float v) { return std::clamp(v, 0.f, 1.f); }
-
-// Spreads small seeds (1, 2, 3...) over the state, whose first xorshift draws would otherwise be
-// near 0 (murmur3 finaliser). Never 0.
-std::uint32_t mixSeed(std::uint32_t h) {
-    h ^= h >> 16;
-    h *= 0x85ebca6bu;
-    h ^= h >> 13;
-    h *= 0xc2b2ae35u;
-    h ^= h >> 16;
-    return h ? h : 1u;
-}
 
 // 0 at x = 0 and 1, 1 at x = 0.5; 0 outside.
 float bump(float x) { return x > 0.f && x < 1.f ? 4.f * x * (1.f - x) : 0.f; }
@@ -113,7 +104,7 @@ bool resolveContainedEmotion(const FaceShapeSet& set, const EmotionMap& map, con
 
 FaceDirector::FaceDirector(const FaceShapeSet& set, const EmotionMap& map, FacePlayer& player, std::uint32_t seed,
                            const FaceDirectionTuning& tuning)
-    : set_(&set), map_(&map), player_(&player), tuning_(tuning), rng_(mixSeed(seed)) {
+    : set_(&set), map_(&map), player_(&player), tuning_(tuning), rng_(detail::mixSeed(seed)) {
     const auto shape = [&](std::string_view name) {
         const int s = set.find(name);
         return s < static_cast<int>(kMaxFaceShapes) ? s : -1;

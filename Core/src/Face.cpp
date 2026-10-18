@@ -1,5 +1,7 @@
 #include "ftcore/Face.h"
 
+#include "SeedMix.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -224,7 +226,7 @@ constexpr float kBlinkMinGap = 2.f, kBlinkGapRange = 4.f;
 float& component(FaceVec3& v, int k) { return k == 0 ? v.x : k == 1 ? v.y : v.z; }
 } // namespace
 
-FacePlayer::FacePlayer(const FaceShapeSet& set, std::uint32_t seed) : set_(&set), rng_(seed ? seed : 1u) {
+FacePlayer::FacePlayer(const FaceShapeSet& set, std::uint32_t seed) : set_(&set), rng_(detail::mixSeed(seed)) {
     channelShape_.fill(kChannelNone);
     scheduleBlink();
 }
