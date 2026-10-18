@@ -1,5 +1,7 @@
 # story_import
 
+The canonical copy is newengine `tools/story_import` (Draft 63 tables, `build_vo_list.py`). This copy only parses.
+
 Builds the runtime story JSON (`docs/story_format.md`) from the Forgotten Third design package.
 
     python3 -I tools/story_import/story_import.py            # regenerate assets/story/

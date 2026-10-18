@@ -33,17 +33,16 @@ Then delete the branch, locally and on origin.
 - **Change already made:** `FTImportCharacter` now moves every imported glTF material instance onto `/Game/Characters/Shared/Materials/M_FTCharacter`. That master takes `BaseColor`, `Metallic`, `Roughness`, `Emissive` and `EmissiveStrength`, and has the skeletal mesh and morph target usages, which the Interchange plugin master lacks. Keep it: it removes a plugin dependency and the editor's load-time usage patches.
 - **Next step:** open `Leads.umap` in the editor (portrait monitor) and press Play. If the colours show, the open issue was only the capture method. If they don't, compare a cooked build, which compiles shaders up front.
 
-## Story data: move it to Draft 63
+## Story data: done, on Draft 63
 
-- The script is final (Draft 63, in newengine), but `Data/Story` is still built from Draft 55.
-- Next steps:
-  1. Give the importer a draft flag.
-  2. Build a Draft 63 VO list.
-  3. Re-anchor the insert and slate CSVs.
-  4. Run `story_import --check` until it's clean.
-  5. Copy the output into `Data/Story/`.
-  6. Run ctest.
-- The step-by-step plan is in newengine's `build/draft63/IMPORT_TRIAL_draft63.md`, and in the private handoff. Story text stays out of this repo.
+- The game loads the final script (Draft 63). newengine's `tools/story_import` is the canonical importer: it defaults to `--draft draft63`, and `--check` is clean. This repo's copy only gained the `--draft` flag and the blockquote parser, because newengine's copy holds story text.
+- To refresh, copy newengine `assets/story` into `Data/Story/` (gitignored).
+- `tools/gate.ps1` now finds newengine from any worktree and says whether the real-script tests ran. Before this fix they silently skipped in worktrees.
+- The Draft 63 VO list is built. VO rows marked "REVIEW: line edited" need a check before ElevenLabs.
+- Deferred, and listed in newengine's `STATUS_draft63.md`:
+  - The Home Echo consequence flags (recut, lantern score, diagram pins).
+  - Choice branches, which are not modelled.
+  - A rebuild of `Interactive_Script.md`.
 
 ## Characters: quality
 

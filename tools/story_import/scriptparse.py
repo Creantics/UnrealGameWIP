@@ -44,6 +44,14 @@ INLINE_DIR = re.compile(r'\*\([^)]*\)\*')
 INTEXT_NOTE = re.compile(r'^\*\*\*(CHOICE|VARIANT|OPTIONAL|HOLD|TIMED)\b')
 
 
+BLOCKQUOTE = re.compile(r'^>[ 	]?')
+
+
+def unquote(line):
+    """A body line without its markdown blockquote prefix ('> DUY: ...' reads as dialogue)."""
+    return BLOCKQUOTE.sub('', line)
+
+
 def read_lines(path):
     with open(path, encoding='utf-8', newline='') as fh:
         return fh.read().split('\n')

@@ -12,12 +12,17 @@ $srcs = Get-ChildItem "$repo\Core\src\*.cpp" | % FullName
 if ($LASTEXITCODE -ne 0) { "CLANG FAILED"; exit 1 }
 "clang ok ($($srcs.Count) sources)"
 
-& "$cm\cmake.exe" -S "$repo\Core" -B "$repo\Core\build" -DFTCORE_WERROR=ON 2>&1 | Select-String 'Error|error' | Select-Object -First 20
+# newengine sits beside the main checkout, not beside a worktree, so resolve it from git's common dir.
+$main = Split-Path -Parent (git -C $repo rev-parse --path-format=absolute --git-common-dir)
+$assets = Join-Path (Split-Path -Parent $main) 'newengine\assets'
+& "$cm\cmake.exe" -S "$repo\Core" -B "$repo\Core\build" -DFTCORE_WERROR=ON "-DFTCORE_NEWENGINE_ASSETS=$assets" 2>&1 | Select-String 'Error|error' | Select-Object -First 20
 & "$cm\cmake.exe" --build "$repo\Core\build" --config Debug 2>&1 | Select-String 'warning|error' | Select-Object -First 40
 if ($LASTEXITCODE -ne 0) { "CMAKE BUILD FAILED"; exit 1 }
 & "$cm\ctest.exe" --test-dir "$repo\Core\build" -C Debug --output-on-failure 2>&1 | Select-String 'Passed|Failed|tests passed|Error|missing|wrapper|reserved|:\d+:'
 if ($LASTEXITCODE -ne 0) { "CTEST FAILED"; exit 1 }
 & "$repo\Core\build\Debug\ftcore_tests.exe" 2>&1 | Select-String 'test cases|assertions'
+if (Test-Path "$assets\story\story.json") { "real-script tests ran ($assets\story)" }
+else { "real-script tests SKIPPED (no $assets\story\story.json)" }
 
 if ($Ubt) {
     # Only an editor on this checkout's project locks its binaries; other worktrees' editors are fine.

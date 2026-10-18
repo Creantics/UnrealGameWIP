@@ -605,9 +605,11 @@ TEST_CASE("a save taken anywhere in the real script loads into a runner that pla
     MESSAGE(saves << " saves round-tripped over " << moves << " moves");
 }
 
-// ---- dialogue exchanges (the former MINI beats, newengine docs/story_mini_dialogue.md) -----------
+// ---- the former MINI scenes (Draft 63 writes their exchanges into the script itself) --------------
+// Draft 55's hand-authored PH- ladders (wrong picks, scores, pinned clues) are gone; the Home Echo consequence
+// flags (F_CH_RECUT_*, F_HE_LANTERN_GUARD_SCORE, F_CH_DIAGRAM_PINS) are not set by the Draft 63 import yet.
 
-TEST_CASE("the former MINI beats are dialogue exchanges in the real script") {
+TEST_CASE("the former MINI scenes keep their notation and offer choices in the real script") {
     FTCORE_REQUIRE_REAL_STORY(s);
     const StoryDatabase& db = s.db;
     for (const char* id : kExchangeScenes) {
@@ -615,7 +617,7 @@ TEST_CASE("the former MINI beats are dialogue exchanges in the real script") {
         const std::uint32_t si = db.findScene(id);
         REQUIRE(si != kNone);
         const Scene& sc = db.scene(si);
-        int choices = 0, misses = 0, minis = 0, hiddenMini = 0;
+        int choices = 0, minis = 0, hiddenMini = 0;
         for (std::uint32_t b = 0; b < sc.beatCount; ++b) {
             const Beat& beat = db.beat(sc, b);
             if (beat.type == BeatType::Gameplay && beat.kind == GameplayKind::Mini) ++minis;
@@ -623,16 +625,14 @@ TEST_CASE("the former MINI beats are dialogue exchanges in the real script") {
             if (beat.type != BeatType::Choice) continue;
             ++choices;
             CHECK(beat.optionCount <= 4);
-            for (std::uint32_t o = 0; o < beat.optionCount; ++o) misses += db.option(beat, o).miss ? 1 : 0;
         }
         CHECK(minis == 0);      // no mini-game hand-off left
         CHECK(hiddenMini >= 1); // the original notation is kept as a designer note
         CHECK(choices >= 2);
-        if (std::string_view(id) != "SC-10-HE1") CHECK(misses > 0); // SC-10: no wrong answers
     }
 }
 
-TEST_CASE("dialogue exchanges set their flags whichever way the player answers") {
+TEST_CASE("the former MINI scenes set their Home Echo flags whichever way the player answers") {
     FTCORE_REQUIRE_REAL_STORY(s);
     struct Done {
         const char* scene;
@@ -654,59 +654,12 @@ TEST_CASE("dialogue exchanges set their flags whichever way the player answers")
             CAPTURE(static_cast<int>(pick));
             r.resetFlags();
             const SceneRun run = playScene(r, d.scene, pick);
-            CHECK(run.left); // no loop: three misses get the answer supplied and the exchange moves on
+            CHECK(run.left);
             CHECK(run.choices >= 2);
-            if (pick == Pick::Right) CHECK(run.misses == 0);
-            else if (std::string_view(d.scene) != "SC-10-HE1") CHECK(run.misses > 0);
             for (const char* f : d.flags)
                 if (f) CHECK(r.flag(f).truthy());
         }
     }
-}
-
-TEST_CASE("SC-13-HE1 counts first-try triage calls in F_HE_LANTERN_GUARD_SCORE") {
-    FTCORE_REQUIRE_REAL_STORY(s);
-    StoryRunner r(&s.db);
-    r.resetFlags();
-    playScene(r, "SC-13-HE1", Pick::Right);
-    CHECK(r.flag("F_HE_LANTERN_GUARD_SCORE") == FlagValue::integer(3));
-    r.resetFlags();
-    CHECK(r.setFlag("F_HE_LANTERN_GUARD_SCORE", FlagValue::integer(2))); // a replay starts from zero
-    const SceneRun miss = playScene(r, "SC-13-HE1", Pick::AlwaysMiss);
-    CHECK(miss.misses == 9); // three ladders, three misses each: the answer is supplied every time
-    CHECK(r.flag("F_HE_LANTERN_GUARD_SCORE") == FlagValue::integer(0));
-    CHECK(r.flag("F_HE_LANTERN_GUARD_DONE").truthy());
-    r.resetFlags();
-    playScene(r, "SC-13-HE1", Pick::MissThenRight); // miss, then right on the retry: no smudge for a retry
-    CHECK(r.flag("F_HE_LANTERN_GUARD_SCORE") == FlagValue::integer(0));
-}
-
-TEST_CASE("SC-18-Q1: pinned clues pre-fill the hands column") {
-    FTCORE_REQUIRE_REAL_STORY(s);
-    StoryRunner r(&s.db);
-    r.resetFlags();
-    const SceneRun unpinned = playScene(r, "SC-18-Q1", Pick::AlwaysMiss);
-    r.resetFlags();
-    CHECK(r.setFlag("F_CH_DIAGRAM_PINS", FlagValue::integer(2)));
-    const SceneRun pinned = playScene(r, "SC-18-Q1", Pick::AlwaysMiss);
-    CHECK(unpinned.left);
-    CHECK(pinned.left);
-    CHECK(unpinned.misses == 6); // laugh + taps ladders
-    CHECK(pinned.misses == 3);   // laugh only: the taps are a scripted pick
-    CHECK(pinned.choices == unpinned.choices - 2); // three asks become one scripted pick
-}
-
-TEST_CASE("SC-10-HE1 sets one F_CH_RECUT_* flag per choice") {
-    FTCORE_REQUIRE_REAL_STORY(s);
-    StoryRunner r(&s.db);
-    r.resetFlags();
-    const SceneRun run = playScene(r, "SC-10-HE1", Pick::Right);
-    CHECK(run.choices == 4);
-    CHECK(s.db.flagString(r.flag("F_CH_RECUT_START")) == "FROM_THE_FREEZE");
-    CHECK(r.flag("F_CH_RECUT_SPEECH") == FlagValue::boolean(true));
-    CHECK(s.db.flagString(r.flag("F_CH_RECUT_HOLD")) == "SHORT");
-    CHECK(s.db.flagString(r.flag("F_CH_RECUT_SOUNDBED")) == "COLD_HUM");
-    CHECK(r.flag("F_HE_RECUT_DONE").truthy());
 }
 
 // ---- save JSON codec ------------------------------------------------------------------------------

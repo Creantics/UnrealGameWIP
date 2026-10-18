@@ -37,6 +37,8 @@ WORLDS = ['Solhaven', 'Lattice', 'Unwritten', 'Ink-Solhaven', 'Cleft pocket', 'H
 GAMEPLAY_KINDS = ['CMB', 'ENG', 'PLAY', 'MINI']
 BEAT_TYPES = ['line', 'direction', 'choice', 'gameplay', 'cue', 'flag', 'hold', 'end']
 
+DRAFT = 'draft55'  # the script folder under the build dir: 04*.md and VO_Master_List.csv
+
 # Hold ladder (docs/story_format.md, rulings_advisor_draft55.md section D), seconds.
 HOLD_LADDER = {'SC-06-U2': 4.0, 'SC-11-Q3': 3.0, 'SC-14-Q3': 5.0, 'SC-15-Q1': 5.0, 'SC-22-Q1': 8.0, 'SC-EP-03': 12.0}
 # Where a ladder hold with no [HOLD] insert goes: after the first direction matching this (default: TELL_RX).
@@ -470,11 +472,11 @@ class Model:
     pass
 
 
-def load_inputs(build_dir):
+def load_inputs(build_dir, draft):
     m = Model()
-    d55 = os.path.join(build_dir, 'draft55')
-    m.scenes = sp.parse_all(d55)
-    m.vo = csv_rows(os.path.join(d55, 'VO_Master_List.csv'))
+    dd = os.path.join(build_dir, draft)
+    m.scenes = sp.parse_all(dd)
+    m.vo = csv_rows(os.path.join(dd, 'VO_Master_List.csv'))
     m.meta = {r['scene_id']: r for r in csv_glob(os.path.join(build_dir, 'meta', 'meta_*.csv'))}
     m.inserts = csv_glob(os.path.join(build_dir, 'meta', 'inserts_*.csv'))
     m.flags = csv_rows(os.path.join(build_dir, 'flags.csv'))
@@ -493,9 +495,9 @@ def flag_default(s):
     return s
 
 
-def build(build_dir):
+def build(build_dir, draft=DRAFT):
     """-> (files {relpath: text}, stats dict, problems [str])"""
-    m = load_inputs(build_dir)
+    m = load_inputs(build_dir, draft)
     problems = []
     stats = collections.Counter()
     flag_ids = {f['flag_id'] for f in m.flags}
@@ -1118,11 +1120,12 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--build-dir', default=os.path.join(REPO, 'design', 'forgotten_third', 'build'))
     ap.add_argument('--out-dir', default=os.path.join(REPO, 'assets', 'story'))
+    ap.add_argument('--draft', default=DRAFT, help='draft folder under --build-dir (default %(default)s)')
     ap.add_argument('--check', action='store_true', help='validate the files in --out-dir instead of writing them')
     a = ap.parse_args(argv)
-    files, stats, problems, info = build(a.build_dir)
+    files, stats, problems, info = build(a.build_dir, a.draft)
     if a.check:
-        vo_ids = {r['VO ID'] for r in csv_rows(os.path.join(a.build_dir, 'draft55', 'VO_Master_List.csv'))}
+        vo_ids = {r['VO ID'] for r in csv_rows(os.path.join(a.build_dir, a.draft, 'VO_Master_List.csv'))}
         errs = problems + validate(a.out_dir, files, vo_ids, info)
         summary(stats, info, sys.stdout)
         if errs:
