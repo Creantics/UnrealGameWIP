@@ -5,7 +5,7 @@
 
 #include "ftcore/Version.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogForgottenThird, Log, All);
+DEFINE_LOG_CATEGORY(LogForgottenThird);
 
 class FForgottenThirdModule : public FDefaultGameModuleImpl
 {
