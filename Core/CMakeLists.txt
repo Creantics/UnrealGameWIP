@@ -34,6 +34,7 @@ add_library(ftcore STATIC
     src/ComboGenerator.cpp
     src/ComboSequence.cpp
     src/Conductor.cpp
+    src/Face.cpp
     src/StoryDatabase.cpp
     src/StoryRunner.cpp
     src/StorySave.cpp
@@ -68,6 +69,8 @@ if(FTCORE_BUILD_TESTS)
         tests/test_battle.cpp
         tests/test_combo.cpp
         tests/test_conductor.cpp
+        tests/test_face.cpp
+        tests/test_face.cpp
         tests/test_story.cpp
         tests/test_turnqueue.cpp
         tests/test_version.cpp
