@@ -1,0 +1,40 @@
+# Builds and tests the plain C++20 Core library (no Unreal) on Linux and Windows.
+# The real-data tests skip themselves here: the newengine assets aren't checked out.
+name: core
+
+on:
+  push:
+    branches: [main]
+    paths: ['Core/**', 'Source/ForgottenCore/Private/Core/**', '.github/workflows/core.yml']
+  pull_request:
+    paths: ['Core/**', 'Source/ForgottenCore/Private/Core/**', '.github/workflows/core.yml']
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-gcc, os: ubuntu-latest, cc: gcc, cxx: g++ }
+          - { name: linux-clang, os: ubuntu-latest, cc: clang, cxx: clang++ }
+          - { name: windows-msvc, os: windows-latest }
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: Configure
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.cxx }}" ]; then
+            export CC=${{ matrix.cc }} CXX=${{ matrix.cxx }}
+            cmake -S Core -B build -DCMAKE_BUILD_TYPE=Debug -DFTCORE_WERROR=ON
+          else
+            cmake -S Core -B build -DFTCORE_WERROR=ON
+          fi
+      - name: Build
+        run: cmake --build build --config Debug --parallel
+      - name: Test
+        run: ctest --test-dir build -C Debug --output-on-failure
