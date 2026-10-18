@@ -1,9 +1,11 @@
 # Plan: from Core library to first playable
 
-State on 2026-10-18 (origin/main at dbe2069). The Core porting is done. The demo map is built by code, and its game shaders are cooked. **The first rigging test passed on 2026-10-18.**
+State on 2026-10-18 (origin/main at ef99ba1). The Core porting is done. The demo map is built by code, and its game shaders are cooked. **The first rigging test passed on 2026-10-18.**
 - `proof_head.glb` was imported by `FTImportCharacter`: 7/7 face bones and 56/56 face shapes.
 - `FTBuildDemoWorld -Mesh=` placed it in `Demo`.
 - In Play, the user saw the expressions cycle, the blinks, and the jaw move.
+
+**Style packs, Niagara VFX and Chaos physics are built by code (overnight run, 2026-10-18).** All three cook for Windows with 0 errors. Nobody has looked at any of them in a viewport yet. See `docs/STYLE_PACKS_UE.md`, `docs/VFX_UE.md` and `docs/PHYSICS_UE.md`.
 
 **`Data/` is staged with the packaged game (2026-10-18).** A `BuildCookRun -cook -stage` for Win64 Development succeeded. `Data/Rig/*.json`, `Data/Models/proof_head.glb` and the local `Data/Story/` landed under the staged `ForgottenThird/Data/`, which is where `FPaths::ProjectDir()` points in the packaged game. The paths are in `docs/RIGGING_TEST.md` (Shaders).
 
@@ -11,7 +13,7 @@ State on 2026-10-18 (origin/main at dbe2069). The Core porting is done. The demo
 
 1. **Ask GitHub Support to purge commit 362873808ae789806f186b5e554748f27caeb109.** History was rewritten and force-pushed, but GitHub keeps the commit reachable by its SHA.
 2. **GitHub billing.** CI never starts because of the spending limit. Until it's fixed, the local gate is the authority.
-3. **On any other machine:** copy newengine `assets/story/` to `Data/Story/`. It's gitignored.
+3. **Look at the overnight work.** Open the editor (it opens `Demo`), click Play, and check: the Solhaven style (outlines, paper grain, colour), the three effects beside the character (ember swirl, heal ring, smoke), and the physics corner (stacked crates, a bouncing ball). Change packs with `FTBuildDemoWorld -Style=lattice` and so on.. **On any other machine:** copy newengine `assets/story/` to `Data/Story/`. It's gitignored.
 
 ## Where things stand
 
@@ -99,3 +101,13 @@ Then ask GitHub Support to purge cached views of the removed commits, and check 
 - **IK Rig and Retargeter for proof_head** (`FTBuildRigCommandlet`): auto-characterized from the UE4 Mannequin template (48 bones matched, score 0.95), retarget root `pelvis`, root motion bone `root`, 21 valid chains. Rerunning it replaces both assets.
 - **Branches:** 8 local and 6 remote branches deleted, 8 finished sessions archived. Only `main` is left.
 - Tests went from 105 to 129. The UBT editor build succeeded.
+
+## Overnight run (2026-10-18, forked session)
+
+- **Guards:** `tools/gate.ps1` replaces the scratchpad gate. `.githooks/pre-commit` runs `tools/leak_guard.py`, which blocks staged `Data/Story/` paths and any staged line containing a 32+ character story string. It ran on every commit since. The Git LFS hooks now live in `.githooks/` as well.
+- **Style packs** (b62e9bb..5731842): `ftcore::StylePack` (packs, lerp, dial, `parseStyleSpec`), `-run=FTBuildStyleMaterials` (`PP_Style` plus five `MI_Style_*`), `AFTStyleController` (runtime blends), and `FTBuildDemoWorld -Style=`. The first cook failed because the base-pass permutation needed the view size; this was fixed, and the cook then had 0 errors and 0 warnings. Deferred: cel bands, lit hatching, hull silhouettes, rim, face fields.
+- **Niagara VFX** (8d8a926..3acf8d5): the Core effect model and loader, `-run=FTBuildVfx` (12 Lightweight systems, 4 sprite materials), `UFTVfxComponent`, and three effects in `Demo` (`-NoVfx` turns them off). The cook had 0 errors. UE 5.8's Lightweight emitters can't orbit, so `heal_ring`, `heal` and `magic_ribbon` don't circle. Ribbons, death bursts, flipbooks and soft fade are deferred.
+- **Unity build fix** (3865bda): the VFX and style commandlets both defined anonymous `Save`/`AddExpression`, and adaptive unity hid the clash until the files were committed. After the last commit, run `gate -Ubt` once more on a clean tree.
+- **Chaos physics** (8920a4a..4ea01ae): the Core ragdoll and feel data, `-run=FTBuildPhysics` (six `PM_*` materials and `PHYS_proof_head_Ragdoll`), `UFTPhysicsComponent`, and a physics corner in `Demo` (`-NoPhysics` turns it off). The headless `-run=FTPhysicsSim` check (4 s) found the stack standing, the ball bouncing six times, and every prop asleep. The ragdoll settles too. The cook had 0 errors. Unverified: elbow and knee bend direction, and the feel. The hit-stop check only logs.
+- **Story draft drift** (ef99ba1): newengine Draft 63 dropped every `miss` option, which broke five story-import tests. Those tests now use an invented fixture (`SC-TEST-*`). The end-to-end and save tests still read the live draft. The gate has 167 tests and passes against the default newengine path.
+- **The other session** has branches `worktree-agent-*`. One of them (ac78bf5) ports the style packs again. It and the other two (battle demo, leads) need a rebase onto origin/main before they merge.
