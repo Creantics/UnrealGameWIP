@@ -251,7 +251,10 @@ void FacePlayer::setExpression(const FacePreset* preset, float intensity, float 
 }
 
 bool FacePlayer::play(const FaceTrack& track, float time) {
-    if (track.channels.size() > kMaxTrackChannels || track.data.size() < track.channels.size() * track.frames) return false;
+    if (track.channels.size() > kMaxTrackChannels || track.data.size() < track.channels.size() * track.frames) {
+        stop(); // a refused track plays nothing, so whatever was playing ends too
+        return false;
+    }
     channelShape_.fill(kChannelNone);
     trackHasSpeech_ = false;
     for (std::size_t c = 0; c < track.channels.size(); ++c) {

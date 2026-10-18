@@ -350,6 +350,47 @@ TEST_CASE("a miss option corrects and moves on; the autoplay option is the right
     CHECK(r.text() == "Yes.");
 }
 
+TEST_CASE("a choice with hundreds of options reaches each one; greyed ones are refused") {
+    constexpr std::uint32_t kWide = 300;
+    StoryBuilder b;
+    b.beginChapter("01", "One");
+    b.beginScene("SC-W", "Wide");
+    b.choice("Pick one");                                   // 0
+    for (std::uint32_t i = 0; i < kWide; ++i) b.option("o" + std::to_string(i), 2 + i);
+    b.choice("Only the last");                              // 1
+    for (std::uint32_t i = 0; i + 1 < kWide; ++i) b.greyedOption("g" + std::to_string(i));
+    b.option("last", 2);
+    std::vector<std::string> texts;
+    for (std::uint32_t i = 0; i < kWide; ++i) texts.push_back("line " + std::to_string(i));
+    for (std::uint32_t i = 0; i < kWide; ++i) b.line("PH-W-" + std::to_string(i), "ZEE", texts[i]); // 2 + i
+    b.end();
+    StoryDatabase db;
+    std::string error;
+    REQUIRE_MESSAGE(b.finish(db, &error), error);
+
+    StoryRunner r(&db);
+    REQUIRE(r.start());
+    REQUIRE(r.optionCount() == kWide);
+    CHECK(r.optionText(kWide - 1) == "o299");
+    CHECK(r.defaultOption() == 0);
+    CHECK_FALSE(r.choose(kWide));
+    int wrong = 0;
+    for (std::uint32_t i = 0; i < kWide; ++i) {
+        REQUIRE(r.restore({"SC-W", 0}));
+        if (!r.choose(i) || r.text() != texts[i]) ++wrong;
+    }
+    CHECK(wrong == 0);
+
+    REQUIRE(r.restore({"SC-W", 1}));
+    REQUIRE(r.optionCount() == kWide);
+    CHECK(r.defaultOption() == kWide - 1);
+    CHECK_FALSE(r.optionSelectable(0));
+    CHECK_FALSE(r.choose(0));
+    CHECK(r.state() == StoryRunner::State::Choice);
+    CHECK(r.choose(kWide - 1));
+    CHECK(r.text() == "line 0");
+}
+
 TEST_CASE("story builder warns about recoverable mistakes") {
     StoryBuilder b;
     b.keepEmphasis(true);

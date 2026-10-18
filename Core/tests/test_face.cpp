@@ -262,6 +262,80 @@ TEST_CASE("face player binds mesh targets by name") {
     CHECK(out[3] == doctest::Approx(0.f));
 }
 
+TEST_CASE(".nface tracks cut short at any byte are rejected") {
+    FaceTrack t = makeTrack({"jawOpen", "@speech", "@tongue_02", "mouthSmileLeft"}, 5, {10, 200, 128, 40});
+    const std::vector<std::uint8_t> bytes = serializeFaceTrack(t);
+    FaceTrack back;
+    std::string error;
+    REQUIRE(parseFaceTrack(bytes, back, &error));
+    int accepted = 0, dirty = 0;
+    for (std::size_t n = 0; n < bytes.size(); ++n) {
+        back = t; // a parse failure must leave `back` empty, whatever it held
+        if (parseFaceTrack(std::span<const std::uint8_t>(bytes.data(), n), back, &error)) ++accepted;
+        if (back.frames != 0 || !back.channels.empty() || !back.data.empty()) ++dirty;
+    }
+    CHECK(accepted == 0);
+    CHECK(dirty == 0);
+}
+
+TEST_CASE("a face set at the 64-shape budget, correctives last, composes and binds every shape") {
+    FaceShapeSet set;
+    REQUIRE(set.addShape("jawOpen", FaceLayer::MouthArticulation));
+    REQUIRE(set.addShape("mouthFunnel", FaceLayer::MouthArticulation));
+    REQUIRE(set.addShape("mouthSmileLeft", FaceLayer::MouthTone));
+    REQUIRE(set.addShape("mouthSmileRight", FaceLayer::MouthTone));
+    while (set.size() < kMaxFaceShapes - 2) REQUIRE(set.addShape("s" + std::to_string(set.size()), FaceLayer::Upper));
+    REQUIRE(set.addShape("jawOpen_x_mouthSmile", FaceLayer::Corrective));
+    REQUIRE(set.addShape("jawOpen_x_mouthFunnel", FaceLayer::Corrective));
+    std::string error;
+    CHECK_FALSE(set.addShape("one_more", FaceLayer::Upper, &error));
+    const std::array<FaceShapeWeight, 2> aa{{{"jawOpen", 0.6f}, {"mouthFunnel", 0.5f}}};
+    REQUIRE(set.addViseme("AA", aa));
+    const std::array<FaceShapeWeight, 2> smile{{{"mouthSmileLeft", 0.8f}, {"s61", 0.7f}}};
+    REQUIRE(set.addExpression("smile", smile));
+    REQUIRE_MESSAGE(set.finish(&error), error);
+    REQUIRE(set.size() == kMaxFaceShapes);
+    REQUIRE(set.correctives.size() == 2);
+    const int last = static_cast<int>(kMaxFaceShapes) - 1;
+    CHECK(set.correctives[1].shape == last);
+    CHECK(set.find("jawOpen_x_mouthFunnel") == last);
+
+    FaceWeights out{}, micro{};
+    composeFace(set, set.expression("smile")->weights, set.viseme("AA")->weights, 1.f, micro, out);
+    const auto w = [&](std::string_view name) { return out[static_cast<std::size_t>(set.find(name))]; };
+    CHECK(w("s61") == doctest::Approx(0.7f));
+    CHECK(w("jawOpen_x_mouthFunnel") == doctest::Approx(w("jawOpen") * w("mouthFunnel")));
+    CHECK(w("jawOpen_x_mouthFunnel") > 0.f);
+    CHECK(w("jawOpen_x_mouthSmile") == doctest::Approx(w("jawOpen") * w("mouthSmileLeft")));
+
+    // Every shape binds to a mesh target, in reverse order, and reaches it.
+    std::vector<std::string_view> targets;
+    for (std::size_t i = kMaxFaceShapes; i-- > 0;) targets.push_back(set.shapes[i]);
+    std::vector<int> map;
+    FacePlayer::bindMesh(set, targets, map);
+    REQUIRE(map.size() == kMaxFaceShapes);
+    for (std::size_t t = 0; t < kMaxFaceShapes; ++t) CHECK(map[t] == static_cast<int>(kMaxFaceShapes - 1 - t));
+    FacePlayer p(set);
+    p.setBlinking(false);
+    p.setMicro(set.find("s4"), 0.25f);
+    p.update(0.f);
+    std::vector<float> mesh(kMaxFaceShapes, 9.f);
+    p.writeMeshWeights(map, mesh);
+    CHECK(mesh[kMaxFaceShapes - 1 - 4] == doctest::Approx(0.25f));
+    CHECK(mesh[0] == doctest::Approx(0.f)); // the corrective, with nothing driving it
+
+    // A track may carry every shape plus the 8 special channels, and no more.
+    std::vector<std::string> channels(set.shapes.begin(), set.shapes.end());
+    for (const char* c : {"@speech", "@tongue_01", "@tongue_02", "@tongue_03", "@a", "@b", "@c", "@d"}) channels.push_back(c);
+    REQUIRE(channels.size() == FacePlayer::kMaxTrackChannels);
+    const FaceTrack full = makeTrack(channels, 2, std::vector<std::uint8_t>(channels.size(), 128));
+    CHECK(p.play(full));
+    channels.push_back("@e");
+    const FaceTrack over = makeTrack(channels, 2, std::vector<std::uint8_t>(channels.size(), 128));
+    CHECK_FALSE(p.play(over));
+    CHECK_FALSE(p.playing());
+}
+
 TEST_CASE("face player updates without allocating") {
     if (!ftcore_test::allocHookInstalled()) {
         MESSAGE("alloc hook not linked; skipping");
