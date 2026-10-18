@@ -4,6 +4,14 @@ Written 2026-10-18 at the end of the overnight session. Read `docs/HANDOFF_UE.md
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
+## Resume here (updated 2026-10-18)
+
+- **Phase:** S, the story gate, from `docs/ROADMAP.md`. No game building happens until every part scores at least 4.9/5 and two whole-script readers each give at least 9/10.
+- **Status:** the Draft 64 revision runs in newengine, which is local only. Its round and scores are in the private handoff.
+- **Next action:** read the private handoff's Resume block, then continue the current revision round.
+- **Allowed in this repo during Phase S:** merging the two waiting branches (below), once their diffs are read and the gate passes. Nothing else.
+- **User actions open:** the leak purge, and the GitHub billing fix (see `docs/PLAN.md`).
+
 ## Branches waiting to merge
 
 The fork session owns the main checkout (`D:\projects\unrealgamewip`, on `chaos-physics`) and merges to main. Each branch below has had origin/main (3865bda) merged into it and is gate-green: ctest plus UBT Succeeded.
