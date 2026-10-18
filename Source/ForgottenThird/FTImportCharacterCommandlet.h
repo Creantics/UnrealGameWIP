@@ -9,7 +9,8 @@
 // It logs every imported asset, then for the skeletal mesh: how many face shapes from
 // Data/Rig/face_presets.json have a morph target of the same name, and whether the face bones
 // (jaw, tongue_01..03, head, eye_l, eye_r) exist. Returns 1 when the import fails, a face bone is
-// missing, or a face shape has no morph.
+// missing, or a face shape has no morph. -Face=0 skips the face shape check (for a body without
+// face morphs, such as test_human); the face bone check still runs.
 
 #include "CoreMinimal.h"
 #include "Commandlets/Commandlet.h"

@@ -21,8 +21,8 @@ const TCHAR* const kFaceBones[] = {
 	TEXT("head"), TEXT("jaw"), TEXT("tongue_01"), TEXT("tongue_02"), TEXT("tongue_03"), TEXT("eye_l"), TEXT("eye_r"),
 };
 
-// Logs the rig check; false when a face bone or a face shape's morph is missing.
-bool CheckRig(const USkeletalMesh& Mesh)
+// Logs the rig check; false when a face bone or (with bCheckFace) a face shape's morph is missing.
+bool CheckRig(const USkeletalMesh& Mesh, bool bCheckFace)
 {
 	bool bOk = true;
 
@@ -52,6 +52,12 @@ bool CheckRig(const USkeletalMesh& Mesh)
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTImportCharacter: %d/%d face bones, %d bones in all."), BonesFound,
 		UE_ARRAY_COUNT(kFaceBones), Skeleton.GetNum());
+
+	if (!bCheckFace)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTImportCharacter: -Face=0, skipping the face shape check."));
+		return bOk;
+	}
 
 	const FString PresetsPath = FPaths::ProjectDir() / TEXT("Data/Rig/face_presets.json");
 	TArray<uint8> Bytes;
@@ -100,6 +106,8 @@ int32 UFTImportCharacterCommandlet::Main(const FString& Params)
 		return 1;
 	}
 	FParse::Value(*Params, TEXT("Dest="), Dest);
+	bool bCheckFace = true;
+	FParse::Bool(*Params, TEXT("Face="), bCheckFace);
 	if (FPaths::IsRelative(Source))
 	{
 		Source = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / Source);
@@ -142,7 +150,7 @@ int32 UFTImportCharacterCommandlet::Main(const FString& Params)
 		return 1;
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTImportCharacter: mesh is %s"), *Mesh->GetPathName());
-	return CheckRig(*Mesh) ? 0 : 1;
+	return CheckRig(*Mesh, bCheckFace) ? 0 : 1;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTImportCharacter needs an editor build."));
 	return 1;
