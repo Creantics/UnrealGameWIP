@@ -55,6 +55,47 @@ void AFTPlayerController::CreateInputObjects()
 	MappingContext->MapKey(TapAction, EKeys::Gamepad_LeftShoulder);
 	MappingContext->MapKey(TapAction, EKeys::Gamepad_RightShoulder);
 	MappingContext->MapKey(TapAction, EKeys::Gamepad_FaceButton_Left);
+
+	// Battle: added on top of the story context while a battle runs. Its actions consume their
+	// keys, so the d-pad, face buttons, shoulders, Space and Enter stop reaching the story actions.
+	BattleContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Battle"));
+	static const TCHAR* const LaneNames[4] = {TEXT("IA_LaneLeft"), TEXT("IA_LaneDown"), TEXT("IA_LaneUp"), TEXT("IA_LaneRight")};
+	static const TCHAR* const FaceNames[4] = {TEXT("IA_PadLaneLeft"), TEXT("IA_PadLaneDown"), TEXT("IA_PadLaneUp"), TEXT("IA_PadLaneRight")};
+	const FKey ArrowKeys[4] = {EKeys::Left, EKeys::Down, EKeys::Up, EKeys::Right};
+	const FKey LetterKeys[4] = {EKeys::A, EKeys::S, EKeys::W, EKeys::D};
+	const FKey DPadKeys[4] = {EKeys::Gamepad_DPad_Left, EKeys::Gamepad_DPad_Down, EKeys::Gamepad_DPad_Up, EKeys::Gamepad_DPad_Right};
+	const FKey FaceKeys[4] = {EKeys::Gamepad_FaceButton_Left, EKeys::Gamepad_FaceButton_Bottom, EKeys::Gamepad_FaceButton_Top,
+		EKeys::Gamepad_FaceButton_Right};
+	LaneActions.Reset(4);
+	FaceActions.Reset(4);
+	for (int32 I = 0; I < 4; ++I)
+	{
+		UInputAction* Lane = MakeAction(LaneNames[I]);
+		BattleContext->MapKey(Lane, ArrowKeys[I]);
+		BattleContext->MapKey(Lane, LetterKeys[I]);
+		BattleContext->MapKey(Lane, DPadKeys[I]);
+		LaneActions.Add(Lane);
+
+		UInputAction* Face = MakeAction(FaceNames[I]);
+		BattleContext->MapKey(Face, FaceKeys[I]);
+		FaceActions.Add(Face);
+	}
+	// Skills use the story's choose actions (1-4 and the numpad stay mapped in the story context;
+	// its d-pad mapping is hidden by the lanes above). HandleChoose reports them as OnBattleSkill.
+
+	TargetNextAction = MakeAction(TEXT("IA_TargetNext"));
+	BattleContext->MapKey(TargetNextAction, EKeys::Tab);
+	BattleContext->MapKey(TargetNextAction, EKeys::E);
+	BattleContext->MapKey(TargetNextAction, EKeys::Gamepad_RightShoulder);
+
+	TargetPrevAction = MakeAction(TEXT("IA_TargetPrev"));
+	BattleContext->MapKey(TargetPrevAction, EKeys::Q);
+	BattleContext->MapKey(TargetPrevAction, EKeys::Gamepad_LeftShoulder);
+
+	BattleConfirmAction = MakeAction(TEXT("IA_BattleConfirm"));
+	BattleContext->MapKey(BattleConfirmAction, EKeys::Enter);
+	BattleContext->MapKey(BattleConfirmAction, EKeys::SpaceBar);
+	BattleContext->MapKey(BattleConfirmAction, EKeys::Gamepad_Special_Right);
 }
 
 UInputAction* AFTPlayerController::MakeAction(const TCHAR* Name)
@@ -85,6 +126,18 @@ void AFTPlayerController::SetupInputComponent()
 	Input->BindAction(ConfirmAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleConfirm);
 	Input->BindAction(CancelAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleCancel);
 	Input->BindAction(TapAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleTap);
+
+	Input->BindAction(LaneActions[0], ETriggerEvent::Started, this, &AFTPlayerController::HandleLaneLeft);
+	Input->BindAction(LaneActions[1], ETriggerEvent::Started, this, &AFTPlayerController::HandleLaneDown);
+	Input->BindAction(LaneActions[2], ETriggerEvent::Started, this, &AFTPlayerController::HandleLaneUp);
+	Input->BindAction(LaneActions[3], ETriggerEvent::Started, this, &AFTPlayerController::HandleLaneRight);
+	Input->BindAction(FaceActions[0], ETriggerEvent::Started, this, &AFTPlayerController::HandleFaceLeft);
+	Input->BindAction(FaceActions[1], ETriggerEvent::Started, this, &AFTPlayerController::HandleFaceDown);
+	Input->BindAction(FaceActions[2], ETriggerEvent::Started, this, &AFTPlayerController::HandleFaceUp);
+	Input->BindAction(FaceActions[3], ETriggerEvent::Started, this, &AFTPlayerController::HandleFaceRight);
+	Input->BindAction(TargetNextAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleTargetNext);
+	Input->BindAction(TargetPrevAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleTargetPrev);
+	Input->BindAction(BattleConfirmAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleBattleConfirm);
 }
 
 void AFTPlayerController::BeginPlay()
@@ -92,12 +145,82 @@ void AFTPlayerController::BeginPlay()
 	Super::BeginPlay();
 	CreateInputObjects();
 
-	// Remote controllers on a server have no local player.
-	const ULocalPlayer* LocalPlayer = GetLocalPlayer();
-	UEnhancedInputLocalPlayerSubsystem* Subsystem = LocalPlayer ? LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>() : nullptr;
-	if (Subsystem)
+	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = GetInputSubsystem())
 	{
 		Subsystem->AddMappingContext(MappingContext, 0);
+		if (bBattleInput)
+		{
+			Subsystem->AddMappingContext(BattleContext, 1); // BeginBattleInput ran first
+		}
+	}
+}
+
+UEnhancedInputLocalPlayerSubsystem* AFTPlayerController::GetInputSubsystem() const
+{
+	// Remote controllers on a server have no local player.
+	const ULocalPlayer* LocalPlayer = GetLocalPlayer();
+	return LocalPlayer ? LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>() : nullptr;
+}
+
+void AFTPlayerController::BeginBattleInput()
+{
+	if (bBattleInput)
+	{
+		return;
+	}
+	CreateInputObjects();
+	bBattleInput = true;
+	bStoryRoutingBeforeBattle = bRouteInputToStory;
+	bRouteInputToStory = false;
+	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = GetInputSubsystem())
+	{
+		Subsystem->AddMappingContext(BattleContext, 1);
+	}
+}
+
+void AFTPlayerController::EndBattleInput()
+{
+	if (!bBattleInput)
+	{
+		return;
+	}
+	bBattleInput = false;
+	bRouteInputToStory = bStoryRoutingBeforeBattle;
+	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = GetInputSubsystem())
+	{
+		Subsystem->RemoveMappingContext(BattleContext);
+	}
+}
+
+void AFTPlayerController::HandleBattleArrow(EFTArrow Arrow, bool bFaceButton)
+{
+	if (bBattleInput)
+	{
+		OnBattleArrow.Broadcast(Arrow, bFaceButton);
+	}
+}
+
+void AFTPlayerController::HandleTargetNext()
+{
+	if (bBattleInput)
+	{
+		OnBattleTarget.Broadcast(1);
+	}
+}
+
+void AFTPlayerController::HandleTargetPrev()
+{
+	if (bBattleInput)
+	{
+		OnBattleTarget.Broadcast(-1);
+	}
+}
+
+void AFTPlayerController::HandleBattleConfirm()
+{
+	if (bBattleInput)
+	{
+		OnBattleConfirm.Broadcast();
 	}
 }
 
@@ -120,6 +243,10 @@ void AFTPlayerController::HandleAdvance()
 void AFTPlayerController::HandleChoose(int32 Option)
 {
 	OnChoose.Broadcast(Option);
+	if (bBattleInput)
+	{
+		OnBattleSkill.Broadcast(Option);
+	}
 	UFTStorySubsystem* Story = bRouteInputToStory ? GetStory() : nullptr;
 	if (Story && Story->GetState() == EFTStoryState::Choice && Option < Story->GetOptionCount())
 	{
