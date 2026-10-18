@@ -19,8 +19,10 @@ int findExpression(const FaceShapeSet& set, std::string_view name) {
     return -1;
 }
 
-// pose(def) * k added into out, on every shape or only on Upper / Eyes ones.
-void addPose(const FaceShapeSet& set, const EmotionDef& def, float k, bool upperOnly, FaceWeights& out) {
+} // namespace
+
+void addEmotionPose(const FaceShapeSet& set, const EmotionDef& def, float k, bool upperOnly, FaceWeights& out) {
+    if (def.base < 0 || def.base >= static_cast<int>(set.expressions.size())) return;
     const FaceWeights& base = set.expressions[static_cast<std::size_t>(def.base)].weights;
     const std::size_t n = std::min(set.size(), kMaxFaceShapes);
     for (std::size_t s = 0; s < n; ++s) {
@@ -28,8 +30,6 @@ void addPose(const FaceShapeSet& set, const EmotionDef& def, float k, bool upper
         out[s] += k * (def.weight * base[s] + def.modifiers[s]);
     }
 }
-
-} // namespace
 
 const EmotionDef* EmotionMap::find(std::string_view name) const {
     for (const EmotionDef& e : emotions)
@@ -68,11 +68,11 @@ bool resolveEmotion(const FaceShapeSet& set, const EmotionMap& map, std::string_
     out.tongueDeg = {};
     bool ok = true;
     if (!primary.empty()) {
-        if (const EmotionDef* p = map.find(primary)) addPose(set, *p, emotionIntensityWeight(intensity, cap), false, out.weights);
+        if (const EmotionDef* p = map.find(primary)) addEmotionPose(set, *p, emotionIntensityWeight(intensity, cap), false, out.weights);
         else ok = false;
     }
     if (!secondary.empty()) {
-        if (const EmotionDef* s = map.find(secondary)) addPose(set, *s, kSecondaryWeight, true, out.weights);
+        if (const EmotionDef* s = map.find(secondary)) addEmotionPose(set, *s, kSecondaryWeight, true, out.weights);
         else ok = false;
     }
     for (float& w : out.weights) w = std::clamp(w, 0.f, 1.f);
@@ -94,7 +94,8 @@ bool importEmotionMap(std::string_view json, const FaceShapeSet& set, EmotionMap
     for (std::uint32_t i = 0; i < list.size(); ++i) {
         const JsonValue e = list[i];
         const std::string_view name = e["name"].string();
-        const JsonValue weight = e["weight"], add = e["add"];
+        const JsonValue weight = e["weight"], add = e["add"], mirror = e["mirror"];
+        if (!mirror.isAbsent() && !mirror.isBool()) return fail("emotion '" + std::string(name) + "': mirror is not a bool");
         if (!weight.isAbsent() && !weight.isNumber()) return fail("emotion '" + std::string(name) + "': weight is not a number");
         if (!add.isAbsent() && !add.isObject()) return fail("emotion '" + std::string(name) + "': add must be an object");
         mods.clear();
@@ -104,6 +105,7 @@ bool importEmotionMap(std::string_view json, const FaceShapeSet& set, EmotionMap
             mods.emplace_back(add.key(k), static_cast<float>(add.value(k).number()));
         }
         if (!out.add(set, name, e["base"].string(), static_cast<float>(weight.number(1.0)), mods, &err)) return fail(err);
+        out.emotions.back().mirrors = mirror.boolean(true);
     }
     return true;
 }

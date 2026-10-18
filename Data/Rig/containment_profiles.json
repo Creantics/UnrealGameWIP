@@ -1,0 +1,9 @@
+{
+ "format": 1,
+ "note": "DRAFT for the F10 face review. Per-character containment (rigging_plan §7.2): cap = highest emotion weight shown, add = holding-back shapes times 0.2 * intensity, blink_rate and head_motion scale the defaults, micro_per_excess = extra micro-expression flashes per second per 1.0 of weight above the cap, minor = intensity capped at 4.",
+ "profiles": [
+  {"name": "devin", "cap": 0.7, "add": {"mouthPressLeft": 0.3, "mouthPressRight": 0.3}},
+  {"name": "duy", "cap": 0.6, "blink_rate": 0.5},
+  {"name": "odette", "cap": 0.5, "head_motion": 0.0}
+ ]
+}

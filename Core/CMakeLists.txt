@@ -36,6 +36,7 @@ add_library(ftcore STATIC
     src/Conductor.cpp
     src/Emotion.cpp
     src/Face.cpp
+    src/FaceDirection.cpp
     src/FaceImport.cpp
     src/Json.cpp
     src/StoryDatabase.cpp
@@ -75,6 +76,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_conductor.cpp
         tests/test_emotion.cpp
         tests/test_face.cpp
+        tests/test_face_direction.cpp
         tests/test_face_import.cpp
         tests/test_json.cpp
         tests/test_story.cpp
