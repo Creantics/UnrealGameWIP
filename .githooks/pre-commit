@@ -1,0 +1,5 @@
+#!/bin/sh
+# Blocks story text from reaching the public repo. Enable with: git config core.hooksPath .githooks
+PY="$LOCALAPPDATA/Programs/Python/Python312/python.exe"
+[ -x "$PY" ] || PY=python
+exec "$PY" -I "$(git rev-parse --show-toplevel)/tools/leak_guard.py"

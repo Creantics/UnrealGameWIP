@@ -59,7 +59,9 @@ From 2026-10-18, the advisor makes these calls and the user steps in only to cha
 
 ## Next
 
-1. **Jaw and tongue in C++.** An anim instance or anim node that drives `jaw` and `tongue_01..03` from `UFTFaceComponent`, so no hand-built Anim Blueprint is needed.
+**Guards.** `tools/gate.ps1 [-Ubt]` is the gate (works from any worktree). `.githooks/pre-commit` runs `tools/leak_guard.py`, which refuses staged `Data/Story/` paths and any staged line holding a 32+ character string from the local story copy. Enable it per clone with `git config core.hooksPath .githooks`.
+
+1. ~~**Jaw and tongue in C++.**~~ Done: `UFTFaceAnimInstance` drives `jaw` and `tongue_01..03` from `UFTFaceComponent`.
 2. ~~**Prove that `Data/` gets staged.**~~ Done 2026-10-18. No Build.cs change was needed. New `Data/` files need a game-target rebuild before they stage.
 3. ~~**IK Rig and Retargeter**~~ Done 2026-10-18 by `-run=FTBuildRig`: `IK_proof_head` (retarget root `pelvis`, 21 chains) and a source-only `RTG_proof_head` in `Content/Characters/ProofHead/Rig/`. Still open: a target side (no mannequin ships in Engine/Content; proof_head uses the mannequin bone names, so adding one is an `AutoMapChains` call), and the three clips that import empty because of a UE 5.8 Interchange bug with CUBICSPLINE glTF keys (see `docs/RIGGING_TEST.md`, IK Rig and Retargeter).
 4. **Post-process materials** (`docs/reference/style_packs.md`), then Niagara and Chaos.
