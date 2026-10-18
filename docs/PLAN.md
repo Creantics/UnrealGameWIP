@@ -5,6 +5,8 @@ State on 2026-10-18 (origin/main at dbe2069). The Core porting is done. The demo
 - `FTBuildDemoWorld -Mesh=` placed it in `Demo`.
 - In Play, the user saw the expressions cycle, the blinks, and the jaw move.
 
+**`Data/` is staged with the packaged game (2026-10-18).** A `BuildCookRun -cook -stage` for Win64 Development succeeded. `Data/Rig/*.json`, `Data/Models/proof_head.glb` and the local `Data/Story/` landed under the staged `ForgottenThird/Data/`, which is where `FPaths::ProjectDir()` points in the packaged game. The paths are in `docs/RIGGING_TEST.md` (Shaders).
+
 ## Needs the user
 
 1. **Ask GitHub Support to purge commit 362873808ae789806f186b5e554748f27caeb109.** History was rewritten and force-pushed, but GitHub keeps the commit reachable by its SHA.
@@ -58,7 +60,7 @@ From 2026-10-18, the advisor makes these calls and the user steps in only to cha
 ## Next
 
 1. **Jaw and tongue in C++.** An anim instance or anim node that drives `jaw` and `tongue_01..03` from `UFTFaceComponent`, so no hand-built Anim Blueprint is needed.
-2. **Prove that `Data/` gets staged.** The cook doesn't stage. Only a `BuildCookRun -stage` run shows `Data/` next to the packaged game.
+2. ~~**Prove that `Data/` gets staged.**~~ Done 2026-10-18. No Build.cs change was needed. New `Data/` files need a game-target rebuild before they stage.
 3. **IK Rig and Retargeter** from the A-pose skeleton, after the rigging test.
 4. **Post-process materials** (`docs/reference/style_packs.md`), then Niagara and Chaos.
 
