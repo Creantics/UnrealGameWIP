@@ -70,4 +70,12 @@ if(FTCORE_BUILD_TESTS)
         target_compile_options(ftcore_tests PRIVATE /EHsc)
     endif()
     add_test(NAME ftcore_tests COMMAND ftcore_tests)
+
+    add_test(NAME unreal_wrappers COMMAND ${CMAKE_COMMAND}
+        -DCORE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DWRAPPER_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../Source/ForgottenCore/Private/Core
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckUnrealWrappers.cmake)
+    add_test(NAME macro_names COMMAND ${CMAKE_COMMAND}
+        -DINCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/include
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckMacroNames.cmake)
 endif()

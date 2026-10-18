@@ -25,4 +25,6 @@ cmake --build Core/build --config Debug
 ctest --test-dir Core/build -C Debug --output-on-failure
 ```
 
+Besides the unit tests, ctest checks that every `Core/src/*.cpp` has its Unreal wrapper, and that no Core header uses a name Unreal or glibc defines as a macro (`check`, `verify`, `ensure`, `PI`, `TEXT`, `major`, `minor`, ...).
+
 The story, the art direction and the tools carried over from the earlier engine live in [creantics/newengine](https://github.com/Creantics/newengine); start with `docs/HANDOFF_UE.md` there.
