@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using System.IO;
 using UnrealBuildTool;
 
 public class ForgottenThird : ModuleRules
@@ -8,7 +9,7 @@ public class ForgottenThird : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 	
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "ForgottenCore" });
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "ForgottenCore", "Niagara" });
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });
 
@@ -20,6 +21,13 @@ public class ForgottenThird : ModuleRules
 		{
 			// The demo-world, character-import and rig commandlets.
 			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry", "AssetTools", "IKRig", "IKRigEditor", "Slate", "SlateCore" });
+
+			// FTBuildVfx builds Niagara Lightweight (stateless) emitters. Their module classes live in
+			// Niagara's Internal headers, which UBT only exposes to engine-scope modules, so add the paths.
+			PrivateDependencyModuleNames.AddRange(new string[] { "NiagaraCore", "NiagaraShader", "NiagaraEditor", "RenderCore", "RHI" });
+			string NiagaraSource = Path.Combine(EngineDirectory, "Plugins", "FX", "Niagara", "Source");
+			PrivateIncludePaths.Add(Path.Combine(NiagaraSource, "Niagara", "Internal"));
+			PrivateIncludePaths.Add(Path.Combine(NiagaraSource, "NiagaraShader", "Internal"));
 		}
 
 		// Uncomment if you are using Slate UI
