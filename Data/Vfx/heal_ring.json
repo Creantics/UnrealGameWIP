@@ -1,0 +1,92 @@
+{
+  "name": "heal_ring",
+  "emitters": [
+    {
+      "name": "motes",
+      "rate": 70,
+      "duration": 1.0,
+      "loop": true,
+      "maxParticles": 200,
+      "lifetime": [
+        1.4,
+        2.0
+      ],
+      "shape": "ring",
+      "radius": 1.0,
+      "innerRadius": 0.95,
+      "speed": 0.0,
+      "startSize": [
+        0.06,
+        0.12
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 0.0
+        },
+        {
+          "t": 0.15,
+          "v": 1.0
+        },
+        {
+          "t": 1,
+          "v": 0.2
+        }
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            0.5,
+            2.0,
+            0.8,
+            0.0
+          ]
+        },
+        {
+          "t": 0.2,
+          "color": [
+            0.6,
+            1.8,
+            0.7,
+            1.0
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            0.3,
+            1.2,
+            0.5,
+            0.0
+          ]
+        }
+      ],
+      "blend": "additive",
+      "sprite": "soft",
+      "softness": 0.0,
+      "velocityOverLifetime": {
+        "linear": [
+          0,
+          0.6,
+          0
+        ],
+        "orbital": [
+          0,
+          2.5,
+          0
+        ],
+        "radial": [
+          {
+            "t": 0,
+            "v": 0.0
+          },
+          {
+            "t": 1,
+            "v": -0.5
+          }
+        ]
+      }
+    }
+  ]
+}

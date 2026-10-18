@@ -4,8 +4,17 @@
 //
 //   UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildDemoWorld -NullRHI -unattended -nopause -nosplash
 //
-// It writes a floor, a sun, a sky light, sky atmosphere, height fog, a player start and an
-// AFTCharacterPreview at the origin. It overwrites the map, so run it again after changing it here.
+// It writes a floor, a sun, a sky light, sky atmosphere, height fog, a player start, an
+// AFTCharacterPreview at the origin, a few BasicShapes props, an unbound post-process volume and an
+// AFTStyleController, plus three AFTVfxActor effects beside the character (ember_swirl, heal_ring, smoke).
+// Options:
+//   -Mesh=<skeletal mesh object path>  the preview character, turned to face the player
+//   -Style=<spec>                      none, solhaven (default), lattice, unwritten, restored, inksolhaven
+//                                      or a dial such as S3,U0.5 (ftcore::parseStyleSpec)
+//   -NoVfx                             leave the effects out
+// The style needs /Game/Rendering/PP_Style: run FTBuildStyleMaterials first. The effects need
+// /Game/VFX/NS_*: run FTBuildVfx first. It overwrites the map, so
+// run it again after changing it here.
 
 #include "CoreMinimal.h"
 #include "Commandlets/Commandlet.h"

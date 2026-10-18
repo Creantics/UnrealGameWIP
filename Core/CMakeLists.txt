@@ -42,9 +42,11 @@ add_library(ftcore STATIC
     src/StoryDatabase.cpp
     src/StoryImport.cpp
     src/StoryRunner.cpp
+    src/StylePack.cpp
     src/StorySave.cpp
     src/TurnQueue.cpp
     src/Version.cpp
+    src/Vfx.cpp
 )
 target_include_directories(ftcore PUBLIC include)
 target_link_libraries(ftcore PRIVATE ftcore_warnings)
@@ -81,8 +83,10 @@ if(FTCORE_BUILD_TESTS)
         tests/test_json.cpp
         tests/test_story.cpp
         tests/test_story_import.cpp
+        tests/test_style.cpp
         tests/test_turnqueue.cpp
         tests/test_version.cpp
+        tests/test_vfx.cpp
     )
     target_link_libraries(ftcore_tests PRIVATE ftcore doctest::doctest ftcore_warnings)
     # The real-data tests read the newengine checkout's assets in place (skipped when absent).

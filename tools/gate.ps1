@@ -20,7 +20,11 @@ if ($LASTEXITCODE -ne 0) { "CTEST FAILED"; exit 1 }
 & "$repo\Core\build\Debug\ftcore_tests.exe" 2>&1 | Select-String 'test cases|assertions'
 
 if ($Ubt) {
-    $running = Get-Process UnrealEditor* -ErrorAction SilentlyContinue
+    # Only an editor on this checkout's project locks its binaries; other worktrees' editors are fine.
+    $uproject = "$repo\ForgottenThird.uproject"
+    $running = Get-CimInstance Win32_Process -Filter "Name LIKE 'UnrealEditor%'" |
+        Where-Object { $_.CommandLine -and $_.CommandLine.Replace('/', '\').ToLower().Contains($uproject.ToLower()) } |
+        Select-Object @{ n = 'Id'; e = { $_.ProcessId } }
     if ($running) { "UNREAL EDITOR RUNNING (PID $($running.Id -join ',')); skipping UBT"; exit 2 }
     & 'E:\Epic Games\UE_5.8\Engine\Build\BatchFiles\Build.bat' ForgottenThirdEditor Win64 Development "-Project=$repo\ForgottenThird.uproject" -WaitMutex -NoHotReloadFromIDE *> $log
     $code = $LASTEXITCODE

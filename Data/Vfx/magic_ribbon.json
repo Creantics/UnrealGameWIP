@@ -1,0 +1,61 @@
+{
+  "name": "magic_ribbon",
+  "emitters": [
+    {
+      "name": "ribbon",
+      "rate": 45,
+      "loop": true,
+      "maxParticles": 96,
+      "lifetime": 1.5,
+      "shape": "point",
+      "speed": 0.0,
+      "startSize": 0.07,
+      "sizeOverLife": [{ "t": 0, "v": 1.0 }, { "t": 1, "v": 0.2 }],
+      "colorOverLife": [
+        { "t": 0, "color": [1.4, 1.6, 2.4, 1] },
+        { "t": 1, "color": [1.6, 0.6, 2.0, 0] }
+      ],
+      "blend": "additive",
+      "softness": 0.0,
+      "velocityOverLifetime": {
+        "linear": [0, 0.55, 0],
+        "orbital": [0, 3.2, 0],
+        "offset": [-0.75, 0, 0]
+      },
+      "trails": {
+        "mode": "ribbon",
+        "ribbonCount": 1,
+        "sizeAffectsWidth": false,
+        "inheritParticleColor": false,
+        "widthOverTrail": [{ "t": 0, "v": 0.32 }, { "t": 0.3, "v": 0.26 }, { "t": 1, "v": 0.0 }],
+        "colorOverTrail": [
+          { "t": 0, "color": [1.2, 1.8, 2.6, 0.9] },
+          { "t": 0.5, "color": [1.4, 0.6, 2.2, 0.6] },
+          { "t": 1, "color": [0.8, 0.2, 1.4, 0.0] }
+        ]
+      }
+    },
+    {
+      "name": "glints",
+      "rate": 18,
+      "loop": true,
+      "maxParticles": 48,
+      "lifetime": [1.2, 1.8],
+      "shape": "ring",
+      "radius": 0.75,
+      "innerRadius": 0.6,
+      "speed": 0.0,
+      "velocityMin": [0, 0.4, 0],
+      "velocityMax": [0, 0.8, 0],
+      "startSize": [0.12, 0.2],
+      "sizeOverLife": [{ "t": 0, "v": 0.0 }, { "t": 0.2, "v": 1.0 }, { "t": 1, "v": 0.0 }],
+      "colorOverLife": [
+        { "t": 0, "color": [0.8, 1.2, 2.2, 1] },
+        { "t": 1, "color": [1.2, 0.5, 2.0, 0] }
+      ],
+      "blend": "additive",
+      "softness": 0.0,
+      "renderMode": "vertical"
+    }
+  ]
+}
