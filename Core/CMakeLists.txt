@@ -42,6 +42,7 @@ add_library(ftcore STATIC
     src/StoryDatabase.cpp
     src/StoryImport.cpp
     src/StoryRunner.cpp
+    src/StylePack.cpp
     src/StorySave.cpp
     src/TurnQueue.cpp
     src/Version.cpp
@@ -81,6 +82,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_json.cpp
         tests/test_story.cpp
         tests/test_story_import.cpp
+        tests/test_style.cpp
         tests/test_turnqueue.cpp
         tests/test_version.cpp
     )
