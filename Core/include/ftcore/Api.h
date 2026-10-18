@@ -1,6 +1,8 @@
 #pragma once
 
-// Export macro for ftcore's non-inline functions and classes.
+// Export macro for ftcore's non-inline free functions and public member functions. Mark the
+// members, not the class: exporting a whole class that holds std:: members makes MSVC warn
+// C4251 in the Unreal DLL build.
 // Inside Unreal, UBT defines FORGOTTENCORE_API for the ForgottenCore module as DLLEXPORT there and
 // DLLIMPORT in modules that depend on it (empty in monolithic builds). Those two come from UE's
 // platform headers, which Core never includes, so define them here with UE's exact text; an

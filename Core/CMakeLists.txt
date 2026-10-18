@@ -29,6 +29,10 @@ else()
 endif()
 
 add_library(ftcore STATIC
+    src/Battle.cpp
+    src/ComboGenerator.cpp
+    src/ComboSequence.cpp
+    src/TurnQueue.cpp
     src/Version.cpp
 )
 target_include_directories(ftcore PUBLIC include)
@@ -54,6 +58,11 @@ if(FTCORE_BUILD_TESTS)
     enable_testing()
     add_executable(ftcore_tests
         tests/test_main.cpp
+        tests/AllocCounter.cpp
+        tests/AllocHook.cpp
+        tests/test_battle.cpp
+        tests/test_combo.cpp
+        tests/test_turnqueue.cpp
         tests/test_version.cpp
     )
     target_link_libraries(ftcore_tests PRIVATE ftcore doctest::doctest ftcore_warnings)
