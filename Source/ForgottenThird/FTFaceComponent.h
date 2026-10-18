@@ -4,8 +4,8 @@
 // (.nface), procedural blinks and a micro layer. All face rules live in Core; this loads the files,
 // binds the face mesh's morph targets by name and writes the weights to them every tick.
 //
-// The jaw and tongue are bones: read GetJawRotation() / GetTongueRotation(i) in the face mesh's
-// Anim Blueprint (Transform (Modify) Bone, local space, added to the rest pose).
+// The jaw and tongue are bones: UFTFaceAnimInstance (set as the mesh's anim class) applies
+// GetJawRotation() / GetTongueRotation(i) in local space, added to the rest pose.
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"

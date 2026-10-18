@@ -50,7 +50,7 @@ These steps need the interactive editor, at the keyboard.
   - It blinks every 2 to 6 s.
   - Check that the brows, lids, cheeks and mouth corners read as each expression's name. Also check that the lids close fully on a blink and that nothing tears at the mouth corners.
 - **The output log** has a line for each face shape that has no matching morph target. Expect none.
-- **The jaw and tongue don't move yet.** They are bones driven from `UFTFaceComponent::GetJawRotation()` / `GetTongueRotation()`, which needs an Anim Blueprint or a C++ anim node. That is the next step after this test, together with the IK Rig and Retargeter from the A-pose skeleton.
+- **The jaw and tongue move.** `Body` uses the C++ anim class `UFTFaceAnimInstance` by default, so no Anim Blueprint is needed. It rotates the `jaw` and `tongue_01..03` bones from `UFTFaceComponent::GetJawRotation()` / `GetTongueRotation()`, in local space on top of the rest pose. A bone the skeleton lacks is skipped, with one warning in the log ("Face anim: bone '...' not found"). Next after this test: the IK Rig and Retargeter from the A-pose skeleton.
 
 ## Shaders
 

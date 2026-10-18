@@ -2,7 +2,7 @@
 
 // A character on a stand, for rigging tests: a skeletal mesh driven by UFTFaceComponent, cycling
 // through the face's expression presets so every morph target can be checked by eye. Set Body's
-// mesh (and its Anim Blueprint, for the jaw and tongue) in the Details panel.
+// mesh in the Details panel; Body's anim class (UFTFaceAnimInstance) moves the jaw and tongue bones.
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"

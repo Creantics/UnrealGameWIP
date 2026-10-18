@@ -1,6 +1,7 @@
 ﻿#include "FTCharacterPreview.h"
 
 #include "Components/SkeletalMeshComponent.h"
+#include "FTFaceAnimInstance.h"
 #include "FTFaceComponent.h"
 #include "ForgottenThird.h"
 
@@ -13,6 +14,9 @@ AFTCharacterPreview::AFTCharacterPreview()
 
 	Body = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("Body"));
 	Body->SetupAttachment(Root);
+	// Moves the jaw and tongue bones from the face component; no Anim Blueprint needed.
+	Body->SetAnimationMode(EAnimationMode::AnimationBlueprint);
+	Body->SetAnimInstanceClass(UFTFaceAnimInstance::StaticClass());
 
 	Face = CreateDefaultSubobject<UFTFaceComponent>(TEXT("Face"));
 	Face->FaceMeshComponentName = TEXT("Body");
