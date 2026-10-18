@@ -383,7 +383,7 @@ void AFTBattleDemoActor::UpdateHpText(int32 Id)
 	}
 }
 
-const FString& AFTBattleDemoActor::GetName(int32 Id) const
+const FString& AFTBattleDemoActor::GetFighterName(int32 Id) const
 {
 	return Names.IsValidIndex(Id) ? Names[Id] : kEmpty;
 }
@@ -443,8 +443,8 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 	case EFTBattleEventType::SkillStarted:
 	{
 		const bool bEnemy = Battle->GetCombatant(Event.Source).Team == EFTTeam::Enemies;
-		SetBanner(bEnemy ? FString::Printf(TEXT("%s: %s - defend!"), *GetName(Event.Source), *Event.Label)
-		                 : FString::Printf(TEXT("%s: %s"), *GetName(Event.Source), *Event.Label));
+		SetBanner(bEnemy ? FString::Printf(TEXT("%s: %s - defend!"), *GetFighterName(Event.Source), *Event.Label)
+		                 : FString::Printf(TEXT("%s: %s"), *GetFighterName(Event.Source), *Event.Label));
 		break;
 	}
 	case EFTBattleEventType::NoteJudged:
@@ -492,14 +492,14 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 		                                : FString::Printf(TEXT("FULL COMBO!  %d%%"), Event.Amount));
 		break;
 	case EFTBattleEventType::Counter:
-		SetBanner(FString::Printf(TEXT("%s counters!"), *GetName(Event.Source)));
+		SetBanner(FString::Printf(TEXT("%s counters!"), *GetFighterName(Event.Source)));
 		break;
 	case EFTBattleEventType::Downed:
 		if (Figures.IsValidIndex(Event.Target))
 		{
 			Figures[Event.Target].DownWall = Now;
 		}
-		SetBanner(FString::Printf(TEXT("%s is down!"), *GetName(Event.Target)));
+		SetBanner(FString::Printf(TEXT("%s is down!"), *GetFighterName(Event.Target)));
 		break;
 	default:
 		break;

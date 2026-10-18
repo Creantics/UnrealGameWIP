@@ -67,7 +67,7 @@ public:
 	UFTConductorComponent* GetConductor() const { return Conductor; }
 	int32 GetSelectedSkill() const { return SelectedSkill; }
 	int32 GetSelectedTarget() const { return SelectedTarget; }
-	const FString& GetName(int32 Id) const;
+	const FString& GetFighterName(int32 Id) const;
 	// "1  Strike" style label of a skill of combatant Id, and "2 AP" style cost.
 	const FString& GetSkillLabel(int32 Id, int32 Skill) const;
 	const FString& GetSkillCost(int32 Id, int32 Skill) const;

@@ -48,7 +48,7 @@ const FString kMenuHint(TEXT("Up/Down or 1-4: skill    Left/Right, Q/E, Tab: tar
 const FString kLaneHint(TEXT("Arrows / WASD / d-pad / X A Y B"));
 const FString kDown(TEXT("DOWN"));
 
-double Wall() { return FPlatformTime::Seconds(); }
+double HudWall() { return FPlatformTime::Seconds(); }
 
 bool IsOver(const ftcore::Battle& B) { return B.phase() == ftcore::Phase::Victory || B.phase() == ftcore::Phase::Defeat; }
 
@@ -166,7 +166,7 @@ void AFTBattleHUD::DrawTurnOrder(const AFTBattleDemoActor& D)
 		DrawRect(kPanel, X, Y, BoxW, BoxH);
 		DrawFrame(X, Y, BoxW, BoxH, kGold, 3.f * S);
 		DrawStr(kNow, kGold, X + 8.f * S, Y + 4.f * S, Font, 1.f);
-		DrawStr(D.GetName(Actor), bParty ? kHpParty : kHpEnemy, X + 8.f * S, Y + 20.f * S, Font, 1.2f);
+		DrawStr(D.GetFighterName(Actor), bParty ? kHpParty : kHpEnemy, X + 8.f * S, Y + 20.f * S, Font, 1.2f);
 		X += BoxW + 16.f * S;
 	}
 	DrawStr(kNext, kDim, X, Y + 4.f * S, Font, 1.f);
@@ -178,7 +178,7 @@ void AFTBattleHUD::DrawTurnOrder(const AFTBattleDemoActor& D)
 		const float W = 100.f * S;
 		DrawRect(kPanel, X, Y + 8.f * S, W, BoxH - 16.f * S);
 		DrawRect(bParty ? kHpParty : kHpEnemy, X, Y + 8.f * S, 4.f * S, BoxH - 16.f * S);
-		DrawStr(D.GetName(static_cast<int32>(Id)), kWhite, X + 10.f * S, Y + 14.f * S, Font, 1.f);
+		DrawStr(D.GetFighterName(static_cast<int32>(Id)), kWhite, X + 10.f * S, Y + 14.f * S, Font, 1.f);
 		X += W + 6.f * S;
 	}
 }
@@ -202,7 +202,7 @@ void AFTBattleHUD::DrawPhase(const AFTBattleDemoActor& D)
 	UFont* Font = GEngine->GetMediumFont();
 	const float CX = Canvas->ClipX * 0.5f;
 	const float Y = 86.f * UiScale;
-	const FString& Name = D.GetName(static_cast<int32>(B->actor()));
+	const FString& Name = D.GetFighterName(static_cast<int32>(B->actor()));
 	float NW = 0.f, NH = 0.f, LW = 0.f, LH = 0.f;
 	GetTextSize(Name, NW, NH, Font, UiScale);
 	GetTextSize(*Label, LW, LH, Font, UiScale);
@@ -230,7 +230,7 @@ void AFTBattleHUD::DrawPanel(const AFTBattleDemoActor& D, int32 Id, float X, flo
 	}
 	const float Flash = D.GetFlash(Id);
 	const FLinearColor NameColor = !C.alive() ? kDim : FLinearColor::LerpUsingHSV(kWhite, kRed, Flash);
-	DrawStr(D.GetName(Id), NameColor, X + 12.f * S, Y + 8.f * S, Font, 1.3f);
+	DrawStr(D.GetFighterName(Id), NameColor, X + 12.f * S, Y + 8.f * S, Font, 1.3f);
 	if (!C.alive())
 	{
 		DrawStr(kDown, kRed, X + W - 70.f * S, Y + 8.f * S, Font, 1.3f);
@@ -307,7 +307,7 @@ void AFTBattleHUD::DrawTargetMarker(const AFTBattleDemoActor& D)
 		return; // behind the camera
 	}
 	const float S = UiScale;
-	const float Bob = 6.f * S * FMath::Sin(static_cast<float>(Wall()) * 6.f);
+	const float Bob = 6.f * S * FMath::Sin(static_cast<float>(HudWall()) * 6.f);
 	const float X = static_cast<float>(P.X);
 	const float Y = static_cast<float>(P.Y) - 20.f * S + Bob;
 	const float R = 16.f * S;
@@ -428,7 +428,7 @@ void AFTBattleHUD::DrawPopups(const AFTBattleDemoActor& D)
 {
 	UFont* Font = GEngine->GetMediumFont();
 	UFont* Large = GEngine->GetLargeFont();
-	const double Now = Wall();
+	const double Now = HudWall();
 	const float S = UiScale;
 	// Grade popups use the last lane geometry (they can outlive the combo by a moment).
 	if (LaneWidth <= 0.f)
