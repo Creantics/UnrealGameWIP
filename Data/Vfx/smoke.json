@@ -1,0 +1,109 @@
+{
+  "name": "smoke",
+  "emitters": [
+    {
+      "name": "plume",
+      "rate": 20.0,
+      "loop": true,
+      "duration": 1.0,
+      "maxParticles": 128,
+      "lifetime": [
+        3.2,
+        4.4
+      ],
+      "shape": "cone",
+      "radius": 0.2,
+      "coneAngle": 14.0,
+      "speed": [
+        0.7,
+        1.2
+      ],
+      "velocityMin": [
+        0.1,
+        0.0,
+        0.0
+      ],
+      "velocityMax": [
+        0.4,
+        0.15,
+        0.1
+      ],
+      "drag": 0.3,
+      "startSize": [
+        0.9,
+        1.3
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0.0,
+          "v": 0.45
+        },
+        {
+          "t": 0.35,
+          "v": 1.2
+        },
+        {
+          "t": 1.0,
+          "v": 2.6
+        }
+      ],
+      "startRotation": [
+        0.0,
+        6.28
+      ],
+      "angularVelocity": [
+        -0.35,
+        0.35
+      ],
+      "startColor": [
+        0.42,
+        0.4,
+        0.43,
+        1.0
+      ],
+      "colorOverLife": [
+        {
+          "t": 0.0,
+          "color": [
+            0.55,
+            0.5,
+            0.45,
+            0.0
+          ]
+        },
+        {
+          "t": 0.12,
+          "color": [
+            0.8,
+            0.75,
+            0.7,
+            0.62
+          ]
+        },
+        {
+          "t": 0.55,
+          "color": [
+            1.0,
+            1.0,
+            1.02,
+            0.5
+          ]
+        },
+        {
+          "t": 1.0,
+          "color": [
+            1.25,
+            1.25,
+            1.3,
+            0.0
+          ]
+        }
+      ],
+      "blend": "alpha",
+      "sprite": "puff",
+      "coreShade": 0.55,
+      "turbulence": 0.6,
+      "softness": 0.9
+    }
+  ]
+}
