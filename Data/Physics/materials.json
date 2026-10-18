@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "materials": [
+    { "name": "wood",  "surface": "wood",  "friction": 0.6, "staticFriction": 0.7, "restitution": 0.2,  "density": 600 },
+    { "name": "stone", "surface": "stone", "friction": 0.8, "staticFriction": 0.9, "restitution": 0.05, "density": 2400 },
+    { "name": "metal", "surface": "metal", "friction": 0.4, "staticFriction": 0.5, "restitution": 0.15, "density": 7800 },
+    { "name": "sack",  "surface": "cloth", "friction": 0.9, "staticFriction": 1.0, "restitution": 0.0,  "density": 700, "frictionCombine": "max", "restitutionCombine": "min" },
+    { "name": "rubber", "surface": "rubber", "friction": 0.9, "restitution": 0.7, "density": 1100, "restitutionCombine": "max" },
+    { "name": "ragdoll", "surface": "flesh", "friction": 0.9, "restitution": 0.0, "density": 1000, "restitutionCombine": "min" }
+  ]
+}

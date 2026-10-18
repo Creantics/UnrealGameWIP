@@ -1,0 +1,19 @@
+{
+  "name": "humanoid",
+  "totalMass": 70,
+  "parts": [
+    { "name": "pelvis", "joints": ["hips", "pelvis"], "tip": ["spine", "spine_01"], "radius": 0.13, "mass": 0.15 },
+    { "name": "spine", "parent": "pelvis", "joints": ["spine", "spine_01"], "tip": ["chest", "spine_03"], "radius": 0.12, "mass": 0.12, "upper": true },
+    { "name": "chest", "parent": "spine", "joints": ["chest", "spine_03"], "tip": ["head", "neck_01"], "radius": 0.14, "mass": 0.16, "upper": true },
+    { "name": "head", "parent": "chest", "joints": ["head"], "length": 0.25, "radius": 0.11, "mass": 0.08, "upper": true },
+    { "name": "upperArm.L", "parent": "chest", "joints": ["upperArm.L", "upperarm_l"], "tip": ["foreArm.L", "lowerarm_l"], "radius": 0.05, "mass": 0.04, "upper": true },
+    { "name": "foreArm.L", "parent": "upperArm.L", "joints": ["foreArm.L", "lowerarm_l"], "tip": ["hand_l"], "length": 0.3, "radius": 0.045, "mass": 0.03, "upper": true },
+    { "name": "upperArm.R", "parent": "chest", "joints": ["upperArm.R", "upperarm_r"], "tip": ["foreArm.R", "lowerarm_r"], "radius": 0.05, "mass": 0.04, "upper": true },
+    { "name": "foreArm.R", "parent": "upperArm.R", "joints": ["foreArm.R", "lowerarm_r"], "tip": ["hand_r"], "length": 0.3, "radius": 0.045, "mass": 0.03, "upper": true },
+    { "name": "thigh.L", "parent": "pelvis", "joints": ["thigh.L", "thigh_l"], "tip": ["shin.L", "calf_l"], "radius": 0.07, "mass": 0.1 },
+    { "name": "shin.L", "parent": "thigh.L", "joints": ["shin.L", "calf_l"], "tip": ["foot_l"], "length": 0.5, "radius": 0.055, "mass": 0.07 },
+    { "name": "thigh.R", "parent": "pelvis", "joints": ["thigh.R", "thigh_r"], "tip": ["shin.R", "calf_r"], "radius": 0.07, "mass": 0.1 },
+    { "name": "shin.R", "parent": "thigh.R", "joints": ["shin.R", "calf_r"], "tip": ["foot_r"], "length": 0.5, "radius": 0.055, "mass": 0.07 }
+  ],
+  "noCollide": [["upperArm.L", "spine"], ["upperArm.R", "spine"]]
+}

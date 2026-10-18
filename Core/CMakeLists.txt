@@ -39,6 +39,7 @@ add_library(ftcore STATIC
     src/FaceDirection.cpp
     src/FaceImport.cpp
     src/Json.cpp
+    src/Physics.cpp
     src/StoryDatabase.cpp
     src/StoryImport.cpp
     src/StoryRunner.cpp
@@ -81,6 +82,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_face_direction.cpp
         tests/test_face_import.cpp
         tests/test_json.cpp
+        tests/test_physics.cpp
         tests/test_story.cpp
         tests/test_story_import.cpp
         tests/test_style.cpp
