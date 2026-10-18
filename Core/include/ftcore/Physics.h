@@ -13,7 +13,8 @@
 //   Feel maths          knockback slide and wall cut (F6), hit-stop (F7), the KO impulse split (F8), the
 //                       hit-reaction blend weight (F9), the settle assist and "going heavy" (F8, F10).
 //   Unreal mapping      metres, N*s and kg/m^3 in the data; centimetres, kg*cm/s and g/cm^3 in Unreal. Joint
-//                       limits become Chaos cone/twist limits (symmetric, so asymmetric ranges get an offset).
+//                       limits become Chaos cone/twist limits (symmetric, so an asymmetric range gets an offset, baked
+//                       into the parent frame by FTBuildPhysics).
 //
 //   ftcore::RagdollProfile profile;
 //   std::string error;
@@ -174,7 +175,8 @@ FTCORE_API bool bindRagdoll(const RagdollMap& map, const std::vector<std::string
 
 // A Chaos constraint's angular limits for one ragdoll joint, in degrees. The constraint frame is X along the child
 // bone (twist), Z the character's lateral axis (swing1, the hinge axis) and Y = Z x X (swing2). Chaos limits are
-// symmetric about the frame, so an asymmetric range becomes a half-range plus an offset (AngularRotationOffset).
+// symmetric about the frame, so an asymmetric range becomes a half-range plus an offset. Unreal's
+// AngularRotationOffset is not applied by Chaos, so the builder rotates the parent frame by the offsets instead.
 struct RagdollChaosLimits {
     bool hinge = false;
     float swing1Deg = 0.f, swing2Deg = 0.f, twistDeg = 0.f; // half-ranges; 0 = locked
