@@ -62,7 +62,27 @@ Passed: the expressions cycled, the lids blinked and the jaw moved in Play. The 
   - It blinks every 2 to 6 s.
   - Check that the brows, lids, cheeks and mouth corners read as each expression's name. Also check that the lids close fully on a blink and that nothing tears at the mouth corners.
 - **The output log** has a line for each face shape that has no matching morph target. Expect none.
-- **The jaw and tongue move.** `Body` uses the C++ anim class `UFTFaceAnimInstance` by default, so no Anim Blueprint is needed. It rotates the `jaw` and `tongue_01..03` bones from `UFTFaceComponent::GetJawRotation()` / `GetTongueRotation()`, in local space on top of the rest pose. A bone the skeleton lacks is skipped, with one warning in the log ("Face anim: bone '...' not found"). Next after this test: the IK Rig and Retargeter from the A-pose skeleton.
+- **The jaw and tongue move.** `Body` uses the C++ anim class `UFTFaceAnimInstance` by default, so no Anim Blueprint is needed. It rotates the `jaw` and `tongue_01..03` bones from `UFTFaceComponent::GetJawRotation()` / `GetTongueRotation()`, in local space on top of the rest pose. A bone the skeleton lacks is skipped, with one warning in the log ("Face anim: bone '...' not found"). The IK Rig and Retargeter came next; see below.
+
+## IK Rig and Retargeter (2026-10-18)
+
+```
+UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildRig -Mesh=/Game/Characters/ProofHead/proof_head/SkeletalMeshes/proof_head.proof_head -Dest=/Game/Characters/ProofHead/Rig -NullRHI -unattended -nopause -nosplash
+```
+
+Both arguments are optional; these are the defaults. Rerunning replaces both assets.
+
+- **Clip check.** It first logs every AnimSequence in the mesh's folder: frames, bone tracks that move, tracks off the bind pose, and float curves that change. For proof_head:
+  - `rom`: 440 frames, 14.67 s, 81 bone tracks, 60 of them move. Imported correctly.
+  - `tpose`, `face_jaw`, `face_blink`: 1 frame, no tracks, no curves. **Empty.**
+- **Why the three clips are empty.** The 83 "glTF sampler corrupt" import warnings are exactly the 83 CUBICSPLINE samplers in the file (tpose 81, face_jaw 1, face_blink 1); `rom` uses LINEAR keys and imports fine. UE 5.8's Interchange checks `Input.Count != 3 * Output.Count` for cubic splines (`Engine/Plugins/Interchange/Runtime/Source/Import/Private/Gltf/InterchangeGltfAnimation.cpp`, `ValidateChannelSampler`). The glTF 2.0 rule is the reverse: a cubic-spline output holds three values (in-tangent, value, out-tangent) per input key. The file follows the spec (2 keys -> 6 values, 3 -> 9, blink 3 keys x 56 morphs -> 504), so this is an engine bug and every spec-valid cubic channel is dropped. The fix is on the export side: export these clips with LINEAR interpolation (or sample them) in newengine, or collapse each cubic triple to its middle value in a small glb post-process step. The rig doesn't need these clips, since it is built from the mesh's reference pose (the A-pose).
+- **IK Rig** `Content/Characters/ProofHead/Rig/IK_proof_head`: the auto-characterizer matched the UE4 Mannequin template (48 bones, score 0.95, none missing). Retarget root `pelvis`, root motion bone `root`. 21 chains, all valid:
+  - `Spine` spine_01-03, `Neck` neck_01-02, `Head`
+  - `LeftClavicle`/`RightClavicle`, `LeftArm`/`RightArm` upperarm -> hand (goals `LeftHandIK`/`RightHandIK`)
+  - `Thumb`, `Index`, `Middle`, `Ring`, `Pinky` per side, `_01` -> `_03` (the `ring_00`/`pinky_00` metacarpals stay outside the chains)
+  - `LeftLeg`/`RightLeg` thigh -> foot (goals `LeftFootIK`/`RightFootIK`), `LeftFoot`/`RightFoot` ball
+  - It exits with 1 if the root isn't `pelvis` or any spine, neck, head, arm, leg or finger bone has no chain. A chain the template misses is added by hand from a fixed table (none were needed for proof_head).
+- **Retargeter** `Content/Characters/ProofHead/Rig/RTG_proof_head`: source rig `IK_proof_head`, source preview mesh `proof_head`. **No target yet.** Engine/Content ships no mannequin; `SKM_Manny` and `IK_Mannequin` exist only inside experimental plugins (MoverExamples, MoverTests). proof_head uses the mannequin bone names, so once a mannequin (or the game's own body rig) is in the project, setting it as the target and calling `AutoMapChains` should map every chain by name.
 
 ## Shaders
 

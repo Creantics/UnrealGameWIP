@@ -61,7 +61,7 @@ From 2026-10-18, the advisor makes these calls and the user steps in only to cha
 
 1. **Jaw and tongue in C++.** An anim instance or anim node that drives `jaw` and `tongue_01..03` from `UFTFaceComponent`, so no hand-built Anim Blueprint is needed.
 2. ~~**Prove that `Data/` gets staged.**~~ Done 2026-10-18. No Build.cs change was needed. New `Data/` files need a game-target rebuild before they stage.
-3. **IK Rig and Retargeter** from the A-pose skeleton, after the rigging test.
+3. ~~**IK Rig and Retargeter**~~ Done 2026-10-18 by `-run=FTBuildRig`: `IK_proof_head` (retarget root `pelvis`, 21 chains) and a source-only `RTG_proof_head` in `Content/Characters/ProofHead/Rig/`. Still open: a target side (no mannequin ships in Engine/Content; proof_head uses the mannequin bone names, so adding one is an `AutoMapChains` call), and the three clips that import empty because of a UE 5.8 Interchange bug with CUBICSPLINE glTF keys (see `docs/RIGGING_TEST.md`, IK Rig and Retargeter).
 4. **Post-process materials** (`docs/reference/style_packs.md`), then Niagara and Chaos.
 
 ## Session report (this run)
@@ -94,5 +94,6 @@ Then ask GitHub Support to purge cached views of the removed commits, and check 
   - The commandlet ran cleanly four times. A rerun crash on a duplicate WorldSettings was fixed by replacing the old file.
   - The Windows cook of the demo map compiled 17,666 shaders in about 6 minutes.
 - IK Rig and Control Rig are enabled. The rigging test in `docs/RIGGING_TEST.md` passed with proof_head.
+- **IK Rig and Retargeter for proof_head** (`FTBuildRigCommandlet`): auto-characterized from the UE4 Mannequin template (48 bones matched, score 0.95), retarget root `pelvis`, root motion bone `root`, 21 valid chains. Rerunning it replaces both assets.
 - **Branches:** 8 local and 6 remote branches deleted, 8 finished sessions archived. Only `main` is left.
 - Tests went from 105 to 129. The UBT editor build succeeded.
