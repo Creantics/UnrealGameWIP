@@ -1,6 +1,7 @@
 #include "ftcore/Json.h"
 #include "ftcore/StoryImport.h"
 #include "ftcore/StoryRunner.h"
+#include "ftcore/StorySave.h"
 
 #include "AllocCounter.h"
 #include "TestAssets.h"
@@ -517,6 +518,85 @@ TEST_CASE("real story script loads and plays to the end") {
     CHECK(gameplay > 0);
     MESSAGE("played to the end: " << choices << " choices (" << reshown << " re-shown), " << holds << " holds, "
                                   << gameplay << " gameplay beats, " << moves << " moves");
+}
+
+namespace {
+
+bool sameRunner(const StoryRunner& a, const StoryRunner& b) {
+    if (a.state() != b.state() || a.sceneIndex() != b.sceneIndex() || a.beatIndex() != b.beatIndex()) return false;
+    if (a.flagCount() != b.flagCount()) return false;
+    for (std::uint32_t i = 0; i < a.flagCount(); ++i)
+        if (!(a.flag(i) == b.flag(i))) return false;
+    return true;
+}
+
+bool sameSave(const StorySave& a, const StorySave& b) {
+    if (a.scene != b.scene || a.beat != b.beat || a.flags.size() != b.flags.size()) return false;
+    for (std::size_t i = 0; i < a.flags.size(); ++i) {
+        const SavedStoryFlag &x = a.flags[i], &y = b.flags[i];
+        if (x.id != y.id || x.kind != y.kind || x.number != y.number || x.text != y.text) return false;
+    }
+    return true;
+}
+
+// One autoplay move: the same input for any runner in the same state.
+void autoplayMove(StoryRunner& r, std::uint32_t pick) {
+    switch (r.state()) {
+    case StoryRunner::State::Line:
+    case StoryRunner::State::Direction: r.advance(); break;
+    case StoryRunner::State::Choice: r.choose(pick); break;
+    case StoryRunner::State::Hold: r.skipHold(); break;
+    case StoryRunner::State::Gameplay: r.resume(); break;
+    default: r.stop(); break;
+    }
+}
+
+} // namespace
+
+TEST_CASE("a save taken anywhere in the real script loads into a runner that plays on identically") {
+    FTCORE_REQUIRE_REAL_STORY(s);
+    StoryRunner r(&s.db), loaded(&s.db);
+    REQUIRE(r.start());
+    // Save at every scene entry and every 37th move; load into a fresh runner, then drive both with the
+    // same inputs and compare cursor and flags after every move until the next save point.
+    int moves = 0, saves = 0, badCapture = 0, badApply = 0, badResave = 0, diverged = 0;
+    std::uint32_t lastEpoch = ~0u;
+    bool tracking = false;
+    while (!r.finished() && moves < 200000) {
+        if (r.sceneEpoch() != lastEpoch || moves % 37 == 0) {
+            lastEpoch = r.sceneEpoch();
+            StorySave save, resave;
+            if (!captureStory(r, save)) {
+                ++badCapture;
+                break;
+            }
+            loaded.setDatabase(&s.db);
+            StoryLoadReport report;
+            if (!applyStory(save, loaded, &report) || !report.skippedFlags.empty()) ++badApply;
+            if (!captureStory(loaded, resave) || !sameSave(save, resave)) ++badResave;
+            if (!sameRunner(r, loaded)) ++diverged;
+            ++saves;
+            tracking = true;
+        }
+        const std::uint32_t pick = r.state() == StoryRunner::State::Choice ? r.defaultOption() : kNone;
+        autoplayMove(r, pick);
+        if (tracking) {
+            autoplayMove(loaded, pick);
+            if (!sameRunner(r, loaded)) {
+                ++diverged;
+                if (diverged <= 3) MESSAGE("diverged at " << r.position().scene << " beat " << r.position().beat);
+                tracking = false;
+            }
+        }
+        ++moves;
+    }
+    CHECK(r.finished());
+    CHECK(badCapture == 0);
+    CHECK(badApply == 0);
+    CHECK(badResave == 0);
+    CHECK(diverged == 0);
+    CHECK(saves >= static_cast<int>(s.db.sceneCount()) / 2);
+    MESSAGE(saves << " saves round-tripped over " << moves << " moves");
 }
 
 // ---- dialogue exchanges (the former MINI beats, newengine docs/story_mini_dialogue.md) -----------
