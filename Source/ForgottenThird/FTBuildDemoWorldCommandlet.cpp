@@ -19,7 +19,9 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
+#include "Engine/CollisionProfile.h"
 #include "FTCharacterPreview.h"
+#include "FTPhysicsComponent.h"
 #include "FTStyleController.h"
 #include "FTStyleParameters.h"
 #include "FTVfxComponent.h"
@@ -28,6 +30,7 @@
 #include "HAL/FileManager.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/PackageName.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 
@@ -112,6 +115,20 @@ AStaticMeshActor* SpawnProp(UWorld* World, const FActorSpawnParameters& Spawn, U
 	}
 	Prop->SetActorScale3D(Scale);
 	Prop->SetActorLabel(Label);
+	return Prop;
+}
+
+// A prop that simulates from the start, with a /Game/Physics material on its body.
+AStaticMeshActor* PhysSpawnSimProp(UWorld* World, const FActorSpawnParameters& Spawn, UStaticMesh* Mesh, UMaterialInterface* Material,
+	UPhysicalMaterial* PhysMaterial, const TCHAR* Label, const FVector& Location, const FVector& Scale, float Yaw = 0.f)
+{
+	AStaticMeshActor* Prop = SpawnProp(World, Spawn, Mesh, Material, Label, Location, Scale, Yaw);
+	UStaticMeshComponent* Body = Prop->GetStaticMeshComponent();
+	// Static actors drop the simulate flag, so make it movable first.
+	Body->SetMobility(EComponentMobility::Movable);
+	Body->SetCollisionProfileName(UCollisionProfile::PhysicsActor_ProfileName);
+	Body->SetPhysMaterialOverride(PhysMaterial);
+	Body->SetSimulatePhysics(true);
 	return Prop;
 }
 #endif
@@ -263,6 +280,42 @@ int32 UFTBuildDemoWorldCommandlet::Main(const FString& Params)
 	SpawnProp(World, Spawn, Cone, Grey, TEXT("PropCone"), FVector(-130, -230, 40), FVector(0.6f, 0.6f, 0.8f));
 	SpawnProp(World, Spawn, Cube, Grey, TEXT("PropFarBlock"), FVector(-1500, 450, 150), FVector(3.f), 35.f);
 	SpawnProp(World, Spawn, Cylinder, Grey, TEXT("PropFarTower"), FVector(-1200, -700, 300), FVector(1.2f, 1.2f, 6.f));
+
+	// The physics corner: simulating props on the character's left, behind it and clear of the other props,
+	// one per material. A stack of three crates (2 cm gaps, so they settle onto each other), a stone block, a
+	// metal drum, a sack and a rubber ball dropped from 1.5 m. -NoPhysics leaves it out.
+	if (!FParse::Param(*Params, TEXT("NoPhysics")))
+	{
+		auto LoadPhys = [](const TCHAR* Name) {
+			const FString Path = UFTPhysicsComponent::MaterialPath(Name);
+			UPhysicalMaterial* Material = LoadObject<UPhysicalMaterial>(nullptr, *Path);
+			if (!Material)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildDemoWorld: %s is missing; run FTBuildPhysics first (or pass -NoPhysics)."), *Path);
+			}
+			return Material;
+		};
+		UPhysicalMaterial* Wood = LoadPhys(TEXT("wood"));
+		UPhysicalMaterial* Stone = LoadPhys(TEXT("stone"));
+		UPhysicalMaterial* Metal = LoadPhys(TEXT("metal"));
+		UPhysicalMaterial* Sack = LoadPhys(TEXT("sack"));
+		UPhysicalMaterial* Rubber = LoadPhys(TEXT("rubber"));
+		if (!Wood || !Stone || !Metal || !Sack || !Rubber)
+		{
+			World->DestroyWorld(false);
+			return 1;
+		}
+		const FVector Corner(-450, 550, 0);
+		PhysSpawnSimProp(World, Spawn, Cube, Grey, Wood, TEXT("Phys_CrateLow"), Corner + FVector(0, 0, 26), FVector(0.5f));
+		PhysSpawnSimProp(World, Spawn, Cube, Grey, Wood, TEXT("Phys_CrateMid"), Corner + FVector(3, -2, 78), FVector(0.5f), 8.f);
+		PhysSpawnSimProp(World, Spawn, Cube, Grey, Wood, TEXT("Phys_CrateTop"), Corner + FVector(-2, 3, 130), FVector(0.5f), -12.f);
+		PhysSpawnSimProp(World, Spawn, Cube, Grey, Stone, TEXT("Phys_StoneBlock"), Corner + FVector(-110, -90, 31), FVector(0.6f), 25.f);
+		PhysSpawnSimProp(World, Spawn, Cylinder, Grey, Metal, TEXT("Phys_MetalDrum"), Corner + FVector(80, -120, 41), FVector(0.4f, 0.4f, 0.8f));
+		PhysSpawnSimProp(World, Spawn, Cube, Grey, Sack, TEXT("Phys_Sack"), Corner + FVector(-80, 110, 17), FVector(0.6f, 0.4f, 0.3f), 30.f);
+		PhysSpawnSimProp(World, Spawn, Sphere, Grey, Rubber, TEXT("Phys_RubberBall"), Corner + FVector(90, 100, 150), FVector(0.4f));
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildDemoWorld: placed the physics corner (7 simulating props) at (%.0f, %.0f)."),
+			Corner.X, Corner.Y);
+	}
 
 	// Effects beside the character, off the line between it and the player start (which looks along -X
 	// from x = 250): one on each side and one behind. -NoVfx leaves them out.
