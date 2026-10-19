@@ -9,7 +9,7 @@ Private notes (character references, concept-art review, script status) are in `
 - **Phase:** S, the story gate, from `docs/ROADMAP.md`. No game building happens until every part scores at least 4.9/5 and two whole-script readers each give at least 9/10.
 - **Plan change (2026-10-19, later):** the user is back on Max, so the Fable advisor is available again and makes the rulings. Fable only plans (the user ruled it too costly for worker agents), so every agent runs on Opus or Sonnet: reader A on Opus, reader B on Sonnet, reader C on ChatGPT (advisory). Stop rule: launch nothing when the 5-hour window is at 85% or more, or weekly usage is at 98% or more.
 - **Status:** Phase S gate not met. Draft 73 got 8.3 (A, Opus) and 8.2 (B, Sonnet), plus an advisory 8.2 from ChatGPT (reader C). D70-D73 are four passes flat at 8.2-8.4 with pacing at 7-7.5. The plateau is reported, and the gate stands.
-- **Next action:** Draft 84 (a structural pass) won the blind side-by-side reads 4/4, all clear, and is head. The outside-reader coverage of D84 is running. Next, save it, then plan Draft 85 as a structural pass against its top notes.
+- **Next action:** Draft 84 is head (pairwise 4/4 clear; outside reader 8.5, the same as the benchmark game it was compared against). Draft 85 applies the outside reader's own 13 amendments, reworded by our reviser into the house style. The reviser is running. Next: the cross-part check, then 4 overall plus 7 per-criterion side-by-side reads against D84, then a fresh outside read.
 - **Allowed in this repo during Phase S:** merging the two waiting branches (below), once their diffs are read and the gate passes. Nothing else.
 - **User actions open:** the leak purge, and the GitHub billing fix (see `docs/PLAN.md`).
 
