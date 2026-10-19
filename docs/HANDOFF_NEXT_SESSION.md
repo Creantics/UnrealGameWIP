@@ -7,8 +7,8 @@ Private notes (character references, concept-art review, script status) are in `
 ## Resume here (updated 2026-10-18)
 
 - **Phase:** S, the story gate, from `docs/ROADMAP.md`. No game building happens until every part scores at least 4.9/5 and two whole-script readers each give at least 9/10.
-- **Status:** Phase S gate not met. Draft 68 (design pass) readers gave 8 and 8, both Recommend; the earlier repetition notes are fixed, and both readers now flag one new plot issue in the late acts. A plateau report is written (private; newengine, local only). Weekly usage is 95%.
-- **Next action:** wait for the user's decision before launching any story agents. Recommended: one targeted pass after the weekly reset (2026-10-23), then exit Phase S on two Recommends, 0 STRUCTURAL notes and every part at 4.9 or more. The alternative keeps the strict 9/10 gate. See the private handoff. The /motion story animation waits for the final story (keep it local).
+- **Status:** Phase S gate not met. Draft 68 readers gave 8 and 8, both Recommend. The user kept the strict 9/10 gate. Draft 69 (a targeted pass on one late-act plot issue) is running now; weekly usage stops at 98%.
+- **Next action:** if Draft 69 is mid-cycle, resume it from the private handoff and `RULINGS_draft69.md` (newengine, local only). After each weekly reset, keep running outline-gated passes until both readers give 9; launch nothing at 98% weekly usage or above. The /motion story animation waits for the final story (keep it local).
 - **Allowed in this repo during Phase S:** merging the two waiting branches (below), once their diffs are read and the gate passes. Nothing else.
 - **User actions open:** the leak purge, and the GitHub billing fix (see `docs/PLAN.md`).
 
