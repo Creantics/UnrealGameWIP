@@ -4,11 +4,12 @@ Written 2026-10-18 at the end of the overnight session. Read `docs/HANDOFF_UE.md
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
-## Resume here (updated 2026-10-18)
+## Resume here (updated 2026-10-19)
 
 - **Phase:** S, the story gate, from `docs/ROADMAP.md`. No game building happens until every part scores at least 4.9/5 and two whole-script readers each give at least 9/10.
-- **Status:** Phase S gate not met. Drafts 69 and 70 each got 8 and 8 from the readers, both Recommend; each fixed the notes it targeted, and the readers now agree on one remaining late-act structure note. The user kept the strict 9/10 gate. Weekly usage is 97%.
-- **Next action:** after the weekly reset (2026-10-23 10:00 UTC), resume Draft 71 from the private handoff and `RULINGS_draft71.md` (newengine, local only). Its outline is written before the reset; then revisers, cross-part check and two readers. Repeat passes until both readers give 9. Launch nothing at 98% weekly usage or above. The /motion story animation waits for the final story (keep it local).
+- **Plan change (2026-10-19):** the user is on the Pro plan now, so the Fable advisor is gone. The main session makes the rulings itself. Readers use Opus (A) and Sonnet (B). Pro windows are small: check usage after every stage, and launch nothing when the 5-hour window is at 85% or above, or weekly at 90% or above.
+- **Status:** Phase S gate not met. Drafts 68 to 70 each got 8 and 8 from the readers. The Draft 71 outline is approved.
+- **Next action:** Draft 71 stage by stage, from the private handoff and `RULINGS_draft71.md` (newengine, local only): two revisers (R-1 on 04b/04c/04e, R-2 on 04d), then the cross-part check, then two readers. Repeat passes until both readers give 9. The /motion story animation waits for the final story (keep it local).
 - **Allowed in this repo during Phase S:** merging the two waiting branches (below), once their diffs are read and the gate passes. Nothing else.
 - **User actions open:** the leak purge, and the GitHub billing fix (see `docs/PLAN.md`).
 
