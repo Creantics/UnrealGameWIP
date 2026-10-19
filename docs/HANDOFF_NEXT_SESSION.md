@@ -4,12 +4,12 @@ Written 2026-10-18 at the end of the overnight session. Read `docs/HANDOFF_UE.md
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
-## Resume here (updated 2026-10-19)
+## Resume here (updated 2026-10-19, Max plan)
 
 - **Phase:** S, the story gate, from `docs/ROADMAP.md`. No game building happens until every part scores at least 4.9/5 and two whole-script readers each give at least 9/10.
-- **Plan change (2026-10-19):** the user is on the Pro plan now, so the Fable advisor is gone. The main session makes the rulings itself. Readers use Opus (A) and Sonnet (B). Pro windows are small: check usage after every stage, and launch nothing when the 5-hour window is at 85% or above, or weekly at 90% or above.
+- **Plan change (2026-10-19, later):** the user is back on Max, so the Fable advisor is available again and makes the rulings. Readers: A on Opus, B on Fable, C on ChatGPT (advisory). Stop rule: launch nothing when the 5-hour window is at 85% or more, or weekly usage is at 98% or more.
 - **Status:** Phase S gate not met. Draft 72 got 8.4 (A, Opus) and 8.3 (B, Sonnet), plus an advisory 8.2 from ChatGPT (reader C; the user allowed ChatGPT use on 2026-10-19, and its score does not count toward the gate). Draft 71 was 8.3 and 8.4. All three readers agree that Act IV pacing is the weak spot.
-- **Next action:** Draft 73. Its scope is in the "Result" section of `RULINGS_draft72.md` (newengine, local only). Copy draft72 to draft73, write `RULINGS_draft73.md`, then outline, revisers, cross-part check, readers A/B (+ C), one stage at a time and checking usage after each. Repeat passes until both readers give 9. The /motion story animation waits for the final story (keep it local).
+- **Next action:** Draft 73 is set up (newengine 7ffec99, local only): the draft73 folder plus `RULINGS_draft73.md` (the advisor ratified the six-item scope, required a "what the heroes can newly do" table for Ch18-20, and set category targets). In progress: the outline agent (Fable). After that come the revisers, the cross-part check, and readers A/B (+ C). Repeat passes until both readers give 9. The /motion story animation waits for the final story; keep it local.
 - **Allowed in this repo during Phase S:** merging the two waiting branches (below), once their diffs are read and the gate passes. Nothing else.
 - **User actions open:** the leak purge, and the GitHub billing fix (see `docs/PLAN.md`).
 
