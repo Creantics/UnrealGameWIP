@@ -9,7 +9,7 @@ Private notes (character references, concept-art review, script status) are in `
 - **Phase:** S, the story gate, from `docs/ROADMAP.md`. No game building happens until every part scores at least 4.9/5 and two whole-script readers each give at least 9/10.
 - **Plan change (2026-10-19, later):** the user is back on Max, so the Fable advisor is available again and makes the rulings. Fable only plans (the user ruled it too costly for worker agents), so every agent runs on Opus or Sonnet: reader A on Opus, reader B on Sonnet, reader C on ChatGPT (advisory). Stop rule: launch nothing when the 5-hour window is at 85% or more, or weekly usage is at 98% or more.
 - **Status:** Phase S gate not met. Draft 73 got 8.3 (A, Opus) and 8.2 (B, Sonnet), plus an advisory 8.2 from ChatGPT (reader C). D70-D73 are four passes flat at 8.2-8.4 with pacing at 7-7.5. The plateau is reported, and the gate stands.
-- **Next action:** Draft 81 is head: it beat D80 4 of 4, and the outside read was 8.4. A small Draft 82 pass is running on the reader's top note. After that, Draft 83 is an outline-gated pass on the middle chapters (pacing). Details are in the private handoff.
+- **Next action (2026-10-19):** D82 is head (won 4/4 vs D81; ChatGPT 8.4, flat since D80). D83 is set up in newengine build/draft83: an outline-gated middle differentiation pass. Next: an Opus outline, then advisor review, the reviser, cross-part, and a pairwise vs D82. Memory-price work is held for D84. Optional: re-read D82 in a fresh ChatGPT chat to measure noise.
 - **Allowed in this repo during Phase S:** merging the two waiting branches (below), once their diffs are read and the gate passes. Nothing else.
 - **User actions open:** the leak purge, and the GitHub billing fix (see `docs/PLAN.md`).
 
