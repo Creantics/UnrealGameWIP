@@ -8,8 +8,8 @@ Private notes (character references, concept-art review, script status) are in `
 
 - **Phase:** S, the story gate, from `docs/ROADMAP.md`. No game building happens until every part scores at least 4.9/5 and two whole-script readers each give at least 9/10.
 - **Plan change (2026-10-19):** the user is on the Pro plan now, so the Fable advisor is gone. The main session makes the rulings itself. Readers use Opus (A) and Sonnet (B). Pro windows are small: check usage after every stage, and launch nothing when the 5-hour window is at 85% or above, or weekly at 90% or above.
-- **Status:** Phase S gate not met. Draft 71 got 8.3 (A, Opus) and 8.4 (B, Sonnet), plus an advisory 8.0 from ChatGPT. The user allowed ChatGPT use on 2026-10-19; it reads as advisory reader C, and its score doesn't count toward the gate. Draft 72, a design pass, is in progress: its outline is approved and its revisers are running.
-- **Next action:** Draft 72 stage by stage, from the private handoff and `RULINGS_draft72.md` (newengine, local only): revisers, then the cross-part check, then readers A/B (+ C). Repeat passes until both readers give 9. The /motion story animation waits for the final story (keep it local).
+- **Status:** Phase S gate not met. Draft 72 got 8.4 (A, Opus) and 8.3 (B, Sonnet), plus an advisory 8.2 from ChatGPT (reader C; the user allowed ChatGPT use on 2026-10-19, and its score does not count toward the gate). Draft 71 was 8.3 and 8.4. All three readers agree that Act IV pacing is the weak spot.
+- **Next action:** Draft 73. Its scope is in the "Result" section of `RULINGS_draft72.md` (newengine, local only). Copy draft72 to draft73, write `RULINGS_draft73.md`, then outline, revisers, cross-part check, readers A/B (+ C), one stage at a time and checking usage after each. Repeat passes until both readers give 9. The /motion story animation waits for the final story (keep it local).
 - **Allowed in this repo during Phase S:** merging the two waiting branches (below), once their diffs are read and the gate passes. Nothing else.
 - **User actions open:** the leak purge, and the GitHub billing fix (see `docs/PLAN.md`).
 
