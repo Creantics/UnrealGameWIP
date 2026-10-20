@@ -395,16 +395,15 @@ void AFTStoryDirector::StartStep()
 	const ftcore::StoryChain& Chain = GI->Chain;
 	const ftcore::GameplayStep& Step = Chain.current();
 	bHandingOff = true;
-	const TCHAR* ScreenName = TEXT("Stub");
+	const FString ScreenNameText = FT::ToFString(ftcore::gameplayScreenName(ftcore::screenRoutesTo(Step.screen)));
+	const TCHAR* ScreenName = *ScreenNameText;
 	switch (ftcore::screenRoutesTo(Step.screen))
 	{
 	case ftcore::GameplayScreen::Battle:
 		Banner = TEXT("Battle!");
-		ScreenName = TEXT("Battle");
 		break;
 	case ftcore::GameplayScreen::Field:
 		Banner = TEXT("Into the field");
-		ScreenName = TEXT("Field");
 		break;
 	default:
 		Banner = FT::ToFString(Step.tokenName()); // the token as notation ("CHC")

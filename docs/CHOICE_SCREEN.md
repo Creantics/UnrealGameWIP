@@ -165,8 +165,6 @@ later, once the QTE and cutscene screens land and the line is reworked once for 
 
 ## Known gaps
 
-- The director logs `Story: step i/n Stub at ...` for a Choice step. Its `StartStep` names only
-  Battle and Field. Its banner is the token, as before. That file belongs to another stream.
 - Refused loop files and unknown flags are logged as warnings but not added to the alpha's warning
   count. A screen doesn't touch `UFTGameInstance::Alpha` today.
 - There's no typewriter. Each line shows whole.

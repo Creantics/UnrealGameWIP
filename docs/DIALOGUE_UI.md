@@ -59,7 +59,7 @@ when the mode is empty) and plays the plan's steps in order. Each step shows a b
 | stub | BNT, CG, QTE, co-op QTE, MINI, anything unknown | the token ("CG") | `StubMap`, default `Stub` |
 | none | a plan with no step | none | the beat stays in the box; continuing skips it |
 
-The director logs `Story: step i/n <Battle|Field|Stub> at <scene> beat <b>.` (i from 1) for each.
+The director logs `Story: step i/n <screen> at <scene> beat <b>.` (the routed screen's name: battle, field, stub, choice, qte or cutscene) (i from 1) for each.
 
 ### The contract for a screen
 
