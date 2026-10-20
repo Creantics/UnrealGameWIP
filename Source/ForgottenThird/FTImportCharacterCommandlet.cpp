@@ -1,4 +1,4 @@
-﻿#include "FTImportCharacterCommandlet.h"
+#include "FTImportCharacterCommandlet.h"
 
 #include "ForgottenThird.h"
 
@@ -57,8 +57,8 @@ UMaterial* CharacterMaster(TArray<UPackage*>& Dirty)
 	}
 	UPackage* Package = CreatePackage(kCharacterMaster);
 	UMaterial* Material = NewObject<UMaterial>(Package, *Name, RF_Public | RF_Standalone | RF_Transactional);
-	Material->bUsedWithSkeletalMesh = true;
-	Material->bUsedWithMorphTargets = true;
+	Material->SetUsageByFlag(MATUSAGE_SkeletalMesh, true);
+	Material->SetUsageByFlag(MATUSAGE_MorphTargets, true);
 	Material->TwoSided = true;
 
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
