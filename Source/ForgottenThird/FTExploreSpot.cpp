@@ -27,6 +27,7 @@ constexpr float kGateSinkSeconds = 1.5f;
 constexpr float kPickupFadeSeconds = 0.4f;
 
 const FLinearColor kShardColor(0.55f, 0.85f, 1.0f);
+const FLinearColor kGoalColor(1.0f, 0.8f, 0.25f);
 const FLinearColor kGateColor(0.42f, 0.36f, 0.3f);
 const FLinearColor kBarColor(0.62f, 0.5f, 0.28f);
 const FLinearColor kBruteColor(0.48f, 0.33f, 0.25f);
@@ -103,6 +104,27 @@ UMaterialInstanceDynamic* AFTExploreSpot::Tint(UStaticMeshComponent* Part, const
 
 void AFTExploreSpot::Configure()
 {
+	if (SpotId == ftcore::demo::kFieldGoalSpotId)
+	{
+		// The story field step's goal marker: a glowing column with a bobbing orb and a flat ring.
+		Hide(Shape);
+		Hide(PartA);
+		Hide(PartB);
+		Skin->SetSkeletalMesh(nullptr);
+		Place(PartA, kCylinder, FVector(0, 0, 3), FVector(2.4, 2.4, 0.04), false);
+		Tint(PartA, kGoalColor * 0.5f);
+		Place(PartB, kCylinder, FVector(0, 0, 110), FVector(0.12, 0.12, 2.2), false);
+		Tint(PartB, kGoalColor * 0.6f);
+		Place(Shape, kSphere, FVector(0, 0, 240), FVector(0.4), false);
+		ShapeMaterial = Tint(Shape, kGoalColor);
+		Glow->SetRelativeLocation(FVector(0, 0, 200));
+		Glow->SetLightColor(kGoalColor);
+		Glow->SetIntensity(5000.f);
+		Glow->SetAttenuationRadius(600.f);
+		Glow->SetVisibility(true);
+		BaseColor = kGoalColor;
+		return;
+	}
 	if (SpotId < 0 || SpotId >= static_cast<int32>(ftcore::demo::kExploreSpots.size()))
 	{
 		return;
@@ -232,6 +254,14 @@ void AFTExploreSpot::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	Age += DeltaSeconds;
+	if (SpotId == ftcore::demo::kFieldGoalSpotId)
+	{
+		if (Shape->GetStaticMesh())
+		{
+			Shape->SetRelativeLocation(FVector(0, 0, 240.f + 14.f * FMath::Sin(Age * 2.6f)));
+		}
+		return;
+	}
 	if (SpotId < 0 || SpotId >= static_cast<int32>(ftcore::demo::kExploreSpots.size()))
 	{
 		return;

@@ -70,7 +70,11 @@ void AFTExploreHUD::DrawHUD()
 		return;
 	}
 	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
-	if (!Found->IsStoryWalk())
+	if (Found->IsStoryWalk())
+	{
+		DrawFieldObjective(*Found);
+	}
+	else
 	{
 		DrawObjectives(*Found);
 	}
@@ -115,6 +119,18 @@ void AFTExploreHUD::DrawObjectives(const AFTExploreDirector& D)
 		}
 		DrawStr(D.GetObjectiveText(I), Color, X + 22.f * S, LY, Font, 1.f);
 	}
+}
+
+void AFTExploreHUD::DrawFieldObjective(const AFTExploreDirector& D)
+{
+	UFont* Font = GEngine->GetMediumFont();
+	const float S = UiScale;
+	const float X = 24.f * S;
+	const float Y = 24.f * S;
+	DrawRect(kPanelField, X - 10.f * S, Y - 8.f * S, 420.f * S, 70.f * S);
+	DrawStr(kTitleField, kGoldField, X, Y, GEngine->GetSmallFont(), 1.1f);
+	DrawStr(kArrowField, kWhiteField, X, Y + 26.f * S, Font, 1.f);
+	DrawStr(D.GetFieldObjective(), kWhiteField, X + 22.f * S, Y + 26.f * S, Font, 1.f);
 }
 
 void AFTExploreHUD::DrawPrompt(const AFTExploreDirector& D)

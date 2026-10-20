@@ -16,6 +16,8 @@
 
 #include "ftcore/ExploreDemo.h"
 
+#include <string_view>
+
 namespace
 {
 constexpr float kEncounterDelay = 1.2f;
@@ -42,6 +44,13 @@ const TCHAR* KindPrompt(ftcore::InteractKind Kind)
 	default:
 		return TEXT("");
 	}
+}
+
+// Stream 1 adds UFTGameInstance::IsAlphaFast(); until then read the flag here.
+bool IsAlphaFast()
+{
+	static const bool bFast = FParse::Param(FCommandLine::Get(), TEXT("AlphaFast"));
+	return bFast;
 }
 
 ftcore::Vec2 ToGround(const FVector& V)
@@ -173,9 +182,14 @@ const FString& AFTExploreDirector::GetPrompt() const
 {
 	static const FString Empty;
 	static const FString BackToStory(TEXT("E  Back to the story"));
+	static const FString UseMarker(TEXT("E  Use the marker"));
 	if (bStoryWalk)
 	{
-		return bStoryReturning ? Empty : BackToStory;
+		if (bStoryReturning || !ftcore::demo::fieldStepUsable(bFieldReached, FieldElapsed))
+		{
+			return Empty;
+		}
+		return bFieldReached ? UseMarker : BackToStory;
 	}
 	if (Focus < 0 || !PromptText.IsValidIndex(Focus))
 	{
@@ -269,8 +283,83 @@ void AFTExploreDirector::BeginStoryWalk()
 			Spot->SetActorEnableCollision(false);
 		}
 	}
-	SetBanner(TEXT("Free roam"));
-	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: story walk for %s at %s beat %d."), *GI->StoryCarry.Kind, *GI->StoryCarry.Scene, GI->StoryCarry.Beat);
+	FieldElapsed = 0.f;
+	bFieldReached = false;
+	const FFTStoryCarry& Carry = GI->StoryCarry;
+	const FTCHARToUTF8 SceneUtf8(*Carry.Scene);
+	const size_t GoalIndex = ftcore::demo::fieldGoalIndex(std::string_view(SceneUtf8.Get(), static_cast<size_t>(SceneUtf8.Length())), Carry.Beat, Carry.Step);
+	FieldGoal = ftcore::demo::kFieldGoals[GoalIndex];
+	SpawnFieldGoal();
+	FieldObjective = Carry.StepLabel.IsEmpty()
+		? FString::Printf(TEXT("Reach the marker  %s"), *Carry.Kind)
+		: FString::Printf(TEXT("Reach the marker  %s  %s"), *Carry.Kind, *Carry.StepLabel);
+	SetBanner(TEXT("Reach the marker"));
+	if (bAutoPlay && IsAlphaFast())
+	{
+		UGameplayStatics::SetGlobalTimeDilation(this, 8.f);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: field step for %s at %s beat %d step %d, marker %d."), *Carry.Kind, *Carry.Scene, Carry.Beat, Carry.Step, static_cast<int32>(GoalIndex));
+}
+
+void AFTExploreDirector::SpawnFieldGoal()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	for (TActorIterator<AFTExploreSpot> It(World); It; ++It)
+	{
+		if (It->SpotId == ftcore::demo::kFieldGoalSpotId)
+		{
+			GoalSpot = *It;
+		}
+	}
+	const FTransform At(FVector(FieldGoal.x * 100.0, FieldGoal.y * 100.0, 0.0));
+	if (GoalSpot)
+	{
+		GoalSpot->SetActorTransform(At);
+	}
+	else
+	{
+		GoalSpot = World->SpawnActorDeferred<AFTExploreSpot>(AFTExploreSpot::StaticClass(), At, nullptr, nullptr,
+			ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+		if (GoalSpot)
+		{
+			GoalSpot->SpotId = ftcore::demo::kFieldGoalSpotId;
+			GoalSpot->FinishSpawning(At);
+		}
+	}
+	if (GoalSpot)
+	{
+		GoalSpot->SetActorHiddenInGame(false);
+	}
+}
+
+void AFTExploreDirector::TickStoryWalk(AFTExploreCharacter& Player, float DeltaSeconds)
+{
+	FieldElapsed += DeltaSeconds;
+	const ftcore::Vec2 Pos = ToGround(Player.GetActorLocation());
+	const FVector2D Facing = Player.GetFacing2D();
+	const bool bReached = ftcore::demo::fieldGoalInReach(Pos, {static_cast<float>(Facing.X), static_cast<float>(Facing.Y)}, FieldGoal);
+	if (bReached != bFieldReached)
+	{
+		bFieldReached = bReached;
+		if (GoalSpot)
+		{
+			GoalSpot->SetFocused(bReached);
+		}
+	}
+	if (!bAutoPlay || bStoryReturning)
+	{
+		return;
+	}
+	if (bFieldReached)
+	{
+		Interact();
+		return;
+	}
+	PilotWalk(Player, Pos, FieldGoal, ftcore::demo::kFieldGoalSpotId, DeltaSeconds);
 }
 
 void AFTExploreDirector::ReturnToStory()
@@ -284,7 +373,7 @@ void AFTExploreDirector::ReturnToStory()
 	GI->StoryCarry.bDone = true;
 	GI->StoryCarry.bWon = true;
 	SetBanner(TEXT("Back to the story"));
-	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: story walk done after %.1f s; returning to %s."), Now() - StoryWalkStart, *GI->StoryCarry.ReturnMap);
+	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: field step done at %s beat %d step %d after %.1f s."), *GI->StoryCarry.Scene, GI->StoryCarry.Beat, GI->StoryCarry.Step, FieldElapsed);
 	FTimerHandle Timer;
 	GetWorldTimerManager().SetTimer(Timer, this, &AFTExploreDirector::OpenStoryMap, 0.8f, false);
 }
@@ -294,6 +383,7 @@ void AFTExploreDirector::OpenStoryMap()
 	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
 	if (GI && GI->StoryCarry.bValid)
 	{
+		UGameplayStatics::SetGlobalTimeDilation(this, 1.f);
 		UGameplayStatics::OpenLevel(this, FName(*GI->StoryCarry.ReturnMap));
 	}
 }
@@ -302,7 +392,10 @@ void AFTExploreDirector::Interact()
 {
 	if (bStoryWalk)
 	{
-		ReturnToStory();
+		if (ftcore::demo::fieldStepUsable(bFieldReached, FieldElapsed))
+		{
+			ReturnToStory();
+		}
 		return;
 	}
 	if (Focus < 0 || bComplete)
@@ -413,11 +506,7 @@ void AFTExploreDirector::Tick(float DeltaSeconds)
 	}
 	if (bStoryWalk)
 	{
-		// Autopilot: a moment in the field, then back.
-		if (bAutoPlay && Now() - StoryWalkStart > 1.0)
-		{
-			ReturnToStory();
-		}
+		TickStoryWalk(*Player, DeltaSeconds);
 		return;
 	}
 	if (bBattleOpening || PendingEncounter >= 0)
@@ -466,7 +555,11 @@ void AFTExploreDirector::TickAutoPlay(AFTExploreCharacter& Player, float DeltaSe
 		Interact();
 		return;
 	}
-	const ftcore::Vec2 Goal = Exploration.item(Target).pos;
+	PilotWalk(Player, Pos, Exploration.item(Target).pos, Target, DeltaSeconds);
+}
+
+void AFTExploreDirector::PilotWalk(AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 Target, float DeltaSeconds)
+{
 	const FVector2D To(Goal.x - Pos.x, Goal.y - Pos.y);
 	const float Dist = static_cast<float>(To.Size());
 	if (Target != PilotTarget || Dist < PilotBestDist - 0.1f)

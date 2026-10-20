@@ -5,6 +5,8 @@
 
 #include <doctest/doctest.h>
 
+#include <cmath>
+
 using namespace ftcore;
 
 namespace {
@@ -141,4 +143,61 @@ TEST_CASE("the demo pilot walks the whole exploration demo in order without allo
     CHECK(used[4] == 4);
     CHECK(used[5] == 5);
     CHECK(seconds < 60.f);
+}
+
+TEST_CASE("field goals: deterministic choice, spread, and every goal reachable fast without a prop in the way") {
+    CHECK(demo::fieldGoalIndex("sceneA", 2, 0) == demo::fieldGoalIndex("sceneA", 2, 0));
+    CHECK(demo::fieldGoalIndex("sceneA", 2, 0) < demo::kFieldGoals.size());
+    bool seen[demo::kFieldGoals.size()] = {};
+    for (int beat = 0; beat < 40; ++beat)
+        for (int step = 0; step < 3; ++step) seen[demo::fieldGoalIndex("sceneB", beat, step)] = true;
+    for (const bool s : seen) CHECK(s);
+
+    const float dt = 1.f / 30.f;
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    for (const Vec2 goal : demo::kFieldGoals) {
+        Vec2 pos = demo::kExploreStart;
+        Vec2 facing{1.f, 0.f};
+        float seconds = 0.f;
+        float best = 1e9f;
+        float lastProgress = 0.f;
+        bool done = false;
+        while (seconds < 30.f) {
+            if (demo::fieldPilotStep(pos, facing, goal, 3.3f, dt)) {
+                done = true;
+                break;
+            }
+            seconds += dt;
+            const float d = std::sqrt((goal.x - pos.x) * (goal.x - pos.x) + (goal.y - pos.y) * (goal.y - pos.y));
+            if (d < best - 0.1f) {
+                best = d;
+                lastProgress = seconds;
+            }
+            CHECK(seconds - lastProgress < 2.f); // never stalls
+        }
+        CHECK(done);
+        CHECK(seconds < 10.f);
+        CHECK(demo::fieldStepUsable(demo::fieldGoalInReach(pos, facing, goal), seconds));
+        for (const demo::FieldObstacle& o : demo::kFieldObstacles) {
+            // The straight line clears every prop, and the marker isn't inside one.
+            CHECK(demo::segmentDistance(demo::kExploreStart, goal, o.pos) > o.radius + 0.4f);
+            const float dx = o.pos.x - goal.x;
+            const float dy = o.pos.y - goal.y;
+            CHECK(std::sqrt(dx * dx + dy * dy) > o.radius + 0.4f);
+        }
+    }
+    if (ftcore_test::allocHookInstalled()) CHECK(ftcore_test::allocStats().count == before);
+}
+
+TEST_CASE("field step: use needs the marker in reach and facing, or the fallback time") {
+    const Vec2 goal = demo::kFieldGoals[0];
+    const Vec2 near{goal.x - 1.f, goal.y};
+    CHECK(demo::fieldGoalInReach(near, {1.f, 0.f}, goal));
+    CHECK(demo::fieldGoalInReach(near, {0.f, 0.f}, goal));
+    CHECK_FALSE(demo::fieldGoalInReach(near, {-1.f, 0.f}, goal));
+    CHECK_FALSE(demo::fieldGoalInReach({goal.x - 5.f, goal.y}, {1.f, 0.f}, goal));
+    CHECK_FALSE(demo::fieldStepUsable(false, 10.f));
+    CHECK_FALSE(demo::fieldStepUsable(false, demo::kFieldFallbackSeconds - 1.f));
+    CHECK(demo::fieldStepUsable(false, demo::kFieldFallbackSeconds));
+    CHECK(demo::fieldStepUsable(true, 0.f));
 }

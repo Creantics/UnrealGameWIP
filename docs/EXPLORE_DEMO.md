@@ -50,11 +50,23 @@ the story context.
 
 ## From the story
 
-An exploration (ENG or PLAY) beat in the story opens this map with `UFTGameInstance::StoryCarry`
-set, for a free walk: `AFTExploreDirector` hides the spots, skips the encounters and objectives and
-shows "Free roam". The prompt is "E  Back to the story"; pressing it opens the story map again,
-where the story picks up after the beat. On autoplay (`-StoryAutoPlayHandoff`) the walk lasts a
-second. See `DIALOGUE_UI.md`.
+A field step (ENG or PLAY, `StoryCarry.Screen == Field`) opens this map with
+`UFTGameInstance::StoryCarry` set. `AFTExploreDirector` hides the demo spots, skips the encounters
+and objectives and shows ONE goal marker (a glowing column and orb; `AFTExploreSpot` with
+`SpotId == ftcore::demo::kFieldGoalSpotId`, spawned at run time, so the map needs no change). Its
+position comes from `ftcore::demo::fieldGoalIndex(scene, beat, step)`, a deterministic pick from
+`kFieldGoals` (six points, each a straight prop-free line from the start). The HUD reads
+"Reach the marker  <ENG|PLAY>  <step label>" (notation only). Standing at the marker, the prompt is
+"E  Use the marker"; pressing it sets `StoryCarry.bDone` and opens `ReturnMap`. Fallback: after
+`kFieldFallbackSeconds` (5 min) the prompt becomes "E  Back to the story" and works anywhere.
+The rules (`fieldGoalInReach`, `fieldStepUsable`, `fieldPilotStep`) are in `ExploreDemo.h`, tested
+in `test_explore.cpp` (every goal reachable by the pilot in under 10 s, no prop on the line).
+
+On autoplay (`StoryCarry.bAutoPlay`) the autopilot walks to the marker and uses it, logging
+`ExploreDemo: field step done at <scene> beat <b> step <i> after <t> s.` (game time, under 10 s).
+With `-AlphaFast` global time dilation is 8 while it plays. The same stuck detection applies
+(`ExploreDemo: STUCK`). If you move a prop or marker, keep `kFieldObstacles` in step with the map
+builder. See `DIALOGUE_UI.md`.
 
 ## Regenerating the map
 

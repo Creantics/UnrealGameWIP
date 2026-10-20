@@ -56,8 +56,11 @@ public:
 	const FString& GetBanner() const { return Banner; }
 	double GetBannerAge() const;
 	bool IsComplete() const { return bComplete; }
-	// Opened by the story for a field beat: no spots or objectives, just walk and go back.
+	// Opened by the story for a field step: the demo spots are hidden and one goal marker is shown;
+	// reaching it and pressing Use ends the step (after kFieldFallbackSeconds Use works anywhere).
 	bool IsStoryWalk() const { return bStoryWalk; }
+	// "Reach the marker  ENG  <step label>": notation only. Empty outside a story field step.
+	const FString& GetFieldObjective() const { return FieldObjective; }
 
 protected:
 	virtual void BeginPlay() override;
@@ -72,6 +75,10 @@ private:
 	void StartEncounter(int32 Id);
 	void OpenBattle();
 	void TickAutoPlay(AFTExploreCharacter& Player, float DeltaSeconds);
+	void TickStoryWalk(AFTExploreCharacter& Player, float DeltaSeconds);
+	// Walks the pawn toward Goal (metres) and runs the stuck detection for TargetId.
+	void PilotWalk(AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 TargetId, float DeltaSeconds);
+	void SpawnFieldGoal();
 	void SetNotice(const FString& Text);
 	void SetBanner(const FString& Text);
 	void CheckComplete();
@@ -89,6 +96,14 @@ private:
 	bool bStoryWalk = false;
 	bool bStoryReturning = false;
 	double StoryWalkStart = 0.0;
+	// Story field step: the goal marker (metres), its actor, whether the pawn can use it, game
+	// seconds spent, and the HUD line.
+	ftcore::Vec2 FieldGoal;
+	UPROPERTY(Transient)
+	TObjectPtr<AFTExploreSpot> GoalSpot;
+	bool bFieldReached = false;
+	float FieldElapsed = 0.f;
+	FString FieldObjective;
 
 	FString Notice;
 	double NoticeTime = -100.0;

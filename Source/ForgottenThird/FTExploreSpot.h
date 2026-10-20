@@ -6,6 +6,7 @@
 // - Pickup: a glowing shard that bobs and spins; it vanishes when picked up.
 // - Gate: two pillars and a bar that blocks the gap; the bar sinks into the ground when opened.
 // - Encounter: two placeholder enemies (the battle demo's) waiting beyond the gate.
+// - SpotId == ftcore::demo::kFieldGoalSpotId: the story field step's goal marker (glowing column).
 // The look is set from OnConstruction (editor viewport) and BeginPlay (play).
 
 #include "CoreMinimal.h"
