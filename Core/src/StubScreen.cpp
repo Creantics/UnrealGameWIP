@@ -12,7 +12,7 @@ std::string_view stubTitle(std::string_view token) {
     case GameplayToken::Chc: return "Choice";
     case GameplayToken::Bnt: return "Banter";
     case GameplayToken::Cg: return "Cutscene";
-    case GameplayToken::He: return "Heart-to-heart";
+    case GameplayToken::He: return "Dialogue loop";
     case GameplayToken::Qte:
     case GameplayToken::CoopQte: return "Quick-time event";
     case GameplayToken::Mini: return "Mini-game";

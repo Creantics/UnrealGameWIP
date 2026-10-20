@@ -17,7 +17,7 @@ Writes `/Game/Maps/Stub`: a small lit room (floor, back wall, sun, sky light, on
 3. `AFTStubHUD` draws a centred card with those and "Space / Enter / pad A: continue". Drawing builds no strings.
 4. A press (Space, Enter, pad A, read by key polling on the player controller) or, with `bAutoPlay`, one second of game time ends the screen. It sets `bDone` and `bWon`, logs `Stub: <TOKEN> step i/n at <scene> beat <b> done.` (token name, ids and indices only; the label is displayed but never logged) and opens `ReturnMap`.
 
-Titles: CHC Choice, BNT Banter, CG Cutscene, HE Heart-to-heart, QTE and co-op QTE Quick-time event, MINI Mini-game, anything else shown as written. When `StepToken` is empty the carry's `Kind` is used.
+Titles: CHC Choice, BNT Banter, CG Cutscene, HE Dialogue loop, QTE and co-op QTE Quick-time event, MINI Mini-game, anything else shown as written. When `StepToken` is empty the carry's `Kind` is used.
 
 ## Rules (Core)
 

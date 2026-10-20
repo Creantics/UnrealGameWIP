@@ -450,9 +450,22 @@ void AFTStoryDirector::OpenStep()
 	Carry.StepLabel = FT::ToFString(Step.label());
 	Carry.StepToken = FT::ToFString(Step.tokenName());
 	Carry.bAutoPlay = bAutoPlay;
-	const FString& Map = Routed == ftcore::GameplayScreen::Battle ? BattleMap
-		: Routed == ftcore::GameplayScreen::Field ? FieldMap : StubMap;
-	UGameplayStatics::OpenLevel(this, FName(*Map));
+	UGameplayStatics::OpenLevel(this, FName(*MapFor(Routed)));
+}
+
+const FString& AFTStoryDirector::MapFor(ftcore::GameplayScreen Routed) const
+{
+	switch (Routed)
+	{
+	case ftcore::GameplayScreen::Battle: return BattleMap;
+	case ftcore::GameplayScreen::Field: return FieldMap;
+	case ftcore::GameplayScreen::Choice: return ChoiceMap;
+	case ftcore::GameplayScreen::Qte: return QteMap;
+	case ftcore::GameplayScreen::Cutscene: return CutsceneMap;
+	case ftcore::GameplayScreen::Box:
+	case ftcore::GameplayScreen::Stub: break;
+	}
+	return StubMap;
 }
 
 double AFTStoryDirector::GetBannerAge() const

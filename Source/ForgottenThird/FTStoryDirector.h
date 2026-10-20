@@ -69,6 +69,14 @@ public:
 	// The stub screen's map (AFTStubGameMode).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	FString StubMap = TEXT("Stub");
+	// The choice, quick-time event and cutscene screens' maps. Each stays the stub map until its screen
+	// exists and ftcore::screenRoutesTo stops routing it to Stub.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
+	FString ChoiceMap = TEXT("Stub");
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
+	FString QteMap = TEXT("Stub");
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
+	FString CutsceneMap = TEXT("Stub");
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	float HandoffDelay = 1.2f;
 
@@ -117,6 +125,7 @@ private:
 	// Banner, log and the timer that opens the current step's map.
 	void StartStep();
 	void OpenStep();
+	const FString& MapFor(ftcore::GameplayScreen Routed) const;
 	void Quit(int32 ExitCode);
 
 	UPROPERTY()

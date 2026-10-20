@@ -48,7 +48,7 @@ TEST_CASE("gameplay tokens map to screens") {
     CHECK(gameplayTokenScreen(GameplayToken::Qte) == GameplayScreen::Qte);
     CHECK(gameplayTokenScreen(GameplayToken::CoopQte) == GameplayScreen::Qte);
     CHECK(gameplayTokenScreen(GameplayToken::Cg) == GameplayScreen::Cutscene);
-    CHECK(gameplayTokenScreen(GameplayToken::He) == GameplayScreen::Cutscene);
+    CHECK(gameplayTokenScreen(GameplayToken::He) == GameplayScreen::Choice);
     for (GameplayToken t : {GameplayToken::Bnt, GameplayToken::Mini, GameplayToken::Unknown})
         CHECK(gameplayTokenScreen(t) == GameplayScreen::Stub);
     CHECK(gameplayTokenFromName("cmb") == GameplayToken::Cmb);
@@ -138,7 +138,7 @@ TEST_CASE("a mode chain lowers to its steps in order") {
         REQUIRE(p.lower("CG -> HE (intercut) -> BNT"));
         CHECK(p.size() == 3);
         checkStep(p, 0, GameplayToken::Cg, GameplayScreen::Cutscene);
-        checkStep(p, 1, GameplayToken::He, GameplayScreen::Cutscene, "intercut");
+        checkStep(p, 1, GameplayToken::He, GameplayScreen::Choice, "intercut");
         checkStep(p, 2, GameplayToken::Bnt, GameplayScreen::Stub);
     }
     SUBCASE("separators inside a parenthetical don't split") {

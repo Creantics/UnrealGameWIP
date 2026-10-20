@@ -20,7 +20,7 @@
 namespace ftcore {
 
 // The big human title of a gameplay token as written in the script: CHC "Choice", BNT "Banter",
-// CG "Cutscene", HE "Heart-to-heart", QTE and `co-op QTE` "Quick-time event", MINI "Mini-game".
+// CG "Cutscene", HE "Dialogue loop", QTE and `co-op QTE` "Quick-time event", MINI "Mini-game".
 // Matching is ASCII case-insensitive. Any other token comes back as given; an empty one gives "Step".
 FTCORE_API std::string_view stubTitle(std::string_view token);
 

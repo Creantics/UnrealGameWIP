@@ -21,7 +21,7 @@ and there is no voice or music.
 | Story | Read and continue; pick options 1–4 | [DIALOGUE_UI.md](DIALOGUE_UI.md) |
 | Battle | Fight the step's line-up from `Data/Battle/encounters.json`. On a loss, Retry restores the HP the party started the battle with, or Quit to title | [BATTLE_DEMO.md](BATTLE_DEMO.md) |
 | Field | Walk to the glowing goal marker and press Use | [EXPLORE_DEMO.md](EXPLORE_DEMO.md) |
-| Stub | A card naming the step (choice, banter, cutscene, heart-to-heart, quick-time event, mini-game); press to continue | [STUB_SCREEN.md](STUB_SCREEN.md) |
+| Stub | A card naming the step (choice, banter, cutscene, dialogue loop, quick-time event, mini-game); press to continue | [STUB_SCREEN.md](STUB_SCREEN.md) |
 | End card | Press to return to the title | [GAME_FRAME.md](GAME_FRAME.md) |
 
 A gameplay beat's `mode` can chain several steps (a field walk, then a fight, then a field walk).
@@ -68,7 +68,7 @@ counted as alpha warnings.
 
 ## What's stubbed
 
-- **Choice, banter, cutscene, heart-to-heart, quick-time event, mini-game.** All of these show
+- **Choice, banter, cutscene, dialogue loop, quick-time event, mini-game.** All of these show
   the stub card.
 - **Art.** Blockout maps and the proof head only, with no portraits.
 - **Audio.** No voice or music. The Conductor runs on game time.

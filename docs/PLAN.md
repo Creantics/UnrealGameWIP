@@ -23,7 +23,7 @@ State on 2026-10-18 (origin/main at ef99ba1). The Core porting is done. The demo
 Next, all without voice, art or music (the user generates those):
 - **Combat:** `ftcore::DefenceTimeline` (per-attack hit offsets, a wide dodge window and a narrow parry window with a mash lockout, AP refund on a perfect), from `docs/COMBAT_REFERENCE_STUDY.md`.
 - **Style packs v2:** the art direction's parameter deltas and the engine items.
-- **Screens for the stubbed steps:** choice, dialogue backlog and skip, a settings menu, and a cutscene and heart-to-heart framework on blockouts. Then a quick-time event screen once DefenceTimeline lands.
+- **Screens for the stubbed steps:** choice, dialogue backlog and skip, a settings menu, and the dialogue-loop player (CHC and HE), a cutscene framework (CG) on blockouts. Then a quick-time event screen once DefenceTimeline lands.
 - **Later:** balance across every encounter, navmesh and localisation.
 - **Asset intake:** formats for the art, voice and music the user will hand over.
 

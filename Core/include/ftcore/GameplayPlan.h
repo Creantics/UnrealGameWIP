@@ -18,8 +18,8 @@
 //   - a token may be multi-word (`co-op QTE`); separators inside parentheses don't split;
 //   - quotes and a list wrapper around the whole mode (`('ENG', 'CMB')`) are ignored.
 //
-// Token to screen: CMB battle; ENG and PLAY field; CHC choice; QTE and `co-op QTE` qte; CG and HE
-// cutscene; BNT and MINI the stub screen. Any other token goes to the stub screen as well and counts
+// Token to screen: CMB battle; ENG and PLAY field; CHC and HE (a dialogue loop) choice; QTE and
+// `co-op QTE` qte; CG cutscene; BNT and MINI the stub screen. Any other token goes to the stub screen as well and counts
 // in unknownTokens(). Choice, Qte and Cutscene open the stub screen until their own screen exists
 // (screenRoutesTo in Dialogue.h). An empty mode (or one with no step in it) falls back to the beat's kind, lowered the same way.
 //
@@ -43,8 +43,8 @@ enum class GameplayToken : std::uint8_t { Cmb, Eng, Play, Chc, Bnt, Cg, He, Qte,
 FTCORE_API std::string_view gameplayTokenName(GameplayToken token);
 // The token written as `name` (ASCII case-insensitive); Unknown for anything else.
 FTCORE_API GameplayToken gameplayTokenFromName(std::string_view name);
-// Battle for CMB, Field for ENG and PLAY, Choice for CHC, Qte for QTE and co-op QTE, Cutscene for CG
-// and HE, Stub for everything else (Unknown included).
+// Battle for CMB, Field for ENG and PLAY, Choice for CHC and HE, Qte for QTE and co-op QTE, Cutscene
+// for CG, Stub for everything else (Unknown included).
 FTCORE_API GameplayScreen gameplayTokenScreen(GameplayToken token);
 
 struct GameplayStep {

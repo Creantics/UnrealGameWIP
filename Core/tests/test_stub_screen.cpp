@@ -11,7 +11,7 @@ TEST_CASE("stub titles name the known tokens and pass others through") {
     CHECK(stubTitle("CHC") == "Choice");
     CHECK(stubTitle("BNT") == "Banter");
     CHECK(stubTitle("CG") == "Cutscene");
-    CHECK(stubTitle("HE") == "Heart-to-heart");
+    CHECK(stubTitle("HE") == "Dialogue loop");
     CHECK(stubTitle("QTE") == "Quick-time event");
     CHECK(stubTitle("co-op QTE") == "Quick-time event");
     CHECK(stubTitle("MINI") == "Mini-game");
