@@ -1,17 +1,20 @@
 #pragma once
 
-// A turn-based battle where every move is an arrow combo: ftcore::Battle (initiative from
-// ftcore::TurnQueue) with its rules kept in Core. This holds the line-up, runs the battle on one
-// clock and turns Core's battle events into Blueprint events.
+// A turn-based battle: party moves are arrow combos, enemy moves are attack timelines the defender
+// dodges, parries or jumps (ftcore::Battle, initiative from ftcore::TurnQueue, rules kept in Core).
+// This holds the line-up, runs the battle on one clock and turns Core's battle events into
+// Blueprint events.
 //
 // Use:
 //  1. Fill Party and Enemies (every enemy needs at least one skill) and Tuning, then StartBattle().
 //  2. On OnTurnStarted for a party member (phase AwaitingCommand), show its skills
 //     (GetSkillCount / GetSkill) and call ChooseSkill(SkillIndex, Target). Area skills ignore Target.
 //     Enemy turns start on their own.
-//  3. While the phase is PartySkill or EnemySkill, forward arrow input to Press(Arrow). Draw the chart
-//     from GetComboNote(i) against GetBattleTime(); notes are in battle-clock seconds.
-//  4. OnBattleEvent reports every hit, block, judged note, counter and downed combatant;
+//  3. While the phase is PartySkill, forward arrow input to Press(Arrow). Draw the chart from
+//     GetComboNote(i) against GetBattleTime(); notes are in battle-clock seconds.
+//     While the phase is EnemySkill, forward Dodge / Parry / Jump to Defend(Input). Draw the attack's
+//     tells from GetDefenceHit(i) (impact times in battle-clock seconds).
+//  4. OnBattleEvent reports every hit, defended attack hit, judged note, counter and downed combatant;
 //     OnPhaseChanged follows the phase; OnOutcome fires once with Victory or Defeat.
 //
 // Clock: with bSyncToMusic the battle runs on the conductor's song time (Conductor, or the owner's
@@ -58,7 +61,7 @@ enum class EFTBattlePhase : uint8
 	AwaitingCommand,
 	// A party member performs an attack combo.
 	PartySkill,
-	// Enemy windup, then the defender performs a block combo.
+	// An enemy attack timeline: the defender dodges, parries or jumps each hit.
 	EnemySkill,
 	Recovery,
 	Victory,
@@ -75,11 +78,12 @@ enum class EFTBattleEventType : uint8
 	NoteJudged,
 	// Damage dealt (Amount) by the note at Beat.
 	Hit,
-	// Defense: damage blocked (Amount) by a note.
-	Blocked,
-	// Amount = accuracy in percent; Label "FULL COMBO" when nothing was missed.
+	// Enemy turn: attack hit Beat resolved. Label "PERFECT" (a perfect parry or dodge), "DODGE",
+	// "JUMP" or "HIT"; Amount = AP refunded.
+	Defended,
+	// Party combo: Amount = accuracy in percent; Label "FULL COMBO" when nothing was missed.
 	ComboFinished,
-	// The defender blocked nearly everything and strikes back.
+	// The defender parried every hit and strikes back.
 	Counter,
 	Downed,
 	Victory,
@@ -95,6 +99,29 @@ enum class EFTCommandError : uint8
 	NoSuchSkill,
 	NotEnoughAp,
 	InvalidTarget,
+};
+
+// Same order as ftcore::DefenceInput.
+UENUM(BlueprintType)
+enum class EFTDefenceInput : uint8
+{
+	// Wide window, no lockout. Can't avoid a jumpable hit.
+	Dodge,
+	// Narrow window; a miss locks parry out for a moment.
+	Parry,
+	// Jumpable hits only.
+	Jump,
+};
+
+// Same order as ftcore::DefenceOutcome.
+UENUM(BlueprintType)
+enum class EFTDefenceOutcome : uint8
+{
+	Pending,
+	Perfect,
+	Dodged,
+	Jumped,
+	Hit,
 };
 
 UENUM(BlueprintType)
@@ -123,6 +150,28 @@ struct FFTStats
 	int32 Technique = 10;
 };
 
+// One hit of an enemy skill's attack timeline (see ftcore/DefenceTimeline.h).
+USTRUCT(BlueprintType)
+struct FFTAttackHit
+{
+	GENERATED_BODY()
+
+	// Seconds after the skill's banner.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	double At = 1.2;
+	// Tell cue this long before impact (0: none).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	double Tell = 0.4;
+	// World-space telegraph this long before impact (0: none).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	double Telegraph = 0.0;
+	// Share of the skill's damage, relative to the other hits.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	float Weight = 1.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	bool bJumpable = false;
+};
+
 USTRUCT(BlueprintType)
 struct FFTSkill
 {
@@ -145,6 +194,29 @@ struct FFTSkill
 	// Move complexity on the 0-10 combo rating scale.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
 	float Difficulty = 2.0f;
+	// Enemy skills: the attack timeline, at most 8 hits sorted by At. Empty: one default hit 1.2 s
+	// after the banner.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	TArray<FFTAttackHit> Hits;
+};
+
+// A hit of the attack being defended.
+USTRUCT(BlueprintType)
+struct FFTDefenceHit
+{
+	GENERATED_BODY()
+
+	// Battle-clock seconds.
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	double Impact = 0.0;
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	double Tell = 0.0;
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	double Telegraph = 0.0;
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	bool bJumpable = false;
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	EFTDefenceOutcome Outcome = EFTDefenceOutcome::Pending;
 };
 
 USTRUCT(BlueprintType)
@@ -202,9 +274,6 @@ struct FFTBattleTuning
 	// Seconds between choosing a skill and its first note.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
 	double LeadIn = 1.0;
-	// Enemy telegraph before the first note.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
-	double Windup = 1.2;
 	// Pause after a skill resolves before the next turn.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
 	double Recovery = 0.7;
@@ -219,9 +288,23 @@ struct FFTBattleTuning
 	// Attack: extra damage (fraction of full) when no note was missed.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
 	float FullComboBonus = 0.25f;
-	// Defense: block at least this much with no misses to counter.
+	// Defence windows in seconds, each ending at the impact.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
-	float CounterAccuracy = 0.9f;
+	double DodgeWindow = 0.30;
+	// The last part of the dodge window: a perfect dodge.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	double PerfectDodgeWindow = 0.06;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	double ParryWindow = 0.12;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	double JumpWindow = 0.25;
+	// After a parry press that answers nothing.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	double ParryLockout = 0.40;
+	// AP refunded per perfect parry or perfect dodge.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	int32 ApOnPerfect = 1;
+	// A fully parried attack is countered at this power.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
 	float CounterPower = 1.0f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
@@ -253,13 +336,13 @@ struct FFTBattleEvent
 	int32 Amount = 0;
 	UPROPERTY(BlueprintReadOnly, Category = "Battle")
 	EFTGrade Grade = EFTGrade::Pending;
-	// Index of the combo note the event belongs to.
+	// Index of the combo note (or attack hit) the event belongs to.
 	UPROPERTY(BlueprintReadOnly, Category = "Battle")
 	int32 Beat = 0;
 	// Battle-clock seconds.
 	UPROPERTY(BlueprintReadOnly, Category = "Battle")
 	double Time = 0.0;
-	// A skill name, "WRONG", "FULL COMBO" or empty.
+	// A skill name, "WRONG", "FULL COMBO", a defence outcome or empty.
 	UPROPERTY(BlueprintReadOnly, Category = "Battle")
 	FString Label;
 };
@@ -300,9 +383,12 @@ public:
 	// The acting party member uses skill SkillIndex on Target (ignored by area skills).
 	UFUNCTION(BlueprintCallable, Category = "Battle")
 	EFTCommandError ChooseSkill(int32 SkillIndex, int32 Target);
-	// An arrow pressed now, during PartySkill or EnemySkill.
+	// An arrow pressed now, during PartySkill.
 	UFUNCTION(BlueprintCallable, Category = "Battle")
 	void Press(EFTArrow Arrow);
+	// A dodge / parry / jump pressed now, during EnemySkill.
+	UFUNCTION(BlueprintCallable, Category = "Battle")
+	void Defend(EFTDefenceInput Input);
 
 	UFUNCTION(BlueprintPure, Category = "Battle")
 	EFTBattlePhase GetPhase() const;
@@ -332,7 +418,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Battle")
 	TArray<int32> GetTurnOrder(int32 Count = 6) const;
 
-	// ---- the active combo (PartySkill / EnemySkill) ----
+	// ---- the active party combo (PartySkill) ----
 
 	UFUNCTION(BlueprintPure, Category = "Battle")
 	bool IsComboActive() const;
@@ -353,6 +439,21 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Battle")
 	float GetComboRating() const;
 
+	// ---- the enemy attack being defended (EnemySkill) ----
+
+	UFUNCTION(BlueprintPure, Category = "Battle")
+	bool IsDefenceActive() const;
+	// The party member defending (-1 outside EnemySkill).
+	UFUNCTION(BlueprintPure, Category = "Battle")
+	int32 GetDefender() const;
+	UFUNCTION(BlueprintPure, Category = "Battle")
+	int32 GetDefenceHitCount() const;
+	UFUNCTION(BlueprintPure, Category = "Battle")
+	FFTDefenceHit GetDefenceHit(int32 Index) const;
+	// The earliest hit still pending (GetDefenceHitCount() when none).
+	UFUNCTION(BlueprintPure, Category = "Battle")
+	int32 GetDefenceNextHitIndex() const;
+
 	// Every event from Core, in order.
 	UPROPERTY(BlueprintAssignable, Category = "Battle")
 	FFTBattleEventSignature OnBattleEvent;
@@ -367,6 +468,8 @@ public:
 	// An arrow pressed at BattleSeconds on the battle clock (GetBattleTime scale) rather than now:
 	// an autopilot steps on a note exactly on time even when a frame is long (time dilation).
 	void PressAtTime(EFTArrow Arrow, double BattleSeconds);
+	// A defence press at BattleSeconds (the autopilot answers each hit at its ideal time).
+	void DefendAtTime(EFTDefenceInput Input, double BattleSeconds);
 
 	// Native access (null before the first StartBattle).
 	const ftcore::Battle* GetBattle() const { return Battle.Get(); }

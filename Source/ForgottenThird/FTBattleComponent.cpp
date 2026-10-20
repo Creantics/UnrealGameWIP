@@ -24,7 +24,7 @@ static_assert(static_cast<int>(EFTBattleEventType::TurnStarted) == static_cast<i
 static_assert(static_cast<int>(EFTBattleEventType::SkillStarted) == static_cast<int>(ftcore::EventType::SkillStarted));
 static_assert(static_cast<int>(EFTBattleEventType::NoteJudged) == static_cast<int>(ftcore::EventType::NoteJudged));
 static_assert(static_cast<int>(EFTBattleEventType::Hit) == static_cast<int>(ftcore::EventType::Hit));
-static_assert(static_cast<int>(EFTBattleEventType::Blocked) == static_cast<int>(ftcore::EventType::Blocked));
+static_assert(static_cast<int>(EFTBattleEventType::Defended) == static_cast<int>(ftcore::EventType::Defended));
 static_assert(static_cast<int>(EFTBattleEventType::ComboFinished) == static_cast<int>(ftcore::EventType::ComboFinished));
 static_assert(static_cast<int>(EFTBattleEventType::Counter) == static_cast<int>(ftcore::EventType::Counter));
 static_assert(static_cast<int>(EFTBattleEventType::Downed) == static_cast<int>(ftcore::EventType::Downed));
@@ -35,9 +35,44 @@ static_assert(static_cast<int>(EFTCommandError::WrongPhase) == static_cast<int>(
 static_assert(static_cast<int>(EFTCommandError::NoSuchSkill) == static_cast<int>(ftcore::CommandError::NoSuchSkill));
 static_assert(static_cast<int>(EFTCommandError::NotEnoughAp) == static_cast<int>(ftcore::CommandError::NotEnoughAp));
 static_assert(static_cast<int>(EFTCommandError::InvalidTarget) == static_cast<int>(ftcore::CommandError::InvalidTarget));
+static_assert(static_cast<int>(EFTDefenceInput::Dodge) == static_cast<int>(ftcore::DefenceInput::Dodge));
+static_assert(static_cast<int>(EFTDefenceInput::Parry) == static_cast<int>(ftcore::DefenceInput::Parry));
+static_assert(static_cast<int>(EFTDefenceInput::Jump) == static_cast<int>(ftcore::DefenceInput::Jump));
+static_assert(static_cast<int>(EFTDefenceOutcome::Pending) == static_cast<int>(ftcore::DefenceOutcome::Pending));
+static_assert(static_cast<int>(EFTDefenceOutcome::Perfect) == static_cast<int>(ftcore::DefenceOutcome::Perfect));
+static_assert(static_cast<int>(EFTDefenceOutcome::Dodged) == static_cast<int>(ftcore::DefenceOutcome::Dodged));
+static_assert(static_cast<int>(EFTDefenceOutcome::Jumped) == static_cast<int>(ftcore::DefenceOutcome::Jumped));
+static_assert(static_cast<int>(EFTDefenceOutcome::Hit) == static_cast<int>(ftcore::DefenceOutcome::Hit));
 
 namespace
 {
+// An empty list is the default single hit; otherwise at most ftcore::kMaxTimelineHits, sanitized
+// the way the JSON loader would refuse them (times clamped, later hits after earlier ones).
+void ToCore(const TArray<FFTAttackHit>& In, ftcore::AttackTimeline& Out)
+{
+	Out = ftcore::AttackTimeline();
+	if (In.Num() == 0)
+	{
+		return;
+	}
+	Out.clear();
+	double Previous = 0.0;
+	for (const FFTAttackHit& H : In)
+	{
+		ftcore::TimelineHit D;
+		D.at = FMath::Clamp(H.At, Previous + 0.01, ftcore::kMaxHitOffset);
+		D.tell = FMath::Clamp(H.Tell, 0.0, FMath::Min(ftcore::kMaxTell, D.at));
+		D.telegraph = FMath::Clamp(H.Telegraph, 0.0, FMath::Min(ftcore::kMaxTelegraph, D.at));
+		D.weight = FMath::Max(H.Weight, 0.01f);
+		D.jumpable = H.bJumpable;
+		Previous = D.at;
+		if (!Out.add(D))
+		{
+			break;
+		}
+	}
+}
+
 // Assigns in place so a same-shaped line-up reuses the strings and skill lists.
 void ToCore(const FFTCombatant& In, ftcore::Combatant& Out)
 {
@@ -63,6 +98,7 @@ void ToCore(const FFTCombatant& In, ftcore::Combatant& Out)
 		D.power = S.Power;
 		D.notes = S.Notes;
 		D.difficulty = S.Difficulty;
+		ToCore(S.Hits, D.timeline);
 	}
 }
 
@@ -79,13 +115,17 @@ ftcore::BattleTuning ToCore(const FFTBattleTuning& In)
 {
 	ftcore::BattleTuning Out;
 	Out.leadIn = FMath::Max(In.LeadIn, 0.0);
-	Out.windup = FMath::Max(In.Windup, 0.0);
 	Out.recovery = FMath::Max(In.Recovery, 0.0);
 	Out.lockout = FMath::Max(In.Lockout, 0.0);
 	Out.windows = FT::SafeWindows(FT::ToCore(In.Windows));
 	Out.weights = FT::ToCore(In.Weights);
 	Out.fullComboBonus = In.FullComboBonus;
-	Out.counterAccuracy = In.CounterAccuracy;
+	Out.defence.dodge = FMath::Max(In.DodgeWindow, 0.0);
+	Out.defence.perfectDodge = FMath::Clamp(In.PerfectDodgeWindow, 0.0, Out.defence.dodge);
+	Out.defence.parry = FMath::Max(In.ParryWindow, 0.0);
+	Out.defence.jump = FMath::Max(In.JumpWindow, 0.0);
+	Out.defence.parryLockout = FMath::Max(In.ParryLockout, 0.0);
+	Out.apOnPerfect = FMath::Max(In.ApOnPerfect, 0);
 	Out.counterPower = In.CounterPower;
 	Out.apOnCounter = In.ApOnCounter;
 	Out.startingAp = In.StartingAp;
@@ -237,6 +277,26 @@ void UFTBattleComponent::PressAtTime(EFTArrow Arrow, double BattleSeconds)
 	Flush();
 }
 
+void UFTBattleComponent::Defend(EFTDefenceInput Input)
+{
+	if (!Battle)
+	{
+		return;
+	}
+	Battle->defend(static_cast<ftcore::DefenceInput>(Input), InputNow());
+	Flush();
+}
+
+void UFTBattleComponent::DefendAtTime(EFTDefenceInput Input, double BattleSeconds)
+{
+	if (!Battle)
+	{
+		return;
+	}
+	Battle->defend(static_cast<ftcore::DefenceInput>(Input), BattleSeconds);
+	Flush();
+}
+
 void UFTBattleComponent::Flush()
 {
 	if (bDispatching)
@@ -355,6 +415,20 @@ FFTSkill UFTBattleComponent::GetSkill(int32 Id, int32 SkillIndex) const
 	Out.Power = S.power;
 	Out.Notes = S.notes;
 	Out.Difficulty = S.difficulty;
+	// The default single hit stays an empty list, so the skill round-trips unchanged.
+	if (!ftcore::sameTimeline(S.timeline, ftcore::AttackTimeline()))
+	{
+		for (size_t I = 0; I < S.timeline.size(); ++I)
+		{
+			const ftcore::TimelineHit& H = S.timeline[I];
+			FFTAttackHit& D = Out.Hits.AddDefaulted_GetRef();
+			D.At = H.at;
+			D.Tell = H.tell;
+			D.Telegraph = H.telegraph;
+			D.Weight = H.weight;
+			D.bJumpable = H.jumpable;
+		}
+	}
 	return Out;
 }
 
@@ -406,8 +480,44 @@ TArray<int32> UFTBattleComponent::GetTurnOrder(int32 Count) const
 
 bool UFTBattleComponent::IsComboActive() const
 {
-	const EFTBattlePhase Phase = GetPhase();
-	return Phase == EFTBattlePhase::PartySkill || Phase == EFTBattlePhase::EnemySkill;
+	return GetPhase() == EFTBattlePhase::PartySkill;
+}
+
+bool UFTBattleComponent::IsDefenceActive() const
+{
+	return GetPhase() == EFTBattlePhase::EnemySkill;
+}
+
+int32 UFTBattleComponent::GetDefender() const
+{
+	return IsDefenceActive() ? static_cast<int32>(Battle->defender()) : -1;
+}
+
+int32 UFTBattleComponent::GetDefenceHitCount() const
+{
+	return IsDefenceActive() ? static_cast<int32>(Battle->defence().size()) : 0;
+}
+
+FFTDefenceHit UFTBattleComponent::GetDefenceHit(int32 Index) const
+{
+	FFTDefenceHit Out;
+	if (Index < 0 || Index >= GetDefenceHitCount())
+	{
+		return Out;
+	}
+	const ftcore::DefenceTimeline& D = Battle->defence();
+	const size_t I = static_cast<size_t>(Index);
+	Out.Impact = D.impact(I);
+	Out.Tell = D.hit(I).tell;
+	Out.Telegraph = D.hit(I).telegraph;
+	Out.bJumpable = D.hit(I).jumpable;
+	Out.Outcome = static_cast<EFTDefenceOutcome>(D.outcome(I));
+	return Out;
+}
+
+int32 UFTBattleComponent::GetDefenceNextHitIndex() const
+{
+	return IsDefenceActive() ? static_cast<int32>(Battle->defence().nextIndex()) : 0;
 }
 
 FString UFTBattleComponent::GetActiveSkillName() const
