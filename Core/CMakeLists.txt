@@ -94,6 +94,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_json.cpp
         tests/test_physics.cpp
         tests/test_story.cpp
+        tests/test_story_chain.cpp
         tests/test_story_import.cpp
         tests/test_style.cpp
         tests/test_turnqueue.cpp

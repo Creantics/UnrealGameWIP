@@ -1,5 +1,8 @@
 #include "FTGameInstance.h"
 
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+
 #include "ForgottenThird.h"
 #include "FTStorySubsystem.h"
 
@@ -7,6 +10,7 @@ void UFTGameInstance::Init()
 {
 	// Creates the subsystems.
 	Super::Init();
+	bAlphaFast = FParse::Param(FCommandLine::Get(), TEXT("AlphaFast"));
 	ReloadStory();
 }
 

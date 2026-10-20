@@ -9,11 +9,13 @@
 // runs): Space / left mouse / pad bottom or Enter / pad Start finish the text, then move on or
 // continue past a gameplay beat; 1-4 / pad d-pad pick an option once the prompt is out.
 //
-// Gameplay hand-off: continuing past a fight (CMB) opens BattleMap and past an exploration beat (ENG,
-// PLAY) opens FieldMap, with an FFTStoryCarry in the game instance. The screen opens this map again
-// when it is done; the director spawned there resumes the story after the beat. Other kinds wait in
-// the box and continuing skips them. Paced autoplay hands off too (the screen plays itself); fast
-// autoplay skips the hand-off unless -StoryAutoPlayHandoff.
+// Gameplay hand-off: continuing past a gameplay beat lowers it with ftcore::GameplayPlan and plays its
+// steps in order. Each step fills UFTGameInstance::StoryCarry and opens the step's map: BattleMap for
+// a battle (CMB), FieldMap for the field (ENG, PLAY), StubMap for the stub screen (CHC, BNT, ...). A
+// screen sets carry.bDone and opens carry.ReturnMap; the director spawned there opens the next step,
+// or resumes the story after the last one. A screen that comes back not done is logged and the beat
+// waits in the box. Paced autoplay hands off too (the screens play themselves); fast autoplay skips
+// the hand-off unless -StoryAutoPlayHandoff.
 //
 // Moves, scenes and time in the FINISHED line count from this map visit only.
 //
@@ -21,8 +23,13 @@
 // -StoryAutoPlayFast shows each text whole and makes many moves a frame; -StoryQuitOnFinish exits
 // when the story ends (a headless run); -StoryScene=<id> starts there (read by AFTGameMode);
 // -StoryAutoPlayHandoff turns on autoplay that hands off even when fast (the screens play themselves);
-// -StoryQuitOnReturn exits once the story resumes after a hand-off. Logs carry scene ids and counts
-// only, never script text.
+// -StoryQuitOnReturn exits once the story resumes after a whole beat (all its steps).
+//
+// Alpha mode: -AlphaAutoPlay is fast text autoplay that hands off on every step (carry.bAutoPlay set),
+// counting scenes, screens, STUCK and warnings in the game instance across maps. When the story ends
+// it logs "Alpha: FINISHED ..." and, with -StoryQuitOnFinish, exits with code 0 only if there was no
+// STUCK and no warning (1 otherwise). -AlphaFast is read by the screens (UFTGameInstance::IsAlphaFast).
+// Logs carry scene ids and counts only, never script text.
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
@@ -59,6 +66,10 @@ public:
 	FString BattleMap = TEXT("BattleDemo");
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	FString FieldMap = TEXT("Explore");
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
+	// The stub screen's map (AFTStubGameMode).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
+	FString StubMap = TEXT("Stub");
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	float HandoffDelay = 1.2f;
 
@@ -101,8 +112,13 @@ private:
 	void ReportFinished();
 	// Back from a gameplay screen: resumes the story if it is still on the handed-off beat.
 	void ResumeFromCarry();
-	void BeginHandoff(ftcore::GameplayScreen Screen);
-	void OpenHandoff();
+	// Lowers the runner's gameplay beat and starts its first step. False when the beat has no plan
+	// (it is resumed as a plain skip) or a screen already gave up on it in an alpha run.
+	bool BeginChain();
+	// Banner, log and the timer that opens the current step's map.
+	void StartStep();
+	void OpenStep();
+	void Quit(int32 ExitCode);
 
 	UPROPERTY()
 	TObjectPtr<UFTStorySubsystem> Story;
@@ -126,11 +142,11 @@ private:
 	int32 Scenes = 0;
 	double StartTime = 0.0;
 
+	bool bAlpha = false; // -AlphaAutoPlay
 	bool bHandoffAuto = false; // -StoryAutoPlayHandoff
 	bool bQuitOnReturn = false;
 	bool bPrevRouteInput = false;
 	bool bHandingOff = false;
-	ftcore::GameplayScreen HandoffScreen = ftcore::GameplayScreen::Box;
 	FString Banner;
 	double BannerStart = -1.0;
 };

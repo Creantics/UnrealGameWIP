@@ -26,8 +26,8 @@ The first press shows the whole line; the next one moves on. Greyed options can'
   exchange leads to the correction and the question again, as the script says.
 - **Holds**: the box hides for the pause; the story moves on by itself.
 - **Gameplay beats**: the beat's notation waits in the box with "Space / Enter: continue".
-  Continuing past a fight or an exploration beat opens its screen (see "Gameplay hand-off"); other
-  kinds (mini-games) are skipped.
+  Continuing past a gameplay beat opens its screens one after another (see "Gameplay hand-off"); a
+  beat with no step in its plan is skipped.
 - **Scene title**: shown for a few seconds at the top when a scene starts.
 - **The End**: when the story finishes.
 
@@ -47,29 +47,76 @@ Tuning on the director: `RevealRate` (characters per second, default 45), `AutoP
 
 ## Gameplay hand-off
 
-Continuing past a gameplay beat shows a banner ("Battle!" or "Into the field") and, after
-`HandoffDelay` (1.2 s), opens a map:
+Continuing past a gameplay beat lowers it with `ftcore::GameplayPlan` (its `mode` param, or its kind
+when the mode is empty) and plays the plan's steps in order. Each step shows a banner and, after
+`HandoffDelay` (1.2 s), opens that step's map:
 
-| Beat kind | Screen | Map (director property) |
-|---|---|---|
-| CMB | battle | `BattleMap`, default `BattleDemo` |
-| ENG, PLAY | field | `FieldMap`, default `Explore` |
-| anything else | stays in the box | none; continuing skips it |
+| Step screen | Tokens | Banner | Map (director property) |
+|---|---|---|---|
+| battle | CMB | "Battle!" | `BattleMap`, default `BattleDemo` |
+| field | ENG, PLAY | "Into the field" | `FieldMap`, default `Explore` |
+| stub | CHC, BNT, CG, HE, QTE, co-op QTE, MINI, anything unknown | the token ("CHC") | `StubMap`, default `Stub` |
+| none | a plan with no step | none | the beat stays in the box; continuing skips it |
 
-Before opening the map the director fills `UFTGameInstance::StoryCarry` (`FFTStoryCarry`): the map
-to return to, the beat's scene id, index and kind, and the screen. The story subsystem lives on the
-game instance, so the runner waits on the gameplay beat across the map change.
+The director logs `Story: step i/n <Battle|Field|Stub> at <scene> beat <b>.` (i from 1) for each.
+
+### The contract for a screen
+
+Before opening a step's map the director fills `UFTGameInstance::StoryCarry` (`FFTStoryCarry`):
+
+| Field | Meaning |
+|---|---|
+| `bValid` | set |
+| `ReturnMap` | the story map to open again when done |
+| `Scene`, `Beat`, `Kind` | the gameplay beat's scene id, index and kind as written |
+| `Screen` | `Battle`, `Field` or `Stub` |
+| `Step`, `StepCount` | 0-based step within the beat and the plan's step count |
+| `StepToken`, `StepLabel` | the step's token as notation and its qualifiers ("duel"); label empty when none |
+| `bAutoPlay` | the screen plays itself (headless runs) |
+| `bDone`, `bWon` | written by the screen |
+
+A screen reads the carry, plays, then sets `bDone` (and `bWon`) and opens `ReturnMap`; it never
+touches the story. Setting `bDone` false (or leaving it) means it gave up. `-AlphaFast` is read
+through `UFTGameInstance::IsAlphaFast()`; screens apply their own time dilation to their autopilot.
+
+The plan itself lives on the game instance (`UFTGameInstance::Chain`, an `ftcore::StoryChain`), and so
+does the alpha tally (`Alpha`). The story subsystem lives there too, so the runner waits on the
+gameplay beat across all the map changes.
 
 - The battle demo plays its usual fight. A win sets the carry done and goes back after 2.5 s; after
   a loss, Space or Enter restarts the fight.
 - The exploration map becomes a free walk: no spots, encounters or objectives. "E  Back to the
   story" (E, Enter or pad X) goes back.
 - Back on the story map the game mode sees the story already running, so it spawns a director
-  without starting the story again. The director resumes after the beat if the runner is still on
-  it, with no title card for the scene it came back to. If the screen wasn't done or the story
-  moved, it logs a warning and leaves the beat in the box.
+  without starting the story again. The director opens the next step of the beat (no title card), or
+  after the last step resumes the story past the beat if the runner is still on it.
+- If a screen came back with `bDone` false, or the story moved, the director logs a warning and
+  leaves the beat in the box. Autoplay would try the beat again; in alpha mode it skips the beat
+  instead, and the warning counts.
 
 The `FINISHED` line counts moves, scenes and time from the latest map visit only.
+
+### Alpha mode
+
+`-AlphaAutoPlay` is fast autoplay (each text shown whole, many moves a frame) that hands off on every
+step, with `carry.bAutoPlay` set. The game instance keeps the counters across maps: scenes, battle,
+field and stub screens played, STUCK and warnings (unknown or dropped plan tokens, screens that came
+back not done, a story that moved). When the story finishes it logs
+
+```
+Alpha: FINISHED <S> scenes, <N> screens (<b> battle, <f> field, <s> stub), <k> STUCK, <w> warnings
+```
+
+and, with `-StoryQuitOnFinish`, exits with code 0 only if there was no STUCK and no warning (1
+otherwise). A STUCK run also exits 1 with `-StoryQuitOnFinish`. `-AlphaFast` makes the gameplay
+screens dilate time and shortens the banner pause to 0.1 s.
+
+```
+UnrealEditor-Cmd.exe ForgottenThird.uproject -game -NullRHI -AlphaAutoPlay -AlphaFast -StoryQuitOnFinish -unattended -nosplash -nosound
+```
+
+The existing single hand-off flags keep working: `-StoryAutoPlayHandoff` and `-StoryQuitOnReturn`
+(which now exits after the whole beat, all its steps, resumes).
 
 ## Headless checks
 
@@ -101,8 +148,8 @@ It logs `Story: hand-off CMB at SC-P1-02 beat 0 to the battle screen.`, the batt
 
 ## What's missing
 
-- **Gameplay set-up from the beat.** Every fight is the demo fight and every field beat the demo
-  map; the beat's params (enemies, place, goal) aren't read yet. Mini-game beats have no screen.
+- **Gameplay set-up from the beat.** The beat's params beyond its mode (enemies, place, goal) are
+  read by the screens that implement them; the stub screen stands in for the mini-games.
 - **Losing.** A lost story fight just waits for a retry; there's no game-over or retry menu.
 - **Voice.** Lines carry their VO ids (`GetLineId`), but nothing plays audio yet.
 - **Localisation.** The box shows the script's text; the loc keys aren't looked up.
