@@ -20,6 +20,7 @@
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
 #include "FTCharacterPreview.h"
+#include "FTMeshFacing.h"
 #include "GameFramework/PlayerStart.h"
 #include "HAL/FileManager.h"
 #include "Materials/MaterialInterface.h"
@@ -49,44 +50,6 @@ const FLead kLeads[] = {
 	{TEXT("Third"), TEXT("Third"), TEXT("third"), TEXT("neutral"), -120.f},
 };
 
-#if WITH_EDITOR
-// A bone's reference-pose position in component space, or false when the bone isn't there.
-bool LeadRefBonePosition(const FReferenceSkeleton& Skeleton, const TCHAR* Name, FVector& Out)
-{
-	int32 Bone = Skeleton.FindBoneIndex(Name);
-	if (Bone == INDEX_NONE)
-	{
-		return false;
-	}
-	FTransform Pose = FTransform::Identity;
-	for (; Bone != INDEX_NONE; Bone = Skeleton.GetParentIndex(Bone))
-	{
-		Pose = Pose * Skeleton.GetRefBonePose()[Bone];
-	}
-	Out = Pose.GetLocation();
-	return true;
-}
-
-// The yaw that turns the mesh to face +X, from where its eyes sit relative to its head (the same
-// rule as the demo map's).
-float LeadFacingYaw(const USkeletalMesh& Mesh)
-{
-	FVector Head, EyeL, EyeR;
-	const FReferenceSkeleton& Skeleton = Mesh.GetRefSkeleton();
-	if (!LeadRefBonePosition(Skeleton, TEXT("head"), Head) || !LeadRefBonePosition(Skeleton, TEXT("eye_l"), EyeL)
-		|| !LeadRefBonePosition(Skeleton, TEXT("eye_r"), EyeR))
-	{
-		return 0.f;
-	}
-	FVector Forward = (EyeL + EyeR) * 0.5f - Head;
-	Forward.Z = 0;
-	if (Forward.IsNearlyZero())
-	{
-		return 0.f;
-	}
-	return -FMath::RadiansToDegrees(FMath::Atan2(Forward.Y, Forward.X));
-}
-#endif
 }
 
 UFTBuildLeadsWorldCommandlet::UFTBuildLeadsWorldCommandlet()
@@ -183,7 +146,7 @@ int32 UFTBuildLeadsWorldCommandlet::Main(const FString& Params)
 	for (int32 i = 0; i < UE_ARRAY_COUNT(kLeads); ++i)
 	{
 		const FLead& Lead = kLeads[i];
-		const float Yaw = LeadFacingYaw(*Meshes[i]);
+		const float Yaw = FTMeshFacing::FacingYaw(*Meshes[i]);
 		AFTCharacterPreview* Preview =
 			World->SpawnActor<AFTCharacterPreview>(FVector(0, Lead.Y, 0), FRotator(0, Yaw, 0), Spawn);
 		Preview->SetActorLabel(Lead.Label);

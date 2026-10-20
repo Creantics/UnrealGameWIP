@@ -4,8 +4,8 @@
 // (ftcore::Battle, line-up from ftcore/BattleDemo.h) and this actor as the stage.
 //
 // It owns the battle and its song clock (a silent 120 BPM wall clock: no audio is bound), places
-// placeholder figures (cylinder-and-sphere party members, cube enemies) that flash on hits and
-// fall over when downed, frames the fight with its camera and turns the player controller's battle
+// the figures (the lead characters Devin and Duy looping their idle clips, placeholder cube enemies)
+// that flash or squash on hits and fall over when downed, frames the fight with its camera and turns the player controller's battle
 // input into commands and presses. AFTBattleHUD draws the UI from the getters below.
 //
 // Command menu (phase AwaitingCommand): Up/Down pick the skill, Left/Right or Tab/Q/E the target,
@@ -27,7 +27,10 @@ class AFTPlayerController;
 class UCameraComponent;
 class UFTConductorComponent;
 class UMaterialInstanceDynamic;
+class UAnimSequence;
 class UMaterialInterface;
+class USkeletalMesh;
+class USkeletalMeshComponent;
 class UStaticMesh;
 class UStaticMeshComponent;
 
@@ -48,6 +51,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle Demo")
 	bool bQuitOnOutcome = false;
 
+	// Party member i is PartyMeshes[i] looping PartyIdles[i]. A slot without a mesh falls back to
+	// the cylinder-and-sphere stand-in below.
+	UPROPERTY(EditAnywhere, Category = "Battle Demo|Look")
+	TArray<TObjectPtr<USkeletalMesh>> PartyMeshes;
+	UPROPERTY(EditAnywhere, Category = "Battle Demo|Look")
+	TArray<TObjectPtr<UAnimSequence>> PartyIdles;
 	UPROPERTY(EditAnywhere, Category = "Battle Demo|Look")
 	TObjectPtr<UStaticMesh> PartyBodyMesh;
 	UPROPERTY(EditAnywhere, Category = "Battle Demo|Look")
@@ -110,6 +119,7 @@ private:
 		TObjectPtr<USceneComponent> Pivot;
 		TObjectPtr<UStaticMeshComponent> Body;
 		TObjectPtr<UStaticMeshComponent> Head;
+		TObjectPtr<USkeletalMeshComponent> Skin;
 		TObjectPtr<UMaterialInstanceDynamic> Material;
 		FLinearColor Color = FLinearColor::White;
 		FVector Home = FVector::ZeroVector;
@@ -140,6 +150,8 @@ private:
 	void HandleTurnStarted(int32 Actor);
 	UFUNCTION()
 	void HandleOutcome(EFTBattleOutcome Outcome);
+	// Opens the exploration map this fight was started from (see UFTGameInstance::ExploreCarry).
+	void ReturnToField();
 	UFUNCTION()
 	void HandleArrow(EFTArrow Arrow, bool bFaceButton);
 	UFUNCTION()

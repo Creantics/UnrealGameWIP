@@ -21,6 +21,7 @@
 #include "Engine/World.h"
 #include "Engine/CollisionProfile.h"
 #include "FTCharacterPreview.h"
+#include "FTMeshFacing.h"
 #include "FTPhysicsComponent.h"
 #include "FTStyleController.h"
 #include "FTStyleParameters.h"
@@ -45,43 +46,6 @@ namespace
 const TCHAR* const kMapFolder = TEXT("/Game/Maps");
 
 #if WITH_EDITOR
-// A bone's reference-pose position in component space, or false when the bone isn't there.
-bool RefBonePosition(const FReferenceSkeleton& Skeleton, const TCHAR* Name, FVector& Out)
-{
-	int32 Bone = Skeleton.FindBoneIndex(Name);
-	if (Bone == INDEX_NONE)
-	{
-		return false;
-	}
-	FTransform Pose = FTransform::Identity;
-	for (; Bone != INDEX_NONE; Bone = Skeleton.GetParentIndex(Bone))
-	{
-		Pose = Pose * Skeleton.GetRefBonePose()[Bone];
-	}
-	Out = Pose.GetLocation();
-	return true;
-}
-
-// The yaw that turns the mesh to face +X, from where its eyes sit relative to its head. Zero when
-// the mesh has no eye or head bones.
-float FacingYaw(const USkeletalMesh& Mesh)
-{
-	FVector Head, EyeL, EyeR;
-	const FReferenceSkeleton& Skeleton = Mesh.GetRefSkeleton();
-	if (!RefBonePosition(Skeleton, TEXT("head"), Head) || !RefBonePosition(Skeleton, TEXT("eye_l"), EyeL)
-		|| !RefBonePosition(Skeleton, TEXT("eye_r"), EyeR))
-	{
-		return 0.f;
-	}
-	FVector Forward = (EyeL + EyeR) * 0.5f - Head;
-	Forward.Z = 0;
-	if (Forward.IsNearlyZero())
-	{
-		return 0.f;
-	}
-	return -FMath::RadiansToDegrees(FMath::Atan2(Forward.Y, Forward.X));
-}
-
 // The static pack instance for a named preset, so the editor viewport shows the style without playing.
 // Empty for "none" and for dial specs (those only show in play, through the controller's dynamic instance).
 FString StaticInstancePath(const FString& Spec)
@@ -263,7 +227,7 @@ int32 UFTBuildDemoWorldCommandlet::Main(const FString& Params)
 			return 1;
 		}
 		Preview->GetBody()->SetSkeletalMesh(Mesh);
-		const float Yaw = FacingYaw(*Mesh);
+		const float Yaw = FTMeshFacing::FacingYaw(*Mesh);
 		Preview->SetActorRotation(FRotator(0, Yaw, 0));
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildDemoWorld: preview uses %s, yaw %.1f."), *Mesh->GetPathName(), Yaw);
 	}

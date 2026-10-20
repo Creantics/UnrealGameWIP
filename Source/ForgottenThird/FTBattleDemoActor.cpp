@@ -1,7 +1,10 @@
 #include "FTBattleDemoActor.h"
 
+#include "Animation/AnimSequence.h"
 #include "Camera/CameraComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "HAL/PlatformMisc.h"
@@ -16,6 +19,8 @@
 
 #include "ForgottenThird.h"
 #include "FTConductorComponent.h"
+#include "FTGameInstance.h"
+#include "FTMeshFacing.h"
 #include "FTPlayerController.h"
 #include "FTText.h"
 
@@ -104,6 +109,12 @@ AFTBattleDemoActor::AFTBattleDemoActor()
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Sphere(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube.Cube"));
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> Material(TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	static ConstructorHelpers::FObjectFinder<USkeletalMesh> Devin(TEXT("/Game/Characters/Devin/devin/SkeletalMeshes/devin.devin"));
+	static ConstructorHelpers::FObjectFinder<UAnimSequence> DevinIdle(TEXT("/Game/Characters/Devin/devin/SkeletalMeshes/devinidle.devinidle"));
+	static ConstructorHelpers::FObjectFinder<USkeletalMesh> Duy(TEXT("/Game/Characters/Duy/duy/SkeletalMeshes/duy.duy"));
+	static ConstructorHelpers::FObjectFinder<UAnimSequence> DuyIdle(TEXT("/Game/Characters/Duy/duy/SkeletalMeshes/duyidle.duyidle"));
+	PartyMeshes = {Devin.Object, Duy.Object};
+	PartyIdles = {DevinIdle.Object, DuyIdle.Object};
 	PartyBodyMesh = Cylinder.Object;
 	PartyHeadMesh = Sphere.Object;
 	EnemyMesh = Cube.Object;
@@ -113,7 +124,8 @@ AFTBattleDemoActor::AFTBattleDemoActor()
 void AFTBattleDemoActor::BeginPlay()
 {
 	Super::BeginPlay();
-	bAutoPlay = bAutoPlay || FParse::Param(FCommandLine::Get(), TEXT("BattleAutoPlay"));
+	// The exploration demo's autoplay runs its fights too.
+	bAutoPlay = bAutoPlay || FParse::Param(FCommandLine::Get(), TEXT("BattleAutoPlay")) || FParse::Param(FCommandLine::Get(), TEXT("ExploreAutoPlay"));
 	bQuitOnOutcome = bQuitOnOutcome || FParse::Param(FCommandLine::Get(), TEXT("BattleQuitOnOutcome"));
 
 	Battle->OnBattleEvent.AddDynamic(this, &AFTBattleDemoActor::HandleBattleEvent);
@@ -231,7 +243,24 @@ void AFTBattleDemoActor::BuildFigures()
 			return Part;
 		};
 
-		if (bParty)
+		USkeletalMesh* Skin = bParty && PartyMeshes.IsValidIndex(Slot) ? PartyMeshes[Slot].Get() : nullptr;
+		if (Skin)
+		{
+			// The lead, turned to face the enemies (+Y), looping its idle clip.
+			F.Height = 190.f;
+			F.Skin = NewObject<USkeletalMeshComponent>(this);
+			F.Skin->SetSkeletalMesh(Skin);
+			F.Skin->SetupAttachment(F.Pivot);
+			F.Skin->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Skin) + 90.0, 0.0));
+			F.Skin->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			F.Skin->RegisterComponent();
+			if (UAnimSequence* Idle = PartyIdles.IsValidIndex(Slot) ? PartyIdles[Slot].Get() : nullptr)
+			{
+				F.Skin->PlayAnimation(Idle, true);
+			}
+			FigureObjects.Add(F.Skin);
+		}
+		else if (bParty)
 		{
 			// A capsule stand-in: a cylinder body (meshes are 100 units, centred) with a sphere head.
 			F.Height = 190.f;
@@ -523,9 +552,32 @@ void AFTBattleDemoActor::HandleOutcome(EFTBattleOutcome Outcome)
 	const double Seconds = OutcomeWall - RoundStartWall;
 	UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: %s after %.1f s."),
 		Outcome == EFTBattleOutcome::Victory ? TEXT("VICTORY") : TEXT("DEFEAT"), Seconds);
+	UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+	if (GI && GI->ExploreCarry.bValid)
+	{
+		// Started from the exploration demo: a win goes back there; a loss stays for a retry.
+		if (Outcome == EFTBattleOutcome::Victory)
+		{
+			GI->ExploreCarry.bWon = true;
+			SetNotice(TEXT("Returning to the field"));
+			FTimerHandle Timer;
+			GetWorldTimerManager().SetTimer(Timer, this, &AFTBattleDemoActor::ReturnToField, 2.5f, false);
+		}
+		return;
+	}
 	if (bQuitOnOutcome)
 	{
 		FPlatformMisc::RequestExit(false, TEXT("BattleDemo"));
+	}
+}
+
+void AFTBattleDemoActor::ReturnToField()
+{
+	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+	if (GI && GI->ExploreCarry.bValid)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: returning to %s."), *GI->ExploreCarry.ReturnMap);
+		UGameplayStatics::OpenLevel(this, FName(*GI->ExploreCarry.ReturnMap));
 	}
 }
 

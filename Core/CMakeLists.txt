@@ -35,6 +35,7 @@ add_library(ftcore STATIC
     src/ComboSequence.cpp
     src/Conductor.cpp
     src/Emotion.cpp
+    src/Explore.cpp
     src/Face.cpp
     src/FaceDirection.cpp
     src/FaceImport.cpp
@@ -79,6 +80,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_combo.cpp
         tests/test_conductor.cpp
         tests/test_emotion.cpp
+        tests/test_explore.cpp
         tests/test_face.cpp
         tests/test_face_direction.cpp
         tests/test_face_import.cpp

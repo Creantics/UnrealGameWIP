@@ -41,11 +41,11 @@ inline Combatant makeCombatant(std::string name, Stats stats, std::vector<Skill>
 inline std::vector<Combatant> party() {
     const Skill strike = makeSkill("Strike", 0, 1, Targeting::SingleEnemy, 1.0f, 4, 1.0f);
     return {
-        makeCombatant("Fighter", {140, 24, 8, 12, 12},
+        makeCombatant("Devin", {140, 24, 8, 12, 12},
                       {strike, makeSkill("Twin Cut", 2, 0, Targeting::SingleEnemy, 2.0f, 5, 3.0f),
                        makeSkill("Sweep", 3, 0, Targeting::AllEnemies, 1.6f, 6, 4.0f),
                        makeSkill("Heavy Blow", 5, 0, Targeting::SingleEnemy, 4.0f, 8, 6.0f)}),
-        makeCombatant("Mage", {110, 20, 4, 15, 15},
+        makeCombatant("Duy", {110, 20, 4, 15, 15},
                       {strike, makeSkill("Spark", 1, 0, Targeting::SingleEnemy, 1.5f, 4, 2.0f),
                        makeSkill("Pierce", 2, 0, Targeting::SingleEnemy, 2.2f, 6, 4.5f),
                        makeSkill("Flare", 4, 0, Targeting::AllEnemies, 2.4f, 7, 5.0f)}),
