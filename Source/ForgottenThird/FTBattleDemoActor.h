@@ -1,7 +1,13 @@
 #pragma once
 
-// The playable battle demo: two party members against two enemies, with the rules in Core
-// (ftcore::Battle, line-up from ftcore/BattleDemo.h) and this actor as the stage.
+// The playable battle demo: two party members (the leads, from ftcore/BattleDemo.h) against one to
+// three enemies, with the rules in Core (ftcore::Battle) and this actor as the stage.
+//
+// The enemy line-up comes from data: with a story carry (UFTGameInstance::StoryCarry) the entry of
+// Data/Battle/encounters.json for the carry's scene, beat and step, else the table's "default"
+// (the original demo fight); stats and skills come from Data/Battle/enemies.json. If the files
+// can't be read, the built-in demo line-up is used. Every round (first and each retry) rebuilds
+// both sides from that line-up, so a retry starts at battle-start HP.
 //
 // It owns the battle and its song clock (a silent 120 BPM wall clock: no audio is bound), places
 // the figures (the lead characters Devin and Duy looping their idle clips, placeholder cube enemies)
@@ -10,16 +16,24 @@
 //
 // Command menu (phase AwaitingCommand): Up/Down pick the skill, Left/Right or Tab/Q/E the target,
 // Enter/Space/pad A use it; 1-4 use a skill at once. During a combo every arrow is a step.
-// After the outcome, Enter/Space/pad A/Start fight again.
+// After the outcome, Enter/Space/pad A/Start fight again. After a loss in a story fight, Esc / Q /
+// pad B quits to the title instead: it opens the story map (carry.ReturnMap) with the URL option
+// ?Title and leaves the carry's bDone false.
 //
 // bAutoPlay (or -BattleAutoPlay on the command line) lets Core's pilot play perfectly; with
-// -BattleQuitOnOutcome the game exits when the battle ends (a headless end-to-end run).
+// -BattleQuitOnOutcome the game exits when the battle ends (a headless end-to-end run). With a carry
+// the autopilot always retries after a loss. A story fight on autoplay with -AlphaFast runs at global
+// time dilation 8 and its song clock follows game time (UFTConductorComponent::bWallClockFollowsGameTime).
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 
 #include "FTBattleComponent.h"
 #include "FTComboComponent.h"
+
+#include "ftcore/Encounter.h"
+
+#include <vector>
 
 #include "FTBattleDemoActor.generated.h"
 
@@ -86,6 +100,8 @@ public:
 	const FString& GetNotice() const { return Notice; }
 	double GetNoticeAge() const;
 	bool IsWaitingForRestart() const { return bWaitingForRestart; }
+	// After a loss in a story fight: the screen offers Retry and Quit to title.
+	bool CanQuitToTitle() const { return bCanQuitToTitle; }
 	// World position above a combatant's figure (for markers and numbers).
 	FVector GetFigureTop(int32 Id) const;
 	// 0..1, high right after the figure was hit.
@@ -130,6 +146,11 @@ private:
 		double DownWall = -1.0;
 	};
 
+	// Picks the line-up (carry entry or default; the built-in demo when the data can't load) into
+	// CoreParty / CoreFoes.
+	void LoadLineup();
+	// Copies CoreParty / CoreFoes into the battle component: full HP, the state at battle start.
+	void ApplyLineup();
 	void BuildFigures();
 	void ResetFigures();
 	void CacheText();
@@ -153,6 +174,11 @@ private:
 	// Opens the exploration map this fight was started from (see UFTGameInstance::ExploreCarry).
 	void ReturnToField();
 	void ReturnToStory();
+	// The story map with ?Title (a lost story fight); the carry stays unfinished.
+	UFUNCTION()
+	void HandleQuit();
+	// The autopilot's answer to a loss.
+	void RetryAfterDefeat();
 	UFUNCTION()
 	void HandleArrow(EFTArrow Arrow, bool bFaceButton);
 	UFUNCTION()
@@ -196,7 +222,17 @@ private:
 	int32 SelectedTarget = -1;
 	bool bWaitingForRestart = false;
 	bool bReturningToStory = false; // a story fight was won; no restart
+	bool bCanQuitToTitle = false;
+	bool bQuitting = false;
+	bool bQKeyDown = false;
 	double OutcomeWall = 0.0;
 	bool bInputBound = false;
 	double RoundStartWall = 0.0;
+	double RoundStartGame = 0.0;
+	int32 Attempt = 0;
+	bool bDilated = false;
+
+	// The line-up in Core form: both sides at full HP, copied into the component each round.
+	std::vector<ftcore::Combatant> CoreParty;
+	std::vector<ftcore::Combatant> CoreFoes;
 };

@@ -56,6 +56,13 @@ public:
 	// ResetClock) instead of standing at 0. For silent rhythm play and tests.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rhythm")
 	bool bWallClockWithoutAudio = false;
+	// With bWallClockWithoutAudio and no audio bound, the silent song clock follows game time
+	// (UWorld::GetTimeSeconds, so global time dilation and pauses count) instead of platform time.
+	// For sped-up headless runs: the beat grid, combo timing and an autopilot's presses stay in
+	// sync with the dilated game. Set before ResetClock. Event times from other sources (taps from
+	// the player controller) are platform-time based and don't belong in this mode.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rhythm")
+	bool bWallClockFollowsGameTime = false;
 
 	// Applies Bpm / OffsetSeconds / LatencyOffset after changing them at runtime.
 	UFUNCTION(BlueprintCallable, Category = "Rhythm")
@@ -122,10 +129,13 @@ private:
 	TObjectPtr<UAudioComponent> BoundAudio;
 	// Feeds wall time as the cursor when bWallClockWithoutAudio and nothing is bound.
 	void ObserveWallClock();
+	// The clock the silent song follows: game time with bWallClockFollowsGameTime, else platform time.
+	double ClockNow() const;
 
 	double LatestCursor = 0.0;
 	bool bHaveCursor = false;
 	double WallEpoch = 0.0;
+	bool bHaveWallEpoch = false;
 
 	bool bCalibrating = false;
 	double SavedLatency = 0.0;

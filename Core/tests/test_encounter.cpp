@@ -1,7 +1,11 @@
 #include "ftcore/BattleDemo.h"
+#include "ftcore/Dialogue.h"
 #include "ftcore/Encounter.h"
+#include "ftcore/GameplayPlan.h"
+#include "ftcore/StoryRunner.h"
 
 #include "AllocCounter.h"
+#include "RealStory.h"
 #include "TestAssets.h"
 
 #include <ostream> // doctest prints std::string_view through operator<<
@@ -164,5 +168,142 @@ TEST_CASE("Data/Battle loads and its default line-up is the demo's") {
     for (const EncounterEntry& e : table.entries) {
         CHECK_FALSE(e.lineup.enemies.empty());
         CHECK(&table.find(e.scene, e.beat, e.step) == &e.lineup);
+    }
+}
+
+namespace {
+
+struct LoadedData {
+    EnemyRoster roster;
+    EncounterTable table;
+    bool ok = false;
+};
+
+LoadedData loadBattleData() {
+    LoadedData d;
+    std::string enemiesText, encountersText, err;
+    if (!ftcore_test::readProjectData("Battle/enemies.json", enemiesText) ||
+        !ftcore_test::readProjectData("Battle/encounters.json", encountersText))
+        return d;
+    d.ok = importEnemyRoster(enemiesText, d.roster, &err) &&
+           importEncounterTable(encountersText, d.roster, d.table, &err);
+    return d;
+}
+
+} // namespace
+
+TEST_CASE("balance gate: every encounter is won with perfect presses and lost with none") {
+    const LoadedData d = loadBattleData();
+    REQUIRE(d.ok);
+    REQUIRE_FALSE(d.table.entries.empty());
+
+    // The default line-up first, then every listed entry at its own tier.
+    for (std::size_t i = 0; i <= d.table.entries.size(); ++i) {
+        const EncounterLineup& lineup = i == 0 ? d.table.fallback : d.table.entries[i - 1].lineup;
+        const std::string name = i == 0 ? std::string("default")
+                                        : d.table.entries[i - 1].scene + " beat " + std::to_string(d.table.entries[i - 1].beat) +
+                                              " step " + std::to_string(d.table.entries[i - 1].step);
+        CAPTURE(name);
+        CHECK(lineup.enemies.size() >= 1);
+        CHECK(lineup.enemies.size() <= 3); // the HUD stacks three enemy panels
+
+        std::vector<Combatant> foes;
+        makeEnemies(d.roster, lineup, foes);
+        REQUIRE(foes.size() == lineup.enemies.size());
+
+        const demo::HeadlessResult win = demo::playHeadless(demo::party(), foes, true);
+        CHECK_FALSE(win.commandFailed);
+        CHECK(win.finished);
+        CHECK(win.outcome == Phase::Victory);
+        CHECK(win.partyTurns >= 1);
+        CHECK(win.presses > 0);
+        MESSAGE(name << ": tier " << lineup.tier << ", victory in " << win.endTime << " s, " << win.partyTurns
+                     << " turns, " << win.enemyCombos << " defences, party HP left " << win.partyHpLeft);
+
+        // Long frames (130 ms of battle time per frame, as under time dilation) still win: the autopilot
+        // presses at each note's own time before the update that would expire it.
+        const demo::HeadlessResult coarse = demo::playHeadless(demo::party(), foes, true, 0.13);
+        CHECK(coarse.outcome == Phase::Victory);
+
+        const demo::HeadlessResult loss = demo::playHeadless(demo::party(), foes, false);
+        CHECK_FALSE(loss.commandFailed);
+        CHECK(loss.finished);
+        CHECK(loss.outcome == Phase::Defeat);
+        CHECK(loss.presses == 0);
+    }
+}
+
+TEST_CASE("tiers toughen a line-up and stay within bounds") {
+    const LoadedData d = loadBattleData();
+    REQUIRE(d.ok);
+    EncounterLineup lineup = d.table.fallback;
+    std::vector<Combatant> base, tough;
+    makeEnemies(d.roster, lineup, base);
+    lineup.tier = 5;
+    makeEnemies(d.roster, lineup, tough);
+    REQUIRE(base.size() == tough.size());
+    for (std::size_t i = 0; i < base.size(); ++i) {
+        CHECK(tough[i].stats.maxHp == base[i].stats.maxHp + base[i].stats.maxHp * 5 * kTierPercent / 100);
+        CHECK(tough[i].hp == tough[i].stats.maxHp);
+        CHECK(tough[i].stats.attack > base[i].stats.attack);
+        CHECK(tough[i].stats.defense == base[i].stats.defense);
+    }
+    lineup.tier = 99; // clamped
+    std::vector<Combatant> clamped;
+    makeEnemies(d.roster, lineup, clamped);
+    CHECK(clamped[0].stats.maxHp == base[0].stats.maxHp + base[0].stats.maxHp * kMaxTier * kTierPercent / 100);
+
+    EnemyRoster roster;
+    EncounterTable table;
+    REQUIRE(importEnemyRoster(kRoster, roster));
+    CHECK(importEncounterTable(R"({"default": {"enemies": ["brute"], "tier": 2}, "encounters": [{"scene": "S", "beat": 1, "tier": 4, "enemies": ["shade"]}]})",
+                               roster, table));
+    CHECK(table.fallback.tier == 2);
+    CHECK(table.find("S", 1, 0).tier == 4);
+    std::string err;
+    CHECK_FALSE(importEncounterTable(R"({"default": {"enemies": ["brute"], "tier": 10}})", roster, table, &err));
+    CHECK(err.find("tier") != std::string::npos);
+}
+
+TEST_CASE("every listed encounter is a real battle step of the script") {
+    FTCORE_REQUIRE_REAL_STORY(s);
+    const LoadedData d = loadBattleData();
+    REQUIRE(d.ok);
+
+    struct Key {
+        std::string scene;
+        std::uint32_t beat, step;
+    };
+    std::vector<Key> real;
+    StoryRunner r(&s.db);
+    DialoguePresenter p(&r);
+    p.setRevealRate(0.f);
+    GameplayPlan plan;
+    REQUIRE(r.start());
+    int moves = 0;
+    while (!r.finished() && moves < 200000) {
+        if (r.waitingForGameplay()) {
+            REQUIRE(plan.lower(r));
+            for (std::uint32_t i = 0; i < plan.size(); ++i)
+                if (plan.step(i).screen == GameplayScreen::Battle)
+                    real.push_back({std::string(r.position().scene), static_cast<std::uint32_t>(r.position().beat), i});
+            REQUIRE(r.resume());
+            ++moves;
+            continue;
+        }
+        p.update(1.f / 60.f);
+        const DialogueCommand c = p.autoplay();
+        if (c.none() || !applyDialogueCommand(r, c)) break;
+        ++moves;
+    }
+    CHECK(r.finished());
+    CHECK(real.size() > d.table.entries.size());
+    for (const EncounterEntry& e : d.table.entries) {
+        CAPTURE(e.scene);
+        CAPTURE(e.beat);
+        CAPTURE(e.step);
+        bool found = false;
+        for (const Key& k : real) found = found || (k.scene == e.scene && k.beat == e.beat && k.step == e.step);
+        CHECK(found);
     }
 }

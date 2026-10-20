@@ -24,8 +24,10 @@
 // encounters.json:
 //   { "version": 1, "default": { "enemies": ["brute", "shade"] },
 //     "encounters": [ { "scene": "SC-X", "beat": 4, "step": 0, "enemies": ["shade"] } ] }
-//   `step` defaults to 0. An unknown enemy id, a duplicate (scene, beat, step) or an empty line-up
-//   is an error; unknown keys are warnings.
+//   `step` defaults to 0. `tier` (0..9, default 0; "default" takes one too) toughens the line-up:
+//   each tier adds kTierPercent of the base max HP and attack to every enemy in it (see
+//   makeEnemies). An unknown enemy id, a duplicate (scene, beat, step) or an empty line-up is an
+//   error; unknown keys are warnings.
 
 #include "ftcore/Api.h"
 #include "ftcore/CombatTypes.h"
@@ -51,8 +53,13 @@ struct EnemyRoster {
     FTCORE_API int find(std::string_view id) const;
 };
 
+// Percent of an enemy's base max HP and attack that each tier adds.
+inline constexpr int kTierPercent = 8;
+inline constexpr int kMaxTier = 9;
+
 struct EncounterLineup {
     std::vector<std::uint32_t> enemies; // indices into the roster, in line-up order
+    int tier = 0;                       // 0..kMaxTier; later fights are a bit tougher
 };
 
 struct EncounterEntry {
@@ -78,7 +85,8 @@ FTCORE_API bool importEnemyRoster(std::string_view json, EnemyRoster& out, std::
 FTCORE_API bool importEncounterTable(std::string_view json, const EnemyRoster& roster, EncounterTable& out,
                                      std::string* error = nullptr, std::vector<std::string>* warnings = nullptr);
 
-// The line-up as battle combatants (Team::Enemies, full HP). Replaces `out`. Allocates.
+// The line-up as battle combatants (Team::Enemies, full HP, the line-up's tier applied to max HP and
+// attack). Replaces `out`. Allocates.
 FTCORE_API void makeEnemies(const EnemyRoster& roster, const EncounterLineup& lineup, std::vector<Combatant>& out);
 
 } // namespace ftcore

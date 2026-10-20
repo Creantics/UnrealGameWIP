@@ -18,6 +18,42 @@
         { "id": "flicker", "name": "Flicker", "targeting": "single", "power": 1.6, "notes": 5, "difficulty": 4.0 },
         { "id": "feint", "name": "Feint", "targeting": "single", "power": 1.8, "notes": 5, "difficulty": 5.0 }
       ]
+    },
+    {
+      "id": "wisp",
+      "name": "Wisp",
+      "stats": { "maxHp": 70, "attack": 12, "defense": 2, "speed": 16, "technique": 10 },
+      "skills": [
+        { "id": "zap", "name": "Zap", "targeting": "single", "power": 1.0, "notes": 3, "difficulty": 1.5 },
+        { "id": "dart", "name": "Dart", "targeting": "single", "power": 1.3, "notes": 4, "difficulty": 3.0 }
+      ]
+    },
+    {
+      "id": "hound",
+      "name": "Hound",
+      "stats": { "maxHp": 120, "attack": 16, "defense": 4, "speed": 13, "technique": 9 },
+      "skills": [
+        { "id": "bite", "name": "Bite", "targeting": "single", "power": 1.2, "notes": 3, "difficulty": 1.5 },
+        { "id": "lunge", "name": "Lunge", "targeting": "single", "power": 1.5, "notes": 4, "difficulty": 2.5 }
+      ]
+    },
+    {
+      "id": "bulwark",
+      "name": "Bulwark",
+      "stats": { "maxHp": 280, "attack": 14, "defense": 10, "speed": 5, "technique": 6 },
+      "skills": [
+        { "id": "shove", "name": "Shove", "targeting": "single", "power": 1.0, "notes": 3, "difficulty": 1.0 },
+        { "id": "crush", "name": "Crush", "targeting": "single", "power": 1.6, "notes": 4, "difficulty": 2.0 }
+      ]
+    },
+    {
+      "id": "lurker",
+      "name": "Lurker",
+      "stats": { "maxHp": 110, "attack": 24, "defense": 2, "speed": 11, "technique": 16 },
+      "skills": [
+        { "id": "rake", "name": "Rake", "targeting": "single", "power": 1.4, "notes": 4, "difficulty": 3.0 },
+        { "id": "ambush", "name": "Ambush", "targeting": "single", "power": 2.0, "notes": 5, "difficulty": 4.0 }
+      ]
     }
   ]
 }

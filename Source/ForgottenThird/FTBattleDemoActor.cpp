@@ -11,9 +11,12 @@
 #include "HAL/PlatformTime.h"
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "InputCoreTypes.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
+#include "Misc/Paths.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
 
@@ -26,8 +29,42 @@
 
 #include "ftcore/BattleDemo.h"
 
+#include <string>
+
 namespace
 {
+// Global time dilation of an autopilot fight under -AlphaFast.
+constexpr float kAlphaFastDilation = 8.f;
+
+// -AlphaFast. UFTGameInstance::IsAlphaFast() (stream 1) is the same switch; read here so this file
+// doesn't depend on it landing first.
+bool IsAlphaFastRequested()
+{
+	return FParse::Param(FCommandLine::Get(), TEXT("AlphaFast"));
+}
+
+// Data/Battle/enemies.json and encounters.json; false (and logged) when either can't be read or
+// is refused. Ids and numbers only: nothing story-related is logged.
+bool LoadBattleData(ftcore::EnemyRoster& Roster, ftcore::EncounterTable& Table)
+{
+	const FString Dir = FPaths::ProjectDir() / TEXT("Data/Battle");
+	TArray<uint8> EnemyBytes, EncounterBytes;
+	if (!FFileHelper::LoadFileToArray(EnemyBytes, *(Dir / TEXT("enemies.json")))
+		|| !FFileHelper::LoadFileToArray(EncounterBytes, *(Dir / TEXT("encounters.json"))))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("BattleDemo: Data/Battle not found under %s; using the built-in line-up."), *Dir);
+		return false;
+	}
+	std::string Error;
+	if (!ftcore::importEnemyRoster(FT::BytesAsText(EnemyBytes), Roster, &Error)
+		|| !ftcore::importEncounterTable(FT::BytesAsText(EncounterBytes), Roster, Table, &Error))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("BattleDemo: Data/Battle refused (%s); using the built-in line-up."), UTF8_TO_TCHAR(Error.c_str()));
+		return false;
+	}
+	return true;
+}
+
 FFTCombatant FromCore(const ftcore::Combatant& C)
 {
 	FFTCombatant Out;
@@ -128,15 +165,30 @@ void AFTBattleDemoActor::BeginPlay()
 	bAutoPlay = bAutoPlay || FParse::Param(FCommandLine::Get(), TEXT("BattleAutoPlay")) || FParse::Param(FCommandLine::Get(), TEXT("ExploreAutoPlay"));
 	bQuitOnOutcome = bQuitOnOutcome || FParse::Param(FCommandLine::Get(), TEXT("BattleQuitOnOutcome"));
 	// So does the story's, when it hands a fight here.
+	bool bStoryAutoPlay = false;
 	if (const UFTGameInstance* StoryGI = GetGameInstance<UFTGameInstance>())
 	{
-		bAutoPlay = bAutoPlay || (StoryGI->StoryCarry.bValid && StoryGI->StoryCarry.bAutoPlay);
+		bStoryAutoPlay = StoryGI->StoryCarry.bValid && StoryGI->StoryCarry.bAutoPlay;
+		bAutoPlay = bAutoPlay || bStoryAutoPlay;
+	}
+
+	// A headless alpha run: play the fight 8x faster. The song clock has to follow the dilated game
+	// time, or the combo timing and the autopilot's presses would fall out of step.
+	if (bStoryAutoPlay && IsAlphaFastRequested())
+	{
+		Conductor->bWallClockFollowsGameTime = true;
+		Conductor->ResetClock(); // its BeginPlay already seeded the clock from platform time
+		UGameplayStatics::SetGlobalTimeDilation(this, kAlphaFastDilation);
+		bDilated = true;
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: -AlphaFast, game time x%.0f."), kAlphaFastDilation);
 	}
 
 	Battle->OnBattleEvent.AddDynamic(this, &AFTBattleDemoActor::HandleBattleEvent);
 	Battle->OnTurnStarted.AddDynamic(this, &AFTBattleDemoActor::HandleTurnStarted);
 	Battle->OnOutcome.AddDynamic(this, &AFTBattleDemoActor::HandleOutcome);
 
+	LoadLineup();
+	ApplyLineup();
 	BuildFigures();
 	// Next tick: the player controller and its pawn are settled by then.
 	GetWorldTimerManager().SetTimerForNextTick(this, &AFTBattleDemoActor::StartRound);
@@ -148,7 +200,61 @@ void AFTBattleDemoActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	{
 		PC->EndBattleInput();
 	}
+	if (bDilated && GetWorld())
+	{
+		UGameplayStatics::SetGlobalTimeDilation(this, 1.f);
+		bDilated = false;
+	}
 	Super::EndPlay(EndPlayReason);
+}
+
+void AFTBattleDemoActor::LoadLineup()
+{
+	CoreParty = ftcore::demo::party();
+	CoreFoes = ftcore::demo::enemies();
+
+	ftcore::EnemyRoster Roster;
+	ftcore::EncounterTable Table;
+	if (!LoadBattleData(Roster, Table))
+	{
+		return;
+	}
+	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+	const bool bCarry = GI && GI->StoryCarry.bValid && GI->StoryCarry.Beat >= 0;
+	const std::string Scene = bCarry ? FT::ToUtf8(GI->StoryCarry.Scene) : std::string();
+	const uint32 Beat = bCarry ? static_cast<uint32>(GI->StoryCarry.Beat) : 0u;
+	const uint32 Step = bCarry ? static_cast<uint32>(FMath::Max(0, GI->StoryCarry.Step)) : 0u;
+	const ftcore::EncounterEntry* Entry = bCarry ? Table.findEntry(Scene, Beat, Step) : nullptr;
+	const ftcore::EncounterLineup& Lineup = Entry ? Entry->lineup : Table.fallback;
+	ftcore::makeEnemies(Roster, Lineup, CoreFoes);
+	if (CoreFoes.empty()) // can't happen with a validated table; the demo fight is the safe answer
+	{
+		CoreFoes = ftcore::demo::enemies();
+	}
+	if (Entry)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: line-up of %d (tier %d) for %s beat %d step %d."), static_cast<int32>(CoreFoes.size()),
+			Lineup.tier, *GI->StoryCarry.Scene, GI->StoryCarry.Beat, GI->StoryCarry.Step);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: default line-up of %d (tier %d)%s."), static_cast<int32>(CoreFoes.size()), Lineup.tier,
+			bCarry ? TEXT(", no entry for this step") : TEXT(""));
+	}
+}
+
+void AFTBattleDemoActor::ApplyLineup()
+{
+	Battle->Party.Reset();
+	for (const ftcore::Combatant& C : CoreParty)
+	{
+		Battle->Party.Add(FromCore(C));
+	}
+	Battle->Enemies.Reset();
+	for (const ftcore::Combatant& C : CoreFoes)
+	{
+		Battle->Enemies.Add(FromCore(C));
+	}
 }
 
 AFTPlayerController* AFTBattleDemoActor::GetPlayer() const
@@ -159,13 +265,17 @@ AFTPlayerController* AFTBattleDemoActor::GetPlayer() const
 void AFTBattleDemoActor::StartRound()
 {
 	Conductor->ResetClock(); // song time from ~0, so the beat grid starts with the round
+	ApplyLineup(); // both sides at full HP: a retry starts from the state the fight began in
 	if (!Battle->StartBattle())
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("BattleDemo: the battle didn't start."));
 		return;
 	}
 	RoundStartWall = Wall();
+	RoundStartGame = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	++Attempt;
 	bWaitingForRestart = false;
+	bCanQuitToTitle = false;
 	SelectedSkill = 0;
 	SelectedTarget = -1;
 	EnsureTarget();
@@ -190,6 +300,8 @@ void AFTBattleDemoActor::StartRound()
 			// Story-context keys, live again once the battle input is off: fight again.
 			PC->OnConfirm.AddDynamic(this, &AFTBattleDemoActor::HandleRestart);
 			PC->OnAdvance.AddDynamic(this, &AFTBattleDemoActor::HandleRestart);
+			// Esc / Backspace / pad B (Q is polled in Tick: it has no story-context binding).
+			PC->OnCancel.AddDynamic(this, &AFTBattleDemoActor::HandleQuit);
 			PC->SetViewTarget(this);
 		}
 		PC->BeginBattleInput();
@@ -198,7 +310,14 @@ void AFTBattleDemoActor::StartRound()
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("BattleDemo: no AFTPlayerController; there will be no battle input."));
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: battle started%s."), bAutoPlay ? TEXT(" (autoplay)") : TEXT(""));
+	if (Attempt > 1)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: battle started, attempt %d%s."), Attempt, bAutoPlay ? TEXT(" (autoplay)") : TEXT(""));
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: battle started%s."), bAutoPlay ? TEXT(" (autoplay)") : TEXT(""));
+	}
 }
 
 // ---- figures ----
@@ -215,7 +334,10 @@ void AFTBattleDemoActor::BuildFigures()
 		FFigure& F = Figures[Id];
 		F.Color = bParty ? kPartyColors[Slot % UE_ARRAY_COUNT(kPartyColors)] : kEnemyColors[Slot % UE_ARRAY_COUNT(kEnemyColors)];
 		// Two staggered rows facing each other across the middle of the screen.
-		F.Home = bParty ? FVector(-80.0 + 180.0 * Slot, -400.0 + 130.0 * Slot, 0.0) : FVector(-80.0 + 180.0 * Slot, 360.0 + 130.0 * Slot, 0.0);
+		// A third enemy gets a tighter stagger so the row stays in frame.
+		const double EnemyStepX = Battle->Enemies.Num() > 2 ? 140.0 : 180.0;
+		const double EnemyStepY = Battle->Enemies.Num() > 2 ? 95.0 : 130.0;
+		F.Home = bParty ? FVector(-80.0 + 180.0 * Slot, -400.0 + 130.0 * Slot, 0.0) : FVector(-80.0 + EnemyStepX * Slot, 360.0 + EnemyStepY * Slot, 0.0);
 		F.FallSign = bParty ? 1.f : -1.f;
 
 		F.Pivot = NewObject<USceneComponent>(this);
@@ -554,26 +676,35 @@ void AFTBattleDemoActor::HandleOutcome(EFTBattleOutcome Outcome)
 	{
 		PC->EndBattleInput();
 	}
+	const bool bWon = Outcome == EFTBattleOutcome::Victory;
 	const double Seconds = OutcomeWall - RoundStartWall;
-	UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: %s after %.1f s."),
-		Outcome == EFTBattleOutcome::Victory ? TEXT("VICTORY") : TEXT("DEFEAT"), Seconds);
+	const double GameSeconds = (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0) - RoundStartGame;
+	UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: %s after %.1f s (game %.1f s)."),
+		bWon ? TEXT("VICTORY") : TEXT("DEFEAT"), Seconds, GameSeconds);
 	UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
 	if (GI && GI->ExploreCarry.bValid)
 	{
 		// Started from the exploration demo: a win goes back there; a loss stays for a retry.
-		if (Outcome == EFTBattleOutcome::Victory)
+		if (bWon)
 		{
 			GI->ExploreCarry.bWon = true;
+			bReturningToStory = true; // (the name covers any return: no restart while leaving)
 			SetNotice(TEXT("Returning to the field"));
 			FTimerHandle Timer;
 			GetWorldTimerManager().SetTimer(Timer, this, &AFTBattleDemoActor::ReturnToField, 2.5f, false);
+		}
+		else if (bAutoPlay)
+		{
+			FTimerHandle Timer;
+			GetWorldTimerManager().SetTimer(Timer, this, &AFTBattleDemoActor::RetryAfterDefeat, 1.2f, false);
 		}
 		return;
 	}
 	if (GI && GI->StoryCarry.bValid && !GI->StoryCarry.bDone)
 	{
-		// Handed here by the story: a win goes back to it; a loss stays for a retry.
-		if (Outcome == EFTBattleOutcome::Victory)
+		// Handed here by the story: a win goes back to it; a loss offers Retry and Quit to title (the
+		// autopilot always retries, so a headless run never stops on a defeat).
+		if (bWon)
 		{
 			GI->StoryCarry.bDone = true;
 			GI->StoryCarry.bWon = true;
@@ -581,6 +712,15 @@ void AFTBattleDemoActor::HandleOutcome(EFTBattleOutcome Outcome)
 			SetNotice(TEXT("Returning to the story"));
 			FTimerHandle Timer;
 			GetWorldTimerManager().SetTimer(Timer, this, &AFTBattleDemoActor::ReturnToStory, 2.5f, false);
+		}
+		else if (bAutoPlay)
+		{
+			FTimerHandle Timer;
+			GetWorldTimerManager().SetTimer(Timer, this, &AFTBattleDemoActor::RetryAfterDefeat, 1.2f, false);
+		}
+		else
+		{
+			bCanQuitToTitle = true;
 		}
 		return;
 	}
@@ -598,6 +738,32 @@ void AFTBattleDemoActor::ReturnToStory()
 		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: returning to the story on %s."), *GI->StoryCarry.ReturnMap);
 		UGameplayStatics::OpenLevel(this, FName(*GI->StoryCarry.ReturnMap));
 	}
+}
+
+void AFTBattleDemoActor::RetryAfterDefeat()
+{
+	if (bWaitingForRestart && !bReturningToStory && !bQuitting)
+	{
+		StartRound();
+	}
+}
+
+void AFTBattleDemoActor::HandleQuit()
+{
+	// Same short pause as a restart, so the press that ended the battle can't quit.
+	if (!bWaitingForRestart || !bCanQuitToTitle || bQuitting || Wall() - OutcomeWall <= 1.0)
+	{
+		return;
+	}
+	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+	if (!GI || !GI->StoryCarry.bValid || GI->StoryCarry.ReturnMap.IsEmpty())
+	{
+		return;
+	}
+	bQuitting = true;
+	// The carry stays unfinished (bDone false); the story map reads ?Title and shows the title screen.
+	UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: quitting to the title via %s."), *GI->StoryCarry.ReturnMap);
+	UGameplayStatics::OpenLevel(this, FName(*GI->StoryCarry.ReturnMap), true, TEXT("Title"));
 }
 
 void AFTBattleDemoActor::ReturnToField()
@@ -687,7 +853,7 @@ void AFTBattleDemoActor::HandleConfirm()
 void AFTBattleDemoActor::HandleRestart()
 {
 	// A short pause first, so the press that ended the battle doesn't start the next one.
-	if (bWaitingForRestart && !bReturningToStory && Wall() - OutcomeWall > 1.0)
+	if (bWaitingForRestart && !bReturningToStory && !bQuitting && Wall() - OutcomeWall > 1.0)
 	{
 		StartRound();
 	}
@@ -776,7 +942,8 @@ void AFTBattleDemoActor::TickAutoPlay()
 		if (Combo.grade(I) == ftcore::Grade::Pending)
 		{
 			LanePressWall[static_cast<int32>(Combo.note(I).arrow)] = Wall();
-			Battle->Press(FT::FromCore(Combo.note(I).arrow));
+			// At the note's own time, not "now": a long (dilated) frame must not turn PERFECT into late.
+			Battle->PressAtTime(FT::FromCore(Combo.note(I).arrow), Combo.note(I).time);
 		}
 		if (!Battle->IsComboActive())
 		{
@@ -791,6 +958,22 @@ void AFTBattleDemoActor::Tick(float DeltaSeconds)
 	if (bAutoPlay)
 	{
 		TickAutoPlay();
+	}
+	if (bCanQuitToTitle && bWaitingForRestart)
+	{
+		// Q quits on its press edge. It is polled: after the battle the story keys are live, and Q has
+		// no binding there.
+		const AFTPlayerController* PC = GetPlayer();
+		const bool bDown = PC && PC->IsInputKeyDown(EKeys::Q);
+		if (bDown && !bQKeyDown)
+		{
+			HandleQuit();
+		}
+		bQKeyDown = bDown;
+	}
+	else
+	{
+		bQKeyDown = false;
 	}
 	TickFigures(Wall());
 }
