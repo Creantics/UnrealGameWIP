@@ -61,4 +61,23 @@ FTCORE_API std::string encodeStorySave(const StorySave& save);
 // says why and `out` is left untouched.
 FTCORE_API bool decodeStorySave(std::string_view text, StorySave& out, std::string* error = nullptr);
 
+// ---- checking a save before loading it ----
+
+// Why a save text can't be used. The name (saveRefusalName) is what gets logged.
+enum class SaveRefusal : std::uint8_t {
+    None,           // usable
+    Empty,          // no text: nothing was saved
+    Invalid,        // bad JSON, unknown format version, or a missing / wrong-typed field
+    NoStory,        // no story database is loaded
+    SceneMissing,   // the saved scene is not in the loaded story
+    BeatOutOfRange, // the saved beat is past the end of its scene
+};
+
+// A short stable code for logs ("ok", "empty", "invalid", "no_story", "scene_missing",
+// "beat_out_of_range"). Never script text.
+FTCORE_API const char* saveRefusalName(SaveRefusal reason);
+// Decodes `text` and checks it against `db` without touching any runner. `*out` (when given) gets
+// the decoded save only when the result is None.
+FTCORE_API SaveRefusal checkStorySave(std::string_view text, const StoryDatabase* db, StorySave* out = nullptr);
+
 } // namespace ftcore

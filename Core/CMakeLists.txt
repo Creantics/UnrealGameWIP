@@ -96,6 +96,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_story.cpp
         tests/test_story_import.cpp
         tests/test_style.cpp
+        tests/test_title.cpp
         tests/test_turnqueue.cpp
         tests/test_version.cpp
         tests/test_vfx.cpp
