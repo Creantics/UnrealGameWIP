@@ -34,9 +34,28 @@ namespace ftcore {
 // Where a gameplay beat is played (story_format.md: CMB battle; ENG and PLAY field; anything else
 // has no screen and waits in the dialogue box). Stub is the placeholder screen a GameplayPlan step
 // with no real screen yet opens (GameplayPlan.h); gameplayScreen() never returns it.
-enum class GameplayScreen : std::uint8_t { Box, Battle, Field, Stub };
+// Choice, Qte and Cutscene are the screens a GameplayPlan step names for CHC, QTE (and co-op QTE)
+// and CG / HE; each is owned by its own stream and routes to Stub until that screen exists.
+enum class GameplayScreen : std::uint8_t { Box, Battle, Field, Stub, Choice, Qte, Cutscene };
+inline constexpr std::uint32_t kGameplayScreenCount = 7;
 FTCORE_API GameplayScreen gameplayScreen(GameplayKind kind);
-FTCORE_API std::string_view gameplayScreenName(GameplayScreen screen); // "box", "battle", "field", "stub"
+// "box", "battle", "field", "stub", "choice", "qte", "cutscene"
+FTCORE_API std::string_view gameplayScreenName(GameplayScreen screen);
+
+// The screen that really opens for `screen`. A stream that builds its screen changes only its own
+// case here (Choice, Qte or Cutscene returns itself); the others keep returning Stub.
+constexpr GameplayScreen screenRoutesTo(GameplayScreen screen) {
+    switch (screen) {
+    case GameplayScreen::Choice:
+    case GameplayScreen::Qte:
+    case GameplayScreen::Cutscene: return GameplayScreen::Stub;
+    case GameplayScreen::Box:
+    case GameplayScreen::Battle:
+    case GameplayScreen::Field:
+    case GameplayScreen::Stub: break;
+    }
+    return screen;
+}
 
 struct DialogueCommand {
     // Handoff: open the gameplay beat's screen (option holds the GameplayScreen); the runner stays

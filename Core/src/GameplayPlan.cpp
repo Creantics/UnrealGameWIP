@@ -124,12 +124,12 @@ GameplayScreen gameplayTokenScreen(GameplayToken token) {
     case GameplayToken::Cmb: return GameplayScreen::Battle;
     case GameplayToken::Eng:
     case GameplayToken::Play: return GameplayScreen::Field;
-    case GameplayToken::Chc:
-    case GameplayToken::Bnt:
-    case GameplayToken::Cg:
-    case GameplayToken::He:
+    case GameplayToken::Chc: return GameplayScreen::Choice;
     case GameplayToken::Qte:
-    case GameplayToken::CoopQte:
+    case GameplayToken::CoopQte: return GameplayScreen::Qte;
+    case GameplayToken::Cg:
+    case GameplayToken::He: return GameplayScreen::Cutscene;
+    case GameplayToken::Bnt:
     case GameplayToken::Mini:
     case GameplayToken::Unknown: break;
     }

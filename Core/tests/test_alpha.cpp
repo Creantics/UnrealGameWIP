@@ -22,7 +22,7 @@ namespace {
 
 // A screen that finishes (and wins) the moment it opens.
 struct FakeScreens {
-    std::uint32_t opened[4] = {}; // by GameplayScreen
+    std::uint32_t opened[kGameplayScreenCount] = {}; // by GameplayScreen (the step's own, not routed)
     std::uint32_t wrong = 0;      // a step that asked for the dialogue box
 
     bool play(const GameplayStep& step, std::uint32_t index, std::uint32_t count) {
@@ -33,7 +33,11 @@ struct FakeScreens {
         ++opened[static_cast<std::uint8_t>(step.screen)];
         return true;
     }
-    std::uint32_t total() const { return opened[0] + opened[1] + opened[2] + opened[3]; }
+    std::uint32_t total() const {
+        std::uint32_t n = 0;
+        for (const std::uint32_t o : opened) n += o;
+        return n;
+    }
 };
 
 } // namespace
@@ -86,6 +90,9 @@ TEST_CASE("alpha: the real script plays start to end through every gameplay step
     const std::uint32_t battle = screens.opened[static_cast<std::uint8_t>(GameplayScreen::Battle)];
     const std::uint32_t field = screens.opened[static_cast<std::uint8_t>(GameplayScreen::Field)];
     const std::uint32_t stub = screens.opened[static_cast<std::uint8_t>(GameplayScreen::Stub)];
+    const std::uint32_t choice = screens.opened[static_cast<std::uint8_t>(GameplayScreen::Choice)];
+    const std::uint32_t qte = screens.opened[static_cast<std::uint8_t>(GameplayScreen::Qte)];
+    const std::uint32_t cutscene = screens.opened[static_cast<std::uint8_t>(GameplayScreen::Cutscene)];
 
     CHECK(r.finished());
     CHECK_FALSE(r.stalled());
@@ -99,9 +106,10 @@ TEST_CASE("alpha: the real script plays start to end through every gameplay step
     CHECK(screens.wrong == 0);
     CHECK(battle > 0);
     CHECK(field > 0);
-    CHECK(stub > 0);
-    CHECK(screens.total() == battle + field + stub);
+    CHECK(stub + choice + qte + cutscene > 0); // every one of these opens the stub for now
+    CHECK(screens.total() == battle + field + stub + choice + qte + cutscene);
     if (counting) CHECK(allocs == 0);
     MESSAGE("alpha: " << scenes << " scenes, " << beats << " beats, " << screens.total() << " screens (" << battle
-                      << " battle, " << field << " field, " << stub << " stub), " << moves << " moves");
+                      << " battle, " << field << " field, " << stub << " stub, " << choice << " choice, " << qte
+                      << " qte, " << cutscene << " cutscene), " << moves << " moves");
 }

@@ -396,7 +396,7 @@ void AFTStoryDirector::StartStep()
 	const ftcore::GameplayStep& Step = Chain.current();
 	bHandingOff = true;
 	const TCHAR* ScreenName = TEXT("Stub");
-	switch (Step.screen)
+	switch (ftcore::screenRoutesTo(Step.screen))
 	{
 	case ftcore::GameplayScreen::Battle:
 		Banner = TEXT("Battle!");
@@ -443,14 +443,15 @@ void AFTStoryDirector::OpenStep()
 	Carry.Scene = FT::ToFString(Runner.position().scene);
 	Carry.Beat = static_cast<int32>(Runner.position().beat);
 	Carry.Kind = FT::ToFString(Runner.gameplayKindName());
-	Carry.Screen = Step.screen;
+	const ftcore::GameplayScreen Routed = ftcore::screenRoutesTo(Step.screen);
+	Carry.Screen = Routed;
 	Carry.Step = static_cast<int32>(GI->Chain.step());
 	Carry.StepCount = static_cast<int32>(GI->Chain.count());
 	Carry.StepLabel = FT::ToFString(Step.label());
 	Carry.StepToken = FT::ToFString(Step.tokenName());
 	Carry.bAutoPlay = bAutoPlay;
-	const FString& Map = Step.screen == ftcore::GameplayScreen::Battle ? BattleMap
-		: Step.screen == ftcore::GameplayScreen::Field ? FieldMap : StubMap;
+	const FString& Map = Routed == ftcore::GameplayScreen::Battle ? BattleMap
+		: Routed == ftcore::GameplayScreen::Field ? FieldMap : StubMap;
 	UGameplayStatics::OpenLevel(this, FName(*Map));
 }
 
