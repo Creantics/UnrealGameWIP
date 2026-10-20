@@ -44,8 +44,12 @@ TEST_CASE("gameplay tokens map to screens") {
     CHECK(gameplayTokenScreen(GameplayToken::Cmb) == GameplayScreen::Battle);
     CHECK(gameplayTokenScreen(GameplayToken::Eng) == GameplayScreen::Field);
     CHECK(gameplayTokenScreen(GameplayToken::Play) == GameplayScreen::Field);
-    for (GameplayToken t : {GameplayToken::Chc, GameplayToken::Bnt, GameplayToken::Cg, GameplayToken::He,
-                            GameplayToken::Qte, GameplayToken::CoopQte, GameplayToken::Mini, GameplayToken::Unknown})
+    CHECK(gameplayTokenScreen(GameplayToken::Chc) == GameplayScreen::Choice);
+    CHECK(gameplayTokenScreen(GameplayToken::Qte) == GameplayScreen::Qte);
+    CHECK(gameplayTokenScreen(GameplayToken::CoopQte) == GameplayScreen::Qte);
+    CHECK(gameplayTokenScreen(GameplayToken::Cg) == GameplayScreen::Cutscene);
+    CHECK(gameplayTokenScreen(GameplayToken::He) == GameplayScreen::Cutscene);
+    for (GameplayToken t : {GameplayToken::Bnt, GameplayToken::Mini, GameplayToken::Unknown})
         CHECK(gameplayTokenScreen(t) == GameplayScreen::Stub);
     CHECK(gameplayTokenFromName("cmb") == GameplayToken::Cmb);
     CHECK(gameplayTokenFromName("Co-Op QTE") == GameplayToken::CoopQte);
@@ -53,6 +57,26 @@ TEST_CASE("gameplay tokens map to screens") {
     CHECK(gameplayTokenName(GameplayToken::CoopQte) == "co-op QTE");
     CHECK(gameplayTokenName(GameplayToken::Unknown).empty());
     CHECK(gameplayScreenName(GameplayScreen::Stub) == "stub");
+    CHECK(gameplayScreenName(GameplayScreen::Choice) == "choice");
+    CHECK(gameplayScreenName(GameplayScreen::Qte) == "qte");
+    CHECK(gameplayScreenName(GameplayScreen::Cutscene) == "cutscene");
+}
+
+TEST_CASE("screens route: new screens open the stub for now") {
+    static_assert(screenRoutesTo(GameplayScreen::Choice) == GameplayScreen::Stub);
+    static_assert(screenRoutesTo(GameplayScreen::Qte) == GameplayScreen::Stub);
+    static_assert(screenRoutesTo(GameplayScreen::Cutscene) == GameplayScreen::Stub);
+    static_assert(screenRoutesTo(GameplayScreen::Battle) == GameplayScreen::Battle);
+    static_assert(screenRoutesTo(GameplayScreen::Field) == GameplayScreen::Field);
+    static_assert(screenRoutesTo(GameplayScreen::Stub) == GameplayScreen::Stub);
+    static_assert(screenRoutesTo(GameplayScreen::Box) == GameplayScreen::Box);
+    GameplayPlan p; // invented fixture tokens
+    REQUIRE(p.lower("CHC + QTE + CG + BNT + ZZZ"));
+    CHECK(p.count(GameplayScreen::Choice) == 1);
+    CHECK(p.count(GameplayScreen::Qte) == 1);
+    CHECK(p.count(GameplayScreen::Cutscene) == 1);
+    CHECK(p.count(GameplayScreen::Stub) == 2);
+    CHECK(p.unknownTokens() == 1);
 }
 
 TEST_CASE("a mode chain lowers to its steps in order") {
@@ -61,11 +85,11 @@ TEST_CASE("a mode chain lowers to its steps in order") {
         REQUIRE(p.lower("PLAY → CHC → CMB"));
         CHECK(p.size() == 3);
         checkStep(p, 0, GameplayToken::Play, GameplayScreen::Field);
-        checkStep(p, 1, GameplayToken::Chc, GameplayScreen::Stub);
+        checkStep(p, 1, GameplayToken::Chc, GameplayScreen::Choice);
         checkStep(p, 2, GameplayToken::Cmb, GameplayScreen::Battle);
         CHECK(p.count(GameplayScreen::Battle) == 1);
         CHECK(p.count(GameplayScreen::Field) == 1);
-        CHECK(p.count(GameplayScreen::Stub) == 1);
+        CHECK(p.count(GameplayScreen::Choice) == 1);
         CHECK(p.warnings() == 0);
     }
     SUBCASE("qualifiers become labels") {
@@ -78,21 +102,21 @@ TEST_CASE("a mode chain lowers to its steps in order") {
         REQUIRE(p.lower("ENG + CHC (loop) → CMB → ENG"));
         CHECK(p.size() == 4);
         checkStep(p, 0, GameplayToken::Eng, GameplayScreen::Field);
-        checkStep(p, 1, GameplayToken::Chc, GameplayScreen::Stub, "loop");
+        checkStep(p, 1, GameplayToken::Chc, GameplayScreen::Choice, "loop");
         checkStep(p, 2, GameplayToken::Cmb, GameplayScreen::Battle);
         checkStep(p, 3, GameplayToken::Eng, GameplayScreen::Field);
     }
     SUBCASE("a multi-word token") {
         REQUIRE(p.lower("PLAY → ENG → co-op QTE"));
         CHECK(p.size() == 3);
-        checkStep(p, 2, GameplayToken::CoopQte, GameplayScreen::Stub);
+        checkStep(p, 2, GameplayToken::CoopQte, GameplayScreen::Qte);
         CHECK(p.unknownTokens() == 0);
     }
     SUBCASE("a bare lower-case word qualifies the step before it") {
         REQUIRE(p.lower("CMB (Phase IV) + CHC (loop), intercut"));
         CHECK(p.size() == 2);
         checkStep(p, 0, GameplayToken::Cmb, GameplayScreen::Battle, "Phase IV");
-        checkStep(p, 1, GameplayToken::Chc, GameplayScreen::Stub, "loop, intercut");
+        checkStep(p, 1, GameplayToken::Chc, GameplayScreen::Choice, "loop, intercut");
     }
     SUBCASE("a qualifier before any step goes to the first one") {
         REQUIRE(p.lower("intercut, CMB (duel)"));
@@ -113,8 +137,8 @@ TEST_CASE("a mode chain lowers to its steps in order") {
     SUBCASE("ASCII arrow") {
         REQUIRE(p.lower("CG -> HE (intercut) -> BNT"));
         CHECK(p.size() == 3);
-        checkStep(p, 0, GameplayToken::Cg, GameplayScreen::Stub);
-        checkStep(p, 1, GameplayToken::He, GameplayScreen::Stub, "intercut");
+        checkStep(p, 0, GameplayToken::Cg, GameplayScreen::Cutscene);
+        checkStep(p, 1, GameplayToken::He, GameplayScreen::Cutscene, "intercut");
         checkStep(p, 2, GameplayToken::Bnt, GameplayScreen::Stub);
     }
     SUBCASE("separators inside a parenthetical don't split") {
@@ -134,7 +158,7 @@ TEST_CASE("a mode chain lowers to its steps in order") {
         checkStep(p, 1, GameplayToken::Cmb, GameplayScreen::Battle, "pair action");
         REQUIRE(p.lower("[\"CHC\", \"ENG\"]"));
         CHECK(p.size() == 2);
-        checkStep(p, 0, GameplayToken::Chc, GameplayScreen::Stub);
+        checkStep(p, 0, GameplayToken::Chc, GameplayScreen::Choice);
     }
     SUBCASE("empty pieces are skipped") {
         REQUIRE(p.lower(" → CMB →  , + ENG → "));
@@ -288,7 +312,7 @@ TEST_CASE("every gameplay beat of the real script lowers with no unknown token")
     const StoryDatabase& db = s.db;
     GameplayPlan p;
     std::uint32_t beats = 0, empty = 0, unknown = 0, dropped = 0, withMinutes = 0;
-    std::uint32_t battle = 0, field = 0, stub = 0;
+    std::uint32_t battle = 0, field = 0, stub = 0, choice = 0, qte = 0, cutscene = 0;
     for (std::uint32_t si = 0; si < db.sceneCount(); ++si) {
         const Scene& sc = db.scene(si);
         for (std::uint32_t bi = 0; bi < sc.beatCount; ++bi) {
@@ -302,6 +326,9 @@ TEST_CASE("every gameplay beat of the real script lowers with no unknown token")
             battle += p.count(GameplayScreen::Battle);
             field += p.count(GameplayScreen::Field);
             stub += p.count(GameplayScreen::Stub);
+            choice += p.count(GameplayScreen::Choice);
+            qte += p.count(GameplayScreen::Qte);
+            cutscene += p.count(GameplayScreen::Cutscene);
         }
     }
     CHECK(beats == 74);
@@ -311,7 +338,8 @@ TEST_CASE("every gameplay beat of the real script lowers with no unknown token")
     CHECK(withMinutes > 0);
     CHECK(battle > 0);
     CHECK(field > 0);
-    CHECK(stub > 0);
+    CHECK(stub + choice + qte + cutscene > 0);
     MESSAGE("real script plans: " << beats << " beats, " << battle << " battle, " << field << " field, " << stub
-                                  << " stub steps");
+                                  << " stub, " << choice << " choice, " << qte << " qte, " << cutscene
+                                  << " cutscene steps");
 }

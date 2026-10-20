@@ -27,7 +27,8 @@ TEST_CASE("chain walks every step and finishes after the last") {
     CHECK(chain.current().screen == GameplayScreen::Battle);
     CHECK(chain.current().label() == "pair");
     CHECK(chain.finishStep(true) == StoryChain::Next::Open);
-    CHECK(chain.current().screen == GameplayScreen::Stub);
+    CHECK(chain.current().screen == GameplayScreen::Choice);
+    CHECK(screenRoutesTo(chain.current().screen) == GameplayScreen::Stub);
     CHECK(chain.current().tokenName() == "CHC");
     CHECK(chain.finishStep(true) == StoryChain::Next::Finish);
     CHECK_FALSE(chain.active());
@@ -102,14 +103,18 @@ TEST_CASE("alpha counters and the closing line") {
     c.addScreen(GameplayScreen::Battle);
     c.addScreen(GameplayScreen::Field);
     c.addScreen(GameplayScreen::Stub);
+    c.addScreen(GameplayScreen::Choice); // routed: counts as a stub
+    c.addScreen(GameplayScreen::Qte);
+    c.addScreen(GameplayScreen::Cutscene);
     c.addScreen(GameplayScreen::Box); // not a screen
-    CHECK(c.screens() == 4);
+    CHECK(c.stub == 4);
+    CHECK(c.screens() == 7);
     CHECK(c.clean());
     CHECK(c.exitCode() == 0);
 
     char line[160];
     const std::size_t n = c.formatFinished(line, sizeof line);
-    CHECK(std::strcmp(line, "Alpha: FINISHED 73 scenes, 4 screens (2 battle, 1 field, 1 stub), 0 STUCK, 0 warnings") == 0);
+    CHECK(std::strcmp(line, "Alpha: FINISHED 73 scenes, 7 screens (2 battle, 1 field, 4 stub), 0 STUCK, 0 warnings") == 0);
     CHECK(n == std::strlen(line));
 
     c.warnings = 2;

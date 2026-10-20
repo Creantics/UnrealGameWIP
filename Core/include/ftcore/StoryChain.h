@@ -79,11 +79,14 @@ struct AlphaCounters {
     std::uint32_t warnings = 0; // plan unknown or dropped tokens, screens that came back not done
 
     void addScreen(GameplayScreen screen) {
-        switch (screen) {
+        switch (screenRoutesTo(screen)) { // the screen that was really played
         case GameplayScreen::Battle: ++battle; break;
         case GameplayScreen::Field: ++field; break;
         case GameplayScreen::Stub: ++stub; break;
-        case GameplayScreen::Box: break;
+        case GameplayScreen::Box:
+        case GameplayScreen::Choice:
+        case GameplayScreen::Qte:
+        case GameplayScreen::Cutscene: break;
         }
     }
     std::uint32_t screens() const { return battle + field + stub; }
