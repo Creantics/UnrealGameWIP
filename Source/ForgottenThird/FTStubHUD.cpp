@@ -7,14 +7,14 @@
 
 namespace
 {
-const FLinearColor kGoldField(1.0f, 0.82f, 0.25f);
-const FLinearColor kWhiteField(1.f, 1.f, 1.f);
-const FLinearColor kDimField(0.6f, 0.6f, 0.65f);
-const FLinearColor kPanelField(0.02f, 0.02f, 0.05f, 0.75f);
+const FLinearColor kGoldStub(1.0f, 0.82f, 0.25f);
+const FLinearColor kWhiteStub(1.f, 1.f, 1.f);
+const FLinearColor kDimStub(0.6f, 0.6f, 0.65f);
+const FLinearColor kPanelStub(0.02f, 0.02f, 0.05f, 0.75f);
 
 // Static so drawing never builds strings.
-const FString kNoStepField(TEXT("No story step"));
-const FString kContinueField(TEXT("Space / Enter / pad A: continue"));
+const FString kNoStepStub(TEXT("No story step"));
+const FString kContinueStub(TEXT("Space / Enter / pad A: continue"));
 } // namespace
 
 void AFTStubHUD::DrawCentered(const FString& Text, const FLinearColor& Color, float Y, UFont* Font, float Scale)
@@ -43,21 +43,21 @@ void AFTStubHUD::DrawHUD()
 	const float CY = Canvas->ClipY * 0.5f;
 	const float W = 760.f * S;
 	const float H = 300.f * S;
-	DrawRect(kPanelField, CX - W * 0.5f, CY - H * 0.5f, W, H);
+	DrawRect(kPanelStub, CX - W * 0.5f, CY - H * 0.5f, W, H);
 
 	if (!Mode->HasStep())
 	{
-		DrawCentered(kNoStepField, kWhiteField, CY - 20.f * S, GEngine->GetLargeFont(), 1.4f);
+		DrawCentered(kNoStepStub, kWhiteStub, CY - 20.f * S, GEngine->GetLargeFont(), 1.4f);
 		return;
 	}
 	float Y = CY - H * 0.5f + 40.f * S;
-	DrawCentered(Mode->GetTitleText(), kGoldField, Y, GEngine->GetLargeFont(), 2.2f);
+	DrawCentered(Mode->GetTitleText(), kGoldStub, Y, GEngine->GetLargeFont(), 2.2f);
 	Y += 110.f * S;
 	if (!Mode->GetLabelText().IsEmpty())
 	{
-		DrawCentered(Mode->GetLabelText(), kWhiteField, Y, GEngine->GetMediumFont(), 1.5f);
+		DrawCentered(Mode->GetLabelText(), kWhiteStub, Y, GEngine->GetMediumFont(), 1.5f);
 	}
 	Y += 50.f * S;
-	DrawCentered(Mode->GetStepText(), kDimField, Y, GEngine->GetMediumFont(), 1.2f);
-	DrawCentered(kContinueField, kDimField, CY + H * 0.5f - 50.f * S, GEngine->GetSmallFont(), 1.3f);
+	DrawCentered(Mode->GetStepText(), kDimStub, Y, GEngine->GetMediumFont(), 1.2f);
+	DrawCentered(kContinueStub, kDimStub, CY + H * 0.5f - 50.f * S, GEngine->GetSmallFont(), 1.3f);
 }

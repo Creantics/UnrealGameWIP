@@ -66,7 +66,6 @@ public:
 	FString BattleMap = TEXT("BattleDemo");
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	FString FieldMap = TEXT("Explore");
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	// The stub screen's map (AFTStubGameMode).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	FString StubMap = TEXT("Stub");
