@@ -2,7 +2,8 @@
 // A port of newengine's tonemap STYLE stage (engine/src/render/PostProcess.cpp, applyStyle) plus a
 // screen-space version of the lit shader's tonal-art-map hatching. Display-space sRGB in and out.
 // The inputs are named after the material parameters (FTStyleParameters.cpp) plus SceneColor
-// (PostProcessInput0), SceneDepthIn (SceneDepth, cm), WorldPos and TimeSec.
+// (PostProcessInput0), SceneDepthIn (SceneDepth, cm), SceneNormalIn (GBuffer world normal), CameraVec
+// (surface to camera, world space), WorldPos and TimeSec.
 //
 // Split into several literals: MSVC caps one string literal piece at 16 KB.
 
@@ -123,6 +124,35 @@ c = saturate(lerp(float3(l, l, l), c, Saturation));
 l = dot(c, kLuma);
 c *= lerp(ShadowTint.rgb, float3(1.0, 1.0, 1.0), smoothstep(0.0, 0.55, l));
 c *= lerp(float3(1.0, 1.0, 1.0), HighlightTint.rgb, smoothstep(0.35, 1.0, l));
+// Black point: the darks clip to black and the rest re-stretches (keeps a tinted shadow from going muddy).
+if (BlackPoint > 0.0)
+{
+	c = saturate((c - BlackPoint) / max(1.0 - BlackPoint, 1e-3));
+}
+
+// Pack rim. newengine adds (1 - N.V)^3 * rimScale * rimTint to the lit colour of skinned meshes. Post has
+// no mesh type and no light, so this is a stand-in: the GBuffer normal against the view direction, added
+// in display space, masked to silhouettes (a depth step to something farther within a few pixels) so a
+// floor seen edge-on does not glow. It applies to any foreground shape, not only the cast. It runs before
+// the hatching so the tone the strokes see includes it, and after bloom, so it never blooms.
+#if POST_PROCESS_MATERIAL
+if (RimScale > 0.0 && !sky)
+{
+	float3 nrm = SceneNormalIn.rgb;
+	float nLen = length(nrm);
+	if (nLen > 1e-3)
+	{
+		float ndv = saturate(dot(nrm / nLen, normalize(CameraVec)));
+		float fres = 1.0 - ndv;
+		float2 ro = 4.0 * pxScale * invView;
+		float dC = clamp(rawDepth, 1.0, SkyDepth);
+		float dFar = max(max(F.DepthCm(vuv + float2(ro.x, 0.0), SkyDepth), F.DepthCm(vuv - float2(ro.x, 0.0), SkyDepth)),
+			max(F.DepthCm(vuv + float2(0.0, ro.y), SkyDepth), F.DepthCm(vuv - float2(0.0, ro.y), SkyDepth)));
+		float edge = smoothstep(0.04, 0.15, (dFar - dC) / dC);
+		c = saturate(c + fres * fres * fres * edge * RimScale * RimTint.rgb);
+	}
+}
+#endif
 )HLSL")
 TEXT(R"HLSL(
 // Hatching (screen-space stand-in for the lit shader's tonal art map): darker tone -> denser strokes.

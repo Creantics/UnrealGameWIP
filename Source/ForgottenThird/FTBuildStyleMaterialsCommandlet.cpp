@@ -9,6 +9,7 @@
 #include "FTStyleParameters.h"
 #include "HAL/FileManager.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialExpressionCameraVectorWS.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionSceneTexture.h"
@@ -86,6 +87,12 @@ UMaterial* BuildStyleMaterial(UPackage* Package)
 	AddInput(Custom, TEXT("WorldPos"), WorldPos);
 	UMaterialExpressionTime* Time = AddExpression<UMaterialExpressionTime>(Material, -1200, 0);
 	AddInput(Custom, TEXT("TimeSec"), Time);
+	// The pack rim's post approximation: the GBuffer normal against the surface-to-camera direction.
+	UMaterialExpressionSceneTexture* Normal = AddExpression<UMaterialExpressionSceneTexture>(Material, -1200, 100);
+	Normal->SceneTextureId = PPI_WorldNormal;
+	AddInput(Custom, TEXT("SceneNormalIn"), Normal);
+	UMaterialExpressionCameraVectorWS* CameraVec = AddExpression<UMaterialExpressionCameraVectorWS>(Material, -1200, 200);
+	AddInput(Custom, TEXT("CameraVec"), CameraVec);
 
 	// One parameter per style field, defaulting to the identity (None).
 	int32 Row = 0;

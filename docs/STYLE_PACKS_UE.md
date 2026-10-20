@@ -7,7 +7,7 @@ the screen.
 
 | Piece | File | Job |
 |---|---|---|
-| `ftcore::StyleSettings` and friends | `Core/include/ftcore/StylePack.h`, `Core/src/StylePack.cpp` | Pack values, blends, the dial, spec parsing. Ten doctest cases. |
+| `ftcore::StyleSettings` and friends | `Core/include/ftcore/StylePack.h`, `Core/src/StylePack.cpp` | Pack values, blends, the dial, spec parsing. Thirteen doctest cases. |
 | Parameter mapping | `Source/ForgottenThird/FTStyleParameters.{h,cpp}` | `FTStyle::VisitParameters`: one call per material parameter, with unit conversion. The commandlet and the controller both use it, so they always agree. |
 | Shader | `Source/ForgottenThird/FTStyleShader.inl` | The HLSL body of the Custom node. A port of newengine's tonemap STYLE stage, plus a screen-space hatching. |
 | Material builder | `FTBuildStyleMaterialsCommandlet` | Writes `/Game/Rendering/PP_Style` and the instances `MI_Style_Solhaven`, `_Lattice`, `_Unwritten`, `_Restored` and `_InkSolhaven`. |
@@ -110,6 +110,7 @@ material instance unless the "Goes to" column says otherwise.
 | `outlineColor` | `OutlineColor` | sRGB |
 | `celSteps` | `CelSteps` | Used only for the hatching's shadow-only mask (see Deferred) |
 | `saturation`, `shadowTint`, `highlightTint` | `Saturation`, `ShadowTint`, `HighlightTint` | |
+| `blackPoint` | `BlackPoint` | Display values below it clip to black and the rest re-stretch. 0 in every pack (see below). |
 | `monochrome`, `monoGamma`, `paperColor`, `inkColor` | `Monochrome`, `MonoGamma`, `PaperColor`, `InkColor` | |
 | `halftone`, `halftonePitch` | `Halftone`, `HalftonePitch` | |
 | `paperSky`, `paperGrain` | `PaperSky`, `PaperGrain` | Sky is scene depth ≥ `SkyDepth` (group "Scene", 60000 cm) |
@@ -119,27 +120,70 @@ material instance unless the "Goes to" column says otherwise.
 | `hatch`, `hatchScale`, `hatchDensity`, `hatchInk`, `hatchOverlay`, `hatchMaxLevel`, `hatchShadowOnly`, `hatchCurve` | same names, capitalised | Screen-space hatching in post |
 | `inkVoid` | `InkVoid` | |
 | `inkVoidNear`, `inkVoidFar` | `InkVoidNear`, `InkVoidFar` | × 100 (cm) |
+| `rimScale`, `rimTint` | `RimScale`, `RimTint` | Post approximation of the pack rim (below) |
 | `bloomScale` | none | Controller: `BloomIntensity = BaseBloomIntensity (0.675) × bloomScale` |
 | `bloomThresholdScale` | none | Controller: `BloomThreshold = BaseBloomThreshold × scale`. Only applied when the base is ≥ 0, and UE's default is −1, so it is off by default. |
 | `vignetteScale` | none | Controller: `VignetteIntensity = 0.4 × scale` |
 | `filmGrainScale` | none | Controller: `FilmGrainIntensity = BaseFilmGrainIntensity (0) × scale` |
 | `chromaScale` | none | Controller: `SceneFringeIntensity = BaseFringeIntensity (0) × scale` |
-| `cel`, `hull*`, `rimScale`, `rimTint`, `face*` | none | Deferred (below) |
+| `cel`, `hull*`, `face*` | none | Deferred (below) |
 
 Pipeline order inside the shader, the same as newengine:
 
 1. Tint and saturation.
-2. Hatching.
-3. Mono remap with halftone.
-4. Paper sky.
-5. Ink void.
-6. Island.
-7. Outline.
-8. Paper tooth.
+2. Black point.
+3. Pack rim.
+4. Hatching.
+5. Mono remap with halftone.
+6. Paper sky.
+7. Ink void.
+8. Island.
+9. Outline.
+10. Paper tooth.
+
+The rim and the black point are Unreal-side steps: in newengine the rim is part of the lit colour, so it
+reaches the style stage already in the image, and the black point is an optional extra (below).
 
 Edges use the second difference of 1/depth over a 3×3 ring, as in newengine. The shader reads
 depth through `SceneTextureLookup(…, PPI_SceneDepth)`, and the SceneTexture nodes wired into the
-Custom node make the material bind both scene textures.
+Custom node make the material bind the scene textures it reads (colour, depth and the GBuffer world
+normal). A `CameraVectorWS` node feeds the rim's view direction.
+
+## Art direction engine deltas
+
+Art direction v2 section 7 lists the engine work behind the v2 pack values. Where each item stands here:
+
+| # | Item | Fields | Unreal |
+|---|---|---|---|
+| – | Parameter-only values | Solhaven saturation; the Lattice's outline, cel, bands, shadow tint, bloom, vignette and hull; the Unwritten's tile, gamma and density | In `stylePack()`. The cel and hull values wait for the deferred lit-pass and geometry work. |
+| 1 | Hatch overlay mode | `hatchOverlay` | Post hatching: strokes over the graded colour instead of a paper-bright base. |
+| 2 | Hatch level cap | `hatchMaxLevel` | Post hatching: the level is clamped before the stroke lookup. |
+| 3 | Shadow-band mask | `hatchShadowOnly` | Post hatching. Approximated by display tone below `0.8 / CelSteps` (no light buffer in post). |
+| 4 | Hatch tone curve | `hatchCurve` | Post hatching and `hatchWeights()`. Tested: with density 1.4 and curve 1.8 the cross begins at tone 0.50 and is full at 0.375. |
+| 5 | Pack rim | `rimScale`, `rimTint` | Post approximation (below). |
+| 6 | Bloom threshold multiplier | `bloomThresholdScale` | Controller, on `BloomThreshold`. Off until `BaseBloomThreshold` is set to 0 or more. |
+| 7 | Ink void | `inkVoid`, `inkVoidNear`, `inkVoidFar` | Post: depth fades to ink, and the sky goes to ink too. 0 in every pack; a scene sets it. |
+| 8 | Core-shadow ink (optional) | – | Not ported. It is for the environment only, which needs the character/environment mask that post lacks. |
+| 9 | Black-point clip (optional) | `blackPoint` | Post, right after the tints. 0 in every pack: v2 proposes 0.06 for the Lattice only if its shadow tint muddies the darks, which needs a look at the picture first. |
+| 10, 11 | Per-draw override, object-space strokes | – | Not ported. They belong to the lit pass and the hull, which are deferred. |
+
+Every new field defaults to the identity, so `lerp` and the dial cover it and the Restored pack, which
+sets none of them, draws as before.
+
+### The rim in post
+
+newengine adds `(1 − N·V)³ × rimScale × linear(rimTint)` to the lit colour of skinned meshes, before
+bloom and tonemapping. The post version:
+
+- reads `N` from the GBuffer world normal and `V` from `CameraVectorWS`, and adds
+  `(1 − N·V)³ × RimScale × RimTint` to the display-space colour;
+- masks it to silhouettes: the rim only shows where a depth sample 4 px away (at 1080p) is at least 4–15 %
+  farther than the pixel, so a floor or wall seen edge-on does not glow;
+- applies to every foreground surface, not only the cast, since post has no mesh type. Custom depth isn't
+  used as a cast mask because the explore spots already use it for focus;
+- runs before the hatching, so strokes thin out along the rim, and after bloom, so the rim never blooms.
+  That is what the Lattice wants anyway (a cyan rim kept below the bloom threshold);
+- is skipped in the base-pass permutation UE also compiles for post materials.
 
 ## Deferred, and the plan for each
 
@@ -148,7 +192,7 @@ Custom node make the material bind both scene textures.
 | **Cel bands** (`cel`, `celSteps`) | They quantise `N·L × shadow` in the lit shader. Banding tone in post would posterise textures, which the spec rules out. | A material function for the character and world master materials that bands the light term. Alternatively, a Substrate or custom shading model once the master materials exist. Feed `cel` and `celSteps` through a Material Parameter Collection the controller writes. |
 | **Lit hatching** (tonal art map in the lit pass) | Post only sees display tone, not the light amount. The post version is a screen-space stand-in. Its `hatchShadowOnly` mask is display tone below `0.8 / CelSteps`, not the real lowest cel band. | Port newengine's procedural TAM generator to a Core function or a texture-building commandlet. Sample it in the master materials from the banded light term, keyed by the same MPC. Drop the post hatching when that lands. |
 | **Inverted-hull silhouettes** (`hull`, `hullWidth`, `hullColor`, `hullStatic`) | It is a geometry pass. | A second material slot or overlay material on skeletal meshes: a front-face-culled shell pushed out along normals to a constant pixel width, with the colour from the MPC. Static meshes opt in with `hullStatic`. |
-| **Pack rim** (`rimScale`, `rimTint`) | It is a scene-referred term in the lit pass on skinned meshes. | A Fresnel term in the character master material, from the MPC. |
+| **Pack rim, lit version** (`rimScale`, `rimTint`) | Post has a stand-in (above). The real term is scene-referred, in the lit pass, on skinned meshes only. | A Fresnel term in the character master material, from the MPC. Drop the post rim when it lands. |
 | **Face fields** (`face*`) | They apply to materials with a face role, inside the lit hatching. | Comes with lit hatching. `faceSnap` belongs to `UFTFaceComponent`. |
 | **Full colour-authority buffer** (8.15.5) | v1 is one disc, as in newengine. | A render-target mask (gold, violet, rose, blank channels) written by emitters and sampled here in place of the disc test. |
 | **Static instance for dial specs** | A dial has no saved instance. | Only needed if the editor viewport must show a dial without playing. The commandlet could save an `MI_Style_Custom`. |
@@ -162,8 +206,11 @@ Custom node make the material bind both scene textures.
   - The first cook failed. UE also compiles a base-pass pixel shader for a post-process material, and
     `PostProcessOutput_ViewportSizeInverse` doesn't exist there.
   - The shader now falls back to `View.ViewSizeAndInvSize` outside `POST_PROCESS_MATERIAL`.
+- **Not yet built:** the black point and the post rim (new `SceneNormalIn` and `CameraVec` inputs)
+  haven't been through UBT or `FTBuildStyleMaterials` yet. Rerun the commandlet before judging them.
 - **Not yet seen:** nobody has looked at the picture. Everything above ran without a renderer, so the
   look of each pack still needs an eye in the editor or a packaged build. Things to check:
   - outline threshold and width against UE's depth precision;
   - hatching density at 1080p;
-  - that the sky reads as sky (`SkyDepth`).
+  - that the sky reads as sky (`SkyDepth`);
+  - the rim's silhouette mask: rim width and whether props pick up too much of it.
