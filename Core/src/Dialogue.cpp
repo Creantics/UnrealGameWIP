@@ -39,6 +39,7 @@ std::string_view gameplayScreenName(GameplayScreen screen) {
     switch (screen) {
     case GameplayScreen::Battle: return "battle";
     case GameplayScreen::Field: return "field";
+    case GameplayScreen::Stub: return "stub";
     case GameplayScreen::Box: break;
     }
     return "box";

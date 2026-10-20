@@ -37,6 +37,11 @@ struct FFTStoryCarry
 	int32 Beat = -1;
 	FString Kind; // gameplay kind as written (CMB, ENG, PLAY)
 	ftcore::GameplayScreen Screen = ftcore::GameplayScreen::Box;
+	// The step of the beat's ftcore::GameplayPlan this screen plays (0-based) and the plan's step
+	// count. The story resumes only after the last step; a single-screen beat is step 0 of 1.
+	int32 Step = 0;
+	int32 StepCount = 1;
+	FString StepLabel; // the step's qualifiers ("duel", "loop, intercut"); empty when none
 	bool bAutoPlay = false; // the screen plays itself (a headless hand-off run)
 	bool bDone = false;
 	bool bWon = false;
