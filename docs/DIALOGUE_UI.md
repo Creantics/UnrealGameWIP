@@ -15,8 +15,60 @@ start the story; the story opens them for its gameplay beats (see below).
 |---|---|---|
 | Finish the text, then continue | Space, left click or Enter | A or Start |
 | Pick an option (once the prompt is out) | 1-4 | D-pad up, right, down, left |
+| Backlog | B or mouse wheel up; B or Esc closes | |
+| Scroll the backlog | Up / Down, mouse wheel | |
+| Skip (hold) | Ctrl or S | Right trigger |
+| Settings | Esc (Esc, Backspace or the Back row closes) | pad B closes |
 
 The first press shows the whole line; the next one moves on. Greyed options can't be picked.
+
+### Backlog
+
+B (or a wheel notch up) opens a scrollable overlay of what you were shown: lines with their
+speaker, directions, choice prompts and the option you picked (in green, with a ">" in front).
+It keeps the last 200 entries, newest at the bottom; Up / Down or the wheel go back and forward in
+time. While it is open the story stands still (no typing, a hold waits) and presses are ignored. B
+or Esc closes it. Not available on the end card. The log starts over on New Game, on loading a
+save, on returning to the title and when the story is reloaded; it is never saved.
+
+### Skip
+
+Holding Ctrl, S or the pad's right trigger fast-forwards: each line or direction shows at once and
+the story moves on every 0.08 s (`SkipInterval` on the director); a hold is passed as soon as it
+is reached. It stops at a choice, at a gameplay beat and at the end, and carries on after you
+answer if the key is still down. A "SKIP >>" tag shows top right while it runs. With the setting
+**Skip: Seen lines only** (the default) it also stops at a line you have not seen before, which
+types out normally; **All lines** never stops for that. A beat counts as seen once you move off it.
+The seen beats are a bitset (one bit per beat) saved with the story slot (see GAME_FRAME.md), so
+they survive quitting; a new game keeps them.
+
+### Auto-advance
+
+With **Auto-advance** on (settings) a fully shown line or direction moves on by itself after the
+delay (0.25 s to 5 s, default 1.5 s). Choices and gameplay beats always wait for you. Skip takes
+priority while held. An "AUTO" tag shows top right.
+
+### Settings
+
+Esc opens the settings overlay from the story (and the title's Settings entry opens the same
+one). Up / Down (or the mouse) pick a row, Left / Right or a click on the left / right half of the
+value step it, Enter / Space / click cycle it. Changes apply at once and are written to
+`Saved/Settings.json` when the overlay closes (Esc, or the Back row). The story is paused behind it.
+
+| Row | Values | Used by |
+|---|---|---|
+| Text speed | Slow 22, Normal 45, Fast 90 characters per second, Instant | the presenter's reveal rate |
+| Auto-advance, delay | on / off, 0.25 to 5 s in quarters | the director |
+| Skip | seen lines only / all lines | skip |
+| Master, music, voice, effects volume | 0 to 100 % in steps of 10 | stored; no audio yet |
+| Defence window assist | off / wide | stored; the combat stream reads it |
+| Subtitle size | small 0.85x, medium, large 1.3x | the dialogue box's text size |
+| Reduce flashes | on / off | stored; the style controller reads it |
+
+The rules (`ftcore::SettingsMenu`, `ftcore::Settings`, JSON with a `version` field, defaults and
+clamping) are in `Core/include/ftcore/Settings.h` with tests in `test_settings.cpp`. The settings
+never touch autoplay: a headless run (`-StoryAutoPlay`, `-AlphaAutoPlay`, ...) keeps its own text
+speed, never binds the backlog, skip or settings keys, and is never blocked by them.
 
 ## What the box shows
 
@@ -43,7 +95,19 @@ The first press shows the whole line; the next one moves on. Greyed options can'
 - `AFTStoryHUD` draws on the canvas (no UMG). It wraps the text once per beat and draws the typed
   part with a reused buffer, so steady-state drawing builds no strings.
 
-Tuning on the director: `RevealRate` (characters per second, default 45), `AutoPlayPause`.
+- `ftcore::DialogueBacklog` (`Backlog.h`) is a fixed ring of 200 entries holding database indices
+  (scene, beat, option), not text, so a push never allocates; the text is read back from the story
+  database on demand. `ftcore::SeenLines` (`Seen.h`) is the seen-beat bitset, `ftcore::SkipController`
+  and `ftcore::AutoAdvancer` (`Skip.h`) turn held-key and delay into `DialogueCommand`s, and
+  `ftcore::Settings` / `SettingsMenu` (`Settings.h`) hold the options. Tests: `test_backlog.cpp`,
+  `test_skip.cpp`, `test_settings.cpp`.
+- `UFTStorySubsystem` keeps the backlog, the seen bits and a pause flag (so they outlive the
+  director, which is spawned again after each gameplay screen). `UFTSettingsSubsystem` keeps the
+  settings and the overlay state; `AFTPlayerController` has the reading keys (`OnBacklog`,
+  `OnWheel`, `OnSkip`, and `OnMenuAdjust` in the menu context, which also shows the mouse cursor).
+
+Tuning on the director: `RevealRate` (characters per second, default 45; autoplay only, play by hand
+uses the text speed setting), `AutoPlayPause`, `SkipInterval` (0.08 s).
 
 ## Gameplay hand-off
 
@@ -153,6 +217,9 @@ It logs `Story: hand-off CMB at SC-P1-02 beat 0 to the battle screen.`, the batt
 - **Losing.** A lost story fight just waits for a retry; there's no game-over or retry menu.
 - **Voice.** Lines carry their VO ids (`GetLineId`), but nothing plays audio yet.
 - **Localisation.** The box shows the script's text; the loc keys aren't looked up.
-- **Menus, saving, backlog and skip.** None yet; the story always starts from the beginning.
+- **Pad control of the settings values.** The d-pad moves between rows and A cycles a value, but
+  there is no left / right step on the pad (the d-pad's left and right already move up and down in
+  menus); use Enter / A, or the keyboard or mouse.
+- **Backlog voice replay.** The backlog is text only (there is no audio yet).
 - **Presentation.** Engine fonts on a flat panel; no portraits, staging or camera work.
 - **At most four options** can be picked with the keys. The script has none with more.

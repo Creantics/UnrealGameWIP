@@ -79,6 +79,7 @@ void UFTStorySubsystem::Deinitialize()
 {
 	Runner->setCueHandler(nullptr, nullptr);
 	Runner->setDatabase(nullptr);
+	Seen.setDatabase(nullptr);
 	PendingCues.Reset();
 	Super::Deinitialize();
 }
@@ -134,6 +135,8 @@ bool UFTStorySubsystem::LoadStory(const FString& Dir, FString& OutError, TArray<
 	Runner->setDatabase(nullptr);
 	Database = MoveTemp(NewDb);
 	Runner->setDatabase(Database.Get());
+	Seen.setDatabase(Database.Get()); // a new database: nothing seen yet, and the backlog's indices are stale
+	Backlog.clear();
 	PendingCues.Reset();
 	SeenSceneEpoch = Runner->sceneEpoch();
 	SeenBeatEpoch = Runner->beatEpoch();
@@ -150,6 +153,8 @@ bool UFTStorySubsystem::StartStory(const FString& SceneId)
 		return false;
 	}
 	bReportedFinished = false;
+	Backlog.clear(); // a new game (or a headless start): nothing shown yet
+	bPaused = false;
 	const bool bOk = Runner->start(FT::ToUtf8(SceneId));
 	Flush();
 	return bOk;
@@ -186,6 +191,8 @@ void UFTStorySubsystem::StopStory()
 {
 	Runner->stop();
 	PendingCues.Reset();
+	Backlog.clear();
+	bPaused = false;
 }
 
 EFTStoryState UFTStorySubsystem::GetState() const { return ToState(Runner->state()); }
@@ -275,6 +282,8 @@ bool UFTStorySubsystem::ApplySave(const FFTStorySave& InSave, TArray<FString>& O
 	}
 	ftcore::StoryLoadReport Report;
 	bReportedFinished = false;
+	Backlog.clear(); // a load: the backlog starts over
+	bPaused = false;
 	const bool bOk = ftcore::applyStory(Save, *Runner, &Report);
 	TGuardValue<bool> NoAutosave(bApplyingSave, true); // the flush below reports the loaded scene
 	for (const std::string& Id : Report.skippedFlags)
@@ -315,6 +324,21 @@ void UFTStorySubsystem::HandleSceneChanged(const FString& SceneId)
 	if (bAutosave && !bApplyingSave && bLoaded)
 	{
 		Autosave();
+	}
+}
+
+void UFTStorySubsystem::AdoptSeenFromSlot()
+{
+	if (!bLoaded || Seen.count() > 0 || !UGameplayStatics::DoesSaveGameExist(GetSlotName(), 0))
+	{
+		return;
+	}
+	const UFTStorySaveGame* Slot = Cast<UFTStorySaveGame>(UGameplayStatics::LoadGameFromSlot(GetSlotName(), 0));
+	ftcore::StorySave Save;
+	if (Slot && ftcore::decodeStorySave(FT::ToUtf8(Slot->SaveJson), Save))
+	{
+		const uint32 Count = ftcore::applySeen(Save, Seen);
+		UE_LOG(LogFTStory, Log, TEXT("Save: kept %u seen beats from the slot for the new game."), Count);
 	}
 }
 
@@ -410,7 +434,7 @@ void UFTStorySubsystem::Flush()
 
 void UFTStorySubsystem::Tick(float DeltaTime)
 {
-	if (!bLoaded || Runner->state() != ftcore::StoryRunner::State::Hold)
+	if (!bLoaded || bPaused || Runner->state() != ftcore::StoryRunner::State::Hold)
 	{
 		return;
 	}

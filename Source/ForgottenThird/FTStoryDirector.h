@@ -25,6 +25,16 @@
 // -StoryAutoPlayHandoff turns on autoplay that hands off even when fast (the screens play themselves);
 // -StoryQuitOnReturn exits once the story resumes after a whole beat (all its steps).
 //
+// Reading aids (interactive play only; autoplay never binds them, so headless runs are unchanged):
+// B or mouse wheel up opens the backlog (ftcore::DialogueBacklog on the story subsystem), Escape or B
+// closes it; up / down and the wheel scroll it. Escape otherwise opens the settings overlay
+// (UFTSettingsSubsystem). While either is open the story stands still (UFTStorySubsystem::SetPaused,
+// no typing) and presses are ignored. Holding Ctrl, S or the pad's right trigger skips (ftcore::
+// SkipController): each line shows at once and moves on every SkipInterval seconds, stopping at
+// choices and gameplay beats, and, with the "seen lines only" setting, at lines not seen before.
+// Auto-advance (a setting) moves on a fully shown line after a delay. Text speed, skip mode and
+// auto-advance come from the settings; the director polls their revision.
+//
 // Alpha mode: -AlphaAutoPlay is fast text autoplay that hands off on every step (carry.bAutoPlay set),
 // counting scenes, screens, STUCK and warnings in the game instance across maps. When the story ends
 // it logs "Alpha: FINISHED ..." and, with -StoryQuitOnFinish, exits with code 0 only if there was no
@@ -34,11 +44,14 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 
+#include "ftcore/Backlog.h"
 #include "ftcore/Dialogue.h"
+#include "ftcore/Skip.h"
 
 #include "FTStoryDirector.generated.h"
 
 class AFTPlayerController;
+class UFTSettingsSubsystem;
 class UFTStorySubsystem;
 
 UCLASS()
@@ -51,9 +64,13 @@ public:
 
 	AFTStoryDirector();
 
-	// Characters per second the text types out at (0: whole at once).
+	// Characters per second the text types out at (0: whole at once). Autoplay only: interactive play
+	// uses the text speed setting.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	float RevealRate = 45.f;
+	// Seconds between lines while skip is held.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
+	float SkipInterval = 0.08f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	bool bAutoPlay = false;
 	// Seconds autoplay waits once a text is out.
@@ -92,6 +109,18 @@ public:
 	const FString& GetBanner() const { return Banner; }
 	double GetBannerAge() const;
 
+	// ---- reading aids, for the HUD ----
+	bool IsBacklogOpen() const { return bBacklogOpen; }
+	// How many entries back from the newest the backlog is scrolled (0: at the newest).
+	int32 GetBacklogScroll() const { return BacklogScroll; }
+	// Null before the story is loaded.
+	const ftcore::DialogueBacklog* GetBacklog() const;
+	const ftcore::StoryDatabase* GetStoryDatabase() const;
+	bool IsSkipping() const { return Skip.skipping(); }
+	bool IsAutoAdvanceOn() const { return !bAutoPlay && AutoAdvance.enabled(); }
+	// Dialogue text size multiplier from the settings (1 in autoplay).
+	float GetSubtitleScale() const { return SubtitleScale; }
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
@@ -101,6 +130,31 @@ private:
 	void HandlePress();
 	UFUNCTION()
 	void HandleChoose(int32 Option);
+	UFUNCTION()
+	void HandleBacklogKey();
+	UFUNCTION()
+	void HandleWheel(int32 Direction);
+	UFUNCTION()
+	void HandleSkip(bool bHeld);
+	UFUNCTION()
+	void HandleCancel();
+	UFUNCTION()
+	void HandleMenuStep(int32 Step);
+
+	// A reading overlay (backlog or settings) is up, or just closed this frame.
+	bool InputBlocked() const;
+	// Interactive play, not handing off, and no overlay up.
+	bool CanOpenOverlay() const;
+	void OpenBacklog();
+	void CloseBacklog();
+	void ScrollBacklog(int32 Delta);
+	void OpenSettings();
+	// Takes the text speed, skip mode and auto-advance from the settings when their revision moved.
+	void ApplySettings();
+	// One interactive frame: skip, then auto-advance.
+	void TickReading(float DeltaSeconds);
+	bool IsSkipKeyDown() const;
+	void NoteShown();
 
 	// Applies a presenter command through the subsystem. False when there was none or it was refused.
 	bool Apply(const ftcore::DialogueCommand& Command);
@@ -148,4 +202,16 @@ private:
 	bool bHandingOff = false;
 	FString Banner;
 	double BannerStart = -1.0;
+
+	// Reading aids (interactive play).
+	ftcore::SkipController Skip;
+	ftcore::AutoAdvancer AutoAdvance;
+	TWeakObjectPtr<UFTSettingsSubsystem> SettingsSub;
+	uint32 AppliedSettings = MAX_uint32;
+	float SubtitleScale = 1.f;
+	int32 BacklogScroll = 0;
+	bool bBacklogOpen = false;
+	bool bBacklogBeganMenu = false; // OpenBacklog turned the controller's menu input on
+	bool bSkipHeld = false;
+	bool bStoryPaused = false;
 };

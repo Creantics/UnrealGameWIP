@@ -5,7 +5,12 @@
 #include "Engine/Font.h"
 #include "Engine/World.h"
 
+#include "Engine/GameInstance.h"
+#include "GameFramework/PlayerController.h"
+
 #include "FTGameMode.h"
+#include "FTSettingsOverlay.h"
+#include "FTSettingsSubsystem.h"
 
 #include "ftcore/StorySave.h"
 #include "ftcore/TitleMenu.h"
@@ -24,7 +29,9 @@ const FString kNewGameTitle(TEXT("New Game"));
 const FString kContinueTitle(TEXT("Continue"));
 const FString kNewGameSelTitle(TEXT("> New Game"));
 const FString kContinueSelTitle(TEXT("> Continue"));
-const FString kHintTitle(TEXT("Up / Down and Enter, or 1 / 2    Pad: d-pad and A"));
+const FString kSettingsTitle(TEXT("Settings"));
+const FString kSettingsSelTitle(TEXT("> Settings"));
+const FString kHintTitle(TEXT("Up / Down and Enter, mouse, or 1 / 2 / 3    Pad: d-pad and A"));
 const FString kNoSaveTitle(TEXT("No saved game"));
 const FString kBadSaveTitle(TEXT("The saved game can't be loaded"));
 } // namespace
@@ -41,11 +48,18 @@ void AFTTitleHUD::DrawHUD()
 {
 	Super::DrawHUD();
 	const UWorld* World = GetWorld();
-	const AFTGameMode* Mode = World ? World->GetAuthGameMode<AFTGameMode>() : nullptr;
+	AFTGameMode* Mode = World ? World->GetAuthGameMode<AFTGameMode>() : nullptr;
 	if (!Canvas || !Mode || !Mode->IsTitleShown())
 	{
 		return;
 	}
+	if (!CachedSettings.IsValid())
+	{
+		const UGameInstance* GameInstance = World->GetGameInstance();
+		CachedSettings = GameInstance ? GameInstance->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
+	}
+	UFTSettingsSubsystem* Settings = CachedSettings.Get();
+	const bool bSettingsOpen = Settings && Settings->IsOpen();
 	const ftcore::TitleMenu& Menu = Mode->GetTitleMenu();
 	const float S = FMath::Max(Canvas->ClipY / 1080.f, 0.5f);
 
@@ -68,5 +82,33 @@ void AFTTitleHUD::DrawHUD()
 		DrawCentered(bNone ? kNoSaveTitle : kBadSaveTitle, kDimTitle, Y + 48.f * S, GEngine->GetSmallFont(), 1.f * S);
 	}
 
+	const float SettingsY = Y + (bContinueOn ? 70.f : 110.f) * S; // room for the reason under a greyed Continue
+	const bool bSetSel = Menu.selected() == ftcore::TitleItem::Settings;
+	DrawCentered(bSetSel ? kSettingsSelTitle : kSettingsTitle, bSetSel ? kGoldTitle : kWhiteTitle, SettingsY, Font, 1.6f * S);
+
 	DrawCentered(kHintTitle, kDimTitle, Canvas->ClipY - 48.f * S, GEngine->GetSmallFont(), 1.f * S);
+
+	// The mouse selects the item under it once it moves; the overlay has its own hover while it is up.
+	const APlayerController* PC = GetOwningPlayerController();
+	float MouseX = 0.f;
+	float MouseY = 0.f;
+	if (!bSettingsOpen && PC && PC->GetMousePosition(MouseX, MouseY) && FVector2D(MouseX, MouseY) != LastMouse)
+	{
+		LastMouse = FVector2D(MouseX, MouseY);
+		const float Left = Canvas->ClipX * 0.3f;
+		const float Right = Canvas->ClipX * 0.7f;
+		const float Rows[3] = {Canvas->ClipY * 0.5f, Y, SettingsY};
+		const ftcore::TitleItem Items[3] = {ftcore::TitleItem::NewGame, ftcore::TitleItem::Continue, ftcore::TitleItem::Settings};
+		for (int32 I = 0; I < 3; ++I)
+		{
+			if (MouseX >= Left && MouseX <= Right && MouseY >= Rows[I] - 8.f * S && MouseY <= Rows[I] + 56.f * S)
+			{
+				Mode->HoverTitleItem(Items[I]);
+			}
+		}
+	}
+	if (Settings)
+	{
+		FT::DrawSettingsOverlay(*this, *Settings);
+	}
 }

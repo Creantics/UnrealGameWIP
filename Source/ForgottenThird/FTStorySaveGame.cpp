@@ -3,6 +3,7 @@
 #include "FTStorySubsystem.h"
 #include "FTText.h"
 
+#include "ftcore/Seen.h"
 #include "ftcore/StorySave.h"
 
 bool UFTStorySaveGame::CaptureFrom(const UFTStorySubsystem* Story)
@@ -26,6 +27,7 @@ bool UFTStorySaveGame::CaptureFrom(const UFTStorySubsystem* Story)
 		Out.text = FT::ToUtf8(F.Text);
 		Save.flags.push_back(std::move(Out));
 	}
+	ftcore::captureSeen(Story->GetSeen(), Save); // the read-state rides along (format 2)
 	SaveJson = FT::ToFString(ftcore::encodeStorySave(Save));
 	return true;
 }
@@ -64,5 +66,6 @@ bool UFTStorySaveGame::ApplyTo(UFTStorySubsystem* Story, FString& OutError, TArr
 		OutError = TEXT("the saved scene no longer exists, or the story is not loaded");
 		return false;
 	}
+	ftcore::applySeen(Save, Story->GetSeen()); // an old (format 1) save has none: nothing seen
 	return true;
 }

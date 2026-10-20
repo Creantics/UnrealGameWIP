@@ -9,6 +9,10 @@
 // pad shoulders / pad left. Story routing is off by default: AFTStoryDirector takes the presses and
 // drives the story; set bRouteInputToStory to drive it from here instead.
 //
+// Reading keys (the story director and the settings overlay listen): backlog B / mouse wheel up (OnBacklog,
+// OnWheel +1; wheel down is OnWheel -1); skip, held, Ctrl / S / pad right trigger (OnSkip true while
+// held, false on release). Escape (OnCancel) opens the settings from the story.
+//
 // Battle input is a second mapping context, added on top (higher priority, so its keys hide the
 // story mappings they share) only between BeginBattleInput and EndBattleInput. Its presses are
 // broadcast as OnBattleArrow / OnBattleSkill / OnBattleTarget / OnBattleConfirm for whoever runs
@@ -35,6 +39,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFTChooseEvent, int32, Option);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFTTapEvent, double, WallSeconds);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFTBattleArrowEvent, EFTArrow, Arrow, bool, bFaceButton);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFTBattleStepEvent, int32, Step);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFTHeldEvent, bool, bHeld);
 
 UCLASS()
 class FORGOTTENTHIRD_API AFTPlayerController : public APlayerController
@@ -63,6 +68,16 @@ public:
 	// calibrates.
 	UPROPERTY(BlueprintAssignable, Category = "Input")
 	FFTTapEvent OnRhythmTap;
+
+	// B: open or close the dialogue backlog.
+	UPROPERTY(BlueprintAssignable, Category = "Input")
+	FFTInputEvent OnBacklog;
+	// Mouse wheel: +1 up, -1 down.
+	UPROPERTY(BlueprintAssignable, Category = "Input")
+	FFTBattleStepEvent OnWheel;
+	// The skip key: true when it goes down, false when it is released.
+	UPROPERTY(BlueprintAssignable, Category = "Input")
+	FFTHeldEvent OnSkip;
 
 	UFUNCTION(BlueprintPure, Category = "Input")
 	UInputMappingContext* GetMappingContext() const { return MappingContext; }
@@ -108,6 +123,10 @@ public:
 	// -1 up, +1 down.
 	UPROPERTY(BlueprintAssignable, Category = "Input|Menu")
 	FFTBattleStepEvent OnMenuStep;
+	// Left arrow / A give OnMenuAdjust(-1); Right arrow / D give +1 (the d-pad stays on OnMenuStep).
+	UPROPERTY(BlueprintAssignable, Category = "Input|Menu")
+	FFTBattleStepEvent OnMenuAdjust;
+	// BeginMenuInput also shows the mouse cursor (and lets it move); EndMenuInput puts both back.
 
 protected:
 	virtual void BeginPlay() override;
@@ -146,6 +165,29 @@ private:
 	void HandleMenuUp() { HandleMenuStep(-1); }
 	void HandleMenuDown() { HandleMenuStep(1); }
 	void HandleMenuStep(int32 Step);
+	void HandleMenuLeft() { HandleMenuAdjust(-1); }
+	void HandleMenuRight() { HandleMenuAdjust(1); }
+	void HandleMenuAdjust(int32 Direction);
+
+	void HandleBacklog() { OnBacklog.Broadcast(); }
+	void HandleWheelUp() { OnWheel.Broadcast(1); }
+	void HandleWheelDown() { OnWheel.Broadcast(-1); }
+	void HandleSkipStart() { OnSkip.Broadcast(true); }
+	void HandleSkipStop() { OnSkip.Broadcast(false); }
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> BacklogAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> WheelUpAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> WheelDownAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> SkipAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> MenuLeftAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> MenuRightAction;
+	bool bPrevShowCursor = false;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UInputMappingContext> MenuContext;
