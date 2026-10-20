@@ -34,7 +34,49 @@ TEST_CASE("None is the identity and the four packs are active") {
     s.hatchOverlay = 1.f;
     s.hatchMaxLevel = 2.f;
     s.faceFeatures = 1.f;
+    s.hatchShadowOnly = 1.f;
+    s.hatchCurve = 1.8f;
+    s.rimTint = StyleVec3(1.f, 0.5f, 0.f); // a tint without a rim strength draws nothing
+    s.inkVoidNear = 2.f;
     CHECK_FALSE(s.active());
+    CHECK_FALSE(s.needsDepth());
+}
+
+TEST_CASE("The engine-delta fields default to the identity") {
+    const StyleSettings none;
+    CHECK(none.hatchOverlay == 0.f);
+    CHECK(none.hatchMaxLevel == 5.f);
+    CHECK(none.hatchShadowOnly == 0.f);
+    CHECK(none.hatchCurve == 1.f);
+    CHECK(none.rimScale == 0.f);
+    CHECK(none.rimTint == StyleVec3(1.f));
+    CHECK(none.bloomThresholdScale == 1.f);
+    CHECK(none.inkVoid == 0.f);
+    CHECK(none.blackPoint == 0.f);
+    // Each one, set on its own, switches the style on (the void also needs depth).
+    StyleSettings rim;
+    rim.rimScale = 0.5f;
+    CHECK(rim.active());
+    StyleSettings bloom;
+    bloom.bloomThresholdScale = 2.f;
+    CHECK(bloom.active());
+    StyleSettings clip;
+    clip.blackPoint = 0.06f;
+    CHECK(clip.active());
+    StyleSettings ink;
+    ink.inkVoid = 1.f;
+    CHECK(ink.active());
+    CHECK(ink.needsDepth());
+    // Restored uses none of them.
+    const StyleSettings res = stylePack(StylePack::Restored);
+    CHECK(res.hatch == 0.f);
+    CHECK(res.hatchOverlay == 0.f);
+    CHECK(res.hatchMaxLevel == 5.f);
+    CHECK(res.hatchCurve == 1.f);
+    CHECK(res.rimScale == 0.f);
+    CHECK(res.bloomThresholdScale == 1.f);
+    CHECK(res.inkVoid == 0.f);
+    CHECK(res.blackPoint == 0.f);
 }
 
 TEST_CASE("Pack values follow art direction v2") {
@@ -44,15 +86,37 @@ TEST_CASE("Pack values follow art direction v2") {
     CHECK(sol.outlineColor == StyleVec3(0x14 / 255.f, 0x11 / 255.f, 0x0F / 255.f));
     CHECK(approx(sol.highlightTint, StyleVec3(0.78f + 0.22f, 0.78f + 0.22f * (0xC9 / 255.f),
                                             0.78f + 0.22f * (0x3C / 255.f))));
+    CHECK(sol.hatch == 1.f);
+    CHECK(sol.hatchScale == 240.f);
+    CHECK(sol.hatchDensity == 1.f);
+    CHECK(sol.hatchOverlay == 1.f);
     CHECK(sol.hatchMaxLevel == 2.f);
     CHECK(sol.hatchShadowOnly == 1.f);
+    CHECK(sol.hatchCurve == 1.f);
+    CHECK(sol.rimScale == 1.f);
+    CHECK(sol.rimTint == StyleVec3(1.f, 0xC9 / 255.f, 0x3C / 255.f));
+    CHECK(sol.bloomThresholdScale == 1.f);
 
     const StyleSettings lat = stylePack(StylePack::Lattice);
+    CHECK(lat.outline == 0.9f);
+    CHECK(lat.cel == 0.9f);
+    CHECK(lat.celSteps == 2.f);
     CHECK(lat.shadowTint == StyleVec3(0.46f, 0.38f, 0.59f));
+    CHECK(lat.bloomScale == 1.8f);
+    CHECK(lat.vignetteScale == 1.5f);
+    CHECK(lat.hull == 0.8f);
+    CHECK(lat.hullWidth == 1.2f);
+    CHECK(lat.hullColor == StyleVec3(0x12 / 255.f, 0x07 / 255.f, 0x2B / 255.f));
     CHECK(lat.bloomThresholdScale == 2.5f);
+    CHECK(lat.rimScale == 0.35f);
+    CHECK(lat.rimTint == StyleVec3(0x19 / 255.f, 0xE3 / 255.f, 0xF0 / 255.f));
+    CHECK(lat.blackPoint == 0.f); // the optional clip waits for a look at the picture
     CHECK(lat.hatch == 0.f);
 
     const StyleSettings unw = stylePack(StylePack::Unwritten);
+    CHECK(unw.hatchScale == 280.f);
+    CHECK(unw.hatchDensity == 1.4f);
+    CHECK(unw.rimScale == 0.f);
     CHECK(unw.monochrome == 1.f);
     CHECK(unw.monoGamma == 1.15f);
     CHECK(unw.paperSky == 1.f);
@@ -78,6 +142,32 @@ TEST_CASE("lerp endpoints are exact and t is clamped") {
     CHECK(approx(m.outlineWidth, (2.4f + 1.3f) * 0.5f));
     CHECK(approx(m.monochrome, 0.5f));
     CHECK(approx(m.outlineColor, (a.outlineColor + b.outlineColor) * 0.5f));
+}
+
+TEST_CASE("lerp and the dial cover the engine-delta fields") {
+    const StyleSettings sol = stylePack(StylePack::Solhaven);
+    const StyleSettings lat = stylePack(StylePack::Lattice);
+    const StyleSettings unw = stylePack(StylePack::Unwritten);
+    const StyleSettings sl = ftcore::lerp(sol, lat, 0.5f);
+    CHECK(approx(sl.rimScale, 0.5f * (1.f + 0.35f)));
+    CHECK(approx(sl.rimTint, (sol.rimTint + lat.rimTint) * 0.5f));
+    CHECK(approx(sl.bloomThresholdScale, 0.5f * (1.f + 2.5f)));
+    CHECK(approx(sl.hatchOverlay, 0.5f));
+    CHECK(approx(sl.hatchMaxLevel, 0.5f * (2.f + 5.f)));
+    CHECK(approx(sl.hatchShadowOnly, 0.5f));
+    const StyleSettings su = ftcore::lerp(sol, unw, 0.25f);
+    CHECK(approx(su.hatchCurve, 0.75f * 1.f + 0.25f * 1.8f));
+    CHECK(approx(su.hatchScale, 0.75f * 240.f + 0.25f * 280.f));
+    StyleSettings clip;
+    clip.blackPoint = 0.06f;
+    CHECK(approx(ftcore::lerp(StyleSettings{}, clip, 0.5f).blackPoint, 0.03f));
+    StyleSettings dark;
+    dark.inkVoid = 1.f;
+    CHECK(approx(ftcore::lerp(StyleSettings{}, dark, 0.25f).inkVoid, 0.25f));
+    // The dial: L1 is a third of the Lattice, the rest None.
+    const StyleSettings l1 = ftcore::styleFromDial({0.f, 1.f, 0.f, 0.f});
+    CHECK(approx(l1.rimScale, 0.35f / 3.f));
+    CHECK(approx(l1.bloomThresholdScale, 2.f / 3.f + 2.5f / 3.f));
 }
 
 TEST_CASE("lerp keeps the island and the ink void of the side that has one") {
@@ -196,6 +286,29 @@ TEST_CASE("hatchWeights picks neighbouring levels") {
     const auto mid = ftcore::hatchWeights(0.5f); // d = 2.5
     CHECK(approx(mid.tam[1], 0.5f));
     CHECK(approx(mid.tam[2], 0.5f));
+}
+
+TEST_CASE("hatchWeights tone curve keeps the cross to the darks") {
+    // The Unwritten: density 1.4, curve 1.8. The cross (level 3) begins at tone 0.50 and is full at 0.375.
+    const auto mid = ftcore::hatchWeights(0.5f, 1.4f, 1.8f); // d ~ 2.01
+    CHECK(mid.tam[2] > 0.f);
+    CHECK(mid.tam[2] < 0.05f);
+    CHECK(mid.tam[1] > 0.95f);
+    const auto lighter = ftcore::hatchWeights(0.52f, 1.4f, 1.8f); // d ~ 1.87: one direction only
+    CHECK(lighter.tam[2] == 0.f);
+    CHECK(lighter.tam[1] > 0.f);
+    const auto cross = ftcore::hatchWeights(0.375f, 1.4f, 1.8f); // d ~ 3.0
+    CHECK(approx(cross.tam[2], 1.f, 0.02f));
+    CHECK(cross.solid == 0.f);
+    // Without the curve the same density reaches the cross much earlier, at tone 0.71.
+    CHECK(ftcore::hatchWeights(0.65f, 1.4f).tam[2] > 0.f);
+    CHECK(ftcore::hatchWeights(0.65f, 1.4f, 1.8f).tam[2] == 0.f);
+    // Curve 1 is the plain law, and the cap still applies with a curve.
+    CHECK(approx(ftcore::hatchWeights(0.5f, 1.f, 1.f).tam[1], ftcore::hatchWeights(0.5f).tam[1]));
+    const auto capped = ftcore::hatchWeights(0.f, 1.4f, 1.8f, 2.f);
+    CHECK(capped.tam[1] == 1.f);
+    CHECK(capped.tam[2] == 0.f);
+    CHECK(capped.solid == 0.f);
 }
 
 TEST_CASE("Blending allocates nothing") {

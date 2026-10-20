@@ -148,6 +148,8 @@ StyleSettings stylePack(StylePack pack) {
         s.hullColor = srgb(0x12072B);
         s.rimScale = 0.35f;
         s.rimTint = srgb(0x19E3F0);
+        // v2 section 7 item 9 proposes blackPoint 0.06 only if the shadowTint multiply muddies the darks. It stays 0
+        // until someone has looked at the picture.
         break;
     case StylePack::Unwritten:
         // Black-and-white pen-line page: fine ink line with an 8 fps tremble, the scene remapped onto ink and
