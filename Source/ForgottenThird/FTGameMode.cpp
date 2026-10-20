@@ -11,6 +11,7 @@
 #include "FTGameInstance.h"
 #include "FTPawn.h"
 #include "FTPlayerController.h"
+#include "FTSettingsSubsystem.h"
 #include "FTStoryDirector.h"
 #include "FTStoryHUD.h"
 #include "FTStorySubsystem.h"
@@ -134,9 +135,28 @@ void AFTGameMode::EnterTitle(UFTStorySubsystem& Story)
 	}
 }
 
+bool AFTGameMode::SettingsBlocked() const
+{
+	const UGameInstance* GameInstance = GetGameInstance();
+	const UFTSettingsSubsystem* Settings = GameInstance ? GameInstance->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
+	return Settings && Settings->BlocksInput();
+}
+
+void AFTGameMode::OpenSettings()
+{
+	const UGameInstance* GameInstance = GetGameInstance();
+	UFTSettingsSubsystem* Settings = GameInstance ? GameInstance->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
+	AFTPlayerController* PC = GetPlayer();
+	if (Settings && PC)
+	{
+		UE_LOG(LogForgottenThird, Log, TEXT("Title: Settings."));
+		Settings->Open(PC);
+	}
+}
+
 void AFTGameMode::HandleMenuStep(int32 Step)
 {
-	if (bTitle)
+	if (bTitle && !SettingsBlocked())
 	{
 		Menu.press(Step < 0 ? ftcore::TitleKey::Up : ftcore::TitleKey::Down);
 	}
@@ -144,7 +164,7 @@ void AFTGameMode::HandleMenuStep(int32 Step)
 
 void AFTGameMode::HandleMenuPress()
 {
-	if (bTitle)
+	if (bTitle && !SettingsBlocked())
 	{
 		ApplyTitleAction(Menu.press(ftcore::TitleKey::Confirm));
 	}
@@ -152,9 +172,9 @@ void AFTGameMode::HandleMenuPress()
 
 void AFTGameMode::HandleMenuChoose(int32 Option)
 {
-	if (bTitle && (Option == 0 || Option == 1))
+	if (bTitle && !SettingsBlocked() && Option >= 0 && Option < ftcore::TitleMenu::kItemCount)
 	{
-		ApplyTitleAction(Menu.press(Option == 0 ? ftcore::TitleKey::Pick1 : ftcore::TitleKey::Pick2));
+		ApplyTitleAction(Menu.press(Option == 0 ? ftcore::TitleKey::Pick1 : Option == 1 ? ftcore::TitleKey::Pick2 : ftcore::TitleKey::Pick3));
 	}
 }
 
@@ -168,12 +188,17 @@ void AFTGameMode::ApplyTitleAction(ftcore::TitleAction Action)
 	if (Action == ftcore::TitleAction::NewGame)
 	{
 		UE_LOG(LogForgottenThird, Log, TEXT("Title: New Game."));
+		Story->AdoptSeenFromSlot(); // a replay keeps what the player has read (before the first autosave overwrites the slot)
 		if (!Story->StartStory(StartScene))
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("Story: could not start at '%s'."), *StartScene);
 			return;
 		}
 		EnterStory();
+	}
+	else if (Action == ftcore::TitleAction::Settings)
+	{
+		OpenSettings();
 	}
 	else if (Action == ftcore::TitleAction::Continue)
 	{

@@ -9,6 +9,7 @@
 #include "ForgottenThird.h"
 #include "FTGameInstance.h"
 #include "FTPlayerController.h"
+#include "FTSettingsSubsystem.h"
 #include "FTStorySubsystem.h"
 #include "FTText.h"
 
@@ -70,6 +71,21 @@ void AFTStoryDirector::BeginPlay()
 		PC->OnAdvance.AddDynamic(this, &AFTStoryDirector::HandlePress);
 		PC->OnConfirm.AddDynamic(this, &AFTStoryDirector::HandlePress);
 		PC->OnChoose.AddDynamic(this, &AFTStoryDirector::HandleChoose);
+		if (!bAutoPlay)
+		{
+			// The reading aids exist for a person at the keys; autoplay never listens.
+			PC->OnBacklog.AddDynamic(this, &AFTStoryDirector::HandleBacklogKey);
+			PC->OnWheel.AddDynamic(this, &AFTStoryDirector::HandleWheel);
+			PC->OnSkip.AddDynamic(this, &AFTStoryDirector::HandleSkip);
+			PC->OnCancel.AddDynamic(this, &AFTStoryDirector::HandleCancel);
+			PC->OnMenuStep.AddDynamic(this, &AFTStoryDirector::HandleMenuStep);
+		}
+	}
+	if (!bAutoPlay)
+	{
+		SettingsSub = GameInstance->GetSubsystem<UFTSettingsSubsystem>();
+		Skip.setInterval(SkipInterval);
+		ApplySettings();
 	}
 
 	Refresh();
@@ -84,7 +100,21 @@ void AFTStoryDirector::EndPlay(const EEndPlayReason::Type Reason)
 		PC->OnAdvance.RemoveDynamic(this, &AFTStoryDirector::HandlePress);
 		PC->OnConfirm.RemoveDynamic(this, &AFTStoryDirector::HandlePress);
 		PC->OnChoose.RemoveDynamic(this, &AFTStoryDirector::HandleChoose);
+		PC->OnBacklog.RemoveDynamic(this, &AFTStoryDirector::HandleBacklogKey);
+		PC->OnWheel.RemoveDynamic(this, &AFTStoryDirector::HandleWheel);
+		PC->OnSkip.RemoveDynamic(this, &AFTStoryDirector::HandleSkip);
+		PC->OnCancel.RemoveDynamic(this, &AFTStoryDirector::HandleCancel);
+		PC->OnMenuStep.RemoveDynamic(this, &AFTStoryDirector::HandleMenuStep);
 		PC->bRouteInputToStory = bPrevRouteInput;
+	}
+	if (bBacklogOpen)
+	{
+		CloseBacklog();
+	}
+	if (bStoryPaused && Story)
+	{
+		Story->SetPaused(false);
+		bStoryPaused = false;
 	}
 	Super::EndPlay(Reason);
 }
@@ -96,17 +126,35 @@ void AFTStoryDirector::Tick(float DeltaSeconds)
 	{
 		return;
 	}
+	if (!bAutoPlay)
+	{
+		ApplySettings();
+		const bool bBlocked = InputBlocked();
+		if (bBlocked != bStoryPaused)
+		{
+			bStoryPaused = bBlocked;
+			Story->SetPaused(bBlocked); // a hold waits while an overlay is up
+		}
+		if (bBlocked)
+		{
+			return; // the story stands still: no typing, no skipping
+		}
+	}
 	Refresh(); // the subsystem's hold timer may have moved the runner
 	Presenter.update(DeltaSeconds);
 	if (bAutoPlay)
 	{
 		TickAutoPlay(DeltaSeconds);
 	}
+	else
+	{
+		TickReading(DeltaSeconds);
+	}
 }
 
 void AFTStoryDirector::HandlePress()
 {
-	if (Story && !bAutoPlay && !bHandingOff)
+	if (Story && !bAutoPlay && !bHandingOff && !InputBlocked())
 	{
 		Apply(Presenter.press());
 	}
@@ -114,15 +162,190 @@ void AFTStoryDirector::HandlePress()
 
 void AFTStoryDirector::HandleChoose(int32 Option)
 {
-	if (Story && !bAutoPlay && !bHandingOff && Option >= 0)
+	if (Story && !bAutoPlay && !bHandingOff && !InputBlocked() && Option >= 0)
 	{
 		Apply(Presenter.choose(static_cast<uint32>(Option)));
 	}
 }
 
+// ---- reading aids ----
+
+bool AFTStoryDirector::InputBlocked() const
+{
+	if (bBacklogOpen)
+	{
+		return true;
+	}
+	const UFTSettingsSubsystem* Settings = SettingsSub.Get();
+	return Settings && Settings->BlocksInput();
+}
+
+bool AFTStoryDirector::CanOpenOverlay() const
+{
+	return Story && !bAutoPlay && !bHandingOff && !InputBlocked();
+}
+
+void AFTStoryDirector::HandleBacklogKey()
+{
+	// While the settings are open (or closed this frame) the key belongs to them.
+	if (bBacklogOpen)
+	{
+		CloseBacklog();
+	}
+	else if (CanOpenOverlay() && !IsFinished())
+	{
+		OpenBacklog();
+	}
+}
+
+void AFTStoryDirector::HandleWheel(int32 Direction)
+{
+	if (bBacklogOpen)
+	{
+		ScrollBacklog(Direction > 0 ? 1 : -1); // wheel up goes back in time
+	}
+	else if (Direction > 0 && CanOpenOverlay() && !IsFinished() && Story->GetBacklog().size() > 0)
+	{
+		OpenBacklog();
+	}
+}
+
+void AFTStoryDirector::HandleMenuStep(int32 Step)
+{
+	if (bBacklogOpen)
+	{
+		ScrollBacklog(Step < 0 ? 1 : -1); // up arrow goes back
+	}
+}
+
+void AFTStoryDirector::HandleSkip(bool bHeld)
+{
+	bSkipHeld = bHeld && Story && !bHandingOff && !InputBlocked();
+}
+
+void AFTStoryDirector::HandleCancel()
+{
+	if (bBacklogOpen)
+	{
+		CloseBacklog();
+	}
+	else if (CanOpenOverlay())
+	{
+		OpenSettings();
+	}
+}
+
+void AFTStoryDirector::OpenBacklog()
+{
+	AFTPlayerController* PC = Controller.Get();
+	bBacklogOpen = true;
+	BacklogScroll = 0;
+	bSkipHeld = false;
+	bBacklogBeganMenu = PC && !PC->IsMenuInputActive();
+	if (PC)
+	{
+		PC->BeginMenuInput(); // up / down scroll, the cursor shows
+	}
+}
+
+void AFTStoryDirector::CloseBacklog()
+{
+	bBacklogOpen = false;
+	AFTPlayerController* PC = Controller.Get();
+	if (bBacklogBeganMenu && PC)
+	{
+		PC->EndMenuInput();
+	}
+	bBacklogBeganMenu = false;
+}
+
+void AFTStoryDirector::ScrollBacklog(int32 Delta)
+{
+	const int32 Last = FMath::Max(0, static_cast<int32>(Story->GetBacklog().size()) - 1);
+	BacklogScroll = FMath::Clamp(BacklogScroll + Delta, 0, Last);
+}
+
+void AFTStoryDirector::OpenSettings()
+{
+	UFTSettingsSubsystem* Settings = SettingsSub.Get();
+	AFTPlayerController* PC = Controller.Get();
+	if (Settings && PC)
+	{
+		bSkipHeld = false;
+		Settings->Open(PC);
+	}
+}
+
+void AFTStoryDirector::ApplySettings()
+{
+	const UFTSettingsSubsystem* Settings = SettingsSub.Get();
+	if (bAutoPlay || !Settings || AppliedSettings == Settings->GetRevision())
+	{
+		return;
+	}
+	AppliedSettings = Settings->GetRevision();
+	const ftcore::Settings& S = Settings->Get();
+	Presenter.setRevealRate(S.textCharsPerSecond());
+	Skip.setMode(S.skipMode);
+	AutoAdvance.setEnabled(S.autoAdvance);
+	AutoAdvance.setDelay(S.autoDelay);
+	SubtitleScale = S.subtitleScale();
+}
+
+bool AFTStoryDirector::IsSkipKeyDown() const
+{
+	const AFTPlayerController* PC = Controller.Get();
+	return PC && (PC->IsInputKeyDown(EKeys::LeftControl) || PC->IsInputKeyDown(EKeys::RightControl) || PC->IsInputKeyDown(EKeys::S)
+		|| PC->IsInputKeyDown(EKeys::Gamepad_RightTrigger));
+}
+
+void AFTStoryDirector::TickReading(float DeltaSeconds)
+{
+	NoteShown();
+	if (Presenter.state() == StoryRunner::State::Finished)
+	{
+		Skip.setHeld(false);
+		return;
+	}
+	// A release can be lost (the menu context eats S while an overlay is up): trust the key state.
+	if (bSkipHeld && !IsSkipKeyDown())
+	{
+		bSkipHeld = false;
+	}
+	Skip.setHeld(bSkipHeld);
+	DialogueCommand Command = Skip.update(DeltaSeconds, Presenter, Story->GetSeen());
+	if (Command.none() && !Skip.skipping())
+	{
+		Command = AutoAdvance.update(DeltaSeconds, Presenter);
+	}
+	if (!Command.none())
+	{
+		Apply(Command);
+	}
+}
+
+void AFTStoryDirector::NoteShown()
+{
+	Story->GetBacklog().noteShown(Story->GetRunner(), Presenter);
+}
+
+const ftcore::DialogueBacklog* AFTStoryDirector::GetBacklog() const
+{
+	return Story ? &Story->GetBacklog() : nullptr;
+}
+
+const ftcore::StoryDatabase* AFTStoryDirector::GetStoryDatabase() const
+{
+	return Story ? &Story->GetDatabase() : nullptr;
+}
+
 bool AFTStoryDirector::Apply(const DialogueCommand& Input)
 {
 	DialogueCommand Command = Input;
+	if (!Command.none())
+	{
+		Story->GetSeen().mark(Story->GetRunner()); // the player is leaving this beat: it counts as seen
+	}
 	// A gameplay beat plays as its plan's steps, whatever screen its kind alone would open (or none).
 	if ((Command.kind == DialogueCommand::Kind::Handoff || Command.kind == DialogueCommand::Kind::Resume) && Presenter.handoff()
 		&& Story->GetRunner().state() == StoryRunner::State::Gameplay)
@@ -140,6 +363,7 @@ bool AFTStoryDirector::Apply(const DialogueCommand& Input)
 		bOk = Story->Advance();
 		break;
 	case DialogueCommand::Kind::Choose:
+		Story->GetBacklog().noteChoice(Story->GetRunner(), Command.option); // before the move: it reads the choice
 		bOk = Story->Choose(static_cast<int32>(Command.option));
 		break;
 	case DialogueCommand::Kind::Resume:
@@ -183,6 +407,7 @@ void AFTStoryDirector::Refresh()
 	{
 		CacheBeat();
 	}
+	NoteShown(); // a text shown whole (instant reveal) goes in the backlog at once
 	if (Presenter.state() == StoryRunner::State::Finished)
 	{
 		ReportFinished();

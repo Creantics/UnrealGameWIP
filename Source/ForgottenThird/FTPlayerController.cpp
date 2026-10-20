@@ -56,6 +56,19 @@ void AFTPlayerController::CreateInputObjects()
 	MappingContext->MapKey(TapAction, EKeys::Gamepad_RightShoulder);
 	MappingContext->MapKey(TapAction, EKeys::Gamepad_FaceButton_Left);
 
+	// Reading keys: the backlog, the mouse wheel, and skip (held).
+	BacklogAction = MakeAction(TEXT("IA_Backlog"));
+	MappingContext->MapKey(BacklogAction, EKeys::B);
+	WheelUpAction = MakeAction(TEXT("IA_WheelUp"));
+	MappingContext->MapKey(WheelUpAction, EKeys::MouseScrollUp);
+	WheelDownAction = MakeAction(TEXT("IA_WheelDown"));
+	MappingContext->MapKey(WheelDownAction, EKeys::MouseScrollDown);
+	SkipAction = MakeAction(TEXT("IA_Skip"));
+	MappingContext->MapKey(SkipAction, EKeys::LeftControl);
+	MappingContext->MapKey(SkipAction, EKeys::RightControl);
+	MappingContext->MapKey(SkipAction, EKeys::S);
+	MappingContext->MapKey(SkipAction, EKeys::Gamepad_RightTrigger);
+
 	// Battle: added on top of the story context while a battle runs. Its actions consume their
 	// keys, so the d-pad, face buttons, shoulders, Space and Enter stop reaching the story actions.
 	BattleContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Battle"));
@@ -109,6 +122,12 @@ void AFTPlayerController::CreateInputObjects()
 	MenuContext->MapKey(MenuDownAction, EKeys::S);
 	MenuContext->MapKey(MenuDownAction, EKeys::Gamepad_DPad_Down);
 	MenuContext->MapKey(MenuDownAction, EKeys::Gamepad_DPad_Right);
+	MenuLeftAction = MakeAction(TEXT("IA_MenuLeft"));
+	MenuContext->MapKey(MenuLeftAction, EKeys::Left);
+	MenuContext->MapKey(MenuLeftAction, EKeys::A);
+	MenuRightAction = MakeAction(TEXT("IA_MenuRight"));
+	MenuContext->MapKey(MenuRightAction, EKeys::Right);
+	MenuContext->MapKey(MenuRightAction, EKeys::D);
 }
 
 UInputAction* AFTPlayerController::MakeAction(const TCHAR* Name)
@@ -139,6 +158,13 @@ void AFTPlayerController::SetupInputComponent()
 	Input->BindAction(ConfirmAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleConfirm);
 	Input->BindAction(CancelAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleCancel);
 	Input->BindAction(TapAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleTap);
+	Input->BindAction(BacklogAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleBacklog);
+	Input->BindAction(WheelUpAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleWheelUp);
+	Input->BindAction(WheelDownAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleWheelDown);
+	// Skip is held: down on Started, up on Completed (or Canceled when the context goes away).
+	Input->BindAction(SkipAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleSkipStart);
+	Input->BindAction(SkipAction, ETriggerEvent::Completed, this, &AFTPlayerController::HandleSkipStop);
+	Input->BindAction(SkipAction, ETriggerEvent::Canceled, this, &AFTPlayerController::HandleSkipStop);
 
 	Input->BindAction(LaneActions[0], ETriggerEvent::Started, this, &AFTPlayerController::HandleLaneLeft);
 	Input->BindAction(LaneActions[1], ETriggerEvent::Started, this, &AFTPlayerController::HandleLaneDown);
@@ -153,6 +179,8 @@ void AFTPlayerController::SetupInputComponent()
 	Input->BindAction(BattleConfirmAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleBattleConfirm);
 	Input->BindAction(MenuUpAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleMenuUp);
 	Input->BindAction(MenuDownAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleMenuDown);
+	Input->BindAction(MenuLeftAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleMenuLeft);
+	Input->BindAction(MenuRightAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleMenuRight);
 }
 
 void AFTPlayerController::BeginPlay()
@@ -186,6 +214,16 @@ void AFTPlayerController::BeginMenuInput()
 	{
 		Subsystem->AddMappingContext(MenuContext, 2);
 	}
+	if (IsLocalController())
+	{
+		// Menus are mouse-driven too: show the cursor and don't capture it. Clicks still arrive as OnAdvance.
+		bPrevShowCursor = bShowMouseCursor;
+		bShowMouseCursor = true;
+		FInputModeGameAndUI Mode;
+		Mode.SetHideCursorDuringCapture(false);
+		Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+		SetInputMode(Mode);
+	}
 }
 
 void AFTPlayerController::EndMenuInput()
@@ -199,6 +237,11 @@ void AFTPlayerController::EndMenuInput()
 	{
 		Subsystem->RemoveMappingContext(MenuContext);
 	}
+	if (IsLocalController())
+	{
+		bShowMouseCursor = bPrevShowCursor;
+		SetInputMode(FInputModeGameOnly());
+	}
 }
 
 void AFTPlayerController::HandleMenuStep(int32 Step)
@@ -206,6 +249,14 @@ void AFTPlayerController::HandleMenuStep(int32 Step)
 	if (bMenuInput)
 	{
 		OnMenuStep.Broadcast(Step);
+	}
+}
+
+void AFTPlayerController::HandleMenuAdjust(int32 Direction)
+{
+	if (bMenuInput)
+	{
+		OnMenuAdjust.Broadcast(Direction);
 	}
 }
 

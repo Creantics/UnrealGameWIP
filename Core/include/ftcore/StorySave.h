@@ -32,10 +32,18 @@ struct SavedStoryFlag {
     std::string text;        // String: the value's text
 };
 
+// The beats of one scene the player has seen, as lowercase hex: beat i is bit (i % 4) of hex digit
+// i / 4 (a digit is 0-9 a-f; digits past the end are zero, so trailing zeros are left off).
+struct SavedSeenScene {
+    std::string scene; // scene id
+    std::string bits;
+};
+
 struct StorySave {
     std::string scene; // scene id
     std::uint32_t beat = 0;
     std::vector<SavedStoryFlag> flags; // only flags that differ from their default
+    std::vector<SavedSeenScene> seen;  // only scenes with a seen beat (format 2; empty for a format 1 save)
 };
 
 struct StoryLoadReport {
@@ -52,8 +60,10 @@ FTCORE_API bool captureStory(const StoryRunner& runner, StorySave& out);
 FTCORE_API bool applyStory(const StorySave& save, StoryRunner& runner, StoryLoadReport* report = nullptr);
 
 // ---- JSON text ----
-// {"format":1,"scene":"SC-A","beat":4,"flags":[{"id":"F","kind":"int","number":3,"text":""}]}
-// kind is "bool", "int" or "string". Every field is required; unknown extra fields are ignored.
+// {"format":2,"scene":"SC-A","beat":4,"flags":[{"id":"F","kind":"int","number":3,"text":""}],
+//  "seen":[{"scene":"SC-A","bits":"1f"}]}
+// kind is "bool", "int" or "string". Every field is required (a format 1 save has no "seen", which
+// then reads as empty); unknown extra fields are ignored. Encoding always writes format 2.
 
 // UTF-8 JSON text for the save.
 FTCORE_API std::string encodeStorySave(const StorySave& save);

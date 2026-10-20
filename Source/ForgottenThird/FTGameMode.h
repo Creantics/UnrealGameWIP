@@ -3,9 +3,10 @@
 // The default game mode: AFTPawn driven by AFTPlayerController. It has two states on the Demo map.
 //
 // Title: a fresh start (no story running, no gameplay hand-off pending) or the map option ?Title
-// (the battle screen's "Quit to title"). AFTTitleHUD shows New Game and Continue; the rules are
-// ftcore::TitleMenu. New Game starts the story at its start scene (-StoryScene is a headless flag,
-// see below), Continue loads the autosave slot. Either then switches to the story state.
+// (the battle screen's "Quit to title"). AFTTitleHUD shows New Game, Continue and Settings; the rules
+// are ftcore::TitleMenu. New Game starts the story at its start scene (-StoryScene is a headless flag,
+// see below), Continue loads the autosave slot. Either then switches to the story state. Settings
+// opens UFTSettingsSubsystem's overlay (it takes the input while it is up; the title ignores presses).
 //
 // Story: AFTStoryHUD with the AFTStoryDirector playing the story. Back from a gameplay screen the
 // story is already running: only the director is spawned, and it resumes the story. When the story
@@ -56,6 +57,8 @@ public:
 	const ftcore::TitleMenu& GetTitleMenu() const { return Menu; }
 	// Why Continue is greyed (None: it isn't).
 	ftcore::SaveRefusal GetSaveStatus() const { return SaveStatus; }
+	// The mouse is over a title item: selects it (a greyed one stays unselected).
+	void HoverTitleItem(ftcore::TitleItem Item) { Menu.hover(Item); }
 
 private:
 	UFUNCTION()
@@ -71,6 +74,9 @@ private:
 
 	UFTStorySubsystem* GetStory() const;
 	AFTPlayerController* GetPlayer() const;
+	// The settings overlay is up (or closed this frame): the title ignores input.
+	bool SettingsBlocked() const;
+	void OpenSettings();
 	void EnterTitle(UFTStorySubsystem& Story);
 	void ApplyTitleAction(ftcore::TitleAction Action);
 	// Leaves the title state for the story (already started or loaded) and spawns its director.

@@ -54,7 +54,10 @@ bool applyStory(const StorySave& save, StoryRunner& runner, StoryLoadReport* rep
 
 namespace {
 
-constexpr std::int64_t kSaveFormat = 1;
+constexpr std::int64_t kSaveFormat = 2;    // what encodeStorySave writes
+constexpr std::int64_t kOldestFormat = 1;  // the oldest decodeStorySave still reads
+
+bool isHexDigit(char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
 
 void appendQuoted(std::string& out, const std::string& s) {
     out += '"';
@@ -105,6 +108,15 @@ std::string encodeStorySave(const StorySave& save) {
         appendQuoted(out, f.text);
         out += '}';
     }
+    out += "],\"seen\":[";
+    for (std::size_t i = 0; i < save.seen.size(); ++i) {
+        if (i) out += ',';
+        out += "{\"scene\":";
+        appendQuoted(out, save.seen[i].scene);
+        out += ",\"bits\":";
+        appendQuoted(out, save.seen[i].bits);
+        out += '}';
+    }
     out += "]}";
     return out;
 }
@@ -117,8 +129,9 @@ bool decodeStorySave(std::string_view text, StorySave& out, std::string* error) 
     if (!root.isObject()) return fail(error, "save: the top level must be an object");
     const JsonValue format = root["format"];
     if (!format.isInteger()) return fail(error, "save: \"format\" is missing or not an integer");
-    if (format.integer() != kSaveFormat)
+    if (format.integer() < kOldestFormat || format.integer() > kSaveFormat)
         return fail(error, "save: unsupported format " + std::to_string(format.integer()));
+    const bool hasSeen = format.integer() >= 2;
     const JsonValue scene = root["scene"], beat = root["beat"], flags = root["flags"];
     if (!scene.isString()) return fail(error, "save: \"scene\" is missing or not a string");
     if (!beat.isInteger() || beat.integer() < 0 || beat.integer() > 0xFFFFFFFFll)
@@ -148,6 +161,22 @@ bool decodeStorySave(std::string_view text, StorySave& out, std::string* error) 
         sf.number = number.integer();
         sf.text = std::string(str.string());
         result.flags.push_back(std::move(sf));
+    }
+    if (hasSeen) {
+        const JsonValue seen = root["seen"];
+        if (!seen.isArray()) return fail(error, "save: \"seen\" is missing or not an array");
+        result.seen.reserve(seen.size());
+        for (std::uint32_t i = 0; i < seen.size(); ++i) {
+            const JsonValue s = seen[i];
+            const std::string at = "save: seen[" + std::to_string(i) + "]";
+            if (!s.isObject()) return fail(error, at + " is not an object");
+            const JsonValue id = s["scene"], bits = s["bits"];
+            if (!id.isString()) return fail(error, at + ".scene is missing or not a string");
+            if (!bits.isString()) return fail(error, at + ".bits is missing or not a string");
+            for (const char c : bits.string())
+                if (!isHexDigit(c)) return fail(error, at + ".bits is not hexadecimal");
+            result.seen.push_back({std::string(id.string()), std::string(bits.string())});
+        }
     }
     out = std::move(result);
     return true;

@@ -11,6 +11,8 @@
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Tickable.h"
 
+#include "ftcore/Backlog.h"
+#include "ftcore/Seen.h"
 #include "ftcore/StoryDatabase.h"
 #include "ftcore/StoryRunner.h"
 #include "ftcore/StorySave.h"
@@ -199,6 +201,23 @@ public:
 	// the apply step, which stops it) and the code says why; it is logged by code only.
 	ftcore::SaveRefusal LoadSlot();
 
+	// ---- reading state (kept here so it outlives the story map's director) ----
+
+	// The lines, directions and choices shown so far, for the backlog overlay. Cleared when the story
+	// is loaded, started, loaded from a save and stopped; never saved.
+	ftcore::DialogueBacklog& GetBacklog() { return Backlog; }
+	const ftcore::DialogueBacklog& GetBacklog() const { return Backlog; }
+	// The beats the player has seen (skip only seen lines). Saved with the story slot (StorySave::seen,
+	// written by UFTStorySaveGame::CaptureFrom, read back by ApplyTo). A new game keeps it.
+	ftcore::SeenLines& GetSeen() { return Seen; }
+	const ftcore::SeenLines& GetSeen() const { return Seen; }
+	// While paused the runner's hold timer stands still (an overlay is open). Always unpaused by
+	// StartStory, ApplySave and StopStory.
+	void SetPaused(bool bPause) { bPaused = bPause; }
+	bool IsPaused() const { return bPaused; }
+	// New Game keeps the read-state of the run before it: with nothing seen in memory, reads the slot's.
+	void AdoptSeenFromSlot();
+
 	// ---- events ----
 
 	UPROPERTY(BlueprintAssignable, Category = "Story")
@@ -238,6 +257,9 @@ private:
 	TUniquePtr<ftcore::StoryDatabase> Database;
 	TUniquePtr<ftcore::StoryRunner> Runner;
 	TArray<FQueuedCue> PendingCues;
+	ftcore::DialogueBacklog Backlog;
+	ftcore::SeenLines Seen;
+	bool bPaused = false;
 	uint32 SeenSceneEpoch = 0;
 	uint32 SeenBeatEpoch = 0;
 	bool bLoaded = false;
