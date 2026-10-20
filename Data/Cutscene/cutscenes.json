@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "default": {
+    "shots": [
+      { "spot": "spot_a", "framing": "wide",          "duration": 3.0, "subject": "subj_a", "move": "push_in", "amount": 1.5 },
+      { "spot": "spot_b", "framing": "two_shot",      "duration": 2.5, "subject": "subj_a", "subject2": "subj_b", "transition": "blend", "blend": 0.8 },
+      { "spot": "spot_c", "framing": "over_shoulder", "duration": 2.0, "subject": "subj_b", "subject2": "subj_a" },
+      { "spot": "spot_d", "framing": "over_shoulder", "duration": 2.0, "subject": "subj_a", "subject2": "subj_b" },
+      { "spot": "spot_e", "framing": "close",         "duration": 2.0, "subject": "subj_c", "move": "push_in", "amount": 0.3 },
+      { "spot": "spot_f", "framing": "insert",        "duration": 1.5, "subject": "subj_c" },
+      { "spot": "spot_a", "framing": "medium",        "duration": 3.0, "subject": "subj_b", "move": "orbit", "amount": 25, "transition": "blend", "blend": 1.0 },
+      { "spot": "spot_b", "framing": "wide",          "duration": 3.0, "subject": "subj_c", "move": "pull_out", "amount": 2.0 }
+    ]
+  },
+  "cutscenes": []
+}

@@ -89,12 +89,12 @@ public:
 	// The choice screen's map (AFTChoiceGameMode, the dialogue loop for CHC and HE).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	FString ChoiceMap = TEXT("Choice");
-	// The quick-time event and cutscene screens' maps. Each stays the stub map until its screen exists
-	// and ftcore::screenRoutesTo stops routing it to Stub.
+	// The quick-time event screen's map stays the stub map until its screen exists and
+	// ftcore::screenRoutesTo stops routing it to Stub. The cutscene screen: AFTCutsceneGameMode.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	FString QteMap = TEXT("Stub");
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
-	FString CutsceneMap = TEXT("Stub");
+	FString CutsceneMap = TEXT("Cutscene");
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	float HandoffDelay = 1.2f;
 
