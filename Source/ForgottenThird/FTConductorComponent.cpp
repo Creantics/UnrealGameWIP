@@ -1,6 +1,7 @@
 #include "FTConductorComponent.h"
 
 #include "Components/AudioComponent.h"
+#include "Engine/World.h"
 #include "HAL/PlatformTime.h"
 #include "Sound/SoundWave.h"
 
@@ -76,26 +77,49 @@ void UFTConductorComponent::ResetClock()
 	Conductor.reset();
 	LatestCursor = 0.0;
 	bHaveCursor = false;
-	WallEpoch = FPlatformTime::Seconds();
+	WallEpoch = ClockNow();
+	bHaveWallEpoch = true;
 	ObserveWallClock();
+}
+
+double UFTConductorComponent::ClockNow() const
+{
+	if (bWallClockFollowsGameTime && bWallClockWithoutAudio && !BoundAudio)
+	{
+		if (const UWorld* World = GetWorld())
+		{
+			return World->GetTimeSeconds();
+		}
+	}
+	return FPlatformTime::Seconds();
 }
 
 void UFTConductorComponent::ObserveWallClock()
 {
 	if (bWallClockWithoutAudio && !BoundAudio)
 	{
-		const double Wall = FPlatformTime::Seconds();
-		if (WallEpoch <= 0.0)
+		const double Wall = ClockNow();
+		if (!bHaveWallEpoch)
 		{
 			WallEpoch = Wall;
+			bHaveWallEpoch = true;
 		}
 		Conductor.observe(Wall - WallEpoch, Wall);
 	}
 }
 
-double UFTConductorComponent::GetSongTime() { return Conductor.songTime(FPlatformTime::Seconds()); }
+double UFTConductorComponent::GetSongTime()
+{
+	if (bWallClockFollowsGameTime)
+	{
+		// Game frames can be long under time dilation: bring the cursor up to this frame first, or the
+		// clock would stall at its extrapolation limit.
+		ObserveWallClock();
+	}
+	return Conductor.songTime(ClockNow());
+}
 double UFTConductorComponent::GetBeat() { return Conductor.beatAt(GetSongTime()); }
-double UFTConductorComponent::GetInputSongTime() const { return Conductor.songTimeForEvent(FPlatformTime::Seconds()); }
+double UFTConductorComponent::GetInputSongTime() const { return Conductor.songTimeForEvent(ClockNow()); }
 double UFTConductorComponent::GetEventSongTime(double WallSeconds) const { return Conductor.songTimeForEvent(WallSeconds); }
 
 void UFTConductorComponent::BeginCalibration()

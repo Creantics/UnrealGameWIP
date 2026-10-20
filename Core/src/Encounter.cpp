@@ -210,8 +210,9 @@ bool importEncounterTable(std::string_view json, const EnemyRoster& roster, Enco
     if (!def.isObject()) {
         errors.push_back("default: expected an object");
     } else {
-        encUnknownKeys(def, "default", {"enemies"}, warnings);
+        encUnknownKeys(def, "default", {"enemies", "tier"}, warnings);
         encLineup(def["enemies"], roster, "default.enemies", table.fallback, errors);
+        encInt(def, "tier", table.fallback.tier, 0, kMaxTier, "default", errors);
     }
 
     const JsonValue list = root["encounters"];
@@ -223,7 +224,7 @@ bool importEncounterTable(std::string_view json, const EnemyRoster& roster, Enco
             errors.push_back(path + ": expected an object");
             continue;
         }
-        encUnknownKeys(j, path, {"scene", "beat", "step", "enemies"}, warnings);
+        encUnknownKeys(j, path, {"scene", "beat", "step", "tier", "enemies"}, warnings);
         EncounterEntry e;
         e.scene = encStr(j["scene"].string());
         if (e.scene.empty()) errors.push_back(path + ".scene: expected a scene id");
@@ -234,6 +235,7 @@ bool importEncounterTable(std::string_view json, const EnemyRoster& roster, Enco
         e.beat = beat < 0 ? 0u : static_cast<std::uint32_t>(beat);
         e.step = static_cast<std::uint32_t>(step);
         encLineup(j["enemies"], roster, path + ".enemies", e.lineup, errors);
+        encInt(j, "tier", e.lineup.tier, 0, kMaxTier, path, errors);
         if (beat >= 0 && !e.scene.empty() && table.findEntry(e.scene, e.beat, e.step))
             errors.push_back(path + ": duplicate entry for " + e.scene + " beat " + std::to_string(e.beat) + " step " +
                              std::to_string(e.step));
@@ -254,7 +256,10 @@ void makeEnemies(const EnemyRoster& roster, const EncounterLineup& lineup, std::
         c.name = e.name;
         c.team = Team::Enemies;
         c.stats = e.stats;
-        c.hp = e.stats.maxHp;
+        const int tier = lineup.tier < 0 ? 0 : (lineup.tier > kMaxTier ? kMaxTier : lineup.tier);
+        c.stats.maxHp += e.stats.maxHp * tier * kTierPercent / 100;
+        c.stats.attack += e.stats.attack * tier * kTierPercent / 100;
+        c.hp = c.stats.maxHp;
         c.skills = e.skills;
         out.push_back(std::move(c));
     }

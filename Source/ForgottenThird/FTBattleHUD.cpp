@@ -40,6 +40,8 @@ const FString kWrong(TEXT("WRONG"));
 const FString kVictory(TEXT("VICTORY"));
 const FString kDefeat(TEXT("DEFEAT"));
 const FString kAgain(TEXT("Enter / Space / pad A to fight again"));
+const FString kRetry(TEXT("Enter: Retry"));
+const FString kQuitToTitle(TEXT("Esc / Q: Quit to title"));
 const FString kChoose(TEXT("choose a skill"));
 const FString kAttack(TEXT("attack - hit the arrows!"));
 const FString kDefend(TEXT("defend - hit the arrows!"));
@@ -521,11 +523,19 @@ void AFTBattleHUD::DrawMessages(const AFTBattleDemoActor& D)
 	{
 		const bool bWon = B->phase() == ftcore::Phase::Victory;
 		const float Y = Canvas->ClipY * 0.36f;
-		DrawRect(kPanel, 0.f, Y - 20.f * S, Canvas->ClipX, 150.f * S);
+		DrawRect(kPanel, 0.f, Y - 20.f * S, Canvas->ClipX, (D.CanQuitToTitle() ? 190.f : 150.f) * S);
 		DrawStrCentered(bWon ? kVictory : kDefeat, bWon ? kGold : kRed, CX, Y, Large, 3.f);
 		if (D.IsWaitingForRestart())
 		{
-			DrawStrCentered(kAgain, kWhite, CX, Y + 90.f * S, Font, 1.f);
+			if (D.CanQuitToTitle())
+			{
+				DrawStrCentered(kRetry, kWhite, CX, Y + 90.f * S, Font, 1.f);
+				DrawStrCentered(kQuitToTitle, kWhite, CX, Y + 124.f * S, Font, 1.f);
+			}
+			else
+			{
+				DrawStrCentered(kAgain, kWhite, CX, Y + 90.f * S, Font, 1.f);
+			}
 		}
 	}
 }

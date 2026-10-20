@@ -227,6 +227,16 @@ void UFTBattleComponent::Press(EFTArrow Arrow)
 	Flush();
 }
 
+void UFTBattleComponent::PressAtTime(EFTArrow Arrow, double BattleSeconds)
+{
+	if (!Battle)
+	{
+		return;
+	}
+	Battle->press(FT::ToCore(Arrow), BattleSeconds);
+	Flush();
+}
+
 void UFTBattleComponent::Flush()
 {
 	if (bDispatching)

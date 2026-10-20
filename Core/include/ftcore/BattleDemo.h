@@ -121,4 +121,49 @@ inline int pilotPress(Battle& b, double now) {
     return presses;
 }
 
+struct HeadlessResult {
+    Phase outcome = Phase::NotStarted; // Victory or Defeat when the fight ended, else where it stopped
+    bool finished = false;
+    bool commandFailed = false; // the pilot's choice was refused (never expected)
+    int partyTurns = 0;
+    int enemyCombos = 0;
+    int presses = 0;
+    int partyHpLeft = 0; // sum over the party at the end
+    double endTime = 0.0;
+};
+
+// Plays a whole fight on a fixed clock `step` seconds apart (default 120 Hz), up to `limit`
+// battle seconds. The pilot picks skills and targets for every party turn; with `press` it steps on
+// every note exactly on time, without it never presses. The same clock the Unreal autopilot
+// sees: presses go in before the update that would expire them.
+inline HeadlessResult playHeadless(std::vector<Combatant> party, std::vector<Combatant> foes, bool press,
+                                   double step = 1.0 / 120.0, double limit = 1200.0) {
+    Battle b(std::move(party), std::move(foes), tuning());
+    HeadlessResult r;
+    double now = 0.0;
+    b.start(now);
+    while (b.phase() != Phase::Victory && b.phase() != Phase::Defeat && now < limit) {
+        if (b.phase() == Phase::AwaitingCommand) {
+            const PilotChoice choice = pilotChoice(b);
+            if (b.command(choice.skill, choice.target, now) != CommandError::None) {
+                r.commandFailed = true;
+                break;
+            }
+            ++r.partyTurns;
+        }
+        const Phase before = b.phase();
+        if (press) r.presses += pilotPress(b, now);
+        now += step;
+        b.update(now);
+        if (before != Phase::EnemySkill && b.phase() == Phase::EnemySkill) ++r.enemyCombos;
+        b.clearEvents();
+    }
+    r.outcome = b.phase();
+    r.finished = r.outcome == Phase::Victory || r.outcome == Phase::Defeat;
+    r.endTime = now;
+    for (const Combatant& c : b.combatants())
+        if (c.team == Team::Party) r.partyHpLeft += c.hp;
+    return r;
+}
+
 } // namespace ftcore::demo

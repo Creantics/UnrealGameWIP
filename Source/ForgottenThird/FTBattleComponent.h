@@ -364,6 +364,10 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Battle")
 	FFTBattleOutcomeSignature OnOutcome;
 
+	// An arrow pressed at BattleSeconds on the battle clock (GetBattleTime scale) rather than now:
+	// an autopilot steps on a note exactly on time even when a frame is long (time dilation).
+	void PressAtTime(EFTArrow Arrow, double BattleSeconds);
+
 	// Native access (null before the first StartBattle).
 	const ftcore::Battle* GetBattle() const { return Battle.Get(); }
 	// Allocation-free turn order for native per-frame code; valid until the next call.
