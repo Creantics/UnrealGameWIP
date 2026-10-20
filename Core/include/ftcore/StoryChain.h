@@ -74,7 +74,7 @@ private:
 
 struct AlphaCounters {
     std::uint32_t scenes = 0;
-    std::uint32_t battle = 0, field = 0, stub = 0; // screens played to the end
+    std::uint32_t battle = 0, field = 0, stub = 0; // screens played to the end; stub includes cutscenes
     std::uint32_t stuck = 0;
     std::uint32_t warnings = 0; // plan unknown or dropped tokens, screens that came back not done
 
@@ -83,10 +83,10 @@ struct AlphaCounters {
         case GameplayScreen::Battle: ++battle; break;
         case GameplayScreen::Field: ++field; break;
         case GameplayScreen::Stub: ++stub; break;
+        case GameplayScreen::Cutscene: ++stub; break; // counted with the stubs: the FINISHED line keeps its shape
         case GameplayScreen::Box:
         case GameplayScreen::Choice:
-        case GameplayScreen::Qte:
-        case GameplayScreen::Cutscene: break;
+        case GameplayScreen::Qte: break;
         }
     }
     std::uint32_t screens() const { return battle + field + stub; }
