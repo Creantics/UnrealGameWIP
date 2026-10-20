@@ -34,6 +34,7 @@ add_library(ftcore STATIC
     src/ComboGenerator.cpp
     src/ComboSequence.cpp
     src/Conductor.cpp
+    src/DefenceTimeline.cpp
     src/Dialogue.cpp
     src/Emotion.cpp
     src/Encounter.cpp
@@ -83,6 +84,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_battle_demo.cpp
         tests/test_combo.cpp
         tests/test_conductor.cpp
+        tests/test_defence.cpp
         tests/test_dialogue.cpp
         tests/test_alpha.cpp
         tests/test_emotion.cpp

@@ -56,6 +56,58 @@ bool encNum(JsonValue j, const char* key, float& out, float lo, float hi, const 
     return true;
 }
 
+// A number in [lo, hi] (required when `required`, else optional and left alone when absent).
+bool encDouble(JsonValue j, const char* key, double& out, double lo, double hi, bool required, const std::string& path,
+               std::vector<std::string>& errors) {
+    const JsonValue v = j[key];
+    if (v.isAbsent() && !required) return true;
+    const double d = v.number(-1e30);
+    if (!v.isNumber() || !std::isfinite(d) || d < lo || d > hi) {
+        errors.push_back(path + "." + key + ": expected a number in " + std::to_string(lo) + ".." + std::to_string(hi));
+        return false;
+    }
+    out = d;
+    return true;
+}
+
+// A skill's optional "hits" array: its attack timeline. Absent: the default single hit.
+void encHits(JsonValue s, const std::string& path, AttackTimeline& out, std::vector<std::string>& errors,
+             std::vector<std::string>* warnings) {
+    const JsonValue hits = s["hits"];
+    if (hits.isAbsent()) return;
+    const std::string hp = path + ".hits";
+    if (!hits.isArray() || hits.size() == 0 || hits.size() > kMaxTimelineHits) {
+        errors.push_back(hp + ": expected an array of 1.." + std::to_string(kMaxTimelineHits) + " hits");
+        return;
+    }
+    out.clear();
+    double previous = 0.0;
+    for (std::uint32_t i = 0; i < hits.size(); ++i) {
+        const JsonValue h = hits[i];
+        const std::string p = hp + "[" + std::to_string(i) + "]";
+        if (!h.isObject()) {
+            errors.push_back(p + ": expected an object");
+            continue;
+        }
+        encUnknownKeys(h, p, {"at", "tell", "telegraph", "weight", "jumpable"}, warnings);
+        TimelineHit hit;
+        if (encDouble(h, "at", hit.at, 0.0, kMaxHitOffset, true, p, errors)) {
+            if (hit.at <= previous) errors.push_back(p + ".at: expected a time after the previous hit (and above 0)");
+            previous = hit.at;
+        }
+        encDouble(h, "tell", hit.tell, 0.0, kMaxTell, false, p, errors);
+        encDouble(h, "telegraph", hit.telegraph, 0.0, kMaxTelegraph, false, p, errors);
+        if (hit.tell > hit.at) errors.push_back(p + ".tell: longer than the time from the banner to the hit");
+        if (hit.telegraph > hit.at) errors.push_back(p + ".telegraph: longer than the time from the banner to the hit");
+        encNum(h, "weight", hit.weight, 0.f, 100.f, p, errors);
+        if (!(hit.weight > 0.0f)) errors.push_back(p + ".weight: expected a number above 0");
+        const JsonValue jump = h["jumpable"];
+        if (!jump.isAbsent() && !jump.isBool()) errors.push_back(p + ".jumpable: expected true or false");
+        hit.jumpable = jump.boolean(false);
+        out.add(hit);
+    }
+}
+
 bool encRoot(std::string_view json, JsonDocument& doc, const char* what, std::vector<std::string>& errors) {
     std::string err;
     if (!doc.parse(json, &err)) {
@@ -169,7 +221,8 @@ bool importEnemyRoster(std::string_view json, EnemyRoster& out, std::string* err
                 errors.push_back(kp + ": expected an object");
                 continue;
             }
-            encUnknownKeys(s, kp, {"id", "name", "apCost", "apGain", "targeting", "power", "notes", "difficulty"},
+            encUnknownKeys(s, kp,
+                           {"id", "name", "apCost", "apGain", "targeting", "power", "notes", "difficulty", "hits"},
                            warnings);
             Skill skill;
             const std::string id = encStr(s["id"].string());
@@ -182,6 +235,7 @@ bool importEnemyRoster(std::string_view json, EnemyRoster& out, std::string* err
             encNum(s, "power", skill.power, 0.f, 100.f, kp, errors);
             encInt(s, "notes", skill.notes, 1, 64, kp, errors);
             encNum(s, "difficulty", skill.difficulty, 0.f, 10.f, kp, errors);
+            encHits(s, kp, skill.timeline, errors, warnings);
             const std::string_view targeting = s["targeting"].string("single");
             if (targeting == "single") skill.targeting = Targeting::SingleEnemy;
             else if (targeting == "all") skill.targeting = Targeting::AllEnemies;

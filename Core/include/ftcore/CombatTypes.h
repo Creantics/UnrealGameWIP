@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ftcore/DefenceTimeline.h"
+
 #include <string>
 #include <vector>
 
@@ -19,9 +21,9 @@ struct Stats {
 
 enum class Targeting { SingleEnemy, AllEnemies };
 
-// A move. Performing it means playing an arrow combo: party skills are performed by the
-// attacker (accuracy scales damage dealt), enemy skills by the defender (accuracy scales
-// damage blocked).
+// A move. Party skills are performed as an arrow combo by the attacker (accuracy scales damage
+// dealt). Enemy skills play their attack timeline instead, and the defender answers each hit with
+// a dodge, parry or jump (see DefenceTimeline.h); notes and difficulty only matter for party skills.
 struct Skill {
     std::string name;
     int apCost = 0;
@@ -30,6 +32,7 @@ struct Skill {
     float power = 1.0f;       // damage multiplier for the whole move at 100% accuracy
     int notes = 4;            // base combo length before difficulty adds more
     float difficulty = 2.0f;  // move complexity on the 0-10 combo rating scale
+    AttackTimeline timeline;  // enemy skills: the hits to defend (default: one hit, kDefaultImpact s in)
 };
 
 struct Combatant {

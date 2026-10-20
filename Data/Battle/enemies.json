@@ -6,8 +6,10 @@
       "name": "Brute",
       "stats": { "maxHp": 260, "attack": 18, "defense": 6, "speed": 8, "technique": 8 },
       "skills": [
-        { "id": "slam", "name": "Slam", "targeting": "single", "power": 1.3, "notes": 3, "difficulty": 1.0 },
-        { "id": "double_swipe", "name": "Double Swipe", "targeting": "single", "power": 1.6, "notes": 5, "difficulty": 2.5 }
+        { "id": "slam", "name": "Slam", "targeting": "single", "power": 1.3, "notes": 3, "difficulty": 1.0,
+          "hits": [ { "at": 1.6, "tell": 0.4, "telegraph": 1.2 } ] },
+        { "id": "double_swipe", "name": "Double Swipe", "targeting": "single", "power": 1.6, "notes": 5, "difficulty": 2.5,
+          "hits": [ { "at": 0.9 }, { "at": 1.4 } ] }
       ]
     },
     {
@@ -15,8 +17,10 @@
       "name": "Shade",
       "stats": { "maxHp": 180, "attack": 15, "defense": 3, "speed": 14, "technique": 14 },
       "skills": [
-        { "id": "flicker", "name": "Flicker", "targeting": "single", "power": 1.6, "notes": 5, "difficulty": 4.0 },
-        { "id": "feint", "name": "Feint", "targeting": "single", "power": 1.8, "notes": 5, "difficulty": 5.0 }
+        { "id": "flicker", "name": "Flicker", "targeting": "single", "power": 1.6, "notes": 5, "difficulty": 4.0,
+          "hits": [ { "at": 0.8, "tell": 0.3 }, { "at": 1.1, "tell": 0.3 }, { "at": 1.4, "tell": 0.3 } ] },
+        { "id": "feint", "name": "Feint", "targeting": "single", "power": 1.8, "notes": 5, "difficulty": 5.0,
+          "hits": [ { "at": 1.0 }, { "at": 1.8, "weight": 2 } ] }
       ]
     },
     {
@@ -25,7 +29,8 @@
       "stats": { "maxHp": 70, "attack": 12, "defense": 2, "speed": 16, "technique": 10 },
       "skills": [
         { "id": "zap", "name": "Zap", "targeting": "single", "power": 1.0, "notes": 3, "difficulty": 1.5 },
-        { "id": "dart", "name": "Dart", "targeting": "single", "power": 1.3, "notes": 4, "difficulty": 3.0 }
+        { "id": "dart", "name": "Dart", "targeting": "single", "power": 1.3, "notes": 4, "difficulty": 3.0,
+          "hits": [ { "at": 0.8 }, { "at": 1.2 } ] }
       ]
     },
     {
@@ -34,7 +39,8 @@
       "stats": { "maxHp": 120, "attack": 16, "defense": 4, "speed": 13, "technique": 9 },
       "skills": [
         { "id": "bite", "name": "Bite", "targeting": "single", "power": 1.2, "notes": 3, "difficulty": 1.5 },
-        { "id": "lunge", "name": "Lunge", "targeting": "single", "power": 1.5, "notes": 4, "difficulty": 2.5 }
+        { "id": "lunge", "name": "Lunge", "targeting": "single", "power": 1.5, "notes": 4, "difficulty": 2.5,
+          "hits": [ { "at": 1.0, "jumpable": true } ] }
       ]
     },
     {
@@ -43,7 +49,8 @@
       "stats": { "maxHp": 280, "attack": 14, "defense": 10, "speed": 5, "technique": 6 },
       "skills": [
         { "id": "shove", "name": "Shove", "targeting": "single", "power": 1.0, "notes": 3, "difficulty": 1.0 },
-        { "id": "crush", "name": "Crush", "targeting": "single", "power": 1.6, "notes": 4, "difficulty": 2.0 }
+        { "id": "crush", "name": "Crush", "targeting": "single", "power": 1.6, "notes": 4, "difficulty": 2.0,
+          "hits": [ { "at": 2.0, "tell": 0.5, "telegraph": 1.5, "jumpable": true } ] }
       ]
     },
     {
@@ -51,8 +58,10 @@
       "name": "Lurker",
       "stats": { "maxHp": 110, "attack": 24, "defense": 2, "speed": 11, "technique": 16 },
       "skills": [
-        { "id": "rake", "name": "Rake", "targeting": "single", "power": 1.4, "notes": 4, "difficulty": 3.0 },
-        { "id": "ambush", "name": "Ambush", "targeting": "single", "power": 2.0, "notes": 5, "difficulty": 4.0 }
+        { "id": "rake", "name": "Rake", "targeting": "single", "power": 1.4, "notes": 4, "difficulty": 3.0,
+          "hits": [ { "at": 0.7 }, { "at": 1.0 }, { "at": 1.3 } ] },
+        { "id": "ambush", "name": "Ambush", "targeting": "single", "power": 2.0, "notes": 5, "difficulty": 4.0,
+          "hits": [ { "at": 1.4 }, { "at": 1.7, "tell": 0.3, "weight": 2 } ] }
       ]
     }
   ]

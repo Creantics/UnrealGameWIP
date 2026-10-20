@@ -46,6 +46,8 @@ void Battle::reset(const std::vector<Combatant>& party, const std::vector<Combat
     shares_.clear();
     params_ = {};
     combosPlayed_ = 0;
+    defence_.clear();
+    landedWeight_ = 0.0f;
     events_.clear();
     results_.clear();
 
@@ -136,8 +138,14 @@ void Battle::startEnemyTurn(double now) {
     shares_.push_back({target, damage(enemy, combatants_[target], enemy.skills[idx].power)});
     phase_ = Phase::EnemySkill;
     phaseStart_ = now;
-    // The defender performs the combo; the attacking enemy is the opponent.
-    startCombo(enemy.skills[idx], target, actor_, now + tuning_.windup, now);
+    // No party chart during an enemy turn (swaps buffers: no allocation).
+    noteScratch_.clear();
+    combo_.reset(noteScratch_, scaled(tuning_.windows, 1.0), tuning_.lockout, tuning_.weights);
+    // The banner is now; the hits follow at the skill's fixed offsets.
+    landedWeight_ = 0.0f;
+    defence_.reset(enemy.skills[idx].timeline, now, tuning_.defence);
+    emit({.type = EventType::SkillStarted, .source = actor_, .target = target, .time = now, .label = enemy.skills[idx].name});
+    if (defence_.complete()) finishSkill(now); // a skill without hits
 }
 
 void Battle::startCombo(const Skill& skill, CombatantId performer, CombatantId opponent, double firstNote,
@@ -196,19 +204,26 @@ CommandError Battle::command(std::size_t skillIndex, CombatantId target, double 
 }
 
 void Battle::press(Arrow arrow, double timestamp) {
-    if (phase_ != Phase::PartySkill && phase_ != Phase::EnemySkill) return;
+    if (phase_ != Phase::PartySkill) return;
     results_.clear();
     combo_.press(arrow, timestamp, results_);
     resolve(timestamp);
 }
 
+void Battle::defend(DefenceInput input, double timestamp) {
+    if (phase_ != Phase::EnemySkill) return;
+    resolveDefence(defence_.press(input, timestamp), timestamp);
+}
+
 void Battle::update(double now) {
     switch (phase_) {
     case Phase::PartySkill:
-    case Phase::EnemySkill:
         results_.clear();
         combo_.update(now, results_);
         resolve(now);
+        break;
+    case Phase::EnemySkill:
+        resolveDefence(defence_.update(now), now);
         break;
     case Phase::Recovery:
         if (now >= recoveryEnd_) beginTurn(now);
@@ -219,7 +234,7 @@ void Battle::update(double now) {
 
 void Battle::resolve(double now) {
     for (const NoteResult& r : results_) {
-        if (phase_ != Phase::PartySkill && phase_ != Phase::EnemySkill) return;
+        if (phase_ != Phase::PartySkill) return;
         emit({.type = EventType::NoteJudged,
               .source = actor_,
               .target = targets_.front(),
@@ -227,13 +242,9 @@ void Battle::resolve(double now) {
               .beat = r.index,
               .time = now,
               .label = r.wrongArrow ? "WRONG" : ""});
-        if (phase_ == Phase::PartySkill)
-            resolveAttackNote(r, now);
-        else
-            resolveDefenseNote(r, now);
+        resolveAttackNote(r, now);
     }
-    if ((phase_ == Phase::PartySkill || phase_ == Phase::EnemySkill) && (combo_.complete() || targetsGone()))
-        finishSkill(now);
+    if (phase_ == Phase::PartySkill && (combo_.complete() || targetsGone())) finishSkill(now);
 }
 
 // Damage is spread over the notes: after each note the total dealt so far is the full
@@ -251,21 +262,34 @@ void Battle::resolveAttackNote(const NoteResult& r, double now) {
     }
 }
 
-// Each note stands for an equal slice of the incoming blow: the graded part of the slice
-// is blocked and the rest gets through.
-void Battle::resolveDefenseNote(const NoteResult& r, double now) {
-    Share& s = shares_.front();
-    if (!combatants_[s.target].alive()) return;
-    const auto n = static_cast<float>(combo_.size());
-    const int blocked = static_cast<int>(std::lround(s.full * combo_.score() / n)) - s.applied;
-    const int taken =
-        static_cast<int>(std::lround(s.full * (static_cast<float>(combo_.judged()) - combo_.score()) / n)) - s.taken;
-    s.applied += blocked;
-    s.taken += taken;
-    if (blocked > 0)
-        emit({.type = EventType::Blocked, .source = actor_, .target = s.target, .amount = blocked, .grade = r.grade,
-              .beat = r.index, .time = now, .label = {}});
-    if (taken > 0) dealDamage(actor_, s.target, taken, r.grade, r.index, now);
+// Each hit carries its weight's share of the blow. A hit that lands deals its share (rounded
+// cumulatively, so every hit landing deals exactly the full blow); a dodged, jumped or parried hit
+// deals nothing, and a perfect parry or dodge refunds AP to the defender.
+void Battle::resolveDefence(const DefenceResults& results, double now) {
+    for (const DefenceResult& r : results) {
+        if (phase_ != Phase::EnemySkill) return;
+        Share& s = shares_.front();
+        Combatant& d = combatants_[s.target];
+        const int refund = r.refund && d.alive() ? std::max(0, std::min(tuning_.apOnPerfect, d.maxAp - d.ap)) : 0;
+        d.ap += refund;
+        const Grade grade = r.refund ? Grade::Perfect : r.outcome == DefenceOutcome::Hit ? Grade::Miss : Grade::Good;
+        emit({.type = EventType::Defended,
+              .source = actor_,
+              .target = s.target,
+              .amount = refund,
+              .grade = grade,
+              .beat = r.hit,
+              .time = r.time,
+              .label = r.refund ? "PERFECT" : defenceOutcomeName(r.outcome)});
+        if (r.outcome != DefenceOutcome::Hit || !d.alive()) continue;
+        landedWeight_ += defence_.hit(r.hit).weight;
+        const float total = defence_.timeline().totalWeight();
+        const float fraction = total > 0.0f ? std::min(landedWeight_ / total, 1.0f) : 1.0f;
+        const int taken = static_cast<int>(std::lround(s.full * fraction)) - s.taken;
+        s.taken += taken;
+        if (taken > 0) dealDamage(actor_, s.target, taken, grade, r.hit, now);
+    }
+    if (phase_ == Phase::EnemySkill && (defence_.complete() || targetsGone())) finishSkill(now);
 }
 
 bool Battle::targetsGone() const {
@@ -274,12 +298,13 @@ bool Battle::targetsGone() const {
 
 void Battle::finishSkill(double now) {
     const bool full = combo_.complete() && combo_.fullCombo();
-    emit({.type = EventType::ComboFinished,
-          .source = actor_,
-          .target = targets_.front(),
-          .amount = static_cast<int>(std::lround(combo_.accuracy() * 100.0f)),
-          .time = now,
-          .label = full ? "FULL COMBO" : ""});
+    if (phase_ == Phase::PartySkill)
+        emit({.type = EventType::ComboFinished,
+              .source = actor_,
+              .target = targets_.front(),
+              .amount = static_cast<int>(std::lround(combo_.accuracy() * 100.0f)),
+              .time = now,
+              .label = full ? "FULL COMBO" : ""});
 
     if (phase_ == Phase::PartySkill && full && tuning_.fullComboBonus > 0.0f) {
         for (Share& s : shares_) {
@@ -289,14 +314,15 @@ void Battle::finishSkill(double now) {
             if (phase_ == Phase::Victory) return;
         }
     }
-    if (phase_ == Phase::EnemySkill && full && combo_.accuracy() >= tuning_.counterAccuracy) {
+    // A fully parried attack: the defender strikes back.
+    if (phase_ == Phase::EnemySkill && defence_.allParried()) {
         const CombatantId defender = targets_.front();
         Combatant& d = combatants_[defender];
         if (d.alive() && combatants_[actor_].alive()) {
             const int dmg = std::max(1, static_cast<int>(std::lround(damage(d, combatants_[actor_], tuning_.counterPower))));
             d.ap = std::min(d.ap + tuning_.apOnCounter, d.maxAp);
             emit({.type = EventType::Counter, .source = defender, .target = actor_, .amount = dmg, .time = now, .label = {}});
-            dealDamage(defender, actor_, dmg, Grade::Perfect, combo_.size(), now);
+            dealDamage(defender, actor_, dmg, Grade::Perfect, defence_.size(), now);
             if (phase_ == Phase::Victory || phase_ == Phase::Defeat) return;
         }
     }

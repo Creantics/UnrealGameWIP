@@ -20,7 +20,13 @@
 //       { "id": "brute", "name": "Brute", "stats": { "maxHp": 260, "attack": 18, "defense": 6, "speed": 8, "technique": 8 },
 //         "skills": [ { "id": "slam", "name": "Slam", "power": 1.3, "notes": 3, "difficulty": 1.0 } ] } ] }
 //   Skill keys: id, name, apCost, apGain (default 0), targeting ("single" default, or "all"), power,
-//   notes, difficulty. Stats keys default to the Stats defaults. `name` defaults to the id.
+//   notes, difficulty, hits. Stats keys default to the Stats defaults. `name` defaults to the id.
+//   `hits` is the attack timeline the defender answers on an enemy turn (see DefenceTimeline.h):
+//     "hits": [ { "at": 0.9, "tell": 0.4 }, { "at": 1.5, "tell": 0.4, "weight": 2, "jumpable": true } ]
+//   1..8 hits, `at` seconds after the banner (0 < at <= 30, strictly increasing, required); `tell`
+//   (0..2, default 0.4) and `telegraph` (0..10, default 0) seconds before impact, neither longer
+//   than `at`; `weight` (> 0, default 1) is the hit's share of the skill's damage; `jumpable`
+//   (default false). A skill without `hits` gets one default hit 1.2 s after its banner.
 // encounters.json:
 //   { "version": 1, "default": { "enemies": ["brute", "shade"] },
 //     "encounters": [ { "scene": "SC-X", "beat": 4, "step": 0, "enemies": ["shade"] } ] }
