@@ -177,6 +177,7 @@ void AFTBattleDemoActor::BeginPlay()
 	if (bStoryAutoPlay && IsAlphaFastRequested())
 	{
 		Conductor->bWallClockFollowsGameTime = true;
+		Conductor->ResetClock(); // its BeginPlay already seeded the clock from platform time
 		UGameplayStatics::SetGlobalTimeDilation(this, kAlphaFastDilation);
 		bDilated = true;
 		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: -AlphaFast, game time x%.0f."), kAlphaFastDilation);

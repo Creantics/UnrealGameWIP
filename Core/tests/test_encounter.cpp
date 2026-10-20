@@ -220,7 +220,8 @@ TEST_CASE("balance gate: every encounter is won with perfect presses and lost wi
         MESSAGE(name << ": tier " << lineup.tier << ", victory in " << win.endTime << " s, " << win.partyTurns
                      << " turns, " << win.enemyCombos << " defences, party HP left " << win.partyHpLeft);
 
-        // A slow frame rate (about 7 fps at 8x time dilation: 130 ms of battle time per frame) still wins.
+        // Long frames (130 ms of battle time per frame, as under time dilation) still win: the autopilot
+        // presses at each note's own time before the update that would expire it.
         const demo::HeadlessResult coarse = demo::playHeadless(demo::party(), foes, true, 0.13);
         CHECK(coarse.outcome == Phase::Victory);
 
