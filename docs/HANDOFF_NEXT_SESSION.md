@@ -15,7 +15,7 @@ Private notes (character references, concept-art review, script status) are in `
   - The style branch is salvaged and retired (next section).
   - **Two playable demos on main (4d23d8f):** the fight demo now fights with the Devin and Duy meshes, and a new exploration map (`/Game/Maps/Explore`, `docs/EXPLORE_DEMO.md`) plays end to end: talk to Duy, three light shards, the old gate, then an ambush that opens `BattleDemo` and returns to the field on a win. Headless autoplay passes both: `BattleDemo: VICTORY after 61.5 s.` and `ExploreDemo: COMPLETE after 23.5 s.` (field time, with the fight round trip in between). gate -Ubt green.
 - **Next actions, in order:**
-  1. **User visual check (portrait monitor, nobody else launches the editor):** press Play in `Explore.umap` and in `BattleDemo.umap`. Check the camera, Devin's walk and facing, Duy's facing, the prompts and the fight round trip. This also answers the grey-characters check (below), as would Play in `Leads.umap`.
+  1. **Done 2026-10-20:** the user pressed Play in `Explore.umap` and `BattleDemo.umap`: "ok so far". The /goal (a playable fight demo and a playable exploration demo) is met. No specific notes on the grey-characters question yet.
   2. The dialogue UI on the Draft 95 data, then movement, menus and VO playback.
   3. The Prologue chapters 1-2 vertical slice.
 - **Not modelled yet in the import:** Draft 95's inline gameplay markers stay hidden notes, and its new seen/fairness/ruling-tier flags are set by no insert. Model them when the dialogue UI needs them.
