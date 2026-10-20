@@ -92,6 +92,23 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Input|Battle")
 	FFTInputEvent OnBattleConfirm;
 
+	// ---- menu ----
+
+	// Menu navigation (the title screen): a third mapping context, on top of the story's, only
+	// between BeginMenuInput and EndMenuInput. Up arrow, W, pad d-pad up
+	// and left give OnMenuStep(-1); Down arrow, S, pad d-pad down and right give OnMenuStep(+1).
+	// Its actions consume those keys, so the d-pad stops reaching the story's choose actions. Space,
+	// Enter, click and pad A / Start still arrive as OnAdvance / OnConfirm, and 1 / 2 as OnChoose.
+	UFUNCTION(BlueprintCallable, Category = "Input|Menu")
+	void BeginMenuInput();
+	UFUNCTION(BlueprintCallable, Category = "Input|Menu")
+	void EndMenuInput();
+	UFUNCTION(BlueprintPure, Category = "Input|Menu")
+	bool IsMenuInputActive() const { return bMenuInput; }
+	// -1 up, +1 down.
+	UPROPERTY(BlueprintAssignable, Category = "Input|Menu")
+	FFTBattleStepEvent OnMenuStep;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void SetupInputComponent() override;
@@ -125,6 +142,18 @@ private:
 	void HandleTargetPrev();
 	void HandleBattleConfirm();
 	class UEnhancedInputLocalPlayerSubsystem* GetInputSubsystem() const;
+
+	void HandleMenuUp() { HandleMenuStep(-1); }
+	void HandleMenuDown() { HandleMenuStep(1); }
+	void HandleMenuStep(int32 Step);
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputMappingContext> MenuContext;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> MenuUpAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> MenuDownAction;
+	bool bMenuInput = false;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UInputMappingContext> BattleContext;
