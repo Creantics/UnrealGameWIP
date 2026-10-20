@@ -12,14 +12,15 @@
 // Gameplay hand-off: continuing past a fight (CMB) opens BattleMap and past an exploration beat (ENG,
 // PLAY) opens FieldMap, with an FFTStoryCarry in the game instance. The screen opens this map again
 // when it is done; the director spawned there resumes the story after the beat. Other kinds wait in
-// the box and continuing skips them. Fast autoplay skips the hand-off unless -StoryAutoPlayHandoff.
+// the box and continuing skips them. Paced autoplay hands off too (the screen plays itself); fast
+// autoplay skips the hand-off unless -StoryAutoPlayHandoff.
 //
 // Moves, scenes and time in the FINISHED line count from this map visit only.
 //
 // Command line: -StoryAutoPlay plays by itself (each text typed out, then a short pause);
 // -StoryAutoPlayFast shows each text whole and makes many moves a frame; -StoryQuitOnFinish exits
 // when the story ends (a headless run); -StoryScene=<id> starts there (read by AFTGameMode);
-// -StoryAutoPlayHandoff makes autoplay hand off too (and the screens play themselves);
+// -StoryAutoPlayHandoff turns on autoplay that hands off even when fast (the screens play themselves);
 // -StoryQuitOnReturn exits once the story resumes after a hand-off. Logs carry scene ids and counts
 // only, never script text.
 

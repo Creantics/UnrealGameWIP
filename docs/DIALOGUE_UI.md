@@ -60,8 +60,8 @@ Before opening the map the director fills `UFTGameInstance::StoryCarry` (`FFTSto
 to return to, the beat's scene id, index and kind, and the screen. The story subsystem lives on the
 game instance, so the runner waits on the gameplay beat across the map change.
 
-- The battle demo plays its usual fight. A win sets the carry done and goes back after 2.5 s; a loss
-  stays for a retry.
+- The battle demo plays its usual fight. A win sets the carry done and goes back after 2.5 s; after
+  a loss, Space or Enter restarts the fight.
 - The exploration map becomes a free walk: no spots, encounters or objectives. "E  Back to the
   story" (E, Enter or pad X) goes back.
 - Back on the story map the game mode sees the story already running, so it spawns a director
@@ -85,10 +85,11 @@ UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/Demo -game -NullRHI -Sto
 It logs one `Story: scene <id>` line per scene and `Story: FINISHED after 3042 moves, 73 scenes`,
 then exits. `-StoryAutoPlay` plays at reading pace instead (typing, then a pause), and
 `-StoryScene=<id>` starts at a given scene. `Story: STUCK` means autoplay found nothing to do for
-10 s. Fast autoplay skips the hand-off, so this run never leaves the map.
+10 s. Paced `-StoryAutoPlay` hands off too, and the opened screen plays itself; fast autoplay
+skips the hand-off, so the whole-script run never leaves the map.
 
-- A hand-off round trip: `-StoryAutoPlayHandoff` makes autoplay hand off as well, and the screen
-  plays itself; `-StoryQuitOnReturn` exits once the story resumes.
+- A hand-off round trip: `-StoryAutoPlayHandoff` turns on autoplay that hands off even when fast,
+  and the opened screen plays itself; `-StoryQuitOnReturn` exits once the story resumes.
 
 ```
 UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/Demo -game -NullRHI -StoryScene=SC-P1-02 -StoryAutoPlay -StoryAutoPlayHandoff -StoryQuitOnReturn -unattended -nosplash -nosound

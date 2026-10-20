@@ -195,6 +195,7 @@ private:
 	int32 SelectedSkill = 0;
 	int32 SelectedTarget = -1;
 	bool bWaitingForRestart = false;
+	bool bReturningToStory = false; // a story fight was won; no restart
 	double OutcomeWall = 0.0;
 	bool bInputBound = false;
 	double RoundStartWall = 0.0;

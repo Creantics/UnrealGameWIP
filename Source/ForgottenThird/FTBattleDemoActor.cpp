@@ -577,6 +577,7 @@ void AFTBattleDemoActor::HandleOutcome(EFTBattleOutcome Outcome)
 		{
 			GI->StoryCarry.bDone = true;
 			GI->StoryCarry.bWon = true;
+			bReturningToStory = true;
 			SetNotice(TEXT("Returning to the story"));
 			FTimerHandle Timer;
 			GetWorldTimerManager().SetTimer(Timer, this, &AFTBattleDemoActor::ReturnToStory, 2.5f, false);
@@ -686,7 +687,7 @@ void AFTBattleDemoActor::HandleConfirm()
 void AFTBattleDemoActor::HandleRestart()
 {
 	// A short pause first, so the press that ended the battle doesn't start the next one.
-	if (bWaitingForRestart && Wall() - OutcomeWall > 1.0)
+	if (bWaitingForRestart && !bReturningToStory && Wall() - OutcomeWall > 1.0)
 	{
 		StartRound();
 	}
