@@ -1,12 +1,20 @@
-#include "FTImportCharacterCommandlet.h"
+﻿#include "FTImportCharacterCommandlet.h"
 
 #include "ForgottenThird.h"
 
 #if WITH_EDITOR
 #include "AssetImportTask.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "Animation/MorphTarget.h"
 #include "Engine/SkeletalMesh.h"
+#include "FileHelpers.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialInstanceConstant.h"
+#include "Misc/PackageName.h"
 #include "FTText.h"
 #include "IAssetTools.h"
 #include "Misc/FileHelper.h"
@@ -21,8 +29,119 @@ const TCHAR* const kFaceBones[] = {
 	TEXT("head"), TEXT("jaw"), TEXT("tongue_01"), TEXT("tongue_02"), TEXT("tongue_03"), TEXT("eye_l"), TEXT("eye_r"),
 };
 
-// Logs the rig check; false when a face bone or a face shape's morph is missing.
-bool CheckRig(const USkeletalMesh& Mesh)
+// Interchange gives each glTF material an instance of a plugin master without the skeletal mesh and morph target
+// usage. The editor adds them in memory, but a game run draws the default material instead. Plugin content can't be
+// saved, and characters use flat glTF factors only, so each instance is moved onto a small project master that takes
+// the same values and has both usages.
+const TCHAR* const kCharacterMaster = TEXT("/Game/Characters/Shared/Materials/M_FTCharacter");
+
+template <typename T>
+T* AddParameter(UMaterial* Material, FName Name, int32 Y)
+{
+	T* Expression = NewObject<T>(Material, NAME_None, RF_Transactional);
+	Expression->Material = Material;
+	Expression->MaterialExpressionEditorX = -400;
+	Expression->MaterialExpressionEditorY = Y;
+	Expression->ParameterName = Name;
+	Material->GetExpressionCollection().AddExpression(Expression);
+	return Expression;
+}
+
+UMaterial* CharacterMaster(TArray<UPackage*>& Dirty)
+{
+	const FString Name = FPackageName::GetShortName(kCharacterMaster);
+	if (UMaterial* Existing = LoadObject<UMaterial>(nullptr, *(FString(kCharacterMaster) + TEXT(".") + Name), nullptr,
+			LOAD_NoWarn | LOAD_Quiet))
+	{
+		return Existing;
+	}
+	UPackage* Package = CreatePackage(kCharacterMaster);
+	UMaterial* Material = NewObject<UMaterial>(Package, *Name, RF_Public | RF_Standalone | RF_Transactional);
+	Material->bUsedWithSkeletalMesh = true;
+	Material->bUsedWithMorphTargets = true;
+	Material->TwoSided = true;
+
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	UMaterialExpressionVectorParameter* Color = AddParameter<UMaterialExpressionVectorParameter>(Material, TEXT("BaseColor"), 0);
+	Color->DefaultValue = FLinearColor::White;
+	Inputs->BaseColor.Expression = Color;
+	UMaterialExpressionScalarParameter* Metallic = AddParameter<UMaterialExpressionScalarParameter>(Material, TEXT("Metallic"), 200);
+	Metallic->DefaultValue = 0.0f;
+	Inputs->Metallic.Expression = Metallic;
+	UMaterialExpressionScalarParameter* Roughness = AddParameter<UMaterialExpressionScalarParameter>(Material, TEXT("Roughness"), 300);
+	Roughness->DefaultValue = 0.6f;
+	Inputs->Roughness.Expression = Roughness;
+	UMaterialExpressionVectorParameter* Emissive = AddParameter<UMaterialExpressionVectorParameter>(Material, TEXT("Emissive"), 400);
+	Emissive->DefaultValue = FLinearColor::Black;
+	UMaterialExpressionScalarParameter* Strength = AddParameter<UMaterialExpressionScalarParameter>(Material, TEXT("EmissiveStrength"), 600);
+	Strength->DefaultValue = 1.0f;
+	UMaterialExpressionMultiply* Glow = NewObject<UMaterialExpressionMultiply>(Material, NAME_None, RF_Transactional);
+	Glow->Material = Material;
+	Glow->MaterialExpressionEditorX = -200;
+	Glow->MaterialExpressionEditorY = 450;
+	Glow->A.Expression = Emissive;
+	Glow->B.Expression = Strength;
+	Material->GetExpressionCollection().AddExpression(Glow);
+	Inputs->EmissiveColor.Expression = Glow;
+
+	Material->PreEditChange(nullptr);
+	Material->PostEditChange();
+	FAssetRegistryModule::AssetCreated(Material);
+	Material->MarkPackageDirty();
+	Dirty.AddUnique(Package);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTImportCharacter: made %s."), *Material->GetPathName());
+	return Material;
+}
+
+void UseCharacterMaster(const USkeletalMesh& Mesh)
+{
+	TArray<UPackage*> Dirty;
+	UMaterial* Master = nullptr;
+	int32 Moved = 0;
+	for (const FSkeletalMaterial& Slot : Mesh.GetMaterials())
+	{
+		UMaterialInstanceConstant* Instance = Cast<UMaterialInstanceConstant>(Slot.MaterialInterface);
+		if (!Instance || !Instance->GetPathName().StartsWith(TEXT("/Game/")))
+		{
+			continue;
+		}
+		if (!Master)
+		{
+			Master = CharacterMaster(Dirty);
+		}
+		if (Instance->Parent == Master)
+		{
+			continue;
+		}
+		FLinearColor Color = FLinearColor::White, Emissive = FLinearColor::Black;
+		float Metallic = 0.0f, Roughness = 0.6f, Strength = 1.0f;
+		Instance->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("BaseColorFactor")), Color);
+		Instance->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("EmissiveFactor")), Emissive);
+		Instance->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("MetallicFactor")), Metallic);
+		Instance->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("RoughnessFactor")), Roughness);
+		Instance->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("EmissiveStrength")), Strength);
+
+		Instance->ClearParameterValuesEditorOnly();
+		Instance->SetParentEditorOnly(Master);
+		Instance->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("BaseColor")), Color);
+		Instance->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Emissive")), Emissive);
+		Instance->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Metallic")), Metallic);
+		Instance->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Roughness")), Roughness);
+		Instance->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("EmissiveStrength")), Strength);
+		Instance->PostEditChange();
+		Instance->MarkPackageDirty();
+		Dirty.AddUnique(Instance->GetOutermost());
+		++Moved;
+	}
+	if (!Dirty.IsEmpty())
+	{
+		UEditorLoadingAndSavingUtils::SavePackages(Dirty, false);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTImportCharacter: moved %d materials onto %s."), Moved, kCharacterMaster);
+}
+
+// Logs the rig check; false when a face bone or (with bCheckFace) a face shape's morph is missing.
+bool CheckRig(const USkeletalMesh& Mesh, bool bCheckFace)
 {
 	bool bOk = true;
 
@@ -52,6 +171,12 @@ bool CheckRig(const USkeletalMesh& Mesh)
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTImportCharacter: %d/%d face bones, %d bones in all."), BonesFound,
 		UE_ARRAY_COUNT(kFaceBones), Skeleton.GetNum());
+
+	if (!bCheckFace)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTImportCharacter: -Face=0, skipping the face shape check."));
+		return bOk;
+	}
 
 	const FString PresetsPath = FPaths::ProjectDir() / TEXT("Data/Rig/face_presets.json");
 	TArray<uint8> Bytes;
@@ -100,6 +225,8 @@ int32 UFTImportCharacterCommandlet::Main(const FString& Params)
 		return 1;
 	}
 	FParse::Value(*Params, TEXT("Dest="), Dest);
+	bool bCheckFace = true;
+	FParse::Bool(*Params, TEXT("Face="), bCheckFace);
 	if (FPaths::IsRelative(Source))
 	{
 		Source = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / Source);
@@ -142,7 +269,8 @@ int32 UFTImportCharacterCommandlet::Main(const FString& Params)
 		return 1;
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTImportCharacter: mesh is %s"), *Mesh->GetPathName());
-	return CheckRig(*Mesh) ? 0 : 1;
+	UseCharacterMaster(*Mesh);
+	return CheckRig(*Mesh, bCheckFace) ? 0 : 1;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTImportCharacter needs an editor build."));
 	return 1;

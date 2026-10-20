@@ -14,6 +14,17 @@
 // with a hand-written fallback for any chain the template misses), and RTG_<mesh> with that rig as
 // its source. No stock mannequin ships in Engine/Content, so the target side is left empty.
 // Returns 1 when the mesh can't be loaded, a chain is missing or invalid, or a save fails.
+//
+// With -RetargetFrom=<IK Rig path> (and optionally -Clips=<anim path>,<anim path>...) it also
+// writes RTG_<source mesh>_to_<mesh> in Dest, with the given rig as source and this mesh's rig as
+// target (default op stack, chains mapped by exact name), retargets the clips into
+// Dest/Retargeted and logs each result like the clip check. It returns 1 if a target chain is
+// unmapped or a retargeted clip comes out empty. Example (proof_head's rom onto test_human):
+//
+//   -run=FTBuildRig -Mesh=/Game/Characters/TestHuman/test_human/SkeletalMeshes/test_human.test_human
+//       -Dest=/Game/Characters/TestHuman/Rig
+//       -RetargetFrom=/Game/Characters/ProofHead/Rig/IK_proof_head.IK_proof_head
+//       -Clips=/Game/Characters/ProofHead/proof_head/SkeletalMeshes/proof_headrom.proof_headrom
 
 #include "CoreMinimal.h"
 #include "Commandlets/Commandlet.h"
