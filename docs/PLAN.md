@@ -16,6 +16,16 @@ State on 2026-10-18 (origin/main at ef99ba1). The Core porting is done. The demo
 3. **Look at the overnight work.** Open the editor (it opens `Demo`), click Play, and check: the Solhaven style (outlines, paper grain, colour), the three effects beside the character (ember swirl, heal ring, smoke), and the physics corner (stacked crates, a bouncing ball). Change packs with `FTBuildDemoWorld -Style=lattice` and so on.
 4. **On any other machine:** copy newengine `assets/story/` to `Data/Story/`. It's gitignored.
 
+## Alpha
+
+Goal: one build that plays the whole story from the title screen to the end card, with a screen for every gameplay step. Phase 0 (the shared surface) is in; the streams that fill it come next.
+
+- **`ftcore::GameplayPlan`** (`Core/include/ftcore/GameplayPlan.h`) lowers a gameplay beat's `mode` param to an ordered list of steps (at most 8, no allocation). Separators `→`, `+` and `,` flatten to one sequence, and parentheticals and bare lower-case words become the step's label. CMB opens the battle screen, ENG and PLAY the field, and CHC, BNT, CG, HE, QTE and co-op QTE the new stub screen (`GameplayScreen::Stub`). Unknown tokens also go to the stub screen and are counted. An empty mode falls back to the beat's kind. The beat's `minutes` is kept.
+- **Carry.** `FFTStoryCarry` has `Step`, `StepCount` and `StepLabel` (defaults: step 0 of 1). The director doesn't use them yet.
+- **Encounters** (`Core/include/ftcore/Encounter.h`). `Data/Battle/enemies.json` holds the enemy roster (ids, stats and skills). `Data/Battle/encounters.json` maps scene id, beat index and step index to a line-up, and its `default` entry is the demo line-up. The files hold ids and numbers only.
+- **Skeletons.** `AFTStubGameMode`, `AFTStubHUD` and `AFTTitleHUD` exist as empty classes.
+- **Core gate** (`Core/tests/test_alpha.cpp`). The presenter's autoplay plays the real script, and each gameplay beat's plan has every step resolved at once by a fake screen. On Draft 93.1 it finishes all 73 scenes, with 74 beats and 167 steps: 40 battle, 91 field and 36 stub. There are 0 unknown tokens, and the test makes no allocation.
+
 ## Where things stand
 
 **Core** (plain C++20, 167 tests outside Unreal):
