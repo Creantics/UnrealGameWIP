@@ -113,6 +113,7 @@ void AFTStoryHUD::DrawHUD()
 	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
 	DrawBox(*Found);
 	DrawTitle(*Found);
+	DrawBanner(*Found);
 }
 
 void AFTStoryHUD::DrawStr(const FString& S, const FLinearColor& Color, float X, float Y, UFont* Font, float Scale)
@@ -276,6 +277,19 @@ void AFTStoryHUD::DrawBox(const AFTStoryDirector& D)
 			DrawText(kMoreBox, BoxWithAlpha(kGoldBox, A), BoxX + BoxW - Pad - CharW, BoxY + BoxH - Pad - LineH * 0.8f, Font, Scale);
 		}
 	}
+}
+
+void AFTStoryHUD::DrawBanner(const AFTStoryDirector& D)
+{
+	if (D.GetBanner().IsEmpty())
+	{
+		return;
+	}
+	const float A = static_cast<float>(FMath::Clamp(D.GetBannerAge() / 0.3, 0.0, 1.0));
+	const float S = UiScale;
+	const float Y = Canvas->ClipY * 0.42f;
+	DrawRect(BoxWithAlpha(kPanelBox, A), 0.f, Y - 20.f * S, Canvas->ClipX, 110.f * S);
+	DrawStrCentered(D.GetBanner(), BoxWithAlpha(kGoldBox, A), Canvas->ClipX * 0.5f, Y, GEngine->GetLargeFont(), 2.2f);
 }
 
 void AFTStoryHUD::DrawTitle(const AFTStoryDirector& D)

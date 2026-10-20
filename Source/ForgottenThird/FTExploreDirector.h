@@ -56,6 +56,8 @@ public:
 	const FString& GetBanner() const { return Banner; }
 	double GetBannerAge() const;
 	bool IsComplete() const { return bComplete; }
+	// Opened by the story for a field beat: no spots or objectives, just walk and go back.
+	bool IsStoryWalk() const { return bStoryWalk; }
 
 protected:
 	virtual void BeginPlay() override;
@@ -73,6 +75,9 @@ private:
 	void SetNotice(const FString& Text);
 	void SetBanner(const FString& Text);
 	void CheckComplete();
+	void BeginStoryWalk();
+	void ReturnToStory();
+	void OpenStoryMap();
 	double Now() const;
 
 	ftcore::Exploration Exploration;
@@ -81,6 +86,9 @@ private:
 	bool bRestorePending = false;
 	bool bComplete = false;
 	bool bBattleOpening = false;
+	bool bStoryWalk = false;
+	bool bStoryReturning = false;
+	double StoryWalkStart = 0.0;
 
 	FString Notice;
 	double NoticeTime = -100.0;

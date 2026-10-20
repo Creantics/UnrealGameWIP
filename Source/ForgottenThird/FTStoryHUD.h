@@ -26,6 +26,7 @@ private:
 
 	void DrawBox(const AFTStoryDirector& D);
 	void DrawTitle(const AFTStoryDirector& D);
+	void DrawBanner(const AFTStoryDirector& D);
 	void Wrap(const FString& Src, UFont* Font, float Scale, float MaxWidth);
 
 	void DrawStr(const FString& S, const FLinearColor& Color, float X, float Y, UFont* Font, float Scale = 1.f);

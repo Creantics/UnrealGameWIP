@@ -9,12 +9,19 @@
 // runs): Space / left mouse / pad bottom or Enter / pad Start finish the text, then move on or
 // continue past a gameplay beat; 1-4 / pad d-pad pick an option once the prompt is out.
 //
-// Gameplay beats have no handlers yet: they wait in the box until the player continues.
+// Gameplay hand-off: continuing past a fight (CMB) opens BattleMap and past an exploration beat (ENG,
+// PLAY) opens FieldMap, with an FFTStoryCarry in the game instance. The screen opens this map again
+// when it is done; the director spawned there resumes the story after the beat. Other kinds wait in
+// the box and continuing skips them. Fast autoplay skips the hand-off unless -StoryAutoPlayHandoff.
+//
+// Moves, scenes and time in the FINISHED line count from this map visit only.
 //
 // Command line: -StoryAutoPlay plays by itself (each text typed out, then a short pause);
 // -StoryAutoPlayFast shows each text whole and makes many moves a frame; -StoryQuitOnFinish exits
-// when the story ends (a headless run); -StoryScene=<id> starts there (read by AFTGameMode). Logs
-// carry scene ids and counts only, never script text.
+// when the story ends (a headless run); -StoryScene=<id> starts there (read by AFTGameMode);
+// -StoryAutoPlayHandoff makes autoplay hand off too (and the screens play themselves);
+// -StoryQuitOnReturn exits once the story resumes after a hand-off. Logs carry scene ids and counts
+// only, never script text.
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
@@ -46,6 +53,13 @@ public:
 	float AutoPlayPause = 0.8f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	bool bQuitOnFinish = false;
+	// Maps the gameplay beats open, and the pause before they do.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
+	FString BattleMap = TEXT("BattleDemo");
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
+	FString FieldMap = TEXT("Explore");
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
+	float HandoffDelay = 1.2f;
 
 	virtual void Tick(float DeltaSeconds) override;
 
@@ -63,6 +77,9 @@ public:
 	const FString& GetSceneTitle() const { return SceneTitle; }
 	double GetSceneAge() const;
 	bool IsFinished() const;
+	// A short banner while a gameplay screen opens ("Battle!"); empty otherwise.
+	const FString& GetBanner() const { return Banner; }
+	double GetBannerAge() const;
 
 protected:
 	virtual void BeginPlay() override;
@@ -81,6 +98,10 @@ private:
 	void CacheBeat();
 	void TickAutoPlay(float DeltaSeconds);
 	void ReportFinished();
+	// Back from a gameplay screen: resumes the story if it is still on the handed-off beat.
+	void ResumeFromCarry();
+	void BeginHandoff(ftcore::GameplayScreen Screen);
+	void OpenHandoff();
 
 	UPROPERTY()
 	TObjectPtr<UFTStorySubsystem> Story;
@@ -103,4 +124,12 @@ private:
 	int32 Moves = 0;
 	int32 Scenes = 0;
 	double StartTime = 0.0;
+
+	bool bHandoffAuto = false; // -StoryAutoPlayHandoff
+	bool bQuitOnReturn = false;
+	bool bPrevRouteInput = false;
+	bool bHandingOff = false;
+	ftcore::GameplayScreen HandoffScreen = ftcore::GameplayScreen::Box;
+	FString Banner;
+	double BannerStart = -1.0;
 };

@@ -6,7 +6,8 @@
 //
 // Keys: advance Space / left mouse / pad bottom; choose 1-4 the number keys / pad d-pad (up, right,
 // down, left); confirm Enter / pad Start; cancel Escape / Backspace / pad right; rhythm tap F / J /
-// pad shoulders / pad left.
+// pad shoulders / pad left. Story routing is off by default: AFTStoryDirector takes the presses and
+// drives the story; set bRouteInputToStory to drive it from here instead.
 //
 // Battle input is a second mapping context, added on top (higher priority, so its keys hide the
 // story mappings they share) only between BeginBattleInput and EndBattleInput. Its presses are
@@ -43,9 +44,10 @@ class FORGOTTENTHIRD_API AFTPlayerController : public APlayerController
 public:
 	static constexpr int32 NumChoices = 4;
 
-	// Off while another mode (battle, menus) owns the story keys; the events still fire.
+	// On: presses also drive UFTStorySubsystem directly (off by default; AFTStoryDirector does it,
+	// and battle input turns it off while it runs). The events always fire.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input")
-	bool bRouteInputToStory = true;
+	bool bRouteInputToStory = false;
 
 	UPROPERTY(BlueprintAssignable, Category = "Input")
 	FFTInputEvent OnAdvance;

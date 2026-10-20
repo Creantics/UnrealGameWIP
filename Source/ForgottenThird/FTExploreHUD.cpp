@@ -70,7 +70,10 @@ void AFTExploreHUD::DrawHUD()
 		return;
 	}
 	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
-	DrawObjectives(*Found);
+	if (!Found->IsStoryWalk())
+	{
+		DrawObjectives(*Found);
+	}
 	DrawPrompt(*Found);
 	DrawMessages(*Found);
 }

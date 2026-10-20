@@ -26,6 +26,24 @@ std::size_t utf8PrefixBytes(std::string_view text, std::uint32_t chars) {
     return i;
 }
 
+GameplayScreen gameplayScreen(GameplayKind kind) {
+    switch (kind) {
+    case GameplayKind::Combat: return GameplayScreen::Battle;
+    case GameplayKind::Engage:
+    case GameplayKind::Play: return GameplayScreen::Field;
+    default: return GameplayScreen::Box;
+    }
+}
+
+std::string_view gameplayScreenName(GameplayScreen screen) {
+    switch (screen) {
+    case GameplayScreen::Battle: return "battle";
+    case GameplayScreen::Field: return "field";
+    case GameplayScreen::Box: break;
+    }
+    return "box";
+}
+
 bool applyDialogueCommand(StoryRunner& r, const DialogueCommand& c) {
     switch (c.kind) {
     case DialogueCommand::Kind::Advance: return r.advance();
@@ -35,7 +53,8 @@ bool applyDialogueCommand(StoryRunner& r, const DialogueCommand& c) {
         if (r.state() != StoryRunner::State::Hold) return false;
         r.skipHold();
         return true;
-    case DialogueCommand::Kind::None: break;
+    case DialogueCommand::Kind::None:
+    case DialogueCommand::Kind::Handoff: break;
     }
     return false;
 }
@@ -107,9 +126,15 @@ DialogueCommand DialoguePresenter::press() {
     switch (state_) {
     case StoryRunner::State::Line:
     case StoryRunner::State::Direction: return {DialogueCommand::Kind::Advance};
-    case StoryRunner::State::Gameplay: return {DialogueCommand::Kind::Resume};
+    case StoryRunner::State::Gameplay: return gameplayCommand();
     default: return {};
     }
+}
+
+DialogueCommand DialoguePresenter::gameplayCommand() const {
+    const GameplayScreen screen = gameplayScreen(runner_->gameplayKind());
+    if (!handoff_ || screen == GameplayScreen::Box) return {DialogueCommand::Kind::Resume};
+    return {DialogueCommand::Kind::Handoff, static_cast<std::uint32_t>(screen)};
 }
 
 DialogueCommand DialoguePresenter::choose(std::uint32_t i) {
@@ -130,7 +155,7 @@ DialogueCommand DialoguePresenter::autoplay() const {
     switch (state_) {
     case StoryRunner::State::Line:
     case StoryRunner::State::Direction: return {DialogueCommand::Kind::Advance};
-    case StoryRunner::State::Gameplay: return {DialogueCommand::Kind::Resume};
+    case StoryRunner::State::Gameplay: return gameplayCommand();
     case StoryRunner::State::Hold: return {DialogueCommand::Kind::SkipHold};
     case StoryRunner::State::Choice: {
         std::uint32_t pick = runner_->defaultOption();

@@ -152,6 +152,7 @@ private:
 	void HandleOutcome(EFTBattleOutcome Outcome);
 	// Opens the exploration map this fight was started from (see UFTGameInstance::ExploreCarry).
 	void ReturnToField();
+	void ReturnToStory();
 	UFUNCTION()
 	void HandleArrow(EFTArrow Arrow, bool bFaceButton);
 	UFUNCTION()

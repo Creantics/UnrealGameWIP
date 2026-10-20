@@ -15,7 +15,9 @@
 // applies it (in Unreal through the story subsystem, so its events fire). Characters are counted
 // in UTF-8 codepoints, so a multibyte character appears whole.
 //
-// A gameplay beat with no handler waits in the box: press() resumes it. A hold shows nothing and
+// A gameplay beat waits in the box. With hand-off off (the default) press() resumes it; with
+// hand-off on, a beat that has a screen (gameplayScreen()) hands off instead and the owner resumes
+// the story when that screen is done. A kind with no screen always resumes. A hold shows nothing and
 // press() does nothing (the runner moves on when the hold ends); autoplay() skips it.
 //
 // Zero allocation.
@@ -29,15 +31,24 @@
 
 namespace ftcore {
 
+// Where a gameplay beat is played (story_format.md: CMB battle; ENG and PLAY field; anything else
+// has no screen and waits in the dialogue box).
+enum class GameplayScreen : std::uint8_t { Box, Battle, Field };
+FTCORE_API GameplayScreen gameplayScreen(GameplayKind kind);
+FTCORE_API std::string_view gameplayScreenName(GameplayScreen screen); // "box", "battle", "field"
+
 struct DialogueCommand {
-    enum class Kind : std::uint8_t { None, Advance, Choose, Resume, SkipHold };
+    // Handoff: open the gameplay beat's screen (option holds the GameplayScreen); the runner stays
+    // on the beat until the owner resumes it.
+    enum class Kind : std::uint8_t { None, Advance, Choose, Resume, SkipHold, Handoff };
     Kind kind = Kind::None;
-    std::uint32_t option = kNone; // Choose only
+    std::uint32_t option = kNone; // Choose: the option. Handoff: the GameplayScreen.
 
     bool none() const { return kind == Kind::None; }
 };
 
-// Applies `c` to `r` directly (tests and owners without events). False when the runner refused it.
+// Applies `c` to `r` directly (tests and owners without events). False when the runner refused it
+// or there is nothing to apply (None, Handoff).
 FTCORE_API bool applyDialogueCommand(StoryRunner& r, const DialogueCommand& c);
 
 // Number of codepoints in UTF-8 `text` (continuation bytes are not counted).
@@ -54,6 +65,9 @@ public:
     // Characters per second; 0 or less shows each text whole at once.
     void setRevealRate(float charsPerSecond) { rate_ = charsPerSecond; }
     float revealRate() const { return rate_; }
+    // On: press() and autoplay() hand gameplay beats with a screen off instead of resuming them.
+    void setHandoff(bool on) { handoff_ = on; }
+    bool handoff() const { return handoff_; }
 
     // Picks up a new beat (restarting the typewriter). True when the beat changed. update(),
     // press() and choose() call it; call it yourself after moving the runner to read the new beat
@@ -77,19 +91,20 @@ public:
 
     // ---- input ----
     // Confirm: finishes the text when it is still typing (None), else Advance on a line or a
-    // direction, Resume on a gameplay beat. None on a choice (pick an option) or a hold.
+    // direction, Resume or Handoff on a gameplay beat. None on a choice (pick an option) or a hold.
     FTCORE_API DialogueCommand press();
     // Option i (0-based): finishes the text when it is still typing (None); Choose once the options
     // show and i is selectable; None otherwise.
     FTCORE_API DialogueCommand choose(std::uint32_t i);
     // The move an automatic player makes now: nothing until the text is out, then Advance, the
-    // runner's defaultOption() (else the first selectable option), Resume or SkipHold.
+    // runner's defaultOption() (else the first selectable option), Resume or Handoff, or SkipHold.
     FTCORE_API DialogueCommand autoplay() const;
     // Shows the whole text now.
     void revealAll() { reveal(total_); }
 
 private:
     void reveal(std::uint32_t chars);
+    DialogueCommand gameplayCommand() const;
 
     const StoryRunner* runner_ = nullptr;
     StoryRunner::State state_ = StoryRunner::State::Idle;
@@ -100,6 +115,7 @@ private:
     float rate_ = 40.f;
     float progress_ = 0.f; // characters, fractional
     float beatTime_ = 0.f;
+    bool handoff_ = false;
     bool fresh_ = true; // read the runner on the next sync() whatever its epoch
 };
 

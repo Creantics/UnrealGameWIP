@@ -6,6 +6,7 @@
 #include "CoreMinimal.h"
 #include "Engine/GameInstance.h"
 
+#include "ftcore/Dialogue.h"
 #include "ftcore/Explore.h"
 
 #include "FTGameInstance.generated.h"
@@ -25,6 +26,22 @@ struct FFTExploreCarry
 	double Seconds = 0.0; // time already spent in the field, for the completion log
 };
 
+// What the story hands to a gameplay screen and gets back: set by AFTStoryDirector before it opens
+// the battle or field map for a gameplay beat. The screen sets bDone (and bWon) and opens ReturnMap;
+// the director there resumes the story if the runner is still on the same beat.
+struct FFTStoryCarry
+{
+	bool bValid = false;
+	FString ReturnMap;
+	FString Scene; // scene id and beat index of the gameplay beat
+	int32 Beat = -1;
+	FString Kind; // gameplay kind as written (CMB, ENG, PLAY)
+	ftcore::GameplayScreen Screen = ftcore::GameplayScreen::Box;
+	bool bAutoPlay = false; // the screen plays itself (a headless hand-off run)
+	bool bDone = false;
+	bool bWon = false;
+};
+
 UCLASS(Config = Game)
 class FORGOTTENTHIRD_API UFTGameInstance : public UGameInstance
 {
@@ -42,4 +59,5 @@ public:
 	bool ReloadStory();
 
 	FFTExploreCarry ExploreCarry;
+	FFTStoryCarry StoryCarry;
 };

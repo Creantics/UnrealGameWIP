@@ -220,3 +220,61 @@ TEST_CASE("autoplay ignores a stale view and a presenter without a runner") {
     CHECK(empty.autoplay().none());
     CHECK_FALSE(applyDialogueCommand(r, DialogueCommand{}));
 }
+
+TEST_CASE("gameplay kinds map to their screens") {
+    CHECK(gameplayScreen(GameplayKind::Combat) == GameplayScreen::Battle);
+    CHECK(gameplayScreen(GameplayKind::Engage) == GameplayScreen::Field);
+    CHECK(gameplayScreen(GameplayKind::Play) == GameplayScreen::Field);
+    CHECK(gameplayScreen(GameplayKind::Mini) == GameplayScreen::Box);
+    CHECK(gameplayScreen(GameplayKind::Other) == GameplayScreen::Box);
+    CHECK(gameplayScreenName(GameplayScreen::Battle) == "battle");
+    CHECK(gameplayScreenName(GameplayScreen::Field) == "field");
+    CHECK(gameplayScreenName(GameplayScreen::Box) == "box");
+}
+
+TEST_CASE("with hand-off on, a gameplay beat with a screen hands off; one without resumes") {
+    StoryBuilder b;
+    b.beginChapter("01", "One");
+    b.beginScene("SC-H", "H");
+    b.gameplay("CMB", "[fight]"); // 0
+    b.gameplay("PLAY", "[walk]"); // 1
+    b.gameplay("ODD", "[other]"); // 2
+    b.line("PH-H-001", "SPK", "Done.");
+    StoryDatabase db;
+    std::string error;
+    REQUIRE_MESSAGE(b.finish(db, &error), error);
+    StoryRunner r(&db);
+    REQUIRE(r.start());
+    DialoguePresenter p(&r);
+    p.setRevealRate(0.f);
+    p.revealAll(); // the first beat was read at the default rate
+
+    // Off (the default): every gameplay beat resumes, as before.
+    CHECK_FALSE(p.handoff());
+    CHECK(p.press().kind == DialogueCommand::Kind::Resume);
+    CHECK(p.autoplay().kind == DialogueCommand::Kind::Resume);
+
+    p.setHandoff(true);
+    DialogueCommand c = p.press();
+    CHECK(c.kind == DialogueCommand::Kind::Handoff);
+    CHECK(static_cast<GameplayScreen>(c.option) == GameplayScreen::Battle);
+    CHECK(p.autoplay().kind == DialogueCommand::Kind::Handoff);
+    CHECK_FALSE(applyDialogueCommand(r, c)); // the owner opens the screen; the runner waits
+    CHECK(r.state() == StoryRunner::State::Gameplay);
+    CHECK(r.beatIndex() == 0);
+
+    REQUIRE(r.resume()); // the battle is won
+    p.update(0.f);
+    c = p.autoplay();
+    CHECK(c.kind == DialogueCommand::Kind::Handoff);
+    CHECK(static_cast<GameplayScreen>(c.option) == GameplayScreen::Field);
+
+    REQUIRE(r.resume());
+    p.update(0.f);
+    CHECK(p.press().kind == DialogueCommand::Kind::Resume); // no screen for this kind
+    CHECK(p.autoplay().kind == DialogueCommand::Kind::Resume);
+    REQUIRE(applyDialogueCommand(r, p.press()));
+    CHECK(r.state() == StoryRunner::State::Line);
+    p.update(0.f);
+    CHECK(p.press().kind == DialogueCommand::Kind::Advance); // hand-off leaves lines alone
+}

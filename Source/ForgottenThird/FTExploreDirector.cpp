@@ -74,6 +74,7 @@ void AFTExploreDirector::BeginPlay()
 	FindSpots();
 	CacheText();
 	RestoreFromCarry();
+	BeginStoryWalk();
 	for (int32 I = 0; I < static_cast<int32>(Exploration.objectiveCount()); ++I)
 	{
 		UpdateObjectiveText(I);
@@ -171,6 +172,11 @@ const FString& AFTExploreDirector::GetObjectiveText(int32 Objective) const
 const FString& AFTExploreDirector::GetPrompt() const
 {
 	static const FString Empty;
+	static const FString BackToStory(TEXT("E  Back to the story"));
+	if (bStoryWalk)
+	{
+		return bStoryReturning ? Empty : BackToStory;
+	}
 	if (Focus < 0 || !PromptText.IsValidIndex(Focus))
 	{
 		return Empty;
@@ -245,8 +251,60 @@ void AFTExploreDirector::RestoreFromCarry()
 	}
 }
 
+void AFTExploreDirector::BeginStoryWalk()
+{
+	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+	if (!GI || !GI->StoryCarry.bValid || GI->StoryCarry.bDone || GI->StoryCarry.Screen != ftcore::GameplayScreen::Field)
+	{
+		return;
+	}
+	bStoryWalk = true;
+	bAutoPlay = bAutoPlay || GI->StoryCarry.bAutoPlay;
+	StoryWalkStart = Now();
+	for (const TObjectPtr<AFTExploreSpot>& Spot : Spots)
+	{
+		if (Spot)
+		{
+			Spot->SetActorHiddenInGame(true);
+			Spot->SetActorEnableCollision(false);
+		}
+	}
+	SetBanner(TEXT("Free roam"));
+	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: story walk for %s at %s beat %d."), *GI->StoryCarry.Kind, *GI->StoryCarry.Scene, GI->StoryCarry.Beat);
+}
+
+void AFTExploreDirector::ReturnToStory()
+{
+	UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+	if (bStoryReturning || !GI || !GI->StoryCarry.bValid)
+	{
+		return;
+	}
+	bStoryReturning = true;
+	GI->StoryCarry.bDone = true;
+	GI->StoryCarry.bWon = true;
+	SetBanner(TEXT("Back to the story"));
+	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: story walk done after %.1f s; returning to %s."), Now() - StoryWalkStart, *GI->StoryCarry.ReturnMap);
+	FTimerHandle Timer;
+	GetWorldTimerManager().SetTimer(Timer, this, &AFTExploreDirector::OpenStoryMap, 0.8f, false);
+}
+
+void AFTExploreDirector::OpenStoryMap()
+{
+	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+	if (GI && GI->StoryCarry.bValid)
+	{
+		UGameplayStatics::OpenLevel(this, FName(*GI->StoryCarry.ReturnMap));
+	}
+}
+
 void AFTExploreDirector::Interact()
 {
+	if (bStoryWalk)
+	{
+		ReturnToStory();
+		return;
+	}
 	if (Focus < 0 || bComplete)
 	{
 		return;
@@ -352,6 +410,15 @@ void AFTExploreDirector::Tick(float DeltaSeconds)
 		}
 		bRestorePending = false;
 		CheckComplete();
+	}
+	if (bStoryWalk)
+	{
+		// Autopilot: a moment in the field, then back.
+		if (bAutoPlay && Now() - StoryWalkStart > 1.0)
+		{
+			ReturnToStory();
+		}
+		return;
 	}
 	if (bBattleOpening || PendingEncounter >= 0)
 	{

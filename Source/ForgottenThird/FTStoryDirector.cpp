@@ -1,10 +1,13 @@
 #include "FTStoryDirector.h"
 
 #include "Engine/World.h"
+#include "Kismet/GameplayStatics.h"
+#include "TimerManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 
 #include "ForgottenThird.h"
+#include "FTGameInstance.h"
 #include "FTPlayerController.h"
 #include "FTStorySubsystem.h"
 #include "FTText.h"
@@ -33,6 +36,9 @@ void AFTStoryDirector::BeginPlay()
 	bFast = FParse::Param(Cmd, TEXT("StoryAutoPlayFast"));
 	bAutoPlay = bAutoPlay || bFast || FParse::Param(Cmd, TEXT("StoryAutoPlay"));
 	bQuitOnFinish = bQuitOnFinish || FParse::Param(Cmd, TEXT("StoryQuitOnFinish"));
+	bHandoffAuto = FParse::Param(Cmd, TEXT("StoryAutoPlayHandoff"));
+	bAutoPlay = bAutoPlay || bHandoffAuto;
+	bQuitOnReturn = FParse::Param(Cmd, TEXT("StoryQuitOnReturn"));
 
 	const UGameInstance* GameInstance = GetGameInstance();
 	Story = GameInstance ? GameInstance->GetSubsystem<UFTStorySubsystem>() : nullptr;
@@ -43,21 +49,25 @@ void AFTStoryDirector::BeginPlay()
 		return;
 	}
 
+	StartTime = GetWorld()->GetTimeSeconds();
+	SceneEpoch = MAX_uint32;
+	ResumeFromCarry();
+
 	Presenter.setRevealRate(bFast ? 0.f : RevealRate);
+	Presenter.setHandoff(!bFast || bHandoffAuto);
 	Presenter.setRunner(&Story->GetRunner());
 	CacheBeat(); // setRunner already read the first beat, so Refresh() sees no change
 
 	if (AFTPlayerController* PC = Cast<AFTPlayerController>(GetWorld()->GetFirstPlayerController()))
 	{
 		Controller = PC;
+		bPrevRouteInput = PC->bRouteInputToStory;
 		PC->bRouteInputToStory = false;
 		PC->OnAdvance.AddDynamic(this, &AFTStoryDirector::HandlePress);
 		PC->OnConfirm.AddDynamic(this, &AFTStoryDirector::HandlePress);
 		PC->OnChoose.AddDynamic(this, &AFTStoryDirector::HandleChoose);
 	}
 
-	StartTime = GetWorld()->GetTimeSeconds();
-	SceneEpoch = MAX_uint32;
 	Refresh();
 	UE_LOG(LogForgottenThird, Log, TEXT("Story: dialogue on%s."), bAutoPlay ? (bFast ? TEXT(" (fast autoplay)") : TEXT(" (autoplay)")) : TEXT(""));
 }
@@ -69,7 +79,7 @@ void AFTStoryDirector::EndPlay(const EEndPlayReason::Type Reason)
 		PC->OnAdvance.RemoveDynamic(this, &AFTStoryDirector::HandlePress);
 		PC->OnConfirm.RemoveDynamic(this, &AFTStoryDirector::HandlePress);
 		PC->OnChoose.RemoveDynamic(this, &AFTStoryDirector::HandleChoose);
-		PC->bRouteInputToStory = true;
+		PC->bRouteInputToStory = bPrevRouteInput;
 	}
 	Super::EndPlay(Reason);
 }
@@ -77,7 +87,7 @@ void AFTStoryDirector::EndPlay(const EEndPlayReason::Type Reason)
 void AFTStoryDirector::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
-	if (!Story)
+	if (!Story || bHandingOff)
 	{
 		return;
 	}
@@ -91,7 +101,7 @@ void AFTStoryDirector::Tick(float DeltaSeconds)
 
 void AFTStoryDirector::HandlePress()
 {
-	if (Story && !bAutoPlay)
+	if (Story && !bAutoPlay && !bHandingOff)
 	{
 		Apply(Presenter.press());
 	}
@@ -99,7 +109,7 @@ void AFTStoryDirector::HandlePress()
 
 void AFTStoryDirector::HandleChoose(int32 Option)
 {
-	if (Story && !bAutoPlay && Option >= 0)
+	if (Story && !bAutoPlay && !bHandingOff && Option >= 0)
 	{
 		Apply(Presenter.choose(static_cast<uint32>(Option)));
 	}
@@ -123,6 +133,9 @@ bool AFTStoryDirector::Apply(const DialogueCommand& Command)
 		Story->SkipHold();
 		bOk = true;
 		break;
+	case DialogueCommand::Kind::Handoff:
+		BeginHandoff(static_cast<ftcore::GameplayScreen>(Command.option));
+		return false; // the runner waits on the beat until the screen comes back
 	case DialogueCommand::Kind::None:
 		return false;
 	}
@@ -236,6 +249,90 @@ void AFTStoryDirector::ReportFinished()
 	{
 		FPlatformMisc::RequestExit(false, TEXT("StoryDirector"));
 	}
+}
+
+void AFTStoryDirector::ResumeFromCarry()
+{
+	UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+	if (!GI || !GI->StoryCarry.bValid)
+	{
+		return;
+	}
+	const FFTStoryCarry Carry = GI->StoryCarry;
+	GI->StoryCarry = FFTStoryCarry();
+	const StoryRunner& Runner = Story->GetRunner();
+	const ftcore::StoryPosition Pos = Runner.position();
+	if (!Carry.bDone)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Story: back from the %s screen before it was done; the beat waits in the box."),
+			*FT::ToFString(ftcore::gameplayScreenName(Carry.Screen)));
+	}
+	else if (Runner.state() != StoryRunner::State::Gameplay || FT::ToFString(Pos.scene) != Carry.Scene || static_cast<int32>(Pos.beat) != Carry.Beat)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Story: the story moved since the hand-off at %s beat %d; not resuming."), *Carry.Scene, Carry.Beat);
+	}
+	else
+	{
+		const uint32 Epoch = Runner.sceneEpoch();
+		UE_LOG(LogForgottenThird, Log, TEXT("Story: resumed after %s at %s beat %d."), *Carry.Kind, *Carry.Scene, Carry.Beat);
+		if (Story->ResumeAfterGameplay())
+		{
+			++Moves;
+		}
+		// No title card or scene line for the scene we came back to; a new scene still gets both.
+		SceneEpoch = Epoch;
+		if (bQuitOnReturn)
+		{
+			FPlatformMisc::RequestExit(false, TEXT("StoryDirector"));
+		}
+	}
+}
+
+void AFTStoryDirector::BeginHandoff(ftcore::GameplayScreen Screen)
+{
+	if (bHandingOff)
+	{
+		return;
+	}
+	bHandingOff = true;
+	HandoffScreen = Screen;
+	Banner = Screen == ftcore::GameplayScreen::Battle ? TEXT("Battle!") : TEXT("Into the field");
+	BannerStart = GetWorld()->GetTimeSeconds();
+	const StoryRunner& Runner = Story->GetRunner();
+	UE_LOG(LogForgottenThird, Log, TEXT("Story: hand-off %s at %s beat %u to the %s screen."), *FT::ToFString(Runner.gameplayKindName()),
+		*FT::ToFString(Runner.position().scene), Runner.beatIndex(), *FT::ToFString(ftcore::gameplayScreenName(Screen)));
+	FTimerHandle Timer;
+	GetWorldTimerManager().SetTimer(Timer, this, &AFTStoryDirector::OpenHandoff, FMath::Max(0.01f, HandoffDelay), false);
+}
+
+void AFTStoryDirector::OpenHandoff()
+{
+	UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+	if (!GI)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Story: no game instance to hand off with; skipping the beat."));
+		bHandingOff = false;
+		Banner.Reset();
+		Apply({DialogueCommand::Kind::Resume});
+		return;
+	}
+	const StoryRunner& Runner = Story->GetRunner();
+	FFTStoryCarry& Carry = GI->StoryCarry;
+	Carry = FFTStoryCarry();
+	Carry.bValid = true;
+	Carry.ReturnMap = UGameplayStatics::GetCurrentLevelName(this, true);
+	Carry.Scene = FT::ToFString(Runner.position().scene);
+	Carry.Beat = static_cast<int32>(Runner.position().beat);
+	Carry.Kind = FT::ToFString(Runner.gameplayKindName());
+	Carry.Screen = HandoffScreen;
+	Carry.bAutoPlay = bAutoPlay;
+	const FString& Map = HandoffScreen == ftcore::GameplayScreen::Battle ? BattleMap : FieldMap;
+	UGameplayStatics::OpenLevel(this, FName(*Map));
+}
+
+double AFTStoryDirector::GetBannerAge() const
+{
+	return BannerStart < 0.0 ? -1.0 : GetWorld()->GetTimeSeconds() - BannerStart;
 }
 
 double AFTStoryDirector::GetSceneAge() const

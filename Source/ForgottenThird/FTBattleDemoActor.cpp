@@ -127,6 +127,11 @@ void AFTBattleDemoActor::BeginPlay()
 	// The exploration demo's autoplay runs its fights too.
 	bAutoPlay = bAutoPlay || FParse::Param(FCommandLine::Get(), TEXT("BattleAutoPlay")) || FParse::Param(FCommandLine::Get(), TEXT("ExploreAutoPlay"));
 	bQuitOnOutcome = bQuitOnOutcome || FParse::Param(FCommandLine::Get(), TEXT("BattleQuitOnOutcome"));
+	// So does the story's, when it hands a fight here.
+	if (const UFTGameInstance* StoryGI = GetGameInstance<UFTGameInstance>())
+	{
+		bAutoPlay = bAutoPlay || (StoryGI->StoryCarry.bValid && StoryGI->StoryCarry.bAutoPlay);
+	}
 
 	Battle->OnBattleEvent.AddDynamic(this, &AFTBattleDemoActor::HandleBattleEvent);
 	Battle->OnTurnStarted.AddDynamic(this, &AFTBattleDemoActor::HandleTurnStarted);
@@ -565,9 +570,32 @@ void AFTBattleDemoActor::HandleOutcome(EFTBattleOutcome Outcome)
 		}
 		return;
 	}
+	if (GI && GI->StoryCarry.bValid && !GI->StoryCarry.bDone)
+	{
+		// Handed here by the story: a win goes back to it; a loss stays for a retry.
+		if (Outcome == EFTBattleOutcome::Victory)
+		{
+			GI->StoryCarry.bDone = true;
+			GI->StoryCarry.bWon = true;
+			SetNotice(TEXT("Returning to the story"));
+			FTimerHandle Timer;
+			GetWorldTimerManager().SetTimer(Timer, this, &AFTBattleDemoActor::ReturnToStory, 2.5f, false);
+		}
+		return;
+	}
 	if (bQuitOnOutcome)
 	{
 		FPlatformMisc::RequestExit(false, TEXT("BattleDemo"));
+	}
+}
+
+void AFTBattleDemoActor::ReturnToStory()
+{
+	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+	if (GI && GI->StoryCarry.bValid)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: returning to the story on %s."), *GI->StoryCarry.ReturnMap);
+		UGameplayStatics::OpenLevel(this, FName(*GI->StoryCarry.ReturnMap));
 	}
 }
 

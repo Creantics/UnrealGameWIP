@@ -30,16 +30,20 @@ void AFTGameMode::StartPlay()
 	}
 	const UGameInstance* GameInstance = GetGameInstance();
 	UFTStorySubsystem* Story = GameInstance ? GameInstance->GetSubsystem<UFTStorySubsystem>() : nullptr;
-	if (!Story || !Story->IsLoaded() || Story->GetState() != EFTStoryState::Idle)
+	if (!Story || !Story->IsLoaded())
 	{
 		return;
 	}
-	FString Scene = StartScene;
-	FParse::Value(FCommandLine::Get(), TEXT("StoryScene="), Scene);
-	if (!Story->StartStory(Scene))
+	// Not idle: the story is already running (back from a gameplay screen); just show it again.
+	if (Story->GetState() == EFTStoryState::Idle)
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("Story: could not start at '%s'."), *Scene);
-		return;
+		FString Scene = StartScene;
+		FParse::Value(FCommandLine::Get(), TEXT("StoryScene="), Scene);
+		if (!Story->StartStory(Scene))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Story: could not start at '%s'."), *Scene);
+			return;
+		}
 	}
 	if (!TActorIterator<AFTStoryDirector>(GetWorld()))
 	{
