@@ -45,6 +45,7 @@ void AFTStoryDirector::BeginPlay()
 
 	Presenter.setRevealRate(bFast ? 0.f : RevealRate);
 	Presenter.setRunner(&Story->GetRunner());
+	CacheBeat(); // setRunner already read the first beat, so Refresh() sees no change
 
 	if (AFTPlayerController* PC = Cast<AFTPlayerController>(GetWorld()->GetFirstPlayerController()))
 	{
