@@ -24,6 +24,7 @@ const FString kMoreBox(TEXT(">"));
 const FString kContinueBox(TEXT("Space / Enter: continue"));
 const FString kHintBox(TEXT("Space / Enter / pad A: continue    1-4 / d-pad: choose"));
 const FString kEndBox(TEXT("The End"));
+const FString kEndHintBox(TEXT("Space / Enter: title"));
 
 constexpr float kTextScaleBox = 1.15f;
 constexpr double kTitleHoldBox = 2.5;
@@ -194,6 +195,7 @@ void AFTStoryHUD::DrawBox(const AFTStoryDirector& D)
 		const float Y = Canvas->ClipY * 0.4f;
 		DrawRect(kPanelBox, 0.f, Y - 20.f * S, Canvas->ClipX, 120.f * S);
 		DrawStrCentered(kEndBox, kGoldBox, CX, Y, GEngine->GetLargeFont(), 2.5f);
+		DrawStrCentered(kEndHintBox, kDimBox, CX, Y + 70.f * S, Small, 1.f);
 		return;
 	}
 	DrawStrCentered(kHintBox, kDimBox, CX, Canvas->ClipY - 32.f * S, Small, 1.f);
