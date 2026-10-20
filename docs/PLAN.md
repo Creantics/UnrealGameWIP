@@ -18,7 +18,16 @@ State on 2026-10-18 (origin/main at ef99ba1). The Core porting is done. The demo
 
 ## Alpha
 
-Goal: one build that plays the whole story from the title screen to the end card, with a screen for every gameplay step. Phase 0 (the shared surface) is in; the streams that fill it come next.
+**Done 2026-10-20.** One build plays the whole story from the title screen to the end card, with a screen for every gameplay step. The headless gate (`tools/gate.ps1 -Alpha`, about 7 minutes on the 8x clock) passes: `Alpha: FINISHED 73 scenes, 167 screens (40 battle, 91 field, 36 stub), 0 STUCK, 0 warnings`. How to play it, the gate, and what's still stubbed are in `docs/ALPHA.md`.
+
+Next, all without voice, art or music (the user generates those):
+- **Combat:** `ftcore::DefenceTimeline` (per-attack hit offsets, a wide dodge window and a narrow parry window with a mash lockout, AP refund on a perfect), from `docs/COMBAT_REFERENCE_STUDY.md`.
+- **Style packs v2:** the art direction's parameter deltas and the engine items.
+- **Screens for the stubbed steps:** choice, dialogue backlog and skip, a settings menu, and a cutscene and heart-to-heart framework on blockouts. Then a quick-time event screen once DefenceTimeline lands.
+- **Later:** balance across every encounter, navmesh and localisation.
+- **Asset intake:** formats for the art, voice and music the user will hand over.
+
+Phase 0, the shared surface the streams built on:
 
 - **`ftcore::GameplayPlan`** (`Core/include/ftcore/GameplayPlan.h`) lowers a gameplay beat's `mode` param to an ordered list of steps (at most 8, no allocation). Separators `→`, `+` and `,` flatten to one sequence, and parentheticals and bare lower-case words become the step's label. CMB opens the battle screen, ENG and PLAY the field, and CHC, BNT, CG, HE, QTE and co-op QTE the new stub screen (`GameplayScreen::Stub`). Unknown tokens also go to the stub screen and are counted. An empty mode falls back to the beat's kind. The beat's `minutes` is kept.
 - **Carry.** `FFTStoryCarry` has `Step`, `StepCount` and `StepLabel` (defaults: step 0 of 1). The director doesn't use them yet.

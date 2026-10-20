@@ -1,6 +1,9 @@
 # The local gate: Core syntax check (clang, warnings as errors), CMake build + ctest, then with -Ubt
-# the UBT editor build. Works from any worktree. Prints GATE OK on success.
-param([switch]$Ubt)
+# the UBT editor build, then with -Alpha the headless alpha run on the 8x clock (implies -Ubt; needs
+# the local Data/Story, so only the main checkout can run it). -AlphaFull runs it at full speed
+# instead (about 45 minutes). Works from any worktree. Prints GATE OK on success.
+param([switch]$Ubt, [switch]$Alpha, [switch]$AlphaFull)
+if ($Alpha -or $AlphaFull) { $Ubt = $true }
 $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent $PSScriptRoot
 $cm = 'C:\Program Files\CMake\bin'
@@ -30,5 +33,20 @@ if ($Ubt) {
     $code = $LASTEXITCODE
     Get-Content $log | Select-String 'error|warning|Result:'
     if ($code -ne 0) { "UBT FAILED ($code)"; exit 1 }
+}
+
+if ($Alpha -or $AlphaFull) {
+    if (-not (Test-Path "$repo\Data\Story")) { "NO Data/Story IN THIS CHECKOUT; the alpha run needs it"; exit 1 }
+    $alog = Join-Path $env:TEMP ("ft_alpha_" + (Split-Path -Leaf $repo) + ".log")
+    $runArgs = @("`"$repo\ForgottenThird.uproject`"", '-game', '-NullRHI', '-AlphaAutoPlay', '-StoryQuitOnFinish',
+                 '-unattended', '-nosplash', '-nosound', "-abslog=`"$alog`"")
+    if (-not $AlphaFull) { $runArgs += '-AlphaFast' }
+    $limit = if ($AlphaFull) { 90 } else { 30 }
+    $p = Start-Process 'E:\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' -ArgumentList $runArgs -PassThru -NoNewWindow
+    $null = $p.Handle
+    if (-not $p.WaitForExit($limit * 60 * 1000)) { $p.Kill(); "ALPHA TIMED OUT after $limit min"; exit 1 }
+    Select-String -Path $alog -Pattern 'Alpha: ' | Select-Object -Last 3 | % { $_.Line }
+    $pass = Select-String -Path $alog -Pattern 'Alpha: FINISHED .*, 0 STUCK, 0 warnings' -Quiet
+    if ($p.ExitCode -ne 0 -or -not $pass) { "ALPHA FAILED (exit $($p.ExitCode)); log $alog"; exit 1 }
 }
 "GATE OK"
