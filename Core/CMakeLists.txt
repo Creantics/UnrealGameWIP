@@ -46,6 +46,7 @@ add_library(ftcore STATIC
     src/GameplayPlan.cpp
     src/Json.cpp
     src/Physics.cpp
+    src/Qte.cpp
     src/StoryDatabase.cpp
     src/StoryImport.cpp
     src/StoryRunner.cpp
@@ -98,6 +99,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_gameplay_plan.cpp
         tests/test_json.cpp
         tests/test_physics.cpp
+        tests/test_qte.cpp
         tests/test_story.cpp
         tests/test_story_chain.cpp
         tests/test_story_import.cpp
