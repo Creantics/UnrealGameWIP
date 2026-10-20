@@ -1,39 +1,34 @@
 # Handoff: the next session
 
-Written 2026-10-18 at the end of the overnight session. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-20. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
-## Resume here (updated 2026-10-19, Max plan)
+## Resume here (updated 2026-10-20, Max plan)
 
-- **Phase:** S, the story gate, from `docs/ROADMAP.md`. No game building happens until every part scores at least 4.9/5 and two whole-script readers each give at least 9/10.
-- **Plan change (2026-10-19, later):** the user is back on Max, so the Fable advisor is available again and makes the rulings. Fable only plans (the user ruled it too costly for worker agents), so every agent runs on Opus or Sonnet: reader A on Opus, reader B on Sonnet, reader C on ChatGPT (advisory). Stop rule: launch nothing when the 5-hour window is at 85% or more, or weekly usage is at 98% or more.
-- **Status:** Phase S gate not met. Draft 73 got 8.3 (A, Opus) and 8.2 (B, Sonnet), plus an advisory 8.2 from ChatGPT (reader C). D70-D73 are four passes flat at 8.2-8.4 with pacing at 7-7.5. The plateau is reported, and the gate stands.
-- **Next action:** The script goal is met. Draft 95 (the M-rated rebuild) passed the blind gate and then scored 9.0/10, Recommend, on a cold outside whole-script read (coverage committed locally in newengine). The art phase has begun, ahead of voices: one subject per sheet on a white background, with turnaround views. Sheets are generated in the ChatGPT tab of the built-in browser and saved to a private folder outside the repo, never committed. The page's CSP blocks fetch, frames, downloads and the clipboard; the working save path is a hidden-form POST of the base64 PNG to a localhost receiver, which answers 303 back to the chat. Order: subjects with no likeness constraint first (enemies, bosses, props, weapons, supporting cast), then the three leads. The leads are drawn from their written likeness and checked locally against the user's private references. Progress (2026-10-20): every non-lead sheet is done (136 queued subjects: enemies, props and supporting cast), each reviewed on contact sheets. Three were regenerated with sharper prompts. The three leads are done too: one master sheet each plus 13 variant sheets (outfits, wear states, expressions, epilogue looks), with faces held consistent across sheets. Three multi-subject lead rows were skipped under the one-subject rule. Open questions for the user are in the private handoff. Voice generation is next, after the user reviews the art. Optional later: a Draft 96 pass using the reader's notes.
-- **Allowed in this repo during Phase S:** merging the two waiting branches (below), once their diffs are read and the gate passes. Nothing else.
+- **Phase:** M0, the playable vertical slice, from `docs/ROADMAP.md`. Phase S (the story gate) is exited: Draft 95 passed the blind gate and scored 9.0/10 on a cold whole-script read.
+- **Done in M0 so far (2026-10-20):**
+  - Draft 95 is imported into newengine (commit e447462, local only, never pushed). `--check` is clean: 73 scenes and 127 of 127 inserts placed. Ten insert anchors moved with the rewrite; the Draft 93.1 meta set is frozen in `build/meta/draft93_1/`.
+  - The Draft 95 VO list is built in newengine `design/forgotten_third/build/draft95/VO_Master_List.csv`: 1,680 script lines, 34 marked "REVIEW: line edited in draft95". Check those before ElevenLabs.
+  - `Data/Story/` here holds the Draft 95 data (gitignored; copied from newengine `assets/story`).
+  - Both waiting branches are merged to main (e4763eb leads, f711839 battle demo; main is now 505814f), and their branches and worktrees are deleted.
+  - The style branch is salvaged and retired (next section).
+- **Next actions, in order:**
+  1. The grey-characters check (below). It needs the user to press Play in `Leads.umap` on the portrait monitor.
+  2. The dialogue UI on the Draft 95 data, then movement, menus and VO playback.
+  3. The Prologue chapters 1-2 vertical slice.
+- **Not modelled yet in the import:** Draft 95's inline gameplay markers stay hidden notes, and its new seen/fairness/ruling-tier flags are set by no insert. Model them when the dialogue UI needs them.
+- **The user is working on** concept art and voice work in parallel. Leave the ChatGPT tab, the private art folder and the voice files alone.
 - **User actions open:** the leak purge, and the GitHub billing fix (see `docs/PLAN.md`).
 
-## Branches waiting to merge
+## Style branch: salvaged
 
-The fork session owns the main checkout (`D:\projects\unrealgamewip`, on `chaos-physics`) and merges to main. Each branch below has had origin/main (3865bda) merged into it and is gate-green: ctest plus UBT Succeeded.
+The duplicate style port (`worktree-agent-ac78bf565fd6d3d57`) is retired. Main gained what it lacked:
 
-| Branch | Head | What it adds | Merge |
-|---|---|---|---|
-| `worktree-agent-ae87df10adccaad05` | e33902e | Test human; three lead characters (`Content/Characters/{Devin,Duy,Third}`) with IK Rigs and retargeters; `FTBuildLeadsWorld` and `Content/Maps/Leads.umap`; `docs/LEADS.md`, `docs/TEST_HUMAN.md`; `FTImportCharacter -Face=0`; the character master material (below) | Yes, first |
-| `worktree-agent-a5baae6739480a570` | e6ca5e9 | Playable fight: `Content/Maps/BattleDemo.umap`, `AFTBattleDemoActor`, HUD, game mode, `FTBuildBattleDemo`; `docs/BATTLE_DEMO.md` | Yes, after the leads branch |
-| `worktree-agent-ac78bf565fd6d3d57` | 98b9f62 | A second port of the style packs. It duplicates main's b62e9bb..5731842. | **Don't merge.** Salvage only what main lacks (next section). |
-
-Both mergeable branches only gained renames on top of main: unity-build name clashes (`LeadRefBonePosition`, `LeadFacingYaw`, `HudWall`) and `GetFighterName`, which had hidden `UObject::GetName`. After merging, delete each branch locally and on origin, and remove its worktree.
-
-## Style branch: what main lacks
-
-Main has `PP_Style` and the `MI_Style_*` instances in `Content/Rendering`, plus `AFTStyleController`. The duplicate branch also has these, which main doesn't:
-
-- **`Content/Maps/Demo_{Solhaven,Lattice,Unwritten,Restored}.umap`:** one demo world per style pack. This is what the user asked for. Rebuild them on main's `FTBuildDemoWorld -Style=<pack>`; don't copy the branch's assets, which point at its own `/Game/Styles` materials.
-- **An `ft.Style <pack|none|dial>` console command:** check whether `AFTStyleController` already covers it before porting.
-- **`DefaultGame.ini` always-cook for the style folder:** main's cook was clean without it, so add it only if a packaged build drops the materials.
-
-Then delete the branch, locally and on origin.
+- `FTBuildDemoWorld -Map=<name>`, which writes `/Game/Maps/<name>` instead of `Demo`.
+- `Content/Maps/Demo_{Solhaven,Lattice,Unwritten,Restored}.umap`, rebuilt with main's commandlet (`docs/STYLE_PACKS_UE.md`, step 3).
+- The `ft.Style <spec>` console command, which drives every `AFTStyleController` in the world.
+- Not added: the `DefaultGame.ini` always-cook entry. Add it only if a packaged build drops the style materials.
 
 ## Open issue: characters render grey in `-game` screenshots
 
@@ -42,16 +37,11 @@ Then delete the branch, locally and on origin.
 - **Change already made:** `FTImportCharacter` now moves every imported glTF material instance onto `/Game/Characters/Shared/Materials/M_FTCharacter`. That master takes `BaseColor`, `Metallic`, `Roughness`, `Emissive` and `EmissiveStrength`, and has the skeletal mesh and morph target usages, which the Interchange plugin master lacks. Keep it: it removes a plugin dependency and the editor's load-time usage patches.
 - **Next step:** open `Leads.umap` in the editor (portrait monitor) and press Play. If the colours show, the open issue was only the capture method. If they don't, compare a cooked build, which compiles shaders up front.
 
-## Story data: done, on Draft 63
+## Story data: Draft 95
 
-- The game loads the final script (Draft 63). newengine's `tools/story_import` is the canonical importer: it defaults to `--draft draft63`, and `--check` is clean. This repo's copy only gained the `--draft` flag and the blockquote parser, because newengine's copy holds story text.
+- newengine's `tools/story_import` is the canonical importer and defaults to `draft95`. This repo's copy is stale; don't run it.
 - To refresh, copy newengine `assets/story` into `Data/Story/` (gitignored).
-- `tools/gate.ps1` now finds newengine from any worktree and says whether the real-script tests ran. Before this fix they silently skipped in worktrees.
-- The Draft 63 VO list is built. VO rows marked "REVIEW: line edited" need a check before ElevenLabs.
-- Deferred, and listed in newengine's `STATUS_draft63.md`:
-  - The Home Echo consequence flags (recut, lantern score, diagram pins).
-  - Choice branches, which are not modelled.
-  - A rebuild of `Interactive_Script.md`.
+- This branch also carries a `tools/gate.ps1` fix that finds newengine from any worktree, and Draft 63-era importer tests. Main doesn't have them. Port the gate fix when main's tests read the real script again.
 
 ## Characters: quality
 
@@ -62,14 +52,13 @@ Then delete the branch, locally and on origin.
 
 ## Fight demo: gaps
 
-- There is no music; `bpm` stays 0, so timing is plain seconds.
-- The fighters are placeholder shapes. Swap in the lead meshes once the leads branch is merged.
+- There is no music; the conductor runs a silent wall clock, so timing is plain seconds.
+- The fighters are placeholder shapes. The leads are on main now, so swap in their meshes.
 
 ## Worktrees to clean up
 
 These are under `.claude/worktrees/`:
 
-- `agent-ae87df10adccaad05`, `agent-a5baae6739480a570`, `agent-ac78bf565fd6d3d57`: remove each once its branch is merged or retired.
 - `funny-colden-696509`, `save-codec-884678`, `suspicious-euclid-af4c31`: old detached worktrees. Check them for uncommitted work before removing.
 - `handoff-next-session`: this file's branch.
 
