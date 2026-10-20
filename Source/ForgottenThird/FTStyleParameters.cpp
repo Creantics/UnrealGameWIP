@@ -45,6 +45,8 @@ enum EScalar
 	InkVoid,
 	InkVoidNear,
 	InkVoidFar,
+	RimScale,
+	BlackPoint,
 	NumScalars
 };
 
@@ -58,6 +60,7 @@ enum EVector
 	IslandCenter,
 	IslandInk,
 	HatchInk,
+	RimTint,
 	NumVectors
 };
 
@@ -70,14 +73,15 @@ const FName* ScalarNames()
 		TEXT("HalftonePitch"), TEXT("PaperSky"), TEXT("PaperGrain"), TEXT("Island"), TEXT("IslandRadius"),
 		TEXT("IslandEdge"), TEXT("Hatch"), TEXT("HatchScale"), TEXT("HatchDensity"), TEXT("HatchOverlay"),
 		TEXT("HatchMaxLevel"), TEXT("HatchShadowOnly"), TEXT("HatchCurve"), TEXT("InkVoid"), TEXT("InkVoidNear"),
-		TEXT("InkVoidFar")};
+		TEXT("InkVoidFar"), TEXT("RimScale"), TEXT("BlackPoint")};
 	return Names;
 }
 
 const FName* VectorNames()
 {
 	static const FName Names[NumVectors] = {TEXT("OutlineColor"), TEXT("ShadowTint"), TEXT("HighlightTint"),
-		TEXT("PaperColor"), TEXT("InkColor"), TEXT("IslandCenter"), TEXT("IslandInk"), TEXT("HatchInk")};
+		TEXT("PaperColor"), TEXT("InkColor"), TEXT("IslandCenter"), TEXT("IslandInk"), TEXT("HatchInk"),
+		TEXT("RimTint")};
 	return Names;
 }
 }
@@ -120,6 +124,8 @@ void FTStyle::VisitParameters(const ftcore::StyleSettings& S, TFunctionRef<void(
 	V[InkVoid] = S.inkVoid;
 	V[InkVoidNear] = S.inkVoidNear * 100.f;
 	V[InkVoidFar] = S.inkVoidFar * 100.f;
+	V[RimScale] = S.rimScale;
+	V[BlackPoint] = S.blackPoint;
 
 	const FName* SN = ScalarNames();
 	for (int32 I = 0; I < NumScalars; ++I)
@@ -136,4 +142,5 @@ void FTStyle::VisitParameters(const ftcore::StyleSettings& S, TFunctionRef<void(
 	Vector(VN[IslandCenter], Position(S.islandCenter));
 	Vector(VN[IslandInk], Colour(S.islandInk));
 	Vector(VN[HatchInk], Colour(S.hatchInk));
+	Vector(VN[RimTint], Colour(S.rimTint));
 }

@@ -59,6 +59,7 @@ inline constexpr int kStylePackCount = 5;
     X(saturation, float, 1.f)                                                                                  \
     X(shadowTint, StyleVec3, StyleVec3(1.f))    /* multiply on the darks */                                    \
     X(highlightTint, StyleVec3, StyleVec3(1.f)) /* multiply on the lights */                                   \
+    X(blackPoint, float, 0.f)         /* 0..1: display values below it clip to black, the rest re-stretch */   \
     X(monochrome, float, 0.f)         /* 0..1: remap luminance onto inkColor -> paperColor */                  \
     X(monoGamma, float, 1.f)          /* tone curve of the remap */                                            \
     X(paperColor, StyleVec3, StyleVec3(0.949f, 0.937f, 0.910f)) /* NDD 8.2.3 Paper #F2EFE8 */                  \
@@ -128,7 +129,8 @@ struct StyleSettings {
         return outline > 0.f || cel > 0.f || monochrome > 0.f || halftone > 0.f || paperSky > 0.f || paperGrain > 0.f ||
                island > 0.f || hull > 0.f || hatch > 0.f || saturation != 1.f || shadowTint != StyleVec3(1.f) ||
                highlightTint != StyleVec3(1.f) || bloomScale != 1.f || vignetteScale != 1.f || filmGrainScale != 1.f ||
-               chromaScale != 1.f || rimScale > 0.f || bloomThresholdScale != 1.f || inkVoid > 0.f;
+               chromaScale != 1.f || rimScale > 0.f || bloomThresholdScale != 1.f || inkVoid > 0.f ||
+               blackPoint > 0.f;
     }
     // The style stage needs the scene depth (outline edges, paper sky, island position, ink void distance).
     bool needsDepth() const { return outline > 0.f || paperSky > 0.f || island > 0.f || inkVoid > 0.f; }
