@@ -106,7 +106,7 @@ TEST_CASE("alpha: the real script plays start to end through every gameplay step
     CHECK(screens.wrong == 0);
     CHECK(battle > 0);
     CHECK(field > 0);
-    CHECK(stub + choice + qte + cutscene > 0); // every one of these opens the stub for now
+    CHECK(stub + choice + qte + cutscene > 0); // counted by the step's own screen, not the routed one
     CHECK(screens.total() == battle + field + stub + choice + qte + cutscene);
     if (counting) CHECK(allocs == 0);
     MESSAGE("alpha: " << scenes << " scenes, " << beats << " beats, " << screens.total() << " screens (" << battle
