@@ -1,3 +1,4 @@
+#include "ftcore/Dialogue.h"
 #include "ftcore/Json.h"
 #include "ftcore/StoryImport.h"
 #include "ftcore/StoryRunner.h"
@@ -882,4 +883,32 @@ TEST_CASE("save codec refuses a bad version, missing fields and wrong types") {
     StorySave ok;
     CHECK(decodeStorySave(R"({"format":1,"scene":"A","beat":0,"flags":[],"extra":{"x":1}})", ok, nullptr));
     CHECK_FALSE(decodeStorySave("{", ok, nullptr)); // no error sink: must not crash
+}
+
+TEST_CASE("the dialogue presenter's autoplay plays the real script to the end") {
+    FTCORE_REQUIRE_REAL_STORY(s);
+    StoryRunner r(&s.db);
+    DialoguePresenter p(&r);
+    p.setRevealRate(0.f); // each text whole at once, as the headless Unreal run does
+    REQUIRE(r.start());
+    int moves = 0, stuck = 0;
+    std::uint32_t scenes = 1, lastEpoch = r.sceneEpoch();
+    while (!r.finished() && moves < 200000) {
+        p.update(1.f / 60.f);
+        const DialogueCommand c = p.autoplay();
+        if (c.none() || !applyDialogueCommand(r, c)) {
+            if (++stuck > 3) break;
+            continue;
+        }
+        stuck = 0;
+        ++moves;
+        if (r.sceneEpoch() != lastEpoch) {
+            lastEpoch = r.sceneEpoch();
+            ++scenes;
+        }
+    }
+    CHECK(r.finished());
+    CHECK_FALSE(r.stalled());
+    CHECK(stuck == 0);
+    MESSAGE("presenter autoplay: " << moves << " moves, " << scenes << " scene entries");
 }

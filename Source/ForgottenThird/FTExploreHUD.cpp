@@ -11,20 +11,20 @@
 
 namespace
 {
-const FLinearColor kGold(1.0f, 0.82f, 0.25f);
-const FLinearColor kWhite(1.f, 1.f, 1.f);
-const FLinearColor kDim(0.6f, 0.6f, 0.65f);
-const FLinearColor kDone(0.45f, 0.85f, 0.5f);
-const FLinearColor kPanel(0.02f, 0.02f, 0.05f, 0.6f);
+const FLinearColor kGoldField(1.0f, 0.82f, 0.25f);
+const FLinearColor kWhiteField(1.f, 1.f, 1.f);
+const FLinearColor kDimField(0.6f, 0.6f, 0.65f);
+const FLinearColor kDoneField(0.45f, 0.85f, 0.5f);
+const FLinearColor kPanelField(0.02f, 0.02f, 0.05f, 0.6f);
 
 // Static so drawing never builds strings.
-const FString kTitle(TEXT("OBJECTIVES"));
-const FString kTick(TEXT("v"));
-const FString kArrow(TEXT(">"));
-const FString kHint(TEXT("WASD / left stick: move    Mouse / right stick: look    Shift: run    Space: jump    E / pad X: use"));
-const FString kComplete(TEXT("Demo complete"));
+const FString kTitleField(TEXT("OBJECTIVES"));
+const FString kTickField(TEXT("v"));
+const FString kArrowField(TEXT(">"));
+const FString kHintField(TEXT("WASD / left stick: move    Mouse / right stick: look    Shift: run    Space: jump    E / pad X: use"));
+const FString kCompleteField(TEXT("Demo complete"));
 
-float Fade(double Age, double Hold, double Out)
+float FieldFade(double Age, double Hold, double Out)
 {
 	if (Age < 0.0)
 	{
@@ -37,7 +37,7 @@ float Fade(double Age, double Hold, double Out)
 	return static_cast<float>(FMath::Clamp(1.0 - (Age - Hold) / Out, 0.0, 1.0));
 }
 
-FLinearColor WithAlpha(FLinearColor C, float A)
+FLinearColor FieldWithAlpha(FLinearColor C, float A)
 {
 	C.A *= A;
 	return C;
@@ -98,17 +98,17 @@ void AFTExploreHUD::DrawObjectives(const AFTExploreDirector& D)
 	const float X = 24.f * S;
 	const float Y = 24.f * S;
 	const float Line = 30.f * S;
-	DrawRect(kPanel, X - 10.f * S, Y - 8.f * S, 380.f * S, 40.f * S + Line * Count);
-	DrawStr(kTitle, kGold, X, Y, GEngine->GetSmallFont(), 1.1f);
+	DrawRect(kPanelField, X - 10.f * S, Y - 8.f * S, 380.f * S, 40.f * S + Line * Count);
+	DrawStr(kTitleField, kGoldField, X, Y, GEngine->GetSmallFont(), 1.1f);
 	for (int32 I = 0; I < Count; ++I)
 	{
 		const float LY = Y + 26.f * S + Line * I;
 		const bool bDone = E.objectiveDone(I);
 		const bool bNow = I == Current;
-		const FLinearColor Color = bDone ? kDone : (bNow ? kWhite : kDim);
+		const FLinearColor Color = bDone ? kDoneField : (bNow ? kWhiteField : kDimField);
 		if (bDone || bNow)
 		{
-			DrawStr(bDone ? kTick : kArrow, Color, X, LY, Font, 1.f);
+			DrawStr(bDone ? kTickField : kArrowField, Color, X, LY, Font, 1.f);
 		}
 		DrawStr(D.GetObjectiveText(I), Color, X + 22.f * S, LY, Font, 1.f);
 	}
@@ -126,10 +126,10 @@ void AFTExploreHUD::DrawPrompt(const AFTExploreDirector& D)
 		float H = 0.f;
 		GetTextSize(Prompt, W, H, Font, 1.2f * S);
 		const float Y = Canvas->ClipY * 0.68f;
-		DrawRect(kPanel, CX - W * 0.5f - 16.f * S, Y - 8.f * S, W + 32.f * S, H + 16.f * S);
-		DrawStrCentered(Prompt, kWhite, CX, Y, Font, 1.2f);
+		DrawRect(kPanelField, CX - W * 0.5f - 16.f * S, Y - 8.f * S, W + 32.f * S, H + 16.f * S);
+		DrawStrCentered(Prompt, kWhiteField, CX, Y, Font, 1.2f);
 	}
-	DrawStrCentered(kHint, kDim, CX, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.f);
+	DrawStrCentered(kHintField, kDimField, CX, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.f);
 }
 
 void AFTExploreHUD::DrawMessages(const AFTExploreDirector& D)
@@ -141,27 +141,27 @@ void AFTExploreHUD::DrawMessages(const AFTExploreDirector& D)
 
 	if (!D.GetNotice().IsEmpty())
 	{
-		const float A = Fade(D.GetNoticeAge(), 1.8, 0.5);
+		const float A = FieldFade(D.GetNoticeAge(), 1.8, 0.5);
 		if (A > 0.f)
 		{
-			DrawStrCentered(D.GetNotice(), WithAlpha(kGold, A), CX, Canvas->ClipY * 0.6f, Font, 1.3f);
+			DrawStrCentered(D.GetNotice(), FieldWithAlpha(kGoldField, A), CX, Canvas->ClipY * 0.6f, Font, 1.3f);
 		}
 	}
 	if (D.IsComplete())
 	{
 		const float Y = Canvas->ClipY * 0.36f;
-		DrawRect(kPanel, 0.f, Y - 20.f * S, Canvas->ClipX, 120.f * S);
-		DrawStrCentered(kComplete, kGold, CX, Y, Large, 2.5f);
+		DrawRect(kPanelField, 0.f, Y - 20.f * S, Canvas->ClipX, 120.f * S);
+		DrawStrCentered(kCompleteField, kGoldField, CX, Y, Large, 2.5f);
 		return;
 	}
 	if (!D.GetBanner().IsEmpty())
 	{
-		const float A = Fade(D.GetBannerAge(), 1.4, 0.5);
+		const float A = FieldFade(D.GetBannerAge(), 1.4, 0.5);
 		if (A > 0.f)
 		{
 			const float Y = Canvas->ClipY * 0.36f;
-			DrawRect(WithAlpha(kPanel, A), 0.f, Y - 20.f * S, Canvas->ClipX, 110.f * S);
-			DrawStrCentered(D.GetBanner(), WithAlpha(kWhite, A), CX, Y, Large, 2.2f);
+			DrawRect(FieldWithAlpha(kPanelField, A), 0.f, Y - 20.f * S, Canvas->ClipX, 110.f * S);
+			DrawStrCentered(D.GetBanner(), FieldWithAlpha(kWhiteField, A), CX, Y, Large, 2.2f);
 		}
 	}
 }

@@ -36,7 +36,7 @@
 
 namespace
 {
-const TCHAR* const kMapFolder = TEXT("/Game/Maps");
+const TCHAR* const kExploreMapFolder = TEXT("/Game/Maps");
 
 #if WITH_EDITOR
 // A tint of the basic shape material, saved inside the map package.
@@ -91,7 +91,7 @@ int32 UFTBuildExploreWorldCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: '%s' is not a valid map name."), *MapName);
 		return 1;
 	}
-	const FString MapPath = FString::Printf(TEXT("%s/%s"), kMapFolder, *MapName);
+	const FString MapPath = FString::Printf(TEXT("%s/%s"), kExploreMapFolder, *MapName);
 	// -Style=<spec> for the style controller; "none" leaves it out. The separator flag is off so a
 	// dial ("S3,U0.5") keeps its commas.
 	FString StyleSpec = TEXT("solhaven");
