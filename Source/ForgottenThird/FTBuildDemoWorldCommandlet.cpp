@@ -42,7 +42,7 @@
 
 namespace
 {
-const TCHAR* const kDemoMap = TEXT("/Game/Maps/Demo");
+const TCHAR* const kMapFolder = TEXT("/Game/Maps");
 
 #if WITH_EDITOR
 // A bone's reference-pose position in component space, or false when the bone isn't there.
@@ -145,6 +145,16 @@ UFTBuildDemoWorldCommandlet::UFTBuildDemoWorldCommandlet()
 int32 UFTBuildDemoWorldCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
+	// -Map=<name> picks the map under /Game/Maps (default Demo), so each style can have its own map.
+	FString MapName = TEXT("Demo");
+	FParse::Value(*Params, TEXT("Map="), MapName);
+	if (MapName.IsEmpty() || !FName::IsValidXName(MapName, INVALID_LONGPACKAGE_CHARACTERS))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildDemoWorld: '%s' is not a valid map name."), *MapName);
+		return 1;
+	}
+	const FString MapPath = FString::Printf(TEXT("%s/%s"), kMapFolder, *MapName);
+
 	// -Style=<spec>; the separator flag is off so a dial ("S3,U0.5") keeps its commas.
 	FString StyleSpec = TEXT("solhaven");
 	FParse::Value(*Params, TEXT("Style="), StyleSpec, false);
@@ -179,15 +189,15 @@ int32 UFTBuildDemoWorldCommandlet::Main(const FString& Params)
 	}
 
 	// Start from nothing: loading the old map into the package would clash with the new world.
-	const FString File = FPackageName::LongPackageNameToFilename(kDemoMap, FPackageName::GetMapPackageExtension());
+	const FString File = FPackageName::LongPackageNameToFilename(MapPath, FPackageName::GetMapPackageExtension());
 	if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildDemoWorld: couldn't replace %s."), *File);
 		return 1;
 	}
-	UPackage* Package = CreatePackage(kDemoMap);
+	UPackage* Package = CreatePackage(*MapPath);
 
-	UWorld* World = UWorld::CreateWorld(EWorldType::Inactive, false, TEXT("Demo"), Package);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Inactive, false, *MapName, Package);
 	if (!World)
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildDemoWorld: couldn't create the world."));

@@ -1,6 +1,8 @@
 #include "FTStyleController.h"
 
 #include "Components/PostProcessComponent.h"
+#include "EngineUtils.h"
+#include "HAL/IConsoleManager.h"
 #include "FTStyleParameters.h"
 #include "ForgottenThird.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -16,6 +18,32 @@ std::optional<ftcore::StyleSettings> ParseSpec(const FString& Spec)
 	const FTCHARToUTF8 Utf8(*Spec);
 	return ftcore::parseStyleSpec(std::string_view(Utf8.Get(), static_cast<size_t>(Utf8.Length())));
 }
+
+// ft.Style <spec>: sets every style controller in the world to a pack, inksolhaven or a dial (S3,U1).
+void StyleCommand(const TArray<FString>& Args, UWorld* World)
+{
+	if (!World)
+	{
+		return;
+	}
+	const FString Spec = FString::Join(Args, TEXT(","));
+	int32 Count = 0;
+	for (TActorIterator<AFTStyleController> It(World); It; ++It)
+	{
+		if (!It->SetStyleSpec(Spec))
+		{
+			UE_LOG(LogForgottenThird, Warning,
+				TEXT("ft.Style: '%s' is not a pack (none|solhaven|lattice|unwritten|restored), inksolhaven or a dial like S3,U1."), *Spec);
+			return;
+		}
+		++Count;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("ft.Style: %s on %d controller(s)."), *Spec, Count);
+}
+
+FAutoConsoleCommandWithWorldAndArgs GStyleCommand(TEXT("ft.Style"),
+	TEXT("Sets the world style: ft.Style none|solhaven|lattice|unwritten|restored|inksolhaven, or a dial such as ft.Style S3,U1."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&StyleCommand));
 }
 
 AFTStyleController::AFTStyleController()

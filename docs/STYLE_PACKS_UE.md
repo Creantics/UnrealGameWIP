@@ -30,7 +30,17 @@ $null = $p.Handle; $p.WaitForExit(); $p.ExitCode
 # 2. The demo map with a style.
 $p = Start-Process $ue -ArgumentList "$proj -run=FTBuildDemoWorld -Mesh=/Game/Characters/ProofHead/proof_head/SkeletalMeshes/proof_head.proof_head -Style=solhaven -NullRHI -unattended -nopause -nosplash -log -abslog=$env:TEMP\ft_demo.log" -PassThru -NoNewWindow
 $null = $p.Handle; $p.WaitForExit(); $p.ExitCode
+
+# 3. One map per pack: -Map=<name> writes /Game/Maps/<name> instead of /Game/Maps/Demo.
+foreach ($pack in 'solhaven','lattice','unwritten','restored') {
+  $name = 'Demo_' + $pack.Substring(0,1).ToUpper() + $pack.Substring(1)
+  $p = Start-Process $ue -ArgumentList "$proj -run=FTBuildDemoWorld -Map=$name -Mesh=/Game/Characters/ProofHead/proof_head/SkeletalMeshes/proof_head.proof_head -Style=$pack -NullRHI -unattended -nopause -nosplash -log -abslog=$env:TEMPt_$name.log" -PassThru -NoNewWindow
+  $null = $p.Handle; $p.WaitForExit(); "$name $($p.ExitCode)"
+}
 ```
+
+The maps are `Demo_Solhaven`, `Demo_Lattice`, `Demo_Unwritten` and `Demo_Restored`. They are rebuilt
+outputs, so rerun step 3 after changing the demo commandlet rather than editing them by hand.
 
 `-Style=` takes anything `ftcore::parseStyleSpec` takes:
 
@@ -49,6 +59,9 @@ has no static instance, so it only shows in play. The same applies to `none`.
 At run time, call `SetPack` or `BlendToPack(Pack, Seconds)` on the `StyleController` actor (from
 Blueprint or C++), `SetDial(S, L, U, R, Seconds)`, or `BlendTo(ftcore::StyleSettings, Seconds)` from
 C++.
+
+In play, the console command `ft.Style <spec>` sets every `StyleController` in the world to that
+spec, for example `ft.Style lattice` or `ft.Style S3,U1`. It takes the same specs as `-Style=`.
 
 ## Blendable location: after tonemapping
 
