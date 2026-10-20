@@ -153,4 +153,28 @@ bool decodeStorySave(std::string_view text, StorySave& out, std::string* error) 
     return true;
 }
 
+const char* saveRefusalName(SaveRefusal reason) {
+    switch (reason) {
+    case SaveRefusal::None: return "ok";
+    case SaveRefusal::Empty: return "empty";
+    case SaveRefusal::Invalid: return "invalid";
+    case SaveRefusal::NoStory: return "no_story";
+    case SaveRefusal::SceneMissing: return "scene_missing";
+    case SaveRefusal::BeatOutOfRange: return "beat_out_of_range";
+    }
+    return "invalid";
+}
+
+SaveRefusal checkStorySave(std::string_view text, const StoryDatabase* db, StorySave* out) {
+    if (text.empty()) return SaveRefusal::Empty;
+    StorySave save;
+    if (!decodeStorySave(text, save)) return SaveRefusal::Invalid;
+    if (!db || !db->loaded()) return SaveRefusal::NoStory;
+    const std::uint32_t s = db->findScene(save.scene);
+    if (s == kNone) return SaveRefusal::SceneMissing;
+    if (save.beat > db->scene(s).beatCount) return SaveRefusal::BeatOutOfRange;
+    if (out) *out = std::move(save);
+    return SaveRefusal::None;
+}
+
 } // namespace ftcore

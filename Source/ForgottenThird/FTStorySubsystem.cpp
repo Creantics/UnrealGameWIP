@@ -1,8 +1,12 @@
 #include "FTStorySubsystem.h"
 
+#include "FTStorySaveGame.h"
 #include "FTText.h"
 #include "HAL/FileManager.h"
+#include "Kismet/GameplayStatics.h"
+#include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
+#include "Misc/Parse.h"
 #include "Misc/Paths.h"
 
 #include "ftcore/StoryImport.h"
@@ -67,6 +71,8 @@ void UFTStorySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Super::Initialize(Collection);
 	Runner->setCueHandler(&UFTStorySubsystem::HandleCue, this);
 	PendingCues.Reserve(16);
+	bAutosave = !IsHeadlessRun();
+	OnSceneChanged.AddDynamic(this, &UFTStorySubsystem::HandleSceneChanged);
 }
 
 void UFTStorySubsystem::Deinitialize()
@@ -270,12 +276,84 @@ bool UFTStorySubsystem::ApplySave(const FFTStorySave& InSave, TArray<FString>& O
 	ftcore::StoryLoadReport Report;
 	bReportedFinished = false;
 	const bool bOk = ftcore::applyStory(Save, *Runner, &Report);
+	TGuardValue<bool> NoAutosave(bApplyingSave, true); // the flush below reports the loaded scene
 	for (const std::string& Id : Report.skippedFlags)
 	{
 		OutSkippedFlags.Add(FT::ToFString(Id));
 	}
 	Flush();
 	return bOk;
+}
+
+bool UFTStorySubsystem::IsHeadlessRun()
+{
+	const TCHAR* Cmd = FCommandLine::Get();
+	FString Scene;
+	return FParse::Param(Cmd, TEXT("StoryAutoPlay")) || FParse::Param(Cmd, TEXT("StoryAutoPlayFast")) ||
+		FParse::Param(Cmd, TEXT("StoryAutoPlayHandoff")) || FParse::Param(Cmd, TEXT("AlphaAutoPlay")) ||
+		FParse::Value(Cmd, TEXT("StoryScene="), Scene);
+}
+
+bool UFTStorySubsystem::Autosave()
+{
+	UFTStorySaveGame* Slot = Cast<UFTStorySaveGame>(UGameplayStatics::CreateSaveGameObject(UFTStorySaveGame::StaticClass()));
+	if (!Slot || !Slot->CaptureFrom(this))
+	{
+		return false;
+	}
+	if (!UGameplayStatics::SaveGameToSlot(Slot, GetSlotName(), 0))
+	{
+		UE_LOG(LogFTStory, Warning, TEXT("Save: writing the slot failed."));
+		return false;
+	}
+	UE_LOG(LogFTStory, Log, TEXT("Save: slot written at scene %s."), *GetSceneId());
+	return true;
+}
+
+void UFTStorySubsystem::HandleSceneChanged(const FString& SceneId)
+{
+	if (bAutosave && !bApplyingSave && bLoaded)
+	{
+		Autosave();
+	}
+}
+
+ftcore::SaveRefusal UFTStorySubsystem::CheckSlot() const
+{
+	if (!bLoaded)
+	{
+		return ftcore::SaveRefusal::NoStory;
+	}
+	if (!UGameplayStatics::DoesSaveGameExist(GetSlotName(), 0))
+	{
+		return ftcore::SaveRefusal::Empty;
+	}
+	const UFTStorySaveGame* Slot = Cast<UFTStorySaveGame>(UGameplayStatics::LoadGameFromSlot(GetSlotName(), 0));
+	if (!Slot)
+	{
+		return ftcore::SaveRefusal::Invalid; // unreadable, or not our save class
+	}
+	return ftcore::checkStorySave(FT::ToUtf8(Slot->SaveJson), Database.Get());
+}
+
+ftcore::SaveRefusal UFTStorySubsystem::LoadSlot()
+{
+	const ftcore::SaveRefusal Check = CheckSlot();
+	if (Check != ftcore::SaveRefusal::None)
+	{
+		UE_LOG(LogFTStory, Warning, TEXT("Save: load refused (%hs)."), ftcore::saveRefusalName(Check));
+		return Check;
+	}
+	const UFTStorySaveGame* Slot = Cast<UFTStorySaveGame>(UGameplayStatics::LoadGameFromSlot(GetSlotName(), 0));
+	FString Error;
+	TArray<FString> Skipped;
+	if (!Slot || !Slot->ApplyTo(this, Error, Skipped))
+	{
+		UE_LOG(LogFTStory, Warning, TEXT("Save: load refused (%hs)."), ftcore::saveRefusalName(ftcore::SaveRefusal::SceneMissing));
+		return ftcore::SaveRefusal::SceneMissing;
+	}
+	UE_LOG(LogFTStory, Log, TEXT("Save: loaded the slot at scene %s, %d flags skipped."), *GetSceneId(), Skipped.Num());
+	return ftcore::SaveRefusal::None;
 }
 
 void UFTStorySubsystem::HandleCue(void* User, const ftcore::CueEvent& Event)

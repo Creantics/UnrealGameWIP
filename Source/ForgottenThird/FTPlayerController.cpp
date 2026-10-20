@@ -96,6 +96,19 @@ void AFTPlayerController::CreateInputObjects()
 	BattleContext->MapKey(BattleConfirmAction, EKeys::Enter);
 	BattleContext->MapKey(BattleConfirmAction, EKeys::SpaceBar);
 	BattleContext->MapKey(BattleConfirmAction, EKeys::Gamepad_Special_Right);
+
+	// Menu: added on top of the story context while a menu is up. Consumes the d-pad.
+	MenuContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Menu"));
+	MenuUpAction = MakeAction(TEXT("IA_MenuUp"));
+	MenuContext->MapKey(MenuUpAction, EKeys::Up);
+	MenuContext->MapKey(MenuUpAction, EKeys::W);
+	MenuContext->MapKey(MenuUpAction, EKeys::Gamepad_DPad_Up);
+	MenuContext->MapKey(MenuUpAction, EKeys::Gamepad_DPad_Left);
+	MenuDownAction = MakeAction(TEXT("IA_MenuDown"));
+	MenuContext->MapKey(MenuDownAction, EKeys::Down);
+	MenuContext->MapKey(MenuDownAction, EKeys::S);
+	MenuContext->MapKey(MenuDownAction, EKeys::Gamepad_DPad_Down);
+	MenuContext->MapKey(MenuDownAction, EKeys::Gamepad_DPad_Right);
 }
 
 UInputAction* AFTPlayerController::MakeAction(const TCHAR* Name)
@@ -138,6 +151,8 @@ void AFTPlayerController::SetupInputComponent()
 	Input->BindAction(TargetNextAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleTargetNext);
 	Input->BindAction(TargetPrevAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleTargetPrev);
 	Input->BindAction(BattleConfirmAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleBattleConfirm);
+	Input->BindAction(MenuUpAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleMenuUp);
+	Input->BindAction(MenuDownAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleMenuDown);
 }
 
 void AFTPlayerController::BeginPlay()
@@ -152,6 +167,45 @@ void AFTPlayerController::BeginPlay()
 		{
 			Subsystem->AddMappingContext(BattleContext, 1); // BeginBattleInput ran first
 		}
+		if (bMenuInput)
+		{
+			Subsystem->AddMappingContext(MenuContext, 2); // BeginMenuInput ran first
+		}
+	}
+}
+
+void AFTPlayerController::BeginMenuInput()
+{
+	if (bMenuInput)
+	{
+		return;
+	}
+	CreateInputObjects();
+	bMenuInput = true;
+	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = GetInputSubsystem())
+	{
+		Subsystem->AddMappingContext(MenuContext, 2);
+	}
+}
+
+void AFTPlayerController::EndMenuInput()
+{
+	if (!bMenuInput)
+	{
+		return;
+	}
+	bMenuInput = false;
+	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = GetInputSubsystem())
+	{
+		Subsystem->RemoveMappingContext(MenuContext);
+	}
+}
+
+void AFTPlayerController::HandleMenuStep(int32 Step)
+{
+	if (bMenuInput)
+	{
+		OnMenuStep.Broadcast(Step);
 	}
 }
 

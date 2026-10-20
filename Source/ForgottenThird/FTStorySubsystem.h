@@ -13,6 +13,7 @@
 
 #include "ftcore/StoryDatabase.h"
 #include "ftcore/StoryRunner.h"
+#include "ftcore/StorySave.h"
 
 #include "FTStorySubsystem.generated.h"
 
@@ -177,6 +178,27 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Story")
 	bool ApplySave(const FFTStorySave& Save, TArray<FString>& OutSkippedFlags);
 
+	// ---- the save slot ----
+	// One slot ("Slot0", user index 0; Saved/SaveGames/Slot0.sav) holding a UFTStorySaveGame. The
+	// story is saved there at every scene start (HandleSceneChanged), except in headless runs
+	// (IsHeadlessRun) so an autoplay check never overwrites a player's save.
+
+	static const TCHAR* GetSlotName() { return TEXT("Slot0"); }
+	// True when a command-line flag asks for an unattended run: -StoryAutoPlay, -StoryAutoPlayFast,
+	// -StoryAutoPlayHandoff, -AlphaAutoPlay or -StoryScene=.
+	static bool IsHeadlessRun();
+
+	// Writes the story's current progress to the slot. False when the story isn't on a scene or
+	// the write failed.
+	UFUNCTION(BlueprintCallable, Category = "Story")
+	bool Autosave();
+	// Reads the slot and checks it against the loaded story without applying it. None: Continue
+	// would work. Logs nothing.
+	ftcore::SaveRefusal CheckSlot() const;
+	// Loads the slot into the story. On refusal the story is untouched (except SceneMissing from
+	// the apply step, which stops it) and the code says why; it is logged by code only.
+	ftcore::SaveRefusal LoadSlot();
+
 	// ---- events ----
 
 	UPROPERTY(BlueprintAssignable, Category = "Story")
@@ -208,6 +230,8 @@ private:
 	};
 
 	static void HandleCue(void* User, const ftcore::CueEvent& Event);
+	UFUNCTION()
+	void HandleSceneChanged(const FString& SceneId);
 	// Broadcasts queued cues and beat / scene changes. Called after every move.
 	void Flush();
 
@@ -219,4 +243,6 @@ private:
 	bool bLoaded = false;
 	bool bFlushing = false;
 	bool bReportedFinished = false;
+	bool bAutosave = true;        // off in headless runs
+	bool bApplyingSave = false;   // ApplySave in progress: its scene event must not write the slot
 };
