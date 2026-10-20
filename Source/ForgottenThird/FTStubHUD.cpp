@@ -1,6 +1,63 @@
 #include "FTStubHUD.h"
 
+#include "Engine/Canvas.h"
+#include "Engine/Engine.h"
+#include "Engine/Font.h"
+#include "FTStubGameMode.h"
+
+namespace
+{
+const FLinearColor kGoldField(1.0f, 0.82f, 0.25f);
+const FLinearColor kWhiteField(1.f, 1.f, 1.f);
+const FLinearColor kDimField(0.6f, 0.6f, 0.65f);
+const FLinearColor kPanelField(0.02f, 0.02f, 0.05f, 0.75f);
+
+// Static so drawing never builds strings.
+const FString kNoStepField(TEXT("No story step"));
+const FString kContinueField(TEXT("Space / Enter / pad A: continue"));
+} // namespace
+
+void AFTStubHUD::DrawCentered(const FString& Text, const FLinearColor& Color, float Y, UFont* Font, float Scale)
+{
+	float W = 0.f;
+	float H = 0.f;
+	GetTextSize(Text, W, H, Font, Scale * UiScale);
+	DrawText(Text, Color, Canvas->ClipX * 0.5f - W * 0.5f, Y, Font, Scale * UiScale);
+}
+
 void AFTStubHUD::DrawHUD()
 {
 	Super::DrawHUD();
+	if (!Canvas)
+	{
+		return;
+	}
+	const AFTStubGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AFTStubGameMode>() : nullptr;
+	if (!Mode)
+	{
+		return;
+	}
+	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
+	const float S = UiScale;
+	const float CX = Canvas->ClipX * 0.5f;
+	const float CY = Canvas->ClipY * 0.5f;
+	const float W = 760.f * S;
+	const float H = 300.f * S;
+	DrawRect(kPanelField, CX - W * 0.5f, CY - H * 0.5f, W, H);
+
+	if (!Mode->HasStep())
+	{
+		DrawCentered(kNoStepField, kWhiteField, CY - 20.f * S, GEngine->GetLargeFont(), 1.4f);
+		return;
+	}
+	float Y = CY - H * 0.5f + 40.f * S;
+	DrawCentered(Mode->GetTitleText(), kGoldField, Y, GEngine->GetLargeFont(), 2.2f);
+	Y += 110.f * S;
+	if (!Mode->GetLabelText().IsEmpty())
+	{
+		DrawCentered(Mode->GetLabelText(), kWhiteField, Y, GEngine->GetMediumFont(), 1.5f);
+	}
+	Y += 50.f * S;
+	DrawCentered(Mode->GetStepText(), kDimField, Y, GEngine->GetMediumFont(), 1.2f);
+	DrawCentered(kContinueField, kDimField, CY + H * 0.5f - 50.f * S, GEngine->GetSmallFont(), 1.3f);
 }

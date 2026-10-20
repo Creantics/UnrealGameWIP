@@ -1,13 +1,16 @@
 #pragma once
 
 // Game mode of the stub screen: the placeholder a gameplay step with no real screen yet opens
-// (CHC, BNT, CG, HE, QTE and unknown tokens in ftcore::GameplayPlan; GameplayScreen::Stub). It
-// shows the step and continues on a press, then returns to the story through
-// UFTGameInstance::StoryCarry. No story on play. Skeleton: the stub-screen stream fills it in.
+// (CHC, BNT, CG, HE, QTE, MINI and unknown tokens in ftcore::GameplayPlan; GameplayScreen::Stub). It
+// shows the step (AFTStubHUD) and continues on Space, Enter or pad A (by itself after a second
+// with StoryCarry.bAutoPlay), then returns to the story through UFTGameInstance::StoryCarry. No
+// story on play. Opened without a valid carry it only says "No story step".
 
 #include "CoreMinimal.h"
 
 #include "FTGameMode.h"
+
+#include "ftcore/StubScreen.h"
 
 #include "FTStubGameMode.generated.h"
 
@@ -20,4 +23,24 @@ public:
 	AFTStubGameMode();
 
 	virtual void StartPlay() override;
+	virtual void Tick(float DeltaSeconds) override;
+
+	// True when the map was opened with a story step to show.
+	bool HasStep() const { return bHasStep; }
+	// Text for the HUD, built once in StartPlay.
+	const FString& GetTitleText() const { return TitleText; }
+	const FString& GetLabelText() const { return LabelText; }
+	const FString& GetStepText() const { return StepText; }
+
+private:
+	void Finish();
+	void OpenReturnMap();
+
+	ftcore::StubScreen Screen;
+	bool bHasStep = false;
+	bool bFast = false;
+	bool bReturning = false;
+	FString TitleText;
+	FString LabelText;
+	FString StepText;
 };
