@@ -5,6 +5,7 @@
 #include "ftcore/StorySave.h"
 
 #include "AllocCounter.h"
+#include "RealStory.h"
 #include "TestAssets.h"
 
 #include <ostream> // doctest prints std::string_view through operator<<
@@ -311,44 +312,6 @@ TEST_CASE("a miss option corrects and moves on; the autoplay option is the right
 // ---- the real script (newengine assets/story) ---------------------------------------------------
 
 namespace {
-
-struct RealStory {
-    StoryDatabase db;
-    bool present = false;
-    bool ok = false;
-    std::string error;
-    std::vector<std::string> warnings;
-};
-
-// Loaded once: the script is large and every test only reads it.
-const RealStory& realStory() {
-    static const RealStory story = [] {
-        RealStory s;
-        std::string storyText;
-        if (!ftcore_test::readAsset("story/story.json", storyText)) return s;
-        s.present = true;
-        std::vector<std::string> ids;
-        if (!storySceneIds(storyText, ids, &s.error)) return s;
-        std::vector<std::string> texts(ids.size());
-        for (std::size_t i = 0; i < ids.size(); ++i)
-            if (!ftcore_test::readAsset("story/scenes/" + ids[i] + ".json", texts[i])) {
-                s.error = "cannot read scenes/" + ids[i] + ".json";
-                return s;
-            }
-        const std::vector<std::string_view> views(texts.begin(), texts.end());
-        s.ok = importStory(storyText, views, s.db, &s.error, &s.warnings);
-        return s;
-    }();
-    return story;
-}
-
-#define FTCORE_REQUIRE_REAL_STORY(s)                                                                                   \
-    const RealStory& s = realStory();                                                                                  \
-    if (!s.present) {                                                                                                  \
-        MESSAGE("newengine assets/story not present; skipping");                                                       \
-        return;                                                                                                        \
-    }                                                                                                                  \
-    REQUIRE_MESSAGE(s.ok, s.error)
 
 enum class Pick { Right, MissThenRight, AlwaysMiss };
 

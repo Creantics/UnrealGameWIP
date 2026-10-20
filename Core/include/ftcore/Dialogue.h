@@ -32,10 +32,11 @@
 namespace ftcore {
 
 // Where a gameplay beat is played (story_format.md: CMB battle; ENG and PLAY field; anything else
-// has no screen and waits in the dialogue box).
-enum class GameplayScreen : std::uint8_t { Box, Battle, Field };
+// has no screen and waits in the dialogue box). Stub is the placeholder screen a GameplayPlan step
+// with no real screen yet opens (GameplayPlan.h); gameplayScreen() never returns it.
+enum class GameplayScreen : std::uint8_t { Box, Battle, Field, Stub };
 FTCORE_API GameplayScreen gameplayScreen(GameplayKind kind);
-FTCORE_API std::string_view gameplayScreenName(GameplayScreen screen); // "box", "battle", "field"
+FTCORE_API std::string_view gameplayScreenName(GameplayScreen screen); // "box", "battle", "field", "stub"
 
 struct DialogueCommand {
     // Handoff: open the gameplay beat's screen (option holds the GameplayScreen); the runner stays

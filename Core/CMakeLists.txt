@@ -36,10 +36,12 @@ add_library(ftcore STATIC
     src/Conductor.cpp
     src/Dialogue.cpp
     src/Emotion.cpp
+    src/Encounter.cpp
     src/Explore.cpp
     src/Face.cpp
     src/FaceDirection.cpp
     src/FaceImport.cpp
+    src/GameplayPlan.cpp
     src/Json.cpp
     src/Physics.cpp
     src/StoryDatabase.cpp
@@ -81,11 +83,14 @@ if(FTCORE_BUILD_TESTS)
         tests/test_combo.cpp
         tests/test_conductor.cpp
         tests/test_dialogue.cpp
+        tests/test_alpha.cpp
         tests/test_emotion.cpp
+        tests/test_encounter.cpp
         tests/test_explore.cpp
         tests/test_face.cpp
         tests/test_face_direction.cpp
         tests/test_face_import.cpp
+        tests/test_gameplay_plan.cpp
         tests/test_json.cpp
         tests/test_physics.cpp
         tests/test_story.cpp

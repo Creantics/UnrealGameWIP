@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "enemies": [
+    {
+      "id": "brute",
+      "name": "Brute",
+      "stats": { "maxHp": 260, "attack": 18, "defense": 6, "speed": 8, "technique": 8 },
+      "skills": [
+        { "id": "slam", "name": "Slam", "targeting": "single", "power": 1.3, "notes": 3, "difficulty": 1.0 },
+        { "id": "double_swipe", "name": "Double Swipe", "targeting": "single", "power": 1.6, "notes": 5, "difficulty": 2.5 }
+      ]
+    },
+    {
+      "id": "shade",
+      "name": "Shade",
+      "stats": { "maxHp": 180, "attack": 15, "defense": 3, "speed": 14, "technique": 14 },
+      "skills": [
+        { "id": "flicker", "name": "Flicker", "targeting": "single", "power": 1.6, "notes": 5, "difficulty": 4.0 },
+        { "id": "feint", "name": "Feint", "targeting": "single", "power": 1.8, "notes": 5, "difficulty": 5.0 }
+      ]
+    }
+  ]
+}
