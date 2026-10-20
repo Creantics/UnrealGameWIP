@@ -75,6 +75,7 @@ if(FTCORE_BUILD_TESTS)
         tests/AllocCounter.cpp
         tests/AllocHook.cpp
         tests/test_battle.cpp
+        tests/test_battle_demo.cpp
         tests/test_combo.cpp
         tests/test_conductor.cpp
         tests/test_emotion.cpp

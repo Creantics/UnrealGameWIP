@@ -21,6 +21,7 @@ void UFTConductorComponent::BeginPlay()
 	Super::BeginPlay();
 	ApplySettings();
 	Taps.Reserve(64);
+	ObserveWallClock(); // valid from the first frame
 }
 
 void UFTConductorComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -75,6 +76,21 @@ void UFTConductorComponent::ResetClock()
 	Conductor.reset();
 	LatestCursor = 0.0;
 	bHaveCursor = false;
+	WallEpoch = FPlatformTime::Seconds();
+	ObserveWallClock();
+}
+
+void UFTConductorComponent::ObserveWallClock()
+{
+	if (bWallClockWithoutAudio && !BoundAudio)
+	{
+		const double Wall = FPlatformTime::Seconds();
+		if (WallEpoch <= 0.0)
+		{
+			WallEpoch = Wall;
+		}
+		Conductor.observe(Wall - WallEpoch, Wall);
+	}
 }
 
 double UFTConductorComponent::GetSongTime() { return Conductor.songTime(FPlatformTime::Seconds()); }
@@ -146,5 +162,9 @@ void UFTConductorComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 	if (BoundAudio && bHaveCursor)
 	{
 		Conductor.observe(LatestCursor, FPlatformTime::Seconds());
+	}
+	else
+	{
+		ObserveWallClock();
 	}
 }

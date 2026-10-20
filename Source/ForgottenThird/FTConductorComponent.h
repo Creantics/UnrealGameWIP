@@ -5,7 +5,8 @@
 // (tap along to a beat, then ftcore::estimateLatency).
 //
 // The wall clock is FPlatformTime::Seconds() everywhere. Feed the cursor either by binding a
-// playing UAudioComponent (BindAudio) or by calling ObserveCursor once per frame.
+// playing UAudioComponent (BindAudio) or by calling ObserveCursor once per frame. With
+// bWallClockWithoutAudio and nothing bound, wall time is the cursor (a silent song clock).
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
@@ -51,6 +52,10 @@ public:
 	// How late this player's presses land (from calibration). Subtracted from event times.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Rhythm")
 	double LatencyOffset = 0.0;
+	// With no audio bound, run the song clock on wall time (seconds since BeginPlay or the last
+	// ResetClock) instead of standing at 0. For silent rhythm play and tests.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rhythm")
+	bool bWallClockWithoutAudio = false;
 
 	// Applies Bpm / OffsetSeconds / LatencyOffset after changing them at runtime.
 	UFUNCTION(BlueprintCallable, Category = "Rhythm")
@@ -115,8 +120,12 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UAudioComponent> BoundAudio;
+	// Feeds wall time as the cursor when bWallClockWithoutAudio and nothing is bound.
+	void ObserveWallClock();
+
 	double LatestCursor = 0.0;
 	bool bHaveCursor = false;
+	double WallEpoch = 0.0;
 
 	bool bCalibrating = false;
 	double SavedLatency = 0.0;
