@@ -8,6 +8,7 @@
 
 #include "ftcore/Dialogue.h"
 #include "ftcore/Explore.h"
+#include "ftcore/StoryChain.h"
 
 #include "FTGameInstance.generated.h"
 
@@ -27,21 +28,24 @@ struct FFTExploreCarry
 };
 
 // What the story hands to a gameplay screen and gets back: set by AFTStoryDirector before it opens
-// the battle or field map for a gameplay beat. The screen sets bDone (and bWon) and opens ReturnMap;
-// the director there resumes the story if the runner is still on the same beat.
+// the battle, field or stub map for each step of a gameplay beat. The screen sets bDone (and bWon)
+// and opens ReturnMap; the director there opens the beat's next step, or resumes the story after the
+// last one if the runner is still on the same beat. A screen that gives up leaves bDone false.
 struct FFTStoryCarry
 {
 	bool bValid = false;
 	FString ReturnMap;
 	FString Scene; // scene id and beat index of the gameplay beat
 	int32 Beat = -1;
-	FString Kind; // gameplay kind as written (CMB, ENG, PLAY)
+	FString Kind; // gameplay kind as written (CMB, ENG, PLAY); the beat's, not the step's
 	ftcore::GameplayScreen Screen = ftcore::GameplayScreen::Box;
 	// The step of the beat's ftcore::GameplayPlan this screen plays (0-based) and the plan's step
 	// count. The story resumes only after the last step; a single-screen beat is step 0 of 1.
 	int32 Step = 0;
 	int32 StepCount = 1;
 	FString StepLabel; // the step's qualifiers ("duel", "loop, intercut"); empty when none
+	// The step's token as notation ("CMB", "CHC"); the stub screen shows it.
+	FString StepToken;
 	bool bAutoPlay = false; // the screen plays itself (a headless hand-off run)
 	bool bDone = false;
 	bool bWon = false;
@@ -59,10 +63,25 @@ public:
 
 	virtual void Init() override;
 
+	// -AlphaFast: the alpha run's gameplay screens apply time dilation to their autopilot.
+	bool IsAlphaFast() const { return bAlphaFast; }
+
 	// Loads StoryDir again (after editing the story files).
 	UFUNCTION(BlueprintCallable, Category = "Story")
 	bool ReloadStory();
 
 	FFTExploreCarry ExploreCarry;
 	FFTStoryCarry StoryCarry;
+
+	// The lowered plan of the gameplay beat in progress and the step it is on; the director on the
+	// story map reads it when a screen comes back.
+	ftcore::StoryChain Chain;
+	// The tallies of an -AlphaAutoPlay run, kept across map changes.
+	ftcore::AlphaCounters Alpha;
+	// The beat a screen gave up on (alpha runs skip it instead of retrying it forever).
+	FString FailedScene;
+	int32 FailedBeat = -1;
+
+private:
+	bool bAlphaFast = false;
 };
