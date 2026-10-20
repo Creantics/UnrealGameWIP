@@ -92,7 +92,7 @@ Every beat has `"type"`. Beats play in order.
 
 ## Rules the importer checks
 
-97 scenes; every scene in a chapter; every `CHOICE` / `GAMEPLAY` insert placed exactly once at its anchor;
+the draft's scene count (73 for Draft 93.1, 97 for Drafts 55 and 63); every scene in a chapter; every `CHOICE` / `GAMEPLAY` insert placed exactly once at its anchor;
 every id unique; every VO row of the script's scenes matched to exactly one line (report misses); every
 `loc` key present in `en.json`; JSON is UTF-8, LF, deterministic (sorted where order is free).
 
