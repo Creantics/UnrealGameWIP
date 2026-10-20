@@ -74,7 +74,7 @@ private:
 
 struct AlphaCounters {
     std::uint32_t scenes = 0;
-    std::uint32_t battle = 0, field = 0, stub = 0; // screens played to the end
+    std::uint32_t battle = 0, field = 0, stub = 0; // screens played to the end (stub includes choice)
     std::uint32_t stuck = 0;
     std::uint32_t warnings = 0; // plan unknown or dropped tokens, screens that came back not done
 
@@ -82,9 +82,11 @@ struct AlphaCounters {
         switch (screenRoutesTo(screen)) { // the screen that was really played
         case GameplayScreen::Battle: ++battle; break;
         case GameplayScreen::Field: ++field; break;
-        case GameplayScreen::Stub: ++stub; break;
+        case GameplayScreen::Stub:
+        // The choice screen (the dialogue loop) counts in the stub bucket, so the FINISHED line keeps
+        // its fields and totals (docs/CHOICE_SCREEN.md).
+        case GameplayScreen::Choice: ++stub; break;
         case GameplayScreen::Box:
-        case GameplayScreen::Choice:
         case GameplayScreen::Qte:
         case GameplayScreen::Cutscene: break;
         }

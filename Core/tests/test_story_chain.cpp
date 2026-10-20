@@ -28,7 +28,7 @@ TEST_CASE("chain walks every step and finishes after the last") {
     CHECK(chain.current().label() == "pair");
     CHECK(chain.finishStep(true) == StoryChain::Next::Open);
     CHECK(chain.current().screen == GameplayScreen::Choice);
-    CHECK(screenRoutesTo(chain.current().screen) == GameplayScreen::Stub);
+    CHECK(screenRoutesTo(chain.current().screen) == GameplayScreen::Choice);
     CHECK(chain.current().tokenName() == "CHC");
     CHECK(chain.finishStep(true) == StoryChain::Next::Finish);
     CHECK_FALSE(chain.active());
@@ -103,7 +103,7 @@ TEST_CASE("alpha counters and the closing line") {
     c.addScreen(GameplayScreen::Battle);
     c.addScreen(GameplayScreen::Field);
     c.addScreen(GameplayScreen::Stub);
-    c.addScreen(GameplayScreen::Choice); // routed: counts as a stub
+    c.addScreen(GameplayScreen::Choice); // its own screen, counted in the stub bucket
     c.addScreen(GameplayScreen::Qte);
     c.addScreen(GameplayScreen::Cutscene);
     c.addScreen(GameplayScreen::Box); // not a screen
