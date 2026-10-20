@@ -1,6 +1,6 @@
 # Stub screen
 
-The placeholder for gameplay steps that have no real screen yet: `GameplayScreen::Stub` in `ftcore::GameplayPlan` (CHC, BNT, CG, HE, QTE, co-op QTE, MINI and any unknown token). It names the step, waits for a press and hands control back to the story.
+The placeholder for gameplay steps that have no real screen yet: `GameplayScreen::Stub` in `ftcore::GameplayPlan` (CHC, BNT, HE, QTE, co-op QTE, MINI and any unknown token; CG has its own screen, see [CUTSCENE_SCREEN.md](CUTSCENE_SCREEN.md)). It names the step, waits for a press and hands control back to the story.
 
 ## Regenerate the map
 

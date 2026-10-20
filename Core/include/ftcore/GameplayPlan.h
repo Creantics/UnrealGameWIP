@@ -20,8 +20,8 @@
 //
 // Token to screen: CMB battle; ENG and PLAY field; CHC and HE (a dialogue loop) choice; QTE and
 // `co-op QTE` qte; CG cutscene; BNT and MINI the stub screen. Any other token goes to the stub screen as well and counts
-// in unknownTokens(). Choice, Qte and Cutscene open the stub screen until their own screen exists
-// (screenRoutesTo in Dialogue.h). An empty mode (or one with no step in it) falls back to the beat's kind, lowered the same way.
+// in unknownTokens(). Choice and Qte open the stub screen until their own screen exists; Cutscene has
+// its own (screenRoutesTo in Dialogue.h). An empty mode (or one with no step in it) falls back to the beat's kind, lowered the same way.
 //
 // Fixed capacity (kMaxSteps): steps past it are dropped and counted (droppedSteps()). Token names
 // and labels are copied into fixed buffers (cut at a UTF-8 character boundary when too long), so a

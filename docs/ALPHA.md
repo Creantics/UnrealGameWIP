@@ -1,7 +1,7 @@
 # Alpha: the whole story, start to end
 
 One build plays the story from the title screen to the end card. Every gameplay step in the script
-opens a screen: a battle, a field walk or a stub card. Nothing is polished. The art is blockouts,
+opens a screen: a battle, a field walk, a cutscene or a stub card. Nothing is polished. The art is blockouts,
 and there is no voice or music.
 
 ## Play it
@@ -9,7 +9,8 @@ and there is no voice or music.
 1. Build: `powershell -File tools/gate.ps1 -Ubt`.
 2. Regenerate the maps if they're missing (each doc has the command): `Demo`
    ([RIGGING_TEST.md](RIGGING_TEST.md)), `BattleDemo` ([BATTLE_DEMO.md](BATTLE_DEMO.md)), `Explore`
-   ([EXPLORE_DEMO.md](EXPLORE_DEMO.md)) and `Stub` ([STUB_SCREEN.md](STUB_SCREEN.md)).
+   ([EXPLORE_DEMO.md](EXPLORE_DEMO.md)), `Cutscene` ([CUTSCENE_SCREEN.md](CUTSCENE_SCREEN.md)) and `Stub`
+   ([STUB_SCREEN.md](STUB_SCREEN.md)).
 3. Copy newengine `assets/story/` to `Data/Story/`. It's gitignored and never committed, because the
    repo is public.
 4. Open the editor (it opens `Demo`) and click Play, or run the game. The title offers New Game
@@ -21,7 +22,8 @@ and there is no voice or music.
 | Story | Read and continue; pick options 1–4 | [DIALOGUE_UI.md](DIALOGUE_UI.md) |
 | Battle | Fight the step's line-up from `Data/Battle/encounters.json`. On a loss, Retry restores the HP the party started the battle with, or Quit to title | [BATTLE_DEMO.md](BATTLE_DEMO.md) |
 | Field | Walk to the glowing goal marker and press Use | [EXPLORE_DEMO.md](EXPLORE_DEMO.md) |
-| Stub | A card naming the step (choice, banter, cutscene, dialogue loop, quick-time event, mini-game); press to continue | [STUB_SCREEN.md](STUB_SCREEN.md) |
+| Cutscene | Watch a CG step's shot list from `Data/Cutscene/cutscenes.json` on a blockout set; press to skip | [CUTSCENE_SCREEN.md](CUTSCENE_SCREEN.md) |
+| Stub | A card naming the step (choice, banter, dialogue loop, quick-time event, mini-game); press to continue | [STUB_SCREEN.md](STUB_SCREEN.md) |
 | End card | Press to return to the title | [GAME_FRAME.md](GAME_FRAME.md) |
 
 A gameplay beat's `mode` can chain several steps (a field walk, then a fight, then a field walk).
@@ -43,10 +45,10 @@ UnrealEditor-Cmd ForgottenThird.uproject -game -NullRHI -AlphaAutoPlay -AlphaFas
 
 - `-AlphaAutoPlay` starts at New Game, plays every scene at fast text and hands off on every step.
   Each screen then plays itself: the battle autopilot wins, the field pilot walks to the goal, and a
-  stub ends after one second.
+  stub ends after one second of game time. A cutscene skips itself after one second of real time.
 - `-AlphaFast` runs the gameplay screens at global time dilation 8.
 
-Pass means exit code 0 and this line:
+Pass means exit code 0 and this line (cutscene steps count in the stub bucket):
 
 ```
 Alpha: FINISHED 73 scenes, 167 screens (40 battle, 91 field, 36 stub), 0 STUCK, 0 warnings
@@ -68,7 +70,7 @@ counted as alpha warnings.
 
 ## What's stubbed
 
-- **Choice, banter, cutscene, dialogue loop, quick-time event, mini-game.** All of these show
+- **Choice, banter, dialogue loop, quick-time event, mini-game.** All of these show
   the stub card.
 - **Art.** Blockout maps and the proof head only, with no portraits.
 - **Audio.** No voice or music. The Conductor runs on game time.
