@@ -37,7 +37,6 @@ Combatant monster(int speed = 10, int hp = 200) {
 BattleTuning tuning() {
     BattleTuning t;
     t.leadIn = 0.5;
-    t.windup = 1.0;
     t.recovery = 0.5;
     return t;
 }
@@ -62,6 +61,14 @@ void play(Battle& b, std::size_t count = 1000, double offset = 0.0) {
 }
 
 Arrow other(Arrow a) { return a == Arrow::Left ? Arrow::Right : Arrow::Left; }
+
+// Answers every pending hit of the enemy attack at its ideal time with `input`.
+void defendAll(Battle& b, DefenceInput input = DefenceInput::Parry) {
+    while (b.phase() == Phase::EnemySkill && !b.defence().complete()) {
+        const DefenceTimeline& d = b.defence();
+        b.defend(input, d.idealPress(d.nextIndex(), input));
+    }
+}
 
 // Advance a battle until an enemy starts attacking.
 void runToEnemyAttack(Battle& b, double& now) {
@@ -184,46 +191,89 @@ TEST_CASE("combo difficulty scales with the move and both sides' stats") {
     CHECK(asExpert.previewCombo(0, 1, big).rating < hard.rating);
 }
 
-TEST_CASE("defense: blocking the whole combo takes no damage and counters") {
+TEST_CASE("defense: parrying the whole attack takes no damage, refunds AP and counters") {
     Battle b({hero(5)}, {monster(50)}, tuning());
     double now = 0.0;
     b.start(now);
     runToEnemyAttack(b, now);
     REQUIRE(b.activeTargets().front() == 0);
+    REQUIRE(b.defender() == 0);
+    CHECK(b.combo().size() == 0); // no arrow chart on an enemy turn
+    REQUIRE(b.defence().size() == 1); // a skill without timeline data: the default single hit
+    CHECK(b.defence().impact(0) == doctest::Approx(b.phaseStart() + kDefaultImpact));
     const int apBefore = b.combatant(0).ap;
     b.drainEvents();
 
-    play(b);
+    defendAll(b);
     const auto events = b.drainEvents();
-    CHECK(total(events, EventType::Blocked) == 10);
+    const auto defended = eventsOf(events, EventType::Defended);
+    REQUIRE(defended.size() == 1);
+    CHECK(defended[0].label == "PERFECT");
+    CHECK(defended[0].grade == Grade::Perfect);
+    CHECK(defended[0].amount == 1); // AP refunded
     CHECK(eventsOf(events, EventType::Counter).size() == 1);
     CHECK(b.combatant(0).hp == 100);
-    CHECK(b.combatant(0).ap == apBefore + 1);
-    CHECK(b.combatant(1).hp == 200 - 20); // counter: 20 atk * 1.0
+    CHECK(b.combatant(0).ap == apBefore + 1 + 1); // perfect parry refund + counter
+    CHECK(b.combatant(1).hp == 200 - 20);         // counter: 20 atk * 1.0
     CHECK(b.phase() == Phase::Recovery);
 }
 
-TEST_CASE("defense: damage taken is the share of the combo not blocked") {
+TEST_CASE("defense: hits that land deal their share of the blow") {
     SUBCASE("no input takes the full blow") {
         Battle b({hero(5)}, {monster(50)}, tuning());
         double now = 0.0;
         b.start(now);
         runToEnemyAttack(b, now);
+        b.drainEvents();
         b.update(now + 10.0);
+        const auto events = b.drainEvents();
         CHECK(b.combatant(0).hp == 90);
+        REQUIRE(eventsOf(events, EventType::Defended).size() == 1);
+        CHECK(eventsOf(events, EventType::Defended)[0].label == "HIT");
+        CHECK(eventsOf(events, EventType::Defended)[0].grade == Grade::Miss);
     }
-    SUBCASE("half-credit timing blocks half and no counter") {
+    SUBCASE("a plain dodge avoids the blow but neither refunds nor counters") {
+        Battle b({hero(5)}, {monster(50)}, tuning());
+        double now = 0.0;
+        b.start(now);
+        runToEnemyAttack(b, now);
+        const int apBefore = b.combatant(0).ap;
+        b.drainEvents();
+        b.defend(DefenceInput::Dodge, b.defence().impact(0) - 0.2); // inside the dodge window, not the perfect part
+        const auto events = b.drainEvents();
+        REQUIRE(eventsOf(events, EventType::Defended).size() == 1);
+        CHECK(eventsOf(events, EventType::Defended)[0].label == "DODGE");
+        CHECK(eventsOf(events, EventType::Defended)[0].amount == 0);
+        CHECK(eventsOf(events, EventType::Counter).empty());
+        CHECK(b.combatant(0).hp == 100);
+        CHECK(b.combatant(0).ap == apBefore);
+    }
+    SUBCASE("a weighted combo: dodging the light hit, the heavy one lands") {
+        Combatant m = monster(50);
+        m.skills[0].timeline.clear();
+        m.skills[0].timeline.add({0.8, 0.4, 0.0, 1.0f, false});
+        m.skills[0].timeline.add({1.4, 0.4, 0.0, 3.0f, false});
+        Battle b({hero(5)}, {m}, tuning());
+        double now = 0.0;
+        b.start(now);
+        runToEnemyAttack(b, now);
+        b.drainEvents();
+        b.defend(DefenceInput::Parry, b.defence().idealPress(0, DefenceInput::Parry));
+        b.update(now + 10.0);
+        const auto events = b.drainEvents();
+        CHECK(b.combatant(0).hp == 100 - 8); // 3/4 of the 10-damage blow (7.5 rounds to 8)
+        CHECK(eventsOf(events, EventType::Counter).empty());
+        CHECK(b.phase() == Phase::Recovery);
+    }
+    SUBCASE("arrows do nothing on an enemy turn") {
         Battle b({hero(5)}, {monster(50)}, tuning());
         double now = 0.0;
         b.start(now);
         runToEnemyAttack(b, now);
         b.drainEvents();
-        play(b, 1000, b.combo().windows().good * 0.98);
-        const auto events = b.drainEvents();
-        CHECK(total(events, EventType::Blocked) == 5);
-        CHECK(total(events, EventType::Hit) == 5);
-        CHECK(eventsOf(events, EventType::Counter).empty());
-        CHECK(b.combatant(0).hp == 95);
+        b.press(Arrow::Left, b.defence().idealPress(0, DefenceInput::Parry));
+        CHECK(b.drainEvents().empty());
+        CHECK(b.defence().nextIndex() == 0);
     }
 }
 
@@ -270,12 +320,15 @@ TEST_CASE("full battle runs to completion with deterministic play") {
             const std::size_t skill = me.ap >= 2 ? 1 : 0;
             REQUIRE(b.command(skill, b.living(Team::Enemies).front(), now) == CommandError::None);
         }
-        // Step on every note as it arrives.
-        if (b.phase() == Phase::PartySkill || b.phase() == Phase::EnemySkill) {
+        // Step on every note as it arrives; parry every hit at its ideal time.
+        if (b.phase() == Phase::PartySkill) {
             const ComboSequence& c = b.combo();
             for (std::size_t i = c.nextIndex(); i < c.size() && c.note(i).time <= now; ++i)
                 if (c.grade(i) == Grade::Pending) b.press(c.note(i).arrow, c.note(i).time);
         }
+        while (b.phase() == Phase::EnemySkill && !b.defence().complete() &&
+               b.defence().idealPress(b.defence().nextIndex(), DefenceInput::Parry) <= now)
+            b.defend(DefenceInput::Parry, b.defence().idealPress(b.defence().nextIndex(), DefenceInput::Parry));
         now += 1.0 / 120.0;
         b.update(now);
         REQUIRE(now < 600.0);
@@ -343,15 +396,15 @@ TEST_CASE("perfect presses on a grid chart still deal full damage") {
     CHECK(b.combatant(1).hp == 175);
 }
 
-TEST_CASE("enemy attacks are beat-aligned and blockable with music on") {
+TEST_CASE("enemy attacks keep their own timeline with music on") {
     Battle b({hero()}, {monster()}, musicTuning());
     b.start(0.0);
     double now = 0.0;
     runToEnemyAttack(b, now);
-    for (const ComboNote& n : b.combo().notes()) CHECK(onBeat(n.beat, 0.25));
-    CHECK(b.combo().note(0).time >= now + 1.0 - 1e-9);
+    REQUIRE(b.defence().size() == 1);
+    CHECK(b.defence().impact(0) == doctest::Approx(b.phaseStart() + kDefaultImpact)); // not snapped
     b.drainEvents();
-    play(b);
+    defendAll(b);
     CHECK(b.combatant(0).hp == 100);
 }
 
@@ -423,11 +476,21 @@ TEST_CASE("a running battle does not allocate once it has warmed up") {
             REQUIRE(b.command(skill, scratch.front(), now) == CommandError::None);
             ++skills;
         }
-        if (b.phase() == Phase::EnemySkill && b.combo().judged() == 0 && now < b.combo().note(0).time) ++enemyTurns;
-        if (b.phase() == Phase::PartySkill || b.phase() == Phase::EnemySkill) {
+        if (b.phase() == Phase::EnemySkill && b.defence().nextIndex() == 0 && now < b.defence().impact(0)) ++enemyTurns;
+        if (b.phase() == Phase::PartySkill) {
             const ComboSequence& c = b.combo();
             for (std::size_t i = 0; i < c.size(); ++i)
                 if (c.grade(i) == Grade::Pending && c.note(i).time <= now) b.press(c.note(i).arrow, c.note(i).time);
+        }
+        // Alternate: parry one enemy turn, dodge (and mash) the next, let the one after land.
+        if (b.phase() == Phase::EnemySkill && !b.defence().complete()) {
+            const DefenceTimeline& d = b.defence();
+            const std::size_t i = d.nextIndex();
+            const int mode = enemyTurns % 3;
+            if (mode == 0 && d.idealPress(i, DefenceInput::Parry) <= now)
+                b.defend(DefenceInput::Parry, d.idealPress(i, DefenceInput::Parry));
+            else if (mode == 1)
+                b.defend(DefenceInput::Dodge, now);
         }
         b.update(now);
         (void)b.turnOrder(std::span<CombatantId>(order.data(), 7));
@@ -456,6 +519,7 @@ TEST_CASE("Battle::reset starts over like a new battle and a same-shaped reset d
     CHECK(b.phase() == Phase::NotStarted);
     CHECK(b.events().empty());
     CHECK(b.combo().size() == 0);
+    CHECK(b.defence().size() == 0);
     REQUIRE(b.combatants().size() == 2);
     CHECK(b.combatant(0).hp == 100);
     CHECK(b.combatant(0).team == Team::Party);

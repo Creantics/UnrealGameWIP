@@ -15,8 +15,9 @@ unchanged.
    centre lane on the 120 BPM beat grid; step on each arrow as it reaches the hit line.
    Each note is graded PERFECT / GREAT / GOOD / MISS (WRONG for the wrong arrow), and the
    grades scale the damage. A full combo adds a bonus.
-3. On an enemy turn there is a short windup ("Name: Skill - defend!"), then a defence combo:
-   good steps block damage. Blocking nearly everything counters.
+3. On an enemy turn the banner names the attack ("Name: Skill"), then its hits come in on the
+   attack's timeline. Dodge, parry or jump each one (see Defence below). Parrying every hit
+   counters.
 4. Downed figures fall over. The battle ends in VICTORY or DEFEAT. After a second,
    Enter / Space / pad A starts a new fight.
 
@@ -25,14 +26,58 @@ unchanged.
 | | Keyboard | Gamepad |
 |---|---|---|
 | Arrows during a combo (lanes Left, Down, Up, Right) | Arrow keys or A S W D | D-pad, or X A Y B |
+| Dodge (enemy turn) | Left / Right, or A / D | D-pad left / right, or X / B |
+| Parry (enemy turn) | Down, or S | D-pad down, or A |
+| Jump (enemy turn, jumpable hits) | Up, or W | D-pad up, or Y |
 | Choose a skill (menu) | Up / Down, or 1-4 to use at once | D-pad up / down |
 | Choose a target (menu) | Left / Right, Q / E, Tab | D-pad left / right, shoulders |
 | Use the skill (menu) | Enter or Space | A or Start |
 | Fight again (after the outcome) | Enter or Space | A or Start |
 
-The battle keys are a separate Enhanced Input context (`AFTPlayerController::BeginBattleInput`),
+The defence keys are the combo arrows (`AFTPlayerController::OnBattleArrow`), read as defence inputs
+while an enemy attack runs. The battle keys are a separate Enhanced Input context (`AFTPlayerController::BeginBattleInput`),
 active only while a battle runs. It sits above the story context, so the shared keys don't reach
 the story.
+
+## Defence
+
+An enemy skill is an attack timeline (`ftcore::DefenceTimeline`, `Core/include/ftcore/DefenceTimeline.h`):
+the banner, then up to 8 hits at fixed offsets. The clock is the battle clock; enemy timelines are
+not snapped to the beat grid. Each hit can have:
+
+- a **tell**: the cue before the impact. The HUD draws a frame that closes in on the defender and
+  lands on it at the impact, with "!" (or "JUMP!" in gold on a jumpable hit);
+- a **telegraph**: a longer warning for big hits. The HUD fills a red column next to the defender.
+
+Each hit is answered by one press inside its window, which ends at the impact:
+
+| Input | Window | Notes |
+|---|---|---|
+| Dodge | 0.30 s | The last 0.06 s is a perfect dodge. No lockout, so mashing is safe. Not on jumpable hits. |
+| Parry | 0.12 s | Always a perfect parry. A parry that answers nothing locks parry out for 0.4 s. |
+| Jump | 0.25 s | Jumpable hits only (they also take a parry). A miss locks jump out for 0.3 s. |
+
+Each hit reports PERFECT, DODGE, JUMP or HIT (a `Defended` event; the HUD shows a row of pips
+under the scene and a popup over the defender, or the damage number when the hit lands). A perfect parry or perfect dodge refunds 1 AP (`BattleTuning::apOnPerfect`, capped at
+max AP). A hit that lands deals its weight's share of the blow. Parrying every hit of the attack
+gives the defender a counter. The windows are `BattleTuning::defence` in Core and
+`FFTBattleTuning` (DodgeWindow, PerfectDodgeWindow, ParryWindow, JumpWindow, ParryLockout,
+ApOnPerfect) in Unreal.
+
+Timelines come from the `hits` array of a skill in `Data/Battle/enemies.json`:
+
+```json
+{ "id": "crush", "hits": [ { "at": 2.0, "tell": 0.5, "telegraph": 1.5, "jumpable": true } ] }
+```
+
+- `at`: seconds after the banner, in (0, 30], required, strictly increasing.
+- `tell`: 0 to 2 s (default 0.4). `telegraph`: 0 to 10 s (default 0). Neither may be longer than `at`.
+- `weight`: share of the blow, above 0 (default 1). `jumpable`: true or false (default false).
+- 1 to 8 hits. A skill without `hits` (older data) gets one default hit at 1.2 s with a 0.4 s tell.
+
+The autopilot parries every hit at its ideal time, read from the timeline (never from audio):
+`ftcore::demo::pilotDefend` in Core, and the same loop in `AFTBattleDemoActor::TickAutoPlay`, which
+looks up to two frames ahead and presses at the exact time (`UFTBattleComponent::DefendAtTime`).
 
 ## From the exploration demo
 
@@ -78,8 +123,8 @@ of enemy ids. Both hold ids and numbers only. The loader and the rules are in
 
 Add a fight: add a roster entry if needed, add an `encounters` entry, then run the Core tests. The
 balance gate in `test_encounter.cpp` plays the default line-up and every entry headless: perfect
-presses must win (also at a coarse 130 ms frame step, the dilated frame length) and no presses must
-lose.
+presses must win (also at a coarse 130 ms frame step, the dilated frame length, and with perfect
+dodges and jumps instead of parries) and no presses must lose.
 
 ## Alpha fast
 
@@ -88,7 +133,8 @@ With a carry on autoplay and `-AlphaFast` on the command line (the same switch a
 ends. The silent song clock follows game time in that case
 (`UFTConductorComponent::bWallClockFollowsGameTime`), so the beat grid, combo timing and the
 autopilot's presses stay in step; the autopilot presses at each note's own time
-(`UFTBattleComponent::PressAtTime`), so a long frame doesn't make PERFECT late. The result line
+(`UFTBattleComponent::PressAtTime`) and each hit's ideal defence time
+(`UFTBattleComponent::DefendAtTime`), so a long frame doesn't make PERFECT late. The result line
 gives real and game seconds: `BattleDemo: VICTORY after 7.6 s (game 61.0 s).`
 
 ## Regenerating the map
@@ -103,15 +149,17 @@ UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildBattleDemo -NullRHI -un
 
 - Core: `test_encounter.cpp` is the balance gate over every encounter (see above).
   `test_battle_demo.cpp` plays the whole demo fight headless. With perfect presses it ends in
-  victory (11 party turns, 5 defences, 61 s of battle time). With no presses it ends in defeat.
+  victory (9 party turns, 4 defences, about 45.5 s of battle time). With no presses it ends in
+  defeat. `test_defence.cpp` covers the windows, lockouts and the autopilot.
 - Unreal end to end (the autopilot picks skills and steps on every note):
 
 ```
 UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/BattleDemo -game -NullRHI -BattleAutoPlay -BattleQuitOnOutcome -unattended -nosplash -nosound
 ```
 
-It logs `BattleDemo: VICTORY after 61.5 s (game 61.5 s).` and exits (no carry, so the default
-line-up and no dilation).
+It logs `BattleDemo: VICTORY after <real> s (game <game> s).` and exits (no carry, so the default
+line-up and no dilation). Before the defence timeline it took about 61.5 s; expect roughly the
+headless figure above now (not yet measured in Unreal).
 
 ## What's missing
 

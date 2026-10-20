@@ -10,14 +10,14 @@ namespace {
 struct RunResult {
     Phase outcome = Phase::NotStarted;
     int partyTurns = 0;
-    int enemyCombos = 0;
+    int enemyAttacks = 0;
     int presses = 0;
     bool allOnGrid = true;
     double endTime = 0.0;
 };
 
-// Plays the demo fight on a 120 Hz clock. With `press` the pilot steps on every note on time;
-// without it the party still chooses skills but never presses an arrow.
+// Plays the demo fight on a 120 Hz clock. With `press` the pilot steps on every note on time and
+// parries every enemy hit; without it the party still chooses skills but never presses anything.
 RunResult run(bool press) {
     Battle b(demo::party(), demo::enemies(), demo::tuning());
     RunResult r;
@@ -30,12 +30,11 @@ RunResult run(bool press) {
             REQUIRE(b.command(choice.skill, choice.target, now) == CommandError::None);
             ++r.partyTurns;
         }
-        if (b.phase() != last && (b.phase() == Phase::PartySkill || b.phase() == Phase::EnemySkill)) {
-            r.enemyCombos += b.phase() == Phase::EnemySkill;
+        if (b.phase() != last && b.phase() == Phase::EnemySkill) ++r.enemyAttacks;
+        if (b.phase() != last && b.phase() == Phase::PartySkill)
             for (const ComboNote& n : b.combo().notes()) r.allOnGrid = r.allOnGrid && n.beat != kNoBeat;
-        }
         last = b.phase();
-        if (press) r.presses += demo::pilotPress(b, now);
+        if (press) r.presses += demo::pilotPress(b, now) + demo::pilotDefend(b, now + 1.0 / 120.0);
         now += 1.0 / 120.0;
         b.update(now);
         b.clearEvents();
@@ -87,10 +86,10 @@ TEST_CASE("headless: the demo fight played perfectly ends in victory") {
     const RunResult r = run(true);
     CHECK(r.outcome == Phase::Victory);
     CHECK(r.partyTurns >= 4);
-    CHECK(r.enemyCombos >= 1); // the enemies got to attack and were defended against
+    CHECK(r.enemyAttacks >= 1); // the enemies got to attack and were defended against
     CHECK(r.presses > 20);
-    CHECK(r.allOnGrid); // every chart sat on the 120 BPM beat grid
-    MESSAGE("victory after " << r.partyTurns << " party turns, " << r.enemyCombos << " defences, "
+    CHECK(r.allOnGrid); // every party chart sat on the 120 BPM beat grid
+    MESSAGE("victory after " << r.partyTurns << " party turns, " << r.enemyAttacks << " defences, "
                              << r.presses << " presses, " << r.endTime << " s");
 
     // Same seed, same play: the same fight.

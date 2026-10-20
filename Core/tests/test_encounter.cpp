@@ -39,7 +39,7 @@ constexpr const char* kTable = R"J({
 
 bool sameSkill(const Skill& a, const Skill& b) {
     return a.name == b.name && a.apCost == b.apCost && a.apGain == b.apGain && a.targeting == b.targeting &&
-           a.power == b.power && a.notes == b.notes && a.difficulty == b.difficulty;
+           a.power == b.power && a.notes == b.notes && a.difficulty == b.difficulty && sameTimeline(a.timeline, b.timeline);
 }
 
 } // namespace
@@ -78,6 +78,62 @@ TEST_CASE("enemy roster and encounter table load a fixture") {
     REQUIRE(enemies.size() == 3);
     CHECK(enemies[0].team == Team::Enemies);
     CHECK(enemies[0].hp == 100);
+}
+
+TEST_CASE("skill hits load as the attack timeline; skills without them get the default hit") {
+    constexpr const char* kHits = R"J({
+      "enemies": [ { "id": "a", "stats": {},
+        "skills": [ { "id": "legacy" },
+                    { "id": "combo", "hits": [ { "at": 0.8 },
+                                               { "at": 1.5, "tell": 0.3, "telegraph": 1.2, "weight": 2, "jumpable": true } ] } ] } ]
+    })J";
+    EnemyRoster roster;
+    std::string err;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(importEnemyRoster(kHits, roster, &err, &warnings), err);
+    CHECK(warnings.empty());
+    const std::vector<Skill>& skills = roster.enemies[0].skills;
+    REQUIRE(skills.size() == 2);
+    CHECK(sameTimeline(skills[0].timeline, AttackTimeline{})); // legacy: the default single hit
+    REQUIRE(skills[0].timeline.size() == 1);
+    CHECK(skills[0].timeline[0].at == kDefaultImpact);
+    CHECK(skills[0].timeline[0].tell == kDefaultTell);
+    const AttackTimeline& t = skills[1].timeline;
+    REQUIRE(t.size() == 2);
+    CHECK(t[0].at == 0.8);
+    CHECK(t[0].tell == kDefaultTell);
+    CHECK(t[0].telegraph == 0.0);
+    CHECK(t[0].weight == 1.0f);
+    CHECK_FALSE(t[0].jumpable);
+    CHECK(t[1].at == 1.5);
+    CHECK(t[1].tell == 0.3);
+    CHECK(t[1].telegraph == 1.2);
+    CHECK(t[1].weight == 2.0f);
+    CHECK(t[1].jumpable);
+
+    // Unknown hit keys warn; bad hits are refused with a reason.
+    CHECK(importEnemyRoster(R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{"at": 1, "x": 0}]}]}]})",
+                            roster, &err, &warnings));
+    CHECK(warnings.size() == 1);
+    const char* bad[] = {
+        R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": []}]}]})",
+        R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": {}}]}]})",
+        R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{}]}]}]})",
+        R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{"at": 0}]}]}]})",
+        R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{"at": 31}]}]}]})",
+        R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{"at": 1.0}, {"at": 1.0}]}]}]})",
+        R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{"at": 0.3, "tell": 0.4}]}]}]})",
+        R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{"at": 1, "telegraph": 2}]}]}]})",
+        R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{"at": 1, "weight": 0}]}]}]})",
+        R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{"at": 1, "jumpable": 1}]}]}]})",
+        R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{"at": 1}, {"at": 2}, {"at": 3}, {"at": 4}, {"at": 5}, {"at": 6}, {"at": 7}, {"at": 8}, {"at": 9}]}]}]})",
+    };
+    for (const char* json : bad) {
+        CAPTURE(json);
+        err.clear();
+        CHECK_FALSE(importEnemyRoster(json, roster, &err));
+        CHECK(err.find("hits") != std::string::npos);
+    }
 }
 
 TEST_CASE("encounter lookups do not allocate") {
@@ -218,12 +274,19 @@ TEST_CASE("balance gate: every encounter is won with perfect presses and lost wi
         CHECK(win.partyTurns >= 1);
         CHECK(win.presses > 0);
         MESSAGE(name << ": tier " << lineup.tier << ", victory in " << win.endTime << " s, " << win.partyTurns
-                     << " turns, " << win.enemyCombos << " defences, party HP left " << win.partyHpLeft);
+                     << " turns, " << win.enemyAttacks << " defences, party HP left " << win.partyHpLeft);
 
         // Long frames (130 ms of battle time per frame, as under time dilation) still win: the autopilot
         // presses at each note's own time before the update that would expire it.
         const demo::HeadlessResult coarse = demo::playHeadless(demo::party(), foes, true, 0.13);
         CHECK(coarse.outcome == Phase::Victory);
+        // Perfect dodges (jumps on jumpable hits) instead of parries: no counters, still a win.
+        const demo::HeadlessResult dodged =
+            demo::playHeadless(demo::party(), foes, true, 1.0 / 120.0, 1200.0, DefenceInput::Dodge);
+        CHECK(dodged.outcome == Phase::Victory);
+        const demo::HeadlessResult dodgedCoarse =
+            demo::playHeadless(demo::party(), foes, true, 0.13, 1200.0, DefenceInput::Dodge);
+        CHECK(dodgedCoarse.outcome == Phase::Victory);
 
         const demo::HeadlessResult loss = demo::playHeadless(demo::party(), foes, false);
         CHECK_FALSE(loss.commandFailed);

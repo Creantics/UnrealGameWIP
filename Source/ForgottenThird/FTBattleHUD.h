@@ -1,7 +1,8 @@
 #pragma once
 
 // Canvas UI of the battle demo (no UMG): turn order, phase text, HP and AP panels, the skill menu,
-// the target marker, the note lane with its hit line, grade and damage popups, and the outcome.
+// the target marker, the note lane with its hit line, the enemy attack's tells, telegraphs and
+// defence keys, grade, damage and defence popups, and the outcome.
 // Everything comes from the level's AFTBattleDemoActor; per-frame drawing uses cached or static
 // strings only.
 
@@ -35,6 +36,7 @@ private:
 	void DrawTargetMarker(const AFTBattleDemoActor& Demo);
 	void DrawSkillMenu(const AFTBattleDemoActor& Demo);
 	void DrawLane(const AFTBattleDemoActor& Demo);
+	void DrawDefence(const AFTBattleDemoActor& Demo);
 	void DrawPopups(const AFTBattleDemoActor& Demo);
 	void DrawMessages(const AFTBattleDemoActor& Demo);
 

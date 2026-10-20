@@ -4,6 +4,7 @@
 #include "ftcore/CombatTypes.h"
 #include "ftcore/ComboGenerator.h"
 #include "ftcore/ComboSequence.h"
+#include "ftcore/DefenceTimeline.h"
 #include "ftcore/TurnQueue.h"
 
 #include <cstdint>
@@ -16,8 +17,9 @@
 namespace ftcore {
 
 // Optional music sync. All times stay in seconds on one timeline (the song time that
-// Conductor produces). With bpm > 0 a combo's first note waits for the next beat (or bar)
-// after leadIn/windup has elapsed, and every note sits on the beat grid.
+// Conductor produces). With bpm > 0 a party combo's first note waits for the next beat (or bar)
+// after leadIn has elapsed, and every note sits on the beat grid. Enemy attack timelines are not
+// snapped: their hits sit at fixed offsets from the banner.
 struct MusicConfig {
     double bpm = 0.0;        // <= 0: music off, behaviour is the plain seconds-based one
     double offset = 0.0;     // seconds of the song's beat 0
@@ -29,7 +31,6 @@ struct MusicConfig {
 
 struct BattleTuning {
     double leadIn = 1.0;        // time between choosing a skill and its first note
-    double windup = 1.2;        // enemy telegraph before the first note
     double recovery = 0.7;      // pause after a skill resolves before the next turn
     double lockout = 0.25;      // input ignored this long after a stray press
     JudgeWindows windows;       // base windows, scaled by combo difficulty
@@ -37,8 +38,9 @@ struct BattleTuning {
     DifficultyTuning difficulty;
 
     float fullComboBonus = 0.25f;  // attack: extra damage (fraction of full) if no note was missed
-    float counterAccuracy = 0.9f;  // defense: block at least this much with no misses to counter
-    float counterPower = 1.0f;
+    DefenceWindows defence;        // enemy turns: dodge / parry / jump windows and lockouts
+    int apOnPerfect = 1;           // defence: AP refunded to the defender per perfect parry or dodge
+    float counterPower = 1.0f;     // defence: a fully parried attack is countered at this power
     int apOnCounter = 1;
     int startingAp = 2;
     std::uint64_t seed = 0x5EEDC0DEull; // combo charts are generated deterministically from this
@@ -49,7 +51,7 @@ enum class Phase {
     NotStarted,
     AwaitingCommand, // a party member is choosing what to do
     PartySkill,      // party member performs an attack combo
-    EnemySkill,      // enemy windup, then the defender performs a block combo
+    EnemySkill,      // enemy attack timeline: the defender dodges, parries or jumps each hit
     Recovery,
     Victory,
     Defeat,
@@ -59,10 +61,11 @@ enum class EventType {
     TurnStarted,
     SkillStarted,
     NoteJudged,    // one combo note resolved: grade, beat = note index, label = "WRONG" for a wrong arrow
-    Hit,           // damage dealt (amount); grade/beat of the note that produced it
-    Blocked,       // defense: damage blocked (amount) by a note
-    ComboFinished, // amount = accuracy in percent; label = "FULL COMBO" when no misses
-    Counter,       // defender blocked nearly everything and strikes back
+    Hit,           // damage dealt (amount); grade/beat of the note (or attack hit) that produced it
+    Defended,      // enemy turn: attack hit `beat` resolved; label "PERFECT" (a perfect parry or dodge),
+                   // "DODGE", "JUMP" or "HIT"; amount = AP refunded; grade Perfect on a refund
+    ComboFinished, // party combo: amount = accuracy in percent; label = "FULL COMBO" when no misses
+    Counter,       // the defender parried every hit and strikes back
     Downed,
     Victory,
     Defeat,
@@ -76,7 +79,7 @@ struct BattleEvent {
     Grade grade = Grade::Pending;
     std::size_t beat = 0;
     double time = 0.0;
-    // A skill name, "WRONG", "FULL COMBO" or empty. Points into the battle's own data (or a
+    // A skill name, "WRONG", "FULL COMBO", a defence outcome or empty. Points into the battle's own data (or a
     // literal), so it is valid while the Battle lives and its skills are not edited.
     std::string_view label;
 };
@@ -97,7 +100,10 @@ public:
 
     // Party input. Timestamps should come from input events, not frame time.
     FTCORE_API CommandError command(std::size_t skillIndex, CombatantId target, double now);
+    // An arrow during a party combo (ignored otherwise).
     FTCORE_API void press(Arrow arrow, double timestamp);
+    // A dodge / parry / jump during an enemy attack (ignored otherwise).
+    FTCORE_API void defend(DefenceInput input, double timestamp);
 
     // The combo the player would face for a skill, without starting it (for UI previews).
     // `opponent` is the enemy: the target for party skills, the attacker for enemy skills.
@@ -115,9 +121,14 @@ public:
     // Upcoming actors into `out` (out.size() entries); returns how many were written. No allocation.
     std::size_t turnOrder(std::span<CombatantId> out) const { return queue_.preview(out); }
 
-    // Active skill (valid during PartySkill / EnemySkill).
+    // The party combo (valid during PartySkill; empty during an enemy turn).
     const ComboSequence& combo() const { return combo_; }
+    // The enemy attack being defended (valid during EnemySkill).
+    const DefenceTimeline& defence() const { return defence_; }
+    // The defender of the current enemy attack (valid during EnemySkill).
+    CombatantId defender() const { return targets_.empty() ? actor_ : targets_.front(); }
     const ComboParams& comboParams() const { return params_; }
+    // Active skill (valid during PartySkill / EnemySkill).
     FTCORE_API const Skill* activeSkill() const;
     const std::vector<CombatantId>& activeTargets() const { return targets_; }
     double phaseStart() const { return phaseStart_; }
@@ -134,8 +145,8 @@ private:
     struct Share {
         CombatantId target;
         float full = 0.0f; // damage at 100% (unrounded)
-        int applied = 0;   // dealt (attack) or blocked (defense) so far
-        int taken = 0;     // defense only: damage let through so far
+        int applied = 0;   // attack: dealt so far
+        int taken = 0;     // defence: damage let through so far
     };
 
     void beginTurn(double now);
@@ -143,7 +154,7 @@ private:
     void startCombo(const Skill& skill, CombatantId performer, CombatantId opponent, double firstNote, double now);
     void resolve(double now); // judges results_ (filled by the combo)
     void resolveAttackNote(const NoteResult& r, double now);
-    void resolveDefenseNote(const NoteResult& r, double now);
+    void resolveDefence(const DefenceResults& results, double now);
     void finishSkill(double now);
     bool targetsGone() const;
     void dealDamage(CombatantId source, CombatantId target, int amount, Grade grade, std::size_t beat, double now);
@@ -164,6 +175,8 @@ private:
     ComboSequence combo_;
     ComboParams params_;
     std::vector<Share> shares_;
+    DefenceTimeline defence_;
+    float landedWeight_ = 0.0f; // defence: summed weight of the hits that landed
     std::uint64_t combosPlayed_ = 0;
     std::vector<int> enemyTurnCount_;
     std::vector<BattleEvent> events_;

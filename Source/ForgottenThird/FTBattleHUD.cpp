@@ -44,11 +44,16 @@ const FString kRetry(TEXT("Enter: Retry"));
 const FString kQuitToTitle(TEXT("Esc / Q: Quit to title"));
 const FString kChoose(TEXT("choose a skill"));
 const FString kAttack(TEXT("attack - hit the arrows!"));
-const FString kDefend(TEXT("defend - hit the arrows!"));
+const FString kDefend(TEXT("defend - watch for the tell!"));
 const FString kWait(TEXT("..."));
 const FString kMenuHint(TEXT("Up/Down or 1-4: skill    Left/Right, Q/E, Tab: target    Enter / Space / pad A: use"));
 const FString kLaneHint(TEXT("Arrows / WASD / d-pad / X A Y B"));
 const FString kDown(TEXT("DOWN"));
+const FString kDefenceKeys[3] = {FString(TEXT("Dodge  Left/Right  X/B")), FString(TEXT("Parry  Down  A")),
+	FString(TEXT("Jump  Up  Y"))};
+const FString kTell(TEXT("!"));
+const FString kJumpable(TEXT("JUMP!"));
+const FLinearColor kCyan(0.35f, 0.85f, 1.f);
 
 double HudWall() { return FPlatformTime::Seconds(); }
 
@@ -108,6 +113,7 @@ void AFTBattleHUD::DrawHUD()
 	DrawTargetMarker(D);
 	DrawSkillMenu(D);
 	DrawLane(D);
+	DrawDefence(D);
 	DrawPopups(D);
 	DrawMessages(D);
 }
@@ -378,7 +384,6 @@ void AFTBattleHUD::DrawLane(const AFTBattleDemoActor& D)
 	HitY = Canvas->ClipY * 0.22f;
 	const float Bottom = Canvas->ClipY * 0.86f;
 	const double Now = BC->GetBattleTime();
-	const bool bDefend = B->phase() == ftcore::Phase::EnemySkill;
 
 	// Lane background, with a beat pulse on the hit line.
 	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.45f), LaneX0, HitY - 50.f * S, LaneWidth * 4.f, Bottom - HitY + 50.f * S);
@@ -388,7 +393,7 @@ void AFTBattleHUD::DrawLane(const AFTBattleDemoActor& D)
 		Beat = Conductor->GetBeat();
 	}
 	const float Pulse = static_cast<float>(1.0 - (Beat - FMath::FloorToDouble(Beat)));
-	DrawRect(WithAlpha(bDefend ? kRed : kGold, 0.35f + 0.5f * Pulse * Pulse), LaneX0, HitY - 2.f * S, LaneWidth * 4.f, 4.f * S);
+	DrawRect(WithAlpha(kGold, 0.35f + 0.5f * Pulse * Pulse), LaneX0, HitY - 2.f * S, LaneWidth * 4.f, 4.f * S);
 
 	const float R = LaneWidth * 0.36f;
 	for (int32 Lane = 0; Lane < 4; ++Lane)
@@ -426,6 +431,91 @@ void AFTBattleHUD::DrawLane(const AFTBattleDemoActor& D)
 	DrawStrCentered(kLaneHint, kDim, Canvas->ClipX * 0.5f, Bottom + 8.f * S, Small, 1.f);
 }
 
+void AFTBattleHUD::DrawDefence(const AFTBattleDemoActor& D)
+{
+	UFTBattleComponent* BC = D.GetBattle();
+	const ftcore::Battle* B = BC->GetBattle();
+	if (!BC->IsDefenceActive())
+	{
+		return;
+	}
+	const ftcore::DefenceTimeline& T = B->defence();
+	const double Now = BC->GetBattleTime();
+	const float S = UiScale;
+	UFont* Font = GEngine->GetMediumFont();
+	UFont* Small = GEngine->GetSmallFont();
+
+	// Over the defender: the telegraph column fills toward the impact, the tell is a frame that
+	// closes in on the figure and lands on it at the impact.
+	const FVector P = Project(D.GetFigureTop(static_cast<int32>(B->defender())), true);
+	if (P.Z > 0.0)
+	{
+		const float X = static_cast<float>(P.X);
+		const float Y = static_cast<float>(P.Y) - 30.f * S;
+		for (size_t I = T.nextIndex(); I < T.size(); ++I)
+		{
+			const ftcore::TimelineHit& Hit = T.hit(I);
+			const double Left = T.impact(I) - Now;
+			if (T.telegraphActive(I, Now))
+			{
+				const float Fill = static_cast<float>(FMath::Clamp(1.0 - Left / Hit.telegraph, 0.0, 1.0));
+				const float ColH = 90.f * S;
+				const float ColW = 10.f * S;
+				const float CX = X + 46.f * S;
+				DrawRect(kHpBack, CX, Y - ColH, ColW, ColH);
+				DrawRect(WithAlpha(kRed, 0.5f + 0.5f * Fill), CX, Y - ColH * Fill, ColW, ColH * Fill);
+			}
+			if (T.tellActive(I, Now))
+			{
+				const float K = static_cast<float>(FMath::Clamp(Left / Hit.tell, 0.0, 1.0));
+				const float Half = (26.f + 70.f * K) * S;
+				const FLinearColor Color = Hit.jumpable ? kGold : kRed;
+				DrawFrame(X - Half, Y - Half, Half * 2.f, Half * 2.f, WithAlpha(Color, 1.f - 0.6f * K), 4.f * S);
+				DrawStrCentered(Hit.jumpable ? kJumpable : kTell, Color, X, Y - 70.f * S, Font, 1.4f);
+			}
+		}
+	}
+
+	// One pip per hit of the attack: grey pending, gold perfect, cyan dodged or jumped, red hit.
+	const float Pip = 14.f * S;
+	const float Gap = 6.f * S;
+	const int32 Count = static_cast<int32>(T.size());
+	float PX = Canvas->ClipX * 0.5f - (static_cast<float>(Count) * (Pip + Gap) - Gap) * 0.5f;
+	const float PY = Canvas->ClipY * 0.74f;
+	for (int32 I = 0; I < Count; ++I)
+	{
+		FLinearColor Color = kDim;
+		switch (T.outcome(static_cast<size_t>(I)))
+		{
+		case ftcore::DefenceOutcome::Perfect: Color = kGold; break;
+		case ftcore::DefenceOutcome::Dodged:
+		case ftcore::DefenceOutcome::Jumped: Color = T.refunded(static_cast<size_t>(I)) ? kGold : kCyan; break;
+		case ftcore::DefenceOutcome::Hit: Color = kRed; break;
+		default: break;
+		}
+		DrawRect(Color, PX, PY, Pip, Pip);
+		PX += Pip + Gap;
+	}
+
+	// The keys, the last one pressed lit for a moment.
+	const float Lit = static_cast<float>(FMath::Clamp(1.0 - D.GetDefencePressAge() / 0.2, 0.0, 1.0));
+	const int32 Pressed = static_cast<int32>(D.GetLastDefenceInput());
+	const float KeyW = 230.f * S;
+	float KX = Canvas->ClipX * 0.5f - KeyW * 1.5f;
+	const float KY = PY + Pip + 14.f * S;
+	for (int32 K = 0; K < 3; ++K)
+	{
+		const bool bLit = K == Pressed && Lit > 0.f;
+		DrawRect(kPanel, KX + 4.f * S, KY, KeyW - 8.f * S, 30.f * S);
+		if (bLit)
+		{
+			DrawFrame(KX + 4.f * S, KY, KeyW - 8.f * S, 30.f * S, WithAlpha(kGold, Lit), 2.f * S);
+		}
+		DrawStrCentered(kDefenceKeys[K], bLit ? kGold : kWhite, KX + KeyW * 0.5f, KY + 7.f * S, Small, 1.f);
+		KX += KeyW;
+	}
+}
+
 void AFTBattleHUD::DrawPopups(const AFTBattleDemoActor& D)
 {
 	UFont* Font = GEngine->GetMediumFont();
@@ -460,7 +550,11 @@ void AFTBattleHUD::DrawPopups(const AFTBattleDemoActor& D)
 				continue;
 			}
 			const float Rise = static_cast<float>(Age) * 60.f * S;
-			const FLinearColor Color = P.bBlock ? kAp : kWhite;
+			FLinearColor Color = kWhite;
+			if (P.bDefence)
+			{
+				Color = P.Grade == EFTGrade::Perfect ? kGold : P.Grade == EFTGrade::Miss ? kRed : kCyan;
+			}
 			DrawStrCentered(P.Text, WithAlpha(FLinearColor(0.f, 0.f, 0.f), A), static_cast<float>(W.X) + 2.f * S,
 				static_cast<float>(W.Y) - 40.f * S - Rise + 2.f * S, Large, 1.f);
 			DrawStrCentered(P.Text, WithAlpha(Color, A), static_cast<float>(W.X), static_cast<float>(W.Y) - 40.f * S - Rise, Large, 1.f);

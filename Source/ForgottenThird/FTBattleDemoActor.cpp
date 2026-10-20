@@ -87,6 +87,20 @@ FFTCombatant FromCore(const ftcore::Combatant& C)
 		D.Power = S.power;
 		D.Notes = S.notes;
 		D.Difficulty = S.difficulty;
+		// The default timeline stays implicit (an empty Hits array means the same single hit).
+		if (!ftcore::sameTimeline(S.timeline, ftcore::AttackTimeline()))
+		{
+			for (size_t I = 0; I < S.timeline.size(); ++I)
+			{
+				const ftcore::TimelineHit& Hit = S.timeline[I];
+				FFTAttackHit& Out = D.Hits.AddDefaulted_GetRef();
+				Out.At = Hit.at;
+				Out.Tell = Hit.tell;
+				Out.Telegraph = Hit.telegraph;
+				Out.Weight = Hit.weight;
+				Out.bJumpable = Hit.jumpable;
+			}
+		}
 	}
 	return Out;
 }
@@ -99,6 +113,11 @@ constexpr double kFlashSeconds = 0.35;
 constexpr double kLungeSeconds = 0.3;
 constexpr double kFallSeconds = 0.6;
 constexpr double kBannerSeconds = 1.6;
+// The autopilot answers enemy hits whose ideal press time falls before the next battle update:
+// this many frames ahead (clamped), so a long dilated frame never steps over a window.
+constexpr double kPilotFrames = 2.0;
+constexpr double kPilotMinLookahead = 0.05;
+constexpr double kPilotMaxLookahead = 0.5;
 
 const FString kEmpty;
 
@@ -130,7 +149,6 @@ AFTBattleDemoActor::AFTBattleDemoActor()
 	}
 	const ftcore::BattleTuning Tuning = ftcore::demo::tuning();
 	Battle->Tuning.LeadIn = Tuning.leadIn;
-	Battle->Tuning.Windup = Tuning.windup;
 	Battle->Tuning.Recovery = Tuning.recovery;
 	Battle->Tuning.Lockout = Tuning.lockout;
 	Battle->Tuning.StartingAp = Tuning.startingAp;
@@ -491,6 +509,11 @@ double AFTBattleDemoActor::GetLanePressAge(int32 Lane) const
 	return Lane >= 0 && Lane < 4 ? Wall() - LanePressWall[Lane] : 100.0;
 }
 
+double AFTBattleDemoActor::GetDefencePressAge() const
+{
+	return Wall() - DefencePressWall;
+}
+
 // ---- text, built when it changes ----
 
 void AFTBattleDemoActor::CacheText()
@@ -584,7 +607,7 @@ void AFTBattleDemoActor::AddPopup(const FPopup& P)
 	Slot.Grade = P.Grade;
 	Slot.bWrong = P.bWrong;
 	Slot.bNumber = P.bNumber;
-	Slot.bBlock = P.bBlock;
+	Slot.bDefence = P.bDefence;
 	Slot.Text = P.Text;
 }
 
@@ -599,8 +622,12 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 	case EFTBattleEventType::SkillStarted:
 	{
 		const bool bEnemy = Battle->GetCombatant(Event.Source).Team == EFTTeam::Enemies;
-		SetBanner(bEnemy ? FString::Printf(TEXT("%s: %s - defend!"), *GetFighterName(Event.Source), *Event.Label)
-		                 : FString::Printf(TEXT("%s: %s"), *GetFighterName(Event.Source), *Event.Label));
+		// The enemy banner is the attack's caption; the HUD shows the defence keys and tells.
+		SetBanner(FString::Printf(TEXT("%s: %s"), *GetFighterName(Event.Source), *Event.Label));
+		if (bEnemy)
+		{
+			DefencePressWall = -100.0;
+		}
 		break;
 	}
 	case EFTBattleEventType::NoteJudged:
@@ -633,13 +660,20 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 		AddPopup(P);
 		break;
 	}
-	case EFTBattleEventType::Blocked:
+	case EFTBattleEventType::Defended:
 	{
+		// One per enemy hit: PERFECT / DODGE / JUMP, with the AP refunded if any. A hit that lands
+		// already shows its damage number and flash (the Hit event), so it gets no second popup.
+		if (Event.Grade == EFTGrade::Miss)
+		{
+			break;
+		}
 		FPopup P;
 		P.bNumber = true;
-		P.bBlock = true;
+		P.bDefence = true;
+		P.Grade = Event.Grade;
 		P.Combatant = Event.Target;
-		P.Text = FString::Printf(TEXT("BLOCK %d"), Event.Amount);
+		P.Text = Event.Amount > 0 ? FString::Printf(TEXT("%s +%d AP"), *Event.Label, Event.Amount) : Event.Label;
 		AddPopup(P);
 		break;
 	}
@@ -790,6 +824,17 @@ void AFTBattleDemoActor::HandleArrow(EFTArrow Arrow, bool bFaceButton)
 		Battle->Press(Arrow);
 		return;
 	}
+	if (Battle->IsDefenceActive())
+	{
+		// Arrows and face buttons alike: Left/Right (X/B) dodge, Down (A) parries, Up (Y) jumps.
+		const EFTDefenceInput Input = Arrow == EFTArrow::Down ? EFTDefenceInput::Parry
+			: Arrow == EFTArrow::Up                           ? EFTDefenceInput::Jump
+			                                                  : EFTDefenceInput::Dodge;
+		DefencePressWall = Wall();
+		LastDefenceInput = Input;
+		Battle->Defend(Input);
+		return;
+	}
 	if (Battle->GetPhase() != EFTBattlePhase::AwaitingCommand)
 	{
 		return;
@@ -916,7 +961,7 @@ void AFTBattleDemoActor::CycleTarget(int32 Step)
 
 // ---- per frame ----
 
-void AFTBattleDemoActor::TickAutoPlay()
+void AFTBattleDemoActor::TickAutoPlay(float DeltaSeconds)
 {
 	const ftcore::Battle* B = Battle->GetBattle();
 	if (!B || Battle->IsBattleOver())
@@ -929,6 +974,31 @@ void AFTBattleDemoActor::TickAutoPlay()
 		SelectedSkill = static_cast<int32>(Choice.skill);
 		SelectedTarget = static_cast<int32>(Choice.target);
 		UseSelected();
+		return;
+	}
+	if (Battle->IsDefenceActive())
+	{
+		// Same as ftcore::demo::pilotDefend in parry mode: every hit whose ideal press time comes
+		// before the next update is parried at that time, read from the timeline (never from audio).
+		const double Horizon = Battle->GetBattleTime()
+			+ FMath::Clamp(kPilotFrames * static_cast<double>(DeltaSeconds), kPilotMinLookahead, kPilotMaxLookahead);
+		while (Battle->IsDefenceActive())
+		{
+			const ftcore::DefenceTimeline& Defence = B->defence();
+			const size_t I = Defence.nextIndex();
+			if (I >= Defence.size())
+			{
+				break;
+			}
+			const double Ideal = Defence.idealPress(I, ftcore::DefenceInput::Parry);
+			if (Ideal > Horizon)
+			{
+				break;
+			}
+			DefencePressWall = Wall();
+			LastDefenceInput = EFTDefenceInput::Parry;
+			Battle->DefendAtTime(EFTDefenceInput::Parry, Ideal);
+		}
 		return;
 	}
 	if (!Battle->IsComboActive())
@@ -957,7 +1027,7 @@ void AFTBattleDemoActor::Tick(float DeltaSeconds)
 	Super::Tick(DeltaSeconds);
 	if (bAutoPlay)
 	{
-		TickAutoPlay();
+		TickAutoPlay(DeltaSeconds);
 	}
 	if (bCanQuitToTitle && bWaitingForRestart)
 	{

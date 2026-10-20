@@ -15,12 +15,15 @@
 // input into commands and presses. AFTBattleHUD draws the UI from the getters below.
 //
 // Command menu (phase AwaitingCommand): Up/Down pick the skill, Left/Right or Tab/Q/E the target,
-// Enter/Space/pad A use it; 1-4 use a skill at once. During a combo every arrow is a step.
+// Enter/Space/pad A use it; 1-4 use a skill at once. During a combo every arrow is a step. On an
+// enemy turn the defender answers each hit of the attack timeline: Left/Right (pad X/B) dodge,
+// Down (pad A) parries, Up (pad Y) jumps (jumpable hits only).
 // After the outcome, Enter/Space/pad A/Start fight again. After a loss in a story fight, Esc / Q /
 // pad B quits to the title instead: it opens the story map (carry.ReturnMap) with the URL option
 // ?Title and leaves the carry's bDone false.
 //
-// bAutoPlay (or -BattleAutoPlay on the command line) lets Core's pilot play perfectly; with
+// bAutoPlay (or -BattleAutoPlay on the command line) lets Core's pilot play perfectly (every note
+// on time, every enemy hit parried at its ideal time from the timeline); with
 // -BattleQuitOnOutcome the game exits when the battle ends (a headless end-to-end run). With a carry
 // the autopilot always retries after a loss. A story fight on autoplay with -AlphaFast runs at global
 // time dilation 8 and its song clock follows game time (UFTConductorComponent::bWallClockFollowsGameTime).
@@ -108,17 +111,21 @@ public:
 	float GetFlash(int32 Id) const;
 	// Seconds since the player last pressed this lane during a combo.
 	double GetLanePressAge(int32 Lane) const;
+	// Seconds since the last defence press on an enemy turn, and which input it was.
+	double GetDefencePressAge() const;
+	EFTDefenceInput GetLastDefenceInput() const { return LastDefenceInput; }
 
 	struct FPopup
 	{
 		double WallStart = -1.0;
-		// Grade popup: the lane of the judged note. Number popup: the combatant the number is over.
+		// Grade popup: the lane of the judged note. Number popup (damage, or a defence outcome with
+		// bDefence and Grade Perfect / Good / Miss): the combatant the text is over.
 		int32 Lane = 0;
 		int32 Combatant = -1;
 		EFTGrade Grade = EFTGrade::Pending;
 		bool bWrong = false;
 		bool bNumber = false;
-		bool bBlock = false;
+		bool bDefence = false;
 		FString Text; // numbers only, built when the event arrives
 	};
 	const FPopup& GetPopup(int32 I) const { return Popups[I]; }
@@ -156,7 +163,7 @@ private:
 	void CacheText();
 	void UpdateHpText(int32 Id);
 	void TickFigures(double Wall);
-	void TickAutoPlay();
+	void TickAutoPlay(float DeltaSeconds);
 	void UseSelected();
 	void CycleTarget(int32 Step);
 	void EnsureTarget();
@@ -217,6 +224,8 @@ private:
 	FPopup Popups[MaxPopups];
 	int32 NextPopup = 0;
 	double LanePressWall[4] = {-100.0, -100.0, -100.0, -100.0};
+	double DefencePressWall = -100.0;
+	EFTDefenceInput LastDefenceInput = EFTDefenceInput::Parry;
 
 	int32 SelectedSkill = 0;
 	int32 SelectedTarget = -1;
