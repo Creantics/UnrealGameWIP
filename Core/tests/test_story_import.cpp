@@ -497,6 +497,9 @@ bool sameSave(const StorySave& a, const StorySave& b) {
         const SavedStoryFlag &x = a.flags[i], &y = b.flags[i];
         if (x.id != y.id || x.kind != y.kind || x.number != y.number || x.text != y.text) return false;
     }
+    if (a.seen.size() != b.seen.size()) return false;
+    for (std::size_t i = 0; i < a.seen.size(); ++i)
+        if (a.seen[i].scene != b.seen[i].scene || a.seen[i].bits != b.seen[i].bits) return false;
     return true;
 }
 
@@ -784,6 +787,8 @@ StorySave sampleSave() {
     s.flags.push_back({"F_COUNT", FlagValue::Kind::Int, -9223372036854775807ll - 1, ""});
     s.flags.push_back({"F_MAX", FlagValue::Kind::Int, 9223372036854775807ll, ""});
     s.flags.push_back({"F_ENUM", FlagValue::Kind::String, 2, "SA\"T\\ \r\n\x1f ü"});
+    s.seen.push_back({"SC-\"A\"\\\n é", "1f0aA"});
+    s.seen.push_back({"SC-B", "8"});
     return s;
 }
 
@@ -816,7 +821,15 @@ TEST_CASE("save codec: truncated text is refused at every byte and leaves out un
 TEST_CASE("save codec refuses a bad version, missing fields and wrong types") {
     const StorySave marker = [] { StorySave m; m.scene = "keep"; return m; }();
     const char* bad[] = {
-        R"({"format":2,"scene":"A","beat":0,"flags":[]})",
+        R"({"format":3,"scene":"A","beat":0,"flags":[],"seen":[]})",
+        R"({"format":0,"scene":"A","beat":0,"flags":[]})",
+        R"({"format":2,"scene":"A","beat":0,"flags":[]})",                    // format 2 needs "seen"
+        R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":{}})",
+        R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":[1]})",
+        R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":[{"bits":"1"}]})",
+        R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":[{"scene":"A"}]})",
+        R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":[{"scene":"A","bits":"1g"}]})",
+        R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":[{"scene":"A","bits":3}]})",
         R"({"format":"1","scene":"A","beat":0,"flags":[]})",
         R"({"scene":"A","beat":0,"flags":[]})",
         R"({"format":1,"beat":0,"flags":[]})",

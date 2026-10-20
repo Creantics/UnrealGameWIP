@@ -17,13 +17,23 @@ TEST_CASE("title menu without a save") {
     TitleMenu m;
     CHECK(m.selected() == TitleItem::NewGame);
     CHECK(m.enabled(TitleItem::NewGame));
+    CHECK(m.enabled(TitleItem::Settings));
     CHECK_FALSE(m.enabled(TitleItem::Continue));
-    CHECK(m.press(TitleKey::Down) == TitleAction::None); // can't move onto a greyed item
-    CHECK(m.press(TitleKey::Up) == TitleAction::None);
-    CHECK(m.press(TitleKey::Pick2) == TitleAction::None); // a greyed shortcut does nothing
+    CHECK(m.press(TitleKey::Up) == TitleAction::None);     // at the top
+    CHECK(m.press(TitleKey::Pick2) == TitleAction::None);  // a greyed shortcut does nothing
     CHECK(m.selected() == TitleItem::NewGame);
     CHECK(m.press(TitleKey::Confirm) == TitleAction::NewGame);
     CHECK(m.press(TitleKey::Pick1) == TitleAction::NewGame);
+    CHECK(m.press(TitleKey::Down) == TitleAction::Moved);  // steps over the greyed Continue
+    CHECK(m.selected() == TitleItem::Settings);
+    CHECK(m.press(TitleKey::Down) == TitleAction::None);   // at the bottom
+    CHECK(m.press(TitleKey::Confirm) == TitleAction::Settings);
+    CHECK(m.press(TitleKey::Up) == TitleAction::Moved);
+    CHECK(m.selected() == TitleItem::NewGame);
+    m.hover(TitleItem::Continue); // greyed: the mouse does not select it
+    CHECK(m.selected() == TitleItem::NewGame);
+    m.hover(TitleItem::Settings);
+    CHECK(m.selected() == TitleItem::Settings);
 }
 
 TEST_CASE("title menu with a save") {
@@ -31,7 +41,11 @@ TEST_CASE("title menu with a save") {
     m.setContinueEnabled(true);
     CHECK(m.selected() == TitleItem::Continue); // starts on Continue
     CHECK(m.press(TitleKey::Confirm) == TitleAction::Continue);
+    CHECK(m.press(TitleKey::Down) == TitleAction::Moved);
+    CHECK(m.selected() == TitleItem::Settings);
     CHECK(m.press(TitleKey::Down) == TitleAction::None); // at the bottom: no wrap
+    CHECK(m.press(TitleKey::Pick3) == TitleAction::Settings);
+    CHECK(m.press(TitleKey::Up) == TitleAction::Moved);
     CHECK(m.press(TitleKey::Up) == TitleAction::Moved);
     CHECK(m.selected() == TitleItem::NewGame);
     CHECK(m.press(TitleKey::Up) == TitleAction::None);
@@ -39,6 +53,7 @@ TEST_CASE("title menu with a save") {
     CHECK(m.press(TitleKey::Pick2) == TitleAction::Continue); // shortcuts ignore the selection
     CHECK(m.selected() == TitleItem::NewGame);
     CHECK(m.press(TitleKey::Down) == TitleAction::Moved);
+    CHECK(m.selected() == TitleItem::Continue);
 
     m.setContinueEnabled(false); // the save went bad: selection falls back
     CHECK(m.selected() == TitleItem::NewGame);

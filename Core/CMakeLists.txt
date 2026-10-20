@@ -29,6 +29,7 @@ else()
 endif()
 
 add_library(ftcore STATIC
+    src/Backlog.cpp
     src/Battle.cpp
     src/Calibration.cpp
     src/ComboGenerator.cpp
@@ -44,6 +45,9 @@ add_library(ftcore STATIC
     src/GameplayPlan.cpp
     src/Json.cpp
     src/Physics.cpp
+    src/Seen.cpp
+    src/Settings.cpp
+    src/Skip.cpp
     src/StoryDatabase.cpp
     src/StoryImport.cpp
     src/StoryRunner.cpp
@@ -79,6 +83,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_main.cpp
         tests/AllocCounter.cpp
         tests/AllocHook.cpp
+        tests/test_backlog.cpp
         tests/test_battle.cpp
         tests/test_battle_demo.cpp
         tests/test_combo.cpp
@@ -94,6 +99,8 @@ if(FTCORE_BUILD_TESTS)
         tests/test_gameplay_plan.cpp
         tests/test_json.cpp
         tests/test_physics.cpp
+        tests/test_settings.cpp
+        tests/test_skip.cpp
         tests/test_story.cpp
         tests/test_story_chain.cpp
         tests/test_story_import.cpp
