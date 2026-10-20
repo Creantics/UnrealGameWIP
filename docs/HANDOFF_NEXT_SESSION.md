@@ -11,10 +11,11 @@ Private notes (character references, concept-art review, script status) are in `
   - Draft 95 is imported into newengine (commit e447462, local only, never pushed). `--check` is clean: 73 scenes and 127 of 127 inserts placed. Ten insert anchors moved with the rewrite; the Draft 93.1 meta set is frozen in `build/meta/draft93_1/`.
   - The Draft 95 VO list is built in newengine `design/forgotten_third/build/draft95/VO_Master_List.csv`: 1,680 script lines, 34 marked "REVIEW: line edited in draft95". Check those before ElevenLabs.
   - `Data/Story/` here holds the Draft 95 data (gitignored; copied from newengine `assets/story`).
-  - Both waiting branches are merged to main (e4763eb leads, f711839 battle demo; main is now 505814f), and their branches and worktrees are deleted.
+  - Both waiting branches are merged to main (e4763eb leads, f711839 battle demo; main was then 505814f), and their branches and worktrees are deleted.
   - The style branch is salvaged and retired (next section).
+  - **Two playable demos on main (4d23d8f):** the fight demo now fights with the Devin and Duy meshes, and a new exploration map (`/Game/Maps/Explore`, `docs/EXPLORE_DEMO.md`) plays end to end: talk to Duy, three light shards, the old gate, then an ambush that opens `BattleDemo` and returns to the field on a win. Headless autoplay passes both: `BattleDemo: VICTORY after 61.5 s.` and `ExploreDemo: COMPLETE after 23.5 s.` (field time, with the fight round trip in between). gate -Ubt green.
 - **Next actions, in order:**
-  1. The grey-characters check (below). It needs the user to press Play in `Leads.umap` on the portrait monitor.
+  1. **User visual check (portrait monitor, nobody else launches the editor):** press Play in `Explore.umap` and in `BattleDemo.umap`. Check the camera, Devin's walk and facing, Duy's facing, the prompts and the fight round trip. This also answers the grey-characters check (below), as would Play in `Leads.umap`.
   2. The dialogue UI on the Draft 95 data, then movement, menus and VO playback.
   3. The Prologue chapters 1-2 vertical slice.
 - **Not modelled yet in the import:** Draft 95's inline gameplay markers stay hidden notes, and its new seen/fairness/ruling-tier flags are set by no insert. Model them when the dialogue UI needs them.
@@ -53,7 +54,7 @@ The duplicate style port (`worktree-agent-ac78bf565fd6d3d57`) is retired. Main g
 ## Fight demo: gaps
 
 - There is no music; the conductor runs a silent wall clock, so timing is plain seconds.
-- The fighters are placeholder shapes. The leads are on main now, so swap in their meshes.
+- The party is the lead meshes with idle clips (4d23d8f); the enemies are still cubes, and there are no attack or hit clips.
 
 ## Worktrees to clean up
 
