@@ -77,3 +77,70 @@ floating weak-point orbs to shoot. Firing can trigger passives such as
   before impact. Impact sounds are feedback only.
 - A headless autoplay can drive defence from the timeline directly, so it
   never has to listen to audio.
+
+## Second session: aim, weak points, defence probes
+
+**Aim has soft lock-on.** Once the reticle nears a target it snaps on and
+shows an X marker plus the target's HP bar. Near a target, raw mouse input no
+longer maps linearly to reticle movement. Precision isn't the test: a small
+nudge is enough. Each shot costs one action point. Aim stays open after a
+shot, so shots can be chained, and the damage number pops at the impact point.
+
+**Weak points are one-time bombs, not multipliers.** One enemy carried a
+visible destructible part that could be read from the normal command camera
+before aiming. A body shot did 78 damage. Shooting the part blew it up:
+- About 4x that damage to its carrier, and about 15x to the enemy beside it.
+- A burn status on both.
+- An extra on-hit passive fired.
+
+The part is then gone. Its value comes from sitting next to other enemies,
+which rewards spending one point on the first turn to scan the arena.
+
+**Passive procs are announced.** Each time an equipped passive fires, a small
+chip with its name and a count stacks above the party HUD. The player learns
+which build pieces are working without opening a menu.
+
+**Every enemy action has a banner.** A one-line caption at top centre names
+each enemy action: attacks, buffs on allies, status ticks and named specials.
+The banner is the universal "something is coming" cue. The camera then
+frames the targeted party member with the attacker beside or behind them.
+
+**Telegraph length scales with the attack.** A melee swing landed about
+1.8–2.2 s after its banner. A summoned strike landed about 5.4 s after its
+banner. For the last 2.5 s, a glowing vertical column marked its target,
+visible from any camera angle.
+
+**Dodge is forgiving, parry is not.** Mashing dodge every 0.2 s through an
+enemy phase produced some perfect dodges: a "PERFECT" caption over the
+defender plus an action-point pip. Other hits still got through, including
+the slow summoned strike. Mashing parry every 0.1 s gave no perfects in four
+hits, so parry has a narrower window, a mash lockout, or both. Perfect
+defence refunds action points, which ties defence skill back into the turn
+economy.
+
+**Skills can spend marks instead of points.** One skill card listed its cost
+as two elemental marks and zero action points. The marks are left on targets
+by other skills, so they act as a combo currency across characters.
+
+**Failure flow, timed.**
+1. Party wipe.
+2. "Send in reserve team?" A spare character then fights alone.
+3. A failure card of about 7 s.
+4. "Retry battle?" Retry restarts the fight from its first turn with full HP
+   and no load screen.
+
+Downed allies show a red slash over their portrait.
+
+### More techniques to borrow
+
+7. **Announce every enemy action in one caption line.** Name threats and
+   flavour actions alike, so the player never wonders what just happened.
+8. **Scale the telegraph to the attack.** Slow, big attacks get a long marker
+   on the target in the world. Fast attacks rely on the windup pose.
+9. **Weak points as positional bombs.** A shootable part that explodes for
+   area damage and a status effect rewards reading the formation, not aim.
+10. **Make perfect defence pay into the turn economy.** Refund a point on a
+    perfect dodge or parry, so defence skill turns into offence.
+11. **Punish mashing on the hard input only.** Let the safe input tolerate
+    some mashing, and give the rewarding input a lockout.
+12. **Surface passive procs.** Name each proc briefly as it fires.
