@@ -36,6 +36,7 @@ add_library(ftcore STATIC
     src/Conductor.cpp
     src/DefenceTimeline.cpp
     src/Dialogue.cpp
+    src/DialogueLoop.cpp
     src/Emotion.cpp
     src/Encounter.cpp
     src/Explore.cpp
@@ -86,6 +87,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_conductor.cpp
         tests/test_defence.cpp
         tests/test_dialogue.cpp
+        tests/test_dialogue_loop.cpp
         tests/test_alpha.cpp
         tests/test_emotion.cpp
         tests/test_encounter.cpp
