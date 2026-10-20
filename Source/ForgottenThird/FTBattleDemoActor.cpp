@@ -662,7 +662,12 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 	}
 	case EFTBattleEventType::Defended:
 	{
-		// One per enemy hit: PERFECT / DODGE / JUMP / HIT, with the AP refunded if any.
+		// One per enemy hit: PERFECT / DODGE / JUMP, with the AP refunded if any. A hit that lands
+		// already shows its damage number and flash (the Hit event), so it gets no second popup.
+		if (Event.Grade == EFTGrade::Miss)
+		{
+			break;
+		}
 		FPopup P;
 		P.bNumber = true;
 		P.bDefence = true;

@@ -57,8 +57,8 @@ Each hit is answered by one press inside its window, which ends at the impact:
 | Parry | 0.12 s | Always a perfect parry. A parry that answers nothing locks parry out for 0.4 s. |
 | Jump | 0.25 s | Jumpable hits only (they also take a parry). A miss locks jump out for 0.3 s. |
 
-Each hit reports PERFECT, DODGE, JUMP or HIT (a popup over the defender, and a row of pips under
-the scene). A perfect parry or perfect dodge refunds 1 AP (`BattleTuning::apOnPerfect`, capped at
+Each hit reports PERFECT, DODGE, JUMP or HIT (a `Defended` event; the HUD shows a row of pips
+under the scene and a popup over the defender, or the damage number when the hit lands). A perfect parry or perfect dodge refunds 1 AP (`BattleTuning::apOnPerfect`, capped at
 max AP). A hit that lands deals its weight's share of the blow. Parrying every hit of the attack
 gives the defender a counter. The windows are `BattleTuning::defence` in Core and
 `FFTBattleTuning` (DodgeWindow, PerfectDodgeWindow, ParryWindow, JumpWindow, ParryLockout,

@@ -377,6 +377,46 @@ TEST_CASE("defence autopilot: perfect runs of the demo fight take no damage") {
     CHECK(b.combatant(0).hp == 100);
 }
 
+// The Unreal autopilot presses a little ahead of the battle clock, so the next updates come with
+// earlier times than the press. The clock never runs backwards and nothing is judged twice.
+TEST_CASE("defence: updates earlier than a press change nothing") {
+    DefenceTimeline d;
+    d.reset(timeline({hitAt(1.0), hitAt(1.5)}), kStart);
+    const double early = kStart + 0.5;
+    CHECK(d.update(early).size() == 0);
+    const double ideal = d.idealPress(0, DefenceInput::Parry);
+    REQUIRE(ideal > early);
+    const DefenceResults pressed = d.press(DefenceInput::Parry, ideal);
+    REQUIRE(pressed.size() == 1);
+    CHECK(d.update(early).size() == 0);
+    CHECK(d.update(ideal - 0.01).size() == 0);
+    CHECK(d.now() == ideal);
+    CHECK(d.outcome(0) == DefenceOutcome::Perfect);
+    CHECK(d.nextIndex() == 1);
+    const DefenceResults landed = d.update(d.impact(1) + 0.01);
+    REQUIRE(landed.size() == 1);
+    CHECK(landed[0].hit == 1);
+    CHECK(d.outcome(1) == DefenceOutcome::Hit);
+
+    // In a battle: the pilot parries both hits half a second ahead, then the clock catches up.
+    Battle b({defender()}, {attacker(timeline({hitAt(1.0), hitAt(1.3)}))});
+    double now = 0.0;
+    toEnemyAttack(b, now);
+    b.drainEvents();
+    int presses = 0;
+    while (b.phase() == Phase::EnemySkill && now < 30.0) {
+        presses += demo::pilotDefend(b, now + 0.5);
+        now += 1.0 / 60.0;
+        b.update(now);
+    }
+    CHECK(presses == 2);
+    const auto events = defended(b.drainEvents());
+    REQUIRE(events.size() == 2);
+    CHECK(events[0].label == "PERFECT");
+    CHECK(events[1].label == "PERFECT");
+    CHECK(b.combatant(0).hp == 100);
+}
+
 TEST_CASE("defence: no allocation on reset, update or press") {
     if (!ftcore_test::allocHookInstalled()) {
         MESSAGE("alloc hook not linked; skipping");

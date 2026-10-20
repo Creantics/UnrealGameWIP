@@ -384,7 +384,6 @@ void AFTBattleHUD::DrawLane(const AFTBattleDemoActor& D)
 	HitY = Canvas->ClipY * 0.22f;
 	const float Bottom = Canvas->ClipY * 0.86f;
 	const double Now = BC->GetBattleTime();
-	const bool bDefend = B->phase() == ftcore::Phase::EnemySkill;
 
 	// Lane background, with a beat pulse on the hit line.
 	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.45f), LaneX0, HitY - 50.f * S, LaneWidth * 4.f, Bottom - HitY + 50.f * S);
@@ -394,7 +393,7 @@ void AFTBattleHUD::DrawLane(const AFTBattleDemoActor& D)
 		Beat = Conductor->GetBeat();
 	}
 	const float Pulse = static_cast<float>(1.0 - (Beat - FMath::FloorToDouble(Beat)));
-	DrawRect(WithAlpha(bDefend ? kRed : kGold, 0.35f + 0.5f * Pulse * Pulse), LaneX0, HitY - 2.f * S, LaneWidth * 4.f, 4.f * S);
+	DrawRect(WithAlpha(kGold, 0.35f + 0.5f * Pulse * Pulse), LaneX0, HitY - 2.f * S, LaneWidth * 4.f, 4.f * S);
 
 	const float R = LaneWidth * 0.36f;
 	for (int32 Lane = 0; Lane < 4; ++Lane)
