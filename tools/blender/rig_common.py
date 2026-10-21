@@ -257,6 +257,8 @@ def write_rigexpect(arm, mesh_obj, path, clip="rom", samples=64, seed=11):
 # --------------------------------------------------------------------------------------------
 # Joints that never get automatic weights: sockets carry props, helpers are driven by joint rules (§11),
 # tongue / eyes are rigid islands weighted by hand (a heat map would pull face skin onto them).
+PROXY_VOXEL = 0.004  # metres; fine enough to keep fingers apart
+PROXY_FRACTION = 0.05
 NO_AUTO_WEIGHT = set(rig_spec.SOCKETS) | {r[0] for r in rig_spec.JOINTS if r[5] == "helper"} | {
     "tongue_01", "tongue_02", "tongue_03", "eye_l", "eye_r"}
 
@@ -283,9 +285,8 @@ def bind_mesh(obj, arm):
     return mod
 
 
-def auto_weights(obj, arm):
-    """Heat-map weights from the deform joints minus NO_AUTO_WEIGHT. Vertices the heat solve leaves empty
-    (it fails on non-manifold or disconnected pieces) get their nearest bone segment. -> count of those."""
+def _heat(obj, arm):
+    """Blender's heat weighting of obj on the deform joints minus NO_AUTO_WEIGHT."""
     saved = {b.name: b.use_deform for b in arm.data.bones}
     for b in arm.data.bones:
         if b.name in NO_AUTO_WEIGHT:
@@ -298,7 +299,87 @@ def auto_weights(obj, arm):
     bpy.ops.object.parent_set(type="ARMATURE_AUTO")
     for b in arm.data.bones:
         b.use_deform = saved[b.name]
+    return saved
+
+
+def _weighted(obj, gi):
+    return sum(1 for v in obj.data.vertices if any(g.group in gi and g.weight > 0 for g in v.groups))
+
+
+def _largest_shell_only(mesh):
+    """Deletes every connected piece of mesh but the largest (a voxel remesh closes inner voids into shells)."""
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    comp = {}
+    sizes = []
+    for v0 in bm.verts:
+        if v0 in comp:
+            continue
+        c = len(sizes)
+        comp[v0] = c
+        stack, n = [v0], 0
+        while stack:
+            v = stack.pop()
+            n += 1
+            for e in v.link_edges:
+                w = e.other_vert(v)
+                if w not in comp:
+                    comp[w] = c
+                    stack.append(w)
+        sizes.append(n)
+    if len(sizes) > 1:
+        big = sizes.index(max(sizes))
+        bmesh.ops.delete(bm, geom=[v for v in bm.verts if comp[v] != big], context="VERTS")
+        bm.to_mesh(mesh)
+    bm.free()
+
+
+def proxy_weights(obj, arm, voxel=PROXY_VOXEL):
+    """Heat-weights a watertight voxel copy of obj and carries its weights back (interpolated from the nearest
+    proxy face). For a mesh grafted from overlapping parts, where the heat solve on obj itself fails."""
+    proxy = obj.copy()
+    proxy.data = obj.data.copy()
+    proxy.modifiers.clear()
+    proxy.vertex_groups.clear()
+    proxy.parent = None
+    proxy.matrix_world = obj.matrix_world.copy()
+    bpy.context.scene.collection.objects.link(proxy)
+    proxy.data.remesh_voxel_size = voxel
+    nb.activate(proxy)
+    bpy.ops.object.voxel_remesh()
+    _largest_shell_only(proxy.data)
+    _heat(proxy, arm)
+    obj.vertex_groups.clear()
+    for g in proxy.vertex_groups:
+        obj.vertex_groups.new(name=g.name)
+    m = obj.modifiers.new("proxy_weights", "DATA_TRANSFER")
+    m.object = proxy
+    m.use_vert_data = True
+    m.data_types_verts = {"VGROUP_WEIGHTS"}
+    m.vert_mapping = "POLYINTERP_NEAREST"
+    m.layers_vgroup_select_src = "ALL"
+    m.layers_vgroup_select_dst = "NAME"
+    nb.activate(obj)
+    bpy.ops.object.modifier_move_to_index(modifier=m.name, index=0)
+    bpy.ops.object.modifier_apply(modifier=m.name)
+    n = len(proxy.data.vertices)
+    bpy.data.objects.remove(proxy, do_unlink=True)
+    return n
+
+
+def auto_weights(obj, arm):
+    """Heat-map weights from the deform joints minus NO_AUTO_WEIGHT. When the heat solve leaves more than
+    PROXY_FRACTION of the vertices empty (it fails on non-manifold or disconnected pieces), the weights come
+    from a voxel proxy instead (proxy_weights). Vertices still empty get their nearest bone segment.
+    -> count of those."""
+    saved = _heat(obj, arm)
     bind_mesh(obj, arm)
+    gi = {obj.vertex_groups[n].index for n in saved if n in obj.vertex_groups and n not in NO_AUTO_WEIGHT}
+    if _weighted(obj, gi) < (1.0 - PROXY_FRACTION) * len(obj.data.vertices):
+        n = proxy_weights(obj, arm)
+        print("rig_common: heat weighting failed on %s, weights carried from a %d-vertex voxel proxy" % (obj.name, n))
+        bind_mesh(obj, arm)
     for name in saved:  # every deform joint has a group (possibly empty) so names resolve on export
         if saved[name] and name not in obj.vertex_groups:
             obj.vertex_groups.new(name=name)

@@ -23,6 +23,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import bmesh  # noqa: E402
 import bpy  # noqa: E402
 import numpy as np  # noqa: E402
 
@@ -97,6 +98,19 @@ def place(obj, height, rot_z):
     return s
 
 
+def weld(obj):
+    """Merges coincident vertices. glTF splits a vertex at every UV seam, and a mesh with a per-triangle UV
+    atlas arrives as loose triangles that decimation collapses to nothing and the voxel remesh can't close."""
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    n = len(bm.verts)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-5)
+    if len(bm.verts) < n:
+        bm.to_mesh(obj.data)
+        print("prep_scan: welded %d -> %d vertices" % (n, len(bm.verts)))
+    bm.free()
+
+
 def decimate(obj, faces):
     tris = sum(len(p.vertices) - 2 for p in obj.data.polygons)
     if tris <= faces:
@@ -125,6 +139,37 @@ def _image_node(mat, kind):
     return n, sock
 
 
+def keep_largest_shell(obj):
+    """Deletes every connected piece but the largest. Parts grafted with an overlap leave closed voids
+    behind, and the voxel remesh turns each into an inward-facing shell that QuadriFlow refuses."""
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    comp = [-1] * len(bm.verts)
+    sizes = []
+    for v0 in bm.verts:
+        if comp[v0.index] >= 0:
+            continue
+        c = len(sizes)
+        comp[v0.index] = c
+        stack, n = [v0], 0
+        while stack:
+            v = stack.pop()
+            n += 1
+            for e in v.link_edges:
+                w = e.other_vert(v)
+                if comp[w.index] < 0:
+                    comp[w.index] = c
+                    stack.append(w)
+        sizes.append(n)
+    if len(sizes) > 1:
+        big = sizes.index(max(sizes))
+        bmesh.ops.delete(bm, geom=[v for v in bm.verts if comp[v.index] != big], context="VERTS")
+        bm.to_mesh(obj.data)
+        print("prep_scan: kept the largest of %d shells (%d of %d vertices)" % (len(sizes), max(sizes), sum(sizes)))
+    bm.free()
+
+
 def retopo(high, quads, voxel):
     """A watertight QuadriFlow copy of `high`, mirrored across x = 0, with fresh packed UVs."""
     bpy.ops.object.select_all(action="DESELECT")
@@ -136,8 +181,15 @@ def retopo(high, quads, voxel):
     low.data.remesh_voxel_size = voxel
     low.data.use_remesh_fix_poles = True
     bpy.ops.object.voxel_remesh()
+    keep_largest_shell(low)
+    voxel_faces = len(low.data.polygons)
     bpy.ops.object.quadriflow_remesh(use_mesh_symmetry=True, use_preserve_sharp=False, use_preserve_boundary=False,
                                      smooth_normals=True, mode="FACES", target_faces=quads, seed=0)
+    if len(low.data.polygons) >= voxel_faces:
+        # QuadriFlow leaves the mesh alone when it finds a non-manifold spot (fingers that touch after the
+        # remesh); a collapse decimate of the watertight voxel mesh is the fallback, triangles not quads
+        before, after = decimate(low, 2 * quads)
+        print("prep_scan: QuadriFlow refused the mesh, decimated %d -> %d triangles instead" % (before, after))
     for uv in list(low.data.uv_layers):
         low.data.uv_layers.remove(uv)
     low.data.uv_layers.new(name="UVMap")
@@ -164,11 +216,11 @@ def bake(high, low, size):
     target = nt.nodes.new("ShaderNodeTexImage")
     nt.nodes.active = target
     images = {}
-    hm = high.data.materials[0]
-    hbsdf = next(n for n in hm.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
-    emit = hm.node_tree.nodes.new("ShaderNodeEmission")
-    out = next(n for n in hm.node_tree.nodes if n.type == "OUTPUT_MATERIAL")
-    keep = out.inputs["Surface"].links[0].from_socket
+    # every material of the high mesh takes part (a mesh grafted from parts keeps one material per part)
+    mats = []
+    for hm in high.data.materials:
+        out = next(n for n in hm.node_tree.nodes if n.type == "OUTPUT_MATERIAL")
+        mats.append((hm, hm.node_tree.nodes.new("ShaderNodeEmission"), out, out.inputs["Surface"].links[0].from_socket))
     for name, kind in (("basecolor", "Base Color"), ("orm", "Roughness"), ("normal", None)):
         im = bpy.data.images.new("%s_%s" % (low.name, name), size, size, alpha=False)
         if name != "basecolor":
@@ -178,21 +230,27 @@ def bake(high, low, size):
         low.select_set(True)
         high.select_set(True)
         if kind:
-            src, sock = _image_node(hm, kind)
-            if src is None:
+            srcs = [_image_node(hm, kind)[0] for hm, _, _, _ in mats]
+            if all(src is None for src in srcs):
                 continue
-            # the whole texture, not one channel: ORM's occlusion, roughness and metallic travel together
-            hm.node_tree.links.new(src.outputs["Color"], emit.inputs["Color"])
-            hm.node_tree.links.new(emit.outputs["Emission"], out.inputs["Surface"])
+            for (hm, emit, out, keep), src in zip(mats, srcs):
+                # the whole texture, not one channel: ORM's occlusion, roughness and metallic travel together
+                if src is None:  # a part without this map bakes its own constant
+                    emit.inputs["Color"].default_value = (1.0, 0.7, 0.0, 1.0) if kind == "Roughness" else (0.8, 0.8, 0.8, 1.0)
+                else:
+                    hm.node_tree.links.new(src.outputs["Color"], emit.inputs["Color"])
+                hm.node_tree.links.new(emit.outputs["Emission"], out.inputs["Surface"])
             bpy.ops.object.bake(type="EMIT", use_selected_to_active=True, cage_extrusion=0.02, max_ray_distance=0.05,
                                 margin=8)
         else:
-            hm.node_tree.links.new(keep, out.inputs["Surface"])
+            for hm, _, out, keep in mats:
+                hm.node_tree.links.new(keep, out.inputs["Surface"])
             bpy.ops.object.bake(type="NORMAL", normal_space="TANGENT", use_selected_to_active=True,
                                 cage_extrusion=0.02, max_ray_distance=0.05, margin=8)
         im.pack()
         images[name] = im
-    hm.node_tree.links.new(keep, out.inputs["Surface"])
+    for hm, _, out, keep in mats:
+        hm.node_tree.links.new(keep, out.inputs["Surface"])
     nt.nodes.remove(target)
     tex = {}
     for name, im in images.items():
@@ -295,6 +353,7 @@ def main():
     a = _args()
     obj = import_one(a["mesh"])
     s = place(obj, a["height"], a["rot-z"])
+    weld(obj)
     if a["retopo"]:
         before = sum(len(p.vertices) - 2 for p in obj.data.polygons)
         low = retopo(obj, a["retopo"], a["voxel"])

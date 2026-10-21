@@ -186,6 +186,8 @@ def set_jaw_weights(mesh, arm, jaw):
         if "jaw" not in w and j <= 0.0:
             continue
         w.pop("jaw", None)
+        if not w:  # weighted to the jaw alone (heat weighting can reach the jaw on a scan): the head takes it
+            w = {"head": 1.0}
         total = sum(w.values()) or 1.0
         w = {k: x * (1.0 - j) / total for k, x in w.items()}
         if j > 0.0:

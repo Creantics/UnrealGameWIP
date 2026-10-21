@@ -65,10 +65,14 @@ A character mesh from an image-to-3D service or a scan arrives as one dense text
    - The default decimates the mesh to `--faces` triangles and shrinks its textures to `--tex`.
    - `--retopo QUADS` builds a clean mesh instead. A voxel remesh closes the scan into one shell, then QuadriFlow lays about QUADS quads over it, mirrored across x = 0. Smart UV project and pack give it new UVs, and Cycles bakes the full scan onto it: base colour, ORM and a tangent-space normal map.
 
+   Both ways first weld coincident vertices. glTF splits a vertex at every UV seam, so a mesh with a per-triangle UV atlas (a projected texture) arrives as loose triangles, which the decimate collapses to nothing and the voxel remesh can't close. For a mesh grafted from overlapping parts (body, head, hands), the decimate keeps the parts' own textures and is the better choice. With `--retopo`, the remesh keeps only its largest shell, because overlaps leave closed voids behind. If QuadriFlow still refuses the mesh as non-manifold, the script decimates the voxel mesh to `2 * QUADS` triangles instead and says so.
+
    `--grid DIR` renders orthographic front and side views on a 5 cm grid, for reading off the landmarks. `grid.json` gives the pixel-to-metre mapping. The glTF importer leaves objects in quaternion rotation mode, so the script switches to XYZ before it turns the mesh.
 2. **Landmarks:** the 14 joints `fit_canonical.py` needs, read off the grid views, go into a JSON file of `{name: [x, y, z]}` in metres. `_l` is +x, the character's left.
 3. **`rig_scan.py`** runs `fit_canonical` (joint fit and skinning), then swaps its `tpose` clip for `make_leads`' idle and walk. That gives the same `idle`, `rom` and `walk` clips as the other leads. It checks the result with `make_leads.check_glb(face=False)`.
    - `--skirt HEM,TOP,FOLLOW,HALF_WIDTH` reweights a tunic or skirt so it doesn't tear between the legs. Between the two heights, the weight blends from the pelvis to the thighs, with a soft left/right split. Vertices beyond the half width (the hands) keep their weights.
+   - When heat weighting leaves more than 5% of the vertices empty, the weights come from a voxel proxy instead (`rig_common.proxy_weights`). It voxel-remeshes a copy at 4 mm, which keeps the fingers apart, heat-weights that, and carries the weights back from the nearest proxy face. Heat weighting fails on a mesh grafted from overlapping parts; the log then says `weights carried from a N-vertex voxel proxy`.
+   - `--idle-arm` and `--walk-arm` count from the scan's own arm angle. A T-pose scan needs about -62 and -64 to end where an A-pose scan does with the defaults.
    - `--preview DIR` renders the rest pose in x-ray with the landmark joints marked, plus two walk frames.
    - Add `neck_02`, `head`, `jaw`, `eye_l` and `eye_r` to the landmarks if the face will get shapes. Without them the head joints are extrapolated from the neck and land too high.
 4. **`face_transfer.py`** (optional) gives the rigged mesh the proof head's 56 face shapes and a jaw mask. It takes rig_scan's `.blend`:
@@ -81,7 +85,15 @@ A character mesh from an image-to-3D service or a scan arrives as one dense text
    - A `"jaw"` entry (a cut through the mouth slit that rises to a pivot under the ear) replaces the transferred jaw mask. Use it when the scan's mouth is much wider than the proof's.
    - A scan has no eyeballs or tongue. The eye-look shapes move only the lids, and tongueOut pushes the lower lip forward, because Unreal drops an all-zero morph target.
    - The mouth of a scan is closed, so the jaw stretches the teeth between the lips when it opens wide. Speech levels (jawOpen about 0.4) look fine.
-5. Import with `FTImportCharacter -Role=lead`, adding `-Face=0` if step 4 was skipped. `-Source` takes an absolute path, so a private model can stay outside the repo. Then run `FTBuildRig` and `FTBuildLeadsWorld`. From Git Bash, set `MSYS_NO_PATHCONV=1` first, or it turns `-Dest=/Game/...` into a Windows path.
+5. **`attach_rigid.py`** (optional) joins parts that can't go through the voxel remesh or heat weighting, such as hair cards and glasses, into the rigged mesh. It takes rig_scan's or face_transfer's `.blend`:
+
+   ```
+   blender -b RIG.blend --factory-startup --python-exit-code 1 --python tools/blender/attach_rigid.py --        --part hair.glb:head [--part glasses.glb:head] --out name.glb [--face 1] [--blend name.blend]
+   ```
+
+   - Each part must already sit in prep_scan's frame. Every vertex of it is weighted fully to the named joint, and it keeps its own materials.
+   - Pass `--face 1` after face_transfer, so the check expects the 56 shapes.
+6. Import with `FTImportCharacter -Role=lead`, adding `-Face=0` if step 4 was skipped. A lead's textures must be 2048 px or smaller, so run prep_scan with `--tex 2048`. `-Source` takes an absolute path, so a private model can stay outside the repo. Then run `FTBuildRig` and `FTBuildLeadsWorld`. From Git Bash, set `MSYS_NO_PATHCONV=1` first, or it turns `-Dest=/Game/...` into a Windows path.
 
 ## Into Unreal
 
