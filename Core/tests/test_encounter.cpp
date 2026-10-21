@@ -360,7 +360,7 @@ TEST_CASE("every listed encounter is a real battle step of the script") {
         ++moves;
     }
     CHECK(r.finished());
-    CHECK(real.size() > d.table.entries.size());
+    CHECK(real.size() >= d.table.entries.size());
     for (const EncounterEntry& e : d.table.entries) {
         CAPTURE(e.scene);
         CAPTURE(e.beat);
@@ -369,4 +369,45 @@ TEST_CASE("every listed encounter is a real battle step of the script") {
         for (const Key& k : real) found = found || (k.scene == e.scene && k.beat == e.beat && k.step == e.step);
         CHECK(found);
     }
+}
+
+TEST_CASE("every battle step of the script has its own line-up") {
+    FTCORE_REQUIRE_REAL_STORY(s);
+    const LoadedData d = loadBattleData();
+    REQUIRE(d.ok);
+
+    std::size_t steps = 0, missing = 0;
+    StoryRunner r(&s.db);
+    DialoguePresenter p(&r);
+    p.setRevealRate(0.f);
+    GameplayPlan plan;
+    REQUIRE(r.start());
+    int moves = 0;
+    while (!r.finished() && moves < 200000) {
+        if (r.waitingForGameplay()) {
+            REQUIRE(plan.lower(r));
+            for (std::uint32_t i = 0; i < plan.size(); ++i) {
+                if (plan.step(i).screen != GameplayScreen::Battle) continue;
+                ++steps;
+                const std::string scene(r.position().scene);
+                const auto beat = static_cast<std::uint32_t>(r.position().beat);
+                const bool listed = d.table.findEntry(scene, beat, i) != nullptr;
+                if (!listed) {
+                    ++missing;
+                    MESSAGE("no encounter for " << scene << " beat " << beat << " step " << i);
+                }
+            }
+            REQUIRE(r.resume());
+            ++moves;
+            continue;
+        }
+        p.update(1.f / 60.f);
+        const DialogueCommand c = p.autoplay();
+        if (c.none() || !applyDialogueCommand(r, c)) break;
+        ++moves;
+    }
+    CHECK(r.finished());
+    CHECK(steps > 0);
+    CHECK(missing == 0);
+    CHECK(d.table.entries.size() == steps); // no entry for a step that does not exist
 }
