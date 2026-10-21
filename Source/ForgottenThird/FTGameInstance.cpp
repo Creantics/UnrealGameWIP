@@ -5,6 +5,7 @@
 
 #include "ForgottenThird.h"
 #include "FTStorySubsystem.h"
+#include "FTUiText.h"
 
 void UFTGameInstance::Init()
 {
@@ -12,6 +13,8 @@ void UFTGameInstance::Init()
 	Super::Init();
 	bAlphaFast = FParse::Param(FCommandLine::Get(), TEXT("AlphaFast"));
 	ReloadStory();
+	// Load the interface text now, so a broken table shows up at launch (and in headless runs, which never draw).
+	FTUiText::Culture();
 }
 
 bool UFTGameInstance::ReloadStory()

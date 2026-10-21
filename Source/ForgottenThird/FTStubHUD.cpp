@@ -4,6 +4,7 @@
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
 #include "FTStubGameMode.h"
+#include "FTUiText.h"
 
 namespace
 {
@@ -13,8 +14,8 @@ const FLinearColor kDimStub(0.6f, 0.6f, 0.65f);
 const FLinearColor kPanelStub(0.02f, 0.02f, 0.05f, 0.75f);
 
 // Static so drawing never builds strings.
-const FString kNoStepStub(TEXT("No story step"));
-const FString kContinueStub(TEXT("Space / Enter / pad A: continue"));
+const FTUiText kNoStepStub(TEXT("common.no_step"));
+const FTUiText kContinueStub(TEXT("common.continue_pad"));
 } // namespace
 
 void AFTStubHUD::DrawCentered(const FString& Text, const FLinearColor& Color, float Y, UFont* Font, float Scale)

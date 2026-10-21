@@ -4,6 +4,7 @@
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
 #include "FTBanterGameMode.h"
+#include "FTUiText.h"
 
 namespace
 {
@@ -15,9 +16,9 @@ const FLinearColor kPanelBanter(0.02f, 0.02f, 0.05f, 0.75f);
 const FLinearColor kBarBanter(1.f, 1.f, 1.f, 0.35f);
 
 // Static so drawing never builds strings. The card's match AFTStubHUD's.
-const FString kNoStepBanter(TEXT("No story step"));
-const FString kContinueBanter(TEXT("Space / Enter / pad A: continue"));
-const FString kPromptBanter(TEXT("Space / Enter: next    Esc: skip"));
+const FTUiText kNoStepBanter(TEXT("common.no_step"));
+const FTUiText kContinueBanter(TEXT("common.continue_pad"));
+const FTUiText kPromptBanter(TEXT("banter.prompt"));
 } // namespace
 
 void AFTBanterHUD::DrawCentered(const FString& Text, const FLinearColor& Color, float Y, UFont* Font, float Scale)

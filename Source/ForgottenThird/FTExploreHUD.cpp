@@ -6,6 +6,7 @@
 #include "EngineUtils.h"
 
 #include "FTExploreDirector.h"
+#include "FTUiText.h"
 
 #include "ftcore/Explore.h"
 
@@ -18,11 +19,11 @@ const FLinearColor kDoneField(0.45f, 0.85f, 0.5f);
 const FLinearColor kPanelField(0.02f, 0.02f, 0.05f, 0.6f);
 
 // Static so drawing never builds strings.
-const FString kTitleField(TEXT("OBJECTIVES"));
+const FTUiText kTitleField(TEXT("explore.objectives"));
 const FString kTickField(TEXT("v"));
 const FString kArrowField(TEXT(">"));
-const FString kHintField(TEXT("WASD / left stick: move    Mouse / right stick: look    Shift: run    Space: jump    E / pad X: use"));
-const FString kCompleteField(TEXT("Demo complete"));
+const FTUiText kHintField(TEXT("explore.hint"));
+const FTUiText kCompleteField(TEXT("explore.complete"));
 
 float FieldFade(double Age, double Hold, double Out)
 {

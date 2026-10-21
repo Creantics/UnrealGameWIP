@@ -11,6 +11,7 @@
 #include "FTGameMode.h"
 #include "FTSettingsOverlay.h"
 #include "FTSettingsSubsystem.h"
+#include "FTUiText.h"
 
 #include "ftcore/StorySave.h"
 #include "ftcore/TitleMenu.h"
@@ -24,16 +25,16 @@ const FLinearColor kGreyTitle(0.35f, 0.35f, 0.38f);
 const FLinearColor kDimTitle(0.5f, 0.5f, 0.55f);
 
 // Static so drawing never builds strings.
-const FString kNameTitle(TEXT("Forgotten Third"));
-const FString kNewGameTitle(TEXT("New Game"));
-const FString kContinueTitle(TEXT("Continue"));
-const FString kNewGameSelTitle(TEXT("> New Game"));
-const FString kContinueSelTitle(TEXT("> Continue"));
-const FString kSettingsTitle(TEXT("Settings"));
-const FString kSettingsSelTitle(TEXT("> Settings"));
-const FString kHintTitle(TEXT("Up / Down and Enter, mouse, or 1 / 2 / 3    Pad: d-pad and A"));
-const FString kNoSaveTitle(TEXT("No saved game"));
-const FString kBadSaveTitle(TEXT("The saved game can't be loaded"));
+const FTUiText kNameTitle(TEXT("title.name"));
+const FTUiText kNewGameTitle(TEXT("title.new_game"));
+const FTUiText kContinueTitle(TEXT("title.continue"));
+const FTUiText kNewGameSelTitle(TEXT("title.new_game_selected"));
+const FTUiText kContinueSelTitle(TEXT("title.continue_selected"));
+const FTUiText kSettingsTitle(TEXT("title.settings"));
+const FTUiText kSettingsSelTitle(TEXT("title.settings_selected"));
+const FTUiText kHintTitle(TEXT("title.hint"));
+const FTUiText kNoSaveTitle(TEXT("title.no_save"));
+const FTUiText kBadSaveTitle(TEXT("title.bad_save"));
 } // namespace
 
 void AFTTitleHUD::DrawCentered(const FString& S, const FLinearColor& Color, float Y, UFont* Font, float Scale)

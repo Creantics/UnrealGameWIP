@@ -99,6 +99,7 @@ counted as alpha warnings.
 - **Art.** Blockout maps and the proof head only, with no portraits.
 - **Audio.** No voice. One placeholder music loop (`MUS-KNK`, see [ASSET_INTAKE.md](ASSET_INTAKE.md)); the battle beat grid follows the story music when its cue has a tempo. The headless run is `-nosound`, so its Conductor runs on game time.
 - **Balance.** The only balance rule is that the autopilot wins and no input loses.
-- **Not built yet:** navmesh, localisation, a dialogue backlog or skip, and settings menus.
+- **Navmesh.** `FTBuildExploreWorld` builds and saves a navmesh over the field map and fails if any spot or field goal has no full path from the start. The field autopilot follows the path and walks straight only when there's no navmesh.
+- **Interface text** comes from `Data/Loc/en/ui.json` ([LOCALISATION.md](LOCALISATION.md)). There are no other cultures yet.
 
 [PLAN.md](PLAN.md) lists what comes next.

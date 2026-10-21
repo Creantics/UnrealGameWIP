@@ -55,8 +55,9 @@ add_library(ftcore STATIC
     src/Json.cpp
     src/Loudness.cpp
     src/Mini.cpp
-    src/MusicLoop.cpp
+    src/UiText.cpp
     src/PathFollow.cpp
+    src/MusicLoop.cpp
     src/Physics.cpp
     src/Qte.cpp
     src/Seen.cpp
@@ -125,6 +126,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_mini.cpp
         tests/test_music_loop.cpp
         tests/test_path_follow.cpp
+        tests/test_ui_text.cpp
         tests/test_physics.cpp
         tests/test_qte.cpp
         tests/test_settings.cpp
@@ -157,4 +159,8 @@ if(FTCORE_BUILD_TESTS)
     add_test(NAME macro_names COMMAND ${CMAKE_COMMAND}
         -DINCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/include
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckMacroNames.cmake)
+    add_test(NAME ui_text_keys COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../Source/ForgottenThird
+        -DTABLE=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Loc/en/ui.json
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckUiTextKeys.cmake)
 endif()

@@ -43,7 +43,8 @@ State on 2026-10-18 (origin/main at ef99ba1). The Core porting is done. The demo
 
 Next, still without voice, art or music:
 - Wire the speaking character's face track (`VoiceTrackFile`) and voice-aware auto-advance into the story director.
-- Balance across every encounter, navmesh and localisation.
+- Balance across every encounter.
+- Translations: the English interface table is wired ([LOCALISATION.md](LOCALISATION.md)); other cultures, fonts beyond Latin and a language setting aren't.
 
 Phase 0, the shared surface the streams built on:
 

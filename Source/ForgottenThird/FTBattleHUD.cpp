@@ -9,6 +9,7 @@
 #include "FTBattleComponent.h"
 #include "FTBattleDemoActor.h"
 #include "FTConductorComponent.h"
+#include "FTUiText.h"
 
 #include "ftcore/Battle.h"
 
@@ -31,31 +32,31 @@ const FLinearColor kRed(1.0f, 0.3f, 0.3f);
 const FLinearColor kOrange(1.0f, 0.55f, 0.15f);
 
 // Static so drawing never builds strings.
-const FString kNow(TEXT("NOW"));
-const FString kNext(TEXT("NEXT"));
-const FString kPerfect(TEXT("PERFECT"));
-const FString kGreat(TEXT("GREAT"));
-const FString kGood(TEXT("GOOD"));
-const FString kMiss(TEXT("MISS"));
-const FString kWrong(TEXT("WRONG"));
-const FString kVictory(TEXT("VICTORY"));
-const FString kDefeat(TEXT("DEFEAT"));
-const FString kAgain(TEXT("Enter / Space / pad A to fight again"));
-const FString kRetry(TEXT("Enter: Retry"));
-const FString kQuitToTitle(TEXT("Esc / Q: Quit to title"));
-const FString kChoose(TEXT("choose a skill"));
-const FString kAttack(TEXT("attack - hit the arrows!"));
-const FString kDefend(TEXT("defend - watch for the tell!"));
-const FString kAimPhase(TEXT("aim - shoot a weak point!"));
-const FString kAimHint(TEXT("Mouse / sticks / arrows: aim    Left mouse / Enter / pad A: fire    Esc / right mouse / pad B: cancel"));
+const FTUiText kNow(TEXT("battle.now"));
+const FTUiText kNext(TEXT("battle.next"));
+const FTUiText kPerfect(TEXT("common.perfect"));
+const FTUiText kGreat(TEXT("battle.great"));
+const FTUiText kGood(TEXT("common.good"));
+const FTUiText kMiss(TEXT("common.miss"));
+const FTUiText kWrong(TEXT("battle.wrong"));
+const FTUiText kVictory(TEXT("battle.victory"));
+const FTUiText kDefeat(TEXT("battle.defeat"));
+const FTUiText kAgain(TEXT("battle.again"));
+const FTUiText kRetry(TEXT("battle.retry"));
+const FTUiText kQuitToTitle(TEXT("battle.quit_to_title"));
+const FTUiText kChoose(TEXT("battle.choose"));
+const FTUiText kAttack(TEXT("battle.attack"));
+const FTUiText kDefend(TEXT("battle.defend"));
+const FTUiText kAimPhase(TEXT("battle.aim"));
+const FTUiText kAimHint(TEXT("battle.aim_hint"));
 const FString kWait(TEXT("..."));
-const FString kMenuHint(TEXT("Up/Down or 1-4: skill    Left/Right, Q/E, Tab: target    Enter / Space / pad A: use    F / right mouse / LT: aim"));
-const FString kLaneHint(TEXT("Arrows / WASD / d-pad / X A Y B"));
-const FString kDown(TEXT("DOWN"));
+const FTUiText kMenuHint(TEXT("battle.menu_hint"));
+const FTUiText kLaneHint(TEXT("common.lanes_hint"));
+const FTUiText kDown(TEXT("battle.down"));
 const FString kDefenceKeys[3] = {FString(TEXT("Dodge  Left/Right  X/B")), FString(TEXT("Parry  Down  A")),
 	FString(TEXT("Jump  Up  Y"))};
 const FString kTell(TEXT("!"));
-const FString kJumpable(TEXT("JUMP!"));
+const FTUiText kJumpable(TEXT("battle.jump"));
 const FLinearColor kCyan(0.35f, 0.85f, 1.f);
 
 double HudWall() { return FPlatformTime::Seconds(); }
@@ -218,10 +219,10 @@ void AFTBattleHUD::DrawPhase(const AFTBattleDemoActor& D)
 	const FString* Label = nullptr;
 	switch (B->phase())
 	{
-	case ftcore::Phase::AwaitingCommand: Label = &kChoose; break;
-	case ftcore::Phase::PartySkill: Label = &kAttack; break;
-	case ftcore::Phase::EnemySkill: Label = &kDefend; break;
-	case ftcore::Phase::PartyAim: Label = &kAimPhase; break;
+	case ftcore::Phase::AwaitingCommand: Label = &kChoose.Get(); break;
+	case ftcore::Phase::PartySkill: Label = &kAttack.Get(); break;
+	case ftcore::Phase::EnemySkill: Label = &kDefend.Get(); break;
+	case ftcore::Phase::PartyAim: Label = &kAimPhase.Get(); break;
 	case ftcore::Phase::Recovery: Label = &kWait; break;
 	default: break;
 	}
@@ -712,19 +713,19 @@ void AFTBattleHUD::DrawPopups(const AFTBattleDemoActor& D)
 			{
 				continue;
 			}
-			const FString* Label = &kMiss;
+			const FString* Label = &kMiss.Get();
 			FLinearColor Color = kRed;
 			if (P.bWrong)
 			{
-				Label = &kWrong;
+				Label = &kWrong.Get();
 			}
 			else
 			{
 				switch (P.Grade)
 				{
-				case EFTGrade::Perfect: Label = &kPerfect; Color = kGold; break;
-				case EFTGrade::Great: Label = &kGreat; Color = FLinearColor(0.4f, 1.f, 0.45f); break;
-				case EFTGrade::Good: Label = &kGood; Color = FLinearColor(0.35f, 0.85f, 1.f); break;
+				case EFTGrade::Perfect: Label = &kPerfect.Get(); Color = kGold; break;
+				case EFTGrade::Great: Label = &kGreat.Get(); Color = FLinearColor(0.4f, 1.f, 0.45f); break;
+				case EFTGrade::Good: Label = &kGood.Get(); Color = FLinearColor(0.35f, 0.85f, 1.f); break;
 				default: break;
 				}
 			}

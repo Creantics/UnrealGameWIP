@@ -5,6 +5,7 @@
 #include "Engine/Font.h"
 #include "FTCutsceneDirector.h"
 #include "FTCutsceneGameMode.h"
+#include "FTUiText.h"
 
 namespace
 {
@@ -13,7 +14,7 @@ const FLinearColor kGoldCutscene(1.0f, 0.82f, 0.25f);
 const FLinearColor kDimCutscene(0.6f, 0.6f, 0.65f);
 
 // Static so drawing never builds strings.
-const FString kSkipCutscene(TEXT("Space / Enter / pad A: skip"));
+const FTUiText kSkipCutscene(TEXT("cutscene.skip"));
 constexpr float kLetterboxCutscene = 2.39f;
 constexpr float kMinBarCutscene = 0.08f;
 } // namespace

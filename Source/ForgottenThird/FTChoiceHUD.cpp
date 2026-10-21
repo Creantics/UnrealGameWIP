@@ -4,6 +4,7 @@
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
 #include "FTChoiceGameMode.h"
+#include "FTUiText.h"
 
 namespace
 {
@@ -14,11 +15,11 @@ const FLinearColor kGreyedChoice(0.35f, 0.35f, 0.38f);
 const FLinearColor kPanelChoice(0.02f, 0.02f, 0.05f, 0.75f);
 
 // Static so drawing never builds strings. The card's match AFTStubHUD's.
-const FString kNoStepChoice(TEXT("No story step"));
-const FString kContinueChoice(TEXT("Space / Enter / pad A: continue"));
-const FString kPromptLine(TEXT("Space / Enter: continue    Esc: skip"));
-const FString kPromptPick(TEXT("1-4: pick    Esc: skip"));
-const FString kPromptTag(TEXT("Space / Enter: continue"));
+const FTUiText kNoStepChoice(TEXT("common.no_step"));
+const FTUiText kContinueChoice(TEXT("common.continue_pad"));
+const FTUiText kPromptLine(TEXT("choice.prompt_line"));
+const FTUiText kPromptPick(TEXT("choice.prompt_pick"));
+const FTUiText kPromptTag(TEXT("common.continue"));
 } // namespace
 
 void AFTChoiceHUD::DrawCentered(const FString& Text, const FLinearColor& Color, float Y, UFont* Font, float Scale)

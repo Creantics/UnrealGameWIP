@@ -4,6 +4,7 @@
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
 #include "FTQteGameMode.h"
+#include "FTUiText.h"
 
 namespace
 {
@@ -21,15 +22,15 @@ const FLinearColor kSlotQte[2] = {FLinearColor(1.0f, 0.82f, 0.25f), FLinearColor
 const FVector2D kDirsQte[4] = {FVector2D(-1, 0), FVector2D(0, 1), FVector2D(0, -1), FVector2D(1, 0)};
 
 // Static so drawing never builds strings.
-const FString kNoStepQte(TEXT("No story step"));
-const FString kHintQte(TEXT("Arrows / WASD / d-pad / X A Y B"));
-const FString kHoldQte(TEXT("HOLD"));
-const FString kMashQte(TEXT("MASH"));
+const FTUiText kNoStepQte(TEXT("common.no_step"));
+const FTUiText kHintQte(TEXT("common.lanes_hint"));
+const FTUiText kHoldQte(TEXT("qte.hold"));
+const FTUiText kMashQte(TEXT("qte.mash"));
 const FString kKeyNamesQte[4] = {FString(TEXT("Left / A")), FString(TEXT("Down / S")), FString(TEXT("Up / W")), FString(TEXT("Right / D"))};
 const FString kSlotTagQte[2] = {FString(TEXT("1")), FString(TEXT("2"))};
-const FString kPerfectQte(TEXT("PERFECT"));
-const FString kGoodQte(TEXT("GOOD"));
-const FString kMissQte(TEXT("MISS"));
+const FTUiText kPerfectQte(TEXT("common.perfect"));
+const FTUiText kGoodQte(TEXT("common.good"));
+const FTUiText kMissQte(TEXT("common.miss"));
 // The result line by ftcore::QteOutcome (Perfect, Good, Fair, Poor).
 const FString kResultQte[4] = {FString(TEXT("Perfect!")), FString(TEXT("Good")), FString(TEXT("Fair")), FString(TEXT("Poor"))};
 
@@ -187,16 +188,16 @@ void AFTQteHUD::DrawPopups(const AFTQteGameMode& Mode, float X, float Y)
 			continue;
 		}
 		const float K = Age / kPopupLifeQte;
-		const FString* Text = &kMissQte;
+		const FString* Text = &kMissQte.Get();
 		FLinearColor Color = kRedQte;
 		if (Popup.Grade == ftcore::QteGrade::Perfect)
 		{
-			Text = &kPerfectQte;
+			Text = &kPerfectQte.Get();
 			Color = kGoldQte;
 		}
 		else if (Popup.Grade == ftcore::QteGrade::Good)
 		{
-			Text = &kGoodQte;
+			Text = &kGoodQte.Get();
 			Color = kCyanQte;
 		}
 		DrawStrCentered(*Text, WithAlphaQte(Color, 1.f - K), X, Y - 60.f * UiScale * K, GEngine->GetLargeFont(), 1.4f);

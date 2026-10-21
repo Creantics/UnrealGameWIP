@@ -4,6 +4,7 @@
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
 #include "FTMiniGameMode.h"
+#include "FTUiText.h"
 
 namespace
 {
@@ -20,8 +21,9 @@ const FLinearColor kNoteMini[4] = {FLinearColor(1.0f, 0.45f, 0.6f), FLinearColor
 	FLinearColor(1.0f, 0.82f, 0.25f)};
 
 // Static so drawing never builds strings.
-const FString kNoStepMini(TEXT("No story step"));
-const FString kHintMini(TEXT("Arrows / WASD / d-pad / X A Y B"));
+const FTUiText kNoStepMini(TEXT("common.no_step"));
+const FTUiText kHintMini(TEXT("common.lanes_hint"));
+const FTUiText kTryMini(TEXT("mini.try"));
 const FString kLaneNamesMini[4] = {FString(TEXT("Left")), FString(TEXT("Down")), FString(TEXT("Up")), FString(TEXT("Right"))};
 // By ftcore::Grade (Pending, Perfect, Great, Good, Miss).
 const FString kGradeMini[5] = {FString(), FString(TEXT("PERFECT")), FString(TEXT("GREAT")), FString(TEXT("GOOD")), FString(TEXT("MISS"))};
@@ -81,7 +83,7 @@ void AFTMiniHUD::DrawHUD()
 	if (CachedAttempt != Screen.attempt())
 	{
 		CachedAttempt = Screen.attempt();
-		TryText = FString::Printf(TEXT("Try %d of %d"), Screen.triesUsed(), FMath::Max(Screen.def().tries, 1));
+		TryText = FString::Format(*kTryMini.Get(), {Screen.triesUsed(), FMath::Max(Screen.def().tries, 1)});
 	}
 	const int32 Outcome = static_cast<int32>(Screen.outcome());
 	if (CachedOutcome != Outcome)

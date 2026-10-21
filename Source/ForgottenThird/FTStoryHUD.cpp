@@ -12,6 +12,7 @@
 #include "FTSettingsSubsystem.h"
 #include "FTStoryDirector.h"
 #include "FTText.h"
+#include "FTUiText.h"
 
 #include "ftcore/Backlog.h"
 #include "ftcore/StoryRunner.h"
@@ -28,15 +29,15 @@ const FLinearColor kPanelBox(0.02f, 0.02f, 0.05f, 0.72f);
 
 // Static so drawing never builds strings.
 const FString kMoreBox(TEXT(">"));
-const FString kContinueBox(TEXT("Space / Enter: continue"));
-const FString kHintBox(TEXT("Space / Enter / pad A: continue    1-4 / d-pad: choose    B: log    Ctrl / S: skip    Esc: settings"));
-const FString kEndBox(TEXT("The End"));
-const FString kEndHintBox(TEXT("Space / Enter: title"));
-const FString kSkipBox(TEXT("SKIP >>"));
-const FString kAutoBox(TEXT("AUTO"));
-const FString kLogTitleBox(TEXT("Backlog"));
-const FString kLogHintBox(TEXT("Up / Down or mouse wheel: scroll    B / Esc: close"));
-const FString kLogEmptyBox(TEXT("Nothing yet"));
+const FTUiText kContinueBox(TEXT("common.continue"));
+const FTUiText kHintBox(TEXT("story.hint"));
+const FTUiText kEndBox(TEXT("story.end"));
+const FTUiText kEndHintBox(TEXT("story.end_hint"));
+const FTUiText kSkipBox(TEXT("story.skip"));
+const FTUiText kAutoBox(TEXT("story.auto"));
+const FTUiText kLogTitleBox(TEXT("story.log_title"));
+const FTUiText kLogHintBox(TEXT("story.log_hint"));
+const FTUiText kLogEmptyBox(TEXT("story.log_empty"));
 const FString kChoicePrefixBox(TEXT("> "));
 const FLinearColor kBackdropBox(0.01f, 0.01f, 0.03f, 0.92f);
 const FLinearColor kChoiceBox(0.55f, 0.9f, 0.65f);

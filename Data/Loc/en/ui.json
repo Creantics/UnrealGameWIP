@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "culture": "en",
+  "strings": {
+    "common.no_step": "No story step",
+    "common.continue_pad": "Space / Enter / pad A: continue",
+    "common.continue": "Space / Enter: continue",
+    "common.lanes_hint": "Arrows / WASD / d-pad / X A Y B",
+    "common.perfect": "PERFECT",
+    "common.good": "GOOD",
+    "common.miss": "MISS",
+
+    "banter.prompt": "Space / Enter: next    Esc: skip",
+
+    "battle.now": "NOW",
+    "battle.next": "NEXT",
+    "battle.great": "GREAT",
+    "battle.wrong": "WRONG",
+    "battle.victory": "VICTORY",
+    "battle.defeat": "DEFEAT",
+    "battle.again": "Enter / Space / pad A to fight again",
+    "battle.retry": "Enter: Retry",
+    "battle.quit_to_title": "Esc / Q: Quit to title",
+    "battle.choose": "choose a skill",
+    "battle.attack": "attack - hit the arrows!",
+    "battle.defend": "defend - watch for the tell!",
+    "battle.aim": "aim - shoot a weak point!",
+    "battle.aim_hint": "Mouse / sticks / arrows: aim    Left mouse / Enter / pad A: fire    Esc / right mouse / pad B: cancel",
+    "battle.menu_hint": "Up/Down or 1-4: skill    Left/Right, Q/E, Tab: target    Enter / Space / pad A: use    F / right mouse / LT: aim",
+    "battle.down": "DOWN",
+    "battle.jump": "JUMP!",
+
+    "choice.prompt_line": "Space / Enter: continue    Esc: skip",
+    "choice.prompt_pick": "1-4: pick    Esc: skip",
+
+    "cutscene.skip": "Space / Enter / pad A: skip",
+
+    "explore.objectives": "OBJECTIVES",
+    "explore.hint": "WASD / left stick: move    Mouse / right stick: look    Shift: run    Space: jump    E / pad X: use",
+    "explore.complete": "Demo complete",
+
+    "mini.try": "Try {0} of {1}",
+
+    "qte.hold": "HOLD",
+    "qte.mash": "MASH",
+
+    "story.hint": "Space / Enter / pad A: continue    1-4 / d-pad: choose    B: log    Ctrl / S: skip    Esc: settings",
+    "story.end": "The End",
+    "story.end_hint": "Space / Enter: title",
+    "story.skip": "SKIP >>",
+    "story.auto": "AUTO",
+    "story.log_title": "Backlog",
+    "story.log_hint": "Up / Down or mouse wheel: scroll    B / Esc: close",
+    "story.log_empty": "Nothing yet",
+
+    "title.name": "Forgotten Third",
+    "title.new_game": "New Game",
+    "title.new_game_selected": "> New Game",
+    "title.continue": "Continue",
+    "title.continue_selected": "> Continue",
+    "title.settings": "Settings",
+    "title.settings_selected": "> Settings",
+    "title.hint": "Up / Down and Enter, mouse, or 1 / 2 / 3    Pad: d-pad and A",
+    "title.no_save": "No saved game",
+    "title.bad_save": "The saved game can't be loaded"
+  }
+}
