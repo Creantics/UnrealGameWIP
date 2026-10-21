@@ -16,7 +16,10 @@
 //   Parry  narrow window. Always perfect when it lands and refunds an action point; a whole attack
 //          parried enables a counter. A parry press that misses locks parry out for `parryLockout`.
 //   Jump   only on hits flagged jumpable; no refund. A jump that misses locks jump out for a moment.
-// A hit nobody answered in time lands (outcome Hit).
+// A hit nobody answered in time lands (outcome Hit). A press that answers nothing but comes less
+// than `late` seconds after the impact of the hit that just landed (with an input that hit
+// accepts) marks that hit late instead of counting as a miss: no lockout, the hit still lands, and
+// late(i) tells the HUD to say LATE rather than MISSED.
 //
 // Rules:
 //  - A press first resolves every pending hit whose impact is at or before the press time as Hit,
@@ -99,6 +102,7 @@ struct DefenceWindows {
     double dodgeLockout = 0.0;  // dodge tolerates mashing
     double parryLockout = 0.40; // after a parry press that misses
     double jumpLockout = 0.30;  // after a jump press that misses
+    double late = 0.20;         // a press this soon after a landed hit is judged late, not a miss
 };
 
 struct DefenceResult {
@@ -149,6 +153,11 @@ public:
     double impact(std::size_t i) const { return start_ + timeline_[i].at; }
     DefenceOutcome outcome(std::size_t i) const { return outcomes_[i]; }
     bool refunded(std::size_t i) const { return refunds_[i]; }
+    // Hit i landed, and a press came less than windows().late after its impact.
+    bool late(std::size_t i) const { return late_[i]; }
+    int lateCount() const { return lateCount_; }
+    // The hit most recently judged late (meaningful while lateCount() > 0).
+    std::size_t lastLate() const { return lastLate_; }
     // Earliest pending hit (size() when none).
     std::size_t nextIndex() const { return next_; }
     bool complete() const { return next_ >= timeline_.size(); }
@@ -174,16 +183,20 @@ public:
 private:
     void expire(double t, DefenceResults& out);
     void record(std::size_t i, DefenceOutcome o, bool refund, double t, DefenceResults& out);
+    bool markLate(DefenceInput input, double t);
 
     AttackTimeline timeline_{};
     DefenceWindows windows_{};
     std::array<DefenceOutcome, kMaxTimelineHits> outcomes_{};
     std::array<bool, kMaxTimelineHits> refunds_{};
+    std::array<bool, kMaxTimelineHits> late_{};
     std::array<double, kDefenceInputs> lockoutUntil_{-1e30, -1e30, -1e30};
     double start_ = 0.0;
     double now_ = 0.0;
     std::size_t next_ = 0;
     int refundCount_ = 0;
+    int lateCount_ = 0;
+    std::size_t lastLate_ = 0;
     int misses_ = 0;
     int ignored_ = 0;
 };

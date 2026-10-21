@@ -47,6 +47,8 @@ void Battle::reset(const std::vector<Combatant>& party, const std::vector<Combat
     params_ = {};
     combosPlayed_ = 0;
     defence_.clear();
+    aim_.reset(WeakPoints{}, 0.0, tuning_.aim);
+    lastShot_ = {};
     landedWeight_ = 0.0f;
     events_.clear();
     results_.clear();
@@ -211,8 +213,77 @@ void Battle::press(Arrow arrow, double timestamp) {
 }
 
 void Battle::defend(DefenceInput input, double timestamp) {
-    if (phase_ != Phase::EnemySkill) return;
+    const bool afterAttack =
+        phase_ == Phase::Recovery && combatants_[actor_].team == Team::Enemies && !targets_.empty();
+    if (phase_ != Phase::EnemySkill && !afterAttack) return;
+    const int lateBefore = defence_.lateCount();
     resolveDefence(defence_.press(input, timestamp), timestamp);
+    if (defence_.lateCount() == lateBefore) return;
+    if (phase_ != Phase::EnemySkill && phase_ != Phase::Recovery) return; // the outcome already came
+    emit({.type = EventType::Defended,
+          .source = actor_,
+          .target = targets_.front(),
+          .grade = Grade::Miss,
+          .beat = defence_.lastLate(),
+          .time = timestamp,
+          .label = "LATE"});
+}
+
+CommandError Battle::aim(CombatantId target, double now) {
+    if (phase_ != Phase::AwaitingCommand) return CommandError::WrongPhase;
+    Combatant& c = combatants_[actor_];
+    if (target >= combatants_.size() || combatants_[target].team != Team::Enemies || !combatants_[target].alive())
+        return CommandError::InvalidTarget;
+    const int cost = std::max(0, tuning_.aim.apCost);
+    if (c.ap < cost) return CommandError::NotEnoughAp;
+    c.ap -= cost;
+    skillIndex_.reset();
+    targets_.clear();
+    targets_.push_back(target);
+    shares_.clear();
+    shares_.push_back({.target = target, .full = damage(c, combatants_[target], tuning_.aim.power)});
+    phase_ = Phase::PartyAim;
+    phaseStart_ = now;
+    aim_.reset(combatants_[target].weakPoints, now, tuning_.aim);
+    emit({.type = EventType::SkillStarted, .source = actor_, .target = target, .time = now, .label = "AIM"});
+    return CommandError::None;
+}
+
+void Battle::moveReticle(float dx, float dy) {
+    if (phase_ == Phase::PartyAim) aim_.move(dx, dy);
+}
+
+void Battle::setReticle(float x, float y) {
+    if (phase_ == Phase::PartyAim) aim_.set(x, y);
+}
+
+bool Battle::cancelAim(double now) {
+    if (phase_ != Phase::PartyAim) return false;
+    Combatant& c = combatants_[actor_];
+    c.ap = std::min(c.ap + std::max(0, tuning_.aim.apCost), c.maxAp);
+    targets_.clear();
+    shares_.clear();
+    phase_ = Phase::AwaitingCommand;
+    phaseStart_ = now;
+    return true;
+}
+
+// The shot deals the aim damage times the shot's multiplier, at least 1. A shot after the
+// deadline is judged at the deadline.
+bool Battle::fire(double timestamp) {
+    if (phase_ != Phase::PartyAim) return false;
+    const double t = std::min(timestamp, aim_.deadline());
+    lastShot_ = aim_.judge(t);
+    const Share s = shares_.front();
+    const int amount = std::max(1, static_cast<int>(std::lround(s.full * lastShot_.multiplier)));
+    const Grade grade = lastShot_.kind == ShotKind::Weak   ? Grade::Perfect
+                        : lastShot_.kind == ShotKind::Body ? Grade::Good
+                                                           : Grade::Miss;
+    dealDamage(actor_, s.target, amount, grade, lastShot_.weakPoint, t, shotKindName(lastShot_.kind));
+    if (checkEnd(t)) return true;
+    phase_ = Phase::Recovery;
+    recoveryEnd_ = t + tuning_.recovery;
+    return true;
 }
 
 void Battle::update(double now) {
@@ -224,6 +295,9 @@ void Battle::update(double now) {
         break;
     case Phase::EnemySkill:
         resolveDefence(defence_.update(now), now);
+        break;
+    case Phase::PartyAim:
+        if (aim_.expired(now)) fire(aim_.deadline());
         break;
     case Phase::Recovery:
         if (now >= recoveryEnd_) beginTurn(now);
@@ -337,12 +411,12 @@ float Battle::damage(const Combatant& attacker, const Combatant& defender, float
 }
 
 void Battle::dealDamage(CombatantId source, CombatantId target, int amount, Grade grade, std::size_t beat,
-                        double now) {
+                        double now, std::string_view label) {
     Combatant& t = combatants_[target];
     if (!t.alive() || amount <= 0) return;
     t.hp = std::max(0, t.hp - amount);
     emit({.type = EventType::Hit, .source = source, .target = target, .amount = amount, .grade = grade, .beat = beat,
-          .time = now, .label = {}});
+          .time = now, .label = label});
     if (!t.alive()) {
         queue_.remove(target);
         emit({.type = EventType::Downed, .source = source, .target = target, .time = now, .label = {}});

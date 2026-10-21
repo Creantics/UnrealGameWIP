@@ -437,3 +437,77 @@ TEST_CASE("defence: no allocation on reset, update or press") {
     CHECK(ftcore_test::allocStats().count == before);
     CHECK(resolved == 150);
 }
+
+TEST_CASE("defence: a press just after the impact is late, not a miss") {
+    SUBCASE("the hit already landed: late, no lockout") {
+        DefenceTimeline d = single();
+        REQUIRE(d.update(11.05).size() == 1);
+        CHECK(d.outcome(0) == DefenceOutcome::Hit);
+        CHECK(d.press(DefenceInput::Parry, 11.1).empty());
+        CHECK(d.late(0));
+        CHECK(d.lateCount() == 1);
+        CHECK(d.lastLate() == 0);
+        CHECK(d.misses() == 0);
+        CHECK_FALSE(d.lockedOut(DefenceInput::Parry, 11.15));
+        // A second press is no longer late: it is a miss.
+        d.press(DefenceInput::Dodge, 11.12);
+        CHECK(d.lateCount() == 1);
+        CHECK(d.misses() == 1);
+    }
+    SUBCASE("the late press itself expires the hit") {
+        DefenceTimeline d = single();
+        const DefenceResults r = d.press(DefenceInput::Dodge, 11.0 + 0.19);
+        REQUIRE(r.size() == 1);
+        CHECK(r[0].outcome == DefenceOutcome::Hit);
+        CHECK(d.late(0));
+    }
+    SUBCASE("past the late window it is a plain miss") {
+        DefenceTimeline d = single();
+        d.update(11.05);
+        d.press(DefenceInput::Parry, 11.0 + d.windows().late + 0.01);
+        CHECK_FALSE(d.late(0));
+        CHECK(d.misses() == 1);
+    }
+    SUBCASE("an input the hit doesn't take is never late") {
+        DefenceTimeline d = single(false);
+        d.update(11.05);
+        d.press(DefenceInput::Jump, 11.1);
+        CHECK_FALSE(d.late(0));
+        CHECK(d.misses() == 1);
+    }
+    SUBCASE("reset clears it") {
+        DefenceTimeline d = single();
+        d.update(11.05);
+        d.press(DefenceInput::Parry, 11.1);
+        d.reset(timeline({hitAt(1.0)}), kStart);
+        CHECK_FALSE(d.late(0));
+        CHECK(d.lateCount() == 0);
+    }
+}
+
+TEST_CASE("defence in battle: a late press after the last hit says LATE in the recovery") {
+    Battle b({defender()}, {attacker(timeline({hitAt(0.8)}))});
+    double now = 0.0;
+    toEnemyAttack(b, now);
+    const double impact = b.defence().impact(0);
+    b.update(impact + 0.02);
+    REQUIRE(b.phase() == Phase::Recovery);
+    const int hp = b.combatant(0).hp;
+    CHECK(hp < 100);
+    b.drainEvents();
+    b.defend(DefenceInput::Parry, impact + 0.08);
+    const auto d = defended(b.drainEvents());
+    REQUIRE(d.size() == 1);
+    CHECK(d[0].label == "LATE");
+    CHECK(d[0].grade == Grade::Miss);
+    CHECK(d[0].beat == 0);
+    CHECK(d[0].target == 0);
+    CHECK(d[0].amount == 0);
+    CHECK(b.combatant(0).hp == hp); // nothing else changes
+    CHECK(b.phase() == Phase::Recovery);
+    // Once the recovery is over the press is ignored.
+    b.update(impact + 10.0);
+    b.drainEvents();
+    b.defend(DefenceInput::Parry, impact + 10.01);
+    CHECK(defended(b.drainEvents()).empty());
+}

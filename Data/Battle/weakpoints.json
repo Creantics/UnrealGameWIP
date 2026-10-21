@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "weakpoints": {
+    "brute": {
+      "halfWidth": 0.5,
+      "points": [
+        { "id": "core", "x": 0.0, "y": 0.55, "radius": 0.12, "multiplier": 2.5 },
+        { "id": "knee", "x": -0.28, "y": 0.15, "radius": 0.1, "multiplier": 1.5 }
+      ]
+    },
+    "shade": {
+      "halfWidth": 0.45,
+      "points": [
+        { "id": "eye", "x": 0.12, "y": 0.86, "radius": 0.09, "multiplier": 2.2 },
+        { "id": "heart", "x": -0.08, "y": 0.52, "radius": 0.14, "multiplier": 1.6 }
+      ]
+    },
+    "wisp": {
+      "halfWidth": 0.4,
+      "points": [
+        { "id": "spark", "x": 0.0, "y": 0.7, "radius": 0.1, "multiplier": 2.0 }
+      ]
+    },
+    "hound": {
+      "halfWidth": 0.5,
+      "points": [
+        { "id": "snout", "x": 0.3, "y": 0.78, "radius": 0.1, "multiplier": 2.0 },
+        { "id": "flank", "x": -0.15, "y": 0.45, "radius": 0.16, "multiplier": 1.5 }
+      ]
+    },
+    "bulwark": {
+      "halfWidth": 0.55,
+      "points": [
+        { "id": "seam", "x": 0.0, "y": 0.62, "radius": 0.08, "multiplier": 2.5 },
+        { "id": "joint_l", "x": -0.38, "y": 0.3, "radius": 0.1, "multiplier": 1.8 },
+        { "id": "joint_r", "x": 0.38, "y": 0.3, "radius": 0.1, "multiplier": 1.8 }
+      ]
+    },
+    "lurker": {
+      "halfWidth": 0.45,
+      "points": [
+        { "id": "maw", "x": -0.1, "y": 0.82, "radius": 0.11, "multiplier": 2.2 },
+        { "id": "spine", "x": 0.15, "y": 0.5, "radius": 0.12, "multiplier": 1.7 }
+      ]
+    }
+  }
+}

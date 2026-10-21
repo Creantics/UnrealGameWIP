@@ -6,6 +6,7 @@
 #include "ftcore/ComboSequence.h"
 #include "ftcore/DefenceTimeline.h"
 #include "ftcore/TurnQueue.h"
+#include "ftcore/WeakPoint.h"
 
 #include <cstdint>
 #include <optional>
@@ -45,6 +46,7 @@ struct BattleTuning {
     int startingAp = 2;
     std::uint64_t seed = 0x5EEDC0DEull; // combo charts are generated deterministically from this
     MusicConfig music;                  // beat-synced charts when music.bpm > 0
+    AimTuning aim;                      // the Aim command: cost, power, time limit, sway (WeakPoint.h)
 };
 
 enum class Phase {
@@ -55,15 +57,19 @@ enum class Phase {
     Recovery,
     Victory,
     Defeat,
+    PartyAim, // a party member aims at an enemy's weak points (appended: the Unreal mirror keeps its order)
 };
 
 enum class EventType {
     TurnStarted,
     SkillStarted,
     NoteJudged,    // one combo note resolved: grade, beat = note index, label = "WRONG" for a wrong arrow
-    Hit,           // damage dealt (amount); grade/beat of the note (or attack hit) that produced it
+    Hit,           // damage dealt (amount); grade/beat of the note (or attack hit) that produced it. An aimed
+                   // shot: label "WEAK POINT" (beat = the weak point), "HIT" or "GRAZE" (ShotKind)
     Defended,      // enemy turn: attack hit `beat` resolved; label "PERFECT" (a perfect parry or dodge),
-                   // "DODGE", "JUMP" or "HIT"; amount = AP refunded; grade Perfect on a refund
+                   // "DODGE", "JUMP" or "HIT"; amount = AP refunded; grade Perfect on a refund.
+                   // Also "LATE" (grade Miss, nothing else changes) after a "HIT" when a press came just
+                   // after that hit's impact (DefenceWindows::late), even in the Recovery after the attack
     ComboFinished, // party combo: amount = accuracy in percent; label = "FULL COMBO" when no misses
     Counter,       // the defender parried every hit and strikes back
     Downed,
@@ -102,8 +108,27 @@ public:
     FTCORE_API CommandError command(std::size_t skillIndex, CombatantId target, double now);
     // An arrow during a party combo (ignored otherwise).
     FTCORE_API void press(Arrow arrow, double timestamp);
-    // A dodge / parry / jump during an enemy attack (ignored otherwise).
+    // A dodge / parry / jump during an enemy attack (ignored otherwise). Also taken in the Recovery
+    // right after an enemy attack, where it can only be judged late for the attack's last hit.
     FTCORE_API void defend(DefenceInput input, double timestamp);
+
+    // Aim (see WeakPoint.h and docs/BATTLE_AIM.md). From AwaitingCommand: the acting party member
+    // spends tuning().aim.apCost and aims at `target` (a living enemy); phase PartyAim. Emits
+    // SkillStarted with label "AIM".
+    FTCORE_API CommandError aim(CombatantId target, double now);
+    // Moves / places the reticle (figure units, clamped). Ignored outside PartyAim.
+    FTCORE_API void moveReticle(float dx, float dy);
+    FTCORE_API void setReticle(float x, float y);
+    // Fires at the aim point of `timestamp`: one Hit event, then Recovery (or the outcome). update()
+    // fires on its own at the deadline. False outside PartyAim.
+    FTCORE_API bool fire(double timestamp);
+    // Leaves aim before the shot: the AP comes back and the same member chooses again.
+    FTCORE_API bool cancelAim(double now);
+    // The aim in progress (valid during PartyAim) and the last shot fired.
+    const AimShot& aimShot() const { return aim_; }
+    const ShotResult& lastShot() const { return lastShot_; }
+    // The enemy being aimed at (valid during PartyAim).
+    CombatantId aimTarget() const { return targets_.empty() ? actor_ : targets_.front(); }
 
     // The combo the player would face for a skill, without starting it (for UI previews).
     // `opponent` is the enemy: the target for party skills, the attacker for enemy skills.
@@ -157,7 +182,8 @@ private:
     void resolveDefence(const DefenceResults& results, double now);
     void finishSkill(double now);
     bool targetsGone() const;
-    void dealDamage(CombatantId source, CombatantId target, int amount, Grade grade, std::size_t beat, double now);
+    void dealDamage(CombatantId source, CombatantId target, int amount, Grade grade, std::size_t beat, double now,
+                    std::string_view label = {});
     bool checkEnd(double now);
     float damage(const Combatant& attacker, const Combatant& defender, float power) const;
     void emit(BattleEvent e) { events_.push_back(std::move(e)); }
@@ -176,6 +202,8 @@ private:
     ComboParams params_;
     std::vector<Share> shares_;
     DefenceTimeline defence_;
+    AimShot aim_;
+    ShotResult lastShot_;
     float landedWeight_ = 0.0f; // defence: summed weight of the hits that landed
     std::uint64_t combosPlayed_ = 0;
     std::vector<int> enemyTurnCount_;

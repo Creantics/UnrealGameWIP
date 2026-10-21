@@ -30,11 +30,14 @@ void DefenceTimeline::reset(const AttackTimeline& timeline, double start, const 
     windows_ = windows;
     outcomes_.fill(DefenceOutcome::Pending);
     refunds_.fill(false);
+    late_.fill(false);
     lockoutUntil_.fill(-1e30);
     start_ = start;
     now_ = start;
     next_ = 0;
     refundCount_ = 0;
+    lateCount_ = 0;
+    lastLate_ = 0;
     misses_ = 0;
     ignored_ = 0;
 }
@@ -105,6 +108,7 @@ DefenceResults DefenceTimeline::press(DefenceInput input, double t) {
         }
         if (answered) return out;
     }
+    if (markLate(input, t)) return out;
     // A miss: too early, the wrong input for this hit, or nothing incoming.
     ++misses_;
     const double lockout = input == DefenceInput::Parry  ? windows_.parryLockout
@@ -112,6 +116,19 @@ DefenceResults DefenceTimeline::press(DefenceInput input, double t) {
                                                          : windows_.dodgeLockout;
     if (lockout > 0.0) lockoutUntil_[static_cast<std::size_t>(input)] = t + lockout;
     return out;
+}
+
+// Hits resolve in order, so the one that landed last is the one just before next_.
+bool DefenceTimeline::markLate(DefenceInput input, double t) {
+    if (next_ == 0) return false;
+    const std::size_t i = next_ - 1;
+    if (outcomes_[i] != DefenceOutcome::Hit || late_[i] || !accepts(i, input)) return false;
+    const double after = t - impact(i);
+    if (after < 0.0 || after >= windows_.late) return false;
+    late_[i] = true;
+    ++lateCount_;
+    lastLate_ = i;
+    return true;
 }
 
 bool DefenceTimeline::tellActive(std::size_t i, double t) const {
