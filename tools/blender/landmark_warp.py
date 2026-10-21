@@ -119,8 +119,10 @@ class Warp:
         for lm in self.spec["landmarks"]:
             sides = (1, -1) if lm.get("mirror") else (1,)
             for s in sides:
-                z = self.ze + float(lm.get("z", 0.0))
                 frm = lm.get("from", "front")
+                if "z" not in lm and frm != "above":
+                    raise SystemExit("landmark_warp: landmark %s needs a z" % lm["name"])
+                z = self.ze + float(lm.get("z", 0.0))
                 if frm == "side":
                     o = Vector((self.x0 + s * 0.3, self.ye + float(lm["y"]), z))
                     hit = bvh.ray_cast(o, Vector((-s, 0.0, 0.0)), 0.6)[0]
