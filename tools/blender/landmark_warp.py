@@ -18,8 +18,8 @@ SPEC (lengths in metres, relative to the eye line and the head's mirror plane; m
                  {"name": "gonion", "y": 0.075, "z": -0.085, "from": "side", "mirror": true, "move": [-0.004, 0, 0]}],
    "lids": {"upper_deg": 8, "lower_deg": 0}}
 A landmark is the first surface hit of a ray from the front (+y) at (x, z), or with "from": "side" from outside
-inwards at (y behind the eye centres, z), "back" from behind at (x, z), or "below" upwards from (x, y, z), which
-reaches the underside of the chin and jaw. "mirror" adds the same landmark at -x. Prints each landmark's surface
+inwards at (y behind the eye centres, z), "back" from behind at (x, z), "below" upwards from (x, y, z), which
+reaches the underside of the chin and jaw, or "above" downwards at (x, y) onto the crown ("z" unused). "mirror" adds the same landmark at -x. Prints each landmark's surface
 point and the largest move left on an anchor (the fit's residual, which should be zero).
 """
 import json
@@ -119,7 +119,7 @@ class Warp:
         for lm in self.spec["landmarks"]:
             sides = (1, -1) if lm.get("mirror") else (1,)
             for s in sides:
-                z = self.ze + float(lm["z"])
+                z = self.ze + float(lm.get("z", 0.0))
                 frm = lm.get("from", "front")
                 if frm == "side":
                     o = Vector((self.x0 + s * 0.3, self.ye + float(lm["y"]), z))
@@ -131,6 +131,9 @@ class Warp:
                     # upwards from z (under the chin, say): the first surface above the start point
                     o = Vector((self.x0 + s * float(lm.get("x", 0.0)), self.ye + float(lm["y"]), z))
                     hit = bvh.ray_cast(o, Vector((0.0, 0.0, 1.0)), 0.3)[0]
+                elif frm == "above":
+                    o = Vector((self.x0 + s * float(lm.get("x", 0.0)), self.ye + float(lm["y"]), self.ze + 0.4))
+                    hit = bvh.ray_cast(o, Vector((0.0, 0.0, -1.0)), 0.8)[0]
                 else:
                     o = Vector((self.x0 + s * float(lm.get("x", 0.0)), self.ye - 0.4, z))
                     hit = bvh.ray_cast(o, Vector((0.0, 1.0, 0.0)), 0.8)[0]
