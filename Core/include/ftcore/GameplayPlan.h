@@ -19,9 +19,9 @@
 //   - quotes and a list wrapper around the whole mode (`('ENG', 'CMB')`) are ignored.
 //
 // Token to screen: CMB battle; ENG and PLAY field; CHC and HE (a dialogue loop) choice; QTE and
-// `co-op QTE` qte; CG cutscene; BNT and MINI the stub screen. Any other token goes to the stub screen as well and counts
-// in unknownTokens(). Choice (the dialogue loop), Qte (Qte.h) and Cutscene open their own screens (screenRoutesTo
-// in Dialogue.h). An empty mode (or one with no step in it) falls back to the beat's kind, lowered the same way.
+// `co-op QTE` qte; CG cutscene; BNT banter; MINI mini. Any other token goes to the stub screen and counts
+// in unknownTokens(). Choice (the dialogue loop), Qte (Qte.h), Cutscene, Banter (Banter.h) and Mini (Mini.h)
+// open their own screens (screenRoutesTo in Dialogue.h). An empty mode (or one with no step in it) falls back to the beat's kind, lowered the same way.
 //
 // Fixed capacity (kMaxSteps): steps past it are dropped and counted (droppedSteps()). Token names
 // and labels are copied into fixed buffers (cut at a UTF-8 character boundary when too long), so a
@@ -44,7 +44,7 @@ FTCORE_API std::string_view gameplayTokenName(GameplayToken token);
 // The token written as `name` (ASCII case-insensitive); Unknown for anything else.
 FTCORE_API GameplayToken gameplayTokenFromName(std::string_view name);
 // Battle for CMB, Field for ENG and PLAY, Choice for CHC and HE, Qte for QTE and co-op QTE, Cutscene
-// for CG, Stub for everything else (Unknown included).
+// for CG, Banter for BNT, Mini for MINI, Stub for everything else (Unknown).
 FTCORE_API GameplayScreen gameplayTokenScreen(GameplayToken token);
 
 struct GameplayStep {

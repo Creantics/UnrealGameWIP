@@ -43,6 +43,8 @@ std::string_view gameplayScreenName(GameplayScreen screen) {
     case GameplayScreen::Choice: return "choice";
     case GameplayScreen::Qte: return "qte";
     case GameplayScreen::Cutscene: return "cutscene";
+    case GameplayScreen::Banter: return "banter";
+    case GameplayScreen::Mini: return "mini";
     case GameplayScreen::Box: break;
     }
     return "box";

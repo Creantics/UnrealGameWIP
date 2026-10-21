@@ -106,15 +106,17 @@ TEST_CASE("alpha counters and the closing line") {
     c.addScreen(GameplayScreen::Choice); // its own screen, counted in the stub bucket
     c.addScreen(GameplayScreen::Qte); // its own screen, counted in the stub bucket
     c.addScreen(GameplayScreen::Cutscene); // its own screen, counted in the stub bucket
+    c.addScreen(GameplayScreen::Banter); // its own screen, counted in the stub bucket
+    c.addScreen(GameplayScreen::Mini); // its own screen, counted in the stub bucket
     c.addScreen(GameplayScreen::Box); // not a screen
-    CHECK(c.stub == 4);
-    CHECK(c.screens() == 7);
+    CHECK(c.stub == 6);
+    CHECK(c.screens() == 9);
     CHECK(c.clean());
     CHECK(c.exitCode() == 0);
 
     char line[160];
     const std::size_t n = c.formatFinished(line, sizeof line);
-    CHECK(std::strcmp(line, "Alpha: FINISHED 73 scenes, 7 screens (2 battle, 1 field, 4 stub), 0 STUCK, 0 warnings") == 0);
+    CHECK(std::strcmp(line, "Alpha: FINISHED 73 scenes, 9 screens (2 battle, 1 field, 6 stub), 0 STUCK, 0 warnings") == 0);
     CHECK(n == std::strlen(line));
 
     c.warnings = 2;
