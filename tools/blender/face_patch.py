@@ -16,7 +16,7 @@ eyeWide and eyeSquint are rebuilt for the patch by moving the rows in elevation 
 eye-key deltas fade to zero near the patch.
 
 face.json "eye" (all optional): {"r": eyeball radius, "half_w", "up", "down": lid opening half width and heights
-in metres, "tilt": lateral corner lift in degrees, "iris": [r, g, b], "left", "right": [x, z] of each eye's centre when
+in metres, "tilt": lateral corner lift in degrees, "mask_mm": how far the painted eye reaches past the new margin, "iris": [r, g, b], "left", "right": [x, z] of each eye's centre when
 the scan's eyes are not at eye_l and its mirror}.
 """
 import json
@@ -36,7 +36,7 @@ import make_leads as ml  # noqa: E402
 import ne_blender as nb  # noqa: E402
 import rig_common as rc  # noqa: E402
 
-EYE = {"r": 0.0125, "half_w": 0.0112, "up": 0.0056, "down": 0.0044, "tilt": 3.0, "iris": (0.11, 0.065, 0.04)}
+EYE = {"r": 0.0125, "half_w": 0.0112, "up": 0.0050, "down": 0.0044, "tilt": 3.0, "iris": (0.11, 0.065, 0.04)}
 LID_GAP = 0.0012       # lid margin radius over the eyeball radius
 INNER_GAP = 0.0004     # the rows under the lid
 SEGS = 48              # vertices per ring
@@ -254,7 +254,14 @@ def build_eye(bm, L, scan, side, centre_xz, cfg, mats, eye_group):
     loops = _boundary_loops(rim)
     if not loops:
         raise SystemExit("face_patch: no hole boundary found round the eye (%d removed)" % len(gone))
-    loop = max(loops, key=len)
+    # a scan whose eye sits in a socket leaves a second hole edge deep in it, hidden behind the eyeball: of the
+    # long edges, the front one is the face's
+    big = [lp for lp in loops if len(lp) >= 0.4 * max(len(x) for x in loops)]
+    loop = min(big, key=lambda lp: sum(v.co.y for v in lp) / len(lp))
+    if os.environ.get("FP_DEBUG"):
+        for lp in loops:
+            c = np.mean([v.co[:] for v in lp], axis=0)
+            print("face_patch debug: hole loop %d verts at %.4f %.4f %.4f" % (len(lp), c[0], c[1], c[2]))
     _relax(loop, scan, L["shapes"])
 
     # new vertices, ring by ring, each with the texture, weights and shape deltas of the scan it stands for
@@ -358,7 +365,7 @@ def build_eye(bm, L, scan, side, centre_xz, cfg, mats, eye_group):
     if os.environ.get("FP_DEBUG"):
         print("face_patch debug: back-facing per band (last = stitch):", back)
     neye = _eyeball(bm, L, E, R, mats, eye_group)
-    mask = [tuple(m2[j] + 0.001 * (MASK_MM + MASK_MEDIAL * max(0.0, -side * n2[j][0])) * n2[j])
+    mask = [tuple(m2[j] + 0.001 * (cfg.get("mask_mm", MASK_MM) + MASK_MEDIAL * max(0.0, -side * n2[j][0])) * n2[j])
             for j in range(SEGS)]
     return {"centre": [round(float(c), 4) for c in E], "removed": len(gone), "hole_edge": len(loop),
             "_mask": (mask, sy - DELETE_DEPTH),
@@ -556,9 +563,9 @@ def _fill(rgb, w, smooth=6):
     return col
 
 
-def _skin_fill(src, masks, dark=0.75, power=2.0):
+def _skin_fill(src, masks, dark=0.75, pale=1.3, power=2.0):
     """Makes a material for src's faces inside masks whose colour is the skin round the mask, spread inward per
-    vertex by inverse distance (dark samples, liner and brow paint, are left out). Returns it and the faces."""
+    vertex by inverse distance (dark samples, liner and brow paint, and pale ones, sclera paint, are left out). Returns it and the faces."""
     me = src.data
     gone = [p.index for p in me.polygons
             if any(p.center.y > ymin and _inside(poly, p.center.x, p.center.z) for poly, ymin in masks)]
@@ -588,7 +595,7 @@ def _skin_fill(src, masks, dark=0.75, power=2.0):
     ev = np.array(list(edge.keys()))
     ec = np.array(list(edge.values()), dtype=np.float64)
     lum = ec @ np.array([0.3, 0.59, 0.11])
-    good = lum >= dark * np.median(lum)
+    good = (lum >= dark * np.median(lum)) & (lum <= pale * np.median(lum))
     ev, ec = ev[good], ec[good]
     # image pixels hold sRGB values, while a float colour attribute is linear
     ec = np.where(ec <= 0.04045, ec / 12.92, ((ec + 0.055) / 1.055) ** 2.4)
@@ -801,6 +808,9 @@ def main():
         kb.value = 0.0
     mesh.active_shape_key_index = 0
     bpy.context.view_layer.update()
+    ex, _ey, ez = face["eye_l"]
+    left = face.get("eye", {}).get("left", (abs(ex), ez))
+    right = face.get("eye", {}).get("right", (-abs(ex), ez))
     scan = Scan(mesh)
     mats = {"sclera": _material("eye_sclera", COLORS["sclera"], 0.25),
             "iris": _material("eye_iris", tuple(cfg["iris"]), 0.25),
@@ -825,9 +835,6 @@ def main():
     for j in ("eye_l", "eye_r"):
         if j not in groups:
             groups[j] = mesh.vertex_groups.new(name=j).index
-    ex, _ey, ez = face["eye_l"]
-    left = face.get("eye", {}).get("left", (abs(ex), ez))
-    right = face.get("eye", {}).get("right", (-abs(ex), ez))
     report = {}
     for side, joint, xz in ((1, "eye_l", tuple(left)), (-1, "eye_r", tuple(right))):
         report[joint] = build_eye(bm, L, scan, side, xz, cfg, slots, groups[joint])
