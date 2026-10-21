@@ -8,6 +8,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Sound/SoundBase.h"
+#include "Sound/SoundWave.h"
 
 namespace
 {
@@ -216,6 +217,12 @@ void UFTAudioSubsystem::HandleCue(const FString& CueId, EFTCueAction Action)
 		{
 			Music = Spawn(*Cue, Sound, false);
 		}
+		MusicLoop = ftcore::loopRegionFor(*Cue);
+		MusicCursor = -1.0;
+		if (Music)
+		{
+			Music->OnAudioPlaybackPercentNative.AddUObject(this, &UFTAudioSubsystem::HandleMusicPercent);
+		}
 		return;
 	}
 	if (bHeld)
@@ -277,13 +284,14 @@ UAudioComponent* UFTAudioSubsystem::Spawn(const ftcore::AudioCue& Cue, USoundBas
 	{
 		return nullptr; // no audio device (-nosound)
 	}
+	// From the top: offset is the lead-in before beat 0, for the beat grid, not a start time.
 	if (Cue.fadeInSeconds > 0.f)
 	{
-		Component->FadeIn(Cue.fadeInSeconds, 1.f, Cue.offsetSeconds);
+		Component->FadeIn(Cue.fadeInSeconds, 1.f);
 	}
 	else
 	{
-		Component->Play(Cue.offsetSeconds);
+		Component->Play();
 	}
 	return Component;
 }
@@ -292,6 +300,7 @@ void UFTAudioSubsystem::StopMusic(float FadeSeconds)
 {
 	if (Music)
 	{
+		Music->OnAudioPlaybackPercentNative.RemoveAll(this);
 		Music->bAutoDestroy = true;
 		if (FadeSeconds > 0.f)
 		{
@@ -305,6 +314,33 @@ void UFTAudioSubsystem::StopMusic(float FadeSeconds)
 	Music = nullptr;
 	CurrentMusicId.Reset();
 	CurrentMusicFadeOut = 0.f;
+	MusicLoop = ftcore::LoopRegion();
+	MusicCursor = -1.0;
+}
+
+const ftcore::AudioCue* UFTAudioSubsystem::GetMusicCue() const
+{
+	return Music && !CurrentMusicId.IsEmpty() ? Cues.find(FT::ToUtf8(CurrentMusicId)) : nullptr;
+}
+
+void UFTAudioSubsystem::HandleMusicPercent(const UAudioComponent* /*Audio*/, const USoundWave* Wave, const float Percent)
+{
+	if (Wave)
+	{
+		MusicCursor = static_cast<double>(Percent) * static_cast<double>(Wave->Duration);
+	}
+}
+
+void UFTAudioSubsystem::TickMusicLoop()
+{
+	if (!Music || MusicCursor < 0.0 || !ftcore::loopShouldRestart(MusicLoop, MusicCursor, 0.0))
+	{
+		return;
+	}
+	// The cursor is checked once a frame, so the jump lands up to a frame late; landing as far past
+	// loopStart as the cursor ran past loopEnd keeps the beat phase.
+	Music->Play(ftcore::loopRestartPosition(MusicLoop, MusicCursor));
+	MusicCursor = -1.0;
 }
 
 void UFTAudioSubsystem::LogOnce(const FString& CueId, const TCHAR* Why)
@@ -319,6 +355,7 @@ void UFTAudioSubsystem::LogOnce(const FString& CueId, const TCHAR* Why)
 
 void UFTAudioSubsystem::Tick(float DeltaTime)
 {
+	TickMusicLoop();
 	const UFTSettingsSubsystem* Settings = GetGameInstance()->GetSubsystem<UFTSettingsSubsystem>();
 	if (!Settings || Settings->GetRevision() == SettingsRevision)
 	{

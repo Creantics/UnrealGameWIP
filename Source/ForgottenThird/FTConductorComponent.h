@@ -12,6 +12,7 @@
 #include "Components/ActorComponent.h"
 
 #include "ftcore/Conductor.h"
+#include "ftcore/MusicLoop.h"
 
 #include "FTConductorComponent.generated.h"
 
@@ -73,6 +74,12 @@ public:
 	void BindAudio(UAudioComponent* Audio);
 	UFUNCTION(BlueprintCallable, Category = "Rhythm")
 	void UnbindAudio();
+	// Binds a music cue's component (UFTAudioSubsystem::GetMusicComponent): Bpm and OffsetSeconds
+	// come from the cue (Bpm stays as typed when the cue has none), and its loop points are
+	// unwrapped so the song time keeps rising through every loop instead of seeking back.
+	// CursorNow (UFTAudioSubsystem::GetMusicCursor, -1 if unknown) seeds the clock so it doesn't
+	// stand at 0 until the first playback report.
+	void BindMusic(UAudioComponent* Audio, const ftcore::AudioCue& Cue, double CursorNow);
 	// Feeds a cursor (seconds) from another audio source. Call once per frame.
 	UFUNCTION(BlueprintCallable, Category = "Rhythm")
 	void ObserveCursor(double AudioCursorSeconds);
@@ -133,6 +140,7 @@ private:
 	double ClockNow() const;
 
 	double LatestCursor = 0.0;
+	ftcore::LoopUnwrapper Unwrapper; // no loop region unless BindMusic gave one
 	bool bHaveCursor = false;
 	double WallEpoch = 0.0;
 	bool bHaveWallEpoch = false;

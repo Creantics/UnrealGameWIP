@@ -56,13 +56,30 @@ void UFTConductorComponent::UnbindAudio()
 		BoundAudio->OnAudioPlaybackPercentNative.RemoveAll(this);
 		BoundAudio = nullptr;
 	}
+	Unwrapper.setRegion(ftcore::LoopRegion());
+}
+
+void UFTConductorComponent::BindMusic(UAudioComponent* Audio, const ftcore::AudioCue& Cue, double CursorNow)
+{
+	const ftcore::ConductorConfig Grid = ftcore::conductorConfigFor(Cue, LatencyOffset, Bpm);
+	Bpm = Grid.bpm;
+	OffsetSeconds = Grid.offsetSeconds;
+	ApplySettings();
+	BindAudio(Audio);
+	Unwrapper.setRegion(ftcore::loopRegionFor(Cue));
+	if (BoundAudio && CursorNow >= 0.0)
+	{
+		LatestCursor = Unwrapper.unwrap(CursorNow);
+		bHaveCursor = true;
+		Conductor.observe(LatestCursor, FPlatformTime::Seconds());
+	}
 }
 
 void UFTConductorComponent::HandlePlaybackPercent(const UAudioComponent* /*Audio*/, const USoundWave* Wave, const float Percent)
 {
 	if (Wave)
 	{
-		LatestCursor = static_cast<double>(Percent) * static_cast<double>(Wave->Duration);
+		LatestCursor = Unwrapper.unwrap(static_cast<double>(Percent) * static_cast<double>(Wave->Duration));
 		bHaveCursor = true;
 	}
 }
@@ -75,10 +92,16 @@ void UFTConductorComponent::ObserveCursor(double AudioCursorSeconds)
 void UFTConductorComponent::ResetClock()
 {
 	Conductor.reset();
-	LatestCursor = 0.0;
-	bHaveCursor = false;
 	WallEpoch = ClockNow();
 	bHaveWallEpoch = true;
+	if (BoundAudio && bHaveCursor)
+	{
+		// Bound to playing music: the clock starts again from where the music is, not from 0.
+		Conductor.observe(LatestCursor, FPlatformTime::Seconds());
+		return;
+	}
+	LatestCursor = 0.0;
+	bHaveCursor = false;
 	ObserveWallClock();
 }
 

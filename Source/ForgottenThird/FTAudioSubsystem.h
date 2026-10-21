@@ -5,7 +5,8 @@
 // /Game/Audio/<Bus>/<CueId> (FTImportAudio puts it there):
 //
 //   music loop      Play cross-fades from the current music to this one (the cue's fadeOut / fadeIn);
-//                   Stop, or a cue id ending in -NONE, fades the current music out.
+//                   Stop, or a cue id ending in -NONE, fades the current music out. With loopStart /
+//                   loopEnd the intro plays once, then the region repeats (ftcore::loopShouldRestart).
 //   music stinger / oneshot, sfx oneshot   plays once over everything (Stop does nothing).
 //   ambience loop   held until a Stop for its id; several can run at once.
 //
@@ -29,6 +30,7 @@
 #include "Tickable.h"
 
 #include "ftcore/AudioCues.h"
+#include "ftcore/MusicLoop.h"
 
 #include "FTStorySubsystem.h"
 
@@ -36,6 +38,7 @@
 
 class UAudioComponent;
 class USoundBase;
+class USoundWave;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFTVoiceLineEvent, const FString&, LineId, float, Seconds);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FFTVoiceStoppedEvent);
@@ -76,6 +79,12 @@ public:
 
 	// The music cue playing now ("" when none).
 	const FString& GetCurrentMusic() const { return CurrentMusicId; }
+	// The component playing it and its cue, or null. A conductor binds to these for the beat grid.
+	UAudioComponent* GetMusicComponent() const { return Music; }
+	const ftcore::AudioCue* GetMusicCue() const;
+	// Seconds into the music file as last reported, or -1 when unknown (nothing playing, no audio
+	// device, or no report since the last loop jump).
+	double GetMusicCursor() const { return Music ? MusicCursor : -1.0; }
 	bool IsManifestLoaded() const { return bManifestLoaded; }
 
 	// FTickableGameObject
@@ -96,6 +105,9 @@ private:
 	float VolumeFor(const ftcore::AudioCue& Cue) const;
 	UAudioComponent* Spawn(const ftcore::AudioCue& Cue, USoundBase* Sound, bool bAutoDestroy);
 	void StopMusic(float FadeSeconds);
+	void HandleMusicPercent(const UAudioComponent* Audio, const USoundWave* Wave, const float Percent);
+	// Seeks the music back to loopStart as the cursor reaches loopEnd.
+	void TickMusicLoop();
 	void LogOnce(const FString& CueId, const TCHAR* Why);
 
 	ftcore::AudioCueTable Cues;
@@ -109,6 +121,8 @@ private:
 	TObjectPtr<UAudioComponent> Music;
 	FString CurrentMusicId;
 	float CurrentMusicFadeOut = 0.f;
+	ftcore::LoopRegion MusicLoop;
+	double MusicCursor = -1.0; // seconds into the file, -1 until the first report after a (re)start
 
 	UPROPERTY(Transient)
 	TMap<FString, TObjectPtr<UAudioComponent>> Ambience;

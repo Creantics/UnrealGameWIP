@@ -43,7 +43,6 @@ State on 2026-10-18 (origin/main at ef99ba1). The Core porting is done. The demo
 
 Next, still without voice, art or music:
 - Wire the speaking character's face track (`VoiceTrackFile`) and voice-aware auto-advance into the story director.
-- Loop points and the conductor following the cue's music (`docs/ASSET_INTAKE.md`, gaps).
 - Balance across every encounter, navmesh and localisation.
 
 Phase 0, the shared surface the streams built on:

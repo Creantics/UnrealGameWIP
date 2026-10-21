@@ -21,6 +21,7 @@
 #include "UObject/ConstructorHelpers.h"
 
 #include "ForgottenThird.h"
+#include "FTAudioSubsystem.h"
 #include "FTConductorComponent.h"
 #include "FTGameInstance.h"
 #include "FTMeshFacing.h"
@@ -239,6 +240,21 @@ void AFTBattleDemoActor::BeginPlay()
 		UGameplayStatics::SetGlobalTimeDilation(this, kAlphaFastDilation);
 		bDilated = true;
 		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: -AlphaFast, game time x%.0f."), kAlphaFastDilation);
+	}
+
+	// The beat grid follows the story's music when a cue with a tempo is playing (it carries over the
+	// hand-off). Not under -AlphaFast: the music isn't dilated, so it would run 8x slow against the game.
+	// Otherwise, and always under -nosound, the grid stays on kBpm and the silent clock.
+	if (!bDilated)
+	{
+		const UFTAudioSubsystem* Audio = GetGameInstance() ? GetGameInstance()->GetSubsystem<UFTAudioSubsystem>() : nullptr;
+		const ftcore::AudioCue* Cue = Audio ? Audio->GetMusicCue() : nullptr;
+		if (Cue && Cue->bpm > 0.f && Audio->GetMusicComponent())
+		{
+			Conductor->BindMusic(Audio->GetMusicComponent(), *Cue, Audio->GetMusicCursor());
+			UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: beat grid from music cue %s (%.2f bpm)."),
+				*Audio->GetCurrentMusic(), Conductor->Bpm);
+		}
 	}
 
 	Battle->OnBattleEvent.AddDynamic(this, &AFTBattleDemoActor::HandleBattleEvent);

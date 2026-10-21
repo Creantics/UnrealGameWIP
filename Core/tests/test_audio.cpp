@@ -86,7 +86,7 @@ constexpr const char* kCues = R"J({
   "version": 1,
   "cues": [
     { "id": "MUS-T1", "bus": "music", "playback": "loop", "bpm": 54, "fadeIn": 2, "fadeOut": 3,
-      "loopStart": 1.5, "loopEnd": 9.5 },
+      "loopStart": 1.5, "loopEnd": 11.5 },
     { "id": "MUS-T2", "bus": "music", "playback": "stinger", "offset": 0.25 },
     { "id": "SFX-T1", "bus": "sfx", "playback": "oneshot", "gainDb": -3, "file": "Sfx/custom.wav" }
   ]

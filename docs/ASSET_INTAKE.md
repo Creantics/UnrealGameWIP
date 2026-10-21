@@ -233,12 +233,12 @@ python -I tools/lipsync/bake_face_tracks.py eval --work <W> --backends <backend>
 
 ### What the code needs
 
-`ftcore::Conductor` turns an audio cursor into a smooth song clock. `UFTConductorComponent` supplies it with the cursor of a playing `UAudioComponent` (`BindAudio`; the cursor is playback percent times `USoundWave::Duration`) or from `ObserveCursor`. The beat grid is one **constant** tempo:
+`ftcore::Conductor` turns an audio cursor into a smooth song clock. `UFTConductorComponent` supplies it with the cursor of a playing `UAudioComponent` (`BindAudio`; the cursor is playback percent times `USoundWave::Duration`) or from `ObserveCursor`. `BindMusic` binds a music cue's component instead: it takes `Bpm` and `OffsetSeconds` from the cue (`ftcore::conductorConfigFor`) and unwraps the cue's loop points (`ftcore::LoopUnwrapper`), so the song time keeps rising through every loop. The battle screen binds to the music the story is playing when that cue has a `bpm` (not under `-AlphaFast`, whose game clock runs 8x); otherwise it uses the typed-in values. The beat grid is one **constant** tempo:
 
 | Field | Meaning | Default | Set by |
 |---|---|---|---|
-| `Bpm` | beats per minute, constant for the whole track | 120 | property on the component, by hand |
-| `OffsetSeconds` | song time of beat 0 | 0 | property, by hand |
+| `Bpm` | beats per minute, constant for the whole track | 120 | the cue's `bpm` when bound with `BindMusic`, else the property |
+| `OffsetSeconds` | song time of beat 0 (the lead-in; the music still plays from the file's start) | 0 | the cue's `offset` when bound with `BindMusic`, else the property |
 | `LatencyOffset` | the player's input latency, from calibration (`BeginCalibration`, `RecordTap`, `EndCalibration`) | 0 | calibration |
 
 `beat = (songTime - offset) * bpm / 60`. Battle charts (`MusicConfig`) take `bpm` and `offset` from the bound conductor, and a combo's first note waits for the next beat or bar. Tracking: a cursor jump of more than 0.1 s counts as a seek and snaps the clock.
@@ -249,9 +249,9 @@ python -I tools/lipsync/bake_face_tracks.py eval --work <W> --backends <backend>
 |---|---|---|
 | Track | Defined (checked) | One `.wav` per cue: PCM 16/24/32-bit or 32-bit float, 44.1 or 48 kHz (48 kHz preferred, the project rate), mono or stereo. Ogg or mp3 add encoder padding that shifts beat 0, so they aren't read. |
 | Stems | **Not defined yet** | The conductor follows one audio component. **Proposal:** deliver stems (drums, bass, harmony, lead) of equal length, sample-aligned, plus the full mix. Only the full mix drives the clock. |
-| BPM, offset | Defined as inputs | Per cue, constant: `bpm` and `offset` in `cues.json` (filled where the cue sheet gives one plain tempo). The conductor doesn't read them yet; today the numbers are typed into the component. |
+| BPM, offset | Defined as inputs | Per cue, constant: `bpm` and `offset` in `cues.json` (filled where the cue sheet gives one plain tempo). `BindMusic` reads them. |
 | Tempo changes | **Not supported** | One `Bpm` per conductor. A piece with tempo changes needs a code change, or separate files. |
-| Loop points | **Not defined yet** | The conductor has no loop concept. A looping wave wraps its cursor, which the conductor treats as a seek (`seekCount` goes up) and the beat counter restarts from the wave's start. **Proposal:** the loop is a whole number of bars, starts on beat 0 (or at the offset), with no fade and no reverb tail cut. |
+| Loop points | Defined (played) | `loopStart` / `loopEnd` in seconds. The intro before `loopStart` plays once; when the cursor reaches `loopEnd`, `UFTAudioSubsystem` seeks back to `loopStart` plus the overshoot, so the beat phase holds. The jump is checked once a frame, so it can land up to a frame late and isn't sample-accurate. Audio after `loopEnd` is never heard. A cue without loop points loops the whole file. The loop should be a whole number of bars; `importAudioCues` warns when it isn't a whole number of beats at the cue's `bpm`. |
 | Calibration track | **Not defined yet** | `BeginCalibration` needs a steady beat. **Proposal:** a click track at 100 BPM or slower, as the code advises a slower tempo if the offset might be large. |
 | Loudness | Defined (checked) | Integrated loudness after BS.1770-4 (`ftcore::measureLoudness`), true peak by 4x oversampling. Music -18 LUFS +-2, ambience -24 +-3, voice -23 +-2; sfx have no loudness target. Every bus: true peak at most -1 dBTP. A clip too short or quiet to gate (under 0.4 s) gets a warning, not an error. |
 | Cue ids | Defined | `Data/Audio/cues.json` (ids and numbers only) maps every cue id the story fires to its bus (`music`, `sfx`, `ambience`), playback (`loop`, `stinger`, `oneshot`), file (default `<Bus>/<CueId>.wav`), and optional `bpm`, `offset`, `loopStart`/`loopEnd`, `fadeIn`/`fadeOut` and `gainDb` (format in `Core/include/ftcore/AudioCues.h`). `tools/make_cues_json.py <cues_final.csv>` regenerates it from the private cue sheet and keeps hand edits. A ctest checks that every cue in the story has an entry. A cue id ending in `-NONE` means silence and has no file. |
@@ -272,7 +272,9 @@ Commands:
 UnrealEditor-Cmd ForgottenThird.uproject -run=FTImportAudio [-Cue=<CueId>] [-Check] -NullRHI -unattended -nopause -nosplash
 ```
 
-It looks for every manifest cue's file (or just `-Cue`), decodes and measures each one it finds, and holds it to the rules above. A file that passes is imported as `/Game/Audio/<Bus>/<CueId>`, with looping set from the playback. `-Check` measures without importing. Missing files are listed, not errors. It exits 1 when a file breaks a rule (issue codes: `sample-rate`, `channels`, `voice-not-mono`, `empty`, `loudness`, `true-peak`, `loop-range`; `loudness-unmeasured` is a warning) or an import fails. The battle conductor still takes its BPM and offset by hand, and it isn't bound to the subsystem's music yet. The headless alpha run uses `-nosound`, so it only proves that missing audio stays silent and clean.
+It looks for every manifest cue's file (or just `-Cue`), decodes and measures each one it finds, and holds it to the rules above. A file that passes is imported as `/Game/Audio/<Bus>/<CueId>`, with looping set from the playback. `-Check` measures without importing. Missing files are listed, not errors. It exits 1 when a file breaks a rule (issue codes: `sample-rate`, `channels`, `voice-not-mono`, `empty`, `loudness`, `true-peak`, `loop-range`; `loudness-unmeasured` is a warning) or an import fails. The headless alpha run uses `-nosound`, so it only proves that missing audio stays silent and clean: loop playback and the conductor's binding are not exercised by the gate.
+
+Placeholder: `MUS-KNK` (60 BPM, a one-bar intro, a four-bar loop from 4 s to 20 s, then a tail bar that should never play) comes from `python tools/audio/make_placeholder_music.py --bpm 60 --out Data/Audio/Music/MUS-KNK.wav`. Tones only. Replace it when the real track arrives.
 
 ## 5. Concept art
 
@@ -295,7 +297,7 @@ Checklist: [ ] white background; [ ] one subject; [ ] two or more angles; [ ] ne
 2. The lip-sync bake keys files by text hash, not by the story id (rename on intake). A line's face track and voice-aware auto-advance aren't wired into the story director yet.
 3. Loudness targets are checked at import, but there are no Unreal sound classes or submixes: bus volume is applied per sound by `UFTAudioSubsystem`.
 4. The lip-sync tools have not been run from this repo (`FTImportAudio -Voice` validates the tracks they write).
-5. Music loop points (`loopStart`/`loopEnd`) are checked but not played: a looping cue loops the whole file. There's no tempo map or stems playback. The battle conductor isn't bound to the cue's music, and its BPM and offset are typed into the component instead of read from `cues.json`.
+5. Music loop points are played by a seek, checked once a frame, so they aren't sample-accurate. There's no tempo map or stems playback. A music change during a battle leaves the conductor on the old, fading component. Combat was tuned at 120 BPM, so a cue with a much slower tempo changes how combos feel. None of this is heard in the headless gate (`-nosound`).
 6. No folder or naming scheme for textures or concept art (audio: `Data/Audio/<Bus>/<CueId>.wav`).
 7. The Lattice emissive thresholds (3.0 and 2.5) are enforced at import by material name; `bloomThresholdScale` is still off by default.
 8. The rig's retargeter has no target mannequin, and the proof head's body, tongue and style picture have not been judged.

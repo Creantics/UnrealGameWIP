@@ -8,7 +8,7 @@
     {"id": "MUS-DGR", "bus": "music", "playback": "loop", "fadeIn": 1.0, "fadeOut": 2.0},
     {"id": "MUS-CHM", "bus": "music", "playback": "stinger"},
     {"id": "MUS-HRT", "bus": "music", "playback": "loop", "fadeIn": 1.0, "fadeOut": 2.0},
-    {"id": "MUS-KNK", "bus": "music", "playback": "loop", "bpm": 60, "fadeIn": 1.0, "fadeOut": 2.0},
+    {"id": "MUS-KNK", "bus": "music", "playback": "loop", "bpm": 60, "offset": 0, "loopStart": 4, "loopEnd": 20, "fadeIn": 1.0, "fadeOut": 2.0},
     {"id": "MUS-TOR", "bus": "music", "playback": "loop", "fadeIn": 1.0, "fadeOut": 2.0},
     {"id": "MUS-NIL", "bus": "music", "playback": "loop", "fadeIn": 1.0, "fadeOut": 2.0},
     {"id": "MUS-HUM", "bus": "music", "playback": "loop", "fadeIn": 1.0, "fadeOut": 2.0},

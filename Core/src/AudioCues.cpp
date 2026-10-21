@@ -1,6 +1,7 @@
 #include "ftcore/AudioCues.h"
 
 #include "ftcore/Json.h"
+#include "ftcore/MusicLoop.h"
 
 #include <algorithm>
 #include <cmath>
@@ -139,6 +140,8 @@ bool importAudioCues(std::string_view json, AudioCueTable& out, std::string* err
                 if (cue.playback != CuePlayback::Loop) errors.push_back(path + ": loop points on a cue that doesn't loop");
                 else if (!j.has("loopStart") || !j.has("loopEnd")) errors.push_back(path + ": give both loopStart and loopEnd");
                 else if (cue.loopEndSeconds <= cue.loopStartSeconds) errors.push_back(path + ": loopEnd must be after loopStart");
+                else if (warnings && loopBreaksBeatGrid(cue))
+                    warnings->push_back(path + ": the loop isn't a whole number of beats at its bpm");
             }
             table.cues.push_back(std::move(cue));
         }

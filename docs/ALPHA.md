@@ -97,7 +97,7 @@ counted as alpha warnings.
 - **Cutscenes (CG).** Every CG step plays the `default` shot list on the blockout set; real shot
   lists aren't authored yet.
 - **Art.** Blockout maps and the proof head only, with no portraits.
-- **Audio.** No voice or music. The Conductor runs on game time.
+- **Audio.** No voice. One placeholder music loop (`MUS-KNK`, see [ASSET_INTAKE.md](ASSET_INTAKE.md)); the battle beat grid follows the story music when its cue has a tempo. The headless run is `-nosound`, so its Conductor runs on game time.
 - **Balance.** The only balance rule is that the autopilot wins and no input loses.
 - **Not built yet:** navmesh, localisation, a dialogue backlog or skip, and settings menus.
 

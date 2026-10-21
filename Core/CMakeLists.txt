@@ -55,6 +55,7 @@ add_library(ftcore STATIC
     src/Json.cpp
     src/Loudness.cpp
     src/Mini.cpp
+    src/MusicLoop.cpp
     src/Physics.cpp
     src/Qte.cpp
     src/Seen.cpp
@@ -121,6 +122,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_glb.cpp
         tests/test_json.cpp
         tests/test_mini.cpp
+        tests/test_music_loop.cpp
         tests/test_physics.cpp
         tests/test_qte.cpp
         tests/test_settings.cpp
