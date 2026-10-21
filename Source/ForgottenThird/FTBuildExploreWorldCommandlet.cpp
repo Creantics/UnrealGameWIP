@@ -4,6 +4,7 @@
 
 #if WITH_EDITOR
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Builders/CubeBuilder.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SkyAtmosphereComponent.h"
@@ -28,6 +29,12 @@
 #include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/PackageName.h"
+#include "NavigationPath.h"
+#include "NavigationSystem.h"
+#include "Components/BrushComponent.h"
+#include "Engine/Polys.h"
+#include "Model.h"
+#include "NavMesh/NavMeshBoundsVolume.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 
@@ -116,7 +123,7 @@ int32 UFTBuildExploreWorldCommandlet::Main(const FString& Params)
 	}
 	UPackage* Package = CreatePackage(*MapPath);
 
-	UWorld* World = UWorld::CreateWorld(EWorldType::Inactive, false, *MapName, Package);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false, *MapName, Package); // Editor, so it gets a navigation system
 	if (!World)
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: couldn't create the world."));
@@ -294,6 +301,64 @@ int32 UFTBuildExploreWorldCommandlet::Main(const FString& Params)
 				FTStyle::MaterialObjectPath);
 		}
 	}
+
+	// Navmesh over the whole walled ground, built here and saved with the map (the game doesn't
+	// rebuild it). The field autopilot walks its paths; later, people and followers can too.
+	ANavMeshBoundsVolume* NavBounds = World->SpawnActor<ANavMeshBoundsVolume>(M(19, 0, 3.f), FRotator::ZeroRotator, Spawn);
+	// The builder fills the volume's brush model, so it needs one first (as the editor's volume factory does).
+	NavBounds->Brush = NewObject<UModel>(NavBounds);
+	NavBounds->Brush->Initialize(nullptr, true);
+	NavBounds->Brush->Polys = NewObject<UPolys>(NavBounds->Brush);
+	NavBounds->GetBrushComponent()->Brush = NavBounds->Brush;
+	UCubeBuilder* NavBox = NewObject<UCubeBuilder>();
+	NavBox->X = 6200.f;
+	NavBox->Y = 5200.f;
+	NavBox->Z = 1000.f;
+	NavBox->Build(World, NavBounds);
+	NavBounds->SetActorLabel(TEXT("NavMeshBounds"));
+	FNavigationSystem::AddNavigationSystemToWorld(*World, FNavigationSystemRunMode::EditorMode);
+	UNavigationSystemV1* Nav = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+	if (!Nav)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: no navigation system in the new world."));
+		World->DestroyWorld(false);
+		return 1;
+	}
+	// A commandlet's editor world keeps the async-load lock, and the bounds wait for a tick.
+	Nav->RemoveNavigationBuildLock(ENavigationBuildLock::AsyncLoadLock, UNavigationSystemV1::ELockRemovalRebuildAction::NoRebuild);
+	Nav->OnNavigationBoundsUpdated(NavBounds);
+	Nav->Tick(0.f);
+	Nav->Build();
+	// Every spot must be reachable from the start, or the field pilot would walk into a wall.
+	int32 Unreachable = 0;
+	const FVector StartAt = M(ftcore::demo::kExploreStart.x, ftcore::demo::kExploreStart.y, 1.f);
+	for (int32 Id = 0; Id < SpotCount; ++Id)
+	{
+		const ftcore::demo::ExploreSpot& Def = ftcore::demo::kExploreSpots[static_cast<size_t>(Id)];
+		const UNavigationPath* Route = Nav->FindPathToLocationSynchronously(World, StartAt, M(Def.pos.x, Def.pos.y, 1.f));
+		if (!Route || !Route->IsValid() || Route->IsPartial())
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: spot %d has no navmesh path from the start."), Id);
+			++Unreachable;
+		}
+	}
+	for (size_t Goal = 0; Goal < ftcore::demo::kFieldGoals.size(); ++Goal)
+	{
+		const ftcore::Vec2 G = ftcore::demo::kFieldGoals[Goal];
+		const UNavigationPath* Route = Nav->FindPathToLocationSynchronously(World, StartAt, M(G.x, G.y, 1.f));
+		if (!Route || !Route->IsValid() || Route->IsPartial())
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: field goal %d has no navmesh path from the start."), static_cast<int32>(Goal));
+			++Unreachable;
+		}
+	}
+	if (Unreachable > 0)
+	{
+		World->DestroyWorld(false);
+		return 1;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildExploreWorld: navmesh built; all %d spots and %d field goals reachable."), SpotCount,
+		static_cast<int32>(ftcore::demo::kFieldGoals.size()));
 
 	FAssetRegistryModule::AssetCreated(World);
 	Package->MarkPackageDirty();

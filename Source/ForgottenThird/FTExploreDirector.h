@@ -78,6 +78,8 @@ private:
 	void TickStoryWalk(AFTExploreCharacter& Player, float DeltaSeconds);
 	// Walks the pawn toward Goal (metres) and runs the stuck detection for TargetId.
 	void PilotWalk(AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 TargetId, float DeltaSeconds);
+	// The navmesh point to steer at on the way to Goal, or null to walk straight at it.
+	const ftcore::Vec2* PilotWaypoint(const AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 TargetId);
 	void SpawnFieldGoal();
 	void SetNotice(const FString& Text);
 	void SetBanner(const FString& Text);
@@ -124,4 +126,11 @@ private:
 	int32 PilotTarget = -1;
 	float PilotBestDist = 0.f;
 	float PilotStuck = 0.f;
+	// Autopilot: its navmesh path to the target in ground metres, refreshed about once a second.
+	// Empty (walk straight at the target) when the map has no navmesh or no path was found.
+	TArray<ftcore::Vec2> PilotPath;
+	int32 PilotPathTarget = -1;
+	int32 PilotPathNext = -1;
+	double PilotPathRefreshAt = 0.0;
+	bool bPilotPathLogged = false;
 };

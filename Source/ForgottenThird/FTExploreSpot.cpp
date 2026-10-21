@@ -71,6 +71,11 @@ AFTExploreSpot::AFTExploreSpot()
 	Skin = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("Skin"));
 	Skin->SetupAttachment(Root);
 	Skin->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	// Spots are what the walker heads for, so they don't cut holes in the navmesh.
+	Shape->SetCanEverAffectNavigation(false);
+	PartA->SetCanEverAffectNavigation(false);
+	PartB->SetCanEverAffectNavigation(false);
+	Skin->SetCanEverAffectNavigation(false);
 	Glow = CreateDefaultSubobject<UPointLightComponent>(TEXT("Glow"));
 	Glow->SetupAttachment(Root);
 	Glow->SetVisibility(false);

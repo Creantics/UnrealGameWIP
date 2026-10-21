@@ -10,6 +10,8 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "NavigationPath.h"
+#include "NavigationSystem.h"
 #include "TimerManager.h"
 
 #include "ForgottenThird.h"
@@ -20,6 +22,7 @@
 
 #include "ftcore/ExploreDemo.h"
 #include "ftcore/FieldGoals.h"
+#include "ftcore/PathFollow.h"
 
 #include <string>
 #include <string_view>
@@ -82,6 +85,7 @@ double AFTExploreDirector::Now() const
 void AFTExploreDirector::BeginPlay()
 {
 	Super::BeginPlay();
+	PilotPath.Reserve(64);
 	bAutoPlay = bAutoPlay || FParse::Param(FCommandLine::Get(), TEXT("ExploreAutoPlay"));
 	bQuitOnComplete = bQuitOnComplete || FParse::Param(FCommandLine::Get(), TEXT("ExploreQuitOnComplete"));
 
@@ -620,6 +624,50 @@ void AFTExploreDirector::PilotWalk(AFTExploreCharacter& Player, ftcore::Vec2 Pos
 			}
 		}
 	}
-	const FVector2D Dir = To.GetSafeNormal();
+	FVector2D Dir = To.GetSafeNormal();
+	if (const ftcore::Vec2* Waypoint = PilotWaypoint(Player, Pos, Goal, Target))
+	{
+		Dir = FVector2D(Waypoint->x - Pos.x, Waypoint->y - Pos.y).GetSafeNormal();
+	}
 	Player.AddMovementInput(FVector(Dir.X, Dir.Y, 0.0), 1.f);
+}
+
+const ftcore::Vec2* AFTExploreDirector::PilotWaypoint(const AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 Target)
+{
+	UWorld* World = GetWorld();
+	UNavigationSystemV1* Nav = World ? FNavigationSystem::GetCurrent<UNavigationSystemV1>(World) : nullptr;
+	if (!Nav)
+	{
+		return nullptr;
+	}
+	// The path is found about once a second (and on a new target), not every frame.
+	const double Now = World->GetTimeSeconds();
+	if (Target != PilotPathTarget || Now >= PilotPathRefreshAt)
+	{
+		PilotPathTarget = Target;
+		PilotPathRefreshAt = Now + 1.0;
+		PilotPath.Reset();
+		PilotPathNext = 1;
+		const FVector From = Player.GetActorLocation();
+		const FVector To(Goal.x * 100.0, Goal.y * 100.0, From.Z);
+		const UNavigationPath* Path = Nav->FindPathToLocationSynchronously(World, From, To);
+		if (Path && Path->IsValid())
+		{
+			for (const FVector& Point : Path->PathPoints)
+			{
+				PilotPath.Add(ToGround(Point));
+			}
+			if (!bPilotPathLogged)
+			{
+				bPilotPathLogged = true;
+				UE_LOG(LogForgottenThird, Display, TEXT("Explore: pilot follows a navmesh path (%d points)."), PilotPath.Num());
+			}
+		}
+	}
+	if (PilotPath.Num() < 2)
+	{
+		return nullptr;
+	}
+	PilotPathNext = ftcore::advanceWaypoint(PilotPath.GetData(), PilotPath.Num(), PilotPathNext, Pos, 0.6f);
+	return PilotPathNext >= 0 ? &PilotPath[PilotPathNext] : nullptr;
 }
