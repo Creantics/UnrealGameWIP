@@ -10,7 +10,7 @@ Ids and formats only. Story text, names and line text never go in this repo (it 
 | Character textures | None. Materials import as flat factors only | not defined yet | Gap, see 2 |
 | Static mesh / prop | `FTImportProp` (section 2) | `Data/Models/` | Defined |
 | Voice line (`.wav`) + lip-sync track (`.nface`) | Track: `UFTFaceComponent::PlayTrack`. Audio: none | not defined yet | Partly |
-| Music | `UFTConductorComponent` reads a playing audio component. No import step | not defined yet | Partly |
+| Music and sound cues (`.wav`) | `FTImportAudio` (section 4); `UFTAudioSubsystem` plays them by cue id | `Data/Audio/<Bus>/<CueId>.wav` | Defined |
 | Concept art | Not imported | outside the repo | Convention only |
 
 Everything binary goes through Git LFS (`.gitattributes`: `glb fbx blend png jpg tga exr psd hdr wav ogg flac mp3 mp4 mov obj abc ttf otf zip nface uasset umap`). Never commit `Binaries/`, `Intermediate/`, `Saved/` or `DerivedDataCache/`.
@@ -218,25 +218,32 @@ python -I tools/lipsync/bake_face_tracks.py eval --work <W> --backends <backend>
 
 | Item | Defined? | Value |
 |---|---|---|
-| Track | **Not defined yet** | One audio file per piece of music. **Proposal:** stereo `.wav` at 48 kHz (project rate), 24-bit source. Ogg or mp3 add encoder padding that shifts beat 0, so measure `OffsetSeconds` on the file that ships. |
+| Track | Defined (checked) | One `.wav` per cue: PCM 16/24/32-bit or 32-bit float, 44.1 or 48 kHz (48 kHz preferred, the project rate), mono or stereo. Ogg or mp3 add encoder padding that shifts beat 0, so they aren't read. |
 | Stems | **Not defined yet** | The conductor follows one audio component. **Proposal:** deliver stems (drums, bass, harmony, lead) of equal length, sample-aligned, plus the full mix. Only the full mix drives the clock. |
-| BPM, offset | Defined as inputs | Per track, constant. **Proposal:** a sidecar `<track>.music.json` with `bpm`, `offset_seconds`, `beats_per_bar`, `loop_start_beat`, `loop_end_beat`. Nothing reads it yet; today the numbers are typed into the component. |
+| BPM, offset | Defined as inputs | Per cue, constant: `bpm` and `offset` in `cues.json` (filled where the cue sheet gives one plain tempo). The conductor doesn't read them yet; today the numbers are typed into the component. |
 | Tempo changes | **Not supported** | One `Bpm` per conductor. A piece with tempo changes needs a code change, or separate files. |
 | Loop points | **Not defined yet** | The conductor has no loop concept. A looping wave wraps its cursor, which the conductor treats as a seek (`seekCount` goes up) and the beat counter restarts from the wave's start. **Proposal:** the loop is a whole number of bars, starts on beat 0 (or at the offset), with no fade and no reverb tail cut. |
 | Calibration track | **Not defined yet** | `BeginCalibration` needs a steady beat. **Proposal:** a click track at 100 BPM or slower, as the code advises a slower tempo if the offset might be large. |
-| Loudness | **Not defined yet** | **Proposal:** music at -18 LUFS integrated, true peak below -1 dBTP, so voice at -23 LUFS sits above it. |
-| Cue ids | Defined in the story | The story script lists music cues by id (`CueDef`, kind `music`, actions Play, Stop, Stinger). **Not defined yet:** the map from a cue id to a file. **Proposal:** `<CueId>.wav`, with the cue's sidecar as above. |
+| Loudness | Defined (checked) | Integrated loudness after BS.1770-4 (`ftcore::measureLoudness`), true peak by 4x oversampling. Music -18 LUFS +-2, ambience -24 +-3, voice -23 +-2; sfx have no loudness target. Every bus: true peak at most -1 dBTP. A clip too short or quiet to gate (under 0.4 s) gets a warning, not an error. |
+| Cue ids | Defined | `Data/Audio/cues.json` (ids and numbers only) maps every cue id the story fires to its bus (`music`, `sfx`, `ambience`), playback (`loop`, `stinger`, `oneshot`), file (default `<Bus>/<CueId>.wav`), and optional `bpm`, `offset`, `loopStart`/`loopEnd`, `fadeIn`/`fadeOut` and `gainDb` (format in `Core/include/ftcore/AudioCues.h`). `tools/make_cues_json.py <cues_final.csv>` regenerates it from the private cue sheet and keeps hand edits. A ctest checks that every cue in the story has an entry. A cue id ending in `-NONE` means silence and has no file. |
+| Playback | Defined | `UFTAudioSubsystem` listens to the story's cues. A music loop cross-fades from the current music (Play), and Stop or a `-NONE` cue fades it out. Stingers and one-shots play once over everything. An ambience loop runs until a Stop for its id. Volume = master x bus slider (sfx and ambience share the sfx slider) x `gainDb`, and held sounds follow the sliders. Sounds persist across the story, battle and field maps. A cue without a sound is silent and logged once at Display. |
 
 ### Intake checklist: music
 
-- [ ] File name is the cue id (proposal) and the cue exists in the story's cue list.
+- [ ] File is `Data/Audio/<Bus>/<CueId>.wav` (or the cue's `file`), and the cue is in `Data/Audio/cues.json`.
 - [ ] One constant tempo, measured: `bpm` to 2 decimals, `offset_seconds` to the millisecond.
 - [ ] Loop length is a whole number of bars (proposal).
-- [ ] 48 kHz, no clipping, level as proposed, mix and stems the same length.
+- [ ] 48 kHz, level and true peak as above (`FTImportAudio -Check` measures them), mix and stems the same length.
 - [ ] A drum-only or click stem exists for checking the grid by ear and for calibration.
 - [ ] Files LFS-tracked.
 
-Commands: **no import or validation commandlet exists for audio.** Import is by hand through the editor (Interchange makes a `USoundWave`), and the numbers go on a `UFTConductorComponent`. The only automated checks are the Conductor tests: `ctest --test-dir Core/build -C Debug --output-on-failure`, or `tools/gate.ps1`. The headless alpha run uses `-nosound`, so it proves nothing about music.
+Commands:
+
+```
+UnrealEditor-Cmd ForgottenThird.uproject -run=FTImportAudio [-Cue=<CueId>] [-Check] -NullRHI -unattended -nopause -nosplash
+```
+
+It looks for every manifest cue's file (or just `-Cue`), decodes and measures each one it finds, and holds it to the rules above. A file that passes is imported as `/Game/Audio/<Bus>/<CueId>`, with looping set from the playback. `-Check` measures without importing. Missing files are listed, not errors. It exits 1 when a file breaks a rule (issue codes: `sample-rate`, `channels`, `voice-not-mono`, `empty`, `loudness`, `true-peak`, `loop-range`; `loudness-unmeasured` is a warning) or an import fails. The battle conductor still takes its BPM and offset by hand, and it isn't bound to the subsystem's music yet. The headless alpha run uses `-nosound`, so it only proves that missing audio stays silent and clean.
 
 ## 5. Concept art
 
@@ -257,9 +264,9 @@ Checklist: [ ] white background; [ ] one subject; [ ] two or more angles; [ ] ne
 
 1. The textured master's shader compile is only seen in an attended editor (commandlets run with `-NullRHI`).
 2. No game-side voice lookup by line id, and the lip-sync bake keys files by text hash, not by the story id.
-3. No loudness target for voice or music, and no voice or music bus routing in Unreal.
+3. Loudness targets are checked at import, but there are no Unreal sound classes or submixes: bus volume is applied per sound by `UFTAudioSubsystem`.
 4. No `.nface` validator, and the lip-sync tools have not been run from this repo.
-5. No music file convention: no loop points, tempo map, stems or BPM and offset metadata file. BPM and offset are typed into the component. No audio import commandlet.
-6. No folder or naming scheme for textures, audio or concept art.
+5. Music loop points (`loopStart`/`loopEnd`) are checked but not played: a looping cue loops the whole file. There's no tempo map or stems playback. The battle conductor isn't bound to the cue's music, and its BPM and offset are typed into the component instead of read from `cues.json`.
+6. No folder or naming scheme for textures or concept art (audio: `Data/Audio/<Bus>/<CueId>.wav`).
 7. The Lattice emissive thresholds (3.0 and 2.5) are enforced at import by material name; `bloomThresholdScale` is still off by default.
 8. The rig's retargeter has no target mannequin, and the proof head's body, tongue and style picture have not been judged.
