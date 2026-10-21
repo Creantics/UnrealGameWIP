@@ -46,6 +46,7 @@ add_library(ftcore STATIC
     src/FaceDirection.cpp
     src/FaceImport.cpp
     src/GameplayPlan.cpp
+    src/Glb.cpp
     src/Json.cpp
     src/Physics.cpp
     src/Qte.cpp
@@ -104,6 +105,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_face_direction.cpp
         tests/test_face_import.cpp
         tests/test_gameplay_plan.cpp
+        tests/test_glb.cpp
         tests/test_json.cpp
         tests/test_physics.cpp
         tests/test_qte.cpp
