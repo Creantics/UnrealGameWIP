@@ -84,6 +84,7 @@ def main():
     ap.add_argument("--side-faces", choices=("right", "left"), default="right")
     ap.add_argument("--shoulder", type=float, default=None, help="shoulder line height in m (default 0.8 * height)")
     ap.add_argument("--masks", default=None)
+    ap.add_argument("--masks-only", action="store_true", help="write the --masks silhouettes and stop")
     ap.add_argument("--bridge", action="store_true", help="bridge the side depth across the arm band")
     ap.add_argument("--arm-run", type=float, default=ARM_RUN, help="m; 0 = no arms (e.g. a head)")
     ap.add_argument("--side-centre", type=float, default=None, help="side view centre column, px in the cropped mask")
@@ -96,6 +97,8 @@ def main():
         os.makedirs(a.masks, exist_ok=True)
         for k, m in ms.items():
             Image.fromarray((m * 255).astype(np.uint8)).save(os.path.join(a.masks, k + ".png"))
+    if a.masks_only:
+        return
     front, back = View(ms["front"], H), View(ms["back"], H)
     sc = a.side_centre if a.side_centre is not None else side_centre(ms["side"], H / ms["side"].shape[0])
     side = View(ms["side"], H, sc)
