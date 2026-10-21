@@ -62,10 +62,11 @@ class Builder:
         self.v, self.f, self.fm, self.w = [], [], [], []
 
     def loft(self, path, radii, ref, n=16, weights=None, mat=SKIN, mat_fn=None, cap0=True, cap1=True,
-             expo=2.0, rings_per_m=120, min_rings=6):
+             expo=2.0, rings_per_m=120, min_rings=6, keep=None):
         """A tube along the polyline `path`. `radii(s, t)` -> (ru, rv) half-sizes of the cross-section at arc
         length s (t = s / total). The cross-section's u axis is `ref` made perpendicular to the path.
-        `weights(s, p)` -> {bone: w}. Rounded (pole) caps at both ends unless disabled."""
+        `weights(s, p)` -> {bone: w}. Rounded (pole) caps at both ends unless disabled. `keep(s, ctr)` drops the
+        side faces whose centre it rejects (slits, openings)."""
         path = [np.asarray(p, float) for p in path]
         seg = [np.linalg.norm(path[i + 1] - path[i]) for i in range(len(path) - 1)]
         cum = np.concatenate([[0.0], np.cumsum(seg)])
@@ -123,8 +124,10 @@ class Builder:
                 a0, a1 = base + i * n + k, base + i * n + k2
                 b0, b1 = base + (i + 1) * n + k, base + (i + 1) * n + k2
                 face = (a0, a1, b1, b0)
-                self.f.append(face)
                 ctr = sum(self.v[x] for x in face) / 4
+                if keep is not None and not keep(rings[i][5], ctr):
+                    continue
+                self.f.append(face)
                 self.fm.append(mat_fn(rings[i][5], ctr) if mat_fn else mat)
         for end, (p, u, vv, ru, rv, s, d) in ((0, rings[0]), (1, rings[-1])):
             if (end == 0 and not cap0) or (end == 1 and not cap1):

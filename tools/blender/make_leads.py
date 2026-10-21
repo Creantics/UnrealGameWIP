@@ -58,20 +58,28 @@ def lin(hexstr):
 # Outfits: material name from where a face sits. z / p are canonical (pre-scale) metres.
 # ------------------------------------------------------------------------------------------------------------
 def devin_torso(z, p, hw, hd, cy):
-    if 1.0 <= z <= 1.066:
+    if 0.985 <= z <= 1.075:
         return "sash"
-    side = abs(p[0]) > 0.76 * hw and abs(p[1] - cy) < 0.8 * hd
-    return "panel" if side else "tunic"
+    # blue stripes from the shoulders to the hem, inset from the sides, front and back
+    return "panel" if 0.50 * hw < abs(p[0]) < 0.80 * hw and abs(p[1] - cy) > 0.45 * hd else "tunic"
 
 
 def devin_arm(s, S):
-    if s < S[1] + 0.13:
+    if s < S[1] + 0.15:
         return "tunic"
-    if s < S[1] + 0.165:
-        return "panel"
     if S[2] + 0.03 < s < S[3] - 0.004:
         return "wrap" if int((s - S[2]) / 0.018) % 2 == 0 else "wrap2"
     return "skin"
+
+
+def devin_boot(s, S):
+    """Baggy trousers tucked into tall boots that stop just under the knee, with two straps."""
+    top = S[2] + 0.035
+    if s < top:
+        return "pants"
+    if top + 0.02 < s < top + 0.045 or top + 0.17 < s < top + 0.195:
+        return "strap"
+    return "boot"
 
 
 def duy_torso(z, p, hw, hd, cy):
@@ -107,18 +115,18 @@ def third_arm(s, S):
 CHARS = {
     "devin": dict(
         code="dv", height=1.88, expression="amused",
-        tw=[1.2, 1.2, 1.2, 1.2, 1.24, 1.27, 1.3, 1.36, 1.4, 1.4, 1.42, 1.5, 1.55, 1.4],
-        td=[1.15, 1.2, 1.2, 1.25, 1.45, 1.5, 1.42, 1.32, 1.35, 1.35, 1.3, 1.25, 1.25, 1.25],
+        tw=[1.2, 1.2, 1.2, 1.2, 1.24, 1.28, 1.34, 1.42, 1.48, 1.5, 1.55, 1.75, 2.05, 2.3],
+        td=[1.15, 1.2, 1.2, 1.25, 1.42, 1.45, 1.42, 1.38, 1.42, 1.45, 1.42, 1.45, 1.5, 1.55],
         tf=[0.55] * 14,
-        band=(1.0, 1.066, 0.007), neck=1.42, arm=(1.6, 1.5, 1.42, 1.25), hand=1.15,
-        leg=(1.3, 1.32, 1.3, 1.22, 1.2, 1.3, 1.25, 1.15, 1.15), foot=1.12, idle_arm=-12.0, walk_arm=-16.0,
-        face_wide=0.15, face_chin=0.04, skirt=(1.03, 0.72, 0.05), torso_mat=devin_torso, arm_mat=devin_arm,
-        leg_mat=lambda s, S: "boot" if s > S[2] + 0.10 else "pants", foot_mat="boot", ankle_mat="boot",
+        band=(0.985, 1.075, 0.012), neck=1.72, arm=(1.95, 1.9, 1.75, 1.4), hand=1.22,
+        leg=(1.35, 1.45, 1.55, 1.6, 1.62, 1.6, 1.55, 1.55, 1.5), foot=1.32, idle_arm=-10.0, walk_arm=-14.0,
+        face_wide=0.17, face_chin=0.05, skirt=(1.03, 0.60, 0.07), slit=(0.10, 0.03), torso_mat=devin_torso,
+        arm_mat=devin_arm, leg_mat=lambda s, S: devin_boot(s, S), foot_mat="boot", ankle_mat="boot",
         neck_mat=lambda z: "panel" if z < 1.468 else "skin", hair=None, beard="devin",
         colors={"skin": "#E2B08A", "lips": "#B9735E", "brow": "#1C1512", "iris": "#3A2417", "beard": "#1A1310",
                 "tunic": "#FF8A1F", "panel": "#1F5BFF", "gold": "#FFC93C", "sash": "#E2620F", "wrap": "#E9DFC9",
-                "wrap2": "#CDBFA3", "pants": "#2B2D38", "boot": "#5B2A1E"},
-        metal=("gold",), emissive=()),
+                "wrap2": "#CDBFA3", "pants": "#23262F", "boot": "#6B3420", "strap": "#4A2216"},
+        metal=(), emissive=()),
     "duy": dict(
         code="dy", height=1.70, expression="neutral",
         tw=[1.0, 1.06, 1.06, 1.06, 1.0, 0.86, 0.86, 0.86, 0.86, 0.86, 0.86, 0.86, 0.9, 0.95],
@@ -223,7 +231,16 @@ def build_skirt(B, ch, M, col):
         t = s / length
         return M[ch["torso_mat"](1.2, p, w0 + flare * t ** 1.2, d0 + 0.6 * flare * t ** 1.2, cy)]  # a top colour
 
-    B.loft(path, radii, (1, 0, 0), n=40, weights=weights, mat_fn=mat_fn, cap0=False, cap1=False, rings_per_m=90)
+    keep = None
+    if ch.get("slit"):
+        slit_h, slit_w = ch["slit"]  # side slits open from the hem up slit_h; slit_w is their share of the width
+
+        def keep(s, ctr):
+            t = s / length
+            r = w0 + flare * t ** 1.2
+            return not (s > length - slit_h and abs(ctr[0]) > r * (1.0 - slit_w) and abs(ctr[1] - cy) < 0.5 * d0)
+    B.loft(path, radii, (1, 0, 0), n=48, weights=weights, mat_fn=mat_fn, cap0=False, cap1=False, rings_per_m=90,
+           keep=keep)
 
 
 def build_neck(B, ch, M):
@@ -483,15 +500,119 @@ def glasses_duy(X, M):
            rings_per_m=600)
 
 
+def torso_front(col, x, z, lift=0.0):
+    """The y of the torso's front surface at (x, z) (the loft's superellipse, expo 2.5), pushed out by lift."""
+    w, d, cy = col(1, z), col(2, z), col(3, z)
+    q = max(0.0, 1.0 - abs(x / w) ** 2.5)
+    return cy - (d * q ** 0.4 + lift)
+
+
+def sun_emblem(X, col, z0, mat, r_disc=0.034, r_ray=0.088, rays=8, n=48, rings=5):
+    """The sun on the chest: a round centre with pointed rays, a thin plate that follows the chest's curve."""
+    f0 = len(X.f)
+    w = SPINE(z0)
+
+    def radius(a):
+        k = (a * rays / (2 * math.pi)) % 1.0
+        tri = 1.0 - abs(2.0 * k - 1.0)  # 0 between rays, 1 at a ray's tip
+        return r_disc + (r_ray - r_disc) * max(0.0, (tri - 0.45) / 0.55) ** 1.3
+
+    layers = []
+    for lift in (0.0042, 0.0008):  # front face, back face
+        c = len(X.v)
+        X.v.append(np.array((0.0, torso_front(col, 0.0, z0, lift), z0)))
+        X.w.append(dict(w))
+        for i in range(1, rings + 1):
+            for k in range(n):
+                a = 2 * math.pi * (k + 0.5) / n
+                r = radius(a) * i / rings
+                x, z = r * math.cos(a + math.pi / 2), z0 + r * math.sin(a + math.pi / 2)
+                X.v.append(np.array((x, torso_front(col, x, z, lift), z)))
+                X.w.append(dict(w))
+        layers.append(c)
+    for c in layers:
+        base = c + 1
+        for k in range(n):
+            k2 = (k + 1) % n
+            X.f.append((c, base + k, base + k2))
+            X.fm.append(mat)
+            for i in range(rings - 1):
+                a0, b0 = base + i * n, base + (i + 1) * n
+                X.f.append((a0 + k, b0 + k, b0 + k2, a0 + k2))
+                X.fm.append(mat)
+    fo, bo = layers[0] + 1 + (rings - 1) * n, layers[1] + 1 + (rings - 1) * n
+    for k in range(n):  # the rim
+        k2 = (k + 1) % n
+        X.f.append((fo + k, fo + k2, bo + k2, bo + k))
+        X.fm.append(mat)
+    orient(X, f0, np.array((0.0, torso_front(col, 0.0, z0, 0.0025), z0)))
+
+
+def clean_weights(w):
+    """Drops influences under 0.01 and renormalises (the rig rules reject tiny weights)."""
+    w = {k: v for k, v in w.items() if v >= 0.01}
+    total = sum(w.values())
+    return {k: v / total for k, v in w.items()}
+
+
+def tail_weights(p):
+    """A hanging sash tail: pelvis at the knot, half on the thighs at the tip, split left/right by x so the
+    weights mirror across the centre line."""
+    a = 0.5 * float(sm((1.0 - p[2]) / 0.2))
+    f = float(np.clip(0.5 + p[0] / 0.04, 0.0, 1.0))
+    return clean_weights({"pelvis": 1.0 - a, "thigh_l": a * f, "thigh_r": a * (1.0 - f)})
+
+
+def devin_extras(X, ch, M, col, arm_info):
+    sun_emblem(X, col, 1.315, M["gold"])
+
+    # a stand-up mandarin collar around the base of the neck, open a little at the front
+    k = ch["neck"]
+    neck_w = th.chain_weights([1.475], ["spine_03", "neck_01"], [0.02])
+    X.loft([(0.0, 0.009, 1.442), (0.0, 0.006, 1.505)],
+           lambda s, t: (0.050 * k + 0.007 + 0.002 * (1 - t), 0.054 * k + 0.007 + 0.002 * (1 - t)), (1, 0, 0),
+           n=40, weights=lambda s, p: clean_weights(neck_w(1.442 + s)), mat=M["panel"], cap0=False, cap1=False, rings_per_m=300,
+           keep=lambda s, c: not (abs(c[0]) < 0.012 and c[1] < 0))
+
+    # the sash: a knot at the front and two tails hanging over the tunic
+    z0, z1, flare = ch["skirt"]
+    yk = torso_front(col, 0.0, 1.03, ch["band"][2] + 0.008)
+    X.ellipsoid((0.012, yk, 1.032), (0.042, 0.020, 0.036), n=20, rings=12, weights=lambda p: {"pelvis": 1.0},
+                mat=M["sash"])
+
+    def in_front(pt):  # keep a point ahead of the flaring skirt
+        t = float(np.clip((z0 - pt[2]) / (z0 - z1), 0.0, 1.0))
+        return np.array((pt[0], min(pt[1], col(3, z0) - (col(2, z0) + 0.6 * flare * t ** 1.2) - 0.018), pt[2]))
+
+    for dx, length, swing in ((-0.022, 0.30, -0.018), (0.040, 0.25, 0.026)):
+        top = np.array((0.012 + dx * 0.5, yk - 0.004, 1.015))
+        bot = top + np.array((swing, 0.0, -length))
+        path = [in_front(top + (bot - top) * f) for f in (0.0, 0.33, 0.66, 1.0)]
+        X.loft(path, lambda s, t: (0.028 * (1.0 - 0.75 * t ** 2.5) + 0.004, 0.0035), (1, 0, 0), n=10,
+               weights=lambda s, p: tail_weights(p), mat=M["sash"], rings_per_m=120)
+
+    G = th.Builder()
+    # blue cuffs on the short sleeves
+    path, S, prof_s, prof_r = arm_info["path"], arm_info["S"], arm_info["prof_s"], arm_info["prof_r"]
+    sh, el = np.array(path[1]), np.array(path[2])
+    d1 = unit(el - sh)
+    s0 = S[1] + 0.12
+    r = float(np.interp(s0 + 0.02, prof_s, prof_r))
+    G.loft([sh + d1 * (s0 - S[1]), sh + d1 * (s0 - S[1] + 0.045)], lambda s, t: (r + 0.008, r + 0.008),
+           arm_info["arm_x"], n=24, weights=lambda s, p: {"upperarm_l": 1.0}, mat=M["panel"], rings_per_m=500)
+    # boot tops: a turned cuff just under the knee
+    knee, ankle = head("calf_l"), head("foot_l")
+    d3 = unit(ankle - knee)
+    rb = 0.059 * ch["leg"][5] + 0.004
+    G.loft([knee + d3 * 0.035, knee + d3 * 0.06], lambda s, t: (rb * 1.04 + 0.006, rb + 0.006), (0, -1, 0), n=24,
+           weights=lambda s, p: {"calf_l": 1.0}, mat=M["boot"], rings_per_m=500)
+    X.append_mirrored(G)
+
+
 def extras(ch, name, M, col, arm_info):
     X = th.Builder()
     if name == "devin":
-        z = 1.31
-        disc(X, (0.0, col(3, z) - col(2, z) + 0.002, z), (0, -1, 0), 0.052, 0.009, M["gold"], SPINE(z))
-        z = 1.27
-        back = col(3, z) + col(2, z) + 0.006
-        disc(X, (0.0, back, z), (0, 1, 0), 0.165, 0.032, M["gold"], SPINE(z))
-        disc(X, (0.0, back + 0.03, z), (0, 1, 0), 0.032, 0.016, M["sash"], SPINE(z))  # the shield's boss
+        devin_extras(X, ch, M, col, arm_info)
     if name == "duy":
         hair_duy(X, M)
         glasses_duy(X, M)
@@ -532,6 +653,10 @@ def beard_region(kind, c):
     if kind == "devin":
         if MZ + 0.0045 < z < MZ + 0.0115 and ax < 0.027:  # thin moustache
             return True
+        if 0.024 < ax < 0.030 and MZ - 0.022 < z < MZ + 0.008:  # down past the mouth corners
+            return True
+        if ax < 0.030 and MZ - 0.030 < z < MZ - 0.020:  # joining the chin beard
+            return True
         return ax < 0.016 - 0.2 * max(0.0, MZ - 0.022 - z) and MZ - 0.046 < z < MZ - 0.013  # short, tapered chin beard
     return False
 
@@ -566,6 +691,9 @@ def build_head(ch, M):
             if beard_region(ch["beard"], P[list(f)].mean(axis=0)):
                 fmat[i] = M["beard"]
                 push[list(f)] = t
+        for f, m in HB.faces:  # vertices shared with lips and other non-skin faces stay put
+            if ph.MATERIALS[m] != "skin":
+                push[list(f)] = 0.0
         P = P + ph._outward_normal(P) * push[:, None]
     P = face_warp(P, isl, ch["face_wide"], ch["face_chin"])
     return P, faces, fmat, HB.weights, shapes

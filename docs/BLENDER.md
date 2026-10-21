@@ -52,6 +52,10 @@ blender -b --factory-startup --python-exit-code 1 --python tools/blender/make_al
 
 Both ran from this repo on Blender 5.0.1. `proof_head.glb` came out at 745,624 bytes, the same size as the copy in `Data/Models/`, with 56 shapes and 87 joints. The export settings for hand-made characters are in [RIGGING_TEST.md](RIGGING_TEST.md#later-characters-blender-export).
 
+Blender 5.2's glTF exporter writes each bone's children sorted by name, not in creation order. That breaks the canonical joint order that `check_glb` and `rig_validate` (R12) require. `ne_blender.export_rig` keeps creation order for the duration of the export, by swapping the exporter's `_sort_by_name` out and restoring it afterwards. The swap is skipped on exporters that don't have that function. newengine's copy of `ne_blender.py` doesn't have this fix yet.
+
+The lead scripts can also build inside a running Blender (through the Blender MCP add-on, for example). `reset_scene` calls `read_factory_settings`, which a live session can't run, so replace `make_leads.nb.reset_scene` with a function that deletes the scene's objects and data before calling `build_character`.
+
 ## Into Unreal
 
 - **Skinned characters:** use `-run=FTImportCharacter` (see RIGGING_TEST.md). It imports the file and checks the face bones and shapes.

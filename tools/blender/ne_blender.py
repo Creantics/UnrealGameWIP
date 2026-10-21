@@ -345,7 +345,23 @@ def export_rig(path, extra=None):
     if extra:
         opts.update(extra)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", **opts)
+    # Blender 5.2's exporter walks children sorted by name, which breaks the canonical joint order
+    # (creation order, parents first). Keep creation order for the duration of the export.
+    tree = sys.modules.get("io_scene_gltf2.blender.exp.tree")
+    if tree is None:
+        try:
+            import importlib
+            tree = importlib.import_module("io_scene_gltf2.blender.exp.tree")
+        except ImportError:
+            tree = None
+    sort = getattr(tree, "_sort_by_name", None)
+    if sort is not None:
+        tree._sort_by_name = list
+    try:
+        bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", **opts)
+    finally:
+        if sort is not None:
+            tree._sort_by_name = sort
     return path
 
 
