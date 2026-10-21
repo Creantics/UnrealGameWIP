@@ -5,13 +5,13 @@
 
 MASKS_DIR holds hull_from_views.py's front.png and side.png (figure cropped to its box, side view facing right).
 The mesh is scaled to --height with its feet at z=0, then each pass:
-  1. warps z piecewise-linearly so crotch, armpit and neck heights match the sheet, with the arms' own warp
+  1. warps z piecewise-linearly so crotch, armpit and clavicle heights match the sheet, with the arms' own warp
      (armpit to fingertip) blended in on the arm vertices;
   2. per pixel row, maps the mesh's front x-runs onto the sheet's (each sheet run paired with the base run it
      overlaps most; unpaired base runs move with their nearest pair) and the side extent onto the sheet's in y;
   3. smooths those maps along z (Gaussian, --sigma rows for x, --sigma-side for y) and moves the vertices by them.
-Hands (below the wrist), feet (below the ankle) and the head (above the neck) move rigidly, ramping into the
-field over BLEND metres, and the rows they share with the legs or neck are interpolated instead of mapped: their
+Hands (below the wrist), feet (below the ankle) and head with neck (above the clavicle) move rigidly, ramping into
+the field over BLEND metres, and the rows they share with the legs or shoulders are interpolated instead of mapped: their
 shape comes from the bundle and the head panel, not from this sheet. Only the base cage (mesh.vertices) moves,
 so multires detail rides along. Child objects (eyes) move with their nearest vertices. Uses numpy only, since Blender's Python has no scipy.
 """
@@ -129,7 +129,9 @@ def ankle_row(m):
 
 
 def landmarks(m):
-    """Row indices (top row 0) of crotch, armpit, neck and fingertip in a front mask, or None where not found."""
+    """Row indices (top row 0) of crotch, armpit, neck, clavicle and fingertip in a front mask, or None where not
+    found. The neck is the narrowest row under the head, which on a thick neck is where the jaw meets it; the
+    clavicle is the first row below that where the outline has widened to 1.5 necks (the base of the neck)."""
     h, w = m.shape
     cols = np.flatnonzero(m.any(axis=0))
     c = (cols[0] + cols[-1]) // 2
@@ -144,6 +146,13 @@ def landmarks(m):
         rs = [r for r in runs(m[v]) if r[0] <= c <= r[1]]
         if rs and (best is None or rs[0][1] - rs[0][0] < best):
             neck, best = v, rs[0][1] - rs[0][0]
+    clavicle = None
+    if neck is not None:
+        for v in range(neck, int(0.3 * h)):
+            rs = [r for r in runs(m[v]) if r[0] <= c <= r[1]]
+            if rs and rs[0][1] - rs[0][0] >= 1.5 * best:
+                clavicle = v
+                break
     armpit = None
     for v in range(neck or int(0.15 * h), crotch or int(0.5 * h)):
         if counts[v] >= 3 and counts[v + 1] >= 3:
@@ -155,7 +164,7 @@ def landmarks(m):
         if counts[v] >= 3 and counts[v - 1] >= 3:
             finger = v
             break
-    return {"crotch": crotch, "armpit": armpit, "neck": neck, "finger": finger}
+    return {"crotch": crotch, "armpit": armpit, "neck": neck, "clavicle": clavicle, "finger": finger}
 
 
 class Fitter:
@@ -250,9 +259,9 @@ class Fitter:
                 g = self._group(P, (np.abs(P[:, 2] - zc) < 0.01) & (np.sign(P[:, 0]) == sgn), zc)
                 if g is not None:
                     groups.append(g)
-        if lm["neck"] is not None:
-            # the head is fitted on its own (to the head panel); here it only rides on the neck
-            zc = float(self.z_of(lm["neck"]))
+        if lm["clavicle"] is not None:
+            # head and neck are fitted on their own (to the head panel); here they only ride on the shoulders
+            zc = float(self.z_of(lm["clavicle"]))
             g = self._group(P, (np.abs(P[:, 2] - zc) < 0.01) & (np.abs(P[:, 0]) < 0.15), zc, up=True)
             if g is not None:
                 groups.append(g)
@@ -321,7 +330,7 @@ class Fitter:
         mesh = self.render_front()
         lb, ld = landmarks(mesh), landmarks(self.sheet_f)
         print("fit_to_views: landmarks mesh %s sheet %s" % (lb, ld))
-        keys = [k for k in ("crotch", "armpit", "neck") if lb[k] is not None and ld[k] is not None]
+        keys = [k for k in ("crotch", "armpit", "clavicle") if lb[k] is not None and ld[k] is not None]
         zb = np.array([0.0] + [self.z_of(lb[k]) for k in keys] + [self.height])
         zd = np.array([0.0] + [self.z_of(ld[k]) for k in keys] + [self.height])
         order = np.argsort(zb)
@@ -384,7 +393,7 @@ class Fitter:
         ank = [r for r in (ankle_row(mesh_f), ankle_row(self.sheet_f)) if r is not None]
         if ank:
             skip[max(0, min(ank) - int(0.06 / self.mpp)):] = True
-        necks = [landmarks(m)["neck"] for m in (mesh_f, self.sheet_f)]
+        necks = [landmarks(m)["clavicle"] for m in (mesh_f, self.sheet_f)]
         if None not in necks:
             skip[:max(necks)] = True
         dx = self._row_maps(mesh_f, self.sheet_f, gx, by_run=True, skip=skip, sigma=self.sigma)
