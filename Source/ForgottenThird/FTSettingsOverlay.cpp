@@ -24,9 +24,8 @@ const FString kLeftSet(TEXT("<"));
 const FString kRightSet(TEXT(">"));
 } // namespace
 
-void FT::DrawSettingsOverlay(AHUD& Hud, UFTSettingsSubsystem& Settings)
+void FT::DrawSettingsOverlay(AHUD& Hud, UCanvas* Canvas, UFTSettingsSubsystem& Settings)
 {
-	UCanvas* Canvas = Hud.Canvas;
 	if (!Canvas || !Settings.IsOpen())
 	{
 		return;

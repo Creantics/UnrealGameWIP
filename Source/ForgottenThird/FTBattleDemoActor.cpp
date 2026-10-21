@@ -93,12 +93,12 @@ FFTCombatant FromCore(const ftcore::Combatant& C)
 			for (size_t I = 0; I < S.timeline.size(); ++I)
 			{
 				const ftcore::TimelineHit& Hit = S.timeline[I];
-				FFTAttackHit& Out = D.Hits.AddDefaulted_GetRef();
-				Out.At = Hit.at;
-				Out.Tell = Hit.tell;
-				Out.Telegraph = Hit.telegraph;
-				Out.Weight = Hit.weight;
-				Out.bJumpable = Hit.jumpable;
+				FFTAttackHit& H = D.Hits.AddDefaulted_GetRef();
+				H.At = Hit.at;
+				H.Tell = Hit.tell;
+				H.Telegraph = Hit.telegraph;
+				H.Weight = Hit.weight;
+				H.bJumpable = Hit.jumpable;
 			}
 		}
 	}

@@ -8,9 +8,11 @@
 #include "CoreMinimal.h"
 
 class AHUD;
+class UCanvas;
 class UFTSettingsSubsystem;
 
 namespace FT
 {
-void DrawSettingsOverlay(AHUD& Hud, UFTSettingsSubsystem& Settings);
+// Canvas is the HUD's own (AHUD::Canvas is protected, so the HUD passes it in).
+void DrawSettingsOverlay(AHUD& Hud, UCanvas* Canvas, UFTSettingsSubsystem& Settings);
 } // namespace FT

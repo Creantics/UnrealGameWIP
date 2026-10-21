@@ -109,6 +109,6 @@ void AFTTitleHUD::DrawHUD()
 	}
 	if (Settings)
 	{
-		FT::DrawSettingsOverlay(*this, *Settings);
+		FT::DrawSettingsOverlay(*this, Canvas, *Settings);
 	}
 }

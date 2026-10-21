@@ -143,7 +143,7 @@ void AFTStoryHUD::DrawHUD()
 	}
 	if (UFTSettingsSubsystem* Settings = CachedSettings.Get())
 	{
-		FT::DrawSettingsOverlay(*this, *Settings);
+		FT::DrawSettingsOverlay(*this, Canvas, *Settings);
 	}
 }
 
