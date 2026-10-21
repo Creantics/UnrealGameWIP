@@ -791,7 +791,7 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 		{
 			SetJudgement(EFTJudgement::Missed, TEXT("MISSED"));
 		}
-		else if (Event.Grade == EFTGrade::Perfect)
+		else if (Event.Label == TEXT("PERFECT")) // also a perfect parry at full AP (no refund)
 		{
 			SetJudgement(EFTJudgement::Perfect, Event.Amount > 0 ? FString::Printf(TEXT("PERFECT  +%d AP"), Event.Amount) : FString(TEXT("PERFECT")));
 		}
