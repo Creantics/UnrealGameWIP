@@ -1,7 +1,8 @@
 #pragma once
 
 // Game mode of the stub screen: the placeholder a gameplay step with no real screen yet opens
-// (CHC, BNT, CG, HE, QTE, MINI and unknown tokens in ftcore::GameplayPlan; GameplayScreen::Stub). It
+// (unknown tokens in ftcore::GameplayPlan; GameplayScreen::Stub). The choice, banter and other screens
+// draw the same card when their step's data file is missing. It
 // shows the step (AFTStubHUD) and continues on Space, Enter or pad A (by itself after a second
 // with StoryCarry.bAutoPlay), then returns to the story through UFTGameInstance::StoryCarry. No
 // story on play. Opened without a valid carry it only says "No story step".

@@ -686,6 +686,8 @@ const FString& AFTStoryDirector::MapFor(ftcore::GameplayScreen Routed) const
 	case ftcore::GameplayScreen::Choice: return ChoiceMap;
 	case ftcore::GameplayScreen::Qte: return QteMap;
 	case ftcore::GameplayScreen::Cutscene: return CutsceneMap;
+	case ftcore::GameplayScreen::Banter: return BanterMap;
+	case ftcore::GameplayScreen::Mini: return MiniMap;
 	case ftcore::GameplayScreen::Box:
 	case ftcore::GameplayScreen::Stub: break;
 	}

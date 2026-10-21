@@ -11,7 +11,8 @@
 //
 // Gameplay hand-off: continuing past a gameplay beat lowers it with ftcore::GameplayPlan and plays its
 // steps in order. Each step fills UFTGameInstance::StoryCarry and opens the step's map: BattleMap for
-// a battle (CMB), FieldMap for the field (ENG, PLAY), StubMap for the stub screen (CHC, BNT, ...). A
+// a battle (CMB), FieldMap for the field (ENG, PLAY), ChoiceMap (CHC, HE), QteMap, CutsceneMap (CG),
+// BanterMap (BNT), MiniMap (MINI) and StubMap for the stub screen (unknown tokens). A
 // screen sets carry.bDone and opens carry.ReturnMap; the director spawned there opens the next step,
 // or resumes the story after the last one. A screen that comes back not done is logged and the beat
 // waits in the box. Paced autoplay hands off too (the screens play themselves); fast autoplay skips
@@ -94,6 +95,11 @@ public:
 	FString QteMap = TEXT("Qte");
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	FString CutsceneMap = TEXT("Cutscene");
+	// The banter (AFTBanterGameMode, BNT) and mini-game (AFTMiniGameMode, MINI) screens' maps.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
+	FString BanterMap = TEXT("Banter");
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
+	FString MiniMap = TEXT("Mini");
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	float HandoffDelay = 1.2f;
 
