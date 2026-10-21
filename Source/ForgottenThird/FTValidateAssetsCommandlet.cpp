@@ -21,7 +21,7 @@
 
 namespace
 {
-const TCHAR* const GTag = TEXT("FTValidateAssets");
+const TCHAR* const GValidateTag = TEXT("FTValidateAssets");
 
 struct FValidator
 {
@@ -44,7 +44,7 @@ struct FValidator
 
 	void Summary(const TCHAR* Category, const ftcore::AssetTally& Tally) const
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("%s: %s: %s."), GTag, Category, *FT::ToFString(Tally.summary()));
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: %s: %s."), GValidateTag, Category, *FT::ToFString(Tally.summary()));
 	}
 
 	void Audio()
@@ -53,7 +53,7 @@ struct FValidator
 		FString Error;
 		if (!UFTAudioSubsystem::LoadCueTable(Cues, Error))
 		{
-			UE_LOG(LogForgottenThird, Error, TEXT("%s: audio: %s"), GTag, *Error);
+			UE_LOG(LogForgottenThird, Error, TEXT("%s: audio: %s"), GValidateTag, *Error);
 			bManifestError = true;
 			return;
 		}
@@ -65,7 +65,7 @@ struct FValidator
 			const FString Path = FPaths::ConvertRelativePathToFull(Root / FT::ToFString(Cue.file));
 			const bool bPresent = FPaths::FileExists(Path);
 			double Seconds = 0.0;
-			const bool bOk = !bPresent || FT::CheckClipFile(GTag, Path, Id, Cue.bus, &Cue, Seconds);
+			const bool bOk = !bPresent || FT::CheckClipFile(GValidateTag, Path, Id, Cue.bus, &Cue, Seconds);
 			const bool bImported = FPackageName::DoesPackageExist(UFTAudioSubsystem::AssetFolderFor(Cue) / Id);
 			Record(TEXT("audio"), Id, ftcore::assetState(bPresent, bOk ? 0 : 1, bImported), Tally);
 		}
@@ -78,7 +78,7 @@ struct FValidator
 		FString StoryText;
 		if (!FFileHelper::LoadFileToString(StoryText, *(Dir / TEXT("story.json")), FFileHelper::EHashOptions::None, FILEREAD_Silent))
 		{
-			UE_LOG(LogForgottenThird, Display, TEXT("%s: voice: no Data/Story here; skipped."), GTag);
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: voice: no Data/Story here; skipped."), GValidateTag);
 			return;
 		}
 		const std::string Story = FT::ToUtf8(StoryText);
@@ -86,7 +86,7 @@ struct FValidator
 		std::string Error;
 		if (!ftcore::storySceneIds(Story, SceneIds, &Error))
 		{
-			UE_LOG(LogForgottenThird, Error, TEXT("%s: voice: %s"), GTag, *FT::ToFString(Error));
+			UE_LOG(LogForgottenThird, Error, TEXT("%s: voice: %s"), GValidateTag, *FT::ToFString(Error));
 			bManifestError = true;
 			return;
 		}
@@ -98,7 +98,7 @@ struct FValidator
 			const FString Path = Dir / TEXT("scenes") / FT::ToFString(SceneIds[I]) + TEXT(".json");
 			if (!FFileHelper::LoadFileToString(Text, *Path))
 			{
-				UE_LOG(LogForgottenThird, Error, TEXT("%s: voice: can't read %s."), GTag, *Path);
+				UE_LOG(LogForgottenThird, Error, TEXT("%s: voice: can't read %s."), GValidateTag, *Path);
 				bManifestError = true;
 				return;
 			}
@@ -108,7 +108,7 @@ struct FValidator
 		ftcore::StoryDatabase Db;
 		if (!ftcore::importStory(Story, Views, Db, &Error))
 		{
-			UE_LOG(LogForgottenThird, Error, TEXT("%s: voice: the story doesn't import."), GTag);
+			UE_LOG(LogForgottenThird, Error, TEXT("%s: voice: the story doesn't import."), GValidateTag);
 			bManifestError = true;
 			return;
 		}
@@ -126,8 +126,8 @@ struct FValidator
 			{
 				double Seconds = 0.0;
 				bool bTrack = false;
-				bOk = FT::CheckClipFile(GTag, Path, Id, ftcore::AudioBus::Voice, nullptr, Seconds);
-				bOk = FT::CheckLipSyncFile(GTag, Id, Seconds, bTrack) && bOk;
+				bOk = FT::CheckClipFile(GValidateTag, Path, Id, ftcore::AudioBus::Voice, nullptr, Seconds);
+				bOk = FT::CheckLipSyncFile(GValidateTag, Id, Seconds, bTrack) && bOk;
 				NoTrack += bTrack ? 0 : 1;
 			}
 			const bool bImported = FPackageName::DoesPackageExist(TEXT("/Game/Voice/") + Id);
@@ -136,7 +136,7 @@ struct FValidator
 		Summary(TEXT("voice"), Tally);
 		if (NoTrack > 0)
 		{
-			UE_LOG(LogForgottenThird, Display, TEXT("%s: voice: %d voice files have no lip-sync track yet."), GTag, NoTrack);
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: voice: %d voice files have no lip-sync track yet."), GValidateTag, NoTrack);
 		}
 	}
 
@@ -148,7 +148,7 @@ struct FValidator
 		std::string Error;
 		if (!FFileHelper::LoadFileToArray(Bytes, *ManifestPath) || !ftcore::importModelManifest(FT::BytesAsText(Bytes), Models, &Error))
 		{
-			UE_LOG(LogForgottenThird, Error, TEXT("%s: models: %s"), GTag,
+			UE_LOG(LogForgottenThird, Error, TEXT("%s: models: %s"), GValidateTag,
 				Error.empty() ? *FString::Printf(TEXT("can't read %s"), *ManifestPath) : *FT::ToFString(Error).TrimEnd());
 			bManifestError = true;
 			return;
@@ -160,7 +160,7 @@ struct FValidator
 			const FString Id = FT::ToFString(Model.id);
 			const FString Path = Root / FT::ToFString(Model.file);
 			const bool bPresent = FPaths::FileExists(Path);
-			const bool bOk = !bPresent || FT::CheckGlbFile(GTag, Path, ftcore::modelRules(Model));
+			const bool bOk = !bPresent || FT::CheckGlbFile(GValidateTag, Path, ftcore::modelRules(Model));
 			const FString Folder = (Model.kind == ftcore::ModelKind::Character ? TEXT("/Game/Characters/") : TEXT("/Game/Props/")) + Id;
 			Record(TEXT("models"), Id, ftcore::assetState(bPresent, bOk ? 0 : 1, HasAssets(Folder)), Tally);
 		}
@@ -186,7 +186,7 @@ int32 UFTValidateAssetsCommandlet::Main(const FString& Params)
 	FParse::Value(*Params, TEXT("Csv="), Csv);
 	if (!Category.IsEmpty() && Category != TEXT("audio") && Category != TEXT("voice") && Category != TEXT("models"))
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("%s: -Category is audio, voice or models."), GTag);
+		UE_LOG(LogForgottenThird, Error, TEXT("%s: -Category is audio, voice or models."), GValidateTag);
 		return 1;
 	}
 
@@ -212,12 +212,12 @@ int32 UFTValidateAssetsCommandlet::Main(const FString& Params)
 		V.CsvRows.Insert(TEXT("category,id,state"), 0);
 		if (!FFileHelper::SaveStringArrayToFile(V.CsvRows, *Path))
 		{
-			UE_LOG(LogForgottenThird, Error, TEXT("%s: couldn't write %s."), GTag, *Path);
+			UE_LOG(LogForgottenThird, Error, TEXT("%s: couldn't write %s."), GValidateTag, *Path);
 			return 1;
 		}
-		UE_LOG(LogForgottenThird, Display, TEXT("%s: wrote %d rows to %s."), GTag, V.CsvRows.Num() - 1, *FPaths::ConvertRelativePathToFull(Path));
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: wrote %d rows to %s."), GValidateTag, V.CsvRows.Num() - 1, *FPaths::ConvertRelativePathToFull(Path));
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("%s: %d failed%s."), GTag, V.Failed, V.bManifestError ? TEXT(", a manifest is bad") : TEXT(""));
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: %d failed%s."), GValidateTag, V.Failed, V.bManifestError ? TEXT(", a manifest is bad") : TEXT(""));
 	return V.Failed == 0 && !V.bManifestError ? 0 : 1;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTValidateAssets needs an editor build."));

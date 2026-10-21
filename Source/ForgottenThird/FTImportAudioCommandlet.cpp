@@ -19,7 +19,7 @@
 
 namespace
 {
-const TCHAR* const GTag = TEXT("FTImportAudio");
+const TCHAR* const GAudioTag = TEXT("FTImportAudio");
 
 // Imports one checked file as <Folder>/<Name> and sets its looping. False on failure.
 bool ImportClip(const FString& Path, const FString& Folder, const FString& Id, bool bLoop)
@@ -46,17 +46,17 @@ bool ImportClip(const FString& Path, const FString& Folder, const FString& Id, b
 	}
 	if (!Wave)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s: no sound wave came out of %s."), GTag, *Id, *Path);
+		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s: no sound wave came out of %s."), GAudioTag, *Id, *Path);
 		return false;
 	}
 	Wave->bLooping = bLoop;
 	Wave->MarkPackageDirty();
 	if (!UEditorLoadingAndSavingUtils::SavePackages({ Wave->GetPackage() }, false))
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s: couldn't save %s."), GTag, *Id, *Wave->GetPathName());
+		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s: couldn't save %s."), GAudioTag, *Id, *Wave->GetPathName());
 		return false;
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("%s: %s: imported %s (%s)."), GTag, *Id, *Wave->GetPathName(),
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: %s: imported %s (%s)."), GAudioTag, *Id, *Wave->GetPathName(),
 		Wave->bLooping ? TEXT("looping") : TEXT("once"));
 	return true;
 }
@@ -79,8 +79,8 @@ int32 ImportVoice(const FString& Only, bool bCheckOnly)
 		const FString Path = Dir / File;
 		double Seconds = 0.0;
 		bool bTrack = false;
-		const bool bClipOk = FT::CheckClipFile(GTag, Path, Id, ftcore::AudioBus::Voice, nullptr, Seconds);
-		const bool bTrackOk = FT::CheckLipSyncFile(GTag, Id, Seconds, bTrack);
+		const bool bClipOk = FT::CheckClipFile(GAudioTag, Path, Id, ftcore::AudioBus::Voice, nullptr, Seconds);
+		const bool bTrackOk = FT::CheckLipSyncFile(GAudioTag, Id, Seconds, bTrack);
 		NoTrack += bTrack ? 0 : 1;
 		if (!bClipOk || !bTrackOk)
 		{
@@ -101,10 +101,10 @@ int32 ImportVoice(const FString& Only, bool bCheckOnly)
 	}
 	if (!Only.IsEmpty() && Found == 0)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("%s: no Data/Voice/%s.wav."), GTag, *Only);
+		UE_LOG(LogForgottenThird, Error, TEXT("%s: no Data/Voice/%s.wav."), GAudioTag, *Only);
 		return 1;
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("%s: %d voice lines found, %d imported, %d without a lip-sync track, %d failed%s."), GTag,
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: %d voice lines found, %d imported, %d without a lip-sync track, %d failed%s."), GAudioTag,
 		Found, Imported, NoTrack, Failed, bCheckOnly ? TEXT(" (check only)") : TEXT(""));
 	return Failed == 0 ? 0 : 1;
 }
@@ -134,12 +134,12 @@ int32 UFTImportAudioCommandlet::Main(const FString& Params)
 	FString Error;
 	if (!UFTAudioSubsystem::LoadCueTable(Cues, Error))
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s"), GTag, *Error);
+		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s"), GAudioTag, *Error);
 		return 1;
 	}
 	if (!Only.IsEmpty() && !Cues.find(FT::ToUtf8(Only)))
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("%s: cue %s isn't in Data/Audio/cues.json."), GTag, *Only);
+		UE_LOG(LogForgottenThird, Error, TEXT("%s: cue %s isn't in Data/Audio/cues.json."), GAudioTag, *Only);
 		return 1;
 	}
 
@@ -161,7 +161,7 @@ int32 UFTImportAudioCommandlet::Main(const FString& Params)
 		}
 		++Found;
 		double Seconds = 0.0;
-		if (!FT::CheckClipFile(GTag, Path, Id, Cue.bus, &Cue, Seconds))
+		if (!FT::CheckClipFile(GAudioTag, Path, Id, Cue.bus, &Cue, Seconds))
 		{
 			++Failed;
 			continue;
@@ -180,9 +180,9 @@ int32 UFTImportAudioCommandlet::Main(const FString& Params)
 	}
 	if (!Missing.IsEmpty())
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("%s: no file yet for %d cues: %s"), GTag, Missing.Num(), *FString::Join(Missing, TEXT(" ")));
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: no file yet for %d cues: %s"), GAudioTag, Missing.Num(), *FString::Join(Missing, TEXT(" ")));
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("%s: %d cues, %d files found, %d imported, %d missing, %d failed%s."), GTag,
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: %d cues, %d files found, %d imported, %d missing, %d failed%s."), GAudioTag,
 		static_cast<int32>(Cues.cues.size()), Found, Imported, Missing.Num(), Failed, bCheckOnly ? TEXT(" (check only)") : TEXT(""));
 	return Failed == 0 ? 0 : 1;
 #else

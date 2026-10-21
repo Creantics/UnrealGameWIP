@@ -322,8 +322,7 @@ void AFTExploreDirector::BeginStoryWalk()
 			}
 			else
 			{
-				UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: Data/Field/goals.json refused; using the default markers:
-%s"), *FT::ToFString(Error));
+				UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: Data/Field/goals.json refused; using the default markers: %s"), *FT::ToFString(Error).TrimEnd());
 			}
 		}
 	}
