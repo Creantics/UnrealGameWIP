@@ -64,6 +64,9 @@ def main():
     if obj is None:
         raise SystemExit("face_sculpt: no object %s" % a["object"])
     mr = multires(obj)
+    if mr.levels != mr.total_levels:
+        raise SystemExit("face_sculpt: viewport level %d is not the top level %d; Reshape would write a coarser level"
+                         % (mr.levels, mr.total_levels))
     w = Warp(obj, spec)          # eye line, mirror plane, surface BVH
     bvh = w.bvh()
     origin = np.array([w.x0, w.ye, w.ze])
