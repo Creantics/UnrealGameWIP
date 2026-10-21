@@ -1,7 +1,7 @@
 """Silhouette gate: how well a mesh's orthographic outline matches the concept sheet's views.
 
     blender -b model.blend --python-exit-code 1 --python tools/blender/silhouette_iou.py -- MASKS_DIR OUT_DIR \\
-        [--views front,side,back] [--side-faces right] [--min 0.95] [--object NAME] [--frame box|height] \
+        [--views front,side,back] [--side-faces right] [--min 0.95] [--object NAME] [--frame box|height] \\
         [--ignore-rows 0-0.11,0.47-0.6]
 
 MASKS_DIR holds hull_from_views.py's front/side/back.png (figure cropped to its box). Each view is rendered at
