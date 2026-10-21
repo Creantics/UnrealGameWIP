@@ -14,7 +14,9 @@ unchanged.
 2. On a party turn, pick a skill and a target. The skill's arrow combo then scrolls up the
    centre lane on the 120 BPM beat grid; step on each arrow as it reaches the hit line.
    Each note is graded PERFECT / GREAT / GOOD / MISS (WRONG for the wrong arrow), and the
-   grades scale the damage. A full combo adds a bonus.
+   grades scale the damage. A full combo adds a bonus. Instead of a skill the member can **Aim**
+   (2 AP): the enemy's weak points show, and a shot on one deals bonus damage. See
+   [BATTLE_AIM.md](BATTLE_AIM.md).
 3. On an enemy turn the banner names the attack ("Name: Skill"), then its hits come in on the
    attack's timeline. Dodge, parry or jump each one (see Defence below). Parrying every hit
    counters.
@@ -32,6 +34,9 @@ unchanged.
 | Choose a skill (menu) | Up / Down, or 1-4 to use at once | D-pad up / down |
 | Choose a target (menu) | Left / Right, Q / E, Tab | D-pad left / right, shoulders |
 | Use the skill (menu) | Enter or Space | A or Start |
+| Aim (menu row, or at once) | Aim row, F or right mouse | Aim row, or LT |
+| Move the reticle (aiming) | Mouse, or hold the arrows / WASD | Either stick |
+| Fire / cancel (aiming) | Left mouse, Enter, Space / Esc, right mouse | A / B or LT |
 | Fight again (after the outcome) | Enter or Space | A or Start |
 
 The defence keys are the combo arrows (`AFTPlayerController::OnBattleArrow`), read as defence inputs
@@ -45,8 +50,9 @@ An enemy skill is an attack timeline (`ftcore::DefenceTimeline`, `Core/include/f
 the banner, then up to 8 hits at fixed offsets. The clock is the battle clock; enemy timelines are
 not snapped to the beat grid. Each hit can have:
 
-- a **tell**: the cue before the impact. The HUD draws a frame that closes in on the defender and
-  lands on it at the impact, with "!" (or "JUMP!" in gold on a jumpable hit);
+- a **tell**: the cue before the impact. The attacker flashes white as the tell starts. The HUD
+  draws a ring that closes in on the defender and lands on a faint inner ring at the impact, with
+  "!" (or "JUMP!" in gold on a jumpable hit);
 - a **telegraph**: a longer warning for big hits. The HUD fills a red column next to the defender.
 
 Each hit is answered by one press inside its window, which ends at the impact:
@@ -57,8 +63,12 @@ Each hit is answered by one press inside its window, which ends at the impact:
 | Parry | 0.12 s | Always a perfect parry. A parry that answers nothing locks parry out for 0.4 s. |
 | Jump | 0.25 s | Jumpable hits only (they also take a parry). A miss locks jump out for 0.3 s. |
 
-Each hit reports PERFECT, DODGE, JUMP or HIT (a `Defended` event; the HUD shows a row of pips
-under the scene and a popup over the defender, or the damage number when the hit lands). A perfect parry or perfect dodge refunds 1 AP (`BattleTuning::apOnPerfect`, capped at
+Each hit reports PERFECT, DODGE, JUMP or HIT (a `Defended` event). A press up to 0.20 s after a
+hit that landed (`DefenceWindows::late`, `FFTBattleTuning::LateWindow`) adds a second `Defended`
+event, LATE. It changes nothing else, and it is also accepted in the recovery just after the attack.
+The HUD shows a row of pips under the scene (gold perfect, cyan dodged or jumped, red hit, orange
+hit with a late press). Above the pips one judgement line names the last hit: PERFECT (with the AP
+refunded), DEFENDED, LATE or MISSED. A hit that lands also shows its damage number. A perfect parry or perfect dodge refunds 1 AP (`BattleTuning::apOnPerfect`, capped at
 max AP). A hit that lands deals its weight's share of the blow. Parrying every hit of the attack
 gives the defender a counter. The windows are `BattleTuning::defence` in Core and
 `FFTBattleTuning` (DodgeWindow, PerfectDodgeWindow, ParryWindow, JumpWindow, ParryLockout,
@@ -78,6 +88,8 @@ Timelines come from the `hits` array of a skill in `Data/Battle/enemies.json`:
 The autopilot parries every hit at its ideal time, read from the timeline (never from audio):
 `ftcore::demo::pilotDefend` in Core, and the same loop in `AFTBattleDemoActor::TickAutoPlay`, which
 looks up to two frames ahead and presses at the exact time (`UFTBattleComponent::DefendAtTime`).
+
+The autopilot also aims: see [BATTLE_AIM.md](BATTLE_AIM.md).
 
 ## From the exploration demo
 
@@ -173,6 +185,6 @@ headless figure above now (not yet measured in Unreal).
   autopilot and the no-input run; the rest play the default fight.
 - **Input timing.** Presses are judged at the time the frame handles them, not at the hardware
   event time, so low frame rates cost accuracy.
-- **Missing actions.** No items, flee, guard or party switching. Enemy AI is Core's simple
+- **Missing actions.** No items, flee, guard or party switching. Aim is the only extra command. Enemy AI is Core's simple
   round-robin skills against the most wounded target.
 - **Minimal HUD.** The UI is a canvas HUD with engine fonts, not UMG.

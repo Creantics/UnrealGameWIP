@@ -28,6 +28,7 @@ const FLinearColor kHpParty(0.3f, 0.85f, 0.4f);
 const FLinearColor kHpEnemy(0.9f, 0.3f, 0.25f);
 const FLinearColor kAp(0.3f, 0.65f, 1.0f);
 const FLinearColor kRed(1.0f, 0.3f, 0.3f);
+const FLinearColor kOrange(1.0f, 0.55f, 0.15f);
 
 // Static so drawing never builds strings.
 const FString kNow(TEXT("NOW"));
@@ -45,8 +46,10 @@ const FString kQuitToTitle(TEXT("Esc / Q: Quit to title"));
 const FString kChoose(TEXT("choose a skill"));
 const FString kAttack(TEXT("attack - hit the arrows!"));
 const FString kDefend(TEXT("defend - watch for the tell!"));
+const FString kAimPhase(TEXT("aim - shoot a weak point!"));
+const FString kAimHint(TEXT("Mouse / sticks / arrows: aim    Left mouse / Enter / pad A: fire    Esc / right mouse / pad B: cancel"));
 const FString kWait(TEXT("..."));
-const FString kMenuHint(TEXT("Up/Down or 1-4: skill    Left/Right, Q/E, Tab: target    Enter / Space / pad A: use"));
+const FString kMenuHint(TEXT("Up/Down or 1-4: skill    Left/Right, Q/E, Tab: target    Enter / Space / pad A: use    F / right mouse / LT: aim"));
 const FString kLaneHint(TEXT("Arrows / WASD / d-pad / X A Y B"));
 const FString kDown(TEXT("DOWN"));
 const FString kDefenceKeys[3] = {FString(TEXT("Dodge  Left/Right  X/B")), FString(TEXT("Parry  Down  A")),
@@ -114,6 +117,8 @@ void AFTBattleHUD::DrawHUD()
 	DrawSkillMenu(D);
 	DrawLane(D);
 	DrawDefence(D);
+	DrawJudgement(D);
+	DrawAim(D);
 	DrawPopups(D);
 	DrawMessages(D);
 }
@@ -139,6 +144,22 @@ void AFTBattleHUD::DrawFrame(float X, float Y, float W, float H, const FLinearCo
 	DrawRect(Color, X, Y + H - Thickness, W, Thickness);
 	DrawRect(Color, X, Y, Thickness, H);
 	DrawRect(Color, X + W - Thickness, Y, Thickness, H);
+}
+
+void AFTBattleHUD::DrawRing(float X, float Y, float Radius, const FLinearColor& Color, float Thickness)
+{
+	constexpr int32 Segments = 32;
+	float PX = X + Radius;
+	float PY = Y;
+	for (int32 I = 1; I <= Segments; ++I)
+	{
+		const float A = 2.f * PI * static_cast<float>(I) / static_cast<float>(Segments);
+		const float NX = X + Radius * FMath::Cos(A);
+		const float NY = Y + Radius * FMath::Sin(A);
+		DrawLine(PX, PY, NX, NY, Color, Thickness);
+		PX = NX;
+		PY = NY;
+	}
 }
 
 void AFTBattleHUD::DrawArrow(int32 Lane, float X, float Y, float Radius, const FLinearColor& Color, float Thickness)
@@ -200,6 +221,7 @@ void AFTBattleHUD::DrawPhase(const AFTBattleDemoActor& D)
 	case ftcore::Phase::AwaitingCommand: Label = &kChoose; break;
 	case ftcore::Phase::PartySkill: Label = &kAttack; break;
 	case ftcore::Phase::EnemySkill: Label = &kDefend; break;
+	case ftcore::Phase::PartyAim: Label = &kAimPhase; break;
 	case ftcore::Phase::Recovery: Label = &kWait; break;
 	default: break;
 	}
@@ -344,7 +366,8 @@ void AFTBattleHUD::DrawSkillMenu(const AFTBattleDemoActor& D)
 	const int32 Count = static_cast<int32>(C.skills.size());
 	const float RowH = 40.f * S;
 	const float W = 420.f * S;
-	const float H = RowH * static_cast<float>(Count) + 52.f * S;
+	// The skills, then the Aim row.
+	const float H = RowH * static_cast<float>(Count + 1) + 52.f * S;
 	const float X = Canvas->ClipX * 0.5f - W * 0.5f;
 	const float Y = Canvas->ClipY - H - 28.f * S;
 	DrawRect(kPanel, X, Y, W, H);
@@ -366,6 +389,20 @@ void AFTBattleHUD::DrawSkillMenu(const AFTBattleDemoActor& D)
 		float CW = 0.f, CH = 0.f;
 		GetTextSize(Cost, CW, CH, Font, S);
 		DrawStr(Cost, bAffordable ? kAp : kRed, X + W - 20.f * S - CW, RY + 6.f * S, Font);
+	}
+	{
+		const bool bAffordable = C.ap >= D.GetBattle()->Tuning.AimApCost;
+		const bool bSelected = D.GetSelectedSkill() == Count;
+		const float RY = Y + 10.f * S + RowH * static_cast<float>(Count);
+		if (bSelected)
+		{
+			DrawRect(WithAlpha(kGold, 0.25f), X + 6.f * S, RY, W - 12.f * S, RowH - 4.f * S);
+			DrawRect(kGold, X + 6.f * S, RY, 4.f * S, RowH - 4.f * S);
+		}
+		DrawStr(D.GetAimLabel(), !bAffordable ? kDim : bSelected ? kGold : kWhite, X + 20.f * S, RY + 6.f * S, Font);
+		float CW = 0.f, CH = 0.f;
+		GetTextSize(D.GetAimCost(), CW, CH, Font, S);
+		DrawStr(D.GetAimCost(), bAffordable ? kAp : kRed, X + W - 20.f * S - CW, RY + 6.f * S, Font);
 	}
 	DrawStrCentered(kMenuHint, kDim, Canvas->ClipX * 0.5f, Y + H - 30.f * S, Small, 1.f);
 }
@@ -445,8 +482,8 @@ void AFTBattleHUD::DrawDefence(const AFTBattleDemoActor& D)
 	UFont* Font = GEngine->GetMediumFont();
 	UFont* Small = GEngine->GetSmallFont();
 
-	// Over the defender: the telegraph column fills toward the impact, the tell is a frame that
-	// closes in on the figure and lands on it at the impact.
+	// Over the defender: the telegraph column fills toward the impact, the tell is a ring that
+	// closes in on the figure and lands on it at the impact (the attacker flashes as it starts).
 	const FVector P = Project(D.GetFigureTop(static_cast<int32>(B->defender())), true);
 	if (P.Z > 0.0)
 	{
@@ -468,15 +505,17 @@ void AFTBattleHUD::DrawDefence(const AFTBattleDemoActor& D)
 			if (T.tellActive(I, Now))
 			{
 				const float K = static_cast<float>(FMath::Clamp(Left / Hit.tell, 0.0, 1.0));
-				const float Half = (26.f + 70.f * K) * S;
+				const float Radius = (26.f + 80.f * K) * S;
 				const FLinearColor Color = Hit.jumpable ? kGold : kRed;
-				DrawFrame(X - Half, Y - Half, Half * 2.f, Half * 2.f, WithAlpha(Color, 1.f - 0.6f * K), 4.f * S);
+				DrawRing(X, Y, 26.f * S, WithAlpha(kWhite, 0.35f), 2.f * S); // where the ring lands
+				DrawRing(X, Y, Radius, WithAlpha(Color, 1.f - 0.6f * K), 4.f * S);
 				DrawStrCentered(Hit.jumpable ? kJumpable : kTell, Color, X, Y - 70.f * S, Font, 1.4f);
 			}
 		}
 	}
 
-	// One pip per hit of the attack: grey pending, gold perfect, cyan dodged or jumped, red hit.
+	// One pip per hit of the attack: grey pending, gold perfect, cyan dodged or jumped, red hit,
+	// orange hit with a late press.
 	const float Pip = 14.f * S;
 	const float Gap = 6.f * S;
 	const int32 Count = static_cast<int32>(T.size());
@@ -490,7 +529,7 @@ void AFTBattleHUD::DrawDefence(const AFTBattleDemoActor& D)
 		case ftcore::DefenceOutcome::Perfect: Color = kGold; break;
 		case ftcore::DefenceOutcome::Dodged:
 		case ftcore::DefenceOutcome::Jumped: Color = T.refunded(static_cast<size_t>(I)) ? kGold : kCyan; break;
-		case ftcore::DefenceOutcome::Hit: Color = kRed; break;
+		case ftcore::DefenceOutcome::Hit: Color = T.late(static_cast<size_t>(I)) ? kOrange : kRed; break;
 		default: break;
 		}
 		DrawRect(Color, PX, PY, Pip, Pip);
@@ -514,6 +553,107 @@ void AFTBattleHUD::DrawDefence(const AFTBattleDemoActor& D)
 		DrawStrCentered(kDefenceKeys[K], bLit ? kGold : kWhite, KX + KeyW * 0.5f, KY + 7.f * S, Small, 1.f);
 		KX += KeyW;
 	}
+}
+
+// The last enemy hit's judgement, on one line above the pips (it outlasts the attack a moment).
+void AFTBattleHUD::DrawJudgement(const AFTBattleDemoActor& D)
+{
+	if (D.GetJudgement() == EFTJudgement::None)
+	{
+		return;
+	}
+	const float A = Fade(D.GetJudgementAge(), 0.5, 0.4);
+	if (A <= 0.f)
+	{
+		return;
+	}
+	FLinearColor Color = kRed;
+	switch (D.GetJudgement())
+	{
+	case EFTJudgement::Perfect: Color = kGold; break;
+	case EFTJudgement::Defended: Color = kCyan; break;
+	case EFTJudgement::Late: Color = kOrange; break;
+	default: break;
+	}
+	const float S = UiScale;
+	const float Pop = 1.f + 0.25f * static_cast<float>(FMath::Clamp(1.0 - D.GetJudgementAge() / 0.12, 0.0, 1.0));
+	DrawStrCentered(D.GetJudgementText(), WithAlpha(Color, A), Canvas->ClipX * 0.5f, Canvas->ClipY * 0.74f - 48.f * S,
+		GEngine->GetLargeFont(), Pop);
+}
+
+// Aim: the target's weak points (rings with their multipliers), the reticle where a shot now
+// would land (gold over a weak point), the time left and the controls.
+void AFTBattleHUD::DrawAim(const AFTBattleDemoActor& D)
+{
+	UFTBattleComponent* BC = D.GetBattle();
+	const ftcore::Battle* B = BC->GetBattle();
+	if (B->phase() != ftcore::Phase::PartyAim)
+	{
+		return;
+	}
+	const ftcore::AimShot& Aim = B->aimShot();
+	const int32 Target = static_cast<int32>(B->aimTarget());
+	const double Now = BC->GetBattleTime();
+	const float S = UiScale;
+	UFont* Font = GEngine->GetMediumFont();
+	UFont* Small = GEngine->GetSmallFont();
+
+	// Pixels per figure height at the target, for the ring sizes.
+	const FVector Feet = Project(D.GetFigurePoint(Target, 0.f, 0.f), true);
+	const FVector Top = Project(D.GetFigurePoint(Target, 0.f, 1.f), true);
+	if (Feet.Z <= 0.0 || Top.Z <= 0.0)
+	{
+		return;
+	}
+	const float FigurePx = FMath::Max(static_cast<float>(FVector::Dist2D(Feet, Top)), 1.f);
+
+	const ftcore::ShotResult Shot = Aim.judge(Now);
+	const float Pulse = 0.5f + 0.5f * FMath::Sin(static_cast<float>(HudWall()) * 7.f);
+	const ftcore::WeakPoints& Points = Aim.weakPoints();
+	for (size_t I = 0; I < Points.size(); ++I)
+	{
+		const ftcore::WeakPoint& P = Points[I];
+		const FVector At = Project(D.GetFigurePoint(Target, P.x, P.y), true);
+		if (At.Z <= 0.0)
+		{
+			continue;
+		}
+		const bool bOn = Shot.kind == ftcore::ShotKind::Weak && Shot.weakPoint == I;
+		const float R = P.radius * FigurePx;
+		const FLinearColor Color = bOn ? kGold : WithAlpha(kOrange, 0.55f + 0.45f * Pulse);
+		DrawRing(static_cast<float>(At.X), static_cast<float>(At.Y), R, Color, (bOn ? 4.f : 2.5f) * S);
+		DrawRing(static_cast<float>(At.X), static_cast<float>(At.Y), R * 0.3f, Color, 2.f * S);
+		DrawStrCentered(D.GetWeakPointLabel(static_cast<int32>(I)), Color, static_cast<float>(At.X),
+			static_cast<float>(At.Y) - R - 26.f * S, Font, 1.f);
+	}
+
+	// The reticle: a ring with a cross, at the aim point (the reticle plus its sway).
+	const ftcore::AimPoint AimPt = Aim.aimPoint(Now);
+	const FVector Ret = Project(D.GetFigurePoint(Target, AimPt.x, AimPt.y), true);
+	if (Ret.Z > 0.0)
+	{
+		const float X = static_cast<float>(Ret.X);
+		const float Y = static_cast<float>(Ret.Y);
+		const FLinearColor Color = Shot.kind == ftcore::ShotKind::Weak ? kGold : Shot.kind == ftcore::ShotKind::Body ? kWhite : kDim;
+		const float Rad = 18.f * S;
+		DrawRing(X, Y, Rad, Color, 2.5f * S);
+		DrawLine(X - Rad * 1.6f, Y, X - Rad * 0.5f, Y, Color, 2.f * S);
+		DrawLine(X + Rad * 0.5f, Y, X + Rad * 1.6f, Y, Color, 2.f * S);
+		DrawLine(X, Y - Rad * 1.6f, X, Y - Rad * 0.5f, Color, 2.f * S);
+		DrawLine(X, Y + Rad * 0.5f, X, Y + Rad * 1.6f, Color, 2.f * S);
+		DrawRect(Color, X - 2.f * S, Y - 2.f * S, 4.f * S, 4.f * S);
+	}
+
+	// The time left before the shot fires on its own.
+	const double Limit = Aim.tuning().timeLimit;
+	const float Frac = Limit > 0.0 ? static_cast<float>(FMath::Clamp((Aim.deadline() - Now) / Limit, 0.0, 1.0)) : 0.f;
+	const float BarW = 360.f * S;
+	const float BarH = 10.f * S;
+	const float BarX = Canvas->ClipX * 0.5f - BarW * 0.5f;
+	const float BarY = Canvas->ClipY * 0.80f;
+	DrawRect(kHpBack, BarX, BarY, BarW, BarH);
+	DrawRect(Frac < 0.3f ? kRed : kGold, BarX, BarY, BarW * Frac, BarH);
+	DrawStrCentered(kAimHint, kDim, Canvas->ClipX * 0.5f, BarY + BarH + 10.f * S, Small, 1.f);
 }
 
 void AFTBattleHUD::DrawPopups(const AFTBattleDemoActor& D)
@@ -555,9 +695,15 @@ void AFTBattleHUD::DrawPopups(const AFTBattleDemoActor& D)
 			{
 				Color = P.Grade == EFTGrade::Perfect ? kGold : P.Grade == EFTGrade::Miss ? kRed : kCyan;
 			}
+			// A weak-point hit is gold and bigger.
+			const float Size = P.bWeak ? 1.35f : 1.f;
+			if (P.bWeak)
+			{
+				Color = kGold;
+			}
 			DrawStrCentered(P.Text, WithAlpha(FLinearColor(0.f, 0.f, 0.f), A), static_cast<float>(W.X) + 2.f * S,
-				static_cast<float>(W.Y) - 40.f * S - Rise + 2.f * S, Large, 1.f);
-			DrawStrCentered(P.Text, WithAlpha(Color, A), static_cast<float>(W.X), static_cast<float>(W.Y) - 40.f * S - Rise, Large, 1.f);
+				static_cast<float>(W.Y) - 40.f * S - Rise + 2.f * S, Large, Size);
+			DrawStrCentered(P.Text, WithAlpha(Color, A), static_cast<float>(W.X), static_cast<float>(W.Y) - 40.f * S - Rise, Large, Size);
 		}
 		else
 		{

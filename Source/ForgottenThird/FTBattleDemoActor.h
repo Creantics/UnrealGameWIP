@@ -5,8 +5,9 @@
 //
 // The enemy line-up comes from data: with a story carry (UFTGameInstance::StoryCarry) the entry of
 // Data/Battle/encounters.json for the carry's scene, beat and step, else the table's "default"
-// (the original demo fight); stats and skills come from Data/Battle/enemies.json. If the files
-// can't be read, the built-in demo line-up is used. Every round (first and each retry) rebuilds
+// (the original demo fight); stats and skills come from Data/Battle/enemies.json, weak points from
+// Data/Battle/weakpoints.json (optional: without it enemies have none). If the files can't be read,
+// the built-in demo line-up is used. Every round (first and each retry) rebuilds
 // both sides from that line-up, so a retry starts at battle-start HP.
 //
 // It owns the battle and its song clock (a silent 120 BPM wall clock: no audio is bound), places
@@ -15,15 +16,20 @@
 // input into commands and presses. AFTBattleHUD draws the UI from the getters below.
 //
 // Command menu (phase AwaitingCommand): Up/Down pick the skill, Left/Right or Tab/Q/E the target,
-// Enter/Space/pad A use it; 1-4 use a skill at once. During a combo every arrow is a step. On an
-// enemy turn the defender answers each hit of the attack timeline: Left/Right (pad X/B) dodge,
-// Down (pad A) parries, Up (pad Y) jumps (jumpable hits only).
+// Enter/Space/pad A use it; 1-4 use a skill at once. The row after the skills is Aim (also F, the
+// right mouse button or pad LT): the reticle moves with the mouse, either stick or the held arrows,
+// the left mouse button / Enter / Space / pad A fire and Esc / right mouse / pad B / LT cancel (the
+// AP comes back); see docs/BATTLE_AIM.md. During a combo every arrow is a step. On an enemy turn the
+// defender answers each hit of the attack timeline: Left/Right (pad X/B) dodge, Down (pad A) parries,
+// Up (pad Y) jumps (jumpable hits only). The attacker flashes as each hit's tell starts, and each hit
+// is judged on one line: PERFECT, DEFENDED, LATE (a press just after the impact) or MISSED.
 // After the outcome, Enter/Space/pad A/Start fight again. After a loss in a story fight, Esc / Q /
 // pad B quits to the title instead: it opens the story map (carry.ReturnMap) with the URL option
 // ?Title and leaves the carry's bDone false.
 //
 // bAutoPlay (or -BattleAutoPlay on the command line) lets Core's pilot play perfectly (every note
-// on time, every enemy hit parried at its ideal time from the timeline); with
+// on time, every enemy hit parried at its ideal time from the timeline, and an aimed shot on the best
+// weak point whenever ftcore::demo::pilotChoice prefers it to a skill); with
 // -BattleQuitOnOutcome the game exits when the battle ends (a headless end-to-end run). With a carry
 // the autopilot always retries after a loss. A story fight on autoplay with -AlphaFast runs at global
 // time dilation 8 and its song clock follows game time (UFTConductorComponent::bWallClockFollowsGameTime).
@@ -35,6 +41,7 @@
 #include "FTComboComponent.h"
 
 #include "ftcore/Encounter.h"
+#include "ftcore/WeakPoint.h"
 
 #include <vector>
 
@@ -50,6 +57,16 @@ class USkeletalMesh;
 class USkeletalMeshComponent;
 class UStaticMesh;
 class UStaticMeshComponent;
+
+// How the last enemy hit was answered (AFTBattleDemoActor::GetJudgement).
+enum class EFTJudgement : uint8
+{
+	None,
+	Perfect,  // a perfect parry or dodge
+	Defended, // a dodge or jump
+	Late,     // the hit landed and a press came just after it
+	Missed,   // the hit landed
+};
 
 UCLASS()
 class FORGOTTENTHIRD_API AFTBattleDemoActor : public AActor
@@ -91,7 +108,14 @@ public:
 
 	UFTBattleComponent* GetBattle() const { return Battle; }
 	UFTConductorComponent* GetConductor() const { return Conductor; }
+	// The selected menu row: a skill index, or GetAimRow() for Aim.
 	int32 GetSelectedSkill() const { return SelectedSkill; }
+	// The Aim row of the acting party member's menu (its skill count).
+	int32 GetAimRow() const;
+	const FString& GetAimLabel() const { return AimLabel; }
+	const FString& GetAimCost() const { return AimCost; }
+	// "x2.5" style label of weak point I of the enemy being aimed at.
+	const FString& GetWeakPointLabel(int32 I) const;
 	int32 GetSelectedTarget() const { return SelectedTarget; }
 	const FString& GetFighterName(int32 Id) const;
 	// "1  Strike" style label of a skill of combatant Id, and "2 AP" style cost.
@@ -107,6 +131,10 @@ public:
 	bool CanQuitToTitle() const { return bCanQuitToTitle; }
 	// World position above a combatant's figure (for markers and numbers).
 	FVector GetFigureTop(int32 Id) const;
+	// World position of a point in figure space (ftcore/WeakPoint.h: X across in figure heights,
+	// screen-right positive; Y up from the feet).
+	FVector GetFigurePoint(int32 Id, float X, float Y) const;
+	float GetFigureHeight(int32 Id) const;
 	// 0..1, high right after the figure was hit.
 	float GetFlash(int32 Id) const;
 	// Seconds since the player last pressed this lane during a combo.
@@ -114,6 +142,11 @@ public:
 	// Seconds since the last defence press on an enemy turn, and which input it was.
 	double GetDefencePressAge() const;
 	EFTDefenceInput GetLastDefenceInput() const { return LastDefenceInput; }
+
+	// The judgement of the last enemy hit defended (or not), shown on one line under the pips.
+	EFTJudgement GetJudgement() const { return Judgement; }
+	const FString& GetJudgementText() const { return JudgementText; }
+	double GetJudgementAge() const;
 
 	struct FPopup
 	{
@@ -126,6 +159,7 @@ public:
 		bool bWrong = false;
 		bool bNumber = false;
 		bool bDefence = false;
+		bool bWeak = false; // an aimed shot on a weak point (drawn gold)
 		FString Text; // numbers only, built when the event arrives
 	};
 	const FPopup& GetPopup(int32 I) const { return Popups[I]; }
@@ -164,7 +198,11 @@ private:
 	void UpdateHpText(int32 Id);
 	void TickFigures(double Wall);
 	void TickAutoPlay(float DeltaSeconds);
+	// The player's reticle and the aim keys that are polled (mouse buttons, F, pad LT, sticks).
+	void TickAimInput(float DeltaSeconds);
 	void UseSelected();
+	void EnterAim();
+	void SetJudgement(EFTJudgement Kind, const FString& Text);
 	void CycleTarget(int32 Step);
 	void EnsureTarget();
 	void AddPopup(const FPopup& P);
@@ -226,6 +264,19 @@ private:
 	double LanePressWall[4] = {-100.0, -100.0, -100.0, -100.0};
 	double DefencePressWall = -100.0;
 	EFTDefenceInput LastDefenceInput = EFTDefenceInput::Parry;
+	EFTJudgement Judgement = EFTJudgement::None;
+	FString JudgementText;
+	double JudgementWall = -100.0;
+
+	FString AimLabel;
+	FString AimCost;
+	FString WeakPointLabels[ftcore::kMaxWeakPoints];
+	// Press edges of the polled aim keys.
+	bool bAimKeyDown = false;
+	bool bFireKeyDown = false;
+	bool bCancelKeyDown = false;
+	// The autopilot's weak point for the aim in progress.
+	size_t PilotWeakPoint = ftcore::kMaxWeakPoints;
 
 	int32 SelectedSkill = 0;
 	int32 SelectedTarget = -1;

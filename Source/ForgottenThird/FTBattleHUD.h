@@ -1,8 +1,9 @@
 #pragma once
 
 // Canvas UI of the battle demo (no UMG): turn order, phase text, HP and AP panels, the skill menu,
-// the target marker, the note lane with its hit line, the enemy attack's tells, telegraphs and
-// defence keys, grade, damage and defence popups, and the outcome.
+// the target marker, the note lane with its hit line, the enemy attack's tells (a ring closing on
+// the defender), telegraphs, defence keys and the judgement line, the aim reticle with the target's
+// weak points and the shot timer, grade and damage popups, and the outcome.
 // Everything comes from the level's AFTBattleDemoActor; per-frame drawing uses cached or static
 // strings only.
 
@@ -37,6 +38,8 @@ private:
 	void DrawSkillMenu(const AFTBattleDemoActor& Demo);
 	void DrawLane(const AFTBattleDemoActor& Demo);
 	void DrawDefence(const AFTBattleDemoActor& Demo);
+	void DrawJudgement(const AFTBattleDemoActor& Demo);
+	void DrawAim(const AFTBattleDemoActor& Demo);
 	void DrawPopups(const AFTBattleDemoActor& Demo);
 	void DrawMessages(const AFTBattleDemoActor& Demo);
 
@@ -45,6 +48,7 @@ private:
 	void DrawStrCentered(const FString& S, const FLinearColor& Color, float X, float Y, UFont* Font, float Scale = 1.f);
 	void DrawArrow(int32 Lane, float X, float Y, float Radius, const FLinearColor& Color, float Thickness);
 	void DrawFrame(float X, float Y, float W, float H, const FLinearColor& Color, float Thickness);
+	void DrawRing(float X, float Y, float Radius, const FLinearColor& Color, float Thickness);
 
 	TWeakObjectPtr<AFTBattleDemoActor> CachedDemo;
 	float UiScale = 1.f;

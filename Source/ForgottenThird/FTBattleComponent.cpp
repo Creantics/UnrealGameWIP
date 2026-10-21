@@ -20,6 +20,7 @@ static_assert(static_cast<int>(EFTBattlePhase::EnemySkill) == static_cast<int>(f
 static_assert(static_cast<int>(EFTBattlePhase::Recovery) == static_cast<int>(ftcore::Phase::Recovery));
 static_assert(static_cast<int>(EFTBattlePhase::Victory) == static_cast<int>(ftcore::Phase::Victory));
 static_assert(static_cast<int>(EFTBattlePhase::Defeat) == static_cast<int>(ftcore::Phase::Defeat));
+static_assert(static_cast<int>(EFTBattlePhase::PartyAim) == static_cast<int>(ftcore::Phase::PartyAim));
 static_assert(static_cast<int>(EFTBattleEventType::TurnStarted) == static_cast<int>(ftcore::EventType::TurnStarted));
 static_assert(static_cast<int>(EFTBattleEventType::SkillStarted) == static_cast<int>(ftcore::EventType::SkillStarted));
 static_assert(static_cast<int>(EFTBattleEventType::NoteJudged) == static_cast<int>(ftcore::EventType::NoteJudged));
@@ -73,6 +74,37 @@ void ToCore(const TArray<FFTAttackHit>& In, ftcore::AttackTimeline& Out)
 	}
 }
 
+// At most ftcore::kMaxWeakPoints, clamped to the limits the JSON loader enforces.
+void ToCore(const TArray<FFTWeakPoint>& In, float HalfWidth, ftcore::WeakPoints& Out)
+{
+	Out = ftcore::WeakPoints();
+	Out.halfWidth = FMath::Clamp(HalfWidth, 0.05f, 1.0f);
+	for (const FFTWeakPoint& P : In)
+	{
+		ftcore::WeakPoint D;
+		D.setId(FT::ToUtf8(P.Id.ToLower()));
+		D.x = FMath::Clamp(P.X, -1.0f, 1.0f);
+		D.y = FMath::Clamp(P.Y, 0.0f, 1.0f);
+		D.radius = FMath::Clamp(P.Radius, ftcore::kMinWeakRadius, ftcore::kMaxWeakRadius);
+		D.multiplier = FMath::Clamp(P.Multiplier, ftcore::kMinWeakMultiplier, ftcore::kMaxWeakMultiplier);
+		if (!Out.add(D))
+		{
+			break;
+		}
+	}
+}
+
+FFTWeakPoint FromCore(const ftcore::WeakPoint& In)
+{
+	FFTWeakPoint Out;
+	Out.Id = FT::ToFString(In.id());
+	Out.X = In.x;
+	Out.Y = In.y;
+	Out.Radius = In.radius;
+	Out.Multiplier = In.multiplier;
+	return Out;
+}
+
 // Assigns in place so a same-shaped line-up reuses the strings and skill lists.
 void ToCore(const FFTCombatant& In, ftcore::Combatant& Out)
 {
@@ -100,6 +132,7 @@ void ToCore(const FFTCombatant& In, ftcore::Combatant& Out)
 		D.difficulty = S.Difficulty;
 		ToCore(S.Hits, D.timeline);
 	}
+	ToCore(In.WeakPoints, In.HalfWidth, Out.weakPoints);
 }
 
 void ToCore(const TArray<FFTCombatant>& In, std::vector<ftcore::Combatant>& Out)
@@ -125,6 +158,14 @@ ftcore::BattleTuning ToCore(const FFTBattleTuning& In)
 	Out.defence.parry = FMath::Max(In.ParryWindow, 0.0);
 	Out.defence.jump = FMath::Max(In.JumpWindow, 0.0);
 	Out.defence.parryLockout = FMath::Max(In.ParryLockout, 0.0);
+	Out.defence.late = FMath::Max(In.LateWindow, 0.0);
+	Out.aim.apCost = FMath::Max(In.AimApCost, 0);
+	Out.aim.power = FMath::Max(In.AimPower, 0.0f);
+	Out.aim.timeLimit = FMath::Max(In.AimTimeLimit, 0.5);
+	Out.aim.bodyMultiplier = FMath::Max(In.AimBodyMultiplier, 0.0f);
+	Out.aim.grazeMultiplier = FMath::Max(In.AimGrazeMultiplier, 0.0f);
+	Out.aim.swayX = FMath::Max(In.AimSwayX, 0.0f);
+	Out.aim.swayY = FMath::Max(In.AimSwayY, 0.0f);
 	Out.apOnPerfect = FMath::Max(In.ApOnPerfect, 0);
 	Out.counterPower = In.CounterPower;
 	Out.apOnCounter = In.ApOnCounter;
@@ -295,6 +336,112 @@ void UFTBattleComponent::DefendAtTime(EFTDefenceInput Input, double BattleSecond
 	}
 	Battle->defend(static_cast<ftcore::DefenceInput>(Input), BattleSeconds);
 	Flush();
+}
+
+EFTCommandError UFTBattleComponent::AimAt(int32 Target)
+{
+	if (!Battle)
+	{
+		return EFTCommandError::WrongPhase;
+	}
+	if (!ValidId(Target))
+	{
+		return EFTCommandError::InvalidTarget;
+	}
+	const ftcore::CommandError Err = Battle->aim(static_cast<ftcore::CombatantId>(Target), Now());
+	Flush();
+	return static_cast<EFTCommandError>(Err);
+}
+
+void UFTBattleComponent::MoveReticle(FVector2D Delta)
+{
+	if (Battle)
+	{
+		Battle->moveReticle(static_cast<float>(Delta.X), static_cast<float>(Delta.Y));
+	}
+}
+
+void UFTBattleComponent::SetReticle(FVector2D At)
+{
+	if (Battle)
+	{
+		Battle->setReticle(static_cast<float>(At.X), static_cast<float>(At.Y));
+	}
+}
+
+bool UFTBattleComponent::Fire()
+{
+	return Battle && FireAtTime(InputNow());
+}
+
+bool UFTBattleComponent::FireAtTime(double BattleSeconds)
+{
+	if (!Battle)
+	{
+		return false;
+	}
+	const bool bFired = Battle->fire(BattleSeconds);
+	Flush();
+	return bFired;
+}
+
+bool UFTBattleComponent::CancelAim()
+{
+	if (!Battle)
+	{
+		return false;
+	}
+	const bool bCancelled = Battle->cancelAim(Now());
+	Flush();
+	return bCancelled;
+}
+
+bool UFTBattleComponent::IsAimActive() const
+{
+	return GetPhase() == EFTBattlePhase::PartyAim;
+}
+
+int32 UFTBattleComponent::GetAimTarget() const
+{
+	return IsAimActive() ? static_cast<int32>(Battle->aimTarget()) : -1;
+}
+
+FVector2D UFTBattleComponent::GetReticle() const
+{
+	if (!IsAimActive())
+	{
+		return FVector2D(0.0, 0.5);
+	}
+	const ftcore::AimPoint P = Battle->aimShot().reticle();
+	return FVector2D(P.x, P.y);
+}
+
+FVector2D UFTBattleComponent::GetAimPoint()
+{
+	if (!IsAimActive())
+	{
+		return FVector2D(0.0, 0.5);
+	}
+	const ftcore::AimPoint P = Battle->aimShot().aimPoint(Now());
+	return FVector2D(P.x, P.y);
+}
+
+TArray<FFTWeakPoint> UFTBattleComponent::GetAimWeakPoints() const
+{
+	TArray<FFTWeakPoint> Out;
+	if (IsAimActive())
+	{
+		for (const ftcore::WeakPoint& P : Battle->aimShot().weakPoints())
+		{
+			Out.Add(FromCore(P));
+		}
+	}
+	return Out;
+}
+
+double UFTBattleComponent::GetAimTimeLeft()
+{
+	return IsAimActive() ? FMath::Max(Battle->aimShot().deadline() - Now(), 0.0) : 0.0;
 }
 
 void UFTBattleComponent::Flush()
@@ -512,6 +659,7 @@ FFTDefenceHit UFTBattleComponent::GetDefenceHit(int32 Index) const
 	Out.Telegraph = D.hit(I).telegraph;
 	Out.bJumpable = D.hit(I).jumpable;
 	Out.Outcome = static_cast<EFTDefenceOutcome>(D.outcome(I));
+	Out.bLate = D.late(I);
 	return Out;
 }
 
