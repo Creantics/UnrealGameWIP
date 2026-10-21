@@ -20,12 +20,18 @@ State on 2026-10-18 (origin/main at ef99ba1). The Core porting is done. The demo
 
 **Done 2026-10-20.** One build plays the whole story from the title screen to the end card, with a screen for every gameplay step. The headless gate (`tools/gate.ps1 -Alpha`, about 7 minutes on the 8x clock) passes: `Alpha: FINISHED 73 scenes, 167 screens (40 battle, 91 field, 36 stub), 0 STUCK, 0 warnings`. How to play it, the gate, and what's still stubbed are in `docs/ALPHA.md`.
 
-Next, all without voice, art or music (the user generates those):
-- **Combat:** `ftcore::DefenceTimeline` (per-attack hit offsets, a wide dodge window and a narrow parry window with a mash lockout, AP refund on a perfect), from `docs/COMBAT_REFERENCE_STUDY.md`.
-- **Style packs v2:** the art direction's parameter deltas and the engine items.
-- **Screens for the stubbed steps:** choice, dialogue backlog and skip, a settings menu, and the dialogue-loop player (CHC and HE), a cutscene framework (CG) on blockouts. Then a quick-time event screen once DefenceTimeline lands.
-- **Later:** balance across every encounter, navmesh and localisation.
-- **Asset intake:** formats for the art, voice and music the user will hand over.
+**Merged 2026-10-21** (main at efef15d, gate green on the 8x clock; the full-speed run also passed on 2026-10-20):
+- **Combat:** `ftcore::DefenceTimeline`: dodge (left/right), parry (down) and jump (up) judged against each hit, with tells before impact.
+- **Style packs v2:** rim and black point per pack (`FTBuildStyleMaterials`).
+- **Screens:** the dialogue-loop choice screen for CHC and HE (`docs/CHOICE_SCREEN.md`), the cutscene framework for CG, the quick-time event screen for QTE, and the dialogue backlog, skip and settings menu. Their maps (`Choice`, `Cutscene`, `Qte`) come from commandlets.
+- **Asset intake:** `docs/ASSET_INTAKE.md`.
+
+Next, still without voice, art or music:
+- Real data for the new screens: dialogue loops (story work, gitignored), cutscene shot lists and QTE tables per step.
+- Wire DefenceTimeline tells into the battle screen's presentation, and aim with weak points.
+- Banter and mini-game screens (still the stub card).
+- Balance across every encounter, navmesh and localisation.
+- Close the intake gaps in `docs/ASSET_INTAKE.md`: character textures, VO playback by line id, audio buses and loudness, music import.
 
 Phase 0, the shared surface the streams built on:
 
