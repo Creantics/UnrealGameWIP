@@ -50,6 +50,7 @@ const FKey& QteKey(int32 Direction, int32 Which)
 AFTQteGameMode::AFTQteGameMode()
 {
 	HUDClass = AFTQteHUD::StaticClass();
+	bHostsStory = false;
 	PrimaryActorTick.bCanEverTick = true;
 }
 

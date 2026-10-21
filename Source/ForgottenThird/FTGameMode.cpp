@@ -43,7 +43,7 @@ void AFTGameMode::InitGame(const FString& MapName, const FString& Options, FStri
 	bTitle = false;
 	bHeadless = UFTStorySubsystem::IsHeadlessRun();
 	const UFTStorySubsystem* Story = GetStory();
-	if (!bStartStoryOnPlay || bHeadless || !Story || !Story->IsLoaded())
+	if (!bHostsStory || !bStartStoryOnPlay || bHeadless || !Story || !Story->IsLoaded())
 	{
 		return;
 	}

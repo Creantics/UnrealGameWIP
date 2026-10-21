@@ -60,6 +60,12 @@ public:
 	// The mouse is over a title item: selects it (a greyed one stays unselected).
 	void HoverTitleItem(ftcore::TitleItem Item) { Menu.hover(Item); }
 
+protected:
+	// False on the gameplay screens (battle, exploration, stubs...): they skip StartPlay's story
+	// start, so they must never pick the title in InitGame either, or a screen played on its own
+	// would show a title menu nothing drives.
+	bool bHostsStory = true;
+
 private:
 	UFUNCTION()
 	void HandleMenuStep(int32 Step);

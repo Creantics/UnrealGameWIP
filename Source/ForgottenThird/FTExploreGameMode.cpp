@@ -7,6 +7,7 @@ AFTExploreGameMode::AFTExploreGameMode()
 {
 	DefaultPawnClass = AFTExploreCharacter::StaticClass();
 	HUDClass = AFTExploreHUD::StaticClass();
+	bHostsStory = false;
 }
 
 void AFTExploreGameMode::StartPlay()

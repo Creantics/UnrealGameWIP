@@ -32,6 +32,7 @@ constexpr double kAutoSkipAtBanter = ftcore::StubScreen::kInputGrace;
 AFTBanterGameMode::AFTBanterGameMode()
 {
 	HUDClass = AFTBanterHUD::StaticClass();
+	bHostsStory = false;
 	PrimaryActorTick.bCanEverTick = true;
 }
 

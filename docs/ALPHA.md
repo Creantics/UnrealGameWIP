@@ -18,7 +18,8 @@ and there is no voice or music.
 3. Copy newengine `assets/story/` to `Data/Story/`. It's gitignored and never committed, because the
    repo is public.
 4. Open the editor (it opens `Demo`) and click Play, or run the game. The title offers New Game
-   and Continue.
+   and Continue. Only `Demo` shows the title. Playing a screen's own map (`Explore`, `BattleDemo`
+   and the rest) opens that screen alone, with no story around it.
 
 | Screen | What you do | Doc |
 |---|---|---|

@@ -49,6 +49,7 @@ const FKey& MiniKey(int32 Direction, int32 Which)
 AFTMiniGameMode::AFTMiniGameMode()
 {
 	HUDClass = AFTMiniHUD::StaticClass();
+	bHostsStory = false;
 	PrimaryActorTick.bCanEverTick = true;
 }
 

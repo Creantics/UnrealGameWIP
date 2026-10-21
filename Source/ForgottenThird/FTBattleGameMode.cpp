@@ -5,6 +5,7 @@
 AFTBattleGameMode::AFTBattleGameMode()
 {
 	HUDClass = AFTBattleHUD::StaticClass();
+	bHostsStory = false;
 }
 
 void AFTBattleGameMode::StartPlay()

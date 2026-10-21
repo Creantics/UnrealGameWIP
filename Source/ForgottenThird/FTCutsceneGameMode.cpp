@@ -25,6 +25,7 @@ const FString kNoShotCutscene;
 AFTCutsceneGameMode::AFTCutsceneGameMode()
 {
 	HUDClass = AFTCutsceneHUD::StaticClass();
+	bHostsStory = false;
 	PrimaryActorTick.bCanEverTick = true;
 }
 

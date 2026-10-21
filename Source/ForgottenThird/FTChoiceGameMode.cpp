@@ -37,6 +37,7 @@ constexpr int32 kAutoMoves = 2 + static_cast<int32>(ftcore::DialogueLoopDef::kMa
 AFTChoiceGameMode::AFTChoiceGameMode()
 {
 	HUDClass = AFTChoiceHUD::StaticClass();
+	bHostsStory = false;
 	PrimaryActorTick.bCanEverTick = true;
 	Options.Reserve(MaxOptions);
 }

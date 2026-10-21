@@ -24,6 +24,7 @@ bool AlphaFast()
 AFTStubGameMode::AFTStubGameMode()
 {
 	HUDClass = AFTStubHUD::StaticClass();
+	bHostsStory = false;
 	PrimaryActorTick.bCanEverTick = true;
 }
 
