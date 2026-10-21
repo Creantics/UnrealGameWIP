@@ -55,6 +55,9 @@ FADE = 0.010           # the scan's own eye-key deltas fade out this close to th
 COLORS = {"sclera": (0.80, 0.77, 0.72), "pupil": (0.004, 0.004, 0.004)}
 PUPIL_DEG, IRIS_DEG, LIMBUS_DEG = 9.0, 27.0, 31.0
 CORNEA = 0.0006        # the cornea bulges this far out of the eyeball at the pupil
+BAKE_SIZE = 2048       # the face's new texture
+MASK_MM = 6.0          # the scan's painted eye reaches this far past the new lid margin
+MASK_MEDIAL = 12.0     # and this much further toward the nose
 
 
 def _args():
@@ -231,12 +234,7 @@ def build_eye(bm, L, scan, side, centre_xz, cfg, mats, eye_group):
     poly = [tuple(m2[j] + 0.001 * RINGS[-1][1] * squeeze[j] * n2[j]) for j in range(SEGS)]
 
     def inside(x, z):
-        n, ins = len(poly), False
-        for i in range(n):
-            (x1, y1), (x2, y2) = poly[i], poly[(i + 1) % n]
-            if (y1 > z) != (y2 > z) and x < x1 + (z - y1) * (x2 - x1) / (y2 - y1):
-                ins = not ins
-        return ins
+        return _inside(poly, x, z)
 
     # every front face touching the inside of the outer ring goes, so the hole's jagged edge lies wholly outside
     # the ring and the stitch band between them cannot fold
@@ -354,8 +352,20 @@ def build_eye(bm, L, scan, side, centre_xz, cfg, mats, eye_group):
     if os.environ.get("FP_DEBUG"):
         print("face_patch debug: back-facing per band (last = stitch):", back)
     neye = _eyeball(bm, L, E, R, mats, eye_group)
+    mask = [tuple(m2[j] + 0.001 * (MASK_MM + MASK_MEDIAL * max(0.0, -side * n2[j][0])) * n2[j])
+            for j in range(SEGS)]
     return {"centre": [round(float(c), 4) for c in E], "removed": len(gone), "hole_edge": len(loop),
+            "_mask": (mask, sy - DELETE_DEPTH),
             "loops": len(loops), "stitch": len(stitch), "eyeball_verts": neye, "pmax": round(pmax, 1)}
+
+
+def _inside(poly, x, z):
+    n, ins = len(poly), False
+    for i in range(n):
+        (x1, y1), (x2, y2) = poly[i], poly[(i + 1) % n]
+        if (y1 > z) != (y2 > z) and x < x1 + (z - y1) * (x2 - x1) / (y2 - y1):
+            ins = not ins
+    return ins
 
 
 def _boundary_loops(rim):
@@ -514,6 +524,195 @@ def _eyeball(bm, L, E, R, mats, eye_group):
     return sum(len(r) for r in verts)
 
 
+# ------------------------------------------------------------------------------------------------------------
+# The face's own texture. The patch's vertices sample the scan's texture atlas, and a triangle whose corners fall
+# in different atlas islands smears across the seams between them. So the region round the patches gets its own
+# UVs and a texture baked from a copy of the unpatched scan, with the painted eyes cut out of the copy: texels
+# whose rays find nothing there are filled from the skin round them.
+# ------------------------------------------------------------------------------------------------------------
+def _fill(rgb, w, smooth=6):
+    """Push-pull fill: texels with weight 0 take the colour of their surroundings, blended coarse to fine by how
+    much of each coarse texel was covered, then softened where nothing was baked."""
+    levels = [(rgb * w[..., None], w)]
+    while levels[-1][1].shape[0] > 1:
+        c, ww = levels[-1]
+        h = c.shape[0] // 2
+        levels.append((c.reshape(h, 2, h, 2, 3).mean(axis=(1, 3)), ww.reshape(h, 2, h, 2).mean(axis=(1, 3))))
+    col = levels[-1][0] / np.maximum(levels[-1][1], 1e-9)[..., None]
+    for c, ww in reversed(levels[:-1]):
+        up = col.repeat(2, axis=0).repeat(2, axis=1)
+        a = np.clip(2.0 * ww, 0.0, 1.0)[..., None]
+        col = c / np.maximum(ww, 1e-9)[..., None] * a + up * (1.0 - a)
+    hole = w < 0.5
+    for _ in range(smooth):
+        blur = (col + np.roll(col, 1, 0) + np.roll(col, -1, 0) + np.roll(col, 1, 1) + np.roll(col, -1, 1)) / 5.0
+        col[hole] = blur[hole]
+    return col
+
+
+def _skin_fill(src, masks, dark=0.75, power=2.0):
+    """Makes a material for src's faces inside masks whose colour is the skin round the mask, spread inward per
+    vertex by inverse distance (dark samples, liner and brow paint, are left out). Returns it and the faces."""
+    me = src.data
+    gone = [p.index for p in me.polygons
+            if any(p.center.y > ymin and _inside(poly, p.center.x, p.center.z) for poly, ymin in masks)]
+    gone_set = set(gone)
+    inner = {v for fi in gone for v in me.polygons[fi].vertices}
+    images = {}
+    uvl = me.uv_layers.active.data
+    edge = {}
+    for p in me.polygons:
+        if p.index in gone_set:
+            continue
+        for v, li in zip(p.vertices, p.loop_indices):
+            if v not in inner or v in edge:
+                continue
+            mat = me.materials[p.material_index]
+            node = next((n for n in mat.node_tree.nodes if n.type == "TEX_IMAGE" and n.image), None) if mat else None
+            if node is None:
+                continue
+            im = node.image
+            if im.name not in images:
+                a = np.empty(im.size[0] * im.size[1] * 4, dtype=np.float32)
+                im.pixels.foreach_get(a)
+                images[im.name] = a.reshape(im.size[1], im.size[0], 4)
+            a = images[im.name]
+            u, w = uvl[li].uv
+            edge[v] = a[int(np.clip(w, 0, 1) * (a.shape[0] - 1)), int(np.clip(u, 0, 1) * (a.shape[1] - 1)), :3]
+    ev = np.array(list(edge.keys()))
+    ec = np.array(list(edge.values()), dtype=np.float64)
+    lum = ec @ np.array([0.3, 0.59, 0.11])
+    good = lum >= dark * np.median(lum)
+    ev, ec = ev[good], ec[good]
+    # image pixels hold sRGB values, while a float colour attribute is linear
+    ec = np.where(ec <= 0.04045, ec / 12.92, ((ec + 0.055) / 1.055) ** 2.4)
+    kept = dict(zip(ev.tolist(), ec))
+    ep = np.array([me.vertices[v].co[:] for v in ev])
+    attr = me.color_attributes.new("skin_fill", "FLOAT_COLOR", "POINT")
+    for v in inner:
+        if v in kept:
+            c = kept[v]
+        else:
+            d = np.linalg.norm(ep - np.array(me.vertices[v].co[:]), axis=1)
+            wt = 1.0 / np.maximum(d, 1e-4) ** power
+            c = (ec * wt[:, None]).sum(axis=0) / wt.sum()
+        attr.data[v].color = (float(c[0]), float(c[1]), float(c[2]), 1.0)
+    mat = bpy.data.materials.new("skin_fill")
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    emit = nt.nodes.new("ShaderNodeEmission")
+    col = nt.nodes.new("ShaderNodeVertexColor")
+    col.layer_name = "skin_fill"
+    nt.links.new(col.outputs["Color"], emit.inputs["Color"])
+    nt.links.new(emit.outputs["Emission"], out.inputs["Surface"])
+    return mat, gone
+
+
+def bake_face(mesh, src, boxes, masks, skip_mats, size, outdir):
+    """Gives mesh's faces inside boxes ((x0, x1, z0, z1, ymax) each) new UVs and a material with a texture baked
+    from src (the unpatched scan); src faces inside masks ((polygon in x, z, ymin) each) show plain skin instead."""
+    fill_mat, gone = _skin_fill(src, masks)
+    me = mesh.data
+    faces = [p.index for p in me.polygons if p.material_index not in skip_mats and
+             any(x0 < p.center.x < x1 and z0 < p.center.z < z1 and p.center.y < ymax for x0, x1, z0, z1, ymax in boxes)]
+    used = sorted({v for fi in faces for v in me.polygons[fi].vertices})
+    remap = {v: i for i, v in enumerate(used)}
+    tmp = nb.mesh_object("face_bake_target", [me.vertices[v].co[:] for v in used],
+                         [[remap[v] for v in me.polygons[fi].vertices] for fi in faces])
+    tmp.data.uv_layers.new(name="UVMap")
+    nb.activate(tmp)
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.uv.smart_project(angle_limit=math.radians(70), island_margin=0.003, area_weight=0.0)
+    bpy.ops.uv.pack_islands(rotate=True, margin=0.003)
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    im = bpy.data.images.new("face_bake", size, size, alpha=True)
+    im.pixels.foreach_set(np.zeros(size * size * 4, dtype=np.float32))
+    mat, nt, bsdf = nb.new_material("face_bake")
+    tex = nb.image_node(nt, im, extension="EXTEND")
+    nt.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+    bsdf.inputs["Roughness"].default_value = 0.55
+    nt.nodes.active = tex
+    tmp.data.materials.append(mat)
+    # the source shows its base colour unlit: an emission shader fed from its image, put back afterwards
+    rewired = []
+    for sm in src.data.materials:
+        if sm is None or not sm.node_tree:
+            continue
+        snt = sm.node_tree
+        out = next(n for n in snt.nodes if n.type == "OUTPUT_MATERIAL")
+        keep = out.inputs["Surface"].links[0].from_socket if out.inputs["Surface"].links else None
+        emit = snt.nodes.new("ShaderNodeEmission")
+        b = next((n for n in snt.nodes if n.type == "BSDF_PRINCIPLED"), None)
+        link = b.inputs["Base Color"].links[0] if b and b.inputs["Base Color"].links else None
+        if link:
+            snt.links.new(link.from_socket, emit.inputs["Color"])
+        elif b:
+            emit.inputs["Color"].default_value = b.inputs["Base Color"].default_value
+        snt.links.new(emit.outputs["Emission"], out.inputs["Surface"])
+        rewired.append((snt, out, keep, emit))
+    fnt = fill_mat.node_tree
+    rewired.append((fnt, next(n for n in fnt.nodes if n.type == "OUTPUT_MATERIAL"), None,
+                    next(n for n in fnt.nodes if n.type == "EMISSION")))
+    src.data.materials.append(fill_mat)
+    slot = len(src.data.materials) - 1
+    for fi in gone:
+        src.data.polygons[fi].material_index = slot
+    sc = bpy.context.scene
+    sc.render.engine = "CYCLES"
+    sc.cycles.device = "CPU"
+    sc.cycles.samples = 1
+    nb.activate(tmp)
+    src.select_set(True)
+    bpy.ops.object.bake(type="EMIT", use_selected_to_active=True, cage_extrusion=0.004, max_ray_distance=0.012,
+                        margin=0)
+    px = np.empty(size * size * 4, dtype=np.float32)
+    im.pixels.foreach_get(px)
+    # a ray that finds nothing writes black too, so a second pass with the source all white marks the hits
+    cov = bpy.data.images.new("face_bake_cover", size, size, alpha=False)
+    cov.pixels.foreach_set(np.zeros(size * size * 4, dtype=np.float32))
+    tex.image = cov
+    for snt, out, keep, emit in rewired:
+        for lk in list(emit.inputs["Color"].links):
+            snt.links.remove(lk)
+        emit.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+    bpy.ops.object.bake(type="EMIT", use_selected_to_active=True, cage_extrusion=0.004, max_ray_distance=0.012,
+                        margin=0)
+    cp = np.empty(size * size * 4, dtype=np.float32)
+    cov.pixels.foreach_get(cp)
+    tex.image = im
+    bpy.data.images.remove(cov)
+    for snt, out, keep, emit in rewired:
+        if keep is not None:
+            snt.links.new(keep, out.inputs["Surface"])
+        snt.nodes.remove(emit)
+    px = px.reshape(size, size, 4)
+    w = (cp.reshape(size, size, 4)[..., 0] > 0.5).astype(np.float64)
+    filled = np.ones((size, size, 4), dtype=np.float32)
+    filled[..., :3] = _fill(px[..., :3].astype(np.float64), w)
+    im.pixels.foreach_set(filled.ravel())
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
+        im.filepath_raw = os.path.join(outdir, "face_bake.png")
+        im.file_format = "PNG"
+        im.save()
+    im.pack()
+
+    slot = len(me.materials)
+    me.materials.append(mat)
+    uvs, tuv = me.uv_layers.active.data, tmp.data.uv_layers.active.data
+    for i, fi in enumerate(faces):
+        p, tp = me.polygons[fi], tmp.data.polygons[i]
+        p.material_index = slot
+        for k, li in enumerate(p.loop_indices):
+            uvs[li].uv = tuv[tp.loop_start + k].uv
+    bpy.data.objects.remove(tmp, do_unlink=True)
+    return {"faces": len(faces), "source_cut": len(gone), "hit": round(float(w.mean()), 3)}
+
+
 def move_eye_joint(arm, joint, E):
     """Puts the eye joint at the eyeball centre (the eyeball turns about it), keeping its direction and length."""
     nb.activate(arm)
@@ -604,6 +803,13 @@ def main():
         mesh.data.materials.append(m)
     slots = {n: mesh.data.materials.find(m.name) for n, m in mats.items()}
 
+    src = mesh.copy()
+    src.data = mesh.data.copy()
+    src.name = "face_bake_source"
+    bpy.context.scene.collection.objects.link(src)
+    src.modifiers.clear()
+    src.shape_key_clear()
+
     bm = bmesh.new()
     bm.from_mesh(mesh.data)
     L = {"deform": bm.verts.layers.deform.verify(), "uv": bm.loops.layers.uv.active,
@@ -621,6 +827,14 @@ def main():
     bm.to_mesh(mesh.data)
     bm.free()
     mesh.data.update()
+    masks = [report[j].pop("_mask") for j in ("eye_l", "eye_r")]
+    el, er = report["eye_l"]["centre"], report["eye_r"]["centre"]
+    boxes = [(er[0] - 0.03, el[0] + 0.03, ez - 0.03, ez + 0.024, max(el[1], er[1]) + 0.004)]
+    report["bake"] = bake_face(mesh, src, boxes, masks, set(slots.values()), BAKE_SIZE,
+                               os.path.dirname(os.path.abspath(a["out"])))
+    src_data = src.data
+    bpy.data.objects.remove(src, do_unlink=True)
+    bpy.data.meshes.remove(src_data)
     for joint in ("eye_l", "eye_r"):
         if joint in arm.data.bones:
             report[joint]["joint_moved_mm"] = round(1000 * move_eye_joint(arm, joint, report[joint]["centre"]), 2)
