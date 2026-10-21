@@ -26,12 +26,25 @@ State on 2026-10-18 (origin/main at ef99ba1). The Core porting is done. The demo
 - **Screens:** the dialogue-loop choice screen for CHC and HE (`docs/CHOICE_SCREEN.md`), the cutscene framework for CG, the quick-time event screen for QTE, and the dialogue backlog, skip and settings menu. Their maps (`Choice`, `Cutscene`, `Qte`) come from commandlets.
 - **Asset intake:** `docs/ASSET_INTAKE.md`.
 
+**Merged 2026-10-21, second batch** (work that needs no voice, art or music while the user generates them):
+- **Asset intake:**
+  - Character textures import onto a textured master.
+  - `FTImportProp` imports props.
+  - `FTImportAudio` imports music and sound by cue id (`Data/Audio/cues.json`, BS.1770 loudness and true-peak checks per bus).
+  - `FTImportAudio -Voice` imports voice by line id (gitignored `Data/Voice`).
+  - `FTValidateAssets` lists every expected asset as missing, failed, delivered or imported (`docs/ASSET_INTAKE.md`).
+- **Playback:** `UFTAudioSubsystem` plays story cues (music cross-fades, stingers, ambience) and each line's voice, and fires `OnVoiceLine`.
+- **Data per step:**
+  - an encounter line-up for all 40 fight steps;
+  - QTE tables, cutscene shot lists and field goals for every co-op QTE, CG and field step.
+- **Screens:**
+  - Banter (BNT) and Mini (MINI) replace the stub card. Their maps come from `FTBuildBanterWorld` and `FTBuildMiniWorld`.
+  - The battle screen gets aim mode with weak points (extra damage) and defence judgement on the timeline's tells (`docs/BATTLE_AIM.md`).
+
 Next, still without voice, art or music:
-- Real data for the new screens: dialogue loops (story work, gitignored), cutscene shot lists and QTE tables per step.
-- Wire DefenceTimeline tells into the battle screen's presentation, and aim with weak points.
-- Banter and mini-game screens (still the stub card).
+- Wire the speaking character's face track (`VoiceTrackFile`) and voice-aware auto-advance into the story director.
+- Loop points and the conductor following the cue's music (`docs/ASSET_INTAKE.md`, gaps).
 - Balance across every encounter, navmesh and localisation.
-- Close the intake gaps in `docs/ASSET_INTAKE.md`: character textures, VO playback by line id, audio buses and loudness, music import.
 
 Phase 0, the shared surface the streams built on:
 
