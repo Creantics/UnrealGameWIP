@@ -44,6 +44,7 @@ The rig pipeline was copied from newengine's `tools/blender/` on 2026-10-18. The
 | `rig_validate.py` | Checks a rigged character against the rig rules. |
 | `rig_fit.py`, `fit_canonical.py`, `bake_to_canonical.py`, `retarget_maps/` | Fit the canonical skeleton to a character and bake Rigify rigs onto it. |
 | `ne_blender.py` | Shared helpers: scene reset and glTF export profiles. |
+| `prep_scan.py`, `rig_scan.py` | Take a generated or scanned character mesh to a rigged lead glb (see below). |
 
 ```
 blender -b --factory-startup --python-exit-code 1 --python tools/blender/make_rig_template.py -- --out <dir>
@@ -55,6 +56,21 @@ Both ran from this repo on Blender 5.0.1. `proof_head.glb` came out at 745,624 b
 Blender 5.2's glTF exporter writes each bone's children sorted by name, not in creation order. That breaks the canonical joint order that `check_glb` and `rig_validate` (R12) require. `ne_blender.export_rig` keeps creation order for the duration of the export, by swapping the exporter's `_sort_by_name` out and restoring it afterwards. The swap is skipped on exporters that don't have that function. newengine's copy of `ne_blender.py` doesn't have this fix yet.
 
 The lead scripts can also build inside a running Blender (through the Blender MCP add-on, for example). `reset_scene` calls `read_factory_settings`, which a live session can't run, so replace `make_leads.nb.reset_scene` with a function that deletes the scene's objects and data before calling `build_character`.
+
+## Generated or scanned characters
+
+A character mesh from an image-to-3D service or a scan arrives as one dense textured mesh with no rig. Two scripts take it to a lead glb:
+
+1. **`prep_scan.py`** orients the mesh so it faces -Y, scales it to `--height`, puts its soles on z = 0 and brings it down to game size. It has two ways to cut the mesh down:
+   - The default decimates the mesh to `--faces` triangles and shrinks its textures to `--tex`.
+   - `--retopo QUADS` builds a clean mesh instead. A voxel remesh closes the scan into one shell, then QuadriFlow lays about QUADS quads over it, mirrored across x = 0. Smart UV project and pack give it new UVs, and Cycles bakes the full scan onto it: base colour, ORM and a tangent-space normal map.
+
+   `--grid DIR` renders orthographic front and side views on a 5 cm grid, for reading off the landmarks. `grid.json` gives the pixel-to-metre mapping. The glTF importer leaves objects in quaternion rotation mode, so the script switches to XYZ before it turns the mesh.
+2. **Landmarks:** the 14 joints `fit_canonical.py` needs, read off the grid views, go into a JSON file of `{name: [x, y, z]}` in metres. `_l` is +x, the character's left.
+3. **`rig_scan.py`** runs `fit_canonical` (joint fit and skinning), then swaps its `tpose` clip for `make_leads`' idle and walk. That gives the same `idle`, `rom` and `walk` clips as the other leads. It checks the result with `make_leads.check_glb(face=False)`.
+   - `--skirt HEM,TOP,FOLLOW,HALF_WIDTH` reweights a tunic or skirt so it doesn't tear between the legs. Between the two heights, the weight blends from the pelvis to the thighs, with a soft left/right split. Vertices beyond the half width (the hands) keep their weights.
+   - `--preview DIR` renders the rest pose in x-ray with the landmark joints marked, plus two walk frames.
+4. Import with `FTImportCharacter -Role=lead -Face=0`, because the mesh has no face shapes. `-Source` takes an absolute path, so a private model can stay outside the repo. Then run `FTBuildRig` and `FTBuildLeadsWorld`.
 
 ## Into Unreal
 

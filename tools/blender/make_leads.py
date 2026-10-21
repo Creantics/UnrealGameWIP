@@ -788,14 +788,16 @@ def make_walk(arm, joints, arm_z):
     return act
 
 
-def check_glb(path):
+def check_glb(path, face=True):
+    """face=False is for scanned leads (rig_scan.py), which have no face shapes."""
     doc = nb.read_glb_json(path)
     assert len(doc["meshes"]) == 1, "expected one mesh"
     m = doc["meshes"][0]
-    names = m.get("extras", {}).get("targetNames")
-    assert names == fsp.ALL_SHAPES, "targetNames missing or out of order"
-    for p in m["primitives"]:
-        assert len(p.get("targets", [])) == len(fsp.ALL_SHAPES), "a primitive lacks the face targets"
+    names = m.get("extras", {}).get("targetNames") or []
+    if face:
+        assert names == fsp.ALL_SHAPES, "targetNames missing or out of order"
+        for p in m["primitives"]:
+            assert len(p.get("targets", [])) == len(fsp.ALL_SHAPES), "a primitive lacks the face targets"
     joints = [doc["nodes"][j]["name"] for j in doc["skins"][0]["joints"]]
     assert joints == rs.JOINT_NAMES, "skin joint order differs from the canonical order"
     anims = sorted(a["name"] for a in doc.get("animations", []))
