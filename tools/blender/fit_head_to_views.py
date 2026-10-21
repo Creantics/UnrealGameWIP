@@ -12,7 +12,8 @@ A side panel drawn a little turned towards the viewer (--turn degrees) is squeez
   1. z is warped piecewise-linearly so the mesh's crown, nose tip and chin land on the panel's;
   2. the head is scaled once in x by the cranium width (ears left out) and in y by the depth at the brow, then
      the head is tilted about the ear to the pitch that best matches the side view, and the lower face is
-     widened to the jaw's width with a scale ramping from the brow to just above the chin;
+     widened to the jaw's width with a scale ramping from the brow to just above the chin, and the dome's width
+     is matched to the panel's row by row from the crown to the brow (no features there to caricature);
   3. each pass moves the front and back edges in the side view onto the panel's, row by row from the nose to the
      chin (smoothed over --sigma rows), each fading to nothing at mid-depth, so the nose, lips and nape follow
      the profile while the dome, the brow, the ears and the jaw keep the base's shape; below the lips the front
@@ -303,6 +304,35 @@ class HeadFitter:
         Q[up, 0] = x0 + (P[up, 0] - x0) * (1.0 + (sc - 1.0) * self.weight(z))
         self.set_world(P, Q)
 
+    def cranium_pass(self, sigma=2.0, fade=6):
+        """Matches the dome's width to the panel's row by row, crown to brow: one base cranium scale leaves a
+        boxy dome (too wide high up, too narrow at the temples) where the panel draws an egg. No features above
+        the brow, so a per-row silhouette match is safe there. The x scale about the mirror plane is smoothed over
+        sigma rows and fades to 1 over `fade` rows above the brow or the ears, whichever comes first."""
+        P = self.world()
+        up = np.flatnonzero(P[:, 2] > self.cut)
+        k = self.mpp_s / self.mpp_f
+        mesh = self.render_front()
+        stop = int(0.75 * (self.nose_s + 0.5) * k)
+        for m in (self.sheet_f, mesh):
+            ears = np.flatnonzero(ear_rows(m, int((self.nose_s + 0.5) * k), int((self.chin_s + 0.5) * k)))
+            if len(ears):
+                stop = min(stop, int(ears[0]) - 1)
+        es, em = extents(self.sheet_f[:stop]), extents(mesh[:stop])
+        rows = np.flatnonzero((es[:, 0] >= 0) & (em[:, 0] >= 0) & (np.arange(stop) >= 2))
+        r = np.ones(stop)
+        r[rows] = (es[rows, 1] - es[rows, 0] + 1) / (em[rows, 1] - em[rows, 0] + 1)
+        r[:rows[0]] = r[rows[0]]
+        r = gauss_rows(r, sigma) - 1.0
+        r *= np.clip((stop - 1 - np.arange(stop)) / float(fade), 0.0, 1.0)
+        print("fit_head_to_views: cranium rows 0..%d, x scale %.3f..%.3f" % (stop, 1 + r.min(), 1 + r.max()))
+        v = (self.top - P[up, 2]) / self.mpp_f - 0.5
+        sc = 1.0 + np.interp(v, np.arange(stop), r, left=r[0], right=0.0)
+        x0 = self.head_x()
+        Q = P.copy()
+        Q[up, 0] = x0 + (P[up, 0] - x0) * (1.0 + (sc - 1.0) * self.weight(P[up, 2]))
+        self.set_world(P, Q)
+
     def front_profile(self, zs, x=None):
         """World y of the face's front surface at each z: rays along +y at the midline (or at x) onto the
         evaluated (subdivided) surface."""
@@ -343,6 +373,9 @@ class HeadFitter:
         up = np.flatnonzero(P[:, 2] > self.cut)
         dx = np.abs(P[up, 0] - x0)
         wz = np.exp(-0.5 * ((P[up, 2] - float(np.mean(zb))) / radius) ** 2)
+        # nothing at the lids: the band fades in from the top of the eyeball, so the lids stay on the eyes
+        r_eye = float(np.mean([max(ch.dimensions) for ch in self.obj.children if ch.matrix_world.translation.z > self.cut])) / 2
+        wz *= np.clip((P[up, 2] - z_eye - r_eye) / 0.006, 0.0, 1.0)
         wx = np.clip((half + 0.04 - dx) / 0.025, 0.0, 1.0)
         wx = wx * wx * (3 - 2 * wx)
         # the front surface only: within 25 mm of the face's front at this height
@@ -562,6 +595,7 @@ def main():
     fit.pitch_pass()
     fit.z_pass()
     fit.jaw_pass()
+    fit.cranium_pass()
     print("fit_head_to_views: scaled IoU front %.4f side %.4f" % fit.iou())
     for i in range(int(a["iters"])):
         fit.profile_pass()
