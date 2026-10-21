@@ -8,7 +8,7 @@ Ids and formats only. Story text, names and line text never go in this repo (it 
 |---|---|---|---|
 | Skinned character (`.glb`) | `-run=FTImportCharacter`, then `-run=FTBuildRig` | `Data/Models/` | Works (proof head: 7/7 face bones, 56/56 shapes) |
 | Character textures | None. Materials import as flat factors only | not defined yet | Gap, see 2 |
-| Static mesh / prop | None yet (`docs/BLENDER.md`) | `Data/Models/` | Gap |
+| Static mesh / prop | `FTImportProp` (section 2) | `Data/Models/` | Defined |
 | Voice line (`.wav`) + lip-sync track (`.nface`) | Track: `UFTFaceComponent::PlayTrack`. Audio: none | not defined yet | Partly |
 | Music | `UFTConductorComponent` reads a playing audio component. No import step | not defined yet | Partly |
 | Concept art | Not imported | outside the repo | Convention only |
@@ -141,6 +141,14 @@ The emissive level is max(emissive factor) × emissive strength. Every message n
 
 Checklist, texture-ready: [ ] no baked light, shadow or hatch; [ ] pockets in base colour, no vertex colour; [ ] Glow/Eye/Skill/Rule in the names of the materials that must glow; [ ] import passes with the right `-Pack=` and `-Role=`.
 
+### Props and static meshes
+
+```
+UnrealEditor-Cmd ForgottenThird.uproject -run=FTImportProp -Source=Data/Models/<stem>.glb -Dest=/Game/Props/<Name> -Pack=<pack> -NullRHI -unattended -nopause -nosplash
+```
+
+The same rules as above with the prop limits: textures up to 1024 px, no skin needed, the Lattice emissive split with `-Pack=Lattice`. A skinned file is refused (import it with `FTImportCharacter`). Materials go onto the same two masters as characters. The log gives each static mesh's triangle count, material slots and simple collision shapes; a mesh with no simple collision is a warning (Interchange adds a box unless the file carries its own `UCX_` shapes). Pass means exit 0 and `ok` on the last line.
+
 Validation: the import's asset-rules line. Look at the result with `FTBuildDemoWorld -Style=<pack>` (see `STYLE_PACKS_UE.md`); nobody has seen the style picture rendered yet.
 
 ## 3. Voice
@@ -247,7 +255,7 @@ Checklist: [ ] white background; [ ] one subject; [ ] two or more angles; [ ] ne
 
 ## Gaps, in one list
 
-1. No static-mesh importer. The textured character master's shader compile is only seen in an attended editor.
+1. The textured master's shader compile is only seen in an attended editor (commandlets run with `-NullRHI`).
 2. No game-side voice lookup by line id, and the lip-sync bake keys files by text hash, not by the story id.
 3. No loudness target for voice or music, and no voice or music bus routing in Unreal.
 4. No `.nface` validator, and the lip-sync tools have not been run from this repo.
