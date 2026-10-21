@@ -2,15 +2,66 @@
   "version": 1,
   "default": {
     "shots": [
-      { "spot": "spot_a", "framing": "wide",          "duration": 3.0, "subject": "subj_a", "move": "push_in", "amount": 1.5 },
-      { "spot": "spot_b", "framing": "two_shot",      "duration": 2.5, "subject": "subj_a", "subject2": "subj_b", "transition": "blend", "blend": 0.8 },
+      { "spot": "spot_a", "framing": "wide", "duration": 3.0, "subject": "subj_a", "move": "push_in", "amount": 1.5 },
+      { "spot": "spot_b", "framing": "two_shot", "duration": 2.5, "subject": "subj_a", "subject2": "subj_b", "transition": "blend", "blend": 0.8 },
       { "spot": "spot_c", "framing": "over_shoulder", "duration": 2.0, "subject": "subj_b", "subject2": "subj_a" },
       { "spot": "spot_d", "framing": "over_shoulder", "duration": 2.0, "subject": "subj_a", "subject2": "subj_b" },
-      { "spot": "spot_e", "framing": "close",         "duration": 2.0, "subject": "subj_c", "move": "push_in", "amount": 0.3 },
-      { "spot": "spot_f", "framing": "insert",        "duration": 1.5, "subject": "subj_c" },
-      { "spot": "spot_a", "framing": "medium",        "duration": 3.0, "subject": "subj_b", "move": "orbit", "amount": 25, "transition": "blend", "blend": 1.0 },
-      { "spot": "spot_b", "framing": "wide",          "duration": 3.0, "subject": "subj_c", "move": "pull_out", "amount": 2.0 }
+      { "spot": "spot_e", "framing": "close", "duration": 2.0, "subject": "subj_c", "move": "push_in", "amount": 0.3 },
+      { "spot": "spot_f", "framing": "insert", "duration": 1.5, "subject": "subj_c" },
+      { "spot": "spot_a", "framing": "medium", "duration": 3.0, "subject": "subj_b", "move": "orbit", "amount": 25, "transition": "blend", "blend": 1.0 },
+      { "spot": "spot_b", "framing": "wide", "duration": 3.0, "subject": "subj_c", "move": "pull_out", "amount": 2.0 }
     ]
   },
-  "cutscenes": []
+  "cutscenes": [
+    { "scene": "SC-15-Q1", "beat": 14, "step": 0, "shots": [
+      { "spot": "spot_a", "framing": "wide", "duration": 3.1, "subject": "subj_c", "move": "push_in", "amount": 0.9 },
+      { "spot": "spot_a", "framing": "two_shot", "duration": 2.3, "subject": "subj_a", "subject2": "subj_c", "move": "pull_out", "amount": 1.0 },
+      { "spot": "spot_b", "framing": "close", "duration": 3.2, "subject": "subj_a", "transition": "blend", "blend": 0.8 },
+      { "spot": "spot_c", "framing": "insert", "duration": 1.9, "subject": "subj_b", "move": "pan", "amount": 20, "transition": "blend", "blend": 1.1 },
+      { "spot": "spot_c", "framing": "insert", "duration": 3.3, "subject": "subj_c", "move": "orbit", "amount": 20 }
+    ] },
+    { "scene": "SC-19-Q2", "beat": 17, "step": 0, "shots": [
+      { "spot": "spot_a", "framing": "wide", "duration": 3.5, "subject": "subj_b", "move": "push_in", "amount": 1.6 },
+      { "spot": "spot_b", "framing": "two_shot", "duration": 2.7, "subject": "subj_c", "subject2": "subj_b", "move": "orbit", "amount": 45 },
+      { "spot": "spot_a", "framing": "over_shoulder", "duration": 1.7, "subject": "subj_b", "subject2": "subj_c", "move": "push_in", "amount": 1.6 },
+      { "spot": "spot_e", "framing": "insert", "duration": 2.2, "subject": "subj_a", "move": "pan", "amount": 30 },
+      { "spot": "spot_d", "framing": "two_shot", "duration": 2.8, "subject": "subj_b", "subject2": "subj_a", "move": "orbit", "amount": 20 }
+    ] },
+    { "scene": "SC-19-Q2", "beat": 19, "step": 0, "shots": [
+      { "spot": "spot_a", "framing": "wide", "duration": 2.4, "subject": "subj_b", "move": "pan", "amount": 15 },
+      { "spot": "spot_c", "framing": "medium", "duration": 2.0, "subject": "subj_b", "move": "orbit", "amount": 30, "transition": "blend", "blend": 0.9 },
+      { "spot": "spot_a", "framing": "close", "duration": 3.2, "subject": "subj_b", "move": "pull_out", "amount": 1.4 },
+      { "spot": "spot_e", "framing": "medium", "duration": 2.0, "subject": "subj_c", "move": "pan", "amount": 15 },
+      { "spot": "spot_a", "framing": "two_shot", "duration": 2.1, "subject": "subj_c", "subject2": "subj_a", "move": "push_in", "amount": 1.5, "transition": "blend", "blend": 0.9 },
+      { "spot": "spot_f", "framing": "close", "duration": 2.1, "subject": "subj_c", "move": "orbit", "amount": 30 }
+    ] },
+    { "scene": "SC-19-Q2", "beat": 54, "step": 0, "shots": [
+      { "spot": "spot_a", "framing": "wide", "duration": 1.8, "subject": "subj_a" },
+      { "spot": "spot_b", "framing": "medium", "duration": 3.2, "subject": "subj_b", "transition": "blend", "blend": 0.5 },
+      { "spot": "spot_c", "framing": "close", "duration": 2.3, "subject": "subj_c", "move": "pull_out", "amount": 1.9 },
+      { "spot": "spot_b", "framing": "medium", "duration": 2.1, "subject": "subj_a" },
+      { "spot": "spot_a", "framing": "medium", "duration": 2.9, "subject": "subj_a", "move": "pan", "amount": 15 },
+      { "spot": "spot_e", "framing": "insert", "duration": 3.4, "subject": "subj_c", "move": "push_in", "amount": 1.5, "transition": "blend", "blend": 1.0 },
+      { "spot": "spot_b", "framing": "two_shot", "duration": 1.8, "subject": "subj_a", "subject2": "subj_c", "move": "push_in", "amount": 1.0 }
+    ] },
+    { "scene": "SC-19-Q2", "beat": 102, "step": 0, "shots": [
+      { "spot": "spot_a", "framing": "wide", "duration": 2.6, "subject": "subj_b", "move": "pull_out", "amount": 1.9 },
+      { "spot": "spot_b", "framing": "two_shot", "duration": 1.7, "subject": "subj_c", "subject2": "subj_b", "move": "orbit", "amount": 20 },
+      { "spot": "spot_f", "framing": "insert", "duration": 2.7, "subject": "subj_a" },
+      { "spot": "spot_b", "framing": "medium", "duration": 2.3, "subject": "subj_b", "move": "pull_out", "amount": 1.3 },
+      { "spot": "spot_f", "framing": "two_shot", "duration": 3.3, "subject": "subj_a", "subject2": "subj_c", "move": "pull_out", "amount": 1.9 },
+      { "spot": "spot_e", "framing": "over_shoulder", "duration": 2.5, "subject": "subj_b", "subject2": "subj_a", "move": "pull_out", "amount": 1.4 },
+      { "spot": "spot_d", "framing": "insert", "duration": 3.5, "subject": "subj_a", "move": "pan", "amount": 20 }
+    ] },
+    { "scene": "SC-20-Q3", "beat": 7, "step": 1, "shots": [
+      { "spot": "spot_a", "framing": "wide", "duration": 2.9, "subject": "subj_b", "move": "push_in", "amount": 1.0 },
+      { "spot": "spot_c", "framing": "medium", "duration": 3.3, "subject": "subj_a", "move": "push_in", "amount": 1.6 },
+      { "spot": "spot_a", "framing": "close", "duration": 3.3, "subject": "subj_b", "move": "orbit", "amount": 45 },
+      { "spot": "spot_a", "framing": "medium", "duration": 2.0, "subject": "subj_c", "move": "pan", "amount": 20, "transition": "blend", "blend": 1.1 },
+      { "spot": "spot_e", "framing": "medium", "duration": 1.8, "subject": "subj_c", "move": "orbit", "amount": 20 },
+      { "spot": "spot_b", "framing": "two_shot", "duration": 2.8, "subject": "subj_c", "subject2": "subj_a", "move": "pan", "amount": 15 },
+      { "spot": "spot_e", "framing": "medium", "duration": 3.2, "subject": "subj_b", "move": "orbit", "amount": 20 },
+      { "spot": "spot_f", "framing": "close", "duration": 3.2, "subject": "subj_b", "move": "push_in", "amount": 0.5, "transition": "blend", "blend": 0.7 }
+    ] }
+  ]
 }

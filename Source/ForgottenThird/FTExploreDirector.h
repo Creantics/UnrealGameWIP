@@ -99,6 +99,10 @@ private:
 	// Story field step: the goal marker (metres), its actor, whether the pawn can use it, game
 	// seconds spent, and the HUD line.
 	ftcore::Vec2 FieldGoal;
+	// Optional waypoint the autopilot passes before the marker (Data/Field/goals.json).
+	ftcore::Vec2 FieldVia;
+	bool bFieldHasVia = false;
+	bool bFieldViaDone = false;
 	UPROPERTY(Transient)
 	TObjectPtr<AFTExploreSpot> GoalSpot;
 	bool bFieldReached = false;

@@ -183,6 +183,8 @@ an eased weight. The lens blends too.
    file and checks that every id it uses exists in the blockout map. If you add spots or subjects
    to the map, extend that test.
 
+Every CG step of the script has its own entry (3 to 8 shots, ids and numbers only); `default` is the fallback. `test_field_goals.cpp` checks the entries against the script's steps.
+
 Never put text in the file. Lines, captions and names belong to the story data, which isn't
 committed.
 
