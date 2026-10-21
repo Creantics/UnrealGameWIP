@@ -2,7 +2,8 @@
 
     blender -b fit.blend --python-exit-code 1 --python tools/blender/fit_head_to_views.py -- \\
         HEAD_MASKS --object NAME --out head.blend --mpp 0.00312,0.00319 --cut 1.598 --chin 0.254 \\
-        [--top 1.88] [--iters 2] [--sigma 4] [--ramp 0.04] [--turn 0] [--min 0.88,0.92] [--preview DIR]
+        [--top 1.88] [--iters 2] [--sigma 4] [--ramp 0.04] [--turn 0] [--face eye:40,nose:54,mouth:63] [--min 0.88,0.92]
+        [--preview DIR]
 
 HEAD_MASKS holds hull_from_views.py's front.png and side.png for the head panel (crown at the top row, side view
 facing right); --mpp is their metres per pixel (front,side). The panel's crown row sits at --top, the figure's
@@ -16,7 +17,10 @@ A side panel drawn a little turned towards the viewer (--turn degrees) is squeez
      chin (smoothed over --sigma rows), each fading to nothing at mid-depth, so the nose, lips and nape follow
      the profile while the dome, the brow, the ears and the jaw keep the base's shape; below the lips the front
      moves no further forward than the lips did (a drawn beard is not the chin);
-  4. a smooth grab brings the chin forward to 4 mm behind the lower lip if it was left receding.
+  4. a smooth grab brings the chin forward to 4 mm behind the lower lip if it was left receding;
+  5. --face gives the front panel's rows of the eye centres, the nose base and the mouth line (side panels are
+     often drawn chin-up, so their rows are not used for the features): the front of the face is remapped in z
+     to put the mesh's there, fixed at the forehead and the chin.
 A silhouette map row by row (as fit_to_views does for the body) turns a face into a caricature, so there is none
 here. Nothing below --cut moves; motion ramps in over --ramp metres above it. Prints the IoU of each view over
 crown..chin and exits 1 below --min (front,side), a sanity floor: the real check is the close-ups --preview
@@ -38,7 +42,7 @@ PAD = 30   # px of margin each side of the sheet columns in the renders
 def _args():
     argv = sys.argv[sys.argv.index("--") + 1:]
     a = {"masks": argv[0], "object": None, "out": None, "mpp": None, "cut": None, "chin": None, "top": "1.88",
-         "iters": "2", "sigma": "4", "ramp": "0.04", "min": "0.88,0.92", "turn": "0", "preview": None}
+         "iters": "2", "sigma": "4", "ramp": "0.04", "min": "0.88,0.92", "turn": "0", "face": "", "preview": None}
     i = 1
     while i < len(argv):
         k = argv[i][2:]
@@ -93,8 +97,9 @@ def ear_rows(m, nose, chin):
 
 
 class HeadFitter:
-    def __init__(self, obj, masks, mpp, cut, top, chin, sigma, ramp, turn=0.0):
+    def __init__(self, obj, masks, mpp, cut, top, chin, sigma, ramp, turn=0.0, face=None):
         self.obj, self.cut, self.top, self.sigma, self.ramp = obj, cut, top, sigma, ramp
+        self.face = face or {}
         self.mpp_f, self.mpp_s = mpp
         self.front = load_mask(os.path.join(masks, "front.png"))
         self.side = load_mask(os.path.join(masks, "side.png"))
@@ -112,14 +117,16 @@ class HeadFitter:
             self._unturn(np.radians(turn))
 
     def _unturn(self, t):
-        """A side panel drawn turned t towards the viewer shows depth*cos t + width*sin t: squeeze its columns
-        about the brow-row centre so the brow depth is the true depth, with the width from the front panel."""
+        """A rounded head (an ellipse in plan, depth d and width w) drawn turned t towards the viewer shows
+        sqrt((d cos t)^2 + (w sin t)^2): squeeze its columns about the brow-row centre so the brow depth is the
+        true depth, with the width from the front panel. (A box's d cos t + w sin t overstates the turn's
+        widening several times and takes real depth off.)"""
         brow = np.arange(int(0.72 * self.nose_s), int(0.78 * self.nose_s) + 1)
         e = extents(self.sheet_s[brow])
         ds = float((e[:, 1] - e[:, 0] + 1).mean()) * self.mpp_s
         ef = extents(self.sheet_f[(brow * self.mpp_s / self.mpp_f).astype(int)])
         wf = float((ef[:, 1] - ef[:, 0] + 1).mean()) * self.mpp_f
-        k = (ds - wf * np.sin(t)) / np.cos(t) / ds
+        k = np.sqrt(max(ds ** 2 - (wf * np.sin(t)) ** 2, (0.5 * ds) ** 2)) / np.cos(t) / ds
         c = float(e.mean())
         src = np.clip(np.round(c + (np.arange(self.ws) - c) / k).astype(int), 0, self.ws - 1)
         self.sheet_s = self.sheet_s[:, src]
@@ -295,6 +302,86 @@ class HeadFitter:
         Q[up, 0] = x0 + (P[up, 0] - x0) * (1.0 + (sc - 1.0) * self.weight(z))
         self.set_world(P, Q)
 
+    def mesh_face_rows(self):
+        """World z of the mesh's eye centre (its eyeballs), nose base (subnasale) and mouth line (stomion): the
+        last two from the midline front profile of the subdivided surface: the most set-back point under the nose
+        tip, and the deepest notch between the lips."""
+        P = self.world()
+        x0 = self.head_x()
+        eyes = [ch.matrix_world.translation.z for ch in self.obj.children if ch.matrix_world.translation.z > self.cut]
+        z_eye = float(np.mean(eyes))
+        # the front profile: rays along +y at the midline onto the evaluated (subdivided) surface
+        from mathutils.bvhtree import BVHTree
+        dg = bpy.context.evaluated_depsgraph_get()
+        ev = self.obj.evaluated_get(dg)
+        me = ev.to_mesh()
+        Mw = ev.matrix_world
+        bvh = BVHTree.FromPolygons([Mw @ v.co for v in me.vertices], [tuple(f.vertices) for f in me.polygons])
+        ev.to_mesh_clear()
+        y0 = float(P[:, 1].min()) - 0.1
+        zb = np.arange(float(self.z_s(self.chin_s)), z_eye, 0.001)
+        front = np.array([(bvh.ray_cast(Vector((x0, y0, z)), Vector((0, 1, 0)))[0] or Vector((0, 9, 0))).y
+                          for z in zb])
+        tip = int(np.argmin(front[3:-3])) + 3                  # nose tip: the most forward (-y) point
+        below = np.arange(max(tip - 40, 3), tip)
+        sub = int(below[np.argmax(front[below])])               # nose base: the deepest point under the tip
+        # mouth line: the deepest notch between the lips, 5..35 mm under the nose base, its depth measured
+        # against the most forward point within 7 mm above and below
+        cand = np.arange(max(sub - 35, 8), sub - 5)
+        notch = [front[i] - max(front[i - 7:i].min(), front[i + 1:i + 8].min()) for i in cand]
+        sto = int(cand[int(np.argmax(notch))])
+        return {"eye": z_eye, "nose": float(zb[sub]), "mouth": float(zb[sto])}
+
+    def face_pass(self):
+        """Moves the eyes, the nose base and the mouth line to the front panel's rows (--face), as one smooth
+        z remap over the front of the face: piecewise linear between those keys, fixed at the forehead (halfway
+        from the crown to the eyes) and at the chin, fading from the face's front to nothing at mid-depth so the
+        ears, the dome and the outline stay where the fit put them."""
+        if not self.face:
+            return
+        have = self.mesh_face_rows()
+        keys = sorted(k for k in self.face if k in have)
+        zb = [have[k] for k in keys]
+        zd = [float(self.z_f(self.face[k])) for k in keys]
+        for k, b, d in zip(keys, zb, zd):
+            print("fit_head_to_views: face %s z %.4f -> %.4f (%+.1f mm)" % (k, b, d, 1000 * (d - b)))
+        z_chin = float(self.z_s(self.chin_s))
+        z_fore = 0.5 * (self.top + max(zd))
+        order = np.argsort(zb)
+        zb = np.array([z_chin] + [zb[i] for i in order] + [z_fore])
+        zd = np.array([z_chin] + [zd[i] for i in order] + [z_fore])
+        if np.any(np.diff(zb) <= 0) or np.any(np.diff(zd) <= 0):
+            raise SystemExit("fit_head_to_views: --face rows are out of order against the chin and forehead")
+        P = self.world()
+        up = np.flatnonzero((P[:, 2] > z_chin) & (P[:, 2] < z_fore))
+        z = P[up, 2]
+        # the remap's kinks smoothed over ~8 mm so no row of the face creases
+        zg = np.arange(zb[0], zb[-1] + 0.0005, 0.0005)
+        dg_ = np.interp(zg, zb, zd) - zg
+        k = np.exp(-0.5 * (np.arange(-48, 49) * 0.0005 / 0.008) ** 2)
+        dg_ = np.convolve(np.pad(dg_, 48, mode="edge"), k / k.sum(), mode="valid")
+        dz = np.interp(z, zg, dg_)
+        # depth fraction per 2 mm band: 0 at the back of the head, 1 at the front of the cheeks (the nose and lips
+        # are left out of the front so they do not make it jump from band to band), both smoothed over ~12 mm
+        y = P[up, 1]
+        side = np.abs(P[up, 0] - self.head_x()) > 0.025
+        band = np.floor((z - z_chin) / 0.002).astype(int)
+        nb = band.max() + 1
+        yf, yb = np.full(nb, np.nan), np.full(nb, np.nan)
+        for b in np.unique(band):
+            yb[b] = y[band == b].max()
+            if (side & (band == b)).any():
+                yf[b] = y[side & (band == b)].min()
+        ar = np.arange(nb)
+        yf = gauss_rows(np.interp(ar, ar[~np.isnan(yf)], yf[~np.isnan(yf)]), 6)
+        yb = gauss_rows(np.interp(ar, ar[~np.isnan(yb)], yb[~np.isnan(yb)]), 6)
+        f = (yb[band] - y) / np.maximum(yb[band] - yf[band], 1e-4)
+        g = np.clip((f - 0.35) / 0.5, 0.0, 1.0)
+        g = g * g * (3 - 2 * g)
+        Q = P.copy()
+        Q[up, 2] += dz * g * self.weight(z)
+        self.set_world(P, Q)
+
     def chin_pass(self, setback=0.004, radius=0.025):
         """Brings the chin forward to `setback` behind the lower lip with a smooth grab (a Gaussian of `radius`
         about the chin point, front half only), when stretching the lower face has left it receding. The panel
@@ -426,7 +513,8 @@ def main():
         o.hide_render = o not in keep
     mpp = tuple(float(t) for t in a["mpp"].split(","))
     fit = HeadFitter(obj, a["masks"], mpp, float(a["cut"]), float(a["top"]), float(a["chin"]), float(a["sigma"]),
-                     float(a["ramp"]), float(a["turn"]))
+                     float(a["ramp"]), float(a["turn"]),
+                     {k: float(v) for k, v in (t.split(":") for t in a["face"].split(",") if t)})
     print("fit_head_to_views: start IoU front %.4f side %.4f" % fit.iou())
     fit.z_pass()
     fit.scale_pass()
@@ -439,6 +527,7 @@ def main():
         fit.profile_pass()
         print("fit_head_to_views: pass %d IoU front %.4f side %.4f" % ((i + 1,) + fit.iou()))
     fit.chin_pass()
+    fit.face_pass()
     res = fit.iou()
     if a["preview"]:
         os.makedirs(a["preview"], exist_ok=True)
