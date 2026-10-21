@@ -4,7 +4,11 @@ Written 2026-10-18, last updated 2026-10-20. Read `docs/HANDOFF_UE.md` in neweng
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
-## Resume here (updated 2026-10-20, Max plan)
+## Resume here (updated 2026-10-21, Max plan)
+
+- **CURRENT (2026-10-21): the playable alpha is on main (86a24e0) and plays start to end.** `gate.ps1 -Alpha` passes: `Alpha: FINISHED 73 scenes, 167 screens (40 battle, 91 field, 36 stub), 0 STUCK, 0 warnings` (8x clock, about 7 min; see `docs/ALPHA.md`). gate -Ubt green, 382 tests. Merged this round: encounter table, per-step field data, Banter and Mini screens (maps built), battle aim with weak points, audio playback and import, voice playback by line id (`FTImportAudio -Voice`), and `FTValidateAssets` (what's left to deliver, per id; `docs/ASSET_INTAKE.md`).
+- **The user is generating all art, music and voice**, from the private asset tracker. Work only on what doesn't need those assets. Next from `docs/PLAN.md`: face track and voice-aware auto-advance in the story director; loop points and the music conductor; balance, navmesh and localisation.
+- The older bullets below are history.
 
 - **Phase:** M0, the playable vertical slice, from `docs/ROADMAP.md`. Phase S (the story gate) is exited: Draft 95 passed the blind gate and scored 9.0/10 on a cold whole-script read.
 - **Done in M0 so far (2026-10-20):**
