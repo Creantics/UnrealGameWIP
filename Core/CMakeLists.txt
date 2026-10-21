@@ -29,6 +29,7 @@ else()
 endif()
 
 add_library(ftcore STATIC
+    src/AudioCues.cpp
     src/Backlog.cpp
     src/Battle.cpp
     src/Calibration.cpp
@@ -48,6 +49,7 @@ add_library(ftcore STATIC
     src/GameplayPlan.cpp
     src/Glb.cpp
     src/Json.cpp
+    src/Loudness.cpp
     src/Physics.cpp
     src/Qte.cpp
     src/Seen.cpp
@@ -62,6 +64,7 @@ add_library(ftcore STATIC
     src/TurnQueue.cpp
     src/Version.cpp
     src/Vfx.cpp
+    src/Wav.cpp
 )
 target_include_directories(ftcore PUBLIC include)
 target_link_libraries(ftcore PRIVATE ftcore_warnings)
@@ -88,6 +91,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_main.cpp
         tests/AllocCounter.cpp
         tests/AllocHook.cpp
+        tests/test_audio.cpp
         tests/test_backlog.cpp
         tests/test_battle.cpp
         tests/test_battle_demo.cpp
