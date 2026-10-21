@@ -17,7 +17,7 @@
 // Data/Voice/<LineId>.wav there) and plays it on the voice slider, stopping the previous line's voice
 // when the beat moves on. OnVoiceLine then fires with the line id and the clip's length, and
 // VoiceTrackFile gives the line's lip-sync track (Data/Voice/<LineId>.nface) for UFTFaceComponent::
-// PlayTrack. Voice files speak the story, so Data/Voice and Content/Voice stay out of git.
+// PlayTrack, and OnVoiceStopped fires when the beat moves on before or after the clip ends. Voice files speak the story, so Data/Voice and Content/Voice stay out of git.
 //
 // Until the audio is delivered nearly every cue has no sound: a cue missing from the manifest or
 // without an imported asset is silent and logged once at Display (never a warning, so headless runs
@@ -38,6 +38,7 @@ class UAudioComponent;
 class USoundBase;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFTVoiceLineEvent, const FString&, LineId, float, Seconds);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FFTVoiceStoppedEvent);
 
 UCLASS()
 class FORGOTTENTHIRD_API UFTAudioSubsystem : public UGameInstanceSubsystem, public FTickableGameObject
@@ -66,6 +67,9 @@ public:
 	// Fires when a line's voice starts.
 	UPROPERTY(BlueprintAssignable, Category = "Audio")
 	FFTVoiceLineEvent OnVoiceLine;
+	// Fires when the line's voice is let go (the beat moved on, or the subsystem shut down).
+	UPROPERTY(BlueprintAssignable, Category = "Audio")
+	FFTVoiceStoppedEvent OnVoiceStopped;
 	// The line whose voice is playing ("" when none).
 	const FString& GetVoiceLine() const { return VoiceLineId; }
 	bool IsVoicePlaying() const;

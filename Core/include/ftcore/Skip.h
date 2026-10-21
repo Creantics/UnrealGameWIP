@@ -15,7 +15,9 @@
 //
 // AutoAdvancer waits `delay` seconds once a line or direction is fully out, then answers Advance.
 // It never answers on a choice, a hold or a gameplay beat. Skip takes priority: the owner should
-// not run both in one frame.
+// not run both in one frame. When the line is voiced the owner passes voiceBusy while the clip
+// plays: nothing moves until it ends, then the box waits only `voiceTail` (the voice already gave
+// the player time to read).
 
 #include "ftcore/Api.h"
 #include "ftcore/Dialogue.h"
@@ -67,13 +69,20 @@ public:
     void setDelay(float seconds) { delay_ = seconds < 0.f ? 0.f : seconds; }
     float delay() const { return delay_; }
 
-    // One step of dt seconds: Advance once the delay has passed since the text was fully out.
-    FTCORE_API DialogueCommand update(float dt, const DialoguePresenter& presenter);
+    static constexpr float kDefaultVoiceTail = 0.4f;
+    void setVoiceTail(float seconds) { voiceTail_ = seconds < 0.f ? 0.f : seconds; }
+    float voiceTail() const { return voiceTail_; }
+
+    // One step of dt seconds: Advance once the delay has passed since the text was fully out, or
+    // voiceTail after the line's voice ended. voiceBusy: the line's voice is still playing.
+    FTCORE_API DialogueCommand update(float dt, const DialoguePresenter& presenter, bool voiceBusy = false);
 
 private:
     bool enabled_ = false;
     float delay_ = 1.5f;
+    float voiceTail_ = kDefaultVoiceTail;
     float timer_ = 0.f;
+    bool voiced_ = false; // this beat's voice played
     std::uint32_t epoch_ = kNone;
 };
 

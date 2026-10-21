@@ -36,6 +36,14 @@
 // Auto-advance (a setting) moves on a fully shown line after a delay. Text speed, skip mode and
 // auto-advance come from the settings; the director polls their revision.
 //
+// Voice: a voiced line (UFTAudioSubsystem::OnVoiceLine) plays its lip-sync track (Data/Voice/<LineId>.nface)
+// on every UFTFaceComponent in this map whose ModelId is the speaker's model in the local cast file,
+// Data/Voice/speakers.json (ftcore::SpeakerCast; gitignored, since the keys are script labels). The track
+// stops when the voice does. Auto-advance and paced autoplay wait for the voice to finish before their
+// pause starts (auto-advance then waits only its short voice tail); a press still moves on at once and
+// cuts the voice. Fast autoplay and skip never wait. With no cast file, no faces or no voice, nothing
+// changes.
+//
 // Alpha mode: -AlphaAutoPlay is fast text autoplay that hands off on every step (carry.bAutoPlay set),
 // counting scenes, screens, STUCK and warnings in the game instance across maps. When the story ends
 // it logs "Alpha: FINISHED ..." and, with -StoryQuitOnFinish, exits with code 0 only if there was no
@@ -45,6 +53,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 
+#include "ftcore/AssetManifest.h"
 #include "ftcore/Backlog.h"
 #include "ftcore/Dialogue.h"
 #include "ftcore/Skip.h"
@@ -52,6 +61,8 @@
 #include "FTStoryDirector.generated.h"
 
 class AFTPlayerController;
+class UFTAudioSubsystem;
+class UFTFaceComponent;
 class UFTSettingsSubsystem;
 class UFTStorySubsystem;
 
@@ -154,6 +165,15 @@ private:
 	void HandleCancel();
 	UFUNCTION()
 	void HandleMenuStep(int32 Step);
+	UFUNCTION()
+	void HandleVoiceLine(const FString& LineId, float Seconds);
+	UFUNCTION()
+	void HandleVoiceStopped();
+
+	// Reads Data/Voice/speakers.json into Speakers (checked against Data/Assets/models.json when it loads).
+	void LoadCast();
+	// The current line's voice is still playing.
+	bool IsVoiceBusy() const;
 
 	// A reading overlay (backlog or settings) is up, or just closed this frame.
 	bool InputBlocked() const;
@@ -229,4 +249,10 @@ private:
 	bool bBacklogBeganMenu = false; // OpenBacklog turned the controller's menu input on
 	bool bSkipHeld = false;
 	bool bStoryPaused = false;
+
+	// Voice and faces.
+	TWeakObjectPtr<UFTAudioSubsystem> Audio;
+	ftcore::SpeakerCast Speakers;
+	TArray<TWeakObjectPtr<UFTFaceComponent>> SpeakingFaces;
+	bool bLoggedNoFace = false;
 };

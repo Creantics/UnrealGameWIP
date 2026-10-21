@@ -58,6 +58,25 @@ FTCORE_API AssetRules modelRules(const ModelEntry& model);
 // Every line id in the story, in play order, each once. Lines without an id are skipped.
 FTCORE_API std::vector<std::string> voiceLineIds(const StoryDatabase& db);
 
+// Who wears which face: the script's speaker labels mapped to character model ids, so a voiced
+// line's lip-sync track plays on the right face. The labels are script text, so the file lives in
+// the local Data/Voice/speakers.json (gitignored), never in the repo:
+//   { "version": 1, "speakers": [ { "speaker": "<script label>", "model": "<model id>" }, ... ] }
+struct SpeakerCast {
+    struct Entry {
+        std::string speaker, model;
+    };
+    std::vector<Entry> entries;
+
+    // The model id for a speaker label, or "" when the label isn't cast.
+    FTCORE_API std::string_view modelFor(std::string_view speaker) const;
+};
+
+// On failure `out` is empty and *error lists each problem, one per line. When `models` is given,
+// a model id it doesn't list as a character is an error. Errors never quote a speaker label.
+FTCORE_API bool importSpeakerCast(std::string_view json, SpeakerCast& out, const ModelTable* models = nullptr,
+                                  std::string* error = nullptr);
+
 enum class AssetState : std::uint8_t { Missing, Failed, Delivered, Imported, Count };
 
 // "missing", "failed", "delivered", "imported"

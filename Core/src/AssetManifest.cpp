@@ -97,6 +97,52 @@ bool importModelManifest(std::string_view json, ModelTable& out, std::string* er
     return false;
 }
 
+std::string_view SpeakerCast::modelFor(std::string_view speaker) const {
+    for (const Entry& e : entries)
+        if (e.speaker == speaker) return e.model;
+    return {};
+}
+
+bool importSpeakerCast(std::string_view json, SpeakerCast& out, const ModelTable* models, std::string* error) {
+    out = SpeakerCast{};
+    std::vector<std::string> errors;
+    JsonDocument doc;
+    std::string parseError;
+    if (!doc.parse(json, &parseError)) {
+        errors.push_back("speakers file: " + parseError);
+    } else if (!doc.root().isObject()) {
+        errors.push_back("speakers file: expected an object");
+    } else {
+        const JsonValue root = doc.root();
+        if (root["version"].integer(0) != 1) errors.push_back("version: expected 1");
+        const JsonValue list = root["speakers"];
+        if (!list.isArray()) errors.push_back("speakers: expected an array");
+        SpeakerCast cast;
+        for (std::uint32_t i = 0; i < list.size() && list.isArray(); ++i) {
+            const JsonValue j = list[i];
+            const std::string path = "speakers[" + std::to_string(i) + "]";
+            SpeakerCast::Entry entry{amfStr(j["speaker"].string()), amfStr(j["model"].string())};
+            if (entry.speaker.empty()) errors.push_back(path + ".speaker: expected a script label");
+            else if (!cast.modelFor(entry.speaker).empty()) errors.push_back(path + ".speaker: cast twice");
+            if (entry.model.empty()) {
+                errors.push_back(path + ".model: expected a model id");
+            } else if (models) {
+                const ModelEntry* model = models->find(entry.model);
+                if (!model || model->kind != ModelKind::Character)
+                    errors.push_back(path + ".model: " + entry.model + " is not a character in models.json");
+            }
+            cast.entries.push_back(std::move(entry));
+        }
+        if (errors.empty()) out = std::move(cast);
+    }
+    if (errors.empty()) return true;
+    if (error) {
+        error->clear();
+        for (const std::string& e : errors) *error += e + "\n";
+    }
+    return false;
+}
+
 AssetRules modelRules(const ModelEntry& model) {
     return model.kind == ModelKind::Character ? characterRules(model.pack, model.role) : propRules(model.pack);
 }

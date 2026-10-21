@@ -36,6 +36,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Face")
 	FName FaceMeshComponentName;
 
+	// The character model this face belongs to (an id from Data/Assets/models.json). The story director
+	// plays a voiced line's lip-sync track on the faces whose model the speaker is cast as
+	// (Data/Voice/speakers.json). Empty: the face never speaks story lines.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face")
+	FString ModelId;
+
 	// Seed for the blink timing (same seed, same blinks).
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Face")
 	int32 BlinkSeed = 0x5eed;

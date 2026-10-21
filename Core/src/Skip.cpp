@@ -32,7 +32,7 @@ DialogueCommand SkipController::update(float dt, DialoguePresenter& presenter, c
     return {};
 }
 
-DialogueCommand AutoAdvancer::update(float dt, const DialoguePresenter& presenter) {
+DialogueCommand AutoAdvancer::update(float dt, const DialoguePresenter& presenter, bool voiceBusy) {
     const StoryRunner::State state = presenter.state();
     if (!enabled_ || (state != StoryRunner::State::Line && state != StoryRunner::State::Direction)) {
         timer_ = 0.f;
@@ -41,13 +41,15 @@ DialogueCommand AutoAdvancer::update(float dt, const DialoguePresenter& presente
     if (presenter.beatEpoch() != epoch_) {
         epoch_ = presenter.beatEpoch();
         timer_ = 0.f;
+        voiced_ = false;
     }
-    if (!presenter.revealed()) {
+    if (voiceBusy) voiced_ = true;
+    if (!presenter.revealed() || voiceBusy) {
         timer_ = 0.f;
         return {};
     }
     if (dt > 0.f) timer_ += dt;
-    if (timer_ < delay_) return {};
+    if (timer_ < (voiced_ ? voiceTail_ : delay_)) return {};
     timer_ = 0.f;
     return presenter.autoplay();
 }

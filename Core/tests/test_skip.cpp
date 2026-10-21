@@ -339,3 +339,48 @@ TEST_CASE("auto-advance waits for the text, then the delay, and only moves lines
     }
     CHECK(r.state() == StoryRunner::State::Choice);
 }
+
+TEST_CASE("auto-advance waits for a voiced line to finish, then only the voice tail") {
+    Script s;
+    StoryRunner r(&s.db);
+    DialoguePresenter p(&r);
+    AutoAdvancer autoAdv;
+    autoAdv.setEnabled(true);
+    autoAdv.setDelay(1.0f);
+    autoAdv.setVoiceTail(0.3f);
+    REQUIRE(r.start());
+    p.revealAll();
+
+    // The voice runs 3 s, well past the delay: nothing moves while it plays.
+    double t = 0.0;
+    bool moved = false;
+    for (int i = 0; i < 200 && !moved; ++i) {
+        p.update(0.05f);
+        const bool busy = t < 3.0;
+        const DialogueCommand c = autoAdv.update(0.05f, p, busy);
+        t += 0.05;
+        if (!c.none()) {
+            CHECK(c.kind == DialogueCommand::Kind::Advance);
+            moved = applyDialogueCommand(r, c);
+        }
+    }
+    CHECK(moved);
+    CHECK(t >= 3.25);
+    CHECK(t <= 3.45);
+    CHECK(r.beatIndex() == 1);
+
+    // The next line has no voice: back to the full delay.
+    p.update(0.f); // picks up the new line
+    p.revealAll();
+    t = 0.0;
+    moved = false;
+    for (int i = 0; i < 200 && !moved; ++i) {
+        p.update(0.05f);
+        const DialogueCommand c = autoAdv.update(0.05f, p, false);
+        t += 0.05;
+        if (!c.none()) moved = applyDialogueCommand(r, c);
+    }
+    CHECK(moved);
+    CHECK(t >= 0.95);
+    CHECK(t <= 1.15);
+}

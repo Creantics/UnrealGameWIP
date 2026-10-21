@@ -129,3 +129,35 @@ TEST_CASE("the real model manifest loads, and the real story has a voice line id
     CHECK(ids.size() >= 1000);
     for (const std::string& id : ids) CHECK(id.rfind("VO-", 0) == 0);
 }
+
+TEST_CASE("the speaker cast maps script labels to character models") {
+    const char* models = R"({ "version": 1, "models": [
+        { "id": "MDL-001", "kind": "character" }, { "id": "MDL-002", "kind": "prop" } ] })";
+    ModelTable t;
+    REQUIRE(importModelManifest(models, t));
+
+    SpeakerCast cast;
+    std::string error;
+    REQUIRE_MESSAGE(importSpeakerCast(R"({ "version": 1, "speakers": [ { "speaker": "ALPHA", "model": "MDL-001" } ] })",
+                                      cast, &t, &error),
+                    error);
+    CHECK(cast.modelFor("ALPHA") == "MDL-001");
+    CHECK(cast.modelFor("BRAVO").empty());
+
+    // A prop, an unknown model, a label cast twice and a missing label all fail, and the errors
+    // name the entry, never the label.
+    const char* bad = R"({ "version": 1, "speakers": [
+        { "speaker": "ALPHA", "model": "MDL-002" }, { "speaker": "ALPHA", "model": "MDL-009" },
+        { "model": "MDL-001" } ] })";
+    CHECK_FALSE(importSpeakerCast(bad, cast, &t, &error));
+    CHECK(cast.entries.empty());
+    CHECK(error.find("speakers[0].model") != std::string::npos);
+    CHECK(error.find("speakers[1].speaker: cast twice") != std::string::npos);
+    CHECK(error.find("speakers[1].model") != std::string::npos);
+    CHECK(error.find("speakers[2].speaker") != std::string::npos);
+    CHECK(error.find("ALPHA") == std::string::npos);
+
+    // Without a model table any id is taken.
+    REQUIRE(importSpeakerCast(R"({ "version": 1, "speakers": [ { "speaker": "ALPHA", "model": "MDL-777" } ] })", cast));
+    CHECK(cast.modelFor("ALPHA") == "MDL-777");
+}

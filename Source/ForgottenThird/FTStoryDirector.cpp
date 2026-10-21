@@ -4,9 +4,14 @@
 #include "Kismet/GameplayStatics.h"
 #include "TimerManager.h"
 #include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "UObject/UObjectIterator.h"
 #include "Misc/Parse.h"
 
 #include "ForgottenThird.h"
+#include "FTAudioSubsystem.h"
+#include "FTFaceComponent.h"
 #include "FTGameInstance.h"
 #include "FTPlayerController.h"
 #include "FTSettingsSubsystem.h"
@@ -88,6 +93,14 @@ void AFTStoryDirector::BeginPlay()
 		ApplySettings();
 	}
 
+	Audio = GameInstance->GetSubsystem<UFTAudioSubsystem>();
+	if (UFTAudioSubsystem* A = Audio.Get())
+	{
+		LoadCast();
+		A->OnVoiceLine.AddDynamic(this, &AFTStoryDirector::HandleVoiceLine);
+		A->OnVoiceStopped.AddDynamic(this, &AFTStoryDirector::HandleVoiceStopped);
+	}
+
 	Refresh();
 	UE_LOG(LogForgottenThird, Log, TEXT("Story: dialogue on%s%s."), bAutoPlay ? (bFast ? TEXT(" (fast autoplay)") : TEXT(" (autoplay)")) : TEXT(""),
 		bAlpha ? TEXT(" (alpha)") : TEXT(""));
@@ -107,6 +120,12 @@ void AFTStoryDirector::EndPlay(const EEndPlayReason::Type Reason)
 		PC->OnMenuStep.RemoveDynamic(this, &AFTStoryDirector::HandleMenuStep);
 		PC->bRouteInputToStory = bPrevRouteInput;
 	}
+	if (UFTAudioSubsystem* A = Audio.Get())
+	{
+		A->OnVoiceLine.RemoveDynamic(this, &AFTStoryDirector::HandleVoiceLine);
+		A->OnVoiceStopped.RemoveDynamic(this, &AFTStoryDirector::HandleVoiceStopped);
+	}
+	HandleVoiceStopped();
 	if (bBacklogOpen)
 	{
 		CloseBacklog();
@@ -316,7 +335,7 @@ void AFTStoryDirector::TickReading(float DeltaSeconds)
 	DialogueCommand Command = Skip.update(DeltaSeconds, Presenter, Story->GetSeen());
 	if (Command.none() && !Skip.skipping())
 	{
-		Command = AutoAdvance.update(DeltaSeconds, Presenter);
+		Command = AutoAdvance.update(DeltaSeconds, Presenter, IsVoiceBusy());
 	}
 	if (!Command.none())
 	{
@@ -441,7 +460,11 @@ void AFTStoryDirector::TickAutoPlay(float DeltaSeconds)
 	{
 		return;
 	}
-	if (Presenter.revealed())
+	if (!bFast && IsVoiceBusy())
+	{
+		WaitTime = 0.f; // the pause starts once the line has been spoken
+	}
+	else if (Presenter.revealed())
 	{
 		WaitTime += DeltaSeconds; // CacheBeat resets it
 	}
@@ -707,4 +730,74 @@ double AFTStoryDirector::GetSceneAge() const
 bool AFTStoryDirector::IsFinished() const
 {
 	return Presenter.state() == StoryRunner::State::Finished;
+}
+
+void AFTStoryDirector::LoadCast()
+{
+	const FString Path = FPaths::ProjectDir() / TEXT("Data/Voice/speakers.json");
+	TArray<uint8> Bytes;
+	if (!FFileHelper::LoadFileToArray(Bytes, *Path, FILEREAD_Silent))
+	{
+		return; // no cast yet: voiced lines play without faces
+	}
+	ftcore::ModelTable Models;
+	TArray<uint8> ModelBytes;
+	const bool bModels = FFileHelper::LoadFileToArray(ModelBytes, *(FPaths::ProjectDir() / TEXT("Data/Assets/models.json")))
+		&& ftcore::importModelManifest(FT::BytesAsText(ModelBytes), Models);
+	std::string Error;
+	if (!ftcore::importSpeakerCast(FT::BytesAsText(Bytes), Speakers, bModels ? &Models : nullptr, &Error))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Story: Data/Voice/speakers.json is bad; voiced lines play without faces: %s"),
+			*FT::ToFString(Error).TrimEnd().Replace(TEXT("\n"), TEXT("; ")));
+		return;
+	}
+	UE_LOG(LogForgottenThird, Log, TEXT("Story: %d speakers cast."), static_cast<int32>(Speakers.entries.size()));
+}
+
+bool AFTStoryDirector::IsVoiceBusy() const
+{
+	const UFTAudioSubsystem* A = Audio.Get();
+	return A && A->IsVoicePlaying();
+}
+
+void AFTStoryDirector::HandleVoiceLine(const FString& LineId, float Seconds)
+{
+	HandleVoiceStopped();
+	const std::string_view Model = Speakers.modelFor(Story ? Story->GetRunner().speaker() : std::string_view());
+	if (Model.empty())
+	{
+		return;
+	}
+	const FString Track = UFTAudioSubsystem::VoiceTrackFile(LineId);
+	if (Track.IsEmpty())
+	{
+		return; // FTValidateAssets reports lines without a track
+	}
+	const FString ModelId = FT::ToFString(Model);
+	const UWorld* World = GetWorld();
+	for (TObjectIterator<UFTFaceComponent> It; It; ++It)
+	{
+		UFTFaceComponent* Face = *It;
+		if (Face->GetWorld() == World && Face->ModelId == ModelId && Face->PlayTrack(Track))
+		{
+			SpeakingFaces.Add(Face);
+		}
+	}
+	if (SpeakingFaces.IsEmpty() && !bLoggedNoFace)
+	{
+		bLoggedNoFace = true;
+		UE_LOG(LogForgottenThird, Display, TEXT("Story: no face here for model %s (line %s); voiced lines play without a face."), *ModelId, *LineId);
+	}
+}
+
+void AFTStoryDirector::HandleVoiceStopped()
+{
+	for (const TWeakObjectPtr<UFTFaceComponent>& Face : SpeakingFaces)
+	{
+		if (UFTFaceComponent* F = Face.Get())
+		{
+			F->StopTrack();
+		}
+	}
+	SpeakingFaces.Reset();
 }

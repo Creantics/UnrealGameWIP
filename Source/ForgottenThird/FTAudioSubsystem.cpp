@@ -151,7 +151,11 @@ void UFTAudioSubsystem::StopVoice()
 		Voice->Stop();
 	}
 	Voice = nullptr;
-	VoiceLineId.Reset();
+	if (!VoiceLineId.IsEmpty())
+	{
+		VoiceLineId.Reset();
+		OnVoiceStopped.Broadcast();
+	}
 }
 
 void UFTAudioSubsystem::HandleStoryCue(const FString& CueId, const FString& Kind, EFTCueAction Action)
