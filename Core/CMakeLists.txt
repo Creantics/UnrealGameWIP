@@ -29,6 +29,7 @@ else()
 endif()
 
 add_library(ftcore STATIC
+    src/AssetManifest.cpp
     src/AudioCues.cpp
     src/Backlog.cpp
     src/Battle.cpp
@@ -91,6 +92,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_main.cpp
         tests/AllocCounter.cpp
         tests/AllocHook.cpp
+        tests/test_asset_manifest.cpp
         tests/test_audio.cpp
         tests/test_backlog.cpp
         tests/test_battle.cpp

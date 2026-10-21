@@ -13,6 +13,29 @@ Ids and formats only. Story text, names and line text never go in this repo (it 
 | Music and sound cues (`.wav`) | `FTImportAudio` (section 4); `UFTAudioSubsystem` plays them by cue id | `Data/Audio/<Bus>/<CueId>.wav` | Defined |
 | Concept art | Not imported | outside the repo | Convention only |
 
+### What's left to deliver: `FTValidateAssets`
+
+```
+UnrealEditor-Cmd ForgottenThird.uproject -run=FTValidateAssets [-Category=audio|voice|models] [-Csv=Saved/AssetStatus.csv] -NullRHI -unattended -nopause -nosplash
+```
+
+It lists every asset the game expects by id and runs each delivered file through its importer's checks. Each asset ends up in one of four states:
+
+- **missing:** no file yet.
+- **failed:** the file breaks a rule.
+- **delivered:** the file passes but isn't imported yet.
+- **imported:** the asset is under `/Game`.
+
+It prints one summary line per category, for example `audio: 92 expected: 0 imported, 0 delivered, 92 missing, 0 failed`. It exits 1 only when a file fails or a manifest is bad. `-Csv` writes `category,id,state` for every asset; keep that file under `Saved/`, because its voice rows carry line ids.
+
+| Category | Expected list | File | Imported at |
+|---|---|---|---|
+| audio | `Data/Audio/cues.json` | `Data/Audio/<file>` | `/Game/Audio/<Bus>/<CueId>` |
+| voice | every line id in the local `Data/Story` (nothing committed) | `Data/Voice/<LineId>.wav` + `.nface` | `/Game/Voice/<LineId>` |
+| models | `Data/Assets/models.json` (ids, kind, lead/supporting, rule pack) | `Data/Models/<ModelId>.glb` | anything under `/Game/Characters/<ModelId>` or `/Game/Props/<ModelId>` (use that as the importer's `-Dest`) |
+
+`models.json` is generated from the private asset tracker with `python -I tools/make_models_json.py <ASSET_TRACKER.xlsx> --leads "<name>,..."` (the start of each lead row's name, typed on the command line so no name is stored in the repo). It writes only ids and rule fields. Hand edits to `file`, `role` or `pack` survive re-runs.
+
 Everything binary goes through Git LFS (`.gitattributes`: `glb fbx blend png jpg tga exr psd hdr wav ogg flac mp3 mp4 mov obj abc ttf otf zip nface uasset umap`). Never commit `Binaries/`, `Intermediate/`, `Saved/` or `DerivedDataCache/`.
 
 ## 1. Characters and faces
