@@ -46,6 +46,8 @@ def _args():
     for k in ("object", "out"):
         if not a[k]:
             raise SystemExit("face_sculpt: --%s is required" % k)
+    if a["preview"]:
+        a["preview"] = os.path.abspath(a["preview"])
     return a
 
 
