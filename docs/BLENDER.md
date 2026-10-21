@@ -70,7 +70,18 @@ A character mesh from an image-to-3D service or a scan arrives as one dense text
 3. **`rig_scan.py`** runs `fit_canonical` (joint fit and skinning), then swaps its `tpose` clip for `make_leads`' idle and walk. That gives the same `idle`, `rom` and `walk` clips as the other leads. It checks the result with `make_leads.check_glb(face=False)`.
    - `--skirt HEM,TOP,FOLLOW,HALF_WIDTH` reweights a tunic or skirt so it doesn't tear between the legs. Between the two heights, the weight blends from the pelvis to the thighs, with a soft left/right split. Vertices beyond the half width (the hands) keep their weights.
    - `--preview DIR` renders the rest pose in x-ray with the landmark joints marked, plus two walk frames.
-4. Import with `FTImportCharacter -Role=lead -Face=0`, because the mesh has no face shapes. `-Source` takes an absolute path, so a private model can stay outside the repo. Then run `FTBuildRig` and `FTBuildLeadsWorld`.
+   - Add `neck_02`, `head`, `jaw`, `eye_l` and `eye_r` to the landmarks if the face will get shapes. Without them the head joints are extrapolated from the neck and land too high.
+4. **`face_transfer.py`** (optional) gives the rigged mesh the proof head's 56 face shapes and a jaw mask. It takes rig_scan's `.blend`:
+
+   ```
+   blender -b RIG.blend --factory-startup --python-exit-code 1 --python tools/blender/face_transfer.py --        --face face.json --out name.glb [--blend name_face.blend] [--preview DIR]
+   ```
+
+   - `face.json` holds the scan's side of a dozen correspondences: eye centres, mouth corners, lips, nose tip, chin, brows, crown, back, sides and neck. They're read off the grid crops. A thin-plate spline warps the proof head onto the scan, and each vertex takes the shape deltas of the nearest point on the warped proof skin.
+   - A `"jaw"` entry (a cut through the mouth slit that rises to a pivot under the ear) replaces the transferred jaw mask. Use it when the scan's mouth is much wider than the proof's.
+   - A scan has no eyeballs or tongue. The eye-look shapes move only the lids, and tongueOut pushes the lower lip forward, because Unreal drops an all-zero morph target.
+   - The mouth of a scan is closed, so the jaw stretches the teeth between the lips when it opens wide. Speech levels (jawOpen about 0.4) look fine.
+5. Import with `FTImportCharacter -Role=lead`, adding `-Face=0` if step 4 was skipped. `-Source` takes an absolute path, so a private model can stay outside the repo. Then run `FTBuildRig` and `FTBuildLeadsWorld`. From Git Bash, set `MSYS_NO_PATHCONV=1` first, or it turns `-Dest=/Game/...` into a Windows path.
 
 ## Into Unreal
 
