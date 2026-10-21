@@ -76,7 +76,12 @@ UE 5.8 Interchange rejects every spec-valid CUBICSPLINE sampler. Its check is `I
 
 ### Materials (as imported)
 
-Interchange gives each glTF material an instance of a plugin master. `FTImportCharacter` then reparents each one onto `/Game/Characters/Shared/Materials/M_FTCharacter` (skeletal-mesh and morph-target usage on, two-sided) and copies five glTF values: base colour factor, metallic factor, roughness factor, emissive factor and the `KHR_materials_emissive_strength` value. Emissive output is `Emissive * EmissiveStrength`. Nothing else crosses: no base-colour map, normal map, ORM map or emissive map.
+Interchange gives each glTF material an instance of a plugin master. `FTImportCharacter` then reparents each one onto a project master (skeletal-mesh and morph-target usage on, two-sided) and copies five glTF values: base colour factor, metallic factor, roughness factor, emissive factor and the `KHR_materials_emissive_strength` value.
+
+- A material with no texture goes on `/Game/Characters/Shared/Materials/M_FTCharacter`. Emissive output is `Emissive * EmissiveStrength`.
+- A material with any texture goes on `M_FTCharacterTex`, made on first use next to it with its 4x4 defaults `T_FTWhite`, `T_FTWhiteMasks` and `T_FTFlatNormal`. Interchange names its texture parameters `BaseColorTexture`, `MetallicRoughnessTexture`, `NormalTexture`, `OcclusionTexture` and `EmissiveTexture`; the importer logs each one it finds and binds it to the slot of the same name. The graph follows glTF: base colour = map RGB × factor; roughness = metal-rough map G × factor; metallic = map B × factor; ambient occlusion = occlusion map R; emissive = map RGB × emissive factor × strength. A missing map reads as white (flat normal for the normal slot), so factors alone still work.
+- Each bound texture is set up for its slot: base colour and emissive sRGB, metal-rough and occlusion linear masks (`TC_Masks`), normal `TC_Normalmap`, virtual texturing off. The import fails if a texture's sampler type still doesn't match its slot.
+- Not checked headless: the textured master's shader compile. Commandlets run with `-NullRHI`, which has no render resources, so the first attended editor open is where a compile error would show.
 
 Slots: one glTF material per region (skin, lips, cloth, hair, glasses and so on) is how the current models get colour. Keep material names meaningful, as they become the instance names.
 
@@ -89,6 +94,7 @@ Slots: one glTF material per region (skin, lips, cloth, hair, glasses and so on)
 - [ ] 56 shape keys, names exact, no extra normal deltas.
 - [ ] Every animation sampler LINEAR.
 - [ ] Emissive materials follow the style rules (section 2).
+- [ ] Textures, if any, follow section 2 (the importer checks them).
 
 Commands (PowerShell, from the repo root, one at a time; the exe is `E:\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`):
 
@@ -98,7 +104,7 @@ UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildRig -Mesh=/Game/Characters/
 UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildDemoWorld -Mesh=/Game/Characters/<Name>/<stem>/SkeletalMeshes/<stem>.<stem> -NullRHI -unattended -nopause -nosplash
 ```
 
-- **Import** (`-Source=` relative to the project, `-Dest=` default `/Game/Characters/ProofHead`, `-Face=0` skips the shape check). Pass means exit 0 with `7/7 face bones` and `56/56 face shapes bound`. Exit 1 names the missing bone or shape.
+- **Import** (`-Source=` relative to the project, `-Dest=` default `/Game/Characters/ProofHead`, `-Face=0` skips the shape check, `-Pack=` and `-Role=` pick the asset rules in section 2). It checks the `.glb` against the asset rules first and imports nothing if any rule fails. Pass means exit 0 with `0 errors` on the asset-rules line, `7/7 face bones` and `56/56 face shapes bound`. Exit 1 names the broken rule, missing bone or shape.
 - **Rig** logs every clip's frames, moving tracks and curves, then builds `IK_<stem>` and `RTG_<stem>`. Pass means exit 0. A clip with 1 frame and no tracks means a CUBICSPLINE sampler got through.
 - **Demo map** puts the character on `Demo` (it overwrites the map).
 - Blender-side check, before export (needs `bpy`, see `docs/BLENDER.md`): `rig_validate.py <file.glb|.blend> --template <newengine>/assets/rig/canonical_humanoid.json --out <dir> --presets Data/Rig/face_presets.json`. Accepted only on PASS.
@@ -110,27 +116,32 @@ Rules from the art direction (pack names are public: Solhaven, Lattice, Unwritte
 
 - Flat, even light in the model sheet, no baked shadows or drawn hatching in textures, no outlines. Outlines, hatching, cel bands, hulls and rims are a style-pass job (some still deferred: cel bands, lit hatching, hulls, pack rim).
 - **Black pockets and load maps go in textures, not vertex colour.** Flat-black pockets (under jaw, arm, fold, ledge) are painted into the base-colour texture. Vertex colour is not read by any material here (`M_FTCharacter` has no vertex-colour input), and the art direction says the same of the engine.
-- **Lattice emissives:** skills, eyes and rules at **3.0 or more** (scene-referred); everything else **below 2.5**. Set it as emissive factor times `KHR_materials_emissive_strength` in the glTF. Bloom for the pack is `bloomScale`; `bloomThresholdScale` is only applied when the base threshold is set (UE's default is off), so the split is a rule for the author, not something the engine enforces yet.
+- **Lattice emissives:** skills, eyes and rules at **3.0 or more** (scene-referred); everything else **below 2.5**. Set it as emissive factor times `KHR_materials_emissive_strength` in the glTF. Bloom for the pack is `bloomScale`; `bloomThresholdScale` is only applied when the base threshold is set (UE's default is off), so bloom does not split them by itself; the importer enforces the split by material name (see below).
 - A character may cross between packs. Don't author a pack's look into its colours.
 - Shape language and proportion rules per character are in the private design docs, not here.
 
-**What the code accepts for textures:** nothing yet for characters. `UseCharacterMaster` copies flat factors and drops the rest, and no `.glb` in `Data/Models/` has an image. **Not defined yet:** texture import, a texture-capable character master, UV conventions, the load map and pocket layout. Static meshes and props have no importer either.
+**What the code accepts for textures.** `FTImportCharacter` checks every `.glb` against these rules before it imports (`ftcore::checkGlb`, `Core/include/ftcore/Glb.h`), and fails on any error. Pass `-Pack=<Solhaven|Lattice|Unwritten|Restored|InkSolhaven>` and `-Role=<lead|supporting>`; without them the pack is none (no emissive rule) and the role is supporting.
 
-**Proposal (not enforced):**
+| Rule | Code | Level |
+|---|---|---|
+| Maps: base colour (sRGB), normal (+Y up as glTF), metal-rough packed (G roughness, B metal), occlusion (R), emissive (sRGB). Packing occlusion into the metal-rough map's R (ORM) is fine | — | how the master reads them |
+| Images embedded in the `.glb` (a buffer view, not a `uri`) | `image-external` | error |
+| PNG or JPEG only (all glTF allows). Emissive above 1.0 comes from `KHR_materials_emissive_strength`, not from an HDR image | `image-format` | error |
+| At most 2048 px for a lead, 1024 for supporting cast and props | `image-too-big` | error |
+| Square power of two | `image-not-square-pot` | warning |
+| One UV set (`TEXCOORD_0`), no overlap on the face, texel density matched within a character | `uv-sets` | error (overlap and density are by eye) |
+| No vertex colour (`COLOR_0`); pockets and load maps go in textures | `vertex-color` | error |
+| Lattice only: a material whose name contains Glow, Eye, Skill or Rule (any case) glows at 3.0 or more | `emissive-glow-low` | error |
+| Lattice only: every other emissive material stays below 2.5 | `emissive-plain-high` | error |
+| A character has a skin (armature) and a mesh | `no-skin`, `no-mesh` | error |
+| Pockets: painted flat black in base colour, hex from the pack's `outlineColor` (see `StylePack.h`) | — | by eye |
+| Load map: a separate greyscale map, linear, named `<stem>_load.png` | — | proposal; no material reads it yet |
 
-| Item | Proposed default |
-|---|---|
-| Maps | base colour (sRGB), normal (linear, +Y up as glTF), occlusion-roughness-metal packed (linear), emissive (sRGB) |
-| Size | 2048 px square for a lead, 1024 for supporting cast and props |
-| UV | One UV set (`UV0`), no overlap on the face, texel density matched within a character |
-| Format | `.png` or `.tga`, 8 bit, embedded in the `.glb`; `.exr` for emissive above 1.0 |
-| Pockets | Painted flat black in base colour, hex taken from the pack's `outlineColor` (see `StylePack.h`) |
-| Load map | A separate greyscale map, linear, named `<stem>_load.png` |
-| Work needed first | A texture-capable `M_FTCharacter` (or a second master) and the importer step that fills it. This is a code task. |
+The emissive level is max(emissive factor) × emissive strength. Every message names the material or image by index and name.
 
-Checklist, texture-ready (once the importer exists): [ ] no baked light, shadow or hatch; [ ] pockets in base colour, no vertex colour; [ ] emissive follows the 3.0 / 2.5 rule; [ ] one UV set; [ ] sizes as above.
+Checklist, texture-ready: [ ] no baked light, shadow or hatch; [ ] pockets in base colour, no vertex colour; [ ] Glow/Eye/Skill/Rule in the names of the materials that must glow; [ ] import passes with the right `-Pack=` and `-Role=`.
 
-Validation: none for textures. The gate (`tools/gate.ps1 -Ubt`) does not touch assets. Look at the result with `FTBuildDemoWorld -Style=<pack>` (see `STYLE_PACKS_UE.md`); nobody has seen the style picture rendered yet.
+Validation: the import's asset-rules line. Look at the result with `FTBuildDemoWorld -Style=<pack>` (see `STYLE_PACKS_UE.md`); nobody has seen the style picture rendered yet.
 
 ## 3. Voice
 
@@ -236,11 +247,11 @@ Checklist: [ ] white background; [ ] one subject; [ ] two or more angles; [ ] ne
 
 ## Gaps, in one list
 
-1. No texture path for characters: the master material takes flat factors only. No static-mesh importer.
+1. No static-mesh importer. The textured character master's shader compile is only seen in an attended editor.
 2. No game-side voice lookup by line id, and the lip-sync bake keys files by text hash, not by the story id.
 3. No loudness target for voice or music, and no voice or music bus routing in Unreal.
 4. No `.nface` validator, and the lip-sync tools have not been run from this repo.
 5. No music file convention: no loop points, tempo map, stems or BPM and offset metadata file. BPM and offset are typed into the component. No audio import commandlet.
 6. No folder or naming scheme for textures, audio or concept art.
-7. The Lattice emissive thresholds (3.0 and 2.5) are an authoring rule, not enforced; `bloomThresholdScale` is off by default.
+7. The Lattice emissive thresholds (3.0 and 2.5) are enforced at import by material name; `bloomThresholdScale` is still off by default.
 8. The rig's retargeter has no target mannequin, and the proof head's body, tongue and style picture have not been judged.
