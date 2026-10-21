@@ -15,7 +15,7 @@ Writes `/Game/Maps/Qte`: the stub screen's small lit room (floor, back wall, sun
 1. The director fills `UFTGameInstance::StoryCarry` (as for every gameplay screen) and opens `/Game/Maps/Qte`.
 2. `AFTQteGameMode::StartPlay` reads the carry, loads `Data/Qte/qte.json`, picks the sequence for the step's scene, beat and step (the table's `default` when it isn't listed, the built-in sequence when the file is missing or refused) and starts `ftcore::QteScreen`. A step whose token is `co-op QTE` plays as co-op.
 3. Each frame it polls the keys, feeds the presses and releases to the screen, then ticks it. `AFTQteHUD` draws the prompts.
-4. When every prompt is resolved the result shows for about one second (Perfect, Good, Fair or Rough). Then it sets `bDone` and `bWon`, logs one line and opens `ReturnMap`:
+4. When every prompt is resolved the result shows for about one second (Perfect, Good, Fair or Poor). Then it sets `bDone` and `bWon`, logs one line and opens `ReturnMap`:
 
 ```
 QTE: done <scene> beat <b> step <s> prompts <n> perfect <p> good <g> miss <m>

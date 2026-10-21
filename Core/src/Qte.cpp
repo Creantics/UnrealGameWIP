@@ -280,7 +280,8 @@ void QteScreen::tick(double gameSeconds) {
     }
     const double t = elapsed_ * scale_;
     if (autoPlay_) {
-        for (int guard = 0; guard < 256; ++guard) { // bounded: every action moves the sequence on
+        constexpr int kMaxActions = static_cast<int>(kMaxQtePrompts) * (kQteMaxMash + 1);
+        for (int guard = 0; guard < kMaxActions; ++guard) { // bounded: every action moves the sequence on
             const QteAction a = seq_.autopilot(t);
             if (a.kind == QteAction::Kind::None) break;
             collect(a.kind == QteAction::Kind::Press ? seq_.press(a.input, a.time) : seq_.release(a.input, a.time));

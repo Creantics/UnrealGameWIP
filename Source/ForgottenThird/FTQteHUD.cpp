@@ -31,7 +31,7 @@ const FString kPerfectQte(TEXT("PERFECT"));
 const FString kGoodQte(TEXT("GOOD"));
 const FString kMissQte(TEXT("MISS"));
 // The result line by ftcore::QteOutcome (Perfect, Good, Fair, Poor).
-const FString kResultQte[4] = {FString(TEXT("Perfect!")), FString(TEXT("Good")), FString(TEXT("Fair")), FString(TEXT("Rough"))};
+const FString kResultQte[4] = {FString(TEXT("Perfect!")), FString(TEXT("Good")), FString(TEXT("Fair")), FString(TEXT("Poor"))};
 
 constexpr float kPopupLifeQte = 0.8f; // game seconds
 constexpr int32 kVisiblePromptsQte = 3;

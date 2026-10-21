@@ -25,7 +25,7 @@ and there is no voice or music.
 | Battle | Fight the step's line-up from `Data/Battle/encounters.json`. On a loss, Retry restores the HP the party started the battle with, or Quit to title | [BATTLE_DEMO.md](BATTLE_DEMO.md) |
 | Field | Walk to the glowing goal marker and press Use | [EXPLORE_DEMO.md](EXPLORE_DEMO.md) |
 | Choice | CHC and HE steps: a dialogue loop from `Data/Story/loops/<scene>_<beat>_<step>.json`. Read the claim, pick 1–4 (used wrong options grey out), Esc skips to the closing lines; its flags are set at the end. With no loop file it shows the stub card | [CHOICE_SCREEN.md](CHOICE_SCREEN.md) |
-| Qte | QTE and co-op QTE steps: a short timed input sequence from `Data/Qte/qte.json`. Press the arrow, WASD or pad direction as the ring closes in (hold or mash where asked); a miss plays on, and the result (Perfect to Rough) shows for a second. Counted in the `stub` bucket | [QTE_SCREEN.md](QTE_SCREEN.md) |
+| Qte | QTE and co-op QTE steps: a short timed input sequence from `Data/Qte/qte.json`. Press the arrow, WASD or pad direction as the ring closes in (hold or mash where asked); a miss plays on, and the result (Perfect to Poor) shows for a second. Counted in the `stub` bucket | [QTE_SCREEN.md](QTE_SCREEN.md) |
 | Stub | A card naming the step (banter, cutscene, mini-game); press to continue | [STUB_SCREEN.md](STUB_SCREEN.md) |
 | End card | Press to return to the title | [GAME_FRAME.md](GAME_FRAME.md) |
 
