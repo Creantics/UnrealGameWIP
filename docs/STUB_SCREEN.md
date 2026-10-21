@@ -1,6 +1,6 @@
 # Stub screen
 
-The placeholder for gameplay steps that have no real screen yet: `GameplayScreen::Stub` in `ftcore::GameplayPlan` (BNT, MINI and any unknown token). CHC and HE open the choice screen ([CHOICE_SCREEN.md](CHOICE_SCREEN.md)), which shows this same card when its loop file is missing; QTE and co-op QTE open the quick-time event screen ([QTE_SCREEN.md](QTE_SCREEN.md)); CG opens the cutscene screen ([CUTSCENE_SCREEN.md](CUTSCENE_SCREEN.md)). It names the step, waits for a press and hands control back to the story.
+The placeholder for gameplay steps that have no real screen yet: `GameplayScreen::Stub` in `ftcore::GameplayPlan` (any unknown token). CHC and HE open the choice screen ([CHOICE_SCREEN.md](CHOICE_SCREEN.md)), which shows this same card when its loop file is missing; QTE and co-op QTE open the quick-time event screen ([QTE_SCREEN.md](QTE_SCREEN.md)); CG opens the cutscene screen ([CUTSCENE_SCREEN.md](CUTSCENE_SCREEN.md)); BNT opens the banter screen ([BANTER_SCREEN.md](BANTER_SCREEN.md)), which also shows this card when its banter file is missing; MINI opens the mini-game screen ([MINI_SCREEN.md](MINI_SCREEN.md)). It names the step, waits for a press and hands control back to the story.
 
 ## Regenerate the map
 
