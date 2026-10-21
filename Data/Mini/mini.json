@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "default": { "bpm": 100, "steps": 12, "lanes": 3, "subdivision": 1, "seed": 7, "pass": 0.6, "tries": 3, "lead": 2.0, "window": 1.0 },
+  "minis": []
+}

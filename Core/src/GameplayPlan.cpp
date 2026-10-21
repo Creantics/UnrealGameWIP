@@ -129,8 +129,8 @@ GameplayScreen gameplayTokenScreen(GameplayToken token) {
     case GameplayToken::Qte:
     case GameplayToken::CoopQte: return GameplayScreen::Qte;
     case GameplayToken::Cg: return GameplayScreen::Cutscene;
-    case GameplayToken::Bnt:
-    case GameplayToken::Mini:
+    case GameplayToken::Bnt: return GameplayScreen::Banter;
+    case GameplayToken::Mini: return GameplayScreen::Mini;
     case GameplayToken::Unknown: break;
     }
     return GameplayScreen::Stub;

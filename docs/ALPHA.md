@@ -1,7 +1,7 @@
 # Alpha: the whole story, start to end
 
 One build plays the story from the title screen to the end card. Every gameplay step in the script
-opens a screen: a battle, a field walk, a dialogue loop, a quick-time event, a cutscene or a stub card. Nothing is polished. The art is blockouts,
+opens a screen: a battle, a field walk, a dialogue loop, a quick-time event, a cutscene, a banter, a mini-game or a stub card. Nothing is polished. The art is blockouts,
 and there is no voice or music.
 
 ## Play it
@@ -10,9 +10,11 @@ and there is no voice or music.
 2. Regenerate the maps if they're missing (each doc has the command): `Demo`
    ([RIGGING_TEST.md](RIGGING_TEST.md)), `BattleDemo` ([BATTLE_DEMO.md](BATTLE_DEMO.md)), `Explore`
    ([EXPLORE_DEMO.md](EXPLORE_DEMO.md)), `Stub` ([STUB_SCREEN.md](STUB_SCREEN.md)), `Choice`
-   ([CHOICE_SCREEN.md](CHOICE_SCREEN.md)), `Qte` ([QTE_SCREEN.md](QTE_SCREEN.md)) and `Cutscene`
-   ([CUTSCENE_SCREEN.md](CUTSCENE_SCREEN.md)). The director opens `Choice` for every CHC and HE step,
-   `Qte` for every QTE and co-op QTE step and `Cutscene` for every CG step, so all three must exist.
+   ([CHOICE_SCREEN.md](CHOICE_SCREEN.md)), `Qte` ([QTE_SCREEN.md](QTE_SCREEN.md)), `Cutscene`
+   ([CUTSCENE_SCREEN.md](CUTSCENE_SCREEN.md)), `Banter` ([BANTER_SCREEN.md](BANTER_SCREEN.md)) and
+   `Mini` ([MINI_SCREEN.md](MINI_SCREEN.md)). The director opens `Choice` for every CHC and HE step,
+   `Qte` for every QTE and co-op QTE step, `Cutscene` for every CG step, `Banter` for every BNT step
+   and `Mini` for every MINI step, so all five must exist.
 3. Copy newengine `assets/story/` to `Data/Story/`. It's gitignored and never committed, because the
    repo is public.
 4. Open the editor (it opens `Demo`) and click Play, or run the game. The title offers New Game
@@ -27,7 +29,9 @@ and there is no voice or music.
 | Choice | CHC and HE steps: a dialogue loop from `Data/Story/loops/<scene>_<beat>_<step>.json`. Read the claim, pick 1–4 (used wrong options grey out), Esc skips to the closing lines; its flags are set at the end. With no loop file it shows the stub card | [CHOICE_SCREEN.md](CHOICE_SCREEN.md) |
 | Qte | QTE and co-op QTE steps: a short timed input sequence from `Data/Qte/qte.json`. Press the arrow, WASD or pad direction as the ring closes in (hold or mash where asked); a miss plays on, and the result (Perfect to Poor) shows for a second | [QTE_SCREEN.md](QTE_SCREEN.md) |
 | Cutscene | Watch a CG step's shot list from `Data/Cutscene/cutscenes.json` on a blockout set; press to skip | [CUTSCENE_SCREEN.md](CUTSCENE_SCREEN.md) |
-| Stub | A card naming the step (banter, mini-game); press to continue | [STUB_SCREEN.md](STUB_SCREEN.md) |
+| Banter | BNT steps: lines from `Data/Story/banter/<scene>_<beat>_<step>.json` that advance by themselves, left and right by speaker. Press for the next line, Esc skips. With no banter file it shows the stub card | [BANTER_SCREEN.md](BANTER_SCREEN.md) |
+| Mini | MINI steps: a short rhythm round from `Data/Mini/mini.json`. Press each arrow as it reaches the line; a round below the pass mark retries, and after the last try the story goes on | [MINI_SCREEN.md](MINI_SCREEN.md) |
+| Stub | A card naming the step (unknown tokens); press to continue | [STUB_SCREEN.md](STUB_SCREEN.md) |
 | End card | Press to return to the title | [GAME_FRAME.md](GAME_FRAME.md) |
 
 A gameplay beat's `mode` can chain several steps (a field walk, then a fight, then a field walk).
@@ -51,11 +55,12 @@ UnrealEditor-Cmd ForgottenThird.uproject -game -NullRHI -AlphaAutoPlay -AlphaFas
   Each screen then plays itself: the battle autopilot wins, the field pilot walks to the goal, and a
   stub ends after one second of game time, a dialogue loop skips to its closing lines and ends after
   about one second, the quick-time event autopilot presses at the ideal times and finishes within
-  about 10 s of game time, and a cutscene skips itself after one second of real time. Choice,
-  quick-time event and cutscene steps count in the `stub` bucket of the line below.
+  about 10 s of game time, a cutscene skips itself after one second of real time, a banter skips
+  after 0.25 s and a mini-game round clears itself in about a second. Choice, quick-time event,
+  cutscene, banter and mini-game steps count in the `stub` bucket of the line below.
 - `-AlphaFast` runs the gameplay screens at global time dilation 8.
 
-Pass means exit code 0 and this line (choice, quick-time event and cutscene steps count in the stub bucket):
+Pass means exit code 0 and this line (choice, quick-time event, cutscene, banter and mini-game steps count in the stub bucket):
 
 ```
 Alpha: FINISHED 73 scenes, 167 screens (40 battle, 91 field, 36 stub), 0 STUCK, 0 warnings
@@ -79,7 +84,10 @@ counted as alpha warnings.
 
 ## What's stubbed
 
-- **Banter, mini-game.** These show the stub card.
+- **Banter.** The screen is real, but every BNT step shows the stub card until its file is in
+  `Data/Story/banter/`. No walking: the lines play over a fixed camera.
+- **Mini-game.** One generic rhythm round for every MINI step. The script names MINI only in
+  hidden direction notes, not in any beat's mode, so the alpha never opens it.
 - **Quick-time events (QTE, co-op QTE).** The screen is real, with a built-in sequence for every step
   the table doesn't list; its grade is only shown, and the story never branches on it.
 - **Dialogue loops (CHC, HE).** The screen is real, but no loop files are written yet, so each one

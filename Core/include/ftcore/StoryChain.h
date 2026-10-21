@@ -74,7 +74,7 @@ private:
 
 struct AlphaCounters {
     std::uint32_t scenes = 0;
-    std::uint32_t battle = 0, field = 0, stub = 0; // screens played to the end; stub includes choice and cutscene
+    std::uint32_t battle = 0, field = 0, stub = 0; // screens played to the end; stub includes choice, qte, cutscene, banter and mini
     std::uint32_t stuck = 0;
     std::uint32_t warnings = 0; // plan unknown or dropped tokens, screens that came back not done
 
@@ -83,11 +83,14 @@ struct AlphaCounters {
         case GameplayScreen::Battle: ++battle; break;
         case GameplayScreen::Field: ++field; break;
         case GameplayScreen::Stub:
-        // The choice, quick-time event and cutscene screens count in the stub bucket, so the FINISHED
-        // line keeps its fields and totals (docs/CHOICE_SCREEN.md, QTE_SCREEN.md, CUTSCENE_SCREEN.md).
+        // The choice, quick-time event, cutscene, banter and mini-game screens count in the stub
+        // bucket, so the FINISHED line keeps its fields and totals (docs/CHOICE_SCREEN.md,
+        // QTE_SCREEN.md, CUTSCENE_SCREEN.md, BANTER_SCREEN.md, MINI_SCREEN.md).
         case GameplayScreen::Choice:
         case GameplayScreen::Qte:
-        case GameplayScreen::Cutscene: ++stub; break;
+        case GameplayScreen::Cutscene:
+        case GameplayScreen::Banter:
+        case GameplayScreen::Mini: ++stub; break;
         case GameplayScreen::Box: break;
         }
     }

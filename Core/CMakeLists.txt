@@ -32,6 +32,7 @@ add_library(ftcore STATIC
     src/AssetManifest.cpp
     src/AudioCues.cpp
     src/Backlog.cpp
+    src/Banter.cpp
     src/Battle.cpp
     src/Calibration.cpp
     src/ComboGenerator.cpp
@@ -52,6 +53,7 @@ add_library(ftcore STATIC
     src/Glb.cpp
     src/Json.cpp
     src/Loudness.cpp
+    src/Mini.cpp
     src/Physics.cpp
     src/Qte.cpp
     src/Seen.cpp
@@ -96,6 +98,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_asset_manifest.cpp
         tests/test_audio.cpp
         tests/test_backlog.cpp
+        tests/test_banter.cpp
         tests/test_battle.cpp
         tests/test_battle_demo.cpp
         tests/test_combo.cpp
@@ -115,6 +118,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_gameplay_plan.cpp
         tests/test_glb.cpp
         tests/test_json.cpp
+        tests/test_mini.cpp
         tests/test_physics.cpp
         tests/test_qte.cpp
         tests/test_settings.cpp
