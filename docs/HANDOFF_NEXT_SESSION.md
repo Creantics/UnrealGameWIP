@@ -1,10 +1,32 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-20. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-21. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
+
+- **LATEST (2026-10-21, main 683e90a): the list after the alpha is done, except the next-lead model work.** The alpha passes on 683e90a with the same pass line (`73 scenes, 167 screens (40 battle, 91 field, 36 stub), 0 STUCK, 0 warnings`). gate -Ubt is green with 4 ctests: `ftcore_tests` (405 cases), `unreal_wrappers`, `macro_names`, and the new `ui_text_keys`.
+  - **8474a09, combat balance.** A pilot model misses a fixed share of presses. Every encounter must be won by a typical pilot (75% presses, 60% defences) and the early tiers by a novice (50%, 30%). **Gap:** the party never levels, so tier scaling is kept small. Revisit this when progression exists.
+  - **a677f45, first-lead face shapes,** transferred from the proof head (`tools/blender/face_transfer.py`, `docs/BLENDER.md`). Lip-sync now runs on that lead.
+  - **c2b7a05, music loop points and the conductor.**
+    - `ftcore::LoopRegion` and `LoopUnwrapper` (`MusicLoop.h`): the intro plays once, then the loop region repeats.
+    - The conductor unwraps the cursor across each loop, so song time stays monotonic.
+    - BattleDemo takes its beat grid from the music cue when the cue has a bpm.
+    - Placeholder track `MUS-KNK`: 60 bpm, -18 LUFS, loop 4–20 s, made by `tools/audio/make_placeholder_music.py`.
+    - The cue import warns when a loop isn't a whole number of beats.
+    - **Not covered by the alpha,** which runs `-nosound`: music playback, the loop seek and conductor binding. Listen in the editor. The loop seek is frame-granular, and a music change mid-battle leaves the conductor on the old component. Combat was tuned at 120 bpm; MUS-KNK is 60.
+  - **23558e4, navmesh.**
+    - `FTBuildExploreWorld` bakes a navmesh. It uses an Editor-type world: an Inactive world gets no navigation system. It also clears the async-load build lock and gives the bounds volume a brush model.
+    - It fails unless all 6 spots and 6 field goals have full paths from the start.
+    - Spots no longer affect navigation.
+    - The field autopilot follows the path (`ftcore::advanceWaypoint`) and walks straight when there's no navmesh. Every field screen in the alpha logged a navmesh path.
+  - **683e90a, localisation setup (`docs/LOCALISATION.md`).**
+    - HUD strings come from `Data/Loc/en/ui.json` (52 keys, no story text) through `FTUiText`.
+    - `-UiCulture=<name>` picks the culture, falling back to the language, then English. `-UiCulture=pseudo` gives accented, padded text for layout checks.
+    - The game instance loads the table at launch (`UiText: culture en`).
+    - **Not done:** other cultures, non-Latin fonts, an in-game language setting, and a visual check of `pseudo`. HUDs don't draw under `-NullRHI`, so the alpha can't check layout.
+  - **Next:** the next lead models through the prep and rig path from bb0debd (`docs/BLENDER.md`, "Generated or scanned characters"), when the user supplies them. Also the private modelling exercise in the private handoff.
 
 - **CURRENT (2026-10-21): the playable alpha is on main (86a24e0) and plays start to end.** `gate.ps1 -Alpha` passes: `Alpha: FINISHED 73 scenes, 167 screens (40 battle, 91 field, 36 stub), 0 STUCK, 0 warnings` (8x clock, about 7 min; see `docs/ALPHA.md`). gate -Ubt green, 382 tests. Merged this round: encounter table, per-step field data, Banter and Mini screens (maps built), battle aim with weak points, audio playback and import, voice playback by line id (`FTImportAudio -Voice`), and `FTValidateAssets` (what's left to deliver, per id; `docs/ASSET_INTAKE.md`).
 - **The user is generating all art, music and voice**, from the private asset tracker. Work only on what doesn't need those assets. Next from `docs/PLAN.md`: loop points and the music conductor; balance, navmesh and localisation.
