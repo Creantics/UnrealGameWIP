@@ -1,7 +1,7 @@
 # Alpha: the whole story, start to end
 
 One build plays the story from the title screen to the end card. Every gameplay step in the script
-opens a screen: a battle, a field walk, a dialogue loop or a stub card. Nothing is polished. The art is blockouts,
+opens a screen: a battle, a field walk, a dialogue loop, a quick-time event or a stub card. Nothing is polished. The art is blockouts,
 and there is no voice or music.
 
 ## Play it
@@ -11,7 +11,8 @@ and there is no voice or music.
    ([RIGGING_TEST.md](RIGGING_TEST.md)), `BattleDemo` ([BATTLE_DEMO.md](BATTLE_DEMO.md)), `Explore`
    ([EXPLORE_DEMO.md](EXPLORE_DEMO.md)), `Stub` ([STUB_SCREEN.md](STUB_SCREEN.md)) and `Choice`
    ([CHOICE_SCREEN.md](CHOICE_SCREEN.md)). The director opens `Choice` for every CHC and HE step, so it
-   must exist.
+   must exist. The same goes for `Qte` ([QTE_SCREEN.md](QTE_SCREEN.md)), which every QTE and co-op QTE
+   step opens.
 3. Copy newengine `assets/story/` to `Data/Story/`. It's gitignored and never committed, because the
    repo is public.
 4. Open the editor (it opens `Demo`) and click Play, or run the game. The title offers New Game
@@ -24,7 +25,8 @@ and there is no voice or music.
 | Battle | Fight the step's line-up from `Data/Battle/encounters.json`. On a loss, Retry restores the HP the party started the battle with, or Quit to title | [BATTLE_DEMO.md](BATTLE_DEMO.md) |
 | Field | Walk to the glowing goal marker and press Use | [EXPLORE_DEMO.md](EXPLORE_DEMO.md) |
 | Choice | CHC and HE steps: a dialogue loop from `Data/Story/loops/<scene>_<beat>_<step>.json`. Read the claim, pick 1–4 (used wrong options grey out), Esc skips to the closing lines; its flags are set at the end. With no loop file it shows the stub card | [CHOICE_SCREEN.md](CHOICE_SCREEN.md) |
-| Stub | A card naming the step (banter, cutscene, quick-time event, mini-game); press to continue | [STUB_SCREEN.md](STUB_SCREEN.md) |
+| Qte | QTE and co-op QTE steps: a short timed input sequence from `Data/Qte/qte.json`. Press the arrow, WASD or pad direction as the ring closes in (hold or mash where asked); a miss plays on, and the result (Perfect to Rough) shows for a second. Counted in the `stub` bucket | [QTE_SCREEN.md](QTE_SCREEN.md) |
+| Stub | A card naming the step (banter, cutscene, mini-game); press to continue | [STUB_SCREEN.md](STUB_SCREEN.md) |
 | End card | Press to return to the title | [GAME_FRAME.md](GAME_FRAME.md) |
 
 A gameplay beat's `mode` can chain several steps (a field walk, then a fight, then a field walk).
@@ -48,7 +50,9 @@ UnrealEditor-Cmd ForgottenThird.uproject -game -NullRHI -AlphaAutoPlay -AlphaFas
   Each screen then plays itself: the battle autopilot wins, the field pilot walks to the goal, and a
   stub ends after one second, and a dialogue loop skips to its closing lines and ends after about one
   second. The choice screen counts in the `stub` bucket of the line below
-  ([CHOICE_SCREEN.md](CHOICE_SCREEN.md)).
+  ([CHOICE_SCREEN.md](CHOICE_SCREEN.md)), and so does the quick-time event screen, whose autopilot
+  presses at the ideal times and finishes within about 10 s of game time
+  ([QTE_SCREEN.md](QTE_SCREEN.md)).
 - `-AlphaFast` runs the gameplay screens at global time dilation 8.
 
 Pass means exit code 0 and this line:
@@ -73,7 +77,9 @@ counted as alpha warnings.
 
 ## What's stubbed
 
-- **Banter, cutscene, quick-time event, mini-game.** All of these show the stub card.
+- **Banter, cutscene, mini-game.** All of these show the stub card.
+- **Quick-time events (QTE, co-op QTE).** The screen is real, with a built-in sequence for every step
+  the table doesn't list; its grade is only shown, and the story never branches on it.
 - **Dialogue loops (CHC, HE).** The screen is real, but no loop files are written yet, so each one
   shows the stub card until its file is in `Data/Story/loops/`.
 - **Art.** Blockout maps and the proof head only, with no portraits.

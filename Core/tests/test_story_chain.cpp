@@ -104,7 +104,7 @@ TEST_CASE("alpha counters and the closing line") {
     c.addScreen(GameplayScreen::Field);
     c.addScreen(GameplayScreen::Stub);
     c.addScreen(GameplayScreen::Choice); // its own screen, counted in the stub bucket
-    c.addScreen(GameplayScreen::Qte);
+    c.addScreen(GameplayScreen::Qte); // its own screen too, counted in the stub bucket
     c.addScreen(GameplayScreen::Cutscene);
     c.addScreen(GameplayScreen::Box); // not a screen
     CHECK(c.stub == 4);

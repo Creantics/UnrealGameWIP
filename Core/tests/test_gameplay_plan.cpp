@@ -64,7 +64,7 @@ TEST_CASE("gameplay tokens map to screens") {
 
 TEST_CASE("screens route: new screens open the stub for now") {
     static_assert(screenRoutesTo(GameplayScreen::Choice) == GameplayScreen::Choice);
-    static_assert(screenRoutesTo(GameplayScreen::Qte) == GameplayScreen::Stub);
+    static_assert(screenRoutesTo(GameplayScreen::Qte) == GameplayScreen::Qte);
     static_assert(screenRoutesTo(GameplayScreen::Cutscene) == GameplayScreen::Stub);
     static_assert(screenRoutesTo(GameplayScreen::Battle) == GameplayScreen::Battle);
     static_assert(screenRoutesTo(GameplayScreen::Field) == GameplayScreen::Field);

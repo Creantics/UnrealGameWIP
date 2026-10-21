@@ -85,9 +85,10 @@ struct AlphaCounters {
         case GameplayScreen::Stub:
         // The choice screen (the dialogue loop) counts in the stub bucket, so the FINISHED line keeps
         // its fields and totals (docs/CHOICE_SCREEN.md).
-        case GameplayScreen::Choice: ++stub; break;
+        case GameplayScreen::Choice:
+        // The quick-time event screen counts in the stub bucket too (docs/QTE_SCREEN.md).
+        case GameplayScreen::Qte: ++stub; break;
         case GameplayScreen::Box:
-        case GameplayScreen::Qte:
         case GameplayScreen::Cutscene: break;
         }
     }

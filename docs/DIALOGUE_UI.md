@@ -56,7 +56,8 @@ when the mode is empty) and plays the plan's steps in order. Each step shows a b
 | battle | CMB | "Battle!" | `BattleMap`, default `BattleDemo` |
 | field | ENG, PLAY | "Into the field" | `FieldMap`, default `Explore` |
 | choice | CHC, HE | the token ("CHC") | `ChoiceMap`, default `Choice` ([CHOICE_SCREEN.md](CHOICE_SCREEN.md)) |
-| stub | BNT, CG, QTE, co-op QTE, MINI, anything unknown | the token ("CG") | `StubMap`, default `Stub` |
+| qte | QTE, co-op QTE | the token ("QTE") | `QteMap`, default `Qte` ([QTE_SCREEN.md](QTE_SCREEN.md)) |
+| stub | BNT, CG, MINI, anything unknown | the token ("CG") | `StubMap`, default `Stub` |
 | none | a plan with no step | none | the beat stays in the box; continuing skips it |
 
 The director logs `Story: step i/n <Battle|Field|Stub> at <scene> beat <b>.` (i from 1) for each.

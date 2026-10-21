@@ -75,7 +75,7 @@ public:
 	// The quick-time event and cutscene screens' maps. Each stays the stub map until its screen exists
 	// and ftcore::screenRoutesTo stops routing it to Stub.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
-	FString QteMap = TEXT("Stub");
+	FString QteMap = TEXT("Qte");
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	FString CutsceneMap = TEXT("Stub");
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
