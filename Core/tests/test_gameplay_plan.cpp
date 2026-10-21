@@ -64,8 +64,8 @@ TEST_CASE("gameplay tokens map to screens") {
 
 TEST_CASE("screens route: choice and cutscene open their own screens, qte the stub for now") {
     static_assert(screenRoutesTo(GameplayScreen::Choice) == GameplayScreen::Choice);
-    static_assert(screenRoutesTo(GameplayScreen::Qte) == GameplayScreen::Stub);
-    static_assert(screenRoutesTo(GameplayScreen::Cutscene) == GameplayScreen::Cutscene); // its own screen now
+    static_assert(screenRoutesTo(GameplayScreen::Qte) == GameplayScreen::Qte);
+    static_assert(screenRoutesTo(GameplayScreen::Cutscene) == GameplayScreen::Cutscene);
     static_assert(screenRoutesTo(GameplayScreen::Battle) == GameplayScreen::Battle);
     static_assert(screenRoutesTo(GameplayScreen::Field) == GameplayScreen::Field);
     static_assert(screenRoutesTo(GameplayScreen::Stub) == GameplayScreen::Stub);

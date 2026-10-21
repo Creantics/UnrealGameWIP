@@ -48,7 +48,7 @@ FTCORE_API std::string_view gameplayScreenName(GameplayScreen screen);
 constexpr GameplayScreen screenRoutesTo(GameplayScreen screen) {
     switch (screen) {
     case GameplayScreen::Choice: return GameplayScreen::Choice; // the dialogue loop (DialogueLoop.h)
-    case GameplayScreen::Qte: return GameplayScreen::Stub;
+    case GameplayScreen::Qte: return GameplayScreen::Qte; // the quick-time event (Qte.h)
     case GameplayScreen::Cutscene: // its own screen (AFTCutsceneGameMode)
     case GameplayScreen::Box:
     case GameplayScreen::Battle:

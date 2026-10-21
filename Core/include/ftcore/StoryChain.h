@@ -83,12 +83,12 @@ struct AlphaCounters {
         case GameplayScreen::Battle: ++battle; break;
         case GameplayScreen::Field: ++field; break;
         case GameplayScreen::Stub:
-        // The choice and cutscene screens count in the stub bucket, so the FINISHED line keeps its
-        // fields and totals (docs/CHOICE_SCREEN.md, docs/CUTSCENE_SCREEN.md).
+        // The choice, quick-time event and cutscene screens count in the stub bucket, so the FINISHED
+        // line keeps its fields and totals (docs/CHOICE_SCREEN.md, QTE_SCREEN.md, CUTSCENE_SCREEN.md).
         case GameplayScreen::Choice:
+        case GameplayScreen::Qte:
         case GameplayScreen::Cutscene: ++stub; break;
-        case GameplayScreen::Box:
-        case GameplayScreen::Qte: break;
+        case GameplayScreen::Box: break;
         }
     }
     std::uint32_t screens() const { return battle + field + stub; }

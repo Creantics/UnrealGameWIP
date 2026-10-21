@@ -48,6 +48,7 @@ add_library(ftcore STATIC
     src/GameplayPlan.cpp
     src/Json.cpp
     src/Physics.cpp
+    src/Qte.cpp
     src/Seen.cpp
     src/Settings.cpp
     src/Skip.cpp
@@ -105,6 +106,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_gameplay_plan.cpp
         tests/test_json.cpp
         tests/test_physics.cpp
+        tests/test_qte.cpp
         tests/test_settings.cpp
         tests/test_skip.cpp
         tests/test_story.cpp
