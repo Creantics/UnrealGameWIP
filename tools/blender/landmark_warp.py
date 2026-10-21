@@ -173,7 +173,8 @@ class Warp:
             front = np.clip(-d[:, 1] / (0.4 * r), 0.0, 1.0)
             wide = np.clip((1.6 * r - np.abs(d[:, 0])) / (0.4 * r), 0.0, 1.0)
             w = shell * front * wide * (dist < r + reach)
-            for sel, deg in ((d[:, 2] > 0, upper_deg), (d[:, 2] <= 0, -lower_deg)):
+            # only this eye's lid vertices: writing the rest would undo the other eye's rotation
+            for sel, deg in (((d[:, 2] > 0) & (w > 0), upper_deg), ((d[:, 2] <= 0) & (w > 0), -lower_deg)):
                 # rotation about +x through the centre: a positive angle takes a point in front (-y) downwards
                 t = np.radians(deg) * w[sel] * np.clip(np.abs(d[sel, 2]) / (0.25 * r), 0.0, 1.0)
                 y, z = d[sel, 1], d[sel, 2]
