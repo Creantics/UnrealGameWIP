@@ -232,6 +232,7 @@ namespace {
 struct LoadedData {
     EnemyRoster roster;
     EncounterTable table;
+    WeakPointTable weakPoints;
     bool ok = false;
 };
 
@@ -243,6 +244,10 @@ LoadedData loadBattleData() {
         return d;
     d.ok = importEnemyRoster(enemiesText, d.roster, &err) &&
            importEncounterTable(encountersText, d.roster, d.table, &err);
+    // Weak points are optional data: the gate plays with them when the file is there.
+    std::string weakText;
+    if (d.ok && ftcore_test::readProjectData("Battle/weakpoints.json", weakText))
+        d.ok = importWeakPointTable(weakText, d.roster, d.weakPoints, &err);
     return d;
 }
 
@@ -266,6 +271,7 @@ TEST_CASE("balance gate: every encounter is won with perfect presses and lost wi
         std::vector<Combatant> foes;
         makeEnemies(d.roster, lineup, foes);
         REQUIRE(foes.size() == lineup.enemies.size());
+        applyWeakPoints(d.weakPoints, d.roster, lineup, foes);
 
         const demo::HeadlessResult win = demo::playHeadless(demo::party(), foes, true);
         CHECK_FALSE(win.commandFailed);
@@ -274,7 +280,7 @@ TEST_CASE("balance gate: every encounter is won with perfect presses and lost wi
         CHECK(win.partyTurns >= 1);
         CHECK(win.presses > 0);
         MESSAGE(name << ": tier " << lineup.tier << ", victory in " << win.endTime << " s, " << win.partyTurns
-                     << " turns, " << win.enemyAttacks << " defences, party HP left " << win.partyHpLeft);
+                     << " turns (" << win.aims << " aimed, " << win.weakHits << " on a weak point), " << win.enemyAttacks << " defences, party HP left " << win.partyHpLeft);
 
         // Long frames (130 ms of battle time per frame, as under time dilation) still win: the autopilot
         // presses at each note's own time before the update that would expire it.

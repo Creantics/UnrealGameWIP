@@ -40,6 +40,7 @@ add_library(ftcore STATIC
     src/Conductor.cpp
     src/Cutscene.cpp
     src/DefenceTimeline.cpp
+    src/WeakPoint.cpp
     src/Dialogue.cpp
     src/DialogueLoop.cpp
     src/Emotion.cpp
@@ -105,6 +106,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_conductor.cpp
         tests/test_cutscene.cpp
         tests/test_defence.cpp
+        tests/test_weakpoint.cpp
         tests/test_dialogue.cpp
         tests/test_dialogue_loop.cpp
         tests/test_alpha.cpp

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ftcore/DefenceTimeline.h"
+#include "ftcore/WeakPoint.h"
 
 #include <string>
 #include <vector>
@@ -43,6 +44,7 @@ struct Combatant {
     int ap = 0;
     int maxAp = 9;
     std::vector<Skill> skills;
+    WeakPoints weakPoints; // enemies: what aim mode reveals (see WeakPoint.h); none by default
 
     bool alive() const { return hp > 0; }
 };

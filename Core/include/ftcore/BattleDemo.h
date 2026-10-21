@@ -4,7 +4,9 @@
 // plays a battle on its own: it picks a skill and target for each party turn, steps on every
 // note exactly on time and answers every enemy hit at its ideal time (read from the attack
 // timeline, never from audio). The pilot drives the headless test of the demo fight and the demo's
-// autoplay toggle. Header-only, so there is no extra translation unit to wrap for Unreal.
+// autoplay toggle. It also aims (WeakPoint.h): when a shot at the target's best weak point beats
+// its best skill, it enters aim, puts the aim point on that weak point and fires. Header-only, so
+// there is no extra translation unit to wrap for Unreal.
 
 #include "ftcore/Battle.h"
 #include "ftcore/CombatTypes.h"
@@ -12,6 +14,7 @@
 #include <cstddef>
 #include <initializer_list>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -43,6 +46,28 @@ inline Skill withTimeline(Skill s, AttackTimeline t) {
     return s;
 }
 
+inline WeakPoint makeWeakPoint(std::string_view id, float x, float y, float radius, float multiplier) {
+    WeakPoint w;
+    w.setId(id);
+    w.x = x;
+    w.y = y;
+    w.radius = radius;
+    w.multiplier = multiplier;
+    return w;
+}
+
+inline WeakPoints makeWeakPoints(float halfWidth, std::initializer_list<WeakPoint> points) {
+    WeakPoints out;
+    out.halfWidth = halfWidth;
+    for (const WeakPoint& p : points) out.add(p);
+    return out;
+}
+
+inline Combatant withWeakPoints(Combatant c, WeakPoints points) {
+    c.weakPoints = points;
+    return c;
+}
+
 inline Combatant makeCombatant(std::string name, Stats stats, std::vector<Skill> skills) {
     Combatant c;
     c.name = std::move(name);
@@ -67,21 +92,35 @@ inline std::vector<Combatant> party() {
     };
 }
 
-// Same as the brute and shade in Data/Battle/enemies.json (a test keeps them in step).
+// The weak points of the brute and shade in Data/Battle/weakpoints.json (a test keeps them in step).
+inline WeakPoints bruteWeakPoints() {
+    return makeWeakPoints(0.5f, {makeWeakPoint("core", 0.0f, 0.55f, 0.12f, 2.5f),
+                                 makeWeakPoint("knee", -0.28f, 0.15f, 0.10f, 1.5f)});
+}
+
+inline WeakPoints shadeWeakPoints() {
+    return makeWeakPoints(0.45f, {makeWeakPoint("eye", 0.12f, 0.86f, 0.09f, 2.2f),
+                                  makeWeakPoint("heart", -0.08f, 0.52f, 0.14f, 1.6f)});
+}
+
+// Same as the brute and shade in Data/Battle/enemies.json and weakpoints.json (a test keeps them
+// in step).
 inline std::vector<Combatant> enemies() {
     return {
-        makeCombatant("Brute", {260, 18, 6, 8, 8},
+        withWeakPoints(makeCombatant("Brute", {260, 18, 6, 8, 8},
                       {withTimeline(makeSkill("Slam", 0, 0, Targeting::SingleEnemy, 1.3f, 3, 1.0f),
                                     makeTimeline({{1.6, 0.4, 1.2, 1.0f, false}})),
                        withTimeline(makeSkill("Double Swipe", 0, 0, Targeting::SingleEnemy, 1.6f, 5, 2.5f),
                                     makeTimeline({{0.9, 0.4, 0.0, 1.0f, false}, {1.4, 0.4, 0.0, 1.0f, false}}))}),
-        makeCombatant("Shade", {180, 15, 3, 14, 14},
+                       bruteWeakPoints()),
+        withWeakPoints(makeCombatant("Shade", {180, 15, 3, 14, 14},
                       {withTimeline(makeSkill("Flicker", 0, 0, Targeting::SingleEnemy, 1.6f, 5, 4.0f),
                                     makeTimeline({{0.8, 0.3, 0.0, 1.0f, false},
                                                   {1.1, 0.3, 0.0, 1.0f, false},
                                                   {1.4, 0.3, 0.0, 1.0f, false}})),
                        withTimeline(makeSkill("Feint", 0, 0, Targeting::SingleEnemy, 1.8f, 5, 5.0f),
                                     makeTimeline({{1.0, 0.4, 0.0, 1.0f, false}, {1.8, 0.4, 0.0, 2.0f, false}}))}),
+                       shadeWeakPoints()),
     };
 }
 
@@ -100,10 +139,15 @@ inline BattleTuning tuning() {
 struct PilotChoice {
     std::size_t skill = 0;
     CombatantId target = 0;
+    bool aim = false;                     // aim at the target instead of using `skill`
+    std::size_t weakPoint = kMaxWeakPoints; // when aiming: the weak point to shoot
 };
 
 // For the acting party member: the strongest skill it can afford, on the living enemy with the
-// least HP (ties: lowest id). Only meaningful in Phase::AwaitingCommand.
+// least HP (ties: lowest id). Aim instead when it can afford it and a shot at the target's best
+// weak point (aim power times its multiplier) beats that skill played as a full combo (power times
+// 1 + fullComboBonus; an all-enemies skill counts half again). Only meaningful in
+// Phase::AwaitingCommand.
 inline PilotChoice pilotChoice(const Battle& b) {
     PilotChoice out;
     const Combatant& me = b.combatant(b.actor());
@@ -124,7 +168,24 @@ inline PilotChoice pilotChoice(const Battle& b) {
         if (!found || all[id].hp < all[out.target].hp) out.target = id;
         found = true;
     }
+    const AimTuning& aim = b.tuning().aim;
+    const WeakPoints& points = all[out.target].weakPoints;
+    const std::size_t weak = points.best();
+    if (found && weak < points.size() && me.ap >= aim.apCost &&
+        aim.power * points[weak].multiplier > best * (1.0f + b.tuning().fullComboBonus)) {
+        out.aim = true;
+        out.weakPoint = weak;
+    }
     return out;
+}
+
+// In Phase::PartyAim: puts the aim point on weak point `weakPoint` at `now` and fires. Returns
+// whether it fired.
+inline bool pilotShoot(Battle& b, std::size_t weakPoint, double now) {
+    if (b.phase() != Phase::PartyAim) return false;
+    const AimPoint at = b.aimShot().reticleFor(weakPoint, now);
+    b.setReticle(at.x, at.y);
+    return b.fire(now);
 }
 
 // Presses every pending note of the party combo that is due by `now`, exactly at its time.
@@ -171,15 +232,18 @@ struct HeadlessResult {
     int partyTurns = 0;
     int enemyAttacks = 0;
     int presses = 0;
+    int aims = 0;        // aimed shots fired
+    int weakHits = 0;    // of those, shots on a weak point
     int partyHpLeft = 0; // sum over the party at the end
     double endTime = 0.0;
 };
 
 // Plays a whole fight on a fixed clock `step` seconds apart (default 120 Hz), up to `limit`
 // battle seconds. The pilot picks skills and targets for every party turn; with `press` it steps on
-// every note exactly on time and answers every enemy hit perfectly with `defence` (parries, or
-// dodges and jumps), without it never presses. The same clock the Unreal autopilot sees: presses
-// go in before the update that would expire them.
+// every note exactly on time, answers every enemy hit perfectly with `defence` (parries, or
+// dodges and jumps) and aims when pilotChoice says so (the shot fires the same frame, on the weak
+// point); without it it never presses and never aims. The same clock the Unreal autopilot sees:
+// presses go in before the update that would expire them.
 inline HeadlessResult playHeadless(std::vector<Combatant> party, std::vector<Combatant> foes, bool press,
                                    double step = 1.0 / 120.0, double limit = 1200.0,
                                    DefenceInput defence = DefenceInput::Parry) {
@@ -190,11 +254,18 @@ inline HeadlessResult playHeadless(std::vector<Combatant> party, std::vector<Com
     while (b.phase() != Phase::Victory && b.phase() != Phase::Defeat && now < limit) {
         if (b.phase() == Phase::AwaitingCommand) {
             const PilotChoice choice = pilotChoice(b);
-            if (b.command(choice.skill, choice.target, now) != CommandError::None) {
+            const bool aim = press && choice.aim;
+            const CommandError e =
+                aim ? b.aim(choice.target, now) : b.command(choice.skill, choice.target, now);
+            if (e != CommandError::None) {
                 r.commandFailed = true;
                 break;
             }
             ++r.partyTurns;
+            if (aim && pilotShoot(b, choice.weakPoint, now)) {
+                ++r.aims;
+                if (b.lastShot().kind == ShotKind::Weak) ++r.weakHits;
+            }
         }
         const Phase before = b.phase();
         if (press) r.presses += pilotPress(b, now) + pilotDefend(b, now + step, defence);

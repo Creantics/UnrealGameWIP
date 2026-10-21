@@ -14,6 +14,9 @@
 //     GetComboNote(i) against GetBattleTime(); notes are in battle-clock seconds.
 //     While the phase is EnemySkill, forward Dodge / Parry / Jump to Defend(Input). Draw the attack's
 //     tells from GetDefenceHit(i) (impact times in battle-clock seconds).
+//     Instead of a skill a party member can AimAt(Target) (phase PartyAim, see docs/BATTLE_AIM.md):
+//     move the reticle with MoveReticle / SetReticle in figure units, draw GetAimWeakPoints() and
+//     GetAimPoint(), then Fire() (or CancelAim()). The shot fires on its own at the time limit.
 //  4. OnBattleEvent reports every hit, defended attack hit, judged note, counter and downed combatant;
 //     OnPhaseChanged follows the phase; OnOutcome fires once with Victory or Defeat.
 //
@@ -66,6 +69,8 @@ enum class EFTBattlePhase : uint8
 	Recovery,
 	Victory,
 	Defeat,
+	// A party member aims at an enemy's weak points (after Defeat to keep Core's order).
+	PartyAim,
 };
 
 // Same order as ftcore::EventType.
@@ -76,10 +81,12 @@ enum class EFTBattleEventType : uint8
 	SkillStarted,
 	// One combo note resolved: Grade, Beat = note index, Label "WRONG" for a wrong arrow.
 	NoteJudged,
-	// Damage dealt (Amount) by the note at Beat.
+	// Damage dealt (Amount) by the note at Beat. An aimed shot: Label "WEAK POINT" (Beat = the weak
+	// point), "HIT" or "GRAZE".
 	Hit,
 	// Enemy turn: attack hit Beat resolved. Label "PERFECT" (a perfect parry or dodge), "DODGE",
-	// "JUMP" or "HIT"; Amount = AP refunded.
+	// "JUMP" or "HIT"; Amount = AP refunded. "LATE" follows a "HIT" when the press came just after
+	// the impact (also in the Recovery after the attack).
 	Defended,
 	// Party combo: Amount = accuracy in percent; Label "FULL COMBO" when nothing was missed.
 	ComboFinished,
@@ -200,6 +207,27 @@ struct FFTSkill
 	TArray<FFTAttackHit> Hits;
 };
 
+// A spot on an enemy's figure that takes extra damage from an aimed shot (see ftcore/WeakPoint.h).
+// Figure space: the unit is the figure's height, X across from the centre line, Y up from the feet.
+USTRUCT(BlueprintType)
+struct FFTWeakPoint
+{
+	GENERATED_BODY()
+
+	// Lowercase a-z, 0-9 or _, at most 15 characters.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	FString Id;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	float X = 0.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	float Y = 0.5f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	float Radius = 0.12f;
+	// Damage of a shot inside it, times the aim damage.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	float Multiplier = 2.0f;
+};
+
 // A hit of the attack being defended.
 USTRUCT(BlueprintType)
 struct FFTDefenceHit
@@ -217,6 +245,9 @@ struct FFTDefenceHit
 	bool bJumpable = false;
 	UPROPERTY(BlueprintReadOnly, Category = "Battle")
 	EFTDefenceOutcome Outcome = EFTDefenceOutcome::Pending;
+	// The hit landed and a press came just after it.
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	bool bLate = false;
 };
 
 USTRUCT(BlueprintType)
@@ -240,6 +271,12 @@ struct FFTCombatant
 	int32 MaxAp = 9;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
 	TArray<FFTSkill> Skills;
+	// Enemies: at most 3 weak points for aimed shots (none: aim still hits the body).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	TArray<FFTWeakPoint> WeakPoints;
+	// Half the body's width in figure heights (the body for aimed shots).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	float HalfWidth = 0.5f;
 };
 
 // A combatant during the battle, without the skill list.
@@ -301,6 +338,27 @@ struct FFTBattleTuning
 	// After a parry press that answers nothing.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
 	double ParryLockout = 0.40;
+	// A press this long after a hit landed is judged LATE rather than a miss.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	double LateWindow = 0.20;
+	// Aim: AP spent on entering it (refunded by cancelling), damage before the shot's multiplier,
+	// and seconds before the shot fires on its own.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	int32 AimApCost = 2;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	float AimPower = 1.4f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	double AimTimeLimit = 5.0;
+	// Damage multiplier of a shot on the body that misses every weak point, and of one off the body.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	float AimBodyMultiplier = 1.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	float AimGrazeMultiplier = 0.5f;
+	// Reticle sway amplitude in figure heights (0: none).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	float AimSwayX = 0.035f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	float AimSwayY = 0.025f;
 	// AP refunded per perfect parry or perfect dodge.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
 	int32 ApOnPerfect = 1;
@@ -342,7 +400,7 @@ struct FFTBattleEvent
 	// Battle-clock seconds.
 	UPROPERTY(BlueprintReadOnly, Category = "Battle")
 	double Time = 0.0;
-	// A skill name, "WRONG", "FULL COMBO", a defence outcome or empty.
+	// A skill name, "AIM", "WRONG", "FULL COMBO", a defence outcome, "LATE", a shot kind or empty.
 	UPROPERTY(BlueprintReadOnly, Category = "Battle")
 	FString Label;
 };
@@ -386,9 +444,42 @@ public:
 	// An arrow pressed now, during PartySkill.
 	UFUNCTION(BlueprintCallable, Category = "Battle")
 	void Press(EFTArrow Arrow);
-	// A dodge / parry / jump pressed now, during EnemySkill.
+	// A dodge / parry / jump pressed now, during EnemySkill (or just after it, judged late).
 	UFUNCTION(BlueprintCallable, Category = "Battle")
 	void Defend(EFTDefenceInput Input);
+
+	// ---- aim (PartyAim) ----
+
+	// The acting party member spends Tuning.AimApCost and aims at Target, a living enemy.
+	UFUNCTION(BlueprintCallable, Category = "Battle")
+	EFTCommandError AimAt(int32 Target);
+	// Moves / places the reticle in figure units (clamped to the body plus a margin).
+	UFUNCTION(BlueprintCallable, Category = "Battle")
+	void MoveReticle(FVector2D Delta);
+	UFUNCTION(BlueprintCallable, Category = "Battle")
+	void SetReticle(FVector2D At);
+	// Fires now. False outside PartyAim.
+	UFUNCTION(BlueprintCallable, Category = "Battle")
+	bool Fire();
+	// Leaves aim before the shot: the AP comes back and the same member chooses again.
+	UFUNCTION(BlueprintCallable, Category = "Battle")
+	bool CancelAim();
+	UFUNCTION(BlueprintPure, Category = "Battle")
+	bool IsAimActive() const;
+	// The enemy aimed at (-1 outside PartyAim).
+	UFUNCTION(BlueprintPure, Category = "Battle")
+	int32 GetAimTarget() const;
+	// The reticle, and the point a shot now would be judged on (the reticle plus its sway).
+	UFUNCTION(BlueprintPure, Category = "Battle")
+	FVector2D GetReticle() const;
+	UFUNCTION(BlueprintCallable, Category = "Battle")
+	FVector2D GetAimPoint();
+	// The target's weak points (empty outside PartyAim).
+	UFUNCTION(BlueprintPure, Category = "Battle")
+	TArray<FFTWeakPoint> GetAimWeakPoints() const;
+	// Seconds left before the shot fires on its own (0 outside PartyAim).
+	UFUNCTION(BlueprintCallable, Category = "Battle")
+	double GetAimTimeLeft();
 
 	UFUNCTION(BlueprintPure, Category = "Battle")
 	EFTBattlePhase GetPhase() const;
@@ -470,6 +561,8 @@ public:
 	void PressAtTime(EFTArrow Arrow, double BattleSeconds);
 	// A defence press at BattleSeconds (the autopilot answers each hit at its ideal time).
 	void DefendAtTime(EFTDefenceInput Input, double BattleSeconds);
+	// The shot at BattleSeconds (the autopilot places the reticle for that time, then fires).
+	bool FireAtTime(double BattleSeconds);
 
 	// Native access (null before the first StartBattle).
 	const ftcore::Battle* GetBattle() const { return Battle.Get(); }

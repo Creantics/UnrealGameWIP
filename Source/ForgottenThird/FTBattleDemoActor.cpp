@@ -65,6 +65,26 @@ bool LoadBattleData(ftcore::EnemyRoster& Roster, ftcore::EncounterTable& Table)
 	return true;
 }
 
+// Data/Battle/weakpoints.json; false (and logged) when it can't be read or is refused, and the
+// enemies then have no weak points (an aimed shot still hits the body).
+bool LoadWeakPointData(const ftcore::EnemyRoster& Roster, ftcore::WeakPointTable& Table)
+{
+	const FString Path = FPaths::ProjectDir() / TEXT("Data/Battle/weakpoints.json");
+	TArray<uint8> Bytes;
+	if (!FFileHelper::LoadFileToArray(Bytes, *Path))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("BattleDemo: %s not found; enemies have no weak points."), *Path);
+		return false;
+	}
+	std::string Error;
+	if (!ftcore::importWeakPointTable(FT::BytesAsText(Bytes), Roster, Table, &Error))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("BattleDemo: weakpoints.json refused (%s); enemies have no weak points."), UTF8_TO_TCHAR(Error.c_str()));
+		return false;
+	}
+	return true;
+}
+
 FFTCombatant FromCore(const ftcore::Combatant& C)
 {
 	FFTCombatant Out;
@@ -102,6 +122,16 @@ FFTCombatant FromCore(const ftcore::Combatant& C)
 			}
 		}
 	}
+	for (const ftcore::WeakPoint& P : C.weakPoints)
+	{
+		FFTWeakPoint& W = Out.WeakPoints.AddDefaulted_GetRef();
+		W.Id = UTF8_TO_TCHAR(P.idChars.data());
+		W.X = P.x;
+		W.Y = P.y;
+		W.Radius = P.radius;
+		W.Multiplier = P.multiplier;
+	}
+	Out.HalfWidth = C.weakPoints.halfWidth;
 	return Out;
 }
 
@@ -118,6 +148,16 @@ constexpr double kBannerSeconds = 1.6;
 constexpr double kPilotFrames = 2.0;
 constexpr double kPilotMinLookahead = 0.05;
 constexpr double kPilotMaxLookahead = 0.5;
+// The autopilot holds its aim this long (battle seconds) before it fires, so the shot can be seen.
+constexpr double kPilotAimSeconds = 0.6;
+// The attacker lights up for this long as each hit's tell starts.
+constexpr double kTellFlashSeconds = 0.15;
+// Reticle speeds in figure heights per second: a stick at full tilt, a held arrow key.
+constexpr double kStickAimSpeed = 0.8;
+constexpr double kKeyAimSpeed = 0.6;
+constexpr float kStickDeadZone = 0.2f;
+// Screen height of the target's figure when it can't be projected (mouse pixels per figure height).
+constexpr float kFallbackFigurePixels = 300.f;
 
 const FString kEmpty;
 
@@ -249,6 +289,14 @@ void AFTBattleDemoActor::LoadLineup()
 	{
 		CoreFoes = ftcore::demo::enemies();
 	}
+	else
+	{
+		ftcore::WeakPointTable Points;
+		if (LoadWeakPointData(Roster, Points))
+		{
+			ftcore::applyWeakPoints(Points, Roster, Lineup, CoreFoes);
+		}
+	}
 	if (Entry)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: line-up of %d (tier %d) for %s beat %d step %d."), static_cast<int32>(CoreFoes.size()),
@@ -292,6 +340,9 @@ void AFTBattleDemoActor::StartRound()
 	RoundStartWall = Wall();
 	RoundStartGame = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
 	++Attempt;
+	Judgement = EFTJudgement::None;
+	JudgementWall = -100.0;
+	PilotWeakPoint = ftcore::kMaxWeakPoints;
 	bWaitingForRestart = false;
 	bCanQuitToTitle = false;
 	SelectedSkill = 0;
@@ -443,6 +494,21 @@ void AFTBattleDemoActor::TickFigures(double Now)
 	const ftcore::Battle* B = Battle->GetBattle();
 	const bool bRunning = B && !Battle->IsBattleOver();
 	const int32 ActorId = bRunning ? static_cast<int32>(B->actor()) : -1;
+	// The attacker lights up as the tell of its next hit starts (the HUD's ring starts closing then).
+	float TellFlash = 0.f;
+	if (bRunning && Battle->IsDefenceActive())
+	{
+		const ftcore::DefenceTimeline& T = B->defence();
+		const size_t I = T.nextIndex();
+		if (I < T.size())
+		{
+			const double SinceTell = Battle->GetBattleTime() - (T.impact(I) - T.hit(I).tell);
+			if (SinceTell >= 0.0)
+			{
+				TellFlash = static_cast<float>(FMath::Clamp(1.0 - SinceTell / kTellFlashSeconds, 0.0, 1.0));
+			}
+		}
+	}
 	for (int32 Id = 0; Id < Figures.Num(); ++Id)
 	{
 		FFigure& F = Figures[Id];
@@ -470,7 +536,8 @@ void AFTBattleDemoActor::TickFigures(double Now)
 		// Squash on a hit.
 		F.Pivot->SetRelativeScale3D(FVector(1.0 + 0.25 * Flash, 1.0 + 0.25 * Flash, 1.0 - 0.15 * Flash));
 
-		FLinearColor Color = FLinearColor::LerpUsingHSV(F.Color, FLinearColor::White, Flash);
+		const float Light = Id == ActorId ? FMath::Max(Flash, TellFlash) : Flash;
+		FLinearColor Color = FLinearColor::LerpUsingHSV(F.Color, FLinearColor::White, Light);
 		if (F.DownWall >= 0.0)
 		{
 			// Topple sideways about the feet, away from the other side, and grey out.
@@ -493,6 +560,22 @@ FVector AFTBattleDemoActor::GetFigureTop(int32 Id) const
 		return GetActorLocation();
 	}
 	return Figures[Id].Pivot->GetComponentTransform().TransformPosition(FVector(0, 0, Figures[Id].Height + 25.f));
+}
+
+FVector AFTBattleDemoActor::GetFigurePoint(int32 Id, float X, float Y) const
+{
+	if (!Figures.IsValidIndex(Id) || !Figures[Id].Pivot)
+	{
+		return GetActorLocation();
+	}
+	// The camera looks along +X, so screen-right is +Y.
+	const float H = Figures[Id].Height;
+	return Figures[Id].Pivot->GetComponentTransform().TransformPosition(FVector(0, X * H, Y * H));
+}
+
+float AFTBattleDemoActor::GetFigureHeight(int32 Id) const
+{
+	return Figures.IsValidIndex(Id) ? Figures[Id].Height : 0.f;
 }
 
 float AFTBattleDemoActor::GetFlash(int32 Id) const
@@ -545,6 +628,8 @@ void AFTBattleDemoActor::CacheText()
 		}
 		UpdateHpText(Id);
 	}
+	AimLabel = TEXT("Aim");
+	AimCost = FString::Printf(TEXT("%d AP"), Battle->Tuning.AimApCost);
 }
 
 void AFTBattleDemoActor::UpdateHpText(int32 Id)
@@ -582,6 +667,26 @@ const FString& AFTBattleDemoActor::GetHpText(int32 Id) const
 	return HpTexts.IsValidIndex(Id) ? HpTexts[Id] : kEmpty;
 }
 
+int32 AFTBattleDemoActor::GetAimRow() const
+{
+	const int32 Actor = Battle->GetActor();
+	return Actor >= 0 ? Battle->GetSkillCount(Actor) : 0;
+}
+
+const FString& AFTBattleDemoActor::GetWeakPointLabel(int32 I) const
+{
+	return I >= 0 && I < static_cast<int32>(ftcore::kMaxWeakPoints) ? WeakPointLabels[I] : kEmpty;
+}
+
+double AFTBattleDemoActor::GetJudgementAge() const { return Wall() - JudgementWall; }
+
+void AFTBattleDemoActor::SetJudgement(EFTJudgement Kind, const FString& Text)
+{
+	Judgement = Kind;
+	JudgementText = Text;
+	JudgementWall = Wall();
+}
+
 double AFTBattleDemoActor::GetBannerAge() const { return Wall() - BannerWall; }
 double AFTBattleDemoActor::GetNoticeAge() const { return Wall() - NoticeWall; }
 
@@ -608,6 +713,7 @@ void AFTBattleDemoActor::AddPopup(const FPopup& P)
 	Slot.bWrong = P.bWrong;
 	Slot.bNumber = P.bNumber;
 	Slot.bDefence = P.bDefence;
+	Slot.bWeak = P.bWeak;
 	Slot.Text = P.Text;
 }
 
@@ -627,6 +733,15 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 		if (bEnemy)
 		{
 			DefencePressWall = -100.0;
+		}
+		if (Event.Label == TEXT("AIM"))
+		{
+			// The target's weak points, labelled once for the HUD.
+			const ftcore::WeakPoints* Points = B ? &B->aimShot().weakPoints() : nullptr;
+			for (size_t I = 0; I < ftcore::kMaxWeakPoints; ++I)
+			{
+				WeakPointLabels[I] = Points && I < Points->size() ? FString::Printf(TEXT("x%.1f"), (*Points)[I].multiplier) : FString();
+			}
 		}
 		break;
 	}
@@ -656,25 +771,34 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 		FPopup P;
 		P.bNumber = true;
 		P.Combatant = Event.Target;
-		P.Text = FString::Printf(TEXT("-%d"), Event.Amount);
+		// An aimed shot names what it hit; a weak point is gold.
+		P.bWeak = Event.Label == TEXT("WEAK POINT");
+		P.Text = Event.Label.IsEmpty() || Event.Label == TEXT("HIT") ? FString::Printf(TEXT("-%d"), Event.Amount)
+			: FString::Printf(TEXT("%s  -%d"), *Event.Label, Event.Amount);
 		AddPopup(P);
 		break;
 	}
 	case EFTBattleEventType::Defended:
 	{
-		// One per enemy hit: PERFECT / DODGE / JUMP, with the AP refunded if any. A hit that lands
-		// already shows its damage number and flash (the Hit event), so it gets no second popup.
-		if (Event.Grade == EFTGrade::Miss)
+		// One per enemy hit, judged on one line: PERFECT (with the AP refunded), DEFENDED (a dodge or
+		// jump), MISSED (the hit landed: its damage number and flash come with the Hit event), then
+		// LATE in place of MISSED when a press came just after the impact.
+		if (Event.Label == TEXT("LATE"))
 		{
-			break;
+			SetJudgement(EFTJudgement::Late, TEXT("LATE"));
 		}
-		FPopup P;
-		P.bNumber = true;
-		P.bDefence = true;
-		P.Grade = Event.Grade;
-		P.Combatant = Event.Target;
-		P.Text = Event.Amount > 0 ? FString::Printf(TEXT("%s +%d AP"), *Event.Label, Event.Amount) : Event.Label;
-		AddPopup(P);
+		else if (Event.Label == TEXT("HIT"))
+		{
+			SetJudgement(EFTJudgement::Missed, TEXT("MISSED"));
+		}
+		else if (Event.Label == TEXT("PERFECT")) // also a perfect parry at full AP (no refund)
+		{
+			SetJudgement(EFTJudgement::Perfect, Event.Amount > 0 ? FString::Printf(TEXT("PERFECT  +%d AP"), Event.Amount) : FString(TEXT("PERFECT")));
+		}
+		else
+		{
+			SetJudgement(EFTJudgement::Defended, TEXT("DEFENDED"));
+		}
 		break;
 	}
 	case EFTBattleEventType::ComboFinished:
@@ -784,6 +908,12 @@ void AFTBattleDemoActor::RetryAfterDefeat()
 
 void AFTBattleDemoActor::HandleQuit()
 {
+	// Esc / Backspace / pad B while aiming put the shot back (pad B also arrives as a face button).
+	if (!bAutoPlay && Battle->IsAimActive())
+	{
+		Battle->CancelAim();
+		return;
+	}
 	// Same short pause as a restart, so the press that ended the battle can't quit.
 	if (!bWaitingForRestart || !bCanQuitToTitle || bQuitting || Wall() - OutcomeWall <= 1.0)
 	{
@@ -824,7 +954,24 @@ void AFTBattleDemoActor::HandleArrow(EFTArrow Arrow, bool bFaceButton)
 		Battle->Press(Arrow);
 		return;
 	}
-	if (Battle->IsDefenceActive())
+	if (Battle->IsAimActive())
+	{
+		// Pad A fires and pad B cancels; held arrows move the reticle (polled in TickAimInput).
+		if (bFaceButton && Arrow == EFTArrow::Down)
+		{
+			Battle->Fire();
+		}
+		else if (bFaceButton && Arrow == EFTArrow::Right)
+		{
+			Battle->CancelAim();
+		}
+		return;
+	}
+	// Just after an enemy attack a press can still be judged late for its last hit.
+	const int32 Actor = Battle->GetActor();
+	const bool bAfterAttack = Battle->GetPhase() == EFTBattlePhase::Recovery && Actor >= 0
+		&& Battle->GetCombatant(Actor).Team == EFTTeam::Enemies;
+	if (Battle->IsDefenceActive() || bAfterAttack)
 	{
 		// Arrows and face buttons alike: Left/Right (X/B) dodge, Down (A) parries, Up (Y) jumps.
 		const EFTDefenceInput Input = Arrow == EFTArrow::Down ? EFTDefenceInput::Parry
@@ -847,7 +994,8 @@ void AFTBattleDemoActor::HandleArrow(EFTArrow Arrow, bool bFaceButton)
 		}
 		return;
 	}
-	const int32 Count = Battle->GetSkillCount(Battle->GetActor());
+	// The skills, then the Aim row.
+	const int32 Count = Battle->GetSkillCount(Battle->GetActor()) + 1;
 	switch (Arrow)
 	{
 	case EFTArrow::Up:
@@ -889,7 +1037,15 @@ void AFTBattleDemoActor::HandleTarget(int32 Step)
 
 void AFTBattleDemoActor::HandleConfirm()
 {
-	if (!bAutoPlay && !bWaitingForRestart && Battle->GetPhase() == EFTBattlePhase::AwaitingCommand)
+	if (bAutoPlay || bWaitingForRestart)
+	{
+		return;
+	}
+	if (Battle->IsAimActive())
+	{
+		Battle->Fire();
+	}
+	else if (Battle->GetPhase() == EFTBattlePhase::AwaitingCommand)
 	{
 		UseSelected();
 	}
@@ -906,9 +1062,30 @@ void AFTBattleDemoActor::HandleRestart()
 
 void AFTBattleDemoActor::UseSelected()
 {
+	if (SelectedSkill == GetAimRow())
+	{
+		EnterAim();
+		return;
+	}
 	EnsureTarget();
 	const EFTCommandError Err = Battle->ChooseSkill(SelectedSkill, SelectedTarget);
 	switch (Err)
+	{
+	case EFTCommandError::NotEnoughAp:
+		SetNotice(TEXT("Not enough AP"));
+		break;
+	case EFTCommandError::InvalidTarget:
+		SetNotice(TEXT("Pick a target"));
+		break;
+	default:
+		break;
+	}
+}
+
+void AFTBattleDemoActor::EnterAim()
+{
+	EnsureTarget();
+	switch (Battle->AimAt(SelectedTarget))
 	{
 	case EFTCommandError::NotEnoughAp:
 		SetNotice(TEXT("Not enough AP"));
@@ -971,9 +1148,35 @@ void AFTBattleDemoActor::TickAutoPlay(float DeltaSeconds)
 	if (B->phase() == ftcore::Phase::AwaitingCommand)
 	{
 		const ftcore::demo::PilotChoice Choice = ftcore::demo::pilotChoice(*B);
-		SelectedSkill = static_cast<int32>(Choice.skill);
+		SelectedSkill = Choice.aim ? GetAimRow() : static_cast<int32>(Choice.skill);
 		SelectedTarget = static_cast<int32>(Choice.target);
+		PilotWeakPoint = Choice.aim ? Choice.weakPoint : ftcore::kMaxWeakPoints;
 		UseSelected();
+		return;
+	}
+	if (B->phase() == ftcore::Phase::PartyAim)
+	{
+		// Same as ftcore::demo::pilotShoot, after a short visible aim: the reticle glides onto the
+		// weak point, then sits exactly where the sway puts the aim point on it and fires.
+		const ftcore::AimShot& Aim = B->aimShot();
+		const double Now = Battle->GetBattleTime();
+		const size_t Point = PilotWeakPoint < Aim.weakPoints().size() ? PilotWeakPoint : Aim.weakPoints().best();
+		if (Point >= Aim.weakPoints().size())
+		{
+			Battle->FireAtTime(Now); // no weak point: the body
+			return;
+		}
+		const ftcore::AimPoint Want = Aim.reticleFor(Point, Now);
+		if (Now - Aim.start() < kPilotAimSeconds)
+		{
+			const ftcore::AimPoint At = Aim.reticle();
+			const float K = FMath::Clamp(static_cast<float>(DeltaSeconds) * 8.f, 0.f, 1.f);
+			Battle->SetReticle(FVector2D(At.x + (Want.x - At.x) * K, At.y + (Want.y - At.y) * K));
+			return;
+		}
+		Battle->SetReticle(FVector2D(Want.x, Want.y));
+		Battle->FireAtTime(Now);
+		PilotWeakPoint = ftcore::kMaxWeakPoints;
 		return;
 	}
 	if (Battle->IsDefenceActive())
@@ -1022,6 +1225,83 @@ void AFTBattleDemoActor::TickAutoPlay(float DeltaSeconds)
 	}
 }
 
+void AFTBattleDemoActor::TickAimInput(float DeltaSeconds)
+{
+	AFTPlayerController* PC = GetPlayer();
+	const bool bLive = PC && !bAutoPlay && !bWaitingForRestart && Battle->GetBattle();
+	const bool bAiming = bLive && Battle->IsAimActive();
+	// Edges of the polled keys. The right mouse button and pad LT toggle aim; F enters it.
+	const bool bAimDown = bLive && (PC->IsInputKeyDown(EKeys::F) || PC->IsInputKeyDown(EKeys::Gamepad_LeftTrigger));
+	const bool bFireDown = bLive && PC->IsInputKeyDown(EKeys::LeftMouseButton);
+	const bool bCancelDown = bLive && PC->IsInputKeyDown(EKeys::RightMouseButton);
+	const bool bAimPressed = bAimDown && !bAimKeyDown;
+	const bool bFirePressed = bFireDown && !bFireKeyDown;
+	const bool bCancelPressed = bCancelDown && !bCancelKeyDown;
+	bAimKeyDown = bAimDown;
+	bFireKeyDown = bFireDown;
+	bCancelKeyDown = bCancelDown;
+	if (!bLive)
+	{
+		return;
+	}
+	if (!bAiming)
+	{
+		const ftcore::Battle* B = Battle->GetBattle();
+		const bool bPartyTurn = B->phase() == ftcore::Phase::AwaitingCommand && B->combatant(B->actor()).team == ftcore::Team::Party;
+		if (bPartyTurn && (bAimPressed || bCancelPressed))
+		{
+			SelectedSkill = GetAimRow();
+			EnterAim();
+		}
+		return;
+	}
+	if (bFirePressed)
+	{
+		Battle->Fire();
+		return;
+	}
+	if (bCancelPressed || (bAimPressed && PC->IsInputKeyDown(EKeys::Gamepad_LeftTrigger)))
+	{
+		Battle->CancelAim();
+		return;
+	}
+
+	// The mouse moves the reticle by its own distance on screen: pixels over the figure's height.
+	const int32 Target = Battle->GetAimTarget();
+	float FigurePixels = kFallbackFigurePixels;
+	FVector2D Feet, Head;
+	if (PC->ProjectWorldLocationToScreen(GetFigurePoint(Target, 0.f, 0.f), Feet)
+		&& PC->ProjectWorldLocationToScreen(GetFigurePoint(Target, 0.f, 1.f), Head))
+	{
+		FigurePixels = FMath::Max(static_cast<float>(FVector2D::Distance(Feet, Head)), 40.f);
+	}
+	float MouseX = 0.f, MouseY = 0.f;
+	PC->GetInputMouseDelta(MouseX, MouseY);
+	// Mouse Y is up-positive, like figure Y.
+	double DX = MouseX / FigurePixels;
+	double DY = MouseY / FigurePixels;
+
+	// Either stick, past a dead zone; the arrows (and WASD) while held.
+	auto Stick = [&](const FKey& Key)
+	{
+		const float V = PC->GetInputAnalogKeyState(Key);
+		return FMath::Abs(V) > kStickDeadZone ? static_cast<double>(V) : 0.0;
+	};
+	const double Dt = static_cast<double>(DeltaSeconds);
+	DX += (Stick(EKeys::Gamepad_LeftX) + Stick(EKeys::Gamepad_RightX)) * kStickAimSpeed * Dt;
+	DY += (Stick(EKeys::Gamepad_LeftY) + Stick(EKeys::Gamepad_RightY)) * kStickAimSpeed * Dt;
+	const double KeyX = (PC->IsInputKeyDown(EKeys::Right) || PC->IsInputKeyDown(EKeys::D) ? 1.0 : 0.0)
+		- (PC->IsInputKeyDown(EKeys::Left) || PC->IsInputKeyDown(EKeys::A) ? 1.0 : 0.0);
+	const double KeyY = (PC->IsInputKeyDown(EKeys::Up) || PC->IsInputKeyDown(EKeys::W) ? 1.0 : 0.0)
+		- (PC->IsInputKeyDown(EKeys::Down) || PC->IsInputKeyDown(EKeys::S) ? 1.0 : 0.0);
+	DX += KeyX * kKeyAimSpeed * Dt;
+	DY += KeyY * kKeyAimSpeed * Dt;
+	if (DX != 0.0 || DY != 0.0)
+	{
+		Battle->MoveReticle(FVector2D(DX, DY));
+	}
+}
+
 void AFTBattleDemoActor::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
@@ -1029,6 +1309,7 @@ void AFTBattleDemoActor::Tick(float DeltaSeconds)
 	{
 		TickAutoPlay(DeltaSeconds);
 	}
+	TickAimInput(DeltaSeconds);
 	if (bCanQuitToTitle && bWaitingForRestart)
 	{
 		// Q quits on its press edge. It is polled: after the battle the story keys are live, and Q has
