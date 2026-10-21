@@ -47,6 +47,8 @@ RINGS = [("ang", 22.0, INNER_GAP * 0.5, 1.0), ("ang", 10.0, INNER_GAP, 1.0), ("a
          ("ang", 0.0, LID_GAP, 1.0), ("ang", 3.5, LID_GAP + 0.0005, 1.0), ("flat", 1.5, 0.25, 0.8),
          ("flat", 3.2, 0.6, 0.4), ("flat", 5.2, 0.9, 0.12), ("flat", 7.5, 1.0, 0.0)]
 LATERAL = 0.45         # the face rows come this much closer on the ear side, where the face turns away
+DELETE_DEPTH = 0.03    # the cut takes faces up to this far in front of the eye's surface (hair over the eye stays)
+RAY_START = 0.03       # front rays start this far in front of the eye's surface
 LID_SAMPLE = 0.0025    # lid rows take the scan's texture and shape deltas this far outside the margin
 EYE_KEYS = {"blink": "eyeBlink%s", "wide": "eyeWide%s", "squint": "eyeSquint%s"}
 FADE = 0.010           # the scan's own eye-key deltas fade out this close to the patch
@@ -176,7 +178,7 @@ def build_eye(bm, L, scan, side, centre_xz, cfg, mats, eye_group):
     if hit is None:
         raise SystemExit("face_patch: nothing in front of the eye at %.3f, %.3f" % (cx, cz))
     sy = hit[1]
-    y0 = sy - 0.03  # front rays start here, in front of the face but behind most of the hair
+    y0 = sy - RAY_START
     R = cfg["r"]
     rl = R + LID_GAP
     E = np.array([cx, sy + 0.0005 + R, cz])
@@ -245,7 +247,7 @@ def build_eye(bm, L, scan, side, centre_xz, cfg, mats, eye_group):
             continue
         if not any(inside(v.co.x, v.co.z) for v in f.verts):
             continue
-        if c.y > y0:
+        if c.y > sy - DELETE_DEPTH:
             gone.append(f)
     rim = {v for f in gone for v in f.verts}
     bmesh.ops.delete(bm, geom=gone, context="FACES")
@@ -254,6 +256,7 @@ def build_eye(bm, L, scan, side, centre_xz, cfg, mats, eye_group):
     if not loops:
         raise SystemExit("face_patch: no hole boundary found round the eye (%d removed)" % len(gone))
     loop = max(loops, key=len)
+    _relax(loop, scan, L["shapes"])
 
     # new vertices, ring by ring, each with the texture, weights and shape deltas of the scan it stands for
     deform, uvl, shapes = L["deform"], L["uv"], L["shapes"]
@@ -379,6 +382,19 @@ def _boundary_loops(rim):
             if cur in used:
                 break
     return loops
+
+
+def _relax(loop, scan, shapes, passes=2, k=0.5):
+    """Smooths the hole's jagged edge along itself and puts it back on the scan, so the stitch does not fold."""
+    for _ in range(passes):
+        n = len(loop)
+        target = [(loop[i - 1].co + loop[(i + 1) % n].co) * 0.5 for i in range(n)]
+        for v, t in zip(loop, target):
+            p = scan.bvh.find_nearest(v.co.lerp(t, k))[0]
+            d = p - v.co
+            v.co = p
+            for layer in shapes.values():
+                v[layer] = v[layer] + d
 
 
 def _angle2(v, c2):
