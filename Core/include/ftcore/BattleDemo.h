@@ -11,6 +11,7 @@
 #include "ftcore/Battle.h"
 #include "ftcore/CombatTypes.h"
 
+#include <cmath>
 #include <cstddef>
 #include <initializer_list>
 #include <string>
@@ -225,6 +226,76 @@ inline int pilotDefend(Battle& b, double horizon, DefenceInput mode = DefenceInp
     return presses;
 }
 
+// How well a simulated player plays: the share of combo notes it presses on time and of enemy hits
+// it answers. The misses are spread evenly and deterministically (rate r: action n succeeds when
+// round((n+1)r) > round(nr)), counted over the whole fight, so a 0.75 pilot hits exactly three in
+// four. The defaults are the perfect pilot. Aiming stays perfect.
+struct PilotSkill {
+    double press = 1.0;
+    double defend = 1.0;
+};
+
+inline bool pilotSucceeds(unsigned n, double rate) {
+    if (rate >= 1.0) return true;
+    if (rate <= 0.0) return false;
+    return std::floor((n + 1) * rate + 0.5) > std::floor(n * rate + 0.5);
+}
+
+// Carried by an imperfect pilot across frames and turns.
+struct PilotState {
+    unsigned notes = 0; // combo notes acted on this fight
+    unsigned hits = 0;  // enemy hits decided this fight
+    std::size_t skippedHit = static_cast<std::size_t>(-1); // the incoming hit it lets land
+};
+
+// Like pilotPress, but a note the skill misses gets a wrong arrow at its time (one that matches
+// neither it nor the next two notes), which grades it a miss without touching its neighbours.
+inline int pilotPress(Battle& b, double now, const PilotSkill& skill, PilotState& state) {
+    int presses = 0;
+    if (b.phase() != Phase::PartySkill) return presses;
+    const ComboSequence& c = b.combo();
+    for (std::size_t i = c.nextIndex(); i < c.size() && c.note(i).time <= now; ++i) {
+        if (c.grade(i) != Grade::Pending) continue;
+        Arrow arrow = c.note(i).arrow;
+        if (!pilotSucceeds(state.notes++, skill.press)) {
+            const Arrow next = i + 1 < c.size() ? c.note(i + 1).arrow : arrow;
+            const Arrow after = i + 2 < c.size() ? c.note(i + 2).arrow : arrow;
+            for (Arrow a : {Arrow::Left, Arrow::Down, Arrow::Up, Arrow::Right})
+                if (a != c.note(i).arrow && a != next && a != after) {
+                    arrow = a;
+                    break;
+                }
+        }
+        b.press(arrow, c.note(i).time);
+        ++presses;
+        if (b.phase() != Phase::PartySkill) break;
+    }
+    return presses;
+}
+
+// Like pilotDefend, but a hit the skill misses gets no press: the pilot waits for it to land.
+inline int pilotDefend(Battle& b, double horizon, DefenceInput mode, const PilotSkill& skill, PilotState& state) {
+    int presses = 0;
+    if (b.phase() != Phase::EnemySkill) state.skippedHit = static_cast<std::size_t>(-1);
+    while (b.phase() == Phase::EnemySkill) {
+        const DefenceTimeline& d = b.defence();
+        const std::size_t i = d.nextIndex();
+        if (i >= d.size() || i == state.skippedHit) break;
+        const DefenceInput input = mode == DefenceInput::Parry ? DefenceInput::Parry
+                                   : d.accepts(i, DefenceInput::Dodge) ? DefenceInput::Dodge
+                                                                       : DefenceInput::Jump;
+        const double t = d.idealPress(i, input);
+        if (t > horizon) break;
+        if (!pilotSucceeds(state.hits++, skill.defend)) {
+            state.skippedHit = i;
+            break;
+        }
+        b.defend(input, t);
+        ++presses;
+    }
+    return presses;
+}
+
 struct HeadlessResult {
     Phase outcome = Phase::NotStarted; // Victory or Defeat when the fight ended, else where it stopped
     bool finished = false;
@@ -242,13 +313,15 @@ struct HeadlessResult {
 // battle seconds. The pilot picks skills and targets for every party turn; with `press` it steps on
 // every note exactly on time, answers every enemy hit perfectly with `defence` (parries, or
 // dodges and jumps) and aims when pilotChoice says so (the shot fires the same frame, on the weak
-// point); without it it never presses and never aims. The same clock the Unreal autopilot sees:
+// point); without it it never presses and never aims. `skill` makes the presses and answers
+// imperfect (see PilotSkill). The same clock the Unreal autopilot sees:
 // presses go in before the update that would expire them.
 inline HeadlessResult playHeadless(std::vector<Combatant> party, std::vector<Combatant> foes, bool press,
                                    double step = 1.0 / 120.0, double limit = 1200.0,
-                                   DefenceInput defence = DefenceInput::Parry) {
+                                   DefenceInput defence = DefenceInput::Parry, PilotSkill skill = {}) {
     Battle b(std::move(party), std::move(foes), tuning());
     HeadlessResult r;
+    PilotState state;
     double now = 0.0;
     b.start(now);
     while (b.phase() != Phase::Victory && b.phase() != Phase::Defeat && now < limit) {
@@ -268,7 +341,8 @@ inline HeadlessResult playHeadless(std::vector<Combatant> party, std::vector<Com
             }
         }
         const Phase before = b.phase();
-        if (press) r.presses += pilotPress(b, now) + pilotDefend(b, now + step, defence);
+        if (press)
+            r.presses += pilotPress(b, now, skill, state) + pilotDefend(b, now + step, defence, skill, state);
         now += step;
         b.update(now);
         if (before != Phase::EnemySkill && b.phase() == Phase::EnemySkill) ++r.enemyAttacks;

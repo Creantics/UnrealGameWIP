@@ -34,13 +34,13 @@
     { "scene": "SC-12-D2", "beat": 0, "step": 1, "tier": 6, "enemies": ["tide_serpent"] },
     { "scene": "SC-12-D2", "beat": 13, "step": 0, "tier": 6, "enemies": ["glass_sentry", "bulwark"] },
     { "scene": "SC-12-D2", "beat": 13, "step": 1, "tier": 7, "enemies": ["rust_colossus"] },
-    { "scene": "SC-15-Q1", "beat": 14, "step": 1, "tier": 7, "enemies": ["tide_wraith", "ash_stalker", "shade"] },
+    { "scene": "SC-15-Q1", "beat": 14, "step": 1, "tier": 7, "enemies": ["tide_wraith", "ash_stalker", "wisp"] },
     { "scene": "SC-22-Q2", "beat": 3, "step": 1, "tier": 7, "enemies": ["glass_sentry", "tide_wraith", "lurker"] },
     { "scene": "SC-22-Q2", "beat": 105, "step": 1, "tier": 7, "enemies": ["glass_regent"] },
-    { "scene": "SC-23-Q2", "beat": 0, "step": 0, "tier": 8, "enemies": ["tide_wraith", "tide_wraith", "ash_stalker"] },
-    { "scene": "SC-23-Q2", "beat": 11, "step": 0, "tier": 8, "enemies": ["eclipse_maw"] },
-    { "scene": "SC-24-Q1", "beat": 9, "step": 1, "tier": 8, "enemies": ["eclipse_maw"] },
-    { "scene": "SC-25-Q1", "beat": 3, "step": 0, "tier": 8, "enemies": ["eclipse_maw"] },
+    { "scene": "SC-23-Q2", "beat": 0, "step": 0, "tier": 7, "enemies": ["tide_wraith", "ash_stalker", "maw_pup"] },
+    { "scene": "SC-23-Q2", "beat": 11, "step": 0, "tier": 7, "enemies": ["eclipse_maw"] },
+    { "scene": "SC-24-Q1", "beat": 9, "step": 1, "tier": 7, "enemies": ["eclipse_maw", "wisp"] },
+    { "scene": "SC-25-Q1", "beat": 3, "step": 0, "tier": 7, "enemies": ["eclipse_maw", "hound"] },
     { "scene": "SC-25-Q2", "beat": 0, "step": 0, "tier": 9, "enemies": ["eclipse_maw"] }
   ]
 }

@@ -311,8 +311,8 @@ void makeEnemies(const EnemyRoster& roster, const EncounterLineup& lineup, std::
         c.team = Team::Enemies;
         c.stats = e.stats;
         const int tier = lineup.tier < 0 ? 0 : (lineup.tier > kMaxTier ? kMaxTier : lineup.tier);
-        c.stats.maxHp += e.stats.maxHp * tier * kTierPercent / 100;
-        c.stats.attack += e.stats.attack * tier * kTierPercent / 100;
+        c.stats.maxHp += e.stats.maxHp * tier * kTierHpPercent / 100;
+        c.stats.attack += e.stats.attack * tier * kTierAttackPercent / 100;
         c.hp = c.stats.maxHp;
         c.skills = e.skills;
         out.push_back(std::move(c));

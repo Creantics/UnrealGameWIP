@@ -31,7 +31,8 @@
 //   { "version": 1, "default": { "enemies": ["brute", "shade"] },
 //     "encounters": [ { "scene": "SC-X", "beat": 4, "step": 0, "enemies": ["shade"] } ] }
 //   `step` defaults to 0. `tier` (0..9, default 0; "default" takes one too) toughens the line-up:
-//   each tier adds kTierPercent of the base max HP and attack to every enemy in it (see
+//   each tier adds kTierHpPercent of the base max HP and kTierAttackPercent of the base attack to
+//   every enemy in it (see
 //   makeEnemies). An unknown enemy id, a duplicate (scene, beat, step) or an empty line-up is an
 //   error; unknown keys are warnings.
 
@@ -59,8 +60,10 @@ struct EnemyRoster {
     FTCORE_API int find(std::string_view id) const;
 };
 
-// Percent of an enemy's base max HP and attack that each tier adds.
-inline constexpr int kTierPercent = 8;
+// Percent of an enemy's base max HP and of its base attack that each tier adds. Attack grows
+// slowly because later enemies already have higher base attack and the party doesn't level.
+inline constexpr int kTierHpPercent = 8;
+inline constexpr int kTierAttackPercent = 3;
 inline constexpr int kMaxTier = 9;
 
 struct EncounterLineup {

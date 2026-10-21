@@ -128,7 +128,22 @@ of enemy ids. Both hold ids and numbers only. The loader and the rules are in
 - The party is always the two leads from `BattleDemo.h`. A line-up has one to three enemies (the
   HUD stacks three panels).
 - `tier` (0 to 9, on an entry or on `default`) makes a fight tougher: every tier adds 8 percent of
-  each enemy's base max HP and attack. Later acts use higher tiers.
+  each enemy's base max HP and 3 percent of its base attack. Later acts use higher tiers. Attack
+  grows slowly because later enemies already hit harder and the party doesn't level yet.
+
+### Balance targets
+
+`ctest` plays every encounter with three simulated pilots (`demo::PilotSkill`):
+
+| Pilot | Notes pressed | Hits answered | Must |
+|---|---|---|---|
+| perfect | all | all | win every fight (the Unreal autopilot plays this way) |
+| typical | 3 in 4 | 3 in 5 | win every fight within 60 + 8 × tier seconds |
+| novice | 1 in 2 | 3 in 10 | win every fight at tier 0 or 1 |
+
+Misses are spread evenly over the fight, with no randomness. A missed note is a wrong arrow at the
+note's time; a missed hit gets no press. Run `ftcore_tests -tc="balance:*" -s` to print one line per
+encounter. Every enemy has weak points, so aiming is a way through for players who struggle with combos.
 - Roster: brute, shade, wisp (fast, fragile), hound, bulwark (slow, tanky), lurker (hits hard).
   The entries are keyed by real scene ids and real battle steps; a Core test checks that against the
   script when it's available.

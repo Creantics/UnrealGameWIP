@@ -302,6 +302,65 @@ TEST_CASE("balance gate: every encounter is won with perfect presses and lost wi
     }
 }
 
+TEST_CASE("an imperfect pilot misses evenly and deterministically") {
+    int hits = 0;
+    for (unsigned n = 0; n < 100; ++n) hits += demo::pilotSucceeds(n, 0.75) ? 1 : 0;
+    CHECK(hits == 75);
+    CHECK(demo::pilotSucceeds(0, 0.75)); // the first action lands
+    CHECK_FALSE(demo::pilotSucceeds(2, 0.75)); // one in four misses
+    for (unsigned n = 0; n < 8; ++n) {
+        CHECK(demo::pilotSucceeds(n, 1.0));
+        CHECK_FALSE(demo::pilotSucceeds(n, 0.0));
+    }
+
+    // Against the demo line-up a weaker pilot lands fewer presses and takes more damage, and the
+    // same skill plays the same fight twice.
+    const demo::PilotSkill typical{0.75, 0.6};
+    const demo::HeadlessResult perfect = demo::playHeadless(demo::party(), demo::enemies(), true);
+    const demo::HeadlessResult a =
+        demo::playHeadless(demo::party(), demo::enemies(), true, 1.0 / 120.0, 1200.0, DefenceInput::Parry, typical);
+    const demo::HeadlessResult b =
+        demo::playHeadless(demo::party(), demo::enemies(), true, 1.0 / 120.0, 1200.0, DefenceInput::Parry, typical);
+    CHECK(a.finished);
+    CHECK(a.endTime == b.endTime);
+    CHECK(a.partyHpLeft == b.partyHpLeft);
+    CHECK(a.partyHpLeft < perfect.partyHpLeft);
+    CHECK(a.endTime > perfect.endTime);
+}
+
+// Prints a BAL line per encounter with -s (perfect, typical and novice: outcome, seconds, party HP, aims).
+TEST_CASE("balance: typical and novice pilots against every encounter") {
+    const LoadedData d = loadBattleData();
+    REQUIRE(d.ok);
+    const demo::PilotSkill typical{0.75, 0.6}, novice{0.5, 0.3};
+    for (std::size_t i = 0; i <= d.table.entries.size(); ++i) {
+        const EncounterLineup& lineup = i == 0 ? d.table.fallback : d.table.entries[i - 1].lineup;
+        const std::string name = i == 0 ? std::string("default")
+                                        : d.table.entries[i - 1].scene + " b" + std::to_string(d.table.entries[i - 1].beat) +
+                                              " s" + std::to_string(d.table.entries[i - 1].step);
+        std::vector<Combatant> foes;
+        makeEnemies(d.roster, lineup, foes);
+        applyWeakPoints(d.weakPoints, d.roster, lineup, foes);
+        const auto run = [&](const demo::PilotSkill& p) {
+            return demo::playHeadless(demo::party(), foes, true, 1.0 / 120.0, 1200.0, DefenceInput::Parry, p);
+        };
+        const demo::HeadlessResult perfect = run({}), t = run(typical), n = run(novice);
+        const auto out = [](const demo::HeadlessResult& r) {
+            return std::string(r.outcome == Phase::Victory ? "W " : "L ") + std::to_string(static_cast<int>(r.endTime)) +
+                   "s hp" + std::to_string(r.partyHpLeft) + " aim" + std::to_string(r.aims);
+        };
+        std::string ids;
+        for (std::uint32_t e : lineup.enemies) ids += d.roster.enemies[e].id + " ";
+        // A typical player wins every fight inside its time budget; a novice wins the early ones.
+        CAPTURE(name);
+        CHECK(t.outcome == Phase::Victory);
+        CHECK(t.endTime <= 60.0 + 8.0 * lineup.tier);
+        if (lineup.tier <= 1) CHECK(n.outcome == Phase::Victory);
+        MESSAGE("BAL " << name << " t" << lineup.tier << " [" << ids << "] perfect " << out(perfect) << " | typical "
+                       << out(t) << " | novice " << out(n));
+    }
+}
+
 TEST_CASE("tiers toughen a line-up and stay within bounds") {
     const LoadedData d = loadBattleData();
     REQUIRE(d.ok);
@@ -312,7 +371,7 @@ TEST_CASE("tiers toughen a line-up and stay within bounds") {
     makeEnemies(d.roster, lineup, tough);
     REQUIRE(base.size() == tough.size());
     for (std::size_t i = 0; i < base.size(); ++i) {
-        CHECK(tough[i].stats.maxHp == base[i].stats.maxHp + base[i].stats.maxHp * 5 * kTierPercent / 100);
+        CHECK(tough[i].stats.maxHp == base[i].stats.maxHp + base[i].stats.maxHp * 5 * kTierHpPercent / 100);
         CHECK(tough[i].hp == tough[i].stats.maxHp);
         CHECK(tough[i].stats.attack > base[i].stats.attack);
         CHECK(tough[i].stats.defense == base[i].stats.defense);
@@ -320,7 +379,7 @@ TEST_CASE("tiers toughen a line-up and stay within bounds") {
     lineup.tier = 99; // clamped
     std::vector<Combatant> clamped;
     makeEnemies(d.roster, lineup, clamped);
-    CHECK(clamped[0].stats.maxHp == base[0].stats.maxHp + base[0].stats.maxHp * kMaxTier * kTierPercent / 100);
+    CHECK(clamped[0].stats.maxHp == base[0].stats.maxHp + base[0].stats.maxHp * kMaxTier * kTierHpPercent / 100);
 
     EnemyRoster roster;
     EncounterTable table;

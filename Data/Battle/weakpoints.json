@@ -42,6 +42,102 @@
         { "id": "maw", "x": -0.1, "y": 0.82, "radius": 0.11, "multiplier": 2.2 },
         { "id": "spine", "x": 0.15, "y": 0.5, "radius": 0.12, "multiplier": 1.7 }
       ]
+    },
+    "maw_pup": {
+      "halfWidth": 0.4,
+      "points": [
+        { "id": "jaw", "x": 0.2, "y": 0.6, "radius": 0.11, "multiplier": 2.0 }
+      ]
+    },
+    "rust_drone": {
+      "halfWidth": 0.45,
+      "points": [
+        { "id": "lens", "x": 0.0, "y": 0.72, "radius": 0.09, "multiplier": 2.2 },
+        { "id": "vent", "x": -0.2, "y": 0.4, "radius": 0.12, "multiplier": 1.5 }
+      ]
+    },
+    "thorn_crawler": {
+      "halfWidth": 0.5,
+      "points": [
+        { "id": "bulb", "x": 0.0, "y": 0.5, "radius": 0.12, "multiplier": 2.0 }
+      ]
+    },
+    "ash_stalker": {
+      "halfWidth": 0.45,
+      "points": [
+        { "id": "throat", "x": 0.12, "y": 0.74, "radius": 0.09, "multiplier": 2.2 },
+        { "id": "hip", "x": -0.18, "y": 0.38, "radius": 0.12, "multiplier": 1.5 }
+      ]
+    },
+    "glass_sentry": {
+      "halfWidth": 0.5,
+      "points": [
+        { "id": "crack", "x": 0.05, "y": 0.6, "radius": 0.09, "multiplier": 2.4 },
+        { "id": "base", "x": 0.0, "y": 0.15, "radius": 0.14, "multiplier": 1.5 }
+      ]
+    },
+    "tide_wraith": {
+      "halfWidth": 0.45,
+      "points": [
+        { "id": "lantern", "x": -0.1, "y": 0.8, "radius": 0.1, "multiplier": 2.2 },
+        { "id": "tail", "x": 0.2, "y": 0.3, "radius": 0.12, "multiplier": 1.5 }
+      ]
+    },
+    "brass_regent": {
+      "halfWidth": 0.55,
+      "points": [
+        { "id": "crown", "x": 0.0, "y": 0.9, "radius": 0.08, "multiplier": 2.4 },
+        { "id": "gear", "x": 0.18, "y": 0.5, "radius": 0.12, "multiplier": 1.6 }
+      ]
+    },
+    "cinder_warden": {
+      "halfWidth": 0.55,
+      "points": [
+        { "id": "furnace", "x": 0.0, "y": 0.55, "radius": 0.1, "multiplier": 2.4 },
+        { "id": "grate", "x": -0.3, "y": 0.3, "radius": 0.1, "multiplier": 1.6 }
+      ]
+    },
+    "hollow_knight": {
+      "halfWidth": 0.5,
+      "points": [
+        { "id": "visor", "x": 0.0, "y": 0.86, "radius": 0.08, "multiplier": 2.5 },
+        { "id": "gap", "x": 0.22, "y": 0.45, "radius": 0.1, "multiplier": 1.7 }
+      ]
+    },
+    "storm_roc": {
+      "halfWidth": 0.6,
+      "points": [
+        { "id": "eye", "x": 0.25, "y": 0.8, "radius": 0.08, "multiplier": 2.4 },
+        { "id": "wing", "x": -0.4, "y": 0.6, "radius": 0.12, "multiplier": 1.6 }
+      ]
+    },
+    "tide_serpent": {
+      "halfWidth": 0.6,
+      "points": [
+        { "id": "gill", "x": 0.2, "y": 0.7, "radius": 0.09, "multiplier": 2.4 },
+        { "id": "scale", "x": -0.2, "y": 0.4, "radius": 0.12, "multiplier": 1.6 }
+      ]
+    },
+    "rust_colossus": {
+      "halfWidth": 0.6,
+      "points": [
+        { "id": "core", "x": 0.0, "y": 0.6, "radius": 0.1, "multiplier": 2.5 },
+        { "id": "knee", "x": -0.3, "y": 0.18, "radius": 0.12, "multiplier": 1.7 }
+      ]
+    },
+    "glass_regent": {
+      "halfWidth": 0.55,
+      "points": [
+        { "id": "prism", "x": 0.0, "y": 0.82, "radius": 0.08, "multiplier": 2.5 },
+        { "id": "facet", "x": 0.2, "y": 0.45, "radius": 0.11, "multiplier": 1.7 }
+      ]
+    },
+    "eclipse_maw": {
+      "halfWidth": 0.6,
+      "points": [
+        { "id": "void_eye", "x": 0.0, "y": 0.78, "radius": 0.09, "multiplier": 2.5 },
+        { "id": "rim", "x": 0.3, "y": 0.5, "radius": 0.12, "multiplier": 1.7 }
+      ]
     }
   }
 }
