@@ -54,7 +54,10 @@ A field step (ENG or PLAY, `StoryCarry.Screen == Field`) opens this map with
 `UFTGameInstance::StoryCarry` set. `AFTExploreDirector` hides the demo spots, skips the encounters
 and objectives and shows ONE goal marker (a glowing column and orb; `AFTExploreSpot` with
 `SpotId == ftcore::demo::kFieldGoalSpotId`, spawned at run time, so the map needs no change). Its
-position comes from `ftcore::demo::fieldGoalIndex(scene, beat, step)`, a deterministic pick from
+position comes from `Data/Field/goals.json` (`ftcore::FieldGoalTable`, keyed by scene, beat and step: a goal
+and an optional `via` waypoint the autopilot passes first; every step of the script has an entry, all on clear
+ground and reached in under 10 s). When the file or the entry is missing it falls back to
+`ftcore::demo::fieldGoalIndex(scene, beat, step)`, a deterministic pick from
 `kFieldGoals` (six points, each a straight prop-free line from the start). The HUD reads
 "Reach the marker  <ENG|PLAY>  <step label>" (notation only). Standing at the marker, the prompt is
 "E  Use the marker"; pressing it sets `StoryCarry.bDone` and opens `ReturnMap`. Fallback: after

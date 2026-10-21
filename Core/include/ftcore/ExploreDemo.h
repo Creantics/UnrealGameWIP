@@ -199,4 +199,37 @@ inline bool fieldPilotStep(Vec2& pos, Vec2& facing, Vec2 goal, float speed, floa
     return false;
 }
 
+// ---- Optional waypoint ----
+// A step may name a `via` point (FieldGoalTable): the pilot walks there first, then to the marker.
+inline constexpr float kFieldViaRadius = 1.f;
+
+// Where the pilot aims: `via` until it comes within kFieldViaRadius (then `viaDone` latches), else
+// the goal.
+inline Vec2 fieldPilotTarget(Vec2 pos, Vec2 goal, Vec2 via, bool hasVia, bool& viaDone) {
+    if (hasVia && !viaDone) {
+        const float dx = via.x - pos.x;
+        const float dy = via.y - pos.y;
+        if (std::sqrt(dx * dx + dy * dy) <= kFieldViaRadius) viaDone = true;
+        else return via;
+    }
+    return goal;
+}
+
+// fieldPilotStep through the optional waypoint; true once the marker is in reach.
+inline bool fieldPilotStepVia(Vec2& pos, Vec2& facing, Vec2 goal, Vec2 via, bool hasVia, bool& viaDone, float speed,
+                              float dt) {
+    const Vec2 target = fieldPilotTarget(pos, goal, via, hasVia, viaDone);
+    if (hasVia && !viaDone) {
+        const float dx = target.x - pos.x;
+        const float dy = target.y - pos.y;
+        const float dist = std::sqrt(dx * dx + dy * dy);
+        if (dist > 1e-4f) facing = {dx / dist, dy / dist};
+        const float step = speed * dt < dist ? speed * dt : dist;
+        pos.x += facing.x * step;
+        pos.y += facing.y * step;
+        return false;
+    }
+    return fieldPilotStep(pos, facing, goal, speed, dt);
+}
+
 } // namespace ftcore::demo

@@ -5,18 +5,25 @@
 #include "HAL/PlatformMisc.h"
 #include "HAL/PlatformTime.h"
 #include "Kismet/GameplayStatics.h"
+#include "HAL/FileManager.h"
 #include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
+#include "Misc/Paths.h"
 #include "TimerManager.h"
 
 #include "ForgottenThird.h"
 #include "FTExploreCharacter.h"
 #include "FTExploreSpot.h"
 #include "FTGameInstance.h"
+#include "FTText.h"
 
 #include "ftcore/ExploreDemo.h"
+#include "ftcore/FieldGoals.h"
 
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace
 {
@@ -289,6 +296,37 @@ void AFTExploreDirector::BeginStoryWalk()
 	const FTCHARToUTF8 SceneUtf8(*Carry.Scene);
 	const size_t GoalIndex = ftcore::demo::fieldGoalIndex(std::string_view(SceneUtf8.Get(), static_cast<size_t>(SceneUtf8.Length())), Carry.Beat, Carry.Step);
 	FieldGoal = ftcore::demo::kFieldGoals[GoalIndex];
+	bFieldHasVia = false;
+	bFieldViaDone = false;
+	bool bFromTable = false;
+	{
+		// Data/Field/goals.json: this step's own marker (and waypoint); the hashed default when the
+		// file or the entry is missing.
+		ftcore::FieldGoalTable Table;
+		const FString File = FPaths::ProjectDir() / TEXT("Data/Field/goals.json");
+		TArray<uint8> Bytes;
+		if (IFileManager::Get().FileExists(*File) && FFileHelper::LoadFileToArray(Bytes, *File))
+		{
+			std::string Error;
+			if (ftcore::importFieldGoalTable(FT::BytesAsText(Bytes), Table, &Error))
+			{
+				const ftcore::FieldGoalEntry* Entry = Table.findEntry(std::string_view(SceneUtf8.Get(), static_cast<size_t>(SceneUtf8.Length())),
+					static_cast<uint32>(FMath::Max(Carry.Beat, 0)), static_cast<uint32>(FMath::Max(Carry.Step, 0)));
+				if (Entry)
+				{
+					FieldGoal = Entry->goal;
+					FieldVia = Entry->via;
+					bFieldHasVia = Entry->hasVia;
+					bFromTable = true;
+				}
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: Data/Field/goals.json refused; using the default markers:
+%s"), *FT::ToFString(Error));
+			}
+		}
+	}
 	SpawnFieldGoal();
 	FieldObjective = Carry.StepLabel.IsEmpty()
 		? FString::Printf(TEXT("Reach the marker  %s"), *Carry.Kind)
@@ -298,7 +336,7 @@ void AFTExploreDirector::BeginStoryWalk()
 	{
 		UGameplayStatics::SetGlobalTimeDilation(this, 8.f);
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: field step for %s at %s beat %d step %d, marker %d."), *Carry.Kind, *Carry.Scene, Carry.Beat, Carry.Step, static_cast<int32>(GoalIndex));
+	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: field step for %s at %s beat %d step %d, marker %d%s."), *Carry.Kind, *Carry.Scene, Carry.Beat, Carry.Step, static_cast<int32>(GoalIndex), bFromTable ? TEXT(" (table)") : TEXT(""));
 }
 
 void AFTExploreDirector::SpawnFieldGoal()
@@ -359,7 +397,9 @@ void AFTExploreDirector::TickStoryWalk(AFTExploreCharacter& Player, float DeltaS
 		Interact();
 		return;
 	}
-	PilotWalk(Player, Pos, FieldGoal, ftcore::demo::kFieldGoalSpotId, DeltaSeconds);
+	const ftcore::Vec2 Aim = ftcore::demo::fieldPilotTarget(Pos, FieldGoal, FieldVia, bFieldHasVia, bFieldViaDone);
+	// The waypoint and the marker count as separate targets for the stuck detection.
+	PilotWalk(Player, Pos, Aim, bFieldHasVia && !bFieldViaDone ? ftcore::demo::kFieldGoalSpotId + 1 : ftcore::demo::kFieldGoalSpotId, DeltaSeconds);
 }
 
 void AFTExploreDirector::ReturnToStory()

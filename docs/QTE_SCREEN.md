@@ -58,7 +58,7 @@ A ring per prompt closes in on a target ring over 0.6 s (the battle tell frame, 
   "qtes": [ { "scene": "SC-X", "beat": 4, "step": 0, "prompts": [ ... ] } ] }
 ```
 
-Prompt keys: `input` (`left`, `down`, `up`, `right`), `at` (seconds from the start; the first is at least 0.5), `window` (`wide` default or `narrow`), `hold` (0.2 to 5 s), `mash` (2 to 30 presses, needs `limit`) and `limit` (0.5 to 8 s, mash only). Hold and mash are exclusive. 1 to 24 prompts. Each prompt starts at least 0.4 s after the previous one ends. `step` defaults to 0; a duplicate (scene, beat, step) is an error and unknown keys are warnings. The table ships with only the default sequence; entries are added as the script's QTE steps get tuned.
+Prompt keys: `input` (`left`, `down`, `up`, `right`), `at` (seconds from the start; the first is at least 0.5), `window` (`wide` default or `narrow`), `hold` (0.2 to 5 s), `mash` (2 to 30 presses, needs `limit`) and `limit` (0.5 to 8 s, mash only). Hold and mash are exclusive. 1 to 24 prompts. Each prompt starts at least 0.4 s after the previous one ends. `step` defaults to 0; a duplicate (scene, beat, step) is an error and unknown keys are warnings. Every `co-op QTE` step of the script has its own entry (the script has no plain `QTE` step), generated from the step's position in the story: later steps run longer, with more narrow windows, holds and mashes, and every sequence ends by 8 s. The default is only the fallback. `test_field_goals.cpp` checks the entries against the script's steps.
 
 ## Rules (Core)
 
