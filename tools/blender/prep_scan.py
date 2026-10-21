@@ -1,7 +1,8 @@
 """Readies a generated or scanned character mesh (one big textured mesh, no rig) for fit_canonical.py.
 
     blender -b --factory-startup --python-exit-code 1 --python tools/blender/prep_scan.py -- MESH --out prepped.glb \\
-        [--height 1.88] [--rot-z -90] [--faces 60000] [--tex 2048] [--grid DIR] [--retopo QUADS]
+        [--height 1.88] [--rot-z -90] [--faces 60000] [--tex 2048] [--grid DIR] [--retopo QUADS] \
+        [--region X0,Y0,Z0,X1,Y1,Z1:N ...]
 
 Steps: import (.glb/.gltf/.obj/.fbx), join every mesh into one, turn it about Z by --rot-z degrees so it faces
 -Y, scale it to --height metres, centre it on x = y = 0 with the soles on z = 0, decimate (collapse, UVs
@@ -9,6 +10,11 @@ kept) to about --faces triangles, scale every image down to at most --tex pixels
 and export a .glb with no skin. With --grid, also renders orthographic front and side views on a 5 cm
 grid into DIR (front.png, side.png, plus grid.json with the pixel-to-metre mapping) for picking the 14
 landmarks fit_canonical needs.
+
+--region X0,Y0,Z0,X1,Y1,Z1:N (repeatable) gives a box its own budget: faces whose centres lie inside it (metres,
+after scaling) decimate to about N triangles, the first matching box wins, and the rest of the body goes to
+--faces. A 150k body otherwise flattens the face to 5 mm triangles while the hair keeps thousands. Each region
+is decimated in edit mode with everything else unselected, so the seams between them stay closed.
 
 --retopo QUADS replaces the decimation with a clean low-poly mesh: a voxel remesh closes the scan into one
 watertight shell, QuadriFlow lays about QUADS quads over it (mirrored across x = 0, so fit_canonical can
@@ -32,10 +38,16 @@ import ne_blender as nb  # noqa: E402
 
 def _args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
-    a = {"mesh": None, "out": None, "height": 1.88, "rot-z": -90.0, "faces": 60000, "tex": 2048, "grid": None, "retopo": 0, "voxel": 0.006}
+    a = {"mesh": None, "out": None, "height": 1.88, "rot-z": -90.0, "faces": 60000, "tex": 2048, "grid": None, "retopo": 0, "voxel": 0.006,
+         "region": []}
     i = 0
     while i < len(argv):
         k = argv[i]
+        if k == "--region":
+            box, _, n = argv[i + 1].partition(":")
+            a["region"].append(([float(c) for c in box.split(",")], int(n)))
+            i += 2
+            continue
         if k.startswith("--") and k[2:] in a:
             a[k[2:]] = argv[i + 1]
             i += 2
@@ -349,6 +361,46 @@ def render_grid(obj, outdir):
     bpy.data.objects.remove(cam, do_unlink=True)
 
 
+def decimate_regions(obj, regions, faces):
+    """regions: [([x0, y0, z0, x1, y1, z1], triangles)]. Each box's faces decimate to its budget, the rest to faces."""
+    me = obj.data
+    before = sum(len(p.vertices) - 2 for p in me.polygons)
+    nb.activate(obj)
+
+    def owner(c):
+        for k, (b, _n) in enumerate(regions):
+            if b[0] <= c.x <= b[3] and b[1] <= c.y <= b[4] and b[2] <= c.z <= b[5]:
+                return k
+        return len(regions)
+
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.context.tool_settings.mesh_select_mode = (False, False, True)
+    for k, target in enumerate([n for _b, n in regions] + [faces]):
+        bm = bmesh.from_edit_mesh(me)
+        for v in bm.verts:
+            v.select = False
+        for e in bm.edges:
+            e.select = False
+        tris = 0
+        for f in bm.faces:
+            f.select = owner(f.calc_center_median()) == k
+            if f.select:
+                tris += len(f.verts) - 2
+                for v in f.verts:
+                    v.select = True
+                for e in f.edges:
+                    e.select = True
+        bm.select_flush_mode()
+        bmesh.update_edit_mesh(me)
+        if tris > target:
+            bpy.ops.mesh.decimate(ratio=target / tris)
+        print("prep_scan: region %d: %d -> ~%d triangles" % (k, tris, min(tris, target)))
+    bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.mesh.quads_convert_to_tris()
+    bpy.ops.object.mode_set(mode="OBJECT")
+    return before, sum(len(p.vertices) - 2 for p in me.polygons)
+
+
 def main():
     a = _args()
     obj = import_one(a["mesh"])
@@ -364,7 +416,10 @@ def main():
         obj.name = old
         after = sum(len(p.vertices) - 2 for p in obj.data.polygons)
     else:
-        before, after = decimate(obj, a["faces"])
+        if a["region"]:
+            before, after = decimate_regions(obj, a["region"], a["faces"])
+        else:
+            before, after = decimate(obj, a["faces"])
         images = shrink_images(a["tex"])
     obj.name = os.path.splitext(os.path.basename(a["out"]))[0]
     nb.set_smooth(obj, True)
