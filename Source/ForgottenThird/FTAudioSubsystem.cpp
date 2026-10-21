@@ -37,6 +37,7 @@ void UFTAudioSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	if (Story)
 	{
 		Story->OnCue.AddDynamic(this, &UFTAudioSubsystem::HandleStoryCue);
+		Story->OnBeatChanged.AddDynamic(this, &UFTAudioSubsystem::HandleBeat);
 	}
 }
 
@@ -45,7 +46,9 @@ void UFTAudioSubsystem::Deinitialize()
 	if (UFTStorySubsystem* Story = GetGameInstance()->GetSubsystem<UFTStorySubsystem>())
 	{
 		Story->OnCue.RemoveDynamic(this, &UFTAudioSubsystem::HandleStoryCue);
+		Story->OnBeatChanged.RemoveDynamic(this, &UFTAudioSubsystem::HandleBeat);
 	}
+	StopVoice();
 	StopMusic(0.f);
 	for (const TPair<FString, TObjectPtr<UAudioComponent>>& Pair : Ambience)
 	{
@@ -85,6 +88,70 @@ FString UFTAudioSubsystem::AssetPathFor(const ftcore::AudioCue& Cue)
 {
 	const FString Id = FT::ToFString(Cue.id);
 	return AssetFolderFor(Cue) / Id + TEXT(".") + Id;
+}
+
+FString UFTAudioSubsystem::VoiceAssetPath(const FString& LineId)
+{
+	return FString(TEXT("/Game/Voice/")) + LineId + TEXT(".") + LineId;
+}
+
+FString UFTAudioSubsystem::VoiceTrackFile(const FString& LineId)
+{
+	const FString Path = FPaths::ProjectDir() / TEXT("Data/Voice") / LineId + TEXT(".nface");
+	return FPaths::FileExists(Path) ? Path : FString();
+}
+
+bool UFTAudioSubsystem::IsVoicePlaying() const
+{
+	return Voice && Voice->IsPlaying();
+}
+
+void UFTAudioSubsystem::HandleBeat(EFTStoryState State)
+{
+	StopVoice();
+	if (State != EFTStoryState::Line)
+	{
+		return;
+	}
+	const UFTStorySubsystem* Story = GetGameInstance()->GetSubsystem<UFTStorySubsystem>();
+	const FString LineId = Story ? Story->GetLineId() : FString();
+	if (LineId.IsEmpty())
+	{
+		return;
+	}
+	USoundBase* Sound = LoadObject<USoundBase>(nullptr, *VoiceAssetPath(LineId), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	if (!Sound)
+	{
+		if (!bLoggedNoVoice)
+		{
+			bLoggedNoVoice = true;
+			UE_LOG(LogForgottenThird, Display, TEXT("Audio: line %s has no imported voice; lines without one show text only."), *LineId);
+		}
+		return;
+	}
+	float Volume = 1.f;
+	if (const UFTSettingsSubsystem* Settings = GetGameInstance()->GetSubsystem<UFTSettingsSubsystem>())
+	{
+		Volume = Settings->Get().master * Settings->Get().voice;
+	}
+	// A line belongs to its beat: it doesn't persist across a map change.
+	Voice = UGameplayStatics::CreateSound2D(GetGameInstance(), Sound, Volume, 1.f, 0.f, nullptr, false, true);
+	if (Voice)
+	{
+		Voice->Play();
+	}
+	VoiceLineId = LineId;
+	OnVoiceLine.Broadcast(LineId, Sound->GetDuration());
+}
+
+void UFTAudioSubsystem::StopVoice()
+{
+	if (Voice)
+	{
+		Voice->Stop();
+	}
+	Voice = nullptr;
+	VoiceLineId.Reset();
 }
 
 void UFTAudioSubsystem::HandleStoryCue(const FString& CueId, const FString& Kind, EFTCueAction Action)
@@ -261,6 +328,10 @@ void UFTAudioSubsystem::Tick(float DeltaTime)
 		{
 			Music->SetVolumeMultiplier(VolumeFor(*Cue));
 		}
+	}
+	if (Voice)
+	{
+		Voice->SetVolumeMultiplier(Settings->Get().master * Settings->Get().voice);
 	}
 	for (const TPair<FString, TObjectPtr<UAudioComponent>>& Pair : Ambience)
 	{

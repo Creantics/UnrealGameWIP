@@ -83,4 +83,9 @@ FTCORE_API LoudnessTarget loudnessTarget(AudioBus bus);
 FTCORE_API std::vector<AssetIssue> checkClip(const WavInfo& info, const Loudness& loudness, AudioBus bus,
                                              const AudioCue* cue);
 
+// A voice line's lip-sync track (.nface) should be as long as its audio: adds a "nface-length"
+// warning when they differ by more than kLipSyncSlackSeconds.
+inline constexpr double kLipSyncSlackSeconds = 0.25;
+FTCORE_API void checkLipSyncLength(double audioSeconds, double trackSeconds, std::vector<AssetIssue>& issues);
+
 } // namespace ftcore

@@ -352,6 +352,16 @@ TEST_CASE("checkClip holds clips to the bus rules") {
     CHECK(checkClip(info, good, AudioBus::Music, &cue).empty());
 }
 
+TEST_CASE("checkLipSyncLength allows a little slack") {
+    std::vector<AssetIssue> issues;
+    checkLipSyncLength(4.77, 4.60, issues);
+    CHECK(issues.empty());
+    checkLipSyncLength(4.77, 3.0, issues);
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].code == "nface-length");
+    CHECK(issues[0].severity == AssetSeverity::Warning);
+}
+
 TEST_CASE("decoding a written wav and measuring it agree with measuring the samples") {
     const std::vector<float> s = sine(440.0, dbToLinear(-20.0), 5.0, 48000, 1);
     std::string data;

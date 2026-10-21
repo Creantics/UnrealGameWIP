@@ -9,7 +9,7 @@ Ids and formats only. Story text, names and line text never go in this repo (it 
 | Skinned character (`.glb`) | `-run=FTImportCharacter`, then `-run=FTBuildRig` | `Data/Models/` | Works (proof head: 7/7 face bones, 56/56 shapes) |
 | Character textures | None. Materials import as flat factors only | not defined yet | Gap, see 2 |
 | Static mesh / prop | `FTImportProp` (section 2) | `Data/Models/` | Defined |
-| Voice line (`.wav`) + lip-sync track (`.nface`) | Track: `UFTFaceComponent::PlayTrack`. Audio: none | not defined yet | Partly |
+| Voice line (`.wav`) + lip-sync track (`.nface`) | `FTImportAudio -Voice` (section 3); `UFTAudioSubsystem` plays a line's voice by line id. Track: `UFTFaceComponent::PlayTrack` | `Data/Voice/<LineId>.wav` + `.nface` (gitignored) | Defined; face hookup to come |
 | Music and sound cues (`.wav`) | `FTImportAudio` (section 4); `UFTAudioSubsystem` plays them by cue id | `Data/Audio/<Bus>/<CueId>.wav` | Defined |
 | Concept art | Not imported | outside the repo | Convention only |
 
@@ -157,20 +157,20 @@ Validation: the import's asset-rules line. Look at the result with `FTBuildDemoW
 
 A line's id is the `id` on a story line beat (`StoryRunner::lineId()`, `BeatType::Line`), taken from the local `Data/Story/scenes/<scene>.json`. The id style is `VO-<scene>-NNN`, for example `VO-TEST-01-001` in scene `SC-TEST-01`; some camp lines carry the script's own `VO-` id. Ids are what the importer reads; no text is needed to name files.
 
-**Not defined yet:** game-side playback of voice. No code loads or plays a voice file for a line id (the Source tree has no sound-wave lookup). The face side exists: `UFTFaceComponent::PlayTrack(TrackFile, StartSeconds)` takes a path (relative paths resolve against the project folder), reads the bytes and calls `parseFaceTrack`.
+**Playback (defined):** on every story line `UFTAudioSubsystem` looks for `/Game/Voice/<LineId>` and plays it on the voice slider, stopping the previous line's voice when the beat moves on. A line without one shows text only (logged once). `OnVoiceLine(LineId, Seconds)` fires when a voice starts, and `UFTAudioSubsystem::VoiceTrackFile(LineId)` gives `Data/Voice/<LineId>.nface` for `UFTFaceComponent::PlayTrack(TrackFile, StartSeconds)`. **Not wired yet:** the speaking character's face playing that track, and auto-advance waiting for the voice to end (both belong to the story director).
 
-**Naming, proposal:** `<LineId>.wav` and `<LineId>.nface` side by side, for example `VO-TEST-01-001.wav` and `VO-TEST-01-001.nface`. Note the bake tool currently keys its output as `<text_hash>_<speaker>` (a hash of the words plus the speaker label), which is not the story id. Rename on intake, or change the bake to key on the line id. Do not mix the two schemes.
+**Naming (defined):** `Data/Voice/<LineId>.wav` and `Data/Voice/<LineId>.nface` side by side, for example `VO-TEST-01-001.wav` and `VO-TEST-01-001.nface`. **Both `Data/Voice/` and `Content/Voice/` are gitignored:** the audio speaks the story, and this repo is public. Note the bake tool currently keys its output as `<text_hash>_<speaker>` (a hash of the words plus the speaker label), which is not the story id. Rename on intake, or change the bake to key on the line id. Do not mix the two schemes.
 
 ### Audio file
 
 | Item | Defined? | Value |
 |---|---|---|
-| Container | Partly | Uncompressed PCM WAV. The bake reads audio with Python's `wave` module (PCM only). |
-| Channels | Partly | Mono. The bake's own synthesised audio is 16-bit mono. |
-| Sample rate | Partly | Project audio runs at 48000 Hz (`Config/DefaultEngine.ini`, `AudioSampleRate`, `MaxSampleRate`). The bake takes whatever rate the file has. **Proposal:** 48000 Hz, 16-bit (or 24-bit) mono. |
-| Loudness | **Not defined yet** | **Proposal:** dialogue at -23 LUFS integrated, true peak below -1 dBTP, one level for every line. The generator's own loudness setting is fixed at 0.5 for every voice so levels match, and the final level is fixed in the mix, not the design. |
+| Container | Defined (checked) | Uncompressed WAV: PCM 16/24/32-bit or 32-bit float (the import). The bake reads audio with Python's `wave` module, which takes PCM only. |
+| Channels | Defined (checked) | Mono (`voice-not-mono` is an error). |
+| Sample rate | Defined (checked) | 44100 or 48000 Hz; 48000 preferred, the project rate (`Config/DefaultEngine.ini`). |
+| Loudness | Defined (checked) | -23 LUFS integrated +-2, true peak at most -1 dBTP, one level for every line. A line under 0.4 s can't be gated and gets a warning. |
 | Silence | Not defined | The track time 0 is clip time 0. **Proposal:** 50 to 100 ms of lead-in, 150 ms or more of tail, since the face blends back to rest over 120 ms at line end. Holds before or after a line are done in the edit. |
-| Bus | Not defined | The newengine mixer has a Voice bus. Nothing in Unreal routes it yet. |
+| Bus | Defined | The voice slider (master x voice), applied per sound by `UFTAudioSubsystem`. No Unreal sound class or submix. |
 
 ### Lip-sync track (`.nface`)
 
@@ -184,12 +184,18 @@ The contract is newengine `docs/lipsync_track_format.md` (branch `feature/engine
 
 ### Intake checklist: voice
 
-- [ ] `<LineId>.wav`: PCM, mono, 48 kHz, one line per file, level matched (proposal), id exists in `Data/Story`.
+- [ ] `Data/Voice/<LineId>.wav`: mono, 48 kHz, one line per file, -23 LUFS, id exists in `Data/Story`. `FTImportAudio -Voice -Check` measures them all.
 - [ ] `<LineId>.nface` baked from that wav at 60 fps, 20 or so channels (16 shapes, `@tongue_01..03`, `@speech` in the reference bake).
 - [ ] No two files for one id; ids in `Data/Story` with no file are listed, not guessed.
-- [ ] Files LFS-tracked (`wav`, `nface` are in `.gitattributes`). Never commit a file whose name or content carries line text.
+- [ ] Nothing from `Data/Voice/` or `Content/Voice/` is committed (both gitignored). Never commit a file whose name or content carries line text.
 
-Commands (Python 3.12, `python -I`; the tools were carried over unchanged and **have not been run from this repo yet**):
+Import (from `Data/Voice/`, onto `/Game/Voice/<LineId>`):
+
+```
+UnrealEditor-Cmd ForgottenThird.uproject -run=FTImportAudio -Voice [-Cue=<LineId>] [-Check] -NullRHI -unattended -nopause -nosplash
+```
+
+Bake commands (Python 3.12, `python -I`; the tools were carried over unchanged and **have not been run from this repo yet**):
 
 ```
 python -I tools/lipsync/bake_face_tracks.py bake --work <W> --backend <espeak|mfa|rhubarb|elevenlabs> --out <W>/face/<backend>
@@ -197,7 +203,7 @@ python -I tools/lipsync/bake_face_tracks.py eval --work <W> --backends <backend>
 ```
 
 - `bake` reads `<W>/wav/<key>.wav` and writes `<key>.nface` and `<key>.events.json`. `eval` measures the tracks against the lip-sync metrics (F1 to F4). Alignment backends: `align-mfa` and `align-rhubarb` subcommands produce the phone data first (see the tool's `--help`).
-- **No standalone `.nface` validator exists.** The closest checks are `parseFaceTrack` (the face tests in `ctest --test-dir Core/build -C Debug`) and the load at run time, which logs the path and the parse error on failure.
+- `FTImportAudio -Voice` parses each line's `.nface` (an error when it doesn't parse) and warns (`nface-length`) when it is more than 0.25 s longer or shorter than the audio. Other checks: `parseFaceTrack` (the face tests in `ctest --test-dir Core/build -C Debug`) and the load at run time, which logs the path and the parse error on failure.
 - The reference voice-direction pipeline (directions CSV, ElevenLabs settings) is `tools/vo_direction/` and newengine `design/forgotten_third/voice/`. It is private design data and is not summarised here.
 
 ## 4. Music
@@ -263,9 +269,9 @@ Checklist: [ ] white background; [ ] one subject; [ ] two or more angles; [ ] ne
 ## Gaps, in one list
 
 1. The textured master's shader compile is only seen in an attended editor (commandlets run with `-NullRHI`).
-2. No game-side voice lookup by line id, and the lip-sync bake keys files by text hash, not by the story id.
+2. The lip-sync bake keys files by text hash, not by the story id (rename on intake). A line's face track and voice-aware auto-advance aren't wired into the story director yet.
 3. Loudness targets are checked at import, but there are no Unreal sound classes or submixes: bus volume is applied per sound by `UFTAudioSubsystem`.
-4. No `.nface` validator, and the lip-sync tools have not been run from this repo.
+4. The lip-sync tools have not been run from this repo (`FTImportAudio -Voice` validates the tracks they write).
 5. Music loop points (`loopStart`/`loopEnd`) are checked but not played: a looping cue loops the whole file. There's no tempo map or stems playback. The battle conductor isn't bound to the cue's music, and its BPM and offset are typed into the component instead of read from `cues.json`.
 6. No folder or naming scheme for textures or concept art (audio: `Data/Audio/<Bus>/<CueId>.wav`).
 7. The Lattice emissive thresholds (3.0 and 2.5) are enforced at import by material name; `bloomThresholdScale` is still off by default.

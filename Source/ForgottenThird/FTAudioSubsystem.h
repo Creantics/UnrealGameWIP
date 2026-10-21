@@ -13,10 +13,16 @@
 // slider) x the cue's gainDb; music and ambience follow the sliders as they move. Sounds persist across
 // map changes (story <-> battle <-> field), so the music carries over a hand-off.
 //
+// Voice: on every story line it looks for /Game/Voice/<LineId> (FTImportAudio -Voice imports
+// Data/Voice/<LineId>.wav there) and plays it on the voice slider, stopping the previous line's voice
+// when the beat moves on. OnVoiceLine then fires with the line id and the clip's length, and
+// VoiceTrackFile gives the line's lip-sync track (Data/Voice/<LineId>.nface) for UFTFaceComponent::
+// PlayTrack. Voice files speak the story, so Data/Voice and Content/Voice stay out of git.
+//
 // Until the audio is delivered nearly every cue has no sound: a cue missing from the manifest or
 // without an imported asset is silent and logged once at Display (never a warning, so headless runs
 // stay clean). Without an audio device (-nosound) nothing plays but the bookkeeping still runs.
-// Logs carry cue ids only.
+// Logs carry cue and line ids only.
 
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
@@ -30,6 +36,8 @@
 
 class UAudioComponent;
 class USoundBase;
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFTVoiceLineEvent, const FString&, LineId, float, Seconds);
 
 UCLASS()
 class FORGOTTENTHIRD_API UFTAudioSubsystem : public UGameInstanceSubsystem, public FTickableGameObject
@@ -50,6 +58,18 @@ public:
 	// Plays, stops or fires a cue as the story would. Unknown ids are ignored (logged once).
 	void HandleCue(const FString& CueId, EFTCueAction Action);
 
+	// "/Game/Voice/<LineId>.<LineId>"
+	static FString VoiceAssetPath(const FString& LineId);
+	// Data/Voice/<LineId>.nface when that file exists, else "".
+	static FString VoiceTrackFile(const FString& LineId);
+
+	// Fires when a line's voice starts.
+	UPROPERTY(BlueprintAssignable, Category = "Audio")
+	FFTVoiceLineEvent OnVoiceLine;
+	// The line whose voice is playing ("" when none).
+	const FString& GetVoiceLine() const { return VoiceLineId; }
+	bool IsVoicePlaying() const;
+
 	// The music cue playing now ("" when none).
 	const FString& GetCurrentMusic() const { return CurrentMusicId; }
 	bool IsManifestLoaded() const { return bManifestLoaded; }
@@ -62,6 +82,9 @@ public:
 private:
 	UFUNCTION()
 	void HandleStoryCue(const FString& CueId, const FString& Kind, EFTCueAction Action);
+	UFUNCTION()
+	void HandleBeat(EFTStoryState State);
+	void StopVoice();
 
 	// The cue's sound, or null (logged once) when it isn't imported.
 	USoundBase* FindSound(const ftcore::AudioCue& Cue);
@@ -85,6 +108,11 @@ private:
 
 	UPROPERTY(Transient)
 	TMap<FString, TObjectPtr<UAudioComponent>> Ambience;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UAudioComponent> Voice;
+	FString VoiceLineId;
+	bool bLoggedNoVoice = false;
 
 	uint32 SettingsRevision = MAX_uint32;
 };

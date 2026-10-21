@@ -199,4 +199,10 @@ std::vector<AssetIssue> checkClip(const WavInfo& info, const Loudness& loudness,
     return issues;
 }
 
+void checkLipSyncLength(double audioSeconds, double trackSeconds, std::vector<AssetIssue>& issues) {
+    if (std::fabs(audioSeconds - trackSeconds) > kLipSyncSlackSeconds)
+        issues.push_back(audIssue(AssetSeverity::Warning, "nface-length",
+                                  "lip-sync track is " + audNum(trackSeconds) + " s, the audio " + audNum(audioSeconds) + " s"));
+}
+
 } // namespace ftcore

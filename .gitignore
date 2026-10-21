@@ -24,6 +24,9 @@ Core/build*/
 
 # Story text stays out of this public repo (CLAUDE.md). Copy it from newengine assets/story.
 Data/Story/
+# Voice lines speak the story, so their audio, lip-sync tracks and imported assets stay out too.
+Data/Voice/
+Content/Voice/
 
 # Python bytecode (Blender scripts)
 __pycache__/

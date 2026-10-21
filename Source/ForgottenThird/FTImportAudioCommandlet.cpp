@@ -8,11 +8,13 @@
 #include "AssetToolsModule.h"
 #include "FileHelpers.h"
 #include "FTText.h"
+#include "HAL/FileManager.h"
 #include "IAssetTools.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "Sound/SoundWave.h"
+#include "ftcore/Face.h"
 #include "ftcore/Loudness.h"
 #include "ftcore/Wav.h"
 
@@ -23,10 +25,26 @@ namespace
 {
 const TCHAR* const GTag = TEXT("FTImportAudio");
 
-// Decodes, measures and checks one file. False when it can't be read or breaks a rule.
-bool CheckClipFile(const FString& Path, const ftcore::AudioCue& Cue)
+void LogIssues(const FString& Id, const std::vector<ftcore::AssetIssue>& Issues)
 {
-	const FString Id = FT::ToFString(Cue.id);
+	for (const ftcore::AssetIssue& Issue : Issues)
+	{
+		if (Issue.severity == ftcore::AssetSeverity::Error)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("%s: %s: %s: %s"), GTag, *Id, *FT::ToFString(Issue.code), *FT::ToFString(Issue.message));
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("%s: %s: %s: %s"), GTag, *Id, *FT::ToFString(Issue.code), *FT::ToFString(Issue.message));
+		}
+	}
+}
+
+// Decodes, measures and checks one file (Cue is null for a voice line). False when it can't be
+// read or breaks a rule. OutSeconds gets the clip's length.
+bool CheckClipFile(const FString& Path, const FString& Id, ftcore::AudioBus Bus, const ftcore::AudioCue* Cue, double& OutSeconds)
+{
+	OutSeconds = 0.0;
 	TArray<uint8> Bytes;
 	if (!FFileHelper::LoadFileToArray(Bytes, *Path))
 	{
@@ -42,34 +60,53 @@ bool CheckClipFile(const FString& Path, const ftcore::AudioCue& Cue)
 		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s: %s"), GTag, *Id, *FT::ToFString(Error));
 		return false;
 	}
+	OutSeconds = Info.durationSeconds();
 	const ftcore::Loudness Loud = ftcore::measureLoudness(Samples.data(), Info.frames, Info.channels, Info.sampleRate);
 	UE_LOG(LogForgottenThird, Display, TEXT("%s: %s: %u Hz, %u ch, %u-bit%s, %.2f s, %s LUFS, peak %.1f dBFS, true peak %.1f dBTP%s."),
 		GTag, *Id, Info.sampleRate, Info.channels, Info.bitsPerSample, Info.isFloat ? TEXT(" float") : TEXT(""),
 		Info.durationSeconds(), Loud.hasIntegrated ? *FString::Printf(TEXT("%.1f"), Loud.integratedLufs) : TEXT("n/a"),
 		Loud.samplePeakDb, Loud.truePeakDb, Info.hasLoop ? TEXT(", smpl loop") : TEXT(""));
 
-	const std::vector<ftcore::AssetIssue> Issues = ftcore::checkClip(Info, Loud, Cue.bus, &Cue);
-	for (const ftcore::AssetIssue& Issue : Issues)
-	{
-		if (Issue.severity == ftcore::AssetSeverity::Error)
-		{
-			UE_LOG(LogForgottenThird, Error, TEXT("%s: %s: %s: %s"), GTag, *Id, *FT::ToFString(Issue.code), *FT::ToFString(Issue.message));
-		}
-		else
-		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("%s: %s: %s: %s"), GTag, *Id, *FT::ToFString(Issue.code), *FT::ToFString(Issue.message));
-		}
-	}
+	const std::vector<ftcore::AssetIssue> Issues = ftcore::checkClip(Info, Loud, Bus, Cue);
+	LogIssues(Id, Issues);
 	return ftcore::countErrors(Issues) == 0;
 }
 
-// Imports one checked file as /Game/Audio/<Bus>/<Id> and sets its looping. False on failure.
-bool ImportClip(const FString& Path, const ftcore::AudioCue& Cue)
+// The line's lip-sync track, when there is one: it must parse and match the audio's length (a
+// mismatch is a warning). False when it doesn't parse. bOutFound says whether the file is there.
+bool CheckLipSyncFile(const FString& Id, double AudioSeconds, bool& bOutFound)
 {
-	const FString Id = FT::ToFString(Cue.id);
+	const FString Path = UFTAudioSubsystem::VoiceTrackFile(Id);
+	bOutFound = !Path.IsEmpty();
+	if (!bOutFound)
+	{
+		return true;
+	}
+	TArray<uint8> Bytes;
+	ftcore::FaceTrack Track;
+	std::string Error;
+	if (!FFileHelper::LoadFileToArray(Bytes, *Path))
+	{
+		Error = "can't read the file";
+	}
+	if (!Error.empty() ||
+		!ftcore::parseFaceTrack(std::span<const std::uint8_t>(Bytes.GetData(), static_cast<size_t>(Bytes.Num())), Track, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s: bad lip-sync track: %s"), GTag, *Id, *FT::ToFString(Error));
+		return false;
+	}
+	std::vector<ftcore::AssetIssue> Issues;
+	ftcore::checkLipSyncLength(AudioSeconds, Track.duration(), Issues);
+	LogIssues(Id, Issues);
+	return true;
+}
+
+// Imports one checked file as <Folder>/<Name> and sets its looping. False on failure.
+bool ImportClip(const FString& Path, const FString& Folder, const FString& Id, bool bLoop)
+{
 	UAssetImportTask* Task = NewObject<UAssetImportTask>();
 	Task->Filename = Path;
-	Task->DestinationPath = UFTAudioSubsystem::AssetFolderFor(Cue);
+	Task->DestinationPath = Folder;
 	Task->DestinationName = Id;
 	Task->bAutomated = true;
 	Task->bReplaceExisting = true;
@@ -92,7 +129,7 @@ bool ImportClip(const FString& Path, const ftcore::AudioCue& Cue)
 		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s: no sound wave came out of %s."), GTag, *Id, *Path);
 		return false;
 	}
-	Wave->bLooping = Cue.playback == ftcore::CuePlayback::Loop;
+	Wave->bLooping = bLoop;
 	Wave->MarkPackageDirty();
 	if (!UEditorLoadingAndSavingUtils::SavePackages({ Wave->GetPackage() }, false))
 	{
@@ -102,6 +139,54 @@ bool ImportClip(const FString& Path, const ftcore::AudioCue& Cue)
 	UE_LOG(LogForgottenThird, Display, TEXT("%s: %s: imported %s (%s)."), GTag, *Id, *Wave->GetPathName(),
 		Wave->bLooping ? TEXT("looping") : TEXT("once"));
 	return true;
+}
+// -Voice: every Data/Voice/<LineId>.wav (or just Only) onto /Game/Voice/<LineId>.
+int32 ImportVoice(const FString& Only, bool bCheckOnly)
+{
+	const FString Dir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Data/Voice"));
+	TArray<FString> Files;
+	IFileManager::Get().FindFiles(Files, *(Dir / TEXT("*.wav")), true, false);
+	Files.Sort();
+	int32 Found = 0, Imported = 0, Failed = 0, NoTrack = 0;
+	for (const FString& File : Files)
+	{
+		const FString Id = FPaths::GetBaseFilename(File);
+		if (!Only.IsEmpty() && Id != Only)
+		{
+			continue;
+		}
+		++Found;
+		const FString Path = Dir / File;
+		double Seconds = 0.0;
+		bool bTrack = false;
+		const bool bClipOk = CheckClipFile(Path, Id, ftcore::AudioBus::Voice, nullptr, Seconds);
+		const bool bTrackOk = CheckLipSyncFile(Id, Seconds, bTrack);
+		NoTrack += bTrack ? 0 : 1;
+		if (!bClipOk || !bTrackOk)
+		{
+			++Failed;
+			continue;
+		}
+		if (!bCheckOnly)
+		{
+			if (ImportClip(Path, TEXT("/Game/Voice"), Id, false))
+			{
+				++Imported;
+			}
+			else
+			{
+				++Failed;
+			}
+		}
+	}
+	if (!Only.IsEmpty() && Found == 0)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("%s: no Data/Voice/%s.wav."), GTag, *Only);
+		return 1;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: %d voice lines found, %d imported, %d without a lip-sync track, %d failed%s."), GTag,
+		Found, Imported, NoTrack, Failed, bCheckOnly ? TEXT(" (check only)") : TEXT(""));
+	return Failed == 0 ? 0 : 1;
 }
 } // namespace
 #endif
@@ -120,6 +205,10 @@ int32 UFTImportAudioCommandlet::Main(const FString& Params)
 	FString Only;
 	FParse::Value(*Params, TEXT("Cue="), Only);
 	const bool bCheckOnly = FParse::Param(*Params, TEXT("Check"));
+	if (FParse::Param(*Params, TEXT("Voice")))
+	{
+		return ImportVoice(Only, bCheckOnly);
+	}
 
 	ftcore::AudioCueTable Cues;
 	FString Error;
@@ -151,14 +240,15 @@ int32 UFTImportAudioCommandlet::Main(const FString& Params)
 			continue;
 		}
 		++Found;
-		if (!CheckClipFile(Path, Cue))
+		double Seconds = 0.0;
+		if (!CheckClipFile(Path, Id, Cue.bus, &Cue, Seconds))
 		{
 			++Failed;
 			continue;
 		}
 		if (!bCheckOnly)
 		{
-			if (ImportClip(Path, Cue))
+			if (ImportClip(Path, UFTAudioSubsystem::AssetFolderFor(Cue), Id, Cue.playback == ftcore::CuePlayback::Loop))
 			{
 				++Imported;
 			}
