@@ -8,7 +8,7 @@ Private notes (character references, concept-art review, script status) are in `
 
 - **LATEST (2026-10-21, main 683e90a): the list after the alpha is done, except the next-lead model work.** The alpha passes on 683e90a with the same pass line (`73 scenes, 167 screens (40 battle, 91 field, 36 stub), 0 STUCK, 0 warnings`). gate -Ubt is green with 4 ctests: `ftcore_tests` (405 cases), `unreal_wrappers`, `macro_names`, and the new `ui_text_keys`.
   - **8474a09, combat balance.** A pilot model misses a fixed share of presses. Every encounter must be won by a typical pilot (75% presses, 60% defences) and the early tiers by a novice (50%, 30%). **Gap:** the party never levels, so tier scaling is kept small. Revisit this when progression exists.
-  - **a677f45, first-lead face shapes,** transferred from the proof head (`tools/blender/face_transfer.py`, `docs/BLENDER.md`). Lip-sync now runs on that lead.
+  - **a677f45, first-lead face shapes,** transferred from the proof head (`tools/blender/face_transfer.py`, `docs/BLENDER.md`), so lip-sync can drive that lead. Not checked by eye in a running game yet.
   - **c2b7a05, music loop points and the conductor.**
     - `ftcore::LoopRegion` and `LoopUnwrapper` (`MusicLoop.h`): the intro plays once, then the loop region repeats.
     - The conductor unwraps the cursor across each loop, so song time stays monotonic.
