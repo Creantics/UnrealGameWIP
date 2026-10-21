@@ -52,12 +52,13 @@ RAY_START = 0.03       # front rays start this far in front of the eye's surface
 LID_SAMPLE = 0.0025    # lid rows take the scan's texture and shape deltas this far outside the margin
 EYE_KEYS = {"blink": "eyeBlink%s", "wide": "eyeWide%s", "squint": "eyeSquint%s"}
 FADE = 0.010           # the scan's own eye-key deltas fade out this close to the patch
-COLORS = {"sclera": (0.80, 0.77, 0.72), "pupil": (0.004, 0.004, 0.004)}
+COLORS = {"sclera": (0.80, 0.77, 0.72), "pupil": (0.004, 0.004, 0.004), "lash": (0.025, 0.018, 0.015)}
 PUPIL_DEG, IRIS_DEG, LIMBUS_DEG = 9.0, 27.0, 31.0
 CORNEA = 0.0006        # the cornea bulges this far out of the eyeball at the pupil
+LASH_RISE = 0.0015       # the lash line covers upper-margin columns this far above the eye centre
 BAKE_SIZE = 2048       # the face's new texture
 MASK_MM = 6.0          # the scan's painted eye reaches this far past the new lid margin
-MASK_MEDIAL = 12.0     # and this much further toward the nose
+MASK_MEDIAL = 15.0     # and this much further toward the nose
 
 
 def _args():
@@ -312,6 +313,11 @@ def build_eye(bm, L, scan, side, centre_xz, cfg, mats, eye_group):
                 lo[uvl].uv = vinfo[lo.vert][4]
             elif lo.vert in loop_set:
                 lo[uvl].uv = _vert_uv(lo.vert, uvl)
+    # lash line: the upper lid's margin and its front edge, short of the corners
+    for k in (2, 3):
+        for j in range(SEGS):
+            if rings[3][j].co.z > cz + LASH_RISE and rings[3][(j + 1) % SEGS].co.z > cz + LASH_RISE:
+                new_faces[k * SEGS + j].material_index = mats["lash"]
     # shape keys: the scan's deltas, then the rebuilt eye keys
     for v, k, j, delta, _uv, _mi in info:
         for name, layer in shapes.items():
@@ -798,7 +804,8 @@ def main():
     scan = Scan(mesh)
     mats = {"sclera": _material("eye_sclera", COLORS["sclera"], 0.25),
             "iris": _material("eye_iris", tuple(cfg["iris"]), 0.25),
-            "pupil": _material("eye_pupil", COLORS["pupil"], 0.1)}
+            "pupil": _material("eye_pupil", COLORS["pupil"], 0.1),
+            "lash": _material("eye_lash", COLORS["lash"], 0.6)}
     for m in mats.values():
         mesh.data.materials.append(m)
     slots = {n: mesh.data.materials.find(m.name) for n, m in mats.items()}
