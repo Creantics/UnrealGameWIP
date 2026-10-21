@@ -69,6 +69,8 @@ skips when the story is absent.
 
 | Date | Run | Result | Time |
 |---|---|---|---|
+| 2026-10-21 | 8x clock (main at efef15d: choice, quick-time event, cutscene, settings and defence streams merged) | passed | about 7 minutes |
+| 2026-10-20 | full speed (main at ac32638) | passed | — |
 | 2026-10-20 | 8x clock (main at 20211b2) | passed | about 7 minutes |
 | 2026-10-19 | full speed, before stream 2 | passed | — |
 
