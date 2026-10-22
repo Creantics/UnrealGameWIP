@@ -12,7 +12,7 @@ SEGMENTS) with a position t from 0 at the head to 1 at the far end. Kinds:
   "shell": the body faces whose vertices fall in "bones" ({fnmatch pattern: [t0, t1]}, plus optional "zmin"/"zmax"
            as fractions of the body height), subdivided "subdiv" times, pushed out "offset" metres along the normal
            and "bag" further away from the bone axis ([[t, metres], ...] per pattern, linear between), then given
-           "thickness". "floor" flattens anything below that height (a boot sole); "smooth_more" [[pattern, iterations], ...]
+           "thickness". "floor" flattens anything below that height (a boot sole); "cap" {"pat|pat": dist} clears the convex hull of the body there (a toe cap); "smooth_more" [[pattern, iterations], ...]
            smooths further on those segments. "push" {pattern: [[t, metres], ...]} shifts those segments forward
            (negative: back) in the body frame. "also" {pattern: metres} adds that segment's vertices closer than that
            to the midline. "clear" (metres) pushes anything the smoothing left closer to the body than that back out
@@ -49,7 +49,7 @@ SEGMENTS = {  # bone -> the bone whose head ends its segment (Epic/MetaHuman nam
     "pelvis": "spine_01", "spine_01": "spine_02", "spine_02": "spine_03", "spine_03": "spine_04",
     "spine_04": "spine_05", "spine_05": "neck_01", "neck_01": "neck_02", "neck_02": "head",
     "clavicle_?": "upperarm_?", "upperarm_?": "lowerarm_?", "lowerarm_?": "hand_?", "hand_?": "middle_01_?",
-    "thigh_?": "calf_?", "calf_?": "foot_?", "foot_?": "ball_?",
+    "thigh_?": "calf_?", "calf_?": "foot_?", "foot_?": "ball_?", "ball_?": "middletoe_02_?",
 }
 
 
@@ -232,6 +232,9 @@ def shell(g, arm, body, segs, fr):
     if g.get("clear", 0):  # smoothing pulls a tight shell inside the body over convex parts: push it back out
         apply_mods(o)
         clear(o, body, g["clear"])
+    for pat, dist in g.get("cap", {}).items():  # a smooth cap over detail the cloth hides (toes): clear the convex hull
+        apply_mods(o)
+        cap(o, body, segs, vi, pat, dist)
     if g.get("thickness", 0):
         m = o.modifiers.new("sol", "SOLIDIFY"); m.thickness = g["thickness"]; m.offset = 1.0
     apply_mods(o)
@@ -260,6 +263,48 @@ def clear(o, body, dist):
                 V[i] = np.array(loc + n * dist); moved += 1
     set_world_verts(o, V)
     print("garment %s: clear %.3f moved %d of %d" % (o.name, dist, moved, len(V)))
+
+
+def cap(o, body, segs, vi, pat, dist):
+    """Put the shell's vertices on segments matching pat ("|" between alternatives) at dist outside the convex hull of
+    the body's vertices there (one hull per side), so the cloth runs over the toes as one smooth cap, not each toe."""
+    from mathutils.bvhtree import BVHTree
+    P = world_verts(body)
+    idx, _, _ = classify(P, segs)
+    V = world_verts(o)
+    moved = 0
+    hit = lambda name: any(fnmatch.fnmatch(name, q) for q in pat.split("|"))
+    for side in sorted({s[0][-1] for s in segs if hit(s[0])}):
+        on = [i for i, s in enumerate(segs) if hit(s[0]) and s[0][-1] == side]
+        pts = P[np.isin(idx, on)]
+        mine = np.isin(np.asarray(vi), on)
+        if len(pts) < 4 or not mine.any():
+            continue
+        bm = bmesh.new()
+        for q in pts:
+            bm.verts.new(Vector(q))
+        bmesh.ops.convex_hull(bm, input=bm.verts)
+        for e in [e for e in bm.verts if not e.link_faces]:
+            bm.verts.remove(e)
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+        tree = BVHTree.FromBMesh(bm)
+        c = Vector(pts.mean(0))
+        for i in np.nonzero(mine)[0]:
+            loc, n, _, _ = tree.find_nearest(Vector(V[i]))
+            if loc is None:
+                continue
+            if n.dot(loc - c) < 0:
+                n = -n
+            V[i] = np.array(loc + n * dist); moved += 1  # onto the hull, also where the cloth stood further out
+        bm.free()
+        ed = np.array([e.vertices[:] for e in o.data.edges]); ed = ed[mine[ed].all(1)]
+        deg = np.bincount(ed.ravel(), minlength=len(V))
+        sm = mine & (deg > 0)
+        for _ in range(4):  # the hull is faceted
+            acc = np.zeros_like(V); np.add.at(acc, ed[:, 0], V[ed[:, 1]]); np.add.at(acc, ed[:, 1], V[ed[:, 0]])
+            V[sm] = 0.5 * V[sm] + 0.5 * acc[sm] / deg[sm, None]
+    set_world_verts(o, V)
+    print("garment %s: cap %s %.3f moved %d" % (o.name, pat, dist, moved))
 
 
 def set_world_verts(o, V):
@@ -324,7 +369,7 @@ def skirt(g, arm, body, segs, fr):
     o = new_object(g["name"], np.array(V), F, arm)
     S = np.array(S); X = np.cos(np.array(A))
     side = np.clip(0.5 + X * 1.5, 0, 1)  # 1 on the left, 0 on the right, a blend at front and back
-    give = g.get("leg_share", 0.5) * S
+    give = g.get("leg_share", 0.5) * S ** g.get("leg_curve", 1.0)  # under 1: the thighs take the cloth higher up
     copy_weights(o, body, None, {"pelvis": 1 - give, "thigh_l": give * side, "thigh_r": give * (1 - side)})
     if g.get("thickness", 0):
         m = o.modifiers.new("sol", "SOLIDIFY"); m.thickness = g["thickness"]; m.offset = 1.0
