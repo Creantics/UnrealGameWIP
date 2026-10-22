@@ -6,6 +6,17 @@ Private notes (character references, concept-art review, script status) are in `
 
 ## Resume here (updated 2026-10-21, Max plan)
 
+- **NEWEST (2026-10-21 late, main bb9cf3b): Devin's head in the reader loop.** Round 8 readers scored 8.0-8.9 per criterion (gate is 9/10 each). Passes since then reshaped the jaw front, chin, nape, nostril sill and ear root. Two new tool features:
+  - `face_sculpt`'s `box` op (530327f) folds an ear rim in without a fold at its root.
+  - `region_shell` has `close` (438b509), which fills pinholes, and `taper` (bb9cf3b), which thins a shell to nothing at its rim. An even-thickness shell ends in a step. A taper pulls the visible edge in by about 0.3-0.7 mm, so widen the outline to match.
+
+  Measuring lessons:
+  - On a cel-shaded sheet, ink lines can't be darkness targets. Score them on position only.
+  - `landmark_warp` rays aimed from below must start just under the chin, or they hit the throat.
+  - The side silhouette at the nape and chin sits off the midline, so moving landmarks on the midline only digs a groove.
+
+  Reader round 9 is running. Then Devin's rig, clothes, hands, retopo, UVs, bake and import, then Duy and the Third.
+
 - **NEWEST (2026-10-21 night, main 50d6636): face sculpt tool; Devin's face sculpt done.** Correction to the bullet below: in 931bbfe `landmark_warp`'s lid pass lidded only one eye, because the second eye's loop wrote the unmoved positions back over the first. That is fixed in 711e74a, so the "meets the measured exits" claim below holds only from w4 on. The new check is lid aperture: height and width of the eyeball visible from the front, per eye. Devin is now 5.8-6.0 x 21.5 mm on both eyes, with the opening centred on the iris. New `tools/blender/face_sculpt.py` (085ea4c, 50d6636): a JSON spec of brush strokes, eye-relative points ray-cast onto the surface (rays that pass through a gap such as the mouth are dropped). The `ft_sculpt` brushes run on the multires top level, and the result is written back with Reshape, so the cage is untouched and the spec re-runs after any cage change. Two lessons:
   - Stroke dabs overlap at a quarter of the radius, so the real displacement is about 4x `strength`.
   - A groove doesn't make an edge. A crisp jaw needs a change of plane (`flatten` the jaw side), not a `crease`.
