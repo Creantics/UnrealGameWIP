@@ -21,8 +21,8 @@ Each point is put on the surface by a ray through it along "dir" (default [0, 1,
      {"op": "box", "x": [0.098, 0.118], "y": [0.105, 0.150], "z": [-0.010, -0.004, 0.010, 0.012],
       "offset": [-0.008, 0, 0], "mirror": true}
 moves the region by the offset with a weight rising linearly in x from x[0] (the root, which stays) to x[1], a
-trapezoid in z (0 at z[0], 1 from z[1] to z[2], 0 at z[3]) and a hard y range: an ear rim folded in toward the
-skull without a fold at its root. Strokes run in order.
+trapezoid in z (0 at z[0], 1 from z[1] to z[2], 0 at z[3]) and a hard y range, or a trapezoid in y when "y" has
+four values: an ear rim folded in toward the skull without a fold at its root. Strokes run in order.
 """
 import json
 import os
@@ -106,11 +106,16 @@ def main():
         p = s.v @ M[:3, :3].T + M[:3, 3] - origin
         x = side * p[:, 0]
         x0, x1 = st["x"]
-        y0, y1 = st["y"]
-        z0, z1, z2, z3 = st["z"]
+        def trapezoid(t, a, b, c, d):
+            return np.clip(np.minimum((t - a) / max(b - a, 1e-9), (d - t) / max(d - c, 1e-9)), 0.0, 1.0)
+
         wx = np.clip((x - x0) / (x1 - x0), 0.0, 1.0) * (x >= x0)
-        wz = np.clip(np.minimum((p[:, 2] - z0) / max(z1 - z0, 1e-9), (z3 - p[:, 2]) / max(z3 - z2, 1e-9)), 0.0, 1.0)
-        wy = (p[:, 1] >= y0) & (p[:, 1] <= y1)
+        wz = trapezoid(p[:, 2], *st["z"])
+        if len(st["y"]) == 4:
+            # a hard y edge leaves a step on the skin it cuts across
+            wy = trapezoid(p[:, 1], *st["y"])
+        else:
+            wy = (p[:, 1] >= st["y"][0]) & (p[:, 1] <= st["y"][1])
         w = wx * wz * wy
         off = (np.array(st["offset"], dtype=float) * [side, 1.0, 1.0]) @ Mi[:3, :3].T
         s.v += w[:, None] * off

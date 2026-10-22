@@ -72,6 +72,8 @@ def inside(poly, p):
 def material(name, color):
     m = bpy.data.materials.new(name)
     m.diffuse_color = tuple(color) + (1.0,)
+    # hair and decals are matte; a studio glint turns a dark shell grey
+    m.roughness, m.specular_intensity, m.metallic = 1.0, 0.0, 0.0
     return m
 
 
