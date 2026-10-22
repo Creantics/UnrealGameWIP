@@ -1,0 +1,27 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "FT DNA Tools",
+	"Description": "Editor commandlet that dumps and edits the neutral vertex positions of a MetaHuman DNA file, so a sculpted head keeps its face rig.",
+	"Category": "Editor",
+	"EnabledByDefault": true,
+	"CanContainContent": false,
+	"Modules": [
+		{
+			"Name": "FTDnaTools",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "RigLogic",
+			"Enabled": true
+		},
+		{
+			"Name": "DNACalib",
+			"Enabled": true
+		}
+	]
+}
