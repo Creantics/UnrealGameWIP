@@ -119,6 +119,7 @@ The duplicate style port (`worktree-agent-ac78bf565fd6d3d57`) is retired. Main g
 - In `Leads.umap` the jaw and tongue stay at rest, because single-node animation doesn't run the face anim instance.
 - Next is a sculpt pass in Blender (`tools/blender`, headless `ft_sculpt`/`ft_preview`), then re-export with LINEAR keys and re-import.
 - See the "Known limits" section of `docs/LEADS.md`.
+- Lead fit status (2026-10-22): Devin's dressed silhouette is at 0.9656 front / 0.9583 side against the 0.99 gate; details are in the private handoff. `tools/blender/garment_shells.py` (on main, e8b92aa) now stitches a neck skirt into the body's neck hole, trims level, fills small holes, and supports an outer collar (`over`, `radial`). Next steps: rebuild the boots spec, then the face under the chin.
 
 ## Fight demo: gaps
 
