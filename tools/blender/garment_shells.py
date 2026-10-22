@@ -25,9 +25,11 @@ SEGMENTS) with a position t from 0 at the head to 1 at the far end. Kinds:
   "tails": strips hanging from the front of a band: "z", "length", "width", "spread", "count".
   "knot":  a flattened ball on the front at height "z", "size" [x, y, z].
 A top-level "height" (metres) sets the height the fractions are of, for a body mesh that stops at the neck; a top-level
-"face" (an FBX path, relative to the spec) is a separate head mesh that "clear" also keeps the cloth outside of.
+"face" (an FBX path, relative to the spec) is a separate head mesh that "clear" also keeps the cloth outside of; a shell's
+"face_below" (fraction) adds that head mesh's faces below the height to the shell (a neck skirt over the body's hole).
   "collar": a cone round a bone with no body under it (the neck of a body mesh that stops there): rings from "z0" to
-           "z1" (fractions) with half-widths "r0" to "r1" ([left, forward] metres), centred on "bone"'s head.
+           "z1" (fractions) with half-widths "r0" to "r1" ([left, forward] metres), centred on "bone"'s head; with
+           "hull" (metres) each ring instead hugs the body and head surface at its height, that far off it.
 Colour: "color" is the base RGB (sRGB, as picked from the art); "rules" is a list of [expression, RGB] painted in order. An expression is numpy
 over per-vertex arrays: x (body left, metres from the midline), f (forward, metres from the body's centre plane),
 z (height fraction), t (segment position), ang (radians around the segment axis), ax=abs(x), front=f>0, and
@@ -197,10 +199,30 @@ def shell(g, arm, body, segs, fr):
         raise SystemExit("garment %s: no body faces in %s" % (g["name"], g["bones"]))
     used = sorted({v for f in faces for v in f})
     remap = {v: i for i, v in enumerate(used)}
-    o = new_object(g["name"], P[used], [[remap[v] for v in f] for f in faces], arm)
+    V0, F0 = P[used], [[remap[v] for v in f] for f in faces]
+    head = CLEAR_ALSO[0] if CLEAR_ALSO and "face_below" in g else None
+    if head is not None:  # the head's neck skirt covers the body down to the collarbones (the body has a wide hole
+        # there): its faces below "face_below" (a height fraction) join the shell, so the cloth reaches the neck
+        PF = world_verts(head)
+        lowf = fr.local(PF)[2] <= g["face_below"]
+        ff = [[v for v in p.vertices] for p in head.data.polygons if lowf[list(p.vertices)].all()]
+        uf = sorted({v for f in ff for v in f})
+        rf = {v: len(used) + i for i, v in enumerate(uf)}
+        V0 = np.vstack([V0, PF[uf]]); F0 = F0 + [[rf[v] for v in f] for f in ff]
+        print("garment %s: %d head faces below %.3f join the shell" % (g["name"], len(ff), g["face_below"]))
+    o = new_object(g["name"], V0, F0, arm)
     copy_weights(o, body, used)
+    if head is not None:
+        hn = [q.name for q in head.vertex_groups]
+        have = {q.name for q in o.vertex_groups}
+        hv = head.data.vertices
+        for i, si in enumerate(uf):
+            ws = [(hn[ge.group], ge.weight) for ge in hv[si].groups if hn[ge.group] in have and ge.weight > 1e-4]
+            tot = sum(w for _, w in ws) or 1.0
+            for n, w in ws:
+                o.vertex_groups[n].add([len(used) + i], w / tot, "REPLACE")
     bm = bmesh.new(); bm.from_mesh(o.data)  # an imported body is split at its UV seams; joined, the shell stays closed there
-    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-5); bm.to_mesh(o.data); bm.free()
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-4 if head is not None else 1e-5); bm.to_mesh(o.data); bm.free()
     if g.get("subdiv", 1):
         m = o.modifiers.new("sub", "SUBSURF"); m.levels = m.render_levels = g.get("subdiv", 1)
         apply_mods(o)
@@ -454,6 +476,18 @@ def collar(g, arm, body, segs, fr):
         s = k / rows
         rl, rf = (np.array(g["r0"]) * (1 - s) + np.array(g["r1"]) * s)
         zw = fr.z(g["z0"] + (g["z1"] - g["z0"]) * s)
+        if g.get("hull") is not None:  # hug the neck: per angle, the body/head surface at this height plus "hull" metres
+            Q = np.vstack([world_verts(m) for m in [body] + CLEAR_ALSO])
+            Q = Q[np.abs(Q[:, 2] - zw) < 0.008] - c
+            qa = np.arctan2(Q @ fr.fwd, Q @ fr.left); qr = np.hypot(Q @ fr.fwd, Q @ fr.left)
+            near = qr < 1.6 * max(rl, rf)  # the neck, not the shoulders at the same height
+            rad = np.array([qr[near & (np.abs((qa - ai + math.pi) % (2 * math.pi) - math.pi) < 0.15)].max(initial=0.0) for ai in a])
+            for _ in range(3):
+                rad = 0.25 * np.roll(rad, 1) + 0.5 * rad + 0.25 * np.roll(rad, -1)
+            for ai, ri in zip(a, rad):
+                p = c + (fr.left * math.cos(ai) + fr.fwd * math.sin(ai)) * (ri + g["hull"])
+                V.append([p[0], p[1], zw])
+            continue
         for ai in a:
             p = c + fr.left * rl * math.cos(ai) + fr.fwd * rf * math.sin(ai)
             V.append([p[0], p[1], zw])
