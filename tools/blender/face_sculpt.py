@@ -17,7 +17,12 @@ SPEC (lengths in metres, points relative to the eye line and the head's mirror p
      {"op": "crease", "points": [[0, 0.075, -0.088]], "dir": [-1, 0, 0], "mirror": true, ...}]}
 Each point is put on the surface by a ray through it along "dir" (default [0, 1, 0], from the front), starting
 0.3 m before it; a hit more than "reach" (default 0.07) beyond the point is a gap and the point is dropped; "mirror" repeats the stroke at -x (with dir mirrored). ops: draw, crease, flatten, smooth, grab
-("offset": [outward, back, up]). Strokes run in order.
+("offset": [outward, back, up]), and box, which takes no points:
+     {"op": "box", "x": [0.098, 0.118], "y": [0.105, 0.150], "z": [-0.010, -0.004, 0.010, 0.012],
+      "offset": [-0.008, 0, 0], "mirror": true}
+moves the region by the offset with a weight rising linearly in x from x[0] (the root, which stays) to x[1], a
+trapezoid in z (0 at z[0], 1 from z[1] to z[2], 0 at z[3]) and a hard y range: an ear rim folded in toward the
+skull without a fold at its root. Strokes run in order.
 """
 import json
 import os
@@ -93,7 +98,29 @@ def main():
             return None
         return np.array(hit) @ Mi[:3, :3].T + Mi[:3, 3]
 
+    M = np.array(obj.matrix_world)
+
+    def box(st, side):
+        """A graded move of a region: the weight rises linearly in x from the box's root face to its outer face
+        (so the root stays and the far side moves most) and follows a trapezoid in z."""
+        p = s.v @ M[:3, :3].T + M[:3, 3] - origin
+        x = side * p[:, 0]
+        x0, x1 = st["x"]
+        y0, y1 = st["y"]
+        z0, z1, z2, z3 = st["z"]
+        wx = np.clip((x - x0) / (x1 - x0), 0.0, 1.0) * (x >= x0)
+        wz = np.clip(np.minimum((p[:, 2] - z0) / max(z1 - z0, 1e-9), (z3 - p[:, 2]) / max(z3 - z2, 1e-9)), 0.0, 1.0)
+        wy = (p[:, 1] >= y0) & (p[:, 1] <= y1)
+        w = wx * wz * wy
+        off = (np.array(st["offset"], dtype=float) * [side, 1.0, 1.0]) @ Mi[:3, :3].T
+        s.v += w[:, None] * off
+        return int((w > 0).sum())
+
     for st in spec["strokes"]:
+        if st["op"] == "box":
+            n = [box(st, side) for side in ((1, -1) if st.get("mirror") else (1,))]
+            print("face_sculpt: box      %-14s %s vertices moved" % (st.get("name", ""), "/".join(map(str, n))))
+            continue
         for side in ((1, -1) if st.get("mirror") else (1,)):
             flip = np.array([side, 1.0, 1.0])
             d = np.array(st.get("dir", [0, 1, 0]), dtype=float) * flip
