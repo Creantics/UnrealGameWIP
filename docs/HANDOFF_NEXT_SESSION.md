@@ -6,6 +6,14 @@ Private notes (character references, concept-art review, script status) are in `
 
 ## Resume here (updated 2026-10-21, Max plan)
 
+- **NEWEST (2026-10-22 late night, main 701e206): new yoke and collar.**
+  - `garment_shells.py` has a `drape` kind: cloth laid over the shoulders from above, wrapping down the back onto the nearest surface. The collar has a `neck` search radius and finds its `over` rings with their own cap.
+  - The private garment_fit gained two options:
+    - `--still`: thin over-cloth keeps its draped shape and moves only smoothly.
+    - a tuck: under-cloth goes back inside the cloth laid over it, measured as distance from the body.
+  - Together these stop the yoke and collar crumpling.
+  - g19 is 0.9646 / 0.9342 / 0.9575 (g17 was 0.9656 / 0.9360 / 0.9583; accepted within 0.001). The neck look is clean, except one small poke-through on the upper back that's already present before the fit.
+  - Next: boots (instep, toe lip, heel, cap ridge, sole shards), then hair, textures, rig and UE import. Every garment stays a separate mesh.
 - **NEWEST (2026-10-22 evening, main f95cc88): the reshaped neck is in the game with the face rig kept.** The new `Plugins/FTDnaTools` commandlet `-run=FTDna` edits a MetaHuman head DNA outside MetaHuman. `-dump` writes one mesh's raw positions, `-deltas` adds per-vertex offsets through the engine's DNACalib, and `-skm` copies the edited positions into the face skeletal mesh. Findings:
   - The head mesh maps exactly to Unreal space as UE = (DNA x, DNA z, DNA y).
   - The built face mesh's LODs 0-3 are DNA LODs 1/3/5/7, in the same vertex order.
