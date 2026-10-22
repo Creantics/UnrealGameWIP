@@ -13,14 +13,19 @@ SEGMENTS) with a position t from 0 at the head to 1 at the far end. Kinds:
            as fractions of the body height), subdivided "subdiv" times, pushed out "offset" metres along the normal
            and "bag" further away from the bone axis ([[t, metres], ...] per pattern, linear between), then given
            "thickness". "floor" flattens anything below that height (a boot sole); "smooth_more" [[pattern, iterations], ...]
-           smooths further on those segments. Weights come from the body.
+           smooths further on those segments. "push" {pattern: [[t, metres], ...]} shifts those segments forward
+           (negative: back) in the body frame. "also" {pattern: metres} adds that segment's vertices closer than that
+           to the midline. "clear" (metres) pushes anything the smoothing left closer to the body than that back out
+           to it. Weights come from the body.
   "skirt": a ring hung from height "top" to "bottom" (fractions of the height), its section the body's own
            hull at "top" plus "offset", flaring by "flare" at the hem; "slit" [angle_degrees, from_fraction] leaves
-           the sides open below that point. Weighted to the pelvis, giving way to the thigh on its side.
+           the sides open below that point; "squash" [width, depth] scales the section about the body centre.
+           Weighted to the pelvis, giving way to the thigh on its side.
   "band":  a ring round the body at height "z" (fraction), "height" tall, "offset" off the hull (a sash).
   "tails": strips hanging from the front of a band: "z", "length", "width", "spread", "count".
   "knot":  a flattened ball on the front at height "z", "size" [x, y, z].
-A top-level "height" (metres) sets the height the fractions are of, for a body mesh that stops at the neck.
+A top-level "height" (metres) sets the height the fractions are of, for a body mesh that stops at the neck; a top-level
+"face" (an FBX path, relative to the spec) is a separate head mesh that "clear" also keeps the cloth outside of.
   "collar": a cone round a bone with no body under it (the neck of a body mesh that stops there): rings from "z0" to
            "z1" (fractions) with half-widths "r0" to "r1" ([left, forward] metres), centred on "bone"'s head.
 Colour: "color" is the base RGB (sRGB, as picked from the art); "rules" is a list of [expression, RGB] painted in order. An expression is numpy
@@ -181,6 +186,11 @@ def shell(g, arm, body, segs, fr):
         for i, s in enumerate(segs):
             if fnmatch.fnmatch(s[0], pat):
                 keep |= (idx == i) & (T >= t0) & (T <= t1)
+    xs, _, _ = fr.local(P)
+    for pat, xmax in g.get("also", {}).items():  # trunk parts a limb's segment claims (the lats under a hanging arm)
+        for i, s in enumerate(segs):
+            if fnmatch.fnmatch(s[0], pat):
+                keep |= (idx == i) & (np.abs(xs) < xmax)
     keep &= (zf >= g.get("zmin", -1)) & (zf <= g.get("zmax", 2))
     faces = [[v for v in p.vertices] for p in body.data.polygons if keep[list(p.vertices)].all()]
     if not faces:
@@ -206,6 +216,9 @@ def shell(g, arm, body, segs, fr):
         r = V - vc
         r /= np.linalg.norm(r, axis=1, keepdims=True) + 1e-12
         D += (on * interp(table, vt))[:, None] * r
+    for pat, table in g.get("push", {}).items():  # a shift forward (negative: back) in the body frame, per segment
+        on = np.array([fnmatch.fnmatch(segs[i][0], pat) for i in vi])
+        D += (on * interp(table, vt))[:, None] * fr.fwd[None, :]
     V = V + D
     if "floor" in g:
         V[:, 2] = np.maximum(V[:, 2], fr.z(g["floor"]))
@@ -216,12 +229,37 @@ def shell(g, arm, body, segs, fr):
         vg = o.vertex_groups.new(name="_sm%d" % k)
         vg.add([i for i, si in enumerate(vi) if fnmatch.fnmatch(segs[si][0], pat)], 1.0, "REPLACE")
         m = o.modifiers.new("sm%d" % k, "SMOOTH"); m.iterations = its; m.factor = 1.0; m.vertex_group = vg.name
+    if g.get("clear", 0):  # smoothing pulls a tight shell inside the body over convex parts: push it back out
+        apply_mods(o)
+        clear(o, body, g["clear"])
     if g.get("thickness", 0):
         m = o.modifiers.new("sol", "SOLIDIFY"); m.thickness = g["thickness"]; m.offset = 1.0
     apply_mods(o)
     for vg in [v for v in o.vertex_groups if v.name.startswith("_sm")]:
         o.vertex_groups.remove(vg)
     return o
+
+
+CLEAR_ALSO = []  # other meshes the cloth must stay outside of (a separate head over the neck)
+
+
+def clear(o, body, dist):
+    """Move every vertex closer than dist to the body (or inside it) out to dist along the nearest face's normal."""
+    from mathutils.bvhtree import BVHTree
+    trees = [BVHTree.FromPolygons([Vector(p) for p in world_verts(m)], [list(p.vertices) for p in m.data.polygons])
+             for m in [body] + CLEAR_ALSO]
+    V = world_verts(o)
+    moved = 0
+    for k, tree in enumerate(trees):
+        for i, v in enumerate(V):
+            loc, n, _, d = tree.find_nearest(Vector(v))
+            if loc is None or (k and d > 0.03):  # an open head mesh only counts where the cloth runs close to it
+                continue
+            h = (Vector(v) - loc).dot(n)
+            if h < dist:
+                V[i] = np.array(loc + n * dist); moved += 1
+    set_world_verts(o, V)
+    print("garment %s: clear %.3f moved %d of %d" % (o.name, dist, moved, len(V)))
 
 
 def set_world_verts(o, V):
@@ -269,6 +307,9 @@ def skirt(g, arm, body, segs, fr):
         s = k / rows
         zw = fr.z(g["top"] + (g["bottom"] - g["top"]) * s)
         pts, a = ring_points(fr, prof, zw, 1 + g.get("flare", 0.15) * s, g.get("offset", 0.02))
+        sx, sf = g.get("squash", [1.0, 1.0])  # width and depth scale of the section about the body centre
+        d = pts - fr.centre[None, :]
+        pts = pts + np.outer(d @ fr.left * (sx - 1), fr.left) + np.outer(d @ fr.fwd * (sf - 1), fr.fwd)
         V += list(pts); A += list(a); S += [s] * n
     slit_a, slit_from = g.get("slit", [0, 2])
     F = []
@@ -460,6 +501,11 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     spec = json.load(open(spec_path))
     arm, body = load_body(body_path)
+    if spec.get("face"):  # a separate head mesh over the body's neck: "clear" keeps the cloth outside it too
+        before = set(bpy.data.objects)
+        bpy.ops.import_scene.fbx(filepath=os.path.join(os.path.dirname(os.path.abspath(spec_path)), spec["face"]),
+                                 automatic_bone_orientation=False)
+        CLEAR_ALSO.append(max((o for o in set(bpy.data.objects) - before if o.type == "MESH"), key=lambda o: len(o.data.vertices)))
     segs = segments(arm)
     fr = Frame(arm, body, segs, spec.get("height"))
     print("body height %.3f, %d segments" % (fr.height, len(segs)))
@@ -489,4 +535,5 @@ def main():
     print("GARMENTS_DONE", len(objs))
 
 
-main()
+if __name__ == "__main__":
+    main()
