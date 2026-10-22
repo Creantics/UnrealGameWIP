@@ -6,6 +6,7 @@ Private notes (character references, concept-art review, script status) are in `
 
 ## Resume here (updated 2026-10-21, Max plan)
 
+- **NEWEST (2026-10-22): Devin as two MetaHumans, for a comparison.** The user asked for one version that follows the concept art and one that follows the person it's based on, and will pick the approach for the other leads from these. A route proven for both: export the face mesh (`get_mesh_data_for_conforming`), deform the head verts in numpy (jaw carve, jowls, chin, lips, lids, crown, ears), then `fit_state_to_target_vertices` + `commit_face_state`. About 98% of the intended move lands, so the face is no longer limited to the Creator sliders. Gotchas: a later face blend or sculpt overwrites the fitted state; the CUPID lips makeup turns the lips white (use NONE); Forearm 50 balloons the arm. Neither version is rigged. Scripts and details are in the private handoff (private assets, never committed).
 - **NEWEST (2026-10-21 late, main bb9cf3b): Devin's head in the reader loop.** Round 8 readers scored 8.0-8.9 per criterion (gate is 9/10 each). Passes since then reshaped the jaw front, chin, nape, nostril sill and ear root. Two new tool features:
   - `face_sculpt`'s `box` op (530327f) folds an ear rim in without a fold at its root.
   - `region_shell` has `close` (438b509), which fills pinholes, and `taper` (bb9cf3b), which thins a shell to nothing at its rim. An even-thickness shell ends in a step. A taper pulls the visible edge in by about 0.3-0.7 mm, so widen the outline to match.
