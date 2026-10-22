@@ -16,7 +16,8 @@ SEGMENTS) with a position t from 0 at the head to 1 at the far end. Kinds:
            smooths further on those segments. "push" {pattern: [[t, metres], ...]} shifts those segments forward
            (negative: back) in the body frame. "also" {pattern: metres} adds that segment's vertices closer than that
            to the midline. "clear" (metres) pushes anything the smoothing left closer to the body than that back out
-           to it. Weights come from the body.
+           to it. "trim" (fraction) cuts the shell level at that height and drops what is above (one clean top
+           edge); "fill" (n) closes holes of up to n sides. Weights come from the body.
   "skirt": a ring hung from height "top" to "bottom" (fractions of the height), its section the body's own
            hull at "top" plus "offset", flaring by "flare" at the hem; "slit" [angle_degrees, from_fraction] leaves
            the sides open below that point; "squash" [width, depth] scales the section about the body centre.
@@ -26,10 +27,14 @@ SEGMENTS) with a position t from 0 at the head to 1 at the far end. Kinds:
   "knot":  a flattened ball on the front at height "z", "size" [x, y, z].
 A top-level "height" (metres) sets the height the fractions are of, for a body mesh that stops at the neck; a top-level
 "face" (an FBX path, relative to the spec) is a separate head mesh that "clear" also keeps the cloth outside of; a shell's
-"face_below" (fraction) adds that head mesh's faces below the height to the shell (a neck skirt over the body's hole).
+"face_below" (fraction) adds that head mesh's faces below the height to the shell (a neck skirt over the body's hole;
+faces turned to the floor, under the jaw, stay out),
+its rim welded onto the body's neck hole where they lie within "weld" metres (default 0.003).
   "collar": a cone round a bone with no body under it (the neck of a body mesh that stops there): rings from "z0" to
            "z1" (fractions) with half-widths "r0" to "r1" ([left, forward] metres), centred on "bone"'s head; with
-           "hull" (metres) each ring instead hugs the body and head surface at its height, that far off it.
+           "hull" (metres) each ring instead hugs the body and head surface at its height, that far off it, also hugging
+           the garments named in "over" (built earlier in the spec, so the collar lies on top of them); "radial"
+           {"front"|"back": [[s, metres], ...]} widens the rings that much at the front or back (s 0 bottom row, 1 top).
 Colour: "color" is the base RGB (sRGB, as picked from the art); "rules" is a list of [expression, RGB] painted in order. An expression is numpy
 over per-vertex arrays: x (body left, metres from the midline), f (forward, metres from the body's centre plane),
 z (height fraction), t (segment position), ang (radians around the segment axis), ax=abs(x), front=f>0, and
@@ -205,7 +210,10 @@ def shell(g, arm, body, segs, fr):
         # there): its faces below "face_below" (a height fraction) join the shell, so the cloth reaches the neck
         PF = world_verts(head)
         lowf = fr.local(PF)[2] <= g["face_below"]
-        ff = [[v for v in p.vertices] for p in head.data.polygons if lowf[list(p.vertices)].all()]
+        def down(f):  # under the jaw the skin faces the floor: not neck, and offset it would hang into the neck hole
+            q = PF[f]
+            return np.cross(q[1] - q[0], q[2] - q[0])[2] < -0.5 * np.linalg.norm(np.cross(q[1] - q[0], q[2] - q[0]))
+        ff = [[v for v in p.vertices] for p in head.data.polygons if lowf[list(p.vertices)].all() and not down(list(p.vertices))]
         uf = sorted({v for f in ff for v in f})
         rf = {v: len(used) + i for i, v in enumerate(uf)}
         V0 = np.vstack([V0, PF[uf]]); F0 = F0 + [[rf[v] for v in f] for f in ff]
@@ -222,6 +230,24 @@ def shell(g, arm, body, segs, fr):
             for n, w in ws:
                 o.vertex_groups[n].add([len(used) + i], w / tot, "REPLACE")
     bm = bmesh.new(); bm.from_mesh(o.data)  # an imported body is split at its UV seams; joined, the shell stays closed there
+    if head is not None:  # the head's neck rim lies on the body's neck hole, but with its own vertex spacing: stitch
+        # it (each rim vertex near the other rim splits that edge and joins it), so no T-junction opens a slit later
+        src = bm.verts.layers.int.new("src")
+        bm.verts.ensure_lookup_table()
+        for v in bm.verts:
+            v[src] = int(v.index >= len(used))
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-4)
+        print("garment %s: stitch joined %d rim vertices" % (g["name"], stitch(bm, src, g.get("weld", 0.008))))
+    if "trim" in g:  # one clean top edge: cut level before any smoothing, so a ragged boundary never ripples the cloth
+        zt = (np.array(o.matrix_world.inverted()) @ np.array([0, 0, fr.z(g["trim"]), 1.0]))[2]
+        bmesh.ops.bisect_plane(bm, geom=bm.verts[:] + bm.edges[:] + bm.faces[:], plane_co=(0, 0, zt), plane_no=(0, 0, 1),
+                               clear_outer=True)
+    if g.get("fill", 0):  # small holes where a face fell outside "bones" (a vertex on another segment): close them
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-5)
+        nb = sum(1 for e in bm.edges if e.is_boundary)
+        bmesh.ops.holes_fill(bm, edges=[e for e in bm.edges if e.is_boundary], sides=g["fill"])
+        print("garment %s: fill closed holes of up to %d sides, boundary edges %d -> %d"
+              % (g["name"], g["fill"], nb, sum(1 for e in bm.edges if e.is_boundary)))
     bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-4 if head is not None else 1e-5); bm.to_mesh(o.data); bm.free()
     if g.get("subdiv", 1):
         m = o.modifiers.new("sub", "SUBSURF"); m.levels = m.render_levels = g.get("subdiv", 1)
@@ -265,7 +291,40 @@ def shell(g, arm, body, segs, fr):
     return o
 
 
+def stitch(bm, src, dist):
+    """Join the open rims of two parts of one bmesh (layer src 0/1) that run along each other within dist: every rim
+    vertex of one part lands on the nearest rim edge of the other (splitting it) or on its end, and the pairs merge."""
+    joined = 0
+    for side in (1, 0):
+        for v in [v for v in bm.verts if v.is_boundary and v[src] == side]:
+            if not v.is_valid:
+                continue
+            best = None
+            for e in (e for e in bm.edges if e.is_boundary and e.verts[0][src] != side and e.verts[1][src] != side):
+                a, b = e.verts[0].co, e.verts[1].co
+                ab = b - a
+                t = max(0.0, min(1.0, (v.co - a).dot(ab) / max(ab.length_squared, 1e-12)))
+                d = (a + ab * t - v.co).length
+                if d <= dist and (best is None or d < best[0]):
+                    best = (d, e, t)
+            if best is None:
+                continue
+            d, e, t = best
+            a, b = e.verts
+            L = e.calc_length()
+            if t * L < 0.002 or (1 - t) * L < 0.002:  # close to an end: join that vertex
+                w = a if t * L < (1 - t) * L else b
+            else:
+                ne, w = bmesh.utils.edge_split(e, a, t)
+                w[src] = 1 - side
+            w.co = v.co if side == 0 else w.co  # keep the body's rim where it is; the head rim comes to it
+            bmesh.ops.pointmerge(bm, verts=[v, w], merge_co=w.co)
+            joined += 1
+    return joined
+
+
 CLEAR_ALSO = []  # other meshes the cloth must stay outside of (a separate head over the neck)
+BUILT = {}  # garments built so far, by name (a collar can hug one built before it)
 
 
 def clear(o, body, dist):
@@ -477,13 +536,24 @@ def collar(g, arm, body, segs, fr):
         rl, rf = (np.array(g["r0"]) * (1 - s) + np.array(g["r1"]) * s)
         zw = fr.z(g["z0"] + (g["z1"] - g["z0"]) * s)
         if g.get("hull") is not None:  # hug the neck: per angle, the body/head surface at this height plus "hull" metres
-            Q = np.vstack([world_verts(m) for m in [body] + CLEAR_ALSO])
-            Q = Q[np.abs(Q[:, 2] - zw) < 0.008] - c
-            qa = np.arctan2(Q @ fr.fwd, Q @ fr.left); qr = np.hypot(Q @ fr.fwd, Q @ fr.left)
-            near = qr < 1.6 * max(rl, rf)  # the neck, not the shoulders at the same height
-            rad = np.array([qr[near & (np.abs((qa - ai + math.pi) % (2 * math.pi) - math.pi) < 0.15)].max(initial=0.0) for ai in a])
+            def ring(meshes, cap=None):
+                Q = np.vstack([world_verts(m) for m in meshes])
+                Q = Q[np.abs(Q[:, 2] - zw) < 0.008] - c
+                qa = np.arctan2(Q @ fr.fwd, Q @ fr.left); qr = np.hypot(Q @ fr.fwd, Q @ fr.left)
+                near = qr < 1.6 * max(rl, rf)  # the neck, not the shoulders at the same height
+                out = []
+                for k2, ai in enumerate(a):
+                    w = near & (np.abs((qa - ai + math.pi) % (2 * math.pi) - math.pi) < 0.15)
+                    if cap is not None:
+                        w &= qr < cap[k2]
+                    out.append(qr[w].max(initial=0.0))
+                return np.array(out)
+            rad = ring([body] + CLEAR_ALSO)
+            if g.get("over"):  # cloth lying on the neck within 3 cm of it, not the cloth on the shoulders at this height
+                rad = np.maximum(rad, ring([BUILT[q] for q in g["over"]], rad + 0.03))
             for _ in range(3):
                 rad = 0.25 * np.roll(rad, 1) + 0.5 * rad + 0.25 * np.roll(rad, -1)
+            rad = rad + interp(g.get("radial", {}).get("front", [[0, 0.0]]), s) * np.maximum(np.sin(a), 0)                 + interp(g.get("radial", {}).get("back", [[0, 0.0]]), s) * np.maximum(-np.sin(a), 0)
             for ai, ri in zip(a, rad):
                 p = c + (fr.left * math.cos(ai) + fr.fwd * math.sin(ai)) * (ri + g["hull"])
                 V.append([p[0], p[1], zw])
@@ -597,6 +667,7 @@ def main():
         paint(o, g, segs, fr)
         skin(o, arm)
         objs.append(o)
+        BUILT[g["name"]] = o
         print("garment", g["name"], len(o.data.vertices), "verts")
     for img in bpy.data.images:
         if img.name.startswith("T_"):
