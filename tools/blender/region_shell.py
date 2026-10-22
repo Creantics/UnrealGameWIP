@@ -24,7 +24,8 @@ SPEC (lengths in metres, relative to the eye line and the head's mirror plane as
 the two side-on outlines alone would leave square in plan. A surface shell skips faces turned backwards (normal y above "back", default 0.3) so an outline cast
 through the head takes the front only; "lift" moves the shell off the skin before the thickness is added. "level"
 is the multires level the surface shells are cut from; the cut border is smoothed "rim_smooth" times (default 4) so
-it does not follow the face edges in steps; pinholes inside it are closed over "close" passes (default 3). "head_color" is the head's colour in the preview.
+it does not follow the face edges in steps; pinholes inside it are closed over "close" passes (default 3); "taper" (default 0) thins the shell
+from its full thickness to none at the rim over that distance, so its edge is not a step. "head_color" is the head's colour in the preview.
 """
 import json
 import os
@@ -148,6 +149,15 @@ class Shells:
         lift = float(sh.get("lift", 0.0002))
         for v in bm.verts:
             v.co += v.normal * lift
+        # a shell of even thickness ends in a step at its rim; "taper" thins it to nothing over that distance
+        taper = float(sh.get("taper", 0.0))
+        if taper > 0:
+            co = np.array([v.co for v in bm.verts])
+            edge = co[[v.is_boundary for v in bm.verts]]
+            d = np.full(len(co), np.inf)
+            for i in range(0, len(edge), 512):
+                d = np.minimum(d, np.sqrt(((co[:, None, :] - edge[None, i:i + 512, :]) ** 2).sum(2)).min(1))
+            wt = np.clip(d / taper, 0.0, 1.0)
         out = bpy.data.meshes.new(sh["name"])
         bm.to_mesh(out)
         bm.free()
@@ -156,6 +166,11 @@ class Shells:
         sol.thickness = float(sh.get("thickness", 0.0015))
         sol.offset = 1.0
         sol.use_even_offset = True
+        if taper > 0:
+            vg = o.vertex_groups.new(name="taper")
+            for i, x in enumerate(wt):
+                vg.add([i], float(x), "REPLACE")
+            sol.vertex_group, sol.thickness_vertex_group = vg.name, 0.0
         bake(o)
         return o, int(keep.sum())
 
