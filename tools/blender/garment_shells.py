@@ -32,9 +32,18 @@ faces turned to the floor, under the jaw, stay out),
 its rim welded onto the body's neck hole where they lie within "weld" metres (default 0.003).
   "collar": a cone round a bone with no body under it (the neck of a body mesh that stops there): rings from "z0" to
            "z1" (fractions) with half-widths "r0" to "r1" ([left, forward] metres), centred on "bone"'s head; with
-           "hull" (metres) each ring instead hugs the body and head surface at its height, that far off it, also hugging
+           "hull" (metres) each ring instead hugs the body and head surface at its height within "neck" metres of the bone
+           (default 1.6 times the larger half-width; the shoulders at that height stay out), that far off it, also hugging
            the garments named in "over" (built earlier in the spec, so the collar lies on top of them); "radial"
            {"front"|"back": [[s, metres], ...]} widens the rings that much at the front or back (s 0 bottom row, 1 top).
+  "drape": cloth laid over the shoulders from above (a yoke): a polar grid round "bone"'s head from the body and head
+           surface at height "ztop" (fraction; the neck is what lies within "neck", default 0.15 m, of the bone) plus "hull"
+           metres out a further "r1" ([left, forward] metres), each
+           point put on the highest upward-facing body, head or "over" garment surface above it below the first
+           surface facing down (a ray up from inside the torso: the underside of the jaw stops it) and no higher than "rise"
+           (default 0.03) metres over "ztop", and lifted "offset" metres off it, then smoothed; it follows the slope of the shoulders where rings at fixed heights would stand out
+           as a shelf. A point with no such surface (past the top of the back) wraps down onto the nearest body or head
+           surface instead of running on level. Weights come from the nearest vertex of the mesh each point rests on.
 Colour: "color" is the base RGB (sRGB, as picked from the art); "rules" is a list of [expression, RGB] painted in order. An expression is numpy
 over per-vertex arrays: x (body left, metres from the midline), f (forward, metres from the body's centre plane),
 z (height fraction), t (segment position), ang (radians around the segment axis), ax=abs(x), front=f>0, and
@@ -540,7 +549,7 @@ def collar(g, arm, body, segs, fr):
                 Q = np.vstack([world_verts(m) for m in meshes])
                 Q = Q[np.abs(Q[:, 2] - zw) < 0.008] - c
                 qa = np.arctan2(Q @ fr.fwd, Q @ fr.left); qr = np.hypot(Q @ fr.fwd, Q @ fr.left)
-                near = qr < 1.6 * max(rl, rf)  # the neck, not the shoulders at the same height
+                near = qr < (g.get("neck", 1.6 * max(rl, rf)) if cap is None else np.inf)  # the neck, not the shoulders
                 out = []
                 for k2, ai in enumerate(a):
                     w = near & (np.abs((qa - ai + math.pi) % (2 * math.pi) - math.pi) < 0.15)
@@ -565,6 +574,112 @@ def collar(g, arm, body, segs, fr):
     o = new_object(g["name"], np.array(V), F, arm)
     s = np.repeat(np.arange(rows + 1) / rows, n)
     copy_weights(o, body, None, {"spine_05": 1 - s, g.get("bone", "neck_01"): s})
+    m = o.modifiers.new("sol", "SOLIDIFY"); m.thickness = g.get("thickness", 0.004); m.offset = 1.0
+    m = o.modifiers.new("sub", "SUBSURF"); m.levels = 1
+    apply_mods(o)
+    return o
+
+
+def drape(g, arm, body, segs, fr):
+    from mathutils.bvhtree import BVHTree
+    n, rows = g.get("segments", 64), g.get("rows", 10)
+    c = np.array(arm.matrix_world @ arm.data.bones[g.get("bone", "neck_01")].head_local)
+    a = -math.pi + (np.arange(n) + 0.5) / n * 2 * math.pi
+    zt = fr.z(g["ztop"])
+    meshes = [body] + CLEAR_ALSO + [BUILT[q] for q in g.get("over", [])]
+    Q = np.vstack([world_verts(m) for m in CLEAR_ALSO or [body]])  # the neck: at the sides the body's rim is the shoulder
+    Q = Q[(Q[:, 2] > zt - 0.02) & (Q[:, 2] < zt + 0.008)] - c
+    qa = np.arctan2(Q @ fr.fwd, Q @ fr.left); qr = np.hypot(Q @ fr.fwd, Q @ fr.left)
+    r1 = np.array(g["r1"])
+    inner = np.array([qr[(qr < g.get("neck", 0.15)) & (np.abs((qa - ai + math.pi) % (2 * math.pi) - math.pi) < 0.15)]
+                      .max(initial=0.0) for ai in a])
+    ok = inner > 0  # an angle with no neck surface near this height takes its neighbours' radius
+    inner = np.interp(np.arange(n), np.arange(n)[ok], inner[ok], period=n)
+    for _ in range(3):
+        inner = 0.25 * np.roll(inner, 1) + 0.5 * inner + 0.25 * np.roll(inner, -1)
+    inner += g.get("hull", 0.006)
+    outer = inner + 1 / np.hypot(np.cos(a) / r1[0], np.sin(a) / r1[1])  # out from the neck by an ellipse of widths
+    trees = [BVHTree.FromPolygons([Vector(p) for p in world_verts(m)], [list(p.vertices) for p in m.data.polygons])
+             for m in meshes]
+    R = inner[None, :] + (outer - inner)[None, :] * (np.arange(rows + 1) / rows)[:, None]
+    XY = c[None, None, :2] + R[..., None] * (np.cos(a)[None, :, None] * fr.left[:2] + np.sin(a)[None, :, None] * fr.fwd[:2])
+    Z = np.full(R.shape, np.nan)
+    S = np.zeros(R.shape, int)  # which mesh the point rests on (a garment counts as the body under it)
+    for k in range(rows + 1):
+        for i in range(n):
+            hits = []  # every surface along a ray up from inside the torso
+            for j, t in enumerate(trees):
+                o0 = Vector((*XY[k, i], zt - 0.3))
+                for _ in range(12):
+                    h = t.ray_cast(o0, Vector((0, 0, 1)), zt + g.get("rise", 0.03) - o0.z)
+                    if h[0] is None:
+                        break
+                    hits.append((h[0].z, h[1].z, j)); o0 = h[0] + Vector((0, 0, 1e-4))
+            z = j = None
+            for hz, nz, hj in sorted(hits):  # the highest skin or cloth facing up, below the first facing down (the jaw)
+                if nz < -0.2 and z is not None:
+                    break
+                if nz > 0.05:
+                    z, j = hz, hj
+            if z is not None:
+                if z > zt - 0.12 and (k == 0 or np.isnan(Z[k - 1, i]) or Z[k - 1, i] - z < g.get("drop", 0.05)):
+                    # not through a hole
+                    Z[k, i] = z; S[k, i] = j if j <= len(CLEAR_ALSO) else 0
+    miss = np.isnan(Z)
+    for k in range(rows + 1):  # a column with no surface under it takes its neighbours' height
+        row = Z[k]
+        if np.isnan(row).all():
+            Z[k] = Z[k - 1]
+        elif np.isnan(row).any():
+            ok = ~np.isnan(row)
+            Z[k] = np.interp(np.arange(n), np.arange(n)[ok], row[ok], period=n)
+    floor = Z + g.get("offset", 0.006)
+    Z = floor.copy()
+    for _ in range(g.get("smooth", 4)):  # smooth round and across, never sinking below what it rests on
+        Z = 0.25 * np.roll(Z, 1, 1) + 0.5 * Z + 0.25 * np.roll(Z, -1, 1)
+        Z[1:-1] = 0.25 * Z[:-2] + 0.5 * Z[1:-1] + 0.25 * Z[2:]
+        Z = np.maximum(Z, floor)
+    V = np.c_[XY.reshape(-1, 2), Z.reshape(-1)].reshape(rows + 1, n, 3)
+    step = (R[-1] - R[0]) / rows
+    N = np.zeros((n, 3)); N[:, 2] = 1.0  # surface normal under the last point of each column
+    for k in range(1, rows + 1):  # past an edge (the top of the back) the cloth wraps down onto the nearest surface
+        for i in np.nonzero(miss[k])[0]:   # instead of running on level into the air: each step goes outward
+            out = np.r_[V[k - 1, i, :2] - c[:2], 0.0]   # along the surface (down a vertical back)
+            out /= np.linalg.norm(out) + 1e-9
+            d = out - (out @ N[i]) * N[i]
+            d = d / np.linalg.norm(d) if np.linalg.norm(d) > 0.3 else np.array([0.0, 0.0, -1.0])
+            q = Vector(V[k - 1, i] + d * step[i])
+            near = [t.find_nearest(q) for t in trees]
+            loc, nrm, _, _ = min((h for h in near if h[0] is not None), key=lambda h: h[3])
+            V[k, i] = np.array(loc + nrm * g.get("offset", 0.006))
+            N[i] = np.array(nrm)
+    wrap = miss.copy(); wrap[1:] |= miss[:-1]  # the wrapped points and the row they hang from
+    for _ in range(3 * g.get("smooth", 4)):  # a column that hangs next to one that rests would fold at the change
+        A = 0.25 * (np.roll(V, 1, 1) + np.roll(V, -1, 1) + np.r_[V[:1], V[:-1]] + np.r_[V[1:], V[-1:]])
+        for k, i in zip(*np.nonzero(wrap)):
+            near = [t.find_nearest(Vector(A[k, i])) for t in trees]
+            loc, nrm, _, _ = min((h for h in near if h[0] is not None), key=lambda h: h[3])
+            V[k, i] = np.array(loc + nrm * g.get("offset", 0.006))
+    V = V.reshape(-1, 3)
+    F = [[k * n + i, k * n + (i + 1) % n, (k + 1) * n + (i + 1) % n, (k + 1) * n + i] for k in range(rows) for i in range(n)]
+    o = new_object(g["name"], V, F, arm)
+    from mathutils.kdtree import KDTree
+    blend = {}  # weights of the nearest vertex of the mesh each point rests on: over the head's neck skirt the
+    S = S.reshape(-1)  # cloth must follow the neck as the skirt does, not the shoulder under it
+    for j, m in enumerate([body] + CLEAR_ALSO):
+        if not (S == j).any():
+            continue
+        P = world_verts(m); kd = KDTree(len(P))
+        for i, p in enumerate(P):
+            kd.insert(Vector(p), i)
+        kd.balance()
+        names = [vg.name for vg in m.vertex_groups]
+        for i in np.nonzero(S == j)[0]:
+            for ge in m.data.vertices[kd.find(Vector(V[i]))[1]].groups:
+                blend.setdefault(names[ge.group], np.zeros(len(V)))[i] = ge.weight
+    copy_weights(o, body, None, blend)
+    print("garment %s: drape on head %d of %d, z %.3f..%.3f, inner radius %.3f..%.3f" % (g["name"], (S == 1).sum(), len(S), (Z.min() - fr.floor) / fr.height,
+          (Z.max() - fr.floor) / fr.height, inner.min(), inner.max()))
     m = o.modifiers.new("sol", "SOLIDIFY"); m.thickness = g.get("thickness", 0.004); m.offset = 1.0
     m = o.modifiers.new("sub", "SUBSURF"); m.levels = 1
     apply_mods(o)
@@ -658,7 +773,7 @@ def main():
     segs = segments(arm)
     fr = Frame(arm, body, segs, spec.get("height"))
     print("body height %.3f, %d segments" % (fr.height, len(segs)))
-    build = {"shell": shell, "skirt": skirt, "band": band, "tails": tails, "knot": knot, "collar": collar}
+    build = {"shell": shell, "skirt": skirt, "band": band, "tails": tails, "knot": knot, "collar": collar, "drape": drape}
     objs = []
     for g in spec["garments"]:
         o = build[g["kind"]](g, arm, body, segs, fr)
