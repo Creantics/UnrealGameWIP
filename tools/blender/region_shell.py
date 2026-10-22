@@ -24,7 +24,7 @@ SPEC (lengths in metres, relative to the eye line and the head's mirror plane as
 the two side-on outlines alone would leave square in plan. A surface shell skips faces turned backwards (normal y above "back", default 0.3) so an outline cast
 through the head takes the front only; "lift" moves the shell off the skin before the thickness is added. "level"
 is the multires level the surface shells are cut from; the cut border is smoothed "rim_smooth" times (default 4) so
-it does not follow the face edges in steps. "head_color" is the head's colour in the preview.
+it does not follow the face edges in steps; pinholes inside it are closed over "close" passes (default 3). "head_color" is the head's colour in the preview.
 """
 import json
 import os
@@ -129,6 +129,17 @@ class Shells:
         keep &= hit
         if "side" in sh:
             keep &= inside(sh["side"], c[:, [1, 2]])
+        # a face dropped inside the region (a normal or a centre just over a test) leaves a pinhole: take back the
+        # faces whose every corner is shared with a kept face; the rim's faces have outer corners, so it stays put
+        for _ in range(int(sh.get("close", 3))):
+            used = np.zeros(len(bm.verts), dtype=bool)
+            for f, k in zip(bm.faces, keep):
+                if k:
+                    used[[v.index for v in f.verts]] = True
+            add = np.array([not k and all(used[v.index] for v in f.verts) for f, k in zip(bm.faces, keep)])
+            if not add.any():
+                break
+            keep |= add
         bmesh.ops.delete(bm, geom=[f for f, k in zip(bm.faces, keep) if not k], context="FACES")
         # the cut follows face edges: smooth the border so it does not show the stair steps
         rim = [v for v in bm.verts if v.is_boundary]
