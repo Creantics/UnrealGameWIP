@@ -1,0 +1,492 @@
+"""Builds clothes for a skinned body as separate skinned meshes, headless, from a JSON spec, and exports them as FBX.
+
+    blender -b --factory-startup --python-exit-code 1 --python tools/blender/garment_shells.py -- \\
+        BODY.fbx SPEC.json OUT_DIR [--preview]
+
+BODY.fbx is a skinned body (armature plus the largest mesh is taken as the body). Every garment is skinned to the
+same armature, so in the engine it can follow the body's skeleton by bone name.
+
+Where a garment sits is said in bone segments, not in mesh indices, so a spec carries over between bodies of one
+skeleton: each body vertex is put on its nearest bone segment (a bone's head to the head of the "next" bone in
+SEGMENTS) with a position t from 0 at the head to 1 at the far end. Kinds:
+  "shell": the body faces whose vertices fall in "bones" ({fnmatch pattern: [t0, t1]}, plus optional "zmin"/"zmax"
+           as fractions of the body height), subdivided "subdiv" times, pushed out "offset" metres along the normal
+           and "bag" further away from the bone axis ([[t, metres], ...] per pattern, linear between), then given
+           "thickness". "floor" flattens anything below that height (a boot sole); "smooth_more" [[pattern, iterations], ...]
+           smooths further on those segments. Weights come from the body.
+  "skirt": a ring hung from height "top" to "bottom" (fractions of the height), its section the body's own
+           hull at "top" plus "offset", flaring by "flare" at the hem; "slit" [angle_degrees, from_fraction] leaves
+           the sides open below that point. Weighted to the pelvis, giving way to the thigh on its side.
+  "band":  a ring round the body at height "z" (fraction), "height" tall, "offset" off the hull (a sash).
+  "tails": strips hanging from the front of a band: "z", "length", "width", "spread", "count".
+  "knot":  a flattened ball on the front at height "z", "size" [x, y, z].
+A top-level "height" (metres) sets the height the fractions are of, for a body mesh that stops at the neck.
+  "collar": a cone round a bone with no body under it (the neck of a body mesh that stops there): rings from "z0" to
+           "z1" (fractions) with half-widths "r0" to "r1" ([left, forward] metres), centred on "bone"'s head.
+Colour: "color" is the base RGB (sRGB, as picked from the art); "rules" is a list of [expression, RGB] painted in order. An expression is numpy
+over per-vertex arrays: x (body left, metres from the midline), f (forward, metres from the body's centre plane),
+z (height fraction), t (segment position), ang (radians around the segment axis), ax=abs(x), front=f>0, and
+m("pattern") for "on a segment matching pattern". "crest" {"center": [x, z], "r": metres, "rays": n, "color": RGB}
+paints a rayed sun disc on the front. Colours are baked to a texture per garment ("tex", default 1024).
+"""
+import fnmatch
+import json
+import math
+import os
+import sys
+
+import bmesh
+import bpy
+import numpy as np
+from mathutils import Matrix, Vector
+
+SEGMENTS = {  # bone -> the bone whose head ends its segment (Epic/MetaHuman names; others fall back to the tail)
+    "pelvis": "spine_01", "spine_01": "spine_02", "spine_02": "spine_03", "spine_03": "spine_04",
+    "spine_04": "spine_05", "spine_05": "neck_01", "neck_01": "neck_02", "neck_02": "head",
+    "clavicle_?": "upperarm_?", "upperarm_?": "lowerarm_?", "lowerarm_?": "hand_?", "hand_?": "middle_01_?",
+    "thigh_?": "calf_?", "calf_?": "foot_?", "foot_?": "ball_?",
+}
+
+
+def args():
+    a = sys.argv[sys.argv.index("--") + 1:]
+    return a[0], a[1], a[2], "--preview" in a
+
+
+def load_body(path):
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.ops.import_scene.fbx(filepath=path, automatic_bone_orientation=False)
+    arm = next(o for o in bpy.context.scene.objects if o.type == "ARMATURE")
+    meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+    body = max(meshes, key=lambda o: len(o.data.vertices))
+    for o in meshes:
+        if o is not body:
+            bpy.data.objects.remove(o)
+    return arm, body
+
+
+def segments(arm):
+    """[(name, head, end)] in world space for every bone that has a segment rule."""
+    mw = arm.matrix_world
+    bones = arm.data.bones
+    out = []
+    for b in bones:
+        nxt = None
+        for pat, n in SEGMENTS.items():
+            if fnmatch.fnmatch(b.name, pat):
+                side = b.name[-1]
+                nxt = bones.get(n.replace("?", side))
+        if nxt is None and not any(fnmatch.fnmatch(b.name, p) for p in SEGMENTS):
+            continue
+        h = mw @ b.head_local
+        e = mw @ (nxt.head_local if nxt else b.tail_local)
+        out.append((b.name, np.array(h), np.array(e)))
+    return out
+
+
+def classify(P, segs):
+    """Nearest segment per point: (index into segs, t, closest point on the segment)."""
+    best = np.full(len(P), 1e9); idx = np.zeros(len(P), int); T = np.zeros(len(P)); C = np.zeros_like(P)
+    for i, (_, h, e) in enumerate(segs):
+        ab = e - h
+        t = np.clip(((P - h) @ ab) / max(ab @ ab, 1e-12), 0, 1)
+        c = h + t[:, None] * ab
+        d = np.linalg.norm(P - c, axis=1)
+        m = d < best
+        best[m] = d[m]; idx[m] = i; T[m] = t[m]; C[m] = c[m]
+    return idx, T, C
+
+
+class Frame:
+    """Body axes: up z, forward from the toes, left = up x forward; heights as fractions of the body."""
+
+    def __init__(self, arm, body, segs, height=None):
+        P = world_verts(body)
+        self.floor, self.top = P[:, 2].min(), P[:, 2].max()
+        self.height = height or self.top - self.floor  # a body mesh without its head needs the full height given
+        names = {s[0]: s for s in segs}
+        foot = names.get("foot_l") or names.get("foot_r")
+        fwd = foot[2] - foot[1] if foot else np.array([0, -1.0, 0])
+        fwd[2] = 0; self.fwd = fwd / np.linalg.norm(fwd)
+        self.up = np.array([0, 0, 1.0])
+        self.left = np.cross(self.up, self.fwd)
+        self.centre = np.array([P[:, 0].mean(), P[:, 1].mean(), 0])
+        if names.get("thigh_l") is not None and (names["thigh_l"][1] - self.centre) @ self.left < 0:
+            self.left = -self.left  # left as the skeleton names it
+
+    def local(self, P):
+        d = P - self.centre
+        return d @ self.left, d @ self.fwd, (P[:, 2] - self.floor) / self.height
+
+    def z(self, frac):
+        return self.floor + frac * self.height
+
+
+def world_verts(o):
+    mw = np.array(o.matrix_world)
+    V = np.array([v.co for v in o.data.vertices])
+    return V @ mw[:3, :3].T + mw[:3, 3]
+
+
+def new_object(name, V, F, arm):
+    me = bpy.data.meshes.new(name)
+    me.from_pydata([tuple(v) for v in V], [], [tuple(f) for f in F])
+    me.update()
+    o = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(o)
+    o.parent = arm
+    o.matrix_parent_inverse = arm.matrix_world.inverted()  # vertices are in world space
+    return o
+
+
+def copy_weights(dst, src_obj, src_idx, blend=None):
+    """dst vertex i takes src vertex src_idx[i]'s weights (or a {group: weight-array} blend when given)."""
+    names = [g.name for g in src_obj.vertex_groups]
+    groups = {n: dst.vertex_groups.new(name=n) for n in names}
+    if blend is not None:
+        for n, w in blend.items():
+            g = groups.get(n) or dst.vertex_groups.new(name=n)
+            for i, wi in enumerate(w):
+                if wi > 1e-4:
+                    g.add([i], float(wi), "REPLACE")
+        return
+    sv = src_obj.data.vertices
+    for i, si in enumerate(src_idx):
+        for ge in sv[si].groups:
+            groups[names[ge.group]].add([i], ge.weight, "REPLACE")
+
+
+def skin(o, arm):
+    m = o.modifiers.new("arm", "ARMATURE"); m.object = arm
+
+
+def apply_mods(o):
+    bpy.context.view_layer.objects.active = o
+    for m in list(o.modifiers):
+        if m.type != "ARMATURE":
+            bpy.ops.object.modifier_apply(modifier=m.name)
+
+
+def interp(table, t):
+    table = sorted(table)
+    return np.interp(t, [a for a, _ in table], [b for _, b in table])
+
+
+def shell(g, arm, body, segs, fr):
+    P = world_verts(body)
+    idx, T, _ = classify(P, segs)
+    _, _, zf = fr.local(P)
+    keep = np.zeros(len(P), bool)
+    for pat, (t0, t1) in g["bones"].items():
+        for i, s in enumerate(segs):
+            if fnmatch.fnmatch(s[0], pat):
+                keep |= (idx == i) & (T >= t0) & (T <= t1)
+    keep &= (zf >= g.get("zmin", -1)) & (zf <= g.get("zmax", 2))
+    faces = [[v for v in p.vertices] for p in body.data.polygons if keep[list(p.vertices)].all()]
+    if not faces:
+        raise SystemExit("garment %s: no body faces in %s" % (g["name"], g["bones"]))
+    used = sorted({v for f in faces for v in f})
+    remap = {v: i for i, v in enumerate(used)}
+    o = new_object(g["name"], P[used], [[remap[v] for v in f] for f in faces], arm)
+    copy_weights(o, body, used)
+    bm = bmesh.new(); bm.from_mesh(o.data)  # an imported body is split at its UV seams; joined, the shell stays closed there
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-5); bm.to_mesh(o.data); bm.free()
+    if g.get("subdiv", 1):
+        m = o.modifiers.new("sub", "SUBSURF"); m.levels = m.render_levels = g.get("subdiv", 1)
+        apply_mods(o)
+    me = o.data
+    me.update()
+    V = world_verts(o)
+    N = np.array([v.normal for v in me.vertices]) @ np.array(o.matrix_world)[:3, :3].T
+    N /= np.linalg.norm(N, axis=1, keepdims=True) + 1e-12
+    vi, vt, vc = classify(V, segs)
+    D = N * g.get("offset", 0.01)
+    for pat, table in g.get("bag", {}).items():
+        on = np.array([fnmatch.fnmatch(segs[i][0], pat) for i in vi])
+        r = V - vc
+        r /= np.linalg.norm(r, axis=1, keepdims=True) + 1e-12
+        D += (on * interp(table, vt))[:, None] * r
+    V = V + D
+    if "floor" in g:
+        V[:, 2] = np.maximum(V[:, 2], fr.z(g["floor"]))
+    set_world_verts(o, V)
+    if g.get("smooth", 0):
+        m = o.modifiers.new("sm", "SMOOTH"); m.iterations = g["smooth"]; m.factor = 0.5
+    for k, (pat, its) in enumerate(g.get("smooth_more", [])):  # extra smoothing where the body has detail the cloth hides (toes)
+        vg = o.vertex_groups.new(name="_sm%d" % k)
+        vg.add([i for i, si in enumerate(vi) if fnmatch.fnmatch(segs[si][0], pat)], 1.0, "REPLACE")
+        m = o.modifiers.new("sm%d" % k, "SMOOTH"); m.iterations = its; m.factor = 1.0; m.vertex_group = vg.name
+    if g.get("thickness", 0):
+        m = o.modifiers.new("sol", "SOLIDIFY"); m.thickness = g["thickness"]; m.offset = 1.0
+    apply_mods(o)
+    for vg in [v for v in o.vertex_groups if v.name.startswith("_sm")]:
+        o.vertex_groups.remove(vg)
+    return o
+
+
+def set_world_verts(o, V):
+    inv = np.array(o.matrix_world.inverted())
+    L = V @ inv[:3, :3].T + inv[:3, 3]
+    o.data.vertices.foreach_set("co", L.ravel().astype(np.float32))
+    o.data.update()
+
+
+ARMS = ("upperarm_*", "lowerarm_*", "hand_*")  # hanging arms are not part of a section round the trunk
+
+
+def hull_profile(body, fr, segs, zfrac, band, n):
+    """Trunk section radius per angle (around the body centre) at a height: the largest radius in each wedge."""
+    P = world_verts(body)
+    x, f, zf = fr.local(P)
+    idx, _, _ = classify(P, segs)
+    arm = np.array([any(fnmatch.fnmatch(s[0], p) for p in ARMS) for s in segs])
+    sel = (np.abs(zf - zfrac) < band) & ~arm[idx]
+    ang = np.arctan2(f[sel], x[sel])
+    r = np.hypot(x[sel], f[sel])
+    bins = ((ang + math.pi) / (2 * math.pi) * n).astype(int) % n
+    prof = np.zeros(n)
+    np.maximum.at(prof, bins, r)
+    for _ in range(3):  # fill empty wedges and soften
+        prof = np.maximum(prof, 0.5 * (np.roll(prof, 1) + np.roll(prof, -1)) * (prof == 0))
+        prof = 0.25 * np.roll(prof, 1) + 0.5 * prof + 0.25 * np.roll(prof, -1)
+    return prof
+
+
+def ring_points(fr, prof, zw, scale, add):
+    n = len(prof)
+    a = -math.pi + (np.arange(n) + 0.5) / n * 2 * math.pi
+    r = prof * scale + add
+    return (fr.centre[None, :] + np.outer(r * np.cos(a), fr.left) + np.outer(r * np.sin(a), fr.fwd)
+            + np.outer(np.full(n, 1.0), np.array([0, 0, zw - fr.centre[2]]))), a
+
+
+def skirt(g, arm, body, segs, fr):
+    n, rows = g.get("segments", 64), g.get("rows", 14)
+    prof = hull_profile(body, fr, segs, g["top"], 0.01, n)
+    prof = np.maximum(prof, np.convolve(np.r_[prof[-4:], prof, prof[:4]], np.ones(9) / 9, "same")[4:-4])
+    V, A, S = [], [], []
+    for k in range(rows + 1):
+        s = k / rows
+        zw = fr.z(g["top"] + (g["bottom"] - g["top"]) * s)
+        pts, a = ring_points(fr, prof, zw, 1 + g.get("flare", 0.15) * s, g.get("offset", 0.02))
+        V += list(pts); A += list(a); S += [s] * n
+    slit_a, slit_from = g.get("slit", [0, 2])
+    F = []
+    for k in range(rows):
+        for i in range(n):
+            a = A[k * n + i]
+            side = min(abs(abs(a) - 0.0), abs(abs(a) - math.pi))  # angle from the left/right axis
+            if math.degrees(side) < slit_a / 2 and (k + 0.5) / rows > slit_from:
+                continue
+            j = (i + 1) % n
+            F.append([k * n + i, k * n + j, (k + 1) * n + j, (k + 1) * n + i])
+    o = new_object(g["name"], np.array(V), F, arm)
+    S = np.array(S); X = np.cos(np.array(A))
+    side = np.clip(0.5 + X * 1.5, 0, 1)  # 1 on the left, 0 on the right, a blend at front and back
+    give = g.get("leg_share", 0.5) * S
+    copy_weights(o, body, None, {"pelvis": 1 - give, "thigh_l": give * side, "thigh_r": give * (1 - side)})
+    if g.get("thickness", 0):
+        m = o.modifiers.new("sol", "SOLIDIFY"); m.thickness = g["thickness"]; m.offset = 1.0
+    m = o.modifiers.new("sub", "SUBSURF"); m.levels = 1
+    apply_mods(o)
+    return o
+
+
+def band(g, arm, body, segs, fr):
+    n = g.get("segments", 64)
+    prof = hull_profile(body, fr, segs, g["z"], 0.015, n)
+    V = []
+    for zf in (g["z"] - g["height"] / 2, g["z"], g["z"] + g["height"] / 2):
+        pts, _ = ring_points(fr, prof, fr.z(zf), 1.0, g.get("offset", 0.02) * (1.15 if zf == g["z"] else 1.0))
+        V += list(pts)
+    F = [[k * n + i, k * n + (i + 1) % n, (k + 1) * n + (i + 1) % n, (k + 1) * n + i] for k in range(2) for i in range(n)]
+    o = new_object(g["name"], np.array(V), F, arm)
+    one = np.ones(len(V))
+    copy_weights(o, body, None, {g.get("bone", "pelvis"): one})
+    if g.get("thickness", 0):
+        m = o.modifiers.new("sol", "SOLIDIFY"); m.thickness = g["thickness"]; m.offset = 1.0
+    m = o.modifiers.new("sub", "SUBSURF"); m.levels = 1
+    apply_mods(o)
+    return o
+
+
+def front_radius(body, fr, segs, zfrac):
+    prof = hull_profile(body, fr, segs, zfrac, 0.015, 64)
+    return prof[48]  # the wedge facing forward (angle +90 degrees)
+
+
+def tails(g, arm, body, segs, fr):
+    V, F, Wp = [], [], []
+    rows = 10
+    r0 = front_radius(body, fr, segs, g["z"]) + g.get("offset", 0.04)
+    for c in range(g.get("count", 2)):
+        side = -1 if c == 0 else 1
+        x0 = side * g.get("spread", 0.05)
+        base = len(V)
+        for k in range(rows + 1):
+            s = k / rows
+            zw = fr.z(g["z"]) - g["length"] * s
+            xc = x0 + side * g.get("splay", 0.04) * s
+            w = g["width"] * (1 + 0.3 * s)
+            for e in (-0.5, 0.5):
+                p = fr.centre + fr.left * (xc + e * w) + fr.fwd * (r0 + g.get("lean", 0.03) * s)
+                p[2] = zw
+                V.append(p); Wp.append(s)
+        for k in range(rows):
+            a = base + 2 * k
+            F.append([a, a + 1, a + 3, a + 2])
+    o = new_object(g["name"], np.array(V), F, arm)
+    s = np.array(Wp)
+    copy_weights(o, body, None, {"pelvis": 1 - 0.4 * s, "thigh_l": 0.2 * s, "thigh_r": 0.2 * s})
+    m = o.modifiers.new("sol", "SOLIDIFY"); m.thickness = g.get("thickness", 0.004); m.offset = 0
+    m = o.modifiers.new("sub", "SUBSURF"); m.levels = 1
+    apply_mods(o)
+    return o
+
+
+def knot(g, arm, body, segs, fr):
+    bm = bmesh.new()
+    bmesh.ops.create_uvsphere(bm, u_segments=20, v_segments=12, radius=1.0)
+    sx, sy, sz = g["size"]
+    r0 = front_radius(body, fr, segs, g["z"]) + g.get("offset", 0.04)
+    c = fr.centre + fr.fwd * r0; c[2] = fr.z(g["z"])
+    V = np.array([c + fr.left * v.co.x * sx + fr.fwd * v.co.y * sy + np.array([0, 0, v.co.z * sz]) for v in bm.verts])
+    F = [[v.index for v in f.verts] for f in bm.faces]
+    bm.free()
+    o = new_object(g["name"], V, F, arm)
+    copy_weights(o, body, None, {"pelvis": np.ones(len(V))})
+    return o
+
+
+def collar(g, arm, body, segs, fr):
+    n, rows = g.get("segments", 48), g.get("rows", 4)
+    b = arm.data.bones[g.get("bone", "neck_01")]
+    c = np.array(arm.matrix_world @ b.head_local)
+    a = -math.pi + (np.arange(n) + 0.5) / n * 2 * math.pi
+    V = []
+    for k in range(rows + 1):
+        s = k / rows
+        rl, rf = (np.array(g["r0"]) * (1 - s) + np.array(g["r1"]) * s)
+        zw = fr.z(g["z0"] + (g["z1"] - g["z0"]) * s)
+        for ai in a:
+            p = c + fr.left * rl * math.cos(ai) + fr.fwd * rf * math.sin(ai)
+            V.append([p[0], p[1], zw])
+    F = [[k * n + i, k * n + (i + 1) % n, (k + 1) * n + (i + 1) % n, (k + 1) * n + i] for k in range(rows) for i in range(n)]
+    o = new_object(g["name"], np.array(V), F, arm)
+    s = np.repeat(np.arange(rows + 1) / rows, n)
+    copy_weights(o, body, None, {"spine_05": 1 - s, g.get("bone", "neck_01"): s})
+    m = o.modifiers.new("sol", "SOLIDIFY"); m.thickness = g.get("thickness", 0.004); m.offset = 1.0
+    m = o.modifiers.new("sub", "SUBSURF"); m.levels = 1
+    apply_mods(o)
+    return o
+
+
+def paint(o, g, segs, fr):
+    """Per-vertex colour from the rules, baked to a texture through a smart UV projection."""
+    V = world_verts(o)
+    x, f, z = fr.local(V)
+    vi, t, c = classify(V, segs)
+    r = V - c
+    ang = np.arctan2(r @ fr.fwd, r @ fr.left)
+    names = np.array([segs[i][0] for i in vi])
+    env = {"np": np, "x": x, "f": f, "z": z, "t": t, "ang": ang, "ax": np.abs(x), "front": f > 0,
+           "m": lambda p: np.array([fnmatch.fnmatch(n, p) for n in names])}
+    col = np.tile(np.array(g.get("color", [0.5, 0.5, 0.5]), float), (len(V), 1))
+    for expr, rgb in g.get("rules", []):
+        col[np.asarray(eval(expr, env), bool) & np.ones(len(V), bool)] = rgb
+    cr = g.get("crest")
+    if cr:
+        dx, dz = x - cr["center"][0], (z - cr["center"][1]) * fr.height
+        rr = np.hypot(dx, dz); aa = np.arctan2(dz, dx)
+        rays = cr.get("rays", 12)
+        spike = cr["r"] * (0.55 + 0.45 * np.maximum(0, 1 - np.abs(((aa * rays / (2 * math.pi)) % 1) - 0.5) * 2) ** 0.5)
+        sun = ((rr < cr["r"] * 0.42) | (rr < spike)) & (f > 0)
+        col[sun] = cr["color"]
+    me = o.data
+    attr = me.color_attributes.new("col", "FLOAT_COLOR", "POINT")
+    col = np.where(col <= 0.04045, col / 12.92, ((col + 0.055) / 1.055) ** 2.4)  # spec colours are sRGB, the bake is linear
+    rgba = np.c_[col, np.ones(len(col))].astype(np.float32)
+    attr.data.foreach_set("color", rgba.ravel())
+    bpy.context.view_layer.objects.active = o
+    for s in bpy.context.selected_objects:
+        s.select_set(False)
+    o.select_set(True)
+    bpy.ops.object.mode_set(mode="EDIT"); bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.uv.smart_project(angle_limit=math.radians(60), island_margin=0.02)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    size = g.get("tex", 1024)
+    img = bpy.data.images.new("T_" + g["name"], size, size)
+    img.generated_color = (*np.median(col, axis=0), 1.0)  # a gap between islands reads as the main colour, not black
+    mat = bpy.data.materials.new("M_" + g["name"]); mat.use_nodes = True
+    nt = mat.node_tree; bsdf = nt.nodes["Principled BSDF"]
+    vc = nt.nodes.new("ShaderNodeVertexColor"); vc.layer_name = "col"
+    em = nt.nodes.new("ShaderNodeEmission"); out = nt.nodes["Material Output"]
+    nt.links.new(vc.outputs["Color"], em.inputs["Color"]); nt.links.new(em.outputs[0], out.inputs["Surface"])
+    tex = nt.nodes.new("ShaderNodeTexImage"); tex.image = img; nt.nodes.active = tex
+    bsdf.inputs["Roughness"].default_value = g.get("roughness", 0.8)
+    me.materials.clear(); me.materials.append(mat)
+    sc = bpy.context.scene; sc.render.engine = "CYCLES"; sc.cycles.samples = 1; sc.cycles.device = "CPU"
+    sc.render.bake.margin = 32
+    sc.render.bake.use_clear = False  # keep the main-colour fill: off-island texels (and the mips built from them) would be black
+    bpy.ops.object.bake(type="EMIT")
+    nt.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"]); nt.links.new(bsdf.outputs[0], out.inputs["Surface"])
+    return img
+
+
+def preview(arm, body, objs, fr, out_dir):
+    sc = bpy.context.scene
+    sc.render.engine = "BLENDER_EEVEE"; sc.render.resolution_x, sc.render.resolution_y = 700, 1000
+    w = bpy.data.worlds.new("w"); sc.world = w; w.use_nodes = True
+    w.node_tree.nodes["Background"].inputs[0].default_value = (1, 1, 1, 1)
+    w.node_tree.nodes["Background"].inputs[1].default_value = 0.8
+    skin_m = bpy.data.materials.new("skin"); skin_m.use_nodes = True
+    skin_m.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.55, 0.36, 0.24, 1)
+    body.data.materials.clear(); body.data.materials.append(skin_m)
+    L = bpy.data.lights.new("k", "SUN"); L.energy = 3.0; lo = bpy.data.objects.new("k", L); sc.collection.objects.link(lo)
+    lo.rotation_euler = (math.radians(50), 0, math.radians(30))
+    cam = bpy.data.cameras.new("c"); cam.type = "ORTHO"; cam.ortho_scale = fr.height * 1.1
+    co = bpy.data.objects.new("c", cam); sc.collection.objects.link(co); sc.camera = co
+    mid = fr.centre.copy(); mid[2] = fr.floor + fr.height / 2
+    for name, d in (("front", fr.fwd), ("side", fr.left), ("back", -fr.fwd), ("q", (fr.fwd + fr.left) / np.linalg.norm(fr.fwd + fr.left))):
+        pos = mid + d * 5
+        co.location = Vector(pos)
+        co.rotation_euler = (Vector(mid) - Vector(pos)).to_track_quat("-Z", "Y").to_euler()
+        sc.render.filepath = os.path.join(out_dir, "prev_" + name + ".png")
+        bpy.ops.render.render(write_still=True)
+
+
+def main():
+    body_path, spec_path, out_dir, prev = args()
+    os.makedirs(out_dir, exist_ok=True)
+    spec = json.load(open(spec_path))
+    arm, body = load_body(body_path)
+    segs = segments(arm)
+    fr = Frame(arm, body, segs, spec.get("height"))
+    print("body height %.3f, %d segments" % (fr.height, len(segs)))
+    build = {"shell": shell, "skirt": skirt, "band": band, "tails": tails, "knot": knot, "collar": collar}
+    objs = []
+    for g in spec["garments"]:
+        o = build[g["kind"]](g, arm, body, segs, fr)
+        for p in o.data.polygons:
+            p.use_smooth = True
+        paint(o, g, segs, fr)
+        skin(o, arm)
+        objs.append(o)
+        print("garment", g["name"], len(o.data.vertices), "verts")
+    for img in bpy.data.images:
+        if img.name.startswith("T_"):
+            img.filepath_raw = os.path.join(out_dir, img.name + ".png"); img.file_format = "PNG"; img.save()
+    if prev:
+        preview(arm, body, objs, fr, out_dir)
+    bpy.ops.object.select_all(action="DESELECT")
+    arm.select_set(True)
+    for o in objs:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.export_scene.fbx(filepath=os.path.join(out_dir, spec.get("out", "garments") + ".fbx"), use_selection=True,
+                             add_leaf_bones=False, use_armature_deform_only=False, mesh_smooth_type="FACE",
+                             path_mode="COPY", embed_textures=True, bake_anim=False)
+    print("GARMENTS_DONE", len(objs))
+
+
+main()
