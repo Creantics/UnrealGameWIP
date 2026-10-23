@@ -12,7 +12,9 @@
 // rebuild, under [/Script/ForgottenThird.FTExploreCharacter] in Config/UserGame.ini (local, not
 // committed) or DefaultGame.ini. Pieces follow the body's pose (leader pose) and face shapes.
 //
-// -ExplorePortrait puts the camera in front of the face and keeps it there, for checking a look.
+// -ExplorePortrait puts the camera in front of the face and keeps it there, for checking a look;
+// -ExplorePortraitYaw= (180 front, 90 side, 0 back), -ExplorePortraitArm=, -ExplorePortraitHeight= and
+// -ExplorePortraitPitch= move it, e.g. Arm=330 Height=0 Pitch=0 frames the whole body.
 
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"

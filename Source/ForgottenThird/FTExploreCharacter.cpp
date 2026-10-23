@@ -86,13 +86,20 @@ void AFTExploreCharacter::BeginPlay()
 	UpdateClip();
 	if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait")))
 	{
-		// For looking at the face: the camera sits in front of the pawn at head height and stays there.
+		// For checking a look: the camera holds still round the pawn, by default in front of the face. Yaw 180 is
+		// the front, 135 a three-quarter, 90 a side and 0 the back; a longer arm and a lower height frame the body.
+		float Yaw = 180.f, Arm = 110.f, Height = 78.f, Pitch = -4.f;
+		FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitYaw="), Yaw);
+		FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitArm="), Arm);
+		FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitHeight="), Height);
+		FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitPitch="), Pitch);
 		Boom->bUsePawnControlRotation = false;
 		Boom->bEnableCameraLag = false;
-		Boom->SetRelativeRotation(FRotator(0.0, 180.0, 0.0));
-		Boom->TargetArmLength = 110.f;
-		Boom->SocketOffset = FVector(0.0, 0.0, 78.0);
-		Camera->SetRelativeRotation(FRotator(-4.0, 0.0, 0.0));
+		Boom->bDoCollisionTest = false;
+		Boom->SetRelativeRotation(FRotator(0.0, Yaw, 0.0));
+		Boom->TargetArmLength = Arm;
+		Boom->SocketOffset = FVector(0.0, 0.0, Height);
+		Camera->SetRelativeRotation(FRotator(Pitch, 0.0, 0.0));
 	}
 }
 
