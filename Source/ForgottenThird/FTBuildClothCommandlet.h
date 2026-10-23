@@ -1,0 +1,33 @@
+#pragma once
+
+// Turns an imported skeletal mesh (a skirt, a sash's tails) into Chaos cloth:
+//
+//   UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildCloth -Mesh=<object path> -Physics=<object path>
+//       -NullRHI -unattended -nopause -nosplash
+//
+// Strips any clothing the mesh already has, makes a clothing asset from LOD 0 section 0, paints its max distance
+// by height (0 within -Pin cm of the mesh's top, so the waistband stays skinned, rising smoothly to -Max cm at the
+// hem), takes the collision capsules from the physics asset (the body's, so the cloth falls over the legs) and
+// saves the mesh. Re-importing the mesh wipes the cloth, so run this again after every FTImportCharacter.
+//
+//   -Mesh=<object path>     the skeletal mesh to clothe
+//   -Physics=<object path>  the physics asset the cloth collides with (default: none)
+//   -Max=<cm>               max distance at the hem (default 25)
+//   -Pin=<cm>               pinned band at the top (default 3)
+//   -Verify                 write nothing; report the mesh's clothing
+
+#include "CoreMinimal.h"
+#include "Commandlets/Commandlet.h"
+
+#include "FTBuildClothCommandlet.generated.h"
+
+UCLASS()
+class UFTBuildClothCommandlet : public UCommandlet
+{
+	GENERATED_BODY()
+
+public:
+	UFTBuildClothCommandlet();
+
+	virtual int32 Main(const FString& Params) override;
+};

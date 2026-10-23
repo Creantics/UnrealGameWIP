@@ -116,6 +116,7 @@ void AFTExploreCharacter::ApplyLookOverrides()
 	};
 	LoadClip(IdleClipPath, IdleClip);
 	LoadClip(WalkClipPath, WalkClip);
+	int32 Cloth = 0;
 	for (const FSoftObjectPath& Path : PiecePaths)
 	{
 		USkeletalMesh* PieceMesh = Cast<USkeletalMesh>(Path.TryLoad());
@@ -128,12 +129,15 @@ void AFTExploreCharacter::ApplyLookOverrides()
 		Piece->SetupAttachment(GetMesh());
 		Piece->SetSkeletalMesh(PieceMesh);
 		Piece->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Piece->bCollideWithEnvironment = true; // cloth pieces (FTBuildCloth) also push off the level, not just the body
 		Piece->RegisterComponent();
+		Cloth += PieceMesh->GetMeshClothingAssets().Num() > 0;
 		Piece->SetLeaderPoseComponent(GetMesh());
 		Pieces.Add(Piece);
 	}
 	const USkeletalMesh* Body = GetMesh()->GetSkeletalMeshAsset();
-	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: body %s, %d pieces."), Body ? *Body->GetName() : TEXT("none"), Pieces.Num());
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: body %s, %d pieces, %d with cloth."), Body ? *Body->GetName() : TEXT("none"),
+		Pieces.Num(), Cloth);
 }
 
 void AFTExploreCharacter::CreateInputObjects()

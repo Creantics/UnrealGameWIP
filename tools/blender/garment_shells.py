@@ -26,6 +26,14 @@ SEGMENTS) with a position t from 0 at the head to 1 at the far end. Kinds:
   "band":  a ring round the body at height "z" (fraction), "height" tall, "offset" off the hull (a sash).
   "tails": strips hanging from the front of a band: "z", "length", "width", "spread", "count".
   "knot":  a flattened ball on the front at height "z", "size" [x, y, z].
+Any garment can carry "sim": it is then cloth-simulated onto the body before it gets its thickness, so it hangs loose
+with real folds instead of hugging every muscle (vertices only move, so the paint, the UVs and the weights carry
+through). Its hem loops are relaxed along themselves (no ragged edge), it is pushed "inflate" metres out and smoothed
+"smooth" Taubin passes, then dropped under gravity for "frames" frames (default 40) onto the body and the garments
+named in "collide" (built earlier), at "distance" metres off them (default 0.004), "quality" steps (12), "shrink"
+(0; negative bags it out), "bending" stiffness (0.5), with the vertices within "pin" metres of its top held (a
+waistband; 0 holds nothing). A vertex moving more than "max_move" metres (0.15) has run off: a few take their
+neighbours' move, more than 0.5 % mean the solve blew up and the shell is kept as built.
 A top-level "height" (metres) sets the height the fractions are of, for a body mesh that stops at the neck; a top-level
 "face" (an FBX path, relative to the spec) is a separate head mesh that "clear" also keeps the cloth outside of; a shell's
 "face_below" (fraction) adds that head mesh's faces below the height to the shell (a neck skirt over the body's hole;
@@ -315,6 +323,134 @@ def shell(g, arm, body, segs, fr):
     return o
 
 
+def relax_hems(o, its=6):
+    """Smooths each open edge loop along itself, so a hem cut through the body's faces runs straight."""
+    me = o.data
+    E = np.array([e.vertices[:] for e in me.edges])
+    cnt = np.zeros(len(E), int)
+    fe = {}
+    for p in me.polygons:
+        for k in p.edge_keys:
+            fe[k] = fe.get(k, 0) + 1
+    B = np.array([e for e in E if fe.get(tuple(sorted(e)), 0) == 1])
+    if not len(B):
+        return 0
+    V = world_verts(o)
+    deg = np.bincount(B.ravel(), minlength=len(V)).astype(float)[:, None]
+    on = deg[:, 0] == 2
+    for _ in range(its):
+        S = np.zeros_like(V)
+        np.add.at(S, B[:, 0], V[B[:, 1]]); np.add.at(S, B[:, 1], V[B[:, 0]])
+        V = np.where(on[:, None], 0.5 * V + 0.5 * S / np.maximum(deg, 1), V)
+    set_world_verts(o, V)
+    return int(on.sum())
+
+
+def push_out(o, others, dist):
+    """Like clear, against other garments: vertices closer than dist to them (on either side) go out to dist on their
+    own side, so a cloth never starts inside a collider."""
+    from mathutils.bvhtree import BVHTree
+    V = world_verts(o)
+    moved = 0
+    for m in others:
+        tree = BVHTree.FromPolygons([Vector(p) for p in world_verts(m)], [list(p.vertices) for p in m.data.polygons])
+        for i, v in enumerate(V):
+            loc, n, _, d = tree.find_nearest(Vector(v), dist)
+            if loc is None:
+                continue
+            h = (Vector(v) - loc).dot(n)
+            V[i] = np.array(loc + n * (dist if h >= 0 else -dist)); moved += 1
+    set_world_verts(o, V)
+    return moved
+
+
+def simulate(o, g, body):
+    """Cloth-sims o onto the body (see "sim" in the docstring)."""
+    import time
+    c = g["sim"]
+    dist = c.get("distance", 0.004)
+    hem = relax_hems(o)
+    me = o.data
+    me.update()
+    V = world_verts(o)
+    N = np.array([v.normal for v in me.vertices]) @ np.array(o.matrix_world)[:3, :3].T
+    N /= np.linalg.norm(N, axis=1, keepdims=True) + 1e-12
+    set_world_verts(o, taubin(V + N * c.get("inflate", 0.02), me, c.get("smooth", 10)))
+    clear(o, body, 2 * dist)
+    others = [BUILT[n] for n in c.get("collide", [])]
+    pushed = push_out(o, others, 2 * dist) if others else 0
+    sc = bpy.context.scene
+    frames = c.get("frames", 40)
+    sc.frame_start, sc.frame_end = 1, frames
+    cols = []
+    for m in [body] + others + CLEAR_ALSO:
+        cm = m.modifiers.new("col", "COLLISION")
+        m.collision.thickness_outer = dist
+        m.collision.cloth_friction = 5.0
+        cols.append((m, cm))
+    cl = o.modifiers.new("cloth", "CLOTH")
+    st = cl.settings
+    st.quality = c.get("quality", 12)
+    st.mass = 0.3
+    st.tension_stiffness = st.compression_stiffness = 15
+    st.shear_stiffness = 5
+    st.bending_stiffness = c.get("bending", 0.5)
+    st.shrink_min = c.get("shrink", 0.0)
+    cs = cl.collision_settings
+    cs.distance_min = dist
+    cs.collision_quality = 3
+    cs.use_self_collision = c.get("self", False)
+    cl.point_cache.frame_start, cl.point_cache.frame_end = 1, frames
+    if c.get("pin", 0):
+        V = world_verts(o)
+        top = V[:, 2].max()
+        vg = o.vertex_groups.new(name="_pin")
+        vg.add([int(i) for i in np.nonzero(V[:, 2] > top - c["pin"])[0]], 1.0, "REPLACE")
+        st.vertex_group_mass = vg.name
+    start = np.array([v.co for v in me.vertices])
+    t0 = time.time()
+    for f in range(1, frames + 1):
+        sc.frame_set(f)
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev = o.evaluated_get(dg).data
+    co = np.array([v.co for v in ev.vertices])
+    R = np.array(o.matrix_world)[:3, :3]
+    moved = np.nan_to_num(np.linalg.norm((co - start) @ R.T, axis=1), nan=1e9)
+    print("garment %s: moved p50 %.3f p99 %.3f max %.3f m (scale %.3f)"
+          % (o.name, *np.percentile(moved, [50, 99]), moved.max(), o.matrix_world.to_scale().x))
+    bad = moved > c.get("max_move", 0.15)
+    if bad.mean() > 0.005:  # a blown-up solve: keep the shell as built
+        print("garment %s: sim blew up (%d vertices ran off), shell kept" % (o.name, bad.sum()))
+        co = start
+    elif bad.any():  # a few runaway vertices: they take their neighbours' move, spread in from the good ones
+        E = np.array([e.vertices[:] for e in me.edges])
+        d = np.where(bad[:, None], 0.0, co - start)
+        known = ~bad
+        for _ in range(200):
+            acc, cnt = np.zeros_like(d), np.zeros(len(d))
+            for a, b in ((0, 1), (1, 0)):
+                k = known[E[:, b]]
+                np.add.at(acc, E[k, a], d[E[k, b]])
+                np.add.at(cnt, E[k, a], 1)
+            fill = ~known & (cnt > 0)
+            if not fill.any():
+                break
+            d[fill] = acc[fill] / cnt[fill, None]
+            known |= fill
+        co = start + d
+        print("garment %s: %d runaway vertices repaired" % (o.name, bad.sum()))
+    o.modifiers.remove(cl)
+    for m, cm in cols:
+        m.modifiers.remove(cm)
+    me.vertices.foreach_set("co", co.ravel())
+    me.update()
+    sc.frame_set(1)
+    if "_pin" in o.vertex_groups:
+        o.vertex_groups.remove(o.vertex_groups["_pin"])
+    print("garment %s: sim %d frames in %.1f s (hem verts %d, pushed off colliders %d)"
+          % (o.name, frames, time.time() - t0, hem, pushed))
+
+
 def taubin(V, me, its, lam=0.5, mu=-0.53):
     """Smooths V (the mesh's vertices) without shrinking it: each iteration a step toward the neighbours' mean, then a
     slightly larger step back, so detail goes and the overall shape stays (Taubin)."""
@@ -543,7 +679,8 @@ def tails(g, arm, body, segs, fr):
     o = new_object(g["name"], np.array(V), F, arm)
     s = np.array(Wp)
     copy_weights(o, body, None, {"pelvis": 1 - 0.4 * s, "thigh_l": 0.2 * s, "thigh_r": 0.2 * s})
-    m = o.modifiers.new("sol", "SOLIDIFY"); m.thickness = g.get("thickness", 0.004); m.offset = 0
+    if g.get("thickness", 0.004):
+        m = o.modifiers.new("sol", "SOLIDIFY"); m.thickness = g.get("thickness", 0.004); m.offset = 0
     m = o.modifiers.new("sub", "SUBSURF"); m.levels = 1
     apply_mods(o)
     return o
@@ -903,10 +1040,16 @@ def main():
     build = {"shell": shell, "skirt": skirt, "band": band, "tails": tails, "knot": knot, "collar": collar, "drape": drape, "boot": boot}
     objs = []
     for g in spec["garments"]:
-        o = build[g["kind"]](g, arm, body, segs, fr)
+        sim = "sim" in g
+        o = build[g["kind"]](dict(g, thickness=0) if sim else g, arm, body, segs, fr)  # thickness after the sim
         for p in o.data.polygons:
             p.use_smooth = True
         paint(o, g, segs, fr)
+        if sim:
+            simulate(o, g, body)
+            if g.get("thickness", 0):
+                m = o.modifiers.new("sol", "SOLIDIFY"); m.thickness = g["thickness"]; m.offset = 1.0
+                apply_mods(o)
         skin(o, arm)
         objs.append(o)
         BUILT[g["name"]] = o

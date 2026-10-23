@@ -22,6 +22,9 @@ public class ForgottenThird : ModuleRules
 			// The demo-world, character-import and rig commandlets.
 			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry", "AssetTools", "IKRig", "IKRigEditor", "Slate", "SlateCore" });
 
+			// FTBuildCloth makes Chaos cloth from an imported mesh section.
+			PrivateDependencyModuleNames.AddRange(new string[] { "ClothingSystemEditor", "ClothingSystemEditorInterface", "ClothingSystemRuntimeCommon", "ClothingSystemRuntimeInterface", "SkeletalMeshEditor" });
+
 			// FTBuildVfx builds Niagara Lightweight (stateless) emitters. Their module classes live in
 			// Niagara's Internal headers, which UBT only exposes to engine-scope modules, so add the paths.
 			PrivateDependencyModuleNames.AddRange(new string[] { "NiagaraCore", "NiagaraShader", "NiagaraEditor", "RenderCore", "RHI" });
