@@ -9,6 +9,7 @@ SPEC.json (lengths in the body OBJ's units, centimetres for a cloth-tool avatar;
      "shaft_round": 2.4, "toe_round": 7, "heel_round": 4, "toe_height": 0.55, "decimate": 0.5, "wall": 0.3,
      "cuff": {"height": 6.5, "out": 0.6},
      "strap": {"y": 10.5, "shift": 1.5, "tilt": 20, "width": 2.6, "out": 0.45},
+     "straps": [{"y": 10.5, ...}, {"y": 24, "tilt": 0, "buckle": true}, ...],   (instead of "strap", for a strapped shaft)
      "bands": [{"at": 0.58, "tilt": 15, "width": 1.6, "out": 0.35}, ...],
      "buckle": {"size": [2.6, 2.2], "bar": 0.4, "depth": 0.3},
      "sole": {"out": 0.55, "arch": [0.3, 0.52], "arch_lift": 0.9}}
@@ -17,8 +18,9 @@ SPEC.json (lengths in the body OBJ's units, centimetres for a cloth-tool avatar;
 vertices on its side of x = 0 below "top". The upper is the voxel union of a shaft (a superellipse ring per height,
 fitted to the leg's slice plus "margin") and a last (a flat-bottomed arch per station along the foot's long axis,
 rounded at the toe and heel), smoothed, cut level at "top" and "sole_top" and given "wall" thickness inwards. The
-cuff, strap and bands are strips lofted over the upper's surface along plane sections, "out" proud of it; the
-buckle sits on the strap at the outer ankle; the sole is the upper's outline at "sole_top", "out" wider, down to the
+cuff, straps and bands are strips lofted over the upper's surface along plane sections, "out" proud of it; a buckle
+sits on each strap (unless its "buckle" is false) at its outer side, the extra straps grouped boot_strap2_l and so
+on; the sole is the upper's outline at "sole_top", "out" wider, down to the
 floor, lifted by "arch_lift" between the "arch" fractions of the foot's length (from the heel), so the heel stands
 apart. Groups are boot_<part>_l / _r (l = +x). Every strip is a grid with a rectangular UV island; the upper gets a
 smart UV projection. The body vertices left outside the upper are counted and printed (should be 0).
@@ -42,6 +44,39 @@ def read_obj(path):
         elif line.startswith("f "):
             fs.append([int(t.split("/")[0]) - 1 for t in line.split()[1:]])
     return np.array(vs), fs
+
+
+def buckle_object(name, mid, bk, leg, tree):
+    """A buckle frame and tongue on a strap's centre line, at its outermost point."""
+    i = int(np.argmax((mid[:, [0, 2]] - leg.c) @ leg.e))
+    p = mid[i]
+    t = mid[(i + 1) % len(mid)] - mid[i - 1]
+    t /= np.linalg.norm(t)
+    _, nrm, _, _ = tree.find_nearest(Vector(p))
+    nrm = np.array(nrm)
+    b_ = np.cross(nrm, t)
+    (W, H), bar, dep = bk.get("size", [2.6, 2.2]), bk.get("bar", 0.4), bk.get("depth", 0.3)
+    verts, faces = [], []
+    for z in (0.0, dep):
+        for (hx, hy) in ((W / 2, H / 2), (W / 2 - bar, H / 2 - bar)):
+            for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+                verts.append(p + nrm * (0.05 + z) + t * sx * hx + b_ * sy * hy)
+    # rings: 0 outer bottom, 4 inner bottom, 8 outer top, 12 inner top
+    for a, c in ((8, 12), (12, 4), (4, 0), (0, 8)):
+        for k in range(4):
+            k2 = (k + 1) % 4
+            faces.append([a + k, a + k2, c + k2, c + k])
+    tongue = [p + nrm * (0.05 + dep * 0.6) + t * (-W / 2 + bar * 0.5) + b_ * sy * 0.12 for sy in (-1, 1)]
+    tongue += [q + t * (W - bar) for q in tongue[::-1]]
+    verts += tongue
+    faces.append([16, 17, 18, 19])
+    o = new_object(name, verts, faces)
+    uv = o.data.uv_layers.new(name="UVMap")
+    for poly in o.data.polygons:
+        for li in poly.loop_indices:
+            q = np.array(o.data.vertices[o.data.loops[li].vertex_index].co) - p
+            uv.data[li].uv = (q @ t, q @ b_)
+    return o
 
 
 def smooth1d(a, k=5):
@@ -325,23 +360,28 @@ def build_leg(V, side, sp):
     rows += [lip + radial * (co_ * 0.55), lip - radial * (sp.get("wall", 0.3) + 0.1),
              rimp - up * 0.6 - radial * (sp.get("wall", 0.3) + 0.12)]
     parts["cuff"] = grid_object("boot_cuff_" + tag, rows, True)
-    # Ankle strap: a band on a plane tilted so it rises towards the heel.
-    stp = sp.get("strap", {})
-    tilt = np.radians(stp.get("tilt", 20))
-    n = up * np.cos(tilt) + d3 * np.sin(tilt)
-    p0c = leg.xz(np.array([stp.get("shift", 1.5)]), np.array([0.0]))[0]
-    p0 = np.array([p0c[0], stp.get("y", 10.5), p0c[1]])
-    w, so = stp.get("width", 2.6) / 2, stp.get("out", 0.45)
-    rows, mid = [], None
-    for k, (f, o_) in enumerate(((-1.0, 0.13), (-0.85, so), (0, so * 1.1), (0.85, so), (1.0, 0.13))):
-        pts, closed = slice_loop(surf, p0 + n * f * w, n)
-        if not closed:
-            print("boot_build: %s: strap section %d is open; lower the tilt" % (tag, k))
-        loop = orient_loop(resample(pts, N, True), n, d3)
-        rows.append(offset_along_normals(tree, loop, o_))
-        if f == 0:
-            mid = rows[-1]
-    parts["strap"] = grid_object("boot_strap_" + tag, rows, True)
+    # Straps: bands on planes tilted so they rise towards the heel, each with a buckle at the outer side. "straps"
+    # lists them up the shaft; a lone "strap" is the ankle strap.
+    bk = sp.get("buckle")
+    for si, stp in enumerate(sp.get("straps", [sp.get("strap", {})])):
+        sfx = "" if si == 0 else str(si + 1)
+        tilt = np.radians(stp.get("tilt", 20))
+        n = up * np.cos(tilt) + d3 * np.sin(tilt)
+        p0c = leg.xz(np.array([stp.get("shift", 1.5)]), np.array([0.0]))[0]
+        p0 = np.array([p0c[0], stp.get("y", 10.5), p0c[1]])
+        w, so = stp.get("width", 2.6) / 2, stp.get("out", 0.45)
+        rows, mid = [], None
+        for k, (f, o_) in enumerate(((-1.0, 0.13), (-0.85, so), (0, so * 1.1), (0.85, so), (1.0, 0.13))):
+            pts, closed = slice_loop(surf, p0 + n * f * w, n)
+            if not closed:
+                print("boot_build: %s: strap%s section %d is open; lower the tilt" % (tag, sfx, k))
+            loop = orient_loop(resample(pts, N, True), n, d3)
+            rows.append(offset_along_normals(tree, loop, o_))
+            if f == 0:
+                mid = rows[-1]
+        parts["strap" + sfx] = grid_object("boot_strap%s_%s" % (sfx, tag), rows, True)
+        if bk and stp.get("buckle", True):
+            parts["buckle" + sfx] = buckle_object("boot_buckle%s_%s" % (sfx, tag), mid, bk, leg, tree)
     # Instep bands: open arcs over the top of the foot, across the long axis.
     s_all, _ = leg.st(leg.P[leg.P[:, 1] < sp["ankle"]])
     smin, smax = s_all.min(), s_all.max()
@@ -377,38 +417,6 @@ def build_leg(V, side, sp):
         o = bpy.data.objects.new("boot_band_" + tag, me)
         bpy.context.scene.collection.objects.link(o)
         parts["band"] = o
-    # Buckle on the strap at the outer ankle.
-    bk = sp.get("buckle")
-    if bk and mid is not None:
-        i = int(np.argmax((mid[:, [0, 2]] - leg.c) @ leg.e))
-        p = mid[i]
-        t = mid[(i + 1) % len(mid)] - mid[i - 1]
-        t /= np.linalg.norm(t)
-        _, nrm, _, _ = tree.find_nearest(Vector(p))
-        nrm = np.array(nrm)
-        b_ = np.cross(nrm, t)
-        (W, H), bar, dep = bk.get("size", [2.6, 2.2]), bk.get("bar", 0.4), bk.get("depth", 0.3)
-        verts, faces = [], []
-        for z in (0.0, dep):
-            for (hx, hy) in ((W / 2, H / 2), (W / 2 - bar, H / 2 - bar)):
-                for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
-                    verts.append(p + nrm * (0.05 + z) + t * sx * hx + b_ * sy * hy)
-        # rings: 0 outer bottom, 4 inner bottom, 8 outer top, 12 inner top
-        for a, c in ((8, 12), (12, 4), (4, 0), (0, 8)):
-            for k in range(4):
-                k2 = (k + 1) % 4
-                faces.append([a + k, a + k2, c + k2, c + k])
-        tongue = [p + nrm * (0.05 + dep * 0.6) + t * (-W / 2 + bar * 0.5) + b_ * sy * 0.12 for sy in (-1, 1)]
-        tongue += [q + t * (W - bar) for q in tongue[::-1]]
-        verts += tongue
-        faces.append([16, 17, 18, 19])
-        o = new_object("boot_buckle_" + tag, verts, faces)
-        uv = o.data.uv_layers.new(name="UVMap")
-        for poly in o.data.polygons:
-            for li in poly.loop_indices:
-                q = np.array(o.data.vertices[o.data.loops[li].vertex_index].co) - p
-                uv.data[li].uv = (q @ t, q @ b_)
-        parts["buckle"] = o
     # Sole: the upper's outline at the sole top, wider, down to the floor, lifted under the arch.
     so_ = sp.get("sole", {})
     pts, closed = slice_loop(surf, (0, yb + 0.25, 0), up)
@@ -491,7 +499,8 @@ def main():
     objs = []
     for side in (1, -1):
         parts = build_leg(V, side, sp)
-        objs += [parts[k] for k in ("upper", "cuff", "strap", "band", "buckle", "sole") if k in parts]
+        objs += [parts[k] for k in ("upper", "cuff", "band", "sole") if k in parts]
+        objs += [o for k, o in parts.items() if k.startswith(("strap", "buckle"))]
     for o in objs:
         print("boot_build: %s %d vertices, %d faces" % (o.name, len(o.data.vertices), len(o.data.polygons)))
     write_obj(out, objs)

@@ -27,8 +27,9 @@ mm; keep it at 4 texels or more), "slub"}, "ao", "cavity", "edge" (how much AO, 
 occlusion and curvature in Cycles, folds them into the albedo, and writes NAME_normal.png and NAME_orm.png (occlusion,
 roughness, metallic) wired into the material, so a glTF export carries all three. "occluders" (top level) lists glTF
 files, or {"file", "objects": [names]}, that shade the AO bake (the body under the garment) and are not kept. After the
-bakes, a piece's "decimate" (face ratio) thins the mesh and its "thickness" (m) solidifies it about the sheet with a
-closed rim, so hems and cut ends read as cloth with a turned edge. Each piece is written to OUT_DIR/NAME_albedo.png and kept as object NAME in OUT_DIR/garments.blend, with one
+bakes, a piece's "decimate" (face ratio) thins the mesh and its "thickness" (m) solidifies it with a closed rim, so
+hems and cut ends read as cloth with a turned edge. "thickness_offset" picks the side it grows to: 0 about the sheet,
+1 outward, -1 inward (an under layer grows in and an over layer out, so the gap between them is kept). Each piece is written to OUT_DIR/NAME_albedo.png and kept as object NAME in OUT_DIR/garments.blend, with one
 double-sided material using that texture; shell_bind.py --keep-material then skins it to the body.
 """
 import json
@@ -391,7 +392,7 @@ def build_piece(name, ps, objs, weld, out):
         bpy.ops.object.modifier_apply(modifier=dec.name)
     if ps.get("thickness"):
         sol = o.modifiers.new("thickness", "SOLIDIFY")
-        sol.thickness, sol.offset = ps["thickness"], 0.0
+        sol.thickness, sol.offset = ps["thickness"], ps.get("thickness_offset", 0.0)
         sol.use_even_offset = sol.use_quality_normals = sol.use_rim = True
         bpy.ops.object.modifier_apply(modifier=sol.name)
     path = im.filepath_raw
