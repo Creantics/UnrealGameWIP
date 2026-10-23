@@ -17,6 +17,14 @@
 //   -Max=<cm>               max distance at the hem (default 25)
 //   -Pin=<cm>               pinned band at the top (default 3)
 //   -Verify                 write nothing; report the mesh's clothing
+//
+// Or, to make a physics asset for cloth to collide with from one made for a ragdoll:
+//
+//   -FitPhysics=<object path> -Physics=<source> -Body=<skeletal mesh> [-Fit=0.7] [-Pad=1] [-Drop=hand,thumb]
+//
+// copies -Physics to -FitPhysics and shrinks each capsule to the body: the radius becomes the -Fit quantile of the
+// distances from its axis of the vertices nearest it, plus -Pad cm (for the clothes underneath), never larger. Bodies
+// whose bone name contains a -Drop word (comma separated) lose their shapes.
 
 #include "CoreMinimal.h"
 #include "Commandlets/Commandlet.h"

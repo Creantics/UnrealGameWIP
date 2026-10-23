@@ -12,6 +12,7 @@
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "PhysicsEngine/SkeletalBodySetup.h"
 #include "PointWeightMap.h"
+#include "Rendering/SkeletalMeshLODModel.h"
 #include "Rendering/SkeletalMeshModel.h"
 #include "SkeletalMeshClothingSystemUtilities.h"
 #include "UObject/Package.h"
@@ -104,6 +105,148 @@ void ClothCheckCollision(const USkeletalMesh& Mesh, const UPhysicsAsset& Physics
 			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildCloth: no sphere or capsule on %s; the cloth will pass through it."), Bone);
 		}
 	}
+	for (const USkeletalBodySetup* Setup : Physics.SkeletalBodySetups)
+	{
+		for (const FKSphylElem& Capsule : Setup ? Setup->AggGeom.SphylElems : TArray<FKSphylElem>())
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: capsule on %s, radius %.1f cm, length %.1f cm."),
+				*Setup->BoneName.ToString(), Capsule.Radius, Capsule.Length);
+		}
+	}
+}
+
+// Copies a physics asset and shrinks each capsule to the body it covers: each of the body's vertices (in the reference
+// pose) goes to the capsule whose surface is nearest, the capsule's axis moves to the middle of its vertices and the
+// radius becomes the Fit quantile of their distances from it, plus Pad cm, never larger than it was. Physics assets made
+// for a ragdoll take every vertex a bone touches, so a thigh capsule can grow to hip width and push a skirt out in two
+// lobes. Grouping by nearness rather than by skin weights keeps the left and right sides alike even when an
+// auto-skinned body's weights aren't (one thigh taking the seat, a twist bone taking most of a limb).
+UPhysicsAsset* ClothFitPhysics(const UPhysicsAsset& Source, const USkeletalMesh& Body, const FString& OutPath, float Fit, float Pad,
+	const TArray<FString>& Drop)
+{
+	const FSkeletalMeshModel* Model = Body.GetImportedModel();
+	if (!Model || Model->LODModels.Num() == 0)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: %s has no LOD 0 to fit capsules to."), *Body.GetName());
+		return nullptr;
+	}
+	const FReferenceSkeleton& Skeleton = Body.GetRefSkeleton();
+	TArray<FTransform> Pose = Skeleton.GetRefBonePose();
+	for (int32 i = 0; i < Pose.Num(); ++i)
+	{
+		const int32 Parent = Skeleton.GetParentIndex(i);
+		if (Parent != INDEX_NONE)
+		{
+			Pose[i] = Pose[i] * Pose[Parent];
+		}
+	}
+
+	const FString PackageName = FPackageName::ObjectPathToPackageName(OutPath);
+	UPackage* Package = CreatePackage(*PackageName);
+	UPhysicsAsset* Out = DuplicateObject<UPhysicsAsset>(&Source, Package, *FPackageName::GetShortName(PackageName));
+	Out->SetFlags(RF_Public | RF_Standalone);
+
+	// Bodies whose bone name contains a -Drop word lose their shapes: hands hang against a skirt at rest and would
+	// push it out in puffs.
+	for (USkeletalBodySetup* Setup : Out->SkeletalBodySetups)
+	{
+		const FString Name = Setup ? Setup->BoneName.ToString() : FString();
+		if (Drop.ContainsByPredicate([&Name](const FString& Word) { return Name.Contains(Word); }))
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: dropped the shapes of %s."), *Name);
+			Setup->AggGeom.EmptyElements();
+			Setup->InvalidatePhysicsData();
+		}
+	}
+
+	struct FFit
+	{
+		USkeletalBodySetup* Setup;
+		FKSphylElem* Capsule;
+		FTransform ToCapsule;
+		TArray<FVector2D> Around;
+	};
+	TArray<FFit> Fits;
+	for (USkeletalBodySetup* Setup : Out->SkeletalBodySetups)
+	{
+		const int32 Bone = Setup ? Skeleton.FindBoneIndex(Setup->BoneName) : INDEX_NONE;
+		if (Bone == INDEX_NONE)
+		{
+			continue;
+		}
+		for (FKSphylElem& Capsule : Setup->AggGeom.SphylElems)
+		{
+			Fits.Add({Setup, &Capsule, Capsule.GetTransform() * Pose[Bone], {}});
+		}
+	}
+	for (const FSkelMeshSection& Section : Model->LODModels[0].Sections)
+	{
+		for (const FSoftSkinVertex& Vertex : Section.SoftVertices)
+		{
+			FFit* Nearest = nullptr;
+			float NearestGap = TNumericLimits<float>::Max();
+			FVector2D NearestLocal(0, 0);
+			bool bBesideAxis = false;
+			for (FFit& Candidate : Fits)
+			{
+				const FVector Local = Candidate.ToCapsule.InverseTransformPosition(FVector(Vertex.Position));
+				const float Along = FMath::Max(0.0f, float(FMath::Abs(Local.Z)) - Candidate.Capsule->Length / 2);
+				const float Gap = FMath::Sqrt(float(Local.X * Local.X + Local.Y * Local.Y) + Along * Along) - Candidate.Capsule->Radius;
+				if (Gap < NearestGap)
+				{
+					Nearest = &Candidate;
+					NearestGap = Gap;
+					NearestLocal = FVector2D(Local.X, Local.Y);
+					bBesideAxis = Along == 0;
+				}
+			}
+			if (Nearest && bBesideAxis)  // a vertex past a cap doesn't size the radius
+			{
+				Nearest->Around.Add(NearestLocal);
+			}
+		}
+	}
+	for (FFit& F : Fits)
+	{
+		if (F.Around.Num() < 8)
+		{
+			continue;
+		}
+		FVector2D Mid(0, 0);
+		for (const FVector2D& P : F.Around)
+		{
+			Mid += P;
+		}
+		Mid /= F.Around.Num();
+		TArray<float> Distances;
+		for (const FVector2D& P : F.Around)
+		{
+			Distances.Add((P - Mid).Size());
+		}
+		Distances.Sort();
+		const float Radius = FMath::Min(F.Capsule->Radius, Distances[FMath::Clamp(FMath::FloorToInt(Fit * Distances.Num()), 0, Distances.Num() - 1)] + Pad);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: fitted capsule on %s from %d vertices, axis moved %.1f cm, radius %.1f -> %.1f cm."),
+			*F.Setup->BoneName.ToString(), Distances.Num(), Mid.Size(), F.Capsule->Radius, Radius);
+		F.Capsule->Center += F.Capsule->Rotation.RotateVector(FVector(Mid.X, Mid.Y, 0));
+		F.Capsule->Radius = Radius;
+		F.Setup->InvalidatePhysicsData();
+	}
+	// The body is symmetric, so each _l/_r pair takes the mean of its two radii.
+	for (USkeletalBodySetup* Left : Out->SkeletalBodySetups)
+	{
+		const FString Name = Left ? Left->BoneName.ToString() : FString();
+		const int32 Index = Name.EndsWith(TEXT("_l")) ? Out->FindBodyIndex(FName(Name.LeftChop(2) + TEXT("_r"))) : INDEX_NONE;
+		USkeletalBodySetup* Right = Index != INDEX_NONE ? Out->SkeletalBodySetups[Index].Get() : nullptr;
+		if (!Right || Left->AggGeom.SphylElems.Num() != 1 || Right->AggGeom.SphylElems.Num() != 1)
+		{
+			continue;
+		}
+		float& A = Left->AggGeom.SphylElems[0].Radius;
+		float& B = Right->AggGeom.SphylElems[0].Radius;
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: %s pair radius %.1f / %.1f -> %.1f cm."), *Name.LeftChop(2), A, B, (A + B) / 2);
+		A = B = (A + B) / 2;
+	}
+	return Out;
 }
 
 // Max distance by height: 0 in the top Pin cm, easing up to Max at the lowest vertex.
@@ -210,6 +353,27 @@ int32 UFTBuildClothCommandlet::Main(const FString& Params)
 	FParse::Value(*Params, TEXT("Physics="), PhysicsPath);
 	FParse::Value(*Params, TEXT("Max="), Max);
 	FParse::Value(*Params, TEXT("Pin="), Pin);
+	FString FitPath, BodyPath;
+	if (FParse::Value(*Params, TEXT("FitPhysics="), FitPath))
+	{
+		float Fit = 0.7f, Pad = 1.f;
+		FParse::Value(*Params, TEXT("Body="), BodyPath);
+		FParse::Value(*Params, TEXT("Fit="), Fit);
+		FParse::Value(*Params, TEXT("Pad="), Pad);
+		FString DropList;
+		TArray<FString> Drop;
+		FParse::Value(*Params, TEXT("Drop="), DropList, false);  // the list itself has commas
+		DropList.ParseIntoArray(Drop, TEXT(","));
+		const UPhysicsAsset* Source = PhysicsPath.IsEmpty() ? nullptr : LoadObject<UPhysicsAsset>(nullptr, *PhysicsPath);
+		const USkeletalMesh* Body = BodyPath.IsEmpty() ? nullptr : LoadObject<USkeletalMesh>(nullptr, *BodyPath);
+		if (!Source || !Body)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -FitPhysics needs -Physics=<physics asset> and -Body=<skeletal mesh>."));
+			return 1;
+		}
+		UPhysicsAsset* Fitted = ClothFitPhysics(*Source, *Body, FitPath, Fit, Pad, Drop);
+		return Fitted && SavePackageOf(*Fitted) ? 0 : 1;
+	}
 	USkeletalMesh* Mesh = MeshPath.IsEmpty() ? nullptr : LoadObject<USkeletalMesh>(nullptr, *MeshPath);
 	if (!Mesh)
 	{
