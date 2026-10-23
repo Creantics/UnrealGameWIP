@@ -156,6 +156,7 @@ def import_occluders(spec):
                 o.matrix_world = mw
                 for m in list(o.modifiers):
                     o.modifiers.remove(m)
+                o["md_occluder"] = True
                 occ.append(o)
         for o in new:
             if o not in occ:
@@ -178,10 +179,16 @@ def bake(o, kind, res, setup=None):
     node = nt.nodes.new("ShaderNodeTexImage")
     node.image = im
     nt.nodes.active = node
+    # Only this piece and the occluders take part: another piece (a sash over the tunic) would print its shadow in.
+    hidden = [x for x in bpy.data.objects if x is not o and not x.get("md_occluder") and not x.hide_render]
+    for x in hidden:
+        x.hide_render = True
     bpy.ops.object.select_all(action="DESELECT")
     o.select_set(True)
     bpy.context.view_layer.objects.active = o
     bpy.ops.object.bake(type=kind, margin=8, use_clear=True)
+    for x in hidden:
+        x.hide_render = False
     px = np.array(im.pixels[:], dtype=np.float32).reshape(res, res, 4)[..., :3]
     nt.nodes.remove(node)
     if setup:
