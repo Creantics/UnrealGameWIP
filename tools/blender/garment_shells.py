@@ -44,6 +44,15 @@ its rim welded onto the body's neck hole where they lie within "weld" metres (de
            (default 0.03) metres over "ztop", and lifted "offset" metres off it, then smoothed; it follows the slope of the shoulders where rings at fixed heights would stand out
            as a shelf. A point with no such surface (past the top of the back) wraps down onto the nearest body or head
            surface instead of running on level. Weights come from the nearest vertex of the mesh each point rests on.
+  "boot":  each leg's boot as rings from "top" (metres above the floor) down to the sole, every ring the convex
+           hull of that leg's body section at its height ("band" metres thick) plus "offset": no toes or creases show.
+           Below the ankle the walls only go out going down. "profile" {"l"|"r": [[height, left, right, forward,
+           back], ...]} gives the art's half-extents (metres, from the calf bone, or below the ankle from the ankle's
+           spot); each ring goes out to at least that outline (a quarter ellipse between neighbouring extents), then
+           "smooth" passes even the rings out along the boot and around it (default 6). The
+           last "sole" metres are a block following the outline down to "below" metres under the body's floor (the
+           foot stands on it), closed underneath. Weights come from the
+           nearest body vertex.
 Colour: "color" is the base RGB (sRGB, as picked from the art); "rules" is a list of [expression, RGB] painted in order. An expression is numpy
 over per-vertex arrays: x (body left, metres from the midline), f (forward, metres from the body's centre plane),
 z (height fraction), t (segment position), ang (radians around the segment axis), ax=abs(x), front=f>0, and
@@ -686,6 +695,100 @@ def drape(g, arm, body, segs, fr):
     return o
 
 
+def hull_radius(Q, a):
+    """Radius along each angle a of the 2D convex hull of points Q (around the origin, which must lie inside)."""
+    P = sorted(map(tuple, Q))
+    def half(pts):
+        h = []
+        for p in pts:
+            while len(h) > 1 and (h[-1][0] - h[-2][0]) * (p[1] - h[-2][1]) - (h[-1][1] - h[-2][1]) * (p[0] - h[-2][0]) <= 0:
+                h.pop()
+            h.append(p)
+        return h
+    H = np.array(half(P)[:-1] + half(P[::-1])[:-1])  # counter-clockwise
+    E = np.roll(H, -1, 0) - H
+    nrm = np.c_[E[:, 1], -E[:, 0]]; nrm /= np.linalg.norm(nrm, axis=1)[:, None] + 1e-12
+    d = (H * nrm).sum(1)
+    U = np.c_[np.cos(a), np.sin(a)]
+    c = U @ nrm.T
+    return np.where(c > 1e-9, d[None, :] / np.maximum(c, 1e-9), np.inf).min(1)
+
+
+def boot(g, arm, body, segs, fr):
+    n = g.get("segments", 64)
+    a = -math.pi + (np.arange(n) + 0.5) / n * 2 * math.pi
+    P = world_verts(body)
+    idx, _, _ = classify(P, segs)
+    names = {s[0]: s for s in segs}
+    off, sole = g.get("offset", 0.006), g.get("sole", 0.015)
+    U = np.c_[np.cos(a), np.sin(a)]
+    Vall, Fall = [], []
+    for side in "lr":
+        calf, foot = names["calf_" + side], names["foot_" + side]
+        mine = np.isin(idx, [i for i, s_ in enumerate(segs) if s_[0] in ("calf_" + side, "foot_" + side, "ball_" + side)])
+        Q = P[mine]
+        ztop, zank = fr.floor + g["top"], foot[1][2]
+        zs = np.r_[np.arange(ztop, zank, -g.get("step", 0.01)), np.linspace(zank, fr.floor + sole, 12)]
+        ka = int(np.sum(zs >= zank))  # rings on the shin; the last of them is the ankle's
+        ank = calf[1] + (zank - calf[1][2]) / (calf[2][2] - calf[1][2]) * (calf[2] - calf[1])
+        rows, cents = [], []
+        for zw in zs:
+            band = Q[np.abs(Q[:, 2] - zw) < g.get("band", 0.006)]
+            if zw >= zank:  # on the shin: round the calf bone at this height
+                cen = calf[1] + (zw - calf[1][2]) / (calf[2][2] - calf[1][2]) * (calf[2] - calf[1])
+            else:  # on the foot: round the ankle's spot, so walls that go out going down do so in place
+                cen = np.r_[ank[:2], zw]
+            L = np.c_[(band - cen) @ fr.left, (band - cen) @ fr.fwd]
+            rows.append(hull_radius(L, a) if len(L) > 2 else rows[-1]); cents.append(np.array(cen, float))
+        R = np.array(rows); C = np.array(cents)
+        for k in range(ka, len(zs)):  # below the ankle the walls only go out going down (no toes, a boot's last)
+            R[k] = np.maximum(R[k], R[k - 1])
+        for _ in range(3):
+            R = 0.25 * np.roll(R, 1, 1) + 0.5 * R + 0.25 * np.roll(R, -1, 1)
+            R[1:-1] = 0.25 * R[:-2] + 0.5 * R[1:-1] + 0.25 * R[2:]
+            C[1:-1] = 0.25 * C[:-2] + 0.5 * C[1:-1] + 0.25 * C[2:]
+        R += off
+        prof = np.array(g.get("profile", {}).get(side, []), float).reshape(-1, 5)
+
+        def outline(z):  # the art's outline at height z: four half-extents joined by a quarter ellipse each
+            if not len(prof):
+                return np.zeros(n)
+            l, r, f, b = (np.maximum(np.interp(z - fr.floor, prof[:, 0], prof[:, j], left=0, right=0), 1e-4) for j in range(1, 5))
+            A = np.where(U[:, 0] > 0, l, r); Bf = np.where(U[:, 1] > 0, f, b)
+            return 1 / np.sqrt((U[:, 0] / A) ** 2 + (U[:, 1] / Bf) ** 2) - g.get("thickness", 0.005)  # cloth grows outward
+        H = R.copy()  # the body's hull plus offset: smoothing the outline never takes a ring inside it
+        R = np.maximum(R, np.array([outline(z) for z in zs]))
+        for _ in range(g.get("smooth", 6)):  # the art's outline is cut a pixel row at a time: even it out along the boot
+            R[1:-1] = 0.25 * R[:-2] + 0.5 * R[1:-1] + 0.25 * R[2:]
+            R = np.maximum(0.25 * np.roll(R, 1, 1) + 0.5 * R + 0.25 * np.roll(R, -1, 1), H)
+        low = Q[Q[:, 2] < fr.floor + sole]  # toes below the last ring stay inside the sole too
+        Lw = np.c_[(low - C[-1]) @ fr.left, (low - C[-1]) @ fr.fwd]
+        inner = np.maximum(R[-1], hull_radius(Lw, a) + off if len(Lw) > 2 else 0)
+        zsole = np.linspace(fr.floor + sole, fr.floor - g.get("below", 0.0), 4)  # the sole block, to the art's outline
+        R = np.vstack([R] + [np.maximum(inner, outline(z)) for z in zsole])
+        C = np.vstack([C] + [C[-1] * [1, 1, 0] + [0, 0, z] for z in zsole])
+        base = len(Vall)
+        for k in range(len(R)):
+            for i in range(n):
+                Vall.append(C[k] + (fr.left * U[i, 0] + fr.fwd * U[i, 1]) * R[k, i])
+        rows_ = len(R)
+        Fall += [[base + k * n + i, base + k * n + (i + 1) % n, base + (k + 1) * n + (i + 1) % n, base + (k + 1) * n + i]
+                 for k in range(rows_ - 1) for i in range(n)]
+        Vall.append(C[-1]); ci = len(Vall) - 1  # the bottom of the sole, closed
+        Fall += [[base + (rows_ - 1) * n + i, base + (rows_ - 1) * n + (i + 1) % n, ci] for i in range(n)]
+    V = np.array(Vall)
+    o = new_object(g["name"], V, Fall, arm)
+    from mathutils.kdtree import KDTree
+    kd = KDTree(len(P))
+    for i, p in enumerate(P):
+        kd.insert(Vector(p), i)
+    kd.balance()
+    copy_weights(o, body, [kd.find(Vector(v))[1] for v in V])
+    m = o.modifiers.new("sol", "SOLIDIFY"); m.thickness = g.get("thickness", 0.005); m.offset = 1.0
+    m = o.modifiers.new("sub", "SUBSURF"); m.levels = 1
+    apply_mods(o)
+    return o
+
 def paint(o, g, segs, fr):
     """Per-vertex colour from the rules, baked to a texture through a smart UV projection."""
     V = world_verts(o)
@@ -773,7 +876,7 @@ def main():
     segs = segments(arm)
     fr = Frame(arm, body, segs, spec.get("height"))
     print("body height %.3f, %d segments" % (fr.height, len(segs)))
-    build = {"shell": shell, "skirt": skirt, "band": band, "tails": tails, "knot": knot, "collar": collar, "drape": drape}
+    build = {"shell": shell, "skirt": skirt, "band": band, "tails": tails, "knot": knot, "collar": collar, "drape": drape, "boot": boot}
     objs = []
     for g in spec["garments"]:
         o = build[g["kind"]](g, arm, body, segs, fr)
