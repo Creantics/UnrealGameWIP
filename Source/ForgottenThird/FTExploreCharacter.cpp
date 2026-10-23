@@ -84,6 +84,16 @@ void AFTExploreCharacter::BeginPlay()
 	}
 	GetMesh()->SetAnimationMode(EAnimationMode::AnimationSingleNode);
 	UpdateClip();
+	if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait")))
+	{
+		// For looking at the face: the camera sits in front of the pawn at head height and stays there.
+		Boom->bUsePawnControlRotation = false;
+		Boom->bEnableCameraLag = false;
+		Boom->SetRelativeRotation(FRotator(0.0, 180.0, 0.0));
+		Boom->TargetArmLength = 110.f;
+		Boom->SocketOffset = FVector(0.0, 0.0, 78.0);
+		Camera->SetRelativeRotation(FRotator(-4.0, 0.0, 0.0));
+	}
 }
 
 void AFTExploreCharacter::ApplyLookOverrides()

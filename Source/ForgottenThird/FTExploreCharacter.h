@@ -11,6 +11,8 @@
 // The body, its clips and any extra pieces (clothes, hair) can be swapped from config without a
 // rebuild, under [/Script/ForgottenThird.FTExploreCharacter] in Config/UserGame.ini (local, not
 // committed) or DefaultGame.ini. Pieces follow the body's pose (leader pose) and face shapes.
+//
+// -ExplorePortrait puts the camera in front of the face and keeps it there, for checking a look.
 
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
