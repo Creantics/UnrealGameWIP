@@ -393,7 +393,9 @@ def build_piece(name, ps, objs, weld, out):
     if ps.get("thickness"):
         sol = o.modifiers.new("thickness", "SOLIDIFY")
         sol.thickness, sol.offset = ps["thickness"], ps.get("thickness_offset", 0.0)
-        sol.use_even_offset = sol.use_quality_normals = sol.use_rim = True
+        # Plain offset: each vertex moves one thickness along its normal. Even offset scales that by the crease angle
+        # and shoots a vertex a metre off where panels meet at a sharp seam (a crotch, a collar).
+        sol.use_rim = True
         bpy.ops.object.modifier_apply(modifier=sol.name)
     path = im.filepath_raw
     print("md_garment: %s groups %s, %d -> %d vertices, %d faces, atlas %.2f m -> %s"

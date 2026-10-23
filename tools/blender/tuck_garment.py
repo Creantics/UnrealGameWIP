@@ -8,7 +8,8 @@
 # name starts with one of --groups move. body.obj is the avatar in the same units and axes (y up). --gap must be less
 # than the shell's margin minus the garment's thickness. --min keeps vertices already nearer the body than that off it.
 # Each group pulls only towards the body on its own side of x = 0 (the side of the group's mean below the rim), so
-# cloth hanging between the legs goes to its own leg instead of bridging to the other one.
+# cloth hanging between the legs goes to its own leg instead of bridging to the other one. --cut drops the moved
+# groups' faces whose vertices all lie below that height: cloth the shell hides only risks poking through it.
 import argparse
 import numpy as np
 from scipy.spatial import cKDTree
@@ -25,6 +26,7 @@ def main():
     ap.add_argument("--top", type=float, required=True, help="shell rim height (y)")
     ap.add_argument("--band", type=float, default=6.0, help="blend height above the rim")
     ap.add_argument("--gap", type=float, default=0.9, help="distance off the body below the rim")
+    ap.add_argument("--cut", type=float, default=None, help="drop hidden faces below this height")
     ap.add_argument("--min", type=float, default=0.4, help="push vertices nearer than this out to it")
     a = ap.parse_args()
 
@@ -61,6 +63,17 @@ def main():
 
     for k, i in enumerate(vi):
         lines[i] = "v %.5f %.5f %.5f" % tuple(V[k])
+    if a.cut is not None:
+        keep, on, dropped = [], False, 0
+        for l in lines:
+            if l.startswith(("g ", "o ")):
+                on = l[2:].strip().startswith(tuple(a.groups))
+            elif on and l.startswith("f ") and all(V[int(t.split("/")[0]) - 1, 1] < a.cut for t in l.split()[1:]):
+                dropped += 1
+                continue
+            keep.append(l)
+        lines = keep
+        print("tuck_garment: dropped %d faces below %.1f" % (dropped, a.cut))
     open(a.out, "w").write("\n".join(lines))
     d2, _ = cKDTree(body).query(V[idx[w[:, 0] >= 1]])
     print("tuck_garment: moved %d vertices; below the rim distance off the body %.2f..%.2f" %
