@@ -23,9 +23,14 @@ SEGMENTS) with a position t from 0 at the head to 1 at the far end. Kinds:
            hull at "top" plus "offset", flaring by "flare" at the hem; "slit" [angle_degrees, from_fraction] leaves
            the sides open below that point; "squash" [width, depth] scales the section about the body centre.
            Weighted to the pelvis, giving way to the thigh on its side.
-  "band":  a ring round the body at height "z" (fraction), "height" tall, "offset" off the hull (a sash).
-  "tails": strips hanging from the front of a band: "z", "length", "width", "spread", "count".
-  "knot":  a flattened ball on the front at height "z", "size" [x, y, z].
+  "band":  a ring round the body at height "z" (fraction), "height" tall, "offset" off the hull (a sash); "folds"
+           stacks that many wrapped folds up its height, each standing "fold_depth" metres out (default 0.006).
+  "tails": strips hanging from the front of a band: "z", "length" (or "lengths" per tail), "width" (growing by
+           "widen", default 0.3, to the end), "spread", "count", "x" (metres to the body's left, for a knot off the
+           middle); "cols" > 1 splits a strip across so "pleat" metres of folds can run down it, and "point" cuts the
+           end on a slant, that much longer at the outer edge.
+  "knot":  a flattened ball on the front at height "z", "size" [x, y, z], at "x"; "lobes" [[degrees, scale], ...]
+           adds flattened loops round it.
 Any garment can carry "sim": it is then cloth-simulated onto the body before it gets its thickness, so it hangs loose
 with real folds instead of hugging every muscle (vertices only move, so the paint, the UVs and the weights carry
 through). Its hem loops are relaxed along themselves (no ragged edge), it is pushed "inflate" metres out and smoothed
@@ -67,8 +72,8 @@ its rim welded onto the body's neck hole where they lie within "weld" metres (de
 Colour: "color" is the base RGB (sRGB, as picked from the art); "rules" is a list of [expression, RGB] painted in order. An expression is numpy
 over per-vertex arrays: x (body left, metres from the midline), f (forward, metres from the body's centre plane),
 z (height fraction), t (segment position), ang (radians around the segment axis), ax=abs(x), front=f>0, and
-m("pattern") for "on a segment matching pattern". "crest" {"center": [x, z], "r": metres, "rays": n, "color": RGB}
-paints a rayed sun disc on the front. Colours are baked to a texture per garment ("tex", default 1024).
+m("pattern") for "on a segment matching pattern". "crest" {"center": [x, z], "r": metres, "rays": n, "color": RGB,
+"sharp": ray exponent (0.5 rounded petals, above 1 pointed rays)} paints a rayed sun disc on the front. Colours are evaluated per texel into a texture per garment ("tex", default 1024).
 """
 import fnmatch
 import json
@@ -641,11 +646,19 @@ def skirt(g, arm, body, segs, fr):
 def band(g, arm, body, segs, fr):
     n = g.get("segments", 64)
     prof = hull_profile(body, fr, segs, g["z"], 0.015, n)
+    folds = g.get("folds", 0)  # a wrapped sash: that many folds stacked up its height, each standing "fold_depth" out
+    rows = 2 * folds + 1 if folds else 2
     V = []
-    for zf in (g["z"] - g["height"] / 2, g["z"], g["z"] + g["height"] / 2):
-        pts, _ = ring_points(fr, prof, fr.z(zf), 1.0, g.get("offset", 0.02) * (1.15 if zf == g["z"] else 1.0))
+    for k in range(rows + 1):
+        s_ = k / rows
+        zf = g["z"] + g["height"] * (s_ - 0.5)
+        if folds:
+            out = g.get("offset", 0.02) + g.get("fold_depth", 0.006) * math.sin(math.pi * s_ * folds) ** 2
+        else:
+            out = g.get("offset", 0.02) * (1.15 if k == 1 else 1.0)
+        pts, _ = ring_points(fr, prof, fr.z(zf), 1.0, out)
         V += list(pts)
-    F = [[k * n + i, k * n + (i + 1) % n, (k + 1) * n + (i + 1) % n, (k + 1) * n + i] for k in range(2) for i in range(n)]
+    F = [[k * n + i, k * n + (i + 1) % n, (k + 1) * n + (i + 1) % n, (k + 1) * n + i] for k in range(rows) for i in range(n)]
     o = new_object(g["name"], np.array(V), F, arm)
     one = np.ones(len(V))
     copy_weights(o, body, None, {g.get("bone", "pelvis"): one})
@@ -663,24 +676,31 @@ def front_radius(body, fr, segs, zfrac):
 
 def tails(g, arm, body, segs, fr):
     V, F, Wp = [], [], []
-    rows = 10
+    rows, cols = g.get("rows", 10), g.get("cols", 1)
     r0 = front_radius(body, fr, segs, g["z"]) + g.get("offset", 0.04)
+    lengths = g.get("lengths", [g["length"]] * g.get("count", 2))
     for c in range(g.get("count", 2)):
-        side = -1 if c == 0 else 1
-        x0 = side * g.get("spread", 0.05)
+        side = -1 if c % 2 == 0 else 1
+        x0 = g.get("x", 0.0) + side * g.get("spread", 0.05) * (1 + c // 2)
+        length = lengths[c % len(lengths)]
         base = len(V)
         for k in range(rows + 1):
             s = k / rows
-            zw = fr.z(g["z"]) - g["length"] * s
             xc = x0 + side * g.get("splay", 0.04) * s
-            w = g["width"] * (1 + 0.3 * s)
-            for e in (-0.5, 0.5):
-                p = fr.centre + fr.left * (xc + e * w) + fr.fwd * (r0 + g.get("lean", 0.03) * s)
-                p[2] = zw
+            w = g["width"] * (1 + g.get("widen", 0.3) * s)
+            for j in range(cols + 1):
+                e = j / cols - 0.5
+                # the end is cut on a slant ("point" metres longer at the outer edge), and "pleat" metres of
+                # accordion folds run down the tail, deepening towards the end
+                drop = length * s + g.get("point", 0.0) * s ** 4 * (0.5 + e * side)
+                pleat = g.get("pleat", 0.0) * (0.3 + 0.7 * s) * (1 if j % 2 else -1) if cols > 1 else 0.0
+                p = fr.centre + fr.left * (xc + e * w) + fr.fwd * (r0 + g.get("lean", 0.03) * s + pleat)
+                p[2] = fr.z(g["z"]) - drop
                 V.append(p); Wp.append(s)
         for k in range(rows):
-            a = base + 2 * k
-            F.append([a, a + 1, a + 3, a + 2])
+            for j in range(cols):
+                a = base + k * (cols + 1) + j
+                F.append([a, a + 1, a + cols + 2, a + cols + 1])
     o = new_object(g["name"], np.array(V), F, arm)
     s = np.array(Wp)
     copy_weights(o, body, None, {"pelvis": 1 - 0.4 * s, "thigh_l": 0.2 * s, "thigh_r": 0.2 * s})
@@ -692,15 +712,26 @@ def tails(g, arm, body, segs, fr):
 
 
 def knot(g, arm, body, segs, fr):
-    bm = bmesh.new()
-    bmesh.ops.create_uvsphere(bm, u_segments=20, v_segments=12, radius=1.0)
+    """A knot at the front: a squashed sphere of "size" ([left, forward, up] half-sizes) at "x" metres to the body's
+    left, plus "lobes": [[angle degrees, scale], ...] flattened loops round it (a tied knot's layers)."""
     sx, sy, sz = g["size"]
     r0 = front_radius(body, fr, segs, g["z"]) + g.get("offset", 0.04)
-    c = fr.centre + fr.fwd * r0; c[2] = fr.z(g["z"])
-    V = np.array([c + fr.left * v.co.x * sx + fr.fwd * v.co.y * sy + np.array([0, 0, v.co.z * sz]) for v in bm.verts])
-    F = [[v.index for v in f.verts] for f in bm.faces]
-    bm.free()
-    o = new_object(g["name"], V, F, arm)
+    c = fr.centre + fr.fwd * r0 + fr.left * g.get("x", 0.0); c[2] = fr.z(g["z"])
+    V, F = [], []
+    for ang, sc in [[0, 1.0]] + g.get("lobes", []):
+        bm = bmesh.new()
+        bmesh.ops.create_uvsphere(bm, u_segments=20, v_segments=12, radius=1.0)
+        a = math.radians(ang)
+        base = len(V)
+        for v in bm.verts:
+            lx, ly, lz = v.co.x * sx * sc, v.co.y * sy * (1.0 if ang == 0 else 0.6), v.co.z * sz * (1.0 if ang == 0 else 0.55) * sc
+            lx, lz = lx * math.cos(a) - lz * math.sin(a), lx * math.sin(a) + lz * math.cos(a)
+            off = 0.0 if ang == 0 else sx * 0.8
+            V.append(c + fr.left * (lx + off * math.cos(a)) + fr.fwd * (ly - (0 if ang == 0 else sy * 0.3))
+                     + np.array([0, 0, lz + off * math.sin(a)]))
+        F += [[base + v.index for v in f.verts] for f in bm.faces]
+        bm.free()
+    o = new_object(g["name"], np.array(V), F, arm)
     copy_weights(o, body, None, {"pelvis": np.ones(len(V))})
     return o
 
@@ -954,9 +985,8 @@ def boot(g, arm, body, segs, fr):
     apply_mods(o)
     return o
 
-def paint(o, g, segs, fr):
-    """Per-vertex colour from the rules, baked to a texture through a smart UV projection."""
-    V = world_verts(o)
+def rule_colours(V, g, segs, fr):
+    """The spec's colour (sRGB) at each world point in V: the base colour, then the rules and the crest in order."""
     x, f, z = fr.local(V)
     vi, t, c = classify(V, segs)
     r = V - c
@@ -972,14 +1002,17 @@ def paint(o, g, segs, fr):
         dx, dz = x - cr["center"][0], (z - cr["center"][1]) * fr.height
         rr = np.hypot(dx, dz); aa = np.arctan2(dz, dx)
         rays = cr.get("rays", 12)
-        spike = cr["r"] * (0.55 + 0.45 * np.maximum(0, 1 - np.abs(((aa * rays / (2 * math.pi)) % 1) - 0.5) * 2) ** 0.5)
+        spike = cr["r"] * (0.55 + 0.45 * np.maximum(0, 1 - np.abs(((aa * rays / (2 * math.pi)) % 1) - 0.5) * 2) ** cr.get("sharp", 0.5))
         sun = ((rr < cr["r"] * 0.42) | (rr < spike)) & (f > 0)
         col[sun] = cr["color"]
-    me = o.data
-    attr = me.color_attributes.new("col", "FLOAT_COLOR", "POINT")
-    col = np.where(col <= 0.04045, col / 12.92, ((col + 0.055) / 1.055) ** 2.4)  # spec colours are sRGB, the bake is linear
-    rgba = np.c_[col, np.ones(len(col))].astype(np.float32)
-    attr.data.foreach_set("color", rgba.ravel())
+    return col
+
+
+def paint(o, g, segs, fr):
+    """Colours from the rules, painted per texel: the world position of every texel is baked through a smart UV
+    projection (at twice the size), the rules are evaluated there and the result is box-filtered down, so pattern
+    edges are as sharp as the texture allows instead of following the mesh's triangles. Texels outside every island
+    take the main colour, so mips don't bleed a fill colour into the garment."""
     bpy.context.view_layer.objects.active = o
     for s in bpy.context.selected_objects:
         s.select_set(False)
@@ -988,20 +1021,33 @@ def paint(o, g, segs, fr):
     bpy.ops.uv.smart_project(angle_limit=math.radians(60), island_margin=0.02)
     bpy.ops.object.mode_set(mode="OBJECT")
     size = g.get("tex", 1024)
-    img = bpy.data.images.new("T_" + g["name"], size, size)
-    img.generated_color = (*np.median(col, axis=0), 1.0)  # a gap between islands reads as the main colour, not black
+    ss = 2 * size
+    pos = bpy.data.images.new("P_" + g["name"], ss, ss, alpha=True, float_buffer=True)
+    pos.generated_color = (0, 0, 0, 0)
     mat = bpy.data.materials.new("M_" + g["name"]); mat.use_nodes = True
-    nt = mat.node_tree; bsdf = nt.nodes["Principled BSDF"]
-    vc = nt.nodes.new("ShaderNodeVertexColor"); vc.layer_name = "col"
-    em = nt.nodes.new("ShaderNodeEmission"); out = nt.nodes["Material Output"]
-    nt.links.new(vc.outputs["Color"], em.inputs["Color"]); nt.links.new(em.outputs[0], out.inputs["Surface"])
-    tex = nt.nodes.new("ShaderNodeTexImage"); tex.image = img; nt.nodes.active = tex
-    bsdf.inputs["Roughness"].default_value = g.get("roughness", 0.8)
+    nt = mat.node_tree; bsdf = nt.nodes["Principled BSDF"]; out = nt.nodes["Material Output"]
+    geo = nt.nodes.new("ShaderNodeNewGeometry"); em = nt.nodes.new("ShaderNodeEmission")
+    nt.links.new(geo.outputs["Position"], em.inputs["Color"]); nt.links.new(em.outputs[0], out.inputs["Surface"])
+    ptex = nt.nodes.new("ShaderNodeTexImage"); ptex.image = pos; nt.nodes.active = ptex
+    me = o.data
     me.materials.clear(); me.materials.append(mat)
     sc = bpy.context.scene; sc.render.engine = "CYCLES"; sc.cycles.samples = 1; sc.cycles.device = "CPU"
-    sc.render.bake.margin = 32
-    sc.render.bake.use_clear = False  # keep the main-colour fill: off-island texels (and the mips built from them) would be black
+    sc.render.bake.margin = 16  # margin texels copy their neighbour's position, so they take the island's colour
+    sc.render.bake.use_clear = False
     bpy.ops.object.bake(type="EMIT")
+    px = np.empty(ss * ss * 4, np.float32); pos.pixels.foreach_get(px); px = px.reshape(-1, 4)
+    hit = px[:, 3] > 0.5
+    col = np.tile(np.array(g.get("color", [0.5, 0.5, 0.5]), float), (len(px), 1))
+    col[hit] = rule_colours(px[hit, :3].astype(float), g, segs, fr)
+    col = np.where(col <= 0.04045, col / 12.92, ((col + 0.055) / 1.055) ** 2.4)  # filter in linear light,
+    col = col.reshape(size, 2, size, 2, 3).mean(axis=(1, 3)).reshape(-1, 3)
+    col = np.where(col <= 0.0031308, col * 12.92, 1.055 * col ** (1 / 2.4) - 0.055)  # store sRGB (a byte image)
+    img = bpy.data.images.new("T_" + g["name"], size, size)
+    img.pixels.foreach_set(np.c_[col, np.ones(len(col))].astype(np.float32).ravel())
+    bpy.data.images.remove(pos)
+    nt.nodes.remove(ptex); nt.nodes.remove(geo); nt.nodes.remove(em)
+    tex = nt.nodes.new("ShaderNodeTexImage"); tex.image = img
+    bsdf.inputs["Roughness"].default_value = g.get("roughness", 0.8)
     nt.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"]); nt.links.new(bsdf.outputs[0], out.inputs["Surface"])
     return img
 
