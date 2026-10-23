@@ -8,7 +8,9 @@
 // Strips any clothing the mesh already has, makes a clothing asset from LOD 0 section 0, paints its max distance
 // by height (0 within -Pin cm of the mesh's top, so the waistband stays skinned, rising smoothly to -Max cm at the
 // hem), takes the collision capsules from the physics asset (the body's, so the cloth falls over the legs) and
-// saves the mesh. Re-importing the mesh wipes the cloth, so run this again after every FTImportCharacter.
+// saves the mesh. It also turns on the clothing usage of every base material on the mesh (saving those packages),
+// since the engine draws a clothed section with its default material otherwise. A fresh import (the piece's folder
+// deleted first, as textures and materials aren't replaced) has no cloth, so run this again after every import.
 //
 //   -Mesh=<object path>     the skeletal mesh to clothe
 //   -Physics=<object path>  the physics asset the cloth collides with (default: none)

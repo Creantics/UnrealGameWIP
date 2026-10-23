@@ -32,7 +32,8 @@ through). Its hem loops are relaxed along themselves (no ragged edge), it is pus
 "smooth" Taubin passes, then dropped under gravity for "frames" frames (default 40) onto the body and the garments
 named in "collide" (built earlier), at "distance" metres off them (default 0.004), "quality" steps (12), "shrink"
 (0; negative bags it out), "bending" stiffness (0.5), with the vertices within "pin" metres of its top held (a
-waistband; 0 holds nothing). A vertex moving more than "max_move" metres (0.15) has run off: a few take their
+waistband; 0 holds nothing) and those within "pin_bottom" metres of its bottom (a hem tucked under a belt). "post_smooth" Taubin passes after the
+solve take out its fine crinkle. A vertex moving more than "max_move" metres (0.15) has run off: a few take their
 neighbours' move, more than 0.5 % mean the solve blew up and the shell is kept as built.
 A top-level "height" (metres) sets the height the fractions are of, for a body mesh that stops at the neck; a top-level
 "face" (an FBX path, relative to the spec) is a separate head mesh that "clear" also keeps the cloth outside of; a shell's
@@ -401,11 +402,11 @@ def simulate(o, g, body):
     cs.collision_quality = 3
     cs.use_self_collision = c.get("self", False)
     cl.point_cache.frame_start, cl.point_cache.frame_end = 1, frames
-    if c.get("pin", 0):
+    if c.get("pin", 0) or c.get("pin_bottom", 0):
         V = world_verts(o)
-        top = V[:, 2].max()
+        held = (V[:, 2] > V[:, 2].max() - c.get("pin", 0)) | (V[:, 2] < V[:, 2].min() + c.get("pin_bottom", 0))
         vg = o.vertex_groups.new(name="_pin")
-        vg.add([int(i) for i in np.nonzero(V[:, 2] > top - c["pin"])[0]], 1.0, "REPLACE")
+        vg.add([int(i) for i in np.nonzero(held)[0]], 1.0, "REPLACE")
         st.vertex_group_mass = vg.name
     start = np.array([v.co for v in me.vertices])
     t0 = time.time()
@@ -439,12 +440,16 @@ def simulate(o, g, body):
             known |= fill
         co = start + d
         print("garment %s: %d runaway vertices repaired" % (o.name, bad.sum()))
+    if c.get("post_smooth", 0):  # the solve's crinkle at the collision distance; the big folds stay
+        co = taubin(co, me, c["post_smooth"])
     o.modifiers.remove(cl)
     for m, cm in cols:
         m.modifiers.remove(cm)
     me.vertices.foreach_set("co", co.ravel())
     me.update()
     sc.frame_set(1)
+    if c.get("post_smooth", 0):
+        clear(o, body, dist)
     if "_pin" in o.vertex_groups:
         o.vertex_groups.remove(o.vertex_groups["_pin"])
     print("garment %s: sim %d frames in %.1f s (hem verts %d, pushed off colliders %d)"

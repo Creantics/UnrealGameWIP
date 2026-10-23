@@ -96,6 +96,7 @@ UMaterial* NewMaster(const TCHAR* Path, TArray<UPackage*>& Dirty)
 		NewObject<UMaterial>(Package, *FPackageName::GetShortName(Path), RF_Public | RF_Standalone | RF_Transactional);
 	Material->SetUsageByFlag(MATUSAGE_SkeletalMesh, true);
 	Material->SetUsageByFlag(MATUSAGE_MorphTargets, true);
+	Material->SetUsageByFlag(MATUSAGE_Clothing, true);
 	Material->TwoSided = true;
 	Dirty.AddUnique(Package);
 	return Material;

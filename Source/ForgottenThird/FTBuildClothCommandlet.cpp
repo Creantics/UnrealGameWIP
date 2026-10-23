@@ -6,6 +6,8 @@
 #include "ClothingAsset.h"
 #include "ClothingAssetFactory.h"
 #include "Engine/SkeletalMesh.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialInterface.h"
 #include "Misc/PackageName.h"
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "PhysicsEngine/SkeletalBodySetup.h"
@@ -135,6 +137,43 @@ void ClothPaint(UClothingAssetCommon& Asset, float Max, float Pin)
 		Top - Bottom, Pin, Max);
 }
 
+bool SavePackageOf(UObject& Asset)
+{
+	UPackage* Package = Asset.GetOutermost();
+	Package->MarkPackageDirty();
+	FSavePackageArgs Args;
+	Args.TopLevelFlags = RF_Public | RF_Standalone;
+	Args.SaveFlags = SAVE_NoError;
+	const FString File = FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
+	if (!UPackage::SavePackage(Package, &Asset, *File, Args))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: couldn't save %s."), *File);
+		return false;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: saved %s."), *File);
+	return true;
+}
+
+// A material drawn on a clothed section needs the clothing usage, or the engine swaps in its default (grey) material.
+bool ClothMaterials(const USkeletalMesh& Mesh)
+{
+	bool bOk = true;
+	for (const FSkeletalMaterial& Slot : Mesh.GetMaterials())
+	{
+		UMaterial* Base = Slot.MaterialInterface ? Slot.MaterialInterface->GetMaterial() : nullptr;
+		if (!Base || Base->GetUsageByFlag(MATUSAGE_Clothing))
+		{
+			continue;
+		}
+		Base->PreEditChange(nullptr);
+		Base->SetUsageByFlag(MATUSAGE_Clothing, true);
+		Base->PostEditChange();
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: %s now allows clothing."), *Base->GetName());
+		bOk &= SavePackageOf(*Base);
+	}
+	return bOk;
+}
+
 bool ClothSave(USkeletalMesh& Mesh)
 {
 	UPackage* Package = Mesh.GetOutermost();
@@ -180,6 +219,12 @@ int32 UFTBuildClothCommandlet::Main(const FString& Params)
 	if (FParse::Param(*Params, TEXT("Verify")))
 	{
 		ClothReport(*Mesh);
+		for (const FSkeletalMaterial& Slot : Mesh->GetMaterials())
+		{
+			const UMaterial* Base = Slot.MaterialInterface ? Slot.MaterialInterface->GetMaterial() : nullptr;
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: material %s, clothing usage %s."),
+				Base ? *Base->GetName() : TEXT("none"), Base && Base->GetUsageByFlag(MATUSAGE_Clothing) ? TEXT("on") : TEXT("off"));
+		}
 		return 0;
 	}
 	UPhysicsAsset* Physics = nullptr;
@@ -216,7 +261,8 @@ int32 UFTBuildClothCommandlet::Main(const FString& Params)
 		return 1;
 	}
 	ClothReport(*Mesh);
-	return ClothSave(*Mesh) ? 0 : 1;
+	const bool bMaterialsOk = ClothMaterials(*Mesh);
+	return ClothSave(*Mesh) && bMaterialsOk ? 0 : 1;
 #else
 	return 1;
 #endif
