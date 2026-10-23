@@ -180,6 +180,7 @@ TEST_CASE("asset rules by pack and role") {
     CHECK(assetRoleFromName("Lead") == AssetRole::Lead);
     CHECK(assetRoleFromName("prop") == AssetRole::Prop);
     CHECK(assetRoleFromName("") == AssetRole::Supporting);
+    CHECK(assetRoleFromName("Outfit") == AssetRole::Outfit);
 
     const AssetRules lead = characterRules(AssetPack::Lattice, AssetRole::Lead);
     CHECK(lead.maxTextureSize == 2048);
@@ -188,6 +189,9 @@ TEST_CASE("asset rules by pack and role") {
     const AssetRules other = characterRules(AssetPack::Solhaven, AssetRole::Supporting);
     CHECK(other.maxTextureSize == 1024);
     CHECK_FALSE(other.emissiveRule);
+    const AssetRules outfit = characterRules(AssetPack::Solhaven, AssetRole::Outfit);
+    CHECK(outfit.maxTextureSize == 2048);
+    CHECK_FALSE(outfit.requireSkin);
     const AssetRules prop = propRules(AssetPack::Lattice);
     CHECK_FALSE(prop.requireSkin);
     CHECK(prop.emissiveRule);

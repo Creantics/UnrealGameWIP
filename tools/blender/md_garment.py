@@ -19,7 +19,14 @@ UV box. A strip paints where |x| lies between x0(y) and x1(y), each linear in y 
 (mirrored about x = 0; "mirror": false paints only the listed side). A "crest" {"center": [x, y], "r", "rays", "color",
 "sharp" (ray exponent: above 1 pointed), "disc" (radius fraction), "base" (where the rays start), "alt" (shorter rays
 between the long ones, that fraction long), "outline": [width, RGB]} paints a rayed sun over the strips, in the rule's
-units. A group with no rule takes its own "color" or the piece's. Each piece is written to OUT_DIR/NAME_albedo.png and kept as object NAME in OUT_DIR/garments.blend, with one
+units. A group with no rule takes its own "color" or the piece's.
+
+A piece's "surface" adds the base layer stack a texture painter lays under fabric: {"weave": {"pitch" (thread spacing,
+mm; keep it at 4 texels or more), "slub"}, "ao", "cavity", "edge" (how much AO, creases and crests shade the albedo),
+"normal" (weave normal strength), "ao_distance" (m), "rough_weave", "rough_mottle", "samples"}. It bakes ambient
+occlusion and curvature in Cycles, folds them into the albedo, and writes NAME_normal.png and NAME_orm.png (occlusion,
+roughness, metallic) wired into the material, so a glTF export carries all three. "occluders" (top level) lists glTF
+files, or {"file", "objects": [names]}, that shade the AO bake (the body under the garment) and are not kept. Each piece is written to OUT_DIR/NAME_albedo.png and kept as object NAME in OUT_DIR/garments.blend, with one
 double-sided material using that texture; shell_bind.py --keep-material then skins it to the body.
 """
 import json
@@ -37,7 +44,8 @@ def _spec():
         sys.exit("md_garment: SPEC.json OUT_DIR")
     spec_path, out = os.path.abspath(argv[0]), os.path.abspath(argv[1])
     spec = json.load(open(spec_path))
-    spec["obj"] = os.path.join(os.path.dirname(spec_path), spec["obj"])
+    spec["dir"] = os.path.dirname(spec_path)
+    spec["obj"] = os.path.join(spec["dir"], spec["obj"])
     return spec, out
 
 
@@ -104,6 +112,171 @@ def rule_colour(px, py, rule, base):
     return c
 
 
+def weave_height(xm, ym, wv):
+    """Plain-weave height 0..1 at tile coordinates in metres: warp threads run along v, weft along u, and they swap
+    over at every crossing. "pitch" is the thread spacing in millimetres, "slub" how uneven the threads are."""
+    p = wv.get("pitch", 2.5) / 1000.0
+    u, v = xm / p, ym / p
+    warp = np.abs(np.cos(np.pi * u)) ** 0.6 * (0.55 + 0.45 * np.abs(np.sin(np.pi * v)))
+    weft = np.abs(np.cos(np.pi * v)) ** 0.6 * (0.55 + 0.45 * np.abs(np.sin(np.pi * u)))
+    over = (np.floor(u) + np.floor(v)) % 2 == 0
+    hgt = np.where(over, np.maximum(warp, 0.6 * weft), np.maximum(weft, 0.6 * warp))
+    slub = wv.get("slub", 0.25)
+    if slub:  # threads vary in thickness along their length
+        hgt *= 1 - slub * 0.5 * (1 + np.sin(np.floor(u) * 12.9898 + v * 0.7) * np.sin(np.floor(v) * 78.233 + u * 0.9))
+    return hgt
+
+
+def save_image(name, rgb, out, colour=True):
+    res = rgb.shape[0]
+    im = bpy.data.images.new(name, res, res, alpha=False, is_data=not colour)
+    rgba = np.ones((res, res, 4))
+    rgba[..., :3] = rgb
+    im.pixels.foreach_set(rgba.astype(np.float32).ravel())
+    im.filepath_raw = os.path.join(out, name + ".png")
+    im.file_format = "PNG"
+    im.save()
+    if not colour:
+        im.colorspace_settings.name = "Non-Color"
+    return im
+
+
+def import_occluders(spec):
+    """Meshes (the body) that shade the garments in the AO bake; main() drops them before saving."""
+    occ = []
+    for entry in spec.get("occluders", []):
+        path, names = (entry, None) if isinstance(entry, str) else (entry["file"], entry.get("objects"))
+        before = set(bpy.data.objects)
+        bpy.ops.import_scene.gltf(filepath=os.path.join(spec["dir"], path))
+        new = [o for o in bpy.data.objects if o not in before]
+        for o in new:
+            if o.type == "MESH" and (names is None or o.name.split(".")[0] in names):
+                mw = o.matrix_world.copy()
+                o.parent = None
+                o.matrix_world = mw
+                for m in list(o.modifiers):
+                    o.modifiers.remove(m)
+                occ.append(o)
+        for o in new:
+            if o not in occ:
+                bpy.data.objects.remove(o)
+    for o in occ:
+        lo = np.min([o.matrix_world @ v.co for v in o.data.vertices], axis=0)
+        hi = np.max([o.matrix_world @ v.co for v in o.data.vertices], axis=0)
+        print("md_garment: occluder %s spans %s .. %s" % (o.name, np.round(lo, 3), np.round(hi, 3)))
+    return occ
+
+
+def bake(o, kind, res, setup=None):
+    """Bakes one Cycles pass of object o into a float image on its UVs; returns (res, res, 3) linear values."""
+    im = bpy.data.images.new("bake_" + kind, res, res, alpha=False, float_buffer=True, is_data=True)
+    mats = list(o.data.materials)
+    if setup:
+        o.data.materials.clear()
+        o.data.materials.append(setup)
+    nt = o.data.materials[0].node_tree
+    node = nt.nodes.new("ShaderNodeTexImage")
+    node.image = im
+    nt.nodes.active = node
+    bpy.ops.object.select_all(action="DESELECT")
+    o.select_set(True)
+    bpy.context.view_layer.objects.active = o
+    bpy.ops.object.bake(type=kind, margin=8, use_clear=True)
+    px = np.array(im.pixels[:], dtype=np.float32).reshape(res, res, 4)[..., :3]
+    nt.nodes.remove(node)
+    if setup:
+        o.data.materials.clear()
+        for m in mats:
+            o.data.materials.append(m)
+    bpy.data.images.remove(im)
+    return px.astype(np.float64)
+
+
+def blur(a, r):
+    """Box blur of a 2D array, r texels each way, three passes (close to a Gaussian)."""
+    for _ in range(3):
+        for ax in (0, 1):
+            pad = [(r + 1, r) if i == ax else (0, 0) for i in range(2)]
+            c = np.cumsum(np.pad(a, pad, mode="edge"), axis=ax)
+            n = c.shape[ax]
+            a = (np.take(c, range(2 * r + 1, n), axis=ax) - np.take(c, range(0, n - 2 * r - 1), axis=ax)) / (2 * r + 1)
+    return a
+
+
+def base_stack(o, name, ps, img, height, out):
+    """The base layer stack a texture painter puts under every fabric: baked ambient occlusion multiplied in, curvature
+    as cavity (creases darker, crests a touch lighter), a weave normal map and roughness that varies with the weave and
+    the creases. Writes NAME_normal.png and NAME_orm.png (glTF packing: occlusion R, roughness G, metallic B) beside
+    the albedo, rewrites the albedo with the stack in it, and wires all three into the material."""
+    sf = ps["surface"]
+    res = img.shape[0]
+    sc = bpy.context.scene
+    sc.render.engine = "CYCLES"
+    sc.cycles.device = "CPU"
+    sc.cycles.samples = sf.get("samples", 64)
+    if sc.world is None:
+        sc.world = bpy.data.worlds.new("bake")
+    sc.world.light_settings.distance = sf.get("ao_distance", 0.08)
+    ao = bake(o, "AO", res)[..., 0]
+    # Curvature from Cycles pointiness (0.5 flat, lower in a crease), emitted and baked.
+    cm = bpy.data.materials.new("bake_curv")
+    cm.use_nodes = True
+    ct = cm.node_tree
+    for n in list(ct.nodes):
+        if n.type != "OUTPUT_MATERIAL":
+            ct.nodes.remove(n)
+    geo, em = ct.nodes.new("ShaderNodeNewGeometry"), ct.nodes.new("ShaderNodeEmission")
+    ct.links.new(geo.outputs["Pointiness"], em.inputs["Color"])
+    ct.links.new(em.outputs["Emission"], ct.nodes["Material Output"].inputs["Surface"])
+    curv = bake(o, "EMIT", res, cm)[..., 0] - 0.5
+    bpy.data.materials.remove(cm)
+    curv = np.clip(curv / max(np.percentile(np.abs(curv), 98), 1e-4), -1, 1)  # contrast pushed hard, as the stack wants
+    lo = np.percentile(ao, 2)
+    ao = np.clip((ao - lo) / max(1 - lo, 1e-4), 0, 1)
+    ao_k, cav_k, edge_k = sf.get("ao", 0.6), sf.get("cavity", 0.35), sf.get("edge", 0.12)
+    shade = (1 - ao_k * (1 - ao)) * (1 - cav_k * np.maximum(-curv, 0)) * (1 + edge_k * np.maximum(curv, 0))
+    shade *= 1 - sf.get("weave_albedo", 0.12) * (1 - height)  # thread tops catch light, the gaps stay dark
+    lin = np.where(img <= 0.04045, img / 12.92, ((img + 0.055) / 1.055) ** 2.4) * shade[..., None]
+    alb = np.where(lin <= 0.0031308, lin * 12.92, 1.055 * np.clip(lin, 0, None) ** (1 / 2.4) - 0.055)
+    # Weave normal, OpenGL convention (+Y up the v axis, which is the image's row order).
+    st = sf.get("normal", 2.0)
+    gy, gx = np.gradient(height)
+    nrm = np.dstack([-gx * st, -gy * st, np.ones_like(height)])
+    nrm /= np.linalg.norm(nrm, axis=2, keepdims=True)
+    # Roughness: rougher in the thread gaps and creases, with slow mottling so a big panel doesn't read as one sheet.
+    mott = blur(np.random.default_rng(7).standard_normal((res, res)), max(res // 64, 2))
+    mott /= max(np.abs(mott).max(), 1e-6)
+    rough = (ps.get("roughness", 0.8) + sf.get("rough_weave", 0.08) * (1 - height) + 0.06 * np.maximum(-curv, 0)
+             + sf.get("rough_mottle", 0.05) * mott)
+    orm = np.dstack([1 - 0.5 * (1 - ao), np.clip(rough, 0.05, 1), np.zeros_like(rough)])
+    im_alb = save_image(name + "_albedo", np.clip(alb, 0, 1), out)
+    im_nrm = save_image(name + "_normal", nrm * 0.5 + 0.5, out, colour=False)
+    im_orm = save_image(name + "_orm", orm, out, colour=False)
+    # Material: ORM through a colour split, the normal through a normal map node, occlusion to the glTF output group.
+    nt = o.data.materials[0].node_tree
+    bsdf = nt.nodes["Principled BSDF"]
+    for n in nt.nodes:
+        if n.type == "TEX_IMAGE":
+            n.image = im_alb
+    t_orm, t_nrm = nt.nodes.new("ShaderNodeTexImage"), nt.nodes.new("ShaderNodeTexImage")
+    t_orm.image, t_nrm.image = im_orm, im_nrm
+    sep, nmap = nt.nodes.new("ShaderNodeSeparateColor"), nt.nodes.new("ShaderNodeNormalMap")
+    nt.links.new(t_orm.outputs["Color"], sep.inputs["Color"])
+    nt.links.new(sep.outputs["Green"], bsdf.inputs["Roughness"])
+    nt.links.new(sep.outputs["Blue"], bsdf.inputs["Metallic"])
+    nt.links.new(t_nrm.outputs["Color"], nmap.inputs["Color"])
+    nt.links.new(nmap.outputs["Normal"], bsdf.inputs["Normal"])
+    grp = bpy.data.node_groups.get("glTF Material Output")
+    if grp is None:
+        grp = bpy.data.node_groups.new("glTF Material Output", "ShaderNodeTree")
+        grp.interface.new_socket("Occlusion", in_out="INPUT", socket_type="NodeSocketFloat")
+    gn = nt.nodes.new("ShaderNodeGroup")
+    gn.node_tree = grp
+    nt.links.new(sep.outputs["Red"], gn.inputs["Occlusion"])
+    print("md_garment: %s base stack: weave %.1f mm, roughness %.2f..%.2f, shade %.2f..%.2f"
+          % (name, sf.get("weave", {}).get("pitch", 2.5), rough.min(), rough.max(), shade.min(), shade.max()))
+
+
 def build_piece(name, ps, objs, weld, out):
     groups = [g for g in ps["groups"] if g in objs]
     missing = set(ps["groups"]) - set(groups)
@@ -138,6 +311,8 @@ def build_piece(name, ps, objs, weld, out):
     res = int(ps.get("tex", 2048))
     img = np.zeros((res, res, 3))
     img[:] = base
+    surf = ps.get("surface")
+    height = np.zeros((res, res)) if surf else None
     for i, (ox, oy) in zip(info, pos):
         g, (w, h) = i["g"], i["size"]
         me = objs[g].data
@@ -163,6 +338,9 @@ def build_piece(name, ps, objs, weld, out):
         c = c.reshape(c.shape[0] // ss, ss, c.shape[1] // ss, ss, 3)
         lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4).mean(axis=(1, 3))
         img[y0p:y1p, x0p:x1p] = np.where(lin <= 0.0031308, lin * 12.92, 1.055 * lin ** (1 / 2.4) - 0.055)
+        if surf:  # weave height from the tile's real size, so the threads keep one pitch on every panel
+            hgt = weave_height(tu * w, tv * h, surf.get("weave", {}))
+            height[y0p:y1p, x0p:x1p] = hgt.reshape(hgt.shape[0] // ss, ss, hgt.shape[1] // ss, ss).mean(axis=(1, 3))
     # Join the groups into one object and weld the seams the cloth tool sewed.
     bpy.ops.object.select_all(action="DESELECT")
     for g in groups:
@@ -181,14 +359,7 @@ def build_piece(name, ps, objs, weld, out):
     for p in o.data.polygons:
         p.use_smooth = True
     # Texture and material.
-    path = os.path.join(out, name + "_albedo.png")
-    im = bpy.data.images.new(name + "_albedo", res, res, alpha=False)
-    rgba = np.ones((res, res, 4))
-    rgba[..., :3] = np.clip(img, 0, 1)
-    im.pixels.foreach_set(rgba.astype(np.float32).ravel())
-    im.filepath_raw = path
-    im.file_format = "PNG"
-    im.save()
+    im = save_image(name + "_albedo", np.clip(img, 0, 1), out)
     mat = bpy.data.materials.new(name)
     mat.use_backface_culling = False
     if mat.node_tree is None:
@@ -201,6 +372,9 @@ def build_piece(name, ps, objs, weld, out):
     bsdf.inputs["Roughness"].default_value = ps.get("roughness", 0.8)
     o.data.materials.clear()
     o.data.materials.append(mat)
+    if surf:
+        base_stack(o, name, ps, img, height, out)
+    path = im.filepath_raw
     print("md_garment: %s groups %s, %d -> %d vertices, %d faces, atlas %.2f m -> %s"
           % (name, groups, n0, len(o.data.vertices), len(o.data.polygons), side, path))
     return o
@@ -210,6 +384,10 @@ def main():
     spec, out = _spec()
     os.makedirs(out, exist_ok=True)
     objs = import_groups(spec)
+    named = {g for ps in spec["pieces"].values() for g in ps["groups"]}
+    for g in [g for g in objs if g not in named]:  # the avatar, which would shade the AO bake where it pokes through
+        bpy.data.objects.remove(objs.pop(g))
+    import_occluders(spec)  # shade the AO bake; dropped with the other unnamed objects below
     keep = set()
     for name, ps in spec["pieces"].items():
         keep.add(build_piece(name, ps, objs, spec.get("weld", 0.002), out).name)

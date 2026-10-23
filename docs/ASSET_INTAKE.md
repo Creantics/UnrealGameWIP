@@ -143,14 +143,14 @@ Rules from the art direction (pack names are public: Solhaven, Lattice, Unwritte
 - A character may cross between packs. Don't author a pack's look into its colours.
 - Shape language and proportion rules per character are in the private design docs, not here.
 
-**What the code accepts for textures.** `FTImportCharacter` checks every `.glb` against these rules before it imports (`ftcore::checkGlb`, `Core/include/ftcore/Glb.h`), and fails on any error. Pass `-Pack=<Solhaven|Lattice|Unwritten|Restored|InkSolhaven>` and `-Role=<lead|supporting>`; without them the pack is none (no emissive rule) and the role is supporting.
+**What the code accepts for textures.** `FTImportCharacter` checks every `.glb` against these rules before it imports (`ftcore::checkGlb`, `Core/include/ftcore/Glb.h`), and fails on any error. Pass `-Pack=<Solhaven|Lattice|Unwritten|Restored|InkSolhaven>` and `-Role=<lead|supporting|outfit|prop>`; without them the pack is none (no emissive rule) and the role is supporting.
 
 | Rule | Code | Level |
 |---|---|---|
 | Maps: base colour (sRGB), normal (+Y up as glTF), metal-rough packed (G roughness, B metal), occlusion (R), emissive (sRGB). Packing occlusion into the metal-rough map's R (ORM) is fine | — | how the master reads them |
 | Images embedded in the `.glb` (a buffer view, not a `uri`) | `image-external` | error |
 | PNG or JPEG only (all glTF allows). Emissive above 1.0 comes from `KHR_materials_emissive_strength`, not from an HDR image | `image-format` | error |
-| At most 2048 px for a lead, 1024 for supporting cast and props | `image-too-big` | error |
+| At most 2048 px for a lead or a lead's outfit piece (`-Role=outfit`, no skin material needed), 1024 for supporting cast and props | `image-too-big` | error |
 | Square power of two | `image-not-square-pot` | warning |
 | One UV set (`TEXCOORD_0`), no overlap on the face, texel density matched within a character | `uv-sets` | error (overlap and density are by eye) |
 | No vertex colour (`COLOR_0`); pockets and load maps go in textures | `vertex-color` | error |
@@ -162,7 +162,7 @@ Rules from the art direction (pack names are public: Solhaven, Lattice, Unwritte
 
 The emissive level is max(emissive factor) × emissive strength. Every message names the material or image by index and name.
 
-Checklist, texture-ready: [ ] no baked light, shadow or hatch; [ ] pockets in base colour, no vertex colour; [ ] Glow/Eye/Skill/Rule in the names of the materials that must glow; [ ] import passes with the right `-Pack=` and `-Role=`.
+Checklist, texture-ready: [ ] no baked light, shadow or hatch (a fabric's ambient occlusion and crease cavity from `md_garment.py`'s base stack are fine: they carry no light direction); [ ] pockets in base colour, no vertex colour; [ ] Glow/Eye/Skill/Rule in the names of the materials that must glow; [ ] import passes with the right `-Pack=` and `-Role=`.
 
 ### Props and static meshes
 

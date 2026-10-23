@@ -19,7 +19,7 @@
 //     reach kGlowMin (3.0); every other emissive material must stay below kPlainMax (2.5). Other
 //     packs have no emissive rule.
 //   - One UV set (TEXCOORD_0 only). No vertex colour (COLOR_0): pockets and load maps go in textures.
-//   - Image sizes: square powers of two, at most the role's size (2048 lead, 1024 otherwise).
+//   - Image sizes: square powers of two, at most the role's size (2048 lead or outfit, 1024 otherwise).
 //   - Images are embedded (a bufferView), PNG or JPEG.
 // Every issue names a material, image or mesh by index and name, never anything else.
 
@@ -69,7 +69,8 @@ struct GlbInfo {
 FTCORE_API bool readGlb(std::string_view bytes, GlbInfo& out, std::string* error = nullptr);
 
 enum class AssetPack : std::uint8_t { None, Solhaven, Lattice, Unwritten, Restored, InkSolhaven };
-enum class AssetRole : std::uint8_t { Lead, Supporting, Prop };
+// Outfit: a garment worn by a lead (its own skinned mesh, no skin material), with the lead's texture size.
+enum class AssetRole : std::uint8_t { Lead, Supporting, Prop, Outfit };
 
 // "Solhaven", "Lattice", "Unwritten", "Restored", "InkSolhaven" (any case; "Ink Solhaven" and
 // "Ink-Solhaven" too). Anything else is None.

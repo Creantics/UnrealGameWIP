@@ -232,15 +232,16 @@ AssetPack assetPackFromName(std::string_view name) {
 AssetRole assetRoleFromName(std::string_view name) {
     if (equalsNoCase(name, "lead")) return AssetRole::Lead;
     if (equalsNoCase(name, "prop")) return AssetRole::Prop;
+    if (equalsNoCase(name, "outfit")) return AssetRole::Outfit;
     return AssetRole::Supporting;
 }
 
 AssetRules characterRules(AssetPack pack, AssetRole role) {
     AssetRules r;
     r.pack = pack;
-    r.maxTextureSize = role == AssetRole::Lead ? 2048 : 1024;
+    r.maxTextureSize = role == AssetRole::Lead || role == AssetRole::Outfit ? 2048 : 1024;
     r.emissiveRule = pack == AssetPack::Lattice;
-    r.requireSkin = role != AssetRole::Prop;
+    r.requireSkin = role == AssetRole::Lead || role == AssetRole::Supporting;
     return r;
 }
 
