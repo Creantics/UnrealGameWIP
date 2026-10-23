@@ -82,6 +82,17 @@ void AFTStyleController::BeginPlay()
 {
 	Super::BeginPlay();
 
+	// -StyleOff: Unreal's plain physically based look (no PP_Style, no styled finish), for judging assets
+	// the way they read under natural light.
+	if (FParse::Param(FCommandLine::Get(), TEXT("StyleOff")))
+	{
+		PostProcess->Settings.WeightedBlendables.Array.Reset();
+		PostProcess->bEnabled = false;
+		SetActorTickEnabled(false);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTStyleController: -StyleOff, so the scene renders unstyled."));
+		return;
+	}
+
 	if (const std::optional<ftcore::StyleSettings> Parsed = ParseSpec(StyleSpec))
 	{
 		Current = *Parsed;
