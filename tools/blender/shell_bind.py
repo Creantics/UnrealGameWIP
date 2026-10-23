@@ -3,7 +3,7 @@ each vertex takes the weights and the shape-key deltas of the nearest point on t
 follow the bones and the face shapes as separate skinned meshes.
 
     blender -b BODY.blend --factory-startup --python-exit-code 1 --python tools/blender/shell_bind.py -- \\
-        SHELLS.blend NAME [NAME ...] --out OUT_DIR [--body OBJECT] [--color R,G,B] [--roughness R]
+        SHELLS.blend NAME [NAME ...] --out OUT_DIR [--body OBJECT] [--color R,G,B] [--roughness R] [--keep-material]
 
 BODY.blend holds the armature and the skinned body (the mesh with the most vertices unless --body names it). The named
 objects are appended from SHELLS.blend, placed where they were (world space), bound, and each is written to
@@ -13,7 +13,7 @@ values of the nearest body triangle, blended by its barycentric coordinates.
 Each piece leaves with one double-sided material of its own name. Its base colour is --color (linear RGB, e.g. a near
 black 0.022,0.016,0.012 for dark hair) or else the mean of the shell's colour attribute (region_shell's "color"), and
 its roughness is --roughness (default 0.75). Without either the piece would arrive in the engine as Blender's default
-light grey.
+light grey. --keep-material leaves a piece that already has materials as it is (a textured garment from md_garment).
 """
 import os
 import sys
@@ -26,10 +26,13 @@ from mathutils.bvhtree import BVHTree
 
 def _args():
     argv = sys.argv[sys.argv.index("--") + 1:]
-    a = {"shells": argv[0], "names": [], "out": None, "body": None, "color": None, "roughness": "0.75"}
+    a = {"shells": argv[0], "names": [], "out": None, "body": None, "color": None, "roughness": "0.75", "keep": False}
     i = 1
     while i < len(argv):
-        if argv[i] in ("--out", "--body", "--color", "--roughness"):
+        if argv[i] == "--keep-material":
+            a["keep"] = True
+            i += 1
+        elif argv[i] in ("--out", "--body", "--color", "--roughness"):
             a[argv[i][2:]] = argv[i + 1]
             i += 2
         else:
@@ -111,7 +114,7 @@ def main():
         bpy.context.view_layer.objects.active = o
         for m in list(o.modifiers):  # what the shell looks like now (solidify, smoothing) is what gets bound
             bpy.ops.object.modifier_apply(modifier=m.name)
-        color = give_material(o, a["color"], a["roughness"])
+        color = None if a["keep"] and o.data.materials else give_material(o, a["color"], a["roughness"])
         for c in list(o.data.color_attributes):  # the engine's intake takes colour from materials, not vertices
             o.data.color_attributes.remove(c)
         V = np.array([o.matrix_world @ v.co for v in o.data.vertices])
