@@ -16,8 +16,10 @@ is in world space (an OBJ in centimetres, Y up, -Z forward by default). Groups n
 dropped. Colours are sRGB. A group's "box" is its pattern bounding box in millimetres (x0, y0, x1, y1); the group's UV
 bounding box is mapped onto it, so a rule reads pattern coordinates. Without a box the rule coordinates are 0..1 of the
 UV box. A strip paints where |x| lies between x0(y) and x1(y), each linear in y between the listed "y" stations
-(mirrored about x = 0; "mirror": false paints only the listed side). A group with no rule takes its own "color" or the
-piece's. Each piece is written to OUT_DIR/NAME_albedo.png and kept as object NAME in OUT_DIR/garments.blend, with one
+(mirrored about x = 0; "mirror": false paints only the listed side). A "crest" {"center": [x, y], "r", "rays", "color",
+"sharp" (ray exponent: above 1 pointed), "disc" (radius fraction), "base" (where the rays start), "alt" (shorter rays
+between the long ones, that fraction long), "outline": [width, RGB]} paints a rayed sun over the strips, in the rule's
+units. A group with no rule takes its own "color" or the piece's. Each piece is written to OUT_DIR/NAME_albedo.png and kept as object NAME in OUT_DIR/garments.blend, with one
 double-sided material using that texture; shell_bind.py --keep-material then skins it to the body.
 """
 import json
@@ -79,6 +81,26 @@ def rule_colour(px, py, rule, base):
         x1 = np.interp(py, s["y"], s["x1"])
         ax = np.abs(px) if s.get("mirror", True) else px
         c[(ax >= x0) & (ax <= x1)] = s["color"]
+    cr = rule.get("crest")
+    if cr:
+        dx, dy = px - cr["center"][0], py - cr["center"][1]
+        rr, aa = np.hypot(dx, dy), np.arctan2(dy, dx)
+        rays, disc, base, alt = cr.get("rays", 12), cr.get("disc", 0.42), cr.get("base", 0.55), cr.get("alt", 0)
+
+        def sun(a_):
+            tri = lambda u: np.maximum(0, 1 - np.abs((u % 1) - 0.5) * 2) ** cr.get("sharp", 0.5)
+            u = a_ * rays / (2 * np.pi) + 0.5  # a long ray points straight up
+            spike = cr["r"] * (base + (1 - base) * tri(u))
+            if alt:  # shorter rays between the long ones, "alt" times the radius
+                spike = np.maximum(spike, cr["r"] * (base + (alt - base) * tri(u + 0.5)))
+            return np.maximum(spike, cr["r"] * disc)
+        inside = rr < sun(aa)
+        ol = cr.get("outline")  # [width, RGB]: a rim round the sun and a ring round its disc
+        if ol:
+            da = ol[0] / np.maximum(rr, 1e-4)
+            c[rr - ol[0] < np.maximum.reduce([sun(aa), sun(aa + da), sun(aa - da)])] = ol[1]
+            inside &= np.abs(rr - cr["r"] * disc) > ol[0] / 2
+        c[inside] = cr["color"]
     return c
 
 
@@ -97,12 +119,20 @@ def build_piece(name, ps, objs, weld, out):
         me.uv_layers.active.data.foreach_get("uv", uv)
         uv = uv.reshape(-1, 2)
         lo, hi = uv.min(0), uv.max(0)
+        # Metres per UV unit along u and along v (a cloth tool may scale them differently): least squares over the
+        # triangle edges of |edge|^2 = (ku du)^2 + (kv dv)^2.
         me.calc_loop_triangles()
-        area3 = sum(t.area for t in me.loop_triangles)
+        co = np.zeros(len(me.vertices) * 3)
+        me.vertices.foreach_get("co", co)
+        co = co.reshape(-1, 3)
+        lv = np.zeros(len(me.loops), dtype=np.int64)
+        me.loops.foreach_get("vertex_index", lv)
         tri = np.array([t.loops[:] for t in me.loop_triangles])
-        e1, e2 = uv[tri[:, 1]] - uv[tri[:, 0]], uv[tri[:, 2]] - uv[tri[:, 0]]
-        area_uv = 0.5 * np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]).sum()
-        k = np.sqrt(area3 / max(area_uv, 1e-12))  # metres per UV unit
+        a, b = tri.ravel(), np.roll(tri, -1, axis=1).ravel()
+        d3 = ((co[lv[a]] - co[lv[b]]) ** 2).sum(1)
+        duv = (uv[a] - uv[b]) ** 2
+        k2 = np.linalg.lstsq(duv, d3, rcond=None)[0]
+        k = np.sqrt(np.maximum(k2, 1e-12))
         info.append({"g": g, "lo": lo, "hi": hi, "size": ((hi - lo) * k).tolist()})
     pos, side = shelf_pack([i["size"] for i in info], pad=0.02)
     res = int(ps.get("tex", 2048))
