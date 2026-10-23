@@ -16,7 +16,8 @@ SEGMENTS) with a position t from 0 at the head to 1 at the far end. Kinds:
            smooths further on those segments. "push" {pattern: [[t, metres], ...]} shifts those segments forward
            (negative: back) in the body frame. "also" {pattern: metres} adds that segment's vertices closer than that
            to the midline. "clear" (metres) pushes anything the smoothing left closer to the body than that back out
-           to it. "trim" (fraction) cuts the shell level at that height and drops what is above (one clean top
+           to it; "relax" [rounds, iterations] then smooths and clears in turn, so the cloth spans the hollows
+           between muscles. "trim" (fraction) cuts the shell level at that height and drops what is above (one clean top
            edge); "fill" (n) closes holes of up to n sides. Weights come from the body.
   "skirt": a ring hung from height "top" to "bottom" (fractions of the height), its section the body's own
            hull at "top" plus "offset", flaring by "flare" at the hem; "slit" [angle_degrees, from_fraction] leaves
@@ -45,7 +46,8 @@ its rim welded onto the body's neck hole where they lie within "weld" metres (de
            as a shelf. A point with no such surface (past the top of the back) wraps down onto the nearest body or head
            surface instead of running on level. Weights come from the nearest vertex of the mesh each point rests on.
   "boot":  each leg's boot as rings from "top" (metres above the floor) down to the sole, every ring the convex
-           hull of that leg's body section at its height ("band" metres thick) plus "offset": no toes or creases show.
+           hull of that leg's body section at its height ("band" metres thick) plus "offset": no toes or creases show;
+           garments named in "over" (trousers tucked in) count as part of the section.
            Below the ankle the walls only go out going down. "profile" {"l"|"r": [[height, left, right, forward,
            back], ...]} gives the art's half-extents (metres, from the calf bone, or below the ankle from the ankle's
            spot); each ring goes out to at least that outline (a quarter ellipse between neighbouring extents), then
@@ -298,6 +300,10 @@ def shell(g, arm, body, segs, fr):
     if g.get("clear", 0):  # smoothing pulls a tight shell inside the body over convex parts: push it back out
         apply_mods(o)
         clear(o, body, g["clear"])
+    for _ in range(g.get("relax", [0, 0])[0]):  # smoothed and cleared in turn, the cloth spans the hollows between
+        # muscles and rests on the peaks; one long smooth then one clear only lays it back on the body at "clear"
+        set_world_verts(o, taubin(world_verts(o), o.data, g["relax"][1]))
+        clear(o, body, g.get("clear", 0.004))
     for pat, dist in g.get("cap", {}).items():  # a smooth cap over detail the cloth hides (toes): clear the convex hull
         apply_mods(o)
         cap(o, body, segs, vi, pat, dist)
@@ -307,6 +313,20 @@ def shell(g, arm, body, segs, fr):
     for vg in [v for v in o.vertex_groups if v.name.startswith("_sm")]:
         o.vertex_groups.remove(vg)
     return o
+
+
+def taubin(V, me, its, lam=0.5, mu=-0.53):
+    """Smooths V (the mesh's vertices) without shrinking it: each iteration a step toward the neighbours' mean, then a
+    slightly larger step back, so detail goes and the overall shape stays (Taubin)."""
+    E = np.array([e.vertices[:] for e in me.edges])
+    deg = np.bincount(E.ravel(), minlength=len(V)).astype(float)[:, None]
+    V = V.copy()
+    for _ in range(its):
+        for f in (lam, mu):
+            S = np.zeros_like(V)
+            np.add.at(S, E[:, 0], V[E[:, 1]]); np.add.at(S, E[:, 1], V[E[:, 0]])
+            V = V + f * np.where(deg > 0, S / np.maximum(deg, 1) - V, 0.0)
+    return V
 
 
 def stitch(bm, src, dist):
@@ -725,8 +745,11 @@ def boot(g, arm, body, segs, fr):
     Vall, Fall = [], []
     for side in "lr":
         calf, foot = names["calf_" + side], names["foot_" + side]
-        mine = np.isin(idx, [i for i, s_ in enumerate(segs) if s_[0] in ("calf_" + side, "foot_" + side, "ball_" + side)])
-        Q = P[mine]
+        leg = [i for i, s_ in enumerate(segs) if s_[0] in ("calf_" + side, "foot_" + side, "ball_" + side)]
+        Q = P[np.isin(idx, leg)]
+        for q in g.get("over", []):  # cloth tucked into the boot (trousers): the rings go round it as well
+            W = world_verts(BUILT[q])
+            Q = np.vstack([Q, W[np.isin(classify(W, segs)[0], leg)]])
         ztop, zank = fr.floor + g["top"], foot[1][2]
         zs = np.r_[np.arange(ztop, zank, -g.get("step", 0.01)), np.linspace(zank, fr.floor + sole, 12)]
         ka = int(np.sum(zs >= zank))  # rings on the shin; the last of them is the ankle's
@@ -865,6 +888,7 @@ def preview(arm, body, objs, fr, out_dir):
 
 def main():
     body_path, spec_path, out_dir, prev = args()
+    out_dir = os.path.abspath(out_dir)  # images save relative to the .blend, not the working directory
     os.makedirs(out_dir, exist_ok=True)
     spec = json.load(open(spec_path))
     arm, body = load_body(body_path)
