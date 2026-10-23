@@ -27,6 +27,7 @@ class UAnimSequence;
 class UCameraComponent;
 class UInputAction;
 class UInputMappingContext;
+class URectLightComponent;
 class USpringArmComponent;
 
 UCLASS(Config = Game)
@@ -81,6 +82,7 @@ private:
 	void HandleInteract();
 	void UpdateClip();
 	void ApplyLookOverrides();
+	void AddPortraitLights();
 
 	AFTExploreDirector* GetDirector();
 
@@ -104,6 +106,8 @@ private:
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<URectLightComponent>> PortraitLights;
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
 	bool bWalking = false;

@@ -3,6 +3,7 @@
 #include "Animation/AnimSequence.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/RectLightComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "EngineUtils.h"
 #include "EnhancedInputComponent.h"
@@ -100,7 +101,48 @@ void AFTExploreCharacter::BeginPlay()
 		Boom->TargetArmLength = Arm;
 		Boom->SocketOffset = FVector(0.0, 0.0, Height);
 		Camera->SetRelativeRotation(FRotator(Pitch, 0.0, 0.0));
+		if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitLights")))
+		{
+			AddPortraitLights();
+		}
 	}
+}
+
+void AFTExploreCharacter::AddPortraitLights()
+{
+	// A studio three-point rig for judging a look: a key above the camera's left, a soft fill low on its right and a
+	// rim behind the pawn. The lights hang off the boom, so they keep their places round whichever side the camera
+	// shows. Boom space: the camera sits on -X looking down +X at the pawn; +Y is the camera's right.
+	struct FLightSpec
+	{
+		FVector Location;
+		float Candelas;
+		float Width;
+		FLinearColor Color;
+	};
+	const FLightSpec Specs[] = {
+		{FVector(-260.0, -190.0, 170.0), 30.f, 120.f, FLinearColor(1.f, 0.95f, 0.88f)},   // key
+		{FVector(-260.0, 230.0, 20.0), 8.f, 200.f, FLinearColor(0.85f, 0.9f, 1.f)},       // fill
+		{FVector(240.0, 140.0, 160.0), 50.f, 80.f, FLinearColor(1.f, 1.f, 1.f)},          // rim
+	};
+	const FVector Target(0.0, 0.0, 20.0);
+	for (const FLightSpec& Spec : Specs)
+	{
+		URectLightComponent* Light = NewObject<URectLightComponent>(this);
+		Light->SetupAttachment(Boom);
+		Light->SetMobility(EComponentMobility::Movable);
+		Light->SetRelativeLocation(Spec.Location);
+		Light->SetRelativeRotation((Target - Spec.Location).Rotation());
+		Light->SetIntensityUnits(ELightUnits::Candelas);
+		Light->SetIntensity(Spec.Candelas);
+		Light->SetSourceWidth(Spec.Width);
+		Light->SetSourceHeight(Spec.Width);
+		Light->SetLightColor(Spec.Color);
+		Light->SetAttenuationRadius(1200.f);
+		Light->RegisterComponent();
+		PortraitLights.Add(Light);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: portrait lights on (key, fill, rim)."));
 }
 
 void AFTExploreCharacter::ApplyLookOverrides()
