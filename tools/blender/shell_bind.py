@@ -32,6 +32,7 @@ def _args():
             i += 1
     if not a["out"] or not a["names"]:
         sys.exit("shell_bind: SHELLS.blend NAME [NAME ...] --out OUT_DIR")
+    a["shells"], a["out"] = os.path.abspath(a["shells"]), os.path.abspath(a["out"])  # Blender reads a bare relative path against its own directory
     return a
 
 
