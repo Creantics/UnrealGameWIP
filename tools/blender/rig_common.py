@@ -368,17 +368,19 @@ def proxy_weights(obj, arm, voxel=PROXY_VOXEL):
     return n
 
 
-def auto_weights(obj, arm):
+def auto_weights(obj, arm, force_proxy=False):
     """Heat-map weights from the deform joints minus NO_AUTO_WEIGHT. When the heat solve leaves more than
     PROXY_FRACTION of the vertices empty (it fails on non-manifold or disconnected pieces), the weights come
-    from a voxel proxy instead (proxy_weights). Vertices still empty get their nearest bone segment.
+    from a voxel proxy instead (proxy_weights); force_proxy always takes the proxy (heat weights can bleed across a
+    generated mesh's overlapping sheets without leaving vertices empty). Vertices still empty get their nearest bone segment.
     -> count of those."""
     saved = _heat(obj, arm)
     bind_mesh(obj, arm)
     gi = {obj.vertex_groups[n].index for n in saved if n in obj.vertex_groups and n not in NO_AUTO_WEIGHT}
-    if _weighted(obj, gi) < (1.0 - PROXY_FRACTION) * len(obj.data.vertices):
+    if force_proxy or _weighted(obj, gi) < (1.0 - PROXY_FRACTION) * len(obj.data.vertices):
         n = proxy_weights(obj, arm)
-        print("rig_common: heat weighting failed on %s, weights carried from a %d-vertex voxel proxy" % (obj.name, n))
+        print("rig_common: %s on %s, weights carried from a %d-vertex voxel proxy"
+              % ("proxy weights asked for" if force_proxy else "heat weighting failed", obj.name, n))
         bind_mesh(obj, arm)
     for name in saved:  # every deform joint has a group (possibly empty) so names resolve on export
         if saved[name] and name not in obj.vertex_groups:

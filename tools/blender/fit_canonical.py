@@ -131,7 +131,7 @@ def build_fitted_armature(rows, height):
     return arm
 
 
-def fit(meshes, landmarks, symmetrize=True, mirror=True, height=None):
+def fit(meshes, landmarks, symmetrize=True, mirror=True, height=None, proxy=False):
     zs = np.concatenate([[(o.matrix_world @ v.co).z for v in o.data.vertices] for o in meshes])
     floor, top = float(zs.min()), float(zs.max())
     if symmetrize:
@@ -141,7 +141,7 @@ def fit(meshes, landmarks, symmetrize=True, mirror=True, height=None):
     report = {"landmarks": sorted(landmarks), "landmark_residual_m": info["landmark_residual_m"],
               "floor_z": floor, "height_m": top - floor, "meshes": {}}
     for o in meshes:
-        empty = rc.auto_weights(o, arm)
+        empty = rc.auto_weights(o, arm, force_proxy=proxy)
         stats = rc.weight_post_pass(o, arm, mirror=mirror)
         stats["heat_fallback_vertices"] = empty
         report["meshes"][o.name] = stats

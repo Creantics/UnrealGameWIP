@@ -1,14 +1,16 @@
 """Rigs a mesh from prep_scan.py on the canonical skeleton and gives it the lead clips (idle, rom, walk).
 
     blender -b --factory-startup --python-exit-code 1 --python tools/blender/rig_scan.py -- PREPPED.glb \\
-        --landmarks lm.json --out name.glb [--blend name.blend] [--idle-arm -30] [--walk-arm -32] [--skirt 0.6,1.08,0.6,0.3] [--preview DIR]
+        --landmarks lm.json --out name.glb [--blend name.blend] [--idle-arm -30] [--walk-arm -32] [--skirt 0.6,1.08,0.6,0.3] [--proxy] [--preview DIR]
 
 fit_canonical fits the joints to the 14 landmarks and skins the mesh. Its `tpose` clip is then swapped for
 make_leads' idle and walk, so the clips match the other leads exactly (check_glb). The face joints get no
 weights and the mesh has no face shapes: import it with FTImportCharacter -Face=0. --idle-arm and
 --walk-arm lower the upper arms (degrees) from the scan's A-pose. --skirt HEM,TOP,FOLLOW,HALF_WIDTH reweights a tunic
 or skirt hanging between those heights (see skirt_weights). --preview renders the rest pose in x-ray
-with a red dot on each landmark joint, plus walk frames 0 and 8, front and side, into DIR.
+with a red dot on each landmark joint, plus walk frames 0 and 8, front and side, into DIR. --proxy takes the
+weights from the voxel proxy even when heat weighting leaves no vertex empty (it can still bleed across a generated
+mesh's overlapping sheets and tear the walk).
 """
 import json
 import math
@@ -29,10 +31,14 @@ import rig_fit  # noqa: E402
 def _args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
     a = {"mesh": None, "landmarks": None, "out": None, "blend": None, "idle-arm": -30.0, "walk-arm": -32.0,
-         "preview": None, "skirt": None}
+         "preview": None, "skirt": None, "proxy": False}
     i = 0
     while i < len(argv):
         k = argv[i]
+        if k == "--proxy":
+            a["proxy"] = True
+            i += 1
+            continue
         if k.startswith("--") and k[2:] in a:
             a[k[2:]] = argv[i + 1]
             i += 2
@@ -136,7 +142,7 @@ def main():
     bpy.ops.mesh.remove_doubles(threshold=1e-5)
     bpy.ops.object.mode_set(mode="OBJECT")
     mesh.name = os.path.splitext(os.path.basename(a["out"]))[0]
-    arm, report = fc.fit(meshes, landmarks)
+    arm, report = fc.fit(meshes, landmarks, proxy=a["proxy"])
     if a["skirt"]:
         report["skirt_vertices"] = skirt_weights(mesh, *a["skirt"])
     bpy.data.actions.remove(bpy.data.actions["tpose"])
