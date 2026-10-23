@@ -161,7 +161,7 @@ def main():
     if a["blend"]:
         bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a["blend"]))
     if a["preview"]:
-        preview(arm, mesh, a["preview"])
+        preview(arm, mesh, os.path.abspath(a["preview"]))  # the renderer reads a bare relative path against its own directory
     print("rig_scan: %s, landmark residual %.4f m, weights %s, skirt %s, %d bytes -> %s"
           % (info, report["landmark_residual_m"], report["meshes"][mesh.name], report.get("skirt_vertices"),
              os.path.getsize(glb), glb))

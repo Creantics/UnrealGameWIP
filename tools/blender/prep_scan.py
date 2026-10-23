@@ -298,6 +298,7 @@ def shrink_images(limit):
 
 def render_grid(obj, outdir):
     """Orthographic front (looking +Y) and side (looking -X) views on a white background with a 5 cm grid."""
+    outdir = os.path.abspath(outdir)  # the renderer reads a bare relative path against its own directory
     os.makedirs(outdir, exist_ok=True)
     sc = bpy.context.scene
     sc.render.engine = "BLENDER_WORKBENCH"
