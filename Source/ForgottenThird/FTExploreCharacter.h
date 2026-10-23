@@ -7,6 +7,10 @@
 //
 // The body plays its idle or walk clip in single-node mode, switched on ground speed, with the
 // walk's play rate following the speed. There is no blend, so the switch pops.
+//
+// The body, its clips and any extra pieces (clothes, hair) can be swapped from config without a
+// rebuild, under [/Script/ForgottenThird.FTExploreCharacter] in Config/UserGame.ini (local, not
+// committed) or DefaultGame.ini. Pieces follow the body's pose (leader pose) and face shapes.
 
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
@@ -21,7 +25,7 @@ class UInputAction;
 class UInputMappingContext;
 class USpringArmComponent;
 
-UCLASS()
+UCLASS(Config = Game)
 class FORGOTTENTHIRD_API AFTExploreCharacter : public ACharacter
 {
 	GENERATED_BODY()
@@ -33,6 +37,16 @@ public:
 	TObjectPtr<UAnimSequence> IdleClip;
 	UPROPERTY(EditAnywhere, Category = "Explore|Look")
 	TObjectPtr<UAnimSequence> WalkClip;
+	// Config overrides, loaded at BeginPlay; empty keeps the built-in Devin.
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
+	FSoftObjectPath BodyMeshPath;
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
+	FSoftObjectPath IdleClipPath;
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
+	FSoftObjectPath WalkClipPath;
+	// Skeletal meshes worn over the body, posed by it.
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
+	TArray<FSoftObjectPath> PiecePaths;
 	// The ground speed (cm/s) at which the walk clip plays at rate 1.
 	UPROPERTY(EditAnywhere, Category = "Explore|Look")
 	float WalkClipSpeed = 140.f;
@@ -62,6 +76,7 @@ private:
 	void HandleRunStop();
 	void HandleInteract();
 	void UpdateClip();
+	void ApplyLookOverrides();
 
 	AFTExploreDirector* GetDirector();
 
@@ -82,6 +97,9 @@ private:
 	TObjectPtr<UInputAction> RunAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> InteractAction;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
 	bool bWalking = false;

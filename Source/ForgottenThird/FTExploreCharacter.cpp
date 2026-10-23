@@ -19,6 +19,7 @@
 
 #include "FTExploreDirector.h"
 #include "FTMeshFacing.h"
+#include "ForgottenThird.h"
 
 namespace
 {
@@ -75,6 +76,7 @@ void AFTExploreCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
+	ApplyLookOverrides();
 	if (USkeletalMesh* Body = GetMesh()->GetSkeletalMeshAsset())
 	{
 		// Turn the body to face the capsule's forward (+X).
@@ -82,6 +84,56 @@ void AFTExploreCharacter::BeginPlay()
 	}
 	GetMesh()->SetAnimationMode(EAnimationMode::AnimationSingleNode);
 	UpdateClip();
+}
+
+void AFTExploreCharacter::ApplyLookOverrides()
+{
+	if (!BodyMeshPath.IsNull())
+	{
+		if (USkeletalMesh* Body = Cast<USkeletalMesh>(BodyMeshPath.TryLoad()))
+		{
+			GetMesh()->SetSkeletalMesh(Body);
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no skeletal mesh at %s; keeping the default body."), *BodyMeshPath.ToString());
+		}
+	}
+	auto LoadClip = [](const FSoftObjectPath& Path, TObjectPtr<UAnimSequence>& Clip)
+	{
+		if (Path.IsNull())
+		{
+			return;
+		}
+		if (UAnimSequence* Loaded = Cast<UAnimSequence>(Path.TryLoad()))
+		{
+			Clip = Loaded;
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no anim sequence at %s."), *Path.ToString());
+		}
+	};
+	LoadClip(IdleClipPath, IdleClip);
+	LoadClip(WalkClipPath, WalkClip);
+	for (const FSoftObjectPath& Path : PiecePaths)
+	{
+		USkeletalMesh* PieceMesh = Cast<USkeletalMesh>(Path.TryLoad());
+		if (!PieceMesh)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no skeletal mesh at %s; piece skipped."), *Path.ToString());
+			continue;
+		}
+		USkeletalMeshComponent* Piece = NewObject<USkeletalMeshComponent>(this);
+		Piece->SetupAttachment(GetMesh());
+		Piece->SetSkeletalMesh(PieceMesh);
+		Piece->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Piece->RegisterComponent();
+		Piece->SetLeaderPoseComponent(GetMesh());
+		Pieces.Add(Piece);
+	}
+	const USkeletalMesh* Body = GetMesh()->GetSkeletalMeshAsset();
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: body %s, %d pieces."), Body ? *Body->GetName() : TEXT("none"), Pieces.Num());
 }
 
 void AFTExploreCharacter::CreateInputObjects()

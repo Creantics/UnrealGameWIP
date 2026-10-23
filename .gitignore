@@ -30,3 +30,6 @@ Content/Voice/
 
 # Python bytecode (Blender scripts)
 __pycache__/
+
+# Local config overrides (e.g. which private character the explore pawn wears)
+Config/User*.ini
