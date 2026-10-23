@@ -24,7 +24,9 @@ SPEC (lengths in metres, relative to the eye line and the head's mirror plane as
 the two side-on outlines alone would leave square in plan. A surface shell skips faces turned backwards (normal y above "back", default 0.3) so an outline cast
 through the head takes the front only; "lift" moves the shell off the skin before the thickness is added. "level"
 is the multires level the surface shells are cut from; the cut border is smoothed "rim_smooth" times (default 4) so
-it does not follow the face edges in steps; pinholes inside it are closed over "close" passes (default 3); "taper" (default 0) thins the shell
+it does not follow the face edges in steps; pinholes inside it are closed over "close" passes (default 3); "max_edge"
+leaves out faces with a longer edge (a generated mesh's slivers) and "min_island" drops patches of fewer faces;
+"refine" first splits the head's edges round the outline down to that length so a coarse mesh cuts a clean border; "taper" (default 0) thins the shell
 from its full thickness to none at the rim over that distance, so its edge is not a step. "head_color" is the head's colour in the preview.
 """
 import json
@@ -121,17 +123,41 @@ class Shells:
         me = self.head()
         bm = bmesh.new()
         bm.from_mesh(me)
+        front = np.asarray(sh["front"], dtype=float)
+        refine = float(sh.get("refine", 0.0))
+        if refine > 0:
+            # a coarse mesh cuts a jagged outline: split the edges round the outline (flat, so the skin keeps its
+            # shape) until none is longer than `refine`
+            lo, hi = front.min(0) - 0.01, front.max(0) + 0.01
+            if sh.get("mirror"):
+                lo[0], hi[0] = min(lo[0], -hi[0]), max(hi[0], -lo[0])
+            for _ in range(8):
+                long = []
+                for e in bm.edges:
+                    m = (e.verts[0].co + e.verts[1].co) * 0.5 - Vector(self.origin)
+                    if lo[0] < m.x < hi[0] and lo[1] < m.z < hi[1] and e.calc_length() > refine:
+                        long.append(e)
+                if not long:
+                    break
+                bmesh.ops.subdivide_edges(bm, edges=long, cuts=1, use_grid_fill=True)
+                bmesh.ops.triangulate(bm, faces=[f for f in bm.faces if len(f.verts) > 4])
+            bmesh.ops.dissolve_degenerate(bm, dist=1e-6, edges=bm.edges)
+            bm.normal_update()
         bm.faces.ensure_lookup_table()
+        bm.verts.index_update()
         c = np.array([f.calc_center_median() for f in bm.faces]) - self.origin
         n = np.array([f.normal for f in bm.faces])
         keep = n[:, 1] < float(sh.get("back", 0.3))
-        front = np.asarray(sh["front"], dtype=float)
         hit = inside(front, c[:, [0, 2]])
         if sh.get("mirror"):
             hit |= inside(front * [-1, 1], c[:, [0, 2]])
         keep &= hit
         if "side" in sh:
             keep &= inside(sh["side"], c[:, [1, 2]])
+        # a generated mesh has long slivers whose centre falls inside while a corner reaches far out of it
+        if "max_edge" in sh:
+            longest = np.array([max(e.calc_length() for e in f.edges) for f in bm.faces])
+            keep &= longest <= float(sh["max_edge"])
         # a face dropped inside the region (a normal or a centre just over a test) leaves a pinhole: take back the
         # faces whose every corner is shared with a kept face; the rim's faces have outer corners, so it stays put
         for _ in range(int(sh.get("close", 3))):
@@ -144,11 +170,33 @@ class Shells:
                 break
             keep |= add
         bmesh.ops.delete(bm, geom=[f for f, k in zip(bm.faces, keep) if not k], context="FACES")
+        # shards the outline clips off the main patch (a few faces joined to it by a corner or not at all)
+        min_island = int(sh.get("min_island", 0))
+        if min_island:
+            seen, gone = set(), []
+            for f in bm.faces:
+                if f in seen:
+                    continue
+                isl, stack = [], [f]
+                seen.add(f)
+                while stack:
+                    g = stack.pop()
+                    isl.append(g)
+                    for e in g.edges:
+                        for h in e.link_faces:
+                            if h not in seen:
+                                seen.add(h)
+                                stack.append(h)
+                if len(isl) < min_island:
+                    gone += isl
+            bmesh.ops.delete(bm, geom=gone, context="FACES")
+            bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context="VERTS")
         # the cut follows face edges: smooth the border so it does not show the stair steps
         rim = [v for v in bm.verts if v.is_boundary]
         for _ in range(int(sh.get("rim_smooth", 4))):
             bmesh.ops.smooth_vert(bm, verts=rim, factor=0.5, use_axis_x=True, use_axis_y=True, use_axis_z=True)
         lift = float(sh.get("lift", 0.0002))
+        bm.normal_update()
         for v in bm.verts:
             v.co += v.normal * lift
         # a shell of even thickness ends in a step at its rim; "taper" thins it to nothing over that distance
@@ -167,13 +215,14 @@ class Shells:
         sol = o.modifiers.new("thickness", "SOLIDIFY")
         sol.thickness = float(sh.get("thickness", 0.0015))
         sol.offset = 1.0
-        sol.use_even_offset = True
+        sol.use_even_offset = False
         if taper > 0:
             vg = o.vertex_groups.new(name="taper")
             for i, x in enumerate(wt):
                 vg.add([i], float(x), "REPLACE")
             sol.vertex_group, sol.thickness_vertex_group = vg.name, 0.0
         bake(o)
+        o.data.shade_smooth()
         return o, int(keep.sum())
 
     def prism(self, sh):

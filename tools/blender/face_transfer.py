@@ -15,7 +15,15 @@ sparse morph targets small. The eye-look shapes carry only the lids following th
 A scan has no tongue, so tongueOut pushes the lower lip forward instead: Unreal drops an all-zero target,
 and the import needs all 56. The jaw weights are replaced by the proof head's jaw mask carried the same way
 (heat weighting can't place that bone), or by face.json's "jaw" cut (jaw_mask) when the scan's mouth is far
-wider than the proof's.
+wider than the proof's. face.json's "slit" ({"z", "half_width", "zone", "back_y"}) is for a mouth opened by
+mouth_cut.py: near the cut (within "zone" of z, in front of "back_y") the jaw weight goes to 0 above z and 1 below,
+fully in the middle and easing out to the corners at "half_width", faded into the carried weights, so the two lips
+part though they lie a millimetre apart. mouth_cut.py's pocket (its "mouth" material) is split the same way at z and
+takes no shape deltas: the jaw bone alone opens it.
+"mouth_parts": true (or a list from "bag", "teeth", "tongue") then adds the proof's mouth bag, teeth and tongue to
+the mesh, carried through the same warp with their own weights (head, jaw, tongue_01..03), materials and shape
+deltas; leave out "bag" when mouth_cut.py made the pocket. "mouth_parts_fit" ({"scale", "offset"}) moves them as one
+so they sit inside that pocket.
 Import the result with FTImportCharacter -Face=1. --preview renders the warped proof over the scan, then
 Basis, jawOpen (key plus jaw bone), mouthSmileLeft, mouthPucker, eyeBlinkLeft and browInnerUp, front view.
 """
@@ -171,6 +179,104 @@ def jaw_mask(SV, spec):
     return {int(i): float(w[i]) for i in np.nonzero(w > 1e-3)[0]}
 
 
+def slit_across(x, spec):
+    """How fully the slit overrides the jaw weight at x: 1 in the middle, easing to 0 at the lip corners (half_width)
+    so the corners keep their carried weight and the mouth opens as a lens, not a box."""
+    hw = spec["half_width"]
+    return _smooth((hw - np.abs(x)) / max(spec["zone"], 0.5 * hw))
+
+
+def slit_weights(SV, jaw, spec):
+    """Overrides jaw weights next to a cut mouth: 0 above the slit, 1 below, faded out over "zone" (see the doc)."""
+    sz, zone, by = spec["z"], spec["zone"], spec["back_y"]
+    y, z = SV[:, 1], SV[:, 2]
+    s = _smooth(1.0 - np.abs(z - sz) / zone) * slit_across(SV[:, 0], spec) * (y < by)
+    out = dict(jaw)
+    for i in np.nonzero(s > 1e-3)[0]:
+        j = (1.0 - s[i]) * jaw.get(int(i), 0.0) + s[i] * float(z[i] < sz)
+        if j > 1e-3:
+            out[int(i)] = float(j)
+        else:
+            out.pop(int(i), None)
+    return out
+
+
+def pocket_verts(mesh):
+    """Vertices of mouth_cut.py's pocket: those whose faces all use its "mouth" material."""
+    mi = [k for k, m in enumerate(mesh.data.materials) if m and m.name.split(".")[0] == "mouth"]
+    if not mi:
+        return np.zeros(0, dtype=int)
+    other = set()
+    mine = set()
+    for p in mesh.data.polygons:
+        (mine if p.material_index == mi[0] else other).update(p.vertices)
+    return np.array(sorted(mine - other), dtype=int)
+
+
+def pocket_weights(SV, jaw, pocket, spec, blend=0.003):
+    """The pocket follows the jaw below the slit and the head above it, split within `blend` of z, so its floor drops
+    with the lower teeth; toward its ends the split eases into the carried weights as the lips' does (slit_across)."""
+    out = dict(jaw)
+    s = slit_across(SV[pocket, 0], spec)
+    for k, i in enumerate(pocket):
+        split = float(_smooth(0.5 + (spec["z"] - SV[i, 2]) / (2.0 * blend)))
+        j = (1.0 - s[k]) * jaw.get(int(i), 0.0) + s[k] * split
+        if j > 1e-3:
+            out[int(i)] = float(j)
+        else:
+            out.pop(int(i), None)
+    return out
+
+
+def fit_parts(P, spec):
+    """face.json "mouth_parts_fit" {"scale": [sx, sy, sz], "offset": [dx, dy, dz]}: the parts scaled about the middle of
+    their front (x 0, their frontmost y, the middle of their height), then moved."""
+    if not spec:
+        return P
+    pivot = np.array([0.0, P[:, 1].min(), 0.5 * (P[:, 2].min() + P[:, 2].max())])
+    scale = np.array(spec.get("scale", (1.0, 1.0, 1.0)))
+    return pivot + (P - pivot) * scale + np.array(spec.get("offset", (0.0, 0.0, 0.0)))
+
+
+def add_mouth_parts(mesh, HB, WV, which, fit=None):
+    """Appends the proof's bag, teeth and tongue (positions WV, the warped proof) to `mesh` with their weights and
+    materials, placed by fit_parts. Returns (the proof vertex index of each new vertex in order, their positions)."""
+    import bmesh
+    isl = np.array(HB.island)
+    names = ("bag", "teeth", "tongue") if which is True else which
+    keep = {"bag": (ph.BAG,), "teeth": (ph.TEETH_U, ph.TEETH_L), "tongue": (ph.TONGUE,)}
+    keep = tuple(i for n in names for i in keep[n])
+    parts = [i for i in range(len(isl)) if isl[i] in keep]
+    new = {pi: k for k, pi in enumerate(parts)}
+    P = fit_parts(WV[parts], fit)
+    mats = {}
+    for name in ("teeth", "tongue", "mouth"):
+        m = bpy.data.materials.get("ne_" + name) or bpy.data.materials.new("ne_" + name)
+        m.diffuse_color = ph.MAT_COLOR[name] + (1.0,)
+        m.use_nodes = True
+        m.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = m.diffuse_color
+        if m.name not in mesh.data.materials:
+            mesh.data.materials.append(m)
+        mats[ph.MAT[name]] = list(mesh.data.materials).index(m)
+    bm = bmesh.new()
+    bm.from_mesh(mesh.data)
+    n0 = len(bm.verts)
+    for p in P:
+        bm.verts.new(p)
+    bm.verts.ensure_lookup_table()
+    for idx, mat in HB.faces:
+        if all(i in new for i in idx):
+            f = bm.faces.new([bm.verts[n0 + new[i]] for i in idx])
+            f.material_index = mats[mat]
+    bm.to_mesh(mesh.data)
+    bm.free()
+    for k, pi in enumerate(parts):
+        for bone, w in HB.weights[pi].items():
+            g = mesh.vertex_groups.get(bone) or mesh.vertex_groups.new(name=bone)
+            g.add([n0 + k], w, "REPLACE")
+    return np.array(parts), P
+
+
 def _smooth(t):
     t = np.clip(t, 0.0, 1.0)
     return t * t * (3 - 2 * t)
@@ -295,6 +401,14 @@ def main():
     fall = np.array([1.0 if d <= NEAR else max(0.0, 1.0 - (d - NEAR) / (FAR - NEAR)) for d, _, _ in cw])
     fall = fall * fall * (3 - 2 * fall)
 
+    parts = None
+    if face.get("mouth_parts"):
+        parts, PP = add_mouth_parts(mesh, HB, WV, face["mouth_parts"], face.get("mouth_parts_fit"))
+    n_scan = len(SV)
+    if parts is not None:
+        SV = np.vstack([SV, PP])
+    pocket = pocket_verts(mesh) if "slit" in face else np.zeros(0, dtype=int)
+
     mesh.shape_key_add(name="Basis", from_mix=False)
     moved = {}
     for sname in fsp.ALL_SHAPES:
@@ -307,6 +421,9 @@ def main():
             for k, (vi, (_d, corners, w)) in enumerate(zip(region, cw)):
                 if fall[k] > 0.0:
                     D[vi] = fall[k] * (w @ DW[corners])
+            if parts is not None:
+                D[n_scan:] = DW[parts]
+            D[pocket] = 0.0
             D[np.abs(D) < 1e-5] = 0.0
         kb = mesh.shape_key_add(name=sname, from_mix=False)
         kb.data.foreach_set("co", (SV + D).astype(np.float32).ravel())
@@ -325,6 +442,13 @@ def main():
             j = float(fall[k] * (w @ wj[corners]))
             if j > 1e-3:
                 jaw[int(vi)] = j
+    if "slit" in face:
+        jaw = slit_weights(SV[:n_scan], jaw, face["slit"])
+        jaw = pocket_weights(SV, jaw, pocket, face["slit"])
+    if parts is not None:
+        for k, pi in enumerate(parts):
+            if HB.weights[pi].get("jaw", 0.0) > 0.0:
+                jaw[n_scan + k] = HB.weights[pi]["jaw"]
     set_jaw_weights(mesh, arm, jaw)
     chin = int(region[np.argmin(np.linalg.norm(SV[region] - dst[names.index("chin")], axis=1))])
     sign = jaw_sign(arm, mesh, chin)
