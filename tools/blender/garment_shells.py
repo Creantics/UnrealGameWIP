@@ -50,7 +50,9 @@ its rim welded onto the body's neck hole where they lie within "weld" metres (de
            "hull" (metres) each ring instead hugs the body and head surface at its height within "neck" metres of the bone
            (default 1.6 times the larger half-width; the shoulders at that height stay out), that far off it, also hugging
            the garments named in "over" (built earlier in the spec, so the collar lies on top of them); "radial"
-           {"front"|"back": [[s, metres], ...]} widens the rings that much at the front or back (s 0 bottom row, 1 top).
+           {"front"|"back": [[s, metres], ...]} widens the rings that much at the front or back (s 0 bottom row, 1 top);
+           "gap" (degrees) leaves an opening at the front and "dip" (metres) lowers the rings there (a stand collar
+           following the neckline).
   "drape": cloth laid over the shoulders from above (a yoke): a polar grid round "bone"'s head from the body and head
            surface at height "ztop" (fraction; the neck is what lies within "neck", default 0.15 m, of the bone) plus "hull"
            metres out a further "r1" ([left, forward] metres), each
@@ -65,7 +67,9 @@ its rim welded onto the body's neck hole where they lie within "weld" metres (de
            Below the ankle the walls only go out going down. "profile" {"l"|"r": [[height, left, right, forward,
            back], ...]} gives the art's half-extents (metres, from the calf bone, or below the ankle from the ankle's
            spot); each ring goes out to at least that outline (a quarter ellipse between neighbouring extents), then
-           "smooth" passes even the rings out along the boot and around it (default 6). The
+           "smooth" passes even the rings out along the boot and around it (default 6). "bands" [[height, width, metres],
+           ...] then stand those rings out (straps, a turned-down cuff at the top; give a small "step", the ring spacing,
+           default 0.01, so their edges are crisp). The
            last "sole" metres are a block following the outline down to "below" metres under the body's floor (the
            foot stands on it), closed underneath. Weights come from the
            nearest body vertex.
@@ -73,7 +77,10 @@ Colour: "color" is the base RGB (sRGB, as picked from the art); "rules" is a lis
 over per-vertex arrays: x (body left, metres from the midline), f (forward, metres from the body's centre plane),
 z (height fraction), t (segment position), ang (radians around the segment axis), ax=abs(x), front=f>0, and
 m("pattern") for "on a segment matching pattern". "crest" {"center": [x, z], "r": metres, "rays": n, "color": RGB,
-"sharp": ray exponent (0.5 rounded petals, above 1 pointed rays)} paints a rayed sun disc on the front. Colours are evaluated per texel into a texture per garment ("tex", default 1024).
+"sharp": ray exponent (0.5 rounded petals, above 1 pointed rays), "disc" (radius fraction, 0.42), "base" (where the
+rays start, 0.55), "alt" (shorter rays between, that fraction long), "outline" [metres, RGB] (a rim round the sun
+and its disc)}
+paints a rayed sun disc on the front. Colours are evaluated per texel into a texture per garment ("tex", default 1024).
 """
 import fnmatch
 import json
@@ -741,20 +748,22 @@ def collar(g, arm, body, segs, fr):
     b = arm.data.bones[g.get("bone", "neck_01")]
     c = np.array(arm.matrix_world @ b.head_local)
     a = -math.pi + (np.arange(n) + 0.5) / n * 2 * math.pi
+    dip = g.get("dip", 0.0) * np.maximum(np.sin(a), 0) ** 2  # metres the rings drop at the front (a neckline)
     V = []
     for k in range(rows + 1):
         s = k / rows
         rl, rf = (np.array(g["r0"]) * (1 - s) + np.array(g["r1"]) * s)
         zw = fr.z(g["z0"] + (g["z1"] - g["z0"]) * s)
         if g.get("hull") is not None:  # hug the neck: per angle, the body/head surface at this height plus "hull" metres
+            za = zw - dip  # each angle's height: the ring dips at the front
             def ring(meshes, cap=None):
                 Q = np.vstack([world_verts(m) for m in meshes])
-                Q = Q[np.abs(Q[:, 2] - zw) < 0.008] - c
+                Q = Q[np.abs(Q[:, 2] - zw + dip.max() / 2) < 0.008 + dip.max() / 2] - c
                 qa = np.arctan2(Q @ fr.fwd, Q @ fr.left); qr = np.hypot(Q @ fr.fwd, Q @ fr.left)
                 near = qr < (g.get("neck", 1.6 * max(rl, rf)) if cap is None else np.inf)  # the neck, not the shoulders
                 out = []
                 for k2, ai in enumerate(a):
-                    w = near & (np.abs((qa - ai + math.pi) % (2 * math.pi) - math.pi) < 0.15)
+                    w = near & (np.abs((qa - ai + math.pi) % (2 * math.pi) - math.pi) < 0.15) & (np.abs(Q[:, 2] + c[2] - za[k2]) < 0.008)
                     if cap is not None:
                         w &= qr < cap[k2]
                     out.append(qr[w].max(initial=0.0))
@@ -765,14 +774,16 @@ def collar(g, arm, body, segs, fr):
             for _ in range(3):
                 rad = 0.25 * np.roll(rad, 1) + 0.5 * rad + 0.25 * np.roll(rad, -1)
             rad = rad + interp(g.get("radial", {}).get("front", [[0, 0.0]]), s) * np.maximum(np.sin(a), 0)                 + interp(g.get("radial", {}).get("back", [[0, 0.0]]), s) * np.maximum(-np.sin(a), 0)
-            for ai, ri in zip(a, rad):
+            for ai, ri, zi in zip(a, rad, za):
                 p = c + (fr.left * math.cos(ai) + fr.fwd * math.sin(ai)) * (ri + g["hull"])
-                V.append([p[0], p[1], zw])
+                V.append([p[0], p[1], zi])
             continue
-        for ai in a:
+        for ai, di in zip(a, dip):
             p = c + fr.left * rl * math.cos(ai) + fr.fwd * rf * math.sin(ai)
-            V.append([p[0], p[1], zw])
-    F = [[k * n + i, k * n + (i + 1) % n, (k + 1) * n + (i + 1) % n, (k + 1) * n + i] for k in range(rows) for i in range(n)]
+            V.append([p[0], p[1], zw - di])
+    gap = math.radians(g.get("gap", 0)) / 2  # a stand collar's opening at the front
+    F = [[k * n + i, k * n + (i + 1) % n, (k + 1) * n + (i + 1) % n, (k + 1) * n + i] for k in range(rows) for i in range(n)
+         if abs((a[i] + math.pi / n - math.pi / 2 + math.pi) % (2 * math.pi) - math.pi) >= gap]
     o = new_object(g["name"], np.array(V), F, arm)
     s = np.repeat(np.arange(rows + 1) / rows, n)
     copy_weights(o, body, None, {"spine_05": 1 - s, g.get("bone", "neck_01"): s})
@@ -957,6 +968,8 @@ def boot(g, arm, body, segs, fr):
         for _ in range(g.get("smooth", 6)):  # the art's outline is cut a pixel row at a time: even it out along the boot
             R[1:-1] = 0.25 * R[:-2] + 0.5 * R[1:-1] + 0.25 * R[2:]
             R = np.maximum(0.25 * np.roll(R, 1, 1) + 0.5 * R + 0.25 * np.roll(R, -1, 1), H)
+        for h, w, d in g.get("bands", []):  # raised straps and a turned-down cuff: [height, width, metres out]
+            R += (d * np.clip((w / 2 - np.abs(zs - fr.floor - h)) / 0.003 + 0.5, 0, 1))[:, None]
         low = Q[Q[:, 2] < fr.floor + sole]  # toes below the last ring stay inside the sole too
         Lw = np.c_[(low - C[-1]) @ fr.left, (low - C[-1]) @ fr.fwd]
         inner = np.maximum(R[-1], hull_radius(Lw, a) + off if len(Lw) > 2 else 0)
@@ -1001,10 +1014,23 @@ def rule_colours(V, g, segs, fr):
     if cr:
         dx, dz = x - cr["center"][0], (z - cr["center"][1]) * fr.height
         rr = np.hypot(dx, dz); aa = np.arctan2(dz, dx)
-        rays = cr.get("rays", 12)
-        spike = cr["r"] * (0.55 + 0.45 * np.maximum(0, 1 - np.abs(((aa * rays / (2 * math.pi)) % 1) - 0.5) * 2) ** cr.get("sharp", 0.5))
-        sun = ((rr < cr["r"] * 0.42) | (rr < spike)) & (f > 0)
-        col[sun] = cr["color"]
+        rays, disc, base, alt = cr.get("rays", 12), cr.get("disc", 0.42), cr.get("base", 0.55), cr.get("alt", 0)
+
+        def sun(a_):
+            tri = lambda u: np.maximum(0, 1 - np.abs((u % 1) - 0.5) * 2) ** cr.get("sharp", 0.5)
+            u = a_ * rays / (2 * math.pi) + 0.5  # a long ray points straight up
+            spike = cr["r"] * (base + (1 - base) * tri(u))
+            if alt:  # shorter rays between the long ones, "alt" times the radius
+                spike = np.maximum(spike, cr["r"] * (base + (alt - base) * tri(u + 0.5)))
+            return np.maximum(spike, cr["r"] * disc)
+        inside = (rr < sun(aa)) & (f > 0)
+        ol = cr.get("outline")  # [metres, RGB]: a rim round the sun
+        if ol:
+            da = ol[0] / np.maximum(rr, 1e-4)
+            near = (rr - ol[0] < np.maximum.reduce([sun(aa), sun(aa + da), sun(aa - da)])) & (f > 0)
+            col[near] = ol[1]
+            inside &= np.abs(rr - cr["r"] * disc) > ol[0] / 2  # and a ring between the disc and the rays
+        col[inside] = cr["color"]
     return col
 
 
