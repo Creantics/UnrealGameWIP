@@ -12,6 +12,13 @@ Private notes (character references, concept-art review, script status) are in `
   - `translate_face_landmarks` is local (only the region that owns the landmark moves). The face model takes only 20-45% of each move, so the residual is pushed again (4 pushes leave about 2 mm).
   - Measuring: the plugin's own 2D face tracker runs on references and renders alike. Ratios normalised by the outer eye-corner span (eye spacing, eye width and opening, mouth width, lip heights, eye-to-mouth, nose width) are compared. Round 7 is within about 1% on the eyes and mouth; the nose is about 7% wide.
   - Next: one more round (lip tint, brow colour, nose width, cranium survey), then blind per-criterion readers (face shape, eyes/brow, nose, mouth, skin tone, facial hair, build; 9/10 each), then rig and import.
+  - Update (later 2026-10-24): blind reader rounds are running. Round A scored 6-7 per criterion with an 8 on the nose; Round B is a variant survey rendered in one editor pass (each variant changes one thing, and the base is restored between variants, because changes otherwise pile up). Findings:
+    - Swapping a groom (beard, brows, lashes) on an actor that's already spawned does nothing until the actor is respawned.
+    - Body constraint changes (shoulders, arms, chest, neck) do land. Earlier rounds just moved them too little to see.
+    - Skin: `u` sets how dark the skin is, `v` how pink (lower is more olive). The face "accent" redness defaults to the neutral 0.5; 0 gives green/yellow patches on the forehead, nose and chin, and about 0.3 is the safe low end.
+    - Lip makeup at half opacity barely shows; the lips accent region moves the colour more.
+    - Groom asset settings (curve decimation, hair width) can be overridden in memory for a variant and restored afterwards, through nested property paths.
+  - Duy's and the Third's starting faces come from the same preset-blend fit, driven by tracker ratios on their references. The tracker-to-landmark offset is calibrated on Devin.
 - **NEWEST (2026-10-22 late night, main 701e206): new yoke and collar.**
   - `garment_shells.py` has a `drape` kind: cloth laid over the shoulders from above, wrapping down the back onto the nearest surface. The collar has a `neck` search radius and finds its `over` rings with their own cap.
   - The private garment_fit gained two options:
