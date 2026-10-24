@@ -5,6 +5,7 @@ blender -b --factory-startup --python-exit-code 1 --python tools/blender/groom_p
 Each patch is a band on the surface, given in Unreal axes (cm, +Y is the face direction, Z up) as functions of the
 distance x from the centre line:
   "x":      [a, soft]          keep |x| < a
+  "xmin":   [a, soft]          keep |x| > a               (optional: a bare strip down the centre line)
   "top":    [z0, k, soft]      keep z < z0 + k*x*x        (a smile-shaped upper edge when k > 0)
   "bottom": [z0, k, soft]      keep z > z0 + k*x*x        (follow a jaw line that rises toward the ears)
   "front":  [y0, k, soft]      keep y > y0 - k*x*x        (how far the band reaches back under the chin)
@@ -55,6 +56,8 @@ def mask(pt, p, n):
         return 0.0
     x2 = p.x * p.x
     m = ramp(pt["x"][0] - abs(p.x), pt["x"][1])
+    if "xmin" in pt:
+        m *= ramp(abs(p.x) - pt["xmin"][0], pt["xmin"][1])
     if "top" in pt:
         z0, k, w = pt["top"]
         m *= ramp(z0 + k * x2 - p.z, w)
