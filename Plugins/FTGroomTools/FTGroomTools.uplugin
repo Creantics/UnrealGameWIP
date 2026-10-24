@@ -1,0 +1,23 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "FT Groom Tools",
+	"Description": "Editor function that writes a groom asset's strands to a flat file, so a stock groom can be mirrored, trimmed or recut outside Unreal and reimported as Alembic.",
+	"Category": "Editor",
+	"EnabledByDefault": true,
+	"CanContainContent": false,
+	"Modules": [
+		{
+			"Name": "FTGroomTools",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "HairStrands",
+			"Enabled": true
+		}
+	]
+}

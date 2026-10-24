@@ -9,11 +9,15 @@ distance x from the centre line:
   "top":    [z0, k, soft]      keep z < z0 + k*x*x        (a smile-shaped upper edge when k > 0)
   "bottom": [z0, k, soft]      keep z > z0 + k*x*x        (follow a jaw line that rises toward the ears)
   "front":  [y0, k, soft]      keep y > y0 - k*x*x        (how far the band reaches back under the chin)
+  "top_curve":    [[[a, z], ..], soft]   keep z below a line through (|x|, z) points (an arched brow's upper edge)
+  "bottom_curve": [[[a, z], ..], soft]   keep z above such a line
 Each limit fades to nothing over its own "soft" width, so a wide soft top gives a sparse upper edge over a dense
 lower one. Surface facing away from the face is skipped. Roots are spread at "density" per cm2 times the mask, then
 each curve leaves the surface along the downward tangent mixed with the normal ("normal_mix"), "length" [min, max]
 cm, with "points" points and a little "jitter". Under a chin, where the surface faces down, the curves comb back
-toward the neck. A patch may override any of the curve settings given at the top level.
+toward the neck. "dir": [[a, deg], ..] replaces the downward tangent with a direction in the face plane that turns
+with |x| (0 points away from the centre line, 90 up), for brows that grow up at the inner end and out along the
+rest. A patch may override any of the curve settings given at the top level.
 
 spec.json: {"mesh": fbx, "material": 0, "out": abc, "preview": png, "seed": 1, "density": .., "length": [..],
             "points": 5, "normal_mix": .3, "jitter": .1, "width": .01, "patches": [{"x": .., "top": .., ...}],
@@ -27,7 +31,7 @@ the wardrobe item pipeline's BakedGroomTexture (import as a non-sRGB vector map)
 The FBX is an Unreal skeletal mesh export (Blender imports it at 1/100 with Y flipped); the curves are written in
 Blender's frame at 100x scale, which Unreal's default Alembic conversion turns back into the mesh's own frame.
 """
-import json, random, sys
+import json, math, random, sys
 import bpy
 from mathutils import Vector
 
@@ -51,6 +55,15 @@ def ramp(d, w):
     return t * t * (3 - 2 * t)
 
 
+def lerp_pts(a, pts):  # piecewise linear through [(a, value), ..], held flat past the ends
+    if a <= pts[0][0]:
+        return pts[0][1]
+    for (a0, v0), (a1, v1) in zip(pts, pts[1:]):
+        if a <= a1:
+            return v0 + (v1 - v0) * (a - a0) / (a1 - a0)
+    return pts[-1][1]
+
+
 def mask(pt, p, n):
     if n.y < -0.3:
         return 0.0
@@ -67,6 +80,10 @@ def mask(pt, p, n):
     if "front" in pt:
         y0, k, w = pt["front"]
         m *= ramp(p.y - (y0 - k * x2), w)
+    if "top_curve" in pt:
+        m *= ramp(lerp_pts(abs(p.x), pt["top_curve"][0]) - p.z, pt["top_curve"][1])
+    if "bottom_curve" in pt:
+        m *= ramp(p.z - lerp_pts(abs(p.x), pt["bottom_curve"][0]), pt["bottom_curve"][1])
     return m
 
 
@@ -88,7 +105,7 @@ def grow(patches, over=None, density_x=1.0):
     """Curves for each patch as (points, triangle index, r1, r2, mask): the root sits at a + (b-a)*r1 + (c-a)*r2."""
     out = []
     for pt in patches:
-        cfg = {k: pt.get(k, spec.get(k)) for k in ("density", "length", "points", "normal_mix", "jitter")}
+        cfg = {k: pt.get(k, spec.get(k)) for k in ("density", "length", "points", "normal_mix", "jitter", "dir")}
         cfg.update(over or {})
         roots = []
         for ti, (a, b, c, area, n, uv) in enumerate(tris):
@@ -104,9 +121,14 @@ def grow(patches, over=None, density_x=1.0):
                 if rnd.random() < m:
                     roots.append((p, n, ti, r1, r2, m))
         for p, n, ti, r1, r2, m in roots:
-            t = down - n * down.dot(n)
-            if t.length < 0.5:
-                t = back - n * back.dot(n)
+            if cfg["dir"]:
+                a = math.radians(lerp_pts(abs(p.x), cfg["dir"]))
+                w = Vector((math.copysign(math.cos(a), p.x), 0, math.sin(a)))
+                t = w - n * w.dot(n)
+            else:
+                t = down - n * down.dot(n)
+                if t.length < 0.5:
+                    t = back - n * back.dot(n)
             t.normalize()
             d = (t * (1 - cfg["normal_mix"]) + n * cfg["normal_mix"]).normalized()
             seg = rnd.uniform(*cfg["length"]) / (cfg["points"] - 1)
@@ -177,7 +199,7 @@ if spec.get("bake"):
     import numpy as np
     bk = spec["bake"]
     N = bk.get("size", 4096)
-    over = {k: bk[k] for k in ("length", "points", "normal_mix", "jitter") if k in bk}
+    over = {k: bk[k] for k in ("length", "points", "normal_mix", "jitter", "dir") if k in bk}
     strands = grow(bk.get("patches", spec["patches"]), over, bk.get("density_x", 1.0))
     XS, YS, CV, SH, DX, DY = [], [], [], [], [], []
     for pts, ti, r1, r2, m in strands:
