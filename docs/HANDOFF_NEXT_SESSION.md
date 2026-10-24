@@ -1,11 +1,17 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-22. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-24. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
+- **NEWEST (2026-10-24): the image-to-3D Devin is paused after pass 30; the leads restart as MetaHumans built from private face references.** Order: Devin's MetaHuman until the advisor signs off, then Duy's and the Third's the same way, then the base outfits in Marvelous Designer once all three are approved. Assets and references stay private (the MetaHuman content folders are excluded from git).
+  - Root cause of the first two bad rounds: `set_face_model_coefficients` must be followed by `commit_face_state`, or the change is dropped and the default face renders. Skin tone changes need `request_texture_sources` before they show.
+  - The face coefficient vector is `[22 regions, then per region: 1, quaternion(4), translation(3), k, k PCA weights]`. Swapping one region's PCA weights for another preset's (the eyes, brows or nose, say) keeps that region's placement. This mixes features from different presets without touching the rest of the face.
+  - `translate_face_landmarks` is local (only the region that owns the landmark moves). The face model takes only 20-45% of each move, so the residual is pushed again (4 pushes leave about 2 mm).
+  - Measuring: the plugin's own 2D face tracker runs on references and renders alike. Ratios normalised by the outer eye-corner span (eye spacing, eye width and opening, mouth width, lip heights, eye-to-mouth, nose width) are compared. Round 7 is within about 1% on the eyes and mouth; the nose is about 7% wide.
+  - Next: one more round (lip tint, brow colour, nose width, cranium survey), then blind per-criterion readers (face shape, eyes/brow, nose, mouth, skin tone, facial hair, build; 9/10 each), then rig and import.
 - **NEWEST (2026-10-22 late night, main 701e206): new yoke and collar.**
   - `garment_shells.py` has a `drape` kind: cloth laid over the shoulders from above, wrapping down the back onto the nearest surface. The collar has a `neck` search radius and finds its `over` rings with their own cap.
   - The private garment_fit gained two options:
