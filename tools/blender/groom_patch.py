@@ -15,7 +15,14 @@ cm, with "points" points and a little "jitter". Under a chin, where the surface 
 toward the neck. A patch may override any of the curve settings given at the top level.
 
 spec.json: {"mesh": fbx, "material": 0, "out": abc, "preview": png, "seed": 1, "density": .., "length": [..],
-            "points": 5, "normal_mix": .3, "jitter": .1, "width": .01, "patches": [{"x": .., "top": .., ...}]}
+            "points": 5, "normal_mix": .3, "jitter": .1, "width": .01, "patches": [{"x": .., "top": .., ...}],
+            "bake": {"out": png, "size": 4096, "density_x": 4, "length": [..], "patches": [..],
+                     "stroke": 1, "gain": 1}}
+"bake" also writes a MetaHuman baked groom texture: a second, usually denser and shorter set of curves (its own
+"patches" or the spec's, "density_x" times the curve density) drawn into the head's UV layout as an RGBA map: RG the
+strand direction (0.5 neutral, G down the face), B coverage, A coverage shaded per strand and toward the tip; both
+fade with the mask. "stroke" (px radius) widens each line and "gain" scales B and A (clipped to 1). Set it as
+the wardrobe item pipeline's BakedGroomTexture (import as a non-sRGB vector map) and the face paints it as stubble.
 The FBX is an Unreal skeletal mesh export (Blender imports it at 1/100 with Y flipped); the curves are written in
 Blender's frame at 100x scale, which Unreal's default Alembic conversion turns back into the mesh's own frame.
 """
@@ -60,6 +67,7 @@ def mask(pt, p, n):
     return m
 
 
+uvl = me.uv_layers.active
 tris = []
 for t in me.loop_triangles:
     if t.material_index != spec.get("material", 0):
@@ -67,40 +75,51 @@ for t in me.loop_triangles:
     a, b, c = (ue(mw @ me.vertices[i].co) * 100 for i in t.vertices)
     area = (b - a).cross(c - a).length / 2
     if area > 0:
-        tris.append((a, b, c, area, ue(rot @ t.normal).normalized()))
+        uv = [Vector(uvl.data[i].uv) for i in t.loops] if uvl else None
+        tris.append((a, b, c, area, ue(rot @ t.normal).normalized(), uv))
 
 down, back = Vector((0, 0, -1)), Vector((0, -1, 0))
-curves = []
-for pt in spec["patches"]:
-    cfg = {k: pt.get(k, spec.get(k)) for k in ("density", "length", "points", "normal_mix", "jitter")}
-    roots = []
-    for a, b, c, area, n in tris:
-        if max(mask(pt, q, n) for q in (a, b, c, (a + b + c) / 3)) <= 0:
-            continue
-        k = area * cfg["density"]
-        for _ in range(int(k) + (1 if rnd.random() < k - int(k) else 0)):
-            r1, r2 = rnd.random(), rnd.random()
-            if r1 + r2 > 1:
-                r1, r2 = 1 - r1, 1 - r2
-            p = a + (b - a) * r1 + (c - a) * r2
-            if rnd.random() < mask(pt, p, n):
-                roots.append((p, n))
-    for p, n in roots:
-        t = down - n * down.dot(n)
-        if t.length < 0.5:
-            t = back - n * back.dot(n)
-        t.normalize()
-        d = (t * (1 - cfg["normal_mix"]) + n * cfg["normal_mix"]).normalized()
-        seg = rnd.uniform(*cfg["length"]) / (cfg["points"] - 1)
-        q = p - n * 0.02  # root just under the skin so no gap shows
-        pts = [q]
-        for _ in range(cfg["points"] - 1):
-            g = Vector((rnd.gauss(0, 1), rnd.gauss(0, 1), rnd.gauss(0, 1)))
-            d = (d + t * 0.08 + g * cfg["jitter"]).normalized()
-            q = q + d * seg
-            pts.append(q)
-        curves.append(pts)
-    print("PATCH", len(roots), "roots")
+
+
+def grow(patches, over=None, density_x=1.0):
+    """Curves for each patch as (points, triangle index, r1, r2, mask): the root sits at a + (b-a)*r1 + (c-a)*r2."""
+    out = []
+    for pt in patches:
+        cfg = {k: pt.get(k, spec.get(k)) for k in ("density", "length", "points", "normal_mix", "jitter")}
+        cfg.update(over or {})
+        roots = []
+        for ti, (a, b, c, area, n, uv) in enumerate(tris):
+            if max(mask(pt, q, n) for q in (a, b, c, (a + b + c) / 3)) <= 0:
+                continue
+            k = area * cfg["density"] * density_x
+            for _ in range(int(k) + (1 if rnd.random() < k - int(k) else 0)):
+                r1, r2 = rnd.random(), rnd.random()
+                if r1 + r2 > 1:
+                    r1, r2 = 1 - r1, 1 - r2
+                p = a + (b - a) * r1 + (c - a) * r2
+                m = mask(pt, p, n)
+                if rnd.random() < m:
+                    roots.append((p, n, ti, r1, r2, m))
+        for p, n, ti, r1, r2, m in roots:
+            t = down - n * down.dot(n)
+            if t.length < 0.5:
+                t = back - n * back.dot(n)
+            t.normalize()
+            d = (t * (1 - cfg["normal_mix"]) + n * cfg["normal_mix"]).normalized()
+            seg = rnd.uniform(*cfg["length"]) / (cfg["points"] - 1)
+            q = p - n * 0.02  # root just under the skin so no gap shows
+            pts = [q]
+            for _ in range(cfg["points"] - 1):
+                g = Vector((rnd.gauss(0, 1), rnd.gauss(0, 1), rnd.gauss(0, 1)))
+                d = (d + t * 0.08 + g * cfg["jitter"]).normalized()
+                q = q + d * seg
+                pts.append(q)
+            out.append((pts, ti, r1, r2, m))
+        print("PATCH", len(roots), "roots")
+    return out
+
+
+curves = [g[0] for g in grow(spec["patches"])]
 
 cu = bpy.data.curves.new("patch", "CURVE")
 cu.dimensions = "3D"
@@ -148,3 +167,71 @@ if spec.get("preview"):
     im.filepath_raw = spec["preview"]
     im.file_format = "PNG"
     im.save()
+
+if spec.get("bake"):
+    # each curve maps into UV through its root triangle (3D offsets in the triangle's plane -> UV offsets), then is
+    # sampled every half pixel and splatted bilinearly; Blender image rows run bottom-up like UV v
+    import numpy as np
+    bk = spec["bake"]
+    N = bk.get("size", 4096)
+    over = {k: bk[k] for k in ("length", "points", "normal_mix", "jitter") if k in bk}
+    strands = grow(bk.get("patches", spec["patches"]), over, bk.get("density_x", 1.0))
+    XS, YS, CV, SH, DX, DY = [], [], [], [], [], []
+    for pts, ti, r1, r2, m in strands:
+        a, b, c, area, n, uv = tris[ti]
+        e1, e2 = b - a, c - a
+        g11, g12, g22 = e1.dot(e1), e1.dot(e2), e2.dot(e2)
+        det = g11 * g22 - g12 * g12
+        d1, d2 = uv[1] - uv[0], uv[2] - uv[0]
+        line = []
+        for q in pts:
+            x, y = e1.dot(q - a), e2.dot(q - a)
+            line.append(uv[0] + d1 * ((g22 * x - g12 * y) / det) + d2 * ((g11 * y - g12 * x) / det))
+        P = np.array([(v.x, v.y) for v in line]) * N
+        cum = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))])
+        if cum[-1] < 0.5:
+            continue
+        at = np.arange(0, cum[-1], 0.5)
+        tt = at / cum[-1]
+        XS.append(np.interp(at, cum, P[:, 0]) - 0.5)
+        YS.append(np.interp(at, cum, P[:, 1]) - 0.5)
+        CV.append(m * (1 - 0.5 * tt))  # strands fade with the mask as well as thinning out, so edges stay soft
+        SH.append(m * rnd.uniform(0.35, 1.0) * (1 - 0.6 * tt))
+        dv = (P[-1] - P[0]) / cum[-1]
+        DX.append(np.full_like(tt, dv[0]))
+        DY.append(np.full_like(tt, dv[1]))
+    X, Y, C, S, U, V = (np.concatenate(v) for v in (XS, YS, CV, SH, DX, DY))
+    cov, shade = np.zeros((N, N), np.float32), np.zeros((N, N), np.float32)
+    dsum = np.zeros((N, N, 2), np.float32)
+    x0, y0 = np.floor(X).astype(int), np.floor(Y).astype(int)
+    fx, fy = X - x0, Y - y0
+    for ox, oy, w in ((0, 0, (1 - fx) * (1 - fy)), (1, 0, fx * (1 - fy)), (0, 1, (1 - fx) * fy), (1, 1, fx * fy)):
+        ix, iy = np.clip(x0 + ox, 0, N - 1), np.clip(y0 + oy, 0, N - 1)
+        np.maximum.at(cov, (iy, ix), (w * C).astype(np.float32))
+        np.maximum.at(shade, (iy, ix), (w * S).astype(np.float32))
+        np.add.at(dsum, (iy, ix, 0), (w * U).astype(np.float32))
+        np.add.at(dsum, (iy, ix, 1), (w * V).astype(np.float32))
+    r = int(bk.get("stroke", 0))  # px: widen each 1 px line into a stroke the face shader can resolve
+    if r > 0:
+        disk = [(ox, oy) for oy in range(-r, r + 1) for ox in range(-r, r + 1) if ox * ox + oy * oy <= r * r]
+        cov = np.max([np.roll(cov, (oy, ox), (0, 1)) for ox, oy in disk], axis=0)
+        shade = np.max([np.roll(shade, (oy, ox), (0, 1)) for ox, oy in disk], axis=0)
+        dsum = np.sum([np.roll(dsum, (oy, ox), (0, 1)) for ox, oy in disk], axis=0)
+    g = bk.get("gain", 1.0)  # bilinear splats of masked strands peak well below 1; scale up toward the stock bakes
+    cov, shade = np.minimum(1, g * cov), np.minimum(1, g * shade)
+    ln = np.linalg.norm(dsum, axis=2)
+    on = ln > 1e-6
+    rgba = np.zeros((N, N, 4), np.float32)
+    rgba[..., :2] = 0.5
+    rgba[on, 0] = 0.5 + 0.5 * dsum[on, 0] / ln[on]
+    rgba[on, 1] = 0.5 - 0.5 * dsum[on, 1] / ln[on]  # G points down the face (Unreal's v runs top-down)
+    rgba[..., 2] = cov
+    rgba[..., 3] = shade
+    im = bpy.data.images.new("bake", N, N, alpha=True)
+    im.colorspace_settings.name = "Non-Color"
+    im.alpha_mode = "STRAIGHT"
+    im.pixels.foreach_set(rgba.ravel())
+    im.filepath_raw = bk["out"]
+    im.file_format = "PNG"
+    im.save()
+    print("BAKE", len(strands), "strands", int((cov > 0.1).sum()), "px", bk["out"])
