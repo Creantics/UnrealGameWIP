@@ -22,6 +22,8 @@ Each op applies to the strands whose root lies in its "where" region, through a 
              and bottom edges of a brow
   "oval": [y0, z0, ry, rz]   inside the ellipse about (y0, z0) with these radii in the side (y-z) plane: an arch over
              the ear
+  "xprofile": [[x, f], ..]   the mask times a piecewise-linear factor over the root's x (held flat past the ends): a
+             parting moved over with "move" + "snap", full at the old parting and easing out to either side
   "soft": cm   each limit fades to nothing over this width at its edge (default 0.5)
   "group": id  only the strands of this group
   "on": "tip"  test the strand's tip instead of its root
@@ -154,6 +156,9 @@ def region(where, R=None):
     if "below_pts" in where:
         q = np.asarray(where["below_pts"], float)
         m *= ramp(np.interp(x, q[:, 0], q[:, 1]) - z, w)
+    if "xprofile" in where:  # [[x, f], ..] sorted by x
+        q = np.asarray(where["xprofile"], float)
+        m *= np.interp(x, q[:, 0], q[:, 1])
     if "oval" in where:
         y0, z0, ry, rz = where["oval"]
         m *= ramp((1 - np.sqrt(((y - y0) / ry) ** 2 + ((z - z0) / rz) ** 2)) * min(ry, rz), w)
