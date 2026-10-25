@@ -1,10 +1,30 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-24. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-25. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
+
+- **NEWEST (2026-10-25): all three leads now conform to concept head models.** Each lead's MetaHuman head is fitted to a scaled, cut
+  head model (private), not built from presets. Pipeline per lead, all private scripts driven through the editor bridge:
+  1. Blender prep: mediapipe landmarks on orthographic front renders of the concept head and the MetaHuman head; scale the concept so
+     pupil-to-chin matches, move its nose tip onto the MetaHuman's, then cut it down to a conform target. Cut modes combine: keep
+     only the face (forehead cut height is a parameter), drop separate hair pieces (weld seams, keep the biggest mostly-light island),
+     drop the ears, drop a sphere round each pupil.
+  2. Import the target as a static mesh, capture a lit portrait, track 16 face curves on it, then `align_to_target_meshes` +
+     `conform_to_target_meshes` with `HEAD_ONLY` and pipeline `head_only` (about 80 s), commit the A-pose and face state.
+  3. Clear the Hair/Beard/Mustache slots, render front, three-quarter and profile, and build a three-row sheet (art, concept model,
+     MetaHuman).
+  - Findings: a target that holds only part of an ear conforms into a shrunken nub, and a full cranium with ears swells the skull and
+    buries the ears. Leaving the ears out lets the MetaHuman supply whole ones. Stylised (anime) eye spacing and socket size make an
+    uncanny realistic face, and pulling the pupils in doesn't fix the lids, so the eye regions are cut out and the MetaHuman prior
+    keeps realistic eyes. A forehead cut just above the brow leaves a visible step in profile; it now sits about 4 cm up.
+  - A duplicate target asset that was deleted badly stays in the asset registry, where it exists but loads as None, so duplicating
+    onto it fails ("could not open the character for editing"). Conform into a new name instead.
+  - Hair is grown with `tools/blender/groom_strands.py` from a stock groom against the concept hair shell (grow, clump with spikes,
+    length by root region). Side shortening has to apply at every root height, or temple roots fall in front of the ear.
+  - Gate: the advisor's yes on a three-view sheet per lead. Then hair per lead, then base outfits in Marvelous Designer.
 
 - **NEWEST (2026-10-24): the image-to-3D Devin is paused after pass 30; the leads restart as MetaHumans built from private face references.** Order: Devin's MetaHuman until the advisor signs off, then Duy's and the Third's the same way, then the base outfits in Marvelous Designer once all three are approved. Assets and references stay private (the MetaHuman content folders are excluded from git).
   - Root cause of the first two bad rounds: `set_face_model_coefficients` must be followed by `commit_face_state`, or the change is dropped and the default face renders. Skin tone changes need `request_texture_sources` before they show.
@@ -18,6 +38,11 @@ Private notes (character references, concept-art review, script status) are in `
     - Skin: `u` sets how dark the skin is, `v` how pink (lower is more olive). The face "accent" redness defaults to the neutral 0.5; 0 gives green/yellow patches on the forehead, nose and chin, and about 0.3 is the safe low end.
     - Lip makeup at half opacity barely shows; the lips accent region moves the colour more.
     - Groom asset settings (curve decimation, hair width) can be overridden in memory for a variant and restored afterwards, through nested property paths.
+  - Update (2026-10-24, Rounds C-D): scores sit at 6-7 per criterion with best variants at 7-8. Findings:
+    - Body constraints were only ever switched on, so some sat on their limits; the body config now takes `[active, value]` to switch one off.
+    - The body texture index renders pixel-identical across values; it is not a lever.
+    - Hiding the Body component does not clear the chin at eye level: the MetaHuman face mesh itself runs down to the upper chest, so chin/trap overlap has to be fixed through the body shape (neck length, traps).
+    - The stock beard grooms are each a single hair group, so their cheek stubble can't be dropped per group. **Custom groom route:** a beard wardrobe item points (through `PrincipalAsset`, whose runtime identifier refreshes on save) at a groom binding authored on `SKM_Groom_Head_Legacy02`; the pipeline transfers it onto the character's face. So a groom grown on that head mesh, imported, bound with source = target = that mesh, and referenced from a duplicated wardrobe item works on any MetaHuman. `tools/blender/groom_patch.py` grows such a groom from band masks (Alembic out); the private build script copies a stock groom's materials and rendering settings onto it.
   - Duy's and the Third's starting faces come from the same preset-blend fit, driven by tracker ratios on their references. The tracker-to-landmark offset is calibrated on Devin.
 - **NEWEST (2026-10-22 late night, main 701e206): new yoke and collar.**
   - `garment_shells.py` has a `drape` kind: cloth laid over the shoulders from above, wrapping down the back onto the nearest surface. The collar has a `neck` search radius and finds its `over` rings with their own cap.
