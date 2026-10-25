@@ -58,6 +58,25 @@ With no "where" an op applies to every strand. Ops run in order:
                                           along the nearest head vertex's normal, to at least "clear" (default 0.01)
                                           above the surface plus the root's own height (blended by the mask): a strand
                                           moved or bent into the skin ends up lying on it instead
+  {"op": "shell", "file": npz, "frac": f, "radius": cm, "smooth": cm, "kmin": a, "kmax": b}
+                                          (needs "head") give the hair a target volume: "file" holds "v", a surface in
+                                          groom space (the outside of a sculpted or scanned hairstyle). At each root the
+                                          shell height is how far that surface reaches out along the head normal (its
+                                          points within "radius", default 1.2, of the normal line), box-averaged over
+                                          roots within "smooth" (default 2.5) so single spikes don't count. Each strand's
+                                          offset along its root normal is then scaled so its highest point sits at frac
+                                          (default 1) times that height, the factor held to [kmin, kmax] (default 0.3, 4)
+                                          and blended toward 1 by the mask. Offsets are scaled, not re-aimed, so strands
+                                          keep their flow; spikes come after from clump and bend
+  {"op": "grow", "file": npz, "frac": f, "rise": a, "climb": c, "hmin": cm, "radius": cm, "smooth": cm}
+                                          (needs "head") rebuild each strand from its root against a target volume
+                                          instead of rescaling it: the shell height is found as in "shell" (times
+                                          frac, at least hmin, default 0.2), and the strand walks over the scalp along
+                                          its own root-to-tip direction, keeping its length and point count, rising
+                                          to the shell height under the point it has reached by the fraction "rise"
+                                          of its length (default 0.35, smoothstep), never climbing faster than
+                                          "climb" (default 0.9) cm per cm walked. Blended toward the old strand by the
+                                          mask. Follow it with "clump" for locks and "bend" for spikes
   {"op": "width", "scale": s}             scale the point widths (s blended toward 1 by the mask)
   {"op": "wave", "amp": cm, "wavelength": cm, "power": p}
                                           a sine wave across each strand, random phase and direction per strand,
@@ -69,7 +88,9 @@ With no "where" an op applies to every strand. Ops run in order:
                                           (randomly offset), one random strand per cell is the lock's centre, and every
                                           point moves a fraction amount * mask * t^p (default p 1.5) of the way toward
                                           the centre strand's point at the same arc fraction: the roots stay, the tips
-                                          converge, and small gaps open between the locks
+                                          converge, and small gaps open between the locks. With "spike": cm (and
+                                          "head") each centre strand is first lifted out along its root normal by a
+                                          random 0..spike cm times t^2, so the locks stand up as spikes
   {"op": "smooth", "amount": f, "iters": n}
                                           straighten the curl in each strand: n passes (default 4) moving every point a
                                           fraction f (default 0.5) toward the middle of its neighbours, the root fixed
@@ -171,22 +192,36 @@ def region(where, R=None):
     return m
 
 
+def kdtree(V):
+    """A mathutils KD-tree over points V (Blender's Python has no scipy)."""
+    from mathutils.kdtree import KDTree
+    t = KDTree(len(V))
+    for i, v in enumerate(V.tolist()):
+        t.insert(v, i)
+    t.balance()
+    return t
+
+
+_head = {}
+
+
 def head_near(q):
     """For points q: the nearest head vertex and its normal, the normal turned to point out of the head (away from
-    the head's centre). Blender's Python has no scipy: nearest vertex by brute force, in chunks."""
-    hd = np.load(spec["head"])
-    Hv, Hf = hd["v"].astype(float), hd["f"]
-    fn = np.cross(Hv[Hf[:, 1]] - Hv[Hf[:, 0]], Hv[Hf[:, 2]] - Hv[Hf[:, 0]])
-    Hn = np.zeros_like(Hv)
-    for c in range(3):
-        np.add.at(Hn, Hf[:, c], fn)
-    Hn /= np.maximum(np.linalg.norm(Hn, axis=1, keepdims=True), 1e-9)
-    if ((Hv - Hv.mean(0)) * Hn).sum() < 0:
-        Hn = -Hn
-    near = np.flatnonzero(np.all((Hv > q.min(0) - 2) & (Hv < q.max(0) + 2), axis=1))
-    j = near[np.concatenate([np.argmin(((q[a:a + 64, None, :] - Hv[near][None]) ** 2).sum(2), 1)
-                             for a in range(0, len(q), 64)])]
-    return Hv[j], Hn[j]
+    the head's centre). The head and its KD-tree are built once."""
+    if not _head:
+        hd = np.load(spec["head"])
+        Hv, Hf = hd["v"].astype(float), hd["f"]
+        fn = np.cross(Hv[Hf[:, 1]] - Hv[Hf[:, 0]], Hv[Hf[:, 2]] - Hv[Hf[:, 0]])
+        Hn = np.zeros_like(Hv)
+        for c in range(3):
+            np.add.at(Hn, Hf[:, c], fn)
+        Hn /= np.maximum(np.linalg.norm(Hn, axis=1, keepdims=True), 1e-9)
+        if ((Hv - Hv.mean(0)) * Hn).sum() < 0:
+            Hn = -Hn
+        _head.update(v=Hv, n=Hn, t=kdtree(Hv))
+    f = _head["t"].find
+    j = np.fromiter((f(p)[1] for p in q.tolist()), np.int64, len(q))
+    return _head["v"][j], _head["n"][j]
 
 
 def onto_head(r, shift):
@@ -195,6 +230,44 @@ def onto_head(r, shift):
     q = r + shift
     hv, hn = head_near(q)
     return shift - (((q - hv) * hn).sum(1))[:, None] * hn
+
+
+def shell_height(r, n, C, radius, reach=8.0):
+    """For roots r with outward normals n: the furthest point of the surface points C within radius of each root's
+    normal line, measured along it (0 where none lies within reach)."""
+    C = C[np.all((C > r.min(0) - reach) & (C < r.max(0) + reach), axis=1)]
+    find = kdtree(C).find_range  # candidates: a chain of small balls along each root's normal segment
+    step = radius
+    ts = np.arange(step / 2 - 0.5, reach + step / 2, step)
+    ball = float(np.hypot(step / 2, radius))
+    H = np.zeros(len(r))
+    for i in range(len(r)):
+        j = list({k for c in (r[i] + n[i] * ts[:, None]).tolist() for _, k, _ in find(c, ball)})
+        if j:
+            p = r[i]
+            q = C[j] - p
+            t = q @ n[i]
+            ok = ((q * q).sum(1) - t * t < radius * radius) & (t > -0.5) & (t < reach)
+            H[i] = t[ok].max() if ok.any() else 0.0
+    return H
+
+
+def box_smooth(r, h, size):
+    """Average h over the roots in the 3x3x3 block of size-cm cells around each root's cell."""
+    c = np.floor(r / size).astype(np.int64) + 1000
+    key = (c[:, 0] * 4096 + c[:, 1]) * 4096 + c[:, 2]
+    u, inv = np.unique(key, return_inverse=True)
+    s, cnt = np.bincount(inv, h, len(u)), np.bincount(inv, None, len(u))
+    tot, num = np.zeros(len(r)), np.zeros(len(r))
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                nk = key + (dx * 4096 + dy) * 4096 + dz
+                j = np.clip(np.searchsorted(u, nk), 0, len(u) - 1)
+                hit = u[j] == nk
+                tot[hit] += s[j[hit]]
+                num[hit] += cnt[j[hit]]
+    return tot / np.maximum(num, 1)
 
 
 def perp(L):
@@ -324,8 +397,64 @@ for op in spec.get("ops", []):
             push = np.maximum(h0[sid[k]] + op.get("clear", 0.01) - h, 0) * m[sid[k]]
             P[k] += push[:, None] * hn
             print("op lift   %d points pushed out, max %.3f cm" % (int((push > 1e-4).sum()), push.max()))
+    elif kind == "shell":
+        if not spec.get("head"):
+            raise SystemExit("shell needs a head")
+        sid, _, _, off = arcs()
+        r = P[off[:-1]]
+        _, rn = head_near(r)
+        H = box_smooth(r, shell_height(r, rn, np.load(op["file"])["v"].astype(float), op.get("radius", 1.2)),
+                       op.get("smooth", 2.5))
+        h = ((P - r[sid]) * rn[sid]).sum(1)
+        top = np.zeros(len(st))
+        np.maximum.at(top, sid, h)
+        k = np.clip(op.get("frac", 1.0) * H / np.maximum(top, 0.2), op.get("kmin", 0.3), op.get("kmax", 4.0))
+        k = 1 + (k - 1) * m
+        P += ((k[sid] - 1) * h)[:, None] * rn[sid]
+        print("op shell  height p10/50/90 %.2f/%.2f/%.2f cm, scale p10/50/90 %.2f/%.2f/%.2f"
+              % (*np.percentile(H, [10, 50, 90]), *np.percentile(k, [10, 50, 90])))
+    elif kind == "grow":
+        if not spec.get("head"):
+            raise SystemExit("grow needs a head")
+        _, _, L, off = arcs()
+        n = st["n"]
+        r = P[off[:-1]]
+        rv, rn = head_near(r)
+        H = box_smooth(r, shell_height(r, rn, np.load(op["file"])["v"].astype(float), op.get("radius", 1.2)),
+                       op.get("smooth", 2.5))
+        H = np.maximum(H * op.get("frac", 1.0), op.get("hmin", 0.2))
+        hlook = kdtree(r).find
+        h0 = ((r - rv) * rn).sum(1)
+        d = P[off[1:] - 1] - r  # the flow: each strand's own root-to-tip direction, laid on the scalp
+        d -= rn * (d * rn).sum(1, keepdims=True)
+        d /= np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-9)
+        j = np.arange(len(P)) - np.repeat(off[:-1], n)
+        ds = np.repeat(L / np.maximum(n - 1, 1), n)
+        Q = P.copy()
+        pos, dir_, hprev = r.copy(), d.copy(), h0.copy()
+        rise, cap = op.get("rise", 0.35), op.get("climb", 0.9)
+        for k in range(1, int(n.max())):
+            s = np.flatnonzero(n > k)  # strands that have a point k
+            v = off[s] + k
+            t = k / (n[s] - 1)
+            Ht = H[np.fromiter((hlook(p)[1] for p in pos[s].tolist()), np.int64, len(s))]
+            u = np.minimum(t / rise, 1)
+            h = h0[s] + np.minimum(Ht * u * u * (3 - 2 * u), cap * k * ds[v])
+            dh = h - hprev[s]
+            tang = np.sqrt(np.maximum(ds[v] ** 2 - dh * dh, 0.04 * ds[v] ** 2))
+            q = pos[s] + dir_[s] * tang[:, None]
+            hv, hn = head_near(q)
+            q -= hn * ((q - hv) * hn).sum(1, keepdims=True)  # back onto the scalp, then up to this height
+            nd = q - pos[s]
+            nd -= hn * (nd * hn).sum(1, keepdims=True)
+            dir_[s] = nd / np.maximum(np.linalg.norm(nd, axis=1, keepdims=True), 1e-9)
+            pos[s], hprev[s] = q, h
+            Q[v] = q + hn * h[:, None]
+        mv = np.repeat(m, n)[:, None]
+        P = P + (Q - P) * mv
+        print("op grow   shell height p10/50/90 %.2f/%.2f/%.2f cm" % tuple(np.percentile(H, [10, 50, 90])))
     elif kind == "width":
-        W *= np.repeat(1 + (op["scale"] - 1) * m, st["n"])
+        W *=np.repeat(1 + (op["scale"] - 1) * m, st["n"])
     elif kind == "wave":
         sid, c, L, _ = arcs()
         d, ph = perp(L), rng.uniform(0, 2 * np.pi, len(st))
@@ -345,6 +474,12 @@ for op in spec.get("ops", []):
         _, first = np.unique(inv[perm], return_index=True)
         cen = perm[first][inv]  # each strand's lock centre, a random member of its cell
         fr = np.minimum(c / np.maximum(L[sid], 1e-9), 1.0)
+        if op.get("spike") and spec.get("head"):  # lift each lock's centre strand out from the scalp first: spiky locks
+            _, rn = head_near(R)
+            lead = np.unique(cen)
+            up = np.zeros(len(st))
+            up[lead] = rng.uniform(0, op["spike"], len(lead))
+            P += rn[sid] * (up[sid] * m[sid] * fr ** 2)[:, None]
         key = sid + fr * 0.999  # fractions sorted within each strand, strands in order: one global search
         g = cen[sid]
         i = np.searchsorted(key, g + fr * 0.999, side="right") - 1
