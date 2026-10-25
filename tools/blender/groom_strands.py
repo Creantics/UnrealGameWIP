@@ -54,6 +54,10 @@ With no "where" an op applies to every strand. Ops run in order:
                                           p 0 moves whole strands, p 1 bends them about the root; with "snap": true
                                           (and "head") each moved root goes back onto the head surface and its strand
                                           moves with it
+  {"op": "lift", "clear": cm}             (needs "head") push each point that sits below the head surface back out
+                                          along the nearest head vertex's normal, to at least "clear" (default 0.01)
+                                          above the surface plus the root's own height (blended by the mask): a strand
+                                          moved or bent into the skin ends up lying on it instead
   {"op": "width", "scale": s}             scale the point widths (s blended toward 1 by the mask)
   {"op": "wave", "amp": cm, "wavelength": cm, "power": p}
                                           a sine wave across each strand, random phase and direction per strand,
@@ -167,21 +171,30 @@ def region(where, R=None):
     return m
 
 
-def onto_head(r, shift):
-    """The shifts that put roots r + shift back on the head surface: each moved root is projected onto the tangent
-    plane at its nearest head vertex."""
-    hd = np.load(spec["head"])  # Blender's Python has no scipy: nearest vertex by brute force, in chunks
+def head_near(q):
+    """For points q: the nearest head vertex and its normal, the normal turned to point out of the head (away from
+    the head's centre). Blender's Python has no scipy: nearest vertex by brute force, in chunks."""
+    hd = np.load(spec["head"])
     Hv, Hf = hd["v"].astype(float), hd["f"]
     fn = np.cross(Hv[Hf[:, 1]] - Hv[Hf[:, 0]], Hv[Hf[:, 2]] - Hv[Hf[:, 0]])
     Hn = np.zeros_like(Hv)
     for c in range(3):
         np.add.at(Hn, Hf[:, c], fn)
     Hn /= np.maximum(np.linalg.norm(Hn, axis=1, keepdims=True), 1e-9)
-    q = r + shift
+    if ((Hv - Hv.mean(0)) * Hn).sum() < 0:
+        Hn = -Hn
     near = np.flatnonzero(np.all((Hv > q.min(0) - 2) & (Hv < q.max(0) + 2), axis=1))
     j = near[np.concatenate([np.argmin(((q[a:a + 64, None, :] - Hv[near][None]) ** 2).sum(2), 1)
                              for a in range(0, len(q), 64)])]
-    return shift - (((q - Hv[j]) * Hn[j]).sum(1))[:, None] * Hn[j]
+    return Hv[j], Hn[j]
+
+
+def onto_head(r, shift):
+    """The shifts that put roots r + shift back on the head surface: each moved root is projected onto the tangent
+    plane at its nearest head vertex."""
+    q = r + shift
+    hv, hn = head_near(q)
+    return shift - (((q - hv) * hn).sum(1))[:, None] * hn
 
 
 def perp(L):
@@ -297,6 +310,20 @@ for op in spec.get("ops", []):
                 fix = np.zeros((len(st), 3))
                 fix[k] = onto_head(P[off[:-1]][k], np.zeros((len(k), 3)))
                 P += np.repeat(fix, st["n"], axis=0)
+    elif kind == "lift":
+        if not spec.get("head"):
+            raise SystemExit("lift needs a head")
+        sid, _, _, off = arcs()
+        k = np.flatnonzero(np.repeat(m, st["n"]) > 1e-3)
+        k = k[~np.isin(k, off[:-1])]  # the roots stay where they are
+        if len(k):
+            hv, hn = head_near(P[k])
+            h = ((P[k] - hv) * hn).sum(1)
+            rv, rn = head_near(P[off[:-1]])
+            h0 = np.maximum(((P[off[:-1]] - rv) * rn).sum(1), 0)
+            push = np.maximum(h0[sid[k]] + op.get("clear", 0.01) - h, 0) * m[sid[k]]
+            P[k] += push[:, None] * hn
+            print("op lift   %d points pushed out, max %.3f cm" % (int((push > 1e-4).sum()), push.max()))
     elif kind == "width":
         W *= np.repeat(1 + (op["scale"] - 1) * m, st["n"])
     elif kind == "wave":
