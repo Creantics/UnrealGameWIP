@@ -13,6 +13,15 @@
 // description, guides included (flag 1).
 // Returns one JSON object with the counts, the attributes found and each group id's name, or an empty
 // string when the groom has no hair description or the file can't be written.
+//
+// ExportGroomColors / SetGroomColors read and write the per-vertex colour, roughness and AO and the
+// per-strand root UV of the same hair description, in the same order as ExportGroomStrands. The MetaHuman
+// hair material takes its ombre coordinate from the colour's red channel and samples its highlight mask at
+// the root UV. File layout, little endian: "FTGC", int32 version (2), int32 vertex count, int32 has
+// colour, int32 has roughness, int32 has AO, int32 strand count, int32 has root UV; then per vertex float
+// r, g, b, roughness, AO, then per strand float u, v (0 where missing). Version 1 files stop after the
+// has-AO field and the vertex block. SetGroomColors writes only the attributes the file has, refuses
+// counts that don't match the groom, then rebuilds the groom; save the asset afterwards.
 
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
@@ -29,4 +38,10 @@ class UFTGroomToolsLibrary : public UBlueprintFunctionLibrary
 public:
 	UFUNCTION(BlueprintCallable, Category = "FT|Groom")
 	static FString ExportGroomStrands(UGroomAsset* Groom, const FString& Path);
+
+	UFUNCTION(BlueprintCallable, Category = "FT|Groom")
+	static FString ExportGroomColors(UGroomAsset* Groom, const FString& Path);
+
+	UFUNCTION(BlueprintCallable, Category = "FT|Groom")
+	static FString SetGroomColors(UGroomAsset* Groom, const FString& Path);
 };
