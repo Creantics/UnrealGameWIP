@@ -18,6 +18,8 @@ Each op applies to the strands whose root lies in its "where" region, through a 
   "behind": [y0, k]  y < y0 - k*x*x       "ahead": [y0, k]   y > y0 - k*x*x
   "ahead_pts" / "behind_pts": [[x, y], ..]   y ahead of / behind the line through these points (x ascending), a free
              curve such as a hairline set back at the temples
+  "above_pts" / "below_pts": [[x, z], ..]   z above / below the line through these points (x ascending): the top
+             and bottom edges of a brow
   "oval": [y0, z0, ry, rz]   inside the ellipse about (y0, z0) with these radii in the side (y-z) plane: an arch over
              the ear
   "soft": cm   each limit fades to nothing over this width at its edge (default 0.5)
@@ -25,6 +27,14 @@ Each op applies to the strands whose root lies in its "where" region, through a 
   "on": "tip"  test the strand's tip instead of its root
 With no "where" an op applies to every strand. Ops run in order:
   {"op": "mirror"}                        x -> -x for every strand (the parting moves to the other side)
+  {"op": "mirror", "keep": "+x"}          make the groom symmetric: drop the strands rooted on the other side and
+                                          replace them with the kept side's strands mirrored (a thinner brow evened up)
+  {"op": "dup", "frac": f, "d": [x, y, z], "jitter": cm}
+                                          copy each strand inside with probability frac * mask (frac up to 1; repeat
+                                          the op for more), moved by d plus a random sideways jitter up to this size;
+                                          with "head" the copy's root is put back on the head surface (projected onto
+                                          the tangent plane at the nearest head vertex) and the strand moves with it.
+                                          Fills a bare patch from the hair beside it, or thickens a sparse region
   {"op": "length", "scale": s}            cut or extend each strand to s times its arc length, s blended toward 1 by
                                           the mask; an extension carries on along the tip direction
   {"op": "length", "max": cm}             cut each strand to at most this arc length (blended the same way)
@@ -39,7 +49,9 @@ With no "where" an op applies to every strand. Ops run in order:
   {"op": "thin", "keep": f}               keep a fraction f of the strands inside (probability 1 - (1 - f) * mask)
   {"op": "move", "d": [x, y, z], "power": p}
                                           add d * mask * t^p to each point, t its arc position (0 root, 1 tip):
-                                          p 0 moves whole strands, p 1 bends them about the root
+                                          p 0 moves whole strands, p 1 bends them about the root; with "snap": true
+                                          (and "head") each moved root goes back onto the head surface and its strand
+                                          moves with it
   {"op": "width", "scale": s}             scale the point widths (s blended toward 1 by the mask)
   {"op": "wave", "amp": cm, "wavelength": cm, "power": p}
                                           a sine wave across each strand, random phase and direction per strand,
@@ -130,12 +142,35 @@ def region(where, R=None):
     if "behind_pts" in where:
         q = np.asarray(where["behind_pts"], float)
         m *= ramp(np.interp(x, q[:, 0], q[:, 1]) - y, w)
+    if "above_pts" in where:  # [[x, z], ..] sorted by x: z above the line through these points (a brow's arch)
+        q = np.asarray(where["above_pts"], float)
+        m *= ramp(z - np.interp(x, q[:, 0], q[:, 1]), w)
+    if "below_pts" in where:
+        q = np.asarray(where["below_pts"], float)
+        m *= ramp(np.interp(x, q[:, 0], q[:, 1]) - z, w)
     if "oval" in where:
         y0, z0, ry, rz = where["oval"]
         m *= ramp((1 - np.sqrt(((y - y0) / ry) ** 2 + ((z - z0) / rz) ** 2)) * min(ry, rz), w)
     if "group" in where:
         m *= st["g"] == where["group"] if len(R) == len(st) else np.repeat(st["g"] == where["group"], st["n"])
     return m
+
+
+def onto_head(r, shift):
+    """The shifts that put roots r + shift back on the head surface: each moved root is projected onto the tangent
+    plane at its nearest head vertex."""
+    hd = np.load(spec["head"])  # Blender's Python has no scipy: nearest vertex by brute force, in chunks
+    Hv, Hf = hd["v"].astype(float), hd["f"]
+    fn = np.cross(Hv[Hf[:, 1]] - Hv[Hf[:, 0]], Hv[Hf[:, 2]] - Hv[Hf[:, 0]])
+    Hn = np.zeros_like(Hv)
+    for c in range(3):
+        np.add.at(Hn, Hf[:, c], fn)
+    Hn /= np.maximum(np.linalg.norm(Hn, axis=1, keepdims=True), 1e-9)
+    q = r + shift
+    near = np.flatnonzero(np.all((Hv > q.min(0) - 2) & (Hv < q.max(0) + 2), axis=1))
+    j = near[np.concatenate([np.argmin(((q[a:a + 64, None, :] - Hv[near][None]) ** 2).sum(2), 1)
+                             for a in range(0, len(q), 64)])]
+    return shift - (((q - Hv[j]) * Hn[j]).sum(1))[:, None] * Hn[j]
 
 
 def perp(L):
@@ -190,7 +225,30 @@ P0, n0 = P.copy(), st["n"].copy()
 for op in spec.get("ops", []):
     kind = op["op"]
     if kind == "mirror":
-        P[:, 0] *= -1
+        if "keep" not in op:
+            P[:, 0] *= -1
+            continue
+        sgn = 1.0 if op["keep"] == "+x" else -1.0
+        off = offsets(st["n"])
+        side = P[off[:-1], 0] * sgn > 0
+        keep_strands(side)
+        Q = P.copy()
+        Q[:, 0] *= -1
+        P, W, st = np.concatenate([P, Q]), np.concatenate([W, W]), np.concatenate([st, st])
+        print("op mirror %d strands kept on the %s side, mirrored" % (int(side.sum()), op["keep"]))
+        continue
+    if kind == "dup":
+        m = region(op.get("where"))
+        k = np.flatnonzero(rng.random(len(m)) < op["frac"] * m)
+        off = offsets(st["n"])
+        idx = np.concatenate([np.arange(off[i], off[i + 1]) for i in k]) if len(k) else np.zeros(0, int)
+        shift = np.asarray(op.get("d", [0, 0, 0]), float)[None, :] + perp(None)[k] * rng.uniform(
+            0, op.get("jitter", 0.0), len(k))[:, None]
+        if spec.get("head") and len(k):
+            shift = onto_head(P[off[:-1]][k], shift)
+        P = np.concatenate([P, P[idx] + np.repeat(shift, st["n"][k], axis=0)])
+        W, st = np.concatenate([W, W[idx]]), np.concatenate([st, st[k]])
+        print("op dup    %d strands copied" % len(k))
         continue
     m = region(op.get("where"))
     if kind == "length":
@@ -219,9 +277,15 @@ for op in spec.get("ops", []):
     elif kind == "thin":
         keep_strands(rng.random(len(m)) < 1 - (1 - op["keep"]) * m)
     elif kind == "move":
-        sid, c, L, _ = arcs()
+        sid, c, L, off = arcs()
         t = (c / np.maximum(L[sid], 1e-9)) ** op.get("power", 1.0)
         P += np.asarray(op["d"], float)[None, :] * (m[sid] * t)[:, None]
+        if op.get("snap") and spec.get("head"):
+            k = np.flatnonzero(m > 1e-3)
+            if len(k):
+                fix = np.zeros((len(st), 3))
+                fix[k] = onto_head(P[off[:-1]][k], np.zeros((len(k), 3)))
+                P += np.repeat(fix, st["n"], axis=0)
     elif kind == "width":
         W *= np.repeat(1 + (op["scale"] - 1) * m, st["n"])
     elif kind == "wave":
