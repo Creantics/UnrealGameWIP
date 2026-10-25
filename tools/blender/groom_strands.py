@@ -58,6 +58,12 @@ With no "where" an op applies to every strand. Ops run in order:
                                           growing as t^p from the root (default 1)
   {"op": "bend", "amount": f, "power": p} push each tip sideways by a random f times the strand length, the bend
                                           growing as t^p (default 2): more direction variation between strands
+  {"op": "clump", "size": cm, "amount": f, "power": p}
+                                          gather the strands into locks: roots are binned into cells about this size
+                                          (randomly offset), one random strand per cell is the lock's centre, and every
+                                          point moves a fraction amount * mask * t^p (default p 1.5) of the way toward
+                                          the centre strand's point at the same arc fraction: the roots stay, the tips
+                                          converge, and small gaps open between the locks
   {"op": "smooth", "amount": f, "iters": n}
                                           straighten the curl in each strand: n passes (default 4) moving every point a
                                           fraction f (default 0.5) toward the middle of its neighbours, the root fixed
@@ -298,6 +304,25 @@ for op in spec.get("ops", []):
         sid, c, L, _ = arcs()
         d = perp(L) * (rng.uniform(0, 1, len(st)) * op["amount"] * L * m)[:, None]
         P += d[sid] * ((c / np.maximum(L[sid], 1e-9)) ** op.get("power", 2.0))[:, None]
+    elif kind == "clump":
+        sid, c, L, off = arcs()
+        R = P[off[:-1]]
+        cell = np.floor((R - R.min(0) + rng.uniform(0, op["size"], 3)) / op["size"]).astype(np.int64)
+        _, inv = np.unique(cell[:, 0] * 1000003 + cell[:, 1] * 1009 + cell[:, 2], return_inverse=True)
+        perm = rng.permutation(len(st))
+        _, first = np.unique(inv[perm], return_index=True)
+        cen = perm[first][inv]  # each strand's lock centre, a random member of its cell
+        fr = np.minimum(c / np.maximum(L[sid], 1e-9), 1.0)
+        key = sid + fr * 0.999  # fractions sorted within each strand, strands in order: one global search
+        g = cen[sid]
+        i = np.searchsorted(key, g + fr * 0.999, side="right") - 1
+        i = np.clip(i, off[g], np.maximum(off[g + 1] - 2, off[g]))
+        i1 = np.minimum(i + 1, off[g + 1] - 1)
+        u = np.clip((fr - fr[i]) / np.maximum(fr[i1] - fr[i], 1e-9), 0, 1)
+        G = P[i] + (P[i1] - P[i]) * u[:, None]
+        a = op.get("amount", 0.5) * m[sid] * fr ** op.get("power", 1.5)
+        P += (G - P) * a[:, None]
+        print("op clump  %d locks" % len(first))
     elif kind == "smooth":
         # pull each inner point toward the middle of its neighbours (the root stays put, the tip follows its neighbour's
         # direction): calms curl and frizz without changing where the strand goes
