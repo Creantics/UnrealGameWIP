@@ -2,6 +2,7 @@
 #include "ftcore/Dialogue.h"
 #include "ftcore/Encounter.h"
 #include "ftcore/GameplayPlan.h"
+#include "ftcore/Progression.h"
 #include "ftcore/StoryRunner.h"
 
 #include "AllocCounter.h"
@@ -251,16 +252,62 @@ LoadedData loadBattleData() {
     return d;
 }
 
+// The party level at each listed encounter (before its fight), for a party that has won every
+// earlier one. The table lists the story's fights in script order (a real-story test checks it).
+std::vector<int> levelsInTableOrder(const LoadedData& d) {
+    std::vector<int> levels;
+    PartyProgress progress;
+    for (const EncounterEntry& e : d.table.entries) {
+        levels.push_back(levelForXp(progress.xp));
+        award(progress, encounterReward(d.roster, e.lineup));
+    }
+    return levels;
+}
+
 } // namespace
+
+TEST_CASE("winning the story's fights in order levels the party about every four fights to the cap") {
+    const LoadedData d = loadBattleData();
+    REQUIRE(d.ok);
+    for (const EnemyDef& e : d.roster.enemies) {
+        CAPTURE(e.id);
+        CHECK(e.reward.xp > 0);
+        CHECK(e.reward.gold > 0);
+    }
+    PartyProgress progress;
+    int prevLevel = 1, lastGain = 0, capAt = -1;
+    const int n = static_cast<int>(d.table.entries.size());
+    REQUIRE(n >= 30);
+    for (int i = 0; i < n; ++i) {
+        const AwardResult r = award(progress, encounterReward(d.roster, d.table.entries[static_cast<std::size_t>(i)].lineup));
+        CAPTURE(i);
+        CHECK(r.levelAfter - r.levelBefore <= 1); // never two levels from one fight
+        if (r.levelAfter > prevLevel) {
+            CHECK(i - lastGain <= 6); // no long stretch without a level
+            CHECK(i - lastGain >= 2); // and no level every fight
+            lastGain = i;
+        }
+        if (r.levelAfter == kMaxLevel && capAt < 0) capAt = i;
+        prevLevel = r.levelAfter;
+    }
+    MESSAGE("PROGRESSION " << n << " fights: " << progress.xp << " xp, " << progress.gold << " gold, cap at fight " << capAt + 1);
+    CHECK(levelForXp(progress.xp) == kMaxLevel);
+    CHECK(capAt >= n - 6); // the cap comes near the finale, not before
+    // The xp left over after the cap is small: the curve isn't far too cheap.
+    CHECK(progress.xp - xpForLevel(kMaxLevel) < xpForLevel(kMaxLevel) / 4);
+}
 
 TEST_CASE("balance gate: every encounter is won with perfect presses and lost with none") {
     const LoadedData d = loadBattleData();
     REQUIRE(d.ok);
     REQUIRE_FALSE(d.table.entries.empty());
 
-    // The default line-up first, then every listed entry at its own tier.
+    // The default line-up first (at level 1), then every listed entry at its own tier, with the
+    // party at the level it has reached by then.
+    const std::vector<int> levels = levelsInTableOrder(d);
     for (std::size_t i = 0; i <= d.table.entries.size(); ++i) {
         const EncounterLineup& lineup = i == 0 ? d.table.fallback : d.table.entries[i - 1].lineup;
+        const int level = i == 0 ? 1 : levels[i - 1];
         const std::string name = i == 0 ? std::string("default")
                                         : d.table.entries[i - 1].scene + " beat " + std::to_string(d.table.entries[i - 1].beat) +
                                               " step " + std::to_string(d.table.entries[i - 1].step);
@@ -273,28 +320,28 @@ TEST_CASE("balance gate: every encounter is won with perfect presses and lost wi
         REQUIRE(foes.size() == lineup.enemies.size());
         applyWeakPoints(d.weakPoints, d.roster, lineup, foes);
 
-        const demo::HeadlessResult win = demo::playHeadless(demo::party(), foes, true);
+        const demo::HeadlessResult win = demo::playHeadless(demo::party(level), foes, true);
         CHECK_FALSE(win.commandFailed);
         CHECK(win.finished);
         CHECK(win.outcome == Phase::Victory);
         CHECK(win.partyTurns >= 1);
         CHECK(win.presses > 0);
-        MESSAGE(name << ": tier " << lineup.tier << ", victory in " << win.endTime << " s, " << win.partyTurns
+        MESSAGE(name << ": tier " << lineup.tier << ", level " << level << ", victory in " << win.endTime << " s, " << win.partyTurns
                      << " turns (" << win.aims << " aimed, " << win.weakHits << " on a weak point), " << win.enemyAttacks << " defences, party HP left " << win.partyHpLeft);
 
         // Long frames (130 ms of battle time per frame, as under time dilation) still win: the autopilot
         // presses at each note's own time before the update that would expire it.
-        const demo::HeadlessResult coarse = demo::playHeadless(demo::party(), foes, true, 0.13);
+        const demo::HeadlessResult coarse = demo::playHeadless(demo::party(level), foes, true, 0.13);
         CHECK(coarse.outcome == Phase::Victory);
         // Perfect dodges (jumps on jumpable hits) instead of parries: no counters, still a win.
         const demo::HeadlessResult dodged =
-            demo::playHeadless(demo::party(), foes, true, 1.0 / 120.0, 1200.0, DefenceInput::Dodge);
+            demo::playHeadless(demo::party(level), foes, true, 1.0 / 120.0, 1200.0, DefenceInput::Dodge);
         CHECK(dodged.outcome == Phase::Victory);
         const demo::HeadlessResult dodgedCoarse =
-            demo::playHeadless(demo::party(), foes, true, 0.13, 1200.0, DefenceInput::Dodge);
+            demo::playHeadless(demo::party(level), foes, true, 0.13, 1200.0, DefenceInput::Dodge);
         CHECK(dodgedCoarse.outcome == Phase::Victory);
 
-        const demo::HeadlessResult loss = demo::playHeadless(demo::party(), foes, false);
+        const demo::HeadlessResult loss = demo::playHeadless(demo::party(level), foes, false);
         CHECK_FALSE(loss.commandFailed);
         CHECK(loss.finished);
         CHECK(loss.outcome == Phase::Defeat);
@@ -333,8 +380,10 @@ TEST_CASE("balance: typical and novice pilots against every encounter") {
     const LoadedData d = loadBattleData();
     REQUIRE(d.ok);
     const demo::PilotSkill typical{0.75, 0.6}, novice{0.5, 0.3};
+    const std::vector<int> levels = levelsInTableOrder(d);
     for (std::size_t i = 0; i <= d.table.entries.size(); ++i) {
         const EncounterLineup& lineup = i == 0 ? d.table.fallback : d.table.entries[i - 1].lineup;
+        const int level = i == 0 ? 1 : levels[i - 1];
         const std::string name = i == 0 ? std::string("default")
                                         : d.table.entries[i - 1].scene + " b" + std::to_string(d.table.entries[i - 1].beat) +
                                               " s" + std::to_string(d.table.entries[i - 1].step);
@@ -342,7 +391,7 @@ TEST_CASE("balance: typical and novice pilots against every encounter") {
         makeEnemies(d.roster, lineup, foes);
         applyWeakPoints(d.weakPoints, d.roster, lineup, foes);
         const auto run = [&](const demo::PilotSkill& p) {
-            return demo::playHeadless(demo::party(), foes, true, 1.0 / 120.0, 1200.0, DefenceInput::Parry, p);
+            return demo::playHeadless(demo::party(level), foes, true, 1.0 / 120.0, 1200.0, DefenceInput::Parry, p);
         };
         const demo::HeadlessResult perfect = run({}), t = run(typical), n = run(novice);
         const auto out = [](const demo::HeadlessResult& r) {
@@ -356,7 +405,7 @@ TEST_CASE("balance: typical and novice pilots against every encounter") {
         CHECK(t.outcome == Phase::Victory);
         CHECK(t.endTime <= 60.0 + 8.0 * lineup.tier);
         if (lineup.tier <= 1) CHECK(n.outcome == Phase::Victory);
-        MESSAGE("BAL " << name << " t" << lineup.tier << " [" << ids << "] perfect " << out(perfect) << " | typical "
+        MESSAGE("BAL " << name << " t" << lineup.tier << " L" << level << " [" << ids << "] perfect " << out(perfect) << " | typical "
                        << out(t) << " | novice " << out(n));
     }
 }
@@ -441,7 +490,7 @@ TEST_CASE("every battle step of the script has its own line-up") {
     const LoadedData d = loadBattleData();
     REQUIRE(d.ok);
 
-    std::size_t steps = 0, missing = 0;
+    std::size_t steps = 0, missing = 0, outOfOrder = 0;
     StoryRunner r(&s.db);
     DialoguePresenter p(&r);
     p.setRevealRate(0.f);
@@ -456,7 +505,17 @@ TEST_CASE("every battle step of the script has its own line-up") {
                 ++steps;
                 const std::string scene(r.position().scene);
                 const auto beat = static_cast<std::uint32_t>(r.position().beat);
-                const bool listed = d.table.findEntry(scene, beat, i) != nullptr;
+                const EncounterEntry* entry = d.table.findEntry(scene, beat, i);
+                const bool listed = entry != nullptr;
+                if (listed) {
+                    // The table lists the fights in the order the script reaches them.
+                    const auto index = static_cast<std::size_t>(entry - d.table.entries.data());
+                    if (index != steps - 1) {
+                        ++outOfOrder;
+                        MESSAGE("encounter " << scene << " beat " << beat << " step " << i << " is entry " << index
+                                             << ", but the script reaches it as fight " << steps - 1);
+                    }
+                }
                 if (!listed) {
                     ++missing;
                     MESSAGE("no encounter for " << scene << " beat " << beat << " step " << i);
@@ -474,5 +533,6 @@ TEST_CASE("every battle step of the script has its own line-up") {
     CHECK(r.finished());
     CHECK(steps > 0);
     CHECK(missing == 0);
+    CHECK(outOfOrder == 0);
     CHECK(d.table.entries.size() == steps); // no entry for a step that does not exist
 }

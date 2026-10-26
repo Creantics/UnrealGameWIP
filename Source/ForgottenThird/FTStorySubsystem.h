@@ -217,6 +217,13 @@ public:
 	bool IsPaused() const { return bPaused; }
 	// New Game keeps the read-state of the run before it: with nothing seen in memory, reads the slot's.
 	void AdoptSeenFromSlot();
+	// The party's xp and gold (ftcore/Progression.h). StartStory starts them over; the story slot
+	// carries them (written by UFTStorySaveGame::CaptureFrom, read back by ApplyTo).
+	const ftcore::PartyProgress& GetParty() const { return Party; }
+	void SetParty(const ftcore::PartyProgress& InParty) { Party = InParty; }
+	int32 GetPartyLevel() const;
+	// Adds a won fight's reward and logs it, with the level up if there is one.
+	ftcore::AwardResult AwardBattle(const ftcore::Reward& Reward);
 
 	// ---- events ----
 
@@ -259,6 +266,7 @@ private:
 	TArray<FQueuedCue> PendingCues;
 	ftcore::DialogueBacklog Backlog;
 	ftcore::SeenLines Seen;
+	ftcore::PartyProgress Party;
 	bool bPaused = false;
 	uint32 SeenSceneEpoch = 0;
 	uint32 SeenBeatEpoch = 0;

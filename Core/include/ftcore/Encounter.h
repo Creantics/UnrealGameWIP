@@ -21,6 +21,8 @@
 //         "skills": [ { "id": "slam", "name": "Slam", "power": 1.3, "notes": 3, "difficulty": 1.0 } ] } ] }
 //   Skill keys: id, name, apCost, apGain (default 0), targeting ("single" default, or "all"), power,
 //   notes, difficulty, hits. Stats keys default to the Stats defaults. `name` defaults to the id.
+//   `reward` (optional, each part 0..100000, default 0) is what beating the enemy pays:
+//     "reward": { "xp": 20, "gold": 12 }
 //   `hits` is the attack timeline the defender answers on an enemy turn (see DefenceTimeline.h):
 //     "hits": [ { "at": 0.9, "tell": 0.4 }, { "at": 1.5, "tell": 0.4, "weight": 2, "jumpable": true } ]
 //   1..8 hits, `at` seconds after the banner (0 < at <= 30, strictly increasing, required); `tell`
@@ -38,6 +40,7 @@
 
 #include "ftcore/Api.h"
 #include "ftcore/CombatTypes.h"
+#include "ftcore/Progression.h"
 
 #include <cstdint>
 #include <string>
@@ -52,6 +55,7 @@ struct EnemyDef {
     Stats stats;
     std::vector<std::string> skillIds; // parallel to skills
     std::vector<Skill> skills;
+    Reward reward; // what beating it pays (see Progression.h)
 };
 
 struct EnemyRoster {
@@ -60,10 +64,11 @@ struct EnemyRoster {
     FTCORE_API int find(std::string_view id) const;
 };
 
-// Percent of an enemy's base max HP and of its base attack that each tier adds. Attack grows
-// slowly because later enemies already have higher base attack and the party doesn't level.
-inline constexpr int kTierHpPercent = 8;
-inline constexpr int kTierAttackPercent = 3;
+// Percent of an enemy's base max HP and of its base attack that each tier adds. Tiers keep pace
+// with the party's levels (see Progression.h): a typical player ends a late fight with about half
+// their HP, and a novice wins the fights up to tier 5.
+inline constexpr int kTierHpPercent = 10;
+inline constexpr int kTierAttackPercent = 11;
 inline constexpr int kMaxTier = 9;
 
 struct EncounterLineup {

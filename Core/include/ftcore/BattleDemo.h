@@ -10,6 +10,7 @@
 
 #include "ftcore/Battle.h"
 #include "ftcore/CombatTypes.h"
+#include "ftcore/Progression.h"
 
 #include <cmath>
 #include <cstddef>
@@ -78,8 +79,8 @@ inline Combatant makeCombatant(std::string name, Stats stats, std::vector<Skill>
     return c;
 }
 
-// Stats are {maxHp, attack, defense, speed, technique}.
-inline std::vector<Combatant> party() {
+// Stats are {maxHp, attack, defense, speed, technique}, at level 1.
+inline std::vector<Combatant> partyAtLevel1() {
     const Skill strike = makeSkill("Strike", 0, 1, Targeting::SingleEnemy, 1.0f, 4, 1.0f);
     return {
         makeCombatant("Devin", {140, 24, 8, 12, 12},
@@ -91,6 +92,16 @@ inline std::vector<Combatant> party() {
                        makeSkill("Pierce", 2, 0, Targeting::SingleEnemy, 2.2f, 6, 4.5f),
                        makeSkill("Flare", 4, 0, Targeting::AllEnemies, 2.4f, 7, 5.0f)}),
     };
+}
+
+// The party at `level` (see Progression.h), at full HP.
+inline std::vector<Combatant> party(int level = 1) {
+    std::vector<Combatant> members = partyAtLevel1();
+    for (Combatant& c : members) {
+        c.stats = statsAtLevel(c.stats, level);
+        c.hp = c.stats.maxHp;
+    }
+    return members;
 }
 
 // The weak points of the brute and shade in Data/Battle/weakpoints.json (a test keeps them in step).

@@ -295,4 +295,6 @@ private:
 	// The line-up in Core form: both sides at full HP, copied into the component each round.
 	std::vector<ftcore::Combatant> CoreParty;
 	std::vector<ftcore::Combatant> CoreFoes;
+	// What winning a story fight pays (the line-up's reward); nothing for other fights.
+	ftcore::Reward Reward;
 };

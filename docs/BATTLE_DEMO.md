@@ -127,13 +127,33 @@ of enemy ids. Both hold ids and numbers only. The loader and the rules are in
   uses the built-in demo line-up (`ftcore::demo::enemies()`).
 - The party is always the two leads from `BattleDemo.h`. A line-up has one to three enemies (the
   HUD stacks three panels).
-- `tier` (0 to 9, on an entry or on `default`) makes a fight tougher: every tier adds 8 percent of
-  each enemy's base max HP and 3 percent of its base attack. Later acts use higher tiers. Attack
-  grows slowly because later enemies already hit harder and the party doesn't level yet.
+- `tier` (0 to 9, on an entry or on `default`) makes a fight tougher: every tier adds 10 percent of
+  each enemy's base max HP and 11 percent of its base attack. Later acts use higher tiers; the
+  party's levels (below) keep pace with them.
+
+### Experience, gold and levels
+
+Each roster enemy has a `reward` (`{"xp": N, "gold": N}`). A story fight that is won pays the
+line-up's rewards, plus 10 percent per tier, to the party (`ftcore::encounterReward` and
+`ftcore::award` in `Core/include/ftcore/Progression.h`). The rewards in the roster follow
+xp = round((maxHp + 6 × attack + 4 × defense) / 20) and gold = round(xp × 0.6); keep new enemies on
+that rule.
+
+- The whole party shares one level, 1 to 10, from total xp on a fixed curve. Each level above 1
+  adds 8 percent of the level 1 max HP and 6 percent of attack and defense, and one technique every
+  two levels. Speed never changes.
+- Winning every story fight in script order gives a level about every four fights and the cap a
+  few fights before the end. A Core test walks the encounter table to keep it that way, and checks
+  that the table lists the fights in script order.
+- `UFTStorySubsystem` holds the party's xp and gold (`GetParty`, `AwardBattle`) and the save
+  keeps them (`"party"` in the save JSON). The battle builds the party at the story's level and
+  logs `Party: +N xp, +N gold (...)` on a win. A plain demo fight uses level 1 and pays nothing.
+- Gold isn't spent on anything yet.
 
 ### Balance targets
 
-`ctest` plays every encounter with three simulated pilots (`demo::PilotSkill`):
+`ctest` plays every encounter with three simulated pilots (`demo::PilotSkill`), with the party at
+the level it would have reached by that fight:
 
 | Pilot | Notes pressed | Hits answered | Must |
 |---|---|---|---|

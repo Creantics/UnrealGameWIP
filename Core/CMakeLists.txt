@@ -59,6 +59,7 @@ add_library(ftcore STATIC
     src/PathFollow.cpp
     src/MusicLoop.cpp
     src/Physics.cpp
+    src/Progression.cpp
     src/Qte.cpp
     src/Seen.cpp
     src/Settings.cpp
@@ -128,6 +129,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_path_follow.cpp
         tests/test_ui_text.cpp
         tests/test_physics.cpp
+        tests/test_progression.cpp
         tests/test_qte.cpp
         tests/test_settings.cpp
         tests/test_skip.cpp

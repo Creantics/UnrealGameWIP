@@ -14,6 +14,7 @@
 // capture and apply allocate (they copy text): call them on save and load, not per frame.
 
 #include "ftcore/Api.h"
+#include "ftcore/Progression.h"
 #include "ftcore/StoryDatabase.h"
 
 #include <cstdint>
@@ -44,6 +45,7 @@ struct StorySave {
     std::uint32_t beat = 0;
     std::vector<SavedStoryFlag> flags; // only flags that differ from their default
     std::vector<SavedSeenScene> seen;  // only scenes with a seen beat (format 2; empty for a format 1 save)
+    PartyProgress party;               // xp and gold; the owner fills it (capture and apply leave it alone)
 };
 
 struct StoryLoadReport {
@@ -61,9 +63,10 @@ FTCORE_API bool applyStory(const StorySave& save, StoryRunner& runner, StoryLoad
 
 // ---- JSON text ----
 // {"format":2,"scene":"SC-A","beat":4,"flags":[{"id":"F","kind":"int","number":3,"text":""}],
-//  "seen":[{"scene":"SC-A","bits":"1f"}]}
-// kind is "bool", "int" or "string". Every field is required (a format 1 save has no "seen", which
-// then reads as empty); unknown extra fields are ignored. Encoding always writes format 2.
+//  "seen":[{"scene":"SC-A","bits":"1f"}],"party":{"xp":240,"gold":130}}
+// kind is "bool", "int" or "string". Every field is required except "party" (a save from before
+// progression has none: xp and gold read as 0) and "seen" in a format 1 save (it then reads as
+// empty); unknown extra fields are ignored. Encoding always writes format 2.
 
 // UTF-8 JSON text for the save.
 FTCORE_API std::string encodeStorySave(const StorySave& save);

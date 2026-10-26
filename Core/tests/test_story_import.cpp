@@ -500,6 +500,7 @@ bool sameSave(const StorySave& a, const StorySave& b) {
     if (a.seen.size() != b.seen.size()) return false;
     for (std::size_t i = 0; i < a.seen.size(); ++i)
         if (a.seen[i].scene != b.seen[i].scene || a.seen[i].bits != b.seen[i].bits) return false;
+    if (a.party.xp != b.party.xp || a.party.gold != b.party.gold) return false;
     return true;
 }
 
@@ -789,6 +790,7 @@ StorySave sampleSave() {
     s.flags.push_back({"F_ENUM", FlagValue::Kind::String, 2, "SA\"T\\ \r\n\x1f ü"});
     s.seen.push_back({"SC-\"A\"\\\n é", "1f0aA"});
     s.seen.push_back({"SC-B", "8"});
+    s.party = {kMaxXp, 12345};
     return s;
 }
 
@@ -830,6 +832,13 @@ TEST_CASE("save codec refuses a bad version, missing fields and wrong types") {
         R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":[{"scene":"A"}]})",
         R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":[{"scene":"A","bits":"1g"}]})",
         R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":[{"scene":"A","bits":3}]})",
+        R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":[],"party":[]})",
+        R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":[],"party":{"gold":1}})",
+        R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":[],"party":{"xp":1}})",
+        R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":[],"party":{"xp":-1,"gold":0}})",
+        R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":[],"party":{"xp":1000001,"gold":0}})",
+        R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":[],"party":{"xp":1.5,"gold":0}})",
+        R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":[],"party":{"xp":0,"gold":"3"}})",
         R"({"format":"1","scene":"A","beat":0,"flags":[]})",
         R"({"scene":"A","beat":0,"flags":[]})",
         R"({"format":1,"beat":0,"flags":[]})",
@@ -858,6 +867,14 @@ TEST_CASE("save codec refuses a bad version, missing fields and wrong types") {
     }
     StorySave ok;
     CHECK(decodeStorySave(R"({"format":1,"scene":"A","beat":0,"flags":[],"extra":{"x":1}})", ok, nullptr));
+    // A save from before progression has no "party": xp and gold read as 0.
+    ok.party = {5, 5};
+    REQUIRE(decodeStorySave(R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":[]})", ok, nullptr));
+    CHECK(ok.party.xp == 0);
+    CHECK(ok.party.gold == 0);
+    REQUIRE(decodeStorySave(R"({"format":2,"scene":"A","beat":0,"flags":[],"seen":[],"party":{"xp":240,"gold":130}})", ok, nullptr));
+    CHECK(ok.party.xp == 240);
+    CHECK(ok.party.gold == 130);
     CHECK_FALSE(decodeStorySave("{", ok, nullptr)); // no error sink: must not crash
 }
 

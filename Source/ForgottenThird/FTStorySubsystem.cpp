@@ -155,9 +155,23 @@ bool UFTStorySubsystem::StartStory(const FString& SceneId)
 	bReportedFinished = false;
 	Backlog.clear(); // a new game (or a headless start): nothing shown yet
 	bPaused = false;
+	Party = ftcore::PartyProgress();
 	const bool bOk = Runner->start(FT::ToUtf8(SceneId));
 	Flush();
 	return bOk;
+}
+
+int32 UFTStorySubsystem::GetPartyLevel() const
+{
+	return ftcore::levelForXp(Party.xp);
+}
+
+ftcore::AwardResult UFTStorySubsystem::AwardBattle(const ftcore::Reward& Reward)
+{
+	const ftcore::AwardResult Result = ftcore::award(Party, Reward);
+	UE_LOG(LogFTStory, Display, TEXT("Party: +%d xp, +%d gold (%d xp, %d gold, level %d%s)."), Reward.xp, Reward.gold, Party.xp,
+		Party.gold, Result.levelAfter, Result.levelAfter > Result.levelBefore ? TEXT(", LEVEL UP") : TEXT(""));
+	return Result;
 }
 
 bool UFTStorySubsystem::Advance()

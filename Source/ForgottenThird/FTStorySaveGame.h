@@ -3,7 +3,7 @@
 // The story save slot: Core's JSON text for a StorySave (ftcore::encodeStorySave) in one string.
 // Save with UGameplayStatics::SaveGameToSlot as usual; the text format, not the UPROPERTY layout,
 // is what survives changes to the story data. The text (format 2) also carries which beats the
-// player has seen, for "skip only seen lines".
+// player has seen, for "skip only seen lines", and the party's xp and gold.
 
 #include "CoreMinimal.h"
 #include "GameFramework/SaveGame.h"

@@ -68,6 +68,9 @@ reduce-flashes are stored for the audio, combat and style code to read later (po
   Format 1 saves still load, with nothing seen. Continue replaces the seen bits with the slot's; New
   Game keeps the ones in memory (or, with none, the slot's) before its first autosave overwrites the
   slot. Scenes or beats a newer script no longer has are dropped on load. The backlog is not saved.
+- The save text also holds `"party": {"xp": N, "gold": N}` (`StorySave::party`, `Progression.h`),
+  the party's experience and gold from won fights. A save without it loads with both at 0. New Game
+  resets them; Continue restores them.
 
 ## Command line
 

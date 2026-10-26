@@ -191,7 +191,7 @@ bool importEnemyRoster(std::string_view json, EnemyRoster& out, std::string* err
             errors.push_back(path + ": expected an object");
             continue;
         }
-        encUnknownKeys(j, path, {"id", "name", "stats", "skills"}, warnings);
+        encUnknownKeys(j, path, {"id", "name", "stats", "skills", "reward"}, warnings);
         EnemyDef e;
         e.id = encStr(j["id"].string());
         if (!encId(e.id)) errors.push_back(path + ".id: expected lower-case letters, digits and _");
@@ -210,6 +210,18 @@ bool importEnemyRoster(std::string_view json, EnemyRoster& out, std::string* err
             encInt(st, "defense", e.stats.defense, 0, 100000, sp, errors);
             encInt(st, "speed", e.stats.speed, 1, 100000, sp, errors);
             encInt(st, "technique", e.stats.technique, 0, 100000, sp, errors);
+        }
+
+        const JsonValue rw = j["reward"];
+        if (!rw.isAbsent()) {
+            const std::string rp = path + ".reward";
+            if (!rw.isObject()) {
+                errors.push_back(rp + ": expected an object");
+            } else {
+                encUnknownKeys(rw, rp, {"xp", "gold"}, warnings);
+                encInt(rw, "xp", e.reward.xp, 0, 100000, rp, errors);
+                encInt(rw, "gold", e.reward.gold, 0, 100000, rp, errors);
+            }
         }
 
         const JsonValue skills = j["skills"];

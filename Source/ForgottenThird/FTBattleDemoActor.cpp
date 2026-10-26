@@ -26,6 +26,7 @@
 #include "FTGameInstance.h"
 #include "FTMeshFacing.h"
 #include "FTPlayerController.h"
+#include "FTStorySubsystem.h"
 #include "FTText.h"
 
 #include "ftcore/BattleDemo.h"
@@ -284,8 +285,14 @@ void AFTBattleDemoActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 void AFTBattleDemoActor::LoadLineup()
 {
-	CoreParty = ftcore::demo::party();
+	// A story fight puts the party up at its level; other fights (the demo, the field) at level 1.
+	const UFTStorySubsystem* Story = GetGameInstance() ? GetGameInstance()->GetSubsystem<UFTStorySubsystem>() : nullptr;
+	const UFTGameInstance* StoryGI = GetGameInstance<UFTGameInstance>();
+	const bool bStoryFight = Story && StoryGI && StoryGI->StoryCarry.bValid;
+	const int32 Level = bStoryFight ? Story->GetPartyLevel() : 1;
+	CoreParty = ftcore::demo::party(Level);
 	CoreFoes = ftcore::demo::enemies();
+	Reward = ftcore::Reward();
 
 	ftcore::EnemyRoster Roster;
 	ftcore::EncounterTable Table;
@@ -301,6 +308,11 @@ void AFTBattleDemoActor::LoadLineup()
 	const ftcore::EncounterEntry* Entry = bCarry ? Table.findEntry(Scene, Beat, Step) : nullptr;
 	const ftcore::EncounterLineup& Lineup = Entry ? Entry->lineup : Table.fallback;
 	ftcore::makeEnemies(Roster, Lineup, CoreFoes);
+	if (bStoryFight)
+	{
+		Reward = ftcore::encounterReward(Roster, Lineup);
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: party level %d; a win pays %d xp, %d gold."), Level, Reward.xp, Reward.gold);
+	}
 	if (CoreFoes.empty()) // can't happen with a validated table; the demo fight is the safe answer
 	{
 		CoreFoes = ftcore::demo::enemies();
@@ -880,6 +892,10 @@ void AFTBattleDemoActor::HandleOutcome(EFTBattleOutcome Outcome)
 		// autopilot always retries, so a headless run never stops on a defeat).
 		if (bWon)
 		{
+			if (UFTStorySubsystem* Story = GI->GetSubsystem<UFTStorySubsystem>())
+			{
+				Story->AwardBattle(Reward);
+			}
 			GI->StoryCarry.bDone = true;
 			GI->StoryCarry.bWon = true;
 			bReturningToStory = true;

@@ -117,7 +117,7 @@ std::string encodeStorySave(const StorySave& save) {
         appendQuoted(out, save.seen[i].bits);
         out += '}';
     }
-    out += "]}";
+    out += "],\"party\":{\"xp\":" + std::to_string(save.party.xp) + ",\"gold\":" + std::to_string(save.party.gold) + "}}";
     return out;
 }
 
@@ -177,6 +177,17 @@ bool decodeStorySave(std::string_view text, StorySave& out, std::string* error) 
                 if (!isHexDigit(c)) return fail(error, at + ".bits is not hexadecimal");
             result.seen.push_back({std::string(id.string()), std::string(bits.string())});
         }
+    }
+    const JsonValue party = root["party"];
+    if (!party.isAbsent()) {
+        if (!party.isObject()) return fail(error, "save: \"party\" is not an object");
+        const JsonValue xp = party["xp"], gold = party["gold"];
+        if (!xp.isInteger() || xp.integer() < 0 || xp.integer() > kMaxXp)
+            return fail(error, "save: party.xp is missing or not an integer in range");
+        if (!gold.isInteger() || gold.integer() < 0 || gold.integer() > kMaxGold)
+            return fail(error, "save: party.gold is missing or not an integer in range");
+        result.party.xp = static_cast<int>(xp.integer());
+        result.party.gold = static_cast<int>(gold.integer());
     }
     out = std::move(result);
     return true;

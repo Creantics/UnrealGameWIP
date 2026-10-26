@@ -28,6 +28,7 @@ bool UFTStorySaveGame::CaptureFrom(const UFTStorySubsystem* Story)
 		Save.flags.push_back(std::move(Out));
 	}
 	ftcore::captureSeen(Story->GetSeen(), Save); // the read-state rides along (format 2)
+	Save.party = Story->GetParty();
 	SaveJson = FT::ToFString(ftcore::encodeStorySave(Save));
 	return true;
 }
@@ -67,5 +68,6 @@ bool UFTStorySaveGame::ApplyTo(UFTStorySubsystem* Story, FString& OutError, TArr
 		return false;
 	}
 	ftcore::applySeen(Save, Story->GetSeen()); // an old (format 1) save has none: nothing seen
+	Story->SetParty(Save.party);               // a save from before progression: xp and gold 0
 	return true;
 }
