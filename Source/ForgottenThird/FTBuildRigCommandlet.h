@@ -21,7 +21,9 @@
 // the source has no foot chain), retargets the clips into
 // Dest/Retargeted and logs each result like the clip check, with its feet' planted ground speed
 // (the capsule speed at which it plays at rate 1). It returns 1 if a target chain is
-// unmapped or a retargeted clip comes out empty. Example (proof_head's rom onto test_human):
+// unmapped or a retargeted clip comes out empty. Add -AlignPose when the two rest poses differ (a
+// T-pose source onto an A-pose MetaHuman): the target gets a retarget pose with its chains turned
+// to the source's directions. Example (proof_head's rom onto test_human):
 //
 //   -run=FTBuildRig -Mesh=/Game/Characters/TestHuman/test_human/SkeletalMeshes/test_human.test_human
 //       -Dest=/Game/Characters/TestHuman/Rig
