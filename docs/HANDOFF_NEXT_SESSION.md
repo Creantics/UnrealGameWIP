@@ -14,8 +14,12 @@ Private notes (character references, concept-art review, script status) are in `
     typical pilots end late fights near half HP and novices start losing from tier 6. Docs: `docs/BATTLE_DEMO.md` (Experience,
     gold and levels), `docs/GAME_FRAME.md`.
   - Gold has no use yet, and no HUD shows the level (needs someone to look at a screen).
-  - Next, in the advisor's order: story flags from QTE grades, the party following the lead on the field, field guards, pause
-    with save slots.
+  - Done on main (25e9cb3): assist options instead of QTE-grade flags (the script never branches on a QTE grade). Three new
+    settings rows (QTE auto-complete, hold inputs as a press, skip choices) are mirrored onto the script's `F_SYS_OPT_*` flags at
+    story start, after a load and on every change; the QTE screen reads the first two (`ftcore::QteAssist`). Alpha gate counts
+    unchanged. Docs: `docs/QTE_SCREEN.md` (Assist options), `docs/DIALOGUE_UI.md` (settings table).
+  - Open: skip choices is mirror-only (nothing acts on it yet); story hold beats are still timed waits, not held inputs.
+  - Next, in the advisor's order: the party following the lead on the field, field guards, pause with save slots.
 
 - **NEWEST (2026-10-25): all three leads now conform to concept head models.** Each lead's MetaHuman head is fitted to a scaled, cut
   head model (private), not built from presets. Pipeline per lead, all private scripts driven through the editor bridge:
