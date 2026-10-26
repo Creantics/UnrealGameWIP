@@ -100,11 +100,111 @@ FootTrack measureFoot(const GaitFrame* frames, std::size_t n, float dt, bool lef
     return out;
 }
 
+LocoPoint lerp(const LocoPoint& a, const LocoPoint& b, float u) {
+    return {a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u, a.z + (b.z - a.z) * u};
+}
+
+LocoPoint sub(const LocoPoint& a, const LocoPoint& b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+
+float dist2(const LocoPoint& a, const LocoPoint& b) {
+    const LocoPoint d = sub(a, b);
+    return d.x * d.x + d.y * d.y + d.z * d.z;
+}
+
+constexpr float kLastSample = static_cast<float>(kMoveSamples - 1);
+
+// Where time t falls in a clip's move track: the sample before it and the share of the way to the next.
+std::size_t trackAt(const LocoClipInfo& i, float t, float& u) {
+    const float f = i.moveTime > 0.f ? clampf(t / i.moveTime, 0.f, 1.f) * kLastSample : 0.f;
+    const std::size_t k = std::min(static_cast<std::size_t>(f), kMoveSamples - 2);
+    u = f - static_cast<float>(k);
+    return k;
+}
+
+float pathAt(const LocoClipInfo& i, float t) {
+    float u = 0.f;
+    const std::size_t k = trackAt(i, t, u);
+    return i.path[k] + (i.path[k + 1] - i.path[k]) * u;
+}
+
+// The first time the root has come `d` along its path.
+float timeAtPath(const LocoClipInfo& i, float d) {
+    if (d <= i.path[0]) return 0.f;
+    for (std::size_t k = 0; k + 1 < kMoveSamples; ++k) {
+        if (i.path[k + 1] < d) continue;
+        const float span = i.path[k + 1] - i.path[k];
+        const float u = span > 0.f ? (d - i.path[k]) / span : 0.f;
+        return (static_cast<float>(k) + u) / kLastSample * i.moveTime;
+    }
+    return i.moveTime;
+}
+
+// The root's speed along its path at t (rate 1).
+float pathSpeed(const LocoClipInfo& i, float t) {
+    const float h = i.moveTime / kLastSample;
+    const float a = std::max(t - h, 0.f), b = std::min(t + h, i.moveTime);
+    return b > a ? (pathAt(i, b) - pathAt(i, a)) / (b - a) : 0.f;
+}
+
+LocoFeet feetAt(const LocoClipInfo& i, float t) {
+    float u = 0.f;
+    const std::size_t k = trackAt(i, t, u);
+    return {lerp(i.feet[k].left, i.feet[k + 1].left, u), lerp(i.feet[k].right, i.feet[k + 1].right, u)};
+}
+
+// The feet's velocity relative to the root at t, played at `rate`.
+LocoFeet feetVelocity(const LocoClipInfo& i, float t, float rate) {
+    const float h = i.moveTime / kLastSample;
+    const float a = std::max(t - h, 0.f), b = std::min(t + h, i.moveTime);
+    if (b <= a) return {};
+    const LocoFeet fa = feetAt(i, a), fb = feetAt(i, b);
+    const float s = rate / (b - a);
+    const LocoPoint l = sub(fb.left, fa.left), r = sub(fb.right, fa.right);
+    return {{l.x * s, l.y * s, l.z * s}, {r.x * s, r.y * s, r.z * s}};
+}
+
+// How far apart two poses of the feet are: their positions, and their velocities by `velocityWeight`.
+float poseCost(const LocoFeet& a, const LocoFeet& av, const LocoFeet& b, const LocoFeet& bv, float velocityWeight) {
+    return dist2(a.left, b.left) + dist2(a.right, b.right) + velocityWeight * (dist2(av.left, bv.left) + dist2(av.right, bv.right));
+}
+
 } // namespace
 
-LocoClipInfo measureGait(const GaitFrame* frames, std::size_t count, float length) {
+LocoClipInfo measureMove(const GaitFrame* frames, std::size_t count, float length) {
     LocoClipInfo info;
     info.length = std::max(length, 0.f);
+    const std::size_t n = std::min(count, kMaxGaitFrames);
+    if (!frames || n < 2 || length <= 0.f) return info;
+    const float dt = length / static_cast<float>(n - 1);
+    std::array<float, kMaxGaitFrames> path{};
+    for (std::size_t k = 1; k < n; ++k) {
+        path[k] = path[k - 1] + std::hypot(frames[k].root.x - frames[k - 1].root.x, frames[k].root.y - frames[k - 1].root.y);
+    }
+    // The root moves until the frame after the last one away from where it ends; a root that never
+    // moves has the whole clip as its track.
+    const LocoPoint& end = frames[n - 1].root;
+    std::size_t last = n - 1;
+    for (std::size_t k = n; k-- > 0;) {
+        if (std::hypot(frames[k].root.x - end.x, frames[k].root.y - end.y) > kMoveStill) {
+            last = std::min(k + 1, n - 1);
+            break;
+        }
+    }
+    info.moveTime = path[n - 1] > kMoveStill ? static_cast<float>(last) * dt : info.length;
+    for (std::size_t s = 0; s < kMoveSamples; ++s) {
+        const float f = info.moveTime * static_cast<float>(s) / kLastSample / dt;
+        const std::size_t k = std::min(static_cast<std::size_t>(f), n - 2);
+        const float u = std::min(f - static_cast<float>(k), 1.f);
+        info.path[s] = path[k] + (path[k + 1] - path[k]) * u;
+        info.feet[s] = {lerp(footRel(frames, k, true), footRel(frames, k + 1, true), u),
+                        lerp(footRel(frames, k, false), footRel(frames, k + 1, false), u)};
+    }
+    info.travel = info.path[kMoveSamples - 1];
+    return info;
+}
+
+LocoClipInfo measureGait(const GaitFrame* frames, std::size_t count, float length) {
+    LocoClipInfo info = measureMove(frames, count, length);
     const std::size_t n = std::min(count, kMaxGaitFrames);
     if (!frames || n < 3 || length <= 0.f) return info;
     const float dt = length / static_cast<float>(n - 1);
@@ -133,6 +233,7 @@ void Locomotion::setClip(LocoClip clip, const LocoClipInfo& info) {
     slot.groundSpeed = std::max(slot.groundSpeed, 0.f);
     slot.cycles = std::max(slot.cycles, 1);
     slot.leftPlant = frac(slot.leftPlant);
+    slot.moveTime = clampf(slot.moveTime, 0.f, slot.length);
 }
 
 void Locomotion::reset() {
@@ -142,6 +243,8 @@ void Locomotion::reset() {
     rate_.fill(1.f);
     jump_ = LocoClip::JumpStart;
     land_ = LocoClip::Land;
+    move_ = LocoClip::RunStart;
+    moved_ = braking_ = 0.f;
     layers_[0] = {LocoClip::Idle, 0.f, 1.f};
     layerCount_ = 1;
     state_ = LocoState::Ground;
@@ -194,15 +297,152 @@ LocoClip Locomotion::groundTarget(float speed) {
         gait_ = LocoClip::Idle;
         return gait_;
     }
-    gait_ = LocoClip::Walk;
-    for (const LocoClip c : kGaits) {
-        if (share_[index(c)] > share_[index(gait_)]) gait_ = c;
-    }
+    gait_ = heaviestGait();
     return gait_;
 }
 
+LocoClip Locomotion::heaviestGait() const {
+    LocoClip g = LocoClip::Walk;
+    for (const LocoClip c : kGaits) {
+        if (share_[index(c)] > share_[index(g)]) g = c;
+    }
+    return g;
+}
+
+bool Locomotion::beginStop(const LocoInput& in, float speed) {
+    if (braking_ < tuning_.stopDelay || in.stopDistance < 0.f || !isLocoGait(gait_) || speed < tuning_.moveStop) return false;
+    // The stop on the foot that best continues what the feet are doing now.
+    const LocoClip from = state_ == LocoState::Starting ? move_ : gait_;
+    const bool known = hasMove(from);
+    const LocoClipInfo& f = clip(from);
+    const float fromTime = time_[index(from)];
+    const LocoFeet a = known ? feetAt(f, fromTime) : LocoFeet{};
+    const LocoFeet av = known ? feetVelocity(f, fromTime, rate_[index(from)]) : LocoFeet{};
+    float best = 0.f, bestTime = 0.f;
+    LocoClip pick = LocoClip::Count;
+    for (const bool right : {false, true}) {
+        const LocoClip c = locoStop(gait_, right);
+        if (!hasMove(c)) continue;
+        const LocoClipInfo& s = clip(c);
+        // The point whose remaining travel is the capsule's.
+        const float t = timeAtPath(s, s.travel - std::min(in.stopDistance, s.travel));
+        const float cost = known ? poseCost(a, av, feetAt(s, t), feetVelocity(s, t, 1.f), tuning_.poseVelocity) : 0.f;
+        if (pick == LocoClip::Count || cost < best) {
+            pick = c;
+            best = cost;
+            bestTime = t;
+        }
+    }
+    if (pick == LocoClip::Count) return false;
+    state_ = LocoState::Stopping;
+    move_ = pick;
+    rate_[index(pick)] = 0.f;
+    enter_ = bestTime;
+    return true;
+}
+
+void Locomotion::syncGaits(LocoClip from, float t, float speed) {
+    const LocoClip g = gait_;
+    if (!isLocoGait(g) || !hasMove(from) || !hasMove(g)) return;
+    float gaits = 0.f;
+    for (const LocoClip c : kGaits) gaits += weight_[index(c)];
+    if (gaits >= 0.5f) return; // the gaits still show: keep them going as they are
+    // The time in the gait whose feet best continue the clip's.
+    const LocoClipInfo& src = clip(from);
+    const LocoClipInfo& dst = clip(g);
+    const LocoFeet a = feetAt(src, t), av = feetVelocity(src, t, rate_[index(from)]);
+    const float rate = dst.groundSpeed > 0.f ? speed / dst.groundSpeed : 1.f;
+    float best = 0.f, bestTime = 0.f;
+    for (std::size_t k = 0; k < kMoveSamples; ++k) {
+        const float tt = dst.moveTime * static_cast<float>(k) / kLastSample;
+        const float cost = poseCost(a, av, feetAt(dst, tt), feetVelocity(dst, tt, rate), tuning_.poseVelocity);
+        if (k == 0 || cost < best) {
+            best = cost;
+            bestTime = tt;
+        }
+    }
+    // That time as the shared phase and the gait's stride within its loop (the others start at their first).
+    const float u = (bestTime / dst.length - dst.leftPlant) * static_cast<float>(dst.cycles);
+    const float whole = std::floor(u);
+    phase_ = u - whole;
+    stride_.fill(0);
+    stride_[index(g)] = ((static_cast<int>(whole) % dst.cycles) + dst.cycles) % dst.cycles;
+}
+
+LocoClip Locomotion::moveTarget(const LocoInput& in, float speed, LocoClip& syncFrom, float& syncTime) {
+    const float dt = std::max(in.dt, 0.f);
+    const bool heading = in.wantSpeed >= tuning_.moveStart;
+    const LocoClipInfo& m = clip(move_);
+    const float t = time_[index(move_)];
+    const auto play = [&](float to, float maxStep) {
+        const float next = clampf(to, t, t + maxStep);
+        rate_[index(move_)] = dt > 0.f ? (next - t) / dt : 0.f;
+        return move_;
+    };
+    const auto toGaits = [&]() {
+        state_ = LocoState::Ground;
+        const LocoClip next = groundTarget(speed);
+        if (isLocoGait(next)) {
+            syncFrom = move_;
+            syncTime = t;
+        }
+        return next;
+    };
+
+    switch (state_) {
+    case LocoState::Starting: {
+        // Braking only just begun may be a dropped frame of input: the start plays on until it lasts.
+        const bool brief = braking_ > 0.f && braking_ < tuning_.stopDelay;
+        if ((!heading || speed < tuning_.moveStop) && !(brief && speed >= tuning_.moveStop)) {
+            if (beginStop(in, speed)) return move_;
+            return toGaits();
+        }
+        moved_ += speed * dt;
+        if (pathSpeed(m, t) >= tuning_.startHandoff * clip(gait_).groundSpeed || t >= tuning_.startEnd * m.length) return toGaits();
+        return play(timeAtPath(m, moved_), dt * tuning_.moveRate);
+    }
+    case LocoState::Stopping: {
+        if (in.wantSpeed < 0.f || heading) return toGaits();
+        if (t >= m.length - tuning_.stopSettle) {
+            state_ = LocoState::Ground;
+            gait_ = LocoClip::Idle;
+            return LocoClip::Idle;
+        }
+        if (t >= m.moveTime) return play(t + dt, dt); // the settle, in place
+        // Once the capsule stands, the clip gets to its stand quickly rather than walking on under it.
+        const float step = dt * tuning_.moveRate;
+        if (speed < tuning_.moveStop) return play(m.moveTime, std::max(step, (m.moveTime - t) * follow(dt, tuning_.landFade)));
+        // At the point whose remaining travel is the capsule's.
+        return play(timeAtPath(m, m.travel - std::min(std::max(in.stopDistance, 0.f), m.travel)), step);
+    }
+    default: break;
+    }
+
+    // On the ground: heading off from standing starts the gait it heads for, braking stops the gait.
+    float gaits = 0.f;
+    for (const LocoClip c : kGaits) gaits += weight_[index(c)];
+    if (heading && !isLocoGait(gait_) && gaits < 0.5f && speed >= tuning_.moveStop) {
+        splitGaits(in.wantSpeed);
+        const LocoClip g = heaviestGait();
+        splitGaits(speed);
+        const LocoClip s = locoStart(g);
+        if (hasMove(s)) {
+            state_ = LocoState::Starting;
+            move_ = s;
+            gait_ = g;
+            moved_ = speed * dt;
+            rate_[index(s)] = 0.f;
+            enter_ = 0.f;
+            return s;
+        }
+    }
+    if (beginStop(in, speed)) return move_;
+    return groundTarget(speed);
+}
+
 void Locomotion::retarget(LocoClip next) {
-    fade_ = state_ == LocoState::Ground ? tuning_.gaitFade : state_ == LocoState::Landing ? tuning_.landFade : tuning_.airFade;
+    const bool air = state_ == LocoState::Rising || state_ == LocoState::Falling;
+    fade_ = air ? tuning_.airFade : state_ == LocoState::Landing ? tuning_.landFade : tuning_.gaitFade;
     if (next == target_) return;
     target_ = next;
     if (isLocoGait(next)) {
@@ -295,6 +535,8 @@ void Locomotion::update(const LocoInput& in) {
     const bool moving = speed >= tuning_.movingAir;
     switch (state_) {
     case LocoState::Ground:
+    case LocoState::Starting:
+    case LocoState::Stopping:
     case LocoState::Landing:
         if (offGround) {
             jump_ = moving && has(LocoClip::JumpMoving) ? LocoClip::JumpMoving : LocoClip::JumpStart;
@@ -323,15 +565,26 @@ void Locomotion::update(const LocoInput& in) {
         airTime_ = 0.f;
     }
 
+    const bool braking = !in.falling && in.wantSpeed >= 0.f && in.wantSpeed < tuning_.moveStop;
+    braking_ = braking ? braking_ + dt : 0.f;
     splitGaits(speed);
     LocoClip next = target_;
+    LocoClip syncFrom = LocoClip::Count;
+    float syncTime = 0.f;
     switch (state_) {
-    case LocoState::Ground: next = groundTarget(speed); break;
+    case LocoState::Ground:
+    case LocoState::Starting:
+    case LocoState::Stopping: next = moveTarget(in, speed, syncFrom, syncTime); break;
     case LocoState::Rising: next = jump_; break;
     case LocoState::Falling: next = has(LocoClip::Fall) ? LocoClip::Fall : has(jump_) ? jump_ : gait_; break;
     case LocoState::Landing: next = land_; break;
     }
     retarget(next);
+    if (enter_ >= 0.f) {
+        time_[index(next)] = enter_;
+        enter_ = -1.f;
+    }
+    if (syncFrom != LocoClip::Count) syncGaits(syncFrom, syncTime, speed);
 
     // The moving jump and landing play at the rate their root travel matches the capsule's, within
     // limits: past them it's no longer the same move.
@@ -346,7 +599,7 @@ void Locomotion::update(const LocoInput& in) {
     const float runSpeed = has(LocoClip::Run) ? clip(LocoClip::Run).groundSpeed : walkSpeed;
     const float topSpeed = has(LocoClip::Sprint) ? clip(LocoClip::Sprint).groundSpeed : runSpeed;
     const float speedShare = runSpeed > 0.f ? clampf(speed / runSpeed, 0.f, 1.f) : 0.f;
-    const bool ground = state_ == LocoState::Ground;
+    const bool ground = state_ == LocoState::Ground || state_ == LocoState::Starting || state_ == LocoState::Stopping;
     const float leanTo = ground ? clampf(in.turnRate * tuning_.leanPerTurn * speedShare, -tuning_.maxLean, tuning_.maxLean) : 0.f;
     const float twistTo = ground ? clampf(in.turnRate * tuning_.twistPerTurn, -tuning_.maxTwist, tuning_.maxTwist) : 0.f;
     const float runShare = topSpeed > walkSpeed ? clampf((speed - walkSpeed) / (topSpeed - walkSpeed), 0.f, 1.f) : 0.f;

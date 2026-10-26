@@ -8,8 +8,10 @@
 // The body is animated by UFTLocomotionAnimInstance: idle, walk, run, sprint, jump, fall and land
 // clips (and the moving jump and landing taken at speed) blended from the capsule's speed and
 // IsFalling, the gaits at the rate that keeps the planted feet still, the spine banking and leaning
-// into turns and speed. Missing clips are skipped (with no run clip the walk speeds up; with no jump
-// clips the gait carries on in the air).
+// into turns and speed. Each gait's start and stops, where there are clips named after its loop
+// (UFTLocomotionAnimInstance::SetMovesFromGait), play as the capsule sets off and brakes. Missing
+// clips are skipped (with no run clip the walk speeds up; with no jump clips the gait carries on in
+// the air).
 //
 // The body, its clips and any extra pieces (clothes, hair) can be swapped from config without a
 // rebuild, under [/Script/ForgottenThird.FTExploreCharacter] in Config/UserGame.ini (local, not
@@ -92,6 +94,7 @@ public:
 	float RunSpeed = 700.f;
 
 	virtual void Tick(float DeltaSeconds) override;
+	virtual void AddMovementInput(FVector WorldDirection, float ScaleValue = 1.f, bool bForce = false) override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
 	// Ground-plane facing, for the interact prompt's cone.
@@ -151,4 +154,6 @@ private:
 	FFTFootSlideProbe SlideProbe;
 	float JumpEvery = 0.f; // -LocoJump=<s>
 	float JumpTimer = 0.f;
+	float PulseEvery = 0.f; // -LocoPulse=<s>
+	float PulseTimer = 0.f;
 };

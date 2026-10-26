@@ -9,6 +9,7 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Misc/CommandLine.h"
+#include "Misc/PackageName.h"
 
 #include "ForgottenThird.h"
 
@@ -29,21 +30,31 @@ const TCHAR* ClipName(ftcore::LocoClip C)
 	case ftcore::LocoClip::Land: return TEXT("land");
 	case ftcore::LocoClip::JumpMoving: return TEXT("moving jump");
 	case ftcore::LocoClip::LandMoving: return TEXT("moving land");
+	case ftcore::LocoClip::WalkStart: return TEXT("walk start");
+	case ftcore::LocoClip::RunStart: return TEXT("run start");
+	case ftcore::LocoClip::SprintStart: return TEXT("sprint start");
+	case ftcore::LocoClip::WalkStopLeft: return TEXT("walk stop L");
+	case ftcore::LocoClip::WalkStopRight: return TEXT("walk stop R");
+	case ftcore::LocoClip::RunStopLeft: return TEXT("run stop L");
+	case ftcore::LocoClip::RunStopRight: return TEXT("run stop R");
+	case ftcore::LocoClip::SprintStopLeft: return TEXT("sprint stop L");
+	case ftcore::LocoClip::SprintStopRight: return TEXT("sprint stop R");
 	default: return TEXT("?");
 	}
 }
 
 // Samples per second when measuring a gait.
 constexpr float kMeasureRate = 60.f;
-} // namespace
 
-ftcore::LocoClipInfo UFTLocomotionAnimInstance::MeasureClip(const UAnimSequence& Clip)
+// The clip's root and ball (or foot) bones in its component space, sampled evenly from 0 to its
+// length into Frames. False (and no frames) when the clip has no skeleton, length or feet.
+bool SampleFeet(const UAnimSequence& Clip, TArray<ftcore::GaitFrame>& Frames)
 {
 	const float Length = Clip.GetPlayLength();
 	const USkeleton* Skeleton = Clip.GetSkeleton();
 	if (!Skeleton || Length <= 0.f)
 	{
-		return ftcore::measureGait(nullptr, 0, Length);
+		return false;
 	}
 	const FReferenceSkeleton& Ref = Skeleton->GetReferenceSkeleton();
 	auto Find = [&Ref](const TCHAR* A, const TCHAR* B)
@@ -55,7 +66,7 @@ ftcore::LocoClipInfo UFTLocomotionAnimInstance::MeasureClip(const UAnimSequence&
 	const int32 Right = Find(TEXT("ball_r"), TEXT("foot_r"));
 	if (Left == INDEX_NONE || Right == INDEX_NONE)
 	{
-		return ftcore::measureGait(nullptr, 0, Length);
+		return false;
 	}
 
 	// A bone's transform in the clip's component space, composed up its parent chain.
@@ -74,7 +85,6 @@ ftcore::LocoClipInfo UFTLocomotionAnimInstance::MeasureClip(const UAnimSequence&
 	auto Point = [](const FVector& V) { return ftcore::LocoPoint{float(V.X), float(V.Y), float(V.Z)}; };
 
 	const int32 N = FMath::Clamp(FMath::CeilToInt(Length * kMeasureRate) + 1, 3, static_cast<int32>(ftcore::kMaxGaitFrames));
-	TArray<ftcore::GaitFrame> Frames;
 	Frames.SetNum(N);
 	for (int32 K = 0; K < N; ++K)
 	{
@@ -83,7 +93,22 @@ ftcore::LocoClipInfo UFTLocomotionAnimInstance::MeasureClip(const UAnimSequence&
 		Frames[K].left = Point(ComponentSpace(Left, Time).GetTranslation());
 		Frames[K].right = Point(ComponentSpace(Right, Time).GetTranslation());
 	}
-	return ftcore::measureGait(Frames.GetData(), Frames.Num(), Length);
+	return true;
+}
+} // namespace
+
+ftcore::LocoClipInfo UFTLocomotionAnimInstance::MeasureClip(const UAnimSequence& Clip)
+{
+	TArray<ftcore::GaitFrame> Frames;
+	SampleFeet(Clip, Frames);
+	return ftcore::measureGait(Frames.GetData(), Frames.Num(), Clip.GetPlayLength());
+}
+
+ftcore::LocoClipInfo UFTLocomotionAnimInstance::MeasureMove(const UAnimSequence& Clip)
+{
+	TArray<ftcore::GaitFrame> Frames;
+	SampleFeet(Clip, Frames);
+	return ftcore::measureMove(Frames.GetData(), Frames.Num(), Clip.GetPlayLength());
 }
 
 void UFTLocomotionAnimInstance::SetClip(ftcore::LocoClip Which, UAnimSequence* Clip)
@@ -97,7 +122,8 @@ void UFTLocomotionAnimInstance::SetClip(ftcore::LocoClip Which, UAnimSequence* C
 	if (Clip)
 	{
 		const bool bGait = ftcore::isLocoGait(Which);
-		Info = bGait ? MeasureClip(*Clip) : ftcore::LocoClipInfo{Clip->GetPlayLength(), 0.f, 1, 0.f};
+		const bool bMove = ftcore::isLocoStart(Which) || ftcore::isLocoStop(Which);
+		Info = bGait ? MeasureClip(*Clip) : bMove ? MeasureMove(*Clip) : ftcore::LocoClipInfo{Clip->GetPlayLength(), 0.f, 1, 0.f};
 		// The root's own travel over the loop, when the clip has root motion: a check on the ground speed.
 		FTransform Start, End;
 		Clip->GetBoneTransform(Start, FSkeletonPoseBoneIndex(0), FAnimExtractContext(0.0, false), false);
@@ -108,13 +134,74 @@ void UFTLocomotionAnimInstance::SetClip(ftcore::LocoClip Which, UAnimSequence* C
 		{
 			Info.groundSpeed = RootSpeed;
 		}
-		UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: %s = %s, %.2f s%s"), ClipName(Which), *Clip->GetName(), Info.length,
-			bGait ? *FString::Printf(TEXT(", ground speed %.0f cm/s (root moves %.0f, feet %.0f, %.0f sideways), %d strides, left plant at %.2f"),
-						Info.groundSpeed, RootSpeed, Info.footSpeed, Info.footSide, Info.cycles, Info.leftPlant)
-				  : *FString::Printf(TEXT(", root moves %.0f cm/s"), RootSpeed));
+		FString Detail;
+		if (bGait)
+		{
+			Detail = FString::Printf(TEXT(", ground speed %.0f cm/s (root moves %.0f, feet %.0f, %.0f sideways), %d strides, left plant at %.2f"),
+				Info.groundSpeed, RootSpeed, Info.footSpeed, Info.footSide, Info.cycles, Info.leftPlant);
+		}
+		else if (bMove)
+		{
+			Detail = FString::Printf(TEXT(", root travels %.0f cm in %.2f s"), Info.travel, Info.moveTime);
+		}
+		else
+		{
+			Detail = FString::Printf(TEXT(", root moves %.0f cm/s"), RootSpeed);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: %s = %s, %.2f s%s"), ClipName(Which), *Clip->GetName(), Info.length, *Detail);
 	}
 	Loco.setClip(Which, Info);
 	Loco.reset();
+}
+
+void UFTLocomotionAnimInstance::SetMovesFromGait(ftcore::LocoClip Gait)
+{
+	// -LocoNoMoves leaves them out, for comparing with the gaits alone.
+	static const bool bNoMoves = FParse::Param(FCommandLine::Get(), TEXT("LocoNoMoves"));
+	const UAnimSequence* Loop = ftcore::isLocoGait(Gait) && !bNoMoves ? Clips[static_cast<int32>(Gait)].Get() : nullptr;
+	const FString Path = Loop ? Loop->GetPathName() : FString();
+	auto Set = [&](ftcore::LocoClip Which, const TCHAR* Name)
+	{
+		UAnimSequence* Clip = nullptr;
+		if (Path.Contains(TEXT("_Loop_F")))
+		{
+			const FString MovePath = Path.Replace(TEXT("_Loop_F"), Name, ESearchCase::CaseSensitive);
+			if (FPackageName::DoesPackageExist(FPackageName::ObjectPathToPackageName(MovePath)))
+			{
+				Clip = LoadObject<UAnimSequence>(nullptr, *MovePath, nullptr, LOAD_NoWarn | LOAD_Quiet);
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: no %s, so none."), *MovePath);
+			}
+		}
+		SetClip(Which, Clip);
+	};
+	Set(ftcore::locoStart(Gait), TEXT("_Start_F_Lfoot"));
+	Set(ftcore::locoStop(Gait, false), TEXT("_Stop_F_Lfoot"));
+	Set(ftcore::locoStop(Gait, true), TEXT("_Stop_F_Rfoot"));
+}
+
+void UFTLocomotionAnimInstance::MovementIntent(const UCharacterMovementComponent& Move, float& WantSpeed, float& StopDistance)
+{
+	WantSpeed = -1.f;
+	StopDistance = -1.f;
+	if (Move.IsFalling())
+	{
+		return;
+	}
+	if (!Move.GetCurrentAcceleration().IsNearlyZero())
+	{
+		WantSpeed = static_cast<float>(Move.GetMaxSpeed()) * FMath::Max(Move.GetAnalogInputModifier(), 0.f);
+		return;
+	}
+	WantSpeed = 0.f;
+	const float Brake = Move.GetMaxBrakingDeceleration();
+	if (Brake > 0.f)
+	{
+		const float Speed = static_cast<float>(Move.Velocity.Size2D());
+		StopDistance = Speed * Speed / (2.f * Brake);
+	}
 }
 
 void UFTLocomotionAnimInstance::NativeInitializeAnimation()
@@ -159,10 +246,16 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		In.verticalSpeed = static_cast<float>(V.Z);
 		const UCharacterMovementComponent* Move = Character->GetCharacterMovement();
 		In.falling = Move && Move->IsFalling();
+		if (Move)
+		{
+			MovementIntent(*Move, In.wantSpeed, In.stopDistance);
+		}
 	}
 	else
 	{
 		In.groundSpeed = PushedSpeed;
+		In.wantSpeed = PushedWant;
+		In.stopDistance = PushedStop;
 	}
 	const float Yaw = static_cast<float>(Owner->GetActorRotation().Yaw);
 	In.turnRate = bHasYaw && DeltaSeconds > 0.f ? FMath::FindDeltaAngleDegrees(LastYaw, Yaw) / DeltaSeconds : 0.f;
@@ -179,18 +272,23 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		}
 	}
 
-	if (bLog && (LogTimer -= DeltaSeconds) <= 0.f)
+	// Each change of state is logged too, and starts and stops ten times a second.
+	const bool bChanged = Loco.state() != LastState;
+	LastState = Loco.state();
+	if (bLog && ((LogTimer -= DeltaSeconds) <= 0.f || bChanged))
 	{
-		LogTimer = 1.f;
+		const bool bMoving = Loco.state() == ftcore::LocoState::Starting || Loco.state() == ftcore::LocoState::Stopping;
+		LogTimer = LogTimer <= 0.f ? (bMoving ? 0.1f : 1.f) : LogTimer;
 		FString Layers;
 		for (std::size_t I = 0; I < Loco.layerCount(); ++I)
 		{
 			const ftcore::LocoLayer& L = Loco.layer(I);
 			Layers += FString::Printf(TEXT(" %s %.2f@x%.2f"), ClipName(L.clip), L.weight, Loco.rate(L.clip));
 		}
-		UE_LOG(LogForgottenThird, Display, TEXT("Locomotion %s: speed %.0f turn %.0f falling %d state %d lean %.1f twist %.1f pitch %.1f |%s"),
-			*Owner->GetName(), In.groundSpeed, In.turnRate, In.falling ? 1 : 0, static_cast<int32>(Loco.state()), Loco.lean(), Loco.twist(),
-			Loco.pitch(), *Layers);
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("Locomotion %s: speed %.0f want %.0f stop in %.0f turn %.0f falling %d state %d lean %.1f twist %.1f pitch %.1f |%s"),
+			*Owner->GetName(), In.groundSpeed, In.wantSpeed, In.stopDistance, In.turnRate, In.falling ? 1 : 0, static_cast<int32>(Loco.state()),
+			Loco.lean(), Loco.twist(), Loco.pitch(), *Layers);
 	}
 }
 
@@ -246,9 +344,18 @@ void FFTFootSlideProbe::Sample(const USkeletalMeshComponent& Mesh, float DeltaSe
 			AlongSum += Slip.X * Fwd.X + Slip.Y * Fwd.Y;
 			SideSum += Slip.Y * Fwd.X - Slip.X * Fwd.Y;
 			SlipTime += PlantTime;
+			// A body moving at either end; 20 cm/s of change either way counts as speeding up or braking.
+			if (FMath::Max(PlantSpeed, BodySpeed) >= 50.f)
+			{
+				const int32 Kind = BodySpeed > PlantSpeed + 20.f ? 0 : BodySpeed < PlantSpeed - 20.f ? 1 : 2;
+				KindSlip[Kind] += Slip.Size2D();
+				KindTime[Kind] += PlantTime;
+				++KindPlants[Kind];
+			}
 		}
 		PlantFoot = Foot;
 		PlantTime = 0.f;
+		PlantSpeed = BodySpeed;
 		if (Foot != INDEX_NONE)
 		{
 			PlantStart = Now[Foot];
@@ -272,6 +379,9 @@ void FFTFootSlideProbe::Sample(const USkeletalMeshComponent& Mesh, float DeltaSe
 			Mesh.GetOwner() ? *Mesh.GetOwner()->GetName() : TEXT("?"), Frames ? SpeedSum / Frames : 0.0, SlipTime > 0.0 ? SlipSum / SlipTime : 0.0,
 			SlipTime > 0.0 ? AlongSum / SlipTime : 0.0, SlipTime > 0.0 ? SideSum / SlipTime : 0.0, Planted ? SlideSum / Planted : 0.0, Planted,
 			Frames);
+		auto Kind = [this](int32 K) { return KindTime[K] > 0.0 ? KindSlip[K] / KindTime[K] : 0.0; };
+		UE_LOG(LogForgottenThird, Display, TEXT("LocoSlide %s so far: speeding up %.1f cm/s (%d plants), braking %.1f (%d), steady %.1f (%d)"),
+			Mesh.GetOwner() ? *Mesh.GetOwner()->GetName() : TEXT("?"), Kind(0), KindPlants[0], Kind(1), KindPlants[1], Kind(2), KindPlants[2]);
 		Floor = NextFloor;
 		NextFloor = 1e9f;
 		SlideSum = SpeedSum = AlongSum = SideSum = SlipSum = SlipTime = 0.0;

@@ -3,6 +3,7 @@
 #include "Camera/PlayerCameraManager.h"
 #include "EngineUtils.h"
 #include "Engine/World.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
 #include "HAL/PlatformMisc.h"
 #include "HAL/PlatformTime.h"
@@ -483,12 +484,17 @@ void AFTExploreDirector::PlaceFollowers(AFTExploreCharacter& Player, float Delta
 	Trail.push(ToGround(Player.GetActorLocation()));
 	const float FeetZ = static_cast<float>(Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight());
 	const APlayerCameraManager* Camera = UGameplayStatics::GetPlayerCameraManager(this, 0);
+	float WantSpeed = -1.f, StopDistance = -1.f;
+	if (const UCharacterMovementComponent* Move = Player.GetCharacterMovement())
+	{
+		UFTLocomotionAnimInstance::MovementIntent(*Move, WantSpeed, StopDistance);
+	}
 	for (int32 I = 0; I < Followers.Num(); ++I)
 	{
 		if (AFTPartyFollower* Follower = Followers[I])
 		{
 			const ftcore::Vec2 At = Trail.pointBehind(static_cast<float>(I + 1) * ftcore::PartyTrail::kFollowerSpacing);
-			Follower->Place(FVector2D(At.x * 100.0, At.y * 100.0), FeetZ, DeltaSeconds);
+			Follower->Place(FVector2D(At.x * 100.0, At.y * 100.0), FeetZ, DeltaSeconds, WantSpeed, StopDistance);
 			const bool bInLens = Camera
 				&& FVector::Dist2D(Camera->GetCameraLocation(), Follower->GetActorLocation())
 					< kFollowerCameraShare * FVector::Dist2D(Camera->GetCameraLocation(), Player.GetActorLocation());

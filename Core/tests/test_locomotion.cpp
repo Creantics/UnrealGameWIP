@@ -309,6 +309,19 @@ namespace {
 // 60% of its stride and sliding back under the root at `speed`, then lifting 15 cm to swing
 // forward. `rootSpeed` adds root motion (0 for an in-place clip).
 // `dip` lowers the toe to the ground for a moment mid-swing, as real clips do.
+// A foot at foot phase p (0 at its plant) of a `stride` cm stride, relative to the root along x.
+void stepFoot(float p, float stride, bool dip, float& x, float& z) {
+    p -= std::floor(p);
+    if (p < 0.6f) { // planted: from +stride*0.3 back to -stride*0.3
+        x = stride * (0.3f - p);
+        z = 0.f;
+    } else { // swing forward
+        const float s = (p - 0.6f) / 0.4f;
+        x = stride * (-0.3f + 0.6f * s);
+        z = dip && std::fabs(s - 0.5f) < 0.08f ? 1.f : 15.f * std::sin(3.14159265f * s);
+    }
+}
+
 void makeGait(GaitFrame* frames, int n, float length, int cycles, float speed, float rootSpeed, float leftPlantAt, bool dip = false) {
     const float stride = speed * length / static_cast<float>(cycles);
     for (int k = 0; k < n; ++k) {
@@ -316,22 +329,80 @@ void makeGait(GaitFrame* frames, int n, float length, int cycles, float speed, f
         const float rootX = rootSpeed * t;
         frames[k].root = {rootX, 0.f, 90.f};
         for (int side = 0; side < 2; ++side) {
-            float p = static_cast<float>(cycles) * t / length - leftPlantAt * static_cast<float>(cycles) + (side ? 0.5f : 0.f);
-            p -= std::floor(p);
+            const float p = static_cast<float>(cycles) * t / length - leftPlantAt * static_cast<float>(cycles) + (side ? 0.5f : 0.f);
             float x, z;
-            if (p < 0.6f) { // planted: from +stride*0.3 back to -stride*0.3
-                x = stride * (0.3f - p);
-                z = 0.f;
-            } else { // swing forward
-                const float s = (p - 0.6f) / 0.4f;
-                x = stride * (-0.3f + 0.6f * s);
-                z = dip && std::fabs(s - 0.5f) < 0.08f ? 1.f : 15.f * std::sin(3.14159265f * s);
-            }
+            stepFoot(p, stride, dip, x, z);
             LocoPoint& foot = side ? frames[k].right : frames[k].left;
-            foot = {rootX + x, side ? 10.f : -10.f, 90.f - 90.f + z};
+            foot = {rootX + x, side ? 10.f : -10.f, z};
         }
     }
 }
+
+// A synthetic start or stop: the root comes path(t) cm along x and the feet step as in makeGait, at
+// foot phase phase0 + path / stride (so the planted foot stands still), standing where the root does.
+template <class Path>
+void makeMove(GaitFrame* frames, int n, float length, float stride, float phase0, Path path) {
+    for (int k = 0; k < n; ++k) {
+        const float d = path(length * static_cast<float>(k) / static_cast<float>(n - 1));
+        frames[k].root = {d, 0.f, 90.f};
+        for (int side = 0; side < 2; ++side) {
+            float x, z;
+            stepFoot(phase0 + d / stride + (side ? 0.5f : 0.f), stride, false, x, z);
+            LocoPoint& foot = side ? frames[k].right : frames[k].left;
+            foot = {d + x, side ? 10.f : -10.f, z};
+        }
+    }
+}
+
+// The run below: 450 cm/s, a stride (left plant to left plant) every 0.6 s.
+constexpr float kStride = 270.f;
+// Its start speeds up evenly to 450 by 0.8 s (180 cm), then holds it to the end, 1.3 s; the left
+// foot lifts first.
+float startPath(float t) { return t < 0.8f ? 281.25f * t * t : 180.f + 450.f * (t - 0.8f); }
+constexpr float kStartPhase = 0.75f;
+// Its stops slow evenly from 450 to a stand at 1 s (225 cm), then settle to 2 s, the left foot
+// planted last (phase 0.3 at the end) or the right (the left at 0.8).
+float stopPath(float t) { return t < 1.f ? 450.f * t - 225.f * t * t : 225.f; }
+constexpr float kStopLeftPhase = 0.3f - 225.f / kStride;
+constexpr float kStopRightPhase = 0.8f - 225.f / kStride;
+
+// A clip's root path at t, from its measured track.
+float trackPath(const LocoClipInfo& i, float t) {
+    const float f = std::fmin(std::fmax(t / i.moveTime, 0.f), 1.f) * static_cast<float>(kMoveSamples - 1);
+    const std::size_t k = std::min(static_cast<std::size_t>(f), kMoveSamples - 2);
+    return i.path[k] + (i.path[k + 1] - i.path[k]) * (f - static_cast<float>(k));
+}
+
+// How far apart two foot phases are, around the loop.
+float phaseApart(float a, float b) {
+    const float d = std::fabs(a - b) - std::floor(std::fabs(a - b));
+    return std::fmin(d, 1.f - d);
+}
+
+Locomotion makeMoveLoco() {
+    static GaitFrame frames[121];
+    Locomotion l;
+    l.setClip(LocoClip::Idle, {7.57f, 0.f, 1, 0.f});
+    makeGait(frames, 37, 0.6f, 1, 450.f, 450.f, 0.f);
+    l.setClip(LocoClip::Run, measureGait(frames, 37, 0.6f));
+    makeMove(frames, 79, 1.3f, kStride, kStartPhase, startPath);
+    l.setClip(LocoClip::RunStart, measureMove(frames, 79, 1.3f));
+    makeMove(frames, 121, 2.f, kStride, kStopLeftPhase, stopPath);
+    l.setClip(LocoClip::RunStopLeft, measureMove(frames, 121, 2.f));
+    makeMove(frames, 121, 2.f, kStride, kStopRightPhase, stopPath);
+    l.setClip(LocoClip::RunStopRight, measureMove(frames, 121, 2.f));
+    l.reset();
+    return l;
+}
+
+// The lead's capsule: speeding up at 1024 cm/s^2 while heading off, braking at 1000 to a stop.
+struct Capsule {
+    float speed = 0.f;
+    LocoInput step(float want) {
+        speed = want > 0.f ? std::fmin(speed + 1024.f * kDt, want) : std::fmax(speed - 1000.f * kDt, 0.f);
+        return {kDt, speed, 0.f, false, 0.f, want, want > 0.f ? -1.f : speed * speed / 2000.f};
+    }
+};
 
 } // namespace
 
@@ -395,6 +466,206 @@ TEST_CASE("locomotion: measureGait reads ground speed, strides and the left plan
     CHECK(measureGait(nullptr, 0, 1.f).groundSpeed == 0.f);
 }
 
+TEST_CASE("locomotion: measureMove reads the root's travel and when it stops") {
+    static GaitFrame frames[121];
+    makeMove(frames, 121, 2.f, kStride, kStopLeftPhase, stopPath);
+    LocoClipInfo m = measureMove(frames, 121, 2.f);
+    CHECK(m.length == doctest::Approx(2.f));
+    // The root ends 225 cm along, within kMoveStill of it from 0.953 s on.
+    CHECK(m.moveTime == doctest::Approx(0.97f).epsilon(0.02));
+    CHECK(m.travel == doctest::Approx(225.f).epsilon(0.01));
+    CHECK(m.path[0] == 0.f);
+    for (std::size_t k = 0; k + 1 < kMoveSamples; ++k) CHECK(m.path[k + 1] >= m.path[k]);
+    CHECK(trackPath(m, 0.5f) == doctest::Approx(stopPath(0.5f)).epsilon(0.01));
+    // The feet relative to the root: the left planted at the end, half a stride behind where it plants.
+    CHECK(m.feet[kMoveSamples - 1].left.z == doctest::Approx(-90.f));
+    CHECK(std::fabs(m.feet[kMoveSamples - 1].left.x) < 1.f);
+
+    // A start moves to its end.
+    makeMove(frames, 79, 1.3f, kStride, kStartPhase, startPath);
+    m = measureMove(frames, 79, 1.3f);
+    CHECK(m.moveTime == doctest::Approx(1.3f));
+    CHECK(m.travel == doctest::Approx(startPath(1.3f)).epsilon(0.01));
+
+    // A root that stays put has the whole clip as its track and no travel; measureGait measures the move too.
+    makeGait(frames, 91, 1.5f, 2, 300.f, 0.f, 0.1f);
+    m = measureGait(frames, 91, 1.5f);
+    CHECK(m.moveTime == doctest::Approx(1.5f));
+    CHECK(m.travel == 0.f);
+    CHECK(m.groundSpeed == doctest::Approx(300.f).epsilon(0.02));
+    CHECK(measureMove(nullptr, 0, 1.f).moveTime == 0.f);
+}
+
+TEST_CASE("locomotion: heading off plays the start at the distance covered, then the gait in step") {
+    Locomotion l = makeMoveLoco();
+    const LocoClipInfo& s = l.clip(LocoClip::RunStart);
+    Capsule c;
+    float moved = 0.f, last = 0.f;
+    bool starting = false, handed = false;
+    for (int i = 0; i < 120 && !handed; ++i) {
+        const LocoInput in = c.step(450.f);
+        moved += in.groundSpeed * kDt;
+        l.update(in);
+        if (l.state() != LocoState::Starting) {
+            handed = starting;
+            continue;
+        }
+        CHECK(l.target() == LocoClip::RunStart);
+        const float t = l.time(LocoClip::RunStart);
+        if (starting) {
+            CHECK(t >= last);
+            CHECK(t - last <= kDt * l.tuning().moveRate + 1e-4f);
+            // At the point the capsule has come to, unless held back by the rate cap.
+            if (t - last < kDt * l.tuning().moveRate * 0.99f) CHECK(std::fabs(trackPath(s, t) - moved) < 2.f);
+        } else {
+            CHECK(t == 0.f);
+        }
+        starting = true;
+        last = t;
+    }
+    REQUIRE(handed);
+    CHECK(l.state() == LocoState::Ground);
+    CHECK(l.target() == LocoClip::Run);
+    // The run picks up the start's foot phase where it handed over (and has stepped one frame on).
+    const float startPhase = kStartPhase + trackPath(s, last) / kStride;
+    CHECK(phaseApart(l.phase(), startPhase + kDt * 450.f / kStride) < 0.04f);
+    CHECK(phaseApart(l.footPhase(LocoClip::Run, l.time(LocoClip::Run)), l.phase()) < 0.01f);
+}
+
+TEST_CASE("locomotion: braking plays the stop on the matching foot at the distance left, then idles") {
+    LocoClip picked[2] = {LocoClip::Count, LocoClip::Count};
+    for (int trial = 0; trial < 2; ++trial) {
+        Locomotion l = makeMoveLoco();
+        Capsule c;
+        // Run on, for half a stride more the second time.
+        for (int i = 0; i < 90 + trial * 18; ++i) l.update(c.step(450.f));
+        REQUIRE(l.target() == LocoClip::Run);
+        float runPhase = l.phase();
+        bool stopping = false, settled = false;
+        float last = 0.f;
+        for (int i = 0; i < 240; ++i) {
+            const LocoInput in = c.step(0.f);
+            l.update(in);
+            if (l.state() != LocoState::Stopping) {
+                if (stopping) break;
+                // Not yet braking for stopDelay: the run plays on.
+                CHECK(l.target() == LocoClip::Run);
+                CHECK(static_cast<float>(i + 1) * kDt < l.tuning().stopDelay + kDt);
+                runPhase = l.phase();
+                continue;
+            }
+            const LocoClip stop = l.target();
+            const LocoClipInfo& s = l.clip(stop);
+            const float t = l.time(stop);
+            if (!stopping) {
+                picked[trial] = stop;
+                // Its feet are the nearer to the run's: both step with the distance covered, so how far
+                // apart they are is set by where the capsule stops, and the feet planting last halves it.
+                const float run = runPhase + kDt * 450.f / kStride;
+                const float mine = (stop == LocoClip::RunStopLeft ? kStopLeftPhase : kStopRightPhase) + trackPath(s, t) / kStride;
+                CHECK(phaseApart(mine, run) <= 0.25f);
+                CHECK(phaseApart(mine, run) <= phaseApart(mine + 0.5f, run));
+            } else {
+                CHECK(t >= last);
+                if (c.speed > 0.f && t - last < kDt * l.tuning().moveRate * 0.99f) {
+                    // At the point whose remaining travel is the capsule's.
+                    CHECK(std::fabs(s.travel - trackPath(s, t) - in.stopDistance) < 2.f);
+                }
+            }
+            // Once the capsule stands, the clip soon stands too.
+            if (c.speed == 0.f && t >= s.moveTime) settled = true;
+            stopping = true;
+            last = t;
+            runPhase = l.phase();
+        }
+        CHECK(stopping);
+        CHECK(settled);
+        // Settled, it hands over to idle near its end.
+        CHECK(l.state() == LocoState::Ground);
+        CHECK(l.target() == LocoClip::Idle);
+        CHECK(last >= l.clip(picked[trial]).length - l.tuning().stopSettle - 2.f * kDt);
+    }
+    // Half a stride apart, the other foot.
+    CHECK(picked[0] != picked[1]);
+}
+
+TEST_CASE("locomotion: heading off again mid-stop goes back to the gait in step") {
+    Locomotion l = makeMoveLoco();
+    Capsule c;
+    for (int i = 0; i < 90; ++i) l.update(c.step(450.f));
+    for (int i = 0; i < 12; ++i) l.update(c.step(0.f));
+    REQUIRE(l.state() == LocoState::Stopping);
+    const LocoClip stop = l.target();
+    const float t = l.time(stop);
+    const float phase0 = stop == LocoClip::RunStopLeft ? kStopLeftPhase : kStopRightPhase;
+    l.update(c.step(450.f));
+    CHECK(l.state() == LocoState::Ground);
+    CHECK(l.target() == LocoClip::Run);
+    CHECK(phaseApart(l.phase(), phase0 + trackPath(l.clip(stop), t) / kStride) < 0.08f);
+}
+
+TEST_CASE("locomotion: letting go mid-start stops; a blocked or unknown heading doesn't start; a jump leaves the start") {
+    Locomotion l = makeMoveLoco();
+    Capsule c;
+    for (int i = 0; i < 20; ++i) l.update(c.step(450.f));
+    REQUIRE(l.state() == LocoState::Starting);
+    // A frame without input (a dropped frame) plays the start on; letting go for stopDelay stops.
+    l.update(c.step(0.f));
+    CHECK(l.state() == LocoState::Starting);
+    l.update(c.step(450.f));
+    CHECK(l.state() == LocoState::Starting);
+    int frames = 0;
+    while (l.state() == LocoState::Starting && frames < 10) {
+        l.update(c.step(0.f));
+        ++frames;
+    }
+    CHECK(l.state() == LocoState::Stopping);
+    CHECK(static_cast<float>(frames) * kDt >= l.tuning().stopDelay - 1e-4f);
+    CHECK(static_cast<float>(frames - 1) * kDt < l.tuning().stopDelay);
+
+    // The same on the run: a dropped frame keeps running.
+    l = makeMoveLoco();
+    c = Capsule{};
+    for (int i = 0; i < 90; ++i) l.update(c.step(450.f));
+    REQUIRE(l.target() == LocoClip::Run);
+    l.update(c.step(0.f));
+    l.update(c.step(450.f));
+    CHECK(l.state() == LocoState::Ground);
+    CHECK(l.target() == LocoClip::Run);
+
+    // Pressing into a wall: heading off, but the capsule doesn't move.
+    l = makeMoveLoco();
+    run(l, 1.f, {kDt, 0.f, 0.f, false, 0.f, 450.f, -1.f});
+    CHECK(l.state() == LocoState::Ground);
+    CHECK(l.target() == LocoClip::Idle);
+
+    // A caller that doesn't say where the body heads gets the gaits alone.
+    l = makeMoveLoco();
+    c = Capsule{};
+    for (int i = 0; i < 60; ++i) {
+        LocoInput in = c.step(450.f);
+        in.wantSpeed = -1.f;
+        l.update(in);
+        CHECK(l.state() == LocoState::Ground);
+    }
+    for (int i = 0; i < 60; ++i) {
+        LocoInput in = c.step(0.f);
+        in.wantSpeed = in.stopDistance = -1.f;
+        l.update(in);
+        CHECK(l.state() == LocoState::Ground);
+    }
+
+    l = makeMoveLoco();
+    c = Capsule{};
+    for (int i = 0; i < 20; ++i) l.update(c.step(450.f));
+    REQUIRE(l.state() == LocoState::Starting);
+    LocoInput in = c.step(450.f);
+    in.falling = true;
+    in.verticalSpeed = 400.f;
+    l.update(in);
+    CHECK(l.state() == LocoState::Falling); // no jump clips here
+}
+
 TEST_CASE("locomotion: update does not allocate") {
     Locomotion l = makeLoco();
     const auto before = ftcore_test::allocStats().count;
@@ -403,4 +674,9 @@ TEST_CASE("locomotion: update does not allocate") {
         l.update({kDt, s, 90.f, i % 150 > 120, i % 150 > 135 ? -300.f : 400.f});
     }
     CHECK(ftcore_test::allocStats().count == before);
+    Locomotion m = makeMoveLoco();
+    const auto moving = ftcore_test::allocStats().count;
+    Capsule c;
+    for (int i = 0; i < 600; ++i) m.update(c.step(i % 200 < 100 ? 450.f : 0.f));
+    CHECK(ftcore_test::allocStats().count == moving);
 }

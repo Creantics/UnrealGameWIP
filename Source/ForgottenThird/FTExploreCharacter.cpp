@@ -27,6 +27,12 @@
 #include "FTMeshFacing.h"
 #include "ForgottenThird.h"
 
+namespace
+{
+// -LocoPulse: how long (s) each rest lasts, long enough for a stop clip to settle.
+constexpr float kPulseRest = 2.f;
+} // namespace
+
 AFTExploreCharacter::AFTExploreCharacter()
 {
 	PrimaryActorTick.bCanEverTick = true;
@@ -43,7 +49,14 @@ AFTExploreCharacter::AFTExploreCharacter()
 	Move->MaxWalkSpeed = WalkSpeed;
 	Move->JumpZVelocity = 520.f;
 	Move->AirControl = 0.35f;
-	Move->BrakingDecelerationWalking = 2000.f;
+	// Braking at a steady deceleration, with no friction term, so the distance to a stop is v^2 / 2b
+	// and the stop clip can play to it.
+	// Speeding up at half the default, the run start plays near its own pace (about x1.3) rather than
+	// racing to keep up with the capsule.
+	Move->MaxAcceleration = 1024.f;
+	Move->bUseSeparateBrakingFriction = true;
+	Move->BrakingFriction = 0.f;
+	Move->BrakingDecelerationWalking = 1000.f;
 
 	Boom = CreateDefaultSubobject<USpringArmComponent>(TEXT("Boom"));
 	Boom->SetupAttachment(RootComponent);
@@ -85,12 +98,15 @@ void AFTExploreCharacter::BeginPlay()
 		GetMesh()->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Body), 0.0));
 	}
 	SetupLocomotion();
-	// Locomotion test switches: -LocoRun holds the run speed, -LocoJump=<s> jumps every s seconds.
+	// Locomotion test switches: -LocoRun holds the run speed, -LocoJump=<s> jumps every s seconds,
+	// -LocoPulse=<s> drops the movement input for kPulseRest seconds after every s seconds of it, for
+	// starts and stops.
 	if (FParse::Param(FCommandLine::Get(), TEXT("LocoRun")))
 	{
 		GetCharacterMovement()->MaxWalkSpeed = RunSpeed;
 	}
 	FParse::Value(FCommandLine::Get(), TEXT("LocoJump="), JumpEvery);
+	FParse::Value(FCommandLine::Get(), TEXT("LocoPulse="), PulseEvery);
 	if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait")))
 	{
 		// For checking a look: the camera holds still round the pawn, by default in front of the face. Yaw 180 is
@@ -418,11 +434,24 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	SlideProbe.Sample(*GetMesh(), DeltaSeconds, static_cast<float>(GetVelocity().Size2D()));
+	if (PulseEvery > 0.f && (PulseTimer += DeltaSeconds) > PulseEvery + kPulseRest)
+	{
+		PulseTimer = 0.f;
+	}
 	if (JumpEvery > 0.f && (JumpTimer += DeltaSeconds) >= JumpEvery)
 	{
 		JumpTimer = 0.f;
 		Jump();
 	}
+}
+
+void AFTExploreCharacter::AddMovementInput(FVector WorldDirection, float ScaleValue, bool bForce)
+{
+	if (PulseEvery > 0.f && PulseTimer > PulseEvery)
+	{
+		return;
+	}
+	Super::AddMovementInput(WorldDirection, ScaleValue, bForce);
 }
 
 void AFTExploreCharacter::SetupLocomotion()
@@ -444,4 +473,7 @@ void AFTExploreCharacter::SetupLocomotion()
 	Anim->SetClip(ftcore::LocoClip::Land, LandClip);
 	Anim->SetClip(ftcore::LocoClip::JumpMoving, JumpMovingClip);
 	Anim->SetClip(ftcore::LocoClip::LandMoving, LandMovingClip);
+	Anim->SetMovesFromGait(ftcore::LocoClip::Walk);
+	Anim->SetMovesFromGait(ftcore::LocoClip::Run);
+	Anim->SetMovesFromGait(ftcore::LocoClip::Sprint);
 }

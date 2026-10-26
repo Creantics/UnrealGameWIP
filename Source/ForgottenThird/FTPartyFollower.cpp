@@ -73,10 +73,13 @@ bool AFTPartyFollower::Setup(const FString& Name, const AActor* Lead)
 	Anim->SetClip(ftcore::LocoClip::Walk, Load({TEXT("M_Neutral_Walk_Loop_F"), TEXT("MF_Unarmed_Walk_Fwd")}, TEXT("walk")));
 	Anim->SetClip(ftcore::LocoClip::Run, Load({TEXT("M_Neutral_Run_Loop_F"), TEXT("MF_Unarmed_Jog_Fwd")}, nullptr));
 	Anim->SetClip(ftcore::LocoClip::Sprint, Load({TEXT("M_Neutral_Sprint_Loop_F")}, nullptr));
+	Anim->SetMovesFromGait(ftcore::LocoClip::Walk);
+	Anim->SetMovesFromGait(ftcore::LocoClip::Run);
+	Anim->SetMovesFromGait(ftcore::LocoClip::Sprint);
 	return true;
 }
 
-void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float DeltaSeconds)
+void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float DeltaSeconds, float WantSpeed, float StopDistance)
 {
 	const FVector2D Move = bPlaced ? Ground - LastGround : FVector2D::ZeroVector;
 	const float Step = DeltaSeconds > 0.f ? static_cast<float>(Move.Size()) / DeltaSeconds : 0.f;
@@ -113,5 +116,6 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Body->GetAnimInstance()))
 	{
 		Anim->SetGroundSpeed(Speed);
+		Anim->SetIntent(WantSpeed, StopDistance);
 	}
 }

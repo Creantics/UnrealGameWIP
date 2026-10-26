@@ -22,6 +22,15 @@
 // slide. A step down shorter than airGrace stays on the ground clips. Blends are exponential
 // crossfades. Fixed size: nothing here allocates.
 //
+// Starts and stops, when the caller says where the body is heading (LocoInput::wantSpeed) and the
+// clips have their root travel measured (measureMove): from idle, a body heading off plays the start
+// clip of the gait it heads for, at the point whose root travel matches the distance the capsule has
+// covered since, and hands over to the gait once the clip nears the gait's speed, at the gait's
+// foot phase that best matches the clip's feet. A moving body told to stop plays the stop clip of
+// its gait (the one stopping on whichever foot matches best) at the point whose remaining root
+// travel matches the capsule's remaining braking distance (LocoInput::stopDistance), then its
+// settle, then idle. Heading off again mid-stop goes back to the gait the same way.
+//
 // Speeds are cm/s, times seconds, angles degrees. turnRate is the body's yaw rate, positive one way
 // (the caller's); lean() and twist() have its sign.
 
@@ -33,23 +42,29 @@
 
 namespace ftcore {
 
-enum class LocoClip : std::uint8_t { Idle, Walk, Run, Sprint, JumpStart, Fall, Land, JumpMoving, LandMoving, Count };
+// Starts are each gait's start from standing; stops each gait's stop, planting the left or the right
+// foot last.
+enum class LocoClip : std::uint8_t {
+    Idle, Walk, Run, Sprint, JumpStart, Fall, Land, JumpMoving, LandMoving,
+    WalkStart, RunStart, SprintStart,
+    WalkStopLeft, WalkStopRight, RunStopLeft, RunStopRight, SprintStopLeft, SprintStopRight,
+    Count
+};
 inline constexpr std::size_t kLocoClipCount = static_cast<std::size_t>(LocoClip::Count);
 
 constexpr bool isLocoGait(LocoClip c) { return c == LocoClip::Walk || c == LocoClip::Run || c == LocoClip::Sprint; }
 constexpr bool isLocoLoop(LocoClip c) { return c == LocoClip::Idle || c == LocoClip::Fall || isLocoGait(c); }
+constexpr bool isLocoStart(LocoClip c) { return c >= LocoClip::WalkStart && c <= LocoClip::SprintStart; }
+constexpr bool isLocoStop(LocoClip c) { return c >= LocoClip::WalkStopLeft && c <= LocoClip::SprintStopRight; }
+// A gait's start, and its stops.
+constexpr LocoClip locoStart(LocoClip gait) {
+    return static_cast<LocoClip>(static_cast<int>(LocoClip::WalkStart) + static_cast<int>(gait) - static_cast<int>(LocoClip::Walk));
+}
+constexpr LocoClip locoStop(LocoClip gait, bool right) {
+    return static_cast<LocoClip>(static_cast<int>(LocoClip::WalkStopLeft) + 2 * (static_cast<int>(gait) - static_cast<int>(LocoClip::Walk)) + (right ? 1 : 0));
+}
 
-enum class LocoState : std::uint8_t { Ground, Rising, Falling, Landing };
-
-// What the anim layer knows about one clip.
-struct LocoClipInfo {
-    float length = 0.f;      // seconds; 0 means the body has no such clip
-    float groundSpeed = 0.f; // gaits and moving jumps: the capsule speed at which the feet don't slide at rate 1
-    int cycles = 1;          // gaits: strides (plants of one foot) per loop
-    float leftPlant = 0.f;   // gaits: normalized time (0..1) of the first left plant
-    float footSpeed = 0.f;   // measureGait: the planted feet's own median speed (which groundSpeed takes)
-    float footSide = 0.f;    // measureGait: their median speed across the stride; near 0 unless the feet slide sideways
-};
+enum class LocoState : std::uint8_t { Ground, Rising, Falling, Landing, Starting, Stopping };
 
 // One sample of a clip for measureGait: the root bone and the two feet (ball joints), in the
 // clip's space (cm, z up).
@@ -61,15 +76,42 @@ struct GaitFrame {
 };
 inline constexpr std::size_t kMaxGaitFrames = 512;
 
+// The feet relative to the root.
+struct LocoFeet {
+    LocoPoint left, right;
+};
+inline constexpr std::size_t kMoveSamples = 64;
+
+// What the anim layer knows about one clip.
+struct LocoClipInfo {
+    float length = 0.f;      // seconds; 0 means the body has no such clip
+    float groundSpeed = 0.f; // gaits and moving jumps: the capsule speed at which the feet don't slide at rate 1
+    int cycles = 1;          // gaits: strides (plants of one foot) per loop
+    float leftPlant = 0.f;   // gaits: normalized time (0..1) of the first left plant
+    float footSpeed = 0.f;   // measureGait: the planted feet's own median speed (which groundSpeed takes)
+    float footSide = 0.f;    // measureGait: their median speed across the stride; near 0 unless the feet slide sideways
+    // measureMove: the time the root moves for (from 0; a stop then settles in place), how far it
+    // travels, and, sampled evenly over that time, its path length from time 0 and the feet. Starts
+    // and stops need the path; matching a gait to a start or stop needs the feet.
+    float moveTime = 0.f;
+    float travel = 0.f;
+    std::array<float, kMoveSamples> path{};
+    std::array<LocoFeet, kMoveSamples> feet{};
+};
+
 // Measures a gait clip from `count` frames sampled evenly over one loop (frame 0 at time 0, the
 // last at `length`; at most kMaxGaitFrames are read). A foot is planted while it is within
 // kPlantHeight of its lowest point relative to the root and moving back under it (against the way
 // it swings), and lifted once it rises kSwingHeight above it. groundSpeed is the median speed of a
 // planted foot relative to the root (with or without root motion); cycles counts the left foot's plants, and leftPlant is the first one's normalized time. A
-// clip whose feet never lift gets groundSpeed 0.
+// clip whose feet never lift gets groundSpeed 0. It measures the move too (measureMove).
 inline constexpr float kPlantHeight = 2.5f;
 inline constexpr float kSwingHeight = 8.f;
 FTCORE_API LocoClipInfo measureGait(const GaitFrame* frames, std::size_t count, float length);
+// Measures any clip's root travel and feet (the move fields), from frames sampled as for
+// measureGait. The root moves until it is last more than kMoveStill from where it ends.
+inline constexpr float kMoveStill = 0.5f;
+FTCORE_API LocoClipInfo measureMove(const GaitFrame* frames, std::size_t count, float length);
 
 struct LocoTuning {
     float moveStart = 25.f;     // ground speed that starts a gait from idle
@@ -90,6 +132,12 @@ struct LocoTuning {
     float maxTwist = 18.f;
     float runPitch = 6.f;       // forward lean added at the fastest gait's ground speed (none at the walk's)
     float bodyResponse = 10.f;  // how fast lean, twist and pitch follow (1/s)
+    float moveRate = 3.f;       // starts and stops play at most this fast to catch up with the capsule
+    float startHandoff = 0.9f;  // a start hands over once its root moves this share of the gait's ground speed
+    float startEnd = 0.85f;     // or once it is this far through
+    float stopSettle = 0.25f;   // a stop hands over to idle this long before its end
+    float stopDelay = 0.05f;    // braking starts a stop once it has lasted this long (a dropped frame of input doesn't)
+    float poseVelocity = 0.01f; // feet matching: weight of the feet's velocity (s^2) against their position
 };
 
 struct LocoInput {
@@ -98,6 +146,11 @@ struct LocoInput {
     float turnRate = 0.f;
     bool falling = false;
     float verticalSpeed = 0.f; // positive up
+    // Where the body is heading: the speed it is speeding up to or holding, 0 when it is braking to a
+    // stop, below 0 when the caller doesn't say (no starts or stops then).
+    float wantSpeed = -1.f;
+    // While braking: the distance to standstill (below 0: unknown, no stop clip).
+    float stopDistance = -1.f;
 };
 
 struct LocoLayer {
@@ -144,8 +197,15 @@ public:
 private:
     static constexpr std::size_t index(LocoClip c) { return static_cast<std::size_t>(c); }
     bool has(LocoClip c) const { return info_[index(c)].length > 0.f; }
+    bool hasMove(LocoClip c) const { return has(c) && info_[index(c)].moveTime > 0.f; }
     void splitGaits(float speed);
     LocoClip groundTarget(float speed);
+    LocoClip heaviestGait() const;
+    // The ground states with starts and stops; returns the clip to head for. syncFrom is set to a
+    // clip (and syncTime to its time) when the gaits should pick up from its feet.
+    LocoClip moveTarget(const LocoInput& in, float speed, LocoClip& syncFrom, float& syncTime);
+    bool beginStop(const LocoInput& in, float speed);
+    void syncGaits(LocoClip from, float time, float speed);
     void retarget(LocoClip next);
     void advance(float dt, float speed);
 
@@ -163,6 +223,10 @@ private:
     LocoClip gait_ = LocoClip::Idle; // the ground clip (the heaviest gait), kept through the air for the landing
     LocoClip jump_ = LocoClip::JumpStart; // the take-off and landing clips this jump uses
     LocoClip land_ = LocoClip::Land;
+    LocoClip move_ = LocoClip::RunStart; // the start or stop playing
+    float moved_ = 0.f; // starting: the distance covered since
+    float braking_ = 0.f; // how long the body has been braking
+    float enter_ = -1.f; // the time a start or stop just begun enters at, once it is the target
     float fade_ = 0.f;
     float phase_ = 0.f; // within the current stride
     float airTime_ = 0.f;

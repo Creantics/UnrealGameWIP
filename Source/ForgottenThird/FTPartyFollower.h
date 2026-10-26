@@ -31,8 +31,10 @@ public:
 	bool Setup(const FString& Name, const AActor* Lead);
 
 	// Stands the follower at `Ground` (cm, any height; the ground below it is found), turning toward the
-	// way it moved since the last call; the anim instance gets the speed.
-	void Place(const FVector2D& Ground, float LeadFeetZ, float DeltaSeconds);
+	// way it moved since the last call; the anim instance gets the speed. On the lead's trail the
+	// follower sets off and stops when the lead does, so the lead's intent (SetIntent) drives its
+	// starts and stops; -1 plays none.
+	void Place(const FVector2D& Ground, float LeadFeetZ, float DeltaSeconds, float WantSpeed = -1.f, float StopDistance = -1.f);
 
 private:
 	UPROPERTY(VisibleAnywhere, Category = "Follower")
