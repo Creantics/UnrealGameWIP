@@ -65,6 +65,18 @@ ground and reached in under 10 s). When the file or the entry is missing it fall
 The rules (`fieldGoalInReach`, `fieldStepUsable`, `fieldPilotStep`) are in `ExploreDemo.h`, tested
 in `test_explore.cpp` (every goal reachable by the pilot in under 10 s, no prop on the line).
 
+**The party follows.** On a field step the rest of the party (`ftcore::demo::kPartyNames` after
+the first, the battle's line-up, so the field and the fights agree; at most three) walks behind
+the lead. The director keeps an `ftcore::PartyTrail` (`PartyTrail.h`): the lead's ground positions
+sampled every 0.25 m, so a long or fast-forwarded frame still leaves the corners in the path. Each
+follower is placed, not steered: member i stands i x 1.6 m behind the lead along that path, so it
+moves exactly when and as fast as the lead did and never falls further behind. The trail starts as
+a straight line behind the lead's facing, so the party starts in a line. A follower
+(`AFTPartyFollower`) is the member's skeletal mesh from `/Game/Characters/<Name>/<name>/SkeletalMeshes/`
+with its idle and walk clips, set down on the ground found below it. It has no controller, no
+movement component and no collision, so it can't block the lead or the autopilot. Log:
+`ExploreDemo: <n> following the lead.` The demo map's own Duy stays a talk spot.
+
 On autoplay (`StoryCarry.bAutoPlay`) the autopilot walks to the marker and uses it, logging
 `ExploreDemo: field step done at <scene> beat <b> step <i> after <t> s.` (game time, under 10 s).
 With `-AlphaFast` global time dilation is 8 while it plays. The same stuck detection applies
@@ -106,4 +118,7 @@ made no progress toward a spot for 15 s (a prop in the way).
 - **One fixed fight.** The ambush always opens the battle demo's line-up. Encounter data doesn't
   come from `Data/` yet.
 - **No saving to disk.** The field state survives the fight in the game instance only.
-- **Simple autopilot.** It walks straight lines; there is no navmesh.
+- **Simple autopilot.** It follows the navmesh path the map builder saves (see ALPHA.md), and walks
+  straight only when there is none.
+- **Followers on the field demo.** The party follows only on story field steps; the demo's own
+  walk has no followers.

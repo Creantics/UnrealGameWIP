@@ -14,11 +14,13 @@
 #include "GameFramework/Actor.h"
 
 #include "ftcore/Explore.h"
+#include "ftcore/PartyTrail.h"
 
 #include "FTExploreDirector.generated.h"
 
 class AFTExploreCharacter;
 class AFTExploreSpot;
+class AFTPartyFollower;
 
 UCLASS()
 class FORGOTTENTHIRD_API AFTExploreDirector : public AActor
@@ -107,6 +109,14 @@ private:
 	bool bFieldViaDone = false;
 	UPROPERTY(Transient)
 	TObjectPtr<AFTExploreSpot> GoalSpot;
+
+	// The party following the lead on a story field step (ftcore::kPartyNames after the first).
+	void SpawnFollowers(AFTExploreCharacter& Player);
+	void PlaceFollowers(AFTExploreCharacter& Player, float DeltaSeconds);
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<AFTPartyFollower>> Followers;
+	ftcore::PartyTrail Trail;
+	bool bFollowersSpawned = false;
 	bool bFieldReached = false;
 	float FieldElapsed = 0.f;
 	FString FieldObjective;

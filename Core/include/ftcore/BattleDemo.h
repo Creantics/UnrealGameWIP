@@ -12,6 +12,7 @@
 #include "ftcore/CombatTypes.h"
 #include "ftcore/Progression.h"
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <initializer_list>
@@ -79,15 +80,18 @@ inline Combatant makeCombatant(std::string name, Stats stats, std::vector<Skill>
     return c;
 }
 
+// The party, in order: the first leads on the field and the rest follow it (PartyTrail.h).
+inline constexpr std::array<const char*, 2> kPartyNames{"Devin", "Duy"};
+
 // Stats are {maxHp, attack, defense, speed, technique}, at level 1.
 inline std::vector<Combatant> partyAtLevel1() {
     const Skill strike = makeSkill("Strike", 0, 1, Targeting::SingleEnemy, 1.0f, 4, 1.0f);
     return {
-        makeCombatant("Devin", {140, 24, 8, 12, 12},
+        makeCombatant(kPartyNames[0], {140, 24, 8, 12, 12},
                       {strike, makeSkill("Twin Cut", 2, 0, Targeting::SingleEnemy, 2.0f, 5, 3.0f),
                        makeSkill("Sweep", 3, 0, Targeting::AllEnemies, 1.6f, 6, 4.0f),
                        makeSkill("Heavy Blow", 5, 0, Targeting::SingleEnemy, 4.0f, 8, 6.0f)}),
-        makeCombatant("Duy", {110, 20, 4, 15, 15},
+        makeCombatant(kPartyNames[1], {110, 20, 4, 15, 15},
                       {strike, makeSkill("Spark", 1, 0, Targeting::SingleEnemy, 1.5f, 4, 2.0f),
                        makeSkill("Pierce", 2, 0, Targeting::SingleEnemy, 2.2f, 6, 4.5f),
                        makeSkill("Flare", 4, 0, Targeting::AllEnemies, 2.4f, 7, 5.0f)}),

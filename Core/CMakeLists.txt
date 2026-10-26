@@ -56,6 +56,7 @@ add_library(ftcore STATIC
     src/Loudness.cpp
     src/Mini.cpp
     src/UiText.cpp
+    src/PartyTrail.cpp
     src/PathFollow.cpp
     src/MusicLoop.cpp
     src/Physics.cpp
@@ -126,6 +127,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_json.cpp
         tests/test_mini.cpp
         tests/test_music_loop.cpp
+        tests/test_party_trail.cpp
         tests/test_path_follow.cpp
         tests/test_ui_text.cpp
         tests/test_physics.cpp

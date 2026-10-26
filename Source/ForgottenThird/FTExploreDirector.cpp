@@ -18,8 +18,10 @@
 #include "FTExploreCharacter.h"
 #include "FTExploreSpot.h"
 #include "FTGameInstance.h"
+#include "FTPartyFollower.h"
 #include "FTText.h"
 
+#include "ftcore/BattleDemo.h"
 #include "ftcore/ExploreDemo.h"
 #include "ftcore/FieldGoals.h"
 #include "ftcore/PathFollow.h"
@@ -377,9 +379,60 @@ void AFTExploreDirector::SpawnFieldGoal()
 	}
 }
 
+void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
+{
+	bFollowersSpawned = true;
+	UWorld* World = GetWorld();
+	const size_t Count = FMath::Min(ftcore::demo::kPartyNames.size() - 1u, ftcore::PartyTrail::kMaxFollowers);
+	const FVector2D Facing = Player.GetFacing2D();
+	Trail.reset(ToGround(Player.GetActorLocation()), {static_cast<float>(Facing.X), static_cast<float>(Facing.Y)},
+		static_cast<float>(Count) * ftcore::PartyTrail::kFollowerSpacing);
+	Followers.Reserve(static_cast<int32>(Count));
+	for (size_t I = 0; World && I < Count; ++I)
+	{
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		AFTPartyFollower* Follower = World->SpawnActor<AFTPartyFollower>(AFTPartyFollower::StaticClass(), Player.GetActorTransform(), Params);
+		if (!Follower)
+		{
+			continue;
+		}
+		const FString Name = UTF8_TO_TCHAR(ftcore::demo::kPartyNames[I + 1u]);
+		if (!Follower->Setup(Name, &Player))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: no mesh for follower %s."), *Name);
+		}
+		Followers.Add(Follower);
+	}
+	PlaceFollowers(Player, 0.f);
+	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: %d following the lead."), Followers.Num());
+}
+
+void AFTExploreDirector::PlaceFollowers(AFTExploreCharacter& Player, float DeltaSeconds)
+{
+	Trail.push(ToGround(Player.GetActorLocation()));
+	const float FeetZ = static_cast<float>(Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight());
+	for (int32 I = 0; I < Followers.Num(); ++I)
+	{
+		if (AFTPartyFollower* Follower = Followers[I])
+		{
+			const ftcore::Vec2 At = Trail.pointBehind(static_cast<float>(I + 1) * ftcore::PartyTrail::kFollowerSpacing);
+			Follower->Place(FVector2D(At.x * 100.0, At.y * 100.0), FeetZ, DeltaSeconds);
+		}
+	}
+}
+
 void AFTExploreDirector::TickStoryWalk(AFTExploreCharacter& Player, float DeltaSeconds)
 {
 	FieldElapsed += DeltaSeconds;
+	if (!bFollowersSpawned)
+	{
+		SpawnFollowers(Player);
+	}
+	else
+	{
+		PlaceFollowers(Player, DeltaSeconds);
+	}
 	const ftcore::Vec2 Pos = ToGround(Player.GetActorLocation());
 	const FVector2D Facing = Player.GetFacing2D();
 	const bool bReached = ftcore::demo::fieldGoalInReach(Pos, {static_cast<float>(Facing.X), static_cast<float>(Facing.Y)}, FieldGoal);
