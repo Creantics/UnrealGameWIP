@@ -624,6 +624,30 @@ def margin_rho(P, phi, phi_m, u, rho0, r, xc, hw):
     return lambda x: np.polyval(fit, np.clip(x, xc - hw, xc + hw))
 
 
+def lid_front(P, phi, phi_u, u, rho0, r, xc, hw, reach):
+    """The front of the upper lid as a smooth surface: its distance from the eye centre as a function of x and of
+    the angle past the margin (0 to reach), fitted by least squares (quadratic in each) to the outer skin over the
+    lid, with the lining and any skin well inside the fit dropped and the fit redone. A coarse lid then closes on a
+    smooth surface, not on the uneven depths of its few vertices."""
+    a = phi - phi_u
+    X = (P[:, 0] - xc) / hw
+    sel = (a > 0.02) & (a < reach) & (u > 0.3 * r) & (rho0 > r) & (rho0 < 1.8 * r) & (np.abs(X) < 1.0)
+
+    def basis(x, b):
+        b = np.clip(b, 0.0, reach) / reach
+        x = np.clip(x, -1.0, 1.0)
+        return np.stack([x ** i * b ** j for i in range(3) for j in range(3)], axis=-1)
+
+    if sel.sum() < 30:
+        flat = float(np.median(rho0[sel])) if sel.any() else 1.1 * r
+        return lambda x, b: np.full(np.shape(x), flat)
+    coef = None
+    for _ in range(2):
+        coef = np.linalg.lstsq(basis(X[sel], a[sel]), rho0[sel], rcond=None)[0]
+        sel &= rho0 > basis(X, a) @ coef - 0.1 * r
+    return lambda x, b: basis((x - xc) / hw, b) @ coef
+
+
 def procedural_lids(mesh, arm, eyes):
     """Rebuilds the lid shapes (LID_SHAPES, both sides) on the skin from its own lid margins. The transferred ones
     crumple on a coarse lid rim, since neighbouring rim points take deltas from different layers of the proof lid.
@@ -660,13 +684,17 @@ def procedural_lids(mesh, arm, eyes):
         # The shut upper lid lies on a smooth shell through the front of the lower margin, not on its own profile:
         # turned whole, the lid's crease and its thick margin would come down over the eye as they are, a step across
         # the shut lid and an edge hanging past the lower one.
-        rim_u, rim_l = margin_rho(P, phi, phi_u, u, rho0, r, xc, hw), margin_rho(P, phi, phi_l, u, rho0, r, xc, hw)
+        span = np.maximum(phi_u - phi_l, 0.0)
+        reach = max(0.35, 1.6 * max(k for k, _ in LID_SHAPES.values()) * float(np.max(up - lo)))
+        lid_f = lid_front(P, phi, phi_u, u, rho0, r, xc, hw, reach)
+        rim_u = lambda x: lid_f(x, np.zeros(np.shape(x)))  # noqa: E731
+        rim_l = margin_rho(P, phi, phi_l, u, rho0, r, xc, hw)
         # The shell clears the cornea, which bulges past the eyeball's radius.
         clear = 1.03 * np.linalg.norm(V - c, axis=1).max()
         geo[side] = (c, r, xs, up, lo, xc, hw, rim_u, rim_l, clear)
         shell = np.maximum(rim_l(P[:, 0]), clear)
-        front = rim_u(P[:, 0])
-        span = np.maximum(phi_u - phi_l, 0.0)
+        front = lid_f(P[:, 0], phi - phi_u)
+        margin_out = shell - rim_u(P[:, 0])
         t = np.clip((phi - phi_l) / np.maximum(span, 1e-6), 0.0, 1.0)
         # Inside the opening each lid turns whole with its own margin, the two parting halfway across. A blend of the
         # two turns across the opening would squash whatever lies between the margins (the thick margin overhanging
@@ -695,14 +723,22 @@ def procedural_lids(mesh, arm, eyes):
             w_lo = np.maximum(0.45, 1.6 * abs(k_lo) * span)
             f_up = 1.0 - _smooth01((phi - phi_u) / w_up)
             f_lo = 1.0 - _smooth01((phi_l - phi - 0.15) / w_lo)
-            turn = -span * (k_up * s * f_up - k_lo * (1.0 - s) * f_lo) * across * on_ball * near
+            reach_k = across * on_ball * near
+            turn_u = -span * k_up * s * f_up * reach_k
+            if k_up > 0:
+                # Lining turned whole past the shut margin would hang below it, through the lower lid: it stops just
+                # past the margin instead, where the shut lid covers it.
+                turn_u = np.maximum(turn_u, s * (phi_u - span * k_up * reach_k - 0.05 * span - phi))
+            turn = turn_u + span * k_lo * (1.0 - s) * f_lo * reach_k
             cu, sn = np.cos(turn), np.sin(turn)
             u2, v2 = u * cu - v * sn, u * sn + v * cu
-            # The closing upper lid moves onto the shell as it turns: its front (the margin's) onto the shell, and
-            # what lies behind or in front of that (the lining, the crease) a quarter as far off it as before, so the
-            # lining stays hidden behind the shut lid. The lining inside the eyeball's radius keeps its distance.
-            lid = min(max(k_up, 0.0), 1.0) * s * f_up * across * on_ball * near * _smooth01((rho0 - r) / (0.1 * r))
-            to = shell + 0.25 * (rho0 - front)
+            # The closing upper lid moves out as it turns, the margin onto the shell and the lid above it by as much,
+            # fading toward the crease, so the shut lid keeps the lid's own smooth curve (lid_front) without the
+            # uneven depths of its vertices: what lies off that curve (the lining behind it, a crease in front)
+            # comes a quarter as far off it, so the lining stays hidden behind the shut lid. The lining inside the
+            # eyeball's radius keeps its distance.
+            lid = min(max(k_up, 0.0), 1.0) * s * f_up * reach_k * _smooth01((rho0 - r) / (0.1 * r))
+            to = front + 0.25 * (rho0 - front) + margin_out
             out = 1.0 + lid * (to / np.maximum(rho0, 1e-6) - 1.0)
             u2, v2 = u2 * out, v2 * out
             proc = np.zeros_like(P)
