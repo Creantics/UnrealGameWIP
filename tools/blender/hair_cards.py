@@ -1,5 +1,7 @@
-"""Grow a short haircut on a rigged lead as hair cards: guide curves over the scalp, then textured cards along them and
-a scalp cap, skinned to the head bone (or the body's weights) and exported as a glb outfit piece (FTImportCharacter -Role=outfit -Face=0).
+"""Grow a short haircut (or a short beard) on a rigged lead as hair cards: guide curves over the skin, then textured cards
+along them and a cap, skinned to the head bone (or the body's weights) and exported as a glb outfit piece
+(FTImportCharacter -Role=outfit -Face=0). A beard is the same groom in a band: "hairline" is its lower edge (the
+neckline), "topline" its upper edge (the cheek line) and "holes" keep the lips clear.
 
     blender -b --factory-startup --python-exit-code 1 lead.blend --python tools/blender/hair_cards.py -- spec.json
 
@@ -12,15 +14,22 @@ spec.json keys (lengths in cm unless said):
   "hairline": [[phi, theta], ..]
                             the edge of the hair: a root grows only above this theta at its phi (periodic,
                             piecewise linear; a dip makes a sideburn). "mirror": true adds every point at -phi
+  "topline": [[phi, theta], ..]
+                            optional upper edge: a root grows only below this theta too (mirrored like the hairline)
+  "holes": [[phi, theta, half_phi, half_theta], ..]
+                            optional ellipses in (phi, theta) where nothing grows (the lips); mirrored too
   "fields": {"length": [[phi, theta, cm], ..], "volume": [[phi, theta, cm], ..]}
                             strand length and how far the hair stands off the scalp, blended between the points with
                             a Gaussian of angular width "sigma" (degrees, default 22); mirrored with "mirror" too
-  "flow": {"split": [[phi, from, to], ..], "sweep": x, "part": [phi, width], "sweep_small": x, "down_back": y}
+  "flow": {"split": [[phi, from, to], ..], "sweep": x, "part": [phi, width], "sweep_small": x, "down_back": y, "out": z}
                             above theta "to" the hair runs back over the head (+Y) leaning sideways by "sweep" (+X);
-                            below "from" it runs down, leaning back by "down_back"; blended in between. Roots on the
+                            below "from" it runs down, leaning back by "down_back" (negative: forward) and away from
+                            the midline by "out" (fading to 0 at the sides); blended in between. Roots on the
                             -X side of the "part" phi lean by -"sweep_small" instead (a soft side parting)
   "hairline_jitter": deg    random lift of each root's hairline, so the edge isn't a line (default 1.5)
-  "overshoot": deg          how far below the hairline a strand may reach before it's cut (default 1.5)
+  "outer_only": bool        grow only on skin seen from outside along rays toward "center" (no roots or cap inside the
+                            mouth, the nostrils or the ear's folds)
+  "overshoot": deg          how far past an edge a strand may reach before it's cut (default 1.5)
   "layers": [{"spacing": cm, "height": f, "width": cm, "rows": [..], "min_volume": cm, "twist": deg, "count": n}]
                             card layers, innermost first: roots at least "spacing" apart (closer where the hair is
                             short, down to "short_spacing" times it, default 0.55), standing at "height" times the
@@ -33,8 +42,11 @@ spec.json keys (lengths in cm unless said):
   "clear": cm               every card point but the root row is pushed at least this far out of the scalp (0.15)
   "tuck": cm                roots sink this far under the scalp (default 0.2)
   "colors": {"root": rgb, "mid": rgb, "tip": rgb, "jitter": f}   sRGB 0..255 strand colours along the strand
-  "atlas": {"size": px, "rows": n, "strands": [n per row ..], "clump": [f per row ..], "thick": [lo, hi] px}
-                            the card texture: n rows, strands along U (root at U 0), so the mesh tangent follows them
+  "atlas": {"size": px, "rows": n, "strands": [n per row ..], "clump": [f per row ..], "thick": [lo, hi] px,
+            "wave": [lo, hi] px, "waves": [lo, hi]}
+                            the card texture: n rows, strands along U (root at U 0), so the mesh tangent follows them;
+                            each strand waves by an amplitude in "wave" (default [0.5, 3]), "waves" times along it
+                            (default [1, 3]): coarse, wavy beard hair wants more of both
   "cap": {"offset": cm, "fade": cm, "tile": cm, "size": px, "subdiv": n, "color": rgb, "fill": [u0, u1], "strands": n}
                             a shell over the scalp under the cards; its U runs from 0 at the hairline curve to 1 "fade"
                             in, its V round the head repeating about every "tile". Its texture is solid "color" from U
@@ -42,8 +54,16 @@ spec.json keys (lengths in cm unless said):
   "bone": name              the bone every hair vertex is weighted to (default "head")
   "skin_from_body": bool    instead, each vertex takes the body's bone weights at its nearest scalp point, so the nape
                             follows the neck bones the skin under it follows
+  "bind": "nearest"|"anchor"
+                            which skin point a card vertex takes its weights (and morphs) from: the nearest to the
+                            vertex (default), or the one its guide point was grown over ("anchor"), so a card hanging
+                            off the chin moves with the chin, not with the neck it happens to be nearest
+  "morphs": bool            copy the body's shape keys onto the hair (each vertex moves as the skin under it does), so
+                            the face's morph targets also drive it; keys that move it less than "morph_min" mm
+                            (default 0.05) are left out
   "seed": n
   "out": glb, "blend": path, "preview": dir   outputs; the preview renders front, side, back and a three-quarter
+                            (or the [name, [x, y, z]] view directions in "preview_views")
 """
 import json, math, os, sys
 
@@ -108,6 +128,8 @@ def smoothstep(a, b, x):
 
 
 hairline = periodic(mirrored(spec["hairline"], 2))
+topline = periodic(mirrored(spec["topline"], 2)) if spec.get("topline") else None
+holes = mirrored(spec.get("holes", []), 4)
 sigma = spec.get("sigma", 22)
 length_f = field(mirrored(spec["fields"]["length"], 3), sigma)
 volume_f = field(mirrored(spec["fields"]["volume"], 3), sigma)
@@ -153,13 +175,34 @@ def surface(p):
     return loc, n, (p - loc).dot(fn)
 
 
+def inner(phi, th):
+    """How far (phi, theta) is inside the hair, in degrees: above the hairline, below the topline, out of every hole."""
+    d = th - hairline(phi)
+    if topline:
+        d = min(d, topline(phi) - th)
+    for hp, ht, rp, rt in holes:
+        dp = (((phi - hp) + 180) % 360 - 180) / rp
+        d = min(d, (math.hypot(dp, (th - ht) / rt) - 1) * min(rp, rt))
+    return d
+
+
 def inside(phi, th, margin=0.0):
-    return th > hairline(phi) + margin
+    return inner(phi, th) > margin
 
 
 # Scalp triangles: every corner above the hairline.
+outer_only = spec.get("outer_only", False)
+def outer(t):
+    """True when triangle t is the first skin a ray from outside toward the frame centre meets, so the mouth's inside,
+    the nostrils and the ear's folds stay bare ("outer_only")."""
+    c = (BV[t[0]] + BV[t[1]] + BV[t[2]]) / 3
+    d = (c - O).normalized()
+    hit = bvh.ray_cast(O + d * 0.3, -d)[0]
+    return hit is None or (hit - c).length < 0.002
+
+
 def tri_in(t):
-    return all(inside(*head_angles(BV[i])) for i in t)
+    return all(inside(*head_angles(BV[i])) for i in t) and (not outer_only or outer(t))
 
 
 scalp_tris = [t for t in tris if tri_in(t)]
@@ -215,12 +258,14 @@ def flow_dir(p, phi, th, root_phi):
     small = 1 - smoothstep(part_phi - part_w, part_phi + part_w, root_phi) if -110 < root_phi < 0 else 0.0
     sweep = flow.get("sweep", 0.0) * (1 - small) - flow.get("sweep_small", 0.0) * small
     top = Vector((sweep, 1.0, 0.0))
-    down = Vector((0.0, flow.get("down_back", 0.3), -1.0))
+    out = flow.get("out", 0.0) * math.copysign(max(math.cos(math.radians(phi)), 0.0) ** 2, phi)
+    down = Vector((out, flow.get("down_back", 0.3), -1.0))
     return (top.normalized() * w + down.normalized() * (1 - w))
 
 
 def grow(root, height_k, rnd_len, rnd_h):
-    """A guide strand from root over the scalp, along the flow, standing off it toward its volume height."""
+    """A guide strand from root over the scalp, along the flow, standing off it toward its volume height. Returns its
+    points, the scalp normal under each and the scalp point each was grown over (its anchor)."""
     phi0, th0 = head_angles(root)
     L = length_f(phi0, th0) * CM * rnd_len
     nseg = int(min(16, max(4, round(L / (0.5 * CM)))))
@@ -228,6 +273,7 @@ def grow(root, height_k, rnd_len, rnd_h):
     loc, n, _ = surface(root)
     pts = [loc - n * spec.get("tuck", 0.2) * CM]
     normals = [n]
+    anchors = [loc]
     prev = None
     h = 0.0
     walk = loc
@@ -246,14 +292,15 @@ def grow(root, height_k, rnd_len, rnd_h):
         prev = d
         walk, n2, _ = surface(loc + d * ds)
         phi2, th2 = head_angles(walk)
-        if th2 < hairline(phi2) - over and k > 1:
+        if inner(phi2, th2) < -over and k > 1:
             break
         t = k / nseg
         target = volume_f(phi2, th2) * CM * height_k * rnd_h
         h = min(target * smoothstep(0, rise, t) + 0.1 * CM, h + climb * ds)
         pts.append(walk + n2 * h)
         normals.append(n2)
-    return pts, normals
+        anchors.append(walk)
+    return pts, normals, anchors
 
 
 # ---- guide curves for each layer
@@ -274,9 +321,9 @@ for li, lay in enumerate(spec["layers"]):
         roots = poisson(cands, spacing_at)
     strands = []
     for r in roots:
-        pts, nrm = grow(r, lay["height"], rng.uniform(0.85, 1.1), rng.uniform(0.8, 1.05))
+        pts, nrm, anc = grow(r, lay["height"], rng.uniform(0.85, 1.1), rng.uniform(0.8, 1.05))
         if len(pts) >= 3:
-            strands.append((pts, nrm))
+            strands.append((pts, nrm, anc))
     layers.append({"spec": lay, "roots": roots, "strands": strands})
     print("LAYER %d: %d roots, %d strands" % (li, len(roots), len(strands)))
 
@@ -342,6 +389,7 @@ def atlas_texture():
     A = np.zeros((S, S))
     band = S / R
     thick = at.get("thick", [2.5, 4.0])
+    wave, waves = at.get("wave", [0.5, 3.0]), at.get("waves", [1.0, 3.0])
     for r in range(R):
         y0 = r * band
         pad = band * 0.06
@@ -356,7 +404,7 @@ def atlas_texture():
             x = np.arange(int(math.ceil(u0)), int(u1))
             t = np.clip((x - u0) / (u1 - u0), 0, 1)
             c = min(centres, key=lambda cc: abs(cc - v0))
-            amp, ph, fr = rng.uniform(0.5, 3.0), rng.uniform(0, 6.28), rng.uniform(1.0, 3.0)
+            amp, ph, fr = rng.uniform(*wave), rng.uniform(0, 6.28), rng.uniform(*waves)
             y = v0 + (c - v0) * clump * t ** 1.5 + amp * np.sin(ph + fr * 6.28 * t) * t
             y = np.clip(y, y0 + pad, y0 + band - pad)
             w0 = rng.uniform(*thick)
@@ -449,6 +497,7 @@ at_rows = spec["atlas"]["rows"]
 clear = spec.get("clear", 0.15) * CM
 bulge = spec.get("bulge", 0.12)
 verts, vnorm, faces, uvs, mats = [], [], [], [], []
+vanchor = []  # the scalp point each vertex binds to with "bind": "anchor"
 # Card normals lean to the scalp's, so neighbouring cards shade as one mass instead of as flat flakes.
 shell = spec.get("shell_normals", 0.8)
 
@@ -460,7 +509,7 @@ def push_out(p):
 
 for L in layers:
     lay = L["spec"]
-    for pts, nrm in L["strands"]:
+    for pts, nrm, anc in L["strands"]:
         m = len(pts)
         row = int(rng.choice(lay["rows"]))
         vlo = (row + 0.04) / at_rows
@@ -489,6 +538,7 @@ for L in layers:
             if i > 0:
                 row_pts = [push_out(p) for p in row_pts]
             verts.extend(row_pts)
+            vanchor.extend([anc[i]] * 3)
             for q in row_pts:
                 vnorm.append((surface(q)[1] * shell + Cn * (1 - shell)).normalized())
             u = t
@@ -506,7 +556,7 @@ print("CARDS %d verts, %d quads" % (len(verts), len(faces)))
 # hairline and fades in from the hairline curve itself, so the mesh's stepped edge never shows.
 
 cp = spec["cap"]
-cap_tris = [t for t in tris if any(inside(*head_angles(BV[i]), -1.0) for i in t)]
+cap_tris = [t for t in tris if any(inside(*head_angles(BV[i]), -1.0) for i in t) and (not outer_only or outer(t))]
 bm = bmesh.new()
 vmap = {}
 for t in cap_tris:
@@ -531,12 +581,13 @@ cap_index, cap_u, cap_phi = {}, {}, {}
 for v in bm.verts:
     loc, n, _ = surface(v.co)
     phi, th = head_angles(loc)
-    above = math.radians(th - hairline(phi)) * (loc - O).length
+    above = math.radians(inner(phi, th)) * (loc - O).length
     cap_u[v.index] = min(max(above / fade, 0.0), 1.0) * 0.97
     cap_phi[v.index] = phi
     cap_index[v.index] = len(verts)
     verts.append(loc + n * cp.get("offset", 0.15) * CM)
     vnorm.append(n)
+    vanchor.append(loc)
 cap_faces = []
 cap_uv = []
 for f in bm.faces:
@@ -555,26 +606,67 @@ print("CAP %d verts, %d faces" % (len(verts) - cap_base, len(cap_faces)))
 # ---- one mesh, two materials, skinned to the head bone or to the body's own weights under each vertex
 
 
-def skin_from_body():
-    """For each hair vertex, the body's bone weights at its nearest scalp point (at most 4 bones, normalised), so hair
-    at the nape follows the neck as the skin under it does."""
+def skin_points():
+    """For each hair vertex, the body triangle and barycentric weights of the skin point it binds to ("bind")."""
     if len(body.data.vertices) != len(BV):
-        raise SystemExit("skin_from_body: the evaluated body changed topology; can't map its weights")
+        raise SystemExit("skin: the evaluated body changed topology; can't map its weights or shape keys")
+    src = vanchor if spec.get("bind", "nearest") == "anchor" else verts
+    out = []
+    for p in src:
+        loc, _, ti, _ = bvh.find_nearest(p)
+        out.append((ti, bary(loc, ti)))
+    return out
+
+
+def skin_from_body(points):
+    """For each hair vertex, the body's bone weights at its skin point (at most 4 bones, normalised), so hair
+    at the nape follows the neck as the skin under it does."""
     names = {g.index: g.name for g in body.vertex_groups}
     bones = {b.name for b in arm.data.bones if b.use_deform}
     bw = [{names[g.group]: g.weight for g in v.groups if names.get(g.group) in bones and g.weight > 0}
           for v in body.data.vertices]
     out = []
-    for p in verts:
-        loc, _, ti, _ = bvh.find_nearest(p)
+    for ti, kk in points:
         acc = {}
-        for i, k in zip(tris[ti], bary(loc, ti)):
+        for i, k in zip(tris[ti], kk):
             for name, w in bw[i].items():
                 acc[name] = acc.get(name, 0.0) + w * max(k, 0.0)
         top = sorted(acc.items(), key=lambda kv: -kv[1])[:4]
         s = sum(w for _, w in top)
         out.append({n: w / s for n, w in top} if s > 1e-6 else {bone: 1.0})
     return out
+
+
+def morphs_from_body(obj, points):
+    """The body's shape keys on the hair: each vertex moves by the key's offset at its skin point."""
+    keys = body.data.shape_keys
+    if not keys:
+        return []
+    def coords(kb):
+        a = np.empty(len(kb.data) * 3)
+        kb.data.foreach_get("co", a)
+        return a.reshape(-1, 3)
+    basis = coords(keys.reference_key)
+    M3 = np.array(MW.to_3x3())
+    tri_idx = np.array([tris[ti] for ti, _ in points])
+    tri_w = np.clip(np.array([kk for _, kk in points]), 0.0, None)
+    tri_w /= np.maximum(tri_w.sum(axis=1, keepdims=True), 1e-9)
+    rest = np.array([tuple(v.co) for v in obj.data.vertices])
+    kept = []
+    for kb in keys.key_blocks:
+        if kb == keys.reference_key:
+            continue
+        delta = (coords(kb) - basis) @ M3.T
+        d = (delta[tri_idx] * tri_w[:, :, None]).sum(axis=1)
+        if np.abs(d).max() < spec.get("morph_min", 0.05) * 0.001:
+            continue
+        if obj.data.shape_keys is None:
+            obj.shape_key_add(name="Basis", from_mix=False)
+        sk = obj.shape_key_add(name=kb.name, from_mix=False)
+        sk.value = 0.0  # added keys start at 1; the export's default morph weights come from these
+        sk.data.foreach_set("co", (rest + d).ravel())
+        kept.append(kb.name)
+    return kept
 
 
 me = bpy.data.meshes.new("hair")
@@ -598,9 +690,10 @@ me.normals_split_custom_set_from_vertices([tuple(n) for n in vnorm])
 hair = bpy.data.objects.new("hair", me)
 bpy.context.scene.collection.objects.link(hair)
 bone = spec.get("bone", "head")
+points = skin_points() if spec.get("skin_from_body") or spec.get("morphs") else None
 if spec.get("skin_from_body"):
     groups = {}
-    for vi, ws in enumerate(skin_from_body()):
+    for vi, ws in enumerate(skin_from_body(points)):
         for name, w in ws.items():
             if name not in groups:
                 groups[name] = hair.vertex_groups.new(name=name)
@@ -609,6 +702,8 @@ if spec.get("skin_from_body"):
 else:
     vg = hair.vertex_groups.new(name=bone)
     vg.add(list(range(len(verts))), 1.0, "REPLACE")
+if spec.get("morphs"):
+    print("MORPHS %s" % morphs_from_body(hair, points))
 hair.parent = arm
 mod = hair.modifiers.new("Armature", "ARMATURE")
 mod.object = arm
@@ -625,7 +720,7 @@ if spec.get("out"):
     hair.select_set(True)
     bpy.context.view_layer.objects.active = arm
     bpy.ops.export_scene.gltf(filepath=spec["out"], export_format="GLB", use_selection=True, export_animations=False,
-                              export_morph=False)
+                              export_morph=bool(spec.get("morphs")), export_morph_normal=False)
     raw = open(spec["out"], "rb").read()
     jlen = int.from_bytes(raw[12:16], "little")
     gl = json.loads(raw[20:20 + jlen])
@@ -664,8 +759,9 @@ if out:
     cam.data.type = "ORTHO"
     cam.data.ortho_scale = spec.get("preview_scale", 0.34)
     sc.camera = cam
-    for name, d in (("front", (0, -1, 0)), ("side", (1, 0, 0)), ("back", (0, 1, 0)), ("q", (0.7, -0.7, 0.2)),
-                    ("sideR", (-1, 0, 0)), ("top", (0, -0.3, 1))):
+    views = spec.get("preview_views") or (("front", (0, -1, 0)), ("side", (1, 0, 0)), ("back", (0, 1, 0)),
+                                          ("q", (0.7, -0.7, 0.2)), ("sideR", (-1, 0, 0)), ("top", (0, -0.3, 1)))
+    for name, d in views:
         dv = Vector(d).normalized()
         cam.location = O + dv * 1.0 + Vector((0, 0, -0.03))
         cam.rotation_euler = (-dv).to_track_quat("-Z", "Y").to_euler()
