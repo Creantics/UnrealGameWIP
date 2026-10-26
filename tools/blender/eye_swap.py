@@ -327,6 +327,31 @@ def eyeball(mesh, side, joint, c, r, iris_rgb, bulge=(), rings=24, segs=36):
     return obj
 
 
+def keep_nonempty(mesh, c, nudge=0.0004):
+    """procedural_lids leaves eyeLookIn/Out with no lid move, and on a whole body every transferred delta lay round
+    the eye, so those keys come out empty; the engine's importer drops a morph whose deltas are all under its
+    threshold (0.15 mm), and FTImportCharacter then fails for want of the face shape. Each empty key gets `nudge` on
+    the skin vertex nearest the eye centre c.
+    Returns the names nudged."""
+    keys = mesh.data.shape_keys.key_blocks
+    n = len(mesh.data.vertices)
+    base = np.zeros(n * 3)
+    keys[0].data.foreach_get("co", base)
+    base = base.reshape(-1, 3)
+    i = int(np.argmin(np.linalg.norm(base - c, axis=1)))
+    nudged = []
+    for kb in keys[1:]:
+        co = np.zeros(n * 3)
+        kb.data.foreach_get("co", co)
+        co = co.reshape(-1, 3)
+        if np.abs(co - base).max() < 1e-6:
+            co[i, 1] -= nudge
+            kb.data.foreach_set("co", co.ravel())
+            nudged.append(kb.name)
+    mesh.data.update()
+    return nudged
+
+
 def centre_joint(arm, joint, c):
     """Moves the eye joint (keeping its direction and length) to the eyeball's centre, so the eye turns in its socket;
     only the eyeball is weighted to it, so nothing moves at rest."""
@@ -422,6 +447,7 @@ def main():
     if a["lids"] == "procedural":
         import rig_head
         report["lids"] = rig_head.procedural_lids(mesh, arm, balls)[0]
+        report["kept_empty"] = keep_nonempty(mesh, fits[0][2])
     else:
         for side, joint, c, R, _bulge in fits:
             key = "eyeBlinkLeft" if side == "l" else "eyeBlinkRight"
