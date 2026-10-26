@@ -6,6 +6,24 @@ Private notes (character references, concept-art review, script status) are in `
 
 ## Resume here (updated 2026-10-21, Max plan)
 
+- **NEWEST (2026-10-25, combat): one full set-piece fight, the Brass Regent (models set aside again; the user is on the
+  machine, so no computer use or GUI).** Scope set by the advisor: enemy phases, scripted skill patterns, results. Items,
+  guard, flee, status effects and waves/adds were left out; **waves/adds are the next combat step**.
+  - Main bd7ae02 (Core): `phases` on an enemy in `Data/Battle/enemies.json` (up to 4, HP thresholds, a skill pattern each
+    with an opener and a loop point, attack/heal on entry); `EventType::PhaseChanged`; `Battle::stats()` (`BattleStats`).
+    The Regent (480 HP) has three phases; a Core test plays it with every pilot and each sees all three.
+  - Main 6129b40 (Unreal): `FFTEnemyPhase` mirror (phases would otherwise be lost in the FromCore/ToCore round trip),
+    `GetEnemyPhase`, `GetNextEnemySkill`, `GetResults` (`FFTBattleResults`). HUD: the enemy's next skill under its NEXT
+    slot, a phase banner, green heal popups, an outcome panel with four stat lines plus a story win's reward, and
+    press-Enter-to-continue for a player (the autopilot still continues after 2.5 s). `-BattleEncounter=<scene>,<beat>,<step>`
+    plays one encounter entry headless; the Regent is `SC-P2-01,12,0`. Docs: `docs/BATTLE_DEMO.md` (Enemy phases, Results).
+  - Also in 6129b40: FTFieldGuard's file-scope constants renamed; they collided with FTExploreSpot's in a unity blob once the
+    adaptive build reshuffled. Keep file-scope names in Source/ unique per file.
+  - Checks: ctest and UBT green; the headless Regent run (`-BattleAutoPlay -BattleQuitOnOutcome -BattleEncounter=SC-P2-01,12,0`)
+    logs both phase changes, VICTORY after 41 s (perfect autopilot: 5 enemy turns, 2/2/1 per phase) and the results line.
+    Not looked at on screen yet (the HUD layout of the banner, NEXT skill and results panel needs a human look).
+  - Next queued by the user: three worlds, each big. Ask the advisor for the approach first.
+
 - **NEWEST (2026-10-25, latest): lead heads rigged headless from generated open-mouth busts (user resumed head-only rigging in
   Blender `-b`; MetaHuman set aside; no body yet).** `tools/blender/rig_head.py` prep -> `face_transfer.py` -> `rig_head.py finish`
   gives the canonical skeleton plus the 56 face shapes on a bust that already has eyes, teeth and tongue as loose parts.
