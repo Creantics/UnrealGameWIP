@@ -3,8 +3,12 @@
 
 #include <array>
 #include <cmath>
+#include <initializer_list>
+#include <iterator>
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <span>
+#include <string>
+#include <vector>
 
 #include <doctest/doctest.h>
 
@@ -529,4 +533,207 @@ TEST_CASE("Battle::reset starts over like a new battle and a same-shaped reset d
     fresh.start(5.0);
     CHECK(b.phase() == fresh.phase());
     CHECK(b.actor() == fresh.actor());
+}
+
+namespace {
+
+Skill enemySkill(const char* name) { return {name, 0, 0, Targeting::SingleEnemy, 1.0f, 4, 2.0f}; }
+
+EnemyPhase phaseOf(std::initializer_list<std::size_t> steps, float below = 1.0f, std::string_view label = {},
+                   int attackPercent = 0, int healPercent = 0, std::uint8_t loopFrom = 0) {
+    EnemyPhase p;
+    for (std::size_t s : steps) p.addStep(s);
+    p.hpBelow = below;
+    p.setLabel(label);
+    p.attackPercent = attackPercent;
+    p.healPercent = healPercent;
+    p.loopFrom = loopFrom;
+    return p;
+}
+
+// A boss with skills A, B, C, D: phase 0 plays A B; below half it plays C then loops B D, with 50
+// percent more attack and a 10 percent heal.
+Combatant boss(int hp = 1000) {
+    Combatant c = monster(10, hp);
+    c.name = "Boss";
+    c.skills = {enemySkill("A"), enemySkill("B"), enemySkill("C"), enemySkill("D")};
+    c.phases.add(phaseOf({0, 1}));
+    c.phases.add(phaseOf({2, 1, 3}, 0.5f, "Fury", 50, 10, 1));
+    return c;
+}
+
+// Strikes with skill 0 and lets every enemy attack land: records the enemy skills used, in order,
+// until `turns` enemy turns have started.
+std::vector<std::string> enemySkillsUsed(Battle& b, double& now, int turns) {
+    std::vector<std::string> used;
+    while (static_cast<int>(used.size()) < turns && b.phase() != Phase::Victory && b.phase() != Phase::Defeat) {
+        if (b.phase() == Phase::AwaitingCommand)
+            REQUIRE(b.command(0, b.living(Team::Enemies).front(), now) == CommandError::None);
+        for (const BattleEvent& e : b.events())
+            if (e.type == EventType::SkillStarted && b.combatant(e.source).team == Team::Enemies)
+                used.emplace_back(e.label);
+        b.clearEvents();
+        now += 0.05;
+        b.update(now);
+        REQUIRE(now < 1000.0);
+    }
+    return used;
+}
+
+// Full-combo strikes and parried attacks until `done` holds.
+template <typename Done> void fightUntil(Battle& b, double& now, Done done) {
+    while (!done()) {
+        REQUIRE(now < 1000.0);
+        if (b.phase() == Phase::AwaitingCommand) {
+            REQUIRE(b.command(0, b.living(Team::Enemies).front(), now) == CommandError::None);
+            play(b);
+        }
+        defendAll(b);
+        if (done()) break;
+        now += 0.05;
+        b.update(now);
+    }
+}
+
+} // namespace
+
+TEST_CASE("an enemy phase plays its pattern: the opener once, then the loop") {
+    const EnemyPhase p = phaseOf({2, 1, 3}, 0.5f, "Fury", 0, 0, 1);
+    const std::size_t expected[] = {2, 1, 3, 1, 3, 1, 3};
+    for (std::size_t n = 0; n < std::size(expected); ++n) CHECK(p.step(n, 4) == expected[n]);
+    const EnemyPhase whole = phaseOf({0, 2});
+    CHECK(whole.step(0, 4) == 0);
+    CHECK(whole.step(1, 4) == 2);
+    CHECK(whole.step(2, 4) == 0);
+    const EnemyPhase empty;
+    CHECK(empty.step(5, 3) == 2); // no pattern: every skill in order
+    EnemyPhase full;
+    for (std::size_t i = 0; i < kMaxPatternSteps; ++i) CHECK(full.addStep(i % 4));
+    CHECK_FALSE(full.addStep(0));
+    EnemyPhase named;
+    named.setLabel("a label well past the capacity of the buffer");
+    CHECK(named.label().size() == kPhaseLabelCapacity - 1);
+}
+
+TEST_CASE("an enemy without phases cycles its skills; one with phases follows its pattern") {
+    Combatant plain = monster(30);
+    plain.skills = {enemySkill("A"), enemySkill("B"), enemySkill("C")};
+    Battle a({hero(10, 100000)}, {plain}, tuning());
+    a.start(0.0);
+    double now = 0.0;
+    CHECK(enemySkillsUsed(a, now, 5) == std::vector<std::string>{"A", "B", "C", "A", "B"});
+
+    Combatant patterned = boss(100000);
+    patterned.stats.speed = 30;
+    Battle b({hero(10, 100000)}, {patterned}, tuning());
+    CHECK(b.nextEnemySkill(1) == 0);
+    b.start(0.0); // the boss is faster: its first turn starts at once
+    CHECK(b.nextEnemySkill(1) == 1);
+    now = 0.0;
+    CHECK(enemySkillsUsed(b, now, 5) == std::vector<std::string>{"A", "B", "A", "B", "A"});
+    CHECK(b.nextEnemySkill(1) == 1);
+    CHECK(b.enemyPhase(1) == 0);
+}
+
+TEST_CASE("an enemy enters its next phase at the HP threshold: banner, attack, heal and a fresh pattern") {
+    Battle b({hero(30, 100000)}, {boss(1000)}, tuning());
+    b.start(0.0);
+    double now = 0.0;
+    const int attackBefore = b.combatant(1).stats.attack;
+    bool entered = false;
+    BattleEvent change{};
+    fightUntil(b, now, [&] {
+        for (const BattleEvent& e : b.events())
+            if (e.type == EventType::PhaseChanged) {
+                entered = true;
+                change = e;
+            }
+        b.clearEvents();
+        return entered;
+    });
+    CHECK(change.source == 1);
+    CHECK(change.target == 1);
+    CHECK(change.beat == 1);
+    CHECK(change.label == "Fury");
+    CHECK(change.amount == 100); // 10 percent of 1000 max HP
+    CHECK(b.enemyPhase(1) == 1);
+    CHECK(b.combatant(1).stats.attack == attackBefore + attackBefore / 2);
+    CHECK(b.combatant(1).hp <= 600);
+    CHECK(b.combatant(1).hp > 100);
+    CHECK(b.nextEnemySkill(1) == 2); // the new phase starts its pattern from the top
+    CHECK(b.stats().phaseChanges == 1);
+}
+
+TEST_CASE("a big hit enters the deepest phase it passes, once") {
+    Combatant c = boss(1000);
+    c.phases.add(phaseOf({3}, 0.2f, "Last"));
+    Combatant big = hero(30, 1000);
+    big.stats.attack = 600; // one aimed body shot (1.4 x 600) takes the boss from full to below a fifth
+    Battle b({big}, {c}, tuning());
+    b.start(0.0);
+    REQUIRE(b.aim(1, 0.0) == CommandError::None);
+    b.setReticle(0.0f, 0.5f);
+    REQUIRE(b.fire(0.1));
+    CHECK(b.lastShot().kind == ShotKind::Body);
+    CHECK(b.combatant(1).hp == 160);
+    const auto events = b.drainEvents();
+    const auto changes = eventsOf(events, EventType::PhaseChanged);
+    REQUIRE(changes.size() == 1);
+    CHECK(changes[0].beat == 2);
+    CHECK(changes[0].label == "Last");
+    CHECK(b.enemyPhase(1) == 2);
+}
+
+TEST_CASE("battle stats total the fight for the results screen") {
+    Battle b({hero(30, 100000)}, {monster(10, 300)}, tuning());
+    b.start(1.0);
+    double now = 1.0;
+    int dealt = 0, taken = 0, notes = 0, perfectDefences = 0, turns = 0;
+    fightUntil(b, now, [&] {
+        for (const BattleEvent& e : b.events()) {
+            if (e.type == EventType::Hit && e.source == 0) dealt += e.amount;
+            if (e.type == EventType::Hit && e.target == 0) taken += e.amount;
+            notes += e.type == EventType::NoteJudged;
+            perfectDefences += e.type == EventType::Defended && e.label == "PERFECT";
+            turns += e.type == EventType::TurnStarted;
+        }
+        b.clearEvents();
+        return b.phase() == Phase::Victory;
+    });
+    const BattleStats& s = b.stats();
+    CHECK(s.damageDealt == dealt);
+    CHECK(s.damageDealt >= 300);
+    CHECK(s.damageTaken == taken);
+    CHECK(s.damageTaken == 0);
+    CHECK(s.notes == notes);
+    CHECK(s.perfectNotes == notes);
+    CHECK(s.missedNotes == 0);
+    CHECK(s.fullCombos >= s.partyTurns - 1); // the last combo ends early: the monster falls mid-combo
+    CHECK(s.perfectDefences == perfectDefences);
+    CHECK(s.hitsTaken == 0);
+    CHECK(s.partyTurns + s.enemyTurns == turns);
+    CHECK(s.counters == s.enemyTurns); // every attack fully parried
+    CHECK(s.startTime == 1.0);
+    CHECK(s.endTime > s.startTime);
+}
+
+TEST_CASE("reset clears enemy phases, pattern cursors and stats") {
+    const std::vector<Combatant> party = {hero(30, 100000)};
+    const std::vector<Combatant> foes = {boss(1000)};
+    Battle b(party, foes, tuning());
+    b.start(0.0);
+    double now = 0.0;
+    fightUntil(b, now, [&] {
+        b.clearEvents();
+        return b.enemyPhase(1) == 1;
+    });
+    b.reset(party, foes, tuning()); // warm up the reuse path
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    b.reset(party, foes, tuning());
+    CHECK(ftcore_test::allocStats().count == before);
+    CHECK(b.enemyPhase(1) == 0);
+    CHECK(b.nextEnemySkill(1) == 0);
+    CHECK(b.combatant(1).stats.attack == foes[0].stats.attack);
+    CHECK(b.stats().damageDealt == 0);
+    CHECK(b.stats().phaseChanges == 0);
 }

@@ -29,6 +29,18 @@
 //   (0..2, default 0.4) and `telegraph` (0..10, default 0) seconds before impact, neither longer
 //   than `at`; `weight` (> 0, default 1) is the hit's share of the skill's damage; `jumpable`
 //   (default false). A skill without `hits` gets one default hit 1.2 s after its banner.
+//   `phases` (optional, 1..kMaxEnemyPhases) are the stages of the enemy's fight and the skill
+//   pattern of each (see EnemyPhase in CombatTypes.h); without it the enemy cycles its skills:
+//     "phases": [ { "pattern": ["hammer", "decree"] },
+//                 { "below": 0.6, "label": "Overdrive", "pattern": ["rally", "hammer"], "attack": 10 },
+//                 { "below": 0.25, "label": "Last Stand", "pattern": ["verdict", "rally", "hammer"], "loop": 1,
+//                   "heal": 10 } ]
+//   `pattern` is 1..kMaxPatternSteps skill ids (required); `loop` (0..length-1, default 0) is where
+//   the pattern starts again after its last step. `below` (a fraction of max HP, 0 < below < 1) is
+//   required on every phase but the first, which has none, and falls from phase to phase. `label`
+//   (up to kPhaseLabelCapacity - 1 bytes, default empty) is the banner when the phase begins.
+//   `attack` (0..kMaxPhaseAttackPercent) is the percent added to the enemy's battle-start attack
+//   while the phase holds; `heal` (0..100) the percent of max HP it heals on entering. Both default 0.
 // encounters.json:
 //   { "version": 1, "default": { "enemies": ["brute", "shade"] },
 //     "encounters": [ { "scene": "SC-X", "beat": 4, "step": 0, "enemies": ["shade"] } ] }
@@ -56,6 +68,7 @@ struct EnemyDef {
     std::vector<std::string> skillIds; // parallel to skills
     std::vector<Skill> skills;
     Reward reward; // what beating it pays (see Progression.h)
+    EnemyPhases phases;
 };
 
 struct EnemyRoster {

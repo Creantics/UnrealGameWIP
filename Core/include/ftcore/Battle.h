@@ -75,6 +75,28 @@ enum class EventType {
     Downed,
     Victory,
     Defeat,
+    PhaseChanged, // an enemy (source and target) entered phase `beat` of its EnemyPhases; label = the phase's
+                  // label (may be empty); amount = HP it healed (appended: the Unreal mirror keeps its order)
+};
+
+// Running totals over one battle (from start() to the outcome), for the results screen.
+struct BattleStats {
+    int damageDealt = 0;     // by the party, counters and aimed shots included
+    int damageTaken = 0;     // by the party
+    int notes = 0;           // party combo notes judged
+    int perfectNotes = 0;
+    int missedNotes = 0;     // misses and wrong arrows
+    int fullCombos = 0;
+    int hitsDefended = 0;    // enemy hits dodged, jumped or parried (perfect ones included)
+    int perfectDefences = 0; // perfect parries and dodges
+    int hitsTaken = 0;       // enemy hits that landed
+    int counters = 0;
+    int weakPointHits = 0;   // aimed shots on a weak point
+    int partyTurns = 0;
+    int enemyTurns = 0;
+    int phaseChanges = 0;
+    double startTime = 0.0;
+    double endTime = 0.0;    // the time of the outcome (0 until then)
 };
 
 struct BattleEvent {
@@ -160,6 +182,15 @@ public:
 
     const BattleTuning& tuning() const { return tuning_; }
 
+    // Enemy phases (CombatTypes.h EnemyPhase). The phase an enemy is in (0 for an enemy without
+    // phases), and the index of the skill it will use on its next turn (its phase pattern, else the
+    // next skill in order), so the UI can show what is coming.
+    std::size_t enemyPhase(CombatantId id) const { return id < enemyPhase_.size() ? enemyPhase_[id] : 0; }
+    FTCORE_API std::size_t nextEnemySkill(CombatantId id) const;
+
+    // Running totals for the results screen (complete once the outcome came).
+    const BattleStats& stats() const { return stats_; }
+
     // Events since the last drain. drainEvents() hands them over (one vector per call, so it
     // allocates); events() + clearEvents() read them in place and never allocate.
     FTCORE_API std::vector<BattleEvent> drainEvents();
@@ -186,7 +217,12 @@ private:
                     std::string_view label = {});
     bool checkEnd(double now);
     float damage(const Combatant& attacker, const Combatant& defender, float power) const;
-    void emit(BattleEvent e) { events_.push_back(std::move(e)); }
+    void checkPhase(CombatantId enemy, double now);
+    void tally(const BattleEvent& e);
+    void emit(BattleEvent e) {
+        tally(e);
+        events_.push_back(std::move(e));
+    }
 
     std::vector<Combatant> combatants_;
     BattleTuning tuning_;
@@ -206,7 +242,10 @@ private:
     ShotResult lastShot_;
     float landedWeight_ = 0.0f; // defence: summed weight of the hits that landed
     std::uint64_t combosPlayed_ = 0;
-    std::vector<int> enemyTurnCount_;
+    std::vector<int> enemyTurnCount_;      // turns taken in the current phase (the pattern cursor)
+    std::vector<std::uint8_t> enemyPhase_; // per combatant: its current phase
+    std::vector<int> baseAttack_;          // per combatant: attack at battle start
+    BattleStats stats_;
     std::vector<BattleEvent> events_;
     std::vector<NoteResult> results_;   // scratch, reused by press()/update()
     std::vector<ComboNote> noteScratch_; // scratch for chart generation, swapped with combo_'s notes

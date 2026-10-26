@@ -12,6 +12,7 @@
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
 
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -189,6 +190,62 @@ TEST_CASE("bad enemy and encounter files are refused with a reason") {
     CHECK(table.entries.empty());
 }
 
+TEST_CASE("enemy phases load with their patterns, thresholds and bonuses; bad ones are refused") {
+    constexpr const char* kPhased = R"J({ "enemies": [ { "id": "boss", "stats": { "maxHp": 400, "attack": 20 },
+      "skills": [ { "id": "a" }, { "id": "b" }, { "id": "c" } ],
+      "phases": [ { "pattern": ["a", "b"] },
+                  { "below": 0.5, "label": "Fury", "pattern": ["c", "a", "b"], "loop": 1, "attack": 25, "heal": 5 } ] } ] })J";
+    EnemyRoster roster;
+    std::string err;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(importEnemyRoster(kPhased, roster, &err, &warnings), err);
+    CHECK(warnings.empty());
+    const EnemyPhases& phases = roster.enemies[0].phases;
+    REQUIRE(phases.size() == 2);
+    CHECK(phases[0].hpBelow == 1.0f);
+    CHECK(phases[0].length == 2);
+    CHECK(phases[0].pattern[1] == 1);
+    CHECK(phases[0].label().empty());
+    CHECK(phases[1].hpBelow == 0.5f);
+    CHECK(phases[1].label() == "Fury");
+    CHECK(phases[1].length == 3);
+    CHECK(phases[1].pattern[0] == 2);
+    CHECK(phases[1].loopFrom == 1);
+    CHECK(phases[1].attackPercent == 25);
+    CHECK(phases[1].healPercent == 5);
+
+    EncounterLineup lineup;
+    lineup.enemies = {0};
+    std::vector<Combatant> foes;
+    makeEnemies(roster, lineup, foes);
+    REQUIRE(foes.size() == 1);
+    CHECK(foes[0].phases.size() == 2);
+    CHECK(foes[0].phases[1].label() == "Fury");
+
+    const auto refused = [&](const char* phasesJson, const char* where) {
+        const std::string json = std::string(R"({"enemies": [{"id": "e", "stats": {}, "skills": [{"id": "a"}, {"id": "b"}], "phases": )") +
+                                 phasesJson + "}]}";
+        EnemyRoster r;
+        std::string e;
+        CAPTURE(phasesJson);
+        CHECK_FALSE(importEnemyRoster(json, r, &e));
+        CHECK(e.find(where) != std::string::npos);
+    };
+    refused("[]", ".phases");
+    refused(R"([{"pattern": ["a"]}, {"pattern": ["b"]}])", "phases[1].below");                   // no threshold
+    refused(R"([{"below": 0.5, "pattern": ["a"]}])", "phases[0].below");                         // first has one
+    refused(R"([{"pattern": ["a"]}, {"below": 0.5, "pattern": ["b"]}, {"below": 0.6, "pattern": ["a"]}])", "phases[2].below");
+    refused(R"([{"pattern": ["a"]}, {"below": 1.0, "pattern": ["b"]}])", "phases[1].below");
+    refused(R"([{"pattern": ["zz"]}])", "phases[0].pattern[0]");                                 // unknown skill
+    refused(R"([{"pattern": []}])", "phases[0].pattern");
+    refused(R"([{"pattern": ["a", "b"], "loop": 2}])", "phases[0].loop");
+    refused(R"([{"pattern": ["a"], "attack": 999}])", "phases[0].attack");
+    refused(R"([{"pattern": ["a"], "heal": 101}])", "phases[0].heal");
+    refused(R"([{"pattern": ["a"], "label": "a label much too long for the buffer"}])", "phases[0].label");
+    refused(R"([{"pattern": ["a"]}, {"below": 0.8, "pattern": ["a"]}, {"below": 0.6, "pattern": ["a"]},
+               {"below": 0.4, "pattern": ["a"]}, {"below": 0.2, "pattern": ["a"]}])", ".phases");
+}
+
 TEST_CASE("Data/Battle loads and its default line-up is the demo's") {
     std::string enemiesText, encountersText;
     if (!ftcore_test::readProjectData("Battle/enemies.json", enemiesText) ||
@@ -346,6 +403,75 @@ TEST_CASE("balance gate: every encounter is won with perfect presses and lost wi
         CHECK(loss.finished);
         CHECK(loss.outcome == Phase::Defeat);
         CHECK(loss.presses == 0);
+    }
+}
+
+// The set-piece fight: the Brass Regent (SC-P2-01 beat 12) goes through all three of its phases
+// against every pilot, each phase announced once and in order, and its turns follow each phase's
+// pattern from the top.
+TEST_CASE("the Brass Regent fight plays its phases and patterns for every pilot") {
+    const LoadedData d = loadBattleData();
+    REQUIRE(d.ok);
+    const EncounterEntry* entry = d.table.findEntry("SC-P2-01", 12, 0);
+    REQUIRE(entry != nullptr);
+    std::vector<Combatant> foes;
+    makeEnemies(d.roster, entry->lineup, foes);
+    applyWeakPoints(d.weakPoints, d.roster, entry->lineup, foes);
+    REQUIRE(foes.size() == 1);
+    REQUIRE(foes[0].phases.size() == 3);
+    CHECK(foes[0].phases[1].label() == "Overdrive");
+    CHECK(foes[0].phases[2].label() == "Last Stand");
+
+    for (const demo::PilotSkill& pilot : {demo::PilotSkill{}, demo::PilotSkill{0.75, 0.6}, demo::PilotSkill{0.5, 0.3}}) {
+        CAPTURE(pilot.press);
+        Battle b(demo::party(1), foes, demo::tuning());
+        demo::PilotState state;
+        const CombatantId regent = 2;
+        std::vector<std::size_t> phasesEntered;
+        std::vector<std::vector<std::string>> used(3); // enemy skills per phase
+        double now = 0.0;
+        const double step = 1.0 / 120.0;
+        b.start(now);
+        while (b.phase() != Phase::Victory && b.phase() != Phase::Defeat && now < 1200.0) {
+            if (b.phase() == Phase::AwaitingCommand) {
+                const demo::PilotChoice choice = demo::pilotChoice(b);
+                if (choice.aim) {
+                    REQUIRE(b.aim(choice.target, now) == CommandError::None);
+                    demo::pilotShoot(b, choice.weakPoint, now);
+                } else {
+                    REQUIRE(b.command(choice.skill, choice.target, now) == CommandError::None);
+                }
+            }
+            demo::pilotPress(b, now, pilot, state);
+            demo::pilotDefend(b, now + step, DefenceInput::Parry, pilot, state);
+            now += step;
+            b.update(now);
+            for (const BattleEvent& e : b.events()) {
+                if (e.type == EventType::PhaseChanged) phasesEntered.push_back(e.beat);
+                if (e.type == EventType::SkillStarted && e.source == regent)
+                    used[b.enemyPhase(regent)].emplace_back(e.label);
+            }
+            b.clearEvents();
+        }
+        CHECK(b.phase() == Phase::Victory);
+        CHECK(phasesEntered == std::vector<std::size_t>{1, 2});
+        CHECK(b.stats().phaseChanges == 2);
+        const auto starts = [](const std::vector<std::string>& got, std::initializer_list<const char*> want) {
+            std::size_t i = 0;
+            for (const char* w : want) {
+                if (i >= got.size()) return true; // the phase ended before more turns
+                if (got[i++] != w) return false;
+            }
+            return true;
+        };
+        CHECK(starts(used[0], {"Hammer", "Decree", "Hammer", "Decree"}));
+        CHECK(starts(used[1], {"Rally Strike", "Hammer", "Rally Strike", "Decree", "Rally Strike"}));
+        CHECK(starts(used[2], {"Verdict", "Onslaught", "Rally Strike", "Onslaught"}));
+        CHECK_FALSE(used[0].empty());
+        CHECK_FALSE(used[1].empty());
+        CHECK_FALSE(used[2].empty()); // the Last Stand opener always gets its turn
+        MESSAGE("Regent: " << used[0].size() << " / " << used[1].size() << " / " << used[2].size() << " turns per phase, "
+                           << b.stats().endTime << " s");
     }
 }
 

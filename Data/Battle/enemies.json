@@ -144,15 +144,24 @@
     {
       "id": "brass_regent",
       "name": "Brass Regent",
-      "stats": { "maxHp": 320, "attack": 20, "defense": 8, "speed": 10, "technique": 10 },
-      "reward": { "xp": 24, "gold": 14 },
+      "stats": { "maxHp": 480, "attack": 20, "defense": 8, "speed": 13, "technique": 10 },
+      "reward": { "xp": 32, "gold": 19 },
       "skills": [
         { "id": "hammer", "name": "Hammer", "targeting": "single", "power": 1.5, "notes": 4, "difficulty": 2.5,
           "hits": [ { "at": 1.4, "tell": 0.4, "telegraph": 1.0, "jumpable": true }, { "at": 2.0, "weight": 1.5 } ] },
         { "id": "rally", "name": "Rally Strike", "targeting": "single", "power": 1.6, "notes": 5, "difficulty": 3.5,
           "hits": [ { "at": 0.9 }, { "at": 1.3 }, { "at": 1.7 } ] },
         { "id": "decree", "name": "Decree", "targeting": "single", "power": 1.4, "notes": 4, "difficulty": 3.0,
-          "hits": [ { "at": 1.0 }, { "at": 1.6, "tell": 0.5 } ] }
+          "hits": [ { "at": 1.0 }, { "at": 1.6, "tell": 0.5 } ] },
+        { "id": "verdict", "name": "Verdict", "targeting": "single", "power": 2.2, "notes": 5, "difficulty": 4.0,
+          "hits": [ { "at": 4.5, "tell": 0.5, "telegraph": 2.5, "jumpable": true } ] },
+        { "id": "onslaught", "name": "Onslaught", "targeting": "single", "power": 1.8, "notes": 6, "difficulty": 4.5,
+          "hits": [ { "at": 0.8 }, { "at": 1.1 }, { "at": 1.4 }, { "at": 1.9, "tell": 0.5, "weight": 2 } ] }
+      ],
+      "phases": [
+        { "pattern": ["hammer", "decree"] },
+        { "below": 0.6, "label": "Overdrive", "pattern": ["rally", "hammer", "rally", "decree"], "attack": 10 },
+        { "below": 0.25, "label": "Last Stand", "pattern": ["verdict", "onslaught", "rally"], "loop": 1, "attack": 20 }
       ]
     },
     {

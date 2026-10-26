@@ -108,6 +108,66 @@ void encHits(JsonValue s, const std::string& path, AttackTimeline& out, std::vec
     }
 }
 
+// An enemy's optional "phases" array (its skill ids already read). Absent: no phases.
+void encPhases(JsonValue j, const std::string& path, const std::vector<std::string>& skillIds, EnemyPhases& out,
+               std::vector<std::string>& errors, std::vector<std::string>* warnings) {
+    const JsonValue phases = j["phases"];
+    if (phases.isAbsent()) return;
+    const std::string pp = path + ".phases";
+    if (!phases.isArray() || phases.size() == 0 || phases.size() > kMaxEnemyPhases) {
+        errors.push_back(pp + ": expected an array of 1.." + std::to_string(kMaxEnemyPhases) + " phases");
+        return;
+    }
+    out.clear();
+    float previous = 1.0f;
+    for (std::uint32_t i = 0; i < phases.size(); ++i) {
+        const JsonValue ph = phases[i];
+        const std::string p = pp + "[" + std::to_string(i) + "]";
+        if (!ph.isObject()) {
+            errors.push_back(p + ": expected an object");
+            continue;
+        }
+        encUnknownKeys(ph, p, {"below", "label", "pattern", "loop", "attack", "heal"}, warnings);
+        EnemyPhase phase;
+        if (i == 0) {
+            if (ph.has("below")) errors.push_back(p + ".below: the first phase holds from the start (no threshold)");
+        } else if (!ph.has("below")) {
+            errors.push_back(p + ".below: expected a fraction of max HP above 0 and below 1");
+        } else if (encNum(ph, "below", phase.hpBelow, 0.f, 1.f, p, errors)) {
+            if (!(phase.hpBelow > 0.0f && phase.hpBelow < previous))
+                errors.push_back(p + ".below: expected a fraction above 0 and below the previous phase's");
+            previous = phase.hpBelow;
+        }
+        const JsonValue label = ph["label"];
+        if (!label.isAbsent()) {
+            if (!label.isString() || label.string().size() >= kPhaseLabelCapacity)
+                errors.push_back(p + ".label: expected a string of at most " + std::to_string(kPhaseLabelCapacity - 1) +
+                                 " bytes");
+            else phase.setLabel(label.string());
+        }
+        const JsonValue pattern = ph["pattern"];
+        if (!pattern.isArray() || pattern.size() == 0 || pattern.size() > kMaxPatternSteps) {
+            errors.push_back(p + ".pattern: expected an array of 1.." + std::to_string(kMaxPatternSteps) + " skill ids");
+        } else {
+            for (std::uint32_t k = 0; k < pattern.size(); ++k) {
+                const std::string_view id = pattern[k].string();
+                const auto it = std::find(skillIds.begin(), skillIds.end(), id);
+                if (!pattern[k].isString() || it == skillIds.end())
+                    errors.push_back(p + ".pattern[" + std::to_string(k) + "]: expected one of the enemy's skill ids");
+                else phase.addStep(static_cast<std::size_t>(std::distance(skillIds.begin(), it)));
+            }
+        }
+        int loop = 0;
+        if (encInt(ph, "loop", loop, 0, static_cast<int>(kMaxPatternSteps) - 1, p, errors) && phase.length > 0 &&
+            loop >= phase.length)
+            errors.push_back(p + ".loop: expected a step of the pattern (0.." + std::to_string(phase.length - 1) + ")");
+        phase.loopFrom = static_cast<std::uint8_t>(loop);
+        encInt(ph, "attack", phase.attackPercent, 0, kMaxPhaseAttackPercent, p, errors);
+        encInt(ph, "heal", phase.healPercent, 0, 100, p, errors);
+        out.add(phase);
+    }
+}
+
 bool encRoot(std::string_view json, JsonDocument& doc, const char* what, std::vector<std::string>& errors) {
     std::string err;
     if (!doc.parse(json, &err)) {
@@ -191,7 +251,7 @@ bool importEnemyRoster(std::string_view json, EnemyRoster& out, std::string* err
             errors.push_back(path + ": expected an object");
             continue;
         }
-        encUnknownKeys(j, path, {"id", "name", "stats", "skills", "reward"}, warnings);
+        encUnknownKeys(j, path, {"id", "name", "stats", "skills", "reward", "phases"}, warnings);
         EnemyDef e;
         e.id = encStr(j["id"].string());
         if (!encId(e.id)) errors.push_back(path + ".id: expected lower-case letters, digits and _");
@@ -255,6 +315,7 @@ bool importEnemyRoster(std::string_view json, EnemyRoster& out, std::string* err
             e.skillIds.push_back(id);
             e.skills.push_back(std::move(skill));
         }
+        encPhases(j, path, e.skillIds, e.phases, errors, warnings);
         roster.enemies.push_back(std::move(e));
     }
     if (!encFinish(errors, error)) return false;
@@ -327,6 +388,7 @@ void makeEnemies(const EnemyRoster& roster, const EncounterLineup& lineup, std::
         c.stats.attack += e.stats.attack * tier * kTierAttackPercent / 100;
         c.hp = c.stats.maxHp;
         c.skills = e.skills;
+        c.phases = e.phases;
         out.push_back(std::move(c));
     }
 }

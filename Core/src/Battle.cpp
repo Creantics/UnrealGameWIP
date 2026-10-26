@@ -35,6 +35,10 @@ void Battle::reset(const std::vector<Combatant>& party, const std::vector<Combat
         FTCORE_ASSERT(!d.skills.empty());
     }
     enemyTurnCount_.assign(combatants_.size(), 0);
+    enemyPhase_.assign(combatants_.size(), 0);
+    baseAttack_.resize(combatants_.size());
+    for (std::size_t i = 0; i < combatants_.size(); ++i) baseAttack_[i] = combatants_[i].stats.attack;
+    stats_ = {};
 
     queue_.clear();
     phase_ = Phase::NotStarted;
@@ -68,6 +72,8 @@ void Battle::reset(const std::vector<Combatant>& party, const std::vector<Combat
 
 void Battle::start(double now) {
     FTCORE_ASSERT(phase_ == Phase::NotStarted);
+    stats_ = {};
+    stats_.startTime = now;
     for (CombatantId id = 0; id < combatants_.size(); ++id)
         if (combatants_[id].alive()) queue_.add(id, std::max(1, combatants_[id].stats.speed));
     if (!checkEnd(now)) beginTurn(now);
@@ -89,6 +95,15 @@ std::size_t Battle::livingCount(Team team) const {
     std::size_t n = 0;
     for (const Combatant& c : combatants_) n += c.team == team && c.alive();
     return n;
+}
+
+std::size_t Battle::nextEnemySkill(CombatantId id) const {
+    if (id >= combatants_.size()) return 0;
+    const Combatant& c = combatants_[id];
+    const std::size_t n = static_cast<std::size_t>(enemyTurnCount_[id]);
+    if (c.phases.empty()) return c.skills.empty() ? 0 : n % c.skills.size();
+    const std::size_t s = c.phases[enemyPhase_[id]].step(n, c.skills.size());
+    return s < c.skills.size() ? s : 0;
 }
 
 const Skill* Battle::activeSkill() const {
@@ -120,7 +135,8 @@ void Battle::beginTurn(double now) {
 
 void Battle::startEnemyTurn(double now) {
     Combatant& enemy = combatants_[actor_];
-    const std::size_t idx = static_cast<std::size_t>(enemyTurnCount_[actor_]++) % enemy.skills.size();
+    const std::size_t idx = nextEnemySkill(actor_);
+    ++enemyTurnCount_[actor_];
 
     // Focus the most wounded party member (ties: lowest id) so behaviour is deterministic.
     CombatantId target = 0;
@@ -421,6 +437,61 @@ void Battle::dealDamage(CombatantId source, CombatantId target, int amount, Grad
         queue_.remove(target);
         emit({.type = EventType::Downed, .source = source, .target = target, .time = now, .label = {}});
         checkEnd(now);
+        return;
+    }
+    if (t.team == Team::Enemies) checkPhase(target, now);
+}
+
+// Enters the deepest later phase whose threshold the enemy's HP has fallen to (skipped phases are
+// passed over: only the phase entered applies its attack and heal).
+void Battle::checkPhase(CombatantId enemy, double now) {
+    Combatant& c = combatants_[enemy];
+    const std::size_t current = enemyPhase_[enemy];
+    std::size_t next = current;
+    for (std::size_t p = current + 1; p < c.phases.size(); ++p)
+        if (static_cast<float>(c.hp) <= c.phases[p].hpBelow * static_cast<float>(c.stats.maxHp)) next = p;
+    if (next == current) return;
+    const EnemyPhase& phase = c.phases[next];
+    enemyPhase_[enemy] = static_cast<std::uint8_t>(next);
+    enemyTurnCount_[enemy] = 0;
+    c.stats.attack = baseAttack_[enemy] + baseAttack_[enemy] * std::max(0, phase.attackPercent) / 100;
+    const int heal = std::min(c.stats.maxHp * std::max(0, phase.healPercent) / 100, c.stats.maxHp - c.hp);
+    c.hp += std::max(0, heal);
+    emit({.type = EventType::PhaseChanged,
+          .source = enemy,
+          .target = enemy,
+          .amount = std::max(0, heal),
+          .beat = next,
+          .time = now,
+          .label = phase.label()});
+}
+
+void Battle::tally(const BattleEvent& e) {
+    const auto onParty = [&](CombatantId id) { return id < combatants_.size() && combatants_[id].team == Team::Party; };
+    switch (e.type) {
+    case EventType::TurnStarted: ++(onParty(e.source) ? stats_.partyTurns : stats_.enemyTurns); break;
+    case EventType::NoteJudged:
+        ++stats_.notes;
+        stats_.perfectNotes += e.grade == Grade::Perfect;
+        stats_.missedNotes += e.grade == Grade::Miss;
+        break;
+    case EventType::Hit:
+        if (onParty(e.source)) stats_.damageDealt += e.amount;
+        if (onParty(e.target)) stats_.damageTaken += e.amount;
+        stats_.weakPointHits += e.label == shotKindName(ShotKind::Weak);
+        break;
+    case EventType::Defended:
+        if (e.label == "LATE") break;
+        if (e.label == "HIT") ++stats_.hitsTaken;
+        else ++stats_.hitsDefended;
+        stats_.perfectDefences += e.label == "PERFECT";
+        break;
+    case EventType::ComboFinished: stats_.fullCombos += e.label == "FULL COMBO"; break;
+    case EventType::Counter: ++stats_.counters; break;
+    case EventType::PhaseChanged: ++stats_.phaseChanges; break;
+    case EventType::Victory:
+    case EventType::Defeat: stats_.endTime = e.time; break;
+    default: break;
     }
 }
 
