@@ -23,8 +23,16 @@ Private notes (character references, concept-art review, script status) are in `
     - SOMA's `Neck1/Neck2` aren't in the Mixamo template, so the Third's neck holds the bind pose. A SOMA fallback in
       `kChains` would fix it.
     - The 8 MH metacarpal chains have no source.
-    - Kimodo's text-to-motion model hasn't run yet: the user still has to accept the gated Llama licence on HF and log
-      in.
+  - Later the same day, Kimodo text-to-motion ran locally (Kimodo-SOMA-RP-v1.2) from plain prompts:
+    - A 5 s walk: 6.25 m, clean alternating foot contacts. It went through the same chain onto the Third: 20/29
+      chains, pelvis travel ratio 0.85 as with MotionBricks, toes above the floor.
+    - A 3 s crouch-and-jump: hips 0.72–1.42 m, 0.67 s airborne, which shows the prompt steers the motion.
+    - Setup notes:
+      - The LLM2Vec text encoder (Llama 3 8B, bf16) runs on the CPU, about 16 GB RAM.
+      - The Llama 3 8B Instruct base came from NousResearch's ungated copy; its shards, tokenizer and config match
+        Meta's by LFS sha256. It's under the same Llama 3 licence.
+      - Kimodo's `TEXT_ENCODERS_DIR` points at local McGill adapter copies whose `adapter_config` names that base.
+      - Kimodo's foot cleanup needs its `MotionCorrection` C++ extension, installed from the repo folder.
 
 - **(2026-10-26, overworld): a small walkable overworld joins the three worlds; the story walks it between
   worlds.** Design by the advisor; the technique only (a miniature map walked between locations), no borrowed names.
