@@ -6,6 +6,20 @@ Private notes (character references, concept-art review, script status) are in `
 
 ## Resume here (updated 2026-10-21, Max plan)
 
+- **NEWEST (2026-10-25, latest): lead heads rigged headless from generated open-mouth busts (user resumed head-only rigging in
+  Blender `-b`; MetaHuman set aside; no body yet).** `tools/blender/rig_head.py` prep -> `face_transfer.py` -> `rig_head.py finish`
+  gives the canonical skeleton plus the 56 face shapes on a bust that already has eyes, teeth and tongue as loose parts.
+  - Main fc4b2a3: the open mouth is found by its notch in the front profile (works for lips parted a few mm).
+  - Main 9b21fe4: eye bones at the eyeball's sphere-fit centre (the vertex mean sat ~1.7 mm forward, pulled by the iris); lids
+    turn whole with their own margin inside the opening, a closing upper lid rides out onto a shell through the lower margin;
+    lash plates turn with their margin. Main 01bb3d6: the shut lid follows a smooth fitted lid surface (`lid_front`).
+  - Results on two test heads: basis, jawOpen, eyeWide and eyeSquint pass the close-up renders. **eyeBlink is a known limit**:
+    on the dense head the shut lid still folds near the outer corner; on the coarse head (lid one or two triangle rows tall) the
+    shut lid zigzags. The advisor capped it after two structural passes; don't tweak it further. A real fix needs denser lid
+    topology (a local remesh of the lid band before rigging) or a lid from a template, a new task.
+  - The third head has no eyeballs (painted discs), so its lids can't be built; the user is asked to regenerate it with eyeballs.
+  - Check renders only (the flip counts in the diagnostics didn't track what the renders show).
+
 - **NEWEST (2026-10-25, later): character model work is PAUSED by the user while they rethink the process; gameplay work that
   needs no models continues.** Don't resume the lead models until the user gives the new process.
   - Done on main (c2bc63a): party progression. Story fights pay xp and gold (`reward` per enemy in `Data/Battle/enemies.json`,
