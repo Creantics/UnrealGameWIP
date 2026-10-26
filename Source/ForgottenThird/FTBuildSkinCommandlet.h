@@ -3,14 +3,15 @@
 // Builds the shared skin master and moves one material slot of a character onto it:
 //
 //   UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildSkin -Mesh=<skeletal mesh object path> [-Slot=0]
-//       [-Albedo=<png>] [-Mask=<png>] [-ScatterScale=1] [-Scalars=Name:Value,Name:Value] [-DumpDir=<dir>]
+//       [-Albedo=<png>] [-Mask=<png>] [-ScatterScale=1] [-ScatterColor=R,G,B] [-Scalars=Name:Value,Name:Value]
+//       [-DumpDir=<dir>]
 //       -AllowCommandletRendering -unattended -nopause -nosplash
 //
 // -AllowCommandletRendering is required: without it the master never compiles in a commandlet.
 //
 // Writes, under /Game/Characters/Shared/Materials (replacing what is there):
 // - SP_FTSkin, a Burley subsurface profile (Unreal's human skin defaults; -ScatterScale scales the mean
-//   free path, for checking that the scatter shows at all);
+//   free path, for checking that the scatter shows at all; -ScatterColor replaces its per-channel mean free path);
 // - T_FTSkinPores (tangent-space normals) and T_FTSkinPoresMask (R cavity, G micro roughness), one
 //   tiling tile from ftcore::makeSkinHeight; -DumpDir also saves both as PNGs;
 // - T_FTSkinMaskNeutral, the default region mask (R ambient occlusion 1, G roughness scale 0.5, B scatter 1);

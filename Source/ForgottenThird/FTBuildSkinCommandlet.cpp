@@ -174,16 +174,21 @@ UTexture2D* ImportPng(const FString& File, const FString& Path, bool bSRGB, Text
 	return Texture;
 }
 
-USubsurfaceProfile* BuildProfile(float ScatterScale)
+USubsurfaceProfile* BuildProfile(float ScatterScale, const FLinearColor* PathColor)
 {
 	UPackage* Package = CreatePackage(kProfile);
 	USubsurfaceProfile* Profile = NewObject<USubsurfaceProfile>(Package, *FPackageName::GetShortName(kProfile),
 		RF_Public | RF_Standalone | RF_Transactional);
-	// The struct's defaults are Unreal's human skin, matched to its Burley form; only the scatter distance scales.
+	// The struct's defaults are Unreal's human skin, matched to its Burley form; the scatter distance scales, and the
+	// per-channel mean free path can be replaced.
 	FSubsurfaceProfileStruct& S = Profile->Settings;
 	S.bEnableBurley = true;
 	S.bEnableMeanFreePath = true;
 	S.MeanFreePathDistance *= ScatterScale;
+	if (PathColor)
+	{
+		S.MeanFreePathColor = *PathColor;
+	}
 	Profile->Guid = FGuid::NewGuid();
 	FAssetRegistryModule::AssetCreated(Profile);
 	return Profile;
@@ -296,6 +301,19 @@ int32 UFTBuildSkinCommandlet::Main(const FString& Params)
 	FParse::Value(*Params, TEXT("ScatterScale="), ScatterScale);
 	FParse::Value(*Params, TEXT("Scalars="), ScalarList, false);
 	FParse::Value(*Params, TEXT("DumpDir="), DumpDir);
+	FString PathColorList;
+	TOptional<FLinearColor> PathColor;
+	if (FParse::Value(*Params, TEXT("ScatterColor="), PathColorList, false))
+	{
+		TArray<FString> Parts;
+		PathColorList.ParseIntoArray(Parts, TEXT(","));
+		if (Parts.Num() != 3)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSkin: -ScatterColor wants R,G,B."));
+			return 1;
+		}
+		PathColor = FLinearColor(FCString::Atof(*Parts[0]), FCString::Atof(*Parts[1]), FCString::Atof(*Parts[2]));
+	}
 	if (MeshPath.IsEmpty())
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSkin: give -Mesh=<skeletal mesh object path>."));
@@ -351,7 +369,7 @@ int32 UFTBuildSkinCommandlet::Main(const FString& Params)
 	}
 
 	TArray<UObject*> ToSave;
-	USubsurfaceProfile* Profile = FTSkinBuild::BuildProfile(ScatterScale);
+	USubsurfaceProfile* Profile = FTSkinBuild::BuildProfile(ScatterScale, PathColor.GetPtrOrNull());
 	UTexture2D* Pores = FTSkinBuild::NewTexture(FTSkinBuild::kPores, Size, NormalArray, false, TC_Normalmap);
 	UTexture2D* PoresMask = FTSkinBuild::NewTexture(FTSkinBuild::kPoresMask, Size, MaskArray, false, TC_Masks);
 	UTexture2D* NeutralMask = FTSkinBuild::NewTexture(FTSkinBuild::kNeutralMask, 4, Neutral, false, TC_Masks);

@@ -15,6 +15,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/HUD.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "InputAction.h"
@@ -110,7 +111,7 @@ void AFTExploreCharacter::BeginPlay()
 		{
 			AddPortraitLights();
 		}
-		// -ExplorePortraitShot=<path prefix>: the renderer saves one 1400x1100 shot (HUD canvas included) per yaw in
+		// -ExplorePortraitShot=<path prefix>: the renderer saves one 1400x1100 shot (HUD hidden) per yaw in
 		// -ExplorePortraitYaws=180,90,0 (default: the one yaw above) as <prefix>_<yaw>.png, then the game quits.
 		if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitShot="), ShotPrefix) && !ShotPrefix.IsEmpty())
 		{
@@ -150,6 +151,12 @@ void AFTExploreCharacter::StepPortraitShots()
 	{
 		// Aim one step ahead of the shot, so temporal AA and lighting settle at the new angle.
 		Boom->SetRelativeRotation(FRotator(0.0, Yaw, 0.0));
+		// The HUD's canvas would land in the shot; the look is what is being checked.
+		const APlayerController* Player = Cast<APlayerController>(GetController());
+		if (AHUD* Hud = Player ? Player->GetHUD() : nullptr)
+		{
+			Hud->bShowHUD = false;
+		}
 		bShotAimed = true;
 		return;
 	}
