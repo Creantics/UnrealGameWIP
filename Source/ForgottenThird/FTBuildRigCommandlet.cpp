@@ -12,6 +12,7 @@
 #include "Retargeter/IKRetargeter.h"
 #include "RetargetEditor/IKRetargetBatchOperation.h"
 #include "RetargetEditor/IKRetargeterController.h"
+#include "RetargetEditor/IKRetargeterPoseGenerator.h"
 #include "Retargeter/IKRetargetChainMapping.h"
 #include "Rig/IKRigDefinition.h"
 #include "RigEditor/IKRigAutoCharacterizer.h"
@@ -207,10 +208,12 @@ bool SaveAsset(UObject* Asset)
 
 // Writes RTG_<source mesh>_to_<target mesh> in Dest (source = SourceRig, target = TargetRig, the
 // default op stack, chains mapped by exact name), then retargets each clip in Clips into
-// Dest/Retargeted and checks that every result has frames and moving tracks. False when a chain
-// is unmapped, a clip can't be loaded, a result is empty or a save fails.
+// Dest/Retargeted and checks that every result has frames and moving tracks. With bAlignPose the
+// target gets a new retarget pose with its chains turned to the source's directions (for a T-pose
+// source onto an A-pose target). False when a chain is unmapped, a clip can't be loaded, a result
+// is empty or a save fails.
 bool RetargetClips(UIKRigDefinition& SourceRig, UIKRigDefinition& TargetRig, USkeletalMesh& TargetMesh, const FString& Dest,
-	const TArray<FString>& Clips)
+	const TArray<FString>& Clips, bool bAlignPose)
 {
 	USkeletalMesh* SourceMesh = SourceRig.GetPreviewMesh();
 	if (!SourceMesh || SourceMesh == &TargetMesh)
@@ -230,6 +233,12 @@ bool RetargetClips(UIKRigDefinition& SourceRig, UIKRigDefinition& TargetRig, USk
 	Retargeter->AssignIKRigToAllOps(ERetargetSourceOrTarget::Source, &SourceRig);
 	Retargeter->AssignIKRigToAllOps(ERetargetSourceOrTarget::Target, &TargetRig);
 	Retargeter->AutoMapChains(EAutoMapChainType::Exact, true);
+	if (bAlignPose)
+	{
+		const FName Pose = Retargeter->CreateRetargetPose(TEXT("AlignedToSource"), ERetargetSourceOrTarget::Target);
+		Retargeter->AutoAlignAllBones(ERetargetSourceOrTarget::Target, ERetargetAutoAlignMethod::ChainToChain);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: target retarget pose %s aligned to the source chains."), *Pose.ToString());
+	}
 
 	bool bOk = true;
 	int32 Mapped = 0;
@@ -428,7 +437,7 @@ int32 UFTBuildRigCommandlet::Main(const FString& Params)
 	FParse::Value(*Params, TEXT("Clips="), ClipList, false);
 	TArray<FString> Clips;
 	ClipList.ParseIntoArray(Clips, TEXT(","));
-	return RetargetClips(*FromRig, *RigAsset, *Mesh, Dest, Clips) ? 0 : 1;
+	return RetargetClips(*FromRig, *RigAsset, *Mesh, Dest, Clips, FParse::Param(*Params, TEXT("AlignPose"))) ? 0 : 1;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig needs an editor build."));
 	return 1;
