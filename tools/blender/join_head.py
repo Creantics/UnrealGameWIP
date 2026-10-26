@@ -3,7 +3,7 @@
 
     blender -b HEAD.blend --factory-startup --python-exit-code 1 --python tools/blender/join_head.py -- \\
         --body BODY.blend --out name.glb [--blend name.blend] [--seam Z] [--gap 0.004] \\
-        [--neck BASE_Z,CHIN_Z,LENGTH] [--preview DIR]
+        [--neck BASE_Z,CHIN_Z,LENGTH [--head SCALE]] [--preview DIR]
 
 Both must already share a frame: give prep_scan.py the --height that brings the body's neck to the bust's (compare
 their neck widths by height). The seam is a level cut through the neck where both have it; by default the height in
@@ -19,7 +19,8 @@ around the seam is reweighted along spine_03 -> neck_01 -> neck_02 -> head by he
 fading into each side's own weights a few centimetres away. A body stump and a bust neck stacked can make the neck
 too long: --neck shortens the stretch from BASE_Z (the notch at its base) to CHIN_Z (just under the chin) to LENGTH
 after the join, scaling heights there (eased in and out over a centimetre, so no crease) and dropping everything
-above, the bones and shape keys with it; widths are untouched, so the seam still fits. The body's colour differs from the bust's, so the seam
+above, the bones and shape keys with it; widths are untouched, so the seam still fits. --head then scales the head
+about the chin, the neck widening along its length to meet it while the seam and shoulders stay. The body's colour differs from the bust's, so the seam
 shows a step in colour; blending the textures there is a separate job. The glb is checked with the face shapes.
 --preview renders the whole lead front and three-quarter, and the neck up close at rest, bent and turned.
 """
@@ -44,7 +45,8 @@ NECK_REACH = 0.1  # metres from the centre line that count as neck in a section
 
 def _args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
-    a = {"body": None, "out": None, "blend": None, "seam": None, "gap": "0.004", "neck": None, "preview": None}
+    a = {"body": None, "out": None, "blend": None, "seam": None, "gap": "0.004", "neck": None, "head": "1",
+         "preview": None}
     i = 0
     while i < len(argv):
         k = argv[i]
@@ -61,6 +63,9 @@ def _args():
         a["neck"] = [float(x) for x in a["neck"].split(",")]
         if len(a["neck"]) != 3 or not 0 < a["neck"][2] < a["neck"][1] - a["neck"][0]:
             raise SystemExit("join_head: --neck takes BASE_Z,CHIN_Z,LENGTH with 0 < LENGTH < CHIN_Z - BASE_Z")
+    a["head"] = float(a["head"])
+    if a["head"] != 1.0 and not a["neck"]:
+        raise SystemExit("join_head: --head needs --neck (its base and chin heights)")
     return a
 
 
@@ -325,15 +330,42 @@ def neck_map(z0, z1, length, ramp=0.01):
     return f
 
 
-def shorten_neck(mesh, arm, f):
-    """Applies the height map f to the mesh, every shape key (they hold positions, so the same map) and every bone."""
+def _ease(t):
+    t = np.clip(t, 0.0, 1.0)
+    return t * t * (3 - 2 * t)
+
+
+def head_map(z0, z1, s, cx, cy, ramp=0.01, r_in=0.08, r_out=0.16):
+    """The map that scales the head by s: heights about the chin z1 (eased in over `ramp` either side, so the neck's
+    length and the slope under the jaw stay), widths about the neck's axis (cx, cy) growing from 1 at the neck's base
+    z0 to s at the chin, so the neck thickens to carry the head instead of flaring at the seam. Below the chin the
+    width change fades out from r_in to r_out off the axis, so the shoulders keep their shape."""
+    g = np.linspace(z1 - ramp, z1 + ramp, 2001)
+    E = np.concatenate([[0.0], np.cumsum((_ease((g[1:] - g[0]) / (2 * ramp)) + _ease((g[:-1] - g[0]) / (2 * ramp)))
+                                         / 2 * np.diff(g))])
+
+    def F(P):
+        P = P.copy()
+        z = P[:, 2]
+        r = np.hypot(P[:, 0] - cx, P[:, 1] - cy)
+        gate = 1.0 - _ease((r - r_in) / (r_out - r_in))
+        gate = gate + (1.0 - gate) * _ease((z - (z1 - ramp)) / ramp)
+        h = 1.0 + (s - 1.0) * _ease((z - z0) / (z1 - z0)) * gate
+        P[:, 0] = cx + (P[:, 0] - cx) * h
+        P[:, 1] = cy + (P[:, 1] - cy) * h
+        P[:, 2] = z + (s - 1.0) * np.where(z > g[-1], E[-1] + (z - g[-1]), np.interp(z, g, E))
+        return P
+    return F
+
+
+def remap(mesh, arm, F):
+    """Moves the mesh, every shape key (they hold positions, so the same map) and every bone by the map F of an
+    (n, 3) array of points. The vertices follow the reference key: setting them directly would shift every key."""
     me = mesh.data
     for kb in me.shape_keys.key_blocks:
         co = np.empty(len(kb.data) * 3, dtype=np.float64)
         kb.data.foreach_get("co", co)
-        co = co.reshape(-1, 3)
-        co[:, 2] = f(co[:, 2])
-        kb.data.foreach_set("co", co.astype(np.float32).ravel())
+        kb.data.foreach_set("co", F(co.reshape(-1, 3)).astype(np.float32).ravel())
     co = np.empty(len(me.vertices) * 3, dtype=np.float32)
     me.shape_keys.reference_key.data.foreach_get("co", co)
     me.vertices.foreach_set("co", co)
@@ -341,9 +373,8 @@ def shorten_neck(mesh, arm, f):
     nb.activate(arm)
     bpy.ops.object.mode_set(mode="EDIT")
     for eb in arm.data.edit_bones:
-        h, t = eb.head.copy(), eb.tail.copy()
-        h.z, t.z = float(f(h.z)), float(f(t.z))
-        eb.head, eb.tail = h, t
+        h, t = F(np.array([eb.head[:], eb.tail[:]]))
+        eb.head, eb.tail = Vector(h), Vector(t)
     bpy.ops.object.mode_set(mode="OBJECT")
 
 
@@ -486,10 +517,13 @@ def main():
     if a["neck"]:
         z0, z1, length = a["neck"]
         f = neck_map(z0, z1, length)
-        shorten_neck(mesh, arm_b, f)
+        remap(mesh, arm_b, lambda P: np.column_stack([P[:, :2], f(P[:, 2])]))
         print("join_head: neck %.4f..%.4f shortened to %.4f, head down %.4f, seam now z %.4f"
               % (z0, z1, length, z1 - z0 - length, float(f(seam))))
         seam = float(f(seam))
+        if a["head"] != 1.0:
+            remap(mesh, arm_b, head_map(z0, float(f(z1)), a["head"], cx, cy))
+            print("join_head: head scaled %.3f about the chin at z %.4f" % (a["head"], float(f(z1))))
     reweighted = reweight_seam(mesh, arm_b, seam, cx, cy)
     bpy.data.objects.remove(arm_h, do_unlink=True)
 
