@@ -2,7 +2,8 @@
 headless, after face_transfer.
 
     blender -b FACE.blend --factory-startup --python-exit-code 1 --python tools/blender/eye_swap.py -- \\
-        --out name.glb [--blend name.blend] [--preview DIR] [--iris 0.12,0.07,0.04] [--search 0.022]
+        --out name.glb [--blend name.blend] [--preview DIR] [--iris 0.12,0.07,0.04] [--search 0.022] [--lid-cuts 1] \\
+        [--lids hinge|procedural]
 
 A generator (Tripo and the like) puts a sphere behind each lid opening, welded into the one body mesh, with a cone
 inside it for the pupil. It cannot turn, and nothing shines. For each of eye_l / eye_r this fits a sphere to the
@@ -15,8 +16,11 @@ new ball copies the bulge.
 A generated mesh's winding is mixed (on Devin, 40k skin faces faced in and would be holes in the engine), so every
 skin face is turned to face out (outward_normals). The generic eyeBlinkLeft/Right from face_transfer drop the brow and
 socket instead of closing the lids, so they are rewritten: the lids turn over the new ball about its hinge until they
-meet (blink). The other eye shapes (look, squint, wide) are left as face_transfer made them. FACE.blend is
-face_transfer's .blend.
+meet (blink). --lids procedural rebuilds all the lid shapes (blink, squint, wide, look) with rig_head.procedural_lids
+instead, which follows each lid's own margin and suits a scan's thick, uneven lids better. Each eye joint is moved to
+its eyeball's centre so the eye turns in its socket. Before that, every skin edge within 1.6 eye radii is cut into lid-cuts + 1 (rig_common.subdivide_near;
+0 skips it), since a coarse lid folds into a zigzag when it turns. The other eye shapes (look, squint, wide) are left
+as face_transfer made them. FACE.blend is face_transfer's .blend.
 """
 import math
 import os
@@ -27,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bmesh  # noqa: E402
 import bpy  # noqa: E402
 import numpy as np  # noqa: E402
+from mathutils import Vector  # noqa: E402
 from mathutils.bvhtree import BVHTree  # noqa: E402
 
 import make_leads as ml  # noqa: E402
@@ -37,6 +42,8 @@ TOL = 0.0005          # a face within this of the fitted sphere (or inside it) i
 CAP_TOL = 0.0024      # ... within this at the front, where the old eyeball bulges like a cornea and the lids stand off
 CAP, CAP_END = 35.0, 50.0  # degrees from straight ahead where the front tolerance holds, and where it is back to TOL
 SHARD = 40            # face islands left round the eye with fewer faces than this are the old eyeball's too
+LOOSE = (1.0, 1.6)    # ... and so is an island centred within the first many radii of the eye and wholly within the
+                      # second (the back of a loose old eyeball, about 0.8 R behind); brows and lashes are further off
 INSET = 0.0006        # the new eyeball's radius is this much under the old one
 IRIS, PUPIL = 0.36, 0.13  # iris and pupil radii as fractions of the eyeball's
 SCLERA, PUPIL_RGB = (0.80, 0.77, 0.72), (0.004, 0.004, 0.004)
@@ -44,7 +51,8 @@ SCLERA, PUPIL_RGB = (0.80, 0.77, 0.72), (0.004, 0.004, 0.004)
 
 def _args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    a = {"out": None, "blend": None, "preview": None, "iris": "0.12,0.07,0.04", "search": "0.022"}
+    a = {"out": None, "blend": None, "preview": None, "iris": "0.12,0.07,0.04", "search": "0.022", "lid-cuts": "1",
+         "lids": "hinge"}
     i = 0
     while i < len(argv):
         k = argv[i][2:]
@@ -56,6 +64,9 @@ def _args():
         raise SystemExit(__doc__)
     a["iris"] = tuple(float(c) for c in a["iris"].split(","))
     a["search"] = float(a["search"])
+    a["lid-cuts"] = int(a["lid-cuts"])
+    if a["lids"] not in ("hinge", "procedural"):
+        raise SystemExit("eye_swap: --lids is hinge or procedural")
     return a
 
 
@@ -89,7 +100,8 @@ def _tol(theta):
 
 def remove_inside(mesh, c, R):
     """Deletes the faces whose corners all lie within R + tol of c (tol wider at the front, where the old eyeball
-    bulges), then the small islands that leaves near the eye (shards of the old sphere a little outside the fit).
+    bulges), then the islands that leaves near the eye that are small or lie wholly round it (shards of the old sphere
+    a little outside the fit, or the back of a loose one).
     Returns (faces removed, the bulge: median distance outside R of the removed corners in 5-degree bands from
     straight ahead, out to CAP_END)."""
     bm = bmesh.new()
@@ -115,7 +127,8 @@ def remove_inside(mesh, c, R):
                     if h not in seen:
                         seen.add(h)
                         stack.append(h)
-        if len(isl) < SHARD:
+        Q = np.array([v.co[:] for g in isl for v in g.verts]) - c
+        if len(isl) < SHARD or (np.linalg.norm(Q.mean(0)) < LOOSE[0] * R and np.linalg.norm(Q, axis=1).max() < LOOSE[1] * R):
             shards += isl
     bmesh.ops.delete(bm, geom=shards, context="FACES")
     gone += shards
@@ -311,10 +324,19 @@ def eyeball(mesh, side, joint, c, r, iris_rgb, bulge=(), rings=24, segs=36):
         p.material_index = mi
         p.use_smooth = True
     obj.vertex_groups.new(name=joint).add(list(range(len(V))), 1.0, "REPLACE")
-    nb.activate(mesh)
-    obj.select_set(True)
-    bpy.ops.object.join()
-    return len(V)
+    return obj
+
+
+def centre_joint(arm, joint, c):
+    """Moves the eye joint (keeping its direction and length) to the eyeball's centre, so the eye turns in its socket;
+    only the eyeball is weighted to it, so nothing moves at rest."""
+    nb.activate(arm)
+    bpy.ops.object.mode_set(mode="EDIT")
+    eb = arm.data.edit_bones[joint]
+    d = eb.tail - eb.head
+    eb.head = arm.matrix_world.inverted() @ Vector(tuple(float(x) for x in c))
+    eb.tail = eb.head + d
+    bpy.ops.object.mode_set(mode="OBJECT")
 
 
 def preview(arm, mesh, outdir, c):
@@ -385,11 +407,29 @@ def main():
                          "off_joint": round(float(np.linalg.norm(c - guess)), 4), "removed": gone,
                          "bulge_mm": [round(b * 1000, 1) for b in bulge]}
     report["turned"] = outward_normals(mesh)
-    for side, joint, c, R, _bulge in fits:
-        report[joint]["blink_mm"] = round(1000 * blink(mesh, "eyeBlinkLeft" if side == "l" else "eyeBlinkRight", c, R), 1)
+    if a["lid-cuts"] > 0:
+        report["lid_verts_added"] = rc.subdivide_near(mesh, [(c, 1.6 * R) for _s, _j, c, R, _b in fits], a["lid-cuts"],
+                                                      lambda f: f.material_index == 0)
+        if mesh.data.has_custom_normals:  # the imported normals, interpolated onto the cut faces, shade as crumples
+            nb.activate(mesh)
+            bpy.ops.mesh.customdata_custom_splitnormals_clear()
+    balls = {}
     for side, joint, c, R, bulge in fits:
-        report[joint]["added"] = eyeball(mesh, side, joint, c, R - INSET, a["iris"], bulge)
+        centre_joint(arm, joint, c)
+        balls[side] = eyeball(mesh, side, joint, c, R - INSET, a["iris"], bulge)
+        report[joint]["added"] = len(balls[side].data.vertices)
         centres.append(c)
+    if a["lids"] == "procedural":
+        import rig_head
+        report["lids"] = rig_head.procedural_lids(mesh, arm, balls)[0]
+    else:
+        for side, joint, c, R, _bulge in fits:
+            key = "eyeBlinkLeft" if side == "l" else "eyeBlinkRight"
+            report[joint]["blink_mm"] = round(1000 * blink(mesh, key, c, R), 1)
+    nb.activate(mesh)
+    for o in balls.values():
+        o.select_set(True)
+    bpy.ops.object.join()
     for kb in mesh.data.shape_keys.key_blocks if mesh.data.shape_keys else ():
         kb.value = 0.0
     if a["preview"]:

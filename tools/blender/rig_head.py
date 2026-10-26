@@ -330,25 +330,7 @@ def subdivide_lids(skin, eyes, cuts):
     (a scan's lid can be one or two triangle rows from the margin to the crease) has the vertices to follow the
     smooth turn procedural_lids gives it; with too few, a blink folds the long triangles into a zigzag. The new
     vertices lie on the old faces, so the rest shape is unchanged. Returns the number of skin vertices added."""
-    bm = bmesh.new()
-    bm.from_mesh(skin.data)
-    n0 = len(bm.verts)
-    faces = set()
-    for o in eyes:
-        c = Vector(eye_centre(o))
-        reach = 1.6 * sphere_fit(_verts(o))[1]
-        faces.update(f for f in bm.faces if all((v.co - c).length < reach for v in f.verts))
-    edges = list({e for f in faces for e in f.edges})
-    out = bmesh.ops.subdivide_edges(bm, edges=edges, cuts=cuts, use_grid_fill=True)
-    # faces on the rim of the region have only some edges cut: triangulate whatever is no longer a triangle
-    rim = [f for f in bm.faces if len(f.verts) > 3]
-    if rim:
-        bmesh.ops.triangulate(bm, faces=rim)
-    bm.to_mesh(skin.data)
-    skin.data.update()
-    added = len(bm.verts) - n0
-    bm.free()
-    return added, len(out["geom_split"])
+    return rc.subdivide_near(skin, [(eye_centre(o), 1.6 * sphere_fit(_verts(o))[1]) for o in eyes], cuts)
 
 
 def sphere_fit(V):
@@ -509,7 +491,7 @@ def prep(a):
     M, k = place(parts, skin, eye_l, eye_r, mouth_c, ML, s)
     ML = np.array([M @ Vector(p) for p in ML])
     mouth_c = np.array(M @ Vector(mouth_c))
-    lid_added = subdivide_lids(skin, (eye_l, eye_r), a["lid-cuts"])[0] if a["lid-cuts"] > 0 else 0
+    lid_added = subdivide_lids(skin, (eye_l, eye_r), a["lid-cuts"]) if a["lid-cuts"] > 0 else 0
     arm, joints = fit_armature(a["name"], s, skin, eye_l, eye_r, mouth_c[2])
     knots = neck_weights(skin, arm)
     face, cb = face_anchors(skin, eye_l, mouth_c, ML, s)

@@ -2,6 +2,7 @@
 the rig export profile and evaluation helpers. The data lives in rig_spec.py (no bpy)."""
 import math
 
+import bmesh
 import bpy
 from mathutils import Euler, Matrix, Vector
 
@@ -135,6 +136,32 @@ def make_tpose_action(arm, joints=None):
 # --------------------------------------------------------------------------------------------
 # Rig export profile (§11). The default nb.export_gltf profile is left untouched.
 # --------------------------------------------------------------------------------------------
+
+def subdivide_near(obj, spheres, cuts, faces_ok=None):
+    """Cuts every edge of the faces lying wholly within a sphere ((centre, radius) pairs) into cuts + 1, so a coarse
+    lid (a scan's can be one or two triangle rows from the margin to the crease) has the vertices to follow a smooth
+    turn; with too few, a blink folds the long triangles into a zigzag. The new vertices lie on the old faces and take
+    their shape keys and weights by interpolation, so nothing moves. faces_ok(face) narrows the faces cut. Returns
+    the number of vertices added."""
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    n0 = len(bm.verts)
+    faces = set()
+    for c, reach in spheres:
+        c = Vector(c)
+        faces.update(f for f in bm.faces if all((v.co - c).length < reach for v in f.verts)
+                     and (faces_ok is None or faces_ok(f)))
+    bmesh.ops.subdivide_edges(bm, edges=list({e for f in faces for e in f.edges}), cuts=cuts, use_grid_fill=True)
+    # faces on the rim of the region have only some edges cut: triangulate whatever is no longer a triangle
+    rim = [f for f in bm.faces if len(f.verts) > 3]
+    if rim:
+        bmesh.ops.triangulate(bm, faces=rim)
+    bm.to_mesh(obj.data)
+    obj.data.update()
+    added = len(bm.verts) - n0
+    bm.free()
+    return added
+
 
 def export_rig_glb(path, extra=None):
     """Exports the scene with the `rig` profile into one .glb. Delegates to nb.export_rig."""
