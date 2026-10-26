@@ -1,6 +1,8 @@
 // Settings: defaults, JSON text with clamping, and the menu's rules.
 
 #include "ftcore/Settings.h"
+#include "ftcore/StoryRunner.h"
+#include "ftcore/StoryDatabase.h"
 
 #include "AllocCounter.h"
 
@@ -23,6 +25,9 @@ TEST_CASE("settings defaults") {
     CHECK(s.subtitleSize == SubtitleSize::Medium);
     CHECK(s.subtitleScale() == 1.f);
     CHECK_FALSE(s.reduceFlashes);
+    CHECK_FALSE(s.qteAutoComplete);
+    CHECK_FALSE(s.holdToggle);
+    CHECK_FALSE(s.skipChoices);
 
     Settings t;
     t.textSpeed = TextSpeed::Instant;
@@ -50,6 +55,9 @@ TEST_CASE("settings round-trip through JSON") {
     s.defenceAssist = DefenceAssist::Wide;
     s.subtitleSize = SubtitleSize::Large;
     s.reduceFlashes = true;
+    s.qteAutoComplete = true;
+    s.holdToggle = true;
+    s.skipChoices = true;
     const std::string text = encodeSettings(s);
     CHECK(text.find("\"version\":1") != std::string::npos);
 
@@ -79,6 +87,11 @@ TEST_CASE("settings: missing and wrong-typed fields keep their defaults") {
     CHECK(out.autoDelay == Settings{}.autoDelay);
     CHECK(out.master == 1.f);
     CHECK(out.music == 0.5f);
+
+    REQUIRE(decodeSettings(R"({"version":1,"holdToggle":true,"skipChoices":"yes"})", out, &err));
+    CHECK_FALSE(out.qteAutoComplete);
+    CHECK(out.holdToggle);
+    CHECK_FALSE(out.skipChoices);
 }
 
 TEST_CASE("settings: out-of-range values are clamped") {
@@ -253,6 +266,63 @@ TEST_CASE("settings menu: a click selects the row, then steps or cycles it") {
     CHECK(m.click(s, SettingsRow::Back, 1) == SettingsAction::Close);
     CHECK(m.click(s, static_cast<SettingsRow>(99), 1) == SettingsAction::None);
     CHECK(m.selected() == SettingsRow::Back);
+}
+
+TEST_CASE("settings menu: the assist option rows toggle their switches") {
+    Settings s;
+    SettingsMenu m;
+    CHECK(m.click(s, SettingsRow::QteAutoComplete, 1) == SettingsAction::Changed);
+    CHECK(s.qteAutoComplete);
+    CHECK(m.click(s, SettingsRow::HoldToggle, 1) == SettingsAction::Changed);
+    CHECK(s.holdToggle);
+    CHECK(m.click(s, SettingsRow::SkipChoices, 1) == SettingsAction::Changed);
+    CHECK(s.skipChoices);
+    char value[32];
+    settingsRowValue(s, SettingsRow::QteAutoComplete, value, sizeof value);
+    CHECK(std::string(value) == "Auto-complete");
+    settingsRowValue(s, SettingsRow::HoldToggle, value, sizeof value);
+    CHECK(std::string(value) == "Press once");
+    CHECK(m.click(s, SettingsRow::HoldToggle, -1) == SettingsAction::Changed);
+    CHECK_FALSE(s.holdToggle);
+    settingsRowValue(s, SettingsRow::HoldToggle, value, sizeof value);
+    CHECK(std::string(value) == "Hold down");
+}
+
+TEST_CASE("settings: option flags mirror the assist switches") {
+    Settings s;
+    s.holdToggle = true;
+    const auto flags = settingsOptionFlags(s);
+    REQUIRE(flags.size() == 3);
+    CHECK(std::string(flags[0].id) == "F_SYS_OPT_QTE_AUTOCOMPLETE");
+    CHECK_FALSE(flags[0].on);
+    CHECK(std::string(flags[1].id) == "F_SYS_OPT_HOLD_TOGGLE");
+    CHECK(flags[1].on);
+    CHECK(std::string(flags[2].id) == "F_SYS_OPT_SKIP_CHOICES");
+    CHECK_FALSE(flags[2].on);
+}
+
+TEST_CASE("settings: option flags set the story's flags when it declares them, and are ignored when not") {
+    StoryBuilder b;
+    b.beginChapter("01", "One");
+    b.beginScene("SC-X", "X");
+    b.addFlag("F_SYS_OPT_QTE_AUTOCOMPLETE", FlagValue::boolean(false));
+    b.addFlag("F_SYS_OPT_HOLD_TOGGLE", FlagValue::boolean(false));
+    b.line("A", "", "Hello.");
+    b.end();
+    StoryDatabase db;
+    std::string err;
+    REQUIRE_MESSAGE(b.finish(db, &err), err);
+    StoryRunner r(&db);
+
+    Settings s;
+    s.qteAutoComplete = true;
+    s.skipChoices = true;
+    int applied = 0;
+    for (const OptionFlag& f : settingsOptionFlags(s))
+        if (r.setFlag(f.id, FlagValue::boolean(f.on))) ++applied;
+    CHECK(applied == 2); // the story has no F_SYS_OPT_SKIP_CHOICES
+    CHECK(r.flag("F_SYS_OPT_QTE_AUTOCOMPLETE") == FlagValue::boolean(true));
+    CHECK(r.flag("F_SYS_OPT_HOLD_TOGGLE") == FlagValue::boolean(false));
 }
 
 TEST_CASE("settings menu allocates nothing") {

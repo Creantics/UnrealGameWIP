@@ -4,6 +4,7 @@
 #include "EngineUtils.h"
 #include "FTGameInstance.h"
 #include "FTQteHUD.h"
+#include "FTSettingsSubsystem.h"
 #include "FTText.h"
 #include "ForgottenThird.h"
 #include "GameFramework/PlayerController.h"
@@ -75,7 +76,13 @@ void AFTQteGameMode::StartPlay()
 			Def = Table.find(FT::ToUtf8(Carry->Scene), static_cast<uint32>(Carry->Beat), static_cast<uint32>(Carry->Step));
 		}
 	}
-	Screen.begin(bHasStep, Def, bCoop, bHasStep && Carry->bAutoPlay);
+	ftcore::QteAssist Assist;
+	if (const UFTSettingsSubsystem* SettingsSub = GI ? GI->GetSubsystem<UFTSettingsSubsystem>() : nullptr)
+	{
+		Assist.autoComplete = SettingsSub->Get().qteAutoComplete;
+		Assist.holdToggle = SettingsSub->Get().holdToggle;
+	}
+	Screen.begin(bHasStep, Def, bCoop, bHasStep && Carry->bAutoPlay, Assist);
 
 	// Look through the map's camera rather than the pawn.
 	if (APlayerController* PC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr)

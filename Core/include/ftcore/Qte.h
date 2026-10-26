@@ -34,6 +34,11 @@
 //
 // QteScreen wraps a sequence with the screen's clock, input grace, result pause and autoplay.
 //
+// Two player options (ftcore::Settings, passed in as a QteAssist) change the screen: auto-complete
+// lets the autopilot play the sequence at its own pace while the player watches (input is ignored),
+// and hold toggle makes a Hold prompt latch on its press: letting go does nothing and the prompt
+// keeps its tap grade when the hold runs out.
+//
 // Data: Data/Qte/qte.json, ids and numbers only, no story text. Like encounters.json it is keyed by
 // scene id + gameplay beat index + plan step index with a `default` entry for every step not listed:
 //   { "version": 1,
@@ -152,6 +157,12 @@ inline DefenceWindows qteWindows() {
     return w;
 }
 
+// The player's assist options for a quick-time event (from ftcore::Settings).
+struct QteAssist {
+    bool autoComplete = false; // the autopilot plays it, at normal speed
+    bool holdToggle = false;   // a Hold prompt latches on its press
+};
+
 // What the autopilot does next.
 struct QteAction {
     enum class Kind : std::uint8_t { None, Press, Release };
@@ -163,8 +174,12 @@ struct QteAction {
 class QteSequence {
 public:
     // Starts `def` with the clock at 0. coop: prompts alternate between actor slots 0 and 1; else
-    // every prompt is slot 0. An empty sequence is complete at once.
+    // every prompt is slot 0. An empty sequence is complete at once. Hold toggle starts off.
     FTCORE_API void begin(const QteDef& def, bool coop = false, const DefenceWindows& windows = qteWindows());
+    // With hold toggle on, release() never ends a hold early: a Hold prompt resolves at the end of its
+    // hold with the grade of its press.
+    void setHoldToggle(bool on) { holdToggle_ = on; }
+    bool holdToggle() const { return holdToggle_; }
 
     // Moves the clock to `now`: prompts that ran out unanswered are Misses, a held prompt whose time
     // is up resolves. Times (here and in press/release) go in order; an earlier time is read as `now()`.
@@ -227,6 +242,7 @@ private:
     int mashDone_ = 0;
     int strays_ = 0;
     bool coop_ = false;
+    bool holdToggle_ = false;
 };
 
 // The screen around a sequence: a clock, the input grace, the result pause and autoplay.
@@ -241,7 +257,9 @@ private:
 // that expires a prompt can't swallow a press made in it. Input is ignored for kInputGrace seconds
 // (the press that opened the screen) and always under autoplay, where the autopilot plays on a clock
 // compressed to fit kAutoBudget seconds if the sequence is longer, and the whole screen ends by
-// kAutoCap game seconds at the latest (what is still open is graded a Miss).
+// kAutoCap game seconds at the latest (what is still open is graded a Miss). Auto-complete (an assist,
+// not autoplay) also ignores input and lets the autopilot play, but on the normal clock and without
+// the cap: the player sees the whole sequence.
 enum class QtePhase : std::uint8_t {
     NoStep,  // no story step: the screen does nothing
     Playing,
@@ -256,8 +274,9 @@ public:
     static constexpr double kAutoBudget = 8.0;
     static constexpr double kAutoCap = 10.0;
 
-    // hasStep false: a screen opened without a valid story carry (NoStep, inert).
-    FTCORE_API void begin(bool hasStep, const QteDef& def, bool coop, bool autoPlay);
+    // hasStep false: a screen opened without a valid story carry (NoStep, inert). Under autoplay the
+    // assist's auto-complete is moot; its hold toggle still applies.
+    FTCORE_API void begin(bool hasStep, const QteDef& def, bool coop, bool autoPlay, const QteAssist& assist = {});
     FTCORE_API void tick(double gameSeconds);
     // Key events (ignored outside Playing, under autoplay and during the grace).
     FTCORE_API void press(Arrow input);
@@ -268,6 +287,8 @@ public:
     bool showingResult() const { return phase_ == QtePhase::Result; }
     bool finished() const { return phase_ == QtePhase::Done; }
     bool autoPlay() const { return autoPlay_; }
+    // The assist's auto-complete is playing the sequence (never under autoplay).
+    bool autoComplete() const { return autoComplete_; }
     // The sequence's clock (it runs faster than game time when autoplay compresses a long sequence).
     double time() const { return seq_.now(); }
     // Game seconds on the screen.
@@ -291,6 +312,7 @@ private:
     QteResults fresh_;
     QtePhase phase_ = QtePhase::NoStep;
     bool autoPlay_ = false;
+    bool autoComplete_ = false;
     double elapsed_ = 0.0;
     double resultAge_ = 0.0;
     double scale_ = 1.0;

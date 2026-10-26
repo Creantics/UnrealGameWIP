@@ -12,7 +12,7 @@ title when the story ends. It is a state of `AFTGameMode`, not a new map.
 2. **New Game** starts the story at its start scene (`StartScene` on the game mode, empty: the
    story's start). **Continue** loads the slot and resumes at the scene it was saved at.
    **Settings** opens the settings overlay (text speed, auto-advance, skip, volumes, assists,
-   subtitle size, reduce flashes; see DIALOGUE_UI.md) over the title; Esc or its Back row closes it
+   subtitle size, reduce flashes, and the QTE, hold and skip-choice assists; see DIALOGUE_UI.md) over the title; Esc or its Back row closes it
    and writes `Saved/Settings.json`. The same overlay opens from the story with Esc.
 3. **Story.** The game mode switches to `AFTStoryHUD` and spawns the director, as before.
 4. **End.** When the story finishes, the end card shows. After a short delay (`EndCardDelay`, 0.6 s)
@@ -45,7 +45,9 @@ writes it when the overlay closes; a missing, unreadable or newer-version file m
 The file is `ftcore::encodeSettings` JSON (a `version` field, values clamped on read). The director
 applies text speed, auto-advance and skip mode as they change; volumes, the defence-window assist and
 reduce-flashes are stored for the audio, combat and style code to read later (poll
-`GetRevision()`, read `Get()`). Headless runs ignore all of it.
+`GetRevision()`, read `Get()`). The QTE screen reads the QTE and hold assists when it starts, and
+every change of a setting re-mirrors the three assist options onto the story's `F_SYS_OPT_*` flags
+(`UFTStorySubsystem::ApplyOptionFlags`). Headless runs ignore all of it.
 
 ## Saving
 

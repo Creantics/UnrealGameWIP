@@ -64,6 +64,15 @@ value step it, Enter / Space / click cycle it. Changes apply at once and are wri
 | Defence window assist | off / wide | stored; the combat stream reads it |
 | Subtitle size | small 0.85x, medium, large 1.3x | the dialogue box's text size |
 | Reduce flashes | on / off | stored; the style controller reads it |
+| Quick-time events | play / auto-complete | the QTE screen (see QTE_SCREEN.md) |
+| Hold inputs | hold down / press once | the QTE screen's hold prompts |
+| Skip choices | off / on | stored; mirrored to the script's flag, nothing acts on it yet |
+
+The last three are the script's assist options. Each is mirrored onto the matching `F_SYS_OPT_*`
+flag (`ftcore::settingsOptionFlags`) when the story starts, after a save loads (the settings win
+over the saved value) and whenever the setting changes, so the script can branch on them. A script
+that doesn't declare one of the flags is left alone. Because the mirror runs once the story has
+started, a check in the opening beats before the story's first stop sees the flag's default.
 
 The rules (`ftcore::SettingsMenu`, `ftcore::Settings`, JSON with a `version` field, defaults and
 clamping) are in `Core/include/ftcore/Settings.h` with tests in `test_settings.cpp`. The settings

@@ -1,11 +1,13 @@
 #include "FTSettingsSubsystem.h"
 
+#include "Engine/GameInstance.h"
 #include "InputCoreTypes.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 
 #include "ForgottenThird.h"
 #include "FTPlayerController.h"
+#include "FTStorySubsystem.h"
 #include "FTText.h"
 
 #include <string>
@@ -132,6 +134,10 @@ void UFTSettingsSubsystem::Apply(ftcore::SettingsAction Action)
 	{
 	case ftcore::SettingsAction::Changed:
 		MarkChanged();
+		if (UFTStorySubsystem* Story = GetGameInstance()->GetSubsystem<UFTStorySubsystem>())
+		{
+			Story->ApplyOptionFlags(Values);
+		}
 		break;
 	case ftcore::SettingsAction::Close:
 		Close();

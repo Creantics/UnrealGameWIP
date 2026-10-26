@@ -1,7 +1,9 @@
 #include "FTStorySubsystem.h"
 
+#include "FTSettingsSubsystem.h"
 #include "FTStorySaveGame.h"
 #include "FTText.h"
+#include "Engine/GameInstance.h"
 #include "HAL/FileManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/CommandLine.h"
@@ -157,6 +159,10 @@ bool UFTStorySubsystem::StartStory(const FString& SceneId)
 	bPaused = false;
 	Party = ftcore::PartyProgress();
 	const bool bOk = Runner->start(FT::ToUtf8(SceneId));
+	if (const UFTSettingsSubsystem* SettingsSub = GetGameInstance()->GetSubsystem<UFTSettingsSubsystem>())
+	{
+		ApplyOptionFlags(SettingsSub->Get());
+	}
 	Flush();
 	return bOk;
 }
@@ -250,6 +256,18 @@ bool UFTStorySubsystem::SetFlag(const FString& Id, const FString& Value)
 	return bLoaded && Database->parseFlagValue(FT::ToUtf8(Value), V) && Runner->setFlag(FT::ToUtf8(Id), V);
 }
 
+void UFTStorySubsystem::ApplyOptionFlags(const ftcore::Settings& Settings)
+{
+	if (!bLoaded)
+	{
+		return;
+	}
+	for (const ftcore::OptionFlag& F : ftcore::settingsOptionFlags(Settings))
+	{
+		Runner->setFlag(F.id, ftcore::FlagValue::boolean(F.on)); // false: the script doesn't have it
+	}
+}
+
 bool UFTStorySubsystem::CaptureSave(FFTStorySave& OutSave) const
 {
 	OutSave = FFTStorySave();
@@ -299,6 +317,10 @@ bool UFTStorySubsystem::ApplySave(const FFTStorySave& InSave, TArray<FString>& O
 	Backlog.clear(); // a load: the backlog starts over
 	bPaused = false;
 	const bool bOk = ftcore::applyStory(Save, *Runner, &Report);
+	if (const UFTSettingsSubsystem* SettingsSub = GetGameInstance()->GetSubsystem<UFTSettingsSubsystem>())
+	{
+		ApplyOptionFlags(SettingsSub->Get()); // the settings win over the values in the save
+	}
 	TGuardValue<bool> NoAutosave(bApplyingSave, true); // the flush below reports the loaded scene
 	for (const std::string& Id : Report.skippedFlags)
 	{

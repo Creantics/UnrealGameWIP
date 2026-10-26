@@ -37,6 +37,13 @@ There is no fail state. A prompt that runs out unanswered is a Miss and the sequ
 
 In a co-op step the prompts alternate between actor slots 0 and 1. The screen tints them by slot and tags them 1 and 2.
 
+## Assist options
+
+Two settings (see DIALOGUE_UI.md) change the screen, read once when it starts (`ftcore::QteAssist`):
+
+- **Quick-time events: auto-complete.** The autopilot plays every prompt perfectly, on the normal clock (no compression, no 10 s cap), and the player's input is ignored. It is off under autoplay, where the autopilot already plays, and when there is no step.
+- **Hold inputs: press once.** A hold prompt latches on its press: letting go early is not a Miss, and it keeps its tap grade once its time is up. Taps and mashes are unchanged.
+
 ## Keys
 
 The battle screen's mapping: left, down, up and right are the arrow keys, WASD, the pad d-pad, or the pad's X, A, Y and B. Keys are polled each frame (so a hold sees its key go up), and presses are stamped with the clock as it stood at the start of the frame. Input is ignored for the first 0.25 s, so the press that opened the screen can't count.

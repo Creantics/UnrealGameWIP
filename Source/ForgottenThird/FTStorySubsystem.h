@@ -13,6 +13,7 @@
 
 #include "ftcore/Backlog.h"
 #include "ftcore/Seen.h"
+#include "ftcore/Settings.h"
 #include "ftcore/StoryDatabase.h"
 #include "ftcore/StoryRunner.h"
 #include "ftcore/StorySave.h"
@@ -169,6 +170,10 @@ public:
 	// Value as GetFlag writes it. False when the flag or the value is unknown.
 	UFUNCTION(BlueprintCallable, Category = "Story")
 	bool SetFlag(const FString& Id, const FString& Value);
+	// Mirrors the settings' assist options onto the script's F_SYS_OPT_* flags
+	// (ftcore::settingsOptionFlags). Flags the script doesn't declare are skipped. Called after
+	// StartStory and ApplySave, and by the settings subsystem when a setting changes.
+	void ApplyOptionFlags(const ftcore::Settings& Settings);
 
 	// ---- saves ----
 

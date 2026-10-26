@@ -68,6 +68,7 @@ void QteSequence::begin(const QteDef& def, bool coop, const DefenceWindows& wind
     now_ = 0.0;
     next_ = 0;
     strays_ = 0;
+    holdToggle_ = false;
     arm();
 }
 
@@ -176,7 +177,7 @@ QteResults QteSequence::press(Arrow input, double t) {
 QteResults QteSequence::release(Arrow input, double t) {
     QteResults out;
     advance(t, out);
-    if (phase_ == Phase::Holding && next_ < def_.size()) {
+    if (phase_ == Phase::Holding && !holdToggle_ && next_ < def_.size()) {
         const QtePrompt& p = def_[next_];
         if (input == p.input && now_ < p.at + p.hold - kQteHoldSlack) resolve(QteGrade::Miss, now_, out);
     }
@@ -253,12 +254,14 @@ QteOutcome QteSequence::outcome() const {
 
 // ---- QteScreen ----
 
-void QteScreen::begin(bool hasStep, const QteDef& def, bool coop, bool autoPlay) {
+void QteScreen::begin(bool hasStep, const QteDef& def, bool coop, bool autoPlay, const QteAssist& assist) {
     seq_.begin(def, coop);
+    seq_.setHoldToggle(assist.holdToggle);
     fresh_.count = 0;
     elapsed_ = 0.0;
     resultAge_ = 0.0;
     autoPlay_ = hasStep && autoPlay;
+    autoComplete_ = hasStep && !autoPlay_ && assist.autoComplete;
     scale_ = 1.0;
     if (autoPlay_ && def.length() > kAutoBudget) scale_ = def.length() / kAutoBudget;
     phase_ = !hasStep ? QtePhase::NoStep : (seq_.complete() ? QtePhase::Result : QtePhase::Playing);
@@ -279,7 +282,7 @@ void QteScreen::tick(double gameSeconds) {
         return;
     }
     const double t = elapsed_ * scale_;
-    if (autoPlay_) {
+    if (autoPlay_ || autoComplete_) {
         constexpr int kMaxActions = static_cast<int>(kMaxQtePrompts) * (kQteMaxMash + 1);
         for (int guard = 0; guard < kMaxActions; ++guard) { // bounded: every action moves the sequence on
             const QteAction a = seq_.autopilot(t);
@@ -296,12 +299,12 @@ void QteScreen::tick(double gameSeconds) {
 }
 
 void QteScreen::press(Arrow input) {
-    if (phase_ != QtePhase::Playing || autoPlay_ || elapsed_ < kInputGrace) return;
+    if (phase_ != QtePhase::Playing || autoPlay_ || autoComplete_ || elapsed_ < kInputGrace) return;
     collect(seq_.press(input, elapsed_));
 }
 
 void QteScreen::release(Arrow input) {
-    if (phase_ != QtePhase::Playing || autoPlay_ || elapsed_ < kInputGrace) return;
+    if (phase_ != QtePhase::Playing || autoPlay_ || autoComplete_ || elapsed_ < kInputGrace) return;
     collect(seq_.release(input, elapsed_));
 }
 

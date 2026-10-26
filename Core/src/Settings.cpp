@@ -74,16 +74,18 @@ void clampSettings(Settings& s) {
 std::string encodeSettings(const Settings& in) {
     Settings s = in;
     clampSettings(s);
-    char buf[512];
+    char buf[640];
     std::snprintf(buf, sizeof buf,
                   "{\"version\":%d,\"textSpeed\":%d,\"autoAdvance\":%s,\"autoDelay\":%.3f,\"skipMode\":%d,"
                   "\"master\":%.3f,\"music\":%.3f,\"voice\":%.3f,\"sfx\":%.3f,\"defenceAssist\":%d,"
-                  "\"subtitleSize\":%d,\"reduceFlashes\":%s}",
+                  "\"subtitleSize\":%d,\"reduceFlashes\":%s,\"qteAutoComplete\":%s,\"holdToggle\":%s,"
+                  "\"skipChoices\":%s}",
                   Settings::kVersion, static_cast<int>(s.textSpeed), s.autoAdvance ? "true" : "false",
                   static_cast<double>(s.autoDelay), static_cast<int>(s.skipMode), static_cast<double>(s.master),
                   static_cast<double>(s.music), static_cast<double>(s.voice), static_cast<double>(s.sfx),
                   static_cast<int>(s.defenceAssist), static_cast<int>(s.subtitleSize),
-                  s.reduceFlashes ? "true" : "false");
+                  s.reduceFlashes ? "true" : "false", s.qteAutoComplete ? "true" : "false",
+                  s.holdToggle ? "true" : "false", s.skipChoices ? "true" : "false");
     return buf;
 }
 
@@ -130,6 +132,9 @@ bool decodeSettings(std::string_view text, Settings& out, std::string* error) {
     s.subtitleSize =
         clampEnum(intField("subtitleSize", static_cast<std::int64_t>(s.subtitleSize)), SubtitleSize::Large, s.subtitleSize);
     s.reduceFlashes = boolField("reduceFlashes", s.reduceFlashes);
+    s.qteAutoComplete = boolField("qteAutoComplete", s.qteAutoComplete);
+    s.holdToggle = boolField("holdToggle", s.holdToggle);
+    s.skipChoices = boolField("skipChoices", s.skipChoices);
     clampSettings(s);
     out = s;
     return true;
@@ -148,6 +153,9 @@ const char* settingsRowLabel(SettingsRow row) {
     case SettingsRow::DefenceAssist: return "Defence window assist";
     case SettingsRow::SubtitleSize: return "Subtitle size";
     case SettingsRow::ReduceFlashes: return "Reduce flashes";
+    case SettingsRow::QteAutoComplete: return "Quick-time events";
+    case SettingsRow::HoldToggle: return "Hold inputs";
+    case SettingsRow::SkipChoices: return "Skip choices";
     case SettingsRow::Back: return "Back";
     }
     return "";
@@ -170,6 +178,9 @@ std::size_t settingsRowValue(const Settings& s, SettingsRow row, char* buf, std:
         word = s.subtitleSize == SubtitleSize::Small ? "Small" : s.subtitleSize == SubtitleSize::Medium ? "Medium" : "Large";
         break;
     case SettingsRow::ReduceFlashes: word = s.reduceFlashes ? "On" : "Off"; break;
+    case SettingsRow::QteAutoComplete: word = s.qteAutoComplete ? "Auto-complete" : "Play"; break;
+    case SettingsRow::HoldToggle: word = s.holdToggle ? "Press once" : "Hold down"; break;
+    case SettingsRow::SkipChoices: word = s.skipChoices ? "On" : "Off"; break;
     case SettingsRow::Back: word = ""; break;
     default: break;
     }
@@ -206,9 +217,18 @@ bool adjustSetting(Settings& s, SettingsRow row, int dir, bool wrap) {
     case SettingsRow::DefenceAssist: return stepEnum(s.defenceAssist, dir, DefenceAssist::Wide, wrap);
     case SettingsRow::SubtitleSize: return stepEnum(s.subtitleSize, dir, SubtitleSize::Large, wrap);
     case SettingsRow::ReduceFlashes: return setBool(s.reduceFlashes, dir, wrap);
+    case SettingsRow::QteAutoComplete: return setBool(s.qteAutoComplete, dir, wrap);
+    case SettingsRow::HoldToggle: return setBool(s.holdToggle, dir, wrap);
+    case SettingsRow::SkipChoices: return setBool(s.skipChoices, dir, wrap);
     case SettingsRow::Back: break;
     }
     return false;
+}
+
+std::array<OptionFlag, kOptionFlagCount> settingsOptionFlags(const Settings& s) {
+    return {{{"F_SYS_OPT_QTE_AUTOCOMPLETE", s.qteAutoComplete},
+             {"F_SYS_OPT_HOLD_TOGGLE", s.holdToggle},
+             {"F_SYS_OPT_SKIP_CHOICES", s.skipChoices}}};
 }
 
 SettingsAction SettingsMenu::press(Settings& s, SettingsKey key) {

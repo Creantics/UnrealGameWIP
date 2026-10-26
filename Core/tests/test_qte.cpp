@@ -245,6 +245,59 @@ TEST_CASE("qte: the ring closes from 1 to 0 over the tell, and only while the pr
     CHECK(qteTell(tap(Arrow::Left, 3.0)) == doctest::Approx(kQteTell));
 }
 
+TEST_CASE("qte: under hold toggle a hold latches on its press, and begin turns the toggle off") {
+    const QteDef def = defOf({hold(Arrow::Down, 1.0, 1.0)});
+    QteSequence q;
+    q.begin(def);
+    q.setHoldToggle(true);
+    CHECK(q.holdToggle());
+    q.press(Arrow::Down, 0.97);
+    CHECK(q.release(Arrow::Down, 1.1).empty()); // let go at once: still held
+    CHECK(q.holding());
+    const QteResults r = q.update(2.0);
+    REQUIRE(r.size() == 1);
+    CHECK(r[0].grade == QteGrade::Perfect);
+
+    q.begin(def);
+    CHECK_FALSE(q.holdToggle());
+    q.press(Arrow::Down, 0.97);
+    const QteResults early = q.release(Arrow::Down, 1.1);
+    REQUIRE(early.size() == 1);
+    CHECK(early[0].grade == QteGrade::Miss);
+}
+
+TEST_CASE("qte: the screen's assist turns on hold toggle and auto-complete") {
+    const QteDef def = defOf({tap(Arrow::Left, 1.0), hold(Arrow::Down, 2.0, 1.0)});
+    QteScreen s;
+    s.begin(true, def, false, false, QteAssist{false, true});
+    CHECK(s.sequence().holdToggle());
+    CHECK_FALSE(s.autoComplete());
+
+    s.begin(true, def, false, false);
+    CHECK_FALSE(s.sequence().holdToggle());
+
+    // Auto-complete plays itself perfectly on the normal clock and ignores the player.
+    s.begin(true, def, false, false, QteAssist{true, false});
+    CHECK(s.autoComplete());
+    CHECK(s.clockScale() == 1.0);
+    double game = 0.0;
+    while (!s.finished() && game < 30.0) {
+        s.press(Arrow::Up); // a stray press would count against the player
+        s.tick(1.0 / 60.0);
+        game += 1.0 / 60.0;
+    }
+    REQUIRE(s.finished());
+    CHECK(s.sequence().strays() == 0);
+    CHECK(s.sequence().outcome() == QteOutcome::Perfect);
+    CHECK(game >= def.length()); // not compressed
+
+    // Under autoplay the autopilot already drives it, so auto-complete stays off; no step, off too.
+    s.begin(true, def, false, true, QteAssist{true, false});
+    CHECK_FALSE(s.autoComplete());
+    s.begin(false, def, false, false, QteAssist{true, false});
+    CHECK_FALSE(s.autoComplete());
+}
+
 TEST_CASE("qte: the autopilot plays the default sequence perfectly at any frame rate") {
     for (const double dt : {1.0 / 60.0, 1.0 / 30.0, 0.13, 0.5}) {
         QteScreen s;

@@ -6,6 +6,12 @@
 // read them later: the volumes (no audio yet), the defence-window assist (combat) and reduce-flashes
 // (the style controller). No story text anywhere in here.
 //
+// Three accessibility options are also story flags, so the script can read them: settingsOptionFlags()
+// lists each with its flag id and value, and the story owner copies them into the story's flags (a
+// script that doesn't declare one just doesn't get it). QTE auto-complete plays quick-time events by
+// themselves, hold toggle turns every hold input into a single press, and skip choices is only
+// mirrored to its flag for now.
+//
 //   ftcore::Settings s;                        // defaults
 //   ftcore::decodeSettings(text, s);           // missing fields keep their defaults, values are clamped
 //   std::string text = ftcore::encodeSettings(s);
@@ -19,6 +25,7 @@
 #include "ftcore/Api.h"
 #include "ftcore/Skip.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -43,6 +50,9 @@ struct Settings {
     DefenceAssist defenceAssist = DefenceAssist::Off;
     SubtitleSize subtitleSize = SubtitleSize::Medium;
     bool reduceFlashes = false;
+    bool qteAutoComplete = false; // quick-time events play themselves
+    bool holdToggle = false;      // a hold input is one press instead of keeping it down
+    bool skipChoices = false;     // mirrored to its story flag only, for now
 
     // Characters per second the dialogue types out at (0: whole text at once).
     float textCharsPerSecond() const {
@@ -72,7 +82,8 @@ FTCORE_API void clampSettings(Settings& s);
 
 // ---- JSON text ----
 // {"version":1,"textSpeed":1,"autoAdvance":false,"autoDelay":1.5,"skipMode":1,"master":1.0,
-//  "music":0.8,"voice":1.0,"sfx":1.0,"defenceAssist":0,"subtitleSize":1,"reduceFlashes":false}
+//  "music":0.8,"voice":1.0,"sfx":1.0,"defenceAssist":0,"subtitleSize":1,"reduceFlashes":false,
+//  "qteAutoComplete":false,"holdToggle":false,"skipChoices":false}
 // Enums are written as their number (the order above: textSpeed slow..instant, skipMode all/seen,
 // defenceAssist off/wide, subtitleSize small..large).
 FTCORE_API std::string encodeSettings(const Settings& s);
@@ -95,9 +106,12 @@ enum class SettingsRow : std::uint8_t {
     DefenceAssist,
     SubtitleSize,
     ReduceFlashes,
+    QteAutoComplete,
+    HoldToggle,
+    SkipChoices,
     Back,
 };
-inline constexpr std::uint32_t kSettingsRowCount = 12;
+inline constexpr std::uint32_t kSettingsRowCount = 15;
 
 enum class SettingsKey : std::uint8_t { Up, Down, Left, Right, Confirm };
 
@@ -117,6 +131,18 @@ FTCORE_API std::size_t settingsRowValue(const Settings& s, SettingsRow row, char
 // stops at its ends, and without wrap so does every row (a toggle just sets itself). True when the
 // value changed.
 FTCORE_API bool adjustSetting(Settings& s, SettingsRow row, int dir, bool wrap);
+
+// ---- options the story can read ----
+
+struct OptionFlag {
+    const char* id; // the story flag (a literal)
+    bool on;
+};
+inline constexpr std::size_t kOptionFlagCount = 3;
+// QTE auto-complete, hold toggle and skip choices, as F_SYS_OPT_* flag ids with their values. The
+// flags are booleans; a script that declares one gets it set from here at the start of the story,
+// after a load and whenever the setting changes.
+FTCORE_API std::array<OptionFlag, kOptionFlagCount> settingsOptionFlags(const Settings& s);
 
 class SettingsMenu {
 public:
