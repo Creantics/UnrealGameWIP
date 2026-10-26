@@ -47,7 +47,9 @@ applies text speed, auto-advance and skip mode as they change; volumes, the defe
 reduce-flashes are stored for the audio, combat and style code to read later (poll
 `GetRevision()`, read `Get()`). The QTE screen reads the QTE and hold assists when it starts, and
 every change of a setting re-mirrors the three assist options onto the story's `F_SYS_OPT_*` flags
-(`UFTStorySubsystem::ApplyOptionFlags`). Headless runs ignore all of it.
+(`UFTStorySubsystem::ApplyOptionFlags`). Headless runs keep their own text speed and skip, but the
+file is still loaded, so the option flags are mirrored from it (QTE auto-complete stays off under
+autoplay either way).
 
 ## Saving
 
