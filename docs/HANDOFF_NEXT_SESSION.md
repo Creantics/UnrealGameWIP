@@ -303,6 +303,7 @@ The duplicate style port (`worktree-agent-ac78bf565fd6d3d57`) is retired. Main g
 - In `Leads.umap` the jaw and tongue stay at rest, because single-node animation doesn't run the face anim instance.
 - Next is a sculpt pass in Blender (`tools/blender`, headless `ft_sculpt`/`ft_preview`), then re-export with LINEAR keys and re-import.
 - See the "Known limits" section of `docs/LEADS.md`.
+- 2026-10-26 evening: the Third's Marvelous Designer robe pass is parked at pass r28f (bodice/skirt split with inner ties; the sleeve fit and the front corner are still open). The user wants the MetaHuman test from the new realistic reference sheets done first, so the clothing is fitted once on the final body. MetaHuman route: a multi-view mesh made from the sheet, then the existing Mesh-to-MetaHuman bridge. UE 5.8 has no image-only route (footage identity needs depth). Details and the test gate are in the private handoff.
 - Lead fit status (2026-10-22): Devin's dressed silhouette is at 0.9656 front / 0.9583 side against the 0.99 gate; details are in the private handoff. `tools/blender/garment_shells.py` (on main, e8b92aa) now stitches a neck skirt into the body's neck hole, trims level, fills small holes, and supports an outer collar (`over`, `radial`). Next steps: rebuild the boots spec, then the face under the chin.
 
 ## Fight demo: gaps
