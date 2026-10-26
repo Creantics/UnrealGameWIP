@@ -6,6 +6,8 @@
 //   UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildExploreWorld [-Map=Explore] [-Style=solhaven]
 //       -NullRHI -unattended -nopause -nosplash
 //
+// With -World=<id> it builds that big world's map instead (FTWorldMapBuilder.h).
+//
 // A walled square of village blockout: houses, trees, a fountain, a raised terrace with a ramp,
 // and an inner wall with one gap that the old gate closes, with a courtyard beyond it. The spots
 // of ftcore::demo::kExploreSpots are placed as AFTExploreSpot actors and handed to one

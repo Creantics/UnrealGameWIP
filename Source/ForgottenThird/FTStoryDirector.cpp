@@ -5,6 +5,7 @@
 #include "TimerManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "UObject/UObjectIterator.h"
 #include "Misc/Parse.h"
@@ -697,7 +698,30 @@ void AFTStoryDirector::OpenStep()
 	Carry.StepLabel = FT::ToFString(Step.label());
 	Carry.StepToken = FT::ToFString(Step.tokenName());
 	Carry.bAutoPlay = bAutoPlay;
-	UGameplayStatics::OpenLevel(this, FName(*MapFor(Routed)));
+	FString Map = MapFor(Routed);
+	if (Routed == ftcore::GameplayScreen::Field)
+	{
+		// A scene placed in one of the big worlds plays its field steps in its district there.
+		const ftcore::WorldTable& Worlds = GI->GetWorlds();
+		if (const ftcore::WorldScene* Placed = Worlds.findScene(Runner.position().scene))
+		{
+			const ftcore::WorldSpec& World = Worlds.worlds[Placed->world];
+			const FString WorldMap = FT::ToFString(World.map);
+			if (FPackageName::DoesPackageExist(FString::Printf(TEXT("/Game/Maps/%s"), *WorldMap)))
+			{
+				Map = WorldMap;
+				Carry.World = FT::ToFString(World.id);
+				Carry.District = static_cast<int32>(Placed->district);
+				Carry.Style = FT::ToFString(Placed->style.empty() ? World.style : Placed->style);
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("Story: %s isn't built (FTBuildExploreWorld -World=%s); the field step uses %s."),
+					*WorldMap, *FT::ToFString(World.id), *Map);
+			}
+		}
+	}
+	UGameplayStatics::OpenLevel(this, FName(*Map));
 }
 
 const FString& AFTStoryDirector::MapFor(ftcore::GameplayScreen Routed) const

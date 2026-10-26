@@ -10,6 +10,13 @@
 // bAutoPlay (or -ExploreAutoPlay) walks the player to each objective in turn with Core's pilot
 // target and uses it; the battle demo also autoplays under that flag. With -ExploreQuitOnComplete
 // the game exits once every objective is done (a headless end-to-end run).
+//
+// On a big world's map (WorldId set by FTBuildExploreWorld -World=) the director lays the world out
+// again from Data/Field/worlds.json (ftcore::WorldLayout) and has no demo spots or guards. A story
+// field step puts the player at the spawn of the scene's district and its goal (goals.json, in the
+// district's frame) in that district's plaza, with the scene's style. -WorldAutoPlay walks the roads
+// from district to district until it has reached them all (logging each), then exits with
+// -ExploreQuitOnComplete.
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
@@ -17,6 +24,7 @@
 #include "ftcore/Explore.h"
 #include "ftcore/Guard.h"
 #include "ftcore/PartyTrail.h"
+#include "ftcore/WorldLayout.h"
 
 #include "FTExploreDirector.generated.h"
 
@@ -44,6 +52,9 @@ public:
 	// Indexed by SpotId; filled by the map builder (and found by SpotId if empty).
 	UPROPERTY(EditAnywhere, Category = "Explore")
 	TArray<TObjectPtr<AFTExploreSpot>> Spots;
+	// The big world this map is (an id in Data/Field/worlds.json); empty on the Explore map.
+	UPROPERTY(EditAnywhere, Category = "Explore")
+	FString WorldId;
 
 	virtual void Tick(float DeltaSeconds) override;
 
@@ -66,6 +77,9 @@ public:
 	bool IsStoryWalk() const { return bStoryWalk; }
 	// "Reach the marker  ENG  <step label>": notation only. Empty outside a story field step.
 	const FString& GetFieldObjective() const { return FieldObjective; }
+	// On a big world's map: its layout is in play. GetWorldLine is "solhaven  district 3 of 16".
+	bool IsWorldMode() const { return Layout.IsValid(); }
+	const FString& GetWorldLine() const { return WorldLine; }
 
 protected:
 	virtual void BeginPlay() override;
@@ -82,8 +96,10 @@ private:
 	void OpenBattle();
 	void TickAutoPlay(AFTExploreCharacter& Player, float DeltaSeconds);
 	void TickStoryWalk(AFTExploreCharacter& Player, float DeltaSeconds);
-	// Walks the pawn toward Goal (metres) and runs the stuck detection for TargetId.
-	void PilotWalk(AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 TargetId, float DeltaSeconds);
+	// Walks the pawn toward Goal (metres) and runs the stuck detection for TargetId; straight at it
+	// without the navmesh when !bUseNav.
+	void PilotWalk(AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 TargetId, float DeltaSeconds,
+		bool bUseNav = true);
 	// The navmesh point to steer at on the way to Goal, or null to walk straight at it.
 	const ftcore::Vec2* PilotWaypoint(const AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 TargetId);
 	void SpawnFieldGoal();
@@ -91,6 +107,9 @@ private:
 	void SetBanner(const FString& Text);
 	void CheckComplete();
 	void BeginStoryWalk();
+	void BeginWorld();
+	void TickWorld(AFTExploreCharacter& Player, float DeltaSeconds);
+	void UpdateWorldLine(ftcore::Vec2 Pos);
 	void ReturnToStory();
 	void OpenStoryMap();
 	double Now() const;
@@ -134,6 +153,23 @@ private:
 	bool bFieldReached = false;
 	float FieldElapsed = 0.f;
 	FString FieldObjective;
+
+	// The big world (null on the Explore map), the district of the story step, the spawn the player is
+	// moved to on the first tick, and the -WorldAutoPlay tour (district indices over the roads).
+	TUniquePtr<ftcore::WorldLayout> Layout;
+	int32 WorldDistrict = -1;
+	bool bWorldSpawnPending = false;
+	FVector WorldSpawn = FVector::ZeroVector;
+	FRotator WorldSpawnRotation = FRotator::ZeroRotator;
+	bool bWorldTour = false;
+	bool bWorldTourDone = false;
+	uint8 Tour[2 * ftcore::WorldLayout::kMaxDistricts] = {};
+	int32 TourCount = 0;
+	int32 TourLeg = 0;
+	double TourStart = 0.0;
+	double TourGameStart = 0.0;
+	int32 WorldLineDistrict = -2;
+	FString WorldLine;
 
 	FString Notice;
 	double NoticeTime = -100.0;

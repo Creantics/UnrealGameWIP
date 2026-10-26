@@ -1,7 +1,8 @@
 #pragma once
 
 // Loads the story (UFTStorySubsystem::LoadStory) from StoryDir when the game instance starts. A
-// missing or broken story is logged and the game runs on without one.
+// missing or broken story is logged and the game runs on without one. Also loads the big worlds'
+// table (Data/Field/worlds.json), which says which world map and district a scene's field steps use.
 
 #include "CoreMinimal.h"
 #include "Engine/GameInstance.h"
@@ -10,6 +11,7 @@
 #include "ftcore/Explore.h"
 #include "ftcore/Guard.h"
 #include "ftcore/StoryChain.h"
+#include "ftcore/WorldLayout.h"
 
 #include "FTGameInstance.generated.h"
 
@@ -50,6 +52,11 @@ struct FFTStoryCarry
 	FString StepLabel; // the step's qualifiers ("duel", "loop, intercut"); empty when none
 	// The step's token as notation ("CMB", "CHC"); the stub screen shows it.
 	FString StepToken;
+	// A field step in one of the big worlds (Data/Field/worlds.json): the world's id, the district
+	// whose plaza holds the goal, and the style for the scene. Empty World: the Explore map.
+	FString World;
+	int32 District = -1;
+	FString Style;
 	bool bAutoPlay = false; // the screen plays itself (a headless hand-off run)
 	bool bDone = false;
 	bool bWon = false;
@@ -74,6 +81,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Story")
 	bool ReloadStory();
 
+	// Data/Field/worlds.json, loaded at Init (empty when missing or refused, so every field step
+	// plays on the Explore map).
+	const ftcore::WorldTable& GetWorlds() const { return Worlds; }
+
 	FFTExploreCarry ExploreCarry;
 	FFTStoryCarry StoryCarry;
 
@@ -87,5 +98,8 @@ public:
 	int32 FailedBeat = -1;
 
 private:
+	void LoadWorlds();
+
 	bool bAlphaFast = false;
+	ftcore::WorldTable Worlds;
 };

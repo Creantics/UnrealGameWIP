@@ -11,7 +11,8 @@
 //
 // Gameplay hand-off: continuing past a gameplay beat lowers it with ftcore::GameplayPlan and plays its
 // steps in order. Each step fills UFTGameInstance::StoryCarry and opens the step's map: BattleMap for
-// a battle (CMB), FieldMap for the field (ENG, PLAY), ChoiceMap (CHC, HE), QteMap, CutsceneMap (CG),
+// a battle (CMB), FieldMap for the field (ENG, PLAY; a scene placed in one of the big worlds by
+// Data/Field/worlds.json opens that world's map instead, when it has been built), ChoiceMap (CHC, HE), QteMap, CutsceneMap (CG),
 // BanterMap (BNT), MiniMap (MINI) and StubMap for the stub screen (unknown tokens). A
 // screen sets carry.bDone and opens carry.ReturnMap; the director spawned there opens the next step,
 // or resumes the story after the last one. A screen that comes back not done is logged and the beat

@@ -26,6 +26,7 @@ private:
 	void DrawObjectives(const AFTExploreDirector& D);
 	void DrawPrompt(const AFTExploreDirector& D);
 	void DrawFieldObjective(const AFTExploreDirector& D);
+	void DrawWorld(const AFTExploreDirector& D);
 	void DrawMessages(const AFTExploreDirector& D);
 
 	void DrawStr(const FString& S, const FLinearColor& Color, float X, float Y, UFont* Font, float Scale = 1.f);

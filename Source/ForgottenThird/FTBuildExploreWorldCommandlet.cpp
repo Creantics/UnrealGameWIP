@@ -23,6 +23,7 @@
 #include "FTExploreSpot.h"
 #include "FTStyleController.h"
 #include "FTStyleParameters.h"
+#include "FTWorldMapBuilder.h"
 #include "GameFramework/PlayerStart.h"
 #include "GameFramework/WorldSettings.h"
 #include "HAL/FileManager.h"
@@ -91,6 +92,12 @@ UFTBuildExploreWorldCommandlet::UFTBuildExploreWorldCommandlet()
 int32 UFTBuildExploreWorldCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
+	// -World=<id>: one of the big worlds of Data/Field/worlds.json instead of the demo map.
+	FString WorldId;
+	if (FParse::Value(*Params, TEXT("World="), WorldId) && !WorldId.IsEmpty())
+	{
+		return FTBuildWorldMap(WorldId, Params);
+	}
 	FString MapName = TEXT("Explore");
 	FParse::Value(*Params, TEXT("Map="), MapName);
 	if (MapName.IsEmpty() || !FName::IsValidXName(MapName, INVALID_LONGPACKAGE_CHARACTERS))

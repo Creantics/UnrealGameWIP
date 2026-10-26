@@ -24,6 +24,7 @@ const FString kTickField(TEXT("v"));
 const FString kArrowField(TEXT(">"));
 const FTUiText kHintField(TEXT("explore.hint"));
 const FTUiText kCompleteField(TEXT("explore.complete"));
+const FTUiText kWorldField(TEXT("explore.world"));
 
 float FieldFade(double Age, double Hold, double Out)
 {
@@ -74,6 +75,10 @@ void AFTExploreHUD::DrawHUD()
 	if (Found->IsStoryWalk())
 	{
 		DrawFieldObjective(*Found);
+	}
+	else if (Found->IsWorldMode())
+	{
+		DrawWorld(*Found);
 	}
 	else
 	{
@@ -132,6 +137,16 @@ void AFTExploreHUD::DrawFieldObjective(const AFTExploreDirector& D)
 	DrawStr(kTitleField, kGoldField, X, Y, GEngine->GetSmallFont(), 1.1f);
 	DrawStr(kArrowField, kWhiteField, X, Y + 26.f * S, Font, 1.f);
 	DrawStr(D.GetFieldObjective(), kWhiteField, X + 22.f * S, Y + 26.f * S, Font, 1.f);
+}
+
+void AFTExploreHUD::DrawWorld(const AFTExploreDirector& D)
+{
+	const float S = UiScale;
+	const float X = 24.f * S;
+	const float Y = 24.f * S;
+	DrawRect(kPanelField, X - 10.f * S, Y - 8.f * S, 360.f * S, 70.f * S);
+	DrawStr(kWorldField, kGoldField, X, Y, GEngine->GetSmallFont(), 1.1f);
+	DrawStr(D.GetWorldLine(), kWhiteField, X, Y + 26.f * S, GEngine->GetMediumFont(), 1.f);
 }
 
 void AFTExploreHUD::DrawPrompt(const AFTExploreDirector& D)

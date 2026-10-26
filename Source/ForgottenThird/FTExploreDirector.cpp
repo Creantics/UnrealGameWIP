@@ -2,6 +2,7 @@
 
 #include "EngineUtils.h"
 #include "Engine/World.h"
+#include "GameFramework/Controller.h"
 #include "HAL/PlatformMisc.h"
 #include "HAL/PlatformTime.h"
 #include "Kismet/GameplayStatics.h"
@@ -20,6 +21,7 @@
 #include "FTFieldGuard.h"
 #include "FTGameInstance.h"
 #include "FTPartyFollower.h"
+#include "FTStyleController.h"
 #include "FTText.h"
 
 #include "ftcore/BattleDemo.h"
@@ -36,6 +38,10 @@ namespace
 constexpr float kEncounterDelay = 1.2f;
 // The autopilot gives up when it hasn't got 10 cm closer to its target for this long.
 constexpr float kPilotStuckSeconds = 15.f;
+// -WorldAutoPlay: a district counts as reached this close to its plaza's centre (metres); the
+// tour's pilot targets get ids from here up, apart from the demo spots' and the field goal's.
+constexpr float kTourReach = 4.f;
+constexpr int32 kTourTargetBase = 300;
 
 const TCHAR* const kObjectiveNames[ftcore::demo::kObjCount] = {
 	TEXT("Talk to Duy"),
@@ -99,6 +105,7 @@ void AFTExploreDirector::BeginPlay()
 	FindSpots();
 	CacheText();
 	RestoreFromCarry();
+	BeginWorld();
 	BeginStoryWalk();
 	for (int32 I = 0; I < static_cast<int32>(Exploration.objectiveCount()); ++I)
 	{
@@ -114,6 +121,10 @@ void AFTExploreDirector::BeginPlay()
 
 void AFTExploreDirector::FindSpots()
 {
+	if (!WorldId.IsEmpty())
+	{
+		return; // a big world's map has no demo spots
+	}
 	const int32 Count = static_cast<int32>(Exploration.count());
 	bool bHaveAll = Spots.Num() == Count;
 	for (int32 I = 0; bHaveAll && I < Count; ++I)
@@ -350,6 +361,38 @@ void AFTExploreDirector::BeginStoryWalk()
 				UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: Data/Field/goals.json refused; using the default markers: %s"), *FT::ToFString(Error).TrimEnd());
 			}
 		}
+	}
+	if (Layout)
+	{
+		// A big world: the goal and waypoint are in the district's frame; the player starts at its spawn.
+		const int32 Count = static_cast<int32>(Layout->districtCount());
+		const bool bPlaced = Carry.World == WorldId && Carry.District >= 0 && Carry.District < Count;
+		WorldDistrict = bPlaced ? Carry.District : 0;
+		if (!bPlaced)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("World %s: the field step's scene %s isn't placed here; using district 0."), *WorldId, *Carry.Scene);
+		}
+		const size_t D = static_cast<size_t>(WorldDistrict);
+		FieldGoal = Layout->toWorld(D, FieldGoal);
+		FieldVia = Layout->toWorld(D, FieldVia);
+		const ftcore::Vec2 Spawn = Layout->district(D).origin;
+		WorldSpawn = FVector(Spawn.x * 100.0, Spawn.y * 100.0, 0.0);
+		WorldSpawnRotation = FRotator(0.f, FMath::RadiansToDegrees(Layout->spawnYaw(D)), 0.f);
+		bWorldSpawnPending = true;
+		if (!Carry.Style.IsEmpty())
+		{
+			for (TActorIterator<AFTStyleController> It(GetWorld()); It; ++It)
+			{
+				// Before its BeginPlay the controller applies StyleSpec itself; after it, switch now.
+				It->StyleSpec = Carry.Style;
+				if (It->HasActorBegunPlay())
+				{
+					It->SetStyleSpec(Carry.Style);
+				}
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("World %s: field step in district %d (style %s)."), *WorldId, WorldDistrict,
+			Carry.Style.IsEmpty() ? TEXT("the map's") : *Carry.Style);
 	}
 	SpawnFieldGoal();
 	FieldObjective = Carry.StepLabel.IsEmpty()
@@ -711,9 +754,25 @@ void AFTExploreDirector::Tick(float DeltaSeconds)
 		bRestorePending = false;
 		CheckComplete();
 	}
+	if (bWorldSpawnPending)
+	{
+		bWorldSpawnPending = false;
+		const FVector At(WorldSpawn.X, WorldSpawn.Y, Player->GetActorLocation().Z);
+		Player->SetActorLocationAndRotation(At, WorldSpawnRotation, false, nullptr, ETeleportType::TeleportPhysics);
+		if (AController* Controller = Player->GetController())
+		{
+			Controller->SetControlRotation(WorldSpawnRotation);
+		}
+	}
 	if (bStoryWalk)
 	{
 		TickStoryWalk(*Player, DeltaSeconds);
+		return;
+	}
+	if (Layout)
+	{
+		// A big world has no demo spots or guards: a free walk, or the -WorldAutoPlay tour.
+		TickWorld(*Player, DeltaSeconds);
 		return;
 	}
 	if (bBattleOpening || PendingEncounter >= 0 || PendingGuard >= 0)
@@ -771,7 +830,8 @@ void AFTExploreDirector::TickAutoPlay(AFTExploreCharacter& Player, float DeltaSe
 	PilotWalk(Player, Pos, Exploration.item(Target).pos, Target, DeltaSeconds);
 }
 
-void AFTExploreDirector::PilotWalk(AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 Target, float DeltaSeconds)
+void AFTExploreDirector::PilotWalk(AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 Target, float DeltaSeconds,
+	bool bUseNav)
 {
 	const FVector2D To(Goal.x - Pos.x, Goal.y - Pos.y);
 	const float Dist = static_cast<float>(To.Size());
@@ -795,7 +855,7 @@ void AFTExploreDirector::PilotWalk(AFTExploreCharacter& Player, ftcore::Vec2 Pos
 		}
 	}
 	FVector2D Dir = To.GetSafeNormal();
-	if (const ftcore::Vec2* Waypoint = PilotWaypoint(Player, Pos, Goal, Target))
+	if (const ftcore::Vec2* Waypoint = bUseNav ? PilotWaypoint(Player, Pos, Goal, Target) : nullptr)
 	{
 		Dir = FVector2D(Waypoint->x - Pos.x, Waypoint->y - Pos.y).GetSafeNormal();
 	}
@@ -840,4 +900,107 @@ const ftcore::Vec2* AFTExploreDirector::PilotWaypoint(const AFTExploreCharacter&
 	}
 	PilotPathNext = ftcore::advanceWaypoint(PilotPath.GetData(), PilotPath.Num(), PilotPathNext, Pos, 0.6f);
 	return PilotPathNext >= 0 ? &PilotPath[PilotPathNext] : nullptr;
+}
+
+void AFTExploreDirector::BeginWorld()
+{
+	if (WorldId.IsEmpty())
+	{
+		return;
+	}
+	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+	if (!GI)
+	{
+		return;
+	}
+	const ftcore::WorldTable& Worlds = GI->GetWorlds();
+	const FTCHARToUTF8 IdUtf8(*WorldId);
+	const int32 Index = Worlds.findWorld(std::string_view(IdUtf8.Get(), static_cast<size_t>(IdUtf8.Length())));
+	if (Index < 0)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("World %s: not in Data/Field/worlds.json; the map plays as a plain field."), *WorldId);
+		return;
+	}
+	Layout = MakeUnique<ftcore::WorldLayout>();
+	std::string Error;
+	if (!ftcore::generateWorldLayout(Worlds.worlds[static_cast<size_t>(Index)], *Layout, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("World %s: %s"), *WorldId, *FT::ToFString(Error).TrimEnd());
+		Layout.Reset();
+		return;
+	}
+	WorldDistrict = 0;
+	UE_LOG(LogForgottenThird, Display, TEXT("World %s: %d districts, %d roads, %d buildings, %d props over %.0f m."), *WorldId,
+		static_cast<int32>(Layout->districtCount()), static_cast<int32>(Layout->roadCount()), static_cast<int32>(Layout->blockCount()),
+		static_cast<int32>(Layout->propCount()), Layout->side());
+	const FFTStoryCarry& Carry = GI->StoryCarry;
+	const bool bStoryStep = Carry.bValid && !Carry.bDone && Carry.Screen == ftcore::GameplayScreen::Field;
+	bWorldTour = !bStoryStep && FParse::Param(FCommandLine::Get(), TEXT("WorldAutoPlay"));
+	if (!bWorldTour)
+	{
+		return;
+	}
+	TourCount = static_cast<int32>(Layout->tour(0, Tour, UE_ARRAY_COUNT(Tour)));
+	TourLeg = 0;
+	TourStart = Now();
+	TourGameStart = GetWorld()->GetTimeSeconds();
+	if (IsAlphaFast())
+	{
+		UGameplayStatics::SetGlobalTimeDilation(this, 8.f);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("World %s: tour of %d legs over the roads."), *WorldId, TourCount);
+}
+
+void AFTExploreDirector::UpdateWorldLine(ftcore::Vec2 Pos)
+{
+	const int32 At = Layout->districtAt(Pos);
+	if (At == WorldLineDistrict)
+	{
+		return;
+	}
+	WorldLineDistrict = At;
+	WorldLine = At >= 0
+		? FString::Printf(TEXT("%s  district %d of %d"), *WorldId, At + 1, static_cast<int32>(Layout->districtCount()))
+		: FString::Printf(TEXT("%s  open ground"), *WorldId);
+}
+
+void AFTExploreDirector::TickWorld(AFTExploreCharacter& Player, float DeltaSeconds)
+{
+	if (!bFollowersSpawned)
+	{
+		SpawnFollowers(Player);
+	}
+	else
+	{
+		PlaceFollowers(Player, DeltaSeconds);
+	}
+	const ftcore::Vec2 Pos = ToGround(Player.GetActorLocation());
+	UpdateWorldLine(Pos);
+	if (!bWorldTour || bWorldTourDone || TourLeg >= TourCount)
+	{
+		return;
+	}
+	const int32 District = Tour[TourLeg];
+	const ftcore::Vec2 Target = Layout->district(static_cast<size_t>(District)).centre;
+	if (FVector2D(Target.x - Pos.x, Target.y - Pos.y).Size() > kTourReach)
+	{
+		// Roads run straight between plaza centres and nothing stands on them, so no navmesh is needed.
+		PilotWalk(Player, Pos, Target, kTourTargetBase + TourLeg, DeltaSeconds, false);
+		return;
+	}
+	const double Game = GetWorld()->GetTimeSeconds() - TourGameStart;
+	UE_LOG(LogForgottenThird, Display, TEXT("World %s: reached district %d (leg %d/%d) at %.1f s game time."), *WorldId, District,
+		TourLeg + 1, TourCount, Game);
+	if (++TourLeg < TourCount)
+	{
+		return;
+	}
+	bWorldTourDone = true;
+	UE_LOG(LogForgottenThird, Display, TEXT("World %s: TOUR DONE, all %d districts in %d legs, %.1f s game time (%.1f s real)."), *WorldId,
+		static_cast<int32>(Layout->districtCount()), TourCount, Game, Now() - TourStart);
+	UGameplayStatics::SetGlobalTimeDilation(this, 1.f);
+	if (bQuitOnComplete || FParse::Param(FCommandLine::Get(), TEXT("WorldQuitOnDone")))
+	{
+		FPlatformMisc::RequestExit(false, TEXT("WorldTour"));
+	}
 }
