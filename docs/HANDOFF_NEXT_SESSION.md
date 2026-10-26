@@ -19,7 +19,11 @@ Private notes (character references, concept-art review, script status) are in `
     story start, after a load and on every change; the QTE screen reads the first two (`ftcore::QteAssist`). Alpha gate counts
     unchanged. Docs: `docs/QTE_SCREEN.md` (Assist options), `docs/DIALOGUE_UI.md` (settings table).
   - Open: skip choices is mirror-only (nothing acts on it yet); story hold beats are still timed waits, not held inputs.
-  - Next, in the advisor's order: the party following the lead on the field, field guards, pause with save slots.
+  - Done on main (f6e9474): the party follows the lead on story field steps. `ftcore::PartyTrail` samples the lead's path by
+    distance and places each follower (not steered) 1.6 m apart along it; `AFTPartyFollower` is a mesh plus idle/walk clips with
+    no controller, movement or collision. Followers come from `ftcore::demo::kPartyNames` (the battle line-up). Alpha counts
+    unchanged, one follower on all 91 field steps. Docs: `docs/EXPLORE_DEMO.md`. Not looked at on a screen yet.
+  - Next, in the advisor's order: field guards, then pause with save slots.
 
 - **NEWEST (2026-10-25): all three leads now conform to concept head models.** Each lead's MetaHuman head is fitted to a scaled, cut
   head model (private), not built from presets. Pipeline per lead, all private scripts driven through the editor bridge:
