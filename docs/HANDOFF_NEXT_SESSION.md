@@ -6,6 +6,26 @@ Private notes (character references, concept-art review, script status) are in `
 
 ## Resume here (updated 2026-10-21, Max plan)
 
+- **NEWEST (2026-10-26, overworld): a small walkable overworld joins the three worlds; the story walks it between
+  worlds.** Design by the advisor; the technique only (a miniature map walked between locations), no borrowed names.
+  - Main b45cddb (Core): `ftcore::OverworldLayout` in `Core/include/ftcore/Overworld.h`, plus the `"overworld"` entry in
+    `Data/Field/worlds.json`. One node per world on a ring: a gate, with the world's emblem (small blocks round a
+    landmark) 26 m behind it. Straight roads join the gates, 150-250 m apart. Also `overworldRoute`, and the open rule
+    (`worldFirstScenes`, `worldsOpen`). 7 tests.
+  - Main e1267c2 (Unreal):
+    - The story director opens the Overworld map when a field step is in another world than the last one, with
+      `FFTStoryCarry::FromWorld` set.
+    - The explore director's `bOverworld` mode walks the hop gate to gate and enters the world's map at the gate.
+      Free walk enters open worlds. `-OverworldAutoPlay` tours every gate. The HUD has an OVERWORLD panel.
+    - `FTBuildExploreWorld -World=overworld` builds it.
+    - The alpha line now ends `, <h> overworld hops`. `gate.ps1 -Alpha` needs at least one once `Overworld.umap`
+      exists.
+  - Checks: ctest green (455 cases). **Not yet run: UBT, the overworld map build, the tour, or the alpha gate.**
+    They were held while the MetaHuman session had the editor open. Neither commit is pushed until UBT passes.
+  - Next, in order: run `tools/gate.ps1 -Ubt` and build the map with `-World=overworld`. Then run the tour, and then
+    `gate.ps1 -Alpha`; Core expects 19 hops. Put the real numbers in `docs/ALPHA.md` and `docs/WORLDS.md`, and push.
+    The look needs a human eye.
+
 - **NEWEST (2026-10-26, worlds): three big worlds (solhaven town, lattice towers, unwritten ruins), each 1 km a side.**
   Approach set by the advisor: Core first, then one generated map per world. Each map is a blockout plus the world's style
   pack, built from instanced meshes. There is no World Partition, terrain art, streaming or fast travel yet.
@@ -20,12 +40,11 @@ Private notes (character references, concept-art review, script status) are in `
     - The story director opens a placed scene's world map and carries the world, district and style. The explore
       director moves the goal into the district and spawns the player there.
     - `-WorldAutoPlay` walks a road tour, and the HUD has a WORLD panel.
-  - Next commit: the Lattice and Unwritten maps plus `docs/WORLDS.md`.
+  - Main e4becea: the Lattice and Unwritten maps plus `docs/WORLDS.md`.
   - Checks: ctest and UBT green. The alpha gate is green: 73 scenes, 0 STUCK, 0 warnings, with field steps on the world
     maps. The Solhaven tour covers 16 districts in 18 legs, 1108 s game time (the autopilot walks; running is about
     half that). Nothing has been looked at on screen yet: scale, landmarks and the anchor need a human look.
-  - Next queued by the user: an overworld map linking the three worlds (walkable, between locations). Ask the advisor
-    for the design first.
+  - The overworld followed (entry above).
 
 - **NEWEST (2026-10-25, combat): one full set-piece fight, the Brass Regent (models set aside again; the user is on the
   machine, so no computer use or GUI).** Scope set by the advisor: enemy phases, scripted skill patterns, results. Items,
