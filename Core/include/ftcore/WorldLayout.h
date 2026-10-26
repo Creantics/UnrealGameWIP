@@ -24,11 +24,14 @@
 //   { "version": 1,
 //     "worlds": [ { "id": "solhaven", "map": "World_Solhaven", "style": "solhaven", "kind": "town",
 //                   "side": 1000, "seed": 3, "districts": 16, "story": ["Solhaven"] } ],
-//     "scenes": [ { "scene": "SC-X", "world": "solhaven", "district": 2, "style": "inksolhaven" } ] }
+//     "scenes": [ { "scene": "SC-X", "world": "solhaven", "district": 2, "style": "inksolhaven" } ],
+//     "overworld": { "map": "Overworld", "side": 480, "seed": 7 } }
 //   `kind` is town, towers or ruins (the buildings' shape). `story` lists the script's scene world
 //   names the world plays (checked by a test against the script). A scene's field steps play in its
 //   district; `style` optionally overrides the world's style for that scene. A scene not listed
-//   plays on the Explore map. Unknown keys are warnings; anything else wrong is an error.
+//   plays on the Explore map. `overworld` (optional) is the small map that joins the worlds
+//   (ftcore/Overworld.h); without it the story goes straight from one world to the next. Unknown
+//   keys are warnings; anything else wrong is an error.
 
 #include "ftcore/Api.h"
 #include "ftcore/Explore.h"
@@ -69,9 +72,20 @@ struct WorldScene {
     std::string style;          // empty: the world's own
 };
 
+struct OverworldSpec {
+    static constexpr float kMinSide = 300.f;
+    static constexpr float kMaxSide = 1200.f;
+
+    bool present = false;
+    std::string map; // the Unreal map under /Game/Maps
+    float side = 480.f;
+    std::uint32_t seed = 1;
+};
+
 struct WorldTable {
     std::vector<WorldSpec> worlds;
     std::vector<WorldScene> scenes;
+    OverworldSpec overworld;
 
     // No allocation. Null when the scene plays on the Explore map.
     FTCORE_API const WorldScene* findScene(std::string_view scene) const;

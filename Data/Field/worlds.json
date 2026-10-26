@@ -66,5 +66,6 @@
     {"scene": "SC-20-Q3", "world": "unwritten", "district": 7},
     {"scene": "SC-21-Q2", "world": "unwritten", "district": 3},
     {"scene": "SC-P0-01", "world": "unwritten", "district": 8}
-  ]
+  ],
+  "overworld": {"map": "Overworld", "side": 480, "seed": 7}
 }

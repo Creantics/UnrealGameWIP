@@ -107,7 +107,7 @@ bool importWorldTable(std::string_view json, WorldTable& out, std::string* error
     }
     if (const JsonValue v = root["version"]; !v.isAbsent() && !(v.isInteger() && v.integer() == 1))
         errors.push_back("version: expected 1");
-    worldUnknownKeys(root, "", {"version", "worlds", "scenes"}, warnings);
+    worldUnknownKeys(root, "", {"version", "worlds", "scenes", "overworld"}, warnings);
 
     WorldTable table;
     const JsonValue list = root["worlds"];
@@ -195,6 +195,33 @@ bool importWorldTable(std::string_view json, WorldTable& out, std::string* error
             if (!worldName(s.style, false)) errors.push_back(path + ".style: expected letters, digits and _");
         }
         table.scenes.push_back(std::move(s));
+    }
+
+    if (const JsonValue j = root["overworld"]; !j.isAbsent()) {
+        if (!j.isObject()) {
+            errors.push_back("overworld: expected an object");
+        } else {
+            worldUnknownKeys(j, "overworld", {"map", "side", "seed"}, warnings);
+            OverworldSpec& o = table.overworld;
+            o.present = true;
+            o.map = std::string(j["map"].string());
+            if (!worldName(o.map, false)) errors.push_back("overworld.map: expected letters, digits and _");
+            else if (table.findWorld(o.map) >= 0) errors.push_back("overworld.map: a world's map already");
+            const JsonValue side = j["side"];
+            const double sd = side.number(-1.0);
+            if (!side.isAbsent() && (!side.isNumber() || !std::isfinite(sd) || sd < OverworldSpec::kMinSide ||
+                                     sd > OverworldSpec::kMaxSide))
+                errors.push_back("overworld.side: expected a number in " +
+                                 std::to_string(static_cast<int>(OverworldSpec::kMinSide)) + ".." +
+                                 std::to_string(static_cast<int>(OverworldSpec::kMaxSide)));
+            else if (!side.isAbsent())
+                o.side = static_cast<float>(sd);
+            const JsonValue seed = j["seed"];
+            if (!seed.isAbsent() && (!seed.isInteger() || seed.integer() < 0 || seed.integer() > 0xffffffffll))
+                errors.push_back("overworld.seed: expected an integer in 0..4294967295");
+            else
+                o.seed = static_cast<std::uint32_t>(seed.integer(1));
+        }
     }
     if (!finish()) return false;
     out = std::move(table);
