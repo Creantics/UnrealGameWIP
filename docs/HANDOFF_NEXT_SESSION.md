@@ -6,7 +6,27 @@ Private notes (character references, concept-art review, script status) are in `
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-26, overworld): a small walkable overworld joins the three worlds; the story walks it between
+- **NEWEST (2026-10-26, motion tools): SOMA-skeleton motion (NVIDIA Kimodo and MotionBricks) retargets onto the
+  MetaHuman Third, headless.** It was a trial run, and nothing generated is in the repo.
+  - Both tools output the 77-joint SOMA skeleton.
+  - Path:
+    - The BVH goes through Blender -b into a skinned GLB.
+    - `FTImportCharacter`, then `FTBuildRig` on that mesh. Auto-characterize uses the Mixamo template (score 0.86) and
+      gives 20 chains.
+    - `FTBuildRig -Mesh=<MH body> -RetargetFrom=<SOMA IK rig> -Clips=<full anim path> -AlignPose`.
+  - Main 2c65d20: `FTBuildRig -AlignPose` gives the target a retarget pose aligned to the source chains
+    (`AutoAlignAllBones`, ChainToChain). It's off by default. A T-pose source onto the A-pose MH body needs it, or the
+    arms cross the body. UBT Succeeded and ctest is green.
+  - Checked in engine with UE's AnimPose Python API (world bone positions, source vs Third), all within body scale:
+    knees forward in a squat, hand swing, foot lift, pelvis travel.
+  - Gaps:
+    - SOMA's `Neck1/Neck2` aren't in the Mixamo template, so the Third's neck holds the bind pose. A SOMA fallback in
+      `kChains` would fix it.
+    - The 8 MH metacarpal chains have no source.
+    - Kimodo's text-to-motion model hasn't run yet: the user still has to accept the gated Llama licence on HF and log
+      in.
+
+- **(2026-10-26, overworld): a small walkable overworld joins the three worlds; the story walks it between
   worlds.** Design by the advisor; the technique only (a miniature map walked between locations), no borrowed names.
   - Main b45cddb (Core): `ftcore::OverworldLayout` in `Core/include/ftcore/Overworld.h`, plus the `"overworld"` entry in
     `Data/Field/worlds.json`. One node per world on a ring: a gate, with the world's emblem (small blocks round a
