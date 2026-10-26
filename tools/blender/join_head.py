@@ -2,7 +2,8 @@
 (rig_scan.py's .blend) at the neck, into one lead with one mesh and one skeleton.
 
     blender -b HEAD.blend --factory-startup --python-exit-code 1 --python tools/blender/join_head.py -- \\
-        --body BODY.blend --out name.glb [--blend name.blend] [--seam Z] [--gap 0.004] [--preview DIR]
+        --body BODY.blend --out name.glb [--blend name.blend] [--seam Z] [--gap 0.004] \\
+        [--neck BASE_Z,CHIN_Z,LENGTH] [--preview DIR]
 
 Both must already share a frame: give prep_scan.py the --height that brings the body's neck to the bust's (compare
 their neck widths by height). The seam is a level cut through the neck where both have it; by default the height in
@@ -15,7 +16,10 @@ zipped with one band of triangles (UVs and material from the face beside each ed
 The skeleton is the body's (its rest pose and clips fit the body); the head joint and everything under it (jaw,
 eyes, the face joints) take the bust's rest positions, so the face shapes and jaw weights still line up. The skin
 around the seam is reweighted along spine_03 -> neck_01 -> neck_02 -> head by height (as rig_head weights a bust),
-fading into each side's own weights a few centimetres away. The body's colour differs from the bust's, so the seam
+fading into each side's own weights a few centimetres away. A body stump and a bust neck stacked can make the neck
+too long: --neck shortens the stretch from BASE_Z (the notch at its base) to CHIN_Z (just under the chin) to LENGTH
+after the join, scaling heights there (eased in and out over a centimetre, so no crease) and dropping everything
+above, the bones and shape keys with it; widths are untouched, so the seam still fits. The body's colour differs from the bust's, so the seam
 shows a step in colour; blending the textures there is a separate job. The glb is checked with the face shapes.
 --preview renders the whole lead front and three-quarter, and the neck up close at rest, bent and turned.
 """
@@ -40,7 +44,7 @@ NECK_REACH = 0.1  # metres from the centre line that count as neck in a section
 
 def _args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
-    a = {"body": None, "out": None, "blend": None, "seam": None, "gap": "0.004", "preview": None}
+    a = {"body": None, "out": None, "blend": None, "seam": None, "gap": "0.004", "neck": None, "preview": None}
     i = 0
     while i < len(argv):
         k = argv[i]
@@ -53,6 +57,10 @@ def _args():
         raise SystemExit(__doc__)
     a["gap"] = float(a["gap"])
     a["seam"] = float(a["seam"]) if a["seam"] is not None else None
+    if a["neck"]:
+        a["neck"] = [float(x) for x in a["neck"].split(",")]
+        if len(a["neck"]) != 3 or not 0 < a["neck"][2] < a["neck"][1] - a["neck"][0]:
+            raise SystemExit("join_head: --neck takes BASE_Z,CHIN_Z,LENGTH with 0 < LENGTH < CHIN_Z - BASE_Z")
     return a
 
 
@@ -299,6 +307,46 @@ def reweight_seam(mesh, arm, seam, cx, cy, below=0.04, above=0.012, core=0.008):
     return done
 
 
+def neck_map(z0, z1, length, ramp=0.01):
+    """The height map that shortens the neck from z0 (its base) to z1 (under the chin) to `length`: the local scale
+    eases from 1 to k = length / (z1 - z0) over `ramp` either side of z0 and back over `ramp` either side of z1, so
+    the surface keeps its slope there (no crease under the jaw); below it nothing moves, above it everything drops
+    by z1 - z0 - length."""
+    k = length / (z1 - z0)
+    g = np.linspace(z0 - ramp, z1 + ramp, 4001)
+    on = np.clip((g - (z0 - ramp)) / (2 * ramp), 0, 1)
+    off = np.clip(((z1 + ramp) - g) / (2 * ramp), 0, 1)
+    w = np.minimum(on * on * (3 - 2 * on), off * off * (3 - 2 * off))
+    W = np.concatenate([[0.0], np.cumsum((w[1:] + w[:-1]) / 2 * np.diff(g))])
+    W *= (z1 - z0) / W[-1]
+
+    def f(z):
+        return z - (1 - k) * np.interp(z, g, W)
+    return f
+
+
+def shorten_neck(mesh, arm, f):
+    """Applies the height map f to the mesh, every shape key (they hold positions, so the same map) and every bone."""
+    me = mesh.data
+    for kb in me.shape_keys.key_blocks:
+        co = np.empty(len(kb.data) * 3, dtype=np.float64)
+        kb.data.foreach_get("co", co)
+        co = co.reshape(-1, 3)
+        co[:, 2] = f(co[:, 2])
+        kb.data.foreach_set("co", co.astype(np.float32).ravel())
+    co = np.empty(len(me.vertices) * 3, dtype=np.float32)
+    me.shape_keys.reference_key.data.foreach_get("co", co)
+    me.vertices.foreach_set("co", co)
+    me.update()
+    nb.activate(arm)
+    bpy.ops.object.mode_set(mode="EDIT")
+    for eb in arm.data.edit_bones:
+        h, t = eb.head.copy(), eb.tail.copy()
+        h.z, t.z = float(f(h.z)), float(f(t.z))
+        eb.head, eb.tail = h, t
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+
 def append_body(path):
     with bpy.data.libraries.load(path) as (src, dst):
         dst.objects = list(src.objects)
@@ -423,7 +471,6 @@ def main():
     mod = next((m for m in mesh.modifiers if m.type == "ARMATURE"), None) or mesh.modifiers.new("Armature", "ARMATURE")
     mod.object = arm_b
     mesh.parent = arm_b
-    bpy.data.objects.remove(arm_h, do_unlink=True)
 
     bm = bmesh.new()
     bm.from_mesh(mesh.data)
@@ -436,7 +483,15 @@ def main():
     bm.to_mesh(mesh.data)
     mesh.data.update()
     bm.free()
+    if a["neck"]:
+        z0, z1, length = a["neck"]
+        f = neck_map(z0, z1, length)
+        shorten_neck(mesh, arm_b, f)
+        print("join_head: neck %.4f..%.4f shortened to %.4f, head down %.4f, seam now z %.4f"
+              % (z0, z1, length, z1 - z0 - length, float(f(seam))))
+        seam = float(f(seam))
     reweighted = reweight_seam(mesh, arm_b, seam, cx, cy)
+    bpy.data.objects.remove(arm_h, do_unlink=True)
 
     arm_b.name = os.path.splitext(os.path.basename(a["out"]))[0] + "_rig"
     mesh.name = os.path.splitext(os.path.basename(a["out"]))[0]
