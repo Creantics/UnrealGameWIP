@@ -23,7 +23,8 @@ spec.json keys (lengths in cm unless said):
   "overshoot": deg          how far below the hairline a strand may reach before it's cut (default 1.5)
   "layers": [{"spacing": cm, "height": f, "width": cm, "rows": [..], "min_volume": cm, "twist": deg, "count": n}]
                             card layers, innermost first: roots at least "spacing" apart (closer where the hair is
-                            short), standing at "height" times the volume, cards "width" wide using these atlas rows.
+                            short, down to "short_spacing" times it, default 0.55), standing at "height" times the
+                            volume, cards "width" wide using these atlas rows.
                             "count" instead of "spacing" takes that many random roots from the layer above (flyaways)
   "rise": f, "climb": f     a strand reaches its height by the fraction "rise" of its length (default 0.35),
                             climbing at most "climb" cm per cm (default 1.2)
@@ -251,6 +252,7 @@ def grow(root, height_k, rnd_len, rnd_h):
 # ---- guide curves for each layer
 
 layers = []
+short_spacing = spec.get("short_spacing", 0.55)
 for li, lay in enumerate(spec["layers"]):
     if "count" in lay:
         src = layers[-1]["roots"]
@@ -259,7 +261,7 @@ for li, lay in enumerate(spec["layers"]):
     else:
         def spacing_at(p, lay=lay):
             phi, th = head_angles(p)
-            return lay["spacing"] * CM * min(1.0, max(0.55, length_f(phi, th) / 3.0))
+            return lay["spacing"] * CM * min(1.0, max(short_spacing, length_f(phi, th) / 3.0))
         cands = scatter(int(areas.sum() / (lay["spacing"] * CM) ** 2 * 6))
         cands = [p for p in cands if volume_f(*head_angles(p)) >= lay.get("min_volume", 0.0)]
         roots = poisson(cands, spacing_at)
