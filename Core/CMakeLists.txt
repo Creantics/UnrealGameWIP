@@ -57,6 +57,7 @@ add_library(ftcore STATIC
     src/Glb.cpp
     src/Json.cpp
     src/Loudness.cpp
+    src/Locomotion.cpp
     src/Mini.cpp
     src/UiText.cpp
     src/PartyTrail.cpp
@@ -131,6 +132,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_gameplay_plan.cpp
         tests/test_glb.cpp
         tests/test_json.cpp
+        tests/test_locomotion.cpp
         tests/test_mini.cpp
         tests/test_music_loop.cpp
         tests/test_party_trail.cpp

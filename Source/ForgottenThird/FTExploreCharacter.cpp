@@ -26,12 +26,6 @@
 #include "FTMeshFacing.h"
 #include "ForgottenThird.h"
 
-namespace
-{
-// Walk clip below this ground speed (cm/s) is idle.
-constexpr float kWalkThreshold = 25.f;
-}
-
 AFTExploreCharacter::AFTExploreCharacter()
 {
 	PrimaryActorTick.bCanEverTick = true;
@@ -43,7 +37,8 @@ AFTExploreCharacter::AFTExploreCharacter()
 	bUseControllerRotationRoll = false;
 	UCharacterMovementComponent* Move = GetCharacterMovement();
 	Move->bOrientRotationToMovement = true;
-	Move->RotationRate = FRotator(0.0, 540.0, 0.0);
+	// Slow enough that a turn is seen: the upper body leads it and the body banks into it.
+	Move->RotationRate = FRotator(0.0, 360.0, 0.0);
 	Move->MaxWalkSpeed = WalkSpeed;
 	Move->JumpZVelocity = 520.f;
 	Move->AirControl = 0.35f;
@@ -88,8 +83,13 @@ void AFTExploreCharacter::BeginPlay()
 		// Turn the body to face the capsule's forward (+X).
 		GetMesh()->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Body), 0.0));
 	}
-	GetMesh()->SetAnimationMode(EAnimationMode::AnimationSingleNode);
-	UpdateClip();
+	SetupLocomotion();
+	// Locomotion test switches: -LocoRun holds the run speed, -LocoJump=<s> jumps every s seconds.
+	if (FParse::Param(FCommandLine::Get(), TEXT("LocoRun")))
+	{
+		GetCharacterMovement()->MaxWalkSpeed = RunSpeed;
+	}
+	FParse::Value(FCommandLine::Get(), TEXT("LocoJump="), JumpEvery);
 	if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait")))
 	{
 		// For checking a look: the camera holds still round the pawn, by default in front of the face. Yaw 180 is
@@ -232,6 +232,13 @@ void AFTExploreCharacter::ApplyLookOverrides()
 	};
 	LoadClip(IdleClipPath, IdleClip);
 	LoadClip(WalkClipPath, WalkClip);
+	LoadClip(RunClipPath, RunClip);
+	LoadClip(SprintClipPath, SprintClip);
+	LoadClip(JumpClipPath, JumpClip);
+	LoadClip(FallClipPath, FallClip);
+	LoadClip(LandClipPath, LandClip);
+	LoadClip(JumpMovingClipPath, JumpMovingClip);
+	LoadClip(LandMovingClipPath, LandMovingClip);
 	int32 Cloth = 0;
 	for (const FSoftObjectPath& Path : PiecePaths)
 	{
@@ -403,24 +410,31 @@ FVector2D AFTExploreCharacter::GetFacing2D() const
 void AFTExploreCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
-	UpdateClip();
+	SlideProbe.Sample(*GetMesh(), DeltaSeconds, static_cast<float>(GetVelocity().Size2D()));
+	if (JumpEvery > 0.f && (JumpTimer += DeltaSeconds) >= JumpEvery)
+	{
+		JumpTimer = 0.f;
+		Jump();
+	}
 }
 
-void AFTExploreCharacter::UpdateClip()
+void AFTExploreCharacter::SetupLocomotion()
 {
 	USkeletalMeshComponent* Body = GetMesh();
-	const float Speed = static_cast<float>(GetVelocity().Size2D());
-	const bool bWantWalk = Speed > kWalkThreshold && GetCharacterMovement()->IsMovingOnGround();
-	if (!bClipStarted || bWantWalk != bWalking)
+	Body->SetAnimInstanceClass(UFTLocomotionAnimInstance::StaticClass());
+	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Body->GetAnimInstance());
+	if (!Anim)
 	{
-		UAnimSequence* Clip = bWantWalk ? WalkClip.Get() : IdleClip.Get();
-		if (Clip)
-		{
-			Body->PlayAnimation(Clip, true);
-		}
-		bWalking = bWantWalk;
-		bClipStarted = true;
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no locomotion anim instance; the body stays in its ref pose."));
+		return;
 	}
-	// Up to 4x keeps the feet near the ground speed at a run until there's a run clip.
-	Body->SetPlayRate(bWalking ? FMath::Clamp(Speed / WalkClipSpeed, 0.5f, 4.f) : 1.f);
+	Anim->SetClip(ftcore::LocoClip::Idle, IdleClip);
+	Anim->SetClip(ftcore::LocoClip::Walk, WalkClip);
+	Anim->SetClip(ftcore::LocoClip::Run, RunClip);
+	Anim->SetClip(ftcore::LocoClip::Sprint, SprintClip);
+	Anim->SetClip(ftcore::LocoClip::JumpStart, JumpClip);
+	Anim->SetClip(ftcore::LocoClip::Fall, FallClip);
+	Anim->SetClip(ftcore::LocoClip::Land, LandClip);
+	Anim->SetClip(ftcore::LocoClip::JumpMoving, JumpMovingClip);
+	Anim->SetClip(ftcore::LocoClip::LandMoving, LandMovingClip);
 }

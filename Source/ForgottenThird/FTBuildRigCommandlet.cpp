@@ -1,6 +1,7 @@
 #include "FTBuildRigCommandlet.h"
 
 #include "ForgottenThird.h"
+#include "FTLocomotionAnimInstance.h"
 
 #if WITH_EDITOR
 #include "Animation/AnimData/IAnimationDataModel.h"
@@ -12,7 +13,9 @@
 #include "Retargeter/IKRetargeter.h"
 #include "RetargetEditor/IKRetargetBatchOperation.h"
 #include "RetargetEditor/IKRetargeterController.h"
+#include "RetargetEditor/IKRetargeterPoseGenerator.h"
 #include "Retargeter/IKRetargetChainMapping.h"
+#include "Retargeter/RetargetOps/RootMotionGeneratorOp.h"
 #include "Rig/IKRigDefinition.h"
 #include "RigEditor/IKRigAutoCharacterizer.h"
 #include "RigEditor/IKRigController.h"
@@ -28,6 +31,54 @@ bool Differs(const FTransform& A, const FTransform& B)
 {
 	return FMath::RadiansToDegrees(A.GetRotation().AngularDistance(B.GetRotation())) > kMoveDegrees
 		|| FVector::Dist(A.GetTranslation(), B.GetTranslation()) > kMoveCm;
+}
+
+// A bone's component-space transform at Key, composed up the parent chain from the clip's tracks
+// (the bind pose where a bone has no track).
+FTransform ComponentTransform(const IAnimationDataModel& Model, const FReferenceSkeleton& Skeleton, int32 Bone, int32 Key)
+{
+	FTransform Result = FTransform::Identity;
+	TArray<FTransform> Keys;
+	for (int32 B = Bone; B != INDEX_NONE; B = Skeleton.GetParentIndex(B))
+	{
+		Keys.Reset();
+		Model.GetBoneTrackTransforms(Skeleton.GetBoneName(B), Keys);
+		const FTransform Local = Keys.IsValidIndex(Key) ? Keys[Key] : Skeleton.GetRefBonePose()[B];
+		Result = Result * Local;
+	}
+	return Result;
+}
+
+// Logs the clip's gait as the game measures it at load (UFTLocomotionAnimInstance::MeasureClip):
+// the planted feet's ground speed relative to the root bone (the capsule speed at which the clip
+// plays at rate 1 with no sliding), strides per loop and where the left foot plants; and the
+// root's own speed, which for a clip with root motion should match the ground speed.
+void LogFootSpeed(const UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
+{
+	const IAnimationDataModel* Model = Clip.GetDataModel();
+	const int32 Frames = Model ? Model->GetNumberOfKeys() : 0;
+	const double Length = Model ? Model->GetPlayLength() : 0.0;
+	if (Frames < 3 || Length <= 0.0)
+	{
+		return;
+	}
+	const ftcore::LocoClipInfo Gait = UFTLocomotionAnimInstance::MeasureClip(Clip);
+	if (Gait.groundSpeed <= 0.f)
+	{
+		return;
+	}
+	auto Travel = [&](int32 Bone)
+	{
+		return (ComponentTransform(*Model, Skeleton, Bone, Frames - 1).GetTranslation() - ComponentTransform(*Model, Skeleton, Bone, 0).GetTranslation())
+				   .Size2D()
+			/ Length;
+	};
+	// The pelvis carries the body: its travel should match the root's, or the root runs ahead of the feet.
+	const int32 Pelvis = Skeleton.FindBoneIndex(TEXT("pelvis"));
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("FTBuildRig: clip %s gait: ground speed %.0f cm/s (feet %.0f, %.0f sideways), %d strides per loop, left plant at %.2f, root motion %.0f cm/s, pelvis %.0f cm/s"),
+		*Clip.GetName(), Gait.groundSpeed, Gait.footSpeed, Gait.footSide, Gait.cycles, Gait.leftPlant, Travel(0),
+		Pelvis != INDEX_NONE ? Travel(Pelvis) : 0.0);
 }
 
 // Logs one line for a clip: frames, bone tracks that move over time or differ from the bind pose,
@@ -87,6 +138,7 @@ bool LogClip(const UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 		TEXT("FTBuildRig: clip %s: %d frames, %.2f s, %d bone tracks (%d move, %d off the bind pose), %d float curves (%d change)%s"),
 		*Clip.GetName(), Model->GetNumberOfFrames(), Model->GetPlayLength(), Model->GetNumBoneTracks(), Moving, OffBind,
 		Model->GetNumberOfFloatCurves(), CurvesChanging, bEmpty ? TEXT(" - EMPTY") : TEXT(""));
+	LogFootSpeed(Clip, Skeleton);
 	return !bEmpty;
 }
 
@@ -231,14 +283,43 @@ bool RetargetClips(UIKRigDefinition& SourceRig, UIKRigDefinition& TargetRig, USk
 	Retargeter->AssignIKRigToAllOps(ERetargetSourceOrTarget::Target, &TargetRig);
 	Retargeter->AutoMapChains(EAutoMapChainType::Exact, true);
 
+	// Other rigs' names for the same chain (the UEFN mannequin's foot chain is its toe).
+	static const TCHAR* const Aliases[][2] = {{TEXT("LeftFoot"), TEXT("LeftToe")}, {TEXT("RightFoot"), TEXT("RightToe")}};
+	auto HasSourceChain = [&SourceRig](FName Name)
+	{
+		return SourceRig.GetRetargetChains().ContainsByPredicate([Name](const FBoneChain& C) { return C.ChainName == Name; });
+	};
 	bool bOk = true;
 	int32 Mapped = 0;
 	for (const FBoneChain& Chain : TargetRig.GetRetargetChains())
 	{
-		const FName Source = Retargeter->GetSourceChain(Chain.ChainName);
+		FName Source = Retargeter->GetSourceChain(Chain.ChainName);
+		for (const auto& Alias : Aliases)
+		{
+			if (Source == NAME_None && Chain.ChainName == FName(Alias[0]) && HasSourceChain(Alias[1]))
+			{
+				Retargeter->SetSourceChain(Alias[1], Chain.ChainName);
+				Source = Retargeter->GetSourceChain(Chain.ChainName);
+			}
+		}
+		for (const FBoneChain& C : SourceRig.GetRetargetChains())
+		{
+			if (C.ChainName == Source)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig:   %-14s %s -> %s  <-  source %s %s -> %s"), *Chain.ChainName.ToString(),
+					*Chain.StartBone.BoneName.ToString(), *Chain.EndBone.BoneName.ToString(), *C.ChainName.ToString(),
+					*C.StartBone.BoneName.ToString(), *C.EndBone.BoneName.ToString());
+			}
+		}
 		if (Source == NAME_None)
 		{
-			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: target chain %s has no source chain."), *Chain.ChainName.ToString());
+			FString Names;
+			for (const FBoneChain& C : SourceRig.GetRetargetChains())
+			{
+				Names += TEXT(" ") + C.ChainName.ToString();
+			}
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: target chain %s has no source chain (source chains:%s)."),
+				*Chain.ChainName.ToString(), *Names);
 			bOk = false;
 		}
 		else
@@ -246,6 +327,19 @@ bool RetargetClips(UIKRigDefinition& SourceRig, UIKRigDefinition& TargetRig, USk
 			++Mapped;
 		}
 	}
+	// Turn the target's chains to point the way the source's do in its retarget pose. Rigs whose ref poses differ (the UEFN
+	// mannequin's against a Tripo body) otherwise swing each leg in a turned plane, and the planted feet sweep sideways.
+	Retargeter->AutoAlignAllBones(ERetargetSourceOrTarget::Target, ERetargetAutoAlignMethod::ChainToChain);
+
+	// The root motion op takes its roots from the rigs, and the source rig's root is the mannequin's pelvis: the target
+	// root would copy the pelvis (hip height, bob and sway) and the game, which holds the root still, would lose them.
+	// Copy the skeletons' own roots, which carry only the ground motion.
+	if (FIKRetargetRootMotionOp* RootOp = Retargeter->GetFirstRetargetOpOfType<FIKRetargetRootMotionOp>())
+	{
+		RootOp->Settings.SourceRoot.BoneName = SourceMesh->GetRefSkeleton().GetBoneName(0);
+		RootOp->Settings.TargetRoot.BoneName = TargetMesh.GetRefSkeleton().GetBoneName(0);
+	}
+
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: retargeter %s: %d ops, %d/%d target chains mapped (%s -> %s)."),
 		*Asset->GetName(), Retargeter->GetNumRetargetOps(), Mapped, TargetRig.GetRetargetChains().Num(), *SourceMesh->GetName(),
 		*TargetMesh.GetName());

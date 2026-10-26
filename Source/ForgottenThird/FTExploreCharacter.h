@@ -5,8 +5,11 @@
 // right stick, hold Shift or the left trigger to run, Space or pad A to jump, E or pad X to use
 // what the prompt points at. Input objects are built here at run time, like AFTPlayerController's.
 //
-// The body plays its idle or walk clip in single-node mode, switched on ground speed, with the
-// walk's play rate following the speed. There is no blend, so the switch pops.
+// The body is animated by UFTLocomotionAnimInstance: idle, walk, run, sprint, jump, fall and land
+// clips (and the moving jump and landing taken at speed) blended from the capsule's speed and
+// IsFalling, the gaits at the rate that keeps the planted feet still, the spine banking and leaning
+// into turns and speed. Missing clips are skipped (with no run clip the walk speeds up; with no jump
+// clips the gait carries on in the air).
 //
 // The body, its clips and any extra pieces (clothes, hair) can be swapped from config without a
 // rebuild, under [/Script/ForgottenThird.FTExploreCharacter] in Config/UserGame.ini (local, not
@@ -19,6 +22,8 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "InputActionValue.h"
+
+#include "FTLocomotionAnimInstance.h"
 
 #include "FTExploreCharacter.generated.h"
 
@@ -42,6 +47,20 @@ public:
 	TObjectPtr<UAnimSequence> IdleClip;
 	UPROPERTY(EditAnywhere, Category = "Explore|Look")
 	TObjectPtr<UAnimSequence> WalkClip;
+	UPROPERTY(EditAnywhere, Category = "Explore|Look")
+	TObjectPtr<UAnimSequence> RunClip;
+	UPROPERTY(EditAnywhere, Category = "Explore|Look")
+	TObjectPtr<UAnimSequence> SprintClip;
+	UPROPERTY(EditAnywhere, Category = "Explore|Look")
+	TObjectPtr<UAnimSequence> JumpClip;
+	UPROPERTY(EditAnywhere, Category = "Explore|Look")
+	TObjectPtr<UAnimSequence> FallClip;
+	UPROPERTY(EditAnywhere, Category = "Explore|Look")
+	TObjectPtr<UAnimSequence> LandClip;
+	UPROPERTY(EditAnywhere, Category = "Explore|Look")
+	TObjectPtr<UAnimSequence> JumpMovingClip;
+	UPROPERTY(EditAnywhere, Category = "Explore|Look")
+	TObjectPtr<UAnimSequence> LandMovingClip;
 	// Config overrides, loaded at BeginPlay; empty keeps the built-in Devin.
 	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
 	FSoftObjectPath BodyMeshPath;
@@ -49,15 +68,26 @@ public:
 	FSoftObjectPath IdleClipPath;
 	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
 	FSoftObjectPath WalkClipPath;
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
+	FSoftObjectPath RunClipPath;
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
+	FSoftObjectPath SprintClipPath;
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
+	FSoftObjectPath JumpClipPath;
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
+	FSoftObjectPath FallClipPath;
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
+	FSoftObjectPath LandClipPath;
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
+	FSoftObjectPath JumpMovingClipPath;
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
+	FSoftObjectPath LandMovingClipPath;
 	// Skeletal meshes worn over the body, posed by it.
 	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
 	TArray<FSoftObjectPath> PiecePaths;
-	// The ground speed (cm/s) at which the walk clip plays at rate 1.
-	UPROPERTY(EditAnywhere, Category = "Explore|Look")
-	float WalkClipSpeed = 140.f;
-
+	// The default gait is a run (the run clip's ground speed); held Run sprints.
 	UPROPERTY(EditAnywhere, Category = "Explore|Movement")
-	float WalkSpeed = 330.f;
+	float WalkSpeed = 450.f;
 	UPROPERTY(EditAnywhere, Category = "Explore|Movement")
 	float RunSpeed = 700.f;
 
@@ -80,7 +110,7 @@ private:
 	void HandleRunStart();
 	void HandleRunStop();
 	void HandleInteract();
-	void UpdateClip();
+	void SetupLocomotion();
 	void ApplyLookOverrides();
 	void AddPortraitLights();
 	void StepPortraitShots();
@@ -118,6 +148,7 @@ private:
 	FTimerHandle ShotTimer;
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
-	bool bWalking = false;
-	bool bClipStarted = false;
+	FFTFootSlideProbe SlideProbe;
+	float JumpEvery = 0.f; // -LocoJump=<s>
+	float JumpTimer = 0.f;
 };
