@@ -161,41 +161,62 @@ def boundary_loops(o):
 
 
 def mouth_from_pocket(skin, eye_z, height):
-    """An open mouth whose inside is a closed pocket of the skin (no boundary loop): down the centre line, the run of
-    heights where a ray from the front goes much deeper than the face around it (the highest such run; the gap under
-    the chin is lower). Returns four outline points: the
-    corners (where the deep run ends sideways at mid height) and the upper and lower lip edges."""
+    """An open mouth whose inside is a closed pocket of the skin (no boundary loop), seen from the front: a notch, a
+    height where a ray from the front goes deeper than both lips around it. Lips parted only a few millimetres at the
+    centre still show one (the ray slips between them into the pocket); the gap under the chin doesn't, since the
+    neck below it is further back still. Down the centre line the deepest notch is the opening (the creases under the
+    nose and over the chin are shallow ones), and each lip edge is the biggest step forward in the profile from there;
+    sideways the notch is followed as it curves until it fades at the corners.
+    Returns four outline points, the corners and the upper and lower lip edges, or None."""
     SV = _verts(skin)
     bvh = BVHTree.FromPolygons([Vector(p) for p in SV], [tuple(p.vertices) for p in skin.data.polygons])
-    step = 0.002 * height
+    step, thr = 0.002 * height, 0.01 * height
+    far = SV[:, 1].max() + height  # a ray that goes through the opening
+
+    def y_at(x, z):
+        h = front_profile(bvh, x, z)
+        return far if h is None else h[1]
+
+    def notch(x, z, y=None):
+        y = y_at(x, z) if y is None else y
+        return max(y - max(y_at(x, z + d), y_at(x, z - d)) for d in np.array([0.01, 0.02, 0.04, 0.08]) * height)
+
     zs = np.arange(eye_z - 0.08 * height, eye_z - 0.45 * height, -step)
-    ys = [front_profile(bvh, 0.0, z) for z in zs]
-    face_y = np.median([h[1] for h in ys if h is not None])
-    deep = np.array([h is None or h[1] - face_y > 0.05 * height for h in ys])
+    yv = np.array([y_at(0.0, z) for z in zs])
+    depth = np.array([notch(0.0, z, y) for z, y in zip(zs, yv)])
     runs, i = [], 0
     while i < len(zs):
-        if deep[i]:
+        if depth[i] > thr:
             j = i
-            while j + 1 < len(zs) and deep[j + 1]:
+            while j + 1 < len(zs) and depth[j + 1] > thr:
                 j += 1
-            runs.append((j - i, i, j))
+            if j - i >= 2:
+                runs.append((depth[i:j + 1].max(), i, j))
             i = j + 1
         else:
             i += 1
-    runs = [r for r in runs if r[0] >= 2]  # the highest real run: the gap under the chin comes later
     if not runs:
-        raise SystemExit("rig_head: no open mouth found (close-mouthed heads go through mouth_cut.py)")
-    _n, i, j = runs[0]
+        return None
+    _d, i, j = max(runs)
+    k = i + int(np.argmax(depth[i:j + 1]))
+    z = zs[k]
+    # the lip edges: the biggest step forward in the profile going up, and going down, from the deepest point
+    reach = int(0.12 * height / step)
+    up = np.arange(max(1, k - reach), k + 1)
+    lo = np.arange(k, min(len(zs) - 1, k + reach))
+    i = up[np.argmax(yv[up] - yv[up - 1])]
+    j = lo[np.argmax(yv[lo] - yv[lo + 1])]
     z_up, z_lo = zs[i] + step / 2, zs[j] - step / 2
-    zm = (z_up + z_lo) / 2
+    win = np.arange(-10, 11) * step
     x = 0.0
     while x < 0.2 * height:
-        h = front_profile(bvh, x + step, zm)
-        if h is not None and h[1] - face_y < 0.05 * height:
+        cand = [(notch(x + step, z + dz), z + dz) for dz in win]
+        best = max(cand)
+        if best[0] <= thr:
             break
-        x += step
-    y = face_y
-    return np.array([[x, y, zm], [-x, y, zm], [0.0, y, z_up], [0.0, y, z_lo]])
+        x, z = x + step, best[1]
+    y = min(y_at(0.0, z_up + step), y_at(0.0, z_lo - step))
+    return np.array([[x, y, z], [-x, y, z], [0.0, y, z_up], [0.0, y, z_lo]])
 
 
 def sort_parts(parts):
@@ -224,16 +245,21 @@ def sort_parts(parts):
     eye_l, eye_r = best[1], best[2]  # +x is the character's left (it faces -y)
     E = S[eye_l.name]
     eye_z, eye_w = E["c"][2], E["size"][0]
-    # the mouth: the skin's open loop nearest the centre line below the eyes, in front
-    mouth_loop, mouth_c = None, None
-    SV = _verts(skin)
-    for loop in boundary_loops(skin):
-        c = SV[loop].mean(axis=0)
-        if abs(c[0]) < 0.03 * height and c[2] < eye_z - 0.5 * eye_w and c[1] < E["c"][1] + eye_w and len(loop) > 8:
-            if mouth_c is None or c[2] > mouth_c[2]:
-                mouth_loop, mouth_c = loop, c
-    ML = SV[mouth_loop] if mouth_loop is not None else mouth_from_pocket(skin, eye_z, height)
-    mouth_c = ML.mean(axis=0) if mouth_loop is None else mouth_c
+    # the mouth: the opening down the centre line. An open loop of the skin there is only a fallback: it can be just
+    # the inner edge of one lip running back into the mouth, which misses the other lip
+    ML = mouth_from_pocket(skin, eye_z, height)
+    if ML is None:
+        mouth_loop, mouth_c = None, None
+        SV = _verts(skin)
+        for loop in boundary_loops(skin):
+            c = SV[loop].mean(axis=0)
+            if abs(c[0]) < 0.03 * height and c[2] < eye_z - 0.5 * eye_w and c[1] < E["c"][1] + eye_w and len(loop) > 8:
+                if mouth_c is None or c[2] > mouth_c[2]:
+                    mouth_loop, mouth_c = loop, c
+        if mouth_loop is None:
+            raise SystemExit("rig_head: no open mouth found (close-mouthed heads go through mouth_cut.py)")
+        ML = SV[mouth_loop]
+    mouth_c = ML.mean(axis=0)
     face_top = eye_z + 0.7 * eye_w
     chin_z = mouth_c[2] - 2.0 * (eye_z - mouth_c[2])  # generous: only used to bound the face band
     kinds = {eye_l.name: "eye", eye_r.name: "eye"}
