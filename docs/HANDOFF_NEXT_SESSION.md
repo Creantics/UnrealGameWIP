@@ -20,11 +20,15 @@ Private notes (character references, concept-art review, script status) are in `
     - `FTBuildExploreWorld -World=overworld` builds it.
     - The alpha line now ends `, <h> overworld hops`. `gate.ps1 -Alpha` needs at least one once `Overworld.umap`
       exists.
-  - Checks: ctest green (455 cases). **Not yet run: UBT, the overworld map build, the tour, or the alpha gate.**
-    They were held while the MetaHuman session had the editor open. Neither commit is pushed until UBT passes.
-  - Next, in order: run `tools/gate.ps1 -Ubt` and build the map with `-World=overworld`. Then run the tour, and then
-    `gate.ps1 -Alpha`; Core expects 19 hops. Put the real numbers in `docs/ALPHA.md` and `docs/WORLDS.md`, and push.
-    The look needs a human eye.
+  - Main 430ea10: arrival within 4 m of a gate (as the world tour) and a free walk when the carry's world is unknown.
+  - Main 8afd6e0: `Content/Maps/Overworld.umap` built (0 errors, 0 warnings: 3 worlds, 3 roads, 256 props, 482 m).
+    `test_overworld` now counts hops as the director does (field-routed steps only; it counted battle and stub scenes
+    before and said 19). `FTMeshFacing` falls back to foot->ball bones when a body mesh has no eye bones (MetaHuman
+    bodies keep the eyes on the face mesh).
+  - Checks, all green and pushed: UBT Succeeded; the tour (all 3 gates in 2 legs, 117.5 s game time, 16 s real);
+    `gate.ps1 -Alpha`: `FINISHED 73 scenes, 167 screens (40 battle, 91 field, 36 stub), 0 STUCK, 0 warnings,
+    12 overworld hops`. Numbers are in `docs/ALPHA.md` and `docs/WORLDS.md`.
+  - Open: the look needs a human eye (nothing was rendered; NullRHI only).
 
 - **NEWEST (2026-10-26, worlds): three big worlds (solhaven town, lattice towers, unwritten ruins), each 1 km a side.**
   Approach set by the advisor: Core first, then one generated map per world. Each map is a blockout plus the world's style
