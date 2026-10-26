@@ -47,6 +47,7 @@ add_library(ftcore STATIC
     src/Encounter.cpp
     src/Explore.cpp
     src/FieldGoals.cpp
+    src/WorldLayout.cpp
     src/Face.cpp
     src/FaceDirection.cpp
     src/FaceImport.cpp
@@ -120,6 +121,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_encounter.cpp
         tests/test_explore.cpp
         tests/test_field_goals.cpp
+        tests/test_world_layout.cpp
         tests/test_face.cpp
         tests/test_face_direction.cpp
         tests/test_face_import.cpp
