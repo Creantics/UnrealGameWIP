@@ -47,15 +47,16 @@ AFTExploreCharacter::AFTExploreCharacter()
 
 	Boom = CreateDefaultSubobject<USpringArmComponent>(TEXT("Boom"));
 	Boom->SetupAttachment(RootComponent);
-	Boom->TargetArmLength = 460.f;
-	Boom->SocketOffset = FVector(0.0, 0.0, 70.0);
+	// Close and low, so the ground moving past reads as speed.
+	Boom->TargetArmLength = 300.f;
+	Boom->SocketOffset = FVector(0.0, 0.0, 60.0);
 	Boom->bUsePawnControlRotation = true;
 	Boom->bEnableCameraLag = true;
 	Boom->CameraLagSpeed = 12.f;
 
 	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
 	Camera->SetupAttachment(Boom, USpringArmComponent::SocketName);
-	Camera->SetRelativeRotation(FRotator(-8.0, 0.0, 0.0));
+	Camera->SetRelativeRotation(FRotator(-10.0, 0.0, 0.0));
 	Camera->bUsePawnControlRotation = false;
 	Camera->SetFieldOfView(70.f);
 
@@ -364,5 +365,6 @@ void AFTExploreCharacter::UpdateClip()
 		bWalking = bWantWalk;
 		bClipStarted = true;
 	}
-	Body->SetPlayRate(bWalking ? FMath::Clamp(Speed / WalkClipSpeed, 0.5f, 3.f) : 1.f);
+	// Up to 4x keeps the feet near the ground speed at a run until there's a run clip.
+	Body->SetPlayRate(bWalking ? FMath::Clamp(Speed / WalkClipSpeed, 0.5f, 4.f) : 1.f);
 }

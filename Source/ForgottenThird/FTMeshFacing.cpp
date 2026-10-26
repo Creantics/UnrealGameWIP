@@ -38,5 +38,6 @@ float FTMeshFacing::FacingYaw(const USkeletalMesh& Mesh)
 	{
 		return 0.f;
 	}
-	return -FMath::RadiansToDegrees(FMath::Atan2(Forward.Y, Forward.X));
+	// Every imported rig faces an axis; snapping drops the few degrees an uneven pair of eyes adds.
+	return static_cast<float>(FMath::GridSnap(-FMath::RadiansToDegrees(FMath::Atan2(Forward.Y, Forward.X)), 90.0));
 }

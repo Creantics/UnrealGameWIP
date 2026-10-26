@@ -13,6 +13,8 @@ namespace
 constexpr float kMoveEpsilon = 0.5f;
 // The walk clip's ground speed (cm/s), as on the explore character.
 constexpr float kWalkClipSpeed = 140.f;
+// How fast (deg/s) the follower turns toward the way it moves, as the lead's movement does.
+constexpr float kTurnRate = 540.f;
 }
 
 AFTPartyFollower::AFTPartyFollower()
@@ -80,7 +82,9 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 	FRotator Rot = GetActorRotation();
 	if (bWantWalk)
 	{
-		Rot = FRotator(0.0, FMath::RadiansToDegrees(FMath::Atan2(Move.Y, Move.X)), 0.0);
+		// Turn toward the trail rather than snapping to each frame's step, so a weaving lead doesn't jerk it round.
+		const FRotator Want(0.0, FMath::RadiansToDegrees(FMath::Atan2(Move.Y, Move.X)), 0.0);
+		Rot = DeltaSeconds > 0.f ? FMath::RInterpConstantTo(Rot, Want, DeltaSeconds, kTurnRate) : Want;
 	}
 	SetActorLocationAndRotation(FVector(Ground.X, Ground.Y, Z), Rot, false, nullptr, ETeleportType::TeleportPhysics);
 
@@ -91,5 +95,5 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 		bClipStarted = true;
 	}
 	const float Speed = DeltaSeconds > 0.f ? Moved / DeltaSeconds : 0.f;
-	Body->SetPlayRate(bWalking ? FMath::Clamp(Speed / kWalkClipSpeed, 0.5f, 3.f) : 1.f);
+	Body->SetPlayRate(bWalking ? FMath::Clamp(Speed / kWalkClipSpeed, 0.5f, 4.f) : 1.f);
 }

@@ -1,5 +1,6 @@
 #include "FTExploreDirector.h"
 
+#include "Camera/PlayerCameraManager.h"
 #include "EngineUtils.h"
 #include "Engine/World.h"
 #include "GameFramework/Controller.h"
@@ -46,6 +47,8 @@ constexpr float kTourReach = 4.f;
 constexpr int32 kTourTargetBase = 300;
 // The overworld's pilot targets (a hop's gates, the tour's gates) get ids from here up.
 constexpr int32 kOverTargetBase = 400;
+// A follower nearer the camera than this share of the lead's distance is hidden: it would loom over the lead.
+constexpr double kFollowerCameraShare = 0.8;
 
 const TCHAR* const kObjectiveNames[ftcore::demo::kObjCount] = {
 	TEXT("Talk to Duy"),
@@ -479,12 +482,17 @@ void AFTExploreDirector::PlaceFollowers(AFTExploreCharacter& Player, float Delta
 {
 	Trail.push(ToGround(Player.GetActorLocation()));
 	const float FeetZ = static_cast<float>(Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight());
+	const APlayerCameraManager* Camera = UGameplayStatics::GetPlayerCameraManager(this, 0);
 	for (int32 I = 0; I < Followers.Num(); ++I)
 	{
 		if (AFTPartyFollower* Follower = Followers[I])
 		{
 			const ftcore::Vec2 At = Trail.pointBehind(static_cast<float>(I + 1) * ftcore::PartyTrail::kFollowerSpacing);
 			Follower->Place(FVector2D(At.x * 100.0, At.y * 100.0), FeetZ, DeltaSeconds);
+			const bool bInLens = Camera
+				&& FVector::Dist2D(Camera->GetCameraLocation(), Follower->GetActorLocation())
+					< kFollowerCameraShare * FVector::Dist2D(Camera->GetCameraLocation(), Player.GetActorLocation());
+			Follower->SetActorHiddenInGame(bInLens);
 		}
 	}
 }

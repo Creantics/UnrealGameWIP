@@ -59,7 +59,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Explore|Movement")
 	float WalkSpeed = 330.f;
 	UPROPERTY(EditAnywhere, Category = "Explore|Movement")
-	float RunSpeed = 620.f;
+	float RunSpeed = 700.f;
 
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
