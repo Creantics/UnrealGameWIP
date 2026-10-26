@@ -25,6 +25,7 @@ const FString kArrowField(TEXT(">"));
 const FTUiText kHintField(TEXT("explore.hint"));
 const FTUiText kCompleteField(TEXT("explore.complete"));
 const FTUiText kWorldField(TEXT("explore.world"));
+const FTUiText kOverworldField(TEXT("explore.overworld"));
 
 float FieldFade(double Age, double Hold, double Out)
 {
@@ -76,7 +77,7 @@ void AFTExploreHUD::DrawHUD()
 	{
 		DrawFieldObjective(*Found);
 	}
-	else if (Found->IsWorldMode())
+	else if (Found->IsWorldMode() || Found->IsOverworld())
 	{
 		DrawWorld(*Found);
 	}
@@ -145,7 +146,7 @@ void AFTExploreHUD::DrawWorld(const AFTExploreDirector& D)
 	const float X = 24.f * S;
 	const float Y = 24.f * S;
 	DrawRect(kPanelField, X - 10.f * S, Y - 8.f * S, 360.f * S, 70.f * S);
-	DrawStr(kWorldField, kGoldField, X, Y, GEngine->GetSmallFont(), 1.1f);
+	DrawStr(D.IsOverworld() ? kOverworldField : kWorldField, kGoldField, X, Y, GEngine->GetSmallFont(), 1.1f);
 	DrawStr(D.GetWorldLine(), kWhiteField, X, Y + 26.f * S, GEngine->GetMediumFont(), 1.f);
 }
 

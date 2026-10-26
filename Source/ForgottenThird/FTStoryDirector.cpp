@@ -713,6 +713,16 @@ void AFTStoryDirector::OpenStep()
 				Carry.World = FT::ToFString(World.id);
 				Carry.District = static_cast<int32>(Placed->district);
 				Carry.Style = FT::ToFString(Placed->style.empty() ? World.style : Placed->style);
+				// Another world than the last field step's: walk the overworld between them first.
+				const FString OverMap = FT::ToFString(Worlds.overworld.map);
+				if (Worlds.overworld.present && !GI->LastWorld.IsEmpty() && GI->LastWorld != Carry.World
+					&& FPackageName::DoesPackageExist(FString::Printf(TEXT("/Game/Maps/%s"), *OverMap)))
+				{
+					Map = OverMap;
+					Carry.FromWorld = GI->LastWorld;
+					UE_LOG(LogForgottenThird, Display, TEXT("Story: overworld hop from %s to %s for %s."), *Carry.FromWorld, *Carry.World, *Carry.Scene);
+				}
+				GI->LastWorld = Carry.World;
 			}
 			else
 			{

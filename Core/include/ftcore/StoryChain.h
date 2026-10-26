@@ -77,6 +77,7 @@ struct AlphaCounters {
     std::uint32_t battle = 0, field = 0, stub = 0; // screens played to the end; stub includes choice, qte, cutscene, banter and mini
     std::uint32_t stuck = 0;
     std::uint32_t warnings = 0; // plan unknown or dropped tokens, screens that came back not done
+    std::uint32_t hops = 0;     // overworld walks between two worlds' field steps
 
     void addScreen(GameplayScreen screen) {
         switch (screenRoutesTo(screen)) { // the screen that was really played
@@ -99,15 +100,16 @@ struct AlphaCounters {
     // 0 for a clean run, 1 otherwise.
     int exitCode() const { return clean() ? 0 : 1; }
 
-    // "Alpha: FINISHED <S> scenes, <N> screens (<b> battle, <f> field, <s> stub), <k> STUCK, <w> warnings".
+    // "Alpha: FINISHED <S> scenes, <N> screens (<b> battle, <f> field, <s> stub), <k> STUCK, <w> warnings,
+    // <h> overworld hops".
     // Returns the length written (the text is cut to fit `capacity`, always null-terminated).
     std::size_t formatFinished(char* buffer, std::size_t capacity) const {
         if (!buffer || capacity == 0) return 0;
         const int n = std::snprintf(buffer, capacity,
-                                    "Alpha: FINISHED %u scenes, %u screens (%u battle, %u field, %u stub), %u STUCK, %u warnings",
+                                    "Alpha: FINISHED %u scenes, %u screens (%u battle, %u field, %u stub), %u STUCK, %u warnings, %u overworld hops",
                                     static_cast<unsigned>(scenes), static_cast<unsigned>(screens()),
                                     static_cast<unsigned>(battle), static_cast<unsigned>(field), static_cast<unsigned>(stub),
-                                    static_cast<unsigned>(stuck), static_cast<unsigned>(warnings));
+                                    static_cast<unsigned>(stuck), static_cast<unsigned>(warnings), static_cast<unsigned>(hops));
         if (n < 0) {
             buffer[0] = '\0';
             return 0;

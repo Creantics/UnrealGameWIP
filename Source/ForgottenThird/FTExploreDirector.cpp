@@ -21,6 +21,7 @@
 #include "FTFieldGuard.h"
 #include "FTGameInstance.h"
 #include "FTPartyFollower.h"
+#include "FTStorySubsystem.h"
 #include "FTStyleController.h"
 #include "FTText.h"
 
@@ -28,6 +29,7 @@
 #include "ftcore/ExploreDemo.h"
 #include "ftcore/FieldGoals.h"
 #include "ftcore/PathFollow.h"
+#include "ftcore/StoryDatabase.h"
 
 #include <string>
 #include <string_view>
@@ -42,6 +44,8 @@ constexpr float kPilotStuckSeconds = 15.f;
 // tour's pilot targets get ids from here up, apart from the demo spots' and the field goal's.
 constexpr float kTourReach = 4.f;
 constexpr int32 kTourTargetBase = 300;
+// The overworld's pilot targets (a hop's gates, the tour's gates) get ids from here up.
+constexpr int32 kOverTargetBase = 400;
 
 const TCHAR* const kObjectiveNames[ftcore::demo::kObjCount] = {
 	TEXT("Talk to Duy"),
@@ -106,6 +110,7 @@ void AFTExploreDirector::BeginPlay()
 	CacheText();
 	RestoreFromCarry();
 	BeginWorld();
+	BeginOverworld();
 	BeginStoryWalk();
 	for (int32 I = 0; I < static_cast<int32>(Exploration.objectiveCount()); ++I)
 	{
@@ -121,7 +126,7 @@ void AFTExploreDirector::BeginPlay()
 
 void AFTExploreDirector::FindSpots()
 {
-	if (!WorldId.IsEmpty())
+	if (!WorldId.IsEmpty() || bOverworld)
 	{
 		return; // a big world's map has no demo spots
 	}
@@ -311,7 +316,7 @@ void AFTExploreDirector::RestoreFromCarry()
 void AFTExploreDirector::BeginStoryWalk()
 {
 	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
-	if (!GI || !GI->StoryCarry.bValid || GI->StoryCarry.bDone || GI->StoryCarry.Screen != ftcore::GameplayScreen::Field)
+	if (Overworld || !GI || !GI->StoryCarry.bValid || GI->StoryCarry.bDone || GI->StoryCarry.Screen != ftcore::GameplayScreen::Field)
 	{
 		return;
 	}
@@ -629,6 +634,24 @@ void AFTExploreDirector::OpenStoryMap()
 
 void AFTExploreDirector::Interact()
 {
+	if (Overworld)
+	{
+		const AFTExploreCharacter* Player = GetPlayerCharacter();
+		const int32 Node = Player ? Overworld->nodeAt(ToGround(Player->GetActorLocation())) : -1;
+		if (Node < 0 || bEntering)
+		{
+			return;
+		}
+		if (bHop ? Node == Hop.to : ((OpenWorlds >> Node) & 1u) != 0)
+		{
+			EnterWorld(Node);
+		}
+		else if (!bHop)
+		{
+			SetNotice(FString::Printf(TEXT("%s  closed"), *WorldName(Node)));
+		}
+		return;
+	}
 	if (bStoryWalk)
 	{
 		if (ftcore::demo::fieldStepUsable(bFieldReached, FieldElapsed))
@@ -763,6 +786,11 @@ void AFTExploreDirector::Tick(float DeltaSeconds)
 		{
 			Controller->SetControlRotation(WorldSpawnRotation);
 		}
+	}
+	if (Overworld)
+	{
+		TickOverworld(*Player, DeltaSeconds);
+		return;
 	}
 	if (bStoryWalk)
 	{
@@ -1004,3 +1032,248 @@ void AFTExploreDirector::TickWorld(AFTExploreCharacter& Player, float DeltaSecon
 		FPlatformMisc::RequestExit(false, TEXT("WorldTour"));
 	}
 }
+
+FString AFTExploreDirector::WorldName(int32 World) const
+{
+	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+	if (!GI || World < 0 || World >= static_cast<int32>(GI->GetWorlds().worlds.size()))
+	{
+		return FString();
+	}
+	return FT::ToFString(GI->GetWorlds().worlds[static_cast<size_t>(World)].id);
+}
+
+void AFTExploreDirector::BeginOverworld()
+{
+	if (!bOverworld)
+	{
+		return;
+	}
+	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+	if (!GI)
+	{
+		return;
+	}
+	const ftcore::WorldTable& Worlds = GI->GetWorlds();
+	Overworld = MakeUnique<ftcore::OverworldLayout>();
+	std::string Error;
+	if (!ftcore::generateOverworldLayout(Worlds, *Overworld, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("Overworld: %s"), *FT::ToFString(Error).TrimEnd());
+		Overworld.Reset();
+		return;
+	}
+	const int32 Count = static_cast<int32>(Overworld->nodeCount());
+	UE_LOG(LogForgottenThird, Display, TEXT("Overworld: %d worlds, %d roads, %d emblem blocks, %d props over %.0f m."), Count,
+		static_cast<int32>(Overworld->roadCount()), static_cast<int32>(Overworld->blockCount()),
+		static_cast<int32>(Overworld->propCount()), Overworld->side());
+
+	// Open worlds on a free walk: those whose first placed scene the story has reached; all of them
+	// when the story isn't on a scene (a walk started from the map itself).
+	OpenWorlds = (1u << Count) - 1u;
+	const UFTStorySubsystem* Story = GI->GetSubsystem<UFTStorySubsystem>();
+	if (Story && Story->IsLoaded() && Story->GetRunner().state() != ftcore::StoryRunner::State::Idle)
+	{
+		const ftcore::StoryDatabase& Db = Story->GetDatabase();
+		const std::string_view At = Story->GetRunner().position().scene;
+		std::vector<std::string_view> Order;
+		Order.reserve(Db.sceneCount());
+		size_t Reached = 0;
+		for (uint32 I = 0; I < static_cast<uint32>(Db.sceneCount()); ++I)
+		{
+			Order.push_back(Db.view(Db.scene(I).id));
+			if (Order.back() == At)
+			{
+				Reached = I;
+			}
+		}
+		std::vector<size_t> First;
+		ftcore::worldFirstScenes(Worlds, Order, First);
+		OpenWorlds = ftcore::worldsOpen(First, Reached);
+	}
+
+	// Spawn at a gate, facing the way on: the hop's start, or world 0's.
+	const FFTStoryCarry& Carry = GI->StoryCarry;
+	const bool bStoryStep = Carry.bValid && !Carry.bDone && Carry.Screen == ftcore::GameplayScreen::Field;
+	ftcore::Vec2 Spawn = Overworld->node(0).gate;
+	float Yaw = Overworld->gateYaw(0);
+	if (bStoryStep)
+	{
+		const FTCHARToUTF8 FromUtf8(*Carry.FromWorld);
+		const FTCHARToUTF8 ToUtf8(*Carry.World);
+		const int32 From = Worlds.findWorld(std::string_view(FromUtf8.Get(), static_cast<size_t>(FromUtf8.Length())));
+		const int32 To = Worlds.findWorld(std::string_view(ToUtf8.Get(), static_cast<size_t>(ToUtf8.Length())));
+		bHop = From >= 0 && To >= 0 && ftcore::overworldRoute(*Overworld, static_cast<size_t>(From), static_cast<size_t>(To), Hop);
+		if (!bHop)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Overworld: no way from '%s' to '%s' for %s; entering '%s' straight away."),
+				*Carry.FromWorld, *Carry.World, *Carry.Scene, *Carry.World);
+			bEntering = true;
+			FTimerHandle Timer;
+			GetWorldTimerManager().SetTimer(Timer, FTimerDelegate::CreateWeakLambda(this, [this, To]()
+			{
+				bEntering = false;
+				EnterWorld(To);
+			}), 0.1f, false);
+			return;
+		}
+		bAutoPlay = bAutoPlay || Carry.bAutoPlay;
+		HopPoint = 0;
+		Spawn = Hop.start;
+		Yaw = Hop.startYaw;
+		StoryWalkStart = GetWorld()->GetTimeSeconds();
+		SetBanner(FString::Printf(TEXT("To %s"), *Carry.World));
+		if (bAutoPlay && IsAlphaFast())
+		{
+			UGameplayStatics::SetGlobalTimeDilation(this, 8.f);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Overworld: hop from %s to %s for %s beat %d (%d gates on the way)."),
+			*Carry.FromWorld, *Carry.World, *Carry.Scene, Carry.Beat, static_cast<int32>(Hop.pointCount));
+	}
+	WorldSpawn = FVector(Spawn.x * 100.0, Spawn.y * 100.0, 0.0);
+	WorldSpawnRotation = FRotator(0.f, FMath::RadiansToDegrees(Yaw), 0.f);
+	bWorldSpawnPending = true;
+
+	bWorldTour = !bStoryStep && FParse::Param(FCommandLine::Get(), TEXT("OverworldAutoPlay"));
+	if (!bWorldTour)
+	{
+		return;
+	}
+	// Every gate in turn from world 0's, along the roads.
+	OverTourCount = 0;
+	OverTour[OverTourCount++] = 0;
+	for (int32 To = 1; To < Count; ++To)
+	{
+		uint8 Way[ftcore::OverworldLayout::kMaxNodes];
+		const size_t N = Overworld->path(OverTour[OverTourCount - 1], static_cast<size_t>(To), Way, UE_ARRAY_COUNT(Way));
+		for (size_t K = 1; K < N && OverTourCount < static_cast<int32>(UE_ARRAY_COUNT(OverTour)); ++K)
+		{
+			OverTour[OverTourCount++] = Way[K];
+		}
+	}
+	TourLeg = 1; // the walk starts at the first gate
+	TourStart = Now();
+	TourGameStart = GetWorld()->GetTimeSeconds();
+	if (IsAlphaFast())
+	{
+		UGameplayStatics::SetGlobalTimeDilation(this, 8.f);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Overworld: tour of %d gates over the roads."), OverTourCount);
+}
+
+void AFTExploreDirector::UpdateOverworldLine(ftcore::Vec2 Pos)
+{
+	const int32 At = Overworld->nodeAt(Pos);
+	if (At == OverLineNode && !WorldLine.IsEmpty())
+	{
+		return;
+	}
+	OverLineNode = At;
+	if (At >= 0 && (bHop ? At == Hop.to : ((OpenWorlds >> At) & 1u) != 0))
+	{
+		WorldLine = FString::Printf(TEXT("%s  E  Enter"), *WorldName(At));
+	}
+	else if (At >= 0 && !bHop)
+	{
+		WorldLine = FString::Printf(TEXT("%s  closed"), *WorldName(At));
+	}
+	else if (bHop)
+	{
+		WorldLine = FString::Printf(TEXT("to %s"), *WorldName(Hop.to));
+	}
+	else
+	{
+		WorldLine = TEXT("open road");
+	}
+}
+
+void AFTExploreDirector::TickOverworld(AFTExploreCharacter& Player, float DeltaSeconds)
+{
+	if (!bFollowersSpawned)
+	{
+		SpawnFollowers(Player);
+	}
+	else
+	{
+		PlaceFollowers(Player, DeltaSeconds);
+	}
+	const ftcore::Vec2 Pos = ToGround(Player.GetActorLocation());
+	UpdateOverworldLine(Pos);
+	if (bEntering)
+	{
+		return;
+	}
+	if (bHop)
+	{
+		if (!bAutoPlay)
+		{
+			return;
+		}
+		// The roads run straight gate to gate and nothing stands on them, so no navmesh is needed.
+		const ftcore::Vec2 Target = Hop.points[static_cast<size_t>(HopPoint)];
+		if (FVector2D(Target.x - Pos.x, Target.y - Pos.y).Size() > ftcore::OverworldLayout::kGateReach * 0.5f)
+		{
+			PilotWalk(Player, Pos, Target, kOverTargetBase + HopPoint, DeltaSeconds, false);
+			return;
+		}
+		if (++HopPoint >= static_cast<int32>(Hop.pointCount))
+		{
+			EnterWorld(Hop.to);
+		}
+		return;
+	}
+	if (!bWorldTour || bWorldTourDone || TourLeg >= OverTourCount)
+	{
+		return;
+	}
+	const int32 Node = OverTour[TourLeg];
+	const ftcore::Vec2 Target = Overworld->node(static_cast<size_t>(Node)).gate;
+	if (FVector2D(Target.x - Pos.x, Target.y - Pos.y).Size() > ftcore::OverworldLayout::kGateReach * 0.5f)
+	{
+		PilotWalk(Player, Pos, Target, kOverTargetBase + TourLeg, DeltaSeconds, false);
+		return;
+	}
+	const double Game = GetWorld()->GetTimeSeconds() - TourGameStart;
+	UE_LOG(LogForgottenThird, Display, TEXT("Overworld: reached the %s gate (leg %d/%d) at %.1f s game time."), *WorldName(Node),
+		TourLeg, OverTourCount - 1, Game);
+	if (++TourLeg < OverTourCount)
+	{
+		return;
+	}
+	bWorldTourDone = true;
+	UE_LOG(LogForgottenThird, Display, TEXT("Overworld: OVERWORLD TOUR DONE, all %d gates in %d legs, %.1f s game time (%.1f s real)."),
+		static_cast<int32>(Overworld->nodeCount()), OverTourCount - 1, Game, Now() - TourStart);
+	UGameplayStatics::SetGlobalTimeDilation(this, 1.f);
+	if (bQuitOnComplete || FParse::Param(FCommandLine::Get(), TEXT("WorldQuitOnDone")))
+	{
+		FPlatformMisc::RequestExit(false, TEXT("OverworldTour"));
+	}
+}
+
+void AFTExploreDirector::EnterWorld(int32 World)
+{
+	UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+	if (bEntering || !GI || World < 0 || World >= static_cast<int32>(GI->GetWorlds().worlds.size()))
+	{
+		return;
+	}
+	bEntering = true;
+	const FString Map = FT::ToFString(GI->GetWorlds().worlds[static_cast<size_t>(World)].map);
+	FFTStoryCarry& Carry = GI->StoryCarry;
+	if (Carry.bValid && !Carry.bDone && !Carry.FromWorld.IsEmpty())
+	{
+		// The field step itself plays on the world's map; the carry goes on with it.
+		UE_LOG(LogForgottenThird, Display, TEXT("Overworld: hop from %s to %s done after %.1f s game time."), *Carry.FromWorld,
+			*Carry.World, GetWorld()->GetTimeSeconds() - StoryWalkStart);
+		Carry.FromWorld.Empty();
+		++GI->Alpha.hops;
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Overworld: entering %s."), *WorldName(World));
+	}
+	SetBanner(FString::Printf(TEXT("Entering %s"), *WorldName(World)));
+	UGameplayStatics::SetGlobalTimeDilation(this, 1.f);
+	UGameplayStatics::OpenLevel(this, FName(*Map));
+}
+

@@ -43,6 +43,7 @@
 
 #include "ftcore/ExploreDemo.h"
 #include "ftcore/FieldGoals.h"
+#include "ftcore/Overworld.h"
 #include "ftcore/WorldLayout.h"
 
 #include <string>
@@ -155,6 +156,119 @@ bool WorldLoadText(const TCHAR* Relative, TArray<uint8>& Bytes)
 	const FString File = FPaths::ProjectDir() / Relative;
 	return IFileManager::Get().FileExists(*File) && FFileHelper::LoadFileToArray(Bytes, *File);
 }
+
+// Sun, sky light, atmosphere, fog and an unbound post-process volume.
+void WorldSky(UWorld* World, const FActorSpawnParameters& Spawn)
+{
+	ADirectionalLight* Sun = World->SpawnActor<ADirectionalLight>(FVector(0, 0, 1000), FRotator(-38, 35, 0), Spawn);
+	Sun->GetComponent()->SetMobility(EComponentMobility::Movable);
+	Sun->GetComponent()->SetIntensity(6.f);
+	if (UDirectionalLightComponent* SunLight = Cast<UDirectionalLightComponent>(Sun->GetComponent()))
+	{
+		SunLight->SetAtmosphereSunLight(true);
+	}
+	Sun->SetActorLabel(TEXT("Sun"));
+	ASkyLight* Sky = World->SpawnActor<ASkyLight>(FVector(0, 0, 800), FRotator::ZeroRotator, Spawn);
+	Sky->GetLightComponent()->SetMobility(EComponentMobility::Movable);
+	Sky->GetLightComponent()->bRealTimeCapture = true;
+	Sky->SetActorLabel(TEXT("SkyLight"));
+	ASkyAtmosphere* Atmosphere = World->SpawnActor<ASkyAtmosphere>(FVector::ZeroVector, FRotator::ZeroRotator, Spawn);
+	Atmosphere->SetActorLabel(TEXT("SkyAtmosphere"));
+	AExponentialHeightFog* Fog = World->SpawnActor<AExponentialHeightFog>(FVector(0, 0, -100), FRotator::ZeroRotator, Spawn);
+	Fog->SetActorLabel(TEXT("HeightFog"));
+	APostProcessVolume* Volume = World->SpawnActor<APostProcessVolume>(FVector(0, 0, 200), FRotator::ZeroRotator, Spawn);
+	Volume->bUnbound = true;
+	Volume->Priority = 0.f;
+	Volume->SetActorLabel(TEXT("PostProcessVolume"));
+}
+
+// The style controller with `StyleSpec`, unless it is "none".
+void WorldStyle(UWorld* World, const FActorSpawnParameters& Spawn, const FString& StyleSpec)
+{
+	if (StyleSpec.TrimStartAndEnd().Equals(TEXT("none"), ESearchCase::IgnoreCase))
+	{
+		return;
+	}
+	if (UMaterialInterface* StyleMaterial = LoadObject<UMaterialInterface>(nullptr, FTStyle::MaterialObjectPath))
+	{
+		AFTStyleController* Style = World->SpawnActor<AFTStyleController>(FVector(0, 0, 300), FRotator::ZeroRotator, Spawn);
+		Style->StyleSpec = StyleSpec;
+		Style->StyleMaterial = StyleMaterial;
+		Style->SetActorLabel(TEXT("StyleController"));
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildExploreWorld: %s is missing, so no style controller (run FTBuildStyleMaterials)."),
+			FTStyle::MaterialObjectPath);
+	}
+}
+
+// A new editor world in /Game/Maps/<MapName>, replacing the file; null on failure (logged).
+UWorld* WorldCreate(const FString& MapName, UPackage*& Package, FString& File)
+{
+	if (MapName.IsEmpty() || !FName::IsValidXName(MapName, INVALID_LONGPACKAGE_CHARACTERS))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: '%s' is not a valid map name."), *MapName);
+		return nullptr;
+	}
+	const FString MapPath = FString::Printf(TEXT("/Game/Maps/%s"), *MapName);
+	File = FPackageName::LongPackageNameToFilename(MapPath, FPackageName::GetMapPackageExtension());
+	if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: couldn't replace %s."), *File);
+		return nullptr;
+	}
+	Package = CreatePackage(*MapPath);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false, *MapName, Package); // Editor, so it gets a navigation system
+	if (!World)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: couldn't create the world."));
+		return nullptr;
+	}
+	World->SetFlags(RF_Public | RF_Standalone);
+	if (AWorldSettings* Settings = World->GetWorldSettings())
+	{
+		Settings->DefaultGameMode = AFTExploreGameMode::StaticClass();
+	}
+	return World;
+}
+
+// Saves the map and destroys the world; the commandlet's exit code.
+int32 WorldSave(UPackage* Package, UWorld* World, const FString& File)
+{
+	FAssetRegistryModule::AssetCreated(World);
+	Package->MarkPackageDirty();
+	FSavePackageArgs Save;
+	Save.TopLevelFlags = RF_Public | RF_Standalone;
+	Save.SaveFlags = SAVE_NoError;
+	const bool bSaved = UPackage::SavePackage(Package, World, *File, Save);
+	World->DestroyWorld(false);
+	if (!bSaved)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: couldn't save %s."), *File);
+		return 1;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildExploreWorld: saved %s."), *File);
+	return 0;
+}
+
+// The blockout's actor count and bounds: lights, volumes and the director don't count toward the size.
+FBox WorldBounds(UWorld* World, int32& Actors)
+{
+	Actors = 0;
+	FBox Bounds(ForceInit);
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		++Actors;
+		if (It->IsA<AStaticMeshActor>() || It->FindComponentByClass<UInstancedStaticMeshComponent>())
+		{
+			Bounds += It->GetComponentsBoundingBox(true);
+		}
+	}
+	return Bounds;
+}
+
+int32 BuildOverworldMap(const ftcore::WorldTable& Worlds, const FString& Params);
 } // namespace
 
 int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
@@ -173,6 +287,10 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: Data/Field/worlds.json refused: %s"), *FT::ToFString(Error).TrimEnd());
 		return 1;
 	}
+	if (WorldId.Equals(TEXT("overworld"), ESearchCase::IgnoreCase))
+	{
+		return BuildOverworldMap(Worlds, Params);
+	}
 	const FTCHARToUTF8 IdUtf8(*WorldId);
 	const int32 Index = Worlds.findWorld(std::string_view(IdUtf8.Get(), static_cast<size_t>(IdUtf8.Length())));
 	if (Index < 0)
@@ -189,11 +307,6 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 	}
 	const FString Id = FT::ToFString(Spec.id);
 	const FString MapName = FT::ToFString(Spec.map);
-	if (MapName.IsEmpty() || !FName::IsValidXName(MapName, INVALID_LONGPACKAGE_CHARACTERS))
-	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: '%s' is not a valid map name."), *MapName);
-		return 1;
-	}
 	FString StyleSpec = FT::ToFString(Spec.style);
 	FParse::Value(*Params, TEXT("Style="), StyleSpec, false);
 
@@ -227,24 +340,12 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 		return 1;
 	}
 
-	const FString MapPath = FString::Printf(TEXT("/Game/Maps/%s"), *MapName);
-	const FString File = FPackageName::LongPackageNameToFilename(MapPath, FPackageName::GetMapPackageExtension());
-	if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
-	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: couldn't replace %s."), *File);
-		return 1;
-	}
-	UPackage* Package = CreatePackage(*MapPath);
-	UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false, *MapName, Package); // Editor, so it gets a navigation system
+	UPackage* Package = nullptr;
+	FString File;
+	UWorld* World = WorldCreate(MapName, Package, File);
 	if (!World)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: couldn't create the world."));
 		return 1;
-	}
-	World->SetFlags(RF_Public | RF_Standalone);
-	if (AWorldSettings* Settings = World->GetWorldSettings())
-	{
-		Settings->DefaultGameMode = AFTExploreGameMode::StaticClass();
 	}
 
 	const FWorldPalette Palette = WorldPaletteFor(Layout->kind());
@@ -385,23 +486,7 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 	WorldBlock(World, Spawn, Sphere, AnchorTint, TEXT("Anchor"), WorldM(0, 0, 260), FVector(60.f));
 	WorldBlock(World, Spawn, Cylinder, AnchorTint, TEXT("Anchor_Ring"), WorldM(0, 0, 260), FVector(150.f, 150.f, 3.f), FRotator(12.f, 0.f, 0.f));
 
-	// Light.
-	ADirectionalLight* Sun = World->SpawnActor<ADirectionalLight>(FVector(0, 0, 1000), FRotator(-38, 35, 0), Spawn);
-	Sun->GetComponent()->SetMobility(EComponentMobility::Movable);
-	Sun->GetComponent()->SetIntensity(6.f);
-	if (UDirectionalLightComponent* SunLight = Cast<UDirectionalLightComponent>(Sun->GetComponent()))
-	{
-		SunLight->SetAtmosphereSunLight(true);
-	}
-	Sun->SetActorLabel(TEXT("Sun"));
-	ASkyLight* Sky = World->SpawnActor<ASkyLight>(FVector(0, 0, 800), FRotator::ZeroRotator, Spawn);
-	Sky->GetLightComponent()->SetMobility(EComponentMobility::Movable);
-	Sky->GetLightComponent()->bRealTimeCapture = true;
-	Sky->SetActorLabel(TEXT("SkyLight"));
-	ASkyAtmosphere* Atmosphere = World->SpawnActor<ASkyAtmosphere>(FVector::ZeroVector, FRotator::ZeroRotator, Spawn);
-	Atmosphere->SetActorLabel(TEXT("SkyAtmosphere"));
-	AExponentialHeightFog* Fog = World->SpawnActor<AExponentialHeightFog>(FVector(0, 0, -100), FRotator::ZeroRotator, Spawn);
-	Fog->SetActorLabel(TEXT("HeightFog"));
+	WorldSky(World, Spawn);
 
 	AFTExploreDirector* Director = World->SpawnActor<AFTExploreDirector>(FVector(0, 0, 200), FRotator::ZeroRotator, Spawn);
 	Director->WorldId = Id;
@@ -411,26 +496,7 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 	APlayerStart* Start = World->SpawnActor<APlayerStart>(WorldM(First.origin, 1.f), FRotator(0.f, FMath::RadiansToDegrees(Layout->spawnYaw(0)), 0.f), Spawn);
 	Start->SetActorLabel(TEXT("PlayerStart"));
 
-	APostProcessVolume* Volume = World->SpawnActor<APostProcessVolume>(FVector(0, 0, 200), FRotator::ZeroRotator, Spawn);
-	Volume->bUnbound = true;
-	Volume->Priority = 0.f;
-	Volume->SetActorLabel(TEXT("PostProcessVolume"));
-
-	if (!StyleSpec.TrimStartAndEnd().Equals(TEXT("none"), ESearchCase::IgnoreCase))
-	{
-		if (UMaterialInterface* StyleMaterial = LoadObject<UMaterialInterface>(nullptr, FTStyle::MaterialObjectPath))
-		{
-			AFTStyleController* Style = World->SpawnActor<AFTStyleController>(FVector(0, 0, 300), FRotator::ZeroRotator, Spawn);
-			Style->StyleSpec = StyleSpec;
-			Style->StyleMaterial = StyleMaterial;
-			Style->SetActorLabel(TEXT("StyleController"));
-		}
-		else
-		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildExploreWorld: %s is missing, so no style controller (run FTBuildStyleMaterials)."),
-				FTStyle::MaterialObjectPath);
-		}
-	}
+	WorldStyle(World, Spawn, StyleSpec);
 
 	// A navmesh over each district (plaza and building ring), built here and saved with the map. The
 	// roads between districts are straight and clear, so nothing walks them by navmesh.
@@ -486,35 +552,190 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 	}
 
 	int32 Actors = 0;
-	FBox Bounds(ForceInit);
-	for (TActorIterator<AActor> It(World); It; ++It)
-	{
-		++Actors;
-		// The blockout only: lights, volumes and the director don't count toward the size.
-		if (It->IsA<AStaticMeshActor>() || It->FindComponentByClass<UInstancedStaticMeshComponent>())
-		{
-			Bounds += It->GetComponentsBoundingBox(true);
-		}
-	}
+	const FBox Bounds = WorldBounds(World, Actors);
 	UE_LOG(LogForgottenThird, Display,
 		TEXT("FTBuildExploreWorld: world %s (style %s): %d districts, %d roads, %d buildings, %d props, %d instances, %d landmarks, %d actors; bounds %.0f x %.0f m, %.0f m tall; %d goals reachable from each district."),
 		*Id, *StyleSpec, static_cast<int32>(Layout->districtCount()), static_cast<int32>(Layout->roadCount()),
 		static_cast<int32>(Layout->blockCount()), static_cast<int32>(Layout->propCount()), Instances, Landmarks, Actors,
 		Bounds.GetSize().X / 100.0, Bounds.GetSize().Y / 100.0, Bounds.Max.Z / 100.0, static_cast<int32>(Goals.size()));
 
-	FAssetRegistryModule::AssetCreated(World);
-	Package->MarkPackageDirty();
-	FSavePackageArgs Save;
-	Save.TopLevelFlags = RF_Public | RF_Standalone;
-	Save.SaveFlags = SAVE_NoError;
-	const bool bSaved = UPackage::SavePackage(Package, World, *File, Save);
-	World->DestroyWorld(false);
-	if (!bSaved)
+	return WorldSave(Package, World, File);
+}
+
+namespace
+{
+// The overworld (ftcore::generateOverworldLayout, as the director makes it at run time): a floor with
+// perimeter walls, straight roads gate to gate, and per world a gate arch with that world's emblem
+// behind it, a ring of small blocks in its colours round a landmark with a beacon. Nothing stands on
+// the roads, so the walk between gates needs no navmesh. The player start is world 0's gate.
+int32 BuildOverworldMap(const ftcore::WorldTable& Worlds, const FString& Params)
+{
+	TUniquePtr<ftcore::OverworldLayout> Over = MakeUnique<ftcore::OverworldLayout>();
+	std::string Error;
+	if (!ftcore::generateOverworldLayout(Worlds, *Over, &Error))
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: couldn't save %s."), *File);
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: overworld: %s"), *FT::ToFString(Error).TrimEnd());
 		return 1;
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildExploreWorld: saved %s."), *File);
-	return 0;
+	// The style: -Style=<spec>, or world 0's (the overworld is the way out of home).
+	FString StyleSpec = Worlds.worlds.empty() ? FString(TEXT("none")) : FT::ToFString(Worlds.worlds[0].style);
+	FParse::Value(*Params, TEXT("Style="), StyleSpec, false);
+
+	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+	UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+	UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	if (!Cube || !Sphere || !Cylinder || !Base)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: a /Engine/BasicShapes asset is missing."));
+		return 1;
+	}
+	UPackage* Package = nullptr;
+	FString File;
+	UWorld* World = WorldCreate(FT::ToFString(Worlds.overworld.map), Package, File);
+	if (!World)
+	{
+		return 1;
+	}
+
+	const FWorldPalette Land = WorldPaletteFor(ftcore::WorldKind::Town);
+	UMaterialInterface* GroundTint = WorldTint(Package, Base, TEXT("MI_Over_Ground"), Land.Ground);
+	UMaterialInterface* RoadTint = WorldTint(Package, Base, TEXT("MI_Over_Road"), Land.Road);
+	UMaterialInterface* GateTint = WorldTint(Package, Base, TEXT("MI_Over_Gate"), FLinearColor(0.35f, 0.32f, 0.3f));
+	UMaterialInterface* BeaconTint = WorldTint(Package, Base, TEXT("MI_Over_Beacon"), FLinearColor(1.f, 0.8f, 0.3f));
+	UMaterialInterface* WoodTint = WorldTint(Package, Base, TEXT("MI_Over_Wood"), FLinearColor(0.3f, 0.2f, 0.12f));
+	UMaterialInterface* LeavesTint = WorldTint(Package, Base, TEXT("MI_Over_Leaves"), FLinearColor(0.18f, 0.42f, 0.16f));
+	UMaterialInterface* RockTint = WorldTint(Package, Base, TEXT("MI_Over_Rock"), FLinearColor(0.42f, 0.4f, 0.38f));
+
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	const float Side = Over->side();
+	const float Half = Side * 0.5f;
+	WorldBlock(World, Spawn, Cube, GroundTint, TEXT("Ground"), WorldM(0, 0, -0.5f), FVector(Side, Side, 1));
+	WorldBlock(World, Spawn, Cube, RockTint, TEXT("Wall_N"), WorldM(0, Half, 5), FVector(Side + 2, 2, 10));
+	WorldBlock(World, Spawn, Cube, RockTint, TEXT("Wall_S"), WorldM(0, -Half, 5), FVector(Side + 2, 2, 10));
+	WorldBlock(World, Spawn, Cube, RockTint, TEXT("Wall_E"), WorldM(Half, 0, 5), FVector(2, Side + 2, 10));
+	WorldBlock(World, Spawn, Cube, RockTint, TEXT("Wall_W"), WorldM(-Half, 0, 5), FVector(2, Side + 2, 10));
+
+	int32 Instances = 0;
+	{
+		AActor* Holder = WorldHolder(World, Spawn, TEXT("Roads"));
+		UInstancedStaticMeshComponent* Roads = WorldIsm(Holder, TEXT("RoadStrips"), Cube, RoadTint);
+		for (size_t I = 0; I < Over->roadCount(); ++I)
+		{
+			const ftcore::Vec2 A = Over->node(Over->road(I).a).gate;
+			const ftcore::Vec2 B = Over->node(Over->road(I).b).gate;
+			const float Length = FVector2D(B.x - A.x, B.y - A.y).Size() + ftcore::OverworldLayout::kRoadWidth;
+			const float Degrees = FMath::RadiansToDegrees(FMath::Atan2(B.y - A.y, B.x - A.x));
+			Roads->AddInstance(FTransform(FRotator(0.f, Degrees, 0.f), WorldM((A.x + B.x) * 0.5f, (A.y + B.y) * 0.5f, -0.48f),
+				FVector(Length, ftcore::OverworldLayout::kRoadWidth, 1.f)));
+			++Instances;
+		}
+	}
+
+	// Per world: a base disc and the emblem's blocks in its kind's colours, the landmark and beacon, and
+	// a gate arch 2 m behind the gate (the roads all leave the gate forward, so the arch never stands on one).
+	for (size_t N = 0; N < Over->nodeCount(); ++N)
+	{
+		const ftcore::OverworldNode& Node = Over->node(N);
+		const FWorldPalette Palette = WorldPaletteFor(Node.kind);
+		const FString Tag = FString::Printf(TEXT("%d"), static_cast<int32>(N));
+		UMaterialInterface* PlazaTint = WorldTint(Package, Base, *(TEXT("MI_Over_Plaza_") + Tag), Palette.Plaza);
+		UMaterialInterface* BuildingTint = WorldTint(Package, Base, *(TEXT("MI_Over_Building_") + Tag), Palette.Building);
+		UMaterialInterface* RoofTint = WorldTint(Package, Base, *(TEXT("MI_Over_Roof_") + Tag), Palette.Roof);
+		UMaterialInterface* LandmarkTint = WorldTint(Package, Base, *(TEXT("MI_Over_Landmark_") + Tag), Palette.Landmark);
+
+		AActor* Holder = WorldHolder(World, Spawn, *(TEXT("Emblem_") + Tag));
+		UInstancedStaticMeshComponent* Discs = WorldIsm(Holder, TEXT("Base"), Cylinder, PlazaTint);
+		UInstancedStaticMeshComponent* Bodies = WorldIsm(Holder, TEXT("Bodies"), Cube, BuildingTint);
+		UInstancedStaticMeshComponent* Roofs = WorldIsm(Holder, TEXT("Roofs"), Cube, RoofTint);
+		const float Disc = (ftcore::OverworldLayout::kEmblemRadius + 2.f) * 2.f;
+		Discs->AddInstance(FTransform(FRotator::ZeroRotator, WorldM(Node.centre, -0.47f), FVector(Disc, Disc, 1.f)));
+		++Instances;
+		const bool bTown = Node.kind == ftcore::WorldKind::Town;
+		for (size_t I = 0; I < Over->blockCount(); ++I)
+		{
+			const ftcore::WorldBlock& B = Over->block(I);
+			if (B.district != N)
+			{
+				continue;
+			}
+			const float Degrees = FMath::RadiansToDegrees(B.yaw);
+			Bodies->AddInstance(FTransform(FRotator(0.f, Degrees, 0.f), WorldM(B.pos, B.height * 0.5f), FVector(B.width, B.depth, B.height)));
+			++Instances;
+			if (!B.roof)
+			{
+				continue;
+			}
+			if (bTown)
+			{
+				const float Pitch = B.depth * 0.72f;
+				Roofs->AddInstance(FTransform(FRotator(0.f, Degrees, 45.f), WorldM(B.pos, B.height), FVector(B.width + 0.2f, Pitch, Pitch)));
+			}
+			else
+			{
+				Roofs->AddInstance(FTransform(FRotator(0.f, Degrees, 0.f), WorldM(B.pos, B.height + 0.25f), FVector(B.width + 0.4f, B.depth + 0.4f, 0.5f)));
+			}
+			++Instances;
+		}
+
+		const float H = Node.landmarkHeight;
+		WorldBlock(World, Spawn, Cylinder, LandmarkTint, TEXT("Landmark_") + Tag, WorldM(Node.centre, H * 0.5f), FVector(3.f, 3.f, H));
+		WorldBlock(World, Spawn, Sphere, BeaconTint, TEXT("Landmark_") + Tag + TEXT("_Beacon"), WorldM(Node.centre, H + 2.f), FVector(4.f));
+
+		const ftcore::Vec2 Across{-Node.outward.y, Node.outward.x};
+		const ftcore::Vec2 Arch{Node.gate.x + Node.outward.x * 2.f, Node.gate.y + Node.outward.y * 2.f};
+		const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Across.y, Across.x));
+		for (const float Sign : {-1.f, 1.f})
+		{
+			const ftcore::Vec2 Post{Arch.x + Across.x * 4.5f * Sign, Arch.y + Across.y * 4.5f * Sign};
+			WorldBlock(World, Spawn, Cube, GateTint, FString::Printf(TEXT("Gate_%s_Post%s"), *Tag, Sign < 0.f ? TEXT("L") : TEXT("R")),
+				WorldM(Post, 3.5f), FVector(1.f, 1.f, 7.f), FRotator(0.f, Yaw, 0.f));
+		}
+		WorldBlock(World, Spawn, Cube, GateTint, FString::Printf(TEXT("Gate_%s_Lintel"), *Tag), WorldM(Arch, 7.5f), FVector(10.f, 1.2f, 1.2f),
+			FRotator(0.f, Yaw, 0.f));
+	}
+
+	{
+		AActor* Holder = WorldHolder(World, Spawn, TEXT("Props"));
+		UInstancedStaticMeshComponent* Trunks = WorldIsm(Holder, TEXT("Trunks"), Cylinder, WoodTint);
+		UInstancedStaticMeshComponent* Crowns = WorldIsm(Holder, TEXT("Crowns"), Sphere, LeavesTint);
+		UInstancedStaticMeshComponent* Rocks = WorldIsm(Holder, TEXT("Rocks"), Sphere, RockTint);
+		for (size_t I = 0; I < Over->propCount(); ++I)
+		{
+			const ftcore::WorldProp& P = Over->prop(I);
+			const float S = P.scale;
+			if (P.kind == 0)
+			{
+				Trunks->AddInstance(FTransform(FRotator::ZeroRotator, WorldM(P.pos, 1.5f * S), FVector(0.4f * S, 0.4f * S, 3.f * S)));
+				Crowns->AddInstance(FTransform(FRotator::ZeroRotator, WorldM(P.pos, 4.f * S), FVector(3.2f * S)));
+				Instances += 2;
+			}
+			else
+			{
+				const float Turn = static_cast<float>((I * 47u) % 360u);
+				Rocks->AddInstance(FTransform(FRotator(0.f, Turn, 0.f), WorldM(P.pos, 0.3f * S), FVector(1.6f * S, 1.3f * S, 0.9f * S)));
+				++Instances;
+			}
+		}
+	}
+
+	WorldSky(World, Spawn);
+	AFTExploreDirector* Director = World->SpawnActor<AFTExploreDirector>(FVector(0, 0, 200), FRotator::ZeroRotator, Spawn);
+	Director->bOverworld = true;
+	Director->SetActorLabel(TEXT("ExploreDirector"));
+	APlayerStart* Start = World->SpawnActor<APlayerStart>(WorldM(Over->node(0).gate, 1.f),
+		FRotator(0.f, FMath::RadiansToDegrees(Over->gateYaw(0)), 0.f), Spawn);
+	Start->SetActorLabel(TEXT("PlayerStart"));
+	WorldStyle(World, Spawn, StyleSpec);
+
+	int32 Actors = 0;
+	const FBox Bounds = WorldBounds(World, Actors);
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("FTBuildExploreWorld: overworld (style %s): %d worlds, %d roads, %d emblem blocks, %d props, %d instances, %d actors; bounds %.0f x %.0f m, %.0f m tall."),
+		*StyleSpec, static_cast<int32>(Over->nodeCount()), static_cast<int32>(Over->roadCount()), static_cast<int32>(Over->blockCount()),
+		static_cast<int32>(Over->propCount()), Instances, Actors, Bounds.GetSize().X / 100.0, Bounds.GetSize().Y / 100.0, Bounds.Max.Z / 100.0);
+	return WorldSave(Package, World, File);
 }
+} // namespace
 #endif

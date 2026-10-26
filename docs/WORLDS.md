@@ -8,6 +8,8 @@ The story's field steps play in three big worlds:
 
 Scenes that aren't placed in a world, such as the house and the pocket, still play on the small Explore map.
 
+The **overworld** joins them: a small walkable map with one gate per world. When the story moves from one world to another, the party walks the road between the two gates before the next field step starts.
+
 Each world is a blockout for now: shapes, roads, landmarks and the world's style pack. It has no terrain art, streaming or biomes yet.
 
 ## Size
@@ -55,6 +57,7 @@ All goals and waypoints in `goals.json` lie inside the plaza. So a field step pl
 
 1. The game instance loads `worlds.json` at start: `Worlds: 3 worlds, 60 scenes placed.`
 2. When a field step's scene is placed, the story director opens that world's map and carries the world, district and style in `FFTStoryCarry`. If the map isn't built, it warns and uses the Explore map.
+   - If the last field step played in a different world and the overworld map is built, it opens the overworld first, with `FromWorld` set: `Story: overworld hop from solhaven to lattice for <scene>.` The party walks from the old world's gate to the new one's (the autopilot walks it on autoplay), and Use at the gate opens the world's map with the same carry. Each hop adds one to the alpha line's `overworld hops`.
 3. On a world's map (where `AFTExploreDirector::WorldId` is set), the director:
    - lays the world out again
    - starts the player at the district's spawn
@@ -64,6 +67,31 @@ All goals and waypoints in `goals.json` lie inside the plaza. So a field step pl
    Log: `World solhaven: field step in district 3 (style inksolhaven).`
 
 Without a story step, the world is a free walk. The party follows, and the HUD shows a WORLD panel ("solhaven  district 4 of 16" or "open ground").
+
+## The overworld
+
+`worlds.json` has an `"overworld"` entry: its map (`Overworld`), its side in metres (300 to 1200, default 480) and a seed. `ftcore::generateOverworldLayout` lays it out the same way at build time and at run time:
+- One node per world, in table order, on a ring round the centre. Neighbouring gates are 150 to 250 m apart by road, a 25 to 40 s run.
+- Each node is a gate with the world's emblem 26 m behind it: a small ring of blocks in the world's kind and colours round a landmark with a beacon. The player stays full size.
+- Straight roads join the gates round the ring. Nothing stands on a road or within 8 m of a gate, so the walk needs no navmesh.
+
+A world is open once the script's first scene placed in it has started (`worldFirstScenes`, `worldsOpen`). On a free walk, Use at an open gate enters that world; a closed one says so. The story's own hops always go through.
+
+The HUD shows an OVERWORLD panel: "to lattice" on a hop, "lattice  E  Enter" at an open gate, or "open road".
+
+Build it with `-World=overworld`:
+
+```
+UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildExploreWorld -World=overworld -NullRHI -unattended -nopause -nosplash
+```
+
+The style is world 0's unless `-Style=<spec>` is given. The tour walks every gate along the roads:
+
+```
+UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/Overworld -game -NullRHI -OverworldAutoPlay -AlphaFast -WorldQuitOnDone -unattended -nosplash -nosound
+```
+
+It logs `Overworld: reached the <id> gate (leg i/n) at <t> s game time.` for each leg, then `OVERWORLD TOUR DONE`. Core covers the layout in `Core/tests/test_overworld.cpp`: the loader, determinism and clearances for 1 to 8 worlds, no allocation, the open rule, and the real script's hops (when `Data/Story` is present).
 
 ## Building the maps
 

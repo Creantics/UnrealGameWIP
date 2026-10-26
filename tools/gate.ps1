@@ -47,6 +47,10 @@ if ($Alpha -or $AlphaFull) {
     if (-not $p.WaitForExit($limit * 60 * 1000)) { $p.Kill(); "ALPHA TIMED OUT after $limit min"; exit 1 }
     Select-String -Path $alog -Pattern 'Alpha: ' | Select-Object -Last 3 | % { $_.Line }
     $pass = Select-String -Path $alog -Pattern 'Alpha: FINISHED .*, 0 STUCK, 0 warnings' -Quiet
+    # With the overworld built, the story walks it between worlds at least once.
+    if ($pass -and (Test-Path "$repo\Content\Maps\Overworld.umap")) {
+        $pass = Select-String -Path $alog -Pattern 'Alpha: FINISHED .*, 0 warnings, [1-9]\d* overworld hops' -Quiet
+    }
     if ($p.ExitCode -ne 0 -or -not $pass) { "ALPHA FAILED (exit $($p.ExitCode)); log $alog"; exit 1 }
 }
 "GATE OK"

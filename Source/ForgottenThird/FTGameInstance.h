@@ -57,6 +57,9 @@ struct FFTStoryCarry
 	FString World;
 	int32 District = -1;
 	FString Style;
+	// Set when the last field step was in another world: the step opens the overworld first, the
+	// player walks from this world's gate to World's, and entering it opens World's map.
+	FString FromWorld;
 	bool bAutoPlay = false; // the screen plays itself (a headless hand-off run)
 	bool bDone = false;
 	bool bWon = false;
@@ -96,6 +99,9 @@ public:
 	// The beat a screen gave up on (alpha runs skip it instead of retrying it forever).
 	FString FailedScene;
 	int32 FailedBeat = -1;
+	// The world of the last field step the story opened (empty before the first): a field step in
+	// another world walks the overworld from this one.
+	FString LastWorld;
 
 private:
 	void LoadWorlds();

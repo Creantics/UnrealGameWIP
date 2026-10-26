@@ -17,12 +17,20 @@
 // district's frame) in that district's plaza, with the scene's style. -WorldAutoPlay walks the roads
 // from district to district until it has reached them all (logging each), then exits with
 // -ExploreQuitOnComplete.
+//
+// On the overworld (bOverworld, FTBuildExploreWorld -World=overworld) the director lays out the
+// overworld (ftcore::OverworldLayout). A story field step whose carry has FromWorld set is a hop: the
+// player starts at that world's gate and walks to the next world's; Use there opens that world's map
+// with the carry, where the field step plays. Without a story step it is a free walk: Use at an open
+// world's gate enters it. -OverworldAutoPlay walks to every gate in turn (logging each), then exits
+// with -WorldQuitOnDone.
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 
 #include "ftcore/Explore.h"
 #include "ftcore/Guard.h"
+#include "ftcore/Overworld.h"
 #include "ftcore/PartyTrail.h"
 #include "ftcore/WorldLayout.h"
 
@@ -55,6 +63,9 @@ public:
 	// The big world this map is (an id in Data/Field/worlds.json); empty on the Explore map.
 	UPROPERTY(EditAnywhere, Category = "Explore")
 	FString WorldId;
+	// This map is the overworld that joins the big worlds (Data/Field/worlds.json's "overworld").
+	UPROPERTY(EditAnywhere, Category = "Explore")
+	bool bOverworld = false;
 
 	virtual void Tick(float DeltaSeconds) override;
 
@@ -80,6 +91,8 @@ public:
 	// On a big world's map: its layout is in play. GetWorldLine is "solhaven  district 3 of 16".
 	bool IsWorldMode() const { return Layout.IsValid(); }
 	const FString& GetWorldLine() const { return WorldLine; }
+	// On the overworld: its layout is in play, and GetWorldLine is "to lattice" or "lattice  E  Enter".
+	bool IsOverworld() const { return Overworld.IsValid(); }
 
 protected:
 	virtual void BeginPlay() override;
@@ -110,6 +123,12 @@ private:
 	void BeginWorld();
 	void TickWorld(AFTExploreCharacter& Player, float DeltaSeconds);
 	void UpdateWorldLine(ftcore::Vec2 Pos);
+	void BeginOverworld();
+	void TickOverworld(AFTExploreCharacter& Player, float DeltaSeconds);
+	void UpdateOverworldLine(ftcore::Vec2 Pos);
+	FString WorldName(int32 World) const;
+	// Opens a world's map from its gate: with the story's carry on a hop, as a free walk otherwise.
+	void EnterWorld(int32 World);
 	void ReturnToStory();
 	void OpenStoryMap();
 	double Now() const;
@@ -170,6 +189,18 @@ private:
 	double TourGameStart = 0.0;
 	int32 WorldLineDistrict = -2;
 	FString WorldLine;
+
+	// The overworld (null elsewhere): the story's hop (the route and the gate it has reached), which
+	// worlds are open on a free walk (bit per world), and the -OverworldAutoPlay tour (node indices).
+	TUniquePtr<ftcore::OverworldLayout> Overworld;
+	ftcore::OverworldRoute Hop;
+	bool bHop = false;
+	int32 HopPoint = 0;
+	bool bEntering = false;
+	uint32 OpenWorlds = 0;
+	int32 OverLineNode = -2;
+	uint8 OverTour[2 * ftcore::OverworldLayout::kMaxNodes] = {};
+	int32 OverTourCount = 0;
 
 	FString Notice;
 	double NoticeTime = -100.0;

@@ -39,6 +39,7 @@
     "explore.hint": "WASD / left stick: move    Mouse / right stick: look    Shift: run    Space: jump    E / pad X: use",
     "explore.complete": "Demo complete",
     "explore.world": "WORLD",
+    "explore.overworld": "OVERWORLD",
 
     "mini.try": "Try {0} of {1}",
 

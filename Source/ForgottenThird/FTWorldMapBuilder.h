@@ -16,6 +16,10 @@
 // reachable from every district's spawn, or the build fails. The player start is district 0's
 // spawn; the director's WorldId is set, and the style controller uses the world's style. It
 // overwrites the map.
+//
+// -World=overworld builds the overworld instead (worlds.json's "overworld" map, laid out by
+// ftcore::generateOverworldLayout): roads gate to gate, a gate arch and a small emblem per world, the
+// director in overworld mode and the player start at world 0's gate. No navmesh: the roads are clear.
 
 #include "CoreMinimal.h"
 

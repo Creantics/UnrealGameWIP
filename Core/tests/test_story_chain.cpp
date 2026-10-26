@@ -116,7 +116,7 @@ TEST_CASE("alpha counters and the closing line") {
 
     char line[160];
     const std::size_t n = c.formatFinished(line, sizeof line);
-    CHECK(std::strcmp(line, "Alpha: FINISHED 73 scenes, 9 screens (2 battle, 1 field, 6 stub), 0 STUCK, 0 warnings") == 0);
+    CHECK(std::strcmp(line, "Alpha: FINISHED 73 scenes, 9 screens (2 battle, 1 field, 6 stub), 0 STUCK, 0 warnings, 0 overworld hops") == 0);
     CHECK(n == std::strlen(line));
 
     c.warnings = 2;
