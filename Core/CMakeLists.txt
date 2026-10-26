@@ -67,6 +67,7 @@ add_library(ftcore STATIC
     src/Qte.cpp
     src/Seen.cpp
     src/Settings.cpp
+    src/SkinDetail.cpp
     src/Skip.cpp
     src/StoryDatabase.cpp
     src/StoryImport.cpp
@@ -140,6 +141,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_progression.cpp
         tests/test_qte.cpp
         tests/test_settings.cpp
+        tests/test_skin_detail.cpp
         tests/test_skip.cpp
         tests/test_story.cpp
         tests/test_story_chain.cpp

@@ -28,6 +28,7 @@ const TCHAR* GTag = TEXT("FTImport");
 // flat master for factor-only materials, the textured one when the glTF material has any texture.
 const TCHAR* const kCharacterMaster = TEXT("/Game/Characters/Shared/Materials/M_FTCharacter");
 const TCHAR* const kTexturedMaster = TEXT("/Game/Characters/Shared/Materials/M_FTCharacterTex");
+const TCHAR* const kSkinMaster = TEXT("/Game/Characters/Shared/Materials/M_FTSkin");
 const TCHAR* const kHairMaster = TEXT("/Game/Characters/Shared/Materials/M_FTHair");
 const TCHAR* const kSharedMaterials = TEXT("/Game/Characters/Shared/Materials/");
 
@@ -289,7 +290,7 @@ bool PrepareTexture(UTexture* Texture, const FTextureSlot& Slot, TArray<UPackage
 }
 
 // Logs a master's compile errors; returns how many.
-int32 CompileErrors(UMaterial* Master)
+int32 MasterCompileErrors(UMaterial* Master)
 {
 	FMaterialResource* Resource = Master->GetMaterialResource(GMaxRHIShaderPlatform);
 	if (!Resource)
@@ -328,7 +329,8 @@ bool UseProjectMasters(const TCHAR* Tag, TConstArrayView<UMaterialInterface*> Ma
 			continue;
 		}
 		const FString ParentPath = Instance->Parent ? Instance->Parent->GetPathName() : FString();
-		if (ParentPath.StartsWith(kCharacterMaster) || ParentPath.StartsWith(kTexturedMaster) || ParentPath.StartsWith(kHairMaster))
+		if (ParentPath.StartsWith(kCharacterMaster) || ParentPath.StartsWith(kTexturedMaster) || ParentPath.StartsWith(kHairMaster) ||
+			ParentPath.StartsWith(kSkinMaster))
 		{
 			continue;
 		}
@@ -402,7 +404,7 @@ bool UseProjectMasters(const TCHAR* Tag, TConstArrayView<UMaterialInterface*> Ma
 	}
 	for (UMaterial* Master : { Flat, Textured, Hair })
 	{
-		if (Master && CompileErrors(Master) > 0)
+		if (Master && MasterCompileErrors(Master) > 0)
 		{
 			bOk = false;
 		}
@@ -413,6 +415,17 @@ bool UseProjectMasters(const TCHAR* Tag, TConstArrayView<UMaterialInterface*> Ma
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("%s: moved %d materials onto the project masters."), GTag, Moved);
 	return bOk;
+}
+
+int32 CompileErrors(const TCHAR* Tag, UMaterial* Master)
+{
+	GTag = Tag;
+	return MasterCompileErrors(Master);
+}
+
+const TCHAR* SkinMasterPath()
+{
+	return kSkinMaster;
 }
 
 bool CheckGlbFile(const TCHAR* Tag, const FString& Source, const ftcore::AssetRules& Rules)

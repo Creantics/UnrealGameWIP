@@ -83,6 +83,7 @@ private:
 	void UpdateClip();
 	void ApplyLookOverrides();
 	void AddPortraitLights();
+	void StepPortraitShots();
 
 	AFTExploreDirector* GetDirector();
 
@@ -108,6 +109,13 @@ private:
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<URectLightComponent>> PortraitLights;
+
+	// -ExplorePortraitShot: the yaws still to shoot, the file prefix, and whether the boom already faces the next one.
+	TArray<float> ShotYaws;
+	FString ShotPrefix;
+	int32 ShotIndex = 0;
+	bool bShotAimed = false;
+	FTimerHandle ShotTimer;
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
 	bool bWalking = false;

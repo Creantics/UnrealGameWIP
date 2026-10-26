@@ -10,6 +10,10 @@
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/SkeletalMesh.h"
+#include "HAL/PlatformMisc.h"
+#include "TimerManager.h"
+#include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
@@ -106,7 +110,59 @@ void AFTExploreCharacter::BeginPlay()
 		{
 			AddPortraitLights();
 		}
+		// -ExplorePortraitShot=<path prefix>: the renderer saves one 1400x1100 shot (HUD canvas included) per yaw in
+		// -ExplorePortraitYaws=180,90,0 (default: the one yaw above) as <prefix>_<yaw>.png, then the game quits.
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitShot="), ShotPrefix) && !ShotPrefix.IsEmpty())
+		{
+			FString YawList;
+			if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitYaws="), YawList, false))
+			{
+				TArray<FString> Parts;
+				YawList.ParseIntoArray(Parts, TEXT(","));
+				for (const FString& Part : Parts)
+				{
+					ShotYaws.Add(FCString::Atof(*Part));
+				}
+			}
+			if (ShotYaws.IsEmpty())
+			{
+				ShotYaws.Add(Yaw);
+			}
+			// Settle time first (streaming, shaders, exposure), then a step every few seconds: aim, then shoot.
+			float Delay = 8.f;
+			FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitShotDelay="), Delay);
+			GetWorldTimerManager().SetTimer(ShotTimer, this, &AFTExploreCharacter::StepPortraitShots, 2.5f, true, Delay);
+		}
 	}
+}
+
+void AFTExploreCharacter::StepPortraitShots()
+{
+	if (ShotIndex >= ShotYaws.Num())
+	{
+		GetWorldTimerManager().ClearTimer(ShotTimer);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: %d portrait shots taken; quitting."), ShotYaws.Num());
+		FPlatformMisc::RequestExit(false, TEXT("ExplorePortraitShot"));
+		return;
+	}
+	const float Yaw = ShotYaws[ShotIndex];
+	if (!bShotAimed)
+	{
+		// Aim one step ahead of the shot, so temporal AA and lighting settle at the new angle.
+		Boom->SetRelativeRotation(FRotator(0.0, Yaw, 0.0));
+		bShotAimed = true;
+		return;
+	}
+	const FString File = FString::Printf(TEXT("%s_%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw));
+	// A high-res shot renders its own view at a fixed size, so a window the desktop resizes can't upset the copy.
+	// The game viewport handles HighResShot; the engine's own Exec doesn't.
+	if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
+	{
+		Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot 1400x1100 filename=\"%s\""), *File), *GLog);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: portrait shot %s."), *File);
+	bShotAimed = false;
+	++ShotIndex;
 }
 
 void AFTExploreCharacter::AddPortraitLights()
