@@ -45,13 +45,15 @@ struct FScalarSpec
 	float Default;
 };
 const FScalarSpec kScalars[] = {
-	{TEXT("DetailTiling"), 70.f},     // pore tile repeats per 0-1 UV (the atlas spans about 1.8 m of skin)
-	{TEXT("DetailStrength"), 1.f},    // pore normal tilt scale
-	{TEXT("Roughness"), 0.5f},        // open skin, before the region mask
+	// Pore tile repeats per 0-1 UV (the atlas spans about 1.8 m of skin). Higher sinks the tile to mips where a pore is
+	// under a texel at portrait range.
+	{TEXT("DetailTiling"), 40.f},
+	{TEXT("DetailStrength"), 3.f},    // pore normal tilt scale; pores read only in the specular, so it runs strong
+	{TEXT("Roughness"), 0.42f},       // open skin, before the region mask
 	{TEXT("CavityRoughness"), 0.35f}, // extra roughness at the bottom of a pore
-	{TEXT("MicroRoughness"), 0.6f},   // micro variation, as a fraction of Roughness
+	{TEXT("MicroRoughness"), 0.2f},   // micro variation, as a fraction of Roughness; more sparkles on the scalp
 	{TEXT("Specular"), 0.35f},        // about 2.8% reflectance at normal incidence
-	{TEXT("CavitySpecular"), 0.45f},  // specular left at the bottom of a pore
+	{TEXT("CavitySpecular"), 0.3f},   // specular left at the bottom of a pore
 	{TEXT("Scatter"), 1.f},           // subsurface amount (Opacity), before the region mask
 };
 
