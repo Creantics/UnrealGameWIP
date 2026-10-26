@@ -89,6 +89,8 @@ Log lines: `ExploreDemo: 2 guards on patrol.`, `guard <i> noticed you.`, `guard 
 
 ## From the story
 
+A field step whose scene is placed in one of the three big worlds plays on that world's map instead, in its district (see `WORLDS.md`); everything below applies there too, moved into the district's frame.
+
 A field step (ENG or PLAY, `StoryCarry.Screen == Field`) opens this map with
 `UFTGameInstance::StoryCarry` set. `AFTExploreDirector` hides the demo spots, skips the encounters
 and objectives and shows ONE goal marker (a glowing column and orb; `AFTExploreSpot` with
