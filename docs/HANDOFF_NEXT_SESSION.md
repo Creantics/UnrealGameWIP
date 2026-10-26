@@ -23,7 +23,15 @@ Private notes (character references, concept-art review, script status) are in `
     distance and places each follower (not steered) 1.6 m apart along it; `AFTPartyFollower` is a mesh plus idle/walk clips with
     no controller, movement or collision. Followers come from `ftcore::demo::kPartyNames` (the battle line-up). Alpha counts
     unchanged, one follower on all 91 field steps. Docs: `docs/EXPLORE_DEMO.md`. Not looked at on a screen yet.
-  - Next, in the advisor's order: field guards, then pause with save slots.
+  - Done on main (c1bf5a0): field guards on the exploration demo only. `ftcore::GuardSet` (idle, patrol, notice, chase, return;
+    vision cone plus sense radius, gated by a per-guard line-trace bit; contact once, then a cooldown) drives two
+    `AFTFieldGuard` blockout columns, tinted by state, with no controller, movement or collision. Contact opens the battle demo
+    with that guard; a win defeats it, and every return to the field holds all guards off for 3 s. Story field steps spawn no
+    guards, so the alpha counts are unchanged. Headless explore run: one guard fight (guard 1), COMPLETE after 26.6 s.
+    Docs: `docs/EXPLORE_DEMO.md` (Field guards).
+  - Open: guards are not checked on screen yet; a chase goes straight through props (placed, not steered); demo fights pay no xp;
+    the log says "1 guards on patrol" after the first fight.
+  - Next, in the advisor's order: pause with save slots.
 
 - **NEWEST (2026-10-25): all three leads now conform to concept head models.** Each lead's MetaHuman head is fitted to a scaled, cut
   head model (private), not built from presets. Pipeline per lead, all private scripts driven through the editor bridge:
