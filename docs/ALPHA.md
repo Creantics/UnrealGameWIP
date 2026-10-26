@@ -64,7 +64,7 @@ UnrealEditor-Cmd ForgottenThird.uproject -game -NullRHI -AlphaAutoPlay -AlphaFas
 Pass means exit code 0 and this line (choice, quick-time event, cutscene, banter and mini-game steps count in the stub bucket):
 
 ```
-Alpha: FINISHED 73 scenes, 167 screens (40 battle, 91 field, 36 stub), 0 STUCK, 0 warnings, <h> overworld hops
+Alpha: FINISHED 73 scenes, 167 screens (40 battle, 91 field, 36 stub), 0 STUCK, 0 warnings, 12 overworld hops
 ```
 
 When `Content/Maps/Overworld.umap` exists, the gate also needs at least one overworld hop (see `docs/WORLDS.md`).

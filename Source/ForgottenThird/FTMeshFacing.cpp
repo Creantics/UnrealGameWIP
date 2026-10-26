@@ -25,14 +25,24 @@ bool RefBonePosition(const FReferenceSkeleton& Skeleton, const TCHAR* Name, FVec
 
 float FTMeshFacing::FacingYaw(const USkeletalMesh& Mesh)
 {
-	FVector Head, EyeL, EyeR;
+	FVector Head, EyeL, EyeR, FootL, FootR, BallL, BallR;
 	const FReferenceSkeleton& Skeleton = Mesh.GetRefSkeleton();
-	if (!RefBonePosition(Skeleton, TEXT("head"), Head) || !RefBonePosition(Skeleton, TEXT("eye_l"), EyeL)
-		|| !RefBonePosition(Skeleton, TEXT("eye_r"), EyeR))
+	FVector Forward;
+	if (RefBonePosition(Skeleton, TEXT("head"), Head) && RefBonePosition(Skeleton, TEXT("eye_l"), EyeL)
+		&& RefBonePosition(Skeleton, TEXT("eye_r"), EyeR))
+	{
+		Forward = (EyeL + EyeR) * 0.5f - Head;
+	}
+	else if (RefBonePosition(Skeleton, TEXT("foot_l"), FootL) && RefBonePosition(Skeleton, TEXT("foot_r"), FootR)
+		&& RefBonePosition(Skeleton, TEXT("ball_l"), BallL) && RefBonePosition(Skeleton, TEXT("ball_r"), BallR))
+	{
+		// A MetaHuman body keeps its eyes on the face mesh; the toes point the same way.
+		Forward = (BallL + BallR) - (FootL + FootR);
+	}
+	else
 	{
 		return 0.f;
 	}
-	FVector Forward = (EyeL + EyeR) * 0.5f - Head;
 	Forward.Z = 0;
 	if (Forward.IsNearlyZero())
 	{
