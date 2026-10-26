@@ -42,6 +42,8 @@ namespace
 constexpr float kEncounterDelay = 1.2f;
 // The autopilot gives up when it hasn't got 10 cm closer to its target for this long.
 constexpr float kPilotStuckSeconds = 15.f;
+// Turning to face a spot (TickFace): how long (s) the movement before it may linger.
+constexpr float kFaceGrace = 0.15f;
 // -WorldAutoPlay: a district counts as reached this close to its plaza's centre (metres); the
 // tour's pilot targets get ids from here up, apart from the demo spots' and the field goal's.
 constexpr float kTourReach = 4.f;
@@ -459,6 +461,7 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 	Trail.reset(ToGround(Player.GetActorLocation()), {static_cast<float>(Facing.X), static_cast<float>(Facing.Y)},
 		static_cast<float>(Count) * ftcore::PartyTrail::kFollowerSpacing);
 	Followers.Reserve(static_cast<int32>(Count));
+	TurnCursors.Init(0u, static_cast<int32>(Count));
 	for (size_t I = 0; World && I < Count; ++I)
 	{
 		FActorSpawnParameters Params;
@@ -476,12 +479,30 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 		Followers.Add(Follower);
 	}
 	PlaceFollowers(Player, 0.f);
+	// -LocoWatchFollower: the camera follows the first follower instead, for locomotion captures.
+	if (FParse::Param(FCommandLine::Get(), TEXT("LocoWatchFollower")) && !Followers.IsEmpty() && Followers[0])
+	{
+		Player.WatchFrom(Followers[0]->GetRootComponent());
+	}
 	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: %d following the lead."), Followers.Num());
 }
 
 void AFTExploreDirector::PlaceFollowers(AFTExploreCharacter& Player, float DeltaSeconds)
 {
 	Trail.push(ToGround(Player.GetActorLocation()));
+	// The lead's running turns and turning starts go on the trail, for each follower to play where the lead did.
+	if (const UFTLocomotionAnimInstance* LeadAnim = Player.GetMesh() ? Cast<UFTLocomotionAnimInstance>(Player.GetMesh()->GetAnimInstance()) : nullptr)
+	{
+		const ftcore::Locomotion& Lead = LeadAnim->GetLocomotion();
+		if (Lead.turnsBegun() != LeadTurns)
+		{
+			LeadTurns = Lead.turnsBegun();
+			if (Lead.turning() && !ftcore::isLocoStandTurn(Lead.turnClip()))
+			{
+				Trail.markTurn(Lead.turnAngle());
+			}
+		}
+	}
 	const float FeetZ = static_cast<float>(Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight());
 	const APlayerCameraManager* Camera = UGameplayStatics::GetPlayerCameraManager(this, 0);
 	float WantSpeed = -1.f, StopDistance = -1.f;
@@ -493,7 +514,15 @@ void AFTExploreDirector::PlaceFollowers(AFTExploreCharacter& Player, float Delta
 	{
 		if (AFTPartyFollower* Follower = Followers[I])
 		{
-			const ftcore::Vec2 At = Trail.pointBehind(static_cast<float>(I + 1) * ftcore::PartyTrail::kFollowerSpacing);
+			const float Arc = static_cast<float>(I + 1) * ftcore::PartyTrail::kFollowerSpacing;
+			if (TurnCursors.IsValidIndex(I))
+			{
+				if (const float Delta = Trail.turnsReached(Arc, TurnCursors[I]); Delta != 0.f)
+				{
+					Follower->ReplayTurn(Delta);
+				}
+			}
+			const ftcore::Vec2 At = Trail.pointBehind(Arc);
 			Follower->Place(FVector2D(At.x * 100.0, At.y * 100.0), FeetZ, DeltaSeconds, WantSpeed, StopDistance);
 			const bool bInLens = Camera
 				&& FVector::Dist2D(Camera->GetCameraLocation(), Follower->GetActorLocation())
@@ -674,6 +703,19 @@ void AFTExploreDirector::Interact()
 		}
 		return;
 	}
+	if (Focus < 0 && !bComplete)
+	{
+		// A spot in reach off to the side: turn on the spot to face it, then use it (TickFace).
+		if (const AFTExploreCharacter* Player = GetPlayerCharacter())
+		{
+			const int32 Near = Exploration.focus(ToGround(Player->GetActorLocation()), {});
+			if (Near >= 0)
+			{
+				FaceTarget = Near;
+			}
+		}
+		return;
+	}
 	if (Focus < 0 || bComplete)
 	{
 		return;
@@ -837,6 +879,10 @@ void AFTExploreDirector::Tick(float DeltaSeconds)
 		}
 		Focus = NewFocus;
 	}
+	if (TickFace(*Player, Pos, DeltaSeconds))
+	{
+		return;
+	}
 
 	const int32 Caught = TickGuards(*Player, DeltaSeconds);
 	if (Caught >= 0)
@@ -869,7 +915,46 @@ void AFTExploreDirector::TickAutoPlay(AFTExploreCharacter& Player, float DeltaSe
 		Interact();
 		return;
 	}
+	if (Exploration.item(Target).kind != ftcore::InteractKind::Encounter && Exploration.focus(Pos, {}) == Target)
+	{
+		// In reach but not faced: stop and turn to it rather than circling in.
+		FaceTarget = Target;
+		return;
+	}
 	PilotWalk(Player, Pos, Exploration.item(Target).pos, Target, DeltaSeconds);
+}
+
+bool AFTExploreDirector::TickFace(AFTExploreCharacter& Player, ftcore::Vec2 Pos, float DeltaSeconds)
+{
+	if (FaceTarget < 0)
+	{
+		FaceTime = 0.f;
+		return false;
+	}
+	FaceTime += DeltaSeconds;
+	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Player.GetMesh()->GetAnimInstance());
+	// Moving again gives it up; the movement already under way when it began takes a frame or two to clear.
+	const bool bMoving = FaceTime > kFaceGrace && Player.GetCharacterMovement()
+		&& Player.GetCharacterMovement()->GetCurrentAcceleration().SizeSquared2D() > 1.0;
+	if (bMoving || Exploration.focus(Pos, {}) != FaceTarget || !Anim)
+	{
+		FaceTarget = -1; // walked off or out of reach: give up
+		if (Anim)
+		{
+			Anim->SetFace(false, 0.f);
+		}
+		return false;
+	}
+	if (Focus == FaceTarget)
+	{
+		FaceTarget = -1;
+		Anim->SetFace(false, 0.f);
+		Interact();
+		return true;
+	}
+	const ftcore::Vec2 At = Exploration.item(FaceTarget).pos;
+	Anim->SetFace(true, FMath::RadiansToDegrees(FMath::Atan2(At.y - Pos.y, At.x - Pos.x)));
+	return true;
 }
 
 void AFTExploreDirector::PilotWalk(AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 Target, float DeltaSeconds,

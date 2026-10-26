@@ -19,6 +19,7 @@ void PartyTrail::add(Vec2 p) {
     newest_ = (newest_ + 1) % kCapacity;
     ring_[newest_] = p;
     if (count_ < kCapacity) ++count_;
+    ++laid_;
 }
 
 void PartyTrail::reset(Vec2 lead, Vec2 facing, float seedLength) {
@@ -33,6 +34,7 @@ void PartyTrail::reset(Vec2 lead, Vec2 facing, float seedLength) {
         add({lead.x - dir.x * back, lead.y - dir.y * back});
     }
     lead_ = lead;
+    turnBase_ = turnCount_;
 }
 
 void PartyTrail::push(Vec2 lead) {
@@ -67,6 +69,28 @@ Vec2 PartyTrail::pointBehind(float arc) const {
         a = b;
     }
     return a;
+}
+
+float PartyTrail::odometer() const {
+    if (count_ == 0) return 0.f;
+    return static_cast<float>(laid_) * kSampleSpacing + distance(sample(0), lead_);
+}
+
+void PartyTrail::markTurn(float delta) {
+    turns_[turnCount_ % kTurns] = {odometer(), delta};
+    ++turnCount_;
+}
+
+float PartyTrail::turnsReached(float arc, std::uint32_t& next) const {
+    if (next < turnBase_) next = turnBase_;
+    if (turnCount_ - next > kTurns) next = turnCount_ - static_cast<std::uint32_t>(kTurns);
+    const float at = odometer() - arc;
+    float delta = 0.f;
+    while (next < turnCount_ && turns_[next % kTurns].at <= at) {
+        delta += turns_[next % kTurns].delta;
+        ++next;
+    }
+    return delta;
 }
 
 float PartyTrail::length() const {

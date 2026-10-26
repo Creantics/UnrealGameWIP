@@ -12,8 +12,8 @@ namespace
 // Slower than this (cm/s) counts as standing still. A speed, not a distance: at a high frame rate a walking
 // follower moves well under a centimetre a frame.
 constexpr float kStillSpeed = 10.f;
-// How fast (deg/s) the follower turns toward the way it moves, as the lead's movement does.
-constexpr float kTurnRate = 360.f;
+// The time constant (s) of the follower's turn toward the way it moves, as the lead's facing eases (LocoTuning::faceTime).
+constexpr float kFaceTime = 0.15f;
 // How fast the speed fed to the anim follows each frame's step (1/s), so uneven frames don't jitter the stride.
 constexpr float kSpeedResponse = 12.f;
 }
@@ -76,6 +76,7 @@ bool AFTPartyFollower::Setup(const FString& Name, const AActor* Lead)
 	Anim->SetMovesFromGait(ftcore::LocoClip::Walk);
 	Anim->SetMovesFromGait(ftcore::LocoClip::Run);
 	Anim->SetMovesFromGait(ftcore::LocoClip::Sprint);
+	Anim->SetTurnsFromRun();
 	return true;
 }
 
@@ -101,11 +102,24 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 		}
 	}
 	FRotator Rot = GetActorRotation();
-	if (bWantWalk)
+	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Body->GetAnimInstance());
+	const ftcore::Locomotion* Loco = Anim ? &Anim->GetLocomotion() : nullptr;
+	if (Loco && Loco->turning() && !ftcore::isLocoStandTurn(Loco->turnClip()))
 	{
-		// Turn toward the trail rather than snapping to each frame's step, so a weaving lead doesn't jerk it round.
-		const FRotator Want(0.0, FMath::RadiansToDegrees(FMath::Atan2(Move.Y, Move.X)), 0.0);
-		Rot = DeltaSeconds > 0.f ? FMath::RInterpConstantTo(Rot, Want, DeltaSeconds, kTurnRate) : Want;
+		// A replayed turn turns the body by its clip's root, as it turned the lead.
+		if (Loco->turnsBegun() != TurnsSeen)
+		{
+			TurnsSeen = Loco->turnsBegun();
+			TurnEntryYaw = static_cast<float>(Rot.Yaw) - Loco->turnYaw();
+		}
+		Rot.Yaw = TurnEntryYaw + Loco->turnYaw();
+	}
+	else if (bWantWalk)
+	{
+		// Ease toward the trail rather than snapping to each frame's step, so a weaving lead doesn't jerk it round.
+		const float Want = FMath::RadiansToDegrees(FMath::Atan2(Move.Y, Move.X));
+		const float Ease = DeltaSeconds > 0.f ? 1.f - FMath::Exp(-DeltaSeconds / kFaceTime) : 1.f;
+		Rot.Yaw += FMath::FindDeltaAngleDegrees(static_cast<float>(Rot.Yaw), Want) * Ease;
 	}
 	SetActorLocationAndRotation(FVector(Ground.X, Ground.Y, Z), Rot, false, nullptr, ETeleportType::TeleportPhysics);
 
@@ -113,9 +127,17 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 	{
 		Speed += ((bWantWalk ? Step : 0.f) - Speed) * (1.f - FMath::Exp(-DeltaSeconds * kSpeedResponse));
 	}
-	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Body->GetAnimInstance()))
+	if (Anim)
 	{
 		Anim->SetGroundSpeed(Speed);
 		Anim->SetIntent(WantSpeed, StopDistance);
+	}
+}
+
+void AFTPartyFollower::ReplayTurn(float Delta)
+{
+	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Body->GetAnimInstance()))
+	{
+		Anim->ReplayTurn(Delta);
 	}
 }

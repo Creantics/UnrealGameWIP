@@ -99,6 +99,8 @@ public:
 
 	// Ground-plane facing, for the interact prompt's cone.
 	FVector2D GetFacing2D() const;
+	// For locomotion captures: the camera frames the body under Root (its feet) as it frames this one.
+	void WatchFrom(USceneComponent* Root);
 
 protected:
 	virtual void BeginPlay() override;
@@ -156,4 +158,8 @@ private:
 	float JumpTimer = 0.f;
 	float PulseEvery = 0.f; // -LocoPulse=<s>
 	float PulseTimer = 0.f;
+	float LookRest = 0.f; // seconds since the last look input
+	float FaceBy = 0.f;   // -LocoFace=<deg>
+	TWeakObjectPtr<AActor> Watched; // WatchFrom: the body the camera frames and recentres behind
+	bool bFacing = false;
 };

@@ -35,6 +35,9 @@ public:
 	// follower sets off and stops when the lead does, so the lead's intent (SetIntent) drives its
 	// starts and stops; -1 plays none.
 	void Place(const FVector2D& Ground, float LeadFeetZ, float DeltaSeconds, float WantSpeed = -1.f, float StopDistance = -1.f);
+	// Plays a running turn by `Delta` degrees from here, as the lead did at this spot on its trail
+	// (ftcore::PartyTrail::turnsReached). Call before Place.
+	void ReplayTurn(float Delta);
 
 private:
 	UPROPERTY(VisibleAnywhere, Category = "Follower")
@@ -44,5 +47,7 @@ private:
 	FVector2D LastGround = FVector2D::ZeroVector;
 	float Speed = 0.f;
 	bool bPlaced = false;
+	uint32 TurnsSeen = 0;
+	float TurnEntryYaw = 0.f; // the yaw a replayed turn began at
 	FFTFootSlideProbe SlideProbe;
 };

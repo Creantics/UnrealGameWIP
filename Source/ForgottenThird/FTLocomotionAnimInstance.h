@@ -15,6 +15,14 @@
 // capsule moves the body), and the spine banks, twists and leans forward per Locomotion's lean,
 // twist and pitch.
 //
+// Turns (SetTurnsFromRun): a character owner steers. Its facing eases toward the way it moves
+// (apply GetLocomotion().yawStep() to the actor each frame; turn bOrientRotationToMovement off), and
+// running turns, turning starts and turns on the spot (SetFace) move and turn the capsule by the
+// clip's root motion: the anim instance plays root motion from everything and hands the movement
+// component each frame's stretch of the turn clip. Any other owner turns itself (by
+// GetLocomotion().turnYaw() while turning) and replays a lead's running turn with ReplayTurn. The root
+// bone is held at its ref pose, rotation and all.
+//
 // -LocoLog logs the speed, the intent, the clips and their weights and rates: on each change of state,
 // ten times a second through a start or stop, otherwise about once a second. -LocoNoMoves plays no
 // starts or stops (SetMovesFromGait sets none), for comparing against.
@@ -72,7 +80,8 @@ struct FFTLocomotionAnimProxy : public FAnimInstanceProxy
 	FFTLocomotionAnimProxy() = default;
 	explicit FFTLocomotionAnimProxy(UAnimInstance* InInstance) : FAnimInstanceProxy(InInstance) {}
 
-	static constexpr int32 MaxLayers = static_cast<int32>(ftcore::kLocoClipCount);
+	// The heaviest layers past this many are dropped (only a crossfade under way has more than a few).
+	static constexpr int32 MaxLayers = 12;
 	static constexpr int32 NumSpine = 3; // spine_01..03
 
 	virtual void PreUpdate(UAnimInstance* InAnimInstance, float DeltaSeconds) override;
@@ -108,6 +117,19 @@ public:
 	// M_Neutral_Run_Loop_F_to_x, M_Neutral_Run_Start_F_Lfoot_to_x and M_Neutral_Run_Stop_F_Lfoot_to_x
 	// (and _Rfoot). Call after the gait's SetClip.
 	void SetMovesFromGait(ftcore::LocoClip Gait);
+	// Sets the running turns, turning starts and turns on the spot from the clips named after the run
+	// loop, where there are any: next to M_Neutral_Run_Loop_F_to_x, M_Neutral_Run_Turn_L_090_Lfoot_to_x,
+	// M_Neutral_Run_Reface_Start_F_L_090_to_x, M_Neutral_Stand_Turn_090_L_to_x and so on. Call after
+	// SetClip(Run). -LocoNoTurns leaves them out.
+	void SetTurnsFromRun();
+	// A character owner standing still turns on the spot to face Yaw (degrees, world) while bFace holds.
+	void SetFace(bool bFace, float Yaw)
+	{
+		bPushedFace = bFace;
+		PushedFaceYaw = Yaw;
+	}
+	// A non-character owner: replay a running turn by Delta degrees on the next update.
+	void ReplayTurn(float Delta) { PushedTurnBy = Delta; }
 	// The owner's ground speed (cm/s) for this frame, for owners that aren't characters.
 	void SetGroundSpeed(float Speed) { PushedSpeed = Speed; }
 	// Where such an owner is heading, as ftcore::LocoInput's wantSpeed and stopDistance: the speed it
@@ -144,8 +166,8 @@ private:
 	void Step(float DeltaSeconds);
 
 	UPROPERTY(Transient)
-	TObjectPtr<UAnimSequence> Clips[18];
-	static_assert(ftcore::kLocoClipCount == 18, "Clips[] holds one per LocoClip");
+	TObjectPtr<UAnimSequence> Clips[46];
+	static_assert(ftcore::kLocoClipCount == 46, "Clips[] holds one per LocoClip");
 
 	ftcore::Locomotion Loco;
 	// The actor's forward in the mesh component's space, for the spine bend.
@@ -153,6 +175,9 @@ private:
 	float PushedSpeed = 0.f;
 	float PushedWant = -1.f;
 	float PushedStop = -1.f;
+	float PushedTurnBy = 0.f;
+	float PushedFaceYaw = 0.f;
+	bool bPushedFace = false;
 	float LastYaw = 0.f;
 	bool bHasYaw = false;
 	bool bLog = false;

@@ -31,6 +31,12 @@ namespace
 {
 // -LocoPulse: how long (s) each rest lasts, long enough for a stop clip to settle.
 constexpr float kPulseRest = 2.f;
+// The camera comes back round behind a moving lead once the look input has rested this long (s), closing
+// kRecentreRate of the gap a second and never faster than kRecentreMax (deg/s), so it trails into turns.
+constexpr float kRecentreDelay = 1.f;
+constexpr float kRecentreRate = 3.f;
+constexpr float kRecentreMax = 120.f;
+constexpr float kRecentreSpeed = 50.f; // cm/s: slower counts as standing
 } // namespace
 
 AFTExploreCharacter::AFTExploreCharacter()
@@ -43,9 +49,9 @@ AFTExploreCharacter::AFTExploreCharacter()
 	bUseControllerRotationPitch = false;
 	bUseControllerRotationRoll = false;
 	UCharacterMovementComponent* Move = GetCharacterMovement();
-	Move->bOrientRotationToMovement = true;
-	// Slow enough that a turn is seen: the upper body leads it and the body banks into it.
-	Move->RotationRate = FRotator(0.0, 360.0, 0.0);
+	// Locomotion steers the body (Tick): its facing eases toward the way it moves, and a sharp turn
+	// plays a turn clip whose root motion turns it.
+	Move->bOrientRotationToMovement = false;
 	Move->MaxWalkSpeed = WalkSpeed;
 	Move->JumpZVelocity = 520.f;
 	Move->AirControl = 0.35f;
@@ -60,9 +66,10 @@ AFTExploreCharacter::AFTExploreCharacter()
 
 	Boom = CreateDefaultSubobject<USpringArmComponent>(TEXT("Boom"));
 	Boom->SetupAttachment(RootComponent);
-	// Close and low, so the ground moving past reads as speed.
-	Boom->TargetArmLength = 300.f;
-	Boom->SocketOffset = FVector(0.0, 0.0, 60.0);
+	// Low and over the right shoulder, the lead filling about 45% of the frame's height (at 16:9), so
+	// the ground moving past reads as speed and the run reads whole.
+	Boom->TargetArmLength = 400.f;
+	Boom->SocketOffset = FVector(0.0, 70.0, 60.0);
 	Boom->bUsePawnControlRotation = true;
 	Boom->bEnableCameraLag = true;
 	Boom->CameraLagSpeed = 12.f;
@@ -100,13 +107,14 @@ void AFTExploreCharacter::BeginPlay()
 	SetupLocomotion();
 	// Locomotion test switches: -LocoRun holds the run speed, -LocoJump=<s> jumps every s seconds,
 	// -LocoPulse=<s> drops the movement input for kPulseRest seconds after every s seconds of it, for
-	// starts and stops.
+	// starts and stops; with -LocoFace=<deg> the body turns on the spot by that much in each rest.
 	if (FParse::Param(FCommandLine::Get(), TEXT("LocoRun")))
 	{
 		GetCharacterMovement()->MaxWalkSpeed = RunSpeed;
 	}
 	FParse::Value(FCommandLine::Get(), TEXT("LocoJump="), JumpEvery);
 	FParse::Value(FCommandLine::Get(), TEXT("LocoPulse="), PulseEvery);
+	FParse::Value(FCommandLine::Get(), TEXT("LocoFace="), FaceBy);
 	if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait")))
 	{
 		// For checking a look: the camera holds still round the pawn, by default in front of the face. Yaw 180 is
@@ -151,6 +159,13 @@ void AFTExploreCharacter::BeginPlay()
 			GetWorldTimerManager().SetTimer(ShotTimer, this, &AFTExploreCharacter::StepPortraitShots, 2.5f, true, Delay);
 		}
 	}
+}
+
+void AFTExploreCharacter::WatchFrom(USceneComponent* Root)
+{
+	Watched = Root->GetOwner();
+	Boom->AttachToComponent(Root, FAttachmentTransformRules::KeepRelativeTransform);
+	Boom->SetRelativeLocation(FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
 }
 
 void AFTExploreCharacter::StepPortraitShots()
@@ -389,6 +404,10 @@ void AFTExploreCharacter::HandleMove(const FInputActionValue& Value)
 void AFTExploreCharacter::HandleLook(const FInputActionValue& Value)
 {
 	const FVector2D Axis = Value.Get<FVector2D>();
+	if (!Axis.IsNearlyZero())
+	{
+		LookRest = 0.f;
+	}
 	AddControllerYawInput(Axis.X);
 	AddControllerPitchInput(-Axis.Y);
 }
@@ -433,10 +452,35 @@ FVector2D AFTExploreCharacter::GetFacing2D() const
 void AFTExploreCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (const UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance()))
+	{
+		const float Step = Anim->GetLocomotion().yawStep();
+		if (Step != 0.f)
+		{
+			AddActorWorldRotation(FRotator(0.0, Step, 0.0));
+		}
+	}
 	SlideProbe.Sample(*GetMesh(), DeltaSeconds, static_cast<float>(GetVelocity().Size2D()));
+	LookRest += DeltaSeconds;
+	if (Controller && Boom->bUsePawnControlRotation && LookRest >= kRecentreDelay && GetVelocity().Size2D() > kRecentreSpeed)
+	{
+		FRotator Control = Controller->GetControlRotation();
+		const AActor* Framed = Watched.IsValid() ? Watched.Get() : this;
+		const float Gap = FMath::FindDeltaAngleDegrees(static_cast<float>(Control.Yaw), static_cast<float>(Framed->GetActorRotation().Yaw));
+		Control.Yaw += FMath::Clamp(Gap * kRecentreRate * DeltaSeconds, -kRecentreMax * DeltaSeconds, kRecentreMax * DeltaSeconds);
+		Controller->SetControlRotation(Control);
+	}
 	if (PulseEvery > 0.f && (PulseTimer += DeltaSeconds) > PulseEvery + kPulseRest)
 	{
 		PulseTimer = 0.f;
+	}
+	if (FaceBy != 0.f && PulseEvery > 0.f && (PulseTimer > PulseEvery) != bFacing)
+	{
+		bFacing = !bFacing;
+		if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance()))
+		{
+			Anim->SetFace(bFacing, static_cast<float>(GetActorRotation().Yaw) + FaceBy);
+		}
 	}
 	if (JumpEvery > 0.f && (JumpTimer += DeltaSeconds) >= JumpEvery)
 	{
@@ -476,4 +520,5 @@ void AFTExploreCharacter::SetupLocomotion()
 	Anim->SetMovesFromGait(ftcore::LocoClip::Walk);
 	Anim->SetMovesFromGait(ftcore::LocoClip::Run);
 	Anim->SetMovesFromGait(ftcore::LocoClip::Sprint);
+	Anim->SetTurnsFromRun();
 }

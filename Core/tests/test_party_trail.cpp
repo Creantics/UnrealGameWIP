@@ -98,16 +98,81 @@ TEST_CASE("party trail: a jump longer than the trail starts it over, facing the 
     CHECK(fresh.pointBehind(2.f).x == doctest::Approx(3.f));
 }
 
+TEST_CASE("party trail: the odometer counts the lead's way along the trail") {
+    PartyTrail t;
+    CHECK(t.odometer() == doctest::Approx(0.f));
+    t.reset({0.f, 0.f}, {1.f, 0.f}, 1.f);
+    const float start = t.odometer();
+    walk(t, {0.f, 0.f}, {3.f, 0.f}, 0.07f);
+    walk(t, {3.f, 0.f}, {3.f, 2.f}, 0.4f);
+    CHECK(t.odometer() - start == doctest::Approx(5.f).epsilon(0.02)); // the corner is cut by at most a sample
+    // A point behind the lead is where the lead was when the odometer read that much less.
+    CHECK(dist(t.pointBehind(1.f), {3.f, 1.f}) < 0.05f);
+}
+
+TEST_CASE("party trail: each follower reaches a turn where the lead began it") {
+    PartyTrail t;
+    t.reset({0.f, 0.f}, {1.f, 0.f}, 2.f * PartyTrail::kFollowerSpacing);
+    std::uint32_t first = 0, second = 0;
+    const float a1 = PartyTrail::kFollowerSpacing, a2 = 2.f * PartyTrail::kFollowerSpacing;
+    CHECK(t.turnsReached(a1, first) == 0.f);
+    walk(t, {0.f, 0.f}, {4.f, 0.f}, 0.05f);
+    t.markTurn(90.f); // at x = 4
+    Vec2 lead{4.f, 0.f};
+    float got1 = 0.f, got2 = 0.f, at1 = -1.f, at2 = -1.f;
+    for (int i = 0; i < 120; ++i) {
+        const Vec2 next{lead.x, lead.y + 0.05f};
+        t.push(next);
+        lead = next;
+        const float d1 = t.turnsReached(a1, first), d2 = t.turnsReached(a2, second);
+        if (d1 != 0.f) { got1 = d1; at1 = lead.y; }
+        if (d2 != 0.f) { got2 = d2; at2 = lead.y; }
+    }
+    CHECK(got1 == 90.f);
+    CHECK(got2 == 90.f);
+    // Each reaches it once, when the lead is its spacing past the turn (to within a frame's step).
+    CHECK(at1 == doctest::Approx(a1).epsilon(0.05));
+    CHECK(at2 == doctest::Approx(a2).epsilon(0.05));
+    CHECK(t.turnsReached(a1, first) == 0.f);
+}
+
+TEST_CASE("party trail: turns reached together sum, a reset forgets them, the ring drops the oldest") {
+    PartyTrail t;
+    t.reset({0.f, 0.f}, {1.f, 0.f}, 4.f);
+    std::uint32_t next = 0;
+    t.markTurn(45.f);
+    t.push({0.5f, 0.f});
+    t.markTurn(-30.f);
+    walk(t, {0.5f, 0.f}, {3.f, 0.f}, 0.1f);
+    CHECK(t.turnsReached(1.f, next) == doctest::Approx(15.f));
+
+    std::uint32_t late = 0;
+    t.markTurn(90.f);
+    t.reset({0.f, 0.f}, {1.f, 0.f}, 4.f);
+    walk(t, {0.f, 0.f}, {3.f, 0.f}, 0.1f);
+    CHECK(t.turnsReached(1.f, late) == 0.f);
+
+    std::uint32_t slow = 0;
+    for (int i = 0; i < static_cast<int>(PartyTrail::kTurns) + 3; ++i) {
+        t.markTurn(1.f);
+        t.push({3.f + 0.3f * static_cast<float>(i + 1), 0.f});
+    }
+    walk(t, {3.f + 0.3f * static_cast<float>(PartyTrail::kTurns + 3), 0.f}, {20.f, 0.f}, 0.2f);
+    CHECK(t.turnsReached(1.f, slow) == doctest::Approx(static_cast<float>(PartyTrail::kTurns)));
+}
+
 TEST_CASE("party trail allocates nothing") {
     PartyTrail t;
     const bool counting = ftcore_test::allocHookInstalled();
     const auto before = ftcore_test::allocStats().count;
     t.reset({0.f, 0.f}, {1.f, 0.f}, 3.2f);
     float sum = 0.f;
+    std::uint32_t next = 0;
     for (int i = 0; i < 2000; ++i) {
         const float a = static_cast<float>(i) * 0.01f;
         t.push({a * 3.f, std::sin(a) * 4.f});
-        sum += t.pointBehind(1.6f).x + t.pointBehind(3.2f).y + t.length();
+        if (i % 100 == 0) t.markTurn(10.f);
+        sum += t.pointBehind(1.6f).x + t.pointBehind(3.2f).y + t.length() + t.turnsReached(1.6f, next);
     }
     const auto after = ftcore_test::allocStats().count;
     CHECK(sum != 0.f);

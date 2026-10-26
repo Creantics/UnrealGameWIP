@@ -200,6 +200,13 @@ void AFTPlayerController::BeginPlay()
 			Subsystem->AddMappingContext(MenuContext, 2); // BeginMenuInput ran first
 		}
 	}
+	// -ClayView: every surface renders plain grey under the scene's lighting, for checking motion and form
+	// without the materials. No asset changes.
+	if (IsLocalController() && FParse::Param(FCommandLine::Get(), TEXT("ClayView")))
+	{
+		ConsoleCommand(TEXT("viewmode lightingonly"));
+		UE_LOG(LogForgottenThird, Display, TEXT("ClayView: viewmode lightingonly."));
+	}
 }
 
 void AFTPlayerController::BeginMenuInput()

@@ -17,6 +17,31 @@ namespace
 {
 const TCHAR* const SpineNames[FFTLocomotionAnimProxy::NumSpine] = {TEXT("spine_01"), TEXT("spine_02"), TEXT("spine_03")};
 
+// A turn clip's side ("L" or "R"), angle and, for a running turn, foot.
+struct FTurnParts
+{
+	const TCHAR* Side;
+	int32 Angle;
+	const TCHAR* Foot;
+};
+FTurnParts TurnParts(ftcore::LocoClip C)
+{
+	const int32 I = static_cast<int32>(C);
+	auto Side = [](bool bRight) { return bRight ? TEXT("R") : TEXT("L"); };
+	if (ftcore::isLocoRunTurn(C))
+	{
+		const int32 K = I - static_cast<int32>(ftcore::LocoClip::RunTurnLeft45L);
+		return {Side(K >= 8), ftcore::kLocoTurnAngles[(K % 8) / 2], Side(K % 2 == 1)};
+	}
+	if (ftcore::isLocoReface(C))
+	{
+		const int32 K = I - static_cast<int32>(ftcore::LocoClip::RefaceLeft90);
+		return {Side(K >= 2), ftcore::kLocoRefaceAngles[K % 2], TEXT("")};
+	}
+	const int32 K = I - static_cast<int32>(ftcore::LocoClip::StandTurnLeft45);
+	return {Side(K >= 4), ftcore::kLocoTurnAngles[K % 4], TEXT("")};
+}
+
 const TCHAR* ClipName(ftcore::LocoClip C)
 {
 	switch (C)
@@ -39,8 +64,24 @@ const TCHAR* ClipName(ftcore::LocoClip C)
 	case ftcore::LocoClip::RunStopRight: return TEXT("run stop R");
 	case ftcore::LocoClip::SprintStopLeft: return TEXT("sprint stop L");
 	case ftcore::LocoClip::SprintStopRight: return TEXT("sprint stop R");
-	default: return TEXT("?");
+	default: break;
 	}
+	// The turns, named once: "run turn L90 Rfoot", "reface R180", "stand turn L45".
+	static const TArray<FString> Turns = []
+	{
+		TArray<FString> Names;
+		for (int32 I = static_cast<int32>(ftcore::LocoClip::RunTurnLeft45L); I < static_cast<int32>(ftcore::LocoClip::Count); ++I)
+		{
+			const ftcore::LocoClip Clip = static_cast<ftcore::LocoClip>(I);
+			const FTurnParts T = TurnParts(Clip);
+			Names.Add(ftcore::isLocoRunTurn(Clip) ? FString::Printf(TEXT("run turn %s%d %sfoot"), T.Side, T.Angle, T.Foot)
+				: ftcore::isLocoReface(Clip) ? FString::Printf(TEXT("reface %s%d"), T.Side, T.Angle)
+				: FString::Printf(TEXT("stand turn %s%d"), T.Side, T.Angle));
+		}
+		return Names;
+	}();
+	const int32 Turn = static_cast<int32>(C) - static_cast<int32>(ftcore::LocoClip::RunTurnLeft45L);
+	return Turns.IsValidIndex(Turn) ? *Turns[Turn] : TEXT("?");
 }
 
 // Samples per second when measuring a gait.
@@ -92,6 +133,7 @@ bool SampleFeet(const UAnimSequence& Clip, TArray<ftcore::GaitFrame>& Frames)
 		Frames[K].root = Point(ComponentSpace(0, Time).GetTranslation());
 		Frames[K].left = Point(ComponentSpace(Left, Time).GetTranslation());
 		Frames[K].right = Point(ComponentSpace(Right, Time).GetTranslation());
+		Frames[K].yaw = float(ComponentSpace(0, Time).Rotator().Yaw);
 	}
 	return true;
 }
@@ -122,7 +164,7 @@ void UFTLocomotionAnimInstance::SetClip(ftcore::LocoClip Which, UAnimSequence* C
 	if (Clip)
 	{
 		const bool bGait = ftcore::isLocoGait(Which);
-		const bool bMove = ftcore::isLocoStart(Which) || ftcore::isLocoStop(Which);
+		const bool bMove = ftcore::isLocoStart(Which) || ftcore::isLocoStop(Which) || ftcore::isLocoTurn(Which);
 		Info = bGait ? MeasureClip(*Clip) : bMove ? MeasureMove(*Clip) : ftcore::LocoClipInfo{Clip->GetPlayLength(), 0.f, 1, 0.f};
 		// The root's own travel over the loop, when the clip has root motion: a check on the ground speed.
 		FTransform Start, End;
@@ -143,6 +185,10 @@ void UFTLocomotionAnimInstance::SetClip(ftcore::LocoClip Which, UAnimSequence* C
 		else if (bMove)
 		{
 			Detail = FString::Printf(TEXT(", root travels %.0f cm in %.2f s"), Info.travel, Info.moveTime);
+			if (ftcore::isLocoTurn(Which))
+			{
+				Detail += FString::Printf(TEXT(", turns %.0f deg from %.2f to %.2f s"), Info.turn, Info.turnStart, Info.turnEnd);
+			}
 		}
 		else
 		{
@@ -182,6 +228,38 @@ void UFTLocomotionAnimInstance::SetMovesFromGait(ftcore::LocoClip Gait)
 	Set(ftcore::locoStop(Gait, true), TEXT("_Stop_F_Rfoot"));
 }
 
+void UFTLocomotionAnimInstance::SetTurnsFromRun()
+{
+	static const bool bNoTurns = FParse::Param(FCommandLine::Get(), TEXT("LocoNoTurns"));
+	const UAnimSequence* Loop = bNoTurns ? nullptr : Clips[static_cast<int32>(ftcore::LocoClip::Run)].Get();
+	const FString Path = Loop ? Loop->GetPathName() : FString();
+	int32 Found = 0;
+	for (int32 C = static_cast<int32>(ftcore::LocoClip::RunTurnLeft45L); C < static_cast<int32>(ftcore::LocoClip::Count); ++C)
+	{
+		const ftcore::LocoClip Which = static_cast<ftcore::LocoClip>(C);
+		UAnimSequence* Clip = nullptr;
+		if (Path.Contains(TEXT("_Run_Loop_F")))
+		{
+			const FTurnParts T = TurnParts(Which);
+			const FString Name = ftcore::isLocoRunTurn(Which) ? FString::Printf(TEXT("_Run_Turn_%s_%03d_%sfoot"), T.Side, T.Angle, T.Foot)
+				: ftcore::isLocoReface(Which) ? FString::Printf(TEXT("_Run_Reface_Start_F_%s_%03d"), T.Side, T.Angle)
+				: FString::Printf(TEXT("_Stand_Turn_%03d_%s"), T.Angle, T.Side);
+			const FString TurnPath = Path.Replace(TEXT("_Run_Loop_F"), *Name, ESearchCase::CaseSensitive);
+			if (FPackageName::DoesPackageExist(FPackageName::ObjectPathToPackageName(TurnPath)))
+			{
+				Clip = LoadObject<UAnimSequence>(nullptr, *TurnPath, nullptr, LOAD_NoWarn | LOAD_Quiet);
+			}
+		}
+		Found += Clip ? 1 : 0;
+		SetClip(Which, Clip);
+	}
+	if (Loop)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: %d of %d turn clips next to %s."), Found,
+			static_cast<int32>(ftcore::LocoClip::Count) - static_cast<int32>(ftcore::LocoClip::RunTurnLeft45L), *Loop->GetName());
+	}
+}
+
 void UFTLocomotionAnimInstance::MovementIntent(const UCharacterMovementComponent& Move, float& WantSpeed, float& StopDistance)
 {
 	WantSpeed = -1.f;
@@ -208,6 +286,11 @@ void UFTLocomotionAnimInstance::NativeInitializeAnimation()
 {
 	Super::NativeInitializeAnimation();
 	Loco.reset();
+	// A character's turn clips move and turn its capsule; nothing else here extracts root motion.
+	if (Cast<ACharacter>(GetOwningActor()))
+	{
+		RootMotionMode = ERootMotionMode::RootMotionFromEverything;
+	}
 	bHasYaw = false;
 	bLog = FParse::Param(FCommandLine::Get(), TEXT("LocoLog"));
 	if (FParse::Param(FCommandLine::Get(), TEXT("LocoSlide")))
@@ -250,12 +333,23 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		{
 			MovementIntent(*Move, In.wantSpeed, In.stopDistance);
 		}
+		// It steers: Locomotion eases its facing toward the way it moves and turns it by root motion.
+		const float Facing = static_cast<float>(Owner->GetActorRotation().Yaw);
+		const FVector A = Move ? Move->GetCurrentAcceleration() : FVector::ZeroVector;
+		In.steer = In.rootMotion = true;
+		In.yaw = Facing;
+		In.moveYaw = V.SizeSquared2D() > 1.0 ? static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(V.Y, V.X))) : Facing;
+		In.wantYaw = A.SizeSquared2D() > 1.0 ? static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(A.Y, A.X))) : Facing;
+		In.face = bPushedFace;
+		In.faceYaw = PushedFaceYaw;
 	}
 	else
 	{
 		In.groundSpeed = PushedSpeed;
 		In.wantSpeed = PushedWant;
 		In.stopDistance = PushedStop;
+		In.turnBy = PushedTurnBy;
+		PushedTurnBy = 0.f;
 	}
 	const float Yaw = static_cast<float>(Owner->GetActorRotation().Yaw);
 	In.turnRate = bHasYaw && DeltaSeconds > 0.f ? FMath::FindDeltaAngleDegrees(LastYaw, Yaw) / DeltaSeconds : 0.f;
@@ -272,18 +366,23 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		}
 	}
 
-	// Each change of state is logged too, and starts and stops ten times a second.
+	// Each change of state is logged too, and starts, stops and turns ten times a second.
 	const bool bChanged = Loco.state() != LastState;
 	LastState = Loco.state();
 	if (bLog && ((LogTimer -= DeltaSeconds) <= 0.f || bChanged))
 	{
-		const bool bMoving = Loco.state() == ftcore::LocoState::Starting || Loco.state() == ftcore::LocoState::Stopping;
+		const bool bMoving = Loco.state() == ftcore::LocoState::Starting || Loco.state() == ftcore::LocoState::Stopping || Loco.turning();
 		LogTimer = LogTimer <= 0.f ? (bMoving ? 0.1f : 1.f) : LogTimer;
 		FString Layers;
 		for (std::size_t I = 0; I < Loco.layerCount(); ++I)
 		{
 			const ftcore::LocoLayer& L = Loco.layer(I);
 			Layers += FString::Printf(TEXT(" %s %.2f@x%.2f"), ClipName(L.clip), L.weight, Loco.rate(L.clip));
+		}
+		if (Loco.turning())
+		{
+			Layers += FString::Printf(TEXT(" | turning %s x%.2f yaw %.0f (facing %.0f, heading %.0f)"), ClipName(Loco.turnClip()), Loco.turnWarp(),
+				Loco.turnYaw(), In.yaw, In.wantYaw);
 		}
 		UE_LOG(LogForgottenThird, Display,
 			TEXT("Locomotion %s: speed %.0f want %.0f stop in %.0f turn %.0f falling %d state %d lean %.1f twist %.1f pitch %.1f |%s"),
@@ -336,7 +435,8 @@ void FFTFootSlideProbe::Sample(const USkeletalMeshComponent& Mesh, float DeltaSe
 	if (Foot != PlantFoot)
 	{
 		// A plant ends: its net slip, start to end, leaves out the frame-to-frame jitter.
-		if (PlantFoot != INDEX_NONE)
+		// Shorter than 0.08 s it is a flip between the feet at a high frame rate, not a plant.
+		if (PlantFoot != INDEX_NONE && PlantTime >= 0.08f)
 		{
 			const FVector Slip = Last[PlantFoot] - PlantStart;
 			const FVector Fwd = Mesh.GetOwner() ? Mesh.GetOwner()->GetActorForwardVector() : FVector::ForwardVector;
@@ -398,13 +498,49 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 	Instance->Step(DeltaSeconds);
 	const ftcore::Locomotion& Loco = Instance->Loco;
 	NumLayers = 0;
+	float Kept = 0.f;
 	for (std::size_t I = 0; I < Loco.layerCount(); ++I)
 	{
 		const ftcore::LocoLayer& L = Loco.layer(I);
 		const UAnimSequence* Seq = Instance->Clips[static_cast<int32>(L.clip)];
-		if (Seq)
+		if (!Seq)
 		{
-			Layers[NumLayers++] = {Seq, L.time, L.weight, ftcore::isLocoLoop(L.clip)};
+			continue;
+		}
+		const FLayer Layer{Seq, L.time, L.weight, ftcore::isLocoLoop(L.clip)};
+		if (NumLayers < MaxLayers)
+		{
+			Layers[NumLayers++] = Layer;
+			Kept += L.weight;
+			continue;
+		}
+		// Full: it replaces the lightest, if heavier.
+		int32 Lightest = 0;
+		for (int32 K = 1; K < NumLayers; ++K)
+		{
+			Lightest = Layers[K].Weight < Layers[Lightest].Weight ? K : Lightest;
+		}
+		if (L.weight > Layers[Lightest].Weight)
+		{
+			Kept += L.weight - Layers[Lightest].Weight;
+			Layers[Lightest] = Layer;
+		}
+	}
+	for (int32 I = 0; I < NumLayers && Kept > 0.f; ++I)
+	{
+		Layers[I].Weight /= Kept;
+	}
+
+	// A turn driving the capsule: this frame's stretch of its root motion, its yaw scaled to the turn
+	// asked for, for the movement component to apply.
+	if (Loco.turning() && Loco.turnRootDriven() && Loco.turnTo() > Loco.turnFrom())
+	{
+		if (const UAnimSequence* Seq = Instance->Clips[static_cast<int32>(Loco.turnClip())])
+		{
+			FTransform Delta = Seq->ExtractRootMotionFromRange(Loco.turnFrom(), Loco.turnTo(), FAnimExtractContext());
+			const float Yaw = Delta.GetRotation().GetTwistAngle(FVector::UpVector);
+			Delta.SetRotation(FQuat(FVector::UpVector, Yaw * Loco.turnWarp()));
+			GetExtractedRootMotion().Accumulate(Delta);
 		}
 	}
 
@@ -456,9 +592,10 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 	}
 
 	const FBoneContainer& Container = Output.Pose.GetBoneContainer();
-	// The capsule carries the body: hold the root where the ref pose has it.
+	// The capsule carries the body, turns included: hold the root where the ref pose has it.
 	const FCompactPoseBoneIndex Root(0);
 	Output.Pose[Root].SetTranslation(Output.Pose.GetRefPose(Root).GetTranslation());
+	Output.Pose[Root].SetRotation(Output.Pose.GetRefPose(Root).GetRotation());
 
 	if (!bBound || BoundSerial != Container.GetSerialNumber())
 	{

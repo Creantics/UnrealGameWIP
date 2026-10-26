@@ -108,6 +108,9 @@ private:
 	void StartGuardFight(int32 Id);
 	void OpenBattle();
 	void TickAutoPlay(AFTExploreCharacter& Player, float DeltaSeconds);
+	// While FaceTarget is set: turns the standing lead on the spot to face it and uses it once it is
+	// in the focus cone; gives up when the lead moves off or out of reach. True while it holds the tick.
+	bool TickFace(AFTExploreCharacter& Player, ftcore::Vec2 Pos, float DeltaSeconds);
 	void TickStoryWalk(AFTExploreCharacter& Player, float DeltaSeconds);
 	// Walks the pawn toward Goal (metres) and runs the stuck detection for TargetId; straight at it
 	// without the navmesh when !bUseNav.
@@ -135,6 +138,8 @@ private:
 
 	ftcore::Exploration Exploration;
 	int32 Focus = -1;
+	int32 FaceTarget = -1; // a spot in reach the lead is turning on the spot to face, to use it once faced
+	float FaceTime = 0.f;
 	int32 PendingEncounter = -1;
 	int32 PendingGuard = -1;
 	bool bRestorePending = false;
@@ -159,6 +164,8 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AFTPartyFollower>> Followers;
 	ftcore::PartyTrail Trail;
+	uint32 LeadTurns = 0;       // the lead's turns begun, last seen
+	TArray<uint32> TurnCursors; // each follower's place in the trail's turns
 	bool bFollowersSpawned = false;
 
 	// The field guards (demo only; a story field step has none). Returns the guard that caught the

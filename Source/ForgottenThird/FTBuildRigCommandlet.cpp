@@ -81,6 +81,64 @@ void LogFootSpeed(const UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 		Pelvis != INDEX_NONE ? Travel(Pelvis) : 0.0);
 }
 
+// Logs how far a clip turns, on the root bone and on the pelvis (component space, first to last
+// frame), and the root's travel. A turn or pivot the game plays as root motion needs the yaw on the
+// root; skipped for clips that turn less than 5 degrees.
+void LogTurn(const UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
+{
+	const IAnimationDataModel* Model = Clip.GetDataModel();
+	const int32 Frames = Model ? Model->GetNumberOfKeys() : 0;
+	const int32 Pelvis = Skeleton.FindBoneIndex(TEXT("pelvis"));
+	if (Frames < 2 || Pelvis == INDEX_NONE)
+	{
+		return;
+	}
+	// Summed frame to frame, so a half turn keeps its sign.
+	TArray<double> RootYaw;
+	RootYaw.SetNumZeroed(Frames);
+	double PelvisYaw = 0.0;
+	for (int32 F = 1; F < Frames; ++F)
+	{
+		auto Step = [&](int32 Bone)
+		{
+			const FQuat A = ComponentTransform(*Model, Skeleton, Bone, F - 1).GetRotation();
+			const FQuat B = ComponentTransform(*Model, Skeleton, Bone, F).GetRotation();
+			return FMath::RadiansToDegrees((B * A.Inverse()).GetTwistAngle(FVector::UpVector));
+		};
+		RootYaw[F] = RootYaw[F - 1] + Step(0);
+		PelvisYaw += Step(Pelvis);
+	}
+	const double Turn = RootYaw.Last();
+	if (FMath::Abs(Turn) < 5.0 && FMath::Abs(PelvisYaw) < 5.0)
+	{
+		return;
+	}
+	// When the root has turned 10%, half and 90% of the way, and its speed over the first and last tenth.
+	const double Length = Model->GetPlayLength();
+	auto TimeAt = [&](double Share)
+	{
+		for (int32 F = 0; F < Frames; ++F)
+		{
+			if (FMath::Abs(RootYaw[F]) >= FMath::Abs(Turn) * Share)
+			{
+				return Length * F / (Frames - 1);
+			}
+		}
+		return Length;
+	};
+	const int32 Tenth = FMath::Max(1, (Frames - 1) / 10);
+	auto Speed = [&](int32 From)
+	{
+		return (ComponentTransform(*Model, Skeleton, 0, From + Tenth).GetTranslation() - ComponentTransform(*Model, Skeleton, 0, From).GetTranslation()).Size2D()
+			/ (Length * Tenth / (Frames - 1));
+	};
+	const FVector Travel = ComponentTransform(*Model, Skeleton, 0, Frames - 1).GetTranslation() - ComponentTransform(*Model, Skeleton, 0, 0).GetTranslation();
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("FTBuildRig: clip %s turn: root %.0f deg (10%% at %.2f s, half at %.2f, 90%% at %.2f of %.2f), pelvis %.0f deg, root travels %.0f cm (%.0f, %.0f), %.0f cm/s at first, %.0f at last"),
+		*Clip.GetName(), Turn, TimeAt(0.1), TimeAt(0.5), TimeAt(0.9), Length, PelvisYaw, Travel.Size2D(), Travel.X, Travel.Y, Speed(0),
+		Speed(Frames - 1 - Tenth));
+}
+
 // Logs one line for a clip: frames, bone tracks that move over time or differ from the bind pose,
 // and float curves whose value changes. Returns false when the clip is empty (nothing moves and
 // nothing is off the bind pose).
@@ -139,6 +197,7 @@ bool LogClip(const UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 		*Clip.GetName(), Model->GetNumberOfFrames(), Model->GetPlayLength(), Model->GetNumBoneTracks(), Moving, OffBind,
 		Model->GetNumberOfFloatCurves(), CurvesChanging, bEmpty ? TEXT(" - EMPTY") : TEXT(""));
 	LogFootSpeed(Clip, Skeleton);
+	LogTurn(Clip, Skeleton);
 	return !bEmpty;
 }
 

@@ -7,11 +7,17 @@ namespace ftcore {
 
 namespace {
 
+constexpr float kDegToRad = 3.14159265f / 180.f;
 constexpr LocoClip kGaits[] = {LocoClip::Walk, LocoClip::Run, LocoClip::Sprint};
+// Gait mixes nearer than this to either end play the nearer gait alone.
+constexpr float kGaitDeadBand = 0.03f;
 
 float frac(float x) { return x - std::floor(x); }
 
 float clampf(float x, float lo, float hi) { return std::min(std::max(x, lo), hi); }
+
+// An angle (degrees) brought within -180..180.
+float wrap180(float a) { return a - 360.f * std::floor((a + 180.f) / 360.f); }
 
 // The share of the remaining distance an exponential follow covers in dt.
 float follow(float dt, float timeConstant) { return timeConstant > 0.f ? 1.f - std::exp(-dt / timeConstant) : 1.f; }
@@ -23,10 +29,15 @@ struct FootTrack {
     int firstPlant = -1; // frame of the first plant onset
 };
 
+// Turned back by the root's yaw since frame 0, so the feet of a turning clip compare with a gait's.
 LocoPoint footRel(const GaitFrame* frames, std::size_t k, bool left) {
     const LocoPoint& f = left ? frames[k].left : frames[k].right;
     const LocoPoint& r = frames[k].root;
-    return LocoPoint{f.x - r.x, f.y - r.y, f.z - r.z};
+    const float x = f.x - r.x, y = f.y - r.y;
+    const float a = (frames[k].yaw - frames[0].yaw) * kDegToRad;
+    if (a == 0.f) return LocoPoint{x, y, f.z - r.z};
+    const float c = std::cos(a), sn = std::sin(a);
+    return LocoPoint{x * c + y * sn, y * c - x * sn, f.z - r.z};
 }
 
 float footMinZ(const GaitFrame* frames, std::size_t n, bool left) {
@@ -146,6 +157,13 @@ float pathSpeed(const LocoClipInfo& i, float t) {
     return b > a ? (pathAt(i, b) - pathAt(i, a)) / (b - a) : 0.f;
 }
 
+// The root's yaw at t (from the clip's start); the yaw track spans the whole clip.
+float yawAt(const LocoClipInfo& i, float t) {
+    const float f = i.length > 0.f ? clampf(t / i.length, 0.f, 1.f) * kLastSample : 0.f;
+    const std::size_t k = std::min(static_cast<std::size_t>(f), kMoveSamples - 2);
+    return i.yaw[k] + (i.yaw[k + 1] - i.yaw[k]) * (f - static_cast<float>(k));
+}
+
 LocoFeet feetAt(const LocoClipInfo& i, float t) {
     float u = 0.f;
     const std::size_t k = trackAt(i, t, u);
@@ -200,6 +218,35 @@ LocoClipInfo measureMove(const GaitFrame* frames, std::size_t count, float lengt
                         lerp(footRel(frames, k, false), footRel(frames, k + 1, false), u)};
     }
     info.travel = info.path[kMoveSamples - 1];
+
+    // The root's yaw, unwrapped, over the whole clip (a turn on the spot barely moves).
+    std::array<float, kMaxGaitFrames> yaw{};
+    for (std::size_t k = 1; k < n; ++k) yaw[k] = yaw[k - 1] + wrap180(frames[k].yaw - frames[k - 1].yaw);
+    for (std::size_t s = 0; s < kMoveSamples; ++s) {
+        const float f = static_cast<float>(s) / kLastSample * static_cast<float>(n - 1);
+        const std::size_t k = std::min(static_cast<std::size_t>(f), n - 2);
+        info.yaw[s] = yaw[k] + (yaw[k + 1] - yaw[k]) * std::min(f - static_cast<float>(k), 1.f);
+    }
+    info.turn = yaw[n - 1];
+    if (std::fabs(info.turn) < kTurnStill) {
+        info.turn = 0.f;
+        info.yaw.fill(0.f);
+        return info;
+    }
+    // When it has done 5% and 95% of its turn.
+    const float sign = info.turn > 0.f ? 1.f : -1.f, whole = std::fabs(info.turn);
+    bool started = false;
+    for (std::size_t k = 0; k < n; ++k) {
+        const float done = yaw[k] * sign;
+        if (!started && done >= 0.05f * whole) {
+            info.turnStart = static_cast<float>(k) * dt;
+            started = true;
+        }
+        if (done >= 0.95f * whole) {
+            info.turnEnd = static_cast<float>(k) * dt;
+            break;
+        }
+    }
     return info;
 }
 
@@ -245,6 +292,9 @@ void Locomotion::reset() {
     land_ = LocoClip::Land;
     move_ = LocoClip::RunStart;
     moved_ = braking_ = 0.f;
+    turnEnter_ = turnFrom_ = turnTo_ = yawStep_ = 0.f;
+    warp_ = 1.f;
+    rootDriven_ = false;
     layers_[0] = {LocoClip::Idle, 0.f, 1.f};
     layerCount_ = 1;
     state_ = LocoState::Ground;
@@ -286,7 +336,10 @@ void Locomotion::splitGaits(float speed) {
         share_[index(order[k])] = 1.f;
         return;
     }
-    const float t = (speed - lo) / (clip(order[k + 1]).groundSpeed - lo);
+    // A gait with only a few percent of the mix plays at a rate far from its own and slides the planted
+    // foot; near either end the nearer gait plays alone.
+    float t = (speed - lo) / (clip(order[k + 1]).groundSpeed - lo);
+    t = t < kGaitDeadBand ? 0.f : t > 1.f - kGaitDeadBand ? 1.f : t;
     share_[index(order[k])] = 1.f - t;
     share_[index(order[k + 1])] = t;
 }
@@ -312,7 +365,7 @@ LocoClip Locomotion::heaviestGait() const {
 bool Locomotion::beginStop(const LocoInput& in, float speed) {
     if (braking_ < tuning_.stopDelay || in.stopDistance < 0.f || !isLocoGait(gait_) || speed < tuning_.moveStop) return false;
     // The stop on the foot that best continues what the feet are doing now.
-    const LocoClip from = state_ == LocoState::Starting ? move_ : gait_;
+    const LocoClip from = state_ == LocoState::Starting || state_ == LocoState::Turning ? move_ : gait_;
     const bool known = hasMove(from);
     const LocoClipInfo& f = clip(from);
     const float fromTime = time_[index(from)];
@@ -339,6 +392,67 @@ bool Locomotion::beginStop(const LocoInput& in, float speed) {
     rate_[index(pick)] = 0.f;
     enter_ = bestTime;
     return true;
+}
+
+bool Locomotion::beginTurn(const LocoInput& in, LocoClip first, LocoClip last, float angle, bool matchFeet) {
+    // The turn nearest the angle asked for, the same way; its other foot turns about as far.
+    float nearest = -1.f;
+    for (int c = static_cast<int>(first); c <= static_cast<int>(last); ++c) {
+        const LocoClipInfo& i = info_[static_cast<std::size_t>(c)];
+        if (i.length <= 0.f || i.moveTime <= 0.f || i.turn == 0.f || (i.turn > 0.f) != (angle > 0.f)) continue;
+        if (nearest < 0.f || std::fabs(std::fabs(i.turn) - std::fabs(angle)) < std::fabs(nearest - std::fabs(angle))) nearest = std::fabs(i.turn);
+    }
+    if (nearest < 0.f) return false;
+    const bool known = matchFeet && hasMove(gait_);
+    const LocoClipInfo& g = clip(gait_);
+    const LocoFeet a = known ? feetAt(g, time_[index(gait_)]) : LocoFeet{};
+    const LocoFeet av = known ? feetVelocity(g, time_[index(gait_)], rate_[index(gait_)]) : LocoFeet{};
+    constexpr int kEntries = 8;
+    float best = 0.f, bestTime = 0.f;
+    LocoClip pick = LocoClip::Count;
+    for (int c = static_cast<int>(first); c <= static_cast<int>(last); ++c) {
+        const LocoClipInfo& i = info_[static_cast<std::size_t>(c)];
+        if (i.length <= 0.f || i.moveTime <= 0.f || i.turn == 0.f || (i.turn > 0.f) != (angle > 0.f)) continue;
+        if (std::fabs(std::fabs(i.turn) - nearest) > 10.f) continue;
+        // Entering a little before the turn, at the point whose feet best continue the gait's.
+        const float lo = std::max(i.turnStart - tuning_.turnEarly, 0.f), hi = std::max(i.turnStart - tuning_.turnLate, 0.f);
+        for (int k = 0; k <= (known ? kEntries : 0); ++k) {
+            const float t = known ? lo + (hi - lo) * static_cast<float>(k) / kEntries : 0.f;
+            float cost = 0.f;
+            if (known) {
+                const float p = pathSpeed(i, t);
+                const float rate = in.rootMotion || p <= 0.f ? 1.f : std::fabs(in.groundSpeed) / p;
+                cost = poseCost(a, av, feetAt(i, t), feetVelocity(i, t, rate), tuning_.poseVelocity);
+            }
+            if (pick == LocoClip::Count || cost < best) {
+                pick = static_cast<LocoClip>(c);
+                best = cost;
+                bestTime = t;
+            }
+        }
+    }
+    if (pick == LocoClip::Count) return false;
+    state_ = LocoState::Turning;
+    move_ = pick;
+    warp_ = clampf(angle / clip(pick).turn, tuning_.minWarp, tuning_.maxWarp);
+    rootDriven_ = in.rootMotion;
+    rate_[index(pick)] = rootDriven_ ? 1.f : 0.f;
+    moved_ = 0.f;
+    turnEnter_ = enter_ = bestTime;
+    ++turnsBegun_;
+    return true;
+}
+
+float Locomotion::turnYaw() const {
+    if (state_ != LocoState::Turning) return 0.f;
+    const LocoClipInfo& m = clip(move_);
+    return warp_ * (yawAt(m, time_[index(move_)]) - yawAt(m, turnEnter_));
+}
+
+float Locomotion::turnAngle() const {
+    if (state_ != LocoState::Turning) return 0.f;
+    const LocoClipInfo& m = clip(move_);
+    return warp_ * (m.turn - yawAt(m, turnEnter_));
 }
 
 void Locomotion::syncGaits(LocoClip from, float t, float speed) {
@@ -415,16 +529,49 @@ LocoClip Locomotion::moveTarget(const LocoInput& in, float speed, LocoClip& sync
         // At the point whose remaining travel is the capsule's.
         return play(timeAtPath(m, m.travel - std::min(std::max(in.stopDistance, 0.f), m.travel)), step);
     }
+    case LocoState::Turning: {
+        if (isLocoStandTurn(move_)) {
+            if (heading || t >= m.turnEnd + tuning_.turnTail || t >= m.length) return toGaits();
+            return play(t + dt, dt);
+        }
+        const bool brief = braking_ > 0.f && braking_ < tuning_.stopDelay;
+        if ((!heading || speed < tuning_.moveStop) && !(brief && speed >= tuning_.moveStop)) {
+            if (beginStop(in, speed)) return move_;
+            return toGaits();
+        }
+        // A turning start hands over like a start once it has turned; a running turn once it has
+        // turned and run on a little.
+        const bool done = isLocoReface(move_)
+            ? (t >= m.turnEnd && pathSpeed(m, t) >= tuning_.startHandoff * clip(gait_).groundSpeed) || t >= tuning_.startEnd * m.length
+            : t >= std::min(m.turnEnd + tuning_.turnTail, m.length);
+        if (done) return toGaits();
+        if (rootDriven_) return play(t + dt, dt);
+        // At the point whose root has come as far as the body since the turn began, but never far from
+        // the clip's own pace: a follower keeps the trail's speed where the clip slows into its turn,
+        // and racing through it would snap the body round.
+        moved_ += speed * dt;
+        const float to = timeAtPath(m, pathAt(m, turnEnter_) + moved_);
+        return play(std::max(to, t + dt * tuning_.turnRateMin), dt * tuning_.turnRateMax);
+    }
     default: break;
     }
 
-    // On the ground: heading off from standing starts the gait it heads for, braking stops the gait.
+    // On the ground: heading off from standing starts the gait it heads for (turning as it sets off
+    // when it heads well away from its facing), heading well away from its facing at a run turns,
+    // braking stops the gait, and asked to face elsewhere when standing it turns on the spot.
     float gaits = 0.f;
     for (const LocoClip c : kGaits) gaits += weight_[index(c)];
+    const float want = wrap180(in.wantYaw - in.yaw);
     if (heading && !isLocoGait(gait_) && gaits < 0.5f && speed >= tuning_.moveStop) {
         splitGaits(in.wantSpeed);
         const LocoClip g = heaviestGait();
         splitGaits(speed);
+        if (in.steer && g != LocoClip::Walk && std::fabs(want) >= tuning_.refaceMin) {
+            const LocoClip held = gait_;
+            gait_ = g;
+            if (beginTurn(in, LocoClip::RefaceLeft90, LocoClip::RefaceRight180, want, false)) return move_;
+            gait_ = held;
+        }
         const LocoClip s = locoStart(g);
         if (hasMove(s)) {
             state_ = LocoState::Starting;
@@ -437,6 +584,18 @@ LocoClip Locomotion::moveTarget(const LocoInput& in, float speed, LocoClip& sync
         }
     }
     if (beginStop(in, speed)) return move_;
+    const float runSpeed = clip(has(LocoClip::Run) ? LocoClip::Run : LocoClip::Walk).groundSpeed;
+    const float turn = in.turnBy != 0.f ? wrap180(in.turnBy) : in.steer ? want : 0.f;
+    if (heading && isLocoGait(gait_) && gaits >= 0.5f && speed >= tuning_.turnSpeed * runSpeed &&
+        (in.turnBy != 0.f || std::fabs(turn) >= tuning_.turnMin) &&
+        beginTurn(in, LocoClip::RunTurnLeft45L, LocoClip::RunTurnRight180R, turn, true)) {
+        return move_;
+    }
+    const float face = wrap180(in.faceYaw - in.yaw);
+    if (in.steer && in.face && !heading && !isLocoGait(gait_) && speed < tuning_.moveStop && std::fabs(face) >= tuning_.faceMin &&
+        beginTurn(in, LocoClip::StandTurnLeft45, LocoClip::StandTurnRight180, face, false)) {
+        return move_;
+    }
     return groundTarget(speed);
 }
 
@@ -537,6 +696,7 @@ void Locomotion::update(const LocoInput& in) {
     case LocoState::Ground:
     case LocoState::Starting:
     case LocoState::Stopping:
+    case LocoState::Turning:
     case LocoState::Landing:
         if (offGround) {
             jump_ = moving && has(LocoClip::JumpMoving) ? LocoClip::JumpMoving : LocoClip::JumpStart;
@@ -574,7 +734,8 @@ void Locomotion::update(const LocoInput& in) {
     switch (state_) {
     case LocoState::Ground:
     case LocoState::Starting:
-    case LocoState::Stopping: next = moveTarget(in, speed, syncFrom, syncTime); break;
+    case LocoState::Stopping:
+    case LocoState::Turning: next = moveTarget(in, speed, syncFrom, syncTime); break;
     case LocoState::Rising: next = jump_; break;
     case LocoState::Falling: next = has(LocoClip::Fall) ? LocoClip::Fall : has(jump_) ? jump_ : gait_; break;
     case LocoState::Landing: next = land_; break;
@@ -585,6 +746,7 @@ void Locomotion::update(const LocoInput& in) {
         enter_ = -1.f;
     }
     if (syncFrom != LocoClip::Count) syncGaits(syncFrom, syncTime, speed);
+    turnFrom_ = turnTo_ = state_ == LocoState::Turning ? time_[index(move_)] : 0.f;
 
     // The moving jump and landing play at the rate their root travel matches the capsule's, within
     // limits: past them it's no longer the same move.
@@ -593,8 +755,14 @@ void Locomotion::update(const LocoInput& in) {
         rate_[index(c)] = clipSpeed > 0.f ? clampf(speed / clipSpeed, tuning_.minLandRate, tuning_.maxLandRate) : 1.f;
     }
     advance(dt, speed);
+    if (state_ == LocoState::Turning) turnTo_ = time_[index(move_)];
 
-    // The body: bank and lead with the upper body into turns, lean forward with speed.
+    // Facing: outside a turn, ease toward the way the body moves.
+    yawStep_ = in.steer && state_ != LocoState::Turning && speed >= tuning_.moveStop
+        ? wrap180(in.moveYaw - in.yaw) * follow(dt, tuning_.faceTime) : 0.f;
+
+    // The body: bank and lead with the upper body into turns, lean forward with speed. A turn clip
+    // already does all of that.
     const float walkSpeed = clip(LocoClip::Walk).groundSpeed;
     const float runSpeed = has(LocoClip::Run) ? clip(LocoClip::Run).groundSpeed : walkSpeed;
     const float topSpeed = has(LocoClip::Sprint) ? clip(LocoClip::Sprint).groundSpeed : runSpeed;
