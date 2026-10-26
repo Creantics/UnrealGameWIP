@@ -33,6 +33,10 @@ Private notes (character references, concept-art review, script status) are in `
         Meta's by LFS sha256. It's under the same Llama 3 licence.
       - Kimodo's `TEXT_ENCODERS_DIR` points at local McGill adapter copies whose `adapter_config` names that base.
       - Kimodo's foot cleanup needs its `MotionCorrection` C++ extension, installed from the repo folder.
+    - Not verified: whether the LLM2Vec adapters merged into the base. The load report shows a key-prefix mismatch on
+      the first pass, then a second PEFT load. The walk vs jump test proves the prompt steers the motion, not that the
+      adapters loaded.
+      - Check: compare `layers[0].self_attn.o_proj.weight` after loading against the base shard.
 
 - **(2026-10-26, overworld): a small walkable overworld joins the three worlds; the story walks it between
   worlds.** Design by the advisor; the technique only (a miniature map walked between locations), no borrowed names.
