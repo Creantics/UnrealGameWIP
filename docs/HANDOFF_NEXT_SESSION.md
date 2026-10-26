@@ -6,6 +6,17 @@ Private notes (character references, concept-art review, script status) are in `
 
 ## Resume here (updated 2026-10-21, Max plan)
 
+- **NEWEST (2026-10-25, later): character model work is PAUSED by the user while they rethink the process; gameplay work that
+  needs no models continues.** Don't resume the lead models until the user gives the new process.
+  - Done on main (c2bc63a): party progression. Story fights pay xp and gold (`reward` per enemy in `Data/Battle/enemies.json`,
+    plus 10% per tier); the party shares one level 1-10 (`ftcore::Progression`) that raises max HP 8%, attack and defense 6% per
+    level and technique every two levels; the save's `"party"` keeps both. Tiers retuned to 10% HP / 11% attack so levelled
+    typical pilots end late fights near half HP and novices start losing from tier 6. Docs: `docs/BATTLE_DEMO.md` (Experience,
+    gold and levels), `docs/GAME_FRAME.md`.
+  - Gold has no use yet, and no HUD shows the level (needs someone to look at a screen).
+  - Next, in the advisor's order: story flags from QTE grades, the party following the lead on the field, field guards, pause
+    with save slots.
+
 - **NEWEST (2026-10-25): all three leads now conform to concept head models.** Each lead's MetaHuman head is fitted to a scaled, cut
   head model (private), not built from presets. Pipeline per lead, all private scripts driven through the editor bridge:
   1. Blender prep: mediapipe landmarks on orthographic front renders of the concept head and the MetaHuman head; scale the concept so
