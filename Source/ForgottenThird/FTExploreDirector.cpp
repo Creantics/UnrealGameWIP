@@ -17,6 +17,7 @@
 #include "ForgottenThird.h"
 #include "FTExploreCharacter.h"
 #include "FTExploreSpot.h"
+#include "FTFieldGuard.h"
 #include "FTGameInstance.h"
 #include "FTPartyFollower.h"
 #include "FTText.h"
@@ -77,6 +78,7 @@ AFTExploreDirector::AFTExploreDirector()
 	PrimaryActorTick.bCanEverTick = true;
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 	Exploration = ftcore::demo::makeExploration();
+	Guards = ftcore::demo::makeGuards();
 }
 
 double AFTExploreDirector::Now() const
@@ -92,6 +94,7 @@ void AFTExploreDirector::BeginPlay()
 	bQuitOnComplete = bQuitOnComplete || FParse::Param(FCommandLine::Get(), TEXT("ExploreQuitOnComplete"));
 
 	Exploration = ftcore::demo::makeExploration();
+	Guards = ftcore::demo::makeGuards();
 	StartTime = Now();
 	FindSpots();
 	CacheText();
@@ -257,6 +260,22 @@ void AFTExploreDirector::RestoreFromCarry()
 		SetBanner(TEXT("Ambush cleared"));
 		UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: back from the fight, ambush cleared."));
 	}
+	Guards.load(Carry.Guards);
+	if (Carry.Guard >= 0)
+	{
+		if (Carry.bWon)
+		{
+			Guards.defeat(Carry.Guard);
+			SetBanner(TEXT("Guard defeated"));
+			UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: back from the fight, guard %d defeated."), Carry.Guard);
+		}
+		else
+		{
+			Guards.reset(Carry.Guard);
+		}
+	}
+	// Nobody pounces the moment the field opens again.
+	Guards.holdOff(ftcore::demo::kGuardHoldOffSeconds);
 	for (int32 Id = 0; Id < static_cast<int32>(Exploration.count()); ++Id)
 	{
 		if (Exploration.isUsed(Id))
@@ -422,6 +441,87 @@ void AFTExploreDirector::PlaceFollowers(AFTExploreCharacter& Player, float Delta
 	}
 }
 
+void AFTExploreDirector::SpawnGuards(AFTExploreCharacter& Player)
+{
+	bGuardsSpawned = true;
+	UWorld* World = GetWorld();
+	const int32 Count = static_cast<int32>(Guards.count());
+	GuardActors.SetNum(Count);
+	int32 OnPatrol = 0;
+	for (int32 I = 0; World && I < Count; ++I)
+	{
+		if (!Guards.active(I))
+		{
+			continue;
+		}
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		AFTFieldGuard* Guard = World->SpawnActor<AFTFieldGuard>(AFTFieldGuard::StaticClass(), FTransform::Identity, Params);
+		if (Guard)
+		{
+			Guard->Setup(&Player);
+			++OnPatrol;
+		}
+		GuardActors[I] = Guard;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: %d guards on patrol."), OnPatrol);
+}
+
+int32 AFTExploreDirector::TickGuards(AFTExploreCharacter& Player, float DeltaSeconds)
+{
+	if (!bGuardsSpawned)
+	{
+		SpawnGuards(Player);
+	}
+	const ftcore::Vec2 Pos = ToGround(Player.GetActorLocation());
+	// Core does the cone and the distances; a line trace answers for the walls, only for the guards
+	// close enough to need one.
+	uint32 Sight = 0;
+	for (int32 I = 0; I < GuardActors.Num(); ++I)
+	{
+		const AFTFieldGuard* Guard = GuardActors[I];
+		if (Guard && Guards.inSenseRange(I, Pos) && Guard->CanSee(Player))
+		{
+			Sight |= 1u << I;
+		}
+	}
+	ftcore::GuardEvents Events;
+	const int32 Caught = Guards.step(Pos, Sight, DeltaSeconds, &Events);
+	const float FeetZ = static_cast<float>(Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight());
+	for (int32 I = 0; I < GuardActors.Num(); ++I)
+	{
+		AFTFieldGuard* Guard = GuardActors[I];
+		if (!Guard)
+		{
+			continue;
+		}
+		if (!Guards.active(I))
+		{
+			Guard->SetActorHiddenInGame(true);
+			continue;
+		}
+		const ftcore::Vec2 At = Guards.position(I);
+		const ftcore::Vec2 Facing = Guards.facing(I);
+		Guard->Place(FVector2D(At.x * 100.0, At.y * 100.0), FVector2D(Facing.x, Facing.y), Guards.state(I), FeetZ);
+		const uint8 Bits = Events.bits[static_cast<size_t>(I)];
+		if (Bits & ftcore::kGuardNoticed)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: guard %d noticed you."), I);
+		}
+		if (Bits & ftcore::kGuardChaseStarted)
+		{
+			SetNotice(TEXT("A guard has spotted you"));
+			UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: guard %d gives chase."), I);
+		}
+		if (Bits & ftcore::kGuardLost)
+		{
+			SetNotice(TEXT("The guard lost you"));
+			UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: guard %d lost you."), I);
+		}
+	}
+	return Caught;
+}
+
 void AFTExploreDirector::TickStoryWalk(AFTExploreCharacter& Player, float DeltaSeconds)
 {
 	FieldElapsed += DeltaSeconds;
@@ -544,6 +644,15 @@ void AFTExploreDirector::StartEncounter(int32 Id)
 	GetWorldTimerManager().SetTimer(Timer, this, &AFTExploreDirector::OpenBattle, kEncounterDelay, false);
 }
 
+void AFTExploreDirector::StartGuardFight(int32 Id)
+{
+	PendingGuard = Id;
+	SetBanner(TEXT("Caught!"));
+	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: guard %d caught you after %.1f s."), Id, Now() - StartTime);
+	FTimerHandle Timer;
+	GetWorldTimerManager().SetTimer(Timer, this, &AFTExploreDirector::OpenBattle, kEncounterDelay, false);
+}
+
 void AFTExploreDirector::OpenBattle()
 {
 	UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
@@ -557,6 +666,8 @@ void AFTExploreDirector::OpenBattle()
 	Carry.ReturnMap = UGameplayStatics::GetCurrentLevelName(this, true);
 	Carry.State = Exploration.save();
 	Carry.Encounter = PendingEncounter;
+	Carry.Guard = PendingGuard;
+	Carry.Guards = Guards.save();
 	Carry.bWon = false;
 	Carry.Seconds = Now() - StartTime;
 	if (const AFTExploreCharacter* Player = GetPlayerCharacter())
@@ -605,7 +716,7 @@ void AFTExploreDirector::Tick(float DeltaSeconds)
 		TickStoryWalk(*Player, DeltaSeconds);
 		return;
 	}
-	if (bBattleOpening || PendingEncounter >= 0)
+	if (bBattleOpening || PendingEncounter >= 0 || PendingGuard >= 0)
 	{
 		return;
 	}
@@ -626,6 +737,12 @@ void AFTExploreDirector::Tick(float DeltaSeconds)
 		Focus = NewFocus;
 	}
 
+	const int32 Caught = TickGuards(*Player, DeltaSeconds);
+	if (Caught >= 0)
+	{
+		StartGuardFight(Caught);
+		return;
+	}
 	const int32 Encounter = Exploration.encounterAt(Pos);
 	if (Encounter >= 0)
 	{

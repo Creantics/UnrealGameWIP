@@ -2,7 +2,8 @@
 
 // The exploration demo's rules on the map: holds the ftcore::Exploration built from
 // ftcore/ExploreDemo.h, finds the spot the player's prompt points at, uses it on Interact, and
-// starts the fight when the player walks into the ambush. The fight is the battle demo map: the
+// starts the fight when the player walks into the ambush or a field guard (ftcore::GuardSet)
+// catches them. The fight is the battle demo map: the
 // director stores the field's state in UFTGameInstance, opens BattleDemo, and the battle demo opens
 // this map again after a victory; the director then restores the state and clears the ambush.
 //
@@ -14,12 +15,14 @@
 #include "GameFramework/Actor.h"
 
 #include "ftcore/Explore.h"
+#include "ftcore/Guard.h"
 #include "ftcore/PartyTrail.h"
 
 #include "FTExploreDirector.generated.h"
 
 class AFTExploreCharacter;
 class AFTExploreSpot;
+class AFTFieldGuard;
 class AFTPartyFollower;
 
 UCLASS()
@@ -75,6 +78,7 @@ private:
 	AFTExploreCharacter* GetPlayerCharacter() const;
 	void RestoreFromCarry();
 	void StartEncounter(int32 Id);
+	void StartGuardFight(int32 Id);
 	void OpenBattle();
 	void TickAutoPlay(AFTExploreCharacter& Player, float DeltaSeconds);
 	void TickStoryWalk(AFTExploreCharacter& Player, float DeltaSeconds);
@@ -94,6 +98,7 @@ private:
 	ftcore::Exploration Exploration;
 	int32 Focus = -1;
 	int32 PendingEncounter = -1;
+	int32 PendingGuard = -1;
 	bool bRestorePending = false;
 	bool bComplete = false;
 	bool bBattleOpening = false;
@@ -117,6 +122,15 @@ private:
 	TArray<TObjectPtr<AFTPartyFollower>> Followers;
 	ftcore::PartyTrail Trail;
 	bool bFollowersSpawned = false;
+
+	// The field guards (demo only; a story field step has none). Returns the guard that caught the
+	// player this frame, or -1.
+	void SpawnGuards(AFTExploreCharacter& Player);
+	int32 TickGuards(AFTExploreCharacter& Player, float DeltaSeconds);
+	ftcore::GuardSet Guards;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<AFTFieldGuard>> GuardActors;
+	bool bGuardsSpawned = false;
 	bool bFieldReached = false;
 	float FieldElapsed = 0.f;
 	FString FieldObjective;

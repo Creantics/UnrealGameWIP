@@ -51,6 +51,7 @@ add_library(ftcore STATIC
     src/FaceDirection.cpp
     src/FaceImport.cpp
     src/GameplayPlan.cpp
+    src/Guard.cpp
     src/Glb.cpp
     src/Json.cpp
     src/Loudness.cpp
@@ -128,6 +129,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_mini.cpp
         tests/test_music_loop.cpp
         tests/test_party_trail.cpp
+        tests/test_guard.cpp
         tests/test_path_follow.cpp
         tests/test_ui_text.cpp
         tests/test_physics.cpp

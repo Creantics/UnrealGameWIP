@@ -20,6 +20,10 @@ default map is unchanged.
 4. **Win the ambush.** Two enemies wait in the courtyard beyond the gate. Walking into them opens
    the battle map; win and the field comes back with the ambush cleared and "Demo complete".
 
+**Guards.** Two guards walk loops around the east and south shards. They aren't objectives, but
+one that touches you starts the same fight as the ambush; win it and that guard is gone for the rest
+of the demo. See "Field guards" below.
+
 The objective list sits top left; the prompt for whatever you face shows near the bottom. Locked
 spots say which objective they wait for.
 
@@ -47,6 +51,41 @@ the story context.
   state, the pawn's transform and the encounter id, then opens `BattleDemo`. The battle sets
   `bWon` on victory and opens the field again. The director restores everything, clears the
   encounter and puts the pawn back where it was.
+
+## Field guards
+
+The rules are `ftcore::GuardSet` (`Core/include/ftcore/Guard.h`, tests in `test_guard.cpp`); the
+demo's two routes are `ftcore::demo::kGuardSpecs`.
+
+- **States.** Idle (a 1 s pause at each route point), Patrol (1.5 m/s), Notice (stops and faces you
+  for 0.5 s), Chase (4 m/s: faster than a walk at 3.3 m/s, slower than a run at 6.2 m/s), Return
+  (back to the route point it was walking to).
+- **Seeing you.** Inside an 8 m cone of about 100 degrees, or within 2.5 m whatever its facing.
+  While chasing only the distance counts (12 m). Core does the cone and the distances; the line of
+  sight is a line trace on the Unreal side (`AFTFieldGuard::CanSee`, eyes at 160 cm to the middle
+  of the pawn), done only for guards close enough to need it. A chase out of sight for 2 s gives up
+  and the guard walks back.
+- **Contact** (closer than 0.8 m) shows "Caught!" and opens `BattleDemo` after the same 1.2 s as
+  the ambush. The carry holds the guard's id (`ExploreCarry.Guard`, with `Encounter` at -1) and the
+  defeated guards (`ExploreCarry.Guards`). A win removes the guard; on any return to the field every
+  guard ignores you for 3 s (`kGuardHoldOffSeconds`) and the others start their routes again. A loss
+  stays on the battle screen (retry or quit), as for the ambush, and there is no flee. Demo fights
+  pay no xp or gold: party progression belongs to the story.
+- **On the map.** `AFTFieldGuard` is a blockout figure: a tinted column (dark red; amber while it
+  notices you, red while it chases, with a marker over its head) and a visor that shows its facing.
+  The director spawns the guards at run time, so the map needs no rebuild. They have no controller,
+  movement component or collision: Core places them, they can't block the pawn or the autopilot, and
+  a chase goes straight through props. Their routes keep 0.5 m clear of every prop (a Core test).
+- **Not on story field steps.** A field step from the story spawns no guards, so the alpha run's
+  counts don't change.
+- **Autopilot.** The pilot ignores the guards. In Core's walk (`test_guard.cpp`, at walk speed) the
+  south guard catches it once and the east one has its back turned; on the map the count can differ
+  (navmesh path, acceleration), and each catch is one more battle-demo fight before COMPLETE. The
+  headless run on 2026-10-25 matched Core: one guard fight (the south guard, guard 1, caught it at
+  19.6 s), won, then the ambush fight.
+
+Log lines: `ExploreDemo: 2 guards on patrol.`, `guard <i> noticed you.`, `guard <i> gives chase.`,
+`guard <i> lost you.`, `guard <i> caught you after <s> s.`, `back from the fight, guard <i> defeated.`
 
 ## From the story
 
@@ -108,8 +147,8 @@ lines the autopilot walks between spots, so check those lines when moving spots 
 UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/Explore -game -NullRHI -ExploreAutoPlay -ExploreQuitOnComplete -unattended -nosplash -nosound
 ```
 
-It logs `ExploreDemo: COMPLETE after 23.5 s.` (time in the field; the fight is not counted) and
-exits, with one `used spot` line per spot and the battle demo's `VICTORY` line in between. `ExploreDemo: STUCK` means the autopilot
+It logs `ExploreDemo: COMPLETE after 26.6 s.` (time in the field; fights are not counted) and
+exits, with one `used spot` line per spot and a battle demo `VICTORY` line for each fight (the guard's and the ambush's). `ExploreDemo: STUCK` means the autopilot
 made no progress toward a spot for 15 s (a prop in the way).
 
 ## What's missing
@@ -122,5 +161,6 @@ made no progress toward a spot for 15 s (a prop in the way).
 - **No saving to disk.** The field state survives the fight in the game instance only.
 - **Simple autopilot.** It follows the navmesh path the map builder saves (see ALPHA.md), and walks
   straight only when there is none.
+- **Guards are blockouts.** No enemy model, no walk clip, and they walk through props while chasing.
 - **Followers on the field demo.** The party follows only on story field steps; the demo's own
   walk has no followers.

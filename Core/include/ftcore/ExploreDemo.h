@@ -6,6 +6,7 @@
 // toward the gate, +y to the player's left as they set off.
 
 #include "ftcore/Explore.h"
+#include "ftcore/Guard.h"
 
 #include <array>
 #include <cmath>
@@ -152,6 +153,26 @@ inline float segmentDistance(Vec2 a, Vec2 b, Vec2 p) {
     const float dx = a.x + abx * t - p.x;
     const float dy = a.y + aby * t - p.y;
     return std::sqrt(dx * dx + dy * dy);
+}
+
+// ---- Field guards (the demo only; story field steps have none) ----
+// Two guards walk loops around the east and south shards, so the pilot's walk crosses both. Their
+// routes keep kGuardPropMargin clear of every prop (a guard doesn't collide). Contact starts the
+// demo fight; a win removes the guard. They aren't objectives.
+
+inline constexpr float kGuardPropMargin = 0.5f;
+// Seconds every guard ignores the player when the field opens again after a fight.
+inline constexpr float kGuardHoldOffSeconds = 3.f;
+
+inline constexpr std::array<GuardSpec, 2> kGuardSpecs = {{
+    {{{{18.f, 5.f}, {25.f, 6.f}, {25.f, 12.f}, {18.f, 12.f}}}, 4, {1.f, 0.f}, {}},
+    {{{{9.f, -5.f}, {20.f, -5.f}, {20.f, -12.f}, {9.f, -12.f}}}, 4, {1.f, 0.f}, {}},
+}};
+
+inline GuardSet makeGuards() {
+    GuardSet g;
+    for (const GuardSpec& s : kGuardSpecs) g.add(s);
+    return g;
 }
 
 // Which kFieldGoals entry a step uses: deterministic in (scene, beat, step), spread by FNV-1a.

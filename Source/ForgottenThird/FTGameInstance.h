@@ -8,6 +8,7 @@
 
 #include "ftcore/Dialogue.h"
 #include "ftcore/Explore.h"
+#include "ftcore/Guard.h"
 #include "ftcore/StoryChain.h"
 
 #include "FTGameInstance.generated.h"
@@ -22,7 +23,10 @@ struct FFTExploreCarry
 	FVector Location = FVector::ZeroVector;
 	FRotator Rotation = FRotator::ZeroRotator;
 	ftcore::ExploreState State;
+	// The fight: an encounter spot's id, or a field guard's id (the other is -1).
 	int32 Encounter = -1;
+	int32 Guard = -1;
+	ftcore::GuardSave Guards; // which guards were defeated before this fight
 	bool bWon = false;
 	double Seconds = 0.0; // time already spent in the field, for the completion log
 };
