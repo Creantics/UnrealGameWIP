@@ -6,6 +6,27 @@ Private notes (character references, concept-art review, script status) are in `
 
 ## Resume here (updated 2026-10-21, Max plan)
 
+- **NEWEST (2026-10-26, worlds): three big worlds (solhaven town, lattice towers, unwritten ruins), each 1 km a side.**
+  Approach set by the advisor: Core first, then one generated map per world. Each map is a blockout plus the world's style
+  pack, built from instanced meshes. There is no World Partition, terrain art, streaming or fast travel yet.
+  - Main b9e8e04 (Core): `ftcore::WorldLayout` and `Data/Field/worlds.json` (ids and numbers only). Districts are placed
+    deterministically and joined by straight roads. Each district has a plaza in the goals.json frame, so every field
+    goal plays in any district. Also buildings, landmarks and props. 7 tests; the median run between neighbouring
+    districts is 30/34/38 s at run speed.
+  - Main 7cb7965 (Unreal):
+    - `FTBuildExploreWorld -World=<id>` (`FTWorldMapBuilder`) builds `World_<Name>` with about 90 actors and
+      1–3k instances. It builds a navmesh per district and fails if any field goal can't be reached from any
+      district's spawn.
+    - The story director opens a placed scene's world map and carries the world, district and style. The explore
+      director moves the goal into the district and spawns the player there.
+    - `-WorldAutoPlay` walks a road tour, and the HUD has a WORLD panel.
+  - Next commit: the Lattice and Unwritten maps plus `docs/WORLDS.md`.
+  - Checks: ctest and UBT green. The alpha gate is green: 73 scenes, 0 STUCK, 0 warnings, with field steps on the world
+    maps. The Solhaven tour covers 16 districts in 18 legs, 1108 s game time (the autopilot walks; running is about
+    half that). Nothing has been looked at on screen yet: scale, landmarks and the anchor need a human look.
+  - Next queued by the user: an overworld map linking the three worlds (walkable, between locations). Ask the advisor
+    for the design first.
+
 - **NEWEST (2026-10-25, combat): one full set-piece fight, the Brass Regent (models set aside again; the user is on the
   machine, so no computer use or GUI).** Scope set by the advisor: enemy phases, scripted skill patterns, results. Items,
   guard, flee, status effects and waves/adds were left out; **waves/adds are the next combat step**.
