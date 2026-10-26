@@ -1104,7 +1104,12 @@ void AFTExploreDirector::BeginOverworld()
 		const int32 From = Worlds.findWorld(std::string_view(FromUtf8.Get(), static_cast<size_t>(FromUtf8.Length())));
 		const int32 To = Worlds.findWorld(std::string_view(ToUtf8.Get(), static_cast<size_t>(ToUtf8.Length())));
 		bHop = From >= 0 && To >= 0 && ftcore::overworldRoute(*Overworld, static_cast<size_t>(From), static_cast<size_t>(To), Hop);
-		if (!bHop)
+		if (!bHop && To < 0)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("Overworld: '%s' is not a world in worlds.json (%s); the overworld is a free walk."),
+				*Carry.World, *Carry.Scene);
+		}
+		else if (!bHop)
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("Overworld: no way from '%s' to '%s' for %s; entering '%s' straight away."),
 				*Carry.FromWorld, *Carry.World, *Carry.Scene, *Carry.World);
@@ -1117,18 +1122,21 @@ void AFTExploreDirector::BeginOverworld()
 			}), 0.1f, false);
 			return;
 		}
-		bAutoPlay = bAutoPlay || Carry.bAutoPlay;
-		HopPoint = 0;
-		Spawn = Hop.start;
-		Yaw = Hop.startYaw;
-		StoryWalkStart = GetWorld()->GetTimeSeconds();
-		SetBanner(FString::Printf(TEXT("To %s"), *Carry.World));
-		if (bAutoPlay && IsAlphaFast())
+		else
 		{
-			UGameplayStatics::SetGlobalTimeDilation(this, 8.f);
+			bAutoPlay = bAutoPlay || Carry.bAutoPlay;
+			HopPoint = 0;
+			Spawn = Hop.start;
+			Yaw = Hop.startYaw;
+			StoryWalkStart = GetWorld()->GetTimeSeconds();
+			SetBanner(FString::Printf(TEXT("To %s"), *Carry.World));
+			if (bAutoPlay && IsAlphaFast())
+			{
+				UGameplayStatics::SetGlobalTimeDilation(this, 8.f);
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Overworld: hop from %s to %s for %s beat %d (%d gates on the way)."),
+				*Carry.FromWorld, *Carry.World, *Carry.Scene, Carry.Beat, static_cast<int32>(Hop.pointCount));
 		}
-		UE_LOG(LogForgottenThird, Display, TEXT("Overworld: hop from %s to %s for %s beat %d (%d gates on the way)."),
-			*Carry.FromWorld, *Carry.World, *Carry.Scene, Carry.Beat, static_cast<int32>(Hop.pointCount));
 	}
 	WorldSpawn = FVector(Spawn.x * 100.0, Spawn.y * 100.0, 0.0);
 	WorldSpawnRotation = FRotator(0.f, FMath::RadiansToDegrees(Yaw), 0.f);
@@ -1211,7 +1219,7 @@ void AFTExploreDirector::TickOverworld(AFTExploreCharacter& Player, float DeltaS
 		}
 		// The roads run straight gate to gate and nothing stands on them, so no navmesh is needed.
 		const ftcore::Vec2 Target = Hop.points[static_cast<size_t>(HopPoint)];
-		if (FVector2D(Target.x - Pos.x, Target.y - Pos.y).Size() > ftcore::OverworldLayout::kGateReach * 0.5f)
+		if (FVector2D(Target.x - Pos.x, Target.y - Pos.y).Size() > ftcore::OverworldLayout::kGateReach)
 		{
 			PilotWalk(Player, Pos, Target, kOverTargetBase + HopPoint, DeltaSeconds, false);
 			return;
@@ -1228,7 +1236,7 @@ void AFTExploreDirector::TickOverworld(AFTExploreCharacter& Player, float DeltaS
 	}
 	const int32 Node = OverTour[TourLeg];
 	const ftcore::Vec2 Target = Overworld->node(static_cast<size_t>(Node)).gate;
-	if (FVector2D(Target.x - Pos.x, Target.y - Pos.y).Size() > ftcore::OverworldLayout::kGateReach * 0.5f)
+	if (FVector2D(Target.x - Pos.x, Target.y - Pos.y).Size() > ftcore::OverworldLayout::kGateReach)
 	{
 		PilotWalk(Player, Pos, Target, kOverTargetBase + TourLeg, DeltaSeconds, false);
 		return;
