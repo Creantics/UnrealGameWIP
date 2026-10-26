@@ -8,11 +8,11 @@
 
 namespace
 {
-const TCHAR* const kCube = TEXT("/Engine/BasicShapes/Cube.Cube");
-const TCHAR* const kCylinder = TEXT("/Engine/BasicShapes/Cylinder.Cylinder");
-const TCHAR* const kSphere = TEXT("/Engine/BasicShapes/Sphere.Sphere");
+const TCHAR* const kGuardCube = TEXT("/Engine/BasicShapes/Cube.Cube");
+const TCHAR* const kGuardCylinder = TEXT("/Engine/BasicShapes/Cylinder.Cylinder");
+const TCHAR* const kGuardSphere = TEXT("/Engine/BasicShapes/Sphere.Sphere");
 // Has a "Color" vector parameter.
-const TCHAR* const kShapeMaterial = TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial");
+const TCHAR* const kGuardShapeMaterial = TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial");
 
 // The figure: a 60 cm wide, 180 cm tall column standing on the actor's origin.
 constexpr double kHeight = 180.0;
@@ -40,7 +40,7 @@ UMaterialInstanceDynamic* Dress(AActor& Owner, UStaticMeshComponent* Part, const
 	{
 		Part->SetStaticMesh(Mesh);
 	}
-	UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, kShapeMaterial);
+	UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, kGuardShapeMaterial);
 	if (!Base)
 	{
 		return nullptr;
@@ -89,9 +89,9 @@ void AFTFieldGuard::Setup(const AActor* Player)
 	{
 		GroundParams.AddIgnoredActor(Player);
 	}
-	BodyTint = Dress(*this, Body, kCylinder, kCalmColor);
-	Dress(*this, Visor, kCube, kVisorColor);
-	Dress(*this, Alert, kSphere, kChaseColor);
+	BodyTint = Dress(*this, Body, kGuardCylinder, kCalmColor);
+	Dress(*this, Visor, kGuardCube, kVisorColor);
+	Dress(*this, Alert, kGuardSphere, kChaseColor);
 	Alert->SetHiddenInGame(true);
 }
 

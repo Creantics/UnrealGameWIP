@@ -95,6 +95,10 @@ enum class EFTBattleEventType : uint8
 	Downed,
 	Victory,
 	Defeat,
+	// An enemy (Source and Target) entered its phase Beat (FFTEnemyPhase), not a change of the
+	// battle's EFTBattlePhase (that is OnPhaseChanged). Label = the phase's label (may be empty);
+	// Amount = HP it healed.
+	PhaseChanged,
 };
 
 // Same order as ftcore::CommandError.
@@ -228,6 +232,33 @@ struct FFTWeakPoint
 	float Multiplier = 2.0f;
 };
 
+// One stage of an enemy's fight (see ftcore/CombatTypes.h EnemyPhase). The first phase holds from
+// the start; a later one begins when the enemy's HP falls to HpBelow of its max HP. While it holds,
+// the enemy's turns follow Pattern (skill indices) in order, then again from LoopFrom. Entering it
+// restarts the pattern, sets attack to the battle-start attack plus AttackPercent and heals
+// HealPercent of max HP.
+USTRUCT(BlueprintType)
+struct FFTEnemyPhase
+{
+	GENERATED_BODY()
+
+	// At most 23 bytes of UTF-8.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	FString Label;
+	// Ignored on the first phase; falls from phase to phase.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	float HpBelow = 1.0f;
+	// At most 8 skill indices. Empty: every skill in order.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	TArray<int32> Pattern;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	int32 LoopFrom = 0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	int32 AttackPercent = 0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	int32 HealPercent = 0;
+};
+
 // A hit of the attack being defended.
 USTRUCT(BlueprintType)
 struct FFTDefenceHit
@@ -277,6 +308,51 @@ struct FFTCombatant
 	// Half the body's width in figure heights (the body for aimed shots).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
 	float HalfWidth = 0.5f;
+	// Enemies: at most 4 phases (none: one phase that cycles through every skill).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	TArray<FFTEnemyPhase> Phases;
+};
+
+// Running totals of one battle for the results screen (ftcore::BattleStats).
+USTRUCT(BlueprintType)
+struct FFTBattleResults
+{
+	GENERATED_BODY()
+
+	// By the party, counters and aimed shots included.
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	int32 DamageDealt = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	int32 DamageTaken = 0;
+	// Party combo notes judged, the perfect ones, and misses plus wrong arrows.
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	int32 Notes = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	int32 PerfectNotes = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	int32 MissedNotes = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	int32 FullCombos = 0;
+	// Enemy hits dodged, jumped or parried (perfect ones included), the perfect ones, and those that landed.
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	int32 HitsDefended = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	int32 PerfectDefences = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	int32 HitsTaken = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	int32 Counters = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	int32 WeakPointHits = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	int32 PartyTurns = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	int32 EnemyTurns = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	int32 PhaseChanges = 0;
+	// Battle-clock seconds from the start to the outcome (so far, before it).
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	double Seconds = 0.0;
 };
 
 // A combatant during the battle, without the skill list.
@@ -508,6 +584,15 @@ public:
 	// The next Count actors from the turn queue, soonest first. At most 32.
 	UFUNCTION(BlueprintPure, Category = "Battle")
 	TArray<int32> GetTurnOrder(int32 Count = 6) const;
+	// The FFTEnemyPhase enemy Id is in (0 without phases or for a party member).
+	UFUNCTION(BlueprintPure, Category = "Battle")
+	int32 GetEnemyPhase(int32 Id) const;
+	// The skill index enemy Id uses on its next turn (-1 for a party member or no such combatant).
+	UFUNCTION(BlueprintPure, Category = "Battle")
+	int32 GetNextEnemySkill(int32 Id) const;
+	// Totals of the battle so far (complete once the outcome came).
+	UFUNCTION(BlueprintPure, Category = "Battle")
+	FFTBattleResults GetResults() const;
 
 	// ---- the active party combo (PartySkill) ----
 

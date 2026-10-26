@@ -202,6 +202,7 @@ void AFTBattleHUD::DrawTurnOrder(const AFTBattleDemoActor& D)
 	DrawStr(kNext, kDim, X, Y + 4.f * S, Font, 1.f);
 	X += 44.f * S;
 	const std::span<const ftcore::CombatantId> Order = D.GetBattle()->PeekTurnOrder(6);
+	uint64 Named = 0; // enemies whose next skill is already shown (under their soonest turn)
 	for (const ftcore::CombatantId Id : Order)
 	{
 		const bool bParty = B->combatant(Id).team == ftcore::Team::Party;
@@ -209,6 +210,16 @@ void AFTBattleHUD::DrawTurnOrder(const AFTBattleDemoActor& D)
 		DrawRect(kPanel, X, Y + 8.f * S, W, BoxH - 16.f * S);
 		DrawRect(bParty ? kHpParty : kHpEnemy, X, Y + 8.f * S, 4.f * S, BoxH - 16.f * S);
 		DrawStr(D.GetFighterName(static_cast<int32>(Id)), kWhite, X + 10.f * S, Y + 14.f * S, Font, 1.f);
+		const uint64 Bit = Id < 64 ? (uint64(1) << Id) : 0;
+		if (!bParty && Bit && !(Named & Bit))
+		{
+			Named |= Bit;
+			const FString& Skill = D.GetNextSkillName(static_cast<int32>(Id));
+			if (!Skill.IsEmpty())
+			{
+				DrawStr(Skill, kOrange, X + 10.f * S, Y + BoxH - 4.f * S, Font, 0.9f);
+			}
+		}
 		X += W + 6.f * S;
 	}
 }
@@ -696,11 +707,15 @@ void AFTBattleHUD::DrawPopups(const AFTBattleDemoActor& D)
 			{
 				Color = P.Grade == EFTGrade::Perfect ? kGold : P.Grade == EFTGrade::Miss ? kRed : kCyan;
 			}
-			// A weak-point hit is gold and bigger.
+			// A weak-point hit is gold and bigger; HP healed is green.
 			const float Size = P.bWeak ? 1.35f : 1.f;
 			if (P.bWeak)
 			{
 				Color = kGold;
+			}
+			else if (P.bHeal)
+			{
+				Color = kHpParty;
 			}
 			DrawStrCentered(P.Text, WithAlpha(FLinearColor(0.f, 0.f, 0.f), A), static_cast<float>(W.X) + 2.f * S,
 				static_cast<float>(W.Y) - 40.f * S - Rise + 2.f * S, Large, Size);
@@ -752,6 +767,16 @@ void AFTBattleHUD::DrawMessages(const AFTBattleDemoActor& D)
 			DrawStrCentered(D.GetBanner(), WithAlpha(kWhite, A), CX, 130.f * S, Font, 1.2f);
 		}
 	}
+	if (!D.GetPhaseBanner().IsEmpty() && !IsOver(*B))
+	{
+		const float A = Fade(D.GetPhaseBannerAge(), 1.8, 0.5);
+		if (A > 0.f)
+		{
+			const float Y = Canvas->ClipY * 0.30f;
+			DrawStrCentered(D.GetPhaseBanner(), WithAlpha(FLinearColor(0.f, 0.f, 0.f), A), CX + 2.f * S, Y + 2.f * S, Large, 1.6f);
+			DrawStrCentered(D.GetPhaseBanner(), WithAlpha(kOrange, A), CX, Y, Large, 1.6f);
+		}
+	}
 	if (!D.GetNotice().IsEmpty())
 	{
 		const float A = Fade(D.GetNoticeAge(), 1.0, 0.4);
@@ -762,20 +787,40 @@ void AFTBattleHUD::DrawMessages(const AFTBattleDemoActor& D)
 	}
 	if (IsOver(*B))
 	{
+		// The title, the results (one line each), then what a press does: continue (a won story or
+		// field fight), Retry and Quit to title (a lost story fight) or fight again.
 		const bool bWon = B->phase() == ftcore::Phase::Victory;
-		const float Y = Canvas->ClipY * 0.36f;
-		DrawRect(kPanel, 0.f, Y - 20.f * S, Canvas->ClipX, (D.CanQuitToTitle() ? 190.f : 150.f) * S);
+		const int32 Lines = D.GetResultLineCount();
+		const bool bQuit = D.CanQuitToTitle();
+		const float LineH = 28.f * S;
+		const float PromptH = 34.f * S;
+		const float ResultsY = 86.f * S;
+		const float PromptsY = ResultsY + static_cast<float>(Lines) * LineH + (Lines > 0 ? 16.f * S : 4.f * S);
+		const float Height = PromptsY + (bQuit ? 2.f : 1.f) * PromptH + 30.f * S;
+		const float Y = FMath::Max(Canvas->ClipY * 0.5f - Height * 0.5f, 20.f * S);
+		DrawRect(kPanel, 0.f, Y - 20.f * S, Canvas->ClipX, Height);
 		DrawStrCentered(bWon ? kVictory : kDefeat, bWon ? kGold : kRed, CX, Y, Large, 3.f);
+		for (int32 I = 0; I < Lines; ++I)
+		{
+			// After the stat lines, a story win's reward.
+			const bool bReward = bWon && I >= AFTBattleDemoActor::StatResultLines;
+			DrawStrCentered(D.GetResultLine(I), bReward ? kGold : kWhite, CX, Y + ResultsY + static_cast<float>(I) * LineH, Font, 0.9f);
+		}
 		if (D.IsWaitingForRestart())
 		{
-			if (D.CanQuitToTitle())
+			const float PY = Y + PromptsY;
+			if (!D.GetContinuePrompt().IsEmpty())
 			{
-				DrawStrCentered(kRetry, kWhite, CX, Y + 90.f * S, Font, 1.f);
-				DrawStrCentered(kQuitToTitle, kWhite, CX, Y + 124.f * S, Font, 1.f);
+				DrawStrCentered(D.GetContinuePrompt(), kDim, CX, PY, Font, 1.f);
+			}
+			else if (bQuit)
+			{
+				DrawStrCentered(kRetry, kWhite, CX, PY, Font, 1.f);
+				DrawStrCentered(kQuitToTitle, kWhite, CX, PY + PromptH, Font, 1.f);
 			}
 			else
 			{
-				DrawStrCentered(kAgain, kWhite, CX, Y + 90.f * S, Font, 1.f);
+				DrawStrCentered(kAgain, kWhite, CX, PY, Font, 1.f);
 			}
 		}
 	}

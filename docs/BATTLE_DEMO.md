@@ -10,7 +10,8 @@ unchanged.
 
 ## Flow
 
-1. Turn order comes from the speed-gauge turn queue (shown top left: NOW, then NEXT).
+1. Turn order comes from the speed-gauge turn queue (shown top left: NOW, then NEXT). Under an
+   enemy's soonest NEXT slot, in orange, is the skill it will use on that turn.
 2. On a party turn, pick a skill and a target. The skill's arrow combo then scrolls up the
    centre lane on the 120 BPM beat grid; step on each arrow as it reaches the hit line.
    Each note is graded PERFECT / GREAT / GOOD / MISS (WRONG for the wrong arrow), and the
@@ -20,8 +21,10 @@ unchanged.
 3. On an enemy turn the banner names the attack ("Name: Skill"), then its hits come in on the
    attack's timeline. Dodge, parry or jump each one (see Defence below). Parrying every hit
    counters.
-4. Downed figures fall over. The battle ends in VICTORY or DEFEAT. After a second,
-   Enter / Space / pad A starts a new fight.
+4. A boss can change phase when its HP falls past a threshold (see Enemy phases below): a banner
+   says so and its pattern changes.
+5. Downed figures fall over. The battle ends in VICTORY or DEFEAT, and the results panel shows the
+   fight's totals (see Results below). After a second, Enter / Space / pad A starts a new fight.
 
 ## Controls
 
@@ -95,14 +98,16 @@ The autopilot also aims: see [BATTLE_AIM.md](BATTLE_AIM.md).
 
 The exploration demo's ambush opens this map (see [EXPLORE_DEMO.md](EXPLORE_DEMO.md)). It leaves
 the field's state in `UFTGameInstance::ExploreCarry`; on VICTORY the battle shows "Returning to the
-field" and opens the field map again after 2.5 s. A DEFEAT stays here for a retry. With a carry set,
+field" and the autopilot opens the field map again after 2.5 s; a player presses Enter to go back
+once they've read the results. A DEFEAT stays here for a retry. With a carry set,
 `-BattleQuitOnOutcome` doesn't quit, and `-ExploreAutoPlay` also turns on the battle autopilot.
 
 ## From the story
 
 A fight (CMB) step in the story opens this map with `UFTGameInstance::StoryCarry` set. The enemy
-line-up comes from data (below). A win shows "Returning to the story" and opens the story map again
-after 2.5 s, where the story picks up after the beat.
+line-up comes from data (below). A win shows the results with the reward and **Enter: Continue**,
+which opens the story map again, where the story picks up after the beat. The autopilot continues
+on its own after 2.5 s ("Returning to the story").
 
 A loss stays here. The DEFEAT screen offers **Enter: Retry** and **Esc / Q: Quit to title**
 (Esc, Backspace and pad B come through the controller's cancel; Q is polled). Retry rebuilds both
@@ -149,6 +154,47 @@ that rule.
   keeps them (`"party"` in the save JSON). The battle builds the party at the story's level and
   logs `Party: +N xp, +N gold (...)` on a win. A plain demo fight uses level 1 and pays nothing.
 - Gold isn't spent on anything yet.
+
+### Enemy phases
+
+An enemy in `enemies.json` can have `phases`, which turn one fight into a set piece in stages
+(`ftcore::EnemyPhase` in `Core/include/ftcore/CombatTypes.h`; the loader is in `Encounter.h`):
+
+```json
+"phases": [
+  { "pattern": ["hammer", "decree"] },
+  { "below": 0.6, "label": "Overdrive", "pattern": ["rally", "hammer", "rally", "decree"], "attack": 10 },
+  { "below": 0.25, "label": "Last Stand", "pattern": ["verdict", "onslaught", "rally"], "loop": 1, "attack": 20 }
+]
+```
+
+- At most 4 phases. The first holds from the start (no `below`). Each later one starts when HP
+  falls to `below` of max HP; the thresholds must fall from phase to phase (0 < below < 1). A big
+  hit past two thresholds goes straight to the deeper phase.
+- `pattern` lists 1 to 8 of the enemy's own skill ids. Its turns follow the pattern in order, then
+  repeat from index `loop` (default 0), so the steps before `loop` are an opener played once.
+  Entering a phase starts its pattern from the top.
+- `attack` (0 to 300) sets attack to the battle-start attack plus that percent; `heal` (0 to 100)
+  heals that percent of max HP on entry. `label` (at most 23 bytes) is shown on the banner.
+- An enemy without phases uses its skills in order, as before.
+- The battle emits `PhaseChanged` (Unreal: `EFTBattleEventType::PhaseChanged`, not to be confused
+  with the battle-phase delegate `OnPhaseChanged`). The HUD shows "Name enters Label!" in orange,
+  a green +HP popup when it healed, and the log has `BattleDemo: <name> enters phase <k> "<label>"
+  (+<n> HP).` `UFTBattleComponent::GetEnemyPhase` and `GetNextEnemySkill` expose the state.
+
+The set piece is the **Brass Regent** (480 HP, speed 13): the opening phase trades Hammer and Decree;
+Overdrive (below 60%) adds Rally between them at +10% attack; Last Stand (below 25%) opens with
+Verdict, a telegraphed jumpable hit, then loops Onslaught, a four-hit flurry, and Rally at +20%
+attack. A Core test plays it with every pilot and checks that each one sees all three phases.
+
+### Results
+
+`ftcore::Battle::stats()` keeps running totals from the start to the outcome (`BattleStats`):
+damage dealt and taken, notes judged, perfect and missed, full combos, enemy hits defended, perfect
+and landed, counters, weak-point hits, turns per side, phase changes and battle time. Unreal reads
+them with `UFTBattleComponent::GetResults()`. The outcome panel shows four lines of them, and a won
+story fight adds the xp, gold and level (with LEVEL UP when it went up). The log gets one line:
+`BattleDemo: results: <s> s, dealt <n>, taken <n>, notes ...`.
 
 ### Balance targets
 
@@ -204,8 +250,10 @@ UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildBattleDemo -NullRHI -un
 UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/BattleDemo -game -NullRHI -BattleAutoPlay -BattleQuitOnOutcome -unattended -nosplash -nosound
 ```
 
-It logs `BattleDemo: VICTORY after <real> s (game <game> s).` and exits (no carry, so the default
-line-up and no dilation). Before the defence timeline it took about 61.5 s; expect roughly the
+It logs `BattleDemo: VICTORY after <real> s (game <game> s).` and the results line, and exits (no
+carry, so the default line-up and no dilation). `-BattleEncounter=<scene>,<beat>,<step>` plays that
+entry of `encounters.json` instead, without a carry (so the win pays nothing); the Brass Regent is
+`-BattleEncounter=SC-P2-01,12,0`, and its run logs both phase changes. Before the defence timeline it took about 61.5 s; expect roughly the
 headless figure above now (not yet measured in Unreal).
 
 ## What's missing
@@ -220,6 +268,7 @@ headless figure above now (not yet measured in Unreal).
   autopilot and the no-input run; the rest play the default fight.
 - **Input timing.** Presses are judged at the time the frame handles them, not at the hardware
   event time, so low frame rates cost accuracy.
-- **Missing actions.** No items, flee, guard or party switching. Aim is the only extra command. Enemy AI is Core's simple
-  round-robin skills against the most wounded target.
+- **Missing actions.** No items, flee, guard or party switching. Aim is the only extra command. Enemies
+  follow their phase patterns (or their skills in order) against the most wounded target. No waves
+  or adds yet: a line-up is fixed for the whole fight.
 - **Minimal HUD.** The UI is a canvas HUD with engine fonts, not UMG.

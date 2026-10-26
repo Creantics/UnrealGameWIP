@@ -31,6 +31,7 @@ static_assert(static_cast<int>(EFTBattleEventType::Counter) == static_cast<int>(
 static_assert(static_cast<int>(EFTBattleEventType::Downed) == static_cast<int>(ftcore::EventType::Downed));
 static_assert(static_cast<int>(EFTBattleEventType::Victory) == static_cast<int>(ftcore::EventType::Victory));
 static_assert(static_cast<int>(EFTBattleEventType::Defeat) == static_cast<int>(ftcore::EventType::Defeat));
+static_assert(static_cast<int>(EFTBattleEventType::PhaseChanged) == static_cast<int>(ftcore::EventType::PhaseChanged));
 static_assert(static_cast<int>(EFTCommandError::None) == static_cast<int>(ftcore::CommandError::None));
 static_assert(static_cast<int>(EFTCommandError::WrongPhase) == static_cast<int>(ftcore::CommandError::WrongPhase));
 static_assert(static_cast<int>(EFTCommandError::NoSuchSkill) == static_cast<int>(ftcore::CommandError::NoSuchSkill));
@@ -105,6 +106,33 @@ FFTWeakPoint FromCore(const ftcore::WeakPoint& In)
 	return Out;
 }
 
+// At most ftcore::kMaxEnemyPhases of at most ftcore::kMaxPatternSteps steps; pattern steps that name
+// no skill are dropped and the numbers clamped to the limits the JSON loader enforces.
+void ToCore(const TArray<FFTEnemyPhase>& In, size_t SkillCount, ftcore::EnemyPhases& Out)
+{
+	Out.clear();
+	for (const FFTEnemyPhase& P : In)
+	{
+		ftcore::EnemyPhase D;
+		D.setLabel(FT::ToUtf8(P.Label));
+		D.hpBelow = Out.empty() ? 1.0f : FMath::Clamp(P.HpBelow, 0.0f, 1.0f);
+		for (const int32 Step : P.Pattern)
+		{
+			if (Step >= 0 && static_cast<size_t>(Step) < SkillCount && !D.addStep(static_cast<size_t>(Step)))
+			{
+				break;
+			}
+		}
+		D.loopFrom = static_cast<uint8>(FMath::Clamp(P.LoopFrom, 0, FMath::Max(static_cast<int32>(D.length) - 1, 0)));
+		D.attackPercent = FMath::Clamp(P.AttackPercent, 0, ftcore::kMaxPhaseAttackPercent);
+		D.healPercent = FMath::Clamp(P.HealPercent, 0, 100);
+		if (!Out.add(D))
+		{
+			break;
+		}
+	}
+}
+
 // Assigns in place so a same-shaped line-up reuses the strings and skill lists.
 void ToCore(const FFTCombatant& In, ftcore::Combatant& Out)
 {
@@ -133,6 +161,7 @@ void ToCore(const FFTCombatant& In, ftcore::Combatant& Out)
 		ToCore(S.Hits, D.timeline);
 	}
 	ToCore(In.WeakPoints, In.HalfWidth, Out.weakPoints);
+	ToCore(In.Phases, Out.skills.size(), Out.phases);
 }
 
 void ToCore(const TArray<FFTCombatant>& In, std::vector<ftcore::Combatant>& Out)
@@ -622,6 +651,47 @@ TArray<int32> UFTBattleComponent::GetTurnOrder(int32 Count) const
 	{
 		Out.Add(static_cast<int32>(Id));
 	}
+	return Out;
+}
+
+int32 UFTBattleComponent::GetEnemyPhase(int32 Id) const
+{
+	return ValidId(Id) ? static_cast<int32>(Battle->enemyPhase(static_cast<ftcore::CombatantId>(Id))) : 0;
+}
+
+int32 UFTBattleComponent::GetNextEnemySkill(int32 Id) const
+{
+	if (!ValidId(Id) || Battle->combatant(static_cast<ftcore::CombatantId>(Id)).team != ftcore::Team::Enemies)
+	{
+		return -1;
+	}
+	return static_cast<int32>(Battle->nextEnemySkill(static_cast<ftcore::CombatantId>(Id)));
+}
+
+FFTBattleResults UFTBattleComponent::GetResults() const
+{
+	FFTBattleResults Out;
+	if (!Battle)
+	{
+		return Out;
+	}
+	const ftcore::BattleStats& S = Battle->stats();
+	Out.DamageDealt = S.damageDealt;
+	Out.DamageTaken = S.damageTaken;
+	Out.Notes = S.notes;
+	Out.PerfectNotes = S.perfectNotes;
+	Out.MissedNotes = S.missedNotes;
+	Out.FullCombos = S.fullCombos;
+	Out.HitsDefended = S.hitsDefended;
+	Out.PerfectDefences = S.perfectDefences;
+	Out.HitsTaken = S.hitsTaken;
+	Out.Counters = S.counters;
+	Out.WeakPointHits = S.weakPointHits;
+	Out.PartyTurns = S.partyTurns;
+	Out.EnemyTurns = S.enemyTurns;
+	Out.PhaseChanges = S.phaseChanges;
+	const double End = S.endTime > 0.0 ? S.endTime : (Battle->phase() == ftcore::Phase::NotStarted ? S.startTime : Battle->phaseStart());
+	Out.Seconds = FMath::Max(End - S.startTime, 0.0);
 	return Out;
 }
 

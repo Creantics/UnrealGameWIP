@@ -134,6 +134,20 @@ FFTCombatant FromCore(const ftcore::Combatant& C)
 		W.Multiplier = P.multiplier;
 	}
 	Out.HalfWidth = C.weakPoints.halfWidth;
+	for (size_t I = 0; I < C.phases.size(); ++I)
+	{
+		const ftcore::EnemyPhase& P = C.phases[I];
+		FFTEnemyPhase& D = Out.Phases.AddDefaulted_GetRef();
+		D.Label = FT::ToFString(P.label());
+		D.HpBelow = P.hpBelow;
+		for (uint8 Step = 0; Step < P.length; ++Step)
+		{
+			D.Pattern.Add(P.pattern[Step]);
+		}
+		D.LoopFrom = P.loopFrom;
+		D.AttackPercent = P.attackPercent;
+		D.HealPercent = P.healPercent;
+	}
 	return Out;
 }
 
@@ -306,6 +320,25 @@ void AFTBattleDemoActor::LoadLineup()
 	const uint32 Beat = bCarry ? static_cast<uint32>(GI->StoryCarry.Beat) : 0u;
 	const uint32 Step = bCarry ? static_cast<uint32>(FMath::Max(0, GI->StoryCarry.Step)) : 0u;
 	const ftcore::EncounterEntry* Entry = bCarry ? Table.findEntry(Scene, Beat, Step) : nullptr;
+	FString Wanted;
+	if (!bCarry && FParse::Value(FCommandLine::Get(), TEXT("BattleEncounter="), Wanted, false))
+	{
+		TArray<FString> Parts;
+		Wanted.ParseIntoArray(Parts, TEXT(","));
+		if (Parts.Num() == 3)
+		{
+			Entry = Table.findEntry(FT::ToUtf8(Parts[0]), static_cast<uint32>(FMath::Max(0, FCString::Atoi(*Parts[1]))),
+				static_cast<uint32>(FMath::Max(0, FCString::Atoi(*Parts[2]))));
+		}
+		if (Entry)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: -BattleEncounter=%s: that entry's line-up (no story carry, so a win pays nothing)."), *Wanted);
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("BattleDemo: -BattleEncounter=%s names no entry (scene,beat,step); the default line-up."), *Wanted);
+		}
+	}
 	const ftcore::EncounterLineup& Lineup = Entry ? Entry->lineup : Table.fallback;
 	ftcore::makeEnemies(Roster, Lineup, CoreFoes);
 	if (bStoryFight)
@@ -325,7 +358,11 @@ void AFTBattleDemoActor::LoadLineup()
 			ftcore::applyWeakPoints(Points, Roster, Lineup, CoreFoes);
 		}
 	}
-	if (Entry)
+	if (Entry && !bCarry)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: line-up of %d (tier %d)."), static_cast<int32>(CoreFoes.size()), Lineup.tier);
+	}
+	else if (Entry)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: line-up of %d (tier %d) for %s beat %d step %d."), static_cast<int32>(CoreFoes.size()),
 			Lineup.tier, *GI->StoryCarry.Scene, GI->StoryCarry.Beat, GI->StoryCarry.Step);
@@ -382,7 +419,11 @@ void AFTBattleDemoActor::StartRound()
 	}
 	Banner.Reset();
 	Notice.Reset();
+	PhaseBanner.Reset();
+	ResultLineCount = 0;
+	ContinuePrompt.Reset();
 	CacheText();
+	RefreshNextSkills();
 	ResetFigures();
 
 	if (AFTPlayerController* PC = GetPlayer())
@@ -640,15 +681,18 @@ void AFTBattleDemoActor::CacheText()
 	HpShown.Init(-1, Count);
 	SkillLabels.SetNum(Count);
 	SkillCosts.SetNum(Count);
+	SkillNames.SetNum(Count);
 	for (int32 Id = 0; Id < Count; ++Id)
 	{
 		const ftcore::Combatant& C = B->combatant(static_cast<ftcore::CombatantId>(Id));
 		Names[Id] = FT::ToFString(C.name);
 		SkillLabels[Id].SetNum(static_cast<int32>(C.skills.size()));
 		SkillCosts[Id].SetNum(static_cast<int32>(C.skills.size()));
+		SkillNames[Id].SetNum(static_cast<int32>(C.skills.size()));
 		for (int32 S = 0; S < SkillLabels[Id].Num(); ++S)
 		{
 			const ftcore::Skill& Skill = C.skills[static_cast<size_t>(S)];
+			SkillNames[Id][S] = FT::ToFString(Skill.name);
 			SkillLabels[Id][S] = FString::Printf(TEXT("%d  %s%s"), S + 1, *FT::ToFString(Skill.name),
 				Skill.targeting == ftcore::Targeting::AllEnemies ? TEXT(" (all)") : TEXT(""));
 			SkillCosts[Id][S] = Skill.apCost > 0 ? FString::Printf(TEXT("%d AP"), Skill.apCost)
@@ -717,6 +761,52 @@ void AFTBattleDemoActor::SetJudgement(EFTJudgement Kind, const FString& Text)
 
 double AFTBattleDemoActor::GetBannerAge() const { return Wall() - BannerWall; }
 double AFTBattleDemoActor::GetNoticeAge() const { return Wall() - NoticeWall; }
+double AFTBattleDemoActor::GetPhaseBannerAge() const { return Wall() - PhaseBannerWall; }
+
+const FString& AFTBattleDemoActor::GetNextSkillName(int32 Id) const
+{
+	static const FString None;
+	if (!NextSkill.IsValidIndex(Id) || !SkillNames.IsValidIndex(Id) || !SkillNames[Id].IsValidIndex(NextSkill[Id]))
+	{
+		return None;
+	}
+	return SkillNames[Id][NextSkill[Id]];
+}
+
+void AFTBattleDemoActor::RefreshNextSkills()
+{
+	const int32 Count = Battle->GetCombatantCount();
+	NextSkill.SetNum(Count);
+	for (int32 Id = 0; Id < Count; ++Id)
+	{
+		NextSkill[Id] = Battle->GetNextEnemySkill(Id);
+	}
+}
+
+void AFTBattleDemoActor::AddResultLine(const FString& Line)
+{
+	if (ResultLineCount < MaxResultLines)
+	{
+		ResultLines[ResultLineCount++] = Line;
+	}
+}
+
+void AFTBattleDemoActor::BuildResults()
+{
+	const FFTBattleResults R = Battle->GetResults();
+	ResultLineCount = 0;
+	AddResultLine(FString::Printf(TEXT("Time %.1f s    Turns %d"), R.Seconds, R.PartyTurns));
+	AddResultLine(FString::Printf(TEXT("Damage dealt %d    taken %d"), R.DamageDealt, R.DamageTaken));
+	AddResultLine(FString::Printf(TEXT("Notes %d    perfect %d    missed %d    full combos %d"), R.Notes, R.PerfectNotes, R.MissedNotes,
+		R.FullCombos));
+	AddResultLine(FString::Printf(TEXT("Hits defended %d of %d    perfect %d    counters %d    weak points %d"), R.HitsDefended,
+		R.HitsDefended + R.HitsTaken, R.PerfectDefences, R.Counters, R.WeakPointHits));
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("BattleDemo: results: %.1f s, dealt %d, taken %d, notes %d (%d perfect, %d missed), full combos %d, defended %d of %d (%d perfect), ")
+		TEXT("counters %d, weak points %d, phase changes %d, turns %d party / %d enemy."),
+		R.Seconds, R.DamageDealt, R.DamageTaken, R.Notes, R.PerfectNotes, R.MissedNotes, R.FullCombos, R.HitsDefended, R.HitsDefended + R.HitsTaken,
+		R.PerfectDefences, R.Counters, R.WeakPointHits, R.PhaseChanges, R.PartyTurns, R.EnemyTurns);
+}
 
 void AFTBattleDemoActor::SetBanner(const FString& Text)
 {
@@ -742,6 +832,7 @@ void AFTBattleDemoActor::AddPopup(const FPopup& P)
 	Slot.bNumber = P.bNumber;
 	Slot.bDefence = P.bDefence;
 	Slot.bWeak = P.bWeak;
+	Slot.bHeal = P.bHeal;
 	Slot.Text = P.Text;
 }
 
@@ -753,8 +844,12 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 	const double Now = Wall();
 	switch (Event.Type)
 	{
+	case EFTBattleEventType::TurnStarted:
+		RefreshNextSkills();
+		break;
 	case EFTBattleEventType::SkillStarted:
 	{
+		RefreshNextSkills();
 		const bool bEnemy = Battle->GetCombatant(Event.Source).Team == EFTTeam::Enemies;
 		// The enemy banner is the attack's caption; the HUD shows the defence keys and tells.
 		SetBanner(FString::Printf(TEXT("%s: %s"), *GetFighterName(Event.Source), *Event.Label));
@@ -843,6 +938,32 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 		}
 		SetBanner(FString::Printf(TEXT("%s is down!"), *GetFighterName(Event.Target)));
 		break;
+	case EFTBattleEventType::PhaseChanged:
+	{
+		// Its own banner: the combo that pushed the enemy over the threshold finishes in the same
+		// flush and would overwrite the skill banner.
+		const FString& Name = GetFighterName(Event.Target);
+		PhaseBanner = Event.Label.IsEmpty() ? FString::Printf(TEXT("%s grows stronger!"), *Name)
+		                                    : FString::Printf(TEXT("%s enters %s!"), *Name, *Event.Label);
+		PhaseBannerWall = Now;
+		if (Figures.IsValidIndex(Event.Target))
+		{
+			Figures[Event.Target].HitWall = Now;
+		}
+		UpdateHpText(Event.Target);
+		if (Event.Amount > 0)
+		{
+			FPopup P;
+			P.bNumber = true;
+			P.bHeal = true;
+			P.Combatant = Event.Target;
+			P.Text = FString::Printf(TEXT("+%d"), Event.Amount);
+			AddPopup(P);
+		}
+		RefreshNextSkills();
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: %s enters phase %d \"%s\" (+%d HP)."), *Name, Event.Beat, *Event.Label, Event.Amount);
+		break;
+	}
 	default:
 		break;
 	}
@@ -867,6 +988,7 @@ void AFTBattleDemoActor::HandleOutcome(EFTBattleOutcome Outcome)
 	const double GameSeconds = (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0) - RoundStartGame;
 	UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: %s after %.1f s (game %.1f s)."),
 		bWon ? TEXT("VICTORY") : TEXT("DEFEAT"), Seconds, GameSeconds);
+	BuildResults();
 	UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
 	if (GI && GI->ExploreCarry.bValid)
 	{
@@ -875,9 +997,17 @@ void AFTBattleDemoActor::HandleOutcome(EFTBattleOutcome Outcome)
 		{
 			GI->ExploreCarry.bWon = true;
 			bReturningToStory = true; // (the name covers any return: no restart while leaving)
-			SetNotice(TEXT("Returning to the field"));
-			FTimerHandle Timer;
-			GetWorldTimerManager().SetTimer(Timer, this, &AFTBattleDemoActor::ReturnToField, 2.5f, false);
+			bReturnToField = true;
+			if (bAutoPlay)
+			{
+				ContinuePrompt = TEXT("Returning to the field");
+				FTimerHandle Timer;
+				GetWorldTimerManager().SetTimer(Timer, this, &AFTBattleDemoActor::Continue, 2.5f, false);
+			}
+			else
+			{
+				ContinuePrompt = TEXT("Enter  Back to the field");
+			}
 		}
 		else if (bAutoPlay)
 		{
@@ -894,14 +1024,24 @@ void AFTBattleDemoActor::HandleOutcome(EFTBattleOutcome Outcome)
 		{
 			if (UFTStorySubsystem* Story = GI->GetSubsystem<UFTStorySubsystem>())
 			{
-				Story->AwardBattle(Reward);
+				const ftcore::AwardResult Award = Story->AwardBattle(Reward);
+				AddResultLine(Award.levelAfter > Award.levelBefore
+					? FString::Printf(TEXT("+%d XP    +%d gold    Level %d -> %d  LEVEL UP!"), Reward.xp, Reward.gold, Award.levelBefore, Award.levelAfter)
+					: FString::Printf(TEXT("+%d XP    +%d gold    Level %d"), Reward.xp, Reward.gold, Award.levelAfter));
 			}
 			GI->StoryCarry.bDone = true;
 			GI->StoryCarry.bWon = true;
 			bReturningToStory = true;
-			SetNotice(TEXT("Returning to the story"));
-			FTimerHandle Timer;
-			GetWorldTimerManager().SetTimer(Timer, this, &AFTBattleDemoActor::ReturnToStory, 2.5f, false);
+			if (bAutoPlay)
+			{
+				ContinuePrompt = TEXT("Returning to the story");
+				FTimerHandle Timer;
+				GetWorldTimerManager().SetTimer(Timer, this, &AFTBattleDemoActor::Continue, 2.5f, false);
+			}
+			else
+			{
+				ContinuePrompt = TEXT("Enter  Continue");
+			}
 		}
 		else if (bAutoPlay)
 		{
@@ -917,6 +1057,23 @@ void AFTBattleDemoActor::HandleOutcome(EFTBattleOutcome Outcome)
 	if (bQuitOnOutcome)
 	{
 		FPlatformMisc::RequestExit(false, TEXT("BattleDemo"));
+	}
+}
+
+void AFTBattleDemoActor::Continue()
+{
+	if (bLeaving)
+	{
+		return;
+	}
+	bLeaving = true;
+	if (bReturnToField)
+	{
+		ReturnToField();
+	}
+	else
+	{
+		ReturnToStory();
 	}
 }
 
@@ -1085,10 +1242,19 @@ void AFTBattleDemoActor::HandleConfirm()
 
 void AFTBattleDemoActor::HandleRestart()
 {
-	// A short pause first, so the press that ended the battle doesn't start the next one.
-	if (bWaitingForRestart && !bReturningToStory && !bQuitting && Wall() - OutcomeWall > 1.0)
+	// A short pause first, so the press that ended the battle doesn't start the next one (or skip
+	// the results).
+	if (!bWaitingForRestart || bQuitting || Wall() - OutcomeWall <= 1.0)
+	{
+		return;
+	}
+	if (!bReturningToStory)
 	{
 		StartRound();
+	}
+	else if (!bAutoPlay)
+	{
+		Continue();
 	}
 }
 

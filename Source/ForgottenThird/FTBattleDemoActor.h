@@ -23,7 +23,9 @@
 // defender answers each hit of the attack timeline: Left/Right (pad X/B) dodge, Down (pad A) parries,
 // Up (pad Y) jumps (jumpable hits only). The attacker flashes as each hit's tell starts, and each hit
 // is judged on one line: PERFECT, DEFENDED, LATE (a press just after the impact) or MISSED.
-// After the outcome, Enter/Space/pad A/Start fight again. After a loss in a story fight, Esc / Q /
+// After the outcome the screen shows the results (time, damage, notes, defences; a story win adds the
+// xp, gold and level). Enter/Space/pad A/Start then fight again, or after a won story or field fight
+// continue back there (the autopilot continues on its own after 2.5 s). After a loss in a story fight, Esc / Q /
 // pad B quits to the title instead: it opens the story map (carry.ReturnMap) with the URL option
 // ?Title and leaves the carry's bDone false.
 //
@@ -31,7 +33,8 @@
 // on time, every enemy hit parried at its ideal time from the timeline, and an aimed shot on the best
 // weak point whenever ftcore::demo::pilotChoice prefers it to a skill); with
 // -BattleQuitOnOutcome the game exits when the battle ends (a headless end-to-end run). With a carry
-// the autopilot always retries after a loss. A story fight on autoplay with -AlphaFast runs at global
+// the autopilot always retries after a loss. -BattleEncounter=<scene>,<beat>,<step> plays that entry
+// of encounters.json without a story carry (a test hook: the win pays nothing). A story fight on autoplay with -AlphaFast runs at global
 // time dilation 8 and its song clock follows game time (UFTConductorComponent::bWallClockFollowsGameTime).
 
 #include "CoreMinimal.h"
@@ -77,6 +80,8 @@ public:
 	AFTBattleDemoActor();
 
 	static constexpr int32 MaxPopups = 12;
+	static constexpr int32 MaxResultLines = 6;
+	static constexpr int32 StatResultLines = 4; // the battle totals; a story win adds the reward after them
 
 	// The Core pilot chooses skills and steps on every note on time.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle Demo")
@@ -126,6 +131,16 @@ public:
 	double GetBannerAge() const;
 	const FString& GetNotice() const { return Notice; }
 	double GetNoticeAge() const;
+	// An enemy entering a new phase of its fight ("Brass Regent enters Overdrive!").
+	const FString& GetPhaseBanner() const { return PhaseBanner; }
+	double GetPhaseBannerAge() const;
+	// The name of the skill enemy Id uses on its next turn (empty for a party member).
+	const FString& GetNextSkillName(int32 Id) const;
+	// The results after the outcome (none before it), then what a press does next (empty: the
+	// HUD's own fight-again or retry lines).
+	int32 GetResultLineCount() const { return ResultLineCount; }
+	const FString& GetResultLine(int32 I) const { return ResultLines[I]; }
+	const FString& GetContinuePrompt() const { return ContinuePrompt; }
 	bool IsWaitingForRestart() const { return bWaitingForRestart; }
 	// After a loss in a story fight: the screen offers Retry and Quit to title.
 	bool CanQuitToTitle() const { return bCanQuitToTitle; }
@@ -160,6 +175,7 @@ public:
 		bool bNumber = false;
 		bool bDefence = false;
 		bool bWeak = false; // an aimed shot on a weak point (drawn gold)
+		bool bHeal = false; // HP an enemy healed entering a phase (drawn green)
 		FString Text; // numbers only, built when the event arrives
 	};
 	const FPopup& GetPopup(int32 I) const { return Popups[I]; }
@@ -208,6 +224,13 @@ private:
 	void AddPopup(const FPopup& P);
 	void SetBanner(const FString& Text);
 	void SetNotice(const FString& Text);
+	// The next skill of every enemy, after anything that moves a pattern on.
+	void RefreshNextSkills();
+	// Fills the results panel from the battle's totals and logs them.
+	void BuildResults();
+	void AddResultLine(const FString& Line);
+	// After a won story or field fight: back there (the timer, or a press for a human player).
+	void Continue();
 	AFTPlayerController* GetPlayer() const;
 
 	UFUNCTION()
@@ -258,6 +281,13 @@ private:
 	double BannerWall = -100.0;
 	FString Notice;
 	double NoticeWall = -100.0;
+	FString PhaseBanner;
+	double PhaseBannerWall = -100.0;
+	TArray<TArray<FString>> SkillNames;
+	TArray<int32> NextSkill;
+	FString ResultLines[MaxResultLines];
+	int32 ResultLineCount = 0;
+	FString ContinuePrompt;
 
 	FPopup Popups[MaxPopups];
 	int32 NextPopup = 0;
@@ -282,6 +312,8 @@ private:
 	int32 SelectedTarget = -1;
 	bool bWaitingForRestart = false;
 	bool bReturningToStory = false; // a story fight was won; no restart
+	bool bReturnToField = false;    // ...or a field fight: Continue opens the field
+	bool bLeaving = false;          // Continue ran: the next map is loading
 	bool bCanQuitToTitle = false;
 	bool bQuitting = false;
 	bool bQKeyDown = false;

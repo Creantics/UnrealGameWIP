@@ -3,7 +3,8 @@
 // Canvas UI of the battle demo (no UMG): turn order, phase text, HP and AP panels, the skill menu,
 // the target marker, the note lane with its hit line, the enemy attack's tells (a ring closing on
 // the defender), telegraphs, defence keys and the judgement line, the aim reticle with the target's
-// weak points and the shot timer, grade and damage popups, and the outcome.
+// weak points and the shot timer, grade, damage and heal popups, an enemy's phase banner with the
+// next skill of each enemy in the turn order, and the outcome with the results.
 // Everything comes from the level's AFTBattleDemoActor; per-frame drawing uses cached or static
 // strings only.
 
