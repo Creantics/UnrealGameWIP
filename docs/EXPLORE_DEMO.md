@@ -75,7 +75,9 @@ a straight line behind the lead's facing, so the party starts in a line. A follo
 (`AFTPartyFollower`) is the member's skeletal mesh from `/Game/Characters/<Name>/<name>/SkeletalMeshes/`
 with its idle and walk clips, set down on the ground found below it. It has no controller, no
 movement component and no collision, so it can't block the lead or the autopilot. Log:
-`ExploreDemo: <n> following the lead.` The demo map's own Duy stays a talk spot.
+`ExploreDemo: <n> following the lead.` The pawn's own body is the lead and `kPartyNames[0]` is
+assumed to be it, so pointing the pawn's `BodyMeshPath` at another member would put that member on
+the field twice. The demo map's own Duy stays a talk spot.
 
 On autoplay (`StoryCarry.bAutoPlay`) the autopilot walks to the marker and uses it, logging
 `ExploreDemo: field step done at <scene> beat <b> step <i> after <t> s.` (game time, under 10 s).
