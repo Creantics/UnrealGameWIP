@@ -167,6 +167,7 @@ private:
 	uint32 LeadTurns = 0;       // the lead's turns begun, last seen
 	TArray<uint32> TurnCursors; // each follower's place in the trail's turns
 	bool bFollowersSpawned = false;
+	bool bWatchFollower = false; // -LocoWatchFollower: the camera is behind the first follower, so it stays in view
 
 	// The field guards (demo only; a story field step has none). Returns the guard that caught the
 	// player this frame, or -1.

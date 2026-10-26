@@ -30,7 +30,6 @@
 namespace
 {
 // -LocoPulse: how long (s) each rest lasts, long enough for a stop clip to settle.
-constexpr float kPulseRest = 2.f;
 // The camera comes back round behind a moving lead once the look input has rested this long (s), closing
 // kRecentreRate of the gap a second and never faster than kRecentreMax (deg/s), so it trails into turns.
 constexpr float kRecentreDelay = 1.f;
@@ -106,14 +105,16 @@ void AFTExploreCharacter::BeginPlay()
 	}
 	SetupLocomotion();
 	// Locomotion test switches: -LocoRun holds the run speed, -LocoJump=<s> jumps every s seconds,
-	// -LocoPulse=<s> drops the movement input for kPulseRest seconds after every s seconds of it, for
-	// starts and stops; with -LocoFace=<deg> the body turns on the spot by that much in each rest.
+	// -LocoPulse=<s> drops the movement input for -LocoRest=<s> seconds (default 2) after every s seconds
+	// of it, for starts and stops; with -LocoFace=<deg> the body turns on the spot by that much in each
+	// rest (a rest needs about 4 s to fit the stop and the turn).
 	if (FParse::Param(FCommandLine::Get(), TEXT("LocoRun")))
 	{
 		GetCharacterMovement()->MaxWalkSpeed = RunSpeed;
 	}
 	FParse::Value(FCommandLine::Get(), TEXT("LocoJump="), JumpEvery);
 	FParse::Value(FCommandLine::Get(), TEXT("LocoPulse="), PulseEvery);
+	FParse::Value(FCommandLine::Get(), TEXT("LocoRest="), PulseRest);
 	FParse::Value(FCommandLine::Get(), TEXT("LocoFace="), FaceBy);
 	if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait")))
 	{
@@ -470,7 +471,7 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 		Control.Yaw += FMath::Clamp(Gap * kRecentreRate * DeltaSeconds, -kRecentreMax * DeltaSeconds, kRecentreMax * DeltaSeconds);
 		Controller->SetControlRotation(Control);
 	}
-	if (PulseEvery > 0.f && (PulseTimer += DeltaSeconds) > PulseEvery + kPulseRest)
+	if (PulseEvery > 0.f && (PulseTimer += DeltaSeconds) > PulseEvery + PulseRest)
 	{
 		PulseTimer = 0.f;
 	}

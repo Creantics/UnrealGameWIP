@@ -482,6 +482,7 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 	// -LocoWatchFollower: the camera follows the first follower instead, for locomotion captures.
 	if (FParse::Param(FCommandLine::Get(), TEXT("LocoWatchFollower")) && !Followers.IsEmpty() && Followers[0])
 	{
+		bWatchFollower = true;
 		Player.WatchFrom(Followers[0]->GetRootComponent());
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: %d following the lead."), Followers.Num());
@@ -524,7 +525,7 @@ void AFTExploreDirector::PlaceFollowers(AFTExploreCharacter& Player, float Delta
 			}
 			const ftcore::Vec2 At = Trail.pointBehind(Arc);
 			Follower->Place(FVector2D(At.x * 100.0, At.y * 100.0), FeetZ, DeltaSeconds, WantSpeed, StopDistance);
-			const bool bInLens = Camera
+			const bool bInLens = Camera && !(bWatchFollower && I == 0)
 				&& FVector::Dist2D(Camera->GetCameraLocation(), Follower->GetActorLocation())
 					< kFollowerCameraShare * FVector::Dist2D(Camera->GetCameraLocation(), Player.GetActorLocation());
 			Follower->SetActorHiddenInGame(bInLens);

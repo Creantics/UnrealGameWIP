@@ -158,6 +158,7 @@ private:
 	float JumpTimer = 0.f;
 	float PulseEvery = 0.f; // -LocoPulse=<s>
 	float PulseTimer = 0.f;
+	float PulseRest = 2.f;  // -LocoRest=<s>
 	float LookRest = 0.f; // seconds since the last look input
 	float FaceBy = 0.f;   // -LocoFace=<deg>
 	TWeakObjectPtr<AActor> Watched; // WatchFrom: the body the camera frames and recentres behind
