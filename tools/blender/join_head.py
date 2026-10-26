@@ -326,6 +326,20 @@ def preview(arm, mesh, outdir):
         bpy.context.view_layer.update()
         rh.render_views([mesh], outdir, [("neck_%s_front" % tag, 0), ("neck_%s_side" % tag, 90),
                                          ("neck_%s_back" % tag, 180)], size=640, focus=focus, span=0.32)
+    # the face shapes on the joined mesh: a shape that lost its deltas at the seam would open the neck here
+    keys = mesh.data.shape_keys.key_blocks
+    sign = rh.jaw_open_sign(arm, mesh)
+    for shape in ("jawOpen", "eyeBlinkLeft"):
+        rc.reset_pose(arm)
+        keys[shape].value = 1.0
+        if shape == "jawOpen":
+            pb = arm.pose.bones["jaw"]
+            pb.rotation_mode = "XYZ"
+            pb.rotation_euler = (math.radians(12 * sign), 0.0, 0.0)
+        bpy.context.view_layer.update()
+        rh.render_views([mesh], outdir, [("neck_%s_front" % shape, 0), ("neck_%s_side" % shape, 90)], size=640,
+                        focus=focus, span=0.32)
+        keys[shape].value = 0.0
     rc.reset_pose(arm)
 
 
