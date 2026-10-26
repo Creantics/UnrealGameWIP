@@ -1,5 +1,5 @@
 """Grow a short haircut on a rigged lead as hair cards: guide curves over the scalp, then textured cards along them and
-a scalp cap, skinned to the head bone and exported as a glb outfit piece (FTImportCharacter -Role=outfit -Face=0).
+a scalp cap, skinned to the head bone (or the body's weights) and exported as a glb outfit piece (FTImportCharacter -Role=outfit -Face=0).
 
     blender -b --factory-startup --python-exit-code 1 lead.blend --python tools/blender/hair_cards.py -- spec.json
 
@@ -40,6 +40,8 @@ spec.json keys (lengths in cm unless said):
                             in, its V round the head repeating about every "tile". Its texture is solid "color" from U
                             "fill"[1] (fading in from "fill"[0]) with "strands" short strands over it
   "bone": name              the bone every hair vertex is weighted to (default "head")
+  "skin_from_body": bool    instead, each vertex takes the body's bone weights at its nearest scalp point, so the nape
+                            follows the neck bones the skin under it follows
   "seed": n
   "out": glb, "blend": path, "preview": dir   outputs; the preview renders front, side, back and a three-quarter
 """
@@ -129,16 +131,21 @@ tris = [tuple(t.vertices) for t in bme.loop_triangles]
 bvh = BVHTree.FromPolygons(BV, tris)
 
 
-def surface(p):
-    """Nearest scalp point, its smooth normal (pointing out), and the signed height of p above it."""
-    loc, fn, ti, _ = bvh.find_nearest(p)
+def bary(loc, ti):
+    """Barycentric weights of loc in body triangle ti."""
     a, b, c = (BV[i] for i in tris[ti])
     v0, v1, v2 = b - a, c - a, loc - a
     d00, d01, d11, d20, d21 = v0.dot(v0), v0.dot(v1), v1.dot(v1), v2.dot(v0), v2.dot(v1)
     den = d00 * d11 - d01 * d01 or 1e-12
     wb = (d11 * d20 - d01 * d21) / den
     wc = (d00 * d21 - d01 * d20) / den
-    wa = 1 - wb - wc
+    return 1 - wb - wc, wb, wc
+
+
+def surface(p):
+    """Nearest scalp point, its smooth normal (pointing out), and the signed height of p above it."""
+    loc, fn, ti, _ = bvh.find_nearest(p)
+    wa, wb, wc = bary(loc, ti)
     ia, ib, ic = tris[ti]
     n = (BN[ia] * wa + BN[ib] * wb + BN[ic] * wc).normalized()
     if n.dot(fn) < 0:
@@ -545,7 +552,30 @@ for f in bm.faces:
 bm.free()
 print("CAP %d verts, %d faces" % (len(verts) - cap_base, len(cap_faces)))
 
-# ---- one mesh, two materials, every vertex on the head bone
+# ---- one mesh, two materials, skinned to the head bone or to the body's own weights under each vertex
+
+
+def skin_from_body():
+    """For each hair vertex, the body's bone weights at its nearest scalp point (at most 4 bones, normalised), so hair
+    at the nape follows the neck as the skin under it does."""
+    if len(body.data.vertices) != len(BV):
+        raise SystemExit("skin_from_body: the evaluated body changed topology; can't map its weights")
+    names = {g.index: g.name for g in body.vertex_groups}
+    bones = {b.name for b in arm.data.bones if b.use_deform}
+    bw = [{names[g.group]: g.weight for g in v.groups if names.get(g.group) in bones and g.weight > 0}
+          for v in body.data.vertices]
+    out = []
+    for p in verts:
+        loc, _, ti, _ = bvh.find_nearest(p)
+        acc = {}
+        for i, k in zip(tris[ti], bary(loc, ti)):
+            for name, w in bw[i].items():
+                acc[name] = acc.get(name, 0.0) + w * max(k, 0.0)
+        top = sorted(acc.items(), key=lambda kv: -kv[1])[:4]
+        s = sum(w for _, w in top)
+        out.append({n: w / s for n, w in top} if s > 1e-6 else {bone: 1.0})
+    return out
+
 
 me = bpy.data.meshes.new("hair")
 me.from_pydata([tuple(v) for v in verts], [], faces + cap_faces)
@@ -568,8 +598,17 @@ me.normals_split_custom_set_from_vertices([tuple(n) for n in vnorm])
 hair = bpy.data.objects.new("hair", me)
 bpy.context.scene.collection.objects.link(hair)
 bone = spec.get("bone", "head")
-vg = hair.vertex_groups.new(name=bone)
-vg.add(list(range(len(verts))), 1.0, "REPLACE")
+if spec.get("skin_from_body"):
+    groups = {}
+    for vi, ws in enumerate(skin_from_body()):
+        for name, w in ws.items():
+            if name not in groups:
+                groups[name] = hair.vertex_groups.new(name=name)
+            groups[name].add([vi], w, "REPLACE")
+    print("SKIN from body: %s" % sorted(groups))
+else:
+    vg = hair.vertex_groups.new(name=bone)
+    vg.add(list(range(len(verts))), 1.0, "REPLACE")
 hair.parent = arm
 mod = hair.modifiers.new("Armature", "ARMATURE")
 mod.object = arm
