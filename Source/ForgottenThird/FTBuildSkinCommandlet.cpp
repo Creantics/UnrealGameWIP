@@ -29,7 +29,9 @@
 #endif
 
 #if WITH_EDITOR
-namespace
+// Named, not anonymous: in a unity build the other material commandlets' own AddExpression and PackageFile share this
+// translation unit.
+namespace FTSkinBuild
 {
 const TCHAR* const kProfile = TEXT("/Game/Characters/Shared/Materials/SP_FTSkin");
 const TCHAR* const kPores = TEXT("/Game/Characters/Shared/Materials/T_FTSkinPores");
@@ -268,7 +270,7 @@ bool Save(UObject* Asset)
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildSkin: saved %s."), *File);
 	return true;
 }
-}
+} // namespace FTSkinBuild
 #endif
 
 UFTBuildSkinCommandlet::UFTBuildSkinCommandlet()
@@ -307,10 +309,11 @@ int32 UFTBuildSkinCommandlet::Main(const FString& Params)
 	// The registry's startup scan opens each package file to read its header; let it finish so the deletes don't race it.
 	FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get().WaitForCompletion();
 	// Start the shared assets from nothing, before anything loads the old ones.
-	const FString Shared[] = {kProfile, kPores, kPoresMask, kNeutralMask, FT::SkinMasterPath()};
+	const FString Shared[] = {
+		FTSkinBuild::kProfile, FTSkinBuild::kPores, FTSkinBuild::kPoresMask, FTSkinBuild::kNeutralMask, FT::SkinMasterPath()};
 	for (const FString& Package : Shared)
 	{
-		const FString File = PackageFile(Package);
+		const FString File = FTSkinBuild::PackageFile(Package);
 		if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSkin: couldn't replace %s."), *File);
@@ -346,13 +349,13 @@ int32 UFTBuildSkinCommandlet::Main(const FString& Params)
 	}
 
 	TArray<UObject*> ToSave;
-	USubsurfaceProfile* Profile = BuildProfile(ScatterScale);
-	UTexture2D* Pores = NewTexture(kPores, Size, NormalArray, false, TC_Normalmap);
-	UTexture2D* PoresMask = NewTexture(kPoresMask, Size, MaskArray, false, TC_Masks);
-	UTexture2D* NeutralMask = NewTexture(kNeutralMask, 4, Neutral, false, TC_Masks);
+	USubsurfaceProfile* Profile = FTSkinBuild::BuildProfile(ScatterScale);
+	UTexture2D* Pores = FTSkinBuild::NewTexture(FTSkinBuild::kPores, Size, NormalArray, false, TC_Normalmap);
+	UTexture2D* PoresMask = FTSkinBuild::NewTexture(FTSkinBuild::kPoresMask, Size, MaskArray, false, TC_Masks);
+	UTexture2D* NeutralMask = FTSkinBuild::NewTexture(FTSkinBuild::kNeutralMask, 4, Neutral, false, TC_Masks);
 	NeutralMask->MipGenSettings = TMGS_NoMipmaps;
 	NeutralMask->PostEditChange();
-	UMaterial* Master = BuildMaster(Profile, Pores, PoresMask, NeutralMask);
+	UMaterial* Master = FTSkinBuild::BuildMaster(Profile, Pores, PoresMask, NeutralMask);
 	ToSave.Add(Profile);
 	ToSave.Add(Pores);
 	ToSave.Add(PoresMask);
@@ -381,7 +384,7 @@ int32 UFTBuildSkinCommandlet::Main(const FString& Params)
 	const FString MeshName = FPackageName::GetShortName(Mesh->GetPackage()->GetName());
 	if (!AlbedoFile.IsEmpty())
 	{
-		Albedo = ImportPng(AlbedoFile, TextureFolder / (TEXT("T_") + MeshName + TEXT("_SkinAlbedo")), true, TC_Default);
+		Albedo = FTSkinBuild::ImportPng(AlbedoFile, TextureFolder / (TEXT("T_") + MeshName + TEXT("_SkinAlbedo")), true, TC_Default);
 		if (!Albedo)
 		{
 			return 1;
@@ -390,7 +393,7 @@ int32 UFTBuildSkinCommandlet::Main(const FString& Params)
 	}
 	if (!MaskFile.IsEmpty())
 	{
-		RegionMask = ImportPng(MaskFile, TextureFolder / (TEXT("T_") + MeshName + TEXT("_SkinMask")), false, TC_Masks);
+		RegionMask = FTSkinBuild::ImportPng(MaskFile, TextureFolder / (TEXT("T_") + MeshName + TEXT("_SkinMask")), false, TC_Masks);
 		if (!RegionMask)
 		{
 			return 1;
@@ -434,7 +437,7 @@ int32 UFTBuildSkinCommandlet::Main(const FString& Params)
 	bool bOk = true;
 	for (UObject* Asset : ToSave)
 	{
-		bOk &= Save(Asset);
+		bOk &= FTSkinBuild::Save(Asset);
 	}
 	if (!bOk)
 	{
