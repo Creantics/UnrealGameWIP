@@ -7,7 +7,8 @@
 //
 // UseProjectMasters moves Interchange's glTF material instances onto the project masters:
 // M_FTCharacter for factor-only materials, M_FTCharacterTex (made on first use) for materials with
-// textures, and sets each bound texture up for its slot. Both masters have the skeletal mesh and
+// textures, M_FTHair (masked, anisotropic; for hair cards) for a textured alphaMode MASK material,
+// and sets each bound texture up for its slot. The masters have the skeletal mesh and
 // morph target usages, and static meshes need none, so props use them too. False when a texture's
 // sampler type can't be made to match its slot or a master reports compile errors.
 
