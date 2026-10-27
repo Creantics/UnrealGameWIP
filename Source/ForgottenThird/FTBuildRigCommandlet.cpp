@@ -814,7 +814,7 @@ int32 UFTBuildRigCommandlet::Main(const FString& Params)
 	ClipList.ParseIntoArray(Clips, TEXT(","));
 	FString KeepList;
 	// A MetaHuman body (the only skeleton with the pectoral corrective) keeps its spine by default; an explicit
-	// -KeepChains= (even empty) wins.
+	// -KeepChains wins (-KeepChains=None aligns every chain: an empty value would read the next switch).
 	if (!FParse::Value(*Params, TEXT("KeepChains="), KeepList, false)
 		&& Mesh->GetRefSkeleton().FindBoneIndex(TEXT("clavicle_pec_l")) != INDEX_NONE)
 	{
