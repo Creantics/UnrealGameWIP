@@ -163,6 +163,12 @@ TraversalPlan TraversalSet::plan(const TraversalObstacle& o, float speed, int fo
     return p;
 }
 
+float TraversalSet::exitTime(const TraversalPlan& p) const {
+    if (!p.ok()) return 0.f;
+    const TraversalClipInfo& c = clips_[static_cast<std::size_t>(p.clip)];
+    return std::clamp(c.land + tuning_.exitAfter, p.start, c.length);
+}
+
 TravPoint TraversalSet::rootAt(const TraversalPlan& p, float t) const {
     if (!p.ok()) return {};
     const TraversalClipInfo& c = clips_[static_cast<std::size_t>(p.clip)];

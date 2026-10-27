@@ -198,6 +198,20 @@ TEST_CASE("rootAt meets the real edge and height on the top, and the real floor 
     CHECK(deep.atLand.x == doctest::Approx(deep.atLeave.x));
 }
 
+TEST_CASE("exitTime hands back just after the landing, within the clip") {
+    TraversalSet set;
+    set.setClip(0, measure(makeClip(false)));
+    const TraversalClipInfo& c = set.clip(0);
+    const TraversalPlan p = set.plan(wall(70.f), 200.f, 1);
+    REQUIRE(p.ok());
+    CHECK(set.exitTime(p) == doctest::Approx(std::min(c.land + 0.3f, c.length)));
+    TraversalTuning t;
+    t.exitAfter = 100.f;
+    set.setTuning(t);
+    CHECK(set.exitTime(p) == doctest::Approx(c.length));
+    CHECK(set.exitTime(TraversalPlan{}) == 0.f);
+}
+
 TEST_CASE("Traversal plans and paths allocate nothing") {
     TraversalSet set;
     set.setClip(0, measure(makeClip(false)));

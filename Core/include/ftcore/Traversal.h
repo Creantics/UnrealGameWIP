@@ -99,6 +99,7 @@ struct TraversalTuning {
     float heightCost = 1.f / 100.f; // the cost per cm of height between the obstacle and the clip
     float speedCost = 1.f / 200.f;  // per cm/s of entry speed between the body and the clip
     float footCost = 0.3f;       // a clip taking off from the other foot
+    float exitAfter = 0.3f;      // a body that wants to move leaves the clip this long after the landing
 };
 
 struct TraversalPlan {
@@ -127,6 +128,10 @@ public:
     // The root at clip time t (from p.start on), from where it was when the plan was made, in the
     // body's space then.
     FTCORE_API TravPoint rootAt(const TraversalPlan& p, float t) const;
+    // When a body that wants to move hands back to its locomotion: exitAfter past the landing, never
+    // before the entry nor past the clip's end (the clip's own tail, a run on or a stand-up, is for a body
+    // left standing). 0 without a plan.
+    FTCORE_API float exitTime(const TraversalPlan& p) const;
 
 private:
     TraversalTuning tuning_;

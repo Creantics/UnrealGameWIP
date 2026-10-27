@@ -614,18 +614,38 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 		const ftcore::TravPoint R = Set.rootAt(TravPlan, At);
 		return TravFrame.TransformPosition(FVector(R.x, -R.y, R.z));
 	};
-	const FVector Feet = FeetAt(T);
-	SetActorLocation(Feet + FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+	FVector Feet = FeetAt(T);
+	const FVector HalfUp(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+	// Past the landing the clip's tail (a run on, a stand-up) is swept, a little above the floor so the floor
+	// never stops it: a wall ahead ends it there.
+	bool bBlocked = false;
+	if (T > Set.clip(static_cast<std::size_t>(TravPlan.clip)).land)
+	{
+		const FVector Lift(0.0, 0.0, 2.0);
+		FHitResult Hit;
+		SetActorLocation(Feet + HalfUp + Lift, true, &Hit);
+		bBlocked = Hit.bBlockingHit && Hit.ImpactNormal.Z < 0.7;
+		Feet = GetActorLocation() - HalfUp - Lift;
+	}
+	else
+	{
+		SetActorLocation(Feet + HalfUp);
+	}
 	// The movement component's velocity is the path's, for the locomotion now and the walk after.
 	const float Back = FMath::Max(DeltaSeconds, 1.f / 60.f);
-	Move->Velocity = (Feet - FeetAt(FMath::Max(TravPlan.start, T - Back))) / Back;
-	if (T >= Length)
+	Move->Velocity = (FeetAt(T) - FeetAt(FMath::Max(TravPlan.start, T - Back))) / Back;
+	// A body that wants to move hands back to its locomotion just after the landing; one left standing
+	// plays the clip out.
+	const bool bWantsMove = bVaultCourse || !Move->GetCurrentAcceleration().IsNearlyZero();
+	if (T >= Length || bBlocked || (bWantsMove && T >= Set.exitTime(TravPlan)))
 	{
+		if (bBlocked) Move->Velocity = FVector::ZeroVector;
 		bTraversing = false;
 		Anim->SetTraversal(-1, 0.f);
 		Move->Velocity.Z = 0.0;
 		Move->SetMovementMode(MOVE_Walking);
-		UE_LOG(LogForgottenThird, Display, TEXT("Traversal: done at %.0f cm/s, %.0f cm from the start, %+.0f cm up."), Move->Velocity.Size2D(),
+		UE_LOG(LogForgottenThird, Display, TEXT("Traversal: done at %.2f of %.2f s (%s), %.0f cm/s, %.0f cm from the start, %+.0f cm up."), T, Length,
+			bBlocked ? TEXT("blocked") : T >= Length ? TEXT("clip end") : TEXT("exit"), Move->Velocity.Size2D(),
 			FVector::Dist2D(Feet, TravFrame.GetLocation()), Feet.Z - TravFrame.GetLocation().Z);
 		return;
 	}
