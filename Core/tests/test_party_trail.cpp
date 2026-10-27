@@ -218,7 +218,8 @@ struct Lead {
         const float r = dirDeg * 3.14159265f / 180.f;
         pos = {pos.x + std::cos(r) * speed * kDt, pos.y + std::sin(r) * speed * kDt};
         trail.push(pos, speed);
-        slot.step(trail, speed, kDt);
+        // Braking to a stand, it says how far it has left (as the game's lead does).
+        slot.step(trail, speed, kDt, want <= 0.f && speed > 0.f ? speed * speed / 20.f : -1.f);
         t += kDt;
     }
 };
@@ -229,8 +230,10 @@ TEST_CASE("party slot: on a steady run it holds its place behind and to the side
     Lead l;
     for (int i = 0; i < 600; ++i) l.step(0.f, 4.5f);
     const PartySlotTuning k = l.slot.tuning();
-    CHECK(l.slot.arc() >= k.spacing - 0.05f); // in its place, give or take the slack
-    CHECK(l.slot.arc() <= k.spacing + k.slack + 0.05f);
+    // In its place behind where the lead was a beat ago, give or take the slack.
+    const float place = k.spacing + 4.5f * k.delay;
+    CHECK(l.slot.arc() >= place - 0.05f);
+    CHECK(l.slot.arc() <= place + k.slack + 0.05f);
     CHECK(l.slot.position().y == doctest::Approx(k.side).epsilon(0.02));
     CHECK(l.slot.speed() == doctest::Approx(4.5f).epsilon(0.01));
 }
@@ -245,7 +248,7 @@ TEST_CASE("party slot: it sets off after the lead and stops after it, never clos
         if (leadMoved < 0.f && l.speed > 0.5f) leadMoved = l.t;
         if (slotMoved < 0.f && l.slot.speed() > 0.5f) slotMoved = l.t;
     }
-    CHECK(slotMoved - leadMoved > 0.1f); // a beat late
+    CHECK(slotMoved - leadMoved >= l.slot.tuning().delay); // a beat late, at least the delay
     CHECK(l.slot.wantSpeed() == doctest::Approx(4.5f).epsilon(0.05));
     CHECK(l.slot.stopDistance() < 0.f);
     float leadStood = -1.f, slotStood = -1.f;
@@ -262,7 +265,7 @@ TEST_CASE("party slot: it sets off after the lead and stops after it, never clos
         minGap = std::min(minGap, dist(l.slot.position(), l.pos));
         minArc = std::min(minArc, l.slot.arc());
     }
-    CHECK(slotStood - leadStood > 0.1f); // arrives late
+    CHECK(slotStood - leadStood >= l.slot.tuning().delay); // arrives late
     REQUIRE(stopSaid > 0.f); // it said it was stopping, and about how far it would go
     CHECK(stopFrom - slotFrom == doctest::Approx(stopSaid).epsilon(0.35));
     CHECK(l.slot.wantSpeed() == 0.f);
@@ -341,7 +344,7 @@ TEST_CASE("party slot: a lead running back past it pushes it aside without stopp
     // And it goes on along the path after the lead, at its pace.
     for (int i = 0; i < 180; ++i) l.step(heading, 4.5f);
     CHECK(l.slot.speed() == doctest::Approx(4.5f).epsilon(0.05));
-    CHECK(l.slot.arc() <= l.slot.tuning().spacing + l.slot.tuning().slack + 0.1f);
+    CHECK(l.slot.arc() <= l.slot.tuning().spacing + 4.5f * l.slot.tuning().delay + l.slot.tuning().slack + 0.1f);
 }
 
 TEST_CASE("party trail allocates nothing") {

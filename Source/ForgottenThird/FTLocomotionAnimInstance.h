@@ -14,7 +14,7 @@
 // (their ground speed is measured from the clip at SetClip), starts and stops at the point whose
 // root travel matches the capsule's, the root bone's translation is held at the ref pose (the
 // capsule moves the body), and the spine banks, twists and leans forward per Locomotion's lean,
-// twist and pitch.
+// twist and pitch. At a run the elbows are held bent at least Locomotion's elbowBend.
 //
 // Turns (SetTurnsFromRun): a character owner steers. Its facing eases toward the way it moves
 // (apply GetLocomotion().yawStep() to the actor each frame; turn bOrientRotationToMovement off), and
@@ -109,6 +109,11 @@ private:
 	// The air pose (Locomotion::limbs), and its weight on the arms and on the legs.
 	FLayer LimbPose;
 	float LimbWeight[2] = {0.f, 0.f};
+	// The elbows held bent at least ElbowBend degrees (Locomotion::elbowHold), by this weight; a
+	// straight arm bends toward ElbowForward (the body's forward, in component space).
+	float ElbowHold = 0.f;
+	float ElbowBend = 90.f;
+	FVector ElbowForward = FVector::ForwardVector;
 
 	FBoneReference Spine[NumSpine];
 	FBoneReference Neck[NumNeck];

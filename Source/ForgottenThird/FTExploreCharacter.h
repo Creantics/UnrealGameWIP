@@ -165,6 +165,8 @@ private:
 	bool bFacing = false;
 	// -LocoSideView: each turn of the framed body is watched from its side, the camera held where the turn began.
 	bool bSideView = false;
+	// -LocoSideAlways: the framed body is filmed from its side the whole time, for measuring its lean.
+	bool bSideAlways = false;
 	// -LocoNoLook: look input is ignored, so a mouse passing over an unattended capture can't swing the camera.
 	bool bNoLook = false;
 	uint32 SideTurns = 0;

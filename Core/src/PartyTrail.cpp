@@ -162,7 +162,9 @@ Vec2 PartySlot::sideOffset(const PartyTrail& trail, float arc) const {
 void PartySlot::reset(const PartyTrail& trail) {
     arc_ = std::min(tuning_.spacing, trail.length());
     at_ = trail.odometer() - arc_;
-    speed_ = leadLag_ = want_ = 0.f;
+    speed_ = leadLag_ = want_ = clock_ = heardMark_ = stopDecel_ = stopRoom_ = 0.f;
+    stopping_ = false;
+    heardNewest_ = heardCount_ = 0;
     offset_ = {};
     offset_ = sideOffset(trail, arc_);
     const Vec2 base = trail.pointBehind(arc_);
@@ -170,12 +172,44 @@ void PartySlot::reset(const PartyTrail& trail) {
 }
 
 float PartySlot::stopDistance() const {
-    if (want_ > kStanding || speed_ <= kStanding) return -1.f;
-    // It eases in at the braking it plans for, and never past its place nearest the lead.
-    return std::min(speed_ * speed_ / (2.f * tuning_.settle), std::max(arc_ - tuning_.minArc, 0.f));
+    if (!stopping_ || speed_ <= kStanding) return -1.f;
+    // It brakes at the rate it planned, and never past its place nearest the lead.
+    return std::min(std::min(speed_ * speed_ / (2.f * stopDecel_), stopRoom_ + 0.05f), std::max(arc_ - tuning_.minArc, 0.f));
 }
 
-void PartySlot::step(const PartyTrail& trail, float leadSpeed, float dt) {
+PartySlot::Heard PartySlot::heard(float odometer, float leadSpeed, float leadStop, float dt) {
+    clock_ += dt;
+    // A new sample at least delay/24 after the last one began, so the ring spans the delay whatever
+    // the frame rate; between those the newest is this frame's.
+    const float gapAt = tuning_.delay / static_cast<float>(kHeard - 8);
+    if (heardCount_ == 0 || clock_ - heardMark_ >= gapAt) {
+        heardNewest_ = heardCount_ == 0 ? 0 : (heardNewest_ + 1) % kHeard;
+        heardCount_ = std::min(heardCount_ + 1, kHeard);
+        heardMark_ = clock_;
+    }
+    heardAt_[heardNewest_] = clock_;
+    heardOdo_[heardNewest_] = odometer;
+    heardSpeed_[heardNewest_] = leadSpeed;
+    heardStop_[heardNewest_] = leadStop;
+    const float when = clock_ - tuning_.delay;
+    // Newest back to the first sample at or before `when`, between it and the one after.
+    std::size_t later = heardNewest_;
+    for (std::size_t k = 1; k < heardCount_; ++k) {
+        const std::size_t i = (heardNewest_ + kHeard - k) % kHeard;
+        if (heardAt_[i] <= when) {
+            const float span = heardAt_[later] - heardAt_[i];
+            const float u = span > 0.f ? std::clamp((when - heardAt_[i]) / span, 0.f, 1.f) : 0.f;
+            // A stop is heard from the sample before (the distance left is only meaningful there).
+            return {heardOdo_[i] + (heardOdo_[later] - heardOdo_[i]) * u, heardSpeed_[i] + (heardSpeed_[later] - heardSpeed_[i]) * u,
+                heardStop_[i] < 0.f ? -1.f : heardStop_[i] - (heardOdo_[later] - heardOdo_[i]) * u};
+        }
+        later = i;
+    }
+    // Not that much kept yet (just reset): the oldest.
+    return {heardOdo_[later], heardSpeed_[later], heardStop_[later]};
+}
+
+void PartySlot::step(const PartyTrail& trail, float leadSpeed, float dt, float leadStop) {
     if (dt <= 0.f) return;
     const PartySlotTuning& k = tuning_;
     const float odo = trail.odometer();
@@ -183,11 +217,14 @@ void PartySlot::step(const PartyTrail& trail, float leadSpeed, float dt) {
     at_ = std::clamp(at_, odo - trail.length(), odo);
     arc_ = odo - at_;
 
-    // It follows the lead's speed a beat late, and closes a gap that has opened or shut.
-    leadLag_ += (std::max(leadSpeed, 0.f) - leadLag_) * (1.f - std::exp(-dt / k.react));
-    float want = leadLag_ + k.gain * std::max(arc_ - k.spacing - k.slack, 0.f);
+    // It keeps its place behind the lead as it was a beat ago: follows its speed then, closes a gap
+    // that has opened or shut since.
+    const Heard then = heard(odo, std::max(leadSpeed, 0.f), leadStop, dt);
+    const float back = std::max(then.odometer - at_, 0.f);
+    leadLag_ += (then.speed - leadLag_) * (1.f - std::exp(-dt / k.react));
+    float want = leadLag_ + k.gain * std::max(back - k.spacing - k.slack, 0.f);
     // It comes into its place no faster than it can stop there, as the lead stops ahead.
-    want = std::min(want, std::max(leadSpeed, 0.f) + std::sqrt(2.f * k.settle * std::max(arc_ - k.spacing, 0.f)));
+    want = std::min(want, then.speed + std::sqrt(2.f * k.settle * std::max(back - k.spacing, 0.f)));
     // Through this stretch no faster than the lead went (plus the catch-up)...
     const float there = trail.speedBehind(arc_);
     float cap = k.maxSpeed;
@@ -196,7 +233,17 @@ void PartySlot::step(const PartyTrail& trail, float leadSpeed, float dt) {
     const float room = std::max(arc_ - k.minArc, 0.f);
     cap = std::min(cap, std::sqrt(2.f * k.decel * room));
     want = std::clamp(want, 0.f, cap);
-    want_ = want;
+    // The lead braking to a stand (or standing), as it heard a beat ago: it plans its own stop to stand
+    // `spacing` behind where the lead will, at a steady braking it picks as it begins.
+    const bool stopping = then.stop >= 0.f || then.speed <= kStanding;
+    if (stopping) {
+        const float place = then.odometer + std::max(then.stop, 0.f) - k.spacing;
+        stopRoom_ = std::max(place - at_, 0.f);
+        if (!stopping_) stopDecel_ = std::clamp(speed_ * speed_ / (2.f * std::max(stopRoom_, 1e-3f)), k.settle, k.decel);
+        want = std::min(want, std::sqrt(2.f * stopDecel_ * stopRoom_));
+    }
+    stopping_ = stopping;
+    want_ = stopping ? 0.f : want;
     if (want > speed_) speed_ = std::min(want, speed_ + k.accel * dt);
     else speed_ = std::max(want, speed_ - k.decel * dt);
     // A braking limit it can't meet (the lead turned back on it) is met by the hard limit below.

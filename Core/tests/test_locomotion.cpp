@@ -350,6 +350,76 @@ TEST_CASE("locomotion: the head stays level against the lean and the bank") {
     CHECK(std::fabs(l.headRoll()) < 0.01f);
 }
 
+TEST_CASE("locomotion: the lean leads a start, leans back into a stop and bobs as it stands") {
+    Locomotion l = makeLoco();
+    const LocoTuning& t = l.tuning();
+    LocoInput in{0.f, 100.f};
+    in.wantSpeed = 509.f;
+    run(l, 0.5f, in);
+    CHECK(l.pitch() == doctest::Approx(t.startPitch * 409.f / 509.f).epsilon(0.01));
+    CHECK(l.headPitch() == doctest::Approx(-l.pitch() * t.headLevel));
+
+    in.groundSpeed = 509.f;
+    run(l, 1.f, in); // up to speed: just the run's lean
+    CHECK(l.pitch() == doctest::Approx(t.runPitch).epsilon(0.01));
+
+    in.wantSpeed = 0.f;
+    run(l, 1.f, in); // braking at full speed leans back, the run's lean gone
+    CHECK(l.pitch() == doctest::Approx(-t.stopPitch).epsilon(0.01));
+    in.groundSpeed = 250.f;
+    run(l, 1.f, in);
+    CHECK(l.pitch() == doctest::Approx(-t.stopPitch * 250.f / 509.f).epsilon(0.01));
+
+    in.groundSpeed = 0.f;
+    float peak = 0.f;
+    for (int i = 0; i < 30; ++i) {
+        run(l, kDt, in);
+        peak = std::fmax(peak, l.pitch());
+    }
+    CHECK(peak > 0.5f * t.settlePitch);
+    run(l, 1.f, in);
+    CHECK(std::fabs(l.pitch()) < 0.01f);
+
+    // Speed with no heading said (a follower without one): no start or stop lean, no bob.
+    Locomotion plain = makeLoco();
+    run(plain, 1.f, {0.f, 250.f});
+    CHECK(std::fabs(plain.pitch()) < 0.01f);
+    peak = 0.f;
+    for (int i = 0; i < 30; ++i) {
+        run(plain, kDt, {0.f, 0.f});
+        peak = std::fmax(peak, std::fabs(plain.pitch()));
+    }
+    CHECK(peak < 0.01f);
+}
+
+TEST_CASE("locomotion: the body tucks in the air and dips into the landing") {
+    Locomotion l = makeLoco();
+    run(l, 1.f, {0.f, 509.f});
+    run(l, 0.2f, {0.f, 509.f, 0.f, true, 300.f});
+    CHECK(l.state() == LocoState::Rising);
+    run(l, 0.3f, {0.f, 509.f, 0.f, true, -300.f});
+    CHECK(l.pitch() == doctest::Approx(l.tuning().airPitch).epsilon(0.05));
+    float peak = 0.f;
+    for (int i = 0; i < 12; ++i) {
+        run(l, kDt, {0.f, 0.f});
+        peak = std::fmax(peak, l.pitch());
+    }
+    CHECK(peak > l.tuning().airPitch);
+    run(l, 1.f, {0.f, 0.f});
+    CHECK(std::fabs(l.pitch()) < 0.01f);
+}
+
+TEST_CASE("locomotion: the elbows are held bent at a run, not at the walk or in the air") {
+    Locomotion l = makeLoco();
+    run(l, 1.f, {0.f, 509.f});
+    CHECK(l.elbowHold() == doctest::Approx(l.tuning().elbowHold).epsilon(0.01));
+    run(l, 1.f, {0.f, 298.f});
+    CHECK(l.elbowHold() < 0.01f);
+    run(l, 1.f, {0.f, 509.f});
+    run(l, 0.6f, {0.f, 509.f, 0.f, true, -300.f});
+    CHECK(l.elbowHold() < 0.05f);
+}
+
 TEST_CASE("locomotion: a body with only idle and walk walks at any speed, capped in rate") {
     Locomotion l;
     l.setClip(LocoClip::Idle, {2.f, 0.f, 1, 0.f});

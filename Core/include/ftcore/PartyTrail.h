@@ -19,8 +19,8 @@
 // the same there. Each sample also keeps the lead's speed as it passed, for PartySlot.
 //
 // PartySlot is one follower's place in the party, moving along the trail on its own: it keeps about
-// `spacing` behind the lead and `side` metres to one side of the path, reacts to the lead's starts
-// and stops a beat late (and with the lead's acceleration), goes no faster through a stretch than
+// `spacing` behind where the lead was a beat (`delay`) ago and `side` metres to one side of the path,
+// so it sets off, slows and stops a beat after the lead (and with the lead's acceleration), goes no faster through a stretch than
 // the lead did there (plus a bounded catch-up), and never comes nearer the lead than `minGap`: where
 // the path doubles back past the lead it holds its place on the path, and a lead coming back past
 // it pushes it aside, without either stopping it.
@@ -102,13 +102,16 @@ private:
 };
 
 struct PartySlotTuning {
-    float spacing = 1.9f;    // metres behind the lead along the trail, when it holds its speed
+    float spacing = 1.2f;    // metres behind where the lead was `delay` ago, along the trail (about
+                             // spacing + speed * delay behind the lead itself)
     float side = 1.0f;       // metres to the side of the path (+ left of the way it goes, - right)
     float minGap = 1.0f;     // never nearer the lead than this (metres, straight line)
     float minArc = 0.9f;     // nor nearer along the trail
-    float react = 0.25f;     // seconds: the lag of its speed behind the lead's
+    float delay = 0.2f;      // seconds: it keeps its place behind the lead as it was this long ago (a beat
+                             // behind on starts and stops)...
+    float react = 0.25f;     // ...and eases toward the lead's speed then this slowly
     float gain = 1.2f;       // 1/s: how hard it closes a gap that has opened...
-    float slack = 0.3f;      // ...past this (metres), so the lead gets a step ahead before it reacts
+    float slack = 0.15f;     // ...past this (metres), so the lead gets a step ahead before it reacts
     float settle = 4.f;      // m/s^2: the braking it plans for, coming into its place behind a standing lead
     float accel = 10.f;      // m/s^2, speeding up
     float decel = 10.f;      // m/s^2, braking
@@ -122,8 +125,10 @@ class PartySlot {
 public:
     // Puts it `tuning().spacing` behind the trail's lead, standing.
     FTCORE_API void reset(const PartyTrail& trail);
-    // One frame: the lead's ground speed now (m/s) and the frame time.
-    FTCORE_API void step(const PartyTrail& trail, float leadSpeed, float dt);
+    // One frame: the lead's ground speed now (m/s), the frame time, and while the lead is braking to a
+    // stand, how far it has left to go (metres; below 0 when it isn't). Hearing that a beat later, the
+    // follower plans its own stop to stand `spacing` behind where the lead will.
+    FTCORE_API void step(const PartyTrail& trail, float leadSpeed, float dt, float leadStop = -1.f);
 
     Vec2 position() const { return pos_; }
     // Metres behind the lead along the trail (for turnsReached and jumpsReached).
@@ -138,6 +143,13 @@ public:
 
 private:
     Vec2 sideOffset(const PartyTrail& trail, float arc) const;
+    // The lead's odometer and speed `delay` seconds ago, from the samples kept.
+    struct Heard {
+        float odometer = 0.f;
+        float speed = 0.f;
+        float stop = -1.f;
+    };
+    Heard heard(float odometer, float leadSpeed, float leadStop, float dt);
 
     PartySlotTuning tuning_;
     float at_ = 0.f;  // its own odometer reading along the trail
@@ -146,6 +158,18 @@ private:
     float leadLag_ = 0.f;
     float want_ = 0.f;
     static constexpr float kStanding = 0.05f; // m/s
+    static constexpr std::size_t kHeard = 32; // lead speeds kept for the delay
+    std::array<float, kHeard> heardSpeed_{};
+    std::array<float, kHeard> heardOdo_{};
+    std::array<float, kHeard> heardStop_{};
+    std::array<float, kHeard> heardAt_{};
+    std::size_t heardNewest_ = 0;
+    std::size_t heardCount_ = 0;
+    float clock_ = 0.f;
+    float heardMark_ = 0.f; // when the newest sample began
+    bool stopping_ = false;  // coming to a stand where it planned...
+    float stopDecel_ = 0.f;  // ...at this braking (m/s^2)...
+    float stopRoom_ = 0.f;   // ...this far on
     Vec2 offset_;
     Vec2 pos_;
 };

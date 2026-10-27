@@ -121,6 +121,7 @@ void AFTExploreCharacter::BeginPlay()
 	FParse::Value(FCommandLine::Get(), TEXT("LocoRest="), PulseRest);
 	FParse::Value(FCommandLine::Get(), TEXT("LocoFace="), FaceBy);
 	bSideView = FParse::Param(FCommandLine::Get(), TEXT("LocoSideView"));
+	bSideAlways = FParse::Param(FCommandLine::Get(), TEXT("LocoSideAlways"));
 	bNoLook = FParse::Param(FCommandLine::Get(), TEXT("LocoNoLook"));
 	if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait")))
 	{
@@ -494,7 +495,19 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	SlideProbe.Sample(*GetMesh(), DeltaSeconds, static_cast<float>(GetVelocity().Size2D()));
 	LookRest += DeltaSeconds;
 	const AActor* Framed = Watched.IsValid() ? Watched.Get() : this;
-	if (bSideView && Controller)
+	if (bSideAlways && Controller)
+	{
+		// The framed body is filmed from its left the whole time, turning with it, at the usual distance.
+		FRotator Control = Controller->GetControlRotation();
+		Control.Yaw = Framed->GetActorRotation().Yaw + 90.0;
+		Controller->SetControlRotation(Control);
+		if (Framed != this)
+		{
+			// The follower's root is at its feet, the lead's at its capsule's middle.
+			Boom->SetWorldLocation(Framed->GetActorLocation() + FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+		}
+	}
+	else if (bSideView && Controller)
 	{
 		// A turn is filmed side on from where it began, the camera still until a second after it ends.
 		const USkeletalMeshComponent* FramedMesh = Framed->FindComponentByClass<USkeletalMeshComponent>();
@@ -534,7 +547,7 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 		}
 	}
 	if (Controller && Boom->bUsePawnControlRotation && LookRest >= kRecentreDelay && GetVelocity().Size2D() > kRecentreSpeed
-		&& SideHold <= 0.f)
+		&& SideHold <= 0.f && !bSideAlways)
 	{
 		FRotator Control = Controller->GetControlRotation();
 		const float Gap = FMath::FindDeltaAngleDegrees(static_cast<float>(Control.Yaw), static_cast<float>(Framed->GetActorRotation().Yaw));

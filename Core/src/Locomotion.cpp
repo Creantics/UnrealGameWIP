@@ -305,6 +305,7 @@ void Locomotion::reset() {
     fade_ = phase_ = airTime_ = landTime_ = groundTime_ = 0.f;
     lean_ = twist_ = pitch_ = 0.f;
     headPitch_ = headRoll_ = headYaw_ = 0.f;
+    elbowHold_ = settle_ = lastSpeed_ = 0.f;
 }
 
 float Locomotion::footPhase(LocoClip c, float t) const {
@@ -795,11 +796,29 @@ void Locomotion::update(const LocoInput& in) {
         : clampf(turningNow ? toCome * tuning_.twistLead : in.turnRate * tuning_.twistPerTurn, -tuning_.maxTwist, tuning_.maxTwist);
     const float runShare = runSpeed > walkSpeed ? clampf((speed - walkSpeed) / (runSpeed - walkSpeed), 0.f, 1.f) : 0.f;
     const float sprintShare = topSpeed > runSpeed ? clampf((speed - runSpeed) / (topSpeed - runSpeed), 0.f, 1.f) : 0.f;
-    const float pitchTo = ground ? tuning_.runPitch * runShare + tuning_.sprintPitch * sprintShare : 0.f;
+    float pitchTo = ground ? tuning_.runPitch * runShare + tuning_.sprintPitch * sprintShare : 0.f;
+    // Starts lean into the speed still to gain, stops lean back against the speed still to lose (in
+    // place of the gait's lean), and a stop that comes to a stand bobs forward once (a half sine over
+    // settleTime).
+    if (lastSpeed_ >= tuning_.moveStop && speed < tuning_.moveStop && braking_ > 0.f) settle_ = tuning_.settleTime;
+    lastSpeed_ = speed;
+    if (ground && runSpeed > 0.f && in.wantSpeed >= 0.f) {
+        if (braking) pitchTo = -tuning_.stopPitch * speedShare;
+        else pitchTo += tuning_.startPitch * clampf((in.wantSpeed - speed) / runSpeed, 0.f, 1.f);
+    }
+    if (settle_ > 0.f) {
+        settle_ = std::max(settle_ - dt, 0.f);
+        if (ground && tuning_.settleTime > 0.f) pitchTo += tuning_.settlePitch * std::sin(180.f * kDegToRad * (1.f - settle_ / tuning_.settleTime));
+    }
+    if (air) pitchTo = tuning_.airPitch;
+    if (state_ == LocoState::Landing && tuning_.landDip > 0.f && landTime_ < tuning_.landDip)
+        pitchTo = tuning_.landPitch * (1.f - landTime_ / tuning_.landDip);
     const float b = 1.f - std::exp(-dt * tuning_.bodyResponse);
     lean_ += (leanTo - lean_) * b;
     twist_ += (twistTo - twist_) * b;
     pitch_ += (pitchTo - pitch_) * b;
+    // The elbows: held bent at a run, free at the walk and off the ground (the air pose has the arms).
+    elbowHold_ += ((ground ? tuning_.elbowHold * runShare : 0.f) - elbowHold_) * b;
 
     // The head: level against the lean and the bank, and a look into the turn ahead of the chest.
     const float h = 1.f - std::exp(-dt * tuning_.headResponse);

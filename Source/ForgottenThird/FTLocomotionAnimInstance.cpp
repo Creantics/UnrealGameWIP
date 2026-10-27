@@ -433,6 +433,39 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 			*Owner->GetName(), In.groundSpeed, In.wantSpeed, In.stopDistance, In.turnRate, In.falling ? 1 : 0, static_cast<int32>(Loco.state()),
 			Loco.lean(), Loco.twist(), Loco.pitch(), *Layers);
 	}
+
+	// -LocoAngles logs the posed body every frame, stamped with the UTC time so captures can be matched to it:
+	// the trunk (pelvis to neck) and chest (spine_03 to neck) tipped forward and to the right of upright, the
+	// head the same from the neck, and each elbow's bend (0 straight). The pose is last frame's.
+	static const bool bAngles = FParse::Param(FCommandLine::Get(), TEXT("LocoAngles"));
+	const USkeletalMeshComponent* Posed = bAngles ? GetSkelMeshComponent() : nullptr;
+	if (Posed)
+	{
+		const FVector Fwd = Owner->GetActorForwardVector().GetSafeNormal2D();
+		const FVector Side = FVector::CrossProduct(FVector::UpVector, Fwd);
+		auto At = [Posed](const TCHAR* Bone) { return Posed->GetBoneLocation(FName(Bone), EBoneSpaces::WorldSpace); };
+		auto Tip = [](const FVector& V, const FVector& Axis)
+		{
+			return FMath::RadiansToDegrees(FMath::Atan2(static_cast<float>(FVector::DotProduct(V, Axis)), static_cast<float>(V.Z)));
+		};
+		auto Elbow = [&At](const TCHAR* Upper, const TCHAR* Lower, const TCHAR* Hand)
+		{
+			const FVector A = (At(Lower) - At(Upper)).GetSafeNormal();
+			const FVector B = (At(Hand) - At(Lower)).GetSafeNormal();
+			return FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(static_cast<float>(FVector::DotProduct(A, B)), -1.f, 1.f)));
+		};
+		const FVector Neck = At(TEXT("neck_01"));
+		const FVector Trunk = Neck - At(TEXT("pelvis"));
+		const FVector Chest = Neck - At(TEXT("spine_03"));
+		const FVector Head = At(TEXT("head")) - Neck;
+		const FDateTime Now = FDateTime::UtcNow();
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("LocoAngles %s utc %lld state %d speed %.0f | trunk pitch %.1f roll %.1f | chest pitch %.1f roll %.1f | head pitch %.1f roll %.1f | elbow l %.0f r %.0f | loco pitch %.1f lean %.1f twist %.1f"),
+			*Owner->GetName(), Now.ToUnixTimestamp() * 1000 + Now.GetMillisecond(), static_cast<int32>(Loco.state()),
+			static_cast<float>(Owner->GetVelocity().Size2D()), Tip(Trunk, Fwd), Tip(Trunk, Side), Tip(Chest, Fwd), Tip(Chest, Side),
+			Tip(Head, Fwd), Tip(Head, Side), Elbow(TEXT("upperarm_l"), TEXT("lowerarm_l"), TEXT("hand_l")),
+			Elbow(TEXT("upperarm_r"), TEXT("lowerarm_r"), TEXT("hand_r")), Loco.pitch(), Loco.lean(), Loco.twist());
+	}
 }
 
 void FFTFootSlideProbe::Sample(const USkeletalMeshComponent& Mesh, float DeltaSeconds, float BodySpeed)
@@ -580,6 +613,9 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 	LimbPose = {Instance->Clips[static_cast<int32>(Limbs.clip)], Limbs.time, 1.f, false};
 	LimbWeight[0] = LimbPose.Seq ? Limbs.arms : 0.f;
 	LimbWeight[1] = LimbPose.Seq ? Limbs.legs : 0.f;
+	ElbowHold = Loco.elbowHold();
+	ElbowBend = Loco.tuning().elbowBend;
+	ElbowForward = Instance->ForwardCS;
 
 	// A turn driving the capsule: this frame's stretch of its root motion, its yaw scaled to the turn
 	// asked for, for the movement component to apply.
@@ -605,6 +641,13 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 	// The head keeps level against the pitch and the lean, and looks into a turn ahead of the chest.
 	HeadBend = FQuat(FVector::UpVector, FMath::DegreesToRadians(Loco.headYaw()))
 		* FQuat(Right, FMath::DegreesToRadians(Loco.headPitch())) * FQuat(F, FMath::DegreesToRadians(-Loco.headRoll()));
+	// -LocoNoBend leaves the clips' own trunk, head and elbows, for measuring what the bend adds.
+	static const bool bNoBend = FParse::Param(FCommandLine::Get(), TEXT("LocoNoBend"));
+	if (bNoBend)
+	{
+		SpineBend = HeadBend = FQuat::Identity;
+		ElbowHold = 0.f;
+	}
 }
 
 bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
@@ -714,7 +757,8 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 	const int32 NeckValid = CountValid(Neck, NumNeck);
 	const bool bSpine = SpineValid > 0 && !SpineBend.Equals(FQuat::Identity, 1e-5);
 	const bool bNeck = NeckValid > 0 && !HeadBend.Equals(FQuat::Identity, 1e-5);
-	if (!bSpine && !bNeck)
+	const bool bElbows = ElbowHold > 0.002f && ElbowBend > 0.f;
+	if (!bSpine && !bNeck && !bElbows)
 	{
 		return true;
 	}
@@ -743,6 +787,43 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 	if (bNeck)
 	{
 		Bend(Neck, NumNeck, NeckValid, HeadBend);
+	}
+	// The elbows: a forearm bent less than ElbowBend from its upper arm turns about the elbow toward
+	// it, by ElbowHold of the difference; one held straight bends toward the body's front.
+	for (int32 Side = 0; bElbows && Side < 2; ++Side)
+	{
+		const FBoneReference& Upper = Limb[Side * 4 + 1];
+		const FBoneReference& Lower = Limb[Side * 4 + 2];
+		const FBoneReference& Hand = Limb[Side * 4 + 3];
+		if (!Upper.IsValidToEvaluate(Container) || !Lower.IsValidToEvaluate(Container) || !Hand.IsValidToEvaluate(Container))
+		{
+			continue;
+		}
+		// The wrist from the forearm and the hand's local offset: reading the hand through CS would
+		// fix its component-space place, and it would stay put as the forearm turns.
+		const FCompactPoseBoneIndex LowerIndex = Lower.GetCompactPoseIndex(Container);
+		const FTransform LowerCS = CS.GetComponentSpaceTransform(LowerIndex);
+		const FVector Elbow = LowerCS.GetTranslation();
+		const FVector Wrist = LowerCS.TransformPosition(Output.Pose[Hand.GetCompactPoseIndex(Container)].GetTranslation());
+		const FVector A = (Elbow - CS.GetComponentSpaceTransform(Upper.GetCompactPoseIndex(Container)).GetTranslation()).GetSafeNormal();
+		const FVector B = (Wrist - Elbow).GetSafeNormal();
+		const float BentBy = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(FVector::DotProduct(A, B), -1.f, 1.f)));
+		if (A.IsZero() || B.IsZero() || BentBy >= ElbowBend)
+		{
+			continue;
+		}
+		FVector Axis = FVector::CrossProduct(A, B);
+		if (Axis.SizeSquared() < 1e-4)
+		{
+			Axis = FVector::CrossProduct(A, ElbowForward);
+		}
+		if (!Axis.Normalize())
+		{
+			continue;
+		}
+		FTransform T = LowerCS;
+		T.SetRotation((FQuat(Axis, FMath::DegreesToRadians((ElbowBend - BentBy) * ElbowHold)) * T.GetRotation()).GetNormalized());
+		CS.SetComponentSpaceTransform(LowerIndex, T);
 	}
 	FCSPose<FCompactPose>::ConvertComponentPosesToLocalPoses(MoveTemp(CS), Output.Pose);
 	return true;

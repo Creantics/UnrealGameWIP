@@ -22,6 +22,7 @@
 #include "FTExploreSpot.h"
 #include "FTFieldGuard.h"
 #include "FTGameInstance.h"
+#include "FTLocomotionAnimInstance.h"
 #include "FTPartyFollower.h"
 #include "FTStorySubsystem.h"
 #include "FTStyleController.h"
@@ -535,6 +536,13 @@ void AFTExploreDirector::PlaceFollowers(AFTExploreCharacter& Player, float Delta
 	{
 		LeadFacedAgo += DeltaSeconds;
 	}
+	// Braking to a stand, how far the lead has left (m), for the followers to plan their own stops by.
+	float LeadWant = -1.f, LeadStop = -1.f;
+	if (LeadMove)
+	{
+		UFTLocomotionAnimInstance::MovementIntent(*LeadMove, LeadWant, LeadStop);
+	}
+	LeadStop = LeadWant == 0.f && LeadStop >= 0.f ? LeadStop * 0.01f : -1.f;
 	const float FeetZ = static_cast<float>(Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight());
 	const APlayerCameraManager* Camera = UGameplayStatics::GetPlayerCameraManager(this, 0);
 	for (int32 I = 0; I < Followers.Num(); ++I)
@@ -544,7 +552,7 @@ void AFTExploreDirector::PlaceFollowers(AFTExploreCharacter& Player, float Delta
 			// Its slot moves on its own along the trail: it sets off and stops after the lead, and starts and
 			// stops its own legs by where its slot is heading.
 			ftcore::PartySlot& Slot = Slots[I];
-			Slot.step(Trail, LeadSpeed, DeltaSeconds);
+			Slot.step(Trail, LeadSpeed, DeltaSeconds, LeadStop);
 			const float Arc = Slot.arc();
 			const float StopDistance = Slot.stopDistance();
 			if (TurnCursors.IsValidIndex(I))

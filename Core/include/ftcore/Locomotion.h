@@ -9,6 +9,10 @@
 //   then bend the spine by loco.lean() (roll into the turn), loco.twist() (upper body leads the
 //   turn) and loco.pitch() (forward lean at a run).
 //
+// The forward lean also leads a start (more while there is speed to gain), leans back into a stop,
+// bobs forward as the stop comes to a stand, tucks in the air and dips into a landing; the head
+// keeps level against all of it. At a run the elbows are held bent (elbowHold()).
+//
 // On the ground it plays idle or a blend of the gaits it has (walk, run, sprint). The speed picks
 // the blend: between two adjacent gaits' ground speeds it mixes them linearly, below the slowest it
 // plays that one alone, above the fastest that one. The gaits share one foot phase (0 at a left
@@ -186,6 +190,15 @@ struct LocoTuning {
     float maxTwist = 22.f;
     float runPitch = 12.f;      // forward lean added at the run's ground speed (none at the walk's)...
     float sprintPitch = 3.f;    // ...and this much more at the sprint's
+    float startPitch = 8.f;     // more forward lean while speeding up, with a run's speed still to gain...
+    float stopPitch = 8.f;      // ...and lean back (in place of the gait's lean) while braking from the run's speed
+    float settlePitch = 4.f;    // a forward bob as a stop comes to a stand...
+    float settleTime = 0.4f;    // ...over this long
+    float airPitch = 6.f;       // forward tuck in the air
+    float landPitch = 10.f;     // forward dip into a landing...
+    float landDip = 0.3f;       // ...easing out over this long
+    float elbowHold = 1.f;      // at a run the elbows bend at least elbowBend, by this weight (none at the walk)
+    float elbowBend = 90.f;
     float bodyResponse = 10.f;  // how fast lean, twist and pitch follow (1/s)
     float headLevel = 1.f;      // the head takes back this share of the forward lean...
     float headLevelRoll = 0.6f; // ...and this share of the bank
@@ -266,6 +279,7 @@ public:
     FTCORE_API void setClip(LocoClip clip, const LocoClipInfo& info);
     const LocoClipInfo& clip(LocoClip c) const { return info_[index(c)]; }
     LocoTuning& tuning() { return tuning_; }
+    const LocoTuning& tuning() const { return tuning_; }
 
     // Back to standing idle at full weight.
     FTCORE_API void reset();
@@ -314,6 +328,8 @@ public:
     float headPitch() const { return headPitch_; }
     float headRoll() const { return headRoll_; }
     float headYaw() const { return headYaw_; }
+    // The weight (0..1) on holding the elbows bent at least tuning().elbowBend.
+    float elbowHold() const { return elbowHold_; }
     const LocoLimbs& limbs() const { return limbs_; }
 
 private:
@@ -370,6 +386,9 @@ private:
     float headPitch_ = 0.f;
     float headRoll_ = 0.f;
     float headYaw_ = 0.f;
+    float elbowHold_ = 0.f;
+    float settle_ = 0.f; // time left in the settle bob
+    float lastSpeed_ = 0.f;
     LocoLimbs limbs_;
 };
 
