@@ -614,10 +614,10 @@ void FFTFootSlideProbe::Sample(const USkeletalMeshComponent& Mesh, float DeltaSe
 				const FVector2D Mid = At(0.75f) - At(0.25f);
 				const FDateTime Utc = FDateTime::UtcNow();
 				UE_LOG(LogForgottenThird, Display,
-					TEXT("LocoPlant %s utc %lld body %.0f | %.3f s, net %.1f forward %.1f right | middle half %.1f forward (cm/s)"),
+					TEXT("LocoPlant %s utc %lld body %.0f | %.3f s, net %.1f forward %.1f right | middle half %.1f forward (cm/s), foot %s"),
 					Mesh.GetOwner() ? *Mesh.GetOwner()->GetName() : TEXT("?"), Utc.ToUnixTimestamp() * 1000 + Utc.GetMillisecond(), BodySpeed,
 					PlantTime, (Slip.X * Fwd.X + Slip.Y * Fwd.Y) / PlantTime, (Slip.Y * Fwd.X - Slip.X * Fwd.Y) / PlantTime,
-					(Mid.X * Fwd.X + Mid.Y * Fwd.Y) / (0.5f * PathTime[PathLen - 1]));
+					(Mid.X * Fwd.X + Mid.Y * Fwd.Y) / (0.5f * PathTime[PathLen - 1]), PlantFoot == 0 ? TEXT("l") : TEXT("r"));
 			}
 			// A body moving at either end; 20 cm/s of change either way counts as speeding up or braking.
 			if (FMath::Max(PlantSpeed, BodySpeed) >= 50.f)
