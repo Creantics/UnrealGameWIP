@@ -8,9 +8,15 @@
 // The body plays its idle or walk clip in single-node mode, switched on ground speed, with the
 // walk's play rate following the speed. There is no blend, so the switch pops.
 //
-// The body, its clips and any extra pieces (clothes, hair) can be swapped from config without a
-// rebuild, under [/Script/ForgottenThird.FTExploreCharacter] in Config/UserGame.ini (local, not
-// committed) or DefaultGame.ini. Pieces follow the body's pose (leader pose) and face shapes.
+// The body, its clips, any extra pieces (clothes, hair, a face) and grooms (brows, lashes) can be
+// swapped from config without a rebuild, under [/Script/ForgottenThird.FTExploreCharacter] in
+// Config/UserGame.ini (local, not committed) or DefaultGame.ini. Pieces follow the body's pose
+// (leader pose) and face shapes; grooms bind to the piece they were built for (see FTLook.h).
+//
+// With a party in config (PartyLooks) the pawn wears one member's look and the rest follow it
+// (AFTExploreDirector): Tab or RB switches to the next member, P or LB hides or shows the followers.
+// StartLead and bStartSolo set the start (-ExploreLead=<Name> and -ExploreSolo for -game runs); the
+// player's last choice is kept across a fight (UFTGameInstance).
 //
 // -ExplorePortrait puts the camera in front of the face and keeps it there, for checking a look;
 // -ExplorePortraitYaw= (180 front, 90 side, 0 back), -ExplorePortraitArm=, -ExplorePortraitHeight= and
@@ -19,6 +25,8 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "InputActionValue.h"
+
+#include "FTLook.h"
 
 #include "FTExploreCharacter.generated.h"
 
@@ -52,6 +60,19 @@ public:
 	// Skeletal meshes worn over the body, posed by it.
 	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
 	TArray<FSoftObjectPath> PiecePaths;
+	// Grooms bound to the body or a piece; skipped without the HairStrands plugin.
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
+	TArray<FFTGroomLook> Grooms;
+	// The party in order, each member's look: the pawn wears one and the others follow it. Empty keeps
+	// the look above (as the first of ftcore::demo::kPartyNames) and the default followers.
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Party")
+	TArray<FFTLeadLook> PartyLooks;
+	// The member to start as, by name; empty or unknown starts as the first.
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Party")
+	FString StartLead;
+	// Start with the followers hidden.
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Party")
+	bool bStartSolo = false;
 	// The ground speed (cm/s) at which the walk clip plays at rate 1.
 	UPROPERTY(EditAnywhere, Category = "Explore|Look")
 	float WalkClipSpeed = 140.f;
@@ -67,6 +88,10 @@ public:
 	// Ground-plane facing, for the interact prompt's cone.
 	FVector2D GetFacing2D() const;
 
+	// The PartyLooks entry the pawn wears (-1 when PartyLooks is empty), and whether the followers are hidden.
+	int32 GetLeadIndex() const { return LeadIndex; }
+	bool IsPartyHidden() const { return bPartyHidden; }
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void PawnClientRestart() override;
@@ -80,8 +105,11 @@ private:
 	void HandleRunStart();
 	void HandleRunStop();
 	void HandleInteract();
+	void HandleSwitchLead();
+	void HandleToggleParty();
 	void UpdateClip();
-	void ApplyLookOverrides();
+	// Puts on a look, replacing the body, clips, pieces and grooms worn (FTLook).
+	void WearLook(const FFTLeadLook& Look);
 	void AddPortraitLights();
 
 	AFTExploreDirector* GetDirector();
@@ -103,13 +131,21 @@ private:
 	TObjectPtr<UInputAction> RunAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> InteractAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> SwitchLeadAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> PartyAction;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
 	UPROPERTY(Transient)
+	TArray<TObjectPtr<USceneComponent>> GroomComponents;
+	UPROPERTY(Transient)
 	TArray<TObjectPtr<URectLightComponent>> PortraitLights;
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
+	int32 LeadIndex = -1;
+	bool bPartyHidden = false;
 	bool bWalking = false;
 	bool bClipStarted = false;
 };

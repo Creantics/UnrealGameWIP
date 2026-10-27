@@ -19,8 +19,11 @@
 #include "UObject/ConstructorHelpers.h"
 
 #include "FTExploreDirector.h"
+#include "FTGameInstance.h"
 #include "FTMeshFacing.h"
 #include "ForgottenThird.h"
+
+#include "ftcore/BattleDemo.h"
 
 namespace
 {
@@ -77,15 +80,37 @@ void AFTExploreCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
-	ApplyLookOverrides();
-	if (USkeletalMesh* Body = GetMesh()->GetSkeletalMeshAsset())
+	const bool bPortrait = FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait"));
+	// The lead and the party toggle: the player's last choice this session, else the command line, else config. A
+	// portrait shows the lead alone.
+	FString Lead = StartLead;
+	FParse::Value(FCommandLine::Get(), TEXT("ExploreLead="), Lead);
+	bPartyHidden = bStartSolo || bPortrait || FParse::Param(FCommandLine::Get(), TEXT("ExploreSolo"));
+	if (const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>())
 	{
-		// Turn the body to face the capsule's forward (+X).
-		GetMesh()->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Body), 0.0));
+		Lead = GI->ExploreLead.IsEmpty() ? Lead : GI->ExploreLead;
+		bPartyHidden = GI->bExplorePartySet ? GI->bExplorePartyHidden : bPartyHidden;
 	}
-	GetMesh()->SetAnimationMode(EAnimationMode::AnimationSingleNode);
-	UpdateClip();
-	if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait")))
+	if (PartyLooks.IsEmpty())
+	{
+		FFTLeadLook Own;
+		Own.Name = UTF8_TO_TCHAR(ftcore::demo::kPartyNames[0]);
+		Own.BodyMeshPath = BodyMeshPath;
+		Own.IdleClipPath = IdleClipPath;
+		Own.WalkClipPath = WalkClipPath;
+		Own.PiecePaths = PiecePaths;
+		Own.Grooms = Grooms;
+		WearLook(Own);
+	}
+	else
+	{
+		LeadIndex = FMath::Max(0, PartyLooks.IndexOfByPredicate([&Lead](const FFTLeadLook& Member)
+		{
+			return Member.Name.Equals(Lead, ESearchCase::IgnoreCase);
+		}));
+		WearLook(PartyLooks[LeadIndex]);
+	}
+	if (bPortrait)
 	{
 		// For checking a look: the camera holds still round the pawn, by default in front of the face. Yaw 180 is
 		// the front, 135 a three-quarter, 90 a side and 0 the back; a longer arm and a lower height frame the body.
@@ -145,58 +170,52 @@ void AFTExploreCharacter::AddPortraitLights()
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: portrait lights on (key, fill, rim)."));
 }
 
-void AFTExploreCharacter::ApplyLookOverrides()
+void AFTExploreCharacter::WearLook(const FFTLeadLook& Look)
 {
-	if (!BodyMeshPath.IsNull())
+	// Grooms first: they may be bound to a piece.
+	for (USceneComponent* Groom : GroomComponents)
 	{
-		if (USkeletalMesh* Body = Cast<USkeletalMesh>(BodyMeshPath.TryLoad()))
+		if (Groom)
 		{
-			GetMesh()->SetSkeletalMesh(Body);
-		}
-		else
-		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no skeletal mesh at %s; keeping the default body."), *BodyMeshPath.ToString());
+			Groom->DestroyComponent();
 		}
 	}
-	auto LoadClip = [](const FSoftObjectPath& Path, TObjectPtr<UAnimSequence>& Clip)
+	GroomComponents.Reset();
+	for (USkeletalMeshComponent* Piece : Pieces)
 	{
-		if (Path.IsNull())
+		if (Piece)
 		{
-			return;
+			Piece->DestroyComponent();
 		}
-		if (UAnimSequence* Loaded = Cast<UAnimSequence>(Path.TryLoad()))
-		{
-			Clip = Loaded;
-		}
-		else
-		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no anim sequence at %s."), *Path.ToString());
-		}
-	};
-	LoadClip(IdleClipPath, IdleClip);
-	LoadClip(WalkClipPath, WalkClip);
-	int32 Cloth = 0;
-	for (const FSoftObjectPath& Path : PiecePaths)
-	{
-		USkeletalMesh* PieceMesh = Cast<USkeletalMesh>(Path.TryLoad());
-		if (!PieceMesh)
-		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no skeletal mesh at %s; piece skipped."), *Path.ToString());
-			continue;
-		}
-		USkeletalMeshComponent* Piece = NewObject<USkeletalMeshComponent>(this);
-		Piece->SetupAttachment(GetMesh());
-		Piece->SetSkeletalMesh(PieceMesh);
-		Piece->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		Piece->bCollideWithEnvironment = true; // cloth pieces (FTBuildCloth) also push off the level, not just the body
-		Piece->RegisterComponent();
-		Cloth += PieceMesh->GetMeshClothingAssets().Num() > 0;
-		Piece->SetLeaderPoseComponent(GetMesh());
-		Pieces.Add(Piece);
 	}
-	const USkeletalMesh* Body = GetMesh()->GetSkeletalMeshAsset();
-	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: body %s, %d pieces, %d with cloth."), Body ? *Body->GetName() : TEXT("none"),
-		Pieces.Num(), Cloth);
+	Pieces.Reset();
+
+	USkeletalMeshComponent* BodyComponent = GetMesh();
+	const FFTLoadedLook Loaded = FTLook::LoadLook(Look, TEXT("FTExploreCharacter"));
+	if (Loaded.Body)
+	{
+		BodyComponent->SetSkeletalMesh(Loaded.Body);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no body for %s; keeping the one worn."), *Look.Name);
+	}
+	// A clip that didn't load keeps the one worn (the leads' MetaHuman bodies share a skeleton).
+	IdleClip = Loaded.Idle ? Loaded.Idle : IdleClip.Get();
+	WalkClip = Loaded.Walk ? Loaded.Walk : WalkClip.Get();
+	const USkeletalMesh* Body = BodyComponent->GetSkeletalMeshAsset();
+	if (Body)
+	{
+		// Turn the body to face the capsule's forward (+X).
+		BodyComponent->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Body), 0.0));
+	}
+	const int32 Cloth = FTLook::AddPieces(*this, *BodyComponent, Look.PiecePaths, Pieces, TEXT("FTExploreCharacter"));
+	FTLook::AddGrooms(*this, *BodyComponent, Pieces, Look.Grooms, GroomComponents, TEXT("FTExploreCharacter"));
+	BodyComponent->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+	bClipStarted = false;
+	UpdateClip();
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: %s: body %s, %d pieces, %d with cloth, %d grooms."), *Look.Name,
+		Body ? *Body->GetName() : TEXT("none"), Pieces.Num(), Cloth, GroomComponents.Num());
 }
 
 void AFTExploreCharacter::CreateInputObjects()
@@ -247,6 +266,14 @@ void AFTExploreCharacter::CreateInputObjects()
 	Context->MapKey(InteractAction, EKeys::E);
 	Context->MapKey(InteractAction, EKeys::Enter);
 	Context->MapKey(InteractAction, EKeys::Gamepad_FaceButton_Left);
+
+	SwitchLeadAction = MakeAction(TEXT("IA_ExploreSwitchLead"), false);
+	Context->MapKey(SwitchLeadAction, EKeys::Tab);
+	Context->MapKey(SwitchLeadAction, EKeys::Gamepad_RightShoulder);
+
+	PartyAction = MakeAction(TEXT("IA_ExploreParty"), false);
+	Context->MapKey(PartyAction, EKeys::P);
+	Context->MapKey(PartyAction, EKeys::Gamepad_LeftShoulder);
 }
 
 UInputAction* AFTExploreCharacter::MakeAction(const TCHAR* Name, bool bAxis2D)
@@ -285,6 +312,8 @@ void AFTExploreCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 	Input->BindAction(RunAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleRunStart);
 	Input->BindAction(RunAction, ETriggerEvent::Completed, this, &AFTExploreCharacter::HandleRunStop);
 	Input->BindAction(InteractAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleInteract);
+	Input->BindAction(SwitchLeadAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleSwitchLead);
+	Input->BindAction(PartyAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleToggleParty);
 }
 
 void AFTExploreCharacter::HandleMove(const FInputActionValue& Value)
@@ -321,6 +350,40 @@ void AFTExploreCharacter::HandleInteract()
 	if (AFTExploreDirector* D = GetDirector())
 	{
 		D->Interact();
+	}
+}
+
+void AFTExploreCharacter::HandleSwitchLead()
+{
+	if (PartyLooks.Num() < 2)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: no lead to switch to (PartyLooks has %d)."), PartyLooks.Num());
+		return;
+	}
+	LeadIndex = (LeadIndex + 1) % PartyLooks.Num();
+	const FFTLeadLook& Look = PartyLooks[LeadIndex];
+	WearLook(Look);
+	if (UFTGameInstance* GI = GetGameInstance<UFTGameInstance>())
+	{
+		GI->ExploreLead = Look.Name;
+	}
+	if (AFTExploreDirector* D = GetDirector())
+	{
+		D->OnLeadChanged(Look.Name);
+	}
+}
+
+void AFTExploreCharacter::HandleToggleParty()
+{
+	bPartyHidden = !bPartyHidden;
+	if (UFTGameInstance* GI = GetGameInstance<UFTGameInstance>())
+	{
+		GI->bExplorePartySet = true;
+		GI->bExplorePartyHidden = bPartyHidden;
+	}
+	if (AFTExploreDirector* D = GetDirector())
+	{
+		D->SetPartyHidden(bPartyHidden);
 	}
 }
 

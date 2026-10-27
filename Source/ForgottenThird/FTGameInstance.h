@@ -102,6 +102,11 @@ public:
 	// The world of the last field step the story opened (empty before the first): a field step in
 	// another world walks the overworld from this one.
 	FString LastWorld;
+	// The explore pawn's lead (a PartyLooks name) and party toggle as the player last set them, kept
+	// across map changes (a fight and back). Empty and unset until then, so the pawn's config picks.
+	FString ExploreLead;
+	bool bExplorePartySet = false;
+	bool bExplorePartyHidden = false;
 
 private:
 	void LoadWorlds();

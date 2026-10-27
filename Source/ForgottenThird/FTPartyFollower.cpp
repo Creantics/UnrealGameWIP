@@ -5,6 +5,7 @@
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
 
+#include "FTLook.h"
 #include "FTMeshFacing.h"
 
 namespace
@@ -18,35 +19,38 @@ constexpr float kWalkClipSpeed = 140.f;
 AFTPartyFollower::AFTPartyFollower()
 {
 	PrimaryActorTick.bCanEverTick = false;
+	Root = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
+	SetRootComponent(Root);
 	Body = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("Body"));
+	Body->SetupAttachment(Root);
 	Body->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Body->SetGenerateOverlapEvents(false);
-	SetRootComponent(Body);
 	SetActorEnableCollision(false);
 	TraceParams = FCollisionQueryParams(FName(TEXT("FTPartyFollower")), false);
 }
 
-bool AFTPartyFollower::Setup(const FString& Name, const AActor* Lead)
+bool AFTPartyFollower::Setup(const FFTLeadLook& Look, const AActor* Lead)
 {
-	const FString Lower = Name.ToLower();
-	const FString Dir = FString::Printf(TEXT("/Game/Characters/%s/%s/SkeletalMeshes/"), *Name, *Lower);
-	USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, *(Dir + Lower + TEXT(".") + Lower));
-	IdleClip = LoadObject<UAnimSequence>(nullptr, *(Dir + Lower + TEXT("idle.") + Lower + TEXT("idle")));
-	WalkClip = LoadObject<UAnimSequence>(nullptr, *(Dir + Lower + TEXT("walk.") + Lower + TEXT("walk")));
 	TraceParams.AddIgnoredActor(this);
 	if (Lead)
 	{
 		TraceParams.AddIgnoredActor(Lead);
 	}
-	if (!Mesh)
+	const FString Who = FString::Printf(TEXT("FTPartyFollower %s"), *Look.Name);
+	const FFTLoadedLook Loaded = FTLook::LoadLook(Look, *Who);
+	IdleClip = Loaded.Idle;
+	WalkClip = Loaded.Walk;
+	if (!Loaded.Body)
 	{
 		SetActorHiddenInGame(true);
 		return false;
 	}
-	Body->SetSkeletalMesh(Mesh);
+	Body->SetSkeletalMesh(Loaded.Body);
 	// Turn the body to face the actor's forward (+X).
-	Body->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Mesh), 0.0));
+	Body->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Loaded.Body), 0.0));
 	Body->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+	FTLook::AddPieces(*this, *Body, Look.PiecePaths, Pieces, *Who);
+	FTLook::AddGrooms(*this, *Body, Pieces, Look.Grooms, GroomComponents, *Who);
 	return true;
 }
 
