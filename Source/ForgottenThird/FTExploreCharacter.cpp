@@ -605,7 +605,7 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 		return;
 	}
 	const ftcore::TraversalSet& Set = Anim->GetTraversal();
-	TravTime += DeltaSeconds;
+	TravTime += DeltaSeconds * Set.rate(TravPlan, TravTime);
 	const float Length = Set.clip(static_cast<std::size_t>(TravPlan.clip)).length;
 	const float T = FMath::Min(TravTime, Length);
 	// The plan's root in the body's space as it began: x forward, y left (UE's Y is right), z up.

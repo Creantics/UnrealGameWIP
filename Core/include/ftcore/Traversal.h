@@ -7,7 +7,8 @@
 //   ftcore::TraversalSet set;
 //   set.setClip(i, ftcore::measureTraversal(frames, count, length));  // once per clip, at load
 //   const ftcore::TraversalPlan p = set.plan(obstacle, speed, foot);    // while an obstacle is ahead
-//   if (p.ok()) play clip p.clip from p.start; every frame: root = set.rootAt(p, clipTime);
+//   if (p.ok()) play clip p.clip from p.start; every frame: clipTime += dt * set.rate(p, clipTime);
+//                                                          root = set.rootAt(p, clipTime);
 //
 // The clips' root bone traces the obstacle they were made for: it stays on the floor, rises onto the top
 // (reaching it at the front edge), and either comes back down beyond it (over) or stays up (up).
@@ -24,6 +25,8 @@
 // ask again). rootAt() is the clip's root path from that point plus an offset that eases (smoothstep) from
 // nothing at the entry to the one meeting the real edge and height at the contact, holds the height over
 // the top while making up any extra depth, then eases to the one meeting the real floor at the landing.
+// rate() plays the clip at the body's own speed as it enters (a sprint into a clip made at a run would
+// otherwise drop to the clip's speed in a frame), easing to the clip's own rate by the contact.
 //
 // Space: x forward (toward the obstacle at the start), y to the left, z up; cm and seconds. Fixed
 // size: nothing allocates.
@@ -100,11 +103,14 @@ struct TraversalTuning {
     float speedCost = 1.f / 200.f;  // per cm/s of entry speed between the body and the clip
     float footCost = 0.3f;       // a clip taking off from the other foot
     float exitAfter = 0.3f;      // a body that wants to move leaves the clip this long after the landing
+    float minEntryRate = 0.8f;   // the play rate at the entry keeps the body's speed within these
+    float maxEntryRate = 1.5f;
 };
 
 struct TraversalPlan {
     int clip = -1;
     float start = 0.f;     // the clip time it is entered at
+    float entryRate = 1.f; // the play rate there: the body's speed over the clip's entry speed, within limits
     TravPoint atContact;   // the offset reached at the contact
     TravPoint atLeave;     // at the leave
     TravPoint atLand;      // and at the landing
@@ -132,6 +138,10 @@ public:
     // before the entry nor past the clip's end (the clip's own tail, a run on or a stand-up, is for a body
     // left standing). 0 without a plan.
     FTCORE_API float exitTime(const TraversalPlan& p) const;
+    // The play rate at clip time t: the plan's entryRate at the entry, easing (smoothstep) to 1 by the contact,
+    // so the climb or vault itself plays at its own pace. A caller advances clip time by dt x rate. 1 without a
+    // plan.
+    FTCORE_API float rate(const TraversalPlan& p, float t) const;
 
 private:
     TraversalTuning tuning_;

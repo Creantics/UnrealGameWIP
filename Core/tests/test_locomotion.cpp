@@ -83,9 +83,9 @@ TEST_CASE("locomotion: the gaits blend by speed with the feet moving at the caps
     CHECK(l.weight(LocoClip::Walk) == doctest::Approx(1.f));
     CHECK(l.rate(LocoClip::Walk) == doctest::Approx(200.f / 298.f));
 
-    run(l, 1.f, {0.f, 330.f}); // between walk (298) and run (509)
+    run(l, 1.f, {0.f, 330.f}); // between walk (298) and where the run plays alone (448)
     CHECK(l.target() == LocoClip::Walk);
-    CHECK(l.weight(LocoClip::Run) == doctest::Approx(32.f / 211.f).epsilon(0.01));
+    CHECK(l.weight(LocoClip::Run) == doctest::Approx(32.f / ((1.f - l.tuning().gaitBand) * 509.f - 298.f)).epsilon(0.01));
     CHECK(gaitWeight(l) == doctest::Approx(1.f));
     CHECK(footSpeed(l) == doctest::Approx(330.f));
     CHECK(phaseGap(l) < 1e-3f);
@@ -101,11 +101,11 @@ TEST_CASE("locomotion: walk, run and sprint share one stride") {
     Locomotion l = makeLoco();
     l.setClip(LocoClip::Sprint, {1.2f, 646.f, 2, 0.3f});
     l.reset();
-    run(l, 1.f, {0.f, 580.f}); // between run (509) and sprint (646), nearer the sprint
+    run(l, 1.f, {0.f, 540.f}); // between run (509) and where the sprint plays alone (568), past halfway
     CHECK(l.target() == LocoClip::Sprint);
     CHECK(l.weight(LocoClip::Walk) == 0.f);
-    CHECK(l.weight(LocoClip::Sprint) == doctest::Approx(71.f / 137.f).epsilon(0.01));
-    CHECK(footSpeed(l) == doctest::Approx(580.f));
+    CHECK(l.weight(LocoClip::Sprint) == doctest::Approx(31.f / ((1.f - l.tuning().gaitBand) * 646.f - 509.f)).epsilon(0.01));
+    CHECK(footSpeed(l) == doctest::Approx(540.f));
     CHECK(phaseGap(l) < 1e-3f);
 
     run(l, 1.f, {0.f, 700.f});
@@ -113,6 +113,61 @@ TEST_CASE("locomotion: walk, run and sprint share one stride") {
     CHECK(l.weight(LocoClip::Sprint) == doctest::Approx(1.f));
     CHECK(l.rate(LocoClip::Sprint) == doctest::Approx(700.f / 646.f));
     CHECK(l.pitch() == doctest::Approx(l.tuning().runPitch + l.tuning().sprintPitch).epsilon(0.01));
+}
+
+TEST_CASE("locomotion: the faster gait plays alone a band short of its own speed; below that the two mix") {
+    // The MetaHuman bodies' walk and run: at the party's 450 jog the run plays alone, a little slowed.
+    Locomotion l;
+    l.setClip(LocoClip::Idle, {7.57f, 0.f, 1, 0.f});
+    l.setClip(LocoClip::Walk, {4.f, 190.f, 4, 0.1f});
+    l.setClip(LocoClip::Run, {2.5f, 489.f, 4, 0.01f});
+    l.setClip(LocoClip::Sprint, {2.f, 680.f, 4, 0.01f});
+    l.reset();
+    const LocoTuning& t = l.tuning();
+    run(l, 1.f, {0.f, 450.f});
+    CHECK(l.weight(LocoClip::Walk) == 0.f);
+    CHECK(l.weight(LocoClip::Run) == doctest::Approx(1.f));
+    CHECK(l.rate(LocoClip::Run) == doctest::Approx(450.f / 489.f));
+    CHECK(footSpeed(l) == doctest::Approx(450.f));
+
+    // From the walk's speed up to the band the run's share rises steadily, the feet keeping pace and phase.
+    const float runAlone = (1.f - t.gaitBand) * 489.f;
+    run(l, 1.f, {0.f, 190.f});
+    CHECK(l.weight(LocoClip::Walk) == doctest::Approx(1.f));
+    float last = l.weight(LocoClip::Run);
+    for (float v = 191.f; v <= 489.f; v += 1.f) {
+        l.update({kDt, v});
+        const float w = l.weight(LocoClip::Run);
+        CHECK(w >= last - 1e-5f);
+        CHECK(w - last <= t.gaitDeadBand + 1.f / (runAlone - 190.f) + 1e-4f);
+        CHECK(footSpeed(l) == doctest::Approx(v));
+        CHECK(phaseGap(l) < 1e-3f);
+        last = w;
+    }
+    run(l, 0.1f, {0.f, 0.5f * (190.f + runAlone)});
+    CHECK(l.weight(LocoClip::Run) == doctest::Approx(0.5f).epsilon(0.01));
+    run(l, 0.1f, {0.f, runAlone + 1.f});
+    CHECK(l.weight(LocoClip::Run) == doctest::Approx(1.f));
+
+    // The run and the sprint the same way.
+    const float sprintAlone = (1.f - t.gaitBand) * 680.f;
+    run(l, 0.1f, {0.f, 0.5f * (489.f + sprintAlone)});
+    CHECK(l.weight(LocoClip::Sprint) == doctest::Approx(0.5f).epsilon(0.01));
+    CHECK(l.weight(LocoClip::Run) == doctest::Approx(0.5f).epsilon(0.01));
+    run(l, 0.1f, {0.f, sprintAlone + 1.f});
+    CHECK(l.weight(LocoClip::Sprint) == doctest::Approx(1.f));
+    CHECK(footSpeed(l) == doctest::Approx(sprintAlone + 1.f));
+
+    // Two gaits nearer than the band: past the slower one's speed the faster plays alone.
+    Locomotion near;
+    near.setClip(LocoClip::Idle, {7.57f, 0.f, 1, 0.f});
+    near.setClip(LocoClip::Walk, {4.f, 300.f, 4, 0.1f});
+    near.setClip(LocoClip::Run, {2.5f, 320.f, 4, 0.01f});
+    near.reset();
+    run(near, 1.f, {0.f, 301.f});
+    CHECK(near.weight(LocoClip::Run) == doctest::Approx(1.f));
+    run(near, 0.1f, {0.f, 300.f});
+    CHECK(near.weight(LocoClip::Walk) == doctest::Approx(1.f));
 }
 
 TEST_CASE("locomotion: on a speed ramp the blend moves smoothly and the lead gait changes once") {
@@ -291,7 +346,7 @@ TEST_CASE("locomotion: the air pose holds the limbs in the air, the arms into th
     CHECK(l.limbs().arms <= 0.05f);
     CHECK(l.limbs().legs == 0.f);
 
-    // A moving landing hands back to the run sooner: the arms ease out with it.
+    // Landing at a run with no moving landing to play: the run carries on, and the arms ease out at once.
     run(l, 1.f, {0.f, 700.f});
     l.update({kDt, 700.f, 0.f, true, 520.f});
     run(l, 0.6f, {0.f, 700.f, 0.f, true, -200.f});
@@ -458,19 +513,59 @@ TEST_CASE("locomotion: the lean leads a start and leans back into a stop by how 
 
 TEST_CASE("locomotion: the body tucks in the air and dips into the landing") {
     Locomotion l = makeLoco();
-    run(l, 1.f, {0.f, 509.f});
-    run(l, 0.2f, {0.f, 509.f, 0.f, true, 300.f});
+    run(l, 1.f, {});
+    run(l, 0.2f, {0.f, 0.f, 0.f, true, 300.f});
     CHECK(l.state() == LocoState::Rising);
-    run(l, 0.3f, {0.f, 509.f, 0.f, true, -300.f});
+    run(l, 0.3f, {0.f, 0.f, 0.f, true, -300.f});
     CHECK(l.pitch() == doctest::Approx(l.tuning().airPitch).epsilon(0.05));
     float peak = 0.f;
     for (int i = 0; i < 12; ++i) {
-        run(l, kDt, {0.f, 0.f});
+        run(l, kDt, {});
         peak = std::fmax(peak, l.pitch());
     }
+    CHECK(l.state() == LocoState::Landing);
     CHECK(peak > l.tuning().airPitch);
-    run(l, 1.f, {0.f, 0.f});
+    run(l, 1.f, {});
     CHECK(std::fabs(l.pitch()) < 0.01f);
+}
+
+TEST_CASE("locomotion: a running jump's tuck and dip go on top of the run's lean, the dip easing out into the run") {
+    Locomotion l = makeLoco();
+    l.setClip(LocoClip::JumpMoving, {0.6f, 460.f, 1, 0.f});
+    l.setClip(LocoClip::LandMoving, {0.9f, 560.f, 1, 0.f});
+    l.setClip(LocoClip::AirPose, {0.5f, 0.f, 1, 0.f});
+    l.reset();
+    const LocoTuning& t = l.tuning();
+    run(l, 1.f, {0.f, 509.f});
+    CHECK(l.pitch() == doctest::Approx(t.runPitch).epsilon(0.01));
+    l.update({kDt, 509.f, 0.f, true, 520.f});
+    run(l, 0.3f, {0.f, 509.f, 0.f, true, 200.f});
+    run(l, 0.3f, {0.f, 509.f, 0.f, true, -300.f});
+    CHECK(l.pitch() == doctest::Approx(t.runPitch + t.airPitch).epsilon(0.01));
+
+    // Touchdown at the run: the landing hands the legs back to the run at landHoldMoving, before the dip has
+    // eased out. The dip carries on over the run's lean: once past its peak the pitch only comes down, onto it.
+    l.update({kDt, 509.f, 0.f, false, 0.f});
+    REQUIRE(l.state() == LocoState::Landing);
+    float handBack = -1.f, last = l.pitch(), peak = l.pitch();
+    bool falling = false;
+    for (int i = 1; i * kDt < t.landDip + 0.5f; ++i) {
+        l.update({kDt, 509.f});
+        if (handBack < 0.f && l.state() == LocoState::Ground) handBack = static_cast<float>(i) * kDt;
+        CHECK(l.pitch() > t.runPitch);
+        if (falling) CHECK(l.pitch() <= last + 1e-4f);
+        falling = falling || l.pitch() < last;
+        peak = std::fmax(peak, l.pitch());
+        last = l.pitch();
+        // The arms hold the air pose through the hand-back, until landArms after touchdown.
+        if (i * kDt < t.landArms) CHECK(l.limbs().arms >= 0.95f);
+    }
+    CHECK(handBack == doctest::Approx(t.landHoldMoving).epsilon(0.1));
+    CHECK(handBack < t.landDip);
+    CHECK(peak > t.runPitch + t.airPitch);
+    CHECK(l.limbs().arms <= 0.05f);
+    run(l, 0.5f, {0.f, 509.f});
+    CHECK(l.pitch() == doctest::Approx(t.runPitch).epsilon(0.01));
 }
 
 TEST_CASE("locomotion: the elbows are held bent at a run, not at the walk or in the air") {
@@ -1319,14 +1414,14 @@ namespace {
 // again. Returns how far apart their foot contacts fall over the last seconds of each run, in steps
 // (0 together, 0.5 halfway between): the foot phase spans a stride, two steps, and a reader sees the
 // contacts, so half a stride apart is in step too, on opposite feet. The follower is told the lead's
-// phase when `trim` holds (and its stride too with `feed`) and its run clip's ground speed is `followerRun`
-// (cm/s, a longer stride).
+// phase when `trim` holds (and its stride too with `feed`), its run clip's ground speed is `followerRun`
+// (cm/s, a longer stride), and it takes its slot's speed `lag` frames late (under 32), setting off that much behind.
 struct PartyStep {
     float gap = 0.5f;      // closest contacts
     float maxTrim = 0.f;   // the follower's largest stride rate trim
     float settledTrim = 0.f; // and its mean over the last 3 s of the second run
 };
-PartyStep partyStep(bool trim, float followerRun = 509.f, bool feed = false) {
+PartyStep partyStep(bool trim, float followerRun = 509.f, bool feed = false, int lag = 0) {
     Locomotion lead = makeLoco(), follower = makeLoco();
     follower.setClip(LocoClip::Run, {1.77f, followerRun, 3, 0.4f});
     follower.reset();
@@ -1336,6 +1431,7 @@ PartyStep partyStep(bool trim, float followerRun = 509.f, bool feed = false) {
     slot.reset(trail);
     PartyStep out;
     float x = 0.f, speed = 0.f;
+    float slotSpeeds[32] = {};
     for (int leg = 0; leg < 2; ++leg) {
         for (int i = 0; i < 1560; ++i) { // 1 s standing, 20 s at a run, then 5 s to stop and stand
             const float want = i >= 60 && i < 1260 ? 4.5f : 0.f;
@@ -1343,8 +1439,9 @@ PartyStep partyStep(bool trim, float followerRun = 509.f, bool feed = false) {
             x += speed * kDt;
             trail.push({x, 0.f}, speed);
             slot.step(trail, speed, kDt, want <= 0.f && speed > 0.f ? speed * speed / 20.f : -1.f);
+            slotSpeeds[i % 32] = slot.speed();
             // The lead's phase as the frame begins, like the follower's own (LocoInput::leadPhase).
-            LocoInput in{kDt, slot.speed() * 100.f};
+            LocoInput in{kDt, i >= lag ? slotSpeeds[(i - lag) % 32] * 100.f : 0.f};
             if (trim && lead.state() == LocoState::Ground && speed * 100.f >= lead.tuning().moveStop) {
                 in.leadPhase = lead.phase();
                 if (feed) in.leadStride = lead.strideLength();
@@ -1366,22 +1463,28 @@ PartyStep partyStep(bool trim, float followerRun = 509.f, bool feed = false) {
 
 TEST_CASE("locomotion: a follower's foot contacts fall between the lead's") {
     // Both feet phases follow the ground each body covers, so untrimmed the follower's contacts trail
-    // the lead's by however much less ground it covered setting off: here half a stride, contacts
-    // together on opposite feet (the game measured the same). Told the lead's phase, it eases to a
-    // quarter stride off by stepping at most 2% faster or slower.
-    const PartyStep untrimmed = partyStep(false), trimmed = partyStep(true);
-    CAPTURE(untrimmed.gap);
-    CAPTURE(trimmed.gap);
-    CHECK(untrimmed.gap < 0.2f);
-    CHECK(trimmed.gap >= 0.4f); // within a tenth of a step of halfway (0.5)
-    CHECK(trimmed.maxTrim <= LocoTuning{}.phaseTrim + 1e-6f);
-    CHECK(untrimmed.maxTrim == 0.f);
+    // the lead's by however much less ground it covered setting off. A frame later off puts it 7.5 cm, a
+    // fortieth of a stride, further behind, so over 20 frames late its contacts pass once over the lead's
+    // (together, on the same foot or the other). Told the lead's phase, it eases to a quarter stride off by
+    // stepping at most 3% faster or slower, wherever it set off.
+    float untrimmedGap = 0.5f;
+    for (int lag = 0; lag < 20; lag += 2) {
+        const PartyStep untrimmed = partyStep(false, 509.f, false, lag), trimmed = partyStep(true, 509.f, false, lag);
+        CAPTURE(lag);
+        CAPTURE(untrimmed.gap);
+        CAPTURE(trimmed.gap);
+        untrimmedGap = std::fmin(untrimmedGap, untrimmed.gap);
+        CHECK(trimmed.gap >= 0.4f); // within a tenth of a step of halfway (0.5)
+        CHECK(trimmed.maxTrim <= LocoTuning{}.phaseTrim + 1e-6f);
+        CHECK(untrimmed.maxTrim == 0.f);
+    }
+    CHECK(untrimmedGap < 0.1f);
 }
 
 TEST_CASE("locomotion: the phase trim holds a follower whose stride differs") {
     // A body whose run clip is 3% faster (a longer stride: Duy's against the Third's). At the party's
     // run speed its blend leans further toward the walk, so its effective stride differs by about 1%;
-    // untrimmed it drifts through the lead's steps, and the trim (up to 2%) holds it off them.
+    // untrimmed it drifts through the lead's steps, and the trim (up to 3%) holds it off them.
     const PartyStep untrimmed = partyStep(false, 509.f * 1.03f), trimmed = partyStep(true, 509.f * 1.03f);
     CAPTURE(untrimmed.gap);
     CAPTURE(trimmed.gap);
@@ -1391,8 +1494,8 @@ TEST_CASE("locomotion: the phase trim holds a follower whose stride differs") {
 
 TEST_CASE("locomotion: told the lead's stride, a follower whose stride differs keeps halfway between its steps") {
     // The phase error alone has to stand off halfway to hold a trim: trim / gain of a stride (the game's
-    // 2.6% at 0.4 settled at a gap of 0.40). Here the run clip is 2.6% longer, about 0.7% at the party's
-    // blend, 0.46 on the phase alone; the stride against the lead's sets the rate, and the phase error only
+    // 2.6% at 0.4 settled at a gap of 0.40). Here the run clip is 2.6% longer, about 0.9% at the party's
+    // blend, 0.45 on the phase alone; the stride against the lead's sets the rate, and the phase error only
     // takes up what is left.
     const PartyStep phaseOnly = partyStep(true, 509.f * 1.026f), fed = partyStep(true, 509.f * 1.026f, true);
     CAPTURE(phaseOnly.gap);
@@ -1425,13 +1528,14 @@ TEST_CASE("locomotion: a follower steps faster to the next quarter stride unless
 }
 
 TEST_CASE("locomotion: a follower's wider gait dead band drops a few percent of walk at a run") {
-    // makeLoco's walk is 298 cm/s and its run 509: at 500 the walk holds about 4% of the mix.
+    // makeLoco's walk is 298 cm/s and its run 509, alone from 448 (gaitBand): at 440 the walk holds about 5%
+    // of the mix.
     Locomotion narrow = makeLoco();
-    run(narrow, 2.f, {0.f, 500.f});
+    run(narrow, 2.f, {0.f, 440.f});
     CHECK(narrow.weight(LocoClip::Walk) > 0.03f);
     Locomotion wide = makeLoco();
     tuneForFollower(wide.tuning());
-    run(wide, 2.f, {0.f, 500.f});
+    run(wide, 2.f, {0.f, 440.f});
     CHECK(wide.weight(LocoClip::Walk) == 0.f);
     CHECK(wide.weight(LocoClip::Run) == doctest::Approx(gaitWeight(wide)));
 }

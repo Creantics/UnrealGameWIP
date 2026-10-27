@@ -212,6 +212,35 @@ TEST_CASE("exitTime hands back just after the landing, within the clip") {
     CHECK(set.exitTime(TraversalPlan{}) == 0.f);
 }
 
+TEST_CASE("rate plays the clip at the body's speed at the entry, easing to its own by the contact") {
+    TraversalSet set;
+    set.setClip(0, measure(makeClip(false))); // comes in at 200 cm/s
+    const TraversalClipInfo& c = set.clip(0);
+    const TraversalPlan p = set.plan(wall(70.f), 260.f, 1);
+    REQUIRE(p.ok());
+    CHECK(p.entryRate == doctest::Approx(1.3f));
+    CHECK(set.rate(p, p.start) == doctest::Approx(1.3f));
+    CHECK(set.rate(p, c.contact) == doctest::Approx(1.f));
+    CHECK(set.rate(p, c.land) == 1.f);
+    // Steadily down from one to the other.
+    float last = set.rate(p, p.start);
+    for (float t = p.start; t <= c.contact; t += 0.01f) {
+        const float r = set.rate(p, t);
+        CHECK(r <= last + 1e-6f);
+        CHECK(r >= 1.f - 1e-6f);
+        last = r;
+    }
+    // Advanced by dt x rate, the root goes on at the body's speed as it enters.
+    const float dt = 1.f / 60.f;
+    const float t1 = p.start + dt * set.rate(p, p.start);
+    CHECK((set.rootAt(p, t1).x - set.rootAt(p, p.start).x) / dt == doctest::Approx(260.f).epsilon(0.02));
+    // Slower than the clip, and within limits.
+    CHECK(set.plan(wall(70.f), 180.f, 1).entryRate == doctest::Approx(0.9f));
+    CHECK(set.plan(wall(70.f), 1000.f, 1).entryRate == doctest::Approx(set.tuning().maxEntryRate));
+    CHECK(set.plan(wall(70.f), 0.f, 1).entryRate == doctest::Approx(set.tuning().minEntryRate));
+    CHECK(set.rate(TraversalPlan{}, 0.5f) == 1.f);
+}
+
 TEST_CASE("Traversal plans and paths allocate nothing") {
     TraversalSet set;
     set.setClip(0, measure(makeClip(false)));
@@ -221,7 +250,7 @@ TEST_CASE("Traversal plans and paths allocate nothing") {
     float sum = 0.f;
     for (int i = 0; i < 100; ++i) {
         const TraversalPlan p = set.plan(i % 2 ? wall(60.f + static_cast<float>(i)) : ledge(60.f), 200.f, i % 2);
-        if (p.ok()) sum += set.rootAt(p, 0.01f * static_cast<float>(i)).x;
+        if (p.ok()) sum += set.rootAt(p, 0.01f * static_cast<float>(i)).x + set.rate(p, 0.01f * static_cast<float>(i));
     }
     CHECK(std::isfinite(sum));
     if (hooked) CHECK(ftcore_test::allocStats().count == before);

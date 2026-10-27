@@ -151,6 +151,7 @@ TraversalPlan TraversalSet::plan(const TraversalObstacle& o, float speed, int fo
         return p;
     }
     const TraversalClipInfo& c = clips_[static_cast<std::size_t>(p.clip)];
+    if (c.entrySpeed > 0.f) p.entryRate = std::max(t.minEntryRate, std::min(speed / c.entrySpeed, t.maxEntryRate));
     const float push = o.distance - (c.ledgeAhead - traversalPath(c, p.start).x);
     p.atContact = {push, 0.f, o.height - c.ledgeHeight};
     if (up) {
@@ -167,6 +168,13 @@ float TraversalSet::exitTime(const TraversalPlan& p) const {
     if (!p.ok()) return 0.f;
     const TraversalClipInfo& c = clips_[static_cast<std::size_t>(p.clip)];
     return std::clamp(c.land + tuning_.exitAfter, p.start, c.length);
+}
+
+float TraversalSet::rate(const TraversalPlan& p, float t) const {
+    if (!p.ok()) return 1.f;
+    const TraversalClipInfo& c = clips_[static_cast<std::size_t>(p.clip)];
+    if (t >= c.contact || c.contact <= p.start) return 1.f;
+    return p.entryRate + (1.f - p.entryRate) * smooth((t - p.start) / (c.contact - p.start));
 }
 
 TravPoint TraversalSet::rootAt(const TraversalPlan& p, float t) const {

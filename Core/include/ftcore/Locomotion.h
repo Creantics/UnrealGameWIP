@@ -10,12 +10,14 @@
 //   turn) and loco.pitch() (forward lean at a run).
 //
 // The forward lean also leads a start (more while there is speed to gain), leans back into a stop,
-// bobs forward as the stop comes to a stand, tucks in the air and dips into a landing; the head
-// keeps level against all of it. At a run the elbows are held bent (elbowHold()).
+// bobs forward as the stop comes to a stand, tucks in the air and dips into a landing (both on top of
+// the gait's lean at the speed, the dip easing out from touchdown even once the body has gone back to
+// its gait); the head keeps level against all of it. At a run the elbows are held bent (elbowHold()).
 //
 // On the ground it plays idle or a blend of the gaits it has (walk, run, sprint). The speed picks
-// the blend: between two adjacent gaits' ground speeds it mixes them linearly, below the slowest it
-// plays that one alone, above the fastest that one. The gaits share one foot phase (0 at a left
+// the blend: between two adjacent gaits it mixes them linearly from the slower one's ground speed up
+// to gaitBand short of the faster one's, where that one plays alone; below the slowest it plays that
+// one alone, above the fastest that one. The gaits share one foot phase (0 at a left
 // plant), advanced at the rate that makes the blended planted foot move exactly as fast as the
 // capsule: every gait plays at the point in its loop where the same foot is in the same place in
 // its stride, so the blend never slides, whatever the speed. A jump plays the jump start, then the
@@ -56,8 +58,8 @@
 // The air pose (LocoClip::AirPose), when the body has one: a pose held over the limbs in the air,
 // since the mocap jumps fling the arms wide and leave the legs hanging. limbs() gives the arms' and
 // legs' weights over whatever the layers blend, sampled at the clip's end. Both ease in at take-off;
-// at touchdown the legs ease out into the landing's crouch, the arms once the landing has played
-// landArms (its first moments throw the arms out too).
+// at touchdown the legs ease out into the landing's crouch, the arms landArms after it (the landing's
+// first moments throw the arms out too), even when a moving body has gone back to its gait sooner.
 //
 // Speeds are cm/s, times seconds, angles degrees. turnRate is the body's yaw rate, positive one way
 // (the caller's); lean() and twist() have its sign.
@@ -208,6 +210,9 @@ struct LocoTuning {
                                 // to the last one: trimming down adds to the forward slip of the plants, trimming up takes from it
     float gaitDeadBand = 0.03f; // a gait with less of the mix than this drops out, the nearer gait playing alone (the
                                 // blend steps by this much in a frame where it crosses)
+    float gaitBand = 0.12f;     // the faster of two gaits plays alone from this share short of its own ground speed (a
+                                // little slowed: the stride rate follows the speed); the MetaHuman bodies' run (483-489)
+                                // would hold 13% walk at the 450 jog, which takes from its arm pump and knee lift
     float leanPerTurn = 0.035f; // roll per deg/s of turning, at the run's ground speed (less when slower)
     float maxLean = 14.f;
     float twistPerTurn = 0.05f; // upper body yaw per deg/s of turning
@@ -220,9 +225,9 @@ struct LocoTuning {
     float brakePitch = -4.f;    // ...and lean back while braking, on top of the gait's lean, by how hard it slows: all of it at
     float brakeDecel = 1030.f;  // this deceleration (cm/s^2: the lead's mean stopping a run, 400 to a stand in 0.39 s)...
     float brakeSmooth = 0.1f;   // ...smoothed over this long (s): the GASP stops lurch forward mid-stop, and this holds them back
-    float airPitch = 6.f;       // forward tuck in the air
-    float landPitch = 10.f;     // forward dip into a landing...
-    float landDip = 0.3f;       // ...easing out over this long
+    float airPitch = 6.f;       // forward tuck in the air, on top of the gait's lean at the speed
+    float landPitch = 10.f;     // forward dip into a landing, on top of it too...
+    float landDip = 0.3f;       // ...easing out over this long from touchdown (on past a moving body's landHoldMoving)
     float elbowHold = 1.f;      // at a run the elbows bend at least elbowBend, by this weight (none at the walk)
     float elbowBend = 90.f;
     float bodyResponse = 10.f;  // how fast lean, twist and pitch follow (1/s)
@@ -252,16 +257,17 @@ struct LocoTuning {
     float minWarp = 0.7f;       // a turn's yaw scales to the angle asked for, within this range
     float maxWarp = 1.3f;
     float limbFade = 0.05f;     // the air pose's ease in and out (95% in three)
-    float landArms = 0.5f;      // the arms keep the air pose this far into a landing
+    float landArms = 0.5f;      // the arms keep the air pose this long from a landing's touchdown
     float crouchFade = 0.2f;    // moving: the gaits ease between standing and the crouch walk (time constant)
     float crouchSettle = 0.15f; // getting down or up hands over to the idle this long before its end
 };
 
 // A party follower's brake lean and gaits. The party trail brings it to a stand more gently than the lead's
 // movement component (485 cm/s^2 on average, about 0.95 s from a run), so all of its lean comes at its own rate;
-// and its stop clip leans back less than the lead's on its own, so the lean tops it up by more. Below its own run
-// speed it holds a few percent of walk under the run, which slips the planted foot mid-stance: a wider dead band
-// drops it, and the stride rate (the lead's stride against its own, plus the phase trim; up to 3%) keeps step instead.
+// and its stop clip leans back less than the lead's on its own, so the lean tops it up by more. Just below where its
+// run plays alone (gaitBand) it would hold a few percent of walk under the run, which slips the planted foot
+// mid-stance: a wider dead band drops it, and the stride rate (the lead's stride against its own, plus the phase
+// trim; up to 3%) keeps step instead.
 inline void tuneForFollower(LocoTuning& t) {
     t.brakeDecel = 485.f;
     t.brakePitch = -12.f;
@@ -441,7 +447,7 @@ private:
     float trim_ = 0.f; // a follower's stride rate trim this frame
     float strideLength_ = 0.f;
     float airTime_ = 0.f;
-    float landTime_ = 0.f;
+    float landTime_ = -1.f; // since a landing touched down, on through the hand-back to the gaits (below 0: none)
     float groundTime_ = 0.f; // seconds in Ground since a start, a turn or a landing
     float lean_ = 0.f;
     float twist_ = 0.f;

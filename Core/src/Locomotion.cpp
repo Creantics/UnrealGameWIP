@@ -10,7 +10,6 @@ namespace {
 constexpr float kDegToRad = 3.14159265f / 180.f;
 constexpr LocoClip kGaits[] = {LocoClip::Walk, LocoClip::Run, LocoClip::Sprint, LocoClip::CrouchWalk};
 constexpr LocoClip kStandGaits[] = {LocoClip::Walk, LocoClip::Run, LocoClip::Sprint};
-// Gait mixes nearer than this to either end play the nearer gait alone.
 
 float frac(float x) { return x - std::floor(x); }
 
@@ -302,7 +301,8 @@ void Locomotion::reset() {
     target_ = gait_ = LocoClip::Idle;
     share_.fill(0.f);
     stride_.fill(0);
-    fade_ = phase_ = airTime_ = landTime_ = groundTime_ = 0.f;
+    fade_ = phase_ = airTime_ = groundTime_ = 0.f;
+    landTime_ = -1.f;
     lean_ = twist_ = pitch_ = 0.f;
     headPitch_ = headRoll_ = headYaw_ = 0.f;
     elbowHold_ = decel_ = lastSpeed_ = 0.f;
@@ -348,9 +348,11 @@ void Locomotion::splitGaits(float speed) {
         share_[index(order[k])] = stand;
         return;
     }
-    // A gait with only a few percent of the mix plays at a rate far from its own and slides the planted
-    // foot; near either end the nearer gait plays alone.
-    float t = (speed - lo) / (clip(order[k + 1]).groundSpeed - lo);
+    // The faster gait plays alone from gaitBand short of its own speed; the two mix from the slower one's up
+    // to there. A gait with only a few percent of the mix plays at a rate far from its own and slides the
+    // planted foot; near either end the nearer gait plays alone.
+    const float hi = std::max((1.f - tuning_.gaitBand) * clip(order[k + 1]).groundSpeed, lo);
+    float t = speed >= hi ? 1.f : (speed - lo) / (hi - lo);
     t = t < tuning_.gaitDeadBand ? 0.f : t > 1.f - tuning_.gaitDeadBand ? 1.f : t;
     share_[index(order[k])] = (1.f - t) * stand;
     share_[index(order[k + 1])] = t * stand;
@@ -757,6 +759,7 @@ void Locomotion::update(const LocoInput& in) {
     if (in.falling) {
         airTime_ += dt;
     }
+    if (landTime_ >= 0.f) landTime_ += dt;
     const bool jumped = in.falling && in.verticalSpeed > 0.f;
     const bool offGround = in.falling && (jumped || airTime_ > tuning_.airGrace);
     const bool moving = speed >= tuning_.movingAir;
@@ -771,7 +774,6 @@ void Locomotion::update(const LocoInput& in) {
             jump_ = moving && has(LocoClip::JumpMoving) ? LocoClip::JumpMoving : LocoClip::JumpStart;
             state_ = jumped && has(jump_) ? LocoState::Rising : LocoState::Falling;
         } else if (state_ == LocoState::Landing) {
-            landTime_ += dt;
             if ((speed >= tuning_.moveStart && landTime_ >= tuning_.landHoldMoving) || landTime_ >= 0.9f * clip(land_).length) {
                 state_ = LocoState::Ground;
             }
@@ -784,7 +786,7 @@ void Locomotion::update(const LocoInput& in) {
             land_ = moving ? LocoClip::LandMoving : LocoClip::Land;
             const bool hard = airTime_ >= tuning_.landMinAir && has(land_);
             state_ = hard ? LocoState::Landing : LocoState::Ground;
-            landTime_ = 0.f;
+            landTime_ = hard ? 0.f : -1.f;
         } else if (state_ == LocoState::Rising) {
             if (time(jump_) >= 0.85f * clip(jump_).length) state_ = LocoState::Falling;
         }
@@ -832,9 +834,10 @@ void Locomotion::update(const LocoInput& in) {
     advance(dt, speed, in.leadPhase, in.leadStride);
     if (state_ == LocoState::Turning) turnTo_ = time_[index(move_)];
 
-    // The air pose over the limbs: in the air, and for the arms into the landing.
+    // The air pose over the limbs: in the air, and for the arms into the landing (on past a moving body's
+    // hand-back to its gait).
     const bool air = state_ == LocoState::Rising || state_ == LocoState::Falling;
-    const bool arms = air || (state_ == LocoState::Landing && landTime_ < tuning_.landArms);
+    const bool arms = air || (landTime_ >= 0.f && landTime_ < tuning_.landArms);
     const bool posed = has(LocoClip::AirPose);
     const float limbFollow = posed ? follow(dt, tuning_.limbFade) : 1.f;
     limbs_.arms += ((posed && arms ? 1.f : 0.f) - limbs_.arms) * limbFollow;
@@ -865,7 +868,9 @@ void Locomotion::update(const LocoInput& in) {
     const float stand = 1.f - crouch_;
     const float runShare = runSpeed > walkSpeed ? stand * clampf((speed - walkSpeed) / (runSpeed - walkSpeed), 0.f, 1.f) : 0.f;
     const float sprintShare = topSpeed > runSpeed ? stand * clampf((speed - runSpeed) / (topSpeed - runSpeed), 0.f, 1.f) : 0.f;
-    float pitchTo = ground ? tuning_.runPitch * runShare + tuning_.sprintPitch * sprintShare : 0.f;
+    // The gait's lean at the speed, in the air and landing too: the tuck and the dip add to it, so a running
+    // jump keeps the run's lean under them and the dip eases out into it.
+    float pitchTo = tuning_.runPitch * runShare + tuning_.sprintPitch * sprintShare;
     // Starts lean into the speed still to gain, and stops lean back by how hard they slow, on top of
     // the gait's lean.
     // Only over time that passes: a character with root motion poses twice a frame, the second time with no
@@ -878,9 +883,8 @@ void Locomotion::update(const LocoInput& in) {
         if (braking) pitchTo += tuning_.brakePitch * clampf(decel_ / std::max(tuning_.brakeDecel, 1.f), 0.f, 1.f);
         else pitchTo += tuning_.startPitch * clampf((in.wantSpeed - speed) / runSpeed, 0.f, 1.f);
     }
-    if (air) pitchTo = tuning_.airPitch;
-    if (state_ == LocoState::Landing && tuning_.landDip > 0.f && landTime_ < tuning_.landDip)
-        pitchTo = tuning_.landPitch * (1.f - landTime_ / tuning_.landDip);
+    if (air) pitchTo += tuning_.airPitch;
+    else if (landTime_ >= 0.f && landTime_ < tuning_.landDip) pitchTo += tuning_.landPitch * (1.f - landTime_ / tuning_.landDip);
     const float b = 1.f - std::exp(-dt * tuning_.bodyResponse);
     lean_ += (leanTo - lean_) * b;
     twist_ += (twistTo - twist_) * b;
