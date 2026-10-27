@@ -254,6 +254,54 @@ TEST_CASE("locomotion: landing standing still plays the landing out") {
     CHECK(l.target() == LocoClip::Idle);
 }
 
+TEST_CASE("locomotion: the air pose holds the limbs in the air, the arms into the landing") {
+    Locomotion l = makeLoco();
+    run(l, 1.f, {0.f, 330.f});
+    CHECK(l.limbs().arms == 0.f); // no air pose: nothing over the limbs
+    l.update({kDt, 330.f, 0.f, true, 500.f});
+    CHECK(l.limbs().legs == 0.f);
+
+    l.setClip(LocoClip::AirPose, {0.5f, 0.f, 1, 0.f});
+    l.reset();
+    run(l, 1.f, {0.f, 330.f});
+    CHECK(l.limbs().arms == 0.f);
+    CHECK(l.limbs().legs == 0.f);
+    // Take off: in by 0.15 s, held at the clip's end.
+    l.update({kDt, 330.f, 0.f, true, 500.f});
+    CHECK(l.limbs().legs > 0.f);
+    CHECK(l.limbs().legs < 0.5f);
+    run(l, 0.15f, {0.f, 330.f, 0.f, true, 300.f});
+    CHECK(l.limbs().arms >= 0.95f);
+    CHECK(l.limbs().legs >= 0.95f);
+    CHECK(l.limbs().time == doctest::Approx(0.5f));
+    CHECK(l.limbs().clip == LocoClip::AirPose);
+    run(l, 0.6f, {0.f, 0.f, 0.f, true, -300.f});
+
+    // Touchdown: the legs ease out into the landing, the arms hold for landArms, then ease out too.
+    l.update({kDt, 0.f, 0.f, false, 0.f});
+    CHECK(l.state() == LocoState::Landing);
+    run(l, 0.15f, {});
+    CHECK(l.limbs().legs <= 0.05f);
+    CHECK(l.limbs().arms == doctest::Approx(1.f));
+    run(l, l.tuning().landArms - 0.15f, {});
+    CHECK(l.limbs().arms > 0.5f);
+    run(l, 0.16f, {});
+    CHECK(l.limbs().arms <= 0.05f);
+    CHECK(l.limbs().legs == 0.f);
+
+    // A moving landing hands back to the run sooner: the arms ease out with it.
+    run(l, 1.f, {0.f, 700.f});
+    l.update({kDt, 700.f, 0.f, true, 520.f});
+    run(l, 0.6f, {0.f, 700.f, 0.f, true, -200.f});
+    CHECK(l.limbs().arms >= 0.95f);
+    l.update({kDt, 700.f, 0.f, false, 0.f});
+    run(l, 0.15f, {0.f, 700.f});
+    CHECK(l.limbs().legs <= 0.05f);
+    run(l, l.tuning().landArms + 0.2f, {0.f, 700.f});
+    CHECK(l.state() == LocoState::Ground);
+    CHECK(l.limbs().arms == 0.f);
+}
+
 TEST_CASE("locomotion: a step down stays on the ground clips; a short hop skips the landing") {
     Locomotion l = makeLoco();
     run(l, 0.5f, {0.f, 330.f});
@@ -1010,6 +1058,7 @@ TEST_CASE("locomotion: asked to face elsewhere when standing it turns on the spo
 
 TEST_CASE("locomotion: update does not allocate") {
     Locomotion l = makeLoco();
+    l.setClip(LocoClip::AirPose, {0.5f, 0.f, 1, 0.f});
     const auto before = ftcore_test::allocStats().count;
     for (int i = 0; i < 600; ++i) {
         const float s = static_cast<float>(i % 200) * 4.f;

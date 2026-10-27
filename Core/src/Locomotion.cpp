@@ -295,6 +295,7 @@ void Locomotion::reset() {
     turnEnter_ = turnFrom_ = turnTo_ = yawStep_ = 0.f;
     warp_ = 1.f;
     rootDriven_ = false;
+    limbs_ = {};
     layers_[0] = {LocoClip::Idle, 0.f, 1.f};
     layerCount_ = 1;
     state_ = LocoState::Ground;
@@ -757,6 +758,17 @@ void Locomotion::update(const LocoInput& in) {
     }
     advance(dt, speed);
     if (state_ == LocoState::Turning) turnTo_ = time_[index(move_)];
+
+    // The air pose over the limbs: in the air, and for the arms into the landing.
+    const bool air = state_ == LocoState::Rising || state_ == LocoState::Falling;
+    const bool arms = air || (state_ == LocoState::Landing && landTime_ < tuning_.landArms);
+    const bool posed = has(LocoClip::AirPose);
+    const float limbFollow = posed ? follow(dt, tuning_.limbFade) : 1.f;
+    limbs_.arms += ((posed && arms ? 1.f : 0.f) - limbs_.arms) * limbFollow;
+    limbs_.legs += ((posed && air ? 1.f : 0.f) - limbs_.legs) * limbFollow;
+    if (limbs_.arms < kMinWeight) limbs_.arms = 0.f;
+    if (limbs_.legs < kMinWeight) limbs_.legs = 0.f;
+    limbs_.time = clip(LocoClip::AirPose).length;
 
     // Facing: outside a turn, ease toward the way the body moves.
     yawStep_ = in.steer && state_ != LocoState::Turning && speed >= tuning_.moveStop

@@ -567,4 +567,5 @@ void AFTExploreCharacter::SetupLocomotion()
 	Anim->SetMovesFromGait(ftcore::LocoClip::Run);
 	Anim->SetMovesFromGait(ftcore::LocoClip::Sprint);
 	Anim->SetTurnsFromRun();
+	Anim->SetAirPoseFromRun();
 }

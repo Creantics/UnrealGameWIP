@@ -2,7 +2,8 @@
 
 // Anim class for a walking body: idle, walk, run, jump start, fall loop and landing clips (and the
 // moving jump and landing, and each gait's start and left- and right-foot stops), blended by
-// ftcore::Locomotion from how the owner moves. No Anim Blueprint needed.
+// ftcore::Locomotion from how the owner moves, with the air pose (LocoClip::AirPose, its last frame)
+// laid over the arms and legs in the air. No Anim Blueprint needed.
 //
 //   Mesh->SetAnimInstanceClass(UFTLocomotionAnimInstance::StaticClass());
 //   Anim->SetClip(ftcore::LocoClip::Walk, WalkSeq);   // measures the clip's gait once
@@ -83,6 +84,9 @@ struct FFTLocomotionAnimProxy : public FAnimInstanceProxy
 	// The heaviest layers past this many are dropped (only a crossfade under way has more than a few).
 	static constexpr int32 MaxLayers = 12;
 	static constexpr int32 NumSpine = 3; // spine_01..03
+	// The air pose's bones: clavicle to hand on each side, then thigh to foot on each side.
+	static constexpr int32 NumArmBones = 8;
+	static constexpr int32 NumLimbs = 14;
 
 	virtual void PreUpdate(UAnimInstance* InAnimInstance, float DeltaSeconds) override;
 	virtual bool Evaluate(FPoseContext& Output) override;
@@ -99,8 +103,12 @@ private:
 	int32 NumLayers = 0;
 	// The spine's bend this frame, in component space: one rotation shared over the spine bones.
 	FQuat SpineBend = FQuat::Identity;
+	// The air pose (Locomotion::limbs), and its weight on the arms and on the legs.
+	FLayer LimbPose;
+	float LimbWeight[2] = {0.f, 0.f};
 
 	FBoneReference Spine[NumSpine];
+	FBoneReference Limb[NumLimbs];
 	uint16 BoundSerial = 0;
 	bool bBound = false;
 };
@@ -114,9 +122,13 @@ public:
 	// Sets (or with nullptr clears) one of the clips, measuring a walk or run clip's gait.
 	void SetClip(ftcore::LocoClip Which, UAnimSequence* Clip);
 	// Sets a gait's start and stops from the clips named after its loop, where there are any: next to
-	// M_Neutral_Run_Loop_F_to_x, M_Neutral_Run_Start_F_Lfoot_to_x and M_Neutral_Run_Stop_F_Lfoot_to_x
-	// (and _Rfoot). Call after the gait's SetClip.
+	// M_Neutral_Run_Loop_F_to_x, M_Neutral_Run_Start_F_Lfoot_to_x (M_Relaxed_Run_Start_F_Lfoot_to_x
+	// first) and M_Neutral_Run_Stop_F_Lfoot_to_x (and _Rfoot). Call after the gait's SetClip.
 	void SetMovesFromGait(ftcore::LocoClip Gait);
+	// Sets the air pose from the clip named after the run loop, where there is one: next to
+	// M_Neutral_Run_Loop_F_to_x, M_Neutral_Jump_F_Off_Run_Lfoot_to_x (its last frame: arms bent
+	// forward and down, knees tucked). Call after SetClip(Run). -LocoNoAirPose leaves it out.
+	void SetAirPoseFromRun();
 	// Sets the running turns, turning starts and turns on the spot from the clips named after the run
 	// loop, where there are any: next to M_Neutral_Run_Loop_F_to_x, M_Neutral_Run_Turn_L_090_Lfoot_to_x,
 	// M_Neutral_Run_Reface_Start_F_L_090_to_x, M_Neutral_Stand_Turn_090_L_to_x and so on. Call after
@@ -172,8 +184,8 @@ private:
 	void Step(float DeltaSeconds);
 
 	UPROPERTY(Transient)
-	TObjectPtr<UAnimSequence> Clips[46];
-	static_assert(ftcore::kLocoClipCount == 46, "Clips[] holds one per LocoClip");
+	TObjectPtr<UAnimSequence> Clips[47];
+	static_assert(ftcore::kLocoClipCount == 47, "Clips[] holds one per LocoClip");
 
 	ftcore::Locomotion Loco;
 	// The actor's forward in the mesh component's space, for the spine bend.

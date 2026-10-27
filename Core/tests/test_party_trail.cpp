@@ -297,7 +297,7 @@ TEST_CASE("party slot: through a corner it goes no faster than the lead went the
     CHECK(worst <= 0.05f);
 }
 
-TEST_CASE("party slot: where the path doubles back past the lead, it waits") {
+TEST_CASE("party slot: where the path doubles back past the lead, it holds its place") {
     Lead l;
     for (int i = 0; i < 120; ++i) l.step(0.f, 3.f);
     // A tight hairpin to the left, then the lead stands just beside the way it came.
@@ -313,11 +313,35 @@ TEST_CASE("party slot: where the path doubles back past the lead, it waits") {
         l.step(180.f, 0.f);
         const float d = dist(l.slot.position(), l.pos);
         // Within minGap it may only hold or move away.
-        if (d < l.slot.tuning().minGap) CHECK(d >= dist(last, l.pos) - 1e-3f);
+        if (d < l.slot.tuning().minGap - 1e-3f) CHECK(d >= dist(last, l.pos) - 1e-3f);
         closest = std::min(closest, d);
         last = l.slot.position();
     }
-    CHECK(closest > 0.3f);
+    CHECK(closest >= l.slot.tuning().minGap - 1e-3f);
+}
+
+TEST_CASE("party slot: a lead running back past it pushes it aside without stopping it") {
+    Lead l;
+    for (int i = 0; i < 240; ++i) l.step(0.f, 4.5f);
+    // A 135-degree turn in a third of a second, then on: the lead sweeps back along the follower's side.
+    float heading = 0.f, closest = 1e9f, slowest = 1e9f;
+    for (int i = 0; i < 20; ++i) {
+        heading += 135.f / 20.f;
+        l.step(heading, 4.5f);
+        closest = std::min(closest, dist(l.slot.position(), l.pos));
+        slowest = std::min(slowest, l.slot.speed());
+    }
+    for (int i = 0; i < 60; ++i) {
+        l.step(heading, 4.5f);
+        closest = std::min(closest, dist(l.slot.position(), l.pos));
+        slowest = std::min(slowest, l.slot.speed());
+    }
+    CHECK(closest >= l.slot.tuning().minGap - 1e-3f);
+    CHECK(slowest > 1.f); // it never stands to wait
+    // And it goes on along the path after the lead, at its pace.
+    for (int i = 0; i < 180; ++i) l.step(heading, 4.5f);
+    CHECK(l.slot.speed() == doctest::Approx(4.5f).epsilon(0.05));
+    CHECK(l.slot.arc() <= l.slot.tuning().spacing + l.slot.tuning().slack + 0.1f);
 }
 
 TEST_CASE("party trail allocates nothing") {

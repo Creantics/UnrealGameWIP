@@ -210,14 +210,27 @@ void PartySlot::step(const PartyTrail& trail, float leadSpeed, float dt) {
     const Vec2 off{offset_.x + (want0.x - offset_.x) * ease, offset_.y + (want0.y - offset_.y) * ease};
     const Vec2 base = trail.pointBehind(nextArc);
     Vec2 pos{base.x + off.x, base.y + off.y};
-    // Where the path doubles back past the lead, it waits rather than walk into it.
+    // Where the path doubles back past the lead, it holds its place on the path rather than walk
+    // into it, keeping its speed to carry on as the path clears...
     const float gapNow = distance(pos_, lead), gapNext = distance(pos, lead);
     if (gapNext < k.minGap && gapNext < gapNow && next > at_) {
         next = at_;
         nextArc = odo - next;
-        speed_ = 0.f;
         const Vec2 stay = trail.pointBehind(nextArc);
         pos = {stay.x + off.x, stay.y + off.y};
+    }
+    // ...and a lead coming back past it pushes it aside, minGap away.
+    const float gap = distance(pos, lead);
+    if (gap < k.minGap) {
+        Vec2 away{pos.x - lead.x, pos.y - lead.y};
+        float len = gap;
+        if (len < 1e-4f) {
+            // Right on the lead: back along the path.
+            const Vec2 behind = trail.pointBehind(k.minArc);
+            away = {behind.x - lead.x, behind.y - lead.y};
+            len = distance(behind, lead);
+        }
+        if (len >= 1e-4f) pos = {lead.x + away.x / len * k.minGap, lead.y + away.y / len * k.minGap};
     }
     at_ = next;
     arc_ = nextArc;

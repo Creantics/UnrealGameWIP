@@ -43,6 +43,12 @@
 // the distance the body has come, and the caller turns the body by turnYaw. A follower replays a
 // running turn with LocoInput::turnBy.
 //
+// The air pose (LocoClip::AirPose), when the body has one: a pose held over the limbs in the air,
+// since the mocap jumps fling the arms wide and leave the legs hanging. limbs() gives the arms' and
+// legs' weights over whatever the layers blend, sampled at the clip's end. Both ease in at take-off;
+// at touchdown the legs ease out into the landing's crouch, the arms once the landing has played
+// landArms (its first moments throw the arms out too).
+//
 // Speeds are cm/s, times seconds, angles degrees. turnRate is the body's yaw rate, positive one way
 // (the caller's); lean() and twist() have its sign.
 
@@ -68,6 +74,7 @@ enum class LocoClip : std::uint8_t {
     RefaceLeft90, RefaceLeft180, RefaceRight90, RefaceRight180,
     StandTurnLeft45, StandTurnLeft90, StandTurnLeft135, StandTurnLeft180,
     StandTurnRight45, StandTurnRight90, StandTurnRight135, StandTurnRight180,
+    AirPose,
     Count
 };
 inline constexpr std::size_t kLocoClipCount = static_cast<std::size_t>(LocoClip::Count);
@@ -196,6 +203,8 @@ struct LocoTuning {
     float turnRateMax = 1.4f;
     float minWarp = 0.7f;       // a turn's yaw scales to the angle asked for, within this range
     float maxWarp = 1.3f;
+    float limbFade = 0.05f;     // the air pose's ease in and out (95% in three)
+    float landArms = 0.5f;      // the arms keep the air pose this far into a landing
 };
 
 struct LocoInput {
@@ -228,6 +237,15 @@ struct LocoLayer {
     LocoClip clip = LocoClip::Idle;
     float time = 0.f;
     float weight = 0.f;
+};
+
+// A pose laid over the limbs after the layers blend: each arm (upper arm, forearm, hand) and each
+// leg (thigh, calf, foot) turned toward the clip's pose by its weight.
+struct LocoLimbs {
+    LocoClip clip = LocoClip::AirPose;
+    float time = 0.f;
+    float arms = 0.f;
+    float legs = 0.f;
 };
 
 class Locomotion {
@@ -280,6 +298,7 @@ public:
     float lean() const { return lean_; }
     float twist() const { return twist_; }
     float pitch() const { return pitch_; }
+    const LocoLimbs& limbs() const { return limbs_; }
 
 private:
     static constexpr std::size_t index(LocoClip c) { return static_cast<std::size_t>(c); }
@@ -331,6 +350,7 @@ private:
     float lean_ = 0.f;
     float twist_ = 0.f;
     float pitch_ = 0.f;
+    LocoLimbs limbs_;
 };
 
 } // namespace ftcore

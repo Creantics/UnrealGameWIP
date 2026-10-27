@@ -21,7 +21,9 @@
 // PartySlot is one follower's place in the party, moving along the trail on its own: it keeps about
 // `spacing` behind the lead and `side` metres to one side of the path, reacts to the lead's starts
 // and stops a beat late (and with the lead's acceleration), goes no faster through a stretch than
-// the lead did there (plus a bounded catch-up), and never comes nearer the lead than `minGap`.
+// the lead did there (plus a bounded catch-up), and never comes nearer the lead than `minGap`: where
+// the path doubles back past the lead it holds its place on the path, and a lead coming back past
+// it pushes it aside, without either stopping it.
 
 #include "ftcore/Api.h"
 #include "ftcore/Explore.h"

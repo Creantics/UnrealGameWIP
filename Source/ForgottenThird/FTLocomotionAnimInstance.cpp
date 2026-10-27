@@ -16,6 +16,11 @@
 namespace
 {
 const TCHAR* const SpineNames[FFTLocomotionAnimProxy::NumSpine] = {TEXT("spine_01"), TEXT("spine_02"), TEXT("spine_03")};
+// The bones the air pose turns: the arms (from the clavicles) first, then the legs.
+const TCHAR* const LimbNames[FFTLocomotionAnimProxy::NumLimbs] = {
+	TEXT("clavicle_l"), TEXT("upperarm_l"), TEXT("lowerarm_l"), TEXT("hand_l"),
+	TEXT("clavicle_r"), TEXT("upperarm_r"), TEXT("lowerarm_r"), TEXT("hand_r"),
+	TEXT("thigh_l"), TEXT("calf_l"), TEXT("foot_l"), TEXT("thigh_r"), TEXT("calf_r"), TEXT("foot_r")};
 
 // A turn clip's side ("L" or "R"), angle and, for a running turn, foot.
 struct FTurnParts
@@ -64,13 +69,14 @@ const TCHAR* ClipName(ftcore::LocoClip C)
 	case ftcore::LocoClip::RunStopRight: return TEXT("run stop R");
 	case ftcore::LocoClip::SprintStopLeft: return TEXT("sprint stop L");
 	case ftcore::LocoClip::SprintStopRight: return TEXT("sprint stop R");
+	case ftcore::LocoClip::AirPose: return TEXT("air pose");
 	default: break;
 	}
 	// The turns, named once: "run turn L90 Rfoot", "reface R180", "stand turn L45".
 	static const TArray<FString> Turns = []
 	{
 		TArray<FString> Names;
-		for (int32 I = static_cast<int32>(ftcore::LocoClip::RunTurnLeft45L); I < static_cast<int32>(ftcore::LocoClip::Count); ++I)
+		for (int32 I = static_cast<int32>(ftcore::LocoClip::RunTurnLeft45L); I <= static_cast<int32>(ftcore::LocoClip::StandTurnRight180); ++I)
 		{
 			const ftcore::LocoClip Clip = static_cast<ftcore::LocoClip>(I);
 			const FTurnParts T = TurnParts(Clip);
@@ -211,7 +217,14 @@ void UFTLocomotionAnimInstance::SetMovesFromGait(ftcore::LocoClip Gait)
 		UAnimSequence* Clip = nullptr;
 		if (Path.Contains(TEXT("_Loop_F")))
 		{
-			const FString MovePath = Path.Replace(TEXT("_Loop_F"), Name, ESearchCase::CaseSensitive);
+			FString MovePath = Path.Replace(TEXT("_Loop_F"), Name, ESearchCase::CaseSensitive);
+			// A start prefers the relaxed set's where there is one: the neutral run start flings its arms
+			// back and up in a 60-degree drive.
+			const FString Relaxed = MovePath.Replace(TEXT("M_Neutral_"), TEXT("M_Relaxed_"), ESearchCase::CaseSensitive);
+			if (ftcore::isLocoStart(Which) && FPackageName::DoesPackageExist(FPackageName::ObjectPathToPackageName(Relaxed)))
+			{
+				MovePath = Relaxed;
+			}
 			if (FPackageName::DoesPackageExist(FPackageName::ObjectPathToPackageName(MovePath)))
 			{
 				Clip = LoadObject<UAnimSequence>(nullptr, *MovePath, nullptr, LOAD_NoWarn | LOAD_Quiet);
@@ -228,13 +241,34 @@ void UFTLocomotionAnimInstance::SetMovesFromGait(ftcore::LocoClip Gait)
 	Set(ftcore::locoStop(Gait, true), TEXT("_Stop_F_Rfoot"));
 }
 
+void UFTLocomotionAnimInstance::SetAirPoseFromRun()
+{
+	static const bool bNoAirPose = FParse::Param(FCommandLine::Get(), TEXT("LocoNoAirPose"));
+	const UAnimSequence* Loop = bNoAirPose ? nullptr : Clips[static_cast<int32>(ftcore::LocoClip::Run)].Get();
+	const FString Path = Loop ? Loop->GetPathName() : FString();
+	UAnimSequence* Clip = nullptr;
+	if (Path.Contains(TEXT("_Run_Loop_F")))
+	{
+		const FString PosePath = Path.Replace(TEXT("_Run_Loop_F"), TEXT("_Jump_F_Off_Run_Lfoot"), ESearchCase::CaseSensitive);
+		if (FPackageName::DoesPackageExist(FPackageName::ObjectPathToPackageName(PosePath)))
+		{
+			Clip = LoadObject<UAnimSequence>(nullptr, *PosePath, nullptr, LOAD_NoWarn | LOAD_Quiet);
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: no %s, so no air pose."), *PosePath);
+		}
+	}
+	SetClip(ftcore::LocoClip::AirPose, Clip);
+}
+
 void UFTLocomotionAnimInstance::SetTurnsFromRun()
 {
 	static const bool bNoTurns = FParse::Param(FCommandLine::Get(), TEXT("LocoNoTurns"));
 	const UAnimSequence* Loop = bNoTurns ? nullptr : Clips[static_cast<int32>(ftcore::LocoClip::Run)].Get();
 	const FString Path = Loop ? Loop->GetPathName() : FString();
 	int32 Found = 0;
-	for (int32 C = static_cast<int32>(ftcore::LocoClip::RunTurnLeft45L); C < static_cast<int32>(ftcore::LocoClip::Count); ++C)
+	for (int32 C = static_cast<int32>(ftcore::LocoClip::RunTurnLeft45L); C <= static_cast<int32>(ftcore::LocoClip::StandTurnRight180); ++C)
 	{
 		const ftcore::LocoClip Which = static_cast<ftcore::LocoClip>(C);
 		UAnimSequence* Clip = nullptr;
@@ -389,6 +423,10 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 			Layers += FString::Printf(TEXT(" | turning %s x%.2f yaw %.0f (facing %.0f, heading %.0f)"), ClipName(Loco.turnClip()), Loco.turnWarp(),
 				Loco.turnYaw(), In.yaw, In.wantYaw);
 		}
+		if (Loco.limbs().arms > 0.f || Loco.limbs().legs > 0.f)
+		{
+			Layers += FString::Printf(TEXT(" | air pose arms %.2f legs %.2f"), Loco.limbs().arms, Loco.limbs().legs);
+		}
 		UE_LOG(LogForgottenThird, Display,
 			TEXT("Locomotion %s: speed %.0f want %.0f stop in %.0f turn %.0f falling %d state %d lean %.1f twist %.1f pitch %.1f |%s"),
 			*Owner->GetName(), In.groundSpeed, In.wantSpeed, In.stopDistance, In.turnRate, In.falling ? 1 : 0, static_cast<int32>(Loco.state()),
@@ -536,6 +574,12 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 		Layers[I].Weight /= Kept;
 	}
 
+	// The air pose over the limbs.
+	const ftcore::LocoLimbs& Limbs = Loco.limbs();
+	LimbPose = {Instance->Clips[static_cast<int32>(Limbs.clip)], Limbs.time, 1.f, false};
+	LimbWeight[0] = LimbPose.Seq ? Limbs.arms : 0.f;
+	LimbWeight[1] = LimbPose.Seq ? Limbs.legs : 0.f;
+
 	// A turn driving the capsule: this frame's stretch of its root motion, its yaw scaled to the turn
 	// asked for, for the movement component to apply.
 	if (Loco.turning() && Loco.turnRootDriven() && Loco.turnTo() > Loco.turnFrom())
@@ -609,8 +653,35 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 			Spine[I].BoneName = SpineNames[I];
 			Spine[I].Initialize(Container);
 		}
+		for (int32 I = 0; I < NumLimbs; ++I)
+		{
+			Limb[I].BoneName = LimbNames[I];
+			Limb[I].Initialize(Container);
+		}
 		BoundSerial = Container.GetSerialNumber();
 		bBound = true;
+	}
+
+	// The air pose: each limb bone's local rotation turned toward the pose's by the arms' or legs' weight.
+	if (LimbPose.Seq && (LimbWeight[0] > 0.f || LimbWeight[1] > 0.f))
+	{
+		FCompactPose Pose;
+		Pose.SetBoneContainer(&Container);
+		FBlendedCurve Curve;
+		Curve.InitFrom(Output.Curve);
+		UE::Anim::FStackAttributeContainer Attributes;
+		FAnimationPoseData Data(Pose, Curve, Attributes);
+		Sample(LimbPose, Data);
+		for (int32 I = 0; I < NumLimbs; ++I)
+		{
+			const float W = LimbWeight[I < NumArmBones ? 0 : 1];
+			if (W <= 0.f || !Limb[I].IsValidToEvaluate(Container))
+			{
+				continue;
+			}
+			const FCompactPoseBoneIndex Index = Limb[I].GetCompactPoseIndex(Container);
+			Output.Pose[Index].SetRotation(FQuat::Slerp(Output.Pose[Index].GetRotation(), Pose[Index].GetRotation(), W).GetNormalized());
+		}
 	}
 	int32 Valid = 0;
 	for (const FBoneReference& B : Spine)

@@ -147,6 +147,8 @@ void LogTurn(const UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 struct FPoseAngles
 {
 	double Elbow[2] = {}, Arm[2] = {}, Knee[2] = {}, Lean = 0.0, Side = 0.0;
+	// Each hand from its shoulder in the root's frame (cm): forward, out to its own side, and up.
+	FVector Hand[2];
 	bool bValid = false;
 };
 
@@ -177,6 +179,7 @@ FPoseAngles MeasurePose(const UAnimSequence& Clip, double Share)
 	const TCHAR* Sides[2] = {TEXT("_l"), TEXT("_r")};
 	FVector Pelvis, Head;
 	bool bOk = At(TEXT("pelvis"), Pelvis) && At(TEXT("head"), Head);
+	const FTransform Root = ComponentTransform(*Model, Skeleton, 0, Key);
 	for (int32 S = 0; S < 2 && bOk; ++S)
 	{
 		FVector Upper, Lower, Hand, Thigh, Calf, Foot;
@@ -188,12 +191,14 @@ FPoseAngles MeasurePose(const UAnimSequence& Clip, double Share)
 			Pose.Elbow[S] = Bend(Upper, Lower, Hand);
 			Pose.Knee[S] = Bend(Thigh, Calf, Foot);
 			Pose.Arm[S] = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(((Lower - Upper).GetSafeNormal() | FVector::DownVector), -1.0, 1.0)));
+			// UE mannequins face +Y with their left side at +X.
+			const FVector H = Root.InverseTransformVectorNoScale(Hand - Upper);
+			Pose.Hand[S] = FVector(H.Y, S == 0 ? H.X : -H.X, H.Z);
 		}
 	}
 	if (bOk)
 	{
 		// Measured in the root's frame at that key, so a turning clip's lean stays forward.
-		const FTransform Root = ComponentTransform(*Model, Skeleton, 0, Key);
 		const FVector Up = Root.InverseTransformVectorNoScale(Head - Pelvis).GetSafeNormal();
 		Pose.Lean = FMath::RadiansToDegrees(FMath::Atan2(Up.Y, Up.Z)); // UE mannequins face +Y
 		Pose.Side = FMath::RadiansToDegrees(FMath::Atan2(Up.X, Up.Z));
@@ -203,8 +208,9 @@ FPoseAngles MeasurePose(const UAnimSequence& Clip, double Share)
 }
 
 // -ComparePose=<source clip>,<retargeted clip>[,<retargeted clip>...]: logs both clips' joint angles
-// at ten points through each, so a retarget that straightens the arms or legs shows as numbers.
-int32 ComparePoses(const FString& List)
+// at ten points through each (-PoseSteps=<n> for more), so a retarget that straightens the arms or legs
+// shows as numbers.
+int32 ComparePoses(const FString& List, int32 Steps)
 {
 	TArray<FString> Paths;
 	List.ParseIntoArray(Paths, TEXT(","));
@@ -219,15 +225,17 @@ int32 ComparePoses(const FString& List)
 		}
 		Clips.Add(Clip);
 	}
-	for (int32 I = 0; I <= 10; ++I)
+	Steps = FMath::Max(Steps, 1);
+	for (int32 I = 0; I <= Steps; ++I)
 	{
 		for (const UAnimSequence* Clip : Clips)
 		{
-			const FPoseAngles P = MeasurePose(*Clip, I / 10.0);
+			const double Share = static_cast<double>(I) / Steps;
+			const FPoseAngles P = MeasurePose(*Clip, Share);
 			UE_LOG(LogForgottenThird, Display,
-				TEXT("FTBuildRig: pose %.1f %-48s elbow %5.0f %5.0f  arm %5.0f %5.0f  knee %5.0f %5.0f  lean %5.0f side %5.0f%s"), I / 10.0,
-				*Clip->GetName(), P.Elbow[0], P.Elbow[1], P.Arm[0], P.Arm[1], P.Knee[0], P.Knee[1], P.Lean, P.Side,
-				P.bValid ? TEXT("") : TEXT(" (missing bones)"));
+				TEXT("FTBuildRig: pose %.3f %-48s elbow %5.0f %5.0f  arm %5.0f %5.0f  knee %5.0f %5.0f  lean %5.0f side %5.0f  hand L %4.0f %4.0f %4.0f  R %4.0f %4.0f %4.0f%s"),
+				Share, *Clip->GetName(), P.Elbow[0], P.Elbow[1], P.Arm[0], P.Arm[1], P.Knee[0], P.Knee[1], P.Lean, P.Side,
+				P.Hand[0].X, P.Hand[0].Y, P.Hand[0].Z, P.Hand[1].X, P.Hand[1].Y, P.Hand[1].Z, P.bValid ? TEXT("") : TEXT(" (missing bones)"));
 		}
 	}
 	return 0;
@@ -626,7 +634,9 @@ int32 UFTBuildRigCommandlet::Main(const FString& Params)
 	FString CompareList;
 	if (FParse::Value(*Params, TEXT("ComparePose="), CompareList, false))
 	{
-		return ComparePoses(CompareList);
+		int32 Steps = 10;
+		FParse::Value(*Params, TEXT("PoseSteps="), Steps);
+		return ComparePoses(CompareList, Steps);
 	}
 	FString MeshPath =TEXT("/Game/Characters/ProofHead/proof_head/SkeletalMeshes/proof_head.proof_head");
 	FString Dest = TEXT("/Game/Characters/ProofHead/Rig");

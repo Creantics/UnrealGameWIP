@@ -85,6 +85,7 @@ bool AFTPartyFollower::Setup(const FString& Name, const AActor* Lead)
 	Anim->SetMovesFromGait(ftcore::LocoClip::Run);
 	Anim->SetMovesFromGait(ftcore::LocoClip::Sprint);
 	Anim->SetTurnsFromRun();
+	Anim->SetAirPoseFromRun();
 	return true;
 }
 
