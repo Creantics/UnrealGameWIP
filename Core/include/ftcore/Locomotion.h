@@ -184,10 +184,11 @@ struct LocoTuning {
     float maxLandRate = 2.f;
     float maxRate = 3.f;        // gait rate cap
     float phaseGain = 0.4f;     // a follower's stride rate trim per stride of phase error (LocoInput::leadPhase)...
-    float phaseTrim = 0.02f;    // ...at most this share either way (the feet slip by speed x trim)
+    float phaseTrim = 0.03f;    // ...at most this share either way (the feet slip by speed x trim; Duy's run stride is 2.6% over the Third's)
     float phaseUpBias = 1.5f;   // it steps faster to the next quarter stride unless that is this many times further than slowing
                                 // to the last one: trimming down adds to the forward slip of the plants, trimming up takes from it
-    float gaitDeadBand = 0.03f; // a gait with less of the mix than this drops out, the nearer gait playing alone
+    float gaitDeadBand = 0.03f; // a gait with less of the mix than this drops out, the nearer gait playing alone (the
+                                // blend steps by this much in a frame where it crosses)
     float leanPerTurn = 0.035f; // roll per deg/s of turning, at the run's ground speed (less when slower)
     float maxLean = 14.f;
     float twistPerTurn = 0.05f; // upper body yaw per deg/s of turning
@@ -235,12 +236,15 @@ struct LocoTuning {
     float landArms = 0.5f;      // the arms keep the air pose this far into a landing
 };
 
-// A party follower's brake lean. The party trail brings it to a stand more gently than the lead's movement
-// component (485 cm/s^2 on average, about 0.95 s from a run), so all of its lean comes at its own rate; and
-// its stop clip leans back less than the lead's on its own, so the lean tops it up by more.
+// A party follower's brake lean and gaits. The party trail brings it to a stand more gently than the lead's
+// movement component (485 cm/s^2 on average, about 0.95 s from a run), so all of its lean comes at its own rate;
+// and its stop clip leans back less than the lead's on its own, so the lean tops it up by more. Below its own run
+// speed it holds a few percent of walk under the run, which slips the planted foot mid-stance: a wider dead band
+// drops it, and the phase trim (up to 3%) matches its stride to the lead's instead.
 inline void tuneForFollower(LocoTuning& t) {
     t.brakeDecel = 485.f;
-    t.brakePitch = -12.f;
+    t.brakePitch = -13.f;
+    t.gaitDeadBand = 0.08f;
 }
 
 struct LocoInput {

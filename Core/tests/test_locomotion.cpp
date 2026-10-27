@@ -1401,13 +1401,13 @@ TEST_CASE("locomotion: a follower steps faster to the next quarter stride unless
     CHECK(trimAt(0.45f) < 0.f);
 }
 
-TEST_CASE("locomotion: a wider gait dead band drops a few percent of walk at a run") {
+TEST_CASE("locomotion: a follower's wider gait dead band drops a few percent of walk at a run") {
     // makeLoco's walk is 298 cm/s and its run 509: at 500 the walk holds about 4% of the mix.
     Locomotion narrow = makeLoco();
     run(narrow, 2.f, {0.f, 500.f});
     CHECK(narrow.weight(LocoClip::Walk) > 0.03f);
     Locomotion wide = makeLoco();
-    wide.tuning().gaitDeadBand = 0.05f;
+    tuneForFollower(wide.tuning());
     run(wide, 2.f, {0.f, 500.f});
     CHECK(wide.weight(LocoClip::Walk) == 0.f);
     CHECK(wide.weight(LocoClip::Run) == doctest::Approx(gaitWeight(wide)));

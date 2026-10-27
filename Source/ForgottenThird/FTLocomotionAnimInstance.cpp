@@ -343,8 +343,10 @@ void UFTLocomotionAnimInstance::NativeInitializeAnimation()
 	FParse::Value(FCommandLine::Get(), *FString::Printf(TEXT("Loco%sBrakePitch="), Body), Loco.tuning().brakePitch);
 	FParse::Value(FCommandLine::Get(), TEXT("LocoBrakeDecel="), Loco.tuning().brakeDecel);
 	FParse::Value(FCommandLine::Get(), *FString::Printf(TEXT("Loco%sBrakeDecel="), Body), Loco.tuning().brakeDecel);
-	// -LocoGaitDeadBand=<share> drops a gait with less of the mix than this (a follower at the run holds ~6% walk).
+	// -LocoGaitDeadBand=<share> drops a gait with less of the mix than this (lead 0.03, followers 0.08: at 0.03 Duy holds ~6% walk at the run).
 	FParse::Value(FCommandLine::Get(), TEXT("LocoGaitDeadBand="), Loco.tuning().gaitDeadBand);
+	// -LocoPhaseTrim=<share> caps how far a follower's stride rate bends to keep its step off the lead's.
+	FParse::Value(FCommandLine::Get(), TEXT("LocoPhaseTrim="), Loco.tuning().phaseTrim);
 	if (FParse::Param(FCommandLine::Get(), TEXT("LocoSlide")))
 	{
 		// The probe reads bone positions, which an unrendered mesh (-NullRHI) otherwise leaves stale.
