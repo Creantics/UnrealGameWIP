@@ -34,6 +34,7 @@
 #include "Animation/BoneReference.h"
 
 #include "ftcore/Locomotion.h"
+#include "ftcore/Traversal.h"
 
 #include "FTLocomotionAnimInstance.generated.h"
 
@@ -156,6 +157,22 @@ public:
 	// M_Neutral_Transition_Stand_to_Crouch_to_x and _Crouch_to_Stand, and M_Neutral_Crouch_Idle_Turn_090_L_to_x
 	// and so on. Call after SetClip(Run). -LocoNoCrouch leaves them out.
 	void SetCrouchFromRun();
+	// Sets the traversal clips (a hurdle over a low wall, a mantle or a climb up onto a ledge, each from a stand, a
+	// walk and a run off either foot) from the clips named after the run loop, where there are any: next to
+	// M_Neutral_Run_Loop_F_to_x, M_Neutral_Traversal_Hurdle_1_0_run_F_V2_Lfoot_to_x, ..._Mantle_1_0_run_F_Lfoot_to_x,
+	// ..._Climb_Start_2_5_run_F_Lfoot_to_x and so on, each measured into GetTraversal() (index = TraversalNames
+	// order). Call after SetClip(Run). -LocoNoTraversal leaves them out.
+	void SetTraversalFromRun();
+	const ftcore::TraversalSet& GetTraversal() const { return Traversal; }
+	// Plays traversal clip Clip (a TraversalPlan's) at clip time Time over the locomotion, fading in over its first
+	// moments and out by its end; the owner moves the body along TraversalSet::rootAt and calls this every frame,
+	// then with Clip -1 once the clip is over. The clip's root is held like the locomotion's: the owner carries it.
+	void SetTraversal(int32 Clip, float Time)
+	{
+		TravElapsed = Clip == TravClip ? TravElapsed : 0.f;
+		TravClip = Clip;
+		TravTime = Time;
+	}
 	// The owner standing still turns on the spot to face Yaw (degrees, world) while bFace holds.
 	void SetFace(bool bFace, float Yaw)
 	{
@@ -222,6 +239,15 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> Clips[59];
 	static_assert(ftcore::kLocoClipCount == 59, "Clips[] holds one per LocoClip");
+	static constexpr int32 NumTraversalClips = 18;
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> TraversalClips[NumTraversalClips];
+	ftcore::TraversalSet Traversal;
+	// The traversal playing (-1 none), its clip time, how long it has played and its weight over the locomotion.
+	int32 TravClip = -1;
+	float TravTime = 0.f;
+	float TravElapsed = 0.f;
+	float TravWeight = 0.f;
 
 	ftcore::Locomotion Loco;
 	// The actor's forward in the mesh component's space, for the spine bend.

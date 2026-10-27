@@ -10,6 +10,9 @@
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
+#include "Components/StaticMeshComponent.h"
 #include "HAL/PlatformMisc.h"
 #include "TimerManager.h"
 #include "Engine/Engine.h"
@@ -40,6 +43,17 @@ constexpr float kRecentreSpeed = 50.f; // cm/s: slower counts as standing
 constexpr float kSideHold = 1.f;       // -LocoSideView holds the side camera this long (s) after a turn
 constexpr float kArm = 400.f;          // the camera's distance behind the body
 constexpr float kSideArm = 450.f;      // and, filming a follower's turn, behind the point between it and the lead (plus their gap)
+// Traversal probes (cm): the forward traces' heights above the feet and their reach (past the run clips'
+// lead), the down trace's start above the feet, the step along the top, how far a top may stray from level
+// and still be the same top, the gap past a thin top where the far floor is looked for, and how squarely
+// (the cosine) a face must face the body.
+constexpr float kProbeHeights[] = {45.f, 95.f};
+constexpr float kProbeReach = 560.f;
+constexpr float kProbeTop = 360.f;
+constexpr float kProbeStep = 5.f;
+constexpr float kTopTolerance = 15.f;
+constexpr float kBackGap = 50.f;
+constexpr float kProbeFacing = 0.8f;
 } // namespace
 
 AFTExploreCharacter::AFTExploreCharacter()
@@ -137,6 +151,7 @@ void AFTExploreCharacter::BeginPlay()
 		|| FParse::Param(FCommandLine::Get(), TEXT("LocoSideAlways"));
 	FParse::Value(FCommandLine::Get(), TEXT("LocoCamPitch="), SideAlwaysPitch);
 	bNoLook = FParse::Param(FCommandLine::Get(), TEXT("LocoNoLook"));
+	bCoursePending = FParse::Param(FCommandLine::Get(), TEXT("LocoVaultWall"));
 	if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait")))
 	{
 		// For checking a look: the camera holds still round the pawn, by default in front of the face. Yaw 180 is
@@ -435,13 +450,234 @@ void AFTExploreCharacter::HandleRunStart()
 
 void AFTExploreCharacter::HandleJump()
 {
-	// Crouched, jump stands the body up; standing, it jumps.
+	// Crouched, jump stands the body up; standing in front of a low wall or a ledge, it goes over or up; otherwise it jumps.
+	if (bTraversing)
+	{
+		return;
+	}
 	if (GetCharacterMovement()->bWantsToCrouch)
 	{
 		UnCrouch();
 		return;
 	}
+	if (TryTraverse(true))
+	{
+		return;
+	}
 	Jump();
+}
+
+bool AFTExploreCharacter::ProbeObstacle(const ftcore::TraversalSet& Set, ftcore::TraversalObstacle& Out) const
+{
+	const UWorld* World = GetWorld();
+	const UCapsuleComponent* Capsule = GetCapsuleComponent();
+	const FVector Fwd = GetActorForwardVector().GetSafeNormal2D();
+	const FVector Feet = GetActorLocation() - FVector(0.0, 0.0, Capsule->GetScaledCapsuleHalfHeight());
+	const FCollisionQueryParams Query(SCENE_QUERY_STAT(FTTraversal), false, this);
+	const FCollisionObjectQueryParams Static(ECC_WorldStatic);
+	auto Trace = [World, &Query, &Static](const FVector& From, const FVector& To, FHitResult& Hit)
+	{
+		return World->LineTraceSingleByObjectType(Hit, From, To, Static, Query) && !Hit.bStartPenetrating;
+	};
+	auto Level = [](const FHitResult& Hit) { return Hit.ImpactNormal.Z > 0.7; };
+
+	// The near face: the nearer hit of the forward traces on a wall facing the body.
+	FHitResult Wall;
+	bool bWall = false;
+	for (const float Height : kProbeHeights)
+	{
+		const FVector From = Feet + FVector(0.0, 0.0, Height);
+		FHitResult Hit;
+		if (Trace(From, From + Fwd * kProbeReach, Hit) && FMath::Abs(Hit.ImpactNormal.Z) < 0.3
+			&& FVector::DotProduct(-Hit.ImpactNormal.GetSafeNormal2D(), Fwd) > kProbeFacing && (!bWall || Hit.Distance < Wall.Distance))
+		{
+			Wall = Hit;
+			bWall = true;
+		}
+	}
+	if (!bWall)
+	{
+		return false;
+	}
+	const float Distance = static_cast<float>(FVector::DotProduct(Wall.ImpactPoint - Feet, Fwd));
+	// The top: down just past the face, from above the highest clip (a start inside something is too high).
+	const FVector Over = Feet + Fwd * (Distance + kProbeStep);
+	FHitResult Top;
+	if (!Trace(Over + FVector(0.0, 0.0, kProbeTop), Over, Top) || !Level(Top))
+	{
+		return false;
+	}
+	const double TopZ = Top.ImpactPoint.Z;
+	// Its depth: on along the top while it stays level, as far as standing on it needs.
+	const ftcore::TraversalTuning& Tuning = Set.tuning();
+	float Depth = 0.f;
+	for (float D = 2.f * kProbeStep; D <= Tuning.standDepth + kProbeStep; D += kProbeStep)
+	{
+		const FVector At = Feet + Fwd * (Distance + D);
+		FHitResult Hit;
+		if (!Trace(FVector(At.X, At.Y, TopZ + kTopTolerance), FVector(At.X, At.Y, TopZ - kTopTolerance), Hit))
+		{
+			break;
+		}
+		Depth = D;
+	}
+	Out = ftcore::TraversalObstacle();
+	Out.distance = Distance;
+	Out.height = static_cast<float>(TopZ - Feet.Z);
+	Out.depth = Depth;
+	if (Depth < Tuning.standDepth)
+	{
+		// Thin: the floor beyond, no lower than the deepest drop.
+		const FVector Beyond = Feet + Fwd * (Distance + Depth + kBackGap);
+		FHitResult Floor;
+		if (Trace(FVector(Beyond.X, Beyond.Y, TopZ + kTopTolerance), FVector(Beyond.X, Beyond.Y, Feet.Z - Tuning.maxDrop - 20.0), Floor) && Level(Floor))
+		{
+			Out.backFloor = true;
+			Out.backHeight = static_cast<float>(Floor.ImpactPoint.Z - Feet.Z);
+		}
+	}
+	else
+	{
+		// Deep: room on the top for the capsule.
+		const float Half = Capsule->GetScaledCapsuleHalfHeight();
+		const float Radius = Capsule->GetScaledCapsuleRadius();
+		const FVector Stand = Feet + Fwd * (Distance + Radius + kProbeStep);
+		if (World->OverlapBlockingTestByChannel(FVector(Stand.X, Stand.Y, TopZ + Half + 2.0), FQuat::Identity, ECC_Pawn,
+				FCollisionShape::MakeCapsule(Radius, Half), Query))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+bool AFTExploreCharacter::TryTraverse(bool bLog)
+{
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
+	if (bTraversing || !Anim || !Move->IsMovingOnGround() || bIsCrouched)
+	{
+		return false;
+	}
+	const ftcore::TraversalSet& Set = Anim->GetTraversal();
+	ftcore::TraversalObstacle Obstacle;
+	if (!ProbeObstacle(Set, Obstacle))
+	{
+		return false;
+	}
+	const float Speed = static_cast<float>(GetVelocity().Size2D());
+	const ftcore::TraversalPlan Plan = Set.plan(Obstacle, Speed, -1);
+	if (!Plan.ok())
+	{
+		if (bLog)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Traversal: none for a %.0f cm top %.0f cm ahead, %.0f deep (floor beyond %d at %.0f), at %.0f cm/s%s."),
+				Obstacle.height, Obstacle.distance, Obstacle.depth, Obstacle.backFloor ? 1 : 0, Obstacle.backHeight, Speed,
+				Plan.tooFar ? TEXT(": still out of reach") : TEXT(""));
+		}
+		return false;
+	}
+	bTraversing = true;
+	TravPlan = Plan;
+	TravTime = Plan.start;
+	TravFrame = FTransform(FRotator(0.0, GetActorRotation().Yaw, 0.0),
+		GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+	// Nothing moves the capsule but TickTraversal (a custom mode with no physics of its own).
+	Move->SetMovementMode(MOVE_Custom);
+	Anim->SetTraversal(Plan.clip, TravTime);
+	const ftcore::TraversalClipInfo& Clip = Set.clip(static_cast<std::size_t>(Plan.clip));
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("Traversal: clip %d (%s, edge %.0f up) from %.2f s for a %.0f cm top %.0f cm ahead, %.0f deep (floor beyond %d at %.0f), at %.0f cm/s; offsets contact (%.0f, %.0f) leave (%.0f, %.0f) land (%.0f, %.0f)."),
+		Plan.clip, Clip.move == ftcore::TraversalMove::Up ? TEXT("up") : TEXT("over"), Clip.ledgeHeight, Plan.start, Obstacle.height,
+		Obstacle.distance, Obstacle.depth, Obstacle.backFloor ? 1 : 0, Obstacle.backHeight, Speed, Plan.atContact.x, Plan.atContact.z,
+		Plan.atLeave.x, Plan.atLeave.z, Plan.atLand.x, Plan.atLand.z);
+	return true;
+}
+
+void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
+{
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
+	if (!Anim)
+	{
+		bTraversing = false;
+		Move->SetMovementMode(MOVE_Walking);
+		return;
+	}
+	const ftcore::TraversalSet& Set = Anim->GetTraversal();
+	TravTime += DeltaSeconds;
+	const float Length = Set.clip(static_cast<std::size_t>(TravPlan.clip)).length;
+	const float T = FMath::Min(TravTime, Length);
+	// The plan's root in the body's space as it began: x forward, y left (UE's Y is right), z up.
+	auto FeetAt = [&](float At)
+	{
+		const ftcore::TravPoint R = Set.rootAt(TravPlan, At);
+		return TravFrame.TransformPosition(FVector(R.x, -R.y, R.z));
+	};
+	const FVector Feet = FeetAt(T);
+	SetActorLocation(Feet + FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+	// The movement component's velocity is the path's, for the locomotion now and the walk after.
+	const float Back = FMath::Max(DeltaSeconds, 1.f / 60.f);
+	Move->Velocity = (Feet - FeetAt(FMath::Max(TravPlan.start, T - Back))) / Back;
+	if (T >= Length)
+	{
+		bTraversing = false;
+		Anim->SetTraversal(-1, 0.f);
+		Move->Velocity.Z = 0.0;
+		Move->SetMovementMode(MOVE_Walking);
+		UE_LOG(LogForgottenThird, Display, TEXT("Traversal: done at %.0f cm/s, %.0f cm from the start, %+.0f cm up."), Move->Velocity.Size2D(),
+			FVector::Dist2D(Feet, TravFrame.GetLocation()), Feet.Z - TravFrame.GetLocation().Z);
+		return;
+	}
+	Anim->SetTraversal(TravPlan.clip, T);
+}
+
+void AFTExploreCharacter::SpawnTraversalCourse()
+{
+	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	UWorld* World = GetWorld();
+	if (!Cube || !World)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Traversal course: no cube mesh; nothing built."));
+		return;
+	}
+	CourseDir = GetActorForwardVector().GetSafeNormal2D();
+	const FVector Feet = GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+	// Ahead, each on the floor found under it: a thin wall to go over, a low block to climb onto (and run off the
+	// far end), and a high block to climb.
+	struct FBlock
+	{
+		float At, Depth, Height;
+	};
+	const FBlock Blocks[] = {{700.f, 25.f, 100.f}, {1500.f, 300.f, 100.f}, {2600.f, 300.f, 240.f}};
+	const FCollisionQueryParams Query(SCENE_QUERY_STAT(FTTraversalCourse), false, this);
+	for (const FBlock& B : Blocks)
+	{
+		const FVector Centre = Feet + CourseDir * (B.At + 0.5f * B.Depth);
+		FHitResult Floor;
+		double Z = Feet.Z;
+		if (World->LineTraceSingleByObjectType(Floor, Centre + FVector(0.0, 0.0, 500.0), Centre - FVector(0.0, 0.0, 500.0),
+				FCollisionObjectQueryParams(ECC_WorldStatic), Query))
+		{
+			Z = Floor.ImpactPoint.Z;
+		}
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		AStaticMeshActor* Block = World->SpawnActor<AStaticMeshActor>(FVector(Centre.X, Centre.Y, Z + 0.5 * B.Height),
+			FRotator(0.0, CourseDir.Rotation().Yaw, 0.0), Params);
+		if (!Block)
+		{
+			continue;
+		}
+		Block->SetMobility(EComponentMobility::Movable);
+		Block->GetStaticMeshComponent()->SetStaticMesh(Cube);
+		// The cube is 100 cm a side: x along the course, y across it.
+		Block->SetActorScale3D(FVector(B.Depth / 100.0, 3.0, B.Height / 100.0));
+		UE_LOG(LogForgottenThird, Display, TEXT("Traversal course: a %.0f cm block %.0f deep, %.0f cm ahead (floor %+.0f)."), B.Height, B.Depth,
+			B.At, Z - Feet.Z);
+	}
+	GetCharacterMovement()->MaxWalkSpeed = RunSpeed;
+	bVaultCourse = true;
 }
 
 void AFTExploreCharacter::HandleCrouch()
@@ -491,7 +727,25 @@ FVector2D AFTExploreCharacter::GetFacing2D() const
 void AFTExploreCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
-	if (const UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance()))
+	// -LocoVaultWall builds the course once the body has settled where the map puts it, then runs along it,
+	// traversing what it can.
+	if (bCoursePending && GetWorld()->GetTimeSeconds() > 1.0 && GetCharacterMovement()->IsMovingOnGround())
+	{
+		bCoursePending = false;
+		SpawnTraversalCourse();
+	}
+	if (bVaultCourse && !bTraversing)
+	{
+		AddMovementInput(CourseDir, 1.f);
+		TryTraverse(false);
+	}
+	if (bTraversing)
+	{
+		TickTraversal(DeltaSeconds);
+	}
+	// A traversal holds the facing it began with.
+	const UFTLocomotionAnimInstance* Steered = bTraversing ? nullptr : Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
+	if (const UFTLocomotionAnimInstance* Anim = Steered)
 	{
 		const float Step = Anim->GetLocomotion().yawStep();
 		if (Step != 0.f)
@@ -624,6 +878,7 @@ void AFTExploreCharacter::SetupLocomotion()
 	Anim->SetTurnsFromRun();
 	Anim->SetAirPoseFromRun();
 	Anim->SetCrouchFromRun();
+	Anim->SetTraversalFromRun();
 	// The crouch walk plays at its own pace at the crouched top speed.
 	const float Crouched = Anim->GetLocomotion().clip(ftcore::LocoClip::CrouchWalk).groundSpeed;
 	if (Crouched > 0.f)

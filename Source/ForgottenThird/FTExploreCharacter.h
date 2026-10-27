@@ -17,6 +17,12 @@
 // rebuild, under [/Script/ForgottenThird.FTExploreCharacter] in Config/UserGame.ini (local, not
 // committed) or DefaultGame.ini. Pieces follow the body's pose (leader pose) and face shapes.
 //
+// Jump in front of a low wall or a ledge (UFTLocomotionAnimInstance::SetTraversalFromRun's clips) goes over it or
+// climbs onto it instead: forward and down traces find the near face, the top and its depth and the floor beyond,
+// ftcore::TraversalSet picks the clip and where to enter it, and the capsule is carried along the plan's root path
+// (no collision on the way) until the clip ends. -LocoVaultWall builds a test course ahead (a thin wall, a low
+// block, a high block) and runs at it, traversing whatever it can.
+//
 // -ExplorePortrait puts the camera in front of the face and keeps it there, for checking a look;
 // -ExplorePortraitYaw= (180 front, 90 side, 0 back), -ExplorePortraitArm=, -ExplorePortraitHeight= and
 // -ExplorePortraitPitch= move it, e.g. Arm=330 Height=0 Pitch=0 frames the whole body.
@@ -121,6 +127,12 @@ private:
 	void HandleCrouch();
 	void HandleInteract();
 	void SetupLocomotion();
+	// Traversal: finds what is ahead (false: nothing to go over or onto), starts a traversal (false: none
+	// fits; bLog says why), carries the body along one under way, and builds -LocoVaultWall's course.
+	bool ProbeObstacle(const ftcore::TraversalSet& Set, ftcore::TraversalObstacle& Out) const;
+	bool TryTraverse(bool bLog);
+	void TickTraversal(float DeltaSeconds);
+	void SpawnTraversalCourse();
 	void ApplyLookOverrides();
 	void AddPortraitLights();
 	void StepPortraitShots();
@@ -182,6 +194,15 @@ private:
 	float SideAlwaysPitch = 0.f;
 	// -LocoNoLook: look input is ignored, so a mouse passing over an unattended capture can't swing the camera.
 	bool bNoLook = false;
+	// The traversal under way: its plan, clip time, and the body's feet and facing as it began.
+	bool bTraversing = false;
+	ftcore::TraversalPlan TravPlan;
+	float TravTime = 0.f;
+	FTransform TravFrame;
+	// -LocoVaultWall: the course still to build, then its way, run along every frame, traversing whatever is ahead.
+	bool bCoursePending = false;
+	bool bVaultCourse = false;
+	FVector CourseDir = FVector::ForwardVector;
 	uint32 SideTurns = 0;
 	float SideYaw = 0.f;
 	float SideHold = 0.f;
