@@ -6,7 +6,17 @@ Private notes (character references, concept-art review, script status) are in `
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-27 morning, lead face round 2 scored):**
+- **NEWEST (2026-10-27 mid-morning, lead face round 3 scored):**
+  - Round 3 (fourth fit pass, brows and eyelashes added to every lead, one reader per criterion) scored flat at about
+    5.4/10 on all three leads. Readers called new and old "nearly identical" except where a groom slot changed. The
+    fitted vertices moved at most 2.4 mm, below what a reader sees. Round 5 scales the field ops 3-5x (up to about
+    1 cm), aimed at each lead's lowest criterion, and checks a diff image before spending readers.
+  - Groom slots: check that Eyebrows and Eyelashes are filled on every MetaHuman Character. Two leads had empty slots
+    that rendered as missing brows or lashes.
+  - Persisted look: iterating a character's look writes makeup and accents into the asset itself, so later renders
+    keep it even when the run's options omit those keys. Set the full look explicitly in each run's options.
+  - The editor was handed to the animation session for a UBT build and capture; face passes resume after.
+- **Earlier (2026-10-27 morning, lead face round 2 scored):**
   - Second-round fits and a facial-hair rebuild ran on all three leads, then a blind per-criterion reader round (one
     reader per criterion, old against new). Two leads improved; the third regressed and goes back to its first-round
     state. Eyes and brows are the weakest criterion on every lead, so the next pass is brow grooms plus eyelid shape.
