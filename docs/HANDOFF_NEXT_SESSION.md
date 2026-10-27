@@ -15,7 +15,9 @@ Private notes (character references, concept-art review, script status) are in `
     reference sheet (used as a shape target only), and in a blind per-criterion check it beat the previous MetaHuman build
     on every shape criterion. The face still needs a refinement pass. The robe continues on the MetaHuman body, after a
     proportion check against the old avatar. Details are in the private handoff.
-  - Next aspect: the blind readers for the animation gate sheets.
+  - Animation gate round 1 ran (per-criterion readers on the contact sheets, a baseline well under the bar). The fixes went to the
+    animation session: rebuilt jump, start and stop phases, a layered turn driver, a run upper body, follower spacing, and a hood
+    binding fault. Details are in the private handoff.
 - **NEWEST (2026-10-26, motion tools): SOMA-skeleton motion (NVIDIA Kimodo and MotionBricks) retargets onto the
   MetaHuman Third, headless.** It was a trial run, and nothing generated is in the repo.
   - Both tools output the 77-joint SOMA skeleton.
