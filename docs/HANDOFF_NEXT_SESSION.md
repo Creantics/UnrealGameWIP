@@ -6,7 +6,21 @@ Private notes (character references, concept-art review, script status) are in `
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-27 mid-morning, lead face round 3 scored):**
+- **NEWEST (2026-10-27 ~09:15, face round 5 regressed, round 6 queued, clothes chains scripted):**
+  - Round 5 (field ops scaled up) scored flat or worse (about 4.9-5.5/10). Cause: several field ops had their sign
+    backwards (one widened a jaw that readers wanted narrower), and look items (hair, brows, iris, skin texture) were
+    never touched. Round 6 fixes the signs, then sweeps groom/iris/skin variants on a contact sheet with one reader per
+    criterion before a full reader round. Check each op's direction on a diff image before spending readers.
+  - Field-op signs (fields_r2.py): CW/JW + = wider at cheekbone/jaw, MW + = mouth narrower, CT + = chin tip wider,
+    BU_* + = brows up, CH + = chin longer, LD + = upper lid down, ET + = outer corner up, NA + = alae narrower.
+  - One lead is finalized (body, rig, assembled, FBX export). Its clothing-sim avatars (arms out at 42 deg, plus the
+    rest pose) are exported, and the cloth chain (trousers, boots, tunic, sash, then pose to rest) is scripted. A
+    second lead's chain (slim trousers, low shoes, a new V-hem jacket script) is scripted too. Both need the cloth
+    tool run with the user present.
+  - Sequence scripts: substitute the lead with a placeholder token (`@L@`), never the bare word, or the substitution
+    also rewrites the `LEAD_DIR` key. Stopping a background shell does not kill its child `bash`; check `ps` before
+    restarting a sequence.
+- **Earlier (2026-10-27 mid-morning, lead face round 3 scored):**
   - Round 3 (fourth fit pass, brows and eyelashes added to every lead, one reader per criterion) scored flat at about
     5.4/10 on all three leads. Readers called new and old "nearly identical" except where a groom slot changed. The
     fitted vertices moved at most 2.4 mm, below what a reader sees. Round 5 scales the field ops 3-5x (up to about
