@@ -144,9 +144,11 @@ void LogTurn(const UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 // Joint angles of a clip at a share of its length, from component-space bone positions (not local
 // rotations, which depend on each rig's bone roll): elbow and knee bend (0 = straight), upper arm
 // raised from hanging down (90 = level), and the pelvis-to-head line's lean forward (+X) and sideways.
+// Also the neck_01-to-head line's lean forward, and how far the head is turned chin down from its own
+// rest (its rotation against the ref pose's, applied to the way the body faces).
 struct FPoseAngles
 {
-	double Elbow[2] = {}, Arm[2] = {}, Knee[2] = {}, Lean = 0.0, Side = 0.0;
+	double Elbow[2] = {}, Arm[2] = {}, Knee[2] = {}, Lean = 0.0, Side = 0.0, Neck = 0.0, ChinDown = 0.0;
 	// Each hand from its shoulder in the root's frame (cm): forward, out to its own side, and up.
 	FVector Hand[2];
 	bool bValid = false;
@@ -203,6 +205,21 @@ FPoseAngles MeasurePose(const UAnimSequence& Clip, double Share)
 		Pose.Lean = FMath::RadiansToDegrees(FMath::Atan2(Up.Y, Up.Z)); // UE mannequins face +Y
 		Pose.Side = FMath::RadiansToDegrees(FMath::Atan2(Up.X, Up.Z));
 		Pose.bValid = true;
+		FVector Neck;
+		const int32 HeadBone = Skeleton.FindBoneIndex(TEXT("head"));
+		if (At(TEXT("neck_01"), Neck))
+		{
+			const FVector N = Root.InverseTransformVectorNoScale(Head - Neck).GetSafeNormal();
+			Pose.Neck = FMath::RadiansToDegrees(FMath::Atan2(N.Y, N.Z));
+		}
+		FQuat RefHead = FQuat::Identity;
+		for (int32 Bone = HeadBone; Bone != INDEX_NONE; Bone = Skeleton.GetParentIndex(Bone))
+		{
+			RefHead = Skeleton.GetRefBonePose()[Bone].GetRotation() * RefHead;
+		}
+		const FQuat Turned = ComponentTransform(*Model, Skeleton, HeadBone, Key).GetRotation() * RefHead.Inverse();
+		const FVector Face = Root.InverseTransformVectorNoScale(Turned.RotateVector(FVector::YAxisVector));
+		Pose.ChinDown = FMath::RadiansToDegrees(FMath::Atan2(-Face.Z, Face.Y));
 	}
 	return Pose;
 }
@@ -233,8 +250,8 @@ int32 ComparePoses(const FString& List, int32 Steps)
 			const double Share = static_cast<double>(I) / Steps;
 			const FPoseAngles P = MeasurePose(*Clip, Share);
 			UE_LOG(LogForgottenThird, Display,
-				TEXT("FTBuildRig: pose %.3f %-48s elbow %5.0f %5.0f  arm %5.0f %5.0f  knee %5.0f %5.0f  lean %5.0f side %5.0f  hand L %4.0f %4.0f %4.0f  R %4.0f %4.0f %4.0f%s"),
-				Share, *Clip->GetName(), P.Elbow[0], P.Elbow[1], P.Arm[0], P.Arm[1], P.Knee[0], P.Knee[1], P.Lean, P.Side,
+				TEXT("FTBuildRig: pose %.3f %-48s elbow %5.0f %5.0f  arm %5.0f %5.0f  knee %5.0f %5.0f  lean %5.0f side %5.0f  neck %5.1f chin %5.1f  hand L %4.0f %4.0f %4.0f  R %4.0f %4.0f %4.0f%s"),
+				Share, *Clip->GetName(), P.Elbow[0], P.Elbow[1], P.Arm[0], P.Arm[1], P.Knee[0], P.Knee[1], P.Lean, P.Side, P.Neck, P.ChinDown,
 				P.Hand[0].X, P.Hand[0].Y, P.Hand[0].Z, P.Hand[1].X, P.Hand[1].Y, P.Hand[1].Z, P.bValid ? TEXT("") : TEXT(" (missing bones)"));
 		}
 	}
@@ -422,10 +439,12 @@ bool SaveAsset(UObject* Asset)
 // default op stack, chains mapped by exact name), then retargets each clip in Clips into
 // Dest/Retargeted and checks that every result has frames and moving tracks. With bAlignPose the
 // target gets a new retarget pose with its chains turned to the source's directions (for a T-pose
-// source onto an A-pose target). False when a chain is unmapped, a clip can't be loaded, a result
+// source onto an A-pose target). bNoAlign keeps the target's own rest pose as its retarget pose (no
+// chain turned), for comparing against the aligned result; chains named in KeepChains (Pelvis: the rig's pelvis bone)
+// are left at rest and the others aligned under them. False when a chain is unmapped, a clip can't be loaded, a result
 // is empty or a save fails.
 bool RetargetClips(UIKRigDefinition& SourceRig, UIKRigDefinition& TargetRig, USkeletalMesh& TargetMesh, const FString& Dest,
-	const TArray<FString>& Clips, bool bAlignPose)
+	const TArray<FString>& Clips, bool bAlignPose, bool bNoAlign, const TArray<FString>& KeepChains)
 {
 	USkeletalMesh* SourceMesh = SourceRig.GetPreviewMesh();
 	if (!SourceMesh || SourceMesh == &TargetMesh)
@@ -445,7 +464,7 @@ bool RetargetClips(UIKRigDefinition& SourceRig, UIKRigDefinition& TargetRig, USk
 	Retargeter->AssignIKRigToAllOps(ERetargetSourceOrTarget::Source, &SourceRig);
 	Retargeter->AssignIKRigToAllOps(ERetargetSourceOrTarget::Target, &TargetRig);
 	Retargeter->AutoMapChains(EAutoMapChainType::Exact, true);
-	if (bAlignPose)
+	if (bAlignPose && !bNoAlign)
 	{
 		const FName Pose = Retargeter->CreateRetargetPose(TEXT("AlignedToSource"), ERetargetSourceOrTarget::Target);
 		Retargeter->AutoAlignAllBones(ERetargetSourceOrTarget::Target, ERetargetAutoAlignMethod::ChainToChain);
@@ -498,7 +517,39 @@ bool RetargetClips(UIKRigDefinition& SourceRig, UIKRigDefinition& TargetRig, USk
 	}
 	// Turn the target's chains to point the way the source's do in its retarget pose. Rigs whose ref poses differ (the UEFN
 	// mannequin's against a Tripo body) otherwise swing each leg in a turned plane, and the planted feet sweep sideways.
-	Retargeter->AutoAlignAllBones(ERetargetSourceOrTarget::Target, ERetargetAutoAlignMethod::ChainToChain);
+	if (!bNoAlign)
+	{
+		Retargeter->AutoAlignAllBones(ERetargetSourceOrTarget::Target, ERetargetAutoAlignMethod::ChainToChain);
+		if (!KeepChains.IsEmpty())
+		{
+			const FReferenceSkeleton& Skeleton = TargetMesh.GetRefSkeleton();
+			TArray<FName> Kept;
+			TArray<FName> Aligned;
+			if (KeepChains.Contains(TEXT("Pelvis")))
+			{
+				Kept.Add(TargetRig.GetPelvis());
+			}
+			for (const FBoneChain& Chain : TargetRig.GetRetargetChains())
+			{
+				TArray<FName>& Bones = KeepChains.Contains(Chain.ChainName.ToString()) ? Kept : Aligned;
+				const int32 Start = Skeleton.FindBoneIndex(Chain.StartBone.BoneName);
+				for (int32 Bone = Skeleton.FindBoneIndex(Chain.EndBone.BoneName); Bone != INDEX_NONE; Bone = Skeleton.GetParentIndex(Bone))
+				{
+					Bones.Add(Skeleton.GetBoneName(Bone));
+					if (Bone == Start)
+					{
+						break;
+					}
+				}
+			}
+			// The kept bones go back to rest, which turns the chains under them; those are aligned again.
+			Retargeter->ResetRetargetPose(Retargeter->GetCurrentRetargetPoseName(ERetargetSourceOrTarget::Target), Kept,
+				ERetargetSourceOrTarget::Target);
+			Retargeter->AutoAlignBones(Aligned, ERetargetAutoAlignMethod::ChainToChain, ERetargetSourceOrTarget::Target);
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: %d bones of %s kept at rest, %d aligned."), Kept.Num(),
+				*FString::Join(KeepChains, TEXT(",")), Aligned.Num());
+		}
+	}
 
 	// The root motion op takes its roots from the rigs, and the source rig's root is the mannequin's pelvis: the target
 	// root would copy the pelvis (hip height, bob and sway) and the game, which holds the root still, would lose them.
@@ -761,7 +812,12 @@ int32 UFTBuildRigCommandlet::Main(const FString& Params)
 	FParse::Value(*Params, TEXT("Clips="), ClipList, false);
 	TArray<FString> Clips;
 	ClipList.ParseIntoArray(Clips, TEXT(","));
-	return RetargetClips(*FromRig, *RigAsset, *Mesh, Dest, Clips, FParse::Param(*Params, TEXT("AlignPose"))) ? 0 : 1;
+	FString KeepList;
+	FParse::Value(*Params, TEXT("KeepChains="), KeepList, false);
+	TArray<FString> KeepChains;
+	KeepList.ParseIntoArray(KeepChains, TEXT(","));
+	return RetargetClips(*FromRig, *RigAsset, *Mesh, Dest, Clips, FParse::Param(*Params, TEXT("AlignPose")),
+		FParse::Param(*Params, TEXT("NoAlign")), KeepChains) ? 0 : 1;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig needs an editor build."));
 	return 1;

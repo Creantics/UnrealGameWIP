@@ -23,7 +23,10 @@
 // (the capsule speed at which it plays at rate 1). It returns 1 if a target chain is
 // unmapped or a retargeted clip comes out empty. Add -AlignPose when the two rest poses differ (a
 // T-pose source onto an A-pose MetaHuman): the target gets a retarget pose with its chains turned
-// to the source's directions. Example (proof_head's rom onto test_human):
+// to the source's directions (the chains are aligned in any case; -AlignPose keeps that in its own
+// named pose). -NoAlign skips the alignment and retargets from the target's rest pose;
+// -KeepChains=Pelvis,Spine,Neck,Head aligns all but those chains (an aligned MetaHuman spine tips its chin
+// 6 degrees down). Example (proof_head's rom onto test_human):
 //
 //   -run=FTBuildRig -Mesh=/Game/Characters/TestHuman/test_human/SkeletalMeshes/test_human.test_human
 //       -Dest=/Game/Characters/TestHuman/Rig
