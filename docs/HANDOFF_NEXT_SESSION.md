@@ -6,6 +6,21 @@ Private notes (character references, concept-art review, script status) are in `
 
 ## Resume here (updated 2026-10-21, Max plan)
 
+- **NEWEST (2026-10-27, the three MetaHuman leads):**
+  - Main fa4104a: hatching is off until the shader pass; `-StyleHatch` brings it back.
+  - Face refinement runs on all three MetaHuman leads at once: measured face fields (cheek, jaw, mouth, nose, lids,
+    brows) against each concept sheet, a vertex fit, then a render and a re-measure. The fit lands about 63% of a width
+    field in render space, so the second-round fields are sized up to match. Readers wait for the second fits. Body
+    proportion changes go to the advisor first. Details are in the private handoff.
+  - Two editor findings:
+    - An auto-rigged MetaHuman character renders its rig's mesh, so a face fit on it commits but doesn't show. Remove
+      the face rig first (`remove_face_rig`), fit, then re-rig at finalize.
+    - MetaHuman Creator opens a modal "Not enough memory" dialog when it loads an auto-rigged character with less than
+      10 GiB of free commit. The dialog blocks scripted runs. A window watcher confirms it with Enter (the default
+      button is Yes), and the system-managed pagefile then grows. Closing each MetaHuman asset editor after use keeps the
+      editor's footprint down.
+  - Clothes for all three come after the faces, bodies and animation retarget, made in Marvelous Designer.
+
 - **NEWEST (2026-10-26 late, characters and art direction):**
   - Art direction: one photoreal base for every world. Each world gets its own identity from shader and post-process
     differences (grade, light, atmosphere, material tweaks), not separate drawing styles. The style-pack system
