@@ -63,6 +63,9 @@ C++.
 In play, the console command `ft.Style <spec>` sets every `StyleController` in the world to that
 spec, for example `ft.Style lattice` or `ft.Style S3,U1`. It takes the same specs as `-Style=`.
 
+Hatching is off for now, until the shader pass: every pack's `Hatch` reaches the material as 0. Launch
+with `-StyleHatch` to see it again. The packs still carry their hatch values.
+
 Launching the game with `-StyleOff` turns every controller's post-process off at BeginPlay, so the scene
 renders with Unreal's plain physically based look (default finish, no hatching or ink). Use it to judge
 characters and props under natural light, for example in portrait captures.
