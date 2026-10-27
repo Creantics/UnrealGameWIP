@@ -411,6 +411,24 @@ TEST_CASE("locomotion: the lean leads a start and leans back into a stop by how 
     }
     CHECK(half.pitch() == doctest::Approx(0.5f * t.brakePitch).epsilon(0.05));
 
+    // A character with root motion poses twice a frame: once with the frame's time at the speed it had, then
+    // with none at its new speed. The same braking still leans it back.
+    Locomotion twice = makeLoco();
+    twice.tuning().runPitch = 0.f;
+    LocoInput w{0.f, 509.f};
+    w.wantSpeed = 509.f;
+    run(twice, 1.f, w);
+    w.wantSpeed = 0.f;
+    for (int i = 0; i < 30; ++i) {
+        w.dt = kDt;
+        twice.update(w);
+        w.groundSpeed -= 0.5f * t.brakeDecel * kDt;
+        w.dt = 0.f;
+        twice.update(w);
+    }
+    CHECK(twice.decel() == doctest::Approx(0.5f * t.brakeDecel).epsilon(0.05));
+    CHECK(twice.pitch() == doctest::Approx(0.5f * t.brakePitch).epsilon(0.05));
+
     // Speed with no heading said (a follower without one): no start or stop lean.
     Locomotion plain = makeLoco();
     run(plain, 1.f, {0.f, 250.f});

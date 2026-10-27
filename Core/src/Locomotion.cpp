@@ -808,8 +808,12 @@ void Locomotion::update(const LocoInput& in) {
     float pitchTo = ground ? tuning_.runPitch * runShare + tuning_.sprintPitch * sprintShare : 0.f;
     // Starts lean into the speed still to gain, and stops lean back by how hard they slow, on top of
     // the gait's lean.
-    if (dt > 0.f) decel_ += ((lastSpeed_ - speed) / dt - decel_) * (1.f - std::exp(-dt / std::max(tuning_.brakeSmooth, 1e-3f)));
-    lastSpeed_ = speed;
+    // Only over time that passes: a character with root motion poses twice a frame, the second time with no
+    // time passed but its new speed, which would leave the next frame nothing to measure.
+    if (dt > 0.f) {
+        decel_ += ((lastSpeed_ - speed) / dt - decel_) * (1.f - std::exp(-dt / std::max(tuning_.brakeSmooth, 1e-3f)));
+        lastSpeed_ = speed;
+    }
     if (ground && runSpeed > 0.f && in.wantSpeed >= 0.f) {
         if (braking) pitchTo += tuning_.brakePitch * clampf(decel_ / std::max(tuning_.brakeDecel, 1.f), 0.f, 1.f);
         else pitchTo += tuning_.startPitch * clampf((in.wantSpeed - speed) / runSpeed, 0.f, 1.f);
