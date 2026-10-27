@@ -106,6 +106,7 @@ void AFTExploreCharacter::BeginPlay()
 	{
 		// Turn the body to face the capsule's forward (+X).
 		GetMesh()->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Body), 0.0));
+		UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: body %s facing %.0f."), *Body->GetName(), GetMesh()->GetRelativeRotation().Yaw);
 	}
 	SetupLocomotion();
 	// Locomotion test switches: -LocoRun holds the run speed, -LocoJump=<s> jumps every s seconds,
