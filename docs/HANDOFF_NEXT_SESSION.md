@@ -1,12 +1,26 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-26. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-27. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-27, the three MetaHuman leads):**
+- **NEWEST (2026-10-27 morning, lead face round 2 scored):**
+  - Second-round fits and a facial-hair rebuild ran on all three leads, then a blind per-criterion reader round (one
+    reader per criterion, old against new). Two leads improved; the third regressed and goes back to its first-round
+    state. Eyes and brows are the weakest criterion on every lead, so the next pass is brow grooms plus eyelid shape.
+  - Groom findings (MetaHuman Creator capture):
+    - Some stock groom templates never render strands in a capture render; only their bake texture shows. Before you
+      build a custom groom, sweep the stock items of that slot and build only on a template proven to render.
+    - A template with a hair-width override ignores a per-strand width change. Set `rendering.hair_width_scale` in the
+      build options instead.
+    - A groom rebuild must quit the editor and render in a fresh one. Rendering in the same session hit a HairStrands
+      assert.
+  - Editor launch: the "Wait for ZenServer?" modal can block a scripted launch. The window watcher confirms it with
+    Enter, the same way it handles the memory dialog.
+  - Details are in the private handoff.
+- **(2026-10-27, the three MetaHuman leads):**
   - Main fa4104a: hatching is off until the shader pass; `-StyleHatch` brings it back.
   - Face refinement runs on all three MetaHuman leads at once: measured face fields (cheek, jaw, mouth, nose, lids,
     brows) against each concept sheet, a vertex fit, then a render and a re-measure. The fit lands about 63% of a width
