@@ -4,6 +4,34 @@ A vocabulary of weighty words for revising scripted prompts: cinematics, shots, 
 few precise words from the sections that matter for the shot rather than stacking many; one tone, one look, one light.
 Names of real artists, studios or franchises are for prompts only and never go into shipped text.
 
+## Cutscene pipeline
+
+The process for making cutscenes. The word lists below are step 2.
+
+1. Caffeine.
+2. A compiled list of impactful words in a markdown document (e.g. cinematic, volumetric lighting): this file.
+3. A compiled list of general guidelines in a markdown document. Examples: use existing 3D assets; prefer high poly
+   over low poly; never hand-roll assets on your own; you are allowed to use 1 sub-agent for any task. Essentially,
+   put steering lines in prompts to keep away from what you do NOT want (like low poly, which the user hates).
+4. Have a general idea of what you want, in rough human form, spelling mistakes included ("I want a cyberpunk alley").
+5. Spin up ChatGPT or Claude, give it the rough prompt, and tell it to adapt it against the impact-word list, expand
+   it, add detail and apply the guidelines document.
+6. Run it again and have it adapt the prompt to the game engine (here Unreal 5.8; Godot 4.7 for Godot work).
+7. Give it to Claude or ChatGPT and let it spin up the agents, set up the folders and launch each agent in it.
+
+Tools:
+
+- Game engine: Unreal 5.8 (Godot 4.7 for Godot work).
+- Blender 5: 3D modeling and tweaks.
+- Poly Haven: 3D assets.
+- Sketchfab: 3D assets.
+- The internet: always search for an asset if it can't be found on the sites above.
+- Muxer: the user's own multiplexing terminal. Agents are started in a terminal the user can watch, not as sub-agents
+  of another agent, since agents behave differently when started by an agent than when they think a human started
+  them.
+
+The guidelines document from step 3 doesn't exist yet; write it before the first cutscene.
+
 ## Tone
 cinematic, moody, ethereal, gritty, whimsical, ominous, serene, epic, melancholic, nostalgic, dreamlike, surreal,
 uncanny, eerie, cozy, tranquil, foreboding, haunting, majestic, intimate, claustrophobic, desolate, triumphant,
