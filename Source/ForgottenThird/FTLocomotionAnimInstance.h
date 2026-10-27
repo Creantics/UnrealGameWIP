@@ -46,8 +46,10 @@ class USkeletalMeshComponent;
 // the frame-to-frame speed. The planted foot is the slower of the ball bones within 3 cm of the
 // lowest ball height (in the mesh's space) in the previous second. Each plant also counts, for the
 // whole run, by what the body did over it (speeding up, braking, holding its speed), so starts and
-// stops compare across runs. Call Sample while the mesh's pose and placement are from the same
-// frame: a character's Tick, or a follower before it moves.
+// stops compare across runs. -LocoPlants also logs each plant as it ends, UTC-stamped: its length, its
+// net slip forward and sideways, and the forward slip over its middle half alone (so slip from the
+// foot still landing or already lifting shows apart from the stance's own). Call Sample while the
+// mesh's pose and placement are from the same frame: a character's Tick, or a follower before it moves.
 struct FFTFootSlideProbe
 {
 	void Sample(const USkeletalMeshComponent& Mesh, float DeltaSeconds, float BodySpeed);
@@ -65,6 +67,12 @@ private:
 	FVector PlantStart = FVector::ZeroVector;
 	float PlantTime = 0.f;
 	float PlantSpeed = 0.f; // the body's speed as the plant began
+	// -LocoPlants: the plant's path so far (a plant longer than MaxPath frames keeps its first MaxPath).
+	bool bPlantLog = false;
+	static constexpr int32 MaxPath = 512;
+	FVector2D Path[MaxPath];
+	float PathTime[MaxPath] = {};
+	int32 PathLen = 0;
 	// The run's plants by what the body did: speeding up, braking, holding its speed.
 	static constexpr int32 NumKinds = 3;
 	double KindSlip[NumKinds] = {}, KindTime[NumKinds] = {};
@@ -159,6 +167,9 @@ public:
 	void ReplayTurn(float Delta) { PushedTurnBy = Delta; }
 	// The owner's ground speed (cm/s) for this frame, for owners that aren't characters.
 	void SetGroundSpeed(float Speed) { PushedSpeed = Speed; }
+	// Such an owner following a lead: the lead's foot phase while it holds a gait, below 0 otherwise
+	// (ftcore::LocoInput::leadPhase: the follower steps a quarter stride off it).
+	void SetLeadPhase(float Phase) { PushedLeadPhase = Phase; }
 	// Where such an owner is heading, as ftcore::LocoInput's wantSpeed and stopDistance: the speed it
 	// accelerates toward (0 while braking, below 0 unknown, which plays no starts or stops) and, while
 	// braking, how far it will slide before it stands.
@@ -203,6 +214,7 @@ private:
 	float PushedWant = -1.f;
 	float PushedStop = -1.f;
 	float PushedTurnBy = 0.f;
+	float PushedLeadPhase = -1.f;
 	float PushedFaceYaw = 0.f;
 	bool bPushedFace = false;
 	bool bPushedAir = false;

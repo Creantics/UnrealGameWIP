@@ -306,6 +306,8 @@ public:
     float phase() const { return phase_; }
     // A follower's stride rate trim this frame (a share: 0.02 steps 2% faster).
     float phaseTrim() const { return trim_; }
+    // How hard the body slows, smoothed (cm/s^2, speeding up below 0): LocoTuning::brakePitch leans back by it.
+    float decel() const { return decel_; }
     // The foot phase of a gait clip at `time`.
     FTCORE_API float footPhase(LocoClip c, float time) const;
     // The time in a gait clip at which its foot phase is `phase`.

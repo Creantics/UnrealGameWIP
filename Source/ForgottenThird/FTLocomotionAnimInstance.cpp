@@ -330,6 +330,8 @@ void UFTLocomotionAnimInstance::NativeInitializeAnimation()
 	bLog = FParse::Param(FCommandLine::Get(), TEXT("LocoLog"));
 	// -LocoRunPitch=<deg> tries another run lean for a capture (negative pulls the mocap upright).
 	FParse::Value(FCommandLine::Get(), TEXT("LocoRunPitch="), Loco.tuning().runPitch);
+	// -LocoBrakePitch=<deg> tries another stop lean (negative leans back).
+	FParse::Value(FCommandLine::Get(), TEXT("LocoBrakePitch="), Loco.tuning().brakePitch);
 	if (FParse::Param(FCommandLine::Get(), TEXT("LocoSlide")))
 	{
 		// The probe reads bone positions, which an unrendered mesh (-NullRHI) otherwise leaves stale.
@@ -387,6 +389,7 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		In.stopDistance = PushedStop;
 		In.turnBy = PushedTurnBy;
 		PushedTurnBy = 0.f;
+		In.leadPhase = PushedLeadPhase;
 		In.falling = bPushedAir;
 		In.verticalSpeed = PushedVerticalSpeed;
 		In.yaw = static_cast<float>(Owner->GetActorRotation().Yaw);
@@ -439,8 +442,9 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	// -LocoAngles logs the posed body every frame, stamped with the UTC time so captures can be matched to it:
 	// the trunk (pelvis to neck) and chest (spine_03 to neck) tipped forward and to the right of upright, the
 	// head the same from the neck, each elbow's bend (0 straight), and the body (pelvis to head) forward, the
-	// lean a side view shows, then the stride phase (two party members' phases give their step offset). The pose
-	// is last frame's.
+	// lean a side view shows, then the stride phase (two party members' phases give their step offset), a
+	// follower's stride rate trim, and the ground speed Core was given with how hard it slows (a kinematic
+	// follower's own velocity reads 0). The pose is last frame's.
 	static const bool bAngles = FParse::Param(FCommandLine::Get(), TEXT("LocoAngles"));
 	const USkeletalMeshComponent* Posed = bAngles ? GetSkelMeshComponent() : nullptr;
 	if (Posed)
@@ -464,12 +468,12 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		const FVector Head = At(TEXT("head")) - Neck;
 		const FDateTime Now = FDateTime::UtcNow();
 		UE_LOG(LogForgottenThird, Display,
-			TEXT("LocoAngles %s utc %lld state %d speed %.0f | trunk pitch %.1f roll %.1f | chest pitch %.1f roll %.1f | head pitch %.1f roll %.1f | elbow l %.0f r %.0f | loco pitch %.1f lean %.1f twist %.1f | body pitch %.1f | phase %.3f"),
+			TEXT("LocoAngles %s utc %lld state %d speed %.0f | trunk pitch %.1f roll %.1f | chest pitch %.1f roll %.1f | head pitch %.1f roll %.1f | elbow l %.0f r %.0f | loco pitch %.1f lean %.1f twist %.1f | body pitch %.1f | phase %.3f trim %.3f | ground %.0f decel %.0f"),
 			*Owner->GetName(), Now.ToUnixTimestamp() * 1000 + Now.GetMillisecond(), static_cast<int32>(Loco.state()),
 			static_cast<float>(Owner->GetVelocity().Size2D()), Tip(Trunk, Fwd), Tip(Trunk, Side), Tip(Chest, Fwd), Tip(Chest, Side),
 			Tip(Head, Fwd), Tip(Head, Side), Elbow(TEXT("upperarm_l"), TEXT("lowerarm_l"), TEXT("hand_l")),
 			Elbow(TEXT("upperarm_r"), TEXT("lowerarm_r"), TEXT("hand_r")), Loco.pitch(), Loco.lean(), Loco.twist(),
-			Tip(At(TEXT("head")) - At(TEXT("pelvis")), Fwd), Loco.phase());
+			Tip(At(TEXT("head")) - At(TEXT("pelvis")), Fwd), Loco.phase(), Loco.phaseTrim(), In.groundSpeed, Loco.decel());
 	}
 }
 
@@ -478,6 +482,7 @@ void FFTFootSlideProbe::Sample(const USkeletalMeshComponent& Mesh, float DeltaSe
 	if (!bChecked)
 	{
 		bEnabled = FParse::Param(FCommandLine::Get(), TEXT("LocoSlide"));
+		bPlantLog = bEnabled && FParse::Param(FCommandLine::Get(), TEXT("LocoPlants"));
 		bChecked = true;
 	}
 	if (!bEnabled || DeltaSeconds <= 0.f)
@@ -526,6 +531,28 @@ void FFTFootSlideProbe::Sample(const USkeletalMeshComponent& Mesh, float DeltaSe
 			AlongSum += Slip.X * Fwd.X + Slip.Y * Fwd.Y;
 			SideSum += Slip.Y * Fwd.X - Slip.X * Fwd.Y;
 			SlipTime += PlantTime;
+			if (bPlantLog && PathLen >= 4)
+			{
+				// Where the foot was at a share of the plant's time, from its path.
+				auto At = [this](float Share)
+				{
+					const float T = Share * PathTime[PathLen - 1];
+					int32 I = 1;
+					while (I < PathLen - 1 && PathTime[I] < T)
+					{
+						++I;
+					}
+					const float Span = PathTime[I] - PathTime[I - 1];
+					return FMath::Lerp(Path[I - 1], Path[I], Span > 0.f ? FMath::Clamp((T - PathTime[I - 1]) / Span, 0.f, 1.f) : 1.f);
+				};
+				const FVector2D Mid = At(0.75f) - At(0.25f);
+				const FDateTime Utc = FDateTime::UtcNow();
+				UE_LOG(LogForgottenThird, Display,
+					TEXT("LocoPlant %s utc %lld body %.0f | %.3f s, net %.1f forward %.1f right | middle half %.1f forward (cm/s)"),
+					Mesh.GetOwner() ? *Mesh.GetOwner()->GetName() : TEXT("?"), Utc.ToUnixTimestamp() * 1000 + Utc.GetMillisecond(), BodySpeed,
+					PlantTime, (Slip.X * Fwd.X + Slip.Y * Fwd.Y) / PlantTime, (Slip.Y * Fwd.X - Slip.X * Fwd.Y) / PlantTime,
+					(Mid.X * Fwd.X + Mid.Y * Fwd.Y) / (0.5f * PathTime[PathLen - 1]));
+			}
 			// A body moving at either end; 20 cm/s of change either way counts as speeding up or braking.
 			if (FMath::Max(PlantSpeed, BodySpeed) >= 50.f)
 			{
@@ -542,9 +569,15 @@ void FFTFootSlideProbe::Sample(const USkeletalMeshComponent& Mesh, float DeltaSe
 		{
 			PlantStart = Now[Foot];
 		}
+		PathLen = 0;
 	}
 	if (Foot != INDEX_NONE)
 	{
+		if (bPlantLog && PathLen < MaxPath)
+		{
+			Path[PathLen] = FVector2D(Now[Foot]);
+			PathTime[PathLen++] = PlantTime;
+		}
 		PlantTime += DeltaSeconds;
 		SlideSum += Slowest;
 		++Planted;

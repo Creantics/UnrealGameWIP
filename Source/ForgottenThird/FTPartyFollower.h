@@ -13,6 +13,7 @@
 
 #include "FTPartyFollower.generated.h"
 
+class ACharacter;
 class UAnimSequence;
 class USkeletalMeshComponent;
 
@@ -27,7 +28,8 @@ public:
 	// Loads the member's mesh from /Game/Characters/<Name>/<name>/SkeletalMeshes/ and its clips from
 	// /Game/Characters/<Name>/Rig/Retargeted/ (FTBuildRig -RetargetFrom), falling back to the mesh's
 	// own <name>idle and <name>walk. False when the mesh is missing (the follower then stays
-	// invisible). `Lead` is ignored by the ground trace.
+	// invisible). `Lead` is ignored by the ground trace, and a character lead's foot phase sets the
+	// follower's steps a quarter stride off its own (-LocoNoPhaseTrim: not).
 	bool Setup(const FString& Name, const AActor* Lead);
 
 	// Stands the follower at `Ground` (cm, any height; the ground below it is found), turning toward the
@@ -49,6 +51,7 @@ private:
 	TObjectPtr<USkeletalMeshComponent> Body;
 
 	FCollisionQueryParams TraceParams;
+	TWeakObjectPtr<const ACharacter> LeadCharacter;
 	FVector2D LastGround = FVector2D::ZeroVector;
 	float Speed = 0.f;
 	bool bPlaced = false;

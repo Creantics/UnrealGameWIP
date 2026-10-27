@@ -4,6 +4,8 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
+#include "GameFramework/Character.h"
+#include "Misc/CommandLine.h"
 
 #include "FTMeshFacing.h"
 
@@ -44,6 +46,10 @@ bool AFTPartyFollower::Setup(const FString& Name, const AActor* Lead)
 	if (Lead)
 	{
 		TraceParams.AddIgnoredActor(Lead);
+	}
+	if (!FParse::Param(FCommandLine::Get(), TEXT("LocoNoPhaseTrim")))
+	{
+		LeadCharacter = Cast<ACharacter>(Lead);
 	}
 	if (!Mesh)
 	{
@@ -163,6 +169,18 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 		Anim->SetIntent(WantSpeed, StopDistance);
 		Anim->SetAir(bAir, AirSpeed);
 		Anim->SetFace(bFacing, FaceYaw);
+		// The lead's foot phase while it holds a gait, so the two don't step together.
+		float LeadPhase = -1.f;
+		const USkeletalMeshComponent* LeadMesh = LeadCharacter.IsValid() ? LeadCharacter->GetMesh() : nullptr;
+		if (const UFTLocomotionAnimInstance* LeadAnim = LeadMesh ? Cast<UFTLocomotionAnimInstance>(LeadMesh->GetAnimInstance()) : nullptr)
+		{
+			const ftcore::Locomotion& LeadLoco = LeadAnim->GetLocomotion();
+			if (LeadLoco.state() == ftcore::LocoState::Ground && LeadCharacter->GetVelocity().Size2D() >= LeadLoco.tuning().moveStop)
+			{
+				LeadPhase = LeadLoco.phase();
+			}
+		}
+		Anim->SetLeadPhase(LeadPhase);
 	}
 }
 
