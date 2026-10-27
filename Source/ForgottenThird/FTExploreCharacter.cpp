@@ -121,7 +121,9 @@ void AFTExploreCharacter::BeginPlay()
 	FParse::Value(FCommandLine::Get(), TEXT("LocoRest="), PulseRest);
 	FParse::Value(FCommandLine::Get(), TEXT("LocoFace="), FaceBy);
 	bSideView = FParse::Param(FCommandLine::Get(), TEXT("LocoSideView"));
-	bSideAlways = FParse::Param(FCommandLine::Get(), TEXT("LocoSideAlways"));
+	bSideAlways = FParse::Value(FCommandLine::Get(), TEXT("LocoCamYaw="), SideAlwaysYaw)
+		|| FParse::Param(FCommandLine::Get(), TEXT("LocoSideAlways"));
+	FParse::Value(FCommandLine::Get(), TEXT("LocoCamPitch="), SideAlwaysPitch);
 	bNoLook = FParse::Param(FCommandLine::Get(), TEXT("LocoNoLook"));
 	if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait")))
 	{
@@ -497,9 +499,14 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	const AActor* Framed = Watched.IsValid() ? Watched.Get() : this;
 	if (bSideAlways && Controller)
 	{
-		// The framed body is filmed from its left the whole time, turning with it, at the usual distance.
+		// The framed body is filmed from its left (or -LocoCamYaw's angle) the whole time, turning with it, at the
+		// usual distance.
 		FRotator Control = Controller->GetControlRotation();
-		Control.Yaw = Framed->GetActorRotation().Yaw + 90.0;
+		Control.Yaw = Framed->GetActorRotation().Yaw + SideAlwaysYaw;
+		if (SideAlwaysPitch != 0.f)
+		{
+			Control.Pitch = -SideAlwaysPitch;
+		}
 		Controller->SetControlRotation(Control);
 		if (Framed != this)
 		{

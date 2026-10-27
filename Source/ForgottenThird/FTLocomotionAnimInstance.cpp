@@ -328,6 +328,8 @@ void UFTLocomotionAnimInstance::NativeInitializeAnimation()
 	}
 	bHasYaw = false;
 	bLog = FParse::Param(FCommandLine::Get(), TEXT("LocoLog"));
+	// -LocoRunPitch=<deg> tries another run lean for a capture (negative pulls the mocap upright).
+	FParse::Value(FCommandLine::Get(), TEXT("LocoRunPitch="), Loco.tuning().runPitch);
 	if (FParse::Param(FCommandLine::Get(), TEXT("LocoSlide")))
 	{
 		// The probe reads bone positions, which an unrendered mesh (-NullRHI) otherwise leaves stale.
