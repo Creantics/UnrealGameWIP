@@ -946,6 +946,33 @@ TEST_CASE("locomotion: a follower replays a running turn at the distance it has 
     CHECK(lastYaw == doctest::Approx(90.f).epsilon(0.02));
 }
 
+TEST_CASE("locomotion: a follower drops a replayed turn until it has settled into its run") {
+    Locomotion l = makeTurnLoco();
+    LocoInput in{kDt, 0.f};
+    in.wantSpeed = 450.f;
+    // Setting off: the speed ramps up from a stand, and the turn reaches it just after the start
+    // hands over to the gaits, once they are most of the blend (where it used to play).
+    float speed = 0.f;
+    int ground = 0;
+    for (int i = 0; i < 300 && ground < 3; ++i) {
+        speed = std::fmin(speed + 1000.f * kDt, 450.f);
+        in.groundSpeed = speed;
+        l.update(in);
+        const float gaits = l.weight(LocoClip::Walk) + l.weight(LocoClip::Run) + l.weight(LocoClip::Sprint);
+        if (l.state() == LocoState::Ground && gaits >= 0.5f) ++ground;
+    }
+    REQUIRE(ground == 3);
+    in.turnBy = 135.f;
+    l.update(in);
+    CHECK(!l.turning());
+    in.turnBy = 0.f;
+    // Settled on the run, the next one plays.
+    for (int i = 0; i < 90; ++i) l.update(in);
+    in.turnBy = 135.f;
+    l.update(in);
+    CHECK(l.turning());
+}
+
 TEST_CASE("locomotion: a replayed turn keeps near the clip's own pace when the body outruns it") {
     for (const float speed : {900.f, 200.f}) {
         Locomotion l = makeTurnLoco();

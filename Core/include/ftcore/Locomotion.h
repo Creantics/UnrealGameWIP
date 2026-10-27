@@ -201,6 +201,8 @@ struct LocoTuning {
     float faceTime = 0.15f;     // steering: time constant of the facing's ease toward the way the body moves
     float turnMin = 30.f;       // heading this far from the facing while running plays a running turn
     float turnSpeed = 0.6f;     // at this share of the run's ground speed or more
+    float replaySettle = 0.5f;  // a follower's replayed running turn plays only this long (s) into a steady run...
+    float replayWeight = 0.9f;  // ...with the run (or sprint) this much of the blend; else it is dropped
     float refaceMin = 60.f;     // setting off this far from the facing plays a turning start
     float faceMin = 40.f;       // standing, LocoInput::face this far off turns on the spot
     float turnEarly = 0.3f;     // a running turn enters between this long and turnLate before its turn begins
@@ -361,6 +363,7 @@ private:
     float phase_ = 0.f; // within the current stride
     float airTime_ = 0.f;
     float landTime_ = 0.f;
+    float groundTime_ = 0.f; // seconds in Ground since a start, a turn or a landing
     float lean_ = 0.f;
     float twist_ = 0.f;
     float pitch_ = 0.f;

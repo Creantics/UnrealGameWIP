@@ -302,7 +302,7 @@ void Locomotion::reset() {
     target_ = gait_ = LocoClip::Idle;
     share_.fill(0.f);
     stride_.fill(0);
-    fade_ = phase_ = airTime_ = landTime_ = 0.f;
+    fade_ = phase_ = airTime_ = landTime_ = groundTime_ = 0.f;
     lean_ = twist_ = pitch_ = 0.f;
     headPitch_ = headRoll_ = headYaw_ = 0.f;
 }
@@ -588,9 +588,13 @@ LocoClip Locomotion::moveTarget(const LocoInput& in, float speed, LocoClip& sync
     }
     if (beginStop(in, speed)) return move_;
     const float runSpeed = clip(has(LocoClip::Run) ? LocoClip::Run : LocoClip::Walk).groundSpeed;
-    const float turn = in.turnBy != 0.f ? wrap180(in.turnBy) : in.steer ? want : 0.f;
+    // A replayed turn needs a run the body has settled into: fired from a walk start or a half-blended
+    // gait its clip's feet and stoop don't match the body's, so the follower rounds the corner instead.
+    const bool settled = groundTime_ >= tuning_.replaySettle &&
+        weight_[index(LocoClip::Run)] + weight_[index(LocoClip::Sprint)] >= tuning_.replayWeight;
+    const float turn = in.turnBy != 0.f ? (settled ? wrap180(in.turnBy) : 0.f) : in.steer ? want : 0.f;
     if (heading && isLocoGait(gait_) && gaits >= 0.5f && speed >= tuning_.turnSpeed * runSpeed &&
-        (in.turnBy != 0.f || std::fabs(turn) >= tuning_.turnMin) &&
+        ((in.turnBy != 0.f && settled) || std::fabs(turn) >= tuning_.turnMin) &&
         beginTurn(in, LocoClip::RunTurnLeft45L, LocoClip::RunTurnRight180R, turn, true)) {
         return move_;
     }
@@ -730,6 +734,7 @@ void Locomotion::update(const LocoInput& in) {
 
     const bool braking = !in.falling && in.wantSpeed >= 0.f && in.wantSpeed < tuning_.moveStop;
     braking_ = braking ? braking_ + dt : 0.f;
+    groundTime_ = state_ == LocoState::Ground ? groundTime_ + dt : 0.f;
     splitGaits(speed);
     LocoClip next = target_;
     LocoClip syncFrom = LocoClip::Count;
