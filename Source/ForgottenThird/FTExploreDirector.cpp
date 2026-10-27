@@ -10,6 +10,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "HAL/FileManager.h"
 #include "Misc/CommandLine.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
@@ -459,14 +460,17 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 {
 	bFollowersSpawned = true;
 	UWorld* World = GetWorld();
-	// The party behind the lead; -PartyFollowers=Duy+Devin names others (at most PartyTrail::kMaxFollowers).
+	// The party behind the lead; Followers=Duy+Devin under [FTParty] in the game ini, then -PartyFollowers=
+	// on the command line, names others (at most PartyTrail::kMaxFollowers).
 	TArray<FString> Names;
 	for (size_t I = 1; I < ftcore::demo::kPartyNames.size(); ++I)
 	{
 		Names.Add(UTF8_TO_TCHAR(ftcore::demo::kPartyNames[I]));
 	}
 	FString NameArg;
-	if (FParse::Value(FCommandLine::Get(), TEXT("PartyFollowers="), NameArg))
+	GConfig->GetString(TEXT("FTParty"), TEXT("Followers"), NameArg, GGameIni);
+	FParse::Value(FCommandLine::Get(), TEXT("PartyFollowers="), NameArg);
+	if (!NameArg.IsEmpty())
 	{
 		NameArg.ParseIntoArray(Names, TEXT("+"));
 	}
