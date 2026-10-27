@@ -44,7 +44,7 @@ FTurnParts TurnParts(ftcore::LocoClip C)
 		const int32 K = I - static_cast<int32>(ftcore::LocoClip::RefaceLeft90);
 		return {Side(K >= 2), ftcore::kLocoRefaceAngles[K % 2], TEXT("")};
 	}
-	const int32 K = I - static_cast<int32>(ftcore::LocoClip::StandTurnLeft45);
+	const int32 K = I - static_cast<int32>(ftcore::isLocoCrouchTurn(C) ? ftcore::LocoClip::CrouchTurnLeft45 : ftcore::LocoClip::StandTurnLeft45);
 	return {Side(K >= 4), ftcore::kLocoTurnAngles[K % 4], TEXT("")};
 }
 
@@ -71,18 +71,28 @@ const TCHAR* ClipName(ftcore::LocoClip C)
 	case ftcore::LocoClip::SprintStopLeft: return TEXT("sprint stop L");
 	case ftcore::LocoClip::SprintStopRight: return TEXT("sprint stop R");
 	case ftcore::LocoClip::AirPose: return TEXT("air pose");
+	case ftcore::LocoClip::CrouchIdle: return TEXT("crouch idle");
+	case ftcore::LocoClip::CrouchWalk: return TEXT("crouch walk");
+	case ftcore::LocoClip::CrouchDown: return TEXT("crouch down");
+	case ftcore::LocoClip::CrouchUp: return TEXT("crouch up");
 	default: break;
 	}
-	// The turns, named once: "run turn L90 Rfoot", "reface R180", "stand turn L45".
+	// The turns, named once: "run turn L90 Rfoot", "reface R180", "stand turn L45", "crouch turn R90".
 	static const TArray<FString> Turns = []
 	{
 		TArray<FString> Names;
-		for (int32 I = static_cast<int32>(ftcore::LocoClip::RunTurnLeft45L); I <= static_cast<int32>(ftcore::LocoClip::StandTurnRight180); ++I)
+		for (int32 I = static_cast<int32>(ftcore::LocoClip::RunTurnLeft45L); I < static_cast<int32>(ftcore::LocoClip::Count); ++I)
 		{
 			const ftcore::LocoClip Clip = static_cast<ftcore::LocoClip>(I);
+			if (!ftcore::isLocoTurn(Clip))
+			{
+				Names.Add(TEXT("?"));
+				continue;
+			}
 			const FTurnParts T = TurnParts(Clip);
 			Names.Add(ftcore::isLocoRunTurn(Clip) ? FString::Printf(TEXT("run turn %s%d %sfoot"), T.Side, T.Angle, T.Foot)
 				: ftcore::isLocoReface(Clip) ? FString::Printf(TEXT("reface %s%d"), T.Side, T.Angle)
+				: ftcore::isLocoCrouchTurn(Clip) ? FString::Printf(TEXT("crouch turn %s%d"), T.Side, T.Angle)
 				: FString::Printf(TEXT("stand turn %s%d"), T.Side, T.Angle));
 		}
 		return Names;
@@ -291,7 +301,41 @@ void UFTLocomotionAnimInstance::SetTurnsFromRun()
 	if (Loop)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: %d of %d turn clips next to %s."), Found,
-			static_cast<int32>(ftcore::LocoClip::Count) - static_cast<int32>(ftcore::LocoClip::RunTurnLeft45L), *Loop->GetName());
+			static_cast<int32>(ftcore::LocoClip::StandTurnRight180) - static_cast<int32>(ftcore::LocoClip::RunTurnLeft45L) + 1, *Loop->GetName());
+	}
+}
+
+void UFTLocomotionAnimInstance::SetCrouchFromRun()
+{
+	static const bool bNoCrouch = FParse::Param(FCommandLine::Get(), TEXT("LocoNoCrouch"));
+	const UAnimSequence* Loop = bNoCrouch ? nullptr : Clips[static_cast<int32>(ftcore::LocoClip::Run)].Get();
+	const FString Path = Loop ? Loop->GetPathName() : FString();
+	auto Set = [&](ftcore::LocoClip Which, const FString& Name)
+	{
+		UAnimSequence* Clip = nullptr;
+		if (Path.Contains(TEXT("_Run_Loop_F")))
+		{
+			const FString ClipPath = Path.Replace(TEXT("_Run_Loop_F"), *Name, ESearchCase::CaseSensitive);
+			if (FPackageName::DoesPackageExist(FPackageName::ObjectPathToPackageName(ClipPath)))
+			{
+				Clip = LoadObject<UAnimSequence>(nullptr, *ClipPath, nullptr, LOAD_NoWarn | LOAD_Quiet);
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: no %s, so none."), *ClipPath);
+			}
+		}
+		SetClip(Which, Clip);
+	};
+	Set(ftcore::LocoClip::CrouchIdle, TEXT("_Crouch_Idle_Loop"));
+	Set(ftcore::LocoClip::CrouchWalk, TEXT("_Crouch_Loop_F"));
+	Set(ftcore::LocoClip::CrouchDown, TEXT("_Transition_Stand_to_Crouch"));
+	Set(ftcore::LocoClip::CrouchUp, TEXT("_Transition_Crouch_to_Stand"));
+	for (int32 C = static_cast<int32>(ftcore::LocoClip::CrouchTurnLeft45); C <= static_cast<int32>(ftcore::LocoClip::CrouchTurnRight180); ++C)
+	{
+		const ftcore::LocoClip Which = static_cast<ftcore::LocoClip>(C);
+		const FTurnParts T = TurnParts(Which);
+		Set(Which, FString::Printf(TEXT("_Crouch_Idle_Turn_%03d_%s"), T.Angle, T.Side));
 	}
 }
 
@@ -396,6 +440,7 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		In.wantYaw = A.SizeSquared2D() > 1.0 ? static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(A.Y, A.X))) : Facing;
 		In.face = bPushedFace;
 		In.faceYaw = PushedFaceYaw;
+		In.crouch = Character->bIsCrouched;
 	}
 	else
 	{
@@ -408,6 +453,7 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		In.leadStride = PushedLeadStride;
 		In.falling = bPushedAir;
 		In.verticalSpeed = PushedVerticalSpeed;
+		In.crouch = bPushedCrouch;
 		In.yaw = static_cast<float>(Owner->GetActorRotation().Yaw);
 		In.face = bPushedFace;
 		In.faceYaw = PushedFaceYaw;

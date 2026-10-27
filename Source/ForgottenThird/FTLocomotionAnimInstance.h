@@ -151,6 +151,11 @@ public:
 	// M_Neutral_Run_Reface_Start_F_L_090_to_x, M_Neutral_Stand_Turn_090_L_to_x and so on. Call after
 	// SetClip(Run). -LocoNoTurns leaves them out.
 	void SetTurnsFromRun();
+	// Sets the crouch from the clips named after the run loop, where there are any: next to
+	// M_Neutral_Run_Loop_F_to_x, M_Neutral_Crouch_Loop_F_to_x (the crouch walk), M_Neutral_Crouch_Idle_Loop_to_x,
+	// M_Neutral_Transition_Stand_to_Crouch_to_x and _Crouch_to_Stand, and M_Neutral_Crouch_Idle_Turn_090_L_to_x
+	// and so on. Call after SetClip(Run). -LocoNoCrouch leaves them out.
+	void SetCrouchFromRun();
 	// The owner standing still turns on the spot to face Yaw (degrees, world) while bFace holds.
 	void SetFace(bool bFace, float Yaw)
 	{
@@ -163,6 +168,8 @@ public:
 		bPushedAir = bAir;
 		PushedVerticalSpeed = VerticalSpeed;
 	}
+	// A non-character owner crouches while bCrouch holds (a character's own crouch is read from it).
+	void SetCrouch(bool bCrouch) { bPushedCrouch = bCrouch; }
 	// A non-character owner: replay a running turn by Delta degrees on the next update.
 	void ReplayTurn(float Delta) { PushedTurnBy = Delta; }
 	// The owner's ground speed (cm/s) for this frame, for owners that aren't characters.
@@ -213,8 +220,8 @@ private:
 	void Step(float DeltaSeconds);
 
 	UPROPERTY(Transient)
-	TObjectPtr<UAnimSequence> Clips[47];
-	static_assert(ftcore::kLocoClipCount == 47, "Clips[] holds one per LocoClip");
+	TObjectPtr<UAnimSequence> Clips[59];
+	static_assert(ftcore::kLocoClipCount == 59, "Clips[] holds one per LocoClip");
 
 	ftcore::Locomotion Loco;
 	// The actor's forward in the mesh component's space, for the spine bend.
@@ -232,6 +239,7 @@ private:
 	float PushedFaceYaw = 0.f;
 	bool bPushedFace = false;
 	bool bPushedAir = false;
+	bool bPushedCrouch = false;
 	float PushedVerticalSpeed = 0.f;
 	float LastYaw = 0.f;
 	bool bHasYaw = false;

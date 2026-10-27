@@ -1435,3 +1435,163 @@ TEST_CASE("locomotion: a follower's wider gait dead band drops a few percent of 
     CHECK(wide.weight(LocoClip::Walk) == 0.f);
     CHECK(wide.weight(LocoClip::Run) == doctest::Approx(gaitWeight(wide)));
 }
+
+namespace {
+
+// makeTurnLoco crouching too: an idle, a walk at 150 cm/s (one stride a second), getting down (0.8 s) and up
+// (0.9 s), and a crouched turn on the spot right by 90.
+Locomotion makeCrouchLoco() {
+    static GaitFrame frames[91];
+    Locomotion l = makeTurnLoco();
+    l.setClip(LocoClip::CrouchIdle, {4.f, 0.f, 1, 0.f});
+    makeGait(frames, 61, 1.f, 1, 150.f, 150.f, 0.2f);
+    l.setClip(LocoClip::CrouchWalk, measureGait(frames, 61, 1.f));
+    l.setClip(LocoClip::CrouchDown, {0.8f, 0.f, 1, 0.f});
+    l.setClip(LocoClip::CrouchUp, {0.9f, 0.f, 1, 0.f});
+    makeTurn(frames, 91, 1.5f, 0.05f, standPath, 90.f, 0.1f, 0.5f);
+    l.setClip(locoCrouchTurn(true, 1), measureMove(frames, 91, 1.5f));
+    l.reset();
+    return l;
+}
+
+} // namespace
+
+TEST_CASE("locomotion: crouching standing still gets down, idles crouched, and gets up") {
+    Locomotion l = makeCrouchLoco();
+    REQUIRE(l.clip(LocoClip::CrouchWalk).groundSpeed == doctest::Approx(150.f).epsilon(0.02));
+    LocoInput in{kDt, 0.f};
+    in.crouch = true;
+    l.update(in);
+    CHECK(l.crouched());
+    CHECK(l.state() == LocoState::StanceChange);
+    CHECK(l.target() == LocoClip::CrouchDown);
+    int frames = 1;
+    while (l.state() == LocoState::StanceChange && frames < 200) {
+        l.update(in);
+        ++frames;
+    }
+    CHECK(static_cast<float>(frames) * kDt == doctest::Approx(0.8f - l.tuning().crouchSettle).epsilon(0.05));
+    CHECK(l.target() == LocoClip::CrouchIdle);
+    run(l, 1.f, in);
+    CHECK(l.weight(LocoClip::CrouchIdle) == doctest::Approx(1.f));
+    CHECK(l.crouchWeight() == 1.f);
+
+    in.crouch = false;
+    l.update(in);
+    CHECK(!l.crouched());
+    CHECK(l.target() == LocoClip::CrouchUp);
+    run(l, 1.f, in);
+    CHECK(l.state() == LocoState::Ground);
+    CHECK(l.target() == LocoClip::Idle);
+    CHECK(l.crouchWeight() == 0.f);
+}
+
+TEST_CASE("locomotion: crouched, the crouch walk is the gait, with no starts or stops") {
+    Locomotion l = makeCrouchLoco();
+    LocoInput in{kDt, 0.f};
+    in.crouch = true;
+    run(l, 1.f, in);
+    in.groundSpeed = in.wantSpeed = 120.f;
+    for (int i = 0; i < 60; ++i) {
+        l.update(in);
+        CHECK(l.state() == LocoState::Ground);
+    }
+    CHECK(l.target() == LocoClip::CrouchWalk);
+    CHECK(l.weight(LocoClip::CrouchWalk) == doctest::Approx(1.f));
+    CHECK(l.rate(LocoClip::CrouchWalk) == doctest::Approx(120.f / 150.f).epsilon(0.02));
+    CHECK(l.strideLength() == doctest::Approx(150.f).epsilon(0.02));
+    CHECK(l.elbowHold() < 0.01f);
+    // Braking to a stand: no stop clip, back to the crouched idle.
+    in.wantSpeed = 0.f;
+    for (int i = 0; i < 60; ++i) {
+        in.groundSpeed = std::fmax(120.f - 240.f * static_cast<float>(i) * kDt, 0.f);
+        in.stopDistance = in.groundSpeed * in.groundSpeed / 480.f;
+        l.update(in);
+        CHECK(l.state() == LocoState::Ground);
+    }
+    CHECK(l.target() == LocoClip::CrouchIdle);
+}
+
+TEST_CASE("locomotion: crouching at a run eases into the crouch walk in step") {
+    Locomotion l = makeCrouchLoco();
+    run(l, 1.f, {0.f, 450.f});
+    REQUIRE(l.weight(LocoClip::Run) == doctest::Approx(1.f));
+    LocoInput in{kDt, 450.f};
+    in.crouch = true;
+    float crouchW = 0.f, phase = l.phase();
+    for (int i = 0; i < 90; ++i) {
+        in.groundSpeed = std::fmax(450.f - 1000.f * static_cast<float>(i) * kDt, 150.f); // the capsule slows to the crouch walk
+        l.update(in);
+        CHECK(l.state() == LocoState::Ground);
+        const float w = l.weight(LocoClip::CrouchWalk);
+        CHECK(w >= crouchW - 1e-5f);
+        CHECK(w - crouchW < 0.15f);
+        crouchW = w;
+        CHECK(l.weight(LocoClip::Run) + w == doctest::Approx(1.f));
+        CHECK(phaseApart(l.phase(), phase) < 0.1f); // one foot phase throughout: no jump
+        phase = l.phase();
+        CHECK(phaseApart(l.footPhase(LocoClip::CrouchWalk, l.time(LocoClip::CrouchWalk)), l.phase()) < 1e-3f);
+    }
+    CHECK(l.weight(LocoClip::CrouchWalk) == doctest::Approx(1.f));
+    CHECK(l.crouchWeight() == 1.f);
+    CHECK(l.rate(LocoClip::CrouchWalk) == doctest::Approx(1.f).epsilon(0.02));
+}
+
+TEST_CASE("locomotion: moving off while getting down cuts it short; asked back up, it rises from as far down") {
+    Locomotion l = makeCrouchLoco();
+    LocoInput in{kDt, 0.f};
+    in.crouch = true;
+    run(l, 0.1f, in);
+    REQUIRE(l.state() == LocoState::StanceChange);
+    in.groundSpeed = in.wantSpeed = 100.f;
+    l.update(in);
+    CHECK(l.state() == LocoState::Ground);
+    CHECK(isLocoGait(l.target())); // the gaits, still easing into the crouch walk
+    run(l, 0.3f, in);
+    CHECK(l.target() == LocoClip::CrouchWalk);
+
+    l = makeCrouchLoco();
+    in = LocoInput{kDt, 0.f};
+    in.crouch = true;
+    run(l, 0.3f, in);
+    const float down = l.time(LocoClip::CrouchDown);
+    in.crouch = false;
+    l.update(in);
+    CHECK(l.state() == LocoState::StanceChange);
+    CHECK(l.target() == LocoClip::CrouchUp);
+    CHECK(l.time(LocoClip::CrouchUp) == doctest::Approx((1.f - down / 0.8f) * 0.9f + kDt).epsilon(0.02));
+}
+
+TEST_CASE("locomotion: crouched, a turn on the spot is the crouch turn") {
+    Locomotion l = makeCrouchLoco();
+    LocoInput in{kDt, 0.f};
+    in.crouch = in.steer = in.rootMotion = in.face = true;
+    in.wantSpeed = 0.f;
+    run(l, 1.f, in);
+    in.faceYaw = 85.f;
+    l.update(in);
+    REQUIRE(l.turning());
+    CHECK(l.turnClip() == locoCrouchTurn(true, 1));
+    int frames = 0;
+    while (l.turning() && frames < 200) {
+        in.yaw = l.turnYaw();
+        l.update(in);
+        ++frames;
+    }
+    CHECK(in.yaw == doctest::Approx(85.f).epsilon(0.02));
+    CHECK(l.target() == LocoClip::CrouchIdle);
+}
+
+TEST_CASE("locomotion: a body without the crouch clips ignores crouch") {
+    Locomotion l = makeLoco();
+    LocoInput in{kDt, 0.f};
+    in.crouch = true;
+    run(l, 0.5f, in);
+    CHECK(!l.crouched());
+    CHECK(l.state() == LocoState::Ground);
+    CHECK(l.target() == LocoClip::Idle);
+    in.groundSpeed = 200.f;
+    run(l, 0.5f, in);
+    CHECK(l.target() == LocoClip::Walk);
+    CHECK(l.weight(LocoClip::Walk) == doctest::Approx(1.f));
+}

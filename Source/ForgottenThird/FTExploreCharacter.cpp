@@ -56,6 +56,10 @@ AFTExploreCharacter::AFTExploreCharacter()
 	// plays a turn clip whose root motion turns it.
 	Move->bOrientRotationToMovement = false;
 	Move->MaxWalkSpeed = WalkSpeed;
+	Move->MaxWalkSpeedCrouched = CrouchSpeed;
+	// Crouched, the capsule is 120 cm tall (ACharacter keeps the feet on the ground).
+	Move->GetNavAgentPropertiesRef().bCanCrouch = true;
+	Move->SetCrouchedHalfHeight(60.f);
 	Move->JumpZVelocity = 520.f;
 	Move->AirControl = 0.35f;
 	// Braking at a steady deceleration, with no friction term, so the distance to a stop is v^2 / 2b
@@ -119,6 +123,12 @@ void AFTExploreCharacter::BeginPlay()
 		GetCharacterMovement()->MaxWalkSpeed = RunSpeed;
 	}
 	FParse::Value(FCommandLine::Get(), TEXT("LocoJump="), JumpEvery);
+	// -LocoCrouch holds a crouch; -LocoCrouchEvery=<s> gets down or up every s seconds.
+	if (FParse::Param(FCommandLine::Get(), TEXT("LocoCrouch")))
+	{
+		Crouch();
+	}
+	FParse::Value(FCommandLine::Get(), TEXT("LocoCrouchEvery="), CrouchEvery);
 	FParse::Value(FCommandLine::Get(), TEXT("LocoPulse="), PulseEvery);
 	FParse::Value(FCommandLine::Get(), TEXT("LocoRest="), PulseRest);
 	FParse::Value(FCommandLine::Get(), TEXT("LocoFace="), FaceBy);
@@ -339,6 +349,11 @@ void AFTExploreCharacter::CreateInputObjects()
 	Context->MapKey(RunAction, EKeys::LeftShift);
 	Context->MapKey(RunAction, EKeys::Gamepad_LeftTrigger);
 
+	CrouchAction = MakeAction(TEXT("IA_ExploreCrouch"), false);
+	Context->MapKey(CrouchAction, EKeys::C);
+	Context->MapKey(CrouchAction, EKeys::LeftControl);
+	Context->MapKey(CrouchAction, EKeys::Gamepad_RightThumbstick);
+
 	InteractAction = MakeAction(TEXT("IA_ExploreInteract"), false);
 	Context->MapKey(InteractAction, EKeys::E);
 	Context->MapKey(InteractAction, EKeys::Enter);
@@ -376,10 +391,11 @@ void AFTExploreCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 	}
 	Input->BindAction(MoveAction, ETriggerEvent::Triggered, this, &AFTExploreCharacter::HandleMove);
 	Input->BindAction(LookAction, ETriggerEvent::Triggered, this, &AFTExploreCharacter::HandleLook);
-	Input->BindAction(JumpAction, ETriggerEvent::Started, this, &ACharacter::Jump);
+	Input->BindAction(JumpAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleJump);
 	Input->BindAction(JumpAction, ETriggerEvent::Completed, this, &ACharacter::StopJumping);
 	Input->BindAction(RunAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleRunStart);
 	Input->BindAction(RunAction, ETriggerEvent::Completed, this, &AFTExploreCharacter::HandleRunStop);
+	Input->BindAction(CrouchAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleCrouch);
 	Input->BindAction(InteractAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleInteract);
 }
 
@@ -412,7 +428,32 @@ void AFTExploreCharacter::HandleLook(const FInputActionValue& Value)
 
 void AFTExploreCharacter::HandleRunStart()
 {
+	// Sprinting stands the body up.
+	UnCrouch();
 	GetCharacterMovement()->MaxWalkSpeed = RunSpeed;
+}
+
+void AFTExploreCharacter::HandleJump()
+{
+	// Crouched, jump stands the body up; standing, it jumps.
+	if (GetCharacterMovement()->bWantsToCrouch)
+	{
+		UnCrouch();
+		return;
+	}
+	Jump();
+}
+
+void AFTExploreCharacter::HandleCrouch()
+{
+	if (GetCharacterMovement()->bWantsToCrouch)
+	{
+		UnCrouch();
+	}
+	else
+	{
+		Crouch();
+	}
 }
 
 void AFTExploreCharacter::HandleRunStop()
@@ -542,6 +583,11 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 		JumpTimer = 0.f;
 		Jump();
 	}
+	if (CrouchEvery > 0.f && (CrouchTimer += DeltaSeconds) >= CrouchEvery)
+	{
+		CrouchTimer = 0.f;
+		HandleCrouch();
+	}
 }
 
 void AFTExploreCharacter::AddMovementInput(FVector WorldDirection, float ScaleValue, bool bForce)
@@ -577,4 +623,12 @@ void AFTExploreCharacter::SetupLocomotion()
 	Anim->SetMovesFromGait(ftcore::LocoClip::Sprint);
 	Anim->SetTurnsFromRun();
 	Anim->SetAirPoseFromRun();
+	Anim->SetCrouchFromRun();
+	// The crouch walk plays at its own pace at the crouched top speed.
+	const float Crouched = Anim->GetLocomotion().clip(ftcore::LocoClip::CrouchWalk).groundSpeed;
+	if (Crouched > 0.f)
+	{
+		CrouchSpeed = Crouched;
+		GetCharacterMovement()->MaxWalkSpeedCrouched = Crouched;
+	}
 }

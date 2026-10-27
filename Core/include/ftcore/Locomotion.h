@@ -26,6 +26,12 @@
 // slide. A step down shorter than airGrace stays on the ground clips. Blends are exponential
 // crossfades. Fixed size: nothing here allocates.
 //
+// Crouching (LocoInput::crouch, when the body has CrouchIdle and CrouchWalk): the crouch walk is a gait
+// on the same foot phase, so a moving body eases between its standing gaits and the crouch walk over
+// crouchFade in step. A standing body gets down (CrouchDown) or up (CrouchUp) before its idle, unless it
+// moves off first. Crouched there are no starts, stops or running turns; turns on the spot use the
+// crouch turns.
+//
 // Starts and stops, when the caller says where the body is heading (LocoInput::wantSpeed) and the
 // clips have their root travel measured (measureMove): from idle, a body heading off plays the start
 // clip of the gait it heads for, at the point whose root travel matches the distance the capsule has
@@ -79,18 +85,25 @@ enum class LocoClip : std::uint8_t {
     StandTurnLeft45, StandTurnLeft90, StandTurnLeft135, StandTurnLeft180,
     StandTurnRight45, StandTurnRight90, StandTurnRight135, StandTurnRight180,
     AirPose,
+    // Crouching: the idle and the walk loops, getting down and up from a stand, and turns on the spot.
+    CrouchIdle, CrouchWalk, CrouchDown, CrouchUp,
+    CrouchTurnLeft45, CrouchTurnLeft90, CrouchTurnLeft135, CrouchTurnLeft180,
+    CrouchTurnRight45, CrouchTurnRight90, CrouchTurnRight135, CrouchTurnRight180,
     Count
 };
 inline constexpr std::size_t kLocoClipCount = static_cast<std::size_t>(LocoClip::Count);
 
-constexpr bool isLocoGait(LocoClip c) { return c == LocoClip::Walk || c == LocoClip::Run || c == LocoClip::Sprint; }
-constexpr bool isLocoLoop(LocoClip c) { return c == LocoClip::Idle || c == LocoClip::Fall || isLocoGait(c); }
+constexpr bool isLocoGait(LocoClip c) {
+    return c == LocoClip::Walk || c == LocoClip::Run || c == LocoClip::Sprint || c == LocoClip::CrouchWalk;
+}
+constexpr bool isLocoLoop(LocoClip c) { return c == LocoClip::Idle || c == LocoClip::CrouchIdle || c == LocoClip::Fall || isLocoGait(c); }
 constexpr bool isLocoStart(LocoClip c) { return c >= LocoClip::WalkStart && c <= LocoClip::SprintStart; }
 constexpr bool isLocoStop(LocoClip c) { return c >= LocoClip::WalkStopLeft && c <= LocoClip::SprintStopRight; }
 constexpr bool isLocoRunTurn(LocoClip c) { return c >= LocoClip::RunTurnLeft45L && c <= LocoClip::RunTurnRight180R; }
 constexpr bool isLocoReface(LocoClip c) { return c >= LocoClip::RefaceLeft90 && c <= LocoClip::RefaceRight180; }
 constexpr bool isLocoStandTurn(LocoClip c) { return c >= LocoClip::StandTurnLeft45 && c <= LocoClip::StandTurnRight180; }
-constexpr bool isLocoTurn(LocoClip c) { return isLocoRunTurn(c) || isLocoReface(c) || isLocoStandTurn(c); }
+constexpr bool isLocoCrouchTurn(LocoClip c) { return c >= LocoClip::CrouchTurnLeft45 && c <= LocoClip::CrouchTurnRight180; }
+constexpr bool isLocoTurn(LocoClip c) { return isLocoRunTurn(c) || isLocoReface(c) || isLocoStandTurn(c) || isLocoCrouchTurn(c); }
 // The turns by angle: running turns and turns on the spot by kLocoTurnAngles[angle], turning starts
 // by kLocoRefaceAngles[angle].
 inline constexpr int kLocoTurnAngles[] = {45, 90, 135, 180};
@@ -104,7 +117,10 @@ constexpr LocoClip locoReface(bool right, int angle) {
 constexpr LocoClip locoStandTurn(bool right, int angle) {
     return static_cast<LocoClip>(static_cast<int>(LocoClip::StandTurnLeft45) + (right ? 4 : 0) + angle);
 }
-// A gait's start, and its stops.
+constexpr LocoClip locoCrouchTurn(bool right, int angle) {
+    return static_cast<LocoClip>(static_cast<int>(LocoClip::CrouchTurnLeft45) + (right ? 4 : 0) + angle);
+}
+// A standing gait's start, and its stops (the crouch walk has none).
 constexpr LocoClip locoStart(LocoClip gait) {
     return static_cast<LocoClip>(static_cast<int>(LocoClip::WalkStart) + static_cast<int>(gait) - static_cast<int>(LocoClip::Walk));
 }
@@ -112,7 +128,8 @@ constexpr LocoClip locoStop(LocoClip gait, bool right) {
     return static_cast<LocoClip>(static_cast<int>(LocoClip::WalkStopLeft) + 2 * (static_cast<int>(gait) - static_cast<int>(LocoClip::Walk)) + (right ? 1 : 0));
 }
 
-enum class LocoState : std::uint8_t { Ground, Rising, Falling, Landing, Starting, Stopping, Turning };
+// StanceChange: standing still, getting down into a crouch or up from one.
+enum class LocoState : std::uint8_t { Ground, Rising, Falling, Landing, Starting, Stopping, Turning, StanceChange };
 
 // One sample of a clip for measureGait: the root bone and the two feet (ball joints), in the
 // clip's space (cm, z up), and the root's yaw (degrees, positive turning +x toward +y).
@@ -236,6 +253,8 @@ struct LocoTuning {
     float maxWarp = 1.3f;
     float limbFade = 0.05f;     // the air pose's ease in and out (95% in three)
     float landArms = 0.5f;      // the arms keep the air pose this far into a landing
+    float crouchFade = 0.2f;    // moving: the gaits ease between standing and the crouch walk (time constant)
+    float crouchSettle = 0.15f; // getting down or up hands over to the idle this long before its end
 };
 
 // A party follower's brake lean and gaits. The party trail brings it to a stand more gently than the lead's
@@ -280,6 +299,8 @@ struct LocoInput {
     // With it, the lead's stride (cm from one left plant to the next, Locomotion::strideLength): the follower
     // steps at the rate a body with that stride would at its speed, and trims its phase from there. 0: unknown.
     float leadStride = 0.f;
+    // Crouch (a follower: as its lead does). Ignored without CrouchIdle and CrouchWalk.
+    bool crouch = false;
 };
 
 struct LocoLayer {
@@ -365,6 +386,9 @@ public:
     // The weight (0..1) on holding the elbows bent at least tuning().elbowBend.
     float elbowHold() const { return elbowHold_; }
     const LocoLimbs& limbs() const { return limbs_; }
+    // Crouched (asked to, with the clips for it), and how far the gaits have eased into the crouch walk (0..1).
+    bool crouched() const { return crouched_; }
+    float crouchWeight() const { return crouch_; }
 
 private:
     static constexpr std::size_t index(LocoClip c) { return static_cast<std::size_t>(c); }
@@ -384,6 +408,9 @@ private:
     void syncGaits(LocoClip from, float time, float speed);
     void retarget(LocoClip next);
     void advance(float dt, float speed, float leadPhase, float leadStride);
+    // Takes up the stance asked for: getting down or up when standing still.
+    void changeStance(bool crouch, float speed);
+    LocoClip idleClip() const { return crouched_ ? LocoClip::CrouchIdle : LocoClip::Idle; }
 
     std::array<LocoClipInfo, kLocoClipCount> info_{};
     std::array<float, kLocoClipCount> weight_{1.f};
@@ -426,6 +453,8 @@ private:
     float decel_ = 0.f; // smoothed deceleration (cm/s^2, speeding up below 0)
     float lastSpeed_ = 0.f;
     LocoLimbs limbs_;
+    bool crouched_ = false;
+    float crouch_ = 0.f; // the crouch walk's share of the gaits
 };
 
 } // namespace ftcore

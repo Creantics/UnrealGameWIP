@@ -140,6 +140,7 @@ bool AFTPartyFollower::Setup(const FString& Name, const AActor* Lead)
 	Anim->SetMovesFromGait(ftcore::LocoClip::Sprint);
 	Anim->SetTurnsFromRun();
 	Anim->SetAirPoseFromRun();
+	Anim->SetCrouchFromRun();
 	return true;
 }
 
@@ -215,6 +216,8 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 		Anim->SetIntent(WantSpeed, StopDistance);
 		Anim->SetAir(bAir, AirSpeed);
 		Anim->SetFace(bFacing, FaceYaw);
+		// It crouches when its lead does.
+		Anim->SetCrouch(LeadCharacter.IsValid() && LeadCharacter->bIsCrouched);
 		// The lead's foot phase while it holds a gait, so the two don't step together, and its stride, so a
 		// follower with a longer one steps faster to keep pace.
 		float LeadPhase = -1.f, LeadStride = 0.f;

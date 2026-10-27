@@ -8,7 +8,8 @@ namespace ftcore {
 namespace {
 
 constexpr float kDegToRad = 3.14159265f / 180.f;
-constexpr LocoClip kGaits[] = {LocoClip::Walk, LocoClip::Run, LocoClip::Sprint};
+constexpr LocoClip kGaits[] = {LocoClip::Walk, LocoClip::Run, LocoClip::Sprint, LocoClip::CrouchWalk};
+constexpr LocoClip kStandGaits[] = {LocoClip::Walk, LocoClip::Run, LocoClip::Sprint};
 // Gait mixes nearer than this to either end play the nearer gait alone.
 
 float frac(float x) { return x - std::floor(x); }
@@ -305,6 +306,8 @@ void Locomotion::reset() {
     lean_ = twist_ = pitch_ = 0.f;
     headPitch_ = headRoll_ = headYaw_ = 0.f;
     elbowHold_ = decel_ = lastSpeed_ = 0.f;
+    crouched_ = false;
+    crouch_ = 0.f;
 }
 
 float Locomotion::footPhase(LocoClip c, float t) const {
@@ -320,36 +323,44 @@ float Locomotion::timeAtPhase(LocoClip c, float phase) const {
 }
 
 void Locomotion::splitGaits(float speed) {
-    // The gaits this body has, slowest first.
+    // The crouch walk takes its share (all of it once crouched), the standing gaits split the rest.
+    share_.fill(0.f);
+    const float crouch = has(LocoClip::CrouchWalk) ? crouch_ : 0.f;
+    share_[index(LocoClip::CrouchWalk)] = crouch;
+    // The standing gaits this body has, slowest first.
     std::array<LocoClip, 3> order{};
     std::size_t n = 0;
-    for (const LocoClip c : kGaits) {
+    for (const LocoClip c : kStandGaits) {
         if (!has(c)) continue;
         std::size_t k = n++;
         for (; k > 0 && clip(order[k - 1]).groundSpeed > clip(c).groundSpeed; --k) order[k] = order[k - 1];
         order[k] = c;
     }
-    share_.fill(0.f);
-    if (n == 0) return;
+    if (n == 0) {
+        if (crouch > 0.f) share_[index(LocoClip::CrouchWalk)] = 1.f;
+        return;
+    }
+    const float stand = 1.f - crouch;
     std::size_t k = 0;
     while (k + 1 < n && speed > clip(order[k + 1]).groundSpeed) ++k;
     const float lo = clip(order[k]).groundSpeed;
     if (k + 1 == n || speed <= lo) {
-        share_[index(order[k])] = 1.f;
+        share_[index(order[k])] = stand;
         return;
     }
     // A gait with only a few percent of the mix plays at a rate far from its own and slides the planted
     // foot; near either end the nearer gait plays alone.
     float t = (speed - lo) / (clip(order[k + 1]).groundSpeed - lo);
     t = t < tuning_.gaitDeadBand ? 0.f : t > 1.f - tuning_.gaitDeadBand ? 1.f : t;
-    share_[index(order[k])] = 1.f - t;
-    share_[index(order[k + 1])] = t;
+    share_[index(order[k])] = (1.f - t) * stand;
+    share_[index(order[k + 1])] = t * stand;
 }
 
 LocoClip Locomotion::groundTarget(float speed) {
     const bool moving = isLocoGait(gait_);
-    if (speed < (moving ? tuning_.moveStop : tuning_.moveStart) || !(has(LocoClip::Walk) || has(LocoClip::Run) || has(LocoClip::Sprint))) {
-        gait_ = LocoClip::Idle;
+    if (speed < (moving ? tuning_.moveStop : tuning_.moveStart) ||
+        !(crouched_ || has(LocoClip::Walk) || has(LocoClip::Run) || has(LocoClip::Sprint))) {
+        gait_ = idleClip();
         return gait_;
     }
     gait_ = heaviestGait();
@@ -366,6 +377,7 @@ LocoClip Locomotion::heaviestGait() const {
 
 bool Locomotion::beginStop(const LocoInput& in, float speed) {
     if (braking_ < tuning_.stopDelay || in.stopDistance < 0.f || !isLocoGait(gait_) || speed < tuning_.moveStop) return false;
+    if (crouched_ || gait_ == LocoClip::CrouchWalk) return false; // the crouch walk has no stops
     // The stop on the foot that best continues what the feet are doing now.
     const LocoClip from = state_ == LocoState::Starting || state_ == LocoState::Turning ? move_ : gait_;
     const bool known = hasMove(from);
@@ -438,7 +450,7 @@ bool Locomotion::beginTurn(const LocoInput& in, LocoClip first, LocoClip last, f
     move_ = pick;
     warp_ = clampf(angle / clip(pick).turn, tuning_.minWarp, tuning_.maxWarp);
     // A turn on the spot has no distance to match: it plays at its own pace, as if its root moved the body.
-    rootDriven_ = in.rootMotion || isLocoStandTurn(pick);
+    rootDriven_ = in.rootMotion || isLocoStandTurn(pick) || isLocoCrouchTurn(pick);
     rate_[index(pick)] = rootDriven_ ? 1.f : 0.f;
     moved_ = 0.f;
     turnEnter_ = enter_ = bestTime;
@@ -532,8 +544,16 @@ LocoClip Locomotion::moveTarget(const LocoInput& in, float speed, LocoClip& sync
         // At the point whose remaining travel is the capsule's.
         return play(timeAtPath(m, m.travel - std::min(std::max(in.stopDistance, 0.f), m.travel)), step);
     }
+    case LocoState::StanceChange: {
+        // Getting down or up: moving off cuts it short.
+        if (heading || speed >= tuning_.moveStart || t >= m.length - tuning_.crouchSettle) {
+            state_ = LocoState::Ground;
+            return groundTarget(speed);
+        }
+        return play(t + dt, dt);
+    }
     case LocoState::Turning: {
-        if (isLocoStandTurn(move_)) {
+        if (isLocoStandTurn(move_) || isLocoCrouchTurn(move_)) {
             if (heading || t >= m.turnEnd + tuning_.turnTail || t >= m.length) return toGaits();
             return play(t + dt, dt);
         }
@@ -565,7 +585,7 @@ LocoClip Locomotion::moveTarget(const LocoInput& in, float speed, LocoClip& sync
     float gaits = 0.f;
     for (const LocoClip c : kGaits) gaits += weight_[index(c)];
     const float want = wrap180(in.wantYaw - in.yaw);
-    if (heading && !isLocoGait(gait_) && gaits < 0.5f && speed >= tuning_.moveStop) {
+    if (heading && !crouched_ && !isLocoGait(gait_) && gaits < 0.5f && speed >= tuning_.moveStop) {
         splitGaits(in.wantSpeed);
         const LocoClip g = heaviestGait();
         splitGaits(speed);
@@ -593,17 +613,45 @@ LocoClip Locomotion::moveTarget(const LocoInput& in, float speed, LocoClip& sync
     const bool settled = groundTime_ >= tuning_.replaySettle &&
         weight_[index(LocoClip::Run)] + weight_[index(LocoClip::Sprint)] >= tuning_.replayWeight;
     const float turn = in.turnBy != 0.f ? (settled ? wrap180(in.turnBy) : 0.f) : in.steer ? want : 0.f;
-    if (heading && isLocoGait(gait_) && gaits >= 0.5f && speed >= tuning_.turnSpeed * runSpeed &&
+    if (heading && !crouched_ && gait_ != LocoClip::CrouchWalk && isLocoGait(gait_) && gaits >= 0.5f &&
+        speed >= tuning_.turnSpeed * runSpeed &&
         ((in.turnBy != 0.f && settled) || std::fabs(turn) >= tuning_.turnMin) &&
         beginTurn(in, LocoClip::RunTurnLeft45L, LocoClip::RunTurnRight180R, turn, true)) {
         return move_;
     }
     const float face = wrap180(in.faceYaw - in.yaw);
     if (in.face && !heading && !isLocoGait(gait_) && speed < tuning_.moveStop && std::fabs(face) >= tuning_.faceMin &&
-        beginTurn(in, LocoClip::StandTurnLeft45, LocoClip::StandTurnRight180, face, false)) {
+        (crouched_ ? beginTurn(in, LocoClip::CrouchTurnLeft45, LocoClip::CrouchTurnRight180, face, false)
+                   : beginTurn(in, LocoClip::StandTurnLeft45, LocoClip::StandTurnRight180, face, false))) {
         return move_;
     }
     return groundTarget(speed);
+}
+
+void Locomotion::changeStance(bool crouch, float speed) {
+    crouch = crouch && has(LocoClip::CrouchIdle) && has(LocoClip::CrouchWalk);
+    if (crouch == crouched_) return;
+    crouched_ = crouch;
+    const LocoClip c = crouch ? LocoClip::CrouchDown : LocoClip::CrouchUp;
+    // Partway down and asked back up (or the other way): from the point as far along in the other clip.
+    float enter = 0.f;
+    if (state_ == LocoState::StanceChange) {
+        const float from = clip(move_).length;
+        enter = from > 0.f ? (1.f - time_[index(move_)] / from) * clip(c).length : 0.f;
+    }
+    // A start, stop or turn of the other stance gives way to the gaits.
+    if (state_ == LocoState::Starting || state_ == LocoState::Stopping || state_ == LocoState::Turning ||
+        state_ == LocoState::StanceChange) {
+        state_ = LocoState::Ground;
+    }
+    float gaits = 0.f;
+    for (const LocoClip g : kGaits) gaits += weight_[index(g)];
+    if (state_ != LocoState::Ground || isLocoGait(gait_) || gaits >= 0.5f || speed >= tuning_.moveStop || !has(c)) return;
+    state_ = LocoState::StanceChange;
+    move_ = c;
+    rate_[index(c)] = 1.f;
+    // Now, for this frame's step, and again once it is the target (a clip fading in starts from 0).
+    time_[index(c)] = enter_ = enter;
 }
 
 void Locomotion::retarget(LocoClip next) {
@@ -717,6 +765,7 @@ void Locomotion::update(const LocoInput& in) {
     case LocoState::Starting:
     case LocoState::Stopping:
     case LocoState::Turning:
+    case LocoState::StanceChange:
     case LocoState::Landing:
         if (offGround) {
             jump_ = moving && has(LocoClip::JumpMoving) ? LocoClip::JumpMoving : LocoClip::JumpStart;
@@ -748,6 +797,10 @@ void Locomotion::update(const LocoInput& in) {
     const bool braking = !in.falling && in.wantSpeed >= 0.f && in.wantSpeed < tuning_.moveStop;
     braking_ = braking ? braking_ + dt : 0.f;
     groundTime_ = state_ == LocoState::Ground ? groundTime_ + dt : 0.f;
+    changeStance(in.crouch, speed);
+    const float crouchTo = crouched_ ? 1.f : 0.f;
+    crouch_ += (crouchTo - crouch_) * follow(dt, tuning_.crouchFade);
+    if (std::fabs(crouchTo - crouch_) < 0.01f) crouch_ = crouchTo;
     splitGaits(speed);
     LocoClip next = target_;
     LocoClip syncFrom = LocoClip::Count;
@@ -756,7 +809,8 @@ void Locomotion::update(const LocoInput& in) {
     case LocoState::Ground:
     case LocoState::Starting:
     case LocoState::Stopping:
-    case LocoState::Turning: next = moveTarget(in, speed, syncFrom, syncTime); break;
+    case LocoState::Turning:
+    case LocoState::StanceChange: next = moveTarget(in, speed, syncFrom, syncTime); break;
     case LocoState::Rising: next = jump_; break;
     case LocoState::Falling: next = has(LocoClip::Fall) ? LocoClip::Fall : has(jump_) ? jump_ : gait_; break;
     case LocoState::Landing: next = land_; break;
@@ -801,13 +855,16 @@ void Locomotion::update(const LocoInput& in) {
     const float topSpeed = has(LocoClip::Sprint) ? clip(LocoClip::Sprint).groundSpeed : runSpeed;
     const float speedShare = runSpeed > 0.f ? clampf(speed / runSpeed, 0.f, 1.f) : 0.f;
     const bool turningNow = state_ == LocoState::Turning;
-    const bool ground = turningNow || state_ == LocoState::Ground || state_ == LocoState::Starting || state_ == LocoState::Stopping;
+    const bool ground = turningNow || state_ == LocoState::Ground || state_ == LocoState::Starting || state_ == LocoState::Stopping ||
+        state_ == LocoState::StanceChange;
     const float toCome = turningNow ? turnAngle() - turnYaw() : 0.f;
     const float leanTo = ground ? clampf(in.turnRate * tuning_.leanPerTurn * speedShare, -tuning_.maxLean, tuning_.maxLean) : 0.f;
     const float twistTo = !ground ? 0.f
         : clampf(turningNow ? toCome * tuning_.twistLead : in.turnRate * tuning_.twistPerTurn, -tuning_.maxTwist, tuning_.maxTwist);
-    const float runShare = runSpeed > walkSpeed ? clampf((speed - walkSpeed) / (runSpeed - walkSpeed), 0.f, 1.f) : 0.f;
-    const float sprintShare = topSpeed > runSpeed ? clampf((speed - runSpeed) / (topSpeed - runSpeed), 0.f, 1.f) : 0.f;
+    // Crouched, the run's lean and arms go with the standing gaits' share.
+    const float stand = 1.f - crouch_;
+    const float runShare = runSpeed > walkSpeed ? stand * clampf((speed - walkSpeed) / (runSpeed - walkSpeed), 0.f, 1.f) : 0.f;
+    const float sprintShare = topSpeed > runSpeed ? stand * clampf((speed - runSpeed) / (topSpeed - runSpeed), 0.f, 1.f) : 0.f;
     float pitchTo = ground ? tuning_.runPitch * runShare + tuning_.sprintPitch * sprintShare : 0.f;
     // Starts lean into the speed still to gain, and stops lean back by how hard they slow, on top of
     // the gait's lean.

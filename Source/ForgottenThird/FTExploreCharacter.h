@@ -87,11 +87,14 @@ public:
 	// Skeletal meshes worn over the body, posed by it.
 	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
 	TArray<FSoftObjectPath> PiecePaths;
-	// The default gait is a run (the run clip's ground speed); held Run sprints.
+	// The default gait is a run (the run clip's ground speed); held Run sprints. Crouch toggles a crouch walk
+	// at the crouch walk clip's ground speed (CrouchSpeed until it is measured).
 	UPROPERTY(EditAnywhere, Category = "Explore|Movement")
 	float WalkSpeed = 450.f;
 	UPROPERTY(EditAnywhere, Category = "Explore|Movement")
 	float RunSpeed = 700.f;
+	UPROPERTY(EditAnywhere, Category = "Explore|Movement")
+	float CrouchSpeed = 150.f;
 
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void AddMovementInput(FVector WorldDirection, float ScaleValue = 1.f, bool bForce = false) override;
@@ -114,6 +117,8 @@ private:
 	void HandleLook(const FInputActionValue& Value);
 	void HandleRunStart();
 	void HandleRunStop();
+	void HandleJump();
+	void HandleCrouch();
 	void HandleInteract();
 	void SetupLocomotion();
 	void ApplyLookOverrides();
@@ -138,6 +143,8 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> RunAction;
 	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> CrouchAction;
+	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> InteractAction;
 
 	UPROPERTY(Transient)
@@ -156,6 +163,8 @@ private:
 	FFTFootSlideProbe SlideProbe;
 	float JumpEvery = 0.f; // -LocoJump=<s>
 	float JumpTimer = 0.f;
+	float CrouchEvery = 0.f; // -LocoCrouchEvery=<s>
+	float CrouchTimer = 0.f;
 	float PulseEvery = 0.f; // -LocoPulse=<s>
 	float PulseTimer = 0.f;
 	float PulseRest = 2.f;  // -LocoRest=<s>
