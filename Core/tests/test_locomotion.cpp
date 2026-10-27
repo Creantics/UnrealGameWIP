@@ -110,7 +110,7 @@ TEST_CASE("locomotion: walk, run and sprint share one stride") {
     CHECK(l.target() == LocoClip::Sprint);
     CHECK(l.weight(LocoClip::Sprint) == doctest::Approx(1.f));
     CHECK(l.rate(LocoClip::Sprint) == doctest::Approx(700.f / 646.f));
-    CHECK(l.pitch() == doctest::Approx(l.tuning().runPitch).epsilon(0.01));
+    CHECK(l.pitch() == doctest::Approx(l.tuning().runPitch + l.tuning().sprintPitch).epsilon(0.01));
 }
 
 TEST_CASE("locomotion: on a speed ramp the blend moves smoothly and the lead gait changes once") {
@@ -336,6 +336,18 @@ TEST_CASE("locomotion: the body banks and leads into turns, more at speed, withi
     run(l, 1.f, {0.f, 700.f, -2000.f});
     CHECK(l.lean() == doctest::Approx(-l.tuning().maxLean).epsilon(0.01));
     CHECK(l.twist() == doctest::Approx(-l.tuning().maxTwist).epsilon(0.01));
+}
+
+TEST_CASE("locomotion: the head stays level against the lean and the bank") {
+    Locomotion l = makeLoco();
+    run(l, 1.f, {0.f, 509.f, 180.f});
+    CHECK(l.pitch() == doctest::Approx(l.tuning().runPitch).epsilon(0.01));
+    CHECK(l.headPitch() == doctest::Approx(-l.pitch() * l.tuning().headLevel));
+    CHECK(l.headRoll() == doctest::Approx(-l.lean() * l.tuning().headLevelRoll));
+    CHECK(l.headYaw() == 0.f); // no turn clip, so no look ahead of the chest
+    run(l, 1.f, {0.f, 0.f});
+    CHECK(std::fabs(l.headPitch()) < 0.01f);
+    CHECK(std::fabs(l.headRoll()) < 0.01f);
 }
 
 TEST_CASE("locomotion: a body with only idle and walk walks at any speed, capped in rate") {
@@ -1083,4 +1095,59 @@ TEST_CASE("locomotion: update does not allocate") {
         yaw += t.turning() ? 1.f : t.yawStep();
     }
     CHECK(ftcore_test::allocStats().count == turning);
+}
+
+TEST_CASE("locomotion: in a turn clip the chest and head lead the hips, and the body banks") {
+    Locomotion l = makeTurnLoco();
+    LocoInput in = runningIn(l);
+    in.steer = in.rootMotion = false;
+    in.turnBy = 90.f;
+    l.update(in);
+    REQUIRE(l.turning());
+    in.turnBy = 0.f;
+    float yaw = 0.f, peak = 0.f, yawAtPeak = 0.f, maxLean = 0.f, maxHead = 0.f;
+    while (l.turning()) {
+        const float before = yaw;
+        yaw = l.turnYaw();
+        in.turnRate = (yaw - before) / kDt;
+        l.update(in);
+        if (!l.turning()) break;
+        if (l.twist() > peak) {
+            peak = l.twist();
+            yawAtPeak = l.turnYaw();
+        }
+        maxLean = std::fmax(maxLean, l.lean());
+        maxHead = std::fmax(maxHead, l.headYaw());
+        CHECK(l.twist() >= 0.f);
+    }
+    CHECK(peak > 0.6f * l.tuning().maxTwist);
+    CHECK(yawAtPeak < 0.5f * 90.f); // ahead early: the chest is round before the hips are halfway
+    CHECK(maxHead > 0.5f * l.tuning().maxHeadYaw);
+    CHECK(maxLean > 5.f);
+    CHECK(maxLean <= l.tuning().maxLean + 1e-4f);
+    // Unwound by the time the turn hands back to the run.
+    CHECK(l.twist() < 0.25f * peak);
+    CHECK(std::fabs(l.headYaw()) < 0.25f * maxHead);
+
+    // On the spot it leads the same way but doesn't bank.
+    l = makeTurnLoco();
+    in = LocoInput{kDt, 0.f};
+    in.wantSpeed = 0.f;
+    in.face = true;
+    in.faceYaw = 90.f;
+    l.update(in);
+    REQUIRE(l.turning());
+    peak = maxLean = 0.f;
+    yaw = 0.f;
+    while (l.turning()) {
+        const float before = yaw;
+        yaw = l.turnYaw();
+        in.yaw = yaw;
+        in.turnRate = (yaw - before) / kDt;
+        l.update(in);
+        peak = std::fmax(peak, l.twist());
+        maxLean = std::fmax(maxLean, std::fabs(l.lean()));
+    }
+    CHECK(peak > 0.6f * l.tuning().maxTwist);
+    CHECK(maxLean < 0.5f);
 }

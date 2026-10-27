@@ -180,11 +180,18 @@ struct LocoTuning {
     float maxLandRate = 2.f;
     float maxRate = 3.f;        // gait rate cap
     float leanPerTurn = 0.035f; // roll per deg/s of turning, at the run's ground speed (less when slower)
-    float maxLean = 10.f;
+    float maxLean = 14.f;
     float twistPerTurn = 0.05f; // upper body yaw per deg/s of turning
-    float maxTwist = 18.f;
-    float runPitch = 6.f;       // forward lean added at the fastest gait's ground speed (none at the walk's)
+    float twistLead = 0.25f;    // in a turn clip: upper body yaw per degree of the turn still to come
+    float maxTwist = 22.f;
+    float runPitch = 12.f;      // forward lean added at the run's ground speed (none at the walk's)...
+    float sprintPitch = 3.f;    // ...and this much more at the sprint's
     float bodyResponse = 10.f;  // how fast lean, twist and pitch follow (1/s)
+    float headLevel = 1.f;      // the head takes back this share of the forward lean...
+    float headLevelRoll = 0.6f; // ...and this share of the bank
+    float headLead = 0.3f;      // in a turn clip: head yaw past the upper body's per degree still to come
+    float maxHeadYaw = 30.f;
+    float headResponse = 14.f;  // how fast the head follows (1/s)
     float moveRate = 3.f;       // starts and stops play at most this fast to catch up with the capsule
     float startHandoff = 0.9f;  // a start hands over once its root moves this share of the gait's ground speed
     float startEnd = 0.85f;     // or once it is this far through
@@ -295,9 +302,16 @@ public:
     FTCORE_API float turnAngle() const;
     std::uint32_t turnsBegun() const { return turnsBegun_; }
 
+    // The body layer over the clips (degrees): bank into turns (roll, positive with a positive
+    // turnRate), the upper body's yaw lead into them, and its forward lean with speed.
     float lean() const { return lean_; }
     float twist() const { return twist_; }
     float pitch() const { return pitch_; }
+    // The head on top of that (degrees): pitch and roll that keep it level against the lean and the
+    // bank, and yaw that looks into a turn ahead of the upper body.
+    float headPitch() const { return headPitch_; }
+    float headRoll() const { return headRoll_; }
+    float headYaw() const { return headYaw_; }
     const LocoLimbs& limbs() const { return limbs_; }
 
 private:
@@ -350,6 +364,9 @@ private:
     float lean_ = 0.f;
     float twist_ = 0.f;
     float pitch_ = 0.f;
+    float headPitch_ = 0.f;
+    float headRoll_ = 0.f;
+    float headYaw_ = 0.f;
     LocoLimbs limbs_;
 };
 

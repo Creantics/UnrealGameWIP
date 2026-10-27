@@ -304,6 +304,7 @@ void Locomotion::reset() {
     stride_.fill(0);
     fade_ = phase_ = airTime_ = landTime_ = 0.f;
     lean_ = twist_ = pitch_ = 0.f;
+    headPitch_ = headRoll_ = headYaw_ = 0.f;
 }
 
 float Locomotion::footPhase(LocoClip c, float t) const {
@@ -774,21 +775,33 @@ void Locomotion::update(const LocoInput& in) {
     yawStep_ = in.steer && state_ != LocoState::Turning && speed >= tuning_.moveStop
         ? wrap180(in.moveYaw - in.yaw) * follow(dt, tuning_.faceTime) : 0.f;
 
-    // The body: bank and lead with the upper body into turns, lean forward with speed. A turn clip
-    // already does all of that.
+    // The body: bank into turns by how fast the body turns and how fast it goes, lead into them with
+    // the upper body, and lean forward with speed. In a turn clip the upper body leads by the turn
+    // still to come, so it is ahead early and unwinds as the hips come round.
     const float walkSpeed = clip(LocoClip::Walk).groundSpeed;
     const float runSpeed = has(LocoClip::Run) ? clip(LocoClip::Run).groundSpeed : walkSpeed;
     const float topSpeed = has(LocoClip::Sprint) ? clip(LocoClip::Sprint).groundSpeed : runSpeed;
     const float speedShare = runSpeed > 0.f ? clampf(speed / runSpeed, 0.f, 1.f) : 0.f;
-    const bool ground = state_ == LocoState::Ground || state_ == LocoState::Starting || state_ == LocoState::Stopping;
+    const bool turningNow = state_ == LocoState::Turning;
+    const bool ground = turningNow || state_ == LocoState::Ground || state_ == LocoState::Starting || state_ == LocoState::Stopping;
+    const float toCome = turningNow ? turnAngle() - turnYaw() : 0.f;
     const float leanTo = ground ? clampf(in.turnRate * tuning_.leanPerTurn * speedShare, -tuning_.maxLean, tuning_.maxLean) : 0.f;
-    const float twistTo = ground ? clampf(in.turnRate * tuning_.twistPerTurn, -tuning_.maxTwist, tuning_.maxTwist) : 0.f;
-    const float runShare = topSpeed > walkSpeed ? clampf((speed - walkSpeed) / (topSpeed - walkSpeed), 0.f, 1.f) : 0.f;
-    const float pitchTo = ground ? tuning_.runPitch * runShare : 0.f;
+    const float twistTo = !ground ? 0.f
+        : clampf(turningNow ? toCome * tuning_.twistLead : in.turnRate * tuning_.twistPerTurn, -tuning_.maxTwist, tuning_.maxTwist);
+    const float runShare = runSpeed > walkSpeed ? clampf((speed - walkSpeed) / (runSpeed - walkSpeed), 0.f, 1.f) : 0.f;
+    const float sprintShare = topSpeed > runSpeed ? clampf((speed - runSpeed) / (topSpeed - runSpeed), 0.f, 1.f) : 0.f;
+    const float pitchTo = ground ? tuning_.runPitch * runShare + tuning_.sprintPitch * sprintShare : 0.f;
     const float b = 1.f - std::exp(-dt * tuning_.bodyResponse);
     lean_ += (leanTo - lean_) * b;
     twist_ += (twistTo - twist_) * b;
     pitch_ += (pitchTo - pitch_) * b;
+
+    // The head: level against the lean and the bank, and a look into the turn ahead of the chest.
+    const float h = 1.f - std::exp(-dt * tuning_.headResponse);
+    const float headYawTo = clampf(toCome * tuning_.headLead, -tuning_.maxHeadYaw, tuning_.maxHeadYaw);
+    headPitch_ = -pitch_ * tuning_.headLevel;
+    headRoll_ = -lean_ * tuning_.headLevelRoll;
+    headYaw_ += (headYawTo - headYaw_) * h;
 }
 
 } // namespace ftcore

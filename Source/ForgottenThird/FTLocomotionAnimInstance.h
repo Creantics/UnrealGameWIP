@@ -84,6 +84,7 @@ struct FFTLocomotionAnimProxy : public FAnimInstanceProxy
 	// The heaviest layers past this many are dropped (only a crossfade under way has more than a few).
 	static constexpr int32 MaxLayers = 12;
 	static constexpr int32 NumSpine = 3; // spine_01..03
+	static constexpr int32 NumNeck = 2;  // neck_01, head
 	// The air pose's bones: clavicle to hand on each side, then thigh to foot on each side.
 	static constexpr int32 NumArmBones = 8;
 	static constexpr int32 NumLimbs = 14;
@@ -103,11 +104,14 @@ private:
 	int32 NumLayers = 0;
 	// The spine's bend this frame, in component space: one rotation shared over the spine bones.
 	FQuat SpineBend = FQuat::Identity;
+	// The head's on top of it (Locomotion's headPitch, headRoll, headYaw), shared over the neck bones.
+	FQuat HeadBend = FQuat::Identity;
 	// The air pose (Locomotion::limbs), and its weight on the arms and on the legs.
 	FLayer LimbPose;
 	float LimbWeight[2] = {0.f, 0.f};
 
 	FBoneReference Spine[NumSpine];
+	FBoneReference Neck[NumNeck];
 	FBoneReference Limb[NumLimbs];
 	uint16 BoundSerial = 0;
 	bool bBound = false;

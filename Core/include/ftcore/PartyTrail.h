@@ -102,8 +102,8 @@ private:
 };
 
 struct PartySlotTuning {
-    float spacing = 1.5f;    // metres behind the lead along the trail, when it holds its speed
-    float side = 0.7f;       // metres to the side of the path (+ left of the way it goes, - right)
+    float spacing = 1.9f;    // metres behind the lead along the trail, when it holds its speed
+    float side = 1.0f;       // metres to the side of the path (+ left of the way it goes, - right)
     float minGap = 1.0f;     // never nearer the lead than this (metres, straight line)
     float minArc = 0.9f;     // nor nearer along the trail
     float react = 0.25f;     // seconds: the lag of its speed behind the lead's

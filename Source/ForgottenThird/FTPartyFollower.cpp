@@ -14,6 +14,8 @@ namespace
 constexpr float kStillSpeed = 10.f;
 // The time constant (s) of the follower's turn toward the way it moves, as the lead's facing eases (LocoTuning::faceTime).
 constexpr float kFaceTime = 0.15f;
+// And never faster than this (deg/s): a walking body's turn, not a spin.
+constexpr float kMaxFaceRate = 220.f;
 // How fast the speed fed to the anim follows each frame's step (1/s), so uneven frames don't jitter the stride.
 constexpr float kSpeedResponse = 12.f;
 // Asked to face a way, it has once it is this near (degrees): nearer than LocoTuning::faceMin, no turn on the spot starts.
@@ -137,10 +139,12 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 	}
 	else if (bWantWalk)
 	{
-		// Ease toward the trail rather than snapping to each frame's step, so a weaving lead doesn't jerk it round.
+		// Ease toward the trail rather than snapping to each frame's step, so a weaving lead doesn't jerk it round,
+		// and no faster than a body turns as it walks (setting off well away from its facing, after a stand turn).
 		const float Want = FMath::RadiansToDegrees(FMath::Atan2(Move.Y, Move.X));
 		const float Ease = DeltaSeconds > 0.f ? 1.f - FMath::Exp(-DeltaSeconds / kFaceTime) : 1.f;
-		Rot.Yaw += FMath::FindDeltaAngleDegrees(static_cast<float>(Rot.Yaw), Want) * Ease;
+		const float MaxStep = kMaxFaceRate * DeltaSeconds;
+		Rot.Yaw += FMath::Clamp(FMath::FindDeltaAngleDegrees(static_cast<float>(Rot.Yaw), Want) * Ease, -MaxStep, MaxStep);
 	}
 	SetActorLocationAndRotation(FVector(Ground.X, Ground.Y, Z), Rot, false, nullptr, ETeleportType::TeleportPhysics);
 	// Facing where it was asked to, or setting off, it no longer turns on the spot.

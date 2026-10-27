@@ -16,6 +16,7 @@
 namespace
 {
 const TCHAR* const SpineNames[FFTLocomotionAnimProxy::NumSpine] = {TEXT("spine_01"), TEXT("spine_02"), TEXT("spine_03")};
+const TCHAR* const NeckNames[FFTLocomotionAnimProxy::NumNeck] = {TEXT("neck_01"), TEXT("head")};
 // The bones the air pose turns: the arms (from the clavicles) first, then the legs.
 const TCHAR* const LimbNames[FFTLocomotionAnimProxy::NumLimbs] = {
 	TEXT("clavicle_l"), TEXT("upperarm_l"), TEXT("lowerarm_l"), TEXT("hand_l"),
@@ -601,6 +602,9 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 	const FQuat Pitch(Right, FMath::DegreesToRadians(Loco.pitch()));
 	const FQuat Twist(FVector::UpVector, FMath::DegreesToRadians(Loco.twist()));
 	SpineBend = Twist * Pitch * Lean;
+	// The head keeps level against the pitch and the lean, and looks into a turn ahead of the chest.
+	HeadBend = FQuat(FVector::UpVector, FMath::DegreesToRadians(Loco.headYaw()))
+		* FQuat(Right, FMath::DegreesToRadians(Loco.headPitch())) * FQuat(F, FMath::DegreesToRadians(-Loco.headRoll()));
 }
 
 bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
@@ -653,6 +657,18 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 			Spine[I].BoneName = SpineNames[I];
 			Spine[I].Initialize(Container);
 		}
+		int32 NeckFound = 0;
+		for (int32 I = 0; I < NumNeck; ++I)
+		{
+			Neck[I].BoneName = NeckNames[I];
+			Neck[I].Initialize(Container);
+			NeckFound += Neck[I].IsValidToEvaluate(Container) ? 1 : 0;
+		}
+		if (NeckFound < NumNeck)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTLocomotion: %d of %d neck bones (neck_01, head) found; the head's level and look use those."),
+				NeckFound, NumNeck);
+		}
 		for (int32 I = 0; I < NumLimbs; ++I)
 		{
 			Limb[I].BoneName = LimbNames[I];
@@ -683,31 +699,50 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 			Output.Pose[Index].SetRotation(FQuat::Slerp(Output.Pose[Index].GetRotation(), Pose[Index].GetRotation(), W).GetNormalized());
 		}
 	}
-	int32 Valid = 0;
-	for (const FBoneReference& B : Spine)
+	// Each chain's bones turn by an equal share of its bend about their own origins, in component
+	// space; the bones above follow, so the head's bend comes on top of the spine's.
+	auto CountValid = [&Container](const FBoneReference* Bones, int32 Num)
 	{
-		Valid += B.IsValidToEvaluate(Container) ? 1 : 0;
-	}
-	if (Valid == 0 || SpineBend.Equals(FQuat::Identity, 1e-5))
+		int32 Valid = 0;
+		for (int32 I = 0; I < Num; ++I)
+		{
+			Valid += Bones[I].IsValidToEvaluate(Container) ? 1 : 0;
+		}
+		return Valid;
+	};
+	const int32 SpineValid = CountValid(Spine, NumSpine);
+	const int32 NeckValid = CountValid(Neck, NumNeck);
+	const bool bSpine = SpineValid > 0 && !SpineBend.Equals(FQuat::Identity, 1e-5);
+	const bool bNeck = NeckValid > 0 && !HeadBend.Equals(FQuat::Identity, 1e-5);
+	if (!bSpine && !bNeck)
 	{
 		return true;
 	}
-	// Each spine bone turns by an equal share of the bend about its own origin, in component space;
-	// the bones above it follow.
-	const FQuat Share = FQuat::Slerp(FQuat::Identity, SpineBend, 1.f / static_cast<float>(Valid));
 	FCSPose<FCompactPose> CS;
 	// A copy (on the anim stack): the conversion back writes into Output.Pose before taking CS's.
 	CS.InitPose(Output.Pose);
-	for (const FBoneReference& B : Spine)
+	auto Bend = [&Container, &CS](const FBoneReference* Bones, int32 Num, int32 Valid, const FQuat& By)
 	{
-		if (!B.IsValidToEvaluate(Container))
+		const FQuat Share = FQuat::Slerp(FQuat::Identity, By, 1.f / static_cast<float>(Valid));
+		for (int32 I = 0; I < Num; ++I)
 		{
-			continue;
+			if (!Bones[I].IsValidToEvaluate(Container))
+			{
+				continue;
+			}
+			const FCompactPoseBoneIndex Index = Bones[I].GetCompactPoseIndex(Container);
+			FTransform T = CS.GetComponentSpaceTransform(Index);
+			T.SetRotation((Share * T.GetRotation()).GetNormalized());
+			CS.SetComponentSpaceTransform(Index, T);
 		}
-		const FCompactPoseBoneIndex Index = B.GetCompactPoseIndex(Container);
-		FTransform T = CS.GetComponentSpaceTransform(Index);
-		T.SetRotation((Share * T.GetRotation()).GetNormalized());
-		CS.SetComponentSpaceTransform(Index, T);
+	};
+	if (bSpine)
+	{
+		Bend(Spine, NumSpine, SpineValid, SpineBend);
+	}
+	if (bNeck)
+	{
+		Bend(Neck, NumNeck, NeckValid, HeadBend);
 	}
 	FCSPose<FCompactPose>::ConvertComponentPosesToLocalPoses(MoveTemp(CS), Output.Pose);
 	return true;

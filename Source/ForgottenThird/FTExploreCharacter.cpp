@@ -37,6 +37,8 @@ constexpr float kRecentreRate = 3.f;
 constexpr float kRecentreMax = 120.f;
 constexpr float kRecentreSpeed = 50.f; // cm/s: slower counts as standing
 constexpr float kSideHold = 1.f;       // -LocoSideView holds the side camera this long (s) after a turn
+constexpr float kArm = 400.f;          // the camera's distance behind the body
+constexpr float kSideArm = 450.f;      // and, filming a follower's turn, behind the point between it and the lead (plus their gap)
 } // namespace
 
 AFTExploreCharacter::AFTExploreCharacter()
@@ -68,7 +70,7 @@ AFTExploreCharacter::AFTExploreCharacter()
 	Boom->SetupAttachment(RootComponent);
 	// Low and over the right shoulder, the lead filling about 45% of the frame's height (at 16:9), so
 	// the ground moving past reads as speed and the run reads whole.
-	Boom->TargetArmLength = 400.f;
+	Boom->TargetArmLength = kArm;
 	Boom->SocketOffset = FVector(0.0, 70.0, 60.0);
 	Boom->bUsePawnControlRotation = true;
 	Boom->bEnableCameraLag = true;
@@ -284,13 +286,18 @@ void AFTExploreCharacter::ApplyLookOverrides()
 	LoadClip(LandMovingClipPath, LandMovingClip);
 	int32 Cloth = 0;
 	// Gate captures: -LocoNoPieces leaves every piece off (the body alone), -LocoNoPiece=hair+collar those whose
-	// asset name holds any of the words, to find which one breaks up as the body turns.
+	// asset name holds any of the words, to find which one breaks up as the body turns. The collar is left off
+	// unless -LocoCollar: it stands off the shoulders as a flat plate behind the head once the body moves.
 	const bool bNoPieces = FParse::Param(FCommandLine::Get(), TEXT("LocoNoPieces"));
 	FString NoPiece;
 	TArray<FString> NoPieceWords;
 	if (FParse::Value(FCommandLine::Get(), TEXT("LocoNoPiece="), NoPiece))
 	{
 		NoPiece.ParseIntoArray(NoPieceWords, TEXT("+"));
+	}
+	if (!FParse::Param(FCommandLine::Get(), TEXT("LocoCollar")))
+	{
+		NoPieceWords.Add(TEXT("collar"));
 	}
 	for (const FSoftObjectPath& Path : PiecePaths)
 	{
@@ -506,6 +513,24 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 			FRotator Control = Controller->GetControlRotation();
 			Control.Yaw = SideYaw;
 			Controller->SetControlRotation(Control);
+		}
+		// Watching a follower, the turn is filmed with the lead in frame too: the camera looks at the
+		// point between them, pulled back by the gap.
+		if (Framed != this)
+		{
+			const float HalfHeight = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+			if (SideHold > 0.f)
+			{
+				// The follower's root is at its feet, the lead's at its capsule's middle.
+				const FVector Up(0.0, 0.0, HalfHeight);
+				Boom->SetWorldLocation((GetActorLocation() - Up + Framed->GetActorLocation()) * 0.5 + Up);
+				Boom->TargetArmLength = kSideArm + static_cast<float>(FVector::Dist2D(GetActorLocation(), Framed->GetActorLocation()));
+			}
+			else
+			{
+				Boom->SetRelativeLocation(FVector(0.0, 0.0, HalfHeight));
+				Boom->TargetArmLength = kArm;
+			}
 		}
 	}
 	if (Controller && Boom->bUsePawnControlRotation && LookRest >= kRecentreDelay && GetVelocity().Size2D() > kRecentreSpeed
