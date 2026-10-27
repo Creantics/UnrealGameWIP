@@ -6,7 +6,24 @@ Private notes (character references, concept-art review, script status) are in `
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-27 ~09:15, face round 5 regressed, round 6 queued, clothes chains scripted):**
+- **NEWEST (2026-10-27 ~11:20, face round 6 scored; ops now sized from measurements; animation on the new bodies):**
+  - Round 6 (sign-fixed field ops plus look variants on contact sheets): only the unrigged lead's fit reached the renders.
+    The two finalized leads render their face rig, so their fits never showed (see the rig note below). Their round 6
+    is held back. Look picks from one reader per criterion: one lead gets a new hair groom, another a new skin texture
+    and iris tint; the other slots keep their base.
+  - New method (advisor ruling): readers find which feature is off; measurement sets the direction and the size.
+    MediaPipe landmarks on the sheet and on the render give ratios. Normalise by a distance no field op touches
+    (nasion to chin, after backing out the known chin op) to decide whether IPD or face width is the trustworthy
+    anchor. Calibration: chin op CH 1.0 is about 1 cm of chin drop; eye op EM 1.0 per eye is about 2 cm of eye
+    spacing. Back out pitch differences by rotating the sheet landmarks before you compare verticals.
+  - Round 7 is built from those sizes: one lead's eyes move closer (spacing 7.85 to 7.1 cm), one lead's chin comes up
+    0.6 cm with a thinner lower lip, and one lead drops round-5 ops that widened the mouth and opened the lids.
+    The editor run does a lens test first (the same front view at 2x distance and half FOV, to see whether the
+    render camera inflates nose and mouth widths), then unrigs the two finalized leads, fits, and renders.
+    `fit_vertices.py` takes `"unrig": true` in its args. Re-finalize (re-rig) once the faces pass.
+  - Animation: the set is retargeted onto all three new MetaHuman bodies, and a lead plus two followers run in game
+    facing forward at 450 cm/s. The follower stop lean and stride sync are in the animation session's notes.
+- **Earlier (2026-10-27 ~09:15, face round 5 regressed, round 6 queued, clothes chains scripted):**
   - Round 5 (field ops scaled up) scored flat or worse (about 4.9-5.5/10). Cause: several field ops had their sign
     backwards (one widened a jaw that readers wanted narrower), and look items (hair, brows, iris, skin texture) were
     never touched. Round 6 fixes the signs, then sweeps groom/iris/skin variants on a contact sheet with one reader per
