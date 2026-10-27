@@ -185,6 +185,9 @@ struct LocoTuning {
     float maxRate = 3.f;        // gait rate cap
     float phaseGain = 0.4f;     // a follower's stride rate trim per stride of phase error (LocoInput::leadPhase)...
     float phaseTrim = 0.02f;    // ...at most this share either way (the feet slip by speed x trim)
+    float phaseUpBias = 1.5f;   // it steps faster to the next quarter stride unless that is this many times further than slowing
+                                // to the last one: trimming down adds to the forward slip of the plants, trimming up takes from it
+    float gaitDeadBand = 0.03f; // a gait with less of the mix than this drops out, the nearer gait playing alone
     float leanPerTurn = 0.035f; // roll per deg/s of turning, at the run's ground speed (less when slower)
     float maxLean = 14.f;
     float twistPerTurn = 0.05f; // upper body yaw per deg/s of turning
@@ -194,8 +197,8 @@ struct LocoTuning {
                                 // and -6 lifts the head clear of the shoulders in a rear three-quarter view...
     float sprintPitch = 3.f;    // ...and this much more at the sprint's
     float startPitch = 8.f;     // more forward lean while speeding up, with a run's speed still to gain...
-    float brakePitch = -10.f;   // ...and lean back while braking, on top of the gait's lean, by how hard it slows: all of it at
-    float brakeDecel = 1150.f;  // this deceleration (cm/s^2: a run stopping in the game, 450 to a stand in 0.39 s)...
+    float brakePitch = -4.f;    // ...and lean back while braking, on top of the gait's lean, by how hard it slows: all of it at
+    float brakeDecel = 1030.f;  // this deceleration (cm/s^2: the lead's mean stopping a run, 400 to a stand in 0.39 s)...
     float brakeSmooth = 0.1f;   // ...smoothed over this long (s): the GASP stops lurch forward mid-stop, and this holds them back
     float airPitch = 6.f;       // forward tuck in the air
     float landPitch = 10.f;     // forward dip into a landing...
@@ -231,6 +234,14 @@ struct LocoTuning {
     float limbFade = 0.05f;     // the air pose's ease in and out (95% in three)
     float landArms = 0.5f;      // the arms keep the air pose this far into a landing
 };
+
+// A party follower's brake lean. The party trail brings it to a stand more gently than the lead's movement
+// component (485 cm/s^2 on average, about 0.95 s from a run), so all of its lean comes at its own rate; and
+// its stop clip leans back less than the lead's on its own, so the lean tops it up by more.
+inline void tuneForFollower(LocoTuning& t) {
+    t.brakeDecel = 485.f;
+    t.brakePitch = -12.f;
+}
 
 struct LocoInput {
     float dt = 0.f;

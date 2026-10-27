@@ -10,7 +10,6 @@ namespace {
 constexpr float kDegToRad = 3.14159265f / 180.f;
 constexpr LocoClip kGaits[] = {LocoClip::Walk, LocoClip::Run, LocoClip::Sprint};
 // Gait mixes nearer than this to either end play the nearer gait alone.
-constexpr float kGaitDeadBand = 0.03f;
 
 float frac(float x) { return x - std::floor(x); }
 
@@ -342,7 +341,7 @@ void Locomotion::splitGaits(float speed) {
     // A gait with only a few percent of the mix plays at a rate far from its own and slides the planted
     // foot; near either end the nearer gait plays alone.
     float t = (speed - lo) / (clip(order[k + 1]).groundSpeed - lo);
-    t = t < kGaitDeadBand ? 0.f : t > 1.f - kGaitDeadBand ? 1.f : t;
+    t = t < tuning_.gaitDeadBand ? 0.f : t > 1.f - tuning_.gaitDeadBand ? 1.f : t;
     share_[index(order[k])] = 1.f - t;
     share_[index(order[k + 1])] = t;
 }
@@ -658,12 +657,12 @@ void Locomotion::advance(float dt, float speed, float leadPhase) {
         natural += s * static_cast<float>(i.cycles) / i.length;
     }
     float strideRate = stride > 0.f ? std::min(speed / stride, tuning_.maxRate * natural) : natural;
-    // A follower on the ground loop eases its phase toward the nearer of the lead's +-1/4 stride (feet
-    // half a step apart) by stepping a little faster or slower.
+    // A follower on the ground loop eases its phase toward one of the lead's +-1/4 stride (feet half a
+    // step apart) by stepping a little faster or slower: faster unless that one is much further.
     trim_ = 0.f;
     if (leadPhase >= 0.f && state_ == LocoState::Ground && speed >= tuning_.moveStop) {
-        float err = frac(leadPhase + 0.25f - phase_ + 0.5f) - 0.5f; // to lead + 1/4, in -0.5..0.5
-        if (std::fabs(err) > 0.25f) err -= std::copysign(0.5f, err); // lead - 1/4 is nearer
+        const float up = 0.5f * frac(2.f * (leadPhase + 0.25f - phase_)); // ahead to the next one, 0..0.5
+        const float err = up <= tuning_.phaseUpBias * (0.5f - up) ? up : up - 0.5f;
         trim_ = clampf(tuning_.phaseGain * err, -tuning_.phaseTrim, tuning_.phaseTrim);
         strideRate *= 1.f + trim_;
     }

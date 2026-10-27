@@ -429,6 +429,21 @@ TEST_CASE("locomotion: the lean leads a start and leans back into a stop by how 
     CHECK(twice.decel() == doctest::Approx(0.5f * t.brakeDecel).epsilon(0.05));
     CHECK(twice.pitch() == doctest::Approx(0.5f * t.brakePitch).epsilon(0.05));
 
+    // A follower leans back by all of its own brake lean at its own, softer, rate; braking harder leans it no further.
+    Locomotion soft = makeLoco();
+    tuneForFollower(soft.tuning());
+    soft.tuning().runPitch = 0.f;
+    CHECK(soft.tuning().brakeDecel < t.brakeDecel);
+    LocoInput f{0.f, 509.f};
+    f.wantSpeed = 509.f;
+    run(soft, 1.f, f);
+    f.wantSpeed = 0.f;
+    for (int i = 0; i < 30; ++i) {
+        f.groundSpeed -= 1.5f * soft.tuning().brakeDecel * kDt;
+        run(soft, kDt, f);
+    }
+    CHECK(soft.pitch() == doctest::Approx(soft.tuning().brakePitch).epsilon(0.05));
+
     // Speed with no heading said (a follower without one): no start or stop lean.
     Locomotion plain = makeLoco();
     run(plain, 1.f, {0.f, 250.f});
@@ -1365,4 +1380,35 @@ TEST_CASE("locomotion: the phase trim holds a follower whose stride differs") {
     CAPTURE(trimmed.gap);
     CHECK(trimmed.gap >= 0.4f);
     CHECK(trimmed.maxTrim <= LocoTuning{}.phaseTrim + 1e-6f);
+}
+
+TEST_CASE("locomotion: a follower steps faster to the next quarter stride unless it is much further") {
+    // The lead's +-1/4 stride sit half a stride apart, so a follower is always between two of them.
+    // Slowing to the one behind adds to the forward slip of its plants, so it speeds up to the one
+    // ahead unless that is more than 1.5 times as far (here 0.3 of a stride ahead, 0.2 behind).
+    auto trimAt = [](float ahead) {
+        Locomotion f = makeLoco();
+        run(f, 2.f, {0.f, 450.f});
+        REQUIRE(f.state() == LocoState::Ground);
+        LocoInput in{kDt, 450.f};
+        in.leadPhase = std::fmod(f.phase() + ahead - 0.25f + 1.f, 1.f);
+        f.update(in);
+        return f.phaseTrim();
+    };
+    CHECK(trimAt(0.1f) > 0.f);
+    CHECK(trimAt(0.28f) > 0.f); // nearer behind, but not by enough
+    CHECK(trimAt(0.32f) < 0.f);
+    CHECK(trimAt(0.45f) < 0.f);
+}
+
+TEST_CASE("locomotion: a wider gait dead band drops a few percent of walk at a run") {
+    // makeLoco's walk is 298 cm/s and its run 509: at 500 the walk holds about 4% of the mix.
+    Locomotion narrow = makeLoco();
+    run(narrow, 2.f, {0.f, 500.f});
+    CHECK(narrow.weight(LocoClip::Walk) > 0.03f);
+    Locomotion wide = makeLoco();
+    wide.tuning().gaitDeadBand = 0.05f;
+    run(wide, 2.f, {0.f, 500.f});
+    CHECK(wide.weight(LocoClip::Walk) == 0.f);
+    CHECK(wide.weight(LocoClip::Run) == doctest::Approx(gaitWeight(wide)));
 }

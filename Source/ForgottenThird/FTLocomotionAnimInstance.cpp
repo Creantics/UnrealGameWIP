@@ -321,17 +321,30 @@ void UFTLocomotionAnimInstance::NativeInitializeAnimation()
 {
 	Super::NativeInitializeAnimation();
 	Loco.reset();
-	// A character's turn clips move and turn its capsule; nothing else here extracts root motion.
-	if (Cast<ACharacter>(GetOwningActor()))
+	// A character's turn clips move and turn its capsule; nothing else here extracts root motion. Anything
+	// else is a party follower, which the party trail brakes more gently.
+	const bool bLead = Cast<ACharacter>(GetOwningActor()) != nullptr;
+	if (bLead)
 	{
 		RootMotionMode = ERootMotionMode::RootMotionFromEverything;
+	}
+	else
+	{
+		ftcore::tuneForFollower(Loco.tuning());
 	}
 	bHasYaw = false;
 	bLog = FParse::Param(FCommandLine::Get(), TEXT("LocoLog"));
 	// -LocoRunPitch=<deg> tries another run lean for a capture (negative pulls the mocap upright).
 	FParse::Value(FCommandLine::Get(), TEXT("LocoRunPitch="), Loco.tuning().runPitch);
-	// -LocoBrakePitch=<deg> tries another stop lean (negative leans back).
+	// -LocoBrakePitch=<deg> and -LocoBrakeDecel=<cm/s^2> try another stop lean on both bodies (negative leans
+	// back), -LocoLeadBrakePitch=... or -LocoFollowerBrakePitch=... on one.
+	const TCHAR* Body = bLead ? TEXT("Lead") : TEXT("Follower");
 	FParse::Value(FCommandLine::Get(), TEXT("LocoBrakePitch="), Loco.tuning().brakePitch);
+	FParse::Value(FCommandLine::Get(), *FString::Printf(TEXT("Loco%sBrakePitch="), Body), Loco.tuning().brakePitch);
+	FParse::Value(FCommandLine::Get(), TEXT("LocoBrakeDecel="), Loco.tuning().brakeDecel);
+	FParse::Value(FCommandLine::Get(), *FString::Printf(TEXT("Loco%sBrakeDecel="), Body), Loco.tuning().brakeDecel);
+	// -LocoGaitDeadBand=<share> drops a gait with less of the mix than this (a follower at the run holds ~6% walk).
+	FParse::Value(FCommandLine::Get(), TEXT("LocoGaitDeadBand="), Loco.tuning().gaitDeadBand);
 	if (FParse::Param(FCommandLine::Get(), TEXT("LocoSlide")))
 	{
 		// The probe reads bone positions, which an unrendered mesh (-NullRHI) otherwise leaves stale.
