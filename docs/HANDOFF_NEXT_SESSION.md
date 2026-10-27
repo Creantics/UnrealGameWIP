@@ -1,11 +1,21 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-25. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-26. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
+- **NEWEST (2026-10-26 late, characters and art direction):**
+  - Art direction: one photoreal base for every world. Each world gets its own identity from shader and post-process
+    differences (grade, light, atmosphere, material tweaks), not separate drawing styles. The style-pack system
+    (`ftcore::StylePack`, `FTBuildStyleMaterials`, `AFTStyleController`) carries that layer once its packs are retuned.
+    The stylization backlog (cel bands, hatching, hulls, ink lines) is dropped.
+  - The Third moves to a MetaHuman head and body. A test conformed a fresh MetaHuman to a mesh made from the new realistic
+    reference sheet (used as a shape target only), and in a blind per-criterion check it beat the previous MetaHuman build
+    on every shape criterion. The face still needs a refinement pass. The robe continues on the MetaHuman body, after a
+    proportion check against the old avatar. Details are in the private handoff.
+  - Next aspect: the blind readers for the animation gate sheets.
 - **NEWEST (2026-10-26, motion tools): SOMA-skeleton motion (NVIDIA Kimodo and MotionBricks) retargets onto the
   MetaHuman Third, headless.** It was a trial run, and nothing generated is in the repo.
   - Both tools output the 77-joint SOMA skeleton.
