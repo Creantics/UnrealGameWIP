@@ -305,7 +305,7 @@ void Locomotion::reset() {
     fade_ = phase_ = airTime_ = landTime_ = groundTime_ = 0.f;
     lean_ = twist_ = pitch_ = 0.f;
     headPitch_ = headRoll_ = headYaw_ = 0.f;
-    elbowHold_ = settle_ = lastSpeed_ = 0.f;
+    elbowHold_ = decel_ = lastSpeed_ = 0.f;
 }
 
 float Locomotion::footPhase(LocoClip c, float t) const {
@@ -806,18 +806,13 @@ void Locomotion::update(const LocoInput& in) {
     const float runShare = runSpeed > walkSpeed ? clampf((speed - walkSpeed) / (runSpeed - walkSpeed), 0.f, 1.f) : 0.f;
     const float sprintShare = topSpeed > runSpeed ? clampf((speed - runSpeed) / (topSpeed - runSpeed), 0.f, 1.f) : 0.f;
     float pitchTo = ground ? tuning_.runPitch * runShare + tuning_.sprintPitch * sprintShare : 0.f;
-    // Starts lean into the speed still to gain, stops lean back against the speed still to lose (in
-    // place of the gait's lean), and a stop that comes to a stand bobs forward once (a half sine over
-    // settleTime).
-    if (lastSpeed_ >= tuning_.moveStop && speed < tuning_.moveStop && braking_ > 0.f) settle_ = tuning_.settleTime;
+    // Starts lean into the speed still to gain, and stops lean back by how hard they slow, on top of
+    // the gait's lean.
+    if (dt > 0.f) decel_ += ((lastSpeed_ - speed) / dt - decel_) * (1.f - std::exp(-dt / std::max(tuning_.brakeSmooth, 1e-3f)));
     lastSpeed_ = speed;
     if (ground && runSpeed > 0.f && in.wantSpeed >= 0.f) {
-        if (braking) pitchTo = -tuning_.stopPitch * speedShare;
+        if (braking) pitchTo += tuning_.brakePitch * clampf(decel_ / std::max(tuning_.brakeDecel, 1.f), 0.f, 1.f);
         else pitchTo += tuning_.startPitch * clampf((in.wantSpeed - speed) / runSpeed, 0.f, 1.f);
-    }
-    if (settle_ > 0.f) {
-        settle_ = std::max(settle_ - dt, 0.f);
-        if (ground && tuning_.settleTime > 0.f) pitchTo += tuning_.settlePitch * std::sin(180.f * kDegToRad * (1.f - settle_ / tuning_.settleTime));
     }
     if (air) pitchTo = tuning_.airPitch;
     if (state_ == LocoState::Landing && tuning_.landDip > 0.f && landTime_ < tuning_.landDip)

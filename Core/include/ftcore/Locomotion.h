@@ -194,9 +194,9 @@ struct LocoTuning {
                                 // and -6 lifts the head clear of the shoulders in a rear three-quarter view...
     float sprintPitch = 3.f;    // ...and this much more at the sprint's
     float startPitch = 8.f;     // more forward lean while speeding up, with a run's speed still to gain...
-    float stopPitch = 8.f;      // ...and lean back (in place of the gait's lean) while braking from the run's speed
-    float settlePitch = 4.f;    // a forward bob as a stop comes to a stand...
-    float settleTime = 0.4f;    // ...over this long
+    float brakePitch = -10.f;   // ...and lean back while braking, on top of the gait's lean, by how hard it slows: all of it at
+    float brakeDecel = 1150.f;  // this deceleration (cm/s^2: a run stopping in the game, 450 to a stand in 0.39 s)...
+    float brakeSmooth = 0.1f;   // ...smoothed over this long (s): the GASP stops lurch forward mid-stop, and this holds them back
     float airPitch = 6.f;       // forward tuck in the air
     float landPitch = 10.f;     // forward dip into a landing...
     float landDip = 0.3f;       // ...easing out over this long
@@ -397,7 +397,7 @@ private:
     float headRoll_ = 0.f;
     float headYaw_ = 0.f;
     float elbowHold_ = 0.f;
-    float settle_ = 0.f; // time left in the settle bob
+    float decel_ = 0.f; // smoothed deceleration (cm/s^2, speeding up below 0)
     float lastSpeed_ = 0.f;
     LocoLimbs limbs_;
 };

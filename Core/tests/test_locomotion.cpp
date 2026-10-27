@@ -352,7 +352,7 @@ TEST_CASE("locomotion: the head stays level against the lean and the bank") {
     CHECK(std::fabs(l.headRoll()) < 0.01f);
 }
 
-TEST_CASE("locomotion: the lean leads a start, leans back into a stop and bobs as it stands") {
+TEST_CASE("locomotion: the lean leads a start and leans back into a stop by how hard it slows") {
     Locomotion l = makeLoco();
     const LocoTuning& t = l.tuning();
     LocoInput in{0.f, 100.f};
@@ -366,27 +366,56 @@ TEST_CASE("locomotion: the lean leads a start, leans back into a stop and bobs a
     CHECK(l.pitch() == doctest::Approx(t.runPitch).epsilon(0.01));
 
     in.wantSpeed = 0.f;
-    run(l, 1.f, in); // braking at full speed leans back, the run's lean gone
-    CHECK(l.pitch() == doctest::Approx(-t.stopPitch).epsilon(0.01));
-    in.groundSpeed = 250.f;
-    run(l, 1.f, in);
-    CHECK(l.pitch() == doctest::Approx(-t.stopPitch * 250.f / 509.f).epsilon(0.01));
+    run(l, 1.f, in); // told to stop but not slowing yet: no lean back
+    CHECK(l.pitch() == doctest::Approx(t.runPitch).epsilon(0.01));
 
-    in.groundSpeed = 0.f;
-    float peak = 0.f;
+    // Braking at the reference rate to a stand: back past where the gait's lean alone would be (the
+    // brake adds to it, not in its place), never forward of it, and no bob forward once standing.
+    struct Brake { float least, most, standing; };
+    auto brake = [](float brakePitch) {
+        Locomotion b = makeLoco();
+        b.tuning().brakePitch = brakePitch;
+        LocoInput bi{0.f, 509.f};
+        bi.wantSpeed = 509.f;
+        run(b, 1.f, bi);
+        bi.wantSpeed = 0.f;
+        Brake r{b.pitch(), b.pitch(), -1e9f};
+        for (float v = 509.f; v > 0.f;) {
+            v = std::fmax(v - b.tuning().brakeDecel * kDt, 0.f);
+            bi.groundSpeed = v;
+            run(b, kDt, bi);
+            r.least = std::fmin(r.least, b.pitch());
+            r.most = std::fmax(r.most, b.pitch());
+        }
+        for (int i = 0; i < 90; ++i) {
+            run(b, kDt, bi);
+            r.standing = std::fmax(r.standing, b.pitch());
+        }
+        return r;
+    };
+    const Brake with = brake(t.brakePitch), without = brake(0.f);
+    CHECK(with.least < without.least + 0.6f * t.brakePitch);
+    CHECK(with.most <= without.most + 1e-4f);
+    CHECK(with.standing <= 1e-4f);
+
+    // Half the deceleration, held: half the lean back.
+    Locomotion half = makeLoco();
+    half.tuning().runPitch = 0.f;
+    LocoInput h{0.f, 509.f};
+    h.wantSpeed = 509.f;
+    run(half, 1.f, h);
+    h.wantSpeed = 0.f;
     for (int i = 0; i < 30; ++i) {
-        run(l, kDt, in);
-        peak = std::fmax(peak, l.pitch());
+        h.groundSpeed -= 0.5f * t.brakeDecel * kDt;
+        run(half, kDt, h);
     }
-    CHECK(peak > 0.5f * t.settlePitch);
-    run(l, 1.f, in);
-    CHECK(std::fabs(l.pitch()) < 0.01f);
+    CHECK(half.pitch() == doctest::Approx(0.5f * t.brakePitch).epsilon(0.05));
 
-    // Speed with no heading said (a follower without one): no start or stop lean, no bob.
+    // Speed with no heading said (a follower without one): no start or stop lean.
     Locomotion plain = makeLoco();
     run(plain, 1.f, {0.f, 250.f});
     CHECK(std::fabs(plain.pitch()) < 0.01f);
-    peak = 0.f;
+    float peak = 0.f;
     for (int i = 0; i < 30; ++i) {
         run(plain, kDt, {0.f, 0.f});
         peak = std::fmax(peak, std::fabs(plain.pitch()));
