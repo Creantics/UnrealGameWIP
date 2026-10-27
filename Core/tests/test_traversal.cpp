@@ -4,6 +4,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -13,30 +14,33 @@ namespace {
 
 constexpr float kFps = 30.f;
 constexpr float kLength = 1.5f;
+constexpr float kRamp = 0.2f;   // the root's climb onto the top and down off it
+constexpr float kDepth = 40.f;  // how far it runs along the top, going over
 
-// A made-up clip at 30 fps: the root runs forward at `speed`; the left foot rests until 0.2 s, the
-// right from 0.2 to 0.4 (so it takes off from the right); the right hand rests on a ledge `ahead` cm
-// in front of the start and `height` cm up from 0.5 to 0.75 s; both feet land at 1.0 s, on the floor
-// beyond (over) or on top (up), and rest there to the end.
-std::vector<TraversalFrame> makeClip(bool up, float ahead = 100.f, float height = 100.f, float speed = 200.f) {
+// A made-up clip at 30 fps, its root tracing the obstacle as the mannequin's clips do: it runs forward at
+// `speed`, starts up kRamp before reaching the front edge `ahead` cm in front of its start (`height` cm
+// up), then goes kDepth along the top and back down to the floor (over) or stays up (up). The left foot
+// rests until 0.1 s, the right from 0.1 to 0.3 (so it takes off from the right); both are in the air
+// after, and on the end floor from 1.2 s.
+std::vector<TraversalFrame> makeClip(bool up, float ahead = 100.f, float height = 100.f, float speed = 200.f, float drop = 0.f) {
     std::vector<TraversalFrame> frames;
     const int n = static_cast<int>(kLength * kFps) + 1;
-    const float landZ = up ? height : 0.f;
+    const float top = ahead / speed;
+    const float leave = top + kDepth / speed;
     for (int i = 0; i < n; ++i) {
         const float t = static_cast<float>(i) / kFps;
+        float z = height * std::clamp((t - (top - kRamp)) / kRamp, 0.f, 1.f);
+        if (!up && t > leave) z = height - (height - drop) * std::clamp((t - leave) / kRamp, 0.f, 1.f);
         TraversalFrame f;
-        f.root = {speed * t, 0.f, 0.f}; // the root bone on the floor, as in the mannequin's clips
+        f.root = {speed * t, 0.f, z};
+        const float endZ = up ? height : drop;
         auto foot = [&](float restFrom, float restTo, float side) {
             if (t <= restTo && t >= restFrom) return TravPoint{speed * restFrom, side, 0.f};
-            if (t >= 1.f) return TravPoint{ahead + 60.f, side, landZ};
-            return TravPoint{speed * t + 20.f, side, 40.f + 30.f * t}; // in the air, moving
+            if (t >= 1.2f) return TravPoint{speed * 1.2f, side, endZ};
+            return TravPoint{speed * t + 20.f, side, z + 30.f}; // in the air, moving
         };
-        f.ballLeft = foot(-1.f, 0.2f, 10.f);
-        f.ballRight = foot(0.2f, 0.4f, -10.f);
-        if (t < 0.5f) f.handRight = {ahead - 200.f * (0.5f - t), -20.f, height - 100.f * (0.5f - t)};
-        else if (t <= 0.75f) f.handRight = {ahead, -20.f, height};
-        else f.handRight = {ahead + 200.f * (t - 0.75f), -20.f, height + 100.f * (t - 0.75f)};
-        f.handLeft = {speed * t, 20.f, 100.f + 60.f * t}; // swinging, never at rest
+        f.ballLeft = foot(-1.f, 0.1f, 10.f);
+        f.ballRight = foot(0.1f, 0.3f, -10.f);
         frames.push_back(f);
     }
     return frames;
@@ -44,11 +48,11 @@ std::vector<TraversalFrame> makeClip(bool up, float ahead = 100.f, float height 
 
 TraversalClipInfo measure(const std::vector<TraversalFrame>& f) { return measureTraversal(f.data(), f.size(), kLength); }
 
-TraversalObstacle wall(float distance, float height = 100.f) {
+TraversalObstacle wall(float distance, float height = 100.f, float depth = 25.f) {
     TraversalObstacle o;
     o.distance = distance;
     o.height = height;
-    o.depth = 25.f;
+    o.depth = depth;
     o.backFloor = true;
     return o;
 }
@@ -61,18 +65,23 @@ TraversalObstacle ledge(float distance, float height = 100.f) {
     return o;
 }
 
+constexpr float kFrame = 1.f / kFps;
+
 } // namespace
 
-TEST_CASE("measureTraversal finds the contact, the landing, the ledge and the take-off foot") {
+TEST_CASE("measureTraversal reads the obstacle from the root: rise, front edge, top, landing") {
     const TraversalClipInfo over = measure(makeClip(false));
     CHECK(over.length == doctest::Approx(kLength));
-    CHECK(over.contact == doctest::Approx(0.5f).epsilon(0.02));
-    CHECK(over.land == doctest::Approx(1.0f).epsilon(0.02));
-    CHECK(over.contactHand == 1);
+    CHECK(over.move == TraversalMove::Over);
+    // The root starts up at 0.3 s (the first frame past 5% is 0.333), reaches the edge at 0.5 s and
+    // 100 cm ahead, leaves the top at 0.7 s (first frame below 95%: 0.733), and is down by 0.9 s.
+    CHECK(over.contact == doctest::Approx(10 * kFrame));
     CHECK(over.ledgeAhead == doctest::Approx(100.f));
     CHECK(over.ledgeHeight == doctest::Approx(100.f));
+    CHECK(over.leave == doctest::Approx(22 * kFrame));
+    CHECK(over.topDepth == doctest::Approx(200.f * 7 * kFrame));
+    CHECK(over.land == doctest::Approx(27 * kFrame));
     CHECK(over.rise == doctest::Approx(0.f));
-    CHECK(over.move == TraversalMove::Over);
     CHECK(over.takeoffFoot == 1);
     CHECK(over.entrySpeed == doctest::Approx(200.f));
     CHECK(over.path[kTraversalSamples - 1].x == doctest::Approx(300.f));
@@ -80,12 +89,15 @@ TEST_CASE("measureTraversal finds the contact, the landing, the ledge and the ta
     const TraversalClipInfo up = measure(makeClip(true));
     CHECK(up.move == TraversalMove::Up);
     CHECK(up.rise == doctest::Approx(100.f));
+    CHECK(up.land == doctest::Approx(15 * kFrame)); // on the top as it reaches the edge
+    CHECK(up.leave == up.land);
+    CHECK(up.topDepth == 0.f);
 }
 
-TEST_CASE("measureTraversal leaves a clip with no hand on a ledge unmeasured") {
-    std::vector<TraversalFrame> f = makeClip(false);
-    for (TraversalFrame& x : f) x.handRight = x.handLeft;
-    CHECK(measure(f).length == 0.f);
+TEST_CASE("measureTraversal leaves a clip with no obstacle, or one dropping off an edge, unmeasured") {
+    CHECK(measure(makeClip(false, 100.f, 10.f)).length == 0.f);          // hardly rises
+    CHECK(measure(makeClip(false, 100.f, 100.f, 200.f, -500.f)).length == 0.f); // over, then a long fall
+    CHECK(measure(makeClip(false, 100.f, 100.f, 200.f, -30.f)).length > 0.f);   // a short step down is fine
     CHECK(measureTraversal(nullptr, 0, 1.f).length == 0.f);
 }
 
@@ -127,16 +139,16 @@ TEST_CASE("plan takes the nearest height, then entry speed, then the take-off fo
     CHECK(feet.plan(ledge(100.f), 200.f, 0).clip == 1);
 }
 
-TEST_CASE("plan enters the clip where its ledge is as far as the real one") {
+TEST_CASE("plan enters the clip where its edge is as far as the real one") {
     TraversalSet set;
     set.setClip(0, measure(makeClip(false)));
     // At the clip's own distance it starts from the top, with nothing to make up.
     TraversalPlan p = set.plan(wall(100.f), 200.f, 1);
     CHECK(p.start == doctest::Approx(0.f));
     CHECK(p.atContact.x == doctest::Approx(0.f).epsilon(0.01));
-    // Nearer: later in, still nothing to make up (the root runs at 200 cm/s: 40 cm is 0.2 s).
-    p = set.plan(wall(60.f), 200.f, 1);
-    CHECK(p.start == doctest::Approx(0.2f).epsilon(0.01));
+    // Nearer: later in, still nothing to make up (the root runs at 200 cm/s: 30 cm is 0.15 s).
+    p = set.plan(wall(70.f), 200.f, 1);
+    CHECK(p.start == doctest::Approx(0.15f).epsilon(0.01));
     CHECK(std::fabs(p.atContact.x) < 0.5f);
     // Farther than the clip reaches, within maxPush: the offset carries the rest.
     p = set.plan(wall(130.f), 200.f, 1);
@@ -146,44 +158,44 @@ TEST_CASE("plan enters the clip where its ledge is as far as the real one") {
     p = set.plan(wall(200.f), 200.f, 1);
     CHECK_FALSE(p.ok());
     CHECK(p.tooFar);
-    // So near that even the latest entry (0.15 s before the contact: 30 cm off) pulls back too far.
+    // So near that even the latest entry (0.15 s before the contact: 37 cm off) pulls back too far.
     CHECK_FALSE(set.plan(wall(-20.f), 200.f, 1).ok());
     CHECK_FALSE(set.plan(wall(-20.f), 200.f, 1).tooFar);
 }
 
-TEST_CASE("rootAt puts the hands on the real ledge and the feet on the real floor") {
+TEST_CASE("rootAt meets the real edge and height on the top, and the real floor after") {
     TraversalSet set;
-    const std::vector<TraversalFrame> frames = makeClip(false);
-    set.setClip(0, measure(frames));
+    set.setClip(0, measure(makeClip(false)));
     const TraversalClipInfo& c = set.clip(0);
 
     TraversalObstacle o = wall(70.f, 120.f);
-    o.depth = 45.f;
     o.backHeight = -30.f;
     const TraversalPlan p = set.plan(o, 200.f, 1);
     REQUIRE(p.ok());
     CHECK(p.atContact.z == doctest::Approx(20.f));
-    CHECK(p.atLand.x == doctest::Approx(p.atContact.x + 15.f));
+    CHECK(p.atLeave.x == doctest::Approx(p.atContact.x)); // the wall is thinner than the clip's top
     CHECK(p.atLand.z == doctest::Approx(-30.f));
 
     // At the entry the root is where the body is.
     const TravPoint at0 = set.rootAt(p, p.start);
     CHECK(std::fabs(at0.x) + std::fabs(at0.z) < 0.01f);
-    // At the contact the clip's hand, carried with the root, is on the real ledge.
-    const std::size_t k = static_cast<std::size_t>(std::lround(c.contact * kFps));
-    const TravPoint root = set.rootAt(p, c.contact);
-    const TravPoint hand{frames[k].handRight.x - frames[k].root.x + root.x, 0.f, frames[k].handRight.z - frames[k].root.z + root.z};
-    CHECK(hand.x == doctest::Approx(70.f).epsilon(0.01));
-    CHECK(hand.z == doctest::Approx(120.f).epsilon(0.01));
-    // After the landing it holds the landing's offset.
-    const TravPoint end = set.rootAt(p, kLength);
-    const TravPoint clipEnd = traversalPath(c, kLength);
-    const TravPoint from = traversalPath(c, p.start);
-    CHECK(end.x == doctest::Approx(clipEnd.x - from.x + p.atLand.x));
-    CHECK(end.z == doctest::Approx(-30.f));
+    // Reaching the top it is at the real edge, at the real height, and stays up along the top.
+    const TravPoint edge = set.rootAt(p, 0.5f);
+    CHECK(edge.x == doctest::Approx(70.f).epsilon(0.01));
+    CHECK(edge.z == doctest::Approx(120.f).epsilon(0.01));
+    CHECK(set.rootAt(p, 0.6f).z == doctest::Approx(120.f).epsilon(0.01));
+    // After the landing it holds the landing's offset: on the real far floor.
+    CHECK(set.rootAt(p, kLength).z == doctest::Approx(-30.f));
     // It eases: halfway to the contact the offset is halfway.
     const float mid = 0.5f * (p.start + c.contact);
+    const TravPoint from = traversalPath(c, p.start);
     CHECK(set.rootAt(p, mid).z - (traversalPath(c, mid).z - from.z) == doctest::Approx(10.f));
+
+    // A top deeper than the clip's (still thin enough to go over): the extra is made up along the top.
+    const TraversalPlan deep = set.plan(wall(70.f, 100.f, 55.f), 200.f, 1);
+    REQUIRE(deep.ok());
+    CHECK(deep.atLeave.x - deep.atContact.x == doctest::Approx(55.f - c.topDepth));
+    CHECK(deep.atLand.x == doctest::Approx(deep.atLeave.x));
 }
 
 TEST_CASE("Traversal plans and paths allocate nothing") {

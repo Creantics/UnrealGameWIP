@@ -9,8 +9,6 @@ namespace ftcore {
 namespace {
 
 using Part = const TravPoint& (*)(const TraversalFrame&);
-const TravPoint& handLeft(const TraversalFrame& f) { return f.handLeft; }
-const TravPoint& handRight(const TraversalFrame& f) { return f.handRight; }
 const TravPoint& ballLeft(const TraversalFrame& f) { return f.ballLeft; }
 const TravPoint& ballRight(const TraversalFrame& f) { return f.ballRight; }
 
@@ -23,20 +21,16 @@ float smooth(float u) {
     return u * u * (3.f - 2.f * u);
 }
 
-struct Frames {
-    const TraversalFrame* f;
-    std::size_t count;
-    float dt;
-    std::size_t restFrames;
+// Eases from a at time t0 to b at t1.
+TravPoint ease(const TravPoint& a, const TravPoint& b, float t, float t0, float t1) { return lerp(a, b, t1 > t0 ? smooth((t - t0) / (t1 - t0)) : 1.f); }
 
-    // At rest from frame i: every step over the next restFrames frames slower than kRestSpeed.
-    bool restsFrom(Part part, std::size_t i) const {
-        if (i + restFrames >= count) return false;
-        for (std::size_t k = i; k < i + restFrames; ++k)
-            if (dist(part(f[k]), part(f[k + 1])) / dt >= kRestSpeed) return false;
-        return true;
-    }
-};
+// At rest from frame i: every step over the next n frames slower than kRestSpeed.
+bool restsFrom(const TraversalFrame* f, std::size_t count, Part part, std::size_t i, std::size_t n, float dt) {
+    if (i + n >= count) return false;
+    for (std::size_t k = i; k < i + n; ++k)
+        if (dist(part(f[k]), part(f[k + 1])) / dt >= kRestSpeed) return false;
+    return true;
+}
 
 } // namespace
 
@@ -45,51 +39,48 @@ TraversalClipInfo measureTraversal(const TraversalFrame* frames, std::size_t cou
     count = std::min(count, kMaxTraversalFrames);
     if (!frames || count < 3 || length <= 0.f) return info;
     const float dt = length / static_cast<float>(count - 1);
-    const Frames fr{frames, count, dt, std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil(kRestTime / dt - 1e-4f)))};
-    const float floor0 = std::min(frames[0].ballLeft.z, frames[0].ballRight.z);
+    const TravPoint& root0 = frames[0].root;
+    auto up = [&](std::size_t i) { return frames[i].root.z - root0.z; };
 
-    // The contact: the first hand to come to rest above the floor.
-    const Part hands[2] = {handLeft, handRight};
-    std::size_t contact = count;
-    int hand = 0;
-    for (std::size_t i = 0; i < count && contact == count; ++i)
-        for (int h = 0; h < 2; ++h)
-            if (hands[h](frames[i]).z - floor0 > kMinLedge && fr.restsFrom(hands[h], i)) {
-                contact = i;
-                hand = h;
-                break;
-            }
-    if (contact == count) return info;
+    float peak = 0.f;
+    for (std::size_t i = 0; i < count; ++i) peak = std::max(peak, up(i));
+    const float rise = up(count - 1);
+    if (peak < kMinObstacle || rise < -kMaxClipDrop) return info;
 
-    // The landing: a foot coming to rest where it ends, after the contact.
-    const Part balls[2] = {ballLeft, ballRight};
-    std::size_t land = count;
-    for (std::size_t i = contact + 1; i < count && land == count; ++i)
-        for (const Part b : balls)
-            if (std::fabs(b(frames[i]).z - b(frames[count - 1]).z) < kFootRest && fr.restsFrom(b, i)) {
-                land = i;
-                break;
-            }
+    std::size_t contact = 0;
+    while (up(contact) <= kRiseShare * peak) ++contact;
+    std::size_t top = contact;
+    while (up(top) < kTopShare * peak) ++top;
+    std::size_t leave = top;
+    while (leave < count && up(leave) >= kTopShare * peak) ++leave;
+    std::size_t land = top;
+    while (land < count && std::fabs(up(land) - rise) >= kSettle) ++land;
     if (land == count) return info;
 
     // The take-off foot: the last at rest on the starting floor before the contact.
+    const Part balls[2] = {ballLeft, ballRight};
+    const float floor0 = std::min(frames[0].ballLeft.z, frames[0].ballRight.z);
+    const std::size_t rest = std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil(kRestTime / dt - 1e-4f)));
     for (std::size_t i = contact; i-- > 0 && info.takeoffFoot < 0;)
         for (int b = 0; b < 2; ++b)
-            if (balls[b](frames[i]).z - floor0 < kFootRest && fr.restsFrom(balls[b], i)) {
+            if (balls[b](frames[i]).z - floor0 < kFootRest && restsFrom(frames, count, balls[b], i, rest, dt)) {
                 info.takeoffFoot = b;
                 break;
             }
 
-    const TravPoint& root0 = frames[0].root;
-    const TravPoint& h = hands[hand](frames[contact]);
     info.length = length;
     info.contact = static_cast<float>(contact) * dt;
     info.land = static_cast<float>(land) * dt;
-    info.contactHand = hand;
-    info.ledgeAhead = h.x - root0.x;
-    info.ledgeHeight = h.z - floor0;
-    info.rise = std::min(frames[count - 1].ballLeft.z, frames[count - 1].ballRight.z) - floor0;
-    info.move = info.rise > 0.5f * info.ledgeHeight ? TraversalMove::Up : TraversalMove::Over;
+    info.ledgeAhead = frames[top].root.x - root0.x;
+    info.ledgeHeight = peak;
+    info.rise = rise;
+    info.move = rise > 0.5f * peak ? TraversalMove::Up : TraversalMove::Over;
+    if (info.move == TraversalMove::Over && leave < count) {
+        info.leave = static_cast<float>(leave) * dt;
+        info.topDepth = frames[leave].root.x - frames[top].root.x;
+    } else {
+        info.leave = info.land;
+    }
     const std::size_t k = std::clamp<std::size_t>(static_cast<std::size_t>(std::lround(kEntryTime / dt)), 1, count - 1);
     info.entrySpeed = (frames[k].root.x - root0.x) / (static_cast<float>(k) * dt);
     for (std::size_t s = 0; s < kTraversalSamples; ++s) {
@@ -126,7 +117,7 @@ TraversalPlan TraversalSet::plan(const TraversalObstacle& o, float speed, int fo
         if (c.length <= 0.f || (c.move == TraversalMove::Up) != up) continue;
         const float dh = std::fabs(o.height - c.ledgeHeight);
         if (dh > std::max(t.minHeightSlack, t.heightSlack * c.ledgeHeight)) continue;
-        // The ledge's distance ahead of the root from clip time s on.
+        // The edge's distance ahead of the root from clip time s on.
         auto ahead = [&](float s) { return c.ledgeAhead - traversalPath(c, s).x; };
         const float latest = std::max(0.f, c.contact - t.minLead);
         float start = 0.f;
@@ -162,8 +153,13 @@ TraversalPlan TraversalSet::plan(const TraversalObstacle& o, float speed, int fo
     const TraversalClipInfo& c = clips_[static_cast<std::size_t>(p.clip)];
     const float push = o.distance - (c.ledgeAhead - traversalPath(c, p.start).x);
     p.atContact = {push, 0.f, o.height - c.ledgeHeight};
-    if (up) p.atLand = p.atContact; // stands on top as far in as the clip does
-    else p.atLand = {push + std::max(0.f, o.depth - t.overDepth), 0.f, o.backHeight - c.rise};
+    if (up) {
+        p.atLeave = p.atLand = p.atContact; // stands on top as far in as the clip does
+    } else {
+        const float across = push + std::max(0.f, o.depth - c.topDepth);
+        p.atLeave = {across, 0.f, p.atContact.z};
+        p.atLand = {across, 0.f, o.backHeight - c.rise};
+    }
     return p;
 }
 
@@ -173,8 +169,9 @@ TravPoint TraversalSet::rootAt(const TraversalPlan& p, float t) const {
     const TravPoint from = traversalPath(c, p.start);
     const TravPoint at = traversalPath(c, t);
     TravPoint off;
-    if (t <= c.contact) off = lerp({}, p.atContact, c.contact > p.start ? smooth((t - p.start) / (c.contact - p.start)) : 1.f);
-    else if (t <= c.land) off = lerp(p.atContact, p.atLand, c.land > c.contact ? smooth((t - c.contact) / (c.land - c.contact)) : 1.f);
+    if (t <= c.contact) off = ease({}, p.atContact, t, p.start, c.contact);
+    else if (t <= c.leave) off = ease(p.atContact, p.atLeave, t, c.contact, c.leave);
+    else if (t <= c.land) off = ease(p.atLeave, p.atLand, t, c.leave, c.land);
     else off = p.atLand;
     return {at.x - from.x + off.x, at.y - from.y + off.y, at.z - from.z + off.z};
 }
