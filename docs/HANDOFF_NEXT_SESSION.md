@@ -410,6 +410,12 @@ The duplicate style port (`worktree-agent-ac78bf565fd6d3d57`) is retired. Main g
   - The Third gets his custom hair and beard grooms back in r8, and freckles are off (the user's rule). His own width taper waits for r9, so this round's grooms read on their own.
   - Stock goatee grooms on the dense end render nothing after a 120-tick wait; r8 waits 600.
   Details are in the private handoff.
+- 2026-10-27 late: all three leads are re-conformed from new high-detail head scans, decimated to 40k triangles for the conform. They are bald and beardless for now (hair comes in a later step), with freckles off on the Third. Bodies: Devin is the power build, the other two the lean build. Results:
+  - The likeness gate changed. A calibration control showed the absolute bar can't be reached: two reference images of the same person score only 4-8 with the per-criterion readers, and the scans themselves score 5-7 against the sheets.
+  - The new gate has two parts. First, the MetaHuman keeps the scan, judged by paired A/B with three readers per criterion and no single-reader rounds. Second, the user's named fixes are checked by eye.
+  - A private distance tool (similarity ICP, then signed distance per region) shows the conform holds the cranium, brow, eyes and ears within 1 mm. The cheeks and jaw drift up to about 9 mm outward, which is the next targeted fix.
+  - The conform solve settings expose model regularization and face ICP weight, a cheaper fidelity knob than a vertex fit.
+  Details are in the private handoff.
 - 2026-10-26 evening: the Third's Marvelous Designer robe pass is parked at pass r28f (bodice/skirt split with inner ties; the sleeve fit and the front corner are still open). The user wants the MetaHuman test from the new realistic reference sheets done first, so the clothing is fitted once on the final body. MetaHuman route: a multi-view mesh made from the sheet, then the existing Mesh-to-MetaHuman bridge. UE 5.8 has no image-only route (footage identity needs depth). Details and the test gate are in the private handoff.
 - Lead fit status (2026-10-22): Devin's dressed silhouette is at 0.9656 front / 0.9583 side against the 0.99 gate; details are in the private handoff. `tools/blender/garment_shells.py` (on main, e8b92aa) now stitches a neck skirt into the body's neck hole, trims level, fills small holes, and supports an outer collar (`over`, `radial`). Next steps: rebuild the boots spec, then the face under the chin.
 
