@@ -183,8 +183,10 @@ struct LocoTuning {
     float minLandRate = 0.5f;   // the moving jump's and landing's rate range
     float maxLandRate = 2.f;
     float maxRate = 3.f;        // gait rate cap
-    float phaseGain = 0.4f;     // a follower's stride rate trim per stride of phase error (LocoInput::leadPhase)...
-    float phaseTrim = 0.03f;    // ...at most this share either way (the feet slip by speed x trim; Duy's run stride is 2.6% over the Third's)
+    float phaseGain = 0.4f;     // a follower's stride rate trim per stride of phase error (LocoInput::leadPhase), on top of
+                                // its stride against the lead's (LocoInput::leadStride: the rate that keeps step on its own)...
+    float phaseTrim = 0.03f;    // ...the two at most this share either way (the feet slip by speed x trim; Duy's run stride is
+                                // 2.6% over the Third's)
     float phaseUpBias = 1.5f;   // it steps faster to the next quarter stride unless that is this many times further than slowing
                                 // to the last one: trimming down adds to the forward slip of the plants, trimming up takes from it
     float gaitDeadBand = 0.03f; // a gait with less of the mix than this drops out, the nearer gait playing alone (the
@@ -243,7 +245,7 @@ struct LocoTuning {
 // drops it, and the phase trim (up to 3%) matches its stride to the lead's instead.
 inline void tuneForFollower(LocoTuning& t) {
     t.brakeDecel = 485.f;
-    t.brakePitch = -13.f;
+    t.brakePitch = -12.f;
     t.gaitDeadBand = 0.08f;
 }
 
@@ -271,10 +273,13 @@ struct LocoInput {
     bool rootMotion = false;
     // A follower: replay a running turn by this many degrees now (0: none).
     float turnBy = 0.f;
-    // A follower: the lead's foot phase (0..1) while the lead holds a gait, below 0 otherwise. On the
-    // ground loop the follower trims its stride rate to keep a quarter stride from it, so their feet
-    // don't land together.
+    // A follower: the lead's foot phase (0..1) while the lead holds a gait, below 0 otherwise, as this
+    // frame begins (before the lead's update, like the follower's own). On the ground loop the follower
+    // trims its stride rate to keep a quarter stride from it, so their feet don't land together.
     float leadPhase = -1.f;
+    // With it, the lead's stride (cm from one left plant to the next, Locomotion::strideLength): the follower
+    // steps at the rate a body with that stride would at its speed, and trims its phase from there. 0: unknown.
+    float leadStride = 0.f;
 };
 
 struct LocoLayer {
@@ -319,8 +324,11 @@ public:
 
     // The gaits' shared foot phase (0..1, 0 at a left plant).
     float phase() const { return phase_; }
-    // A follower's stride rate trim this frame (a share: 0.02 steps 2% faster).
+    // A follower's stride rate trim this frame (a share: 0.02 steps 2% faster), its stride against the lead's
+    // and its phase error together.
     float phaseTrim() const { return trim_; }
+    // The gaits' stride at this blend (cm from one left plant to the next; 0 with no gait).
+    float strideLength() const { return strideLength_; }
     // How hard the body slows, smoothed (cm/s^2, speeding up below 0): LocoTuning::brakePitch leans back by it.
     float decel() const { return decel_; }
     // The foot phase of a gait clip at `time`.
@@ -375,7 +383,7 @@ private:
     bool beginTurn(const LocoInput& in, LocoClip first, LocoClip last, float angle, bool matchFeet);
     void syncGaits(LocoClip from, float time, float speed);
     void retarget(LocoClip next);
-    void advance(float dt, float speed, float leadPhase);
+    void advance(float dt, float speed, float leadPhase, float leadStride);
 
     std::array<LocoClipInfo, kLocoClipCount> info_{};
     std::array<float, kLocoClipCount> weight_{1.f};
@@ -404,6 +412,7 @@ private:
     float fade_ = 0.f;
     float phase_ = 0.f; // within the current stride
     float trim_ = 0.f; // a follower's stride rate trim this frame
+    float strideLength_ = 0.f;
     float airTime_ = 0.f;
     float landTime_ = 0.f;
     float groundTime_ = 0.f; // seconds in Ground since a start, a turn or a landing

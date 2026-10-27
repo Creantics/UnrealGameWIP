@@ -405,6 +405,7 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		In.turnBy = PushedTurnBy;
 		PushedTurnBy = 0.f;
 		In.leadPhase = PushedLeadPhase;
+		In.leadStride = PushedLeadStride;
 		In.falling = bPushedAir;
 		In.verticalSpeed = PushedVerticalSpeed;
 		In.yaw = static_cast<float>(Owner->GetActorRotation().Yaw);
@@ -415,6 +416,9 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	In.turnRate = bHasYaw && DeltaSeconds > 0.f ? FMath::FindDeltaAngleDegrees(LastYaw, Yaw) / DeltaSeconds : 0.f;
 	LastYaw = Yaw;
 	bHasYaw = true;
+	SteppedFrame = GFrameCounter;
+	PhaseBefore = Loco.phase();
+	StrideBefore = Loco.strideLength();
 	Loco.update(In);
 
 	if (const USkeletalMeshComponent* Mesh = GetSkelMeshComponent())

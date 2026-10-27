@@ -1319,12 +1319,14 @@ namespace {
 // again. Returns how far apart their foot contacts fall over the last seconds of each run, in steps
 // (0 together, 0.5 halfway between): the foot phase spans a stride, two steps, and a reader sees the
 // contacts, so half a stride apart is in step too, on opposite feet. The follower is told the lead's
-// phase when `trim` holds and its run clip's ground speed is `followerRun` (cm/s, a longer stride).
+// phase when `trim` holds (and its stride too with `feed`) and its run clip's ground speed is `followerRun`
+// (cm/s, a longer stride).
 struct PartyStep {
     float gap = 0.5f;      // closest contacts
     float maxTrim = 0.f;   // the follower's largest stride rate trim
+    float settledTrim = 0.f; // and its mean over the last 3 s of the second run
 };
-PartyStep partyStep(bool trim, float followerRun = 509.f) {
+PartyStep partyStep(bool trim, float followerRun = 509.f, bool feed = false) {
     Locomotion lead = makeLoco(), follower = makeLoco();
     follower.setClip(LocoClip::Run, {1.77f, followerRun, 3, 0.4f});
     follower.reset();
@@ -1341,14 +1343,19 @@ PartyStep partyStep(bool trim, float followerRun = 509.f) {
             x += speed * kDt;
             trail.push({x, 0.f}, speed);
             slot.step(trail, speed, kDt, want <= 0.f && speed > 0.f ? speed * speed / 20.f : -1.f);
-            lead.update(LocoInput{kDt, speed * 100.f});
+            // The lead's phase as the frame begins, like the follower's own (LocoInput::leadPhase).
             LocoInput in{kDt, slot.speed() * 100.f};
-            if (trim && lead.state() == LocoState::Ground && speed * 100.f >= lead.tuning().moveStop) in.leadPhase = lead.phase();
+            if (trim && lead.state() == LocoState::Ground && speed * 100.f >= lead.tuning().moveStop) {
+                in.leadPhase = lead.phase();
+                if (feed) in.leadStride = lead.strideLength();
+            }
+            lead.update(LocoInput{kDt, speed * 100.f});
             follower.update(in);
             out.maxTrim = std::fmax(out.maxTrim, std::fabs(follower.phaseTrim()));
             if (i >= 1080 && i < 1260) { // the last 3 s of the run: settled (at most 0.25 stride off, at 2% a stride)
                 const float d = std::fmod(std::fabs(lead.phase() - follower.phase()), 0.5f);
                 out.gap = std::fmin(out.gap, 2.f * std::fmin(d, 0.5f - d));
+                if (leg == 1) out.settledTrim += follower.phaseTrim() / 180.f;
             }
         }
     }
@@ -1380,6 +1387,22 @@ TEST_CASE("locomotion: the phase trim holds a follower whose stride differs") {
     CAPTURE(trimmed.gap);
     CHECK(trimmed.gap >= 0.4f);
     CHECK(trimmed.maxTrim <= LocoTuning{}.phaseTrim + 1e-6f);
+}
+
+TEST_CASE("locomotion: told the lead's stride, a follower whose stride differs keeps halfway between its steps") {
+    // The phase error alone has to stand off halfway to hold a trim: trim / gain of a stride (the game's
+    // 2.6% at 0.4 settled at a gap of 0.40). Here the run clip is 2.6% longer, about 0.7% at the party's
+    // blend, 0.46 on the phase alone; the stride against the lead's sets the rate, and the phase error only
+    // takes up what is left.
+    const PartyStep phaseOnly = partyStep(true, 509.f * 1.026f), fed = partyStep(true, 509.f * 1.026f, true);
+    CAPTURE(phaseOnly.gap);
+    CAPTURE(fed.gap);
+    CAPTURE(phaseOnly.settledTrim);
+    CAPTURE(fed.settledTrim);
+    CHECK(phaseOnly.gap < 0.47f);
+    CHECK(fed.gap >= 0.49f);
+    CHECK(fed.settledTrim > 0.f); // the longer stride steps faster
+    CHECK(fed.maxTrim <= LocoTuning{}.phaseTrim + 1e-6f);
 }
 
 TEST_CASE("locomotion: a follower steps faster to the next quarter stride unless it is much further") {

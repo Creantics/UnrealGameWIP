@@ -167,9 +167,18 @@ public:
 	void ReplayTurn(float Delta) { PushedTurnBy = Delta; }
 	// The owner's ground speed (cm/s) for this frame, for owners that aren't characters.
 	void SetGroundSpeed(float Speed) { PushedSpeed = Speed; }
-	// Such an owner following a lead: the lead's foot phase while it holds a gait, below 0 otherwise
-	// (ftcore::LocoInput::leadPhase: the follower steps a quarter stride off it).
-	void SetLeadPhase(float Phase) { PushedLeadPhase = Phase; }
+	// Such an owner following a lead: the lead's foot phase while it holds a gait, below 0 otherwise, and its
+	// stride (ftcore::LocoInput::leadPhase and leadStride: the follower steps at the lead's rate, a quarter
+	// stride off it), both as the frame began (LeadPhaseAtFrameStart).
+	void SetLead(float Phase, float Stride)
+	{
+		PushedLeadPhase = Phase;
+		PushedLeadStride = Stride;
+	}
+	// The foot phase and the stride as this frame began, whether this instance has updated yet or not: what a
+	// follower, updating in either order, compares with its own phase before its update.
+	float LeadPhaseAtFrameStart() const { return SteppedFrame == GFrameCounter ? PhaseBefore : Loco.phase(); }
+	float LeadStrideAtFrameStart() const { return SteppedFrame == GFrameCounter ? StrideBefore : Loco.strideLength(); }
 	// Where such an owner is heading, as ftcore::LocoInput's wantSpeed and stopDistance: the speed it
 	// accelerates toward (0 while braking, below 0 unknown, which plays no starts or stops) and, while
 	// braking, how far it will slide before it stands.
@@ -215,6 +224,11 @@ private:
 	float PushedStop = -1.f;
 	float PushedTurnBy = 0.f;
 	float PushedLeadPhase = -1.f;
+	float PushedLeadStride = 0.f;
+	// The phase and stride before the last update, and the frame it ran in.
+	uint64 SteppedFrame = MAX_uint64;
+	float PhaseBefore = 0.f;
+	float StrideBefore = 0.f;
 	float PushedFaceYaw = 0.f;
 	bool bPushedFace = false;
 	bool bPushedAir = false;

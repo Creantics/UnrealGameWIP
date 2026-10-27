@@ -625,7 +625,7 @@ void Locomotion::retarget(LocoClip next) {
     if (next != LocoClip::Idle) time_[index(next)] = 0.f;
 }
 
-void Locomotion::advance(float dt, float speed, float leadPhase) {
+void Locomotion::advance(float dt, float speed, float leadPhase, float leadStride) {
     const float a = follow(dt, fade_);
     // The gaits fade in and out as one layer, split between them by the speed.
     float gaits = 0.f;
@@ -656,14 +656,18 @@ void Locomotion::advance(float dt, float speed, float leadPhase) {
         stride += s * i.groundSpeed * i.length / static_cast<float>(i.cycles);
         natural += s * static_cast<float>(i.cycles) / i.length;
     }
+    strideLength_ = stride;
     float strideRate = stride > 0.f ? std::min(speed / stride, tuning_.maxRate * natural) : natural;
-    // A follower on the ground loop eases its phase toward one of the lead's +-1/4 stride (feet half a
-    // step apart) by stepping a little faster or slower: faster unless that one is much further.
+    // A follower on the ground loop steps at the lead's rate (a longer stride than the lead's steps faster),
+    // and eases its phase toward one of the lead's +-1/4 stride (feet half a step apart) by stepping a little
+    // faster or slower: faster unless that one is much further. The rate alone would need a standing phase
+    // error to hold.
     trim_ = 0.f;
     if (leadPhase >= 0.f && state_ == LocoState::Ground && speed >= tuning_.moveStop) {
+        const float feed = leadStride > 0.f && stride > 0.f ? stride / leadStride - 1.f : 0.f;
         const float up = 0.5f * frac(2.f * (leadPhase + 0.25f - phase_)); // ahead to the next one, 0..0.5
         const float err = up <= tuning_.phaseUpBias * (0.5f - up) ? up : up - 0.5f;
-        trim_ = clampf(tuning_.phaseGain * err, -tuning_.phaseTrim, tuning_.phaseTrim);
+        trim_ = clampf(feed + tuning_.phaseGain * err, -tuning_.phaseTrim, tuning_.phaseTrim);
         strideRate *= 1.f + trim_;
     }
     for (const LocoClip c : kGaits) {
@@ -771,7 +775,7 @@ void Locomotion::update(const LocoInput& in) {
         const float clipSpeed = clip(c).groundSpeed;
         rate_[index(c)] = clipSpeed > 0.f ? clampf(speed / clipSpeed, tuning_.minLandRate, tuning_.maxLandRate) : 1.f;
     }
-    advance(dt, speed, in.leadPhase);
+    advance(dt, speed, in.leadPhase, in.leadStride);
     if (state_ == LocoState::Turning) turnTo_ = time_[index(move_)];
 
     // The air pose over the limbs: in the air, and for the arms into the landing.

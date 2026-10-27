@@ -215,18 +215,20 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 		Anim->SetIntent(WantSpeed, StopDistance);
 		Anim->SetAir(bAir, AirSpeed);
 		Anim->SetFace(bFacing, FaceYaw);
-		// The lead's foot phase while it holds a gait, so the two don't step together.
-		float LeadPhase = -1.f;
+		// The lead's foot phase while it holds a gait, so the two don't step together, and its stride, so a
+		// follower with a longer one steps faster to keep pace.
+		float LeadPhase = -1.f, LeadStride = 0.f;
 		const USkeletalMeshComponent* LeadMesh = LeadCharacter.IsValid() ? LeadCharacter->GetMesh() : nullptr;
 		if (const UFTLocomotionAnimInstance* LeadAnim = LeadMesh ? Cast<UFTLocomotionAnimInstance>(LeadMesh->GetAnimInstance()) : nullptr)
 		{
 			const ftcore::Locomotion& LeadLoco = LeadAnim->GetLocomotion();
 			if (LeadLoco.state() == ftcore::LocoState::Ground && LeadCharacter->GetVelocity().Size2D() >= LeadLoco.tuning().moveStop)
 			{
-				LeadPhase = LeadLoco.phase();
+				LeadPhase = LeadAnim->LeadPhaseAtFrameStart();
+				LeadStride = LeadAnim->LeadStrideAtFrameStart();
 			}
 		}
-		Anim->SetLeadPhase(LeadPhase);
+		Anim->SetLead(LeadPhase, LeadStride);
 	}
 }
 
