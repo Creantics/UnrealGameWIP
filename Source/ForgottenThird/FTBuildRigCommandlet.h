@@ -26,7 +26,8 @@
 // to the source's directions (the chains are aligned in any case; -AlignPose keeps that in its own
 // named pose). -NoAlign skips the alignment and retargets from the target's rest pose;
 // -KeepChains=Pelvis,Spine,Neck,Head aligns all but those chains (an aligned MetaHuman spine tips its chin
-// 6 degrees down). Example (proof_head's rom onto test_human):
+// 6 degrees down). That's the default for a MetaHuman body (one with clavicle_pec_l); -KeepChains= with no
+// list aligns them all. Example (proof_head's rom onto test_human):
 //
 //   -run=FTBuildRig -Mesh=/Game/Characters/TestHuman/test_human/SkeletalMeshes/test_human.test_human
 //       -Dest=/Game/Characters/TestHuman/Rig

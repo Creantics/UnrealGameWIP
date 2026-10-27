@@ -813,7 +813,13 @@ int32 UFTBuildRigCommandlet::Main(const FString& Params)
 	TArray<FString> Clips;
 	ClipList.ParseIntoArray(Clips, TEXT(","));
 	FString KeepList;
-	FParse::Value(*Params, TEXT("KeepChains="), KeepList, false);
+	// A MetaHuman body (the only skeleton with the pectoral corrective) keeps its spine by default; an explicit
+	// -KeepChains= (even empty) wins.
+	if (!FParse::Value(*Params, TEXT("KeepChains="), KeepList, false)
+		&& Mesh->GetRefSkeleton().FindBoneIndex(TEXT("clavicle_pec_l")) != INDEX_NONE)
+	{
+		KeepList = TEXT("Pelvis,Spine,Neck,Head");
+	}
 	TArray<FString> KeepChains;
 	KeepList.ParseIntoArray(KeepChains, TEXT(","));
 	return RetargetClips(*FromRig, *RigAsset, *Mesh, Dest, Clips, FParse::Param(*Params, TEXT("AlignPose")),
