@@ -345,16 +345,20 @@ TEST_CASE("fight director: the aimed shot fires on its hit, and without a shot c
         f.step();
         f.step(); // the first frame of a fade-in has no weight
         const FightAnimator& a = f.dir.animator(shooter);
+        CHECK(find(f.dir.animator(c.target), FightClip::HitReact) != nullptr);
         if (withShot) {
             CHECK(a.current() == FightClip::Shot);
             // Its key met the shot: it runs on from the key by the time since.
             const FightLayer* s = find(a, FightClip::Shot);
             REQUIRE(s != nullptr);
             CHECK(s->time == doctest::Approx(0.05 + (f.now - firedAt)).epsilon(0.02));
+            // The shot covers the aim for good: once it ends the shooter is in the stance, not back in the aim.
+            while (f.now < firedAt + 1.0) f.step();
+            CHECK(a.current() == FightClip::Stance);
+            CHECK(find(a, FightClip::Aim) == nullptr);
         } else {
             CHECK(a.current() == FightClip::Stance);
         }
-        CHECK(find(f.dir.animator(c.target), FightClip::HitReact) != nullptr);
     }
 }
 
