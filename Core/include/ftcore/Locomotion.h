@@ -183,6 +183,8 @@ struct LocoTuning {
     float minLandRate = 0.5f;   // the moving jump's and landing's rate range
     float maxLandRate = 2.f;
     float maxRate = 3.f;        // gait rate cap
+    float phaseGain = 0.4f;     // a follower's stride rate trim per stride of phase error (LocoInput::leadPhase)...
+    float phaseTrim = 0.02f;    // ...at most this share either way (the feet slip by speed x trim)
     float leanPerTurn = 0.035f; // roll per deg/s of turning, at the run's ground speed (less when slower)
     float maxLean = 14.f;
     float twistPerTurn = 0.05f; // upper body yaw per deg/s of turning
@@ -254,6 +256,10 @@ struct LocoInput {
     bool rootMotion = false;
     // A follower: replay a running turn by this many degrees now (0: none).
     float turnBy = 0.f;
+    // A follower: the lead's foot phase (0..1) while the lead holds a gait, below 0 otherwise. On the
+    // ground loop the follower trims its stride rate to keep a quarter stride from it, so their feet
+    // don't land together.
+    float leadPhase = -1.f;
 };
 
 struct LocoLayer {
@@ -298,6 +304,8 @@ public:
 
     // The gaits' shared foot phase (0..1, 0 at a left plant).
     float phase() const { return phase_; }
+    // A follower's stride rate trim this frame (a share: 0.02 steps 2% faster).
+    float phaseTrim() const { return trim_; }
     // The foot phase of a gait clip at `time`.
     FTCORE_API float footPhase(LocoClip c, float time) const;
     // The time in a gait clip at which its foot phase is `phase`.
@@ -350,7 +358,7 @@ private:
     bool beginTurn(const LocoInput& in, LocoClip first, LocoClip last, float angle, bool matchFeet);
     void syncGaits(LocoClip from, float time, float speed);
     void retarget(LocoClip next);
-    void advance(float dt, float speed);
+    void advance(float dt, float speed, float leadPhase);
 
     std::array<LocoClipInfo, kLocoClipCount> info_{};
     std::array<float, kLocoClipCount> weight_{1.f};
@@ -378,6 +386,7 @@ private:
     std::uint32_t turnsBegun_ = 0;
     float fade_ = 0.f;
     float phase_ = 0.f; // within the current stride
+    float trim_ = 0.f; // a follower's stride rate trim this frame
     float airTime_ = 0.f;
     float landTime_ = 0.f;
     float groundTime_ = 0.f; // seconds in Ground since a start, a turn or a landing

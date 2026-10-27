@@ -626,7 +626,7 @@ void Locomotion::retarget(LocoClip next) {
     if (next != LocoClip::Idle) time_[index(next)] = 0.f;
 }
 
-void Locomotion::advance(float dt, float speed) {
+void Locomotion::advance(float dt, float speed, float leadPhase) {
     const float a = follow(dt, fade_);
     // The gaits fade in and out as one layer, split between them by the speed.
     float gaits = 0.f;
@@ -657,7 +657,16 @@ void Locomotion::advance(float dt, float speed) {
         stride += s * i.groundSpeed * i.length / static_cast<float>(i.cycles);
         natural += s * static_cast<float>(i.cycles) / i.length;
     }
-    const float strideRate = stride > 0.f ? std::min(speed / stride, tuning_.maxRate * natural) : natural;
+    float strideRate = stride > 0.f ? std::min(speed / stride, tuning_.maxRate * natural) : natural;
+    // A follower on the ground loop eases its phase toward the nearer of the lead's +-1/4 stride (feet
+    // half a step apart) by stepping a little faster or slower.
+    trim_ = 0.f;
+    if (leadPhase >= 0.f && state_ == LocoState::Ground && speed >= tuning_.moveStop) {
+        float err = frac(leadPhase + 0.25f - phase_ + 0.5f) - 0.5f; // to lead + 1/4, in -0.5..0.5
+        if (std::fabs(err) > 0.25f) err -= std::copysign(0.5f, err); // lead - 1/4 is nearer
+        trim_ = clampf(tuning_.phaseGain * err, -tuning_.phaseTrim, tuning_.phaseTrim);
+        strideRate *= 1.f + trim_;
+    }
     for (const LocoClip c : kGaits) {
         const LocoClipInfo& i = clip(c);
         rate_[index(c)] = i.length > 0.f ? strideRate * i.length / static_cast<float>(i.cycles) : 1.f;
@@ -763,7 +772,7 @@ void Locomotion::update(const LocoInput& in) {
         const float clipSpeed = clip(c).groundSpeed;
         rate_[index(c)] = clipSpeed > 0.f ? clampf(speed / clipSpeed, tuning_.minLandRate, tuning_.maxLandRate) : 1.f;
     }
-    advance(dt, speed);
+    advance(dt, speed, in.leadPhase);
     if (state_ == LocoState::Turning) turnTo_ = time_[index(move_)];
 
     // The air pose over the limbs: in the air, and for the arms into the landing.
