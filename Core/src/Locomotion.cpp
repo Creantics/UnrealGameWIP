@@ -435,7 +435,8 @@ bool Locomotion::beginTurn(const LocoInput& in, LocoClip first, LocoClip last, f
     state_ = LocoState::Turning;
     move_ = pick;
     warp_ = clampf(angle / clip(pick).turn, tuning_.minWarp, tuning_.maxWarp);
-    rootDriven_ = in.rootMotion;
+    // A turn on the spot has no distance to match: it plays at its own pace, as if its root moved the body.
+    rootDriven_ = in.rootMotion || isLocoStandTurn(pick);
     rate_[index(pick)] = rootDriven_ ? 1.f : 0.f;
     moved_ = 0.f;
     turnEnter_ = enter_ = bestTime;
@@ -592,7 +593,7 @@ LocoClip Locomotion::moveTarget(const LocoInput& in, float speed, LocoClip& sync
         return move_;
     }
     const float face = wrap180(in.faceYaw - in.yaw);
-    if (in.steer && in.face && !heading && !isLocoGait(gait_) && speed < tuning_.moveStop && std::fabs(face) >= tuning_.faceMin &&
+    if (in.face && !heading && !isLocoGait(gait_) && speed < tuning_.moveStop && std::fabs(face) >= tuning_.faceMin &&
         beginTurn(in, LocoClip::StandTurnLeft45, LocoClip::StandTurnRight180, face, false)) {
         return move_;
     }

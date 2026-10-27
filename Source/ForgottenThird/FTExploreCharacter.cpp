@@ -36,6 +36,7 @@ constexpr float kRecentreDelay = 1.f;
 constexpr float kRecentreRate = 3.f;
 constexpr float kRecentreMax = 120.f;
 constexpr float kRecentreSpeed = 50.f; // cm/s: slower counts as standing
+constexpr float kSideHold = 1.f;       // -LocoSideView holds the side camera this long (s) after a turn
 } // namespace
 
 AFTExploreCharacter::AFTExploreCharacter()
@@ -107,7 +108,8 @@ void AFTExploreCharacter::BeginPlay()
 	// Locomotion test switches: -LocoRun holds the run speed, -LocoJump=<s> jumps every s seconds,
 	// -LocoPulse=<s> drops the movement input for -LocoRest=<s> seconds (default 2) after every s seconds
 	// of it, for starts and stops; with -LocoFace=<deg> the body turns on the spot by that much in each
-	// rest (a rest needs about 4 s to fit the stop and the turn).
+	// rest (a rest needs about 4 s to fit the stop and the turn). -LocoSideView films each turn from the side;
+	// -LocoNoLook ignores look input.
 	if (FParse::Param(FCommandLine::Get(), TEXT("LocoRun")))
 	{
 		GetCharacterMovement()->MaxWalkSpeed = RunSpeed;
@@ -116,6 +118,8 @@ void AFTExploreCharacter::BeginPlay()
 	FParse::Value(FCommandLine::Get(), TEXT("LocoPulse="), PulseEvery);
 	FParse::Value(FCommandLine::Get(), TEXT("LocoRest="), PulseRest);
 	FParse::Value(FCommandLine::Get(), TEXT("LocoFace="), FaceBy);
+	bSideView = FParse::Param(FCommandLine::Get(), TEXT("LocoSideView"));
+	bNoLook = FParse::Param(FCommandLine::Get(), TEXT("LocoNoLook"));
 	if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait")))
 	{
 		// For checking a look: the camera holds still round the pawn, by default in front of the face. Yaw 180 is
@@ -279,8 +283,23 @@ void AFTExploreCharacter::ApplyLookOverrides()
 	LoadClip(JumpMovingClipPath, JumpMovingClip);
 	LoadClip(LandMovingClipPath, LandMovingClip);
 	int32 Cloth = 0;
+	// Gate captures: -LocoNoPieces leaves every piece off (the body alone), -LocoNoPiece=hair+collar those whose
+	// asset name holds any of the words, to find which one breaks up as the body turns.
+	const bool bNoPieces = FParse::Param(FCommandLine::Get(), TEXT("LocoNoPieces"));
+	FString NoPiece;
+	TArray<FString> NoPieceWords;
+	if (FParse::Value(FCommandLine::Get(), TEXT("LocoNoPiece="), NoPiece))
+	{
+		NoPiece.ParseIntoArray(NoPieceWords, TEXT("+"));
+	}
 	for (const FSoftObjectPath& Path : PiecePaths)
 	{
+		const FString Name = Path.GetAssetName();
+		if (bNoPieces || NoPieceWords.ContainsByPredicate([&Name](const FString& Word) { return Name.Contains(Word); }))
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: piece %s left off."), *Name);
+			continue;
+		}
 		USkeletalMesh* PieceMesh = Cast<USkeletalMesh>(Path.TryLoad());
 		if (!PieceMesh)
 		{
@@ -405,6 +424,10 @@ void AFTExploreCharacter::HandleMove(const FInputActionValue& Value)
 void AFTExploreCharacter::HandleLook(const FInputActionValue& Value)
 {
 	const FVector2D Axis = Value.Get<FVector2D>();
+	if (bNoLook)
+	{
+		return;
+	}
 	if (!Axis.IsNearlyZero())
 	{
 		LookRest = 0.f;
@@ -463,10 +486,32 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	}
 	SlideProbe.Sample(*GetMesh(), DeltaSeconds, static_cast<float>(GetVelocity().Size2D()));
 	LookRest += DeltaSeconds;
-	if (Controller && Boom->bUsePawnControlRotation && LookRest >= kRecentreDelay && GetVelocity().Size2D() > kRecentreSpeed)
+	const AActor* Framed = Watched.IsValid() ? Watched.Get() : this;
+	if (bSideView && Controller)
+	{
+		// A turn is filmed side on from where it began, the camera still until a second after it ends.
+		const USkeletalMeshComponent* FramedMesh = Framed->FindComponentByClass<USkeletalMeshComponent>();
+		if (const UFTLocomotionAnimInstance* Anim = FramedMesh ? Cast<UFTLocomotionAnimInstance>(FramedMesh->GetAnimInstance()) : nullptr)
+		{
+			const ftcore::Locomotion& Loco = Anim->GetLocomotion();
+			if (Loco.turning() && Loco.turnsBegun() != SideTurns)
+			{
+				SideTurns = Loco.turnsBegun();
+				SideYaw = static_cast<float>(Framed->GetActorRotation().Yaw) + 90.f;
+			}
+			SideHold = Loco.turning() ? kSideHold : SideHold - DeltaSeconds;
+		}
+		if (SideHold > 0.f)
+		{
+			FRotator Control = Controller->GetControlRotation();
+			Control.Yaw = SideYaw;
+			Controller->SetControlRotation(Control);
+		}
+	}
+	if (Controller && Boom->bUsePawnControlRotation && LookRest >= kRecentreDelay && GetVelocity().Size2D() > kRecentreSpeed
+		&& SideHold <= 0.f)
 	{
 		FRotator Control = Controller->GetControlRotation();
-		const AActor* Framed = Watched.IsValid() ? Watched.Get() : this;
 		const float Gap = FMath::FindDeltaAngleDegrees(static_cast<float>(Control.Yaw), static_cast<float>(Framed->GetActorRotation().Yaw));
 		Control.Yaw += FMath::Clamp(Gap * kRecentreRate * DeltaSeconds, -kRecentreMax * DeltaSeconds, kRecentreMax * DeltaSeconds);
 		Controller->SetControlRotation(Control);

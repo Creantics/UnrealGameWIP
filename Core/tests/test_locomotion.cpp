@@ -969,8 +969,27 @@ TEST_CASE("locomotion: asked to face elsewhere when standing it turns on the spo
     run(l, 0.5f, in);
     CHECK(!l.turning());
 
+    // A follower, which doesn't steer (its caller faces it the way it moves), turns on the spot too.
+    l = makeTurnLoco();
+    in = LocoInput{kDt, 0.f};
+    in.wantSpeed = 0.f;
+    in.face = true;
+    in.faceYaw = 100.f;
+    l.update(in);
+    REQUIRE(l.turning());
+    CHECK(l.turnClip() == locoStandTurn(true, 1));
+    frames = 0;
+    while (l.turning() && frames < 200) { // it plays through though nothing moves it: the caller turns it by turnYaw
+        in.yaw = l.turnYaw();
+        l.update(in);
+        ++frames;
+    }
+    CHECK(in.yaw == doctest::Approx(100.f).epsilon(0.02));
+
     // Heading off mid-turn leaves it; so does a jump.
     l = makeTurnLoco();
+    in.steer = in.rootMotion = true;
+    in.faceYaw = 85.f;
     in.yaw = 0.f;
     l.update(in);
     REQUIRE(l.turning());

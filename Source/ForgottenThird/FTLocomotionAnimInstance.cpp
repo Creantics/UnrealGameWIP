@@ -350,6 +350,11 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		In.stopDistance = PushedStop;
 		In.turnBy = PushedTurnBy;
 		PushedTurnBy = 0.f;
+		In.falling = bPushedAir;
+		In.verticalSpeed = PushedVerticalSpeed;
+		In.yaw = static_cast<float>(Owner->GetActorRotation().Yaw);
+		In.face = bPushedFace;
+		In.faceYaw = PushedFaceYaw;
 	}
 	const float Yaw = static_cast<float>(Owner->GetActorRotation().Yaw);
 	In.turnRate = bHasYaw && DeltaSeconds > 0.f ? FMath::FindDeltaAngleDegrees(LastYaw, Yaw) / DeltaSeconds : 0.f;

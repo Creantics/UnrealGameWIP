@@ -122,11 +122,17 @@ public:
 	// M_Neutral_Run_Reface_Start_F_L_090_to_x, M_Neutral_Stand_Turn_090_L_to_x and so on. Call after
 	// SetClip(Run). -LocoNoTurns leaves them out.
 	void SetTurnsFromRun();
-	// A character owner standing still turns on the spot to face Yaw (degrees, world) while bFace holds.
+	// The owner standing still turns on the spot to face Yaw (degrees, world) while bFace holds.
 	void SetFace(bool bFace, float Yaw)
 	{
 		bPushedFace = bFace;
 		PushedFaceYaw = Yaw;
+	}
+	// A non-character owner in the air (a replayed jump), rising while VerticalSpeed (cm/s) is above 0.
+	void SetAir(bool bAir, float VerticalSpeed)
+	{
+		bPushedAir = bAir;
+		PushedVerticalSpeed = VerticalSpeed;
 	}
 	// A non-character owner: replay a running turn by Delta degrees on the next update.
 	void ReplayTurn(float Delta) { PushedTurnBy = Delta; }
@@ -178,6 +184,8 @@ private:
 	float PushedTurnBy = 0.f;
 	float PushedFaceYaw = 0.f;
 	bool bPushedFace = false;
+	bool bPushedAir = false;
+	float PushedVerticalSpeed = 0.f;
 	float LastYaw = 0.f;
 	bool bHasYaw = false;
 	bool bLog = false;

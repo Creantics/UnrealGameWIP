@@ -163,4 +163,11 @@ private:
 	float FaceBy = 0.f;   // -LocoFace=<deg>
 	TWeakObjectPtr<AActor> Watched; // WatchFrom: the body the camera frames and recentres behind
 	bool bFacing = false;
+	// -LocoSideView: each turn of the framed body is watched from its side, the camera held where the turn began.
+	bool bSideView = false;
+	// -LocoNoLook: look input is ignored, so a mouse passing over an unattended capture can't swing the camera.
+	bool bNoLook = false;
+	uint32 SideTurns = 0;
+	float SideYaw = 0.f;
+	float SideHold = 0.f;
 };

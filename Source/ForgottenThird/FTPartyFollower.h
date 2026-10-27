@@ -38,6 +38,11 @@ public:
 	// Plays a running turn by `Delta` degrees from here, as the lead did at this spot on its trail
 	// (ftcore::PartyTrail::turnsReached). Call before Place.
 	void ReplayTurn(float Delta);
+	// Jumps from here as the lead did at this spot (ftcore::PartyTrail::jumpsReached): a hop at UpSpeed
+	// (cm/s) under Gravity (cm/s^2, positive), landing back on the ground below it.
+	void ReplayJump(float UpSpeed, float Gravity);
+	// Standing, turns on the spot to face Yaw (degrees, world), as the lead turned to face something.
+	void FaceTo(float Yaw);
 
 private:
 	UPROPERTY(VisibleAnywhere, Category = "Follower")
@@ -49,5 +54,11 @@ private:
 	bool bPlaced = false;
 	uint32 TurnsSeen = 0;
 	float TurnEntryYaw = 0.f; // the yaw a replayed turn began at
+	bool bAir = false;        // in a replayed jump: this high above the ground (cm) and rising this fast
+	float AirHeight = 0.f;
+	float AirSpeed = 0.f;
+	float AirGravity = 0.f;
+	bool bFacing = false;     // asked to turn on the spot to FaceYaw
+	float FaceYaw = 0.f;
 	FFTFootSlideProbe SlideProbe;
 };

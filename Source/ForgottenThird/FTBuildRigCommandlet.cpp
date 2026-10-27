@@ -16,6 +16,8 @@
 #include "RetargetEditor/IKRetargeterPoseGenerator.h"
 #include "Retargeter/IKRetargetChainMapping.h"
 #include "Retargeter/RetargetOps/RootMotionGeneratorOp.h"
+#include "Retargeter/RetargetOps/FKChainsOp.h"
+#include "Retargeter/RetargetOps/RunIKRigOp.h"
 #include "Rig/IKRigDefinition.h"
 #include "RigEditor/IKRigAutoCharacterizer.h"
 #include "RigEditor/IKRigController.h"
@@ -137,6 +139,98 @@ void LogTurn(const UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 		TEXT("FTBuildRig: clip %s turn: root %.0f deg (10%% at %.2f s, half at %.2f, 90%% at %.2f of %.2f), pelvis %.0f deg, root travels %.0f cm (%.0f, %.0f), %.0f cm/s at first, %.0f at last"),
 		*Clip.GetName(), Turn, TimeAt(0.1), TimeAt(0.5), TimeAt(0.9), Length, PelvisYaw, Travel.Size2D(), Travel.X, Travel.Y, Speed(0),
 		Speed(Frames - 1 - Tenth));
+}
+
+// Joint angles of a clip at a share of its length, from component-space bone positions (not local
+// rotations, which depend on each rig's bone roll): elbow and knee bend (0 = straight), upper arm
+// raised from hanging down (90 = level), and the pelvis-to-head line's lean forward (+X) and sideways.
+struct FPoseAngles
+{
+	double Elbow[2] = {}, Arm[2] = {}, Knee[2] = {}, Lean = 0.0, Side = 0.0;
+	bool bValid = false;
+};
+
+FPoseAngles MeasurePose(const UAnimSequence& Clip, double Share)
+{
+	FPoseAngles Pose;
+	const IAnimationDataModel* Model = Clip.GetDataModel();
+	const USkeleton* Skel = Clip.GetSkeleton();
+	if (!Model || !Skel || Model->GetNumberOfKeys() < 1)
+	{
+		return Pose;
+	}
+	const FReferenceSkeleton& Skeleton = Skel->GetReferenceSkeleton();
+	const int32 Key = FMath::RoundToInt(Share * (Model->GetNumberOfKeys() - 1));
+	auto At = [&](const TCHAR* Name, FVector& Out)
+	{
+		const int32 Bone = Skeleton.FindBoneIndex(Name);
+		if (Bone != INDEX_NONE)
+		{
+			Out = ComponentTransform(*Model, Skeleton, Bone, Key).GetTranslation();
+		}
+		return Bone != INDEX_NONE;
+	};
+	auto Bend = [](const FVector& A, const FVector& B, const FVector& C)
+	{
+		return FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(((B - A).GetSafeNormal() | (C - B).GetSafeNormal()), -1.0, 1.0)));
+	};
+	const TCHAR* Sides[2] = {TEXT("_l"), TEXT("_r")};
+	FVector Pelvis, Head;
+	bool bOk = At(TEXT("pelvis"), Pelvis) && At(TEXT("head"), Head);
+	for (int32 S = 0; S < 2 && bOk; ++S)
+	{
+		FVector Upper, Lower, Hand, Thigh, Calf, Foot;
+		bOk = At(*(FString(TEXT("upperarm")) + Sides[S]), Upper) && At(*(FString(TEXT("lowerarm")) + Sides[S]), Lower)
+			&& At(*(FString(TEXT("hand")) + Sides[S]), Hand) && At(*(FString(TEXT("thigh")) + Sides[S]), Thigh)
+			&& At(*(FString(TEXT("calf")) + Sides[S]), Calf) && At(*(FString(TEXT("foot")) + Sides[S]), Foot);
+		if (bOk)
+		{
+			Pose.Elbow[S] = Bend(Upper, Lower, Hand);
+			Pose.Knee[S] = Bend(Thigh, Calf, Foot);
+			Pose.Arm[S] = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(((Lower - Upper).GetSafeNormal() | FVector::DownVector), -1.0, 1.0)));
+		}
+	}
+	if (bOk)
+	{
+		// Measured in the root's frame at that key, so a turning clip's lean stays forward.
+		const FTransform Root = ComponentTransform(*Model, Skeleton, 0, Key);
+		const FVector Up = Root.InverseTransformVectorNoScale(Head - Pelvis).GetSafeNormal();
+		Pose.Lean = FMath::RadiansToDegrees(FMath::Atan2(Up.Y, Up.Z)); // UE mannequins face +Y
+		Pose.Side = FMath::RadiansToDegrees(FMath::Atan2(Up.X, Up.Z));
+		Pose.bValid = true;
+	}
+	return Pose;
+}
+
+// -ComparePose=<source clip>,<retargeted clip>[,<retargeted clip>...]: logs both clips' joint angles
+// at ten points through each, so a retarget that straightens the arms or legs shows as numbers.
+int32 ComparePoses(const FString& List)
+{
+	TArray<FString> Paths;
+	List.ParseIntoArray(Paths, TEXT(","));
+	TArray<UAnimSequence*> Clips;
+	for (const FString& Path : Paths)
+	{
+		UAnimSequence* Clip = LoadObject<UAnimSequence>(nullptr, *Path);
+		if (!Clip)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: couldn't load %s."), *Path);
+			return 1;
+		}
+		Clips.Add(Clip);
+	}
+	for (int32 I = 0; I <= 10; ++I)
+	{
+		for (const UAnimSequence* Clip : Clips)
+		{
+			const FPoseAngles P = MeasurePose(*Clip, I / 10.0);
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("FTBuildRig: pose %.1f %-48s elbow %5.0f %5.0f  arm %5.0f %5.0f  knee %5.0f %5.0f  lean %5.0f side %5.0f%s"), I / 10.0,
+				*Clip->GetName(), P.Elbow[0], P.Elbow[1], P.Arm[0], P.Arm[1], P.Knee[0], P.Knee[1], P.Lean, P.Side,
+				P.bValid ? TEXT("") : TEXT(" (missing bones)"));
+		}
+	}
+	return 0;
 }
 
 // Logs one line for a clip: frames, bone tracks that move over time or differ from the bind pose,
@@ -398,16 +492,41 @@ bool RetargetClips(UIKRigDefinition& SourceRig, UIKRigDefinition& TargetRig, USk
 		RootOp->Settings.SourceRoot.BoneName = SourceMesh->GetRefSkeleton().GetBoneName(0);
 		RootOp->Settings.TargetRoot.BoneName = TargetMesh.GetRefSkeleton().GetBoneName(0);
 	}
+	// The arms take whichever FK mode keeps the mocap's elbow bend on this body. Interpolated samples the source chain at
+	// the same share of its length, so where the arms' proportions differ the elbow takes a blend of the source's upper
+	// arm and forearm (the Third's run: 16 degrees straighter); matching the chain's shape fixes that body but straightened
+	// Duy's by 16, whose interpolated arms were within 3. Both are tried on a probe clip below. Matched arms are FK only:
+	// the hand goals would pull the elbow straight again. The legs keep their IK (planting).
+	auto IsArm = [](FName Chain) { return Chain == TEXT("LeftArm") || Chain == TEXT("RightArm"); };
+	auto SetArms = [&](EFKChainRotationMode Mode)
+	{
+		if (FIKRetargetFKChainsOp* FkOp = Retargeter->GetFirstRetargetOpOfType<FIKRetargetFKChainsOp>())
+		{
+			for (FRetargetFKChainSettings& Chain : FkOp->Settings.ChainsToRetarget)
+			{
+				if (IsArm(Chain.TargetChainName))
+				{
+					Chain.RotationMode = Mode;
+				}
+			}
+		}
+		if (FIKRetargetRunIKRigOp* IkOp = Retargeter->GetFirstRetargetOpOfType<FIKRetargetRunIKRigOp>())
+		{
+			for (FIKRetargetRunIKRigChainSettings& Chain : IkOp->Settings.Chains)
+			{
+				if (IsArm(Chain.TargetChainName))
+				{
+					Chain.bEnableIK = Mode != EFKChainRotationMode::MatchChain;
+				}
+			}
+		}
+	};
 
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: retargeter %s: %d ops, %d/%d target chains mapped (%s -> %s)."),
 		*Asset->GetName(), Retargeter->GetNumRetargetOps(), Mapped, TargetRig.GetRetargetChains().Num(), *SourceMesh->GetName(),
 		*TargetMesh.GetName());
-	if (!SaveAsset(Asset))
-	{
-		return false;
-	}
 
-	FIKRetargetBatchOperationInputs Inputs;
+	TArray<UAnimSequence*> Sources;
 	for (const FString& Path : Clips)
 	{
 		UAnimSequence* Clip = LoadObject<UAnimSequence>(nullptr, *Path);
@@ -416,24 +535,62 @@ bool RetargetClips(UIKRigDefinition& SourceRig, UIKRigDefinition& TargetRig, USk
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: couldn't load clip %s."), *Path);
 			return false;
 		}
-		Inputs.AssetsToRetarget.Add(FAssetData(Clip));
+		Sources.Add(Clip);
 	}
-	if (Inputs.AssetsToRetarget.IsEmpty())
+	if (Sources.IsEmpty())
 	{
-		return bOk;
+		SetArms(EFKChainRotationMode::Interpolated);
+		return SaveAsset(Asset) && bOk;
 	}
-	Inputs.SourceMesh = SourceMesh;
-	Inputs.TargetMesh = &TargetMesh;
-	Inputs.IKRetargetAsset = Asset;
-	Inputs.Suffix = TEXT("_to_") + TargetMesh.GetName();
-	Inputs.TargetPath = Dest / TEXT("Retargeted") / TEXT("");
-	Inputs.bIncludeReferencedAssets = false;
-	Inputs.bOverwriteExistingFiles = true;
-	const TArray<FAssetData> Results = UIKRetargetBatchOperation::RunBatchRetarget(Inputs);
-	if (Results.Num() != Inputs.AssetsToRetarget.Num())
+	auto Run = [&](TArrayView<UAnimSequence* const> These)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: retargeting %d clips gave %d results."), Inputs.AssetsToRetarget.Num(),
-			Results.Num());
+		FIKRetargetBatchOperationInputs Inputs;
+		for (UAnimSequence* Clip : These)
+		{
+			Inputs.AssetsToRetarget.Add(FAssetData(Clip));
+		}
+		Inputs.SourceMesh = SourceMesh;
+		Inputs.TargetMesh = &TargetMesh;
+		Inputs.IKRetargetAsset = Asset;
+		Inputs.Suffix = TEXT("_to_") + TargetMesh.GetName();
+		Inputs.TargetPath = Dest / TEXT("Retargeted") / TEXT("");
+		Inputs.bIncludeReferencedAssets = false;
+		Inputs.bOverwriteExistingFiles = true;
+		return UIKRetargetBatchOperation::RunBatchRetarget(Inputs);
+	};
+
+	// The probe: the run loop if there is one (its elbows bend the most and swing through the whole range), else the first clip.
+	UAnimSequence* const* Probe = Sources.FindByPredicate([](const UAnimSequence* Clip) { return Clip->GetName().Contains(TEXT("Run_Loop_F")); });
+	Probe = Probe ? Probe : &Sources[0];
+	auto ElbowError = [&](EFKChainRotationMode Mode)
+	{
+		SetArms(Mode);
+		const TArray<FAssetData> Out = Run(TArrayView<UAnimSequence* const>(Probe, 1));
+		const UAnimSequence* Result = Out.Num() == 1 ? Cast<UAnimSequence>(Out[0].GetAsset()) : nullptr;
+		double Error = 0.0;
+		for (int32 I = 0; I <= 10 && Result; ++I)
+		{
+			const FPoseAngles From = MeasurePose(**Probe, I / 10.0), To = MeasurePose(*Result, I / 10.0);
+			Error += From.bValid && To.bValid ? FMath::Abs(From.Elbow[0] - To.Elbow[0]) + FMath::Abs(From.Elbow[1] - To.Elbow[1]) : 1e6;
+		}
+		return Result ? Error / 22.0 : 1e6;
+	};
+	const double Matched = ElbowError(EFKChainRotationMode::MatchChain);
+	const double Interpolated = ElbowError(EFKChainRotationMode::Interpolated);
+	const EFKChainRotationMode Arms = Matched < Interpolated ? EFKChainRotationMode::MatchChain : EFKChainRotationMode::Interpolated;
+	SetArms(Arms);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: arms %s (%s elbows off the mocap by %.1f degrees on average, matched %.1f, interpolated %.1f)."),
+		Arms == EFKChainRotationMode::MatchChain ? TEXT("match the source chain, FK only") : TEXT("interpolated, with IK"), *(*Probe)->GetName(),
+		FMath::Min(Matched, Interpolated), Matched, Interpolated);
+	if (!SaveAsset(Asset))
+	{
+		return false;
+	}
+
+	const TArray<FAssetData> Results = Run(Sources);
+	if (Results.Num() != Sources.Num())
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: retargeting %d clips gave %d results."), Sources.Num(), Results.Num());
 		bOk = false;
 	}
 	for (const FAssetData& Result : Results)
@@ -466,7 +623,12 @@ UFTBuildRigCommandlet::UFTBuildRigCommandlet()
 int32 UFTBuildRigCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
-	FString MeshPath = TEXT("/Game/Characters/ProofHead/proof_head/SkeletalMeshes/proof_head.proof_head");
+	FString CompareList;
+	if (FParse::Value(*Params, TEXT("ComparePose="), CompareList, false))
+	{
+		return ComparePoses(CompareList);
+	}
+	FString MeshPath =TEXT("/Game/Characters/ProofHead/proof_head/SkeletalMeshes/proof_head.proof_head");
 	FString Dest = TEXT("/Game/Characters/ProofHead/Rig");
 	FParse::Value(*Params, TEXT("Mesh="), MeshPath);
 	FParse::Value(*Params, TEXT("Dest="), Dest);

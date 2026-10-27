@@ -211,7 +211,7 @@ struct LocoInput {
     float stopDistance = -1.f;
     // Steering (degrees, the turnRate's convention): the body's facing, the way it moves (meaningful
     // while groundSpeed is at least moveStop) and the way it heads (while wantSpeed is above 0). face
-    // asks a standing body to turn on the spot to faceYaw.
+    // asks a standing body to turn on the spot from yaw to faceYaw (without steer too: a follower).
     bool steer = false;
     float yaw = 0.f;
     float moveYaw = 0.f;

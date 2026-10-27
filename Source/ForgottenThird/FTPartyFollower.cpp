@@ -16,6 +16,8 @@ constexpr float kStillSpeed = 10.f;
 constexpr float kFaceTime = 0.15f;
 // How fast the speed fed to the anim follows each frame's step (1/s), so uneven frames don't jitter the stride.
 constexpr float kSpeedResponse = 12.f;
+// Asked to face a way, it has once it is this near (degrees): nearer than LocoTuning::faceMin, no turn on the spot starts.
+constexpr float kFacedWithin = 40.f;
 }
 
 AFTPartyFollower::AFTPartyFollower()
@@ -73,6 +75,12 @@ bool AFTPartyFollower::Setup(const FString& Name, const AActor* Lead)
 	Anim->SetClip(ftcore::LocoClip::Walk, Load({TEXT("M_Neutral_Walk_Loop_F"), TEXT("MF_Unarmed_Walk_Fwd")}, TEXT("walk")));
 	Anim->SetClip(ftcore::LocoClip::Run, Load({TEXT("M_Neutral_Run_Loop_F"), TEXT("MF_Unarmed_Jog_Fwd")}, nullptr));
 	Anim->SetClip(ftcore::LocoClip::Sprint, Load({TEXT("M_Neutral_Sprint_Loop_F")}, nullptr));
+	// The lead's jumps, replayed on the trail.
+	Anim->SetClip(ftcore::LocoClip::JumpStart, Load({TEXT("M_Neutral_Jump_F_Start_Stand_Lfoot"), TEXT("MM_Jump")}, nullptr));
+	Anim->SetClip(ftcore::LocoClip::Fall, Load({TEXT("M_Neutral_Jump_Loop_Fall"), TEXT("MM_Fall_Loop")}, nullptr));
+	Anim->SetClip(ftcore::LocoClip::Land, Load({TEXT("M_Neutral_Jump_F_Land_Stand_Light_Lfoot")}, nullptr));
+	Anim->SetClip(ftcore::LocoClip::JumpMoving, Load({TEXT("M_Neutral_Jump_F_Start_Run_Lfoot")}, nullptr));
+	Anim->SetClip(ftcore::LocoClip::LandMoving, Load({TEXT("M_Neutral_Jump_F_Land_Run_Light_Lfoot")}, nullptr));
 	Anim->SetMovesFromGait(ftcore::LocoClip::Walk);
 	Anim->SetMovesFromGait(ftcore::LocoClip::Run);
 	Anim->SetMovesFromGait(ftcore::LocoClip::Sprint);
@@ -101,12 +109,24 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 			Z = Hit.ImpactPoint.Z;
 		}
 	}
+	// A replayed jump: a hop off the ground below, back down onto it.
+	if (bAir && DeltaSeconds > 0.f)
+	{
+		AirHeight += AirSpeed * DeltaSeconds - 0.5f * AirGravity * DeltaSeconds * DeltaSeconds;
+		AirSpeed -= AirGravity * DeltaSeconds;
+		if (AirHeight <= 0.f && AirSpeed < 0.f)
+		{
+			bAir = false;
+			AirHeight = AirSpeed = 0.f;
+		}
+	}
+	Z += AirHeight;
 	FRotator Rot = GetActorRotation();
 	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Body->GetAnimInstance());
 	const ftcore::Locomotion* Loco = Anim ? &Anim->GetLocomotion() : nullptr;
-	if (Loco && Loco->turning() && !ftcore::isLocoStandTurn(Loco->turnClip()))
+	if (Loco && Loco->turning())
 	{
-		// A replayed turn turns the body by its clip's root, as it turned the lead.
+		// A replayed turn (running, or on the spot) turns the body by its clip's root, as it turned the lead.
 		if (Loco->turnsBegun() != TurnsSeen)
 		{
 			TurnsSeen = Loco->turnsBegun();
@@ -122,6 +142,11 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 		Rot.Yaw += FMath::FindDeltaAngleDegrees(static_cast<float>(Rot.Yaw), Want) * Ease;
 	}
 	SetActorLocationAndRotation(FVector(Ground.X, Ground.Y, Z), Rot, false, nullptr, ETeleportType::TeleportPhysics);
+	// Facing where it was asked to, or setting off, it no longer turns on the spot.
+	if (bFacing && (bWantWalk || FMath::Abs(FMath::FindDeltaAngleDegrees(static_cast<float>(Rot.Yaw), FaceYaw)) < kFacedWithin))
+	{
+		bFacing = false;
+	}
 
 	if (DeltaSeconds > 0.f)
 	{
@@ -131,7 +156,27 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 	{
 		Anim->SetGroundSpeed(Speed);
 		Anim->SetIntent(WantSpeed, StopDistance);
+		Anim->SetAir(bAir, AirSpeed);
+		Anim->SetFace(bFacing, FaceYaw);
 	}
+}
+
+void AFTPartyFollower::ReplayJump(float UpSpeed, float Gravity)
+{
+	if (bAir || UpSpeed <= 0.f || Gravity <= 0.f)
+	{
+		return;
+	}
+	bAir = true;
+	AirHeight = 0.f;
+	AirSpeed = UpSpeed;
+	AirGravity = Gravity;
+}
+
+void AFTPartyFollower::FaceTo(float Yaw)
+{
+	bFacing = true;
+	FaceYaw = Yaw;
 }
 
 void AFTPartyFollower::ReplayTurn(float Delta)

@@ -52,6 +52,8 @@ constexpr int32 kTourTargetBase = 300;
 constexpr int32 kOverTargetBase = 400;
 // A follower nearer the camera than this share of the lead's distance is hidden: it would loom over the lead.
 constexpr double kFollowerCameraShare = 0.8;
+// Each follower turns to face where the lead turned on the spot this long (s) after the one before it.
+constexpr float kFollowerFaceDelay = 0.3f;
 
 const TCHAR* const kObjectiveNames[ftcore::demo::kObjCount] = {
 	TEXT("Talk to Duy"),
@@ -462,6 +464,16 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 		static_cast<float>(Count) * ftcore::PartyTrail::kFollowerSpacing);
 	Followers.Reserve(static_cast<int32>(Count));
 	TurnCursors.Init(0u, static_cast<int32>(Count));
+	JumpCursors.Init(0u, static_cast<int32>(Count));
+	// Each a step further back than the one before, on alternate sides of the lead's path.
+	Slots.SetNum(static_cast<int32>(Count));
+	for (int32 I = 0; I < Slots.Num(); ++I)
+	{
+		ftcore::PartySlotTuning& Tune = Slots[I].tuning();
+		Tune.spacing *= static_cast<float>(I + 1);
+		Tune.side *= (I % 2 == 0) ? 1.f : -1.f;
+		Slots[I].reset(Trail);
+	}
 	for (size_t I = 0; World && I < Count; ++I)
 	{
 		FActorSpawnParameters Params;
@@ -485,12 +497,14 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 		bWatchFollower = true;
 		Player.WatchFrom(Followers[0]->GetRootComponent());
 	}
+	bLogGap = FParse::Param(FCommandLine::Get(), TEXT("LocoLog"));
 	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: %d following the lead."), Followers.Num());
 }
 
 void AFTExploreDirector::PlaceFollowers(AFTExploreCharacter& Player, float DeltaSeconds)
 {
-	Trail.push(ToGround(Player.GetActorLocation()));
+	const float LeadSpeed = static_cast<float>(Player.GetVelocity().Size2D()) / 100.f;
+	Trail.push(ToGround(Player.GetActorLocation()), LeadSpeed);
 	// The lead's running turns and turning starts go on the trail, for each follower to play where the lead did.
 	if (const UFTLocomotionAnimInstance* LeadAnim = Player.GetMesh() ? Cast<UFTLocomotionAnimInstance>(Player.GetMesh()->GetAnimInstance()) : nullptr)
 	{
@@ -502,20 +516,37 @@ void AFTExploreDirector::PlaceFollowers(AFTExploreCharacter& Player, float Delta
 			{
 				Trail.markTurn(Lead.turnAngle());
 			}
+			else if (Lead.turning())
+			{
+				LeadFacedYaw = static_cast<float>(Player.GetActorRotation().Yaw) + Lead.turnAngle();
+				LeadFacedAgo = 0.f;
+			}
 		}
+	}
+	// The lead's jumps (off the ground going up, not a step off a ledge) go on the trail too.
+	const UCharacterMovementComponent* LeadMove = Player.GetCharacterMovement();
+	const bool bInAir = LeadMove && LeadMove->IsFalling();
+	if (bInAir && !bLeadInAir && Player.GetVelocity().Z > 0.0)
+	{
+		Trail.markJump();
+	}
+	bLeadInAir = bInAir;
+	if (LeadFacedAgo >= 0.f)
+	{
+		LeadFacedAgo += DeltaSeconds;
 	}
 	const float FeetZ = static_cast<float>(Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight());
 	const APlayerCameraManager* Camera = UGameplayStatics::GetPlayerCameraManager(this, 0);
-	float WantSpeed = -1.f, StopDistance = -1.f;
-	if (const UCharacterMovementComponent* Move = Player.GetCharacterMovement())
-	{
-		UFTLocomotionAnimInstance::MovementIntent(*Move, WantSpeed, StopDistance);
-	}
 	for (int32 I = 0; I < Followers.Num(); ++I)
 	{
-		if (AFTPartyFollower* Follower = Followers[I])
+		if (AFTPartyFollower* Follower = Followers[I]; Follower && Slots.IsValidIndex(I))
 		{
-			const float Arc = static_cast<float>(I + 1) * ftcore::PartyTrail::kFollowerSpacing;
+			// Its slot moves on its own along the trail: it sets off and stops after the lead, and starts and
+			// stops its own legs by where its slot is heading.
+			ftcore::PartySlot& Slot = Slots[I];
+			Slot.step(Trail, LeadSpeed, DeltaSeconds);
+			const float Arc = Slot.arc();
+			const float StopDistance = Slot.stopDistance();
 			if (TurnCursors.IsValidIndex(I))
 			{
 				if (const float Delta = Trail.turnsReached(Arc, TurnCursors[I]); Delta != 0.f)
@@ -523,12 +554,34 @@ void AFTExploreDirector::PlaceFollowers(AFTExploreCharacter& Player, float Delta
 					Follower->ReplayTurn(Delta);
 				}
 			}
-			const ftcore::Vec2 At = Trail.pointBehind(Arc);
-			Follower->Place(FVector2D(At.x * 100.0, At.y * 100.0), FeetZ, DeltaSeconds, WantSpeed, StopDistance);
+			if (JumpCursors.IsValidIndex(I) && LeadMove && Trail.jumpsReached(Arc, JumpCursors[I]) > 0)
+			{
+				Follower->ReplayJump(LeadMove->JumpZVelocity, static_cast<float>(-LeadMove->GetGravityZ()));
+			}
+			// When the lead turns on the spot to face something, each follower looks the same way a beat later.
+			const float FaceAfter = kFollowerFaceDelay * static_cast<float>(I + 1);
+			if (LeadFacedAgo >= FaceAfter && LeadFacedAgo - DeltaSeconds < FaceAfter)
+			{
+				Follower->FaceTo(LeadFacedYaw);
+			}
+			const ftcore::Vec2 At = Slot.position();
+			Follower->Place(FVector2D(At.x * 100.0, At.y * 100.0), FeetZ, DeltaSeconds, Slot.wantSpeed() * 100.f,
+				StopDistance < 0.f ? -1.f : StopDistance * 100.f);
 			const bool bInLens = Camera && !(bWatchFollower && I == 0)
 				&& FVector::Dist2D(Camera->GetCameraLocation(), Follower->GetActorLocation())
 					< kFollowerCameraShare * FVector::Dist2D(Camera->GetCameraLocation(), Player.GetActorLocation());
 			Follower->SetActorHiddenInGame(bInLens);
+			if (bLogGap && I == 0 && DeltaSeconds > 0.f)
+			{
+				NearestGap = FMath::Min(NearestGap, static_cast<float>(FVector::Dist2D(Player.GetActorLocation(), Follower->GetActorLocation())));
+				if ((GapLogTimer -= DeltaSeconds) <= 0.f)
+				{
+					UE_LOG(LogForgottenThird, Display, TEXT("Party: follower 0 came within %.0f cm of the lead (slot %.0f cm behind on the trail)."),
+						NearestGap, Arc * 100.f);
+					GapLogTimer = 1.f;
+					NearestGap = TNumericLimits<float>::Max();
+				}
+			}
 		}
 	}
 }
