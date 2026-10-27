@@ -19,6 +19,19 @@ Private notes (character references, concept-art review, script status) are in `
   - Animation gate round 1 ran (per-criterion readers on the contact sheets, a baseline well under the bar). The fixes went to the
     animation session: rebuilt jump, start and stop phases, a layered turn driver, a run upper body, follower spacing, and a hood
     binding fault. Details are in the private handoff.
+  - Animation round 2 was a fix check on three criteria (run gait, turns, follower), not a full gate round:
+    - The follower improved clearly and no longer overlaps the lead.
+    - Run gait and turns did not move, because the retarget is now faithful to the mocap (within about 3 degrees) and the
+      source clips are the ceiling.
+    - Ruling: matching the mocap is not a pass; the bar is the reference game. The remaining defects are fixed by clip
+      selection, pose overrides or a procedural layer:
+      - run posture (spine pitch, elbow hold, shorter stride)
+      - a chest-led banked turn and a stepped stand pivot
+      - a wider follower slot with its own timing
+      - the jump, start and stop arm poses
+      - the hood plate culprit
+    - The body retune is unblocked by the animation session's green push, but it waits for a turn with the user at the
+      machine (it needs the editor).
 - **NEWEST (2026-10-26, motion tools): SOMA-skeleton motion (NVIDIA Kimodo and MotionBricks) retargets onto the
   MetaHuman Third, headless.** It was a trial run, and nothing generated is in the repo.
   - Both tools output the 77-joint SOMA skeleton.
