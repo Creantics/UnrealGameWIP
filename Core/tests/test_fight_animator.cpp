@@ -30,6 +30,8 @@ void setClips(FightAnimator& a) {
     a.setClip(FightClip::Victory, {2.f, 0.f, false});
     a.setClip(FightClip::Aim, {1.5f, 0.f, true});
     a.setClip(FightClip::PhaseChange, {1.8f, 0.f, false});
+    a.setClip(FightClip::KickLeft, {1.1f, 0.5f, false});
+    a.setClip(FightClip::KickRight, {1.1f, 0.5f, false});
 }
 
 FightAnimator makeAnimator() {
@@ -51,7 +53,19 @@ const FightLayer* find(const FightAnimator& a, FightClip clip) {
     return nullptr;
 }
 
-bool isStrike(FightClip c) { return c == FightClip::StrikeLeft || c == FightClip::StrikeRight || c == FightClip::Finisher; }
+bool isStrike(FightClip c) {
+    return c == FightClip::StrikeLeft || c == FightClip::StrikeRight || c == FightClip::Finisher || c == FightClip::KickLeft ||
+           c == FightClip::KickRight;
+}
+
+// The layer playing `clip` within `tol` of its key frame, or nullptr.
+const FightLayer* onKey(const FightAnimator& a, FightClip clip, double tol) {
+    for (std::size_t i = 0; i < a.layerCount(); ++i) {
+        const FightLayer& l = a.layer(i);
+        if (l.clip == clip && std::abs(l.time - a.clip(clip).key) <= tol) return &l;
+    }
+    return nullptr;
+}
 
 // A strike layer whose time is within `tol` of its key frame.
 bool strikeOnKey(const FightAnimator& a, double tol) {
@@ -239,6 +253,48 @@ TEST_CASE("fight director: each combo note is met by a strike's impact, the last
     CHECK(finisher);
 }
 
+TEST_CASE("fight animator: a strike pattern takes punches and kicks only, 1 to 8 of them") {
+    FightAnimator a;
+    CHECK(a.patternSize() == 2);
+    CHECK(a.patternStrike(0) == FightClip::StrikeLeft);
+    CHECK(a.patternStrike(3) == FightClip::StrikeRight);
+    const FightClip kicks[] = {FightClip::StrikeLeft, FightClip::KickRight, FightClip::StrikeRight};
+    REQUIRE(a.setPattern(kicks, 3));
+    CHECK(a.patternStrike(4) == FightClip::KickRight);
+    const FightClip bad[] = {FightClip::StrikeLeft, FightClip::Finisher};
+    CHECK_FALSE(a.setPattern(bad, 2));
+    CHECK_FALSE(a.setPattern(kicks, 0));
+    const FightClip many[FightAnimator::kMaxPattern + 1] = {};
+    CHECK_FALSE(a.setPattern(many, FightAnimator::kMaxPattern + 1));
+    CHECK(a.patternSize() == 3); // unchanged by the refusals
+    a.reset();
+    CHECK(a.patternStrike(1) == FightClip::KickRight);
+}
+
+TEST_CASE("fight director: combo notes follow the striker's pattern, a missing kick thrown as the punch on its side") {
+    DemoFight f;
+    const FightClip pattern[] = {FightClip::KickLeft, FightClip::StrikeRight, FightClip::KickRight};
+    for (std::size_t i = 0; i < f.dir.size(); ++i) {
+        FightAnimator& a = f.dir.animator(static_cast<CombatantId>(i));
+        REQUIRE(a.setPattern(pattern, 3));
+        a.setClip(FightClip::KickLeft, {}); // no left kick: the left punch stands in
+    }
+    int checked = 0;
+    while (!f.over() && checked < 12) {
+        const bool party = f.b.phase() == Phase::PartySkill;
+        const CombatantId striker = f.b.actor();
+        const std::size_t next = party ? f.b.combo().nextIndex() : 0;
+        const double noteTime = party && next < f.b.combo().size() ? f.b.combo().note(next).time : -1.0;
+        const bool last = party && next + 1 == f.b.combo().size();
+        f.step();
+        if (noteTime < 0.0 || last || f.now < noteTime || f.now - noteTime > kStep) continue;
+        const FightClip want = next % 3 == 0 ? FightClip::StrikeLeft : next % 3 == 1 ? FightClip::StrikeRight : FightClip::KickRight;
+        CHECK(onKey(f.dir.animator(striker), want, 1.6 * kStep + 1e-4) != nullptr);
+        ++checked;
+    }
+    CHECK(checked >= 6);
+}
+
 TEST_CASE("fight director: parries meet the impacts they answer, then the counter strikes before the reaction") {
     DemoFight f;
     bool parried = false, countered = false;
@@ -301,6 +357,9 @@ TEST_CASE("fight director: a perfect dodge shows as a dodge") {
 
 TEST_CASE("fight director: a whole fight animates without allocating, the downed down and the victors cheering") {
     DemoFight f;
+    // One fighter leans on kicks.
+    const FightClip kicker[] = {FightClip::StrikeLeft, FightClip::KickRight, FightClip::StrikeRight, FightClip::KickLeft};
+    REQUIRE(f.dir.animator(0).setPattern(kicker, 4));
     const bool hooked = ftcore_test::allocHookInstalled();
     std::uint64_t allocs = 0;
     while (!f.over()) {
@@ -335,5 +394,6 @@ TEST_CASE("fight director: a whole fight animates without allocating, the downed
 TEST_CASE("fight clip names") {
     CHECK(std::string(fightClipName(FightClip::StrikeLeft)) == "strike left");
     CHECK(std::string(fightClipName(FightClip::PhaseChange)) == "phase change");
+    CHECK(std::string(fightClipName(FightClip::KickRight)) == "kick right");
     CHECK(std::string(fightClipName(FightClip::Count)) == "?");
 }

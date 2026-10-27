@@ -24,12 +24,25 @@ const char* fightClipName(FightClip clip) {
     case FightClip::Victory: return "victory";
     case FightClip::Aim: return "aim";
     case FightClip::PhaseChange: return "phase change";
+    case FightClip::KickLeft: return "kick left";
+    case FightClip::KickRight: return "kick right";
     case FightClip::Count: break;
     }
     return "?";
 }
 
 // ---- FightAnimator ----
+
+bool FightAnimator::setPattern(const FightClip* strikes, std::size_t count) {
+    if (!strikes || count == 0 || count > kMaxPattern) return false;
+    for (std::size_t i = 0; i < count; ++i) {
+        const FightClip c = strikes[i];
+        if (c != FightClip::StrikeLeft && c != FightClip::StrikeRight && c != FightClip::KickLeft && c != FightClip::KickRight) return false;
+    }
+    std::copy(strikes, strikes + count, pattern_.begin());
+    patternCount_ = count;
+    return true;
+}
 
 void FightAnimator::reset() {
     count_ = 0;
@@ -164,6 +177,14 @@ bool FightDirector::playOr(CombatantId id, FightClip clip, FightClip fallback, d
     return a.play(clip, now, keyAt) || a.play(fallback, now, keyAt);
 }
 
+bool FightDirector::playStrike(CombatantId id, std::size_t i, double now, double keyAt) {
+    if (id >= animators_.size()) return false;
+    FightAnimator& a = animators_[id];
+    const FightClip c = a.patternStrike(i);
+    const FightClip side = c == FightClip::KickLeft ? FightClip::StrikeLeft : c == FightClip::KickRight ? FightClip::StrikeRight : c;
+    return a.play(c, now, keyAt) || a.play(side, now, keyAt) || a.play(FightClip::StrikeLeft, now, keyAt);
+}
+
 // No earlier than the key frame of what `id` has queued (a strike's impact, a reaction's contact).
 double FightDirector::afterKey(CombatantId id, double now) const {
     return id < animators_.size() ? std::max(now, animators_[id].lastKeyTime()) : now;
@@ -178,9 +199,10 @@ void FightDirector::queueStrikes(const Battle& battle, double now) {
         }
         const std::vector<ComboNote>& notes = battle.combo().notes();
         for (; nextStrike_ < notes.size() && notes[nextStrike_].time <= now + lookahead_; ++nextStrike_) {
-            const FightClip side = nextStrike_ % 2 == 0 ? FightClip::StrikeLeft : FightClip::StrikeRight;
             const bool last = nextStrike_ + 1 == notes.size();
-            playOr(striker_, last ? FightClip::Finisher : side, side, now, notes[nextStrike_].time);
+            const double at = notes[nextStrike_].time;
+            if (!(last && striker_ < animators_.size() && animators_[striker_].play(FightClip::Finisher, now, at)))
+                playStrike(striker_, nextStrike_, now, at);
         }
         return;
     }
@@ -190,8 +212,7 @@ void FightDirector::queueStrikes(const Battle& battle, double now) {
     }
     const DefenceTimeline& d = battle.defence();
     for (; nextStrike_ < d.size() && d.impact(nextStrike_) <= now + lookahead_; ++nextStrike_)
-        playOr(striker_, nextStrike_ % 2 == 0 ? FightClip::StrikeLeft : FightClip::StrikeRight, FightClip::StrikeLeft, now,
-               d.impact(nextStrike_));
+        playStrike(striker_, nextStrike_, now, d.impact(nextStrike_));
 }
 
 void FightDirector::update(const Battle& battle, double now) {

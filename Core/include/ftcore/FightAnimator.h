@@ -20,8 +20,12 @@
 // at its end; what they leave goes to the Stance loop. Downed and Victory hold their last frame;
 // looping clips (Stance, Aim) play until something newer covers them. Fixed size: nothing allocates.
 //
+// Each combatant has a strike pattern: the punches and kicks its combo notes and attack hits cycle
+// through, a punch each side in turn by default (a fighter at home with kicks gets kicks in it). A
+// kick the body has no clip for is thrown as the punch on its side.
+//
 // FightDirector runs one animator per combatant from a Battle's events: the party's combo strikes
-// keyed to their notes (alternating sides, the last one the finisher), an enemy's strikes keyed to
+// keyed to their notes (by the striker's pattern, the last one the finisher), an enemy's strikes keyed to
 // its attack's impacts, dodges, parries and jumps keyed to the hits they answer, hit reactions,
 // counters, phase changes, the downed, the victors and the aim.
 
@@ -52,6 +56,8 @@ enum class FightClip : std::uint8_t {
     Victory,     // holds its last frame
     Aim,         // party: loops while aiming
     PhaseChange, // enemies: entering a new phase of the fight
+    KickLeft,    // in a combatant's strike pattern, in place of a punch
+    KickRight,
     Count
 };
 
@@ -79,14 +85,21 @@ struct FightLayer {
 class FightAnimator {
 public:
     static constexpr std::size_t kMaxActions = 8;
+    static constexpr std::size_t kMaxPattern = 8;
 
     void setClip(FightClip c, FightClipInfo info) { clips_[index(c)] = info; }
+    // The strike pattern (see the top of this file): 1 to kMaxPattern of StrikeLeft, StrikeRight,
+    // KickLeft and KickRight. Returns false, keeping the pattern it had, for anything else.
+    FTCORE_API bool setPattern(const FightClip* strikes, std::size_t count);
+    // The strike for the i-th note or hit of a combo or attack.
+    FightClip patternStrike(std::size_t i) const { return pattern_[i % patternCount_]; }
+    std::size_t patternSize() const { return patternCount_; }
     const FightClipInfo& clip(FightClip c) const { return clips_[index(c)]; }
     bool has(FightClip c) const { return clips_[index(c)].length > 0.f; }
     FightTuning& tuning() { return tuning_; }
     const FightTuning& tuning() const { return tuning_; }
 
-    // Back to the Stance loop alone (the clips and tuning stay).
+    // Back to the Stance loop alone (the clips, pattern and tuning stay).
     FTCORE_API void reset();
 
     // Plays `clip` from `now`, or so that its key frame plays at `keyAt` when keyAt >= 0 (see the top
@@ -120,6 +133,8 @@ private:
 
     std::array<FightClipInfo, static_cast<std::size_t>(FightClip::Count)> clips_{};
     FightTuning tuning_;
+    std::array<FightClip, kMaxPattern> pattern_{FightClip::StrikeLeft, FightClip::StrikeRight};
+    std::size_t patternCount_ = 2;
     std::array<Action, kMaxActions> actions_{}; // by start time, oldest first
     std::size_t count_ = 0;
     std::size_t queuedLast_ = kMaxActions;      // index of the action play() added last
@@ -157,6 +172,8 @@ public:
 private:
     void queueStrikes(const Battle& battle, double now);
     bool playOr(CombatantId id, FightClip clip, FightClip fallback, double now, double keyAt = -1.0);
+    // The i-th strike of id's pattern, or the punch on its side, or StrikeLeft.
+    bool playStrike(CombatantId id, std::size_t i, double now, double keyAt);
     double afterKey(CombatantId id, double now) const;
 
     std::vector<FightAnimator> animators_;
