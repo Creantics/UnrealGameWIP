@@ -14,7 +14,8 @@ Private notes (character references, concept-art review, script status) are in `
   - The Third moves to a MetaHuman head and body. A test conformed a fresh MetaHuman to a mesh made from the new realistic
     reference sheet (used as a shape target only), and in a blind per-criterion check it beat the previous MetaHuman build
     on every shape criterion. The face still needs a refinement pass. The robe continues on the MetaHuman body, after a
-    proportion check against the old avatar. Details are in the private handoff.
+    body retune: the body need not match the old avatar; its proportions are set to suit the new head (queued behind the
+    animation fixes, because the editor blocks their builds). Details are in the private handoff.
   - Animation gate round 1 ran (per-criterion readers on the contact sheets, a baseline well under the bar). The fixes went to the
     animation session: rebuilt jump, start and stop phases, a layered turn driver, a run upper body, follower spacing, and a hood
     binding fault. Details are in the private handoff.
