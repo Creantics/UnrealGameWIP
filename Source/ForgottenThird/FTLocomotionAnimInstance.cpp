@@ -436,7 +436,8 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 
 	// -LocoAngles logs the posed body every frame, stamped with the UTC time so captures can be matched to it:
 	// the trunk (pelvis to neck) and chest (spine_03 to neck) tipped forward and to the right of upright, the
-	// head the same from the neck, and each elbow's bend (0 straight). The pose is last frame's.
+	// head the same from the neck, each elbow's bend (0 straight), and the body (pelvis to head) forward, the
+	// lean a side view shows. The pose is last frame's.
 	static const bool bAngles = FParse::Param(FCommandLine::Get(), TEXT("LocoAngles"));
 	const USkeletalMeshComponent* Posed = bAngles ? GetSkelMeshComponent() : nullptr;
 	if (Posed)
@@ -460,11 +461,12 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		const FVector Head = At(TEXT("head")) - Neck;
 		const FDateTime Now = FDateTime::UtcNow();
 		UE_LOG(LogForgottenThird, Display,
-			TEXT("LocoAngles %s utc %lld state %d speed %.0f | trunk pitch %.1f roll %.1f | chest pitch %.1f roll %.1f | head pitch %.1f roll %.1f | elbow l %.0f r %.0f | loco pitch %.1f lean %.1f twist %.1f"),
+			TEXT("LocoAngles %s utc %lld state %d speed %.0f | trunk pitch %.1f roll %.1f | chest pitch %.1f roll %.1f | head pitch %.1f roll %.1f | elbow l %.0f r %.0f | loco pitch %.1f lean %.1f twist %.1f | body pitch %.1f"),
 			*Owner->GetName(), Now.ToUnixTimestamp() * 1000 + Now.GetMillisecond(), static_cast<int32>(Loco.state()),
 			static_cast<float>(Owner->GetVelocity().Size2D()), Tip(Trunk, Fwd), Tip(Trunk, Side), Tip(Chest, Fwd), Tip(Chest, Side),
 			Tip(Head, Fwd), Tip(Head, Side), Elbow(TEXT("upperarm_l"), TEXT("lowerarm_l"), TEXT("hand_l")),
-			Elbow(TEXT("upperarm_r"), TEXT("lowerarm_r"), TEXT("hand_r")), Loco.pitch(), Loco.lean(), Loco.twist());
+			Elbow(TEXT("upperarm_r"), TEXT("lowerarm_r"), TEXT("hand_r")), Loco.pitch(), Loco.lean(), Loco.twist(),
+			Tip(At(TEXT("head")) - At(TEXT("pelvis")), Fwd));
 	}
 }
 

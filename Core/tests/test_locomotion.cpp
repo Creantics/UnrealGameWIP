@@ -21,6 +21,7 @@ Locomotion makeLoco() {
     l.setClip(LocoClip::JumpStart, {0.87f, 0.f, 1, 0.f});
     l.setClip(LocoClip::Fall, {3.f, 0.f, 1, 0.f});
     l.setClip(LocoClip::Land, {0.87f, 0.f, 1, 0.f});
+    l.tuning().runPitch = 12.f; // the game's run leans from its clip alone; a lean here keeps the run's share testable
     l.reset();
     return l;
 }
