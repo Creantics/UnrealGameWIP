@@ -1,4 +1,5 @@
 #include "ftcore/Locomotion.h"
+#include "ftcore/PartyTrail.h"
 
 #include "AllocCounter.h"
 
@@ -1248,4 +1249,49 @@ TEST_CASE("locomotion: in a turn clip the chest and head lead the hips, and the 
     }
     CHECK(peak > 0.6f * l.tuning().maxTwist);
     CHECK(maxLean < 0.5f);
+}
+
+namespace {
+
+// The lead and one follower in its party slot set off together from standing, run, stop and set off
+// again. Returns how far apart their foot contacts fall over the steady stretches of the run, in steps
+// (0 together, 0.5 halfway between): the foot phase spans a stride, two steps, and a reader sees the
+// contacts, so half a stride apart is in step too, on opposite feet.
+float partyStepGap(float delay) {
+    Locomotion lead = makeLoco(), follower = makeLoco();
+    PartyTrail trail;
+    trail.reset({0.f, 0.f}, {1.f, 0.f}, 6.f);
+    PartySlot slot;
+    slot.tuning().delay = delay;
+    slot.reset(trail);
+    float x = 0.f, speed = 0.f, gap = 0.5f;
+    for (int leg = 0; leg < 2; ++leg) {
+        for (int i = 0; i < 600; ++i) { // 1 s standing, 5 s at a run, then 4 s to stop and stand
+            const float want = i >= 60 && i < 360 ? 4.5f : 0.f;
+            speed = want > speed ? std::min(want, speed + 10.f * kDt) : std::max(want, speed - 10.f * kDt);
+            x += speed * kDt;
+            trail.push({x, 0.f}, speed);
+            slot.step(trail, speed, kDt, want <= 0.f && speed > 0.f ? speed * speed / 20.f : -1.f);
+            lead.update(LocoInput{kDt, speed * 100.f});
+            follower.update(LocoInput{kDt, slot.speed() * 100.f});
+            if (i >= 240 && i < 360) { // both settled into the run
+                const float d = std::fmod(std::fabs(lead.phase() - follower.phase()), 0.5f);
+                gap = std::fmin(gap, 2.f * std::fmin(d, 0.5f - d));
+            }
+        }
+    }
+    return gap;
+}
+
+} // namespace
+
+TEST_CASE("locomotion: a follower's foot contacts fall between the lead's" * doctest::may_fail()) {
+    // Both feet phases follow the ground each body covers, so the follower's contacts trail the lead's
+    // by however much less ground it covers between standing and running (its place falls back by
+    // speed x delay at a run, plus slack and the stop's overrun). Known short: on this rig that lands
+    // near half a stride, contacts together on opposite feet. Kept as a measure until the fix is chosen.
+    const float gap = partyStepGap(PartySlotTuning{}.delay);
+    CAPTURE(gap);
+    CAPTURE(partyStepGap(0.f));
+    CHECK(gap >= 0.2f); // at least a fifth of a step apart
 }
