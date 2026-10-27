@@ -459,7 +459,18 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 {
 	bFollowersSpawned = true;
 	UWorld* World = GetWorld();
-	const size_t Count = FMath::Min(ftcore::demo::kPartyNames.size() - 1u, ftcore::PartyTrail::kMaxFollowers);
+	// The party behind the lead; -PartyFollowers=Duy+Devin names others (at most PartyTrail::kMaxFollowers).
+	TArray<FString> Names;
+	for (size_t I = 1; I < ftcore::demo::kPartyNames.size(); ++I)
+	{
+		Names.Add(UTF8_TO_TCHAR(ftcore::demo::kPartyNames[I]));
+	}
+	FString NameArg;
+	if (FParse::Value(FCommandLine::Get(), TEXT("PartyFollowers="), NameArg))
+	{
+		NameArg.ParseIntoArray(Names, TEXT("+"));
+	}
+	const size_t Count = FMath::Min(static_cast<size_t>(Names.Num()), ftcore::PartyTrail::kMaxFollowers);
 	const FVector2D Facing = Player.GetFacing2D();
 	Trail.reset(ToGround(Player.GetActorLocation()), {static_cast<float>(Facing.X), static_cast<float>(Facing.Y)},
 		static_cast<float>(Count) * ftcore::PartyTrail::kFollowerSpacing);
@@ -484,7 +495,7 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 		{
 			continue;
 		}
-		const FString Name = UTF8_TO_TCHAR(ftcore::demo::kPartyNames[I + 1u]);
+		const FString& Name = Names[static_cast<int32>(I)];
 		if (!Follower->Setup(Name, &Player))
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: no mesh for follower %s."), *Name);
