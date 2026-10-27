@@ -32,6 +32,10 @@ void setClips(FightAnimator& a) {
     a.setClip(FightClip::PhaseChange, {1.8f, 0.f, false});
     a.setClip(FightClip::KickLeft, {1.1f, 0.5f, false});
     a.setClip(FightClip::KickRight, {1.1f, 0.5f, false});
+    a.setClip(FightClip::WeaponLeft, {1.0f, 0.45f, false});
+    a.setClip(FightClip::WeaponRight, {1.0f, 0.45f, false});
+    a.setClip(FightClip::Cast, {1.3f, 0.6f, false});
+    a.setClip(FightClip::Shot, {0.8f, 0.05f, false});
 }
 
 FightAnimator makeAnimator() {
@@ -55,7 +59,7 @@ const FightLayer* find(const FightAnimator& a, FightClip clip) {
 
 bool isStrike(FightClip c) {
     return c == FightClip::StrikeLeft || c == FightClip::StrikeRight || c == FightClip::Finisher || c == FightClip::KickLeft ||
-           c == FightClip::KickRight;
+           c == FightClip::KickRight || c == FightClip::WeaponLeft || c == FightClip::WeaponRight || c == FightClip::Cast;
 }
 
 // The layer playing `clip` within `tol` of its key frame, or nullptr.
@@ -253,16 +257,21 @@ TEST_CASE("fight director: each combo note is met by a strike's impact, the last
     CHECK(finisher);
 }
 
-TEST_CASE("fight animator: a strike pattern takes punches and kicks only, 1 to 8 of them") {
+TEST_CASE("fight animator: a strike pattern takes punches, kicks, swings and casts only, 1 to 8 of them") {
     FightAnimator a;
     CHECK(a.patternSize() == 2);
     CHECK(a.patternStrike(0) == FightClip::StrikeLeft);
     CHECK(a.patternStrike(3) == FightClip::StrikeRight);
+    const FightClip armed[] = {FightClip::WeaponLeft, FightClip::WeaponRight, FightClip::Cast, FightClip::KickLeft};
+    REQUIRE(a.setPattern(armed, 4));
+    CHECK(a.patternStrike(6) == FightClip::Cast);
     const FightClip kicks[] = {FightClip::StrikeLeft, FightClip::KickRight, FightClip::StrikeRight};
     REQUIRE(a.setPattern(kicks, 3));
     CHECK(a.patternStrike(4) == FightClip::KickRight);
     const FightClip bad[] = {FightClip::StrikeLeft, FightClip::Finisher};
     CHECK_FALSE(a.setPattern(bad, 2));
+    const FightClip shot[] = {FightClip::Shot};
+    CHECK_FALSE(a.setPattern(shot, 1));
     CHECK_FALSE(a.setPattern(kicks, 0));
     const FightClip many[FightAnimator::kMaxPattern + 1] = {};
     CHECK_FALSE(a.setPattern(many, FightAnimator::kMaxPattern + 1));
@@ -293,6 +302,60 @@ TEST_CASE("fight director: combo notes follow the striker's pattern, a missing k
         ++checked;
     }
     CHECK(checked >= 6);
+}
+
+TEST_CASE("fight director: a blade's swings and a caster's spells land on the notes; a missing swing is the punch on its side") {
+    DemoFight f;
+    const FightClip pattern[] = {FightClip::WeaponLeft, FightClip::WeaponRight, FightClip::Cast};
+    for (std::size_t i = 0; i < f.dir.size(); ++i) {
+        FightAnimator& a = f.dir.animator(static_cast<CombatantId>(i));
+        REQUIRE(a.setPattern(pattern, 3));
+        a.setClip(FightClip::WeaponRight, {}); // no right swing: the right punch stands in
+    }
+    int checked = 0;
+    while (!f.over() && checked < 12) {
+        const bool party = f.b.phase() == Phase::PartySkill;
+        const CombatantId striker = f.b.actor();
+        const std::size_t next = party ? f.b.combo().nextIndex() : 0;
+        const double noteTime = party && next < f.b.combo().size() ? f.b.combo().note(next).time : -1.0;
+        const bool last = party && next + 1 == f.b.combo().size();
+        f.step();
+        if (noteTime < 0.0 || last || f.now < noteTime || f.now - noteTime > kStep) continue;
+        const FightClip want = next % 3 == 0 ? FightClip::WeaponLeft : next % 3 == 1 ? FightClip::StrikeRight : FightClip::Cast;
+        CHECK(onKey(f.dir.animator(striker), want, 1.6 * kStep + 1e-4) != nullptr);
+        ++checked;
+    }
+    CHECK(checked >= 6);
+}
+
+TEST_CASE("fight director: the aimed shot fires on its hit, and without a shot clip the aim gives way to the stance") {
+    for (const bool withShot : {true, false}) {
+        CAPTURE(withShot);
+        DemoFight f;
+        if (!withShot)
+            for (std::size_t i = 0; i < f.dir.size(); ++i) f.dir.animator(static_cast<CombatantId>(i)).setClip(FightClip::Shot, {});
+        while (f.b.phase() != Phase::AwaitingCommand) f.step();
+        const demo::PilotChoice c = demo::pilotChoice(f.b);
+        const CombatantId shooter = f.b.actor();
+        REQUIRE(f.b.aim(c.target, f.now) == CommandError::None);
+        for (int i = 0; i < 30; ++i) f.step();
+        CHECK(f.dir.animator(shooter).current() == FightClip::Aim);
+        const double firedAt = f.now;
+        REQUIRE(demo::pilotShoot(f.b, f.b.combatant(c.target).weakPoints.best(), f.now));
+        f.step();
+        f.step(); // the first frame of a fade-in has no weight
+        const FightAnimator& a = f.dir.animator(shooter);
+        if (withShot) {
+            CHECK(a.current() == FightClip::Shot);
+            // Its key met the shot: it runs on from the key by the time since.
+            const FightLayer* s = find(a, FightClip::Shot);
+            REQUIRE(s != nullptr);
+            CHECK(s->time == doctest::Approx(0.05 + (f.now - firedAt)).epsilon(0.02));
+        } else {
+            CHECK(a.current() == FightClip::Stance);
+        }
+        CHECK(find(f.dir.animator(c.target), FightClip::HitReact) != nullptr);
+    }
 }
 
 TEST_CASE("fight director: parries meet the impacts they answer, then the counter strikes before the reaction") {
@@ -395,5 +458,8 @@ TEST_CASE("fight clip names") {
     CHECK(std::string(fightClipName(FightClip::StrikeLeft)) == "strike left");
     CHECK(std::string(fightClipName(FightClip::PhaseChange)) == "phase change");
     CHECK(std::string(fightClipName(FightClip::KickRight)) == "kick right");
+    CHECK(std::string(fightClipName(FightClip::WeaponLeft)) == "weapon left");
+    CHECK(std::string(fightClipName(FightClip::Cast)) == "cast");
+    CHECK(std::string(fightClipName(FightClip::Shot)) == "shot");
     CHECK(std::string(fightClipName(FightClip::Count)) == "?");
 }

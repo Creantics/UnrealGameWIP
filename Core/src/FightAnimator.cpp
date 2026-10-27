@@ -26,10 +26,30 @@ const char* fightClipName(FightClip clip) {
     case FightClip::PhaseChange: return "phase change";
     case FightClip::KickLeft: return "kick left";
     case FightClip::KickRight: return "kick right";
+    case FightClip::WeaponLeft: return "weapon left";
+    case FightClip::WeaponRight: return "weapon right";
+    case FightClip::Cast: return "cast";
+    case FightClip::Shot: return "shot";
     case FightClip::Count: break;
     }
     return "?";
 }
+
+namespace {
+
+// The punch thrown in place of a pattern strike the body has no clip for.
+FightClip punchFor(FightClip c) {
+    switch (c) {
+    case FightClip::KickLeft:
+    case FightClip::WeaponLeft: return FightClip::StrikeLeft;
+    case FightClip::KickRight:
+    case FightClip::WeaponRight:
+    case FightClip::Cast: return FightClip::StrikeRight;
+    default: return c;
+    }
+}
+
+} // namespace
 
 // ---- FightAnimator ----
 
@@ -37,7 +57,7 @@ bool FightAnimator::setPattern(const FightClip* strikes, std::size_t count) {
     if (!strikes || count == 0 || count > kMaxPattern) return false;
     for (std::size_t i = 0; i < count; ++i) {
         const FightClip c = strikes[i];
-        if (c != FightClip::StrikeLeft && c != FightClip::StrikeRight && c != FightClip::KickLeft && c != FightClip::KickRight) return false;
+        if (c != FightClip::StrikeLeft && c != FightClip::StrikeRight && punchFor(c) == c) return false;
     }
     std::copy(strikes, strikes + count, pattern_.begin());
     patternCount_ = count;
@@ -181,8 +201,7 @@ bool FightDirector::playStrike(CombatantId id, std::size_t i, double now, double
     if (id >= animators_.size()) return false;
     FightAnimator& a = animators_[id];
     const FightClip c = a.patternStrike(i);
-    const FightClip side = c == FightClip::KickLeft ? FightClip::StrikeLeft : c == FightClip::KickRight ? FightClip::StrikeRight : c;
-    return a.play(c, now, keyAt) || a.play(side, now, keyAt) || a.play(FightClip::StrikeLeft, now, keyAt);
+    return a.play(c, now, keyAt) || a.play(punchFor(c), now, keyAt) || a.play(FightClip::StrikeLeft, now, keyAt);
 }
 
 // No earlier than the key frame of what `id` has queued (a strike's impact, a reaction's contact).
@@ -245,6 +264,8 @@ void FightDirector::update(const Battle& battle, double now) {
                 skipCounterHit_ = false;
                 break;
             }
+            // The aimed shot: the shooter fires on the hit and settles from there, not into the stance at once.
+            if (aiming_ && e.source == aimer_ && playOr(e.source, FightClip::Shot, FightClip::Shot, now, e.time)) aiming_ = false;
             playOr(e.target, FightClip::HitReact, FightClip::HitReact, now, e.time);
             break;
         case EventType::Counter: {

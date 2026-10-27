@@ -20,14 +20,15 @@
 // at its end; what they leave goes to the Stance loop. Downed and Victory hold their last frame;
 // looping clips (Stance, Aim) play until something newer covers them. Fixed size: nothing allocates.
 //
-// Each combatant has a strike pattern: the punches and kicks its combo notes and attack hits cycle
-// through, a punch each side in turn by default (a fighter at home with kicks gets kicks in it). A
-// kick the body has no clip for is thrown as the punch on its side.
+// Each combatant has a strike pattern: the punches, kicks, weapon swings and casts its combo notes
+// and attack hits cycle through, a punch each side in turn by default (a fighter at home with kicks
+// gets kicks in it, one with a blade swings it). A kick or swing the body has no clip for is thrown as
+// the punch on its side; a cast without its clip, as the right punch.
 //
 // FightDirector runs one animator per combatant from a Battle's events: the party's combo strikes
 // keyed to their notes (by the striker's pattern, the last one the finisher), an enemy's strikes keyed to
 // its attack's impacts, dodges, parries and jumps keyed to the hits they answer, hit reactions,
-// counters, phase changes, the downed, the victors and the aim.
+// counters, phase changes, the downed, the victors, the aim and the aimed shot.
 
 #include "ftcore/Api.h"
 #include "ftcore/DefenceTimeline.h"
@@ -58,6 +59,10 @@ enum class FightClip : std::uint8_t {
     PhaseChange, // enemies: entering a new phase of the fight
     KickLeft,    // in a combatant's strike pattern, in place of a punch
     KickRight,
+    WeaponLeft,  // in a strike pattern: a held weapon's swing from each side
+    WeaponRight,
+    Cast,        // in a strike pattern: a spell thrown from the hands
+    Shot,        // party: the aimed shot firing, its key on the shot
     Count
 };
 
@@ -89,7 +94,8 @@ public:
 
     void setClip(FightClip c, FightClipInfo info) { clips_[index(c)] = info; }
     // The strike pattern (see the top of this file): 1 to kMaxPattern of StrikeLeft, StrikeRight,
-    // KickLeft and KickRight. Returns false, keeping the pattern it had, for anything else.
+    // KickLeft, KickRight, WeaponLeft, WeaponRight and Cast. Returns false, keeping the pattern it
+    // had, for anything else.
     FTCORE_API bool setPattern(const FightClip* strikes, std::size_t count);
     // The strike for the i-th note or hit of a combo or attack.
     FightClip patternStrike(std::size_t i) const { return pattern_[i % patternCount_]; }
