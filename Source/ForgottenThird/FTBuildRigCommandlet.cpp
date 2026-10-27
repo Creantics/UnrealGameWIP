@@ -8,7 +8,9 @@
 #include "Animation/AnimSequence.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/SkeletalMesh.h"
+#include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
+#include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "Retargeter/IKRetargeter.h"
 #include "RetargetEditor/IKRetargetBatchOperation.h"
@@ -256,6 +258,71 @@ int32 ComparePoses(const FString& List, int32 Steps)
 		}
 	}
 	return 0;
+}
+
+// -DumpClips=<clip>[,<clip>...] -DumpDir=<folder>: writes each clip's frames as <folder>/<clip>.csv: the time,
+// the root's yaw, the component-space positions (cm; UE mannequins face +Y) of the root, pelvis, head, hands,
+// feet and balls, and every float curve's value. For measuring where a traversal clip's hands meet the
+// ledge and its feet land, outside the engine.
+int32 DumpClips(const FString& List, const FString& Dir)
+{
+	static const TCHAR* const Bones[] = {TEXT("root"), TEXT("pelvis"), TEXT("head"), TEXT("hand_l"), TEXT("hand_r"),
+		TEXT("foot_l"), TEXT("foot_r"), TEXT("ball_l"), TEXT("ball_r")};
+	TArray<FString> Paths;
+	List.ParseIntoArray(Paths, TEXT(","));
+	int32 Failed = 0;
+	for (const FString& Path : Paths)
+	{
+		const UAnimSequence* Clip = LoadObject<UAnimSequence>(nullptr, *Path);
+		const IAnimationDataModel* Model = Clip ? Clip->GetDataModel() : nullptr;
+		const USkeleton* Skel = Clip ? Clip->GetSkeleton() : nullptr;
+		if (!Model || !Skel || Model->GetNumberOfKeys() < 2)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: couldn't load %s with keys and a skeleton."), *Path);
+			++Failed;
+			continue;
+		}
+		const FReferenceSkeleton& Skeleton = Skel->GetReferenceSkeleton();
+		const TArray<FFloatCurve>& Curves = Model->GetFloatCurves();
+		FString Csv = TEXT("t,root_yaw");
+		for (const TCHAR* Bone : Bones)
+		{
+			Csv += FString::Printf(TEXT(",%s_x,%s_y,%s_z"), Bone, Bone, Bone);
+		}
+		for (const FFloatCurve& Curve : Curves)
+		{
+			Csv += TEXT(",") + Curve.GetName().ToString();
+		}
+		Csv += TEXT("\n");
+		const int32 Keys = Model->GetNumberOfKeys();
+		const double Length = Model->GetPlayLength();
+		for (int32 Key = 0; Key < Keys; ++Key)
+		{
+			const double T = Length * Key / (Keys - 1);
+			Csv += FString::Printf(TEXT("%.4f,%.2f"), T, ComponentTransform(*Model, Skeleton, 0, Key).GetRotation().Rotator().Yaw);
+			for (const TCHAR* Name : Bones)
+			{
+				const int32 Bone = Skeleton.FindBoneIndex(Name);
+				const FVector P = Bone != INDEX_NONE ? ComponentTransform(*Model, Skeleton, Bone, Key).GetTranslation() : FVector::ZeroVector;
+				Csv += FString::Printf(TEXT(",%.2f,%.2f,%.2f"), P.X, P.Y, P.Z);
+			}
+			for (const FFloatCurve& Curve : Curves)
+			{
+				Csv += FString::Printf(TEXT(",%.3f"), Curve.FloatCurve.Eval(static_cast<float>(T)));
+			}
+			Csv += TEXT("\n");
+		}
+		const FString File = Dir / Clip->GetName() + TEXT(".csv");
+		if (!FFileHelper::SaveStringToFile(Csv, *File))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: couldn't write %s."), *File);
+			++Failed;
+			continue;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: dumped %s: %d keys, %.2f s, %d curves -> %s"), *Clip->GetName(), Keys, Length,
+			Curves.Num(), *File);
+	}
+	return Failed == 0 ? 0 : 1;
 }
 
 // Logs one line for a clip: frames, bone tracks that move over time or differ from the bind pose,
@@ -696,6 +763,13 @@ int32 UFTBuildRigCommandlet::Main(const FString& Params)
 		int32 Steps = 10;
 		FParse::Value(*Params, TEXT("PoseSteps="), Steps);
 		return ComparePoses(CompareList, Steps);
+	}
+	FString DumpList;
+	if (FParse::Value(*Params, TEXT("DumpClips="), DumpList, false))
+	{
+		FString DumpDir = FPaths::ProjectSavedDir() / TEXT("ClipDump");
+		FParse::Value(*Params, TEXT("DumpDir="), DumpDir);
+		return DumpClips(DumpList, DumpDir);
 	}
 	FString MeshPath =TEXT("/Game/Characters/ProofHead/proof_head/SkeletalMeshes/proof_head.proof_head");
 	FString Dest = TEXT("/Game/Characters/ProofHead/Rig");
