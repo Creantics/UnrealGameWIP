@@ -1,0 +1,132 @@
+#pragma once
+
+// Going over and up onto things: which traversal clip (a vault or hurdle over a low wall, a mantle
+// or climb up onto a ledge) a body plays for an obstacle ahead, from where in the clip, and the path
+// its root follows so that the hands meet the real ledge and the feet the real floor.
+//
+//   ftcore::TraversalSet set;
+//   set.setClip(i, ftcore::measureTraversal(frames, count, length));  // once per clip, at load
+//   const ftcore::TraversalPlan p = set.plan(obstacle, speed, foot);    // while an obstacle is ahead
+//   if (p.ok()) play clip p.clip from p.start; every frame: root = set.rootAt(p, clipTime);
+//
+// measureTraversal finds in a clip when a hand first comes to rest above the floor (the contact: the
+// ledge the clip was made for is where that hand is, its height and how far ahead of the root's start),
+// when a foot then comes to rest where the feet end (the landing, on the far floor or on top), how far
+// the feet rise in all (about 0 going over, the ledge's height going up), the speed it comes in at and
+// the foot it takes off from.
+//
+// plan() keeps the clips the obstacle allows (a top thinner than standDepth with a floor beyond is
+// gone over, a deeper one is climbed onto) and made for a height near the obstacle's, then takes the
+// cheapest by height, entry speed and take-off foot. It enters the clip at the point whose distance to
+// its ledge matches the real one; a body still farther off than the clip reaches gets tooFar (keep
+// moving and ask again). rootAt() is the clip's root path from that point plus an offset that eases
+// (smoothstep) from nothing at the entry to the one putting the hands on the real ledge at the contact,
+// then to the one putting the feet on the real floor at the landing, and holds it after.
+//
+// Space: x forward (toward the obstacle at the start), y to the left, z up; cm and seconds. Fixed
+// size: nothing allocates.
+
+#include "ftcore/Api.h"
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+
+namespace ftcore {
+
+struct TravPoint {
+    float x = 0.f, y = 0.f, z = 0.f;
+};
+
+// One sample of a clip: the root bone, both hands and both feet (ball joints), in the clip's space.
+struct TraversalFrame {
+    TravPoint root, handLeft, handRight, ballLeft, ballRight;
+};
+inline constexpr std::size_t kMaxTraversalFrames = 512;
+inline constexpr std::size_t kTraversalSamples = 64;
+
+enum class TraversalMove : std::uint8_t { Over, Up };
+
+struct TraversalClipInfo {
+    float length = 0.f;     // seconds; 0: no such clip (or none could be measured in it)
+    TraversalMove move = TraversalMove::Over;
+    float contact = 0.f;    // when a hand comes to rest on the ledge
+    float land = 0.f;       // when a foot comes to rest where the feet end
+    float ledgeAhead = 0.f; // the ledge's distance ahead of the root at time 0
+    float ledgeHeight = 0.f; // its height above the floor at time 0 (the lower foot's)
+    float rise = 0.f;       // the lower foot's height at the end above where it starts
+    float entrySpeed = 0.f; // the root's forward speed over the first kEntryTime
+    int takeoffFoot = -1;   // 0 left, 1 right: the last foot at rest before the contact (-1: none)
+    int contactHand = 0;    // 0 left, 1 right
+    std::array<TravPoint, kTraversalSamples> path{}; // the root from where it starts, evenly over length
+};
+
+inline constexpr float kRestSpeed = 40.f;  // cm/s: a hand or foot slower than this is at rest...
+inline constexpr float kRestTime = 0.08f;  // ...when it stays so this long
+inline constexpr float kMinLedge = 40.f;   // a hand at rest lower than this above the floor is not on a ledge
+inline constexpr float kFootRest = 4.f;    // a foot at rest within this of where it ends has landed
+inline constexpr float kEntryTime = 0.2f;
+
+// Measures a clip from `count` frames sampled evenly over it (frame 0 at time 0, the last at
+// `length`; at most kMaxTraversalFrames are read). length stays 0 when no hand comes to rest on a
+// ledge or no foot lands after it.
+FTCORE_API TraversalClipInfo measureTraversal(const TraversalFrame* frames, std::size_t count, float length);
+
+// What the body's probes found ahead.
+struct TraversalObstacle {
+    float distance = 0.f;   // from the root to the near edge, along the way the body faces
+    float height = 0.f;     // the top above the floor the body stands on
+    float depth = 0.f;      // the top's length front to back (as far as it was probed)
+    bool backFloor = false; // a floor found beyond the top
+    float backHeight = 0.f; // its height above the floor the body stands on (negative: lower)
+};
+
+struct TraversalTuning {
+    float standDepth = 60.f;   // a top at least this deep is climbed onto; a thinner one is gone over
+    float overDepth = 30.f;    // the top depth the clips going over were made for
+    float heightSlack = 0.3f;  // a clip serves heights within this share of its own...
+    float minHeightSlack = 30.f; // ...or within this, whichever is more
+    float maxDrop = 150.f;     // going over needs the far floor no lower than this below
+    float minLead = 0.15f;     // a clip is entered at least this long before its contact
+    float maxPush = 40.f;      // the offset may carry the root this much farther than the clip to the ledge
+    float maxPull = 40.f;      // or this much less
+    float heightCost = 1.f / 100.f; // the cost per cm of height between the obstacle and the clip
+    float speedCost = 1.f / 200.f;  // per cm/s of entry speed between the body and the clip
+    float footCost = 0.3f;     // a clip taking off from the other foot
+};
+
+struct TraversalPlan {
+    int clip = -1;
+    float start = 0.f;     // the clip time it is entered at
+    TravPoint atContact;   // the offset reached at the contact
+    TravPoint atLand;      // and at the landing
+    bool tooFar = false;   // no plan yet: a clip fits, but the ledge is still out of its reach
+    bool ok() const { return clip >= 0; }
+};
+
+inline constexpr std::size_t kMaxTraversalClips = 32;
+
+class TraversalSet {
+public:
+    void setTuning(const TraversalTuning& t) { tuning_ = t; }
+    const TraversalTuning& tuning() const { return tuning_; }
+    // False when i is out of range.
+    FTCORE_API bool setClip(std::size_t i, const TraversalClipInfo& info);
+    const TraversalClipInfo& clip(std::size_t i) const { return clips_[i]; }
+
+    // speed: the body's ground speed now; foot: its planted (or last planted) foot, 0 left, 1 right,
+    // -1 not known. Clips are taken in index order when they cost the same.
+    FTCORE_API TraversalPlan plan(const TraversalObstacle& obstacle, float speed, int foot) const;
+    // The root at clip time t (from p.start on), from where it was when the plan was made, in the
+    // body's space then.
+    FTCORE_API TravPoint rootAt(const TraversalPlan& p, float t) const;
+
+private:
+    TraversalTuning tuning_;
+    std::array<TraversalClipInfo, kMaxTraversalClips> clips_{};
+};
+
+// The clip's root at time t, from its path.
+FTCORE_API TravPoint traversalPath(const TraversalClipInfo& info, float t);
+
+} // namespace ftcore
