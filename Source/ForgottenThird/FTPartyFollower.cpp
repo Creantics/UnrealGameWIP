@@ -6,8 +6,12 @@
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "Misc/CommandLine.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/PackageName.h"
 
 #include "FTMeshFacing.h"
+#include "FTMeshPieces.h"
+#include "ForgottenThird.h"
 
 namespace
 {
@@ -22,6 +26,17 @@ constexpr float kMaxFaceRate = 220.f;
 constexpr float kSpeedResponse = 12.f;
 // Asked to face a way, it has once it is this near (degrees): nearer than LocoTuning::faceMin, no turn on the spot starts.
 constexpr float kFacedWithin = 40.f;
+
+// An object path from a config or command-line value; a bare package path names its asset after the package.
+FSoftObjectPath ObjectPath(FString Path)
+{
+	Path.TrimStartAndEndInline();
+	if (!Path.IsEmpty() && !Path.Contains(TEXT(".")))
+	{
+		Path += TEXT(".") + FPackageName::GetShortName(Path);
+	}
+	return FSoftObjectPath(Path);
+}
 }
 
 AFTPartyFollower::AFTPartyFollower()
@@ -41,7 +56,26 @@ bool AFTPartyFollower::Setup(const FString& Name, const AActor* Lead)
 {
 	const FString Lower = Name.ToLower();
 	const FString Dir = FString::Printf(TEXT("/Game/Characters/%s/%s/SkeletalMeshes/"), *Name, *Lower);
-	USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, *(Dir + Lower + TEXT(".") + Lower));
+	// Config overrides under [FTPartyFollower.<Name>], then -Follower<Name><Key>= on the command line.
+	const FString Section = TEXT("FTPartyFollower.") + Name;
+	auto Override = [&](const TCHAR* Key, FString& Value)
+	{
+		GConfig->GetString(*Section, Key, Value, GGameIni);
+		FParse::Value(FCommandLine::Get(), *FString::Printf(TEXT("Follower%s%s="), *Name, Key), Value);
+	};
+	FString BodyPath = Dir + Lower;
+	FString ClipFolder = FString::Printf(TEXT("/Game/Characters/%s/Rig/Retargeted"), *Name);
+	FString PieceArg;
+	TArray<FString> PieceList;
+	Override(TEXT("BodyMeshPath"), BodyPath);
+	Override(TEXT("ClipFolder"), ClipFolder);
+	GConfig->GetArray(*Section, TEXT("PiecePaths"), PieceList, GGameIni);
+	if (FParse::Value(FCommandLine::Get(), *FString::Printf(TEXT("Follower%sPiecePaths="), *Name), PieceArg, false))
+	{
+		PieceArg.ParseIntoArray(PieceList, TEXT("+"));
+	}
+	const FSoftObjectPath BodyAsset = ObjectPath(BodyPath);
+	USkeletalMesh* Mesh = Cast<USkeletalMesh>(BodyAsset.TryLoad());
 	TraceParams.AddIgnoredActor(this);
 	if (Lead)
 	{
@@ -53,6 +87,7 @@ bool AFTPartyFollower::Setup(const FString& Name, const AActor* Lead)
 	}
 	if (!Mesh)
 	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("PartyFollower %s: no skeletal mesh at %s."), *Name, *BodyAsset.ToString());
 		SetActorHiddenInGame(true);
 		return false;
 	}
@@ -60,18 +95,29 @@ bool AFTPartyFollower::Setup(const FString& Name, const AActor* Lead)
 	// Turn the body to face the actor's forward (+X).
 	Body->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Mesh), 0.0));
 	Body->SetAnimInstanceClass(UFTLocomotionAnimInstance::StaticClass());
+	TArray<FSoftObjectPath> PiecePaths;
+	for (const FString& Piece : PieceList)
+	{
+		PiecePaths.Add(ObjectPath(Piece));
+	}
+	const FString Who = TEXT("PartyFollower ") + Name;
+	const int32 Cloth = FTMeshPieces::Attach(*this, *Body, PiecePaths, Pieces, *Who);
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: body %s facing %.0f, %d pieces (%d with cloth), clips from %s."), *Who, *Mesh->GetName(),
+		Body->GetRelativeRotation().Yaw, Pieces.Num(), Cloth, *ClipFolder);
 	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Body->GetAnimInstance());
 	if (!Anim)
 	{
 		return true;
 	}
-	// Retargeted clips first (the mocap sample's, then the template's), then the mesh's own idle and walk.
-	const FString Rig = FString::Printf(TEXT("/Game/Characters/%s/Rig/Retargeted/"), *Name);
+	// Retargeted clips first (the mocap sample's, then the template's: FTBuildRig names them after the
+	// mesh), then the mesh's own idle and walk.
+	const FString Rig = ClipFolder.EndsWith(TEXT("/")) ? ClipFolder : ClipFolder + TEXT("/");
+	const FString Target = Mesh->GetName();
 	auto Load = [&](std::initializer_list<const TCHAR*> Retargeted, const TCHAR* Own) -> UAnimSequence*
 	{
 		for (const TCHAR* Source : Retargeted)
 		{
-			const FString Asset = FString::Printf(TEXT("%s_to_%s"), Source, *Lower);
+			const FString Asset = FString::Printf(TEXT("%s_to_%s"), Source, *Target);
 			if (UAnimSequence* Clip = LoadObject<UAnimSequence>(nullptr, *(Rig + Asset + TEXT(".") + Asset), nullptr, LOAD_NoWarn | LOAD_Quiet))
 			{
 				return Clip;

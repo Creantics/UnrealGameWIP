@@ -26,10 +26,16 @@ public:
 	AFTPartyFollower();
 
 	// Loads the member's mesh from /Game/Characters/<Name>/<name>/SkeletalMeshes/ and its clips from
-	// /Game/Characters/<Name>/Rig/Retargeted/ (FTBuildRig -RetargetFrom), falling back to the mesh's
-	// own <name>idle and <name>walk. False when the mesh is missing (the follower then stays
-	// invisible). `Lead` is ignored by the ground trace, and a character lead's foot phase sets the
+	// /Game/Characters/<Name>/Rig/Retargeted/ (FTBuildRig -RetargetFrom: <clip>_to_<mesh name>), falling
+	// back to the mesh's own <name>idle and <name>walk. False when the mesh is missing (the follower then
+	// stays invisible). `Lead` is ignored by the ground trace, and a character lead's foot phase sets the
 	// follower's steps a quarter stride off its own (-LocoNoPhaseTrim: not).
+	//
+	// Config can swap the body, its clips and add pieces (face, hair, clothes; FTMeshPieces) without a
+	// rebuild, under [FTPartyFollower.<Name>] in Config/UserGame.ini: BodyMeshPath=, ClipFolder= (the
+	// Retargeted folder) and +PiecePaths=, as the lead's keys. -Follower<Name>BodyMeshPath=,
+	// -Follower<Name>ClipFolder= and -Follower<Name>PiecePaths=a+b on the command line win over it.
+	// A package path without the asset name will do.
 	bool Setup(const FString& Name, const AActor* Lead);
 
 	// Stands the follower at `Ground` (cm, any height; the ground below it is found), turning toward the
@@ -49,6 +55,9 @@ public:
 private:
 	UPROPERTY(VisibleAnywhere, Category = "Follower")
 	TObjectPtr<USkeletalMeshComponent> Body;
+
+	UPROPERTY()
+	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
 
 	FCollisionQueryParams TraceParams;
 	TWeakObjectPtr<const ACharacter> LeadCharacter;

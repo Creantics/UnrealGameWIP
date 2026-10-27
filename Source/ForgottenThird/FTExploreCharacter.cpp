@@ -25,6 +25,7 @@
 
 #include "FTExploreDirector.h"
 #include "FTMeshFacing.h"
+#include "FTMeshPieces.h"
 #include "ForgottenThird.h"
 
 namespace
@@ -287,45 +288,7 @@ void AFTExploreCharacter::ApplyLookOverrides()
 	LoadClip(LandClipPath, LandClip);
 	LoadClip(JumpMovingClipPath, JumpMovingClip);
 	LoadClip(LandMovingClipPath, LandMovingClip);
-	int32 Cloth = 0;
-	// Gate captures: -LocoNoPieces leaves every piece off (the body alone), -LocoNoPiece=hair+collar those whose
-	// asset name holds any of the words, to find which one breaks up as the body turns. The collar is left off
-	// unless -LocoCollar: it stands off the shoulders as a flat plate behind the head once the body moves.
-	const bool bNoPieces = FParse::Param(FCommandLine::Get(), TEXT("LocoNoPieces"));
-	FString NoPiece;
-	TArray<FString> NoPieceWords;
-	if (FParse::Value(FCommandLine::Get(), TEXT("LocoNoPiece="), NoPiece))
-	{
-		NoPiece.ParseIntoArray(NoPieceWords, TEXT("+"));
-	}
-	if (!FParse::Param(FCommandLine::Get(), TEXT("LocoCollar")))
-	{
-		NoPieceWords.Add(TEXT("collar"));
-	}
-	for (const FSoftObjectPath& Path : PiecePaths)
-	{
-		const FString Name = Path.GetAssetName();
-		if (bNoPieces || NoPieceWords.ContainsByPredicate([&Name](const FString& Word) { return Name.Contains(Word); }))
-		{
-			UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: piece %s left off."), *Name);
-			continue;
-		}
-		USkeletalMesh* PieceMesh = Cast<USkeletalMesh>(Path.TryLoad());
-		if (!PieceMesh)
-		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no skeletal mesh at %s; piece skipped."), *Path.ToString());
-			continue;
-		}
-		USkeletalMeshComponent* Piece = NewObject<USkeletalMeshComponent>(this);
-		Piece->SetupAttachment(GetMesh());
-		Piece->SetSkeletalMesh(PieceMesh);
-		Piece->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		Piece->bCollideWithEnvironment = true; // cloth pieces (FTBuildCloth) also push off the level, not just the body
-		Piece->RegisterComponent();
-		Cloth += PieceMesh->GetMeshClothingAssets().Num() > 0;
-		Piece->SetLeaderPoseComponent(GetMesh());
-		Pieces.Add(Piece);
-	}
+	const int32 Cloth = FTMeshPieces::Attach(*this, *GetMesh(), PiecePaths, Pieces, TEXT("FTExploreCharacter"));
 	const USkeletalMesh* Body = GetMesh()->GetSkeletalMeshAsset();
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: body %s, %d pieces, %d with cloth."), Body ? *Body->GetName() : TEXT("none"),
 		Pieces.Num(), Cloth);
