@@ -242,7 +242,7 @@ struct LocoTuning {
 // movement component (485 cm/s^2 on average, about 0.95 s from a run), so all of its lean comes at its own rate;
 // and its stop clip leans back less than the lead's on its own, so the lean tops it up by more. Below its own run
 // speed it holds a few percent of walk under the run, which slips the planted foot mid-stance: a wider dead band
-// drops it, and the phase trim (up to 3%) matches its stride to the lead's instead.
+// drops it, and the stride rate (the lead's stride against its own, plus the phase trim; up to 3%) keeps step instead.
 inline void tuneForFollower(LocoTuning& t) {
     t.brakeDecel = 485.f;
     t.brakePitch = -12.f;
