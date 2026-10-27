@@ -476,12 +476,13 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		}
 	}
 
-	// Each change of state is logged too, and starts, stops and turns ten times a second.
+	// Each change of state is logged too, and starts, stops, turns and stance changes ten times a second.
 	const bool bChanged = Loco.state() != LastState;
 	LastState = Loco.state();
 	if (bLog && ((LogTimer -= DeltaSeconds) <= 0.f || bChanged))
 	{
-		const bool bMoving = Loco.state() == ftcore::LocoState::Starting || Loco.state() == ftcore::LocoState::Stopping || Loco.turning();
+		const bool bMoving = Loco.state() == ftcore::LocoState::Starting || Loco.state() == ftcore::LocoState::Stopping || Loco.turning()
+			|| Loco.state() == ftcore::LocoState::StanceChange;
 		LogTimer = LogTimer <= 0.f ? (bMoving ? 0.1f : 1.f) : LogTimer;
 		FString Layers;
 		for (std::size_t I = 0; I < Loco.layerCount(); ++I)
