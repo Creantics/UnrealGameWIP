@@ -1273,8 +1273,8 @@ PartyStep partyStep(bool trim, float followerRun = 509.f) {
     PartyStep out;
     float x = 0.f, speed = 0.f;
     for (int leg = 0; leg < 2; ++leg) {
-        for (int i = 0; i < 1080; ++i) { // 1 s standing, 12 s at a run, then 5 s to stop and stand
-            const float want = i >= 60 && i < 780 ? 4.5f : 0.f;
+        for (int i = 0; i < 1560; ++i) { // 1 s standing, 20 s at a run, then 5 s to stop and stand
+            const float want = i >= 60 && i < 1260 ? 4.5f : 0.f;
             speed = want > speed ? std::min(want, speed + 10.f * kDt) : std::max(want, speed - 10.f * kDt);
             x += speed * kDt;
             trail.push({x, 0.f}, speed);
@@ -1284,7 +1284,7 @@ PartyStep partyStep(bool trim, float followerRun = 509.f) {
             if (trim && lead.state() == LocoState::Ground && speed * 100.f >= lead.tuning().moveStop) in.leadPhase = lead.phase();
             follower.update(in);
             out.maxTrim = std::fmax(out.maxTrim, std::fabs(follower.phaseTrim()));
-            if (i >= 600 && i < 780) { // the last 3 s of the run
+            if (i >= 1080 && i < 1260) { // the last 3 s of the run: settled (at most 0.25 stride off, at 2% a stride)
                 const float d = std::fmod(std::fabs(lead.phase() - follower.phase()), 0.5f);
                 out.gap = std::fmin(out.gap, 2.f * std::fmin(d, 0.5f - d));
             }
@@ -1310,8 +1310,11 @@ TEST_CASE("locomotion: a follower's foot contacts fall between the lead's") {
 }
 
 TEST_CASE("locomotion: the phase trim holds a follower whose stride differs") {
-    // A body with a 3% longer run stride drifts through the lead's step untrimmed; the trim holds it.
-    const PartyStep trimmed = partyStep(true, 509.f * 1.03f);
+    // A body whose run clip is 3% faster (a longer stride: Duy's against the Third's). At the party's
+    // run speed its blend leans further toward the walk, so its effective stride differs by about 1%;
+    // untrimmed it drifts through the lead's steps, and the trim (up to 2%) holds it off them.
+    const PartyStep untrimmed = partyStep(false, 509.f * 1.03f), trimmed = partyStep(true, 509.f * 1.03f);
+    CAPTURE(untrimmed.gap);
     CAPTURE(trimmed.gap);
     CHECK(trimmed.gap >= 0.4f);
     CHECK(trimmed.maxTrim <= LocoTuning{}.phaseTrim + 1e-6f);
