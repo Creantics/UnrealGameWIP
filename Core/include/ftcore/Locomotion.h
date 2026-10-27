@@ -188,7 +188,8 @@ struct LocoTuning {
     float twistPerTurn = 0.05f; // upper body yaw per deg/s of turning
     float twistLead = 0.25f;    // in a turn clip: upper body yaw per degree of the turn still to come
     float maxTwist = 22.f;
-    float runPitch = 0.f;       // forward lean added at the run's ground speed (none at the walk's; the GASP run leans ~25 deg alone)...
+    float runPitch = -6.f;      // lean added at the run's ground speed (none at the walk's): the GASP run leans ~25 deg alone,
+                                // and -6 lifts the head clear of the shoulders in a rear three-quarter view...
     float sprintPitch = 3.f;    // ...and this much more at the sprint's
     float startPitch = 8.f;     // more forward lean while speeding up, with a run's speed still to gain...
     float stopPitch = 8.f;      // ...and lean back (in place of the gait's lean) while braking from the run's speed
