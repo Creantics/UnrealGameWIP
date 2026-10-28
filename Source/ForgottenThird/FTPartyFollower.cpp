@@ -109,9 +109,10 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 	FRotator Rot = GetActorRotation();
 	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Body->GetAnimInstance());
 	const ftcore::Locomotion* Loco = Anim ? &Anim->GetLocomotion() : nullptr;
-	if (Loco && Loco->turning())
+	if (Loco && Loco->turning() && Loco->turnPivots())
 	{
-		// A replayed turn (running, or on the spot) turns the body by its clip's root, as it turned the lead.
+		// A replayed pivot (running, or on the spot) turns the body by its clip's root, as it turned the lead. A
+		// shallower one rode the lead's own motion round, so the body eases along the trail through it as the lead did.
 		if (Loco->turnsBegun() != TurnsSeen)
 		{
 			TurnsSeen = Loco->turnsBegun();

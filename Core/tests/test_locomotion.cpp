@@ -1039,7 +1039,7 @@ void makeTurn(GaitFrame* frames, int n, float length, float phase0, Path path, f
 float runPath(float t) { return 450.f * t; }
 float standPath(float) { return 0.f; }
 
-// makeMoveLoco with running turns right by 45 and 90 (on either foot) and left by 90, each running
+// makeMoveLoco with running turns right by 45, 90 and 180 (on either foot) and left by 90, each running
 // 0.8 s before turning; a turning start right by 180; and a turn on the spot right by 90.
 Locomotion makeTurnLoco() {
     static GaitFrame frames[121];
@@ -1050,6 +1050,8 @@ Locomotion makeTurnLoco() {
         l.setClip(locoRunTurn(true, 1, rightFoot), measureMove(frames, 121, 2.f));
         makeTurn(frames, 121, 2.f, phase0, runPath, 45.f, 0.8f, 1.f);
         l.setClip(locoRunTurn(true, 0, rightFoot), measureMove(frames, 121, 2.f));
+        makeTurn(frames, 121, 2.f, phase0, runPath, 180.f, 0.8f, 1.3f);
+        l.setClip(locoRunTurn(true, 3, rightFoot), measureMove(frames, 121, 2.f));
     }
     makeTurn(frames, 121, 2.f, 0.f, runPath, -90.f, 0.8f, 1.2f);
     l.setClip(locoRunTurn(false, 1, false), measureMove(frames, 121, 2.f));
@@ -1072,6 +1074,10 @@ LocoInput runningIn(Locomotion& l) {
     for (int i = 0; i < 120; ++i) l.update(in);
     return in;
 }
+
+// The way a movement component's body moves swings toward its heading as its ground friction (8) turns its
+// velocity: a time constant of 1/8 s.
+void swingMove(LocoInput& in) { in.moveYaw += (in.wantYaw - in.moveYaw) * (1.f - std::exp(-kDt * 8.f)); }
 
 } // namespace
 
@@ -1102,7 +1108,7 @@ TEST_CASE("locomotion: measureMove reads a clip's turn, and its feet in the root
     CHECK(still.turnEnd == 0.f);
 }
 
-TEST_CASE("locomotion: heading well off the facing at a run plays the nearest running turn on the matching foot, then the run in step") {
+TEST_CASE("locomotion: heading well off the facing at a run plays the nearest running turn on the matching foot, steered round, then the run in step") {
     Locomotion l = makeTurnLoco();
     LocoInput in = runningIn(l);
     REQUIRE(l.target() == LocoClip::Run);
@@ -1113,53 +1119,121 @@ TEST_CASE("locomotion: heading well off the facing at a run plays the nearest ru
     REQUIRE(l.turning());
     const LocoClip turn = l.turnClip();
     CHECK((turn == locoRunTurn(true, 1, false) || turn == locoRunTurn(true, 1, true)));
-    CHECK(l.turnWarp() == doctest::Approx(1.f).epsilon(0.01));
-    CHECK(l.turnRootDriven());
+    CHECK(l.turnAngle() == doctest::Approx(90.f).epsilon(0.01));
+    // Short of a pivot the body's own motion carries it round: no root motion, the facing still steered.
+    CHECK(!l.turnPivots());
+    CHECK(!l.turnRootDriven());
     const LocoClipInfo& ti = l.clip(turn);
-    // It enters a little before its turn, where its feet are where the run's were.
-    CHECK(l.turnFrom() >= ti.turnStart - l.tuning().turnEarly - 1e-4f);
-    CHECK(l.turnFrom() <= ti.turnStart - l.tuning().turnLate + 1e-4f);
+    // It enters just before its turn, where its feet are where the run's were.
+    CHECK(l.turnFrom() >= ti.turnStart - l.tuning().steerEarly - 1e-4f);
+    CHECK(l.turnFrom() <= ti.turnStart - l.tuning().steerLate + 1e-4f);
     CHECK(phaseApart(runTurnPhase(turn, l.turnFrom()), gaitPhase) < 0.05f);
-    // Played at rate 1 for the caller's root motion; the body takes the clip's yaw.
+    // Played at the distance the body comes, while the facing eases after the way it moves.
     int frames = 0;
     float last = l.turnTo();
     while (l.turning() && frames < 200) {
-        in.yaw = in.moveYaw = l.turnYaw();
+        swingMove(in);
         l.update(in);
         if (l.turning()) {
             CHECK(l.turnFrom() == doctest::Approx(last));
             CHECK(l.turnTo() - l.turnFrom() == doctest::Approx(kDt).epsilon(0.01));
+            CHECK(l.yawStep() == doctest::Approx((in.moveYaw - in.yaw) * (1.f - std::exp(-kDt / l.tuning().faceTime))));
             last = l.turnTo();
         }
+        in.yaw += l.yawStep();
         ++frames;
     }
     REQUIRE(!l.turning());
     CHECK(l.state() == LocoState::Ground);
     CHECK(l.target() == LocoClip::Run);
-    CHECK(in.yaw == doctest::Approx(90.f).epsilon(0.02));
     CHECK(last >= ti.turnEnd + l.tuning().turnTail - kDt);
     // The run picks up the turn's foot phase where it handed over.
     CHECK(phaseApart(l.phase(), runTurnPhase(turn, last)) < 0.06f);
-    // Facing the new way, it runs on without turning again.
+    // Most of the way round by then, it runs on without turning again, coming the rest of the way.
+    CHECK(in.yaw > 60.f);
     for (int i = 0; i < 60; ++i) {
-        in.moveYaw = 90.f;
-        in.yaw += l.yawStep();
+        swingMove(in);
         l.update(in);
+        in.yaw += l.yawStep();
         CHECK(!l.turning());
     }
     CHECK(in.yaw == doctest::Approx(90.f).epsilon(0.01));
+}
+
+TEST_CASE("locomotion: heading the other way at a run pivots: the clip's root turns the body while the facing holds for it") {
+    Locomotion l = makeTurnLoco();
+    LocoInput in = runningIn(l);
+    in.wantYaw = 170.f;
+    l.update(in);
+    REQUIRE(l.turning());
+    CHECK((l.turnClip() == locoRunTurn(true, 3, false) || l.turnClip() == locoRunTurn(true, 3, true)));
+    CHECK(l.turnPivots());
+    CHECK(l.turnRootDriven());
+    CHECK(l.turnAngle() == doctest::Approx(170.f).epsilon(0.01));
+    CHECK(l.yawStep() == 0.f);
+    const LocoClipInfo& ti = l.clip(l.turnClip());
+    // Entered a little further before its turn: its root brings the body into it.
+    CHECK(l.turnFrom() >= ti.turnStart - l.tuning().turnEarly - 1e-4f);
+    CHECK(l.turnFrom() <= ti.turnStart - l.tuning().turnLate + 1e-4f);
+    // At rate 1, for the caller's root motion; the body takes the clip's yaw.
+    float last = l.turnTo();
+    while (l.turning()) {
+        in.yaw = in.moveYaw = l.turnYaw();
+        l.update(in);
+        if (!l.turning()) break;
+        CHECK(l.turnTo() - l.turnFrom() == doctest::Approx(kDt).epsilon(0.01));
+        CHECK(l.yawStep() == 0.f);
+        last = l.turnTo();
+    }
+    CHECK(in.yaw == doctest::Approx(170.f).epsilon(0.02));
+    CHECK(last >= ti.turnEnd + l.tuning().turnTail - kDt);
+
+    // Its facing lagging far behind a heading swept round fast is no pivot: off the way it moves by less, the
+    // body's motion carries it round, by a clip short of a pivot.
+    l = makeTurnLoco();
+    in = runningIn(l);
+    in.moveYaw = 60.f;
+    in.wantYaw = 150.f;
+    l.update(in);
+    REQUIRE(l.turning());
+    CHECK(!l.turnPivots());
+    CHECK(!l.turnRootDriven());
+    CHECK(l.yawStep() != 0.f);
+    CHECK(std::fabs(l.turnAngle()) < l.tuning().pivotMin);
+}
+
+TEST_CASE("locomotion: a heading swept round at a run eases the facing round after it rather than turning in steps") {
+    Locomotion l = makeTurnLoco();
+    LocoInput in = runningIn(l);
+    const std::uint32_t begun = l.turnsBegun();
+    // A full turn in two seconds, as a camera or a stick swings round; the way the body moves keeps close behind.
+    const float sweep = 180.f;
+    float lag = 0.f;
+    for (int i = 0; i < 120; ++i) {
+        in.wantYaw += sweep * kDt;
+        swingMove(in);
+        l.update(in);
+        CHECK(!l.turning());
+        CHECK(std::fabs(l.yawStep()) < 1.5f * sweep * kDt);
+        in.yaw += l.yawStep();
+        lag = std::fmax(lag, std::fabs(in.moveYaw - in.yaw));
+    }
+    CHECK(l.turnsBegun() == begun);
+    // The facing no further behind the way the body moves than a steady ease keeps it.
+    CHECK(lag < sweep * l.tuning().faceTime + 5.f);
 }
 
 TEST_CASE("locomotion: a running turn picks the nearest angle and scales its yaw to the one asked for") {
     struct Case {
         float want;
         LocoClip clip0, clip1;
-        float warp;
+        bool capped;
     };
     const Case cases[] = {
-        {60.f, locoRunTurn(true, 0, false), locoRunTurn(true, 0, true), 1.3f},  // nearer 45; capped
-        {80.f, locoRunTurn(true, 1, false), locoRunTurn(true, 1, true), 80.f / 90.f},
-        {-100.f, locoRunTurn(false, 1, false), locoRunTurn(false, 1, false), 100.f / 90.f},
+        {60.f, locoRunTurn(true, 0, false), locoRunTurn(true, 0, true), true}, // nearer 45; capped
+        {80.f, locoRunTurn(true, 1, false), locoRunTurn(true, 1, true), false},
+        {-100.f, locoRunTurn(false, 1, false), locoRunTurn(false, 1, false), false},
+        {170.f, locoRunTurn(true, 3, false), locoRunTurn(true, 3, true), false}, // a pivot
     };
     for (const Case& c : cases) {
         Locomotion l = makeTurnLoco();
@@ -1168,13 +1242,15 @@ TEST_CASE("locomotion: a running turn picks the nearest angle and scales its yaw
         l.update(in);
         REQUIRE(l.turning());
         CHECK((l.turnClip() == c.clip0 || l.turnClip() == c.clip1));
-        CHECK(l.turnWarp() == doctest::Approx(c.warp).epsilon(0.01));
-        const float picked = l.clip(c.clip0).turn;
-        while (l.turning()) {
+        if (c.capped) CHECK(l.turnWarp() == doctest::Approx(l.tuning().maxWarp));
+        else CHECK(l.turnAngle() == doctest::Approx(c.want).epsilon(0.01));
+        const float angle = l.turnAngle();
+        for (int i = 0; i < 300 && l.turning(); ++i) {
             in.yaw = l.turnYaw();
             l.update(in);
         }
-        CHECK(in.yaw == doctest::Approx(c.warp * picked).epsilon(0.02));
+        CHECK(!l.turning());
+        CHECK(in.yaw == doctest::Approx(angle).epsilon(0.02));
     }
 
     // A small change of heading, or one at a walk, doesn't turn: the facing eases toward the way the
@@ -1222,16 +1298,25 @@ TEST_CASE("locomotion: posed twice a frame, the body still eases its facing roun
     }
     CHECK(in.yaw == doctest::Approx(20.f).epsilon(0.01));
 
-    // Heading well away on the pose with no time passed begins a running turn there: no step on top of it.
+    // Heading the other way on the pose with no time passed pivots there: no step on top of it. A turn short of a
+    // pivot keeps the frame's step, the body's motion carrying it round.
     in.wantYaw = in.moveYaw = in.yaw + 20.f;
     in.dt = kDt;
     l.update(in);
-    REQUIRE(l.yawStep() != 0.f);
-    in.wantYaw = in.moveYaw = in.yaw + 90.f;
+    const float step = l.yawStep();
+    REQUIRE(step != 0.f);
+    Locomotion shallow = l;
+    in.wantYaw = in.yaw + 170.f;
     in.dt = 0.f;
     l.update(in);
     CHECK(l.turning());
+    CHECK(l.turnPivots());
     CHECK(l.yawStep() == 0.f);
+    in.wantYaw = in.yaw + 90.f;
+    shallow.update(in);
+    CHECK(shallow.turning());
+    CHECK(!shallow.turnPivots());
+    CHECK(shallow.yawStep() == step);
     // Nor once it stops steering.
     l = makeTurnLoco();
     in = runningIn(l);

@@ -293,7 +293,7 @@ void Locomotion::reset() {
     moved_ = braking_ = 0.f;
     turnEnter_ = turnFrom_ = turnTo_ = yawStep_ = 0.f;
     warp_ = 1.f;
-    rootDriven_ = false;
+    rootDriven_ = pivot_ = false;
     limbs_ = {};
     layers_[0] = {LocoClip::Idle, 0.f, 1.f};
     layerCount_ = 1;
@@ -411,7 +411,10 @@ bool Locomotion::beginStop(const LocoInput& in, float speed) {
     return true;
 }
 
-bool Locomotion::beginTurn(const LocoInput& in, LocoClip first, LocoClip last, float angle, bool matchFeet) {
+bool Locomotion::beginTurn(const LocoInput& in, LocoClip first, LocoClip last, float angle, bool matchFeet, bool pivot) {
+    // Short of a pivot, a clip turns the body a degree short of one at most: the steering takes it on round, and a
+    // follower replaying the turn sees it is no pivot.
+    if (!pivot) angle = clampf(angle, 1.f - tuning_.pivotMin, tuning_.pivotMin - 1.f);
     // The turn nearest the angle asked for, the same way; its other foot turns about as far.
     float nearest = -1.f;
     for (int c = static_cast<int>(first); c <= static_cast<int>(last); ++c) {
@@ -431,14 +434,16 @@ bool Locomotion::beginTurn(const LocoInput& in, LocoClip first, LocoClip last, f
         const LocoClipInfo& i = info_[static_cast<std::size_t>(c)];
         if (i.length <= 0.f || i.moveTime <= 0.f || i.turn == 0.f || (i.turn > 0.f) != (angle > 0.f)) continue;
         if (std::fabs(std::fabs(i.turn) - nearest) > 10.f) continue;
-        // Entering a little before the turn, at the point whose feet best continue the gait's.
-        const float lo = std::max(i.turnStart - tuning_.turnEarly, 0.f), hi = std::max(i.turnStart - tuning_.turnLate, 0.f);
+        // Entering before the turn (a pivot a little before it: its root brings the body into it), at the point whose
+        // feet best continue the gait's.
+        const float early = pivot ? tuning_.turnEarly : tuning_.steerEarly, late = pivot ? tuning_.turnLate : tuning_.steerLate;
+        const float lo = std::max(i.turnStart - early, 0.f), hi = std::max(i.turnStart - late, 0.f);
         for (int k = 0; k <= (known ? kEntries : 0); ++k) {
             const float t = known ? lo + (hi - lo) * static_cast<float>(k) / kEntries : 0.f;
             float cost = 0.f;
             if (known) {
                 const float p = pathSpeed(i, t);
-                const float rate = in.rootMotion || p <= 0.f ? 1.f : std::fabs(in.groundSpeed) / p;
+                const float rate = (in.rootMotion && pivot) || p <= 0.f ? 1.f : std::fabs(in.groundSpeed) / p;
                 cost = poseCost(a, av, feetAt(i, t), feetVelocity(i, t, rate), tuning_.poseVelocity);
             }
             if (pick == LocoClip::Count || cost < best) {
@@ -451,9 +456,12 @@ bool Locomotion::beginTurn(const LocoInput& in, LocoClip first, LocoClip last, f
     if (pick == LocoClip::Count) return false;
     state_ = LocoState::Turning;
     move_ = pick;
-    warp_ = clampf(angle / clip(pick).turn, tuning_.minWarp, tuning_.maxWarp);
-    // A turn on the spot has no distance to match: it plays at its own pace, as if its root moved the body.
-    rootDriven_ = in.rootMotion || isLocoStandTurn(pick) || isLocoCrouchTurn(pick);
+    // Its yaw from where it enters scaled to the angle asked for.
+    warp_ = clampf(angle / (clip(pick).turn - yawAt(clip(pick), bestTime)), tuning_.minWarp, tuning_.maxWarp);
+    // A pivot moves the body by its root motion when the caller lets it. A turn on the spot has no distance to match:
+    // it plays at its own pace, as if its root moved the body.
+    pivot_ = pivot;
+    rootDriven_ = (in.rootMotion && pivot) || isLocoStandTurn(pick) || isLocoCrouchTurn(pick);
     rate_[index(pick)] = rootDriven_ ? 1.f : 0.f;
     moved_ = 0.f;
     turnEnter_ = enter_ = bestTime;
@@ -583,8 +591,9 @@ LocoClip Locomotion::moveTarget(const LocoInput& in, float speed, LocoClip& sync
     }
 
     // On the ground: heading off from standing starts the gait it heads for (turning as it sets off
-    // when it heads well away from its facing), heading well away from its facing at a run turns,
-    // braking stops the gait, and asked to face elsewhere when standing it turns on the spot.
+    // when it heads well away from its facing), heading well away from its facing and the way it moves
+    // at a run turns, braking stops the gait, and asked to face elsewhere when standing it turns on the
+    // spot.
     float gaits = 0.f;
     for (const LocoClip c : kGaits) gaits += weight_[index(c)];
     const float want = wrap180(in.wantYaw - in.yaw);
@@ -595,7 +604,7 @@ LocoClip Locomotion::moveTarget(const LocoInput& in, float speed, LocoClip& sync
         if (in.steer && g != LocoClip::Walk && std::fabs(want) >= tuning_.refaceMin) {
             const LocoClip held = gait_;
             gait_ = g;
-            if (beginTurn(in, LocoClip::RefaceLeft90, LocoClip::RefaceRight180, want, false)) return move_;
+            if (beginTurn(in, LocoClip::RefaceLeft90, LocoClip::RefaceRight180, want, false, std::fabs(want) >= tuning_.pivotMin)) return move_;
             gait_ = held;
         }
         const LocoClip s = locoStart(g);
@@ -616,16 +625,20 @@ LocoClip Locomotion::moveTarget(const LocoInput& in, float speed, LocoClip& sync
     const bool settled = groundTime_ >= tuning_.replaySettle &&
         weight_[index(LocoClip::Run)] + weight_[index(LocoClip::Sprint)] >= tuning_.replayWeight;
     const float turn = in.turnBy != 0.f ? (settled ? wrap180(in.turnBy) : 0.f) : in.steer ? want : 0.f;
+    // How far off its run it is asked to turn: steering, the lesser of how far its heading is from its facing and from
+    // the way it moves. A heading swept round smoothly keeps close to the way the body moves, so the facing eases round
+    // after it rather than turning in steps; one swung round sharply is far from both.
+    const float off = in.turnBy != 0.f || !in.steer ? std::fabs(turn) : std::fmin(std::fabs(want), std::fabs(wrap180(in.wantYaw - in.moveYaw)));
     if (heading && !crouched_ && gait_ != LocoClip::CrouchWalk && isLocoGait(gait_) && gaits >= 0.5f &&
         speed >= tuning_.turnSpeed * runSpeed &&
-        ((in.turnBy != 0.f && settled) || std::fabs(turn) >= tuning_.turnMin) &&
-        beginTurn(in, LocoClip::RunTurnLeft45L, LocoClip::RunTurnRight180R, turn, true)) {
+        ((in.turnBy != 0.f && settled) || off >= tuning_.turnMin) &&
+        beginTurn(in, LocoClip::RunTurnLeft45L, LocoClip::RunTurnRight180R, turn, true, off >= tuning_.pivotMin)) {
         return move_;
     }
     const float face = wrap180(in.faceYaw - in.yaw);
     if (in.face && !heading && !isLocoGait(gait_) && speed < tuning_.moveStop && std::fabs(face) >= tuning_.faceMin &&
-        (crouched_ ? beginTurn(in, LocoClip::CrouchTurnLeft45, LocoClip::CrouchTurnRight180, face, false)
-                   : beginTurn(in, LocoClip::StandTurnLeft45, LocoClip::StandTurnRight180, face, false))) {
+        (crouched_ ? beginTurn(in, LocoClip::CrouchTurnLeft45, LocoClip::CrouchTurnRight180, face, false, true)
+                   : beginTurn(in, LocoClip::StandTurnLeft45, LocoClip::StandTurnRight180, face, false, true))) {
         return move_;
     }
     return groundTarget(speed);
@@ -849,17 +862,18 @@ void Locomotion::update(const LocoInput& in) {
     if (limbs_.legs < kMinWeight) limbs_.legs = 0.f;
     limbs_.time = clip(LocoClip::AirPose).length;
 
-    // Facing: outside a turn, ease toward the way the body moves.
+    // Facing: outside a pivot, ease toward the way the body moves.
     // The step is only measured over time that passes: a character with root motion poses twice a frame, the
     // second time with no time passed, before its owner takes the step, which that pose would leave at 0. A
-    // turn begun there, or a body no longer steering, still stops it at once.
-    const bool steering = in.steer && state_ != LocoState::Turning && speed >= tuning_.moveStop;
+    // pivot begun there, or a body no longer steering, still stops it at once.
+    const bool steering = in.steer && !(state_ == LocoState::Turning && pivot_) && speed >= tuning_.moveStop;
     if (!steering) yawStep_ = 0.f;
     else if (dt > 0.f) yawStep_ = wrap180(in.moveYaw - in.yaw) * follow(dt, tuning_.faceTime);
 
     // The body: bank into turns by how fast the body turns and how fast it goes, lead into them with
     // the upper body, and lean forward with speed. In a turn clip the upper body leads by the turn
-    // still to come, so it is ahead early and unwinds as the hips come round.
+    // still to come, so it is ahead early and unwinds as the hips come round: the clip's, or a steered
+    // body's heading from its facing when the clip only rides its motion.
     const float walkSpeed = clip(LocoClip::Walk).groundSpeed;
     const float runSpeed = has(LocoClip::Run) ? clip(LocoClip::Run).groundSpeed : walkSpeed;
     const float topSpeed = has(LocoClip::Sprint) ? clip(LocoClip::Sprint).groundSpeed : runSpeed;
@@ -867,7 +881,7 @@ void Locomotion::update(const LocoInput& in) {
     const bool turningNow = state_ == LocoState::Turning;
     const bool ground = turningNow || state_ == LocoState::Ground || state_ == LocoState::Starting || state_ == LocoState::Stopping ||
         state_ == LocoState::StanceChange;
-    const float toCome = turningNow ? turnAngle() - turnYaw() : 0.f;
+    const float toCome = !turningNow ? 0.f : in.steer && !pivot_ ? wrap180(in.wantYaw - in.yaw) : turnAngle() - turnYaw();
     const float leanTo = ground ? clampf(in.turnRate * tuning_.leanPerTurn * speedShare, -tuning_.maxLean, tuning_.maxLean) : 0.f;
     const float twistTo = !ground ? 0.f
         : clampf(turningNow ? toCome * tuning_.twistLead : in.turnRate * tuning_.twistPerTurn, -tuning_.maxTwist, tuning_.maxTwist);

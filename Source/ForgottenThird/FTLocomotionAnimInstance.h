@@ -18,10 +18,11 @@
 //
 // Turns (SetTurnsFromRun): a character owner steers. Its facing eases toward the way it moves
 // (apply GetLocomotion().yawStep() to the actor each frame that time passes; turn
-// bOrientRotationToMovement off), and running turns, turning starts and turns on the spot (SetFace)
-// move and turn the capsule by the clip's root motion: the anim instance plays root motion from
-// everything and hands the movement component each frame's stretch of the turn clip. Any other owner
-// turns itself (by GetLocomotion().turnYaw() while turning) and replays a lead's running turn with
+// bOrientRotationToMovement off), and pivots (a running turn or turning start well round, a turn on
+// the spot (SetFace)) move and turn the capsule by the clip's root motion: the anim instance plays
+// root motion from everything and hands the movement component each frame's stretch of the turn
+// clip. Any other running turn or turning start rides the capsule's own motion. Any other owner turns
+// itself (by GetLocomotion().turnYaw() through a pivot) and replays a lead's running turn with
 // ReplayTurn. The root bone is held at its ref pose, rotation and all.
 //
 // -LocoLog logs the speed, the intent, the clips and their weights and rates: on each change of state,

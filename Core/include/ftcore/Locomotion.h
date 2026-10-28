@@ -45,15 +45,21 @@
 //
 // Turns, when the caller steers (LocoInput::steer) and the clips have their root's yaw measured
 // (measureMove): the body faces the way it moves, easing toward it (yawStep). Heading at least turnMin
-// away from its facing while running plays a running turn: the clip whose turn is nearest (each
-// clip's measured turn picks it, not its name), on the foot and from the point before the turn
-// whose feet best match the gait's, its yaw scaled to the angle asked for, and back to the gait in
-// step once the turn is done. Setting off at least refaceMin away from the facing plays a turning
-// start; standing, LocoInput::face turns on the spot. A caller that moves the body by the turn clip's
-// root motion (LocoInput::rootMotion) plays it at rate 1 and moves the body by turnFrom..turnTo of
-// it; otherwise (a follower placed on the lead's path) it plays at the point whose root path matches
-// the distance the body has come, and the caller turns the body by turnYaw. A follower replays a
-// running turn with LocoInput::turnBy.
+// away from both its facing and the way it moves while running plays a running turn: the clip whose
+// turn is nearest (each clip's measured turn picks it, not its name), on the foot and from the point
+// before the turn whose feet best match the gait's, its yaw from there scaled to the angle asked for,
+// and back to the gait in step once the turn is done. A heading swept round smoothly, which the way
+// the body moves keeps close to, eases the facing round after it instead. Setting off at least
+// refaceMin away from the facing plays a turning start; standing, LocoInput::face turns on the spot.
+// Most turns ride the body's own motion: entered up to its turn, the clip plays at the point whose
+// root path matches the distance the body has come, while a steered facing goes on easing toward
+// the way it moves. A pivot (turnPivots: a turn on the spot, or one of at least pivotMin, as far off
+// the way a steered body moves too) is the clip's to make, entered a little before its turn so its
+// root brings the body into it: a caller that moves the body by the turn clip's root motion
+// (LocoInput::rootMotion) plays it at rate 1 and moves the body by turnFrom..turnTo of it; otherwise
+// (a follower placed on the lead's path) the caller turns the body by turnYaw through a pivot, and
+// along its path through any other turn. A turn on the spot plays at its own pace either way. A
+// follower replays a running turn with LocoInput::turnBy.
 //
 // The air pose (LocoClip::AirPose), when the body has one: a pose held over the limbs in the air,
 // since the mocap jumps fling the arms wide and leave the legs hanging. limbs() gives the arms' and
@@ -249,8 +255,11 @@ struct LocoTuning {
     float replayWeight = 0.9f;  // ...with the run (or sprint) this much of the blend; else it is dropped
     float refaceMin = 60.f;     // setting off this far from the facing plays a turning start
     float faceMin = 40.f;       // standing, LocoInput::face this far off turns on the spot
-    float turnEarly = 0.3f;     // a running turn enters between this long and turnLate before its turn begins
+    float pivotMin = 135.f;     // a running turn this far round (and this far off the way a steered body moves) pivots
+    float turnEarly = 0.3f;     // a pivot enters between this long and turnLate before its turn begins
     float turnLate = 0.1f;
+    float steerEarly = 0.3f;    // any other running turn between this long and steerLate before it: up to its turn
+    float steerLate = 0.f;      // as the body begins to, over a step, so one foot's clip or the other's meets the gait's feet
     float turnTail = 0.1f;      // and hands back this long after its turn ends (a turn on the spot too)
     float turnRateMin = 0.7f;   // a turn matched to the distance the body comes plays within these rates
     float turnRateMax = 1.4f;
@@ -367,7 +376,7 @@ public:
     // The time in a gait clip at which its foot phase is `phase`.
     FTCORE_API float timeAtPhase(LocoClip c, float phase) const;
 
-    // Steering: the yaw (degrees) to turn the body by this frame, outside a turn. An update with no
+    // Steering: the yaw (degrees) to turn the body by this frame, outside a pivot. An update with no
     // time passed keeps it, so take it once per frame that time passes.
     float yawStep() const { return yawStep_; }
     // While Turning: the turn clip, the stretch of it played this frame (from, to), the scale on its
@@ -378,6 +387,9 @@ public:
     float turnTo() const { return turnTo_; }
     float turnWarp() const { return warp_; }
     bool turnRootDriven() const { return rootDriven_; }
+    // Whether the turn playing is a pivot, which its clip turns the body through (a steered facing holds
+    // for it); any other rides the body's own motion.
+    bool turnPivots() const { return pivot_; }
     FTCORE_API float turnYaw() const;
     // How far the turn playing turns the body in all, from where it entered (degrees, scaled), and
     // how many turns have begun so far (a caller sees a new one when this changes).
@@ -420,7 +432,7 @@ private:
     // Starts the turn among first..last whose measured turn is nearest `angle` and the same way: with
     // matchFeet, on the clip and from the point before its turn whose feet best match the gaits';
     // otherwise from its start. False when there is none.
-    bool beginTurn(const LocoInput& in, LocoClip first, LocoClip last, float angle, bool matchFeet);
+    bool beginTurn(const LocoInput& in, LocoClip first, LocoClip last, float angle, bool matchFeet, bool pivot);
     void syncGaits(LocoClip from, float time, float speed);
     void retarget(LocoClip next);
     void advance(float dt, float speed, float leadPhase, float leadStride);
@@ -449,6 +461,7 @@ private:
     float turnEnter_ = 0.f; // the time the turn playing entered at
     float warp_ = 1.f;
     bool rootDriven_ = false; // the turn playing moves the body by its root motion
+    bool pivot_ = false; // the turn playing is a pivot (turnPivots)
     float turnFrom_ = 0.f, turnTo_ = 0.f;
     float yawStep_ = 0.f;
     std::uint32_t turnsBegun_ = 0;
