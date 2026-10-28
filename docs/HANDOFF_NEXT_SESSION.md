@@ -1,12 +1,38 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-28 morning. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-28 ~08:00. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-28 morning): seamless cutscenes are on main. A story cutscene plays in place on the map the
+- **NEWEST (2026-10-28 ~08:00): the slide is on main and in the demo build, and one lead's trousers are re-cut for
+  the MetaHuman body.**
+  - main is 6f3f419: the animation session's slide (46bb993 in Core, 45bcdbe on the Unreal side, merged in
+    6f3f419). Crouching in a sprint slides, starting from the drop-in clip nearest the body's speed, follows the real
+    floor, and gets up into whatever the player is asking for. It hasn't been watched on screen yet. In the
+    get-up into a sprint, one planted foot slips about 390 cm/s during the 0.25 s blend. The animation session
+    takes the ledge grab next.
+  - The demo checkout is at 6f3f419 with UBT Succeeded (07:41), and its local content has the retargeted slide clips.
+  - **Trousers re-cut (one lead).** The pattern comes from the MetaHuman body's measurements. The waistband is
+    placed higher and held still while the seams lift the panels to it, so once released it settles at the waist,
+    not the hips. Eleven Blender bind variants went through the stride test. The chosen one has a 99th-percentile
+    edge stretch of 2.23 (gate 2.44), a max of 7.5, and no edges over 10. It is imported onto the shared MetaHuman
+    skeleton, and the bind is exact on all 14 bones checked. The check shots caught a run-loop frame rather than the
+    A-pose (the check level's body was left on a clip from an earlier pass). Through that stride the waistband holds
+    at the waist and both cuffs clear the feet, which is a harder test than the A-pose. The trousers are in the demo's
+    local party config but haven't been seen in the demo map's lighting or at play speed yet.
+  - A headless explore run with them on (the walk, then a solo start as another lead): the new asset loads, that
+    lead has 2 pieces as the lead and as a follower, both runs complete, and there are no warnings from our module.
+  - **Known issue: skin shows through at the crotch in a deep stride.** Every weighting tried shows skin at the
+    front inner thigh of the forward leg, next to the crotch seam; in the engine it shows from the side when running.
+    The cause is linear blend skinning across a crotch: the crotch cloth blends both legs' weights, so it moves about
+    half as far as the thigh under it. Blending over a narrower band makes it tear instead. The fix belongs in the
+    engine: hide the body under the pieces being worn (a masked body material, or a body section or variant chosen
+    by which pieces are on). Next session starts there, not with more weight variants.
+  - Next: hide the body under worn pieces in the engine, then flip the arm abduction for sleeved pieces (the rest
+    pose needs +42 degrees, not -42) and run the same chain for the other two leads.
+- **Earlier (2026-10-28 morning): seamless cutscenes are on main. A story cutscene plays in place on the map the
   player is on, easing from the gameplay camera into its shots and back without a cut.**
   - main is c44cacf. Since 9af57aa it holds:
     - in place after a field step (7fbb342): the cutscene director's in-place mode, a step-host subsystem, and the
