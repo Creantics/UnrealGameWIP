@@ -45,8 +45,10 @@ Private notes (character references, concept-art review, script status) are in `
     same leg instead of the pelvis; in a Blender stride test the 99th-percentile edge stretch fell from 5.9 to 2.4,
     and what is left sits at the crotch seam. The garment is in that lead's look in the demo's local config as a
     first pass: the pattern was cut for the old body, so it is baggy, the cuffs pool on the feet, and the crotch
-    still webs in a stride. In the editor, posing a skeletal mesh actor with an animation override does nothing, so
-    posed checks go through Blender or a game run.
+    still webs in a stride. A headless explore run with it on (walk, then a solo start as another lead): the lead
+    loads with 2 pieces, both runs complete, no warnings from our module. It has not been seen in a lit game view
+    yet. In the editor, posing a skeletal mesh actor with an animation override did nothing in this attempt, so
+    the posed checks went through Blender.
   - Next: re-cut the pattern for the MetaHuman proportions, fix the crotch webbing (a tighter crotch, corrective
     weights along the seam, or a cloth asset), flip the arm abduction for sleeved pieces (the rest pose needs +42
     degrees, not -42), then the same chain for the other two leads and the full wardrobe.
