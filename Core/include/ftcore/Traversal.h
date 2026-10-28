@@ -28,6 +28,13 @@
 // rate() plays the clip at the body's own speed as it enters (a sprint into a clip made at a run would
 // otherwise drop to the clip's speed in a frame), easing to the clip's own rate by the contact.
 //
+// A roll is a traversal with no obstacle: its root stays on the floor while the pelvis goes down and
+// back up. measureRoll reads it from the pelvis (when the body is tucked, the contact; when it is back
+// up, the landing; how far it goes down) and from the root as above (the entry speed, the take-off foot,
+// the path). planRoll takes the roll clip whose entry speed and take-off foot are nearest the body's,
+// from its start, its root path as it is; rate() eases to the clip's own rate by the tuck. plan()
+// never takes a roll.
+//
 // Space: x forward (toward the obstacle at the start), y to the left, z up; cm and seconds. Fixed
 // size: nothing allocates.
 
@@ -43,25 +50,28 @@ struct TravPoint {
     float x = 0.f, y = 0.f, z = 0.f;
 };
 
-// One sample of a clip: the root bone and both feet (ball joints), in the clip's space.
+// One sample of a clip: the root bone and both feet (ball joints), in the clip's space, and the pelvis
+// (read for rolls only).
 struct TraversalFrame {
     TravPoint root, ballLeft, ballRight;
+    TravPoint pelvis;
 };
 inline constexpr std::size_t kMaxTraversalFrames = 512;
 inline constexpr std::size_t kTraversalSamples = 64;
 
-enum class TraversalMove : std::uint8_t { Over, Up };
+enum class TraversalMove : std::uint8_t { Over, Up, Roll };
 
 struct TraversalClipInfo {
     float length = 0.f;      // seconds; 0: no such clip (or none could be measured in it)
     TraversalMove move = TraversalMove::Over;
-    float contact = 0.f;     // when the root starts to rise
-    float leave = 0.f;       // when it starts down off the top (over); the landing (up)
-    float land = 0.f;        // when it settles at its end height
+    float contact = 0.f;     // when the root starts to rise (a roll: when the body is tucked)
+    float leave = 0.f;       // when it starts down off the top (over); the landing (up, roll)
+    float land = 0.f;        // when it settles at its end height (a roll: when the pelvis is back up)
     float ledgeAhead = 0.f;  // the front edge's distance ahead of the root at time 0
     float ledgeHeight = 0.f; // the top's height above the root at time 0
     float topDepth = 0.f;    // how far the root goes along the top before coming down (over)
     float rise = 0.f;        // the root's end height above its start
+    float dip = 0.f;         // a roll: how far the pelvis goes below the lower of its start and end heights
     float entrySpeed = 0.f;  // the root's forward speed over the first kEntryTime
     int takeoffFoot = -1;    // 0 left, 1 right: the last foot at rest before the contact (-1: none)
     std::array<TravPoint, kTraversalSamples> path{}; // the root from where it starts, evenly over length
@@ -76,11 +86,19 @@ inline constexpr float kRestSpeed = 40.f;   // cm/s: a foot slower than this is 
 inline constexpr float kRestTime = 0.08f;   // ...when it stays so this long
 inline constexpr float kFootRest = 4.f;     // a foot at rest within this of the starting floor is on it
 inline constexpr float kEntryTime = 0.2f;
+inline constexpr float kMinRollDip = 30.f;  // a pelvis going down less than this is no roll
 
 // Measures a clip from `count` frames sampled evenly over it (frame 0 at time 0, the last at
 // `length`; at most kMaxTraversalFrames are read). length stays 0 when the root rises less than
 // kMinObstacle, ends more than kMaxClipDrop below its start, or never settles.
 FTCORE_API TraversalClipInfo measureTraversal(const TraversalFrame* frames, std::size_t count, float length);
+// Measures a roll from frames sampled the same way. The body is tucked once the pelvis is within
+// kRiseShare of its way down from its start height to its lowest, and back up once it has come
+// kTopShare of the way up to its end height. length stays 0 when the pelvis goes down less than
+// kMinRollDip below its start or its end height (a pelvis never sampled stays at 0: not measured),
+// or when the root goes kMinObstacle or more above or below where it starts (a vault or a drop, or a
+// root that follows the pelvis down).
+FTCORE_API TraversalClipInfo measureRoll(const TraversalFrame* frames, std::size_t count, float length);
 
 // What the body's probes found ahead.
 struct TraversalObstacle {
@@ -105,6 +123,7 @@ struct TraversalTuning {
     float exitAfter = 0.3f;      // a body that wants to move leaves the clip this long after the landing
     float minEntryRate = 0.8f;   // the play rate at the entry keeps the body's speed within these
     float maxEntryRate = 1.5f;
+    float rollExit = 0.75f;      // ...and a roll at this share of its length, once the body is back up
 };
 
 struct TraversalPlan {
@@ -129,14 +148,18 @@ public:
     const TraversalClipInfo& clip(std::size_t i) const { return clips_[i]; }
 
     // speed: the body's ground speed now; foot: its planted (or last planted) foot, 0 left, 1 right,
-    // -1 not known. Clips are taken in index order when they cost the same.
+    // -1 not known. Clips are taken in index order when they cost the same. Rolls are left out.
     FTCORE_API TraversalPlan plan(const TraversalObstacle& obstacle, float speed, int foot) const;
+    // A roll for a body at ground speed `speed` with `foot` planted (as plan()): the roll clip that costs
+    // least by entry speed and take-off foot, entered at its start with its root path as it is (no
+    // offsets). Not ok without a roll clip.
+    FTCORE_API TraversalPlan planRoll(float speed, int foot) const;
     // The root at clip time t (from p.start on), from where it was when the plan was made, in the
     // body's space then.
     FTCORE_API TravPoint rootAt(const TraversalPlan& p, float t) const;
-    // When a body that wants to move hands back to its locomotion: exitAfter past the landing, never
-    // before the entry nor past the clip's end (the clip's own tail, a run on or a stand-up, is for a body
-    // left standing). 0 without a plan.
+    // When a body that wants to move hands back to its locomotion: exitAfter past the landing (a roll:
+    // at rollExit of its length, never before the landing), never before the entry nor past the clip's
+    // end (the clip's own tail, a run on or a stand-up, is for a body left standing). 0 without a plan.
     FTCORE_API float exitTime(const TraversalPlan& p) const;
     // The play rate at clip time t: the plan's entryRate at the entry, easing (smoothstep) to 1 by the contact,
     // so the climb or vault itself plays at its own pace. A caller advances clip time by dt x rate. 1 without a

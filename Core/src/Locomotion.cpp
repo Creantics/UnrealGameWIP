@@ -308,6 +308,7 @@ void Locomotion::reset() {
     elbowHold_ = decel_ = lastSpeed_ = 0.f;
     crouched_ = false;
     crouch_ = 0.f;
+    landRoll_ = false;
 }
 
 float Locomotion::footPhase(LocoClip c, float t) const {
@@ -755,7 +756,8 @@ void Locomotion::update(const LocoInput& in) {
     const float dt = std::max(in.dt, 0.f);
     const float speed = std::max(in.groundSpeed, 0.f);
 
-    // Air and landing.
+    // Air and landing. A landing roll is asked for on the touchdown alone; a pose with no time passed keeps it.
+    if (dt > 0.f) landRoll_ = false;
     if (in.falling) {
         airTime_ += dt;
     }
@@ -787,6 +789,7 @@ void Locomotion::update(const LocoInput& in) {
             const bool hard = airTime_ >= tuning_.landMinAir && has(land_);
             state_ = hard ? LocoState::Landing : LocoState::Ground;
             landTime_ = hard ? 0.f : -1.f;
+            landRoll_ = moving && (in.crouch || in.roll) && airTime_ >= tuning_.rollMinAir;
         } else if (state_ == LocoState::Rising) {
             if (time(jump_) >= 0.85f * clip(jump_).length) state_ = LocoState::Falling;
         }
