@@ -24,6 +24,12 @@
 // with the carry, where the field step plays. Without a story step it is a free walk: Use at an open
 // world's gate enters it. -OverworldAutoPlay walks to every gate in turn (logging each), then exits
 // with -WorldQuitOnDone.
+//
+// Off the overworld the director is this map's field step host (FTStepHost.h), and it spawns an
+// AFTCutsceneDirector as its cutscene host. A done field step first asks FTStep::ContinueHere: when the
+// beat goes on with a field step on this map, the lead walks on from where it stands to the new marker
+// (StartStepHere); when it goes on with a CG step, the cutscene plays around the lead. Otherwise the
+// story map opens as before.
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
@@ -36,6 +42,7 @@
 
 #include "FTExploreDirector.generated.h"
 
+class AFTCutsceneDirector;
 class AFTExploreCharacter;
 class AFTExploreSpot;
 class AFTFieldGuard;
@@ -113,6 +120,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 
 private:
 	void CacheText();
@@ -151,6 +159,9 @@ private:
 	void EnterWorld(int32 World);
 	void ReturnToStory();
 	void OpenStoryMap();
+	// The step host's start for the beat's next field step on this map: a new marker, walked to from
+	// where the lead stands.
+	void StartStepHere();
 	double Now() const;
 
 	ftcore::Exploration Exploration;
@@ -174,6 +185,9 @@ private:
 	bool bFieldViaDone = false;
 	UPROPERTY(Transient)
 	TObjectPtr<AFTExploreSpot> GoalSpot;
+	// Plays the beat's CG steps on this map, around the lead (off the overworld).
+	UPROPERTY(Transient)
+	TObjectPtr<AFTCutsceneDirector> CutsceneDirector;
 
 	// The party following the lead on a field step, a big world and the overworld, and on the demo
 	// walk when the pawn has a party in config: the pawn's PartyLooks after the lead it wears, else

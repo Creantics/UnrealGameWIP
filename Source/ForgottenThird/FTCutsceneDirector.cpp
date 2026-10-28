@@ -1,22 +1,47 @@
 #include "FTCutsceneDirector.h"
 
+#include "Algo/Sort.h"
+#include "Camera/CameraComponent.h"
 #include "CineCameraActor.h"
 #include "CineCameraComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "ForgottenThird.h"
 #include "FTText.h"
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/SpringArmComponent.h"
 #include "GameFramework/WorldSettings.h"
+#include "InputCoreTypes.h"
+#include "Kismet/GameplayStatics.h"
 #include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
+#include "Misc/Paths.h"
 
+#include "FTExploreCharacter.h"
+#include "FTExploreDirector.h"
+#include "FTGameInstance.h"
+#include "FTPartyFollower.h"
 #include "FTPauseSubsystem.h"
+#include "FTStepHost.h"
 
 #include "ftcore/StubScreen.h"
+
+#include <string>
 
 namespace
 {
 constexpr float kCutsceneCmPerMetre = 100.f;
+// In place: the height above the lead's feet where the gameplay camera's look point is taken (cm), how
+// far from the lead a camera must stand to have a bearing of its own (cm), the turn past which the orbit
+// goes round the lead's right rather than the short way (degrees), the camera sweep's radius (cm), and
+// how long a traversal is waited out before the stage goes down anyway (real seconds).
+constexpr float kChestHeightCm = 145.f;
+constexpr float kOrbitMinRadius = 10.f;
+constexpr float kOrbitTieDegrees = 160.f;
+constexpr float kSweepRadius = 12.f;
+constexpr double kTraversalWaitLimit = 5.0;
 
 ftcore::CutsceneVec3 CutsceneToCore(const FVector& Cm)
 {
@@ -42,12 +67,167 @@ float CutsceneFocalLength(ftcore::ShotFraming Framing)
 	}
 	return 35.f;
 }
+
+// In place, who stands on subject mark `Id`: the lead on subj_a (0), and on the stage's other subject
+// marks, in their order, the followers nearest first (1, 2, ...). -1 when `Id` is no subject mark.
+int32 SubjectOrdinal(std::string_view Id)
+{
+	if (Id == ftcore::kCutsceneLeadMark)
+	{
+		return 0;
+	}
+	int32 Ordinal = 0;
+	for (uint32 I = 0; I < ftcore::cutsceneStageMarkCount(); ++I)
+	{
+		const ftcore::CutsceneStageMark& Mark = ftcore::cutsceneStageMark(I);
+		if (!Mark.subject || Mark.id == ftcore::kCutsceneLeadMark)
+		{
+			continue;
+		}
+		++Ordinal;
+		if (Mark.id == Id)
+		{
+			return Ordinal;
+		}
+	}
+	return -1;
+}
 } // namespace
 
 AFTCutsceneDirector::AFTCutsceneDirector()
 {
 	PrimaryActorTick.bCanEverTick = true;
+	// After the lead's spring arm has placed the gameplay camera: in place the blends start from it.
+	PrimaryActorTick.TickGroup = TG_PostPhysics;
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
+}
+
+void AFTCutsceneDirector::LoadPlan(const FString& Scene, int32 Beat, int32 Step, ftcore::CutscenePlan& Out)
+{
+	Out.clear();
+	const FString Path = FPaths::ProjectDir() / TEXT("Data/Cutscene/cutscenes.json");
+	TArray<uint8> Bytes;
+	ftcore::CutsceneTable Table;
+	std::string Error;
+	if (!FFileHelper::LoadFileToArray(Bytes, *Path))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Cutscene: %s not found; playing one wide shot."), *Path);
+	}
+	else if (!ftcore::importCutsceneTable(FT::BytesAsText(Bytes), Table, &Error))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Cutscene: cutscenes.json refused (%s); playing one wide shot."), UTF8_TO_TCHAR(Error.c_str()));
+	}
+	else
+	{
+		const uint32 BeatIndex = static_cast<uint32>(FMath::Max(Beat, 0));
+		const uint32 StepIndex = static_cast<uint32>(FMath::Max(Step, 0));
+		Out = Table.find(FT::ToUtf8(Scene), BeatIndex, StepIndex);
+		return;
+	}
+	ftcore::CutsceneShot Shot;
+	Shot.setSpot("spot_a");
+	Shot.setSubject("subj_a");
+	Shot.framing = ftcore::ShotFraming::Wide;
+	Shot.duration = 3.f;
+	Out.add(Shot);
+}
+
+void AFTCutsceneDirector::HostSteps(bool bInPlaceHost, bool bRegister)
+{
+	bInPlace = bInPlaceHost;
+	UFTStepHostSubsystem* Hosts = (bRegister && GetWorld()) ? GetWorld()->GetSubsystem<UFTStepHostSubsystem>() : nullptr;
+	if (Hosts)
+	{
+		Hosts->Register(EFTStepHost::Cutscene, FFTStartStepHere::CreateUObject(this, &AFTCutsceneDirector::StartStepHere));
+		bRegistered = true;
+	}
+}
+
+void AFTCutsceneDirector::EndPlay(const EEndPlayReason::Type Reason)
+{
+	if (bRegistered)
+	{
+		if (UFTStepHostSubsystem* Hosts = GetWorld() ? GetWorld()->GetSubsystem<UFTStepHostSubsystem>() : nullptr)
+		{
+			Hosts->Unregister(EFTStepHost::Cutscene, this);
+		}
+		bRegistered = false;
+	}
+	// Destroyed mid-cutscene on a map that stays: the lead gets its view, input and party back. (A map
+	// that unloads takes them along.)
+	if (bInPlace && Reason == EEndPlayReason::Destroyed && (bBeginPending || (bStarted && !bFinished)))
+	{
+		EndInPlace();
+	}
+	Super::EndPlay(Reason);
+}
+
+void AFTCutsceneDirector::StartStepHere()
+{
+	bStarted = false;
+	bFinished = false;
+	bBeginPending = false;
+	bControlRestored = false;
+	bWasBlendingOut = false;
+	bOrbitValid = false;
+	PulledShots = 0;
+	bFast = FParse::Param(FCommandLine::Get(), TEXT("AlphaFast"));
+	bBlendTest = FParse::Param(FCommandLine::Get(), TEXT("CutsceneBlendTest"));
+
+	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+	const FFTStoryCarry* Carry = (GI && GI->StoryCarry.bValid && !GI->StoryCarry.bDone) ? &GI->StoryCarry : nullptr;
+	bHasStep = Carry != nullptr;
+	bAutoPlayStep = Carry && Carry->bAutoPlay;
+	if (Carry)
+	{
+		LoadPlan(Carry->Scene, Carry->Beat, Carry->Step, StepPlan);
+	}
+	else
+	{
+		LoadPlan(FString(), -1, 0, StepPlan);
+	}
+
+	UWorld* World = GetWorld();
+	APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+	if (!bInPlace)
+	{
+		Play(StepPlan, bAutoPlayStep);
+		// Look through the director's camera rather than the pawn.
+		if (PC && Camera)
+		{
+			PC->SetViewTarget(Camera.Get());
+		}
+		return;
+	}
+	if (!Carry)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Cutscene: in place without a story step; nothing to play."));
+		return;
+	}
+	AFTExploreCharacter* Body = Cast<AFTExploreCharacter>(UGameplayStatics::GetPlayerPawn(this, 0));
+	Lead = Body;
+	LeadCamera = Body ? Body->FindComponentByClass<UCameraComponent>() : nullptr;
+	LeadBoom = Body ? Body->FindComponentByClass<USpringArmComponent>() : nullptr;
+	ExploreDirector = nullptr;
+	if (World)
+	{
+		for (TActorIterator<AFTExploreDirector> It(World); It; ++It)
+		{
+			ExploreDirector = *It;
+			break;
+		}
+	}
+	// The lead stops where it is and the party stands; the stage goes down once a traversal is over (Tick).
+	if (Body && PC)
+	{
+		Body->DisableInput(PC);
+	}
+	if (AFTExploreDirector* Explore = ExploreDirector.Get())
+	{
+		Explore->SetPartyHeld(true);
+	}
+	PendingSince = UFTPauseSubsystem::WallSeconds();
+	bBeginPending = true;
 }
 
 void AFTCutsceneDirector::EnsureCamera()
@@ -193,22 +373,452 @@ void AFTCutsceneDirector::ApplyCamera()
 	}
 }
 
+void AFTCutsceneDirector::BeginInPlace()
+{
+	bBeginPending = false;
+	EnsureCamera();
+	UWorld* World = GetWorld();
+	APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+	AFTExploreCharacter* Body = Lead.Get();
+	UCineCameraComponent* Cine = Camera ? Camera->GetCineCameraComponent() : nullptr;
+	const UCameraComponent* Live = LeadCamera.Get();
+	if (!PC || !Body || !Cine || !Live)
+	{
+		// Nothing to stage around: the step plays on the Cutscene map instead.
+		UE_LOG(LogForgottenThird, Warning, TEXT("Cutscene: in place, no lead or camera to stage around; opening the Cutscene map."));
+		UGameplayStatics::SetGlobalTimeDilation(this, 1.f);
+		UGameplayStatics::OpenLevel(this, FName(FTStep::ScreenMap(ftcore::GameplayScreen::Cutscene)));
+		return;
+	}
+	const FVector Feet = LeadFeet();
+	const FVector2D Facing = Body->GetFacing2D();
+	LeadYaw = FMath::RadiansToDegrees(FMath::Atan2(static_cast<float>(Facing.Y), static_cast<float>(Facing.X)));
+	const ftcore::StageFrame Frame = ftcore::anchorForLead(CutsceneToCore(Feet), LeadYaw);
+
+	// The cast: the lead, then the followers in view, nearest first. The sweep passes through the whole
+	// party and the camera itself.
+	CastMembers.Reset();
+	CastMembers.Add(Body);
+	SweepParams = FCollisionQueryParams(SCENE_QUERY_STAT(FTCutsceneCamera), false, this);
+	SweepParams.AddIgnoredActor(Body);
+	SweepParams.AddIgnoredActor(Camera.Get());
+	if (const AFTExploreDirector* Explore = ExploreDirector.Get())
+	{
+		for (AFTPartyFollower* Follower : Explore->GetFollowers())
+		{
+			if (!Follower)
+			{
+				continue;
+			}
+			SweepParams.AddIgnoredActor(Follower);
+			if (!Follower->IsHidden())
+			{
+				CastMembers.Add(Follower);
+			}
+		}
+	}
+	if (CastMembers.Num() > 2)
+	{
+		Algo::Sort(MakeArrayView(CastMembers.GetData() + 1, CastMembers.Num() - 1),
+			[&Feet](const TObjectPtr<AActor>& A, const TObjectPtr<AActor>& B)
+			{
+				return FVector::DistSquared(A->GetActorLocation(), Feet) < FVector::DistSquared(B->GetActorLocation(), Feet);
+			});
+	}
+
+	SavedControl = PC->GetControlRotation();
+	// The cine camera sees what the gameplay camera sees: the same aspect handling and post process, and
+	// no exposure or focus of its own.
+	Cine->SetConstraintAspectRatio(false);
+	Cine->FocusSettings.FocusMethod = ECameraFocusMethod::DoNotOverride;
+	Cine->ExposureMethod = ECameraExposureMethod::DoNotOverride;
+	Cine->PostProcessSettings = Live->PostProcessSettings;
+	Cine->SetPostProcessBlendWeight(Live->PostProcessBlendWeight);
+
+	Player.begin(StepPlan, bAutoPlayStep && !bBlendTest, true);
+	ResolveStage(Frame);
+	LastRealTime = UFTPauseSubsystem::WallSeconds();
+	AppliedShot = -1;
+	bStarted = true;
+	if (USpringArmComponent* Boom = LeadBoom.Get())
+	{
+		AddTickPrerequisiteComponent(Boom);
+	}
+	ApplyInPlace();
+	PC->SetViewTarget(Camera.Get());
+	LogSwitch(TEXT("view to the cine camera"));
+}
+
+void AFTCutsceneDirector::ResolveStage(const ftcore::StageFrame& Frame)
+{
+	// Each id with a problem is logged once.
+	TArray<FString, TInlineAllocator<8>> Logged;
+	const auto FirstTime = [&Logged](const FString& Name)
+	{
+		if (Logged.Contains(Name))
+		{
+			return false;
+		}
+		Logged.Add(Name);
+		return true;
+	};
+	const ftcore::CutsceneStageMark* LeadMark = ftcore::findCutsceneStageMark(ftcore::kCutsceneLeadMark);
+	const ftcore::CutsceneVec3 LeadAt = LeadMark ? LeadMark->position : ftcore::CutsceneVec3{};
+	// The cast member a subject id follows, with where it stands now as the fallback; -1, with the mark's
+	// place on the map, when no follower stands on it.
+	const auto Subject = [&](std::string_view Id, ftcore::CutsceneVec3& Out) -> int8
+	{
+		int32 Ordinal = SubjectOrdinal(Id);
+		if (Ordinal < 0)
+		{
+			const FString Name = FT::ToFString(Id);
+			if (FirstTime(Name))
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("Cutscene: in place, %s is no subject mark; framing the lead."), *Name);
+			}
+			Ordinal = 0;
+		}
+		if (CastFeet(Ordinal, Out))
+		{
+			return static_cast<int8>(Ordinal);
+		}
+		const ftcore::CutsceneStageMark* Mark = ftcore::findCutsceneStageMark(Id);
+		Out = ftcore::stageToWorld(Frame, Mark ? Mark->position : LeadAt);
+		const FString Name = FT::ToFString(Id);
+		if (FirstTime(Name))
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Cutscene: in place, no follower stands on %s; the shot frames its mark."), *Name);
+		}
+		return -1;
+	};
+
+	const ftcore::CutscenePlan& Shots = Player.plan();
+	for (uint32 I = 0; I < Shots.size(); ++I)
+	{
+		const ftcore::CutsceneShot& Shot = Shots.shot(I);
+		ShotSubjectCast[I] = Subject(Shot.subject(), ShotSubject[I]);
+		bShotHasSubject2[I] = Shot.hasSubject2();
+		ShotSubject2Cast[I] = bShotHasSubject2[I] ? Subject(Shot.subject2(), ShotSubject2[I]) : static_cast<int8>(-1);
+		const ftcore::CutsceneStageMark* Spot = ftcore::findCutsceneStageMark(Shot.spot());
+		if (!Spot)
+		{
+			const FString Name = FT::ToFString(Shot.spot());
+			if (FirstTime(Name))
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("Cutscene: in place, no stage spot %s; the camera stands 4 m in front of the lead."), *Name);
+			}
+		}
+		ShotSpot[I] = ftcore::stageToWorld(Frame, Spot ? Spot->position : ftcore::CutsceneVec3{LeadAt.x + 4.f, LeadAt.y, LeadAt.z + 1.7f});
+	}
+}
+
+FVector AFTCutsceneDirector::LeadFeet() const
+{
+	const AFTExploreCharacter* Body = Lead.Get();
+	if (!Body)
+	{
+		return GetActorLocation();
+	}
+	const UCapsuleComponent* Capsule = Body->GetCapsuleComponent();
+	return Body->GetActorLocation() - FVector(0.0, 0.0, Capsule ? Capsule->GetScaledCapsuleHalfHeight() : 0.0);
+}
+
+bool AFTCutsceneDirector::CastFeet(int32 Index, ftcore::CutsceneVec3& Out) const
+{
+	if (!CastMembers.IsValidIndex(Index) || !IsValid(CastMembers[Index]))
+	{
+		return false;
+	}
+	// A follower's origin is on its feet; the lead's is its capsule's centre.
+	Out = CutsceneToCore(Index == 0 ? LeadFeet() : CastMembers[Index]->GetActorLocation());
+	return true;
+}
+
+ftcore::CameraPose AFTCutsceneDirector::PoseOfShot(uint32 Index, const ftcore::CutsceneShot& Shot, float Progress) const
+{
+	// The subjects where they stand now; for a mark no one stands on, the point stored at the start.
+	ftcore::CutsceneVec3 Subject = ShotSubject[Index];
+	CastFeet(ShotSubjectCast[Index], Subject);
+	ftcore::CutsceneVec3 Subject2 = ShotSubject2[Index];
+	if (bShotHasSubject2[Index])
+	{
+		CastFeet(ShotSubject2Cast[Index], Subject2);
+	}
+	return ftcore::cutsceneCamera(Shot, Progress, ShotSpot[Index], Subject, bShotHasSubject2[Index] ? &Subject2 : nullptr);
+}
+
+void AFTCutsceneDirector::ShotPose(ftcore::CameraPose& Pose, float& Focal) const
+{
+	const uint32 Index = Player.currentIndex();
+	const ftcore::CutsceneShot& Shot = Player.currentShot();
+	Pose = PoseOfShot(Index, Shot, Player.shotProgress());
+	Focal = CutsceneFocalLength(Shot.framing);
+	if (Player.blending() && Index > 0)
+	{
+		const float W = Player.blendWeight();
+		Pose = ftcore::lerpPose(PoseOfShot(Index - 1, Player.previousShot(), 1.f), Pose, W);
+		Focal = FMath::Lerp(CutsceneFocalLength(Player.previousShot().framing), Focal, W);
+	}
+}
+
+float AFTCutsceneDirector::FovForFocal(float Focal) const
+{
+	const UCineCameraComponent* Cine = Camera ? Camera->GetCineCameraComponent() : nullptr;
+	if (!Cine)
+	{
+		return HeldFov;
+	}
+	const float Width = Cine->Filmback.SensorWidth * Cine->LensSettings.SqueezeFactor;
+	return FMath::RadiansToDegrees(2.f * FMath::Atan(Width / (2.f * FMath::Max(Focal, 1.f))));
+}
+
+void AFTCutsceneDirector::ApplyInPlace()
+{
+	UCineCameraComponent* Cine = Camera ? Camera->GetCineCameraComponent() : nullptr;
+	if (!Cine || Player.shotCount() == 0)
+	{
+		return;
+	}
+	// The shots' camera; held where it got to once the blend out has begun.
+	if (Player.playing() || Player.blendingIn())
+	{
+		ftcore::CameraPose Pose;
+		float Focal = 0.f;
+		ShotPose(Pose, Focal);
+		HeldPos = CutsceneToUnreal(Pose.position);
+		HeldLook = CutsceneToUnreal(Pose.lookAt);
+		HeldFov = FovForFocal(Focal);
+	}
+	FVector Pos = HeldPos;
+	FVector Look = HeldLook;
+	float Fov = HeldFov;
+	const float P = Player.presence();
+	const UCameraComponent* Live = LeadCamera.Get();
+	if (P < 1.f && Live && Lead.IsValid())
+	{
+		// Between the gameplay camera and the shots: orbit round the lead's feet, turning the bearing and
+		// easing the distance and height, and swing the look from the gameplay view to the shot's.
+		const FVector LivePos = Live->GetComponentLocation();
+		const FVector Feet = LeadFeet();
+		const FVector2D Pivot(Feet.X, Feet.Y);
+		const FVector2D FromXY = FVector2D(LivePos.X, LivePos.Y) - Pivot;
+		const FVector2D ToXY = FVector2D(HeldPos.X, HeldPos.Y) - Pivot;
+		const float RadiusFrom = static_cast<float>(FromXY.Size());
+		const float RadiusTo = static_cast<float>(ToXY.Size());
+		float YawFrom = FMath::RadiansToDegrees(FMath::Atan2(static_cast<float>(FromXY.Y), static_cast<float>(FromXY.X)));
+		float YawTo = FMath::RadiansToDegrees(FMath::Atan2(static_cast<float>(ToXY.Y), static_cast<float>(ToXY.X)));
+		// A camera on the lead has no bearing of its own: it takes the other's.
+		if (RadiusFrom < kOrbitMinRadius)
+		{
+			YawFrom = YawTo;
+		}
+		if (RadiusTo < kOrbitMinRadius)
+		{
+			YawTo = YawFrom;
+		}
+		const float Raw = FMath::UnwindDegrees(YawTo - YawFrom);
+		float Delta = Raw;
+		if (!bOrbitValid)
+		{
+			// Near half a turn either way, it goes round the lead's right.
+			if (FMath::Abs(Raw) > kOrbitTieDegrees && FMath::Sin(FMath::DegreesToRadians(YawFrom + 0.5f * Raw - LeadYaw)) <= 0.f)
+			{
+				Delta = Raw - FMath::Sign(Raw) * 360.f;
+			}
+			bOrbitValid = true;
+		}
+		else
+		{
+			// The same way round as the frame before, even past half a turn.
+			Delta = Raw + 360.f * FMath::RoundToFloat((OrbitDelta - Raw) / 360.f);
+		}
+		OrbitDelta = Delta;
+		const float Yaw = FMath::DegreesToRadians(YawFrom + P * Delta);
+		const float Radius = FMath::Lerp(RadiusFrom, RadiusTo, P);
+		Pos = FVector(Pivot.X + Radius * FMath::Cos(Yaw), Pivot.Y + Radius * FMath::Sin(Yaw), FMath::Lerp(LivePos.Z, HeldPos.Z, static_cast<double>(P)));
+		const FVector Chest = Feet + FVector(0.0, 0.0, kChestHeightCm);
+		const FVector LiveLook = LivePos + Live->GetForwardVector() * FVector::Dist(Chest, LivePos);
+		Look = FMath::Lerp(LiveLook, HeldLook, static_cast<double>(P));
+		Fov = FMath::Lerp(Live->FieldOfView, HeldFov, P);
+	}
+	if (P > 0.f && GetWorld())
+	{
+		// In front of whatever stands between the look point and the camera.
+		FHitResult Hit;
+		if (GetWorld()->SweepSingleByChannel(Hit, Look, Pos, FQuat::Identity, ECC_Camera, FCollisionShape::MakeSphere(kSweepRadius), SweepParams)
+			&& !Hit.bStartPenetrating)
+		{
+			Pos = Hit.Location;
+			PulledShots |= 1u << FMath::Min(Player.currentIndex(), 31u);
+		}
+	}
+	const FVector Forward = Look - Pos;
+	Camera->SetActorLocationAndRotation(Pos, Forward.IsNearlyZero() ? Camera->GetActorRotation() : Forward.Rotation());
+	Cine->SetFieldOfView(Fov);
+}
+
+void AFTCutsceneDirector::LogSwitch(const TCHAR* What) const
+{
+	const UCameraComponent* Live = LeadCamera.Get();
+	const UCineCameraComponent* Cine = Camera ? Camera->GetCineCameraComponent() : nullptr;
+	if (!Live || !Cine)
+	{
+		return;
+	}
+	const double Cm = FVector::Dist(Cine->GetComponentLocation(), Live->GetComponentLocation());
+	const double Dot = FMath::Clamp(FVector::DotProduct(Cine->GetForwardVector(), Live->GetForwardVector()), -1.0, 1.0);
+	UE_LOG(LogForgottenThird, Display, TEXT("Cutscene: in place, %s (%.1f cm, %.1f deg, fov %+.1f)."), What, Cm,
+		FMath::RadiansToDegrees(FMath::Acos(Dot)), Cine->FieldOfView - Live->FieldOfView);
+}
+
+void AFTCutsceneDirector::RestoreControl()
+{
+	if (bControlRestored)
+	{
+		return;
+	}
+	bControlRestored = true;
+	if (APlayerController* PC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr)
+	{
+		PC->SetControlRotation(SavedControl);
+	}
+}
+
+void AFTCutsceneDirector::EndInPlace()
+{
+	APlayerController* PC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+	AFTExploreCharacter* Body = Lead.Get();
+	if (bStarted && PC)
+	{
+		RestoreControl();
+		LogSwitch(TEXT("view back to the lead"));
+		if (Body)
+		{
+			PC->SetViewTarget(Body);
+		}
+	}
+	if (Body && PC)
+	{
+		Body->EnableInput(PC);
+		Body->ResetHeldInput();
+	}
+	if (AFTExploreDirector* Explore = ExploreDirector.Get())
+	{
+		Explore->SetPartyHeld(false);
+	}
+	if (USpringArmComponent* Boom = LeadBoom.Get())
+	{
+		RemoveTickPrerequisiteComponent(Boom);
+	}
+}
+
+void AFTCutsceneDirector::Finish()
+{
+	if (bFinished)
+	{
+		return;
+	}
+	bFinished = true;
+	UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+	const bool bCarry = bHasStep && GI && GI->StoryCarry.bValid;
+	if (bCarry)
+	{
+		FFTStoryCarry& Carry = GI->StoryCarry;
+		Carry.bDone = true;
+		Carry.bWon = true;
+		// Ids and counts only.
+		if (bInPlace)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Cutscene: done %s beat %d step %d shots %u skipped %d in place, pulled %d"), *Carry.Scene,
+				Carry.Beat, Carry.Step, Player.shotCount(), Player.skipped() ? 1 : 0, FMath::CountBits(PulledShots));
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Cutscene: done %s beat %d step %d shots %u skipped %d"), *Carry.Scene, Carry.Beat,
+				Carry.Step, Player.shotCount(), Player.skipped() ? 1 : 0);
+		}
+	}
+	if (bInPlace)
+	{
+		EndInPlace();
+	}
+	if (!bCarry)
+	{
+		return; // a preview: no carry to hand back, stay on the map
+	}
+	if (FTStep::ContinueHere(this))
+	{
+		return; // the beat's next step plays on this map
+	}
+	UGameplayStatics::SetGlobalTimeDilation(this, 1.f);
+	const FString& ReturnMap = GI->StoryCarry.ReturnMap;
+	if (!ReturnMap.IsEmpty())
+	{
+		UGameplayStatics::OpenLevel(this, FName(*ReturnMap));
+	}
+}
+
 void AFTCutsceneDirector::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
-	if (!bStarted || !Player.playing())
+	if (bBeginPending)
+	{
+		// A vault, climb or roll carrying the lead ends first: the stage goes down where it lands.
+		const AFTExploreCharacter* Body = Lead.Get();
+		const bool bTraversing = Body && Body->IsTraversing();
+		if (bTraversing && UFTPauseSubsystem::WallSeconds() - PendingSince < kTraversalWaitLimit)
+		{
+			return;
+		}
+		if (bTraversing)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Cutscene: in place, the lead was still traversing after %.0f s; staging anyway."), kTraversalWaitLimit);
+		}
+		BeginInPlace();
+	}
+	if (!bStarted || bFinished)
 	{
 		return;
+	}
+	const APlayerController* PC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+	if (PC && (Player.playing() || Player.blendingIn())
+		&& (PC->WasInputKeyJustPressed(EKeys::SpaceBar) || PC->WasInputKeyJustPressed(EKeys::Enter)
+			|| PC->WasInputKeyJustPressed(EKeys::Gamepad_FaceButton_Bottom)))
+	{
+		Player.press();
 	}
 	// Real time without the pause: the autoplay cap and the skip grace must not count the minutes a
 	// player spent in the menu (this tick doesn't run while paused, so the gap would land here at once).
 	const double Now = UFTPauseSubsystem::WallSeconds();
 	const double Real = Now - LastRealTime;
 	LastRealTime = Now;
-
-	const AWorldSettings* Settings = GetWorld() ? GetWorld()->GetWorldSettings() : nullptr;
-	const double Dilation = Settings ? Settings->GetEffectiveTimeDilation() : 1.0;
-	Player.update(static_cast<double>(DeltaSeconds) * ftcore::StubScreen::speedFactor(bFast, Dilation));
-	Player.tickReal(Real);
-	ApplyCamera();
+	if (Player.active())
+	{
+		const AWorldSettings* Settings = GetWorld() ? GetWorld()->GetWorldSettings() : nullptr;
+		const double Dilation = Settings ? Settings->GetEffectiveTimeDilation() : 1.0;
+		Player.update(static_cast<double>(DeltaSeconds) * ftcore::StubScreen::speedFactor(bFast, Dilation));
+		Player.tickReal(Real);
+	}
+	if (bInPlace && Player.blendingOut() && !bWasBlendingOut)
+	{
+		// The way back aims at the gameplay camera as it was, and picks its side afresh.
+		RestoreControl();
+		bOrbitValid = false;
+	}
+	bWasBlendingOut = Player.blendingOut();
+	if (Player.finished())
+	{
+		// The camera stays where the last frame put it, so the switch logs what is left of the blend (a
+		// cut under autoplay).
+		Finish();
+		return;
+	}
+	if (bInPlace)
+	{
+		ApplyInPlace();
+	}
+	else
+	{
+		ApplyCamera();
+	}
 }
