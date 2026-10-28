@@ -1,12 +1,26 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-27 evening. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-27 night. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-27 evening): all three MetaHuman leads are finalized and play as a party in the explore demo.** One lead's body is being conformed to an approved lead's built body, because measurement constraints don't pin front-to-back depth. Next: base outfits in Marvelous Designer (needs the user present), then per-lead animation. Details are under "Characters: quality" (2026-10-27 evening).
+- **NEWEST (2026-10-27 night): a pause menu, items, and a combat system per world.**
+  - The local branch `gameplay-integration` holds:
+    - items in Core (5effafd): inventory, item table, enemy drops, `Battle::useItem`, shops;
+    - the pause menu on every gameplay screen, plus Quit on the title (61d29df). Its Unreal side compiles for the first
+      time in the main-merge build;
+    - the combat outline (06b58dc).
+  - It merged main as 92a101d with no conflicts. It goes to main once `gate -Ubt` passes. Then the main checkout gets a
+    fast-forward and a UBT build so the demo has it.
+  - Combat: each world names its system with the `combat` key in `worlds.json`. Solhaven gets the arena melee, lattice
+    keeps the rhythm battle, and unwritten gets the beat fight.
+    - `docs/COMBAT_SYSTEMS.md` is the design. `CombatKind.h`, `ArenaFight.h` and `BeatFight.h` are the contracts.
+    - Two Core workers are filling in the implementations, data files and tests. The Unreal hosts come after.
+  - One lead's body was conformed to an approved lead's built body, with only the calf constraint re-pinned. Its torso
+    now matches within 0.1 mm, which removes the chest hollow.
+- **Earlier (2026-10-27 evening): all three MetaHuman leads are finalized and play as a party in the explore demo.** One lead's body is being conformed to an approved lead's built body, because measurement constraints don't pin front-to-back depth. Next: base outfits in Marvelous Designer (needs the user present), then per-lead animation. Details are under "Characters: quality" (2026-10-27 evening).
 - **Earlier (2026-10-27 ~11:20, face round 6 scored; ops now sized from measurements; animation on the new bodies):**
   - Round 6 (sign-fixed field ops plus look variants on contact sheets): only the unrigged lead's fit reached the renders.
     The two finalized leads render their face rig, so their fits never showed (see the rig note below). Their round 6
