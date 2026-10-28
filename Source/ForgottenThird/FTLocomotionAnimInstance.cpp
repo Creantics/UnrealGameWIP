@@ -488,12 +488,13 @@ void UFTLocomotionAnimInstance::SetTraversalFromRun()
 			++Found;
 			if (I >= kFirstRoll)
 			{
-				// A roll is read from the pelvis going down and back up; its root stays on the floor.
+				// A roll is read from the pelvis going down and back up; its root stays on the floor (a land roll's from
+				// its touchdown, where it is played from).
 				Info = ftcore::measureRoll(Frames.GetData(), Frames.Num(), Clip->GetPlayLength());
 				UE_LOG(LogForgottenThird, Display,
-					TEXT("Locomotion: traversal %d = %s, %.2f s: %s, tucked %.2f back up %.2f, pelvis down %.0f cm, ends %.0f up, enters at %.0f cm/s off foot %d"),
-					I, *Clip->GetName(), Clip->GetPlayLength(), Info.length <= 0.f ? TEXT("NOT MEASURED") : TEXT("roll"), Info.contact, Info.land, Info.dip,
-					Info.rise, Info.entrySpeed, Info.takeoffFoot);
+					TEXT("Locomotion: traversal %d = %s, %.2f s: %s, down at %.2f, tucked %.2f back up %.2f, pelvis down %.0f cm, ends %.0f up, enters at %.0f cm/s off foot %d"),
+					I, *Clip->GetName(), Clip->GetPlayLength(), Info.length <= 0.f ? TEXT("NOT MEASURED") : TEXT("roll"), Info.touchdown, Info.contact,
+					Info.land, Info.dip, Info.rise, Info.entrySpeed, Info.takeoffFoot);
 			}
 			else
 			{

@@ -14,6 +14,8 @@ const TravPoint& ballRight(const TraversalFrame& f) { return f.ballRight; }
 
 float dist(const TravPoint& a, const TravPoint& b) { return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z)); }
 
+float groundDist(const TravPoint& a, const TravPoint& b) { return std::hypot(a.x - b.x, a.y - b.y); }
+
 TravPoint lerp(const TravPoint& a, const TravPoint& b, float u) { return {a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u, a.z + (b.z - a.z) * u}; }
 
 float smooth(float u) {
@@ -24,32 +26,33 @@ float smooth(float u) {
 // Eases from a at time t0 to b at t1.
 TravPoint ease(const TravPoint& a, const TravPoint& b, float t, float t0, float t1) { return lerp(a, b, t1 > t0 ? smooth((t - t0) / (t1 - t0)) : 1.f); }
 
-// At rest from frame i: every step over the next n frames slower than kRestSpeed.
+// At rest from frame i: its net move over the next n frames slower than kRestSpeed, or than kRestShare of
+// the root's ground speed over them (a planted foot slips and rolls some at a run; a swinging one passes
+// the root). The net move, so a jittering sample or two does not lift it.
 bool restsFrom(const TraversalFrame* f, std::size_t count, Part part, std::size_t i, std::size_t n, float dt) {
     if (i + n >= count) return false;
-    for (std::size_t k = i; k < i + n; ++k)
-        if (dist(part(f[k]), part(f[k + 1])) / dt >= kRestSpeed) return false;
-    return true;
+    const float limit = std::max(kRestSpeed * static_cast<float>(n) * dt, kRestShare * groundDist(f[i].root, f[i + n].root));
+    return dist(part(f[i]), part(f[i + n])) < limit;
 }
 
-// The take-off foot: the last at rest on the starting floor before frame `before` (-1: none).
-int lastFootAtRest(const TraversalFrame* f, std::size_t count, std::size_t before, float dt) {
+// The take-off foot: the last at rest on the floor under frame `from`, from it to frame `before` (-1: none).
+int lastFootAtRest(const TraversalFrame* f, std::size_t count, std::size_t from, std::size_t before, float dt) {
     const Part balls[2] = {ballLeft, ballRight};
-    const float floor0 = std::min(f[0].ballLeft.z, f[0].ballRight.z);
+    const float floor0 = std::min(f[from].ballLeft.z, f[from].ballRight.z);
     const std::size_t rest = std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil(kRestTime / dt - 1e-4f)));
-    for (std::size_t i = before; i-- > 0;)
+    for (std::size_t i = before; i-- > from;)
         for (int b = 0; b < 2; ++b)
             if (balls[b](f[i]).z - floor0 < kFootRest && restsFrom(f, count, balls[b], i, rest, dt)) return b;
     return -1;
 }
 
-// The root's entry speed and its path from where it starts (count >= 3).
-void measureRootPath(const TraversalFrame* f, std::size_t count, float dt, TraversalClipInfo& info) {
-    const TravPoint& root0 = f[0].root;
-    const std::size_t k = std::clamp<std::size_t>(static_cast<std::size_t>(std::lround(kEntryTime / dt)), 1, count - 1);
-    info.entrySpeed = (f[k].root.x - root0.x) / (static_cast<float>(k) * dt);
+// The root's entry speed and its path, both from frame `from` on (count >= 3, from < count - 1).
+void measureRootPath(const TraversalFrame* f, std::size_t count, float dt, TraversalClipInfo& info, std::size_t from = 0) {
+    const TravPoint& root0 = f[from].root;
+    const std::size_t k = std::clamp<std::size_t>(static_cast<std::size_t>(std::lround(kEntryTime / dt)), 1, count - 1 - from);
+    info.entrySpeed = (f[from + k].root.x - root0.x) / (static_cast<float>(k) * dt);
     for (std::size_t s = 0; s < kTraversalSamples; ++s) {
-        const float u = static_cast<float>(s) / static_cast<float>(kTraversalSamples - 1) * static_cast<float>(count - 1);
+        const float u = static_cast<float>(from) + static_cast<float>(s) / static_cast<float>(kTraversalSamples - 1) * static_cast<float>(count - 1 - from);
         const std::size_t i = std::min(static_cast<std::size_t>(u), count - 2);
         const TravPoint p = lerp(f[i].root, f[i + 1].root, u - static_cast<float>(i));
         info.path[s] = {p.x - root0.x, p.y - root0.y, p.z - root0.z};
@@ -94,7 +97,7 @@ TraversalClipInfo measureTraversal(const TraversalFrame* frames, std::size_t cou
     while (land < count && std::fabs(up(land) - rise) >= kSettle) ++land;
     if (land == count) return info;
 
-    info.takeoffFoot = lastFootAtRest(frames, count, contact, dt);
+    info.takeoffFoot = lastFootAtRest(frames, count, 0, contact, dt);
     info.length = length;
     info.contact = static_cast<float>(contact) * dt;
     info.land = static_cast<float>(land) * dt;
@@ -117,36 +120,41 @@ TraversalClipInfo measureRoll(const TraversalFrame* frames, std::size_t count, f
     count = std::min(count, kMaxTraversalFrames);
     if (!frames || count < 3 || length <= 0.f) return info;
     const float dt = length / static_cast<float>(count - 1);
-    const TravPoint& root0 = frames[0].root;
-    std::size_t bottom = 0;
-    for (std::size_t i = 0; i < count; ++i) {
-        if (std::fabs(frames[i].root.z - root0.z) >= kMinObstacle) return info; // the root leaves the floor
+    // The touchdown: from here on the root stays on the floor it ends on (a land roll comes down onto it).
+    const float floorZ = frames[count - 1].root.z;
+    auto off = [&](std::size_t i) { return std::fabs(frames[i].root.z - floorZ); };
+    std::size_t from = count - 1;
+    while (from > 0 && off(from - 1) < kMinObstacle) --from;
+    if (from > 0)
+        while (off(from) >= kSettle) ++from;
+    std::size_t bottom = from;
+    for (std::size_t i = from; i < count; ++i)
         if (frames[i].pelvis.z < frames[bottom].pelvis.z) bottom = i;
-    }
     const float low = frames[bottom].pelvis.z;
     auto above = [&](std::size_t i) { return frames[i].pelvis.z - low; };
-    const float startHeight = above(0), endHeight = above(count - 1);
+    const float startHeight = above(from), endHeight = above(count - 1);
     if (std::min(startHeight, endHeight) < kMinRollDip) return info;
 
-    std::size_t contact = 0; // the tuck
+    std::size_t contact = from; // the tuck
     while (above(contact) > kRiseShare * startHeight) ++contact;
     std::size_t land = bottom; // back up
     while (above(land) < kTopShare * endHeight) ++land;
 
-    info.takeoffFoot = lastFootAtRest(frames, count, contact, dt);
+    info.takeoffFoot = lastFootAtRest(frames, count, from, contact, dt);
     info.length = length;
     info.move = TraversalMove::Roll;
+    info.touchdown = static_cast<float>(from) * dt;
     info.contact = static_cast<float>(contact) * dt;
     info.leave = info.land = static_cast<float>(land) * dt;
-    info.rise = frames[count - 1].root.z - root0.z;
+    info.rise = floorZ - frames[from].root.z;
     info.dip = std::min(startHeight, endHeight);
-    measureRootPath(frames, count, dt, info);
+    measureRootPath(frames, count, dt, info, from);
     return info;
 }
 
 TravPoint traversalPath(const TraversalClipInfo& info, float t) {
-    if (info.length <= 0.f) return {};
-    const float u = std::clamp(t / info.length, 0.f, 1.f) * static_cast<float>(kTraversalSamples - 1);
+    if (info.length <= info.touchdown) return {}; // not measured
+    const float u = std::clamp((t - info.touchdown) / (info.length - info.touchdown), 0.f, 1.f) * static_cast<float>(kTraversalSamples - 1);
     const std::size_t i = std::min(static_cast<std::size_t>(u), kTraversalSamples - 2);
     return lerp(info.path[i], info.path[i + 1], u - static_cast<float>(i));
 }
@@ -227,15 +235,18 @@ TraversalPlan TraversalSet::planRoll(float speed, int foot) const {
             p.clip = static_cast<int>(i);
         }
     }
-    if (p.ok()) p.entryRate = entryRate(tuning_, clips_[static_cast<std::size_t>(p.clip)], speed);
+    if (p.ok()) {
+        const TraversalClipInfo& c = clips_[static_cast<std::size_t>(p.clip)];
+        p.start = c.touchdown;
+        p.entryRate = entryRate(tuning_, c, speed);
+    }
     return p;
 }
 
 float TraversalSet::exitTime(const TraversalPlan& p) const {
     if (!p.ok()) return 0.f;
     const TraversalClipInfo& c = clips_[static_cast<std::size_t>(p.clip)];
-    const float leaveAt = c.move == TraversalMove::Roll ? std::max(c.land, tuning_.rollExit * c.length) : c.land + tuning_.exitAfter;
-    return std::clamp(leaveAt, p.start, c.length);
+    return std::clamp(c.land + tuning_.exitAfter, p.start, c.length);
 }
 
 float TraversalSet::rate(const TraversalPlan& p, float t) const {
