@@ -363,7 +363,8 @@ public:
     // The time in a gait clip at which its foot phase is `phase`.
     FTCORE_API float timeAtPhase(LocoClip c, float phase) const;
 
-    // Steering: the yaw (degrees) to turn the body by this frame, outside a turn.
+    // Steering: the yaw (degrees) to turn the body by this frame, outside a turn. An update with no
+    // time passed keeps it, so take it once per frame that time passes.
     float yawStep() const { return yawStep_; }
     // While Turning: the turn clip, the stretch of it played this frame (from, to), the scale on its
     // root's yaw, and how far it has turned the body since it began (degrees, scaled).

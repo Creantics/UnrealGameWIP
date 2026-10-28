@@ -17,12 +17,12 @@
 // twist and pitch. At a run the elbows are held bent at least Locomotion's elbowBend.
 //
 // Turns (SetTurnsFromRun): a character owner steers. Its facing eases toward the way it moves
-// (apply GetLocomotion().yawStep() to the actor each frame; turn bOrientRotationToMovement off), and
-// running turns, turning starts and turns on the spot (SetFace) move and turn the capsule by the
-// clip's root motion: the anim instance plays root motion from everything and hands the movement
-// component each frame's stretch of the turn clip. Any other owner turns itself (by
-// GetLocomotion().turnYaw() while turning) and replays a lead's running turn with ReplayTurn. The root
-// bone is held at its ref pose, rotation and all.
+// (apply GetLocomotion().yawStep() to the actor each frame that time passes; turn
+// bOrientRotationToMovement off), and running turns, turning starts and turns on the spot (SetFace)
+// move and turn the capsule by the clip's root motion: the anim instance plays root motion from
+// everything and hands the movement component each frame's stretch of the turn clip. Any other owner
+// turns itself (by GetLocomotion().turnYaw() while turning) and replays a lead's running turn with
+// ReplayTurn. The root bone is held at its ref pose, rotation and all.
 //
 // -LocoLog logs the speed, the intent, the clips and their weights and rates: on each change of state,
 // ten times a second through a start or stop, otherwise about once a second. -LocoNoMoves plays no
@@ -270,7 +270,7 @@ private:
 	float PushedTurnBy = 0.f;
 	float PushedLeadPhase = -1.f;
 	float PushedLeadStride = 0.f;
-	// The phase and stride before the last update, and the frame it ran in.
+	// The phase and stride before the last update over time that passed, and the frame it ran in.
 	uint64 SteppedFrame = MAX_uint64;
 	float PhaseBefore = 0.f;
 	float StrideBefore = 0.f;

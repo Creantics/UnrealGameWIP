@@ -597,9 +597,18 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	}
 	const float Yaw = static_cast<float>(Owner->GetActorRotation().Yaw);
 	In.turnRate = bHasYaw && DeltaSeconds > 0.f ? FMath::FindDeltaAngleDegrees(LastYaw, Yaw) / DeltaSeconds : 0.f;
-	LastYaw = Yaw;
-	bHasYaw = true;
-	SteppedFrame = GFrameCounter;
+	// Only over time that passes: a character with root motion poses again with no time passed once its move
+	// has turned it, and taking the yaw there would hide the clip's turn from the next frame's rate: the body
+	// would never bank into a running turn. The phase and stride the frame began with stay too
+	// (LeadPhaseAtFrameStart).
+	if (DeltaSeconds > 0.f)
+	{
+		LastYaw = Yaw;
+		bHasYaw = true;
+		SteppedFrame = GFrameCounter;
+		PhaseBefore = Loco.phase();
+		StrideBefore = Loco.strideLength();
+	}
 	// A traversal's weight: in over its first kTraversalIn, out over the kTraversalOut before its end.
 	const UAnimSequence* Trav = TravClip >= 0 && TravClip < NumTraversalClips ? TraversalClips[TravClip].Get() : nullptr;
 	if (Trav)
@@ -611,8 +620,6 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	{
 		TravWeight = 0.f;
 	}
-	PhaseBefore = Loco.phase();
-	StrideBefore = Loco.strideLength();
 	Loco.update(In);
 
 	if (const USkeletalMeshComponent* Mesh = GetSkelMeshComponent())

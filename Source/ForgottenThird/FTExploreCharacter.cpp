@@ -843,8 +843,10 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	const UFTLocomotionAnimInstance* Steered = bTraversing ? nullptr : Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
 	if (const UFTLocomotionAnimInstance* Anim = Steered)
 	{
+		// The step holds over a pose with no time passed, so a frame with none (the actor's time dilated to 0)
+		// takes none, rather than the last one again.
 		const float Step = Anim->GetLocomotion().yawStep();
-		if (Step != 0.f)
+		if (Step != 0.f && DeltaSeconds > 0.f)
 		{
 			AddActorWorldRotation(FRotator(0.0, Step, 0.0));
 		}

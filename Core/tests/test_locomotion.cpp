@@ -1150,6 +1150,51 @@ TEST_CASE("locomotion: a running turn picks the nearest angle and scales its yaw
     CHECK(l.yawStep() == 0.f);
 }
 
+TEST_CASE("locomotion: posed twice a frame, the body still eases its facing round, and a turn begun on the second pose stops it") {
+    // A character with root motion poses twice a frame: once with the frame's time, then with none at its new
+    // speed, before its owner takes the step.
+    Locomotion l = makeTurnLoco();
+    LocoInput in = runningIn(l);
+    in.wantYaw = in.moveYaw = 20.f;
+    const auto frame = [&](LocoInput& i) {
+        i.dt = kDt;
+        l.update(i);
+        LocoInput again = i;
+        again.dt = 0.f;
+        l.update(again);
+    };
+    frame(in);
+    CHECK(!l.turning());
+    CHECK(l.yawStep() == doctest::Approx(20.f * (1.f - std::exp(-kDt / l.tuning().faceTime))));
+    for (int i = 0; i < 60; ++i) {
+        in.yaw += l.yawStep();
+        frame(in);
+        CHECK(!l.turning());
+    }
+    CHECK(in.yaw == doctest::Approx(20.f).epsilon(0.01));
+
+    // Heading well away on the pose with no time passed begins a running turn there: no step on top of it.
+    in.wantYaw = in.moveYaw = in.yaw + 20.f;
+    in.dt = kDt;
+    l.update(in);
+    REQUIRE(l.yawStep() != 0.f);
+    in.wantYaw = in.moveYaw = in.yaw + 90.f;
+    in.dt = 0.f;
+    l.update(in);
+    CHECK(l.turning());
+    CHECK(l.yawStep() == 0.f);
+    // Nor once it stops steering.
+    l = makeTurnLoco();
+    in = runningIn(l);
+    in.wantYaw = in.moveYaw = 20.f;
+    frame(in);
+    REQUIRE(l.yawStep() != 0.f);
+    in.steer = false;
+    in.dt = 0.f;
+    l.update(in);
+    CHECK(l.yawStep() == 0.f);
+}
+
 TEST_CASE("locomotion: a follower replays a running turn at the distance it has come") {
     Locomotion l = makeTurnLoco();
     LocoInput in = runningIn(l);
