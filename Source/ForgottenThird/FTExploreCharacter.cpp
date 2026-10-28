@@ -56,6 +56,10 @@ constexpr float kProbeStep = 5.f;
 constexpr float kTopTolerance = 15.f;
 constexpr float kBackGap = 50.f;
 constexpr float kProbeFacing = 0.8f;
+// A roll press the body can't act on yet is kept this long (s), and a roll turns the body to its way with this
+// time constant (s).
+constexpr float kRollBuffer = 0.2f;
+constexpr float kRollTurnTime = 0.05f;
 } // namespace
 
 AFTExploreCharacter::AFTExploreCharacter()
@@ -164,6 +168,8 @@ void AFTExploreCharacter::BeginPlay()
 		Crouch();
 	}
 	FParse::Value(FCommandLine::Get(), TEXT("LocoCrouchEvery="), CrouchEvery);
+	// -LocoRollEvery=<s> rolls every s seconds.
+	FParse::Value(FCommandLine::Get(), TEXT("LocoRollEvery="), RollEvery);
 	FParse::Value(FCommandLine::Get(), TEXT("LocoPulse="), PulseEvery);
 	FParse::Value(FCommandLine::Get(), TEXT("LocoRest="), PulseRest);
 	FParse::Value(FCommandLine::Get(), TEXT("LocoFace="), FaceBy);
@@ -386,6 +392,10 @@ void AFTExploreCharacter::CreateInputObjects()
 	Context->MapKey(JumpAction, EKeys::SpaceBar);
 	Context->MapKey(JumpAction, EKeys::Gamepad_FaceButton_Bottom);
 
+	RollAction = MakeAction(TEXT("IA_ExploreRoll"), false);
+	Context->MapKey(RollAction, EKeys::LeftAlt);
+	Context->MapKey(RollAction, EKeys::Gamepad_FaceButton_Right);
+
 	RunAction = MakeAction(TEXT("IA_ExploreRun"), false);
 	Context->MapKey(RunAction, EKeys::LeftShift);
 	Context->MapKey(RunAction, EKeys::Gamepad_LeftTrigger);
@@ -442,6 +452,7 @@ void AFTExploreCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 	Input->BindAction(LookAction, ETriggerEvent::Triggered, this, &AFTExploreCharacter::HandleLook);
 	Input->BindAction(JumpAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleJump);
 	Input->BindAction(JumpAction, ETriggerEvent::Completed, this, &ACharacter::StopJumping);
+	Input->BindAction(RollAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleRoll);
 	Input->BindAction(RunAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleRunStart);
 	Input->BindAction(RunAction, ETriggerEvent::Completed, this, &AFTExploreCharacter::HandleRunStop);
 	Input->BindAction(CrouchAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleCrouch);
@@ -501,6 +512,12 @@ void AFTExploreCharacter::HandleJump()
 		return;
 	}
 	Jump();
+}
+
+void AFTExploreCharacter::HandleRoll()
+{
+	// A press the body can't act on yet (in the air, mid-traversal) is kept for a moment: Tick tries it again.
+	RollAsked = TryRoll(false, true) ? 0.f : kRollBuffer;
 }
 
 bool AFTExploreCharacter::ProbeObstacle(const ftcore::TraversalSet& Set, ftcore::TraversalObstacle& Out) const
@@ -630,6 +647,60 @@ bool AFTExploreCharacter::TryTraverse(bool bLog)
 	return true;
 }
 
+bool AFTExploreCharacter::TryRoll(bool bLanding, bool bLog)
+{
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
+	if (bTraversing || !Anim || !Move->IsMovingOnGround())
+	{
+		return false;
+	}
+	const ftcore::TraversalSet& Set = Anim->GetTraversal();
+	const float Speed = static_cast<float>(GetVelocity().Size2D());
+	const ftcore::TraversalPlan Plan = Set.planRoll(Speed, -1);
+	if (!Plan.ok())
+	{
+		if (bLog)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Roll: none (no roll clip measured)."));
+		}
+		return false;
+	}
+	// Standing up first, while the body still walks, so the capsule grows from the feet (in the custom mode it would
+	// grow from its middle and sink the feet). Only when crouched: the movement component's uncrouch resets the mesh's
+	// offset whether or not it was. With no room to stand, no roll.
+	if (bIsCrouched)
+	{
+		Move->UnCrouch(false);
+		if (bIsCrouched)
+		{
+			return false;
+		}
+	}
+	UnCrouch();
+	// Its way: a pressed roll goes where the stick points, else where the body moves; a landing rolls on the way it
+	// was going, else where the stick points; failing both, the way the body faces.
+	const FVector Stick = Move->GetCurrentAcceleration();
+	const FVector Going = GetVelocity();
+	const bool bStick = Stick.SizeSquared2D() > 1.0;
+	const bool bGoing = Going.Size2D() > kRecentreSpeed;
+	const FVector Way = bLanding ? (bGoing ? Going : bStick ? Stick : GetActorForwardVector())
+		: (bStick ? Stick : bGoing ? Going : GetActorForwardVector());
+	const double Heading = FMath::RadiansToDegrees(FMath::Atan2(Way.Y, Way.X));
+	bTraversing = true;
+	TravPlan = Plan;
+	TravTime = Plan.start;
+	TravFrame = FTransform(FRotator(0.0, Heading, 0.0),
+		GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+	Move->SetMovementMode(MOVE_Custom);
+	Anim->SetTraversal(Plan.clip, TravTime);
+	const ftcore::TraversalClipInfo& Clip = Set.clip(static_cast<std::size_t>(Plan.clip));
+	UE_LOG(LogForgottenThird, Display, TEXT("Roll (%s): clip %d, %.2f s, at %.0f cm/s (the clip's %.0f, x%.2f), heading %.0f, facing %.0f."),
+		bLanding ? TEXT("landing") : TEXT("asked"), Plan.clip, Clip.length, Speed, Clip.entrySpeed, Plan.entryRate, Heading,
+		GetActorRotation().Yaw);
+	return true;
+}
+
 void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 {
 	UCharacterMovementComponent* Move = GetCharacterMovement();
@@ -641,8 +712,10 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 		return;
 	}
 	const ftcore::TraversalSet& Set = Anim->GetTraversal();
+	const ftcore::TraversalClipInfo& Clip = Set.clip(static_cast<std::size_t>(TravPlan.clip));
+	const bool bRoll = Clip.move == ftcore::TraversalMove::Roll;
 	TravTime += DeltaSeconds * Set.rate(TravPlan, TravTime);
-	const float Length = Set.clip(static_cast<std::size_t>(TravPlan.clip)).length;
+	const float Length = Clip.length;
 	const float T = FMath::Min(TravTime, Length);
 	// The plan's root in the body's space as it began: x forward, y left (UE's Y is right), z up.
 	auto FeetAt = [&](float At)
@@ -652,10 +725,34 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 	};
 	FVector Feet = FeetAt(T);
 	const FVector HalfUp(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+	bool bBlocked = false;
+	bool bFalls = false;
+	if (bRoll)
+	{
+		// A roll keeps to the real floor under its path, as a walk does: up a step, across, then down onto what is
+		// there. A wall ends it; with no floor to stand on, the body lets go and falls.
+		const FVector From = GetActorLocation();
+		const FVector StepUp(0.0, 0.0, Move->MaxStepHeight);
+		FHitResult Hit;
+		SetActorLocation(From + StepUp, true, &Hit);
+		const FVector Lifted(0.0, 0.0, GetActorLocation().Z - From.Z);
+		SetActorLocation(FVector(Feet.X, Feet.Y, GetActorLocation().Z), true, &Hit);
+		bBlocked = Hit.bBlockingHit && !Move->IsWalkable(Hit);
+		const FVector Across = GetActorLocation();
+		SetActorLocation(Across - Lifted - StepUp, true, &Hit);
+		bFalls = !Hit.bBlockingHit || !Move->IsWalkable(Hit);
+		if (!Hit.bBlockingHit)
+		{
+			SetActorLocation(Across - Lifted);
+		}
+		Feet = GetActorLocation() - HalfUp;
+		// The body turns to the way it rolls.
+		const float Gap = FMath::FindDeltaAngleDegrees(static_cast<float>(GetActorRotation().Yaw), static_cast<float>(TravFrame.Rotator().Yaw));
+		AddActorWorldRotation(FRotator(0.0, Gap * (1.f - FMath::Exp(-DeltaSeconds / kRollTurnTime)), 0.0));
+	}
 	// Past the landing the clip's tail (a run on, a stand-up) is swept, a little above the floor so the floor
 	// never stops it: a wall ahead ends it there.
-	bool bBlocked = false;
-	if (T > Set.clip(static_cast<std::size_t>(TravPlan.clip)).land)
+	else if (T > Clip.land)
 	{
 		const FVector Lift(0.0, 0.0, 2.0);
 		FHitResult Hit;
@@ -667,21 +764,23 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 	{
 		SetActorLocation(Feet + HalfUp);
 	}
-	// The movement component's velocity is the path's, for the locomotion now and the walk after.
+	// The movement component's velocity is the path's, for the locomotion now and the walk after (a roll's level:
+	// its floor is the real one).
 	const float Back = FMath::Max(DeltaSeconds, 1.f / 60.f);
 	Move->Velocity = (FeetAt(T) - FeetAt(FMath::Max(TravPlan.start, T - Back))) / Back;
-	// A body that wants to move hands back to its locomotion just after the landing; one left standing
-	// plays the clip out.
+	Move->Velocity.Z = bRoll ? 0.0 : Move->Velocity.Z;
+	// A body that wants to move hands back to its locomotion just after the landing (a roll's body once it is
+	// back up); one left standing plays the clip out.
 	const bool bWantsMove = bVaultCourse || !Move->GetCurrentAcceleration().IsNearlyZero();
-	if (T >= Length || bBlocked || (bWantsMove && T >= Set.exitTime(TravPlan)))
+	if (T >= Length || bBlocked || bFalls || (bWantsMove && T >= Set.exitTime(TravPlan)))
 	{
 		if (bBlocked) Move->Velocity = FVector::ZeroVector;
 		bTraversing = false;
 		Anim->SetTraversal(-1, 0.f);
 		Move->Velocity.Z = 0.0;
-		Move->SetMovementMode(MOVE_Walking);
+		Move->SetMovementMode(bFalls ? MOVE_Falling : MOVE_Walking);
 		UE_LOG(LogForgottenThird, Display, TEXT("Traversal: done at %.2f of %.2f s (%s), %.0f cm/s, %.0f cm from the start, %+.0f cm up."), T, Length,
-			bBlocked ? TEXT("blocked") : T >= Length ? TEXT("clip end") : TEXT("exit"), Move->Velocity.Size2D(),
+			bBlocked ? TEXT("blocked") : bFalls ? TEXT("off an edge") : T >= Length ? TEXT("clip end") : TEXT("exit"), Move->Velocity.Size2D(),
 			FVector::Dist2D(Feet, TravFrame.GetLocation()), Feet.Z - TravFrame.GetLocation().Z);
 		return;
 	}
@@ -751,6 +850,13 @@ void AFTExploreCharacter::HandleCrouch()
 void AFTExploreCharacter::HandleRunStop()
 {
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
+}
+
+void AFTExploreCharacter::ResetHeldInput()
+{
+	HandleRunStop();
+	RollAsked = 0.f;
+	UnCrouch();
 }
 
 void AFTExploreCharacter::HandleInteract()
@@ -835,12 +941,20 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 		AddMovementInput(CourseDir, 1.f);
 		TryTraverse(false);
 	}
+	// A roll press still kept is tried again, and a landing the locomotion rolls out of starts one.
+	RollAsked = FMath::Max(RollAsked - DeltaSeconds, 0.f);
+	const UFTLocomotionAnimInstance* LocoAnim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
+	const bool bLandingRoll = LocoAnim && LocoAnim->GetLocomotion().landRoll();
+	if ((RollAsked > 0.f || bLandingRoll) && TryRoll(bLandingRoll, bLandingRoll))
+	{
+		RollAsked = 0.f;
+	}
 	if (bTraversing)
 	{
 		TickTraversal(DeltaSeconds);
 	}
-	// A traversal holds the facing it began with.
-	const UFTLocomotionAnimInstance* Steered = bTraversing ? nullptr : Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
+	// A vault or a climb holds the facing it began with; a roll turns to its way (TickTraversal).
+	const UFTLocomotionAnimInstance* Steered = bTraversing ? nullptr : LocoAnim;
 	if (const UFTLocomotionAnimInstance* Anim = Steered)
 	{
 		// The step holds over a pose with no time passed, so a frame with none (the actor's time dilated to 0)
@@ -939,6 +1053,11 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	{
 		CrouchTimer = 0.f;
 		HandleCrouch();
+	}
+	if (RollEvery > 0.f && (RollTimer += DeltaSeconds) >= RollEvery)
+	{
+		RollTimer = 0.f;
+		HandleRoll();
 	}
 }
 

@@ -170,18 +170,31 @@ public:
 	// and so on. Call after SetClip(Run). -LocoNoCrouch leaves them out.
 	void SetCrouchFromRun();
 	// Sets the traversal clips (a hurdle over a low wall, a mantle or a climb up onto a ledge, each from a stand, a
-	// walk and a run off either foot) from the clips named after the run loop, where there are any: next to
-	// M_Neutral_Run_Loop_F_to_x, M_Neutral_Traversal_Hurdle_1_0_run_F_V2_Lfoot_to_x, ..._Mantle_1_0_run_F_Lfoot_to_x,
-	// ..._Climb_Start_2_5_run_F_Lfoot_to_x and so on, each measured into GetTraversal() (index = TraversalNames
-	// order). Call after SetClip(Run). -LocoNoTraversal leaves them out.
+	// walk and a run off either foot, then a roll off either foot) from the clips named after the run loop, where
+	// there are any: next to M_Neutral_Run_Loop_F_to_x, M_Neutral_Traversal_Hurdle_1_0_run_F_V2_Lfoot_to_x,
+	// ..._Mantle_1_0_run_F_Lfoot_to_x, ..._Climb_Start_2_5_run_F_Lfoot_to_x, M_Neutral_Jump_F_Land_Roll_Lfoot_to_x
+	// and so on, each measured into GetTraversal() (index = TraversalNames order; the rolls from their pelvis, by
+	// ftcore::measureRoll). Call after SetClip(Run). -LocoNoTraversal leaves them out.
 	void SetTraversalFromRun();
 	const ftcore::TraversalSet& GetTraversal() const { return Traversal; }
 	// Plays traversal clip Clip (a TraversalPlan's) at clip time Time over the locomotion, fading in over its first
 	// moments and out by its end; the owner moves the body along TraversalSet::rootAt and calls this every frame,
-	// then with Clip -1 once the clip is over. The clip's root is held like the locomotion's: the owner carries it.
+	// then with Clip -1 when it hands the body back: the clip plays on at its own pace while it fades out over
+	// kTraversalOut (sooner by its end). The clip's root is held like the locomotion's: the owner carries it.
 	void SetTraversal(int32 Clip, float Time)
 	{
-		TravElapsed = Clip == TravClip ? TravElapsed : 0.f;
+		if (Clip < 0)
+		{
+			if (TravClip >= 0 && !bTravOut)
+			{
+				bTravOut = true;
+				TravOutFor = 0.f;
+				TravOutFrom = TravWeight;
+			}
+			return;
+		}
+		TravElapsed = Clip == TravClip && !bTravOut ? TravElapsed : 0.f;
+		bTravOut = false;
 		TravClip = Clip;
 		TravTime = Time;
 	}
@@ -251,15 +264,19 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> Clips[59];
 	static_assert(ftcore::kLocoClipCount == 59, "Clips[] holds one per LocoClip");
-	static constexpr int32 NumTraversalClips = 18;
+	static constexpr int32 NumTraversalClips = 20;
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> TraversalClips[NumTraversalClips];
 	ftcore::TraversalSet Traversal;
-	// The traversal playing (-1 none), its clip time, how long it has played and its weight over the locomotion.
+	// The traversal playing (-1 none), its clip time, how long it has played and its weight over the locomotion;
+	// once its owner has let it go (bTravOut), how long since and the weight it had then.
 	int32 TravClip = -1;
 	float TravTime = 0.f;
 	float TravElapsed = 0.f;
 	float TravWeight = 0.f;
+	bool bTravOut = false;
+	float TravOutFor = 0.f;
+	float TravOutFrom = 0.f;
 
 	ftcore::Locomotion Loco;
 	// The actor's forward in the mesh component's space, for the spine bend.

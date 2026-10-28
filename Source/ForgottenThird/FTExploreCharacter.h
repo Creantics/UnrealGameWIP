@@ -2,8 +2,9 @@
 
 // The exploration demo's player: a lead character (Devin) on a capsule with a third-person camera
 // on a spring arm. Move with WASD or the left stick (camera-relative), look with the mouse or the
-// right stick, hold Shift or the left trigger to run, Space or pad A to jump, E or pad X to use
-// what the prompt points at. Input objects are built here at run time, like AFTPlayerController's.
+// right stick, hold Shift or the left trigger to run, Space or pad A to jump, Left Alt or pad B to
+// roll, E or pad X to use what the prompt points at. Input objects are built here at run time, like
+// AFTPlayerController's.
 //
 // The body is animated by UFTLocomotionAnimInstance: idle, walk, run, sprint, jump, fall and land
 // clips (and the moving jump and landing taken at speed) blended from the capsule's speed and
@@ -28,6 +29,13 @@
 // ftcore::TraversalSet picks the clip and where to enter it, and the capsule is carried along the plan's root path
 // (no collision on the way) until the clip ends. -LocoVaultWall builds a test course ahead (a thin wall, a low
 // block, a high block) and runs at it, traversing whatever it can.
+//
+// Roll goes the way the stick points (else the way the body moves, else the way it faces): one of the roll clips
+// (SetTraversalFromRun's too) plays from its start, entered at the body's speed, the body turns to the roll's way and
+// the capsule follows the clip's root path along the real floor (up and down steps; a wall ends the roll, and with no
+// floor under it the body lets go and falls). A press the body can't act on yet (in the air, mid-traversal) is kept
+// for a moment, and a moving landing from a real fall with crouch on rolls out of it. -LocoRollEvery=<s> rolls every
+// s seconds.
 //
 // -ExplorePortrait puts the camera in front of the face and keeps it there, for checking a look;
 // -ExplorePortraitYaw= (180 front, 90 side, 0 back), -ExplorePortraitArm=, -ExplorePortraitHeight= and
@@ -105,6 +113,10 @@ public:
 	// The PartyLooks entry the pawn wears (-1 when PartyLooks is empty), and whether the followers are hidden.
 	int32 GetLeadIndex() const { return LeadIndex; }
 	bool IsPartyHidden() const { return bPartyHidden; }
+	// For a scene that turns input off and on again: a held Run's release that came while input was off never arrived,
+	// so the body goes back to its default gait, and a roll press still kept is dropped. Crouch is a toggle, not held;
+	// standing up from it is this call's choice, so a scene starts and ends with the lead on its feet.
+	void ResetHeldInput();
 
 protected:
 	virtual void BeginPlay() override;
@@ -119,6 +131,7 @@ private:
 	void HandleRunStart();
 	void HandleRunStop();
 	void HandleJump();
+	void HandleRoll();
 	void HandleCrouch();
 	void HandleInteract();
 	void HandleSwitchLead();
@@ -131,6 +144,9 @@ private:
 	// fits; bLog says why), carries the body along one under way, and builds -LocoVaultWall's course.
 	bool ProbeObstacle(const ftcore::TraversalSet& Set, ftcore::TraversalObstacle& Out) const;
 	bool TryTraverse(bool bLog);
+	// Starts a roll (false: not on the ground, mid-traversal, no room to stand up, or no roll clip; bLog says the
+	// last), heading as a landing rolls when bLanding.
+	bool TryRoll(bool bLanding, bool bLog);
 	void TickTraversal(float DeltaSeconds);
 	void SpawnTraversalCourse();
 	void AddPortraitLights();
@@ -151,6 +167,8 @@ private:
 	TObjectPtr<UInputAction> LookAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> JumpAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> RollAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> RunAction;
 	UPROPERTY(Transient)
@@ -182,6 +200,9 @@ private:
 	float JumpTimer = 0.f;
 	float CrouchEvery = 0.f; // -LocoCrouchEvery=<s>
 	float CrouchTimer = 0.f;
+	float RollAsked = 0.f; // a roll press still kept (s)
+	float RollEvery = 0.f; // -LocoRollEvery=<s>
+	float RollTimer = 0.f;
 	float PulseEvery = 0.f; // -LocoPulse=<s>
 	float PulseTimer = 0.f;
 	float PulseRest = 2.f;  // -LocoRest=<s>
@@ -199,7 +220,8 @@ private:
 	float SideAlwaysPitch = 0.f;
 	// -LocoNoLook: look input is ignored, so a mouse passing over an unattended capture can't swing the camera.
 	bool bNoLook = false;
-	// The traversal under way: its plan, clip time, and the body's feet and facing as it began.
+	// The traversal under way: its plan, clip time, and the body's feet and facing as it began (a roll's facing is the
+	// way it rolls).
 	bool bTraversing = false;
 	ftcore::TraversalPlan TravPlan;
 	float TravTime = 0.f;

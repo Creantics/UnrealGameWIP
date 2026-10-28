@@ -138,6 +138,30 @@ float PartyTrail::speedBehind(float arc) const {
     return va;
 }
 
+float PartyTrail::arcNearest(Vec2 p) const {
+    float best = 0.f;
+    float bestD2 = (p.x - lead_.x) * (p.x - lead_.x) + (p.y - lead_.y) * (p.y - lead_.y);
+    float arc = 0.f;
+    Vec2 a = lead_;
+    for (std::size_t k = 0; k < count_; ++k) {
+        const Vec2 b = sample(k);
+        const float dx = b.x - a.x, dy = b.y - a.y;
+        const float seg2 = dx * dx + dy * dy;
+        if (seg2 > 0.f) {
+            const float u = std::clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / seg2, 0.f, 1.f);
+            const float qx = a.x + dx * u - p.x, qy = a.y + dy * u - p.y;
+            const float seg = std::sqrt(seg2);
+            if (qx * qx + qy * qy < bestD2) {
+                bestD2 = qx * qx + qy * qy;
+                best = arc + seg * u;
+            }
+            arc += seg;
+        }
+        a = b;
+    }
+    return best;
+}
+
 float PartyTrail::length() const {
     float total = 0.f;
     Vec2 a = lead_;
@@ -150,7 +174,7 @@ float PartyTrail::length() const {
 }
 
 Vec2 PartySlot::sideOffset(const PartyTrail& trail, float arc) const {
-    // Left of the way the path runs here, from a chord a metre long, so a single sample's kink
+    // Right of the way the path runs here, from a chord a metre long, so a single sample's kink
     // doesn't swing it.
     const Vec2 ahead = trail.pointBehind(arc - 0.5f), behind = trail.pointBehind(arc + 0.5f);
     const float dx = ahead.x - behind.x, dy = ahead.y - behind.y;
@@ -165,10 +189,20 @@ void PartySlot::reset(const PartyTrail& trail) {
     speed_ = leadLag_ = want_ = clock_ = heardMark_ = stopDecel_ = stopRoom_ = 0.f;
     stopping_ = false;
     heardNewest_ = heardCount_ = 0;
-    offset_ = {};
+    offset_ = stray_ = {};
     offset_ = sideOffset(trail, arc_);
     const Vec2 base = trail.pointBehind(arc_);
     pos_ = {base.x + offset_.x, base.y + offset_.y};
+}
+
+void PartySlot::resetAt(const PartyTrail& trail, Vec2 standing) {
+    reset(trail);
+    arc_ = trail.arcNearest(standing);
+    at_ = trail.odometer() - arc_;
+    offset_ = sideOffset(trail, arc_);
+    const Vec2 base = trail.pointBehind(arc_);
+    stray_ = {standing.x - base.x - offset_.x, standing.y - base.y - offset_.y};
+    pos_ = standing;
 }
 
 float PartySlot::stopDistance() const {
@@ -255,8 +289,14 @@ void PartySlot::step(const PartyTrail& trail, float leadSpeed, float dt, float l
     const Vec2 want0 = sideOffset(trail, nextArc);
     const float ease = 1.f - std::exp(-dt / k.sideTime);
     const Vec2 off{offset_.x + (want0.x - offset_.x) * ease, offset_.y + (want0.y - offset_.y) * ease};
+    // Left standing off its place (resetAt), it walks back at `rejoin`, easing in at the end.
+    Vec2 stray = stray_;
+    if (const float len = std::sqrt(stray.x * stray.x + stray.y * stray.y); len > 0.f) {
+        const float left = len - std::min(len * ease, k.rejoin * dt);
+        stray = left > 1e-3f ? Vec2{stray.x / len * left, stray.y / len * left} : Vec2{};
+    }
     const Vec2 base = trail.pointBehind(nextArc);
-    Vec2 pos{base.x + off.x, base.y + off.y};
+    Vec2 pos{base.x + off.x + stray.x, base.y + off.y + stray.y};
     // Where the path doubles back past the lead, it holds its place on the path rather than walk
     // into it, keeping its speed to carry on as the path clears...
     const float gapNow = distance(pos_, lead), gapNext = distance(pos, lead);
@@ -264,7 +304,7 @@ void PartySlot::step(const PartyTrail& trail, float leadSpeed, float dt, float l
         next = at_;
         nextArc = odo - next;
         const Vec2 stay = trail.pointBehind(nextArc);
-        pos = {stay.x + off.x, stay.y + off.y};
+        pos = {stay.x + off.x + stray.x, stay.y + off.y + stray.y};
     }
     // ...and a lead coming back past it pushes it aside, minGap away.
     const float gap = distance(pos, lead);
@@ -282,6 +322,7 @@ void PartySlot::step(const PartyTrail& trail, float leadSpeed, float dt, float l
     at_ = next;
     arc_ = nextArc;
     offset_ = off;
+    stray_ = stray;
     pos_ = pos;
 }
 

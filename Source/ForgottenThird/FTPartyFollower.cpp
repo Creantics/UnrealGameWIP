@@ -182,6 +182,26 @@ void AFTPartyFollower::FaceTo(float Yaw)
 	FaceYaw = Yaw;
 }
 
+void AFTPartyFollower::SetHeld(bool bHeld)
+{
+	const FVector At = GetActorLocation();
+	if (!bHeld)
+	{
+		// Whatever moved it meanwhile, its next move counts from here.
+		LastGround = FVector2D(At.X, At.Y);
+		return;
+	}
+	bAir = false;
+	AirHeight = AirSpeed = 0.f;
+	bFacing = false;
+	Speed = 0.f;
+	if (bPlaced)
+	{
+		// Down on the ground below it, and the anim told it stands.
+		Place(FVector2D(At.X, At.Y), static_cast<float>(At.Z), 0.f);
+	}
+}
+
 void AFTPartyFollower::ReplayTurn(float Delta)
 {
 	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Body->GetAnimInstance()))

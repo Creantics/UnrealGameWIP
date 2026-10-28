@@ -105,7 +105,9 @@ const TCHAR* ClipName(ftcore::LocoClip C)
 // Samples per second when measuring a gait.
 constexpr float kMeasureRate = 60.f;
 
-// The traversal clips after the run loop's prefix (M_Neutral_), in TraversalClips' order.
+// The traversal clips after the run loop's prefix (M_Neutral_), in TraversalClips' order: the vaults and climbs,
+// then from kFirstRoll the rolls.
+constexpr int32 kFirstRoll = 18;
 const TCHAR* const TraversalNames[] = {
 	TEXT("_Traversal_Hurdle_1_0_stand_F_V2_Lfoot"), TEXT("_Traversal_Hurdle_1_0_stand_F_V2_Rfoot"),
 	TEXT("_Traversal_Hurdle_1_0_walk_F_V2_Lfoot"), TEXT("_Traversal_Hurdle_1_0_walk_F_V2_Rfoot"),
@@ -115,14 +117,16 @@ const TCHAR* const TraversalNames[] = {
 	TEXT("_Traversal_Mantle_1_0_run_F_Lfoot"), TEXT("_Traversal_Mantle_1_0_run_F_Rfoot"),
 	TEXT("_Traversal_Climb_Start_2_5_stand_F_Lfoot"), TEXT("_Traversal_Climb_Start_2_5_stand_F_Rfoot"),
 	TEXT("_Traversal_Climb_Start_2_5_walk_F_Lfoot"), TEXT("_Traversal_Climb_Start_2_5_walk_F_Rfoot"),
-	TEXT("_Traversal_Climb_Start_2_5_run_F_Lfoot"), TEXT("_Traversal_Climb_Start_2_5_run_F_Rfoot")};
+	TEXT("_Traversal_Climb_Start_2_5_run_F_Lfoot"), TEXT("_Traversal_Climb_Start_2_5_run_F_Rfoot"),
+	TEXT("_Jump_F_Land_Roll_Lfoot"), TEXT("_Jump_F_Land_Roll_Rfoot")};
 // A traversal clip fades in over the locomotion this long (s), and out over this long before its end.
 constexpr float kTraversalIn = 0.15f;
 constexpr float kTraversalOut = 0.25f;
 
 // The clip's root and ball (or foot) bones in its component space, sampled evenly from 0 to its
-// length into Frames. False (and no frames) when the clip has no skeleton, length or feet.
-bool SampleFeet(const UAnimSequence& Clip, TArray<ftcore::GaitFrame>& Frames)
+// length into Frames, and with Pelvis its pelvis bone at the same times (left at 0 without one). False
+// (and no frames) when the clip has no skeleton, length or feet.
+bool SampleFeet(const UAnimSequence& Clip, TArray<ftcore::GaitFrame>& Frames, TArray<ftcore::LocoPoint>* Pelvis = nullptr)
 {
 	const float Length = Clip.GetPlayLength();
 	const USkeleton* Skeleton = Clip.GetSkeleton();
@@ -158,8 +162,14 @@ bool SampleFeet(const UAnimSequence& Clip, TArray<ftcore::GaitFrame>& Frames)
 	};
 	auto Point = [](const FVector& V) { return ftcore::LocoPoint{float(V.X), float(V.Y), float(V.Z)}; };
 
+	const int32 PelvisBone = Pelvis ? Ref.FindBoneIndex(TEXT("pelvis")) : INDEX_NONE;
+
 	const int32 N = FMath::Clamp(FMath::CeilToInt(Length * kMeasureRate) + 1, 3, static_cast<int32>(ftcore::kMaxGaitFrames));
 	Frames.SetNum(N);
+	if (Pelvis)
+	{
+		Pelvis->Init(ftcore::LocoPoint{}, N);
+	}
 	for (int32 K = 0; K < N; ++K)
 	{
 		const double Time = double(Length) * K / (N - 1);
@@ -167,6 +177,10 @@ bool SampleFeet(const UAnimSequence& Clip, TArray<ftcore::GaitFrame>& Frames)
 		Frames[K].left = Point(ComponentSpace(Left, Time).GetTranslation());
 		Frames[K].right = Point(ComponentSpace(Right, Time).GetTranslation());
 		Frames[K].yaw = float(ComponentSpace(0, Time).Rotator().Yaw);
+		if (PelvisBone != INDEX_NONE)
+		{
+			(*Pelvis)[K] = Point(ComponentSpace(PelvisBone, Time).GetTranslation());
+		}
 	}
 	return true;
 }
@@ -428,6 +442,7 @@ void UFTLocomotionAnimInstance::SetTraversalFromRun()
 	const UAnimSequence* Loop = bNoTraversal ? nullptr : Clips[static_cast<int32>(ftcore::LocoClip::Run)].Get();
 	const FString Path = Loop ? Loop->GetPathName() : FString();
 	TArray<ftcore::GaitFrame> Gait;
+	TArray<ftcore::LocoPoint> Pelvis;
 	TArray<ftcore::TraversalFrame> Frames;
 	int32 Found = 0;
 	for (int32 I = 0; I < NumTraversalClips; ++I)
@@ -443,7 +458,7 @@ void UFTLocomotionAnimInstance::SetTraversalFromRun()
 		}
 		TraversalClips[I] = Clip;
 		ftcore::TraversalClipInfo Info;
-		if (Clip && SampleFeet(*Clip, Gait))
+		if (Clip && SampleFeet(*Clip, Gait, &Pelvis))
 		{
 			// Core's x is the way the clip goes (its root's net travel), y its left, z up; the clip's own
 			// component space may face +Y.
@@ -459,14 +474,26 @@ void UFTLocomotionAnimInstance::SetTraversalFromRun()
 			Frames.SetNum(Gait.Num());
 			for (int32 K = 0; K < Gait.Num(); ++K)
 			{
-				Frames[K] = {Point(Gait[K].root), Point(Gait[K].left), Point(Gait[K].right)};
+				Frames[K] = {Point(Gait[K].root), Point(Gait[K].left), Point(Gait[K].right), Point(Pelvis[K])};
 			}
-			Info = ftcore::measureTraversal(Frames.GetData(), Frames.Num(), Clip->GetPlayLength());
 			++Found;
-			UE_LOG(LogForgottenThird, Display,
-				TEXT("Locomotion: traversal %d = %s, %.2f s: %s, contact %.2f leave %.2f land %.2f, edge %.0f cm ahead %.0f up, top %.0f deep, ends %.0f up, enters at %.0f cm/s off foot %d"),
-				I, *Clip->GetName(), Clip->GetPlayLength(), Info.length <= 0.f ? TEXT("NOT MEASURED") : Info.move == ftcore::TraversalMove::Up ? TEXT("up") : TEXT("over"),
-				Info.contact, Info.leave, Info.land, Info.ledgeAhead, Info.ledgeHeight, Info.topDepth, Info.rise, Info.entrySpeed, Info.takeoffFoot);
+			if (I >= kFirstRoll)
+			{
+				// A roll is read from the pelvis going down and back up; its root stays on the floor.
+				Info = ftcore::measureRoll(Frames.GetData(), Frames.Num(), Clip->GetPlayLength());
+				UE_LOG(LogForgottenThird, Display,
+					TEXT("Locomotion: traversal %d = %s, %.2f s: %s, tucked %.2f back up %.2f, pelvis down %.0f cm, ends %.0f up, enters at %.0f cm/s off foot %d"),
+					I, *Clip->GetName(), Clip->GetPlayLength(), Info.length <= 0.f ? TEXT("NOT MEASURED") : TEXT("roll"), Info.contact, Info.land, Info.dip,
+					Info.rise, Info.entrySpeed, Info.takeoffFoot);
+			}
+			else
+			{
+				Info = ftcore::measureTraversal(Frames.GetData(), Frames.Num(), Clip->GetPlayLength());
+				UE_LOG(LogForgottenThird, Display,
+					TEXT("Locomotion: traversal %d = %s, %.2f s: %s, contact %.2f leave %.2f land %.2f, edge %.0f cm ahead %.0f up, top %.0f deep, ends %.0f up, enters at %.0f cm/s off foot %d"),
+					I, *Clip->GetName(), Clip->GetPlayLength(), Info.length <= 0.f ? TEXT("NOT MEASURED") : Info.move == ftcore::TraversalMove::Up ? TEXT("up") : TEXT("over"),
+					Info.contact, Info.leave, Info.land, Info.ledgeAhead, Info.ledgeHeight, Info.topDepth, Info.rise, Info.entrySpeed, Info.takeoffFoot);
+			}
 		}
 		Traversal.setClip(static_cast<std::size_t>(I), Info);
 	}
@@ -609,9 +636,17 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		PhaseBefore = Loco.phase();
 		StrideBefore = Loco.strideLength();
 	}
-	// A traversal's weight: in over its first kTraversalIn, out over the kTraversalOut before its end.
+	// A traversal's weight: in over its first kTraversalIn, out over the kTraversalOut before its end. Let go
+	// by its owner, it plays on at its own pace and fades over kTraversalOut from the weight it had (sooner by
+	// its end), then is gone.
 	const UAnimSequence* Trav = TravClip >= 0 && TravClip < NumTraversalClips ? TraversalClips[TravClip].Get() : nullptr;
-	if (Trav)
+	if (Trav && bTravOut)
+	{
+		TravOutFor += DeltaSeconds;
+		TravTime = FMath::Min(TravTime + DeltaSeconds, Trav->GetPlayLength());
+		TravWeight = FMath::Clamp(FMath::Min(TravOutFrom * (1.f - TravOutFor / kTraversalOut), (Trav->GetPlayLength() - TravTime) / kTraversalOut), 0.f, 1.f);
+	}
+	else if (Trav)
 	{
 		TravElapsed += DeltaSeconds;
 		TravWeight = FMath::Clamp(FMath::Min(TravElapsed / kTraversalIn, (Trav->GetPlayLength() - TravTime) / kTraversalOut), 0.f, 1.f);
@@ -619,6 +654,11 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	else
 	{
 		TravWeight = 0.f;
+	}
+	if (bTravOut && TravWeight <= 0.f)
+	{
+		TravClip = -1;
+		bTravOut = false;
 	}
 	Loco.update(In);
 
@@ -910,8 +950,8 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 
 	// A turn driving the capsule: this frame's stretch of its root motion, its yaw scaled to the turn
 	// asked for, for the movement component to apply.
-	// (None while a traversal plays: its owner carries the body.)
-	if (Instance->TravClip < 0 && Loco.turning() && Loco.turnRootDriven() && Loco.turnTo() > Loco.turnFrom())
+	// (None while a traversal plays: its owner carries the body until it lets go.)
+	if ((Instance->TravClip < 0 || Instance->bTravOut) && Loco.turning() && Loco.turnRootDriven() && Loco.turnTo() > Loco.turnFrom())
 	{
 		if (const UAnimSequence* Seq = Instance->Clips[static_cast<int32>(Loco.turnClip())])
 		{

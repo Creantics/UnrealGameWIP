@@ -347,6 +347,94 @@ TEST_CASE("party slot: a lead running back past it pushes it aside without stopp
     CHECK(l.slot.arc() <= l.slot.tuning().spacing + 4.5f * l.slot.tuning().delay + l.slot.tuning().slack + 0.1f);
 }
 
+TEST_CASE("party trail: the arc nearest a point") {
+    PartyTrail t;
+    t.reset({0.f, 0.f}, {1.f, 0.f}, 6.f);
+    CHECK(t.arcNearest({-2.f, 0.5f}) == doctest::Approx(2.f));
+    CHECK(t.arcNearest({-3.3f, -1.f}) == doctest::Approx(3.3f));
+    CHECK(t.arcNearest({3.f, 0.f}) == 0.f);                          // ahead of the lead: the lead
+    CHECK(t.arcNearest({-10.f, 0.f}) == doctest::Approx(t.length())); // past the end: the oldest point
+}
+
+namespace {
+
+// A trail and a slot with the lead standing at the origin facing +x: the slot's own place is `spacing`
+// behind the lead and `side` to its right, at (-1.2, 1).
+struct Left {
+    PartyTrail trail;
+    PartySlot slot;
+    static constexpr float kDt = 1.f / 60.f;
+
+    explicit Left(Vec2 standing) {
+        trail.reset({0.f, 0.f}, {1.f, 0.f}, 6.f);
+        slot.resetAt(trail, standing);
+    }
+    Vec2 place() { return {-slot.tuning().spacing, slot.tuning().side}; }
+    // One frame with the lead standing; returns how far the slot moved.
+    float step() {
+        const Vec2 from = slot.position();
+        trail.push({0.f, 0.f}, 0.f);
+        slot.step(trail, 0.f, kDt);
+        return dist(from, slot.position());
+    }
+};
+
+} // namespace
+
+TEST_CASE("party slot: left standing at its own place, it stays there") {
+    Left l({-1.2f, 1.f});
+    CHECK(dist(l.slot.position(), l.place()) < 1e-4f);
+    float moved = 0.f;
+    for (int i = 0; i < 60; ++i) moved += l.step();
+    CHECK(moved < 1e-3f);
+    CHECK(l.slot.arc() == doctest::Approx(l.slot.tuning().spacing));
+}
+
+TEST_CASE("party slot: left standing off to the side, it walks back to its place without a jump") {
+    const Vec2 standing{-1.2f, 3.f};
+    Left l(standing);
+    CHECK(dist(l.slot.position(), standing) < 1e-4f); // nothing moves it at the reset
+    float fastest = 0.f;
+    for (int i = 0; i < 180; ++i) fastest = std::max(fastest, l.step() / Left::kDt);
+    CHECK(fastest <= l.slot.tuning().rejoin + 1e-3f);
+    CHECK(fastest >= l.slot.tuning().rejoin - 1e-3f); // it walks, rather than creeping in
+    CHECK(dist(l.slot.position(), l.place()) < 0.01f);
+    CHECK(l.slot.speed() == 0.f); // along the trail it never moved
+}
+
+TEST_CASE("party slot: left standing well back on the trail, it comes up to its place") {
+    const Vec2 standing{-4.2f, 1.f};
+    Left l(standing);
+    CHECK(l.slot.arc() == doctest::Approx(4.2f));
+    CHECK(dist(l.slot.position(), standing) < 1e-4f);
+    float fastest = 0.f;
+    for (int i = 0; i < 300; ++i) fastest = std::max(fastest, l.step() / Left::kDt);
+    CHECK(fastest <= l.slot.tuning().maxSpeed);
+    CHECK(l.slot.arc() >= l.slot.tuning().minArc);
+    CHECK(l.slot.arc() <= l.slot.tuning().spacing + l.slot.tuning().slack + 0.05f);
+    CHECK(l.slot.speed() < 0.05f);
+}
+
+TEST_CASE("party slot: left standing ahead of the lead, it comes round beside it, never nearer than its gap") {
+    Left l({2.f, 0.f});
+    CHECK(l.slot.arc() == 0.f);
+    float closest = 1e9f, fastest = 0.f;
+    for (int i = 0; i < 240; ++i) {
+        fastest = std::max(fastest, l.step() / Left::kDt);
+        closest = std::min(closest, dist(l.slot.position(), {0.f, 0.f}));
+    }
+    CHECK(closest >= l.slot.tuning().minGap - 1e-3f);
+    CHECK(fastest <= l.slot.tuning().rejoin + 0.5f);
+    // Beside the lead, on its side of the way the trail runs.
+    CHECK(l.slot.position().y > 0.5f);
+    // Once the lead sets off, it falls in behind.
+    Lead r;
+    r.slot.resetAt(r.trail, {2.f, 0.f});
+    for (int i = 0; i < 600; ++i) r.step(0.f, 4.5f);
+    CHECK(r.slot.speed() == doctest::Approx(4.5f).epsilon(0.02));
+    CHECK(r.slot.position().y == doctest::Approx(r.slot.tuning().side).epsilon(0.02));
+}
+
 TEST_CASE("party trail allocates nothing") {
     PartyTrail t;
     const bool counting = ftcore_test::allocHookInstalled();
@@ -354,7 +442,8 @@ TEST_CASE("party trail allocates nothing") {
     t.reset({0.f, 0.f}, {1.f, 0.f}, 3.2f);
     PartySlot slot;
     slot.reset(t);
-    float sum = 0.f;
+    slot.resetAt(t, {-1.f, 2.f});
+    float sum = t.arcNearest({-1.f, 2.f});
     std::uint32_t next = 0, jumps = 0;
     for (int i = 0; i < 2000; ++i) {
         const float a = static_cast<float>(i) * 0.01f;

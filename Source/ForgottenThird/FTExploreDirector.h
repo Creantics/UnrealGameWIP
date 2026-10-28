@@ -76,6 +76,18 @@ public:
 	// again in a line behind it; or it hid or showed them (hidden ones keep walking the trail).
 	void OnLeadChanged(const FString& Lead);
 	void SetPartyHidden(bool bHide);
+	// For a scene played in place: held, the followers stand where they are and nothing here moves them, so the
+	// scene can (AFTPartyFollower::Place walks one to a mark); none hides for being in the camera's way, only while
+	// the party is hidden. Followers not spawned yet still spawn behind the lead, then stand. Let go, the trail starts
+	// over behind the lead as it stands, and each follower takes it up from where it stands, walking back to its
+	// place without a jump (ftcore::PartySlot::resetAt).
+	void SetPartyHeld(bool bHold);
+	bool IsPartyHeld() const { return bPartyHeld; }
+	const TArray<TObjectPtr<AFTPartyFollower>>& GetFollowers() const { return Followers; }
+	// The big world's layout (null off a big world: on the Explore map and the overworld), and a district's spawn:
+	// the spot (cm on the ground plane; the caller picks the height) and yaw (degrees). False for no such district.
+	const ftcore::WorldLayout* GetWorldLayout() const { return Layout.Get(); }
+	bool GetDistrictSpawn(int32 District, FVector2D& Spot, float& Yaw) const;
 
 	// ---- for the HUD (no allocation) ----
 	const ftcore::Exploration& GetExploration() const { return Exploration; }
@@ -183,6 +195,7 @@ private:
 	float LeadFacedYaw = 0.f;
 	float LeadFacedAgo = -1.f;
 	bool bFollowersSpawned = false;
+	bool bPartyHeld = false; // SetPartyHeld
 	bool bWatchFollower = false; // -LocoWatchFollower: the camera is behind the first follower, so it stays in view
 	// -LocoLog: once a second, the nearest the first follower came to the lead (cm), so overlap shows as a number.
 	bool bLogGap = false;

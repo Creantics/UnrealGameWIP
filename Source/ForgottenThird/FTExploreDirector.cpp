@@ -389,10 +389,14 @@ void AFTExploreDirector::BeginStoryWalk()
 		const size_t D = static_cast<size_t>(WorldDistrict);
 		FieldGoal = Layout->toWorld(D, FieldGoal);
 		FieldVia = Layout->toWorld(D, FieldVia);
-		const ftcore::Vec2 Spawn = Layout->district(D).origin;
-		WorldSpawn = FVector(Spawn.x * 100.0, Spawn.y * 100.0, 0.0);
-		WorldSpawnRotation = FRotator(0.f, FMath::RadiansToDegrees(Layout->spawnYaw(D)), 0.f);
-		bWorldSpawnPending = true;
+		FVector2D Spot;
+		float Yaw = 0.f;
+		if (GetDistrictSpawn(WorldDistrict, Spot, Yaw))
+		{
+			WorldSpawn = FVector(Spot.X, Spot.Y, 0.0);
+			WorldSpawnRotation = FRotator(0.f, Yaw, 0.f);
+			bWorldSpawnPending = true;
+		}
 		if (!Carry.Style.IsEmpty())
 		{
 			for (TActorIterator<AFTStyleController> It(GetWorld()); It; ++It)
@@ -460,8 +464,19 @@ void AFTExploreDirector::TickFollowers(AFTExploreCharacter& Player, float DeltaS
 	if (!bFollowersSpawned)
 	{
 		SpawnFollowers(Player);
+		if (bPartyHeld)
+		{
+			for (AFTPartyFollower* Follower : Followers)
+			{
+				if (Follower)
+				{
+					Follower->SetHeld(true);
+					Follower->SetActorHiddenInGame(Player.IsPartyHidden());
+				}
+			}
+		}
 	}
-	else
+	else if (!bPartyHeld)
 	{
 		PlaceFollowers(Player, DeltaSeconds);
 	}
@@ -564,6 +579,77 @@ void AFTExploreDirector::SetPartyHidden(bool bHide)
 	}
 	SetNotice(bHide ? TEXT("Party hidden") : TEXT("Party shown"));
 	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: party %s."), bHide ? TEXT("hidden") : TEXT("shown"));
+}
+
+void AFTExploreDirector::SetPartyHeld(bool bHold)
+{
+	if (bHold == bPartyHeld)
+	{
+		return;
+	}
+	bPartyHeld = bHold;
+	const AFTExploreCharacter* Player = GetPlayerCharacter();
+	for (AFTPartyFollower* Follower : Followers)
+	{
+		if (Follower)
+		{
+			Follower->SetHeld(bHold);
+			if (bHold)
+			{
+				Follower->SetActorHiddenInGame(Player && Player->IsPartyHidden());
+			}
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: party %s."), bHold ? TEXT("held") : TEXT("let go"));
+	if (bHold)
+	{
+		LeadFacedAgo = -1.f;
+		return;
+	}
+	if (!Player || !bFollowersSpawned)
+	{
+		return;
+	}
+	// The trail starts over behind the lead as it stands, long enough to reach the farthest follower (as far as it
+	// keeps), and each slot takes it up at the point nearest where its follower stands.
+	const ftcore::Vec2 LeadAt = ToGround(Player->GetActorLocation());
+	float Seed = static_cast<float>(Slots.Num()) * ftcore::PartyTrail::kFollowerSpacing;
+	for (const AFTPartyFollower* Follower : Followers)
+	{
+		if (Follower)
+		{
+			const ftcore::Vec2 At = ToGround(Follower->GetActorLocation());
+			Seed = FMath::Max(Seed, FMath::Sqrt(FMath::Square(At.x - LeadAt.x) + FMath::Square(At.y - LeadAt.y)) + 1.f);
+		}
+	}
+	Seed = FMath::Min(Seed, static_cast<float>(ftcore::PartyTrail::kCapacity - 1u) * ftcore::PartyTrail::kSampleSpacing);
+	const FVector2D Facing = Player->GetFacing2D();
+	Trail.reset(LeadAt, {static_cast<float>(Facing.X), static_cast<float>(Facing.Y)}, Seed);
+	for (int32 I = 0; I < Slots.Num(); ++I)
+	{
+		const AFTPartyFollower* Follower = Followers.IsValidIndex(I) ? Followers[I].Get() : nullptr;
+		if (Follower)
+		{
+			Slots[I].resetAt(Trail, ToGround(Follower->GetActorLocation()));
+		}
+		else
+		{
+			Slots[I].reset(Trail);
+		}
+	}
+}
+
+bool AFTExploreDirector::GetDistrictSpawn(int32 District, FVector2D& Spot, float& Yaw) const
+{
+	if (!Layout || District < 0 || District >= static_cast<int32>(Layout->districtCount()))
+	{
+		return false;
+	}
+	const size_t D = static_cast<size_t>(District);
+	const ftcore::Vec2 Origin = Layout->district(D).origin;
+	Spot = FVector2D(Origin.x * 100.0, Origin.y * 100.0);
+	Yaw = FMath::RadiansToDegrees(Layout->spawnYaw(D));
+	return true;
 }
 
 void AFTExploreDirector::PlaceFollowers(AFTExploreCharacter& Player, float DeltaSeconds)
