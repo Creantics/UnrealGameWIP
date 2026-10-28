@@ -5,6 +5,8 @@
 #include "Engine/Font.h"
 #include "EngineUtils.h"
 
+#include "FTCutsceneDirector.h"
+#include "FTCutsceneHUD.h"
 #include "FTExploreDirector.h"
 #include "FTPauseOverlay.h"
 #include "FTUiText.h"
@@ -75,6 +77,14 @@ void AFTExploreHUD::DrawHUD()
 		return;
 	}
 	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
+	// A cutscene playing in place has the screen: its letterbox, and none of the field's own lines.
+	const AFTCutsceneDirector* Cutscene = Found->GetCutsceneDirector();
+	if (Cutscene && Cutscene->IsPlayingInPlace())
+	{
+		FT::DrawCutsceneHUD(*this, Canvas, *Cutscene);
+		FT::DrawPauseOverlay(*this, Canvas);
+		return;
+	}
 	if (Found->IsStoryWalk())
 	{
 		DrawFieldObjective(*Found);

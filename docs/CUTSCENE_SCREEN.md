@@ -1,11 +1,38 @@
 # Cutscene screen
 
-The screen for CG steps (`GameplayScreen::Cutscene` in `ftcore::GameplayPlan`). It plays a shot list
-on a blockout set with placeholder figures, then hands control back to the story. There's no art
-yet. When art arrives, the same shot lists play on the real set. Only the map and the subject
-actors change.
+The screen for CG steps (`GameplayScreen::Cutscene` in `ftcore::GameplayPlan`). It plays a shot list,
+then hands control back to the story. It plays in one of two places:
 
-## Regenerate the map
+- **In place:** on the field map the lead is already on, staged around the lead. The camera eases
+  out of the gameplay view into the first shot and back into the gameplay view at the end. Play goes
+  into the cutscene and out of it with no map load and no cut.
+- **On the stage:** the `Cutscene` map, a blockout set with placeholder figures, for a step that
+  can't play in place.
+
+There's no art yet. When art arrives, the same shot lists play on the real sets. Only the maps and
+the subject actors change.
+
+## Where a CG step plays
+
+`FTStep` (`FTStepHost.h`) picks the place for each step:
+
+- **After a field step**, a CG step plays in place on that field's map. The field step's screen calls
+  `FTStep::ContinueHere`, and the map's `AFTCutsceneDirector` is the host that plays it. When the
+  cutscene ends, the beat's next step plays on the same map too, if a host there can play it.
+- **When the story director opens it** (it starts a beat, or comes after a step that went back to
+  the story map), `FTStep::Prepare` routes it:
+  - In a scene placed in one of the big worlds (`Data/Field/worlds.json`), it loads that world's map
+    when the map is built and no overworld hop has to come first. The lead stands at the district's
+    spawn and the cutscene plays around the lead in place, so the field steps beside it play in place
+    as well. Moving the lead to the spawn settles its camera boom there too, so the blend in starts
+    from the gameplay view at the spawn instead of a camera still sweeping in from where the map
+    started the lead. The story log says `Story: the CG at <scene> beat <b> step <s> plays on <map>,
+    in district <d>.`
+  - Otherwise it plays on the stage. An overworld hop that's due waits for the next field step.
+
+A step is counted once, by `FTStep::FinishCarried`, wherever it plays.
+
+## The stage map
 
 ```
 UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildCutsceneWorld [-Map=Cutscene] -NullRHI -unattended -nopause -nosplash
@@ -24,6 +51,9 @@ Writes `/Game/Maps/Cutscene`, a 20 m blockout set:
 `WorldSettings.DefaultGameMode` is `AFTCutsceneGameMode`. An existing map file is deleted first, as
 the stub builder does. The map is generated, never hand-made.
 
+The spots and subjects come from one table, `ftcore::cutsceneStageMark`. An in-place cutscene lays
+the same table over the field map, so a shot list frames the same way in both places.
+
 | Id | Position (m) | Use |
 |---|---|---|
 | `spot_a` | (9, 0, 2.5) | front, high: the establishing view |
@@ -32,23 +62,22 @@ the stub builder does. The map is generated, never hand-made.
 | `spot_d` | (3, 6, 1.6) | left side of the pair |
 | `spot_e` | (7, -1, 1.6) | front, low |
 | `spot_f` | (4, 5, 1.4) | by the table |
-| `subj_a` | (-1, -1.2) | blue, one of the pair |
+| `subj_a` | (-1, -1.2) | blue, one of the pair; in place, the lead |
 | `subj_b` | (-1, 1.2) | red, the other of the pair |
 | `subj_c` | (2.5, 2) | green, by the table |
 
-## Flow
+## On the stage
 
-1. The story director fills `UFTGameInstance::StoryCarry` and opens the `Cutscene` map
-   for a CG step, because `ftcore::screenRoutesTo(Cutscene)` now returns `Cutscene`.
-2. `AFTCutsceneGameMode::StartPlay` reads the carry, loads `Data/Cutscene/cutscenes.json` and
-   looks up the shot list by the carry's `Scene`, `Beat` and `Step`. If that step isn't listed it
-   uses `default`. If the file is missing or refused, it logs a warning and plays one wide shot of
-   `subj_a` from `spot_a`.
-3. It finds the map's `AFTCutsceneDirector` (or spawns one), calls `Play`, and makes the
-   director's cine camera the view target.
-4. Every frame the director advances `ftcore::CutscenePlayer` and places the camera with
-   `ftcore::cutsceneCamera`.
-5. The screen ends when the last shot ends, on a skip press, or with autoplay after 1 s of real
+1. The story director fills `UFTGameInstance::StoryCarry` and opens the `Cutscene` map.
+2. `AFTCutsceneGameMode::StartPlay` reads the carry, finds the map's `AFTCutsceneDirector` (or spawns
+   one) and has it play the step. The director loads `Data/Cutscene/cutscenes.json` and looks up the
+   shot list by the carry's `Scene`, `Beat` and `Step`. If that step isn't listed it uses `default`.
+   If the file is missing or refused, it logs a warning and plays one wide shot of `subj_a` from
+   `spot_a`.
+3. The director's cine camera becomes the view target. The director finds the map's actors tagged
+   with the shot ids once, when it starts. Every frame it advances `ftcore::CutscenePlayer` and places
+   the camera with `ftcore::cutsceneCamera`.
+4. The screen ends when the last shot ends, on a skip press, or with autoplay after 1 s of real
    time. It then sets `bDone` and `bWon` on the carry, logs one line and opens `ReturnMap`:
 
    ```
@@ -57,6 +86,54 @@ the stub builder does. The map is generated, never hand-made.
 
    The step index is 0-based, the same as in the lookup key. The line carries ids and counts only,
    never text.
+
+## In place
+
+`AFTExploreDirector` spawns an `AFTCutsceneDirector` on every field map. That director registers as
+the map's cutscene host (`HostSteps(true, true)`). When a CG step reaches it:
+
+1. **Start.** It loads the shot list the same way as on the stage, and turns the lead's input off.
+   It holds the party, so the followers stop taking up the trail. If the lead is mid-traversal
+   (vault, climb, roll), it waits for that to end first.
+2. **Staging.** The stage goes down around the lead (`ftcore::anchorForLead`). `subj_a`'s mark lands
+   on the lead's feet, and the stage's front points along the lead's facing. The followers in view
+   stand in for the other subject marks, nearest first. A mark no follower stands for is framed where
+   it lies.
+3. **Walks.** A follower whose mark some shot frames walks onto it while the camera blends in
+   (`ftcore::MarkWalk`). It goes round the lead, brakes onto the mark and turns to face the lead. It
+   walks only when:
+   - the ground at the mark is within a metre of the lead's feet, and
+   - nothing stands in the way at waist height.
+
+   Otherwise it stays where it stands, and the shots frame it there.
+4. **Blend in.** The view switches to the cine camera while it sits exactly on the gameplay camera.
+   The camera then orbits round the lead from the gameplay view into the first shot, over the plan's
+   `blend_in` time (0.8 s by default). The letterbox grows in with it.
+5. **Shots.** The shots play as on the stage. A sphere sweep from the look point keeps the camera in
+   front of walls.
+6. **Blend out.** When the last shot ends, or on a skip, the camera eases back onto the gameplay
+   camera over `blend_out` (0.8 s by default), and the letterbox shrinks away. A skip during the blend
+   in eases out from wherever the camera got to. The view switches back once the camera is on the
+   gameplay camera again.
+7. **Hand back.** The lead gets input back. The party is let go and takes up the trail from where it
+   stands. Then the beat's next step plays here when a host on this map can play it
+   (`FTStep::ContinueHere`). Otherwise the story map opens, as on the stage.
+
+Under autoplay there are no blends, so both view switches are cuts. Their size is logged: the cut in
+is the first shot's distance from the gameplay camera (about 14 m on the committed shot lists), so a
+cut of tens of metres means the gameplay camera wasn't at the lead. The log lines carry ids and
+counts only:
+
+```
+Cutscene: done <scene> beat <b> step <s> shots <n> skipped <0|1> in place, pulled <k>, walked <w>
+Cutscene: in place, view to the cine camera (<cm> cm, <deg> deg, fov <d>)
+Cutscene: in place, view back to the lead (<cm> cm, <deg> deg, fov <d>)
+Cutscene: in place, follower <k> walks <m> m onto <mark>
+Cutscene: in place, follower <k> on its mark after <s> s
+```
+
+- `pulled`: the shots whose camera the sweep pulled in.
+- `walked`: the followers set walking, whether or not they reached their marks.
 
 ## Controls
 
@@ -72,13 +149,19 @@ count the time spent in it (`UFTPauseSubsystem::WallSeconds`).
 
 ## HUD
 
-`AFTCutsceneHUD` draws on the canvas, with no UMG:
+`FT::DrawCutsceneHUD` (`FTCutsceneHUD.h`) draws from the director on the canvas, with no UMG. On the
+stage `AFTCutsceneHUD` calls it. In place `AFTExploreHUD` calls it instead of drawing the field's
+own lines, from the step's start until it ends (`AFTCutsceneDirector::IsPlayingInPlace`).
 
-- **Letterbox bars:** 2.39:1, and each bar is at least 8% of the screen height.
-- **Top bar:** the step's title from `ftcore::stubTitle` ("Cutscene" for CG) and "Step i of n".
-- **Bottom bar:** "Shot i of n" and the skip hint.
+- **Letterbox bars:** 2.39:1, and each bar is at least 8% of the screen height. In place they scale
+  with `CutscenePlayer::presence`, so they grow in and shrink away with the blends.
+- **Top bar, on the stage only:** the step's title from `ftcore::stubTitle` ("Cutscene" for CG) and
+  "Step i of n".
+- **Bottom bar:** "Shot i of n" on the stage only, and the skip hint while a skip still does
+  something. In place the hint fades with the bars.
 
-All text is built once in `StartPlay`. There's no story text and no step label.
+The bars appear only once the shots have started. All text is built once per step, when the step
+starts. There's no story text and no step label.
 
 ## Autoplay and headless runs
 
@@ -89,7 +172,10 @@ All text is built once in `StartPlay`. There's no story text and no step label.
   `skipped 0`.
 - With `-AlphaFast` the shot clock runs at the stub's `speedFactor`. The real-time cap is
   unaffected.
-- **Opened directly** (no valid carry, or a carry that's already done): the screen plays the
+- **`-CutsceneBlendTest`** plays an autoplay step in place at full length, with its blends. Use it in
+  an alpha run to watch the blends and the walks; the follower lines above show each walk and each
+  arrival.
+- **Opened directly** (no valid carry, or a carry that's already done): the stage plays the
   `default` list as a preview, then holds the last frame. There's no log line and no map change.
 
 ## Alpha counting
@@ -97,7 +183,7 @@ All text is built once in `StartPlay`. There's no story text and no step label.
 A cutscene step counts in the **stub** bucket: `AlphaCounters::addScreen` adds `Cutscene` to
 `stub`. This keeps the shape of the director's `Alpha: FINISHED ... (b battle, f field, s stub)`
 line, so the gate's expected line and the parsers don't change, and the totals stay the same as
-when CG opened the stub card.
+when CG opened the stub card. Playing in place changes where a step plays, never how it counts.
 
 ## Data: `Data/Cutscene/cutscenes.json`
 
@@ -120,6 +206,16 @@ Unreal side multiplies by 100.
 
 Each entry is keyed by `scene`, `beat` and `step` (the gameplay beat index and the plan step
 index), the same way as `Data/Battle/encounters.json`. `step` defaults to 0.
+
+With `"version": 2`, `default` and each entry may also set the in-place blend times:
+
+| Key | Values | Default |
+|---|---|---|
+| `blend_in` | seconds easing from the gameplay camera into the first shot, 0..5 | 0.8 |
+| `blend_out` | seconds easing from the last camera back to the gameplay camera, 0..5 | 0.8 |
+
+A zero time cuts. On the stage both are ignored. A version 1 file gets the defaults, and there the
+two keys are unknown keys.
 
 | Shot key | Values | Default |
 |---|---|---|
@@ -182,9 +278,12 @@ an eased weight. The lens blends too.
    `over_shoulder` back and forth (swap `subject` and `subject2`, and use spots on the same side so
    the line isn't crossed). Use `close` or `insert` for a detail, and a `blend` for a slow change of
    view.
-4. Run the Core tests (`powershell -File tools/gate.ps1`). `test_cutscene.cpp` loads the committed
-   file and checks that every id it uses exists in the blockout map. If you add spots or subjects
-   to the map, extend that test.
+4. Remember the list may play in place, with `subj_a` on the lead and the stage turned to the lead's
+   facing. Followers stand in for `subj_b` and `subj_c`, and walk onto their marks only when a shot
+   frames them.
+5. Run the Core tests (`powershell -File tools/gate.ps1`). `test_cutscene.cpp` loads the committed
+   file and checks that every id it uses is a stage mark. To add spots or subjects, add them to
+   `ftcore::cutsceneStageMark` and rebuild the map.
 
 Every CG step of the script has its own entry (3 to 8 shots, ids and numbers only); `default` is the fallback. `test_field_goals.cpp` checks the entries against the script's steps.
 
@@ -195,10 +294,16 @@ committed.
 
 `Core/include/ftcore/Cutscene.h` holds the following, with tests in `Core/tests/test_cutscene.cpp`:
 
-- `CutsceneShot` and `CutscenePlan`: fixed capacity, with ids in fixed buffers.
-- `CutscenePlayer`: `update`, `tickReal`, `press`, `skip`, `shotProgress`, `blending` and
-  `blendWeight`.
+- `CutsceneShot` and `CutscenePlan`: fixed capacity, with ids in fixed buffers. The plan carries the
+  in-place blend times (`setBlends`, `blendIn`, `blendOut`).
+- `CutscenePlayer`: `begin` (with `inPlace`), `update`, `tickReal`, `press`, `skip`,
+  `shotProgress`, `blending` and `blendWeight`. In place it adds the `BlendIn` and `BlendOut`
+  phases, with `blendInWeight`, `blendOutWeight` and `presence`.
 - `cutsceneCamera`, `lerpPose` and `framingRule`.
+- The stage: `cutsceneStageMark`, `findCutsceneStageMark` and `kCutsceneLeadMark`; `StageFrame`,
+  `anchorForLead`, `stageToWorld` and `stageYawToWorld`.
+- `MarkWalk`: a follower's walk onto its mark, round the lead, with the speed and stopping distance
+  its animation needs (`wantSpeed`, `stopDistance`).
 - `importCutsceneTable` and `CutsceneTable`.
 
 Nothing allocates after load.

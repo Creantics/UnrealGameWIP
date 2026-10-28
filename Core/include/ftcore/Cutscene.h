@@ -296,6 +296,62 @@ FTCORE_API CutsceneVec3 stageToWorld(const StageFrame& frame, const CutsceneVec3
 // A stage yaw (degrees) in the map, in -180..180.
 FTCORE_API float stageYawToWorld(const StageFrame& frame, float stageYaw);
 
+// In place: a follower walking onto the subject mark it stands in for (metres, on the ground: z is
+// carried along but plays no part). The way is straight, or, when that line passes nearer the lead
+// than `clearance`, two legs round the lead's outside, each touching that circle (on the side the line
+// passes; a line straight through the lead goes round a fixed side). It speeds up at `accel` to
+// `speed` and brakes at `decel` to stand on the mark. No allocation.
+//
+//   ftcore::MarkWalk walk;
+//   walk.begin(followerFeet, mark, leadFeet);
+//   every frame: walk.step(dt); stand the follower at walk.position(), and give its animation
+//                walk.wantSpeed() and walk.stopDistance(); walk.arrived() once it stands on the mark.
+struct MarkWalkTuning {
+    float speed = 1.4f;     // m/s, a walk
+    float accel = 2.5f;     // m/s^2
+    float decel = 2.f;      // m/s^2: the braking it plans onto the mark
+    float clearance = 0.8f; // metres it keeps from the lead where it can
+};
+
+class MarkWalk {
+public:
+    static constexpr std::uint32_t kMaxPoints = 3; // the start, a corner round the lead, the mark
+
+    // From `from` to `mark`, round `avoid` (the lead's feet). Starting inside the clearance, or with
+    // the mark inside it, the way is straight. Set the tuning first.
+    FTCORE_API void begin(const CutsceneVec3& from, const CutsceneVec3& mark, const CutsceneVec3& avoid);
+    // One frame of `dt` seconds; nothing moves for dt <= 0.
+    FTCORE_API void step(float dt);
+
+    CutsceneVec3 position() const { return position_; }
+    bool arrived() const { return arrived_; }
+    float speed() const { return speed_; }
+    // Metres of the way still to walk.
+    float remaining() const { return length_ - travelled_; }
+    // For the animation's starts and stops, as PartySlot gives them: the speed it is heading for
+    // (m/s), or 0 while it brakes onto the mark and once it stands there; and while it brakes, how
+    // far it has left (metres; -1 otherwise).
+    float wantSpeed() const { return arrived_ || braking_ ? 0.f : tuning_.speed; }
+    float stopDistance() const { return braking_ && !arrived_ ? remaining() : -1.f; }
+    // The way's corners, the start first and the mark last.
+    std::uint32_t pointCount() const { return count_; }
+    FTCORE_API const CutsceneVec3& point(std::uint32_t i) const;
+    MarkWalkTuning& tuning() { return tuning_; }
+
+private:
+    CutsceneVec3 along(float distance) const;
+
+    MarkWalkTuning tuning_;
+    CutsceneVec3 points_[kMaxPoints] = {};
+    std::uint32_t count_ = 1;
+    float length_ = 0.f;
+    float travelled_ = 0.f;
+    float speed_ = 0.f;
+    CutsceneVec3 position_;
+    bool arrived_ = true;
+    bool braking_ = false;
+};
+
 struct CutsceneEntry {
     std::string scene;
     std::uint32_t beat = 0, step = 0;

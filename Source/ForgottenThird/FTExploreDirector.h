@@ -29,7 +29,9 @@
 // AFTCutsceneDirector as its cutscene host. A done field step first asks FTStep::ContinueHere: when the
 // beat goes on with a field step on this map, the lead walks on from where it stands to the new marker
 // (StartStepHere); when it goes on with a CG step, the cutscene plays around the lead. Otherwise the
-// story map opens as before.
+// story map opens as before. A big world's map opened for a CG step (the step host's lookahead) stays
+// quiet: no marker, tour or demo; the lead starts at the scene's district spawn and the cutscene host
+// begins there on the first tick.
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
@@ -47,6 +49,7 @@ class AFTExploreCharacter;
 class AFTExploreSpot;
 class AFTFieldGuard;
 class AFTPartyFollower;
+struct FFTStoryCarry;
 
 UCLASS()
 class FORGOTTENTHIRD_API AFTExploreDirector : public AActor
@@ -91,6 +94,8 @@ public:
 	void SetPartyHeld(bool bHold);
 	bool IsPartyHeld() const { return bPartyHeld; }
 	const TArray<TObjectPtr<AFTPartyFollower>>& GetFollowers() const { return Followers; }
+	// This map's in-place cutscene host (null before BeginPlay, or when it could not spawn).
+	const AFTCutsceneDirector* GetCutsceneDirector() const;
 	// The big world's layout (null off a big world: on the Explore map and the overworld), and a district's spawn:
 	// the spot (cm on the ground plane; the caller picks the height) and yaw (degrees). False for no such district.
 	const ftcore::WorldLayout* GetWorldLayout() const { return Layout.Get(); }
@@ -148,6 +153,9 @@ private:
 	void SetBanner(const FString& Text);
 	void CheckComplete();
 	void BeginStoryWalk();
+	// A big world's district for the carried step (district 0, with a warning, when the scene isn't
+	// placed here), its spawn for the first tick and the scene's style. What: "field step", "CG step".
+	void PlaceInDistrict(const FFTStoryCarry& Carry, const TCHAR* What);
 	void BeginWorld();
 	void TickWorld(AFTExploreCharacter& Player, float DeltaSeconds);
 	void UpdateWorldLine(ftcore::Vec2 Pos);
@@ -188,6 +196,10 @@ private:
 	// Plays the beat's CG steps on this map, around the lead (off the overworld).
 	UPROPERTY(Transient)
 	TObjectPtr<AFTCutsceneDirector> CutsceneDirector;
+	// The map was opened for a CG step: nothing here runs until a field step starts in place, and the
+	// cutscene host starts once the lead stands at the spawn.
+	bool bCutsceneCarry = false;
+	bool bCutsceneStartPending = false;
 
 	// The party following the lead on a field step, a big world and the overworld, and on the demo
 	// walk when the pawn has a party in config: the pawn's PartyLooks after the lead it wears, else

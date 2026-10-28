@@ -132,6 +132,18 @@ FStepRoute RouteStep(const UFTGameInstance& GI, std::string_view Scene, const ft
 			Route.Wanted = Want;
 		}
 	}
+	else if (Route.Screen == GameplayScreen::Cutscene)
+	{
+		// Lookahead: a CG in a scene placed in a built world plays on that world's map, around the lead at
+		// the district's spawn, so the field steps beside it play in place. One that would need the
+		// overworld hop first plays on the stage, and the hop waits for the next field step (the route
+		// keeps no world, so LastWorld stays as it was).
+		FStepRoute Placed = Route;
+		if (PlaceInWorld(GI, Scene, Placed) == EPlaced::Placed && Placed.FromWorld.IsEmpty())
+		{
+			Route = Placed;
+		}
+	}
 	return Route;
 }
 
@@ -245,6 +257,11 @@ FString FTStep::Prepare(UFTGameInstance& GI, const StoryRunner& Runner, const FS
 	{
 		UE_LOG(LogForgottenThird, Log, TEXT("Story: the fight at %s beat %d step %d plays the %s system on %s."), *Carry.Scene, Carry.Beat,
 			Carry.Step, *FT::ToFString(ftcore::combatKindName(Route.Combat)), *Route.Map);
+	}
+	if (Route.Screen == GameplayScreen::Cutscene && !Route.World.IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Log, TEXT("Story: the CG at %s beat %d step %d plays on %s, in district %d."), *Carry.Scene, Carry.Beat, Carry.Step,
+			*Route.Map, Route.District);
 	}
 	return Route.Map;
 }
