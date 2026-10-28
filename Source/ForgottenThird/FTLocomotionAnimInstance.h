@@ -54,9 +54,11 @@ class USkeletalMeshComponent;
 // net slip forward and sideways, and the forward slip over its middle half alone (so slip from the
 // foot still landing or already lifting shows apart from the stance's own). Call Sample while the
 // mesh's pose and placement are from the same frame: a character's Tick, or a follower before it moves.
+// bOffFoot: no foot is planted now (a follower in the air or carried by a traversal says so; a character's
+// movement mode tells for it).
 struct FFTFootSlideProbe
 {
-	void Sample(const USkeletalMeshComponent& Mesh, float DeltaSeconds, float BodySpeed);
+	void Sample(const USkeletalMeshComponent& Mesh, float DeltaSeconds, float BodySpeed, bool bOffFoot = false);
 
 private:
 	FVector Last[2] = {FVector::ZeroVector, FVector::ZeroVector};

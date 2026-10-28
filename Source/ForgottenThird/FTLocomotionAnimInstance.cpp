@@ -772,11 +772,12 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	{
 		In.falling = true;
 	}
-	// A body a traversal carries (fading in, playing or fading out) isn't asked to turn: a run turn begun under it
-	// would turn the body by its root as the traversal fades out, the planted foot sliding sideways.
+	// A body a traversal carries (fading in, playing or fading out) isn't asked to turn, nor to replay a turn: a run
+	// turn begun under it would turn the body by its root as the traversal fades out, the planted foot sliding sideways.
 	if (TravClip >= 0)
 	{
 		In.wantYaw = In.yaw;
+		In.turnBy = 0.f;
 	}
 	Loco.update(In);
 
@@ -856,7 +857,7 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	}
 }
 
-void FFTFootSlideProbe::Sample(const USkeletalMeshComponent& Mesh, float DeltaSeconds, float BodySpeed)
+void FFTFootSlideProbe::Sample(const USkeletalMeshComponent& Mesh, float DeltaSeconds, float BodySpeed, bool bOffFoot)
 {
 	if (!bChecked)
 	{
@@ -868,11 +869,11 @@ void FFTFootSlideProbe::Sample(const USkeletalMeshComponent& Mesh, float DeltaSe
 	{
 		return;
 	}
-	// In the air no foot is planted, nor while a traversal or a slide carries the body (its custom movement mode):
-	// drop the plant under way and start again once back on foot.
+	// In the air no foot is planted, nor while a traversal or a slide carries the body (its custom movement mode; a
+	// follower says so itself): drop the plant under way and start again once back on foot.
 	const ACharacter* Character = Cast<ACharacter>(Mesh.GetOwner());
 	const UCharacterMovementComponent* Move = Character ? Character->GetCharacterMovement() : nullptr;
-	if (Move && (Move->IsFalling() || Move->MovementMode == MOVE_Custom))
+	if (bOffFoot || (Move && (Move->IsFalling() || Move->MovementMode == MOVE_Custom)))
 	{
 		PlantFoot = INDEX_NONE;
 		bHasLast = false;

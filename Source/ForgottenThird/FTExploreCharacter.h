@@ -28,7 +28,8 @@
 // climbs onto it instead: forward and down traces find the near face, the top and its depth and the floor beyond,
 // ftcore::TraversalSet picks the clip and where to enter it, and the capsule is carried along the plan's root path
 // (no collision on the way) until the clip ends. -LocoVaultWall builds a test course ahead (a thin wall, a low
-// block, a high block) and runs at it, traversing whatever it can.
+// block, a high block) and runs at it, traversing whatever it can. Each vault or climb begun is marked (where and which
+// way) for the followers, who go over or onto the same face where they meet it (AFTPartyFollower).
 //
 // In the air, a ledge within reach (a deep top, from under the feet to past the hands) is caught when the jump is held
 // or the stick points into it: one of the catch clips (SetTraversalFromRun's too) plays from where its catch is timed to
@@ -60,6 +61,7 @@
 
 #include "FTLocomotionAnimInstance.h"
 #include "FTLook.h"
+#include "FTTraversalProbe.h"
 
 #include "FTExploreCharacter.generated.h"
 
@@ -129,6 +131,13 @@ public:
 	// Whether a traversal (a vault, a climb, a catch, a roll or a slide) is carrying the body: a scene played in place waits
 	// for it to end.
 	bool IsTraversing() const { return bTraversing; }
+	// For the followers: how many vaults and climbs the body has begun (not catches, rolls or slides), and where and which
+	// way the last one began.
+	uint32 GetTraversalsBegun() const { return TraversalsBegun; }
+	const FFTTraversalMark& GetLastTraversal() const { return LastTraversal; }
+	// The capsule (cm), which the followers probe ahead with too.
+	static constexpr float CapsuleRadius = 34.f;
+	static constexpr float CapsuleHalfHeight = 88.f;
 	// For a scene that turns input off and on again: a held Run's release that came while input was off never arrived,
 	// so the body goes back to its default gait, a held jump is let go and a roll press still kept is dropped. Crouch is
 	// a toggle, not held; standing up from it is this call's choice, so a scene starts and ends with the lead on its feet.
@@ -157,9 +166,9 @@ private:
 	void WearLook(const FFTLeadLook& Look);
 	// Gives the body's locomotion its loaded clips (and those found beside them) and the crouch its speed.
 	void SetupLocomotion(const FFTLoadedLook& Loaded);
-	// Traversal: finds what is ahead (false: nothing to go over or onto; bAir: a deep top to catch, In the way into its
-	// face), starts a traversal (false: none fits; bLog says why), carries the body along one under way, and builds
-	// -LocoVaultWall's (or -LocoCatch's) course.
+	// Traversal: finds what is ahead (FTTraversalProbe::Probe from the feet along the facing; false: nothing to go over or
+	// onto; bAir: a deep top to catch, In the way into its face), starts a traversal (false: none fits; bLog says why),
+	// carries the body along one under way, and builds -LocoVaultWall's (or -LocoCatch's) course.
 	bool ProbeObstacle(const ftcore::TraversalSet& Set, bool bAir, ftcore::TraversalObstacle& Out, FVector& In) const;
 	bool TryTraverse(bool bLog);
 	// Starts a catch (false: not in the air, mid-traversal, crouched, not asked for, or none fits or is in reach yet; bLog
@@ -257,6 +266,9 @@ private:
 	ftcore::TraversalPlan TravPlan;
 	float TravTime = 0.f;
 	FTransform TravFrame;
+	// The vaults and climbs begun, and the last one's mark (GetLastTraversal).
+	uint32 TraversalsBegun = 0;
+	FFTTraversalMark LastTraversal;
 	// The slide under way (sliding() while it is), the way it goes, the floor's normal last met, whether a wall has
 	// stopped it since its last step, and how long it has gone.
 	ftcore::SlideState SlideNow;
