@@ -100,6 +100,31 @@ std::vector<TraversalFrame> makeRoll(float speed = 300.f, float low = 40.f) {
 
 TraversalClipInfo rollOf(const std::vector<TraversalFrame>& f) { return measureRoll(f.data(), f.size(), kRollLength); }
 
+constexpr int kFallFrames = 12; // 0.4 s
+
+// makeRoll's roll after a fall, as a land roll's clip opens: for kFallFrames before it the whole body
+// comes down from `height` at a steady rate (still coming in at 300 cm/s), its last frame in the air
+// height / kFallFrames up, and touches down on makeRoll's first frame.
+std::vector<TraversalFrame> makeLandRoll(float height = 300.f) {
+    const std::vector<TraversalFrame> roll = makeRoll();
+    std::vector<TraversalFrame> frames;
+    for (int i = 0; i < kFallFrames; ++i) {
+        const float u = static_cast<float>(kFallFrames - i) / static_cast<float>(kFallFrames); // the fall still to come
+        TraversalFrame f = roll.front();
+        for (TravPoint* p : {&f.root, &f.pelvis, &f.ballLeft, &f.ballRight}) {
+            p->x -= 300.f * kFallFrames * kFrame * u;
+            p->z += height * u;
+        }
+        frames.push_back(f);
+    }
+    frames.insert(frames.end(), roll.begin(), roll.end());
+    return frames;
+}
+
+TraversalClipInfo landRollOf(const std::vector<TraversalFrame>& f) {
+    return measureRoll(f.data(), f.size(), static_cast<float>(f.size() - 1) * kFrame);
+}
+
 } // namespace
 
 TEST_CASE("measureTraversal reads the obstacle from the root: rise, front edge, top, landing") {
@@ -286,6 +311,7 @@ TEST_CASE("measureRoll reads the roll from the pelvis: the tuck, back up, how fa
     CHECK(r.leave == r.land);
     CHECK(r.dip == doctest::Approx(50.f));
     CHECK(r.rise == 0.f);
+    CHECK(r.touchdown == 0.f); // on the floor from the start
     CHECK(r.takeoffFoot == 1);
     CHECK(r.entrySpeed == doctest::Approx(300.f));
     CHECK(r.path[kTraversalSamples - 1].x == doctest::Approx(360.f));
@@ -300,12 +326,53 @@ TEST_CASE("measureRoll leaves a shallow dip, an unsampled pelvis or a root off t
     std::vector<TraversalFrame> frames = makeRoll();
     for (TraversalFrame& f : frames) f.pelvis = {};
     CHECK(rollOf(frames).length == 0.f);
-    // A root that follows the pelvis down would carry the body into the floor.
+    // A root that follows the pelvis down would carry the body into the floor: it touches down only once
+    // it is back up, with no dip left after.
     frames = makeRoll();
     for (TraversalFrame& f : frames) f.root.z = f.pelvis.z - 90.f;
     CHECK(rollOf(frames).length == 0.f);
     CHECK(rollOf(makeClip(false)).length == 0.f); // a vault
     CHECK(measureRoll(nullptr, 0, 1.f).length == 0.f);
+}
+
+TEST_CASE("measureRoll reads a land roll from its touchdown, and planRoll enters it there") {
+    // Down from 3 m (its last frame in the air 25 cm up) or from 1.2 m (10 cm up: within kMinObstacle of the
+    // floor, but not on it yet), it touches down 0.4 s in and rolls as makeRoll does from there.
+    for (const float height : {300.f, 120.f}) {
+        CAPTURE(height);
+        const std::vector<TraversalFrame> frames = makeLandRoll(height);
+        const TraversalClipInfo r = landRollOf(frames);
+        REQUIRE(r.length == doctest::Approx(static_cast<float>(frames.size() - 1) * kFrame));
+        CHECK(r.move == TraversalMove::Roll);
+        CHECK(r.touchdown == doctest::Approx(kFallFrames * kFrame));
+        CHECK(r.contact == doctest::Approx((kFallFrames + 9) * kFrame));
+        CHECK(r.land == doctest::Approx((kFallFrames + 26) * kFrame));
+        CHECK(r.dip == doctest::Approx(50.f));
+        CHECK(r.rise == 0.f);
+        CHECK(r.takeoffFoot == 1);
+        CHECK(r.entrySpeed == doctest::Approx(300.f));
+        // The path runs from the touchdown, the fall left out.
+        CHECK(r.path[0].z == 0.f);
+        CHECK(r.path[kTraversalSamples - 1].x == doctest::Approx(360.f));
+
+        TraversalSet set;
+        set.setClip(0, r);
+        const TraversalPlan p = set.planRoll(390.f, 1);
+        REQUIRE(p.ok());
+        CHECK(p.start == doctest::Approx(r.touchdown));
+        CHECK(set.rate(p, p.start) == doctest::Approx(1.3f));
+        CHECK(set.exitTime(p) >= r.land);
+        for (int i = 0; i <= 12; ++i) {
+            const float t = p.start + 0.1f * static_cast<float>(i);
+            const TravPoint at = set.rootAt(p, t);
+            CHECK(at.x == doctest::Approx(300.f * (t - p.start)));
+            CHECK(at.z == 0.f);
+        }
+    }
+    // A fall onto the floor and no roll after it.
+    std::vector<TraversalFrame> landing = makeLandRoll();
+    for (std::size_t i = kFallFrames; i < landing.size(); ++i) landing[i].pelvis.z = 90.f;
+    CHECK(landRollOf(landing).length == 0.f);
 }
 
 TEST_CASE("planRoll takes the roll nearest the body's speed, then its foot, from the start along its own path") {

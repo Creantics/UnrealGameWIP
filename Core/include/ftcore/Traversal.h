@@ -31,9 +31,10 @@
 // A roll is a traversal with no obstacle: its root stays on the floor while the pelvis goes down and
 // back up. measureRoll reads it from the pelvis (when the body is tucked, the contact; when it is back
 // up, the landing; how far it goes down) and from the root as above (the entry speed, the take-off foot,
-// the path). planRoll takes the roll clip whose entry speed and take-off foot are nearest the body's,
-// from its start, its root path as it is; rate() eases to the clip's own rate by the tuck. plan()
-// never takes a roll.
+// the path). A land roll's clip opens with the fall onto that floor: it is read from the touchdown on.
+// planRoll takes the roll clip whose entry speed and take-off foot are nearest the body's, from its
+// touchdown (a roll on the floor throughout: its start), its root path as it is; rate() eases to the
+// clip's own rate by the tuck. plan() never takes a roll.
 //
 // Space: x forward (toward the obstacle at the start), y to the left, z up; cm and seconds. Fixed
 // size: nothing allocates.
@@ -72,9 +73,10 @@ struct TraversalClipInfo {
     float topDepth = 0.f;    // how far the root goes along the top before coming down (over)
     float rise = 0.f;        // the root's end height above its start
     float dip = 0.f;         // a roll: how far the pelvis goes below the lower of its start and end heights
-    float entrySpeed = 0.f;  // the root's forward speed over the first kEntryTime
+    float touchdown = 0.f;   // a roll: when the root is down on the floor it rolls along (0: on it from the start)
+    float entrySpeed = 0.f;  // the root's forward speed over the first kEntryTime (a roll's from the touchdown)
     int takeoffFoot = -1;    // 0 left, 1 right: the last foot at rest before the contact (-1: none)
-    std::array<TravPoint, kTraversalSamples> path{}; // the root from where it starts, evenly over length
+    std::array<TravPoint, kTraversalSamples> path{}; // the root from where it is at the touchdown, evenly to the end
 };
 
 inline constexpr float kMinObstacle = 20.f; // a root rising less than this has no obstacle to measure
@@ -92,12 +94,13 @@ inline constexpr float kMinRollDip = 30.f;  // a pelvis going down less than thi
 // `length`; at most kMaxTraversalFrames are read). length stays 0 when the root rises less than
 // kMinObstacle, ends more than kMaxClipDrop below its start, or never settles.
 FTCORE_API TraversalClipInfo measureTraversal(const TraversalFrame* frames, std::size_t count, float length);
-// Measures a roll from frames sampled the same way. The body is tucked once the pelvis is within
-// kRiseShare of its way down from its start height to its lowest, and back up once it has come
+// Measures a roll from frames sampled the same way. It is read from the touchdown: the first frame from
+// which the root stays within kMinObstacle of the height it ends at, and is within kSettle of it (frame 0
+// for a root that never leaves it; a land roll opens with its fall). The body is tucked once the pelvis
+// is within kRiseShare of its way down from its height there to its lowest, and back up once it has come
 // kTopShare of the way up to its end height. length stays 0 when the pelvis goes down less than
-// kMinRollDip below its start or its end height (a pelvis never sampled stays at 0: not measured),
-// or when the root goes kMinObstacle or more above or below where it starts (a vault or a drop, or a
-// root that follows the pelvis down).
+// kMinRollDip below its height at the touchdown or its end height (a pelvis never sampled stays at 0;
+// a root that follows the pelvis down touches down only once it is back up, past the dip).
 FTCORE_API TraversalClipInfo measureRoll(const TraversalFrame* frames, std::size_t count, float length);
 
 // What the body's probes found ahead.
@@ -151,7 +154,7 @@ public:
     // -1 not known. Clips are taken in index order when they cost the same. Rolls are left out.
     FTCORE_API TraversalPlan plan(const TraversalObstacle& obstacle, float speed, int foot) const;
     // A roll for a body at ground speed `speed` with `foot` planted (as plan()): the roll clip that costs
-    // least by entry speed and take-off foot, entered at its start with its root path as it is (no
+    // least by entry speed and take-off foot, entered at its touchdown with its root path as it is (no
     // offsets). Not ok without a roll clip.
     FTCORE_API TraversalPlan planRoll(float speed, int foot) const;
     // The root at clip time t (from p.start on), from where it was when the plan was made, in the
@@ -171,7 +174,7 @@ private:
     std::array<TraversalClipInfo, kMaxTraversalClips> clips_{};
 };
 
-// The clip's root at time t, from its path.
+// The clip's root at time t, from its path (before a roll's touchdown: where it is at the touchdown).
 FTCORE_API TravPoint traversalPath(const TraversalClipInfo& info, float t);
 
 } // namespace ftcore
