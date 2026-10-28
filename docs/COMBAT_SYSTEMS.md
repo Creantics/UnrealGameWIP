@@ -8,7 +8,7 @@ The game has three combat systems, and each world picks one. Every fight in a wo
 | Arena melee | `arena` | Real time: free movement inside a ring, light and heavy attacks, a dodge roll, guard and parry, stamina, lock-on | `ArenaFight.h` |
 | Beat fight | `beat` | Real time on the music's beat grid: enemies take turns, one bar each, and the lead answers each prompt on its eighth note | `BeatFight.h` |
 
-The rhythm battle is unchanged. This page covers the routing and the two new systems. Both are Core only so far (rules, data, autopilot and tests); the Unreal screens come after the animation merge (see "Unreal work still needed").
+The rhythm battle is unchanged. This page covers the routing and the two new systems. The arena is Core only so far (rules, data, autopilot and tests); its Unreal screen comes after the animation merge (see "Unreal work still needed"). The beat fight has its screen too: a generated map and a game mode, described in [BEAT_SCREEN.md](BEAT_SCREEN.md).
 
 ## Routing
 
@@ -27,7 +27,7 @@ The rhythm battle is unchanged. This page covers the routing and the two new sys
 
 `GameplayPlan` is unchanged: a CMB step still lowers to `GameplayScreen::Battle`. The step dispatcher (`FTStep::Prepare`, `Source/ForgottenThird/FTStepHost.h`) asks the world table which system that step plays and opens its screen:
 
-- A beat fight opens the `Beat` map, once it is built.
+- A beat fight opens the `Beat` map, once it is built (`FTBuildBeatWorld`; see [BEAT_SCREEN.md](BEAT_SCREEN.md)).
 - An arena fight plays in place on the scene's world map, like a field step, once the arena host exists. Until then the arena is left out of `FTStep::kPlayableCombat`.
 - Anything else, and any system whose screen isn't there yet, plays the rhythm battle on `BattleDemo`. That fallback logs one line per system per run and never counts as a warning.
 
@@ -144,7 +144,7 @@ The full rules are in `BeatFight.h`.
 
 ### Clock
 
-`BeatFight` runs on the fight's clock: the music's song time from the host's `Conductor`, or a pause-aware wall clock when no music plays. The def's `bpm` and `offset` place the beat grid, so they must match the cue. Presses are stamped with `Conductor::songTimeForEvent`, as the rhythm battle's are.
+`BeatFight` runs on the fight's clock: the music's song time from the host's `Conductor`, or a pause-aware wall clock when no music plays. The def's `bpm` and `offset` place the beat grid, so they must match the cue. Presses are stamped with `Conductor::songTimeForEvent`, as the rhythm battle's are. The host's rule for choosing between the two (and for `-AlphaFast`) is in [BEAT_SCREEN.md](BEAT_SCREEN.md), "The clock".
 
 ### Judging
 
@@ -169,7 +169,7 @@ The full rules are in `BeatFight.h`.
 
 `BeatFight::autopilot()` presses every prompt on its beat and lets go of each hold at its end. The `qteAutoComplete` assist lets it play the fight, and `holdToggle` makes holds latch, the same options the QTE screen honours.
 
-The tests require two things of every fight within 64 bars: the autopilot wins, and no input loses.
+The tests require two things of every fight within 64 bars: the autopilot wins, and no input loses. `ftcore::BeatScreen` (the screen's state machine) plays that autopilot under autoplay and checks the same thing through the screen: it wins the default fight and every fight in `beat.json`.
 
 ## Techniques used
 
@@ -191,12 +191,7 @@ These wait until the animation session's merge is pushed.
   - Attack, hit, guard and stagger animations, and a dodge roll that reuses the movement work.
   - A lock-on camera.
   - The HUD: hp, stamina, heal charges, the lock marker and the enemy hp.
-- **Beat:**
-  - The beat screen. Its staging is to be decided: in place, or a generated map like the QTE's.
-  - Prompt markers over the enemies.
-  - The cue, with the wall-clock fallback.
-  - The chain and multiplier HUD, and the finisher cue.
-- **Both:** each screen logs one line per fight with ids and counts only, like the other screens. The routing is done (see "Routing").
+- **Logging:** the arena screen logs one line per fight with ids and counts only, like the other screens (the beat screen does already: see [BEAT_SCREEN.md](BEAT_SCREEN.md)). The routing is done (see "Routing").
 
 ## Follow-ups
 
@@ -204,4 +199,5 @@ These wait until the animation session's merge is pushed.
 - A per-encounter override of the world's system.
 - Ranged enemy attacks in the arena.
 - A synthesized beat loop for fights with no cue.
+- In-place staging of beat fights on the world map (the fight plays on its step's world map, as an arena fight does, instead of opening the `Beat` map).
 - Per-lead fighter kits in `arena.json`.
