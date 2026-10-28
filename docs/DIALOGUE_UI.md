@@ -126,15 +126,18 @@ uses the text speed setting), `AutoPlayPause`, `SkipInterval` (0.08 s).
 
 Continuing past a gameplay beat lowers it with `ftcore::GameplayPlan` (its `mode` param, or its kind
 when the mode is empty) and plays the plan's steps in order. Each step shows a banner and, after
-`HandoffDelay` (1.2 s), opens that step's map:
+`HandoffDelay` (1.2 s), opens that step's map. `FTStep::Prepare` (`FTStepHost.h`) fills the carry and
+picks the map:
 
-| Step screen | Tokens | Banner | Map (director property) |
+| Step screen | Tokens | Banner | Map |
 |---|---|---|---|
-| battle | CMB | "Battle!" | `BattleMap`, default `BattleDemo` |
-| field | ENG, PLAY | "Into the field" | `FieldMap`, default `Explore` |
-| choice | CHC, HE | the token ("CHC") | `ChoiceMap`, default `Choice` ([CHOICE_SCREEN.md](CHOICE_SCREEN.md)) |
-| qte | QTE, co-op QTE | the token ("QTE") | `QteMap`, default `Qte` ([QTE_SCREEN.md](QTE_SCREEN.md)) |
-| stub | BNT, CG, MINI, anything unknown | the token ("CG") | `StubMap`, default `Stub` |
+| battle | CMB | "Battle!" | `BattleDemo`; a beat fight's world opens `Beat` once that map is built ([COMBAT_SYSTEMS.md](COMBAT_SYSTEMS.md)) |
+| field | ENG, PLAY | "Into the field" | `Explore`, or the scene's world map (`Data/Field/worlds.json`) |
+| choice | CHC, HE | the token ("CHC") | `Choice` ([CHOICE_SCREEN.md](CHOICE_SCREEN.md)) |
+| qte | QTE, co-op QTE | the token ("QTE") | `Qte` ([QTE_SCREEN.md](QTE_SCREEN.md)) |
+| cutscene | CG | the token ("CG") | `Cutscene` ([CUTSCENE_SCREEN.md](CUTSCENE_SCREEN.md)) |
+| banter, mini | BNT, MINI | the token | `Banter`, `Mini` |
+| stub | anything unknown | the token | `Stub` |
 | none | a plan with no step | none | the beat stays in the box; continuing skips it |
 
 The director logs `Story: step i/n <screen> at <scene> beat <b>.` (the routed screen's name: battle, field, stub, choice, qte or cutscene) (i from 1) for each.
@@ -148,14 +151,18 @@ Before opening a step's map the director fills `UFTGameInstance::StoryCarry` (`F
 | `bValid` | set |
 | `ReturnMap` | the story map to open again when done |
 | `Scene`, `Beat`, `Kind` | the gameplay beat's scene id, index and kind as written |
-| `Screen` | `Battle`, `Field` or `Stub` |
+| `Screen` | the routed screen (`Battle`, `Field`, `Choice`, `Qte`, `Cutscene`, `Banter`, `Mini`, `Stub`) |
+| `Combat` | a battle step's combat system (`ftcore::CombatKind`): its world's when that screen is built, else `Rhythm` |
+| `World`, `District`, `Style`, `FromWorld` | a step in one of the big worlds; `FromWorld` set: the overworld hop comes first |
 | `Step`, `StepCount` | 0-based step within the beat and the plan's step count |
 | `StepToken`, `StepLabel` | the step's token as notation and its qualifiers ("duel"); label empty when none |
 | `bAutoPlay` | the screen plays itself (headless runs) |
 | `bDone`, `bWon` | written by the screen |
 
 A screen reads the carry, plays, then sets `bDone` (and `bWon`) and opens `ReturnMap`; it never
-touches the story. Setting `bDone` false (or leaving it) means it gave up. `-AlphaFast` is read
+touches the story. A screen that can hand over in place calls `FTStep::ContinueHere(this)` first: when the
+beat's next step has a host on this map (`UFTStepHostSubsystem`), that step starts here and the screen
+doesn't open `ReturnMap`. Each step is counted once either way (`FTStep::FinishCarried`). Setting `bDone` false (or leaving it) means it gave up. `-AlphaFast` is read
 through `UFTGameInstance::IsAlphaFast()`; screens apply their own time dilation to their autopilot.
 
 The plan itself lives on the game instance (`UFTGameInstance::Chain`, an `ftcore::StoryChain`), and so

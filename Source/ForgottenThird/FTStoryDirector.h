@@ -10,14 +10,16 @@
 // gameplay beat; 1-4 / pad d-pad pick an option once the prompt is out.
 //
 // Gameplay hand-off: continuing past a gameplay beat lowers it with ftcore::GameplayPlan and plays its
-// steps in order. Each step fills UFTGameInstance::StoryCarry and opens the step's map: BattleMap for
-// a battle (CMB), FieldMap for the field (ENG, PLAY; a scene placed in one of the big worlds by
-// Data/Field/worlds.json opens that world's map instead, when it has been built), ChoiceMap (CHC, HE), QteMap, CutsceneMap (CG),
-// BanterMap (BNT), MiniMap (MINI) and StubMap for the stub screen (unknown tokens). A
-// screen sets carry.bDone and opens carry.ReturnMap; the director spawned there opens the next step,
-// or resumes the story after the last one. A screen that comes back not done is logged and the beat
-// waits in the box. Paced autoplay hands off too (the screens play themselves); fast autoplay skips
-// the hand-off unless -StoryAutoPlayHandoff.
+// steps in order. Each step fills UFTGameInstance::StoryCarry and opens the step's map, both picked by
+// FTStep::Prepare (FTStepHost.h): BattleDemo for a battle (CMB; or its world's combat system's screen),
+// Explore for the field (ENG, PLAY; a scene placed in one of the big worlds by Data/Field/worlds.json
+// opens that world's map instead, when it has been built), Choice (CHC, HE), Qte, Cutscene (CG),
+// Banter (BNT), Mini (MINI) and Stub for the stub screen (unknown tokens). A screen sets carry.bDone,
+// then the beat's next step may start in place on its map (FTStep::ContinueHere); otherwise it opens
+// carry.ReturnMap and the director spawned there opens the next step, or resumes the story after the
+// last one. A screen that comes back not done is logged and the beat waits in the box. Paced autoplay
+// hands off too (the screens play themselves); fast autoplay skips the hand-off unless
+// -StoryAutoPlayHandoff.
 //
 // Moves, scenes and time in the FINISHED line count from this map visit only.
 //
@@ -92,27 +94,7 @@ public:
 	float AutoPlayPause = 0.8f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	bool bQuitOnFinish = false;
-	// Maps the gameplay beats open, and the pause before they do.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
-	FString BattleMap = TEXT("BattleDemo");
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
-	FString FieldMap = TEXT("Explore");
-	// The stub screen's map (AFTStubGameMode).
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
-	FString StubMap = TEXT("Stub");
-	// The choice screen's map (AFTChoiceGameMode, the dialogue loop for CHC and HE).
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
-	FString ChoiceMap = TEXT("Choice");
-	// The quick-time event (AFTQteGameMode) and cutscene (AFTCutsceneGameMode) screens' maps.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
-	FString QteMap = TEXT("Qte");
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
-	FString CutsceneMap = TEXT("Cutscene");
-	// The banter (AFTBanterGameMode, BNT) and mini-game (AFTMiniGameMode, MINI) screens' maps.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
-	FString BanterMap = TEXT("Banter");
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
-	FString MiniMap = TEXT("Mini");
+	// The pause before a gameplay step's map opens (the maps: FTStep::Prepare).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Story")
 	float HandoffDelay = 1.2f;
 
@@ -201,7 +183,8 @@ private:
 	void CacheBeat();
 	void TickAutoPlay(float DeltaSeconds);
 	void ReportFinished();
-	// Back from a gameplay screen: resumes the story if it is still on the handed-off beat.
+	// Back from a gameplay screen: counts its step (FTStep::FinishCarried), then opens the beat's next
+	// step, or resumes the story if it is still on the handed-off beat.
 	void ResumeFromCarry();
 	// Lowers the runner's gameplay beat and starts its first step. False when the beat has no plan
 	// (it is resumed as a plain skip) or a screen already gave up on it in an alpha run.
@@ -209,7 +192,6 @@ private:
 	// Banner, log and the timer that opens the current step's map.
 	void StartStep();
 	void OpenStep();
-	const FString& MapFor(ftcore::GameplayScreen Routed) const;
 	void Quit(int32 ExitCode);
 
 	UPROPERTY()

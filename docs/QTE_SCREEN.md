@@ -8,7 +8,7 @@ The screen that QTE and `co-op QTE` gameplay steps open (`GameplayScreen::Qte` i
 UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildQteWorld [-Map=Qte] -NullRHI -unattended -nopause -nosplash
 ```
 
-Writes `/Game/Maps/Qte`: the stub screen's small lit room (floor, back wall, sun, sky light, one lamp), a camera and a player start, with `AFTQteGameMode` as the default game mode. An existing map file is deleted first. The map is generated, never hand-made. The story director opens it for every QTE and co-op QTE step (`QteMap`, default `Qte`), so it must exist.
+Writes `/Game/Maps/Qte`: the stub screen's small lit room (floor, back wall, sun, sky light, one lamp), a camera and a player start, with `AFTQteGameMode` as the default game mode. An existing map file is deleted first. The map is generated, never hand-made. The story director opens it for every QTE and co-op QTE step (the `Qte` map), so it must exist.
 
 ## Flow
 

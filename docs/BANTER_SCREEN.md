@@ -80,11 +80,11 @@ UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildBanterWorld [-Map=Banter] -
 This writes `/Game/Maps/Banter`: the choice map's room (floor, back wall, sun, sky light, lamp,
 camera, player start) with `WorldSettings.DefaultGameMode` set to `AFTBanterGameMode`. The map is
 generated, never hand-made. **The map has to exist before the alpha runs.** The director opens
-`BanterMap` (`Banter`) for every BNT step.
+the `Banter` map for every BNT step.
 
 ## Flow
 
-1. The story director fills `UFTGameInstance::StoryCarry` and opens `BanterMap`
+1. The story director fills `UFTGameInstance::StoryCarry` and opens the `Banter` map
    ([DIALOGUE_UI.md](DIALOGUE_UI.md), "The contract for a screen").
 2. `AFTBanterGameMode::StartPlay` reads the carry and builds the stub card's text exactly as
    `AFTStubGameMode` does. It then loads `banter/<scene>_<beat>_<step>.json`.

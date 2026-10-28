@@ -113,11 +113,11 @@ UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildChoiceWorld [-Map=Choice] -
 This writes `/Game/Maps/Choice`, the stub map's room (floor, back wall, sun, sky light, lamp,
 camera, player start) with `WorldSettings.DefaultGameMode` set to `AFTChoiceGameMode`. The map is
 generated, never hand-made. **The map has to exist before the alpha runs.** The director opens
-`ChoiceMap` (`Choice`) for every CHC and HE step.
+the `Choice` map for every CHC and HE step.
 
 ## Flow
 
-1. The story director fills `UFTGameInstance::StoryCarry` and opens `ChoiceMap`
+1. The story director fills `UFTGameInstance::StoryCarry` and opens the `Choice` map
    ([DIALOGUE_UI.md](DIALOGUE_UI.md), "The contract for a screen").
 2. `AFTChoiceGameMode::StartPlay` reads the carry and builds the stub card's text exactly as
    `AFTStubGameMode` does. It then loads `loops/<scene>_<beat>_<step>.json`.

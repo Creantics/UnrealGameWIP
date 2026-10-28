@@ -7,6 +7,7 @@
 #include "CoreMinimal.h"
 #include "Engine/GameInstance.h"
 
+#include "ftcore/CombatKind.h"
 #include "ftcore/Dialogue.h"
 #include "ftcore/Explore.h"
 #include "ftcore/Guard.h"
@@ -33,10 +34,11 @@ struct FFTExploreCarry
 	double Seconds = 0.0; // time already spent in the field, for the completion log
 };
 
-// What the story hands to a gameplay screen and gets back: set by AFTStoryDirector before it opens
-// the battle, field or stub map for each step of a gameplay beat. The screen sets bDone (and bWon)
-// and opens ReturnMap; the director there opens the beat's next step, or resumes the story after the
-// last one if the runner is still on the same beat. A screen that gives up leaves bDone false.
+// What the story hands to a gameplay screen and gets back: filled by FTStep::Prepare (FTStepHost.h)
+// for each step of a gameplay beat. The screen sets bDone (and bWon), then either the beat's next step
+// starts in place on its map (FTStep::ContinueHere) or it opens ReturnMap, where the director opens
+// the next step, or resumes the story after the last one if the runner is still on the same beat. A
+// screen that gives up leaves bDone false.
 struct FFTStoryCarry
 {
 	bool bValid = false;
@@ -45,6 +47,9 @@ struct FFTStoryCarry
 	int32 Beat = -1;
 	FString Kind; // gameplay kind as written (CMB, ENG, PLAY); the beat's, not the step's
 	ftcore::GameplayScreen Screen = ftcore::GameplayScreen::Box;
+	// The combat system a battle step plays (its scene's world's, when a screen for it is built; else
+	// the rhythm battle). Rhythm for every other step.
+	ftcore::CombatKind Combat = ftcore::CombatKind::Rhythm;
 	// The step of the beat's ftcore::GameplayPlan this screen plays (0-based) and the plan's step
 	// count. The story resumes only after the last step; a single-screen beat is step 0 of 1.
 	int32 Step = 0;
@@ -102,6 +107,9 @@ public:
 	// The world of the last field step the story opened (empty before the first): a field step in
 	// another world walks the overworld from this one.
 	FString LastWorld;
+	// The combat systems (ftcore::combatBit) whose fights already logged that they play the rhythm
+	// battle instead, so it is said once a run.
+	uint8 CombatFallbackWarned = 0;
 	// The explore pawn's lead (a PartyLooks name) and party toggle as the player last set them, kept
 	// across map changes (a fight and back). Empty and unset until then, so the pawn's config picks.
 	FString ExploreLead;

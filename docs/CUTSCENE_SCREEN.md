@@ -38,7 +38,7 @@ the stub builder does. The map is generated, never hand-made.
 
 ## Flow
 
-1. The story director fills `UFTGameInstance::StoryCarry` and opens `CutsceneMap` (`Cutscene`)
+1. The story director fills `UFTGameInstance::StoryCarry` and opens the `Cutscene` map
    for a CG step, because `ftcore::screenRoutesTo(Cutscene)` now returns `Cutscene`.
 2. `AFTCutsceneGameMode::StartPlay` reads the carry, loads `Data/Cutscene/cutscenes.json` and
    looks up the shot list by the carry's `Scene`, `Beat` and `Step`. If that step isn't listed it

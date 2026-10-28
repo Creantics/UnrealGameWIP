@@ -5,7 +5,6 @@
 #include "TimerManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
-#include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "UObject/UObjectIterator.h"
 #include "Misc/Parse.h"
@@ -17,6 +16,7 @@
 #include "FTPauseSubsystem.h"
 #include "FTPlayerController.h"
 #include "FTSettingsSubsystem.h"
+#include "FTStepHost.h"
 #include "FTStorySubsystem.h"
 #include "FTText.h"
 
@@ -561,33 +561,17 @@ void AFTStoryDirector::ResumeFromCarry()
 	const FFTStoryCarry Carry = GI->StoryCarry;
 	GI->StoryCarry = FFTStoryCarry();
 	const StoryRunner& Runner = Story->GetRunner();
-	const ftcore::StoryPosition Pos = Runner.position();
 	// No title card or scene line for the scene we came back to; a new scene still gets both.
 	SceneEpoch = Runner.sceneEpoch();
-	ftcore::StoryChain& Chain = GI->Chain;
-	if (!Carry.bDone)
+	switch (FTStep::FinishCarried(*GI, Runner, Carry))
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("Story: back from the %s screen before it was done (step %d/%d at %s beat %d); the beat waits in the box."),
-			*FT::ToFString(ftcore::gameplayScreenName(Carry.Screen)), Carry.Step + 1, Carry.StepCount, *Carry.Scene, Carry.Beat);
-		++GI->Alpha.warnings;
-		GI->FailedScene = Carry.Scene;
-		GI->FailedBeat = Carry.Beat;
-		Chain.reset();
+	case FTStep::EFinish::Failed:
 		return;
-	}
-	GI->Alpha.addScreen(Carry.Screen);
-	if (Runner.state() != StoryRunner::State::Gameplay || FT::ToFString(Pos.scene) != Carry.Scene || static_cast<int32>(Pos.beat) != Carry.Beat
-		|| (Chain.active() && static_cast<int32>(Chain.step()) != Carry.Step))
-	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("Story: the story moved since the hand-off at %s beat %d; not resuming."), *Carry.Scene, Carry.Beat);
-		++GI->Alpha.warnings;
-		Chain.reset();
-		return;
-	}
-	if (Chain.active() && Chain.finishStep(true) == ftcore::StoryChain::Next::Open)
-	{
+	case FTStep::EFinish::Next:
 		StartStep();
 		return;
+	case FTStep::EFinish::Resume:
+		break;
 	}
 	const uint32 Epoch = Runner.sceneEpoch();
 	UE_LOG(LogForgottenThird, Log, TEXT("Story: resumed after %s at %s beat %d."), *Carry.Kind, *Carry.Scene, Carry.Beat);
@@ -684,73 +668,8 @@ void AFTStoryDirector::OpenStep()
 		Apply({DialogueCommand::Kind::Resume});
 		return;
 	}
-	const StoryRunner& Runner = Story->GetRunner();
-	const ftcore::GameplayStep& Step = GI->Chain.current();
-	FFTStoryCarry& Carry = GI->StoryCarry;
-	Carry = FFTStoryCarry();
-	Carry.bValid = true;
-	Carry.ReturnMap = UGameplayStatics::GetCurrentLevelName(this, true);
-	Carry.Scene = FT::ToFString(Runner.position().scene);
-	Carry.Beat = static_cast<int32>(Runner.position().beat);
-	Carry.Kind = FT::ToFString(Runner.gameplayKindName());
-	const ftcore::GameplayScreen Routed = ftcore::screenRoutesTo(Step.screen);
-	Carry.Screen = Routed;
-	Carry.Step = static_cast<int32>(GI->Chain.step());
-	Carry.StepCount = static_cast<int32>(GI->Chain.count());
-	Carry.StepLabel = FT::ToFString(Step.label());
-	Carry.StepToken = FT::ToFString(Step.tokenName());
-	Carry.bAutoPlay = bAutoPlay;
-	FString Map = MapFor(Routed);
-	if (Routed == ftcore::GameplayScreen::Field)
-	{
-		// A scene placed in one of the big worlds plays its field steps in its district there.
-		const ftcore::WorldTable& Worlds = GI->GetWorlds();
-		if (const ftcore::WorldScene* Placed = Worlds.findScene(Runner.position().scene))
-		{
-			const ftcore::WorldSpec& World = Worlds.worlds[Placed->world];
-			const FString WorldMap = FT::ToFString(World.map);
-			if (FPackageName::DoesPackageExist(FString::Printf(TEXT("/Game/Maps/%s"), *WorldMap)))
-			{
-				Map = WorldMap;
-				Carry.World = FT::ToFString(World.id);
-				Carry.District = static_cast<int32>(Placed->district);
-				Carry.Style = FT::ToFString(Placed->style.empty() ? World.style : Placed->style);
-				// Another world than the last field step's: walk the overworld between them first.
-				const FString OverMap = FT::ToFString(Worlds.overworld.map);
-				if (Worlds.overworld.present && !GI->LastWorld.IsEmpty() && GI->LastWorld != Carry.World
-					&& FPackageName::DoesPackageExist(FString::Printf(TEXT("/Game/Maps/%s"), *OverMap)))
-				{
-					Map = OverMap;
-					Carry.FromWorld = GI->LastWorld;
-					UE_LOG(LogForgottenThird, Display, TEXT("Story: overworld hop from %s to %s for %s."), *Carry.FromWorld, *Carry.World, *Carry.Scene);
-				}
-				GI->LastWorld = Carry.World;
-			}
-			else
-			{
-				UE_LOG(LogForgottenThird, Warning, TEXT("Story: %s isn't built (FTBuildExploreWorld -World=%s); the field step uses %s."),
-					*WorldMap, *FT::ToFString(World.id), *Map);
-			}
-		}
-	}
+	const FString Map = FTStep::Prepare(*GI, Story->GetRunner(), UGameplayStatics::GetCurrentLevelName(this, true), bAutoPlay);
 	UGameplayStatics::OpenLevel(this, FName(*Map));
-}
-
-const FString& AFTStoryDirector::MapFor(ftcore::GameplayScreen Routed) const
-{
-	switch (Routed)
-	{
-	case ftcore::GameplayScreen::Battle: return BattleMap;
-	case ftcore::GameplayScreen::Field: return FieldMap;
-	case ftcore::GameplayScreen::Choice: return ChoiceMap;
-	case ftcore::GameplayScreen::Qte: return QteMap;
-	case ftcore::GameplayScreen::Cutscene: return CutsceneMap;
-	case ftcore::GameplayScreen::Banter: return BanterMap;
-	case ftcore::GameplayScreen::Mini: return MiniMap;
-	case ftcore::GameplayScreen::Box:
-	case ftcore::GameplayScreen::Stub: break;
-	}
-	return StubMap;
 }
 
 double AFTStoryDirector::GetBannerAge() const

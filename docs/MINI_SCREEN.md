@@ -84,11 +84,11 @@ UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildMiniWorld [-Map=Mini] -Null
 
 This writes `/Game/Maps/Mini`: the choice map's room (floor, back wall, sun, sky light, lamp,
 camera, player start) with `WorldSettings.DefaultGameMode` set to `AFTMiniGameMode`. The map is
-generated, never hand-made. The director opens `MiniMap` (`Mini`) for every MINI step.
+generated, never hand-made. The director opens the `Mini` map for every MINI step.
 
 ## Flow
 
-1. The story director fills `UFTGameInstance::StoryCarry` and opens `MiniMap`.
+1. The story director fills `UFTGameInstance::StoryCarry` and opens the `Mini` map.
 2. `AFTMiniGameMode::StartPlay` loads the table and picks the step's round. It logs
    `Mini: round at <scene> beat <b> step <s>: steps <n> lanes <l> bpm <bpm> tries <t>.`
 3. `AFTMiniHUD` draws four lanes in arrow order (lanes the round doesn't use are dim), the falling
