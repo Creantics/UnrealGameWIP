@@ -47,6 +47,11 @@
 // travel matches the capsule's remaining braking distance (LocoInput::stopDistance), then its
 // settle, then idle. Heading off again mid-stop goes back to the gait the same way.
 //
+// A clip the caller plays over the layers (a vault, climb, catch, slide or roll) hands the body back
+// with its feet (handBack): a body moving on goes straight to its gaits at full weight, at the foot
+// phase whose feet best continue the clip's, rather than from wherever its own clips got to under it
+// or through a start; the caller fades its clip out over them.
+//
 // Turns, when the caller steers (LocoInput::steer) and the clips have their root's yaw measured
 // (measureMove): the body faces the way it moves, easing toward it (yawStep). Heading at least turnMin
 // away from both its facing and the way it moves while running plays a running turn: the clip whose
@@ -372,6 +377,13 @@ public:
     // Back to standing idle at full weight.
     FTCORE_API void reset();
     FTCORE_API void update(const LocoInput& in);
+    // A clip played over the layers (a vault, climb, catch, slide or roll) hands the body back: its feet where it lets
+    // go, relative to its root and turned back by the yaw that root has turned from the gaits' at their first frame (so
+    // they compare with LocoClipInfo::feet), and their velocity relative to the root. On the next update a body on the
+    // ground moving on (at moveStart or more, or on its gaits at moveStop or more) goes straight to its gaits at full
+    // weight, at the foot phase whose feet best continue the clip's, with no start. One standing or barely setting off
+    // (its start plays), or in the air (the fall and the landing take it from there), is left as it is.
+    FTCORE_API void handBack(const LocoFeet& feet, const LocoFeet& velocity);
 
     LocoState state() const { return state_; }
     // The clip the blend is heading for (on the ground, the heaviest gait).
@@ -460,6 +472,9 @@ private:
     // otherwise from its start. False when there is none.
     bool beginTurn(const LocoInput& in, LocoClip first, LocoClip last, float angle, bool matchFeet, bool pivot);
     void syncGaits(LocoClip from, float time, float speed);
+    // Puts the gaits at the foot phase whose feet best continue `feet` (moving at `velocity`), g in that stride of its
+    // loop, and g's time there.
+    void matchGaits(LocoClip g, const LocoFeet& feet, const LocoFeet& velocity, float speed);
     void retarget(LocoClip next);
     void advance(float dt, float speed, float leadPhase, float leadStride);
     // Takes up the stance asked for: getting down or up when standing still.
@@ -499,7 +514,7 @@ private:
     float drop_ = 0.f; // fallen since the highest point in the air (cm)
     float landTime_ = -1.f; // since a landing touched down, on through the hand-back to the gaits (below 0: none)
     bool landFell_ = false; // the landing touched down from a fall (the air pose's arms hold into it)
-    float groundTime_ = 0.f; // seconds in Ground since a start, a turn or a landing
+    float groundTime_ = 0.f; // seconds in Ground since a start, a turn, a landing or a hand-back
     float lean_ = 0.f;
     float twist_ = 0.f;
     float pitch_ = 0.f;
@@ -513,6 +528,8 @@ private:
     bool crouched_ = false;
     float crouch_ = 0.f; // the crouch walk's share of the gaits
     bool landRoll_ = false;
+    bool handBack_ = false; // a clip over the layers handed the body back (handBack), for the next update
+    LocoFeet handFeet_, handVelocity_;
 };
 
 } // namespace ftcore

@@ -204,6 +204,55 @@ bool SampleFeet(const UAnimSequence& Clip, TArray<ftcore::GaitFrame>& Frames, TA
 	return true;
 }
 
+// The clip's ball (or foot) bones at Time relative to its root, turned back by the yaw its root has turned from Yaw0
+// (degrees), as Core measures a gait's from that gait's first frame (ftcore::LocoClipInfo::feet), and with Velocity
+// their velocity played at rate 1, over 1/60 s either side kept within the clip. False when the clip has no
+// skeleton, length or feet.
+bool ClipFeet(const UAnimSequence& Clip, double Time, float Yaw0, ftcore::LocoFeet& Feet, ftcore::LocoFeet* Velocity = nullptr)
+{
+	const double Length = Clip.GetPlayLength();
+	const USkeleton* Skeleton = Clip.GetSkeleton();
+	if (!Skeleton || Length <= 0.0)
+	{
+		return false;
+	}
+	const FReferenceSkeleton& Ref = Skeleton->GetReferenceSkeleton();
+	auto Find = [&Ref](const TCHAR* A, const TCHAR* B)
+	{
+		const int32 I = Ref.FindBoneIndex(A);
+		return I != INDEX_NONE ? I : Ref.FindBoneIndex(B);
+	};
+	const int32 Left = Find(TEXT("ball_l"), TEXT("foot_l"));
+	const int32 Right = Find(TEXT("ball_r"), TEXT("foot_r"));
+	if (Left == INDEX_NONE || Right == INDEX_NONE)
+	{
+		return false;
+	}
+	auto At = [&](double T)
+	{
+		const FTransform Root = ClipBoneCS(Clip, Ref, 0, T);
+		const double A = FMath::DegreesToRadians(Root.Rotator().Yaw - Yaw0);
+		const double C = FMath::Cos(A), S = FMath::Sin(A);
+		auto Rel = [&](int32 Bone)
+		{
+			const FVector D = ClipBoneCS(Clip, Ref, Bone, T).GetTranslation() - Root.GetTranslation();
+			return ftcore::LocoPoint{float(D.X * C + D.Y * S), float(D.Y * C - D.X * S), float(D.Z)};
+		};
+		return ftcore::LocoFeet{Rel(Left), Rel(Right)};
+	};
+	const double Now = FMath::Clamp(Time, 0.0, Length);
+	Feet = At(Now);
+	if (Velocity)
+	{
+		const double From = FMath::Max(Now - 1.0 / 60.0, 0.0), To = FMath::Min(Now + 1.0 / 60.0, Length);
+		const ftcore::LocoFeet A = At(From), B = At(To);
+		const float S = To > From ? float(1.0 / (To - From)) : 0.f;
+		auto Rate = [S](const ftcore::LocoPoint& P, const ftcore::LocoPoint& Q) { return ftcore::LocoPoint{(Q.x - P.x) * S, (Q.y - P.y) * S, (Q.z - P.z) * S}; };
+		*Velocity = {Rate(A.left, B.left), Rate(A.right, B.right)};
+	}
+	return true;
+}
+
 // -LocoJumpDump: each jump, fall, landing and land roll clip's root, and its pelvis, feet, hands and head heights,
 // in its component space every 1/30 s (cm), for timing its take-off, peak and touchdown. Each clip is the one next to
 // RunLoop (a body's retarget) where there is one, else the mocap sample's own.
@@ -550,6 +599,16 @@ void UFTLocomotionAnimInstance::SetTraversalFromRun()
 	TArray<ftcore::LocoPoint> Pelvis;
 	TArray<ftcore::TraversalFrame> Frames;
 	int32 Found = 0;
+	// The gaits' feet are measured turned to their own first frame's root yaw, and a traversal's are handed back to them
+	// turned to the run's (ClipFeet): the log shows whether the clips agree, each traversal clip's from its first frame
+	// to its last.
+	auto RootYaw = [](const UAnimSequence& Seq, double Time)
+	{
+		const USkeleton* Skeleton = Seq.GetSkeleton();
+		return Skeleton ? static_cast<float>(ClipBoneCS(Seq, Skeleton->GetReferenceSkeleton(), 0, Time).Rotator().Yaw) : 0.f;
+	};
+	GaitYaw0 = Loop ? RootYaw(*Loop, 0.0) : 0.f;
+	FString Yaws;
 	for (int32 I = 0; I < NumTraversalClips; ++I)
 	{
 		// A traversal or catch clip's name stands in for the run loop's _Run_Loop_F, a slide clip's for its whole name.
@@ -567,6 +626,10 @@ void UFTLocomotionAnimInstance::SetTraversalFromRun()
 			}
 		}
 		TraversalClips[I] = Clip;
+		if (Clip)
+		{
+			Yaws += FString::Printf(TEXT(" %d %.1f>%.1f"), I, RootYaw(*Clip, 0.0), RootYaw(*Clip, Clip->GetPlayLength()));
+		}
 		const bool bSampled = Clip && SampleFeet(*Clip, Gait, &Pelvis);
 		if (bSampled)
 		{
@@ -664,6 +727,15 @@ void UFTLocomotionAnimInstance::SetTraversalFromRun()
 	if (Loop)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: %d of %d traversal, slide and catch clips next to %s."), Found, NumTraversalClips, *Loop->GetName());
+		FString Gaits;
+		for (const ftcore::LocoClip G : {ftcore::LocoClip::Walk, ftcore::LocoClip::Sprint, ftcore::LocoClip::CrouchWalk})
+		{
+			if (const UAnimSequence* Seq = Clips[static_cast<int32>(G)].Get())
+			{
+				Gaits += FString::Printf(TEXT(", %s %.1f"), ClipName(G), RootYaw(*Seq, 0.0));
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: root yaw at the first frame, Run %.1f%s; traversal clips' (first>last):%s"), GaitYaw0, *Gaits, *Yaws);
 	}
 }
 
@@ -811,6 +883,33 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	};
 	const UAnimSequence* Trav = TravClip >= 0 && TravClip < NumTraversalClips ? TraversalClips[TravClip].Get() : nullptr;
 	const float TravLength = Trav ? Trav->GetPlayLength() : 0.f;
+	// Let go since the last update: the locomotion is handed the clip's feet where it was then, to take the body back at
+	// the foot phase that continues them (both step on from there over this frame), unless the clip barely showed over
+	// it. Locomotion leaves a body standing or in the air as it is. -LocoNoHandBack lets the clip go as before, for
+	// comparing.
+	static const bool bNoHandBack = FParse::Param(FCommandLine::Get(), TEXT("LocoNoHandBack"));
+	ftcore::LocoFeet HandFeet, HandVelocity;
+	const bool bLetGo = bTravHandBack && Trav && TravOutFrom >= 0.5f && ClipFeet(*Trav, TravTime, GaitYaw0, HandFeet, &HandVelocity);
+	const bool bHandBack = bLetGo && !bNoHandBack;
+	bTravHandBack = false;
+	const float HandTime = TravTime;
+	if (bHandBack)
+	{
+		Loco.handBack(HandFeet, HandVelocity);
+	}
+	// For the log: the layer the body showed most under the clip, and where.
+	ftcore::LocoClip Under = ftcore::LocoClip::Count;
+	float UnderTime = 0.f, UnderWeight = 0.f;
+	for (std::size_t I = 0; bLetGo && bLog && I < Loco.layerCount(); ++I)
+	{
+		const ftcore::LocoLayer& L = Loco.layer(I);
+		if (L.weight > UnderWeight)
+		{
+			Under = L.clip;
+			UnderTime = L.time;
+			UnderWeight = L.weight;
+		}
+	}
 	if (Trav && bTravOut)
 	{
 		TravOutFor += DeltaSeconds;
@@ -856,6 +955,34 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		In.turnBy = 0.f;
 	}
 	Loco.update(In);
+
+	// A hand-back's log: each foot's gap between the clip's and the locomotion's, under it as it let go and now.
+	if (bLetGo && bLog)
+	{
+		auto Apart = [this](ftcore::LocoClip C, float Time, const ftcore::LocoFeet& To)
+		{
+			const UAnimSequence* Seq = C < ftcore::LocoClip::Count ? Clips[static_cast<int32>(C)].Get() : nullptr;
+			ftcore::LocoFeet F;
+			if (!Seq || !ClipFeet(*Seq, Time, GaitYaw0, F))
+			{
+				return FVector2f(-1.f, -1.f);
+			}
+			auto Gap = [](const ftcore::LocoPoint& P, const ftcore::LocoPoint& Q)
+			{
+				return FMath::Sqrt(FMath::Square(P.x - Q.x) + FMath::Square(P.y - Q.y) + FMath::Square(P.z - Q.z));
+			};
+			return FVector2f(Gap(F.left, To.left), Gap(F.right, To.right));
+		};
+		ftcore::LocoFeet ClipNow;
+		ClipFeet(*Trav, TravTime, GaitYaw0, ClipNow);
+		const ftcore::LocoClip Now = Loco.target();
+		const FVector2f Before = Apart(Under, UnderTime, HandFeet);
+		const FVector2f After = Apart(Now, Loco.time(Now), ClipNow);
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("Locomotion %s: %s from %s at %.2f s (weight %.2f) at %.0f cm/s, its feet L %.1f R %.1f cm from %s at %.2f s under it, now L %.1f R %.1f cm from %s at %.2f s"),
+			*Owner->GetName(), bHandBack ? TEXT("hands back") : TEXT("lets go"), *Trav->GetName(), HandTime, TravOutFrom, In.groundSpeed, Before.X, Before.Y,
+			Under < ftcore::LocoClip::Count ? ClipName(Under) : TEXT("nothing"), UnderTime, After.X, After.Y, ClipName(Now), Loco.time(Now));
+	}
 
 	if (const USkeletalMeshComponent* Mesh = GetSkelMeshComponent())
 	{

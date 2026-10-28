@@ -195,7 +195,8 @@ public:
 	// Plays traversal clip Clip (a TraversalPlan's) at clip time Time over the locomotion, fading in over its first
 	// moments and out by its end; the owner moves the body along TraversalSet::rootAt and calls this every frame,
 	// then with Clip -1 when it hands the body back: the clip plays on at its own pace while it fades out over
-	// kTraversalOut (sooner by its end). The clip's root is held like the locomotion's: the owner carries it.
+	// kTraversalOut (sooner by its end), and the locomotion takes the body back with the clip's feet where it let go
+	// (ftcore::Locomotion::handBack). The clip's root is held like the locomotion's: the owner carries it.
 	// A clip asked for while another plays takes over from it over kTraversalSwitch, the other playing on at its own
 	// pace as it fades (a slide's clips, one after another). bLoop loops the clip, and neither a looping clip nor one
 	// asked for with bEndFade false fades by its end: the owner goes on from it into another, or lets it go first.
@@ -206,6 +207,7 @@ public:
 			if (TravClip >= 0 && !bTravOut)
 			{
 				bTravOut = true;
+				bTravHandBack = true;
 				TravOutFor = 0.f;
 				TravOutFrom = TravWeight;
 			}
@@ -224,6 +226,7 @@ public:
 			PrevClip = -1;
 		}
 		bTravOut = false;
+		bTravHandBack = false;
 		TravClip = Clip;
 		TravTime = Time;
 		bTravLoop = bLoop;
@@ -305,7 +308,8 @@ private:
 	ftcore::SlideSet Slide;
 	// The traversal playing (-1 none), its clip time, how long it has played, its weight over the locomotion and
 	// whether it loops or fades by its end; once its owner has let it go (bTravOut), how long since and the weight it
-	// had then. The one it is taking over from (-1 none): its clip time, how long since and whether it loops.
+	// had then, and until the next update (bTravHandBack) that the locomotion has its feet to take the body back with.
+	// The one it is taking over from (-1 none): its clip time, how long since and whether it loops.
 	int32 TravClip = -1;
 	float TravTime = 0.f;
 	float TravElapsed = 0.f;
@@ -313,8 +317,12 @@ private:
 	bool bTravLoop = false;
 	bool bTravEndFade = true;
 	bool bTravOut = false;
+	bool bTravHandBack = false;
 	float TravOutFor = 0.f;
 	float TravOutFrom = 0.f;
+	// The run loop's root yaw at its first frame (degrees): the gaits' feet are measured turned to theirs, and a
+	// traversal's are handed back turned to this.
+	float GaitYaw0 = 0.f;
 	int32 PrevClip = -1;
 	float PrevTime = 0.f;
 	float PrevFor = 0.f;

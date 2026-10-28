@@ -1165,6 +1165,156 @@ TEST_CASE("locomotion: letting go mid-start stops; a blocked or unknown heading 
 
 namespace {
 
+// The run's feet (makeMoveLoco) at time t of its loop, relative to its root: what a clip over the layers letting go on
+// the run's foot phase there hands back. Their velocity played at `rate`.
+LocoFeet runFeet(float t) {
+    LocoFeet f;
+    for (int side = 0; side < 2; ++side) {
+        float x, z;
+        stepFoot(t / 0.6f + (side ? 0.5f : 0.f), kStride, false, x, z);
+        (side ? f.right : f.left) = {x, side ? 10.f : -10.f, z - 90.f};
+    }
+    return f;
+}
+
+LocoFeet runFeetVelocity(float t, float rate = 1.f) {
+    const float h = 1.f / 120.f, s = rate / (2.f * h);
+    const LocoFeet a = runFeet(t - h), b = runFeet(t + h);
+    const auto v = [s](const LocoPoint& p, const LocoPoint& q) { return LocoPoint{(q.x - p.x) * s, (q.y - p.y) * s, (q.z - p.z) * s}; };
+    return {v(a.left, b.left), v(a.right, b.right)};
+}
+
+// The run handed back at t is there one frame on, within two samples of its move track: the match steps by one, and
+// a foot lifting between two of the run's 60 fps frames (the right one at 0.06 s) blurs its velocity there enough to
+// pull the match one more (at t 0.05 it picks 0.038, the feet 5 cm off).
+bool runPicksUp(const Locomotion& l, float t) {
+    const LocoClipInfo& r = l.clip(LocoClip::Run);
+    const float want = std::fmod(t + kDt * l.rate(LocoClip::Run), r.length);
+    const float d = std::fabs(l.time(LocoClip::Run) - want);
+    return std::fmin(d, r.length - d) <= 2.f * r.moveTime / static_cast<float>(kMoveSamples - 1) + 1e-3f;
+}
+
+bool samePose(const Locomotion& a, const Locomotion& b) {
+    if (a.state() != b.state() || a.target() != b.target() || a.phase() != b.phase() || a.layerCount() != b.layerCount()) return false;
+    for (std::size_t i = 0; i < a.layerCount(); ++i) {
+        const LocoLayer &p = a.layer(i), &q = b.layer(i);
+        if (p.clip != q.clip || p.time != q.time || p.weight != q.weight) return false;
+    }
+    return true;
+}
+
+} // namespace
+
+TEST_CASE("locomotion: handed back moving, the body goes straight to its gait at the phase that continues the clip's feet") {
+    // Standing under a clip that lets go at a run (a vault, say): the run at full weight, and no start.
+    for (const float t : {0.05f, 0.23f, 0.41f, 0.53f}) {
+        CAPTURE(t);
+        Locomotion l = makeMoveLoco();
+        l.handBack(runFeet(t), runFeetVelocity(t));
+        l.update({kDt, 450.f, 0.f, false, 0.f, 450.f, -1.f});
+        CHECK(l.state() == LocoState::Ground);
+        CHECK(l.target() == LocoClip::Run);
+        CHECK(l.weight(LocoClip::Run) == doctest::Approx(1.f));
+        CHECK(l.layerCount() == 1);
+        CHECK(runPicksUp(l, t));
+        // It runs on from there, stepping with the capsule.
+        const float phase = l.phase();
+        l.update({kDt, 450.f, 0.f, false, 0.f, 450.f, -1.f});
+        CHECK(l.state() == LocoState::Ground);
+        CHECK(l.weight(LocoClip::RunStart) == 0.f);
+        CHECK(phaseApart(l.phase(), phase + kDt * 450.f / l.strideLength()) < 1e-3f);
+    }
+
+    // Running under it, at whatever phase its own clips got to: the run takes the clip's, here half a stride on.
+    Locomotion l = makeMoveLoco();
+    Capsule c;
+    for (int i = 0; i < 90; ++i) l.update(c.step(450.f));
+    REQUIRE(l.target() == LocoClip::Run);
+    float t = std::fmod(l.time(LocoClip::Run) + 0.3f, 0.6f);
+    l.handBack(runFeet(t), runFeetVelocity(t));
+    l.update(c.step(450.f));
+    CHECK(l.state() == LocoState::Ground);
+    CHECK(runPicksUp(l, t));
+
+    // Slowed on its gait to below moveStart (a slide letting go, say): the same.
+    l = makeMoveLoco();
+    c = Capsule{};
+    for (int i = 0; i < 90; ++i) l.update(c.step(450.f));
+    t = 0.37f;
+    l.handBack(runFeet(t), runFeetVelocity(t, 20.f / 450.f));
+    l.update({kDt, 20.f, 0.f, false, 0.f, -1.f, -1.f});
+    CHECK(l.target() == LocoClip::Run);
+    CHECK(runPicksUp(l, t));
+
+    // Touching down as the clip lets go: the run, not the landing.
+    l = makeMoveLoco();
+    l.setClip(LocoClip::Fall, {0.8f, 0.f, 1, 0.f});
+    LocoClipInfo land{0.8f, 450.f, 1, 0.f};
+    land.contact = 0.2f;
+    l.setClip(LocoClip::LandMoving, land);
+    l.reset();
+    c = Capsule{};
+    for (int i = 0; i < 90; ++i) l.update(c.step(450.f));
+    run(l, 0.5f, {0.f, 450.f, 0.f, true, -300.f, 450.f, -1.f});
+    REQUIRE(l.state() == LocoState::Falling);
+    t = 0.11f;
+    l.handBack(runFeet(t), runFeetVelocity(t));
+    l.update({kDt, 450.f, 0.f, false, 0.f, 450.f, -1.f});
+    CHECK(l.state() == LocoState::Ground);
+    CHECK(l.target() == LocoClip::Run);
+    CHECK(l.weight(LocoClip::Run) == doctest::Approx(1.f));
+    CHECK(runPicksUp(l, t));
+}
+
+TEST_CASE("locomotion: handed back standing, barely setting off or in the air, the body goes on as it would have") {
+    const LocoFeet feet = runFeet(0.23f), velocity = runFeetVelocity(0.23f);
+
+    // Standing: it idles, then sets off with its start.
+    Locomotion a = makeMoveLoco(), b = makeMoveLoco();
+    Capsule ca, cb;
+    a.handBack(feet, velocity);
+    a.update(ca.step(0.f));
+    b.update(cb.step(0.f));
+    CHECK(samePose(a, b));
+    CHECK(a.target() == LocoClip::Idle);
+    for (int i = 0; i < 10; ++i) {
+        a.update(ca.step(450.f));
+        b.update(cb.step(450.f));
+    }
+    CHECK(samePose(a, b));
+    CHECK(a.state() == LocoState::Starting);
+
+    // Barely setting off from a stand: its start sets it off.
+    a = makeMoveLoco();
+    b = makeMoveLoco();
+    a.handBack(feet, velocity);
+    a.update({kDt, 15.f, 0.f, false, 0.f, 450.f, -1.f});
+    b.update({kDt, 15.f, 0.f, false, 0.f, 450.f, -1.f});
+    CHECK(samePose(a, b));
+    CHECK(a.state() == LocoState::Starting);
+
+    // In the air: it falls and lands as it would have.
+    a = makeMoveLoco();
+    a.setClip(LocoClip::Fall, {0.8f, 0.f, 1, 0.f});
+    a.setClip(LocoClip::LandMoving, {0.8f, 450.f, 1, 0.f});
+    a.reset();
+    ca = Capsule{};
+    for (int i = 0; i < 90; ++i) a.update(ca.step(450.f));
+    run(a, 0.5f, {0.f, 450.f, 0.f, true, -300.f, 450.f, -1.f});
+    REQUIRE(a.state() == LocoState::Falling);
+    b = a;
+    a.handBack(feet, velocity);
+    a.update({kDt, 450.f, 0.f, true, -300.f, 450.f, -1.f});
+    b.update({kDt, 450.f, 0.f, true, -300.f, 450.f, -1.f});
+    CHECK(samePose(a, b));
+    a.update({kDt, 450.f, 0.f, false, 0.f, 450.f, -1.f});
+    b.update({kDt, 450.f, 0.f, false, 0.f, 450.f, -1.f});
+    CHECK(samePose(a, b));
+    CHECK(a.state() == LocoState::Landing);
+}
+
+namespace {
+
 float smoothStep(float t, float a, float b) {
     const float u = std::fmin(std::fmax((t - a) / (b - a), 0.f), 1.f);
     return u * u * (3.f - 2.f * u);
@@ -1758,7 +1908,10 @@ TEST_CASE("locomotion: update does not allocate") {
     Locomotion m = makeMoveLoco();
     const auto moving = ftcore_test::allocStats().count;
     Capsule c;
-    for (int i = 0; i < 600; ++i) m.update(c.step(i % 200 < 100 ? 450.f : 0.f));
+    for (int i = 0; i < 600; ++i) {
+        if (i % 200 == 50) m.handBack(m.clip(LocoClip::Run).feet[20], {});
+        m.update(c.step(i % 200 < 100 ? 450.f : 0.f));
+    }
     CHECK(ftcore_test::allocStats().count == moving);
     Locomotion t = makeTurnLoco();
     const auto turning = ftcore_test::allocStats().count;

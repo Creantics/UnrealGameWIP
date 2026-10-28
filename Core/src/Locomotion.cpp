@@ -338,6 +338,13 @@ void Locomotion::reset() {
     crouched_ = false;
     crouch_ = 0.f;
     landRoll_ = false;
+    handBack_ = false;
+}
+
+void Locomotion::handBack(const LocoFeet& feet, const LocoFeet& velocity) {
+    handBack_ = true;
+    handFeet_ = feet;
+    handVelocity_ = velocity;
 }
 
 float Locomotion::footPhase(LocoClip c, float t) const {
@@ -525,15 +532,18 @@ float Locomotion::turnAngle() const {
 }
 
 void Locomotion::syncGaits(LocoClip from, float t, float speed) {
-    const LocoClip g = gait_;
-    if (!isLocoGait(g) || !hasMove(from) || !hasMove(g)) return;
+    if (!isLocoGait(gait_) || !hasMove(from)) return;
     float gaits = 0.f;
     for (const LocoClip c : kGaits) gaits += weight_[index(c)];
     if (gaits >= 0.5f) return; // the gaits still show: keep them going as they are
-    // The time in the gait whose feet best continue the clip's.
     const LocoClipInfo& src = clip(from);
+    matchGaits(gait_, feetAt(src, t), feetVelocity(src, t, rate_[index(from)]), speed);
+}
+
+void Locomotion::matchGaits(LocoClip g, const LocoFeet& a, const LocoFeet& av, float speed) {
+    if (!hasMove(g)) return;
+    // The time in the gait whose feet best continue these.
     const LocoClipInfo& dst = clip(g);
-    const LocoFeet a = feetAt(src, t), av = feetVelocity(src, t, rate_[index(from)]);
     const float rate = dst.groundSpeed > 0.f ? speed / dst.groundSpeed : 1.f;
     float best = 0.f, bestTime = 0.f;
     for (std::size_t k = 0; k < kMoveSamples; ++k) {
@@ -544,12 +554,14 @@ void Locomotion::syncGaits(LocoClip from, float t, float speed) {
             bestTime = tt;
         }
     }
-    // That time as the shared phase and the gait's stride within its loop (the others start at their first).
+    // That time as the shared phase and the gait's stride within its loop (the others start at their first). The gait
+    // is there now, for a stop or a turn matched to its feet this frame, and steps on from there with the phase.
     const float u = (bestTime / dst.length - dst.leftPlant) * static_cast<float>(dst.cycles);
     const float whole = std::floor(u);
     phase_ = u - whole;
     stride_.fill(0);
     stride_[index(g)] = ((static_cast<int>(whole) % dst.cycles) + dst.cycles) % dst.cycles;
+    time_[index(g)] = bestTime;
 }
 
 LocoClip Locomotion::moveTarget(const LocoInput& in, float speed, LocoClip& syncFrom, float& syncTime) {
@@ -875,6 +887,22 @@ void Locomotion::update(const LocoInput& in) {
     crouch_ += (crouchTo - crouch_) * follow(dt, tuning_.crouchFade);
     if (std::fabs(crouchTo - crouch_) < 0.01f) crouch_ = crouchTo;
     splitGaits(speed);
+    // A clip over the layers handing the body back (handBack): one moving on on the ground goes straight to its gaits,
+    // at the phase that continues the clip's feet. The rest of the frame finds it on them, as if it had run all along.
+    if (handBack_) {
+        handBack_ = false;
+        const bool air = state_ == LocoState::Rising || state_ == LocoState::Falling;
+        // Barely moving from a stand, its start sets it off better than a gait at a crawl.
+        const bool on = speed >= tuning_.moveStart || (speed >= tuning_.moveStop && isLocoGait(gait_));
+        const LocoClip g = heaviestGait();
+        if (!air && on && hasMove(g) && (crouched_ || has(LocoClip::Walk) || has(LocoClip::Run) || has(LocoClip::Sprint))) {
+            state_ = LocoState::Ground;
+            gait_ = target_ = g;
+            groundTime_ = 0.f;
+            for (std::size_t i = 0; i < kLocoClipCount; ++i) weight_[i] = isLocoGait(static_cast<LocoClip>(i)) ? share_[i] : 0.f;
+            matchGaits(g, handFeet_, handVelocity_, speed);
+        }
+    }
     LocoClip next = target_;
     LocoClip syncFrom = LocoClip::Count;
     float syncTime = 0.f;
