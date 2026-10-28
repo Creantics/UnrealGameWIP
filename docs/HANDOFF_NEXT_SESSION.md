@@ -1,12 +1,47 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-27 night. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-28 early morning. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-27 late night): the pause menu, items and the combat outline are on main. The demo checkout is
+- **NEWEST (2026-10-28 early morning): the beat fight screen is on main, one lead's floating brow is fixed, and the
+  in-place cutscenes come next.**
+  - main is 9af57aa. Since 92a101d it holds:
+    - the beat fight in Core (983b82b) and its screen: game mode, HUD and the generated `Beat` map (e5a4e1e, 9af57aa);
+    - the arena melee in Core: rules, enemy brain, autopilot and a starter roster (19ca2e4);
+    - in-place cutscene playback in Core: blend-in and blend-out, version 2 tables and a blockout stage anchored on
+      the lead (b73c0de);
+    - one story-step dispatcher that fills the carry, picks the map and can start the next step in place (b574c43);
+    - the knight enemy renamed `husk_knight`, so no enemy borrows another game's title (299e06b);
+    - the animation session's running-turn bank (9d41292), party hold (c362b77) and traversal query (1d9b953).
+  - Gate: 735 doctest cases, ctest 4/4, UBT Succeeded.
+  - The demo checkout is at 1d9b953 with UBT Succeeded and the Beat map built. A full alpha rerun is in progress.
+  - **Floating brow, root cause:** one lead's custom brow groom had its binding's source mesh and its material slots
+    pointing into the MetaHumanCharacter plugin. Checkouts without that plugin (all but the demo checkout) loaded an
+    invalid binding, so the groom drew unbound, in front of the face.
+    - Fix: the groom copy, its material instances, the binding and a `/Game` copy of the plugin's groom head and
+      skeleton now all live under `/Game`, made by a private editor script. A plugin-less run shows no load errors,
+      and the lead spawns with both grooms.
+    - These assets sit in the MetaHuman folders, which stay local. They were copied by hand into both
+      animation-session checkouts.
+  - **Asset list for test assets:** a prioritised list of simple props and kits is in the user's GameAssets repo, at
+    https://github.com/Creantics/GameAssets/blob/claude/nice-clarke-t1hlvm/ASSET_LIST.md. P0 is used now, P1 is the
+    world kits and P2 can wait. It sets the delivery rules: an extra `.glb` per asset, `Glow_*` versus `Emit_*`
+    emissive names, climb heights and pivots. Only that file is ours; the rest of the repo belongs to the asset
+    session.
+  - The animation session has the full list of animations the game needs: locomotion, turning, traversal, combat per
+    lead and weapon, interactions, and cutscene idles and reactions. It is fixing the turn feel in walk and run first.
+  - **Next: seamless cutscenes, in place.** A story cutscene plays on the world map the player is already on. The
+    camera eases from the live gameplay camera to the first shot and back, the followers walk to their marks, and
+    input returns at the end. It lands in gated slices:
+    1. director in-place mode, a cutscene host subsystem and the field-to-cutscene hand-off;
+    2. a cutscene step that arrives on a fresh map load, and routing a cutscene to the world it is placed in;
+    3. the HUD and the followers;
+    4. the stage-mark table read from Core.
+    After each slice the alpha must still show 167 screens, 12 hops, 0 STUCK and 0 warnings.
+- **Earlier (2026-10-27 late night): the pause menu, items and the combat outline are on main. The demo checkout is
   built and checked.**
   - main is 92a101d. It holds:
     - items in Core (5effafd): inventory, item table, enemy drops, `Battle::useItem`, shops;
