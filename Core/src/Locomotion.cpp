@@ -847,8 +847,12 @@ void Locomotion::update(const LocoInput& in) {
     limbs_.time = clip(LocoClip::AirPose).length;
 
     // Facing: outside a turn, ease toward the way the body moves.
-    yawStep_ = in.steer && state_ != LocoState::Turning && speed >= tuning_.moveStop
-        ? wrap180(in.moveYaw - in.yaw) * follow(dt, tuning_.faceTime) : 0.f;
+    // The step is only measured over time that passes: a character with root motion poses twice a frame, the
+    // second time with no time passed, before its owner takes the step, which that pose would leave at 0. A
+    // turn begun there, or a body no longer steering, still stops it at once.
+    const bool steering = in.steer && state_ != LocoState::Turning && speed >= tuning_.moveStop;
+    if (!steering) yawStep_ = 0.f;
+    else if (dt > 0.f) yawStep_ = wrap180(in.moveYaw - in.yaw) * follow(dt, tuning_.faceTime);
 
     // The body: bank into turns by how fast the body turns and how fast it goes, lead into them with
     // the upper body, and lean forward with speed. In a turn clip the upper body leads by the turn
