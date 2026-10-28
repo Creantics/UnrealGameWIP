@@ -772,6 +772,12 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	{
 		In.falling = true;
 	}
+	// A body a traversal carries (fading in, playing or fading out) isn't asked to turn: a run turn begun under it
+	// would turn the body by its root as the traversal fades out, the planted foot sliding sideways.
+	if (TravClip >= 0)
+	{
+		In.wantYaw = In.yaw;
+	}
 	Loco.update(In);
 
 	if (const USkeletalMeshComponent* Mesh = GetSkelMeshComponent())
