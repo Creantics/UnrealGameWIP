@@ -135,6 +135,35 @@ TraversalClipInfo landRollOf(const std::vector<TraversalFrame>& f) {
     return measureRoll(f.data(), f.size(), static_cast<float>(f.size() - 1) * kFrame);
 }
 
+constexpr float kCatchLength = 2.f;
+constexpr float kCatchTime = 0.6f; // frame 18
+constexpr float kTop = 300.f;
+constexpr float kGravity = 980.f;
+
+// A made-up catch at 30 fps, its edge at the origin and its top kTop up, as the mannequin's catches are: the
+// root falls onto the catch at 1000 cm/s down and 50 forward, `hang` cm under the top and `ahead` behind the
+// edge, at kCatchTime, climbs steadily onto the top and 20 cm past the edge over 0.3 s, and goes on at `exit`.
+std::vector<TraversalFrame> makeCatch(float hang = 64.f, float ahead = 15.f, float exit = 0.f) {
+    std::vector<TraversalFrame> frames;
+    const int n = static_cast<int>(kCatchLength * kFps) + 1;
+    for (int i = 0; i < n; ++i) {
+        const float t = static_cast<float>(i) / kFps;
+        TraversalFrame f;
+        if (t <= kCatchTime) {
+            f.root = {-ahead - 50.f * (kCatchTime - t), 0.f, kTop - hang + 1000.f * (kCatchTime - t)};
+        } else if (t <= kCatchTime + 0.3f) {
+            const float u = (t - kCatchTime) / 0.3f;
+            f.root = {-ahead + (20.f + ahead) * u, 0.f, kTop - hang * (1.f - u)};
+        } else {
+            f.root = {20.f + exit * (t - kCatchTime - 0.3f), 0.f, kTop};
+        }
+        frames.push_back(f);
+    }
+    return frames;
+}
+
+TraversalClipInfo catchOf(const std::vector<TraversalFrame>& f) { return measureCatch(f.data(), f.size(), kCatchLength); }
+
 } // namespace
 
 TEST_CASE("measureTraversal reads the obstacle from the root: rise, front edge, top, landing") {
@@ -468,11 +497,215 @@ TEST_CASE("A roll hands back exitAfter past the body being back up, as the other
     CHECK(set.rate(p, 0.5f * c.contact) > 1.f);
 }
 
+TEST_CASE("measureCatch reads the catch, the top and the landing from the root, the edge at the origin") {
+    const TraversalClipInfo c = catchOf(makeCatch(64.f, 15.f, 300.f));
+    CHECK(c.length == doctest::Approx(kCatchLength));
+    CHECK(c.move == TraversalMove::Catch);
+    // Caught at 0.6 s, 15 cm behind the edge and 64 under the top; on the top for good from 0.9 s (the first
+    // frame within kSettle of it), going on at 300 cm/s.
+    CHECK(c.contact == doctest::Approx(18 * kFrame));
+    CHECK(c.touchdown == c.contact);
+    CHECK(c.ledgeAhead == doctest::Approx(15.f));
+    CHECK(c.ledgeHeight == doctest::Approx(64.f));
+    CHECK(c.rise == c.ledgeHeight);
+    CHECK(c.land == doctest::Approx(27 * kFrame));
+    CHECK(c.leave == c.land);
+    CHECK(c.exitSpeed == doctest::Approx(300.f));
+    CHECK(c.takeoffFoot == -1);
+    // The path runs from the catch, the fall left out.
+    CHECK(c.path[0].z == 0.f);
+    CHECK(c.path[kTraversalSamples - 1].x == doctest::Approx(15.f + 20.f + 300.f * 1.1f));
+    CHECK(c.path[kTraversalSamples - 1].z == doctest::Approx(64.f));
+    // A hang from the edge, the top far above; it stays up there.
+    const TraversalClipInfo hang = catchOf(makeCatch(186.f, 43.f));
+    CHECK(hang.ledgeHeight == doctest::Approx(186.f));
+    CHECK(hang.ledgeAhead == doctest::Approx(43.f));
+    CHECK(std::fabs(hang.exitSpeed) < 0.01f);
+    // The top near the hips: on it sooner.
+    CHECK(catchOf(makeCatch(16.f)).land == doctest::Approx(25 * kFrame));
+}
+
+TEST_CASE("measureCatch leaves a clip that comes down onto nothing, or only at its end, unmeasured") {
+    const std::vector<TraversalFrame> mantle = makeClip(true), roll = makeRoll();
+    CHECK(measureCatch(mantle.data(), mantle.size(), kLength).length == 0.f); // up from the floor
+    CHECK(measureCatch(roll.data(), roll.size(), kRollLength).length == 0.f);
+    std::vector<TraversalFrame> falling = makeCatch();
+    for (std::size_t i = 0; i < falling.size(); ++i) falling[i].root.z = 1000.f - 10.f * static_cast<float>(i);
+    CHECK(catchOf(falling).length == 0.f);
+    CHECK(measureCatch(nullptr, 0, 1.f).length == 0.f);
+}
+
+TEST_CASE("planCatch takes the catch whose height the body's flight meets") {
+    TraversalSet set;
+    set.setClip(0, catchOf(makeCatch(16.f)));  // the top at the hips
+    set.setClip(1, catchOf(makeCatch(64.f)));  // at the chest
+    set.setClip(2, catchOf(makeCatch(186.f))); // a hang
+    // At the top of its jump, 60 cm from where it catches: there in 0.2 s, 19.6 cm lower.
+    const TravPoint v{300.f, 0.f, 0.f};
+    CHECK(set.planCatch(ledge(75.f, 166.f), v, kGravity, 0.f).clip == 2);
+    CHECK(set.planCatch(ledge(75.f, 44.f), v, kGravity, 0.f).clip == 1);
+    CHECK(set.planCatch(ledge(75.f, -4.f), v, kGravity, 0.f).clip == 0);
+    // Between the chest's reach and the hang's: none, the edge not too far.
+    const TraversalPlan between = set.planCatch(ledge(75.f, 105.f), v, kGravity, 0.f);
+    CHECK_FALSE(between.ok());
+    CHECK_FALSE(between.tooFar);
+    // A top below the feet: at the hips from the top of the jump, at the chest falling fast.
+    CHECK(set.planCatch(ledge(75.f, -16.f), v, kGravity, 0.f).clip == 0);
+    CHECK(set.planCatch(ledge(75.f, -16.f), {300.f, 0.f, -300.f}, kGravity, 0.f).clip == 1);
+    // A top the flight has the feet over by then is landed on, not caught.
+    CHECK_FALSE(set.planCatch(ledge(75.f, -25.f), v, kGravity, 0.f).ok());
+    // A top too thin to stand on is not caught.
+    TraversalObstacle thin = ledge(75.f, 44.f);
+    thin.depth = 30.f;
+    CHECK_FALSE(set.planCatch(thin, v, kGravity, 0.f).ok());
+}
+
+TEST_CASE("planCatch waits while the body closes in, and times the catch by when it gets there") {
+    TraversalSet set;
+    set.setClip(0, catchOf(makeCatch())); // caught 15 cm behind the edge, 64 under the top
+    const TraversalClipInfo& c = set.clip(0);
+    const TravPoint v{300.f, 0.f, 0.f};
+    // 0.5 s out: not yet.
+    TraversalPlan p = set.planCatch(ledge(15.f + 150.f, 44.f), v, kGravity, 0.f);
+    CHECK_FALSE(p.ok());
+    CHECK(p.tooFar);
+    // 0.4 s out (maxCatchLead): entered 0.4 s before the catch, nothing missed ahead.
+    p = set.planCatch(ledge(15.f + 120.f, -14.f), v, kGravity, 0.f);
+    REQUIRE(p.ok());
+    CHECK(p.start == doctest::Approx(c.contact - 0.4f));
+    CHECK(p.atContact.x == doctest::Approx(120.f));
+    CHECK(p.atContact.z == doctest::Approx(-78.f));
+    CHECK(p.atLand.z == p.atContact.z);
+    // 0.1 s out, or nearer: entered minCatchLead before it, the root drawn back what it is nearer.
+    p = set.planCatch(ledge(15.f + 30.f, 59.f), v, kGravity, 0.f);
+    REQUIRE(p.ok());
+    CHECK(p.start == doctest::Approx(c.contact - 0.1f));
+    p = set.planCatch(ledge(15.f, 59.f), v, kGravity, 0.f);
+    REQUIRE(p.ok());
+    CHECK(p.start == doctest::Approx(c.contact - 0.1f));
+    CHECK(p.atContact.x == doctest::Approx(0.f));
+    // Past the catch by more than maxCatchMiss then: none.
+    p = set.planCatch(ledge(-5.f, 59.f), v, kGravity, 0.f);
+    CHECK_FALSE(p.ok());
+    CHECK_FALSE(p.tooFar);
+    // A body hardly closing in (not maxCatchMiss in maxCatchLead) is caught as its flight meets the catch's
+    // height (44.1 cm down: 0.3 s), what it misses ahead within maxCatchMiss.
+    const TravPoint slow{50.f, 0.f, 0.f};
+    p = set.planCatch(ledge(15.f + 50.f, 19.9f), slow, kGravity, 0.f);
+    REQUIRE(p.ok());
+    CHECK(p.start == doctest::Approx(c.contact - 0.3f).epsilon(0.001));
+    CHECK(p.atContact.x == doctest::Approx(50.f));
+    p = set.planCatch(ledge(15.f + 70.f, 19.9f), slow, kGravity, 0.f);
+    CHECK_FALSE(p.ok());
+    CHECK(p.tooFar);
+}
+
+TEST_CASE("planCatch times a body not closing in by its flight: as it meets the catch's height, or tops out under it") {
+    TraversalSet set;
+    set.setClip(0, catchOf(makeCatch())); // caught 15 cm behind the edge, 64 under the top
+    const TraversalClipInfo& c = set.clip(0);
+    // Jumping in place 35 cm from the wall: the catch 84.4 cm up is met rising, 0.2 s on.
+    TraversalPlan p = set.planCatch(ledge(35.f, 148.4f), {0.f, 0.f, 520.f}, kGravity, 0.f);
+    REQUIRE(p.ok());
+    CHECK(p.start == doctest::Approx(c.contact - 0.2f).epsilon(0.001));
+    CHECK(p.atContact.x == doctest::Approx(20.f));
+    CHECK(p.atContact.z == doctest::Approx(84.4f));
+    // 130 cm up it is met 0.403 s on, past maxCatchLead: not yet.
+    p = set.planCatch(ledge(35.f, 194.f), {0.f, 0.f, 520.f}, kGravity, 0.f);
+    CHECK_FALSE(p.ok());
+    CHECK(p.tooFar);
+    // A little later in the same jump it is.
+    p = set.planCatch(ledge(35.f, 146.9f), {0.f, 0.f, 422.f}, kGravity, 0.f);
+    REQUIRE(p.ok());
+    CHECK(p.start == doctest::Approx(c.contact - 0.303f).epsilon(0.01));
+    // Higher than its flight goes: with that 0.53 s on, not yet; with it 0.31 s on, caught there, the root
+    // drawn up the 14 cm the flight falls short.
+    p = set.planCatch(ledge(35.f, 214.f), {0.f, 0.f, 520.f}, kGravity, 0.f);
+    CHECK_FALSE(p.ok());
+    CHECK(p.tooFar);
+    p = set.planCatch(ledge(35.f, 124.f), {0.f, 0.f, 300.f}, kGravity, 0.f);
+    REQUIRE(p.ok());
+    CHECK(p.start == doctest::Approx(c.contact - 300.f / kGravity).epsilon(0.001));
+    CHECK(p.atContact.z == doctest::Approx(60.f));
+    // Falling past it already: caught minCatchLead on, within maxCatchMiss of where the flight is by then.
+    p = set.planCatch(ledge(35.f, 64.f), {0.f, 0.f, -300.f}, kGravity, 0.f);
+    REQUIRE(p.ok());
+    CHECK(p.start == doctest::Approx(c.contact - 0.1f));
+    p = set.planCatch(ledge(35.f, 74.f), {0.f, 0.f, -300.f}, kGravity, 0.f);
+    CHECK_FALSE(p.ok());
+    CHECK_FALSE(p.tooFar);
+}
+
+TEST_CASE("planCatch takes the catch going on nearest the body's speed; across, the body goes on its way") {
+    TraversalSet set;
+    set.setClip(0, catchOf(makeCatch(64.f, 15.f, 0.f)));   // stands up there
+    set.setClip(1, catchOf(makeCatch(64.f, 15.f, 450.f))); // runs on
+    const TravPoint v{300.f, 0.f, 0.f};
+    CHECK(set.planCatch(ledge(75.f, 44.f), v, kGravity, 0.f).clip == 0);
+    CHECK(set.planCatch(ledge(75.f, 44.f), v, kGravity, 420.f).clip == 1);
+    const TraversalPlan p = set.planCatch(ledge(75.f, 44.f), {300.f, 100.f, 0.f}, kGravity, 0.f);
+    REQUIRE(p.ok());
+    CHECK(p.atContact.y == doctest::Approx(20.f)); // 0.2 s at 100 cm/s
+    CHECK(p.entryVelocity.y == 100.f);
+    CHECK(p.entryRate == 1.f);
+}
+
+TEST_CASE("rootAt curves from the body into the catch, then follows the clip onto the top") {
+    TraversalSet set;
+    set.setClip(0, catchOf(makeCatch(64.f, 15.f, 300.f)));
+    const TraversalClipInfo& c = set.clip(0);
+    // Coming down at 100 cm/s, 0.25 s from the catch: it falls 55.6 cm by then.
+    const TravPoint v{300.f, 0.f, -100.f};
+    const TraversalPlan p = set.planCatch(ledge(90.f, 8.f), v, kGravity, 300.f);
+    REQUIRE(p.ok());
+    CHECK(p.start == doctest::Approx(c.contact - 0.25f));
+    // At the entry the root is where the body is, going its way.
+    const float h = 0.001f;
+    const TravPoint at0 = set.rootAt(p, p.start);
+    CHECK(std::fabs(at0.x) + std::fabs(at0.y) + std::fabs(at0.z) < 0.01f);
+    const TravPoint at1 = set.rootAt(p, p.start + h);
+    CHECK((at1.x - at0.x) / h == doctest::Approx(300.f).epsilon(0.05));
+    CHECK((at1.z - at0.z) / h == doctest::Approx(-100.f).epsilon(0.05));
+    // At the catch the clip's edge is the real one.
+    const TravPoint caught = set.rootAt(p, c.contact);
+    CHECK(caught.x + c.ledgeAhead == doctest::Approx(90.f));
+    CHECK(caught.z + c.ledgeHeight == doctest::Approx(8.f));
+    // It goes into the catch the way the clip goes on from it (35 cm ahead and 64 up over 0.3 s).
+    const TravPoint before = set.rootAt(p, c.contact - h);
+    const TravPoint after = set.rootAt(p, c.contact + h);
+    CHECK((caught.x - before.x) / h == doctest::Approx(35.f / 0.3f).epsilon(0.05));
+    CHECK((caught.z - before.z) / h == doctest::Approx(64.f / 0.3f).epsilon(0.05));
+    CHECK((after.z - caught.z) / h == doctest::Approx(64.f / 0.3f).epsilon(0.05));
+    // Then up onto the real top and on along it.
+    CHECK(set.rootAt(p, c.land + 0.1f).z == doctest::Approx(8.f));
+    CHECK(set.rootAt(p, c.length).z == doctest::Approx(8.f));
+    CHECK(set.rootAt(p, c.length).x == doctest::Approx(90.f + 20.f + 300.f * 1.1f));
+    // At its own pace throughout, handing back just after the landing.
+    CHECK(set.rate(p, p.start) == 1.f);
+    CHECK(set.rate(p, c.contact) == 1.f);
+    CHECK(set.exitTime(p) == doctest::Approx(c.land + 0.3f));
+}
+
+TEST_CASE("plan and planRoll never take a catch, nor planCatch anything else") {
+    TraversalSet set;
+    set.setClip(0, catchOf(makeCatch()));
+    // A deep ledge at the catch's own height and edge.
+    CHECK_FALSE(set.plan(ledge(15.f, 64.f), 300.f, 1).ok());
+    CHECK_FALSE(set.plan(ledge(15.f, 64.f), 300.f, 1).tooFar);
+    CHECK_FALSE(set.planRoll(300.f, 1).ok());
+    TraversalSet others;
+    others.setClip(0, measure(makeClip(true)));
+    others.setClip(1, rollOf(makeRoll()));
+    CHECK_FALSE(others.planCatch(ledge(75.f, 44.f), {300.f, 0.f, 0.f}, kGravity, 0.f).ok());
+    CHECK_FALSE(others.planCatch(ledge(75.f, 100.f), {300.f, 0.f, 0.f}, kGravity, 0.f).ok());
+}
+
 TEST_CASE("Traversal plans and paths allocate nothing") {
     TraversalSet set;
     set.setClip(0, measure(makeClip(false)));
     set.setClip(1, measure(makeClip(true)));
     set.setClip(2, rollOf(makeRoll()));
+    set.setClip(kMaxTraversalClips - 1, catchOf(makeCatch()));
     const bool hooked = ftcore_test::allocHookInstalled();
     const std::uint64_t before = ftcore_test::allocStats().count;
     float sum = 0.f;
@@ -482,6 +715,8 @@ TEST_CASE("Traversal plans and paths allocate nothing") {
         if (p.ok()) sum += set.rootAt(p, t).x + set.rate(p, t);
         const TraversalPlan r = set.planRoll(100.f + 5.f * static_cast<float>(i), i % 2);
         if (r.ok()) sum += set.rootAt(r, t).x + set.rate(r, t) + set.exitTime(r);
+        const TraversalPlan k = set.planCatch(ledge(15.f + static_cast<float>(i), 44.f), {300.f, 0.f, 0.f}, kGravity, 0.f);
+        if (k.ok()) sum += set.rootAt(k, 0.3f + 2.f * t).z + set.rate(k, t) + set.exitTime(k);
     }
     CHECK(std::isfinite(sum));
     if (hooked) CHECK(ftcore_test::allocStats().count == before);

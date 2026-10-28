@@ -36,6 +36,21 @@
 // touchdown (a roll on the floor throughout: its start), its root path as it is; rate() eases to the
 // clip's own rate by the tuck. plan() never takes a roll.
 //
+// A catch is a jump or fall onto a ledge: the hands grab its edge in the air and the body climbs up. Its
+// clip comes down onto the ledge from far above, faster than a short jump ever comes in, so only its root
+// from the catch on is used. measureCatch reads the catch (the root's lowest point: the contact, and the
+// touchdown the path starts from), the top (the root's end height: the feet end up on it) with its front
+// edge at the clip's origin (x 0), when the root settles on the top (the landing) and the speed it goes on
+// at from there. planCatch takes the catch clip that a body in the air meets best: the clip's catch goes
+// where the root must be for the clip's edge to be the real one, timed by when the body gets there if it
+// closes in on it, else (at the wall, or jumping in place) by when its flight meets the catch's height or
+// comes nearest it; no sooner than minCatchLead, and one still to come past maxCatchLead waits (tooFar). A
+// clip is kept when the catch is within maxCatchMiss of where the body's own flight would take it by then
+// and that flight would not clear the top (it lands there instead), cheapest by that miss and by the speed
+// it goes on at against the body's. rootAt() curves the root from the body, at its velocity, into the
+// catch at the clip's own velocity after it, then follows the clip's path from there. rate() is 1
+// throughout; plan() and planRoll() never take a catch.
+//
 // Space: x forward (toward the obstacle at the start), y to the left, z up; cm and seconds. Fixed
 // size: nothing allocates.
 
@@ -60,21 +75,23 @@ struct TraversalFrame {
 inline constexpr std::size_t kMaxTraversalFrames = 512;
 inline constexpr std::size_t kTraversalSamples = 64;
 
-enum class TraversalMove : std::uint8_t { Over, Up, Roll };
+enum class TraversalMove : std::uint8_t { Over, Up, Roll, Catch };
 
 struct TraversalClipInfo {
     float length = 0.f;      // seconds; 0: no such clip (or none could be measured in it)
     TraversalMove move = TraversalMove::Over;
-    float contact = 0.f;     // when the root starts to rise (a roll: when the body is tucked)
-    float leave = 0.f;       // when it starts down off the top (over); the landing (up, roll)
+    float contact = 0.f;     // when the root starts to rise (a roll: when the body is tucked; a catch: the catch)
+    float leave = 0.f;       // when it starts down off the top (over); the landing (up, roll, catch)
     float land = 0.f;        // when it settles at its end height (a roll: when the pelvis is back up)
-    float ledgeAhead = 0.f;  // the front edge's distance ahead of the root at time 0
-    float ledgeHeight = 0.f; // the top's height above the root at time 0
+    float ledgeAhead = 0.f;  // the front edge's distance ahead of the root at time 0 (a catch: at the catch)
+    float ledgeHeight = 0.f; // the top's height above the root at time 0 (a catch: at the catch)
     float topDepth = 0.f;    // how far the root goes along the top before coming down (over)
-    float rise = 0.f;        // the root's end height above its start
+    float rise = 0.f;        // the root's end height above its start (a catch: above the catch)
     float dip = 0.f;         // a roll: how far the pelvis goes below the lower of its start and end heights
-    float touchdown = 0.f;   // a roll: when the root is down on the floor it rolls along (0: on it from the start)
+    float touchdown = 0.f;   // a roll: when the root is down on the floor it rolls along (0: on it from the start);
+                             // a catch: the catch
     float entrySpeed = 0.f;  // the root's forward speed over the first kEntryTime (a roll's from the touchdown)
+    float exitSpeed = 0.f;   // a catch: the root's forward speed from the landing to the end
     int takeoffFoot = -1;    // 0 left, 1 right: the last foot at rest before the contact (-1: none)
     std::array<TravPoint, kTraversalSamples> path{}; // the root from where it is at the touchdown, evenly to the end
 };
@@ -103,11 +120,16 @@ FTCORE_API TraversalClipInfo measureTraversal(const TraversalFrame* frames, std:
 // kMinRollDip below its height at the touchdown or its end height (a pelvis never sampled stays at 0;
 // a root that follows the pelvis down touches down only once it is back up, past the dip).
 FTCORE_API TraversalClipInfo measureRoll(const TraversalFrame* frames, std::size_t count, float length);
+// Measures a catch from frames sampled the same way, the ledge's front edge at the clip's origin (x 0) and its
+// top at the root's last height. The catch is the root's lowest frame; the landing the first from which the
+// root stays within kSettle of the top. length stays 0 when the root comes down less than kMinObstacle onto
+// the catch or the catch is in the last two frames.
+FTCORE_API TraversalClipInfo measureCatch(const TraversalFrame* frames, std::size_t count, float length);
 
 // What the body's probes found ahead.
 struct TraversalObstacle {
     float distance = 0.f;   // from the root to the near edge, along the way the body faces
-    float height = 0.f;     // the top above the floor the body stands on
+    float height = 0.f;     // the top above the floor the body stands on (a body in the air: above its root)
     float depth = 0.f;      // the top's length front to back (as far as it was probed)
     bool backFloor = false; // a floor found beyond the top
     float backHeight = 0.f; // its height above the floor the body stands on (negative: lower)
@@ -127,20 +149,25 @@ struct TraversalTuning {
     float exitAfter = 0.3f;      // a body that wants to move leaves the clip this long after the landing
     float minEntryRate = 0.8f;   // the play rate at the entry keeps the body's speed within these
     float maxEntryRate = 1.5f;
+    float minCatchLead = 0.1f;   // a catch is entered at least this long before the catch...
+    float maxCatchLead = 0.4f;   // ...and at most this long: one further off waits
+    float maxCatchMiss = 40.f;   // how far the catch may be from where the body's flight takes it, ahead or up
+    float catchMissCost = 1.f / 40.f; // the cost per cm of that miss
 };
 
 struct TraversalPlan {
     int clip = -1;
     float start = 0.f;     // the clip time it is entered at
     float entryRate = 1.f; // the play rate there: the body's speed over the clip's entry speed, within limits
-    TravPoint atContact;   // the offset reached at the contact
+    TravPoint atContact;   // the offset reached at the contact (a catch: where the root is at the catch)
     TravPoint atLeave;     // at the leave
     TravPoint atLand;      // and at the landing
+    TravPoint entryVelocity; // a catch: the body's velocity as it was planned
     bool tooFar = false;   // no plan yet: a clip fits, but the edge is still out of its reach
     bool ok() const { return clip >= 0; }
 };
 
-inline constexpr std::size_t kMaxTraversalClips = 32;
+inline constexpr std::size_t kMaxTraversalClips = 48;
 
 class TraversalSet {
 public:
@@ -151,12 +178,16 @@ public:
     const TraversalClipInfo& clip(std::size_t i) const { return clips_[i]; }
 
     // speed: the body's ground speed now; foot: its planted (or last planted) foot, 0 left, 1 right,
-    // -1 not known. Clips are taken in index order when they cost the same. Rolls are left out.
+    // -1 not known. Clips are taken in index order when they cost the same. Rolls and catches are left out.
     FTCORE_API TraversalPlan plan(const TraversalObstacle& obstacle, float speed, int foot) const;
     // A roll for a body at ground speed `speed` with `foot` planted (as plan()): the roll clip that costs
     // least by entry speed and take-off foot, entered at its touchdown with its root path as it is (no
     // offsets). Not ok without a roll clip.
     FTCORE_API TraversalPlan planRoll(float speed, int foot) const;
+    // A catch for a body in the air at `velocity` (in the obstacle's space: x toward it), falling at
+    // `gravity` (cm/s^2, down), that wants to go on at ground speed `speed` once up (0: stay up there). Only
+    // a top at least standDepth deep is caught. Not ok without a catch clip that fits.
+    FTCORE_API TraversalPlan planCatch(const TraversalObstacle& obstacle, const TravPoint& velocity, float gravity, float speed) const;
     // The root at clip time t (from p.start on), from where it was when the plan was made, in the
     // body's space then.
     FTCORE_API TravPoint rootAt(const TraversalPlan& p, float t) const;

@@ -48,6 +48,33 @@ float entryRate(const TraversalTuning& t, const TraversalClipInfo& c, float spee
     return c.entrySpeed > 0.f ? std::max(t.minEntryRate, std::min(speed / c.entrySpeed, t.maxEntryRate)) : 1.f;
 }
 
+// A catch's root before the catch: a cubic (Hermite) from where the body was, at its velocity, to the catch,
+// at the velocity the clip's root has just after it.
+TravPoint catchApproach(const TraversalClipInfo& c, const TraversalPlan& p, float t) {
+    const float lead = c.contact - p.start;
+    if (lead <= 0.f) return p.atContact;
+    const float step = (c.length - c.touchdown) / static_cast<float>(kTraversalSamples - 1);
+    const TravPoint& a = c.path[0];
+    const TravPoint& b = c.path[1];
+    const TravPoint out = step > 0.f ? TravPoint{(b.x - a.x) / step, (b.y - a.y) / step, (b.z - a.z) / step} : TravPoint{};
+    const float s = std::clamp((t - p.start) / lead, 0.f, 1.f), s2 = s * s, s3 = s2 * s;
+    const float h10 = s3 - 2.f * s2 + s, h01 = 3.f * s2 - 2.f * s3, h11 = s3 - s2;
+    auto at = [&](float in, float to, float v) { return h10 * lead * in + h01 * to + h11 * lead * v; };
+    const TravPoint& in = p.entryVelocity;
+    return {at(in.x, p.atContact.x, out.x), at(in.y, p.atContact.y, out.y), at(in.z, p.atContact.z, out.z)};
+}
+
+// When a flight going up at vz (down below 0) under gravity g (pulling down) is first at height z, from `from`
+// on; when it never is, when it comes nearest: at the top of its flight, or at `from` once past it.
+float meetTime(float vz, float g, float z, float from) {
+    if (g <= 0.f) return from;
+    const float disc = vz * vz - 2.f * g * z;
+    if (disc < 0.f) return std::max(vz / g, from);
+    const float root = std::sqrt(disc);
+    const float up = (vz - root) / g, down = (vz + root) / g;
+    return up >= from ? up : down >= from ? down : from;
+}
+
 } // namespace
 
 TraversalClipInfo measureTraversal(const TraversalFrame* frames, std::size_t count, float length) {
@@ -128,6 +155,31 @@ TraversalClipInfo measureRoll(const TraversalFrame* frames, std::size_t count, f
     return info;
 }
 
+TraversalClipInfo measureCatch(const TraversalFrame* frames, std::size_t count, float length) {
+    TraversalClipInfo info;
+    count = std::min(count, kMaxTraversalFrames);
+    if (!frames || count < 3 || length <= 0.f) return info;
+    const float dt = length / static_cast<float>(count - 1);
+    std::size_t contact = 0;
+    for (std::size_t i = 1; i < count; ++i)
+        if (frames[i].root.z < frames[contact].root.z) contact = i;
+    const TravPoint& caught = frames[contact].root;
+    if (frames[0].root.z - caught.z < kMinObstacle || contact + 2 >= count) return info;
+    const float top = frames[count - 1].root.z;
+    std::size_t land = count - 1; // on the top from here on
+    while (land > contact && std::fabs(frames[land - 1].root.z - top) < kSettle) --land;
+
+    info.length = length;
+    info.move = TraversalMove::Catch;
+    info.contact = info.touchdown = static_cast<float>(contact) * dt;
+    info.leave = info.land = static_cast<float>(land) * dt;
+    info.ledgeAhead = -caught.x;
+    info.ledgeHeight = info.rise = top - caught.z;
+    if (land < count - 1) info.exitSpeed = (frames[count - 1].root.x - frames[land].root.x) / (static_cast<float>(count - 1 - land) * dt);
+    measureRootPath(frames, count, dt, info, contact);
+    return info;
+}
+
 TravPoint traversalPath(const TraversalClipInfo& info, float t) {
     if (info.length <= info.touchdown) return {}; // not measured
     const float u = std::clamp((t - info.touchdown) / (info.length - info.touchdown), 0.f, 1.f) * static_cast<float>(kTraversalSamples - 1);
@@ -150,7 +202,8 @@ TraversalPlan TraversalSet::plan(const TraversalObstacle& o, float speed, int fo
     bool tooFar = false;
     for (std::size_t i = 0; i < kMaxTraversalClips; ++i) {
         const TraversalClipInfo& c = clips_[i];
-        if (c.length <= 0.f || c.move == TraversalMove::Roll || (c.move == TraversalMove::Up) != up) continue;
+        if (c.length <= 0.f || c.move == TraversalMove::Roll || c.move == TraversalMove::Catch || (c.move == TraversalMove::Up) != up)
+            continue;
         const float dh = std::fabs(o.height - c.ledgeHeight);
         if (dh > std::max(t.minHeightSlack, t.heightSlack * c.ledgeHeight)) continue;
         // The edge's distance ahead of the root from clip time s on.
@@ -219,6 +272,52 @@ TraversalPlan TraversalSet::planRoll(float speed, int foot) const {
     return p;
 }
 
+TraversalPlan TraversalSet::planCatch(const TraversalObstacle& o, const TravPoint& velocity, float gravity, float speed) const {
+    TraversalPlan p;
+    const TraversalTuning& t = tuning_;
+    if (o.depth < t.standDepth) return p; // nothing to climb onto
+    float best = std::numeric_limits<float>::infinity();
+    bool tooFar = false;
+    for (std::size_t i = 0; i < kMaxTraversalClips; ++i) {
+        const TraversalClipInfo& c = clips_[i];
+        if (c.length <= 0.f || c.move != TraversalMove::Catch) continue;
+        // Where the root must be at the catch for the clip's edge to be the real one.
+        const float x = o.distance - c.ledgeAhead, z = o.height - c.ledgeHeight;
+        // When: as the body gets there, if it closes in on it (covers maxCatchMiss within the longest lead);
+        // else as its flight meets that height, or comes nearest it. One still to come past the longest
+        // lead is too far yet.
+        const float longest = std::min(t.maxCatchLead, c.contact);
+        const float shortest = std::min(t.minCatchLead, longest);
+        const bool closing = velocity.x * longest > t.maxCatchMiss;
+        const float when = closing ? x / velocity.x : meetTime(velocity.z, gravity, z, shortest);
+        if (when > longest) {
+            tooFar = true;
+            continue;
+        }
+        const float lead = std::max(when, shortest);
+        // Its miss: how far the catch is from where the body's flight takes it by then. A flight that has
+        // the feet over the top by then lands on it rather than catching it.
+        const float flight = velocity.z * lead - 0.5f * gravity * lead * lead;
+        const float missX = x - velocity.x * lead, missZ = z - flight;
+        if (missX > t.maxCatchMiss) tooFar = true;
+        if (flight >= o.height || std::fabs(missX) > t.maxCatchMiss || std::fabs(missZ) > t.maxCatchMiss) continue;
+        const float cost = std::sqrt(missX * missX + missZ * missZ) * t.catchMissCost + std::fabs(speed - c.exitSpeed) * t.speedCost;
+        if (cost < best) {
+            best = cost;
+            p.clip = static_cast<int>(i);
+            p.start = c.contact - lead;
+            p.atContact = {x, velocity.y * lead, z}; // across, it goes on as it was going
+        }
+    }
+    if (!p.ok()) {
+        p.tooFar = tooFar;
+        return p;
+    }
+    p.atLeave = p.atLand = p.atContact;
+    p.entryVelocity = velocity;
+    return p;
+}
+
 float TraversalSet::exitTime(const TraversalPlan& p) const {
     if (!p.ok()) return 0.f;
     const TraversalClipInfo& c = clips_[static_cast<std::size_t>(p.clip)];
@@ -235,6 +334,11 @@ float TraversalSet::rate(const TraversalPlan& p, float t) const {
 TravPoint TraversalSet::rootAt(const TraversalPlan& p, float t) const {
     if (!p.ok()) return {};
     const TraversalClipInfo& c = clips_[static_cast<std::size_t>(p.clip)];
+    if (c.move == TraversalMove::Catch) {
+        if (t < c.contact) return catchApproach(c, p, t);
+        const TravPoint at = traversalPath(c, t);
+        return {p.atContact.x + at.x, p.atContact.y + at.y, p.atContact.z + at.z};
+    }
     const TravPoint from = traversalPath(c, p.start);
     const TravPoint at = traversalPath(c, t);
     TravPoint off;
