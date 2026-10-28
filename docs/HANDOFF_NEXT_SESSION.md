@@ -37,10 +37,19 @@ Private notes (character references, concept-art review, script status) are in `
     stays put; the view is 0.0 cm from the gameplay camera at all 6 starts and 0.0 cm from the lead's view at all 6
     hand-backs.
   - The demo checkout is at c44cacf with UBT Succeeded.
-  - Next: one lead's base outfit in Marvelous Designer on the new bodies, to prove that pipeline before the full
-    wardrobe. Trousers already drape on one lead's MetaHuman body when it is imported in its A-pose rest (the
-    arms-down frame leaves Marvelous Designer's arrangement points unfitted and the cloth falls); the Unreal import
-    on the MetaHuman skeleton is the open step.
+  - **Outfit pipeline proven on one lead (trousers only).** Marvelous Designer drapes the trousers on the lead's
+    MetaHuman body imported in its A-pose rest (the arms-down frame leaves the arrangement points unfitted and the
+    cloth falls). Blender binds the drape to the body's own armature, and Unreal imports it on the MetaHuman
+    skeleton with an exact bind (0.000 cm and the same rotation on all 14 bones checked). Inner-leg vertices that
+    lose their weights when each leg piece drops the other side's bones now take them from their neighbours on the
+    same leg instead of the pelvis; in a Blender stride test the 99th-percentile edge stretch fell from 5.9 to 2.4,
+    and what is left sits at the crotch seam. The garment is in that lead's look in the demo's local config as a
+    first pass: the pattern was cut for the old body, so it is baggy, the cuffs pool on the feet, and the crotch
+    still webs in a stride. In the editor, posing a skeletal mesh actor with an animation override does nothing, so
+    posed checks go through Blender or a game run.
+  - Next: re-cut the pattern for the MetaHuman proportions, fix the crotch webbing (a tighter crotch, corrective
+    weights along the seam, or a cloth asset), flip the arm abduction for sleeved pieces (the rest pose needs +42
+    degrees, not -42), then the same chain for the other two leads and the full wardrobe.
 - **Earlier (2026-10-28 early morning): the beat fight screen is on main, one lead's floating brow is fixed, and the
   in-place cutscenes come next.**
   - main is 9af57aa. Since 92a101d it holds:
