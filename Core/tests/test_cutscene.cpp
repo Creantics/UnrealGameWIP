@@ -761,6 +761,162 @@ TEST_CASE("playing a cutscene does not allocate") {
         if (spotA) sink += stageToWorld(frame, spotA->position).x + stageYawToWorld(frame, 10.f);
     }
     CHECK(inPlace.finished());
+    // A follower walking round the lead onto its mark.
+    MarkWalk walk;
+    walk.begin({-2.f, 0.f, 0.f}, {2.f, 0.f, 0.f}, a);
+    for (int i = 0; i < 600 && !walk.arrived(); ++i) {
+        walk.step(1.f / 60.f);
+        sink += walk.position().x + walk.wantSpeed() + walk.stopDistance();
+    }
+    CHECK(walk.arrived());
     CHECK(ftcore_test::allocStats().count == before);
     CHECK(sink != 0.f);
+}
+
+namespace {
+
+// Walks `walk` to its mark at 60 frames a second (at most `seconds`), checking on every frame that it
+// keeps to its walking speed, never walks back, and never comes nearer `avoid` than `clearance`.
+// Returns the seconds it took (or `seconds` when it never arrived).
+float walkToMark(MarkWalk& walk, const CutsceneVec3& avoid, float clearance, float seconds = 20.f) {
+    const float dt = 1.f / 60.f;
+    float t = 0.f;
+    float lastRemaining = walk.remaining();
+    float lastStop = -1.f;
+    bool braked = false;
+    while (!walk.arrived() && t < seconds) {
+        walk.step(dt);
+        t += dt;
+        CHECK(walk.speed() <= walk.tuning().speed + 1e-4f);
+        CHECK(walk.remaining() <= lastRemaining + 1e-5f);
+        lastRemaining = walk.remaining();
+        CHECK(flatDistance(walk.position(), avoid) >= clearance - 1e-3f);
+        if (walk.stopDistance() >= 0.f) {
+            // Braking: it says so, and the distance left only shrinks.
+            CHECK(walk.wantSpeed() == 0.f);
+            if (braked) CHECK(walk.stopDistance() <= lastStop + 1e-5f);
+            braked = true;
+            lastStop = walk.stopDistance();
+        } else if (!walk.arrived()) {
+            CHECK_FALSE(braked); // it never speeds up again once braking
+            CHECK(walk.wantSpeed() == doctest::Approx(walk.tuning().speed));
+        }
+    }
+    return t;
+}
+
+} // namespace
+
+TEST_CASE("a mark walk to a clear mark goes straight and stands on it") {
+    MarkWalk walk;
+    const CutsceneVec3 from{0.f, 0.f, 0.f};
+    const CutsceneVec3 mark{3.f, 0.f, 0.f};
+    const CutsceneVec3 lead{0.f, -5.f, 0.f};
+    walk.begin(from, mark, lead);
+    CHECK(walk.pointCount() == 2);
+    CHECK(walk.remaining() == doctest::Approx(3.0));
+    CHECK_FALSE(walk.arrived());
+    CHECK(walk.wantSpeed() == doctest::Approx(1.4));
+    CHECK(walk.stopDistance() == -1.f);
+    const float took = walkToMark(walk, lead, 0.f);
+    CHECK(walk.arrived());
+    // 3 m at a 1.4 m/s walk, with the start and the stop: about 2.8 s.
+    CHECK(took == doctest::Approx(2.8).epsilon(0.1));
+    CHECK(distance3(walk.position(), mark) == doctest::Approx(0.0));
+    CHECK(walk.speed() == 0.f);
+    CHECK(walk.wantSpeed() == 0.f);
+    CHECK(walk.stopDistance() == -1.f);
+    // Standing on the mark, more frames change nothing.
+    walk.step(0.1f);
+    CHECK(distance3(walk.position(), mark) == doctest::Approx(0.0));
+}
+
+TEST_CASE("a mark walk past the lead goes round it, touching the clearance") {
+    const CutsceneVec3 from{-2.f, 0.f, 0.f};
+    const CutsceneVec3 mark{2.f, 0.f, 0.f};
+    MarkWalk walk;
+    // The straight line passes 0.1 m beside the lead: it goes round the side the line passes on.
+    const CutsceneVec3 lead{0.f, 0.1f, 0.f};
+    walk.begin(from, mark, lead);
+    REQUIRE(walk.pointCount() == 3);
+    CHECK(walk.point(1).y < 0.f);
+    CHECK(distance3(walk.point(0), from) == doctest::Approx(0.0));
+    CHECK(distance3(walk.point(2), mark) == doctest::Approx(0.0));
+    CHECK(distance3(walk.point(9), mark) == doctest::Approx(0.0)); // clamped to the mark
+    CHECK(walk.remaining() > 4.f);
+    walkToMark(walk, lead, walk.tuning().clearance);
+    CHECK(walk.arrived());
+    CHECK(distance3(walk.position(), mark) == doctest::Approx(0.0));
+
+    // Straight through the lead, it goes round a fixed side, and still keeps its distance.
+    MarkWalk through;
+    through.begin(from, mark, {0.f, 0.f, 0.f});
+    REQUIRE(through.pointCount() == 3);
+    CHECK(std::fabs(through.point(1).y) > 0.5f);
+    walkToMark(through, {0.f, 0.f, 0.f}, through.tuning().clearance);
+    CHECK(through.arrived());
+
+    // A wider clearance from the tuning.
+    MarkWalk wide;
+    wide.tuning().clearance = 1.5f;
+    wide.begin({-4.f, 1.f, 0.f}, {4.f, 0.f, 0.f}, {0.f, 0.f, 0.f});
+    REQUIRE(wide.pointCount() == 3);
+    walkToMark(wide, {0.f, 0.f, 0.f}, 1.5f);
+    CHECK(wide.arrived());
+}
+
+TEST_CASE("a mark walk whose turns round the lead nearly line up keeps its corner near") {
+    // Both ends just outside the clearance, on either side: the touching lines are nearly parallel and
+    // would meet far off, so the corner stands no more than three clearances from the lead.
+    MarkWalk walk;
+    const CutsceneVec3 lead{0.f, 0.f, 0.f};
+    walk.begin({-0.85f, 0.f, 0.f}, {0.85f, 0.f, 0.f}, lead);
+    REQUIRE(walk.pointCount() == 3);
+    CHECK(flatDistance(walk.point(1), lead) <= 3.f * walk.tuning().clearance + 1e-3f);
+    walkToMark(walk, lead, 0.f);
+    CHECK(walk.arrived());
+}
+
+TEST_CASE("a mark walk starting or ending inside the clearance walks straight") {
+    const CutsceneVec3 lead{0.f, 0.f, 0.f};
+    MarkWalk out;
+    out.begin({0.3f, 0.f, 0.f}, {-3.f, 0.1f, 0.f}, lead);
+    CHECK(out.pointCount() == 2);
+    MarkWalk in;
+    in.begin({-3.f, 0.f, 0.f}, {0.5f, 0.f, 0.f}, lead);
+    CHECK(in.pointCount() == 2);
+    walkToMark(in, lead, 0.f);
+    CHECK(in.arrived());
+    // A mark behind it: the lead isn't on the way.
+    MarkWalk behind;
+    behind.begin({2.f, 0.f, 0.f}, {4.f, 0.f, 0.f}, lead);
+    CHECK(behind.pointCount() == 2);
+}
+
+TEST_CASE("a mark walk on the spot has arrived, and a step of no time moves nothing") {
+    MarkWalk walk;
+    CHECK(walk.arrived()); // never begun
+    const CutsceneVec3 at{1.f, 2.f, 0.5f};
+    walk.begin(at, at, {0.f, 0.f, 0.f});
+    CHECK(walk.arrived());
+    CHECK(distance3(walk.position(), at) == doctest::Approx(0.0));
+    CHECK(walk.wantSpeed() == 0.f);
+
+    MarkWalk still;
+    still.begin({0.f, 0.f, 0.f}, {2.f, 0.f, 0.f}, {0.f, 5.f, 0.f});
+    still.step(0.f);
+    still.step(-1.f);
+    CHECK(distance3(still.position(), {0.f, 0.f, 0.f}) == doctest::Approx(0.0));
+    CHECK_FALSE(still.arrived());
+    CHECK(still.speed() == 0.f);
+}
+
+TEST_CASE("a mark walk carries the height along and ends at the mark's") {
+    MarkWalk walk;
+    const CutsceneVec3 mark{2.f, 0.f, 0.4f};
+    walk.begin({0.f, 0.f, 0.f}, mark, {0.f, 5.f, 0.f});
+    // The height plays no part in how far it is.
+    CHECK(walk.remaining() == doctest::Approx(2.0));
+    walkToMark(walk, {0.f, 5.f, 0.f}, 0.f);
+    CHECK(walk.position().z == doctest::Approx(0.4));
 }

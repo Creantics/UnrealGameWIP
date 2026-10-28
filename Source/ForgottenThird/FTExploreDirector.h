@@ -94,6 +94,8 @@ public:
 	void SetPartyHeld(bool bHold);
 	bool IsPartyHeld() const { return bPartyHeld; }
 	const TArray<TObjectPtr<AFTPartyFollower>>& GetFollowers() const { return Followers; }
+	// This map's in-place cutscene host (null before BeginPlay, or when it could not spawn).
+	const AFTCutsceneDirector* GetCutsceneDirector() const;
 	// The big world's layout (null off a big world: on the Explore map and the overworld), and a district's spawn:
 	// the spot (cm on the ground plane; the caller picks the height) and yaw (degrees). False for no such district.
 	const ftcore::WorldLayout* GetWorldLayout() const { return Layout.Get(); }

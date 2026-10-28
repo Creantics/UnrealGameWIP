@@ -30,19 +30,12 @@ public:
 
 	// True when the map was opened with a story step to play.
 	bool HasStep() const { return bHasStep; }
+	// The director playing the step; the HUD draws from it (its text included).
 	const AFTCutsceneDirector* GetDirector() const { return Director; }
-	// Text for the HUD, built once in StartPlay.
-	const FString& GetTitleText() const { return TitleText; }
-	const FString& GetStepText() const { return StepText; }
-	// "Shot i of n" for the director's current shot (empty when there is none).
-	const FString& GetShotText() const;
 
 private:
 	UPROPERTY()
 	TObjectPtr<AFTCutsceneDirector> Director;
 
 	bool bHasStep = false;
-	FString TitleText;
-	FString StepText;
-	TArray<FString> ShotTexts;
 };

@@ -5,6 +5,7 @@
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
+#include "GameFramework/SpringArmComponent.h"
 #include "HAL/PlatformMisc.h"
 #include "HAL/PlatformTime.h"
 #include "Kismet/GameplayStatics.h"
@@ -91,6 +92,19 @@ ftcore::Vec2 ToGround(const FVector& V)
 {
 	// Unreal centimetres to the demo's metres.
 	return {static_cast<float>(V.X / 100.0), static_cast<float>(V.Y / 100.0)};
+}
+
+// After a teleport the camera boom would ease its lag in from where the pawn stood before, sweeping the
+// view across the map, and a cutscene starting there would blend in from that sweep. Settle it on the new
+// spot; the boom's lag tuning is untouched.
+void SnapExploreBoomLag(const AActor& Pawn)
+{
+	if (USpringArmComponent* Boom = Pawn.FindComponentByClass<USpringArmComponent>())
+	{
+		const FVector ArmOrigin = Boom->GetComponentLocation() + Boom->TargetOffset;
+		Boom->PreviousArmOrigin = ArmOrigin;
+		Boom->PreviousDesiredLoc = ArmOrigin;
+	}
 }
 }
 
@@ -357,6 +371,7 @@ void AFTExploreDirector::RestoreFromCarry()
 	if (AFTExploreCharacter* Player = GetPlayerCharacter())
 	{
 		Player->SetActorLocationAndRotation(Carry.Location, Carry.Rotation, false, nullptr, ETeleportType::TeleportPhysics);
+		SnapExploreBoomLag(*Player);
 		bRestorePending = false;
 	}
 }
@@ -681,6 +696,11 @@ void AFTExploreDirector::SetPartyHeld(bool bHold)
 			Slots[I].reset(Trail);
 		}
 	}
+}
+
+const AFTCutsceneDirector* AFTExploreDirector::GetCutsceneDirector() const
+{
+	return CutsceneDirector;
 }
 
 bool AFTExploreDirector::GetDistrictSpawn(int32 District, FVector2D& Spot, float& Yaw) const
@@ -1111,6 +1131,7 @@ void AFTExploreDirector::Tick(float DeltaSeconds)
 		if (const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>())
 		{
 			Player->SetActorLocationAndRotation(GI->ExploreCarry.Location, GI->ExploreCarry.Rotation, false, nullptr, ETeleportType::TeleportPhysics);
+			SnapExploreBoomLag(*Player);
 		}
 		bRestorePending = false;
 		CheckComplete();
@@ -1120,6 +1141,7 @@ void AFTExploreDirector::Tick(float DeltaSeconds)
 		bWorldSpawnPending = false;
 		const FVector At(WorldSpawn.X, WorldSpawn.Y, Player->GetActorLocation().Z);
 		Player->SetActorLocationAndRotation(At, WorldSpawnRotation, false, nullptr, ETeleportType::TeleportPhysics);
+		SnapExploreBoomLag(*Player);
 		if (AController* Controller = Player->GetController())
 		{
 			Controller->SetControlRotation(WorldSpawnRotation);

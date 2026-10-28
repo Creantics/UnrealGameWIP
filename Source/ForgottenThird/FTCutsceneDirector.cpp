@@ -42,6 +42,12 @@ constexpr float kOrbitMinRadius = 10.f;
 constexpr float kOrbitTieDegrees = 160.f;
 constexpr float kSweepRadius = 12.f;
 constexpr double kTraversalWaitLimit = 5.0;
+// In place: how far above or below the lead's feet the ground at a subject mark may lie for a follower
+// to walk onto it, and the height above the ground its way is checked at (cm).
+constexpr float kWalkGroundCm = 100.f;
+constexpr float kWalkWaistCm = 90.f;
+
+const FString kCutsceneNoShot;
 
 ftcore::CutsceneVec3 CutsceneToCore(const FVector& Cm)
 {
@@ -171,6 +177,12 @@ void AFTCutsceneDirector::StartStepHere()
 	bWasBlendingOut = false;
 	bOrbitValid = false;
 	PulledShots = 0;
+	WalkedCount = 0;
+	for (int32 K = 0; K < kWalkSlots; ++K)
+	{
+		bWalking[K] = false;
+		bWalkArrived[K] = false;
+	}
 	bFast = FParse::Param(FCommandLine::Get(), TEXT("AlphaFast"));
 	bBlendTest = FParse::Param(FCommandLine::Get(), TEXT("CutsceneBlendTest"));
 
@@ -178,13 +190,26 @@ void AFTCutsceneDirector::StartStepHere()
 	const FFTStoryCarry* Carry = (GI && GI->StoryCarry.bValid && !GI->StoryCarry.bDone) ? &GI->StoryCarry : nullptr;
 	bHasStep = Carry != nullptr;
 	bAutoPlayStep = Carry && Carry->bAutoPlay;
+	// The HUD's text, built once per step. The title comes from Core, whatever the step's token is (CG:
+	// "Cutscene").
 	if (Carry)
 	{
 		LoadPlan(Carry->Scene, Carry->Beat, Carry->Step, StepPlan);
+		const FString& Token = Carry->StepToken.IsEmpty() ? Carry->Kind : Carry->StepToken;
+		TitleText = FT::ToFString(ftcore::stubTitle(FT::ToUtf8(Token)));
+		StepText = FString::Printf(TEXT("Step %d of %d"), Carry->Step + 1, FMath::Max(Carry->StepCount, 1));
 	}
 	else
 	{
 		LoadPlan(FString(), -1, 0, StepPlan);
+		TitleText = FT::ToFString(ftcore::stubTitle("CG"));
+		StepText = TEXT("No story step (preview of the default shots)");
+	}
+	const uint32 ShotCount = StepPlan.size();
+	ShotTexts.Reset(static_cast<int32>(ShotCount));
+	for (uint32 I = 0; I < ShotCount; ++I)
+	{
+		ShotTexts.Add(FString::Printf(TEXT("Shot %u of %u"), I + 1, ShotCount));
 	}
 
 	UWorld* World = GetWorld();
@@ -264,6 +289,16 @@ void AFTCutsceneDirector::Play(const ftcore::CutscenePlan& Plan, bool bAutoPlay)
 bool AFTCutsceneDirector::Press()
 {
 	return Player.press();
+}
+
+const FString& AFTCutsceneDirector::GetShotText() const
+{
+	if (!bStarted)
+	{
+		return kCutsceneNoShot;
+	}
+	const int32 Index = static_cast<int32>(Player.currentIndex());
+	return ShotTexts.IsValidIndex(Index) ? ShotTexts[Index] : kCutsceneNoShot;
 }
 
 bool AFTCutsceneDirector::FindMarker(std::string_view Id, bool bSubject, FVector& Out) const
@@ -437,6 +472,7 @@ void AFTCutsceneDirector::BeginInPlace()
 
 	Player.begin(StepPlan, bAutoPlayStep && !bBlendTest, true);
 	ResolveStage(Frame);
+	BeginWalks(Frame);
 	LastRealTime = UFTPauseSubsystem::WallSeconds();
 	AppliedShot = -1;
 	bStarted = true;
@@ -509,6 +545,117 @@ void AFTCutsceneDirector::ResolveStage(const ftcore::StageFrame& Frame)
 			}
 		}
 		ShotSpot[I] = ftcore::stageToWorld(Frame, Spot ? Spot->position : ftcore::CutsceneVec3{LeadAt.x + 4.f, LeadAt.y, LeadAt.z + 1.7f});
+	}
+}
+
+void AFTCutsceneDirector::BeginWalks(const ftcore::StageFrame& Frame)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	// The subject marks the shots frame: a follower walks only onto one of those.
+	bool bFramed[kWalkSlots] = {};
+	const auto Frames = [&bFramed](std::string_view Id)
+	{
+		const int32 Ordinal = SubjectOrdinal(Id);
+		if (Ordinal > 0 && Ordinal < kWalkSlots)
+		{
+			bFramed[Ordinal] = true;
+		}
+	};
+	const ftcore::CutscenePlan& Shots = Player.plan();
+	for (uint32 I = 0; I < Shots.size(); ++I)
+	{
+		const ftcore::CutsceneShot& Shot = Shots.shot(I);
+		Frames(Shot.subject());
+		if (Shot.hasSubject2())
+		{
+			Frames(Shot.subject2());
+		}
+	}
+
+	const FVector Feet = LeadFeet();
+	const ftcore::CutsceneVec3 LeadAt = CutsceneToCore(Feet);
+	int32 Ordinal = 0;
+	for (uint32 I = 0; I < ftcore::cutsceneStageMarkCount() && Ordinal + 1 < kWalkSlots; ++I)
+	{
+		const ftcore::CutsceneStageMark& Mark = ftcore::cutsceneStageMark(I);
+		if (!Mark.subject || Mark.id == ftcore::kCutsceneLeadMark)
+		{
+			continue;
+		}
+		++Ordinal;
+		AFTPartyFollower* Follower = (bFramed[Ordinal] && CastMembers.IsValidIndex(Ordinal)) ? Cast<AFTPartyFollower>(CastMembers[Ordinal]) : nullptr;
+		if (!Follower)
+		{
+			continue;
+		}
+		const FString Name = FT::ToFString(Mark.id);
+		// The ground at the mark, near the lead's height: nobody walks off a ledge or into a wall.
+		ftcore::CutsceneVec3 To = ftcore::stageToWorld(Frame, Mark.position);
+		const FVector ToCm = CutsceneToUnreal(To);
+		FHitResult Ground;
+		if (!World->LineTraceSingleByChannel(Ground, FVector(ToCm.X, ToCm.Y, Feet.Z + 150.0), FVector(ToCm.X, ToCm.Y, Feet.Z - 300.0),
+				ECC_Visibility, SweepParams)
+			|| FMath::Abs(Ground.ImpactPoint.Z - Feet.Z) > kWalkGroundCm)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Cutscene: in place, no ground at %s near the lead; follower %d stays where it stands."), *Name, Ordinal);
+			continue;
+		}
+		To.z = static_cast<float>(Ground.ImpactPoint.Z) / kCutsceneCmPerMetre;
+		ftcore::MarkWalk& Walk = Walks[Ordinal];
+		Walk.begin(CutsceneToCore(Follower->GetActorLocation()), To, LeadAt);
+		if (Walk.arrived())
+		{
+			continue; // already on it
+		}
+		// Its own way there, leg by leg, at waist height.
+		bool bClear = true;
+		for (uint32 P = 0; P + 1 < Walk.pointCount() && bClear; ++P)
+		{
+			const FVector Waist(0.0, 0.0, kWalkWaistCm);
+			bClear = !World->LineTraceTestByChannel(CutsceneToUnreal(Walk.point(P)) + Waist, CutsceneToUnreal(Walk.point(P + 1)) + Waist,
+				ECC_Visibility, SweepParams);
+		}
+		if (!bClear)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Cutscene: in place, the way onto %s is blocked; follower %d stays where it stands."), *Name, Ordinal);
+			continue;
+		}
+		bWalking[Ordinal] = true;
+		WalkSince[Ordinal] = World->GetTimeSeconds();
+		++WalkedCount;
+		UE_LOG(LogForgottenThird, Display, TEXT("Cutscene: in place, follower %d walks %.1f m onto %s."), Ordinal, Walk.remaining(), *Name);
+	}
+}
+
+void AFTCutsceneDirector::TickWalks(float DeltaSeconds)
+{
+	const FVector Feet = LeadFeet();
+	for (int32 K = 1; K < kWalkSlots; ++K)
+	{
+		AFTPartyFollower* Follower = (bWalking[K] && CastMembers.IsValidIndex(K)) ? Cast<AFTPartyFollower>(CastMembers[K]) : nullptr;
+		if (!IsValid(Follower))
+		{
+			bWalking[K] = false;
+			continue;
+		}
+		ftcore::MarkWalk& Walk = Walks[K];
+		Walk.step(DeltaSeconds);
+		const FVector At = CutsceneToUnreal(Walk.position());
+		if (Walk.arrived() && !bWalkArrived[K])
+		{
+			// On the mark it turns to face the lead; Place, still called every frame, plays the turn.
+			bWalkArrived[K] = true;
+			Follower->FaceTo(FMath::RadiansToDegrees(FMath::Atan2(static_cast<float>(Feet.Y - At.Y), static_cast<float>(Feet.X - At.X))));
+			const double Took = GetWorld() ? GetWorld()->GetTimeSeconds() - WalkSince[K] : 0.0;
+			UE_LOG(LogForgottenThird, Display, TEXT("Cutscene: in place, follower %d on its mark after %.1f s."), K, Took);
+		}
+		const float Stop = Walk.stopDistance();
+		Follower->Place(FVector2D(At.X, At.Y), static_cast<float>(Feet.Z), DeltaSeconds, Walk.wantSpeed() * kCutsceneCmPerMetre,
+			Stop < 0.f ? -1.f : Stop * kCutsceneCmPerMetre);
 	}
 }
 
@@ -729,8 +876,8 @@ void AFTCutsceneDirector::Finish()
 		// Ids and counts only.
 		if (bInPlace)
 		{
-			UE_LOG(LogForgottenThird, Display, TEXT("Cutscene: done %s beat %d step %d shots %u skipped %d in place, pulled %d"), *Carry.Scene,
-				Carry.Beat, Carry.Step, Player.shotCount(), Player.skipped() ? 1 : 0, FMath::CountBits(PulledShots));
+			UE_LOG(LogForgottenThird, Display, TEXT("Cutscene: done %s beat %d step %d shots %u skipped %d in place, pulled %d, walked %d"),
+				*Carry.Scene, Carry.Beat, Carry.Step, Player.shotCount(), Player.skipped() ? 1 : 0, FMath::CountBits(PulledShots), WalkedCount);
 		}
 		else
 		{
@@ -815,6 +962,7 @@ void AFTCutsceneDirector::Tick(float DeltaSeconds)
 	}
 	if (bInPlace)
 	{
+		TickWalks(DeltaSeconds);
 		ApplyInPlace();
 	}
 	else

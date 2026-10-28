@@ -545,6 +545,125 @@ CutsceneVec3 stageToWorld(const StageFrame& frame, const CutsceneVec3& stagePoin
 
 float stageYawToWorld(const StageFrame& frame, float stageYaw) { return cutWrapDegrees(stageYaw + frame.turn); }
 
+// ---- mark walk ----
+
+namespace {
+
+// Within this (metres) of the mark it stands on it; a corner whose legs nearly line up meets this many
+// clearances out at most.
+constexpr float kWalkArrived = 1e-3f;
+constexpr float kWalkCornerReach = 3.f;
+
+float cutFlatLength(const CutsceneVec3& a) { return std::sqrt(a.x * a.x + a.y * a.y); }
+
+// Of the two lines from `p` (outside the circle round `c` of radius `r`) that touch the circle, the
+// direction of the one that touches it on `side` of `c`.
+CutsceneVec3 cutTouchDir(const CutsceneVec3& p, const CutsceneVec3& c, float r, const CutsceneVec3& side) {
+    const CutsceneVec3 toC{c.x - p.x, c.y - p.y, 0.f};
+    const float d = cutFlatLength(toC);
+    const float half = std::asin(std::min(1.f, r / d));
+    const float reach = std::sqrt(std::max(0.f, d * d - r * r));
+    CutsceneVec3 best;
+    float bestSide = 0.f;
+    bool first = true;
+    for (const float turn : {half, -half}) {
+        const float cs = std::cos(turn);
+        const float sn = std::sin(turn);
+        const CutsceneVec3 dir{(toC.x * cs - toC.y * sn) / d, (toC.x * sn + toC.y * cs) / d, 0.f};
+        const float onSide = (p.x + dir.x * reach - c.x) * side.x + (p.y + dir.y * reach - c.y) * side.y;
+        if (first || onSide > bestSide) {
+            best = dir;
+            bestSide = onSide;
+            first = false;
+        }
+    }
+    return best;
+}
+
+} // namespace
+
+void MarkWalk::begin(const CutsceneVec3& from, const CutsceneVec3& mark, const CutsceneVec3& avoid) {
+    points_[0] = from;
+    points_[1] = mark;
+    count_ = 2;
+    const float r = tuning_.clearance;
+    const CutsceneVec3 way{mark.x - from.x, mark.y - from.y, 0.f};
+    const float way2 = way.x * way.x + way.y * way.y;
+    const CutsceneVec3 fromOff{from.x - avoid.x, from.y - avoid.y, 0.f};
+    const CutsceneVec3 markOff{mark.x - avoid.x, mark.y - avoid.y, 0.f};
+    if (r > 0.f && way2 > 1e-8f && cutFlatLength(fromOff) > r && cutFlatLength(markOff) > r) {
+        // Where the straight line comes nearest the lead.
+        const float t = -(fromOff.x * way.x + fromOff.y * way.y) / way2;
+        const CutsceneVec3 closest{fromOff.x + way.x * t, fromOff.y + way.y * t, 0.f};
+        const float pass = cutFlatLength(closest);
+        if (t > 0.f && t < 1.f && pass < r) {
+            const float wayLength = std::sqrt(way2);
+            const CutsceneVec3 side = pass > 1e-4f ? CutsceneVec3{closest.x / pass, closest.y / pass, 0.f}
+                                                   : CutsceneVec3{-way.y / wayLength, way.x / wayLength, 0.f};
+            // The corner is where the line out of the start that touches the circle meets the one into
+            // the mark; when they don't meet ahead of both, it stands out from the lead on that side.
+            const CutsceneVec3 out = cutTouchDir(from, avoid, r, side);
+            const CutsceneVec3 in = cutTouchDir(mark, avoid, r, side);
+            const float cross = out.x * in.y - out.y * in.x;
+            CutsceneVec3 corner{avoid.x + side.x * r * kWalkCornerReach, avoid.y + side.y * r * kWalkCornerReach, 0.f};
+            if (std::fabs(cross) > 1e-4f) {
+                const float s = (way.x * in.y - way.y * in.x) / cross;
+                const float u = (way.x * out.y - way.y * out.x) / cross;
+                if (s > 0.f && u > 0.f) corner = {from.x + out.x * s, from.y + out.y * s, 0.f};
+            }
+            const CutsceneVec3 off{corner.x - avoid.x, corner.y - avoid.y, 0.f};
+            const float offLength = cutFlatLength(off);
+            const float reach = r * kWalkCornerReach;
+            if (offLength > reach) corner = {avoid.x + off.x / offLength * reach, avoid.y + off.y / offLength * reach, 0.f};
+            corner.z = from.z + (mark.z - from.z) * t;
+            points_[1] = corner;
+            points_[2] = mark;
+            count_ = 3;
+        }
+    }
+    length_ = 0.f;
+    for (std::uint32_t i = 1; i < count_; ++i) length_ += cutFlatLength(cutSub(points_[i], points_[i - 1]));
+    travelled_ = 0.f;
+    speed_ = 0.f;
+    braking_ = false;
+    arrived_ = length_ <= kWalkArrived;
+    position_ = arrived_ ? mark : from;
+}
+
+void MarkWalk::step(float dt) {
+    if (arrived_ || dt <= 0.f) return;
+    // Up to its walking speed, and no faster than it can still brake to a stand in what is left.
+    const float brake = std::sqrt(2.f * std::max(tuning_.decel, 0.01f) * remaining());
+    float v = std::min(speed_ + std::max(tuning_.accel, 0.01f) * dt, tuning_.speed);
+    if (v >= brake) {
+        v = brake;
+        braking_ = true;
+    }
+    speed_ = v;
+    travelled_ = std::min(length_, travelled_ + v * dt);
+    if (length_ - travelled_ <= kWalkArrived) {
+        travelled_ = length_;
+        speed_ = 0.f;
+        braking_ = false;
+        arrived_ = true;
+    }
+    position_ = along(travelled_);
+}
+
+const CutsceneVec3& MarkWalk::point(std::uint32_t i) const { return points_[std::min(i, count_ - 1)]; }
+
+CutsceneVec3 MarkWalk::along(float distance) const {
+    for (std::uint32_t i = 1; i < count_; ++i) {
+        const CutsceneVec3 leg = cutSub(points_[i], points_[i - 1]);
+        const float legLength = cutFlatLength(leg);
+        if (distance <= legLength) {
+            return legLength > 0.f ? cutAdd(points_[i - 1], cutScale(leg, distance / legLength)) : points_[i];
+        }
+        distance -= legLength;
+    }
+    return points_[count_ - 1];
+}
+
 // ---- table ----
 
 const CutsceneEntry* CutsceneTable::findEntry(std::string_view scene, std::uint32_t beat, std::uint32_t step) const {

@@ -2,7 +2,9 @@
 
 // Canvas UI of the exploration demo (no UMG): the objective list, the prompt for the focused spot,
 // notices, banners and the closing card. Everything comes from the level's AFTExploreDirector;
-// per-frame drawing uses cached or static strings only.
+// per-frame drawing uses cached or static strings only. While a cutscene plays in place
+// (AFTCutsceneDirector::IsPlayingInPlace) it draws that cutscene's letterbox (FT::DrawCutsceneHUD)
+// instead.
 
 #include "CoreMinimal.h"
 #include "GameFramework/HUD.h"
