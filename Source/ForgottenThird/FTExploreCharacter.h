@@ -34,8 +34,9 @@
 // In the air, a ledge within reach (a deep top, from under the feet to past the hands) is caught when the jump is held
 // or the stick points into it: one of the catch clips (SetTraversalFromRun's too) plays from where its catch is timed to
 // meet the body's flight (ftcore::TraversalSet::planCatch), the body turns square into the face, and the capsule is
-// carried from its flight into the catch and up onto the top as a climb is. -LocoCatch builds deep blocks 150, 300 and
-// 330 cm high ahead and jumps at each from about a metre out.
+// carried from its flight into the catch and up onto the top as a climb is. Each catch begun is marked for the followers
+// too, who catch the same ledge where they meet it in the air. -LocoCatch builds deep blocks 150, 300 and 330 cm high
+// ahead and jumps at each from about a metre out.
 //
 // Roll goes the way the stick points (else the way the body moves, else the way it faces): one of the roll clips
 // (SetTraversalFromRun's too) plays from its start, entered at the body's speed, the body turns to the roll's way and
@@ -131,8 +132,8 @@ public:
 	// Whether a traversal (a vault, a climb, a catch, a roll or a slide) is carrying the body: a scene played in place waits
 	// for it to end.
 	bool IsTraversing() const { return bTraversing; }
-	// For the followers: how many vaults and climbs the body has begun (not catches, rolls or slides), and where and which
-	// way the last one began.
+	// For the followers: how many vaults, climbs and catches the body has begun (not rolls or slides), and where and which
+	// way the last one began, and whether it was a catch.
 	uint32 GetTraversalsBegun() const { return TraversalsBegun; }
 	const FFTTraversalMark& GetLastTraversal() const { return LastTraversal; }
 	// The capsule (cm), which the followers probe ahead with too.
@@ -266,7 +267,7 @@ private:
 	ftcore::TraversalPlan TravPlan;
 	float TravTime = 0.f;
 	FTransform TravFrame;
-	// The vaults and climbs begun, and the last one's mark (GetLastTraversal).
+	// The vaults, climbs and catches begun, and the last one's mark (GetLastTraversal).
 	uint32 TraversalsBegun = 0;
 	FFTTraversalMark LastTraversal;
 	// The slide under way (sliding() while it is), the way it goes, the floor's normal last met, whether a wall has

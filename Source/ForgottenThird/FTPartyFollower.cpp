@@ -27,9 +27,9 @@ constexpr float kFacedWithin = 40.f;
 // As high as a walking body steps (cm, the character movement's MaxStepHeight): a floor further down is fallen to, and
 // a change of height past it in one frame (a pop) is logged.
 constexpr float kStepHeight = 45.f;
-// The lead's vaults and climbs (cm): the face ahead is looked at while one is ahead within the probes' reach and the
-// body goes its way at least this squarely (the cosine), and is the lead's when within kMarkSlack of it (along its way);
-// one is forgotten once the body is kMarkPassed past it or kMarkFar from it.
+// The lead's vaults, climbs and catches (cm): the face ahead is looked at while one is ahead within the probes' reach
+// and the body goes its way at least this squarely (the cosine), and is the lead's when within kMarkSlack of it (along
+// its way); one is forgotten once the body is kMarkPassed past it or kMarkFar from it.
 constexpr float kMarkReach = 560.f;
 constexpr float kMarkFacing = 0.8f;
 constexpr float kMarkSlack = 60.f;
@@ -41,9 +41,11 @@ constexpr float kMarkFar = 2000.f;
 constexpr float kStrayTime = 0.4f;
 constexpr float kStrayRate = 200.f;
 constexpr float kStrayWait = 300.f;
+// Carried by a catch, the body turns square into the face with this time constant (s), as the lead does.
+constexpr float kCatchTurnTime = 0.05f;
 // Why the last look ahead started no traversal (LastMiss), for the log.
-const TCHAR* const kMissNames[] = {TEXT("not looked for: not going its way"), TEXT("nothing ahead to go over or onto"),
-	TEXT("the face ahead not the lead's"), TEXT("still out of reach"), TEXT("no clip fits")};
+const TCHAR* const kMissNames[] = {TEXT("not looked for: not going its way, or on the ground at a catch, or in the air at a vault or climb"),
+	TEXT("nothing ahead to go over, onto or catch"), TEXT("the face ahead not the lead's"), TEXT("still out of reach"), TEXT("no clip fits")};
 }
 
 AFTPartyFollower::AFTPartyFollower()
@@ -70,7 +72,7 @@ bool AFTPartyFollower::Setup(const FFTLeadLook& Look, const AActor* Lead)
 	{
 		LeadCharacter = Cast<ACharacter>(Lead);
 	}
-	// The lead's vaults and climbs from here on.
+	// The lead's vaults, climbs and catches from here on.
 	bNoTraversal = FParse::Param(FCommandLine::Get(), TEXT("LocoNoFollowerTraversal"));
 	LeadExplorer = Cast<AFTExploreCharacter>(Lead);
 	MarksSeen = LeadExplorer.IsValid() ? LeadExplorer->GetTraversalsBegun() : 0;
@@ -90,7 +92,7 @@ bool AFTPartyFollower::Setup(const FFTLeadLook& Look, const AActor* Lead)
 	FTLook::AddGrooms(*this, *Body, Pieces, Look.Grooms, GroomComponents, *LogName);
 	UE_LOG(LogForgottenThird, Display, TEXT("%s: body %s facing %.0f, %d pieces (%d with cloth), %d grooms, clips from %s."), *LogName,
 		*Loaded.Body->GetName(), Body->GetRelativeRotation().Yaw, Pieces.Num(), Cloth, GroomComponents.Num(), *Loaded.ClipFolder);
-	// The lead's jumps are replayed on the trail (ReplayJump), and its climbs and vaults gone over again with the
+	// The lead's jumps are replayed on the trail (ReplayJump), and its climbs, vaults and catches gone over again with the
 	// traversal clips (-LocoNoFollowerTraversal: not, so none).
 	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Body->GetAnimInstance()))
 	{
@@ -110,24 +112,39 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 	LastSlot = Ground;
 	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Body->GetAnimInstance());
 
-	// Meeting a face the lead vaulted or climbed, it goes over or onto it too, as the lead does: begun from where it
-	// stands, carried along its clip from this frame.
+	// Meeting a face the lead vaulted or climbed, it goes over or onto it too, as the lead does, and in the air at a
+	// ledge the lead caught it catches it: begun from where it is, carried along its clip from this frame.
+	bAtWall = false;
 	if (!bNoTraversal && !bHeldByScene && DeltaSeconds > 0.f && Anim)
 	{
 		TakeMarks(Was);
-		if (!bTraversing && !bAir && NumMarks > 0 && Speed > kStillSpeed)
+		if (!bTraversing && NumMarks > 0 && (bAir || Speed > kStillSpeed))
 		{
-			TryTraverse(*Anim, Was);
+			TryTraverse(*Anim, Was, WantSpeed);
 		}
 	}
 	FVector Carried = Was;
 	const bool bCarried = bTraversing && Anim && TickTraversal(*Anim, DeltaSeconds, Ground, bSlotMoving, Carried);
 	bTraversing = bCarried;
 	// Otherwise on its slot, or on its way back to it.
-	const FVector2D Spot = bCarried ? FVector2D(Carried.X, Carried.Y) : Ground + EaseStray(Ground, DeltaSeconds);
+	FVector2D Spot = bCarried ? FVector2D(Carried.X, Carried.Y) : Ground + EaseStray(Ground, DeltaSeconds);
+	// Not on through a face the lead caught while it may yet catch it: held short of it, as the lead's capsule is stopped
+	// there. Landed below it, or risen clear of its top, it eases back onto its slot from there.
+	if (bAtWall && !bCarried)
+	{
+		const FVector2D In(WallIn.X, WallIn.Y);
+		const double Over = FVector2D::DotProduct(Spot - FVector2D(WallFace.X, WallFace.Y), In) + AFTExploreCharacter::CapsuleRadius;
+		if (Over > 0.0)
+		{
+			Spot -= In * Over;
+			Stray = Spot - Ground;
+			StrayWay = In;
+		}
+	}
 	const FVector2D Move = bWasPlaced ? Spot - LastGround : FVector2D::ZeroVector;
 	const float Step = DeltaSeconds > 0.f ? static_cast<float>(Move.Size()) / DeltaSeconds : 0.f;
 	const bool bWantWalk = Step > kStillSpeed;
+	Going = DeltaSeconds > 0.f ? Move / DeltaSeconds : FVector2D::ZeroVector;
 	LastGround = Spot;
 	bPlaced = true;
 
@@ -191,8 +208,9 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 	const ftcore::Locomotion* Loco = Anim ? &Anim->GetLocomotion() : nullptr;
 	if (bCarried)
 	{
-		// A traversal keeps the facing it began with.
-		Rot.Yaw = TravFrame.Rotator().Yaw;
+		// A traversal keeps the facing it began with; a catch turns the body square into the face, as it turns the lead.
+		const float Gap = FMath::FindDeltaAngleDegrees(static_cast<float>(Rot.Yaw), static_cast<float>(TravFrame.Rotator().Yaw));
+		Rot.Yaw += Gap * (1.f - FMath::Exp(-DeltaSeconds / kCatchTurnTime));
 	}
 	else if (Loco && Loco->turning() && Loco->turnPivots())
 	{
@@ -286,22 +304,23 @@ void AFTPartyFollower::TakeMarks(const FVector& Feet)
 			Marks[Kept++] = Mark;
 			continue;
 		}
-		UE_LOG(LogForgottenThird, Display, TEXT("%s: left the lead's vault or climb at (%.0f, %.0f) unfollowed (%s)."), *LogName, Mark.Face.X, Mark.Face.Y,
-			bFar ? TEXT("too far from it") : kMissNames[LastMiss]);
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: left the lead's %s at (%.0f, %.0f) unfollowed (%s)."), *LogName,
+			Mark.bCatch ? TEXT("catch") : TEXT("vault or climb"), Mark.Face.X, Mark.Face.Y, bFar ? TEXT("too far from it") : kMissNames[LastMiss]);
 		LastMiss = 0;
 	}
 	NumMarks = Kept;
 }
 
-bool AFTPartyFollower::TryTraverse(UFTLocomotionAnimInstance& Anim, const FVector& Feet)
+bool AFTPartyFollower::TryTraverse(UFTLocomotionAnimInstance& Anim, const FVector& Feet, float WantSpeed)
 {
-	// Only toward one of the lead's ahead within the probes' reach, going its way.
+	// Only toward one of the lead's ahead within the probes' reach, going its way: on the ground a vault or a climb, in
+	// the air a catch.
 	const FVector Fwd = GetActorForwardVector().GetSafeNormal2D();
 	bool bAhead = false;
 	for (int32 I = 0; I < NumMarks && !bAhead; ++I)
 	{
 		const double Ahead = FVector::DotProduct(Marks[I].Face - Feet, Marks[I].Way);
-		bAhead = Ahead > 0.0 && Ahead <= kMarkReach && FVector::DotProduct(Fwd, Marks[I].Way) > kMarkFacing;
+		bAhead = Marks[I].bCatch == bAir && Ahead > 0.0 && Ahead <= kMarkReach && FVector::DotProduct(Fwd, Marks[I].Way) > kMarkFacing;
 	}
 	const UWorld* World = GetWorld();
 	if (!bAhead || !World)
@@ -313,7 +332,7 @@ bool AFTPartyFollower::TryTraverse(UFTLocomotionAnimInstance& Anim, const FVecto
 	ftcore::TraversalObstacle Obstacle;
 	FVector In;
 	if (!FTTraversalProbe::Probe(*World, TraceParams, Feet, Fwd, AFTExploreCharacter::CapsuleRadius, AFTExploreCharacter::CapsuleHalfHeight,
-			Set.tuning(), false, Obstacle, In))
+			Set.tuning(), bAir, Obstacle, In))
 	{
 		LastMiss = 1;
 		return false;
@@ -322,7 +341,7 @@ bool AFTPartyFollower::TryTraverse(UFTLocomotionAnimInstance& Anim, const FVecto
 	int32 Which = INDEX_NONE;
 	for (int32 I = 0; I < NumMarks && Which == INDEX_NONE; ++I)
 	{
-		if (FMath::Abs(FVector::DotProduct(Face - Marks[I].Face, Marks[I].Way)) <= kMarkSlack)
+		if (Marks[I].bCatch == bAir && FMath::Abs(FVector::DotProduct(Face - Marks[I].Face, Marks[I].Way)) <= kMarkSlack)
 		{
 			Which = I;
 		}
@@ -332,10 +351,21 @@ bool AFTPartyFollower::TryTraverse(UFTLocomotionAnimInstance& Anim, const FVecto
 		LastMiss = 2;
 		return false;
 	}
-	const ftcore::TraversalPlan Plan = Set.plan(Obstacle, Speed, -1);
+	// In the air, its flight in the face's space as the lead's (AFTExploreCharacter::TryCatch): Core's x into the face, y
+	// its left, z up; it goes on at its slot's pace.
+	const ftcore::TravPoint Velocity{static_cast<float>(Going.X * In.X + Going.Y * In.Y), static_cast<float>(Going.X * In.Y - Going.Y * In.X), AirSpeed};
+	const ftcore::TraversalPlan Plan = bAir ? Set.planCatch(Obstacle, Velocity, AirGravity, WantSpeed >= 0.f ? WantSpeed : Speed)
+		: Set.plan(Obstacle, Speed, -1);
 	if (!Plan.ok())
 	{
 		LastMiss = Plan.tooFar ? 3 : 4;
+		// Not yet, below the top: it doesn't fly on through the face.
+		if (bAir && Obstacle.height > 0.f)
+		{
+			bAtWall = true;
+			WallFace = Face;
+			WallIn = In;
+		}
 		return false;
 	}
 	const float Off = static_cast<float>(FVector::DotProduct(Face - Marks[Which].Face, Marks[Which].Way));
@@ -348,9 +378,22 @@ bool AFTPartyFollower::TryTraverse(UFTLocomotionAnimInstance& Anim, const FVecto
 	bTraversing = true;
 	TravPlan = Plan;
 	TravTime = Plan.start;
-	TravFrame = FTransform(FRotator(0.0, GetActorRotation().Yaw, 0.0), Feet);
+	// A catch turns the body square into the face (In), and carries it from its flight: it is in the air no more.
+	TravFrame = FTransform(FRotator(0.0, bAir ? In.Rotation().Yaw : GetActorRotation().Yaw, 0.0), Feet);
 	Anim.SetTraversal(Plan.clip, TravTime);
 	const ftcore::TraversalClipInfo& Clip = Set.clip(static_cast<std::size_t>(Plan.clip));
+	if (bAir)
+	{
+		bAir = false;
+		AirSpeed = 0.f;
+		const float Lead = Clip.contact - Plan.start;
+		const float Flight = Velocity.z * Lead - 0.5f * AirGravity * Lead * Lead;
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("%s: catch clip %d (edge %.0f up) from %.2f s, %.2f s before the catch, for a %.0f cm top %.0f cm ahead, %.0f deep, at (%.0f, %.0f, %.0f) cm/s; the catch at (%.0f, %.0f), its flight's miss (%.0f, %.0f), %+.0f cm off the lead's face."),
+			*LogName, Plan.clip, Clip.ledgeHeight, Plan.start, Lead, Obstacle.height, Obstacle.distance, Obstacle.depth, Velocity.x, Velocity.y,
+			Velocity.z, Plan.atContact.x, Plan.atContact.z, Plan.atContact.x - Velocity.x * Lead, Plan.atContact.z - Flight, Off);
+		return true;
+	}
 	UE_LOG(LogForgottenThird, Display,
 		TEXT("%s: traversal clip %d (%s, edge %.0f up) from %.2f s for a %.0f cm top %.0f cm ahead, %.0f deep (floor beyond %d at %.0f), at %.0f cm/s, %+.0f cm off the lead's face."),
 		*LogName, Plan.clip, Clip.move == ftcore::TraversalMove::Up ? TEXT("up") : TEXT("over"), Clip.ledgeHeight, Plan.start, Obstacle.height,

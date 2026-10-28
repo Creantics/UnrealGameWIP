@@ -575,6 +575,7 @@ bool AFTExploreCharacter::TryTraverse(bool bLog)
 	// Marked for the followers, to go the same way where they meet it.
 	LastTraversal.Face = TravFrame.GetLocation() + In * Obstacle.distance;
 	LastTraversal.Way = In;
+	LastTraversal.bCatch = false;
 	++TraversalsBegun;
 	// Nothing moves the capsule but TickTraversal (a custom mode with no physics of its own).
 	Move->SetMovementMode(MOVE_Custom);
@@ -635,6 +636,11 @@ bool AFTExploreCharacter::TryCatch(bool bLog)
 	TravTime = Plan.start;
 	TravFrame = FTransform(FRotator(0.0, In.Rotation().Yaw, 0.0),
 		GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+	// Marked for the followers, to catch the same ledge where they meet it in the air.
+	LastTraversal.Face = TravFrame.GetLocation() + In * Obstacle.distance;
+	LastTraversal.Way = In;
+	LastTraversal.bCatch = true;
+	++TraversalsBegun;
 	Move->SetMovementMode(MOVE_Custom);
 	Anim->SetTraversal(Plan.clip, TravTime);
 	const ftcore::TraversalClipInfo& Clip = Set.clip(static_cast<std::size_t>(Plan.clip));

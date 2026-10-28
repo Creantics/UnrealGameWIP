@@ -3,8 +3,8 @@
 // What a body has ahead of it to vault or climb, for the lead (AFTExploreCharacter) and the party followers
 // (AFTPartyFollower) alike: forward traces from the feet find the near face, a down trace just past it the top, steps
 // along the top its depth, then the floor beyond a thin top or room to stand on a deep one (ftcore::TraversalObstacle).
-// And the mark the lead leaves where it begins a vault or a climb, for its followers to go the same way where they meet
-// it.
+// And the mark the lead leaves where it begins a vault, a climb or a catch, for its followers to go the same way where
+// they meet it.
 
 #include "CoreMinimal.h"
 
@@ -13,12 +13,14 @@
 class UWorld;
 struct FCollisionQueryParams;
 
-// Where a vault or a climb began: the point its way in met the near face, on the ground under it (cm), and that way
-// (level, unit).
+// Where a vault, a climb or a catch began: the point its way in met the near face, level with the feet as it began (on
+// the ground under it, or in the air for a catch) (cm), that way (level, unit), and whether it was a catch (begun in
+// the air, where a vault or a climb is begun on the ground).
 struct FFTTraversalMark
 {
 	FVector Face = FVector::ZeroVector;
 	FVector Way = FVector::ForwardVector;
+	bool bCatch = false;
 };
 
 namespace FTTraversalProbe
