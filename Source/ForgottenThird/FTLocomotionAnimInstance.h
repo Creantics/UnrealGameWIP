@@ -270,7 +270,7 @@ private:
 	float PushedTurnBy = 0.f;
 	float PushedLeadPhase = -1.f;
 	float PushedLeadStride = 0.f;
-	// The phase and stride before the last update, and the frame it ran in.
+	// The phase and stride before the last update over time that passed, and the frame it ran in.
 	uint64 SteppedFrame = MAX_uint64;
 	float PhaseBefore = 0.f;
 	float StrideBefore = 0.f;
