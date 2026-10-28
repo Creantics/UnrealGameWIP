@@ -1,12 +1,49 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-28 ~16:50. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-28 ~18:22. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-28 ~16:50): every map switches to a shared photoreal look; the per-world styles become an
+- **NEWEST (2026-10-28 ~18:22): world building pass 1. Solhaven's shapes wear photographed CC0 surfaces.**
+  - `Data/Field/surfaces.json` lists eight CC0 surfaces from one library: grass, gravel, cobbles, plaster, clay
+    roof tiles, mossy sandstone, bark and rock. For each it gives the real width one copy covers, the resolution and
+    the source page, and for each world kind which surface each role wears, with an optional tint. Only the town kind
+    (Solhaven) is dressed; Lattice and Unwritten keep the flat tints.
+  - Core: `ftcore::SurfaceTable` (loader, role names, lookups that allocate nothing; `test_surface_table.cpp`, which
+    also checks that the committed file dresses every town role at a plausible scale).
+  - `tools/fetch_surfaces.py` downloads the maps (colour, DirectX normal, AO/roughness/metal) and refuses anything not
+    CC0. The photos stay out of the repo; the textures built from them go in through LFS.
+  - `-run=FTBuildSurfaces -Source=<dir> -AllowCommandletRendering` builds `/Game/Rendering/M_WorldSurfaceTex`, then for
+    each surface three textures and an instance under `/Game/Rendering/Surfaces/<id>/`. The textures keep their JPEG
+    as their source: 62.0 MB for all 24. The master projects each photo along the shape's own axes (each
+    instance's, for the instanced roads, walls and trees), so the photo keeps its real size on every shape and a
+    pitched roof's tiles run down the slope. It also has the old master's mottle, plus a broad one against repeats.
+  - The world builder dresses each role from the table, else the old flat tint, and logs
+    `FTBuildExploreWorld: 8 of 8 surface roles wear photographed surfaces.` for Solhaven.
+  - Caught by the renders: the first game run drew every dressed shape in the engine's grey default material. The
+    master's code sampled with `Tex.Sample`, which a ray-tracing hit shader can't compile, so the whole material fell
+    back, and the commandlet's compile check reported 0 errors. It samples through `Texture2DSample` now. After any
+    change to a code-built material, grep the first game run's log for `Failed to compile Material`.
+  - Caught by the renders, second: the road rendered as a mirror. The library's packed AO/roughness/metal map for
+    it has an empty roughness channel (it averages 0.001; the library's separate roughness map averages 0.96).
+    `surfaces.json` gives it a constant `roughness: 0.95`, which the master takes through `RoughnessOverride`, and
+    `FTBuildSurfaces` now refuses a surface whose channel averages under 0.05 without one, or an override on a map
+    that has its own.
+  - Render check: offscreen portrait shots of Solhaven, wide (4 angles) and close (3). Both runs exit 0 with no
+    `Failed to compile Material`. The cobbles read well at the right scale, and so does the tower's sandstone. The
+    roof tiles run down the slopes, though their mottle is a little blotchy from far off. The plaster is smooth,
+    nearly flat, and the road is matte gravel. The ground reads tan at grazing angles: it's a dry-grass photo, so a
+    tint can't make it green, and pass 2's scattered grass is the fix. The plaza's near-white is the exposure, as
+    before.
+  - Known: the blockout roofs are cubes turned 45°, so the gable ends show the tiles turned 45°. The building kit
+    replaces them.
+  - Gate: 799 doctest cases, ctest 4/4, UBT Succeeded (with `-DisablePlugin=Fab`). main and the demo checkout
+    are at 7cb0cbf, on top of the animation session's 873106e (foot phase after a traversal).
+  - Next: pass 2, terrain in place of the flat floor plus scattered grass, stones and decals (PCG), with
+    anti-tiling; then pass 3, a building kit. Lattice and Unwritten get surfaces with the same pipeline.
+- **Earlier (2026-10-28 ~16:50): every map switches to a shared photoreal look; the per-world styles become an
   optional layer.**
   - `ftcore::SceneLook` (Core: 17 values with defaults, equality and `lerp`; `test_scene_look.cpp`) holds the look.
     `FTScene::SpawnLook` builds it in a map: a movable sun, a real-time sky light, sky atmosphere, volumetric height
