@@ -146,6 +146,18 @@ void AFTExploreDirector::BeginPlay()
 		{
 			CutsceneDirector->HostSteps(true, true);
 		}
+		const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+		if (GI && GI->StoryCarry.bValid && !GI->StoryCarry.bDone && GI->StoryCarry.Screen == ftcore::GameplayScreen::Cutscene)
+		{
+			// Opened for a CG step (FTStepHost.h): the lead starts at the scene's district spawn and the
+			// cutscene host begins once it stands there (Tick).
+			bCutsceneCarry = true;
+			bCutsceneStartPending = true;
+			if (Layout)
+			{
+				PlaceInDistrict(GI->StoryCarry, TEXT("CG step"));
+			}
+		}
 	}
 	// Back from the last fight: everything may be done already.
 	CheckComplete();
@@ -406,38 +418,10 @@ void AFTExploreDirector::BeginStoryWalk()
 	if (Layout)
 	{
 		// A big world: the goal and waypoint are in the district's frame; the player starts at its spawn.
-		const int32 Count = static_cast<int32>(Layout->districtCount());
-		const bool bPlaced = Carry.World == WorldId && Carry.District >= 0 && Carry.District < Count;
-		WorldDistrict = bPlaced ? Carry.District : 0;
-		if (!bPlaced)
-		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("World %s: the field step's scene %s isn't placed here; using district 0."), *WorldId, *Carry.Scene);
-		}
+		PlaceInDistrict(Carry, TEXT("field step"));
 		const size_t D = static_cast<size_t>(WorldDistrict);
 		FieldGoal = Layout->toWorld(D, FieldGoal);
 		FieldVia = Layout->toWorld(D, FieldVia);
-		FVector2D Spot;
-		float Yaw = 0.f;
-		if (GetDistrictSpawn(WorldDistrict, Spot, Yaw))
-		{
-			WorldSpawn = FVector(Spot.X, Spot.Y, 0.0);
-			WorldSpawnRotation = FRotator(0.f, Yaw, 0.f);
-			bWorldSpawnPending = true;
-		}
-		if (!Carry.Style.IsEmpty())
-		{
-			for (TActorIterator<AFTStyleController> It(GetWorld()); It; ++It)
-			{
-				// Before its BeginPlay the controller applies StyleSpec itself; after it, switch now.
-				It->StyleSpec = Carry.Style;
-				if (It->HasActorBegunPlay())
-				{
-					It->SetStyleSpec(Carry.Style);
-				}
-			}
-		}
-		UE_LOG(LogForgottenThird, Display, TEXT("World %s: field step in district %d (style %s)."), *WorldId, WorldDistrict,
-			Carry.Style.IsEmpty() ? TEXT("the map's") : *Carry.Style);
 	}
 	SpawnFieldGoal();
 	FieldObjective = Carry.StepLabel.IsEmpty()
@@ -449,6 +433,39 @@ void AFTExploreDirector::BeginStoryWalk()
 		UGameplayStatics::SetGlobalTimeDilation(this, 8.f);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: field step for %s at %s beat %d step %d, marker %d%s."), *Carry.Kind, *Carry.Scene, Carry.Beat, Carry.Step, static_cast<int32>(GoalIndex), bFromTable ? TEXT(" (table)") : TEXT(""));
+}
+
+void AFTExploreDirector::PlaceInDistrict(const FFTStoryCarry& Carry, const TCHAR* What)
+{
+	const int32 Count = static_cast<int32>(Layout->districtCount());
+	const bool bPlaced = Carry.World == WorldId && Carry.District >= 0 && Carry.District < Count;
+	WorldDistrict = bPlaced ? Carry.District : 0;
+	if (!bPlaced)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("World %s: the %s's scene %s isn't placed here; using district 0."), *WorldId, What, *Carry.Scene);
+	}
+	FVector2D Spot;
+	float Yaw = 0.f;
+	if (GetDistrictSpawn(WorldDistrict, Spot, Yaw))
+	{
+		WorldSpawn = FVector(Spot.X, Spot.Y, 0.0);
+		WorldSpawnRotation = FRotator(0.f, Yaw, 0.f);
+		bWorldSpawnPending = true;
+	}
+	if (!Carry.Style.IsEmpty())
+	{
+		for (TActorIterator<AFTStyleController> It(GetWorld()); It; ++It)
+		{
+			// Before its BeginPlay the controller applies StyleSpec itself; after it, switch now.
+			It->StyleSpec = Carry.Style;
+			if (It->HasActorBegunPlay())
+			{
+				It->SetStyleSpec(Carry.Style);
+			}
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("World %s: %s in district %d (style %s)."), *WorldId, What, WorldDistrict,
+		Carry.Style.IsEmpty() ? TEXT("the map's") : *Carry.Style);
 }
 
 void AFTExploreDirector::SpawnFieldGoal()
@@ -929,6 +946,8 @@ void AFTExploreDirector::StartStepHere()
 	PilotPathNext = -1;
 	PilotPathRefreshAt = 0.0;
 	bStoryReturning = false;
+	bCutsceneCarry = false;
+	bCutsceneStartPending = false;
 	BeginStoryWalk();
 	bWorldSpawnPending = false;
 	bFieldReached = false;
@@ -1106,6 +1125,20 @@ void AFTExploreDirector::Tick(float DeltaSeconds)
 			Controller->SetControlRotation(WorldSpawnRotation);
 		}
 	}
+	if (bCutsceneStartPending)
+	{
+		// The lead stands at the spawn now (or where it started, when the district has none): the CG this
+		// map was opened for begins around it, or on the Cutscene map when there is no host here.
+		bCutsceneStartPending = false;
+		const FString Stage = FTStep::ScreenMap(ftcore::GameplayScreen::Cutscene);
+		UFTStepHostSubsystem* Hosts = GetWorld()->GetSubsystem<UFTStepHostSubsystem>();
+		if (!Hosts || !Hosts->StartHere(EFTStepHost::Cutscene, Stage))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: no cutscene host for the CG step; opening %s."), *Stage);
+			UGameplayStatics::OpenLevel(this, FName(*Stage));
+			return;
+		}
+	}
 	if (Overworld)
 	{
 		TickOverworld(*Player, DeltaSeconds);
@@ -1120,6 +1153,11 @@ void AFTExploreDirector::Tick(float DeltaSeconds)
 	{
 		// A big world has no demo spots or guards: a free walk, or the -WorldAutoPlay tour.
 		TickWorld(*Player, DeltaSeconds);
+		return;
+	}
+	if (bCutsceneCarry)
+	{
+		// A CG plays here: no demo walk, guards or fights.
 		return;
 	}
 	if (!Player->PartyLooks.IsEmpty())
@@ -1329,7 +1367,8 @@ void AFTExploreDirector::BeginWorld()
 		static_cast<int32>(Layout->districtCount()), static_cast<int32>(Layout->roadCount()), static_cast<int32>(Layout->blockCount()),
 		static_cast<int32>(Layout->propCount()), Layout->side());
 	const FFTStoryCarry& Carry = GI->StoryCarry;
-	const bool bStoryStep = Carry.bValid && !Carry.bDone && Carry.Screen == ftcore::GameplayScreen::Field;
+	const bool bStoryStep = Carry.bValid && !Carry.bDone
+		&& (Carry.Screen == ftcore::GameplayScreen::Field || Carry.Screen == ftcore::GameplayScreen::Cutscene);
 	bWorldTour = !bStoryStep && FParse::Param(FCommandLine::Get(), TEXT("WorldAutoPlay"));
 	if (!bWorldTour)
 	{

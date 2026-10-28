@@ -13,7 +13,11 @@
 //   - for a fight, its world's combat system (ftcore::CombatKind, WorldTable::combatForScene) when a
 //     screen for it is built, else the rhythm battle on BattleDemo. A beat fight opens the Beat map;
 //     an arena fight plays on its world's map like a field step. StoryCarry.Combat says which system
-//     the step plays. A system with no screen yet logs one warning per run, never a counted one.
+//     the step plays. A system with no screen yet logs one warning per run, never a counted one;
+//   - for a CG step in a scene placed in a big world, that world's map when it is built and no
+//     overworld hop would come first: the cutscene plays around the lead at the district's spawn, so
+//     the field steps beside it play in place. Otherwise the Cutscene stage, and the hop waits for the
+//     next field step (LastWorld is left as it was).
 //
 // Steps in place: a screen whose step is done calls FTStep::ContinueHere before it opens
 // StoryCarry.ReturnMap. When the beat's next step can play on this map, the done step is counted,
