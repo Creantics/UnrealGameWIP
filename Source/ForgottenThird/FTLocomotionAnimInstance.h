@@ -40,6 +40,7 @@
 
 class UAnimSequence;
 class UCharacterMovementComponent;
+class USkeletalMesh;
 class USkeletalMeshComponent;
 
 // -LocoSlide: once a second, logs how fast the planted foot moves over the ground against the body's
@@ -139,6 +140,17 @@ class FORGOTTENTHIRD_API UFTLocomotionAnimInstance : public UAnimInstance
 public:
 	// Sets (or with nullptr clears) one of the clips, measuring a walk or run clip's gait.
 	void SetClip(ftcore::LocoClip Which, UAnimSequence* Clip);
+	// The clips a look sets (LocoClip order, Idle to LandMoving); the rest are found beside the gaits and the run.
+	static constexpr int32 NumBaseClips = static_cast<int32>(ftcore::LocoClip::LandMoving) + 1;
+	// Sets the base clips (a null one clears its slot), then each gait's start and stops, the turns, the air pose,
+	// the crouch and, with bTraversal, the climbs and vaults, from the clips found beside them (below).
+	void SetBaseClips(UAnimSequence* const (&Base)[NumBaseClips], bool bTraversal);
+	// The base clip retargeted onto Body in Folder, as FTBuildRig names one (<source>_to_<mesh>): the mocap
+	// sample's (M_Neutral_Run_Loop_F_to_x), else the template's (MF_Unarmed_Jog_Fwd_to_x). Null when there is none
+	// made for Body's skeleton.
+	static UAnimSequence* FindRetargeted(ftcore::LocoClip Which, const FString& Folder, const USkeletalMesh& Body, const TCHAR* Who);
+	// Whether Clip was made for Body's skeleton (a clip for another one can't pose it); if not, warns, naming Who.
+	static bool FitsBody(const UAnimSequence& Clip, const USkeletalMesh& Body, const TCHAR* Who);
 	// Sets a gait's start and stops from the clips named after its loop, where there are any: next to
 	// M_Neutral_Run_Loop_F_to_x, M_Neutral_Run_Start_F_Lfoot_to_x (M_Relaxed_Run_Start_F_Lfoot_to_x
 	// first) and M_Neutral_Run_Stop_F_Lfoot_to_x (and _Rfoot). Call after the gait's SetClip.

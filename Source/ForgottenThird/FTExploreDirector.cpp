@@ -10,7 +10,6 @@
 #include "Kismet/GameplayStatics.h"
 #include "HAL/FileManager.h"
 #include "Misc/CommandLine.h"
-#include "Misc/ConfigCacheIni.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
@@ -456,25 +455,26 @@ void AFTExploreDirector::SpawnFieldGoal()
 	}
 }
 
+void AFTExploreDirector::TickFollowers(AFTExploreCharacter& Player, float DeltaSeconds)
+{
+	if (!bFollowersSpawned)
+	{
+		SpawnFollowers(Player);
+	}
+	else
+	{
+		PlaceFollowers(Player, DeltaSeconds);
+	}
+}
+
 void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 {
 	bFollowersSpawned = true;
 	UWorld* World = GetWorld();
-	// The party behind the lead; Followers=Duy+Devin under [FTParty] in the game ini, then -PartyFollowers=
-	// on the command line, names others (at most PartyTrail::kMaxFollowers).
-	TArray<FString> Names;
-	for (size_t I = 1; I < ftcore::demo::kPartyNames.size(); ++I)
-	{
-		Names.Add(UTF8_TO_TCHAR(ftcore::demo::kPartyNames[I]));
-	}
-	FString NameArg;
-	GConfig->GetString(TEXT("FTParty"), TEXT("Followers"), NameArg, GGameIni);
-	FParse::Value(FCommandLine::Get(), TEXT("PartyFollowers="), NameArg);
-	if (!NameArg.IsEmpty())
-	{
-		NameArg.ParseIntoArray(Names, TEXT("+"));
-	}
-	const size_t Count = FMath::Min(static_cast<size_t>(Names.Num()), ftcore::PartyTrail::kMaxFollowers);
+	const TArray<FFTLeadLook>& Party = Player.PartyLooks;
+	const int32 Lead = FMath::Max(0, Player.GetLeadIndex());
+	const size_t Members = Party.IsEmpty() ? ftcore::demo::kPartyNames.size() : static_cast<size_t>(Party.Num());
+	const size_t Count = FMath::Min(Members - 1u, ftcore::PartyTrail::kMaxFollowers);
 	const FVector2D Facing = Player.GetFacing2D();
 	Trail.reset(ToGround(Player.GetActorLocation()), {static_cast<float>(Facing.X), static_cast<float>(Facing.Y)},
 		static_cast<float>(Count) * ftcore::PartyTrail::kFollowerSpacing);
@@ -499,10 +499,24 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 		{
 			continue;
 		}
-		const FString& Name = Names[static_cast<int32>(I)];
-		if (!Follower->Setup(Name, &Player))
+		// The members after the lead, in order.
+		FFTLeadLook Default;
+		const FFTLeadLook* Look = &Default;
+		if (Party.IsEmpty())
 		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: no mesh for follower %s."), *Name);
+			Default.Name = UTF8_TO_TCHAR(ftcore::demo::kPartyNames[I + 1u]);
+		}
+		else
+		{
+			Look = &Party[(Lead + 1 + static_cast<int32>(I)) % Party.Num()];
+		}
+		if (Follower->Setup(*Look, &Player))
+		{
+			Follower->SetActorHiddenInGame(Player.IsPartyHidden());
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: no mesh for follower %s."), *Look->Name);
 		}
 		Followers.Add(Follower);
 	}
@@ -514,7 +528,42 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 		Player.WatchFrom(Followers[0]->GetRootComponent());
 	}
 	bLogGap = FParse::Param(FCommandLine::Get(), TEXT("LocoLog"));
-	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: %d following the lead."), Followers.Num());
+	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: %d following the lead%s."), Followers.Num(),
+		Player.IsPartyHidden() ? TEXT(" (hidden)") : TEXT(""));
+}
+
+void AFTExploreDirector::ClearFollowers()
+{
+	for (AFTPartyFollower* Follower : Followers)
+	{
+		if (Follower)
+		{
+			Follower->Destroy();
+		}
+	}
+	Followers.Reset();
+	bFollowersSpawned = false;
+}
+
+void AFTExploreDirector::OnLeadChanged(const FString& Lead)
+{
+	// The tick that places them spawns them again behind the new lead.
+	ClearFollowers();
+	SetNotice(FString::Printf(TEXT("Lead: %s"), *Lead));
+	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: lead is %s."), *Lead);
+}
+
+void AFTExploreDirector::SetPartyHidden(bool bHide)
+{
+	for (AFTPartyFollower* Follower : Followers)
+	{
+		if (Follower)
+		{
+			Follower->SetActorHiddenInGame(bHide);
+		}
+	}
+	SetNotice(bHide ? TEXT("Party hidden") : TEXT("Party shown"));
+	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: party %s."), bHide ? TEXT("hidden") : TEXT("shown"));
 }
 
 void AFTExploreDirector::PlaceFollowers(AFTExploreCharacter& Player, float DeltaSeconds)
@@ -593,7 +642,8 @@ void AFTExploreDirector::PlaceFollowers(AFTExploreCharacter& Player, float Delta
 			const bool bInLens = Camera && !(bWatchFollower && I == 0)
 				&& FVector::Dist2D(Camera->GetCameraLocation(), Follower->GetActorLocation())
 					< kFollowerCameraShare * FVector::Dist2D(Camera->GetCameraLocation(), Player.GetActorLocation());
-			Follower->SetActorHiddenInGame(bInLens);
+			// Hidden too while the party is (P or LB), walking the trail all the same.
+			Follower->SetActorHiddenInGame(bInLens || Player.IsPartyHidden());
 			if (bLogGap && I == 0 && DeltaSeconds > 0.f)
 			{
 				NearestGap = FMath::Min(NearestGap, static_cast<float>(FVector::Dist2D(Player.GetActorLocation(), Follower->GetActorLocation())));
@@ -693,14 +743,7 @@ int32 AFTExploreDirector::TickGuards(AFTExploreCharacter& Player, float DeltaSec
 void AFTExploreDirector::TickStoryWalk(AFTExploreCharacter& Player, float DeltaSeconds)
 {
 	FieldElapsed += DeltaSeconds;
-	if (!bFollowersSpawned)
-	{
-		SpawnFollowers(Player);
-	}
-	else
-	{
-		PlaceFollowers(Player, DeltaSeconds);
-	}
+	TickFollowers(Player, DeltaSeconds);
 	const ftcore::Vec2 Pos = ToGround(Player.GetActorLocation());
 	const FVector2D Facing = Player.GetFacing2D();
 	const bool bReached = ftcore::demo::fieldGoalInReach(Pos, {static_cast<float>(Facing.X), static_cast<float>(Facing.Y)}, FieldGoal);
@@ -936,6 +979,11 @@ void AFTExploreDirector::Tick(float DeltaSeconds)
 		TickWorld(*Player, DeltaSeconds);
 		return;
 	}
+	if (!Player->PartyLooks.IsEmpty())
+	{
+		// The demo walk has followers only with a party in config, so the default demo is unchanged.
+		TickFollowers(*Player, DeltaSeconds);
+	}
 	if (bBattleOpening || PendingEncounter >= 0 || PendingGuard >= 0)
 	{
 		return;
@@ -1170,14 +1218,7 @@ void AFTExploreDirector::UpdateWorldLine(ftcore::Vec2 Pos)
 
 void AFTExploreDirector::TickWorld(AFTExploreCharacter& Player, float DeltaSeconds)
 {
-	if (!bFollowersSpawned)
-	{
-		SpawnFollowers(Player);
-	}
-	else
-	{
-		PlaceFollowers(Player, DeltaSeconds);
-	}
+	TickFollowers(Player, DeltaSeconds);
 	const ftcore::Vec2 Pos = ToGround(Player.GetActorLocation());
 	UpdateWorldLine(Pos);
 	if (!bWorldTour || bWorldTourDone || TourLeg >= TourCount)
@@ -1373,14 +1414,7 @@ void AFTExploreDirector::UpdateOverworldLine(ftcore::Vec2 Pos)
 
 void AFTExploreDirector::TickOverworld(AFTExploreCharacter& Player, float DeltaSeconds)
 {
-	if (!bFollowersSpawned)
-	{
-		SpawnFollowers(Player);
-	}
-	else
-	{
-		PlaceFollowers(Player, DeltaSeconds);
-	}
+	TickFollowers(Player, DeltaSeconds);
 	const ftcore::Vec2 Pos = ToGround(Player.GetActorLocation());
 	UpdateOverworldLine(Pos);
 	if (bEntering)

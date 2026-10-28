@@ -36,7 +36,7 @@
     "cutscene.skip": "Space / Enter / pad A: skip",
 
     "explore.objectives": "OBJECTIVES",
-    "explore.hint": "WASD / left stick: move    Mouse / right stick: look    Shift: run    Space: jump    E / pad X: use",
+    "explore.hint": "WASD / left stick: move    Mouse / right stick: look    Shift: run    Space: jump    E / pad X: use    Tab / RB: switch lead    P / LB: party on/off",
     "explore.complete": "Demo complete",
     "explore.world": "WORLD",
     "explore.overworld": "OVERWORLD",

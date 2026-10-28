@@ -13,9 +13,15 @@
 // clips are skipped (with no run clip the walk speeds up; with no jump clips the gait carries on in
 // the air).
 //
-// The body, its clips and any extra pieces (clothes, hair) can be swapped from config without a
-// rebuild, under [/Script/ForgottenThird.FTExploreCharacter] in Config/UserGame.ini (local, not
-// committed) or DefaultGame.ini. Pieces follow the body's pose (leader pose) and face shapes.
+// The body, its clips, any extra pieces (clothes, hair, a face) and grooms (brows, lashes) can be
+// swapped from config without a rebuild, under [/Script/ForgottenThird.FTExploreCharacter] in
+// Config/UserGame.ini (local, not committed) or DefaultGame.ini. Pieces follow the body's pose
+// (leader pose) and face shapes; grooms bind to the piece they were built for (see FTLook.h).
+//
+// With a party in config (PartyLooks) the pawn wears one member's look and the rest follow it
+// (AFTExploreDirector): Tab or RB switches to the next member, P or LB hides or shows the followers.
+// StartLead and bStartSolo set the start (-ExploreLead=<Name> and -ExploreSolo for -game runs); the
+// player's last choice is kept across a fight (UFTGameInstance).
 //
 // Jump in front of a low wall or a ledge (UFTLocomotionAnimInstance::SetTraversalFromRun's clips) goes over it or
 // climbs onto it instead: forward and down traces find the near face, the top and its depth and the floor beyond,
@@ -32,11 +38,11 @@
 #include "InputActionValue.h"
 
 #include "FTLocomotionAnimInstance.h"
+#include "FTLook.h"
 
 #include "FTExploreCharacter.generated.h"
 
 class AFTExploreDirector;
-class UAnimSequence;
 class UCameraComponent;
 class UInputAction;
 class UInputMappingContext;
@@ -51,48 +57,33 @@ class FORGOTTENTHIRD_API AFTExploreCharacter : public ACharacter
 public:
 	AFTExploreCharacter();
 
-	UPROPERTY(EditAnywhere, Category = "Explore|Look")
-	TObjectPtr<UAnimSequence> IdleClip;
-	UPROPERTY(EditAnywhere, Category = "Explore|Look")
-	TObjectPtr<UAnimSequence> WalkClip;
-	UPROPERTY(EditAnywhere, Category = "Explore|Look")
-	TObjectPtr<UAnimSequence> RunClip;
-	UPROPERTY(EditAnywhere, Category = "Explore|Look")
-	TObjectPtr<UAnimSequence> SprintClip;
-	UPROPERTY(EditAnywhere, Category = "Explore|Look")
-	TObjectPtr<UAnimSequence> JumpClip;
-	UPROPERTY(EditAnywhere, Category = "Explore|Look")
-	TObjectPtr<UAnimSequence> FallClip;
-	UPROPERTY(EditAnywhere, Category = "Explore|Look")
-	TObjectPtr<UAnimSequence> LandClip;
-	UPROPERTY(EditAnywhere, Category = "Explore|Look")
-	TObjectPtr<UAnimSequence> JumpMovingClip;
-	UPROPERTY(EditAnywhere, Category = "Explore|Look")
-	TObjectPtr<UAnimSequence> LandMovingClip;
-	// Config overrides, loaded at BeginPlay; empty keeps the built-in Devin.
+	// The look worn when PartyLooks is empty, as Devin (FFTLeadLook): empty keeps the built-in Devin.
 	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
 	FSoftObjectPath BodyMeshPath;
 	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
 	FSoftObjectPath IdleClipPath;
 	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
 	FSoftObjectPath WalkClipPath;
+	// The retargeted clips' folder (FFTLeadLook::ClipFolder).
 	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
-	FSoftObjectPath RunClipPath;
-	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
-	FSoftObjectPath SprintClipPath;
-	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
-	FSoftObjectPath JumpClipPath;
-	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
-	FSoftObjectPath FallClipPath;
-	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
-	FSoftObjectPath LandClipPath;
-	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
-	FSoftObjectPath JumpMovingClipPath;
-	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
-	FSoftObjectPath LandMovingClipPath;
+	FString ClipFolder;
 	// Skeletal meshes worn over the body, posed by it.
 	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
 	TArray<FSoftObjectPath> PiecePaths;
+	// Grooms bound to the body or a piece; skipped without the HairStrands plugin.
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Look")
+	TArray<FFTGroomLook> Grooms;
+	// The party in order, each member's look: the pawn wears one and the others follow it. Empty keeps
+	// the look above (as the first of ftcore::demo::kPartyNames) and the default followers.
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Party")
+	TArray<FFTLeadLook> PartyLooks;
+	// The member to start as, by name; empty or unknown starts as the first.
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Party")
+	FString StartLead;
+	// Start with the followers hidden.
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Party")
+	bool bStartSolo = false;
+
 	// The default gait is a run (the run clip's ground speed); held Run sprints. Crouch toggles a crouch walk
 	// at the crouch walk clip's ground speed (CrouchSpeed until it is measured).
 	UPROPERTY(EditAnywhere, Category = "Explore|Movement")
@@ -111,6 +102,10 @@ public:
 	// For locomotion captures: the camera frames the body under Root (its feet) as it frames this one.
 	void WatchFrom(USceneComponent* Root);
 
+	// The PartyLooks entry the pawn wears (-1 when PartyLooks is empty), and whether the followers are hidden.
+	int32 GetLeadIndex() const { return LeadIndex; }
+	bool IsPartyHidden() const { return bPartyHidden; }
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void PawnClientRestart() override;
@@ -126,14 +121,18 @@ private:
 	void HandleJump();
 	void HandleCrouch();
 	void HandleInteract();
-	void SetupLocomotion();
+	void HandleSwitchLead();
+	void HandleToggleParty();
+	// Puts on a look, replacing the body, clips, pieces and grooms worn (FTLook).
+	void WearLook(const FFTLeadLook& Look);
+	// Gives the body's locomotion its loaded clips (and those found beside them) and the crouch its speed.
+	void SetupLocomotion(const FFTLoadedLook& Loaded);
 	// Traversal: finds what is ahead (false: nothing to go over or onto), starts a traversal (false: none
 	// fits; bLog says why), carries the body along one under way, and builds -LocoVaultWall's course.
 	bool ProbeObstacle(const ftcore::TraversalSet& Set, ftcore::TraversalObstacle& Out) const;
 	bool TryTraverse(bool bLog);
 	void TickTraversal(float DeltaSeconds);
 	void SpawnTraversalCourse();
-	void ApplyLookOverrides();
 	void AddPortraitLights();
 	void StepPortraitShots();
 
@@ -158,9 +157,15 @@ private:
 	TObjectPtr<UInputAction> CrouchAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> InteractAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> SwitchLeadAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> PartyAction;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<USceneComponent>> GroomComponents;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<URectLightComponent>> PortraitLights;
 
@@ -206,4 +211,6 @@ private:
 	uint32 SideTurns = 0;
 	float SideYaw = 0.f;
 	float SideHold = 0.f;
+	int32 LeadIndex = -1;
+	bool bPartyHidden = false;
 };

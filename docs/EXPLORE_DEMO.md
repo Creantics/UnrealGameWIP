@@ -36,6 +36,8 @@ spots say which objective they wait for.
 | Run | Left Shift (hold) | Left trigger (hold) |
 | Jump | Space | A |
 | Use (talk, pick up, open) | E or Enter | X |
+| Switch lead (with a party in config) | Tab | RB |
+| Show or hide the followers | P | LB |
 
 The keys are an Enhanced Input context made at runtime (`AFTExploreCharacter`), priority 2, above
 the story context.
@@ -113,12 +115,38 @@ sampled every 0.25 m, so a long or fast-forwarded frame still leaves the corners
 follower is placed, not steered: member i stands i x 1.6 m behind the lead along that path, so it
 moves exactly when and as fast as the lead did and never falls further behind. The trail starts as
 a straight line behind the lead's facing, so the party starts in a line. A follower
-(`AFTPartyFollower`) is the member's skeletal mesh from `/Game/Characters/<Name>/<name>/SkeletalMeshes/`
-with its idle and walk clips, set down on the ground found below it. It has no controller, no
-movement component and no collision, so it can't block the lead or the autopilot. Log:
-`ExploreDemo: <n> following the lead.` The pawn's own body is the lead and `kPartyNames[0]` is
-assumed to be it, so pointing the pawn's `BodyMeshPath` at another member would put that member on
-the field twice. The demo map's own Duy stays a talk spot.
+(`AFTPartyFollower`) wears the member's look (below; without a party in config, the member's own
+skeletal mesh from `/Game/Characters/<Name>/<name>/SkeletalMeshes/`), set down on the ground found
+below it. The lead's locomotion (`UFTLocomotionAnimInstance`) plays on it from how far it moved, so
+it sets off and stops when the lead does, banks into the trail's turns and jumps where the lead
+jumped. Climbs and vaults are the lead's alone. It has no controller, no movement component and no
+collision, so it can't block the lead or the autopilot. Log: `ExploreDemo: <n> following the lead.`
+
+**The party in config.** `PartyLooks` on `AFTExploreCharacter` (under
+`[/Script/ForgottenThird.FTExploreCharacter]` in the local `Config/UserGame.ini`) lists the party in
+order, each member with a body, clips, pieces and grooms (`FFTLeadLook`, `FTLook.h`; an empty body
+path uses the member's own body above):
+
+```
++PartyLooks=(Name="Duy",BodyMeshPath=/Game/...,ClipFolder="/Game/...",PiecePaths=(/Game/...),Grooms=((Groom=/Game/...,Binding=/Game/...)))
+```
+
+Each locomotion clip is the look's own `IdleClipPath` or `WalkClipPath` (the idle and the walk only),
+else the one `FTBuildRig` retargeted onto the body, `<source>_to_<body>` in `ClipFolder` (empty is
+`/Game/Characters/<Name>/Rig/Retargeted`), else (the idle and the walk) the member's own. A clip made
+for another skeleton is never worn: it is left out with a warning, as a missing one is.
+
+The pawn wears one member's look and the others follow in order after it. Tab or RB switches to the
+next member (not during a climb or vault): the pawn stands up if it was crouching, changes look, and
+the followers line up again behind it. P or LB hides or shows
+the followers, to see the lead alone (hidden followers keep walking the trail). `StartLead=<Name>` and
+`bStartSolo=True` set the start; `-ExploreLead=<Name>` and `-ExploreSolo` do it for `-game` runs, and
+`-ExplorePortrait` hides the followers. The player's last choice is kept across a fight
+(`UFTGameInstance`). With a party in config the demo walk has followers too, so the demo map's own
+Duy (a talk spot) can stand beside a following Duy. Without one, the pawn wears its single look
+(`BodyMeshPath` and the rest) as `kPartyNames[0]`, and only the story's field steps have followers.
+The log line per look is `FTExploreCharacter: <Name>: body <mesh> facing <yaw>, <n> pieces (<c> with
+cloth), <g> grooms, clips from <folder>.`
 
 On autoplay (`StoryCarry.bAutoPlay`) the autopilot walks to the marker and uses it, logging
 `ExploreDemo: field step done at <scene> beat <b> step <i> after <t> s.` (game time, under 10 s).
@@ -164,5 +192,5 @@ made no progress toward a spot for 15 s (a prop in the way).
 - **Simple autopilot.** It follows the navmesh path the map builder saves (see ALPHA.md), and walks
   straight only when there is none.
 - **Guards are blockouts.** No enemy model, no walk clip, and they walk through props while chasing.
-- **Followers on the field demo.** The party follows only on story field steps; the demo's own
-  walk has no followers.
+- **Followers on the field demo.** Without a party in config the demo's own walk has no followers.
+  With one, the talk spot's Duy is still the old model and can appear next to the party's Duy.

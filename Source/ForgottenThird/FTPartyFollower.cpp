@@ -1,16 +1,13 @@
 #include "FTPartyFollower.h"
 
-#include "Animation/AnimSequence.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "Misc/CommandLine.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Misc/PackageName.h"
 
+#include "FTLook.h"
 #include "FTMeshFacing.h"
-#include "FTMeshPieces.h"
 #include "ForgottenThird.h"
 
 namespace
@@ -26,56 +23,23 @@ constexpr float kMaxFaceRate = 220.f;
 constexpr float kSpeedResponse = 12.f;
 // Asked to face a way, it has once it is this near (degrees): nearer than LocoTuning::faceMin, no turn on the spot starts.
 constexpr float kFacedWithin = 40.f;
-
-// An object path from a config or command-line value; a bare package path names its asset after the package.
-FSoftObjectPath ObjectPath(FString Path)
-{
-	Path.TrimStartAndEndInline();
-	if (!Path.IsEmpty() && !Path.Contains(TEXT(".")))
-	{
-		Path += TEXT(".") + FPackageName::GetShortName(Path);
-	}
-	return FSoftObjectPath(Path);
-}
 }
 
 AFTPartyFollower::AFTPartyFollower()
 {
 	PrimaryActorTick.bCanEverTick = false;
-	// The body hangs off its own root: as the root, the actor's turn would overwrite the mesh's facing offset.
-	SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("Root")));
+	Root = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
+	SetRootComponent(Root);
 	Body = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("Body"));
+	Body->SetupAttachment(Root);
 	Body->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Body->SetGenerateOverlapEvents(false);
-	Body->SetupAttachment(GetRootComponent());
 	SetActorEnableCollision(false);
 	TraceParams = FCollisionQueryParams(FName(TEXT("FTPartyFollower")), false);
 }
 
-bool AFTPartyFollower::Setup(const FString& Name, const AActor* Lead)
+bool AFTPartyFollower::Setup(const FFTLeadLook& Look, const AActor* Lead)
 {
-	const FString Lower = Name.ToLower();
-	const FString Dir = FString::Printf(TEXT("/Game/Characters/%s/%s/SkeletalMeshes/"), *Name, *Lower);
-	// Config overrides under [FTPartyFollower.<Name>], then -Follower<Name><Key>= on the command line.
-	const FString Section = TEXT("FTPartyFollower.") + Name;
-	auto Override = [&](const TCHAR* Key, FString& Value)
-	{
-		GConfig->GetString(*Section, Key, Value, GGameIni);
-		FParse::Value(FCommandLine::Get(), *FString::Printf(TEXT("Follower%s%s="), *Name, Key), Value);
-	};
-	FString BodyPath = Dir + Lower;
-	FString ClipFolder = FString::Printf(TEXT("/Game/Characters/%s/Rig/Retargeted"), *Name);
-	FString PieceArg;
-	TArray<FString> PieceList;
-	Override(TEXT("BodyMeshPath"), BodyPath);
-	Override(TEXT("ClipFolder"), ClipFolder);
-	GConfig->GetArray(*Section, TEXT("PiecePaths"), PieceList, GGameIni);
-	if (FParse::Value(FCommandLine::Get(), *FString::Printf(TEXT("Follower%sPiecePaths="), *Name), PieceArg, false))
-	{
-		PieceArg.ParseIntoArray(PieceList, TEXT("+"));
-	}
-	const FSoftObjectPath BodyAsset = ObjectPath(BodyPath);
-	USkeletalMesh* Mesh = Cast<USkeletalMesh>(BodyAsset.TryLoad());
 	TraceParams.AddIgnoredActor(this);
 	if (Lead)
 	{
@@ -85,62 +49,27 @@ bool AFTPartyFollower::Setup(const FString& Name, const AActor* Lead)
 	{
 		LeadCharacter = Cast<ACharacter>(Lead);
 	}
-	if (!Mesh)
+	const FString Who = FString::Printf(TEXT("FTPartyFollower %s"), *Look.Name);
+	const FFTLoadedLook Loaded = FTLook::LoadLook(Look, *Who);
+	if (!Loaded.Body)
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("PartyFollower %s: no skeletal mesh at %s."), *Name, *BodyAsset.ToString());
+		UE_LOG(LogForgottenThird, Warning, TEXT("%s: no body; it stays hidden."), *Who);
 		SetActorHiddenInGame(true);
 		return false;
 	}
-	Body->SetSkeletalMesh(Mesh);
+	Body->SetSkeletalMesh(Loaded.Body);
 	// Turn the body to face the actor's forward (+X).
-	Body->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Mesh), 0.0));
+	Body->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Loaded.Body), 0.0));
 	Body->SetAnimInstanceClass(UFTLocomotionAnimInstance::StaticClass());
-	TArray<FSoftObjectPath> PiecePaths;
-	for (const FString& Piece : PieceList)
+	const int32 Cloth = FTLook::AddPieces(*this, *Body, Look.PiecePaths, Pieces, *Who);
+	FTLook::AddGrooms(*this, *Body, Pieces, Look.Grooms, GroomComponents, *Who);
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: body %s facing %.0f, %d pieces (%d with cloth), %d grooms, clips from %s."), *Who,
+		*Loaded.Body->GetName(), Body->GetRelativeRotation().Yaw, Pieces.Num(), Cloth, GroomComponents.Num(), *Loaded.ClipFolder);
+	// The lead's jumps are replayed on the trail (ReplayJump); its climbs and vaults aren't, so no traversal clips.
+	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Body->GetAnimInstance()))
 	{
-		PiecePaths.Add(ObjectPath(Piece));
+		Anim->SetBaseClips(Loaded.Clips, false);
 	}
-	const FString Who = TEXT("PartyFollower ") + Name;
-	const int32 Cloth = FTMeshPieces::Attach(*this, *Body, PiecePaths, Pieces, *Who);
-	UE_LOG(LogForgottenThird, Display, TEXT("%s: body %s facing %.0f, %d pieces (%d with cloth), clips from %s."), *Who, *Mesh->GetName(),
-		Body->GetRelativeRotation().Yaw, Pieces.Num(), Cloth, *ClipFolder);
-	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Body->GetAnimInstance());
-	if (!Anim)
-	{
-		return true;
-	}
-	// Retargeted clips first (the mocap sample's, then the template's: FTBuildRig names them after the
-	// mesh), then the mesh's own idle and walk.
-	const FString Rig = ClipFolder.EndsWith(TEXT("/")) ? ClipFolder : ClipFolder + TEXT("/");
-	const FString Target = Mesh->GetName();
-	auto Load = [&](std::initializer_list<const TCHAR*> Retargeted, const TCHAR* Own) -> UAnimSequence*
-	{
-		for (const TCHAR* Source : Retargeted)
-		{
-			const FString Asset = FString::Printf(TEXT("%s_to_%s"), Source, *Target);
-			if (UAnimSequence* Clip = LoadObject<UAnimSequence>(nullptr, *(Rig + Asset + TEXT(".") + Asset), nullptr, LOAD_NoWarn | LOAD_Quiet))
-			{
-				return Clip;
-			}
-		}
-		return Own ? LoadObject<UAnimSequence>(nullptr, *(Dir + Lower + Own + TEXT(".") + Lower + Own), nullptr, LOAD_NoWarn | LOAD_Quiet) : nullptr;
-	};
-	Anim->SetClip(ftcore::LocoClip::Idle, Load({TEXT("M_Neutral_Stand_Idle_Loop"), TEXT("MM_Idle")}, TEXT("idle")));
-	Anim->SetClip(ftcore::LocoClip::Walk, Load({TEXT("M_Neutral_Walk_Loop_F"), TEXT("MF_Unarmed_Walk_Fwd")}, TEXT("walk")));
-	Anim->SetClip(ftcore::LocoClip::Run, Load({TEXT("M_Neutral_Run_Loop_F"), TEXT("MF_Unarmed_Jog_Fwd")}, nullptr));
-	Anim->SetClip(ftcore::LocoClip::Sprint, Load({TEXT("M_Neutral_Sprint_Loop_F")}, nullptr));
-	// The lead's jumps, replayed on the trail.
-	Anim->SetClip(ftcore::LocoClip::JumpStart, Load({TEXT("M_Neutral_Jump_F_Start_Stand_Lfoot"), TEXT("MM_Jump")}, nullptr));
-	Anim->SetClip(ftcore::LocoClip::Fall, Load({TEXT("M_Neutral_Jump_Loop_Fall"), TEXT("MM_Fall_Loop")}, nullptr));
-	Anim->SetClip(ftcore::LocoClip::Land, Load({TEXT("M_Neutral_Jump_F_Land_Stand_Light_Lfoot")}, nullptr));
-	Anim->SetClip(ftcore::LocoClip::JumpMoving, Load({TEXT("M_Neutral_Jump_F_Start_Run_Lfoot")}, nullptr));
-	Anim->SetClip(ftcore::LocoClip::LandMoving, Load({TEXT("M_Neutral_Jump_F_Land_Run_Light_Lfoot")}, nullptr));
-	Anim->SetMovesFromGait(ftcore::LocoClip::Walk);
-	Anim->SetMovesFromGait(ftcore::LocoClip::Run);
-	Anim->SetMovesFromGait(ftcore::LocoClip::Sprint);
-	Anim->SetTurnsFromRun();
-	Anim->SetAirPoseFromRun();
-	Anim->SetCrouchFromRun();
 	return true;
 }
 

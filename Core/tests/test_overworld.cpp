@@ -3,6 +3,8 @@
 // that opens a world. When the real script is there, how often the story's field steps change world
 // (counts only; no story text is read or printed).
 
+#include "ftcore/Dialogue.h"
+#include "ftcore/GameplayPlan.h"
 #include "ftcore/Overworld.h"
 #include "ftcore/WorldLayout.h"
 
@@ -271,13 +273,23 @@ TEST_CASE("overworld: real script: every world opens, and the field steps change
         CHECK(first[w] < order.size());
     }
     CHECK(worldsOpen(first, order.size() - 1) == (1u << t.worlds.size()) - 1u);
-    // Hops: consecutive field-step scenes in different worlds. Each is one overworld walk.
+    // Hops: consecutive field steps in different worlds, as the story director counts them (a step
+    // whose screen routes to the field, in a scene placed in a world). Each is one overworld walk.
     std::size_t hops = 0;
     int last = -1;
+    GameplayPlan plan;
     for (std::uint32_t i = 0; i < db.sceneCount(); ++i) {
         const Scene& sc = db.scene(i);
         const WorldScene* e = t.findScene(db.view(sc.id));
-        if (!e || sc.mode.length == 0) continue;
+        if (!e) continue;
+        bool field = false;
+        for (std::uint32_t b = 0; b < sc.beatCount && !field; ++b) {
+            const Beat& beat = db.beat(sc, b);
+            if (beat.type != BeatType::Gameplay || !plan.lower(db, beat)) continue;
+            for (std::uint32_t k = 0; k < plan.size(); ++k)
+                if (screenRoutesTo(plan.step(k).screen) == GameplayScreen::Field) field = true;
+        }
+        if (!field) continue;
         if (last >= 0 && static_cast<int>(e->world) != last) ++hops;
         last = static_cast<int>(e->world);
         CHECK(((worldsOpen(first, i) >> e->world) & 1u) == 1u);

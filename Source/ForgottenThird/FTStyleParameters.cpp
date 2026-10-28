@@ -1,5 +1,7 @@
 #include "FTStyleParameters.h"
 
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "ftcore/StylePack.h"
 
 // Named (not anonymous) so the short enum names cannot collide with other files in a unity build.
@@ -9,6 +11,14 @@ FLinearColor Colour(const ftcore::StyleVec3& V)
 {
 	// Display-space sRGB values: the material runs after tonemapping, so they pass straight through.
 	return FLinearColor(V.x, V.y, V.z, 1.f);
+}
+
+// Hatching stays off until the shader pass: the packs keep their hatch values, but the material gets 0
+// unless the game is launched with -StyleHatch.
+bool HatchEnabled()
+{
+	static const bool bEnabled = FParse::Param(FCommandLine::Get(), TEXT("StyleHatch"));
+	return bEnabled;
 }
 
 // Metres, Y up -> centimetres, Z up.
@@ -114,7 +124,7 @@ void FTStyle::VisitParameters(const ftcore::StyleSettings& S, TFunctionRef<void(
 	V[Island] = S.island;
 	V[IslandRadius] = S.islandRadius * 100.f;
 	V[IslandEdge] = S.islandEdge;
-	V[Hatch] = S.hatch;
+	V[Hatch] = HatchEnabled() ? S.hatch : 0.f;
 	V[HatchScale] = S.hatchScale;
 	V[HatchDensity] = S.hatchDensity;
 	V[HatchOverlay] = S.hatchOverlay;

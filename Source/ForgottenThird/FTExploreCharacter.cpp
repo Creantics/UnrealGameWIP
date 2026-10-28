@@ -27,9 +27,11 @@
 #include "UObject/ConstructorHelpers.h"
 
 #include "FTExploreDirector.h"
+#include "FTGameInstance.h"
 #include "FTMeshFacing.h"
-#include "FTMeshPieces.h"
 #include "ForgottenThird.h"
+
+#include "ftcore/BattleDemo.h"
 
 namespace
 {
@@ -102,8 +104,6 @@ AFTExploreCharacter::AFTExploreCharacter()
 	Camera->SetFieldOfView(70.f);
 
 	static ConstructorHelpers::FObjectFinder<USkeletalMesh> Devin(TEXT("/Game/Characters/Devin/devin/SkeletalMeshes/devin.devin"));
-	static ConstructorHelpers::FObjectFinder<UAnimSequence> Idle(TEXT("/Game/Characters/Devin/devin/SkeletalMeshes/devinidle.devinidle"));
-	static ConstructorHelpers::FObjectFinder<UAnimSequence> Walk(TEXT("/Game/Characters/Devin/devin/SkeletalMeshes/devinwalk.devinwalk"));
 	// The mesh's origin is at its feet; the capsule's is at its middle.
 	GetMesh()->SetRelativeLocation(FVector(0.0, 0.0, -88.0));
 	GetMesh()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -111,22 +111,43 @@ AFTExploreCharacter::AFTExploreCharacter()
 	{
 		GetMesh()->SetSkeletalMesh(Devin.Object);
 	}
-	IdleClip = Idle.Object;
-	WalkClip = Walk.Object;
 }
 
 void AFTExploreCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
-	ApplyLookOverrides();
-	if (USkeletalMesh* Body = GetMesh()->GetSkeletalMeshAsset())
+	const bool bPortrait = FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait"));
+	// The lead and the party toggle: the player's last choice this session, else the command line, else config. A
+	// portrait shows the lead alone.
+	FString Lead = StartLead;
+	FParse::Value(FCommandLine::Get(), TEXT("ExploreLead="), Lead);
+	bPartyHidden = bStartSolo || bPortrait || FParse::Param(FCommandLine::Get(), TEXT("ExploreSolo"));
+	if (const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>())
 	{
-		// Turn the body to face the capsule's forward (+X).
-		GetMesh()->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Body), 0.0));
-		UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: body %s facing %.0f."), *Body->GetName(), GetMesh()->GetRelativeRotation().Yaw);
+		Lead = GI->ExploreLead.IsEmpty() ? Lead : GI->ExploreLead;
+		bPartyHidden = GI->bExplorePartySet ? GI->bExplorePartyHidden : bPartyHidden;
 	}
-	SetupLocomotion();
+	if (PartyLooks.IsEmpty())
+	{
+		FFTLeadLook Own;
+		Own.Name = UTF8_TO_TCHAR(ftcore::demo::kPartyNames[0]);
+		Own.BodyMeshPath = BodyMeshPath;
+		Own.IdleClipPath = IdleClipPath;
+		Own.WalkClipPath = WalkClipPath;
+		Own.ClipFolder = ClipFolder;
+		Own.PiecePaths = PiecePaths;
+		Own.Grooms = Grooms;
+		WearLook(Own);
+	}
+	else
+	{
+		LeadIndex = FMath::Max(0, PartyLooks.IndexOfByPredicate([&Lead](const FFTLeadLook& Member)
+		{
+			return Member.Name.Equals(Lead, ESearchCase::IgnoreCase);
+		}));
+		WearLook(PartyLooks[LeadIndex]);
+	}
 	// Locomotion test switches: -LocoRun holds the run speed, -LocoJump=<s> jumps every s seconds,
 	// -LocoPulse=<s> drops the movement input for -LocoRest=<s> seconds (default 2) after every s seconds
 	// of it, for starts and stops; with -LocoFace=<deg> the body turns on the spot by that much in each
@@ -152,7 +173,7 @@ void AFTExploreCharacter::BeginPlay()
 	FParse::Value(FCommandLine::Get(), TEXT("LocoCamPitch="), SideAlwaysPitch);
 	bNoLook = FParse::Param(FCommandLine::Get(), TEXT("LocoNoLook"));
 	bCoursePending = FParse::Param(FCommandLine::Get(), TEXT("LocoVaultWall"));
-	if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait")))
+	if (bPortrait)
 	{
 		// For checking a look: the camera holds still round the pawn, by default in front of the face. Yaw 180 is
 		// the front, 135 a three-quarter, 90 a side and 0 the back; a longer arm and a lower height frame the body.
@@ -277,47 +298,52 @@ void AFTExploreCharacter::AddPortraitLights()
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: portrait lights on (key, fill, rim)."));
 }
 
-void AFTExploreCharacter::ApplyLookOverrides()
+void AFTExploreCharacter::WearLook(const FFTLeadLook& Look)
 {
-	if (!BodyMeshPath.IsNull())
+	// Grooms first: they may be bound to a piece.
+	for (USceneComponent* Groom : GroomComponents)
 	{
-		if (USkeletalMesh* Body = Cast<USkeletalMesh>(BodyMeshPath.TryLoad()))
+		if (Groom)
 		{
-			GetMesh()->SetSkeletalMesh(Body);
-		}
-		else
-		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no skeletal mesh at %s; keeping the default body."), *BodyMeshPath.ToString());
+			Groom->DestroyComponent();
 		}
 	}
-	auto LoadClip = [](const FSoftObjectPath& Path, TObjectPtr<UAnimSequence>& Clip)
+	GroomComponents.Reset();
+	for (USkeletalMeshComponent* Piece : Pieces)
 	{
-		if (Path.IsNull())
+		if (Piece)
 		{
-			return;
+			Piece->DestroyComponent();
 		}
-		if (UAnimSequence* Loaded = Cast<UAnimSequence>(Path.TryLoad()))
-		{
-			Clip = Loaded;
-		}
-		else
-		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no anim sequence at %s."), *Path.ToString());
-		}
-	};
-	LoadClip(IdleClipPath, IdleClip);
-	LoadClip(WalkClipPath, WalkClip);
-	LoadClip(RunClipPath, RunClip);
-	LoadClip(SprintClipPath, SprintClip);
-	LoadClip(JumpClipPath, JumpClip);
-	LoadClip(FallClipPath, FallClip);
-	LoadClip(LandClipPath, LandClip);
-	LoadClip(JumpMovingClipPath, JumpMovingClip);
-	LoadClip(LandMovingClipPath, LandMovingClip);
-	const int32 Cloth = FTMeshPieces::Attach(*this, *GetMesh(), PiecePaths, Pieces, TEXT("FTExploreCharacter"));
-	const USkeletalMesh* Body = GetMesh()->GetSkeletalMeshAsset();
-	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: body %s, %d pieces, %d with cloth."), Body ? *Body->GetName() : TEXT("none"),
-		Pieces.Num(), Cloth);
+	}
+	Pieces.Reset();
+
+	USkeletalMeshComponent* BodyComponent = GetMesh();
+	const FFTLoadedLook Loaded = FTLook::LoadLook(Look, TEXT("FTExploreCharacter"));
+	if (Loaded.Body)
+	{
+		BodyComponent->SetSkeletalMesh(Loaded.Body);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no body for %s; keeping the one worn."), *Look.Name);
+	}
+	const USkeletalMesh* Body = BodyComponent->GetSkeletalMeshAsset();
+	if (Body)
+	{
+		// Turn the body to face the capsule's forward (+X).
+		BodyComponent->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Body), 0.0));
+	}
+	const int32 Cloth = FTLook::AddPieces(*this, *BodyComponent, Look.PiecePaths, Pieces, TEXT("FTExploreCharacter"));
+	FTLook::AddGrooms(*this, *BodyComponent, Pieces, Look.Grooms, GroomComponents, TEXT("FTExploreCharacter"));
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: %s: body %s facing %.0f, %d pieces (%d with cloth), %d grooms, clips from %s."),
+		*Look.Name, Body ? *Body->GetName() : TEXT("none"), BodyComponent->GetRelativeRotation().Yaw, Pieces.Num(), Cloth,
+		GroomComponents.Num(), *Loaded.ClipFolder);
+	// A body that didn't load keeps the clips worn with it.
+	if (Loaded.Body)
+	{
+		SetupLocomotion(Loaded);
+	}
 }
 
 void AFTExploreCharacter::CreateInputObjects()
@@ -373,6 +399,14 @@ void AFTExploreCharacter::CreateInputObjects()
 	Context->MapKey(InteractAction, EKeys::E);
 	Context->MapKey(InteractAction, EKeys::Enter);
 	Context->MapKey(InteractAction, EKeys::Gamepad_FaceButton_Left);
+
+	SwitchLeadAction = MakeAction(TEXT("IA_ExploreSwitchLead"), false);
+	Context->MapKey(SwitchLeadAction, EKeys::Tab);
+	Context->MapKey(SwitchLeadAction, EKeys::Gamepad_RightShoulder);
+
+	PartyAction = MakeAction(TEXT("IA_ExploreParty"), false);
+	Context->MapKey(PartyAction, EKeys::P);
+	Context->MapKey(PartyAction, EKeys::Gamepad_LeftShoulder);
 }
 
 UInputAction* AFTExploreCharacter::MakeAction(const TCHAR* Name, bool bAxis2D)
@@ -412,6 +446,8 @@ void AFTExploreCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 	Input->BindAction(RunAction, ETriggerEvent::Completed, this, &AFTExploreCharacter::HandleRunStop);
 	Input->BindAction(CrouchAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleCrouch);
 	Input->BindAction(InteractAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleInteract);
+	Input->BindAction(SwitchLeadAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleSwitchLead);
+	Input->BindAction(PartyAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleToggleParty);
 }
 
 void AFTExploreCharacter::HandleMove(const FInputActionValue& Value)
@@ -725,6 +761,46 @@ void AFTExploreCharacter::HandleInteract()
 	}
 }
 
+void AFTExploreCharacter::HandleSwitchLead()
+{
+	if (PartyLooks.Num() < 2)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: no lead to switch to (PartyLooks has %d)."), PartyLooks.Num());
+		return;
+	}
+	// Not mid-traversal (the body is carried along its clip); a crouch ends, as the new body starts standing.
+	if (bTraversing)
+	{
+		return;
+	}
+	UnCrouch();
+	LeadIndex = (LeadIndex + 1) % PartyLooks.Num();
+	const FFTLeadLook& Look = PartyLooks[LeadIndex];
+	WearLook(Look);
+	if (UFTGameInstance* GI = GetGameInstance<UFTGameInstance>())
+	{
+		GI->ExploreLead = Look.Name;
+	}
+	if (AFTExploreDirector* D = GetDirector())
+	{
+		D->OnLeadChanged(Look.Name);
+	}
+}
+
+void AFTExploreCharacter::HandleToggleParty()
+{
+	bPartyHidden = !bPartyHidden;
+	if (UFTGameInstance* GI = GetGameInstance<UFTGameInstance>())
+	{
+		GI->bExplorePartySet = true;
+		GI->bExplorePartyHidden = bPartyHidden;
+	}
+	if (AFTExploreDirector* D = GetDirector())
+	{
+		D->SetPartyHidden(bPartyHidden);
+	}
+}
+
 AFTExploreDirector* AFTExploreCharacter::GetDirector()
 {
 	if (!Director.IsValid())
@@ -873,7 +949,7 @@ void AFTExploreCharacter::AddMovementInput(FVector WorldDirection, float ScaleVa
 	Super::AddMovementInput(WorldDirection, ScaleValue, bForce);
 }
 
-void AFTExploreCharacter::SetupLocomotion()
+void AFTExploreCharacter::SetupLocomotion(const FFTLoadedLook& Loaded)
 {
 	USkeletalMeshComponent* Body = GetMesh();
 	Body->SetAnimInstanceClass(UFTLocomotionAnimInstance::StaticClass());
@@ -883,22 +959,7 @@ void AFTExploreCharacter::SetupLocomotion()
 		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no locomotion anim instance; the body stays in its ref pose."));
 		return;
 	}
-	Anim->SetClip(ftcore::LocoClip::Idle, IdleClip);
-	Anim->SetClip(ftcore::LocoClip::Walk, WalkClip);
-	Anim->SetClip(ftcore::LocoClip::Run, RunClip);
-	Anim->SetClip(ftcore::LocoClip::Sprint, SprintClip);
-	Anim->SetClip(ftcore::LocoClip::JumpStart, JumpClip);
-	Anim->SetClip(ftcore::LocoClip::Fall, FallClip);
-	Anim->SetClip(ftcore::LocoClip::Land, LandClip);
-	Anim->SetClip(ftcore::LocoClip::JumpMoving, JumpMovingClip);
-	Anim->SetClip(ftcore::LocoClip::LandMoving, LandMovingClip);
-	Anim->SetMovesFromGait(ftcore::LocoClip::Walk);
-	Anim->SetMovesFromGait(ftcore::LocoClip::Run);
-	Anim->SetMovesFromGait(ftcore::LocoClip::Sprint);
-	Anim->SetTurnsFromRun();
-	Anim->SetAirPoseFromRun();
-	Anim->SetCrouchFromRun();
-	Anim->SetTraversalFromRun();
+	Anim->SetBaseClips(Loaded.Clips, true);
 	// The crouch walk plays at its own pace at the crouched top speed.
 	const float Crouched = Anim->GetLocomotion().clip(ftcore::LocoClip::CrouchWalk).groundSpeed;
 	if (Crouched > 0.f)

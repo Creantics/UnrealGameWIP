@@ -6,6 +6,7 @@
 #include "AnimationRuntime.h"
 #include "BonePose.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Misc/CommandLine.h"
@@ -230,6 +231,72 @@ void UFTLocomotionAnimInstance::SetClip(ftcore::LocoClip Which, UAnimSequence* C
 	}
 	Loco.setClip(Which, Info);
 	Loco.reset();
+}
+
+void UFTLocomotionAnimInstance::SetBaseClips(UAnimSequence* const (&Base)[NumBaseClips], bool bTraversal)
+{
+	for (int32 I = 0; I < NumBaseClips; ++I)
+	{
+		SetClip(static_cast<ftcore::LocoClip>(I), Base[I]);
+	}
+	SetMovesFromGait(ftcore::LocoClip::Walk);
+	SetMovesFromGait(ftcore::LocoClip::Run);
+	SetMovesFromGait(ftcore::LocoClip::Sprint);
+	SetTurnsFromRun();
+	SetAirPoseFromRun();
+	SetCrouchFromRun();
+	if (bTraversal)
+	{
+		SetTraversalFromRun();
+	}
+}
+
+UAnimSequence* UFTLocomotionAnimInstance::FindRetargeted(ftcore::LocoClip Which, const FString& Folder, const USkeletalMesh& Body, const TCHAR* Who)
+{
+	// Each base clip's sources: the mocap sample's, then the template's.
+	static const TCHAR* const Sources[NumBaseClips][2] = {
+		{TEXT("M_Neutral_Stand_Idle_Loop"), TEXT("MM_Idle")},
+		{TEXT("M_Neutral_Walk_Loop_F"), TEXT("MF_Unarmed_Walk_Fwd")},
+		{TEXT("M_Neutral_Run_Loop_F"), TEXT("MF_Unarmed_Jog_Fwd")},
+		{TEXT("M_Neutral_Sprint_Loop_F"), nullptr},
+		{TEXT("M_Neutral_Jump_F_Start_Stand_Lfoot"), TEXT("MM_Jump")},
+		{TEXT("M_Neutral_Jump_Loop_Fall"), TEXT("MM_Fall_Loop")},
+		{TEXT("M_Neutral_Jump_F_Land_Stand_Light_Lfoot"), nullptr},
+		{TEXT("M_Neutral_Jump_F_Start_Run_Lfoot"), nullptr},
+		{TEXT("M_Neutral_Jump_F_Land_Run_Light_Lfoot"), nullptr},
+	};
+	const int32 Slot = static_cast<int32>(Which);
+	if (Slot >= NumBaseClips || Folder.IsEmpty())
+	{
+		return nullptr;
+	}
+	const FString Dir = Folder.EndsWith(TEXT("/")) ? Folder : Folder + TEXT("/");
+	for (const TCHAR* Source : Sources[Slot])
+	{
+		const FString Asset = Source ? FString::Printf(TEXT("%s_to_%s"), Source, *Body.GetName()) : FString();
+		if (Asset.IsEmpty() || !FPackageName::DoesPackageExist(Dir + Asset))
+		{
+			continue;
+		}
+		UAnimSequence* Clip = LoadObject<UAnimSequence>(nullptr, *(Dir + Asset + TEXT(".") + Asset), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		if (Clip && FitsBody(*Clip, Body, Who))
+		{
+			return Clip;
+		}
+	}
+	return nullptr;
+}
+
+bool UFTLocomotionAnimInstance::FitsBody(const UAnimSequence& Clip, const USkeletalMesh& Body, const TCHAR* Who)
+{
+	const USkeleton* Skeleton = Clip.GetSkeleton();
+	if (Skeleton && Skeleton == Body.GetSkeleton())
+	{
+		return true;
+	}
+	UE_LOG(LogForgottenThird, Warning, TEXT("%s: %s is for the skeleton %s, not %s's %s; left out."), Who, *Clip.GetName(),
+		Skeleton ? *Skeleton->GetName() : TEXT("(none)"), *Body.GetName(), Body.GetSkeleton() ? *Body.GetSkeleton()->GetName() : TEXT("(none)"));
+	return false;
 }
 
 void UFTLocomotionAnimInstance::SetMovesFromGait(ftcore::LocoClip Gait)

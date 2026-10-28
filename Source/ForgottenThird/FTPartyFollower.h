@@ -3,7 +3,9 @@
 // A party member following the lead on a field step: a skeletal mesh that the explore director
 // places on the lead's trail every frame (ftcore::PartyTrail), animated by UFTLocomotionAnimInstance
 // from how far it moved: idle, walk and run, the spine banking into turns. It has no controller, no
-// movement component and no collision, so it can never block the lead or the autopilot.
+// movement component and no collision, so it can never block the lead or the autopilot. Its look is
+// the member's entry in the explore character's PartyLooks, or its own assets when there is none
+// (FTLook.h).
 
 #include "CoreMinimal.h"
 #include "CollisionQueryParams.h"
@@ -14,8 +16,9 @@
 #include "FTPartyFollower.generated.h"
 
 class ACharacter;
-class UAnimSequence;
+class USceneComponent;
 class USkeletalMeshComponent;
+struct FFTLeadLook;
 
 UCLASS(NotBlueprintable)
 class FORGOTTENTHIRD_API AFTPartyFollower : public AActor
@@ -25,18 +28,11 @@ class FORGOTTENTHIRD_API AFTPartyFollower : public AActor
 public:
 	AFTPartyFollower();
 
-	// Loads the member's mesh from /Game/Characters/<Name>/<name>/SkeletalMeshes/ and its clips from
-	// /Game/Characters/<Name>/Rig/Retargeted/ (FTBuildRig -RetargetFrom: <clip>_to_<mesh name>), falling
-	// back to the mesh's own <name>idle and <name>walk. False when the mesh is missing (the follower then
-	// stays invisible). `Lead` is ignored by the ground trace, and a character lead's foot phase sets the
-	// follower's steps a quarter stride off its own (-LocoNoPhaseTrim: not).
-	//
-	// Config can swap the body, its clips and add pieces (face, hair, clothes; FTMeshPieces) without a
-	// rebuild, under [FTPartyFollower.<Name>] in Config/UserGame.ini: BodyMeshPath=, ClipFolder= (the
-	// Retargeted folder) and +PiecePaths=, as the lead's keys. -Follower<Name>BodyMeshPath=,
-	// -Follower<Name>ClipFolder= and -Follower<Name>PiecePaths=a+b on the command line win over it.
-	// A package path without the asset name will do.
-	bool Setup(const FString& Name, const AActor* Lead);
+	// Puts on the member's look: body, clips (the retargeted ones from the look's ClipFolder), pieces and
+	// grooms (FTLook::LoadLook). False when there is no body (the follower then stays invisible). `Lead` is
+	// ignored by the ground trace, and a character lead's foot phase sets the follower's steps a quarter
+	// stride off its own (-LocoNoPhaseTrim: not).
+	bool Setup(const FFTLeadLook& Look, const AActor* Lead);
 
 	// Stands the follower at `Ground` (cm, any height; the ground below it is found), turning toward the
 	// way it moved since the last call; the anim instance gets the speed. On the lead's trail the
@@ -53,11 +49,15 @@ public:
 	void FaceTo(float Yaw);
 
 private:
+	// The body hangs off a plain root, so its facing turn survives Place setting the actor's rotation.
+	UPROPERTY(VisibleAnywhere, Category = "Follower")
+	TObjectPtr<USceneComponent> Root;
 	UPROPERTY(VisibleAnywhere, Category = "Follower")
 	TObjectPtr<USkeletalMeshComponent> Body;
-
-	UPROPERTY()
+	UPROPERTY(Transient)
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<USceneComponent>> GroomComponents;
 
 	FCollisionQueryParams TraceParams;
 	TWeakObjectPtr<const ACharacter> LeadCharacter;

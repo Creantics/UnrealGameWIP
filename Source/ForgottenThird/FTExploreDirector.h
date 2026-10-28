@@ -72,6 +72,11 @@ public:
 	// Use the spot the prompt points at, if any.
 	void Interact();
 
+	// From the pawn (AFTExploreCharacter): it switched to another lead, so the followers are spawned
+	// again in a line behind it; or it hid or showed them (hidden ones keep walking the trail).
+	void OnLeadChanged(const FString& Lead);
+	void SetPartyHidden(bool bHide);
+
 	// ---- for the HUD (no allocation) ----
 	const ftcore::Exploration& GetExploration() const { return Exploration; }
 	int32 GetFocus() const { return Focus; }
@@ -158,9 +163,13 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<AFTExploreSpot> GoalSpot;
 
-	// The party following the lead on a story field step (ftcore::kPartyNames after the first).
+	// The party following the lead on a field step, a big world and the overworld, and on the demo
+	// walk when the pawn has a party in config: the pawn's PartyLooks after the lead it wears, else
+	// ftcore::kPartyNames after the first.
+	void TickFollowers(AFTExploreCharacter& Player, float DeltaSeconds);
 	void SpawnFollowers(AFTExploreCharacter& Player);
 	void PlaceFollowers(AFTExploreCharacter& Player, float DeltaSeconds);
+	void ClearFollowers();
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AFTPartyFollower>> Followers;
 	ftcore::PartyTrail Trail;
