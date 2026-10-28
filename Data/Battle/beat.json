@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "enemies": [
+    { "id": "wisp", "hp": 60, "damage": 10,
+      "patterns": [ "sL . sR . cU . . .", "cD . . . sL . hU2 -" ] },
+    { "id": "sentry", "hp": 90, "damage": 14,
+      "patterns": [ "cL . sD sD . cR . .", "sU . cD . sU . cL .", "cR . . . hD4 - - -" ] },
+    { "id": "brute", "hp": 140, "damage": 20,
+      "patterns": [ "cL . . . cR . . .", "hU3 - - cD . . sL .", "sD . sD . cU . cU ." ] }
+  ],
+  "default": { "bpm": 120, "offset": 0, "hp": 100, "enemies": ["wisp"], "music": "" },
+  "fights": []
+}
