@@ -157,7 +157,8 @@ rep = {"res": RES, "strip_tris": int(len(S)), "keep_tris": int(len(K)), "black_p
        "lod0_keep_stripped": int(k_bad.sum()), "fresh_jitter_strip_stripped": jit_s, "fresh_jitter_keep_stripped": jit_k}
 
 # the other LODs against the mask; a wrongly stripped triangle outside the band would show
-lo = rep0["cuff_tops"]; band = (max(lo.values()) + rep0["margin"], rep0["waist_zmin"] - rep0["margin"])
+lo = rep0.get("cuff_tops")  # trousers only: a top (body_mask.py mode=top) has no height band
+band = (max(lo.values()) + rep0["margin"], rep0["waist_zmin"] - rep0["margin"]) if lo else None
 if L is not None:
     for k in LODS:
         T, W, C = L["lod%d_tris" % k], L["lod%d_want" % k], L["lod%d_c" % k]
@@ -165,7 +166,7 @@ if L is not None:
         bad = st & ~W
         rep["lod%d" % k] = {"tris": int(len(T)), "want_strip": int(W.sum()), "stripped": int(st.sum()),
                             "stripped_unwanted": int(bad.sum()), "kept_wanted": int((~st & W).sum()),
-                            "unwanted_outside_band": int((bad & ((C[:, 2] <= band[0]) | (C[:, 2] >= band[1]))).sum()),
+                            "unwanted_outside_band": int((bad & ((C[:, 2] <= band[0]) | (C[:, 2] >= band[1]))).sum()) if band else None,
                             "unwanted_z": [round(float(C[bad, 2].min()), 3), round(float(C[bad, 2].max()), 3)] if bad.any() else None}
 print("MASKPNG report", json.dumps(rep))
 json.dump(rep, open(PRE + "_mask_report.json", "w"), indent=1)
