@@ -1,12 +1,41 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-28 ~09:00. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-28 ~15:10. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-28 ~09:00): the crotch poke-through is fixed by hiding the body under the trousers (one lead).
+- **NEWEST (2026-10-28 ~15:10): two leads wear their garments in the demo, and main has the follower ledge catch.**
+  - main and the demo checkout are at 6c82674: the animation session's follower ledge catch (b397de7, merged with
+    main's body-mask tools in 6fcb250) and the pinhole handling below. Gate: 783 doctest cases, ctest 4/4, UBT Succeeded.
+  - **One lead's tunic** is in the party config, with the body under it hidden by `body_mask.py`'s top mode
+    (55323be: every boundary loop of the garment is an opening) and its face-seam band kept only at the neck
+    (b52cde4, `seam_neck`).
+    - A skin fleck at the shoulder front in the run stride is fixed by giving the cloth nearest the neck the face
+      mesh's weights, faded out below the collar and kept off the collar panel. Taking the whole band from the
+      face had crumpled the collar.
+    - Known issue: a small dark serration where the collar seam meets the front piece.
+  - **Another lead's trousers.**
+    - Finding: in the cloth sim the waistband's length sets its stretch, not its height. It stretches to a loop of
+      about 0.84 m and slides down to where the hips flare to that girth (the girth estimate reads about 1 % high).
+      So the rise and the leg length are now cut into the pattern, not set by where the band sits.
+    - The pick, in the stride test: p95 1.32, p99 2.33, max 4.64 (the first lead's trousers: 1.35, 2.23, 7.46);
+      27 vertices within 5 mm of the body (115 before) and none within 15 mm. Bind exact on all 14 bones checked.
+    - The body under them is hidden as for the first lead: LOD0 strips 11,469 of 60,816 triangles and loses no kept
+      triangle (32,334 to 26,461 vertices). `body_mask.py` now reads a small extra boundary loop (a seam-weld
+      pinhole under 3 cm) as a pinhole, not an opening.
+    - Editor shots at the run stride: no skin through the trousers from any angle; hidden, the hole runs from the
+      waist to just above the ankles.
+    - This lead shows a grey chest until its top lands: it's the MetaHuman body's albedo, which the tunic covers on
+      the first lead.
+  - A headless explore walk: the three leads load 3, 2 and 1 pieces, both followers follow, the walk completes,
+    and our module logs no warnings. Not watched at play speed yet.
+  - Editor note: a spawned skeletal mesh actor in single-node mode takes its pose when its mesh is set, so set the
+    animation mode and data before the mesh.
+  - Next: turn the private bind script into a generic garment binder under `tools/blender`, then the second lead's
+    top and the remaining lead's outfit.
+- **Earlier (2026-10-28 ~09:00): the crotch poke-through is fixed by hiding the body under the trousers (one lead).
   Config only, no code change.**
   - The lead's body is now a copy of its MetaHuman body with the faces under the trousers removed, using the editor's
     `strip_lod_geometry` and a UV mask on all 4 LODs. The copy keeps the body's asset name in another folder, so the
