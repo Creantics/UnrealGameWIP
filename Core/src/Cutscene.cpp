@@ -212,6 +212,37 @@ void cutShots(JsonValue list, const std::string& path, CutscenePlan& plan, std::
     for (std::uint32_t i = 0; i < list.size(); ++i) cutShot(list[i], path + "[" + std::to_string(i) + "]", plan, errors, warnings);
 }
 
+// Version 2: the in-place blend times of the object at `path`.
+void cutBlends(JsonValue j, const std::string& path, CutscenePlan& plan, std::vector<std::string>& errors) {
+    float in = CutscenePlan::kDefaultBlend;
+    float out = CutscenePlan::kDefaultBlend;
+    cutNum(j, "blend_in", in, 0.f, CutscenePlan::kMaxBlend, path, errors);
+    cutNum(j, "blend_out", out, 0.f, CutscenePlan::kMaxBlend, path, errors);
+    plan.setBlends(in, out);
+}
+
+// ---- stage ----
+
+// The blockout. FTBuildCutsceneWorld places these in the Cutscene map; cutscenes.json names no others.
+constexpr CutsceneStageMark kStageMarks[] = {
+    {"subj_a", {-1.f, -1.2f, 0.f}, true}, // the lead
+    {"subj_b", {-1.f, 1.2f, 0.f}, true},
+    {"subj_c", {2.5f, 2.f, 0.f}, true},
+    {"spot_a", {9.f, 0.f, 2.5f}, false},  // front, high: the establishing view
+    {"spot_b", {6.f, 5.f, 1.7f}, false},  // front right
+    {"spot_c", {3.f, -5.f, 1.6f}, false}, // right side of the pair
+    {"spot_d", {3.f, 6.f, 1.6f}, false},  // left side of the pair
+    {"spot_e", {7.f, -1.f, 1.6f}, false}, // front, low
+    {"spot_f", {4.f, 5.f, 1.4f}, false},  // by the table
+};
+constexpr std::uint32_t kStageMarkCount = static_cast<std::uint32_t>(sizeof(kStageMarks) / sizeof(kStageMarks[0]));
+
+float cutWrapDegrees(float degrees) {
+    float w = std::fmod(degrees + 180.f, 360.f);
+    if (w < 0.f) w += 360.f;
+    return w - 180.f;
+}
+
 } // namespace
 
 std::string_view shotFramingName(ShotFraming framing) {
@@ -277,57 +308,122 @@ float CutscenePlan::totalDuration() const {
     return total;
 }
 
+void CutscenePlan::setBlends(float inSeconds, float outSeconds) {
+    const auto keep = [](float s) { return s > 0.f ? std::min(s, kMaxBlend) : 0.f; }; // NaN too
+    blendIn_ = keep(inSeconds);
+    blendOut_ = keep(outSeconds);
+}
+
 // ---- player ----
 
-void CutscenePlayer::begin(const CutscenePlan& plan, bool autoPlay) {
+void CutscenePlayer::begin(const CutscenePlan& plan, bool autoPlay, bool inPlace) {
     plan_ = plan;
     index_ = 0;
     shotTime_ = 0.0;
+    phaseTime_ = 0.0;
     elapsed_ = 0.0;
     realElapsed_ = 0.0;
     autoPlay_ = autoPlay;
+    inPlace_ = inPlace;
     skipped_ = false;
-    phase_ = plan_.empty() ? CutscenePhase::Done : CutscenePhase::Playing;
+    const bool blends = inPlace && !autoPlay;
+    blendInTime_ = blends ? plan_.blendIn() : 0.f;
+    blendOutTime_ = blends ? plan_.blendOut() : 0.f;
+    outFrom_ = 1.f;
+    outTime_ = blendOutTime_;
+    if (plan_.empty()) phase_ = CutscenePhase::Done;
+    else phase_ = blendInTime_ > 0.f ? CutscenePhase::BlendIn : CutscenePhase::Playing;
+}
+
+void CutscenePlayer::leave(float from) {
+    outFrom_ = from;
+    outTime_ = blendOutTime_ * from;
+    phaseTime_ = 0.0;
+    phase_ = outTime_ > 0.f ? CutscenePhase::BlendOut : CutscenePhase::Done;
 }
 
 void CutscenePlayer::update(double gameSeconds) {
-    if (phase_ != CutscenePhase::Playing || !(gameSeconds > 0.0)) return;
+    if (!active() || !(gameSeconds > 0.0)) return;
     elapsed_ += gameSeconds;
-    shotTime_ += gameSeconds;
-    while (shotTime_ >= static_cast<double>(plan_.shot(index_).duration)) {
-        if (index_ + 1 >= plan_.size()) {
-            shotTime_ = static_cast<double>(plan_.shot(index_).duration);
-            phase_ = CutscenePhase::Done;
-            return;
+    double rest = gameSeconds;
+    if (phase_ == CutscenePhase::BlendIn) {
+        phaseTime_ += rest;
+        if (phaseTime_ < static_cast<double>(blendInTime_)) return;
+        rest = phaseTime_ - static_cast<double>(blendInTime_);
+        phaseTime_ = 0.0;
+        phase_ = CutscenePhase::Playing;
+    }
+    if (phase_ == CutscenePhase::Playing) {
+        shotTime_ += rest;
+        rest = 0.0;
+        while (shotTime_ >= static_cast<double>(plan_.shot(index_).duration)) {
+            const double duration = static_cast<double>(plan_.shot(index_).duration);
+            if (index_ + 1 < plan_.size()) {
+                shotTime_ -= duration;
+                ++index_;
+                continue;
+            }
+            rest = shotTime_ - duration;
+            shotTime_ = duration;
+            leave(1.f);
+            break;
         }
-        shotTime_ -= static_cast<double>(plan_.shot(index_).duration);
-        ++index_;
+    }
+    if (phase_ == CutscenePhase::BlendOut) {
+        phaseTime_ += rest;
+        if (phaseTime_ >= static_cast<double>(outTime_)) {
+            phaseTime_ = static_cast<double>(outTime_);
+            phase_ = CutscenePhase::Done;
+        }
     }
 }
 
 void CutscenePlayer::tickReal(double realSeconds) {
-    if (phase_ != CutscenePhase::Playing || !(realSeconds > 0.0)) return;
+    if (!active() || !(realSeconds > 0.0)) return;
     realElapsed_ += realSeconds;
     if (autoPlay_ && realElapsed_ >= kAutoPlayRealLimit) skip();
 }
 
 bool CutscenePlayer::skip() {
-    if (phase_ != CutscenePhase::Playing) return false;
-    phase_ = CutscenePhase::Done;
+    if (phase_ != CutscenePhase::Playing && phase_ != CutscenePhase::BlendIn) return false;
     skipped_ = true;
+    leave(presence());
     return true;
 }
 
 bool CutscenePlayer::press() {
-    if (phase_ != CutscenePhase::Playing || realElapsed_ < kInputGrace) return false;
+    if (realElapsed_ < kInputGrace) return false;
     return skip();
 }
 
 float CutscenePlayer::shotProgress() const {
     if (plan_.empty() || phase_ == CutscenePhase::Done) return 1.f;
-    if (phase_ != CutscenePhase::Playing) return 0.f;
+    if (phase_ == CutscenePhase::Idle) return 0.f;
     const double t = shotTime_ / static_cast<double>(plan_.shot(index_).duration);
     return cutClamp01(static_cast<float>(t));
+}
+
+float CutscenePlayer::blendInWeight() const {
+    if (phase_ == CutscenePhase::Idle) return 0.f;
+    if (phase_ != CutscenePhase::BlendIn) return 1.f;
+    return cutEase(static_cast<float>(phaseTime_ / static_cast<double>(blendInTime_))); // > 0 in BlendIn
+}
+
+float CutscenePlayer::blendOutWeight() const {
+    if (phase_ == CutscenePhase::Done) return 1.f;
+    if (phase_ != CutscenePhase::BlendOut) return 0.f;
+    return cutEase(static_cast<float>(phaseTime_ / static_cast<double>(outTime_))); // > 0 in BlendOut
+}
+
+float CutscenePlayer::presence() const {
+    switch (phase_) {
+    case CutscenePhase::Idle:
+    case CutscenePhase::Done: return 0.f;
+    case CutscenePhase::BlendIn: return blendInWeight();
+    case CutscenePhase::Playing: return 1.f;
+    case CutscenePhase::BlendOut: return outFrom_ * (1.f - blendOutWeight());
+    }
+    return 0.f;
 }
 
 bool CutscenePlayer::blending() const {
@@ -422,6 +518,33 @@ CameraPose lerpPose(const CameraPose& from, const CameraPose& to, float t) {
     return pose;
 }
 
+// ---- stage ----
+
+std::uint32_t cutsceneStageMarkCount() { return kStageMarkCount; }
+
+const CutsceneStageMark& cutsceneStageMark(std::uint32_t i) { return kStageMarks[std::min(i, kStageMarkCount - 1)]; }
+
+const CutsceneStageMark* findCutsceneStageMark(std::string_view id) {
+    for (const CutsceneStageMark& m : kStageMarks)
+        if (m.id == id) return &m;
+    return nullptr;
+}
+
+StageFrame anchorForLead(const CutsceneVec3& leadFeet, float leadYaw) {
+    StageFrame frame;
+    if (const CutsceneStageMark* lead = findCutsceneStageMark(kCutsceneLeadMark)) frame.stageAnchor = lead->position;
+    frame.worldAnchor = leadFeet;
+    frame.turn = cutWrapDegrees(leadYaw); // the stage's front is yaw 0
+    return frame;
+}
+
+CutsceneVec3 stageToWorld(const StageFrame& frame, const CutsceneVec3& stagePoint) {
+    // cutTurn keeps z, so height above the anchor carries over unchanged.
+    return cutAdd(frame.worldAnchor, cutSub(cutTurn(stagePoint, frame.stageAnchor, frame.turn), frame.stageAnchor));
+}
+
+float stageYawToWorld(const StageFrame& frame, float stageYaw) { return cutWrapDegrees(stageYaw + frame.turn); }
+
 // ---- table ----
 
 const CutsceneEntry* CutsceneTable::findEntry(std::string_view scene, std::uint32_t beat, std::uint32_t step) const {
@@ -449,8 +572,12 @@ bool importCutsceneTable(std::string_view json, CutsceneTable& out, std::string*
         errors.push_back("cutscenes file: expected an object");
         return cutFinish(errors, error);
     }
-    if (const JsonValue v = root["version"]; !v.isAbsent() && !(v.isInteger() && v.integer() == 1))
-        errors.push_back("version: expected 1");
+    int version = 1;
+    if (const JsonValue v = root["version"]; !v.isAbsent()) {
+        if (v.isInteger() && (v.integer() == 1 || v.integer() == 2)) version = static_cast<int>(v.integer());
+        else errors.push_back("version: expected 1 or 2");
+    }
+    const bool blends = version >= 2;
     cutUnknownKeys(root, "", {"version", "default", "cutscenes"}, warnings);
 
     CutsceneTable table;
@@ -458,8 +585,10 @@ bool importCutsceneTable(std::string_view json, CutsceneTable& out, std::string*
     if (!def.isObject()) {
         errors.push_back("default: expected an object");
     } else {
-        cutUnknownKeys(def, "default", {"shots"}, warnings);
+        if (blends) cutUnknownKeys(def, "default", {"shots", "blend_in", "blend_out"}, warnings);
+        else cutUnknownKeys(def, "default", {"shots"}, warnings);
         cutShots(def["shots"], "default.shots", table.fallback, errors, warnings);
+        if (blends) cutBlends(def, "default", table.fallback, errors);
     }
     const JsonValue list = root["cutscenes"];
     if (!list.isAbsent() && !list.isArray()) errors.push_back("cutscenes: expected an array");
@@ -470,7 +599,8 @@ bool importCutsceneTable(std::string_view json, CutsceneTable& out, std::string*
             errors.push_back(path + ": expected an object");
             continue;
         }
-        cutUnknownKeys(j, path, {"scene", "beat", "step", "shots"}, warnings);
+        if (blends) cutUnknownKeys(j, path, {"scene", "beat", "step", "shots", "blend_in", "blend_out"}, warnings);
+        else cutUnknownKeys(j, path, {"scene", "beat", "step", "shots"}, warnings);
         CutsceneEntry e;
         e.scene = cutStr(j["scene"].string());
         if (e.scene.empty()) errors.push_back(path + ".scene: expected a scene id");
@@ -481,6 +611,7 @@ bool importCutsceneTable(std::string_view json, CutsceneTable& out, std::string*
         e.beat = beat < 0 ? 0u : static_cast<std::uint32_t>(beat);
         e.step = static_cast<std::uint32_t>(step);
         cutShots(j["shots"], path + ".shots", e.plan, errors, warnings);
+        if (blends) cutBlends(j, path, e.plan, errors);
         if (beat >= 0 && !e.scene.empty() && table.findEntry(e.scene, e.beat, e.step))
             errors.push_back(path + ": duplicate entry for " + e.scene + " beat " + std::to_string(e.beat) + " step " +
                              std::to_string(e.step));

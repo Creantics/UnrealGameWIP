@@ -111,6 +111,21 @@ TEST_CASE("a cutscene plan holds a fixed number of shots and tidies their times"
     CHECK(p.shot(2).blendTime == doctest::Approx(1.0));
 }
 
+TEST_CASE("a cutscene plan keeps its in-place blend times in range") {
+    CutscenePlan p;
+    CHECK(p.blendIn() == doctest::Approx(CutscenePlan::kDefaultBlend));
+    CHECK(p.blendOut() == doctest::Approx(CutscenePlan::kDefaultBlend));
+    p.setBlends(-1.f, 99.f);
+    CHECK(p.blendIn() == doctest::Approx(0.0));
+    CHECK(p.blendOut() == doctest::Approx(CutscenePlan::kMaxBlend));
+    p.setBlends(std::nanf(""), 1.5f);
+    CHECK(p.blendIn() == doctest::Approx(0.0));
+    CHECK(p.blendOut() == doctest::Approx(1.5));
+    p.clear();
+    CHECK(p.blendIn() == doctest::Approx(CutscenePlan::kDefaultBlend));
+    CHECK(p.blendOut() == doctest::Approx(CutscenePlan::kDefaultBlend));
+}
+
 TEST_CASE("the cutscene player advances shots on the clock") {
     CutscenePlayer player;
     CHECK(player.phase() == CutscenePhase::Idle);
@@ -219,6 +234,149 @@ TEST_CASE("blend shots blend in from the previous shot over their blend time") {
     player.update(0.5); // shot 2 is a cut
     REQUIRE(player.currentIndex() == 2);
     CHECK_FALSE(player.blending());
+}
+
+TEST_CASE("in place, the player eases in, plays the shots and eases out") {
+    CutscenePlan plan = threeShots(); // 2 + 1 + 3 s
+    plan.setBlends(0.5f, 0.25f);
+    CutscenePlayer player;
+    player.begin(plan, false, true);
+    CHECK(player.inPlace());
+    REQUIRE(player.blendingIn());
+    CHECK(player.active());
+    CHECK_FALSE(player.playing());
+    CHECK(player.blendInTime() == doctest::Approx(0.5));
+    CHECK(player.blendOutTime() == doctest::Approx(0.25));
+    CHECK(player.currentIndex() == 0);
+    CHECK(player.blendInWeight() == doctest::Approx(0.0));
+    CHECK(player.presence() == doctest::Approx(0.0));
+
+    player.update(0.25);
+    CHECK(player.blendingIn());
+    CHECK(player.blendInWeight() == doctest::Approx(0.5)); // eased, symmetric at the middle
+    CHECK(player.presence() == doctest::Approx(0.5));
+    CHECK(player.shotTime() == doctest::Approx(0.0)); // the shot clock holds still
+    CHECK(player.shotProgress() == doctest::Approx(0.0));
+
+    player.update(0.375); // 0.125 past the blend in
+    REQUIRE(player.playing());
+    CHECK(player.blendInWeight() == doctest::Approx(1.0));
+    CHECK(player.presence() == doctest::Approx(1.0));
+    CHECK(player.shotTime() == doctest::Approx(0.125));
+
+    player.update(5.875); // the end of the last shot, exactly
+    REQUIRE(player.blendingOut());
+    CHECK(player.active());
+    CHECK_FALSE(player.skipped());
+    CHECK(player.currentIndex() == 2);
+    CHECK(player.shotProgress() == doctest::Approx(1.0));
+    CHECK(player.blendOutWeight() == doctest::Approx(0.0));
+    CHECK(player.presence() == doctest::Approx(1.0));
+
+    player.update(0.125);
+    CHECK(player.blendOutWeight() == doctest::Approx(0.5));
+    CHECK(player.presence() == doctest::Approx(0.5));
+    CHECK(player.shotProgress() == doctest::Approx(1.0)); // held
+    player.update(0.125);
+    CHECK(player.finished());
+    CHECK_FALSE(player.active());
+    CHECK(player.blendOutWeight() == doctest::Approx(1.0));
+    CHECK(player.presence() == doctest::Approx(0.0));
+    CHECK(player.elapsed() == doctest::Approx(6.75));
+
+    // One long update runs the whole of it.
+    player.begin(plan, false, true);
+    player.update(6.5);
+    CHECK(player.blendingOut());
+    player.begin(plan, false, true);
+    player.update(100.0);
+    CHECK(player.finished());
+    CHECK(player.elapsed() == doctest::Approx(100.0));
+}
+
+TEST_CASE("a skip in place blends out from wherever the camera got to") {
+    CutscenePlan plan = threeShots();
+    plan.setBlends(0.5f, 0.25f);
+    CutscenePlayer player;
+
+    // While the shots play: the shot on screen holds and the whole blend out follows.
+    player.begin(plan, false, true);
+    player.update(3.0); // 0.5 in, 2 of shot 0, half of shot 1
+    REQUIRE(player.currentIndex() == 1);
+    CHECK(player.skip());
+    CHECK(player.skipped());
+    REQUIRE(player.blendingOut());
+    CHECK(player.currentIndex() == 1);
+    CHECK(player.shotProgress() == doctest::Approx(0.5)); // held
+    CHECK(player.presence() == doctest::Approx(1.0));
+    CHECK_FALSE(player.skip()); // already on its way out
+    player.tickReal(1.0);
+    CHECK_FALSE(player.press());
+    player.update(0.125);
+    CHECK(player.presence() == doctest::Approx(0.5));
+    player.update(0.125);
+    CHECK(player.finished());
+    CHECK(player.skipped());
+
+    // While blending in: the input grace counts from begin, and the fall starts where the rise got
+    // to, over that share of the blend out (0.5 of 0.25 s).
+    player.begin(plan, false, true);
+    CHECK_FALSE(player.press());
+    player.tickReal(0.3);
+    player.update(0.25);
+    REQUIRE(player.blendingIn());
+    CHECK(player.press());
+    REQUIRE(player.blendingOut());
+    CHECK(player.currentIndex() == 0);
+    CHECK(player.presence() == doctest::Approx(0.5));
+    player.update(0.0625);
+    CHECK(player.presence() == doctest::Approx(0.25));
+    player.update(0.0625);
+    CHECK(player.finished());
+
+    // A skip on the very first frame has nothing to blend out of.
+    player.begin(plan, false, true);
+    CHECK(player.skip());
+    CHECK(player.finished());
+}
+
+TEST_CASE("blend times count only in place, without autoplay") {
+    CutscenePlan plan = threeShots(); // default blend times
+    CutscenePlayer player;
+
+    // Autoplay in place: no blends, and the real-time cap ends it at once.
+    player.begin(plan, true, true);
+    CHECK(player.playing());
+    CHECK(player.blendInTime() == doctest::Approx(0.0));
+    CHECK(player.blendOutTime() == doctest::Approx(0.0));
+    player.tickReal(1.0);
+    CHECK(player.finished());
+    CHECK(player.skipped());
+
+    // Not in place: the plan's blend times don't count.
+    player.begin(plan);
+    CHECK(player.playing());
+    CHECK(player.blendInTime() == doctest::Approx(0.0));
+    player.update(6.0);
+    CHECK(player.finished());
+    CHECK(player.presence() == doctest::Approx(0.0));
+
+    // A zero time skips its phase.
+    plan.setBlends(0.f, 0.f);
+    player.begin(plan, false, true);
+    CHECK(player.playing());
+    player.update(6.0);
+    CHECK(player.finished());
+    plan.setBlends(0.f, 0.5f);
+    player.begin(plan, false, true);
+    CHECK(player.playing());
+    player.update(6.0);
+    CHECK(player.blendingOut());
+
+    // An empty plan is done at once, in place too.
+    player.begin(CutscenePlan{}, false, true);
+    CHECK(player.finished());
+    CHECK_FALSE(player.active());
 }
 
 TEST_CASE("framings place the camera from the spot and subject") {
@@ -351,6 +509,68 @@ TEST_CASE("lerpPose blends both points") {
     CHECK(lerpPose(a, b, -1.f).position.x == doctest::Approx(0.0));
 }
 
+TEST_CASE("the stage has the blockout's spots and subject marks") {
+    REQUIRE(cutsceneStageMarkCount() == 9);
+    std::uint32_t subjects = 0;
+    for (std::uint32_t i = 0; i < cutsceneStageMarkCount(); ++i) {
+        const CutsceneStageMark& m = cutsceneStageMark(i);
+        CHECK(isCutsceneId(m.id));
+        CHECK(findCutsceneStageMark(m.id) == &m); // ids are unique
+        if (m.subject) {
+            ++subjects;
+            CHECK(m.position.z == doctest::Approx(0.0)); // on the floor
+        } else {
+            CHECK(m.position.x > 0.f); // in front of the lead
+        }
+    }
+    CHECK(subjects == 3);
+    const CutsceneStageMark* lead = findCutsceneStageMark(kCutsceneLeadMark);
+    REQUIRE(lead != nullptr);
+    CHECK(lead->subject);
+    CHECK(findCutsceneStageMark("spot_z") == nullptr);
+    CHECK(&cutsceneStageMark(1000) == &cutsceneStageMark(cutsceneStageMarkCount() - 1));
+}
+
+TEST_CASE("the stage lands on the lead: its mark on the feet, its front along the facing") {
+    const CutsceneVec3 feet{10.f, -4.f, 3.f};
+    const CutsceneStageMark* lead = findCutsceneStageMark(kCutsceneLeadMark);
+    const CutsceneStageMark* spotA = findCutsceneStageMark("spot_a");
+    const CutsceneStageMark* subjB = findCutsceneStageMark("subj_b");
+    REQUIRE(lead != nullptr);
+    REQUIRE(spotA != nullptr);
+    REQUIRE(subjB != nullptr);
+    const CutsceneVec3 ahead{lead->position.x + 1.f, lead->position.y, lead->position.z};
+    for (const float yaw : {0.f, 90.f, -135.f, 270.f, 33.f}) {
+        CAPTURE(yaw);
+        const StageFrame frame = anchorForLead(feet, yaw);
+        CHECK(distance3(stageToWorld(frame, lead->position), feet) == doctest::Approx(0.0));
+        const CutsceneVec3 front = stageToWorld(frame, ahead);
+        const float rad = yaw * 3.14159265f / 180.f;
+        CHECK(front.x - feet.x == doctest::Approx(std::cos(rad)));
+        CHECK(front.y - feet.y == doctest::Approx(std::sin(rad)));
+        CHECK(front.z == doctest::Approx(feet.z));
+        // Rigid: distances between marks stay as they were.
+        CHECK(distance3(stageToWorld(frame, spotA->position), stageToWorld(frame, subjB->position)) ==
+              doctest::Approx(distance3(spotA->position, subjB->position)));
+    }
+    // Facing +x, spot_a stands 10 m ahead, 1.2 m toward +y and 2.5 m up from the lead's feet...
+    CutsceneVec3 a = stageToWorld(anchorForLead(feet, 0.f), spotA->position);
+    CHECK(a.x == doctest::Approx(20.0));
+    CHECK(a.y == doctest::Approx(-2.8));
+    CHECK(a.z == doctest::Approx(5.5));
+    // ...and facing +y, ahead is +y.
+    a = stageToWorld(anchorForLead(feet, 90.f), spotA->position);
+    CHECK(a.x == doctest::Approx(8.8));
+    CHECK(a.y == doctest::Approx(6.0));
+    CHECK(a.z == doctest::Approx(5.5));
+
+    const StageFrame turned = anchorForLead(feet, 170.f);
+    CHECK(stageYawToWorld(turned, 0.f) == doctest::Approx(170.0));
+    CHECK(stageYawToWorld(turned, 30.f) == doctest::Approx(-160.0));
+    CHECK(anchorForLead(feet, -90.f).turn == doctest::Approx(-90.0));
+    CHECK(std::fabs(anchorForLead(feet, 540.f).turn) == doctest::Approx(180.0));
+}
+
 TEST_CASE("cutscene table loads and finds by scene, beat and step") {
     CutsceneTable table;
     std::string err;
@@ -399,7 +619,12 @@ TEST_CASE("cutscene table errors name the problem") {
     };
     fails("{", "cutscenes file");
     fails("[]", "expected an object");
-    fails(R"({"version": 2, "default": {"shots": [{"spot": "spot_a", "subject": "subj_a"}]}})", "version");
+    fails(R"({"version": 3, "default": {"shots": [{"spot": "spot_a", "subject": "subj_a"}]}})", "version");
+    fails(R"({"version": 2, "default": {"blend_in": 6, "shots": [{"spot": "spot_a", "subject": "subj_a"}]}})",
+          "default.blend_in");
+    fails(R"({"version": 2, "default": {"shots": [{"spot": "spot_a", "subject": "subj_a"}]},
+              "cutscenes": [{"scene": "SC-TEST-01", "beat": 1, "blend_out": -1, "shots": [{"spot": "spot_a", "subject": "subj_a"}]}]})",
+          "cutscenes[0].blend_out");
     fails(R"({"cutscenes": []})", "default: expected an object");
     fails(R"({"default": {"shots": []}})", "default.shots: expected a non-empty array");
     fails(R"({"default": {"shots": [{"subject": "subj_a"}]}})", "default.shots[0].spot: expected an id");
@@ -439,6 +664,35 @@ TEST_CASE("cutscene table unknown keys are warnings") {
     CHECK(warnings.size() == 2);
 }
 
+TEST_CASE("version 2 tables carry the in-place blend times") {
+    CutsceneTable table;
+    std::string err;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(importCutsceneTable(R"({"version": 2,
+        "default": {"blend_in": 1.25, "blend_out": 0, "shots": [{"spot": "spot_a", "subject": "subj_a"}]},
+        "cutscenes": [
+          {"scene": "SC-TEST-01", "beat": 1, "blend_out": 2.5, "shots": [{"spot": "spot_b", "subject": "subj_a"}]},
+          {"scene": "SC-TEST-01", "beat": 2, "shots": [{"spot": "spot_b", "subject": "subj_a"}]}]})",
+                                        table, &err, &warnings),
+                    err);
+    CHECK(warnings.empty());
+    CHECK(table.fallback.blendIn() == doctest::Approx(1.25));
+    CHECK(table.fallback.blendOut() == doctest::Approx(0.0));
+    const CutscenePlan& one = table.find("SC-TEST-01", 1, 0);
+    CHECK(one.blendIn() == doctest::Approx(CutscenePlan::kDefaultBlend)); // not the default entry's
+    CHECK(one.blendOut() == doctest::Approx(2.5));
+    CHECK(table.find("SC-TEST-01", 2, 0).blendIn() == doctest::Approx(CutscenePlan::kDefaultBlend));
+
+    // Version 1 has no blend keys: a warning, and the time stays the default.
+    warnings.clear();
+    REQUIRE_MESSAGE(importCutsceneTable(R"({"version": 1,
+        "default": {"blend_in": 2, "shots": [{"spot": "spot_a", "subject": "subj_a"}]}})",
+                                        table, &err, &warnings),
+                    err);
+    CHECK(warnings.size() == 1);
+    CHECK(table.fallback.blendIn() == doctest::Approx(CutscenePlan::kDefaultBlend));
+}
+
 TEST_CASE("the committed cutscenes.json loads cleanly") {
     std::string text;
     if (!ftcore_test::readProjectData("Cutscene/cutscenes.json", text)) {
@@ -451,18 +705,18 @@ TEST_CASE("the committed cutscenes.json loads cleanly") {
     REQUIRE_MESSAGE(importCutsceneTable(text, table, &err, &warnings), err);
     CHECK(warnings.empty());
     CHECK_FALSE(table.fallback.empty());
-    // The blockout map has spot_a..spot_f and subj_a..subj_c; the data names no others.
-    const auto known = [](std::string_view id, char first, char last, std::string_view prefix) {
-        return id.size() == prefix.size() + 1 && id.substr(0, prefix.size()) == prefix && id.back() >= first &&
-               id.back() <= last;
+    // Every id names a mark of the blockout stage: spots for spots, subject marks for subjects.
+    const auto isMark = [](std::string_view id, bool subject) {
+        const CutsceneStageMark* m = findCutsceneStageMark(id);
+        return m != nullptr && m->subject == subject;
     };
     const auto checkPlan = [&](const CutscenePlan& plan) {
         for (std::uint32_t i = 0; i < plan.size(); ++i) {
             const CutsceneShot& s = plan.shot(i);
-            CHECK(known(s.spot(), 'a', 'f', "spot_"));
-            CHECK(known(s.subject(), 'a', 'c', "subj_"));
+            CHECK(isMark(s.spot(), false));
+            CHECK(isMark(s.subject(), true));
             if (s.hasSubject2()) {
-                CHECK(known(s.subject2(), 'a', 'c', "subj_"));
+                CHECK(isMark(s.subject2(), true));
             }
         }
     };
@@ -492,6 +746,21 @@ TEST_CASE("playing a cutscene does not allocate") {
         }
         sink += pose.position.x;
     }
+    // In place: both blends, a skip, and the stage laid over the map.
+    CutscenePlan blended = plan;
+    blended.setBlends(0.5f, 0.5f);
+    CutscenePlayer inPlace;
+    inPlace.begin(blended, false, true);
+    const StageFrame frame = anchorForLead(a, 45.f);
+    const CutsceneStageMark* spotA = findCutsceneStageMark("spot_a");
+    for (int i = 0; i < 400 && !inPlace.finished(); ++i) {
+        inPlace.update(0.02);
+        inPlace.tickReal(0.02);
+        if (i == 100) inPlace.press();
+        sink += inPlace.presence() + inPlace.blendInWeight() + inPlace.blendOutWeight();
+        if (spotA) sink += stageToWorld(frame, spotA->position).x + stageYawToWorld(frame, 10.f);
+    }
+    CHECK(inPlace.finished());
     CHECK(ftcore_test::allocStats().count == before);
     CHECK(sink != 0.f);
 }
