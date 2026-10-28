@@ -376,6 +376,55 @@ TEST_CASE("locomotion: a step down stays on the ground clips; a short hop skips 
     CHECK(l.state() == LocoState::Falling);
 }
 
+TEST_CASE("locomotion: touching down moving after long enough in the air, with crouch held or a roll asked, asks for a roll") {
+    const auto touchdown = [](float air, float speed, bool crouch, bool roll) {
+        Locomotion l = makeLoco();
+        run(l, 1.f, {0.f, speed});
+        run(l, air, {0.f, speed, 0.f, true, -200.f});
+        LocoInput in{kDt, speed};
+        in.crouch = crouch;
+        in.roll = roll;
+        l.update(in);
+        return l.landRoll();
+    };
+    CHECK(touchdown(0.6f, 700.f, true, false));
+    CHECK(touchdown(0.6f, 700.f, false, true));
+    CHECK(touchdown(0.6f, 200.f, true, false)); // a walk's landing too
+    CHECK_FALSE(touchdown(0.6f, 700.f, false, false));
+    CHECK_FALSE(touchdown(0.3f, 700.f, true, true)); // a short drop
+    CHECK_FALSE(touchdown(0.6f, 100.f, true, true)); // slower than movingAir
+    CHECK_FALSE(touchdown(0.6f, 0.f, true, true));
+
+    // For the frame that touches down: a second pose with no time passed keeps it, the next frame drops it.
+    Locomotion l = makeLoco();
+    run(l, 1.f, {0.f, 700.f});
+    run(l, 0.6f, {0.f, 700.f, 0.f, true, -200.f});
+    LocoInput in{kDt, 700.f};
+    in.crouch = true;
+    l.update(in);
+    REQUIRE(l.landRoll());
+    CHECK(l.state() == LocoState::Ground); // the landing goes on beneath it (here, with no moving landing, the run)
+    in.dt = 0.f;
+    l.update(in);
+    CHECK(l.landRoll());
+    in.dt = kDt;
+    l.update(in);
+    CHECK_FALSE(l.landRoll());
+    // Touching down on the pose with no time passed: on until the next frame's.
+    run(l, 0.6f, {0.f, 700.f, 0.f, true, -200.f});
+    in.dt = 0.f;
+    l.update(in);
+    CHECK(l.landRoll());
+    in.dt = kDt;
+    l.update(in);
+    CHECK_FALSE(l.landRoll());
+    run(l, 0.6f, {0.f, 700.f, 0.f, true, -200.f});
+    l.update(in);
+    REQUIRE(l.landRoll());
+    l.reset();
+    CHECK_FALSE(l.landRoll());
+}
+
 TEST_CASE("locomotion: the body banks and leads into turns, more at speed, within limits") {
     Locomotion l = makeLoco();
     run(l, 1.f, {0.f, 700.f, 180.f});

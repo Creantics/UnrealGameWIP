@@ -260,6 +260,7 @@ struct LocoTuning {
     float landArms = 0.5f;      // the arms keep the air pose this long from a landing's touchdown
     float crouchFade = 0.2f;    // moving: the gaits ease between standing and the crouch walk (time constant)
     float crouchSettle = 0.15f; // getting down or up hands over to the idle this long before its end
+    float rollMinAir = 0.4f;    // a moving body touching down after this long in the air may roll out of it (landRoll)
 };
 
 // A party follower's brake lean and gaits. The party trail brings it to a stand more gently than the lead's
@@ -307,6 +308,9 @@ struct LocoInput {
     float leadStride = 0.f;
     // Crouch (a follower: as its lead does). Ignored without CrouchIdle and CrouchWalk.
     bool crouch = false;
+    // A roll asked for (a press the caller holds on to for a moment): touching down, a moving body rolls out of
+    // the landing, as with crouch held (landRoll).
+    bool roll = false;
 };
 
 struct LocoLayer {
@@ -396,6 +400,11 @@ public:
     // Crouched (asked to, with the clips for it), and how far the gaits have eased into the crouch walk (0..1).
     bool crouched() const { return crouched_; }
     float crouchWeight() const { return crouch_; }
+    // A moving body (movingAir or faster) touching down after rollMinAir in the air with crouch held or a roll
+    // asked for: the caller rolls out of the landing. True from the update that touches down until the next one
+    // that time passes in, so a second pose with none keeps it. The landing goes on beneath it all the same,
+    // for a caller with no roll to play.
+    bool landRoll() const { return landRoll_; }
 
 private:
     static constexpr std::size_t index(LocoClip c) { return static_cast<std::size_t>(c); }
@@ -462,6 +471,7 @@ private:
     LocoLimbs limbs_;
     bool crouched_ = false;
     float crouch_ = 0.f; // the crouch walk's share of the gaits
+    bool landRoll_ = false;
 };
 
 } // namespace ftcore

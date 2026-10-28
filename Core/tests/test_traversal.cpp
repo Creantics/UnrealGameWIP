@@ -67,6 +67,39 @@ TraversalObstacle ledge(float distance, float height = 100.f) {
 
 constexpr float kFrame = 1.f / kFps;
 
+constexpr float kRollLength = 1.2f;
+
+// A made-up roll at 30 fps, its root on the floor as the mannequin's are: the root runs forward at
+// `speed` while the pelvis goes from 90 cm down to `low` (smoothly from 0.1 to 0.3 s), stays there until
+// 0.6 and comes back up to 90 by 0.9. The left foot rests until 0.1 s, the right from 0.1 to 0.3 (so it
+// takes off from the right); both are off the floor after, and back on it from 1 s.
+std::vector<TraversalFrame> makeRoll(float speed = 300.f, float low = 40.f) {
+    std::vector<TraversalFrame> frames;
+    const int n = static_cast<int>(kRollLength * kFps) + 1;
+    auto smooth = [](float u) {
+        u = std::clamp(u, 0.f, 1.f);
+        return u * u * (3.f - 2.f * u);
+    };
+    for (int i = 0; i < n; ++i) {
+        const float t = static_cast<float>(i) / kFps;
+        const float down = smooth((t - 0.1f) / 0.2f) - smooth((t - 0.6f) / 0.3f);
+        TraversalFrame f;
+        f.root = {speed * t, 0.f, 0.f};
+        f.pelvis = {speed * t, 0.f, 90.f - (90.f - low) * down};
+        auto foot = [&](float restFrom, float restTo, float side) {
+            if (t <= restTo && t >= restFrom) return TravPoint{speed * std::max(restFrom, 0.f), side, 0.f};
+            if (t >= 1.f) return TravPoint{speed, side, 0.f};
+            return TravPoint{speed * t + 20.f, side, 40.f}; // over the body, moving
+        };
+        f.ballLeft = foot(-1.f, 0.1f, 10.f);
+        f.ballRight = foot(0.1f, 0.3f, -10.f);
+        frames.push_back(f);
+    }
+    return frames;
+}
+
+TraversalClipInfo rollOf(const std::vector<TraversalFrame>& f) { return measureRoll(f.data(), f.size(), kRollLength); }
+
 } // namespace
 
 TEST_CASE("measureTraversal reads the obstacle from the root: rise, front edge, top, landing") {
@@ -241,16 +274,122 @@ TEST_CASE("rate plays the clip at the body's speed at the entry, easing to its o
     CHECK(set.rate(TraversalPlan{}, 0.5f) == 1.f);
 }
 
+TEST_CASE("measureRoll reads the roll from the pelvis: the tuck, back up, how far down") {
+    const std::vector<TraversalFrame> frames = makeRoll();
+    const TraversalClipInfo r = rollOf(frames);
+    CHECK(r.length == doctest::Approx(kRollLength));
+    CHECK(r.move == TraversalMove::Roll);
+    // Tucked at 0.3 s (the first frame within 5% of the way down), back up at 0.867 (the first past 95%
+    // of the way up), 50 cm down.
+    CHECK(r.contact == doctest::Approx(9 * kFrame));
+    CHECK(r.land == doctest::Approx(26 * kFrame));
+    CHECK(r.leave == r.land);
+    CHECK(r.dip == doctest::Approx(50.f));
+    CHECK(r.rise == 0.f);
+    CHECK(r.takeoffFoot == 1);
+    CHECK(r.entrySpeed == doctest::Approx(300.f));
+    CHECK(r.path[kTraversalSamples - 1].x == doctest::Approx(360.f));
+    CHECK(r.ledgeAhead == 0.f);
+    CHECK(r.ledgeHeight == 0.f);
+    // Its root never rises: no traversal to measure in it.
+    CHECK(measureTraversal(frames.data(), frames.size(), kRollLength).length == 0.f);
+}
+
+TEST_CASE("measureRoll leaves a shallow dip, an unsampled pelvis or a root off the floor unmeasured") {
+    CHECK(rollOf(makeRoll(300.f, 70.f)).length == 0.f); // 20 cm down
+    std::vector<TraversalFrame> frames = makeRoll();
+    for (TraversalFrame& f : frames) f.pelvis = {};
+    CHECK(rollOf(frames).length == 0.f);
+    // A root that follows the pelvis down would carry the body into the floor.
+    frames = makeRoll();
+    for (TraversalFrame& f : frames) f.root.z = f.pelvis.z - 90.f;
+    CHECK(rollOf(frames).length == 0.f);
+    CHECK(rollOf(makeClip(false)).length == 0.f); // a vault
+    CHECK(measureRoll(nullptr, 0, 1.f).length == 0.f);
+}
+
+TEST_CASE("planRoll takes the roll nearest the body's speed, then its foot, from the start along its own path") {
+    TraversalSet set;
+    set.setClip(0, rollOf(makeRoll(400.f))); // a sprint's roll
+    set.setClip(1, rollOf(makeRoll(150.f))); // a walk's
+    CHECK(set.planRoll(450.f, -1).clip == 0);
+    CHECK(set.planRoll(120.f, -1).clip == 1);
+
+    const TraversalPlan p = set.planRoll(380.f, 1);
+    REQUIRE(p.ok());
+    CHECK(p.start == 0.f);
+    CHECK(p.entryRate == doctest::Approx(0.95f));
+    for (int i = 0; i <= 12; ++i) {
+        const float t = 0.1f * static_cast<float>(i);
+        const TravPoint at = set.rootAt(p, t);
+        CHECK(at.x == doctest::Approx(traversalPath(set.clip(0), t).x));
+        CHECK(at.z == 0.f);
+    }
+
+    // Two rolls alike but for the foot: the one taking off from the body's foot.
+    TraversalSet feet;
+    std::vector<TraversalFrame> left = makeRoll();
+    for (TraversalFrame& f : left) std::swap(f.ballLeft, f.ballRight);
+    feet.setClip(0, rollOf(makeRoll()));
+    feet.setClip(1, rollOf(left));
+    CHECK(feet.clip(1).takeoffFoot == 0);
+    CHECK(feet.planRoll(300.f, 1).clip == 0);
+    CHECK(feet.planRoll(300.f, 0).clip == 1);
+
+    CHECK_FALSE(TraversalSet{}.planRoll(300.f, 1).ok());
+    TraversalSet hurdles;
+    hurdles.setClip(0, measure(makeClip(false)));
+    CHECK_FALSE(hurdles.planRoll(300.f, 1).ok());
+}
+
+TEST_CASE("plan never takes a roll, even for an obstacle low enough to pass for its height") {
+    TraversalSet set;
+    set.setClip(0, rollOf(makeRoll()));
+    // A 25 cm wall within a roll's reach: its height is within the slack of a roll's (none).
+    CHECK_FALSE(set.plan(wall(30.f, 25.f), 300.f, 1).ok());
+    CHECK_FALSE(set.plan(wall(70.f, 25.f), 300.f, 1).tooFar);
+    // With a hurdle for it, the hurdle, though the roll's entry speed is nearer the body's.
+    set.setClip(1, measure(makeClip(false, 100.f, 25.f)));
+    CHECK(set.plan(wall(30.f, 25.f), 300.f, 1).clip == 1);
+}
+
+TEST_CASE("A roll hands back once the body is back up, at rollExit of its length; its rate eases by the tuck") {
+    TraversalSet set;
+    set.setClip(0, rollOf(makeRoll())); // comes in at 300 cm/s
+    const TraversalClipInfo& c = set.clip(0);
+    const TraversalPlan p = set.planRoll(390.f, 1);
+    REQUIRE(p.ok());
+    CHECK(set.exitTime(p) == doctest::Approx(0.75f * kRollLength));
+    TraversalTuning t;
+    t.rollExit = 0.5f; // before the body is back up: it waits for that
+    set.setTuning(t);
+    CHECK(set.exitTime(p) == doctest::Approx(c.land));
+    t.rollExit = 2.f;
+    set.setTuning(t);
+    CHECK(set.exitTime(p) == doctest::Approx(c.length));
+
+    CHECK(c.contact > 0.2f);
+    CHECK(p.entryRate == doctest::Approx(1.3f));
+    CHECK(set.rate(p, 0.f) == doctest::Approx(1.3f));
+    CHECK(set.rate(p, c.contact) == 1.f);
+    CHECK(set.rate(p, 0.5f * c.contact) < 1.3f);
+    CHECK(set.rate(p, 0.5f * c.contact) > 1.f);
+}
+
 TEST_CASE("Traversal plans and paths allocate nothing") {
     TraversalSet set;
     set.setClip(0, measure(makeClip(false)));
     set.setClip(1, measure(makeClip(true)));
+    set.setClip(2, rollOf(makeRoll()));
     const bool hooked = ftcore_test::allocHookInstalled();
     const std::uint64_t before = ftcore_test::allocStats().count;
     float sum = 0.f;
     for (int i = 0; i < 100; ++i) {
+        const float t = 0.01f * static_cast<float>(i);
         const TraversalPlan p = set.plan(i % 2 ? wall(60.f + static_cast<float>(i)) : ledge(60.f), 200.f, i % 2);
-        if (p.ok()) sum += set.rootAt(p, 0.01f * static_cast<float>(i)).x + set.rate(p, 0.01f * static_cast<float>(i));
+        if (p.ok()) sum += set.rootAt(p, t).x + set.rate(p, t);
+        const TraversalPlan r = set.planRoll(100.f + 5.f * static_cast<float>(i), i % 2);
+        if (r.ok()) sum += set.rootAt(r, t).x + set.rate(r, t) + set.exitTime(r);
     }
     CHECK(std::isfinite(sum));
     if (hooked) CHECK(ftcore_test::allocStats().count == before);
