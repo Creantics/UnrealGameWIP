@@ -6,18 +6,42 @@ Private notes (character references, concept-art review, script status) are in `
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-27 night): a pause menu, items, and a combat system per world.**
-  - The local branch `gameplay-integration` holds:
+- **NEWEST (2026-10-27 late night): the pause menu, items and the combat outline are on main. The demo checkout is
+  built and checked.**
+  - main is 92a101d. It holds:
     - items in Core (5effafd): inventory, item table, enemy drops, `Battle::useItem`, shops;
-    - the pause menu on every gameplay screen, plus Quit on the title (61d29df). Its Unreal side compiles for the first
-      time in the main-merge build;
-    - the combat outline (06b58dc).
-  - It merged main as 92a101d with no conflicts. It goes to main once `gate -Ubt` passes. Then the main checkout gets a
-    fast-forward and a UBT build so the demo has it.
+    - the pause menu on every gameplay screen, plus Quit on the title (61d29df);
+    - the combat outline (06b58dc);
+    - the animation merge (46dc1d3).
+  - Gate: 613 doctest cases, ctest 4/4, UBT Succeeded. One warning predates the branch: C4686 at
+    `FTStorySubsystem.cpp(265)`.
+  - The main checkout was fast-forwarded and built.
+    - A full-story alpha run there passed: 73 scenes, 167 screens (40 battle, 91 field, 36 stub), 0 STUCK, 0 warnings,
+      12 overworld hops.
+    - The party check (walk and solo) shows each lead on its full retargeted clip set from
+      `Content/Characters/<Lead>/RigReal3/Retargeted`, with no missing-clip warnings.
+    - The demo goes to the user once the animation session's last locomotion fix is on main.
+  - **Licence:** the `RigReal3` retargets and `Content/Characters/UEFN_Mannequin/` come from Epic's Game Animation
+    Sample (Fab Standard licence), which bars publishing them. They stay local:
+    - Each `RigReal3` folder holds a local `.gitignore` of `*`.
+    - The mannequin folder is excluded in `.git/info/exclude`.
+    - A fresh clone falls back to `Rig/Retargeted`, with a "7 of the 9 base clips" warning.
+    - Arena enemies on the mannequin must degrade to a capsule or a hidden mesh, with one warning, when it is missing.
   - Combat: each world names its system with the `combat` key in `worlds.json`. Solhaven gets the arena melee, lattice
     keeps the rhythm battle, and unwritten gets the beat fight.
     - `docs/COMBAT_SYSTEMS.md` is the design. `CombatKind.h`, `ArenaFight.h` and `BeatFight.h` are the contracts.
-    - Two Core workers are filling in the implementations, data files and tests. The Unreal hosts come after.
+    - Two Core workers are filling in the implementations, data files and tests.
+    - **Beat host (next):** a generated `Beat` map on the QTE screen's pattern: a Core `BeatScreen`, plus a thin game
+      mode and HUD.
+      - It runs on song time when a cue with a tempo plays. Otherwise it uses the pause-aware wall clock, as it always
+        does under `-nosound` and `-AlphaFast`.
+      - In-place staging on the world map is a follow-up.
+    - **Arena host:** fought in place on the world map, so the animation session builds it, since it owns the explore
+      character and director.
+      - Clips play in place with root motion off, and Core's velocity moves the bodies.
+      - Each attack's play rate puts its contact frame at the start of the active part.
+      - Routing is the integrator's: a combat field in the story carry, set by the story director. Its supported mask
+        stays rhythm and beat until the arena host lands.
   - One lead's body was conformed to an approved lead's built body, with only the calf constraint re-pinned. Its torso
     now matches within 0.1 mm, which removes the chest hollow.
 - **Earlier (2026-10-27 evening): all three MetaHuman leads are finalized and play as a party in the explore demo.** One lead's body is being conformed to an approved lead's built body, because measurement constraints don't pin front-to-back depth. Next: base outfits in Marvelous Designer (needs the user present), then per-lead animation. Details are under "Characters: quality" (2026-10-27 evening).
