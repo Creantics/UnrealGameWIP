@@ -113,6 +113,10 @@ public:
 	// The PartyLooks entry the pawn wears (-1 when PartyLooks is empty), and whether the followers are hidden.
 	int32 GetLeadIndex() const { return LeadIndex; }
 	bool IsPartyHidden() const { return bPartyHidden; }
+	// For a scene that turns input off and on again: a held Run's release that came while input was off never arrived,
+	// so the body goes back to its default gait, and a roll press still kept is dropped. Crouch is a toggle, not held;
+	// standing up from it is this call's choice, so a scene starts and ends with the lead on its feet.
+	void ResetHeldInput();
 
 protected:
 	virtual void BeginPlay() override;

@@ -70,6 +70,8 @@ public:
     // The lead's speed as it passed the point `arc` behind it (m/s), below 0 where unknown (the
     // seeded trail, or pushes without a speed).
     FTCORE_API float speedBehind(float arc) const;
+    // How far behind the lead along the trail its point nearest `p` is (metres; 0 at the lead).
+    FTCORE_API float arcNearest(Vec2 p) const;
 
     Vec2 lead() const { return lead_; }
     std::size_t samples() const { return count_; }
@@ -104,7 +106,7 @@ private:
 struct PartySlotTuning {
     float spacing = 1.2f;    // metres behind where the lead was `delay` ago, along the trail (about
                              // spacing + speed * delay behind the lead itself)
-    float side = 1.0f;       // metres to the side of the path (+ left of the way it goes, - right)
+    float side = 1.0f;       // metres to the side of the path (+ right of the way it goes, - left)
     float minGap = 1.0f;     // never nearer the lead than this (metres, straight line)
     float minArc = 0.9f;     // nor nearer along the trail
     float delay = 0.2f;      // seconds: it keeps its place behind the lead as it was this long ago (a beat
@@ -119,12 +121,17 @@ struct PartySlotTuning {
     float catchUpMin = 0.6f; // ...plus this (m/s), so a stretch the lead crept along doesn't stall it
     float maxSpeed = 9.f;    // m/s
     float sideTime = 0.35f;  // seconds: how fast the side offset swings round as the path bends
+    float rejoin = 2.f;      // m/s: how fast it walks back to its place from where resetAt found it standing
 };
 
 class PartySlot {
 public:
     // Puts it `tuning().spacing` behind the trail's lead, standing.
     FTCORE_API void reset(const PartyTrail& trail);
+    // Puts it standing at `standing` (left there by something else, a cutscene say): on the trail at the point
+    // nearest it, and the rest of the way to its side of the path it walks off at `rejoin`, easing in, so it
+    // takes up the trail from where it stands without a jump.
+    FTCORE_API void resetAt(const PartyTrail& trail, Vec2 standing);
     // One frame: the lead's ground speed now (m/s), the frame time, and while the lead is braking to a
     // stand, how far it has left to go (metres; below 0 when it isn't). Hearing that a beat later, the
     // follower plans its own stop to stand `spacing` behind where the lead will.
@@ -171,6 +178,7 @@ private:
     float stopDecel_ = 0.f;  // ...at this braking (m/s^2)...
     float stopRoom_ = 0.f;   // ...this far on
     Vec2 offset_;
+    Vec2 stray_; // how far it stands off its place (resetAt), still to walk off
     Vec2 pos_;
 };
 

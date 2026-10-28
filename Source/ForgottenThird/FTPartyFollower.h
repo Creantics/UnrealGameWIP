@@ -47,6 +47,10 @@ public:
 	void ReplayJump(float UpSpeed, float Gravity);
 	// Standing, turns on the spot to face Yaw (degrees, world), as the lead turned to face something.
 	void FaceTo(float Yaw);
+	// For a scene that places the party itself (AFTExploreDirector::SetPartyHeld). Held, it stands where it is, on the
+	// ground, its speed dropped to a stand (a replayed jump and a turn on the spot asked for are dropped too); Place can
+	// still walk it to a mark. Let go, its next Place counts the move from wherever it stands then.
+	void SetHeld(bool bHeld);
 
 private:
 	// The body hangs off a plain root, so its facing turn survives Place setting the actor's rotation.

@@ -852,6 +852,13 @@ void AFTExploreCharacter::HandleRunStop()
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 }
 
+void AFTExploreCharacter::ResetHeldInput()
+{
+	HandleRunStop();
+	RollAsked = 0.f;
+	UnCrouch();
+}
+
 void AFTExploreCharacter::HandleInteract()
 {
 	if (AFTExploreDirector* D = GetDirector())
