@@ -72,9 +72,10 @@ autoplay either way).
   Format 1 saves still load, with nothing seen. Continue replaces the seen bits with the slot's; New
   Game keeps the ones in memory (or, with none, the slot's) before its first autosave overwrites the
   slot. Scenes or beats a newer script no longer has are dropped on load. The backlog is not saved.
-- The save text also holds `"party": {"xp": N, "gold": N}` (`StorySave::party`, `Progression.h`),
-  the party's experience and gold from won fights. A save without it loads with both at 0. New Game
-  resets them; Continue restores them.
+- The save text also holds `"party": {"xp": N, "gold": N, "items": [{"id": "...", "count": N}]}`
+  (`StorySave::party`, `Progression.h`), the party's experience, gold and carried items from won
+  fights and the shop. A save without it loads with xp and gold at 0, and one without `items` loads
+  with an empty inventory (`Inventory.h`). New Game resets them; Continue restores them.
 
 ## Command line
 

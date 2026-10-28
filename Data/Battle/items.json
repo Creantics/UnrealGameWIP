@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "items": [
+    { "id": "bandage_roll", "effect": "heal", "scope": "ally", "hp": 30, "hpPercent": 10, "buyPrice": 30, "sellPrice": 15 },
+    { "id": "field_kit", "effect": "heal", "scope": "ally", "hp": 60, "hpPercent": 40, "buyPrice": 80, "sellPrice": 40 },
+    { "id": "shared_rations", "effect": "heal", "scope": "party", "hp": 20, "hpPercent": 20, "buyPrice": 110, "sellPrice": 55 },
+    { "id": "energy_bar", "effect": "restore_ap", "scope": "ally", "ap": 2, "buyPrice": 50, "sellPrice": 25 },
+    { "id": "trail_mix", "effect": "restore_ap", "scope": "party", "ap": 1, "buyPrice": 70, "sellPrice": 35 },
+    { "id": "wake_bell", "effect": "revive", "scope": "ally", "hpPercent": 30, "buyPrice": 120, "sellPrice": 60 }
+  ]
+}

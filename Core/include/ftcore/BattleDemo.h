@@ -5,7 +5,8 @@
 // note exactly on time and answers every enemy hit at its ideal time (read from the attack
 // timeline, never from audio). The pilot drives the headless test of the demo fight and the demo's
 // autoplay toggle. It also aims (WeakPoint.h): when a shot at the target's best weak point beats
-// its best skill, it enters aim, puts the aim point on that weak point and fires. Header-only, so
+// its best skill, it enters aim, puts the aim point on that weak point and fires. Opt-in only, given
+// PilotItems, it also heals a member who is low with a carried item. Header-only, so
 // there is no extra translation unit to wrap for Unreal.
 
 #include "ftcore/Battle.h"
@@ -322,24 +323,83 @@ struct HeadlessResult {
     int weakHits = 0;    // of those, shots on a weak point
     int partyHpLeft = 0; // sum over the party at the end
     double endTime = 0.0;
+    int itemsUsed = 0;   // items the pilot used (only with PilotItems)
 };
 
-// Plays a whole fight on a fixed clock `step` seconds apart (default 120 Hz), up to `limit`
-// battle seconds. The pilot picks skills and targets for every party turn; with `press` it steps on
-// every note exactly on time, answers every enemy hit perfectly with `defence` (parries, or
-// dodges and jumps) and aims when pilotChoice says so (the shot fires the same frame, on the weak
-// point); without it it never presses and never aims. `skill` makes the presses and answers
-// imperfect (see PilotSkill). The same clock the Unreal autopilot sees:
-// presses go in before the update that would expire them.
-inline HeadlessResult playHeadless(std::vector<Combatant> party, std::vector<Combatant> foes, bool press,
-                                   double step = 1.0 / 120.0, double limit = 1200.0,
-                                   DefenceInput defence = DefenceInput::Parry, PilotSkill skill = {}) {
+// An opt-in for the pilot: it uses carried items. The pilot never touches an item unless it is given
+// these, so the balance gate (which plays without them) is unchanged.
+struct PilotItems {
+    ItemTable table;         // what the items do
+    Inventory carried;       // what the party brings into the fight
+    float healBelow = 0.4f;  // a member at or below this share of its max HP gets a heal, if one is carried
+};
+
+struct PilotItemChoice {
+    bool use = false;
+    std::size_t slot = 0;    // into Battle::carriedItems()
+    CombatantId target = 0;
+};
+
+// For the acting party member: when the living member with the lowest share of max HP is at or below
+// `healBelow`, use a carried heal item on it: the smallest heal that covers the HP it is missing, else
+// the biggest one carried. Only meaningful in Phase::AwaitingCommand, with the items loaded.
+inline PilotItemChoice pilotItemChoice(const Battle& b, float healBelow) {
+    PilotItemChoice out;
+    const std::vector<Combatant>& all = b.combatants();
+    bool found = false;
+    float lowest = 2.0f;
+    CombatantId hurt = 0;
+    for (CombatantId id = 0; id < all.size(); ++id) {
+        const Combatant& c = all[id];
+        if (c.team != Team::Party || !c.alive()) continue;
+        const float share = static_cast<float>(c.hp) / static_cast<float>(c.stats.maxHp > 0 ? c.stats.maxHp : 1);
+        if (share < lowest) {
+            lowest = share;
+            hurt = id;
+            found = true;
+        }
+    }
+    if (!found || lowest > healBelow) return out;
+    const Combatant& member = all[hurt];
+    const int missing = member.stats.maxHp - member.hp;
+    int bestHeal = 0;
+    bool covers = false;
+    const Inventory& carried = b.carriedItems();
+    for (std::size_t slot = 0; slot < carried.size(); ++slot) {
+        const ItemDef* def = b.itemTable().find(carried[slot].id.view());
+        if (!def || def->effect != ItemEffect::Heal) continue;
+        const int heal = def->hpFor(member.stats.maxHp);
+        const bool fits = heal >= missing;
+        const bool better = !out.use || (fits && !covers) || (fits && covers && heal < bestHeal) ||
+                            (!fits && !covers && heal > bestHeal);
+        if (!better) continue;
+        out.use = true;
+        out.slot = slot;
+        out.target = hurt;
+        bestHeal = heal;
+        covers = fits;
+    }
+    return out;
+}
+
+// The general form of playHeadless below: with `items` the pilot loads them into the battle and
+// uses them (pilotItemChoice); without, nothing differs from a plain fight.
+inline HeadlessResult playHeadlessWith(std::vector<Combatant> party, std::vector<Combatant> foes, bool press, double step,
+                                       double limit, DefenceInput defence, PilotSkill skill, const PilotItems* items) {
     Battle b(std::move(party), std::move(foes), tuning());
+    if (items) b.setItems(items->table, items->carried);
     HeadlessResult r;
     PilotState state;
     double now = 0.0;
     b.start(now);
     while (b.phase() != Phase::Victory && b.phase() != Phase::Defeat && now < limit) {
+        if (items && b.phase() == Phase::AwaitingCommand) {
+            const PilotItemChoice item = pilotItemChoice(b, items->healBelow);
+            if (item.use && b.useItem(item.slot, item.target, now) == CommandError::None) {
+                ++r.partyTurns;
+                ++r.itemsUsed;
+            }
+        }
         if (b.phase() == Phase::AwaitingCommand) {
             const PilotChoice choice = pilotChoice(b);
             const bool aim = press && choice.aim;
@@ -369,6 +429,26 @@ inline HeadlessResult playHeadless(std::vector<Combatant> party, std::vector<Com
     for (const Combatant& c : b.combatants())
         if (c.team == Team::Party) r.partyHpLeft += c.hp;
     return r;
+}
+
+// Plays a whole fight on a fixed clock `step` seconds apart (default 120 Hz), up to `limit`
+// battle seconds. The pilot picks skills and targets for every party turn; with `press` it steps on
+// every note exactly on time, answers every enemy hit perfectly with `defence` (parries, or
+// dodges and jumps) and aims when pilotChoice says so (the shot fires the same frame, on the weak
+// point); without it it never presses and never aims. `skill` makes the presses and answers
+// imperfect (see PilotSkill). The same clock the Unreal autopilot sees:
+// presses go in before the update that would expire them. It uses no items.
+inline HeadlessResult playHeadless(std::vector<Combatant> party, std::vector<Combatant> foes, bool press,
+                                   double step = 1.0 / 120.0, double limit = 1200.0,
+                                   DefenceInput defence = DefenceInput::Parry, PilotSkill skill = {}) {
+    return playHeadlessWith(std::move(party), std::move(foes), press, step, limit, defence, skill, nullptr);
+}
+
+// The same with the pilot carrying `items`: it heals a member whose HP is low (PilotItems).
+inline HeadlessResult playHeadless(std::vector<Combatant> party, std::vector<Combatant> foes, bool press,
+                                   const PilotItems& items, double step = 1.0 / 120.0, double limit = 1200.0,
+                                   DefenceInput defence = DefenceInput::Parry, PilotSkill skill = {}) {
+    return playHeadlessWith(std::move(party), std::move(foes), press, step, limit, defence, skill, &items);
 }
 
 } // namespace ftcore::demo

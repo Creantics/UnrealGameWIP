@@ -41,6 +41,19 @@
     "explore.world": "WORLD",
     "explore.overworld": "OVERWORLD",
 
+    "item.bandage_roll.name": "Bandage Roll",
+    "item.bandage_roll.desc": "Restores a little HP to one ally.",
+    "item.field_kit.name": "Field Kit",
+    "item.field_kit.desc": "Restores a lot of HP to one ally.",
+    "item.shared_rations.name": "Shared Rations",
+    "item.shared_rations.desc": "Restores some HP to the whole party.",
+    "item.energy_bar.name": "Energy Bar",
+    "item.energy_bar.desc": "Restores some AP to one ally.",
+    "item.trail_mix.name": "Trail Mix",
+    "item.trail_mix.desc": "Restores a little AP to the whole party.",
+    "item.wake_bell.name": "Wake Bell",
+    "item.wake_bell.desc": "Gets a fallen ally back on their feet with some HP.",
+
     "mini.try": "Try {0} of {1}",
 
     "qte.hold": "HOLD",

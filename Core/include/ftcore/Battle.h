@@ -5,6 +5,7 @@
 #include "ftcore/ComboGenerator.h"
 #include "ftcore/ComboSequence.h"
 #include "ftcore/DefenceTimeline.h"
+#include "ftcore/Inventory.h"
 #include "ftcore/TurnQueue.h"
 #include "ftcore/WeakPoint.h"
 
@@ -77,6 +78,9 @@ enum class EventType {
     Defeat,
     PhaseChanged, // an enemy (source and target) entered phase `beat` of its EnemyPhases; label = the phase's
                   // label (may be empty); amount = HP it healed (appended: the Unreal mirror keeps its order)
+    ItemUsed,     // an item took effect on `target`, one event per recipient: source = the member who used it,
+                  // amount = the HP or AP restored (0 when the target was already full), label = the item's id
+                  // (appended: the Unreal mirror does not have it yet)
 };
 
 // Running totals over one battle (from start() to the outcome), for the results screen.
@@ -97,6 +101,7 @@ struct BattleStats {
     int phaseChanges = 0;
     double startTime = 0.0;
     double endTime = 0.0;    // the time of the outcome (0 until then)
+    int itemsUsed = 0;       // items used (an item for the whole party counts once)
 };
 
 struct BattleEvent {
@@ -112,7 +117,9 @@ struct BattleEvent {
     std::string_view label;
 };
 
-enum class CommandError { None, WrongPhase, NoSuchSkill, NotEnoughAp, InvalidTarget };
+// NoSuchItem (appended: the Unreal mirror does not have it yet): useItem's slot is empty or past the end, or
+// holds an id the item table does not know.
+enum class CommandError { None, WrongPhase, NoSuchSkill, NotEnoughAp, InvalidTarget, NoSuchItem };
 
 class Battle {
 public:
@@ -151,6 +158,22 @@ public:
     const ShotResult& lastShot() const { return lastShot_; }
     // The enemy being aimed at (valid during PartyAim).
     CombatantId aimTarget() const { return targets_.empty() ? actor_ : targets_.front(); }
+
+    // Items (Inventory.h, docs/BATTLE_DEMO.md "Items"). Before start() (it asserts the battle has not
+    // started): what the items do and what the party carries. The battle keeps its own copy (fixed-size,
+    // so no allocation) and reset() empties it: load them again after a reset.
+    FTCORE_API void setItems(const ItemTable& table, const Inventory& carried);
+    // From AwaitingCommand: the acting party member uses the item in slot `slot` of carriedItems() on
+    // `target` and the turn is spent (no AP): the item takes effect, then Recovery, then the next turn, as
+    // after a skill. One ItemUsed event per recipient. A heal or an AP restore needs a living ally, a revive
+    // a downed one (it rejoins the turn queue); an item for the whole party ignores `target` and reaches
+    // every member it can (InvalidTarget when there is none). NoSuchItem: the slot is past the end, or its
+    // id is not in the item table (the stack stays carried). A refused use changes nothing. No allocation.
+    FTCORE_API CommandError useItem(std::size_t slot, CombatantId target, double now);
+    // What the items do, and what is still carried (one stack per slot; a used-up stack is gone and the
+    // later ones close up). After the fight the game writes carriedItems() back to PartyProgress::items.
+    const ItemTable& itemTable() const { return items_; }
+    const Inventory& carriedItems() const { return carried_; }
 
     // The combo the player would face for a skill, without starting it (for UI previews).
     // `opponent` is the enemy: the target for party skills, the attacker for enemy skills.
@@ -246,6 +269,8 @@ private:
     std::vector<std::uint8_t> enemyPhase_; // per combatant: its current phase
     std::vector<int> baseAttack_;          // per combatant: attack at battle start
     BattleStats stats_;
+    ItemTable items_;   // set by setItems(); event labels of ItemUsed point into it
+    Inventory carried_; // the party's items, down by one for each use
     std::vector<BattleEvent> events_;
     std::vector<NoteResult> results_;   // scratch, reused by press()/update()
     std::vector<ComboNote> noteScratch_; // scratch for chart generation, swapped with combo_'s notes

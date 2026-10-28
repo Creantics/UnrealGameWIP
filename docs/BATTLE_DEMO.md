@@ -138,8 +138,9 @@ of enemy ids. Both hold ids and numbers only. The loader and the rules are in
 
 ### Experience, gold and levels
 
-Each roster enemy has a `reward` (`{"xp": N, "gold": N}`). A story fight that is won pays the
-line-up's rewards, plus 10 percent per tier, to the party (`ftcore::encounterReward` and
+Each roster enemy has a `reward` (`{"xp": N, "gold": N}`, and optionally item drops: see Items). A
+story fight that is won pays the line-up's rewards, plus 10 percent per tier (xp and gold only), to
+the party (`ftcore::encounterReward` and
 `ftcore::award` in `Core/include/ftcore/Progression.h`). The rewards in the roster follow
 xp = round((maxHp + 6 × attack + 4 × defense) / 20) and gold = round(xp × 0.6); keep new enemies on
 that rule.
@@ -153,7 +154,7 @@ that rule.
 - `UFTStorySubsystem` holds the party's xp and gold (`GetParty`, `AwardBattle`) and the save
   keeps them (`"party"` in the save JSON). The battle builds the party at the story's level and
   logs `Party: +N xp, +N gold (...)` on a win. A plain demo fight uses level 1 and pays nothing.
-- Gold isn't spent on anything yet.
+- Gold is spent in the shop (see Items below). Core has the shop; there is no shop screen yet.
 
 ### Enemy phases
 
@@ -219,6 +220,105 @@ balance gate in `test_encounter.cpp` plays the default line-up and every entry h
 presses must win (also at a coarse 130 ms frame step, the dilated frame length, and with perfect
 dodges and jumps instead of parries) and no presses must lose.
 
+## Items
+
+Consumables exist in Core only for now: the rules, the data and their tests are done, but the battle
+screen has no Items row and there is no shop screen (see "What Unreal still needs" below). All of it
+is plain C++20 with fixed-size storage, so none of it allocates while a battle runs.
+
+### Data
+
+| File | Holds | Core |
+|---|---|---|
+| `Data/Battle/items.json` | every item: id, effect, scope, amounts, buy and sell price | `ftcore::ItemTable`, `importItemTable` (`Inventory.h`) |
+| `Data/Battle/shops.json` | the shop's `default` stock, a list of item ids | `ftcore::ShopStock`, `importShopStock` (`Shop.h`) |
+| `Data/Battle/enemies.json` | an enemy's `reward` may list `items` (its drops) | `ftcore::Reward::items` |
+| `Data/Loc/en/ui.json` | display text: `item.<id>.name` and `item.<id>.desc` | `ftcore::lookupUiText` |
+
+The files hold ids and numbers only. An item looks like this (the format and its limits are at the
+top of `Inventory.h`; a bad file is refused with a reason for each problem):
+
+```json
+{ "id": "bandage_roll", "effect": "heal", "scope": "ally", "hp": 30, "hpPercent": 10, "buyPrice": 30, "sellPrice": 15 }
+```
+
+- `effect` is `heal` (HP to a living ally), `restore_ap` (AP to a living ally) or `revive` (a downed
+  ally gets up). `scope` is `ally` (the default: the one the player picks) or `party` (everyone the
+  effect applies to). A heal or revive restores `hp` plus `hpPercent` of the recipient's max HP; a
+  restore gives `ap`. Prices are 0 to 100000, and an item never sells for more than it costs.
+- Six items ship: Bandage Roll (small heal), Field Kit (big heal), Shared Rations (party heal),
+  Energy Bar (AP), Trail Mix (party AP) and Wake Bell (revive). The prices follow the gold the story
+  pays: a fight pays 25 gold on average (14 in the first ten, 38 in the last ten), the small heal
+  costs 30 and everything sells for half its price. A Core test keeps the cheapest heal between
+  about one and two typical fights of gold.
+- `ui.json` needs both texts for every item. The `ui_text_keys` check reads `items.json` to count
+  `item.<id>.name` and `item.<id>.desc` as used (the game builds those keys from the id at run
+  time, so the sources never spell them out), and a Core test checks that no `item.` text is left
+  over for an item that is gone.
+- Drops: some enemies drop an item, listed as `"reward": { "xp": 8, "gold": 5, "items": [ { "id":
+  "bandage_roll", "count": 1 } ] }` (at most 4 per enemy, a count of 1 to 99, default 1). A Core
+  test checks that every drop id is in `items.json`. Drops are certain, not random.
+
+### Rules
+
+- **Inventory** (`ftcore::Inventory`). A list of stacks (item id and count), at most 24 different
+  ids and 99 of each, in pickup order; a stack that is used up leaves the list. A full inventory
+  refuses a new id but still tops up the stacks it has. It never looks ids up, so an id the item
+  table no longer has stays in the bag.
+- **Save.** The party's inventory is `PartyProgress::items`, so the save keeps it:
+  `"party": {"xp": 240, "gold": 130, "items": [{"id": "bandage_roll", "count": 2}]}`. A save
+  without `items` (every save made before this) loads with an empty inventory, and the save
+  format stays 2. A bad entry refuses the save; entries that do not fit are dropped.
+- **Winning.** `encounterReward` adds up the drops of the line-up (the tier raises xp and gold only)
+  and `award` puts them into `progress.items`. What does not fit is lost and counted in
+  `AwardResult::itemsLost`.
+- **Using an item in battle.**
+  - `Battle::setItems(table, carried)` loads the table and the party's inventory before `start()`.
+    The battle keeps its own copy. `reset()` empties it, so a retry calls `setItems` again.
+  - `Battle::useItem(slot, target, now)` works in `AwaitingCommand` for the member whose turn it is.
+    `slot` is an index into `carriedItems()`. It costs the turn and no AP: the item takes effect, then
+    Recovery, then the next turn, as after a skill. Errors: `WrongPhase`, `NoSuchItem` (a slot past the
+    end, or an id the table does not know) and `InvalidTarget`; a refused use changes nothing.
+  - Heal: the target must be a living ally; HP stops at max HP. Restore AP: a living ally; AP stops at
+    max AP. Revive: a downed ally; it comes back with the item's HP (at least 1, at most max HP) and
+    rejoins the turn queue with an empty gauge. An item used on a target that is already full is used
+    up all the same.
+  - A `party` item reaches every eligible member (living for a heal or AP, downed for a revive), and
+    `target` is ignored. If nobody is eligible it is refused with `InvalidTarget` and not spent.
+  - One `ItemUsed` event per recipient: `source` the user, `target` the recipient, `amount` the HP or
+    AP restored (0 when it was full), `label` the item id (it points into the battle's own copy).
+    `BattleStats::itemsUsed` counts items used, not recipients.
+  - After the fight `Battle::carriedItems()` holds what is left, unknown ids included. The game writes
+    it back to `PartyProgress::items` before it awards the drops.
+- **Shop** (`ftcore::buy`, `ftcore::sell`). `buy` checks, in this order, the count (`InvalidCount`), the
+  item (`UnknownItem`), the stock (`NotStocked`), the gold (`NotEnoughGold`) and the room
+  (`InventoryFull`); `sell` checks the count, the item and `NotCarried`. A deal is all or nothing, so
+  a refused one changes nothing. Gold stays within 0 to `kMaxGold`. Selling needs no stock.
+
+### Autopilot
+
+The pilot never uses items by default, so the balance gate above plays as before. Passing a
+`demo::PilotItems` to `demo::playHeadless` makes it use a carried heal when a member's HP is at or
+below `healBelow` of its max (`demo::pilotItemChoice` picks the smallest heal that covers what is
+missing, else the biggest). `HeadlessResult::itemsUsed` counts them.
+
+### What Unreal still needs
+
+- An **Items row** in the battle menu (`AFTBattleHUD`, `UFTBattleComponent`): list `carriedItems()` with
+  `item.<id>.name` and the count, pick a target for single items, call `useItem`, and show the
+  `ItemUsed` events (a green +HP or an AP popup). It also has to load `items.json` and call `setItems`
+  before `start()`, after `reset()` on a retry.
+- **Enum mirrors** in `FTBattleComponent.h`: `EFTBattleEventType` needs `ItemUsed` and `EFTCommandError`
+  needs `NoSuchItem`, both appended (the casts from `ftcore::EventType` and `ftcore::CommandError`
+  are by position), and `FFTBattleStats` an `ItemsUsed`.
+- **Writing the counts back.** After a fight, `UFTStorySubsystem` stores `Battle::carriedItems()` in
+  its `PartyProgress::items` (`SetParty`) and only then calls `AwardBattle` for the drops. The results
+  panel can show the drops from the `Reward` and a "pack full" line from `AwardResult::itemsLost`.
+- A **shop screen** over `ftcore::buy` and `ftcore::sell`, with `shops.json` loaded through
+  `importShopStock`, the gold and the party's items on screen, and a line for each `ShopResult`.
+- The **interface text** for those screens (menu row, shop headings, the `ShopResult` lines) goes in
+  `ui.json` with the code that uses it, as the `ui_text_keys` check requires.
+
 ## Alpha fast
 
 With a carry on autoplay and `-AlphaFast` on the command line (the same switch as
@@ -268,7 +368,10 @@ headless figure above now (not yet measured in Unreal).
   autopilot and the no-input run; the rest play the default fight.
 - **Input timing.** Presses are judged at the time the frame handles them, not at the hardware
   event time, so low frame rates cost accuracy.
-- **Missing actions.** No items, flee, guard or party switching. Aim is the only extra command. Enemies
+- **Missing actions.** No flee, guard or party switching. Aim is the only extra command on the battle
+  screen. Items exist in Core (see Items) but not on the screen yet. Enemies
   follow their phase patterns (or their skills in order) against the most wounded target. No waves
   or adds yet: a line-up is fixed for the whole fight.
+- **No shop screen.** `ftcore::buy` and `ftcore::sell` work, but nothing in Unreal calls them, so
+  gold still piles up unspent in the game.
 - **Minimal HUD.** The UI is a canvas HUD with engine fonts, not UMG.
