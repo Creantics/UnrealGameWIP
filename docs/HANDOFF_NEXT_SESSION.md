@@ -31,10 +31,16 @@ Private notes (character references, concept-art review, script status) are in `
   - Blend run (`-CutsceneBlendTest -AlphaFast`, from the first scene with an in-place cutscene; 20 scenes, 0 STUCK,
     0 warnings): all 6 cutscenes start with the view 0.0 cm from the gameplay camera and hand back within 0.7 cm of
     the lead's view. The fast clock runs the shots about 8 times faster than the walks, so its follower count says
-    nothing about real play. A real-time run (the same flags without `-AlphaFast`) gives that number.
+    nothing about real play.
+  - Real-time blend run (the same flags without `-AlphaFast`; 20 scenes, 68 screens, 0 STUCK, 0 warnings, ended on
+    its own): all 6 cutscenes in place, every one with its walks; 12 of 12 follower walks reach their marks, none
+    stays put; the view is 0.0 cm from the gameplay camera at all 6 starts and 0.0 cm from the lead's view at all 6
+    hand-backs.
   - The demo checkout is at c44cacf with UBT Succeeded.
-  - Next: the real-time blend run in the background; then one lead's base outfit in Marvelous Designer on the new
-    bodies, to prove that pipeline before the full wardrobe.
+  - Next: one lead's base outfit in Marvelous Designer on the new bodies, to prove that pipeline before the full
+    wardrobe. Trousers already drape on one lead's MetaHuman body when it is imported in its A-pose rest (the
+    arms-down frame leaves Marvelous Designer's arrangement points unfitted and the cloth falls); the Unreal import
+    on the MetaHuman skeleton is the open step.
 - **Earlier (2026-10-28 early morning): the beat fight screen is on main, one lead's floating brow is fixed, and the
   in-place cutscenes come next.**
   - main is 9af57aa. Since 92a101d it holds:
