@@ -35,6 +35,10 @@
 //   is hit when its centre is within range + its body radius of the attacker's centre and inside the
 //   arc (dot(attacker facing, direction to target) >= arcCos). An attack connects at most once per
 //   target. The player's attacks test every living enemy; an enemy's attacks test only the player.
+//   With maxTargets > 0 an attack connects with at most that many distinct targets over its whole
+//   active part: when a tick has more targets that qualify than slots left, the nearest win (centre
+//   distance, ties by lower index; a riposte's own enemy first, as it is aimed at it). So a long,
+//   narrow shot doesn't pierce the whole line.
 // * Player actions. Idle/Move, Light, Heavy, Riposte, Dodge, Guard, Heal; and the ones that happen to
 //   the player: Hitstun, GuardBreak, Downed.
 //   - A new action may start from Idle/Move, from an attack once `cancel` of its recovery has passed,
@@ -49,6 +53,10 @@
 //   - Dodge: a roll of dodgeDistance over dodgeTime along the stick (straight back, away from the
 //     facing, when the stick is idle). Invulnerable from dodgeInvulnStart to dodgeInvulnEnd: an enemy
 //     attack whose hit test passes then does nothing and reports Evaded (once per attack).
+//     ArenaPlayerOut::dodgeDir (unit) and backstep are set once when a dodge starts, from the stick
+//     or the backstep direction before any ring cut, and stay until the next dodge: the host picks
+//     the clip once from them, since a direction read from the velocity turns when a roll slides
+//     along the ring's edge.
 //   - Guard (held): blocks attacks from within guardArcCos of the facing. A blocked hit deals
 //     damage * (1 - guardAbsorb) and costs the guard guardDamage stamina; if that empties stamina
 //     the guard breaks (GuardBroken, GuardBreak for guardBreakTime). Unblockable attacks ignore it.
@@ -85,6 +93,14 @@
 //   lets go when already locked. lockSwitch moves the lock to the next living enemy in range to the
 //   left (-1) or right (+1) of the current one, as seen from the player. The lock moves to the nearest
 //   other living enemy in range when its target dies, and lets go beyond lockBreak.
+// * Acceleration: each body keeps its velocity from tick to tick. Only the player in Idle, Move,
+//   Guard and Heal and an enemy in Approach and Strafe ramp: their velocity moves toward the one
+//   they want by at most rate * dt (as a vector), from wherever it is now. The player's rate is
+//   moveAccel while the wanted speed is above the current one and moveBrake otherwise; an enemy's
+//   is its kind's `accel` both ways; a rate <= 0 snaps (0 is instant). Lunges, dodges and every
+//   velocity an attack or a reaction sets (hitstun, stagger, ...) are written directly and never
+//   ramped; the ramp resumes from that velocity when the body is back in a ramped state.
+//   arenaStep integrates the output velocity, so it follows the ramp.
 // * The ring: every velocity Core outputs is cut so the body stays inside the ring (minus its body
 //   radius); a dodge toward the edge slides along it.
 // * Victory: every enemy Dead. Defeat: the player Downed. Then tick() does nothing but report the
@@ -110,6 +126,9 @@
 //   1..kMaxLightChain lights; `chain` must name another move of the same enemy and no string may
 //   loop. An unknown enemy id, a duplicate id or a duplicate (scene, beat, step) is an error; unknown
 //   keys are warnings; numbers outside their ranges (the loader documents them) are errors.
+//   `moveAccel` and `moveBrake` (a fighter's), `accel` (an enemy's) and `maxTargets` (an attack's)
+//   are keys like the rest. The loader fills ArenaDef::enemyKind of every fight from its line-up:
+//   slot i holds the index of enemies[i]'s kind in ArenaTable::enemyIds.
 //
 // Deterministic for the same seed, inputs and dts. Loading allocates; nothing else does (fixed
 // capacity, results by value or by reference to the fight's own storage).
@@ -138,6 +157,8 @@ inline constexpr std::uint8_t kArenaNobody = 0xFF;
 // The player's move ids in events and ArenaPlayerOut::move: a light is its chain index.
 inline constexpr std::uint8_t kArenaHeavyMove = 8;
 inline constexpr std::uint8_t kArenaRiposteMove = 9;
+// ArenaDef::enemyKind of a slot that is not a table kind (a def built in code).
+inline constexpr std::uint8_t kArenaNoKind = 0xFF;
 
 // One attack, the player's or an enemy's.
 struct ArenaAttack {
@@ -154,6 +175,8 @@ struct ArenaAttack {
     float armor = 0.f;        // 0..1: share of incoming poise damage ignored during startup + active
     float stamina = 0.f;      // the player's cost; enemies have no stamina
     float cancel = 0.6f;      // the player's: share of recovery after which another action may start
+    std::uint8_t maxTargets = 0; // 0: connects with every target in range and arc; N: with at most N distinct
+                                 // targets over its whole active part, the nearest first (the player's matter)
 
     float total() const { return startup + active + recovery; }
 };
@@ -201,6 +224,9 @@ struct ArenaFighter {
 
     float lockRange = 15.f;
     float lockBreak = 20.f;
+
+    float moveAccel = 0.f;      // m/s^2: how fast the velocity gains speed toward the one the stick asks for ...
+    float moveBrake = 0.f;      // ... and loses it (a slower one asked for); 0: instant. Idle, Move, Guard, Heal only
 };
 
 // One of an enemy's moves: an attack plus when the enemy picks it.
@@ -232,7 +258,16 @@ struct ArenaEnemyKind {
     float bodyRadius = 0.45f;
     std::array<ArenaEnemyMove, kMaxArenaMoves> moves{};
     std::uint8_t moveCount = 1;
+    float accel = 0.f;        // m/s^2: how fast its velocity moves toward the one it wants, both ways; 0: instant.
+                              // Approach and Strafe only
 };
+
+// kArenaNoKind in every slot (the default of ArenaDef::enemyKind).
+constexpr std::array<std::uint8_t, kMaxArenaEnemies> arenaNoKinds() {
+    std::array<std::uint8_t, kMaxArenaEnemies> kinds{};
+    for (std::size_t i = 0; i < kinds.size(); ++i) kinds[i] = kArenaNoKind;
+    return kinds;
+}
 
 // One fight: the player's kit and the enemies (one kind per enemy; kinds may repeat).
 struct ArenaDef {
@@ -242,6 +277,9 @@ struct ArenaDef {
     float ringRadius = 12.f;   // the ring the host should build (arenaRingAt)
     float spawnDistance = 7.f; // enemies start this far in front of the player
     std::uint8_t attackers = 1;
+    // Slot i's index into ArenaTable::enemyIds: the kind of enemies[i], from which the host picks that enemy's
+    // mesh and clips. kArenaNoKind (the default, and what defaultArenaDef() leaves) is a def built in code.
+    std::array<std::uint8_t, kMaxArenaEnemies> enemyKind = arenaNoKinds();
 };
 
 // The built-in fight used when no data file is there: one enemy with a quick strike and a slow
@@ -319,6 +357,9 @@ struct ArenaPlayerOut {
     bool invulnerable = false;        // dodge i-frames or a riposte
     bool parrying = false;            // inside a parry window
     std::uint8_t lock = kArenaNobody; // the locked enemy
+    Vec2 dodgeDir{1.f, 0.f};          // unit: set once when a dodge starts (the stick, or the backstep's direction,
+                                      // before any ring cut) and kept until the next dodge
+    bool backstep = false;            // whether the current or last dodge is a backstep
 };
 
 struct ArenaEnemyOut {
@@ -444,6 +485,77 @@ public:
 
 private:
     // The fight's state: the implementer's, fixed capacity only (copying a fight never allocates).
+    // The rules are in ArenaFightImpl (ArenaFight.cpp), which reads and writes it directly.
+    friend struct ArenaFightImpl;
+
+    enum class Press : std::uint8_t { None, Light, Heavy, Dodge, Heal }; // an action waiting in the input buffer
+
+    struct PlayerState {
+        Vec2 pos;
+        Vec2 facing{1.f, 0.f};
+        Vec2 velocity;                      // last output, after the ring cut
+        int hp = 0;
+        float stamina = 0.f;
+        float lastSpend = -1.0e9f;          // fight time stamina was last spent
+        float poise = 0.f;
+        float lastPoiseHit = -1.0e9f;       // fight time of the last poise damage
+        std::uint8_t charges = 0;
+        ArenaAction action = ArenaAction::Idle;
+        float actionTime = 0.f;             // seconds since the action started
+        std::uint8_t move = 0;              // Light: the chain index; kArenaHeavyMove; kArenaRiposteMove
+        std::uint8_t hitMask = 0;           // enemies the current attack has hit (one bit each)
+        std::uint8_t target = kArenaNobody; // the enemy a riposte is aimed at
+        bool healApplied = false;
+        bool invulnerable = false;          // this tick: dodge frames or a riposte
+        Vec2 dodgeDir{1.f, 0.f};            // the current or last dodge's direction (unit)
+        bool backstep = false;              // ... and whether it is a backstep
+        Press buffered = Press::None;
+        float bufferAge = 0.f;
+        bool chainLive = false;             // the last action was a light: the chain may go on
+        std::uint8_t chainNext = 0;         // the light a chained press starts
+        float lightEnd = 0.f;               // fight time that light ended
+        bool guardHeld = false;             // last tick's guard flag
+        float lastGuardPress = -1.0e9f;     // fight time of the last guard press (every press counts)
+        float parryLeft = 0.f;              // seconds left in the parry window
+        std::uint8_t lock = kArenaNobody;
+    };
+
+    struct EnemyState {
+        Vec2 pos;
+        Vec2 facing{1.f, 0.f};
+        Vec2 velocity;                      // last output, after the ring cut
+        int hp = 0;
+        float poise = 0.f;
+        float lastPoiseHit = -1.0e9f;
+        ArenaBrain brain = ArenaBrain::Approach;
+        float stateTime = 0.f;              // seconds in this brain state (Attack: in this move)
+        std::uint8_t move = 0;
+        bool token = false;
+        bool hitPlayer = false;             // this attack has connected: landed, blocked or parried
+        bool evaded = false;                // this attack's Evaded has been reported
+        float stringEnd = 0.f;              // fight time the last string ended (0: the fight's start)
+        float asked = 0.f;                  // seconds spent asking for a token
+        std::int8_t strafeDir = 1;
+        float strafeLeft = 0.f;             // seconds until the strafe may change direction
+        std::array<float, kMaxArenaMoves> cooldown{};
+    };
+
+    ArenaDef def_;
+    ArenaRing ring_;
+    std::uint32_t seed_ = 1;
+    std::uint32_t rng_ = 1;                 // xorshift32 state: a copy or a restart replays the same numbers
+    ArenaPhase phase_ = ArenaPhase::NotStarted;
+    float time_ = 0.f;
+    std::size_t enemyCount_ = 0;
+    Vec2 playerStart_;
+    Vec2 playerStartFacing_{1.f, 0.f};
+    std::array<Vec2, kMaxArenaEnemies> enemyStart_{};
+    std::array<Vec2, kMaxArenaEnemies> enemyStartFacing_{};
+    PlayerState player_;
+    std::array<EnemyState, kMaxArenaEnemies> enemy_{};
+    ArenaOutput out_;
+    ArenaStats stats_;
+    std::uint32_t dropped_ = 0;
 };
 
 // Moves `bodies` the way a host with no walls would: each body at its output velocity for dt, then

@@ -25,7 +25,13 @@ The rhythm battle is unchanged. This page covers the routing and the two new sys
 - `WorldTable::combatForScene(scene)` and `combatForWorld(idOrMap)` answer the question. Both fall back to `rhythm`.
 - A host that can't run a world's system yet plays `rhythm` instead (`playableCombat(want, supportedMask)`). Every fight stays playable while the new screens are built.
 
-`GameplayPlan` is unchanged: a CMB step still lowers to `GameplayScreen::Battle`. The battle host asks the world table which system that step plays. There is no per-encounter override yet (see "Follow-ups").
+`GameplayPlan` is unchanged: a CMB step still lowers to `GameplayScreen::Battle`. The step dispatcher (`FTStep::Prepare`, `Source/ForgottenThird/FTStepHost.h`) asks the world table which system that step plays and opens its screen:
+
+- A beat fight opens the `Beat` map, once it is built.
+- An arena fight plays in place on the scene's world map, like a field step, once the arena host exists. Until then the arena is left out of `FTStep::kPlayableCombat`.
+- Anything else, and any system whose screen isn't there yet, plays the rhythm battle on `BattleDemo`. That fallback logs one line per system per run and never counts as a warning.
+
+The story carry's `Combat` field tells the screen which system the step plays. There is no per-encounter override yet (see "Follow-ups").
 
 ## Arena melee
 
@@ -51,6 +57,13 @@ The tick returns the frame's events, plus what each body wants next: a velocity,
 
 Core owns every facing and every timer. It never knows walls or the navmesh. It only knows the ring: a circle the host supplies, which no body leaves. `arenaStep()` moves bodies the way a host with no walls would. Tests, the balance check and headless runs use it in place of an engine.
 
+What the host reads besides the velocity and facing:
+
+- `ArenaDef::enemyKind`: each slot's index into the table's enemy kinds, so the host picks that enemy's mesh and clips. A def built in code leaves `kArenaNoKind`.
+- `ArenaPlayerOut::dodgeDir` and `backstep`: set once when a dodge starts and kept until the next one. The host picks the roll clip from them once, because a direction read from the velocity turns when a roll slides along the ring's edge.
+
+Core works on Unreal's ground plane: x forward, y to the right. A positive cross product is a turn to the right, and the lock switch's +1 moves the lock to the right.
+
 ### The ring
 
 Fights happen in place on the world map:
@@ -75,6 +88,8 @@ Fights happen in place on the world map:
 The other rules:
 
 - Each attack has a startup, an active part and a recovery. It can connect only in its active part, at most once per target. A hit test covers the whole tick, so a long frame can't skip a short active part.
+- An attack's `maxTargets` caps how many targets it connects with over its whole active part, nearest first, so a long, narrow attack doesn't pierce a whole line. The shipped riposte hits only its own enemy.
+- Movement ramps up and down. The player's velocity moves toward the stick's at `moveAccel` and `moveBrake` (in Idle, Move, Guard and Heal), and an enemy's at its kind's `accel` (in Approach and Strafe). Lunges, dodges and reactions set their velocity directly, without a ramp.
 - An input pressed while an action can't start is buffered for 0.2 s.
 - Stamina regenerates after a short delay.
 - Poise refills after a delay without poise damage.
@@ -95,6 +110,12 @@ The enemy brain runs Approach, Strafe, Attack, Staggered, Open, Down and Dead:
 - Fighters, enemy kinds with their moves, a `default` fight, and fights keyed by scene id, gameplay beat index and plan step index.
 - A missing key keeps the struct's default, so entries list only what differs.
 - Only the `default` fighter ships. Per-lead fighters are allowed by the schema and fall back to it.
+- Three placeholder enemy kinds ship:
+  - `brute`: a slam with a follow-up, and a slow overhead that can't be parried.
+  - `skirmisher`: quick two-hit jabs.
+  - `breaker`: a smash, and a grab that can be neither blocked nor parried.
+- The default fight is one brute. No scene fights ship yet.
+- An attack's damage rises with its telegraph, and a test checks this.
 
 ### Autopilot and balance
 
@@ -175,7 +196,7 @@ These wait until the animation session's merge is pushed.
   - Prompt markers over the enemies.
   - The cue, with the wall-clock fallback.
   - The chain and multiplier HUD, and the finisher cue.
-- **Both:** the battle host picks the system with `combatForScene` and `playableCombat`, and logs one line per fight with ids and counts only, like the other screens.
+- **Both:** each screen logs one line per fight with ids and counts only, like the other screens. The routing is done (see "Routing").
 
 ## Follow-ups
 

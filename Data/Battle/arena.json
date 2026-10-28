@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "fighters": [
+    {
+      "id": "default",
+      "hp": 140, "stamina": 100, "staminaRegen": 45, "staminaDelay": 0.6,
+      "poise": 25, "poiseDelay": 1.5, "hitstun": 0.5,
+      "moveSpeed": 4.5, "moveAccel": 25, "moveBrake": 40, "turnRate": 14, "bodyRadius": 0.4, "bufferTime": 0.2,
+      "light": [
+        { "startup": 0.18, "active": 0.12, "recovery": 0.35, "range": 2.1, "arcCos": 0.3, "damage": 12, "poiseDamage": 10, "lunge": 0.4, "tracking": 8, "stamina": 14, "cancel": 0.5 },
+        { "startup": 0.16, "active": 0.12, "recovery": 0.35, "range": 2.1, "arcCos": 0.3, "damage": 12, "poiseDamage": 10, "lunge": 0.4, "tracking": 8, "stamina": 14, "cancel": 0.5 },
+        { "startup": 0.22, "active": 0.14, "recovery": 0.55, "range": 2.3, "arcCos": 0, "damage": 18, "poiseDamage": 22, "lunge": 0.6, "tracking": 8, "stamina": 18, "cancel": 0.5 }
+      ],
+      "chainGap": 0.3,
+      "heavy": { "startup": 0.55, "active": 0.18, "recovery": 0.65, "range": 2.4, "arcCos": 0.2, "damage": 38, "poiseDamage": 45, "lunge": 0.9, "tracking": 4, "armor": 0.6, "stamina": 30, "cancel": 0.7 },
+      "riposte": { "startup": 0.12, "active": 0.15, "recovery": 0.5, "range": 2.6, "arcCos": 0, "damage": 48, "poiseDamage": 0, "lunge": 0.5, "tracking": 12, "stamina": 0, "cancel": 0.5, "maxTargets": 1 },
+      "dodgeTime": 0.6, "dodgeDistance": 3.5, "dodgeInvulnStart": 0.05, "dodgeInvulnEnd": 0.4, "dodgeStamina": 20, "dodgeCancel": 0.75,
+      "guardArcCos": 0, "guardAbsorb": 1, "guardMoveScale": 0.5, "guardBreakTime": 1.2, "parryWindow": 0.15, "parryRearm": 0.5, "riposteReach": 2.2,
+      "healCharges": 3, "healAmount": 45, "healTime": 0.9, "healRecovery": 0.4, "healMoveScale": 0.35,
+      "lockRange": 15, "lockBreak": 20
+    }
+  ],
+  "enemies": [
+    {
+      "id": "brute",
+      "hp": 200, "poise": 50, "poiseDelay": 3, "staggerTime": 1, "openTime": 1.5, "downTime": 1.2,
+      "walkSpeed": 1.8, "runSpeed": 4, "strafeSpeed": 1.4, "accel": 8, "turnRate": 6,
+      "preferredRange": 3.5, "runRange": 8, "attackDelay": 1.2, "bodyRadius": 0.45,
+      "moves": [
+        { "startup": 0.7, "active": 0.2, "recovery": 0.8, "range": 2.4, "arcCos": 0.5, "damage": 18, "poiseDamage": 20, "guardDamage": 25, "lunge": 0.6, "tracking": 3, "minRange": 0, "maxRange": 2.6, "weight": 1, "chain": 1 },
+        { "startup": 0.55, "active": 0.2, "recovery": 0.9, "range": 2.6, "arcCos": 0.5, "damage": 16, "poiseDamage": 18, "guardDamage": 22, "lunge": 0.8, "tracking": 2.5, "minRange": 0, "maxRange": 3, "weight": 0 },
+        { "startup": 1, "active": 0.25, "recovery": 1, "range": 2.5, "arcCos": 0.5, "damage": 30, "poiseDamage": 40, "guardDamage": 40, "lunge": 0.8, "tracking": 2, "minRange": 0, "maxRange": 2.7, "cooldown": 4, "weight": 0.5, "parryable": false }
+      ]
+    },
+    {
+      "id": "skirmisher",
+      "hp": 70, "poise": 22, "poiseDelay": 2.5, "staggerTime": 0.8, "openTime": 1.4, "downTime": 1,
+      "walkSpeed": 2.4, "runSpeed": 5, "strafeSpeed": 2.2, "accel": 14, "turnRate": 9,
+      "preferredRange": 3, "runRange": 8, "attackDelay": 0.9, "bodyRadius": 0.4,
+      "moves": [
+        { "startup": 0.45, "active": 0.12, "recovery": 0.45, "range": 2, "arcCos": 0.4, "damage": 8, "poiseDamage": 8, "guardDamage": 10, "lunge": 1, "tracking": 5, "minRange": 0, "maxRange": 2.3, "weight": 1, "chain": 1 },
+        { "startup": 0.4, "active": 0.12, "recovery": 0.7, "range": 2, "arcCos": 0.4, "damage": 8, "poiseDamage": 8, "guardDamage": 10, "lunge": 0.8, "tracking": 4, "minRange": 0, "maxRange": 2.3, "weight": 0 }
+      ]
+    },
+    {
+      "id": "breaker",
+      "hp": 260, "poise": 80, "poiseDelay": 3, "staggerTime": 1, "openTime": 1.6, "downTime": 1.4,
+      "walkSpeed": 1.5, "runSpeed": 3.5, "strafeSpeed": 1.1, "accel": 6, "turnRate": 4,
+      "preferredRange": 3.5, "runRange": 9, "attackDelay": 1.8, "bodyRadius": 0.5,
+      "moves": [
+        { "startup": 0.9, "active": 0.25, "recovery": 1, "range": 2.5, "arcCos": 0.5, "damage": 24, "poiseDamage": 30, "guardDamage": 35, "lunge": 0.7, "tracking": 2, "minRange": 0, "maxRange": 2.7, "weight": 1 },
+        { "startup": 1.1, "active": 0.2, "recovery": 1.2, "range": 2.2, "arcCos": 0.5, "damage": 28, "poiseDamage": 30, "guardDamage": 0, "lunge": 1.2, "tracking": 2.5, "armor": 0.5, "minRange": 0, "maxRange": 2.6, "cooldown": 5, "weight": 0.6, "unblockable": true, "parryable": false }
+      ]
+    }
+  ],
+  "default": { "enemies": ["brute"], "ring": 12, "attackers": 1, "spawn": 7 },
+  "fights": []
+}
