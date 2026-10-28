@@ -19,7 +19,9 @@
 #endif
 
 #if WITH_EDITOR
-namespace
+// Named, not anonymous: in a unity build the other material commandlets' own AddExpression, AddInput and PackageFile
+// share this translation unit.
+namespace FTWorldMaterialsBuild
 {
 // Two octaves of value noise on the world position, one channel for the albedo and one for the roughness, each
 // 0..1, hashed on the integer lattice. Scale is the first octave's cell in centimetres.
@@ -138,7 +140,7 @@ UMaterial* BuildSurfaceMaterial(UPackage* Package)
 	Material->PostEditChange();
 	return Material;
 }
-}
+} // namespace FTWorldMaterialsBuild
 #endif
 
 UFTBuildWorldMaterialsCommandlet::UFTBuildWorldMaterialsCommandlet()
@@ -153,7 +155,7 @@ int32 UFTBuildWorldMaterialsCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
 	// Start from nothing: replace the file up front, before anything loads the old asset.
-	const FString File = PackageFile(FTScene::SurfaceMaterial);
+	const FString File = FTWorldMaterialsBuild::PackageFile(FTScene::SurfaceMaterial);
 	if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildWorldMaterials: couldn't replace %s."), *File);
@@ -162,7 +164,7 @@ int32 UFTBuildWorldMaterialsCommandlet::Main(const FString& Params)
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(File), true);
 
 	UPackage* Package = CreatePackage(FTScene::SurfaceMaterial);
-	UMaterial* Material = BuildSurfaceMaterial(Package);
+	UMaterial* Material = FTWorldMaterialsBuild::BuildSurfaceMaterial(Package);
 	FAssetCompilingManager::Get().FinishAllCompilation();
 	if (FT::CompileErrors(TEXT("FTBuildWorldMaterials"), Material) > 0)
 	{
