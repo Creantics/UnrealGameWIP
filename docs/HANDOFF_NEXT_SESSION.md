@@ -1,12 +1,40 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-28 ~08:00. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-28 ~09:00. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-28 ~08:00): the slide is on main and in the demo build, and one lead's trousers are re-cut for
+- **NEWEST (2026-10-28 ~09:00): the crotch poke-through is fixed by hiding the body under the trousers (one lead).
+  Config only, no code change.**
+  - The lead's body is now a copy of its MetaHuman body with the faces under the trousers removed, using the editor's
+    `strip_lod_geometry` and a UV mask on all 4 LODs. The copy keeps the body's asset name in another folder, so the
+    `<clip>_to_<body name>` lookup still finds the retargeted clips. The party config's body path points at it.
+  - The mask comes from two new tools on main (4338efc):
+    - `tools/blender/body_mask.py`: a headless Blender ray pass that finds the body faces the garment covers,
+      keeping a margin under the waistband and the cuffs.
+    - `tools/art/strip_mask_png.py`: system Python, an exact simulation of the engine's strip rule as
+      `LODUtilities.cpp` has it.
+    - LOD0 strips 11,561 of 60,816 triangles and loses no kept triangle, also under float jitter.
+  - Editor checks at the run-loop stride:
+    - With the trousers on, no skin shows from five angles.
+    - With them hidden, the hole runs from the waistband to the cuffs only.
+    - Forcing LOD 1-3 stays clean, and the pose is unchanged.
+  - A headless explore run (the walk, then a solo start as another lead):
+    - The body loads from its new path. The loader warns when a path fails, and it logged nothing.
+    - 2 pieces, the clips found, both runs complete, no warnings from our module.
+    - Not watched in the demo at play speed yet.
+  - Notes:
+    - LOD1-3 keep 183/144/96 triangles that should go. All of them sit inside the trousers on UV seams, so they
+      don't show. The tool's `free=1` option cuts them to 60/48/30.
+    - The strip doesn't remap morph targets, so check a body has none first (this one has none).
+    - The engine refuses reduction-generated LODs.
+  - Gate for the tools commit: 774 doctest cases, ctest 4/4. Source is unchanged, so no UBT. The demo checkout is
+    at 4338efc, and its 6f3f419 binaries still match, since only tools changed.
+  - Next: flip the arm abduction for sleeved pieces (the rest pose needs +42 degrees, not -42). Then run the same
+    chain for the other two leads: re-cut, bind, stride test, import, hide the body.
+- **Earlier (2026-10-28 ~08:00): the slide is on main and in the demo build, and one lead's trousers are re-cut for
   the MetaHuman body.**
   - main is 6f3f419: the animation session's slide (46bb993 in Core, 45bcdbe on the Unreal side, merged in
     6f3f419). Crouching in a sprint slides, starting from the drop-in clip nearest the body's speed, follows the real
@@ -24,8 +52,9 @@ Private notes (character references, concept-art review, script status) are in `
     local party config but haven't been seen in the demo map's lighting or at play speed yet.
   - A headless explore run with them on (the walk, then a solo start as another lead): the new asset loads, that
     lead has 2 pieces as the lead and as a follower, both runs complete, and there are no warnings from our module.
-  - **Known issue: skin shows through at the crotch in a deep stride.** Every weighting tried shows skin at the
-    front inner thigh of the forward leg, next to the crotch seam; in the engine it shows from the side when running.
+  - **Known issue then (fixed ~09:00, see NEWEST): skin shows through at the crotch in a deep stride.** Every
+    weighting tried shows skin at the front inner thigh of the forward leg, next to the crotch seam; in the engine
+    it shows from the side when running.
     The cause is linear blend skinning across a crotch: the crotch cloth blends both legs' weights, so it moves about
     half as far as the thigh under it. Blending over a narrower band makes it tear instead. The fix belongs in the
     engine: hide the body under the pieces being worn (a masked body material, or a body section or variant chosen
