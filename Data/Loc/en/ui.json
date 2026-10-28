@@ -30,6 +30,15 @@
     "battle.down": "DOWN",
     "battle.jump": "JUMP!",
 
+    "beat.chain": "CHAIN",
+    "beat.counter": "COUNTER",
+    "beat.finisher": "FINISH!",
+    "beat.late": "LATE",
+    "beat.locked": "LOCKED",
+    "beat.quit": "Q / Backspace / pad B: Give up",
+    "beat.retry": "Enter / Space / pad A: Retry",
+    "beat.stats": "{0} perfect    {1} good    {2} miss    best chain {3}",
+
     "choice.prompt_line": "Space / Enter: continue    Backspace: skip",
     "choice.prompt_pick": "1-4: pick    Backspace: skip",
 
