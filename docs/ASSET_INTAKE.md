@@ -135,7 +135,7 @@ UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildDemoWorld -Mesh=/Game/Chara
 
 ## 2. Style and textures
 
-Rules from the art direction (pack names are public: Solhaven, Lattice, Unwritten, Restored, Ink Solhaven). The look is mostly the post-process style pass (`docs/STYLE_PACKS_UE.md`), which is switched per scene and applied to every mesh. So assets are authored **neutral**:
+Rules from the art direction (pack names are public: Solhaven, Lattice, Unwritten, Restored, Ink Solhaven). The look is a shared photoreal base (`docs/SCENE_LOOK.md`). The post-process style packs (`docs/STYLE_PACKS_UE.md`) are an optional layer over it, switched per scene and applied to every mesh. So assets are authored **neutral**:
 
 - Flat, even light in the model sheet, no baked shadows or drawn hatching in textures, no outlines. Outlines, hatching, cel bands, hulls and rims are a style-pass job (some still deferred: cel bands, lit hatching, hulls, pack rim).
 - **Black pockets and load maps go in textures, not vertex colour.** Flat-black pockets (under jaw, arm, fold, ledge) are painted into the base-colour texture. Vertex colour is not read by any material here (`M_FTCharacter` has no vertex-colour input), and the art direction says the same of the engine.

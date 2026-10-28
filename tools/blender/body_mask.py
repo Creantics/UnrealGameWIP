@@ -5,7 +5,8 @@ footprint touches is black, and any non-black pixel it touches keeps it -- the h
         [mode=trousers|top] [also=<other prefix>_strip_faces.npy] [seam=<margin>] [seam_neck=<m>]
 A LOD0 body vertex is hidden when all of these hold:
   - a ray along its normal, started 1 cm under the skin, leaves the garment (meets a face from behind) within `reach` m;
-  - that hit is more than `margin` from the garment's openings (its boundary loops: the waist and the two cuffs);
+  - that hit is more than `margin` from the garment's openings (its boundary loops: the waist and the two cuffs, the
+    three largest; a smaller loop, a pinhole under 3 cm where a seam weld left an edge open, is reported, not used);
   - the vertex sits above its leg's cuff top + margin and below the waist's bottom - margin;
   - it carries no weight on an arm, hand, foot, ankle, neck, head or upper-spine bone (the A-pose hands hang by the thighs);
   - it is more than `seam` m (default `margin`) from the body's own open edge, its seam with the face mesh (found with the
@@ -104,9 +105,16 @@ for s in adj:
 loops.sort(key=lambda L: -Gv[L, 2].mean())
 openings = [(len(L), round(float(Gv[L, 2].min()), 3), round(float(Gv[L, 2].max()), 3), round(float(Gv[L, 0].mean()), 3)) for L in loops]
 print("MASK openings", openings)
+holes = []
+if MODE == "trousers":  # the waist and the cuffs are the three largest loops; any other is a pinhole a seam weld left
+    main = sorted(sorted(range(len(loops)), key=lambda k: -len(loops[k]))[:3])  # keeps the height order
+    holes = [(len(loops[k]), round(float(np.ptp(Gv[loops[k]], axis=0).max()), 4)) for k in range(len(loops)) if k not in main]
+    assert len(main) == 3 and all(s < 0.03 for _n, s in holes), "expected the waist, two cuffs and at most pinholes"
+    loops = [loops[k] for k in main]
+    if holes:
+        print("MASK pinholes (vertices, span m), not openings", holes)
 open_pts = Gv[np.concatenate(loops)]
 if MODE == "trousers":
-    assert len(loops) == 3, "expected the waist and two cuffs"
     waist, cuffs = loops[0], loops[1:]
     waist_zmin = float(Gv[waist, 2].min())
     cuff_top = {float(np.sign(Gv[L, 0].mean())): float(Gv[L, 2].max()) for L in cuffs}
@@ -284,7 +292,7 @@ for k, o in enumerate(lods[1:], 1):
 np.savez_compressed(OUT + "_lods.npz", **extra)
 fz = np.array([Bv[list(p.vertices), 2].mean() for p in me.polygons])
 rep = {"mode": MODE, "body_vertices": nb, "body_faces": len(me.polygons), "strip_faces": int(strip_f.sum()),
-       "own_strip_faces": int(own.sum()), "also": also_rep, "openings": openings,
+       "own_strip_faces": int(own.sum()), "also": also_rep, "openings": openings, "pinholes": holes,
        "strip_tris": int(len(S)), "keep_tris": int(len(K)), "garment_winding_outward": round(frac, 4), "orient": orient,
        "hidden_vertices": int(hidden.sum()), "filled_islands": filled, "strip_z": [round(float(fz[strip_f].min()), 3), round(float(fz[strip_f].max()), 3)],
        "strip_left_right": [int((strip_f & (np.array([Bv[list(p.vertices), 0].mean() for p in me.polygons]) > 0)).sum()),

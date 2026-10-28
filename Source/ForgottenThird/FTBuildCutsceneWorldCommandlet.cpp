@@ -5,19 +5,16 @@
 #if WITH_EDITOR
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "CineCameraActor.h"
-#include "Components/DirectionalLightComponent.h"
 #include "Components/PointLightComponent.h"
-#include "Components/SkyLightComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "Engine/DirectionalLight.h"
 #include "Engine/PointLight.h"
-#include "Engine/SkyLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/TargetPoint.h"
 #include "Engine/World.h"
 #include "FTCutsceneDirector.h"
 #include "FTCutsceneGameMode.h"
+#include "FTSceneLook.h"
 #include "FTText.h"
 #include "GameFramework/PlayerStart.h"
 #include "GameFramework/WorldSettings.h"
@@ -34,7 +31,7 @@ namespace
 const TCHAR* const kCutsceneMapFolder = TEXT("/Game/Maps");
 
 #if WITH_EDITOR
-// A tint of the basic shape material, saved inside the map package.
+// A tint of the world surface material, saved inside the map package.
 UMaterialInterface* MakeCutsceneTint(UPackage* Package, UMaterialInterface* Base, const TCHAR* Name, const FLinearColor& Color)
 {
 	UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, Name, RF_Public);
@@ -86,10 +83,10 @@ int32 UFTBuildCutsceneWorldCommandlet::Main(const FString& Params)
 	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
 	UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 	UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
-	UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	UMaterialInterface* Base = FTScene::LoadSurface();
 	if (!Cube || !Sphere || !Cylinder || !Base)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCutsceneWorld: a /Engine/BasicShapes asset is missing."));
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCutsceneWorld: a /Engine/BasicShapes mesh or the world surface material is missing."));
 		return 1;
 	}
 
@@ -174,15 +171,8 @@ int32 UFTBuildCutsceneWorldCommandlet::Main(const FString& Params)
 		Head->AttachToActor(Body, FAttachmentTransformRules::KeepWorldTransform);
 	}
 
-	// Light.
-	ADirectionalLight* Sun = World->SpawnActor<ADirectionalLight>(FVector(0, 0, 800), FRotator(-45, 30, 0), Spawn);
-	Sun->GetComponent()->SetMobility(EComponentMobility::Movable);
-	Sun->GetComponent()->SetIntensity(5.f);
-	Sun->SetActorLabel(TEXT("Sun"));
-	ASkyLight* Sky = World->SpawnActor<ASkyLight>(FVector(0, 0, 600), FRotator::ZeroRotator, Spawn);
-	Sky->GetLightComponent()->SetMobility(EComponentMobility::Movable);
-	Sky->GetLightComponent()->SetIntensity(1.f);
-	Sky->SetActorLabel(TEXT("SkyLight"));
+	// Light: the shared photoreal look, and a warm lamp over the pair.
+	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, FRotator(-45, 30, 0));
 	APointLight* Lamp = World->SpawnActor<APointLight>(CutsceneM(1.f, 0.f, 3.5f), FRotator::ZeroRotator, Spawn);
 	Lamp->PointLightComponent->SetMobility(EComponentMobility::Movable);
 	Lamp->PointLightComponent->SetIntensity(5000.f);
