@@ -5,7 +5,8 @@
 // scene title card and an end card. The text is wrapped once per beat (and when the screen width
 // or the subtitle size changes); per-frame drawing reuses cached strings and one buffer for the line
 // being typed. Also draws the backlog overlay (the director's, scrolled by it; wrapped lines are cached
-// until the backlog, the scroll or the width changes), SKIP / AUTO indicators, and the settings overlay.
+// until the backlog, the scroll or the width changes), SKIP / AUTO indicators, and the pause menu with
+// the settings overlay opened from it (FT::DrawPauseOverlay).
 
 #include "CoreMinimal.h"
 #include "GameFramework/HUD.h"
@@ -63,5 +64,4 @@ private:
 	float BacklogBuiltWidth = -1.f;
 	float BacklogBuiltScale = -1.f;
 	float BacklogBuiltBottom = -1.f;
-	TWeakObjectPtr<class UFTSettingsSubsystem> CachedSettings;
 };

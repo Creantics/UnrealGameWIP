@@ -4,6 +4,7 @@
 #include "EngineUtils.h"
 #include "FTGameInstance.h"
 #include "FTMiniHUD.h"
+#include "FTPauseSubsystem.h"
 #include "FTText.h"
 #include "ForgottenThird.h"
 #include "GameFramework/PlayerController.h"
@@ -125,6 +126,9 @@ void AFTMiniGameMode::PollKeys()
 	{
 		return;
 	}
+	// The frame after the pause menu closed, a key still held (pad A that picked Resume is also "down" here)
+	// is not a press of the screen's own: it counts once it is let go and pressed again.
+	const bool bResumed = UFTPauseSubsystem::IsJustResumed(this);
 	for (int32 D = 0; D < kDirectionsMini; ++D)
 	{
 		bool bPressed = false;
@@ -135,7 +139,7 @@ void AFTMiniGameMode::PollKeys()
 			bPressed |= PC->WasInputKeyJustPressed(Key);
 			bNowDown |= PC->IsInputKeyDown(Key);
 		}
-		if (bPressed || (bNowDown && !bDown[D]))
+		if (!bResumed && (bPressed || (bNowDown && !bDown[D])))
 		{
 			Screen.press(static_cast<ftcore::Arrow>(D));
 		}

@@ -3,6 +3,7 @@
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
+#include "FTPauseOverlay.h"
 #include "FTQteGameMode.h"
 #include "FTUiText.h"
 
@@ -214,6 +215,7 @@ void AFTQteHUD::DrawHUD()
 	const AFTQteGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AFTQteGameMode>() : nullptr;
 	if (!Mode)
 	{
+		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
 	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
@@ -227,6 +229,7 @@ void AFTQteHUD::DrawHUD()
 	if (!Mode->HasStep())
 	{
 		DrawCentered(kNoStepQte, kWhiteQte, CY - 20.f * S, GEngine->GetLargeFont(), 1.4f);
+		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
 	const ftcore::QteScreen& Screen = Mode->GetScreen();
@@ -250,4 +253,5 @@ void AFTQteHUD::DrawHUD()
 		DrawPopups(*Mode, CX - 150.f * S, CY - 150.f * S);
 	}
 	DrawCentered(kHintQte, kDimQte, CY + H * 0.5f - 40.f * S, GEngine->GetSmallFont(), 1.3f);
+	FT::DrawPauseOverlay(*this, Canvas);
 }

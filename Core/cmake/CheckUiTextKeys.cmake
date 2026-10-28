@@ -1,6 +1,10 @@
-# Run as: cmake -DSOURCE_DIR=<Source/ForgottenThird> -DTABLE=<Data/Loc/en/ui.json> -P CheckUiTextKeys.cmake
+# Run as: cmake -DSOURCE_DIR=<Source/ForgottenThird> -DTABLE=<Data/Loc/en/ui.json> [-DITEMS=<Data/Battle/items.json>]
+#         -P CheckUiTextKeys.cmake
 # Every interface-text key the game uses (FTUiText k...(TEXT("key")) or FTUiText::Lookup(TEXT("key")))
 # must be in the English table, and every key in the table must be used somewhere.
+# The game builds the text of an item from its id at run time, so the sources never spell those keys out:
+# with ITEMS, every item in items.json counts as using item.<id>.name and item.<id>.desc. A new item
+# then needs both texts, and an item that is removed leaves its texts flagged as unused.
 
 file(READ "${TABLE}" table)
 string(JSON strings GET "${table}" strings)
@@ -24,6 +28,19 @@ foreach(path IN LISTS sources)
         list(APPEND used "${key}")
     endforeach()
 endforeach()
+if(DEFINED ITEMS AND EXISTS "${ITEMS}")
+    file(READ "${ITEMS}" items_text)
+    string(JSON items_list GET "${items_text}" items)
+    string(JSON items_count LENGTH "${items_list}")
+    if(items_count GREATER 0)
+        math(EXPR items_last "${items_count} - 1")
+        foreach(i RANGE ${items_last})
+            string(JSON item GET "${items_list}" ${i})
+            string(JSON item_id GET "${item}" id)
+            list(APPEND used "item.${item_id}.name" "item.${item_id}.desc")
+        endforeach()
+    endif()
+endif()
 list(REMOVE_DUPLICATES used)
 
 set(problems "")

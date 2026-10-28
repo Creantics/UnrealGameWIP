@@ -4,6 +4,7 @@
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
 #include "FTMiniGameMode.h"
+#include "FTPauseOverlay.h"
 #include "FTUiText.h"
 
 namespace
@@ -57,6 +58,7 @@ void AFTMiniHUD::DrawHUD()
 	const AFTMiniGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AFTMiniGameMode>() : nullptr;
 	if (!Mode)
 	{
+		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
 	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
@@ -70,11 +72,13 @@ void AFTMiniHUD::DrawHUD()
 		const float H = 300.f * S;
 		DrawRect(kPanelMini, CX - W * 0.5f, CY - H * 0.5f, W, H);
 		DrawCentered(kNoStepMini, kWhiteMini, CX, CY - 20.f * S, GEngine->GetLargeFont(), 1.4f);
+		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
 	const ftcore::MiniScreen& Screen = Mode->GetScreen();
 	if (Screen.finished())
 	{
+		FT::DrawPauseOverlay(*this, Canvas);
 		return; // the map is about to change
 	}
 	const ftcore::ComboSequence& Seq = Screen.sequence();
@@ -163,4 +167,5 @@ void AFTMiniHUD::DrawHUD()
 
 	DrawText(TryText, kDimMini, X0, Top - 50.f * S, GEngine->GetMediumFont(), 1.2f * S);
 	DrawCentered(kHintMini, kDimMini, CX, Canvas->ClipY - 70.f * S, GEngine->GetSmallFont(), 1.2f);
+	FT::DrawPauseOverlay(*this, Canvas);
 }

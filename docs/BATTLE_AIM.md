@@ -75,7 +75,10 @@ Every roster enemy has an entry: brute, shade, wisp, hound, bulwark and lurker.
 | Enter aim | the **Aim** row of the menu, or F, or the right mouse button | the Aim row with A, or LT |
 | Move the reticle | the mouse, or hold the arrows / WASD | either stick |
 | Fire | left mouse button, Enter or Space | A |
-| Cancel (refunds the AP) | Esc, Backspace or the right mouse button | B or LT |
+| Cancel (refunds the AP) | Esc, Backspace or the right mouse button | B, Start or LT |
+
+Esc and Start cancel the aim and nothing more: the press that puts the shot back doesn't also open
+the pause menu (see [GAME_FRAME.md](GAME_FRAME.md), "Pause"). The next one does.
 
 The mouse moves the reticle by its own distance on screen. The demo divides the mouse delta by the
 target's projected figure height. Sticks move the reticle at up to 0.8 figure heights per second and

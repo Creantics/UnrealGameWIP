@@ -2,8 +2,9 @@
 
 #include "Components/AudioComponent.h"
 #include "Engine/World.h"
-#include "HAL/PlatformTime.h"
 #include "Sound/SoundWave.h"
+
+#include "FTPauseSubsystem.h"
 
 #include "ftcore/Calibration.h"
 
@@ -71,7 +72,7 @@ void UFTConductorComponent::BindMusic(UAudioComponent* Audio, const ftcore::Audi
 	{
 		LatestCursor = Unwrapper.unwrap(CursorNow);
 		bHaveCursor = true;
-		Conductor.observe(LatestCursor, FPlatformTime::Seconds());
+		Conductor.observe(LatestCursor, UFTPauseSubsystem::WallSeconds());
 	}
 }
 
@@ -86,7 +87,7 @@ void UFTConductorComponent::HandlePlaybackPercent(const UAudioComponent* /*Audio
 
 void UFTConductorComponent::ObserveCursor(double AudioCursorSeconds)
 {
-	Conductor.observe(AudioCursorSeconds, FPlatformTime::Seconds());
+	Conductor.observe(AudioCursorSeconds, UFTPauseSubsystem::WallSeconds());
 }
 
 void UFTConductorComponent::ResetClock()
@@ -97,7 +98,7 @@ void UFTConductorComponent::ResetClock()
 	if (BoundAudio && bHaveCursor)
 	{
 		// Bound to playing music: the clock starts again from where the music is, not from 0.
-		Conductor.observe(LatestCursor, FPlatformTime::Seconds());
+		Conductor.observe(LatestCursor, UFTPauseSubsystem::WallSeconds());
 		return;
 	}
 	LatestCursor = 0.0;
@@ -114,7 +115,7 @@ double UFTConductorComponent::ClockNow() const
 			return World->GetTimeSeconds();
 		}
 	}
-	return FPlatformTime::Seconds();
+	return UFTPauseSubsystem::WallSeconds();
 }
 
 void UFTConductorComponent::ObserveWallClock()
@@ -157,7 +158,7 @@ void UFTConductorComponent::RecordTap()
 {
 	if (bCalibrating && Conductor.valid())
 	{
-		Taps.Add(Conductor.songTimeForEvent(FPlatformTime::Seconds()));
+		Taps.Add(Conductor.songTimeForEvent(UFTPauseSubsystem::WallSeconds()));
 	}
 }
 
@@ -208,7 +209,7 @@ void UFTConductorComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 	if (BoundAudio && bHaveCursor)
 	{
-		Conductor.observe(LatestCursor, FPlatformTime::Seconds());
+		Conductor.observe(LatestCursor, UFTPauseSubsystem::WallSeconds());
 	}
 	else
 	{

@@ -3,10 +3,13 @@
 // The default game mode: AFTPawn driven by AFTPlayerController. It has two states on the Demo map.
 //
 // Title: a fresh start (no story running, no gameplay hand-off pending) or the map option ?Title
-// (the battle screen's "Quit to title"). AFTTitleHUD shows New Game, Continue and Settings; the rules
-// are ftcore::TitleMenu. New Game starts the story at its start scene (-StoryScene is a headless flag,
-// see below), Continue loads the autosave slot. Either then switches to the story state. Settings
-// opens UFTSettingsSubsystem's overlay (it takes the input while it is up; the title ignores presses).
+// (the battle screen's "Quit to title", and the pause menu's). AFTTitleHUD shows New Game, Continue,
+// Settings and Quit; the rules are ftcore::TitleMenu. New Game starts the story at its start scene
+// (-StoryScene is a headless flag, see below), Continue loads the autosave slot. Either then switches
+// to the story state. Settings opens UFTSettingsSubsystem's overlay (it takes the input while it is
+// up; the title ignores presses). Quit leaves the game at once (UKismetSystemLibrary::QuitGame), with
+// no confirm step. The title has no pause menu: Esc and pad Start pause every other screen, and the
+// player controller gets its pause context when the story starts (EnterStory).
 //
 // Story: AFTStoryHUD with the AFTStoryDirector playing the story. Back from a gameplay screen the
 // story is already running: only the director is spawned, and it resumes the story. When the story

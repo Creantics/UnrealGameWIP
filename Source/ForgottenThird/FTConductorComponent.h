@@ -4,9 +4,10 @@
 // song time and latency-compensated times for input events. It also runs latency calibration
 // (tap along to a beat, then ftcore::estimateLatency).
 //
-// The wall clock is FPlatformTime::Seconds() everywhere. Feed the cursor either by binding a
-// playing UAudioComponent (BindAudio) or by calling ObserveCursor once per frame. With
-// bWallClockWithoutAudio and nothing bound, wall time is the cursor (a silent song clock).
+// The wall clock is UFTPauseSubsystem::WallSeconds() everywhere: platform time without the time spent
+// paused, so a pause (with the music paused too) leaves the cursor and the clock in step. Feed the
+// cursor either by binding a playing UAudioComponent (BindAudio) or by calling ObserveCursor once per
+// frame. With bWallClockWithoutAudio and nothing bound, wall time is the cursor (a silent song clock).
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
@@ -100,7 +101,7 @@ public:
 	// Latency-compensated song time of an input that is handled now. Use this for judgement.
 	UFUNCTION(BlueprintPure, Category = "Rhythm")
 	double GetInputSongTime() const;
-	// The same, for an event at WallSeconds (FPlatformTime::Seconds()).
+	// The same, for an event at WallSeconds (UFTPauseSubsystem::WallSeconds()).
 	UFUNCTION(BlueprintPure, Category = "Rhythm")
 	double GetEventSongTime(double WallSeconds) const;
 	UFUNCTION(BlueprintPure, Category = "Rhythm")

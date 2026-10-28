@@ -38,9 +38,14 @@ spots say which objective they wait for.
 | Use (talk, pick up, open) | E or Enter | X |
 | Switch lead (with a party in config) | Tab | RB |
 | Show or hide the followers | P | LB |
+| Pause menu | Esc | Start |
 
 The keys are an Enhanced Input context made at runtime (`AFTExploreCharacter`), priority 2, above
-the story context.
+the story context. The pause menu (see [GAME_FRAME.md](GAME_FRAME.md), "Pause") is the player
+controller's own context at priority 3, and a menu context above that while it is open, so Esc and
+Start work here and the walk, the followers and this context's keys stand still behind it.
+`AFTExploreDirector` isn't paused-aware: its notices and banners age on the platform clock, so one
+shown just before a pause fades early.
 
 ## How it fits together
 

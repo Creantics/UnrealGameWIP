@@ -46,7 +46,7 @@ Two settings (see DIALOGUE_UI.md) change the screen, read once when it starts (`
 
 ## Keys
 
-The battle screen's mapping: left, down, up and right are the arrow keys, WASD, the pad d-pad, or the pad's X, A, Y and B. Keys are polled each frame (so a hold sees its key go up), and presses are stamped with the clock as it stood at the start of the frame. Input is ignored for the first 0.25 s, so the press that opened the screen can't count.
+The battle screen's mapping: left, down, up and right are the arrow keys, WASD, the pad d-pad, or the pad's X, A, Y and B. Keys are polled each frame (so a hold sees its key go up), and presses are stamped with the clock as it stood at the start of the frame. Input is ignored for the first 0.25 s, so the press that opened the screen can't count. Escape (keyboard) or Start (pad) opens the pause menu (see [GAME_FRAME.md](GAME_FRAME.md), "Pause"): the clock stops with the world, and a key still held in the frame after the menu closes (the pad's A that picked Resume) is not read as a press until it is let go and pressed again.
 
 ## HUD
 

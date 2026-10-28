@@ -8,8 +8,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 
-#include "FTSettingsOverlay.h"
-#include "FTSettingsSubsystem.h"
+#include "FTPauseOverlay.h"
 #include "FTStoryDirector.h"
 #include "FTText.h"
 #include "FTUiText.h"
@@ -125,6 +124,7 @@ void AFTStoryHUD::DrawHUD()
 	const AFTStoryDirector* Found = FindDirector();
 	if (!Found)
 	{
+		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
 	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
@@ -136,16 +136,8 @@ void AFTStoryHUD::DrawHUD()
 	{
 		DrawBacklog(*Found);
 	}
-	if (!CachedSettings.IsValid())
-	{
-		const UWorld* World = GetWorld();
-		const UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
-		CachedSettings = GameInstance ? GameInstance->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
-	}
-	if (UFTSettingsSubsystem* Settings = CachedSettings.Get())
-	{
-		FT::DrawSettingsOverlay(*this, Canvas, *Settings);
-	}
+	// The pause menu, and on top of it the settings overlay when that was opened from the menu.
+	FT::DrawPauseOverlay(*this, Canvas);
 }
 
 void AFTStoryHUD::DrawIndicators(const AFTStoryDirector& D)

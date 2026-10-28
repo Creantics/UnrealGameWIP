@@ -82,6 +82,10 @@ add_library(ftcore STATIC
     src/Version.cpp
     src/Vfx.cpp
     src/Wav.cpp
+    src/Inventory.cpp
+    src/Shop.cpp
+    src/ArenaFight.cpp
+    src/BeatFight.cpp
 )
 target_include_directories(ftcore PUBLIC include)
 target_link_libraries(ftcore PRIVATE ftcore_warnings)
@@ -158,6 +162,12 @@ if(FTCORE_BUILD_TESTS)
         tests/test_turnqueue.cpp
         tests/test_version.cpp
         tests/test_vfx.cpp
+        tests/test_inventory.cpp
+        tests/test_battle_items.cpp
+        tests/test_shop.cpp
+        tests/test_pause.cpp
+        tests/test_arena.cpp
+        tests/test_beat.cpp
     )
     target_link_libraries(ftcore_tests PRIVATE ftcore doctest::doctest ftcore_warnings)
     # The real-data tests read the newengine checkout's assets in place (skipped when absent).
@@ -180,5 +190,6 @@ if(FTCORE_BUILD_TESTS)
     add_test(NAME ui_text_keys COMMAND ${CMAKE_COMMAND}
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../Source/ForgottenThird
         -DTABLE=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Loc/en/ui.json
+        -DITEMS=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Battle/items.json
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckUiTextKeys.cmake)
 endif()

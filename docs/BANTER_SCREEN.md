@@ -62,11 +62,14 @@ paths and keys only (`lines[3].hold`), never line text.
 
 | | Keyboard and mouse | Gamepad |
 |---|---|---|
-| Next line now | Space, left click or Enter | A or Start |
-| Skip the rest | Escape or Backspace | B |
+| Next line now | Space, left click or Enter | A |
+| Skip the rest | Backspace | B |
+| Pause menu | Escape | Start |
 
 These are `AFTPlayerController`'s story actions (`OnAdvance`, `OnConfirm`, `OnCancel`), bound by the
-game mode. Presses in the first 0.25 s are ignored, as on the stub screen.
+game mode. Presses in the first 0.25 s are ignored, as on the stub screen. Escape and pad Start
+open the pause menu (see [GAME_FRAME.md](GAME_FRAME.md), "Pause"): the lines stop, and these keys
+are ignored while it is up. Escape no longer skips, and Start no longer shows the next line.
 
 ## Regenerate the map
 

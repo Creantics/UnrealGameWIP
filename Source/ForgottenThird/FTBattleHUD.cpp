@@ -4,11 +4,12 @@
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
 #include "EngineUtils.h"
-#include "HAL/PlatformTime.h"
 
 #include "FTBattleComponent.h"
 #include "FTBattleDemoActor.h"
 #include "FTConductorComponent.h"
+#include "FTPauseOverlay.h"
+#include "FTPauseSubsystem.h"
 #include "FTUiText.h"
 
 #include "ftcore/Battle.h"
@@ -59,7 +60,9 @@ const FString kTell(TEXT("!"));
 const FTUiText kJumpable(TEXT("battle.jump"));
 const FLinearColor kCyan(0.35f, 0.85f, 1.f);
 
-double HudWall() { return FPlatformTime::Seconds(); }
+// The same pause-aware clock AFTBattleDemoActor stamps its popup times with (Wall() there): the popups
+// are aged against those, so the two must agree.
+double HudWall() { return UFTPauseSubsystem::WallSeconds(); }
 
 bool IsOver(const ftcore::Battle& B) { return B.phase() == ftcore::Phase::Victory || B.phase() == ftcore::Phase::Defeat; }
 
@@ -106,6 +109,7 @@ void AFTBattleHUD::DrawHUD()
 	AFTBattleDemoActor* Found = FindDemo();
 	if (!Found || !Found->GetBattle() || !Found->GetBattle()->GetBattle())
 	{
+		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
 	const AFTBattleDemoActor& D = *Found;
@@ -122,6 +126,7 @@ void AFTBattleHUD::DrawHUD()
 	DrawAim(D);
 	DrawPopups(D);
 	DrawMessages(D);
+	FT::DrawPauseOverlay(*this, Canvas);
 }
 
 // ---- helpers ----

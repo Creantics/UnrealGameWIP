@@ -7,9 +7,10 @@
 #include "ForgottenThird.h"
 #include "FTText.h"
 #include "GameFramework/WorldSettings.h"
-#include "HAL/PlatformTime.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+
+#include "FTPauseSubsystem.h"
 
 #include "ftcore/StubScreen.h"
 
@@ -74,7 +75,7 @@ void AFTCutsceneDirector::Play(const ftcore::CutscenePlan& Plan, bool bAutoPlay)
 	bFast = FParse::Param(FCommandLine::Get(), TEXT("AlphaFast"));
 	Player.begin(Plan, bAutoPlay);
 	ResolveMarkers();
-	LastRealTime = FPlatformTime::Seconds();
+	LastRealTime = UFTPauseSubsystem::WallSeconds();
 	AppliedShot = -1;
 	bStarted = true;
 	ApplyCamera();
@@ -199,7 +200,9 @@ void AFTCutsceneDirector::Tick(float DeltaSeconds)
 	{
 		return;
 	}
-	const double Now = FPlatformTime::Seconds();
+	// Real time without the pause: the autoplay cap and the skip grace must not count the minutes a
+	// player spent in the menu (this tick doesn't run while paused, so the gap would land here at once).
+	const double Now = UFTPauseSubsystem::WallSeconds();
 	const double Real = Now - LastRealTime;
 	LastRealTime = Now;
 

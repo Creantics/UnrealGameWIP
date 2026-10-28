@@ -22,7 +22,10 @@
 //   Skill keys: id, name, apCost, apGain (default 0), targeting ("single" default, or "all"), power,
 //   notes, difficulty, hits. Stats keys default to the Stats defaults. `name` defaults to the id.
 //   `reward` (optional, each part 0..100000, default 0) is what beating the enemy pays:
-//     "reward": { "xp": 20, "gold": 12 }
+//     "reward": { "xp": 20, "gold": 12, "items": [ { "id": "bandage_roll", "count": 1 } ] }
+//   `items` (optional) are the item drops: at most kMaxEnemyDrops entries, each an `id` (see
+//   validItemId; a test checks that Data/Battle/items.json has it) and a `count` (1..kMaxItemStack,
+//   default 1), and an id may be listed once.
 //   `hits` is the attack timeline the defender answers on an enemy turn (see DefenceTimeline.h):
 //     "hits": [ { "at": 0.9, "tell": 0.4 }, { "at": 1.5, "tell": 0.4, "weight": 2, "jumpable": true } ]
 //   1..8 hits, `at` seconds after the banner (0 < at <= 30, strictly increasing, required); `tell`

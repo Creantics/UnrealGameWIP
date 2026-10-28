@@ -3,6 +3,7 @@
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
+#include "FTPauseOverlay.h"
 #include "FTStubGameMode.h"
 #include "FTUiText.h"
 
@@ -36,6 +37,7 @@ void AFTStubHUD::DrawHUD()
 	const AFTStubGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AFTStubGameMode>() : nullptr;
 	if (!Mode)
 	{
+		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
 	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
@@ -49,6 +51,7 @@ void AFTStubHUD::DrawHUD()
 	if (!Mode->HasStep())
 	{
 		DrawCentered(kNoStepStub, kWhiteStub, CY - 20.f * S, GEngine->GetLargeFont(), 1.4f);
+		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
 	float Y = CY - H * 0.5f + 40.f * S;
@@ -61,4 +64,5 @@ void AFTStubHUD::DrawHUD()
 	Y += 50.f * S;
 	DrawCentered(Mode->GetStepText(), kDimStub, Y, GEngine->GetMediumFont(), 1.2f);
 	DrawCentered(kContinueStub, kDimStub, CY + H * 0.5f - 50.f * S, GEngine->GetSmallFont(), 1.3f);
+	FT::DrawPauseOverlay(*this, Canvas);
 }

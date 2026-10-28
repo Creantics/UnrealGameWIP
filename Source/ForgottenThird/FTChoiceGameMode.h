@@ -6,9 +6,10 @@
 // StoryDir), plays it with AFTChoiceHUD and returns to the story the way the stub screen does. No
 // story on play.
 //
-// Keys (AFTPlayerController's story actions): Space / left click / pad A or Enter / pad Start
-// continue; 1-4 / pad d-pad pick an option; Escape / Backspace / pad B skip to the closing lines.
-// With StoryCarry.bAutoPlay it skips by itself and finishes after about a second of game time.
+// Keys (AFTPlayerController's story actions): Space / left click / pad A or Enter continue; 1-4 / pad
+// d-pad pick an option; Backspace / pad B skip to the closing lines (Escape and pad Start open the
+// pause menu, which stops the loop and ignores these keys while it is up). With StoryCarry.bAutoPlay
+// it skips by itself and finishes after about a second of game time.
 //
 // When the loop file is missing (or refused) it shows exactly the stub card (the step's title, label
 // and "Step i of n") and continues on a press, so the alpha needs no loop data. Opened without a

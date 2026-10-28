@@ -14,9 +14,13 @@
 // player who wins every story fight in script order gains a level about every four fights and
 // reaches kMaxLevel near the finale (a test walks the encounter table to keep it so). Nothing
 // here allocates.
+//
+// Gold is spent in the shop (Shop.h). The party also carries items (Inventory.h): enemies drop
+// them (Reward::items, from Data/Battle/enemies.json), the shop trades them and a battle uses them.
 
 #include "ftcore/Api.h"
 #include "ftcore/CombatTypes.h"
+#include "ftcore/Inventory.h"
 
 namespace ftcore {
 
@@ -40,18 +44,22 @@ inline constexpr int kMaxXp = 1000000;
 inline constexpr int kMaxGold = 9999999;
 
 struct PartyProgress {
-    int xp = 0;   // total experience, 0..kMaxXp
-    int gold = 0; // 0..kMaxGold; nothing spends it yet
+    int xp = 0;        // total experience, 0..kMaxXp
+    int gold = 0;      // 0..kMaxGold; enemies pay it and the shop spends it (Shop.h)
+    Inventory items{}; // what the party carries: drops land here, the shop trades it, a battle uses it
 };
 
 struct Reward {
     int xp = 0;
     int gold = 0;
+    // Item drops: the same stacks as an inventory, merged by id. The tier raises xp and gold only.
+    Inventory items{};
 };
 
 struct AwardResult {
     int levelBefore = 1;
     int levelAfter = 1;
+    int itemsLost = 0; // dropped items that did not fit in the party's inventory
 };
 
 // Total xp needed to reach `level` (1 needs 0). Levels outside 1..kMaxLevel are clamped.
@@ -61,9 +69,12 @@ FTCORE_API int levelForXp(int xp);
 // Experience still needed for the next level, or 0 at kMaxLevel.
 FTCORE_API int xpToNextLevel(int xp);
 
-// The sum of the line-up's enemy rewards, raised by kTierRewardPercent per tier.
+// The sum of the line-up's enemy rewards, xp and gold raised by kTierRewardPercent per tier. The
+// item drops are summed as they are (the same id from two enemies makes one bigger stack).
 FTCORE_API Reward encounterReward(const EnemyRoster& roster, const EncounterLineup& lineup);
-// Adds `reward` (negative parts count as 0) to `progress`, clamped to the caps.
+// Adds `reward` (negative parts count as 0) to `progress`, clamped to the caps. The drops go into
+// `progress.items`; what does not fit (a full inventory, a stack past kMaxItemStack) is lost and
+// counted in AwardResult::itemsLost.
 FTCORE_API AwardResult award(PartyProgress& progress, const Reward& reward);
 
 // A member's stats at `level` (clamped to 1..kMaxLevel) from their level 1 stats.

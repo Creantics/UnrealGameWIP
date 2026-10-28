@@ -1,26 +1,29 @@
 #pragma once
 
-// The title screen's rules, independent of any engine: three items (New Game, Continue, Settings),
-// which one is selected, which ones can be picked, and what a key does. The screen feeds it keys and
-// acts on the returned action; drawing and the save slot live elsewhere. Header only, no allocation.
+// The title screen's rules, independent of any engine: four items (New Game, Continue, Settings,
+// Quit), which one is selected, which ones can be picked, and what a key does. The screen feeds it
+// keys and acts on the returned action; drawing and the save slot live elsewhere. Header only, no
+// allocation.
 //
 //   ftcore::TitleMenu menu;
 //   menu.setContinueEnabled(saveIsUsable);
 //   switch (menu.press(ftcore::TitleKey::Confirm)) { case ftcore::TitleAction::NewGame: ... }
 //
 // Up / Down move to the previous / next enabled item (no wrap, no move onto a greyed item, so with
-// Continue greyed Down goes from New Game to Settings). Confirm picks the selected item. Pick1 /
-// Pick2 / Pick3 are the number-key shortcuts for New Game / Continue / Settings; a shortcut for a
-// greyed item does nothing. Selection starts on Continue when it is enabled, else on New Game, and
-// falls back to New Game if Continue gets disabled under it. Settings is always enabled.
+// Continue greyed Down goes from New Game to Settings, and Down from Settings reaches Quit). Confirm
+// picks the selected item. Pick1 / Pick2 / Pick3 / Pick4 are the number-key shortcuts for New Game /
+// Continue / Settings / Quit; a shortcut for a greyed item does nothing. Selection starts on Continue
+// when it is enabled, else on New Game, and falls back to New Game if Continue gets disabled under
+// it. Settings and Quit are always enabled. Quit needs no confirm step: nothing is open on the title,
+// and the story autosaves at every scene start.
 
 #include <cstdint>
 
 namespace ftcore {
 
-enum class TitleItem : std::uint8_t { NewGame = 0, Continue = 1, Settings = 2 };
+enum class TitleItem : std::uint8_t { NewGame = 0, Continue = 1, Settings = 2, Quit = 3 };
 
-enum class TitleKey : std::uint8_t { Up, Down, Confirm, Pick1, Pick2, Pick3 };
+enum class TitleKey : std::uint8_t { Up, Down, Confirm, Pick1, Pick2, Pick3, Pick4 };
 
 enum class TitleAction : std::uint8_t {
     None,     // nothing happened (a greyed item, or an edge)
@@ -28,11 +31,12 @@ enum class TitleAction : std::uint8_t {
     NewGame,  // start the story from the beginning
     Continue, // load the save and resume
     Settings, // open the settings menu
+    Quit,     // leave the game
 };
 
 class TitleMenu {
 public:
-    static constexpr std::uint8_t kItemCount = 3;
+    static constexpr std::uint8_t kItemCount = 4;
 
     TitleItem selected() const { return selected_; }
     bool enabled(TitleItem item) const { return item != TitleItem::Continue || continueEnabled_; }
@@ -54,6 +58,7 @@ public:
         case TitleKey::Pick1: return activate(TitleItem::NewGame);
         case TitleKey::Pick2: return activate(TitleItem::Continue);
         case TitleKey::Pick3: return activate(TitleItem::Settings);
+        case TitleKey::Pick4: return activate(TitleItem::Quit);
         }
         return TitleAction::None;
     }
@@ -79,6 +84,7 @@ private:
         case TitleItem::NewGame: return TitleAction::NewGame;
         case TitleItem::Continue: return TitleAction::Continue;
         case TitleItem::Settings: return TitleAction::Settings;
+        case TitleItem::Quit: return TitleAction::Quit;
         }
         return TitleAction::None;
     }
