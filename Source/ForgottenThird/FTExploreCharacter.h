@@ -113,6 +113,8 @@ public:
 	// The PartyLooks entry the pawn wears (-1 when PartyLooks is empty), and whether the followers are hidden.
 	int32 GetLeadIndex() const { return LeadIndex; }
 	bool IsPartyHidden() const { return bPartyHidden; }
+	// Whether a traversal (a vault, a climb or a roll) is carrying the body: a scene played in place waits for it to end.
+	bool IsTraversing() const { return bTraversing; }
 	// For a scene that turns input off and on again: a held Run's release that came while input was off never arrived,
 	// so the body goes back to its default gait, and a roll press still kept is dropped. Crouch is a toggle, not held;
 	// standing up from it is this call's choice, so a scene starts and ends with the lead on its feet.
