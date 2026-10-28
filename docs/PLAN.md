@@ -13,7 +13,7 @@ State on 2026-10-18 (origin/main at ef99ba1). The Core porting is done. The demo
 
 1. **Ask GitHub Support to purge commit 362873808ae789806f186b5e554748f27caeb109.** History was rewritten and force-pushed, but GitHub keeps the commit reachable by its SHA.
 2. **GitHub billing.** CI never starts because of the spending limit. Until it's fixed, the local gate is the authority.
-3. **Look at the overnight work.** Open the editor (it opens `Demo`), click Play, and check: the Solhaven style (outlines, paper grain, colour), the three effects beside the character (ember swirl, heal ring, smoke), and the physics corner (stacked crates, a bouncing ball). Change packs with `FTBuildDemoWorld -Style=lattice` and so on.
+3. **Look at the overnight work.** Open the editor (it opens `Demo`), click Play, and check: the photoreal look ([SCENE_LOOK.md](SCENE_LOOK.md)), the three effects beside the character (ember swirl, heal ring, smoke), and the physics corner (stacked crates, a bouncing ball). The style packs (outlines, paper grain, colour) are on the `Demo_<pack>` maps, or add one with `FTBuildDemoWorld -Style=lattice` and so on.
 4. **On any other machine:** copy newengine `assets/story/` to `Data/Story/`. It's gitignored.
 
 ## Alpha

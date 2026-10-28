@@ -144,7 +144,7 @@ Result on 2026-10-18 (exit 0):
 ```
 UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildPhysics -NullRHI -unattended -nopause -nosplash
 UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildPhysics -Verify -NullRHI -unattended -nopause -nosplash
-UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildDemoWorld -Mesh=/Game/Characters/ProofHead/proof_head/SkeletalMeshes/proof_head.proof_head -Style=solhaven -NullRHI -unattended -nopause -nosplash
+UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildDemoWorld -Mesh=/Game/Characters/ProofHead/proof_head/SkeletalMeshes/proof_head.proof_head -NullRHI -unattended -nopause -nosplash
 UnrealEditor-Cmd ForgottenThird.uproject -run=FTPhysicsSim -NullRHI -unattended -nopause -nosplash
 UnrealEditor-Cmd ForgottenThird.uproject -run=Cook -TargetPlatform=Windows -Map=/Game/Maps/Demo -unattended -nopause -nosplash
 ```

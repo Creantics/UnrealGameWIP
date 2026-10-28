@@ -4,19 +4,13 @@
 
 #if WITH_EDITOR
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "Components/DirectionalLightComponent.h"
-#include "Components/ExponentialHeightFogComponent.h"
-#include "Components/SkyAtmosphereComponent.h"
-#include "Components/SkyLightComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "Engine/DirectionalLight.h"
-#include "Engine/ExponentialHeightFog.h"
-#include "Engine/SkyLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
 #include "FTBattleDemoActor.h"
 #include "FTBattleGameMode.h"
+#include "FTSceneLook.h"
 #include "GameFramework/PlayerStart.h"
 #include "GameFramework/WorldSettings.h"
 #include "HAL/FileManager.h"
@@ -68,7 +62,7 @@ int32 UFTBuildBattleDemoCommandlet::Main(const FString& /*Params*/)
 
 	// Floor: a 40 m x 40 m slab whose top is at z = 0.
 	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
-	UMaterialInterface* Grey = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	UMaterialInterface* Grey = FTScene::LoadSurface();
 	if (!Cube)
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildBattleDemo: /Engine/BasicShapes/Cube is missing."));
@@ -85,25 +79,7 @@ int32 UFTBuildBattleDemoCommandlet::Main(const FString& /*Params*/)
 	Floor->SetActorLabel(TEXT("Floor"));
 
 	// Sun from behind the camera's left shoulder, so both lines are lit from the front.
-	ADirectionalLight* Sun = World->SpawnActor<ADirectionalLight>(FVector(0, 0, 600), FRotator(-40, 25, 0), Spawn);
-	Sun->GetComponent()->SetMobility(EComponentMobility::Movable);
-	Sun->GetComponent()->SetIntensity(6.f);
-	if (UDirectionalLightComponent* SunLight = Cast<UDirectionalLightComponent>(Sun->GetComponent()))
-	{
-		SunLight->SetAtmosphereSunLight(true);
-	}
-	Sun->SetActorLabel(TEXT("Sun"));
-
-	ASkyLight* Sky = World->SpawnActor<ASkyLight>(FVector(0, 0, 400), FRotator::ZeroRotator, Spawn);
-	Sky->GetLightComponent()->SetMobility(EComponentMobility::Movable);
-	Sky->GetLightComponent()->bRealTimeCapture = true;
-	Sky->SetActorLabel(TEXT("SkyLight"));
-
-	ASkyAtmosphere* Atmosphere = World->SpawnActor<ASkyAtmosphere>(FVector::ZeroVector, FRotator::ZeroRotator, Spawn);
-	Atmosphere->SetActorLabel(TEXT("SkyAtmosphere"));
-
-	AExponentialHeightFog* Fog = World->SpawnActor<AExponentialHeightFog>(FVector(0, 0, -100), FRotator::ZeroRotator, Spawn);
-	Fog->SetActorLabel(TEXT("HeightFog"));
+	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, FRotator(-40, 25, 0));
 
 	// The battle at the origin; its own camera frames the fight once play starts.
 	AFTBattleDemoActor* Battle = World->SpawnActor<AFTBattleDemoActor>(FVector::ZeroVector, FRotator::ZeroRotator, Spawn);

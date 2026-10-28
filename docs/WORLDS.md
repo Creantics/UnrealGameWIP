@@ -2,7 +2,7 @@
 
 The story's field steps play in three big worlds:
 
-- **Solhaven**: a town. Its Ink-Solhaven and Restored scenes play here under those style packs.
+- **Solhaven**: a town. Its Ink-Solhaven and Restored scenes play here.
 - **Lattice**: towers.
 - **Unwritten**: ruins.
 
@@ -10,7 +10,7 @@ Scenes that aren't placed in a world, such as the house and the pocket, still pl
 
 The **overworld** joins them: a small walkable map with one gate per world. When the story moves from one world to another, the party walks the road between the two gates before the next field step starts.
 
-Each world is a blockout for now: shapes, roads, landmarks and the world's style pack. It has no terrain art, streaming or biomes yet.
+Each world is a blockout for now: shapes, roads and landmarks under the shared photoreal look ([SCENE_LOOK.md](SCENE_LOOK.md)). It has no terrain art, streaming or biomes yet.
 
 ## Size
 
@@ -63,10 +63,10 @@ All goals and waypoints in `goals.json` lie inside the plaza. So a field step pl
 3. On a world's map (where `AFTExploreDirector::WorldId` is set), the director:
    - lays the world out again
    - starts the player at the district's spawn
-   - switches the style controller to the scene's style
+   - switches the map's style controller to the scene's style, when the map was built with one (`-Style=`)
    - runs the field step as usual
 
-   Log: `World solhaven: field step in district 3 (style inksolhaven).`
+   Log: `World solhaven: field step in district 3 (photoreal look).`, or `(style inksolhaven)` on a map with a style controller.
 
 Without a story step, the world is a free walk. The party follows, and the HUD shows a WORLD panel ("solhaven  district 4 of 16" or "open ground").
 
@@ -87,7 +87,7 @@ Build it with `-World=overworld`:
 UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildExploreWorld -World=overworld -NullRHI -unattended -nopause -nosplash
 ```
 
-The style is world 0's unless `-Style=<spec>` is given. The default build logs `overworld (style solhaven): 3 worlds, 3 roads, 18 emblem blocks, 256 props, 433 instances, 38 actors; bounds 482 x 482 m, 48 m tall.` The tour walks every gate along the roads:
+The map has the photoreal look; `-Style=<spec>` adds a style controller over it. The default build logs `overworld (look photoreal): 3 worlds, 3 roads, 18 emblem blocks, 256 props, 433 instances, 38 actors; bounds 482 x 482 m, 48 m tall.` The tour walks every gate along the roads:
 
 ```
 UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/Overworld -game -NullRHI -OverworldAutoPlay -AlphaFast -WorldQuitOnDone -unattended -nosplash -nosound
@@ -103,19 +103,19 @@ The maps are generated; don't edit them by hand.
 UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildExploreWorld -World=solhaven -NullRHI -unattended -nopause -nosplash
 ```
 
-Run it again with `-World=lattice` and `-World=unwritten`. `-Style=<spec>` overrides the world's style. Each run writes `/Game/Maps/<map>` and contains:
+Run it again with `-World=lattice` and `-World=unwritten`. `-Style=<spec>` adds a style controller over the photoreal look; the world's `style` in `worlds.json` isn't used yet. Build `M_WorldSurface` first (`-run=FTBuildWorldMaterials`). Each run writes `/Game/Maps/<map>` and contains:
 - a floor and perimeter walls
 - roads, plazas, buildings, trees and rocks as instanced meshes on a few holder actors (about 90 actors in all)
 - the landmarks and beacons
 - one large anchor shape floating 260 m over the centre
-- lights, the director and the style controller
+- the shared look (sun, sky light, atmosphere, fog, clouds and the camera finish), and the director
 - a navmesh per district
 
 The build fails if any field goal, from `kFieldGoals` or `goals.json`, has no full navmesh path from any district's spawn. The roads between districts have no navmesh, because they are straight and clear.
 
 The last line logged reads like this:
 
-`FTBuildExploreWorld: world solhaven (style solhaven): 16 districts, 19 roads, 269 buildings, 1400 props, 3001 instances, 16 landmarks, 88 actors; bounds 1002 x 1002 m, 290 m tall; 136 goals reachable from each district.`
+`FTBuildExploreWorld: world solhaven (look photoreal): 16 districts, 19 roads, 269 buildings, 1400 props, 3001 instances, 16 landmarks, 88 actors; bounds 1002 x 1002 m, 290 m tall; 136 goals reachable from each district.`
 
 ## Headless checks
 

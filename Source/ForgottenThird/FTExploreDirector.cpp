@@ -467,6 +467,8 @@ void AFTExploreDirector::PlaceInDistrict(const FFTStoryCarry& Carry, const TCHAR
 		WorldSpawnRotation = FRotator(0.f, Yaw, 0.f);
 		bWorldSpawnPending = true;
 	}
+	// The maps are photoreal unless built with -Style=, so a carried style lands only on a style controller.
+	int32 Styled = 0;
 	if (!Carry.Style.IsEmpty())
 	{
 		for (TActorIterator<AFTStyleController> It(GetWorld()); It; ++It)
@@ -477,10 +479,11 @@ void AFTExploreDirector::PlaceInDistrict(const FFTStoryCarry& Carry, const TCHAR
 			{
 				It->SetStyleSpec(Carry.Style);
 			}
+			++Styled;
 		}
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("World %s: %s in district %d (style %s)."), *WorldId, What, WorldDistrict,
-		Carry.Style.IsEmpty() ? TEXT("the map's") : *Carry.Style);
+	UE_LOG(LogForgottenThird, Display, TEXT("World %s: %s in district %d (%s%s)."), *WorldId, What, WorldDistrict,
+		Styled > 0 ? TEXT("style ") : TEXT("photoreal look"), Styled > 0 ? *Carry.Style : TEXT(""));
 }
 
 void AFTExploreDirector::SpawnFieldGoal()

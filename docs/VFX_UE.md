@@ -105,7 +105,7 @@ $p = Start-Process $ue -ArgumentList "$proj -run=FTBuildVfx -Verify -NullRHI -un
 $null = $p.Handle; $p.WaitForExit(); $p.ExitCode
 
 # 3. The demo map, with the effects (add -NoVfx to leave them out).
-$p = Start-Process $ue -ArgumentList "$proj -run=FTBuildDemoWorld -Mesh=/Game/Characters/ProofHead/proof_head/SkeletalMeshes/proof_head.proof_head -Style=solhaven -NullRHI -unattended -nopause -nosplash -log -abslog=$env:TEMP\ft_demo.log" -PassThru -NoNewWindow
+$p = Start-Process $ue -ArgumentList "$proj -run=FTBuildDemoWorld -Mesh=/Game/Characters/ProofHead/proof_head/SkeletalMeshes/proof_head.proof_head -NullRHI -unattended -nopause -nosplash -log -abslog=$env:TEMP\ft_demo.log" -PassThru -NoNewWindow
 $null = $p.Handle; $p.WaitForExit(); $p.ExitCode
 ```
 

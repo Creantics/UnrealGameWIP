@@ -1,5 +1,11 @@
 # World style packs in Unreal
 
+> **Off by default since 2026-10-28.** The maps now share one photoreal look
+> ([SCENE_LOOK.md](SCENE_LOOK.md)). A builder adds the style controller below only when it's given
+> `-Style=<spec>` (and not `-Style=none`). The packs, the material and the controller still build and
+> work. The worlds will get their own looks later, as tuned light, air, camera and shader values on the
+> photoreal base.
+
 How the style packs from newengine (`docs/reference/style_packs.md`) run in UE 5.8. The rules live in
 Core (`Core/include/ftcore/StylePack.h`, ported from newengine's `StylePack.h`): the four packs, the
 Ink Solhaven preset, `lerp`, the Style Dial and `parseStyleSpec`. Unreal only carries the values to
@@ -44,7 +50,7 @@ outputs, so rerun step 3 after changing the demo commandlet rather than editing 
 
 `-Style=` takes anything `ftcore::parseStyleSpec` takes:
 
-- **Packs:** `none`, `solhaven` (the default), `lattice`, `unwritten`, `restored`.
+- **Packs:** `none`, `solhaven`, `lattice`, `unwritten`, `restored`. Without `-Style=` a builder adds no controller.
 - **The preset:** `inksolhaven`.
 - **A dial:** `S3,U0.5` or `3,0,0.5,0` (needles 0..3 in S, L, U, R order). Commas are kept. A spec with
   spaces needs quotes.

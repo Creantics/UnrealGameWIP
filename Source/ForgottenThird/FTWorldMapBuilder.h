@@ -14,8 +14,9 @@
 // (a few actors with instanced mesh components, not thousands of actors). Each district gets its
 // own navmesh bounds; every field goal (ftcore::demo::kFieldGoals and Data/Field/goals.json) must be
 // reachable from every district's spawn, or the build fails. The player start is district 0's
-// spawn; the director's WorldId is set, and the style controller uses the world's style. It
-// overwrites the map.
+// spawn and the director's WorldId is set. The light, air and camera finish are the shared photoreal
+// look (FTSceneLook.h); -Style=<spec> adds a style controller over it, and worlds.json's style is not
+// used yet. It overwrites the map.
 //
 // -World=overworld builds the overworld instead (worlds.json's "overworld" map, laid out by
 // ftcore::generateOverworldLayout): roads gate to gate, a gate arch and a small emblem per world, the

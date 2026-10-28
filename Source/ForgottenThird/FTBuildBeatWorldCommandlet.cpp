@@ -5,17 +5,14 @@
 #if WITH_EDITOR
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Camera/CameraActor.h"
-#include "Components/DirectionalLightComponent.h"
 #include "Components/PointLightComponent.h"
-#include "Components/SkyLightComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "Engine/DirectionalLight.h"
 #include "Engine/PointLight.h"
-#include "Engine/SkyLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
 #include "FTBeatGameMode.h"
+#include "FTSceneLook.h"
 #include "GameFramework/PlayerStart.h"
 #include "GameFramework/WorldSettings.h"
 #include "HAL/FileManager.h"
@@ -31,7 +28,7 @@ namespace
 const TCHAR* const kBeatMapFolder = TEXT("/Game/Maps");
 
 #if WITH_EDITOR
-// A tint of the basic shape material, saved inside the map package.
+// A tint of the world surface material, saved inside the map package.
 UMaterialInterface* MakeBeatTint(UPackage* Package, UMaterialInterface* Base, const TCHAR* Name, const FLinearColor& Color)
 {
 	UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, Name, RF_Public);
@@ -86,10 +83,10 @@ int32 UFTBuildBeatWorldCommandlet::Main(const FString& Params)
 	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
 	UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 	UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
-	UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	UMaterialInterface* Base = FTScene::LoadSurface();
 	if (!Cube || !Sphere || !Cylinder || !Base)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildBeatWorld: a /Engine/BasicShapes asset is missing."));
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildBeatWorld: a /Engine/BasicShapes mesh or the world surface material is missing."));
 		return 1;
 	}
 
@@ -122,15 +119,8 @@ int32 UFTBuildBeatWorldCommandlet::Main(const FString& Params)
 	BeatBlock(World, Spawn, Cube, Base, TEXT("Floor"), FVector(200, 0, -50), FVector(16, 12, 1), FRotator::ZeroRotator, false);
 	BeatBlock(World, Spawn, Cube, Base, TEXT("Wall"), FVector(900, 0, 250), FVector(1, 12, 6), FRotator::ZeroRotator, false);
 
-	ADirectionalLight* Sun = World->SpawnActor<ADirectionalLight>(FVector(0, 0, 600), FRotator(-40, 25, 0), Spawn);
-	Sun->GetComponent()->SetMobility(EComponentMobility::Movable);
-	Sun->GetComponent()->SetIntensity(5.f);
-	Sun->SetActorLabel(TEXT("Sun"));
-
-	ASkyLight* Sky = World->SpawnActor<ASkyLight>(FVector(0, 0, 400), FRotator::ZeroRotator, Spawn);
-	Sky->GetLightComponent()->SetMobility(EComponentMobility::Movable);
-	Sky->GetLightComponent()->SetIntensity(1.f);
-	Sky->SetActorLabel(TEXT("SkyLight"));
+	// Sun, sky, air and the camera finish: the shared photoreal look.
+	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, FRotator(-40, 25, 0));
 
 	APointLight* Lamp = World->SpawnActor<APointLight>(FVector(350, 0, 320), FRotator::ZeroRotator, Spawn);
 	Lamp->PointLightComponent->SetMobility(EComponentMobility::Movable);

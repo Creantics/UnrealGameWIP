@@ -5,22 +5,16 @@
 #if WITH_EDITOR
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Builders/CubeBuilder.h"
-#include "Components/DirectionalLightComponent.h"
 #include "Components/PointLightComponent.h"
-#include "Components/SkyAtmosphereComponent.h"
-#include "Components/SkyLightComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "Engine/DirectionalLight.h"
-#include "Engine/ExponentialHeightFog.h"
 #include "Engine/PointLight.h"
-#include "Engine/PostProcessVolume.h"
-#include "Engine/SkyLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
 #include "FTExploreDirector.h"
 #include "FTExploreGameMode.h"
 #include "FTExploreSpot.h"
+#include "FTSceneLook.h"
 #include "FTStyleController.h"
 #include "FTStyleParameters.h"
 #include "FTWorldMapBuilder.h"
@@ -47,12 +41,18 @@ namespace
 const TCHAR* const kExploreMapFolder = TEXT("/Game/Maps");
 
 #if WITH_EDITOR
-// A tint of the basic shape material, saved inside the map package.
-UMaterialInterface* MakeTint(UPackage* Package, UMaterialInterface* Base, const TCHAR* Name, const FLinearColor& Color)
+// A tint of the world surface material, saved inside the map package; a Roughness of 0 or more replaces the
+// master's.
+UMaterialInterface* MakeTint(UPackage* Package, UMaterialInterface* Base, const TCHAR* Name, const FLinearColor& Color,
+	float Roughness = -1.f)
 {
 	UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, Name, RF_Public);
 	Mic->SetParentEditorOnly(Base);
 	Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Color")), Color);
+	if (Roughness >= 0.f)
+	{
+		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Roughness")), Roughness);
+	}
 	Mic->PostEditChange();
 	return Mic;
 }
@@ -106,18 +106,18 @@ int32 UFTBuildExploreWorldCommandlet::Main(const FString& Params)
 		return 1;
 	}
 	const FString MapPath = FString::Printf(TEXT("%s/%s"), kExploreMapFolder, *MapName);
-	// -Style=<spec> for the style controller; "none" leaves it out. The separator flag is off so a
-	// dial ("S3,U0.5") keeps its commas.
-	FString StyleSpec = TEXT("solhaven");
+	// -Style=<spec> adds a style controller over the photoreal look (none without it, or with "none").
+	// The separator flag is off so a dial ("S3,U0.5") keeps its commas.
+	FString StyleSpec;
 	FParse::Value(*Params, TEXT("Style="), StyleSpec, false);
 
 	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
 	UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 	UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
-	UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	UMaterialInterface* Base = FTScene::LoadSurface();
 	if (!Cube || !Sphere || !Cylinder || !Base)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: a /Engine/BasicShapes asset is missing."));
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: a /Engine/BasicShapes mesh or the world surface material is missing."));
 		return 1;
 	}
 
@@ -150,7 +150,8 @@ int32 UFTBuildExploreWorldCommandlet::Main(const FString& Params)
 	UMaterialInterface* Wood = MakeTint(Package, Base, TEXT("MI_Explore_Wood"), FLinearColor(0.3f, 0.2f, 0.12f));
 	UMaterialInterface* Leaves = MakeTint(Package, Base, TEXT("MI_Explore_Leaves"), FLinearColor(0.18f, 0.42f, 0.16f));
 	UMaterialInterface* Stone = MakeTint(Package, Base, TEXT("MI_Explore_Stone"), FLinearColor(0.55f, 0.55f, 0.58f));
-	UMaterialInterface* Water = MakeTint(Package, Base, TEXT("MI_Explore_Water"), FLinearColor(0.2f, 0.45f, 0.65f));
+	// Still water: dark, and smooth enough to carry the sky's reflection.
+	UMaterialInterface* Water = MakeTint(Package, Base, TEXT("MI_Explore_Water"), FLinearColor(0.05f, 0.11f, 0.14f), 0.05f);
 
 	FActorSpawnParameters Spawn;
 	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
@@ -249,22 +250,7 @@ int32 UFTBuildExploreWorldCommandlet::Main(const FString& Params)
 	}
 
 	// Light.
-	ADirectionalLight* Sun = World->SpawnActor<ADirectionalLight>(FVector(0, 0, 1000), FRotator(-38, 35, 0), Spawn);
-	Sun->GetComponent()->SetMobility(EComponentMobility::Movable);
-	Sun->GetComponent()->SetIntensity(6.f);
-	if (UDirectionalLightComponent* SunLight = Cast<UDirectionalLightComponent>(Sun->GetComponent()))
-	{
-		SunLight->SetAtmosphereSunLight(true);
-	}
-	Sun->SetActorLabel(TEXT("Sun"));
-	ASkyLight* Sky = World->SpawnActor<ASkyLight>(FVector(0, 0, 800), FRotator::ZeroRotator, Spawn);
-	Sky->GetLightComponent()->SetMobility(EComponentMobility::Movable);
-	Sky->GetLightComponent()->bRealTimeCapture = true;
-	Sky->SetActorLabel(TEXT("SkyLight"));
-	ASkyAtmosphere* Atmosphere = World->SpawnActor<ASkyAtmosphere>(FVector::ZeroVector, FRotator::ZeroRotator, Spawn);
-	Atmosphere->SetActorLabel(TEXT("SkyAtmosphere"));
-	AExponentialHeightFog* Fog = World->SpawnActor<AExponentialHeightFog>(FVector(0, 0, -100), FRotator::ZeroRotator, Spawn);
-	Fog->SetActorLabel(TEXT("HeightFog"));
+	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, FRotator(-38, 35, 0));
 
 	// The spots and their director.
 	AFTExploreDirector* Director = World->SpawnActor<AFTExploreDirector>(FVector(0, 0, 200), FRotator::ZeroRotator, Spawn);
@@ -287,12 +273,8 @@ int32 UFTBuildExploreWorldCommandlet::Main(const FString& Params)
 		M(ftcore::demo::kExploreStart.x, ftcore::demo::kExploreStart.y, 1.f), FRotator::ZeroRotator, Spawn);
 	Start->SetActorLabel(TEXT("PlayerStart"));
 
-	APostProcessVolume* Volume = World->SpawnActor<APostProcessVolume>(FVector(0, 0, 200), FRotator::ZeroRotator, Spawn);
-	Volume->bUnbound = true;
-	Volume->Priority = 0.f;
-	Volume->SetActorLabel(TEXT("PostProcessVolume"));
-
-	if (!StyleSpec.TrimStartAndEnd().Equals(TEXT("none"), ESearchCase::IgnoreCase))
+	StyleSpec.TrimStartAndEndInline();
+	if (!StyleSpec.IsEmpty() && !StyleSpec.Equals(TEXT("none"), ESearchCase::IgnoreCase))
 	{
 		if (UMaterialInterface* StyleMaterial = LoadObject<UMaterialInterface>(nullptr, FTStyle::MaterialObjectPath))
 		{

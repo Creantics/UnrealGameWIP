@@ -4,16 +4,9 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Builders/CubeBuilder.h"
 #include "Components/BrushComponent.h"
-#include "Components/DirectionalLightComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
-#include "Components/SkyAtmosphereComponent.h"
-#include "Components/SkyLightComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "Engine/DirectionalLight.h"
-#include "Engine/ExponentialHeightFog.h"
 #include "Engine/Polys.h"
-#include "Engine/PostProcessVolume.h"
-#include "Engine/SkyLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
@@ -37,6 +30,7 @@
 #include "ForgottenThird.h"
 #include "FTExploreDirector.h"
 #include "FTExploreGameMode.h"
+#include "FTSceneLook.h"
 #include "FTStyleController.h"
 #include "FTStyleParameters.h"
 #include "FTText.h"
@@ -157,35 +151,20 @@ bool WorldLoadText(const TCHAR* Relative, TArray<uint8>& Bytes)
 	return IFileManager::Get().FileExists(*File) && FFileHelper::LoadFileToArray(Bytes, *File);
 }
 
-// Sun, sky light, atmosphere, fog and an unbound post-process volume.
-void WorldSky(UWorld* World, const FActorSpawnParameters& Spawn)
+// The sun's angle in every big world and the overworld.
+const FRotator kWorldSun(-38, 35, 0);
+
+// Whether `StyleSpec` (-Style=<spec>) asks for a style controller: the worlds are photoreal without one.
+bool WorldStyled(const FString& StyleSpec)
 {
-	ADirectionalLight* Sun = World->SpawnActor<ADirectionalLight>(FVector(0, 0, 1000), FRotator(-38, 35, 0), Spawn);
-	Sun->GetComponent()->SetMobility(EComponentMobility::Movable);
-	Sun->GetComponent()->SetIntensity(6.f);
-	if (UDirectionalLightComponent* SunLight = Cast<UDirectionalLightComponent>(Sun->GetComponent()))
-	{
-		SunLight->SetAtmosphereSunLight(true);
-	}
-	Sun->SetActorLabel(TEXT("Sun"));
-	ASkyLight* Sky = World->SpawnActor<ASkyLight>(FVector(0, 0, 800), FRotator::ZeroRotator, Spawn);
-	Sky->GetLightComponent()->SetMobility(EComponentMobility::Movable);
-	Sky->GetLightComponent()->bRealTimeCapture = true;
-	Sky->SetActorLabel(TEXT("SkyLight"));
-	ASkyAtmosphere* Atmosphere = World->SpawnActor<ASkyAtmosphere>(FVector::ZeroVector, FRotator::ZeroRotator, Spawn);
-	Atmosphere->SetActorLabel(TEXT("SkyAtmosphere"));
-	AExponentialHeightFog* Fog = World->SpawnActor<AExponentialHeightFog>(FVector(0, 0, -100), FRotator::ZeroRotator, Spawn);
-	Fog->SetActorLabel(TEXT("HeightFog"));
-	APostProcessVolume* Volume = World->SpawnActor<APostProcessVolume>(FVector(0, 0, 200), FRotator::ZeroRotator, Spawn);
-	Volume->bUnbound = true;
-	Volume->Priority = 0.f;
-	Volume->SetActorLabel(TEXT("PostProcessVolume"));
+	const FString Spec = StyleSpec.TrimStartAndEnd();
+	return !Spec.IsEmpty() && !Spec.Equals(TEXT("none"), ESearchCase::IgnoreCase);
 }
 
-// The style controller with `StyleSpec`, unless it is "none".
+// The style controller with `StyleSpec`, when one is asked for.
 void WorldStyle(UWorld* World, const FActorSpawnParameters& Spawn, const FString& StyleSpec)
 {
-	if (StyleSpec.TrimStartAndEnd().Equals(TEXT("none"), ESearchCase::IgnoreCase))
+	if (!WorldStyled(StyleSpec))
 	{
 		return;
 	}
@@ -307,7 +286,8 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 	}
 	const FString Id = FT::ToFString(Spec.id);
 	const FString MapName = FT::ToFString(Spec.map);
-	FString StyleSpec = FT::ToFString(Spec.style);
+	// -Style=<spec> adds a style controller over the photoreal look; worlds.json's style is not used yet.
+	FString StyleSpec;
 	FParse::Value(*Params, TEXT("Style="), StyleSpec, false);
 
 	// Field goals to check from every district: the hashed defaults and goals.json's entries.
@@ -333,10 +313,10 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
 	UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 	UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
-	UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	UMaterialInterface* Base = FTScene::LoadSurface();
 	if (!Cube || !Sphere || !Cylinder || !Base)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: a /Engine/BasicShapes asset is missing."));
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: a /Engine/BasicShapes mesh or the world surface material is missing."));
 		return 1;
 	}
 
@@ -486,7 +466,7 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 	WorldBlock(World, Spawn, Sphere, AnchorTint, TEXT("Anchor"), WorldM(0, 0, 260), FVector(60.f));
 	WorldBlock(World, Spawn, Cylinder, AnchorTint, TEXT("Anchor_Ring"), WorldM(0, 0, 260), FVector(150.f, 150.f, 3.f), FRotator(12.f, 0.f, 0.f));
 
-	WorldSky(World, Spawn);
+	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, kWorldSun);
 
 	AFTExploreDirector* Director = World->SpawnActor<AFTExploreDirector>(FVector(0, 0, 200), FRotator::ZeroRotator, Spawn);
 	Director->WorldId = Id;
@@ -554,8 +534,8 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 	int32 Actors = 0;
 	const FBox Bounds = WorldBounds(World, Actors);
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("FTBuildExploreWorld: world %s (style %s): %d districts, %d roads, %d buildings, %d props, %d instances, %d landmarks, %d actors; bounds %.0f x %.0f m, %.0f m tall; %d goals reachable from each district."),
-		*Id, *StyleSpec, static_cast<int32>(Layout->districtCount()), static_cast<int32>(Layout->roadCount()),
+		TEXT("FTBuildExploreWorld: world %s (look %s): %d districts, %d roads, %d buildings, %d props, %d instances, %d landmarks, %d actors; bounds %.0f x %.0f m, %.0f m tall; %d goals reachable from each district."),
+		*Id, WorldStyled(StyleSpec) ? *StyleSpec : TEXT("photoreal"), static_cast<int32>(Layout->districtCount()), static_cast<int32>(Layout->roadCount()),
 		static_cast<int32>(Layout->blockCount()), static_cast<int32>(Layout->propCount()), Instances, Landmarks, Actors,
 		Bounds.GetSize().X / 100.0, Bounds.GetSize().Y / 100.0, Bounds.Max.Z / 100.0, static_cast<int32>(Goals.size()));
 
@@ -577,17 +557,17 @@ int32 BuildOverworldMap(const ftcore::WorldTable& Worlds, const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: overworld: %s"), *FT::ToFString(Error).TrimEnd());
 		return 1;
 	}
-	// The style: -Style=<spec>, or world 0's (the overworld is the way out of home).
-	FString StyleSpec = Worlds.worlds.empty() ? FString(TEXT("none")) : FT::ToFString(Worlds.worlds[0].style);
+	// -Style=<spec> adds a style controller over the photoreal look, as for a world.
+	FString StyleSpec;
 	FParse::Value(*Params, TEXT("Style="), StyleSpec, false);
 
 	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
 	UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 	UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
-	UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	UMaterialInterface* Base = FTScene::LoadSurface();
 	if (!Cube || !Sphere || !Cylinder || !Base)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: a /Engine/BasicShapes asset is missing."));
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: a /Engine/BasicShapes mesh or the world surface material is missing."));
 		return 1;
 	}
 	UPackage* Package = nullptr;
@@ -720,7 +700,7 @@ int32 BuildOverworldMap(const ftcore::WorldTable& Worlds, const FString& Params)
 		}
 	}
 
-	WorldSky(World, Spawn);
+	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, kWorldSun);
 	AFTExploreDirector* Director = World->SpawnActor<AFTExploreDirector>(FVector(0, 0, 200), FRotator::ZeroRotator, Spawn);
 	Director->bOverworld = true;
 	Director->SetActorLabel(TEXT("ExploreDirector"));
@@ -732,8 +712,8 @@ int32 BuildOverworldMap(const ftcore::WorldTable& Worlds, const FString& Params)
 	int32 Actors = 0;
 	const FBox Bounds = WorldBounds(World, Actors);
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("FTBuildExploreWorld: overworld (style %s): %d worlds, %d roads, %d emblem blocks, %d props, %d instances, %d actors; bounds %.0f x %.0f m, %.0f m tall."),
-		*StyleSpec, static_cast<int32>(Over->nodeCount()), static_cast<int32>(Over->roadCount()), static_cast<int32>(Over->blockCount()),
+		TEXT("FTBuildExploreWorld: overworld (look %s): %d worlds, %d roads, %d emblem blocks, %d props, %d instances, %d actors; bounds %.0f x %.0f m, %.0f m tall."),
+		WorldStyled(StyleSpec) ? *StyleSpec : TEXT("photoreal"), static_cast<int32>(Over->nodeCount()), static_cast<int32>(Over->roadCount()), static_cast<int32>(Over->blockCount()),
 		static_cast<int32>(Over->propCount()), Instances, Actors, Bounds.GetSize().X / 100.0, Bounds.GetSize().Y / 100.0, Bounds.Max.Z / 100.0);
 	return WorldSave(Package, World, File);
 }

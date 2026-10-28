@@ -4,18 +4,10 @@
 
 #if WITH_EDITOR
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "Components/DirectionalLightComponent.h"
-#include "Components/ExponentialHeightFogComponent.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Components/SkyAtmosphereComponent.h"
-#include "Components/SkyLightComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "Engine/DirectionalLight.h"
 #include "Components/PostProcessComponent.h"
-#include "Engine/ExponentialHeightFog.h"
-#include "Engine/PostProcessVolume.h"
 #include "Engine/SkeletalMesh.h"
-#include "Engine/SkyLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
@@ -23,6 +15,7 @@
 #include "FTCharacterPreview.h"
 #include "FTMeshFacing.h"
 #include "FTPhysicsComponent.h"
+#include "FTSceneLook.h"
 #include "FTStyleController.h"
 #include "FTStyleParameters.h"
 #include "FTVfxComponent.h"
@@ -119,9 +112,14 @@ int32 UFTBuildDemoWorldCommandlet::Main(const FString& Params)
 	}
 	const FString MapPath = FString::Printf(TEXT("%s/%s"), kMapFolder, *MapName);
 
-	// -Style=<spec>; the separator flag is off so a dial ("S3,U0.5") keeps its commas.
-	FString StyleSpec = TEXT("solhaven");
+	// -Style=<spec> adds a style controller over the photoreal look (none without it, or with "none"). The
+	// separator flag is off so a dial ("S3,U0.5") keeps its commas.
+	FString StyleSpec;
 	FParse::Value(*Params, TEXT("Style="), StyleSpec, false);
+	StyleSpec.TrimStartAndEndInline();
+	UMaterialInterface* StyleMaterial = nullptr;
+	UMaterialInterface* StaticInstance = nullptr;
+	if (!StyleSpec.IsEmpty() && !StyleSpec.Equals(TEXT("none"), ESearchCase::IgnoreCase))
 	{
 		const FTCHARToUTF8 Utf8(*StyleSpec);
 		if (!ftcore::parseStyleSpec(std::string_view(Utf8.Get(), static_cast<size_t>(Utf8.Length()))))
@@ -131,24 +129,23 @@ int32 UFTBuildDemoWorldCommandlet::Main(const FString& Params)
 				*StyleSpec);
 			return 1;
 		}
-	}
-	UMaterialInterface* StyleMaterial = LoadObject<UMaterialInterface>(nullptr, FTStyle::MaterialObjectPath);
-	if (!StyleMaterial)
-	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildDemoWorld: %s is missing; run FTBuildStyleMaterials first."),
-			FTStyle::MaterialObjectPath);
-		return 1;
-	}
-	UMaterialInterface* StaticInstance = nullptr;
-	const FString InstancePath = StaticInstancePath(StyleSpec);
-	if (!InstancePath.IsEmpty())
-	{
-		StaticInstance = LoadObject<UMaterialInterface>(nullptr, *InstancePath);
-		if (!StaticInstance)
+		StyleMaterial = LoadObject<UMaterialInterface>(nullptr, FTStyle::MaterialObjectPath);
+		if (!StyleMaterial)
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildDemoWorld: %s is missing; run FTBuildStyleMaterials first."),
-				*InstancePath);
+				FTStyle::MaterialObjectPath);
 			return 1;
+		}
+		const FString InstancePath = StaticInstancePath(StyleSpec);
+		if (!InstancePath.IsEmpty())
+		{
+			StaticInstance = LoadObject<UMaterialInterface>(nullptr, *InstancePath);
+			if (!StaticInstance)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildDemoWorld: %s is missing; run FTBuildStyleMaterials first."),
+					*InstancePath);
+				return 1;
+			}
 		}
 	}
 
@@ -174,7 +171,7 @@ int32 UFTBuildDemoWorldCommandlet::Main(const FString& Params)
 
 	// Floor: a 40 m x 40 m slab whose top is at z = 0.
 	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
-	UMaterialInterface* Grey = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	UMaterialInterface* Grey = FTScene::LoadSurface();
 	if (!Cube)
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildDemoWorld: /Engine/BasicShapes/Cube is missing."));
@@ -190,25 +187,7 @@ int32 UFTBuildDemoWorldCommandlet::Main(const FString& Params)
 	Floor->SetActorLabel(TEXT("Floor"));
 
 	// Sun, low enough to rake across the face.
-	ADirectionalLight* Sun = World->SpawnActor<ADirectionalLight>(FVector(0, 0, 500), FRotator(-35, -40, 0), Spawn);
-	Sun->GetComponent()->SetMobility(EComponentMobility::Movable);
-	Sun->GetComponent()->SetIntensity(6.f);
-	if (UDirectionalLightComponent* SunLight = Cast<UDirectionalLightComponent>(Sun->GetComponent()))
-	{
-		SunLight->SetAtmosphereSunLight(true);
-	}
-	Sun->SetActorLabel(TEXT("Sun"));
-
-	ASkyLight* Sky = World->SpawnActor<ASkyLight>(FVector(0, 0, 400), FRotator::ZeroRotator, Spawn);
-	Sky->GetLightComponent()->SetMobility(EComponentMobility::Movable);
-	Sky->GetLightComponent()->bRealTimeCapture = true;
-	Sky->SetActorLabel(TEXT("SkyLight"));
-
-	ASkyAtmosphere* Atmosphere = World->SpawnActor<ASkyAtmosphere>(FVector::ZeroVector, FRotator::ZeroRotator, Spawn);
-	Atmosphere->SetActorLabel(TEXT("SkyAtmosphere"));
-
-	AExponentialHeightFog* Fog = World->SpawnActor<AExponentialHeightFog>(FVector(0, 0, -100), FRotator::ZeroRotator, Spawn);
-	Fog->SetActorLabel(TEXT("HeightFog"));
+	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, FRotator(-35, -40, 0));
 
 	// The character stands at the origin; the player starts 2.5 m in front of it at eye height,
 	// looking back along -X.
@@ -324,23 +303,23 @@ int32 UFTBuildDemoWorldCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildDemoWorld: placed %d effects."), static_cast<int32>(UE_ARRAY_COUNT(Placements)));
 	}
 
-	// The level's own post-process: unbound, priority 0, no overrides. Grade the scene here; the style
-	// controller sits above it.
-	APostProcessVolume* Volume = World->SpawnActor<APostProcessVolume>(FVector(0, 0, 200), FRotator::ZeroRotator, Spawn);
-	Volume->bUnbound = true;
-	Volume->Priority = 0.f;
-	Volume->SetActorLabel(TEXT("PostProcessVolume"));
-
-	AFTStyleController* Style = World->SpawnActor<AFTStyleController>(FVector(0, 0, 300), FRotator::ZeroRotator, Spawn);
-	Style->StyleSpec = StyleSpec;
-	Style->StyleMaterial = StyleMaterial;
-	if (StaticInstance)
+	if (StyleMaterial)
 	{
-		Style->GetPostProcess()->Settings.AddBlendable(StaticInstance, 1.f);
+		AFTStyleController* Style = World->SpawnActor<AFTStyleController>(FVector(0, 0, 300), FRotator::ZeroRotator, Spawn);
+		Style->StyleSpec = StyleSpec;
+		Style->StyleMaterial = StyleMaterial;
+		if (StaticInstance)
+		{
+			Style->GetPostProcess()->Settings.AddBlendable(StaticInstance, 1.f);
+		}
+		Style->SetActorLabel(TEXT("StyleController"));
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildDemoWorld: style %s%s."), *StyleSpec,
+			StaticInstance ? TEXT("") : TEXT(" (no static instance: the editor viewport shows it only in play)"));
 	}
-	Style->SetActorLabel(TEXT("StyleController"));
-	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildDemoWorld: style %s%s."), *StyleSpec,
-		StaticInstance ? TEXT("") : TEXT(" (no static instance: the editor viewport shows it only in play)"));
+	else
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildDemoWorld: photoreal look, no style controller."));
+	}
 
 	FAssetRegistryModule::AssetCreated(World);
 	Package->MarkPackageDirty();
