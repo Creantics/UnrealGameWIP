@@ -1,12 +1,41 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-28 early morning. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-28 morning. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-28 early morning): the beat fight screen is on main, one lead's floating brow is fixed, and the
+- **NEWEST (2026-10-28 morning): seamless cutscenes are on main. A story cutscene plays in place on the map the
+  player is on, easing from the gameplay camera into its shots and back without a cut.**
+  - main is c44cacf. Since 9af57aa it holds:
+    - in place after a field step (7fbb342): the cutscene director's in-place mode, a step-host subsystem, and the
+      hand-off that starts the next step on the same map; a field step after a field step stays on its map too;
+    - routing (945c96c): a cutscene step in a scene placed in a built world loads that world's map and plays at the
+      district's spawn, so the field steps beside it play in place; when an overworld hop is due, it plays on the
+      Cutscene stage and the hop waits for the next field step;
+    - followers and HUD (6c7bf5e): the followers its shots frame walk onto their marks while the camera blends in,
+      the blend times come from `cutscenes.json` version 2, and the field HUD hands the screen to the cutscene's
+      letterbox;
+    - the stage from Core (8a0c905): the Cutscene map takes its subjects and camera spots from Core's stage marks,
+      the same marks an in-place cutscene lays over a field map, so the built map is unchanged;
+    - docs (c44cacf): `CUTSCENE_SCREEN.md` and `WORLDS.md`;
+    - the animation session's turn fixes (ee66ab3, 36390b1) and land rolls (e48ce88, da69498).
+  - **Camera sweep after a teleport, fixed.** The lead's camera boom lags behind the lead. When the explore
+    director moved the lead to a district's spawn, the camera eased in from where the lead had stood and swept
+    across the map, and a cutscene starting there blended in from that sweep (cuts of 46 to 452 m in the log). The
+    director now settles the boom's lag on the new spot after each teleport. The lag tuning is untouched.
+  - Gate: 758 doctest cases, ctest 4/4, UBT Succeeded. Alpha: 73 scenes, 167 screens (40 battle, 91 field,
+    36 stub), 0 STUCK, 0 warnings, 12 hops, with 6 cutscenes in place and none on the stage. Autoplay has no
+    blends, so each cut into a first shot is about 14 m.
+  - Blend run (`-CutsceneBlendTest -AlphaFast`, from the first scene with an in-place cutscene; 20 scenes, 0 STUCK,
+    0 warnings): all 6 cutscenes start with the view 0.0 cm from the gameplay camera and hand back within 0.7 cm of
+    the lead's view. The fast clock runs the shots about 8 times faster than the walks, so its follower count says
+    nothing about real play. A real-time run (the same flags without `-AlphaFast`) gives that number.
+  - The demo checkout is at c44cacf with UBT Succeeded.
+  - Next: the real-time blend run in the background; then one lead's base outfit in Marvelous Designer on the new
+    bodies, to prove that pipeline before the full wardrobe.
+- **Earlier (2026-10-28 early morning): the beat fight screen is on main, one lead's floating brow is fixed, and the
   in-place cutscenes come next.**
   - main is 9af57aa. Since 92a101d it holds:
     - the beat fight in Core (983b82b) and its screen: game mode, HUD and the generated `Beat` map (e5a4e1e, 9af57aa);
