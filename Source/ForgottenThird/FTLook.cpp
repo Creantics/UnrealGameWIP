@@ -4,6 +4,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "GameFramework/Actor.h"
+#include "Misc/CommandLine.h"
 #include "UObject/UnrealType.h"
 
 #include "ForgottenThird.h"
@@ -34,7 +35,20 @@ bool SetObjectProperty(UObject& Target, const TCHAR* Name, UObject* Value)
 	return true;
 }
 
-// Path when it loads, else the member's own /Game/Characters/<Name>/<name>/SkeletalMeshes/<name><Suffix>.
+// The member's own /Game/Characters/<Name>/<name>/SkeletalMeshes/<name><Suffix>; null without a name.
+template <typename T>
+T* LoadOwn(const FString& Name, const TCHAR* Suffix)
+{
+	if (Name.IsEmpty())
+	{
+		return nullptr;
+	}
+	const FString Lower = Name.ToLower();
+	const FString Asset = Lower + Suffix;
+	return LoadObject<T>(nullptr, *FString::Printf(TEXT("/Game/Characters/%s/%s/SkeletalMeshes/%s.%s"), *Name, *Lower, *Asset, *Asset));
+}
+
+// Path when it loads, else the member's own (LoadOwn).
 template <typename T>
 T* LoadOrOwn(const FSoftObjectPath& Path, const FString& Name, const TCHAR* Suffix, const TCHAR* Who)
 {
@@ -47,13 +61,7 @@ T* LoadOrOwn(const FSoftObjectPath& Path, const FString& Name, const TCHAR* Suff
 		UE_LOG(LogForgottenThird, Warning, TEXT("%s: no %s at %s; trying %s's own."), Who, *T::StaticClass()->GetName(),
 			*Path.ToString(), *Name);
 	}
-	if (Name.IsEmpty())
-	{
-		return nullptr;
-	}
-	const FString Lower = Name.ToLower();
-	const FString Asset = Lower + Suffix;
-	return LoadObject<T>(nullptr, *FString::Printf(TEXT("/Game/Characters/%s/%s/SkeletalMeshes/%s.%s"), *Name, *Lower, *Asset, *Asset));
+	return LoadOwn<T>(Name, Suffix);
 }
 }
 
@@ -61,17 +69,74 @@ FFTLoadedLook FTLook::LoadLook(const FFTLeadLook& Look, const TCHAR* Who)
 {
 	FFTLoadedLook Loaded;
 	Loaded.Body = LoadOrOwn<USkeletalMesh>(Look.BodyMeshPath, Look.Name, TEXT(""), Who);
-	Loaded.Idle = LoadOrOwn<UAnimSequence>(Look.IdleClipPath, Look.Name, TEXT("idle"), Who);
-	Loaded.Walk = LoadOrOwn<UAnimSequence>(Look.WalkClipPath, Look.Name, TEXT("walk"), Who);
+	Loaded.ClipFolder = !Look.ClipFolder.IsEmpty() || Look.Name.IsEmpty() ? Look.ClipFolder
+		: FString::Printf(TEXT("/Game/Characters/%s/Rig/Retargeted"), *Look.Name);
+	if (!Loaded.Body)
+	{
+		return Loaded;
+	}
+	const USkeletalMesh& Body = *Loaded.Body;
+	auto Fitting = [&Body, Who](UAnimSequence* Clip) { return Clip && UFTLocomotionAnimInstance::FitsBody(*Clip, Body, Who) ? Clip : nullptr; };
+	int32 Missing = 0;
+	for (int32 I = 0; I < UFTLocomotionAnimInstance::NumBaseClips; ++I)
+	{
+		const ftcore::LocoClip Which = static_cast<ftcore::LocoClip>(I);
+		// The idle and the walk can be the look's own (a path), else they are the member's own once nothing is retargeted.
+		const bool bIdle = Which == ftcore::LocoClip::Idle;
+		const bool bOwn = bIdle || Which == ftcore::LocoClip::Walk;
+		const FSoftObjectPath& Path = bIdle ? Look.IdleClipPath : Look.WalkClipPath;
+		UAnimSequence* Clip = nullptr;
+		if (bOwn && !Path.IsNull())
+		{
+			UAnimSequence* Set = Cast<UAnimSequence>(Path.TryLoad());
+			if (!Set)
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("%s: no AnimSequence at %s; trying the retargeted one."), Who, *Path.ToString());
+			}
+			Clip = Fitting(Set);
+		}
+		if (!Clip)
+		{
+			Clip = UFTLocomotionAnimInstance::FindRetargeted(Which, Loaded.ClipFolder, Body, Who);
+		}
+		if (!Clip && bOwn)
+		{
+			Clip = Fitting(LoadOwn<UAnimSequence>(Look.Name, bIdle ? TEXT("idle") : TEXT("walk")));
+		}
+		Loaded.Clips[I] = Clip;
+		Missing += Clip == nullptr;
+	}
+	if (Missing > 0)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("%s: %d of the %d base clips weren't found for %s (retargeted ones in %s)."), Who,
+			Missing, UFTLocomotionAnimInstance::NumBaseClips, *Body.GetName(), *Loaded.ClipFolder);
+	}
 	return Loaded;
 }
 
 int32 FTLook::AddPieces(AActor& Owner, USkeletalMeshComponent& Body, const TArray<FSoftObjectPath>& Paths,
 	TArray<TObjectPtr<USkeletalMeshComponent>>& OutPieces, const TCHAR* Who)
 {
+	const bool bNoPieces = FParse::Param(FCommandLine::Get(), TEXT("LocoNoPieces"));
+	FString NoPiece;
+	TArray<FString> NoPieceWords;
+	if (FParse::Value(FCommandLine::Get(), TEXT("LocoNoPiece="), NoPiece))
+	{
+		NoPiece.ParseIntoArray(NoPieceWords, TEXT("+"));
+	}
+	if (!FParse::Param(FCommandLine::Get(), TEXT("LocoCollar")))
+	{
+		NoPieceWords.Add(TEXT("collar"));
+	}
 	int32 Cloth = 0;
 	for (const FSoftObjectPath& Path : Paths)
 	{
+		const FString Name = Path.GetAssetName();
+		if (bNoPieces || NoPieceWords.ContainsByPredicate([&Name](const FString& Word) { return Name.Contains(Word); }))
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: piece %s left off."), Who, *Name);
+			continue;
+		}
 		USkeletalMesh* PieceMesh = Cast<USkeletalMesh>(Path.TryLoad());
 		if (!PieceMesh)
 		{

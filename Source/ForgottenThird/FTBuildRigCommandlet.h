@@ -17,11 +17,17 @@
 //
 // With -RetargetFrom=<IK Rig path> (and optionally -Clips=<anim path>,<anim path>...) it also
 // writes RTG_<source mesh>_to_<mesh> in Dest, with the given rig as source and this mesh's rig as
-// target (default op stack, chains mapped by exact name), retargets the clips into
-// Dest/Retargeted and logs each result like the clip check. It returns 1 if a target chain is
+// target (default op stack, chains mapped by exact name, a foot chain to a source toe chain when
+// the source has no foot chain), retargets the clips into
+// Dest/Retargeted and logs each result like the clip check, with its feet' planted ground speed
+// (the capsule speed at which it plays at rate 1). It returns 1 if a target chain is
 // unmapped or a retargeted clip comes out empty. Add -AlignPose when the two rest poses differ (a
 // T-pose source onto an A-pose MetaHuman): the target gets a retarget pose with its chains turned
-// to the source's directions. Example (proof_head's rom onto test_human):
+// to the source's directions (the chains are aligned in any case; -AlignPose keeps that in its own
+// named pose). -NoAlign skips the alignment and retargets from the target's rest pose;
+// -KeepChains=Pelvis,Spine,Neck,Head aligns all but those chains (an aligned MetaHuman spine tips its chin
+// 6 degrees down). That's the default for a MetaHuman body (one with clavicle_pec_l); -KeepChains=None
+// aligns them all. Example (proof_head's rom onto test_human):
 //
 //   -run=FTBuildRig -Mesh=/Game/Characters/TestHuman/test_human/SkeletalMeshes/test_human.test_human
 //       -Dest=/Game/Characters/TestHuman/Rig

@@ -28,6 +28,8 @@ const TCHAR* GTag = TEXT("FTImport");
 // flat master for factor-only materials, the textured one when the glTF material has any texture.
 const TCHAR* const kCharacterMaster = TEXT("/Game/Characters/Shared/Materials/M_FTCharacter");
 const TCHAR* const kTexturedMaster = TEXT("/Game/Characters/Shared/Materials/M_FTCharacterTex");
+const TCHAR* const kSkinMaster = TEXT("/Game/Characters/Shared/Materials/M_FTSkin");
+const TCHAR* const kHairMaster = TEXT("/Game/Characters/Shared/Materials/M_FTHair");
 const TCHAR* const kSharedMaterials = TEXT("/Game/Characters/Shared/Materials/");
 
 // The glTF texture slots. Interchange names its texture parameters after them; an override is matched to a slot by
@@ -209,6 +211,57 @@ UMaterial* TexturedMaster(TArray<UPackage*>& Dirty)
 	return Material;
 }
 
+// Hair cards: a glTF material with alphaMode MASK. Masked and two-sided, the base colour's alpha clipping each strand at
+// glTF's default cutoff. The specular is anisotropic about the mesh tangent, which follows UV U, so the strand textures
+// run along U; a negative Anisotropy makes the surface rough across the strands and smooth along them, as a fibre is,
+// which draws the highlight as a band across the hair.
+UMaterial* HairMaster(TArray<UPackage*>& Dirty)
+{
+	if (UMaterial* Existing = Cast<UMaterial>(LoadShared(kHairMaster, UMaterial::StaticClass())))
+	{
+		return Existing;
+	}
+	UTexture2D* White = SolidTexture(TEXT("T_FTWhite"), FColor::White, true, TC_Default, Dirty);
+	UTexture2D* WhiteMasks = SolidTexture(TEXT("T_FTWhiteMasks"), FColor::White, false, TC_Masks, Dirty);
+
+	UMaterial* Material = NewMaster(kHairMaster, Dirty);
+	Material->BlendMode = BLEND_Masked;
+	Material->OpacityMaskClipValue = 0.5f;
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	auto Sampler = [Material](const FTextureSlot& Slot, UTexture2D* Default, int32 Y)
+	{
+		UMaterialExpressionTextureSampleParameter2D* Sample =
+			AddParameter<UMaterialExpressionTextureSampleParameter2D>(Material, Slot.Param, Y);
+		Sample->Texture = Default;
+		Sample->SamplerType = Slot.Sampler;
+		return Sample;
+	};
+	UMaterialExpressionTextureSampleParameter2D* Base = Sampler(kTextureSlots[0], White, -600);
+	UMaterialExpressionTextureSampleParameter2D* MetalRough = Sampler(kTextureSlots[1], WhiteMasks, -300);
+	UMaterialExpressionTextureSampleParameter2D* Occlusion = Sampler(kTextureSlots[3], WhiteMasks, 300);
+
+	UMaterialExpressionVectorParameter* Color = AddParameter<UMaterialExpressionVectorParameter>(Material, TEXT("BaseColor"), -700);
+	Color->DefaultValue = FLinearColor::White;
+	UMaterialExpressionScalarParameter* Metallic = AddParameter<UMaterialExpressionScalarParameter>(Material, TEXT("Metallic"), -200);
+	Metallic->DefaultValue = 0.0f;
+	UMaterialExpressionScalarParameter* Roughness = AddParameter<UMaterialExpressionScalarParameter>(Material, TEXT("Roughness"), -100);
+	Roughness->DefaultValue = 0.45f;
+	UMaterialExpressionScalarParameter* Specular = AddParameter<UMaterialExpressionScalarParameter>(Material, TEXT("Specular"), 0);
+	Specular->DefaultValue = 0.4f;
+	UMaterialExpressionScalarParameter* Anisotropy = AddParameter<UMaterialExpressionScalarParameter>(Material, TEXT("Anisotropy"), 100);
+	Anisotropy->DefaultValue = -0.8f;
+
+	Inputs->BaseColor.Connect(0, Multiply(Material, Base, 0, Color, -650));
+	Inputs->OpacityMask.Connect(4, Base);
+	Inputs->Roughness.Connect(0, Multiply(Material, MetalRough, 2, Roughness, -250));
+	Inputs->Metallic.Connect(0, Multiply(Material, MetalRough, 3, Metallic, -150));
+	Inputs->Specular.Connect(0, Specular);
+	Inputs->Anisotropy.Connect(0, Anisotropy);
+	Inputs->AmbientOcclusion.Connect(1, Occlusion);
+	FinishMaster(Material);
+	return Material;
+}
+
 // Sets an imported texture up for the slot it binds to; false (logged) when its sampler type still doesn't match.
 bool PrepareTexture(UTexture* Texture, const FTextureSlot& Slot, TArray<UPackage*>& Dirty)
 {
@@ -237,7 +290,7 @@ bool PrepareTexture(UTexture* Texture, const FTextureSlot& Slot, TArray<UPackage
 }
 
 // Logs a master's compile errors; returns how many.
-int32 CompileErrors(UMaterial* Master)
+int32 MasterCompileErrors(UMaterial* Master)
 {
 	FMaterialResource* Resource = Master->GetMaterialResource(GMaxRHIShaderPlatform);
 	if (!Resource)
@@ -265,6 +318,7 @@ bool UseProjectMasters(const TCHAR* Tag, TConstArrayView<UMaterialInterface*> Ma
 	TArray<UPackage*> Dirty;
 	UMaterial* Flat = nullptr;
 	UMaterial* Textured = nullptr;
+	UMaterial* Hair = nullptr;
 	int32 Moved = 0;
 	bool bOk = true;
 	for (UMaterialInterface* Material : Materials)
@@ -275,10 +329,18 @@ bool UseProjectMasters(const TCHAR* Tag, TConstArrayView<UMaterialInterface*> Ma
 			continue;
 		}
 		const FString ParentPath = Instance->Parent ? Instance->Parent->GetPathName() : FString();
-		if (ParentPath.StartsWith(kCharacterMaster) || ParentPath.StartsWith(kTexturedMaster))
+		if (ParentPath.StartsWith(kCharacterMaster) || ParentPath.StartsWith(kTexturedMaster) || ParentPath.StartsWith(kHairMaster) ||
+			ParentPath.StartsWith(kSkinMaster))
 		{
 			continue;
 		}
+		// Hair cards come in as alphaMode MASK: without Substrate on Interchange's masked glTF master, with it on M_GLTF
+		// with the scalar AlphaMode = 1 (Interchange's glTF EAlphaMode: 0 opaque, 1 mask, 2 blend).
+		float AlphaMode = 0.0f;
+		Instance->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("AlphaMode")), AlphaMode);
+		const bool bMasked = Instance->GetBlendMode() == BLEND_Masked || FMath::RoundToInt(AlphaMode) == 1;
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: %s comes in on %s (%s)."), GTag, *Instance->GetName(), *ParentPath,
+			bMasked ? TEXT("masked") : TEXT("opaque"));
 
 		// Every texture override Interchange set, logged so a renamed parameter shows up.
 		TArray<TPair<const FTextureSlot*, UTexture*>> Textures;
@@ -304,7 +366,11 @@ bool UseProjectMasters(const TCHAR* Tag, TConstArrayView<UMaterialInterface*> Ma
 		Instance->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("EmissiveStrength")), Strength);
 
 		UMaterial* Master = nullptr;
-		if (Textures.IsEmpty())
+		if (bMasked && !Textures.IsEmpty())
+		{
+			Master = Hair ? Hair : (Hair = HairMaster(Dirty));
+		}
+		else if (Textures.IsEmpty())
 		{
 			Master = Flat ? Flat : (Flat = CharacterMaster(Dirty));
 		}
@@ -312,6 +378,13 @@ bool UseProjectMasters(const TCHAR* Tag, TConstArrayView<UMaterialInterface*> Ma
 		{
 			Master = Textured ? Textured : (Textured = TexturedMaster(Dirty));
 		}
+		// Interchange may leave base property overrides (blend mode, clip value, two-sided) from its own master; the
+		// project master's settings must win, so they go along with the parameters.
+		const FMaterialInstanceBasePropertyOverrides& Old = Instance->BasePropertyOverrides;
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: %s overrides: blend %d (%d), clip %.2f (%d), two-sided %d (%d)."), GTag,
+			*Instance->GetName(), static_cast<int32>(Old.BlendMode), Old.bOverride_BlendMode, Old.OpacityMaskClipValue,
+			Old.bOverride_OpacityMaskClipValue, Old.TwoSided, Old.bOverride_TwoSided);
+		Instance->BasePropertyOverrides = FMaterialInstanceBasePropertyOverrides();
 		Instance->ClearParameterValuesEditorOnly();
 		Instance->SetParentEditorOnly(Master);
 		Instance->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("BaseColor")), Color);
@@ -329,9 +402,9 @@ bool UseProjectMasters(const TCHAR* Tag, TConstArrayView<UMaterialInterface*> Ma
 		Dirty.AddUnique(Instance->GetOutermost());
 		++Moved;
 	}
-	for (UMaterial* Master : { Flat, Textured })
+	for (UMaterial* Master : { Flat, Textured, Hair })
 	{
-		if (Master && CompileErrors(Master) > 0)
+		if (Master && MasterCompileErrors(Master) > 0)
 		{
 			bOk = false;
 		}
@@ -342,6 +415,17 @@ bool UseProjectMasters(const TCHAR* Tag, TConstArrayView<UMaterialInterface*> Ma
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("%s: moved %d materials onto the project masters."), GTag, Moved);
 	return bOk;
+}
+
+int32 CompileErrors(const TCHAR* Tag, UMaterial* Master)
+{
+	GTag = Tag;
+	return MasterCompileErrors(Master);
+}
+
+const TCHAR* SkinMasterPath()
+{
+	return kSkinMaster;
 }
 
 bool CheckGlbFile(const TCHAR* Tag, const FString& Source, const ftcore::AssetRules& Rules)

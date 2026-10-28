@@ -2,7 +2,7 @@
 the canonical skeleton, headless, in two steps around face_transfer.py:
 
     blender -b --factory-startup --python-exit-code 1 --python tools/blender/rig_head.py -- prep HEAD.glb --out DIR \\
-        [--height 1.68] [--name NAME]
+        [--height 1.68] [--name NAME] [--lid-cuts N]
     blender -b DIR/skin.blend --factory-startup --python-exit-code 1 --python tools/blender/face_transfer.py -- \\
         --face DIR/face.json --out DIR/face.glb --blend DIR/face.blend [--preview DIR/face_preview]
     blender -b DIR/face.blend --factory-startup --python-exit-code 1 --python tools/blender/rig_head.py -- finish \\
@@ -19,7 +19,9 @@ The bust is scaled so its crown-to-mouth height matches the canonical skeleton a
 mouth, eye line and centre sit where the skeleton has them. The eye joints go to the eyeball centres, the jaw joint
 keeps its place relative to the eyes and mouth, and the neck joints move onto the neck's centre line. The skin is
 weighted along spine_03, neck_01, neck_02 and head by height (the jaw weights come from face_transfer). The armature
-gets the lead clips (idle, rom, walk) so the glb passes make_leads.check_glb like any lead. prep writes:
+gets the lead clips (idle, rom, walk) so the glb passes make_leads.check_glb like any lead. --lid-cuts N (default 0)
+cuts every skin edge around the eyes into N + 1 first (subdivide_lids), for a scan whose lids are too coarse to blink
+without folding; 2 is enough for a Tripo bust. prep writes:
   skin.blend   the armature and the skinned skin alone, ready for face_transfer.py;
   parts.blend  the other parts, already in the rig's frame, named eye_l, eye_r, mouth*, face*, hair*;
   face.json    face_transfer's anchors, read off the mesh;
@@ -34,7 +36,8 @@ turns the jaw until the lips meet, makes that the rest mesh (close_mouth) and sm
 closed (relax_closing). The result is one mesh with the 56 face shapes; import it with FTImportCharacter -Face=1.
 Its report line gives the closing angle and how many skin faces closing turned over outside the mouth (0 when clean).
 --preview renders Basis, jawOpen, eyeBlinkLeft, eyeWideLeft, eyeSquintLeft, mouthSmileLeft, browInnerUp and the eyes
-turned left, front and three-quarter.
+turned left, front and three-quarter, and close-ups of the left eye (eye/: open, eyeBlinkLeft at half and full,
+eyeWideLeft, eyeSquintLeft) to judge the lids by.
 """
 
 import json
@@ -66,7 +69,7 @@ def _args():
     if not argv or argv[0] not in ("prep", "finish"):
         raise SystemExit(__doc__)
     a = {"step": argv[0], "in": None, "out": None, "height": "1.68", "name": "head", "parts": None, "blend": None,
-         "preview": None}
+         "preview": None, "lid-cuts": "0"}
     i = 1
     while i < len(argv):
         if argv[i].startswith("--"):
@@ -83,6 +86,7 @@ def _args():
     if a["step"] == "finish" and not (a["parts"] and a["out"]):
         raise SystemExit(__doc__)
     a["height"] = float(a["height"])
+    a["lid-cuts"] = int(a["lid-cuts"])
     return a
 
 
@@ -321,6 +325,14 @@ def place(objs, skin, eye_l, eye_r, mouth_c, ML, s):
     return M, k
 
 
+def subdivide_lids(skin, eyes, cuts):
+    """Cuts every skin edge around each eye (faces within 1.6 eye radii of its centre) into cuts + 1, so a coarse lid
+    (a scan's lid can be one or two triangle rows from the margin to the crease) has the vertices to follow the
+    smooth turn procedural_lids gives it; with too few, a blink folds the long triangles into a zigzag. The new
+    vertices lie on the old faces, so the rest shape is unchanged. Returns the number of skin vertices added."""
+    return rc.subdivide_near(skin, [(eye_centre(o), 1.6 * sphere_fit(_verts(o))[1]) for o in eyes], cuts)
+
+
 def sphere_fit(V):
     """The least-squares sphere through points: (centre, radius)."""
     A = np.c_[2.0 * V, np.ones(len(V))]
@@ -440,7 +452,7 @@ def joint_dots(arm, names, r):
     return dots
 
 
-def render_views(objs, outdir, views, colour_by=None, size=768, focus=None):
+def render_views(objs, outdir, views, colour_by=None, size=768, focus=None, span=None):
     sc = bpy.context.scene
     sc.render.engine = "BLENDER_WORKBENCH"
     sc.display.shading.light = "STUDIO"
@@ -454,7 +466,7 @@ def render_views(objs, outdir, views, colour_by=None, size=768, focus=None):
     mn = Vector([min(p[i] for p in pts) for i in range(3)])
     mx = Vector([max(p[i] for p in pts) for i in range(3)])
     ctr = focus if focus is not None else (mn + mx) / 2
-    span = max(mx - mn) * (1.1 if focus is None else 0.6)
+    span = span or max(mx - mn) * (1.1 if focus is None else 0.6)
     cam = bpy.data.objects.new("cam", bpy.data.cameras.new("cam"))
     sc.collection.objects.link(cam)
     sc.camera = cam
@@ -479,6 +491,7 @@ def prep(a):
     M, k = place(parts, skin, eye_l, eye_r, mouth_c, ML, s)
     ML = np.array([M @ Vector(p) for p in ML])
     mouth_c = np.array(M @ Vector(mouth_c))
+    lid_added = subdivide_lids(skin, (eye_l, eye_r), a["lid-cuts"]) if a["lid-cuts"] > 0 else 0
     arm, joints = fit_armature(a["name"], s, skin, eye_l, eye_r, mouth_c[2])
     knots = neck_weights(skin, arm)
     face, cb = face_anchors(skin, eye_l, mouth_c, ML, s)
@@ -502,7 +515,7 @@ def prep(a):
     kinds = {p.name: ("skin" if p is skin else "eye" if p in (eye_l, eye_r) else p.name.split("_")[0]) for p in parts}
     report = {"input": os.path.abspath(a["in"]), "height": a["height"], "bust_scale": round(k, 5),
               "mouth_z": round(float(mouth_c[2]), 5), "chin_bottom": round(cb, 5), "joints": joints,
-              "neck_knots": knots,
+              "neck_knots": knots, "lid_cuts": a["lid-cuts"], "lid_verts_added": lid_added,
               "parts": {p.name: {"kind": kinds[p.name], "verts": len(p.data.vertices)} for p in parts}}
     with open(os.path.join(out, "face.json"), "w") as f:
         json.dump(face, f, indent=1)
@@ -606,6 +619,26 @@ def lid_aperture(skin_bvh, eye_bvh, c, r):
     return xs, fit(np.array(up)), fit(np.array(lo))
 
 
+def lid_almond(xs, up, lo, r, corner=0.2):
+    """The opening as an almond: the parting line (halfway between the margins) as a cubic in x, and half the open
+    angle as measured across the columns where the eyeball shows, falling to zero at the two eye corners, `corner`
+    eye radii past the last open column at each end. The margins seen stop short of the corners, still apart; held
+    there (as np.interp holds its ends), a blink turned the skin at and past the corners as far as the last column,
+    dragging the corners down into a W. Returns phi_u, phi_l as functions of x and the corners' x."""
+    mid = np.polyfit(xs, (up + lo) / 2, 3)
+    x0, x1 = xs[0] - corner * r, xs[-1] + corner * r
+    hx = np.concatenate([[x0], xs, [x1]])
+    hv = np.concatenate([[0.0], np.maximum((up - lo) / 2, 0.0), [0.0]])
+
+    def half(x):
+        return np.interp(x, hx, hv, left=0.0, right=0.0)
+
+    def centre(x):
+        return np.polyval(mid, np.clip(x, xs[0], xs[-1]))
+
+    return (lambda x: centre(x) + half(x)), (lambda x: centre(x) - half(x)), x0, x1
+
+
 def margin_rho(P, phi, phi_m, u, rho0, r, xc, hw):
     """The front of the skin along a lid margin (phi_m, per vertex) as a smooth function of x: per column across the
     opening, the outer skin lying on the margin's line, fitted with a parabola (constant if too few columns)."""
@@ -653,9 +686,9 @@ def procedural_lids(mesh, arm, eyes):
     crumple on a coarse lid rim, since neighbouring rim points take deltas from different layers of the proof lid.
     Lid skin turns about the eye centre's x axis, so it slides over the eyeball: the upper lid (above the opening)
     and the lower lid (below it) each by their share of the open angle at that x, full near the margin and fading out
-    toward the brow, the cheek and past the eye corners. Inside the opening each lid turns whole with its own margin
-    (past the corners the two turns blend), and a closing upper lid moves out onto a shell through the front of the
-    lower margin. Within about two eye radii the transferred deltas of these shapes are replaced; outside they are
+    toward the brow and the cheek. The opening is an almond (lid_almond) that closes to nothing at the eye corners,
+    so the corners stay put. Inside the opening each lid turns whole with its own margin; past a margin the skin turns
+    with the nearest point of it. A closing upper lid moves out onto a shell through the front of the lower margin. Within about two eye radii the transferred deltas of these shapes are replaced; outside they are
     kept. Returns the per-eye report and the per-eye lid geometry for lash_deltas."""
     keys = mesh.data.shape_keys.key_blocks
     P = np.array([d.co[:] for d in keys[0].data])
@@ -673,14 +706,15 @@ def procedural_lids(mesh, arm, eyes):
         if ap is None:
             print("rig_head: no lid opening found for eye_%s, its lid shapes stay as transferred" % side)
             continue
-        xs, up, lo = ap
-        hw = (xs[-1] - xs[0]) / 2
-        xc = (xs[-1] + xs[0]) / 2
+        f_u, f_l, x0, x1 = lid_almond(*ap, r)
+        hw, xc = (x1 - x0) / 2, (x1 + x0) / 2
+        xs = np.linspace(x0 - 0.6 * r, x1 + 0.6 * r, 97)
+        up, lo = f_u(xs), f_l(xs)
         u, v = c[1] - P[:, 1], P[:, 2] - c[2]
         phi = np.arctan2(v, u)
         rho0 = np.hypot(u, v)
-        phi_u = np.interp(P[:, 0], xs, up)
-        phi_l = np.interp(P[:, 0], xs, lo)
+        phi_u = f_u(P[:, 0])
+        phi_l = f_l(P[:, 0])
         # The shut upper lid lies on a smooth shell through the front of the lower margin, not on its own profile:
         # turned whole, the lid's crease and its thick margin would come down over the eye as they are, a step across
         # the shut lid and an edge hanging past the lower one.
@@ -701,12 +735,29 @@ def procedural_lids(mesh, arm, eyes):
         # the opening, the lining wrapping in toward the eyeball) onto one line in a blink, folding it over. Nothing
         # visible spans the opening but the corners, where the opening and so the turns are small.
         s = _smooth01((t - 0.4) / 0.2)
-        # Past the last column where the eyeball shows, the lids join and their skin crosses the opening: there the
-        # turn blends across it instead, squashing the corner skin without turning it over.
-        hard = 1.0 - _smooth01((np.abs(P[:, 0] - xc) - hw + 0.2 * r) / (0.2 * r))
-        s = hard * s + (1.0 - hard) * t
-        across = 1.0 - _smooth01((np.abs(P[:, 0] - xc) - hw) / (0.6 * r))
         near = (u > -0.5 * r) & (np.hypot(u, v) < 2.2 * r)
+        # Lid skin past a margin turns with the nearest point of that margin, by the opening there and fading with
+        # the distance from it, not with the margin straight above or below it: toward a corner the margin falls or
+        # rises steeply, so the skin over it belongs to the margin further in, and turned by the small opening of its
+        # own column it stayed up, a step across the shut lid. Inside the opening a vertex's own column is its margin.
+        span_max = max(float(span.max()), 1e-6)
+        xg = np.linspace(x0, x1, 241)
+        sp_g = np.maximum(f_u(xg) - f_l(xg), 0.0)
+        ang = 1.1 * r  # an angle about the eye centre as a distance on the lid, near enough
+        span_u, span_l = span.copy(), span.copy()
+        d_u, d_l = phi - phi_u, phi_l - phi
+        for f_m, sp_m, d_m in ((f_u, span_u, d_u), (f_l, span_l, d_l)):
+            past = np.nonzero(near & (d_m > 0))[0]
+            ph_g = f_m(xg)
+            for chunk in np.array_split(past, max(1, len(past) // 2000)):
+                dist = np.hypot((P[chunk, 0][:, None] - xg[None, :]) / ang, phi[chunk][:, None] - ph_g[None, :])
+                k = np.argmin(dist, axis=1)
+                sp_m[chunk] = sp_g[k]
+                d_m[chunk] = dist[np.arange(len(chunk)), k]
+        # Toward the corners the opening, and so every turn, falls to nothing (lid_almond); the move out onto the
+        # shell fades with it, so the corner skin stays where it is.
+        across = _smooth01(span_u / (0.5 * span_max))
+        across_l = _smooth01(span_l / (0.5 * span_max))
         # Only skin lying on the eyeball turns; a brow overhanging at the same angle sits much further out.
         on_ball = 1.0 - _smooth01((np.hypot(u, v) - 1.3 * r) / (0.5 * r))
         d = np.hypot((P[:, 0] - xc) / max(hw, r), v / r)
@@ -719,17 +770,17 @@ def procedural_lids(mesh, arm, eyes):
             # skin just past the margin overtaking the skin beyond it): with smoothstep's slope of 1.5 that needs a
             # fade at least 1.5 times the turn at the margin wide, so a blink (most of the opening) fades over about
             # 70 degrees and a squint's lower lid over the minimum.
-            w_up = np.maximum(0.35, 1.6 * abs(k_up) * span)
-            w_lo = np.maximum(0.45, 1.6 * abs(k_lo) * span)
-            f_up = 1.0 - _smooth01((phi - phi_u) / w_up)
-            f_lo = 1.0 - _smooth01((phi_l - phi - 0.15) / w_lo)
+            w_up = np.maximum(0.35, 1.6 * abs(k_up) * span_u)
+            w_lo = np.maximum(0.45, 1.6 * abs(k_lo) * span_l)
+            f_up = 1.0 - _smooth01(d_u / w_up)
+            f_lo = 1.0 - _smooth01((d_l - 0.15) / w_lo)
             reach_k = across * on_ball * near
-            turn_u = -span * k_up * s * f_up * reach_k
+            turn_u = -span_u * k_up * s * f_up * reach_k
             if k_up > 0:
                 # Lining turned whole past the shut margin would hang below it, through the lower lid: it stops just
                 # past the margin instead, where the shut lid covers it.
                 turn_u = np.maximum(turn_u, s * (phi_u - span * k_up * reach_k - 0.05 * span - phi))
-            turn = turn_u + span * k_lo * (1.0 - s) * f_lo * reach_k
+            turn = turn_u + span_l * k_lo * (1.0 - s) * f_lo * across_l * on_ball * near
             cu, sn = np.cos(turn), np.sin(turn)
             u2, v2 = u * cu - v * sn, u * sn + v * cu
             # The closing upper lid moves out as it turns, the margin onto the shell and the lid above it by as much,
@@ -1076,11 +1127,11 @@ def preview(arm, mesh, outdir):
     focus = Vector((0.0, eye_l.y, (eye_l.z + head_top) / 2 - 0.06))
     sign = jaw_open_sign(arm, mesh)
 
-    def pose(shape=None, eyes=0.0):
+    def pose(shape=None, eyes=0.0, value=1.0):
         for kb in keys:
             kb.value = 0.0
         if shape:
-            keys[shape].value = 1.0
+            keys[shape].value = value
         rc.reset_pose(arm)
         for n in ("eye_l", "eye_r"):
             pb = arm.pose.bones[n]
@@ -1098,6 +1149,13 @@ def preview(arm, mesh, outdir):
                              ("eyesLeft", None, 20.0)):
         pose(shape, eyes)
         render_views([mesh], outdir, [(tag + "_front", 0), (tag + "_34", 35)], focus=focus)
+    # the left eye up close, the blink half and fully shut: lid folds show only at this size
+    gap = (eye_l - arm.data.bones["eye_r"].head_local).length
+    for tag, shape, value in (("open", None, 0.0), ("blink50", "eyeBlinkLeft", 0.5), ("blink100", "eyeBlinkLeft", 1.0),
+                              ("wide", "eyeWideLeft", 1.0), ("squint", "eyeSquintLeft", 1.0)):
+        pose(shape, 0.0, value)
+        render_views([mesh], os.path.join(outdir, "eye"), [(tag + "_front", 0), (tag + "_34", 35)], size=512,
+                     focus=Vector(eye_l), span=1.1 * gap)
     pose()
 
 

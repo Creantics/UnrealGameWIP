@@ -113,6 +113,9 @@ private:
 	void StartGuardFight(int32 Id);
 	void OpenBattle();
 	void TickAutoPlay(AFTExploreCharacter& Player, float DeltaSeconds);
+	// While FaceTarget is set: turns the standing lead on the spot to face it and uses it once it is
+	// in the focus cone; gives up when the lead moves off or out of reach. True while it holds the tick.
+	bool TickFace(AFTExploreCharacter& Player, ftcore::Vec2 Pos, float DeltaSeconds);
 	void TickStoryWalk(AFTExploreCharacter& Player, float DeltaSeconds);
 	// Walks the pawn toward Goal (metres) and runs the stuck detection for TargetId; straight at it
 	// without the navmesh when !bUseNav.
@@ -140,6 +143,8 @@ private:
 
 	ftcore::Exploration Exploration;
 	int32 Focus = -1;
+	int32 FaceTarget = -1; // a spot in reach the lead is turning on the spot to face, to use it once faced
+	float FaceTime = 0.f;
 	int32 PendingEncounter = -1;
 	int32 PendingGuard = -1;
 	bool bRestorePending = false;
@@ -168,7 +173,21 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AFTPartyFollower>> Followers;
 	ftcore::PartyTrail Trail;
+	TArray<ftcore::PartySlot> Slots; // each follower's place: behind, to one side, a beat late
+	uint32 LeadTurns = 0;       // the lead's turns begun, last seen
+	TArray<uint32> TurnCursors; // each follower's place in the trail's turns
+	TArray<uint32> JumpCursors; // and in its jumps
+	bool bLeadInAir = false;
+	// The lead's last turn on the spot: the way it turned to, and how long ago (each follower turns that
+	// way a beat after the one before it).
+	float LeadFacedYaw = 0.f;
+	float LeadFacedAgo = -1.f;
 	bool bFollowersSpawned = false;
+	bool bWatchFollower = false; // -LocoWatchFollower: the camera is behind the first follower, so it stays in view
+	// -LocoLog: once a second, the nearest the first follower came to the lead (cm), so overlap shows as a number.
+	bool bLogGap = false;
+	float GapLogTimer = 0.f;
+	float NearestGap = TNumericLimits<float>::Max();
 
 	// The field guards (demo only; a story field step has none). Returns the guard that caught the
 	// player this frame, or -1.

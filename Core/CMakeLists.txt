@@ -57,6 +57,9 @@ add_library(ftcore STATIC
     src/Glb.cpp
     src/Json.cpp
     src/Loudness.cpp
+    src/FightAnimator.cpp
+    src/Traversal.cpp
+    src/Locomotion.cpp
     src/Mini.cpp
     src/UiText.cpp
     src/PartyTrail.cpp
@@ -67,6 +70,7 @@ add_library(ftcore STATIC
     src/Qte.cpp
     src/Seen.cpp
     src/Settings.cpp
+    src/SkinDetail.cpp
     src/Skip.cpp
     src/StoryDatabase.cpp
     src/StoryImport.cpp
@@ -134,6 +138,9 @@ if(FTCORE_BUILD_TESTS)
         tests/test_gameplay_plan.cpp
         tests/test_glb.cpp
         tests/test_json.cpp
+        tests/test_fight_animator.cpp
+        tests/test_traversal.cpp
+        tests/test_locomotion.cpp
         tests/test_mini.cpp
         tests/test_music_loop.cpp
         tests/test_party_trail.cpp
@@ -144,6 +151,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_progression.cpp
         tests/test_qte.cpp
         tests/test_settings.cpp
+        tests/test_skin_detail.cpp
         tests/test_skip.cpp
         tests/test_story.cpp
         tests/test_story_chain.cpp
