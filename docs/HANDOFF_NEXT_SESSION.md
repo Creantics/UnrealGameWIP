@@ -1,12 +1,13 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-27. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-27 evening. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-27 ~11:20, face round 6 scored; ops now sized from measurements; animation on the new bodies):**
+- **NEWEST (2026-10-27 evening): all three MetaHuman leads are finalized and play as a party in the explore demo.** One lead's body is being conformed to an approved lead's built body, because measurement constraints don't pin front-to-back depth. Next: base outfits in Marvelous Designer (needs the user present), then per-lead animation. Details are under "Characters: quality" (2026-10-27 evening).
+- **Earlier (2026-10-27 ~11:20, face round 6 scored; ops now sized from measurements; animation on the new bodies):**
   - Round 6 (sign-fixed field ops plus look variants on contact sheets): only the unrigged lead's fit reached the renders.
     The two finalized leads render their face rig, so their fits never showed (see the rig note below). Their round 6
     is held back. Look picks from one reader per criterion: one lead gets a new hair groom, another a new skin texture
@@ -415,6 +416,17 @@ The duplicate style port (`worktree-agent-ac78bf565fd6d3d57`) is retired. Main g
   - The new gate has two parts. First, the MetaHuman keeps the scan, judged by paired A/B with three readers per criterion and no single-reader rounds. Second, the user's named fixes are checked by eye.
   - A private distance tool (similarity ICP, then signed distance per region) shows the conform holds the cranium, brow, eyes and ears within 1 mm. The cheeks and jaw drift up to about 9 mm outward, which is the next targeted fix.
   - The conform solve settings expose model regularization and face ICP weight, a cheaper fidelity knob than a vertex fit.
+  Details are in the private handoff.
+- 2026-10-27 evening: the user approved all three MetaHuman faces as built and two of the three bodies. Each lead is finalized from its newest conform (look, cloud auto-rig, UE-optimised build, body FBX for Marvelous Designer, verify render) in a git-excluded folder, one editor launch per lead.
+  - The explore demo plays them as a party (main 3ba16e7). The looks come from the local `Config/UserGame.ini` (`PartyLooks`: body, face piece, grooms with bindings, idle and walk clips). Tab or RB switches the lead, P or LB hides the followers, `-ExploreLead=<Name>` picks the starting lead and `-ExploreSolo` starts alone.
+  - Body depth: MetaHuman body measurement constraints pin circumferences, not front-to-back depth, and the solve keeps the free directions from the state before it. A lead given another lead's exact measured values still kept a hollow between chest and belly: 3.7 cm deep in the front profile, against 1.8 cm on the approved body. The fix is the body-only conform from a template: `get_mesh_for_body_conforming_from_template` (the DNA vertex map; both are MetaHuman builds) and `get_joints_for_body_conforming_from_template` on the approved lead's built body mesh, then `conform_body_to_target` (A pose, no joint estimate) and `commit_body_state`. It left the face identity untouched (0.0 change over all 1397 coefficients); only the neck seam follows the body.
+  - The conform leaves every constraint inactive at the conformed body's measurements. A built body can miss its own targets by centimetres (3 cm of underbust here), so re-pinning the whole set can pull the torso off the conformed shape. Re-pin only the measurements you mean to change.
+  - Status: the first run was stopped after the conform and the re-pin, before the build, because the PC was needed. The conformed body is saved in the character asset, while the game still uses the previous build. One launch finishes it: rebuild, torso check, and a calf-only fallback when re-pinning the full set moves the torso more than 6 mm.
+  - The torso check is a private front-profile script: per 0.5 cm height slice, the most forward edge crossing within 17 cm of the centre line (so the A-pose arms stay out), the chest peak in 73-80 % of the stature and the belly peak in 55-66 %, and the hollow is the deepest point under the line joining them. The body mesh stops at the neck, at about 0.822 of the stature.
+  - Brow build gap: the MetaHuman Character build skips an external wardrobe brow. A custom brow needs a game copy outside the Build folder, with a transfer binding authored on the groom head mesh and bound to the built face mesh. A rebuild rewrites the face, so redo the copy after every build.
+  - Built groom assets keep the common `MI_Hair` slots, so in-game brow and lash colours may differ from the verify renders.
+  - Git Bash rewrites `/Game/...` arguments into Windows paths. Set `MSYS_NO_PATHCONV=1` before passing map paths to the editor.
+  - Next: base outfits for all three in Marvelous Designer (needs the user present), then per-lead animation.
   Details are in the private handoff.
 - 2026-10-26 evening: the Third's Marvelous Designer robe pass is parked at pass r28f (bodice/skirt split with inner ties; the sleeve fit and the front corner are still open). The user wants the MetaHuman test from the new realistic reference sheets done first, so the clothing is fitted once on the final body. MetaHuman route: a multi-view mesh made from the sheet, then the existing Mesh-to-MetaHuman bridge. UE 5.8 has no image-only route (footage identity needs depth). Details and the test gate are in the private handoff.
 - Lead fit status (2026-10-22): Devin's dressed silhouette is at 0.9656 front / 0.9583 side against the 0.99 gate; details are in the private handoff. `tools/blender/garment_shells.py` (on main, e8b92aa) now stitches a neck skirt into the body's neck hole, trims level, fills small holes, and supports an outer collar (`over`, `radial`). Next steps: rebuild the boots spec, then the face under the chin.
