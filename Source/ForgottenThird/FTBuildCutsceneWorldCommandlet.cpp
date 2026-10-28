@@ -18,6 +18,7 @@
 #include "Engine/World.h"
 #include "FTCutsceneDirector.h"
 #include "FTCutsceneGameMode.h"
+#include "FTText.h"
 #include "GameFramework/PlayerStart.h"
 #include "GameFramework/WorldSettings.h"
 #include "HAL/FileManager.h"
@@ -144,45 +145,33 @@ int32 UFTBuildCutsceneWorldCommandlet::Main(const FString& Params)
 	CutsceneBlock(World, Spawn, Cube, Wood, TEXT("Box_2"), CutsceneM(-3.5f, 4.5f, 0.75f), FVector(1.5f, 1.f, 1.5f), FRotator(0, -10, 0));
 	CutsceneBlock(World, Spawn, Cube, Wood, TEXT("Box_3"), CutsceneM(1.f, -5.5f, 0.4f), FVector(0.8f), FRotator(0, 35, 0));
 
+	// The marks come from Core's stage (ftcore::cutsceneStageMark), the one an in-place cutscene lays over
+	// a field map, so the stage and the field frame the same shots.
+	//
 	// Subjects: capsule placeholders, the body tagged with the id. The body is 1.45 m tall with its
 	// bottom on the floor (the director stands a subject at the bottom of its bounds); the head's
 	// centre is at 1.6 m, the height a close shot looks at.
-	struct FSubject
-	{
-		const TCHAR* Id;
-		float X, Y;
-	};
-	const FSubject Subjects[] = {{TEXT("subj_a"), -1.f, -1.2f}, {TEXT("subj_b"), -1.f, 1.2f}, {TEXT("subj_c"), 2.5f, 2.f}};
+	//
+	// Camera spots: target points where a wide shot stands; the other framings take their direction
+	// from them.
 	Index = 0;
-	for (const FSubject& Def : Subjects)
+	for (uint32 I = 0; I < ftcore::cutsceneStageMarkCount(); ++I)
 	{
-		UMaterialInterface* Tint = SubjectTints[Index++];
-		AStaticMeshActor* Body = CutsceneBlock(World, Spawn, Cylinder, Tint, Def.Id, CutsceneM(Def.X, Def.Y, 0.725f), FVector(0.5f, 0.5f, 1.45f));
-		Body->Tags.Add(FName(Def.Id));
-		AStaticMeshActor* Head = CutsceneBlock(World, Spawn, Sphere, Tint, FString::Printf(TEXT("%s_head"), Def.Id),
-			CutsceneM(Def.X, Def.Y, 1.6f), FVector(0.28f));
+		const ftcore::CutsceneStageMark& Mark = ftcore::cutsceneStageMark(I);
+		const FString Id = FT::ToFString(Mark.id);
+		const ftcore::CutsceneVec3& At = Mark.position;
+		if (!Mark.subject)
+		{
+			ATargetPoint* Point = World->SpawnActor<ATargetPoint>(CutsceneM(At.x, At.y, At.z), FRotator::ZeroRotator, Spawn);
+			Point->Tags.Add(FName(*Id));
+			Point->SetActorLabel(Id);
+			continue;
+		}
+		UMaterialInterface* Tint = SubjectTints[Index++ % UE_ARRAY_COUNT(SubjectTints)];
+		AStaticMeshActor* Body = CutsceneBlock(World, Spawn, Cylinder, Tint, Id, CutsceneM(At.x, At.y, At.z + 0.725f), FVector(0.5f, 0.5f, 1.45f));
+		Body->Tags.Add(FName(*Id));
+		AStaticMeshActor* Head = CutsceneBlock(World, Spawn, Sphere, Tint, Id + TEXT("_head"), CutsceneM(At.x, At.y, At.z + 1.6f), FVector(0.28f));
 		Head->AttachToActor(Body, FAttachmentTransformRules::KeepWorldTransform);
-	}
-
-	// Camera spots: where a wide shot stands; the other framings take their direction from them.
-	struct FSpot
-	{
-		const TCHAR* Id;
-		float X, Y, Z;
-	};
-	const FSpot Spots[] = {
-		{TEXT("spot_a"), 9.f, 0.f, 2.5f},  // front, high: the establishing view
-		{TEXT("spot_b"), 6.f, 5.f, 1.7f},  // front right
-		{TEXT("spot_c"), 3.f, -5.f, 1.6f}, // right side of the pair
-		{TEXT("spot_d"), 3.f, 6.f, 1.6f},  // left side of the pair
-		{TEXT("spot_e"), 7.f, -1.f, 1.6f}, // front, low
-		{TEXT("spot_f"), 4.f, 5.f, 1.4f},  // by the table
-	};
-	for (const FSpot& Def : Spots)
-	{
-		ATargetPoint* Point = World->SpawnActor<ATargetPoint>(CutsceneM(Def.X, Def.Y, Def.Z), FRotator::ZeroRotator, Spawn);
-		Point->Tags.Add(FName(Def.Id));
-		Point->SetActorLabel(Def.Id);
 	}
 
 	// Light.
