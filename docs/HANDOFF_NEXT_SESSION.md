@@ -1,12 +1,49 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-28 ~15:10. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-28 ~16:50. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-28 ~15:10): two leads wear their garments in the demo, and main has the follower ledge catch.**
+- **NEWEST (2026-10-28 ~16:50): every map switches to a shared photoreal look; the per-world styles become an
+  optional layer.**
+  - `ftcore::SceneLook` (Core: 17 values with defaults, equality and `lerp`; `test_scene_look.cpp`) holds the look.
+    `FTScene::SpawnLook` builds it in a map: a movable sun, a real-time sky light, sky atmosphere, volumetric height
+    fog, volumetric clouds, and an unbound post-process volume (priority 0) for the camera finish.
+  - `FTScene::LoadSurface` puts the blockout shapes on `/Game/Rendering/M_WorldSurface`. It's opaque and lit:
+    roughness 0.8, metallic 0, and a world-space tone variation of 12 % in patches about 3.5 m across. The new
+    `-run=FTBuildWorldMaterials` builds it. Without it, a map builder logs that it's missing and how to build it.
+  - All 12 map builders use the look. `-Style=<spec>` still adds a style controller over it, and the
+    `Demo_<pack>` maps keep theirs. The explore director restyles only a map that has one.
+  - All 19 maps are rebuilt: rc 0 and no errors (the only warnings are the usual navigation ones at world init).
+    The worlds log:
+    - solhaven: 16 districts, 3001 instances, 88 actors
+    - lattice: 12 districts, 1017 instances, 73 actors
+    - unwritten: 10 districts, 2357 instances, 64 actors
+    - the overworld: 3 gates, 433 instances, 38 actors
+  - main and the demo checkout are at 50a1a59. Gate: 789 doctest cases, ctest 4/4, UBT Succeeded. In a headless explore walk the party
+    follows, the fight is won and the walk completes, and our module logs no warnings.
+  - Render check (offscreen portrait shots, new maps against the pre-switch ones):
+    - All five runs exit 0: Explore wide (4 angles) and close (2), Solhaven wide (4), and the two pre-switch maps wide (4 each).
+    - Before: black toon edge lines on every shape and character, a flat gradient sky and flat shading.
+    - After: volumetric clouds, soft sun shadows and distance haze, and no outline on any shape or character.
+    - The Solhaven plaza reads near-white: the surface colour clamp tops out at 0.8, above real light stone (about 0.5 to 0.6). It's a C++ value, so it waits for UBT.
+    - A figure standing on Explore shows in both the old and the new shots, so it isn't from this change.
+  - Docs: `SCENE_LOOK.md` (new), plus the look sections of `WORLDS.md`, `EXPLORE_DEMO.md`, `STYLE_PACKS_UE.md`,
+    `VFX_UE.md` and `PHYSICS_UE.md`.
+  - Note: UE 5.8's Mutable plugin is out of Experimental (1.8.0, off by default; its clothing, groom and dataflow
+    parts still are). Its UV-mask clip takes the same kind of mask our body-hide tools write, so it could replace
+    the baked hidden body per outfit with removal at run time. A spike is queued after the animation and outfit work.
+  - **UBT is blocked in every checkout since 16:02 (reported by the animation session).** The Epic launcher updated
+    the engine's Fab plugin to 0.0.22, which adds an editor module, FabToolset, that the installed rules assembly
+    doesn't know, so UBT stops with a RulesError. Until the engine is verified or updated in the launcher, build with
+    `Build.bat` plus `-DisablePlugin=Fab` (`gate.ps1 -Ubt` doesn't pass it). The gate above ran before the update,
+    and nothing under `Source/` or `Core/` changed after it. The existing editor DLLs load fine for `-game` runs.
+  - Next: environment work on the worlds, Solhaven first: a surface library in place of the blockout master,
+    terrain and PCG scatter in place of the sphere trees, then a building kit. Later: lower the surface colour
+    clamp to about 0.6, measure the exposure per map, and give each world its own look (blended with `lerp`).
+- **Earlier (2026-10-28 ~15:10): two leads wear their garments in the demo, and main has the follower ledge catch.**
   - main and the demo checkout are at 6c82674: the animation session's follower ledge catch (b397de7, merged with
     main's body-mask tools in 6fcb250) and the pinhole handling below. Gate: 783 doctest cases, ctest 4/4, UBT Succeeded.
   - **One lead's tunic** is in the party config, with the body under it hidden by `body_mask.py`'s top mode
