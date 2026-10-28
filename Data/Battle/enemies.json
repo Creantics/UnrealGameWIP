@@ -179,8 +179,8 @@
       ]
     },
     {
-      "id": "hollow_knight",
-      "name": "Hollow Knight",
+      "id": "husk_knight",
+      "name": "Husk Knight",
       "stats": { "maxHp": 360, "attack": 24, "defense": 10, "speed": 12, "technique": 14 },
       "reward": { "xp": 27, "gold": 16 },
       "skills": [

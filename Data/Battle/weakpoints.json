@@ -97,7 +97,7 @@
         { "id": "grate", "x": -0.3, "y": 0.3, "radius": 0.1, "multiplier": 1.6 }
       ]
     },
-    "hollow_knight": {
+    "husk_knight": {
       "halfWidth": 0.5,
       "points": [
         { "id": "visor", "x": 0.0, "y": 0.86, "radius": 0.08, "multiplier": 2.5 },
