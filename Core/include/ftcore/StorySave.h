@@ -45,7 +45,7 @@ struct StorySave {
     std::uint32_t beat = 0;
     std::vector<SavedStoryFlag> flags; // only flags that differ from their default
     std::vector<SavedSeenScene> seen;  // only scenes with a seen beat (format 2; empty for a format 1 save)
-    PartyProgress party;               // xp and gold; the owner fills it (capture and apply leave it alone)
+    PartyProgress party;               // xp, gold and items; the owner fills it (capture and apply leave it alone)
 };
 
 struct StoryLoadReport {
@@ -63,10 +63,17 @@ FTCORE_API bool applyStory(const StorySave& save, StoryRunner& runner, StoryLoad
 
 // ---- JSON text ----
 // {"format":2,"scene":"SC-A","beat":4,"flags":[{"id":"F","kind":"int","number":3,"text":""}],
-//  "seen":[{"scene":"SC-A","bits":"1f"}],"party":{"xp":240,"gold":130}}
+//  "seen":[{"scene":"SC-A","bits":"1f"}],"party":{"xp":240,"gold":130,
+//  "items":[{"id":"bandage_roll","count":2}]}}
 // kind is "bool", "int" or "string". Every field is required except "party" (a save from before
 // progression has none: xp and gold read as 0) and "seen" in a format 1 save (it then reads as
 // empty); unknown extra fields are ignored. Encoding always writes format 2.
+// Inside "party", "items" is optional too (a save from before items has none: the inventory reads
+// as empty); encoding always writes it. Each entry needs a valid item id (validItemId) and a count
+// in 1..kMaxItemStack, or the save is refused. The id is not looked up in the item table (the table
+// may change between versions), so an id the game no longer knows loads as it is. The entries go
+// into the inventory in order; whatever does not fit (more than kMaxInventoryStacks different ids,
+// a stack past kMaxItemStack) is dropped.
 
 // UTF-8 JSON text for the save.
 FTCORE_API std::string encodeStorySave(const StorySave& save);

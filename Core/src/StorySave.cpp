@@ -117,7 +117,16 @@ std::string encodeStorySave(const StorySave& save) {
         appendQuoted(out, save.seen[i].bits);
         out += '}';
     }
-    out += "],\"party\":{\"xp\":" + std::to_string(save.party.xp) + ",\"gold\":" + std::to_string(save.party.gold) + "}}";
+    out += "],\"party\":{\"xp\":" + std::to_string(save.party.xp) + ",\"gold\":" + std::to_string(save.party.gold) +
+           ",\"items\":[";
+    for (std::size_t i = 0; i < save.party.items.size(); ++i) {
+        const ItemStack& stack = save.party.items[i];
+        if (i) out += ',';
+        out += "{\"id\":";
+        appendQuoted(out, std::string(stack.id.view()));
+        out += ",\"count\":" + std::to_string(stack.count) + '}';
+    }
+    out += "]}}";
     return out;
 }
 
@@ -188,6 +197,22 @@ bool decodeStorySave(std::string_view text, StorySave& out, std::string* error) 
             return fail(error, "save: party.gold is missing or not an integer in range");
         result.party.xp = static_cast<int>(xp.integer());
         result.party.gold = static_cast<int>(gold.integer());
+        // Optional (a save from before items has none). Ids are not looked up in any item table.
+        const JsonValue items = party["items"];
+        if (!items.isAbsent()) {
+            if (!items.isArray()) return fail(error, "save: party.items is not an array");
+            for (std::uint32_t i = 0; i < items.size(); ++i) {
+                const JsonValue entry = items[i];
+                const std::string at = "save: party.items[" + std::to_string(i) + "]";
+                if (!entry.isObject()) return fail(error, at + " is not an object");
+                const JsonValue id = entry["id"], count = entry["count"];
+                if (!id.isString() || !validItemId(id.string()))
+                    return fail(error, at + ".id is missing or not a valid item id");
+                if (!count.isInteger() || count.integer() < 1 || count.integer() > kMaxItemStack)
+                    return fail(error, at + ".count is missing or not an integer in 1.." + std::to_string(kMaxItemStack));
+                result.party.items.add(id.string(), static_cast<int>(count.integer())); // what does not fit is dropped
+            }
+        }
     }
     out = std::move(result);
     return true;

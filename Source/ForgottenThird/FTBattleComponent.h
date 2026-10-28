@@ -22,7 +22,8 @@
 //
 // Clock: with bSyncToMusic the battle runs on the conductor's song time (Conductor, or the owner's
 // UFTConductorComponent), presses are judged at its latency-compensated input time and charts sit on
-// its beat grid. Otherwise it runs on FPlatformTime::Seconds() from StartBattle.
+// its beat grid. Otherwise it runs on UFTPauseSubsystem::WallSeconds() (platform time without the time
+// spent paused) from StartBattle.
 //
 // Combatant ids are indexes: the party first (in Party order), then the enemies.
 

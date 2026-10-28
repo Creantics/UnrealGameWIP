@@ -13,7 +13,8 @@
 // subject; a missing subject stands at the world origin (each logged once, by id).
 //
 // The shot clock runs on game time (sped up with -AlphaFast like the stub screen); the autoplay cap
-// and the skip grace run on real time. No allocation per frame.
+// and the skip grace run on real time without the time spent in the pause menu
+// (UFTPauseSubsystem::WallSeconds). No allocation per frame.
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"

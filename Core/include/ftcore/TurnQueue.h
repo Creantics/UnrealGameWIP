@@ -24,6 +24,9 @@ public:
     FTCORE_API bool contains(CombatantId id) const;
     bool empty() const { return entries_.empty(); }
     void clear() { entries_.clear(); }
+    // Room for `count` combatants, so add() never allocates for up to that many (a downed member who
+    // is revived mid-battle rejoins with add()).
+    void reserve(std::size_t count) { entries_.reserve(count); }
 
     // Advances time to the next actor, resets their gauge and returns them.
     FTCORE_API CombatantId next();

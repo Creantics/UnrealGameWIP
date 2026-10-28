@@ -14,6 +14,7 @@
 #include "FTAudioSubsystem.h"
 #include "FTFaceComponent.h"
 #include "FTGameInstance.h"
+#include "FTPauseSubsystem.h"
 #include "FTPlayerController.h"
 #include "FTSettingsSubsystem.h"
 #include "FTStorySubsystem.h"
@@ -84,6 +85,7 @@ void AFTStoryDirector::BeginPlay()
 			PC->OnWheel.AddDynamic(this, &AFTStoryDirector::HandleWheel);
 			PC->OnSkip.AddDynamic(this, &AFTStoryDirector::HandleSkip);
 			PC->OnCancel.AddDynamic(this, &AFTStoryDirector::HandleCancel);
+			PC->OnBack.AddDynamic(this, &AFTStoryDirector::HandleBack);
 			PC->OnMenuStep.AddDynamic(this, &AFTStoryDirector::HandleMenuStep);
 		}
 	}
@@ -118,6 +120,7 @@ void AFTStoryDirector::EndPlay(const EEndPlayReason::Type Reason)
 		PC->OnWheel.RemoveDynamic(this, &AFTStoryDirector::HandleWheel);
 		PC->OnSkip.RemoveDynamic(this, &AFTStoryDirector::HandleSkip);
 		PC->OnCancel.RemoveDynamic(this, &AFTStoryDirector::HandleCancel);
+		PC->OnBack.RemoveDynamic(this, &AFTStoryDirector::HandleBack);
 		PC->OnMenuStep.RemoveDynamic(this, &AFTStoryDirector::HandleMenuStep);
 		PC->bRouteInputToStory = bPrevRouteInput;
 	}
@@ -197,7 +200,7 @@ bool AFTStoryDirector::InputBlocked() const
 		return true;
 	}
 	const UFTSettingsSubsystem* Settings = SettingsSub.Get();
-	return Settings && Settings->BlocksInput();
+	return (Settings && Settings->BlocksInput()) || UFTPauseSubsystem::IsBlocking(this);
 }
 
 bool AFTStoryDirector::CanOpenOverlay() const
@@ -245,13 +248,23 @@ void AFTStoryDirector::HandleSkip(bool bHeld)
 
 void AFTStoryDirector::HandleCancel()
 {
+	// Backspace / pad B close the backlog. Esc and pad Start are the pause keys (HandleBack).
 	if (bBacklogOpen)
 	{
 		CloseBacklog();
 	}
-	else if (CanOpenOverlay())
+}
+
+void AFTStoryDirector::HandleBack()
+{
+	// Esc / pad Start close the backlog before they open the pause menu, and claim the press.
+	if (bBacklogOpen)
 	{
-		OpenSettings();
+		CloseBacklog();
+		if (AFTPlayerController* PC = Controller.Get())
+		{
+			PC->ClaimBack();
+		}
 	}
 }
 
@@ -283,17 +296,6 @@ void AFTStoryDirector::ScrollBacklog(int32 Delta)
 {
 	const int32 Last = FMath::Max(0, static_cast<int32>(Story->GetBacklog().size()) - 1);
 	BacklogScroll = FMath::Clamp(BacklogScroll + Delta, 0, Last);
-}
-
-void AFTStoryDirector::OpenSettings()
-{
-	UFTSettingsSubsystem* Settings = SettingsSub.Get();
-	AFTPlayerController* PC = Controller.Get();
-	if (Settings && PC)
-	{
-		bSkipHeld = false;
-		Settings->Open(PC);
-	}
 }
 
 void AFTStoryDirector::ApplySettings()

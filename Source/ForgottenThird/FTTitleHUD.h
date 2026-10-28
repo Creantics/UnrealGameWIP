@@ -1,7 +1,7 @@
 #pragma once
 
-// Canvas UI of the title screen (no UMG): New Game, Continue and Settings on the Demo map, shown while
-// AFTGameMode is in its title state. The menu rules and the selection live in the game mode
+// Canvas UI of the title screen (no UMG): New Game, Continue, Settings and Quit on the Demo map, shown
+// while AFTGameMode is in its title state. The menu rules and the selection live in the game mode
 // (ftcore::TitleMenu); this only draws them. Continue is greyed when the save slot isn't usable,
 // with a short reason underneath. The mouse selects the item under it when it moves (a click then
 // picks it). The settings overlay is drawn on top while it is open. Drawing builds no strings: every

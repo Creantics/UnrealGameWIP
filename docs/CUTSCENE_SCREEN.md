@@ -63,9 +63,12 @@ the stub builder does. The map is generated, never hand-made.
 | | Keyboard | Gamepad |
 |---|---|---|
 | Skip | Space or Enter | A |
+| Pause menu | Escape | Start |
 
 A press counts only after 0.25 s of real time (`CutscenePlayer::kInputGrace`), so the press that
-opened the screen can't skip it.
+opened the screen can't skip it. The pause menu (see [GAME_FRAME.md](GAME_FRAME.md), "Pause")
+stops the shot clock, and the real-time clock that the grace and the autoplay cap run on doesn't
+count the time spent in it (`UFTPauseSubsystem::WallSeconds`).
 
 ## HUD
 

@@ -108,6 +108,36 @@ void encHits(JsonValue s, const std::string& path, AttackTimeline& out, std::vec
     }
 }
 
+// A reward's optional "items" array: its item drops. Absent: none.
+void encDrops(JsonValue rw, const std::string& path, Inventory& out, std::vector<std::string>& errors,
+              std::vector<std::string>* warnings) {
+    const JsonValue drops = rw["items"];
+    if (drops.isAbsent()) return;
+    const std::string dp = path + ".items";
+    if (!drops.isArray() || drops.size() > kMaxEnemyDrops) {
+        errors.push_back(dp + ": expected an array of 0.." + std::to_string(kMaxEnemyDrops) + " drops");
+        return;
+    }
+    for (std::uint32_t i = 0; i < drops.size(); ++i) {
+        const JsonValue d = drops[i];
+        const std::string p = dp + "[" + std::to_string(i) + "]";
+        if (!d.isObject()) {
+            errors.push_back(p + ": expected an object");
+            continue;
+        }
+        encUnknownKeys(d, p, {"id", "count"}, warnings);
+        const JsonValue id = d["id"];
+        int count = 1;
+        const bool countOk = encInt(d, "count", count, 1, kMaxItemStack, p, errors);
+        if (!id.isString() || !validItemId(id.string()))
+            errors.push_back(p + ".id: expected an item id (lower-case letters, digits and _)");
+        else if (out.count(id.string()) > 0)
+            errors.push_back(p + ".id: duplicate \"" + encStr(id.string()) + "\"");
+        else if (countOk)
+            out.add(id.string(), count);
+    }
+}
+
 // An enemy's optional "phases" array (its skill ids already read). Absent: no phases.
 void encPhases(JsonValue j, const std::string& path, const std::vector<std::string>& skillIds, EnemyPhases& out,
                std::vector<std::string>& errors, std::vector<std::string>* warnings) {
@@ -278,9 +308,10 @@ bool importEnemyRoster(std::string_view json, EnemyRoster& out, std::string* err
             if (!rw.isObject()) {
                 errors.push_back(rp + ": expected an object");
             } else {
-                encUnknownKeys(rw, rp, {"xp", "gold"}, warnings);
+                encUnknownKeys(rw, rp, {"xp", "gold", "items"}, warnings);
                 encInt(rw, "xp", e.reward.xp, 0, 100000, rp, errors);
                 encInt(rw, "gold", e.reward.gold, 0, 100000, rp, errors);
+                encDrops(rw, rp, e.reward.items, errors, warnings);
             }
         }
 

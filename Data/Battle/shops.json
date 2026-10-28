@@ -1,0 +1,4 @@
+{
+  "version": 1,
+  "default": ["bandage_roll", "field_kit", "shared_rations", "energy_bar", "trail_mix", "wake_bell"]
+}

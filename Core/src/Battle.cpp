@@ -39,8 +39,11 @@ void Battle::reset(const std::vector<Combatant>& party, const std::vector<Combat
     baseAttack_.resize(combatants_.size());
     for (std::size_t i = 0; i < combatants_.size(); ++i) baseAttack_[i] = combatants_[i].stats.attack;
     stats_ = {};
+    items_ = ItemTable{};
+    carried_ = Inventory{};
 
     queue_.clear();
+    queue_.reserve(combatants_.size()); // a revived member rejoins it without allocating
     phase_ = Phase::NotStarted;
     actor_ = 0;
     phaseStart_ = 0.0;
@@ -300,6 +303,71 @@ bool Battle::fire(double timestamp) {
     phase_ = Phase::Recovery;
     recoveryEnd_ = t + tuning_.recovery;
     return true;
+}
+
+void Battle::setItems(const ItemTable& table, const Inventory& carried) {
+    FTCORE_ASSERT(phase_ == Phase::NotStarted);
+    items_ = table;
+    carried_ = carried;
+}
+
+// The recipients are the members the item can work on: living party members for a heal or an AP
+// restore, downed ones for a revive. A single-ally item takes `target` if it is one of them; an item for
+// the whole party takes all of them. The turn queue and the recipient list are sized up front, so
+// nothing here allocates.
+CommandError Battle::useItem(std::size_t slot, CombatantId target, double now) {
+    if (phase_ != Phase::AwaitingCommand) return CommandError::WrongPhase;
+    if (slot >= carried_.size()) return CommandError::NoSuchItem;
+    const ItemId used = carried_[slot].id; // a copy: removing the stack below moves the slots
+    const ItemDef* def = items_.find(used.view());
+    if (!def) return CommandError::NoSuchItem;
+
+    const bool revive = def->effect == ItemEffect::Revive;
+    const auto eligible = [&](CombatantId id) {
+        const Combatant& c = combatants_[id];
+        return c.team == Team::Party && c.alive() != revive;
+    };
+    targets_.clear();
+    if (def->scope == ItemScope::Party) {
+        for (CombatantId id = 0; id < combatants_.size(); ++id)
+            if (eligible(id)) targets_.push_back(id);
+    } else if (target < combatants_.size() && eligible(target)) {
+        targets_.push_back(target);
+    }
+    if (targets_.empty()) return CommandError::InvalidTarget;
+
+    for (const CombatantId id : targets_) {
+        Combatant& c = combatants_[id];
+        int restored = 0;
+        switch (def->effect) {
+        case ItemEffect::Heal:
+            restored = std::min(std::max(0, def->hpFor(c.stats.maxHp)), std::max(0, c.stats.maxHp - c.hp));
+            c.hp += restored;
+            break;
+        case ItemEffect::RestoreAp:
+            restored = std::min(std::max(0, def->ap), std::max(0, c.maxAp - c.ap));
+            c.ap += restored;
+            break;
+        case ItemEffect::Revive:
+            restored = std::min(std::max(1, def->hpFor(c.stats.maxHp)), std::max(1, c.stats.maxHp));
+            c.hp = restored;
+            if (!queue_.contains(id)) queue_.add(id, std::max(1, c.stats.speed));
+            break;
+        }
+        emit({.type = EventType::ItemUsed,
+              .source = actor_,
+              .target = id,
+              .amount = restored,
+              .time = now,
+              .label = def->id.view()});
+    }
+    carried_.remove(used.view(), 1);
+    ++stats_.itemsUsed;
+    targets_.clear();
+    phase_ = Phase::Recovery;
+    phaseStart_ = now;
+    recoveryEnd_ = now + tuning_.recovery;
+    return CommandError::None;
 }
 
 void Battle::update(double now) {

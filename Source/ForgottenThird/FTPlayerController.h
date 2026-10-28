@@ -5,13 +5,14 @@
 // choose, confirm) also drives UFTStorySubsystem directly while bRouteInputToStory is set.
 //
 // Keys: advance Space / left mouse / pad bottom; choose 1-4 the number keys / pad d-pad (up, right,
-// down, left); confirm Enter / pad Start; cancel Escape / Backspace / pad right; rhythm tap F / J /
-// pad shoulders / pad left. Story routing is off by default: AFTStoryDirector takes the presses and
-// drives the story; set bRouteInputToStory to drive it from here instead.
+// down, left); confirm Enter (pad Start confirms only in the menu context, on the title: on a gameplay
+// screen it pauses); cancel Escape / Backspace / pad right; rhythm tap F / J / pad shoulders / pad
+// left. Story routing is off by default: AFTStoryDirector takes the presses and drives the story; set
+// bRouteInputToStory to drive it from here instead.
 //
 // Reading keys (the story director and the settings overlay listen): backlog B / mouse wheel up (OnBacklog,
 // OnWheel +1; wheel down is OnWheel -1); skip, held, Ctrl / S / pad right trigger (OnSkip true while
-// held, false on release). Escape (OnCancel) opens the settings from the story.
+// held, false on release). Escape and pad Start (OnBack) close the backlog, else pause.
 //
 // Battle input is a second mapping context, added on top (higher priority, so its keys hide the
 // story mappings they share) only between BeginBattleInput and EndBattleInput. Its presses are
@@ -21,7 +22,7 @@
 //            in lane order Left, Down, Up, Right
 //   skill    1-4 / numpad 1-4 (the story's choose keys, reported as OnBattleSkill too)
 //   target   Tab / E / pad right shoulder: next; Q / pad left shoulder: previous
-//   confirm  Enter / Space / pad Start
+//   confirm  Enter / Space
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
@@ -30,6 +31,7 @@
 
 #include "FTPlayerController.generated.h"
 
+class UEnhancedInputComponent;
 class UInputAction;
 class UInputMappingContext;
 class UFTStorySubsystem;
@@ -63,9 +65,9 @@ public:
 	FFTInputEvent OnConfirm;
 	UPROPERTY(BlueprintAssignable, Category = "Input")
 	FFTInputEvent OnCancel;
-	// WallSeconds is FPlatformTime::Seconds() when the press was handled; turn it into song time
-	// with UFTConductorComponent::GetEventSongTime. Taps also feed the pawn's conductor while it
-	// calibrates.
+	// WallSeconds is UFTPauseSubsystem::WallSeconds() (the clock the conductor runs on: platform time
+	// without the time spent paused) when the press was handled; turn it into song time with
+	// UFTConductorComponent::GetEventSongTime. Taps also feed the pawn's conductor while it calibrates.
 	UPROPERTY(BlueprintAssignable, Category = "Input")
 	FFTTapEvent OnRhythmTap;
 
@@ -113,7 +115,9 @@ public:
 	// between BeginMenuInput and EndMenuInput. Up arrow, W, pad d-pad up
 	// and left give OnMenuStep(-1); Down arrow, S, pad d-pad down and right give OnMenuStep(+1).
 	// Its actions consume those keys, so the d-pad stops reaching the story's choose actions. Space,
-	// Enter, click and pad A / Start still arrive as OnAdvance / OnConfirm, and 1 / 2 as OnChoose.
+	// Enter, click and pad A still arrive as OnAdvance / OnConfirm, and 1 / 2 as OnChoose. Pad Start
+	// arrives as OnConfirm here too: the menu context maps it for the title (which keeps Start as
+	// confirm); on a gameplay screen the pause context, one priority up, takes it first.
 	UFUNCTION(BlueprintCallable, Category = "Input|Menu")
 	void BeginMenuInput();
 	UFUNCTION(BlueprintCallable, Category = "Input|Menu")
@@ -127,6 +131,33 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Input|Menu")
 	FFTBattleStepEvent OnMenuAdjust;
 	// BeginMenuInput also shows the mouse cursor (and lets it move); EndMenuInput puts both back.
+
+	// ---- pause ----
+
+	// Esc and pad Start (OnBack / the pause menu): a fourth mapping context, above the explore pawn's, that
+	// every gameplay screen has from the start and AFTGameMode adds when the story begins. The title never
+	// has it: Start confirms there, and Esc closes its settings overlay as the cancel action. The pause
+	// action consumes both keys, so on a gameplay screen Esc is no longer a cancel (Backspace and pad B
+	// still are) and Start is no longer a confirm. No effect in a headless run.
+	UFUNCTION(BlueprintCallable, Category = "Input|Pause")
+	void BeginPauseInput();
+	UFUNCTION(BlueprintCallable, Category = "Input|Pause")
+	void EndPauseInput();
+	UFUNCTION(BlueprintPure, Category = "Input|Pause")
+	bool IsPauseInputActive() const { return bPauseInput; }
+	// Esc or pad Start with no overlay up: the screen closes a layer of its own (the backlog, an aim in
+	// progress) when it has one, and calls ClaimBack() so the press doesn't also open the pause menu.
+	UPROPERTY(BlueprintAssignable, Category = "Input|Pause")
+	FFTInputEvent OnBack;
+	void ClaimBack() { bBackClaimed = true; }
+
+	// While the pause menu is open (UFTPauseSubsystem calls these): a fifth context at the top that maps
+	// every key the menu and the settings overlay opened from it need (up / down / left / right, advance,
+	// confirm, cancel), so a screen's own context can never hide one while the game is paused.
+	UFUNCTION(BlueprintCallable, Category = "Input|Pause")
+	void BeginPauseMenuInput();
+	UFUNCTION(BlueprintCallable, Category = "Input|Pause")
+	void EndPauseMenuInput();
 
 protected:
 	virtual void BeginPlay() override;
@@ -169,6 +200,12 @@ private:
 	void HandleMenuRight() { HandleMenuAdjust(1); }
 	void HandleMenuAdjust(int32 Direction);
 
+	// Pause: Esc / pad Start. Backs out of the topmost layer first (the settings overlay, the pause menu
+	// itself, then OnBack's listeners), else opens the pause menu.
+	void CreatePauseInput();
+	void BindPauseInput(UEnhancedInputComponent& Input);
+	void HandlePause();
+
 	void HandleBacklog() { OnBacklog.Broadcast(); }
 	void HandleWheelUp() { OnWheel.Broadcast(1); }
 	void HandleWheelDown() { OnWheel.Broadcast(-1); }
@@ -196,6 +233,16 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> MenuDownAction;
 	bool bMenuInput = false;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputMappingContext> PauseContext;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputMappingContext> PauseMenuContext;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> PauseAction;
+	bool bPauseInput = false;
+	bool bPauseMenuInput = false;
+	bool bBackClaimed = false;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UInputMappingContext> BattleContext;

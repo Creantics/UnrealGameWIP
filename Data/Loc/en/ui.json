@@ -10,7 +10,7 @@
     "common.good": "GOOD",
     "common.miss": "MISS",
 
-    "banter.prompt": "Space / Enter: next    Esc: skip",
+    "banter.prompt": "Space / Enter: next    Backspace: skip",
 
     "battle.now": "NOW",
     "battle.next": "NEXT",
@@ -20,7 +20,7 @@
     "battle.defeat": "DEFEAT",
     "battle.again": "Enter / Space / pad A to fight again",
     "battle.retry": "Enter: Retry",
-    "battle.quit_to_title": "Esc / Q: Quit to title",
+    "battle.quit_to_title": "Q / pad B: Quit to title",
     "battle.choose": "choose a skill",
     "battle.attack": "attack - hit the arrows!",
     "battle.defend": "defend - watch for the tell!",
@@ -30,8 +30,8 @@
     "battle.down": "DOWN",
     "battle.jump": "JUMP!",
 
-    "choice.prompt_line": "Space / Enter: continue    Esc: skip",
-    "choice.prompt_pick": "1-4: pick    Esc: skip",
+    "choice.prompt_line": "Space / Enter: continue    Backspace: skip",
+    "choice.prompt_pick": "1-4: pick    Backspace: skip",
 
     "cutscene.skip": "Space / Enter / pad A: skip",
 
@@ -41,18 +41,44 @@
     "explore.world": "WORLD",
     "explore.overworld": "OVERWORLD",
 
+    "item.bandage_roll.name": "Bandage Roll",
+    "item.bandage_roll.desc": "Restores a little HP to one ally.",
+    "item.field_kit.name": "Field Kit",
+    "item.field_kit.desc": "Restores a lot of HP to one ally.",
+    "item.shared_rations.name": "Shared Rations",
+    "item.shared_rations.desc": "Restores some HP to the whole party.",
+    "item.energy_bar.name": "Energy Bar",
+    "item.energy_bar.desc": "Restores some AP to one ally.",
+    "item.trail_mix.name": "Trail Mix",
+    "item.trail_mix.desc": "Restores a little AP to the whole party.",
+    "item.wake_bell.name": "Wake Bell",
+    "item.wake_bell.desc": "Gets a fallen ally back on their feet with some HP.",
+
     "mini.try": "Try {0} of {1}",
+
+    "pause.title": "Paused",
+    "pause.resume": "Resume",
+    "pause.settings": "Settings",
+    "pause.quit_title": "Quit to Title",
+    "pause.quit_game": "Quit Game",
+    "pause.ask_title": "Quit to the title screen?",
+    "pause.ask_game": "Quit the game?",
+    "pause.ask_note": "Progress since the last autosave is lost.",
+    "pause.yes": "Yes",
+    "pause.no": "No",
+    "pause.hint": "Up / Down: select    Enter / Space / A: choose    Esc / Start: resume",
+    "pause.ask_hint": "Left / Right: Yes or No    Enter / Space / A: choose    Esc: back",
 
     "qte.hold": "HOLD",
     "qte.mash": "MASH",
 
-    "story.hint": "Space / Enter / pad A: continue    1-4 / d-pad: choose    B: log    Ctrl / S: skip    Esc: settings",
+    "story.hint": "Space / Enter / pad A: continue    1-4 / d-pad: choose    B: log    Ctrl / S: skip    Esc / Start: pause",
     "story.end": "The End",
     "story.end_hint": "Space / Enter: title",
     "story.skip": "SKIP >>",
     "story.auto": "AUTO",
     "story.log_title": "Backlog",
-    "story.log_hint": "Up / Down or mouse wheel: scroll    B / Esc: close",
+    "story.log_hint": "Up / Down or mouse wheel: scroll    B / Esc / Start: close",
     "story.log_empty": "Nothing yet",
 
     "title.name": "Forgotten Third",
@@ -62,7 +88,9 @@
     "title.continue_selected": "> Continue",
     "title.settings": "Settings",
     "title.settings_selected": "> Settings",
-    "title.hint": "Up / Down and Enter, mouse, or 1 / 2 / 3    Pad: d-pad and A",
+    "title.quit": "Quit",
+    "title.quit_selected": "> Quit",
+    "title.hint": "Up / Down and Enter, mouse, or 1 / 2 / 3 / 4    Pad: d-pad and A",
     "title.no_save": "No saved game",
     "title.bad_save": "The saved game can't be loaded"
   }

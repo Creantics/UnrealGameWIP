@@ -3,6 +3,7 @@
 #include "Camera/CameraActor.h"
 #include "EngineUtils.h"
 #include "FTGameInstance.h"
+#include "FTPauseSubsystem.h"
 #include "FTQteHUD.h"
 #include "FTSettingsSubsystem.h"
 #include "FTText.h"
@@ -131,6 +132,9 @@ void AFTQteGameMode::PollKeys()
 	{
 		return;
 	}
+	// The frame after the pause menu closed, a key still held (pad A that picked Resume is also "down" here)
+	// is not a press of the screen's own: it counts once it is let go and pressed again.
+	const bool bResumed = UFTPauseSubsystem::IsJustResumed(this);
 	for (int32 D = 0; D < kDirectionsQte; ++D)
 	{
 		bool bPressed = false;
@@ -144,7 +148,7 @@ void AFTQteGameMode::PollKeys()
 			bNowDown |= PC->IsInputKeyDown(Key);
 		}
 		const ftcore::Arrow Direction = static_cast<ftcore::Arrow>(D);
-		if (bPressed || (bNowDown && !bDown[D]))
+		if (!bResumed && (bPressed || (bNowDown && !bDown[D])))
 		{
 			Screen.press(Direction);
 		}

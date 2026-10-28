@@ -4,6 +4,7 @@
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
 #include "FTBanterGameMode.h"
+#include "FTPauseOverlay.h"
 #include "FTUiText.h"
 
 namespace
@@ -79,6 +80,7 @@ void AFTBanterHUD::DrawHUD()
 	const AFTBanterGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AFTBanterGameMode>() : nullptr;
 	if (!Mode)
 	{
+		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
 	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
@@ -90,6 +92,7 @@ void AFTBanterHUD::DrawHUD()
 	{
 		DrawCard(*Mode);
 	}
+	FT::DrawPauseOverlay(*this, Canvas);
 }
 
 // The stub card, as AFTStubHUD draws it.

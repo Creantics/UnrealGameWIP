@@ -4,11 +4,13 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Kismet/GameplayStatics.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 
 #include "ForgottenThird.h"
 #include "FTGameInstance.h"
+#include "FTPauseSubsystem.h"
 #include "FTPawn.h"
 #include "FTPlayerController.h"
 #include "FTSettingsSubsystem.h"
@@ -127,6 +129,7 @@ void AFTGameMode::EnterTitle(UFTStorySubsystem& Story)
 	if (AFTPlayerController* PC = GetPlayer())
 	{
 		PC->bRouteInputToStory = false;
+		PC->EndPauseInput(); // the title has no pause: Start confirms here
 		PC->OnMenuStep.AddUniqueDynamic(this, &AFTGameMode::HandleMenuStep);
 		PC->OnAdvance.AddUniqueDynamic(this, &AFTGameMode::HandleMenuPress);
 		PC->OnConfirm.AddUniqueDynamic(this, &AFTGameMode::HandleMenuPress);
@@ -172,9 +175,12 @@ void AFTGameMode::HandleMenuPress()
 
 void AFTGameMode::HandleMenuChoose(int32 Option)
 {
+	// The number keys 1-4, in item order: New Game, Continue, Settings, Quit.
+	static const ftcore::TitleKey Picks[ftcore::TitleMenu::kItemCount] = {
+		ftcore::TitleKey::Pick1, ftcore::TitleKey::Pick2, ftcore::TitleKey::Pick3, ftcore::TitleKey::Pick4};
 	if (bTitle && !SettingsBlocked() && Option >= 0 && Option < ftcore::TitleMenu::kItemCount)
 	{
-		ApplyTitleAction(Menu.press(Option == 0 ? ftcore::TitleKey::Pick1 : Option == 1 ? ftcore::TitleKey::Pick2 : ftcore::TitleKey::Pick3));
+		ApplyTitleAction(Menu.press(Picks[Option]));
 	}
 }
 
@@ -200,6 +206,12 @@ void AFTGameMode::ApplyTitleAction(ftcore::TitleAction Action)
 	{
 		OpenSettings();
 	}
+	else if (Action == ftcore::TitleAction::Quit)
+	{
+		// No confirm step: nothing is open on the title, and the story autosaves at every scene start.
+		UE_LOG(LogForgottenThird, Log, TEXT("Title: Quit."));
+		UKismetSystemLibrary::QuitGame(this, GetPlayer(), EQuitPreference::Quit, false);
+	}
 	else if (Action == ftcore::TitleAction::Continue)
 	{
 		UE_LOG(LogForgottenThird, Log, TEXT("Title: Continue."));
@@ -223,6 +235,7 @@ void AFTGameMode::EnterStory()
 		PC->OnConfirm.RemoveDynamic(this, &AFTGameMode::HandleMenuPress);
 		PC->OnChoose.RemoveDynamic(this, &AFTGameMode::HandleMenuChoose);
 		PC->EndMenuInput();
+		PC->BeginPauseInput(); // from here on Esc and Start pause (not in a headless run)
 		PC->ClientSetHUD(AFTStoryHUD::StaticClass()); // replaces the title HUD
 	}
 	SpawnDirector();
@@ -267,7 +280,8 @@ void AFTGameMode::HandleStoryFinished()
 
 void AFTGameMode::HandleEndPress()
 {
-	if (bEndCard && !bReturning && GetWorld()->GetTimeSeconds() - EndCardTime >= EndCardDelay)
+	// The pause menu owns the keys while it is up (and for the rest of the frame it closed in).
+	if (bEndCard && !bReturning && GetWorld()->GetTimeSeconds() - EndCardTime >= EndCardDelay && !UFTPauseSubsystem::IsBlocking(this))
 	{
 		ReturnToTitle();
 	}

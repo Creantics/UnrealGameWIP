@@ -1,9 +1,9 @@
 #include "FTBattleComponent.h"
 
 #include "FTConductorComponent.h"
+#include "FTPauseSubsystem.h"
 #include "FTText.h"
 #include "GameFramework/Actor.h"
-#include "HAL/PlatformTime.h"
 
 #include <algorithm>
 
@@ -286,7 +286,7 @@ bool UFTBattleComponent::StartBattle()
 		Battle = MakeUnique<ftcore::Battle>(CoreParty, CoreEnemies, CoreTuning);
 	}
 
-	Epoch = FPlatformTime::Seconds();
+	Epoch = UFTPauseSubsystem::WallSeconds();
 	LastPhase = EFTBattlePhase::NotStarted;
 	Battle->start(Now());
 	SetComponentTickEnabled(true);
@@ -296,12 +296,12 @@ bool UFTBattleComponent::StartBattle()
 
 double UFTBattleComponent::Now()
 {
-	return bUsingMusic ? Conductor->GetSongTime() : FPlatformTime::Seconds() - Epoch;
+	return bUsingMusic ? Conductor->GetSongTime() : UFTPauseSubsystem::WallSeconds() - Epoch;
 }
 
 double UFTBattleComponent::InputNow() const
 {
-	return bUsingMusic ? Conductor->GetInputSongTime() : FPlatformTime::Seconds() - Epoch;
+	return bUsingMusic ? Conductor->GetInputSongTime() : UFTPauseSubsystem::WallSeconds() - Epoch;
 }
 
 double UFTBattleComponent::GetBattleTime()

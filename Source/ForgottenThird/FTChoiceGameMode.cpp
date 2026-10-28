@@ -4,6 +4,7 @@
 #include "EngineUtils.h"
 #include "FTChoiceHUD.h"
 #include "FTGameInstance.h"
+#include "FTPauseSubsystem.h"
 #include "FTPlayerController.h"
 #include "FTStorySubsystem.h"
 #include "FTText.h"
@@ -182,7 +183,8 @@ void AFTChoiceGameMode::CacheLoop()
 
 bool AFTChoiceGameMode::InputReady() const
 {
-	return bHasStep && !bReturning && Elapsed >= ftcore::StubScreen::kInputGrace;
+	// Not while the pause menu is up (or closed this frame): its presses are not the screen's.
+	return bHasStep && !bReturning && Elapsed >= ftcore::StubScreen::kInputGrace && !UFTPauseSubsystem::IsBlocking(this);
 }
 
 void AFTChoiceGameMode::HandlePress()
