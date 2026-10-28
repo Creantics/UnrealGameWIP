@@ -28,7 +28,8 @@ Private notes (character references, concept-art review, script status) are in `
     - All five runs exit 0: Explore wide (4 angles) and close (2), Solhaven wide (4), and the two pre-switch maps wide (4 each).
     - Before: black toon edge lines on every shape and character, a flat gradient sky and flat shading.
     - After: volumetric clouds, soft sun shadows and distance haze, and no outline on any shape or character.
-    - The Solhaven plaza reads near-white: the surface colour clamp tops out at 0.8, above real light stone (about 0.5 to 0.6). It's a C++ value, so it waits for UBT.
+    - The Solhaven plaza reads near-white under the current exposure. Its albedo (0.55) is already realistic and stays
+      under the 0.8 colour clamp, so the fix is measuring the exposure per map, not changing the colour.
     - A figure standing on Explore shows in both the old and the new shots, so it isn't from this change.
   - Docs: `SCENE_LOOK.md` (new), plus the look sections of `WORLDS.md`, `EXPLORE_DEMO.md`, `STYLE_PACKS_UE.md`,
     `VFX_UE.md` and `PHYSICS_UE.md`.
@@ -40,9 +41,9 @@ Private notes (character references, concept-art review, script status) are in `
     doesn't know, so UBT stops with a RulesError. Until the engine is verified or updated in the launcher, build with
     `Build.bat` plus `-DisablePlugin=Fab` (`gate.ps1 -Ubt` doesn't pass it). The gate above ran before the update,
     and nothing under `Source/` or `Core/` changed after it. The existing editor DLLs load fine for `-game` runs.
-  - Next: environment work on the worlds, Solhaven first: a surface library in place of the blockout master,
-    terrain and PCG scatter in place of the sphere trees, then a building kit. Later: lower the surface colour
-    clamp to about 0.6, measure the exposure per map, and give each world its own look (blended with `lerp`).
+  - Next (started): environment work on the worlds, Solhaven first: CC0 surface textures in place of the blockout
+    master, then terrain and PCG scatter in place of the sphere trees, then a building kit. Later: measure the
+    exposure per map (it's what makes the plaza near-white), and give each world its own look (blended with `lerp`).
 - **Earlier (2026-10-28 ~15:10): two leads wear their garments in the demo, and main has the follower ledge catch.**
   - main and the demo checkout are at 6c82674: the animation session's follower ledge catch (b397de7, merged with
     main's body-mask tools in 6fcb250) and the pinhole handling below. Gate: 783 doctest cases, ctest 4/4, UBT Succeeded.
