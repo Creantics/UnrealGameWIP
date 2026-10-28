@@ -18,12 +18,14 @@
 #include "TimerManager.h"
 
 #include "ForgottenThird.h"
+#include "FTCutsceneDirector.h"
 #include "FTExploreCharacter.h"
 #include "FTExploreSpot.h"
 #include "FTFieldGuard.h"
 #include "FTGameInstance.h"
 #include "FTLocomotionAnimInstance.h"
 #include "FTPartyFollower.h"
+#include "FTStepHost.h"
 #include "FTStorySubsystem.h"
 #include "FTStyleController.h"
 #include "FTText.h"
@@ -129,8 +131,33 @@ void AFTExploreDirector::BeginPlay()
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: autoplay on."));
 	}
+	UWorld* World = GetWorld();
+	if (World && !Overworld && !bOverworld)
+	{
+		// The beat's next field step and its CG steps can play on this map (FTStepHost.h).
+		if (UFTStepHostSubsystem* Hosts = World->GetSubsystem<UFTStepHostSubsystem>())
+		{
+			Hosts->Register(EFTStepHost::Field, FFTStartStepHere::CreateUObject(this, &AFTExploreDirector::StartStepHere));
+		}
+		FActorSpawnParameters Spawn;
+		Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		CutsceneDirector = World->SpawnActor<AFTCutsceneDirector>(GetActorLocation(), FRotator::ZeroRotator, Spawn);
+		if (CutsceneDirector)
+		{
+			CutsceneDirector->HostSteps(true, true);
+		}
+	}
 	// Back from the last fight: everything may be done already.
 	CheckComplete();
+}
+
+void AFTExploreDirector::EndPlay(const EEndPlayReason::Type Reason)
+{
+	if (UFTStepHostSubsystem* Hosts = GetWorld() ? GetWorld()->GetSubsystem<UFTStepHostSubsystem>() : nullptr)
+	{
+		Hosts->Unregister(EFTStepHost::Field, this);
+	}
+	Super::EndPlay(Reason);
 }
 
 void AFTExploreDirector::FindSpots()
@@ -865,8 +892,17 @@ void AFTExploreDirector::ReturnToStory()
 	bStoryReturning = true;
 	GI->StoryCarry.bDone = true;
 	GI->StoryCarry.bWon = true;
-	SetBanner(TEXT("Back to the story"));
 	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: field step done at %s beat %d step %d after %.1f s."), *GI->StoryCarry.Scene, GI->StoryCarry.Beat, GI->StoryCarry.Step, FieldElapsed);
+	// The beat's next step plays on this map when it can (a field step, or a CG step around the lead).
+	if (FTStep::ContinueHere(this))
+	{
+		if (GoalSpot)
+		{
+			GoalSpot->SetActorHiddenInGame(true);
+		}
+		return;
+	}
+	SetBanner(TEXT("Back to the story"));
 	FTimerHandle Timer;
 	GetWorldTimerManager().SetTimer(Timer, this, &AFTExploreDirector::OpenStoryMap, 0.8f, false);
 }
@@ -878,6 +914,27 @@ void AFTExploreDirector::OpenStoryMap()
 	{
 		UGameplayStatics::SetGlobalTimeDilation(this, 1.f);
 		UGameplayStatics::OpenLevel(this, FName(*GI->StoryCarry.ReturnMap));
+	}
+}
+
+void AFTExploreDirector::StartStepHere()
+{
+	// The autopilot starts afresh, and the lead walks on from where it stands: no move to the
+	// district's spawn.
+	PilotTarget = -1;
+	PilotBestDist = 0.f;
+	PilotStuck = 0.f;
+	PilotPath.Reset();
+	PilotPathTarget = -1;
+	PilotPathNext = -1;
+	PilotPathRefreshAt = 0.0;
+	bStoryReturning = false;
+	BeginStoryWalk();
+	bWorldSpawnPending = false;
+	bFieldReached = false;
+	if (GoalSpot)
+	{
+		GoalSpot->SetFocused(false);
 	}
 }
 
