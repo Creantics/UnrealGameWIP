@@ -128,6 +128,12 @@ const TCHAR* const SlideNames[] = {
 	TEXT("M_Neutral_Slide_FootOut_Out_Idle_Stand"), TEXT("M_Neutral_Slide_FootOut_Out_Idle_Crouch"),
 	TEXT("M_Neutral_Slide_FootOut_Out_Moving_Walk"), TEXT("M_Neutral_Slide_FootOut_Out_Moving_Run"),
 	TEXT("M_Relaxed_Slide_FootOut_Out_Moving_Sprint"), TEXT("M_Neutral_Slide_FootOut_Out_Moving_Crouch")};
+// The catches after the run loop's prefix, in TraversalClips' order from FirstCatchClip: from high up, then
+// mantles from a chest's and a hip's height, each from a stand, a walk and a run.
+const TCHAR* const CatchNames[] = {
+	TEXT("_Traversal_Catch_Cliff_high_stand"),
+	TEXT("_Traversal_Catch_Mantle_med_stand"), TEXT("_Traversal_Catch_Mantle_med_walk"), TEXT("_Traversal_Catch_Mantle_med_run"),
+	TEXT("_Traversal_Catch_Mantle_low_stand"), TEXT("_Traversal_Catch_Mantle_low_walk"), TEXT("_Traversal_Catch_Mantle_low_run")};
 // A traversal clip fades in over the locomotion this long (s), and out over this long before its end; one that
 // takes over from another (a slide's next clip) takes this long to.
 constexpr float kTraversalIn = 0.15f;
@@ -458,8 +464,9 @@ void UFTLocomotionAnimInstance::SetCrouchFromRun()
 void UFTLocomotionAnimInstance::SetTraversalFromRun()
 {
 	static_assert(UE_ARRAY_COUNT(TraversalNames) == FirstSlideClip, "one name per traversal clip");
-	static_assert(FirstSlideClip <= static_cast<int32>(ftcore::kMaxTraversalClips), "the traversal clips fit the TraversalSet");
+	static_assert(NumTraversalClips <= static_cast<int32>(ftcore::kMaxTraversalClips), "the traversal clips fit the TraversalSet");
 	static_assert(UE_ARRAY_COUNT(SlideNames) == ftcore::kSlideClips, "one name per slide clip");
+	static_assert(UE_ARRAY_COUNT(CatchNames) == NumCatchClips, "one name per catch clip");
 	static const bool bNoTraversal = FParse::Param(FCommandLine::Get(), TEXT("LocoNoTraversal"));
 	const UAnimSequence* Loop = bNoTraversal ? nullptr : Clips[static_cast<int32>(ftcore::LocoClip::Run)].Get();
 	const FString Path = Loop ? Loop->GetPathName() : FString();
@@ -469,13 +476,15 @@ void UFTLocomotionAnimInstance::SetTraversalFromRun()
 	int32 Found = 0;
 	for (int32 I = 0; I < NumTraversalClips; ++I)
 	{
-		// A traversal clip's name stands in for the run loop's _Run_Loop_F, a slide clip's for its whole name.
-		const bool bSlideClip = I >= FirstSlideClip;
+		// A traversal or catch clip's name stands in for the run loop's _Run_Loop_F, a slide clip's for its whole name.
+		const bool bSlideClip = I >= FirstSlideClip && I < FirstCatchClip;
+		const bool bCatchClip = I >= FirstCatchClip;
 		const TCHAR* const RunName = bSlideClip ? TEXT("M_Neutral_Run_Loop_F") : TEXT("_Run_Loop_F");
+		const TCHAR* const ClipName = bCatchClip ? CatchNames[I - FirstCatchClip] : bSlideClip ? SlideNames[I - FirstSlideClip] : TraversalNames[I];
 		UAnimSequence* Clip = nullptr;
 		if (Path.Contains(RunName))
 		{
-			const FString ClipPath = Path.Replace(RunName, bSlideClip ? SlideNames[I - FirstSlideClip] : TraversalNames[I], ESearchCase::CaseSensitive);
+			const FString ClipPath = Path.Replace(RunName, ClipName, ESearchCase::CaseSensitive);
 			if (FPackageName::DoesPackageExist(FPackageName::ObjectPathToPackageName(ClipPath)))
 			{
 				Clip = LoadObject<UAnimSequence>(nullptr, *ClipPath, nullptr, LOAD_NoWarn | LOAD_Quiet);
@@ -545,7 +554,17 @@ void UFTLocomotionAnimInstance::SetTraversalFromRun()
 		ftcore::TraversalClipInfo Info;
 		if (bSampled)
 		{
-			if (I >= kFirstRoll)
+			if (bCatchClip)
+			{
+				// A catch is read from its root, from the catch (its lowest point) on: the clip comes down onto the ledge
+				// from far higher than a jump comes from.
+				Info = ftcore::measureCatch(Frames.GetData(), Frames.Num(), Clip->GetPlayLength());
+				UE_LOG(LogForgottenThird, Display,
+					TEXT("Locomotion: traversal %d = %s, %.2f s: %s, catch %.2f land %.2f, edge %.0f cm ahead %.0f up, ends %.0f up, goes on at %.0f cm/s"),
+					I, *Clip->GetName(), Clip->GetPlayLength(), Info.length <= 0.f ? TEXT("NOT MEASURED") : TEXT("catch"), Info.contact, Info.land,
+					Info.ledgeAhead, Info.ledgeHeight, Info.rise, Info.exitSpeed);
+			}
+			else if (I >= kFirstRoll)
 			{
 				// A roll is read from the pelvis going down and back up; its root stays on the floor (a land roll's from
 				// its touchdown, where it is played from).
@@ -568,7 +587,7 @@ void UFTLocomotionAnimInstance::SetTraversalFromRun()
 	}
 	if (Loop)
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: %d of %d traversal and slide clips next to %s."), Found, NumTraversalClips, *Loop->GetName());
+		UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: %d of %d traversal, slide and catch clips next to %s."), Found, NumTraversalClips, *Loop->GetName());
 	}
 }
 
@@ -746,6 +765,12 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	else
 	{
 		PrevTime = PlayOn(PrevTime, PrevSeq->GetPlayLength(), bPrevLoop);
+	}
+	// A body a catch carries up from the air stays in the air to its locomotion until the catch plays at full
+	// weight, so the landing it would play then does so under the catch rather than as the catch fades in.
+	if (TravClip >= FirstCatchClip && !bTravOut && TravWeight < 1.f)
+	{
+		In.falling = true;
 	}
 	Loco.update(In);
 

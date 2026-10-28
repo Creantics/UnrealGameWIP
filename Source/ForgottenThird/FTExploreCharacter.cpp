@@ -56,8 +56,17 @@ constexpr float kProbeStep = 5.f;
 constexpr float kTopTolerance = 15.f;
 constexpr float kBackGap = 50.f;
 constexpr float kProbeFacing = 0.8f;
-// A roll press the body can't act on yet is kept this long (s), and a roll or a slide turns the body to its way with
-// this time constant (s).
+// In the air (cm): the forward traces' heights above the feet (a ledge to catch may be from under the feet to past the
+// hands), their reach, and how far below the feet the down trace looks for a top; the stick asks for a catch pointing at
+// least this squarely (the cosine) into the face. -LocoCatch jumps at a wall between these distances ahead.
+constexpr float kCatchHeights[] = {-60.f, 0.f, 60.f, 120.f};
+constexpr float kCatchReach = 300.f;
+constexpr float kCatchBelow = 120.f;
+constexpr float kCatchStick = 0.5f;
+constexpr float kCourseJumpFrom = 80.f;
+constexpr float kCourseJumpTo = 120.f;
+// A roll press the body can't act on yet is kept this long (s), and a roll or a slide turns the body to its way (a catch
+// square into the face) with this time constant (s).
 constexpr float kRollBuffer = 0.2f;
 constexpr float kRollTurnTime = 0.05f;
 // A wall a slide meets this squarely or more (the cosine between its way and into the wall) stops it; one met at more
@@ -185,7 +194,8 @@ void AFTExploreCharacter::BeginPlay()
 		|| FParse::Param(FCommandLine::Get(), TEXT("LocoSideAlways"));
 	FParse::Value(FCommandLine::Get(), TEXT("LocoCamPitch="), SideAlwaysPitch);
 	bNoLook = FParse::Param(FCommandLine::Get(), TEXT("LocoNoLook"));
-	bCoursePending = FParse::Param(FCommandLine::Get(), TEXT("LocoVaultWall"));
+	bCatchCourse = FParse::Param(FCommandLine::Get(), TEXT("LocoCatch"));
+	bCoursePending = bCatchCourse || FParse::Param(FCommandLine::Get(), TEXT("LocoVaultWall"));
 	if (bPortrait)
 	{
 		// For checking a look: the camera holds still round the pawn, by default in front of the face. Yaw 180 is
@@ -458,7 +468,7 @@ void AFTExploreCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 	Input->BindAction(MoveAction, ETriggerEvent::Triggered, this, &AFTExploreCharacter::HandleMove);
 	Input->BindAction(LookAction, ETriggerEvent::Triggered, this, &AFTExploreCharacter::HandleLook);
 	Input->BindAction(JumpAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleJump);
-	Input->BindAction(JumpAction, ETriggerEvent::Completed, this, &ACharacter::StopJumping);
+	Input->BindAction(JumpAction, ETriggerEvent::Completed, this, &AFTExploreCharacter::HandleJumpRelease);
 	Input->BindAction(RollAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleRoll);
 	Input->BindAction(RunAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleRunStart);
 	Input->BindAction(RunAction, ETriggerEvent::Completed, this, &AFTExploreCharacter::HandleRunStop);
@@ -505,6 +515,8 @@ void AFTExploreCharacter::HandleRunStart()
 void AFTExploreCharacter::HandleJump()
 {
 	// Crouched, jump stands the body up; standing in front of a low wall or a ledge, it goes over or up; otherwise it jumps.
+	// Held in the air, it catches a ledge within reach (Tick).
+	bJumpHeld = true;
 	if (bTraversing)
 	{
 		return;
@@ -521,13 +533,19 @@ void AFTExploreCharacter::HandleJump()
 	Jump();
 }
 
+void AFTExploreCharacter::HandleJumpRelease()
+{
+	bJumpHeld = false;
+	StopJumping();
+}
+
 void AFTExploreCharacter::HandleRoll()
 {
 	// A press the body can't act on yet (in the air, mid-traversal) is kept for a moment: Tick tries it again.
 	RollAsked = TryRoll(false, true) ? 0.f : kRollBuffer;
 }
 
-bool AFTExploreCharacter::ProbeObstacle(const ftcore::TraversalSet& Set, ftcore::TraversalObstacle& Out) const
+bool AFTExploreCharacter::ProbeObstacle(const ftcore::TraversalSet& Set, bool bAir, ftcore::TraversalObstacle& Out, FVector& In) const
 {
 	const UWorld* World = GetWorld();
 	const UCapsuleComponent* Capsule = GetCapsuleComponent();
@@ -542,13 +560,15 @@ bool AFTExploreCharacter::ProbeObstacle(const ftcore::TraversalSet& Set, ftcore:
 	auto Level = [](const FHitResult& Hit) { return Hit.ImpactNormal.Z > 0.7; };
 
 	// The near face: the nearer hit of the forward traces on a wall facing the body.
+	const TArrayView<const float> Heights = bAir ? MakeArrayView(kCatchHeights) : MakeArrayView(kProbeHeights);
+	const float Reach = bAir ? kCatchReach : kProbeReach;
 	FHitResult Wall;
 	bool bWall = false;
-	for (const float Height : kProbeHeights)
+	for (const float Height : Heights)
 	{
 		const FVector From = Feet + FVector(0.0, 0.0, Height);
 		FHitResult Hit;
-		if (Trace(From, From + Fwd * kProbeReach, Hit) && FMath::Abs(Hit.ImpactNormal.Z) < 0.3
+		if (Trace(From, From + Fwd * Reach, Hit) && FMath::Abs(Hit.ImpactNormal.Z) < 0.3
 			&& FVector::DotProduct(-Hit.ImpactNormal.GetSafeNormal2D(), Fwd) > kProbeFacing && (!bWall || Hit.Distance < Wall.Distance))
 		{
 			Wall = Hit;
@@ -559,11 +579,15 @@ bool AFTExploreCharacter::ProbeObstacle(const ftcore::TraversalSet& Set, ftcore:
 	{
 		return false;
 	}
-	const float Distance = static_cast<float>(FVector::DotProduct(Wall.ImpactPoint - Feet, Fwd));
-	// The top: down just past the face, from above the highest clip (a start inside something is too high).
-	const FVector Over = Feet + Fwd * (Distance + kProbeStep);
+	// The way in: on the ground the way the body faces (its clips go that way); in the air square into the face, which
+	// the body turns to as it catches.
+	In = bAir ? FVector(-Wall.ImpactNormal.GetSafeNormal2D()) : Fwd;
+	const float Distance = static_cast<float>(FVector::DotProduct(Wall.ImpactPoint - Feet, In));
+	// The top: down just past the face, from above the highest clip (a start inside something is too high); in the air
+	// down to below the feet too.
+	const FVector Over = Feet + In * (Distance + kProbeStep);
 	FHitResult Top;
-	if (!Trace(Over + FVector(0.0, 0.0, kProbeTop), Over, Top) || !Level(Top))
+	if (!Trace(Over + FVector(0.0, 0.0, kProbeTop), Over - FVector(0.0, 0.0, bAir ? kCatchBelow : 0.f), Top) || !Level(Top))
 	{
 		return false;
 	}
@@ -573,7 +597,7 @@ bool AFTExploreCharacter::ProbeObstacle(const ftcore::TraversalSet& Set, ftcore:
 	float Depth = 0.f;
 	for (float D = 2.f * kProbeStep; D <= Tuning.standDepth + kProbeStep; D += kProbeStep)
 	{
-		const FVector At = Feet + Fwd * (Distance + D);
+		const FVector At = Feet + In * (Distance + D);
 		FHitResult Hit;
 		if (!Trace(FVector(At.X, At.Y, TopZ + kTopTolerance), FVector(At.X, At.Y, TopZ - kTopTolerance), Hit))
 		{
@@ -587,8 +611,12 @@ bool AFTExploreCharacter::ProbeObstacle(const ftcore::TraversalSet& Set, ftcore:
 	Out.depth = Depth;
 	if (Depth < Tuning.standDepth)
 	{
-		// Thin: the floor beyond, no lower than the deepest drop.
-		const FVector Beyond = Feet + Fwd * (Distance + Depth + kBackGap);
+		// Thin: the floor beyond, no lower than the deepest drop. Nothing to catch in the air.
+		if (bAir)
+		{
+			return false;
+		}
+		const FVector Beyond = Feet + In * (Distance + Depth + kBackGap);
 		FHitResult Floor;
 		if (Trace(FVector(Beyond.X, Beyond.Y, TopZ + kTopTolerance), FVector(Beyond.X, Beyond.Y, Feet.Z - Tuning.maxDrop - 20.0), Floor) && Level(Floor))
 		{
@@ -601,7 +629,7 @@ bool AFTExploreCharacter::ProbeObstacle(const ftcore::TraversalSet& Set, ftcore:
 		// Deep: room on the top for the capsule.
 		const float Half = Capsule->GetScaledCapsuleHalfHeight();
 		const float Radius = Capsule->GetScaledCapsuleRadius();
-		const FVector Stand = Feet + Fwd * (Distance + Radius + kProbeStep);
+		const FVector Stand = Feet + In * (Distance + Radius + kProbeStep);
 		if (World->OverlapBlockingTestByChannel(FVector(Stand.X, Stand.Y, TopZ + Half + 2.0), FQuat::Identity, ECC_Pawn,
 				FCollisionShape::MakeCapsule(Radius, Half), Query))
 		{
@@ -621,7 +649,8 @@ bool AFTExploreCharacter::TryTraverse(bool bLog)
 	}
 	const ftcore::TraversalSet& Set = Anim->GetTraversal();
 	ftcore::TraversalObstacle Obstacle;
-	if (!ProbeObstacle(Set, Obstacle))
+	FVector In;
+	if (!ProbeObstacle(Set, false, Obstacle, In))
 	{
 		return false;
 	}
@@ -651,6 +680,65 @@ bool AFTExploreCharacter::TryTraverse(bool bLog)
 		Plan.clip, Clip.move == ftcore::TraversalMove::Up ? TEXT("up") : TEXT("over"), Clip.ledgeHeight, Plan.start, Obstacle.height,
 		Obstacle.distance, Obstacle.depth, Obstacle.backFloor ? 1 : 0, Obstacle.backHeight, Speed, Plan.atContact.x, Plan.atContact.z,
 		Plan.atLeave.x, Plan.atLeave.z, Plan.atLand.x, Plan.atLand.z);
+	return true;
+}
+
+bool AFTExploreCharacter::TryCatch(bool bLog)
+{
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
+	if (bTraversing || !Anim || !Move->IsFalling() || bIsCrouched)
+	{
+		return false;
+	}
+	const ftcore::TraversalSet& Set = Anim->GetTraversal();
+	ftcore::TraversalObstacle Obstacle;
+	FVector In;
+	if (!ProbeObstacle(Set, true, Obstacle, In))
+	{
+		return false;
+	}
+	// Asked for by the stick pointing into the face, or by the jump held while the body is not going away from it.
+	const FVector Stick = Move->GetCurrentAcceleration();
+	const FVector V = GetVelocity();
+	const float VIn = static_cast<float>(FVector::DotProduct(V, In));
+	const bool bInto = Stick.SizeSquared2D() > 1.0 && FVector::DotProduct(Stick.GetSafeNormal2D(), In) > kCatchStick;
+	if (!bInto && (!bJumpHeld || VIn < 0.f))
+	{
+		return false;
+	}
+	// Core's x is into the face, y its left (left of In in UE's ground plane is (In.Y, -In.X)), z up; the speed it goes on
+	// at is the one the stick asks for.
+	const ftcore::TravPoint Velocity{VIn, static_cast<float>(V.X * In.Y - V.Y * In.X), static_cast<float>(V.Z)};
+	const float Gravity = -Move->GetGravityZ();
+	const float Speed = Move->MaxWalkSpeed * FMath::Min(static_cast<float>(Stick.Size2D()) / FMath::Max(Move->GetMaxAcceleration(), 1.f), 1.f);
+	const ftcore::TraversalPlan Plan = Set.planCatch(Obstacle, Velocity, Gravity, Speed);
+	if (!Plan.ok())
+	{
+		// Said once a flight for each outcome: none fits, or one is still out of reach.
+		const int32 Said = Plan.tooFar ? 1 : 0;
+		if (bLog && Said != CatchMissSaid)
+		{
+			CatchMissSaid = Said;
+			UE_LOG(LogForgottenThird, Display, TEXT("Catch: none for a %.0f cm top %.0f cm ahead, %.0f deep, at (%.0f, %.0f, %.0f) cm/s%s."),
+				Obstacle.height, Obstacle.distance, Obstacle.depth, Velocity.x, Velocity.y, Velocity.z, Plan.tooFar ? TEXT(": still out of reach") : TEXT(""));
+		}
+		return false;
+	}
+	bTraversing = true;
+	TravPlan = Plan;
+	TravTime = Plan.start;
+	TravFrame = FTransform(FRotator(0.0, In.Rotation().Yaw, 0.0),
+		GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+	Move->SetMovementMode(MOVE_Custom);
+	Anim->SetTraversal(Plan.clip, TravTime);
+	const ftcore::TraversalClipInfo& Clip = Set.clip(static_cast<std::size_t>(Plan.clip));
+	const float Lead = Clip.contact - Plan.start;
+	const float Flight = Velocity.z * Lead - 0.5f * Gravity * Lead * Lead;
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("Catch: clip %d (edge %.0f up) from %.2f s, %.2f s before the catch, for a %.0f cm top %.0f cm ahead, %.0f deep, at (%.0f, %.0f, %.0f) cm/s; the catch at (%.0f, %.0f), its flight's miss (%.0f, %.0f)."),
+		Plan.clip, Clip.ledgeHeight, Plan.start, Lead, Obstacle.height, Obstacle.distance, Obstacle.depth, Velocity.x, Velocity.y, Velocity.z,
+		Plan.atContact.x, Plan.atContact.z, Plan.atContact.x - Velocity.x * Lead, Plan.atContact.z - Flight);
 	return true;
 }
 
@@ -721,6 +809,7 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 	const ftcore::TraversalSet& Set = Anim->GetTraversal();
 	const ftcore::TraversalClipInfo& Clip = Set.clip(static_cast<std::size_t>(TravPlan.clip));
 	const bool bRoll = Clip.move == ftcore::TraversalMove::Roll;
+	const bool bCatch = Clip.move == ftcore::TraversalMove::Catch;
 	TravTime += DeltaSeconds * Set.rate(TravPlan, TravTime);
 	const float Length = Clip.length;
 	const float T = FMath::Min(TravTime, Length);
@@ -743,9 +832,6 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 		bBlocked = Wall.bBlockingHit && !Move->IsWalkable(Wall);
 		bFalls = !Floor.bBlockingHit || !Move->IsWalkable(Floor);
 		Feet = GetActorLocation() - HalfUp;
-		// The body turns to the way it rolls.
-		const float Gap = FMath::FindDeltaAngleDegrees(static_cast<float>(GetActorRotation().Yaw), static_cast<float>(TravFrame.Rotator().Yaw));
-		AddActorWorldRotation(FRotator(0.0, Gap * (1.f - FMath::Exp(-DeltaSeconds / kRollTurnTime)), 0.0));
 	}
 	// Past the landing the clip's tail (a run on, a stand-up) is swept, a little above the floor so the floor
 	// never stops it: a wall ahead ends it there.
@@ -760,6 +846,12 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 	else
 	{
 		SetActorLocation(Feet + HalfUp);
+	}
+	// The body turns to the way it rolls, or square into the face it catches.
+	if (bRoll || bCatch)
+	{
+		const float Gap = FMath::FindDeltaAngleDegrees(static_cast<float>(GetActorRotation().Yaw), static_cast<float>(TravFrame.Rotator().Yaw));
+		AddActorWorldRotation(FRotator(0.0, Gap * (1.f - FMath::Exp(-DeltaSeconds / kRollTurnTime)), 0.0));
 	}
 	// The movement component's velocity is the path's, for the locomotion now and the walk after (a roll's level:
 	// its floor is the real one).
@@ -957,12 +1049,15 @@ void AFTExploreCharacter::SpawnTraversalCourse()
 	CourseDir = GetActorForwardVector().GetSafeNormal2D();
 	const FVector Feet = GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
 	// Ahead, each on the floor found under it: a thin wall to go over, a low block to climb onto (and run off the
-	// far end), and a high block to climb.
+	// far end), and a high block to climb; for -LocoCatch, deep blocks of rising height to jump at and catch, the last
+	// caught at the top of the jump.
 	struct FBlock
 	{
 		float At, Depth, Height;
 	};
-	const FBlock Blocks[] = {{700.f, 25.f, 100.f}, {1500.f, 300.f, 100.f}, {2600.f, 300.f, 240.f}};
+	const FBlock VaultBlocks[] = {{700.f, 25.f, 100.f}, {1500.f, 300.f, 100.f}, {2600.f, 300.f, 240.f}};
+	const FBlock CatchBlocks[] = {{700.f, 300.f, 150.f}, {1500.f, 300.f, 300.f}, {2600.f, 300.f, 330.f}};
+	const TArrayView<const FBlock> Blocks = bCatchCourse ? MakeArrayView(CatchBlocks) : MakeArrayView(VaultBlocks);
 	const FCollisionQueryParams Query(SCENE_QUERY_STAT(FTTraversalCourse), false, this);
 	for (const FBlock& B : Blocks)
 	{
@@ -989,7 +1084,8 @@ void AFTExploreCharacter::SpawnTraversalCourse()
 		UE_LOG(LogForgottenThird, Display, TEXT("Traversal course: a %.0f cm block %.0f deep, %.0f cm ahead (floor %+.0f)."), B.Height, B.Depth,
 			B.At, Z - Feet.Z);
 	}
-	GetCharacterMovement()->MaxWalkSpeed = RunSpeed;
+	// The vaults are run at in a sprint, the catches in the default run.
+	GetCharacterMovement()->MaxWalkSpeed = bCatchCourse ? WalkSpeed : RunSpeed;
 	bVaultCourse = true;
 }
 
@@ -1019,6 +1115,7 @@ void AFTExploreCharacter::ResetHeldInput()
 {
 	HandleRunStop();
 	RollAsked = 0.f;
+	bJumpHeld = false;
 	UnCrouch();
 }
 
@@ -1092,8 +1189,9 @@ FVector2D AFTExploreCharacter::GetFacing2D() const
 void AFTExploreCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
-	// -LocoVaultWall builds the course once the body has settled where the map puts it, then runs along it,
-	// traversing what it can.
+	const UFTLocomotionAnimInstance* LocoAnim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
+	// -LocoVaultWall (or -LocoCatch) builds the course once the body has settled where the map puts it, then runs along
+	// it, traversing what it can (or jumping at each wall from about a metre out, the jump held through the flight).
 	if (bCoursePending && GetWorld()->GetTimeSeconds() > 1.0 && GetCharacterMovement()->IsMovingOnGround())
 	{
 		bCoursePending = false;
@@ -1102,11 +1200,34 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	if (bVaultCourse && !bTraversing)
 	{
 		AddMovementInput(CourseDir, 1.f);
-		TryTraverse(false);
+		if (!bCatchCourse)
+		{
+			TryTraverse(false);
+		}
+		else if (GetCharacterMovement()->IsMovingOnGround())
+		{
+			bJumpHeld = false;
+			ftcore::TraversalObstacle Ahead;
+			FVector In;
+			if (LocoAnim && ProbeObstacle(LocoAnim->GetTraversal(), false, Ahead, In) && Ahead.distance >= kCourseJumpFrom
+				&& Ahead.distance <= kCourseJumpTo)
+			{
+				bJumpHeld = true;
+				Jump();
+			}
+		}
+	}
+	// In the air, a ledge within reach is caught when asked for (TryCatch).
+	if (!bTraversing && GetCharacterMovement()->IsFalling())
+	{
+		TryCatch(bCatchCourse);
+	}
+	else
+	{
+		CatchMissSaid = -1;
 	}
 	// A roll press still kept is tried again, and a landing the locomotion rolls out of starts one.
 	RollAsked = FMath::Max(RollAsked - DeltaSeconds, 0.f);
-	const UFTLocomotionAnimInstance* LocoAnim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
 	const bool bLandingRoll = LocoAnim && LocoAnim->GetLocomotion().landRoll();
 	if ((RollAsked > 0.f || bLandingRoll) && TryRoll(bLandingRoll, bLandingRoll))
 	{
@@ -1123,7 +1244,8 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 			TickTraversal(DeltaSeconds);
 		}
 	}
-	// A vault or a climb holds the facing it began with; a roll or a slide turns to its way (TickTraversal, TickSlide).
+	// A vault or a climb holds the facing it began with; a roll or a slide turns to its way, a catch square into the face
+	// (TickTraversal, TickSlide).
 	const UFTLocomotionAnimInstance* Steered = bTraversing ? nullptr : LocoAnim;
 	if (const UFTLocomotionAnimInstance* Anim = Steered)
 	{

@@ -30,6 +30,12 @@
 // (no collision on the way) until the clip ends. -LocoVaultWall builds a test course ahead (a thin wall, a low
 // block, a high block) and runs at it, traversing whatever it can.
 //
+// In the air, a ledge within reach (a deep top, from under the feet to past the hands) is caught when the jump is held
+// or the stick points into it: one of the catch clips (SetTraversalFromRun's too) plays from where its catch is timed to
+// meet the body's flight (ftcore::TraversalSet::planCatch), the body turns square into the face, and the capsule is
+// carried from its flight into the catch and up onto the top as a climb is. -LocoCatch builds deep blocks 150, 300 and
+// 330 cm high ahead and jumps at each from about a metre out.
+//
 // Roll goes the way the stick points (else the way the body moves, else the way it faces): one of the roll clips
 // (SetTraversalFromRun's too) plays from its start, entered at the body's speed, the body turns to the roll's way and
 // the capsule follows the clip's root path along the real floor (up and down steps; a wall ends the roll, and with no
@@ -120,12 +126,12 @@ public:
 	// The PartyLooks entry the pawn wears (-1 when PartyLooks is empty), and whether the followers are hidden.
 	int32 GetLeadIndex() const { return LeadIndex; }
 	bool IsPartyHidden() const { return bPartyHidden; }
-	// Whether a traversal (a vault, a climb, a roll or a slide) is carrying the body: a scene played in place waits for it
-	// to end.
+	// Whether a traversal (a vault, a climb, a catch, a roll or a slide) is carrying the body: a scene played in place waits
+	// for it to end.
 	bool IsTraversing() const { return bTraversing; }
 	// For a scene that turns input off and on again: a held Run's release that came while input was off never arrived,
-	// so the body goes back to its default gait, and a roll press still kept is dropped. Crouch is a toggle, not held;
-	// standing up from it is this call's choice, so a scene starts and ends with the lead on its feet.
+	// so the body goes back to its default gait, a held jump is let go and a roll press still kept is dropped. Crouch is
+	// a toggle, not held; standing up from it is this call's choice, so a scene starts and ends with the lead on its feet.
 	void ResetHeldInput();
 
 protected:
@@ -141,6 +147,7 @@ private:
 	void HandleRunStart();
 	void HandleRunStop();
 	void HandleJump();
+	void HandleJumpRelease();
 	void HandleRoll();
 	void HandleCrouch();
 	void HandleInteract();
@@ -150,10 +157,14 @@ private:
 	void WearLook(const FFTLeadLook& Look);
 	// Gives the body's locomotion its loaded clips (and those found beside them) and the crouch its speed.
 	void SetupLocomotion(const FFTLoadedLook& Loaded);
-	// Traversal: finds what is ahead (false: nothing to go over or onto), starts a traversal (false: none
-	// fits; bLog says why), carries the body along one under way, and builds -LocoVaultWall's course.
-	bool ProbeObstacle(const ftcore::TraversalSet& Set, ftcore::TraversalObstacle& Out) const;
+	// Traversal: finds what is ahead (false: nothing to go over or onto; bAir: a deep top to catch, In the way into its
+	// face), starts a traversal (false: none fits; bLog says why), carries the body along one under way, and builds
+	// -LocoVaultWall's (or -LocoCatch's) course.
+	bool ProbeObstacle(const ftcore::TraversalSet& Set, bool bAir, ftcore::TraversalObstacle& Out, FVector& In) const;
 	bool TryTraverse(bool bLog);
+	// Starts a catch (false: not in the air, mid-traversal, crouched, not asked for, or none fits or is in reach yet; bLog
+	// says the last two, once a flight each).
+	bool TryCatch(bool bLog);
 	// Starts a roll (false: not on the ground, mid-traversal, no room to stand up, or no roll clip; bLog says the
 	// last), heading as a landing rolls when bLanding.
 	bool TryRoll(bool bLanding, bool bLog);
@@ -218,6 +229,8 @@ private:
 	float JumpTimer = 0.f;
 	float CrouchEvery = 0.f; // -LocoCrouchEvery=<s>
 	float CrouchTimer = 0.f;
+	bool bJumpHeld = false; // the jump pressed and not yet let go
+	int32 CatchMissSaid = -1; // the last "none" TryCatch logged this flight: 0 none fits, 1 out of reach
 	float RollAsked = 0.f; // a roll press still kept (s)
 	float RollEvery = 0.f; // -LocoRollEvery=<s>
 	float RollTimer = 0.f;
@@ -251,9 +264,11 @@ private:
 	FVector SlideFloor = FVector::UpVector;
 	bool bSlideBlocked = false;
 	float SlideTime = 0.f;
-	// -LocoVaultWall: the course still to build, then its way, run along every frame, traversing whatever is ahead.
+	// -LocoVaultWall: the course still to build, then (a course built and run) its way, run along every frame, traversing
+	// whatever is ahead; -LocoCatch's course jumps at its walls instead.
 	bool bCoursePending = false;
 	bool bVaultCourse = false;
+	bool bCatchCourse = false;
 	FVector CourseDir = FVector::ForwardVector;
 	uint32 SideTurns = 0;
 	float SideYaw = 0.f;

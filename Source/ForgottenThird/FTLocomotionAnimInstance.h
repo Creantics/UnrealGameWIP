@@ -178,12 +178,18 @@ public:
 	// and so on, each measured into GetTraversal() (index = TraversalNames order; the rolls from their pelvis, by
 	// ftcore::measureRoll). The slide's clips follow from FirstSlideClip, in ftcore::SlideState::clip's order
 	// (M_Neutral_Slide_FootOut_Into_Lfoot_to_x, ..._Loop_to_x, ..._Out_Moving_Run_to_x and so on), each measured into
-	// GetSlide(). Call after SetClip(Run). -LocoNoTraversal leaves them out.
+	// GetSlide(). The catches (a jump onto a ledge, its edge caught by the hands: from high up, then from a chest's and a
+	// hip's height, each from a stand, a walk and a run) follow from FirstCatchClip
+	// (M_Neutral_Traversal_Catch_Cliff_high_stand_to_x, ..._Catch_Mantle_med_stand_to_x and so on), each measured into
+	// GetTraversal() by ftcore::measureCatch. Call after SetClip(Run). -LocoNoTraversal leaves them out.
 	void SetTraversalFromRun();
 	const ftcore::TraversalSet& GetTraversal() const { return Traversal; }
 	const ftcore::SlideSet& GetSlide() const { return Slide; }
 	// Slide clip k (ftcore::SlideState::clip) plays as traversal clip FirstSlideClip + k.
 	static constexpr int32 FirstSlideClip = 20;
+	// The catches are traversal clips FirstCatchClip on, in the TraversalSet with the vaults and climbs.
+	static constexpr int32 FirstCatchClip = FirstSlideClip + static_cast<int32>(ftcore::kSlideClips);
+	static constexpr int32 NumCatchClips = 7;
 	// Plays traversal clip Clip (a TraversalPlan's) at clip time Time over the locomotion, fading in over its first
 	// moments and out by its end; the owner moves the body along TraversalSet::rootAt and calls this every frame,
 	// then with Clip -1 when it hands the body back: the clip plays on at its own pace while it fades out over
@@ -287,8 +293,8 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> Clips[59];
 	static_assert(ftcore::kLocoClipCount == 59, "Clips[] holds one per LocoClip");
-	// The traversal clips (the TraversalSet's), then the slide's.
-	static constexpr int32 NumTraversalClips = FirstSlideClip + static_cast<int32>(ftcore::kSlideClips);
+	// The traversal clips (the TraversalSet's), then the slide's, then the catches (the TraversalSet's again).
+	static constexpr int32 NumTraversalClips = FirstCatchClip + NumCatchClips;
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> TraversalClips[NumTraversalClips];
 	ftcore::TraversalSet Traversal;
