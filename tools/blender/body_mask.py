@@ -2,7 +2,7 @@
 SkeletalMeshEditorSubsystem.strip_lod_geometry reads; LODUtilities.cpp strips a triangle when every mask pixel its UV0
 footprint touches is black, and any non-black pixel it touches keeps it -- the header's comment says the reverse).
     blender -b --factory-startup --python tools/blender/body_mask.py -- <mh_body.fbx> <garment.fbx> <out prefix> [reach=0.15] [margin=0.05]
-        [mode=trousers|top] [also=<other prefix>_strip_faces.npy] [seam=<margin>]
+        [mode=trousers|top] [also=<other prefix>_strip_faces.npy] [seam=<margin>] [seam_neck=<m>]
 A LOD0 body vertex is hidden when all of these hold:
   - a ray along its normal, started 1 cm under the skin, leaves the garment (meets a face from behind) within `reach` m;
   - that hit is more than `margin` from the garment's openings (its boundary loops: the waist and the two cuffs);
@@ -11,6 +11,9 @@ A LOD0 body vertex is hidden when all of these hold:
   - it is more than `seam` m (default `margin`) from the body's own open edge, its seam with the face mesh (found with the
     UV splits welded by position; on an MH body it runs over the shoulder tops and dips at the front): the face's edge
     sits on it, and a void under that edge would show down a loose collar.
+    seam_neck=<m> (top mode) keeps that band only within <m> of the neck opening (the highest boundary loop): a top
+    rests on the shoulders, so the band shows nothing elsewhere, and there it poked through the cloth (Devin's tunic in
+    the run pose, the shoulder front beside the collar, 4-8 mm under the cloth and 11 cm or more below the opening).
 A face is stripped when all its vertices are hidden; so is any kept island that lies wholly in the band with no such
 weight and nothing within `seam` of the seam (the garment is closed there except at its openings).
 mode=top is for a shirt or tunic: every boundary loop is an opening (neck, cuffs, hem with its slits, any small hole),
@@ -24,7 +27,7 @@ stripped when the LOD0 face nearest its centre is), <out>_report.json, <out>_str
 the body with the strip in red (and with the garment on)."""
 import sys, json, math, bpy
 import numpy as np
-from mathutils import Vector
+from mathutils import Vector, kdtree
 from mathutils.bvhtree import BVHTree
 
 argv = sys.argv[sys.argv.index("--") + 1:]
@@ -151,11 +154,23 @@ if len(seam_pts):
     near_seam = d2.min(1) < SEAM ** 2
 seam_rep = {"edge_verts": int(len(seam_pts)), "band": SEAM, "kept_verts": int(near_seam.sum()),
             "z": [round(float(seam_pts[:, 2].min()), 4), round(float(seam_pts[:, 2].max()), 4)] if len(seam_pts) else None}
+if "seam_neck" in opt and len(seam_pts):
+    assert MODE == "top", "seam_neck is for a top (its highest boundary loop is the neck)"
+    SEAM_NECK = float(opt["seam_neck"])
+    kn = kdtree.KDTree(len(loops[0]))
+    for k, i in enumerate(loops[0]):
+        kn.insert(Vector(Gv[i].tolist()), k)
+    kn.balance()
+    to_neck = lambda P: np.array([kn.find(Vector(p.tolist()))[2] for p in P])
+    de = to_neck(seam_pts)
+    band = np.nonzero(near_seam)[0]
+    near_seam[band[to_neck(Bv[band]) >= SEAM_NECK]] = False
+    seam_rep.update(neck=SEAM_NECK, band_verts=int(len(band)), kept_verts=int(near_seam.sum()),
+                    edge_to_neck_min_p50_max=[round(float(x), 4) for x in (de.min(), np.median(de), de.max())])
 print("MASK seam", json.dumps(seam_rep))
 
 # per vertex tests
 hit_ok = np.zeros(nb, bool); hit_front = np.zeros(nb, bool); hit_d = np.full(nb, np.nan); hit_open = np.full(nb, np.nan)
-from mathutils import kdtree
 kd = kdtree.KDTree(len(open_pts))
 for i, p in enumerate(open_pts):
     kd.insert(Vector(p.tolist()), i)
