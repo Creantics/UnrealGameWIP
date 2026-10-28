@@ -249,6 +249,8 @@ LocoClipInfo measureMove(const GaitFrame* frames, std::size_t count, float lengt
     return info;
 }
 
+float locoRootSpeed(const LocoClipInfo& info, float t) { return info.moveTime > 0.f ? pathSpeed(info, t) : 0.f; }
+
 LocoClipInfo measureGait(const GaitFrame* frames, std::size_t count, float length) {
     LocoClipInfo info = measureMove(frames, count, length);
     const std::size_t n = std::min(count, kMaxGaitFrames);
@@ -437,9 +439,23 @@ bool Locomotion::beginTurn(const LocoInput& in, LocoClip first, LocoClip last, f
         // Entering before the turn (a pivot a little before it: its root brings the body into it), at the point whose
         // feet best continue the gait's.
         const float early = pivot ? tuning_.turnEarly : tuning_.steerEarly, late = pivot ? tuning_.turnLate : tuning_.steerLate;
-        const float lo = std::max(i.turnStart - early, 0.f), hi = std::max(i.turnStart - late, 0.f);
+        float lo = std::max(i.turnStart - early, 0.f), hi = std::max(i.turnStart - late, 0.f);
+        // A pivot whose root moves the body enters while that root still runs at the body's speed, if it ever does by
+        // then: entered braking, its root would brake the body all at once.
+        const float body = std::fabs(in.groundSpeed), band = tuning_.pivotMatch * body;
+        const bool matchSpeed = known && in.rootMotion && pivot;
+        bool matched = false;
+        for (float t = hi; matchSpeed && t >= 0.f; t -= i.moveTime / kLastSample) {
+            if (std::fabs(pathSpeed(i, t) - body) <= band) {
+                lo = std::max(t - (early - late), 0.f);
+                hi = t;
+                matched = true;
+                break;
+            }
+        }
         for (int k = 0; k <= (known ? kEntries : 0); ++k) {
             const float t = known ? lo + (hi - lo) * static_cast<float>(k) / kEntries : 0.f;
+            if (matched && k < kEntries && std::fabs(pathSpeed(i, t) - body) > band) continue;
             float cost = 0.f;
             if (known) {
                 const float p = pathSpeed(i, t);

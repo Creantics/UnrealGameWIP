@@ -194,6 +194,8 @@ FTCORE_API LocoClipInfo measureGait(const GaitFrame* frames, std::size_t count, 
 inline constexpr float kMoveStill = 0.5f;
 inline constexpr float kTurnStill = 5.f;
 FTCORE_API LocoClipInfo measureMove(const GaitFrame* frames, std::size_t count, float length);
+// A measured clip's root speed along its path at t (cm/s, at rate 1).
+FTCORE_API float locoRootSpeed(const LocoClipInfo& info, float t);
 
 struct LocoTuning {
     float moveStart = 25.f;     // ground speed that starts a gait from idle
@@ -258,6 +260,9 @@ struct LocoTuning {
     float pivotMin = 135.f;     // a running turn this far round (and this far off the way a steered body moves) pivots
     float turnEarly = 0.3f;     // a pivot enters between this long and turnLate before its turn begins
     float turnLate = 0.1f;
+    float pivotMatch = 0.2f;    // one its root moves enters where that root still moves within this share of the body's speed
+                                // instead: the latest such point before turnLate, or up to turnEarly - turnLate before it (the
+                                // feet pick), so it brakes the body as the clip brakes; one never that fast enters as above
     float steerEarly = 0.3f;    // any other running turn between this long and steerLate before it: up to its turn
     float steerLate = 0.f;      // as the body begins to, over a step, so one foot's clip or the other's meets the gait's feet
     float turnTail = 0.1f;      // and hands back this long after its turn ends (a turn on the spot too)
@@ -385,6 +390,8 @@ public:
     LocoClip turnClip() const { return move_; }
     float turnFrom() const { return turnFrom_; }
     float turnTo() const { return turnTo_; }
+    // Where in its clip it entered (s).
+    float turnEnter() const { return turnEnter_; }
     float turnWarp() const { return warp_; }
     bool turnRootDriven() const { return rootDriven_; }
     // Whether the turn playing is a pivot, which its clip turns the body through (a steered facing holds

@@ -1079,6 +1079,39 @@ LocoInput runningIn(Locomotion& l) {
 // velocity: a time constant of 1/8 s.
 void swingMove(LocoInput& in) { in.moveYaw += (in.wantYaw - in.moveYaw) * (1.f - std::exp(-kDt * 8.f)); }
 
+// A pivot's root as a captured one comes: running at `run` until 0.3 s, braking to 100 by 0.6, planting while it
+// turns, then away to 450 by 1.8.
+struct BrakePath {
+    float run = 500.f;
+    float operator()(float t) const {
+        if (t < 0.3f) return run * t;
+        const float braked = 0.45f * run + 15.f;
+        if (t < 0.6f) {
+            const float u = t - 0.3f;
+            return 0.3f * run + run * u - (run - 100.f) / 0.6f * u * u;
+        }
+        if (t < 1.4f) return braked + 100.f * (t - 0.6f);
+        const float planted = braked + 80.f;
+        if (t < 1.8f) {
+            const float u = t - 1.4f;
+            return planted + 100.f * u + 437.5f * u * u;
+        }
+        return planted + 110.f + 450.f * (t - 1.8f);
+    }
+};
+
+// makeTurnLoco with its running turns by 180 braking that way (both feet), turning between 0.8 and 1.3 s.
+Locomotion makeBrakeLoco(float run) {
+    static GaitFrame frames[121];
+    Locomotion l = makeTurnLoco();
+    for (const bool rightFoot : {false, true}) {
+        makeTurn(frames, 121, 2.f, rightFoot ? 0.5f : 0.f, BrakePath{run}, 180.f, 0.8f, 1.3f);
+        l.setClip(locoRunTurn(true, 3, rightFoot), measureMove(frames, 121, 2.f));
+    }
+    l.reset();
+    return l;
+}
+
 } // namespace
 
 TEST_CASE("locomotion: measureMove reads a clip's turn, and its feet in the root's turned frame") {
@@ -1200,6 +1233,57 @@ TEST_CASE("locomotion: heading the other way at a run pivots: the clip's root tu
     CHECK(!l.turnRootDriven());
     CHECK(l.yawStep() != 0.f);
     CHECK(std::fabs(l.turnAngle()) < l.tuning().pivotMin);
+}
+
+TEST_CASE("locomotion: a pivot whose root brakes well before its turn enters while that root still runs at the body's speed") {
+    Locomotion l = makeBrakeLoco(500.f);
+    LocoInput in = runningIn(l);
+    in.wantYaw = 170.f;
+    l.update(in);
+    REQUIRE(l.turning());
+    REQUIRE(l.turnPivots());
+    CHECK(l.turnRootDriven());
+    const LocoClipInfo& ti = l.clip(l.turnClip());
+    // Its root is down to 360 (the band's floor at 450) by about 0.4 s: entered at 0.57 to 0.77, as one that keeps
+    // running would be, it would snap the body down to 100-140 at once.
+    const float enter = l.turnEnter();
+    CHECK(std::fabs(locoRootSpeed(ti, enter) - 450.f) <= l.tuning().pivotMatch * 450.f + 1e-3f);
+    CHECK(enter < ti.turnStart - l.tuning().turnEarly);
+    CHECK(enter <= 0.42f);
+    CHECK(enter >= 0.4f - (l.tuning().turnEarly - l.tuning().turnLate) - 0.05f);
+    // Not yet turning there, the clip's whole turn scales to the angle asked for.
+    CHECK(l.turnWarp() == doctest::Approx(170.f / 180.f).epsilon(0.01));
+    CHECK(l.turnAngle() == doctest::Approx(170.f).epsilon(0.01));
+    // Played on at rate 1 from there, it brings the body round all the same.
+    float last = l.turnTo();
+    while (l.turning()) {
+        in.yaw = in.moveYaw = l.turnYaw();
+        l.update(in);
+        if (!l.turning()) break;
+        CHECK(l.turnTo() - l.turnFrom() == doctest::Approx(kDt).epsilon(0.01));
+        last = l.turnTo();
+    }
+    CHECK(in.yaw == doctest::Approx(170.f).epsilon(0.02));
+    CHECK(last >= ti.turnEnd + l.tuning().turnTail - kDt);
+}
+
+TEST_CASE("locomotion: a pivot whose root never runs at the body's speed before its turn, or that doesn't move the body, enters just before its turn") {
+    for (const bool driven : {true, false}) {
+        CAPTURE(driven);
+        // Driven, its root brakes from 300: too slow for a body at 450 all the way. Not, from 500, but the body moves
+        // itself (a follower).
+        Locomotion l = makeBrakeLoco(driven ? 300.f : 500.f);
+        LocoInput in = runningIn(l);
+        in.rootMotion = driven;
+        in.wantYaw = 170.f;
+        l.update(in);
+        REQUIRE(l.turning());
+        REQUIRE(l.turnPivots());
+        CHECK(l.turnRootDriven() == driven);
+        const LocoClipInfo& ti = l.clip(l.turnClip());
+        CHECK(l.turnEnter() >= ti.turnStart - l.tuning().turnEarly - 1e-4f);
+        CHECK(l.turnEnter() <= ti.turnStart - l.tuning().turnLate + 1e-4f);
+    }
 }
 
 TEST_CASE("locomotion: a heading swept round at a run eases the facing round after it rather than turning in steps") {

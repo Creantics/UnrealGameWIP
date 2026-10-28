@@ -236,6 +236,15 @@ void UFTLocomotionAnimInstance::SetClip(ftcore::LocoClip Which, UAnimSequence* C
 			{
 				Detail += FString::Printf(TEXT(", turns %.0f deg from %.2f to %.2f s"), Info.turn, Info.turnStart, Info.turnEnd);
 			}
+			// A running turn's root speed every 0.1 s to its turn's end: where a pivot can enter at the body's speed.
+			if (ftcore::isLocoRunTurn(Which))
+			{
+				Detail += TEXT(", root speed every 0.1 s");
+				for (int32 K = 0; 0.1f * K <= Info.turnEnd + 1e-3f; ++K)
+				{
+					Detail += FString::Printf(TEXT(" %.0f"), ftcore::locoRootSpeed(Info, 0.1f * K));
+				}
+			}
 		}
 		else
 		{
@@ -687,8 +696,8 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		}
 		if (Loco.turning())
 		{
-			Layers += FString::Printf(TEXT(" | turning %s x%.2f yaw %.0f (facing %.0f, heading %.0f)"), ClipName(Loco.turnClip()), Loco.turnWarp(),
-				Loco.turnYaw(), In.yaw, In.wantYaw);
+			Layers += FString::Printf(TEXT(" | turning %s x%.2f yaw %.0f (facing %.0f, heading %.0f) from %.2f s at %.0f cm/s"), ClipName(Loco.turnClip()),
+				Loco.turnWarp(), Loco.turnYaw(), In.yaw, In.wantYaw, Loco.turnEnter(), ftcore::locoRootSpeed(Loco.clip(Loco.turnClip()), Loco.turnEnter()));
 		}
 		if (Loco.limbs().arms > 0.f || Loco.limbs().legs > 0.f)
 		{
