@@ -268,7 +268,7 @@ TEST_CASE("locomotion: a moving jump takes off and lands with the moving clips")
     l.update({kDt, 700.f, 0.f, true, 520.f});
     CHECK(l.state() == LocoState::Rising);
     CHECK(l.target() == LocoClip::JumpMoving);
-    CHECK(l.rate(LocoClip::JumpMoving) == doctest::Approx(700.f / 460.f));
+    CHECK(l.rate(LocoClip::JumpMoving) == 1.f); // in the air from its entry, at its own pace
     run(l, 0.6f, {0.f, 700.f, 0.f, true, -200.f});
     CHECK(l.target() == LocoClip::Fall);
     l.update({kDt, 700.f, 0.f, false, 0.f});
@@ -281,9 +281,9 @@ TEST_CASE("locomotion: a moving jump takes off and lands with the moving clips")
     CHECK(l.state() == LocoState::Ground); // moving: back to the run after landHoldMoving
     CHECK(l.target() == LocoClip::Run);
 
-    // The landing's rate stays within its limits.
+    // The landing's rate stays within its limits; the take-off's stays its own.
     l.update({kDt, 2000.f, 0.f, true, 520.f});
-    CHECK(l.rate(LocoClip::JumpMoving) == doctest::Approx(l.tuning().maxLandRate));
+    CHECK(l.rate(LocoClip::JumpMoving) == 1.f);
     run(l, 0.6f, {0.f, 2000.f, 0.f, true, -200.f});
     l.update({kDt, 2000.f, 0.f, false, 0.f});
     CHECK(l.target() == LocoClip::LandMoving);
@@ -311,11 +311,12 @@ TEST_CASE("locomotion: landing standing still plays the landing out") {
     CHECK(l.target() == LocoClip::Idle);
 }
 
-TEST_CASE("locomotion: the air pose holds the limbs in the air, the arms into the landing") {
+TEST_CASE("locomotion: the air pose holds the limbs in a fall, the arms into the landing after one") {
     Locomotion l = makeLoco();
     run(l, 1.f, {0.f, 330.f});
     CHECK(l.limbs().arms == 0.f); // no air pose: nothing over the limbs
-    l.update({kDt, 330.f, 0.f, true, 500.f});
+    run(l, 0.4f, {0.f, 330.f, 0.f, true, -400.f});
+    REQUIRE(l.state() == LocoState::Falling);
     CHECK(l.limbs().legs == 0.f);
 
     l.setClip(LocoClip::AirPose, {0.5f, 0.f, 1, 0.f});
@@ -323,11 +324,18 @@ TEST_CASE("locomotion: the air pose holds the limbs in the air, the arms into th
     run(l, 1.f, {0.f, 330.f});
     CHECK(l.limbs().arms == 0.f);
     CHECK(l.limbs().legs == 0.f);
-    // Take off: in by 0.15 s, held at the clip's end.
+    // The take-off has its own tuck and arms: nothing over them while it plays.
     l.update({kDt, 330.f, 0.f, true, 500.f});
+    run(l, 0.5f, {0.f, 330.f, 0.f, true, 300.f});
+    REQUIRE(l.state() == LocoState::Rising);
+    CHECK(l.limbs().arms == 0.f);
+    CHECK(l.limbs().legs == 0.f);
+    // Past it, the fall: in by 0.15 s, held at the clip's end.
+    for (int i = 0; i < 60 && l.state() == LocoState::Rising; ++i) l.update({kDt, 0.f, 0.f, true, -300.f});
+    REQUIRE(l.state() == LocoState::Falling);
     CHECK(l.limbs().legs > 0.f);
     CHECK(l.limbs().legs < 0.5f);
-    run(l, 0.15f, {0.f, 330.f, 0.f, true, 300.f});
+    run(l, 0.15f, {0.f, 0.f, 0.f, true, -300.f});
     CHECK(l.limbs().arms >= 0.95f);
     CHECK(l.limbs().legs >= 0.95f);
     CHECK(l.limbs().time == doctest::Approx(0.5f));
@@ -346,10 +354,22 @@ TEST_CASE("locomotion: the air pose holds the limbs in the air, the arms into th
     CHECK(l.limbs().arms <= 0.05f);
     CHECK(l.limbs().legs == 0.f);
 
+    // Touching down before the take-off has played out: nothing over the limbs into the landing either.
+    run(l, 2.f, {});
+    l.update({kDt, 0.f, 0.f, true, 500.f});
+    run(l, 0.5f, {0.f, 0.f, 0.f, true, -100.f});
+    REQUIRE(l.state() == LocoState::Rising);
+    l.update({kDt, 0.f, 0.f, false, 0.f});
+    REQUIRE(l.state() == LocoState::Landing);
+    run(l, 0.1f, {});
+    CHECK(l.limbs().arms == 0.f);
+    CHECK(l.limbs().legs == 0.f);
+
     // Landing at a run with no moving landing to play: the run carries on, and the arms ease out at once.
     run(l, 1.f, {0.f, 700.f});
     l.update({kDt, 700.f, 0.f, true, 520.f});
-    run(l, 0.6f, {0.f, 700.f, 0.f, true, -200.f});
+    run(l, 1.f, {0.f, 700.f, 0.f, true, -200.f});
+    REQUIRE(l.state() == LocoState::Falling);
     CHECK(l.limbs().arms >= 0.95f);
     l.update({kDt, 700.f, 0.f, false, 0.f});
     run(l, 0.15f, {0.f, 700.f});
@@ -423,6 +443,111 @@ TEST_CASE("locomotion: touching down moving after long enough in the air, with c
     REQUIRE(l.landRoll());
     l.reset();
     CHECK_FALSE(l.landRoll());
+}
+
+TEST_CASE("locomotion: touching down from a fall of rollDrop or more asks for a roll, whatever the body holds") {
+    // Up at 428 against 980 (about 95 cm in steps of kDt), then on down to below the take-off. fell: from the top.
+    struct Touchdown {
+        float drop = 0.f, fell = 0.f;
+        bool roll = false;
+    };
+    const auto jumpDown = [](float speed, float below) {
+        Locomotion l = makeLoco();
+        run(l, 1.f, {0.f, speed});
+        float vz = 428.f, z = 0.f, top = 0.f;
+        do {
+            l.update({kDt, speed, 0.f, true, vz});
+            z += vz * kDt;
+            top = std::fmax(top, z);
+            vz -= 980.f * kDt;
+        } while (z > -below);
+        l.update({kDt, speed});
+        return Touchdown{l.drop(), top - z, l.landRoll()};
+    };
+    const Touchdown flat = jumpDown(0.f, 0.f);
+    CHECK(flat.drop == doctest::Approx(flat.fell).epsilon(1e-3));
+    CHECK(flat.fell < 110.f);
+    CHECK_FALSE(flat.roll);
+    CHECK_FALSE(jumpDown(700.f, 0.f).roll);
+    const Touchdown low = jumpDown(0.f, 120.f);
+    CHECK_FALSE(low.roll);
+    CHECK(low.fell == doctest::Approx(221.f).epsilon(0.01));
+    const Touchdown high = jumpDown(0.f, 200.f);
+    CHECK(high.drop == doctest::Approx(high.fell).epsilon(1e-3));
+    CHECK(high.fell == doctest::Approx(304.5f).epsilon(0.01));
+    CHECK(high.roll); // standing
+    CHECK(jumpDown(700.f, 200.f).roll); // moving, holding nothing
+
+    // Walked off a ledge: from where it left.
+    Locomotion l = makeLoco();
+    run(l, 1.f, {0.f, 330.f});
+    run(l, 0.75f, {0.f, 330.f, 0.f, true, -350.f});
+    l.update({kDt, 330.f});
+    CHECK(l.drop() == doctest::Approx(262.5f).epsilon(0.01));
+    CHECK(l.landRoll());
+
+    // Rising again on the way down starts it over (what counts is the fall from the highest point), and so does
+    // a new time in the air.
+    run(l, 1.f, {0.f, 330.f});
+    run(l, 0.5f, {0.f, 330.f, 0.f, true, -350.f});
+    l.update({kDt, 330.f, 0.f, true, 100.f});
+    CHECK(l.drop() == 0.f);
+    run(l, 0.5f, {0.f, 330.f, 0.f, true, -350.f});
+    l.update({kDt, 330.f});
+    CHECK(l.drop() == doctest::Approx(175.f).epsilon(0.01));
+    CHECK_FALSE(l.landRoll());
+    run(l, 0.2f, {0.f, 330.f, 0.f, true, -350.f});
+    CHECK(l.drop() == doctest::Approx(70.f).epsilon(0.01));
+    l.reset();
+    CHECK(l.drop() == 0.f);
+}
+
+TEST_CASE("locomotion: a take-off enters where its root leaves the ground, a landing where its root comes down") {
+    Locomotion l = makeLoco();
+    LocoClipInfo jump{2.5f, 0.f, 1, 0.f};
+    jump.launch = 0.35f;
+    jump.contact = 1.29f;
+    LocoClipInfo jumpMoving{2.53f, 460.f, 1, 0.f};
+    jumpMoving.launch = 0.25f;
+    LocoClipInfo land{2.77f, 0.f, 1, 0.f};
+    land.contact = 0.5f;
+    l.setClip(LocoClip::JumpStart, jump);
+    l.setClip(LocoClip::JumpMoving, jumpMoving);
+    l.setClip(LocoClip::Land, land);
+    l.reset();
+    run(l, 1.f, {});
+    l.update({kDt, 0.f, 0.f, true, 428.f});
+    REQUIRE(l.state() == LocoState::Rising);
+    CHECK(l.time(LocoClip::JumpStart) == doctest::Approx(0.35f + kDt));
+    // A flat jump (0.87 s up and down) plays the take-off's own way down, not the fall loop.
+    float vz = 428.f;
+    for (float t = kDt; t < 0.87f; t += kDt) {
+        vz -= 980.f * kDt;
+        l.update({kDt, 0.f, 0.f, true, vz});
+    }
+    CHECK(l.state() == LocoState::Rising);
+    CHECK(l.time(LocoClip::JumpStart) == doctest::Approx(0.35f + 0.87f).epsilon(0.02));
+    l.update({kDt, 0.f, 0.f, false, 0.f});
+    REQUIRE(l.state() == LocoState::Landing);
+    CHECK(l.target() == LocoClip::Land);
+    CHECK(l.time(LocoClip::Land) == doctest::Approx(0.5f + kDt));
+    // Standing, it holds to near the landing's end from there: 0.9 of the 2.27 s left.
+    run(l, 2.f, {});
+    CHECK(l.state() == LocoState::Landing);
+    run(l, 0.1f, {});
+    CHECK(l.state() == LocoState::Ground);
+
+    // Moving, the moving take-off from its own.
+    run(l, 1.f, {0.f, 700.f});
+    l.update({kDt, 700.f, 0.f, true, 428.f});
+    REQUIRE(l.target() == LocoClip::JumpMoving);
+    CHECK(l.time(LocoClip::JumpMoving) == doctest::Approx(0.25f + kDt));
+
+    // Unmeasured, from the start.
+    l.setClip(LocoClip::JumpStart, {0.87f, 0.f, 1, 0.f});
+    l.reset();
+    l.update({kDt, 0.f, 0.f, true, 428.f});
+    CHECK(l.time(LocoClip::JumpStart) == doctest::Approx(kDt));
 }
 
 TEST_CASE("locomotion: the body banks and leads into turns, more at speed, within limits") {
@@ -589,7 +714,9 @@ TEST_CASE("locomotion: a running jump's tuck and dip go on top of the run's lean
     CHECK(l.pitch() == doctest::Approx(t.runPitch).epsilon(0.01));
     l.update({kDt, 509.f, 0.f, true, 520.f});
     run(l, 0.3f, {0.f, 509.f, 0.f, true, 200.f});
-    run(l, 0.3f, {0.f, 509.f, 0.f, true, -300.f});
+    // On down past the take-off's end, long enough for the air pose's arms to be in.
+    run(l, 0.6f, {0.f, 509.f, 0.f, true, -300.f});
+    REQUIRE(l.state() == LocoState::Falling);
     CHECK(l.pitch() == doctest::Approx(t.runPitch + t.airPitch).epsilon(0.01));
 
     // Touchdown at the run: the landing hands the legs back to the run at landHoldMoving, before the dip has
@@ -832,6 +959,38 @@ TEST_CASE("locomotion: measureMove reads the root's travel and when it stops") {
     CHECK(m.travel == 0.f);
     CHECK(m.groundSpeed == doctest::Approx(300.f).epsilon(0.02));
     CHECK(measureMove(nullptr, 0, 1.f).moveTime == 0.f);
+}
+
+TEST_CASE("locomotion: measureAir finds where a take-off's root leaves the ground and where it, or a landing's, comes down") {
+    // A take-off: still for 0.3 s, then up at 400 cm/s against 900 cm/s^2, on down past the ground.
+    static GaitFrame frames[91];
+    const float dt = 3.f / 90.f;
+    for (std::size_t k = 0; k < 91; ++k) {
+        const float t = static_cast<float>(k) * dt - 0.3f;
+        frames[k].root.z = t > 0.f ? 400.f * t - 450.f * t * t : 0.f;
+    }
+    const LocoClipInfo jump = measureAir(frames, 91, 3.f);
+    CHECK(jump.length == doctest::Approx(3.f));
+    // At kAirStill on the way up and down: 450t^2 - 400t + kAirStill = 0.
+    const float r = std::sqrt(400.f * 400.f - 4.f * 450.f * kAirStill);
+    CHECK(jump.launch == doctest::Approx(0.3f + (400.f - r) / 900.f).epsilon(0.01));
+    CHECK(jump.contact == doctest::Approx(0.3f + (400.f + r) / 900.f).epsilon(0.002));
+
+    // A landing: falling in from above at 400 cm/s, then on the ground.
+    for (std::size_t k = 0; k < 91; ++k) {
+        const float t = static_cast<float>(k) * dt;
+        frames[k].root.z = t < 0.5f ? 400.f * (0.5f - t) : 0.f;
+    }
+    const LocoClipInfo land = measureAir(frames, 91, 3.f);
+    CHECK(land.launch == 0.f);
+    CHECK(land.contact == doctest::Approx(0.5f - kAirStill / 400.f).epsilon(0.002));
+
+    // A root that never leaves the ground.
+    for (GaitFrame& f : frames) f.root.z = 0.f;
+    const LocoClipInfo still = measureAir(frames, 91, 3.f);
+    CHECK(still.launch == 0.f);
+    CHECK(still.contact == 0.f);
+    CHECK(measureAir(nullptr, 0, 1.f).contact == 0.f);
 }
 
 TEST_CASE("locomotion: heading off plays the start at the distance covered, then the gait in step") {

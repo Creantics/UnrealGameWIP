@@ -140,6 +140,20 @@ constexpr float kTraversalIn = 0.15f;
 constexpr float kTraversalOut = 0.25f;
 constexpr float kTraversalSwitch = 0.15f;
 
+// A bone's transform in the clip's component space at Time, composed up its parent chain.
+FTransform ClipBoneCS(const UAnimSequence& Clip, const FReferenceSkeleton& Ref, int32 Bone, double Time)
+{
+	FTransform CS = FTransform::Identity;
+	const FAnimExtractContext Context(Time, false);
+	for (int32 B = Bone; B != INDEX_NONE; B = Ref.GetParentIndex(B))
+	{
+		FTransform Local;
+		Clip.GetBoneTransform(Local, FSkeletonPoseBoneIndex(B), Context, false);
+		CS = CS * Local;
+	}
+	return CS;
+}
+
 // The clip's root and ball (or foot) bones in its component space, sampled evenly from 0 to its
 // length into Frames, and with Pelvis its pelvis bone at the same times (left at 0 without one). False
 // (and no frames) when the clip has no skeleton, length or feet.
@@ -164,19 +178,7 @@ bool SampleFeet(const UAnimSequence& Clip, TArray<ftcore::GaitFrame>& Frames, TA
 		return false;
 	}
 
-	// A bone's transform in the clip's component space, composed up its parent chain.
-	auto ComponentSpace = [&](int32 Bone, double Time)
-	{
-		FTransform CS = FTransform::Identity;
-		const FAnimExtractContext Context(Time, false);
-		for (int32 B = Bone; B != INDEX_NONE; B = Ref.GetParentIndex(B))
-		{
-			FTransform Local;
-			Clip.GetBoneTransform(Local, FSkeletonPoseBoneIndex(B), Context, false);
-			CS = CS * Local;
-		}
-		return CS;
-	};
+	auto ComponentSpace = [&](int32 Bone, double Time) { return ClipBoneCS(Clip, Ref, Bone, Time); };
 	auto Point = [](const FVector& V) { return ftcore::LocoPoint{float(V.X), float(V.Y), float(V.Z)}; };
 
 	const int32 PelvisBone = Pelvis ? Ref.FindBoneIndex(TEXT("pelvis")) : INDEX_NONE;
@@ -201,6 +203,59 @@ bool SampleFeet(const UAnimSequence& Clip, TArray<ftcore::GaitFrame>& Frames, TA
 	}
 	return true;
 }
+
+// -LocoJumpDump: each jump, fall, landing and land roll clip's root, and its pelvis, feet, hands and head heights,
+// in its component space every 1/30 s (cm), for timing its take-off, peak and touchdown. Each clip is the one next to
+// RunLoop (a body's retarget) where there is one, else the mocap sample's own.
+void DumpJumpClips(const UAnimSequence& RunLoop)
+{
+	static const TCHAR* const Names[] = {
+		TEXT("M_Neutral_Jump_F_Start_Stand_Lfoot"), TEXT("M_Neutral_Jump_F_Start_Walk_Lfoot"), TEXT("M_Neutral_Jump_F_Start_Run_Lfoot"),
+		TEXT("M_Neutral_Jump_F_Start_Sprint_Lfoot"), TEXT("M_Neutral_Jump_F_Start_Across_Lfoot"), TEXT("M_Neutral_Jump_F_Off_Run_Lfoot"),
+		TEXT("M_Neutral_Jump_Loop_Fall"),
+		TEXT("M_Neutral_Jump_F_Land_Stand_Light_Lfoot"), TEXT("M_Neutral_Jump_F_Land_Run_Light_Lfoot"), TEXT("M_Neutral_Jump_F_Land_Sprint_Light_Lfoot"),
+		TEXT("M_Neutral_Jump_F_Land_Stand_Heavy_Lfoot"), TEXT("M_Neutral_Jump_F_Land_Walk_Heavy_Lfoot"), TEXT("M_Neutral_Jump_F_Land_Run_Heavy_Lfoot"),
+		TEXT("M_Neutral_Jump_F_Land_Roll_Lfoot"), TEXT("M_Neutral_Jump_F_Land_Roll_Rfoot")};
+	static const TCHAR* const Bones[] = {TEXT("pelvis"), TEXT("foot_l"), TEXT("ball_l"), TEXT("foot_r"), TEXT("ball_r"), TEXT("hand_l"), TEXT("hand_r"), TEXT("head")};
+	const FString RunPath = RunLoop.GetPathName();
+	for (const TCHAR* Name : Names)
+	{
+		FString Path = RunPath.Replace(TEXT("M_Neutral_Run_Loop_F"), Name, ESearchCase::CaseSensitive);
+		if (!FPackageName::DoesPackageExist(FPackageName::ObjectPathToPackageName(Path)))
+		{
+			Path = FString::Printf(TEXT("/Game/Characters/UEFN_Mannequin/Animations/Jump/%s.%s"), Name, Name);
+		}
+		const UAnimSequence* Clip = FPackageName::DoesPackageExist(FPackageName::ObjectPathToPackageName(Path))
+			? LoadObject<UAnimSequence>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet) : nullptr;
+		const USkeleton* Skeleton = Clip ? Clip->GetSkeleton() : nullptr;
+		if (!Skeleton || Clip->GetPlayLength() <= 0.f)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("JumpDump %s: none"), Name);
+			continue;
+		}
+		const FReferenceSkeleton& Ref = Skeleton->GetReferenceSkeleton();
+		int32 Index[UE_ARRAY_COUNT(Bones)];
+		for (int32 I = 0; I < int32(UE_ARRAY_COUNT(Bones)); ++I)
+		{
+			Index[I] = Ref.FindBoneIndex(Bones[I]);
+		}
+		const float Length = Clip->GetPlayLength();
+		UE_LOG(LogForgottenThird, Display, TEXT("JumpDump %s: %s, %.3f s, %d keys, root motion %s"), Name, *Clip->GetName(), Length,
+			Clip->GetNumberOfSampledKeys(), Clip->HasRootMotion() ? TEXT("on") : TEXT("off"));
+		const int32 N = FMath::CeilToInt(Length * 30.f);
+		for (int32 K = 0; K <= N; ++K)
+		{
+			const double Time = FMath::Min(double(K) / 30.0, double(Length));
+			const FVector Root = ClipBoneCS(*Clip, Ref, 0, Time).GetTranslation();
+			FString Line = FString::Printf(TEXT("JumpDump %s t=%.3f root %.1f %.1f %.1f"), Name, Time, Root.X, Root.Y, Root.Z);
+			for (int32 I = 0; I < int32(UE_ARRAY_COUNT(Bones)); ++I)
+			{
+				Line += FString::Printf(TEXT(" %s %.1f"), Bones[I], Index[I] != INDEX_NONE ? ClipBoneCS(*Clip, Ref, Index[I], Time).GetTranslation().Z : 0.0);
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("%s"), *Line);
+		}
+	}
+}
 } // namespace
 
 ftcore::LocoClipInfo UFTLocomotionAnimInstance::MeasureClip(const UAnimSequence& Clip)
@@ -217,6 +272,13 @@ ftcore::LocoClipInfo UFTLocomotionAnimInstance::MeasureMove(const UAnimSequence&
 	return ftcore::measureMove(Frames.GetData(), Frames.Num(), Clip.GetPlayLength());
 }
 
+ftcore::LocoClipInfo UFTLocomotionAnimInstance::MeasureAir(const UAnimSequence& Clip)
+{
+	TArray<ftcore::GaitFrame> Frames;
+	SampleFeet(Clip, Frames);
+	return ftcore::measureAir(Frames.GetData(), Frames.Num(), Clip.GetPlayLength());
+}
+
 void UFTLocomotionAnimInstance::SetClip(ftcore::LocoClip Which, UAnimSequence* Clip)
 {
 	if (Which == ftcore::LocoClip::Count)
@@ -229,14 +291,16 @@ void UFTLocomotionAnimInstance::SetClip(ftcore::LocoClip Which, UAnimSequence* C
 	{
 		const bool bGait = ftcore::isLocoGait(Which);
 		const bool bMove = ftcore::isLocoStart(Which) || ftcore::isLocoStop(Which) || ftcore::isLocoTurn(Which);
-		Info = bGait ? MeasureClip(*Clip) : bMove ? MeasureMove(*Clip) : ftcore::LocoClipInfo{Clip->GetPlayLength(), 0.f, 1, 0.f};
+		const bool bAir = Which == ftcore::LocoClip::JumpStart || Which == ftcore::LocoClip::JumpMoving || Which == ftcore::LocoClip::Land ||
+			Which == ftcore::LocoClip::LandMoving;
+		Info = bGait ? MeasureClip(*Clip) : bMove ? MeasureMove(*Clip) : bAir ? MeasureAir(*Clip) : ftcore::LocoClipInfo{Clip->GetPlayLength(), 0.f, 1, 0.f};
 		// The root's own travel over the loop, when the clip has root motion: a check on the ground speed.
 		FTransform Start, End;
 		Clip->GetBoneTransform(Start, FSkeletonPoseBoneIndex(0), FAnimExtractContext(0.0, false), false);
 		Clip->GetBoneTransform(End, FSkeletonPoseBoneIndex(0), FAnimExtractContext(double(Info.length), false), false);
 		const float RootSpeed = Info.length > 0.f ? float(FVector::Dist2D(Start.GetTranslation(), End.GetTranslation())) / Info.length : 0.f;
-		// A moving jump or landing plays at the rate its root's travel matches the capsule's.
-		if (Which == ftcore::LocoClip::JumpMoving || Which == ftcore::LocoClip::LandMoving)
+		// A moving landing plays at the rate its root's travel matches the capsule's.
+		if (Which == ftcore::LocoClip::LandMoving)
 		{
 			Info.groundSpeed = RootSpeed;
 		}
@@ -266,6 +330,10 @@ void UFTLocomotionAnimInstance::SetClip(ftcore::LocoClip Which, UAnimSequence* C
 		else
 		{
 			Detail = FString::Printf(TEXT(", root moves %.0f cm/s"), RootSpeed);
+			if (bAir)
+			{
+				Detail += FString::Printf(TEXT(", leaves the ground at %.2f s, comes down onto it at %.2f s"), Info.launch, Info.contact);
+			}
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: %s = %s, %.2f s%s"), ClipName(Which), *Clip->GetName(), Info.length, *Detail);
 	}
@@ -288,6 +356,14 @@ void UFTLocomotionAnimInstance::SetBaseClips(UAnimSequence* const (&Base)[NumBas
 	if (bTraversal)
 	{
 		SetTraversalFromRun();
+	}
+	// -LocoJumpDump: the lead's jump clips, once, then quit.
+	static const bool bJumpDump = FParse::Param(FCommandLine::Get(), TEXT("LocoJumpDump"));
+	const UAnimSequence* Run = Clips[static_cast<int32>(ftcore::LocoClip::Run)].Get();
+	if (bJumpDump && Run && Cast<ACharacter>(GetOwningActor()))
+	{
+		DumpJumpClips(*Run);
+		FPlatformMisc::RequestExit(false, TEXT("LocoJumpDump"));
 	}
 }
 
@@ -790,6 +866,16 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		}
 	}
 
+	// For the log: a fall measured by where the body is, beside Locomotion's from its vertical speed. A time in
+	// the air starts from where the body was the frame before.
+	const float Z = static_cast<float>(Owner->GetActorLocation().Z);
+	if (In.falling)
+	{
+		AirTop = bLastAir ? FMath::Max(AirTop, Z) : FMath::Max(LastZ, Z);
+	}
+	bLastAir = In.falling;
+	LastZ = Z;
+
 	// Each change of state is logged too, and starts, stops, turns and stance changes ten times a second.
 	const bool bChanged = Loco.state() != LastState;
 	LastState = Loco.state();
@@ -817,6 +903,28 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 			TEXT("Locomotion %s: speed %.0f want %.0f stop in %.0f turn %.0f falling %d state %d lean %.1f twist %.1f pitch %.1f |%s"),
 			*Owner->GetName(), In.groundSpeed, In.wantSpeed, In.stopDistance, In.turnRate, In.falling ? 1 : 0, static_cast<int32>(Loco.state()),
 			Loco.lean(), Loco.twist(), Loco.pitch(), *Layers);
+		// A take-off or a landing: where its clip came in (and where it leaves or meets the ground) and the clip's feet
+		// over its root there, which show over the capsule's base; then the fall since the highest point (for a landing,
+		// by the body's place too), and a roll.
+		const bool bOff = Loco.state() == ftcore::LocoState::Rising;
+		const ftcore::LocoClip Entered = Loco.target();
+		const UAnimSequence* Seq = bChanged && (bOff || Loco.state() == ftcore::LocoState::Landing) ? Clips[static_cast<int32>(Entered)].Get() : nullptr;
+		if (const USkeleton* Skeleton = Seq ? Seq->GetSkeleton() : nullptr)
+		{
+			const FReferenceSkeleton& Ref = Skeleton->GetReferenceSkeleton();
+			const double T = Loco.time(Entered);
+			const double RootZ = ClipBoneCS(*Seq, Ref, 0, T).GetTranslation().Z;
+			auto Over = [&](const TCHAR* Bone)
+			{
+				const int32 I = Ref.FindBoneIndex(Bone);
+				return I != INDEX_NONE ? ClipBoneCS(*Seq, Ref, I, T).GetTranslation().Z - RootZ : 0.0;
+			};
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("Locomotion %s: %s %s at %.2f s (off the ground at %.2f, onto it at %.2f), feet L %.1f R %.1f cm over its root, fallen %.0f cm%s%s"),
+				*Owner->GetName(), bOff ? TEXT("takes off with") : TEXT("lands with"), ClipName(Entered), T, Loco.clip(Entered).launch,
+				Loco.clip(Entered).contact, Over(TEXT("ball_l")), Over(TEXT("ball_r")), Loco.drop(),
+				bOff ? TEXT("") : *FString::Printf(TEXT(" (%.0f by its place)"), AirTop - Z), Loco.landRoll() ? TEXT(", rolls out") : TEXT(""));
+		}
 	}
 
 	// -LocoAngles logs the posed body every frame, stamped with the UTC time so captures can be matched to it:

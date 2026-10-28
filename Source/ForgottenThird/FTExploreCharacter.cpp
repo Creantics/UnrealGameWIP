@@ -80,7 +80,8 @@ AFTExploreCharacter::AFTExploreCharacter()
 	// Crouched, the capsule is 120 cm tall (ACharacter keeps the feet on the ground).
 	Move->GetNavAgentPropertiesRef().bCanCrouch = true;
 	Move->SetCrouchedHalfHeight(60.f);
-	Move->JumpZVelocity = 520.f;
+	// Up as high as the jump clips' roots go (94 cm, sqrt(2 * 980 * 94)), so the capsule comes down when they do.
+	Move->JumpZVelocity = 428.f;
 	Move->AirControl = 0.35f;
 	// Braking at a steady deceleration, with no friction term, so the distance to a stop is v^2 / 2b
 	// and the stop clip can play to it.
@@ -960,14 +961,15 @@ void AFTExploreCharacter::SpawnTraversalCourse()
 	CourseDir = GetActorForwardVector().GetSafeNormal2D();
 	const FVector Feet = GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
 	// Ahead, each on the floor found under it: a thin wall to go over, a low block to climb onto (and run off the
-	// far end), and a high block to climb; for -LocoCatch, deep blocks of rising height to jump at and catch, the last
-	// caught at the top of the jump.
+	// far end), and a high block to climb; for -LocoCatch, deep blocks to jump at and catch: a low one, one at the edge
+	// of reach (caught at the top of the jump, near the most a catch may miss by, and high enough that the drop off its
+	// far end ends in a roll), and one caught at the top of the jump within reach, far enough on for that roll.
 	struct FBlock
 	{
 		float At, Depth, Height;
 	};
 	const FBlock VaultBlocks[] = {{700.f, 25.f, 100.f}, {1500.f, 300.f, 100.f}, {2600.f, 300.f, 240.f}};
-	const FBlock CatchBlocks[] = {{700.f, 300.f, 150.f}, {1500.f, 300.f, 300.f}, {2600.f, 300.f, 330.f}};
+	const FBlock CatchBlocks[] = {{700.f, 300.f, 150.f}, {1500.f, 300.f, 300.f}, {3100.f, 300.f, 260.f}};
 	const TArrayView<const FBlock> Blocks = bCatchCourse ? MakeArrayView(CatchBlocks) : MakeArrayView(VaultBlocks);
 	const FCollisionQueryParams Query(SCENE_QUERY_STAT(FTTraversalCourse), false, this);
 	for (const FBlock& B : Blocks)

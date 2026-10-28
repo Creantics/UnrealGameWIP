@@ -21,12 +21,16 @@
 // plant), advanced at the rate that makes the blended planted foot move exactly as fast as the
 // capsule: every gait plays at the point in its loop where the same foot is in the same place in
 // its stride, so the blend never slides, whatever the speed. A jump plays the jump start, then the
-// fall loop, then the landing, which hands back to the gaits early when the body keeps moving. A
-// body moving at movingAir or faster takes off and lands with the moving clips (JumpMoving,
-// LandMoving) when it has them; they play at the rate their root travel matches the capsule's,
-// within limits. Landing at speed with only a standing landing skips it, since its feet would
-// slide. A step down shorter than airGrace stays on the ground clips. Blends are exponential
-// crossfades. Fixed size: nothing here allocates.
+// fall loop, then the landing, which hands back to the gaits early when the body keeps moving. The
+// jump start enters where its root leaves the ground and the landing where its root comes down onto
+// it, when they are measured (measureAir): the capsule is in the air from the press and on the ground
+// from the touchdown, so the clips' wind-up and their fall in would leave the body crouching in the
+// air and hanging above the ground. A body moving at movingAir or faster takes off and lands with the
+// moving clips (JumpMoving, LandMoving) when it has them; the landing plays at the rate its root
+// travel matches the capsule's, within limits, and the take-off, in the air from its entry, at its
+// own. Landing at speed with only a standing landing skips it, since its feet would slide. A step
+// down shorter than airGrace stays on the ground clips. Blends are exponential crossfades. Fixed
+// size: nothing here allocates.
 //
 // Crouching (LocoInput::crouch, when the body has CrouchIdle and CrouchWalk): the crouch walk is a gait
 // on the same foot phase, so a moving body eases between its standing gaits and the crouch walk over
@@ -61,11 +65,11 @@
 // along its path through any other turn. A turn on the spot plays at its own pace either way. A
 // follower replays a running turn with LocoInput::turnBy.
 //
-// The air pose (LocoClip::AirPose), when the body has one: a pose held over the limbs in the air,
-// since the mocap jumps fling the arms wide and leave the legs hanging. limbs() gives the arms' and
-// legs' weights over whatever the layers blend, sampled at the clip's end. Both ease in at take-off;
-// at touchdown the legs ease out into the landing's crouch, the arms landArms after it (the landing's
-// first moments throw the arms out too), even when a moving body has gone back to its gait sooner.
+// The air pose (LocoClip::AirPose), when the body has one: a pose held over the limbs in a fall (the
+// take-off clips have their own tuck and arms, from where they enter). limbs() gives the arms' and
+// legs' weights over whatever the layers blend, sampled at the clip's end. Both ease in as the body
+// falls; at touchdown the legs ease out into the landing's crouch, the arms landArms after it, even
+// when a moving body has gone back to its gait sooner.
 //
 // Speeds are cm/s, times seconds, angles degrees. turnRate is the body's yaw rate, positive one way
 // (the caller's); lean() and twist() have its sign.
@@ -178,6 +182,10 @@ struct LocoClipInfo {
     float turn = 0.f;
     float turnStart = 0.f;
     float turnEnd = 0.f;
+    // measureAir: when a take-off's root leaves the ground, and when it, or a landing's root falling from
+    // above, comes down onto it (s; 0 for none).
+    float launch = 0.f;
+    float contact = 0.f;
 };
 
 // Measures a gait clip from `count` frames sampled evenly over one loop (frame 0 at time 0, the
@@ -194,6 +202,12 @@ FTCORE_API LocoClipInfo measureGait(const GaitFrame* frames, std::size_t count, 
 inline constexpr float kMoveStill = 0.5f;
 inline constexpr float kTurnStill = 5.f;
 FTCORE_API LocoClipInfo measureMove(const GaitFrame* frames, std::size_t count, float length);
+// Measures a take-off or a landing (the air fields) from frames sampled as for measureGait. Its root
+// is on the ground within kAirStill of height 0: a take-off launches where it first rises past that
+// and makes contact where it first comes back down to it; a landing, above it from the start, makes
+// contact where it first comes down to it. Each is placed between the frames either side.
+inline constexpr float kAirStill = 1.f;
+FTCORE_API LocoClipInfo measureAir(const GaitFrame* frames, std::size_t count, float length);
 // A measured clip's root speed along its path at t (cm/s, at rate 1).
 FTCORE_API float locoRootSpeed(const LocoClipInfo& info, float t);
 
@@ -274,7 +288,9 @@ struct LocoTuning {
     float landArms = 0.5f;      // the arms keep the air pose this long from a landing's touchdown
     float crouchFade = 0.2f;    // moving: the gaits ease between standing and the crouch walk (time constant)
     float crouchSettle = 0.15f; // getting down or up hands over to the idle this long before its end
-    float rollMinAir = 0.4f;    // a moving body touching down after this long in the air may roll out of it (landRoll)
+    float rollMinAir = 0.4f;    // a body touching down after this long in the air may roll out of it (landRoll): moving, when
+                                // asked to...
+    float rollDrop = 250.f;     // ...and whatever it holds, once it has fallen this far (cm) since its highest point
 };
 
 // A party follower's brake lean and gaits. The party trail brings it to a stand more gently than the lead's
@@ -419,11 +435,14 @@ public:
     // Crouched (asked to, with the clips for it), and how far the gaits have eased into the crouch walk (0..1).
     bool crouched() const { return crouched_; }
     float crouchWeight() const { return crouch_; }
-    // A moving body (movingAir or faster) touching down after rollMinAir in the air with crouch held or a roll
-    // asked for: the caller rolls out of the landing. True from the update that touches down until the next one
-    // that time passes in, so a second pose with none keeps it. The landing goes on beneath it all the same,
-    // for a caller with no roll to play.
+    // A body touching down after rollMinAir in the air, moving (movingAir or faster) with crouch held or a roll
+    // asked for, or from a fall of rollDrop or more whatever it holds: the caller rolls out of the landing. True
+    // from the update that touches down until the next one that time passes in, so a second pose with none keeps
+    // it. The landing goes on beneath it all the same, for a caller with no roll to play.
     bool landRoll() const { return landRoll_; }
+    // How far the body has fallen since its highest point in the air (cm): in the air so far, on the ground in
+    // its last fall.
+    float drop() const { return drop_; }
 
 private:
     static constexpr std::size_t index(LocoClip c) { return static_cast<std::size_t>(c); }
@@ -477,7 +496,9 @@ private:
     float trim_ = 0.f; // a follower's stride rate trim this frame
     float strideLength_ = 0.f;
     float airTime_ = 0.f;
+    float drop_ = 0.f; // fallen since the highest point in the air (cm)
     float landTime_ = -1.f; // since a landing touched down, on through the hand-back to the gaits (below 0: none)
+    bool landFell_ = false; // the landing touched down from a fall (the air pose's arms hold into it)
     float groundTime_ = 0.f; // seconds in Ground since a start, a turn or a landing
     float lean_ = 0.f;
     float twist_ = 0.f;

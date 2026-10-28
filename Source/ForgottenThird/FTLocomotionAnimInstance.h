@@ -281,6 +281,8 @@ public:
 	static ftcore::LocoClipInfo MeasureClip(const UAnimSequence& Clip);
 	// A start or stop clip's root travel and feet over the time the root moves (ftcore::measureMove).
 	static ftcore::LocoClipInfo MeasureMove(const UAnimSequence& Clip);
+	// A take-off's or landing's times off and onto the ground, from its root's height (ftcore::measureAir).
+	static ftcore::LocoClipInfo MeasureAir(const UAnimSequence& Clip);
 
 protected:
 	virtual void NativeInitializeAnimation() override;
@@ -341,4 +343,8 @@ private:
 	bool bLog = false;
 	float LogTimer = 0.f;
 	ftcore::LocoState LastState = ftcore::LocoState::Ground;
+	// For the log: the body's highest point in its time in the air (so far, or its last) and its height last frame (cm).
+	float AirTop = 0.f;
+	float LastZ = 0.f;
+	bool bLastAir = false;
 };

@@ -273,6 +273,30 @@ LocoClipInfo measureGait(const GaitFrame* frames, std::size_t count, float lengt
     return info;
 }
 
+LocoClipInfo measureAir(const GaitFrame* frames, std::size_t count, float length) {
+    LocoClipInfo info;
+    info.length = std::max(length, 0.f);
+    const std::size_t n = std::min(count, kMaxGaitFrames);
+    if (!frames || n < 2 || length <= 0.f) return info;
+    const float dt = length / static_cast<float>(n - 1);
+    // Where the root's height passes kAirStill between frame k and the next.
+    const auto cross = [frames, dt](std::size_t k) {
+        const float a = frames[k].root.z - kAirStill, b = frames[k + 1].root.z - kAirStill;
+        return (static_cast<float>(k) + a / (a - b)) * dt;
+    };
+    bool up = frames[0].root.z > kAirStill;
+    for (std::size_t k = 0; k + 1 < n; ++k) {
+        const bool next = frames[k + 1].root.z > kAirStill;
+        if (!up && next) info.launch = cross(k);
+        if (up && !next) {
+            info.contact = cross(k);
+            break;
+        }
+        up = next;
+    }
+    return info;
+}
+
 void Locomotion::setClip(LocoClip clip, const LocoClipInfo& info) {
     if (clip == LocoClip::Count) return;
     LocoClipInfo& slot = info_[index(clip)];
@@ -282,6 +306,8 @@ void Locomotion::setClip(LocoClip clip, const LocoClipInfo& info) {
     slot.cycles = std::max(slot.cycles, 1);
     slot.leftPlant = frac(slot.leftPlant);
     slot.moveTime = clampf(slot.moveTime, 0.f, slot.length);
+    slot.launch = clampf(slot.launch, 0.f, slot.length);
+    slot.contact = clampf(slot.contact, 0.f, slot.length);
 }
 
 void Locomotion::reset() {
@@ -303,8 +329,9 @@ void Locomotion::reset() {
     target_ = gait_ = LocoClip::Idle;
     share_.fill(0.f);
     stride_.fill(0);
-    fade_ = phase_ = airTime_ = groundTime_ = 0.f;
+    fade_ = phase_ = airTime_ = drop_ = groundTime_ = 0.f;
     landTime_ = -1.f;
+    landFell_ = false;
     lean_ = twist_ = pitch_ = 0.f;
     headPitch_ = headRoll_ = headYaw_ = 0.f;
     elbowHold_ = decel_ = lastSpeed_ = 0.f;
@@ -788,7 +815,10 @@ void Locomotion::update(const LocoInput& in) {
     // Air and landing. A landing roll is asked for on the touchdown alone; a pose with no time passed keeps it.
     if (dt > 0.f) landRoll_ = false;
     if (in.falling) {
+        // The drop counts from the highest point: a new time in the air starts it again, and so does rising.
+        if (airTime_ <= 0.f) drop_ = 0.f;
         airTime_ += dt;
+        drop_ = in.verticalSpeed > 0.f ? 0.f : drop_ - in.verticalSpeed * dt;
     }
     if (landTime_ >= 0.f) landTime_ += dt;
     const bool jumped = in.falling && in.verticalSpeed > 0.f;
@@ -804,8 +834,14 @@ void Locomotion::update(const LocoInput& in) {
         if (offGround) {
             jump_ = moving && has(LocoClip::JumpMoving) ? LocoClip::JumpMoving : LocoClip::JumpStart;
             state_ = jumped && has(jump_) ? LocoState::Rising : LocoState::Falling;
+            // The take-off enters where its root leaves the ground, as the capsule just has.
+            if (state_ == LocoState::Rising) enter_ = clip(jump_).launch;
+            landFell_ = false;
         } else if (state_ == LocoState::Landing) {
-            if ((speed >= tuning_.moveStart && landTime_ >= tuning_.landHoldMoving) || landTime_ >= 0.9f * clip(land_).length) {
+            // The landing, entered at its contact, holds to near its end unless the body moves on.
+            const LocoClipInfo& landing = clip(land_);
+            if ((speed >= tuning_.moveStart && landTime_ >= tuning_.landHoldMoving) ||
+                landTime_ >= 0.9f * (landing.length - landing.contact)) {
                 state_ = LocoState::Ground;
             }
         }
@@ -816,9 +852,12 @@ void Locomotion::update(const LocoInput& in) {
             // A standing landing at speed would slide its feet: without a moving one, run on.
             land_ = moving ? LocoClip::LandMoving : LocoClip::Land;
             const bool hard = airTime_ >= tuning_.landMinAir && has(land_);
+            landFell_ = state_ == LocoState::Falling;
             state_ = hard ? LocoState::Landing : LocoState::Ground;
             landTime_ = hard ? 0.f : -1.f;
-            landRoll_ = moving && (in.crouch || in.roll) && airTime_ >= tuning_.rollMinAir;
+            // The landing enters where its root comes down onto the ground, as the capsule just has.
+            if (hard) enter_ = clip(land_).contact;
+            landRoll_ = airTime_ >= tuning_.rollMinAir && ((moving && (in.crouch || in.roll)) || drop_ >= tuning_.rollDrop);
         } else if (state_ == LocoState::Rising) {
             if (time(jump_) >= 0.85f * clip(jump_).length) state_ = LocoState::Falling;
         }
@@ -857,23 +896,22 @@ void Locomotion::update(const LocoInput& in) {
     if (syncFrom != LocoClip::Count) syncGaits(syncFrom, syncTime, speed);
     turnFrom_ = turnTo_ = state_ == LocoState::Turning ? time_[index(move_)] : 0.f;
 
-    // The moving jump and landing play at the rate their root travel matches the capsule's, within
-    // limits: past them it's no longer the same move.
-    for (const LocoClip c : {LocoClip::JumpMoving, LocoClip::LandMoving}) {
-        const float clipSpeed = clip(c).groundSpeed;
-        rate_[index(c)] = clipSpeed > 0.f ? clampf(speed / clipSpeed, tuning_.minLandRate, tuning_.maxLandRate) : 1.f;
-    }
+    // The moving landing plays at the rate its root travel matches the capsule's, within limits: past them
+    // it's no longer the same move. The moving take-off, in the air from its entry, plays at its own (1).
+    const float landSpeed = clip(LocoClip::LandMoving).groundSpeed;
+    rate_[index(LocoClip::LandMoving)] = landSpeed > 0.f ? clampf(speed / landSpeed, tuning_.minLandRate, tuning_.maxLandRate) : 1.f;
     advance(dt, speed, in.leadPhase, in.leadStride);
     if (state_ == LocoState::Turning) turnTo_ = time_[index(move_)];
 
-    // The air pose over the limbs: in the air, and for the arms into the landing (on past a moving body's
-    // hand-back to its gait).
+    // The air pose over the limbs: in a fall, and for the arms into the landing after one (on past a moving
+    // body's hand-back to its gait). The take-offs have their own tuck and arms.
     const bool air = state_ == LocoState::Rising || state_ == LocoState::Falling;
-    const bool arms = air || (landTime_ >= 0.f && landTime_ < tuning_.landArms);
+    const bool fall = state_ == LocoState::Falling;
+    const bool arms = fall || (landFell_ && landTime_ >= 0.f && landTime_ < tuning_.landArms);
     const bool posed = has(LocoClip::AirPose);
     const float limbFollow = posed ? follow(dt, tuning_.limbFade) : 1.f;
     limbs_.arms += ((posed && arms ? 1.f : 0.f) - limbs_.arms) * limbFollow;
-    limbs_.legs += ((posed && air ? 1.f : 0.f) - limbs_.legs) * limbFollow;
+    limbs_.legs += ((posed && fall ? 1.f : 0.f) - limbs_.legs) * limbFollow;
     if (limbs_.arms < kMinWeight) limbs_.arms = 0.f;
     if (limbs_.legs < kMinWeight) limbs_.legs = 0.f;
     limbs_.time = clip(LocoClip::AirPose).length;
