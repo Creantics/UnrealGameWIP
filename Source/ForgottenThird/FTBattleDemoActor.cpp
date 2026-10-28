@@ -25,6 +25,7 @@
 #include "FTConductorComponent.h"
 #include "FTGameInstance.h"
 #include "FTMeshFacing.h"
+#include "FTPauseSubsystem.h"
 #include "FTPlayerController.h"
 #include "FTStorySubsystem.h"
 #include "FTText.h"
@@ -177,7 +178,10 @@ constexpr float kFallbackFigurePixels = 300.f;
 
 const FString kEmpty;
 
-double Wall() { return FPlatformTime::Seconds(); }
+// The pause-aware wall clock: banner, popup, judgement and press ages, and the second the results hold
+// before a press counts, all stand still while the pause menu is open. AFTBattleHUD's HudWall() reads
+// the same clock, since it ages the popups against the times stamped here.
+double Wall() { return UFTPauseSubsystem::WallSeconds(); }
 } // namespace
 
 AFTBattleDemoActor::AFTBattleDemoActor()
@@ -438,8 +442,10 @@ void AFTBattleDemoActor::StartRound()
 			// Story-context keys, live again once the battle input is off: fight again.
 			PC->OnConfirm.AddDynamic(this, &AFTBattleDemoActor::HandleRestart);
 			PC->OnAdvance.AddDynamic(this, &AFTBattleDemoActor::HandleRestart);
-			// Esc / Backspace / pad B (Q is polled in Tick: it has no story-context binding).
+			// Backspace / pad B (Q is polled in Tick: it has no story-context binding). Esc and Start are the
+			// pause keys: while aiming they put the shot back first (OnBack).
 			PC->OnCancel.AddDynamic(this, &AFTBattleDemoActor::HandleQuit);
+			PC->OnBack.AddDynamic(this, &AFTBattleDemoActor::HandleBack);
 			PC->SetViewTarget(this);
 		}
 		PC->BeginBattleInput();
@@ -1095,9 +1101,26 @@ void AFTBattleDemoActor::RetryAfterDefeat()
 	}
 }
 
+void AFTBattleDemoActor::HandleBack()
+{
+	// Esc / pad Start while aiming put the shot back, and the press doesn't also open the pause menu.
+	if (!bAutoPlay && Battle->IsAimActive())
+	{
+		Battle->CancelAim();
+		if (AFTPlayerController* PC = GetPlayer())
+		{
+			PC->ClaimBack();
+		}
+	}
+}
+
 void AFTBattleDemoActor::HandleQuit()
 {
-	// Esc / Backspace / pad B while aiming put the shot back (pad B also arrives as a face button).
+	if (UFTPauseSubsystem::IsBlocking(this))
+	{
+		return;
+	}
+	// Backspace / pad B while aiming put the shot back (pad B also arrives as a face button).
 	if (!bAutoPlay && Battle->IsAimActive())
 	{
 		Battle->CancelAim();
@@ -1133,7 +1156,7 @@ void AFTBattleDemoActor::ReturnToField()
 
 void AFTBattleDemoActor::HandleArrow(EFTArrow Arrow, bool bFaceButton)
 {
-	if (bAutoPlay || bWaitingForRestart || !Battle->GetBattle())
+	if (bAutoPlay || bWaitingForRestart || !Battle->GetBattle() || UFTPauseSubsystem::IsBlocking(this))
 	{
 		return;
 	}
@@ -1204,7 +1227,7 @@ void AFTBattleDemoActor::HandleArrow(EFTArrow Arrow, bool bFaceButton)
 
 void AFTBattleDemoActor::HandleSkill(int32 Skill)
 {
-	if (bAutoPlay || bWaitingForRestart || Battle->GetPhase() != EFTBattlePhase::AwaitingCommand)
+	if (bAutoPlay || bWaitingForRestart || Battle->GetPhase() != EFTBattlePhase::AwaitingCommand || UFTPauseSubsystem::IsBlocking(this))
 	{
 		return;
 	}
@@ -1218,7 +1241,7 @@ void AFTBattleDemoActor::HandleSkill(int32 Skill)
 
 void AFTBattleDemoActor::HandleTarget(int32 Step)
 {
-	if (!bAutoPlay && !bWaitingForRestart && Battle->GetPhase() == EFTBattlePhase::AwaitingCommand)
+	if (!bAutoPlay && !bWaitingForRestart && Battle->GetPhase() == EFTBattlePhase::AwaitingCommand && !UFTPauseSubsystem::IsBlocking(this))
 	{
 		CycleTarget(Step);
 	}
@@ -1226,7 +1249,7 @@ void AFTBattleDemoActor::HandleTarget(int32 Step)
 
 void AFTBattleDemoActor::HandleConfirm()
 {
-	if (bAutoPlay || bWaitingForRestart)
+	if (bAutoPlay || bWaitingForRestart || UFTPauseSubsystem::IsBlocking(this))
 	{
 		return;
 	}
@@ -1244,7 +1267,7 @@ void AFTBattleDemoActor::HandleRestart()
 {
 	// A short pause first, so the press that ended the battle doesn't start the next one (or skip
 	// the results).
-	if (!bWaitingForRestart || bQuitting || Wall() - OutcomeWall <= 1.0)
+	if (!bWaitingForRestart || bQuitting || Wall() - OutcomeWall <= 1.0 || UFTPauseSubsystem::IsBlocking(this))
 	{
 		return;
 	}
@@ -1432,9 +1455,12 @@ void AFTBattleDemoActor::TickAimInput(float DeltaSeconds)
 	const bool bAimDown = bLive && (PC->IsInputKeyDown(EKeys::F) || PC->IsInputKeyDown(EKeys::Gamepad_LeftTrigger));
 	const bool bFireDown = bLive && PC->IsInputKeyDown(EKeys::LeftMouseButton);
 	const bool bCancelDown = bLive && PC->IsInputKeyDown(EKeys::RightMouseButton);
-	const bool bAimPressed = bAimDown && !bAimKeyDown;
-	const bool bFirePressed = bFireDown && !bFireKeyDown;
-	const bool bCancelPressed = bCancelDown && !bCancelKeyDown;
+	// What is still held the frame after the pause menu closed (the click on Resume) is not a press of
+	// the aim's own: the edges wait until the keys are let go and pressed again.
+	const bool bResumed = UFTPauseSubsystem::IsJustResumed(this);
+	const bool bAimPressed = bAimDown && !bAimKeyDown && !bResumed;
+	const bool bFirePressed = bFireDown && !bFireKeyDown && !bResumed;
+	const bool bCancelPressed = bCancelDown && !bCancelKeyDown && !bResumed;
 	bAimKeyDown = bAimDown;
 	bFireKeyDown = bFireDown;
 	bCancelKeyDown = bCancelDown;

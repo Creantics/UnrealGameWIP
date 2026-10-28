@@ -6,8 +6,8 @@
 // through UFTStorySubsystem, so the subsystem's events fire as usual.
 //
 // Keys (AFTPlayerController's story keys; its own story routing is turned off while a director
-// runs): Space / left mouse / pad bottom or Enter / pad Start finish the text, then move on or
-// continue past a gameplay beat; 1-4 / pad d-pad pick an option once the prompt is out.
+// runs): Space / left mouse / pad bottom or Enter finish the text, then move on or continue past a
+// gameplay beat; 1-4 / pad d-pad pick an option once the prompt is out.
 //
 // Gameplay hand-off: continuing past a gameplay beat lowers it with ftcore::GameplayPlan and plays its
 // steps in order. Each step fills UFTGameInstance::StoryCarry and opens the step's map: BattleMap for
@@ -28,10 +28,11 @@
 // -StoryQuitOnReturn exits once the story resumes after a whole beat (all its steps).
 //
 // Reading aids (interactive play only; autoplay never binds them, so headless runs are unchanged):
-// B or mouse wheel up opens the backlog (ftcore::DialogueBacklog on the story subsystem), Escape or B
-// closes it; up / down and the wheel scroll it. Escape otherwise opens the settings overlay
-// (UFTSettingsSubsystem). While either is open the story stands still (UFTStorySubsystem::SetPaused,
-// no typing) and presses are ignored. Holding Ctrl, S or the pad's right trigger skips (ftcore::
+// B or mouse wheel up opens the backlog (ftcore::DialogueBacklog on the story subsystem), Escape, pad
+// Start or B closes it; up / down and the wheel scroll it. Escape and pad Start otherwise open the
+// pause menu (UFTPauseSubsystem; its Settings row opens the settings overlay). While the backlog, the
+// pause menu or the settings is open the story stands still (UFTStorySubsystem::SetPaused, no typing)
+// and presses are ignored. Holding Ctrl, S or the pad's right trigger skips (ftcore::
 // SkipController): each line shows at once and moves on every SkipInterval seconds, stopping at
 // choices and gameplay beats, and, with the "seen lines only" setting, at lines not seen before.
 // Auto-advance (a setting) moves on a fully shown line after a delay. Text speed, skip mode and
@@ -164,6 +165,9 @@ private:
 	void HandleSkip(bool bHeld);
 	UFUNCTION()
 	void HandleCancel();
+	// Esc / pad Start (AFTPlayerController::OnBack): closes the backlog and claims the press.
+	UFUNCTION()
+	void HandleBack();
 	UFUNCTION()
 	void HandleMenuStep(int32 Step);
 	UFUNCTION()
@@ -176,14 +180,13 @@ private:
 	// The current line's voice is still playing.
 	bool IsVoiceBusy() const;
 
-	// A reading overlay (backlog or settings) is up, or just closed this frame.
+	// A reading overlay (backlog or settings) or the pause menu is up, or just closed this frame.
 	bool InputBlocked() const;
 	// Interactive play, not handing off, and no overlay up.
 	bool CanOpenOverlay() const;
 	void OpenBacklog();
 	void CloseBacklog();
 	void ScrollBacklog(int32 Delta);
-	void OpenSettings();
 	// Takes the text speed, skip mode and auto-advance from the settings when their revision moved.
 	void ApplySettings();
 	// One interactive frame: skip, then auto-advance.

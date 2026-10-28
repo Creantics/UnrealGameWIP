@@ -18,16 +18,21 @@
 // Command menu (phase AwaitingCommand): Up/Down pick the skill, Left/Right or Tab/Q/E the target,
 // Enter/Space/pad A use it; 1-4 use a skill at once. The row after the skills is Aim (also F, the
 // right mouse button or pad LT): the reticle moves with the mouse, either stick or the held arrows,
-// the left mouse button / Enter / Space / pad A fire and Esc / right mouse / pad B / LT cancel (the
-// AP comes back); see docs/BATTLE_AIM.md. During a combo every arrow is a step. On an enemy turn the
+// the left mouse button / Enter / Space / pad A fire and Esc / Start / right mouse / pad B / LT cancel
+// (the AP comes back); see docs/BATTLE_AIM.md. During a combo every arrow is a step. On an enemy turn the
 // defender answers each hit of the attack timeline: Left/Right (pad X/B) dodge, Down (pad A) parries,
 // Up (pad Y) jumps (jumpable hits only). The attacker flashes as each hit's tell starts, and each hit
 // is judged on one line: PERFECT, DEFENDED, LATE (a press just after the impact) or MISSED.
 // After the outcome the screen shows the results (time, damage, notes, defences; a story win adds the
-// xp, gold and level). Enter/Space/pad A/Start then fight again, or after a won story or field fight
-// continue back there (the autopilot continues on its own after 2.5 s). After a loss in a story fight, Esc / Q /
-// pad B quits to the title instead: it opens the story map (carry.ReturnMap) with the URL option
-// ?Title and leaves the carry's bDone false.
+// xp, gold and level). Enter/Space/pad A then fight again, or after a won story or field fight
+// continue back there (the autopilot continues on its own after 2.5 s). After a loss in a story fight, Q /
+// Backspace / pad B quits to the title instead: it opens the story map (carry.ReturnMap) with the URL
+// option ?Title and leaves the carry's bDone false.
+//
+// Esc and pad Start pause the game here as on every other screen (UFTPauseSubsystem): while aiming they
+// put the shot back first, anywhere else they open the pause menu. While it is open this screen ignores
+// its own input, and the battle clock stands still: it runs on UFTPauseSubsystem::WallSeconds, like the
+// times this actor stamps for its banners and popups.
 //
 // bAutoPlay (or -BattleAutoPlay on the command line) lets Core's pilot play perfectly (every note
 // on time, every enemy hit parried at its ideal time from the timeline, and an aimed shot on the best
@@ -245,6 +250,9 @@ private:
 	// The story map with ?Title (a lost story fight); the carry stays unfinished.
 	UFUNCTION()
 	void HandleQuit();
+	// Esc / pad Start while aiming: puts the shot back and claims the press (AFTPlayerController::OnBack).
+	UFUNCTION()
+	void HandleBack();
 	// The autopilot's answer to a loss.
 	void RetryAfterDefeat();
 	UFUNCTION()

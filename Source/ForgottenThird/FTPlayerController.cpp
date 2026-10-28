@@ -10,6 +10,9 @@
 
 #include "ForgottenThird.h"
 #include "FTConductorComponent.h"
+#include "FTGameMode.h"
+#include "FTPauseSubsystem.h"
+#include "FTSettingsSubsystem.h"
 #include "FTStorySubsystem.h"
 
 void AFTPlayerController::CreateInputObjects()
@@ -40,9 +43,10 @@ void AFTPlayerController::CreateInputObjects()
 		ChooseActions.Add(Action);
 	}
 
+	// Enter only: pad Start opens the pause menu on a gameplay screen. The title keeps Start as confirm
+	// through the menu context below.
 	ConfirmAction = MakeAction(TEXT("IA_Confirm"));
 	MappingContext->MapKey(ConfirmAction, EKeys::Enter);
-	MappingContext->MapKey(ConfirmAction, EKeys::Gamepad_Special_Right);
 
 	CancelAction = MakeAction(TEXT("IA_Cancel"));
 	MappingContext->MapKey(CancelAction, EKeys::Escape);
@@ -108,7 +112,6 @@ void AFTPlayerController::CreateInputObjects()
 	BattleConfirmAction = MakeAction(TEXT("IA_BattleConfirm"));
 	BattleContext->MapKey(BattleConfirmAction, EKeys::Enter);
 	BattleContext->MapKey(BattleConfirmAction, EKeys::SpaceBar);
-	BattleContext->MapKey(BattleConfirmAction, EKeys::Gamepad_Special_Right);
 
 	// Menu: added on top of the story context while a menu is up. Consumes the d-pad.
 	MenuContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Menu"));
@@ -128,6 +131,11 @@ void AFTPlayerController::CreateInputObjects()
 	MenuRightAction = MakeAction(TEXT("IA_MenuRight"));
 	MenuContext->MapKey(MenuRightAction, EKeys::Right);
 	MenuContext->MapKey(MenuRightAction, EKeys::D);
+	// Pad Start confirms in a menu: it is the title's confirm key (the story context no longer has it).
+	// On a gameplay screen the pause context (one priority up) takes Start before this mapping sees it.
+	MenuContext->MapKey(ConfirmAction, EKeys::Gamepad_Special_Right);
+
+	CreatePauseInput();
 }
 
 UInputAction* AFTPlayerController::MakeAction(const TCHAR* Name)
@@ -181,6 +189,7 @@ void AFTPlayerController::SetupInputComponent()
 	Input->BindAction(MenuDownAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleMenuDown);
 	Input->BindAction(MenuLeftAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleMenuLeft);
 	Input->BindAction(MenuRightAction, ETriggerEvent::Started, this, &AFTPlayerController::HandleMenuRight);
+	BindPauseInput(*Input);
 }
 
 void AFTPlayerController::BeginPlay()
@@ -258,6 +267,155 @@ void AFTPlayerController::HandleMenuAdjust(int32 Direction)
 	{
 		OnMenuAdjust.Broadcast(Direction);
 	}
+}
+
+// ---- pause ----
+
+void AFTPlayerController::CreatePauseInput()
+{
+	// The actions the pause menu and the settings overlay opened from it read keep firing while the game
+	// is paused; an action without this stands still then.
+	UInputAction* const WhilePaused[] = {AdvanceAction, ConfirmAction, CancelAction, MenuUpAction, MenuDownAction, MenuLeftAction, MenuRightAction};
+	for (UInputAction* Action : WhilePaused)
+	{
+		Action->bTriggerWhenPaused = true;
+	}
+
+	// Esc and pad Start. Its action consumes them, so the cancel and confirm actions don't also fire.
+	PauseAction = MakeAction(TEXT("IA_Pause"));
+	PauseAction->bTriggerWhenPaused = true;
+	PauseContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Pause"));
+	PauseContext->MapKey(PauseAction, EKeys::Escape);
+	PauseContext->MapKey(PauseAction, EKeys::Gamepad_Special_Right);
+
+	// Added only while the pause menu is open, above every screen's own context: the keys it and the
+	// settings overlay need, on the same actions the menu context and the story context use. Esc and
+	// Start are left to the pause context. A screen's context (the explore pawn's Move, Jump and Interact
+	// on W A S D, Space and Enter) can't then take a key the menu is waiting for.
+	PauseMenuContext = NewObject<UInputMappingContext>(this, TEXT("IMC_PauseMenu"));
+	PauseMenuContext->MapKey(MenuUpAction, EKeys::Up);
+	PauseMenuContext->MapKey(MenuUpAction, EKeys::W);
+	PauseMenuContext->MapKey(MenuUpAction, EKeys::Gamepad_DPad_Up);
+	PauseMenuContext->MapKey(MenuUpAction, EKeys::Gamepad_DPad_Left);
+	PauseMenuContext->MapKey(MenuDownAction, EKeys::Down);
+	PauseMenuContext->MapKey(MenuDownAction, EKeys::S);
+	PauseMenuContext->MapKey(MenuDownAction, EKeys::Gamepad_DPad_Down);
+	PauseMenuContext->MapKey(MenuDownAction, EKeys::Gamepad_DPad_Right);
+	PauseMenuContext->MapKey(MenuLeftAction, EKeys::Left);
+	PauseMenuContext->MapKey(MenuLeftAction, EKeys::A);
+	PauseMenuContext->MapKey(MenuRightAction, EKeys::Right);
+	PauseMenuContext->MapKey(MenuRightAction, EKeys::D);
+	PauseMenuContext->MapKey(AdvanceAction, EKeys::SpaceBar);
+	PauseMenuContext->MapKey(AdvanceAction, EKeys::LeftMouseButton);
+	PauseMenuContext->MapKey(AdvanceAction, EKeys::Gamepad_FaceButton_Bottom);
+	PauseMenuContext->MapKey(ConfirmAction, EKeys::Enter);
+	PauseMenuContext->MapKey(CancelAction, EKeys::BackSpace);
+	PauseMenuContext->MapKey(CancelAction, EKeys::Gamepad_FaceButton_Right);
+}
+
+void AFTPlayerController::BindPauseInput(UEnhancedInputComponent& Input)
+{
+	Input.BindAction(PauseAction, ETriggerEvent::Started, this, &AFTPlayerController::HandlePause);
+	// A gameplay screen has the pause context from the start. The title leaves it off (Start confirms
+	// there), and AFTGameMode adds it when the story begins.
+	const AFTGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AFTGameMode>() : nullptr;
+	if (!Mode || !Mode->IsTitleShown())
+	{
+		BeginPauseInput();
+	}
+}
+
+void AFTPlayerController::BeginPauseInput()
+{
+	if (bPauseInput || UFTPauseSubsystem::IsHeadlessRun())
+	{
+		return;
+	}
+	CreateInputObjects();
+	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = GetInputSubsystem())
+	{
+		bPauseInput = true;
+		Subsystem->AddMappingContext(PauseContext, 3);
+	}
+}
+
+void AFTPlayerController::EndPauseInput()
+{
+	if (!bPauseInput)
+	{
+		return;
+	}
+	bPauseInput = false;
+	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = GetInputSubsystem())
+	{
+		Subsystem->RemoveMappingContext(PauseContext);
+	}
+}
+
+void AFTPlayerController::BeginPauseMenuInput()
+{
+	if (bPauseMenuInput)
+	{
+		return;
+	}
+	CreateInputObjects();
+	bPauseMenuInput = true;
+	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = GetInputSubsystem())
+	{
+		Subsystem->AddMappingContext(PauseMenuContext, 5);
+	}
+}
+
+void AFTPlayerController::EndPauseMenuInput()
+{
+	if (!bPauseMenuInput)
+	{
+		return;
+	}
+	bPauseMenuInput = false;
+	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = GetInputSubsystem())
+	{
+		Subsystem->RemoveMappingContext(PauseMenuContext);
+	}
+}
+
+void AFTPlayerController::HandlePause()
+{
+	const UGameInstance* GameInstance = GetGameInstance();
+	UFTPauseSubsystem* Pause = GameInstance ? GameInstance->GetSubsystem<UFTPauseSubsystem>() : nullptr;
+	if (!Pause)
+	{
+		return;
+	}
+	// Esc and Start back out of the topmost layer first. The settings overlay is above the menu it was
+	// opened from; a press that closed it in this very frame is spent.
+	UFTSettingsSubsystem* Settings = GameInstance->GetSubsystem<UFTSettingsSubsystem>();
+	if (Settings && Settings->BlocksInput())
+	{
+		if (Settings->IsOpen())
+		{
+			Settings->Close();
+		}
+		return;
+	}
+	// Then the pause menu: a step back (the quit prompt closes, else the menu resumes).
+	if (Pause->BlocksInput())
+	{
+		if (Pause->IsOpen())
+		{
+			Pause->PressBack();
+		}
+		return;
+	}
+	// Then a layer of the screen itself (the backlog, an aim in progress): its listener closes it and
+	// claims the press.
+	bBackClaimed = false;
+	OnBack.Broadcast();
+	if (bBackClaimed)
+	{
+		return;
+	}
+	Pause->Open(GetWorld());
 }
 
 UEnhancedInputLocalPlayerSubsystem* AFTPlayerController::GetInputSubsystem() const
@@ -391,7 +549,8 @@ void AFTPlayerController::HandleCancel()
 
 void AFTPlayerController::HandleTap()
 {
-	const double WallSeconds = FPlatformTime::Seconds();
+	// The conductor's clock (RecordTap and GetEventSongTime read the same one): no pause in it.
+	const double WallSeconds = UFTPauseSubsystem::WallSeconds();
 	if (const APawn* ControlledPawn = GetPawn())
 	{
 		UFTConductorComponent* Conductor = ControlledPawn->FindComponentByClass<UFTConductorComponent>();

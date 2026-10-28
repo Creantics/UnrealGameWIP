@@ -5,6 +5,7 @@
 #include "Engine/Font.h"
 #include "FTCutsceneDirector.h"
 #include "FTCutsceneGameMode.h"
+#include "FTPauseOverlay.h"
 #include "FTUiText.h"
 
 namespace
@@ -29,6 +30,7 @@ void AFTCutsceneHUD::DrawHUD()
 	const AFTCutsceneGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AFTCutsceneGameMode>() : nullptr;
 	if (!Mode)
 	{
+		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
 	const float W = Canvas->ClipX;
@@ -65,4 +67,5 @@ void AFTCutsceneHUD::DrawHUD()
 	{
 		DrawText(kSkipCutscene, kDimCutscene, W - Margin - HintW, BottomY, Small, 1.2f * S);
 	}
+	FT::DrawPauseOverlay(*this, Canvas);
 }

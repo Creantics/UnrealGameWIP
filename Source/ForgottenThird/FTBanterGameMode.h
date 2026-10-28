@@ -6,10 +6,10 @@
 // with AFTBanterHUD and returns to the story the way the stub screen does. No story on play.
 //
 // The lines run on their own: each holds for a time set by its length (or its `hold`), then the next
-// one shows. Keys (AFTPlayerController's story actions): Space / left click / pad A or Enter / pad
-// Start show the next line at once; Escape / Backspace / pad B skip the rest. With
-// StoryCarry.bAutoPlay it skips by itself after the input grace. With -AlphaFast the timers run at
-// 8x, as on the stub screen.
+// one shows. Keys (AFTPlayerController's story actions): Space / left click / pad A or Enter show the
+// next line at once; Backspace / pad B skip the rest (Escape and pad Start open the pause menu, which
+// stops the lines and ignores these keys while it is up). With StoryCarry.bAutoPlay it skips by
+// itself after the input grace. With -AlphaFast the timers run at 8x, as on the stub screen.
 //
 // When the banter file is missing (or refused) it shows exactly the stub card (the step's title,
 // label and "Step i of n") and continues on a press, so the alpha needs no banter data. Opened

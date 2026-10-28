@@ -4,6 +4,7 @@
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
 #include "FTChoiceGameMode.h"
+#include "FTPauseOverlay.h"
 #include "FTUiText.h"
 
 namespace
@@ -80,6 +81,7 @@ void AFTChoiceHUD::DrawHUD()
 	const AFTChoiceGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AFTChoiceGameMode>() : nullptr;
 	if (!Mode)
 	{
+		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
 	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
@@ -91,6 +93,7 @@ void AFTChoiceHUD::DrawHUD()
 	{
 		DrawCard(*Mode);
 	}
+	FT::DrawPauseOverlay(*this, Canvas);
 }
 
 // The stub card, as AFTStubHUD draws it.

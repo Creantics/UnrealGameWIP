@@ -87,6 +87,11 @@ public:
 	double GetMusicCursor() const { return Music ? MusicCursor : -1.0; }
 	bool IsManifestLoaded() const { return bManifestLoaded; }
 
+	// The pause menu (UFTPauseSubsystem) pauses and resumes everything that is playing: the music, the
+	// voice line and the ambience. The components are created as UI sounds, so the world's pause doesn't
+	// reach them; with the music paused its cursor stops, and so does the conductor that follows it.
+	void SetGamePaused(bool bPaused);
+
 	// FTickableGameObject
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;

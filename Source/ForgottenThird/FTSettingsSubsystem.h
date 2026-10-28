@@ -6,9 +6,11 @@
 // defaults. Changes apply at once: readers poll GetRevision() and re-read Get() when it moves
 // (AFTStoryDirector does, for the text speed, auto-advance and skip; AFTStoryHUD reads the subtitle size).
 //
-// The overlay is opened by the title (its Settings entry) or by the story director (Escape), through
-// Open(). While it is open it takes the player controller's menu input (up / down move, left / right
-// step the value, Enter / Space / click change it, Escape closes) and the owner's own handlers must
+// The overlay is opened by the title (its Settings entry) or by the pause menu (its Settings row, on
+// any gameplay screen; UFTPauseSubsystem), through Open(). While it is open it takes the player
+// controller's menu input (up / down move, left / right step the value, Enter / Space / click change
+// it, Escape closes; on a gameplay screen Esc and pad Start close it through the controller) and the
+// owner's own handlers must
 // ignore input: they check BlocksInput(), which stays true for the rest of the frame the overlay
 // closed in, so the press that closes it doesn't also reach them. The HUD draws it (FTSettingsOverlay)
 // and reports each row's rectangle back here for the mouse. Rules are ftcore::SettingsMenu.

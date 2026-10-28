@@ -13,12 +13,12 @@ start the story; the story opens them for its gameplay beats (see below).
 
 | | Keyboard and mouse | Gamepad |
 |---|---|---|
-| Finish the text, then continue | Space, left click or Enter | A or Start |
+| Finish the text, then continue | Space, left click or Enter | A |
 | Pick an option (once the prompt is out) | 1-4 | D-pad up, right, down, left |
-| Backlog | B or mouse wheel up; B or Esc closes | |
+| Backlog | B or mouse wheel up; B, Esc or Backspace closes | B or Start closes |
 | Scroll the backlog | Up / Down, mouse wheel | |
 | Skip (hold) | Ctrl or S | Right trigger |
-| Settings | Esc (Esc, Backspace or the Back row closes) | pad B closes |
+| Pause menu (Resume, Settings, Quit to Title, Quit Game) | Esc (Esc or Backspace resumes) | Start (Start or B resumes) |
 
 The first press shows the whole line; the next one moves on. Greyed options can't be picked.
 
@@ -27,8 +27,9 @@ The first press shows the whole line; the next one moves on. Greyed options can'
 B (or a wheel notch up) opens a scrollable overlay of what you were shown: lines with their
 speaker, directions, choice prompts and the option you picked (in green, with a ">" in front).
 It keeps the last 200 entries, newest at the bottom; Up / Down or the wheel go back and forward in
-time. While it is open the story stands still (no typing, a hold waits) and presses are ignored. B
-or Esc closes it. Not available on the end card. The log starts over on New Game, on loading a
+time. While it is open the story stands still (no typing, a hold waits) and presses are ignored. B,
+Esc, Backspace or Start closes it (Esc and Start only close it: the press doesn't also open the
+pause menu). Not available on the end card. The log starts over on New Game, on loading a
 save, on returning to the title and when the story is reloaded; it is never saved.
 
 ### Skip
@@ -50,10 +51,12 @@ priority while held. An "AUTO" tag shows top right.
 
 ### Settings
 
-Esc opens the settings overlay from the story (and the title's Settings entry opens the same
-one). Up / Down (or the mouse) pick a row, Left / Right or a click on the left / right half of the
+The pause menu's Settings row opens the settings overlay from the story (Esc or Start opens the
+pause menu, see [GAME_FRAME.md](GAME_FRAME.md); the title's Settings entry opens the same overlay).
+Up / Down (or the mouse) pick a row, Left / Right or a click on the left / right half of the
 value step it, Enter / Space / click cycle it. Changes apply at once and are written to
-`Saved/Settings.json` when the overlay closes (Esc, or the Back row). The story is paused behind it.
+`Saved/Settings.json` when the overlay closes (Esc or Start, or the Back row; Backspace and pad B
+too). The story is paused behind it.
 
 | Row | Values | Used by |
 |---|---|---|
@@ -77,7 +80,8 @@ started, a check in the opening beats before the story's first stop sees the fla
 The rules (`ftcore::SettingsMenu`, `ftcore::Settings`, JSON with a `version` field, defaults and
 clamping) are in `Core/include/ftcore/Settings.h` with tests in `test_settings.cpp`. The settings
 never touch autoplay: a headless run (`-StoryAutoPlay`, `-AlphaAutoPlay`, ...) keeps its own text
-speed, never binds the backlog, skip or settings keys, and is never blocked by them.
+speed, never binds the backlog, skip or settings keys, never opens the pause menu, and is never
+blocked by them.
 
 ## What the box shows
 

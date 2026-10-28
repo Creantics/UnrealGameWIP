@@ -155,6 +155,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_inventory.cpp
         tests/test_battle_items.cpp
         tests/test_shop.cpp
+        tests/test_pause.cpp
     )
     target_link_libraries(ftcore_tests PRIVATE ftcore doctest::doctest ftcore_warnings)
     # The real-data tests read the newengine checkout's assets in place (skipped when absent).

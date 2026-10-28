@@ -71,7 +71,10 @@ Errors name paths (`minis[2].bpm`).
 
 This is the battle and QTE screens' mapping. The game mode polls the keys every frame and presses
 before the tick, so a press is stamped with the round's clock as it stood at the start of the
-frame. Presses in the first 0.25 s of each round are ignored.
+frame. Presses in the first 0.25 s of each round are ignored. Escape (keyboard) or Start (pad)
+opens the pause menu (see [GAME_FRAME.md](GAME_FRAME.md), "Pause"): the round's clock stops with the
+world, and a key still held in the frame after the menu closes (the pad's A that picked Resume) is
+not read as a press until it is let go and pressed again.
 
 ## Regenerate the map
 

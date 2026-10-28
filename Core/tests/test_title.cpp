@@ -26,7 +26,7 @@ TEST_CASE("title menu without a save") {
     CHECK(m.press(TitleKey::Pick1) == TitleAction::NewGame);
     CHECK(m.press(TitleKey::Down) == TitleAction::Moved);  // steps over the greyed Continue
     CHECK(m.selected() == TitleItem::Settings);
-    CHECK(m.press(TitleKey::Down) == TitleAction::None);   // at the bottom
+    // (Settings is no longer the last row: Quit sits below it. The Quit tests below hold the edge.)
     CHECK(m.press(TitleKey::Confirm) == TitleAction::Settings);
     CHECK(m.press(TitleKey::Up) == TitleAction::Moved);
     CHECK(m.selected() == TitleItem::NewGame);
@@ -43,7 +43,7 @@ TEST_CASE("title menu with a save") {
     CHECK(m.press(TitleKey::Confirm) == TitleAction::Continue);
     CHECK(m.press(TitleKey::Down) == TitleAction::Moved);
     CHECK(m.selected() == TitleItem::Settings);
-    CHECK(m.press(TitleKey::Down) == TitleAction::None); // at the bottom: no wrap
+    // (No wrap at the bottom, which is Quit now: see the Quit tests below.)
     CHECK(m.press(TitleKey::Pick3) == TitleAction::Settings);
     CHECK(m.press(TitleKey::Up) == TitleAction::Moved);
     CHECK(m.press(TitleKey::Up) == TitleAction::Moved);
@@ -58,6 +58,77 @@ TEST_CASE("title menu with a save") {
     m.setContinueEnabled(false); // the save went bad: selection falls back
     CHECK(m.selected() == TitleItem::NewGame);
     CHECK(m.press(TitleKey::Pick2) == TitleAction::None);
+}
+
+TEST_CASE("title menu has four items and Quit is the last one") {
+    static_assert(TitleMenu::kItemCount == 4);
+    // The items keep their places: the menu moves by index, and Quit was appended.
+    CHECK(static_cast<int>(TitleItem::NewGame) == 0);
+    CHECK(static_cast<int>(TitleItem::Continue) == 1);
+    CHECK(static_cast<int>(TitleItem::Settings) == 2);
+    CHECK(static_cast<int>(TitleItem::Quit) == 3);
+    TitleMenu m;
+    CHECK(m.enabled(TitleItem::Quit)); // always enabled: with no save,
+    m.setContinueEnabled(true);
+    CHECK(m.enabled(TitleItem::Quit)); // with one,
+    m.setContinueEnabled(false);
+    CHECK(m.enabled(TitleItem::Quit)); // and after it goes bad
+}
+
+TEST_CASE("title menu: Down from Settings reaches Quit, without a save") {
+    TitleMenu m;
+    CHECK(m.press(TitleKey::Down) == TitleAction::Moved); // New Game -> Settings (Continue is greyed)
+    CHECK(m.selected() == TitleItem::Settings);
+    CHECK(m.press(TitleKey::Down) == TitleAction::Moved);
+    CHECK(m.selected() == TitleItem::Quit);
+    CHECK(m.press(TitleKey::Down) == TitleAction::None); // the new bottom: no wrap
+    CHECK(m.selected() == TitleItem::Quit);
+    CHECK(m.press(TitleKey::Confirm) == TitleAction::Quit); // no confirm step
+    CHECK(m.selected() == TitleItem::Quit);                 // and nothing changed: the menu is just gone
+    CHECK(m.press(TitleKey::Up) == TitleAction::Moved);
+    CHECK(m.selected() == TitleItem::Settings);
+    CHECK(m.press(TitleKey::Up) == TitleAction::Moved);
+    CHECK(m.selected() == TitleItem::NewGame); // over the greyed Continue
+    CHECK(m.press(TitleKey::Up) == TitleAction::None);
+}
+
+TEST_CASE("title menu: Down from Settings reaches Quit, with a save") {
+    TitleMenu m;
+    m.setContinueEnabled(true);
+    CHECK(m.press(TitleKey::Down) == TitleAction::Moved);
+    CHECK(m.selected() == TitleItem::Settings);
+    CHECK(m.press(TitleKey::Down) == TitleAction::Moved);
+    CHECK(m.selected() == TitleItem::Quit);
+    CHECK(m.press(TitleKey::Down) == TitleAction::None); // no wrap
+    CHECK(m.press(TitleKey::Confirm) == TitleAction::Quit);
+    for (int i = 0; i < 3; ++i) CHECK(m.press(TitleKey::Up) == TitleAction::Moved);
+    CHECK(m.selected() == TitleItem::NewGame);
+    CHECK(m.press(TitleKey::Up) == TitleAction::None);
+}
+
+TEST_CASE("title menu: the 4 shortcut and the mouse reach Quit") {
+    TitleMenu m;
+    CHECK(m.press(TitleKey::Pick4) == TitleAction::Quit); // works without a save
+    CHECK(m.selected() == TitleItem::NewGame);           // a shortcut doesn't move the selection
+    m.setContinueEnabled(true);
+    CHECK(m.press(TitleKey::Pick4) == TitleAction::Quit);
+    CHECK(m.selected() == TitleItem::Continue);
+    // The other shortcuts are as before.
+    CHECK(m.press(TitleKey::Pick1) == TitleAction::NewGame);
+    CHECK(m.press(TitleKey::Pick2) == TitleAction::Continue);
+    CHECK(m.press(TitleKey::Pick3) == TitleAction::Settings);
+
+    m.hover(TitleItem::Quit);
+    CHECK(m.selected() == TitleItem::Quit);
+    CHECK(m.press(TitleKey::Confirm) == TitleAction::Quit); // a click picks what the mouse is over
+    m.hover(TitleItem::Settings);
+    CHECK(m.selected() == TitleItem::Settings);
+    CHECK(m.press(TitleKey::Down) == TitleAction::Moved);
+    CHECK(m.selected() == TitleItem::Quit);
+
+    // Continue going bad puts the selection on New Game wherever it was, as it did before Quit existed.
+    m.setContinueEnabled(false);
+    CHECK(m.selected() == TitleItem::NewGame);
 }
 
 namespace {

@@ -318,6 +318,25 @@ void UFTAudioSubsystem::StopMusic(float FadeSeconds)
 	MusicCursor = -1.0;
 }
 
+void UFTAudioSubsystem::SetGamePaused(bool bPaused)
+{
+	if (Music)
+	{
+		Music->SetPaused(bPaused);
+	}
+	if (Voice)
+	{
+		Voice->SetPaused(bPaused);
+	}
+	for (const TPair<FString, TObjectPtr<UAudioComponent>>& Pair : Ambience)
+	{
+		if (Pair.Value)
+		{
+			Pair.Value->SetPaused(bPaused);
+		}
+	}
+}
+
 const ftcore::AudioCue* UFTAudioSubsystem::GetMusicCue() const
 {
 	return Music && !CurrentMusicId.IsEmpty() ? Cues.find(FT::ToUtf8(CurrentMusicId)) : nullptr;

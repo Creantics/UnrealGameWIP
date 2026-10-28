@@ -32,6 +32,8 @@ const FTUiText kNewGameSelTitle(TEXT("title.new_game_selected"));
 const FTUiText kContinueSelTitle(TEXT("title.continue_selected"));
 const FTUiText kSettingsTitle(TEXT("title.settings"));
 const FTUiText kSettingsSelTitle(TEXT("title.settings_selected"));
+const FTUiText kQuitTitle(TEXT("title.quit"));
+const FTUiText kQuitSelTitle(TEXT("title.quit_selected"));
 const FTUiText kHintTitle(TEXT("title.hint"));
 const FTUiText kNoSaveTitle(TEXT("title.no_save"));
 const FTUiText kBadSaveTitle(TEXT("title.bad_save"));
@@ -87,6 +89,10 @@ void AFTTitleHUD::DrawHUD()
 	const bool bSetSel = Menu.selected() == ftcore::TitleItem::Settings;
 	DrawCentered(bSetSel ? kSettingsSelTitle : kSettingsTitle, bSetSel ? kGoldTitle : kWhiteTitle, SettingsY, Font, 1.6f * S);
 
+	const float QuitY = SettingsY + 70.f * S;
+	const bool bQuitSel = Menu.selected() == ftcore::TitleItem::Quit;
+	DrawCentered(bQuitSel ? kQuitSelTitle : kQuitTitle, bQuitSel ? kGoldTitle : kWhiteTitle, QuitY, Font, 1.6f * S);
+
 	DrawCentered(kHintTitle, kDimTitle, Canvas->ClipY - 48.f * S, GEngine->GetSmallFont(), 1.f * S);
 
 	// The mouse selects the item under it once it moves; the overlay has its own hover while it is up.
@@ -98,9 +104,10 @@ void AFTTitleHUD::DrawHUD()
 		LastMouse = FVector2D(MouseX, MouseY);
 		const float Left = Canvas->ClipX * 0.3f;
 		const float Right = Canvas->ClipX * 0.7f;
-		const float Rows[3] = {Canvas->ClipY * 0.5f, Y, SettingsY};
-		const ftcore::TitleItem Items[3] = {ftcore::TitleItem::NewGame, ftcore::TitleItem::Continue, ftcore::TitleItem::Settings};
-		for (int32 I = 0; I < 3; ++I)
+		const float Rows[4] = {Canvas->ClipY * 0.5f, Y, SettingsY, QuitY};
+		const ftcore::TitleItem Items[4] = {
+			ftcore::TitleItem::NewGame, ftcore::TitleItem::Continue, ftcore::TitleItem::Settings, ftcore::TitleItem::Quit};
+		for (int32 I = 0; I < 4; ++I)
 		{
 			if (MouseX >= Left && MouseX <= Right && MouseY >= Rows[I] - 8.f * S && MouseY <= Rows[I] + 56.f * S)
 			{

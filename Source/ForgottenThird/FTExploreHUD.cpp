@@ -6,6 +6,7 @@
 #include "EngineUtils.h"
 
 #include "FTExploreDirector.h"
+#include "FTPauseOverlay.h"
 #include "FTUiText.h"
 
 #include "ftcore/Explore.h"
@@ -70,6 +71,7 @@ void AFTExploreHUD::DrawHUD()
 	const AFTExploreDirector* Found = FindDirector();
 	if (!Found)
 	{
+		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
 	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
@@ -87,6 +89,7 @@ void AFTExploreHUD::DrawHUD()
 	}
 	DrawPrompt(*Found);
 	DrawMessages(*Found);
+	FT::DrawPauseOverlay(*this, Canvas);
 }
 
 void AFTExploreHUD::DrawStr(const FString& S, const FLinearColor& Color, float X, float Y, UFont* Font, float Scale)

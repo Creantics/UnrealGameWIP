@@ -36,11 +36,16 @@ unchanged.
 | Jump (enemy turn, jumpable hits) | Up, or W | D-pad up, or Y |
 | Choose a skill (menu) | Up / Down, or 1-4 to use at once | D-pad up / down |
 | Choose a target (menu) | Left / Right, Q / E, Tab | D-pad left / right, shoulders |
-| Use the skill (menu) | Enter or Space | A or Start |
+| Use the skill (menu) | Enter or Space | A |
 | Aim (menu row, or at once) | Aim row, F or right mouse | Aim row, or LT |
 | Move the reticle (aiming) | Mouse, or hold the arrows / WASD | Either stick |
-| Fire / cancel (aiming) | Left mouse, Enter, Space / Esc, right mouse | A / B or LT |
-| Fight again (after the outcome) | Enter or Space | A or Start |
+| Fire / cancel (aiming) | Left mouse, Enter, Space / Esc, right mouse | A / B, Start or LT |
+| Fight again (after the outcome) | Enter or Space | A |
+| Pause menu | Esc | Start |
+
+Esc and Start pause the battle like every other screen (see [GAME_FRAME.md](GAME_FRAME.md), "Pause"):
+the battle clock stops, and the press doesn't reach the battle while the menu is up. While aiming
+they put the shot back first. Pad Start used to use the skill and fight again; it is the pause key now.
 
 The defence keys are the combo arrows (`AFTPlayerController::OnBattleArrow`), read as defence inputs
 while an enemy attack runs. The battle keys are a separate Enhanced Input context (`AFTPlayerController::BeginBattleInput`),
@@ -109,8 +114,9 @@ line-up comes from data (below). A win shows the results with the reward and **E
 which opens the story map again, where the story picks up after the beat. The autopilot continues
 on its own after 2.5 s ("Returning to the story").
 
-A loss stays here. The DEFEAT screen offers **Enter: Retry** and **Esc / Q: Quit to title**
-(Esc, Backspace and pad B come through the controller's cancel; Q is polled). Retry rebuilds both
+A loss stays here. The DEFEAT screen offers **Enter: Retry** and **Q / pad B: Quit to title**
+(Backspace and pad B come through the controller's cancel; Q is polled; Esc and Start open the
+pause menu, whose Quit to Title does the same, with a confirm step). Retry rebuilds both
 sides from the line-up, so the party starts again at battle-start HP, and replays the same
 encounter. Quit opens the story map (`carry.ReturnMap`) with the URL option `?Title` (the story
 map's game mode shows the title screen on it) and leaves `carry.bDone` false. A plain demo fight
