@@ -119,9 +119,20 @@ const TCHAR* const TraversalNames[] = {
 	TEXT("_Traversal_Climb_Start_2_5_walk_F_Lfoot"), TEXT("_Traversal_Climb_Start_2_5_walk_F_Rfoot"),
 	TEXT("_Traversal_Climb_Start_2_5_run_F_Lfoot"), TEXT("_Traversal_Climb_Start_2_5_run_F_Rfoot"),
 	TEXT("_Jump_F_Land_Roll_Lfoot"), TEXT("_Jump_F_Land_Roll_Rfoot")};
-// A traversal clip fades in over the locomotion this long (s), and out over this long before its end.
+// The slide's clips, each in place of the run loop's whole name (M_Neutral_Run_Loop_F), in
+// ftcore::SlideState::clip's order: the drop-ins, the loop, then the get-ups in ftcore::SlideOut's order.
+const TCHAR* const SlideNames[] = {
+	TEXT("M_Neutral_Slide_FootOut_Into_Lfoot"), TEXT("M_Neutral_Slide_FootOut_Into_Rfoot"),
+	TEXT("M_Relaxed_Slide_FootOut_Into_Sprint_Lfoot"), TEXT("M_Relaxed_Slide_FootOut_Into_Sprint_Rfoot"),
+	TEXT("M_Neutral_Slide_FootOut_Loop"),
+	TEXT("M_Neutral_Slide_FootOut_Out_Idle_Stand"), TEXT("M_Neutral_Slide_FootOut_Out_Idle_Crouch"),
+	TEXT("M_Neutral_Slide_FootOut_Out_Moving_Walk"), TEXT("M_Neutral_Slide_FootOut_Out_Moving_Run"),
+	TEXT("M_Relaxed_Slide_FootOut_Out_Moving_Sprint"), TEXT("M_Neutral_Slide_FootOut_Out_Moving_Crouch")};
+// A traversal clip fades in over the locomotion this long (s), and out over this long before its end; one that
+// takes over from another (a slide's next clip) takes this long to.
 constexpr float kTraversalIn = 0.15f;
 constexpr float kTraversalOut = 0.25f;
+constexpr float kTraversalSwitch = 0.15f;
 
 // The clip's root and ball (or foot) bones in its component space, sampled evenly from 0 to its
 // length into Frames, and with Pelvis its pelvis bone at the same times (left at 0 without one). False
@@ -446,7 +457,9 @@ void UFTLocomotionAnimInstance::SetCrouchFromRun()
 
 void UFTLocomotionAnimInstance::SetTraversalFromRun()
 {
-	static_assert(UE_ARRAY_COUNT(TraversalNames) == NumTraversalClips, "one name per traversal clip");
+	static_assert(UE_ARRAY_COUNT(TraversalNames) == FirstSlideClip, "one name per traversal clip");
+	static_assert(FirstSlideClip <= static_cast<int32>(ftcore::kMaxTraversalClips), "the traversal clips fit the TraversalSet");
+	static_assert(UE_ARRAY_COUNT(SlideNames) == ftcore::kSlideClips, "one name per slide clip");
 	static const bool bNoTraversal = FParse::Param(FCommandLine::Get(), TEXT("LocoNoTraversal"));
 	const UAnimSequence* Loop = bNoTraversal ? nullptr : Clips[static_cast<int32>(ftcore::LocoClip::Run)].Get();
 	const FString Path = Loop ? Loop->GetPathName() : FString();
@@ -456,18 +469,21 @@ void UFTLocomotionAnimInstance::SetTraversalFromRun()
 	int32 Found = 0;
 	for (int32 I = 0; I < NumTraversalClips; ++I)
 	{
+		// A traversal clip's name stands in for the run loop's _Run_Loop_F, a slide clip's for its whole name.
+		const bool bSlideClip = I >= FirstSlideClip;
+		const TCHAR* const RunName = bSlideClip ? TEXT("M_Neutral_Run_Loop_F") : TEXT("_Run_Loop_F");
 		UAnimSequence* Clip = nullptr;
-		if (Path.Contains(TEXT("_Run_Loop_F")))
+		if (Path.Contains(RunName))
 		{
-			const FString ClipPath = Path.Replace(TEXT("_Run_Loop_F"), TraversalNames[I], ESearchCase::CaseSensitive);
+			const FString ClipPath = Path.Replace(RunName, bSlideClip ? SlideNames[I - FirstSlideClip] : TraversalNames[I], ESearchCase::CaseSensitive);
 			if (FPackageName::DoesPackageExist(FPackageName::ObjectPathToPackageName(ClipPath)))
 			{
 				Clip = LoadObject<UAnimSequence>(nullptr, *ClipPath, nullptr, LOAD_NoWarn | LOAD_Quiet);
 			}
 		}
 		TraversalClips[I] = Clip;
-		ftcore::TraversalClipInfo Info;
-		if (Clip && SampleFeet(*Clip, Gait, &Pelvis))
+		const bool bSampled = Clip && SampleFeet(*Clip, Gait, &Pelvis);
+		if (bSampled)
 		{
 			// Core's x is the way the clip goes (its root's net travel), y its left, z up; the clip's own
 			// component space may face +Y.
@@ -486,6 +502,49 @@ void UFTLocomotionAnimInstance::SetTraversalFromRun()
 				Frames[K] = {Point(Gait[K].root), Point(Gait[K].left), Point(Gait[K].right), Point(Pelvis[K])};
 			}
 			++Found;
+		}
+		if (bSlideClip)
+		{
+			// The slide's drop-ins, its loop and its get-ups, each left unmeasured when missing.
+			const int32 K = I - FirstSlideClip;
+			const float ClipLength = bSampled ? Clip->GetPlayLength() : 0.f;
+			if (K < ftcore::kSlideLoop)
+			{
+				const ftcore::SlideIntoInfo Into = bSampled ? ftcore::measureSlideInto(Frames.GetData(), Frames.Num(), ClipLength) : ftcore::SlideIntoInfo();
+				Slide.setInto(static_cast<std::size_t>(K), Into);
+				if (bSampled)
+				{
+					UE_LOG(LogForgottenThird, Display,
+						TEXT("Locomotion: slide %d = %s, %.2f s: %s, take-off %.2f off foot %d, down at %.2f, enters at %.0f cm/s, slides at %.0f cm/s"),
+						K, *Clip->GetName(), ClipLength, Into.length <= 0.f ? TEXT("NOT MEASURED") : TEXT("drop-in"), Into.takeoff, Into.takeoffFoot,
+						Into.down, Into.entrySpeed, Into.slideSpeed);
+				}
+			}
+			else if (K == ftcore::kSlideLoop)
+			{
+				Slide.setLoop(ClipLength);
+				if (bSampled)
+				{
+					UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: slide %d = %s, %.2f s: loop"), K, *Clip->GetName(), ClipLength);
+				}
+			}
+			else
+			{
+				const ftcore::SlideOutInfo GetUp = bSampled ? ftcore::measureSlideOut(Frames.GetData(), Frames.Num(), ClipLength) : ftcore::SlideOutInfo();
+				Slide.setOut(static_cast<ftcore::SlideOut>(K - ftcore::kSlideLoop - 1), GetUp);
+				if (bSampled)
+				{
+					UE_LOG(LogForgottenThird, Display,
+						TEXT("Locomotion: slide %d = %s, %.2f s: %s, first plant %.2f, up %.2f, settled %.2f, ends at %.0f cm/s"),
+						K, *Clip->GetName(), ClipLength, GetUp.length <= 0.f ? TEXT("NOT MEASURED") : TEXT("get-up"), GetUp.plant, GetUp.up,
+						GetUp.settle, GetUp.endSpeed);
+				}
+			}
+			continue;
+		}
+		ftcore::TraversalClipInfo Info;
+		if (bSampled)
+		{
 			if (I >= kFirstRoll)
 			{
 				// A roll is read from the pelvis going down and back up; its root stays on the floor (a land roll's from
@@ -509,7 +568,7 @@ void UFTLocomotionAnimInstance::SetTraversalFromRun()
 	}
 	if (Loop)
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: %d of %d traversal clips next to %s."), Found, NumTraversalClips, *Loop->GetName());
+		UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: %d of %d traversal and slide clips next to %s."), Found, NumTraversalClips, *Loop->GetName());
 	}
 }
 
@@ -614,7 +673,9 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		In.wantYaw = A.SizeSquared2D() > 1.0 ? static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(A.Y, A.X))) : Facing;
 		In.face = bPushedFace;
 		In.faceYaw = PushedFaceYaw;
-		In.crouch = Character->bIsCrouched;
+		// Carried by a traversal the capsule stands, but a body sliding or getting up crouched wants it down: its
+		// clip hands back to a crouch.
+		In.crouch = Character->bIsCrouched || (TravClip >= 0 && !bTravOut && TravWeight >= 1.f && Move && Move->bWantsToCrouch);
 	}
 	else
 	{
@@ -646,20 +707,25 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		PhaseBefore = Loco.phase();
 		StrideBefore = Loco.strideLength();
 	}
-	// A traversal's weight: in over its first kTraversalIn, out over the kTraversalOut before its end. Let go
-	// by its owner, it plays on at its own pace and fades over kTraversalOut from the weight it had (sooner by
-	// its end), then is gone.
+	// A traversal's weight: in over its first kTraversalIn, out over the kTraversalOut before its end (unless it
+	// loops or its owner goes on from it). Let go by its owner, it plays on at its own pace and fades over
+	// kTraversalOut from the weight it had (sooner by the end of one that does not loop), then is gone.
+	auto PlayOn = [DeltaSeconds](float Time, float Length, bool bLoop)
+	{
+		return bLoop && Length > 0.f ? FMath::Fmod(Time + DeltaSeconds, Length) : FMath::Min(Time + DeltaSeconds, Length);
+	};
 	const UAnimSequence* Trav = TravClip >= 0 && TravClip < NumTraversalClips ? TraversalClips[TravClip].Get() : nullptr;
+	const float TravLength = Trav ? Trav->GetPlayLength() : 0.f;
 	if (Trav && bTravOut)
 	{
 		TravOutFor += DeltaSeconds;
-		TravTime = FMath::Min(TravTime + DeltaSeconds, Trav->GetPlayLength());
-		TravWeight = FMath::Clamp(FMath::Min(TravOutFrom * (1.f - TravOutFor / kTraversalOut), (Trav->GetPlayLength() - TravTime) / kTraversalOut), 0.f, 1.f);
+		TravTime = PlayOn(TravTime, TravLength, bTravLoop);
+		TravWeight = FMath::Clamp(FMath::Min(TravOutFrom * (1.f - TravOutFor / kTraversalOut), bTravLoop ? 1.f : (TravLength - TravTime) / kTraversalOut), 0.f, 1.f);
 	}
 	else if (Trav)
 	{
 		TravElapsed += DeltaSeconds;
-		TravWeight = FMath::Clamp(FMath::Min(TravElapsed / kTraversalIn, (Trav->GetPlayLength() - TravTime) / kTraversalOut), 0.f, 1.f);
+		TravWeight = FMath::Clamp(FMath::Min(TravElapsed / kTraversalIn, bTravEndFade && !bTravLoop ? (TravLength - TravTime) / kTraversalOut : 1.f), 0.f, 1.f);
 	}
 	else
 	{
@@ -669,6 +735,17 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	{
 		TravClip = -1;
 		bTravOut = false;
+	}
+	// The clip it is taking over from plays on at its own pace until kTraversalSwitch has passed.
+	const UAnimSequence* PrevSeq = PrevClip >= 0 && PrevClip < NumTraversalClips ? TraversalClips[PrevClip].Get() : nullptr;
+	PrevFor += DeltaSeconds;
+	if (!PrevSeq || TravClip < 0 || PrevFor >= kTraversalSwitch)
+	{
+		PrevClip = -1;
+	}
+	else
+	{
+		PrevTime = PlayOn(PrevTime, PrevSeq->GetPlayLength(), bPrevLoop);
 	}
 	Loco.update(In);
 
@@ -760,9 +837,11 @@ void FFTFootSlideProbe::Sample(const USkeletalMeshComponent& Mesh, float DeltaSe
 	{
 		return;
 	}
-	// In the air no foot is planted: drop the plant under way and start again on landing.
+	// In the air no foot is planted, nor while a traversal or a slide carries the body (its custom movement mode):
+	// drop the plant under way and start again once back on foot.
 	const ACharacter* Character = Cast<ACharacter>(Mesh.GetOwner());
-	if (Character && Character->GetCharacterMovement() && Character->GetCharacterMovement()->IsFalling())
+	const UCharacterMovementComponent* Move = Character ? Character->GetCharacterMovement() : nullptr;
+	if (Move && (Move->IsFalling() || Move->MovementMode == MOVE_Custom))
 	{
 		PlantFoot = INDEX_NONE;
 		bHasLast = false;
@@ -916,36 +995,37 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 	{
 		Layers[I].Weight /= Kept;
 	}
-	// A traversal clip over them, by its weight (replacing the lightest when full).
+	// A traversal clip over them by its weight, sharing it with the one it is taking over from (by smoothstep
+	// over kTraversalSwitch); when full, the lightest locomotion layers make room.
 	const float TravWeight = Instance->TravWeight;
 	if (TravWeight > 0.f)
 	{
+		const UAnimSequence* From = Instance->PrevClip >= 0 ? Instance->TraversalClips[Instance->PrevClip].Get() : nullptr;
+		const float Share = From ? FMath::SmoothStep(0.f, 1.f, Instance->PrevFor / kTraversalSwitch) : 1.f;
+		const int32 Room = MaxLayers - (Share < 1.f ? 2 : 1);
+		float Sum = 0.f;
 		for (int32 I = 0; I < NumLayers; ++I)
 		{
-			Layers[I].Weight *= 1.f - TravWeight;
+			Sum += Layers[I].Weight;
 		}
-		const FLayer Layer{Instance->TraversalClips[Instance->TravClip].Get(), Instance->TravTime, TravWeight, false};
-		if (NumLayers < MaxLayers)
-		{
-			Layers[NumLayers++] = Layer;
-		}
-		else
+		while (NumLayers > Room)
 		{
 			int32 Lightest = 0;
 			for (int32 K = 1; K < NumLayers; ++K)
 			{
 				Lightest = Layers[K].Weight < Layers[Lightest].Weight ? K : Lightest;
 			}
-			Layers[Lightest] = Layer;
-			float Sum = 0.f;
-			for (int32 K = 0; K < NumLayers; ++K)
-			{
-				Sum += Layers[K].Weight;
-			}
-			for (int32 K = 0; K < NumLayers; ++K)
-			{
-				Layers[K].Weight /= Sum;
-			}
+			Sum -= Layers[Lightest].Weight;
+			Layers[Lightest] = Layers[--NumLayers];
+		}
+		for (int32 I = 0; I < NumLayers; ++I)
+		{
+			Layers[I].Weight = Sum > 0.f ? Layers[I].Weight / Sum * (1.f - TravWeight) : 0.f;
+		}
+		Layers[NumLayers++] = {Instance->TraversalClips[Instance->TravClip].Get(), Instance->TravTime, TravWeight * Share, Instance->bTravLoop};
+		if (Share < 1.f)
+		{
+			Layers[NumLayers++] = {From, Instance->PrevTime, TravWeight * (1.f - Share), Instance->bPrevLoop};
 		}
 	}
 

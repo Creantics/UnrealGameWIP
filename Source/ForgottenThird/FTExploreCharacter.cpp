@@ -56,10 +56,16 @@ constexpr float kProbeStep = 5.f;
 constexpr float kTopTolerance = 15.f;
 constexpr float kBackGap = 50.f;
 constexpr float kProbeFacing = 0.8f;
-// A roll press the body can't act on yet is kept this long (s), and a roll turns the body to its way with this
-// time constant (s).
+// A roll press the body can't act on yet is kept this long (s), and a roll or a slide turns the body to its way with
+// this time constant (s).
 constexpr float kRollBuffer = 0.2f;
 constexpr float kRollTurnTime = 0.05f;
+// A wall a slide meets this squarely or more (the cosine between its way and into the wall) stops it; one met at more
+// of a glance turns it along the wall.
+constexpr float kSlideHeadOn = 0.7f;
+// The get-ups in ftcore::SlideOut's order, for the log.
+const TCHAR* const SlideOutNames[] = {TEXT("a stand"), TEXT("a crouch"), TEXT("a walk"), TEXT("a run"), TEXT("a sprint"), TEXT("a crouch walk")};
+static_assert(UE_ARRAY_COUNT(SlideOutNames) == ftcore::kSlideOuts, "one name per get-up");
 } // namespace
 
 AFTExploreCharacter::AFTExploreCharacter()
@@ -162,7 +168,8 @@ void AFTExploreCharacter::BeginPlay()
 		GetCharacterMovement()->MaxWalkSpeed = RunSpeed;
 	}
 	FParse::Value(FCommandLine::Get(), TEXT("LocoJump="), JumpEvery);
-	// -LocoCrouch holds a crouch; -LocoCrouchEvery=<s> gets down or up every s seconds.
+	// -LocoCrouch holds a crouch; -LocoCrouchEvery=<s> gets down or up every s seconds (sprinting, as with -LocoRun,
+	// down is a slide).
 	if (FParse::Param(FCommandLine::Get(), TEXT("LocoCrouch")))
 	{
 		Crouch();
@@ -729,22 +736,12 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 	bool bFalls = false;
 	if (bRoll)
 	{
-		// A roll keeps to the real floor under its path, as a walk does: up a step, across, then down onto what is
-		// there. A wall ends it; with no floor to stand on, the body lets go and falls.
-		const FVector From = GetActorLocation();
-		const FVector StepUp(0.0, 0.0, Move->MaxStepHeight);
-		FHitResult Hit;
-		SetActorLocation(From + StepUp, true, &Hit);
-		const FVector Lifted(0.0, 0.0, GetActorLocation().Z - From.Z);
-		SetActorLocation(FVector(Feet.X, Feet.Y, GetActorLocation().Z), true, &Hit);
-		bBlocked = Hit.bBlockingHit && !Move->IsWalkable(Hit);
-		const FVector Across = GetActorLocation();
-		SetActorLocation(Across - Lifted - StepUp, true, &Hit);
-		bFalls = !Hit.bBlockingHit || !Move->IsWalkable(Hit);
-		if (!Hit.bBlockingHit)
-		{
-			SetActorLocation(Across - Lifted);
-		}
+		// A roll keeps to the real floor under its path, as a walk does. A wall ends it; with no floor to stand on, the
+		// body lets go and falls.
+		FHitResult Wall, Floor;
+		MoveOverFloor(Feet, Wall, Floor);
+		bBlocked = Wall.bBlockingHit && !Move->IsWalkable(Wall);
+		bFalls = !Floor.bBlockingHit || !Move->IsWalkable(Floor);
 		Feet = GetActorLocation() - HalfUp;
 		// The body turns to the way it rolls.
 		const float Gap = FMath::FindDeltaAngleDegrees(static_cast<float>(GetActorRotation().Yaw), static_cast<float>(TravFrame.Rotator().Yaw));
@@ -785,6 +782,167 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 		return;
 	}
 	Anim->SetTraversal(TravPlan.clip, T);
+}
+
+void AFTExploreCharacter::MoveOverFloor(const FVector& To, FHitResult& Wall, FHitResult& Floor)
+{
+	const FVector From = GetActorLocation();
+	const FVector StepUp(0.0, 0.0, GetCharacterMovement()->MaxStepHeight);
+	FHitResult Hit;
+	SetActorLocation(From + StepUp, true, &Hit);
+	const FVector Lifted(0.0, 0.0, GetActorLocation().Z - From.Z);
+	SetActorLocation(FVector(To.X, To.Y, GetActorLocation().Z), true, &Wall);
+	const FVector Across = GetActorLocation();
+	SetActorLocation(Across - Lifted - StepUp, true, &Floor);
+	if (!Floor.bBlockingHit)
+	{
+		SetActorLocation(Across - Lifted);
+	}
+}
+
+bool AFTExploreCharacter::TrySlide()
+{
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
+	if (bTraversing || !Anim || !Move->IsMovingOnGround() || bIsCrouched || Move->MaxWalkSpeed < RunSpeed)
+	{
+		return false;
+	}
+	const ftcore::SlideSet& Set = Anim->GetSlide();
+	const float Speed = static_cast<float>(GetVelocity().Size2D());
+	const ftcore::SlideState Start = Set.start(Speed, -1);
+	if (!Start.sliding())
+	{
+		return false;
+	}
+	// It slides on the way it was going.
+	bTraversing = true;
+	SlideNow = Start;
+	SlideTime = 0.f;
+	SlideHeading = static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(GetVelocity().Y, GetVelocity().X)));
+	SlideFloor = Move->CurrentFloor.IsWalkableFloor() ? Move->CurrentFloor.HitResult.ImpactNormal : FVector::UpVector;
+	bSlideBlocked = false;
+	TravFrame = FTransform(FRotator(0.0, SlideHeading, 0.0),
+		GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+	// Nothing moves the capsule but TickSlide. The crouch is on (letting it go gets the body up), but the custom mode
+	// keeps the capsule standing.
+	Move->SetMovementMode(MOVE_Custom);
+	Crouch();
+	Anim->SetTraversal(UFTLocomotionAnimInstance::FirstSlideClip + SlideNow.clip, SlideNow.clipTime, SlideNow.loop, false);
+	const ftcore::SlideIntoInfo& Into = Set.into(static_cast<std::size_t>(SlideNow.into));
+	UE_LOG(LogForgottenThird, Display, TEXT("Slide: in with clip %d from %.2f s (take-off foot %d, its %.0f cm/s, x%.2f) at %.0f cm/s, heading %.0f, facing %.0f."),
+		SlideNow.clip, SlideNow.clipTime, Into.takeoffFoot, Into.entrySpeed, SlideNow.entryRate, Speed, SlideHeading, GetActorRotation().Yaw);
+	return true;
+}
+
+void AFTExploreCharacter::TickSlide(float DeltaSeconds)
+{
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
+	if (!Anim)
+	{
+		SlideNow = ftcore::SlideState();
+		bTraversing = false;
+		Move->SetMovementMode(MOVE_Walking);
+		return;
+	}
+	// What the player asks for, and the floor's rise along the way the body slides (by its normal last met).
+	auto WayOf = [](float Yaw)
+	{
+		const float Rad = FMath::DegreesToRadians(Yaw);
+		return FVector(FMath::Cos(Rad), FMath::Sin(Rad), 0.0);
+	};
+	const FVector Way = WayOf(SlideHeading);
+	const double Rise = -(SlideFloor.X * Way.X + SlideFloor.Y * Way.Y) / FMath::Max(SlideFloor.Z, 0.1);
+	const FVector Stick = Move->GetCurrentAcceleration();
+	const bool bStick = Stick.SizeSquared2D() > 1.0;
+	ftcore::SlideInput In;
+	In.slope = static_cast<float>(Rise / FMath::Sqrt(1.0 + Rise * Rise));
+	In.wantSpeed = bStick ? Move->MaxWalkSpeed * Move->GetAnalogInputModifier() : 0.f;
+	In.turn = bStick ? FMath::FindDeltaAngleDegrees(SlideHeading, static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(Stick.Y, Stick.X)))) : 0.f;
+	In.sprint = Move->MaxWalkSpeed >= RunSpeed;
+	In.crouch = Move->bWantsToCrouch;
+	In.blocked = bSlideBlocked;
+	bSlideBlocked = false;
+	const ftcore::SlideSet& Set = Anim->GetSlide();
+	const ftcore::SlidePhase Was = SlideNow.phase;
+	Set.step(SlideNow, In, DeltaSeconds);
+	SlideTime += DeltaSeconds;
+	const FVector Feet = GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+	if (Was == ftcore::SlidePhase::Into && SlideNow.phase != ftcore::SlidePhase::Into)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Slide: down at %.2f s (clip %d at %.2f), %.0f cm/s, %.0f cm from the start, slope %+.2f."), SlideTime,
+			SlideNow.into, SlideNow.phase == ftcore::SlidePhase::Out ? Set.into(static_cast<std::size_t>(SlideNow.into)).down : SlideNow.clipTime, SlideNow.speed,
+			FVector::Dist2D(Feet, TravFrame.GetLocation()), In.slope);
+	}
+	if (Was != ftcore::SlidePhase::Out && (SlideNow.phase == ftcore::SlidePhase::Out || !SlideNow.sliding()))
+	{
+		// Getting up into a crouch keeps it on, so the capsule crouches once the body walks again; any other stands.
+		if (ftcore::crouchedOut(SlideNow.out))
+		{
+			Crouch();
+		}
+		else
+		{
+			UnCrouch();
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Slide: getting up into %s (clip %d) at %.2f s from %.0f cm/s (%s), %.0f cm from the start."),
+			SlideOutNames[static_cast<int32>(SlideNow.out)], SlideNow.clip, SlideTime, SlideNow.outFrom,
+			!In.crouch ? TEXT("crouch let go") : SlideNow.getUp ? TEXT("a wall") : TEXT("slowed"), FVector::Dist2D(Feet, TravFrame.GetLocation()));
+	}
+
+	// It turns as the stick steers and goes on along the real floor at the slide's speed. A wall met square on stops
+	// it; met at a glance, it turns along the wall, keeping the speed that goes that way.
+	SlideHeading = FMath::UnwindDegrees(SlideHeading + SlideNow.yawStep);
+	FHitResult Wall, Floor;
+	MoveOverFloor(GetActorLocation() + WayOf(SlideHeading) * (SlideNow.speed * DeltaSeconds), Wall, Floor);
+	const bool bFalls = !Floor.bBlockingHit || !Move->IsWalkable(Floor);
+	if (!bFalls)
+	{
+		SlideFloor = Floor.ImpactNormal;
+	}
+	if (Wall.bBlockingHit && !Move->IsWalkable(Wall))
+	{
+		const FVector Ahead = WayOf(SlideHeading);
+		const FVector Normal = Wall.Normal.GetSafeNormal2D();
+		const double Square = -FVector::DotProduct(Normal, Ahead);
+		if (Square >= kSlideHeadOn)
+		{
+			bSlideBlocked = true;
+		}
+		else if (Square > 0.0)
+		{
+			const FVector Along = (Ahead + Normal * Square).GetSafeNormal2D();
+			SlideNow.speed *= static_cast<float>(FVector::DotProduct(Ahead, Along));
+			SlideHeading = static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(Along.Y, Along.X)));
+		}
+	}
+	// The movement component's velocity is the slide's, for the locomotion now and the walk after; the body turns to the
+	// way it slides.
+	Move->Velocity = WayOf(SlideHeading) * (bSlideBlocked ? 0.f : SlideNow.speed);
+	const float Gap = FMath::FindDeltaAngleDegrees(static_cast<float>(GetActorRotation().Yaw), SlideHeading);
+	AddActorWorldRotation(FRotator(0.0, Gap * (1.f - FMath::Exp(-DeltaSeconds / kRollTurnTime)), 0.0));
+
+	// It hands back once up, off an edge (falling), or stopped by a wall while getting up.
+	const bool bStopped = bSlideBlocked && SlideNow.phase == ftcore::SlidePhase::Out;
+	if (!SlideNow.sliding() || bFalls || bStopped)
+	{
+		if (bFalls)
+		{
+			UnCrouch();
+		}
+		const FVector Ended = GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+		UE_LOG(LogForgottenThird, Display, TEXT("Slide: done (%s) at %.2f s, %s at %.2f s, %.0f cm/s, %.0f cm from the start, %+.0f cm up."),
+			bFalls ? TEXT("off an edge") : bStopped ? TEXT("blocked") : TEXT("up"), SlideTime, SlideOutNames[static_cast<int32>(SlideNow.out)],
+			SlideNow.clipTime, Move->Velocity.Size2D(), FVector::Dist2D(Ended, TravFrame.GetLocation()), Ended.Z - TravFrame.GetLocation().Z);
+		bTraversing = false;
+		bSlideBlocked = false;
+		SlideNow = ftcore::SlideState();
+		Anim->SetTraversal(-1, 0.f);
+		Move->SetMovementMode(bFalls ? MOVE_Falling : MOVE_Walking);
+		return;
+	}
+	Anim->SetTraversal(UFTLocomotionAnimInstance::FirstSlideClip + SlideNow.clip, SlideNow.clipTime, SlideNow.loop, false);
 }
 
 void AFTExploreCharacter::SpawnTraversalCourse()
@@ -837,6 +995,11 @@ void AFTExploreCharacter::SpawnTraversalCourse()
 
 void AFTExploreCharacter::HandleCrouch()
 {
+	// In a sprint, crouch slides (TrySlide); pressed again mid-slide it gets the body up.
+	if (!GetCharacterMovement()->bWantsToCrouch && TrySlide())
+	{
+		return;
+	}
 	if (GetCharacterMovement()->bWantsToCrouch)
 	{
 		UnCrouch();
@@ -951,9 +1114,16 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	}
 	if (bTraversing)
 	{
-		TickTraversal(DeltaSeconds);
+		if (SlideNow.sliding())
+		{
+			TickSlide(DeltaSeconds);
+		}
+		else
+		{
+			TickTraversal(DeltaSeconds);
+		}
 	}
-	// A vault or a climb holds the facing it began with; a roll turns to its way (TickTraversal).
+	// A vault or a climb holds the facing it began with; a roll or a slide turns to its way (TickTraversal, TickSlide).
 	const UFTLocomotionAnimInstance* Steered = bTraversing ? nullptr : LocoAnim;
 	if (const UFTLocomotionAnimInstance* Anim = Steered)
 	{

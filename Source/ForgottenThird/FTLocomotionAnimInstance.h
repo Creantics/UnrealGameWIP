@@ -35,6 +35,7 @@
 #include "Animation/BoneReference.h"
 
 #include "ftcore/Locomotion.h"
+#include "ftcore/Slide.h"
 #include "ftcore/Traversal.h"
 
 #include "FTLocomotionAnimInstance.generated.h"
@@ -175,14 +176,22 @@ public:
 	// there are any: next to M_Neutral_Run_Loop_F_to_x, M_Neutral_Traversal_Hurdle_1_0_run_F_V2_Lfoot_to_x,
 	// ..._Mantle_1_0_run_F_Lfoot_to_x, ..._Climb_Start_2_5_run_F_Lfoot_to_x, M_Neutral_Jump_F_Land_Roll_Lfoot_to_x
 	// and so on, each measured into GetTraversal() (index = TraversalNames order; the rolls from their pelvis, by
-	// ftcore::measureRoll). Call after SetClip(Run). -LocoNoTraversal leaves them out.
+	// ftcore::measureRoll). The slide's clips follow from FirstSlideClip, in ftcore::SlideState::clip's order
+	// (M_Neutral_Slide_FootOut_Into_Lfoot_to_x, ..._Loop_to_x, ..._Out_Moving_Run_to_x and so on), each measured into
+	// GetSlide(). Call after SetClip(Run). -LocoNoTraversal leaves them out.
 	void SetTraversalFromRun();
 	const ftcore::TraversalSet& GetTraversal() const { return Traversal; }
+	const ftcore::SlideSet& GetSlide() const { return Slide; }
+	// Slide clip k (ftcore::SlideState::clip) plays as traversal clip FirstSlideClip + k.
+	static constexpr int32 FirstSlideClip = 20;
 	// Plays traversal clip Clip (a TraversalPlan's) at clip time Time over the locomotion, fading in over its first
 	// moments and out by its end; the owner moves the body along TraversalSet::rootAt and calls this every frame,
 	// then with Clip -1 when it hands the body back: the clip plays on at its own pace while it fades out over
 	// kTraversalOut (sooner by its end). The clip's root is held like the locomotion's: the owner carries it.
-	void SetTraversal(int32 Clip, float Time)
+	// A clip asked for while another plays takes over from it over kTraversalSwitch, the other playing on at its own
+	// pace as it fades (a slide's clips, one after another). bLoop loops the clip, and neither a looping clip nor one
+	// asked for with bEndFade false fades by its end: the owner goes on from it into another, or lets it go first.
+	void SetTraversal(int32 Clip, float Time, bool bLoop = false, bool bEndFade = true)
 	{
 		if (Clip < 0)
 		{
@@ -194,10 +203,23 @@ public:
 			}
 			return;
 		}
-		TravElapsed = Clip == TravClip && !bTravOut ? TravElapsed : 0.f;
+		if (Clip != TravClip && TravClip >= 0 && !bTravOut)
+		{
+			PrevClip = TravClip;
+			PrevTime = TravTime;
+			bPrevLoop = bTravLoop;
+			PrevFor = 0.f;
+		}
+		else if (Clip != TravClip || bTravOut)
+		{
+			TravElapsed = 0.f;
+			PrevClip = -1;
+		}
 		bTravOut = false;
 		TravClip = Clip;
 		TravTime = Time;
+		bTravLoop = bLoop;
+		bTravEndFade = bEndFade;
 	}
 	// The owner standing still turns on the spot to face Yaw (degrees, world) while bFace holds.
 	void SetFace(bool bFace, float Yaw)
@@ -265,19 +287,28 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> Clips[59];
 	static_assert(ftcore::kLocoClipCount == 59, "Clips[] holds one per LocoClip");
-	static constexpr int32 NumTraversalClips = 20;
+	// The traversal clips (the TraversalSet's), then the slide's.
+	static constexpr int32 NumTraversalClips = FirstSlideClip + static_cast<int32>(ftcore::kSlideClips);
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> TraversalClips[NumTraversalClips];
 	ftcore::TraversalSet Traversal;
-	// The traversal playing (-1 none), its clip time, how long it has played and its weight over the locomotion;
-	// once its owner has let it go (bTravOut), how long since and the weight it had then.
+	ftcore::SlideSet Slide;
+	// The traversal playing (-1 none), its clip time, how long it has played, its weight over the locomotion and
+	// whether it loops or fades by its end; once its owner has let it go (bTravOut), how long since and the weight it
+	// had then. The one it is taking over from (-1 none): its clip time, how long since and whether it loops.
 	int32 TravClip = -1;
 	float TravTime = 0.f;
 	float TravElapsed = 0.f;
 	float TravWeight = 0.f;
+	bool bTravLoop = false;
+	bool bTravEndFade = true;
 	bool bTravOut = false;
 	float TravOutFor = 0.f;
 	float TravOutFrom = 0.f;
+	int32 PrevClip = -1;
+	float PrevTime = 0.f;
+	float PrevFor = 0.f;
+	bool bPrevLoop = false;
 
 	ftcore::Locomotion Loco;
 	// The actor's forward in the mesh component's space, for the spine bend.

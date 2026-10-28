@@ -37,6 +37,13 @@
 // for a moment, and a moving landing from a real fall with crouch on rolls out of it. -LocoRollEvery=<s> rolls every
 // s seconds.
 //
+// Crouch in a sprint slides (ftcore::SlideSet, from SetTraversalFromRun's slide clips): the drop-in nearest the body's
+// speed plays from its take-off, and the body slides on the way it was going along the real floor, steered a little by
+// the stick, slowing by friction and faster downhill. A wall met at a glance turns it along the wall; one met square on
+// stops it. Letting go of the crouch (sprint pressed stands it up too) or slowing down gets it up into what the stick,
+// sprint and crouch ask then: a sprint, a run, a walk, a crouch walk or a stand. With -LocoRun, -LocoCrouchEvery=<s>
+// slides every s seconds.
+//
 // -ExplorePortrait puts the camera in front of the face and keeps it there, for checking a look;
 // -ExplorePortraitYaw= (180 front, 90 side, 0 back), -ExplorePortraitArm=, -ExplorePortraitHeight= and
 // -ExplorePortraitPitch= move it, e.g. Arm=330 Height=0 Pitch=0 frames the whole body.
@@ -113,7 +120,8 @@ public:
 	// The PartyLooks entry the pawn wears (-1 when PartyLooks is empty), and whether the followers are hidden.
 	int32 GetLeadIndex() const { return LeadIndex; }
 	bool IsPartyHidden() const { return bPartyHidden; }
-	// Whether a traversal (a vault, a climb or a roll) is carrying the body: a scene played in place waits for it to end.
+	// Whether a traversal (a vault, a climb, a roll or a slide) is carrying the body: a scene played in place waits for it
+	// to end.
 	bool IsTraversing() const { return bTraversing; }
 	// For a scene that turns input off and on again: a held Run's release that came while input was off never arrived,
 	// so the body goes back to its default gait, and a roll press still kept is dropped. Crouch is a toggle, not held;
@@ -150,6 +158,14 @@ private:
 	// last), heading as a landing rolls when bLanding.
 	bool TryRoll(bool bLanding, bool bLog);
 	void TickTraversal(float DeltaSeconds);
+	// Starts a slide (false: not sprinting on the ground, mid-traversal, too slow or no slide clip) and carries the
+	// body along one under way.
+	bool TrySlide();
+	void TickSlide(float DeltaSeconds);
+	// Moves the capsule to To's ground position over the real floor: up a step, across (stopping at a wall, which
+	// Wall then holds) and down onto what is there (Floor, no blocking hit when nothing is); with no floor in reach it
+	// is left at the height it started from.
+	void MoveOverFloor(const FVector& To, FHitResult& Wall, FHitResult& Floor);
 	void SpawnTraversalCourse();
 	void AddPortraitLights();
 	void StepPortraitShots();
@@ -228,6 +244,13 @@ private:
 	ftcore::TraversalPlan TravPlan;
 	float TravTime = 0.f;
 	FTransform TravFrame;
+	// The slide under way (sliding() while it is), the way it goes, the floor's normal last met, whether a wall has
+	// stopped it since its last step, and how long it has gone.
+	ftcore::SlideState SlideNow;
+	float SlideHeading = 0.f;
+	FVector SlideFloor = FVector::UpVector;
+	bool bSlideBlocked = false;
+	float SlideTime = 0.f;
 	// -LocoVaultWall: the course still to build, then its way, run along every frame, traversing whatever is ahead.
 	bool bCoursePending = false;
 	bool bVaultCourse = false;
