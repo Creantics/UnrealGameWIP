@@ -300,7 +300,14 @@ TraversalPlan TraversalSet::planCatch(const TraversalObstacle& o, const TravPoin
         const float flight = velocity.z * lead - 0.5f * gravity * lead * lead;
         const float missX = x - velocity.x * lead, missZ = z - flight;
         if (missX > t.maxCatchMiss) tooFar = true;
-        if (flight >= o.height || std::fabs(missX) > t.maxCatchMiss || std::fabs(missZ) > t.maxCatchMiss) continue;
+        if (flight >= o.height || std::fabs(missX) > t.maxCatchMiss) continue;
+        // A body closing in that gets there still rising, the catch well above it, waits: the catch comes
+        // nearer as it rises, and once it is at the wall its flight times the catch.
+        if (closing && missZ > t.maxCatchStretch && velocity.z > gravity * lead) {
+            tooFar = true;
+            continue;
+        }
+        if (std::fabs(missZ) > t.maxCatchMiss) continue;
         const float cost = std::sqrt(missX * missX + missZ * missZ) * t.catchMissCost + std::fabs(speed - c.exitSpeed) * t.speedCost;
         if (cost < best) {
             best = cost;

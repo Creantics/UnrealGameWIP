@@ -600,6 +600,30 @@ TEST_CASE("planCatch waits while the body closes in, and times the catch by when
     CHECK(p.tooFar);
 }
 
+TEST_CASE("planCatch waits for a body closing in still rising toward a catch well above its flight") {
+    TraversalSet set;
+    set.setClip(0, catchOf(makeCatch())); // caught 15 cm behind the edge, 64 under the top
+    const TraversalClipInfo& c = set.clip(0);
+    // Closing in at 300 cm/s and going up at 300: there in 0.2 s, 40.4 cm up and still rising.
+    const TravPoint v{300.f, 0.f, 300.f};
+    // The catch 10 cm above that (within maxCatchStretch): caught there.
+    TraversalPlan p = set.planCatch(ledge(75.f, 114.4f), v, kGravity, 0.f);
+    REQUIRE(p.ok());
+    CHECK(p.start == doctest::Approx(c.contact - 0.2f));
+    // 30 cm above it: it waits, the catch nearer as the body rises.
+    p = set.planCatch(ledge(75.f, 134.4f), v, kGravity, 0.f);
+    CHECK_FALSE(p.ok());
+    CHECK(p.tooFar);
+    // Already coming down by then (going up at 150): caught, the root drawn up the 30 cm its flight falls short.
+    p = set.planCatch(ledge(75.f, 104.4f), {300.f, 0.f, 150.f}, kGravity, 0.f);
+    REQUIRE(p.ok());
+    CHECK(p.start == doctest::Approx(c.contact - 0.2f));
+    // Stopped at the wall, still going up at 300: its flight meets the catch 30 cm up, 0.126 s on.
+    p = set.planCatch(ledge(15.f, 94.f), {0.f, 0.f, 300.f}, kGravity, 0.f);
+    REQUIRE(p.ok());
+    CHECK(p.start == doctest::Approx(c.contact - (300.f - std::sqrt(300.f * 300.f - 2.f * kGravity * 30.f)) / kGravity).epsilon(0.001));
+}
+
 TEST_CASE("planCatch times a body not closing in by its flight: as it meets the catch's height, or tops out under it") {
     TraversalSet set;
     set.setClip(0, catchOf(makeCatch())); // caught 15 cm behind the edge, 64 under the top

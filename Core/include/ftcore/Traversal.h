@@ -47,9 +47,11 @@
 // comes nearest it; no sooner than minCatchLead, and one still to come past maxCatchLead waits (tooFar). A
 // clip is kept when the catch is within maxCatchMiss of where the body's own flight would take it by then
 // and that flight would not clear the top (it lands there instead), cheapest by that miss and by the speed
-// it goes on at against the body's. rootAt() curves the root from the body, at its velocity, into the
-// catch at the clip's own velocity after it, then follows the clip's path from there. rate() is 1
-// throughout; plan() and planRoll() never take a catch.
+// it goes on at against the body's. A body closing in that would get there still rising, the catch more
+// than maxCatchStretch above its flight, waits too (tooFar): the catch comes nearer as it rises, and once
+// it is at the wall its flight times the catch. rootAt() curves the root from the body, at its velocity,
+// into the catch at the clip's own velocity after it, then follows the clip's path from there. rate() is
+// 1 throughout; plan() and planRoll() never take a catch.
 //
 // Space: x forward (toward the obstacle at the start), y to the left, z up; cm and seconds. Fixed
 // size: nothing allocates.
@@ -152,6 +154,7 @@ struct TraversalTuning {
     float minCatchLead = 0.1f;   // a catch is entered at least this long before the catch...
     float maxCatchLead = 0.4f;   // ...and at most this long: one further off waits
     float maxCatchMiss = 40.f;   // how far the catch may be from where the body's flight takes it, ahead or up
+    float maxCatchStretch = 15.f; // a body closing in, still rising then, waits for a catch further above its flight
     float catchMissCost = 1.f / 40.f; // the cost per cm of that miss
 };
 
