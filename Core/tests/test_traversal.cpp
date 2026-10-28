@@ -100,6 +100,16 @@ std::vector<TraversalFrame> makeRoll(float speed = 300.f, float low = 40.f) {
 
 TraversalClipInfo rollOf(const std::vector<TraversalFrame>& f) { return measureRoll(f.data(), f.size(), kRollLength); }
 
+// Feet as retargeted mocap has them at a run, on makeClip's or makeRoll's frames: the right's rest (0.1 to
+// 0.3 s) creeps forward at 60 cm/s and jitters 0.5 cm either way, every other step near 90 cm/s, while the
+// left skims the floor after its own rest, at the body's speed.
+void runFeet(std::vector<TraversalFrame>& frames) {
+    for (std::size_t i = 3; i <= 9; ++i) {
+        frames[i].ballRight.x += 60.f * (static_cast<float>(i) * kFrame - 0.1f) + (i % 2 ? 0.5f : -0.5f);
+        if (i > 3) frames[i].ballLeft.z = 0.f;
+    }
+}
+
 constexpr int kFallFrames = 12; // 0.4 s
 
 // makeRoll's roll after a fall, as a land roll's clip opens: for kFallFrames before it the whole body
@@ -335,6 +345,24 @@ TEST_CASE("measureRoll leaves a shallow dip, an unsampled pelvis or a root off t
     CHECK(measureRoll(nullptr, 0, 1.f).length == 0.f);
 }
 
+TEST_CASE("The take-off foot is read through a planted foot's slip and jitter at a run, not off a foot skimming along") {
+    // At 400 cm/s a foot moving less than a quarter of the root's way over the rest window (10 cm over 3
+    // frames) is planted, though every other step of the right's is near 90 cm/s and its net 7 cm is past
+    // kRestSpeed's 4. The left, skimming the floor at the body's speed, is not.
+    std::vector<TraversalFrame> roll = makeRoll(400.f);
+    runFeet(roll);
+    CHECK(rollOf(roll).takeoffFoot == 1);
+    std::vector<TraversalFrame> hurdle = makeClip(false, 200.f, 100.f, 400.f);
+    runFeet(hurdle);
+    const TraversalClipInfo over = measure(hurdle);
+    REQUIRE(over.length > 0.f);
+    CHECK(over.takeoffFoot == 1);
+    // Under a body at 100 cm/s the same slip is a foot on the move: the left's rest before it is the last.
+    std::vector<TraversalFrame> walk = makeRoll(100.f);
+    runFeet(walk);
+    CHECK(rollOf(walk).takeoffFoot == 0);
+}
+
 TEST_CASE("measureRoll reads a land roll from its touchdown, and planRoll enters it there") {
     // Down from 3 m (its last frame in the air 25 cm up) or from 1.2 m (10 cm up: within kMinObstacle of the
     // floor, but not on it yet), it touches down 0.4 s in and rolls as makeRoll does from there.
@@ -420,18 +448,15 @@ TEST_CASE("plan never takes a roll, even for an obstacle low enough to pass for 
     CHECK(set.plan(wall(30.f, 25.f), 300.f, 1).clip == 1);
 }
 
-TEST_CASE("A roll hands back once the body is back up, at rollExit of its length; its rate eases by the tuck") {
+TEST_CASE("A roll hands back exitAfter past the body being back up, as the other moves do; its rate eases by the tuck") {
     TraversalSet set;
     set.setClip(0, rollOf(makeRoll())); // comes in at 300 cm/s
     const TraversalClipInfo& c = set.clip(0);
     const TraversalPlan p = set.planRoll(390.f, 1);
     REQUIRE(p.ok());
-    CHECK(set.exitTime(p) == doctest::Approx(0.75f * kRollLength));
+    CHECK(set.exitTime(p) == doctest::Approx(c.land + 0.3f));
     TraversalTuning t;
-    t.rollExit = 0.5f; // before the body is back up: it waits for that
-    set.setTuning(t);
-    CHECK(set.exitTime(p) == doctest::Approx(c.land));
-    t.rollExit = 2.f;
+    t.exitAfter = 100.f; // never past its end
     set.setTuning(t);
     CHECK(set.exitTime(p) == doctest::Approx(c.length));
 

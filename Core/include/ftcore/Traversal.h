@@ -84,8 +84,9 @@ inline constexpr float kMaxClipDrop = 40.f; // a root ending lower than this bel
 inline constexpr float kRiseShare = 0.05f;  // the root has started up past this share of the top's height...
 inline constexpr float kTopShare = 0.95f;   // ...and is on the top past this share
 inline constexpr float kSettle = 4.f;       // the root within this of its end height has landed
-inline constexpr float kRestSpeed = 40.f;   // cm/s: a foot slower than this is at rest...
-inline constexpr float kRestTime = 0.08f;   // ...when it stays so this long
+inline constexpr float kRestSpeed = 40.f;   // cm/s: a foot whose net move over kRestTime is slower than this...
+inline constexpr float kRestShare = 0.25f;  // ...or than this share of the root's ground speed then is at rest
+inline constexpr float kRestTime = 0.08f;
 inline constexpr float kFootRest = 4.f;     // a foot at rest within this of the starting floor is on it
 inline constexpr float kEntryTime = 0.2f;
 inline constexpr float kMinRollDip = 30.f;  // a pelvis going down less than this is no roll
@@ -126,7 +127,6 @@ struct TraversalTuning {
     float exitAfter = 0.3f;      // a body that wants to move leaves the clip this long after the landing
     float minEntryRate = 0.8f;   // the play rate at the entry keeps the body's speed within these
     float maxEntryRate = 1.5f;
-    float rollExit = 0.75f;      // ...and a roll at this share of its length, once the body is back up
 };
 
 struct TraversalPlan {
@@ -160,9 +160,9 @@ public:
     // The root at clip time t (from p.start on), from where it was when the plan was made, in the
     // body's space then.
     FTCORE_API TravPoint rootAt(const TraversalPlan& p, float t) const;
-    // When a body that wants to move hands back to its locomotion: exitAfter past the landing (a roll:
-    // at rollExit of its length, never before the landing), never before the entry nor past the clip's
-    // end (the clip's own tail, a run on or a stand-up, is for a body left standing). 0 without a plan.
+    // When a body that wants to move hands back to its locomotion: exitAfter past the landing (a roll's:
+    // once the body is back up), never before the entry nor past the clip's end (the clip's own tail, a
+    // run on or a stand-up, is for a body left standing). 0 without a plan.
     FTCORE_API float exitTime(const TraversalPlan& p) const;
     // The play rate at clip time t: the plan's entryRate at the entry, easing (smoothstep) to 1 by the contact,
     // so the climb or vault itself plays at its own pace. A caller advances clip time by dt x rate. 1 without a

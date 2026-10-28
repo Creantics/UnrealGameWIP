@@ -14,6 +14,8 @@ const TravPoint& ballRight(const TraversalFrame& f) { return f.ballRight; }
 
 float dist(const TravPoint& a, const TravPoint& b) { return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z)); }
 
+float groundDist(const TravPoint& a, const TravPoint& b) { return std::hypot(a.x - b.x, a.y - b.y); }
+
 TravPoint lerp(const TravPoint& a, const TravPoint& b, float u) { return {a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u, a.z + (b.z - a.z) * u}; }
 
 float smooth(float u) {
@@ -24,12 +26,13 @@ float smooth(float u) {
 // Eases from a at time t0 to b at t1.
 TravPoint ease(const TravPoint& a, const TravPoint& b, float t, float t0, float t1) { return lerp(a, b, t1 > t0 ? smooth((t - t0) / (t1 - t0)) : 1.f); }
 
-// At rest from frame i: every step over the next n frames slower than kRestSpeed.
+// At rest from frame i: its net move over the next n frames slower than kRestSpeed, or than kRestShare of
+// the root's ground speed over them (a planted foot slips and rolls some at a run; a swinging one passes
+// the root). The net move, so a jittering sample or two does not lift it.
 bool restsFrom(const TraversalFrame* f, std::size_t count, Part part, std::size_t i, std::size_t n, float dt) {
     if (i + n >= count) return false;
-    for (std::size_t k = i; k < i + n; ++k)
-        if (dist(part(f[k]), part(f[k + 1])) / dt >= kRestSpeed) return false;
-    return true;
+    const float limit = std::max(kRestSpeed * static_cast<float>(n) * dt, kRestShare * groundDist(f[i].root, f[i + n].root));
+    return dist(part(f[i]), part(f[i + n])) < limit;
 }
 
 // The take-off foot: the last at rest on the floor under frame `from`, from it to frame `before` (-1: none).
@@ -243,8 +246,7 @@ TraversalPlan TraversalSet::planRoll(float speed, int foot) const {
 float TraversalSet::exitTime(const TraversalPlan& p) const {
     if (!p.ok()) return 0.f;
     const TraversalClipInfo& c = clips_[static_cast<std::size_t>(p.clip)];
-    const float leaveAt = c.move == TraversalMove::Roll ? std::max(c.land, tuning_.rollExit * c.length) : c.land + tuning_.exitAfter;
-    return std::clamp(leaveAt, p.start, c.length);
+    return std::clamp(c.land + tuning_.exitAfter, p.start, c.length);
 }
 
 float TraversalSet::rate(const TraversalPlan& p, float t) const {
