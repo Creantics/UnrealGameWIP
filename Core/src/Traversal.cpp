@@ -1,5 +1,7 @@
 #include "ftcore/Traversal.h"
 
+#include "FootRest.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -8,13 +10,7 @@ namespace ftcore {
 
 namespace {
 
-using Part = const TravPoint& (*)(const TraversalFrame&);
-const TravPoint& ballLeft(const TraversalFrame& f) { return f.ballLeft; }
-const TravPoint& ballRight(const TraversalFrame& f) { return f.ballRight; }
-
-float dist(const TravPoint& a, const TravPoint& b) { return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z)); }
-
-float groundDist(const TravPoint& a, const TravPoint& b) { return std::hypot(a.x - b.x, a.y - b.y); }
+using detail::lastFootAtRest;
 
 TravPoint lerp(const TravPoint& a, const TravPoint& b, float u) { return {a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u, a.z + (b.z - a.z) * u}; }
 
@@ -25,26 +21,6 @@ float smooth(float u) {
 
 // Eases from a at time t0 to b at t1.
 TravPoint ease(const TravPoint& a, const TravPoint& b, float t, float t0, float t1) { return lerp(a, b, t1 > t0 ? smooth((t - t0) / (t1 - t0)) : 1.f); }
-
-// At rest from frame i: its net move over the next n frames slower than kRestSpeed, or than kRestShare of
-// the root's ground speed over them (a planted foot slips and rolls some at a run; a swinging one passes
-// the root). The net move, so a jittering sample or two does not lift it.
-bool restsFrom(const TraversalFrame* f, std::size_t count, Part part, std::size_t i, std::size_t n, float dt) {
-    if (i + n >= count) return false;
-    const float limit = std::max(kRestSpeed * static_cast<float>(n) * dt, kRestShare * groundDist(f[i].root, f[i + n].root));
-    return dist(part(f[i]), part(f[i + n])) < limit;
-}
-
-// The take-off foot: the last at rest on the floor under frame `from`, from it to frame `before` (-1: none).
-int lastFootAtRest(const TraversalFrame* f, std::size_t count, std::size_t from, std::size_t before, float dt) {
-    const Part balls[2] = {ballLeft, ballRight};
-    const float floor0 = std::min(f[from].ballLeft.z, f[from].ballRight.z);
-    const std::size_t rest = std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil(kRestTime / dt - 1e-4f)));
-    for (std::size_t i = before; i-- > from;)
-        for (int b = 0; b < 2; ++b)
-            if (balls[b](f[i]).z - floor0 < kFootRest && restsFrom(f, count, balls[b], i, rest, dt)) return b;
-    return -1;
-}
 
 // The root's entry speed and its path, both from frame `from` on (count >= 3, from < count - 1).
 void measureRootPath(const TraversalFrame* f, std::size_t count, float dt, TraversalClipInfo& info, std::size_t from = 0) {
@@ -97,7 +73,7 @@ TraversalClipInfo measureTraversal(const TraversalFrame* frames, std::size_t cou
     while (land < count && std::fabs(up(land) - rise) >= kSettle) ++land;
     if (land == count) return info;
 
-    info.takeoffFoot = lastFootAtRest(frames, count, 0, contact, dt);
+    info.takeoffFoot = lastFootAtRest(frames, count, 0, contact, dt).foot;
     info.length = length;
     info.contact = static_cast<float>(contact) * dt;
     info.land = static_cast<float>(land) * dt;
@@ -140,7 +116,7 @@ TraversalClipInfo measureRoll(const TraversalFrame* frames, std::size_t count, f
     std::size_t land = bottom; // back up
     while (above(land) < kTopShare * endHeight) ++land;
 
-    info.takeoffFoot = lastFootAtRest(frames, count, from, contact, dt);
+    info.takeoffFoot = lastFootAtRest(frames, count, from, contact, dt).foot;
     info.length = length;
     info.move = TraversalMove::Roll;
     info.touchdown = static_cast<float>(from) * dt;
