@@ -875,11 +875,12 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		StrideBefore = Loco.strideLength();
 	}
 	// A traversal's weight: in over its first kTraversalIn, out over the kTraversalOut before its end (unless it
-	// loops or its owner goes on from it). Let go by its owner, it plays on at its own pace and fades over
-	// kTraversalOut from the weight it had (sooner by the end of one that does not loop), then is gone.
-	auto PlayOn = [DeltaSeconds](float Time, float Length, bool bLoop)
+	// loops or its owner goes on from it). Let go by its owner, it plays on at the pace it had (TravOutRate) and fades
+	// over kTraversalOut from the weight it had (sooner by the end of one that does not loop), then is gone.
+	auto PlayOn = [DeltaSeconds](float Time, float Length, bool bLoop, float Rate)
 	{
-		return bLoop && Length > 0.f ? FMath::Fmod(Time + DeltaSeconds, Length) : FMath::Min(Time + DeltaSeconds, Length);
+		const float Next = Time + DeltaSeconds * Rate;
+		return bLoop && Length > 0.f ? FMath::Fmod(Next, Length) : FMath::Min(Next, Length);
 	};
 	const UAnimSequence* Trav = TravClip >= 0 && TravClip < NumTraversalClips ? TraversalClips[TravClip].Get() : nullptr;
 	const float TravLength = Trav ? Trav->GetPlayLength() : 0.f;
@@ -895,6 +896,13 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	const float HandTime = TravTime;
 	if (bHandBack)
 	{
+		// The feet's velocity at the pace the clip played, as the gaits' are matched to it at theirs.
+		for (ftcore::LocoPoint* V : {&HandVelocity.left, &HandVelocity.right})
+		{
+			V->x *= TravOutRate;
+			V->y *= TravOutRate;
+			V->z *= TravOutRate;
+		}
 		Loco.handBack(HandFeet, HandVelocity);
 	}
 	// For the log: the layer the body showed most under the clip, and where.
@@ -913,7 +921,7 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	if (Trav && bTravOut)
 	{
 		TravOutFor += DeltaSeconds;
-		TravTime = PlayOn(TravTime, TravLength, bTravLoop);
+		TravTime = PlayOn(TravTime, TravLength, bTravLoop, TravOutRate);
 		TravWeight = FMath::Clamp(FMath::Min(TravOutFrom * (1.f - TravOutFor / kTraversalOut), bTravLoop ? 1.f : (TravLength - TravTime) / kTraversalOut), 0.f, 1.f);
 	}
 	else if (Trav)
@@ -939,7 +947,7 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	}
 	else
 	{
-		PrevTime = PlayOn(PrevTime, PrevSeq->GetPlayLength(), bPrevLoop);
+		PrevTime = PlayOn(PrevTime, PrevSeq->GetPlayLength(), bPrevLoop, 1.f);
 	}
 	// A body a catch carries up from the air stays in the air to its locomotion until the catch plays at full
 	// weight, so the landing it would play then does so under the catch rather than as the catch fades in.
@@ -949,7 +957,8 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	}
 	// A body a traversal carries (fading in, playing or fading out) isn't asked to turn, nor to replay a turn: a run
 	// turn begun under it would turn the body by its root as the traversal fades out, the planted foot sliding sideways.
-	if (TravClip >= 0)
+	// One let go with bTurn may as it fades out (a roll's, its body back on its feet: turning out of it is the point).
+	if (TravClip >= 0 && !(bTravOut && bTravOutTurns))
 	{
 		In.wantYaw = In.yaw;
 		In.turnBy = 0.f;

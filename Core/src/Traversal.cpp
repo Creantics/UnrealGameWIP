@@ -48,6 +48,27 @@ float entryRate(const TraversalTuning& t, const TraversalClipInfo& c, float spee
     return c.entrySpeed > 0.f ? std::max(t.minEntryRate, std::min(speed / c.entrySpeed, t.maxEntryRate)) : 1.f;
 }
 
+// The clip time from one path sample to the next (0: no path).
+float pathStep(const TraversalClipInfo& c) {
+    return c.length > c.touchdown ? (c.length - c.touchdown) / static_cast<float>(kTraversalSamples - 1) : 0.f;
+}
+
+// The path's segment (from sample i to i + 1) at clip time t, and the root's ground speed along it.
+std::size_t pathSegment(const TraversalClipInfo& c, float t) {
+    const float step = pathStep(c);
+    const float u = step > 0.f ? std::max((t - c.touchdown) / step, 0.f) : 0.f;
+    return std::min(static_cast<std::size_t>(u), kTraversalSamples - 2);
+}
+float segmentSpeed(const TraversalClipInfo& c, std::size_t i) {
+    const float step = pathStep(c);
+    return step > 0.f ? std::hypot(c.path[i + 1].x - c.path[i].x, c.path[i + 1].y - c.path[i].y) / step : 0.f;
+}
+
+// A roll that keeps its speed (a plan's for clip c).
+bool keepsSpeed(const TraversalClipInfo& c, const TraversalPlan& p) {
+    return c.move == TraversalMove::Roll && p.speed > 0.f && pathStep(c) > 0.f;
+}
+
 // A catch's root before the catch: a cubic (Hermite) from where the body was, at its velocity, to the catch,
 // at the velocity the clip's root has just after it.
 TravPoint catchApproach(const TraversalClipInfo& c, const TraversalPlan& p, float t) {
@@ -252,7 +273,7 @@ TraversalPlan TraversalSet::plan(const TraversalObstacle& o, float speed, int fo
     return p;
 }
 
-TraversalPlan TraversalSet::planRoll(float speed, int foot) const {
+TraversalPlan TraversalSet::planRoll(float speed, int foot, bool landing) const {
     TraversalPlan p;
     float best = std::numeric_limits<float>::infinity();
     for (std::size_t i = 0; i < kMaxTraversalClips; ++i) {
@@ -267,7 +288,8 @@ TraversalPlan TraversalSet::planRoll(float speed, int foot) const {
     if (p.ok()) {
         const TraversalClipInfo& c = clips_[static_cast<std::size_t>(p.clip)];
         p.start = c.touchdown;
-        p.entryRate = entryRate(tuning_, c, speed);
+        p.speed = std::max(speed, landing ? c.entrySpeed : tuning_.rollMinSpeed);
+        p.entryRate = rate(p, p.start);
     }
     return p;
 }
@@ -325,17 +347,48 @@ TraversalPlan TraversalSet::planCatch(const TraversalObstacle& o, const TravPoin
     return p;
 }
 
-float TraversalSet::exitTime(const TraversalPlan& p) const {
+float TraversalSet::exitTime(const TraversalPlan& p, float offYaw) const {
     if (!p.ok()) return 0.f;
     const TraversalClipInfo& c = clips_[static_cast<std::size_t>(p.clip)];
-    return std::clamp(c.land + tuning_.exitAfter, p.start, c.length);
+    const bool turns = c.move == TraversalMove::Roll && std::fabs(std::remainder(offYaw, 360.f)) >= tuning_.rollTurnOff;
+    return std::clamp(c.land + (turns ? 0.f : tuning_.exitAfter), p.start, c.length);
 }
 
 float TraversalSet::rate(const TraversalPlan& p, float t) const {
     if (!p.ok()) return 1.f;
     const TraversalClipInfo& c = clips_[static_cast<std::size_t>(p.clip)];
+    if (keepsSpeed(c, p)) {
+        const float along = segmentSpeed(c, pathSegment(c, t));
+        return along > 0.f ? std::min(std::max(p.speed / along, tuning_.minEntryRate), tuning_.rollMaxRate) : tuning_.rollMaxRate;
+    }
     if (t >= c.contact || c.contact <= p.start) return 1.f;
     return p.entryRate + (1.f - p.entryRate) * smooth((t - p.start) / (c.contact - p.start));
+}
+
+float TraversalSet::advance(const TraversalPlan& p, float t, float dt) const {
+    if (!p.ok()) return t + dt;
+    const TraversalClipInfo& c = clips_[static_cast<std::size_t>(p.clip)];
+    if (!keepsSpeed(c, p) || t >= c.length || dt <= 0.f) return t + dt * rate(p, t);
+    // Along the path segment by segment until the root has gone speed x dt over the ground.
+    const float step = pathStep(c);
+    float left = p.speed * dt;
+    float at = std::max(t, c.touchdown);
+    for (std::size_t i = pathSegment(c, at);; ++i) {
+        const float end = c.touchdown + static_cast<float>(i + 1) * step;
+        const float along = segmentSpeed(c, i);
+        const float room = std::max(end - at, 0.f) * along;
+        if (room >= left) {
+            at += left / along; // room, and so along, is above 0 here
+            break;
+        }
+        left -= room;
+        at = end;
+        if (i + 2 >= kTraversalSamples) {
+            at = c.length;
+            break;
+        }
+    }
+    return std::min(std::max(at, t + dt * tuning_.minEntryRate), t + dt * tuning_.rollMaxRate);
 }
 
 TravPoint TraversalSet::rootAt(const TraversalPlan& p, float t) const {

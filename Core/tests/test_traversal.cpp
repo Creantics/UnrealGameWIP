@@ -70,26 +70,28 @@ constexpr float kFrame = 1.f / kFps;
 constexpr float kRollLength = 1.2f;
 
 // A made-up roll at 30 fps, its root on the floor as the mannequin's are: the root runs forward at
-// `speed` while the pelvis goes from 90 cm down to `low` (smoothly from 0.1 to 0.3 s), stays there until
-// 0.6 and comes back up to 90 by 0.9. The left foot rests until 0.1 s, the right from 0.1 to 0.3 (so it
-// takes off from the right); both are off the floor after, and back on it from 1 s.
-std::vector<TraversalFrame> makeRoll(float speed = 300.f, float low = 40.f) {
+// `speed` (but at `tuck` x speed from 0.35 to 0.75 s, as a real roll's slows in its tuck) while the pelvis
+// goes from 90 cm down to `low` (smoothly from 0.1 to 0.3 s), stays there until 0.6 and comes back up to
+// 90 by 0.9. The left foot rests until 0.1 s, the right from 0.1 to 0.3 (so it takes off from the right);
+// both are off the floor after, and back on it from 1 s.
+std::vector<TraversalFrame> makeRoll(float speed = 300.f, float low = 40.f, float tuck = 1.f) {
     std::vector<TraversalFrame> frames;
     const int n = static_cast<int>(kRollLength * kFps) + 1;
     auto smooth = [](float u) {
         u = std::clamp(u, 0.f, 1.f);
         return u * u * (3.f - 2.f * u);
     };
+    auto ahead = [&](float t) { return speed * (t - (1.f - tuck) * std::clamp(t - 0.35f, 0.f, 0.4f)); };
     for (int i = 0; i < n; ++i) {
         const float t = static_cast<float>(i) / kFps;
         const float down = smooth((t - 0.1f) / 0.2f) - smooth((t - 0.6f) / 0.3f);
         TraversalFrame f;
-        f.root = {speed * t, 0.f, 0.f};
-        f.pelvis = {speed * t, 0.f, 90.f - (90.f - low) * down};
+        f.root = {ahead(t), 0.f, 0.f};
+        f.pelvis = {ahead(t), 0.f, 90.f - (90.f - low) * down};
         auto foot = [&](float restFrom, float restTo, float side) {
-            if (t <= restTo && t >= restFrom) return TravPoint{speed * std::max(restFrom, 0.f), side, 0.f};
-            if (t >= 1.f) return TravPoint{speed, side, 0.f};
-            return TravPoint{speed * t + 20.f, side, 40.f}; // over the body, moving
+            if (t <= restTo && t >= restFrom) return TravPoint{ahead(std::max(restFrom, 0.f)), side, 0.f};
+            if (t >= 1.f) return TravPoint{ahead(1.f), side, 0.f};
+            return TravPoint{ahead(t) + 20.f, side, 40.f}; // over the body, moving
         };
         f.ballLeft = foot(-1.f, 0.1f, 10.f);
         f.ballRight = foot(0.1f, 0.3f, -10.f);
@@ -330,12 +332,15 @@ TEST_CASE("rate plays the clip at the body's speed at the entry, easing to its o
     // Advanced by dt x rate, the root goes on at the body's speed as it enters.
     const float dt = 1.f / 60.f;
     const float t1 = p.start + dt * set.rate(p, p.start);
+    CHECK(set.advance(p, p.start, dt) == doctest::Approx(t1));
     CHECK((set.rootAt(p, t1).x - set.rootAt(p, p.start).x) / dt == doctest::Approx(260.f).epsilon(0.02));
+    for (float t = p.start; t < kLength; t += 0.1f) CHECK(set.advance(p, t, dt) == doctest::Approx(t + dt * set.rate(p, t)));
     // Slower than the clip, and within limits.
     CHECK(set.plan(wall(70.f), 180.f, 1).entryRate == doctest::Approx(0.9f));
     CHECK(set.plan(wall(70.f), 1000.f, 1).entryRate == doctest::Approx(set.tuning().maxEntryRate));
     CHECK(set.plan(wall(70.f), 0.f, 1).entryRate == doctest::Approx(set.tuning().minEntryRate));
     CHECK(set.rate(TraversalPlan{}, 0.5f) == 1.f);
+    CHECK(set.advance(TraversalPlan{}, 0.5f, 0.1f) == doctest::Approx(0.6f));
 }
 
 TEST_CASE("measureRoll reads the roll from the pelvis: the tuck, back up, how far down") {
@@ -414,10 +419,11 @@ TEST_CASE("measureRoll reads a land roll from its touchdown, and planRoll enters
 
         TraversalSet set;
         set.setClip(0, r);
-        const TraversalPlan p = set.planRoll(390.f, 1);
+        const TraversalPlan p = set.planRoll(390.f, 1, true);
         REQUIRE(p.ok());
         CHECK(p.start == doctest::Approx(r.touchdown));
-        CHECK(set.rate(p, p.start) == doctest::Approx(1.3f));
+        CHECK(p.speed == doctest::Approx(390.f));
+        CHECK(set.rate(p, p.start) == doctest::Approx(1.3f).epsilon(1e-3));
         CHECK(set.exitTime(p) >= r.land);
         for (int i = 0; i <= 12; ++i) {
             const float t = p.start + 0.1f * static_cast<float>(i);
@@ -442,7 +448,8 @@ TEST_CASE("planRoll takes the roll nearest the body's speed, then its foot, from
     const TraversalPlan p = set.planRoll(380.f, 1);
     REQUIRE(p.ok());
     CHECK(p.start == 0.f);
-    CHECK(p.entryRate == doctest::Approx(0.95f));
+    CHECK(p.speed == doctest::Approx(550.f)); // rollMinSpeed
+    CHECK(p.entryRate == doctest::Approx(550.f / 400.f).epsilon(1e-3));
     for (int i = 0; i <= 12; ++i) {
         const float t = 0.1f * static_cast<float>(i);
         const TravPoint at = set.rootAt(p, t);
@@ -477,24 +484,98 @@ TEST_CASE("plan never takes a roll, even for an obstacle low enough to pass for 
     CHECK(set.plan(wall(30.f, 25.f), 300.f, 1).clip == 1);
 }
 
-TEST_CASE("A roll hands back exitAfter past the body being back up, as the other moves do; its rate eases by the tuck") {
+TEST_CASE("planRoll keeps the body's speed, no slower than rollMinSpeed, or a landing's than its clip") {
     TraversalSet set;
-    set.setClip(0, rollOf(makeRoll())); // comes in at 300 cm/s
+    set.setClip(0, rollOf(makeRoll(400.f)));
+    CHECK(set.planRoll(300.f, 1).speed == doctest::Approx(550.f));
+    CHECK(set.planRoll(700.f, 1).speed == doctest::Approx(700.f));
+    CHECK(set.planRoll(300.f, 1, true).speed == doctest::Approx(400.f));
+    CHECK(set.planRoll(500.f, 1, true).speed == doctest::Approx(500.f));
+    // With no floor, a body standing still rolls at the clip's own pace.
+    TraversalTuning t;
+    t.rollMinSpeed = 0.f;
+    set.setTuning(t);
+    const TraversalPlan still = set.planRoll(0.f, 1);
+    REQUIRE(still.ok());
+    CHECK(still.speed == 0.f);
+    CHECK(still.entryRate == 1.f);
+    CHECK(set.rate(still, 0.5f) == 1.f);
+    CHECK(set.advance(still, 0.5f, 0.1f) == doctest::Approx(0.6f));
+}
+
+TEST_CASE("A roll keeps its speed through the tuck: advance() plays its clip faster where its root slows") {
+    TraversalSet set;
+    set.setClip(0, rollOf(makeRoll(400.f, 40.f, 0.65f))); // in at 400 cm/s, 260 in the tuck (0.35 to 0.75 s)
+    const TraversalClipInfo& c = set.clip(0);
+    REQUIRE(c.entrySpeed == doctest::Approx(400.f));
+    const TraversalPlan p = set.planRoll(300.f, 1);
+    REQUIRE(p.ok());
+    CHECK(p.speed == doctest::Approx(550.f));
+    CHECK(p.entryRate == doctest::Approx(550.f / 400.f).epsilon(1e-3));
+    CHECK(set.rate(p, 0.5f) == doctest::Approx(550.f / 260.f).epsilon(1e-3));
+    // Frame by frame at 60 fps the root goes 550 cm/s over the ground all the way, the clip playing no
+    // slower than at its entry and no faster than in the tuck: the body is back up when it has gone the
+    // way there at 550.
+    const float dt = 1.f / 60.f;
+    float t = p.start;
+    float clock = 0.f;
+    float upAt = 0.f;
+    while (true) {
+        const float next = set.advance(p, t, dt);
+        if (next >= c.length) break;
+        CAPTURE(t);
+        CHECK((set.rootAt(p, next).x - set.rootAt(p, t).x) / dt == doctest::Approx(550.f).epsilon(0.01));
+        CHECK((next - t) / dt >= 550.f / 400.f - 1e-3f);
+        CHECK((next - t) / dt <= 550.f / 260.f + 1e-3f);
+        clock += dt;
+        if (upAt == 0.f && next >= c.land) upAt = clock;
+        t = next;
+    }
+    const float there = set.rootAt(p, c.land).x / 550.f;
+    CHECK(upAt > there - 1e-3f);
+    CHECK(upAt < there + dt + 1e-3f);
+
+    // At 900 the tuck would need its clip played 3.5 times over: it plays at rollMaxRate, the body going
+    // 650 cm/s (2.5 x 260) there.
+    const TraversalPlan fast = set.planRoll(900.f, 1);
+    CHECK(fast.entryRate == doctest::Approx(900.f / 400.f).epsilon(1e-3));
+    CHECK(set.rate(fast, 0.5f) == doctest::Approx(set.tuning().rollMaxRate));
+    const float on = set.advance(fast, 0.5f, dt);
+    CHECK(on == doctest::Approx(0.5f + dt * set.tuning().rollMaxRate));
+    CHECK((set.rootAt(fast, on).x - set.rootAt(fast, 0.5f).x) / dt == doctest::Approx(650.f).epsilon(0.01));
+    // A clip running faster than the roll goes plays no slower than minEntryRate.
+    TraversalSet quick;
+    quick.setClip(0, rollOf(makeRoll(800.f)));
+    const TraversalPlan slow = quick.planRoll(300.f, 1);
+    REQUIRE(slow.ok());
+    CHECK(quick.rate(slow, 0.5f) == doctest::Approx(quick.tuning().minEntryRate));
+    CHECK(quick.advance(slow, 0.5f, dt) == doctest::Approx(0.5f + dt * quick.tuning().minEntryRate));
+}
+
+TEST_CASE("A roll hands back exitAfter past the body being back up, or once it is up for a body turning off its way") {
+    TraversalSet set;
+    set.setClip(0, rollOf(makeRoll()));
+    set.setClip(1, measure(makeClip(false)));
     const TraversalClipInfo& c = set.clip(0);
     const TraversalPlan p = set.planRoll(390.f, 1);
-    REQUIRE(p.ok());
+    REQUIRE(p.clip == 0);
     CHECK(set.exitTime(p) == doctest::Approx(c.land + 0.3f));
+    CHECK(set.exitTime(p, 20.f) == doctest::Approx(c.land + 0.3f));
+    CHECK(set.exitTime(p, -350.f) == doctest::Approx(c.land + 0.3f)); // 10 degrees off
+    for (const float off : {30.f, 45.f, -45.f, 90.f, 180.f, 200.f, -170.f}) {
+        CAPTURE(off);
+        CHECK(set.exitTime(p, off) == doctest::Approx(c.land));
+    }
     TraversalTuning t;
     t.exitAfter = 100.f; // never past its end
     set.setTuning(t);
     CHECK(set.exitTime(p) == doctest::Approx(c.length));
-
-    CHECK(c.contact > 0.2f);
-    CHECK(p.entryRate == doctest::Approx(1.3f));
-    CHECK(set.rate(p, 0.f) == doctest::Approx(1.3f));
-    CHECK(set.rate(p, c.contact) == 1.f);
-    CHECK(set.rate(p, 0.5f * c.contact) < 1.3f);
-    CHECK(set.rate(p, 0.5f * c.contact) > 1.f);
+    CHECK(set.exitTime(p, 90.f) == doctest::Approx(c.land));
+    // A vault's body goes exitAfter past its landing whichever way it wants to go.
+    set.setTuning(TraversalTuning{});
+    const TraversalPlan v = set.plan(wall(70.f), 200.f, 1);
+    REQUIRE(v.clip == 1);
+    CHECK(set.exitTime(v, 90.f) == doctest::Approx(set.exitTime(v)));
 }
 
 TEST_CASE("measureCatch reads the catch, the top and the landing from the root, the edge at the origin") {
@@ -736,9 +817,9 @@ TEST_CASE("Traversal plans and paths allocate nothing") {
     for (int i = 0; i < 100; ++i) {
         const float t = 0.01f * static_cast<float>(i);
         const TraversalPlan p = set.plan(i % 2 ? wall(60.f + static_cast<float>(i)) : ledge(60.f), 200.f, i % 2);
-        if (p.ok()) sum += set.rootAt(p, t).x + set.rate(p, t);
-        const TraversalPlan r = set.planRoll(100.f + 5.f * static_cast<float>(i), i % 2);
-        if (r.ok()) sum += set.rootAt(r, t).x + set.rate(r, t) + set.exitTime(r);
+        if (p.ok()) sum += set.rootAt(p, t).x + set.rate(p, t) + set.advance(p, t, 1.f / 60.f);
+        const TraversalPlan r = set.planRoll(100.f + 5.f * static_cast<float>(i), i % 2, i % 3 == 0);
+        if (r.ok()) sum += set.rootAt(r, t).x + set.rate(r, t) + set.advance(r, t, 1.f / 60.f) + set.exitTime(r, 45.f);
         const TraversalPlan k = set.planCatch(ledge(15.f + static_cast<float>(i), 44.f), {300.f, 0.f, 0.f}, kGravity, 0.f);
         if (k.ok()) sum += set.rootAt(k, 0.3f + 2.f * t).z + set.rate(k, t) + set.exitTime(k);
     }

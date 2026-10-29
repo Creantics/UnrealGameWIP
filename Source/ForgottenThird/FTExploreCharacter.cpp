@@ -51,9 +51,11 @@ constexpr float kCatchStick = 0.5f;
 constexpr float kCourseJumpFrom = 80.f;
 constexpr float kCourseJumpTo = 120.f;
 // A roll press the body can't act on yet is kept this long (s), and a roll or a slide turns the body to its way (a catch
-// square into the face) with this time constant (s).
+// square into the face) with this time constant (s). -LocoRollTurn keeps the stick turned this long (s) after a roll
+// hands back.
 constexpr float kRollBuffer = 0.2f;
 constexpr float kRollTurnTime = 0.05f;
+constexpr float kRollTurnHold = 1.f;
 // A wall a slide meets this squarely or more (the cosine between its way and into the wall) stops it; one met at more
 // of a glance turns it along the wall.
 constexpr float kSlideHeadOn = 0.7f;
@@ -170,8 +172,10 @@ void AFTExploreCharacter::BeginPlay()
 		Crouch();
 	}
 	FParse::Value(FCommandLine::Get(), TEXT("LocoCrouchEvery="), CrouchEvery);
-	// -LocoRollEvery=<s> rolls every s seconds.
+	// -LocoRollEvery=<s> rolls every s seconds; -LocoRollTurn=<deg> turns the stick that far off each roll's way, from
+	// its start until kRollTurnHold after it hands back, for turning out of it.
 	FParse::Value(FCommandLine::Get(), TEXT("LocoRollEvery="), RollEvery);
+	FParse::Value(FCommandLine::Get(), TEXT("LocoRollTurn="), RollTurn);
 	FParse::Value(FCommandLine::Get(), TEXT("LocoPulse="), PulseEvery);
 	FParse::Value(FCommandLine::Get(), TEXT("LocoRest="), PulseRest);
 	FParse::Value(FCommandLine::Get(), TEXT("LocoFace="), FaceBy);
@@ -664,7 +668,7 @@ bool AFTExploreCharacter::TryRoll(bool bLanding, bool bLog)
 	}
 	const ftcore::TraversalSet& Set = Anim->GetTraversal();
 	const float Speed = static_cast<float>(GetVelocity().Size2D());
-	const ftcore::TraversalPlan Plan = Set.planRoll(Speed, -1);
+	const ftcore::TraversalPlan Plan = Set.planRoll(Speed, -1, bLanding);
 	if (!Plan.ok())
 	{
 		if (bLog)
@@ -701,9 +705,10 @@ bool AFTExploreCharacter::TryRoll(bool bLanding, bool bLog)
 		GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
 	Move->SetMovementMode(MOVE_Custom);
 	Anim->SetTraversal(Plan.clip, TravTime);
+	RollTurnLeft = RollTurn != 0.f ? kRollTurnHold : 0.f;
 	const ftcore::TraversalClipInfo& Clip = Set.clip(static_cast<std::size_t>(Plan.clip));
-	UE_LOG(LogForgottenThird, Display, TEXT("Roll (%s): clip %d, %.2f s, at %.0f cm/s (the clip's %.0f, x%.2f), heading %.0f, facing %.0f."),
-		bLanding ? TEXT("landing") : TEXT("asked"), Plan.clip, Clip.length, Speed, Clip.entrySpeed, Plan.entryRate, Heading,
+	UE_LOG(LogForgottenThird, Display, TEXT("Roll (%s): clip %d, %.2f s, at %.0f cm/s, rolling at %.0f (the clip's %.0f, x%.2f), heading %.0f, facing %.0f."),
+		bLanding ? TEXT("landing") : TEXT("asked"), Plan.clip, Clip.length, Speed, Plan.speed, Clip.entrySpeed, Plan.entryRate, Heading,
 		GetActorRotation().Yaw);
 	return true;
 }
@@ -722,9 +727,17 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 	const ftcore::TraversalClipInfo& Clip = Set.clip(static_cast<std::size_t>(TravPlan.clip));
 	const bool bRoll = Clip.move == ftcore::TraversalMove::Roll;
 	const bool bCatch = Clip.move == ftcore::TraversalMove::Catch;
-	TravTime += DeltaSeconds * Set.rate(TravPlan, TravTime);
+	// For its log: how long it has gone and its slowest speed, from its first frame.
+	if (TravTime <= TravPlan.start)
+	{
+		TravClock = 0.f;
+		TravSlowest = TNumericLimits<float>::Max();
+	}
+	TravTime = Set.advance(TravPlan, TravTime, DeltaSeconds);
+	TravClock += DeltaSeconds;
 	const float Length = Clip.length;
 	const float T = FMath::Min(TravTime, Length);
+	const float Rate = Set.rate(TravPlan, T);
 	// The plan's root in the body's space as it began: x forward, y left (UE's Y is right), z up.
 	auto FeetAt = [&](float At)
 	{
@@ -765,24 +778,34 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 		const float Gap = FMath::FindDeltaAngleDegrees(static_cast<float>(GetActorRotation().Yaw), static_cast<float>(TravFrame.Rotator().Yaw));
 		AddActorWorldRotation(FRotator(0.0, Gap * (1.f - FMath::Exp(-DeltaSeconds / kRollTurnTime)), 0.0));
 	}
-	// The movement component's velocity is the path's, for the locomotion now and the walk after (a roll's level:
-	// its floor is the real one).
+	// The movement component's velocity is the path's at the pace the clip plays, for the locomotion now and the walk
+	// after (a roll's level: its floor is the real one).
 	const float Back = FMath::Max(DeltaSeconds, 1.f / 60.f);
-	Move->Velocity = (FeetAt(T) - FeetAt(FMath::Max(TravPlan.start, T - Back))) / Back;
+	Move->Velocity = (FeetAt(T) - FeetAt(FMath::Max(TravPlan.start, T - Back))) / Back * Rate;
 	Move->Velocity.Z = bRoll ? 0.0 : Move->Velocity.Z;
+	if (T - Back >= TravPlan.start)
+	{
+		TravSlowest = FMath::Min(TravSlowest, static_cast<float>(Move->Velocity.Size2D()));
+	}
 	// A body that wants to move hands back to its locomotion just after the landing (a roll's body once it is
-	// back up); one left standing plays the clip out.
-	const bool bWantsMove = bVaultCourse || !Move->GetCurrentAcceleration().IsNearlyZero();
-	if (T >= Length || bBlocked || bFalls || (bWantsMove && T >= Set.exitTime(TravPlan)))
+	// back up, and then and there if it wants to go well off the roll's way); one left standing plays the clip out.
+	const FVector Stick = Move->GetCurrentAcceleration();
+	const bool bWantsMove = bVaultCourse || !Stick.IsNearlyZero();
+	const float Off = bRoll && !Stick.IsNearlyZero()
+		? FMath::FindDeltaAngleDegrees(static_cast<float>(TravFrame.Rotator().Yaw), static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(Stick.Y, Stick.X))))
+		: 0.f;
+	if (T >= Length || bBlocked || bFalls || (bWantsMove && T >= Set.exitTime(TravPlan, Off)))
 	{
 		if (bBlocked) Move->Velocity = FVector::ZeroVector;
 		bTraversing = false;
-		Anim->SetTraversal(-1, 0.f);
+		// The clip plays on at the pace it had while it fades out, and under a roll's the body may set off on a turn.
+		Anim->LetGoTraversal(Rate, bRoll);
 		Move->Velocity.Z = 0.0;
 		Move->SetMovementMode(bFalls ? MOVE_Falling : MOVE_Walking);
-		UE_LOG(LogForgottenThird, Display, TEXT("Traversal: done at %.2f of %.2f s (%s), %.0f cm/s, %.0f cm from the start, %+.0f cm up."), T, Length,
-			bBlocked ? TEXT("blocked") : bFalls ? TEXT("off an edge") : T >= Length ? TEXT("clip end") : TEXT("exit"), Move->Velocity.Size2D(),
-			FVector::Dist2D(Feet, TravFrame.GetLocation()), Feet.Z - TravFrame.GetLocation().Z);
+		const float Speed = static_cast<float>(Move->Velocity.Size2D());
+		UE_LOG(LogForgottenThird, Display, TEXT("Traversal: done at %.2f of %.2f s (%s) after %.2f s, %.0f cm/s (%.0f at the slowest), %.0f cm from the start, %+.0f cm up."),
+			T, Length, bBlocked ? TEXT("blocked") : bFalls ? TEXT("off an edge") : T >= Length ? TEXT("clip end") : T < Set.exitTime(TravPlan) ? TEXT("turn") : TEXT("exit"),
+			TravClock, Speed, FMath::Min(TravSlowest, Speed), FVector::Dist2D(Feet, TravFrame.GetLocation()), Feet.Z - TravFrame.GetLocation().Z);
 		return;
 	}
 	Anim->SetTraversal(TravPlan.clip, T);
@@ -1264,6 +1287,10 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 		RollTimer = 0.f;
 		HandleRoll();
 	}
+	if (!bTraversing)
+	{
+		RollTurnLeft = FMath::Max(RollTurnLeft - DeltaSeconds, 0.f);
+	}
 }
 
 void AFTExploreCharacter::AddMovementInput(FVector WorldDirection, float ScaleValue, bool bForce)
@@ -1271,6 +1298,10 @@ void AFTExploreCharacter::AddMovementInput(FVector WorldDirection, float ScaleVa
 	if (PulseEvery > 0.f && PulseTimer > PulseEvery)
 	{
 		return;
+	}
+	if (RollTurnLeft > 0.f)
+	{
+		WorldDirection = WorldDirection.RotateAngleAxis(RollTurn, FVector::UpVector);
 	}
 	Super::AddMovementInput(WorldDirection, ScaleValue, bForce);
 }

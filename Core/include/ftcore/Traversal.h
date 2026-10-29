@@ -7,7 +7,7 @@
 //   ftcore::TraversalSet set;
 //   set.setClip(i, ftcore::measureTraversal(frames, count, length));  // once per clip, at load
 //   const ftcore::TraversalPlan p = set.plan(obstacle, speed, foot);    // while an obstacle is ahead
-//   if (p.ok()) play clip p.clip from p.start; every frame: clipTime += dt * set.rate(p, clipTime);
+//   if (p.ok()) play clip p.clip from p.start; every frame: clipTime = set.advance(p, clipTime, dt);
 //                                                          root = set.rootAt(p, clipTime);
 //
 // The clips' root bone traces the obstacle they were made for: it stays on the floor, rises onto the top
@@ -33,8 +33,12 @@
 // up, the landing; how far it goes down) and from the root as above (the entry speed, the take-off foot,
 // the path). A land roll's clip opens with the fall onto that floor: it is read from the touchdown on.
 // planRoll takes the roll clip whose entry speed and take-off foot are nearest the body's, from its
-// touchdown (a roll on the floor throughout: its start), its root path as it is; rate() eases to the
-// clip's own rate by the tuck. plan() never takes a roll.
+// touchdown (a roll on the floor throughout: its start), its root path as it is. The roll keeps a speed of
+// its own (TraversalPlan::speed: the body's, but no slower than rollMinSpeed, or a landing's no slower than
+// the clip's entry speed): advance() plays it at whatever rate takes its root that far along its path each
+// frame, so the body doesn't slow down in the tuck as the clip's root does (within minEntryRate and
+// rollMaxRate). A body wanting to go rollTurnOff or more off the roll's way is handed back as soon as it is
+// up (exitTime). plan() never takes a roll.
 //
 // A catch is a jump or fall onto a ledge: the hands grab its edge in the air and the body climbs up. Its
 // clip comes down onto the ledge from far above, faster than a short jump ever comes in, so only its root
@@ -150,7 +154,10 @@ struct TraversalTuning {
     float footCost = 0.3f;       // a clip taking off from the other foot
     float exitAfter = 0.3f;      // a body that wants to move leaves the clip this long after the landing
     float minEntryRate = 0.8f;   // the play rate at the entry keeps the body's speed within these
-    float maxEntryRate = 1.5f;
+    float maxEntryRate = 1.5f;   // (a roll's, all the way: from minEntryRate to rollMaxRate)
+    float rollMinSpeed = 550.f;  // cm/s: a roll asked for goes at least this fast
+    float rollMaxRate = 2.5f;    // a roll keeping its speed plays no faster than this
+    float rollTurnOff = 30.f;    // degrees: a body wanting to go this far off its roll's way is let go once it is up
     float minCatchLead = 0.1f;   // a catch is entered at least this long before the catch...
     float maxCatchLead = 0.4f;   // ...and at most this long: one further off waits
     float maxCatchMiss = 40.f;   // how far the catch may be from where the body's flight takes it, ahead or up
@@ -162,6 +169,7 @@ struct TraversalPlan {
     int clip = -1;
     float start = 0.f;     // the clip time it is entered at
     float entryRate = 1.f; // the play rate there: the body's speed over the clip's entry speed, within limits
+    float speed = 0.f;     // a roll: the speed it keeps along its path (cm/s; 0: its own pace)
     TravPoint atContact;   // the offset reached at the contact (a catch: where the root is at the catch)
     TravPoint atLeave;     // at the leave
     TravPoint atLand;      // and at the landing
@@ -185,8 +193,9 @@ public:
     FTCORE_API TraversalPlan plan(const TraversalObstacle& obstacle, float speed, int foot) const;
     // A roll for a body at ground speed `speed` with `foot` planted (as plan()): the roll clip that costs
     // least by entry speed and take-off foot, entered at its touchdown with its root path as it is (no
-    // offsets). Not ok without a roll clip.
-    FTCORE_API TraversalPlan planRoll(float speed, int foot) const;
+    // offsets), keeping the body's speed: no slower than rollMinSpeed, or for a `landing` (rolling out of a
+    // fall), than the clip's entry speed. Not ok without a roll clip.
+    FTCORE_API TraversalPlan planRoll(float speed, int foot, bool landing = false) const;
     // A catch for a body in the air at `velocity` (in the obstacle's space: x toward it), falling at
     // `gravity` (cm/s^2, down), that wants to go on at ground speed `speed` once up (0: stay up there). Only
     // a top at least standDepth deep is caught. Not ok without a catch clip that fits.
@@ -196,12 +205,18 @@ public:
     FTCORE_API TravPoint rootAt(const TraversalPlan& p, float t) const;
     // When a body that wants to move hands back to its locomotion: exitAfter past the landing (a roll's:
     // once the body is back up), never before the entry nor past the clip's end (the clip's own tail, a
-    // run on or a stand-up, is for a body left standing). 0 without a plan.
-    FTCORE_API float exitTime(const TraversalPlan& p) const;
+    // run on or a stand-up, is for a body left standing). A roll's body wanting to go rollTurnOff or more
+    // off its way (offYaw: degrees from the roll's way to the way it wants to go) goes as soon as it is
+    // up. 0 without a plan.
+    FTCORE_API float exitTime(const TraversalPlan& p, float offYaw = 0.f) const;
     // The play rate at clip time t: the plan's entryRate at the entry, easing (smoothstep) to 1 by the contact,
-    // so the climb or vault itself plays at its own pace. A caller advances clip time by dt x rate. 1 without a
-    // plan.
+    // so the climb or vault itself plays at its own pace; a roll's keeps its speed where the path is at t
+    // (within minEntryRate and rollMaxRate). 1 without a plan.
     FTCORE_API float rate(const TraversalPlan& p, float t) const;
+    // The clip time dt after clip time t: t + dt x rate, but a roll's is where its root has gone its speed x dt
+    // further along its path (no less than minEntryRate x dt on, no more than rollMaxRate x dt), so the body
+    // keeps the roll's speed exactly however the clip's root speeds up and slows down. t + dt without a plan.
+    FTCORE_API float advance(const TraversalPlan& p, float t, float dt) const;
 
 private:
     TraversalTuning tuning_;

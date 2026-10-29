@@ -194,9 +194,9 @@ public:
 	static constexpr int32 NumCatchClips = 7;
 	// Plays traversal clip Clip (a TraversalPlan's) at clip time Time over the locomotion, fading in over its first
 	// moments and out by its end; the owner moves the body along TraversalSet::rootAt and calls this every frame,
-	// then with Clip -1 when it hands the body back: the clip plays on at its own pace while it fades out over
-	// kTraversalOut (sooner by its end), and the locomotion takes the body back with the clip's feet where it let go
-	// (ftcore::Locomotion::handBack). The clip's root is held like the locomotion's: the owner carries it.
+	// then with Clip -1 (or LetGoTraversal) when it hands the body back: the clip plays on at its own pace while it
+	// fades out over kTraversalOut (sooner by its end), and the locomotion takes the body back with the clip's feet
+	// where it let go (ftcore::Locomotion::handBack). The clip's root is held like the locomotion's: the owner carries it.
 	// A clip asked for while another plays takes over from it over kTraversalSwitch, the other playing on at its own
 	// pace as it fades (a slide's clips, one after another). bLoop loops the clip, and neither a looping clip nor one
 	// asked for with bEndFade false fades by its end: the owner goes on from it into another, or lets it go first.
@@ -204,13 +204,7 @@ public:
 	{
 		if (Clip < 0)
 		{
-			if (TravClip >= 0 && !bTravOut)
-			{
-				bTravOut = true;
-				bTravHandBack = true;
-				TravOutFor = 0.f;
-				TravOutFrom = TravWeight;
-			}
+			LetGoTraversal(1.f, false);
 			return;
 		}
 		if (Clip != TravClip && TravClip >= 0 && !bTravOut)
@@ -231,6 +225,21 @@ public:
 		TravTime = Time;
 		bTravLoop = bLoop;
 		bTravEndFade = bEndFade;
+	}
+	// Lets the traversal playing go, as SetTraversal(-1, ...) does, but the clip plays on at Rate (the pace the owner
+	// played it at as it let go: its feet are handed back at that pace too) while it fades out, and with bTurn the
+	// locomotion may start a turn under it (a roll's: its body is back on its feet, and may want another way).
+	void LetGoTraversal(float Rate, bool bTurn)
+	{
+		if (TravClip >= 0 && !bTravOut)
+		{
+			bTravOut = true;
+			bTravHandBack = true;
+			TravOutFor = 0.f;
+			TravOutFrom = TravWeight;
+			TravOutRate = Rate;
+			bTravOutTurns = bTurn;
+		}
 	}
 	// The owner standing still turns on the spot to face Yaw (degrees, world) while bFace holds.
 	void SetFace(bool bFace, float Yaw)
@@ -307,8 +316,9 @@ private:
 	ftcore::TraversalSet Traversal;
 	ftcore::SlideSet Slide;
 	// The traversal playing (-1 none), its clip time, how long it has played, its weight over the locomotion and
-	// whether it loops or fades by its end; once its owner has let it go (bTravOut), how long since and the weight it
-	// had then, and until the next update (bTravHandBack) that the locomotion has its feet to take the body back with.
+	// whether it loops or fades by its end; once its owner has let it go (bTravOut), how long since, the weight it had
+	// then, the pace it plays on at and whether the locomotion may turn under it, and until the next update
+	// (bTravHandBack) that the locomotion has its feet to take the body back with.
 	// The one it is taking over from (-1 none): its clip time, how long since and whether it loops.
 	int32 TravClip = -1;
 	float TravTime = 0.f;
@@ -320,6 +330,8 @@ private:
 	bool bTravHandBack = false;
 	float TravOutFor = 0.f;
 	float TravOutFrom = 0.f;
+	float TravOutRate = 1.f;
+	bool bTravOutTurns = false;
 	// The run loop's root yaw at its first frame (degrees): the gaits' feet are measured turned to theirs, and a
 	// traversal's are handed back turned to this.
 	float GaitYaw0 = 0.f;

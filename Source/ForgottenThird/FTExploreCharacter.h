@@ -39,11 +39,14 @@
 // ahead and jumps at each from about a metre out.
 //
 // Roll goes the way the stick points (else the way the body moves, else the way it faces): one of the roll clips
-// (SetTraversalFromRun's too) plays from its start, entered at the body's speed, the body turns to the roll's way and
-// the capsule follows the clip's root path along the real floor (up and down steps; a wall ends the roll, and with no
-// floor under it the body lets go and falls). A press the body can't act on yet (in the air, mid-traversal) is kept
-// for a moment, and a moving landing from a real fall with crouch on rolls out of it. -LocoRollEvery=<s> rolls every
-// s seconds.
+// (SetTraversalFromRun's too) plays from its start, the body turns to the roll's way and the capsule follows the
+// clip's root path along the real floor (up and down steps; a wall ends the roll, and with no floor under it the body
+// lets go and falls). The roll keeps a speed of its own the whole way (the body's, but no slower than a run's, or a
+// landing's than its clip's: ftcore::TraversalPlan::speed), the clip playing faster where its root slows in the tuck.
+// The body is handed back once it is up and a moment on, or as soon as it is up when the stick points well off the
+// roll's way. A press the body can't act on yet (in the air, mid-traversal) is kept for a moment, and a moving landing
+// from a real fall with crouch on rolls out of it. -LocoRollEvery=<s> rolls every s seconds; -LocoRollTurn=<deg>
+// turns the stick that far off each roll's way until a second after it hands back.
 //
 // Crouch in a sprint slides (ftcore::SlideSet, from SetTraversalFromRun's slide clips): the drop-in nearest the body's
 // speed plays from its take-off, and the body slides on the way it was going along the real floor, steered a little by
@@ -244,6 +247,8 @@ private:
 	float RollAsked = 0.f; // a roll press still kept (s)
 	float RollEvery = 0.f; // -LocoRollEvery=<s>
 	float RollTimer = 0.f;
+	float RollTurn = 0.f;     // -LocoRollTurn=<deg>
+	float RollTurnLeft = 0.f; // how much longer the stick stays turned by RollTurn once the roll hands back (s)
 	float PulseEvery = 0.f; // -LocoPulse=<s>
 	float PulseTimer = 0.f;
 	float PulseRest = 2.f;  // -LocoRest=<s>
@@ -262,11 +267,13 @@ private:
 	// -LocoNoLook: look input is ignored, so a mouse passing over an unattended capture can't swing the camera.
 	bool bNoLook = false;
 	// The traversal under way: its plan, clip time, and the body's feet and facing as it began (a roll's facing is the
-	// way it rolls).
+	// way it rolls); for its log, how long it has gone (s) and its slowest speed (cm/s).
 	bool bTraversing = false;
 	ftcore::TraversalPlan TravPlan;
 	float TravTime = 0.f;
 	FTransform TravFrame;
+	float TravClock = 0.f;
+	float TravSlowest = 0.f;
 	// The vaults, climbs and catches begun, and the last one's mark (GetLastTraversal).
 	uint32 TraversalsBegun = 0;
 	FFTTraversalMark LastTraversal;
