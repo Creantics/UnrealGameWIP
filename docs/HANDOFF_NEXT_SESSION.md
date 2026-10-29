@@ -1,12 +1,46 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-29 ~01:15. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-29 ~09:25. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-29 ~01:15): hair cards for the leads' grooms (main 0ea522b).**
+- **NEWEST (2026-10-29 ~09:25): lifelike ground for the three big worlds (branch `terrain-worlds` c14935a,
+  pushed; not merged into main).**
+  - The goal: realistic, lifelike terrain in each world, with no blocky land. `ftcore::generateWorldTerrain`
+    (`Core/include/ftcore/Terrain.h`) shapes each world's ground from its layout and the new `sites` in
+    `Data/Field/worlds.json`, which hold district indices and tier words only: one `entry`, one `climax` and any
+    `major`s. `docs/WORLDS.md` has a new Ground section.
+  - One height field per world: 757 x 757 samples 1.98 m apart over 1.5 km (the 1 km square and a 250 m apron), in
+    1/128 m steps that a 16-bit Landscape at Z scale 100 stores exactly (`heightmapValue()`). That is 6 x 6
+    Landscape components of 2 x 63 quads.
+  - Pads are flat out to the district radius, roads climb in a straight line between pads at 0.25 at most, and the
+    ground beside a road banks at 0.65 at most. The climax stands 36 m up where its roads allow and stays in sight
+    from the entry. On a broad swell each kind has its own ground: hills and bowls in town, broader and higher hills
+    among the towers, and a low plain with mesas and gullies in the ruins. Off the sheer walls nothing is steeper
+    than 1.8 (61 degrees).
+  - Past the edge: mountains whose foot wanders 0 to 60 m out round the towers and on the town's three dry sides; the
+    town's sea behind a quay, with headlands either side; the ruins running on 16 to 114 m in bays and headlands,
+    then dropping into an abyss 170 to 190 m deep.
+  - Features: up to two trenches among the towers (floors 18, 24 or 30 m down, walls at 1.6 that waver and round
+    off at the corners) and up to three pools 0.6 m deep; one or two pits in the ruins, each a funnel round a sheer
+    shaft. Each keeps 25 m from the roads, the pads' blends and the others, and 30 m inside the walls. The only
+    sheer walls (`cliff()`) are the quay, the abyss's fall and the shafts.
+  - `Core/tests/test_terrain.cpp`, 14 cases. Open ground lies near multiples of 3 m (6 m among the towers) no more
+    often than smooth ground does by chance (6.65, 3.32 and 7.16% against 6.67, 3.33 and 6.67%), and 0.27 to 1.78%
+    of open cells are flat (5% at most). Debug generation takes 1.7 to 3.4 s a world.
+  - Looked at beyond the tests: a scratch dump tool, kept out of the repo, drew hillshades and cross-sections of each
+    field. The mountain foot lies a median 44 to 46 m past the edge, and the ruins' lip 24 to 115 m (median 67 m).
+  - Gate: 825 doctest cases, ctest 4/4, UBT Succeeded (with `-DisablePlugin=Fab`).
+  - Deferred by the advisor: the gullies read as grooves of one width (the erosion pass fixes them); the pads read as
+    discs or craters from above (a change to the pads' outlines, which moves the placement tests); and Solhaven's
+    quay runs in one straight line for 1 km (coves need the coast to reach inside the square).
+  - Not done yet: no map uses the field. Next come the Landscape import in the world builder, a weightmap for the
+    roads, and props set on the ground. Trees and rocks are still cubes, and scattered grass waits for the user's go.
+    On a Landscape the abyss and shaft walls will draw as stretched quads until a cliff-mesh or fog pass. The
+    queries answer for lakes, but none is placed. The clockwork relief map (the world map screen) comes later.
+- **Earlier (2026-10-29 ~01:15): hair cards for the leads' grooms (main 0ea522b).**
   - `Data/Grooms/hair_cards.json` lists seven grooms (head hair, brows, beards and moustaches) with each level's
     card, triangle, texture and flyaway targets, atlas size and screen size. `ftcore::HairCardSpec` loads and checks
     it (`test_hair_card_spec.cpp`, 5 cases).
