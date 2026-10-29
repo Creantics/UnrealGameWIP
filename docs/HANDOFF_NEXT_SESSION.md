@@ -1,12 +1,42 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-28 ~18:22. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-29 ~01:15. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-28 ~18:22): world building pass 1. Solhaven's shapes wear photographed CC0 surfaces.**
+- **NEWEST (2026-10-29 ~01:15): hair cards for the leads' grooms (main 0ea522b).**
+  - `Data/Grooms/hair_cards.json` lists seven grooms (head hair, brows, beards and moustaches) with each level's
+    card, triangle, texture and flyaway targets, atlas size and screen size. `ftcore::HairCardSpec` loads and checks
+    it (`test_hair_card_spec.cpp`, 5 cases).
+  - The opt-in editor plugin `Plugins/FTHairCards` adds `FT.HairCards [spec] [only=<id>] [quit]`. It drives the
+    engine's Experimental hair card generator one level at a time, each level with its own atlas, then switches the
+    levels to their cards and saves the groom; a groom with a failed level is left unsaved. It needs the full
+    editor, because the generator's notifications crash a commandlet, so a run needs the user at the PC.
+    `docs/HAIR_CARDS.md` has the run, the hazards and a by-hand UBT line.
+  - The plugin is off by default, so the everyday editor and the other builds leave it out. `tools/gate.ps1
+    -HairCards` builds it. Since the launcher's Fab 0.0.22 update, UBT also needs `-DisablePlugin=Fab`, which
+    `gate.ps1` doesn't pass, so build by hand after the gate's tests.
+  - The generator's Python packages (PyTorch with CUDA among them) go in `D:/projects/ue_pip/ForgottenThird`
+    through `UE_PIPINSTALL_PATH`, which every worktree shares: about 5.3 GB on disk, and the first install took
+    about 4 minutes.
+  - First run, one groom (a moustache of 3,367 strands): 2 levels, 909 cards, 0 failed, in about 2 minutes (63 s
+    and 34 s for the levels, then 14 s to save). Its first level came out at 652 cards for 500 asked, because the
+    generator gives some clumps more than one card, while its triangles stayed within the budget (5,996 of 6,000).
+    The cards stay local with the grooms.
+  - Checked against the strands without the editor: each card drawn with its coverage texture through the
+    generator's own atlas mapping, front and side. The cards look like the strands in both views. A strand point
+    lies a median 0.22 mm from its card on the first level and 0.32 mm on the second, and 97.6% and 92.2% of the
+    points lie within 1 mm.
+  - Gate: 811 doctest cases, ctest 4/4, UBT Succeeded (with `-DisablePlugin=Fab -EnablePlugin=FTHairCards`).
+  - Next, in an attended slot: the other six grooms in one full run. `only=` takes one id, so the moustache is
+    rebuilt too (about 2 minutes). They have 2,123 to 90,613 strands, and the time per groom at the top of that
+    range isn't measured yet. Also try a 1024 atlas on the moustache's first level and compare it with the 2048
+    one: only 12% of the 2048 atlas's texels have any coverage, because the hair in each tile is thin, though the
+    tiles fill the atlas. After that the cards get the hair material; until the look pass they draw with the
+    engine's default cards material.
+- **Earlier (2026-10-28 ~18:22): world building pass 1. Solhaven's shapes wear photographed CC0 surfaces.**
   - `Data/Field/surfaces.json` lists eight CC0 surfaces from one library: grass, gravel, cobbles, plaster, clay
     roof tiles, mossy sandstone, bark and rock. For each it gives the real width one copy covers, the resolution and
     the source page, and for each world kind which surface each role wears, with an optional tint. Only the town kind
