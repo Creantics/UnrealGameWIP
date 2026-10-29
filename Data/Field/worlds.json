@@ -1,9 +1,12 @@
 {
   "version": 1,
   "worlds": [
-    {"id": "solhaven", "map": "World_Solhaven", "style": "solhaven", "kind": "town", "side": 1000, "seed": 3, "districts": 16, "combat": "arena", "story": ["Solhaven", "Ink-Solhaven", "Restored"]},
-    {"id": "lattice", "map": "World_Lattice", "style": "lattice", "kind": "towers", "side": 1000, "seed": 3, "districts": 12, "combat": "rhythm", "story": ["Lattice"]},
-    {"id": "unwritten", "map": "World_Unwritten", "style": "unwritten", "kind": "ruins", "side": 1000, "seed": 5, "districts": 10, "combat": "beat", "story": ["Unwritten"]}
+    {"id": "solhaven", "map": "World_Solhaven", "style": "solhaven", "kind": "town", "side": 1000, "seed": 3, "districts": 16, "combat": "arena", "story": ["Solhaven", "Ink-Solhaven", "Restored"],
+     "sites": [{"district": 0, "tier": "entry"}, {"district": 14, "tier": "climax"}, {"district": 2, "tier": "major"}, {"district": 3, "tier": "major"}, {"district": 4, "tier": "major"}, {"district": 6, "tier": "major"}, {"district": 7, "tier": "major"}, {"district": 10, "tier": "major"}, {"district": 11, "tier": "major"}]},
+    {"id": "lattice", "map": "World_Lattice", "style": "lattice", "kind": "towers", "side": 1000, "seed": 3, "districts": 12, "combat": "rhythm", "story": ["Lattice"],
+     "sites": [{"district": 0, "tier": "entry"}, {"district": 1, "tier": "climax"}, {"district": 6, "tier": "major"}]},
+    {"id": "unwritten", "map": "World_Unwritten", "style": "unwritten", "kind": "ruins", "side": 1000, "seed": 5, "districts": 10, "combat": "beat", "story": ["Unwritten"],
+     "sites": [{"district": 0, "tier": "entry"}, {"district": 4, "tier": "climax"}, {"district": 2, "tier": "major"}, {"district": 3, "tier": "major"}]}
   ],
   "scenes": [
     {"scene": "SC-01-D1", "world": "solhaven", "district": 0},

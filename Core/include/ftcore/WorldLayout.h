@@ -24,7 +24,8 @@
 //   { "version": 1,
 //     "worlds": [ { "id": "solhaven", "map": "World_Solhaven", "style": "solhaven", "kind": "town",
 //                   "side": 1000, "seed": 3, "districts": 16, "combat": "arena",
-//                   "story": ["Solhaven"] } ],
+//                   "story": ["Solhaven"],
+//                   "sites": [ { "district": 0, "tier": "entry" }, { "district": 14, "tier": "climax" } ] } ],
 //     "scenes": [ { "scene": "SC-X", "world": "solhaven", "district": 2, "style": "inksolhaven" } ],
 //     "overworld": { "map": "Overworld", "side": 480, "seed": 7 } }
 //   `kind` is town, towers or ruins (the buildings' shape). `combat` (optional) is rhythm, arena or
@@ -33,8 +34,11 @@
 //   world names the world plays (checked by a test against the script). A scene's field steps play
 //   in its district; `style` optionally overrides the world's style for that scene. A scene not
 //   listed plays on the Explore map. `overworld` (optional) is the small map that joins the worlds
-//   (ftcore/Overworld.h); without it the story goes straight from one world to the next. Unknown
-//   keys are warnings; anything else wrong is an error (an unknown `combat` value too).
+//   (ftcore/Overworld.h); without it the story goes straight from one world to the next. `sites`
+//   (optional) marks the districts the ground is shaped around (ftcore/Terrain.h): the `entry`
+//   (where the world starts), the `climax` and any number of `major` sites, each district at most
+//   once; when present it has exactly one entry and one climax. Unknown keys are warnings; anything
+//   else wrong is an error (an unknown `combat` value too).
 
 #include "ftcore/Api.h"
 #include "ftcore/CombatKind.h"
@@ -55,6 +59,18 @@ enum class WorldKind : std::uint8_t {
     Ruins,  // low broken walls and stubs, sparse
 };
 
+// How much the ground makes of a district (ftcore/Terrain.h). An ordinary district has no site.
+enum class SiteTier : std::uint8_t {
+    Entry,  // where the world starts: kept at the base height, gentle
+    Major,  // a raised or sunken site at its kind's height
+    Climax, // the world's highest (or deepest) site
+};
+
+struct WorldSite {
+    std::uint32_t district = 0;
+    SiteTier tier = SiteTier::Major;
+};
+
 struct WorldSpec {
     static constexpr float kMinSide = 600.f;
     static constexpr float kMaxSide = 4000.f;
@@ -68,6 +84,7 @@ struct WorldSpec {
     std::uint32_t districts = 8;
     CombatKind combat = CombatKind::Rhythm; // the combat system its fights play
     std::vector<std::string> story; // the script's world names this world plays
+    std::vector<WorldSite> sites;   // empty, or one entry, one climax and any majors
 };
 
 struct WorldScene {

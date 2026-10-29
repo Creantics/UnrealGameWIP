@@ -10,7 +10,7 @@ Scenes that aren't placed in a world, such as the house and the pocket, still pl
 
 The **overworld** joins them: a small walkable map with one gate per world. When the story moves from one world to another, the party walks the road between the two gates before the next field step starts.
 
-Each world is a blockout for now: shapes, roads and landmarks under the shared photoreal look ([SCENE_LOOK.md](SCENE_LOOK.md)). It has no terrain art, streaming or biomes yet.
+Each world is a blockout for now: shapes, roads and landmarks on flat ground under the shared photoreal look ([SCENE_LOOK.md](SCENE_LOOK.md)). The shape of its ground exists in Core (see [Ground](#ground)), but no map is built on it yet, and there is no terrain art, streaming or biomes.
 
 ## Size
 
@@ -35,6 +35,7 @@ Each world entry has:
 - `seed` and `districts`
 - `combat` (optional): `rhythm` (the default), `arena` or `beat`, the combat system every fight in its scenes plays (see [COMBAT_SYSTEMS.md](COMBAT_SYSTEMS.md)); an unknown value is a load error
 - `story`: the script's world names it plays
+- `sites` (optional): the districts the ground is shaped around, as district indices and tiers: one `entry` (where the world starts), one `climax` and any number of `major` sites, each district at most once
 
 Each row of `scenes` places one scene in a district of a world. It can also set a `style` that overrides the world's own. A test checks that every scene of a world named in `story` is placed, and that no house or pocket scene is.
 
@@ -44,6 +45,17 @@ Each row of `scenes` places one scene in a district of a world. It can also set 
 - the buildings, trees and rocks
 
 Nothing stands on a road or in a plaza.
+
+## Ground
+
+`ftcore::generateWorldTerrain` (`Core/include/ftcore/Terrain.h`) shapes each world's ground from its entry, its layout and its `sites`. The result is one height field 1.5 km across, the 1 km playable square and 250 m round it, with a sample every 1.98 m. It is deterministic in the seed and allocates only at load. No map uses it yet: the Landscape import, the roads' weightmap and props set on the ground come next.
+
+- Every district stands on a flat pad. A road climbs in a straight line between its two pads, and the ground beside it banks at 0.65 at most.
+- The climax is the world's highest pad, 36 m up where the roads allow. It stays in sight from the entry: the ground near the line between them keeps under it.
+- Between the pads the town rolls in hills, the towers stand among broader, higher hills, and the ruins lie on a low plain broken by mesas and gullies. Off the sheer walls no slope is steeper than 1.8 (61 degrees).
+- Past the edge, mountains rise round the towers and round the town's three dry sides, their foot wandering up to 60 m out. The town's fourth side is its sea, behind a quay. The ruins run on 16 to 114 m in bays and headlands, then drop sheer into an abyss.
+- The town has its sea, the towers up to two trenches and three shallow pools, and the ruins one or two pits. Each keeps 25 m from the roads' edges, the pads' blends and the others, and 30 m inside the walls.
+- `Core/tests/test_terrain.cpp` checks all of this on the three worlds, and that the open ground has no terraces and few flats.
 
 ## District frame
 

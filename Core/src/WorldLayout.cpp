@@ -129,7 +129,8 @@ bool importWorldTable(std::string_view json, WorldTable& out, std::string* error
             errors.push_back(path + ": expected an object");
             continue;
         }
-        worldUnknownKeys(j, path, {"id", "map", "style", "kind", "side", "seed", "districts", "combat", "story"}, warnings);
+        worldUnknownKeys(j, path, {"id", "map", "style", "kind", "side", "seed", "districts", "combat", "story", "sites"},
+                         warnings);
         WorldSpec w;
         w.id = std::string(j["id"].string());
         w.map = std::string(j["map"].string());
@@ -163,8 +164,9 @@ bool importWorldTable(std::string_view json, WorldTable& out, std::string* error
         else
             w.seed = static_cast<std::uint32_t>(seed.integer(1));
         const JsonValue count = j["districts"];
-        if (!count.isInteger() || count.integer() < 1 ||
-            count.integer() > static_cast<std::int64_t>(WorldLayout::kMaxDistricts))
+        const bool countOk = count.isInteger() && count.integer() >= 1 &&
+                             count.integer() <= static_cast<std::int64_t>(WorldLayout::kMaxDistricts);
+        if (!countOk)
             errors.push_back(path + ".districts: expected an integer in 1.." +
                              std::to_string(WorldLayout::kMaxDistricts));
         else
@@ -176,6 +178,45 @@ bool importWorldTable(std::string_view json, WorldTable& out, std::string* error
             if (name.empty()) errors.push_back(path + ".story[" + std::to_string(k) + "]: expected a name");
             else w.story.emplace_back(name);
         }
+        const JsonValue sites = j["sites"];
+        if (!sites.isAbsent() && !sites.isArray()) errors.push_back(path + ".sites: expected an array of sites");
+        const std::int64_t siteLimit =
+            countOk ? static_cast<std::int64_t>(w.districts) : static_cast<std::int64_t>(WorldLayout::kMaxDistricts);
+        int entries = 0, climaxes = 0;
+        for (std::uint32_t k = 0; k < sites.size() && sites.isArray(); ++k) {
+            const JsonValue s = sites[k];
+            const std::string at = path + ".sites[" + std::to_string(k) + "]";
+            if (!s.isObject()) {
+                errors.push_back(at + ": expected an object");
+                continue;
+            }
+            worldUnknownKeys(s, at, {"district", "tier"}, warnings);
+            WorldSite site;
+            const JsonValue d = s["district"];
+            if (!d.isInteger() || d.integer() < 0 || d.integer() >= siteLimit) {
+                errors.push_back(at + ".district: expected an integer in 0.." + std::to_string(siteLimit - 1));
+                continue;
+            }
+            site.district = static_cast<std::uint32_t>(d.integer());
+            const std::string_view tier = s["tier"].string();
+            if (tier == "entry") {
+                site.tier = SiteTier::Entry;
+                ++entries;
+            } else if (tier == "major") {
+                site.tier = SiteTier::Major;
+            } else if (tier == "climax") {
+                site.tier = SiteTier::Climax;
+                ++climaxes;
+            } else {
+                errors.push_back(at + ".tier: expected entry, major or climax");
+            }
+            for (const WorldSite& other : w.sites)
+                if (other.district == site.district)
+                    errors.push_back(at + ".district: district " + std::to_string(site.district) + " is a site already");
+            w.sites.push_back(site);
+        }
+        if (sites.isArray() && (entries != 1 || climaxes != 1))
+            errors.push_back(path + ".sites: expected exactly one entry and one climax");
         table.worlds.push_back(std::move(w));
     }
 
