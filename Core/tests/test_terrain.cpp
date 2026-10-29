@@ -81,6 +81,11 @@ constexpr float kReliefSloped = 0.002f; // measured where the unworn ground slop
 constexpr float kReliefWall = 0.1f;     // 1/m: and curves less, off the kind's own walls (a mesa's, a gully's)
 constexpr double kReliefGain = 1.25;    // the worn ground has this much the unworn ground's relief there, at least: 1.5 to 1.6
 constexpr double kReliefKept = 0.85;    // of the sloping open ground, that measure keeps this much, at least
+constexpr float kRangeWearFrom = 60.f;  // m past the edges (the farther of the two) from which the rain wears the mountains,
+constexpr float kRangeWearTo = 220.f;   // to this,
+constexpr float kRangeKept = 230.f;     // and from this on leaves them exactly as raised, the horizon (the slope limit may
+                                        // trim a few centimetres between, where they meet the worn ground)
+constexpr double kRangeWear = 1.5;      // m it moves them on average between, off the town's coast, at least: 3.7 to 3.9
 
 float between(Vec2 a, Vec2 b) { return std::hypot(a.x - b.x, a.y - b.y); }
 
@@ -209,9 +214,16 @@ const std::vector<Generated>& worlds() {
     return all;
 }
 
-// The same worlds without the rain's wear (TerrainOptions::erode), generated on first use.
+// The same worlds without the rain's wear (TerrainOptions::erode and erodeMountains), generated on
+// first use.
 const std::vector<Generated>& unwornWorlds() {
-    static const std::vector<Generated> all = generateAll({.erode = false});
+    static const std::vector<Generated> all = generateAll({.erode = false, .erodeMountains = false});
+    return all;
+}
+
+// The same worlds with only the mountains worn, generated on first use.
+const std::vector<Generated>& wornMountainWorlds() {
+    static const std::vector<Generated> all = generateAll({.erode = false, .erodeMountains = true});
     return all;
 }
 
@@ -1047,6 +1059,55 @@ TEST_CASE("terrain: the rain gives the open ground more relief than it has unwor
                           << "% of " << sloped << " sloping open samples (" << 100.0 * kReliefKept << "% at least)");
         CHECK(keptShare >= kReliefKept);
         CHECK(wornMean >= kReliefGain * unwornMean);
+    }
+}
+
+TEST_CASE("terrain: the rain wears the mountains, but not the square, the horizon, the coast or the ruins") {
+    const std::vector<Generated>& worn = wornMountainWorlds();
+    const std::vector<Generated>& unworn = unwornWorlds();
+    REQUIRE(unworn.size() == worn.size());
+    for (std::size_t w = 0; w < worn.size(); ++w) {
+        const Generated& g = worn[w];
+        const Generated& u = unworn[w];
+        INFO(g.spec.id);
+        REQUIRE_MESSAGE(g.ok, g.error);
+        REQUIRE_MESSAGE(u.ok, u.error);
+        const WorldTerrain& wt = *g.terrain;
+        const WorldTerrain& ut = *u.terrain;
+        const float halfSide = g.halfSide();
+        int coast = -1;
+        if (g.spec.kind == WorldKind::Town) {
+            REQUIRE(ut.featureCount() >= 1u);
+            REQUIRE(ut.feature(0).kind == FeatureKind::Sea);
+            coast = static_cast<int>(ut.feature(0).side);
+        }
+        // Inside the square, past the town's coast edge, from kRangeKept out and anywhere in the ruins
+        // every sample stands exactly as it did; between kRangeWearFrom and kRangeWearTo, and as far
+        // from the coast's edge, the mountains move kRangeWear on average.
+        Breaches moved;
+        std::size_t wearing = 0;
+        double wearSum = 0.0;
+        for (std::size_t iy = 0; iy < kN; ++iy)
+            for (std::size_t ix = 0; ix < kN; ++ix) {
+                const Vec2 p = g.at(ix, iy);
+                const float beyond = std::max(std::fabs(p.x), std::fabs(p.y)) - halfSide;
+                const float shore = coast >= 0 ? past(p, halfSide, coast) : -kFar;
+                const float d = wt.sample(ix, iy) - ut.sample(ix, iy);
+                if (g.spec.kind == WorldKind::Ruins || beyond <= 0.f || beyond >= kRangeKept || shore >= 0.f) {
+                    if (d != 0.f) moved.add(std::fabs(d), ix, iy);
+                    continue;
+                }
+                if (beyond < kRangeWearFrom || beyond >= kRangeWearTo || shore > -kRangeWearFrom) continue;
+                ++wearing;
+                wearSum += std::fabs(d);
+            }
+        CHECK_MESSAGE(moved.count == 0u, "ground the rain may not touch moved: " << describe(moved));
+        if (g.spec.kind == WorldKind::Ruins) continue;
+        REQUIRE(wearing > 0u);
+        const double mean = wearSum / static_cast<double>(wearing);
+        MESSAGE(g.spec.id << ": the rain moves the mountains " << mean << " m on average between " << kRangeWearFrom
+                          << " and " << kRangeWearTo << " m past the edges (" << kRangeWear << " at least)");
+        CHECK(mean >= kRangeWear);
     }
 }
 

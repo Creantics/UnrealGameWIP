@@ -41,8 +41,7 @@
 // that the hills take branching rills and valleys. Steep ground wears less, as rock. The pads, the
 // roads' shoulders, the ruins' mesas and gullies and the ground just round each don't wear, and
 // rain falling beside them mostly drains away. Worn ground stays within the roads' banks and under
-// the climax and the sightline. The mountains, the coast, the abyss and the features come after it,
-// unworn.
+// the climax and the sightline. The mountains, the coast, the abyss and the features come after it.
 //
 // Past the playable square's edge each kind closes the view its own way, never reaching into the
 // square. Among the towers the ground rises into mountains whose foot wanders from the edge to 60 m
@@ -52,6 +51,12 @@
 // falls away beyond it, and the mountains either side run on into the sea as headlands. The ruins run
 // on 16 to 114 m past the edge in bays and headlands, crumble about 10 m and then drop sheer into an
 // abyss 170 to 190 m deep.
+//
+// Rain wears the mountains too (TerrainOptions::erodeMountains), once they stand, but never inside
+// the square, which it leaves exactly as it was. Their slopes come down a few metres, cut by gullies
+// that rills run down, and fans at the gullies' feet bury the broken band of rock. Their steepest
+// faces wear less and the steepest not at all, as bare rock. The outer 20 m along the field's edge
+// stays exactly as raised, the horizon, and neither the town's coast nor the ruins wear.
 //
 // Each world has the features that suit it (feature()): the town its sea, the towers up to two
 // trenches 18 to 30 m deep, their walls climbing under kRockSlope from a flat floor, and up to three
@@ -109,7 +114,8 @@ struct TerrainFeature {
 
 // How generateWorldTerrain shapes the ground. The defaults make the game's ground.
 struct TerrainOptions {
-    bool erode = true; // wear the open ground with rain; off only to measure what the wear adds
+    bool erode = true;          // wear the open ground with rain; off only to measure what the wear adds
+    bool erodeMountains = true; // wear the mountains past the square's edge; off only to measure, likewise
 };
 
 class WorldTerrain {

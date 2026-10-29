@@ -116,6 +116,16 @@ constexpr float kWearSoftRun = 0.5f;     // and from this much steeper not at al
 constexpr int kWearSoftBlur = 2;         // samples either side over which that share is eased, twice over, and
                                          // over which the ground round a mesa or a gully is kept
 constexpr float kWearKeep = 2.f;         // m: ground the kind raised or cut this far (a mesa, a gully) doesn't wear
+constexpr float kRangeSoft = 1.2f;       // the mountains' ground steeper than this wears less,
+constexpr float kRangeSoftRun = 0.6f;    // and from this much steeper not at all
+constexpr std::size_t kRangeCoarse = 4;  // samples a cell of the field the mountains' gullies are worn on
+constexpr int kRangeDrops = 200000;      // droplets on it,
+constexpr float kRangeRain = 0.1f;       // each wearing this share as hard as one on the full field
+constexpr int kRangeBrush = 2;           // coarse samples: the radius a droplet cuts over there
+constexpr float kRangeBury = 2.f;        // m: where the valleys lay down this much, it buries the finer relief
+constexpr float kRangeRim = 30.f;        // m along the field's edge that the mountains keep as raised, the horizon,
+constexpr float kRangeRimRun = 40.f;     // their wear fading out over this much before it
+constexpr int kMaxWearBrush = 4;         // the widest brush wear() takes
 constexpr float kWearScale = 50.f;
 constexpr float kWearInertia = 0.1f;     // the share of its way a droplet keeps each step
 constexpr float kWearCapacity = 4.f;     // what a droplet may carry per metre it falls, at unit speed and water
@@ -483,48 +493,49 @@ struct WearRng {
     float range(float lo, float hi) { return lo + (hi - lo) * static_cast<float>(next() >> 8) * (1.f / 16777216.f); }
 };
 
-// Rain on the field of kN x kN heights: kWearDrops droplets, each set down at random in the box from
-// `from` to `to` (in samples, along both axes), runs downhill a cell a step for kWearLife steps at
-// most. Where it can carry more than it holds it cuts the ground over a brush kWearBrush samples
-// round it, and where it can't, or the ground rises ahead, it lays some of what it holds on the
+// Rain on a field of n x n heights: `drops` droplets, each set down at random in the box from `from`
+// to `to` (in samples, along both axes), runs downhill a cell a step for kWearLife steps at most.
+// Where it can carry more than it holds it cuts the ground over a brush `brush` samples round it
+// (kMaxWearBrush at most), and where it can't, or the ground rises ahead, it lays some of what it holds on the
 // cell it leaves; what it may carry grows with its fall, its speed and its water, times the
 // `weight` (0 to 1) where it fell, so that rain falling by ground that doesn't wear mostly drains
 // away, and none runs from weight 0. Each sample takes only its `weight` of every cut or deposit,
 // so a sample of weight 0 never changes and a droplet only carries what it took. Deterministic in
 // the seed; no allocation.
-void wear(float* heights, const float* weight, float from, float to, std::uint32_t seed) {
-    constexpr int kSpan = 2 * kWearBrush + 1;
+void wear(float* heights, const float* weight, std::size_t n, int drops, int brush, float from, float to, std::uint32_t seed) {
+    constexpr int kSpan = 2 * kMaxWearBrush + 1;
     std::array<std::ptrdiff_t, kSpan * kSpan> brushAt{};
     std::array<float, kSpan * kSpan> brushBy{};
     std::size_t brushSize = 0;
     float brushSum = 0.f;
-    for (int dy = -kWearBrush; dy <= kWearBrush; ++dy)
-        for (int dx = -kWearBrush; dx <= kWearBrush; ++dx) {
+    brush = std::clamp(brush, 1, kMaxWearBrush);
+    for (int dy = -brush; dy <= brush; ++dy)
+        for (int dx = -brush; dx <= brush; ++dx) {
             const float d = std::sqrt(static_cast<float>(dx * dx + dy * dy));
-            if (d >= static_cast<float>(kWearBrush)) continue;
-            brushAt[brushSize] = static_cast<std::ptrdiff_t>(dy) * static_cast<std::ptrdiff_t>(kN) + dx;
-            brushBy[brushSize] = 1.f - d / static_cast<float>(kWearBrush);
+            if (d >= static_cast<float>(brush)) continue;
+            brushAt[brushSize] = static_cast<std::ptrdiff_t>(dy) * static_cast<std::ptrdiff_t>(n) + dx;
+            brushBy[brushSize] = 1.f - d / static_cast<float>(brush);
             brushSum += brushBy[brushSize++];
         }
     for (std::size_t k = 0; k < brushSize; ++k) brushBy[k] /= brushSum;
 
     // A droplet stays where its cell and its brush lie inside the field.
-    const float edgeLo = static_cast<float>(kWearBrush), edgeHi = static_cast<float>(kN - 2 - kWearBrush);
+    const float edgeLo = static_cast<float>(brush), edgeHi = static_cast<float>(n - 2) - static_cast<float>(brush);
     WearRng dice{seed};
-    for (int drop = 0; drop < kWearDrops; ++drop) {
+    for (int drop = 0; drop < drops; ++drop) {
         float x = dice.range(from, to), y = dice.range(from, to);
         // Rain that falls where the ground wears little, by a pad or a road, mostly drains away.
-        const float rain = weight[static_cast<std::size_t>(y) * kN + static_cast<std::size_t>(x)];
+        const float rain = weight[static_cast<std::size_t>(y) * n + static_cast<std::size_t>(x)];
         if (!(rain > 0.f)) continue;
         float wayX = 0.f, wayY = 0.f, speed = 1.f, water = 1.f, load = 0.f;
         for (int step = 0; step < kWearLife; ++step) {
             // The ground under the droplet and its slope, between the four samples round it.
-            const std::size_t cx = static_cast<std::size_t>(x), cy = static_cast<std::size_t>(y), at = cy * kN + cx;
+            const std::size_t cx = static_cast<std::size_t>(x), cy = static_cast<std::size_t>(y), at = cy * n + cx;
             const float u = x - static_cast<float>(cx), v = y - static_cast<float>(cy);
             const float* corner = heights + at;
-            const float gx = (corner[1] - corner[0]) * (1.f - v) + (corner[kN + 1] - corner[kN]) * v;
-            const float gy = (corner[kN] - corner[0]) * (1.f - u) + (corner[kN + 1] - corner[1]) * u;
-            const float here = (corner[0] * (1.f - u) + corner[1] * u) * (1.f - v) + (corner[kN] * (1.f - u) + corner[kN + 1] * u) * v;
+            const float gx = (corner[1] - corner[0]) * (1.f - v) + (corner[n + 1] - corner[n]) * v;
+            const float gy = (corner[n] - corner[0]) * (1.f - u) + (corner[n + 1] - corner[1]) * u;
+            const float here = (corner[0] * (1.f - u) + corner[1] * u) * (1.f - v) + (corner[n] * (1.f - u) + corner[n + 1] * u) * v;
 
             wayX = wayX * kWearInertia - gx * (1.f - kWearInertia);
             wayY = wayY * kWearInertia - gy * (1.f - kWearInertia);
@@ -538,19 +549,19 @@ void wear(float* heights, const float* weight, float from, float to, std::uint32
 
             const std::size_t nx = static_cast<std::size_t>(x), ny = static_cast<std::size_t>(y);
             const float nu = x - static_cast<float>(nx), nv = y - static_cast<float>(ny);
-            const float* next = heights + ny * kN + nx;
-            const float there = (next[0] * (1.f - nu) + next[1] * nu) * (1.f - nv) + (next[kN] * (1.f - nu) + next[kN + 1] * nu) * nv;
+            const float* next = heights + ny * n + nx;
+            const float there = (next[0] * (1.f - nu) + next[1] * nu) * (1.f - nv) + (next[n] * (1.f - nu) + next[n + 1] * nu) * nv;
             const float fall = here - there;
             const float capacity = std::max(fall * speed * water * kWearCapacity, kWearLeast) * rain;
             if (load > capacity || fall < 0.f) {
                 // Fill the hollow it climbs out of, or lay down what it can no longer carry.
                 const float laid = fall < 0.f ? std::min(-fall, load) : (load - capacity) * kWearLay;
                 const float w00 = (1.f - u) * (1.f - v) * weight[at], w10 = u * (1.f - v) * weight[at + 1];
-                const float w01 = (1.f - u) * v * weight[at + kN], w11 = u * v * weight[at + kN + 1];
+                const float w01 = (1.f - u) * v * weight[at + n], w11 = u * v * weight[at + n + 1];
                 heights[at] += laid * w00;
                 heights[at + 1] += laid * w10;
-                heights[at + kN] += laid * w01;
-                heights[at + kN + 1] += laid * w11;
+                heights[at + n] += laid * w01;
+                heights[at + n + 1] += laid * w11;
                 load -= laid * (w00 + w10 + w01 + w11);
             } else {
                 // Cut, never deeper than its fall, so that it digs no pit.
@@ -1089,49 +1100,58 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
             wearTopAt[i] = std::max(std::min({climaxCeiling, sight.ceiling(p), bankHigh}), h0);
         }
 
+    // On a field n samples a side, along one axis (x where `alongX`), each sample becomes the least
+    // (`least`) or the mean of the 2 kWearSoftBlur + 1 round it, stopping at the field's edge.
+    std::vector<float> eased;
+    const auto ease = [&](std::vector<float>& field, std::size_t n, bool alongX, bool least) {
+        const std::size_t along = alongX ? 1 : n, across = alongX ? n : 1;
+        eased.resize(n * n);
+        for (std::size_t a = 0; a < n; ++a)
+            for (std::size_t b = 0; b < n; ++b) {
+                float sum = 0.f, count = 0.f, low = 1.f;
+                for (int k = -kWearSoftBlur; k <= kWearSoftBlur; ++k) {
+                    const std::ptrdiff_t c = static_cast<std::ptrdiff_t>(b) + k;
+                    if (c < 0 || c >= static_cast<std::ptrdiff_t>(n)) continue;
+                    const float v = field[a * across + static_cast<std::size_t>(c) * along];
+                    sum += v;
+                    count += 1.f;
+                    low = std::min(low, v);
+                }
+                eased[a * across + b * along] = least ? low : sum / count;
+            }
+        field.swap(eased);
+    };
+    // How freely a field of n x n heights `spacing` metres apart wears by its slope: fully up to
+    // `from`, less beyond, not at all from `from` + `run`; that share eased over kWearSoftBlur
+    // samples, twice over, so that no sample wears much more than the next.
+    const auto softness = [&](const float* heights, std::size_t n, float spacing, float from, float run) {
+        std::vector<float> share(n * n, 1.f);
+        for (std::size_t iy = 1; iy + 1 < n; ++iy)
+            for (std::size_t ix = 1; ix + 1 < n; ++ix) {
+                const float* z = heights + iy * n + ix;
+                const float slope = std::hypot(z[1] - z[-1], z[n] - z[-static_cast<std::ptrdiff_t>(n)]) / (2.f * spacing);
+                share[iy * n + ix] = 1.f - smooth01((slope - from) / run);
+            }
+        for (int round = 0; round < 2; ++round) {
+            ease(share, n, true, false);
+            ease(share, n, false, false);
+        }
+        return share;
+    };
     // The rain wears the ground inside the square and kWearMargin round it (wear()): steep ground less
-    // (kWearSoft) as rock, that share eased over kWearSoftBlur samples so that no sample wears much
-    // more than the next, and the kind's mesas and gullies not at all, nor the ground for
+    // (kWearSoft) as rock, and the kind's mesas and gullies not at all, nor the ground for
     // kWearSoftBlur samples round them, from where it eases in, so that the rain cuts no notches at
     // their rims. Then each worn sample is held within the roads' banks and under its top.
     if (options.erode) {
-        std::vector<float> soft(kN * kN, 1.f), eased(kN * kN);
-        for (std::size_t iy = 1; iy + 1 < kN; ++iy)
-            for (std::size_t ix = 1; ix + 1 < kN; ++ix) {
-                const float* z = out.heights_.data() + iy * kN + ix;
-                const float slope = std::hypot(z[1] - z[-1], z[kN] - z[-static_cast<std::ptrdiff_t>(kN)]) / (2.f * cell);
-                soft[iy * kN + ix] = 1.f - smooth01((slope - kWearSoft) / kWearSoftRun);
-            }
-        // Along one axis, each sample becomes the least (`least`) or the mean of the 2 kWearSoftBlur + 1
-        // round it, stopping at the field's edge.
-        const auto ease = [&](std::vector<float>& field, std::size_t along, std::size_t across, bool least) {
-            for (std::size_t a = 0; a < kN; ++a)
-                for (std::size_t b = 0; b < kN; ++b) {
-                    float sum = 0.f, count = 0.f, low = 1.f;
-                    for (int k = -kWearSoftBlur; k <= kWearSoftBlur; ++k) {
-                        const std::ptrdiff_t c = static_cast<std::ptrdiff_t>(b) + k;
-                        if (c < 0 || c >= static_cast<std::ptrdiff_t>(kN)) continue;
-                        const float v = field[a * across + static_cast<std::size_t>(c) * along];
-                        sum += v;
-                        count += 1.f;
-                        low = std::min(low, v);
-                    }
-                    eased[a * across + b * along] = least ? low : sum / count;
-                }
-            field.swap(eased);
-        };
-        for (int round = 0; round < 2; ++round) {
-            ease(soft, 1, kN, false);
-            ease(soft, kN, 1, false);
-        }
+        const std::vector<float> soft = softness(out.heights_.data(), kN, cell, kWearSoft, kWearSoftRun);
         std::vector<float> spread = keep;
-        ease(spread, 1, kN, true);
-        ease(spread, kN, 1, true);
-        ease(spread, 1, kN, false);
-        ease(spread, kN, 1, false);
+        ease(spread, kN, true, true);
+        ease(spread, kN, false, true);
+        ease(spread, kN, true, false);
+        ease(spread, kN, false, false);
         for (std::size_t i = 0; i < kN * kN; ++i) wearAt[i] *= soft[i] * std::min(spread[i], keep[i]);
         const float from = (WorldTerrain::kApron - kWearMargin) / cell, to = static_cast<float>(kN - 1) - from;
-        wear(out.heights_.data(), wearAt.data(), from, to, detail::mixSeed(spec.seed ^ 0x2f6b3d1au));
+        wear(out.heights_.data(), wearAt.data(), kN, kWearDrops, kWearBrush, from, to, detail::mixSeed(spec.seed ^ 0x2f6b3d1au));
         for (std::size_t i = 0; i < kN * kN; ++i)
             if (wearAt[i] > 0.f) out.heights_[i] = std::clamp(out.heights_[i], bankLowAt[i], wearTopAt[i]);
     }
@@ -1659,6 +1679,78 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
             h = std::round((h + ground.apron(sampleAt(ix, iy), h)) / WorldTerrain::kHeightStep) * WorldTerrain::kHeightStep;
             if (!(std::fabs(h) <= WorldTerrain::kMaxAbsHeight)) return fail("the ground leaves the height range");
         }
+
+    // Then the rain wears the mountains (TerrainOptions::erodeMountains), over the whole field but
+    // not inside the square, which it leaves as it stands: its wear fades in over kWearMargin past the
+    // edge as the open ground's fades out, and out again over kRangeRimRun before the field's outer
+    // kRangeRim, where the mountains stay as raised, the horizon. Nor past the town's coast edge, its
+    // wear fading out over kWearMargin before it, so that the quay and the sea's floor keep their
+    // depths, nor in the ruins, which have no mountains. It wears twice. First on a field
+    // kRangeCoarse times coarser, its heights shrunk as much, so that it wears as the full field would
+    // were the mountains that much smaller every way: kRangeDrops droplets, each wearing kRangeRain as
+    // hard as one on the full field, cut gullies down the slopes and lay fans at their feet over the
+    // broken band of rock. The difference, grown back, reaches the full field between the coarse
+    // samples, and where the fans lie kRangeBury deep they bury the finer relief. Then on the full
+    // field, so that rills run down the gullies' sides. Each time ground steeper than kRangeSoft wears
+    // less and from kRangeSoft + kRangeSoftRun not at all, as bare rock. The slope limit below rounds
+    // each worn height to a whole step, and where the rim meets the worn ground it may trim the rim's
+    // first samples by a few centimetres.
+    if (options.erodeMountains && !ruins) {
+        const auto rangeWeight = [&](Vec2 p) {
+            const float beyond = std::max(std::fabs(p.x), std::fabs(p.y)) - ground.half;
+            const float shore = ground.coast >= 0 ? smooth01(-ground.past(p, ground.coast) / kWearMargin) : 1.f;
+            return shore * smooth01(beyond / kWearMargin) *
+                   smooth01((WorldTerrain::kApron - kRangeRim - beyond) / kRangeRimRun);
+        };
+        constexpr std::size_t kNc = (kN - 1) / kRangeCoarse + 1;
+        static_assert((kN - 1) % kRangeCoarse == 0, "the coarse field's samples lie on the full field's");
+        constexpr std::ptrdiff_t kBox = static_cast<std::ptrdiff_t>(kRangeCoarse / 2);
+        std::vector<float> coarse(kNc * kNc);
+        for (std::size_t jy = 0; jy < kNc; ++jy)
+            for (std::size_t jx = 0; jx < kNc; ++jx) {
+                float sum = 0.f, count = 0.f;
+                for (std::ptrdiff_t dy = -kBox; dy <= kBox; ++dy)
+                    for (std::ptrdiff_t dx = -kBox; dx <= kBox; ++dx) {
+                        const std::ptrdiff_t ix = static_cast<std::ptrdiff_t>(jx * kRangeCoarse) + dx;
+                        const std::ptrdiff_t iy = static_cast<std::ptrdiff_t>(jy * kRangeCoarse) + dy;
+                        if (ix < 0 || iy < 0 || ix >= static_cast<std::ptrdiff_t>(kN) || iy >= static_cast<std::ptrdiff_t>(kN)) continue;
+                        sum += out.heights_[static_cast<std::size_t>(iy) * kN + static_cast<std::size_t>(ix)];
+                        count += 1.f;
+                    }
+                coarse[jy * kNc + jx] = sum / count / static_cast<float>(kRangeCoarse);
+            }
+        const std::vector<float> before = coarse;
+        std::vector<float> coarseAt = softness(coarse.data(), kNc, cell, kRangeSoft, kRangeSoftRun);
+        for (std::size_t jy = 0; jy < kNc; ++jy)
+            for (std::size_t jx = 0; jx < kNc; ++jx)
+                coarseAt[jy * kNc + jx] *= kRangeRain * rangeWeight(sampleAt(jx * kRangeCoarse, jy * kRangeCoarse));
+        wear(coarse.data(), coarseAt.data(), kNc, kRangeDrops, kRangeBrush, static_cast<float>(kRangeBrush),
+             static_cast<float>(kNc - 2 - kRangeBrush), detail::mixSeed(spec.seed ^ 0x6a09e667u));
+        for (std::size_t iy = 0; iy < kN; ++iy)
+            for (std::size_t ix = 0; ix < kN; ++ix) {
+                const float w = rangeWeight(sampleAt(ix, iy));
+                if (!(w > 0.f)) continue;
+                const std::size_t jx = std::min(ix / kRangeCoarse, kNc - 2), jy = std::min(iy / kRangeCoarse, kNc - 2);
+                const float u = static_cast<float>(ix) / static_cast<float>(kRangeCoarse) - static_cast<float>(jx);
+                const float v = static_cast<float>(iy) / static_cast<float>(kRangeCoarse) - static_cast<float>(jy);
+                const std::size_t j = jy * kNc + jx;
+                const auto between = [&](const std::vector<float>& f) {
+                    return lerpf(lerpf(f[j], f[j + 1], u), lerpf(f[j + kNc], f[j + kNc + 1], u), v);
+                };
+                const float scale = static_cast<float>(kRangeCoarse);
+                const float worn = between(coarse) * scale, d = worn - between(before) * scale;
+                float h = out.heights_[iy * kN + ix] + d;
+                if (d > 0.f) h = lerpf(h, worn, smooth01(d / kRangeBury));
+                out.heights_[iy * kN + ix] = lerpf(out.heights_[iy * kN + ix], h, w);
+            }
+        std::vector<float> rangeAt = softness(out.heights_.data(), kN, cell, kRangeSoft, kRangeSoftRun);
+        for (std::size_t iy = 0; iy < kN; ++iy)
+            for (std::size_t ix = 0; ix < kN; ++ix) rangeAt[iy * kN + ix] *= rangeWeight(sampleAt(ix, iy));
+        wear(out.heights_.data(), rangeAt.data(), kN, kWearDrops, kWearBrush, static_cast<float>(kWearBrush),
+             static_cast<float>(kN - 2 - kWearBrush), detail::mixSeed(spec.seed ^ 0xbb67ae85u));
+        for (const float level : out.heights_)
+            if (!(std::fabs(level) <= WorldTerrain::kMaxAbsHeight)) return fail("the ground leaves the height range");
+    }
 
     // The sheer walls: the town's quay, and in the ruins the fall into the abyss and the pits. Of two
     // neighbouring samples that climb more than kRockSlope, each one in a wall is marked a cliff; then
