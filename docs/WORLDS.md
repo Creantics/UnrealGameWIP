@@ -53,9 +53,10 @@ Nothing stands on a road or in a plaza.
 - Every district stands on a flat pad. A road climbs in a straight line between its two pads, and the ground beside it banks at 0.65 at most.
 - The climax is the world's highest pad, 36 m up where the roads allow. It stays in sight from the entry: the ground near the line between them keeps under it.
 - Between the pads the town rolls in hills, the towers stand among broader, higher hills, and the ruins lie on a low plain broken by mesas and gullies. Off the sheer walls no slope is steeper than 1.8 (61 degrees).
+- Then rain wears that ground. 200,000 droplets run downhill over the square and 60 m round it, cutting where they run fast and laying down what they carry where they slow, so the hills take branching rills and valleys. Steep ground wears less, as rock. The pads, the roads' shoulders, the ruins' mesas and gullies and the ground just round each don't wear, and worn ground stays within the roads' banks and under the climax and the sightline. The mountains, the coast, the abyss and the features come after it, unworn. The wear makes generation about four times as long: about 1.9 s a world in an optimized build, 7 to 9 s in Debug.
 - Past the edge, mountains rise round the towers and round the town's three dry sides, their foot wandering up to 60 m out. The town's fourth side is its sea, behind a quay. The ruins run on 16 to 114 m in bays and headlands, then drop sheer into an abyss.
 - The town has its sea, the towers up to two trenches and three shallow pools, and the ruins one or two pits. Each keeps 25 m from the roads' edges, the pads' blends and the others, and 30 m inside the walls.
-- `Core/tests/test_terrain.cpp` checks all of this on the three worlds, and that the open ground has no terraces and few flats.
+- `Core/tests/test_terrain.cpp` checks all of this on the three worlds, that the open ground has no terraces and few flats, and that the wear leaves the open ground curving about 1.5 times as sharply as it does unworn (1.25 times at least).
 
 ## District frame
 

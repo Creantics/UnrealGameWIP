@@ -36,6 +36,14 @@
 // than kRockSlope from one sample to the next: steeper ground is cut back until it doesn't, so it
 // stands as rock at that pitch rather than as a step.
 //
+// Then rain wears that ground (TerrainOptions::erode): droplets run downhill over the square and a
+// margin round it, cutting where they run fast and laying down what they carry where they slow, so
+// that the hills take branching rills and valleys. Steep ground wears less, as rock. The pads, the
+// roads' shoulders, the ruins' mesas and gullies and the ground just round each don't wear, and
+// rain falling beside them mostly drains away. Worn ground stays within the roads' banks and under
+// the climax and the sightline. The mountains, the coast, the abyss and the features come after it,
+// unworn.
+//
 // Past the playable square's edge each kind closes the view its own way, never reaching into the
 // square. Among the towers the ground rises into mountains whose foot wanders from the edge to 60 m
 // out: a band of rock along it in broken stretches, then ridges that climb toward the field's edge and
@@ -99,6 +107,11 @@ struct TerrainFeature {
     FTCORE_API bool covers(Vec2 p, float inset = 0.f) const;
 };
 
+// How generateWorldTerrain shapes the ground. The defaults make the game's ground.
+struct TerrainOptions {
+    bool erode = true; // wear the open ground with rain; off only to measure what the wear adds
+};
+
 class WorldTerrain {
 public:
     static constexpr std::size_t kSamples = 757;      // per side: 6 x 6 Landscape components of 2 x 63 quads
@@ -150,7 +163,8 @@ public:
     FTCORE_API float waterDepth(Vec2 p) const;
 
 private:
-    friend FTCORE_API bool generateWorldTerrain(const WorldSpec&, const WorldLayout&, WorldTerrain&, std::string*);
+    friend FTCORE_API bool generateWorldTerrain(const WorldSpec&, const WorldLayout&, WorldTerrain&, std::string*,
+                                                const TerrainOptions&);
 
     struct Road {
         float length = 0.f;
@@ -167,11 +181,11 @@ private:
     std::vector<std::uint8_t> cliffs_;  // the same: 1 in a sheer wall
 };
 
-// Deterministic in the spec and the layout (generated from that spec). Fails, and says why, when
-// the layout doesn't match the spec, a site names a district the layout doesn't have, or the ground
-// can't be shaped (it would leave the height range, or its slopes don't settle).
+// Deterministic in the spec, the layout (generated from that spec) and the options. Fails, and says
+// why, when the layout doesn't match the spec, a site names a district the layout doesn't have, or
+// the ground can't be shaped (it would leave the height range, or its slopes don't settle).
 FTCORE_API bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, WorldTerrain& out,
-                                     std::string* error = nullptr);
+                                     std::string* error = nullptr, const TerrainOptions& options = {});
 
 // The roads as a mask over the playable square, for the ground's material: size x size bytes, row iy
 // then column ix, pixel (ix, iy) centred at (-side/2 + (ix + 0.5) side/size, -side/2 + (iy + 0.5)

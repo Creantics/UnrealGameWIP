@@ -1,7 +1,7 @@
 // The big worlds' ground (ftcore/Terrain.h): each world in Data/Field/worlds.json, generated once,
 // held to the header's promises (pads, roads and their banks, the sightline, the features, the
 // edges, the queries) and to natural ground: no slope steeper than kRockSlope off the sheer walls,
-// no terraces, few flats. Ids and numbers only.
+// no terraces, few flats, and more relief than the same ground has unworn. Ids and numbers only.
 
 #include "ftcore/Terrain.h"
 #include "ftcore/WorldLayout.h"
@@ -76,6 +76,11 @@ static_assert(kPoolDepth + kStepTol < WorldTerrain::kWadeDepth, "a pool is shall
 constexpr float kTerraceNear = 0.1f; // m from a whole multiple of a terrace's height: on the terrace
 constexpr float kFlatSlope = 0.01f;  // a cell no steeper than this is flat
 constexpr double kFlatShare = 0.05;  // of the open cells, at most: natural ground measures about 0.3 to 1.9%, the old terraced ground 64%
+constexpr std::size_t kReliefSpan = 2; // samples: relief is how sharply the ground curves over this span (its Laplacian's size),
+constexpr float kReliefSloped = 0.002f; // measured where the unworn ground slopes more than this
+constexpr float kReliefWall = 0.1f;     // 1/m: and curves less, off the kind's own walls (a mesa's, a gully's)
+constexpr double kReliefGain = 1.25;    // the worn ground has this much the unworn ground's relief there, at least: 1.5 to 1.6
+constexpr double kReliefKept = 0.85;    // of the sloping open ground, that measure keeps this much, at least
 
 float between(Vec2 a, Vec2 b) { return std::hypot(a.x - b.x, a.y - b.y); }
 
@@ -167,7 +172,7 @@ void measure(Generated& g) {
         }
 }
 
-std::vector<Generated> generateAll() {
+std::vector<Generated> generateAll(const TerrainOptions& options) {
     std::vector<Generated> all;
     std::string text;
     if (!ftcore_test::readProjectData("Field/worlds.json", text)) return all;
@@ -188,7 +193,7 @@ std::vector<Generated> generateAll() {
         }
         if (generateWorldLayout(s, *g.layout, &g.error)) {
             const auto start = std::chrono::steady_clock::now();
-            g.ok = generateWorldTerrain(s, *g.layout, *g.terrain, &g.error);
+            g.ok = generateWorldTerrain(s, *g.layout, *g.terrain, &g.error, options);
             g.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         }
         if (g.ok) measure(g);
@@ -199,8 +204,14 @@ std::vector<Generated> generateAll() {
 
 // Every world, generated on first use; none (and a note) where the data isn't there.
 const std::vector<Generated>& worlds() {
-    static const std::vector<Generated> all = generateAll();
+    static const std::vector<Generated> all = generateAll({});
     if (all.empty()) MESSAGE("Field/worlds.json not readable; skipping");
+    return all;
+}
+
+// The same worlds without the rain's wear (TerrainOptions::erode), generated on first use.
+const std::vector<Generated>& unwornWorlds() {
+    static const std::vector<Generated> all = generateAll({.erode = false});
     return all;
 }
 
@@ -987,6 +998,55 @@ TEST_CASE("terrain: the open ground is seldom flat") {
         MESSAGE(g.spec.id << ": " << 100.0 * share << "% of " << cells << " open cells slope " << kFlatSlope
                           << " or less (" << 100.0 * kFlatShare << "% at most)");
         CHECK(share <= kFlatShare);
+    }
+}
+
+TEST_CASE("terrain: the rain gives the open ground more relief than it has unworn") {
+    const std::vector<Generated>& worn = worlds();
+    const std::vector<Generated>& unworn = unwornWorlds();
+    REQUIRE(unworn.size() == worn.size());
+    for (std::size_t w = 0; w < worn.size(); ++w) {
+        const Generated& g = worn[w];
+        const Generated& u = unworn[w];
+        INFO(g.spec.id);
+        REQUIRE_MESSAGE(g.ok, g.error);
+        REQUIRE_MESSAGE(u.ok, u.error);
+        const WorldTerrain& wt = *g.terrain;
+        const WorldTerrain& ut = *u.terrain;
+        const float cell = wt.spacing(), span = static_cast<float>(kReliefSpan) * cell;
+        const std::size_t k = kReliefSpan;
+        // How sharply t curves at (ix, iy), over kReliefSpan samples either way.
+        const auto curve = [&](const WorldTerrain& t, std::size_t ix, std::size_t iy) {
+            return std::fabs(t.sample(ix + k, iy) + t.sample(ix - k, iy) + t.sample(ix, iy + k) + t.sample(ix, iy - k) -
+                             4.f * t.sample(ix, iy)) /
+                   (span * span);
+        };
+        // Open in both, so that ground a feature took in either (they lie elsewhere once worn) is left out.
+        std::size_t sloped = 0, kept = 0;
+        double wornSum = 0.0, unwornSum = 0.0;
+        for (std::size_t i = 0; i < kN * kN; ++i) {
+            if (!openGround(g, i) || !openGround(u, i)) continue;
+            const std::size_t ix = i % kN, iy = i / kN;
+            if (ix < k || iy < k || ix + k >= kN || iy + k >= kN) continue;
+            const float slope =
+                std::hypot(ut.sample(ix + 1, iy) - ut.sample(ix - 1, iy), ut.sample(ix, iy + 1) - ut.sample(ix, iy - 1)) /
+                (2.f * cell);
+            if (slope <= kReliefSloped) continue;
+            ++sloped;
+            const float before = curve(ut, ix, iy);
+            if (before >= kReliefWall) continue;
+            ++kept;
+            wornSum += curve(wt, ix, iy);
+            unwornSum += before;
+        }
+        REQUIRE(kept > 0u);
+        const double keptShare = static_cast<double>(kept) / static_cast<double>(sloped);
+        const double wornMean = wornSum / static_cast<double>(kept), unwornMean = unwornSum / static_cast<double>(kept);
+        MESSAGE(g.spec.id << ": relief " << wornMean << " /m worn against " << unwornMean << " /m unworn ("
+                          << wornMean / unwornMean << " times, " << kReliefGain << " at least), over " << 100.0 * keptShare
+                          << "% of " << sloped << " sloping open samples (" << 100.0 * kReliefKept << "% at least)");
+        CHECK(keptShare >= kReliefKept);
+        CHECK(wornMean >= kReliefGain * unwornMean);
     }
 }
 
