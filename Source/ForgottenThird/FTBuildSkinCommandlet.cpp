@@ -174,7 +174,9 @@ UTexture2D* ImportPng(const FString& File, const FString& Path, bool bSRGB, Text
 	return Texture;
 }
 
-USubsurfaceProfile* BuildProfile(float ScatterScale, const FLinearColor* PathColor)
+// Overrides is "Field=Value;Field=Value" over FSubsurfaceProfileStruct, values in Unreal's text form, e.g.
+// "ExtinctionScale=2;TransmissionTintColor=(R=0.5,G=0.5,B=0.5)". Returns null if a field or value doesn't parse.
+USubsurfaceProfile* BuildProfile(float ScatterScale, const FLinearColor* PathColor, const FString& Overrides)
 {
 	UPackage* Package = CreatePackage(kProfile);
 	USubsurfaceProfile* Profile = NewObject<USubsurfaceProfile>(Package, *FPackageName::GetShortName(kProfile),
@@ -188,6 +190,21 @@ USubsurfaceProfile* BuildProfile(float ScatterScale, const FLinearColor* PathCol
 	if (PathColor)
 	{
 		S.MeanFreePathColor = *PathColor;
+	}
+	TArray<FString> Pairs;
+	Overrides.ParseIntoArray(Pairs, TEXT(";"));
+	for (const FString& Pair : Pairs)
+	{
+		FString Name, Value;
+		const FProperty* Field = Pair.Split(TEXT("="), &Name, &Value)
+			? FSubsurfaceProfileStruct::StaticStruct()->FindPropertyByName(FName(*Name))
+			: nullptr;
+		if (!Field || !Field->ImportText_Direct(*Value, Field->ContainerPtrToValuePtr<void>(&S), nullptr, PPF_None))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSkin: bad -Profile entry '%s'."), *Pair);
+			return nullptr;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildSkin: profile %s = %s."), *Name, *Value);
 	}
 	Profile->Guid = FGuid::NewGuid();
 	FAssetRegistryModule::AssetCreated(Profile);
@@ -301,6 +318,8 @@ int32 UFTBuildSkinCommandlet::Main(const FString& Params)
 	FParse::Value(*Params, TEXT("ScatterScale="), ScatterScale);
 	FParse::Value(*Params, TEXT("Scalars="), ScalarList, false);
 	FParse::Value(*Params, TEXT("DumpDir="), DumpDir);
+	FString ProfileOverrides;
+	FParse::Value(*Params, TEXT("Profile="), ProfileOverrides, false);
 	FString PathColorList;
 	TOptional<FLinearColor> PathColor;
 	if (FParse::Value(*Params, TEXT("ScatterColor="), PathColorList, false))
@@ -369,7 +388,11 @@ int32 UFTBuildSkinCommandlet::Main(const FString& Params)
 	}
 
 	TArray<UObject*> ToSave;
-	USubsurfaceProfile* Profile = FTSkinBuild::BuildProfile(ScatterScale, PathColor.GetPtrOrNull());
+	USubsurfaceProfile* Profile = FTSkinBuild::BuildProfile(ScatterScale, PathColor.GetPtrOrNull(), ProfileOverrides);
+	if (!Profile)
+	{
+		return 1;
+	}
 	UTexture2D* Pores = FTSkinBuild::NewTexture(FTSkinBuild::kPores, Size, NormalArray, false, TC_Normalmap);
 	UTexture2D* PoresMask = FTSkinBuild::NewTexture(FTSkinBuild::kPoresMask, Size, MaskArray, false, TC_Masks);
 	UTexture2D* NeutralMask = FTSkinBuild::NewTexture(FTSkinBuild::kNeutralMask, 4, Neutral, false, TC_Masks);
