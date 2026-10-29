@@ -10,7 +10,7 @@ Scenes that aren't placed in a world, such as the house and the pocket, still pl
 
 The **overworld** joins them: a small walkable map with one gate per world. When the story moves from one world to another, the party walks the road between the two gates before the next field step starts.
 
-Each world is a blockout for now: shapes, roads and landmarks on flat ground under the shared photoreal look ([SCENE_LOOK.md](SCENE_LOOK.md)). The shape of its ground exists in Core (see [Ground](#ground)), but no map is built on it yet, and there is no terrain art, streaming or biomes.
+Each world is a blockout for now: shapes, roads and landmarks on the world's own hills under the shared photoreal look ([SCENE_LOOK.md](SCENE_LOOK.md)). The ground comes from Core (see [Ground](#ground)) and is imported as a Landscape. The trees and rocks are still simple shapes, the ground wears one surface everywhere, and there is no streaming and there are no biomes.
 
 ## Size
 
@@ -48,7 +48,7 @@ Nothing stands on a road or in a plaza.
 
 ## Ground
 
-`ftcore::generateWorldTerrain` (`Core/include/ftcore/Terrain.h`) shapes each world's ground from its entry, its layout and its `sites`. The result is one height field 1.5 km across, the 1 km playable square and 250 m round it, with a sample every 1.98 m. It is deterministic in the seed and allocates only at load. No map uses it yet: the Landscape import, the roads' weightmap and props set on the ground come next.
+`ftcore::generateWorldTerrain` (`Core/include/ftcore/Terrain.h`) shapes each world's ground from its entry, its layout and its `sites`. The result is one height field 1.5 km across, the 1 km playable square and 250 m round it, with a sample every 1.98 m. It is deterministic in the seed and allocates only at load. The map builder imports it as the world's Landscape (see [Building the maps](#building-the-maps)).
 
 - Every district stands on a flat pad. A road climbs in a straight line between its two pads, and the ground beside it banks at 0.65 at most.
 - The climax is the world's highest pad, 36 m up where the roads allow. It stays in sight from the entry: the ground near the line between them keeps under it.
@@ -74,7 +74,7 @@ All goals and waypoints in `goals.json` lie inside the plaza. So a field step pl
    - A CG step in a placed scene opens the world's map too, when it's built and no hop has to come first: the cutscene plays around the lead at the district's spawn (`Story: the CG at <scene> beat <b> step <s> plays on <map>, in district <d>.`), so the field steps beside it play in place. When a hop is due, the CG plays on the Cutscene stage and the hop waits for the next field step. See [CUTSCENE_SCREEN.md](CUTSCENE_SCREEN.md).
 3. On a world's map (where `AFTExploreDirector::WorldId` is set), the director:
    - lays the world out again
-   - starts the player at the district's spawn
+   - starts the player at the district's spawn, on the district's pad: the builder saves each pad's height with the map (`DistrictFloors`), and the director puts the goals and the autopilot's waypoints on the same floor
    - switches the map's style controller to the scene's style, when the map was built with one (`-Style=`)
    - runs the field step as usual
 
@@ -116,8 +116,10 @@ UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildExploreWorld -World=sol
 ```
 
 Run it again with `-World=lattice` and `-World=unwritten`. `-Style=<spec>` adds a style controller over the photoreal look; the world's `style` in `worlds.json` isn't used yet. Build `M_WorldSurface` (`-run=FTBuildWorldMaterials`) and the photographed surfaces (`-run=FTBuildSurfaces`) first; see [SCENE_LOOK.md](SCENE_LOOK.md). Each run writes `/Game/Maps/<map>` and contains:
-- a floor and perimeter walls
-- roads, plazas, buildings, trees and rocks as instanced meshes on a few holder actors (about 90 actors in all)
+- the ground: the world's height field as a Landscape 1.5 km across (6 x 6 components of 2 x 63 quads, a quad every 1.98 m), with the roads carved into it
+- hidden walls along the playable square's edge, and round each trench, pool and pit at its rim, so the player can't walk into the sea, the abyss or a cut
+- the sea and the pools as water planes
+- plazas, buildings, trees and rocks as instanced meshes on a few holder actors. Each plaza and building stands on its district's pad. Each tree and rock stands on the ground under it, and the build leaves out any on ground steeper than 0.8, under water or in a cut
 - the landmarks and beacons
 - one large anchor shape floating 260 m over the centre
 - the shared look (sun, sky light, atmosphere, fog, clouds and the camera finish), and the director
@@ -125,11 +127,19 @@ Run it again with `-World=lattice` and `-World=unwritten`. `-Style=<spec>` adds 
 
 The build fails if any field goal, from `kFieldGoals` or `goals.json`, has no full navmesh path from any district's spawn. The roads between districts have no navmesh, because they are straight and clear.
 
-The ground, roads, plazas, buildings, roofs, landmarks, trunks and rocks wear the photographed surfaces that `Data/Field/surfaces.json` gives the world's kind, and the rest keep flat tints. The build logs how many roles are dressed, for example `FTBuildExploreWorld: 8 of 8 surface roles wear photographed surfaces.` for Solhaven and `0 of 8` for the two kinds that have no surfaces yet.
+The ground (the Landscape's material), plazas, buildings, roofs, landmarks, trunks and rocks wear the photographed surfaces that `Data/Field/surfaces.json` gives the world's kind, and the rest keep flat tints. The road role's surface waits for a ground material that draws the roads onto the Landscape; until then a road is only its cut. The build logs how many roles are dressed, for example `FTBuildExploreWorld: 8 of 8 surface roles wear photographed surfaces.` for Solhaven and `0 of 8` for the two kinds that have no surfaces yet.
 
-The last line logged reads like this:
+The build logs the ground's numbers, then the map's. For Solhaven:
 
-`FTBuildExploreWorld: world solhaven (look photoreal): 16 districts, 19 roads, 269 buildings, 1400 props, 3001 instances, 16 landmarks, 88 actors; bounds 1002 x 1002 m, 290 m tall; 136 goals reachable from each district.`
+`FTBuildExploreWorld: world solhaven's ground: -33.0 to 145.7 m (pads -19.7 to 35.6 m), 0.0% of the square steeper than 1 in 1; 0 cuts walled in by 0 hidden walls; 1 water planes; 0 props left off steep, wet or cut ground.`
+
+`FTBuildExploreWorld: world solhaven (look photoreal): 16 districts, 19 roads, 269 buildings, 1400 props, 2982 instances, 16 landmarks, 89 actors; bounds 990 x 990 m, 290 m tall; 136 goals reachable from each district.`
+
+| World | Ground | Pads | Steeper than 1 in 1 | Cuts, hidden walls | Water planes | Props left off |
+|---|---|---|---|---|---|---|
+| solhaven | -33.0 to 145.7 m | -19.7 to 35.6 m | 0.0% | 0, 0 | 1 | 0 |
+| lattice | -38.7 to 146.7 m | -12.1 to 36.0 m | 1.2% | 2, 8 | 3 | 28 |
+| unwritten | -185.5 to 36.0 m | -18.0 to 36.0 m | 2.8% | 2, 64 | 0 | 77 |
 
 ## Headless checks
 
@@ -145,5 +155,6 @@ The last line logged reads like this:
   UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/World_Solhaven -game -NullRHI -WorldAutoPlay -AlphaFast -WorldQuitOnDone -unattended -nosplash -nosound
   ```
 
-  It logs `World solhaven: reached district <d> (leg i/n) at <t> s game time.` for each leg, then `TOUR DONE`. Solhaven takes 18 legs and 1108 s of game time, about 140 s real with `-AlphaFast`.
+  It logs `World solhaven: reached district <d> (leg i/n) at <t> s game time.` for each leg, then `TOUR DONE`. Solhaven takes 18 legs and 814 s of game time, about 124 s real with `-AlphaFast`; Lattice 15 legs and 803 s, Unwritten 17 legs and 992 s.
+- A second after each placing of the lead on a world map (the start of a free walk or the tour, and every story step, field or CG), the director logs its feet against the floor saved for the district it stands in: `World solhaven: the lead's feet at z 5 cm in district 0, whose floor is 0 cm.` The two agree to a few cm when the map's ground is the one the builder imported. The entry's floor is always 0, so the tour's line only shows the ground is there; a story step in another district logs that district's floor.
 - The alpha gate (`tools/gate.ps1 -Alpha`) plays the whole story, with Solhaven's field steps on its map.

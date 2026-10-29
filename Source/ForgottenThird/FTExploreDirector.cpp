@@ -463,7 +463,9 @@ void AFTExploreDirector::PlaceInDistrict(const FFTStoryCarry& Carry, const TCHAR
 	float Yaw = 0.f;
 	if (GetDistrictSpawn(WorldDistrict, Spot, Yaw))
 	{
-		WorldSpawn = FVector(Spot.X, Spot.Y, 0.0);
+		// The spawn is the district's origin, on its pad's flat.
+		bWorldSpawnOnFloor = DistrictFloors.IsValidIndex(WorldDistrict);
+		WorldSpawn = FVector(Spot.X, Spot.Y, bWorldSpawnOnFloor ? DistrictFloors[WorldDistrict] : 0.0);
 		WorldSpawnRotation = FRotator(0.f, Yaw, 0.f);
 		bWorldSpawnPending = true;
 	}
@@ -500,7 +502,8 @@ void AFTExploreDirector::SpawnFieldGoal()
 			GoalSpot = *It;
 		}
 	}
-	const FTransform At(FVector(FieldGoal.x * 100.0, FieldGoal.y * 100.0, 0.0));
+	// On a big world the marker stands on its district's floor (the goals lie on the pad's flat).
+	const FTransform At(FVector(FieldGoal.x * 100.0, FieldGoal.y * 100.0, DistrictFloors.IsValidIndex(WorldDistrict) ? DistrictFloors[WorldDistrict] : 0.0));
 	if (GoalSpot)
 	{
 		GoalSpot->SetActorTransform(At);
@@ -1142,13 +1145,28 @@ void AFTExploreDirector::Tick(float DeltaSeconds)
 	if (bWorldSpawnPending)
 	{
 		bWorldSpawnPending = false;
-		const FVector At(WorldSpawn.X, WorldSpawn.Y, Player->GetActorLocation().Z);
+		// Set down on the district's floor on a big world's ground; on a flat map the lead keeps its height.
+		const double Z = bWorldSpawnOnFloor ? WorldSpawn.Z + Player->GetSimpleCollisionHalfHeight() + 2.0 : Player->GetActorLocation().Z;
+		const FVector At(WorldSpawn.X, WorldSpawn.Y, Z);
 		Player->SetActorLocationAndRotation(At, WorldSpawnRotation, false, nullptr, ETeleportType::TeleportPhysics);
 		SnapExploreBoomLag(*Player);
 		if (AController* Controller = Player->GetController())
 		{
 			Controller->SetControlRotation(WorldSpawnRotation);
 		}
+		if (bWorldSpawnOnFloor)
+		{
+			FloorLogAt = GetWorld()->GetTimeSeconds() + 1.0;
+		}
+	}
+	if (Layout && FloorLogAt >= 0.0 && GetWorld()->GetTimeSeconds() >= FloorLogAt)
+	{
+		// A second after the lead is placed on a big world, in any step or walk: its feet against the floor of the district it
+		// stands in, which agree to a few cm when the ground under it is the one the builder imported.
+		FloorLogAt = -1.0;
+		const int32 At = Layout->districtAt(ToGround(Player->GetActorLocation()));
+		UE_LOG(LogForgottenThird, Display, TEXT("World %s: the lead's feet at z %.0f cm in district %d, whose floor is %.0f cm."), *WorldId,
+			Player->GetActorLocation().Z - Player->GetSimpleCollisionHalfHeight(), At, DistrictFloors.IsValidIndex(At) ? DistrictFloors[At] : 0.f);
 	}
 	if (bCutsceneStartPending)
 	{
@@ -1337,7 +1355,11 @@ const ftcore::Vec2* AFTExploreDirector::PilotWaypoint(const AFTExploreCharacter&
 		PilotPath.Reset();
 		PilotPathNext = 1;
 		const FVector From = Player.GetActorLocation();
-		const FVector To(Goal.x * 100.0, Goal.y * 100.0, From.Z);
+		// On a big world's ground a goal in another district stands at that district's floor, which may be metres off
+		// the lead's height, too far for the navmesh to find under a point at the lead's.
+		const int32 GoalDistrict = Layout ? Layout->districtAt(Goal) : -1;
+		const FVector To(Goal.x * 100.0, Goal.y * 100.0,
+			DistrictFloors.IsValidIndex(GoalDistrict) ? DistrictFloors[GoalDistrict] + Player.GetSimpleCollisionHalfHeight() : From.Z);
 		const UNavigationPath* Path = Nav->FindPathToLocationSynchronously(World, From, To);
 		if (Path && Path->IsValid())
 		{
@@ -1391,6 +1413,11 @@ void AFTExploreDirector::BeginWorld()
 	UE_LOG(LogForgottenThird, Display, TEXT("World %s: %d districts, %d roads, %d buildings, %d props over %.0f m."), *WorldId,
 		static_cast<int32>(Layout->districtCount()), static_cast<int32>(Layout->roadCount()), static_cast<int32>(Layout->blockCount()),
 		static_cast<int32>(Layout->propCount()), Layout->side());
+	// The lead starts on the PlayerStart (a story step moves it to its district's spawn on the first tick, which logs again).
+	if (!DistrictFloors.IsEmpty())
+	{
+		FloorLogAt = GetWorld()->GetTimeSeconds() + 1.0;
+	}
 	const FFTStoryCarry& Carry = GI->StoryCarry;
 	const bool bStoryStep = Carry.bValid && !Carry.bDone
 		&& (Carry.Screen == ftcore::GameplayScreen::Field || Carry.Screen == ftcore::GameplayScreen::Cutscene);
@@ -1564,6 +1591,7 @@ void AFTExploreDirector::BeginOverworld()
 	}
 	WorldSpawn = FVector(Spawn.x * 100.0, Spawn.y * 100.0, 0.0);
 	WorldSpawnRotation = FRotator(0.f, FMath::RadiansToDegrees(Yaw), 0.f);
+	bWorldSpawnOnFloor = false;
 	bWorldSpawnPending = true;
 
 	bWorldTour = !bStoryStep && FParse::Param(FCommandLine::Get(), TEXT("OverworldAutoPlay"));

@@ -2,8 +2,8 @@
 
 // The ground of a big world (ftcore/WorldLayout.h): one height field over the whole square, shaped
 // by the world's kind and raised or sunk around its sites (WorldSpec::sites). The Unreal map builder
-// is to turn it into a Landscape and the field screen to read heights from it at run time; neither
-// does yet.
+// imports it as the world's Landscape and stands the plazas, buildings and props on it; the game
+// itself reads only the district floors the builder saves with the map.
 //
 //   auto terrain = std::make_unique<ftcore::WorldTerrain>();
 //   if (!ftcore::generateWorldTerrain(spec, layout, *terrain, &error)) ...; // allocates: at load

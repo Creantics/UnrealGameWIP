@@ -22,6 +22,9 @@ public class ForgottenThird : ModuleRules
 			// The demo-world, character-import and rig commandlets.
 			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry", "AssetTools", "IKRig", "IKRigEditor", "Slate", "SlateCore" });
 
+			// FTBuildExploreWorld imports each big world's ground as a Landscape.
+			PrivateDependencyModuleNames.Add("Landscape");
+
 			// FTBuildCloth makes Chaos cloth from an imported mesh section.
 			PrivateDependencyModuleNames.AddRange(new string[] { "ClothingSystemEditor", "ClothingSystemEditorInterface", "ClothingSystemRuntimeCommon", "ClothingSystemRuntimeInterface", "SkeletalMeshEditor" });
 

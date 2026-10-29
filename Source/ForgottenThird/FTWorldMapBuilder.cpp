@@ -14,6 +14,9 @@
 #include "GameFramework/PlayerStart.h"
 #include "GameFramework/WorldSettings.h"
 #include "HAL/FileManager.h"
+#include "Landscape.h"
+#include "LandscapeInfo.h"
+#include "LandscapeProxy.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/FileHelper.h"
@@ -39,6 +42,7 @@
 #include "ftcore/FieldGoals.h"
 #include "ftcore/Overworld.h"
 #include "ftcore/SurfaceTable.h"
+#include "ftcore/Terrain.h"
 #include "ftcore/WorldLayout.h"
 
 #include <string>
@@ -127,6 +131,40 @@ AStaticMeshActor* WorldBlock(UWorld* World, const FActorSpawnParameters& Spawn, 
 	Prop->SetActorLabel(Label);
 	return Prop;
 }
+
+// A hidden wall that stops pawns but no traces on Visibility, by which the followers and the guards find
+// their footing, and not the camera's arm.
+AStaticMeshActor* WorldBlocker(UWorld* World, const FActorSpawnParameters& Spawn, UStaticMesh* Cube, const FString& Label,
+	const FVector& Location, const FVector& Scale, float Yaw = 0.f)
+{
+	AStaticMeshActor* Wall = WorldBlock(World, Spawn, Cube, nullptr, Label, Location, Scale, FRotator(0.f, Yaw, 0.f));
+	UStaticMeshComponent* Mesh = Wall->GetStaticMeshComponent();
+	Mesh->SetCollisionProfileName(TEXT("InvisibleWall"));
+	Mesh->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+	Mesh->SetCastShadow(false);
+	Wall->SetActorHiddenInGame(true);
+	return Wall;
+}
+
+// Water: a plane anything walks or sees through to the ground under it.
+AStaticMeshActor* WorldWater(UWorld* World, const FActorSpawnParameters& Spawn, UStaticMesh* Plane, UMaterialInterface* Material,
+	const FString& Label, const FVector& Location, const FVector& Scale)
+{
+	AStaticMeshActor* Water = WorldBlock(World, Spawn, Plane, Material, Label, Location, Scale);
+	Water->GetStaticMeshComponent()->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
+	Water->GetStaticMeshComponent()->SetCanEverAffectNavigation(false);
+	return Water;
+}
+
+// A Landscape component is 2 x 63 quads, so the terrain's 757 samples make 6 x 6 of them.
+constexpr int32 kWorldLandSubsections = 2;
+constexpr int32 kWorldLandSubsectionQuads = 63;
+static_assert((ftcore::WorldTerrain::kSamples - 1) % (kWorldLandSubsections * kWorldLandSubsectionQuads) == 0,
+	"the terrain's samples must fill whole Landscape components");
+// Trees and rocks stay off ground steeper than this (39 degrees): it stands bare.
+constexpr float kWorldPropMaxSlope = 0.8f;
+// The sea's plane reaches this far (m) out from the square and along its edge both ways, past the horizon.
+constexpr float kWorldSeaReach = 20000.f;
 
 ANavMeshBoundsVolume* WorldNavBounds(UWorld* World, const FActorSpawnParameters& Spawn, const FVector& Centre, const FVector& Size,
 	const FString& Label)
@@ -240,7 +278,13 @@ FBox WorldBounds(UWorld* World, int32& Actors)
 	for (TActorIterator<AActor> It(World); It; ++It)
 	{
 		++Actors;
-		if (It->IsA<AStaticMeshActor>() || It->FindComponentByClass<UInstancedStaticMeshComponent>())
+		// Nor do the hidden walls and the water, which reaches past the horizon.
+		const AStaticMeshActor* Mesh = Cast<AStaticMeshActor>(*It);
+		if (It->IsHidden() || (Mesh && !Mesh->GetStaticMeshComponent()->IsCollisionEnabled()))
+		{
+			continue;
+		}
+		if (Mesh || It->FindComponentByClass<UInstancedStaticMeshComponent>())
 		{
 			Bounds += It->GetComponentsBoundingBox(true);
 		}
@@ -285,6 +329,13 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: world %s: %s"), *WorldId, *FT::ToFString(Error).TrimEnd());
 		return 1;
 	}
+	// Its ground, before the old map is replaced.
+	TUniquePtr<ftcore::WorldTerrain> Terrain = MakeUnique<ftcore::WorldTerrain>();
+	if (!ftcore::generateWorldTerrain(Spec, *Layout, *Terrain, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: world %s's ground: %s"), *WorldId, *FT::ToFString(Error).TrimEnd());
+		return 1;
+	}
 	const FString Id = FT::ToFString(Spec.id);
 	const FString MapName = FT::ToFString(Spec.map);
 	// -Style=<spec> adds a style controller over the photoreal look; worlds.json's style is not used yet.
@@ -314,8 +365,9 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
 	UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 	UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+	UStaticMesh* Plane = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
 	UMaterialInterface* Base = FTScene::LoadSurface();
-	if (!Cube || !Sphere || !Cylinder || !Base)
+	if (!Cube || !Sphere || !Cylinder || !Plane || !Base)
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: a /Engine/BasicShapes mesh or the world surface material is missing."));
 		return 1;
@@ -366,39 +418,170 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 	const float Side = Layout->side();
 	const float Half = Side * 0.5f;
 
-	// The floor (top at z = 0) and the perimeter walls, 10 m high.
-	WorldBlock(World, Spawn, Cube, GroundTint, TEXT("Ground"), WorldM(0, 0, -0.5f), FVector(Side, Side, 1));
-	WorldBlock(World, Spawn, Cube, RockTint, TEXT("Wall_N"), WorldM(0, Half, 5), FVector(Side + 2, 2, 10));
-	WorldBlock(World, Spawn, Cube, RockTint, TEXT("Wall_S"), WorldM(0, -Half, 5), FVector(Side + 2, 2, 10));
-	WorldBlock(World, Spawn, Cube, RockTint, TEXT("Wall_E"), WorldM(Half, 0, 5), FVector(2, Side + 2, 10));
-	WorldBlock(World, Spawn, Cube, RockTint, TEXT("Wall_W"), WorldM(-Half, 0, 5), FVector(2, Side + 2, 10));
+	// The ground: the terrain's height field as a Landscape, a vertex per sample, at the 16-bit heights
+	// ftcore gives (Z scale 100). Its material and scale go on before Import, which builds the components,
+	// their collision and their material instances.
+	const int32 Samples = static_cast<int32>(ftcore::WorldTerrain::kSamples);
+	TArray<uint16> Heights;
+	Heights.SetNumUninitialized(Samples * Samples);
+	for (int32 Y = 0; Y < Samples; ++Y)
+	{
+		for (int32 X = 0; X < Samples; ++X)
+		{
+			Heights[Y * Samples + X] = Terrain->heightmapValue(static_cast<size_t>(X), static_cast<size_t>(Y));
+		}
+	}
+	const float Corner = Terrain->extent() * -50.f;
+	ALandscape* Land = World->SpawnActor<ALandscape>(FVector(Corner, Corner, 0.f), FRotator::ZeroRotator, Spawn);
+	Land->LandscapeMaterial = GroundTint;
+	Land->SetActorRelativeScale3D(FVector(Terrain->spacing() * 100.f, Terrain->spacing() * 100.f, 100.f));
+	{
+		TMap<FGuid, TArray<uint16>> HeightLayers;
+		HeightLayers.Add(FGuid(), MoveTemp(Heights));
+		TMap<FGuid, TArray<FLandscapeImportLayerInfo>> PaintLayers;
+		PaintLayers.Add(FGuid(), TArray<FLandscapeImportLayerInfo>());
+		Land->Import(FGuid::NewGuid(), 0, 0, Samples - 1, Samples - 1, kWorldLandSubsections, kWorldLandSubsectionQuads, HeightLayers,
+			TEXT(""), PaintLayers, ELandscapeImportAlphamapType::Additive, TArrayView<const FLandscapeLayer>());
+	}
+	ULandscapeInfo* LandInfo = Land->GetLandscapeInfo();
+	if (!LandInfo)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: the ground's Landscape has no info after its import."));
+		World->DestroyWorld(false);
+		return 1;
+	}
+	LandInfo->UpdateLayerInfoMap(Land);
+	Land->SetActorLabel(TEXT("Ground"));
+
+	// The edge: hidden walls from under the abyss's floor to far over the mountains, so the sea, the abyss
+	// and the mountains past the square stay scenery.
+	WorldBlocker(World, Spawn, Cube, TEXT("Edge_N"), WorldM(0, Half, 25), FVector(Side + 2, 2, 450));
+	WorldBlocker(World, Spawn, Cube, TEXT("Edge_S"), WorldM(0, -Half, 25), FVector(Side + 2, 2, 450));
+	WorldBlocker(World, Spawn, Cube, TEXT("Edge_E"), WorldM(Half, 0, 25), FVector(2, Side + 2, 450));
+	WorldBlocker(World, Spawn, Cube, TEXT("Edge_W"), WorldM(-Half, 0, 25), FVector(2, Side + 2, 450));
+
+	// A blocked cut (a trench, a pit) gets hidden walls round its footprint, `rim` in from its edge (out
+	// from it, for a negative rim): four round a rectangle, one per ray round a star. ftcore keeps the cuts
+	// off the roads and the pads, so nothing on them meets one. A wall spans the ground along its line,
+	// from 5 m under the lowest to 30 m over the highest.
+	int32 Rims = 0;
+	const auto RimWall = [&](ftcore::Vec2 From, ftcore::Vec2 To)
+	{
+		const float Length = FVector2D(To.x - From.x, To.y - From.y).Size();
+		const int32 Steps = FMath::Max(1, FMath::CeilToInt(Length));
+		float Low = Terrain->height(From);
+		float High = Low;
+		for (int32 Step = 1; Step <= Steps; ++Step)
+		{
+			const float T = static_cast<float>(Step) / static_cast<float>(Steps);
+			const float Along = Terrain->height({From.x + (To.x - From.x) * T, From.y + (To.y - From.y) * T});
+			Low = FMath::Min(Low, Along);
+			High = FMath::Max(High, Along);
+		}
+		Low -= 5.f;
+		High += 30.f;
+		// Half a metre past either end, so neighbouring walls close their corner.
+		WorldBlocker(World, Spawn, Cube, FString::Printf(TEXT("Rim_%d"), Rims), WorldM((From.x + To.x) * 0.5f, (From.y + To.y) * 0.5f, (Low + High) * 0.5f),
+			FVector(Length + 1.f, 1.f, High - Low), FMath::RadiansToDegrees(FMath::Atan2(To.y - From.y, To.x - From.x)));
+		++Rims;
+	};
+	int32 Cuts = 0;
+	for (size_t I = 0; I < Terrain->featureCount(); ++I)
+	{
+		const ftcore::TerrainFeature& Cut = Terrain->feature(I);
+		if (!Cut.blocked)
+		{
+			continue;
+		}
+		const float Grow = -Cut.rim;
+		switch (Cut.kind)
+		{
+		case ftcore::TerrainFeature::Kind::Trench:
+		{
+			const float X0 = Cut.centre.x - Cut.half.x - Grow, X1 = Cut.centre.x + Cut.half.x + Grow;
+			const float Y0 = Cut.centre.y - Cut.half.y - Grow, Y1 = Cut.centre.y + Cut.half.y + Grow;
+			RimWall({X0, Y0}, {X1, Y0});
+			RimWall({X1, Y0}, {X1, Y1});
+			RimWall({X1, Y1}, {X0, Y1});
+			RimWall({X0, Y1}, {X0, Y0});
+			++Cuts;
+			break;
+		}
+		case ftcore::TerrainFeature::Kind::Lake:
+		case ftcore::TerrainFeature::Kind::Pit:
+		{
+			const auto RayEnd = [&Cut, Grow](size_t K)
+			{
+				const float Angle = 2.f * PI * static_cast<float>(K) / static_cast<float>(ftcore::TerrainFeature::kRays);
+				const float R = Cut.ray[K % ftcore::TerrainFeature::kRays] + Grow;
+				return ftcore::Vec2{Cut.centre.x + R * FMath::Cos(Angle), Cut.centre.y + R * FMath::Sin(Angle)};
+			};
+			for (size_t K = 0; K < ftcore::TerrainFeature::kRays; ++K)
+			{
+				RimWall(RayEnd(K), RayEnd(K + 1));
+			}
+			++Cuts;
+			break;
+		}
+		default: // the sea lies past the edge's walls
+			break;
+		}
+	}
+
+	// Water: the sea, a plane from its edge of the square out past the horizon (the ground hides it inside
+	// the coast), and the pools.
+	int32 Waters = 0;
+	UMaterialInstanceConstant* WaterTint = nullptr;
+	for (size_t I = 0; I < Terrain->featureCount(); ++I)
+	{
+		const ftcore::TerrainFeature& Water = Terrain->feature(I);
+		const bool bSea = Water.kind == ftcore::TerrainFeature::Kind::Sea;
+		if (!bSea && Water.kind != ftcore::TerrainFeature::Kind::Pool)
+		{
+			continue;
+		}
+		if (!WaterTint)
+		{
+			// Still water: dark and glossy, so it shows the sky and the shore.
+			WaterTint = Cast<UMaterialInstanceConstant>(WorldTint(Package, Base, TEXT("MI_World_Water"), FLinearColor(0.02f, 0.06f, 0.07f)));
+			WaterTint->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Roughness")), 0.05f);
+			WaterTint->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Variation")), 0.02f);
+			WaterTint->PostEditChange();
+		}
+		if (bSea)
+		{
+			// Side 0 is +x, 1 +y, 2 -x, 3 -y.
+			const bool bAlongX = Water.side % 2 == 0;
+			const float Out = Water.side < 2 ? 1.f : -1.f;
+			const ftcore::Vec2 Middle = bAlongX ? ftcore::Vec2{Water.centre.x + Out * kWorldSeaReach * 0.5f, Water.centre.y}
+												: ftcore::Vec2{Water.centre.x, Water.centre.y + Out * kWorldSeaReach * 0.5f};
+			WorldWater(World, Spawn, Plane, WaterTint, TEXT("Sea"), WorldM(Middle, Water.level),
+				bAlongX ? FVector(kWorldSeaReach, 2.f * kWorldSeaReach, 1.f) : FVector(2.f * kWorldSeaReach, kWorldSeaReach, 1.f));
+		}
+		else
+		{
+			WorldWater(World, Spawn, Plane, WaterTint, FString::Printf(TEXT("Pool_%d"), Waters), WorldM(Water.centre, Water.level),
+				FVector(Water.half.x * 2.f, Water.half.y * 2.f, 1.f));
+		}
+		++Waters;
+	}
 
 	int32 Instances = 0;
-	// Roads (2 cm above the floor) and plazas (3 cm): steps the character walks over.
+	// Plazas, 3 cm over their pads: a step the character walks over. The roads are the ground's own.
 	{
-		AActor* Holder = WorldHolder(World, Spawn, TEXT("Roads"));
-		UInstancedStaticMeshComponent* Roads = WorldIsm(Holder, TEXT("RoadStrips"), Cube, RoadTint);
+		AActor* Holder = WorldHolder(World, Spawn, TEXT("Plazas"));
 		UInstancedStaticMeshComponent* Plazas = WorldIsm(Holder, TEXT("PlazaDiscs"), Cylinder, PlazaTint);
-		for (size_t I = 0; I < Layout->roadCount(); ++I)
-		{
-			const ftcore::WorldRoad& Road = Layout->road(I);
-			const ftcore::Vec2 A = Layout->district(Road.a).centre;
-			const ftcore::Vec2 B = Layout->district(Road.b).centre;
-			const float Length = FVector2D(B.x - A.x, B.y - A.y).Size();
-			const float Degrees = FMath::RadiansToDegrees(FMath::Atan2(B.y - A.y, B.x - A.x));
-			Roads->AddInstance(FTransform(FRotator(0.f, Degrees, 0.f), WorldM((A.x + B.x) * 0.5f, (A.y + B.y) * 0.5f, -0.48f),
-				FVector(Length, ftcore::WorldLayout::kRoadWidth, 1.f)));
-			++Instances;
-		}
 		const float Plaza = ftcore::WorldLayout::kPlazaRadius * 2.f;
 		for (size_t D = 0; D < Layout->districtCount(); ++D)
 		{
-			Plazas->AddInstance(FTransform(FRotator::ZeroRotator, WorldM(Layout->district(D).centre, -0.47f), FVector(Plaza, Plaza, 1.f)));
+			Plazas->AddInstance(FTransform(FRotator::ZeroRotator, WorldM(Layout->district(D).centre, Terrain->padHeight(D) - 0.47f),
+				FVector(Plaza, Plaza, 1.f)));
 			++Instances;
 		}
 	}
 
-	// Buildings: a body, with a pitched roof in a town or a flat cap on a tower.
+	// Buildings, on their pads: a body, sunk half a metre so no gap shows at its foot, with a pitched roof in
+	// a town or a flat cap on a tower.
 	{
 		AActor* Holder = WorldHolder(World, Spawn, TEXT("Buildings"));
 		UInstancedStaticMeshComponent* Bodies = WorldIsm(Holder, TEXT("Bodies"), Cube, BuildingTint);
@@ -408,7 +591,9 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 		{
 			const ftcore::WorldBlock& B = Layout->block(I);
 			const float Degrees = FMath::RadiansToDegrees(B.yaw);
-			Bodies->AddInstance(FTransform(FRotator(0.f, Degrees, 0.f), WorldM(B.pos, B.height * 0.5f), FVector(B.width, B.depth, B.height)));
+			const float Floor = Terrain->padHeight(B.district);
+			Bodies->AddInstance(FTransform(FRotator(0.f, Degrees, 0.f), WorldM(B.pos, Floor + (B.height - 0.5f) * 0.5f),
+				FVector(B.width, B.depth, B.height + 0.5f)));
 			++Instances;
 			if (!B.roof)
 			{
@@ -417,17 +602,20 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 			if (bTown)
 			{
 				const float Pitch = B.depth * 0.72f;
-				Roofs->AddInstance(FTransform(FRotator(0.f, Degrees, 45.f), WorldM(B.pos, B.height), FVector(B.width + 0.4f, Pitch, Pitch)));
+				Roofs->AddInstance(FTransform(FRotator(0.f, Degrees, 45.f), WorldM(B.pos, Floor + B.height), FVector(B.width + 0.4f, Pitch, Pitch)));
 			}
 			else
 			{
-				Roofs->AddInstance(FTransform(FRotator(0.f, Degrees, 0.f), WorldM(B.pos, B.height + 0.5f), FVector(B.width + 1.f, B.depth + 1.f, 1.f)));
+				Roofs->AddInstance(FTransform(FRotator(0.f, Degrees, 0.f), WorldM(B.pos, Floor + B.height + 0.5f),
+					FVector(B.width + 1.f, B.depth + 1.f, 1.f)));
 			}
 			++Instances;
 		}
 	}
 
-	// Trees (a trunk and a crown) and rocks on the open ground.
+	// Trees (a trunk and a crown) and rocks on the open ground, each sunk as far as the slope under it falls
+	// across its foot. None stands in water, in or beside a cut, or on bare steep ground.
+	int32 Skipped = 0;
 	{
 		AActor* Holder = WorldHolder(World, Spawn, TEXT("Props"));
 		UInstancedStaticMeshComponent* Trunks = WorldIsm(Holder, TEXT("Trunks"), Cylinder, WoodTint);
@@ -436,17 +624,31 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 		for (size_t I = 0; I < Layout->propCount(); ++I)
 		{
 			const ftcore::WorldProp& P = Layout->prop(I);
+			const ftcore::Vec2 Fall = Terrain->gradient(P.pos);
+			const float Slope = FMath::Sqrt(Fall.x * Fall.x + Fall.y * Fall.y);
+			bool bClear = Slope <= kWorldPropMaxSlope && Terrain->waterDepth(P.pos) <= 0.f;
+			for (size_t F = 0; bClear && F < Terrain->featureCount(); ++F)
+			{
+				bClear = !Terrain->feature(F).covers(P.pos, -3.f);
+			}
+			if (!bClear)
+			{
+				++Skipped;
+				continue;
+			}
 			const float S = P.scale;
 			if (P.kind == 0)
 			{
-				Trunks->AddInstance(FTransform(FRotator::ZeroRotator, WorldM(P.pos, 1.5f * S), FVector(0.4f * S, 0.4f * S, 3.f * S)));
-				Crowns->AddInstance(FTransform(FRotator::ZeroRotator, WorldM(P.pos, 4.f * S), FVector(3.2f * S)));
+				const float Foot = Terrain->height(P.pos) - 0.2f * S * Slope;
+				Trunks->AddInstance(FTransform(FRotator::ZeroRotator, WorldM(P.pos, Foot + 1.5f * S), FVector(0.4f * S, 0.4f * S, 3.f * S)));
+				Crowns->AddInstance(FTransform(FRotator::ZeroRotator, WorldM(P.pos, Foot + 4.f * S), FVector(3.2f * S)));
 				Instances += 2;
 			}
 			else
 			{
 				const float Turn = static_cast<float>((I * 47u) % 360u);
-				Rocks->AddInstance(FTransform(FRotator(0.f, Turn, 0.f), WorldM(P.pos, 0.3f * S), FVector(1.6f * S, 1.3f * S, 0.9f * S)));
+				const float Foot = Terrain->height(P.pos) - 0.8f * S * Slope;
+				Rocks->AddInstance(FTransform(FRotator(0.f, Turn, 0.f), WorldM(P.pos, Foot + 0.3f * S), FVector(1.6f * S, 1.3f * S, 0.9f * S)));
 				++Instances;
 			}
 		}
@@ -459,26 +661,27 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 		const ftcore::WorldDistrict& Dist = Layout->district(D);
 		const float H = Dist.landmarkHeight;
 		const float W = ftcore::WorldLayout::kLandmarkRadius * 2.f;
+		const float Z = Terrain->padHeight(D); // the landmark stands in the building ring, on the pad
 		const int32 N = static_cast<int32>(D);
 		switch (Dist.landmarkShape)
 		{
 		case 1: // a pillar with a ring
-			WorldBlock(World, Spawn, Cylinder, LandmarkTint, FString::Printf(TEXT("Landmark_%d"), N), WorldM(Dist.landmark, H * 0.5f), FVector(W, W, H));
-			WorldBlock(World, Spawn, Cylinder, LandmarkTint, FString::Printf(TEXT("Landmark_%d_Ring"), N), WorldM(Dist.landmark, H * 0.72f),
+			WorldBlock(World, Spawn, Cylinder, LandmarkTint, FString::Printf(TEXT("Landmark_%d"), N), WorldM(Dist.landmark, Z + H * 0.5f), FVector(W, W, H));
+			WorldBlock(World, Spawn, Cylinder, LandmarkTint, FString::Printf(TEXT("Landmark_%d_Ring"), N), WorldM(Dist.landmark, Z + H * 0.72f),
 				FVector(W * 2.2f, W * 2.2f, 1.5f));
 			break;
 		case 2: // a stepped spire
-			WorldBlock(World, Spawn, Cube, LandmarkTint, FString::Printf(TEXT("Landmark_%d"), N), WorldM(Dist.landmark, H * 0.25f), FVector(W, W, H * 0.5f));
-			WorldBlock(World, Spawn, Cube, LandmarkTint, FString::Printf(TEXT("Landmark_%d_Mid"), N), WorldM(Dist.landmark, H * 0.65f),
+			WorldBlock(World, Spawn, Cube, LandmarkTint, FString::Printf(TEXT("Landmark_%d"), N), WorldM(Dist.landmark, Z + H * 0.25f), FVector(W, W, H * 0.5f));
+			WorldBlock(World, Spawn, Cube, LandmarkTint, FString::Printf(TEXT("Landmark_%d_Mid"), N), WorldM(Dist.landmark, Z + H * 0.65f),
 				FVector(W * 0.66f, W * 0.66f, H * 0.3f), FRotator(0.f, 45.f, 0.f));
-			WorldBlock(World, Spawn, Cube, LandmarkTint, FString::Printf(TEXT("Landmark_%d_Top"), N), WorldM(Dist.landmark, H * 0.9f),
+			WorldBlock(World, Spawn, Cube, LandmarkTint, FString::Printf(TEXT("Landmark_%d_Top"), N), WorldM(Dist.landmark, Z + H * 0.9f),
 				FVector(W * 0.33f, W * 0.33f, H * 0.2f));
 			break;
 		default: // a pillar
-			WorldBlock(World, Spawn, Cylinder, LandmarkTint, FString::Printf(TEXT("Landmark_%d"), N), WorldM(Dist.landmark, H * 0.5f), FVector(W, W, H));
+			WorldBlock(World, Spawn, Cylinder, LandmarkTint, FString::Printf(TEXT("Landmark_%d"), N), WorldM(Dist.landmark, Z + H * 0.5f), FVector(W, W, H));
 			break;
 		}
-		WorldBlock(World, Spawn, Sphere, BeaconTint, FString::Printf(TEXT("Landmark_%d_Beacon"), N), WorldM(Dist.landmark, H + 3.f), FVector(6.f));
+		WorldBlock(World, Spawn, Sphere, BeaconTint, FString::Printf(TEXT("Landmark_%d_Beacon"), N), WorldM(Dist.landmark, Z + H + 3.f), FVector(6.f));
 		++Landmarks;
 	}
 
@@ -490,21 +693,27 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 
 	AFTExploreDirector* Director = World->SpawnActor<AFTExploreDirector>(FVector(0, 0, 200), FRotator::ZeroRotator, Spawn);
 	Director->WorldId = Id;
+	for (size_t D = 0; D < Layout->districtCount(); ++D)
+	{
+		Director->DistrictFloors.Add(Terrain->padHeight(D) * 100.f);
+	}
 	Director->SetActorLabel(TEXT("ExploreDirector"));
 
 	const ftcore::WorldDistrict& First = Layout->district(0);
-	APlayerStart* Start = World->SpawnActor<APlayerStart>(WorldM(First.origin, 1.f), FRotator(0.f, FMath::RadiansToDegrees(Layout->spawnYaw(0)), 0.f), Spawn);
+	APlayerStart* Start = World->SpawnActor<APlayerStart>(WorldM(First.origin, Terrain->padHeight(0) + 1.f),
+		FRotator(0.f, FMath::RadiansToDegrees(Layout->spawnYaw(0)), 0.f), Spawn);
 	Start->SetActorLabel(TEXT("PlayerStart"));
 
 	WorldStyle(World, Spawn, StyleSpec);
 
-	// A navmesh over each district (plaza and building ring), built here and saved with the map. The
-	// roads between districts are straight and clear, so nothing walks them by navmesh.
+	// A navmesh over each district (plaza and building ring), built here and saved with the map, 30 m
+	// either side of its pad for the ground round it. The roads between districts are straight and clear,
+	// so nothing walks them by navmesh.
 	const float NavSide = (ftcore::WorldLayout::kDistrictRadius + 5.f) * 200.f;
 	TArray<ANavMeshBoundsVolume*> NavBounds;
 	for (size_t D = 0; D < Layout->districtCount(); ++D)
 	{
-		NavBounds.Add(WorldNavBounds(World, Spawn, WorldM(Layout->district(D).centre, 5.f), FVector(NavSide, NavSide, 2000.f),
+		NavBounds.Add(WorldNavBounds(World, Spawn, WorldM(Layout->district(D).centre, Terrain->padHeight(D)), FVector(NavSide, NavSide, 6000.f),
 			FString::Printf(TEXT("NavMeshBounds_%d"), static_cast<int32>(D))));
 	}
 	FNavigationSystem::AddNavigationSystemToWorld(*World, FNavigationSystemRunMode::EditorMode);
@@ -528,10 +737,12 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 	int32 Unreachable = 0;
 	for (size_t D = 0; D < Layout->districtCount(); ++D)
 	{
-		const FVector From = WorldM(Layout->district(D).origin, 1.f);
+		const ftcore::Vec2 Origin = Layout->district(D).origin;
+		const FVector From = WorldM(Origin, Terrain->height(Origin) + 1.f);
 		for (size_t G = 0; G < Goals.size(); ++G)
 		{
-			const FVector To = WorldM(Layout->toWorld(D, Goals[G]), 1.f);
+			const ftcore::Vec2 Goal = Layout->toWorld(D, Goals[G]);
+			const FVector To = WorldM(Goal, Terrain->height(Goal) + 1.f);
 			const UNavigationPath* Route = Nav->FindPathToLocationSynchronously(World, From, To);
 			if (!Route || !Route->IsValid() || Route->IsPartial())
 			{
@@ -550,6 +761,40 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 		World->DestroyWorld(false);
 		return 1;
 	}
+
+	// The ground's range, and how much of the square climbs steeper than 1 in 1 (45 degrees: the character
+	// walks up to 44.8).
+	float Lowest = Terrain->sample(0, 0);
+	float Highest = Lowest;
+	int32 Inside = 0;
+	int32 Steep = 0;
+	for (int32 Y = 0; Y < Samples; ++Y)
+	{
+		for (int32 X = 0; X < Samples; ++X)
+		{
+			const float Here = Terrain->sample(static_cast<size_t>(X), static_cast<size_t>(Y));
+			Lowest = FMath::Min(Lowest, Here);
+			Highest = FMath::Max(Highest, Here);
+			const ftcore::Vec2 Middle{(static_cast<float>(X) + 0.5f) * Terrain->spacing() - Terrain->extent() * 0.5f,
+				(static_cast<float>(Y) + 0.5f) * Terrain->spacing() - Terrain->extent() * 0.5f};
+			if (X + 1 < Samples && Y + 1 < Samples && FMath::Abs(Middle.x) < Half && FMath::Abs(Middle.y) < Half)
+			{
+				++Inside;
+				const ftcore::Vec2 Climb = Terrain->gradient(Middle);
+				Steep += Climb.x * Climb.x + Climb.y * Climb.y > 1.f ? 1 : 0;
+			}
+		}
+	}
+	float PadLow = Terrain->padHeight(0);
+	float PadHigh = PadLow;
+	for (size_t D = 1; D < Layout->districtCount(); ++D)
+	{
+		PadLow = FMath::Min(PadLow, Terrain->padHeight(D));
+		PadHigh = FMath::Max(PadHigh, Terrain->padHeight(D));
+	}
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("FTBuildExploreWorld: world %s's ground: %.1f to %.1f m (pads %.1f to %.1f m), %.1f%% of the square steeper than 1 in 1; %d cuts walled in by %d hidden walls; %d water planes; %d props left off steep, wet or cut ground."),
+		*Id, Lowest, Highest, PadLow, PadHigh, 100.0 * Steep / FMath::Max(Inside, 1), Cuts, Rims, Waters, Skipped);
 
 	int32 Actors = 0;
 	const FBox Bounds = WorldBounds(World, Actors);

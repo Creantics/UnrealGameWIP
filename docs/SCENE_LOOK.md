@@ -57,7 +57,7 @@ basic shape material.
 
 ## Photographed surfaces
 
-The world maps' ground, roads, plazas, walls, roofs, landmarks, tree trunks and rocks wear photographed
+The world maps' ground, plazas, walls, roofs, landmarks, tree trunks and rocks wear photographed
 surfaces: colour, normal and ambient occlusion/roughness/metal maps of real ground, stone, plaster, tiles
 and bark. They are all CC0 and come from one library. `Data/Field/surfaces.json` lists:
 
@@ -82,6 +82,12 @@ by how squarely the face meets each axis. An instanced shape uses its own instan
   tiles run down it.
 - the normal map is turned onto the same axes, so the tiles and stones catch the light on the side
   facing it.
+
+A world map's ground is a Landscape ([WORLDS.md](WORLDS.md)) and wears the master the same way. Its axes are
+the Landscape's own, and normalizing them keeps its 1.98 m sample spacing from stretching the photo. A close-up
+from a road shows Solhaven's grass at its real size. From further off, that photo (dry and low in contrast)
+reads as one khaki colour. The master has no layers either, so the steep ground and the roads wear grass too
+until a ground master replaces it (see Later).
 
 Its parameters, in the "Surface" group:
 
@@ -149,5 +155,6 @@ On a world map the director logs `World solhaven: field step in district 3 (phot
 - Measure each map's EV100 and narrow the exposure range to about ±1.5 EV round it.
 - One `SceneLook` per world, blended with `lerp` where the story crosses from one to another.
 - Photographed surfaces for the towers and ruins kinds.
-- Terrain in place of the flat floor, with scattered grass, stones and decals that hide the repeats.
+- On the terrain: rock on the steep ground, the roads drawn onto it (the road role's surface), and
+  scattered grass, stones and decals that hide the repeats.
 - A building kit in place of the blockout cubes, which also fixes the roofs' gable ends.

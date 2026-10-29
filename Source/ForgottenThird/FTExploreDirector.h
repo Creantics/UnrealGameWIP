@@ -76,6 +76,10 @@ public:
 	// This map is the overworld that joins the big worlds (Data/Field/worlds.json's "overworld").
 	UPROPERTY(EditAnywhere, Category = "Explore")
 	bool bOverworld = false;
+	// Each district's floor (cm) on a big world's ground, by district index: filled by the map builder; empty on a
+	// flat map, where everything stands at 0.
+	UPROPERTY(EditAnywhere, Category = "Explore")
+	TArray<float> DistrictFloors;
 
 	virtual void Tick(float DeltaSeconds) override;
 
@@ -247,6 +251,8 @@ private:
 	bool bWorldSpawnPending = false;
 	FVector WorldSpawn = FVector::ZeroVector;
 	FRotator WorldSpawnRotation = FRotator::ZeroRotator;
+	bool bWorldSpawnOnFloor = false; // WorldSpawn.Z is the district's floor, so the lead is set down on it
+	double FloorLogAt = -1.0;        // game time to log where the lead's feet stand against the floor; -1 when done
 	bool bWorldTour = false;
 	bool bWorldTourDone = false;
 	uint8 Tour[2 * ftcore::WorldLayout::kMaxDistricts] = {};
