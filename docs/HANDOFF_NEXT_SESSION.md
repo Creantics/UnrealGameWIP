@@ -1,13 +1,63 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-29 ~09:25. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-29 ~11:15. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-29 ~09:25): lifelike ground for the three big worlds (branch `terrain-worlds` c14935a,
-  pushed; not merged into main).**
+- **NEWEST (2026-10-29 ~11:15): the three big world maps stand on that ground (main 82b03b6, a fast-forward of
+  `terrain-worlds`).**
+  - `FTBuildExploreWorld` imports each world's height field (the entry below) as a Landscape at Z scale 100: a
+    vertex per sample, 6 x 6 components of 2 x 63 quads over 1.5 km, so every height lands exactly. The material
+    and scale go on before `Import`. `ForgottenThird.Build.cs` adds the Landscape module. `docs/WORLDS.md` covers
+    the maps on the ground, the build's log lines and the feet log.
+  - Plazas, buildings and landmarks stand on their district's pad, a building sunk 0.5 m. The road strips are gone,
+    because the roads are now the ground's own cuts. Trees and rocks stand on the ground, sunk as far as the slope
+    falls across their foot. None stands in water, within 3 m of a cut, or on ground steeper than 0.8.
+  - Hidden walls run along the square's edge and round each blocked cut (four round a trench, one per ray round a
+    pit). They stop pawns, but not the camera's arm or the Visibility traces the followers and guards use. The sea
+    is a dark, glossy plane out past the horizon, and each pool is a plane at its level.
+  - Each district's navmesh bounds sit on its pad and reach 30 m either side. All three worlds keep 136 goals
+    reachable from each district.
+  - The builder saves each district's floor in the director's `DistrictFloors`. The director uses it to:
+    - set a story step's lead down on the district's floor;
+    - stand a field goal's marker on it;
+    - aim the autopilot at it.
+    A second after each placing of the lead on a world map, story steps included, the director logs the lead's feet
+    against that floor.
+  - Ground per world:
+    | World | Height range | Steeper than 1 in 1 | Features |
+    |---|---|---|---|
+    | Solhaven | -33.0 to 145.7 m | 0.0% of the square | the sea |
+    | Lattice | -38.7 to 146.7 m | 1.2% | 2 trenches, 3 pools |
+    | Unwritten | -185.5 to 36.0 m | 2.8% | 2 pits |
+  - Every tour visits every district on the new ground: Solhaven 18 legs, Lattice 15, Unwritten 17.
+  - The headless story run (`-AlphaAutoPlay -AlphaFast`) played 73 scenes and 167 screens (40 battle, 91 field,
+    36 stub) with 0 stuck, 0 warnings and 12 overworld hops. It logged 59 placings on the three worlds, on floors
+    from -19.7 to 36.0 m, with the lead's feet 5 to 6 cm over the floor every time.
+  - Gate: 825 doctest cases, ctest 4/4. UBT Succeeded in the worktree and in the main checkout (with
+    `-DisablePlugin=Fab`).
+  - How it looks: offscreen renders show smooth hills and mountains, with no material, shader or Landscape errors.
+    It still reads as flat colour, though:
+    - Solhaven's grass photo is dry, so it shows as khaki from any distance.
+    - Lattice and Unwritten keep flat tints.
+    - Until the ground master lands, a road is only its cut.
+  - Next, in progress: a ground master on world axes. It draws rock on steep ground by slope, the roads from a
+    mask, and the grass in broad patches. The towers and ruins kinds also get photographed surfaces for ground, road
+    and rock, picked by measured colour.
+  - Still to come:
+    - Trees and rocks are cubes and spheres.
+    - Scattered grass waits for the user's go.
+    - The abyss and shaft walls draw as stretched quads until a cliff-mesh or fog pass.
+    - No lakes are placed.
+    - The clockwork relief map.
+    - The three deferred looks in the next entry: the gullies, the disc pads and the straight quay.
+  - To watch a world tour itself, drop `-NullRHI`, `-AlphaFast`, `-unattended` and `-nosound` from the tour line
+    in `docs/WORLDS.md`:
+    `UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/World_Solhaven -game -WorldAutoPlay -WorldQuitOnDone`.
+- **Earlier (2026-10-29 ~09:25): lifelike ground for the three big worlds (branch `terrain-worlds` c14935a; in
+  main since 82b03b6).**
   - The goal: realistic, lifelike terrain in each world, with no blocky land. `ftcore::generateWorldTerrain`
     (`Core/include/ftcore/Terrain.h`) shapes each world's ground from its layout and the new `sites` in
     `Data/Field/worlds.json`, which hold district indices and tier words only: one `entry`, one `climax` and any
@@ -36,10 +86,8 @@ Private notes (character references, concept-art review, script status) are in `
   - Deferred by the advisor: the gullies read as grooves of one width (the erosion pass fixes them); the pads read as
     discs or craters from above (a change to the pads' outlines, which moves the placement tests); and Solhaven's
     quay runs in one straight line for 1 km (coves need the coast to reach inside the square).
-  - Not done yet: no map uses the field. Next come the Landscape import in the world builder, a weightmap for the
-    roads, and props set on the ground. Trees and rocks are still cubes, and scattered grass waits for the user's go.
-    On a Landscape the abyss and shaft walls will draw as stretched quads until a cliff-mesh or fog pass. The
-    queries answer for lakes, but none is placed. The clockwork relief map (the world map screen) comes later.
+  - The maps have stood on the field since 82b03b6 (the entry above). The roads get a mask in the ground master
+    instead of a weightmap. The queries answer for lakes, but none is placed.
 - **Earlier (2026-10-29 ~01:15): hair cards for the leads' grooms (main 0ea522b).**
   - `Data/Grooms/hair_cards.json` lists seven grooms (head hair, brows, beards and moustaches) with each level's
     card, triangle, texture and flyaway targets, atlas size and screen size. `ftcore::HairCardSpec` loads and checks
