@@ -11,8 +11,15 @@
 #include "Engine/SkyLight.h"
 #include "Engine/World.h"
 #include "ForgottenThird.h"
+#include "FTText.h"
+#include "HAL/FileManager.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
+#include "Misc/Paths.h"
+
+#include <string>
+#include <vector>
 
 namespace
 {
@@ -97,5 +104,55 @@ UMaterialInterface* FTScene::LoadSurface()
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("%s is missing; run FTBuildWorldMaterials first."), SurfaceMaterial);
 	}
+	return Material;
+}
+
+FString FTScene::SurfaceInstancePackage(const FString& Id)
+{
+	return FString::Printf(TEXT("%s/%s/MI_Surface_%s"), SurfaceFolder, *Id, *Id);
+}
+
+bool FTScene::LoadSurfaceTable(ftcore::SurfaceTable& Table)
+{
+	Table = ftcore::SurfaceTable{};
+	const FString File = FPaths::ProjectDir() / TEXT("Data/Field/surfaces.json");
+	if (!IFileManager::Get().FileExists(*File))
+	{
+		return true;
+	}
+	TArray<uint8> Bytes;
+	std::string Error;
+	std::vector<std::string> Warnings;
+	if (!FFileHelper::LoadFileToArray(Bytes, *File) || !ftcore::importSurfaceTable(FT::BytesAsText(Bytes), Table, &Error, &Warnings))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("Data/Field/surfaces.json refused: %s"), *FT::ToFString(Error).TrimEnd());
+		return false;
+	}
+	for (const std::string& Warning : Warnings)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Data/Field/surfaces.json: %s"), *FT::ToFString(Warning));
+	}
+	return true;
+}
+
+UMaterialInterface* FTScene::LoadSurfaceFor(const ftcore::SurfaceTable& Table, ftcore::WorldKind Kind,
+	ftcore::SurfaceRole Role, FLinearColor& OutTint)
+{
+	const ftcore::SurfaceSpec* Spec = Table.surfaceFor(Kind, Role);
+	if (!Spec)
+	{
+		return nullptr;
+	}
+	const FString Package = SurfaceInstancePackage(FT::ToFString(Spec->id));
+	UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr,
+		*(Package + TEXT(".") + FPackageName::GetShortName(Package)), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	if (!Material)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("%s is missing; run FTBuildSurfaces first. The %s keeps its flat tint."),
+			*Package, *FT::ToFString(ftcore::surfaceRoleName(Role)));
+		return nullptr;
+	}
+	const std::array<float, 3>& Tint = Table.use(Kind, Role).tint;
+	OutTint = FLinearColor(Tint[0], Tint[1], Tint[2]);
 	return Material;
 }

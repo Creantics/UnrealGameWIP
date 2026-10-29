@@ -103,7 +103,7 @@ The maps are generated; don't edit them by hand.
 UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildExploreWorld -World=solhaven -NullRHI -unattended -nopause -nosplash
 ```
 
-Run it again with `-World=lattice` and `-World=unwritten`. `-Style=<spec>` adds a style controller over the photoreal look; the world's `style` in `worlds.json` isn't used yet. Build `M_WorldSurface` first (`-run=FTBuildWorldMaterials`). Each run writes `/Game/Maps/<map>` and contains:
+Run it again with `-World=lattice` and `-World=unwritten`. `-Style=<spec>` adds a style controller over the photoreal look; the world's `style` in `worlds.json` isn't used yet. Build `M_WorldSurface` (`-run=FTBuildWorldMaterials`) and the photographed surfaces (`-run=FTBuildSurfaces`) first; see [SCENE_LOOK.md](SCENE_LOOK.md). Each run writes `/Game/Maps/<map>` and contains:
 - a floor and perimeter walls
 - roads, plazas, buildings, trees and rocks as instanced meshes on a few holder actors (about 90 actors in all)
 - the landmarks and beacons
@@ -112,6 +112,8 @@ Run it again with `-World=lattice` and `-World=unwritten`. `-Style=<spec>` adds 
 - a navmesh per district
 
 The build fails if any field goal, from `kFieldGoals` or `goals.json`, has no full navmesh path from any district's spawn. The roads between districts have no navmesh, because they are straight and clear.
+
+The ground, roads, plazas, buildings, roofs, landmarks, trunks and rocks wear the photographed surfaces that `Data/Field/surfaces.json` gives the world's kind, and the rest keep flat tints. The build logs how many roles are dressed, for example `FTBuildExploreWorld: 8 of 8 surface roles wear photographed surfaces.` for Solhaven and `0 of 8` for the two kinds that have no surfaces yet.
 
 The last line logged reads like this:
 

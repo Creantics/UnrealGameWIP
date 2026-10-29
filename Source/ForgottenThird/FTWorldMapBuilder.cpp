@@ -38,6 +38,7 @@
 #include "ftcore/ExploreDemo.h"
 #include "ftcore/FieldGoals.h"
 #include "ftcore/Overworld.h"
+#include "ftcore/SurfaceTable.h"
 #include "ftcore/WorldLayout.h"
 
 #include <string>
@@ -319,6 +320,11 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildExploreWorld: a /Engine/BasicShapes mesh or the world surface material is missing."));
 		return 1;
 	}
+	ftcore::SurfaceTable Surfaces;
+	if (!FTScene::LoadSurfaceTable(Surfaces))
+	{
+		return 1;
+	}
 
 	UPackage* Package = nullptr;
 	FString File;
@@ -329,17 +335,31 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 	}
 
 	const FWorldPalette Palette = WorldPaletteFor(Layout->kind());
-	UMaterialInterface* GroundTint = WorldTint(Package, Base, TEXT("MI_World_Ground"), Palette.Ground);
-	UMaterialInterface* RoadTint = WorldTint(Package, Base, TEXT("MI_World_Road"), Palette.Road);
-	UMaterialInterface* PlazaTint = WorldTint(Package, Base, TEXT("MI_World_Plaza"), Palette.Plaza);
-	UMaterialInterface* BuildingTint = WorldTint(Package, Base, TEXT("MI_World_Building"), Palette.Building);
-	UMaterialInterface* RoofTint = WorldTint(Package, Base, TEXT("MI_World_Roof"), Palette.Roof);
-	UMaterialInterface* LandmarkTint = WorldTint(Package, Base, TEXT("MI_World_Landmark"), Palette.Landmark);
+	// A role wears the photographed surface surfaces.json gives it, in its tint, else the palette's flat tint.
+	int32 Dressed = 0;
+	const auto Dress = [&](ftcore::SurfaceRole Role, const TCHAR* Name, const FLinearColor& Flat)
+	{
+		FLinearColor Tint;
+		if (UMaterialInterface* Surface = FTScene::LoadSurfaceFor(Surfaces, Layout->kind(), Role, Tint))
+		{
+			++Dressed;
+			return WorldTint(Package, Surface, Name, Tint);
+		}
+		return WorldTint(Package, Base, Name, Flat);
+	};
+	UMaterialInterface* GroundTint = Dress(ftcore::SurfaceRole::Ground, TEXT("MI_World_Ground"), Palette.Ground);
+	UMaterialInterface* RoadTint = Dress(ftcore::SurfaceRole::Road, TEXT("MI_World_Road"), Palette.Road);
+	UMaterialInterface* PlazaTint = Dress(ftcore::SurfaceRole::Plaza, TEXT("MI_World_Plaza"), Palette.Plaza);
+	UMaterialInterface* BuildingTint = Dress(ftcore::SurfaceRole::Building, TEXT("MI_World_Building"), Palette.Building);
+	UMaterialInterface* RoofTint = Dress(ftcore::SurfaceRole::Roof, TEXT("MI_World_Roof"), Palette.Roof);
+	UMaterialInterface* LandmarkTint = Dress(ftcore::SurfaceRole::Landmark, TEXT("MI_World_Landmark"), Palette.Landmark);
 	UMaterialInterface* AnchorTint = WorldTint(Package, Base, TEXT("MI_World_Anchor"), Palette.Anchor);
 	UMaterialInterface* BeaconTint = WorldTint(Package, Base, TEXT("MI_World_Beacon"), FLinearColor(1.f, 0.8f, 0.3f));
-	UMaterialInterface* WoodTint = WorldTint(Package, Base, TEXT("MI_World_Wood"), FLinearColor(0.3f, 0.2f, 0.12f));
+	UMaterialInterface* WoodTint = Dress(ftcore::SurfaceRole::Wood, TEXT("MI_World_Wood"), FLinearColor(0.3f, 0.2f, 0.12f));
 	UMaterialInterface* LeavesTint = WorldTint(Package, Base, TEXT("MI_World_Leaves"), FLinearColor(0.18f, 0.42f, 0.16f));
-	UMaterialInterface* RockTint = WorldTint(Package, Base, TEXT("MI_World_Rock"), FLinearColor(0.42f, 0.4f, 0.38f));
+	UMaterialInterface* RockTint = Dress(ftcore::SurfaceRole::Rock, TEXT("MI_World_Rock"), FLinearColor(0.42f, 0.4f, 0.38f));
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildExploreWorld: %d of %d surface roles wear photographed surfaces."), Dressed,
+		static_cast<int32>(ftcore::kSurfaceRoleCount));
 
 	FActorSpawnParameters Spawn;
 	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;

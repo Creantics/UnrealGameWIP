@@ -164,6 +164,17 @@ The emissive level is max(emissive factor) × emissive strength. Every message n
 
 Checklist, texture-ready: [ ] no baked light, shadow or hatch (a fabric's ambient occlusion and crease cavity from `md_garment.py`'s base stack are fine: they carry no light direction); [ ] pockets in base colour, no vertex colour; [ ] Glow/Eye/Skill/Rule in the names of the materials that must glow; [ ] import passes with the right `-Pack=` and `-Role=`.
 
+### World surfaces
+
+The world maps' ground, walls, roofs and rocks wear photographed surfaces, listed in `Data/Field/surfaces.json` and built by `-run=FTBuildSurfaces` (see `docs/SCENE_LOOK.md`). To add one:
+
+- CC0 only, from an https source. The loader refuses anything else. Record the source page's URL and the licence, not the author.
+- Three JPEG maps per surface, named `<id>_diff_<res>.jpg` (colour, sRGB), `<id>_nor_dx_<res>.jpg` (normal, **DirectX**: green points down the image, the opposite of the glTF rule above) and `<id>_arm_<res>.jpg` (ambient occlusion, roughness and metal in R, G and B). `tools/fetch_surfaces.py` fetches them in these names from the library the current surfaces come from.
+- `tileCm` is the real width one copy covers, read from the source page. Don't guess it: the projection holds that size on every shape, so a wrong value shows as bricks or tiles the wrong size.
+- `res` 1k for surfaces seen small (bark, rocks), 2k for the ground, walls and roofs; 4k is allowed but unused.
+- Some packed maps have an empty roughness channel (the gravel road's averages 0.001), which renders the surface as a mirror. `-run=FTBuildSurfaces` refuses such a surface until it has a `roughness` (0..1) in surfaces.json, a constant in place of the channel. Read the value off the source's separate roughness map. If that map has real texture, such as wet patches or worn stones, fetch the separate roughness and occlusion maps and pack them into a new arm map instead; no tool does that yet.
+- Add the surface to the role of each world kind that should wear it, rebuild the surfaces, then rebuild the maps.
+
 ### Props and static meshes
 
 ```
