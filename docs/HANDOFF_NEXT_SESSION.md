@@ -1,12 +1,69 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-29 ~13:35. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-29 ~17:05. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-29 ~13:35): the big worlds' ground wears photographed ground, rock and roads (main d66094d, a
+- **NEWEST (2026-10-29 ~17:05): the big worlds' ground is worn by rain, its rock settles into the high ground by
+  height and its detail fades with distance (main 0f4ad2f, a fast-forward of `terrain-worlds`).**
+  - Core (e3ea6d0): `ftcore::generateWorldTerrain` wears each world's open ground before it raises the mountains,
+    the coast, the abyss and the features (`wear()` in `Core/src/Terrain.cpp`):
+    - 200,000 droplets run downhill over the square and 60 m round it, cutting where they run fast and laying down
+      what they carry where they slow;
+    - the ground keeps its mass, the pads, the roads' shoulders and the ruins' mesas and gullies don't wear, and
+      steep ground wears less from a slope of 0.7 and not at all from 1.2;
+    - a test holds the worn open ground to curving at least 1.25 times as sharply as unworn (1.48 to 1.60 now).
+    Generation takes about 1.9 s a world optimized, 7 to 9 s in Debug. `TerrainOptions::erode` turns it off, for
+    measuring only.
+  - The ground master `M_WorldGround` (`-run=FTBuildGround`):
+    - rock on the high ground: each map's instance starts it 10 m over the highest ground inside the square (45.6 m
+      in the town, 46.0 m among the towers; nothing in the ruins stands that high), where gentler ground joins the
+      slope rock over a 40 m band whose line a 40 m mottle moves;
+    - rock and ground meet by height: each surface's occlusion map, about its own mean, stands for its height, so
+      the stone breaks through first at its high points and the ground keeps to its low ones;
+    - far off, from 30 to 120 m from the eye, a third copy of the ground 5 times the size takes 0.6 of its colour,
+      the bumps ease to 0.4 of their strength and the fine mottle fades.
+    `docs/SCENE_LOOK.md` (The ground) has the parameters.
+  - `-WorldDistrict=<n>` starts the lead, and a tour, on district n's spawn and floor. With `-ExplorePortrait` it
+    frames the ground from a climax's hilltop (Solhaven's district 14, Lattice's 1, Unwritten's 4).
+  - The three maps were rebuilt and now stand on the worn ground. Lattice: 1.0% of the square steeper than 1 in 1,
+    25 props left off (28 before). Unwritten: 78 props left off (77). Solhaven's numbers are unchanged, and every pad
+    stays where it was.
+  - How it looks, from 11 offscreen renders (from each entry close behind the lead, 25 m up, 60 m up and 120 m back,
+    and at eye height on each climax), with no material compile or sampler error:
+    - The close and mid views match the last pass; cobbles and gravel show at their real size.
+    - The far grass and sand have lost their tile grain and speckle, but the grass stays one even green and the
+      ruins' plain keeps one even tone to the horizon. Unwritten's worn ground rolls in soft folds.
+    - From the hilltops the mountains round Solhaven and Lattice read as smooth tan and khaki slopes with broad
+      green or pale patches. The far rock is one flat colour.
+  - Checks:
+    - Every tour still visits every district (Solhaven 18 legs in 814 s of game time, Lattice 15 in 803 s,
+      Unwritten 17 in 992 s), with the lead's feet 5 cm over the entry's floor.
+    - The headless story run (`-AlphaAutoPlay -AlphaFast`) finishes 73 scenes and 167 screens (40 battle, 91 field,
+      36 stub) with 0 stuck, 0 warnings and 12 overworld hops. Its 59 placings on the three worlds set the lead's
+      feet 5 to 6 cm over the district's floor, on floors from -19.7 to 36.0 m.
+    - Gate: 828 doctest cases, ctest 4/4. UBT Succeeded in the worktree and in the main checkout (with
+      `-DisablePlugin=Fab`).
+  - Next, one structural pass (advisor): the mountains.
+    - Wear them in Core after `range()` raises them: a second rain pass with steepness limits of its own, or finer
+      ridges with scree at their feet. Their ridges are unworn noise now, the finest about 14 m across, so from a
+      hilltop they read as smooth clay.
+    - Give the rock a far copy like the ground's. From 300 m it shows as its photo's mean colour.
+    - Replace the 40 m mottle that sets the high rock's edge with a mask the builder bakes from the ground's shape
+      over the whole Landscape: rock on the convex ridges, ground in the hollows.
+    - The town's `rock_wall` reads warm brown. `test_surface_table` needs every listed surface worn, so giving the
+      town another rock means retiring `rock_wall` or giving it another role.
+  - Still to come:
+    - The building rings round each climax's plaza hide most of the view from it (a layout fix).
+    - Trees and rocks are cubes and spheres.
+    - Scattered grass waits for the user's go.
+    - The abyss and shaft walls draw as stretched quads until a cliff-mesh or fog pass.
+    - No lakes are placed.
+    - The clockwork relief map.
+    - The three deferred looks: the gullies, the disc pads and the straight quay.
+- **Earlier (2026-10-29 ~13:35): the big worlds' ground wears photographed ground, rock and roads (main d66094d, a
   fast-forward of `terrain-worlds`).**
   - The ground master `M_WorldGround` (`-run=FTBuildGround`) blends three photographed surfaces on each world's
     Landscape:
