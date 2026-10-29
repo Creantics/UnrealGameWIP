@@ -1,9 +1,10 @@
 # The local gate: Core syntax check (clang, warnings as errors), CMake build + ctest, then with -Ubt
 # the UBT editor build, then with -Alpha the headless alpha run on the 8x clock (implies -Ubt; needs
 # the local Data/Story, so only the main checkout can run it). -AlphaFull runs it at full speed
-# instead (about 45 minutes). Works from any worktree. Prints GATE OK on success.
-param([switch]$Ubt, [switch]$Alpha, [switch]$AlphaFull)
-if ($Alpha -or $AlphaFull) { $Ubt = $true }
+# instead (about 45 minutes). -HairCards adds the opt-in FTHairCards plugin to the UBT build (implies
+# -Ubt; docs/HAIR_CARDS.md). Works from any worktree. Prints GATE OK on success.
+param([switch]$Ubt, [switch]$Alpha, [switch]$AlphaFull, [switch]$HairCards)
+if ($Alpha -or $AlphaFull -or $HairCards) { $Ubt = $true }
 $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent $PSScriptRoot
 $cm = 'C:\Program Files\CMake\bin'
@@ -29,7 +30,9 @@ if ($Ubt) {
         Where-Object { $_.CommandLine -and $_.CommandLine.Replace('/', '\').ToLower().Contains($uproject.ToLower()) } |
         Select-Object @{ n = 'Id'; e = { $_.ProcessId } }
     if ($running) { "UNREAL EDITOR RUNNING (PID $($running.Id -join ',')); skipping UBT"; exit 2 }
-    & 'E:\Epic Games\UE_5.8\Engine\Build\BatchFiles\Build.bat' ForgottenThirdEditor Win64 Development "-Project=$repo\ForgottenThird.uproject" -WaitMutex -NoHotReloadFromIDE *> $log
+    $plugins = @()
+    if ($HairCards) { $plugins += '-EnablePlugin=FTHairCards' }
+    & 'E:\Epic Games\UE_5.8\Engine\Build\BatchFiles\Build.bat' ForgottenThirdEditor Win64 Development "-Project=$repo\ForgottenThird.uproject" -WaitMutex -NoHotReloadFromIDE @plugins *> $log
     $code = $LASTEXITCODE
     Get-Content $log | Select-String 'error|warning|Result:'
     if ($code -ne 0) { "UBT FAILED ($code)"; exit 1 }

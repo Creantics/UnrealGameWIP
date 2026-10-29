@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "grooms": [
+    {
+      "id": "duy_hair", "groom": "/Game/Characters/Duy/MH/Grooms/duy_hs_m9", "out": "/Game/Characters/Duy/MH/Grooms/Cards", "seed": 1,
+      "lods": [
+        { "lod": 0, "cards": 2000, "triangles": 40000, "textures": 75, "atlas": 4096 },
+        { "lod": 1, "cards": 1000, "triangles": 16000, "textures": 50, "atlas": 2048 },
+        { "lod": 2, "cards": 400, "triangles": 6000, "textures": 30, "atlas": 1024 }
+      ]
+    },
+    {
+      "id": "duy_brows", "groom": "/Game/Characters/Duy/MH/Real3/Game/duy_br_d8_game", "out": "/Game/Characters/Duy/MH/Real3/Game/Cards", "seed": 1,
+      "lods": [
+        { "lod": 0, "cards": 300, "triangles": 3000, "textures": 20, "atlas": 1024 },
+        { "lod": 1, "cards": 150, "triangles": 1200, "textures": 12, "atlas": 1024 }
+      ]
+    },
+    {
+      "id": "devin_goatee", "groom": "/Game/Characters/Devin/MH/Grooms/goatee_g16", "out": "/Game/Characters/Devin/MH/Grooms/Cards", "seed": 1,
+      "lods": [
+        { "lod": 0, "cards": 800, "triangles": 10000, "textures": 40, "atlas": 2048 },
+        { "lod": 1, "cards": 400, "triangles": 4000, "textures": 25, "atlas": 1024 }
+      ]
+    },
+    {
+      "id": "devin_moustache", "groom": "/Game/Characters/Devin/MH/Grooms/mustache_m13", "out": "/Game/Characters/Devin/MH/Grooms/Cards", "seed": 1,
+      "lods": [
+        { "lod": 0, "cards": 500, "triangles": 6000, "textures": 30, "atlas": 2048 },
+        { "lod": 1, "cards": 250, "triangles": 2500, "textures": 20, "atlas": 1024 }
+      ]
+    },
+    {
+      "id": "third_hair", "groom": "/Game/Characters/Third/MH/Grooms/third_hs_t7", "out": "/Game/Characters/Third/MH/Grooms/Cards", "seed": 1,
+      "lods": [
+        { "lod": 0, "cards": 2000, "triangles": 40000, "textures": 75, "atlas": 4096 },
+        { "lod": 1, "cards": 1000, "triangles": 16000, "textures": 50, "atlas": 2048 },
+        { "lod": 2, "cards": 400, "triangles": 6000, "textures": 30, "atlas": 1024 }
+      ]
+    },
+    {
+      "id": "third_beard", "groom": "/Game/Characters/Third/MH/Grooms/third_bd_t6", "out": "/Game/Characters/Third/MH/Grooms/Cards", "seed": 1,
+      "lods": [
+        { "lod": 0, "cards": 1500, "triangles": 20000, "textures": 50, "atlas": 2048 },
+        { "lod": 1, "cards": 700, "triangles": 8000, "textures": 30, "atlas": 1024 },
+        { "lod": 2, "cards": 300, "triangles": 3000, "textures": 20, "atlas": 1024 }
+      ]
+    },
+    {
+      "id": "third_moustache", "groom": "/Game/Characters/Third/MH/Grooms/third_mu_t7", "out": "/Game/Characters/Third/MH/Grooms/Cards", "seed": 1,
+      "lods": [
+        { "lod": 0, "cards": 500, "triangles": 6000, "textures": 30, "atlas": 2048 },
+        { "lod": 1, "cards": 250, "triangles": 2500, "textures": 20, "atlas": 1024 }
+      ]
+    }
+  ]
+}

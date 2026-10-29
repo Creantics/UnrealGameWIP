@@ -49,6 +49,7 @@ add_library(ftcore STATIC
     src/FieldGoals.cpp
     src/WorldLayout.cpp
     src/SurfaceTable.cpp
+    src/HairCardSpec.cpp
     src/Overworld.cpp
     src/Face.cpp
     src/FaceDirection.cpp
@@ -136,6 +137,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_field_goals.cpp
         tests/test_world_layout.cpp
         tests/test_surface_table.cpp
+        tests/test_hair_card_spec.cpp
         tests/test_overworld.cpp
         tests/test_face.cpp
         tests/test_face_direction.cpp

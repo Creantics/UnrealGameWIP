@@ -1,0 +1,27 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "FT Hair Cards",
+	"Description": "Opt-in editor command FT.HairCards that builds and saves hair cards for the grooms in Data/Grooms/hair_cards.json with the engine's hair card generator. See docs/HAIR_CARDS.md.",
+	"Category": "Editor",
+	"EnabledByDefault": false,
+	"CanContainContent": false,
+	"Modules": [
+		{
+			"Name": "FTHairCards",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "HairStrands",
+			"Enabled": true
+		},
+		{
+			"Name": "HairCardGenerator",
+			"Enabled": true
+		}
+	]
+}
