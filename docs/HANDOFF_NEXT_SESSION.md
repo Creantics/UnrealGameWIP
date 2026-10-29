@@ -1,12 +1,53 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-29 ~11:15. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-29 ~13:35. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-29 ~11:15): the three big world maps stand on that ground (main 82b03b6, a fast-forward of
+- **NEWEST (2026-10-29 ~13:35): the big worlds' ground wears photographed ground, rock and roads (main d66094d, a
+  fast-forward of `terrain-worlds`).**
+  - The ground master `M_WorldGround` (`-run=FTBuildGround`) blends three photographed surfaces on each world's
+    Landscape:
+    - the kind's ground, laid twice at two angles and sizes so neither repeat lines up;
+    - rock wherever the ground is steeper than about 1 in 1, projected along the world's three axes;
+    - the road surface along every road, from a road mask the builder saves with each map (`ftcore::roadMask`, a
+      byte per half metre of the playable square).
+    `docs/SCENE_LOOK.md` (The ground) has the parameters, the samplers and how it looks.
+  - `Data/Field/surfaces.json` now dresses each kind's ground, road and rock:
+    | World | Ground | Rock | Road |
+    |---|---|---|---|
+    | Solhaven | leafy_grass, tinted greener | rock_wall | gravel_road |
+    | Lattice | gravel_floor_02, tinted a touch cooler | worn_rock_natural_01, tinted grey | clean_asphalt |
+    | Unwritten | gravelly_sand | worn_rock_natural_01 | dry_mud_field_001 |
+    That is 13 CC0 surfaces, 39 textures and about 120 MB through LFS. The old grass_ground is gone.
+    `FTBuildSurfaces -Only=<id>,...` rebuilds just the named surfaces.
+  - How it looks, from offscreen renders:
+    - Solhaven's grass reads greener, though lime rather than a lawn's green. From a road, the gravel and the
+      cobbles show at their real size. The far view shows the roads running between the districts.
+    - Lattice's ground is pale, cool gravel, and its asphalt roads read from afar. The mountains' steep faces wear
+      grey stone. A dark rock photo came first, but it read as holes even at the tint's cap, so it was swapped.
+    - Unwritten's sand shows no repeat from 25 m up or from afar. Its mud roads stand out, and its mesas and a
+      pit's funnel show.
+  - Checks:
+    - The maps were rebuilt on the same ground. Every tour still visits every district (Solhaven 18 legs, Lattice
+      15, Unwritten 17), with the lead's feet 5 cm over the entry's floor.
+    - The headless story run (`-AlphaAutoPlay -AlphaFast`) finishes 73 scenes and 167 screens (40 battle, 91 field,
+      36 stub) with 0 stuck, 0 warnings and 12 overworld hops. Its 59 placings on the three worlds set the lead's
+      feet 5 to 6 cm over the district's floor, on floors from -19.7 to 36.0 m.
+    - Gate: 827 doctest cases, ctest 4/4. UBT Succeeded in the worktree and in the main checkout (with
+      `-DisablePlugin=Fab`).
+  - Not now (advisor): a height blend between rock and ground, a fade of the ground's detail with distance,
+    anti-tiling in the shader, and a second ground surface.
+  - Still to come:
+    - Trees and rocks are cubes and spheres.
+    - Scattered grass waits for the user's go.
+    - The abyss and shaft walls draw as stretched quads until a cliff-mesh or fog pass.
+    - No lakes are placed.
+    - The clockwork relief map.
+    - The three deferred looks: the gullies, the disc pads and the straight quay.
+- **Earlier (2026-10-29 ~11:15): the three big world maps stand on that ground (main 82b03b6, a fast-forward of
   `terrain-worlds`).**
   - `FTBuildExploreWorld` imports each world's height field (the entry below) as a Landscape at Z scale 100: a
     vertex per sample, 6 x 6 components of 2 x 63 quads over 1.5 km, so every height lands exactly. The material
@@ -43,9 +84,9 @@ Private notes (character references, concept-art review, script status) are in `
     - Solhaven's grass photo is dry, so it shows as khaki from any distance.
     - Lattice and Unwritten keep flat tints.
     - Until the ground master lands, a road is only its cut.
-  - Next, in progress: a ground master on world axes. It draws rock on steep ground by slope, the roads from a
-    mask, and the grass in broad patches. The towers and ruins kinds also get photographed surfaces for ground, road
-    and rock, picked by measured colour.
+  - Next, now landed (the entry above): a ground master on world axes. It draws rock on steep ground by slope, the
+    roads from a mask, and the grass in broad patches. The towers and ruins kinds also get photographed surfaces for
+    ground, road and rock, picked by measured colour.
   - Still to come:
     - Trees and rocks are cubes and spheres.
     - Scattered grass waits for the user's go.
