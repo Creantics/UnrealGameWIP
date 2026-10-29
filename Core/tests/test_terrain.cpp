@@ -85,7 +85,7 @@ constexpr float kRangeWearFrom = 60.f;  // m past the edges (the farther of the 
 constexpr float kRangeWearTo = 220.f;   // to this,
 constexpr float kRangeKept = 230.f;     // and from this on leaves them exactly as raised, the horizon (the slope limit may
                                         // trim a few centimetres between, where they meet the worn ground)
-constexpr double kRangeWear = 1.5;      // m it moves them on average between, off the town's coast, at least: 3.7 to 3.9
+constexpr double kRangeWear = 1.5;      // m it moves them on average between, off the town's coast, at least: 3.8 to 4.1
 
 float between(Vec2 a, Vec2 b) { return std::hypot(a.x - b.x, a.y - b.y); }
 

@@ -252,6 +252,7 @@ struct KindGround {
     WorldKind kind = WorldKind::Town;
     float half = 500.f; // the playable square's
     std::uint32_t seed = 1;
+    std::uint32_t rangeSeed = 1; // the mountains': `seed` mixed with the kind, so that two kinds on one seed differ
     std::array<Vec2, 2> bendAt{};
     std::array<float, 2> bendBy{};
     std::size_t bends = 0;
@@ -323,13 +324,13 @@ struct KindGround {
         if (ex <= 0.f && ey <= 0.f) return 0.f;
         const Vec2 edge{std::clamp(p.x, -half, half), std::clamp(p.y, -half, half)};
         const float wander =
-            std::clamp(0.5f + 0.9f * fbm({edge.x / 180.f + 2.3f, edge.y / 180.f - 6.7f}, 3, 0.5f, seed ^ 0x85ebca6bu), 0.f, 1.f);
+            std::clamp(0.5f + 0.9f * fbm({edge.x / 180.f + 2.3f, edge.y / 180.f - 6.7f}, 3, 0.5f, rangeSeed ^ 0x85ebca6bu), 0.f, 1.f);
         const float foot = std::hypot(std::max(ex, 0.f), std::max(ey, 0.f)) - kFootWander * wander;
         if (foot <= 0.f) return 0.f;
         const float floor = std::max(kRangeFloor - ground, kRangeFloorMin);
-        const float crest = ridged({p.x / 230.f, p.y / 230.f}, 5, seed ^ 0xc2b2ae35u);
+        const float crest = ridged({p.x / 230.f, p.y / 230.f}, 5, rangeSeed ^ 0xc2b2ae35u);
         const float band =
-            kFootBand * smooth01((fbm({p.x / 60.f - 5.3f, p.y / 60.f + 7.1f}, 3, 0.5f, seed ^ 0xd3a2646cu) + 0.05f) / 0.35f);
+            kFootBand * smooth01((fbm({p.x / 60.f - 5.3f, p.y / 60.f + 7.1f}, 3, 0.5f, rangeSeed ^ 0xd3a2646cu) + 0.05f) / 0.35f);
         return band * smooth01(foot / kFootRun) + smooth01(foot / kRangeClimb) * (floor + kRangeRidge * crest);
     }
 
@@ -847,6 +848,7 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
     // The entry at the base and the climax kClimaxWant high, where the roads allow; then the swell
     // bends to meet them both, and the majors stand above or below the swell where they are.
     KindGround ground{spec.kind, spec.side * 0.5f, detail::mixSeed(spec.seed ^ 0x7e5a1c3du)};
+    ground.rangeSeed = detail::mixSeed(ground.seed ^ (0x632be5abu * (static_cast<std::uint32_t>(spec.kind) + 1u)));
     if (entry >= 0) settle(static_cast<std::size_t>(entry), 0.f);
     // The climax stands no higher than the sightline can still clear the pads and roads between.
     // With the near pairs' limits joined to the roads' (`differ`), each other pad's lowest height
