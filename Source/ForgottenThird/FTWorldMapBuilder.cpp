@@ -1,6 +1,7 @@
 #include "FTWorldMapBuilder.h"
 
 #if WITH_EDITOR
+#include "AssetCompilingManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Builders/CubeBuilder.h"
 #include "Components/BrushComponent.h"
@@ -9,6 +10,7 @@
 #include "Engine/Polys.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
+#include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerStart.h"
@@ -71,10 +73,12 @@ UMaterialInterface* WorldTint(UPackage* Package, UMaterialInterface* Base, const
 	return Mic;
 }
 
-// The colours of one world kind.
+// The colours of one world kind, and how far its ground drifts between warm and cool over broad patches (the ground
+// master's "HueDrift").
 struct FWorldPalette
 {
 	FLinearColor Ground, Road, Plaza, Building, Roof, Landmark, Anchor;
+	float GroundHue;
 };
 
 FWorldPalette WorldPaletteFor(ftcore::WorldKind Kind)
@@ -83,14 +87,100 @@ FWorldPalette WorldPaletteFor(ftcore::WorldKind Kind)
 	{
 	case ftcore::WorldKind::Towers:
 		return {{0.2f, 0.24f, 0.3f}, {0.35f, 0.38f, 0.42f}, {0.5f, 0.55f, 0.62f}, {0.45f, 0.52f, 0.62f}, {0.3f, 0.35f, 0.45f},
-			{0.7f, 0.75f, 0.85f}, {0.55f, 0.7f, 0.95f}};
+			{0.7f, 0.75f, 0.85f}, {0.55f, 0.7f, 0.95f}, 0.02f};
 	case ftcore::WorldKind::Ruins:
 		return {{0.5f, 0.47f, 0.4f}, {0.6f, 0.56f, 0.48f}, {0.68f, 0.65f, 0.6f}, {0.6f, 0.58f, 0.55f}, {0.45f, 0.42f, 0.4f},
-			{0.8f, 0.78f, 0.72f}, {0.9f, 0.88f, 0.8f}};
+			{0.8f, 0.78f, 0.72f}, {0.9f, 0.88f, 0.8f}, 0.05f};
 	default:
 		return {{0.23f, 0.33f, 0.17f}, {0.45f, 0.38f, 0.28f}, {0.55f, 0.55f, 0.58f}, {0.75f, 0.68f, 0.55f}, {0.5f, 0.2f, 0.15f},
-			{0.62f, 0.58f, 0.5f}, {0.95f, 0.78f, 0.45f}};
+			{0.62f, 0.58f, 0.5f}, {0.95f, 0.78f, 0.45f}, 0.08f};
 	}
+}
+
+// A world map's road mask is this many pixels across the playable square, about half a metre each over 1 km, so a
+// road's fade spans eight of them.
+constexpr int32 kWorldRoadMaskSize = 2048;
+
+// The ground's instance of the ground master (FTScene::GroundMaterial), MI_World_Ground. Each of its layers wears the
+// surface the world's kind gives the layer's role, at the surface's scale, in its tint and with its roughness, and the
+// roads come from a new T_RoadMask of ftcore::roadMask's bytes. Null, with a warning and nothing made, when the master,
+// a layer's surface or one of their textures is missing.
+UMaterialInterface* WorldGround(UPackage* Package, const ftcore::SurfaceTable& Surfaces, const ftcore::WorldLayout& Layout, float Hue)
+{
+	constexpr int32 Layers = UE_ARRAY_COUNT(FTScene::GroundLayers);
+	constexpr int32 Maps = UE_ARRAY_COUNT(FTScene::SurfaceMaps);
+	UMaterialInterface* Master = LoadObject<UMaterialInterface>(nullptr,
+		*(FString(FTScene::GroundMaterial) + TEXT(".") + FPackageName::GetShortName(FTScene::GroundMaterial)), nullptr,
+		LOAD_NoWarn | LOAD_Quiet);
+	if (!Master)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildExploreWorld: %s is missing; run FTBuildGround first. The ground wears one surface and the roads stay bare."),
+			FTScene::GroundMaterial);
+		return nullptr;
+	}
+	const ftcore::SurfaceSpec* Specs[Layers] = {};
+	UTexture* Textures[Layers][Maps] = {};
+	for (int32 L = 0; L < Layers; ++L)
+	{
+		Specs[L] = Surfaces.surfaceFor(Layout.kind(), FTScene::GroundLayers[L].Role);
+		if (!Specs[L])
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildExploreWorld: Data/Field/surfaces.json gives this kind's %s no surface. The ground wears one surface and the roads stay bare."),
+				*FT::ToFString(ftcore::surfaceRoleName(FTScene::GroundLayers[L].Role)));
+			return nullptr;
+		}
+		const FString Id = FT::ToFString(Specs[L]->id);
+		for (int32 M = 0; M < Maps; ++M)
+		{
+			Textures[L][M] = FTScene::LoadSurfaceTexture(Id, FTScene::SurfaceMaps[M].Suffix);
+			if (!Textures[L][M])
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildExploreWorld: %s is missing; run FTBuildSurfaces first. The ground wears one surface and the roads stay bare."),
+					*FTScene::SurfaceTexturePackage(Id, FTScene::SurfaceMaps[M].Suffix));
+				return nullptr;
+			}
+		}
+	}
+
+	TArray<uint8> Bytes;
+	Bytes.SetNumZeroed(kWorldRoadMaskSize * kWorldRoadMaskSize);
+	ftcore::roadMask(Layout, static_cast<std::size_t>(kWorldRoadMaskSize), Bytes.GetData());
+	int32 OnRoad = 0;
+	for (const uint8 Byte : Bytes)
+	{
+		OnRoad += Byte >= 128 ? 1 : 0;
+	}
+	UTexture2D* RoadMask = FTScene::NewRoadMask(Package, TEXT("T_RoadMask"), kWorldRoadMaskSize, Bytes.GetData(), RF_Public);
+
+	UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, TEXT("MI_World_Ground"), RF_Public);
+	Mic->SetParentEditorOnly(Master);
+	for (int32 L = 0; L < Layers; ++L)
+	{
+		const FString Layer = FTScene::GroundLayers[L].Name;
+		for (int32 M = 0; M < Maps; ++M)
+		{
+			Mic->SetTextureParameterValueEditorOnly(FMaterialParameterInfo(*(Layer + FTScene::SurfaceMaps[M].Name)), Textures[L][M]);
+		}
+		const std::array<float, 3>& Tint = Surfaces.use(Layout.kind(), FTScene::GroundLayers[L].Role).tint;
+		Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(*(Layer + TEXT("Tint"))), FLinearColor(Tint[0], Tint[1], Tint[2]));
+		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(*(Layer + TEXT("TileCm"))), Specs[L]->tileCm);
+		if (Specs[L]->roughness >= 0.f)
+		{
+			Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(*(Layer + TEXT("Roughness"))), Specs[L]->roughness);
+		}
+	}
+	Mic->SetTextureParameterValueEditorOnly(FMaterialParameterInfo(TEXT("RoadMask")), RoadMask);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("MaskSideCm")), Layout.side() * 100.f);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("HueDrift")), Hue);
+	Mic->PostEditChange();
+	FString Worn;
+	for (int32 L = 0; L < Layers; ++L)
+	{
+		Worn += FString::Printf(TEXT("%s%s %s"), L > 0 ? TEXT(", ") : TEXT(""), FTScene::GroundLayers[L].Name, *FT::ToFString(Specs[L]->id));
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildExploreWorld: the ground wears %s (%s), its roads from a %d x %d mask (%.1f%% of the square on a road)."),
+		FTScene::GroundMaterial, *Worn, kWorldRoadMaskSize, kWorldRoadMaskSize, 100.0 * OnRoad / Bytes.Num());
+	return Mic;
 }
 
 // An actor holding instanced mesh components (it is saved with them, as instance components).
@@ -254,6 +344,8 @@ UWorld* WorldCreate(const FString& MapName, UPackage*& Package, FString& File)
 // Saves the map and destroys the world; the commandlet's exit code.
 int32 WorldSave(UPackage* Package, UWorld* World, const FString& File)
 {
+	// Whatever is still building for the map (its road mask's texture) finishes before it's saved.
+	FAssetCompilingManager::Get().FinishAllCompilation();
 	FAssetRegistryModule::AssetCreated(World);
 	Package->MarkPackageDirty();
 	FSavePackageArgs Save;
@@ -399,8 +491,18 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 		}
 		return WorldTint(Package, Base, Name, Flat);
 	};
-	UMaterialInterface* GroundTint = Dress(ftcore::SurfaceRole::Ground, TEXT("MI_World_Ground"), Palette.Ground);
-	UMaterialInterface* RoadTint = Dress(ftcore::SurfaceRole::Road, TEXT("MI_World_Road"), Palette.Road);
+	// The ground wears the ground master: its kind's ground, rock where it's steep, and the roads. Without the master or
+	// one of its surfaces it wears the ground's surface alone (or the flat tint), and a road is only its cut.
+	UMaterialInterface* GroundTint = WorldGround(Package, Surfaces, *Layout, Palette.GroundHue);
+	if (GroundTint)
+	{
+		// The ground's and the road's surfaces; the rock's counts with the rocks, which wear it too.
+		Dressed += 2;
+	}
+	else
+	{
+		GroundTint = Dress(ftcore::SurfaceRole::Ground, TEXT("MI_World_Ground"), Palette.Ground);
+	}
 	UMaterialInterface* PlazaTint = Dress(ftcore::SurfaceRole::Plaza, TEXT("MI_World_Plaza"), Palette.Plaza);
 	UMaterialInterface* BuildingTint = Dress(ftcore::SurfaceRole::Building, TEXT("MI_World_Building"), Palette.Building);
 	UMaterialInterface* RoofTint = Dress(ftcore::SurfaceRole::Roof, TEXT("MI_World_Roof"), Palette.Roof);

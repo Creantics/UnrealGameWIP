@@ -1,18 +1,23 @@
 {
   "version": 1,
   "surfaces": [
-    { "id": "grass_ground", "tileCm": 251, "res": "2k", "source": "https://polyhaven.com/a/grass_ground", "license": "CC0" },
+    { "id": "leafy_grass", "tileCm": 200, "res": "2k", "source": "https://polyhaven.com/a/leafy_grass", "license": "CC0" },
     { "id": "gravel_road", "tileCm": 200, "res": "2k", "roughness": 0.95, "source": "https://polyhaven.com/a/gravel_road", "license": "CC0" },
     { "id": "cobblestone_color", "tileCm": 240, "res": "2k", "source": "https://polyhaven.com/a/cobblestone_color", "license": "CC0" },
     { "id": "plastered_wall", "tileCm": 200, "res": "2k", "source": "https://polyhaven.com/a/plastered_wall", "license": "CC0" },
     { "id": "clay_roof_tiles_02", "tileCm": 250, "res": "2k", "source": "https://polyhaven.com/a/clay_roof_tiles_02", "license": "CC0" },
     { "id": "mossy_sandstone", "tileCm": 189, "res": "2k", "source": "https://polyhaven.com/a/mossy_sandstone", "license": "CC0" },
     { "id": "bark_willow", "tileCm": 100, "res": "1k", "source": "https://polyhaven.com/a/bark_willow", "license": "CC0" },
-    { "id": "rock_wall", "tileCm": 200, "res": "1k", "source": "https://polyhaven.com/a/rock_wall", "license": "CC0" }
+    { "id": "rock_wall", "tileCm": 200, "res": "1k", "source": "https://polyhaven.com/a/rock_wall", "license": "CC0" },
+    { "id": "gravel_floor_02", "tileCm": 200, "res": "2k", "source": "https://polyhaven.com/a/gravel_floor_02", "license": "CC0" },
+    { "id": "clean_asphalt", "tileCm": 210, "res": "2k", "source": "https://polyhaven.com/a/clean_asphalt", "license": "CC0" },
+    { "id": "gravelly_sand", "tileCm": 248, "res": "2k", "source": "https://polyhaven.com/a/gravelly_sand", "license": "CC0" },
+    { "id": "dry_mud_field_001", "tileCm": 300, "res": "2k", "source": "https://polyhaven.com/a/dry_mud_field_001", "license": "CC0" },
+    { "id": "worn_rock_natural_01", "tileCm": 200, "res": "2k", "source": "https://polyhaven.com/a/worn_rock_natural_01", "license": "CC0" }
   ],
   "kinds": {
     "town": {
-      "ground": { "surface": "grass_ground" },
+      "ground": { "surface": "leafy_grass", "tint": [0.5, 0.9, 0.35] },
       "road": { "surface": "gravel_road" },
       "plaza": { "surface": "cobblestone_color" },
       "building": { "surface": "plastered_wall", "tint": [1.0, 0.92, 0.8] },
@@ -20,6 +25,16 @@
       "landmark": { "surface": "mossy_sandstone" },
       "wood": { "surface": "bark_willow" },
       "rock": { "surface": "rock_wall" }
+    },
+    "towers": {
+      "ground": { "surface": "gravel_floor_02", "tint": [0.85, 0.9, 1.0] },
+      "road": { "surface": "clean_asphalt" },
+      "rock": { "surface": "worn_rock_natural_01", "tint": [0.45, 0.6, 0.9] }
+    },
+    "ruins": {
+      "ground": { "surface": "gravelly_sand" },
+      "road": { "surface": "dry_mud_field_001" },
+      "rock": { "surface": "worn_rock_natural_01" }
     }
   }
 }

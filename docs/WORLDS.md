@@ -10,7 +10,7 @@ Scenes that aren't placed in a world, such as the house and the pocket, still pl
 
 The **overworld** joins them: a small walkable map with one gate per world. When the story moves from one world to another, the party walks the road between the two gates before the next field step starts.
 
-Each world is a blockout for now: shapes, roads and landmarks on the world's own hills under the shared photoreal look ([SCENE_LOOK.md](SCENE_LOOK.md)). The ground comes from Core (see [Ground](#ground)) and is imported as a Landscape. The trees and rocks are still simple shapes, the ground wears one surface everywhere, and there is no streaming and there are no biomes.
+Each world is a blockout for now: shapes, roads and landmarks on the world's own hills under the shared photoreal look ([SCENE_LOOK.md](SCENE_LOOK.md)). The ground comes from Core (see [Ground](#ground)) and is imported as a Landscape. The ground wears photographed ground, rock on its steep faces and the roads, but the trees and rocks are still simple shapes, nothing grows on the ground yet, and there is no streaming and there are no biomes.
 
 ## Size
 
@@ -115,8 +115,8 @@ The maps are generated; don't edit them by hand.
 UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildExploreWorld -World=solhaven -NullRHI -unattended -nopause -nosplash
 ```
 
-Run it again with `-World=lattice` and `-World=unwritten`. `-Style=<spec>` adds a style controller over the photoreal look; the world's `style` in `worlds.json` isn't used yet. Build `M_WorldSurface` (`-run=FTBuildWorldMaterials`) and the photographed surfaces (`-run=FTBuildSurfaces`) first; see [SCENE_LOOK.md](SCENE_LOOK.md). Each run writes `/Game/Maps/<map>` and contains:
-- the ground: the world's height field as a Landscape 1.5 km across (6 x 6 components of 2 x 63 quads, a quad every 1.98 m), with the roads carved into it
+Run it again with `-World=lattice` and `-World=unwritten`. `-Style=<spec>` adds a style controller over the photoreal look; the world's `style` in `worlds.json` isn't used yet. Build `M_WorldSurface` (`-run=FTBuildWorldMaterials`), the photographed surfaces (`-run=FTBuildSurfaces`) and the ground master (`-run=FTBuildGround`) first; see [SCENE_LOOK.md](SCENE_LOOK.md). Each run writes `/Game/Maps/<map>` and contains:
+- the ground: the world's height field as a Landscape 1.5 km across (6 x 6 components of 2 x 63 quads, a quad every 1.98 m), with the roads carved into it, wearing the map's instance of the ground master and its road mask
 - hidden walls along the playable square's edge, and round each trench, pool and pit at its rim, so the player can't walk into the sea, the abyss or a cut
 - the sea and the pools as water planes
 - plazas, buildings, trees and rocks as instanced meshes on a few holder actors. Each plaza and building stands on its district's pad. Each tree and rock stands on the ground under it, and the build leaves out any on ground steeper than 0.8, under water or in a cut
@@ -127,7 +127,17 @@ Run it again with `-World=lattice` and `-World=unwritten`. `-Style=<spec>` adds 
 
 The build fails if any field goal, from `kFieldGoals` or `goals.json`, has no full navmesh path from any district's spawn. The roads between districts have no navmesh, because they are straight and clear.
 
-The ground (the Landscape's material), plazas, buildings, roofs, landmarks, trunks and rocks wear the photographed surfaces that `Data/Field/surfaces.json` gives the world's kind, and the rest keep flat tints. The road role's surface waits for a ground material that draws the roads onto the Landscape; until then a road is only its cut. The build logs how many roles are dressed, for example `FTBuildExploreWorld: 8 of 8 surface roles wear photographed surfaces.` for Solhaven and `0 of 8` for the two kinds that have no surfaces yet.
+The ground wears the ground master: the kind's ground surface, rock wherever the ground is steeper than about 1 in 1, and the road surface along every road, drawn from a mask of the roads the build makes from the layout ([SCENE_LOOK.md](SCENE_LOOK.md#the-ground)). The plazas, buildings, roofs, landmarks, trunks and rocks wear the photographed surfaces that `Data/Field/surfaces.json` gives the world's kind, and the rest keep flat tints. The build logs what the ground wears and how many roles are dressed:
+
+| World | Ground | Rock | Road | On a road | Roles dressed |
+|---|---|---|---|---|---|
+| solhaven | leafy_grass (tinted) | rock_wall | gravel_road | 2.5% | 8 of 8 |
+| lattice | gravel_floor_02 (tinted) | worn_rock_natural_01 (tinted) | clean_asphalt | 2.1% | 3 of 8 |
+| unwritten | gravelly_sand | worn_rock_natural_01 | dry_mud_field_001 | 1.7% | 3 of 8 |
+
+The tints are the ones surfaces.json gives: the town's grass greener, (0.5, 0.9, 0.35), because the photo's dry grass showed as khaki from any distance; the towers' gravel a touch cooler, (0.85, 0.9, 1.0); and their rock, the ruins' worn rock, grey, (0.45, 0.6, 0.9). The towers first wore a dark rock photo, but even at the tint's cap of 2 it stayed darker than the shadows beside it, and the mountains' steep faces read as holes from afar; the grey worn rock reads lighter than those shadows and darker than the sand.
+
+For Solhaven: `FTBuildExploreWorld: the ground wears /Game/Rendering/M_WorldGround (Ground leafy_grass, Rock rock_wall, Road gravel_road), its roads from a 2048 x 2048 mask (2.5% of the square on a road).` then `FTBuildExploreWorld: 8 of 8 surface roles wear photographed surfaces.` The mask adds 56 to 72 KB to a map.
 
 The build logs the ground's numbers, then the map's. For Solhaven:
 

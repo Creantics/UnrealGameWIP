@@ -67,11 +67,16 @@ and bark. They are all CC0 and come from one library. `Data/Field/surfaces.json`
   for the packed map's roughness when the file's roughness channel is empty. The gravel road's is: without
   it the road rendered as a mirror.
 - per world kind (town, towers, ruins), the surface each role wears and an optional `tint`, a
-  multiplier on the photo's colour. Solhaven's walls are tinted warm this way.
+  multiplier on the photo's colour (0 to 2 per channel). Solhaven's walls are tinted warm this way, and its
+  grass greener, (0.5, 0.9, 0.35): the photo's grass is dry and showed as khaki from any distance. The towers'
+  ground is tinted a touch cooler, (0.85, 0.9, 1.0), and their rock, the ruins' worn rock, grey, (0.45, 0.6,
+  0.9). The towers first wore a dark rock photo, but even at the cap of 2 it stayed darker than the shadows
+  beside it, and the mountains' steep faces read as holes from afar.
 
-Only the town kind (Solhaven) is dressed so far. Lattice and Unwritten keep the flat tints of
-`M_WorldSurface`. So does any role the file doesn't list, and any surface that hasn't been built yet,
-which also logs a warning.
+The town kind (Solhaven) dresses all eight roles. The towers and ruins kinds (Lattice and Unwritten) dress
+only the ground, the roads and the rock, the roles their ground draws (see [The ground](#the-ground)); their
+buildings, plazas, roofs, landmarks and tree trunks keep the flat tints of `M_WorldSurface`. So does any role
+the file doesn't list, and any surface that hasn't been built yet, which also logs a warning.
 
 `M_WorldSurfaceTex` projects each photo three ways, along each shape's own axes, and blends the three
 by how squarely the face meets each axis. An instanced shape uses its own instance's axes, so:
@@ -83,11 +88,7 @@ by how squarely the face meets each axis. An instanced shape uses its own instan
 - the normal map is turned onto the same axes, so the tiles and stones catch the light on the side
   facing it.
 
-A world map's ground is a Landscape ([WORLDS.md](WORLDS.md)) and wears the master the same way. Its axes are
-the Landscape's own, and normalizing them keeps its 1.98 m sample spacing from stretching the photo. A close-up
-from a road shows Solhaven's grass at its real size. From further off, that photo (dry and low in contrast)
-reads as one khaki colour. The master has no layers either, so the steep ground and the roads wear grass too
-until a ground master replaces it (see Later).
+A world map's ground wears a master of its own, `M_WorldGround` (see [The ground](#the-ground)).
 
 Its parameters, in the "Surface" group:
 
@@ -104,13 +105,74 @@ Its parameters, in the "Surface" group:
 
 The albedo is held between 0.03 and 0.8 like the surface master's.
 
-The textures keep their JPEG as their source, so each asset costs about its file's size: 24 textures,
-62.0 MB in all. They are loaded whole rather than streamed, because the streamer judges a texture's
-need from the mesh's UVs, which a projection doesn't use. Compressed with their mips, the six 2k surfaces and
-the two 1k ones take about 70 MB of video memory.
+The textures keep their JPEG as their source, so each asset costs about its file's size: 39 textures for
+13 surfaces, about 120 MB in all. They are loaded whole rather than streamed, because the streamer judges a
+texture's need from the mesh's UVs, which a projection doesn't use. Compressed with their mips, a 2k surface
+takes about 11 MB of video memory and a 1k one about 3 MB. A map loads only its own kind's: Solhaven's six 2k
+and two 1k surfaces take about 73 MB, Lattice's and Unwritten's three 2k ones about 34 MB each, and each map's
+road mask about 6 MB more.
 
 One known flaw: the blockout roofs are cubes turned 45° about one axis, so their gable ends show the
 tiles turned 45°. The building kit will replace those cubes.
+
+## The ground
+
+A world map's ground is a Landscape ([WORLDS.md](WORLDS.md)). It wears `M_WorldGround`, which blends three
+photographed surfaces, the ones surfaces.json gives the world's kind for these roles:
+
+- **ground**: laid flat along the world's X and Y and drawn twice. The second copy is turned 0.6 radians and
+  1.31 times the size, and a broad mottle (about 18 m across) chooses between them, so neither copy's repeat
+  lines up across open ground.
+- **rock**: projected along the world's three axes like `M_WorldSurfaceTex`, wherever the ground is steeper
+  than 0.75 to 1 (37 to 45 degrees), with the line wandering by noise. The renders show it on Lattice's
+  mountain faces, as grey stone darker than the sand and lighter than the shadows beside it.
+- **road**: laid flat inside each road's edge, 3 m from its centre line give or take 40 cm by noise, and
+  softened over `RoadEdgeCm`.
+
+The road comes over the rock, and the rock over the ground. Each layer takes its tint and its roughness, and
+then all three take the same mottles and a drift between warm and cool over broad patches.
+
+The roads come from a mask. `ftcore::roadMask` fills one byte for each half metre of the playable square: 255
+within a metre of a road's centre line, falling in a straight line to 0 five metres out, so a filtered read
+gives back the distance to the nearest road. The outermost ring is 0, and the mask is clamped, so no road shows
+past the square. The builder keeps it in the map's package as `T_RoadMask`: 2048 x 2048, uncompressed, loaded
+whole, and stored as a PNG of 56 to 72 KB.
+
+Each map gets one instance of the master, `MI_World_Ground`, in its own package. It carries the three
+surfaces' textures, tints, tile sizes and roughness from surfaces.json, the mask and the square's width, and
+`HueDrift`: 0.08 in the town, 0.02 among the towers and 0.05 in the ruins. When the master or one of the three
+surfaces hasn't been built, the builder warns and the ground wears its ground surface alone through
+`M_WorldSurfaceTex` (or the flat tint), with no rock and no roads.
+
+Its parameters:
+
+- `GroundAlbedo`, `GroundNormal` and `GroundArm`, and the same for `Rock` and `Road`: the maps. The defaults
+  are the town's surfaces.
+- `GroundTint` (white), `GroundTileCm` (200) and `GroundRoughness` (-1), and the same for `Rock` and `Road`.
+  A roughness below zero keeps the packed map's.
+- `RoadMask` (the empty `T_GroundNoRoads`, so the master alone draws no road), `MaskSideCm` (100000, the
+  mask's width) and `RoadEdgeCm` (35).
+- `NormalStrength` (1), `Variation` (0.12), `VariationScale` (400 cm), `MacroVariation` (0.14),
+  `MacroScale` (3000 cm) and `HueDrift` (0.05).
+
+The albedo is held between 0.03 and 0.8. Every texture is read through one of the view's shared samplers,
+which filter as the world's textures do. Ten textures with a sampler each, plus the Landscape's own, would
+pass the sixteen samplers a shader may bind.
+
+How it looks, from offscreen renders at the entry, close behind the lead, 25 m up and from 60 m up and
+120 m back:
+
+- Solhaven's grass reads greener from any distance, a lime green rather than a lawn's. From a road the gravel
+  and the plazas' cobbles show at their real size, and the far view shows the roads running between the
+  districts.
+- Lattice's ground is pale, cool gravel. Its asphalt roads read from the far view, and its mountains' steep
+  faces wear grey stone.
+- Unwritten's sand shows no repeat from 25 m up or from afar, its mud roads stand out against it, and its
+  mesas and a pit's funnel show.
+
+Not yet: the rock meets the ground by slope alone, not by height, so it doesn't settle into the hollows; the
+ground keeps its full detail into the distance, with no fade; and the ground's repeats are broken only by the
+second copy and the mottles.
 
 ## Building
 
@@ -120,6 +182,7 @@ Build the materials first, then the maps:
 UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildWorldMaterials -NullRHI -unattended -nopause -nosplash
 python -I tools/fetch_surfaces.py --out <dir>
 UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildSurfaces -Source=<dir> -AllowCommandletRendering -unattended -nopause -nosplash
+UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildGround -AllowCommandletRendering -unattended -nopause -nosplash
 ```
 
 `FTBuildWorldMaterials` replaces its file, and saves nothing if the material reports compile errors. A map builder that
@@ -130,8 +193,22 @@ when it hasn't been built.
 the right checksum, and refuses any source that isn't CC0. The photos aren't committed; the built
 textures are, through LFS. `FTBuildSurfaces` checks that every file is there before it changes anything,
 replaces the master and every surface's assets, and saves nothing if the master doesn't compile.
-`-AllowCommandletRendering` without `-NullRHI` makes that compile check real. It ends with
-`FTBuildSurfaces: saved 8 surfaces (24 textures, 8 instances and /Game/Rendering/M_WorldSurfaceTex) in 62.0 MB.`
+`-AllowCommandletRendering` without `-NullRHI` makes that compile check real. It ends with a line like
+`FTBuildSurfaces: saved 13 surfaces (39 textures, 13 instances and /Game/Rendering/M_WorldSurfaceTex) in <size> MB.`
+
+`-Only=<id>,<id>,...` rebuilds just those surfaces and keeps the others' assets as they are. The master keeps
+its graph, but its default textures follow the table's first surface, so it's saved only when they move. Building
+the ground's surfaces this way moved the master's defaults to leafy_grass:
+`FTBuildSurfaces: saved 7 surfaces (21 textures, 7 instances and /Game/Rendering/M_WorldSurfaceTex) in 69.9 MB; the others are as they were.`
+When the first surface stays put, the master isn't saved:
+`FTBuildSurfaces: saved 2 surfaces (6 textures, 2 instances) in 21.6 MB; the others are as they were.`
+
+`FTBuildGround` replaces `M_WorldGround` and `T_GroundNoRoads`. It reads the town's ground, rock and road
+surfaces from surfaces.json for the master's defaults, and saves nothing if one of their textures is missing or
+the master doesn't compile. It ends with
+`FTBuildGround: saved /Game/Rendering/M_WorldGround and /Game/Rendering/T_GroundNoRoads (38.4 KB), wearing leafy_grass, rock_wall and gravel_road until a map's instance says otherwise.`
+Each world map's build then makes the map's instance and mask, and logs, for example,
+`FTBuildExploreWorld: the ground wears /Game/Rendering/M_WorldGround (Ground leafy_grass, Rock rock_wall, Road gravel_road), its roads from a 2048 x 2048 mask (2.5% of the square on a road).`
 
 Before it changes anything, it also reads the roughness channel of each surface's packed map. A channel that
 averages under 0.05 is empty. No surface here is that smooth all over, and the shape would render as a mirror.
@@ -142,9 +219,11 @@ road's channel is empty, so the log says
 
 That check misses errors in the ray-tracing hit shaders. If one of those fails, the game draws every shape that wears
 the master in the engine's grey default material, and its log says
-`Failed to compile Material /Game/Rendering/M_WorldSurfaceTex.M_WorldSurfaceTex for platform PCD3D_SM6`. So after any
-change to the master's code, look for that line in the first game run's log. The code samples through the engine's
-`Texture2DSample` for this reason: a plain `Tex.Sample` needs derivatives, which a hit shader doesn't have.
+`Failed to compile Material /Game/Rendering/M_WorldSurfaceTex.M_WorldSurfaceTex for platform PCD3D_SM6`. The same goes
+for `M_WorldGround`, whose failure turns the whole ground grey. So after any change to either master's code, look for
+that line in the first game run's log, and for `too many samplers`, which would mean the ground master's textures
+took samplers of their own again. The code samples through the engine's `Texture2DSample` for this reason: a plain
+`Tex.Sample` needs derivatives, which a hit shader doesn't have.
 
 Without `-Style=` the builders log the look as photoreal, for example
 `FTBuildExploreWorld: world solhaven (look photoreal): ...` and `FTBuildDemoWorld: photoreal look, no style controller.`
@@ -154,7 +233,10 @@ On a world map the director logs `World solhaven: field step in district 3 (phot
 
 - Measure each map's EV100 and narrow the exposure range to about ±1.5 EV round it.
 - One `SceneLook` per world, blended with `lerp` where the story crosses from one to another.
-- Photographed surfaces for the towers and ruins kinds.
-- On the terrain: rock on the steep ground, the roads drawn onto it (the road role's surface), and
-  scattered grass, stones and decals that hide the repeats.
+- Photographed surfaces for the towers' and ruins' buildings, plazas, roofs, landmarks and trees.
+- On the terrain: scattered grass, stones and decals that hide the repeats; rock that meets the ground by
+  height (the ground filling its cracks) rather than by slope alone; a fade at distance that hides the
+  ground's tiling from high up; and a second ground surface per world, such as dirt or moss in patches.
+- Cliff meshes, or a fog pass, on the sheer walls (the quay, the abyss's fall and the pits' shafts), which
+  the Landscape can only draw as long, thin triangles 2 m apart.
 - A building kit in place of the blockout cubes, which also fixes the roofs' gable ends.

@@ -9,6 +9,8 @@
 #include "Engine/ExponentialHeightFog.h"
 #include "Engine/PostProcessVolume.h"
 #include "Engine/SkyLight.h"
+#include "Engine/Texture.h"
+#include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "ForgottenThird.h"
 #include "FTText.h"
@@ -111,6 +113,39 @@ FString FTScene::SurfaceInstancePackage(const FString& Id)
 {
 	return FString::Printf(TEXT("%s/%s/MI_Surface_%s"), SurfaceFolder, *Id, *Id);
 }
+
+FString FTScene::SurfaceTexturePackage(const FString& Id, const TCHAR* Suffix)
+{
+	return FString::Printf(TEXT("%s/%s/T_%s_%s"), SurfaceFolder, *Id, *Id, Suffix);
+}
+
+UTexture* FTScene::LoadSurfaceTexture(const FString& Id, const TCHAR* Suffix)
+{
+	const FString Package = SurfaceTexturePackage(Id, Suffix);
+	return LoadObject<UTexture>(nullptr, *(Package + TEXT(".") + FPackageName::GetShortName(Package)), nullptr,
+		LOAD_NoWarn | LOAD_Quiet);
+}
+
+#if WITH_EDITOR
+UTexture2D* FTScene::NewRoadMask(UObject* Outer, const TCHAR* Name, int32 Size, const uint8* Bytes, EObjectFlags Flags)
+{
+	UTexture2D* Texture = NewObject<UTexture2D>(Outer, Name, Flags);
+	Texture->PreEditChange(nullptr);
+	Texture->Source.Init(Size, Size, 1, 1, TSF_G8, Bytes);
+	// Mostly empty, so a PNG of it is small.
+	Texture->Source.Compress();
+	Texture->SRGB = false;
+	Texture->CompressionSettings = TC_Grayscale;
+	Texture->LODGroup = TEXTUREGROUP_World;
+	Texture->NeverStream = true;
+	Texture->VirtualTextureStreaming = false;
+	// Clamped, so past the playable square it reads the outermost ring, which ftcore::roadMask leaves empty.
+	Texture->AddressX = TA_Clamp;
+	Texture->AddressY = TA_Clamp;
+	Texture->PostEditChange();
+	return Texture;
+}
+#endif
 
 bool FTScene::LoadSurfaceTable(ftcore::SurfaceTable& Table)
 {

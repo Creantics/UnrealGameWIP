@@ -1028,3 +1028,128 @@ TEST_CASE("terrain: a layout or a site that doesn't fit fails, says why and leav
     second.sites.push_back({static_cast<std::uint32_t>(nonSite), SiteTier::Entry});
     checkFails(ground, second, *town->layout, "more than one entry or climax");
 }
+
+namespace {
+
+constexpr std::size_t kMask = 512; // 1.95 m pixels over a 1 km square: every centre line passes within 1 m of one
+
+// The mask read bilinearly at p (metres) with clamped addressing, as the ground's material samples it.
+float maskAt(const std::vector<std::uint8_t>& mask, float side, Vec2 p) {
+    const float last = static_cast<float>(kMask - 1);
+    const float u = std::clamp((p.x + 0.5f * side) / side * static_cast<float>(kMask) - 0.5f, 0.f, last);
+    const float v = std::clamp((p.y + 0.5f * side) / side * static_cast<float>(kMask) - 0.5f, 0.f, last);
+    const std::size_t x0 = std::min(static_cast<std::size_t>(u), kMask - 2);
+    const std::size_t y0 = std::min(static_cast<std::size_t>(v), kMask - 2);
+    const float fx = u - static_cast<float>(x0), fy = v - static_cast<float>(y0);
+    const auto at = [&mask](std::size_t x, std::size_t y) { return static_cast<float>(mask[y * kMask + x]); };
+    return lerpf(lerpf(at(x0, y0), at(x0 + 1, y0), fx), lerpf(at(x0, y0 + 1), at(x0 + 1, y0 + 1), fx), fy);
+}
+
+} // namespace
+
+TEST_CASE("terrain: the road mask fades from each road's centre line to nothing 2 m past its edge, without allocating") {
+    constexpr float kHalfWidth = WorldTerrain::kRoadHalfWidth;                // 3 m: the road's edge
+    constexpr float kGone = kHalfWidth + WorldTerrain::kRoadMaskFeather;      // 5 m: nothing from here
+    const auto value = [](float d) {
+        return 255.f * std::clamp(0.5f + (kHalfWidth - d) / (2.f * WorldTerrain::kRoadMaskFeather), 0.f, 1.f);
+    };
+    std::vector<std::uint8_t> mask(kMask * kMask, 0xab);
+    for (const Generated& g : worlds()) {
+        INFO(g.spec.id);
+        REQUIRE_MESSAGE(g.ok, g.error);
+        const WorldLayout& lay = *g.layout;
+        const float side = lay.side(), pixel = side / static_cast<float>(kMask);
+        const auto ends = [&lay](std::size_t r, Vec2& a, Vec2& b) {
+            a = lay.district(lay.road(r).a).centre;
+            b = lay.district(lay.road(r).b).centre;
+        };
+
+        const bool counting = ftcore_test::allocHookInstalled();
+        const std::uint64_t before = ftcore_test::allocStats().count;
+        roadMask(lay, kMask, mask.data());
+        if (counting) {
+            CHECK(ftcore_test::allocStats().count == before);
+        }
+
+        // The outermost ring is empty, so a clamped read past the square finds no road.
+        std::size_t ring = 0;
+        for (std::size_t k = 0; k < kMask; ++k)
+            ring += static_cast<std::size_t>(mask[k] != 0) + static_cast<std::size_t>(mask[(kMask - 1) * kMask + k] != 0) +
+                    static_cast<std::size_t>(mask[k * kMask] != 0) + static_cast<std::size_t>(mask[k * kMask + kMask - 1] != 0);
+        CHECK(ring == 0u);
+        CHECK(maskAt(mask, side, {-0.5f * side - 50.f, 0.f}) == 0.f);
+
+        // Inside it every pixel holds the nearest road's value: 255 within 1 m of a centre line, 0 from
+        // 5 m, the ramp between, and where two roads come near, the nearer one's.
+        Breaches off;
+        std::size_t junction = 0;
+        std::vector<std::size_t> onLine(lay.roadCount(), 0);
+        for (std::size_t iy = 1; iy + 1 < kMask; ++iy)
+            for (std::size_t ix = 1; ix + 1 < kMask; ++ix) {
+                const Vec2 p{-0.5f * side + (static_cast<float>(ix) + 0.5f) * pixel,
+                             -0.5f * side + (static_cast<float>(iy) + 0.5f) * pixel};
+                const float got = mask[iy * kMask + ix];
+                float nearest = kFar, second = kFar;
+                for (std::size_t r = 0; r < lay.roadCount(); ++r) {
+                    Vec2 a, b;
+                    ends(r, a, b);
+                    float d = 0.f;
+                    nearestOnSegment(p, a, b, d);
+                    if (d < nearest) {
+                        second = nearest;
+                        nearest = d;
+                    } else {
+                        second = std::min(second, d);
+                    }
+                    if (d <= 1.f && got == 255.f) ++onLine[r];
+                }
+                const float by = std::fabs(got - value(nearest));
+                if (by > 0.51f) off.add(by, ix, iy);
+                if (second < kGone && value(second) + 2.f < value(nearest)) ++junction;
+            }
+        CHECK_MESSAGE(off.count == 0u, "pixels off their value: " << describe(off));
+        for (std::size_t r = 0; r < lay.roadCount(); ++r) CHECK_MESSAGE(onLine[r] > 0u, "road " << r);
+        MESSAGE(g.spec.id << ": " << junction << " pixels where two roads come near");
+        CHECK(junction > 0u);
+
+        // Read back as the material reads it, away from the other roads: about 128 at a road's edge, so
+        // the distance it gives back (5 - 4 v / 255) lands on the edge; under 1.6 m on the centre line;
+        // nothing a pixel and a half past 5 m.
+        Breaches edgeOff, lineOff, pastOff;
+        std::size_t reads = 0;
+        for (std::size_t r = 0; r < lay.roadCount(); ++r) {
+            Vec2 a, b;
+            ends(r, a, b);
+            const float len = between(a, b);
+            const Vec2 across{-(b.y - a.y) / len, (b.x - a.x) / len};
+            for (int k = 4; k <= 16; ++k) {
+                const float t = static_cast<float>(k) / 20.f;
+                const Vec2 c{lerpf(a.x, b.x, t), lerpf(a.y, b.y, t)};
+                bool alone = true;
+                for (std::size_t o = 0; o < lay.roadCount() && alone; ++o) {
+                    if (o == r) continue;
+                    Vec2 oa, ob;
+                    ends(o, oa, ob);
+                    float d = 0.f;
+                    nearestOnSegment(c, oa, ob, d);
+                    alone = d > 20.f;
+                }
+                if (!alone) continue;
+                const float line = maskAt(mask, side, c);
+                if (line < value(1.6f)) lineOff.add(value(1.6f) - line);
+                for (const float s : {-1.f, 1.f}) {
+                    ++reads;
+                    const float edge = maskAt(mask, side, {c.x + s * kHalfWidth * across.x, c.y + s * kHalfWidth * across.y});
+                    if (std::fabs(edge - 127.5f) > 1.5f) edgeOff.add(std::fabs(edge - 127.5f));
+                    const float reach = kGone + 1.5f * pixel;
+                    const float beyond = maskAt(mask, side, {c.x + s * reach * across.x, c.y + s * reach * across.y});
+                    if (beyond != 0.f) pastOff.add(beyond);
+                }
+            }
+        }
+        CHECK(reads > 0u);
+        CHECK_MESSAGE(edgeOff.count == 0u, "edge reads off 127.5: " << describe(edgeOff));
+        CHECK_MESSAGE(lineOff.count == 0u, "centre-line reads under 1.6 m's value: " << describe(lineOff));
+        CHECK_MESSAGE(pastOff.count == 0u, "reads past 5 m that aren't 0: " << describe(pastOff));
+    }
+}

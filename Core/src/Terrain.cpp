@@ -1501,4 +1501,37 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
     return true;
 }
 
+void roadMask(const WorldLayout& layout, std::size_t size, std::uint8_t* out) {
+    if (out == nullptr || size == 0) return;
+    std::fill(out, out + size * size, std::uint8_t{0});
+    if (size < 3) return;
+    const float half = layout.side() * 0.5f;
+    const float pixel = layout.side() / static_cast<float>(size);
+    const float clear = WorldTerrain::kRoadHalfWidth + WorldTerrain::kRoadMaskFeather; // 0 from here
+    const float last = static_cast<float>(size - 2);
+    // The pixels whose centres span metres lo..hi along an axis, kept off the outermost ring.
+    const auto lowPixel = [&](float lo) {
+        return static_cast<std::size_t>(std::clamp(std::floor((lo + half) / pixel - 0.5f), 1.f, last));
+    };
+    const auto highPixel = [&](float hi) {
+        return static_cast<std::size_t>(std::clamp(std::ceil((hi + half) / pixel - 0.5f), 1.f, last));
+    };
+    for (std::size_t r = 0; r < layout.roadCount(); ++r) {
+        const Vec2 a = layout.district(layout.road(r).a).centre, b = layout.district(layout.road(r).b).centre;
+        const std::size_t x0 = lowPixel(std::min(a.x, b.x) - clear), x1 = highPixel(std::max(a.x, b.x) + clear);
+        const std::size_t y0 = lowPixel(std::min(a.y, b.y) - clear), y1 = highPixel(std::max(a.y, b.y) + clear);
+        for (std::size_t iy = y0; iy <= y1; ++iy)
+            for (std::size_t ix = x0; ix <= x1; ++ix) {
+                const Vec2 p{-half + (static_cast<float>(ix) + 0.5f) * pixel, -half + (static_cast<float>(iy) + 0.5f) * pixel};
+                float d = 0.f;
+                nearestOnSegment(p, a, b, d);
+                const float v = 255.f * std::clamp(0.5f + (WorldTerrain::kRoadHalfWidth - d) /
+                                                              (2.f * WorldTerrain::kRoadMaskFeather),
+                                                   0.f, 1.f);
+                std::uint8_t& o = out[iy * size + ix];
+                o = std::max(o, static_cast<std::uint8_t>(v + 0.5f)); // the nearest road's, where two meet
+            }
+    }
+}
+
 } // namespace ftcore

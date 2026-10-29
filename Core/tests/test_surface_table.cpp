@@ -1,5 +1,6 @@
 // The world surface library: Data/Field/surfaces.json (loader), what each world kind's roles wear, and that the
-// committed file dresses every role of a town in a CC0 surface at its real scale.
+// committed file dresses every role of a town, and the ground, road and rock of the other kinds, in a CC0 surface at
+// its real scale.
 
 #include "ftcore/SurfaceTable.h"
 
@@ -81,6 +82,31 @@ TEST_CASE("surfaces: the loader reads the library and what each kind's roles wea
     CHECK(t.surfaceFor(WorldKind::Towers, SurfaceRole::Ground) == nullptr);
 }
 
+TEST_CASE("surfaces: a kind may dress only the roles its ground draws") {
+    SurfaceTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(importSurfaceTable(
+                        R"({"surfaces":[{"id":"gravel","tileCm":200,"source":"https://example.org/gravel","license":"CC0"},)"
+                        R"({"id":"tar","tileCm":210,"source":"https://example.org/tar","license":"CC0"},)"
+                        R"({"id":"slate","tileCm":242,"source":"https://example.org/slate","license":"CC0"}],)"
+                        R"("kinds":{"towers":{"ground":{"surface":"gravel"},"road":{"surface":"tar"},)"
+                        R"("rock":{"surface":"slate","tint":[0.9,0.9,1]}}}})",
+                        t, &error, &warnings),
+                    error);
+    CHECK(warnings.empty());
+    CHECK(t.surfaceFor(WorldKind::Towers, SurfaceRole::Ground)->id == "gravel");
+    CHECK(t.surfaceFor(WorldKind::Towers, SurfaceRole::Road)->id == "tar");
+    CHECK(t.surfaceFor(WorldKind::Towers, SurfaceRole::Rock)->id == "slate");
+    CHECK(t.use(WorldKind::Towers, SurfaceRole::Rock).tint[2] == doctest::Approx(1.f));
+    // The roles it leaves out keep the builder's tint, and so does every role of a kind the file doesn't list.
+    for (const SurfaceRole role : {SurfaceRole::Plaza, SurfaceRole::Building, SurfaceRole::Roof, SurfaceRole::Landmark,
+                                   SurfaceRole::Wood})
+        CHECK(t.use(WorldKind::Towers, role).surface == -1);
+    for (std::size_t r = 0; r < kSurfaceRoleCount; ++r)
+        CHECK(t.surfaceFor(WorldKind::Town, static_cast<SurfaceRole>(r)) == nullptr);
+}
+
 TEST_CASE("surfaces: the loader refuses bad files and warns on unknown keys") {
     SurfaceTable t;
     std::string error;
@@ -148,7 +174,8 @@ TEST_CASE("surfaces: lookups allocate nothing") {
     CHECK(found == 4 + 2 + 4);
 }
 
-TEST_CASE("surfaces: Data/Field/surfaces.json dresses every town role in a CC0 surface at its real scale") {
+TEST_CASE("surfaces: Data/Field/surfaces.json dresses every town role, and every world's ground, in a CC0 surface at "
+          "its real scale") {
     std::string text;
     if (!ftcore_test::readProjectData("Field/surfaces.json", text)) {
         MESSAGE("Field/surfaces.json not readable; skipping");
@@ -159,14 +186,18 @@ TEST_CASE("surfaces: Data/Field/surfaces.json dresses every town role in a CC0 s
     std::vector<std::string> warnings;
     REQUIRE_MESSAGE(importSurfaceTable(text, t, &error, &warnings), error);
     CHECK(warnings.empty());
-    for (std::size_t r = 0; r < kSurfaceRoleCount; ++r) {
-        const SurfaceRole role = static_cast<SurfaceRole>(r);
-        const SurfaceSpec* s = t.surfaceFor(WorldKind::Town, role);
-        REQUIRE_MESSAGE(s != nullptr, surfaceRoleName(role));
+    const auto dressed = [&t](WorldKind kind, SurfaceRole role) {
+        const SurfaceSpec* s = t.surfaceFor(kind, role);
+        CHECK_MESSAGE(s != nullptr, surfaceRoleName(role));
+        if (s == nullptr) return;
         // A photographed surface covers somewhere between a hand's width and a few metres.
         CHECK(s->tileCm >= 50.f);
         CHECK(s->tileCm <= 500.f);
-    }
+    };
+    for (std::size_t r = 0; r < kSurfaceRoleCount; ++r) dressed(WorldKind::Town, static_cast<SurfaceRole>(r));
+    // The ground material draws each world's ground, its roads and its steep ground.
+    for (const WorldKind kind : {WorldKind::Towers, WorldKind::Ruins})
+        for (const SurfaceRole role : {SurfaceRole::Ground, SurfaceRole::Road, SurfaceRole::Rock}) dressed(kind, role);
     // Every surface in the library is worn somewhere.
     for (std::size_t i = 0; i < t.surfaces.size(); ++i) {
         bool worn = false;

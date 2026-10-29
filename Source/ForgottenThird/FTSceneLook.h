@@ -16,6 +16,8 @@
 #include "ftcore/SurfaceTable.h"
 
 class UMaterialInterface;
+class UTexture;
+class UTexture2D;
 class UWorld;
 struct FActorSpawnParameters;
 
@@ -27,8 +29,48 @@ inline constexpr const TCHAR* SurfaceMaterial = TEXT("/Game/Rendering/M_WorldSur
 inline constexpr const TCHAR* SurfaceTexMaterial = TEXT("/Game/Rendering/M_WorldSurfaceTex");
 inline constexpr const TCHAR* SurfaceFolder = TEXT("/Game/Rendering/Surfaces");
 
+// The big worlds' ground master, built by FTBuildGround: the ground, rock and road surfaces blended by slope and a
+// road mask.
+inline constexpr const TCHAR* GroundMaterial = TEXT("/Game/Rendering/M_WorldGround");
+
+// The ground master's layers, each wearing the surface its kind gives the role. Its parameters are named after them:
+// "<Layer><Map>" for a texture, "<Layer>Tint", "<Layer>TileCm" and "<Layer>Roughness".
+struct FGroundLayer
+{
+	ftcore::SurfaceRole Role;
+	const TCHAR* Name;
+};
+inline constexpr FGroundLayer GroundLayers[] = {
+	{ftcore::SurfaceRole::Ground, TEXT("Ground")},
+	{ftcore::SurfaceRole::Rock, TEXT("Rock")},
+	{ftcore::SurfaceRole::Road, TEXT("Road")},
+};
+// A surface's maps: the suffix of FTBuildSurfaces' texture and the ground master's name for it.
+struct FSurfaceMap
+{
+	const TCHAR* Suffix;
+	const TCHAR* Name;
+};
+inline constexpr FSurfaceMap SurfaceMaps[] = {
+	{TEXT("D"), TEXT("Albedo")},
+	{TEXT("N"), TEXT("Normal")},
+	{TEXT("ARM"), TEXT("Arm")},
+};
+
 // The package of surface Id's instance of the photographed master: SurfaceFolder/<Id>/MI_Surface_<Id>.
 FORGOTTENTHIRD_API FString SurfaceInstancePackage(const FString& Id);
+// The package of surface Id's texture with Suffix (D, N or ARM: colour, DirectX normal, packed AO/roughness/metal):
+// SurfaceFolder/<Id>/T_<Id>_<Suffix>.
+FORGOTTENTHIRD_API FString SurfaceTexturePackage(const FString& Id, const TCHAR* Suffix);
+// That texture, or null, quietly, when it hasn't been built.
+FORGOTTENTHIRD_API UTexture* LoadSurfaceTexture(const FString& Id, const TCHAR* Suffix);
+
+#if WITH_EDITOR
+// A new road mask for the ground master's "RoadMask" in Outer: Size x Size bytes, row by row along +Y and each row
+// along +X, as ftcore::roadMask fills them. They're kept as they are (linear, uncompressed, clamped at the edges,
+// loaded whole), and the package holds them as a PNG.
+FORGOTTENTHIRD_API UTexture2D* NewRoadMask(UObject* Outer, const TCHAR* Name, int32 Size, const uint8* Bytes, EObjectFlags Flags);
+#endif
 
 // Spawns the sun (pointing along SunRotation), sky light, atmosphere, fog, clouds and post-process volume
 // into World, labelled Sun, SkyLight, SkyAtmosphere, HeightFog, VolumetricCloud and PostProcessVolume.

@@ -134,7 +134,7 @@ FString PackageFile(const FString& Package)
 
 FString TexturePackage(const FString& Id, const FMapSpec& Map)
 {
-	return FString::Printf(TEXT("%s/%s/T_%s_%s"), FTScene::SurfaceFolder, *Id, *Id, Map.Suffix);
+	return FTScene::SurfaceTexturePackage(Id, Map.Suffix);
 }
 
 FString SourceFile(const FString& Dir, const FString& Id, const FMapSpec& Map, uint32 ResK)
@@ -355,6 +355,41 @@ UMaterial* BuildMaster(TArrayView<UTexture* const> Defaults)
 	return Material;
 }
 
+// Points a built master's texture parameters at Defaults, as BuildMaster would have, setting bChanged if any moved. False
+// if the master lacks one of them.
+bool SetDefaults(UMaterial* Master, TArrayView<UTexture* const> Defaults, bool& bChanged)
+{
+	const FName Names[kMapCount] = {TEXT("AlbedoTex"), TEXT("NormalTex"), TEXT("ArmTex")};
+	int32 Found = 0;
+	bChanged = false;
+	for (UMaterialExpression* Expression : Master->GetExpressions())
+	{
+		UMaterialExpressionTextureObjectParameter* P = Cast<UMaterialExpressionTextureObjectParameter>(Expression);
+		for (int32 M = 0; P && M < kMapCount; ++M)
+		{
+			if (P->ParameterName != Names[M])
+			{
+				continue;
+			}
+			++Found;
+			if (P->Texture != Defaults[M])
+			{
+				if (!bChanged)
+				{
+					Master->PreEditChange(nullptr);
+				}
+				P->Texture = Defaults[M];
+				bChanged = true;
+			}
+		}
+	}
+	if (bChanged)
+	{
+		Master->PostEditChange();
+	}
+	return Found == kMapCount;
+}
+
 UMaterialInstanceConstant* BuildInstance(const FString& Path, UMaterial* Master, TArrayView<UTexture* const> Maps, float TileCm,
 	float Roughness)
 {
@@ -423,10 +458,45 @@ int32 UFTBuildSurfacesCommandlet::Main(const FString& Params)
 		return 1;
 	}
 
+	// -Only=<id,...> rebuilds those surfaces and keeps the rest, the master included but for its default textures, which
+	// follow the table's first surface.
+	const int32 SurfaceCount = static_cast<int32>(Table.surfaces.size());
+	TArray<int32> Chosen;
+	FString OnlyList;
+	const bool bOnly = FParse::Value(*Params, TEXT("Only="), OnlyList, false) && !OnlyList.IsEmpty();
+	if (bOnly)
+	{
+		TArray<FString> Ids;
+		OnlyList.ParseIntoArray(Ids, TEXT(","), true);
+		for (const FString& Id : Ids)
+		{
+			int32 Found = INDEX_NONE;
+			for (int32 S = 0; S < SurfaceCount && Found == INDEX_NONE; ++S)
+			{
+				Found = FT::ToFString(Table.surfaces[S].id) == Id ? S : INDEX_NONE;
+			}
+			if (Found == INDEX_NONE)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces: -Only names %s, which Data/Field/surfaces.json doesn't list."),
+					*Id);
+				return 1;
+			}
+			Chosen.AddUnique(Found);
+		}
+	}
+	else
+	{
+		for (int32 S = 0; S < SurfaceCount; ++S)
+		{
+			Chosen.Add(S);
+		}
+	}
+
 	// Every file first: nothing changes if one is missing.
 	int32 Missing = 0;
-	for (const ftcore::SurfaceSpec& Spec : Table.surfaces)
+	for (const int32 S : Chosen)
 	{
+		const ftcore::SurfaceSpec& Spec = Table.surfaces[S];
 		const FString Id = FT::ToFString(Spec.id);
 		for (const FTSurfaceBuild::FMapSpec& Map : FTSurfaceBuild::kMaps)
 		{
@@ -448,8 +518,9 @@ int32 UFTBuildSurfacesCommandlet::Main(const FString& Params)
 	// A packed map with an empty roughness channel renders its surface as a mirror, so the surface needs a constant
 	// roughness from the table. An override on a map that has its own would hide the map once its file is fixed.
 	int32 Unfit = 0;
-	for (const ftcore::SurfaceSpec& Spec : Table.surfaces)
+	for (const int32 S : Chosen)
 	{
+		const ftcore::SurfaceSpec& Spec = Table.surfaces[S];
 		const FString Id = FT::ToFString(Spec.id);
 		double Mean = 0.0;
 		if (!FTSurfaceBuild::RoughnessMean(
@@ -486,10 +557,13 @@ int32 UFTBuildSurfacesCommandlet::Main(const FString& Params)
 
 	// Start from nothing: replace the files up front, before anything loads the old assets.
 	TArray<FString> Packages;
-	Packages.Add(FTScene::SurfaceTexMaterial);
-	for (const ftcore::SurfaceSpec& Spec : Table.surfaces)
+	if (!bOnly)
 	{
-		const FString Id = FT::ToFString(Spec.id);
+		Packages.Add(FTScene::SurfaceTexMaterial);
+	}
+	for (const int32 S : Chosen)
+	{
+		const FString Id = FT::ToFString(Table.surfaces[S].id);
 		for (const FTSurfaceBuild::FMapSpec& Map : FTSurfaceBuild::kMaps)
 		{
 			Packages.Add(FTSurfaceBuild::TexturePackage(Id, Map));
@@ -507,9 +581,11 @@ int32 UFTBuildSurfacesCommandlet::Main(const FString& Params)
 		IFileManager::Get().MakeDirectory(*FPaths::GetPath(File), true);
 	}
 
+	// Textures holds each chosen surface's maps in turn.
 	TArray<UTexture*> Textures;
-	for (const ftcore::SurfaceSpec& Spec : Table.surfaces)
+	for (const int32 S : Chosen)
 	{
+		const ftcore::SurfaceSpec& Spec = Table.surfaces[S];
 		const FString Id = FT::ToFString(Spec.id);
 		for (const FTSurfaceBuild::FMapSpec& Map : FTSurfaceBuild::kMaps)
 		{
@@ -521,13 +597,50 @@ int32 UFTBuildSurfacesCommandlet::Main(const FString& Params)
 			Textures.Add(Texture);
 		}
 	}
-	UMaterial* Master = FTSurfaceBuild::BuildMaster(MakeArrayView(Textures.GetData(), FTSurfaceBuild::kMapCount));
-	TArray<UMaterialInstanceConstant*> Instances;
-	for (int32 S = 0; S < static_cast<int32>(Table.surfaces.size()); ++S)
+	UMaterial* Master = nullptr;
+	bool bMasterChanged = true;
+	if (!bOnly)
 	{
-		const ftcore::SurfaceSpec& Spec = Table.surfaces[S];
+		Master = FTSurfaceBuild::BuildMaster(MakeArrayView(Textures.GetData(), FTSurfaceBuild::kMapCount));
+	}
+	else
+	{
+		// Loaded only now: loaded before the import, it would pull in old textures the new ones collide with by path.
+		Master = LoadObject<UMaterial>(nullptr,
+			*(FString(FTScene::SurfaceTexMaterial) + TEXT(".") + FPackageName::GetShortName(FTScene::SurfaceTexMaterial)));
+		if (!Master)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces: %s is missing; build every surface (no -Only) first."),
+				FTScene::SurfaceTexMaterial);
+			return 1;
+		}
+		UTexture* Defaults[FTSurfaceBuild::kMapCount] = {};
+		const int32 First = Chosen.Find(0);
+		const FString FirstId = FT::ToFString(Table.surfaces[0].id);
+		for (int32 M = 0; M < FTSurfaceBuild::kMapCount; ++M)
+		{
+			const FString Path = FTSurfaceBuild::TexturePackage(FirstId, FTSurfaceBuild::kMaps[M]);
+			Defaults[M] = First != INDEX_NONE ? Textures[First * FTSurfaceBuild::kMapCount + M]
+											  : LoadObject<UTexture>(nullptr, *(Path + TEXT(".") + FPackageName::GetShortName(Path)));
+			if (!Defaults[M])
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces: %s is missing; add %s to -Only."), *Path, *FirstId);
+				return 1;
+			}
+		}
+		if (!FTSurfaceBuild::SetDefaults(Master, MakeArrayView(Defaults), bMasterChanged))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces: %s lacks a texture parameter; build every surface (no -Only)."),
+				FTScene::SurfaceTexMaterial);
+			return 1;
+		}
+	}
+	TArray<UMaterialInstanceConstant*> Instances;
+	for (int32 C = 0; C < Chosen.Num(); ++C)
+	{
+		const ftcore::SurfaceSpec& Spec = Table.surfaces[Chosen[C]];
 		Instances.Add(FTSurfaceBuild::BuildInstance(FTScene::SurfaceInstancePackage(FT::ToFString(Spec.id)), Master,
-			MakeArrayView(Textures.GetData() + S * FTSurfaceBuild::kMapCount, FTSurfaceBuild::kMapCount), Spec.tileCm,
+			MakeArrayView(Textures.GetData() + C * FTSurfaceBuild::kMapCount, FTSurfaceBuild::kMapCount), Spec.tileCm,
 			Spec.roughness));
 	}
 
@@ -536,10 +649,14 @@ int32 UFTBuildSurfacesCommandlet::Main(const FString& Params)
 	{
 		return 1;
 	}
-	FAssetRegistryModule::AssetCreated(Master);
+	if (!bOnly)
+	{
+		FAssetRegistryModule::AssetCreated(Master);
+	}
 
+	// The master is saved only when it changed, so a rebuild of a few surfaces leaves it untouched.
 	int64 Bytes = 0;
-	bool bSaved = FTSurfaceBuild::SaveAsset(Master, Bytes);
+	bool bSaved = !bMasterChanged || FTSurfaceBuild::SaveAsset(Master, Bytes);
 	for (UTexture* Texture : Textures)
 	{
 		bSaved = FTSurfaceBuild::SaveAsset(Texture, Bytes) && bSaved;
@@ -552,8 +669,10 @@ int32 UFTBuildSurfacesCommandlet::Main(const FString& Params)
 	{
 		return 1;
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildSurfaces: saved %d surfaces (%d textures, %d instances and %s) in %.1f MB."),
-		Instances.Num(), Textures.Num(), Instances.Num(), FTScene::SurfaceTexMaterial, Bytes / (1024.0 * 1024.0));
+	const FString MasterNote = bMasterChanged ? FString::Printf(TEXT(" and %s"), FTScene::SurfaceTexMaterial) : FString();
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildSurfaces: saved %d surfaces (%d textures, %d instances%s) in %.1f MB%s."),
+		Instances.Num(), Textures.Num(), Instances.Num(), *MasterNote, Bytes / (1024.0 * 1024.0),
+		bOnly ? TEXT("; the others are as they were") : TEXT(""));
 	return 0;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces needs an editor build."));

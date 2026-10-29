@@ -114,6 +114,7 @@ public:
     static constexpr float kRockSlope = 1.8f;         // the steepest ground off the sheer walls (61 degrees)
     static constexpr std::size_t kMaxFeatures = 8;
     static constexpr float kWadeDepth = 0.7f;         // m: water deeper than this is blocked
+    static constexpr float kRoadMaskFeather = 2.f;    // m either side of a road's edge over which roadMask() fades
 
     float side() const { return side_; } // the playable square's: the layout's
     float extent() const { return side_ + 2.f * kApron; }
@@ -171,5 +172,14 @@ private:
 // can't be shaped (it would leave the height range, or its slopes don't settle).
 FTCORE_API bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, WorldTerrain& out,
                                      std::string* error = nullptr);
+
+// The roads as a mask over the playable square, for the ground's material: size x size bytes, row iy
+// then column ix, pixel (ix, iy) centred at (-side/2 + (ix + 0.5) side/size, -side/2 + (iy + 0.5)
+// side/size). Each byte is 255 clamp(0.5 + (kRoadHalfWidth - d) / (2 kRoadMaskFeather), 0, 1), d the
+// distance to the nearest road's centre line: 255 out to 1 m, about 128 at the road's edge, 0 from
+// 5 m, so a filtered read gives the distance back (d = 5 - 4 byte/255) wherever it lies between 1 and
+// 5 m. The outermost ring is 0 whatever lies near it, so a clamped read past the square finds no road.
+// Writes all size * size bytes. No allocation.
+FTCORE_API void roadMask(const WorldLayout& layout, std::size_t size, std::uint8_t* out);
 
 } // namespace ftcore

@@ -16,7 +16,10 @@
 // ("Variation", "VariationScale") and a broad one ("MacroVariation", "MacroScale") that keeps the repeats from lining
 // up over open ground, and holds the albedo to 0.03-0.8. The textures are loaded whole: the streamer judges a
 // texture's need from the mesh's own UVs, which a projection doesn't use. Every file is replaced; nothing is saved
-// if a file is missing or the master doesn't compile (-AllowCommandletRendering makes the compile real). See
+// if a file is missing or the master doesn't compile (-AllowCommandletRendering makes the compile real).
+//
+// -Only=<id>,<id>,... rebuilds just those surfaces' textures and instances and keeps the others. The master keeps
+// its graph, but its default textures follow the table's first surface: it is saved only when they move. See
 // docs/SCENE_LOOK.md.
 
 #include "CoreMinimal.h"
