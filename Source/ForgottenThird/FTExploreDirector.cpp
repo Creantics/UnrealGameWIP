@@ -1421,12 +1421,33 @@ void AFTExploreDirector::BeginWorld()
 	const FFTStoryCarry& Carry = GI->StoryCarry;
 	const bool bStoryStep = Carry.bValid && !Carry.bDone
 		&& (Carry.Screen == ftcore::GameplayScreen::Field || Carry.Screen == ftcore::GameplayScreen::Cutscene);
+	// -WorldDistrict=<n>: outside a story step the lead starts on district n's spawn, on its floor, instead of the
+	// PlayerStart, and a tour starts there: for looking round a district, or from it with -ExplorePortrait.
+	int32 StartDistrict = -1;
+	if (!bStoryStep && FParse::Value(FCommandLine::Get(), TEXT("WorldDistrict="), StartDistrict))
+	{
+		FVector2D Spot;
+		float Yaw = 0.f;
+		if (GetDistrictSpawn(StartDistrict, Spot, Yaw))
+		{
+			WorldDistrict = StartDistrict;
+			bWorldSpawnOnFloor = DistrictFloors.IsValidIndex(StartDistrict);
+			WorldSpawn = FVector(Spot.X, Spot.Y, bWorldSpawnOnFloor ? DistrictFloors[StartDistrict] : 0.0);
+			WorldSpawnRotation = FRotator(0.f, Yaw, 0.f);
+			bWorldSpawnPending = true;
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("World %s: -WorldDistrict=%d names no district; the lead starts on the PlayerStart."), *WorldId,
+				StartDistrict);
+		}
+	}
 	bWorldTour = !bStoryStep && FParse::Param(FCommandLine::Get(), TEXT("WorldAutoPlay"));
 	if (!bWorldTour)
 	{
 		return;
 	}
-	TourCount = static_cast<int32>(Layout->tour(0, Tour, UE_ARRAY_COUNT(Tour)));
+	TourCount = static_cast<int32>(Layout->tour(static_cast<size_t>(WorldDistrict), Tour, UE_ARRAY_COUNT(Tour)));
 	TourLeg = 0;
 	TourStart = Now();
 	TourGameStart = GetWorld()->GetTimeSeconds();

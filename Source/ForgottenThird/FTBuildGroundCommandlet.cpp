@@ -12,6 +12,7 @@
 #include "HAL/FileManager.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionPixelDepth.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
@@ -41,7 +42,7 @@ const EMaterialSamplerType kMapSamplers[kMapCount] = {SAMPLERTYPE_Color, SAMPLER
 // Texture2DSample, never Tex.Sample (see M_WorldSurfaceTex), through one of the view's shared samplers, which filter as
 // the world's textures do: ten textures with their own samplers, and the Landscape's, would pass the sixteen a shader
 // may bind. Helpers are a struct's methods, the only functions a custom node's code, one function's body, can hold. The
-// code is two literals, each well under the compiler's limit for one.
+// code is three literals, each well under the compiler's limit for one.
 const TCHAR* const kGroundCode = TEXT(R"HLSL(struct FGroundLayers
 {
 	// Value noise on the integer lattice, hashed as M_WorldSurfaceTex's mottle is: 0..1, smooth between lattice points.
@@ -75,10 +76,27 @@ const TCHAR* const kGroundCode = TEXT(R"HLSL(struct FGroundLayers
 		Color *= min(1.0, 0.8 / max(max(Color.r, Color.g), max(Color.b, 1e-4)));
 		return max(Color, 0.03);
 	}
+	// How much of the top layer shows where the weights alone would show Weight of it. Each layer's height stands on its
+	// own share of the weight, and wherever one stands clear of the other by Depth it alone shows, so the top layer
+	// breaks through first at its high points and fills its low ones last. With both heights under 1 - Depth, Weight 0
+	// shows none of it and 1 all of it.
+	float HeightBlend(float Weight, float LowHeight, float TopHeight, float Depth)
+	{
+		float Low = LowHeight + (1.0 - Weight);
+		float Top = TopHeight + Weight;
+		float Cut = max(Low, Top) - Depth;
+		float LowShare = max(Low - Cut, 0.0);
+		float TopShare = max(Top - Cut, 0.0);
+		return TopShare / max(LowShare + TopShare, 1e-5);
+	}
 };
 FGroundLayers Layers;
 float2 P = WorldPos.xy;
 float3 Up = normalize(VertexNormal);
+// Far: 0 out to FarStartCm from the eye and 1 from FarEndCm. Over it the detail that would tile or glitter far off gives
+// way: the bumps ease to FarNormalStrength of their strength.
+float Far = smoothstep(FarStartCm, max(FarEndCm, FarStartCm + 1.0), EyeDepth);
+float Strength = NormalStrength * lerp(1.0, FarNormalStrength, Far);
 
 // Ground: laid flat and drawn twice, the second copy turned 0.6 radians and 1.31 times the size, a broad mottle
 // choosing between them.
@@ -103,10 +121,21 @@ float3 NB = UnpackNormalMap(
 	Texture2DSample(GroundNormal, GetMaterialSharedSampler(GroundNormalSampler, View.MaterialTextureBilinearWrapedSampler), UvB)).xyz;
 float3 GroundLean =
 	lerp(float3(NA.x, NA.y, 0.0), float3(Cos06 * NB.x - Sin06 * NB.y, Sin06 * NB.x + Cos06 * NB.y, 0.0), Turned);
-float3 GroundN = normalize(NormalStrength * GroundLean + lerp(NA.z, NB.z, Turned) * Up);
+float3 GroundN = normalize(Strength * GroundLean + lerp(NA.z, NB.z, Turned) * Up);
+// Far off, a third copy, FarScale times the size and turned 1.9 radians, takes FarBlend of the colour and the packed
+// maps, so that the near copies' repeats don't line up into a pattern seen from afar. Its bumps are left out: far off
+// they have eased anyway.
+const float Cos19 = -0.3232896;
+const float Sin19 = 0.9463001;
+float2 UvF = float2(Cos19 * P.x + Sin19 * P.y, Cos19 * P.y - Sin19 * P.x) / max(GroundTileCm * FarScale, 1.0) + float2(0.13, 0.52);
+float FarW = Far * saturate(FarBlend);
+GroundColor = lerp(GroundColor,
+	Texture2DSample(GroundAlbedo, GetMaterialSharedSampler(GroundAlbedoSampler, View.MaterialTextureBilinearWrapedSampler), UvF).rgb, FarW);
+GroundPack = lerp(GroundPack,
+	Texture2DSample(GroundArm, GetMaterialSharedSampler(GroundArmSampler, View.MaterialTextureBilinearWrapedSampler), UvF).rgb, FarW);
 )HLSL") TEXT(R"HLSL(
 // Rock: projected along the world's axes, blended by how squarely the ground meets each, image-down pointing down the
-// world on a side face. It covers ground steeper than 0.75 to 1, the line wandering by noise.
+// world on a side face.
 float3 Q = WorldPos / max(RockTileCm, 1.0);
 float3 Blend = pow(abs(Up), 4.0);
 Blend /= max(Blend.x + Blend.y + Blend.z, 1e-5);
@@ -129,11 +158,28 @@ float3 RZ = UnpackNormalMap(
 	Texture2DSample(RockNormal, GetMaterialSharedSampler(RockNormalSampler, View.MaterialTextureBilinearWrapedSampler), UvZ)).xyz;
 float3 RockLean =
 	float3(Blend.y * RY.x + Blend.z * RZ.x, Blend.x * RX.x + Blend.z * RZ.y, -(Blend.x * RX.y + Blend.y * RY.y));
-float3 RockN = normalize(NormalStrength * RockLean + (Blend.x * RX.z + Blend.y * RY.z + Blend.z * RZ.z) * Up);
+float3 RockN = normalize(Strength * RockLean + (Blend.x * RX.z + Blend.y * RY.z + Blend.z * RZ.z) * Up);
+// The heights the rock and the ground meet by: each surface's occlusion about its own mean (its last mip), so that a
+// bright gravel and a dark rock meet as evenly as two of a kind. They reach RockBlendHeight, short enough that the
+// blend's ends stay pure.
+float Span = clamp(RockBlendHeight, 0.0, 0.95 - saturate(RockBlendDepth));
+float GroundMean =
+	Texture2DSampleLevel(GroundArm, GetMaterialSharedSampler(GroundArmSampler, View.MaterialTextureBilinearWrapedSampler), float2(0.5, 0.5), 15.0).r;
+float RockMean =
+	Texture2DSampleLevel(RockArm, GetMaterialSharedSampler(RockArmSampler, View.MaterialTextureBilinearWrapedSampler), float2(0.5, 0.5), 15.0).r;
+float GroundH = Span * saturate(0.5 + 2.0 * (GroundPack.r - GroundMean));
+float RockH = Span * saturate(0.5 + 2.0 * (RockPack.r - RockMean));
+// Rock takes the ground over between slopes of about 0.75 and 0.95 (37 to 44 degrees), the line wandering by noise.
+// From RockAltitudeCm up, over RockAltitudeRunCm and up to half as much again by noise, ground gentler by 0.4 joins it,
+// so that the high mountainsides turn to rock and only their gentle shoulders keep the ground; nothing under
+// RockAltitudeCm does. Within the band the rock breaks through at its high points and the ground keeps to its low ones.
 float Nz = saturate(Up.z);
 float Slope = sqrt(saturate(1.0 - Nz * Nz)) / max(Nz, 1e-4);
-float RockW = smoothstep(0.75, 1.0, Slope + (Layers.Mottle(P, 600.0, 5.0) - 0.5) * 0.2);
-
+float Run = max(RockAltitudeRunCm, 1.0);
+float Lift = smoothstep(RockAltitudeCm, RockAltitudeCm + Run, WorldPos.z - 0.5 * Run * Layers.Mottle(P, 4000.0, 8.0));
+float SlopeW = smoothstep(0.55, 1.15, Slope + 0.4 * Lift + (Layers.Mottle(P, 600.0, 5.0) - 0.5) * 0.2);
+float RockW = Layers.HeightBlend(SlopeW, GroundH, RockH, max(RockBlendDepth, 0.01));
+)HLSL") TEXT(R"HLSL(
 // Road: laid flat inside each road's edge. The mask is 255 within a metre of a road's centre line and falls in a
 // straight line to 0 five metres out, so it reads back as the distance; the edge lies 3 m out, give or take 40 cm.
 float2 UvR = P / max(RoadTileCm, 1.0);
@@ -143,7 +189,7 @@ float3 RoadPack =
 	Texture2DSample(RoadArm, GetMaterialSharedSampler(RoadArmSampler, View.MaterialTextureBilinearWrapedSampler), UvR).rgb;
 float3 NR = UnpackNormalMap(
 	Texture2DSample(RoadNormal, GetMaterialSharedSampler(RoadNormalSampler, View.MaterialTextureBilinearWrapedSampler), UvR)).xyz;
-float3 RoadN = normalize(NormalStrength * float3(NR.x, NR.y, 0.0) + NR.z * Up);
+float3 RoadN = normalize(Strength * float3(NR.x, NR.y, 0.0) + NR.z * Up);
 float MaskV = Texture2DSample(RoadMask, GetMaterialSharedSampler(RoadMaskSampler, View.MaterialTextureBilinearClampedSampler),
 	P / max(MaskSideCm, 1.0) + 0.5).r;
 float DistCm = 500.0 - 400.0 * MaskV;
@@ -151,11 +197,13 @@ float EdgeCm = 300.0 + (Layers.Mottle(P, 250.0, 6.0) - 0.5) * 80.0;
 float Soft = 0.5 * max(RoadEdgeCm, 1.0);
 float RoadW = 1.0 - smoothstep(-Soft, Soft, DistCm - EdgeCm);
 
-// Rock over the ground and the road over both, each layer in its tint, then the mottles and the warm and cool drift.
+// Rock over the ground and the road over both, each layer in its tint, then the mottles and the warm and cool drift. The
+// fine mottle, which far off would only speckle, fades with the detail.
 float Fine = Layers.Mottle(P, VariationScale, 2.0);
 float Broad = Layers.Mottle(P, MacroScale, 3.0);
 float Hue = Layers.Mottle(P, MacroScale * 1.7, 4.0);
-float3 Shade = (1.0 + Variation * (2.0 * Fine - 1.0)) * (1.0 + MacroVariation * (2.0 * Broad - 1.0))
+float FineVariation = Variation * (1.0 - Far);
+float3 Shade = (1.0 + FineVariation * (2.0 * Fine - 1.0)) * (1.0 + MacroVariation * (2.0 * Broad - 1.0))
 	* (1.0 + HueDrift * (2.0 * Hue - 1.0) * float3(1.0, 0.25, -0.75));
 float3 Color = lerp(lerp(GroundColor * GroundTint.rgb, RockColor * RockTint.rgb, RockW), RoadColor * RoadTint.rgb, RoadW) * Shade;
 NormalOut = normalize(lerp(lerp(GroundN, RockN, RockW), RoadN, RoadW));
@@ -163,7 +211,7 @@ NormalOut = normalize(lerp(lerp(GroundN, RockN, RockW), RoadN, RoadW));
 float GroundRough = GroundRoughness >= 0.0 ? GroundRoughness : GroundPack.g;
 float RockRough = RockRoughness >= 0.0 ? RockRoughness : RockPack.g;
 float RoadRough = RoadRoughness >= 0.0 ? RoadRoughness : RoadPack.g;
-float RoughVar = 1.0 + 0.5 * Variation * (2.0 * Layers.Mottle(P, VariationScale, 7.0) - 1.0);
+float RoughVar = 1.0 + 0.5 * FineVariation * (2.0 * Layers.Mottle(P, VariationScale, 7.0) - 1.0);
 RoughOut = saturate(lerp(lerp(GroundRough, RockRough, RockW), RoadRough, RoadW) * RoughVar);
 float3 Pack = lerp(lerp(GroundPack, RockPack, RockW), RoadPack, RoadW);
 MetalOut = Pack.b;
@@ -274,24 +322,36 @@ UMaterial* BuildMaster(TConstArrayView<UTexture*> Defaults, UTexture* NoRoads)
 	{
 		const TCHAR* Name;
 		float Value;
+		const TCHAR* Group;
 	};
+	// RockAltitudeCm's default lies far over any ground, so the master alone turns no high ground to rock.
 	const FLookScalar Look[] = {
-		{TEXT("NormalStrength"), 1.f},
-		{TEXT("Variation"), 0.12f},
-		{TEXT("VariationScale"), 400.f},
-		{TEXT("MacroVariation"), 0.14f},
-		{TEXT("MacroScale"), 3000.f},
-		{TEXT("HueDrift"), 0.05f},
-		{TEXT("MaskSideCm"), 100000.f},
-		{TEXT("RoadEdgeCm"), 35.f},
+		{TEXT("NormalStrength"), 1.f, TEXT("Look")},
+		{TEXT("Variation"), 0.12f, TEXT("Look")},
+		{TEXT("VariationScale"), 400.f, TEXT("Look")},
+		{TEXT("MacroVariation"), 0.14f, TEXT("Look")},
+		{TEXT("MacroScale"), 3000.f, TEXT("Look")},
+		{TEXT("HueDrift"), 0.05f, TEXT("Look")},
+		{TEXT("MaskSideCm"), 100000.f, TEXT("Road")},
+		{TEXT("RoadEdgeCm"), 35.f, TEXT("Road")},
+		{TEXT("RockBlendHeight"), 0.5f, TEXT("Rock")},
+		{TEXT("RockBlendDepth"), 0.2f, TEXT("Rock")},
+		{TEXT("RockAltitudeCm"), 100000.f, TEXT("Rock")},
+		{TEXT("RockAltitudeRunCm"), 4000.f, TEXT("Rock")},
+		{TEXT("FarStartCm"), 3000.f, TEXT("Far")},
+		{TEXT("FarEndCm"), 12000.f, TEXT("Far")},
+		{TEXT("FarScale"), 5.f, TEXT("Far")},
+		{TEXT("FarBlend"), 0.6f, TEXT("Far")},
+		{TEXT("FarNormalStrength"), 0.4f, TEXT("Far")},
 	};
 	for (const FLookScalar& Scalar : Look)
 	{
-		AddInput(Custom, Scalar.Name, AddScalar(Material, Scalar.Name, Scalar.Value, TEXT("Look"), Y));
+		AddInput(Custom, Scalar.Name, AddScalar(Material, Scalar.Name, Scalar.Value, Scalar.Group, Y));
 		Y += 100;
 	}
 	AddInput(Custom, TEXT("WorldPos"), AddExpression<UMaterialExpressionWorldPosition>(Material, -900, Y));
 	AddInput(Custom, TEXT("VertexNormal"), AddExpression<UMaterialExpressionVertexNormalWS>(Material, -900, Y + 100));
+	AddInput(Custom, TEXT("EyeDepth"), AddExpression<UMaterialExpressionPixelDepth>(Material, -900, Y + 200));
 	AddOutput(Custom, TEXT("NormalOut"), CMOT_Float3);
 	AddOutput(Custom, TEXT("RoughOut"), CMOT_Float1);
 	AddOutput(Custom, TEXT("MetalOut"), CMOT_Float1);

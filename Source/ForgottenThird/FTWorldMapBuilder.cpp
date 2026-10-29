@@ -100,12 +100,42 @@ FWorldPalette WorldPaletteFor(ftcore::WorldKind Kind)
 // A world map's road mask is this many pixels across the playable square, about half a metre each over 1 km, so a
 // road's fade spans eight of them.
 constexpr int32 kWorldRoadMaskSize = 2048;
+// The high ground's rock starts this far over the highest ground inside the playable square, so that it dresses only
+// the mountains round it.
+constexpr float kRockAltitudeMarginM = 10.f;
+
+// The highest sample inside the playable square, in metres: the climax's pad or a hill above it.
+float HighestInside(const ftcore::WorldTerrain& Terrain)
+{
+	const float Half = 0.5f * Terrain.side();
+	const float Start = -0.5f * Terrain.extent();
+	float Highest = -FLT_MAX;
+	for (std::size_t Iy = 0; Iy < ftcore::WorldTerrain::kSamples; ++Iy)
+	{
+		const float Y = Start + static_cast<float>(Iy) * Terrain.spacing();
+		if (FMath::Abs(Y) > Half)
+		{
+			continue;
+		}
+		for (std::size_t Ix = 0; Ix < ftcore::WorldTerrain::kSamples; ++Ix)
+		{
+			const float X = Start + static_cast<float>(Ix) * Terrain.spacing();
+			if (FMath::Abs(X) <= Half)
+			{
+				Highest = FMath::Max(Highest, Terrain.sample(Ix, Iy));
+			}
+		}
+	}
+	return Highest;
+}
 
 // The ground's instance of the ground master (FTScene::GroundMaterial), MI_World_Ground. Each of its layers wears the
 // surface the world's kind gives the layer's role, at the surface's scale, in its tint and with its roughness, and the
-// roads come from a new T_RoadMask of ftcore::roadMask's bytes. Null, with a warning and nothing made, when the master,
-// a layer's surface or one of their textures is missing.
-UMaterialInterface* WorldGround(UPackage* Package, const ftcore::SurfaceTable& Surfaces, const ftcore::WorldLayout& Layout, float Hue)
+// roads come from a new T_RoadMask of ftcore::roadMask's bytes. The rock dresses the ground from RockAltitudeM up as
+// well as where it's steep. Null, with a warning and nothing made, when the master, a layer's surface or one of their
+// textures is missing.
+UMaterialInterface* WorldGround(UPackage* Package, const ftcore::SurfaceTable& Surfaces, const ftcore::WorldLayout& Layout, float Hue,
+	float RockAltitudeM)
 {
 	constexpr int32 Layers = UE_ARRAY_COUNT(FTScene::GroundLayers);
 	constexpr int32 Maps = UE_ARRAY_COUNT(FTScene::SurfaceMaps);
@@ -172,14 +202,15 @@ UMaterialInterface* WorldGround(UPackage* Package, const ftcore::SurfaceTable& S
 	Mic->SetTextureParameterValueEditorOnly(FMaterialParameterInfo(TEXT("RoadMask")), RoadMask);
 	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("MaskSideCm")), Layout.side() * 100.f);
 	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("HueDrift")), Hue);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("RockAltitudeCm")), RockAltitudeM * 100.f);
 	Mic->PostEditChange();
 	FString Worn;
 	for (int32 L = 0; L < Layers; ++L)
 	{
 		Worn += FString::Printf(TEXT("%s%s %s"), L > 0 ? TEXT(", ") : TEXT(""), FTScene::GroundLayers[L].Name, *FT::ToFString(Specs[L]->id));
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildExploreWorld: the ground wears %s (%s), its roads from a %d x %d mask (%.1f%% of the square on a road)."),
-		FTScene::GroundMaterial, *Worn, kWorldRoadMaskSize, kWorldRoadMaskSize, 100.0 * OnRoad / Bytes.Num());
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildExploreWorld: the ground wears %s (%s), its roads from a %d x %d mask (%.1f%% of the square on a road), rock on the high ground from %.1f m up."),
+		FTScene::GroundMaterial, *Worn, kWorldRoadMaskSize, kWorldRoadMaskSize, 100.0 * OnRoad / Bytes.Num(), RockAltitudeM);
 	return Mic;
 }
 
@@ -491,9 +522,11 @@ int32 FTBuildWorldMap(const FString& WorldId, const FString& Params)
 		}
 		return WorldTint(Package, Base, Name, Flat);
 	};
-	// The ground wears the ground master: its kind's ground, rock where it's steep, and the roads. Without the master or
-	// one of its surfaces it wears the ground's surface alone (or the flat tint), and a road is only its cut.
-	UMaterialInterface* GroundTint = WorldGround(Package, Surfaces, *Layout, Palette.GroundHue);
+	// The ground wears the ground master: its kind's ground, rock where it's steep and on the mountains, and the roads.
+	// Without the master or one of its surfaces it wears the ground's surface alone (or the flat tint), and a road is only
+	// its cut.
+	UMaterialInterface* GroundTint =
+		WorldGround(Package, Surfaces, *Layout, Palette.GroundHue, HighestInside(*Terrain) + kRockAltitudeMarginM);
 	if (GroundTint)
 	{
 		// The ground's and the road's surfaces; the rock's counts with the rocks, which wear it too.

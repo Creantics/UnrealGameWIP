@@ -124,13 +124,30 @@ photographed surfaces, the ones surfaces.json gives the world's kind for these r
   1.31 times the size, and a broad mottle (about 18 m across) chooses between them, so neither copy's repeat
   lines up across open ground.
 - **rock**: projected along the world's three axes like `M_WorldSurfaceTex`, wherever the ground is steeper
-  than 0.75 to 1 (37 to 45 degrees), with the line wandering by noise. The renders show it on Lattice's
-  mountain faces, as grey stone darker than the sand and lighter than the shadows beside it.
+  than about 0.75 to 0.95 (37 to 44 degrees), with the line wandering by noise. High up it takes gentler
+  ground too: from `RockAltitudeCm` up, over `RockAltitudeRunCm` and up to half as much again by noise, the
+  slope it needs falls by 0.4, so the mountains' upper sides turn to stone and only their gentle shoulders
+  keep the ground. Each map sets `RockAltitudeCm` 10 m over the highest ground inside its playable square, so
+  this rock stays on the mountains round it: from 45.6 m in the town and 46.0 m among the towers. Nothing in
+  the ruins stands that high, so their rock keeps to the steep ground.
 - **road**: laid flat inside each road's edge, 3 m from its centre line give or take 40 cm by noise, and
   softened over `RoadEdgeCm`.
 
 The road comes over the rock, and the rock over the ground. Each layer takes its tint and its roughness, and
 then all three take the same mottles and a drift between warm and cool over broad patches.
+
+The rock and the ground meet by height, not by a straight fade. Each surface's occlusion map, taken about its
+own mean (read from its last mip), stands for its height, up to `RockBlendHeight`; wherever one stands
+`RockBlendDepth` clear of the other, it alone shows. So where the slope starts to call for rock, the stone
+breaks through at its high points first and the ground keeps to its cracks and hollows longest. Centring
+each map on its own mean keeps a bright gravel meeting a dark rock as evenly as two of a kind, and the height
+is held under 0.95 less the depth, so the ends of the blend stay pure ground and pure rock.
+
+Far off, the detail that would tile or glitter gives way, from `FarStartCm` (30 m from the eye) to
+`FarEndCm` (120 m). A third copy of the ground, `FarScale` (5) times the size and turned 1.9 radians, takes
+`FarBlend` (0.6) of its colour and packed maps, so the near copies' repeats don't line up into a pattern seen
+from high up. The bumps ease to `FarNormalStrength` (0.4) of their strength, and the fine mottle fades out,
+leaving the broad mottles and the drift.
 
 The roads come from a mask. `ftcore::roadMask` fills one byte for each half metre of the playable square: 255
 within a metre of a road's centre line, falling in a straight line to 0 five metres out, so a filtered read
@@ -152,6 +169,9 @@ Its parameters:
   A roughness below zero keeps the packed map's.
 - `RoadMask` (the empty `T_GroundNoRoads`, so the master alone draws no road), `MaskSideCm` (100000, the
   mask's width) and `RoadEdgeCm` (35).
+- `RockBlendHeight` (0.5), `RockBlendDepth` (0.2), `RockAltitudeCm` (100000, over any ground, so the master
+  alone puts no rock on the high ground) and `RockAltitudeRunCm` (4000).
+- `FarStartCm` (3000), `FarEndCm` (12000), `FarScale` (5), `FarBlend` (0.6) and `FarNormalStrength` (0.4).
 - `NormalStrength` (1), `Variation` (0.12), `VariationScale` (400 cm), `MacroVariation` (0.14),
   `MacroScale` (3000 cm) and `HueDrift` (0.05).
 
@@ -160,19 +180,30 @@ which filter as the world's textures do. Ten textures with a sampler each, plus 
 pass the sixteen samplers a shader may bind.
 
 How it looks, from offscreen renders at the entry, close behind the lead, 25 m up and from 60 m up and
-120 m back:
+120 m back, and at eye height on each world's climax (`-WorldDistrict`, [WORLDS.md](WORLDS.md)):
 
-- Solhaven's grass reads greener from any distance, a lime green rather than a lawn's. From a road the gravel
-  and the plazas' cobbles show at their real size, and the far view shows the roads running between the
-  districts.
+- Solhaven's grass reads a lime green rather than a lawn's. From a road the gravel and the plazas' cobbles
+  show at their real size, and the far view shows the roads running between the districts. From afar the
+  grass no longer shows its tile's grain, though it stays one even green. From the hilltop the mountains round
+  the town read as smooth tan slopes with broad green patches: their rock is one flat brown from that far, and
+  where it gives way to the grass follows the smooth slopes in blotches.
 - Lattice's ground is pale, cool gravel. Its asphalt roads read from the far view, and its mountains' steep
-  faces wear grey stone.
-- Unwritten's sand shows no repeat from 25 m up or from afar, its mud roads stand out against it, and its
-  mesas and a pit's funnel show.
+  faces wear grey stone. From the hilltop they read like the town's, smooth khaki slopes with pale patches.
+- Unwritten's sand shows no repeat, and none of the speckle it used to, from 25 m up or from afar. Its mud
+  roads stand out against it, its worn open ground rolls in soft folds, and its mesas and a pit's funnel
+  show. The plain keeps one even tone to the horizon. On the climax the plaza fills the butte's flat top,
+  so the plain stays hidden below its rim.
 
-Not yet: the rock meets the ground by slope alone, not by height, so it doesn't settle into the hollows; the
-ground keeps its full detail into the distance, with no fade; and the ground's repeats are broken only by the
-second copy and the mottles.
+Not yet: the mountains. Their ridges are noise that no rain wears, the finest about 14 m across, so from a
+hilltop they read as smooth slopes. The rock has no far copy, so from 300 m it shows as its photo's mean
+colour, and the high rock's edge follows a 40 m mottle, not the ground's shape. The next pass wears the
+mountains in Core after they are raised (a second rain pass with steepness limits of its own, or finer ridges
+with scree at their feet), gives the rock a far copy like the ground's, and lets a mask the builder bakes from
+the ground's shape over the whole Landscape choose where the rock shows: on the ridges, with the ground in the
+hollows. The town's `rock_wall` reads warm brown. surfaces.json must wear every surface it lists, so giving
+the town another rock means retiring `rock_wall` or giving it another role, not only changing one line. The
+building rings round each climax's plaza also hide most of the view from it, and nothing grows on the ground
+yet.
 
 ## Building
 
@@ -206,9 +237,9 @@ When the first surface stays put, the master isn't saved:
 `FTBuildGround` replaces `M_WorldGround` and `T_GroundNoRoads`. It reads the town's ground, rock and road
 surfaces from surfaces.json for the master's defaults, and saves nothing if one of their textures is missing or
 the master doesn't compile. It ends with
-`FTBuildGround: saved /Game/Rendering/M_WorldGround and /Game/Rendering/T_GroundNoRoads (38.4 KB), wearing leafy_grass, rock_wall and gravel_road until a map's instance says otherwise.`
+`FTBuildGround: saved /Game/Rendering/M_WorldGround and /Game/Rendering/T_GroundNoRoads (47.5 KB), wearing leafy_grass, rock_wall and gravel_road until a map's instance says otherwise.`
 Each world map's build then makes the map's instance and mask, and logs, for example,
-`FTBuildExploreWorld: the ground wears /Game/Rendering/M_WorldGround (Ground leafy_grass, Rock rock_wall, Road gravel_road), its roads from a 2048 x 2048 mask (2.5% of the square on a road).`
+`FTBuildExploreWorld: the ground wears /Game/Rendering/M_WorldGround (Ground leafy_grass, Rock rock_wall, Road gravel_road), its roads from a 2048 x 2048 mask (2.5% of the square on a road), rock on the high ground from 45.6 m up.`
 
 Before it changes anything, it also reads the roughness channel of each surface's packed map. A channel that
 averages under 0.05 is empty. No surface here is that smooth all over, and the shape would render as a mirror.
@@ -234,9 +265,9 @@ On a world map the director logs `World solhaven: field step in district 3 (phot
 - Measure each map's EV100 and narrow the exposure range to about ±1.5 EV round it.
 - One `SceneLook` per world, blended with `lerp` where the story crosses from one to another.
 - Photographed surfaces for the towers' and ruins' buildings, plazas, roofs, landmarks and trees.
-- On the terrain: scattered grass, stones and decals that hide the repeats; rock that meets the ground by
-  height (the ground filling its cracks) rather than by slope alone; a fade at distance that hides the
-  ground's tiling from high up; and a second ground surface per world, such as dirt or moss in patches.
+- On the terrain: scattered grass, stones and decals that hide the repeats; a second ground surface per
+  world, such as dirt or moss in patches; and a mask from the erosion that lays rock or scree along the
+  rills and gullies the rain cut, rather than by slope and height alone.
 - Cliff meshes, or a fog pass, on the sheer walls (the quay, the abyss's fall and the pits' shafts), which
   the Landscape can only draw as long, thin triangles 2 m apart.
 - A building kit in place of the blockout cubes, which also fixes the roofs' gable ends.

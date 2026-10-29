@@ -10,7 +10,7 @@ Scenes that aren't placed in a world, such as the house and the pocket, still pl
 
 The **overworld** joins them: a small walkable map with one gate per world. When the story moves from one world to another, the party walks the road between the two gates before the next field step starts.
 
-Each world is a blockout for now: shapes, roads and landmarks on the world's own hills under the shared photoreal look ([SCENE_LOOK.md](SCENE_LOOK.md)). The ground comes from Core (see [Ground](#ground)) and is imported as a Landscape. The ground wears photographed ground, rock on its steep faces and the roads, but the trees and rocks are still simple shapes, nothing grows on the ground yet, and there is no streaming and there are no biomes.
+Each world is a blockout for now: shapes, roads and landmarks on the world's own hills under the shared photoreal look ([SCENE_LOOK.md](SCENE_LOOK.md)). The ground comes from Core (see [Ground](#ground)) and is imported as a Landscape. The ground wears photographed ground, rock on its steep faces and its high ground, and the roads, but the trees and rocks are still simple shapes, nothing grows on the ground yet, and there is no streaming and there are no biomes.
 
 ## Size
 
@@ -128,7 +128,7 @@ Run it again with `-World=lattice` and `-World=unwritten`. `-Style=<spec>` adds 
 
 The build fails if any field goal, from `kFieldGoals` or `goals.json`, has no full navmesh path from any district's spawn. The roads between districts have no navmesh, because they are straight and clear.
 
-The ground wears the ground master: the kind's ground surface, rock wherever the ground is steeper than about 1 in 1, and the road surface along every road, drawn from a mask of the roads the build makes from the layout ([SCENE_LOOK.md](SCENE_LOOK.md#the-ground)). The plazas, buildings, roofs, landmarks, trunks and rocks wear the photographed surfaces that `Data/Field/surfaces.json` gives the world's kind, and the rest keep flat tints. The build logs what the ground wears and how many roles are dressed:
+The ground wears the ground master: the kind's ground surface, rock wherever the ground is steeper than about 0.85 in 1 (40 degrees) and on the mountains' upper sides from 10 m over the square's highest ground (45.6 m in the town and 46.0 m among the towers; nothing in the ruins stands that high), meeting the ground by height so that the stone breaks through first at its high points, and the road surface along every road, drawn from a mask of the roads the build makes from the layout ([SCENE_LOOK.md](SCENE_LOOK.md#the-ground)). The plazas, buildings, roofs, landmarks, trunks and rocks wear the photographed surfaces that `Data/Field/surfaces.json` gives the world's kind, and the rest keep flat tints. The build logs what the ground wears and how many roles are dressed:
 
 | World | Ground | Rock | Road | On a road | Roles dressed |
 |---|---|---|---|---|---|
@@ -138,7 +138,7 @@ The ground wears the ground master: the kind's ground surface, rock wherever the
 
 The tints are the ones surfaces.json gives: the town's grass greener, (0.5, 0.9, 0.35), because the photo's dry grass showed as khaki from any distance; the towers' gravel a touch cooler, (0.85, 0.9, 1.0); and their rock, the ruins' worn rock, grey, (0.45, 0.6, 0.9). The towers first wore a dark rock photo, but even at the tint's cap of 2 it stayed darker than the shadows beside it, and the mountains' steep faces read as holes from afar; the grey worn rock reads lighter than those shadows and darker than the sand.
 
-For Solhaven: `FTBuildExploreWorld: the ground wears /Game/Rendering/M_WorldGround (Ground leafy_grass, Rock rock_wall, Road gravel_road), its roads from a 2048 x 2048 mask (2.5% of the square on a road).` then `FTBuildExploreWorld: 8 of 8 surface roles wear photographed surfaces.` The mask adds 56 to 72 KB to a map.
+For Solhaven: `FTBuildExploreWorld: the ground wears /Game/Rendering/M_WorldGround (Ground leafy_grass, Rock rock_wall, Road gravel_road), its roads from a 2048 x 2048 mask (2.5% of the square on a road), rock on the high ground from 45.6 m up.` then `FTBuildExploreWorld: 8 of 8 surface roles wear photographed surfaces.` The mask adds 56 to 72 KB to a map.
 
 The build logs the ground's numbers, then the map's. For Solhaven:
 
@@ -149,8 +149,8 @@ The build logs the ground's numbers, then the map's. For Solhaven:
 | World | Ground | Pads | Steeper than 1 in 1 | Cuts, hidden walls | Water planes | Props left off |
 |---|---|---|---|---|---|---|
 | solhaven | -33.0 to 145.7 m | -19.7 to 35.6 m | 0.0% | 0, 0 | 1 | 0 |
-| lattice | -38.7 to 146.7 m | -12.1 to 36.0 m | 1.2% | 2, 8 | 3 | 28 |
-| unwritten | -185.5 to 36.0 m | -18.0 to 36.0 m | 2.8% | 2, 64 | 0 | 77 |
+| lattice | -38.6 to 146.7 m | -12.1 to 36.0 m | 1.0% | 2, 8 | 3 | 25 |
+| unwritten | -185.5 to 36.0 m | -18.0 to 36.0 m | 2.8% | 2, 64 | 0 | 78 |
 
 ## Headless checks
 
@@ -166,6 +166,7 @@ The build logs the ground's numbers, then the map's. For Solhaven:
   UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/World_Solhaven -game -NullRHI -WorldAutoPlay -AlphaFast -WorldQuitOnDone -unattended -nosplash -nosound
   ```
 
-  It logs `World solhaven: reached district <d> (leg i/n) at <t> s game time.` for each leg, then `TOUR DONE`. Solhaven takes 18 legs and 814 s of game time, about 124 s real with `-AlphaFast`; Lattice 15 legs and 803 s, Unwritten 17 legs and 992 s.
+  It logs `World solhaven: reached district <d> (leg i/n) at <t> s game time.` for each leg, then `TOUR DONE`. Solhaven takes 18 legs and 814 s of game time, about 106 s real with `-AlphaFast`; Lattice 15 legs and 803 s, Unwritten 17 legs and 992 s, each with the lead's feet 5 cm over the entry's floor.
+- `-WorldDistrict=<n>`, outside a story step, starts the lead on district n's spawn and floor instead of the PlayerStart, and starts a tour there. With `-ExplorePortrait` it frames the ground from that district's pad, such as the climax's hilltop (Solhaven's district 14, Lattice's 1, Unwritten's 4).
 - A second after each placing of the lead on a world map (the start of a free walk or the tour, and every story step, field or CG), the director logs its feet against the floor saved for the district it stands in: `World solhaven: the lead's feet at z 5 cm in district 0, whose floor is 0 cm.` The two agree to a few cm when the map's ground is the one the builder imported. The entry's floor is always 0, so the tour's line only shows the ground is there; a story step in another district logs that district's floor.
 - The alpha gate (`tools/gate.ps1 -Alpha`) plays the whole story, with Solhaven's field steps on its map.
