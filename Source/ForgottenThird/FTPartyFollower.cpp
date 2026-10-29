@@ -11,6 +11,8 @@
 #include "FTMeshFacing.h"
 #include "ForgottenThird.h"
 
+#include "ftcore/PartyTrail.h"
+
 namespace
 {
 // Slower than this (cm/s) counts as standing still. A speed, not a distance: at a high frame rate a walking
@@ -35,12 +37,6 @@ constexpr float kMarkFacing = 0.8f;
 constexpr float kMarkSlack = 60.f;
 constexpr float kMarkPassed = 100.f;
 constexpr float kMarkFar = 2000.f;
-// Let go by a traversal off its slot, the body eases back onto it with this time constant (s), no faster than this
-// (cm/s); ahead of its slot the way the traversal went, within kStrayWait (cm), it waits for its slot rather than going
-// back toward it.
-constexpr float kStrayTime = 0.4f;
-constexpr float kStrayRate = 200.f;
-constexpr float kStrayWait = 300.f;
 // Carried by a catch, the body turns square into the face with this time constant (s), as the lead does.
 constexpr float kCatchTurnTime = 0.05f;
 // Why the last look ahead started no traversal (LastMiss), for the log.
@@ -74,6 +70,7 @@ bool AFTPartyFollower::Setup(const FFTLeadLook& Look, const AActor* Lead)
 	}
 	// The lead's vaults, climbs and catches from here on.
 	bNoTraversal = FParse::Param(FCommandLine::Get(), TEXT("LocoNoFollowerTraversal"));
+	bNoCatchUpRamp = FParse::Param(FCommandLine::Get(), TEXT("LocoNoCatchUpRamp"));
 	LeadExplorer = Cast<AFTExploreCharacter>(Lead);
 	MarksSeen = LeadExplorer.IsValid() ? LeadExplorer->GetTraversalsBegun() : 0;
 	LogName = FString::Printf(TEXT("FTPartyFollower %s"), *Look.Name);
@@ -109,6 +106,8 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 	const FVector Was = GetActorLocation();
 	const bool bWasPlaced = bPlaced;
 	const bool bSlotMoving = bWasPlaced && DeltaSeconds > 0.f && FVector2D::Distance(Ground, LastSlot) > kStillSpeed * DeltaSeconds;
+	// Its slot's velocity (cm/s): off it, the body goes at that plus its rate back (StrayRate).
+	const FVector2D SlotGoing = bWasPlaced && DeltaSeconds > 0.f ? (Ground - LastSlot) / DeltaSeconds : FVector2D::ZeroVector;
 	LastSlot = Ground;
 	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Body->GetAnimInstance());
 
@@ -124,12 +123,17 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 		}
 	}
 	FVector Carried = Was;
+	const bool bWasTraversing = bTraversing;
 	const bool bCarried = bTraversing && Anim && TickTraversal(*Anim, DeltaSeconds, Ground, bSlotMoving, Carried);
 	bTraversing = bCarried;
+	// Let go this frame, it is where its clip let it go, at the clip's speed (-LocoNoCatchUpRamp: a step back toward its
+	// slot already, as before).
+	const bool bLetGo = bWasTraversing && !bCarried;
 	// Otherwise on its slot, or on its way back to it.
-	FVector2D Spot = bCarried ? FVector2D(Carried.X, Carried.Y) : Ground + EaseStray(Ground, DeltaSeconds);
+	FVector2D Spot = bCarried ? FVector2D(Carried.X, Carried.Y) : Ground + (bLetGo && !bNoCatchUpRamp ? Stray : EaseStray(Ground, DeltaSeconds));
 	// Not on through a face the lead caught while it may yet catch it: held short of it, as the lead's capsule is stopped
 	// there. Landed below it, or risen clear of its top, it eases back onto its slot from there.
+	bool bHeldShort = false;
 	if (bAtWall && !bCarried)
 	{
 		const FVector2D In(WallIn.X, WallIn.Y);
@@ -139,14 +143,27 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 			Spot -= In * Over;
 			Stray = Spot - Ground;
 			StrayWay = In;
+			bHeldShort = true;
 		}
 	}
 	const FVector2D Move = bWasPlaced ? Spot - LastGround : FVector2D::ZeroVector;
 	const float Step = DeltaSeconds > 0.f ? static_cast<float>(Move.Size()) / DeltaSeconds : 0.f;
 	const bool bWantWalk = Step > kStillSpeed;
+	const FVector2D WasGoing = Going;
 	Going = DeltaSeconds > 0.f ? Move / DeltaSeconds : FVector2D::ZeroVector;
 	LastGround = Spot;
 	bPlaced = true;
+	if (DeltaSeconds > 0.f)
+	{
+		// Let go this frame, or held short of a face, the rate it goes at back is how it moved (at its clip's speed, or
+		// along the face) less its slot's, for the next frame's ease to go on from; otherwise it is the ease's own (from
+		// how it moved every frame, the last step onto its slot fed back into it and threw it off again).
+		if (bLetGo || bHeldShort)
+		{
+			StrayRate = Going - SlotGoing;
+		}
+		TrackCatchUp(bCarried, bLetGo, WasGoing, DeltaSeconds);
+	}
 
 	double Z = Carried.Z;
 	if (!bCarried)
@@ -439,27 +456,65 @@ bool AFTPartyFollower::TickTraversal(UFTLocomotionAnimInstance& Anim, float Delt
 
 FVector2D AFTPartyFollower::EaseStray(const FVector2D& Ground, float DeltaSeconds)
 {
-	if (Stray.IsZero() || DeltaSeconds <= 0.f)
+	// Back toward its slot as it goes on, no faster than a walk back, and ahead of it the way the traversal went, waiting
+	// for it rather than walking back through what it went over (ftcore::easeStray, in metres). Its rate back changes no
+	// faster than a person speeds up or brakes (-LocoNoCatchUpRamp: no limit, as before).
+	ftcore::PartyStrayTuning Tuning;
+	if (bNoCatchUpRamp)
 	{
-		return Stray;
+		Tuning.accel = 0.f;
 	}
-	// Back toward its slot as it goes on, no faster than a walk back.
-	FVector2D Change = Stray * (FMath::Exp(-DeltaSeconds / kStrayTime) - 1.0);
-	const double Most = kStrayRate * DeltaSeconds;
-	if (Change.SizeSquared() > Most * Most)
-	{
-		Change = Change.GetSafeNormal() * Most;
-	}
-	FVector2D Next = Stray + Change;
-	// Ahead of its slot the way the traversal went, it doesn't go back toward it (it would walk back through what it went
-	// over): it waits for its slot to come on.
-	const double Back = FVector2D::DotProduct(Ground + Next - LastGround, StrayWay);
-	if (Back < 0.0 && FVector2D::DotProduct(Next, StrayWay) > 0.0 && Next.Size() < kStrayWait)
-	{
-		Next -= StrayWay * Back;
-	}
-	Stray = Next.SizeSquared() < 1.0 ? FVector2D::ZeroVector : Next;
+	const FVector2D From = LastGround - Ground;
+	ftcore::Vec2 Off{static_cast<float>(Stray.X / 100.0), static_cast<float>(Stray.Y / 100.0)};
+	ftcore::Vec2 Rate{static_cast<float>(StrayRate.X / 100.0), static_cast<float>(StrayRate.Y / 100.0)};
+	ftcore::easeStray(Off, Rate, {static_cast<float>(From.X / 100.0), static_cast<float>(From.Y / 100.0)},
+		{static_cast<float>(StrayWay.X), static_cast<float>(StrayWay.Y)}, DeltaSeconds, Tuning);
+	Stray = FVector2D(Off.x, Off.y) * 100.0;
+	StrayRate = FVector2D(Rate.x, Rate.y) * 100.0;
 	return Stray;
+}
+
+void AFTPartyFollower::TrackCatchUp(bool bCarried, bool bLetGo, const FVector2D& WasGoing, float DeltaSeconds)
+{
+	if (StrayClock >= 0.f)
+	{
+		StrayClock += DeltaSeconds;
+	}
+	if (bCarried)
+	{
+		return;
+	}
+	if (bLetGo)
+	{
+		if (StrayClock >= 0.f)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: let go again %.2f s after it came off its slot (its rate back %.0f cm/s then), before it was back on it: %.0f cm/s at most, its speed changing at %.0f cm/s^2 at most."),
+				*LogName, StrayClock, StrayRateFrom, StrayTop, StrayTopAccel);
+		}
+		StrayClock = 0.f;
+		StrayTop = StrayTopAccel = 0.f;
+		StrayRateFrom = static_cast<float>(StrayRate.Size());
+		return;
+	}
+	if (StrayClock < 0.f)
+	{
+		// Held short of a face the lead caught, it comes off its slot with no let-go.
+		if (Stray.IsZero())
+		{
+			return;
+		}
+		StrayClock = 0.f;
+		StrayTop = StrayTopAccel = 0.f;
+		StrayRateFrom = static_cast<float>(StrayRate.Size());
+	}
+	StrayTop = FMath::Max(StrayTop, static_cast<float>(Going.Size()));
+	StrayTopAccel = FMath::Max(StrayTopAccel, static_cast<float>((Going - WasGoing).Size()) / DeltaSeconds);
+	if (Stray.IsZero())
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: back on its slot %.2f s after it came off it (its rate back %.0f cm/s then): %.0f cm/s at most, its speed changing at %.0f cm/s^2 at most."),
+			*LogName, StrayClock, StrayRateFrom, StrayTop, StrayTopAccel);
+		StrayClock = -1.f;
+	}
 }
 
 void AFTPartyFollower::ReplayJump(float UpSpeed, float Gravity)
@@ -499,7 +554,8 @@ void AFTPartyFollower::SetHeld(bool bHeld)
 	bTraversing = false;
 	NumMarks = 0;
 	LastMiss = 0;
-	Stray = FVector2D::ZeroVector;
+	Stray = StrayRate = FVector2D::ZeroVector;
+	StrayClock = -1.f;
 	bAir = false;
 	AirSpeed = 0.f;
 	bFacing = false;

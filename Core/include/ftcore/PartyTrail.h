@@ -182,4 +182,26 @@ private:
     Vec2 pos_;
 };
 
+// A follower let go off its place on the move (by a traversal that carried it, or held short of a face it may yet catch)
+// easing back onto it. It closes the gap with a time constant, no faster than a walk back; ahead of its place the way it
+// was going, it waits for its place to come on rather than going back over what it went over; and the rate it closes at
+// (its velocity less its place's) changes no faster than a person speeds up or brakes, so a body let go at a clip's exit
+// speed goes on from that speed rather than jumping to its place's pace plus its way back. Near its place it closes no
+// slower than a body braking gently to a stop on it would, so it gets there rather than creeping ever closer.
+struct PartyStrayTuning {
+    float time = 0.4f;  // seconds: the gap's time constant...
+    float speed = 2.f;  // ...closing it no faster than this (m/s)
+    float wait = 3.f;   // metres: ahead of its place within this, it waits for it
+    float accel = 10.f; // m/s^2: the most its rate changes by in a second, about the lead's own speeding up and braking;
+                        // 0 or less: no limit, the rate goes to the gap's at once (and `land` is not used)
+    float land = 0.25f; // m/s^2: it closes no slower than a body braking this hard to stop on its place (from about 8 cm
+                        // off, by default); 0 or less: by the time constant all the way
+};
+
+// One frame of it: `stray` (from its place to the body, metres) and `rate` (how fast that changes, m/s) are updated;
+// `from` is where the body was last frame, from its place now, and `way` the way it was going when let go (unit). Back
+// on its place (within a hundredth of a millimetre and slower than 0.1 m/s; with no limit on its rate, within a
+// centimetre), both are zero, and there they stay.
+FTCORE_API void easeStray(Vec2& stray, Vec2& rate, Vec2 from, Vec2 way, float dt, const PartyStrayTuning& tuning = {});
+
 } // namespace ftcore

@@ -14,6 +14,21 @@ float distance(Vec2 a, Vec2 b) {
 
 Vec2 lerp(Vec2 a, Vec2 b, float t) { return {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t}; }
 
+float norm(Vec2 v) { return std::sqrt(v.x * v.x + v.y * v.y); }
+
+// No longer than `most`, the same way.
+Vec2 clampLength(Vec2 v, float most) {
+    const float len = norm(v);
+    return len > most ? Vec2{v.x / len * most, v.y / len * most} : v;
+}
+
+// A stray this near its place (metres) is back on it: with no limit on its rate, within a centimetre; with one, within a
+// hundredth of a millimetre (its landing brings it right onto it) and slower than kStrayStill (m/s), so the last step
+// onto its place doesn't jolt the body's speed.
+constexpr float kStrayNear = 0.01f;
+constexpr float kStrayNearRamp = 1e-5f;
+constexpr float kStrayStill = 0.1f;
+
 } // namespace
 
 void PartyTrail::add(Vec2 p, float speed) {
@@ -324,6 +339,43 @@ void PartySlot::step(const PartyTrail& trail, float leadSpeed, float dt, float l
     offset_ = off;
     stray_ = stray;
     pos_ = pos;
+}
+
+void easeStray(Vec2& stray, Vec2& rate, Vec2 from, Vec2 way, float dt, const PartyStrayTuning& k) {
+    if (dt <= 0.f) return;
+    const bool ramp = k.accel > 0.f;
+    if (stray.x == 0.f && stray.y == 0.f && (!ramp || norm(rate) < kStrayStill)) {
+        rate = {};
+        return;
+    }
+    // Where it would be next: back toward its place with time constant `time` (near it, no slower than a body braking at
+    // `land` closes to stop on it, onto it at the last), no faster than `speed`...
+    const float decay = std::exp(-dt / k.time) - 1.f;
+    Vec2 change{stray.x * decay, stray.y * decay};
+    const float off = norm(stray);
+    if (ramp && k.land > 0.f && off > 0.f) {
+        const float least = std::min(off, std::sqrt(2.f * k.land * off) * dt);
+        if (norm(change) < least) change = {-stray.x / off * least, -stray.y / off * least};
+    }
+    change = clampLength(change, k.speed * dt);
+    Vec2 next{stray.x + change.x, stray.y + change.y};
+    // ...but ahead of its place the way it was going, not back toward it: it waits for its place to come on.
+    const float back = (next.x - from.x) * way.x + (next.y - from.y) * way.y;
+    if (back < 0.f && next.x * way.x + next.y * way.y > 0.f && norm(next) < k.wait) next = {next.x - way.x * back, next.y - way.y * back};
+    const Vec2 want{(next.x - stray.x) / dt, (next.y - stray.y) / dt};
+    if (ramp) {
+        // Its rate goes there no faster than a person's speed changes, from the one it was let go with.
+        const Vec2 turn = clampLength({want.x - rate.x, want.y - rate.y}, k.accel * dt);
+        rate = {rate.x + turn.x, rate.y + turn.y};
+        next = {stray.x + rate.x * dt, stray.y + rate.y * dt};
+    } else {
+        rate = want;
+    }
+    if (ramp ? norm(next) < kStrayNearRamp && norm(rate) < kStrayStill : norm(next) < kStrayNear) {
+        stray = rate = {};
+        return;
+    }
+    stray = next;
 }
 
 } // namespace ftcore

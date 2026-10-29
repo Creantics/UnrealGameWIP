@@ -435,6 +435,160 @@ TEST_CASE("party slot: left standing ahead of the lead, it comes round beside it
     CHECK(r.slot.position().y == doctest::Approx(r.slot.tuning().side).epsilon(0.02));
 }
 
+namespace {
+
+// A body let go `off` its place at `bodySpeed` along +x, its place going on along +x at `placeSpeed`: each frame the
+// place moves, then the body eases back with easeStray.
+struct LetGo {
+    static constexpr float kDt = 1.f / 60.f;
+    PartyStrayTuning tuning;
+    float placeSpeed = 0.f;
+    float placeX = 0.f;
+    Vec2 stray;
+    Vec2 rate;
+    Vec2 velocity; // the body's, over the last frame
+
+    LetGo(Vec2 off, float bodySpeed, float speed) : placeSpeed(speed), stray(off), rate{bodySpeed - speed, 0.f}, velocity{bodySpeed, 0.f} {}
+    bool back() const { return stray.x == 0.f && stray.y == 0.f; }
+    // One frame; returns how much the body's velocity changed by over it, per second.
+    float step() {
+        const Vec2 was = stray;
+        placeX += placeSpeed * kDt;
+        // Where the body was, from its place now.
+        easeStray(stray, rate, {was.x - placeSpeed * kDt, was.y}, {1.f, 0.f}, kDt, tuning);
+        const Vec2 now{placeSpeed + (stray.x - was.x) / kDt, (stray.y - was.y) / kDt};
+        const float change = std::hypot(now.x - velocity.x, now.y - velocity.y) / kDt;
+        velocity = now;
+        return change;
+    }
+};
+
+// FTPartyFollower's ease before the rate was limited, in metres: the gap closed with a 0.4 s time constant at up to
+// 2 m/s, waiting within 3 m ahead, back on its place within a centimetre.
+Vec2 oldEase(Vec2 stray, Vec2 from, Vec2 way, float dt) {
+    if (stray.x == 0.f && stray.y == 0.f) return stray;
+    const float decay = std::exp(-dt / 0.4f) - 1.f;
+    Vec2 change{stray.x * decay, stray.y * decay};
+    const float most = 2.f * dt, len = std::hypot(change.x, change.y);
+    if (len > most) change = {change.x / len * most, change.y / len * most};
+    Vec2 next{stray.x + change.x, stray.y + change.y};
+    const float back = (next.x - from.x) * way.x + (next.y - from.y) * way.y;
+    if (back < 0.f && next.x * way.x + next.y * way.y > 0.f && std::hypot(next.x, next.y) < 3.f) next = {next.x - way.x * back, next.y - way.y * back};
+    return std::hypot(next.x, next.y) < 0.01f ? Vec2{} : next;
+}
+
+} // namespace
+
+TEST_CASE("party stray: let go slower than its place, its speed builds from the clip's rather than jumping") {
+    // A catch's exit: 1.45 m/s, 5 m behind a place going on at 5 m/s.
+    LetGo g({-5.f, 0.f}, 1.45f, 5.f);
+    float worst = 0.f, fastest = 0.f, ahead = -1e9f, firstSpeed = 0.f, atHalf = 0.f;
+    int frames = 0, within = -1;
+    for (; frames < 600 && !g.back(); ++frames) {
+        worst = std::max(worst, g.step());
+        if (frames == 0) firstSpeed = g.velocity.x;
+        if (frames == 29) atHalf = g.velocity.x;
+        fastest = std::max(fastest, std::hypot(g.velocity.x, g.velocity.y));
+        ahead = std::max(ahead, g.stray.x);
+        if (within < 0 && std::hypot(g.stray.x, g.stray.y) < 0.01f) within = frames;
+    }
+    // It goes on from the clip's speed, speeding up no faster than the lead does (the old ease: to 7 m/s in a frame).
+    CHECK(firstSpeed == doctest::Approx(1.45f + g.tuning.accel * LetGo::kDt).epsilon(0.001));
+    CHECK(atHalf == doctest::Approx(1.45f + g.tuning.accel * 0.5f).epsilon(0.01));
+    CHECK(worst <= g.tuning.accel + 0.01f);
+    // No faster than its place's pace plus a walk back, and onto its place without passing it.
+    CHECK(fastest <= 5.f + g.tuning.speed + 1e-3f);
+    CHECK(ahead <= 0.f);
+    // Within a centimetre in under 4.7 s (the old ease: 3.85 s), and back on it with no jolt.
+    CHECK(within >= 0);
+    CHECK(within < 282);
+    CHECK(g.back());
+    CHECK(g.rate.x == 0.f);
+}
+
+TEST_CASE("party stray: let go ahead of a standing place, it brakes to a stand and waits for it, never going back") {
+    // A vault's exit: 4.6 m/s, a metre ahead of a place at a stand.
+    LetGo g({1.f, 0.f}, 4.6f, 0.f);
+    float worst = 0.f, backward = 0.f;
+    for (int i = 0; i < 90; ++i) {
+        worst = std::max(worst, g.step());
+        backward = std::min(backward, g.velocity.x);
+        if (i == 20) CHECK(g.velocity.x > 0.f); // braking for 0.46 s, as the lead brakes
+    }
+    CHECK(g.velocity.x == 0.f);
+    CHECK(g.stray.x == doctest::Approx(1.f + 4.6f * 4.6f / (2.f * g.tuning.accel)).epsilon(0.03));
+    // The place sets off (at 5 m/s^2 to 1.5 m/s): the body waits for it to come up, then goes on with it.
+    int frames = 0;
+    for (; frames < 900 && !g.back(); ++frames) {
+        g.placeSpeed = std::min(1.5f, g.placeSpeed + 5.f * LetGo::kDt);
+        worst = std::max(worst, g.step());
+        backward = std::min(backward, g.velocity.x);
+    }
+    CHECK(worst <= g.tuning.accel + 0.01f);
+    CHECK(backward > -1e-3f);
+    CHECK(g.back());
+    CHECK(frames < 300);
+}
+
+TEST_CASE("party stray: on its place it stays; let go on it, it eases from the rate it was let go with") {
+    Vec2 stray, rate;
+    easeStray(stray, rate, {}, {1.f, 0.f}, 1.f / 60.f);
+    CHECK(stray.x == 0.f);
+    CHECK(rate.x == 0.f);
+    LetGo g({0.f, 0.f}, 2.f, 5.f);
+    g.step();
+    CHECK(g.stray.x < 0.f);
+    CHECK(g.velocity.x == doctest::Approx(2.f + g.tuning.accel * LetGo::kDt).epsilon(0.001));
+    int frames = 0;
+    for (; frames < 600 && !g.back(); ++frames) g.step();
+    CHECK(g.back());
+}
+
+TEST_CASE("party stray: near its place it lands on it, braking no harder than land, rather than creeping ever closer") {
+    // 5 cm behind a place going on at 5 m/s, at its pace: about as long as braking at `land` to stop on it takes.
+    LetGo g({-0.05f, 0.f}, 5.f, 5.f);
+    float hardest = 0.f;
+    int frames = 0;
+    for (; frames < 600 && !g.back(); ++frames) {
+        const float change = g.step();
+        if (frames > 0) hardest = std::max(hardest, change); // the first sets it going
+    }
+    CHECK(g.back());
+    CHECK(static_cast<float>(frames) * LetGo::kDt == doctest::Approx(std::sqrt(2.f * 0.05f / g.tuning.land)).epsilon(0.1));
+    CHECK(hardest <= 2.f * g.tuning.land + 0.01f);
+    // On it, it stays.
+    for (int i = 0; i < 120; ++i) g.step();
+    CHECK(g.back());
+    // With no landing it eases by the time constant alone: still about a centimetre off by then.
+    LetGo slow({-0.05f, 0.f}, 5.f, 5.f);
+    slow.tuning.land = 0.f;
+    for (int i = 0; i < frames; ++i) slow.step();
+    CHECK(slow.stray.x < -0.009f);
+}
+
+TEST_CASE("party stray: with no limit on its rate, it eases as it did before, step for step") {
+    PartyStrayTuning old;
+    old.accel = 0.f;
+    // Behind and to the side of a place going on at 4 m/s, then ahead of one creeping at 0.5 m/s (it waits).
+    const struct {
+        Vec2 off;
+        float placeSpeed;
+    } cases[] = {{{-3.f, 1.f}, 4.f}, {{1.5f, -0.3f}, 0.5f}};
+    for (const auto& c : cases) {
+        Vec2 stray = c.off, want = c.off, rate{5.f, 0.f};
+        const float dt = 1.f / 60.f;
+        for (int i = 0; i < 400; ++i) {
+            const Vec2 from{stray.x - c.placeSpeed * dt, stray.y};
+            want = oldEase(want, from, {1.f, 0.f}, dt);
+            easeStray(stray, rate, from, {1.f, 0.f}, dt, old);
+            CHECK(stray.x == doctest::Approx(want.x).epsilon(1e-5));
+            CHECK(stray.y == doctest::Approx(want.y).epsilon(1e-5));
+            stray = want;
+        }
+        CHECK(stray.x == 0.f);
+    }
+}
+
 TEST_CASE("party trail allocates nothing") {
     PartyTrail t;
     const bool counting = ftcore_test::allocHookInstalled();
@@ -445,12 +599,16 @@ TEST_CASE("party trail allocates nothing") {
     slot.resetAt(t, {-1.f, 2.f});
     float sum = t.arcNearest({-1.f, 2.f});
     std::uint32_t next = 0, jumps = 0;
+    Vec2 stray, rate;
     for (int i = 0; i < 2000; ++i) {
         const float a = static_cast<float>(i) * 0.01f;
         t.push({a * 3.f, std::sin(a) * 4.f}, 3.f);
         if (i % 100 == 0) t.markTurn(10.f);
         if (i % 300 == 0) t.markJump();
         slot.step(t, 3.f, 1.f / 60.f);
+        if (i % 400 == 0) stray = {-2.f, 1.f};
+        easeStray(stray, rate, {stray.x - 0.05f, stray.y}, {1.f, 0.f}, 1.f / 60.f);
+        sum += stray.x;
         sum += t.pointBehind(1.6f).x + t.pointBehind(3.2f).y + t.length() + t.turnsReached(1.6f, next) + slot.position().x
             + static_cast<float>(t.jumpsReached(1.6f, jumps)) + t.speedBehind(2.f);
     }

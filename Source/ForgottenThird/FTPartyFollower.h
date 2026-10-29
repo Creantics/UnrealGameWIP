@@ -9,11 +9,12 @@
 //
 // Where the lead vaults or climbs (AFTExploreCharacter::GetLastTraversal), a follower that meets the same face goes
 // over or onto it as the lead does, from its own probe ahead (FTTraversalProbe) and its own clips' plan
-// (ftcore::TraversalSet), carried along the plan's root path, and then eases back onto its slot. Where the lead caught
-// a ledge, a follower in the air at the same face catches it, planned from its own flight (TraversalSet::planCatch);
-// till one fits it is held short of the face, as the lead's capsule is, for it has no collision of its own. Off a ledge
-// it falls. -LocoNoFollowerTraversal places it as before, for comparing against: on the ground below its slot, popping
-// onto and off what the lead went over or caught.
+// (ftcore::TraversalSet), carried along the plan's root path, and then eases back onto its slot, its speed going on from
+// the clip's as a person's would (ftcore::easeStray; -LocoNoCatchUpRamp: jumping at once to its slot's pace plus its way
+// back, as before). Where the lead caught a ledge, a follower in the air at the same face catches it, planned from its
+// own flight (TraversalSet::planCatch); till one fits it is held short of the face, as the lead's capsule is, for it has
+// no collision of its own. Off a ledge it falls. -LocoNoFollowerTraversal places it as before, for comparing against: on
+// the ground below its slot, popping onto and off what the lead went over or caught.
 
 #include "CoreMinimal.h"
 #include "CollisionQueryParams.h"
@@ -79,9 +80,12 @@ private:
 	// Carries the body along the traversal under way: Feet is where its clip has it now. False once it lets go there,
 	// as it does at the clip's end, or just after the landing while its slot (at Ground) moves on.
 	bool TickTraversal(UFTLocomotionAnimInstance& Anim, float DeltaSeconds, const FVector2D& Ground, bool bSlotMoving, FVector& Feet);
-	// Eases the body back toward its slot at Ground after a traversal let it go off it, returning how far off it still
-	// is (cm).
+	// Eases the body back toward its slot at Ground after a traversal let it go off it, its rate back (StrayRate) changing
+	// no faster than a person's speed does, returning how far off it still is (cm).
 	FVector2D EaseStray(const FVector2D& Ground, float DeltaSeconds);
+	// For the log, once a frame: from when it comes off its slot (let go by a traversal, or held short of a face) till
+	// it is back on it, how long that takes, its fastest and its hardest change of speed (WasGoing: last frame's Going).
+	void TrackCatchUp(bool bCarried, bool bLetGo, const FVector2D& WasGoing, float DeltaSeconds);
 
 	// The body hangs off a plain root, so its facing turn survives Place setting the actor's rotation.
 	UPROPERTY(VisibleAnywhere, Category = "Follower")
@@ -114,6 +118,8 @@ private:
 	FFTFootSlideProbe SlideProbe;
 	// -LocoNoFollowerTraversal.
 	bool bNoTraversal = false;
+	// -LocoNoCatchUpRamp.
+	bool bNoCatchUpRamp = false;
 	// The lead's vaults, climbs and catches still ahead of the body, the oldest first; how many the lead had begun when
 	// last looked; and why the last look ahead started none (for the log, when one is gone past unfollowed).
 	static constexpr int32 MaxMarks = 4;
@@ -127,9 +133,18 @@ private:
 	ftcore::TraversalPlan TravPlan;
 	float TravTime = 0.f;
 	FTransform TravFrame;
-	// How far off its slot the body still is since a traversal let it go (cm), and the way that traversal went.
+	// How far off its slot the body still is since a traversal let it go (cm), the way that traversal went, and the rate
+	// it goes at back (cm/s: its velocity less its slot's, from how it moved as a traversal let it go or a face held it
+	// short, and the ease's own from there).
 	FVector2D Stray = FVector2D::ZeroVector;
 	FVector2D StrayWay = FVector2D(1.0, 0.0);
+	FVector2D StrayRate = FVector2D::ZeroVector;
+	// Since it came off its slot (s; below 0, on it), its rate back then, its fastest (cm/s) and its hardest change of
+	// speed (cm/s^2).
+	float StrayClock = -1.f;
+	float StrayRateFrom = 0.f;
+	float StrayTop = 0.f;
+	float StrayTopAccel = 0.f;
 	// In the air this frame at a ledge the lead caught, below its top with no catch fitting yet: where its way in meets
 	// the face, and that way (level, unit). Having no collision, the body is held short of it, as the lead's capsule is.
 	bool bAtWall = false;

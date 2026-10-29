@@ -35,7 +35,7 @@
 // or the stick points into it: one of the catch clips (SetTraversalFromRun's too) plays from where its catch is timed to
 // meet the body's flight (ftcore::TraversalSet::planCatch), the body turns square into the face, and the capsule is
 // carried from its flight into the catch and up onto the top as a climb is. Each catch begun is marked for the followers
-// too, who catch the same ledge where they meet it in the air. -LocoCatch builds deep blocks 150, 300 and 330 cm high
+// too, who catch the same ledge where they meet it in the air. -LocoCatch builds deep blocks 150, 300 and 260 cm high
 // ahead and jumps at each from about a metre out.
 //
 // Roll goes the way the stick points (else the way the body moves, else the way it faces): one of the roll clips
