@@ -1,12 +1,28 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-30 ~01:45. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-30 ~02:45. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-30 ~01:45): the worlds measured at other sides (`terrain-worlds` 7bb7fba, not merged into main,
+- **NEWEST (2026-10-30 ~02:45): state saved as usage ran out.**
+  - In progress: the enemy and boss design pass, and story draft 96. Their notes are private (see the private
+    handoff). Nothing of either is in this repo.
+  - Why the demo showed the old lead models: it was opened from a worktree (`.claude/worktrees/terrain-worlds`).
+    - A worktree holds only what git tracks. The MetaHuman leads, their retargeted clips, `Config/UserGame.ini` (the
+      party) and the uproject's MetaHuman plugins are local-only in the main checkout.
+    - Run the demo from `D:\projects\unrealgamewip\ForgottenThird.uproject`. The launcher shows both copies as
+      "ForgottenThird".
+  - Even from the main checkout, the old meshes still load in two places, both by hard-coded path:
+    - The battle screen: `FTBattleDemoActor.cpp` loads the old devin and duy meshes and idles.
+    - The explore spot's figure: `FTExploreSpot.cpp`.
+    - Next: drive them from PartyLooks, keeping the old meshes as the fallback. It needs UBT.
+  - `claude/objective-blackburn-80b6c6` (the skin master and FTBuildSkin -Profile) is pushed but not merged into
+    main.
+  - The machine is on hold for the user: no editor, commandlets, UBT or renders until they free it.
+  - Terrain: see the entry below. The flow-mask worktree's Source side is waiting for UBT.
+- **Earlier (2026-10-30 ~01:45): the worlds measured at other sides (`terrain-worlds` 7bb7fba, not merged into main,
   which stays at 8a2da97). Core only: worlds.json is unchanged, no map is rebuilt, and the 1 km ground is bit for bit
   as before.**
   - Why: larger worlds may be wanted, for more fight sites. Nothing about the size is decided.
