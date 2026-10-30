@@ -422,7 +422,7 @@ void AFTCutsceneDirector::BeginInPlace()
 		// Nothing to stage around: the step plays on the Cutscene map instead.
 		UE_LOG(LogForgottenThird, Warning, TEXT("Cutscene: in place, no lead or camera to stage around; opening the Cutscene map."));
 		UGameplayStatics::SetGlobalTimeDilation(this, 1.f);
-		UGameplayStatics::OpenLevel(this, FName(FTStep::ScreenMap(ftcore::GameplayScreen::Cutscene)));
+		FTStep::OpenMap(this, FTStep::ScreenMap(ftcore::GameplayScreen::Cutscene));
 		return;
 	}
 	const FVector Feet = LeadFeet();
@@ -901,7 +901,7 @@ void AFTCutsceneDirector::Finish()
 	const FString& ReturnMap = GI->StoryCarry.ReturnMap;
 	if (!ReturnMap.IsEmpty())
 	{
-		UGameplayStatics::OpenLevel(this, FName(*ReturnMap));
+		FTStep::OpenMap(this, ReturnMap);
 	}
 }
 

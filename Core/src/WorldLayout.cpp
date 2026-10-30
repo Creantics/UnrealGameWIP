@@ -73,6 +73,14 @@ const WorldScene* WorldTable::findScene(std::string_view scene) const {
     return nullptr;
 }
 
+std::string mapPackage(std::string_view map) {
+    if (map.empty() || map.front() == '/') return std::string(map);
+    std::string out;
+    out.reserve(kMapFolder.size() + map.size());
+    out.append(kMapFolder).append(map);
+    return out;
+}
+
 int WorldTable::findWorld(std::string_view idOrMap) const {
     for (std::size_t i = 0; i < worlds.size(); ++i)
         if (worlds[i].id == idOrMap || worlds[i].map == idOrMap) return static_cast<int>(i);

@@ -109,6 +109,8 @@ All goals and waypoints in `goals.json` lie inside the plaza. So a field step pl
 
 Without a story step, the world is a free walk. The party follows, and the HUD shows a WORLD panel ("solhaven  district 4 of 16" or "open ground").
 
+The game opens every map by its long name under /Game/Maps (`FTStep::OpenMap`, which takes `ftcore::mapPackage`), never by the short name that `worlds.json`, the screens and the return maps carry. The engine resolves a short name to whichever package of that name it finds first anywhere under /Game, so a local copy of a world map kept elsewhere in Content, such as a before-and-after capture, was played in its place: the headless story run at a537d8b played Solhaven's steps on a copy under /Game/Trial and logged no Solhaven placings. The loader takes only short names, so a world's map can't point outside /Game/Maps, and no screen calls `OpenLevel` itself.
+
 ## The overworld
 
 `worlds.json` has an `"overworld"` entry: its map (`Overworld`), its side in metres (300 to 1200, default 480) and a seed. `ftcore::generateOverworldLayout` lays it out the same way at build time and at run time:

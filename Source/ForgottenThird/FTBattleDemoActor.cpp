@@ -27,6 +27,7 @@
 #include "FTMeshFacing.h"
 #include "FTPauseSubsystem.h"
 #include "FTPlayerController.h"
+#include "FTStepHost.h"
 #include "FTStorySubsystem.h"
 #include "FTText.h"
 
@@ -1089,7 +1090,7 @@ void AFTBattleDemoActor::ReturnToStory()
 	if (GI && GI->StoryCarry.bValid)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: returning to the story on %s."), *GI->StoryCarry.ReturnMap);
-		UGameplayStatics::OpenLevel(this, FName(*GI->StoryCarry.ReturnMap));
+		FTStep::OpenMap(this, GI->StoryCarry.ReturnMap);
 	}
 }
 
@@ -1139,7 +1140,7 @@ void AFTBattleDemoActor::HandleQuit()
 	bQuitting = true;
 	// The carry stays unfinished (bDone false); the story map reads ?Title and shows the title screen.
 	UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: quitting to the title via %s."), *GI->StoryCarry.ReturnMap);
-	UGameplayStatics::OpenLevel(this, FName(*GI->StoryCarry.ReturnMap), true, TEXT("Title"));
+	FTStep::OpenMap(this, GI->StoryCarry.ReturnMap, TEXT("Title"));
 }
 
 void AFTBattleDemoActor::ReturnToField()
@@ -1148,7 +1149,7 @@ void AFTBattleDemoActor::ReturnToField()
 	if (GI && GI->ExploreCarry.bValid)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: returning to %s."), *GI->ExploreCarry.ReturnMap);
-		UGameplayStatics::OpenLevel(this, FName(*GI->ExploreCarry.ReturnMap));
+		FTStep::OpenMap(this, GI->ExploreCarry.ReturnMap);
 	}
 }
 

@@ -6,6 +6,7 @@
 #include "FTGameInstance.h"
 #include "FTPauseSubsystem.h"
 #include "FTPlayerController.h"
+#include "FTStepHost.h"
 #include "FTText.h"
 #include "ForgottenThird.h"
 #include "GameFramework/WorldSettings.h"
@@ -253,6 +254,6 @@ void AFTBanterGameMode::OpenReturnMap()
 	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
 	if (GI && GI->StoryCarry.bValid && !GI->StoryCarry.ReturnMap.IsEmpty())
 	{
-		UGameplayStatics::OpenLevel(this, FName(*GI->StoryCarry.ReturnMap));
+		FTStep::OpenMap(this, GI->StoryCarry.ReturnMap);
 	}
 }

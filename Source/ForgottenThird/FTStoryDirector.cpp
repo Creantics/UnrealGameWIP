@@ -669,7 +669,7 @@ void AFTStoryDirector::OpenStep()
 		return;
 	}
 	const FString Map = FTStep::Prepare(*GI, Story->GetRunner(), UGameplayStatics::GetCurrentLevelName(this, true), bAutoPlay);
-	UGameplayStatics::OpenLevel(this, FName(*Map));
+	FTStep::OpenMap(this, Map);
 }
 
 double AFTStoryDirector::GetBannerAge() const

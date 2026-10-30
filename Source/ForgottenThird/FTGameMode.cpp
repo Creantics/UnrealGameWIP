@@ -14,6 +14,7 @@
 #include "FTPawn.h"
 #include "FTPlayerController.h"
 #include "FTSettingsSubsystem.h"
+#include "FTStepHost.h"
 #include "FTStoryDirector.h"
 #include "FTStoryHUD.h"
 #include "FTStorySubsystem.h"
@@ -291,5 +292,5 @@ void AFTGameMode::ReturnToTitle()
 {
 	bReturning = true;
 	UE_LOG(LogForgottenThird, Log, TEXT("Title: back to the title."));
-	UGameplayStatics::OpenLevel(this, FName(*TitleMap), true, TEXT("Title"));
+	FTStep::OpenMap(this, TitleMap, TEXT("Title"));
 }

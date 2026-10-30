@@ -66,6 +66,11 @@ inline constexpr uint32 kPlayableCombat = ftcore::combatBit(ftcore::CombatKind::
 FORGOTTENTHIRD_API const TCHAR* ScreenMap(ftcore::GameplayScreen Routed);
 inline const TCHAR* BeatMap() { return TEXT("Beat"); }
 
+// Opens a map by its long name under /Game/Maps (ftcore::mapPackage), never by the short name the data,
+// the screens and GetCurrentLevelName use, which the engine would resolve to the first package of that
+// name anywhere under /Game, a stray local copy included. Every map the game opens goes through here.
+FORGOTTENTHIRD_API void OpenMap(const UObject* WorldContext, const FString& Map, const FString& Options = FString());
+
 // The host that plays a routed screen in place: Field, Cutscene, or Arena for a battle that plays the
 // arena system.
 FORGOTTENTHIRD_API EFTStepHost HostFor(ftcore::GameplayScreen Routed, ftcore::CombatKind Combat);

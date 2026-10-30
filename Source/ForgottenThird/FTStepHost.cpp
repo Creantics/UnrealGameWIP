@@ -21,9 +21,14 @@ using ftcore::StoryRunner;
 
 namespace
 {
+FString MapPackage(const FString& Map)
+{
+	return FT::ToFString(ftcore::mapPackage(FT::ToUtf8(Map)));
+}
+
 bool MapExists(const FString& Map)
 {
-	return !Map.IsEmpty() && FPackageName::DoesPackageExist(FString::Printf(TEXT("/Game/Maps/%s"), *Map));
+	return !Map.IsEmpty() && FPackageName::DoesPackageExist(MapPackage(Map));
 }
 
 // Where a step plays, worked out before anything is changed or logged.
@@ -155,6 +160,11 @@ bool OnCarriedBeat(const UFTGameInstance& GI, const StoryRunner& Runner, const F
 		&& (!GI.Chain.active() || static_cast<int32>(GI.Chain.step()) == Carry.Step);
 }
 } // namespace
+
+void FTStep::OpenMap(const UObject* WorldContext, const FString& Map, const FString& Options)
+{
+	UGameplayStatics::OpenLevel(WorldContext, FName(*MapPackage(Map)), true, Options);
+}
 
 const TCHAR* FTStep::ScreenMap(GameplayScreen Routed)
 {
@@ -387,5 +397,5 @@ void UFTStepHostSubsystem::StartPending()
 		return;
 	}
 	UE_LOG(LogForgottenThird, Warning, TEXT("Story: the %s host left before its step began; opening %s."), FTStep::HostName(Kind), *PendingMap);
-	UGameplayStatics::OpenLevel(this, FName(*PendingMap));
+	FTStep::OpenMap(this, PendingMap);
 }

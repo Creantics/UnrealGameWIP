@@ -956,7 +956,7 @@ void AFTExploreDirector::OpenStoryMap()
 	if (GI && GI->StoryCarry.bValid)
 	{
 		UGameplayStatics::SetGlobalTimeDilation(this, 1.f);
-		UGameplayStatics::OpenLevel(this, FName(*GI->StoryCarry.ReturnMap));
+		FTStep::OpenMap(this, GI->StoryCarry.ReturnMap);
 	}
 }
 
@@ -1106,7 +1106,7 @@ void AFTExploreDirector::OpenBattle()
 		Carry.Rotation = Player->GetActorRotation();
 	}
 	bBattleOpening = true;
-	UGameplayStatics::OpenLevel(this, BattleMap);
+	FTStep::OpenMap(this, BattleMap.ToString());
 }
 
 void AFTExploreDirector::CheckComplete()
@@ -1178,7 +1178,7 @@ void AFTExploreDirector::Tick(float DeltaSeconds)
 		if (!Hosts || !Hosts->StartHere(EFTStepHost::Cutscene, Stage))
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: no cutscene host for the CG step; opening %s."), *Stage);
-			UGameplayStatics::OpenLevel(this, FName(*Stage));
+			FTStep::OpenMap(this, Stage);
 			return;
 		}
 	}
@@ -1748,6 +1748,6 @@ void AFTExploreDirector::EnterWorld(int32 World)
 	}
 	SetBanner(FString::Printf(TEXT("Entering %s"), *WorldName(World)));
 	UGameplayStatics::SetGlobalTimeDilation(this, 1.f);
-	UGameplayStatics::OpenLevel(this, FName(*Map));
+	FTStep::OpenMap(this, Map);
 }
 

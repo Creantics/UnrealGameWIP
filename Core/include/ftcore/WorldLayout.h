@@ -124,6 +124,15 @@ struct WorldTable {
 FTCORE_API bool importWorldTable(std::string_view json, WorldTable& out, std::string* error = nullptr,
                                  std::vector<std::string>* warnings = nullptr);
 
+// The long package name the engine opens a map by: kMapFolder and the map's name ("World_Solhaven" opens
+// "/Game/Maps/World_Solhaven"). Data and the screens name their maps short, and the loader takes only short
+// names (letters, digits and _), but the engine resolves a short name to whichever package of that name
+// it finds first anywhere under /Game, so a stray local copy can stand in for the real map. Every map is
+// opened by this long name. A name that is already long (it starts with '/') comes back as it is, and an
+// empty one stays empty.
+inline constexpr std::string_view kMapFolder = "/Game/Maps/";
+FTCORE_API std::string mapPackage(std::string_view map);
+
 struct WorldDistrict {
     Vec2 centre;    // the plaza's centre
     Vec2 origin;    // the spawn (goals.json's origin)

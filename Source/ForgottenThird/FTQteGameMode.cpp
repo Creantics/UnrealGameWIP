@@ -6,6 +6,7 @@
 #include "FTPauseSubsystem.h"
 #include "FTQteHUD.h"
 #include "FTSettingsSubsystem.h"
+#include "FTStepHost.h"
 #include "FTText.h"
 #include "ForgottenThird.h"
 #include "GameFramework/PlayerController.h"
@@ -224,6 +225,6 @@ void AFTQteGameMode::OpenReturnMap()
 	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
 	if (GI && GI->StoryCarry.bValid && !GI->StoryCarry.ReturnMap.IsEmpty())
 	{
-		UGameplayStatics::OpenLevel(this, FName(*GI->StoryCarry.ReturnMap));
+		FTStep::OpenMap(this, GI->StoryCarry.ReturnMap);
 	}
 }

@@ -16,6 +16,7 @@
 #include "FTGameMode.h"
 #include "FTPlayerController.h"
 #include "FTSettingsSubsystem.h"
+#include "FTStepHost.h"
 #include "FTStorySubsystem.h"
 
 namespace
@@ -297,7 +298,7 @@ void UFTPauseSubsystem::QuitToTitle()
 			Map = GI->StoryCarry.ReturnMap;
 		}
 	}
-	UGameplayStatics::OpenLevel(World, FName(*Map), true, TEXT("Title"));
+	FTStep::OpenMap(World, Map, TEXT("Title"));
 }
 
 void UFTPauseSubsystem::QuitGame()

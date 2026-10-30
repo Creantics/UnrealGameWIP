@@ -3,6 +3,7 @@
 #include "Camera/CameraActor.h"
 #include "EngineUtils.h"
 #include "FTGameInstance.h"
+#include "FTStepHost.h"
 #include "FTStubHUD.h"
 #include "FTText.h"
 #include "ForgottenThird.h"
@@ -111,6 +112,6 @@ void AFTStubGameMode::OpenReturnMap()
 	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
 	if (GI && GI->StoryCarry.bValid && !GI->StoryCarry.ReturnMap.IsEmpty())
 	{
-		UGameplayStatics::OpenLevel(this, FName(*GI->StoryCarry.ReturnMap));
+		FTStep::OpenMap(this, GI->StoryCarry.ReturnMap);
 	}
 }

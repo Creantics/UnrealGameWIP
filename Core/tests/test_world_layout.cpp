@@ -469,6 +469,33 @@ TEST_CASE("worlds: combatForWorld and combatForScene answer, fall back to rhythm
     CHECK(none.combatForScene("SC-A1") == CombatKind::Rhythm);
 }
 
+TEST_CASE("worlds: every map opens by its long name under /Game/Maps") {
+    CHECK(mapPackage("World_A") == "/Game/Maps/World_A");
+    CHECK(mapPackage("Overworld") == "/Game/Maps/Overworld");
+    CHECK(mapPackage("/Game/Maps/World_A") == "/Game/Maps/World_A");
+    CHECK(mapPackage("").empty());
+    // The loader takes short names only, so a world's map can't point anywhere but /Game/Maps.
+    WorldTable t;
+    std::string error;
+    CHECK_FALSE(importWorldTable(
+        R"({"worlds":[{"id":"a","map":"/Game/Trial/LookBefore/M","style":"s","side":1000,"districts":4}]})", t, &error));
+    CHECK(error.find(".map") != std::string::npos);
+    CHECK_FALSE(importWorldTable(
+        R"({"worlds":[{"id":"a","map":"M","style":"s","side":1000,"districts":4}],"overworld":{"map":"Trial/O"}})", t,
+        &error));
+    CHECK(error.find("overworld.map") != std::string::npos);
+    // Each world in Data/Field/worlds.json, and the overworld, opens under /Game/Maps.
+    if (!loadWorlds(t)) return;
+    REQUIRE(t.worlds.size() == 3);
+    for (const WorldSpec& w : t.worlds) {
+        CAPTURE(w.id);
+        CHECK(w.map.find('/') == std::string::npos);
+        CHECK(mapPackage(w.map) == "/Game/Maps/" + w.map);
+    }
+    REQUIRE(t.overworld.present);
+    CHECK(mapPackage(t.overworld.map) == "/Game/Maps/" + t.overworld.map);
+}
+
 TEST_CASE("worlds: Data/Field/worlds.json names solhaven arena, lattice rhythm and unwritten beat") {
     std::string text;
     if (!ftcore_test::readProjectData("Field/worlds.json", text)) {
