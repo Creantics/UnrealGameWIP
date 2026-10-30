@@ -21,7 +21,13 @@ Private notes (character references, concept-art review, script status) are in `
   - `claude/objective-blackburn-80b6c6` (the skin master and FTBuildSkin -Profile) is pushed but not merged into
     main.
   - The machine is on hold for the user: no editor, commandlets, UBT or renders until they free it.
-  - Terrain: see the entry below. The flow-mask worktree's Source side is waiting for UBT.
+  - Terrain: its session was stopped at ~02:36 before it could save.
+    - Its Source side is now committed as unbuilt WIP 63321f3 on the local `flow-mask` branch
+      (`.claude/worktrees/flow-mask`): T_FlowMask beside T_ShapeMask, and M_WorldGround's FlowMask input and Flow group.
+      It isn't pushed, because UBT can't run until the machine is free.
+    - Its Core commits (0fca86d, 7bb7fba) are on `origin/terrain-worlds`, not merged into main.
+    - Next for that lane, once the machine is free: UBT, `-run=FTBuildGround`, the three map rebuilds, the renders, the
+      tours and the headless story run. Then push, and fast-forward main. The entries below have the details.
 - **Earlier (2026-10-30 ~01:45): the worlds measured at other sides (`terrain-worlds` 7bb7fba, not merged into main,
   which stays at 8a2da97). Core only: worlds.json is unchanged, no map is rebuilt, and the 1 km ground is bit for bit
   as before.**
