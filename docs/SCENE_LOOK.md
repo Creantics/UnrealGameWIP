@@ -167,6 +167,12 @@ over (or under) its rings for each metre out. The builder keeps it in the map's 
 1024 x 1024 over the whole field, about 1.5 m a pixel, so a ridge or a gully keeps its shape. It adds 0.3 to
 0.6 MB to a map. The master alone wears `T_GroundFlatShape`, which reads 128 everywhere.
 
+`ftcore::flowMask` makes a third mask, of where the rain gathers. It resamples the ground's `flow()` (see
+[WORLDS.md](WORLDS.md#ground)) over the whole field, a byte a pixel: 0 on the pads and the roads, low on the
+crests and the open slopes, rising along the gullies and the valleys' floors, and 255 where a hectare's rain
+runs through, which almost nothing reaches. Neither the builder nor the master uses it yet; it is meant to make
+the ground richer and darker where the water gathers and paler on the crests.
+
 Each map gets one instance of the master, `MI_World_Ground`, in its own package. It carries the three
 surfaces' textures, tints, tile sizes and roughness from surfaces.json, the two masks and their widths, and
 `HueDrift`: 0.08 in the town, 0.02 among the towers and 0.05 in the ruins. When the master or one of the three
@@ -218,7 +224,8 @@ tone, and the trees and rocks are still simple shapes. Each pad is a flat disc o
 (62 m), so from a climax's plaza the ground below stays hidden under the pad's rim even where the ring is open;
 to look down on the world, the pad would have to fall away from the plaza's edge on that side. The mountains
 wear one rock photo throughout, the quay runs straight, and the sea is a still, flat plane with no waves or
-foam where it meets the quay.
+foam where it meets the quay. The ground doesn't read where the rain gathers yet, so along a gully or a
+valley's floor it wears the same tint as on the slopes round it.
 
 ## Building
 

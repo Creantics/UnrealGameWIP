@@ -1370,3 +1370,121 @@ TEST_CASE("terrain: the shape mask reads ridges over 128, hollows under it and f
         CHECK(static_cast<double>(clipped) / n <= kShapeClipped);
     }
 }
+
+namespace {
+
+constexpr std::size_t kFlowSize = 1024; // 1.46 m pixels over the 1.5 km field, as the ground's material has it
+constexpr double kFlowWet = 0.001;      // of the pixels inside the square, at least this share reads 200 or more: 0.28 to 0.59%,
+constexpr double kFlowFullAt = 0.01;    // and at most this share 255: 0.005% at most
+constexpr double kFlowGathers = 1.5;    // the hollows (the shape mask's 96 or less) read this many times the crests' (160 or
+                                        // more) on average, at least: 1.8 to 2.5
+
+} // namespace
+
+TEST_CASE("terrain: the flow mask reads 0 on the pads and the roads and gathers in the hollows, without allocating") {
+    const auto blank = std::make_unique<WorldTerrain>();
+    std::vector<std::uint8_t> none(16 * 16, 0xab);
+    flowMask(*blank, 16, none.data());
+    CHECK(std::all_of(none.begin(), none.end(), [](std::uint8_t v) { return v == 0; }));
+
+    std::vector<std::uint8_t> mask(kFlowSize * kFlowSize, 0xab), again(kFlowSize * kFlowSize, 0x00), shape(kFlowSize * kFlowSize);
+    for (const Generated& g : worlds()) {
+        INFO(g.spec.id);
+        REQUIRE_MESSAGE(g.ok, g.error);
+        const WorldTerrain& t = *g.terrain;
+
+        // Every sample reads 0 to 1, and exactly 0 on the pads and on the roads out to their shoulders.
+        Breaches outOfRange, onPads, onRoads;
+        for (std::size_t iy = 0; iy < kN; ++iy)
+            for (std::size_t ix = 0; ix < kN; ++ix) {
+                const std::size_t i = iy * kN + ix;
+                const float f = t.flow(ix, iy);
+                if (!(f >= 0.f && f <= 1.f)) outOfRange.add(std::fabs(f), ix, iy);
+                if (g.padGap[i] <= 0.f && f != 0.f) onPads.add(f, ix, iy);
+                if (g.roadGap[i] <= kLevel && f != 0.f) onRoads.add(f, ix, iy);
+            }
+        CHECK_MESSAGE(outOfRange.count == 0u, "samples outside 0 to 1: " << describe(outOfRange));
+        CHECK_MESSAGE(onPads.count == 0u, "pad samples over 0: " << describe(onPads));
+        CHECK_MESSAGE(onRoads.count == 0u, "road samples over 0: " << describe(onRoads));
+
+        const auto start = std::chrono::steady_clock::now();
+        const bool counting = ftcore_test::allocHookInstalled();
+        const std::uint64_t before = ftcore_test::allocStats().count;
+        flowMask(t, kFlowSize, mask.data());
+        if (counting) {
+            CHECK(ftcore_test::allocStats().count == before);
+        }
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        MESSAGE(g.spec.id << ": flow mask made in " << ms << " ms");
+        // Every byte is written: a buffer that starts out otherwise ends the same.
+        flowMask(t, kFlowSize, again.data());
+        CHECK(mask == again);
+
+        // Each pixel is the flow read straight between the four samples round its centre.
+        const float extent = t.extent(), pixel = extent / static_cast<float>(kFlowSize), cell = t.spacing();
+        const float last = static_cast<float>(kN - 1), halfSide = g.halfSide();
+        Breaches pixelOff;
+        std::size_t inside = 0, wet = 0, full = 0;
+        for (std::size_t iy = 0; iy < kFlowSize; ++iy)
+            for (std::size_t ix = 0; ix < kFlowSize; ++ix) {
+                const Vec2 p{-0.5f * extent + (static_cast<float>(ix) + 0.5f) * pixel,
+                             -0.5f * extent + (static_cast<float>(iy) + 0.5f) * pixel};
+                const float u = std::clamp((p.x + 0.5f * extent) / cell, 0.f, last);
+                const float v = std::clamp((p.y + 0.5f * extent) / cell, 0.f, last);
+                const std::size_t x0 = std::min(static_cast<std::size_t>(u), kN - 2);
+                const std::size_t y0 = std::min(static_cast<std::size_t>(v), kN - 2);
+                const float fx = u - static_cast<float>(x0), fy = v - static_cast<float>(y0);
+                const float want = 255.f * lerpf(lerpf(t.flow(x0, y0), t.flow(x0 + 1, y0), fx),
+                                                 lerpf(t.flow(x0, y0 + 1), t.flow(x0 + 1, y0 + 1), fx), fy);
+                const std::uint8_t got = mask[iy * kFlowSize + ix];
+                const float by = std::fabs(static_cast<float>(got) - want);
+                if (by > 0.51f) pixelOff.add(by, ix, iy);
+                if (std::fabs(p.x) >= halfSide || std::fabs(p.y) >= halfSide) continue;
+                ++inside;
+                wet += static_cast<std::size_t>(got >= 200);
+                full += static_cast<std::size_t>(got == 255);
+            }
+        CHECK_MESSAGE(pixelOff.count == 0u, "pixels off the samples' flow: " << describe(pixelOff));
+        REQUIRE(inside > 0u);
+        const double wetShare = static_cast<double>(wet) / static_cast<double>(inside);
+        const double fullShare = static_cast<double>(full) / static_cast<double>(inside);
+
+        // The rain gathers where the ground curves up round it: the hollows read more than the crests.
+        shapeMask(t, kFlowSize, shape.data());
+        double hollowSum = 0.0, crestSum = 0.0;
+        std::size_t hollows = 0, crests = 0;
+        for (std::size_t i = 0; i < kFlowSize * kFlowSize; ++i) {
+            if (shape[i] <= 96) {
+                hollowSum += mask[i];
+                ++hollows;
+            } else if (shape[i] >= 160) {
+                crestSum += mask[i];
+                ++crests;
+            }
+        }
+        REQUIRE(hollows > 0u);
+        REQUIRE(crests > 0u);
+        const double hollowMean = hollowSum / static_cast<double>(hollows), crestMean = crestSum / static_cast<double>(crests);
+        MESSAGE(g.spec.id << ": inside the square " << 100.0 * wetShare << "% of the pixels read 200 or more and "
+                          << 100.0 * fullShare << "% 255; the hollows read " << hollowMean << " on average, the crests "
+                          << crestMean << " (" << hollowMean / crestMean << " times)");
+        CHECK(wetShare >= kFlowWet);
+        CHECK(fullShare <= kFlowFullAt);
+        CHECK(hollowMean >= kFlowGathers * crestMean);
+    }
+
+    // The same ground gives the same flow: the ruins, generated again.
+    for (const Generated& g : worlds()) {
+        if (!g.ok || g.spec.kind != WorldKind::Ruins) continue;
+        INFO(g.spec.id);
+        auto twice = std::make_unique<WorldTerrain>();
+        std::string error;
+        REQUIRE_MESSAGE(generateWorldTerrain(g.spec, *g.layout, *twice, &error), error);
+        std::size_t differ = 0;
+        for (std::size_t iy = 0; iy < kN; ++iy)
+            for (std::size_t ix = 0; ix < kN; ++ix)
+                differ += static_cast<std::size_t>(twice->flow(ix, iy) != g.terrain->flow(ix, iy));
+        CHECK(differ == 0u);
+        break;
+    }
+}

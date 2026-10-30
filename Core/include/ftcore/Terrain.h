@@ -69,6 +69,13 @@
 // the above holds with them. The pools are shallow throughout. Players are kept out of a blocked
 // feature.
 //
+// Last, the rain's way over the finished ground (flow()): each sample passes the rain that falls on
+// it, and all that reaches it from uphill, on to every lower neighbour, more to the steeper, until it
+// runs off the field's edge or into water, a trench's floor or a pit's shaft. Nothing fills the
+// hollows: a closed hollow's floor, or a flat such as a pad, keeps what reaches it. Rain falls
+// everywhere but on the pads and the roads' shoulders, fading in round them as the wear does, and
+// flow() fades the same way, so the pads and the roads read 0.
+//
 // The sites carry district indices and tiers only. The terrain never reads the story.
 
 #include "ftcore/Api.h"
@@ -138,6 +145,8 @@ public:
     static constexpr std::size_t kShapeFar = 8;
     static constexpr float kShapeFull = 0.5f;         // how far the ground stands over its rings, per metre of their
                                                       // radius, where shapeMask() reads 255 (and under them, 0)
+    static constexpr float kFlowUnit = 4.f;           // m^2 of rain, about a sample's, that flow()'s log scale counts in
+    static constexpr float kFlowFull = 1e4f;          // m^2 (a hectare) whose rain runs through a sample where flow() reads 1
 
     float side() const { return side_; } // the playable square's: the layout's
     float extent() const { return side_ + 2.f * kApron; }
@@ -153,6 +162,12 @@ public:
     // kRockSlope from one sample to the next. Everywhere else no two neighbouring samples, along an
     // axis or a diagonal, differ by more than kRockSlope times the distance between them.
     bool cliff(std::size_t ix, std::size_t iy) const { return cliffs_[iy * kSamples + ix] != 0; }
+    // How much rain runs through the sample, 0 to 1: log(1 + a / kFlowUnit) / log(1 + kFlowFull /
+    // kFlowUnit), clamped at 1, a the square metres of ground whose rain reaches it (where the rain
+    // divides, the share that comes this way), its own cell's included; then faded toward the pads and
+    // the roads as the rain is, to 0 on them. Low on crests and open slopes, rising along the gullies
+    // and the valleys' floors and on a closed hollow's floor, which keeps all that reaches it.
+    float flow(std::size_t ix, std::size_t iy) const { return flow_[iy * kSamples + ix]; }
 
     // District i's pad height.
     float padHeight(std::size_t district) const { return pads_[district]; }
@@ -189,6 +204,7 @@ private:
     std::array<TerrainFeature, kMaxFeatures> features_{};
     std::vector<float> heights_;        // kSamples * kSamples, row iy then column ix
     std::vector<std::uint8_t> cliffs_;  // the same: 1 in a sheer wall
+    std::vector<float> flow_;           // the same: flow()
 };
 
 // Deterministic in the spec, the layout (generated from that spec) and the options. Fails, and says
@@ -214,5 +230,12 @@ FTCORE_API void roadMask(const WorldLayout& layout, std::size_t size, std::uint8
 // and knolls, under it in hollows, gullies and valleys, and exactly 128 on ground that is flat or
 // slopes evenly out to the outer ring, such as a pad's core. Writes all size * size bytes. No allocation.
 FTCORE_API void shapeMask(const WorldTerrain& terrain, std::size_t size, std::uint8_t* out);
+
+// Where the rain gathers, as a mask over the whole field, for the ground's material: size x size bytes,
+// row iy then column ix, pixel centres as shapeMask()'s. Each byte is round(255 f), f the flow() read at
+// the centre, straight between the four samples round it: 0 on the pads and the roads, 255 where a
+// hectare drains through. All 0 for a terrain that wasn't generated. Writes all size * size bytes. No
+// allocation.
+FTCORE_API void flowMask(const WorldTerrain& terrain, std::size_t size, std::uint8_t* out);
 
 } // namespace ftcore

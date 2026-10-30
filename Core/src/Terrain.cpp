@@ -663,6 +663,7 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
         out.districtCount_ = out.roadCount_ = out.featureCount_ = 0;
         out.heights_.clear();
         out.cliffs_.clear();
+        out.flow_.clear();
         if (error) *error = "terrain " + spec.id + ": " + why;
         return false;
     };
@@ -1064,25 +1065,30 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
     const auto sampleAt = [&](std::size_t ix, std::size_t iy) {
         return Vec2{-0.5f * extent + static_cast<float>(ix) * cell, -0.5f * extent + static_cast<float>(iy) * cell};
     };
-    // How freely the rain may wear the ground at p, 0 to 1: not at all on a pad or within two samples
-    // of it, nor on a road's shoulders or within two samples of them, fading in over each pad's blend
-    // and over kWearRoadRamp past the shoulders, and fading out over kWearMargin past the square's
-    // edge, where the mountains and the abyss (apron()) take the ground over.
-    const auto wearWeight = [&](Vec2 p, float gap) {
-        float w = 1.f - smooth01((std::max(std::fabs(p.x), std::fabs(p.y)) - ground.half) / kWearMargin);
-        w = std::min(w, smooth01((gap - kLevel - 2.f * cell) / kWearRoadRamp));
+    // How freely rain falls on the ground at p, gap metres from the nearest road's centre line, 0 to
+    // 1: not at all on a pad or within two samples of it, nor on a road's shoulders or within two
+    // samples of them, fading in over each pad's blend and over kWearRoadRamp past the shoulders.
+    const auto rainWeight = [&](Vec2 p, float gap) {
+        float w = smooth01((gap - kLevel - 2.f * cell) / kWearRoadRamp);
         for (std::size_t i = 0; i < n; ++i)
             w = std::min(w, smooth01((terrainDist(p, pads[i].centre) - kR - 2.f * cell) / std::max(pads[i].blend, cell)));
         return w;
     };
+    // How freely the rain may wear the ground at p, where it falls `rain` freely (rainWeight()): as
+    // freely, fading out over kWearMargin past the square's edge, where the mountains and the abyss
+    // (apron()) take the ground over.
+    const auto wearWeight = [&](Vec2 p, float rain) {
+        return std::min(1.f - smooth01((std::max(std::fabs(p.x), std::fabs(p.y)) - ground.half) / kWearMargin), rain);
+    };
     out.heights_.assign(kN * kN, 0.f);
     out.cliffs_.assign(kN * kN, 0);
+    // Each sample's rain (rainWeight()), for the wear and for the rain's way over the finished ground.
     // With the wear, each sample's weight (wearWeight()) and the highest the rain may raise it: under
     // the ceilings and the roads' banks as Pass 1 held it, or no higher than Pass 1 left it where
     // that is over them. Where two roads' banks cross, the rain leaves the ground alone.
     // And how freely the kind's finish lets it wear (`keep`): not where that raised or cut the ground
     // kWearKeep or more, so that the ruins keep their mesas and gullies.
-    std::vector<float> roadGapAt(kN * kN), bankLowAt(kN * kN), wearAt, wearTopAt, keep;
+    std::vector<float> roadGapAt(kN * kN), bankLowAt(kN * kN), rainAt(kN * kN), wearAt, wearTopAt, keep;
     if (options.erode) {
         wearAt.assign(kN * kN, 0.f);
         wearTopAt.assign(kN * kN, 0.f);
@@ -1095,10 +1101,11 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
             float bankHigh = 1e30f, shaped = 0.f;
             const float h0 = groundAt(p, roadGapAt[i], bankLowAt[i], bankHigh, shaped);
             out.heights_[i] = h0;
+            rainAt[i] = rainWeight(p, roadGapAt[i]);
             if (!options.erode) continue;
             keep[i] = 1.f - smooth01(shaped / kWearKeep);
             if (bankLowAt[i] > bankHigh) continue;
-            wearAt[i] = wearWeight(p, roadGapAt[i]);
+            wearAt[i] = wearWeight(p, rainAt[i]);
             wearTopAt[i] = std::max(std::min({climaxCeiling, sight.ceiling(p), bankHigh}), h0);
         }
 
@@ -1786,6 +1793,81 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
     }
     if (!limitSlopes()) return fail("the ground's slopes don't settle");
 
+    // The rain's way over the finished ground (flow()). Each sample passes the rain that falls on its
+    // cell (rainAt), and all that reaches it, to every neighbour lower than it, in shares as the fourth
+    // power of each drop over its length (after Holmgren's multiple flow directions), so that most goes
+    // the steepest way and some spreads; upstream first, each sample once all that passes to it has.
+    // What reaches a sample with no lower neighbour, a closed hollow's floor or a flat such as a pad,
+    // stays there, as does what reaches an outlet: the field's edge, water over the ground, a trench's
+    // floor or a pit's shaft. Nothing fills the hollows, so no levelled ground draws lines across them.
+    // flow() is that log-scaled and faded by rainAt, so that it is 0 on the pads and the roads.
+    {
+        constexpr std::size_t kTotal = kN * kN;
+        static constexpr std::array<std::ptrdiff_t, 8> kStepX{1, 1, 0, -1, -1, -1, 0, 1}; // kCompass's order
+        static constexpr std::array<std::ptrdiff_t, 8> kStepY{0, 1, 1, 1, 0, -1, -1, -1};
+        // Neighbour k of sample c, if the field has it.
+        const auto neighbour = [](std::size_t c, std::size_t k, std::size_t& j) {
+            const std::ptrdiff_t x = static_cast<std::ptrdiff_t>(c % kN) + kStepX[k];
+            const std::ptrdiff_t y = static_cast<std::ptrdiff_t>(c / kN) + kStepY[k];
+            if (x < 0 || y < 0 || x >= static_cast<std::ptrdiff_t>(kN) || y >= static_cast<std::ptrdiff_t>(kN)) return false;
+            j = static_cast<std::size_t>(y) * kN + static_cast<std::size_t>(x);
+            return true;
+        };
+        // The outlets, which pass nothing on, and how many samples pass theirs to each: its higher
+        // neighbours but the outlets.
+        std::vector<std::uint8_t> outlet(kTotal, 0), donors(kTotal, 0);
+        for (std::size_t iy = 0; iy < kN; ++iy)
+            for (std::size_t ix = 0; ix < kN; ++ix) {
+                const std::size_t i = iy * kN + ix;
+                bool sink = ix == 0 || iy == 0 || ix + 1 == kN || iy + 1 == kN;
+                for (std::size_t f = 0; f < out.featureCount_ && !sink; ++f) {
+                    const TerrainFeature& feature = out.features_[f];
+                    const bool water = feature.kind == TerrainFeature::Kind::Sea || feature.kind == TerrainFeature::Kind::Lake ||
+                                       feature.kind == TerrainFeature::Kind::Pool;
+                    const bool under = water ? out.heights_[i] < feature.level
+                                             : units[i] <= std::lround(feature.level / WorldTerrain::kHeightStep);
+                    sink = under && feature.covers(sampleAt(ix, iy));
+                }
+                outlet[i] = sink ? 1 : 0;
+            }
+        for (std::size_t c = 0; c < kTotal; ++c) {
+            if (outlet[c] != 0) continue;
+            for (std::size_t k = 0; k < 8; ++k) {
+                std::size_t j = 0;
+                if (neighbour(c, k, j) && units[j] < units[c]) ++donors[j];
+            }
+        }
+        std::vector<double> area(kTotal);
+        const double cellArea = static_cast<double>(cell) * static_cast<double>(cell);
+        for (std::size_t i = 0; i < kTotal; ++i) area[i] = static_cast<double>(rainAt[i]) * cellArea;
+        std::vector<std::size_t> queue;
+        queue.reserve(kTotal);
+        for (std::size_t i = 0; i < kTotal; ++i)
+            if (donors[i] == 0) queue.push_back(i);
+        for (std::size_t head = 0; head < queue.size(); ++head) {
+            const std::size_t c = queue[head];
+            if (outlet[c] != 0) continue;
+            std::array<std::size_t, 8> to{};
+            std::array<double, 8> share{};
+            double sum = 0.0;
+            for (std::size_t k = 0; k < 8; ++k) {
+                if (!neighbour(c, k, to[k]) || units[to[k]] >= units[c]) continue;
+                const double drop = static_cast<double>(units[c] - units[to[k]]) * (k % 2 == 1 ? static_cast<double>(kDiag) : 1.0);
+                share[k] = (drop * drop) * (drop * drop);
+                sum += share[k];
+            }
+            for (std::size_t k = 0; k < 8; ++k) {
+                if (!(share[k] > 0.0)) continue;
+                area[to[k]] += area[c] * (share[k] / sum);
+                if (--donors[to[k]] == 0) queue.push_back(to[k]);
+            }
+        }
+        out.flow_.assign(kTotal, 0.f);
+        const double full = std::log1p(static_cast<double>(WorldTerrain::kFlowFull / WorldTerrain::kFlowUnit));
+        for (std::size_t i = 0; i < kTotal; ++i)
+            out.flow_[i] = rainAt[i] * static_cast<float>(std::min(std::log1p(area[i] / WorldTerrain::kFlowUnit) / full, 1.0));
+    }
+
     out.side_ = spec.side;
     out.districtCount_ = n;
     out.roadCount_ = roads;
@@ -1851,6 +1933,30 @@ void shapeMask(const WorldTerrain& terrain, std::size_t size, std::uint8_t* out)
             t /= static_cast<float>(radii.size());
             const float v = std::clamp(128.f + 127.f * t / WorldTerrain::kShapeFull, 0.f, 255.f);
             out[iy * size + ix] = static_cast<std::uint8_t>(v + 0.5f);
+        }
+}
+
+void flowMask(const WorldTerrain& terrain, std::size_t size, std::uint8_t* out) {
+    if (out == nullptr || size == 0) return;
+    if (!(terrain.side() > 0.f)) {
+        std::fill(out, out + size * size, std::uint8_t{0});
+        return;
+    }
+    constexpr std::size_t kLast = WorldTerrain::kSamples - 1;
+    const float half = terrain.extent() * 0.5f;
+    const float pixel = terrain.extent() / static_cast<float>(size);
+    const float cell = terrain.spacing();
+    for (std::size_t iy = 0; iy < size; ++iy)
+        for (std::size_t ix = 0; ix < size; ++ix) {
+            const Vec2 p{-half + (static_cast<float>(ix) + 0.5f) * pixel, -half + (static_cast<float>(iy) + 0.5f) * pixel};
+            const float gx = std::clamp((p.x + half) / cell, 0.f, static_cast<float>(kLast));
+            const float gy = std::clamp((p.y + half) / cell, 0.f, static_cast<float>(kLast));
+            const std::size_t x0 = std::min(static_cast<std::size_t>(gx), kLast - 1);
+            const std::size_t y0 = std::min(static_cast<std::size_t>(gy), kLast - 1);
+            const float fx = gx - static_cast<float>(x0), fy = gy - static_cast<float>(y0);
+            const float f = lerpf(lerpf(terrain.flow(x0, y0), terrain.flow(x0 + 1, y0), fx),
+                                  lerpf(terrain.flow(x0, y0 + 1), terrain.flow(x0 + 1, y0 + 1), fx), fy);
+            out[iy * size + ix] = static_cast<std::uint8_t>(std::clamp(255.f * f, 0.f, 255.f) + 0.5f);
         }
 }
 
