@@ -170,8 +170,23 @@ over (or under) its rings for each metre out. The builder keeps it in the map's 
 `ftcore::flowMask` makes a third mask, of where the rain gathers. It resamples the ground's `flow()` (see
 [WORLDS.md](WORLDS.md#ground)) over the whole field, a byte a pixel: 0 on the pads and the roads, low on the
 crests and the open slopes, rising along the gullies and the valleys' floors, and 255 where a hectare's rain
-runs through, which almost nothing reaches. Neither the builder nor the master uses it yet; it is meant to make
-the ground richer and darker where the water gathers and paler on the crests.
+runs through, which almost nothing reaches. The builder keeps it in the map's package as `T_FlowMask`, as large
+as the shape mask, and the master reads it on the ground layer alone, never the rock or the road. From
+`FlowStart` to `FlowEnd` of it the ground turns wet: it darkens by `WetDarken`, its colour stands `WetRich`
+further from its grey and its roughness falls by `WetSmooth`. A crest, from halfway up the shape mask's scale
+and less where it's wet, moves `CrestPale` of the way to its own colour dried: `CrestDry` of the way to its
+grey, its hue kept, and a quarter lighter, so that a crest pales without turning grey. (It first moved toward
+plain grey, which drained the town's grass to a frosty, mildewed white.)
+
+The builder sets `FlowStart` and `FlowEnd` per map rather than by eye: over the open ground inside the playable
+square (every pixel there but the pads' and the roads', which read 0), `FlowStart` is the mask's 95th
+percentile and `FlowEnd` its 99.5th (`kFlowStartPercentile` and `kFlowEndPercentile` in
+FTWorldMapBuilder.cpp), so that about 5% of each world's open ground begins to darken and 0.5% is fully wet,
+however much rain its ground gathers. The master's own 0.4 and 0.8 serve the master alone, and a map with
+no open ground keeps them. Solhaven turns wet from byte 153 (0.600) to 210 (0.824), Lattice from 156 (0.612)
+to 209 (0.820) and Unwritten from 150 (0.588) to 194 (0.761); at the master's 0.4 and 0.8, 22 to 25% of each
+world's open ground was darkening, and its broad wet floors made the ruins' rills read as stripes. The build
+logs both bytes ([WORLDS.md](WORLDS.md#building-the-maps)).
 
 Each map gets one instance of the master, `MI_World_Ground`, in its own package. It carries the three
 surfaces' textures, tints, tile sizes and roughness from surfaces.json, the two masks and their widths, and
@@ -191,6 +206,9 @@ Its parameters:
   alone puts no rock on the high ground) and `RockAltitudeRunCm` (4000).
 - `ShapeMask` (the flat `T_GroundFlatShape`), `ShapeSideCm` (150000, the field's width), `ShapeLift` (0.5)
   and `ShapeRock` (0.4).
+- `FlowMask` (the empty `T_GroundNoRoads`, so the master alone shows no water), `FlowStart` (0.4) and
+  `FlowEnd` (0.8), set per map as above, `WetDarken` (0.3), `WetRich` (0.3), `WetSmooth` (0.2), `CrestPale`
+  (0.35) and `CrestDry` (0.3).
 - `FarStartCm` (3000), `FarEndCm` (12000), `FarScale` (5), `RockFarScale` (15), `FarBlend` (0.6) and
   `FarNormalStrength` (0.4).
 - `NormalStrength` (1), `Variation` (0.12), `VariationScale` (400 cm), `MacroVariation` (0.14),
@@ -203,29 +221,46 @@ pass the sixteen samplers a shader may bind.
 How it looks, from offscreen renders at the entry, close behind the lead, 25 m up and from 60 m up and
 120 m back, and at eye height on each world's climax (`-WorldDistrict`, [WORLDS.md](WORLDS.md)):
 
-- Solhaven's grass reads a lime green rather than a lawn's. From a road the gravel and the plazas' cobbles
-  show at their real size, and the far view shows the roads running between the districts. From afar the
-  grass no longer shows its tile's grain, though it stays one even green. From the hilltop the plaza looks
+- Solhaven's grass reads a lime green rather than a lawn's. Its crests come out 2 to 3% lighter than the
+  grass round them, the hue within about a degree and the saturation within 0.05, so even at `CrestPale` 0.35
+  they barely show, and nowhere frosty: they cover 0.1 to 0.3% of a view. From a road the gravel and the
+  plazas' cobbles show at their real size, and the far view shows the roads running between the districts.
+  From afar the grass no longer shows its tile's grain, though it stays one even green. From the hilltop the plaza looks
   out through the open half of its ring on the town's other districts, the sea and the mountains. The
   mountains read as grey stone worn into ridges and gullies, with the grass climbing the gullies in tongues
   and filling the slopes' feet, and their rock keeps a grain from 300 m instead of one flat colour.
 - Lattice's ground is pale, cool gravel, and its asphalt roads read from the far view. From the hilltop the
   plaza looks out through the open half of its ring over the towers to the mountains. Their ridges and
   spurs wear grey-brown stone with a grain of its own, and the pale gravel fills the valleys and the gullies
-  between them.
+  between them. Thin, darker channels run over the gravel inside the square, and its crests come out 2 to 3%
+  lighter and a touch less saturated, which hardly shows on gravel so pale.
 - Unwritten's sand shows no repeat, and none of the speckle it used to, from 25 m up or from afar. Its mud
   roads stand out against it, its worn open ground rolls in soft folds, and its mesas and a pit's funnel
   show. From afar the mesas' faces keep the rock's grain, streaked from top to foot, instead of one flat tan.
-  The plain keeps one even tone to the horizon. On the climax the plaza fills the butte's flat top, so even
-  with its ring open the plain stays hidden below the rim, and only the far landmarks show over it.
+  The plain keeps one even tone to the horizon, but for where the rain gathers: thin, darker channels branch
+  down from the mesas' feet inside the square, and out on the plain long, thin, darker lines run side by side
+  across the slopes for a hundred metres or more, reading as dry rills. On the climax the plaza fills the
+  butte's flat top, so even with its ring open the plain stays hidden below the rim, and only the far
+  landmarks show over it.
 
 Not yet: nothing grows on the ground, so from afar the town's grass is one even green and the ruins' plain one
 tone, and the trees and rocks are still simple shapes. Each pad is a flat disc out to the district's radius
 (62 m), so from a climax's plaza the ground below stays hidden under the pad's rim even where the ring is open;
 to look down on the world, the pad would have to fall away from the plaza's edge on that side. The mountains
 wear one rock photo throughout, the quay runs straight, and the sea is a still, flat plane with no waves or
-foam where it meets the quay. The ground doesn't read where the rain gathers yet, so along a gully or a
-valley's floor it wears the same tint as on the slopes round it.
+foam where it meets the quay. A closed hollow keeps all the rain that reaches it, since nothing fills the
+hollows. With the master's own 0.4 one such hollow on Lattice's gravel showed as a wet stain about 8 m
+across, alone on dry ground, rather than as part of a channel; at the map's own 95th percentile it no longer
+shows in the renders, but the hollows still keep their rain. The long side-by-side lines on Unwritten's plain
+are the worn ground's own rills, which the rain follows as it should: inside the square, on open ground
+sloping 3 to 50%, 93% of the wettest twentieth of the samples sit in a hollow over two samples, against 29%
+of the drier half, and they curve 36 mm per square metre on average there against 11 and 12 in the town and
+among the towers. Where the wear runs down a long, even slope it cuts its rills side by side, and the mask
+marks them as parallel lines; making them branch and join is a change to the wear (`wear()` in
+Core/src/Terrain.cpp), queued as a pass of its own. The heights' whole steps play no part: run over the
+unrounded heights instead, the rain leaves 1.3 to 2.0% of the samples where it gathers on a flat of whole
+steps, against 1.0 to 1.4% on the stored heights, and moves the mask by 8 or more on only 0.8 to 1.5% of its
+pixels. The crests barely show, even at `CrestPale` 0.35.
 
 ## Building
 

@@ -6,10 +6,15 @@
 //
 // Writes /Game/Rendering/M_WorldGround (FTScene::GroundMaterial), which each world map's Landscape wears through the
 // instance FTBuildExploreWorld makes for it, with the masks the master takes by default: an empty road mask,
-// /Game/Rendering/T_GroundNoRoads, and a flat shape mask, /Game/Rendering/T_GroundFlatShape. The master blends three of
-// FTBuildSurfaces' photographed surfaces (FTScene::GroundLayers):
+// /Game/Rendering/T_GroundNoRoads, which serves as its flow mask too, and a flat shape mask,
+// /Game/Rendering/T_GroundFlatShape. The master blends three of FTBuildSurfaces' photographed surfaces
+// (FTScene::GroundLayers):
 //   - the ground, laid flat along the world's X and Y and drawn twice, the second copy turned and larger, with a broad
-//     mottle choosing between them so neither copy's repeat lines up across open ground;
+//     mottle choosing between them so neither copy's repeat lines up across open ground. Where the rain gathers it
+//     turns darker and richer, and on the crests paler: "FlowMask" covers the same field as the shape mask with
+//     ftcore::flowMask's bytes, and from "FlowStart" to "FlowEnd" of it the ground darkens by "WetDarken", stands
+//     "WetRich" further from its grey and loses "WetSmooth" of its roughness, while a crest moves "CrestPale" of the
+//     way to a lighter grey;
 //   - rock, projected along the world's three axes, wherever the ground is steeper than about 0.75 to 0.95 (37 to 44
 //     degrees), the line wandering by noise, and on gentler ground from "RockAltitudeCm" up, over "RockAltitudeRunCm"
 //     (the master's default lies over any ground; a world map's instance sets it over its square's highest ground),

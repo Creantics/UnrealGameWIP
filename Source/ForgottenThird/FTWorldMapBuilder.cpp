@@ -100,9 +100,15 @@ FWorldPalette WorldPaletteFor(ftcore::WorldKind Kind)
 // A world map's road mask is this many pixels across the playable square, about half a metre each over 1 km, so a
 // road's fade spans eight of them.
 constexpr int32 kWorldRoadMaskSize = 2048;
-// A world map's shape mask is this many pixels across the whole field, about 1.5 m each over 1.5 km, finer than the
-// ground's samples, so its ridges and hollows keep their shapes.
+// A world map's shape and flow masks are this many pixels across the whole field, about 1.5 m each over 1.5 km, finer
+// than the ground's samples, so its ridges, hollows and gullies keep their shapes.
 constexpr int32 kWorldShapeMaskSize = 1024;
+// Where the ground starts and stops turning wet, set per map from its flow mask over the open ground inside the playable
+// square (every pixel there but the pads' and the roads', which read 0): FlowStart at this percentile of it and FlowEnd
+// at the next, so that about 5% of the open ground begins to darken and 0.5% is fully wet, however much rain each
+// world's ground gathers, rather than one pair of numbers tuned by eye for all three.
+constexpr float kFlowStartPercentile = 0.95f;
+constexpr float kFlowEndPercentile = 0.995f;
 // The high ground's rock starts this far over the highest ground inside the playable square, so that it dresses only
 // the mountains round it.
 constexpr float kRockAltitudeMarginM = 10.f;
@@ -135,8 +141,10 @@ float HighestInside(const ftcore::WorldTerrain& Terrain)
 // The ground's instance of the ground master (FTScene::GroundMaterial), MI_World_Ground. Each of its layers wears the
 // surface the world's kind gives the layer's role, at the surface's scale, in its tint and with its roughness, and the
 // roads come from a new T_RoadMask of ftcore::roadMask's bytes. The rock dresses the ground from RockAltitudeM up as
-// well as where it's steep, keeping to the ridges by a new T_ShapeMask of ftcore::shapeMask's bytes from Terrain. Null,
-// with a warning and nothing made, when the master, a layer's surface or one of their textures is missing.
+// well as where it's steep, keeping to the ridges by a new T_ShapeMask of ftcore::shapeMask's bytes from Terrain, and
+// the ground turns darker where the rain gathers by a new T_FlowMask of ftcore::flowMask's, from FlowStart to FlowEnd
+// at the open ground's kFlowStartPercentile and kFlowEndPercentile inside the square. Null, with a warning and
+// nothing made, when the master, a layer's surface or one of their textures is missing.
 UMaterialInterface* WorldGround(UPackage* Package, const ftcore::SurfaceTable& Surfaces, const ftcore::WorldLayout& Layout,
 	const ftcore::WorldTerrain& Terrain, float Hue, float RockAltitudeM)
 {
@@ -188,6 +196,52 @@ UMaterialInterface* WorldGround(UPackage* Package, const ftcore::SurfaceTable& S
 	Shape.SetNumZeroed(kWorldShapeMaskSize * kWorldShapeMaskSize);
 	ftcore::shapeMask(Terrain, static_cast<std::size_t>(kWorldShapeMaskSize), Shape.GetData());
 	UTexture2D* ShapeMask = FTScene::NewGroundMask(Package, TEXT("T_ShapeMask"), kWorldShapeMaskSize, Shape.GetData(), RF_Public);
+	TArray<uint8> Flow;
+	Flow.SetNumZeroed(kWorldShapeMaskSize * kWorldShapeMaskSize);
+	ftcore::flowMask(Terrain, static_cast<std::size_t>(kWorldShapeMaskSize), Flow.GetData());
+	int32 Wet = 0;
+	for (const uint8 Byte : Flow)
+	{
+		Wet += Byte >= 128 ? 1 : 0;
+	}
+	// The open ground's bytes inside the playable square, counted by value, and the bytes at the two percentiles.
+	int64 Count[256] = {};
+	int64 Open = 0;
+	{
+		const float Pixel = Terrain.extent() / static_cast<float>(kWorldShapeMaskSize), Half = 0.5f * Terrain.side();
+		for (int32 Iy = 0; Iy < kWorldShapeMaskSize; ++Iy)
+		{
+			const float Y = -0.5f * Terrain.extent() + (static_cast<float>(Iy) + 0.5f) * Pixel;
+			for (int32 Ix = 0; Ix < kWorldShapeMaskSize && FMath::Abs(Y) < Half; ++Ix)
+			{
+				const float X = -0.5f * Terrain.extent() + (static_cast<float>(Ix) + 0.5f) * Pixel;
+				const uint8 Byte = Flow[Iy * kWorldShapeMaskSize + Ix];
+				if (FMath::Abs(X) < Half && Byte > 0)
+				{
+					++Count[Byte];
+					++Open;
+				}
+			}
+		}
+	}
+	const auto Percentile = [&](float Share)
+	{
+		const int64 Want = FMath::Max<int64>(1, static_cast<int64>(FMath::CeilToDouble(static_cast<double>(Share) * static_cast<double>(Open))));
+		int64 Below = 0;
+		for (int32 Byte = 0; Byte < 256; ++Byte)
+		{
+			Below += Count[Byte];
+			if (Below >= Want)
+			{
+				return Byte;
+			}
+		}
+		return 255;
+	};
+	const int32 FlowStartByte = Open > 0 ? Percentile(kFlowStartPercentile) : 102;
+	const int32 FlowEndByte = Open > 0 ? Percentile(kFlowEndPercentile) : 204;
+	const float FlowStart = static_cast<float>(FlowStartByte) / 255.f, FlowEnd = static_cast<float>(FlowEndByte) / 255.f;
+	UTexture2D* FlowMask = FTScene::NewGroundMask(Package, TEXT("T_FlowMask"), kWorldShapeMaskSize, Flow.GetData(), RF_Public);
 
 	UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, TEXT("MI_World_Ground"), RF_Public);
 	Mic->SetParentEditorOnly(Master);
@@ -212,15 +266,19 @@ UMaterialInterface* WorldGround(UPackage* Package, const ftcore::SurfaceTable& S
 	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("RockAltitudeCm")), RockAltitudeM * 100.f);
 	Mic->SetTextureParameterValueEditorOnly(FMaterialParameterInfo(TEXT("ShapeMask")), ShapeMask);
 	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("ShapeSideCm")), Terrain.extent() * 100.f);
+	Mic->SetTextureParameterValueEditorOnly(FMaterialParameterInfo(TEXT("FlowMask")), FlowMask);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("FlowStart")), FlowStart);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("FlowEnd")), FlowEnd);
 	Mic->PostEditChange();
 	FString Worn;
 	for (int32 L = 0; L < Layers; ++L)
 	{
 		Worn += FString::Printf(TEXT("%s%s %s"), L > 0 ? TEXT(", ") : TEXT(""), FTScene::GroundLayers[L].Name, *FT::ToFString(Specs[L]->id));
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildExploreWorld: the ground wears %s (%s), its roads from a %d x %d mask (%.1f%% of the square on a road), rock on the high ground from %.1f m up, keeping to the ridges by a %d x %d shape mask."),
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildExploreWorld: the ground wears %s (%s), its roads from a %d x %d mask (%.1f%% of the square on a road), rock on the high ground from %.1f m up, keeping to the ridges by a %d x %d shape mask, darker where the rain gathers by a flow mask as large (%.2f%% of the field at half or more), wet from byte %d (%.3f) to %d (%.3f), the open ground's %gth and %gth percentiles inside the square."),
 		FTScene::GroundMaterial, *Worn, kWorldRoadMaskSize, kWorldRoadMaskSize, 100.0 * OnRoad / Bytes.Num(), RockAltitudeM,
-		kWorldShapeMaskSize, kWorldShapeMaskSize);
+		kWorldShapeMaskSize, kWorldShapeMaskSize, 100.0 * Wet / Flow.Num(), FlowStartByte, FlowStart, FlowEndByte, FlowEnd,
+		100.0 * kFlowStartPercentile, 100.0 * kFlowEndPercentile);
 	return Mic;
 }
 

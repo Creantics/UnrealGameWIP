@@ -224,6 +224,23 @@ float EdgeCm = 300.0 + (Layers.Mottle(P, 250.0, 6.0) - 0.5) * 80.0;
 float Soft = 0.5 * max(RoadEdgeCm, 1.0);
 float RoadW = 1.0 - smoothstep(-Soft, Soft, DistCm - EdgeCm);
 
+// Water: the ground turns darker and richer where the rain gathers, and paler on the crests. FlowMask holds
+// ftcore::flowMask's bytes over the same field as ShapeMask, 0 where no rain gathers and 1 where a hectare's runs
+// through. From FlowStart to FlowEnd of it the ground darkens by WetDarken, its colour stands WetRich further from its
+// grey and its roughness falls by WetSmooth. A crest moves CrestPale of the way to its own colour dried: CrestDry of the
+// way to its grey, its hue kept, and a quarter lighter, so that a crest pales without turning grey; all of it from
+// halfway up the shape mask's scale, and less where it's wet. Neither touches the rock or the road.
+float Flow = Texture2DSample(FlowMask, GetMaterialSharedSampler(FlowMaskSampler, View.MaterialTextureBilinearClampedSampler),
+	P / max(ShapeSideCm, 1.0) + 0.5).r;
+float Wet = smoothstep(FlowStart, max(FlowEnd, FlowStart + 0.01), Flow);
+float Crest = smoothstep(0.0, 0.5, Shape) * (1.0 - Wet);
+float3 GroundTinted = GroundColor * GroundTint.rgb;
+float GroundGrey = dot(GroundTinted, float3(0.2126, 0.7152, 0.0722));
+GroundTinted = max(GroundGrey + (GroundTinted - GroundGrey) * (1.0 + WetRich * Wet), 0.0) * (1.0 - saturate(WetDarken) * Wet);
+float GroundWetGrey = dot(GroundTinted, float3(0.2126, 0.7152, 0.0722));
+float3 GroundDry = 1.25 * lerp(GroundTinted, float3(GroundWetGrey, GroundWetGrey, GroundWetGrey), saturate(CrestDry));
+GroundTinted = lerp(GroundTinted, GroundDry, saturate(CrestPale) * Crest);
+
 // Rock over the ground and the road over both, each layer in its tint, then the mottles and the warm and cool drift. The
 // fine mottle, which far off would only speckle, fades with the detail.
 float Fine = Layers.Mottle(P, VariationScale, 2.0);
@@ -232,10 +249,10 @@ float Hue = Layers.Mottle(P, MacroScale * 1.7, 4.0);
 float FineVariation = Variation * (1.0 - Far);
 float3 Shade = (1.0 + FineVariation * (2.0 * Fine - 1.0)) * (1.0 + MacroVariation * (2.0 * Broad - 1.0))
 	* (1.0 + HueDrift * (2.0 * Hue - 1.0) * float3(1.0, 0.25, -0.75));
-float3 Color = lerp(lerp(GroundColor * GroundTint.rgb, RockColor * RockTint.rgb, RockW), RoadColor * RoadTint.rgb, RoadW) * Shade;
+float3 Color = lerp(lerp(GroundTinted, RockColor * RockTint.rgb, RockW), RoadColor * RoadTint.rgb, RoadW) * Shade;
 NormalOut = normalize(lerp(lerp(GroundN, RockN, RockW), RoadN, RoadW));
 // A surface whose packed map has an empty roughness channel gets a constant from surfaces.json instead.
-float GroundRough = GroundRoughness >= 0.0 ? GroundRoughness : GroundPack.g;
+float GroundRough = (GroundRoughness >= 0.0 ? GroundRoughness : GroundPack.g) * (1.0 - saturate(WetSmooth) * Wet);
 float RockRough = RockRoughness >= 0.0 ? RockRoughness : RockPack.g;
 float RoadRough = RoadRoughness >= 0.0 ? RoadRoughness : RoadPack.g;
 float RoughVar = 1.0 + 0.5 * FineVariation * (2.0 * Layers.Mottle(P, VariationScale, 7.0) - 1.0);
@@ -309,8 +326,8 @@ UMaterialExpressionTextureObjectParameter* AddTexture(UMaterial* Material, FName
 	return P;
 }
 
-// The master, with Defaults (each layer's maps in turn) as its textures, NoRoads as its road mask and FlatShape as its
-// shape mask.
+// The master, with Defaults (each layer's maps in turn) as its textures, NoRoads as its road mask and its flow mask (so
+// that alone it gathers no rain anywhere) and FlatShape as its shape mask.
 UMaterial* BuildMaster(TConstArrayView<UTexture*> Defaults, UTexture* NoRoads, UTexture* FlatShape)
 {
 	UPackage* Package = CreatePackage(FTScene::GroundMaterial);
@@ -349,6 +366,9 @@ UMaterial* BuildMaster(TConstArrayView<UTexture*> Defaults, UTexture* NoRoads, U
 	AddInput(Custom, TEXT("ShapeMask"),
 		AddTexture(Material, TEXT("ShapeMask"), FlatShape, SAMPLERTYPE_LinearGrayscale, TEXT("Rock"), Y));
 	Y += 150;
+	AddInput(Custom, TEXT("FlowMask"),
+		AddTexture(Material, TEXT("FlowMask"), NoRoads, SAMPLERTYPE_LinearGrayscale, TEXT("Flow"), Y));
+	Y += 150;
 	struct FLookScalar
 	{
 		const TCHAR* Name;
@@ -372,6 +392,13 @@ UMaterial* BuildMaster(TConstArrayView<UTexture*> Defaults, UTexture* NoRoads, U
 		{TEXT("ShapeSideCm"), 150000.f, TEXT("Rock")},
 		{TEXT("ShapeLift"), 0.5f, TEXT("Rock")},
 		{TEXT("ShapeRock"), 0.4f, TEXT("Rock")},
+		{TEXT("FlowStart"), 0.4f, TEXT("Flow")},
+		{TEXT("FlowEnd"), 0.8f, TEXT("Flow")},
+		{TEXT("WetDarken"), 0.3f, TEXT("Flow")},
+		{TEXT("WetRich"), 0.3f, TEXT("Flow")},
+		{TEXT("WetSmooth"), 0.2f, TEXT("Flow")},
+		{TEXT("CrestPale"), 0.35f, TEXT("Flow")},
+		{TEXT("CrestDry"), 0.3f, TEXT("Flow")},
 		{TEXT("FarStartCm"), 3000.f, TEXT("Far")},
 		{TEXT("FarEndCm"), 12000.f, TEXT("Far")},
 		{TEXT("FarScale"), 5.f, TEXT("Far")},
