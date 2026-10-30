@@ -1,12 +1,56 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-29 ~20:45. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-30 ~00:50. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-29 ~20:45): the big worlds' mountains are worn by rain, wear stone on their ridges and ground in
+- **NEWEST (2026-10-30 ~00:50): the generator follows the rain over the finished ground (`terrain-worlds` 0fca86d,
+  not merged into main, which stays at 8a2da97). Core only: the maps aren't rebuilt and the ground master doesn't
+  read it yet.**
+  - Core (0fca86d):
+    - Last of all, after the slope limit, `ftcore::generateWorldTerrain` passes each sample's rain, and all that
+      reaches it from uphill, to every lower neighbour, most of it the steepest way (shares as the fourth power of
+      each drop over its length), upstream first, filling nothing. A closed hollow's floor or a flat keeps what
+      reaches it; the field's edge, water over the ground, a trench's floor and a pit's shaft take what reaches them
+      and pass nothing on. That was the advisor's pick after a scratch comparison against the steepest way alone and
+      against filling the hollows first, which drew straight lines across their levelled floors.
+    - Rain falls everywhere but on the pads and the roads' shoulders and fades in round them as the wear does
+      (`rainWeight`, split out of `wearWeight`, so the wear is unchanged), so they read 0.
+    - `WorldTerrain::flow()` reads 0 to 1 on a log scale, 1 where a hectare's rain runs through (`kFlowUnit` about a
+      sample's area, `kFlowFull` a hectare). `ftcore::flowMask` resamples it into a byte mask over the whole field,
+      pixel centres as `shapeMask`'s, without allocating.
+  - Numbers (Solhaven, Lattice, Unwritten):
+    - The pass adds 45, 100 and 104 ms to generation in an optimized build and is deterministic. It agrees within
+      6e-8 with a plain reference sorted by height.
+    - In a 1024 x 1024 mask, inside the square 0.56, 0.59 and 0.28% of the pixels read 200 or more and 0.005, 0.001
+      and 0% read 255. The hollows (the shape mask's 96 or less) read 2.39, 2.52 and 1.78 times what the crests (160
+      or more) do.
+  - Checks: a new test (test_terrain.cpp) checks that every sample reads 0 to 1, and exactly 0 on the pads and the
+    roads out to their shoulders; that each mask pixel is the flow read straight between the four samples round it;
+    that 0.1% of the square at least reads 200 or more and 1% at most reads 255; that the hollows read at least 1.5
+    times what the crests do; that the mask writes every byte without allocating; and that the ruins, generated
+    again, give the same flow. Gate: 832 doctest cases, ctest 4/4.
+  - Written but not committed, in `.claude/worktrees/flow-mask` (4 files under `Source/`), waiting for UBT:
+    - `FTBuildExploreWorld` keeps a 1024 x 1024 `T_FlowMask` beside `T_ShapeMask` and hands it to the map's
+      instance. Its log line gives the share of the field at half or more.
+    - `M_WorldGround` gains a `FlowMask` input (the master's default is `T_GroundNoRoads`, so alone it gathers no
+      rain) and a Flow group. From `FlowStart` (0.4) to `FlowEnd` (0.8) of the mask the ground darkens by
+      `WetDarken` (0.3), stands `WetRich` (0.3) further from its grey and loses `WetSmooth` (0.2) of its roughness.
+      A crest moves `CrestPale` (0.2) of the way to a lighter grey. Only the ground layer changes, not the rock or
+      the road.
+  - Next, when the PC is free: UBT, `-run=FTBuildGround`, the three maps rebuilt, offscreen renders from each entry
+    and on each climax, the tours and the headless story run. Tune `FlowStart` and `FlowEnd` against the renders,
+    then commit the Source side with SCENE_LOOK's parameters and how it looks, push `terrain-worlds` and
+    fast-forward main.
+  - Not yet:
+    - Each closed hollow keeps its own rain, so a basin's floor shows wet specks (1,400 to 2,500 over each field)
+      rather than one channel, and almost nothing reaches 255.
+    - The ground just below a pad or across a level road reads dry, with no channels spilling from them.
+  - The pass after: each climax's pad falls away past the plaza's edge on its open side. Still to come: as in the
+    entry below.
+- **Earlier (2026-10-29 ~20:45): the big worlds' mountains are worn by rain, wear stone on their ridges and ground in
   their gullies, and keep their rock's grain from afar; the town's mountains turn grey, and each climax's plaza
   looks out over its world (main 8a2da97, a fast-forward of `terrain-worlds`).**
   - Core:
