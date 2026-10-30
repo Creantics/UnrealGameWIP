@@ -14,13 +14,13 @@ Each world is a blockout for now: shapes, roads and landmarks on the world's own
 
 ## Size
 
-Each world is 1 km a side. Districts sit at least 150 m apart, joined by straight roads. A district is a stone plaza 72 m across, ringed by buildings, with a tall landmark topped by a gold beacon.
+Each world is 1 km a side. Districts sit at least 150 m apart, joined by straight roads. A district is a stone plaza 72 m across, ringed by buildings, with a tall landmark topped by a gold beacon. The climax's ring stays open over the half that faces the world's centre, so its plaza looks out over the world. The buildings it leaves out still draw their random numbers, so nothing else on the map moves.
 
 | World | Districts | Kind | Roads | Buildings | Props | Median road between neighbours |
 |---|---|---|---|---|---|---|
-| solhaven | 16 | town | 19 | 269 | 1400 | ~185 m: 30 s running, about a minute walking |
-| lattice | 12 | towers | 14 | 163 | 700 | ~210 m: 34 s running |
-| unwritten | 10 | ruins | 10 | 165 | 1600 | ~236 m: 38 s running |
+| solhaven | 16 | town | 19 | 260 | 1400 | ~185 m: 30 s running, about a minute walking |
+| lattice | 12 | towers | 14 | 156 | 700 | ~210 m: 34 s running |
+| unwritten | 10 | ruins | 10 | 156 | 1600 | ~236 m: 38 s running |
 
 Running is 6.2 m/s. A test keeps the median run between neighbouring districts within 20–40 s. The `-WorldAutoPlay` tour walks, so its legs take about twice as long.
 
@@ -129,28 +129,28 @@ Run it again with `-World=lattice` and `-World=unwritten`. `-Style=<spec>` adds 
 
 The build fails if any field goal, from `kFieldGoals` or `goals.json`, has no full navmesh path from any district's spawn. The roads between districts have no navmesh, because they are straight and clear.
 
-The ground wears the ground master: the kind's ground surface, rock wherever the ground is steeper than about 0.85 in 1 (40 degrees) and on the mountains' upper sides from 10 m over the square's highest ground (45.6 m in the town and 46.0 m among the towers; nothing in the ruins stands that high), meeting the ground by height so that the stone breaks through first at its high points, and the road surface along every road, drawn from a mask of the roads the build makes from the layout ([SCENE_LOOK.md](SCENE_LOOK.md#the-ground)). The plazas, buildings, roofs, landmarks, trunks and rocks wear the photographed surfaces that `Data/Field/surfaces.json` gives the world's kind, and the rest keep flat tints. The build logs what the ground wears and how many roles are dressed:
+The ground wears the ground master: the kind's ground surface, rock wherever the ground is steeper than about 0.85 in 1 (40 degrees) and on the mountains' upper sides from 10 m over the square's highest ground (45.6 m in the town and 46.0 m among the towers; nothing in the ruins stands that high), sooner on their ridges and later in their gullies by a mask of the ground's shape the build makes from the height field, meeting the ground by height so that the stone breaks through first at its high points, and the road surface along every road, drawn from a mask of the roads the build makes from the layout ([SCENE_LOOK.md](SCENE_LOOK.md#the-ground)). The plazas, buildings, roofs, landmarks, trunks and rocks wear the photographed surfaces that `Data/Field/surfaces.json` gives the world's kind, and the rest keep flat tints. The build logs what the ground wears and how many roles are dressed:
 
 | World | Ground | Rock | Road | On a road | Roles dressed |
 |---|---|---|---|---|---|
-| solhaven | leafy_grass (tinted) | rock_wall | gravel_road | 2.5% | 8 of 8 |
+| solhaven | leafy_grass (tinted) | worn_rock_natural_01 (tinted) | gravel_road | 2.5% | 8 of 8 |
 | lattice | gravel_floor_02 (tinted) | worn_rock_natural_01 (tinted) | clean_asphalt | 2.1% | 3 of 8 |
 | unwritten | gravelly_sand | worn_rock_natural_01 | dry_mud_field_001 | 1.7% | 3 of 8 |
 
-The tints are the ones surfaces.json gives: the town's grass greener, (0.5, 0.9, 0.35), because the photo's dry grass showed as khaki from any distance; the towers' gravel a touch cooler, (0.85, 0.9, 1.0); and their rock, the ruins' worn rock, grey, (0.45, 0.6, 0.9). The towers first wore a dark rock photo, but even at the tint's cap of 2 it stayed darker than the shadows beside it, and the mountains' steep faces read as holes from afar; the grey worn rock reads lighter than those shadows and darker than the sand.
+The tints are the ones surfaces.json gives: the town's grass greener, (0.5, 0.9, 0.35), because the photo's dry grass showed as khaki from any distance; the towers' gravel a touch cooler, (0.85, 0.9, 1.0); and their rock, the ruins' worn rock, grey, (0.45, 0.6, 0.9). The towers first wore a dark rock photo, but even at the tint's cap of 2 it stayed darker than the shadows beside it, and the mountains' steep faces read as holes from afar; the grey worn rock reads lighter than those shadows and darker than the sand. The town's mountains wear the same worn rock, tinted to a light, slightly cool grey, (0.58, 0.78, 1.3), a little brighter than the tinted grass. Its first rock read warm brown beside the grass, and since surfaces.json must wear every surface it lists, that surface was retired along with its textures.
 
-For Solhaven: `FTBuildExploreWorld: the ground wears /Game/Rendering/M_WorldGround (Ground leafy_grass, Rock rock_wall, Road gravel_road), its roads from a 2048 x 2048 mask (2.5% of the square on a road), rock on the high ground from 45.6 m up.` then `FTBuildExploreWorld: 8 of 8 surface roles wear photographed surfaces.` The mask adds 56 to 72 KB to a map.
+For Solhaven: `FTBuildExploreWorld: the ground wears /Game/Rendering/M_WorldGround (Ground leafy_grass, Rock worn_rock_natural_01, Road gravel_road), its roads from a 2048 x 2048 mask (2.5% of the square on a road), rock on the high ground from 45.6 m up, keeping to the ridges by a 1024 x 1024 shape mask.` then `FTBuildExploreWorld: 8 of 8 surface roles wear photographed surfaces.` The road mask adds 56 to 72 KB to a map and the shape mask 0.3 to 0.6 MB.
 
 The build logs the ground's numbers, then the map's. For Solhaven:
 
-`FTBuildExploreWorld: world solhaven's ground: -33.0 to 145.7 m (pads -19.7 to 35.6 m), 0.0% of the square steeper than 1 in 1; 0 cuts walled in by 0 hidden walls; 1 water planes; 0 props left off steep, wet or cut ground.`
+`FTBuildExploreWorld: world solhaven's ground: -33.0 to 146.4 m (pads -19.7 to 35.6 m), 0.0% of the square steeper than 1 in 1; 0 cuts walled in by 0 hidden walls; 1 water planes; 0 props left off steep, wet or cut ground.`
 
-`FTBuildExploreWorld: world solhaven (look photoreal): 16 districts, 19 roads, 269 buildings, 1400 props, 2982 instances, 16 landmarks, 89 actors; bounds 990 x 990 m, 290 m tall; 136 goals reachable from each district.`
+`FTBuildExploreWorld: world solhaven (look photoreal): 16 districts, 19 roads, 260 buildings, 1400 props, 2964 instances, 16 landmarks, 89 actors; bounds 990 x 990 m, 290 m tall; 136 goals reachable from each district.`
 
 | World | Ground | Pads | Steeper than 1 in 1 | Cuts, hidden walls | Water planes | Props left off |
 |---|---|---|---|---|---|---|
-| solhaven | -33.0 to 145.7 m | -19.7 to 35.6 m | 0.0% | 0, 0 | 1 | 0 |
-| lattice | -38.6 to 146.7 m | -12.1 to 36.0 m | 1.0% | 2, 8 | 3 | 25 |
+| solhaven | -33.0 to 146.4 m | -19.7 to 35.6 m | 0.0% | 0, 0 | 1 | 0 |
+| lattice | -38.6 to 146.3 m | -12.1 to 36.0 m | 1.0% | 2, 8 | 3 | 25 |
 | unwritten | -185.5 to 36.0 m | -18.0 to 36.0 m | 2.8% | 2, 64 | 0 | 78 |
 
 ## Headless checks
@@ -160,6 +160,7 @@ The build logs the ground's numbers, then the map's. For Solhaven:
   - determinism and layout invariants for every kind and district count
   - no allocation
   - the committed worlds' median runs
+  - the climax's open ring: the buildings ahead of its plaza left out (7 to 9), those behind kept (6 to 8), and nothing else moved
   - the real script's placements (when `Data/Story` is present)
 - The tour walks the roads through every district:
 

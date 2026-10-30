@@ -33,6 +33,8 @@ namespace FTGroundBuild
 {
 // The empty road mask the master takes by default, so that the master alone draws no road.
 const TCHAR* const kNoRoads = TEXT("/Game/Rendering/T_GroundNoRoads");
+// The flat shape mask (every byte 128) it takes by default, so that the master alone moves no rock by the ground's shape.
+const TCHAR* const kFlatShape = TEXT("/Game/Rendering/T_GroundFlatShape");
 constexpr int32 kLayerCount = UE_ARRAY_COUNT(FTScene::GroundLayers);
 constexpr int32 kMapCount = UE_ARRAY_COUNT(FTScene::SurfaceMaps);
 // How the master samples each of FTScene::SurfaceMaps.
@@ -159,6 +161,23 @@ float3 RZ = UnpackNormalMap(
 float3 RockLean =
 	float3(Blend.y * RY.x + Blend.z * RZ.x, Blend.x * RX.x + Blend.z * RZ.y, -(Blend.x * RX.y + Blend.y * RY.y));
 float3 RockN = normalize(Strength * RockLean + (Blend.x * RX.z + Blend.y * RY.z + Blend.z * RZ.z) * Up);
+// Far off, a copy RockFarScale times the size takes FarBlend of the colour and the packed maps, as the ground's third
+// copy does, so that from afar the mountains keep the photo's cracks and ledges, grown to their size, instead of fading
+// to its mean colour. Its bumps are left out.
+float3 QF = Q / max(RockFarScale, 1.0) + float3(0.29, 0.61, 0.17);
+float2 UvFX = float2(QF.y, -QF.z);
+float2 UvFY = float2(QF.x, -QF.z);
+float2 UvFZ = float2(QF.x, QF.y);
+RockColor = lerp(RockColor,
+	Blend.x * Texture2DSample(RockAlbedo, GetMaterialSharedSampler(RockAlbedoSampler, View.MaterialTextureBilinearWrapedSampler), UvFX).rgb
+	+ Blend.y * Texture2DSample(RockAlbedo, GetMaterialSharedSampler(RockAlbedoSampler, View.MaterialTextureBilinearWrapedSampler), UvFY).rgb
+	+ Blend.z * Texture2DSample(RockAlbedo, GetMaterialSharedSampler(RockAlbedoSampler, View.MaterialTextureBilinearWrapedSampler), UvFZ).rgb,
+	FarW);
+RockPack = lerp(RockPack,
+	Blend.x * Texture2DSample(RockArm, GetMaterialSharedSampler(RockArmSampler, View.MaterialTextureBilinearWrapedSampler), UvFX).rgb
+	+ Blend.y * Texture2DSample(RockArm, GetMaterialSharedSampler(RockArmSampler, View.MaterialTextureBilinearWrapedSampler), UvFY).rgb
+	+ Blend.z * Texture2DSample(RockArm, GetMaterialSharedSampler(RockArmSampler, View.MaterialTextureBilinearWrapedSampler), UvFZ).rgb,
+	FarW);
 // The heights the rock and the ground meet by: each surface's occlusion about its own mean (its last mip), so that a
 // bright gravel and a dark rock meet as evenly as two of a kind. They reach RockBlendHeight, short enough that the
 // blend's ends stay pure.
@@ -170,14 +189,22 @@ float RockMean =
 float GroundH = Span * saturate(0.5 + 2.0 * (GroundPack.r - GroundMean));
 float RockH = Span * saturate(0.5 + 2.0 * (RockPack.r - RockMean));
 // Rock takes the ground over between slopes of about 0.75 and 0.95 (37 to 44 degrees), the line wandering by noise.
-// From RockAltitudeCm up, over RockAltitudeRunCm and up to half as much again by noise, ground gentler by 0.4 joins it,
-// so that the high mountainsides turn to rock and only their gentle shoulders keep the ground; nothing under
-// RockAltitudeCm does. Within the band the rock breaks through at its high points and the ground keeps to its low ones.
+// From RockAltitudeCm up, over RockAltitudeRunCm, gentler ground joins it, so that the high mountainsides turn to rock
+// and only their gentle shoulders keep the ground; nothing under RockAltitudeCm does. The ground's shape decides where:
+// ShapeMask holds ftcore::shapeMask's bytes over the whole field (ShapeSideCm across), 1 on the sharpest ridges, -1 in
+// the deepest hollows and 0 where the ground slopes evenly. A ridge stands ShapeLift of the run further into the band
+// than its height alone and a hollow as much less far, the band's first quarter-run fading in either way, and ground
+// gentler by 0.4 joins the rock, by ShapeRock more on a ridge and as much less in a hollow, so that the stone keeps to
+// the ridges and the ground fills the hollows. Within the band the rock breaks through at its high points and the
+// ground keeps to its low ones.
 float Nz = saturate(Up.z);
 float Slope = sqrt(saturate(1.0 - Nz * Nz)) / max(Nz, 1e-4);
+float Shape = clamp((255.0 * Texture2DSample(ShapeMask, GetMaterialSharedSampler(ShapeMaskSampler, View.MaterialTextureBilinearClampedSampler),
+	P / max(ShapeSideCm, 1.0) + 0.5).r - 128.0) / 127.0, -1.0, 1.0);
 float Run = max(RockAltitudeRunCm, 1.0);
-float Lift = smoothstep(RockAltitudeCm, RockAltitudeCm + Run, WorldPos.z - 0.5 * Run * Layers.Mottle(P, 4000.0, 8.0));
-float SlopeW = smoothstep(0.55, 1.15, Slope + 0.4 * Lift + (Layers.Mottle(P, 600.0, 5.0) - 0.5) * 0.2);
+float Over = WorldPos.z - RockAltitudeCm;
+float Lift = smoothstep(0.0, Run, Over + ShapeLift * Run * Shape) * smoothstep(0.0, 0.25 * Run, Over);
+float SlopeW = smoothstep(0.55, 1.15, Slope + (0.4 + ShapeRock * Shape) * Lift + (Layers.Mottle(P, 600.0, 5.0) - 0.5) * 0.2);
 float RockW = Layers.HeightBlend(SlopeW, GroundH, RockH, max(RockBlendDepth, 0.01));
 )HLSL") TEXT(R"HLSL(
 // Road: laid flat inside each road's edge. The mask is 255 within a metre of a road's centre line and falls in a
@@ -282,8 +309,9 @@ UMaterialExpressionTextureObjectParameter* AddTexture(UMaterial* Material, FName
 	return P;
 }
 
-// The master, with Defaults (each layer's maps in turn) as its textures and NoRoads as its road mask.
-UMaterial* BuildMaster(TConstArrayView<UTexture*> Defaults, UTexture* NoRoads)
+// The master, with Defaults (each layer's maps in turn) as its textures, NoRoads as its road mask and FlatShape as its
+// shape mask.
+UMaterial* BuildMaster(TConstArrayView<UTexture*> Defaults, UTexture* NoRoads, UTexture* FlatShape)
 {
 	UPackage* Package = CreatePackage(FTScene::GroundMaterial);
 	UMaterial* Material = NewObject<UMaterial>(Package, FName(FPackageName::GetShortName(Package->GetName())),
@@ -318,6 +346,9 @@ UMaterial* BuildMaster(TConstArrayView<UTexture*> Defaults, UTexture* NoRoads)
 	AddInput(Custom, TEXT("RoadMask"),
 		AddTexture(Material, TEXT("RoadMask"), NoRoads, SAMPLERTYPE_LinearGrayscale, TEXT("Road"), Y));
 	Y += 150;
+	AddInput(Custom, TEXT("ShapeMask"),
+		AddTexture(Material, TEXT("ShapeMask"), FlatShape, SAMPLERTYPE_LinearGrayscale, TEXT("Rock"), Y));
+	Y += 150;
 	struct FLookScalar
 	{
 		const TCHAR* Name;
@@ -338,9 +369,13 @@ UMaterial* BuildMaster(TConstArrayView<UTexture*> Defaults, UTexture* NoRoads)
 		{TEXT("RockBlendDepth"), 0.2f, TEXT("Rock")},
 		{TEXT("RockAltitudeCm"), 100000.f, TEXT("Rock")},
 		{TEXT("RockAltitudeRunCm"), 4000.f, TEXT("Rock")},
+		{TEXT("ShapeSideCm"), 150000.f, TEXT("Rock")},
+		{TEXT("ShapeLift"), 0.5f, TEXT("Rock")},
+		{TEXT("ShapeRock"), 0.4f, TEXT("Rock")},
 		{TEXT("FarStartCm"), 3000.f, TEXT("Far")},
 		{TEXT("FarEndCm"), 12000.f, TEXT("Far")},
 		{TEXT("FarScale"), 5.f, TEXT("Far")},
+		{TEXT("RockFarScale"), 15.f, TEXT("Far")},
 		{TEXT("FarBlend"), 0.6f, TEXT("Far")},
 		{TEXT("FarNormalStrength"), 0.4f, TEXT("Far")},
 	};
@@ -423,7 +458,7 @@ int32 UFTBuildGroundCommandlet::Main(const FString& Params)
 	}
 
 	// Start from nothing: replace the files up front, before anything loads the old assets.
-	for (const TCHAR* Package : {FTScene::GroundMaterial, FTGroundBuild::kNoRoads})
+	for (const TCHAR* Package : {FTScene::GroundMaterial, FTGroundBuild::kNoRoads, FTGroundBuild::kFlatShape})
 	{
 		const FString File = FTGroundBuild::PackageFile(Package);
 		if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
@@ -450,11 +485,17 @@ int32 UFTBuildGroundCommandlet::Main(const FString& Params)
 		}
 	}
 	const uint8 Empty[4 * 4] = {};
-	UTexture2D* NoRoads = FTScene::NewRoadMask(CreatePackage(FTGroundBuild::kNoRoads),
+	UTexture2D* NoRoads = FTScene::NewGroundMask(CreatePackage(FTGroundBuild::kNoRoads),
 		*FPackageName::GetShortName(FTGroundBuild::kNoRoads), 4, Empty,
 		RF_Public | RF_Standalone | RF_Transactional);
 	FAssetRegistryModule::AssetCreated(NoRoads);
-	UMaterial* Master = FTGroundBuild::BuildMaster(Defaults, NoRoads);
+	uint8 Flat[4 * 4];
+	FMemory::Memset(Flat, 128, sizeof(Flat));
+	UTexture2D* FlatShape = FTScene::NewGroundMask(CreatePackage(FTGroundBuild::kFlatShape),
+		*FPackageName::GetShortName(FTGroundBuild::kFlatShape), 4, Flat,
+		RF_Public | RF_Standalone | RF_Transactional);
+	FAssetRegistryModule::AssetCreated(FlatShape);
+	UMaterial* Master = FTGroundBuild::BuildMaster(Defaults, NoRoads, FlatShape);
 
 	FAssetCompilingManager::Get().FinishAllCompilation();
 	if (FT::CompileErrors(TEXT("FTBuildGround"), Master) > 0)
@@ -465,13 +506,14 @@ int32 UFTBuildGroundCommandlet::Main(const FString& Params)
 
 	int64 Bytes = 0;
 	bool bSaved = FTGroundBuild::SaveAsset(NoRoads, Bytes);
+	bSaved = FTGroundBuild::SaveAsset(FlatShape, Bytes) && bSaved;
 	bSaved = FTGroundBuild::SaveAsset(Master, Bytes) && bSaved;
 	if (!bSaved)
 	{
 		return 1;
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildGround: saved %s and %s (%.1f KB), wearing %s, %s and %s until a map's instance says otherwise."),
-		FTScene::GroundMaterial, FTGroundBuild::kNoRoads, Bytes / 1024.0, *Ids[0], *Ids[1], *Ids[2]);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildGround: saved %s, %s and %s (%.1f KB), wearing %s, %s and %s until a map's instance says otherwise."),
+		FTScene::GroundMaterial, FTGroundBuild::kNoRoads, FTGroundBuild::kFlatShape, Bytes / 1024.0, *Ids[0], *Ids[1], *Ids[2]);
 	return 0;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTBuildGround needs an editor build."));

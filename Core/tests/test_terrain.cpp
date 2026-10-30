@@ -1274,3 +1274,99 @@ TEST_CASE("terrain: the road mask fades from each road's centre line to nothing 
         CHECK_MESSAGE(pastOff.count == 0u, "reads past 5 m that aren't 0: " << describe(pastOff));
     }
 }
+
+namespace {
+
+constexpr std::size_t kShape = 512;      // 2.9 m pixels over the 1.5 km field
+constexpr float kShapeSpan = 5.f;        // samples, between the rings' radii: where the ground curves over this span
+constexpr float kShapeCurved = 0.05f;    // 1/m at least (its Laplacian's size; about the mountains' median),
+constexpr double kShapeAgree = 0.98;     // the mask reads ridges over 128 and hollows under it this often: 99.4 to 99.8%
+constexpr double kShapeRidges = 0.15;    // of the mountains' pixels, at least this share reads 160 or more: 25%,
+constexpr double kShapeHollows = 0.15;   // at least this share 96 or less: 26%,
+constexpr double kShapeClipped = 0.08;   // and at most this share 0 or 255: 3.5 to 3.8%
+
+} // namespace
+
+TEST_CASE("terrain: the shape mask reads ridges over 128, hollows under it and flat ground at 128, without allocating") {
+    std::vector<std::uint8_t> mask(kShape * kShape, 0xab), again(kShape * kShape, 0x00);
+    for (const Generated& g : worlds()) {
+        INFO(g.spec.id);
+        REQUIRE_MESSAGE(g.ok, g.error);
+        const WorldTerrain& t = *g.terrain;
+        const float extent = t.extent(), pixel = extent / static_cast<float>(kShape);
+        const auto centre = [&](std::size_t ix, std::size_t iy) {
+            return Vec2{-0.5f * extent + (static_cast<float>(ix) + 0.5f) * pixel,
+                        -0.5f * extent + (static_cast<float>(iy) + 0.5f) * pixel};
+        };
+
+        const bool counting = ftcore_test::allocHookInstalled();
+        const std::uint64_t before = ftcore_test::allocStats().count;
+        shapeMask(t, kShape, mask.data());
+        if (counting) {
+            CHECK(ftcore_test::allocStats().count == before);
+        }
+        // Every byte is written: a buffer that starts out otherwise ends the same.
+        shapeMask(t, kShape, again.data());
+        CHECK(mask == again);
+
+        // Each pad's core, where both rings and the triangles under them lie on the pad, reads 128.
+        const float core = kR - static_cast<float>(WorldTerrain::kShapeFar + 1) * t.spacing();
+        Breaches padOff;
+        std::size_t onPads = 0;
+        for (std::size_t iy = 0; iy < kShape; ++iy)
+            for (std::size_t ix = 0; ix < kShape; ++ix) {
+                const Vec2 p = centre(ix, iy);
+                bool onCore = false;
+                for (std::size_t d = 0; d < g.layout->districtCount() && !onCore; ++d)
+                    onCore = between(p, g.layout->district(d).centre) <= core;
+                if (!onCore) continue;
+                ++onPads;
+                const std::uint8_t v = mask[iy * kShape + ix];
+                if (v != 128) padOff.add(std::fabs(static_cast<float>(v) - 128.f), ix, iy);
+            }
+        CHECK(onPads > 0u);
+        CHECK_MESSAGE(padOff.count == 0u, "pad pixels off 128: " << describe(padOff));
+
+        // Where the ground curves strongly, ridges and crests (curving down, a negative Laplacian) read over
+        // 128 and hollows and valleys under it. On the mountains, kRangeWearFrom to kRangeWearTo past the
+        // edges and as far from the town's coast, the mask spreads over its range and seldom clips.
+        const float halfSide = g.halfSide(), span = kShapeSpan * t.spacing();
+        const int coast = g.spec.kind == WorldKind::Town && t.featureCount() > 0 ? static_cast<int>(t.feature(0).side) : -1;
+        std::size_t curved = 0, agree = 0, mountains = 0, ridges = 0, hollows = 0, clipped = 0;
+        for (std::size_t iy = 0; iy < kShape; ++iy)
+            for (std::size_t ix = 0; ix < kShape; ++ix) {
+                const Vec2 p = centre(ix, iy);
+                const float laplacian = (t.height({p.x + span, p.y}) + t.height({p.x - span, p.y}) +
+                                         t.height({p.x, p.y + span}) + t.height({p.x, p.y - span}) - 4.f * t.height(p)) /
+                                        (span * span);
+                const int v = mask[iy * kShape + ix];
+                if (std::fabs(laplacian) >= kShapeCurved) {
+                    ++curved;
+                    if ((laplacian < 0.f && v > 128) || (laplacian > 0.f && v < 128)) ++agree;
+                }
+                const float beyond = std::max(std::fabs(p.x), std::fabs(p.y)) - halfSide;
+                const float shore = coast >= 0 ? past(p, halfSide, coast) : -kFar;
+                if (g.spec.kind == WorldKind::Ruins || beyond < kRangeWearFrom || beyond >= kRangeWearTo ||
+                    shore > -kRangeWearFrom)
+                    continue;
+                ++mountains;
+                if (v >= 160) ++ridges;
+                if (v <= 96) ++hollows;
+                if (v == 0 || v == 255) ++clipped;
+            }
+        REQUIRE(curved > 0u);
+        const double agreeShare = static_cast<double>(agree) / static_cast<double>(curved);
+        MESSAGE(g.spec.id << ": the mask's sign is the curvature's opposite on " << 100.0 * agreeShare << "% of "
+                          << curved << " strongly curved pixels");
+        CHECK(agreeShare >= kShapeAgree);
+        if (g.spec.kind == WorldKind::Ruins) continue;
+        REQUIRE(mountains > 0u);
+        const double n = static_cast<double>(mountains);
+        MESSAGE(g.spec.id << ": on the mountains " << 100.0 * static_cast<double>(ridges) / n << "% read 160 or more, "
+                          << 100.0 * static_cast<double>(hollows) / n << "% 96 or less, "
+                          << 100.0 * static_cast<double>(clipped) / n << "% 0 or 255");
+        CHECK(static_cast<double>(ridges) / n >= kShapeRidges);
+        CHECK(static_cast<double>(hollows) / n >= kShapeHollows);
+        CHECK(static_cast<double>(clipped) / n <= kShapeClipped);
+    }
+}

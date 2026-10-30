@@ -66,10 +66,10 @@ FORGOTTENTHIRD_API FString SurfaceTexturePackage(const FString& Id, const TCHAR*
 FORGOTTENTHIRD_API UTexture* LoadSurfaceTexture(const FString& Id, const TCHAR* Suffix);
 
 #if WITH_EDITOR
-// A new road mask for the ground master's "RoadMask" in Outer: Size x Size bytes, row by row along +Y and each row
-// along +X, as ftcore::roadMask fills them. They're kept as they are (linear, uncompressed, clamped at the edges,
-// loaded whole), and the package holds them as a PNG.
-FORGOTTENTHIRD_API UTexture2D* NewRoadMask(UObject* Outer, const TCHAR* Name, int32 Size, const uint8* Bytes, EObjectFlags Flags);
+// A new mask for the ground master's "RoadMask" or "ShapeMask" in Outer: Size x Size bytes, row by row along +Y and
+// each row along +X, as ftcore::roadMask and ftcore::shapeMask fill them. They're kept as they are (linear,
+// uncompressed, clamped at the edges, loaded whole), and the package holds them as a PNG.
+FORGOTTENTHIRD_API UTexture2D* NewGroundMask(UObject* Outer, const TCHAR* Name, int32 Size, const uint8* Bytes, EObjectFlags Flags);
 #endif
 
 // Spawns the sun (pointing along SunRotation), sky light, atmosphere, fog, clouds and post-process volume

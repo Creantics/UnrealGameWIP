@@ -127,19 +127,20 @@ UTexture* FTScene::LoadSurfaceTexture(const FString& Id, const TCHAR* Suffix)
 }
 
 #if WITH_EDITOR
-UTexture2D* FTScene::NewRoadMask(UObject* Outer, const TCHAR* Name, int32 Size, const uint8* Bytes, EObjectFlags Flags)
+UTexture2D* FTScene::NewGroundMask(UObject* Outer, const TCHAR* Name, int32 Size, const uint8* Bytes, EObjectFlags Flags)
 {
 	UTexture2D* Texture = NewObject<UTexture2D>(Outer, Name, Flags);
 	Texture->PreEditChange(nullptr);
 	Texture->Source.Init(Size, Size, 1, 1, TSF_G8, Bytes);
-	// Mostly empty, so a PNG of it is small.
+	// A road mask is mostly empty and a shape mask smooth, so a PNG of either is small.
 	Texture->Source.Compress();
 	Texture->SRGB = false;
 	Texture->CompressionSettings = TC_Grayscale;
 	Texture->LODGroup = TEXTUREGROUP_World;
 	Texture->NeverStream = true;
 	Texture->VirtualTextureStreaming = false;
-	// Clamped, so past the playable square it reads the outermost ring, which ftcore::roadMask leaves empty.
+	// Clamped, so past its edge a read finds the outermost ring: no road, as ftcore::roadMask leaves it empty, or the shape
+	// at the field's edge.
 	Texture->AddressX = TA_Clamp;
 	Texture->AddressY = TA_Clamp;
 	Texture->PostEditChange();

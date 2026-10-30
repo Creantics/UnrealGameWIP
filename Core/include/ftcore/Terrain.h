@@ -134,6 +134,10 @@ public:
     static constexpr std::size_t kMaxFeatures = 8;
     static constexpr float kWadeDepth = 0.7f;         // m: water deeper than this is blocked
     static constexpr float kRoadMaskFeather = 2.f;    // m either side of a road's edge over which roadMask() fades
+    static constexpr std::size_t kShapeNear = 3;      // samples: the radii of shapeMask()'s two rings
+    static constexpr std::size_t kShapeFar = 8;
+    static constexpr float kShapeFull = 0.5f;         // how far the ground stands over its rings, per metre of their
+                                                      // radius, where shapeMask() reads 255 (and under them, 0)
 
     float side() const { return side_; } // the playable square's: the layout's
     float extent() const { return side_ + 2.f * kApron; }
@@ -201,5 +205,14 @@ FTCORE_API bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& l
 // 5 m. The outermost ring is 0 whatever lies near it, so a clamped read past the square finds no road.
 // Writes all size * size bytes. No allocation.
 FTCORE_API void roadMask(const WorldLayout& layout, std::size_t size, std::uint8_t* out);
+
+// The ground's shape as a mask over the whole field, for the ground's material: size x size bytes, row
+// iy then column ix, pixel (ix, iy) centred at (-extent/2 + (ix + 0.5) extent/size, -extent/2 + (iy +
+// 0.5) extent/size). At each centre t is how far the ground there stands over the mean of eight points
+// on a ring round it, per metre of the ring's radius, averaged over rings of kShapeNear and kShapeFar
+// samples, and the byte is clamp(round(128 + 127 t / kShapeFull), 0, 255): over 128 on ridges, crests
+// and knolls, under it in hollows, gullies and valleys, and exactly 128 on ground that is flat or
+// slopes evenly out to the outer ring, such as a pad's core. Writes all size * size bytes. No allocation.
+FTCORE_API void shapeMask(const WorldTerrain& terrain, std::size_t size, std::uint8_t* out);
 
 } // namespace ftcore

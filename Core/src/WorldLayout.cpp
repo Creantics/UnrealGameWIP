@@ -492,7 +492,12 @@ bool generateWorldLayout(const WorldSpec& spec, WorldLayout& out, std::string* e
         d.landmarkHeight = spec.kind == WorldKind::Towers ? rng.range(80.f, 130.f) : rng.range(40.f, 80.f);
     }
 
-    // Buildings: one ring per district, facing the plaza, clear of roads and the landmark.
+    // Buildings: one ring per district, facing the plaza, clear of roads and the landmark. The climax's ring stays
+    // open over the half that faces the world's centre, so its plaza looks out over the world; its buildings there
+    // still draw their numbers, so nothing else moves.
+    std::size_t climax = count;
+    for (const WorldSite& site : spec.sites)
+        if (site.tier == SiteTier::Climax) climax = site.district;
     for (std::size_t i = 0; i < count; ++i) {
         const WorldDistrict& d = out.districts_[i];
         float angle = rng.range(0.f, 2.f * kWorldPi);
@@ -521,7 +526,9 @@ bool generateWorldLayout(const WorldSpec& spec, WorldLayout& out, std::string* e
             b.pos = {d.centre.x + std::cos(at) * r, d.centre.y + std::sin(at) * r};
             b.yaw = at + kWorldPi * 0.5f; // width runs along the ring
             const float foot = 0.5f * std::hypot(b.width, b.depth);
-            const bool clear = out.roadDistance(b.pos) >= foot + WorldLayout::kRoadWidth * 0.5f + 1.f &&
+            const bool open = i == climax &&
+                              (b.pos.x - d.centre.x) * d.forward.x + (b.pos.y - d.centre.y) * d.forward.y > 0.f;
+            const bool clear = !open && out.roadDistance(b.pos) >= foot + WorldLayout::kRoadWidth * 0.5f + 1.f &&
                                worldDist(b.pos, d.landmark) >= foot + WorldLayout::kLandmarkRadius + 2.f &&
                                r - foot >= WorldLayout::kPlazaRadius && r + foot <= WorldLayout::kDistrictRadius;
             if (clear) out.blocks_[out.blockCount_++] = b;

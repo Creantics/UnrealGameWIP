@@ -1828,4 +1828,30 @@ void roadMask(const WorldLayout& layout, std::size_t size, std::uint8_t* out) {
     }
 }
 
+void shapeMask(const WorldTerrain& terrain, std::size_t size, std::uint8_t* out) {
+    if (out == nullptr || size == 0) return;
+    const float half = terrain.extent() * 0.5f;
+    const float pixel = terrain.extent() / static_cast<float>(size);
+    constexpr float kDiagonal = 0.70710678f;
+    constexpr std::array<Vec2, 8> kRing{{{1.f, 0.f}, {kDiagonal, kDiagonal}, {0.f, 1.f}, {-kDiagonal, kDiagonal},
+                                         {-1.f, 0.f}, {-kDiagonal, -kDiagonal}, {0.f, -1.f}, {kDiagonal, -kDiagonal}}};
+    const std::array<float, 2> radii{static_cast<float>(WorldTerrain::kShapeNear) * terrain.spacing(),
+                                     static_cast<float>(WorldTerrain::kShapeFar) * terrain.spacing()};
+    for (std::size_t iy = 0; iy < size; ++iy)
+        for (std::size_t ix = 0; ix < size; ++ix) {
+            const Vec2 p{-half + (static_cast<float>(ix) + 0.5f) * pixel, -half + (static_cast<float>(iy) + 0.5f) * pixel};
+            const float h = terrain.height(p);
+            float t = 0.f;
+            for (const float r : radii) {
+                // Heights lie on whole steps, so on flat ground the ring's sum is exact and t exactly 0.
+                float ring = 0.f;
+                for (const Vec2& d : kRing) ring += terrain.height({p.x + r * d.x, p.y + r * d.y});
+                t += (h - ring / static_cast<float>(kRing.size())) / r;
+            }
+            t /= static_cast<float>(radii.size());
+            const float v = std::clamp(128.f + 127.f * t / WorldTerrain::kShapeFull, 0.f, 255.f);
+            out[iy * size + ix] = static_cast<std::uint8_t>(v + 0.5f);
+        }
+}
+
 } // namespace ftcore

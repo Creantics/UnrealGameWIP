@@ -10,10 +10,11 @@
 //   const ftcore::Vec2 at = layout.toWorld(district, goal);                // no allocation
 //
 // A world is a square of `side` metres centred on the origin. It holds districts (a clear plaza
-// ringed by blockout buildings, with a tall landmark), straight roads between district centres that
-// join every district, and scattered trees and rocks on the open ground between them. Nothing on
-// the map stands on a road or in a plaza, so a walk along roads, or anywhere inside a plaza, is
-// straight and clear.
+// ringed by blockout buildings, with a tall landmark; the climax site's ring stays open over the
+// half that faces the world's centre, so its plaza looks out over the world), straight roads
+// between district centres that join every district, and scattered trees and rocks on the open
+// ground between them. Nothing on the map stands on a road or in a plaza, so a walk along roads, or
+// anywhere inside a plaza, is straight and clear.
 //
 // Each district has its own frame, the frame of Data/Field/goals.json: the origin is the spawn,
 // +x is the way the spawn faces (toward the world's centre) and +y is to its left. Every goal and

@@ -288,6 +288,55 @@ TEST_CASE("worlds: the committed worlds lay out, are big, and neighbours are 20-
     }
 }
 
+TEST_CASE("worlds: the climax's building ring opens over the half facing the world's centre, and nothing else moves") {
+    WorldTable t;
+    if (!loadWorlds(t)) return;
+    auto open = std::make_unique<WorldLayout>();
+    auto ringed = std::make_unique<WorldLayout>();
+    for (const WorldSpec& s : t.worlds) {
+        CAPTURE(s.id);
+        std::size_t climax = s.districts;
+        for (const WorldSite& site : s.sites)
+            if (site.tier == SiteTier::Climax) climax = site.district;
+        REQUIRE(climax < s.districts);
+        WorldSpec plain = s;
+        plain.sites.clear();
+        REQUIRE(generateWorldLayout(s, *open));
+        REQUIRE(generateWorldLayout(plain, *ringed));
+        // Without its sites the climax keeps its whole ring. With them it loses the buildings ahead of its plaza
+        // and keeps those behind; every other building and every prop stands where it did.
+        const WorldDistrict& d = ringed->district(climax);
+        std::size_t ahead = 0, behind = 0, k = 0;
+        for (std::size_t b = 0; b < ringed->blockCount(); ++b) {
+            const WorldBlock& was = ringed->block(b);
+            if (was.district == climax &&
+                (was.pos.x - d.centre.x) * d.forward.x + (was.pos.y - d.centre.y) * d.forward.y > 0.f) {
+                ++ahead;
+                continue;
+            }
+            behind += was.district == climax ? 1 : 0;
+            REQUIRE(k < open->blockCount());
+            CHECK(open->block(k).district == was.district);
+            CHECK(open->block(k).pos.x == was.pos.x);
+            CHECK(open->block(k).pos.y == was.pos.y);
+            CHECK(open->block(k).height == was.height);
+            ++k;
+        }
+        CHECK(k == open->blockCount());
+        MESSAGE(s.id << ": the climax (district " << climax << ") opens " << ahead << " buildings ahead and keeps "
+                     << behind << " behind");
+        CHECK(ahead >= 3);
+        CHECK(behind >= 3);
+        REQUIRE(open->propCount() == ringed->propCount());
+        for (std::size_t p = 0; p < open->propCount(); ++p) {
+            CHECK(open->prop(p).pos.x == ringed->prop(p).pos.x);
+            CHECK(open->prop(p).pos.y == ringed->prop(p).pos.y);
+        }
+        CHECK(open->district(climax).landmark.x == d.landmark.x);
+        CHECK(open->district(climax).landmark.y == d.landmark.y);
+    }
+}
+
 TEST_CASE("worlds: real script: every field step of a world's scenes plays in that world") {
     FTCORE_REQUIRE_REAL_STORY(s);
     WorldTable t;
