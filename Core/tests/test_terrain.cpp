@@ -19,6 +19,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
@@ -128,6 +131,32 @@ std::string describe(const Breaches& b) {
            ", " + std::to_string(b.wy) + ")";
 }
 
+// FNV-1a over every sample's height, cliff mark and flow, bit for bit, in hex: two builds that print
+// the same give the maps the same ground.
+std::string groundHash(const WorldTerrain& t) {
+    std::uint64_t h = 14695981039346656037ull;
+    const auto mix = [&h](std::uint32_t v) {
+        for (int b = 0; b < 4; ++b) {
+            h ^= (v >> (8 * b)) & 0xffu;
+            h *= 1099511628211ull;
+        }
+    };
+    const auto bits = [](float f) {
+        std::uint32_t v = 0;
+        std::memcpy(&v, &f, sizeof v);
+        return v;
+    };
+    for (std::size_t iy = 0; iy < kN; ++iy)
+        for (std::size_t ix = 0; ix < kN; ++ix) {
+            mix(bits(t.sample(ix, iy)));
+            mix(t.cliff(ix, iy) ? 1u : 0u);
+            mix(bits(t.flow(ix, iy)));
+        }
+    char text[17];
+    std::snprintf(text, sizeof text, "%016llx", static_cast<unsigned long long>(h));
+    return text;
+}
+
 // A world of worlds.json, its layout and its ground, generated once for all the tests here; and how
 // far each sample inside the square lies from the roads, the pads and the features.
 struct Generated {
@@ -177,6 +206,31 @@ void measure(Generated& g) {
         }
 }
 
+// The side every world is generated at in place of its own, for measuring how the ground scales:
+// FTCORE_WORLD_SIDE, in metres (WORLDS.md); 0, each world keeping its own, where it's unset or not a
+// side a world may have.
+float sideOverride() {
+    std::string value;
+#if defined(_MSC_VER)
+    char* raw = nullptr;
+    std::size_t length = 0;
+    if (_dupenv_s(&raw, &length, "FTCORE_WORLD_SIDE") == 0 && raw != nullptr) value = raw;
+    std::free(raw);
+#else
+    if (const char* raw = std::getenv("FTCORE_WORLD_SIDE")) value = raw;
+#endif
+    if (value.empty()) return 0.f;
+    char* end = nullptr;
+    const float side = std::strtof(value.c_str(), &end);
+    if (end != value.c_str() + value.size() || !(side >= WorldSpec::kMinSide && side <= WorldSpec::kMaxSide)) {
+        MESSAGE("FTCORE_WORLD_SIDE=" << value << " isn't a side from " << WorldSpec::kMinSide << " to "
+                                     << WorldSpec::kMaxSide << " m; each world keeps its own");
+        return 0.f;
+    }
+    MESSAGE("every world generated at side " << side << " m (FTCORE_WORLD_SIDE)");
+    return side;
+}
+
 std::vector<Generated> generateAll(const TerrainOptions& options) {
     std::vector<Generated> all;
     std::string text;
@@ -187,18 +241,20 @@ std::vector<Generated> generateAll(const TerrainOptions& options) {
         all.push_back(std::move(unread));
         return all;
     }
+    static const float side = sideOverride();
     for (const WorldSpec& s : table.worlds) {
         Generated g;
         g.spec = s;
+        if (side > 0.f) g.spec.side = side;
         g.layout = std::make_unique<WorldLayout>();
         g.terrain = std::make_unique<WorldTerrain>();
         for (const WorldSite& site : s.sites) {
             if (site.tier == SiteTier::Entry) g.entry = static_cast<int>(site.district);
             if (site.tier == SiteTier::Climax) g.climax = static_cast<int>(site.district);
         }
-        if (generateWorldLayout(s, *g.layout, &g.error)) {
+        if (generateWorldLayout(g.spec, *g.layout, &g.error)) {
             const auto start = std::chrono::steady_clock::now();
-            g.ok = generateWorldTerrain(s, *g.layout, *g.terrain, &g.error, options);
+            g.ok = generateWorldTerrain(g.spec, *g.layout, *g.terrain, &g.error, options);
             g.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         }
         if (g.ok) measure(g);
@@ -533,7 +589,8 @@ TEST_CASE("terrain: each world's ground lies on whole steps inside the height ra
         INFO(g.spec.id);
         REQUIRE_MESSAGE(g.ok, g.error);
         const WorldTerrain& t = *g.terrain;
-        MESSAGE(g.spec.id << ": ground generated in " << g.seconds << " s");
+        MESSAGE(g.spec.id << ": ground generated in " << g.seconds << " s at side " << g.spec.side << " m, hash "
+                          << groundHash(t));
         CHECK(t.side() == g.spec.side);
         CHECK(t.extent() == g.spec.side + 2.f * WorldTerrain::kApron);
         CHECK(t.districtCount() == g.layout->districtCount());

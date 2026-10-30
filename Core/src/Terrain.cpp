@@ -106,7 +106,8 @@ constexpr float kPitRoll = 25.f;
 constexpr float kPitApart = 120.f;     // m between two pits, at least
 // The rain (wear()), after Lague's droplet model, its heights in metres where his run 0 to 1 over a
 // field kWearScale metres high.
-constexpr int kWearDrops = 200000;       // droplets over the square and kWearMargin round it
+constexpr int kWearDrops = 200000;       // droplets over the square and kWearMargin round it at kTunedSide,
+                                         // and as many to each sample there at other sides
 constexpr int kWearLife = 80;            // steps a droplet runs at most, a cell each
 constexpr int kWearBrush = 4;            // samples: the radius a droplet cuts over
 constexpr float kWearMargin = 60.f;      // m past the square's edge over which the wear fades out
@@ -979,6 +980,9 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
         sp.to = pads[layout.road(r).b].height;
     }
     const float extent = spec.side + 2.f * WorldTerrain::kApron, cell = extent / static_cast<float>(kN - 1);
+    // The spacing at kTunedSide, worked out the same way, that the rain's numbers follow cell from: at
+    // that side the two are the same and each number stands exactly as tuned.
+    const float tunedCell = (WorldTerrain::kTunedSide + 2.f * WorldTerrain::kApron) / static_cast<float>(kN - 1);
     const bool ruins = spec.kind == WorldKind::Ruins;
     // Also says how far p lies from the nearest road's centre line within kReach (1e30 beyond), the
     // lowest and the highest the roads' banks let the ground there lie (-1e30 and 1e30 where none
@@ -1160,7 +1164,11 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
         ease(spread, kN, false, false);
         for (std::size_t i = 0; i < kN * kN; ++i) wearAt[i] *= soft[i] * std::min(spread[i], keep[i]);
         const float from = (WorldTerrain::kApron - kWearMargin) / cell, to = static_cast<float>(kN - 1) - from;
-        wear(out.heights_.data(), wearAt.data(), kN, kWearDrops, kWearBrush, from, to, detail::mixSeed(spec.seed ^ 0x2f6b3d1au));
+        // As many droplets to each sample of that box as at kTunedSide.
+        const float tunedFrom = (WorldTerrain::kApron - kWearMargin) / tunedCell;
+        const float box = to - from, tunedBox = (static_cast<float>(kN - 1) - tunedFrom) - tunedFrom;
+        const int drops = static_cast<int>(std::lround(static_cast<float>(kWearDrops) * ((box * box) / (tunedBox * tunedBox))));
+        wear(out.heights_.data(), wearAt.data(), kN, drops, kWearBrush, from, to, detail::mixSeed(spec.seed ^ 0x2f6b3d1au));
         for (std::size_t i = 0; i < kN * kN; ++i)
             if (wearAt[i] > 0.f) out.heights_[i] = std::clamp(out.heights_[i], bankLowAt[i], wearTopAt[i]);
     }
@@ -1863,9 +1871,12 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
             }
         }
         out.flow_.assign(kTotal, 0.f);
-        const double full = std::log1p(static_cast<double>(WorldTerrain::kFlowFull / WorldTerrain::kFlowUnit));
+        // Counted in kFlowUnit grown with a sample's area from its area at kTunedSide.
+        const float grown = (cell * cell) / (tunedCell * tunedCell);
+        const float flowUnit = WorldTerrain::kFlowUnit * grown;
+        const double full = std::log1p(static_cast<double>(WorldTerrain::kFlowFull / flowUnit));
         for (std::size_t i = 0; i < kTotal; ++i)
-            out.flow_[i] = rainAt[i] * static_cast<float>(std::min(std::log1p(area[i] / WorldTerrain::kFlowUnit) / full, 1.0));
+            out.flow_[i] = rainAt[i] * static_cast<float>(std::min(std::log1p(area[i] / flowUnit) / full, 1.0));
     }
 
     out.side_ = spec.side;

@@ -145,7 +145,9 @@ public:
     static constexpr std::size_t kShapeFar = 8;
     static constexpr float kShapeFull = 0.5f;         // how far the ground stands over its rings, per metre of their
                                                       // radius, where shapeMask() reads 255 (and under them, 0)
-    static constexpr float kFlowUnit = 4.f;           // m^2 of rain, about a sample's, that flow()'s log scale counts in
+    static constexpr float kTunedSide = 1000.f;       // m: the side the rain and flow() were tuned at
+    static constexpr float kFlowUnit = 4.f;           // m^2 of rain, about a sample's at kTunedSide, that flow()'s log
+                                                      // scale counts in there; at other sides it grows with a sample's area
     static constexpr float kFlowFull = 1e4f;          // m^2 (a hectare) whose rain runs through a sample where flow() reads 1
 
     float side() const { return side_; } // the playable square's: the layout's
@@ -162,9 +164,10 @@ public:
     // kRockSlope from one sample to the next. Everywhere else no two neighbouring samples, along an
     // axis or a diagonal, differ by more than kRockSlope times the distance between them.
     bool cliff(std::size_t ix, std::size_t iy) const { return cliffs_[iy * kSamples + ix] != 0; }
-    // How much rain runs through the sample, 0 to 1: log(1 + a / kFlowUnit) / log(1 + kFlowFull /
-    // kFlowUnit), clamped at 1, a the square metres of ground whose rain reaches it (where the rain
-    // divides, the share that comes this way), its own cell's included; then faded toward the pads and
+    // How much rain runs through the sample, 0 to 1: log(1 + a / u) / log(1 + kFlowFull / u), clamped
+    // at 1, a the square metres of ground whose rain reaches it (where the rain divides, the share that
+    // comes this way), its own cell's included, and u kFlowUnit times a sample's area over its area at
+    // kTunedSide, so that it counts in about a sample's own rain at every side; then faded toward the pads and
     // the roads as the rain is, to 0 on them. Low on crests and open slopes, rising along the gullies
     // and the valleys' floors and on a closed hollow's floor, which keeps all that reaches it.
     float flow(std::size_t ix, std::size_t iy) const { return flow_[iy * kSamples + ix]; }
