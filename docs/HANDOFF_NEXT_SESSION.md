@@ -1,12 +1,46 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-30 ~00:50. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-30 ~01:45. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-30 ~00:50): the generator follows the rain over the finished ground (`terrain-worlds` 0fca86d,
+- **NEWEST (2026-10-30 ~01:45): the worlds measured at other sides (`terrain-worlds` 7bb7fba, not merged into main,
+  which stays at 8a2da97). Core only: worlds.json is unchanged, no map is rebuilt, and the 1 km ground is bit for bit
+  as before.**
+  - Why: larger worlds may be wanted, for more fight sites. Nothing about the size is decided.
+  - Core (7bb7fba):
+    - The open ground's droplets now come as many to each sample at any side as at `WorldTerrain::kTunedSide`
+      (1000 m): 235,368 at 1.5 km, 257,969 at 2 km, 300,709 at 4 km.
+    - `flow()`'s unit grows with a sample's area from its 1 km value: 11.1 m² at 2 km, 36 m² at 4 km. `kFlowFull`
+      stays a hectare.
+    - The mountains' two passes already came as many to each sample and are unchanged.
+    - test_terrain takes `FTCORE_WORLD_SIDE` (600 to 4000 m) to generate all three worlds at that side. It prints
+      each world's time and a hash of its heights, cliffs and flow.
+  - What binds:
+    - The field keeps 757 samples a side (the Landscape's 6 x 6 components) and 250 m round the square, so a larger
+      side only spreads them: 1.98 m apart at 1 km, 3.31 m at 2 km, 5.95 m at 4 km.
+    - The road's strip breaks first. It holds exactly only to about 1.1 km a side. It misses by 5.1 cm at 2 km, with
+      the ground still under the road, and by 34 cm at 4 km, with the ground coming through it.
+    - At 4 km the pools come out 0.31 to 0.36 m deep for 0.6.
+    - The rain's relief falls under its 1 km floor of 1.25: from 1.9 km in the towers (1.17 at 2 km), and at 4 km in
+      all three (0.87 to 1.18).
+    - The road-mask test fails past 1 km only because it bakes its own 512-pixel mask.
+  - Times (optimized, at low priority, so rough):
+    - 1.8 / 2.2 / 1.7 s at 1 km, 2.0 / 3.1 / 2.0 s at 2 km, 2.1 / 6.8 / 2.4 s at 4 km.
+    - The towers grow most, from their 3 m pool search.
+  - To grow past about 1.1 km, either:
+    - Use more samples: 1,261 a side (10 x 10 components) at 2 km, or 2,269 (18 x 18) at 4 km. The builder's masks
+      and its component check must match, and it costs about 3x and 9x the time and memory.
+    - Or cap the side.
+  - The layout's limits bind first:
+    - 16 districts and 32 roads at most, while districts 150 m apart fit 36 / 169 / 676 at 1 / 2 / 4 km.
+    - The 400 m shortcuts give out, leaving only the tree of roads from 1.9 km.
+  - The full tables, which numbers follow the side, and the routes to playable mountain ground are in the private
+    notes.
+  - Gate: 832 doctest cases, ctest 4/4. Next: the flow mask's Source side once the PC is free (the entry below).
+- **Earlier (2026-10-30 ~00:50): the generator follows the rain over the finished ground (`terrain-worlds` 0fca86d,
   not merged into main, which stays at 8a2da97). Core only: the maps aren't rebuilt and the ground master doesn't
   read it yet.**
   - Core (0fca86d):
