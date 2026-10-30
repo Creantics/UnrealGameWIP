@@ -1,12 +1,78 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-30 ~02:45. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-30 ~07:30. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-30 ~02:45): state saved as usage ran out.**
+- **NEWEST (2026-10-30 ~07:30): the ground darkens where the rain gathers, on main (a537d8b), and every map now opens
+  by its long name (main d3e5cc6).**
+  - Session: the user switched the main model to Fable at ~03:00 and had it delegate. The PC was freed at 02:55 and
+    is free again (`ft_private/gpu_busy_leads.txt`).
+    - A private production-brief set (templates, one brief per location, the bosses to follow) is written and lives
+      in `ft_private/production`. See the private handoff.
+    - The enemy and boss overhaul goes on privately; its exemplars are in reader rounds. Story draft 96 is untouched.
+    - Still open: the PartyLooks follow-up for `FTBattleDemoActor.cpp` and `FTExploreSpot.cpp` (the entry below), and
+      `claude/objective-blackburn-80b6c6` is still unmerged.
+  - The flow mask in the material (a537d8b, `terrain-worlds` fast-forwarded into main):
+    - The map builder keeps `ftcore::flowMask`'s bytes in each map as a 1024 x 1024 `T_FlowMask` beside
+      `T_ShapeMask`. `M_WorldGround` reads it on the ground layer only, never the rock or the road.
+    - From `FlowStart` to `FlowEnd` of the mask the ground darkens by `WetDarken` (0.3), stands `WetRich` (0.3)
+      further from its grey and loses `WetSmooth` (0.2) of its roughness.
+    - A crest, from halfway up the shape mask's scale and less where it's wet, moves `CrestPale` (0.35) of the way to
+      its own colour dried: `CrestDry` (0.3) of the way to its grey, its hue kept, and a quarter lighter. Moving it
+      toward plain grey, as first tried, drained the town's grass to a frosty white.
+    - The builder sets `FlowStart` and `FlowEnd` per map, at the 95th and 99.5th percentiles of the mask over the open
+      ground inside the square (the pads and roads, which read 0, don't count). The master's own 0.4 and 0.8 would
+      darken 22 to 25% of the open ground.
+      - Solhaven: bytes 153 (0.600) to 210 (0.824).
+      - Lattice: bytes 156 (0.612) to 209 (0.820).
+      - Unwritten: bytes 150 (0.588) to 194 (0.761).
+    - The flow mask adds 0.5 to 0.7 MB to a map.
+  - A theory measured and disproved: that the heights' whole steps (7.8 mm) steer the rain into the long parallel
+    lines. Run over unrounded heights, 1.3 to 2.0% of the wet samples sit on a whole-step flat against 1.0 to 1.4%,
+    and the mask moves by 8 or more on only 0.8 to 1.5% of its pixels.
+    - The lines are the worn ground's own rills, which the rain follows as it should. On open slopes of 3 to 50%,
+      84 to 93% of the wettest twentieth of the samples sit in a hollow, against 28 to 29% of the drier half.
+    - The change was reverted.
+  - How it looks:
+    - Solhaven: the crests come out 2 to 3% lighter on the grass, hue within about a degree, never frosty. They barely
+      show even at 0.35, and that's where they stay.
+    - Lattice: thin, darker channels run over the gravel inside the square. The crests come out 2 to 3% lighter and
+      hardly show.
+    - Unwritten: darker channels branch down from the mesas' feet. Out on the plain, long parallel lines read as dry
+      rills.
+  - Not yet:
+    - A closed hollow keeps all its rain. The 8 m wet speck on Lattice's gravel no longer shows at the 95th percentile,
+      but nothing fills the hollows.
+    - The parallel rills want `wear()` (Core/src/Terrain.cpp) changed so its rills branch and join on long slopes.
+      That's a pass of its own, not a flow change.
+    - Queued passes:
+      - pads that fall away on a named side, so a climax looks down on its world
+      - pad and plaza sizes per site
+      - playable mountain ground
+      - a seawall edge for Lattice
+      - set dressing by data
+      - fog colour per world
+  - Checks at a537d8b:
+    - Gate: 832 doctest cases, ctest 4/4, UBT Succeeded (with -DisablePlugin=Fab).
+    - Ten renders log no material or sampler error.
+    - The tours: Solhaven 18 legs in 814 s, Lattice 15 in 803 s, Unwritten 17 in 992 s, the lead's feet 5 cm over
+      the floor.
+    - The headless story run: `Alpha: FINISHED 73 scenes, 167 screens (40 battle, 91 field, 36 stub), 0 STUCK,
+      0 warnings, 12 overworld hops`.
+  - The map shadowing and its fix (d3e5cc6):
+    - That story run logged no Solhaven placings. Every Solhaven step loaded `/Game/Trial/LookBefore/World_Solhaven`,
+      a local copy excluded from git, instead of `/Game/Maps/World_Solhaven`.
+    - The cause: the engine resolves a short map name to the first package of that name anywhere under /Game.
+    - Now every map opens through `FTStep::OpenMap`, by `ftcore::mapPackage`'s long name under /Game/Maps. No screen
+      calls `OpenLevel` itself, and the loader takes only short names.
+    - The local copy is left as it is.
+    - After the fix the story run loads every world from /Game/Maps and logs 59 placings (Solhaven 24, Lattice 14,
+      Unwritten 21), the lead's feet 5 to 6 cm over the floor, with the same FINISHED line. Gate: 833 doctest cases,
+      ctest 4/4, UBT Succeeded (with -DisablePlugin=Fab).
+- **Earlier (2026-10-30 ~02:45): state saved as usage ran out.**
   - In progress: the enemy and boss design pass, and story draft 96. Their notes are private (see the private
     handoff). Nothing of either is in this repo.
   - Why the demo showed the old lead models: it was opened from a worktree (`.claude/worktrees/terrain-worlds`).
