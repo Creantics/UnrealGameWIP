@@ -1,12 +1,74 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-29 ~17:05. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-29 ~20:45. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-29 ~17:05): the big worlds' ground is worn by rain, its rock settles into the high ground by
+- **NEWEST (2026-10-29 ~20:45): the big worlds' mountains are worn by rain, wear stone on their ridges and ground in
+  their gullies, and keep their rock's grain from afar; the town's mountains turn grey, and each climax's plaza
+  looks out over its world (main 8a2da97, a fast-forward of `terrain-worlds`).**
+  - Core:
+    - 754f505: `ftcore::generateWorldTerrain` wears the mountains after `range()` raises them, first on a field 4
+      times coarser (gullies tens of metres across, fans at their feet), then on the full field (rills down the
+      gullies' sides). Nothing inside the square moves. `TerrainOptions::erodeMountains` turns it off.
+    - 8356108: the town and the towers drew their mountains from the same seed, so they stood in the same ranges;
+      each kind now salts the mountains' noises with its own `rangeSeed`.
+    - 8a2da97: `ftcore::shapeMask` bakes the ground's shape over the whole field: 128 where it's flat or slopes
+      evenly, more on ridges, less in gullies and hollows, from how far the ground stands over two rings round each
+      point (6 and 16 m out). `ftcore::generateWorldLayout` leaves out the buildings of the climax's ring that stand
+      ahead of its plaza, toward the world's centre, and keeps those behind (Solhaven 9 out and 8 kept, Lattice 7
+      and 8, Unwritten 9 and 6); they still draw their random numbers, so nothing else moves.
+  - The ground master `M_WorldGround` (`-run=FTBuildGround`):
+    - the high ground's rock follows each map's 1024 x 1024 `T_ShapeMask` in place of the 40 m mottle, so the
+      ridges and upper sides turn to stone first and the gullies keep the ground longest (`ShapeLift`,
+      `ShapeRock`);
+    - far off, a second copy of the rock 15 times its size keeps the photo's cracks and ledges from 300 m instead of
+      its mean colour (`RockFarScale`).
+    `docs/SCENE_LOOK.md` (The ground) has the parameters.
+  - The town's mountains wear `worn_rock_natural_01` tinted a light, slightly cool grey; `rock_wall`, which read
+    warm brown beside the grass, is retired with its textures (12 surfaces, 36 textures, about 117 MB through LFS).
+  - The three maps were rebuilt on the worn mountains, with the same steep shares, cuts, hidden walls and props left
+    off as before, and each map is 0.3 to 0.6 MB larger.
+  - How it looks, from 10 offscreen renders (from each entry and at eye height on each climax), with no material
+    compile or sampler error:
+    - From the hilltops the mountains round Solhaven read as grey stone worn into ridges and gullies, with the grass
+      climbing the gullies in tongues; those round Lattice wear grey-brown stone on their ridges and spurs, with the
+      pale gravel in the valleys. The ruins' mesas keep the rock's grain from afar.
+    - Solhaven's plaza looks out through the open half of its ring on the other districts, the sea and the
+      mountains, and Lattice's over the towers to the mountains. Unwritten's plaza fills its butte's flat top, so
+      the plain stays hidden below the rim.
+    - The entry views match the last pass.
+  - Checks:
+    - New tests: the shape mask reads 128 on every pad's core, over 128 on ridges and under it in hollows on 99.4
+      to 99.8% of the strongly curved pixels, without allocating; the climax's ring leaves out the buildings ahead
+      of its plaza, keeps at least three behind, and nothing else moves.
+    - Every tour still visits every district in the same legs and game time as before (Solhaven 18 legs in 814 s,
+      Lattice 15 in 803 s, Unwritten 17 in 992 s), with the lead's feet 5 cm over the entry's floor.
+    - The headless story run (`-AlphaAutoPlay -AlphaFast`) finishes 73 scenes and 167 screens (40 battle, 91 field,
+      36 stub) with 0 stuck, 0 warnings and 12 overworld hops. Its 59 placings on the three worlds set the lead's
+      feet 5 to 6 cm over the district's floor, on floors from -19.7 to 36.0 m.
+    - Gate: 831 doctest cases, ctest 4/4. UBT Succeeded in the worktree and in the main checkout (with
+      `-DisablePlugin=Fab`).
+  - Next, one structural pass (advisor): the ground's colour follows the water.
+    - A Core `flowMask` bakes how much water gathers at each point of the final field (0 on the pads and roads),
+      and each map keeps it beside `T_ShapeMask`.
+    - The ground master tints the ground by it and by the shape: richer and darker where water gathers, paler and
+      drier on the crests, the ruins' mud streaked along the flow lines and Lattice's gravel darker in its trench
+      floors. The tint holds through the far fade, so the far grass and the ruins' plain stop reading as one tone.
+    - The pass after: each pad is flat out to 62 m, so from a climax's plaza the ground below stays hidden under
+      the pad's rim even where the ring is open. The climax's pad falls away past the plaza's edge on that side.
+  - Still to come:
+    - The mountains wear one rock photo throughout, and the sea is a still, flat plane.
+    - Trees and rocks are cubes and spheres. Real meshes are an asset question: the repo is public, so only CC0
+      or generated ones.
+    - Scattered grass waits for the user's go.
+    - The abyss and shaft walls draw as stretched quads until a cliff-mesh or fog pass.
+    - No lakes are placed.
+    - The clockwork relief map.
+    - The three deferred looks: the gullies, the disc pads and the straight quay.
+- **Earlier (2026-10-29 ~17:05): the big worlds' ground is worn by rain, its rock settles into the high ground by
   height and its detail fades with distance (main 0f4ad2f, a fast-forward of `terrain-worlds`).**
   - Core (e3ea6d0): `ftcore::generateWorldTerrain` wears each world's open ground before it raises the mountains,
     the coast, the abyss and the features (`wear()` in `Core/src/Terrain.cpp`):
