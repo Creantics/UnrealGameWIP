@@ -112,6 +112,12 @@ enum class EFTBattleEventType : uint8
 	Staggered,
 	// Source's skipped turn: its poise refills (Amount = poise restored).
 	Steadied,
+	// A perfect Guard: Target stored Amount Load from hit Beat (Source = the enemy).
+	LoadStored,
+	// Target's Load is full: only Release is open to it.
+	Overloaded,
+	// Source let go of Amount Load: its Release combo finished (poise losses follow).
+	Released,
 };
 
 // Same order as ftcore::CommandError.
@@ -123,6 +129,13 @@ enum class EFTCommandError : uint8
 	NoSuchSkill,
 	NotEnoughAp,
 	InvalidTarget,
+	NoSuchItem,
+	// The member's Load is full: only Release is open.
+	Overloaded,
+	// A Release with no Load.
+	NoLoad,
+	// The member lacks the verb (Guard / Release).
+	NoSuchVerb,
 };
 
 // Same order as ftcore::DefenceInput.
@@ -135,6 +148,9 @@ enum class EFTDefenceInput : uint8
 	Parry,
 	// Jumpable hits only.
 	Jump,
+	// Held (ReleaseGuard lets go): a held hit lands in part; begun within the parry width of the
+	// impact it is perfect, takes nothing and stores the hit as Load. Members with the Guard verb only.
+	Guard,
 };
 
 // Same order as ftcore::DefenceOutcome.
@@ -146,6 +162,8 @@ enum class EFTDefenceOutcome : uint8
 	Dodged,
 	Jumped,
 	Hit,
+	Guarded,
+	PerfectGuard,
 };
 
 UENUM(BlueprintType)
@@ -537,6 +555,12 @@ public:
 	// A dodge / parry / jump pressed now, during EnemySkill (or just after it, judged late).
 	UFUNCTION(BlueprintCallable, Category = "Battle")
 	void Defend(EFTDefenceInput Input);
+	// Lets go of a Guard begun with Defend(Guard).
+	UFUNCTION(BlueprintCallable, Category = "Battle")
+	void ReleaseGuard();
+	// The acting member (Release verb) lets go of all its Load in an arrow combo against every enemy.
+	UFUNCTION(BlueprintCallable, Category = "Battle")
+	EFTCommandError Release();
 
 	// ---- aim (PartyAim) ----
 

@@ -120,6 +120,29 @@ enemy loses no more poise until then. Events (appended): `PoiseLost` (amount), `
 HUD draws a thin gold poise bar over an enemy's HP bar and tags a staggered enemy. No enemy in the
 shipped data has poise yet, so the balance gates are unchanged.
 
+### Guard, Load and Release
+
+A party member may have verbs beyond the arrow combos (`Combatant::verbs`, a bitmask of
+`ftcore::Verb`); in the demo the first lead has Guard and Release. Load (`Load.h`) runs 0 to
+`kMaxLoad` (100) and comes into the battle with the member.
+
+- **Guard** (`DefenceInput::Guard`, held; G or pad RB) answers any hit, jumpable or not, and never
+  locks out. A hold begun within the parry width of the impact is a perfect Guard: no damage, the
+  hit's share of the blow is stored as the defender's Load (`LoadStored`), judged "PERFECT GUARD".
+  Held earlier, it is "GUARD" and `BattleTuning::guardShare` (half) of the hit lands. Letting go
+  (`releaseGuard`) before the impact lets the hit land in full. A member without the verb can't guard.
+- **Release** (`Battle::release`; R or pad RT on the member's turn) lets go of all the Load at once:
+  an arrow combo of exactly 4 + Load/20 notes against every living enemy, each taking
+  `releasePower` damage and losing round(Load x accuracy x `releasePoise`) poise, a stagger at 0.
+  `Released` (amount = the Load) comes when the combo ends. Refused with `NoSuchVerb` or `NoLoad`.
+- **Overload**: at full Load (`Overloaded`, once as it fills) `command`, `aim` and `useItem` return
+  `CommandError::Overloaded`; only Release is open until the Load is spent.
+
+The autopilot releases at 60 Load or more; in Guard mode it begins one hold per hit at the hit's
+ideal time and lets go once it has come. The HUD draws a Load gauge on a party panel (orange and
+tagged OVERLOADED when full), a fourth Guard key in the defence row for a defender with the verb,
+and the Guard pips in gold (perfect) or cyan (held). The layout is not yet checked on screen.
+
 ## From the exploration demo
 
 The exploration demo's ambush opens this map (see [EXPLORE_DEMO.md](EXPLORE_DEMO.md)). It leaves

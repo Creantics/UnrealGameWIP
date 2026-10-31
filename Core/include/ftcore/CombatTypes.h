@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ftcore/DefenceTimeline.h"
+#include "ftcore/Load.h"
 #include "ftcore/WeakPoint.h"
 
 #include <array>
@@ -13,6 +14,11 @@
 namespace ftcore {
 
 enum class Team { Party, Enemies };
+
+// The Turns verbs a party member has beyond its skills (bits of Combatant::verbs). Guard: a held
+// block, perfect in the parry's window, that stores Load. Release: the command that spends Load.
+enum class Verb : std::uint8_t { Guard, Release };
+constexpr std::uint8_t verbBit(Verb v) { return static_cast<std::uint8_t>(1u << static_cast<unsigned>(v)); }
 
 struct Stats {
     int maxHp = 100;
@@ -110,11 +116,14 @@ struct Combatant {
     int maxAp = 9;
     int poise = 0;          // Battle refills it to stats.maxPoise at setup and after a stagger
     bool staggered = false; // its poise broke: it skips its next turn (Battle.h)
+    std::uint8_t verbs = 0; // party: verbBit()s of the Turns verbs it has
+    Load load;              // party: stored by perfect Guards, spent by Release (Load.h)
     std::vector<Skill> skills;
     WeakPoints weakPoints; // enemies: what aim mode reveals (see WeakPoint.h); none by default
     EnemyPhases phases;    // enemies: the stages of its fight and the skill pattern of each; none by default
 
     bool alive() const { return hp > 0; }
+    bool can(Verb v) const { return (verbs & verbBit(v)) != 0; }
 };
 
 } // namespace ftcore

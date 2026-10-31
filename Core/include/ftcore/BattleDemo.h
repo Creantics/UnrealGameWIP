@@ -85,9 +85,10 @@ inline Combatant makeCombatant(std::string name, Stats stats, std::vector<Skill>
 inline constexpr std::array<const char*, 2> kPartyNames{"Devin", "Duy"};
 
 // Stats are {maxHp, attack, defense, speed, technique}, at level 1.
+// The first lead has the Guard and Release verbs (Load: Load.h).
 inline std::vector<Combatant> partyAtLevel1() {
     const Skill strike = makeSkill("Strike", 0, 1, Targeting::SingleEnemy, 1.0f, 4, 1.0f);
-    return {
+    std::vector<Combatant> members{
         makeCombatant(kPartyNames[0], {140, 24, 8, 12, 12},
                       {strike, makeSkill("Twin Cut", 2, 0, Targeting::SingleEnemy, 2.0f, 5, 3.0f),
                        makeSkill("Sweep", 3, 0, Targeting::AllEnemies, 1.6f, 6, 4.0f),
@@ -97,6 +98,8 @@ inline std::vector<Combatant> partyAtLevel1() {
                        makeSkill("Pierce", 2, 0, Targeting::SingleEnemy, 2.2f, 6, 4.5f),
                        makeSkill("Flare", 4, 0, Targeting::AllEnemies, 2.4f, 7, 5.0f)}),
     };
+    members[0].verbs = verbBit(Verb::Guard) | verbBit(Verb::Release);
+    return members;
 }
 
 // The party at `level` (see Progression.h), at full HP.
@@ -153,21 +156,30 @@ inline BattleTuning tuning() {
     return t;
 }
 
+// The Load at which the pilot spends it with a Release (it always does when overloaded).
+inline constexpr int kPilotReleaseAt = 60;
+
 struct PilotChoice {
     std::size_t skill = 0;
     CombatantId target = 0;
     bool aim = false;                     // aim at the target instead of using `skill`
+    bool release = false;                 // Release instead (Load at kPilotReleaseAt or more)
     std::size_t weakPoint = kMaxWeakPoints; // when aiming: the weak point to shoot
 };
 
 // For the acting party member: the strongest skill it can afford, on the living enemy with the
 // least HP (ties: lowest id). Aim instead when it can afford it and a shot at the target's best
 // weak point (aim power times its multiplier) beats that skill played as a full combo (power times
-// 1 + fullComboBonus; an all-enemies skill counts half again). Only meaningful in
-// Phase::AwaitingCommand.
+// 1 + fullComboBonus; an all-enemies skill counts half again). A member with Verb::Release releases
+// once its Load reaches kPilotReleaseAt (the only command open to it when overloaded). Only
+// meaningful in Phase::AwaitingCommand.
 inline PilotChoice pilotChoice(const Battle& b) {
     PilotChoice out;
     const Combatant& me = b.combatant(b.actor());
+    if (me.can(Verb::Release) && me.load.value >= kPilotReleaseAt) {
+        out.release = true;
+        return out;
+    }
     float best = -1.0f;
     for (std::size_t i = 0; i < me.skills.size(); ++i) {
         const Skill& s = me.skills[i];
@@ -220,20 +232,41 @@ inline int pilotPress(Battle& b, double now) {
     return presses;
 }
 
+// Guard mode, for a defender with Verb::Guard: one hold per hit, begun at the hit's ideal time (a
+// perfect Guard) and let go once that hit has come. `answer` false: no hold for the next hit (it
+// lands). Returns 1 when it began a hold.
+inline int pilotGuard(Battle& b, double horizon, bool answer = true) {
+    if (b.phase() != Phase::EnemySkill) return 0;
+    const DefenceTimeline& d = b.defence();
+    const std::size_t i = d.nextIndex();
+    if (d.guarding() && (i >= d.size() || d.guardFrom() < d.idealPress(i, DefenceInput::Guard) - 1e-9))
+        b.releaseGuard(d.now()); // the hold was for a hit that has come
+    if (b.phase() != Phase::EnemySkill || i >= d.size() || d.guarding() || !answer) return 0;
+    const double t = d.idealPress(i, DefenceInput::Guard);
+    if (t > horizon || t < d.now()) return 0;
+    b.defend(DefenceInput::Guard, t);
+    return 1;
+}
+
+inline bool pilotGuards(const Battle& b, DefenceInput mode) {
+    return mode == DefenceInput::Guard && b.phase() == Phase::EnemySkill && b.combatant(b.defender()).can(Verb::Guard);
+}
+
 // Answers every pending hit of the enemy attack whose ideal press time is at or before `horizon`,
 // at that ideal time: perfect parries with DefenceInput::Parry, perfect dodges with Dodge (jumps on
-// jumpable hits, which a dodge can't answer). Call before Battle::update(horizon) (or with a small
-// look-ahead past the current time, so a coarse frame clock never steps over a window). Returns
-// the number of presses.
+// jumpable hits, which a dodge can't answer), perfect Guards with Guard (pilotGuard; a defender
+// without Verb::Guard parries). Call before Battle::update(horizon) (or with a small look-ahead past
+// the current time, so a coarse frame clock never steps over a window). Returns the number of presses.
 inline int pilotDefend(Battle& b, double horizon, DefenceInput mode = DefenceInput::Parry) {
+    if (pilotGuards(b, mode)) return pilotGuard(b, horizon);
     int presses = 0;
     while (b.phase() == Phase::EnemySkill) {
         const DefenceTimeline& d = b.defence();
         const std::size_t i = d.nextIndex();
         if (i >= d.size()) break;
-        const DefenceInput input = mode == DefenceInput::Parry ? DefenceInput::Parry
-                                   : d.accepts(i, DefenceInput::Dodge) ? DefenceInput::Dodge
-                                                                       : DefenceInput::Jump;
+        const DefenceInput input = mode == DefenceInput::Parry || mode == DefenceInput::Guard ? DefenceInput::Parry
+                                   : d.accepts(i, DefenceInput::Dodge)                         ? DefenceInput::Dodge
+                                                                                               : DefenceInput::Jump;
         const double t = d.idealPress(i, input);
         if (t > horizon) break;
         b.defend(input, t);
@@ -293,13 +326,24 @@ inline int pilotPress(Battle& b, double now, const PilotSkill& skill, PilotState
 inline int pilotDefend(Battle& b, double horizon, DefenceInput mode, const PilotSkill& skill, PilotState& state) {
     int presses = 0;
     if (b.phase() != Phase::EnemySkill) state.skippedHit = static_cast<std::size_t>(-1);
+    if (pilotGuards(b, mode)) {
+        const DefenceTimeline& d = b.defence();
+        const std::size_t i = d.nextIndex();
+        if (i >= d.size() || d.guarding() || i == state.skippedHit) return pilotGuard(b, horizon, false);
+        if (d.idealPress(i, DefenceInput::Guard) > horizon) return 0;
+        if (!pilotSucceeds(state.hits++, skill.defend)) {
+            state.skippedHit = i;
+            return pilotGuard(b, horizon, false);
+        }
+        return pilotGuard(b, horizon);
+    }
     while (b.phase() == Phase::EnemySkill) {
         const DefenceTimeline& d = b.defence();
         const std::size_t i = d.nextIndex();
         if (i >= d.size() || i == state.skippedHit) break;
-        const DefenceInput input = mode == DefenceInput::Parry ? DefenceInput::Parry
-                                   : d.accepts(i, DefenceInput::Dodge) ? DefenceInput::Dodge
-                                                                       : DefenceInput::Jump;
+        const DefenceInput input = mode == DefenceInput::Parry || mode == DefenceInput::Guard ? DefenceInput::Parry
+                                   : d.accepts(i, DefenceInput::Dodge)                         ? DefenceInput::Dodge
+                                                                                               : DefenceInput::Jump;
         const double t = d.idealPress(i, input);
         if (t > horizon) break;
         if (!pilotSucceeds(state.hits++, skill.defend)) {
@@ -324,6 +368,8 @@ struct HeadlessResult {
     int partyHpLeft = 0; // sum over the party at the end
     double endTime = 0.0;
     int itemsUsed = 0;   // items the pilot used (only with PilotItems)
+    int releases = 0;    // Releases the pilot made
+    int loadStored = 0;  // Load its perfect Guards stored
 };
 
 // An opt-in for the pilot: it uses carried items. The pilot never touches an item unless it is given
@@ -403,13 +449,15 @@ inline HeadlessResult playHeadlessWith(std::vector<Combatant> party, std::vector
         if (b.phase() == Phase::AwaitingCommand) {
             const PilotChoice choice = pilotChoice(b);
             const bool aim = press && choice.aim;
-            const CommandError e =
-                aim ? b.aim(choice.target, now) : b.command(choice.skill, choice.target, now);
+            const CommandError e = choice.release ? b.release(now)
+                                   : aim          ? b.aim(choice.target, now)
+                                                  : b.command(choice.skill, choice.target, now);
             if (e != CommandError::None) {
                 r.commandFailed = true;
                 break;
             }
             ++r.partyTurns;
+            r.releases += choice.release ? 1 : 0;
             if (aim && pilotShoot(b, choice.weakPoint, now)) {
                 ++r.aims;
                 if (b.lastShot().kind == ShotKind::Weak) ++r.weakHits;
@@ -424,6 +472,7 @@ inline HeadlessResult playHeadlessWith(std::vector<Combatant> party, std::vector
         b.clearEvents();
     }
     r.outcome = b.phase();
+    r.loadStored = b.stats().loadStored;
     r.finished = r.outcome == Phase::Victory || r.outcome == Phase::Defeat;
     r.endTime = now;
     for (const Combatant& c : b.combatants())

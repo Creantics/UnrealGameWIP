@@ -37,19 +37,29 @@ static_assert(static_cast<int>(EFTBattleEventType::CountIn) == static_cast<int>(
 static_assert(static_cast<int>(EFTBattleEventType::PoiseLost) == static_cast<int>(ftcore::EventType::PoiseLost));
 static_assert(static_cast<int>(EFTBattleEventType::Staggered) == static_cast<int>(ftcore::EventType::Staggered));
 static_assert(static_cast<int>(EFTBattleEventType::Steadied) == static_cast<int>(ftcore::EventType::Steadied));
+static_assert(static_cast<int>(EFTBattleEventType::LoadStored) == static_cast<int>(ftcore::EventType::LoadStored));
+static_assert(static_cast<int>(EFTBattleEventType::Overloaded) == static_cast<int>(ftcore::EventType::Overloaded));
+static_assert(static_cast<int>(EFTBattleEventType::Released) == static_cast<int>(ftcore::EventType::Released));
 static_assert(static_cast<int>(EFTCommandError::None) == static_cast<int>(ftcore::CommandError::None));
 static_assert(static_cast<int>(EFTCommandError::WrongPhase) == static_cast<int>(ftcore::CommandError::WrongPhase));
 static_assert(static_cast<int>(EFTCommandError::NoSuchSkill) == static_cast<int>(ftcore::CommandError::NoSuchSkill));
 static_assert(static_cast<int>(EFTCommandError::NotEnoughAp) == static_cast<int>(ftcore::CommandError::NotEnoughAp));
 static_assert(static_cast<int>(EFTCommandError::InvalidTarget) == static_cast<int>(ftcore::CommandError::InvalidTarget));
+static_assert(static_cast<int>(EFTCommandError::NoSuchItem) == static_cast<int>(ftcore::CommandError::NoSuchItem));
+static_assert(static_cast<int>(EFTCommandError::Overloaded) == static_cast<int>(ftcore::CommandError::Overloaded));
+static_assert(static_cast<int>(EFTCommandError::NoLoad) == static_cast<int>(ftcore::CommandError::NoLoad));
+static_assert(static_cast<int>(EFTCommandError::NoSuchVerb) == static_cast<int>(ftcore::CommandError::NoSuchVerb));
 static_assert(static_cast<int>(EFTDefenceInput::Dodge) == static_cast<int>(ftcore::DefenceInput::Dodge));
 static_assert(static_cast<int>(EFTDefenceInput::Parry) == static_cast<int>(ftcore::DefenceInput::Parry));
 static_assert(static_cast<int>(EFTDefenceInput::Jump) == static_cast<int>(ftcore::DefenceInput::Jump));
+static_assert(static_cast<int>(EFTDefenceInput::Guard) == static_cast<int>(ftcore::DefenceInput::Guard));
 static_assert(static_cast<int>(EFTDefenceOutcome::Pending) == static_cast<int>(ftcore::DefenceOutcome::Pending));
 static_assert(static_cast<int>(EFTDefenceOutcome::Perfect) == static_cast<int>(ftcore::DefenceOutcome::Perfect));
 static_assert(static_cast<int>(EFTDefenceOutcome::Dodged) == static_cast<int>(ftcore::DefenceOutcome::Dodged));
 static_assert(static_cast<int>(EFTDefenceOutcome::Jumped) == static_cast<int>(ftcore::DefenceOutcome::Jumped));
 static_assert(static_cast<int>(EFTDefenceOutcome::Hit) == static_cast<int>(ftcore::DefenceOutcome::Hit));
+static_assert(static_cast<int>(EFTDefenceOutcome::Guarded) == static_cast<int>(ftcore::DefenceOutcome::Guarded));
+static_assert(static_cast<int>(EFTDefenceOutcome::PerfectGuard) == static_cast<int>(ftcore::DefenceOutcome::PerfectGuard));
 
 namespace
 {
@@ -370,6 +380,27 @@ void UFTBattleComponent::DefendAtTime(EFTDefenceInput Input, double BattleSecond
 	}
 	Battle->defend(static_cast<ftcore::DefenceInput>(Input), BattleSeconds);
 	Flush();
+}
+
+void UFTBattleComponent::ReleaseGuard()
+{
+	if (!Battle)
+	{
+		return;
+	}
+	Battle->releaseGuard(InputNow());
+	Flush();
+}
+
+EFTCommandError UFTBattleComponent::Release()
+{
+	if (!Battle)
+	{
+		return EFTCommandError::WrongPhase;
+	}
+	const ftcore::CommandError Err = Battle->release(Now());
+	Flush();
+	return static_cast<EFTCommandError>(Err);
 }
 
 EFTCommandError UFTBattleComponent::AimAt(int32 Target)

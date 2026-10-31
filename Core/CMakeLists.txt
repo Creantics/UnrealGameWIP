@@ -125,6 +125,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_banter.cpp
         tests/test_battle.cpp
         tests/test_turns_verbs.cpp
+        tests/test_load.cpp
         tests/test_battle_demo.cpp
         tests/test_combo.cpp
         tests/test_conductor.cpp

@@ -45,6 +45,10 @@ struct BattleTuning {
     float counterPower = 1.0f;     // defence: a fully parried attack is countered at this power
     int apOnCounter = 1;
     int counterPoise = 10;         // defence: a counter also costs the attacker this much poise
+    float guardShare = 0.5f;       // Guard: the share of a held-guarded hit that still lands
+    float releasePower = 0.5f;     // Release: HP damage to each enemy at 100% accuracy
+    float releasePoise = 1.0f;     // Release: poise lost by each enemy, per Load spent, at 100% accuracy
+    float releaseDifficulty = 2.0f; // Release: the combo's move complexity (0-10)
     int startingAp = 2;
     std::uint64_t seed = 0x5EEDC0DEull; // combo charts are generated deterministically from this
     MusicConfig music;                  // beat-synced charts when music.bpm > 0
@@ -92,6 +96,10 @@ enum class EventType {
     Staggered,    // `target`'s poise reached 0: it skips its next turn; source = who broke it (appended)
     Steadied,     // `source`'s skipped turn: its poise refills (amount = poise restored), then the next turn
                   // comes after the recovery pause (appended)
+    LoadStored,   // a perfect Guard: `target` stored `amount` Load from hit `beat`; source = the enemy (appended)
+    Overloaded,   // `target`'s Load reached kMaxLoad: only Release is open to it (appended)
+    Released,     // `source` let go of `amount` Load: its Release combo finished (the poise losses follow)
+                  // (appended)
 };
 
 // Running totals over one battle (from start() to the outcome), for the results screen.
@@ -114,6 +122,8 @@ struct BattleStats {
     double endTime = 0.0;    // the time of the outcome (0 until then)
     int itemsUsed = 0;       // items used (an item for the whole party counts once)
     int staggers = 0;        // enemies staggered
+    int loadStored = 0;      // Load stored by perfect Guards
+    int releases = 0;
 };
 
 struct BattleEvent {
@@ -130,8 +140,10 @@ struct BattleEvent {
 };
 
 // NoSuchItem (appended: the Unreal mirror does not have it yet): useItem's slot is empty or past the end, or
-// holds an id the item table does not know.
-enum class CommandError { None, WrongPhase, NoSuchSkill, NotEnoughAp, InvalidTarget, NoSuchItem };
+// holds an id the item table does not know. Overloaded (appended): the member's Load is full, so only
+// Release is open. NoLoad (appended): a Release with no Load. NoSuchVerb (appended): the member lacks
+// the verb.
+enum class CommandError { None, WrongPhase, NoSuchSkill, NotEnoughAp, InvalidTarget, NoSuchItem, Overloaded, NoLoad, NoSuchVerb };
 
 class Battle {
 public:
@@ -151,7 +163,22 @@ public:
     FTCORE_API void press(Arrow arrow, double timestamp);
     // A dodge / parry / jump during an enemy attack (ignored otherwise). Also taken in the Recovery
     // right after an enemy attack, where it can only be judged late for the attack's last hit.
+    // Guard starts a hold (only for a defender with Verb::Guard; ignored otherwise) that releaseGuard
+    // ends: a perfect Guard takes nothing and stores the hit's damage as the defender's Load, a held one
+    // lets tuning().guardShare of it land. Its result is a Defended event with label "GUARD" or
+    // "PERFECT GUARD" (then LoadStored, and Overloaded when the Load fills).
     FTCORE_API void defend(DefenceInput input, double timestamp);
+    FTCORE_API void releaseGuard(double timestamp);
+
+    // Release (Verb::Release): from AwaitingCommand, the acting member lets go of all its Load in an
+    // arrow combo of exactly load.releaseNotes() notes against every living enemy. Each takes
+    // tuning().releasePower HP damage and loses round(Load x accuracy x releasePoise) poise (a stagger
+    // at 0). The Load is spent at once; Released comes when the combo ends. NoSuchVerb / NoLoad /
+    // WrongPhase. An overloaded member (Load at kMaxLoad) can only Release: command, aim and useItem
+    // return Overloaded.
+    FTCORE_API CommandError release(double now);
+    // The Release in progress (PartySkill).
+    bool releasing() const { return releasing_; }
 
     // Aim (see WeakPoint.h and docs/BATTLE_AIM.md). From AwaitingCommand: the acting party member
     // spends tuning().aim.apCost and aims at `target` (a living enemy); phase PartyAim. Emits
@@ -242,7 +269,10 @@ private:
 
     void beginTurn(double now);
     void startEnemyTurn(double now);
-    void startCombo(const Skill& skill, CombatantId performer, CombatantId opponent, double firstNote, double now);
+    // exactSteps > 0: the chart has exactly that many notes (no jumps), whatever the difficulty.
+    void startCombo(const Skill& skill, CombatantId performer, CombatantId opponent, double firstNote, double now,
+                    int exactSteps = 0);
+    void storeLoad(CombatantId member, int amount, std::size_t hit, double now);
     void resolve(double now); // judges results_ (filled by the combo)
     void resolveAttackNote(const NoteResult& r, double now);
     void resolveDefence(const DefenceResults& results, double now);
@@ -278,6 +308,9 @@ private:
     AimShot aim_;
     ShotResult lastShot_;
     float landedWeight_ = 0.0f; // defence: summed weight of the hits that landed
+    Skill release_;             // the Release's move (its notes set per use); activeSkill() while releasing
+    bool releasing_ = false;
+    int releaseLoad_ = 0;       // the Load the Release in progress spends
     double countHit_ = 0.0;     // enemy turn: the first hit's impact, which the count leads to
     int countLeft_ = 0;         // CountIn cues still to come
     std::uint64_t combosPlayed_ = 0;

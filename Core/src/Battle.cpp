@@ -14,6 +14,12 @@ Battle::Battle(std::vector<Combatant> party, std::vector<Combatant> enemies, Bat
 void Battle::reset(const std::vector<Combatant>& party, const std::vector<Combatant>& enemies,
                    const BattleTuning& tuning) {
     tuning_ = tuning;
+    if (release_.name.empty()) release_.name = "Release"; // once: the label points into it
+    release_.targeting = Targeting::AllEnemies;
+    release_.apCost = 0;
+    release_.apGain = 0;
+    releasing_ = false;
+    releaseLoad_ = 0;
     const std::size_t count = party.size() + enemies.size();
     // Assign in place: strings and skill lists reuse their buffers, so a same-shaped line-up is free.
     if (combatants_.size() > count) combatants_.resize(count);
@@ -28,6 +34,7 @@ void Battle::reset(const std::vector<Combatant>& party, const std::vector<Combat
         Combatant& d = put(c);
         d.team = Team::Party;
         d.ap = std::min(tuning_.startingAp, d.maxAp);
+        d.load.value = std::clamp(d.load.value, 0, kMaxLoad); // Load comes in with the member
         d.poise = std::max(0, d.stats.maxPoise);
         d.staggered = false;
     }
@@ -114,6 +121,7 @@ std::size_t Battle::nextEnemySkill(CombatantId id) const {
 }
 
 const Skill* Battle::activeSkill() const {
+    if (releasing_) return &release_;
     if (!skillIndex_) return nullptr;
     return &combatants_[actor_].skills[*skillIndex_];
 }
@@ -131,6 +139,7 @@ void Battle::beginTurn(double now) {
     actor_ = queue_.next();
     phaseStart_ = now;
     skillIndex_.reset();
+    releasing_ = false;
     targets_.clear();
     shares_.clear();
     emit({.type = EventType::TurnStarted, .source = actor_, .time = now, .label = {}});
@@ -215,8 +224,12 @@ void Battle::emitCountIn(double now) {
 }
 
 void Battle::startCombo(const Skill& skill, CombatantId performer, CombatantId opponent, double firstNote,
-                        double now) {
+                        double now, int exactSteps) {
     params_ = previewCombo(performer, opponent, skill);
+    if (exactSteps > 0) {
+        params_.steps = exactSteps;
+        params_.jumpChance = 0.0f;
+    }
     const std::uint64_t seed = tuning_.seed ^ (++combosPlayed_ * 0xD1B54A32D192ED03ull);
     std::vector<ComboNote>& notes = noteScratch_;
     if (params_.bpm > 0.0) {
@@ -238,6 +251,7 @@ void Battle::startCombo(const Skill& skill, CombatantId performer, CombatantId o
 CommandError Battle::command(std::size_t skillIndex, CombatantId target, double now) {
     if (phase_ != Phase::AwaitingCommand) return CommandError::WrongPhase;
     Combatant& c = combatants_[actor_];
+    if (c.load.overloaded()) return CommandError::Overloaded;
     if (skillIndex >= c.skills.size()) return CommandError::NoSuchSkill;
     const Skill& skill = c.skills[skillIndex];
     if (c.ap < skill.apCost) return CommandError::NotEnoughAp;
@@ -269,6 +283,50 @@ CommandError Battle::command(std::size_t skillIndex, CombatantId target, double 
     return CommandError::None;
 }
 
+CommandError Battle::release(double now) {
+    if (phase_ != Phase::AwaitingCommand) return CommandError::WrongPhase;
+    Combatant& c = combatants_[actor_];
+    if (!c.can(Verb::Release)) return CommandError::NoSuchVerb;
+    if (c.load.value <= 0) return CommandError::NoLoad;
+    targets_.clear();
+    for (CombatantId id = 0; id < combatants_.size(); ++id)
+        if (combatants_[id].team == Team::Enemies && combatants_[id].alive()) targets_.push_back(id);
+    if (targets_.empty()) return CommandError::InvalidTarget;
+
+    const int steps = c.load.releaseNotes();
+    releaseLoad_ = c.load.release();
+    releasing_ = true;
+    release_.power = tuning_.releasePower;
+    release_.notes = steps;
+    release_.difficulty = tuning_.releaseDifficulty;
+    skillIndex_.reset();
+    phase_ = Phase::PartySkill;
+    phaseStart_ = now;
+    shares_.clear();
+    for (CombatantId t : targets_) shares_.push_back({t, damage(c, combatants_[t], release_.power)});
+    const CombatantId opponent = *std::max_element(targets_.begin(), targets_.end(), [&](CombatantId a, CombatantId b) {
+        return combatants_[a].stats.technique < combatants_[b].stats.technique;
+    });
+    startCombo(release_, actor_, opponent, now + tuning_.leadIn, now, steps);
+    return CommandError::None;
+}
+
+void Battle::releaseGuard(double timestamp) {
+    if (phase_ != Phase::EnemySkill) return;
+    resolveDefence(defence_.releaseGuard(timestamp), timestamp);
+}
+
+void Battle::storeLoad(CombatantId member, int amount, std::size_t hit, double now) {
+    Combatant& m = combatants_[member];
+    const bool was = m.load.overloaded();
+    const int stored = m.load.store(amount);
+    if (stored <= 0) return;
+    emit({.type = EventType::LoadStored, .source = actor_, .target = member, .amount = stored, .beat = hit, .time = now,
+          .label = {}});
+    if (!was && m.load.overloaded())
+        emit({.type = EventType::Overloaded, .source = actor_, .target = member, .time = now, .label = {}});
+}
+
 void Battle::press(Arrow arrow, double timestamp) {
     if (phase_ != Phase::PartySkill) return;
     results_.clear();
@@ -280,6 +338,8 @@ void Battle::defend(DefenceInput input, double timestamp) {
     const bool afterAttack =
         phase_ == Phase::Recovery && combatants_[actor_].team == Team::Enemies && !targets_.empty();
     if (phase_ != Phase::EnemySkill && !afterAttack) return;
+    if (input == DefenceInput::Guard && (phase_ != Phase::EnemySkill || !combatants_[defender()].can(Verb::Guard)))
+        return;
     const int lateBefore = defence_.lateCount();
     resolveDefence(defence_.press(input, timestamp), timestamp);
     if (defence_.lateCount() == lateBefore) return;
@@ -296,6 +356,7 @@ void Battle::defend(DefenceInput input, double timestamp) {
 CommandError Battle::aim(CombatantId target, double now) {
     if (phase_ != Phase::AwaitingCommand) return CommandError::WrongPhase;
     Combatant& c = combatants_[actor_];
+    if (c.load.overloaded()) return CommandError::Overloaded;
     if (target >= combatants_.size() || combatants_[target].team != Team::Enemies || !combatants_[target].alive())
         return CommandError::InvalidTarget;
     const int cost = std::max(0, tuning_.aim.apCost);
@@ -362,6 +423,7 @@ void Battle::setItems(const ItemTable& table, const Inventory& carried) {
 // nothing here allocates.
 CommandError Battle::useItem(std::size_t slot, CombatantId target, double now) {
     if (phase_ != Phase::AwaitingCommand) return CommandError::WrongPhase;
+    if (combatants_[actor_].load.overloaded()) return CommandError::Overloaded;
     if (slot >= carried_.size()) return CommandError::NoSuchItem;
     const ItemId used = carried_[slot].id; // a copy: removing the stack below moves the slots
     const ItemDef* def = items_.find(used.view());
@@ -468,7 +530,8 @@ void Battle::resolveAttackNote(const NoteResult& r, double now) {
 
 // Each hit carries its weight's share of the blow. A hit that lands deals its share (rounded
 // cumulatively, so every hit landing deals exactly the full blow); a dodged, jumped or parried hit
-// deals nothing, and a perfect parry or dodge refunds AP to the defender.
+// deals nothing, and a perfect parry or dodge refunds AP to the defender. A held Guard lets
+// guardShare of the hit's share land; a perfect Guard takes none of it and stores it as Load.
 void Battle::resolveDefence(const DefenceResults& results, double now) {
     for (const DefenceResult& r : results) {
         if (phase_ != Phase::EnemySkill) return;
@@ -476,7 +539,9 @@ void Battle::resolveDefence(const DefenceResults& results, double now) {
         Combatant& d = combatants_[s.target];
         const int refund = r.refund && d.alive() ? std::max(0, std::min(tuning_.apOnPerfect, d.maxAp - d.ap)) : 0;
         d.ap += refund;
-        const Grade grade = r.refund ? Grade::Perfect : r.outcome == DefenceOutcome::Hit ? Grade::Miss : Grade::Good;
+        const Grade grade = r.refund || r.outcome == DefenceOutcome::PerfectGuard ? Grade::Perfect
+                            : r.outcome == DefenceOutcome::Hit                    ? Grade::Miss
+                                                                                  : Grade::Good;
         emit({.type = EventType::Defended,
               .source = actor_,
               .target = s.target,
@@ -485,9 +550,15 @@ void Battle::resolveDefence(const DefenceResults& results, double now) {
               .beat = r.hit,
               .time = r.time,
               .label = r.refund ? "PERFECT" : defenceOutcomeName(r.outcome)});
-        if (r.outcome != DefenceOutcome::Hit || !d.alive()) continue;
-        landedWeight_ += defence_.hit(r.hit).weight;
         const float total = defence_.timeline().totalWeight();
+        if (r.outcome == DefenceOutcome::PerfectGuard && d.alive()) {
+            const float part = total > 0.0f ? defence_.hit(r.hit).weight / total : 1.0f;
+            storeLoad(s.target, std::max(1, static_cast<int>(std::lround(s.full * part))), r.hit, r.time);
+            continue;
+        }
+        const bool guarded = r.outcome == DefenceOutcome::Guarded;
+        if ((r.outcome != DefenceOutcome::Hit && !guarded) || !d.alive()) continue;
+        landedWeight_ += defence_.hit(r.hit).weight * (guarded ? std::clamp(tuning_.guardShare, 0.0f, 1.0f) : 1.0f);
         const float fraction = total > 0.0f ? std::min(landedWeight_ / total, 1.0f) : 1.0f;
         const int taken = static_cast<int>(std::lround(s.full * fraction)) - s.taken;
         s.taken += taken;
@@ -517,6 +588,15 @@ void Battle::finishSkill(double now) {
             if (bonus > 0) dealDamage(actor_, s.target, bonus, Grade::Perfect, combo_.size(), now);
             if (phase_ == Phase::Victory) return;
         }
+    }
+    // A Release: the Load let go breaks the poise of every enemy it reached, by the combo's accuracy.
+    if (phase_ == Phase::PartySkill && releasing_) {
+        emit({.type = EventType::Released, .source = actor_, .target = targets_.front(), .amount = releaseLoad_,
+              .time = now, .label = release_.name});
+        const int poise = static_cast<int>(
+            std::lround(static_cast<float>(releaseLoad_) * combo_.accuracy() * std::max(0.0f, tuning_.releasePoise)));
+        for (CombatantId t : targets_) losePoise(actor_, t, poise, now);
+        releasing_ = false;
     }
     // A fully parried attack: the defender strikes back.
     if (phase_ == Phase::EnemySkill && defence_.allParried()) {
@@ -612,12 +692,14 @@ void Battle::tally(const BattleEvent& e) {
         if (e.label == "LATE") break;
         if (e.label == "HIT") ++stats_.hitsTaken;
         else ++stats_.hitsDefended;
-        stats_.perfectDefences += e.label == "PERFECT";
+        stats_.perfectDefences += e.label == "PERFECT" || e.label == "PERFECT GUARD";
         break;
     case EventType::ComboFinished: stats_.fullCombos += e.label == "FULL COMBO"; break;
     case EventType::Counter: ++stats_.counters; break;
     case EventType::PhaseChanged: ++stats_.phaseChanges; break;
     case EventType::Staggered: ++stats_.staggers; break;
+    case EventType::LoadStored: stats_.loadStored += e.amount; break;
+    case EventType::Released: ++stats_.releases; break;
     case EventType::Victory:
     case EventType::Defeat: stats_.endTime = e.time; break;
     default: break;

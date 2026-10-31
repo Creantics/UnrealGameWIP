@@ -11,6 +11,8 @@ const char* defenceOutcomeName(DefenceOutcome o) {
     case DefenceOutcome::Dodged: return "DODGE";
     case DefenceOutcome::Jumped: return "JUMP";
     case DefenceOutcome::Hit: return "HIT";
+    case DefenceOutcome::Guarded: return "GUARD";
+    case DefenceOutcome::PerfectGuard: return "PERFECT GUARD";
     default: return "";
     }
 }
@@ -50,6 +52,8 @@ void DefenceTimeline::reset(const AttackTimeline& timeline, double start, const 
     refunds_.fill(false);
     late_.fill(false);
     lockoutUntil_.fill(-1e30);
+    guarding_ = false;
+    guardFrom_ = start;
     start_ = start;
     now_ = start;
     next_ = 0;
@@ -82,7 +86,20 @@ void DefenceTimeline::record(std::size_t i, DefenceOutcome o, bool refund, doubl
 
 void DefenceTimeline::expire(double t, DefenceResults& out) {
     if (t > now_) now_ = t;
-    while (next_ < timeline_.size() && impact(next_) <= t) record(next_, DefenceOutcome::Hit, false, impact(next_), out);
+    while (next_ < timeline_.size() && impact(next_) <= t) {
+        const double at = impact(next_);
+        const DefenceOutcome o = !guarding_                          ? DefenceOutcome::Hit
+                                 : at - guardFrom_ <= windows_.parry ? DefenceOutcome::PerfectGuard
+                                                                     : DefenceOutcome::Guarded;
+        record(next_, o, false, at, out);
+    }
+}
+
+DefenceResults DefenceTimeline::releaseGuard(double t) {
+    DefenceResults out;
+    expire(t, out);
+    guarding_ = false;
+    return out;
 }
 
 DefenceResults DefenceTimeline::update(double now) {
@@ -94,6 +111,13 @@ DefenceResults DefenceTimeline::update(double now) {
 DefenceResults DefenceTimeline::press(DefenceInput input, double t) {
     DefenceResults out;
     expire(t, out);
+    if (input == DefenceInput::Guard) { // a hold: judged at each impact while it lasts
+        if (!guarding_) {
+            guarding_ = true;
+            guardFrom_ = t;
+        }
+        return out;
+    }
     if (lockedOut(input, t)) {
         ++ignored_;
         return out;
@@ -122,6 +146,7 @@ DefenceResults DefenceTimeline::press(DefenceInput input, double t) {
                     answered = true;
                 }
                 break;
+            case DefenceInput::Guard: break; // handled above
             }
         }
         if (answered) return out;
@@ -173,7 +198,8 @@ bool DefenceTimeline::accepts(std::size_t i, DefenceInput input) const {
 double DefenceTimeline::idealPress(std::size_t i, DefenceInput input) const {
     const double at = impact(i);
     switch (input) {
-    case DefenceInput::Parry: return at - windows_.parry * 0.5;
+    case DefenceInput::Parry:
+    case DefenceInput::Guard: return at - windows_.parry * 0.5;
     case DefenceInput::Dodge: return at - windows_.perfectDodge * 0.5;
     default: return at - windows_.jump * 0.5;
     }

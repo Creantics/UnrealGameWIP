@@ -225,6 +225,8 @@ private:
 	void TickAutoPlay(float DeltaSeconds);
 	// The player's reticle and the aim keys that are polled (mouse buttons, F, pad LT, sticks).
 	void TickAimInput(float DeltaSeconds);
+	// Guard (G / pad RB, held through the hit) and Release (R / pad RT), polled like the aim keys.
+	void TickVerbInput();
 	void UseSelected();
 	void EnterAim();
 	void SetJudgement(EFTJudgement Kind, const FString& Text);
@@ -319,6 +321,9 @@ private:
 	bool bAimKeyDown = false;
 	bool bFireKeyDown = false;
 	bool bCancelKeyDown = false;
+	// Press edges of the polled Guard (held) and Release keys.
+	bool bGuardKeyDown = false;
+	bool bReleaseKeyDown = false;
 	// The autopilot's weak point for the aim in progress.
 	size_t PilotWeakPoint = ftcore::kMaxWeakPoints;
 

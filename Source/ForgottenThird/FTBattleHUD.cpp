@@ -55,8 +55,10 @@ const FTUiText kMenuHint(TEXT("battle.menu_hint"));
 const FTUiText kLaneHint(TEXT("common.lanes_hint"));
 const FTUiText kDown(TEXT("battle.down"));
 const FTUiText kStaggered(TEXT("battle.staggered"));
-const FString kDefenceKeys[3] = {FString(TEXT("Dodge  Left/Right  X/B")), FString(TEXT("Parry  Down  A")),
-	FString(TEXT("Jump  Up  Y"))};
+const FTUiText kOverloaded(TEXT("battle.overloaded"));
+const FTUiText kLoad(TEXT("battle.load"));
+const FString kDefenceKeys[4] = {FString(TEXT("Dodge  Left/Right  X/B")), FString(TEXT("Parry  Down  A")),
+	FString(TEXT("Jump  Up  Y")), FString(TEXT("Guard  hold G  RB"))};
 const FString kTell(TEXT("!"));
 const FTUiText kJumpable(TEXT("battle.jump"));
 const FLinearColor kCyan(0.35f, 0.85f, 1.f);
@@ -287,6 +289,10 @@ void AFTBattleHUD::DrawPanel(const AFTBattleDemoActor& D, int32 Id, float X, flo
 	{
 		DrawStr(kStaggered, kGold, X + W - 110.f * S, Y + 8.f * S, Font, 1.3f);
 	}
+	else if (C.load.overloaded())
+	{
+		DrawStr(kOverloaded, kOrange, X + W - 120.f * S, Y + 8.f * S, Font, 1.3f);
+	}
 
 	const float BarX = X + 12.f * S;
 	const float BarY = Y + 34.f * S;
@@ -306,6 +312,18 @@ void AFTBattleHUD::DrawPanel(const AFTBattleDemoActor& D, int32 Id, float X, flo
 		const float PoiseFrac = FMath::Clamp(static_cast<float>(C.poise) / static_cast<float>(C.stats.maxPoise), 0.f, 1.f);
 		DrawRect(kHpBack, BarX, BarY - 6.f * S, BarW, 4.f * S);
 		DrawRect(kGold, BarX, BarY - 6.f * S, BarW * PoiseFrac, 4.f * S);
+	}
+
+	if (bParty && C.can(ftcore::Verb::Guard))
+	{
+		// Load: a cyan gauge under the HP text, orange when full (only Release is open then).
+		const float LoadY = BarY + BarH + 30.f * S;
+		const float LoadX = BarX + 46.f * S;
+		const float LoadW = BarW * 0.5f;
+		const float LoadFrac = static_cast<float>(FMath::Clamp(C.load.value, 0, ftcore::kMaxLoad)) / static_cast<float>(ftcore::kMaxLoad);
+		DrawStr(kLoad, kDim, BarX, LoadY - 3.f * S, Font, 0.9f);
+		DrawRect(kHpBack, LoadX, LoadY, LoadW, 6.f * S);
+		DrawRect(C.load.overloaded() ? kOrange : kCyan, LoadX, LoadY, LoadW * LoadFrac, 6.f * S);
 	}
 
 	if (bParty)
@@ -567,6 +585,8 @@ void AFTBattleHUD::DrawDefence(const AFTBattleDemoActor& D)
 		case ftcore::DefenceOutcome::Dodged:
 		case ftcore::DefenceOutcome::Jumped: Color = T.refunded(static_cast<size_t>(I)) ? kGold : kCyan; break;
 		case ftcore::DefenceOutcome::Hit: Color = T.late(static_cast<size_t>(I)) ? kOrange : kRed; break;
+		case ftcore::DefenceOutcome::PerfectGuard: Color = kGold; break;
+		case ftcore::DefenceOutcome::Guarded: Color = kCyan; break;
 		default: break;
 		}
 		DrawRect(Color, PX, PY, Pip, Pip);
@@ -577,11 +597,14 @@ void AFTBattleHUD::DrawDefence(const AFTBattleDemoActor& D)
 	const float Lit = static_cast<float>(FMath::Clamp(1.0 - D.GetDefencePressAge() / 0.2, 0.0, 1.0));
 	const int32 Pressed = static_cast<int32>(D.GetLastDefenceInput());
 	const float KeyW = 230.f * S;
-	float KX = Canvas->ClipX * 0.5f - KeyW * 1.5f;
+	// The Guard key only for a defender with the verb; it stays lit while held.
+	const bool bGuard = B->combatant(B->defender()).can(ftcore::Verb::Guard);
+	const int32 Keys = bGuard ? 4 : 3;
+	float KX = Canvas->ClipX * 0.5f - KeyW * 0.5f * static_cast<float>(Keys);
 	const float KY = PY + Pip + 14.f * S;
-	for (int32 K = 0; K < 3; ++K)
+	for (int32 K = 0; K < Keys; ++K)
 	{
-		const bool bLit = K == Pressed && Lit > 0.f;
+		const bool bLit = (K == Pressed && Lit > 0.f) || (K == 3 && T.guarding());
 		DrawRect(kPanel, KX + 4.f * S, KY, KeyW - 8.f * S, 30.f * S);
 		if (bLit)
 		{

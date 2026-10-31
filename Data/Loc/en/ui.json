@@ -27,9 +27,11 @@
     "battle.defend": "defend - watch for the tell!",
     "battle.aim": "aim - shoot a weak point!",
     "battle.aim_hint": "Mouse / sticks / arrows: aim    Left mouse / Enter / pad A: fire    Esc / right mouse / pad B: cancel",
-    "battle.menu_hint": "Up/Down or 1-4: skill    Left/Right, Q/E, Tab: target    Enter / Space / pad A: use    F / right mouse / LT: aim",
+    "battle.menu_hint": "Up/Down or 1-4: skill    Left/Right, Q/E, Tab: target    Enter / Space / pad A: use    F / right mouse / LT: aim    R / RT: release",
     "battle.down": "DOWN",
     "battle.staggered": "STAGGERED",
+    "battle.overloaded": "OVERLOADED",
+    "battle.load": "LOAD",
     "battle.jump": "JUMP!",
 
     "beat.chain": "CHAIN",

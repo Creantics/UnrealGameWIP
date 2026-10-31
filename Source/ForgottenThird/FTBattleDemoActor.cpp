@@ -950,6 +950,13 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 	case EFTBattleEventType::Steadied:
 		SetBanner(FString::Printf(TEXT("%s steadies itself."), *GetFighterName(Event.Source)));
 		break;
+	case EFTBattleEventType::Overloaded:
+		SetBanner(FString::Printf(TEXT("%s is overloaded: Release!"), *GetFighterName(Event.Target)));
+		break;
+	case EFTBattleEventType::Released:
+		SetBanner(FString::Printf(TEXT("%s releases %d Load!"), *GetFighterName(Event.Source), Event.Amount));
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: %s releases %d Load."), *GetFighterName(Event.Source), Event.Amount);
+		break;
 	case EFTBattleEventType::Downed:
 		if (Figures.IsValidIndex(Event.Target))
 		{
@@ -1310,6 +1317,9 @@ void AFTBattleDemoActor::UseSelected()
 	const EFTCommandError Err = Battle->ChooseSkill(SelectedSkill, SelectedTarget);
 	switch (Err)
 	{
+	case EFTCommandError::Overloaded:
+		SetNotice(TEXT("Overloaded: Release (R / RT)"));
+		break;
 	case EFTCommandError::NotEnoughAp:
 		SetNotice(TEXT("Not enough AP"));
 		break;
@@ -1326,6 +1336,9 @@ void AFTBattleDemoActor::EnterAim()
 	EnsureTarget();
 	switch (Battle->AimAt(SelectedTarget))
 	{
+	case EFTCommandError::Overloaded:
+		SetNotice(TEXT("Overloaded: Release (R / RT)"));
+		break;
 	case EFTCommandError::NotEnoughAp:
 		SetNotice(TEXT("Not enough AP"));
 		break;
@@ -1387,6 +1400,11 @@ void AFTBattleDemoActor::TickAutoPlay(float DeltaSeconds)
 	if (B->phase() == ftcore::Phase::AwaitingCommand)
 	{
 		const ftcore::demo::PilotChoice Choice = ftcore::demo::pilotChoice(*B);
+		if (Choice.release)
+		{
+			Battle->Release();
+			return;
+		}
 		SelectedSkill = Choice.aim ? GetAimRow() : static_cast<int32>(Choice.skill);
 		SelectedTarget = static_cast<int32>(Choice.target);
 		PilotWeakPoint = Choice.aim ? Choice.weakPoint : ftcore::kMaxWeakPoints;
@@ -1544,6 +1562,50 @@ void AFTBattleDemoActor::TickAimInput(float DeltaSeconds)
 	}
 }
 
+void AFTBattleDemoActor::TickVerbInput()
+{
+	AFTPlayerController* PC = GetPlayer();
+	const bool bLive = PC && !bAutoPlay && !bWaitingForRestart && Battle->GetBattle();
+	const bool bGuardDown = bLive && (PC->IsInputKeyDown(EKeys::G) || PC->IsInputKeyDown(EKeys::Gamepad_RightShoulder));
+	const bool bReleaseDown = bLive && (PC->IsInputKeyDown(EKeys::R) || PC->IsInputKeyDown(EKeys::Gamepad_RightTrigger));
+	const bool bResumed = UFTPauseSubsystem::IsJustResumed(this);
+	const bool bGuardPressed = bGuardDown && !bGuardKeyDown && !bResumed;
+	const bool bReleasePressed = bReleaseDown && !bReleaseKeyDown && !bResumed;
+	bGuardKeyDown = bGuardDown;
+	bReleaseKeyDown = bReleaseDown;
+	if (!bLive || UFTPauseSubsystem::IsBlocking(this))
+	{
+		return;
+	}
+	const ftcore::Battle* B = Battle->GetBattle();
+	if (Battle->IsDefenceActive())
+	{
+		// The hold lasts while the key is down; Battle ignores it for a defender without the verb.
+		if (bGuardPressed)
+		{
+			DefencePressWall = Wall();
+			LastDefenceInput = EFTDefenceInput::Guard;
+			Battle->Defend(EFTDefenceInput::Guard);
+		}
+		else if (!bGuardDown && B->defence().guarding())
+		{
+			Battle->ReleaseGuard();
+		}
+		return;
+	}
+	const bool bPartyTurn = B->phase() == ftcore::Phase::AwaitingCommand && B->combatant(B->actor()).team == ftcore::Team::Party;
+	if (!bPartyTurn || !bReleasePressed)
+	{
+		return;
+	}
+	switch (Battle->Release())
+	{
+	case EFTCommandError::NoLoad: SetNotice(TEXT("No Load to release")); break;
+	case EFTCommandError::NoSuchVerb: SetNotice(TEXT("Can't release")); break;
+	default: break;
+	}
+}
+
 void AFTBattleDemoActor::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
@@ -1552,6 +1614,7 @@ void AFTBattleDemoActor::Tick(float DeltaSeconds)
 		TickAutoPlay(DeltaSeconds);
 	}
 	TickAimInput(DeltaSeconds);
+	TickVerbInput();
 	if (bCanQuitToTitle && bWaitingForRestart)
 	{
 		// Q quits on its press edge. It is polled: after the battle the story keys are live, and Q has
