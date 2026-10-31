@@ -1,6 +1,6 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-31 ~12:50. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-31 ~13:50. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
@@ -30,11 +30,12 @@ Private notes (character references, concept-art review, script status) are in `
     line-ups of five, Guard/Load/Release/Overload; 858 doctest cases, ctest 5/5, UBT Succeeded; HUD unchecked on
     screen; left: Intercept, Take Half, Read cards, the Arena host, the Beat mode, one-lead Turns, the three-stage
     sequencer, the first Turns encounter data). Not merged into main.
-  - **The boss overhaul** (private): 72 of the 90 slots written beyond the six model entries, 61 at or over the bar,
+  - **The boss overhaul** (private): 78 of the 90 slots written beyond the six model entries (the six superbosses were
+    added last, in a lean wave with one read and no revision, so four of them owe a revision round), 63 at or over the bar,
     every world's finals written as Beat fights where their waves are done, 21 non-boss family stat blocks for Turns.
-    Left: the six superbosses (W14) and the six Act IV story slots that wait for the Draft 96 outline (W11), both
-    held because the weekly usage read 92% at 12:30; they are the next session's first waves after the reset
-    (2026-11-06 ~06:00 EDT). A word-level pass on four entries was in flight at this writing.
+    Left: the superbosses' revision round and the six Act IV story slots that wait for the Draft 96 outline (W11);
+    the session ended at 96% of the weekly usage, so both are the next session's first work after the reset
+    (2026-11-06 ~06:00 EDT).
   - **Repo state:** main is still d3e5cc6 (terrain and map paths), nothing new committed here; the user's local
     edits (`Config/DefaultEngine.ini`, `ForgottenThird.uproject`, `dv_strap.uasset`, `tools/blender/open_features.py`)
     are untouched; the PC is free; `claude/objective-blackburn-80b6c6` and the PartyLooks follow-up are still open.
