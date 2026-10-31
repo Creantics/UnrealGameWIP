@@ -28,10 +28,14 @@ void Battle::reset(const std::vector<Combatant>& party, const std::vector<Combat
         Combatant& d = put(c);
         d.team = Team::Party;
         d.ap = std::min(tuning_.startingAp, d.maxAp);
+        d.poise = std::max(0, d.stats.maxPoise);
+        d.staggered = false;
     }
     for (const Combatant& c : enemies) {
         Combatant& d = put(c);
         d.team = Team::Enemies;
+        d.poise = std::max(0, d.stats.maxPoise);
+        d.staggered = false;
         FTCORE_ASSERT(!d.skills.empty());
     }
     enemyTurnCount_.assign(combatants_.size(), 0);
@@ -130,7 +134,17 @@ void Battle::beginTurn(double now) {
     targets_.clear();
     shares_.clear();
     emit({.type = EventType::TurnStarted, .source = actor_, .time = now, .label = {}});
-    if (combatants_[actor_].team == Team::Party)
+    Combatant& c = combatants_[actor_];
+    if (c.staggered) { // a broken stance: the turn passes, the poise comes back
+        c.staggered = false;
+        const int restored = std::max(0, c.stats.maxPoise) - c.poise;
+        c.poise += restored;
+        emit({.type = EventType::Steadied, .source = actor_, .amount = restored, .time = now, .label = {}});
+        phase_ = Phase::Recovery;
+        recoveryEnd_ = now + tuning_.recovery;
+        return;
+    }
+    if (c.team == Team::Party)
         phase_ = Phase::AwaitingCommand;
     else
         startEnemyTurn(now);
@@ -514,6 +528,7 @@ void Battle::finishSkill(double now) {
             emit({.type = EventType::Counter, .source = defender, .target = actor_, .amount = dmg, .time = now, .label = {}});
             dealDamage(defender, actor_, dmg, Grade::Perfect, defence_.size(), now);
             if (phase_ == Phase::Victory || phase_ == Phase::Defeat) return;
+            losePoise(defender, actor_, tuning_.counterPoise, now);
         }
     }
     if (checkEnd(now)) return;
@@ -540,6 +555,19 @@ void Battle::dealDamage(CombatantId source, CombatantId target, int amount, Grad
         return;
     }
     if (t.team == Team::Enemies) checkPhase(target, now);
+}
+
+// Poise only falls for a combatant that has some and is standing; at 0 it is staggered, and it
+// takes no more poise loss until its skipped turn refills it.
+void Battle::losePoise(CombatantId source, CombatantId target, int amount, double now) {
+    Combatant& t = combatants_[target];
+    if (amount <= 0 || !t.alive() || t.staggered || t.stats.maxPoise <= 0) return;
+    const int lost = std::min(amount, t.poise);
+    t.poise -= lost;
+    emit({.type = EventType::PoiseLost, .source = source, .target = target, .amount = lost, .time = now, .label = {}});
+    if (t.poise > 0) return;
+    t.staggered = true;
+    emit({.type = EventType::Staggered, .source = source, .target = target, .time = now, .label = {}});
 }
 
 // Enters the deepest later phase whose threshold the enemy's HP has fallen to (skipped phases are
@@ -589,6 +617,7 @@ void Battle::tally(const BattleEvent& e) {
     case EventType::ComboFinished: stats_.fullCombos += e.label == "FULL COMBO"; break;
     case EventType::Counter: ++stats_.counters; break;
     case EventType::PhaseChanged: ++stats_.phaseChanges; break;
+    case EventType::Staggered: ++stats_.staggers; break;
     case EventType::Victory:
     case EventType::Defeat: stats_.endTime = e.time; break;
     default: break;

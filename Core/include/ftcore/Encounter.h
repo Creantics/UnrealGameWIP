@@ -89,6 +89,8 @@ struct EnemyRoster {
 inline constexpr int kTierHpPercent = 10;
 inline constexpr int kTierAttackPercent = 11;
 inline constexpr int kMaxTier = 9;
+// An enemy's poise ("poise" in its stats; optional, 0 = never staggered). Not scaled by tier.
+inline constexpr int kMaxPoise = 1000;
 // The most enemies one line-up holds (the battle HUD and stage have room for this many).
 inline constexpr std::size_t kMaxLineupEnemies = 5;
 

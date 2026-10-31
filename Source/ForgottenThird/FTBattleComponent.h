@@ -106,6 +106,12 @@ enum class EFTBattleEventType : uint8
 	// Enemy turn with music on: a count beat before the attack's first hit. Beat = the beats left to
 	// that hit (down to 1); Source = the enemy, Target = the defender.
 	CountIn,
+	// Target lost Amount poise to Source.
+	PoiseLost,
+	// Target's poise reached 0: it skips its next turn. Source = who broke it.
+	Staggered,
+	// Source's skipped turn: its poise refills (Amount = poise restored).
+	Steadied,
 };
 
 // Same order as ftcore::CommandError.

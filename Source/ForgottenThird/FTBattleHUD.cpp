@@ -54,6 +54,7 @@ const FString kWait(TEXT("..."));
 const FTUiText kMenuHint(TEXT("battle.menu_hint"));
 const FTUiText kLaneHint(TEXT("common.lanes_hint"));
 const FTUiText kDown(TEXT("battle.down"));
+const FTUiText kStaggered(TEXT("battle.staggered"));
 const FString kDefenceKeys[3] = {FString(TEXT("Dodge  Left/Right  X/B")), FString(TEXT("Parry  Down  A")),
 	FString(TEXT("Jump  Up  Y"))};
 const FString kTell(TEXT("!"));
@@ -282,6 +283,10 @@ void AFTBattleHUD::DrawPanel(const AFTBattleDemoActor& D, int32 Id, float X, flo
 	{
 		DrawStr(kDown, kRed, X + W - 70.f * S, Y + 8.f * S, Font, 1.3f);
 	}
+	else if (C.staggered)
+	{
+		DrawStr(kStaggered, kGold, X + W - 110.f * S, Y + 8.f * S, Font, 1.3f);
+	}
 
 	const float BarX = X + 12.f * S;
 	const float BarY = Y + 34.f * S;
@@ -295,6 +300,13 @@ void AFTBattleHUD::DrawPanel(const AFTBattleDemoActor& D, int32 Id, float X, flo
 		DrawRect(WithAlpha(kWhite, Flash * 0.6f), BarX, BarY, BarW * Frac, BarH);
 	}
 	DrawStr(D.GetHpText(Id), kWhite, BarX + 4.f * S, BarY + BarH + 2.f * S, Font, 1.f);
+	if (C.stats.maxPoise > 0)
+	{
+		// Poise: a thin gold bar over the HP bar, empty while staggered.
+		const float PoiseFrac = FMath::Clamp(static_cast<float>(C.poise) / static_cast<float>(C.stats.maxPoise), 0.f, 1.f);
+		DrawRect(kHpBack, BarX, BarY - 6.f * S, BarW, 4.f * S);
+		DrawRect(kGold, BarX, BarY - 6.f * S, BarW * PoiseFrac, 4.f * S);
+	}
 
 	if (bParty)
 	{

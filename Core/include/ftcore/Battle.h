@@ -44,6 +44,7 @@ struct BattleTuning {
     int apOnPerfect = 1;           // defence: AP refunded to the defender per perfect parry or dodge
     float counterPower = 1.0f;     // defence: a fully parried attack is countered at this power
     int apOnCounter = 1;
+    int counterPoise = 10;         // defence: a counter also costs the attacker this much poise
     int startingAp = 2;
     std::uint64_t seed = 0x5EEDC0DEull; // combo charts are generated deterministically from this
     MusicConfig music;                  // beat-synced charts when music.bpm > 0
@@ -87,6 +88,10 @@ enum class EventType {
     CountIn,      // enemy turn with music on: a count beat before the attack's first hit; beat = the beats left
                   // to that hit (countIn down to 1), time = the count beat, source = the enemy, target = the
                   // defender (appended)
+    PoiseLost,    // `target` lost `amount` poise to `source` (appended)
+    Staggered,    // `target`'s poise reached 0: it skips its next turn; source = who broke it (appended)
+    Steadied,     // `source`'s skipped turn: its poise refills (amount = poise restored), then the next turn
+                  // comes after the recovery pause (appended)
 };
 
 // Running totals over one battle (from start() to the outcome), for the results screen.
@@ -108,6 +113,7 @@ struct BattleStats {
     double startTime = 0.0;
     double endTime = 0.0;    // the time of the outcome (0 until then)
     int itemsUsed = 0;       // items used (an item for the whole party counts once)
+    int staggers = 0;        // enemies staggered
 };
 
 struct BattleEvent {
@@ -248,6 +254,7 @@ private:
     bool checkEnd(double now);
     float damage(const Combatant& attacker, const Combatant& defender, float power) const;
     void checkPhase(CombatantId enemy, double now);
+    void losePoise(CombatantId source, CombatantId target, int amount, double now);
     void tally(const BattleEvent& e);
     void emit(BattleEvent e) {
         tally(e);

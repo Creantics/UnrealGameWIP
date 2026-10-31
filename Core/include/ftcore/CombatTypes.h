@@ -22,6 +22,8 @@ struct Stats {
     // Combo skill. A higher technique than your opponent makes your own combos (attacking
     // or defending) easier; an opponent with higher technique makes them harder.
     int technique = 10;
+    // Poise (enemies): what a stagger breaks. 0 means the combatant cannot be staggered (Battle.h).
+    int maxPoise = 0;
 };
 
 enum class Targeting { SingleEnemy, AllEnemies };
@@ -106,6 +108,8 @@ struct Combatant {
     int hp = 100;
     int ap = 0;
     int maxAp = 9;
+    int poise = 0;          // Battle refills it to stats.maxPoise at setup and after a stagger
+    bool staggered = false; // its poise broke: it skips its next turn (Battle.h)
     std::vector<Skill> skills;
     WeakPoints weakPoints; // enemies: what aim mode reveals (see WeakPoint.h); none by default
     EnemyPhases phases;    // enemies: the stages of its fight and the skill pattern of each; none by default

@@ -303,12 +303,13 @@ bool importEnemyRoster(std::string_view json, EnemyRoster& out, std::string* err
         if (!st.isObject()) {
             errors.push_back(sp + ": expected an object");
         } else {
-            encUnknownKeys(st, sp, {"maxHp", "attack", "defense", "speed", "technique"}, warnings);
+            encUnknownKeys(st, sp, {"maxHp", "attack", "defense", "speed", "technique", "poise"}, warnings);
             encInt(st, "maxHp", e.stats.maxHp, 1, 1000000, sp, errors);
             encInt(st, "attack", e.stats.attack, 0, 100000, sp, errors);
             encInt(st, "defense", e.stats.defense, 0, 100000, sp, errors);
             encInt(st, "speed", e.stats.speed, 1, 100000, sp, errors);
             encInt(st, "technique", e.stats.technique, 0, 100000, sp, errors);
+            encInt(st, "poise", e.stats.maxPoise, 0, kMaxPoise, sp, errors);
         }
 
         const JsonValue rw = j["reward"];

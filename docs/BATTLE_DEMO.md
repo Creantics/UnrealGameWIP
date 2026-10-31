@@ -109,6 +109,17 @@ looks up to two frames ahead and presses at the exact time (`UFTBattleComponent:
 
 The autopilot also aims: see [BATTLE_AIM.md](BATTLE_AIM.md).
 
+### Poise and stagger
+
+An enemy may have poise (`"poise"` in its `stats`, 0 to 1000; without it, 0, and it is never
+staggered). Tiers leave it alone. Each counter (a fully parried attack) costs the attacker
+`BattleTuning::counterPoise` poise (10 by default). At 0 it is staggered: its next turn passes
+without an attack, its poise refills, and the next turn comes after the recovery pause. A staggered
+enemy loses no more poise until then. Events (appended): `PoiseLost` (amount), `Staggered`, and
+`Steadied` on the skipped turn (amount = poise restored); `BattleStats::staggers` counts them. The
+HUD draws a thin gold poise bar over an enemy's HP bar and tags a staggered enemy. No enemy in the
+shipped data has poise yet, so the balance gates are unchanged.
+
 ## From the exploration demo
 
 The exploration demo's ambush opens this map (see [EXPLORE_DEMO.md](EXPLORE_DEMO.md)). It leaves

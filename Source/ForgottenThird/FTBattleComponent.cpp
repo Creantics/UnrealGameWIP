@@ -34,6 +34,9 @@ static_assert(static_cast<int>(EFTBattleEventType::Defeat) == static_cast<int>(f
 static_assert(static_cast<int>(EFTBattleEventType::PhaseChanged) == static_cast<int>(ftcore::EventType::PhaseChanged));
 static_assert(static_cast<int>(EFTBattleEventType::ItemUsed) == static_cast<int>(ftcore::EventType::ItemUsed));
 static_assert(static_cast<int>(EFTBattleEventType::CountIn) == static_cast<int>(ftcore::EventType::CountIn));
+static_assert(static_cast<int>(EFTBattleEventType::PoiseLost) == static_cast<int>(ftcore::EventType::PoiseLost));
+static_assert(static_cast<int>(EFTBattleEventType::Staggered) == static_cast<int>(ftcore::EventType::Staggered));
+static_assert(static_cast<int>(EFTBattleEventType::Steadied) == static_cast<int>(ftcore::EventType::Steadied));
 static_assert(static_cast<int>(EFTCommandError::None) == static_cast<int>(ftcore::CommandError::None));
 static_assert(static_cast<int>(EFTCommandError::WrongPhase) == static_cast<int>(ftcore::CommandError::WrongPhase));
 static_assert(static_cast<int>(EFTCommandError::NoSuchSkill) == static_cast<int>(ftcore::CommandError::NoSuchSkill));

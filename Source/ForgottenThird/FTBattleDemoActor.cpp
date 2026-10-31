@@ -943,6 +943,13 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 	case EFTBattleEventType::Counter:
 		SetBanner(FString::Printf(TEXT("%s counters!"), *GetFighterName(Event.Source)));
 		break;
+	case EFTBattleEventType::Staggered:
+		SetBanner(FString::Printf(TEXT("%s is staggered!"), *GetFighterName(Event.Target)));
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: %s is staggered."), *GetFighterName(Event.Target));
+		break;
+	case EFTBattleEventType::Steadied:
+		SetBanner(FString::Printf(TEXT("%s steadies itself."), *GetFighterName(Event.Source)));
+		break;
 	case EFTBattleEventType::Downed:
 		if (Figures.IsValidIndex(Event.Target))
 		{
