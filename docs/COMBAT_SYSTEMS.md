@@ -1,10 +1,10 @@
 # Combat systems
 
-The game has three combat systems, and each world picks one. Every fight in a world's scenes plays that world's system:
+The game has three combat systems, and every world has all three. Each fight plays one by what it is: minor fights are Turns, bosses Arena, and each world's final Beat (see "Routing"):
 
 | System | Kind | What it is | Core |
 |---|---|---|---|
-| Rhythm battle | `rhythm` | The turn-based battle: skills as arrow combos on the beat, reactive dodge and parry on enemy turns | `Battle.h` (see [BATTLE_DEMO.md](BATTLE_DEMO.md)) |
+| Turns (the rhythm battle) | `rhythm` | The turn-based battle: skills as arrow combos on the beat, reactive dodge and parry on enemy turns | `Battle.h` (see [BATTLE_DEMO.md](BATTLE_DEMO.md)) |
 | Arena melee | `arena` | Real time: free movement inside a ring, light and heavy attacks, a dodge roll, guard and parry, stamina, lock-on | `ArenaFight.h` |
 | Beat fight | `beat` | Real time on the music's beat grid: enemies take turns, one bar each, and the lead answers each prompt on its eighth note | `BeatFight.h` |
 
@@ -27,26 +27,27 @@ The arrows themselves are Turns' too. Everything else is answered with the four 
 
 ## Routing
 
-`Data/Field/worlds.json` gives each world a `combat` key (`ftcore::CombatKind`, `CombatKind.h`):
+Each fight names its system by what it is, not where it is. In `Data/Battle/encounters.json` an encounter takes an optional `combat` key (`ftcore::CombatKind`, `CombatKind.h`):
 
-| World | `combat` |
-|---|---|
-| `solhaven` | `arena` |
-| `lattice` | `rhythm` |
-| `unwritten` | `beat` |
+| Fight | `combat` | Plays now |
+|---|---|---|
+| Every minor fight: any line-up without a boss | absent (Turns, `CombatKind::Rhythm`) | Turns |
+| A boss fight | `arena` | Turns, until the arena host is built |
+| A world's final (one per world) | `beat` | the beat fight, until the beat boss mode lands |
 
-- A world with no `combat` key plays `rhythm`. An unknown value is a load error.
-- A scene with no world plays `rhythm`.
-- `WorldTable::combatForScene(scene)` and `combatForWorld(idOrMap)` answer the question. Both fall back to `rhythm`.
-- A host that can't run a world's system yet plays `rhythm` instead (`playableCombat(want, supportedMask)`). Every fight stays playable while the new screens are built.
+- An encounter without the key, any fight not listed, and the `default` line-up are Turns fights. The `default` refuses the key; an unknown value is a load error with its path.
+- `EncounterTable::combatFor(scene, beat, step)` answers, without allocating.
+- In the data, 24 fights are Turns, 13 Arena and 3 Beat. A test checks that a fight is tagged exactly when its line-up has a boss (an enemy of 340 base max HP or more), and that each Beat fight is a single boss.
+- `worlds.json`'s old per-world `combat` key is retired: the loader warns and ignores it, and the file no longer has it.
+- A host that can't run a fight's system yet plays Turns instead (`playableCombat(want, supportedMask)`), so every fight stays playable while the new screens are built.
 
-`GameplayPlan` is unchanged: a CMB step still lowers to `GameplayScreen::Battle`. The step dispatcher (`FTStep::Prepare`, `Source/ForgottenThird/FTStepHost.h`) asks the world table which system that step plays and opens its screen:
+`GameplayPlan` is unchanged: a CMB step still lowers to `GameplayScreen::Battle`. The step dispatcher (`FTStep::Prepare`, `Source/ForgottenThird/FTStepHost.h`) asks the game instance's encounter table (loaded at Init) which system the step plays and opens its screen:
 
 - A beat fight opens the `Beat` map, once it is built (`FTBuildBeatWorld`; see [BEAT_SCREEN.md](BEAT_SCREEN.md)).
 - An arena fight plays in place on the scene's world map, like a field step, once the arena host exists. Until then the arena is left out of `FTStep::kPlayableCombat`.
-- Anything else, and any system whose screen isn't there yet, plays the rhythm battle on `BattleDemo`. That fallback logs one line per system per run and never counts as a warning.
+- Anything else, and any system whose screen isn't there yet, plays Turns on `BattleDemo`. That fallback logs one line per system per run and never counts as a warning.
 
-The story carry's `Combat` field tells the screen which system the step plays. There is no per-encounter override yet (see "Follow-ups").
+The story carry's `Combat` field tells the screen which system the step plays, and `WantedCombat` which one its encounter names. An alpha run ends with a second line counting both: `Alpha: FIGHTS <n> (tagged <t> turns, <a> arena, <b> beat; played <t> turns, <a> arena, <b> beat)` (`AlphaCounters::formatFights`).
 
 ## Arena melee
 
@@ -211,7 +212,6 @@ These wait until the animation session's merge is pushed.
 ## Follow-ups
 
 - Status effects (parked).
-- A per-encounter override of the world's system.
 - Ranged enemy attacks in the arena.
 - A synthesized beat loop for fights with no cue.
 - In-place staging of beat fights on the world map (the fight plays on its step's world map, as an arena fight does, instead of opening the `Beat` map).

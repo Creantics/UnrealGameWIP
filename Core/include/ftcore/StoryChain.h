@@ -17,8 +17,10 @@
 // map changes between steps (the owner keeps it on the game instance).
 //
 // AlphaCounters keeps the tallies of an alpha run (the whole script played by autoplay) across map
-// changes and formats the closing line. The line carries counts only.
+// changes and formats the closing line, and the line of its fights by combat system. The lines
+// carry counts only.
 
+#include "ftcore/CombatKind.h"
 #include "ftcore/Dialogue.h"
 #include "ftcore/GameplayPlan.h"
 
@@ -78,6 +80,21 @@ struct AlphaCounters {
     std::uint32_t stuck = 0;
     std::uint32_t warnings = 0; // plan unknown or dropped tokens, screens that came back not done
     std::uint32_t hops = 0;     // overworld walks between two worlds' field steps
+    // The fights played to the end, by the system their encounter names (EncounterTable::combatFor)
+    // and by the one that really played (a system with no screen yet plays Turns).
+    std::uint32_t tagged[kCombatKinds] = {};
+    std::uint32_t played[kCombatKinds] = {};
+
+    void addFight(CombatKind wanted, CombatKind ran) {
+        const auto w = static_cast<std::size_t>(wanted), r = static_cast<std::size_t>(ran);
+        if (w < kCombatKinds) ++tagged[w];
+        if (r < kCombatKinds) ++played[r];
+    }
+    std::uint32_t fights() const {
+        std::uint32_t n = 0;
+        for (const std::uint32_t k : played) n += k;
+        return n;
+    }
 
     void addScreen(GameplayScreen screen) {
         switch (screenRoutesTo(screen)) { // the screen that was really played
@@ -110,6 +127,25 @@ struct AlphaCounters {
                                     static_cast<unsigned>(scenes), static_cast<unsigned>(screens()),
                                     static_cast<unsigned>(battle), static_cast<unsigned>(field), static_cast<unsigned>(stub),
                                     static_cast<unsigned>(stuck), static_cast<unsigned>(warnings), static_cast<unsigned>(hops));
+        if (n < 0) {
+            buffer[0] = '\0';
+            return 0;
+        }
+        return static_cast<std::size_t>(n) < capacity ? static_cast<std::size_t>(n) : capacity - 1;
+    }
+
+    // "Alpha: FIGHTS <n> (tagged <t> turns, <a> arena, <b> beat; played <t> turns, <a> arena, <b> beat)".
+    // Turns is CombatKind::Rhythm. Returns the length written, as formatFinished.
+    std::size_t formatFights(char* buffer, std::size_t capacity) const {
+        if (!buffer || capacity == 0) return 0;
+        const auto at = [](const std::uint32_t (&k)[kCombatKinds], CombatKind c) {
+            return static_cast<unsigned>(k[static_cast<std::size_t>(c)]);
+        };
+        const int n = std::snprintf(buffer, capacity,
+                                    "Alpha: FIGHTS %u (tagged %u turns, %u arena, %u beat; played %u turns, %u arena, %u beat)",
+                                    static_cast<unsigned>(fights()), at(tagged, CombatKind::Rhythm), at(tagged, CombatKind::Arena),
+                                    at(tagged, CombatKind::Beat), at(played, CombatKind::Rhythm), at(played, CombatKind::Arena),
+                                    at(played, CombatKind::Beat));
         if (n < 0) {
             buffer[0] = '\0';
             return 0;

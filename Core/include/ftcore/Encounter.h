@@ -47,13 +47,16 @@
 // encounters.json:
 //   { "version": 1, "default": { "enemies": ["brute", "shade"] },
 //     "encounters": [ { "scene": "SC-X", "beat": 4, "step": 0, "enemies": ["shade"] } ] }
-//   `step` defaults to 0. `tier` (0..9, default 0; "default" takes one too) toughens the line-up:
+//   `step` defaults to 0. `combat` (optional: "rhythm", "arena" or "beat", see CombatKind.h) is the
+//   system the fight plays; without it the fight is a Turns fight (CombatKind::Rhythm), as is the
+//   "default" line-up, which takes no `combat`. `tier` (0..9, default 0; "default" takes one too) toughens the line-up:
 //   each tier adds kTierHpPercent of the base max HP and kTierAttackPercent of the base attack to
 //   every enemy in it (see
 //   makeEnemies). An unknown enemy id, a duplicate (scene, beat, step) or an empty line-up is an
 //   error; unknown keys are warnings.
 
 #include "ftcore/Api.h"
+#include "ftcore/CombatKind.h"
 #include "ftcore/CombatTypes.h"
 #include "ftcore/Progression.h"
 
@@ -96,6 +99,7 @@ struct EncounterEntry {
     std::string scene;
     std::uint32_t beat = 0, step = 0;
     EncounterLineup lineup;
+    CombatKind combat = CombatKind::Rhythm; // the system it plays; Turns unless tagged
 };
 
 struct EncounterTable {
@@ -106,6 +110,9 @@ struct EncounterTable {
     FTCORE_API const EncounterEntry* findEntry(std::string_view scene, std::uint32_t beat, std::uint32_t step) const;
     // The line-up for (scene, beat, step): the entry's, else the default. No allocation.
     FTCORE_API const EncounterLineup& find(std::string_view scene, std::uint32_t beat, std::uint32_t step) const;
+    // The system the fight at (scene, beat, step) plays: the entry's `combat`, else Rhythm (Turns).
+    // No allocation.
+    FTCORE_API CombatKind combatFor(std::string_view scene, std::uint32_t beat, std::uint32_t step) const;
 };
 
 // On failure `out` is empty and *error lists each problem with its path, one per line.

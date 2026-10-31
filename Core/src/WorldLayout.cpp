@@ -87,16 +87,6 @@ int WorldTable::findWorld(std::string_view idOrMap) const {
     return -1;
 }
 
-CombatKind WorldTable::combatForWorld(std::string_view idOrMap) const {
-    const int w = findWorld(idOrMap);
-    return w >= 0 ? worlds[static_cast<std::size_t>(w)].combat : CombatKind::Rhythm;
-}
-
-CombatKind WorldTable::combatForScene(std::string_view scene) const {
-    const WorldScene* s = findScene(scene);
-    return s && s->world < worlds.size() ? worlds[s->world].combat : CombatKind::Rhythm;
-}
-
 bool importWorldTable(std::string_view json, WorldTable& out, std::string* error, std::vector<std::string>* warnings) {
     out = WorldTable{};
     std::vector<std::string> errors;
@@ -156,9 +146,9 @@ bool importWorldTable(std::string_view json, WorldTable& out, std::string* error
             else if (k == "ruins") w.kind = WorldKind::Ruins;
             else errors.push_back(path + ".kind: expected town, towers or ruins");
         }
-        const JsonValue combat = j["combat"];
-        if (!combat.isAbsent() && !(combat.isString() && parseCombatKind(combat.string(), w.combat)))
-            errors.push_back(path + ".combat: expected rhythm, arena or beat");
+        if (j.has("combat") && warnings)
+            warnings->push_back(path + ".combat: retired and ignored; a fight's system is its encounter's \"combat\" in "
+                                       "Data/Battle/encounters.json");
         const JsonValue side = j["side"];
         const double sd = side.number(-1.0);
         if (!side.isNumber() || !std::isfinite(sd) || sd < WorldSpec::kMinSide || sd > WorldSpec::kMaxSide)

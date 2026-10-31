@@ -9,6 +9,7 @@
 
 #include "ftcore/CombatKind.h"
 #include "ftcore/Dialogue.h"
+#include "ftcore/Encounter.h"
 #include "ftcore/Explore.h"
 #include "ftcore/Guard.h"
 #include "ftcore/StoryChain.h"
@@ -47,9 +48,10 @@ struct FFTStoryCarry
 	int32 Beat = -1;
 	FString Kind; // gameplay kind as written (CMB, ENG, PLAY); the beat's, not the step's
 	ftcore::GameplayScreen Screen = ftcore::GameplayScreen::Box;
-	// The combat system a battle step plays (its scene's world's, when a screen for it is built; else
-	// the rhythm battle). Rhythm for every other step.
+	// The combat system a battle step plays (its encounter's, when a screen for it is built; else
+	// Turns, the rhythm battle) and the one its encounter names. Rhythm for every other step.
 	ftcore::CombatKind Combat = ftcore::CombatKind::Rhythm;
+	ftcore::CombatKind WantedCombat = ftcore::CombatKind::Rhythm;
 	// The step of the beat's ftcore::GameplayPlan this screen plays (0-based) and the plan's step
 	// count. The story resumes only after the last step; a single-screen beat is step 0 of 1.
 	int32 Step = 0;
@@ -92,6 +94,10 @@ public:
 	// Data/Field/worlds.json, loaded at Init (empty when missing or refused, so every field step
 	// plays on the Explore map).
 	const ftcore::WorldTable& GetWorlds() const { return Worlds; }
+	// Data/Battle/enemies.json and encounters.json, loaded at Init for routing: which system each
+	// fight plays (ftcore::EncounterTable::combatFor). Empty when missing or refused, so every fight
+	// is a Turns fight. The battle screens load their own copy for the line-ups.
+	const ftcore::EncounterTable& GetEncounters() const { return Encounters; }
 
 	FFTExploreCarry ExploreCarry;
 	FFTStoryCarry StoryCarry;
@@ -118,7 +124,10 @@ public:
 
 private:
 	void LoadWorlds();
+	void LoadEncounters();
 
 	bool bAlphaFast = false;
 	ftcore::WorldTable Worlds;
+	ftcore::EnemyRoster Roster;
+	ftcore::EncounterTable Encounters;
 };

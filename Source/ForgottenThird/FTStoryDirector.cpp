@@ -526,6 +526,8 @@ void AFTStoryDirector::ReportFinished()
 			char Line[160];
 			GI->Alpha.formatFinished(Line, sizeof Line);
 			UE_LOG(LogForgottenThird, Log, TEXT("%s"), UTF8_TO_TCHAR(Line));
+			GI->Alpha.formatFights(Line, sizeof Line);
+			UE_LOG(LogForgottenThird, Log, TEXT("%s"), UTF8_TO_TCHAR(Line));
 			ExitCode = GI->Alpha.exitCode();
 		}
 		else

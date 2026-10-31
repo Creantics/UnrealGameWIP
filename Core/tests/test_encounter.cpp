@@ -190,6 +190,54 @@ TEST_CASE("bad enemy and encounter files are refused with a reason") {
     CHECK(table.entries.empty());
 }
 
+TEST_CASE("an encounter's combat tag says which system it plays; untagged fights are Turns") {
+    EnemyRoster roster;
+    REQUIRE(importEnemyRoster(kRoster, roster));
+    EncounterTable table;
+    std::string err;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(importEncounterTable(R"({"default": {"enemies": ["brute"]}, "encounters": [
+        {"scene": "S", "beat": 1, "enemies": ["brute"]},
+        {"scene": "S", "beat": 2, "combat": "arena", "enemies": ["brute"]},
+        {"scene": "S", "beat": 3, "combat": "beat", "enemies": ["shade"]},
+        {"scene": "S", "beat": 4, "combat": "rhythm", "enemies": ["shade"]}]})",
+                                         roster, table, &err, &warnings),
+                    err);
+    CHECK(warnings.empty()); // `combat` is a known key
+    CHECK(EncounterEntry{}.combat == CombatKind::Rhythm);
+
+    const bool counting = ftcore_test::allocHookInstalled();
+    const auto before = ftcore_test::allocStats().count;
+    const CombatKind plain = table.combatFor("S", 1, 0);
+    const CombatKind arena = table.combatFor("S", 2, 0);
+    const CombatKind beat = table.combatFor("S", 3, 0);
+    const CombatKind spelled = table.combatFor("S", 4, 0);
+    const CombatKind otherStep = table.combatFor("S", 2, 1); // not listed: the default line-up
+    const CombatKind unknown = table.combatFor("NOPE", 2, 0);
+    const CombatKind empty = table.combatFor("", 0, 0);
+    if (counting) CHECK(ftcore_test::allocStats().count == before);
+    CHECK(plain == CombatKind::Rhythm);
+    CHECK(arena == CombatKind::Arena);
+    CHECK(beat == CombatKind::Beat);
+    CHECK(spelled == CombatKind::Rhythm);
+    CHECK(otherStep == CombatKind::Rhythm);
+    CHECK(unknown == CombatKind::Rhythm);
+    CHECK(empty == CombatKind::Rhythm);
+    CHECK(EncounterTable{}.combatFor("S", 2, 0) == CombatKind::Rhythm);
+
+    // A bad value is a load error with its path; the spelling is exact.
+    for (const char* bad : {R"("melee")", R"("Arena")", R"("turns")", R"("")", "3", "null"}) {
+        CAPTURE(bad);
+        const std::string text = std::string(R"({"default": {"enemies": ["brute"]}, "encounters": [{"scene": "S", "beat": 1, "combat": )") +
+                                 bad + R"(, "enemies": ["brute"]}]})";
+        CHECK_FALSE(importEncounterTable(text, roster, table, &err));
+        CHECK(err.find("encounters[0].combat") != std::string::npos);
+    }
+    // The default line-up is always a Turns fight.
+    CHECK_FALSE(importEncounterTable(R"({"default": {"enemies": ["brute"], "combat": "arena"}})", roster, table, &err));
+    CHECK(err.find("default.combat") != std::string::npos);
+}
+
 TEST_CASE("enemy phases load with their patterns, thresholds and bonuses; bad ones are refused") {
     constexpr const char* kPhased = R"J({ "enemies": [ { "id": "boss", "stats": { "maxHp": 400, "attack": 20 },
       "skills": [ { "id": "a" }, { "id": "b" }, { "id": "c" } ],
@@ -283,6 +331,39 @@ TEST_CASE("Data/Battle loads and its default line-up is the demo's") {
         CHECK_FALSE(e.lineup.enemies.empty());
         CHECK(&table.find(e.scene, e.beat, e.step) == &e.lineup);
     }
+}
+
+TEST_CASE("Data/Battle: the bosses' fights are tagged, the finals play Beat and every other fight is Turns") {
+    std::string enemiesText, encountersText;
+    if (!ftcore_test::readProjectData("Battle/enemies.json", enemiesText) ||
+        !ftcore_test::readProjectData("Battle/encounters.json", encountersText)) {
+        FAIL("Data/Battle/enemies.json or encounters.json not found");
+        return;
+    }
+    EnemyRoster roster;
+    EncounterTable table;
+    std::string err;
+    REQUIRE_MESSAGE(importEnemyRoster(enemiesText, roster, &err), err);
+    REQUIRE_MESSAGE(importEncounterTable(encountersText, roster, table, &err), err);
+    // A boss is an enemy of kBossHp base max HP or more; a fight with one is a boss fight.
+    constexpr int kBossHp = 340;
+    std::uint32_t kinds[kCombatKinds] = {};
+    for (const EncounterEntry& e : table.entries) {
+        CAPTURE(e.scene);
+        CAPTURE(e.beat);
+        CAPTURE(e.step);
+        bool boss = false;
+        for (const std::uint32_t i : e.lineup.enemies) boss = boss || roster.enemies[i].stats.maxHp >= kBossHp;
+        const CombatKind kind = table.combatFor(e.scene, e.beat, e.step);
+        CHECK(kind == e.combat);
+        ++kinds[static_cast<std::size_t>(kind)];
+        CHECK(boss == (kind != CombatKind::Rhythm)); // minor enemies are always Turns
+        if (kind == CombatKind::Beat) CHECK(e.lineup.enemies.size() == 1); // a world's final: one boss
+    }
+    CHECK(kinds[static_cast<std::size_t>(CombatKind::Beat)] == 3); // one final per world
+    CHECK(kinds[static_cast<std::size_t>(CombatKind::Arena)] == 13);
+    CHECK(kinds[static_cast<std::size_t>(CombatKind::Rhythm)] == 24);
+    CHECK(table.combatFor("SC-NOPE", 0, 0) == CombatKind::Rhythm); // an unlisted fight plays the default, Turns
 }
 
 namespace {

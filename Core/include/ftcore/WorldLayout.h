@@ -24,14 +24,14 @@
 // worlds.json (ids and numbers only, no story text):
 //   { "version": 1,
 //     "worlds": [ { "id": "solhaven", "map": "World_Solhaven", "style": "solhaven", "kind": "town",
-//                   "side": 1000, "seed": 3, "districts": 16, "combat": "arena",
+//                   "side": 1000, "seed": 3, "districts": 16,
 //                   "story": ["Solhaven"],
 //                   "sites": [ { "district": 0, "tier": "entry" }, { "district": 14, "tier": "climax" } ] } ],
 //     "scenes": [ { "scene": "SC-X", "world": "solhaven", "district": 2, "style": "inksolhaven" } ],
 //     "overworld": { "map": "Overworld", "side": 480, "seed": 7 } }
-//   `kind` is town, towers or ruins (the buildings' shape). `combat` (optional) is rhythm, arena or
-//   beat: the combat system every fight in the world's scenes plays (ftcore/CombatKind.h,
-//   docs/COMBAT_SYSTEMS.md); without it the world plays rhythm. `story` lists the script's scene
+//   `kind` is town, towers or ruins (the buildings' shape). `combat` is retired and ignored with a
+//   warning: each fight names its own system in Data/Battle/encounters.json (ftcore/Encounter.h,
+//   docs/COMBAT_SYSTEMS.md). `story` lists the script's scene
 //   world names the world plays (checked by a test against the script). A scene's field steps play
 //   in its district; `style` optionally overrides the world's style for that scene. A scene not
 //   listed plays on the Explore map. `overworld` (optional) is the small map that joins the worlds
@@ -39,10 +39,9 @@
 //   (optional) marks the districts the ground is shaped around (ftcore/Terrain.h): the `entry`
 //   (where the world starts), the `climax` and any number of `major` sites, each district at most
 //   once; when present it has exactly one entry and one climax. Unknown keys are warnings; anything
-//   else wrong is an error (an unknown `combat` value too).
+//   else wrong is an error.
 
 #include "ftcore/Api.h"
-#include "ftcore/CombatKind.h"
 #include "ftcore/Explore.h"
 
 #include <array>
@@ -83,7 +82,6 @@ struct WorldSpec {
     float side = 1000.f;
     std::uint32_t seed = 1;
     std::uint32_t districts = 8;
-    CombatKind combat = CombatKind::Rhythm; // the combat system its fights play
     std::vector<std::string> story; // the script's world names this world plays
     std::vector<WorldSite> sites;   // empty, or one entry, one climax and any majors
 };
@@ -114,10 +112,6 @@ struct WorldTable {
     FTCORE_API const WorldScene* findScene(std::string_view scene) const;
     // The world with this id or map name, or -1.
     FTCORE_API int findWorld(std::string_view idOrMap) const;
-    // The combat system a fight in that world (by id or map name) / in that scene plays. Rhythm when
-    // the world or the scene isn't listed. No allocation.
-    FTCORE_API CombatKind combatForWorld(std::string_view idOrMap) const;
-    FTCORE_API CombatKind combatForScene(std::string_view scene) const;
 };
 
 // On failure `out` is empty and *error lists each problem with its path, one per line.

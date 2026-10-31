@@ -128,6 +128,19 @@ TEST_CASE("alpha counters and the closing line") {
     c.formatFinished(line, sizeof line);
     CHECK(std::strstr(line, "1 STUCK, 0 warnings") != nullptr);
 
+    // The fights by system: an Arena fight with no screen yet is tagged arena and played as Turns.
+    CHECK(c.fights() == 0);
+    c.addFight(CombatKind::Rhythm, CombatKind::Rhythm);
+    c.addFight(CombatKind::Arena, CombatKind::Rhythm);
+    c.addFight(CombatKind::Beat, CombatKind::Beat);
+    CHECK(c.fights() == 3);
+    const std::size_t m = c.formatFights(line, sizeof line);
+    CHECK(std::strcmp(line, "Alpha: FIGHTS 3 (tagged 1 turns, 1 arena, 1 beat; played 2 turns, 0 arena, 1 beat)") == 0);
+    CHECK(m == std::strlen(line));
+    char shortLine[8];
+    CHECK(c.formatFights(shortLine, sizeof shortLine) == sizeof shortLine - 1);
+    CHECK(c.formatFights(nullptr, 4) == 0);
+
     char tiny[8];
     CHECK(c.formatFinished(tiny, sizeof tiny) == 7);
     CHECK(tiny[7] == '\0');

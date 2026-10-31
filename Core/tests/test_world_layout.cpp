@@ -370,23 +370,6 @@ TEST_CASE("worlds: real script: every field step of a world's scenes plays in th
 
 namespace {
 
-// One world per combat kind, plus one with no `combat` key.
-constexpr const char* kCombatWorlds = R"J({
-  "version": 1,
-  "worlds": [
-    { "id": "town_a", "map": "World_A", "style": "solhaven", "side": 1000, "districts": 4, "combat": "arena" },
-    { "id": "spires", "map": "World_B", "style": "lattice", "kind": "towers", "side": 900, "districts": 4, "combat": "rhythm" },
-    { "id": "ruins_c", "map": "World_C", "style": "unwritten", "kind": "ruins", "side": 900, "districts": 4, "combat": "beat" },
-    { "id": "plain", "map": "World_D", "style": "solhaven", "side": 900, "districts": 4 }
-  ],
-  "scenes": [
-    { "scene": "SC-A1", "world": "town_a", "district": 0 },
-    { "scene": "SC-B1", "world": "spires", "district": 1 },
-    { "scene": "SC-C1", "world": "ruins_c", "district": 2 },
-    { "scene": "SC-D1", "world": "plain", "district": 3 }
-  ]
-})J";
-
 // A one-world file whose `combat` value is `value` (raw JSON text).
 std::string oneWorldWithCombat(const std::string& value) {
     return std::string(R"J({"worlds":[{"id":"a","map":"M","style":"s","side":1000,"districts":4,"combat":)J") + value + "}]}";
@@ -394,79 +377,18 @@ std::string oneWorldWithCombat(const std::string& value) {
 
 } // namespace
 
-TEST_CASE("worlds: the combat key parses, and a world without it plays rhythm") {
-    WorldTable t;
-    std::string error;
-    std::vector<std::string> warnings;
-    REQUIRE_MESSAGE(importWorldTable(kCombatWorlds, t, &error, &warnings), error);
-    CHECK(warnings.empty()); // `combat` is a known key
-    REQUIRE(t.worlds.size() == 4);
-    CHECK(t.worlds[0].combat == CombatKind::Arena);
-    CHECK(t.worlds[1].combat == CombatKind::Rhythm);
-    CHECK(t.worlds[2].combat == CombatKind::Beat);
-    CHECK(t.worlds[3].combat == CombatKind::Rhythm); // no key
-    CHECK(WorldSpec{}.combat == CombatKind::Rhythm);
-
-    // The older fixture has no `combat` anywhere: every world reads as rhythm.
-    REQUIRE_MESSAGE(importWorldTable(kWorlds, t, &error, &warnings), error);
-    for (const WorldSpec& w : t.worlds) CHECK(w.combat == CombatKind::Rhythm);
-}
-
-TEST_CASE("worlds: an unknown combat value is a load error with its path") {
-    WorldTable t;
-    std::string error;
-    CHECK_FALSE(importWorldTable(oneWorldWithCombat(R"J("melee")J"), t, &error));
-    CHECK(error.find("worlds[0].combat") != std::string::npos);
-    CHECK(t.worlds.empty()); // failure leaves it empty
-    CHECK_FALSE(importWorldTable(oneWorldWithCombat(R"J("Arena")J"), t, &error)); // the spelling is exact
-    CHECK_FALSE(importWorldTable(oneWorldWithCombat(R"J("")J"), t, &error));
-    CHECK_FALSE(importWorldTable(oneWorldWithCombat("3"), t, &error)); // not a string
-    CHECK_FALSE(importWorldTable(oneWorldWithCombat("null"), t, &error));
-    for (const char* good : {R"J("rhythm")J", R"J("arena")J", R"J("beat")J"}) {
-        error.clear();
-        CHECK_MESSAGE(importWorldTable(oneWorldWithCombat(good), t, &error), error);
+TEST_CASE("worlds: the retired combat key loads with a warning, whatever its value") {
+    // A fight's system is its encounter's "combat" (Data/Battle/encounters.json), not its world's.
+    for (const char* value : {R"J("arena")J", R"J("rhythm")J", R"J("beat")J", R"J("melee")J", "3", "null"}) {
+        WorldTable t;
+        std::string error;
+        std::vector<std::string> warnings;
+        CHECK_MESSAGE(importWorldTable(oneWorldWithCombat(value), t, &error, &warnings), error);
+        CHECK(t.worlds.size() == 1);
+        REQUIRE(warnings.size() == 1);
+        CHECK(warnings[0].find("worlds[0].combat") != std::string::npos);
+        CHECK(warnings[0].find("encounters.json") != std::string::npos);
     }
-}
-
-TEST_CASE("worlds: combatForWorld and combatForScene answer, fall back to rhythm and allocate nothing") {
-    WorldTable t;
-    std::string error;
-    REQUIRE_MESSAGE(importWorldTable(kCombatWorlds, t, &error), error);
-
-    const bool counting = ftcore_test::allocHookInstalled();
-    const std::uint64_t before = ftcore_test::allocStats().count;
-    const CombatKind byId = t.combatForWorld("town_a");
-    const CombatKind byMap = t.combatForWorld("World_C"); // the map name works too
-    const CombatKind spires = t.combatForWorld("spires");
-    const CombatKind plain = t.combatForWorld("plain");
-    const CombatKind unknownWorld = t.combatForWorld("nowhere");
-    const CombatKind emptyWorld = t.combatForWorld("");
-    const CombatKind sceneA = t.combatForScene("SC-A1");
-    const CombatKind sceneB = t.combatForScene("SC-B1");
-    const CombatKind sceneC = t.combatForScene("SC-C1");
-    const CombatKind sceneD = t.combatForScene("SC-D1");
-    const CombatKind unknownScene = t.combatForScene("SC-NOPE");
-    const CombatKind emptyScene = t.combatForScene("");
-    const std::uint64_t allocs = ftcore_test::allocStats().count - before;
-    if (counting) CHECK(allocs == 0);
-
-    CHECK(byId == CombatKind::Arena);
-    CHECK(byMap == CombatKind::Beat);
-    CHECK(spires == CombatKind::Rhythm);
-    CHECK(plain == CombatKind::Rhythm);
-    CHECK(unknownWorld == CombatKind::Rhythm);
-    CHECK(emptyWorld == CombatKind::Rhythm);
-    CHECK(sceneA == CombatKind::Arena);
-    CHECK(sceneB == CombatKind::Rhythm);
-    CHECK(sceneC == CombatKind::Beat);
-    CHECK(sceneD == CombatKind::Rhythm);       // its world has no key
-    CHECK(unknownScene == CombatKind::Rhythm); // a scene with no world
-    CHECK(emptyScene == CombatKind::Rhythm);
-
-    // An empty table answers rhythm for everything.
-    const WorldTable none{};
-    CHECK(none.combatForWorld("town_a") == CombatKind::Rhythm);
-    CHECK(none.combatForScene("SC-A1") == CombatKind::Rhythm);
 }
 
 TEST_CASE("worlds: every map opens by its long name under /Game/Maps") {
@@ -496,44 +418,17 @@ TEST_CASE("worlds: every map opens by its long name under /Game/Maps") {
     CHECK(mapPackage(t.overworld.map) == "/Game/Maps/" + t.overworld.map);
 }
 
-TEST_CASE("worlds: Data/Field/worlds.json names solhaven arena, lattice rhythm and unwritten beat") {
+TEST_CASE("worlds: Data/Field/worlds.json no longer names a combat system") {
     std::string text;
     if (!ftcore_test::readProjectData("Field/worlds.json", text)) {
         MESSAGE("Field/worlds.json not readable; skipping");
         return;
     }
-    // The file spells the key out for every world (rhythm is also the default, so read the text).
+    // Each fight names its own (Data/Battle/encounters.json): the worlds' retired key is gone.
     JsonDocument doc;
     std::string parseError;
     REQUIRE_MESSAGE(doc.parse(text, &parseError), parseError);
     const JsonValue worlds = doc.root()["worlds"];
     REQUIRE(worlds.size() == 3);
-    for (std::uint32_t i = 0; i < worlds.size(); ++i) {
-        const std::string id(worlds[i]["id"].string());
-        CAPTURE(id);
-        const std::string_view combat = worlds[i]["combat"].string();
-        if (id == "solhaven") CHECK(combat == "arena");
-        else if (id == "lattice") CHECK(combat == "rhythm");
-        else if (id == "unwritten") CHECK(combat == "beat");
-        else FAIL("unexpected world " << id);
-    }
-
-    WorldTable t;
-    if (!loadWorlds(t)) return;
-    CHECK(t.combatForWorld("solhaven") == CombatKind::Arena);
-    CHECK(t.combatForWorld("lattice") == CombatKind::Rhythm);
-    CHECK(t.combatForWorld("unwritten") == CombatKind::Beat);
-    CHECK(t.combatForWorld("World_Unwritten") == CombatKind::Beat);
-    // Scenes follow their world; one that isn't placed plays rhythm.
-    CHECK(t.combatForScene("SC-01-D1") == CombatKind::Arena);
-    CHECK(t.combatForScene("SC-13-HE1") == CombatKind::Arena); // an Ink-Solhaven scene
-    CHECK(t.combatForScene("SC-01-U1") == CombatKind::Rhythm);
-    CHECK(t.combatForScene("SC-14-Q1") == CombatKind::Beat);
-    CHECK(t.combatForScene("SC-P0-01") == CombatKind::Beat);
-    CHECK(t.combatForScene("SC-not-placed") == CombatKind::Rhythm);
-    // Every placed scene answers its world's system.
-    for (const WorldScene& s : t.scenes) {
-        CAPTURE(s.scene);
-        CHECK(t.combatForScene(s.scene) == t.worlds[s.world].combat);
-    }
+    for (std::uint32_t i = 0; i < worlds.size(); ++i) CHECK(worlds[i]["combat"].isAbsent());
 }

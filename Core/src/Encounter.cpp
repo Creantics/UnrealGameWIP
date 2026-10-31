@@ -263,6 +263,11 @@ const EncounterLineup& EncounterTable::find(std::string_view scene, std::uint32_
     return e ? e->lineup : fallback;
 }
 
+CombatKind EncounterTable::combatFor(std::string_view scene, std::uint32_t beat, std::uint32_t step) const {
+    const EncounterEntry* e = findEntry(scene, beat, step);
+    return e ? e->combat : CombatKind::Rhythm;
+}
+
 bool importEnemyRoster(std::string_view json, EnemyRoster& out, std::string* error, std::vector<std::string>* warnings) {
     out = EnemyRoster{};
     std::vector<std::string> errors;
@@ -368,7 +373,8 @@ bool importEncounterTable(std::string_view json, const EnemyRoster& roster, Enco
     if (!def.isObject()) {
         errors.push_back("default: expected an object");
     } else {
-        encUnknownKeys(def, "default", {"enemies", "tier"}, warnings);
+        encUnknownKeys(def, "default", {"enemies", "tier", "combat"}, warnings);
+        if (def.has("combat")) errors.push_back("default.combat: the default line-up is a Turns fight; tag an encounter instead");
         encLineup(def["enemies"], roster, "default.enemies", table.fallback, errors);
         encInt(def, "tier", table.fallback.tier, 0, kMaxTier, "default", errors);
     }
@@ -382,7 +388,7 @@ bool importEncounterTable(std::string_view json, const EnemyRoster& roster, Enco
             errors.push_back(path + ": expected an object");
             continue;
         }
-        encUnknownKeys(j, path, {"scene", "beat", "step", "tier", "enemies"}, warnings);
+        encUnknownKeys(j, path, {"scene", "beat", "step", "tier", "enemies", "combat"}, warnings);
         EncounterEntry e;
         e.scene = encStr(j["scene"].string());
         if (e.scene.empty()) errors.push_back(path + ".scene: expected a scene id");
@@ -394,6 +400,9 @@ bool importEncounterTable(std::string_view json, const EnemyRoster& roster, Enco
         e.step = static_cast<std::uint32_t>(step);
         encLineup(j["enemies"], roster, path + ".enemies", e.lineup, errors);
         encInt(j, "tier", e.lineup.tier, 0, kMaxTier, path, errors);
+        const JsonValue combat = j["combat"];
+        if (!combat.isAbsent() && !(combat.isString() && parseCombatKind(combat.string(), e.combat)))
+            errors.push_back(path + ".combat: expected rhythm, arena or beat");
         if (beat >= 0 && !e.scene.empty() && table.findEntry(e.scene, e.beat, e.step))
             errors.push_back(path + ": duplicate entry for " + e.scene + " beat " + std::to_string(e.beat) + " step " +
                              std::to_string(e.step));

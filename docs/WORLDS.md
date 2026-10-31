@@ -33,7 +33,7 @@ Each world entry has:
 - `kind`: town, towers or ruins
 - `side` in metres
 - `seed` and `districts`
-- `combat` (optional): `rhythm` (the default), `arena` or `beat`, the combat system every fight in its scenes plays (see [COMBAT_SYSTEMS.md](COMBAT_SYSTEMS.md)); an unknown value is a load error
+- `combat`: retired. Each fight names its own system in `Data/Battle/encounters.json` (see [COMBAT_SYSTEMS.md](COMBAT_SYSTEMS.md)); the loader warns and ignores the key
 - `story`: the script's world names it plays
 - `sites` (optional): the districts the ground is shaped around, as district indices and tiers: one `entry` (where the world starts), one `climax` and any number of `major` sites, each district at most once
 

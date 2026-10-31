@@ -46,7 +46,8 @@ struct FStepRoute
 	// The scene's world map when it isn't built, and that world's id.
 	FString MissingMap;
 	FString MissingWorld;
-	// A fight whose world's system can't play here: that system, and why (Combat is Rhythm then).
+	// The system a fight's encounter names, and why it can't play here when it can't (Combat is
+	// Rhythm then).
 	CombatKind Wanted = CombatKind::Rhythm;
 	const TCHAR* FallbackWhy = nullptr;
 };
@@ -89,7 +90,7 @@ EPlaced PlaceInWorld(const UFTGameInstance& GI, std::string_view Scene, FStepRou
 	return EPlaced::Placed;
 }
 
-FStepRoute RouteStep(const UFTGameInstance& GI, std::string_view Scene, const ftcore::GameplayStep& Step)
+FStepRoute RouteStep(const UFTGameInstance& GI, std::string_view Scene, uint32 Beat, uint32 StepIndex, const ftcore::GameplayStep& Step)
 {
 	FStepRoute Route;
 	Route.Screen = ftcore::screenRoutesTo(Step.screen);
@@ -100,7 +101,8 @@ FStepRoute RouteStep(const UFTGameInstance& GI, std::string_view Scene, const ft
 	}
 	else if (Route.Screen == GameplayScreen::Battle)
 	{
-		const CombatKind Want = GI.GetWorlds().combatForScene(Scene);
+		const CombatKind Want = GI.GetEncounters().combatFor(Scene, Beat, StepIndex);
+		Route.Wanted = Want;
 		const CombatKind Play = ftcore::playableCombat(Want, FTStep::kPlayableCombat);
 		if (Play != Want)
 		{
@@ -131,10 +133,6 @@ FStepRoute RouteStep(const UFTGameInstance& GI, std::string_view Scene, const ft
 			{
 				Route.FallbackWhy = TEXT("the scene's world map isn't built");
 			}
-		}
-		if (Route.FallbackWhy)
-		{
-			Route.Wanted = Want;
 		}
 	}
 	else if (Route.Screen == GameplayScreen::Cutscene)
@@ -211,7 +209,7 @@ FString FTStep::Prepare(UFTGameInstance& GI, const StoryRunner& Runner, const FS
 	const ftcore::StoryChain& Chain = GI.Chain;
 	const ftcore::GameplayStep& Step = Chain.current();
 	const ftcore::StoryPosition Pos = Runner.position();
-	const FStepRoute Route = RouteStep(GI, Pos.scene, Step);
+	const FStepRoute Route = RouteStep(GI, Pos.scene, Pos.beat, Chain.step(), Step);
 
 	FFTStoryCarry& Carry = GI.StoryCarry;
 	Carry = FFTStoryCarry();
@@ -222,6 +220,7 @@ FString FTStep::Prepare(UFTGameInstance& GI, const StoryRunner& Runner, const FS
 	Carry.Kind = FT::ToFString(Runner.gameplayKindName());
 	Carry.Screen = Route.Screen;
 	Carry.Combat = Route.Combat;
+	Carry.WantedCombat = Route.Wanted;
 	Carry.Step = static_cast<int32>(Chain.step());
 	Carry.StepCount = static_cast<int32>(Chain.count());
 	Carry.StepLabel = FT::ToFString(Step.label());
@@ -290,6 +289,10 @@ FTStep::EFinish FTStep::FinishCarried(UFTGameInstance& GI, const StoryRunner& Ru
 		return EFinish::Failed;
 	}
 	GI.Alpha.addScreen(Carry.Screen);
+	if (ftcore::screenRoutesTo(Carry.Screen) == GameplayScreen::Battle)
+	{
+		GI.Alpha.addFight(Carry.WantedCombat, Carry.Combat);
+	}
 	if (!OnCarriedBeat(GI, Runner, Carry))
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("Story: the story moved since the hand-off at %s beat %d; not resuming."), *Carry.Scene, Carry.Beat);
@@ -325,7 +328,8 @@ bool FTStep::ContinueHere(const UObject* WorldContext)
 	{
 		return false; // the beat's last step: back to the story
 	}
-	const FStepRoute Route = RouteStep(*GI, Runner.position().scene, Peek.current());
+	const ftcore::StoryPosition Pos = Runner.position();
+	const FStepRoute Route = RouteStep(*GI, Pos.scene, Pos.beat, Peek.step(), Peek.current());
 	const EFTStepHost Host = HostFor(Route.Screen, Route.Combat);
 	const FString Here = UGameplayStatics::GetCurrentLevelName(WorldContext, true);
 	if (Host == EFTStepHost::None || !Hosts->Has(Host) || (Host != EFTStepHost::Cutscene && Route.Map != Here))

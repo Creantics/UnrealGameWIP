@@ -18,6 +18,7 @@ void UFTGameInstance::Init()
 	bAlphaFast = FParse::Param(FCommandLine::Get(), TEXT("AlphaFast"));
 	ReloadStory();
 	LoadWorlds();
+	LoadEncounters();
 	// Load the interface text now, so a broken table shows up at launch (and in headless runs, which never draw).
 	FTUiText::Culture();
 }
@@ -46,6 +47,35 @@ void UFTGameInstance::LoadWorlds()
 	}
 	UE_LOG(LogForgottenThird, Log, TEXT("Worlds: %d worlds, %d scenes placed."), static_cast<int32>(Worlds.worlds.size()),
 		static_cast<int32>(Worlds.scenes.size()));
+}
+
+void UFTGameInstance::LoadEncounters()
+{
+	Roster = ftcore::EnemyRoster{};
+	Encounters = ftcore::EncounterTable{};
+	const FString Dir = FPaths::ProjectDir() / TEXT("Data/Battle");
+	TArray<uint8> EnemyBytes, EncounterBytes;
+	if (!FFileHelper::LoadFileToArray(EnemyBytes, *(Dir / TEXT("enemies.json")))
+		|| !FFileHelper::LoadFileToArray(EncounterBytes, *(Dir / TEXT("encounters.json"))))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Encounters: Data/Battle not found under %s; every fight is a Turns fight."), *Dir);
+		return;
+	}
+	std::string Error;
+	if (!ftcore::importEnemyRoster(FT::BytesAsText(EnemyBytes), Roster, &Error)
+		|| !ftcore::importEncounterTable(FT::BytesAsText(EncounterBytes), Roster, Encounters, &Error))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Encounters: Data/Battle refused; every fight is a Turns fight: %s"), *FT::ToFString(Error).TrimEnd());
+		return;
+	}
+	int32 Kinds[ftcore::kCombatKinds] = {};
+	for (const ftcore::EncounterEntry& E : Encounters.entries)
+	{
+		++Kinds[static_cast<int32>(E.combat)];
+	}
+	UE_LOG(LogForgottenThird, Log, TEXT("Encounters: %d listed (%d turns, %d arena, %d beat)."), static_cast<int32>(Encounters.entries.size()),
+		Kinds[static_cast<int32>(ftcore::CombatKind::Rhythm)], Kinds[static_cast<int32>(ftcore::CombatKind::Arena)],
+		Kinds[static_cast<int32>(ftcore::CombatKind::Beat)]);
 }
 
 bool UFTGameInstance::ReloadStory()

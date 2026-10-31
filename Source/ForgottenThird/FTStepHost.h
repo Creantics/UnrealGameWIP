@@ -10,8 +10,9 @@
 //   - for a field step in a scene placed in one of the big worlds (Data/Field/worlds.json), that
 //     world's map when it is built, or the overworld first when the last field step was in another
 //     world;
-//   - for a fight, its world's combat system (ftcore::CombatKind, WorldTable::combatForScene) when a
-//     screen for it is built, else the rhythm battle on BattleDemo. A beat fight opens the Beat map;
+//   - for a fight, the combat system its encounter names (ftcore::CombatKind,
+//     EncounterTable::combatFor on the scene, beat and step; Turns when untagged) when a screen for
+//     it is built, else Turns, the rhythm battle, on BattleDemo. A beat fight opens the Beat map;
 //     an arena fight plays on its world's map like a field step. StoryCarry.Combat says which system
 //     the step plays. A system with no screen yet logs one warning per run, never a counted one;
 //   - for a CG step in a scene placed in a big world, that world's map when it is built and no
@@ -59,6 +60,7 @@ namespace FTStep
 inline constexpr int32 kHostKinds = 4;
 
 // The combat systems that have a screen. The others play the rhythm battle (ftcore::playableCombat).
+// Arena joins once its host is built; the Beat fights play the beat fight until the boss mode lands.
 inline constexpr uint32 kPlayableCombat = ftcore::combatBit(ftcore::CombatKind::Rhythm) | ftcore::combatBit(ftcore::CombatKind::Beat);
 
 // The map a screen opens when it doesn't play in place ("BattleDemo", "Explore", ...), and the beat

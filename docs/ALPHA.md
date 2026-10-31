@@ -67,6 +67,12 @@ Pass means exit code 0 and this line (choice, quick-time event, cutscene, banter
 Alpha: FINISHED 73 scenes, 167 screens (40 battle, 91 field, 36 stub), 0 STUCK, 0 warnings, 12 overworld hops
 ```
 
+A second line counts the fights by combat system: the system each fight's encounter names, and the one that played (an Arena fight plays Turns until the arena host is built; see `docs/COMBAT_SYSTEMS.md`, "Routing"):
+
+```
+Alpha: FIGHTS <n> (tagged <t> turns, <a> arena, <b> beat; played <t> turns, <a> arena, <b> beat)
+```
+
 When `Content/Maps/Overworld.umap` exists, the gate also needs at least one overworld hop (see `docs/WORLDS.md`).
 
 It needs the local `Data/Story`, so only the main checkout runs it. Worktrees run the Core side
