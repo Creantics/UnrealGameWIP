@@ -1,6 +1,6 @@
 # Quick-time event screen
 
-The screen that QTE and `co-op QTE` gameplay steps open (`GameplayScreen::Qte` in `ftcore::GameplayPlan`). It is a short timed input sequence outside combat: rings close in on prompts, the player presses the matching direction as each ring lands, and a one-line result shows before the story continues. It borrows the battle's dodge and parry timing (see the Defence section of [BATTLE_DEMO.md](BATTLE_DEMO.md)) and has no fail state.
+The screen that QTE and `co-op QTE` gameplay steps open (`GameplayScreen::Qte` in `ftcore::GameplayPlan`). It is a short timed input sequence outside combat: rings close in on prompts, the player presses the matching action button as each ring lands, and a one-line result shows before the story continues. It borrows the battle's dodge and parry timing (see the Defence section of [BATTLE_DEMO.md](BATTLE_DEMO.md)) and has no fail state.
 
 ## Regenerate the map
 
@@ -27,11 +27,11 @@ The line has ids and counts only. Opened without a valid carry, the screen says 
 
 | Kind | Input | Grade |
 |---|---|---|
-| Tap | one direction | Pressed before its time `at`. Wide window: the last 0.06 s is Perfect, the rest of 0.30 s is Good. Narrow window: the last 0.12 s is Perfect, the rest of the wide window is Good |
-| Hold | one direction, then keep it down for `hold` s | Pressed like a tap; let go more than 0.15 s before the end and it is a Miss, otherwise it keeps the tap grade |
-| Mash | one direction, `mash` presses inside `limit` s from `at` | Perfect if done within 60% of the limit, Good if later, Miss if short |
+| Tap | one button | Pressed before its time `at`. Wide window: the last 0.06 s is Perfect, the rest of 0.30 s is Good. Narrow window: the last 0.12 s is Perfect, the rest of the wide window is Good |
+| Hold | one button, then keep it down for `hold` s | Pressed like a tap; let go more than 0.15 s before the end and it is a Miss, otherwise it keeps the tap grade |
+| Mash | one button, `mash` presses inside `limit` s from `at` | Perfect if done within 60% of the limit, Good if later, Miss if short |
 
-A press of another direction is ignored. The window widths are `DefenceTimeline`'s dodge and parry widths: each tap or hold is judged by a one-hit `DefenceTimeline` (a Wide prompt is a dodge press, a Narrow one a parry press, with a dodge press as the Good fallback), with the lockouts turned off so a miss never blocks the next prompt. Nothing here repeats that window arithmetic.
+A press of another button is ignored. The window widths are `DefenceTimeline`'s dodge and parry widths: each tap or hold is judged by a one-hit `DefenceTimeline` (a Wide prompt is a dodge press, a Narrow one a parry press, with a dodge press as the Good fallback), with the lockouts turned off so a miss never blocks the next prompt. Nothing here repeats that window arithmetic.
 
 There is no fail state. A prompt that runs out unanswered is a Miss and the sequence plays on. The overall outcome is only a grade: Perfect (every prompt Perfect), Good (no Miss), Fair (at most half missed), Poor (more). The story never branches on it.
 
@@ -46,11 +46,11 @@ Two settings (see DIALOGUE_UI.md) change the screen, read once when it starts (`
 
 ## Keys
 
-The battle screen's mapping: left, down, up and right are the arrow keys, WASD, the pad d-pad, or the pad's X, A, Y and B. Keys are polled each frame (so a hold sees its key go up), and presses are stamped with the clock as it stood at the start of the frame. Input is ignored for the first 0.25 s, so the press that opened the screen can't count. Escape (keyboard) or Start (pad) opens the pause menu (see [GAME_FRAME.md](GAME_FRAME.md), "Pause"): the clock stops with the world, and a key still held in the frame after the menu closes (the pad's A that picked Resume) is not read as a press until it is let go and pressed again.
+The action buttons (`ftcore::ActionButton`, `FTActionButtons.h`): Attack is J or the pad's face left, Guard I or face top, Dodge L or face right, Jump K or face bottom. The QTE is not a battle, so it takes no arrows: the arrow keys, WASD and the d-pad are the Turns battle's combos alone ([COMBAT_SYSTEMS.md](COMBAT_SYSTEMS.md)). Keys are polled each frame (so a hold sees its key go up), and presses are stamped with the clock as it stood at the start of the frame. Input is ignored for the first 0.25 s, so the press that opened the screen can't count. Escape (keyboard) or Start (pad) opens the pause menu (see [GAME_FRAME.md](GAME_FRAME.md), "Pause"): the clock stops with the world, and a key still held in the frame after the menu closes (the pad's A that picked Resume) is not read as a press until it is let go and pressed again.
 
 ## HUD
 
-A ring per prompt closes in on a target ring over 0.6 s (the battle tell frame, as a circle), with a direction glyph and its key names under it. A second inner ring marks a narrow prompt. The current prompt and the next two show. A hold draws a bar that fills, a mash a row of boxes that fills. One pip per prompt runs along the top (grey pending, gold perfect, cyan good, red miss). PERFECT, GOOD and MISS popups rise from the current prompt. All strings are static.
+A ring per prompt closes in on a target ring over 0.6 s (the battle tell frame, as a circle), with the face-button diamond (the prompt's button filled) and its name and key under it. A second inner ring marks a narrow prompt. The current prompt and the next two show. A hold draws a bar that fills, a mash a row of boxes that fills. One pip per prompt runs along the top (grey pending, gold perfect, cyan good, red miss). PERFECT, GOOD and MISS popups rise from the current prompt. All strings are static.
 
 ## Data
 
@@ -58,14 +58,14 @@ A ring per prompt closes in on a target ring over 0.6 s (the battle tell frame, 
 
 ```json
 { "version": 1,
-  "default": { "prompts": [ { "input": "left", "at": 1.0 },
-                            { "input": "up", "at": 2.0, "window": "narrow" },
+  "default": { "prompts": [ { "input": "attack", "at": 1.0 },
+                            { "input": "guard", "at": 2.0, "window": "narrow" },
                             { "input": "down", "at": 3.0, "hold": 0.8 },
                             { "input": "right", "at": 5.0, "mash": 8, "limit": 1.5 } ] },
   "qtes": [ { "scene": "SC-X", "beat": 4, "step": 0, "prompts": [ ... ] } ] }
 ```
 
-Prompt keys: `input` (`left`, `down`, `up`, `right`), `at` (seconds from the start; the first is at least 0.5), `window` (`wide` default or `narrow`), `hold` (0.2 to 5 s), `mash` (2 to 30 presses, needs `limit`) and `limit` (0.5 to 8 s, mash only). Hold and mash are exclusive. 1 to 24 prompts. Each prompt starts at least 0.4 s after the previous one ends. `step` defaults to 0; a duplicate (scene, beat, step) is an error and unknown keys are warnings. Every `co-op QTE` step of the script has its own entry (the script has no plain `QTE` step), generated from the step's position in the story: later steps run longer, with more narrow windows, holds and mashes, and every sequence ends by 8 s. The default is only the fallback. `test_field_goals.cpp` checks the entries against the script's steps.
+Prompt keys: `input` (`attack`, `guard`, `dodge`, `jump`; an arrow is an error), `at` (seconds from the start; the first is at least 0.5), `window` (`wide` default or `narrow`), `hold` (0.2 to 5 s), `mash` (2 to 30 presses, needs `limit`) and `limit` (0.5 to 8 s, mash only). Hold and mash are exclusive. 1 to 24 prompts. Each prompt starts at least 0.4 s after the previous one ends. `step` defaults to 0; a duplicate (scene, beat, step) is an error and unknown keys are warnings. Every `co-op QTE` step of the script has its own entry (the script has no plain `QTE` step), generated from the step's position in the story: later steps run longer, with more narrow windows, holds and mashes, and every sequence ends by 8 s. The default is only the fallback. `test_field_goals.cpp` checks the entries against the script's steps.
 
 ## Rules (Core)
 

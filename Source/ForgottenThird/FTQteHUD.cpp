@@ -3,6 +3,7 @@
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
+#include "FTActionButtons.h"
 #include "FTPauseOverlay.h"
 #include "FTQteGameMode.h"
 #include "FTUiText.h"
@@ -19,15 +20,11 @@ const FLinearColor kCyanQte(0.35f, 0.85f, 1.f);
 // Co-op: the two leads' prompt colours.
 const FLinearColor kSlotQte[2] = {FLinearColor(1.0f, 0.82f, 0.25f), FLinearColor(0.35f, 0.85f, 1.f)};
 
-// Direction order Left, Down, Up, Right (ftcore::Arrow), in screen space.
-const FVector2D kDirsQte[4] = {FVector2D(-1, 0), FVector2D(0, 1), FVector2D(0, -1), FVector2D(1, 0)};
-
 // Static so drawing never builds strings.
 const FTUiText kNoStepQte(TEXT("common.no_step"));
-const FTUiText kHintQte(TEXT("common.lanes_hint"));
+const FTUiText kHintQte(TEXT("common.buttons_hint"));
 const FTUiText kHoldQte(TEXT("qte.hold"));
 const FTUiText kMashQte(TEXT("qte.mash"));
-const FString kKeyNamesQte[4] = {FString(TEXT("Left / A")), FString(TEXT("Down / S")), FString(TEXT("Up / W")), FString(TEXT("Right / D"))};
 const FString kSlotTagQte[2] = {FString(TEXT("1")), FString(TEXT("2"))};
 const FTUiText kPerfectQte(TEXT("common.perfect"));
 const FTUiText kGoodQte(TEXT("common.good"));
@@ -74,18 +71,9 @@ void AFTQteHUD::DrawRing(float X, float Y, float Radius, const FLinearColor& Col
 	}
 }
 
-void AFTQteHUD::DrawGlyph(int32 Direction, float X, float Y, float Radius, const FLinearColor& Color, float Thickness)
+void AFTQteHUD::DrawGlyph(int32 Button, float X, float Y, float Radius, const FLinearColor& Color, float Thickness)
 {
-	const FVector2D Dir = kDirsQte[Direction & 3];
-	const FVector2D Perp(-Dir.Y, Dir.X);
-	const FVector2D C(X, Y);
-	const FVector2D Tip = C + Dir * Radius * 0.75;
-	const FVector2D Tail = C - Dir * Radius * 0.75;
-	const FVector2D WingA = C + Perp * Radius * 0.7;
-	const FVector2D WingB = C - Perp * Radius * 0.7;
-	DrawLine(Tail.X, Tail.Y, Tip.X, Tip.Y, Color, Thickness);
-	DrawLine(WingA.X, WingA.Y, Tip.X, Tip.Y, Color, Thickness);
-	DrawLine(WingB.X, WingB.Y, Tip.X, Tip.Y, Color, Thickness);
+	FTActionButtons::DrawGlyph(*this, Button, X, Y, Radius, Color, Thickness);
 }
 
 void AFTQteHUD::DrawPrompt(const AFTQteGameMode& Mode, int32 Index, int32 Slot, float X, float Y)
@@ -114,7 +102,7 @@ void AFTQteHUD::DrawPrompt(const AFTQteGameMode& Mode, int32 Index, int32 Slot, 
 	DrawGlyph(static_cast<int32>(P.input), X, Y, R * 0.55f, Shown, 5.f * S * Size);
 
 	float LabelY = Y + R + 14.f * S;
-	DrawStrCentered(kKeyNamesQte[static_cast<int32>(P.input) & 3], bCurrent ? kWhiteQte : kDimQte, X, LabelY, GEngine->GetSmallFont(), 1.2f);
+	DrawStrCentered(FTActionButtons::Label(static_cast<int32>(P.input)), bCurrent ? kWhiteQte : kDimQte, X, LabelY, GEngine->GetSmallFont(), 1.2f);
 	if (Mode.IsCoop())
 	{
 		DrawStrCentered(kSlotTagQte[P.actor & 1], Base, X, Y - R - 34.f * S, GEngine->GetMediumFont(), 1.3f);

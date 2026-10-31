@@ -3,6 +3,7 @@
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
+#include "FTActionButtons.h"
 #include "Engine/World.h"
 #include "FTBeatGameMode.h"
 #include "FTPauseOverlay.h"
@@ -21,12 +22,9 @@ const FLinearColor kBeatOrange(1.0f, 0.55f, 0.15f);
 const FLinearColor kBeatCyan(0.35f, 0.85f, 1.f);
 const FLinearColor kBeatGreen(0.3f, 0.85f, 0.4f);
 
-// Direction order Left, Down, Up, Right (ftcore::Arrow), in screen space.
-const FVector2D kBeatDirs[4] = {FVector2D(-1, 0), FVector2D(0, 1), FVector2D(0, -1), FVector2D(1, 0)};
-
 // Static so drawing never builds strings.
 const FTUiText kNoStepBeat(TEXT("common.no_step"));
-const FTUiText kHintBeat(TEXT("common.lanes_hint"));
+const FTUiText kHintBeat(TEXT("common.buttons_hint"));
 const FTUiText kPerfectBeat(TEXT("common.perfect"));
 const FTUiText kGoodBeat(TEXT("common.good"));
 const FTUiText kMissBeat(TEXT("common.miss"));
@@ -133,18 +131,9 @@ void AFTBeatHUD::DrawBar(float X, float Y, float W, float H, float Fraction, con
 	}
 }
 
-void AFTBeatHUD::DrawGlyph(int32 Direction, float X, float Y, float Radius, const FLinearColor& Color, float Thickness)
+void AFTBeatHUD::DrawGlyph(int32 Button, float X, float Y, float Radius, const FLinearColor& Color, float Thickness)
 {
-	const FVector2D Dir = kBeatDirs[Direction & 3];
-	const FVector2D Perp(-Dir.Y, Dir.X);
-	const FVector2D C(X, Y);
-	const FVector2D Tip = C + Dir * Radius * 0.75;
-	const FVector2D Tail = C - Dir * Radius * 0.75;
-	const FVector2D WingA = C + Perp * Radius * 0.7;
-	const FVector2D WingB = C - Perp * Radius * 0.7;
-	DrawLine(Tail.X, Tail.Y, Tip.X, Tip.Y, Color, Thickness);
-	DrawLine(WingA.X, WingA.Y, Tip.X, Tip.Y, Color, Thickness);
-	DrawLine(WingB.X, WingB.Y, Tip.X, Tip.Y, Color, Thickness);
+	FTActionButtons::DrawGlyph(*this, Button, X, Y, Radius, Color, Thickness);
 }
 
 FVector2D AFTBeatHUD::EnemyPoint(const AFTBeatGameMode& Mode, int32 Enemy, int32 Count)

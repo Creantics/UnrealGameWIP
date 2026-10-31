@@ -18,6 +18,13 @@ The skill arrow combos (`ComboSequence.h`, `ComboGenerator.h`) belong to the tur
 - The `combo_fence` ctest case (`Core/cmake/CheckComboFence.cmake`) fails if `ArenaFight`, `BeatFight` or `BeatScreen` (and any later `BeatBoss` source) names `ComboSequence`, `ComboGenerator` or `generateCombo`.
 - `comboSequencesBuilt()` counts every combo built or restarted; a doctest case plays a whole arena fight and a whole beat fight, won by the autopilot and lost by an idle player, and checks it never moves.
 
+The arrows themselves are Turns' too. Everything else is answered with the four action buttons (`ftcore::ActionButton`, `ActionButton.h`: Attack, Guard, Dodge, Jump, the pad's face buttons and the keyboard's J, I, L, K; the Unreal key table and glyph are `FTActionButtons.h`):
+
+- The beat fight's prompts take a button, and `beat.json` patterns name it by letter (`A`, `G`, `D`, `J`).
+- The quick-time event's prompts take a button; `qte.json` spells it `attack`, `guard`, `dodge` or `jump`, and an arrow is a load error.
+- The mini-game keeps its combo chart for judging (it is a rhythm round), but shows and takes its lanes as buttons: lane i is button i (`miniButton`, `miniLane`).
+- `combo_fence` also fails if `Qte`, `BeatFight` or `BeatScreen` (and any later `BeatBoss` source) names `Arrow`, `kArrows` or `arrowName`.
+
 ## Routing
 
 `Data/Field/worlds.json` gives each world a `combat` key (`ftcore::CombatKind`, `CombatKind.h`):

@@ -2,6 +2,7 @@
 
 #include "Camera/CameraActor.h"
 #include "EngineUtils.h"
+#include "FTActionButtons.h"
 #include "FTGameInstance.h"
 #include "FTMiniHUD.h"
 #include "FTPauseSubsystem.h"
@@ -30,22 +31,6 @@ bool AlphaFastMini()
 	return FParse::Param(FCommandLine::Get(), TEXT("AlphaFast"));
 }
 
-// The four directions in ftcore::Arrow order (Left, Down, Up, Right), each with the keys
-// AFTPlayerController maps for the battle lanes: arrow keys, WASD, the pad d-pad and the pad's face
-// buttons (X, A, Y, B).
-constexpr int32 kDirectionsMini = 4;
-constexpr int32 kKeysPerDirectionMini = 4;
-
-const FKey& MiniKey(int32 Direction, int32 Which)
-{
-	static const FKey Keys[kDirectionsMini][kKeysPerDirectionMini] = {
-		{EKeys::Left, EKeys::A, EKeys::Gamepad_DPad_Left, EKeys::Gamepad_FaceButton_Left},
-		{EKeys::Down, EKeys::S, EKeys::Gamepad_DPad_Down, EKeys::Gamepad_FaceButton_Bottom},
-		{EKeys::Up, EKeys::W, EKeys::Gamepad_DPad_Up, EKeys::Gamepad_FaceButton_Top},
-		{EKeys::Right, EKeys::D, EKeys::Gamepad_DPad_Right, EKeys::Gamepad_FaceButton_Right},
-	};
-	return Keys[Direction][Which];
-}
 } // namespace
 
 AFTMiniGameMode::AFTMiniGameMode()
@@ -130,19 +115,19 @@ void AFTMiniGameMode::PollKeys()
 	// The frame after the pause menu closed, a key still held (pad A that picked Resume is also "down" here)
 	// is not a press of the screen's own: it counts once it is let go and pressed again.
 	const bool bResumed = UFTPauseSubsystem::IsJustResumed(this);
-	for (int32 D = 0; D < kDirectionsMini; ++D)
+	for (int32 D = 0; D < FTActionButtons::Count; ++D)
 	{
 		bool bPressed = false;
 		bool bNowDown = false;
-		for (int32 K = 0; K < kKeysPerDirectionMini; ++K)
+		for (int32 K = 0; K < FTActionButtons::KeysPerButton; ++K)
 		{
-			const FKey& Key = MiniKey(D, K);
+			const FKey& Key = FTActionButtons::Key(D, K);
 			bPressed |= PC->WasInputKeyJustPressed(Key);
 			bNowDown |= PC->IsInputKeyDown(Key);
 		}
 		if (!bResumed && (bPressed || (bNowDown && !bDown[D])))
 		{
-			Screen.press(static_cast<ftcore::Arrow>(D));
+			Screen.press(FTActionButtons::Button(D));
 		}
 		bDown[D] = bNowDown;
 	}

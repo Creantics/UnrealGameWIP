@@ -135,9 +135,9 @@ void MiniScreen::tick(double gameSeconds) {
     }
 }
 
-void MiniScreen::press(Arrow input) {
+void MiniScreen::press(ActionButton input) {
     if (phase_ != MiniPhase::Playing || autoPlay_ || roundAge_ < kInputGrace) return;
-    seq_.press(input, time_, results_);
+    seq_.press(miniLane(input), time_, results_);
     collect(time_);
 }
 

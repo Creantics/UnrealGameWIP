@@ -8,23 +8,23 @@
 // window arithmetic of its own): a Wide prompt is answered like a dodge, a Narrow one like a parry
 // (a press inside the wide window but outside the narrow one still counts, as Good).
 //
-//   Tap   one of the four directions, pressed before `at` (the impact; the press has to come before
+//   Tap   one of the four action buttons (ActionButton.h), pressed before `at` (the impact; the press has to come before
 //         it). Wide: the last 0.06 s before `at` is Perfect, the rest of the 0.30 s window Good.
 //         Narrow: the last 0.12 s is Perfect, the rest of the wide window Good.
-//   Hold  a direction pressed like a Tap, then kept down until at + hold. Let go more than
+//   Hold  a button pressed like a Tap, then kept down until at + hold. Let go more than
 //         kQteHoldSlack early and the prompt is a Miss; otherwise it keeps its tap grade.
-//   Mash  a direction pressed `mashCount` times inside [at, at + limit). Done within
+//   Mash  a button pressed `mashCount` times inside [at, at + limit). Done within
 //         kQtePerfectFraction of the limit it is Perfect, later Good; short of the count it is a Miss.
 //
-// A press of another direction than the prompt's is ignored. There is no fail state: a Miss plays
+// A press of another button than the prompt's is ignored. There is no fail state: a Miss plays
 // on to the next prompt, and the overall QteOutcome is only a grade (the story never branches on
 // it). A `co-op QTE` alternates its prompts between the two leads (actor slot 0, 1, 0, ...); the
 // slot only tells the screen whose prompt it is.
 //
 //   ftcore::QteSequence q;
 //   q.begin(def, coop);
-//   for (const ftcore::QteResult& r : q.press(ftcore::Arrow::Left, t)) ...;   // times in order
-//   q.release(ftcore::Arrow::Left, t);
+//   for (const ftcore::QteResult& r : q.press(ftcore::ActionButton::Attack, t)) ...;   // times in order
+//   q.release(ftcore::ActionButton::Attack, t);
 //   q.update(now);                      // prompts that ran out unanswered are Misses
 //   q.complete(); q.outcome();
 //
@@ -42,11 +42,11 @@
 // Data: Data/Qte/qte.json, ids and numbers only, no story text. Like encounters.json it is keyed by
 // scene id + gameplay beat index + plan step index with a `default` entry for every step not listed:
 //   { "version": 1,
-//     "default": { "prompts": [ { "input": "left", "at": 1.0 }, { "input": "up", "at": 2.0, "window": "narrow" },
-//                               { "input": "down", "at": 3.0, "hold": 0.8 },
-//                               { "input": "right", "at": 5.0, "mash": 8, "limit": 1.5 } ] },
+//     "default": { "prompts": [ { "input": "attack", "at": 1.0 }, { "input": "guard", "at": 2.0, "window": "narrow" },
+//                               { "input": "jump", "at": 3.0, "hold": 0.8 },
+//                               { "input": "dodge", "at": 5.0, "mash": 8, "limit": 1.5 } ] },
 //     "qtes": [ { "scene": "SC-X", "beat": 4, "step": 0, "prompts": [ ... ] } ] }
-//   Prompt keys: input ("left", "down", "up", "right"), at (seconds from the start, at least
+//   Prompt keys: input ("attack", "guard", "dodge", "jump"; no arrows), at (seconds from the start, at least
 //   kQteMinFirst for the first), window ("wide" default, or "narrow"), hold (seconds), mash (count,
 //   needs limit) and limit (seconds; mash only). hold and mash are exclusive. 1..kMaxQtePrompts prompts,
 //   `at` strictly after the previous prompt's end plus kQteMinGap. `step` defaults to 0. A duplicate
@@ -55,7 +55,7 @@
 // Loading allocates; everything else does not (fixed capacity, results by value).
 
 #include "ftcore/Api.h"
-#include "ftcore/Arrow.h"
+#include "ftcore/ActionButton.h"
 #include "ftcore/DefenceTimeline.h"
 
 #include <array>
@@ -94,7 +94,7 @@ inline constexpr double kQtePerfectFraction = 0.6; // a mash done by this share 
 
 struct QtePrompt {
     QteKind kind = QteKind::Tap;
-    Arrow input = Arrow::Left;
+    ActionButton input = ActionButton::Attack;
     QteWindow window = QteWindow::Wide; // Tap and Hold; a Mash ignores it
     std::uint8_t actor = 0;             // 0 or 1: which lead's prompt (co-op)
     std::uint8_t mashCount = 0;         // Mash: presses needed
@@ -167,7 +167,7 @@ struct QteAssist {
 struct QteAction {
     enum class Kind : std::uint8_t { None, Press, Release };
     Kind kind = Kind::None;
-    Arrow input = Arrow::Left;
+    ActionButton input = ActionButton::Attack;
     double time = 0.0;
 };
 
@@ -186,9 +186,9 @@ public:
     FTCORE_API QteResults update(double now);
     // A press of `input` at time t (moves the clock there first). Returns what it resolved: the
     // prompts that ran out before t, then the one it answered, if any.
-    FTCORE_API QteResults press(Arrow input, double t);
+    FTCORE_API QteResults press(ActionButton input, double t);
     // `input` let go at time t. Ends a hold that is let go too early.
-    FTCORE_API QteResults release(Arrow input, double t);
+    FTCORE_API QteResults release(ActionButton input, double t);
     // Ends the sequence at `now`: every prompt still open is a Miss (the autoplay cap).
     FTCORE_API QteResults finish(double now);
 
@@ -220,7 +220,7 @@ public:
     std::size_t perfects() const { return count(QteGrade::Perfect); }
     std::size_t goods() const { return count(QteGrade::Good); }
     std::size_t misses() const { return count(QteGrade::Miss); }
-    int strays() const { return strays_; } // presses of the wrong direction, or that answered nothing
+    int strays() const { return strays_; } // presses of the wrong button, or that answered nothing
     FTCORE_API QteOutcome outcome() const;
 
 private:
@@ -279,8 +279,8 @@ public:
     FTCORE_API void begin(bool hasStep, const QteDef& def, bool coop, bool autoPlay, const QteAssist& assist = {});
     FTCORE_API void tick(double gameSeconds);
     // Key events (ignored outside Playing, under autoplay and during the grace).
-    FTCORE_API void press(Arrow input);
-    FTCORE_API void release(Arrow input);
+    FTCORE_API void press(ActionButton input);
+    FTCORE_API void release(ActionButton input);
 
     QtePhase phase() const { return phase_; }
     bool playing() const { return phase_ == QtePhase::Playing; }

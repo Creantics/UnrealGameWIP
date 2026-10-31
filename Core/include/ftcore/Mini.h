@@ -1,8 +1,10 @@
 #pragma once
 
 // The mini-game: the real screen behind MINI gameplay steps (GameplayScreen::Mini). One small,
-// generic rhythm round: a short chart of arrow steps on a beat grid scrolls to a judgement line, and
-// the player presses each arrow as it lands. The chart comes from generateComboInto (ComboGenerator.h)
+// generic rhythm round: a short chart of button steps on a beat grid scrolls to a judgement line, and
+// the player presses each action button (ActionButton.h) as it lands. The mini-game is not a battle,
+// so it shows no arrows: lane i of the chart is button i (miniButton), and a press of button i
+// answers lane i (miniLane). The chart comes from generateComboInto (ComboGenerator.h)
 // and is judged by ComboSequence (ComboSequence.h), the battle's own step rules; the beat grid is a
 // Conductor's (Conductor.h) helpers on the screen's clock (no song is playing, so no cursor is fed).
 //
@@ -12,7 +14,7 @@
 //
 //   ftcore::MiniScreen screen;
 //   screen.begin(hasStep, def, autoPlay);     // allocates the chart buffers once
-//   every frame: screen.press(arrow) for each key press, then
+//   every frame: screen.press(button) for each key press, then
 //                screen.tick(deltaSeconds * ftcore::StubScreen::speedFactor(fast, worldDilation));
 //   when screen.finished(): mark the carry done and open the return map
 //
@@ -36,6 +38,7 @@
 // Loading and begin() allocate; tick() and press() do not (the chart and the result buffers are
 // reserved in begin(), and a retry regenerates into them).
 
+#include "ftcore/ActionButton.h"
 #include "ftcore/Api.h"
 #include "ftcore/ComboSequence.h"
 #include "ftcore/Conductor.h"
@@ -48,6 +51,10 @@
 namespace ftcore {
 
 inline constexpr int kMaxMiniSteps = 32;
+
+// The chart's lanes are the combo's four steps in order; the screen shows and takes them as buttons.
+inline ActionButton miniButton(Arrow lane) { return static_cast<ActionButton>(static_cast<std::uint8_t>(lane) & 3u); }
+inline Arrow miniLane(ActionButton button) { return static_cast<Arrow>(static_cast<std::uint8_t>(button) & 3u); }
 
 struct MiniDef {
     double bpm = 100.0;
@@ -88,7 +95,7 @@ public:
     FTCORE_API void begin(bool hasStep, const MiniDef& def, bool autoPlay);
     FTCORE_API void tick(double gameSeconds);
     // A key press (ignored outside Playing, under autoplay and during the grace).
-    FTCORE_API void press(Arrow input);
+    FTCORE_API void press(ActionButton input);
 
     MiniPhase phase() const { return phase_; }
     bool playing() const { return phase_ == MiniPhase::Playing; }

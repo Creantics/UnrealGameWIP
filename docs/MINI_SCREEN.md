@@ -1,8 +1,9 @@
 # Mini-game screen
 
 The real screen for MINI gameplay steps (`GameplayScreen::Mini`). It plays one small, generic
-rhythm round. Arrow steps on a beat grid fall down their lanes to a line, and the player presses
-each arrow as it lands. Every MINI step plays this same kind of round. Only its numbers change per
+rhythm round. Button steps on a beat grid fall down their lanes to a line, and the player presses
+each action button as it lands. The mini-game is not a battle, so it shows no arrows (those are the
+Turns battle's combos, [COMBAT_SYSTEMS.md](COMBAT_SYSTEMS.md)): lane i is `ftcore::ActionButton` i. Every MINI step plays this same kind of round. Only its numbers change per
 step.
 
 ## The rules
@@ -11,7 +12,7 @@ step.
   notes, one every `subdivision` beats, in `lanes` lanes, starting `lead` seconds in. The seed is
   the round's `seed` plus the try number, so a retry plays a fresh chart of the same shape.
 - **Judgement** is the battle's own: `ComboSequence` with the standard windows scaled by `window`.
-  Perfect, Great and Good count 1, 0.8 and 0.5. A wrong arrow in a note's window misses it. A press
+  Perfect, Great and Good count 1, 0.8 and 0.5. A wrong button in a note's window misses it. A press
   with no note in range is a stray, and locks input out for 0.15 s.
 - **The beat grid** is a `Conductor`'s helpers (`beatAt`, `secondsPerBeat`) on the screen's own
   clock. No song plays, so no audio cursor is fed. The judgement line pulses on the beat.
@@ -47,7 +48,7 @@ The committed table has only the default.
 |---|---|---|---|
 | `bpm` | Tempo of the beat grid | 60–200 | 100 |
 | `steps` | Notes in a round | 4–32 | 12 |
-| `lanes` | Lanes used (left and right, then up, then down) | 2–4 | 3 |
+| `lanes` | Lanes used (Attack and Jump, then Dodge, then Guard) | 2–4 | 3 |
 | `subdivision` | Beats between notes | 1 or 0.5 | 1 |
 | `seed` | Chart seed (each retry adds 1) | 0–2^31−1 | 7 |
 | `pass` | Accuracy that clears the round | 0–1 | 0.6 |
@@ -62,14 +63,14 @@ Errors name paths (`minis[2].bpm`).
 
 ## Controls
 
-| Direction | Keyboard | Gamepad |
+| Button | Keyboard | Gamepad |
 |---|---|---|
-| Left | Left arrow or A | D-pad left or X |
-| Down | Down arrow or S | D-pad down or A |
-| Up | Up arrow or W | D-pad up or Y |
-| Right | Right arrow or D | D-pad right or B |
+| Attack | J | face left (X) |
+| Guard | I | face top (Y) |
+| Dodge | L | face right (B) |
+| Jump | K | face bottom (A) |
 
-This is the battle and QTE screens' mapping. The game mode polls the keys every frame and presses
+This is the QTE and Beat screens' mapping (`FTActionButtons.h`): the pad's face buttons and the keyboard's I, J, K, L diamond in the same layout. The game mode polls the keys every frame and presses
 before the tick, so a press is stamped with the round's clock as it stood at the start of the
 frame. Presses in the first 0.25 s of each round are ignored. Escape (keyboard) or Start (pad)
 opens the pause menu (see [GAME_FRAME.md](GAME_FRAME.md), "Pause"): the round's clock stops with the
@@ -91,7 +92,7 @@ generated, never hand-made. The director opens the `Mini` map for every MINI ste
 1. The story director fills `UFTGameInstance::StoryCarry` and opens the `Mini` map.
 2. `AFTMiniGameMode::StartPlay` loads the table and picks the step's round. It logs
    `Mini: round at <scene> beat <b> step <s>: steps <n> lanes <l> bpm <bpm> tries <t>.`
-3. `AFTMiniHUD` draws four lanes in arrow order (lanes the round doesn't use are dim), the falling
+3. `AFTMiniHUD` draws four lanes in button order, each named under the line (lanes the round doesn't use are dim), the falling
    notes (a hit note vanishes, a missed one turns red), the pulsing line, the latest grade, "Try i
    of n" and, between rounds, the outcome with the round's accuracy.
 4. When the screen finishes, the game mode marks the carry done and won, logs the line below, and

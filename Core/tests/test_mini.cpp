@@ -27,7 +27,7 @@ void playRound(MiniScreen& s, Hit hit) {
     for (int frame = 0; frame < 6000 && s.playing() && s.attempt() == tries; ++frame) {
         const ComboSequence& q = s.sequence();
         if (next < q.size() && s.time() >= q.note(next).time) {
-            if (hit(next)) s.press(q.note(next).arrow);
+            if (hit(next)) s.press(miniButton(q.note(next).arrow));
             ++next;
         }
         s.tick(1.0 / 240.0);
@@ -115,18 +115,18 @@ TEST_CASE("mini: input is ignored in the grace, under autoplay and with no step"
     MiniDef d = defaultMiniDef();
     d.lead = 1.0;
     s.begin(true, d, false);
-    s.press(Arrow::Left);
-    s.press(Arrow::Right);
+    s.press(miniButton(Arrow::Left));
+    s.press(miniButton(Arrow::Right));
     CHECK(s.sequence().strays() == 0);
     runFor(s, 0.3);
-    s.press(Arrow::Up); // nothing in range: a stray
+    s.press(miniButton(Arrow::Up)); // nothing in range: a stray
     CHECK(s.sequence().strays() == 1);
 
     MiniScreen none;
     none.begin(false, d, false);
     CHECK(none.phase() == MiniPhase::NoStep);
     none.tick(5.0);
-    none.press(Arrow::Left);
+    none.press(miniButton(Arrow::Left));
     CHECK(none.phase() == MiniPhase::NoStep);
 }
 
@@ -140,7 +140,7 @@ TEST_CASE("mini: autoplay clears the first try within about a second at any fram
         s.begin(true, d, true);
         double t = 0.0;
         while (!s.finished() && t < 10.0) {
-            s.press(Arrow::Left); // ignored
+            s.press(miniButton(Arrow::Left)); // ignored
             s.tick(dt);
             t += dt;
         }
@@ -173,7 +173,7 @@ TEST_CASE("mini: running a screen allocates nothing after begin") {
         }
         const ComboSequence& q = s.sequence();
         if (s.playing() && next < q.size() && s.time() >= q.note(next).time) {
-            if (next % 2 == 0) s.press(q.note(next).arrow);
+            if (next % 2 == 0) s.press(miniButton(q.note(next).arrow));
             ++next;
         }
         s.tick(1.0 / 60.0);

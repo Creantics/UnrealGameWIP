@@ -2,6 +2,7 @@
 
 #include "Camera/CameraActor.h"
 #include "EngineUtils.h"
+#include "FTActionButtons.h"
 #include "FTGameInstance.h"
 #include "FTPauseSubsystem.h"
 #include "FTQteHUD.h"
@@ -32,22 +33,6 @@ bool AlphaFastQte()
 	return FParse::Param(FCommandLine::Get(), TEXT("AlphaFast"));
 }
 
-// The four directions in ftcore::Arrow order (Left, Down, Up, Right), each with the keys
-// AFTPlayerController maps for the battle lanes: arrow keys, WASD, the pad d-pad and the pad's face
-// buttons (X, A, Y, B).
-constexpr int32 kDirectionsQte = 4;
-constexpr int32 kKeysPerDirectionQte = 4;
-
-const FKey& QteKey(int32 Direction, int32 Which)
-{
-	static const FKey Keys[kDirectionsQte][kKeysPerDirectionQte] = {
-		{EKeys::Left, EKeys::A, EKeys::Gamepad_DPad_Left, EKeys::Gamepad_FaceButton_Left},
-		{EKeys::Down, EKeys::S, EKeys::Gamepad_DPad_Down, EKeys::Gamepad_FaceButton_Bottom},
-		{EKeys::Up, EKeys::W, EKeys::Gamepad_DPad_Up, EKeys::Gamepad_FaceButton_Top},
-		{EKeys::Right, EKeys::D, EKeys::Gamepad_DPad_Right, EKeys::Gamepad_FaceButton_Right},
-	};
-	return Keys[Direction][Which];
-}
 } // namespace
 
 AFTQteGameMode::AFTQteGameMode()
@@ -136,26 +121,26 @@ void AFTQteGameMode::PollKeys()
 	// The frame after the pause menu closed, a key still held (pad A that picked Resume is also "down" here)
 	// is not a press of the screen's own: it counts once it is let go and pressed again.
 	const bool bResumed = UFTPauseSubsystem::IsJustResumed(this);
-	for (int32 D = 0; D < kDirectionsQte; ++D)
+	for (int32 D = 0; D < FTActionButtons::Count; ++D)
 	{
 		bool bPressed = false;
 		bool bReleased = false;
 		bool bNowDown = false;
-		for (int32 K = 0; K < kKeysPerDirectionQte; ++K)
+		for (int32 K = 0; K < FTActionButtons::KeysPerButton; ++K)
 		{
-			const FKey& Key = QteKey(D, K);
+			const FKey& Key = FTActionButtons::Key(D, K);
 			bPressed |= PC->WasInputKeyJustPressed(Key);
 			bReleased |= PC->WasInputKeyJustReleased(Key);
 			bNowDown |= PC->IsInputKeyDown(Key);
 		}
-		const ftcore::Arrow Direction = static_cast<ftcore::Arrow>(D);
+		const ftcore::ActionButton Button = FTActionButtons::Button(D);
 		if (!bResumed && (bPressed || (bNowDown && !bDown[D])))
 		{
-			Screen.press(Direction);
+			Screen.press(Button);
 		}
 		if (bReleased || (!bNowDown && bDown[D]))
 		{
-			Screen.release(Direction);
+			Screen.release(Button);
 		}
 		bDown[D] = bNowDown;
 	}

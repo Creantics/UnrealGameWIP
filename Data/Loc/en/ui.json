@@ -6,6 +6,7 @@
     "common.continue_pad": "Space / Enter / pad A: continue",
     "common.continue": "Space / Enter: continue",
     "common.lanes_hint": "Arrows / WASD / d-pad / X A Y B",
+    "common.buttons_hint": "Attack J / Guard I / Dodge L / Jump K, or the pad's face buttons",
     "common.perfect": "PERFECT",
     "common.good": "GOOD",
     "common.miss": "MISS",

@@ -122,14 +122,14 @@ void BeatScreen::restartFight() {
     phase_ = BeatScreenPhase::Playing;
 }
 
-void BeatScreen::press(Arrow input, double t) {
+void BeatScreen::press(ActionButton input, double t) {
     if (phase_ != BeatScreenPhase::Playing || autoPlay_ || t < graceUntil_) return;
     const double before = fight_.now();
     collect(fight_.press(input, t));
     settle(before);
 }
 
-void BeatScreen::release(Arrow input, double t) {
+void BeatScreen::release(ActionButton input, double t) {
     if (phase_ != BeatScreenPhase::Playing || autoPlay_ || t < graceUntil_) return;
     const double before = fight_.now();
     collect(fight_.release(input, t));

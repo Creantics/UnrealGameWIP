@@ -3,6 +3,7 @@
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
+#include "FTActionButtons.h"
 #include "FTMiniGameMode.h"
 #include "FTPauseOverlay.h"
 #include "FTUiText.h"
@@ -17,15 +18,14 @@ const FLinearColor kLaneMini(0.12f, 0.12f, 0.16f, 0.9f);
 const FLinearColor kLaneOffMini(0.06f, 0.06f, 0.08f, 0.6f);
 const FLinearColor kRedMini(1.0f, 0.3f, 0.3f);
 const FLinearColor kCyanMini(0.35f, 0.85f, 1.f);
-// A colour per lane, in ftcore::Arrow order (Left, Down, Up, Right).
+// A colour per lane: lane i is ftcore::ActionButton i (ftcore::miniButton).
 const FLinearColor kNoteMini[4] = {FLinearColor(1.0f, 0.45f, 0.6f), FLinearColor(0.35f, 0.85f, 1.f), FLinearColor(0.5f, 1.f, 0.5f),
 	FLinearColor(1.0f, 0.82f, 0.25f)};
 
 // Static so drawing never builds strings.
 const FTUiText kNoStepMini(TEXT("common.no_step"));
-const FTUiText kHintMini(TEXT("common.lanes_hint"));
+const FTUiText kHintMini(TEXT("common.buttons_hint"));
 const FTUiText kTryMini(TEXT("mini.try"));
-const FString kLaneNamesMini[4] = {FString(TEXT("Left")), FString(TEXT("Down")), FString(TEXT("Up")), FString(TEXT("Right"))};
 // By ftcore::Grade (Pending, Perfect, Great, Good, Miss).
 const FString kGradeMini[5] = {FString(), FString(TEXT("PERFECT")), FString(TEXT("GREAT")), FString(TEXT("GOOD")), FString(TEXT("MISS"))};
 // By ftcore::MiniOutcome (Pending, Cleared, Retry, Continue), matching ftcore::miniOutcomeName.
@@ -115,7 +115,7 @@ void AFTMiniHUD::DrawHUD()
 	{
 		const float LX = X0 + L * (LaneW + Gap);
 		DrawRect(bUsed[L] ? kLaneMini : kLaneOffMini, LX, Top, LaneW, LineY - Top + 40.f * S);
-		DrawCentered(kLaneNamesMini[L], bUsed[L] ? kDimMini : WithAlphaMini(kDimMini, 0.35f), LX + LaneW * 0.5f, LineY + 48.f * S,
+		DrawCentered(FTActionButtons::Label(L), bUsed[L] ? kDimMini : WithAlphaMini(kDimMini, 0.35f), LX + LaneW * 0.5f, LineY + 48.f * S,
 			GEngine->GetSmallFont(), 1.2f);
 	}
 

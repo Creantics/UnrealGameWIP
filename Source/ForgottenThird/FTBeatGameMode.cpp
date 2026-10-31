@@ -2,6 +2,7 @@
 
 #include "Camera/CameraActor.h"
 #include "EngineUtils.h"
+#include "FTActionButtons.h"
 #include "FTAudioSubsystem.h"
 #include "FTBeatHUD.h"
 #include "FTConductorComponent.h"
@@ -38,23 +39,6 @@ constexpr float kBeatAlphaFastDilation = 8.f;
 // A music clock that hasn't reported its first position after this many wall seconds gives way to the wall
 // clock (a cue that never plays would otherwise hold the fight back for ever).
 constexpr double kBeatClockWait = 2.0;
-
-// The four directions in ftcore::Arrow order (Left, Down, Up, Right), each with the keys AFTPlayerController
-// maps for the battle lanes and the quick-time event screen reads: arrow keys, WASD, the pad d-pad and the
-// pad's face buttons (X, A, Y, B).
-constexpr int32 kBeatDirections = 4;
-constexpr int32 kBeatKeysPerDirection = 4;
-
-const FKey& BeatLaneKey(int32 Direction, int32 Which)
-{
-	static const FKey Keys[kBeatDirections][kBeatKeysPerDirection] = {
-		{EKeys::Left, EKeys::A, EKeys::Gamepad_DPad_Left, EKeys::Gamepad_FaceButton_Left},
-		{EKeys::Down, EKeys::S, EKeys::Gamepad_DPad_Down, EKeys::Gamepad_FaceButton_Bottom},
-		{EKeys::Up, EKeys::W, EKeys::Gamepad_DPad_Up, EKeys::Gamepad_FaceButton_Top},
-		{EKeys::Right, EKeys::D, EKeys::Gamepad_DPad_Right, EKeys::Gamepad_FaceButton_Right},
-	};
-	return Keys[Direction][Which];
-}
 
 // After a defeat: Enter, Space or the pad's A retries; Q, Backspace or the pad's B gives up.
 bool BeatRetryPressed(const APlayerController& PC)
@@ -411,27 +395,27 @@ void AFTBeatGameMode::PollKeys()
 	const bool bResumed = UFTPauseSubsystem::IsJustResumed(this);
 	// The time of this frame's key events on the fight's clock, latency compensated.
 	const double EventTime = Conductor->GetInputSongTime();
-	for (int32 D = 0; D < kBeatDirections; ++D)
+	for (int32 D = 0; D < FTActionButtons::Count; ++D)
 	{
 		bool bPressed = false;
 		bool bReleased = false;
 		bool bNowDown = false;
-		for (int32 K = 0; K < kBeatKeysPerDirection; ++K)
+		for (int32 K = 0; K < FTActionButtons::KeysPerButton; ++K)
 		{
-			const FKey& Key = BeatLaneKey(D, K);
+			const FKey& Key = FTActionButtons::Key(D, K);
 			bPressed |= PC->WasInputKeyJustPressed(Key);
 			bReleased |= PC->WasInputKeyJustReleased(Key);
 			bNowDown |= PC->IsInputKeyDown(Key);
 		}
 		// The screen ignores them outside the fight; the key states stay current all the same.
-		const ftcore::Arrow Direction = static_cast<ftcore::Arrow>(D);
+		const ftcore::ActionButton Button = FTActionButtons::Button(D);
 		if (!bResumed && (bPressed || (bNowDown && !bDown[D])))
 		{
-			Screen.press(Direction, EventTime);
+			Screen.press(Button, EventTime);
 		}
 		if (bReleased || (!bNowDown && bDown[D]))
 		{
-			Screen.release(Direction, EventTime);
+			Screen.release(Button, EventTime);
 		}
 		bDown[D] = bNowDown;
 	}

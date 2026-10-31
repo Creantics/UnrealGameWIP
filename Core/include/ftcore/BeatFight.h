@@ -3,12 +3,12 @@
 // The beat fight (CombatKind::Beat; docs/COMBAT_SYSTEMS.md): a real-time fight on the music's beat
 // grid. The enemies take turns, one bar each (round robin over the living ones). On its turn an
 // enemy plays one bar of one of its patterns, and each slot of the bar (an eighth note) may be a
-// prompt the lead answers with one of the four arrows:
-//   Strike   press the arrow on its eighth: the lead lands a hit.
-//   Counter  the enemy strikes on its eighth: press the arrow to parry and hit back. Unanswered, or
-//            answered too late, it hits the lead. Mashing is punished: pressing a counter's arrow too
+// prompt the lead answers with one of the four action buttons (ActionButton.h; no arrows: those are the Turns battle's):
+//   Strike   press the button on its eighth: the lead lands a hit.
+//   Counter  the enemy strikes on its eighth: press the button to parry and hit back. Unanswered, or
+//            answered too late, it hits the lead. Mashing is punished: pressing a counter's button too
 //            early locks counters out for a moment.
-//   Hold     press the arrow on its eighth and keep it down for `length` eighths: a heavier hit.
+//   Hold     press the button on its eighth and keep it down for `length` eighths: a heavier hit.
 // Answers in a row build a chain, and the chain a damage multiplier; a Miss resets both. When an
 // enemy is low its next turn is a finisher: a quick run of strikes that takes the rest of its hp,
 // unless one is missed. Only missed counters hurt the lead.
@@ -16,7 +16,7 @@
 //   ftcore::BeatFight fight;
 //   fight.begin(setup.def, setup.tuning, clockNow, seed, assist);
 //   every frame:  for (const ftcore::BeatEvent& e : fight.update(clockNow)) ...;   // sparks, sounds, HUD
-//   on a key:     fight.press(arrow, eventTime) / fight.release(arrow, eventTime)
+//   on a key:     fight.press(button, eventTime) / fight.release(button, eventTime)
 //   draw:         for i < promptCount(): prompt(i), approach(prompt(i), clockNow) (a marker closing in
 //                 over its enemy), plus hp, multiplier(), chain(), turnEnemy(), holding()
 //   fight.phase() == Victory: the step is done. Defeat: retry (restart(clockNow)) or quit.
@@ -44,8 +44,8 @@
 //   - Counter: the defence maths of DefenceTimeline.h, as a Narrow QTE prompt is judged (Qte.h): one
 //     hit whose impact is time + parry / 2, so the parry window is centred on the beat. A press
 //     inside the parry window is Perfect, inside the rest of the dodge window Good. At the impact the
-//     hit lands: a Miss, and the lead takes the enemy's damage (a press of its arrow less than
-//     counter.late after the impact that answers nothing else reports Late). A press of the arrow of
+//     hit lands: a Miss, and the lead takes the enemy's damage (a press of its button less than
+//     counter.late after the impact that answers nothing else reports Late). A press of the button of
 //     a counter that is showing (approach() >= 0) but whose dodge window hasn't opened is a whiff:
 //     counters are locked out for min(counter.parryLockout, counterLockoutBeats * seconds per beat),
 //     across prompts, and a press during the lockout that would answer a counter is ignored
@@ -53,11 +53,11 @@
 //   - Hold, after its press: letting go earlier than holdSlack before its end breaks it (a Miss).
 //     Held to its end, or let go within holdSlack of it, it completes with its press's grade.
 //   - Strict order: a press answers the earliest open prompt not yet pressed, with two exceptions.
-//     (1) A press whose arrow differs from that prompt's but matches the next one's, inside the next
+//     (1) A press whose button differs from that prompt's but matches the next one's, inside the next
 //     one's window, resolves the earliest as a Miss and answers the next (the player skipped a note).
 //     (2) A press or release within holdSlack before the current hold's end completes the hold
-//     first. A press that answers nothing is a whiff when its arrow is that of a showing counter
-//     whose dodge window hasn't opened yet (see Counter), else a stray (a wrong arrow, too early, a
+//     first. A press that answers nothing is a whiff when its button is that of a showing counter
+//     whose dodge window hasn't opened yet (see Counter), else a stray (a wrong button, too early, a
 //     counter not showing yet): counted, nothing else.
 // * Chain and multiplier. Every Perfect or Good adds one to the chain; a Miss resets it to 0 (strays,
 //   whiffs and ignored presses don't). multiplier = min(maxMultiplier, 1 + chain / chainPerStep)
@@ -69,7 +69,7 @@
 //   round(holdDamage * length * goodFactor) * m after a Good press; broken: nothing.
 // * Finisher. A bar whose enemy's hp is at most finisherAt of its max when the bar is generated is a
 //   finisher instead of a pattern (FinisherStart): finisherLength strikes on consecutive eighths from
-//   the bar's start, random arrows from the seeded RNG, no arrow twice in a row. Each finisher strike
+//   the bar's start, random buttons from the seeded RNG, no button twice in a row. Each finisher strike
 //   answered (Perfect or Good alike) deals ceil(the enemy's hp / finisher strikes left), no
 //   multiplier, so the last one takes the rest. A Miss breaks the finisher (FinisherBroken): its
 //   other strikes are dropped silently and the enemy keeps its hp until a later turn.
@@ -87,13 +87,13 @@
 // keyed by scene id + gameplay beat index + plan step index, with a `default` fight:
 //   { "version": 1,
 //     "enemies": [ { "id": "wisp", "hp": 60, "damage": 10,
-//                    "patterns": [ "sL . sR . cU . . .", "cD . . . sL . hU2 -" ] } ],
+//                    "patterns": [ "sA . sJ . cD . . .", "cG . . . sA . hD2 -" ] } ],
 //     "default": { "bpm": 120, "offset": 0, "hp": 100, "enemies": ["wisp"], "music": "" },
 //     "fights": [ { "scene": "SC-X", "beat": 4, "step": 0, "bpm": 96, "offset": 0.42,
 //                   "enemies": ["wisp", "wisp"], "music": "<cue id>" } ] }
 //   A pattern is 8 space-separated slots, one per eighth of the bar: `.` a rest, s<A> a strike, c<A> a
 //   counter, h<A><n> a hold of n eighths (2..8) followed by n - 1 `-` slots (it may end on the next
-//   bar line, not past it); <A> is L, D, U or R. Fight keys (in `default` and each fight): bpm
+//   bar line, not past it); <A> is A, G, D or J (Attack, Guard, Dodge, Jump; ActionButton.h). Fight keys (in `default` and each fight): bpm
 //   (40..240), offset (seconds), hp, strikeDamage, counterDamage, holdDamage, enemies
 //   (1..kMaxBeatEnemies ids), music (a cue id the host plays; "" none), and the tuning overrides
 //   `strike` {perfect, good}, `counter` {dodge, parry, parryLockout, late} and holdSlack. A fight's
@@ -106,7 +106,7 @@
 // capacity, results by value).
 
 #include "ftcore/Api.h"
-#include "ftcore/Arrow.h"
+#include "ftcore/ActionButton.h"
 #include "ftcore/DefenceTimeline.h"
 #include "ftcore/Qte.h"
 
@@ -131,7 +131,7 @@ enum class BeatKind : std::uint8_t { Rest, Strike, Counter, Hold, Held };
 
 struct BeatSlot {
     BeatKind kind = BeatKind::Rest;
-    Arrow input = Arrow::Left;
+    ActionButton input = ActionButton::Attack;
     std::uint8_t length = 0; // Hold: eighths, 2..8
 };
 
@@ -146,7 +146,7 @@ struct BeatPattern {
     }
 };
 
-// The beat.json spelling of a pattern ("sL . sR . cU . . ."). On failure `out` is untouched and
+// The beat.json spelling of a pattern ("sA . sJ . cD . . ."). On failure `out` is untouched and
 // *error says why. Allocates only the error text.
 FTCORE_API bool parseBeatPattern(std::string_view text, BeatPattern& out, std::string* error = nullptr);
 
@@ -233,7 +233,7 @@ inline DefenceWindows effectiveCounterWindows(const BeatTuning& t, double bpm) {
 struct BeatPrompt {
     std::uint32_t id = 0;               // unique within a fight, increasing with time
     BeatKind kind = BeatKind::Strike;   // Strike, Counter or Hold
-    Arrow input = Arrow::Left;
+    ActionButton input = ActionButton::Attack;
     std::uint8_t enemy = 0;
     std::uint8_t length = 0;            // Hold: eighths
     bool finisher = false;
@@ -248,7 +248,7 @@ enum class BeatEventType : std::uint8_t { // append only
     EnemyHit,       // `enemy` took `amount` from `prompt`
     LeadHit,        // the lead took `amount` from `enemy`'s counter `prompt`
     Stray,          // a press that answered nothing
-    Whiff,          // a counter's arrow pressed too early: counters are locked out for `amount` ms
+    Whiff,          // a counter's button pressed too early: counters are locked out for `amount` ms
     LockedOut,      // a press the counter lockout ignored
     Late,           // a press just after counter `prompt` landed (the HUD says LATE)
     Multiplier,     // the multiplier is now `amount`
@@ -314,8 +314,8 @@ public:
     FTCORE_API BeatEvents update(double now);
     // A press / let-go of `input` at time t (moves the clock there first). Returns everything it
     // resolved: what ran out before t, then what the input did.
-    FTCORE_API BeatEvents press(Arrow input, double t);
-    FTCORE_API BeatEvents release(Arrow input, double t);
+    FTCORE_API BeatEvents press(ActionButton input, double t);
+    FTCORE_API BeatEvents release(ActionButton input, double t);
 
     // The next press or release the autopilot makes at or before `now` (None when it is waiting).
     // Apply it with press()/release() at action.time, then ask again until None.
@@ -382,10 +382,10 @@ private:
         std::int32_t index = -1;
         std::int32_t enemy = -1;
     };
-    // A counter that landed lately: a press of its arrow within counter.late of its impact is LATE.
+    // A counter that landed lately: a press of its button within counter.late of its impact is LATE.
     struct Landed {
         std::uint32_t id = 0;
-        Arrow input = Arrow::Left;
+        ActionButton input = ActionButton::Attack;
         std::uint8_t enemy = 0;
         bool open = false; // not reported late yet
         double impact = 0.0;
@@ -398,22 +398,22 @@ private:
     // Moves the clock to t, in time order: bars are generated, start and resolve prompts that ran out
     // (at the same moment a bar is generated first, then prompts resolve, then the bar starts).
     void advance(double t, BeatEvents& out);
-    void doPress(Arrow input, double t, BeatEvents& out);
-    void doRelease(Arrow input, double t, BeatEvents& out);
+    void doPress(ActionButton input, double t, BeatEvents& out);
+    void doRelease(ActionButton input, double t, BeatEvents& out);
     QteAction pilot(double horizon) const; // autopilot()
 
     double generationTime() const;                                  // when the next bar is generated
     double startTime() const;                                       // when the next bar starts
     void generate(double time, BeatEvents& out);                    // the next bar: enemy, pattern, prompts
-    void addPrompt(BeatKind kind, Arrow input, std::uint8_t enemy, std::uint8_t length, bool finisher, double beat);
+    void addPrompt(BeatKind kind, ActionButton input, std::uint8_t enemy, std::uint8_t length, bool finisher, double beat);
     double dueTime(const BeatPrompt& p) const;                      // when p resolves if nothing answers it
     bool isDue(const BeatPrompt& p, double t) const;
     void expire(std::size_t i, BeatEvents& out);                    // prompt i ran out or reached its end
     void resolve(std::size_t i, QteGrade grade, double time, BeatEvents& out); // prompt i is over
     void answer(std::size_t i, QteGrade grade, double t, BeatEvents& out);     // a press answered it
     void finishHolds(double t, BeatEvents& out);                    // holds within holdSlack of their end
-    void judgePress(Arrow input, double t, BeatEvents& out);
-    void classify(Arrow input, double t, BeatEvents& out);          // a press that answered nothing
+    void judgePress(ActionButton input, double t, BeatEvents& out);
+    void classify(ActionButton input, double t, BeatEvents& out);          // a press that answered nothing
     Judgement judge(const BeatPrompt& p, double t) const;
     void hitLead(const BeatPrompt& p, double time, BeatEvents& out);
     void dropEnemy(std::uint8_t enemy);                             // its open prompts, silently

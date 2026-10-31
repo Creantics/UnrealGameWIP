@@ -1,6 +1,6 @@
 # Beat fight screen
 
-The screen that a fight step in a beat world opens (`CombatKind::Beat` in `ftcore::CombatKind`; the routing is in [COMBAT_SYSTEMS.md](COMBAT_SYSTEMS.md), the rules in `Core/include/ftcore/BeatFight.h`). The enemies take turns, one bar each, on the music's beat grid. Each eighth note of a bar can hold a prompt (a strike, a counter or a hold) over an enemy, a ring closes in on it, and the player answers with the matching direction as the ring lands. A defeat offers Retry or Give up; a victory goes back to the story.
+The screen that a fight step in a beat world opens (`CombatKind::Beat` in `ftcore::CombatKind`; the routing is in [COMBAT_SYSTEMS.md](COMBAT_SYSTEMS.md), the rules in `Core/include/ftcore/BeatFight.h`). The enemies take turns, one bar each, on the music's beat grid. Each eighth note of a bar can hold a prompt (a strike, a counter or a hold) over an enemy, a ring closes in on it, and the player answers with the matching action button as the ring lands. A defeat offers Retry or Give up; a victory goes back to the story.
 
 ## Regenerate the map
 
@@ -48,7 +48,7 @@ The pause menu freezes all of it: the world, the wall clock and the music stop t
 
 ## Keys
 
-The lanes are the QTE screen's and the battle's: left, down, up and right are the arrow keys, WASD, the pad d-pad, or the pad's X, A, Y and B. Keys are polled each frame (so a hold sees its key go up) and a press is stamped with the clock's latency-compensated time for the frame. Input is ignored for the first 0.25 s after the fight starts or restarts, so the press that opened the screen, or the one that chose Retry, can't count. Escape (keyboard) or Start (pad) opens the pause menu (see [GAME_FRAME.md](GAME_FRAME.md), "Pause"): a key still held in the frame after the menu closes is not read as a press until it is let go and pressed again.
+The buttons are the QTE screen's (`ftcore::ActionButton`, `FTActionButtons.h`): Attack is J or the pad's face left, Guard I or face top, Dodge L or face right, Jump K or face bottom. Beat prompts never take arrows (those are the Turns battle's combos); in `beat.json` a pattern names its button by letter: `A`, `G`, `D` or `J` (`sA . sJ . cD . . .`). Keys are polled each frame (so a hold sees its key go up) and a press is stamped with the clock's latency-compensated time for the frame. Input is ignored for the first 0.25 s after the fight starts or restarts, so the press that opened the screen, or the one that chose Retry, can't count. Escape (keyboard) or Start (pad) opens the pause menu (see [GAME_FRAME.md](GAME_FRAME.md), "Pause"): a key still held in the frame after the menu closes is not read as a press until it is let go and pressed again.
 
 At the Retry prompt (it ignores the first half second, so the press that ended the fight can't pick):
 
@@ -89,7 +89,7 @@ Beat: autoplay lost <scene> beat <b> step <s> and its 3 retries; the step ends l
 
 All of it is canvas (no UMG), and drawing builds no strings: every word is a static `FTUiText` (the keys are in `Data/Loc/en/ui.json`) and a number is rebuilt only when it changes.
 
-- **Markers.** Each open prompt hangs over its enemy: the stand-in's anchor (above its head) projected to the screen, or a place on the screen when the map has no such stand-in. A ring closes in on the target ring as `approach()` runs from 1 to 0, and the arrow is inside. A strike is cyan. A counter reads as a threat: red, with spikes around the ring and the word COUNTER, greyed and crossed through while counters are locked out. A hold is gold, with a bar as long as the hold that fills with `holdProgress()` once it is held. A finisher's strikes are gold with a second ring inside. An enemy's prompts that follow the first stand to its right, smaller and dimmer: only the first is the one to answer.
+- **Markers.** Each open prompt hangs over its enemy: the stand-in's anchor (above its head) projected to the screen, or a place on the screen when the map has no such stand-in. A ring closes in on the target ring as `approach()` runs from 1 to 0, and the face-button diamond is inside, the prompt's button filled. A strike is cyan. A counter reads as a threat: red, with spikes around the ring and the word COUNTER, greyed and crossed through while counters are locked out. A hold is gold, with a bar as long as the hold that fills with `holdProgress()` once it is held. A finisher's strikes are gold with a second ring inside. An enemy's prompts that follow the first stand to its right, smaller and dimmer: only the first is the one to answer.
 - **Panels.** Each enemy has a panel at the top left with its number and an hp bar, framed in gold while it is that enemy's turn (`turnEnemy()`) and marked DOWN once it is down (its stand-in leaves the stage too). The lead's hp is at the bottom left. At the bottom right the chain and the multiplier, which swells when it changes.
 - **Lead-in.** The beats left until the first bar, counted down in the middle of the screen.
 - **Popups.** PERFECT, GOOD and MISS rise from the enemy as each prompt is judged; LATE after a counter that landed just before the press; LOCKED for a press the lockout ignored.

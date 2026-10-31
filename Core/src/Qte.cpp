@@ -30,25 +30,25 @@ QteDef defaultQteDef() {
     QteDef def;
     QtePrompt p;
     p.kind = QteKind::Tap;
-    p.input = Arrow::Left;
+    p.input = ActionButton::Attack;
     p.at = 1.0;
     def.add(p);
-    p.input = Arrow::Right;
+    p.input = ActionButton::Dodge;
     p.at = 1.8;
     def.add(p);
-    p.input = Arrow::Up;
+    p.input = ActionButton::Guard;
     p.window = QteWindow::Narrow;
     p.at = 2.6;
     def.add(p);
     p.kind = QteKind::Hold;
-    p.input = Arrow::Down;
+    p.input = ActionButton::Jump;
     p.window = QteWindow::Wide;
     p.at = 3.4;
     p.hold = 0.8;
     def.add(p);
     p = QtePrompt{};
     p.kind = QteKind::Mash;
-    p.input = Arrow::Left;
+    p.input = ActionButton::Attack;
     p.at = 5.0;
     p.mashCount = 8;
     p.limit = 1.5;
@@ -134,7 +134,7 @@ QteResults QteSequence::update(double now) {
     return out;
 }
 
-QteResults QteSequence::press(Arrow input, double t) {
+QteResults QteSequence::press(ActionButton input, double t) {
     QteResults out;
     advance(t, out);
     if (complete()) {
@@ -174,7 +174,7 @@ QteResults QteSequence::press(Arrow input, double t) {
     return out;
 }
 
-QteResults QteSequence::release(Arrow input, double t) {
+QteResults QteSequence::release(ActionButton input, double t) {
     QteResults out;
     advance(t, out);
     if (phase_ == Phase::Holding && !holdToggle_ && next_ < def_.size()) {
@@ -298,12 +298,12 @@ void QteScreen::tick(double gameSeconds) {
     }
 }
 
-void QteScreen::press(Arrow input) {
+void QteScreen::press(ActionButton input) {
     if (phase_ != QtePhase::Playing || autoPlay_ || autoComplete_ || elapsed_ < kInputGrace) return;
     collect(seq_.press(input, elapsed_));
 }
 
-void QteScreen::release(Arrow input) {
+void QteScreen::release(ActionButton input) {
     if (phase_ != QtePhase::Playing || autoPlay_ || autoComplete_ || elapsed_ < kInputGrace) return;
     collect(seq_.release(input, elapsed_));
 }
@@ -359,11 +359,8 @@ bool qteParseDef(JsonValue prompts, const std::string& path, QteDef& out, std::v
         const std::size_t before = errors.size();
 
         const std::string_view input = j["input"].string();
-        if (input == "left") q.input = Arrow::Left;
-        else if (input == "down") q.input = Arrow::Down;
-        else if (input == "up") q.input = Arrow::Up;
-        else if (input == "right") q.input = Arrow::Right;
-        else errors.push_back(p + ".input: expected \"left\", \"down\", \"up\" or \"right\"");
+        if (!parseActionButton(input, q.input))
+            errors.push_back(p + ".input: expected \"attack\", \"guard\", \"dodge\" or \"jump\"");
 
         if (j.has("window")) {
             const std::string_view w = j["window"].string();

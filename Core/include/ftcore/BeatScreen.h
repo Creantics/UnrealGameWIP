@@ -13,7 +13,7 @@
 //
 //   ftcore::BeatScreen screen;
 //   screen.begin(hasStep, setup, seed, autoPlay, assist, clockNow);
-//   every frame: screen.press(arrow, eventTime) / screen.release(arrow, eventTime) for the keys, then
+//   every frame: screen.press(button, eventTime) / screen.release(button, eventTime) for the keys, then
 //                screen.tick(clockNow);                       // draw from screen.fight() and screen.now()
 //   at the RetryPrompt: screen.choose(ftcore::BeatChoice::Retry) or (ftcore::BeatChoice::Quit)
 //   when screen.finished(): mark the carry done, won when screen.won(), and go on
@@ -85,8 +85,8 @@ public:
     // result times out and a lost autoplay fight restarts.
     FTCORE_API void tick(double now);
     // Key events at the time t of the event (ignored outside Playing, under autoplay and in the grace).
-    FTCORE_API void press(Arrow input, double t);
-    FTCORE_API void release(Arrow input, double t);
+    FTCORE_API void press(ActionButton input, double t);
+    FTCORE_API void release(ActionButton input, double t);
     // The player's pick at the RetryPrompt. False (and nothing happens) outside it, under autoplay and in
     // the first kPromptGrace of it.
     FTCORE_API bool choose(BeatChoice choice);

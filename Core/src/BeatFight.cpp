@@ -32,12 +32,12 @@ std::uint32_t beatDraw(std::uint32_t& state) {
     return state;
 }
 
-bool beatArrow(char c, Arrow& out) {
+bool beatButton(char c, ActionButton& out) {
     switch (c) {
-    case 'L': out = Arrow::Left; return true;
-    case 'D': out = Arrow::Down; return true;
-    case 'U': out = Arrow::Up; return true;
-    case 'R': out = Arrow::Right; return true;
+    case 'A': out = ActionButton::Attack; return true;
+    case 'G': out = ActionButton::Guard; return true;
+    case 'D': out = ActionButton::Dodge; return true;
+    case 'J': out = ActionButton::Jump; return true;
     default: return false;
     }
 }
@@ -99,21 +99,21 @@ bool parseBeatPattern(std::string_view text, BeatPattern& out, std::string* erro
 
     BeatPattern parsed;
     std::size_t dashes = 0; // the `-` slots the last hold still needs
-    Arrow holdArrow = Arrow::Left;
+    ActionButton holdButton = ActionButton::Attack;
     for (std::size_t s = 0; s < kBeatSlots; ++s) {
         const std::string_view t = tokens[s];
         BeatSlot& slot = parsed.slots[s];
         if (t == "-") {
             if (dashes == 0) return beatPatternFailSlot(error, s, "stray -, no hold before it", t);
             slot.kind = BeatKind::Held;
-            slot.input = holdArrow;
+            slot.input = holdButton;
             --dashes;
             continue;
         }
         if (dashes > 0) return beatPatternFailSlot(error, s, "a hold is missing its - slots", t);
         if (t == ".") continue; // a rest
-        Arrow a = Arrow::Left;
-        const bool shaped = t.size() >= 2 && (t[0] == 's' || t[0] == 'c' || t[0] == 'h') && beatArrow(t[1], a);
+        ActionButton a = ActionButton::Attack;
+        const bool shaped = t.size() >= 2 && (t[0] == 's' || t[0] == 'c' || t[0] == 'h') && beatButton(t[1], a);
         if (!shaped) return beatPatternFailSlot(error, s, "bad token, expected . or s<A> c<A> h<A><n>", t);
         if (t[0] != 'h') {
             if (t.size() != 2) return beatPatternFailSlot(error, s, "bad token, expected . or s<A> c<A> h<A><n>", t);
@@ -133,7 +133,7 @@ bool parseBeatPattern(std::string_view text, BeatPattern& out, std::string* erro
         slot.kind = BeatKind::Hold;
         slot.input = a;
         slot.length = static_cast<std::uint8_t>(length);
-        holdArrow = a;
+        holdButton = a;
         dashes = length - 1;
     }
     out = parsed;
@@ -145,8 +145,8 @@ BeatFightDef defaultBeatFightDef() {
     def.enemyCount = 1;
     BeatEnemy& wisp = def.enemies[0];
     wisp.patternCount = 2;
-    parseBeatPattern("sL . sR . cU . . .", wisp.patterns[0]);
-    parseBeatPattern("cD . . . sL . hU2 -", wisp.patterns[1]);
+    parseBeatPattern("sA . sJ . cD . . .", wisp.patterns[0]);
+    parseBeatPattern("cG . . . sA . hD2 -", wisp.patterns[1]);
     return def;
 }
 
@@ -286,13 +286,13 @@ BeatEvents BeatFight::update(double now) {
     return out;
 }
 
-BeatEvents BeatFight::press(Arrow input, double t) {
+BeatEvents BeatFight::press(ActionButton input, double t) {
     BeatEvents out;
     if (phase_ == BeatPhase::Playing && !assist_.autoComplete) doPress(input, t, out);
     return out;
 }
 
-BeatEvents BeatFight::release(Arrow input, double t) {
+BeatEvents BeatFight::release(ActionButton input, double t) {
     BeatEvents out;
     if (phase_ == BeatPhase::Playing && !assist_.autoComplete) doRelease(input, t, out);
     return out;
@@ -387,7 +387,7 @@ void BeatFight::runTo(double t, BeatEvents& out) {
     }
 }
 
-void BeatFight::doPress(Arrow input, double t, BeatEvents& out) {
+void BeatFight::doPress(ActionButton input, double t, BeatEvents& out) {
     advance(t, out);
     if (phase_ != BeatPhase::Playing) return;
     finishHolds(now_, out);
@@ -395,7 +395,7 @@ void BeatFight::doPress(Arrow input, double t, BeatEvents& out) {
     judgePress(input, now_, out);
 }
 
-void BeatFight::doRelease(Arrow input, double t, BeatEvents& out) {
+void BeatFight::doRelease(ActionButton input, double t, BeatEvents& out) {
     advance(t, out);
     if (phase_ != BeatPhase::Playing || assist_.holdToggle) return; // a toggled hold latches
     finishHolds(now_, out);
@@ -449,16 +449,16 @@ void BeatFight::generate(double time, BeatEvents& out) {
         push(out, beatEvent(BeatEventType::FinisherStart, who, 0, QteGrade::Pending, BeatKind::Rest, 0, time));
         std::uint32_t previous = 0;
         for (int k = 0; k < tuning_.finisherLength; ++k) {
-            // Random arrows, never the same one twice in a row.
-            std::uint32_t arrow = 0;
+            // Random buttons, never the same one twice in a row.
+            std::uint32_t button = 0;
             if (k == 0) {
-                arrow = beatDraw(rng_) % 4u;
+                button = beatDraw(rng_) % 4u;
             } else {
-                arrow = beatDraw(rng_) % 3u;
-                if (arrow >= previous) ++arrow;
+                button = beatDraw(rng_) % 3u;
+                if (button >= previous) ++button;
             }
-            previous = arrow;
-            addPrompt(BeatKind::Strike, static_cast<Arrow>(arrow), who, 0, true, barBeat + kBeatSlotBeats * k);
+            previous = button;
+            addPrompt(BeatKind::Strike, static_cast<ActionButton>(button), who, 0, true, barBeat + kBeatSlotBeats * k);
         }
         return;
     }
@@ -485,7 +485,7 @@ void BeatFight::generate(double time, BeatEvents& out) {
     }
 }
 
-void BeatFight::addPrompt(BeatKind kind, Arrow input, std::uint8_t enemy, std::uint8_t length, bool finisher,
+void BeatFight::addPrompt(BeatKind kind, ActionButton input, std::uint8_t enemy, std::uint8_t length, bool finisher,
                           double beat) {
     if (promptCount_ >= prompts_.size()) return; // full: not with the shipped limits
     BeatPrompt& p = prompts_[promptCount_++];
@@ -533,7 +533,7 @@ BeatFight::Judgement BeatFight::judge(const BeatPrompt& p, double t) const {
     return j;
 }
 
-void BeatFight::judgePress(Arrow input, double t, BeatEvents& out) {
+void BeatFight::judgePress(ActionButton input, double t, BeatEvents& out) {
     // The earliest open prompt not yet pressed, and the one after it.
     std::size_t first = kBeatNone, second = kBeatNone;
     for (std::size_t i = 0; i < promptCount_; ++i) {
@@ -559,7 +559,7 @@ void BeatFight::judgePress(Arrow input, double t, BeatEvents& out) {
                 return;
             }
         } else if (second != kBeatNone && prompts_[second].input == input) {
-            // Another arrow than the earliest prompt's, but the next one's, inside its window: the
+            // Another button than the earliest prompt's, but the next one's, inside its window: the
             // player skipped a note.
             const BeatPrompt p1 = prompts_[second];
             const Judgement j = judge(p1, t);
@@ -586,8 +586,8 @@ void BeatFight::judgePress(Arrow input, double t, BeatEvents& out) {
 }
 
 // A press that answered nothing.
-void BeatFight::classify(Arrow input, double t, BeatEvents& out) {
-    // Just after a counter of that arrow landed: LATE, nothing else.
+void BeatFight::classify(ActionButton input, double t, BeatEvents& out) {
+    // Just after a counter of that button landed: LATE, nothing else.
     std::size_t late = kBeatNone;
     for (std::size_t i = 0; i < landed_.size(); ++i) {
         const Landed& l = landed_[i];
@@ -602,7 +602,7 @@ void BeatFight::classify(Arrow input, double t, BeatEvents& out) {
         push(out, beatEvent(BeatEventType::Late, landed.enemy, landed.id, QteGrade::Pending, BeatKind::Counter, 0, t));
         return;
     }
-    // The arrow of a counter that is showing, before its dodge window opened: a whiff, and counters are
+    // The button of a counter that is showing, before its dodge window opened: a whiff, and counters are
     // locked out for a moment.
     for (std::size_t i = 0; i < promptCount_; ++i) {
         const BeatPrompt& p = prompts_[i];

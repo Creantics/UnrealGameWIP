@@ -2,55 +2,55 @@
   "version": 1,
   "default": {
     "prompts": [
-      { "input": "left", "at": 1.0 },
-      { "input": "right", "at": 1.8 },
-      { "input": "up", "at": 2.6, "window": "narrow" },
-      { "input": "down", "at": 3.4, "hold": 0.8 },
-      { "input": "left", "at": 5.0, "mash": 8, "limit": 1.5 }
+      { "input": "attack", "at": 1.0 },
+      { "input": "dodge", "at": 1.8 },
+      { "input": "guard", "at": 2.6, "window": "narrow" },
+      { "input": "jump", "at": 3.4, "hold": 0.8 },
+      { "input": "attack", "at": 5.0, "mash": 8, "limit": 1.5 }
     ]
   },
   "qtes": [
     { "scene": "SC-17-Q2", "beat": 1, "step": 2, "prompts": [
-      { "input": "down", "at": 1.0 },
-      { "input": "left", "at": 1.98 },
-      { "input": "right", "at": 2.95, "mash": 5, "limit": 1.3 },
-      { "input": "down", "at": 5.25, "window": "narrow" },
-      { "input": "up", "at": 6.14, "hold": 0.6 }
+      { "input": "jump", "at": 1.0 },
+      { "input": "attack", "at": 1.98 },
+      { "input": "dodge", "at": 2.95, "mash": 5, "limit": 1.3 },
+      { "input": "jump", "at": 5.25, "window": "narrow" },
+      { "input": "guard", "at": 6.14, "hold": 0.6 }
     ] },
     { "scene": "SC-17-Q2", "beat": 37, "step": 2, "prompts": [
-      { "input": "up", "at": 1.0 },
-      { "input": "left", "at": 1.97 },
-      { "input": "up", "at": 2.89 },
-      { "input": "down", "at": 3.89 },
-      { "input": "up", "at": 4.77 },
-      { "input": "right", "at": 5.72 },
-      { "input": "down", "at": 6.68 }
+      { "input": "guard", "at": 1.0 },
+      { "input": "attack", "at": 1.97 },
+      { "input": "guard", "at": 2.89 },
+      { "input": "jump", "at": 3.89 },
+      { "input": "guard", "at": 4.77 },
+      { "input": "dodge", "at": 5.72 },
+      { "input": "jump", "at": 6.68 }
     ] },
     { "scene": "SC-17-Q2", "beat": 69, "step": 2, "prompts": [
-      { "input": "up", "at": 1.0 },
-      { "input": "down", "at": 1.9 },
-      { "input": "up", "at": 2.79 },
-      { "input": "down", "at": 3.72, "window": "narrow" },
-      { "input": "left", "at": 4.69, "window": "narrow" },
-      { "input": "up", "at": 5.63 },
-      { "input": "right", "at": 6.6, "window": "narrow" },
-      { "input": "down", "at": 7.5, "window": "narrow" }
+      { "input": "guard", "at": 1.0 },
+      { "input": "jump", "at": 1.9 },
+      { "input": "guard", "at": 2.79 },
+      { "input": "jump", "at": 3.72, "window": "narrow" },
+      { "input": "attack", "at": 4.69, "window": "narrow" },
+      { "input": "guard", "at": 5.63 },
+      { "input": "dodge", "at": 6.6, "window": "narrow" },
+      { "input": "jump", "at": 7.5, "window": "narrow" }
     ] },
     { "scene": "SC-17-Q2", "beat": 74, "step": 2, "prompts": [
-      { "input": "right", "at": 1.0 },
-      { "input": "left", "at": 1.99 },
-      { "input": "right", "at": 3.02 },
-      { "input": "left", "at": 3.92, "hold": 0.6 },
-      { "input": "down", "at": 5.55, "mash": 7, "limit": 1.3 }
+      { "input": "dodge", "at": 1.0 },
+      { "input": "attack", "at": 1.99 },
+      { "input": "dodge", "at": 3.02 },
+      { "input": "attack", "at": 3.92, "hold": 0.6 },
+      { "input": "jump", "at": 5.55, "mash": 7, "limit": 1.3 }
     ] },
     { "scene": "SC-17-Q2", "beat": 85, "step": 2, "prompts": [
-      { "input": "left", "at": 1.0 },
-      { "input": "down", "at": 2.02, "window": "narrow" },
-      { "input": "left", "at": 3.0, "window": "narrow" },
-      { "input": "up", "at": 3.89 },
-      { "input": "down", "at": 4.78 },
-      { "input": "up", "at": 5.67, "window": "narrow" },
-      { "input": "down", "at": 6.59, "hold": 0.6 }
+      { "input": "attack", "at": 1.0 },
+      { "input": "jump", "at": 2.02, "window": "narrow" },
+      { "input": "attack", "at": 3.0, "window": "narrow" },
+      { "input": "guard", "at": 3.89 },
+      { "input": "jump", "at": 4.78 },
+      { "input": "guard", "at": 5.67, "window": "narrow" },
+      { "input": "jump", "at": 6.59, "hold": 0.6 }
     ] }
   ]
 }

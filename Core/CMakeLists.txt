@@ -36,6 +36,7 @@ add_library(ftcore STATIC
     src/Battle.cpp
     src/Calibration.cpp
     src/ComboGenerator.cpp
+    src/ActionButton.cpp
     src/ComboSequence.cpp
     src/Conductor.cpp
     src/Cutscene.cpp

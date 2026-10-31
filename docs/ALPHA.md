@@ -28,10 +28,10 @@ and there is no voice or music.
 | Battle | Fight the step's line-up from `Data/Battle/encounters.json`. On a loss, Retry restores the HP the party started the battle with, or Quit to title | [BATTLE_DEMO.md](BATTLE_DEMO.md) |
 | Field | Walk to the glowing goal marker and press Use | [EXPLORE_DEMO.md](EXPLORE_DEMO.md) |
 | Choice | CHC and HE steps: a dialogue loop from `Data/Story/loops/<scene>_<beat>_<step>.json`. Read the claim, pick 1–4 (used wrong options grey out), Backspace skips to the closing lines; its flags are set at the end. With no loop file it shows the stub card | [CHOICE_SCREEN.md](CHOICE_SCREEN.md) |
-| Qte | QTE and co-op QTE steps: a short timed input sequence from `Data/Qte/qte.json`. Press the arrow, WASD or pad direction as the ring closes in (hold or mash where asked); a miss plays on, and the result (Perfect to Poor) shows for a second | [QTE_SCREEN.md](QTE_SCREEN.md) |
+| Qte | QTE and co-op QTE steps: a short timed input sequence from `Data/Qte/qte.json`. Press the action button (J, I, L, K or the pad's face buttons) as the ring closes in (hold or mash where asked); a miss plays on, and the result (Perfect to Poor) shows for a second | [QTE_SCREEN.md](QTE_SCREEN.md) |
 | Cutscene | Watch a CG step's shot list from `Data/Cutscene/cutscenes.json` on a blockout set; press to skip | [CUTSCENE_SCREEN.md](CUTSCENE_SCREEN.md) |
 | Banter | BNT steps: lines from `Data/Story/banter/<scene>_<beat>_<step>.json` that advance by themselves, left and right by speaker. Press for the next line, Backspace skips. With no banter file it shows the stub card | [BANTER_SCREEN.md](BANTER_SCREEN.md) |
-| Mini | MINI steps: a short rhythm round from `Data/Mini/mini.json`. Press each arrow as it reaches the line; a round below the pass mark retries, and after the last try the story goes on | [MINI_SCREEN.md](MINI_SCREEN.md) |
+| Mini | MINI steps: a short rhythm round from `Data/Mini/mini.json`. Press each button as it reaches the line; a round below the pass mark retries, and after the last try the story goes on | [MINI_SCREEN.md](MINI_SCREEN.md) |
 | Stub | A card naming the step (unknown tokens); press to continue | [STUB_SCREEN.md](STUB_SCREEN.md) |
 | End card | Press to return to the title | [GAME_FRAME.md](GAME_FRAME.md) |
 

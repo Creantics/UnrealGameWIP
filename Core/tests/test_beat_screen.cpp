@@ -79,7 +79,7 @@ bool tickUntil(BeatScreen& s, double& clock, double limit, Done done, double dt 
     return done(s);
 }
 
-// Every prompt the fight shows over an attempt, as text ("sL0 cU8 "): the kind, the arrow and the eighth
+// Every prompt the fight shows over an attempt, as text ("sA0 cD8 "): the kind, the arrow and the eighth
 // from the first bar line. Two attempts of the same fight give the same text.
 struct Watcher {
     std::uint32_t lastId = 0;
@@ -91,7 +91,7 @@ struct Watcher {
             if (p.id <= lastId) continue;
             lastId = p.id;
             text += p.kind == BeatKind::Strike ? 's' : (p.kind == BeatKind::Counter ? 'c' : 'h');
-            text += "LDUR"[static_cast<int>(p.input)];
+            text += "AGDJ"[static_cast<int>(p.input)];
             text += std::to_string(static_cast<int>(std::lround((p.beat - f.firstBarBeat()) * 2.0)));
             text += p.finisher ? "! " : " ";
         }
@@ -202,8 +202,8 @@ TEST_CASE("beat screen: autoplay ignores the player") {
     bool pressed = false;
     for (int frames = 0; frames < 60 * 600 && !s.finished(); ++frames) {
         clock += kFrame;
-        s.press(Arrow::Left, clock); // a player mashing away
-        s.release(Arrow::Left, clock);
+        s.press(ActionButton::Attack, clock); // a player mashing away
+        s.release(ActionButton::Attack, clock);
         s.tick(clock);
         pressed = true;
         if (s.askingRetry()) break;
@@ -221,7 +221,7 @@ TEST_CASE("beat screen: autoplay retries a lost fight three times, then ends the
     BeatTuning tuning = plain();
     tuning.counter.dodge = 0.0;
     tuning.counter.parry = 0.0;
-    const BeatSetup setup = setupOf(oneEnemy({"cU . . . . . . ."}, 60, 1), tuning);
+    const BeatSetup setup = setupOf(oneEnemy({"cD . . . . . . ."}, 60, 1), tuning);
     BeatScreen s;
     s.begin(true, setup, 1, true, {}, 0.0);
     double clock = 0.0;
@@ -395,9 +395,9 @@ TEST_CASE("beat screen: after a Retry the grace drops early presses again") {
     s.tick(clock);
     REQUIRE(s.choose(BeatChoice::Retry));
     const int strays = s.stats().strays;
-    s.press(Arrow::Left, clock + 0.1); // inside the grace of the new start
+    s.press(ActionButton::Attack, clock + 0.1); // inside the grace of the new start
     CHECK(s.stats().strays == strays);
-    s.press(Arrow::Left, clock + BeatScreen::kInputGrace + 0.05); // nothing is open yet: a stray
+    s.press(ActionButton::Attack, clock + BeatScreen::kInputGrace + 0.05); // nothing is open yet: a stray
     CHECK(s.stats().strays == strays + 1);
 }
 
@@ -407,10 +407,10 @@ TEST_CASE("beat screen: presses in the grace after the start are dropped, later 
     BeatScreen s;
     s.begin(true, defaultSetup(), 1, false, {}, 5.0); // the clock starts at 5 s
     s.tick(5.05);
-    s.press(Arrow::Left, 5.1); // the press that opened the screen
-    s.release(Arrow::Left, 5.2);
+    s.press(ActionButton::Attack, 5.1); // the press that opened the screen
+    s.release(ActionButton::Attack, 5.2);
     CHECK(s.stats().strays == 0);
-    s.press(Arrow::Left, 5.0 + BeatScreen::kInputGrace + 0.05);
+    s.press(ActionButton::Attack, 5.0 + BeatScreen::kInputGrace + 0.05);
     CHECK(s.stats().strays == 1);
     CHECK(s.takeFresh().size() == 1);
 }
@@ -427,8 +427,8 @@ TEST_CASE("beat screen: a screen with no step stays inert") {
     CHECK_FALSE(s.autoPlay()); // there is nothing to play
     CHECK_FALSE(s.autoComplete());
     s.tick(100.0);
-    s.press(Arrow::Left, 100.0);
-    s.release(Arrow::Left, 100.0);
+    s.press(ActionButton::Attack, 100.0);
+    s.release(ActionButton::Attack, 100.0);
     CHECK_FALSE(s.choose(BeatChoice::Retry));
     CHECK(s.phase() == BeatScreenPhase::NoStep);
     CHECK_FALSE(s.playing());
@@ -446,11 +446,11 @@ TEST_CASE("beat screen: a screen with no step stays inert") {
 TEST_CASE("beat screen: the press that wins the fight shows the result at once, and the screen finishes after it") {
     // One strike kills the only enemy (5 hp against a strike of 10).
     BeatScreen s;
-    s.begin(true, setupOf(oneEnemy({"sL . . . . . . ."}, 5, 100), plain()), 3, false, {}, 0.0);
+    s.begin(true, setupOf(oneEnemy({"sA . . . . . . ."}, 5, 100), plain()), 3, false, {}, 0.0);
     s.tick(1.0); // the first bar is generated 1.0 s before its line at 2.0 s
     REQUIRE(s.fight().promptCount() == 1);
     s.takeFresh();
-    s.press(Arrow::Left, 2.0); // on the strike's eighth
+    s.press(ActionButton::Attack, 2.0); // on the strike's eighth
     CHECK(s.showingResult());
     CHECK(s.fight().phase() == BeatPhase::Victory);
     CHECK(s.outcome() == BeatOutcome::None); // not done until the result has been shown
@@ -471,7 +471,7 @@ TEST_CASE("beat screen: the press that wins the fight shows the result at once, 
     CHECK_FALSE(s.finished());
     CHECK(s.resultAge() == doctest::Approx(BeatScreen::kResultTime - 0.1));
     // Input does nothing now.
-    s.press(Arrow::Left, 3.5);
+    s.press(ActionButton::Attack, 3.5);
     CHECK(s.stats().strays == 0);
     s.tick(2.0 + BeatScreen::kResultTime + 0.1);
     CHECK(s.finished());
@@ -514,8 +514,8 @@ TEST_CASE("beat screen: the assist's auto-complete plays the fight and ignores t
     bool won = false;
     for (int frames = 0; frames < 60 * 600 && !s.showingResult(); ++frames) {
         clock += kFrame;
-        s.press(Arrow::Down, clock); // whatever the player does is ignored
-        s.release(Arrow::Down, clock);
+        s.press(ActionButton::Guard, clock); // whatever the player does is ignored
+        s.release(ActionButton::Guard, clock);
         s.tick(clock);
         won = s.fight().phase() == BeatPhase::Victory;
     }
@@ -543,14 +543,14 @@ TEST_CASE("beat screen: the assist's auto-complete plays the fight and ignores t
 }
 
 TEST_CASE("beat screen: hold toggle latches a hold on its press") {
-    const BeatSetup setup = setupOf(oneEnemy({"hU2 - . . . . . ."}, 1000, 1000), plain());
+    const BeatSetup setup = setupOf(oneEnemy({"hD2 - . . . . . ."}, 1000, 1000), plain());
     // Without the assist, letting go early breaks the hold.
     {
         BeatScreen s;
         s.begin(true, setup, 1, false, {}, 0.0);
         s.tick(1.0);
-        s.press(Arrow::Up, 2.0);
-        s.release(Arrow::Up, 2.1);
+        s.press(ActionButton::Dodge, 2.0);
+        s.release(ActionButton::Dodge, 2.1);
         s.tick(2.6);
         CHECK(s.stats().misses == 1);
         CHECK(s.stats().perfects == 0);
@@ -562,8 +562,8 @@ TEST_CASE("beat screen: hold toggle latches a hold on its press") {
         BeatScreen s;
         s.begin(true, setup, 1, false, assist, 0.0);
         s.tick(1.0);
-        s.press(Arrow::Up, 2.0);
-        s.release(Arrow::Up, 2.1);
+        s.press(ActionButton::Dodge, 2.0);
+        s.release(ActionButton::Dodge, 2.1);
         s.tick(2.6);
         CHECK(s.stats().misses == 0);
         CHECK(s.stats().perfects == 1);
@@ -589,7 +589,7 @@ TEST_CASE("beat screen: playing, retrying and finishing allocate nothing after b
     BeatTuning tuning = plain();
     tuning.counter.dodge = 0.0;
     tuning.counter.parry = 0.0;
-    const BeatSetup hopeless = setupOf(oneEnemy({"cU . . . . . . ."}, 60, 1), tuning);
+    const BeatSetup hopeless = setupOf(oneEnemy({"cD . . . . . . ."}, 60, 1), tuning);
     QteAssist assist;
     assist.autoComplete = true;
 
@@ -614,8 +614,8 @@ TEST_CASE("beat screen: playing, retrying and finishing allocate nothing after b
         double clock = 0.0;
         for (int frames = 0; frames < 60 * 600 && !s.askingRetry(); ++frames) {
             clock += kFrame;
-            s.press(Arrow::Up, clock);
-            s.release(Arrow::Up, clock);
+            s.press(ActionButton::Dodge, clock);
+            s.release(ActionButton::Dodge, clock);
             s.tick(clock);
         }
         clock += BeatScreen::kPromptGrace + kFrame;

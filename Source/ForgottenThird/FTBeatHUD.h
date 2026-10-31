@@ -2,7 +2,7 @@
 
 // Canvas UI of the beat fight screen (no UMG), drawn from AFTBeatGameMode (docs/BEAT_SCREEN.md):
 //   - each open prompt as a marker over its enemy (the enemy stand-in's place, projected), a ring that
-//     closes in on it as ftcore::BeatFight::approach() runs from 1 to 0, and the arrow inside. A strike is
+//     closes in on it as ftcore::BeatFight::approach() runs from 1 to 0, and the button glyph inside. A strike is
 //     a cyan ring; a counter reads as a threat: red, spiked, and greyed with a cross while counters are
 //     locked out; a hold is gold and shows a bar as long as the hold, which then fills as holdProgress()
 //     runs; a finisher's strikes are gold with an inner ring. An enemy's next prompts follow to the right
@@ -49,8 +49,8 @@ private:
 	void DrawSpikes(float X, float Y, float Radius, const FLinearColor& Color, float Thickness);
 	void DrawFrame(float X, float Y, float W, float H, const FLinearColor& Color, float Thickness);
 	void DrawBar(float X, float Y, float W, float H, float Fraction, const FLinearColor& Fill, const FLinearColor& Back);
-	// Direction: ftcore::Arrow order (Left, Down, Up, Right).
-	void DrawGlyph(int32 Direction, float X, float Y, float Radius, const FLinearColor& Color, float Thickness);
+	// The face-button diamond with Button (ftcore::ActionButton) filled (FTActionButtons::DrawGlyph).
+	void DrawGlyph(int32 Button, float X, float Y, float Radius, const FLinearColor& Color, float Thickness);
 	// Where enemy Enemy's markers hang on the screen: its stand-in's anchor projected, else a place on the screen.
 	FVector2D EnemyPoint(const AFTBeatGameMode& Mode, int32 Enemy, int32 Count);
 	// One prompt's marker. Approach is ftcore::BeatFight::approach() (0 to 1), HoldFill a held hold's progress.

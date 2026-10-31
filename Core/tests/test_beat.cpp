@@ -35,7 +35,7 @@ std::string formatPattern(const BeatPattern& p) {
     std::string out;
     for (const BeatSlot& s : p.slots) {
         if (!out.empty()) out += ' ';
-        const char arrow = "LDUR"[static_cast<int>(s.input)];
+        const char arrow = "AGDJ"[static_cast<int>(s.input)];
         switch (s.kind) {
         case BeatKind::Rest: out += '.'; break;
         case BeatKind::Strike: out += 's'; out += arrow; break;
@@ -143,7 +143,7 @@ bool sameStats(const BeatStats& a, const BeatStats& b) {
 // When bar `bar` (0 is the first) starts on the fight's clock.
 double barStart(const BeatFight& f, int bar) { return f.timeAtBeat(f.firstBarBeat() + 4.0 * bar); }
 
-// The open prompts of one bar as text ("sL0 cU4 "): kind, arrow and slot of each.
+// The open prompts of one bar as text ("sA0 cD4 "): kind, arrow and slot of each.
 std::string barSignature(const BeatFight& f, int bar) {
     std::string s;
     const double from = barStart(f, bar);
@@ -152,7 +152,7 @@ std::string barSignature(const BeatFight& f, int bar) {
         const BeatPrompt& p = f.prompt(i);
         if (p.time < from - 1e-6 || p.time >= to - 1e-6) continue;
         s += p.kind == BeatKind::Strike ? 's' : (p.kind == BeatKind::Counter ? 'c' : 'h');
-        s += "LDUR"[static_cast<int>(p.input)];
+        s += "AGDJ"[static_cast<int>(p.input)];
         s += std::to_string(static_cast<int>(std::lround((p.time - from) / (f.secondsPerBeat() * 0.5))));
         s += ' ';
     }
@@ -230,15 +230,15 @@ Outcome playNothing(const BeatSetup& setup, std::uint32_t seed, double frame = 1
 
 TEST_CASE("beat pattern: valid patterns parse and round-trip") {
     const char* valid[] = {
-        "sL . sR . cU . . .",
-        "cD . . . sL . hU2 -",
+        "sA . sJ . cD . . .",
+        "cG . . . sA . hD2 -",
         ". . . . . . . .",
-        "sL sD sU sR cL cD cU cR",
-        "hL8 - - - - - - -", // a hold may fill the bar...
-        "hD2 - hU2 - hR2 - hL2 -",
-        ". . . . . . hR2 -", // ...or end on the next bar line
-        "hU3 - - cD . . sL .",
-        "cR . . . hD4 - - -",
+        "sA sG sD sJ cA cG cD cJ",
+        "hA8 - - - - - - -", // a hold may fill the bar...
+        "hG2 - hD2 - hJ2 - hA2 -",
+        ". . . . . . hJ2 -", // ...or end on the next bar line
+        "hD3 - - cG . . sA .",
+        "cJ . . . hG4 - - -",
     };
     for (const char* text : valid) {
         CAPTURE(text);
@@ -250,32 +250,32 @@ TEST_CASE("beat pattern: valid patterns parse and round-trip") {
 }
 
 TEST_CASE("beat pattern: slots, holds and counters") {
-    const BeatPattern a = patternOf("sL . sR . cU . . .");
+    const BeatPattern a = patternOf("sA . sJ . cD . . .");
     CHECK(a.slots[0].kind == BeatKind::Strike);
-    CHECK(a.slots[0].input == Arrow::Left);
+    CHECK(a.slots[0].input == ActionButton::Attack);
     CHECK(a.slots[1].kind == BeatKind::Rest);
     CHECK(a.slots[2].kind == BeatKind::Strike);
-    CHECK(a.slots[2].input == Arrow::Right);
+    CHECK(a.slots[2].input == ActionButton::Jump);
     CHECK(a.slots[4].kind == BeatKind::Counter);
-    CHECK(a.slots[4].input == Arrow::Up);
+    CHECK(a.slots[4].input == ActionButton::Dodge);
     CHECK(a.hasCounter());
 
-    const BeatPattern b = patternOf("cD . . . sL . hU2 -");
-    CHECK(b.slots[0].input == Arrow::Down);
+    const BeatPattern b = patternOf("cG . . . sA . hD2 -");
+    CHECK(b.slots[0].input == ActionButton::Guard);
     CHECK(b.slots[6].kind == BeatKind::Hold);
-    CHECK(b.slots[6].input == Arrow::Up);
+    CHECK(b.slots[6].input == ActionButton::Dodge);
     CHECK(b.slots[6].length == 2);
     CHECK(b.slots[7].kind == BeatKind::Held);
 
-    const BeatPattern c = patternOf("hL8 - - - - - - -");
+    const BeatPattern c = patternOf("hA8 - - - - - - -");
     CHECK(c.slots[0].length == 8);
     for (std::size_t i = 1; i < kBeatSlots; ++i) CHECK(c.slots[i].kind == BeatKind::Held);
     CHECK_FALSE(c.hasCounter());
-    CHECK_FALSE(patternOf("sL sD sU sR sL sD sU sR").hasCounter());
+    CHECK_FALSE(patternOf("sA sG sD sJ sA sG sD sJ").hasCounter());
     CHECK_FALSE(patternOf(". . . . . . . .").hasCounter());
 
     // Blanks of any width and tabs separate the slots.
-    CHECK(formatPattern(patternOf("  sL\t.  sR . cU . . .  ")) == "sL . sR . cU . . .");
+    CHECK(formatPattern(patternOf("  sA\t.  sJ . cD . . .  ")) == "sA . sJ . cD . . .");
 }
 
 TEST_CASE("beat pattern: bad patterns are errors and leave the output alone") {
@@ -285,37 +285,38 @@ TEST_CASE("beat pattern: bad patterns are errors and leave the output alone") {
     };
     const Bad bad[] = {
         {"", "expected 8 slots, found 0"},
-        {"sL . sR", "expected 8 slots, found 3"},
-        {"sL . sR . cU . . . .", "expected 8 slots, found 9"},
+        {"sA . sJ", "expected 8 slots, found 3"},
+        {"sA . sJ . cD . . . .", "expected 8 slots, found 9"},
         {"sX . . . . . . .", "bad token"},
         {"x . . . . . . .", "bad token"},
         {"sl . . . . . . .", "bad token"},
         {"s . . . . . . .", "bad token"},
-        {"sLL . . . . . . .", "bad token"},
-        {"cU2 . . . . . . .", "bad token"},
-        {"hUx . . . . . . .", "bad token"},
-        {"hU1 . . . . . . .", "2..8"},
-        {"hU0 . . . . . . .", "2..8"},
-        {"hU9 - - - - - - -", "2..8"},
-        {"hU10 - - - - - - -", "2..8"},
-        {"hU . . . . . . .", "length"},
-        {"hU2 . . . . . . .", "missing"},
-        {"hU3 - . . . . . .", "missing"},
-        {"hU4 - - . . . . .", "missing"},
+        {"sAA . . . . . . .", "bad token"},
+        {"cD2 . . . . . . .", "bad token"},
+        {"hDx . . . . . . .", "bad token"},
+        {"sL . . . . . . .", "bad token"}, // an arrow letter: Beat prompts are buttons
+        {"hD1 . . . . . . .", "2..8"},
+        {"hD0 . . . . . . .", "2..8"},
+        {"hD9 - - - - - - -", "2..8"},
+        {"hD10 - - - - - - -", "2..8"},
+        {"hD . . . . . . .", "length"},
+        {"hD2 . . . . . . .", "missing"},
+        {"hD3 - . . . . . .", "missing"},
+        {"hD4 - - . . . . .", "missing"},
         {"- . . . . . . .", "stray"},
-        {"sL - . . . . . .", "stray"},
-        {"hU2 - - . . . . .", "stray"},
-        {". . . . . . . hU2", "past the bar"},
-        {". . . . . . hU3 -", "past the bar"},
-        {". . . . . hU8 - -", "past the bar"},
+        {"sA - . . . . . .", "stray"},
+        {"hD2 - - . . . . .", "stray"},
+        {". . . . . . . hD2", "past the bar"},
+        {". . . . . . hD3 -", "past the bar"},
+        {". . . . . hD8 - -", "past the bar"},
     };
     for (const Bad& b : bad) {
         CAPTURE(b.text);
-        BeatPattern p = patternOf("sD . . . . . . cU");
+        BeatPattern p = patternOf("sG . . . . . . cD");
         std::string error;
         CHECK_FALSE(parseBeatPattern(b.text, p, &error));
         CHECK(error.find(b.why) != std::string::npos);
-        CHECK(formatPattern(p) == "sD . . . . . . cU"); // untouched
+        CHECK(formatPattern(p) == "sG . . . . . . cD"); // untouched
         CHECK_FALSE(parseBeatPattern(b.text, p));       // no error text wanted
     }
 }
@@ -329,8 +330,8 @@ TEST_CASE("beat: the built-in fight is the header's example at 120 bpm") {
     CHECK(d.enemies[0].hp == 60);
     CHECK(d.enemies[0].damage == 10);
     REQUIRE(d.enemies[0].patternCount == 2);
-    CHECK(formatPattern(d.enemies[0].patterns[0]) == "sL . sR . cU . . .");
-    CHECK(formatPattern(d.enemies[0].patterns[1]) == "cD . . . sL . hU2 -");
+    CHECK(formatPattern(d.enemies[0].patterns[0]) == "sA . sJ . cD . . .");
+    CHECK(formatPattern(d.enemies[0].patterns[1]) == "cG . . . sA . hD2 -");
     CHECK(d.enemies[0].patterns[0].hasCounter());
     CHECK(d.enemies[0].patterns[1].hasCounter());
 }
@@ -342,8 +343,8 @@ namespace {
 constexpr const char* kTable = R"J({
   "version": 1,
   "enemies": [
-    { "id": "wisp", "hp": 60, "damage": 10, "patterns": [ "sL . sR . cU . . .", "cD . . . sL . hU2 -" ] },
-    { "id": "brute", "hp": 140, "damage": 22, "patterns": [ "cL . . . cR . . ." ] }
+    { "id": "wisp", "hp": 60, "damage": 10, "patterns": [ "sA . sJ . cD . . .", "cG . . . sA . hD2 -" ] },
+    { "id": "brute", "hp": 140, "damage": 22, "patterns": [ "cA . . . cJ . . ." ] }
   ],
   "default": { "bpm": 100, "offset": 0.5, "hp": 80, "strikeDamage": 12, "counterDamage": 16, "holdDamage": 5,
                "enemies": ["wisp"], "music": "",
@@ -362,8 +363,8 @@ std::string tableJson(const std::string& enemies, const std::string& def, const 
     return "{ \"version\": 1, \"enemies\": " + enemies + ", \"default\": " + def + ", \"fights\": " + fights + " }";
 }
 
-const char* const kTwoEnemies = R"J([ { "id": "wisp", "hp": 60, "damage": 10, "patterns": [ "sL . sR . cU . . .", "cD . . . sL . hU2 -" ] },
-                                      { "id": "brute", "hp": 140, "damage": 22, "patterns": [ "cL . . . cR . . ." ] } ])J";
+const char* const kTwoEnemies = R"J([ { "id": "wisp", "hp": 60, "damage": 10, "patterns": [ "sA . sJ . cD . . .", "cG . . . sA . hD2 -" ] },
+                                      { "id": "brute", "hp": 140, "damage": 22, "patterns": [ "cA . . . cJ . . ." ] } ])J";
 const char* const kPlainDefault = R"J({ "bpm": 120, "enemies": ["wisp"] })J";
 
 bool hasWarning(const std::vector<std::string>& warnings, const std::string& piece) {
@@ -460,7 +461,7 @@ TEST_CASE("beat table: bad data is an error with its path, and leaves the table 
         {tableJson(two, R"J({ "enemies": ["ghost"] })J"), "default.enemies[0]"},
         // a duplicate id
         {tableJson(R"J([ { "id": "wisp", "patterns": [ "cL . . . . . . ." ] },
-                         { "id": "wisp", "patterns": [ "cL . . . . . . ." ] } ])J", def),
+                         { "id": "wisp", "patterns": [ "cA . . . . . . ." ] } ])J", def),
          "enemies[1].id"},
         // a duplicate (scene, beat, step): the step defaults to 0
         {tableJson(two, def, R"J([ { "scene": "A", "beat": 1 }, { "scene": "A", "beat": 1, "step": 0 } ])J"), "fights[1]"},
@@ -483,7 +484,7 @@ TEST_CASE("beat table: bad data is an error with its path, and leaves the table 
         {tableJson(R"J([ { "id": "wisp", "patterns": [ "sL . sR" ] } ])J", def), "enemies[0].patterns[0]"},
         {tableJson(R"J([ { "id": "wisp", "patterns": [] } ])J", def), "enemies[0].patterns"},
         {tableJson(R"J([ { "id": "wisp", "patterns": [ "cL . . . . . . .", "cL . . . . . . .", "cL . . . . . . .",
-                         "cL . . . . . . .", "cL . . . . . . .", "cL . . . . . . .", "cL . . . . . . ." ] } ])J", def),
+                         "cA . . . . . . .", "cA . . . . . . .", "cA . . . . . . .", "cA . . . . . . ." ] } ])J", def),
          "enemies[0].patterns"},
         {tableJson(R"J([ { "id": "wisp", "hp": 0, "patterns": [ "cL . . . . . . ." ] } ])J", def), "enemies[0].hp"},
         {tableJson(R"J([ { "id": "bad id", "patterns": [ "cL . . . . . . ." ] } ])J", def), "enemies[0].id"},
@@ -526,7 +527,7 @@ TEST_CASE("beat table: bad data is an error with its path, and leaves the table 
 TEST_CASE("beat table: an unknown key is a warning with its path") {
     const std::string json = R"J({
       "version": 1, "color": 3,
-      "enemies": [ { "id": "wisp", "hp": 60, "damage": 10, "speed": 2, "patterns": [ "cL . . . . . . ." ] } ],
+      "enemies": [ { "id": "wisp", "hp": 60, "damage": 10, "speed": 2, "patterns": [ "cA . . . . . . ." ] } ],
       "default": { "bpm": 120, "enemies": ["wisp"], "mood": 1, "strike": { "perfect": 0.05, "wide": 1 },
                    "counter": { "dodge": 0.3, "narrow": 1 } },
       "fights": [ { "scene": "A", "beat": 1, "volume": 2 } ]
@@ -623,7 +624,7 @@ TEST_CASE("beat windows: unchanged at 120 bpm, capped at fast tempos") {
 
     // A fight judges with them: at 240 bpm a beat is 0.25 s and the first bar line is beat 4 (1.0 s);
     // the strike is at 1.0 s and the counter an eighth (0.125 s) later.
-    BeatFightDef def = oneEnemy({"sL cU . . . . . ."}, 1000, 10);
+    BeatFightDef def = oneEnemy({"sA cD . . . . . ."}, 1000, 10);
     def.hp = 1000;
     def.bpm = 240.0;
     BeatFight f;
@@ -635,21 +636,21 @@ TEST_CASE("beat windows: unchanged at 120 bpm, capped at fast tempos") {
     CHECK(strike == doctest::Approx(1.0));
     CHECK(f.prompt(1).time == doctest::Approx(1.125));
     // A strike is Good within 0.0625 s: 0.07 s early answers nothing, 0.06 s early is Good.
-    const BeatEvents early = f.press(Arrow::Left, strike - 0.07);
+    const BeatEvents early = f.press(ActionButton::Attack, strike - 0.07);
     CHECK(countOf(early, BeatEventType::Stray) == 1);
-    const BeatEvents good = f.press(Arrow::Left, strike - 0.06);
+    const BeatEvents good = f.press(ActionButton::Attack, strike - 0.06);
     REQUIRE(findEvent(good, BeatEventType::Judged) != nullptr);
     CHECK(findEvent(good, BeatEventType::Judged)->grade == QteGrade::Good);
     // The counter's dodge window (0.185 s before its impact, 0.125 s before its eighth) opens at 1.0 s:
     // 0.02 s before that it is a whiff.
-    const BeatEvents whiff = f.press(Arrow::Up, strike - 0.02);
+    const BeatEvents whiff = f.press(ActionButton::Dodge, strike - 0.02);
     CHECK(countOf(whiff, BeatEventType::Whiff) == 1);
 }
 
 // ---- the schedule ----
 
 TEST_CASE("beat schedule: the first bar line comes after the lead-in") {
-    const BeatFightDef def = oneEnemy({"cU . . . . . . ."});
+    const BeatFightDef def = oneEnemy({"cD . . . . . . ."});
     BeatFight f;
     // 120 bpm, begun at 0 with one lead-in bar: beat 4 is 2.0 s.
     f.begin(def, plain(), 0.0, 1);
@@ -685,7 +686,7 @@ TEST_CASE("beat schedule: the first bar line comes after the lead-in") {
 }
 
 TEST_CASE("beat schedule: a bar is generated approachBeats before it starts, and bars follow back to back") {
-    const BeatFightDef def = oneEnemy({"sL . . . . . . ."});
+    const BeatFightDef def = oneEnemy({"sA . . . . . . ."});
     for (const double approach : {0.5, 2.0, 4.0}) {
         CAPTURE(approach);
         BeatTuning t = plain();
@@ -729,14 +730,14 @@ TEST_CASE("beat schedule: a bar is generated approachBeats before it starts, and
 }
 
 TEST_CASE("beat schedule: a bar's prompts are its pattern's slots, in time order") {
-    BeatFight f = beginFight({"sL sD sU sR cL cD cU cR"});
+    BeatFight f = beginFight({"sA sG sD sJ cA cG cD cJ"});
     REQUIRE(f.promptCount() == 8);
     const BeatKind kinds[] = {BeatKind::Strike,  BeatKind::Strike,  BeatKind::Strike,  BeatKind::Strike,
                               BeatKind::Counter, BeatKind::Counter, BeatKind::Counter, BeatKind::Counter};
     for (std::size_t i = 0; i < 8; ++i) {
         const BeatPrompt& p = f.prompt(i);
         CHECK(p.kind == kinds[i]);
-        CHECK(p.input == kArrows[i & 3u]);
+        CHECK(p.input == kActionButtons[i & 3u]);
         CHECK(p.id == i + 1);
         CHECK(p.enemy == 0);
         CHECK(p.length == 0);
@@ -747,7 +748,7 @@ TEST_CASE("beat schedule: a bar's prompts are its pattern's slots, in time order
         CHECK(p.end == p.time);
     }
     // A hold's prompt knows its length and its end; its `-` slots are no prompts.
-    BeatFight h = beginFight({"hU3 - - cD . . sL ."});
+    BeatFight h = beginFight({"hD3 - - cG . . sA ."});
     REQUIRE(h.promptCount() == 3);
     CHECK(h.prompt(0).kind == BeatKind::Hold);
     CHECK(h.prompt(0).length == 3);
@@ -760,7 +761,7 @@ TEST_CASE("beat schedule: a bar's prompts are its pattern's slots, in time order
 }
 
 TEST_CASE("beat schedule: the marker closes in from 1 to 0 over approachBeats, then rests at 0") {
-    BeatFight f = beginFight({"sL . . . . . . ."});
+    BeatFight f = beginFight({"sA . . . . . . ."});
     const BeatPrompt p = f.prompt(0); // at 2.0 s; approachBeats 2 is 1.0 s
     CHECK(f.approach(p, p.time - 1.5) == -1.0);
     CHECK(f.approach(p, p.time - 1.0) == doctest::Approx(1.0));
@@ -771,7 +772,7 @@ TEST_CASE("beat schedule: the marker closes in from 1 to 0 over approachBeats, t
 
     BeatTuning t = plain();
     t.approachBeats = 0.0; // no lead: it shows at its eighth
-    BeatFight g = beginFight({"sL . . . . . . ."}, t);
+    BeatFight g = beginFight({"sA . . . . . . ."}, t);
     const BeatPrompt q = g.prompt(0);
     CHECK(g.approach(q, q.time - 0.01) == -1.0);
     CHECK(g.approach(q, q.time) == 0.0);
@@ -779,7 +780,7 @@ TEST_CASE("beat schedule: the marker closes in from 1 to 0 over approachBeats, t
 
 TEST_CASE("beat schedule: enemies take turns, round robin over the living ones") {
     // Three enemies whose bars are one strike each, a different arrow each (L, D, U); enemy 1 has 10 hp.
-    BeatFightDef def = defOf({{60, 10, {"sL . . . . . . ."}}, {10, 10, {"sD . . . . . . ."}}, {60, 10, {"sU . . . . . . ."}}});
+    BeatFightDef def = defOf({{60, 10, {"sA . . . . . . ."}}, {10, 10, {"sG . . . . . . ."}}, {60, 10, {"sD . . . . . . ."}}});
     def.hp = 1000;
     BeatFight f;
     f.begin(def, plain(), 0.0, 1);
@@ -788,7 +789,7 @@ TEST_CASE("beat schedule: enemies take turns, round robin over the living ones")
     CHECK(f.turnEnemy() == -1);
     // Bars 0, 1, 2 belong to enemies 0, 1, 2. Enemy 1's strike is answered: it falls.
     const int owner[] = {0, 1, 2};
-    const Arrow arrow[] = {Arrow::Left, Arrow::Down, Arrow::Up};
+    const ActionButton arrow[] = {ActionButton::Attack, ActionButton::Guard, ActionButton::Dodge};
     for (int bar = 0; bar < 3; ++bar) {
         CAPTURE(bar);
         const double start = 2.0 + 2.0 * bar;
@@ -820,14 +821,14 @@ TEST_CASE("beat schedule: enemies take turns, round robin over the living ones")
 
 TEST_CASE("beat schedule: an enemy never plays the same pattern twice in a row") {
     // One enemy, three patterns told apart by the arrow of their one strike.
-    BeatFight f = beginFight({"sL . . . . . . .", "sD . . . . . . .", "sU . . . . . . ."});
+    BeatFight f = beginFight({"sA . . . . . . .", "sG . . . . . . .", "sD . . . . . . ."});
     std::vector<int> picks;
     int seen[3] = {0, 0, 0};
     for (int bar = 0; bar < 150; ++bar) {
         f.update(barStart(f, bar) - 0.5);
         const std::string sig = barSignature(f, bar);
         REQUIRE(sig.size() == 4); // one strike: kind, arrow, slot, a blank
-        const int arrow = sig[1] == 'L' ? 0 : (sig[1] == 'D' ? 1 : 2);
+        const int arrow = sig[1] == 'A' ? 0 : (sig[1] == 'G' ? 1 : 2);
         if (!picks.empty()) CHECK(arrow != picks.back());
         picks.push_back(arrow);
         ++seen[arrow];
@@ -837,7 +838,7 @@ TEST_CASE("beat schedule: an enemy never plays the same pattern twice in a row")
     CHECK(seen[2] > 20);
 
     // Two patterns can only alternate; each enemy has its own memory.
-    BeatFightDef def = defOf({{60, 10, {"sL . . . . . . .", "sD . . . . . . ."}}, {60, 10, {"sU . . . . . . .", "sR . . . . . . ."}}});
+    BeatFightDef def = defOf({{60, 10, {"sA . . . . . . .", "sG . . . . . . ."}}, {60, 10, {"sD . . . . . . .", "sJ . . . . . . ."}}});
     def.hp = 100000;
     BeatFight g;
     g.begin(def, plain(), 0.0, 4);
@@ -854,7 +855,7 @@ TEST_CASE("beat schedule: an enemy never plays the same pattern twice in a row")
     bool differ = false;
     char firstPick = '?';
     for (std::uint32_t seed = 1; seed <= 16; ++seed) {
-        BeatFight h = beginFight({"sL . . . . . . .", "sD . . . . . . .", "sU . . . . . . ."}, plain(), {}, seed);
+        BeatFight h = beginFight({"sA . . . . . . .", "sG . . . . . . .", "sD . . . . . . ."}, plain(), {}, seed);
         const char pick = barSignature(h, 0)[1];
         if (firstPick == '?') firstPick = pick;
         differ = differ || pick != firstPick;
@@ -869,7 +870,7 @@ TEST_CASE("beat schedule: a bar whose enemy went down before it starts plays as 
     // with enemy 0 still alive: it is a rest.
     BeatTuning t = plain();
     t.approachBeats = 4.0;
-    BeatFightDef def = defOf({{12, 10, {"hU8 - - - - - - -"}}, {60, 10, {"cL . . . . . . ."}}});
+    BeatFightDef def = defOf({{12, 10, {"hD8 - - - - - - -"}}, {60, 10, {"cA . . . . . . ."}}});
     def.hp = 1000;
     BeatFight f;
     f.begin(def, t, 0.0, 1);
@@ -879,7 +880,7 @@ TEST_CASE("beat schedule: a bar whose enemy went down before it starts plays as 
     CHECK(f.prompt(0).time == doctest::Approx(2.0));
     CHECK(f.prompt(0).end == doctest::Approx(4.0));
     f.update(1.0);
-    CHECK(f.press(Arrow::Up, 2.0).empty()); // pressed: held
+    CHECK(f.press(ActionButton::Dodge, 2.0).empty()); // pressed: held
     CHECK(f.holding());
     f.update(3.0);
     CHECK(f.turnEnemy() == 0);
@@ -920,8 +921,8 @@ TEST_CASE("beat judging: a strike is Perfect, Good or a Miss around its eighth, 
     };
     for (const Case& c : cases) {
         CAPTURE(c.offset);
-        BeatFight f = beginFight({"sL . . . . . . ."});
-        const BeatEvents e = f.press(Arrow::Left, 2.0 + c.offset);
+        BeatFight f = beginFight({"sA . . . . . . ."});
+        const BeatEvents e = f.press(ActionButton::Attack, 2.0 + c.offset);
         REQUIRE(e.size() == 2);
         CHECK(e[0].type == BeatEventType::Judged);
         CHECK(e[0].grade == c.grade);
@@ -936,16 +937,16 @@ TEST_CASE("beat judging: a strike is Perfect, Good or a Miss around its eighth, 
     }
 
     // Before the window opens the press answers nothing: a stray, and the prompt is still there.
-    BeatFight f = beginFight({"sL . . . . . . ."});
-    const BeatEvents stray = f.press(Arrow::Left, 2.0 - 0.13);
+    BeatFight f = beginFight({"sA . . . . . . ."});
+    const BeatEvents stray = f.press(ActionButton::Attack, 2.0 - 0.13);
     REQUIRE(stray.size() == 1);
     CHECK(stray[0].type == BeatEventType::Stray);
     CHECK(f.stats().strays == 1);
     CHECK(f.promptCount() == 1);
-    CHECK(f.press(Arrow::Left, 2.0).size() == 2); // it answers when its time comes
+    CHECK(f.press(ActionButton::Attack, 2.0).size() == 2); // it answers when its time comes
 
     // Past the window with nothing pressed: a Miss at the window's end; a late press is a stray.
-    BeatFight g = beginFight({"sL . . . . . . ."});
+    BeatFight g = beginFight({"sA . . . . . . ."});
     CHECK(g.update(2.12).empty()); // a press at the last moment would still count
     const BeatEvents miss = g.update(2.121);
     REQUIRE(miss.size() == 1);
@@ -954,13 +955,13 @@ TEST_CASE("beat judging: a strike is Perfect, Good or a Miss around its eighth, 
     CHECK(miss[0].time == doctest::Approx(2.12));
     CHECK(g.stats().misses == 1);
     CHECK(g.hp() == 1000); // only a missed counter hurts the lead
-    const BeatEvents late = g.press(Arrow::Left, 2.13);
+    const BeatEvents late = g.press(ActionButton::Attack, 2.13);
     REQUIRE(late.size() == 1);
     CHECK(late[0].type == BeatEventType::Stray);
 
     // A wrong arrow answers nothing.
-    BeatFight h = beginFight({"sL . . . . . . ."});
-    CHECK(h.press(Arrow::Right, 2.0)[0].type == BeatEventType::Stray);
+    BeatFight h = beginFight({"sA . . . . . . ."});
+    CHECK(h.press(ActionButton::Jump, 2.0)[0].type == BeatEventType::Stray);
     CHECK(h.promptCount() == 1);
 }
 
@@ -979,8 +980,8 @@ TEST_CASE("beat judging: a counter is Perfect in the parry window around its bea
     };
     for (const Case& c : cases) {
         CAPTURE(c.offset);
-        BeatFight f = beginFight({"cU . . . . . . ."});
-        const BeatEvents e = f.press(Arrow::Up, 2.0 + c.offset);
+        BeatFight f = beginFight({"cD . . . . . . ."});
+        const BeatEvents e = f.press(ActionButton::Dodge, 2.0 + c.offset);
         REQUIRE(e.size() == 2);
         CHECK(e[0].type == BeatEventType::Judged);
         CHECK(e[0].grade == c.grade);
@@ -994,7 +995,7 @@ TEST_CASE("beat judging: a counter is Perfect in the parry window around its bea
     }
 
     // Unanswered: a Miss at the impact (0.06 s after the eighth), and the lead takes the enemy's damage.
-    BeatFight f = beginFight({"cU . . . . . . ."});
+    BeatFight f = beginFight({"cD . . . . . . ."});
     CHECK(f.update(2.059).empty());
     const BeatEvents e = f.update(2.061);
     REQUIRE(e.size() == 2);
@@ -1011,16 +1012,16 @@ TEST_CASE("beat judging: a counter is Perfect in the parry window around its bea
     CHECK(f.stats().misses == 1);
 
     // A wrong arrow doesn't answer it; the right one does.
-    BeatFight g = beginFight({"cU . . . . . . ."});
-    CHECK(g.press(Arrow::Down, 2.0)[0].type == BeatEventType::Stray);
-    CHECK(g.press(Arrow::Up, 2.0).size() == 2);
+    BeatFight g = beginFight({"cD . . . . . . ."});
+    CHECK(g.press(ActionButton::Guard, 2.0)[0].type == BeatEventType::Stray);
+    CHECK(g.press(ActionButton::Dodge, 2.0).size() == 2);
 }
 
 TEST_CASE("beat judging: a press just after a counter landed is Late, once, with no other effect") {
-    BeatFight f = beginFight({"cU . . . . . . ."});
+    BeatFight f = beginFight({"cD . . . . . . ."});
     f.update(2.07); // it landed at 2.06
     const int hp = f.hp();
-    const BeatEvents late = f.press(Arrow::Up, 2.1); // 0.04 s after: within counter.late (0.2 s)
+    const BeatEvents late = f.press(ActionButton::Dodge, 2.1); // 0.04 s after: within counter.late (0.2 s)
     REQUIRE(late.size() == 1);
     CHECK(late[0].type == BeatEventType::Late);
     CHECK(late[0].prompt == 1);
@@ -1029,21 +1030,21 @@ TEST_CASE("beat judging: a press just after a counter landed is Late, once, with
     CHECK(f.stats().strays == 0);
     CHECK_FALSE(f.counterLockedOut(2.11));
     // The second press is no longer late: a stray.
-    const BeatEvents again = f.press(Arrow::Up, 2.12);
+    const BeatEvents again = f.press(ActionButton::Dodge, 2.12);
     REQUIRE(again.size() == 1);
     CHECK(again[0].type == BeatEventType::Stray);
 
     // A press that comes too long after, or with another arrow, is a stray.
-    BeatFight g = beginFight({"cU . . . . . . ."});
+    BeatFight g = beginFight({"cD . . . . . . ."});
     g.update(2.07);
-    CHECK(g.press(Arrow::Up, 2.06 + 0.21)[0].type == BeatEventType::Stray);
-    BeatFight h = beginFight({"cU . . . . . . ."});
+    CHECK(g.press(ActionButton::Dodge, 2.06 + 0.21)[0].type == BeatEventType::Stray);
+    BeatFight h = beginFight({"cD . . . . . . ."});
     h.update(2.07);
-    CHECK(h.press(Arrow::Down, 2.1)[0].type == BeatEventType::Stray);
+    CHECK(h.press(ActionButton::Guard, 2.1)[0].type == BeatEventType::Stray);
 
     // The press that lands the counter late is both: the Miss and the LeadHit, then Late.
-    BeatFight k = beginFight({"cU . . . . . . ."});
-    const BeatEvents e = k.press(Arrow::Up, 2.1);
+    BeatFight k = beginFight({"cD . . . . . . ."});
+    const BeatEvents e = k.press(ActionButton::Dodge, 2.1);
     CHECK(countOf(e, BeatEventType::LeadHit) == 1);
     CHECK(e[e.size() - 1].type == BeatEventType::Late);
 
@@ -1051,25 +1052,25 @@ TEST_CASE("beat judging: a press just after a counter landed is Late, once, with
     // puts two in it): up at 2.0 (landed 2.06) and down at 2.25 (landed 2.31), each late once.
     BeatTuning longLate = plain();
     longLate.counter.late = 0.5;
-    BeatFight m = beginFight({"cU cD . . . . . ."}, longLate);
+    BeatFight m = beginFight({"cD cG . . . . . ."}, longLate);
     m.update(2.32);
     CHECK(m.stats().damageTaken == 20);
-    const BeatEvents up = m.press(Arrow::Up, 2.33);
+    const BeatEvents up = m.press(ActionButton::Dodge, 2.33);
     REQUIRE(up.size() == 1);
     CHECK(up[0].type == BeatEventType::Late);
     CHECK(up[0].prompt == 1);
-    const BeatEvents down = m.press(Arrow::Down, 2.34);
+    const BeatEvents down = m.press(ActionButton::Guard, 2.34);
     REQUIRE(down.size() == 1);
     CHECK(down[0].type == BeatEventType::Late);
     CHECK(down[0].prompt == 2);
-    CHECK(m.press(Arrow::Up, 2.35)[0].type == BeatEventType::Stray);
-    CHECK(m.press(Arrow::Down, 2.36)[0].type == BeatEventType::Stray);
+    CHECK(m.press(ActionButton::Dodge, 2.35)[0].type == BeatEventType::Stray);
+    CHECK(m.press(ActionButton::Guard, 2.36)[0].type == BeatEventType::Stray);
 
     // Late wins over a whiff: with a second counter of the same arrow showing, the press is still Late
     // for the first, and no lockout starts.
-    BeatFight n = beginFight({"cU . cU . . . . ."});
+    BeatFight n = beginFight({"cD . cD . . . . ."});
     n.update(2.07);
-    const BeatEvents second = n.press(Arrow::Up, 2.1);
+    const BeatEvents second = n.press(ActionButton::Dodge, 2.1);
     REQUIRE(second.size() == 1);
     CHECK(second[0].type == BeatEventType::Late);
     CHECK_FALSE(n.counterLockedOut(2.2));
@@ -1079,9 +1080,9 @@ TEST_CASE("beat judging: a press just after a counter landed is Late, once, with
 TEST_CASE("beat judging: mashing a counter's arrow before its window locks counters out, but never strikes") {
     // A strike at 2.0 s (left) then a counter at 2.25 s (up), whose marker shows from 1.25 s and whose
     // dodge window opens at 2.01 s.
-    BeatFight f = beginFight({"sL cU . . . . . ."});
+    BeatFight f = beginFight({"sA cD . . . . . ."});
     // Showing, window closed: a whiff. The lockout is min(0.40 s, 0.75 beats = 0.375 s).
-    const BeatEvents whiff = f.press(Arrow::Up, 1.7);
+    const BeatEvents whiff = f.press(ActionButton::Dodge, 1.7);
     REQUIRE(whiff.size() == 1);
     CHECK(whiff[0].type == BeatEventType::Whiff);
     CHECK(whiff[0].amount == 375);
@@ -1093,13 +1094,13 @@ TEST_CASE("beat judging: mashing a counter's arrow before its window locks count
     CHECK_FALSE(f.counterLockedOut(1.7 + 0.376));
 
     // Strikes are never locked out: the strike at 2.0 s is inside the lockout (until 2.075 s).
-    const BeatEvents strike = f.press(Arrow::Left, 2.0);
+    const BeatEvents strike = f.press(ActionButton::Attack, 2.0);
     REQUIRE(strike.size() == 2);
     CHECK(strike[0].type == BeatEventType::Judged);
     CHECK(strike[0].grade == QteGrade::Perfect);
 
     // A press that would answer the counter, inside the lockout, is ignored.
-    const BeatEvents ignored = f.press(Arrow::Up, 2.05);
+    const BeatEvents ignored = f.press(ActionButton::Dodge, 2.05);
     REQUIRE(ignored.size() == 1);
     CHECK(ignored[0].type == BeatEventType::LockedOut);
     CHECK(ignored[0].prompt == 2);
@@ -1107,26 +1108,26 @@ TEST_CASE("beat judging: mashing a counter's arrow before its window locks count
     CHECK(f.promptCount() == 1); // the counter is still open
 
     // Once the lockout is over it answers: 0.15 s before its eighth is the dodge window (Good).
-    const BeatEvents answered = f.press(Arrow::Up, 2.1);
+    const BeatEvents answered = f.press(ActionButton::Dodge, 2.1);
     REQUIRE(answered.size() == 2);
     CHECK(answered[0].grade == QteGrade::Good);
 
     // A press during the lockout that is itself a whiff starts it over.
-    BeatFight g = beginFight({"cU . . . . . . ."});
-    CHECK(g.press(Arrow::Up, 1.5)[0].type == BeatEventType::Whiff); // locked until 1.875
-    CHECK(g.press(Arrow::Up, 1.7)[0].type == BeatEventType::Whiff); // the window opens at 1.76: closed still
+    BeatFight g = beginFight({"cD . . . . . . ."});
+    CHECK(g.press(ActionButton::Dodge, 1.5)[0].type == BeatEventType::Whiff); // locked until 1.875
+    CHECK(g.press(ActionButton::Dodge, 1.7)[0].type == BeatEventType::Whiff); // the window opens at 1.76: closed still
     CHECK(g.counterLockedOut(2.0));                                  // 1.7 + 0.375 = 2.075
     CHECK(g.stats().whiffs == 2);
 
     // Any showing counter of that arrow counts, not only the next prompt: the counter is third, at 2.5 s,
     // and its window opens at 2.26 s.
-    BeatFight h = beginFight({"sL sD cU . . . . ."});
-    CHECK(h.press(Arrow::Up, 2.0)[0].type == BeatEventType::Whiff);
+    BeatFight h = beginFight({"sA sG cD . . . . ."});
+    CHECK(h.press(ActionButton::Dodge, 2.0)[0].type == BeatEventType::Whiff);
 
     // Skipping to a counter is a press that would answer it: locked out, the skip doesn't happen either.
-    BeatFight k = beginFight({"sL cU . . . . . ."});
-    CHECK(k.press(Arrow::Up, 1.9)[0].type == BeatEventType::Whiff); // locked until 2.275; the window opens at 2.01
-    const BeatEvents locked = k.press(Arrow::Up, 2.05);             // inside the strike's window as well
+    BeatFight k = beginFight({"sA cD . . . . . ."});
+    CHECK(k.press(ActionButton::Dodge, 1.9)[0].type == BeatEventType::Whiff); // locked until 2.275; the window opens at 2.01
+    const BeatEvents locked = k.press(ActionButton::Dodge, 2.05);             // inside the strike's window as well
     REQUIRE(locked.size() == 1);
     CHECK(locked[0].type == BeatEventType::LockedOut);
     CHECK(locked[0].prompt == 2);
@@ -1135,9 +1136,9 @@ TEST_CASE("beat judging: mashing a counter's arrow before its window locks count
 
 TEST_CASE("beat judging: a press for a counter whose marker isn't showing yet is a stray") {
     // The counter is at 3.0 s; its marker shows from 2.0 s. The bar is open from 1.0 s.
-    BeatFight f = beginFight({"sL . . . cU . . ."});
+    BeatFight f = beginFight({"sA . . . cD . . ."});
     REQUIRE(f.promptCount() == 2);
-    const BeatEvents early = f.press(Arrow::Up, 1.5);
+    const BeatEvents early = f.press(ActionButton::Dodge, 1.5);
     REQUIRE(early.size() == 1);
     CHECK(early[0].type == BeatEventType::Stray);
     CHECK(f.stats().whiffs == 0);
@@ -1145,7 +1146,7 @@ TEST_CASE("beat judging: a press for a counter whose marker isn't showing yet is
     CHECK_FALSE(f.counterLockedOut(1.6));
     // Once it is showing but its window hasn't opened (from 2.76 s), the same press is a whiff.
     f.update(2.2);
-    const BeatEvents whiff = f.press(Arrow::Up, 2.2);
+    const BeatEvents whiff = f.press(ActionButton::Dodge, 2.2);
     CHECK(countOf(whiff, BeatEventType::Whiff) == 1);
     CHECK(f.stats().whiffs == 1);
     CHECK(f.counterLockedOut(2.3));
@@ -1153,22 +1154,22 @@ TEST_CASE("beat judging: a press for a counter whose marker isn't showing yet is
 
 TEST_CASE("beat judging: strict order, and the skipped-note exception") {
     // A press answers the earliest prompt: a press of the second prompt's arrow before its window is a stray.
-    BeatFight f = beginFight({"sL sD sU . . . . ."});
-    const BeatEvents wrong = f.press(Arrow::Down, 2.0);
+    BeatFight f = beginFight({"sA sG sD . . . . ."});
+    const BeatEvents wrong = f.press(ActionButton::Guard, 2.0);
     REQUIRE(wrong.size() == 1);
     CHECK(wrong[0].type == BeatEventType::Stray);
     CHECK(f.promptCount() == 3);
-    CHECK(f.press(Arrow::Left, 2.0).size() == 2);
+    CHECK(f.press(ActionButton::Attack, 2.0).size() == 2);
     // The same arrow again doesn't answer the next prompt (down), whose window isn't open.
-    CHECK(f.press(Arrow::Left, 2.0)[0].type == BeatEventType::Stray);
-    CHECK(f.press(Arrow::Down, 2.25).size() == 2);
-    CHECK(f.press(Arrow::Up, 2.5).size() == 2);
+    CHECK(f.press(ActionButton::Attack, 2.0)[0].type == BeatEventType::Stray);
+    CHECK(f.press(ActionButton::Guard, 2.25).size() == 2);
+    CHECK(f.press(ActionButton::Dodge, 2.5).size() == 2);
     CHECK(f.promptCount() == 0);
 
     // The exception: the arrow of the next prompt, inside its window, while the earliest is still open.
     // A counter's dodge window opens 0.24 s before its eighth, inside the strike's window.
-    BeatFight g = beginFight({"sL cD . . . . . ."});
-    const BeatEvents skip = g.press(Arrow::Down, 2.05);
+    BeatFight g = beginFight({"sA cG . . . . . ."});
+    const BeatEvents skip = g.press(ActionButton::Guard, 2.05);
     REQUIRE(skip.size() == 3);
     CHECK(skip[0].type == BeatEventType::Judged); // the skipped strike is a Miss...
     CHECK(skip[0].grade == QteGrade::Miss);
@@ -1185,8 +1186,8 @@ TEST_CASE("beat judging: strict order, and the skipped-note exception") {
     CHECK(g.promptCount() == 0);
 
     // Skipping a counter costs the lead its hit.
-    BeatFight h = beginFight({"cL cD . . . . . ."});
-    const BeatEvents lose = h.press(Arrow::Down, 2.03);
+    BeatFight h = beginFight({"cA cG . . . . . ."});
+    const BeatEvents lose = h.press(ActionButton::Guard, 2.03);
     CHECK(countOf(lose, BeatEventType::LeadHit) == 1);
     REQUIRE(findEvent(lose, BeatEventType::Judged, 1) != nullptr);
     CHECK(findEvent(lose, BeatEventType::Judged, 0)->grade == QteGrade::Miss);
@@ -1194,16 +1195,16 @@ TEST_CASE("beat judging: strict order, and the skipped-note exception") {
     CHECK(h.hp() == 990);
 
     // A press that matches neither prompt is a stray and skips nothing.
-    BeatFight k = beginFight({"sL sD . . . . . ."});
-    CHECK(k.press(Arrow::Up, 2.05)[0].type == BeatEventType::Stray);
+    BeatFight k = beginFight({"sA sG . . . . . ."});
+    CHECK(k.press(ActionButton::Dodge, 2.05)[0].type == BeatEventType::Stray);
     CHECK(k.promptCount() == 2);
 }
 
 // ---- judging: holds ----
 
 TEST_CASE("beat judging: a hold completes when held to its end, with the grade of its press") {
-    BeatFight f = beginFight({"hU2 - . . . . . ."}); // 2.0 s to 2.5 s
-    CHECK(f.press(Arrow::Up, 2.0).empty());          // pressed: nothing resolves yet
+    BeatFight f = beginFight({"hD2 - . . . . . ."}); // 2.0 s to 2.5 s
+    CHECK(f.press(ActionButton::Dodge, 2.0).empty());          // pressed: nothing resolves yet
     CHECK(f.holding());
     CHECK(f.holdProgress() == doctest::Approx(0.0));
     f.update(2.25);
@@ -1220,24 +1221,24 @@ TEST_CASE("beat judging: a hold completes when held to its end, with the grade o
     CHECK(done[1].amount == 12); // holdDamage 6 * 2 eighths
     CHECK_FALSE(f.holding());
     CHECK(f.holdProgress() == 0.0);
-    CHECK(f.release(Arrow::Up, 2.6).empty()); // letting go afterwards does nothing
+    CHECK(f.release(ActionButton::Dodge, 2.6).empty()); // letting go afterwards does nothing
 
     // A Good press keeps its grade: round(6 * 2 * 0.6) = 7.
-    BeatFight g = beginFight({"hU2 - . . . . . ."});
-    g.press(Arrow::Up, 2.1);
+    BeatFight g = beginFight({"hD2 - . . . . . ."});
+    g.press(ActionButton::Dodge, 2.1);
     const BeatEvents good = g.update(2.5);
     REQUIRE(good.size() == 2);
     CHECK(good[0].grade == QteGrade::Good);
     CHECK(good[1].amount == 7);
 
     // Nobody releases: it still completes at its end.
-    BeatFight h = beginFight({"hU2 - . . . . . ."});
-    h.press(Arrow::Up, 2.0);
+    BeatFight h = beginFight({"hD2 - . . . . . ."});
+    h.press(ActionButton::Dodge, 2.0);
     CHECK(countOf(h.update(3.0), BeatEventType::Judged) == 1);
     CHECK(h.stats().perfects == 1);
 
     // Nobody presses it: a Miss when its press window has passed.
-    BeatFight k = beginFight({"hU2 - . . . . . ."});
+    BeatFight k = beginFight({"hD2 - . . . . . ."});
     const BeatEvents miss = k.update(2.13);
     REQUIRE(miss.size() == 1);
     CHECK(miss[0].grade == QteGrade::Miss);
@@ -1247,9 +1248,9 @@ TEST_CASE("beat judging: a hold completes when held to its end, with the grade o
 
 TEST_CASE("beat judging: letting go of a hold early breaks it; within holdSlack of its end it still counts") {
     // Broken: let go 0.3 s before the end (holdSlack is 0.15 s).
-    BeatFight f = beginFight({"hU2 - . . . . . ."});
-    f.press(Arrow::Up, 2.0);
-    const BeatEvents broken = f.release(Arrow::Up, 2.2);
+    BeatFight f = beginFight({"hD2 - . . . . . ."});
+    f.press(ActionButton::Dodge, 2.0);
+    const BeatEvents broken = f.release(ActionButton::Dodge, 2.2);
     REQUIRE(broken.size() == 1);
     CHECK(broken[0].type == BeatEventType::Judged);
     CHECK(broken[0].grade == QteGrade::Miss);
@@ -1262,40 +1263,40 @@ TEST_CASE("beat judging: letting go of a hold early breaks it; within holdSlack 
     CHECK(f.update(3.0).empty());
 
     // Within the slack (0.1 s early): complete, at the release.
-    BeatFight g = beginFight({"hU2 - . . . . . ."});
-    g.press(Arrow::Up, 2.0);
-    const BeatEvents slack = g.release(Arrow::Up, 2.4);
+    BeatFight g = beginFight({"hD2 - . . . . . ."});
+    g.press(ActionButton::Dodge, 2.0);
+    const BeatEvents slack = g.release(ActionButton::Dodge, 2.4);
     REQUIRE(slack.size() == 2);
     CHECK(slack[0].grade == QteGrade::Perfect);
     CHECK(slack[0].time == doctest::Approx(2.4));
     CHECK(slack[1].amount == 12);
 
     // The edge: 2.35 s is 0.15 s before the end.
-    BeatFight h = beginFight({"hU2 - . . . . . ."});
-    h.press(Arrow::Up, 2.0);
-    CHECK(h.release(Arrow::Up, 2.34).size() == 1); // just outside: broken
-    BeatFight k = beginFight({"hU2 - . . . . . ."});
-    k.press(Arrow::Up, 2.0);
-    CHECK(k.release(Arrow::Up, 2.36).size() == 2); // just inside: complete
+    BeatFight h = beginFight({"hD2 - . . . . . ."});
+    h.press(ActionButton::Dodge, 2.0);
+    CHECK(h.release(ActionButton::Dodge, 2.34).size() == 1); // just outside: broken
+    BeatFight k = beginFight({"hD2 - . . . . . ."});
+    k.press(ActionButton::Dodge, 2.0);
+    CHECK(k.release(ActionButton::Dodge, 2.36).size() == 2); // just inside: complete
 
     // Letting go of another arrow does nothing; a wider holdSlack widens the edge.
-    BeatFight m = beginFight({"hU2 - . . . . . ."});
-    m.press(Arrow::Up, 2.0);
-    CHECK(m.release(Arrow::Down, 2.2).empty());
+    BeatFight m = beginFight({"hD2 - . . . . . ."});
+    m.press(ActionButton::Dodge, 2.0);
+    CHECK(m.release(ActionButton::Guard, 2.2).empty());
     CHECK(m.holding());
     BeatTuning wide = plain();
     wide.holdSlack = 0.4;
-    BeatFight n = beginFight({"hU2 - . . . . . ."}, wide);
-    n.press(Arrow::Up, 2.0);
-    CHECK(n.release(Arrow::Up, 2.2).size() == 2);
+    BeatFight n = beginFight({"hD2 - . . . . . ."}, wide);
+    n.press(ActionButton::Dodge, 2.0);
+    CHECK(n.release(ActionButton::Dodge, 2.2).size() == 2);
 }
 
 TEST_CASE("beat judging: a press or release within holdSlack of a hold's end completes the hold first") {
     // The hold fills slots 0-1 (2.0 s to 2.5 s) and a strike follows at 2.5 s.
-    BeatFight f = beginFight({"hU2 - sD . . . . ."});
-    f.press(Arrow::Up, 2.0);
+    BeatFight f = beginFight({"hD2 - sG . . . . ."});
+    f.press(ActionButton::Dodge, 2.0);
     // A press of the next prompt's arrow 0.1 s before the hold ends completes the hold first.
-    const BeatEvents e = f.press(Arrow::Down, 2.4);
+    const BeatEvents e = f.press(ActionButton::Guard, 2.4);
     REQUIRE(e.size() == 4);
     CHECK(e[0].type == BeatEventType::Judged);
     CHECK(e[0].kind == BeatKind::Hold);
@@ -1308,17 +1309,17 @@ TEST_CASE("beat judging: a press or release within holdSlack of a hold's end com
     CHECK_FALSE(f.holding());
 
     // Not close enough to the end (0.2 s): the hold goes on and the press is outside the strike's window.
-    BeatFight g = beginFight({"hU2 - sD . . . . ."});
-    g.press(Arrow::Up, 2.0);
-    const BeatEvents outside = g.press(Arrow::Down, 2.3);
+    BeatFight g = beginFight({"hD2 - sG . . . . ."});
+    g.press(ActionButton::Dodge, 2.0);
+    const BeatEvents outside = g.press(ActionButton::Guard, 2.3);
     REQUIRE(outside.size() == 1);
     CHECK(outside[0].type == BeatEventType::Stray);
     CHECK(g.holding());
 
     // A release of another arrow that close to the end completes it too.
-    BeatFight h = beginFight({"hU2 - sD . . . . ."});
-    h.press(Arrow::Up, 2.0);
-    const BeatEvents r = h.release(Arrow::Left, 2.4);
+    BeatFight h = beginFight({"hD2 - sG . . . . ."});
+    h.press(ActionButton::Dodge, 2.0);
+    const BeatEvents r = h.release(ActionButton::Attack, 2.4);
     REQUIRE(r.size() == 2);
     CHECK(r[0].kind == BeatKind::Hold);
     CHECK_FALSE(h.holding());
@@ -1329,9 +1330,9 @@ TEST_CASE("beat judging: a press or release within holdSlack of a hold's end com
 TEST_CASE("beat assists: hold toggle latches a hold on its press") {
     QteAssist toggle;
     toggle.holdToggle = true;
-    BeatFight f = beginFight({"hU2 - . . . . . ."}, plain(), toggle);
-    CHECK(f.press(Arrow::Up, 2.0).empty());
-    CHECK(f.release(Arrow::Up, 2.1).empty()); // letting go does nothing
+    BeatFight f = beginFight({"hD2 - . . . . . ."}, plain(), toggle);
+    CHECK(f.press(ActionButton::Dodge, 2.0).empty());
+    CHECK(f.release(ActionButton::Dodge, 2.1).empty()); // letting go does nothing
     CHECK(f.holding());
     const BeatEvents done = f.update(2.5);
     REQUIRE(done.size() == 2);
@@ -1339,9 +1340,9 @@ TEST_CASE("beat assists: hold toggle latches a hold on its press") {
     CHECK(done[0].time == doctest::Approx(2.5));
 
     // Without the assist the same release breaks it.
-    BeatFight g = beginFight({"hU2 - . . . . . ."});
-    g.press(Arrow::Up, 2.0);
-    CHECK(g.release(Arrow::Up, 2.1)[0].grade == QteGrade::Miss);
+    BeatFight g = beginFight({"hD2 - . . . . . ."});
+    g.press(ActionButton::Dodge, 2.0);
+    CHECK(g.release(ActionButton::Dodge, 2.1)[0].grade == QteGrade::Miss);
 }
 
 TEST_CASE("beat assists: auto-complete plays the autopilot in update and ignores the player") {
@@ -1353,8 +1354,8 @@ TEST_CASE("beat assists: auto-complete plays the autopilot in update and ignores
     bool ignoredAll = true;
     for (double now = 1.0 / 60.0; !f.over() && now < 60.0; now += 1.0 / 60.0) {
         // Whatever the player does is ignored: it neither answers nor strays.
-        const BeatEvents p = f.press(Arrow::Left, now);
-        const BeatEvents r = f.release(Arrow::Left, now);
+        const BeatEvents p = f.press(ActionButton::Attack, now);
+        const BeatEvents r = f.release(ActionButton::Attack, now);
         ignoredAll = ignoredAll && p.empty() && r.empty();
         rec.add(f.update(now));
     }
@@ -1381,31 +1382,31 @@ TEST_CASE("beat assists: auto-complete plays the autopilot in update and ignores
 
 TEST_CASE("beat autopilot: presses on the beat, releases a hold at its end, and a release goes before a press") {
     // A hold ending at 2.5 s and a strike at 2.5 s.
-    BeatFight f = beginFight({"hU2 - sD . . . . ."});
+    BeatFight f = beginFight({"hD2 - sG . . . . ."});
     QteAction a = f.autopilot(1.9);
     CHECK(a.kind == QteAction::Kind::None); // waiting
     a = f.autopilot(2.0);
     CHECK(a.kind == QteAction::Kind::Press);
-    CHECK(a.input == Arrow::Up);
+    CHECK(a.input == ActionButton::Dodge);
     CHECK(a.time == doctest::Approx(2.0));
     CHECK(f.press(a.input, a.time).empty());
     CHECK(f.autopilot(2.4).kind == QteAction::Kind::None); // nothing due before 2.5 s
     // At 2.5 s both are due: the release first, then the press.
     a = f.autopilot(2.5);
     CHECK(a.kind == QteAction::Kind::Release);
-    CHECK(a.input == Arrow::Up);
+    CHECK(a.input == ActionButton::Dodge);
     CHECK(a.time == doctest::Approx(2.5));
     CHECK(countOf(f.release(a.input, a.time), BeatEventType::Judged) == 1);
     a = f.autopilot(2.5);
     CHECK(a.kind == QteAction::Kind::Press);
-    CHECK(a.input == Arrow::Down);
+    CHECK(a.input == ActionButton::Guard);
     CHECK(a.time == doctest::Approx(2.5));
     CHECK(f.press(a.input, a.time).size() == 2);
     CHECK(f.autopilot(2.5).kind == QteAction::Kind::None);
 
     // Both due at once because the clock was late: the release is still asked for first.
-    BeatFight g = beginFight({"hU2 - sD . . . . ."});
-    g.press(Arrow::Up, 2.0);
+    BeatFight g = beginFight({"hD2 - sG . . . . ."});
+    g.press(ActionButton::Dodge, 2.0);
     g.update(2.4);
     a = g.autopilot(3.0);
     CHECK(a.kind == QteAction::Kind::Release);
@@ -1413,7 +1414,7 @@ TEST_CASE("beat autopilot: presses on the beat, releases a hold at its end, and 
     CHECK(g.autopilot(2.45).kind == QteAction::Kind::None);
 
     // A late clock gets its move at now(), never in the past.
-    BeatFight h = beginFight({"sL . . . . . . ."});
+    BeatFight h = beginFight({"sA . . . . . . ."});
     h.update(2.1); // 0.1 s late: still inside the window
     a = h.autopilot(2.1);
     CHECK(a.kind == QteAction::Kind::Press);
@@ -1428,8 +1429,8 @@ TEST_CASE("beat autopilot: presses on the beat, releases a hold at its end, and 
     BeatTuning locked = plain();
     locked.counter.parryLockout = 2.0;
     locked.counterLockoutBeats = 4.0;
-    BeatFight k = beginFight({"cU . . . . . . ."}, locked);
-    CHECK(k.press(Arrow::Up, 1.5)[0].type == BeatEventType::Whiff); // locked out until 3.5
+    BeatFight k = beginFight({"cD . . . . . . ."}, locked);
+    CHECK(k.press(ActionButton::Dodge, 1.5)[0].type == BeatEventType::Whiff); // locked out until 3.5
     k.update(2.0);
     CHECK(k.autopilot(2.0).kind == QteAction::Kind::None);
     CHECK(countOf(k.update(2.1), BeatEventType::LeadHit) == 1);
@@ -1439,7 +1440,7 @@ TEST_CASE("beat autopilot: presses on the beat, releases a hold at its end, and 
     CHECK(idle.autopilot(100.0).kind == QteAction::Kind::None);
     CHECK(idle.phase() == BeatPhase::NotStarted);
     CHECK(idle.update(5.0).empty());
-    CHECK(idle.press(Arrow::Left, 5.0).empty());
+    CHECK(idle.press(ActionButton::Attack, 5.0).empty());
 }
 
 // ---- chain, multiplier, damage ----
@@ -1447,7 +1448,7 @@ TEST_CASE("beat autopilot: presses on the beat, releases a hold at its end, and 
 TEST_CASE("beat chain: the multiplier steps every chainPerStep answers, caps, and resets on a Miss") {
     // Eight strikes a bar against a wall of hp: the damage each answer deals is 10 times the
     // multiplier it started with: x1 for the first 8, then x2, x3 and x4 (the cap).
-    BeatFightDef def = oneEnemy({"sL sD sU sR sL sD sU sR"}, 100000, 10);
+    BeatFightDef def = oneEnemy({"sA sG sD sJ sA sG sD sJ"}, 100000, 10);
     def.hp = 100000;
     BeatFight f;
     f.begin(def, plain(), 0.0, 1);
@@ -1510,16 +1511,16 @@ TEST_CASE("beat chain: the multiplier steps every chainPerStep answers, caps, an
     CHECK(seen[1] == 1); // the Miss
 
     // A Miss at x1 changes no multiplier: no event.
-    BeatFight k = beginFight({"sL . . . . . . ."});
+    BeatFight k = beginFight({"sA . . . . . . ."});
     CHECK(countOf(k.update(2.2), BeatEventType::Multiplier) == 0);
     CHECK(k.stats().misses == 1);
 
     // Strays, whiffs and ignored presses don't touch the chain.
-    BeatFight m = beginFight({"sL sD . . . . . ."});
-    m.press(Arrow::Left, 2.0);
+    BeatFight m = beginFight({"sA sG . . . . . ."});
+    m.press(ActionButton::Attack, 2.0);
     CHECK(m.chain() == 1);
-    m.press(Arrow::Right, 2.1);
-    m.press(Arrow::Up, 1.0);
+    m.press(ActionButton::Jump, 2.1);
+    m.press(ActionButton::Dodge, 1.0);
     CHECK(m.chain() == 1);
 }
 
@@ -1527,16 +1528,16 @@ TEST_CASE("beat damage: the formulas, goodFactor rounding and the multiplier") {
     // strikeDamage 10, counterDamage 14, holdDamage 6 per eighth: Perfect, and round(x * 0.6) for Good.
     struct Case {
         const char* pattern;
-        Arrow arrow;
+        ActionButton arrow;
         double offset;
         int damage;
     };
     const Case cases[] = {
-        {"sL . . . . . . .", Arrow::Left, 0.0, 10},  {"sL . . . . . . .", Arrow::Left, 0.1, 6},
-        {"cU . . . . . . .", Arrow::Up, 0.0, 14},    {"cU . . . . . . .", Arrow::Up, -0.15, 8},  // 8.4 -> 8
-        {"hU2 - . . . . . .", Arrow::Up, 0.0, 12},   {"hU2 - . . . . . .", Arrow::Up, 0.1, 7},   // 7.2 -> 7
-        {"hU3 - - . . . . .", Arrow::Up, 0.0, 18},   {"hU3 - - . . . . .", Arrow::Up, 0.1, 11},  // 10.8 -> 11
-        {"hU8 - - - - - - -", Arrow::Up, 0.0, 48},   {"hU8 - - - - - - -", Arrow::Up, 0.1, 29},  // 28.8 -> 29
+        {"sA . . . . . . .", ActionButton::Attack, 0.0, 10},  {"sA . . . . . . .", ActionButton::Attack, 0.1, 6},
+        {"cD . . . . . . .", ActionButton::Dodge, 0.0, 14},    {"cD . . . . . . .", ActionButton::Dodge, -0.15, 8},  // 8.4 -> 8
+        {"hD2 - . . . . . .", ActionButton::Dodge, 0.0, 12},   {"hD2 - . . . . . .", ActionButton::Dodge, 0.1, 7},   // 7.2 -> 7
+        {"hD3 - - . . . . .", ActionButton::Dodge, 0.0, 18},   {"hD3 - - . . . . .", ActionButton::Dodge, 0.1, 11},  // 10.8 -> 11
+        {"hD8 - - - - - - -", ActionButton::Dodge, 0.0, 48},   {"hD8 - - - - - - -", ActionButton::Dodge, 0.1, 29},  // 28.8 -> 29
     };
     for (const Case& c : cases) {
         CAPTURE(c.pattern);
@@ -1556,7 +1557,7 @@ TEST_CASE("beat damage: the formulas, goodFactor rounding and the multiplier") {
     // 2.5 -> 3, 3.5 -> 4 and (3 * 3 eighths) 4.5 -> 5.
     BeatTuning half = plain();
     half.goodFactor = 0.5;
-    BeatFightDef def = oneEnemy({"sL . cU . hD3 - - ."}, 1000, 10);
+    BeatFightDef def = oneEnemy({"sA . cD . hG3 - - ."}, 1000, 10);
     def.hp = 1000;
     def.strikeDamage = 5;
     def.counterDamage = 7;
@@ -1564,11 +1565,11 @@ TEST_CASE("beat damage: the formulas, goodFactor rounding and the multiplier") {
     BeatFight f;
     f.begin(def, half, 0.0, 1);
     f.update(1.0);
-    const BeatEvents strike = f.press(Arrow::Left, 2.1);
+    const BeatEvents strike = f.press(ActionButton::Attack, 2.1);
     CHECK(findEvent(strike, BeatEventType::EnemyHit)->amount == 3);
-    const BeatEvents counter = f.press(Arrow::Up, 2.5 - 0.1);
+    const BeatEvents counter = f.press(ActionButton::Dodge, 2.5 - 0.1);
     CHECK(findEvent(counter, BeatEventType::EnemyHit)->amount == 4);
-    f.press(Arrow::Down, 3.0 + 0.1);
+    f.press(ActionButton::Guard, 3.0 + 0.1);
     const BeatEvents hold = f.update(5.0);
     CHECK(findEvent(hold, BeatEventType::EnemyHit)->amount == 5);
 
@@ -1576,16 +1577,16 @@ TEST_CASE("beat damage: the formulas, goodFactor rounding and the multiplier") {
     BeatTuning steep = half;
     steep.chainPerStep = 1;
     steep.maxMultiplier = 3;
-    BeatFightDef two = oneEnemy({"sL sD sU sR . . . ."}, 1000, 10);
+    BeatFightDef two = oneEnemy({"sA sG sD sJ . . . ."}, 1000, 10);
     two.hp = 1000;
     two.strikeDamage = 5;
     BeatFight g;
     g.begin(two, steep, 0.0, 1);
     g.update(1.0);
-    CHECK(findEvent(g.press(Arrow::Left, 2.0), BeatEventType::EnemyHit)->amount == 5);        // Perfect x1
-    CHECK(findEvent(g.press(Arrow::Down, 2.25 + 0.1), BeatEventType::EnemyHit)->amount == 6); // Good: 3 x2
-    CHECK(findEvent(g.press(Arrow::Up, 2.5), BeatEventType::EnemyHit)->amount == 15);         // Perfect x3
-    CHECK(findEvent(g.press(Arrow::Right, 2.75), BeatEventType::EnemyHit)->amount == 15);     // capped at x3
+    CHECK(findEvent(g.press(ActionButton::Attack, 2.0), BeatEventType::EnemyHit)->amount == 5);        // Perfect x1
+    CHECK(findEvent(g.press(ActionButton::Guard, 2.25 + 0.1), BeatEventType::EnemyHit)->amount == 6); // Good: 3 x2
+    CHECK(findEvent(g.press(ActionButton::Dodge, 2.5), BeatEventType::EnemyHit)->amount == 15);         // Perfect x3
+    CHECK(findEvent(g.press(ActionButton::Jump, 2.75), BeatEventType::EnemyHit)->amount == 15);     // capped at x3
 }
 
 // ---- the finisher ----
@@ -1593,7 +1594,7 @@ TEST_CASE("beat damage: the formulas, goodFactor rounding and the multiplier") {
 TEST_CASE("beat finisher: a low enemy's next bar is a run of strikes that takes the rest of its hp") {
     // An enemy with a lot of hp, so the autopilot has time to wear it down (against the default enemy
     // it wins before it ever gets low). Four strikes a bar, then four empty slots.
-    BeatFightDef def = oneEnemy({"sL sD sU sR . . . ."}, 400, 10);
+    BeatFightDef def = oneEnemy({"sA sG sD sJ . . . ."}, 400, 10);
     def.hp = 100000;
     BeatFight f;
     f.begin(def, BeatTuning{}, 0.0, 2);
@@ -1660,14 +1661,14 @@ TEST_CASE("beat finisher: a Miss breaks it, drops its other strikes and leaves t
     BeatTuning t = plain();
     t.finisherAt = 1.0; // every bar of this enemy is a finisher
     t.finisherLength = 4;
-    BeatFightDef def = oneEnemy({"cL . . . . . . ."}, 100, 10);
+    BeatFightDef def = oneEnemy({"cA . . . . . . ."}, 100, 10);
     def.hp = 1000;
     BeatFight f;
     f.begin(def, t, 0.0, 3);
     const BeatEvents generated = f.update(1.0);
     CHECK(countOf(generated, BeatEventType::FinisherStart) == 1);
     REQUIRE(f.promptCount() == 4);
-    Arrow arrows[4];
+    ActionButton arrows[4];
     for (std::size_t i = 0; i < 4; ++i) {
         arrows[i] = f.prompt(i).input;
         CHECK(f.prompt(i).finisher);
@@ -1718,13 +1719,13 @@ TEST_CASE("beat finisher: skipping a strike breaks it, and the press that skippe
     t.finisherLength = 3;
     t.strikeCapEighths = 1.0;
     t.strike.good = 0.2;
-    BeatFightDef def = oneEnemy({"cL . . . . . . ."}, 100, 10);
+    BeatFightDef def = oneEnemy({"cA . . . . . . ."}, 100, 10);
     def.hp = 1000;
     BeatFight f;
     f.begin(def, t, 0.0, 3);
     f.update(1.0);
     REQUIRE(f.promptCount() == 3);
-    const Arrow other = f.prompt(1).input; // the strike at 2.25 s; finisher arrows never repeat
+    const ActionButton other = f.prompt(1).input; // the strike at 2.25 s; finisher arrows never repeat
     REQUIRE(other != f.prompt(0).input);
     const BeatEvents e = f.press(other, 2.1); // inside the windows of the strikes at 2.0 s and 2.25 s
     REQUIRE(e.size() == 3);
@@ -1744,7 +1745,7 @@ TEST_CASE("beat finisher: an enemy is low at finisherAt of its max hp or less, a
         CAPTURE(damage);
         BeatTuning t = plain();
         t.finisherAt = 0.25;
-        BeatFightDef def = oneEnemy({"sL . . . . . . ."}, 100, 10);
+        BeatFightDef def = oneEnemy({"sA . . . . . . ."}, 100, 10);
         def.hp = 1000;
         def.strikeDamage = damage;
         BeatFight f;
@@ -1752,7 +1753,7 @@ TEST_CASE("beat finisher: an enemy is low at finisherAt of its max hp or less, a
         CHECK(countOf(f.update(1.0), BeatEventType::FinisherStart) == 0); // full hp: a pattern
         REQUIRE(f.promptCount() == 1);
         CHECK_FALSE(f.prompt(0).finisher);
-        f.press(Arrow::Left, 2.0);
+        f.press(ActionButton::Attack, 2.0);
         CHECK(f.enemyHp(0) == 100 - damage);
         const BeatEvents next = f.update(3.0); // the next bar is generated
         CHECK(countOf(next, BeatEventType::FinisherStart) == (damage == 75 ? 1 : 0));
@@ -1761,13 +1762,13 @@ TEST_CASE("beat finisher: an enemy is low at finisherAt of its max hp or less, a
     }
     // finisherAt 0 switches finishers off.
     BeatTuning off = plain();
-    BeatFightDef def = oneEnemy({"sL . . . . . . ."}, 100, 10);
+    BeatFightDef def = oneEnemy({"sA . . . . . . ."}, 100, 10);
     def.hp = 1000;
     def.strikeDamage = 99;
     BeatFight f;
     f.begin(def, off, 0.0, 1);
     f.update(1.0);
-    f.press(Arrow::Left, 2.0);
+    f.press(ActionButton::Attack, 2.0);
     CHECK(countOf(f.update(3.0), BeatEventType::FinisherStart) == 0);
 }
 
@@ -1775,13 +1776,13 @@ TEST_CASE("beat finisher: an enemy is low at finisherAt of its max hp or less, a
 
 TEST_CASE("beat end: an enemy at 0 hp is down and its open prompts are dropped silently") {
     // Enemy 0 has 10 hp and three strikes; enemy 1 keeps the fight going.
-    BeatFightDef def = defOf({{10, 10, {"sL sD sU . . . . ."}}, {1000, 10, {"sL . . . . . . ."}}});
+    BeatFightDef def = defOf({{10, 10, {"sA sG sD . . . . ."}}, {1000, 10, {"sA . . . . . . ."}}});
     def.hp = 1000;
     BeatFight f;
     f.begin(def, plain(), 0.0, 1);
     f.update(1.0);
     REQUIRE(f.promptCount() == 3);
-    const BeatEvents e = f.press(Arrow::Left, 2.0); // 10 damage: down
+    const BeatEvents e = f.press(ActionButton::Attack, 2.0); // 10 damage: down
     REQUIRE(e.size() == 3);
     CHECK(e[0].type == BeatEventType::Judged);
     CHECK(e[1].type == BeatEventType::EnemyHit);
@@ -1814,8 +1815,8 @@ TEST_CASE("beat end: every enemy down is Victory, the lead at 0 hp is Defeat, an
         const BeatStats before = v.stats();
         const double now = v.now();
         CHECK(v.update(now + 100.0).empty());
-        CHECK(v.press(Arrow::Left, now + 101.0).empty());
-        CHECK(v.release(Arrow::Left, now + 102.0).empty());
+        CHECK(v.press(ActionButton::Attack, now + 101.0).empty());
+        CHECK(v.release(ActionButton::Attack, now + 102.0).empty());
         CHECK(sameStats(before, v.stats()));
         CHECK(v.now() == now);
         CHECK(v.phase() == BeatPhase::Victory);
@@ -1839,8 +1840,8 @@ TEST_CASE("beat end: every enemy down is Victory, the lead at 0 hp is Defeat, an
         const BeatStats before = d.stats();
         const double now = d.now();
         CHECK(d.update(now + 100.0).empty());
-        CHECK(d.press(Arrow::Left, now + 101.0).empty());
-        CHECK(d.release(Arrow::Left, now + 102.0).empty());
+        CHECK(d.press(ActionButton::Attack, now + 101.0).empty());
+        CHECK(d.release(ActionButton::Attack, now + 102.0).empty());
         CHECK(sameStats(before, d.stats()));
         CHECK(d.now() == now);
         CHECK(d.phase() == BeatPhase::Defeat);
@@ -1862,7 +1863,7 @@ TEST_CASE("beat end: every enemy down is Victory, the lead at 0 hp is Defeat, an
 
 TEST_CASE("beat end: restart replays the same bars, keeps the stats and counts itself") {
     // Plenty of hp on both sides, so the fight just runs; three patterns, so the picks matter.
-    BeatFightDef def = oneEnemy({"sL . . . cU . . .", "sD . sU . . . cL .", "cR . . . sL . . ."}, 100000, 1);
+    BeatFightDef def = oneEnemy({"sA . . . cD . . .", "sG . sD . . . cA .", "cJ . . . sA . . ."}, 100000, 1);
     def.hp = 100000;
     BeatFight f;
     f.begin(def, plain(), 0.0, 9);
@@ -1912,7 +1913,7 @@ TEST_CASE("beat end: restart replays the same bars, keeps the stats and counts i
     CHECK(first != other);
 
     // After a Defeat, a retry plays the same bars again too.
-    BeatFightDef weak = oneEnemy({"sL . . . cU . . .", "sD . sU . . . cL .", "cR . . . sL . . ."}, 100000, 50);
+    BeatFightDef weak = oneEnemy({"sA . . . cD . . .", "sG . sD . . . cA .", "cJ . . . sA . . ."}, 100000, 50);
     weak.hp = 100;
     BeatFight r;
     r.begin(weak, plain(), 0.0, 4);
@@ -1936,19 +1937,19 @@ TEST_CASE("beat end: restart replays the same bars, keeps the stats and counts i
 }
 
 TEST_CASE("beat clock: the clock never runs back, and events past the capacity are counted") {
-    BeatFight f = beginFight({"sL . . . . . . ."});
+    BeatFight f = beginFight({"sA . . . . . . ."});
     f.update(5.0);
     CHECK(f.now() == 5.0);
     CHECK(f.update(4.0).empty());
     CHECK(f.now() == 5.0);
     // A press with an earlier time is read as now().
-    const BeatEvents e = f.press(Arrow::Left, 1.0);
+    const BeatEvents e = f.press(ActionButton::Attack, 1.0);
     REQUIRE(e.size() == 1);
     CHECK(e[0].type == BeatEventType::Stray);
     CHECK(e[0].time == 5.0);
 
     // Eight misses a bar over five bars is 40 events in one call: 32 are kept, the rest counted.
-    BeatFightDef def = oneEnemy({"sL sD sU sR sL sD sU sR"}, 1000, 10);
+    BeatFightDef def = oneEnemy({"sA sG sD sJ sA sG sD sJ"}, 1000, 10);
     def.hp = 100000;
     BeatFight g;
     g.begin(def, plain(), 0.0, 1);
@@ -1962,8 +1963,8 @@ TEST_CASE("beat clock: the clock never runs back, and events past the capacity a
 // ---- determinism and balance ----
 
 TEST_CASE("beat determinism: the same seed, inputs and times give the same events") {
-    BeatFightDef def = defOf({{60, 10, {"sL . sR . cU . . .", "cD . . . sL . hU2 -"}},
-                              {90, 14, {"cL . sD sD . cR . .", "sU . cD . sU . cL .", "cR . . . hD4 - - -"}}});
+    BeatFightDef def = defOf({{60, 10, {"sA . sJ . cD . . .", "cG . . . sA . hD2 -"}},
+                              {90, 14, {"cA . sG sG . cJ . .", "sD . cG . sD . cA .", "cJ . . . hG4 - - -"}}});
     def.hp = 150;
     const auto run = [&](std::uint32_t seed, std::vector<BeatEvent>& out) {
         BeatFight f;
@@ -1979,7 +1980,7 @@ TEST_CASE("beat determinism: the same seed, inputs and times give the same event
             for (int k = 0; k < 2; ++k) {
                 const std::uint32_t r = next();
                 if ((r & 7u) == 0u) {
-                    const Arrow arrow = kArrows[(r >> 3) & 3u];
+                    const ActionButton arrow = kActionButtons[(r >> 3) & 3u];
                     const BeatEvents e = (r & 0x100u) ? f.press(arrow, now - 0.01) : f.release(arrow, now - 0.02);
                     out.insert(out.end(), e.begin(), e.end());
                 }
@@ -2121,8 +2122,8 @@ TEST_CASE("beat: update, press, release and autopilot allocate nothing over a wh
         BeatFight f;
         f.begin(won, tuning, 0.0, 1);
         for (double now = 1.0 / 60.0; !f.over() && now < 90.0; now += 1.0 / 60.0) {
-            sink += static_cast<int>(f.press(Arrow::Down, now).size());
-            sink += static_cast<int>(f.release(Arrow::Up, now).size());
+            sink += static_cast<int>(f.press(ActionButton::Guard, now).size());
+            sink += static_cast<int>(f.release(ActionButton::Dodge, now).size());
             for (int guard = 0; guard < 16; ++guard) {
                 const QteAction a = f.autopilot(now);
                 if (a.kind == QteAction::Kind::None) break;
@@ -2143,8 +2144,8 @@ TEST_CASE("beat: update, press, release and autopilot allocate nothing over a wh
         BeatFight g;
         g.begin(table.fallback.def, table.fallback.tuning, 0.0, 3, toggle);
         for (double now = 1.0 / 60.0; !g.over() && now < 90.0; now += 1.0 / 60.0) {
-            sink += static_cast<int>(g.press(Arrow::Left, now).size());
-            sink += static_cast<int>(g.release(Arrow::Left, now).size());
+            sink += static_cast<int>(g.press(ActionButton::Attack, now).size());
+            sink += static_cast<int>(g.release(ActionButton::Attack, now).size());
             sink += static_cast<int>(g.update(now).size());
         }
         BeatFight h;
@@ -2155,9 +2156,9 @@ TEST_CASE("beat: update, press, release and autopilot allocate nothing over a wh
     // Looking up a fight and parsing a pattern, good or bad, with no error text asked for.
     sink += static_cast<int>(table.find("SC-X", 1, 0).def.enemyCount);
     sink += table.findEntry("SC-X", 1, 0) == nullptr ? 1 : 0;
-    sink += parseBeatPattern("sL . sR . cU . . .", parsed) ? 1 : 0;
-    sink += parseBeatPattern("sL . sR", parsed) ? 1 : 0;
-    sink += parseBeatPattern("hU9 - - - - - - -", parsed) ? 1 : 0;
+    sink += parseBeatPattern("sA . sJ . cD . . .", parsed) ? 1 : 0;
+    sink += parseBeatPattern("sA . sJ", parsed) ? 1 : 0;
+    sink += parseBeatPattern("hD9 - - - - - - -", parsed) ? 1 : 0;
     sink += static_cast<int>(defaultBeatFightDef().enemyCount);
     const std::uint64_t allocs = ftcore_test::allocStats().count - before;
     CHECK(allocs == 0);
