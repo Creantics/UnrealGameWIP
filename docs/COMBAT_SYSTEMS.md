@@ -10,6 +10,14 @@ The game has three combat systems, and each world picks one. Every fight in a wo
 
 The rhythm battle is unchanged. This page covers the routing and the two new systems. The arena is Core only so far (rules, data, autopilot and tests); its Unreal screen comes after the animation merge (see "Unreal work still needed"). The beat fight has its screen too: a generated map and a game mode, described in [BEAT_SCREEN.md](BEAT_SCREEN.md).
 
+## Arrow combos: Turns only
+
+The skill arrow combos (`ComboSequence.h`, `ComboGenerator.h`) belong to the turn-based battle alone. The arena and the beat fight never build one:
+
+- The four directions live in `Arrow.h`, which `ComboSequence.h` includes. `BeatFight.h` and `Qte.h` include `Arrow.h` only.
+- The `combo_fence` ctest case (`Core/cmake/CheckComboFence.cmake`) fails if `ArenaFight`, `BeatFight` or `BeatScreen` (and any later `BeatBoss` source) names `ComboSequence`, `ComboGenerator` or `generateCombo`.
+- `comboSequencesBuilt()` counts every combo built or restarted; a doctest case plays a whole arena fight and a whole beat fight, won by the autopilot and lost by an idle player, and checks it never moves.
+
 ## Routing
 
 `Data/Field/worlds.json` gives each world a `combat` key (`ftcore::CombatKind`, `CombatKind.h`):

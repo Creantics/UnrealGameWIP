@@ -1,4 +1,5 @@
 #include "ftcore/BeatFight.h"
+#include "ftcore/ComboSequence.h" // comboSequencesBuilt: the fence test
 
 #include "AllocCounter.h"
 #include "TestAssets.h"
@@ -2161,4 +2162,17 @@ TEST_CASE("beat: update, press, release and autopilot allocate nothing over a wh
     const std::uint64_t allocs = ftcore_test::allocStats().count - before;
     CHECK(allocs == 0);
     CHECK(sink > 0);
+}
+
+// ---- the arrow combos stay in the Turns battle ----
+
+TEST_CASE("beat fence: a whole autopilot fight and an idle one build no arrow combo") {
+    BeatSetup s;
+    s.def = defaultBeatFightDef();
+    const std::uint64_t before = comboSequencesBuilt();
+    const Outcome won = playAutopilot(s, 3);
+    const Outcome lost = playNothing(s, 3);
+    CHECK(won.phase == BeatPhase::Victory);
+    CHECK(lost.phase == BeatPhase::Defeat);
+    CHECK(comboSequencesBuilt() == before);
 }

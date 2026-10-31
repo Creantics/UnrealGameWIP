@@ -199,6 +199,9 @@ if(FTCORE_BUILD_TESTS)
     add_test(NAME macro_names COMMAND ${CMAKE_COMMAND}
         -DINCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/include
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckMacroNames.cmake)
+    add_test(NAME combo_fence COMMAND ${CMAKE_COMMAND}
+        -DCORE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckComboFence.cmake)
     add_test(NAME ui_text_keys COMMAND ${CMAKE_COMMAND}
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../Source/ForgottenThird
         -DTABLE=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Loc/en/ui.json

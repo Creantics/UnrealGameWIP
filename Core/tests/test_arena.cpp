@@ -1,4 +1,5 @@
 #include "ftcore/ArenaFight.h"
+#include "ftcore/ComboSequence.h" // comboSequencesBuilt: the fence test
 
 #include "AllocCounter.h"
 #include "TestAssets.h"
@@ -2630,4 +2631,15 @@ TEST_CASE("arena: tick, autopilot and arenaStep allocate nothing over a whole fi
     const auto allocs = ftcore_test::allocStats().count - before;
     if (counting) CHECK(allocs == 0);
     CHECK(ticks > 500);
+}
+
+// ---- the arrow combos stay in the Turns battle ----
+
+TEST_CASE("arena fence: a whole autopilot fight and an idle one build no arrow combo") {
+    const std::uint64_t before = comboSequencesBuilt();
+    const Outcome won = playOut(defaultArenaDef(), 2, true);
+    const Outcome lost = playOut(defaultArenaDef(), 2, false);
+    CHECK(won.phase == ArenaPhase::Victory);
+    CHECK(lost.phase == ArenaPhase::Defeat);
+    CHECK(comboSequencesBuilt() == before);
 }

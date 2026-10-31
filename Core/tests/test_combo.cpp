@@ -247,3 +247,13 @@ TEST_CASE("bursts halve the subdivision, unless that would be too fast") {
     notes = generateComboOnGrid(p, 0.0, 9);
     for (std::size_t i = 1; i < notes.size(); ++i) CHECK(notes[i].beat - notes[i - 1].beat == doctest::Approx(0.5));
 }
+
+TEST_CASE("combo: every constructor and reset() counts one built combo") {
+    const std::uint64_t before = ftcore::comboSequencesBuilt();
+    ftcore::ComboSequence a;
+    std::vector<ftcore::ComboNote> notes{ftcore::ComboNote{ftcore::Arrow::Left, 1.0}};
+    a.reset(notes, ftcore::JudgeWindows{}, 0.25);
+    const ftcore::ComboSequence b(std::vector<ftcore::ComboNote>{}, ftcore::JudgeWindows{}, 0.25);
+    CHECK(b.size() == 0);
+    CHECK(ftcore::comboSequencesBuilt() == before + 3);
+}

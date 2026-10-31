@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ftcore/Api.h"
+#include "ftcore/Arrow.h"
 
 #include <array>
 #include <cstddef>
@@ -8,11 +9,6 @@
 #include <vector>
 
 namespace ftcore {
-
-// The four step directions, in dance-pad lane order.
-enum class Arrow : std::uint8_t { Left, Down, Up, Right };
-inline constexpr std::array<Arrow, 4> kArrows{Arrow::Left, Arrow::Down, Arrow::Up, Arrow::Right};
-FTCORE_API const char* arrowName(Arrow a);
 
 enum class Grade : std::uint8_t { Pending, Perfect, Great, Good, Miss };
 
@@ -67,9 +63,13 @@ struct NoteResult {
 //    is ignored, so mashing ahead of the notes is punished.
 //  - Notes whose window passes unanswered are judged Miss.
 // Presses must be fed in time order.
+// How many combos were ever built or restarted (every constructor and every reset() counts one), for the
+// test that an Arena or a Beat fight builds none (the combos belong to the Turns battle alone).
+FTCORE_API std::uint64_t comboSequencesBuilt();
+
 class ComboSequence {
 public:
-    ComboSequence() = default;
+    FTCORE_API ComboSequence();
     FTCORE_API ComboSequence(std::vector<ComboNote> notes, JudgeWindows windows, double lockout, GradeWeights weights = {});
 
     // Returns every note resolved by this call: expirations first, then the press itself.

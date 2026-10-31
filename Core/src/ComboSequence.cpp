@@ -3,9 +3,18 @@
 #include "ftcore/Assert.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 
 namespace ftcore {
+
+namespace {
+std::atomic<std::uint64_t> gBuilt{0};
+} // namespace
+
+std::uint64_t comboSequencesBuilt() { return gBuilt.load(std::memory_order_relaxed); }
+
+ComboSequence::ComboSequence() { gBuilt.fetch_add(1, std::memory_order_relaxed); }
 
 const char* arrowName(Arrow a) {
     switch (a) {
@@ -20,6 +29,7 @@ const char* arrowName(Arrow a) {
 ComboSequence::ComboSequence(std::vector<ComboNote> notes, JudgeWindows windows, double lockout, GradeWeights weights)
     : notes_(std::move(notes)), grades_(notes_.size(), Grade::Pending), windows_(windows), weights_(weights),
       lockout_(lockout) {
+    gBuilt.fetch_add(1, std::memory_order_relaxed);
     FTCORE_ASSERT(std::is_sorted(notes_.begin(), notes_.end(),
                              [](const ComboNote& a, const ComboNote& b) { return a.time < b.time; }));
     FTCORE_ASSERT(windows_.perfect <= windows_.great && windows_.great <= windows_.good);
@@ -56,6 +66,7 @@ void ComboSequence::reserve(std::size_t notes) {
 }
 
 void ComboSequence::reset(std::vector<ComboNote>& notes, JudgeWindows windows, double lockout, GradeWeights weights) {
+    gBuilt.fetch_add(1, std::memory_order_relaxed);
     FTCORE_ASSERT(std::is_sorted(notes.begin(), notes.end(),
                              [](const ComboNote& a, const ComboNote& b) { return a.time < b.time; }));
     FTCORE_ASSERT(windows.perfect <= windows.great && windows.great <= windows.good);

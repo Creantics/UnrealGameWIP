@@ -55,7 +55,7 @@
 // Loading allocates; everything else does not (fixed capacity, results by value).
 
 #include "ftcore/Api.h"
-#include "ftcore/ComboSequence.h"
+#include "ftcore/Arrow.h"
 #include "ftcore/DefenceTimeline.h"
 
 #include <array>
