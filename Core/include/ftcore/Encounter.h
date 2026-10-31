@@ -52,8 +52,8 @@
 //   "default" line-up, which takes no `combat`. `tier` (0..9, default 0; "default" takes one too) toughens the line-up:
 //   each tier adds kTierHpPercent of the base max HP and kTierAttackPercent of the base attack to
 //   every enemy in it (see
-//   makeEnemies). An unknown enemy id, a duplicate (scene, beat, step) or an empty line-up is an
-//   error; unknown keys are warnings.
+//   makeEnemies). An unknown enemy id, a duplicate (scene, beat, step), an empty line-up or one of
+//   more than kMaxLineupEnemies is an error; unknown keys are warnings.
 
 #include "ftcore/Api.h"
 #include "ftcore/CombatKind.h"
@@ -89,6 +89,8 @@ struct EnemyRoster {
 inline constexpr int kTierHpPercent = 10;
 inline constexpr int kTierAttackPercent = 11;
 inline constexpr int kMaxTier = 9;
+// The most enemies one line-up holds (the battle HUD and stage have room for this many).
+inline constexpr std::size_t kMaxLineupEnemies = 5;
 
 struct EncounterLineup {
     std::vector<std::uint32_t> enemies; // indices into the roster, in line-up order

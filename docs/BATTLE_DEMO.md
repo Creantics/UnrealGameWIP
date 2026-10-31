@@ -1,7 +1,7 @@
 # Battle demo
 
 A playable version of the rhythm fight system: two party members (the leads Devin and Duy) against one
-to three enemies (by default Brute and Shade; placeholder shapes), with a canvas HUD. The leads loop their idle clips. The rules all live in Core
+to five enemies (by default Brute and Shade; placeholder shapes), with a canvas HUD. The leads loop their idle clips. The rules all live in Core
 (`ftcore::Battle`); the line-up, tuning and autopilot are in `Core/include/ftcore/BattleDemo.h`.
 
 Map: `/Game/Maps/BattleDemo` (Content/Maps/BattleDemo.umap). Open it and press Play. The map's
@@ -146,8 +146,11 @@ of enemy ids. Both hold ids and numbers only. The loader and the rules are in
 - The battle looks up `StoryCarry.Scene`, `.Beat`, `.Step` and falls back to the table's `default`
   (the original Brute and Shade) when there is no carry or no entry. If the files can't be read it
   uses the built-in demo line-up (`ftcore::demo::enemies()`).
-- The party is always the two leads from `BattleDemo.h`. A line-up has one to three enemies (the
-  HUD stacks three panels).
+- The party is always the two leads from `BattleDemo.h`. A line-up has one to five enemies
+  (`kMaxLineupEnemies`; the loader refuses more). The HUD stacks up to five panels, and the stage
+  staggers four or five enemies tighter so the row stays in frame. A test plays two line-ups of five
+  (a pack of five weak enemies at level 1, and a mixed five at level 4) through the balance gate: won
+  by the autopilot on fine and long frames, with parries and with dodges, and lost by an idle player.
 - `tier` (0 to 9, on an entry or on `default`) makes a fight tougher: every tier adds 10 percent of
   each enemy's base max HP and 11 percent of its base attack. Later acts use higher tiers; the
   party's levels (below) keep pace with them.

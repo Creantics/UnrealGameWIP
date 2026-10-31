@@ -231,6 +231,10 @@ bool encLineup(JsonValue list, const EnemyRoster& roster, const std::string& pat
         errors.push_back(path + ": expected a non-empty array of enemy ids");
         return false;
     }
+    if (list.size() > kMaxLineupEnemies) {
+        errors.push_back(path + ": expected at most " + std::to_string(kMaxLineupEnemies) + " enemies");
+        return false;
+    }
     bool ok = true;
     for (std::uint32_t i = 0; i < list.size(); ++i) {
         const int e = roster.find(list[i].string());

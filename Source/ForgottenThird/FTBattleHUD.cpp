@@ -326,11 +326,19 @@ void AFTBattleHUD::DrawPanels(const AFTBattleDemoActor& D)
 			DrawPanel(D, Id, 24.f * S, PartyY, Id == Actor);
 		}
 	}
+	// Up to five enemy panels (ftcore::kMaxLineupEnemies): 74 px apart, closer when the stack would
+	// reach past the middle of the screen (never closer than a panel's height, 66 px).
+	int32 Enemies = 0;
+	for (int32 Id = 0; Id < Count; ++Id)
+	{
+		Enemies += B->combatant(static_cast<ftcore::CombatantId>(Id)).team == ftcore::Team::Enemies ? 1 : 0;
+	}
+	const float EnemyStep = Enemies > 0 ? FMath::Clamp((Canvas->ClipY * 0.5f - 24.f * S) / static_cast<float>(Enemies), 68.f * S, 74.f * S) : 74.f * S;
 	for (int32 Id = 0; Id < Count; ++Id)
 	{
 		if (B->combatant(static_cast<ftcore::CombatantId>(Id)).team == ftcore::Team::Enemies)
 		{
-			DrawPanel(D, Id, Canvas->ClipX - 324.f * S, 24.f * S + static_cast<float>(EnemyIndex) * 74.f * S, Id == Actor);
+			DrawPanel(D, Id, Canvas->ClipX - 324.f * S, 24.f * S + static_cast<float>(EnemyIndex) * EnemyStep, Id == Actor);
 			++EnemyIndex;
 		}
 	}

@@ -155,7 +155,8 @@ FFTCombatant FromCore(const ftcore::Combatant& C)
 
 // Figure colours: party members first, then enemies.
 const FLinearColor kPartyColors[] = {FLinearColor(0.85f, 0.22f, 0.28f), FLinearColor(0.25f, 0.45f, 0.85f), FLinearColor(0.92f, 0.74f, 0.28f)};
-const FLinearColor kEnemyColors[] = {FLinearColor(0.48f, 0.33f, 0.25f), FLinearColor(0.22f, 0.42f, 0.44f), FLinearColor(0.38f, 0.3f, 0.42f)};
+const FLinearColor kEnemyColors[] = {FLinearColor(0.48f, 0.33f, 0.25f), FLinearColor(0.22f, 0.42f, 0.44f), FLinearColor(0.38f, 0.3f, 0.42f),
+	FLinearColor(0.42f, 0.4f, 0.22f), FLinearColor(0.44f, 0.24f, 0.3f)};
 
 constexpr double kFlashSeconds = 0.35;
 constexpr double kLungeSeconds = 0.3;
@@ -479,10 +480,12 @@ void AFTBattleDemoActor::BuildFigures()
 		const int32 Slot = bParty ? Id : Id - PartyCount;
 		FFigure& F = Figures[Id];
 		F.Color = bParty ? kPartyColors[Slot % UE_ARRAY_COUNT(kPartyColors)] : kEnemyColors[Slot % UE_ARRAY_COUNT(kEnemyColors)];
-		// Two staggered rows facing each other across the middle of the screen.
-		// A third enemy gets a tighter stagger so the row stays in frame.
-		const double EnemyStepX = Battle->Enemies.Num() > 2 ? 140.0 : 180.0;
-		const double EnemyStepY = Battle->Enemies.Num() > 2 ? 95.0 : 130.0;
+		// Two staggered rows facing each other across the middle of the screen. A third enemy gets a
+		// tighter stagger so the row stays in frame, and a fourth and fifth (ftcore::kMaxLineupEnemies)
+		// tighter still.
+		const int32 EnemyCount = Battle->Enemies.Num();
+		const double EnemyStepX = EnemyCount > 3 ? 105.0 : EnemyCount > 2 ? 140.0 : 180.0;
+		const double EnemyStepY = EnemyCount > 3 ? 70.0 : EnemyCount > 2 ? 95.0 : 130.0;
 		F.Home = bParty ? FVector(-80.0 + 180.0 * Slot, -400.0 + 130.0 * Slot, 0.0) : FVector(-80.0 + EnemyStepX * Slot, 360.0 + EnemyStepY * Slot, 0.0);
 		F.FallSign = bParty ? 1.f : -1.f;
 

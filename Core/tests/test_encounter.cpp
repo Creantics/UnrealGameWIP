@@ -453,7 +453,7 @@ TEST_CASE("balance gate: every encounter is won with perfect presses and lost wi
                                               " step " + std::to_string(d.table.entries[i - 1].step);
         CAPTURE(name);
         CHECK(lineup.enemies.size() >= 1);
-        CHECK(lineup.enemies.size() <= 3); // the HUD stacks three enemy panels
+        CHECK(lineup.enemies.size() <= kMaxLineupEnemies);
 
         std::vector<Combatant> foes;
         makeEnemies(d.roster, lineup, foes);
@@ -486,6 +486,58 @@ TEST_CASE("balance gate: every encounter is won with perfect presses and lost wi
         CHECK(loss.finished);
         CHECK(loss.outcome == Phase::Defeat);
         CHECK(loss.presses == 0);
+    }
+}
+
+TEST_CASE("line-ups of up to five load, and five enemies run the whole balance gate") {
+    const LoadedData d = loadBattleData();
+    REQUIRE(d.ok);
+    // The loader takes five and refuses six, naming the path.
+    EncounterTable table;
+    std::string err;
+    REQUIRE_MESSAGE(importEncounterTable(R"({"default": {"enemies": ["wisp"]}, "encounters": [
+        {"scene": "SC-T5", "beat": 1, "enemies": ["maw_pup", "maw_pup", "maw_pup", "maw_pup", "maw_pup"]}]})",
+                                         d.roster, table, &err),
+                    err);
+    CHECK(table.find("SC-T5", 1, 0).enemies.size() == kMaxLineupEnemies);
+    CHECK_FALSE(importEncounterTable(R"({"default": {"enemies": ["wisp"]}, "encounters": [
+        {"scene": "SC-T6", "beat": 1, "enemies": ["wisp", "wisp", "wisp", "wisp", "wisp", "wisp"]}]})",
+                                     d.roster, table, &err));
+    CHECK(err.find("encounters[0].enemies: expected at most 5 enemies") != std::string::npos);
+    CHECK_FALSE(importEncounterTable(R"({"default": {"enemies": ["wisp", "wisp", "wisp", "wisp", "wisp", "wisp"]}})", d.roster, table, &err));
+    CHECK(err.find("default.enemies: expected at most 5 enemies") != std::string::npos);
+
+    // A pack of five weak enemies at the start of the game, and a mixed five later on.
+    struct Five {
+        const char* ids[kMaxLineupEnemies];
+        int tier, level;
+    };
+    for (const Five& five : {Five{{"maw_pup", "maw_pup", "maw_pup", "maw_pup", "maw_pup"}, 0, 1},
+                             Five{{"wisp", "hound", "maw_pup", "rust_drone", "lurker"}, 2, 4}}) {
+        CAPTURE(five.ids[0]);
+        EncounterLineup lineup;
+        lineup.tier = five.tier;
+        for (const char* id : five.ids) {
+            const int e = d.roster.find(id);
+            REQUIRE(e >= 0);
+            lineup.enemies.push_back(static_cast<std::uint32_t>(e));
+        }
+        std::vector<Combatant> foes;
+        makeEnemies(d.roster, lineup, foes);
+        REQUIRE(foes.size() == kMaxLineupEnemies);
+        applyWeakPoints(d.weakPoints, d.roster, lineup, foes);
+
+        const demo::HeadlessResult win = demo::playHeadless(demo::party(five.level), foes, true);
+        CHECK_FALSE(win.commandFailed);
+        CHECK(win.outcome == Phase::Victory);
+        MESSAGE("five: victory in " << win.endTime << " s, " << win.partyTurns << " turns, " << win.enemyAttacks
+                                    << " defences, party HP left " << win.partyHpLeft);
+        CHECK(demo::playHeadless(demo::party(five.level), foes, true, 0.13).outcome == Phase::Victory);
+        CHECK(demo::playHeadless(demo::party(five.level), foes, true, 1.0 / 120.0, 1200.0, DefenceInput::Dodge).outcome ==
+              Phase::Victory);
+        const demo::HeadlessResult loss = demo::playHeadless(demo::party(five.level), foes, false);
+        CHECK_FALSE(loss.commandFailed);
+        CHECK(loss.outcome == Phase::Defeat);
     }
 }
 

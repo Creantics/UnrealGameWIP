@@ -1,7 +1,7 @@
 #pragma once
 
 // The playable battle demo: two party members (the leads, from ftcore/BattleDemo.h) against one to
-// three enemies, with the rules in Core (ftcore::Battle) and this actor as the stage.
+// five enemies (ftcore::kMaxLineupEnemies), with the rules in Core (ftcore::Battle) and this actor as the stage.
 //
 // The enemy line-up comes from data: with a story carry (UFTGameInstance::StoryCarry) the entry of
 // Data/Battle/encounters.json for the carry's scene, beat and step, else the table's "default"
