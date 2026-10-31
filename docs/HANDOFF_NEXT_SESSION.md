@@ -14,7 +14,9 @@ Private notes (character references, concept-art review, script status) are in `
     shoulder (concrete terraces, rail, a floodlit stadium for the tournament, the old festival quarter kept as one
     district; a dark palette with one hot accent per fight; the enemies grotesque, calm and graded). Photoreal stays.
     The story's beats don't move; the design document's Solhaven sections are rewritten in newengine (commits
-    a191ad9, cc4875f on `feature/engine-foundation`, NOT pushed), a Draft 96 outline item lists every scene's
+    a191ad9, cc4875f on `feature/engine-foundation`, NOT pushed: the remote branch was rewritten by the engine-freeze
+    commits and no longer holds the local history, so a push is non-fast-forward and the user decides how to reconcile;
+    never force-push), a Draft 96 outline item lists every scene's
     dressing change, and the private location briefs and boss entries are re-dressed. The Unreal side is untouched:
     the town kind still dresses Solhaven as pale plaster houses; the building kit follows the private look sheet
     when the kit work starts. No franchise names anywhere in this repo: our words are the look sheet's.
