@@ -1,12 +1,45 @@
 # Handoff: the next session
 
-Written 2026-10-18, last updated 2026-10-30 ~07:30. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
+Written 2026-10-18, last updated 2026-10-31 ~12:50. Read `docs/HANDOFF_UE.md` in newengine first, as CLAUDE.md says. This file picks up from where that one stops.
 
 Private notes (character references, concept-art review, script status) are in `D:\projects\ft_private\HANDOFF_PRIVATE.md`. They stay off this public repo.
 
 ## Resume here (updated 2026-10-21, Max plan)
 
-- **NEWEST (2026-10-30 ~07:30): the ground darkens where the rain gathers, on main (a537d8b), and every map now opens
+- **NEWEST (2026-10-31 ~12:50): the design overhaul of 2026-10-30/31, held at the usage stop.** The Fable
+  session (the advisor; the user gave it authority overnight) ran three design changes the user asked for; all the
+  text is private in `D:\projectst_private\` (read `HANDOFF_PRIVATE.md` there first: it has the rulings, the scores
+  and the queue), and nothing of it is in this repo yet. In short:
+  - **Devin's world, Solhaven, changes look:** from the festival town to a contemporary coastal city on a mountain's
+    shoulder (concrete terraces, rail, a floodlit stadium for the tournament, the old festival quarter kept as one
+    district; a dark palette with one hot accent per fight; the enemies grotesque, calm and graded). Photoreal stays.
+    The story's beats don't move; the design document's Solhaven sections are rewritten in newengine (commits
+    a191ad9, cc4875f on `feature/engine-foundation`, NOT pushed), a Draft 96 outline item lists every scene's
+    dressing change, and the private location briefs and boss entries are re-dressed. The Unreal side is untouched:
+    the town kind still dresses Solhaven as pale plaster houses; the building kit follows the private look sheet
+    when the kit work starts. No franchise names anywhere in this repo: our words are the look sheet's.
+  - **Three battle types by tier** (the user's rule): every non-boss fight is **Turns** (the existing turn-based
+    battle with active defence; it alone keeps the skill arrow combos), every boss fight is **Arena** (open-arena
+    real-time: lock-on, dodge with i-frames, parry, Load as a second gauge beside stamina, punish windows), each
+    world's final boss is **Beat** (the music is the timeline; attacks and answers on bars and beats; prompts by
+    action buttons; a HUD beat line with the sound off), and the game's final boss runs Turns, then Arena, then Beat.
+    The engineering lane is the user's own session on branch `claude/sleepy-grothendieck-a99140` (steps 1 to 5b
+    pushed at cfe4f40: arrow combos fenced to Turns, routing by encounter, the beat snap and 0.4 s tell floor,
+    line-ups of five, Guard/Load/Release/Overload; 858 doctest cases, ctest 5/5, UBT Succeeded; HUD unchecked on
+    screen; left: Intercept, Take Half, Read cards, the Arena host, the Beat mode, one-lead Turns, the three-stage
+    sequencer, the first Turns encounter data). Not merged into main.
+  - **The boss overhaul** (private): 72 of the 90 slots written beyond the six model entries, 61 at or over the bar,
+    every world's finals written as Beat fights where their waves are done, 21 non-boss family stat blocks for Turns.
+    Left: the six superbosses (W14) and the six Act IV story slots that wait for the Draft 96 outline (W11), both
+    held because the weekly usage read 92% at 12:30; they are the next session's first waves after the reset
+    (2026-11-06 ~06:00 EDT). A word-level pass on four entries was in flight at this writing.
+  - **Repo state:** main is still d3e5cc6 (terrain and map paths), nothing new committed here; the user's local
+    edits (`Config/DefaultEngine.ini`, `ForgottenThird.uproject`, `dv_strap.uasset`, `tools/blender/open_features.py`)
+    are untouched; the PC is free; `claude/objective-blackburn-80b6c6` and the PartyLooks follow-up are still open.
+  - **Next session, in order:** W14 and then W11 (after the user approves the Draft 96 outline), the queued boss
+    passes the private handoff lists, the Solhaven building kit for the Unreal town kind, and the C++ lane's
+    remaining steps if the user's session hasn't finished them.
+- **Earlier (2026-10-30 ~07:30): the ground darkens where the rain gathers, on main (a537d8b), and every map now opens
   by its long name (main d3e5cc6).**
   - Session: the user switched the main model to Fable at ~03:00 and had it delegate. The PC was freed at 02:55 and
     is free again (`ft_private/gpu_busy_leads.txt`).
