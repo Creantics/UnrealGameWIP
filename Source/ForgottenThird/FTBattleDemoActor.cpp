@@ -425,6 +425,7 @@ void AFTBattleDemoActor::StartRound()
 	Banner.Reset();
 	Notice.Reset();
 	PhaseBanner.Reset();
+	CountBeat = 0;
 	ResultLineCount = 0;
 	ContinuePrompt.Reset();
 	CacheText();
@@ -769,6 +770,7 @@ void AFTBattleDemoActor::SetJudgement(EFTJudgement Kind, const FString& Text)
 double AFTBattleDemoActor::GetBannerAge() const { return Wall() - BannerWall; }
 double AFTBattleDemoActor::GetNoticeAge() const { return Wall() - NoticeWall; }
 double AFTBattleDemoActor::GetPhaseBannerAge() const { return Wall() - PhaseBannerWall; }
+double AFTBattleDemoActor::GetCountAge() const { return Wall() - CountWall; }
 
 const FString& AFTBattleDemoActor::GetNextSkillName(int32 Id) const
 {
@@ -971,6 +973,11 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: %s enters phase %d \"%s\" (+%d HP)."), *Name, Event.Beat, *Event.Label, Event.Amount);
 		break;
 	}
+	case EFTBattleEventType::CountIn:
+		// The HUD counts the beats down to the hit, one number per beat.
+		CountBeat = Event.Beat;
+		CountWall = Now;
+		break;
 	default:
 		break;
 	}

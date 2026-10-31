@@ -87,7 +87,7 @@ TEST_CASE("skill hits load as the attack timeline; skills without them get the d
       "enemies": [ { "id": "a", "stats": {},
         "skills": [ { "id": "legacy" },
                     { "id": "combo", "hits": [ { "at": 0.8 },
-                                               { "at": 1.5, "tell": 0.3, "telegraph": 1.2, "weight": 2, "jumpable": true } ] } ] } ]
+                                               { "at": 1.5, "tell": 0.5, "telegraph": 1.2, "weight": 2, "jumpable": true } ] } ] } ]
     })J";
     EnemyRoster roster;
     std::string err;
@@ -108,7 +108,7 @@ TEST_CASE("skill hits load as the attack timeline; skills without them get the d
     CHECK(t[0].weight == 1.0f);
     CHECK_FALSE(t[0].jumpable);
     CHECK(t[1].at == 1.5);
-    CHECK(t[1].tell == 0.3);
+    CHECK(t[1].tell == 0.5);
     CHECK(t[1].telegraph == 1.2);
     CHECK(t[1].weight == 2.0f);
     CHECK(t[1].jumpable);
@@ -125,6 +125,8 @@ TEST_CASE("skill hits load as the attack timeline; skills without them get the d
         R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{"at": 31}]}]}]})",
         R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{"at": 1.0}, {"at": 1.0}]}]}]})",
         R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{"at": 0.3, "tell": 0.4}]}]}]})",
+        R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{"at": 1, "tell": 0.3}]}]}]})", // under the 0.4 s floor
+        R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{"at": 1, "tell": 0}]}]}]})",
         R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{"at": 1, "telegraph": 2}]}]}]})",
         R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{"at": 1, "weight": 0}]}]}]})",
         R"({"enemies": [{"id": "a", "stats": {}, "skills": [{"id": "s", "hits": [{"at": 1, "jumpable": 1}]}]}]})",

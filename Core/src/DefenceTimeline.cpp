@@ -1,5 +1,8 @@
 #include "ftcore/DefenceTimeline.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace ftcore {
 
 const char* defenceOutcomeName(DefenceOutcome o) {
@@ -22,6 +25,21 @@ bool sameTimeline(const AttackTimeline& a, const AttackTimeline& b) {
             return false;
     }
     return true;
+}
+
+AttackTimeline snapToBeat(const AttackTimeline& timeline, double start, double bpm, double offset) {
+    AttackTimeline out = timeline;
+    if (!(bpm > 0.0)) return out;
+    const double spb = 60.0 / bpm;
+    constexpr double kOnBeat = 1e-6; // a hit this close past a beat counts as on it
+    double previous = -1e300;
+    for (std::size_t i = 0; i < out.size() && i < kMaxTimelineHits; ++i) {
+        double beat = std::ceil((start + out.hits[i].at - offset) / spb - kOnBeat);
+        if (beat <= previous) beat = previous + 1.0;
+        previous = beat;
+        out.hits[i].at = std::max(out.hits[i].at, offset + beat * spb - start);
+    }
+    return out;
 }
 
 void DefenceTimeline::reset(const AttackTimeline& timeline, double start, const DefenceWindows& windows) {

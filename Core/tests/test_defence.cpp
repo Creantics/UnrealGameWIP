@@ -6,6 +6,7 @@
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
 
+#include <cmath>
 #include <vector>
 
 using namespace ftcore;
@@ -510,4 +511,52 @@ TEST_CASE("defence in battle: a late press after the last hit says LATE in the r
     b.drainEvents();
     b.defend(DefenceInput::Parry, impact + 10.01);
     CHECK(defended(b.drainEvents()).empty());
+}
+
+// --- the song's beat ---
+
+TEST_CASE("snapToBeat moves each hit later onto a beat, keeps them apart and leaves bpm 0 alone") {
+    // The demo Shade's three quick hits, 0.3 s apart, on a 120 bpm song whose beat 0 is at 0.1 s.
+    const AttackTimeline data = timeline({{0.8, 0.4, 0.0, 1.0f, false}, {1.1, 0.4, 0.0, 1.0f, false}, {1.4, 0.4, 0.7, 2.0f, true}});
+    const AttackTimeline t = snapToBeat(data, kStart, 120.0, 0.1);
+    REQUIRE(t.size() == 3);
+    double previous = 0.0;
+    for (std::size_t i = 0; i < t.size(); ++i) {
+        CAPTURE(i);
+        const double beats = (kStart + t[i].at - 0.1) / 0.5;
+        CHECK(beats == doctest::Approx(std::round(beats)));
+        CHECK(t[i].at >= data[i].at - 1e-9); // never earlier
+        CHECK(t[i].at > previous + 0.5 - 1e-9); // a beat or more after the last one
+        CHECK(t[i].tell == data[i].tell);
+        CHECK(t[i].tell <= t[i].at);
+        CHECK(t[i].telegraph <= t[i].at);
+        previous = t[i].at;
+    }
+    CHECK(t[0].at == doctest::Approx(1.1)); // 10.8 s -> beat 21.4 -> beat 22 at 11.1 s
+    CHECK(t[1].at == doctest::Approx(1.6)); // 11.1 s is beat 22, taken: the next one
+    CHECK(t[2].at == doctest::Approx(2.1));
+    CHECK(t[2].weight == 2.0f);
+    CHECK(t[2].jumpable);
+
+    // A hit already on a beat stays there.
+    const AttackTimeline on = snapToBeat(timeline({{1.0, 0.4, 0.0, 1.0f, false}}), 0.0, 120.0, 0.0);
+    CHECK(on[0].at == doctest::Approx(1.0));
+    // No music: unchanged.
+    CHECK(sameTimeline(snapToBeat(data, kStart, 0.0, 0.1), data));
+    CHECK(sameTimeline(snapToBeat(data, kStart, -60.0, 0.1), data));
+    // Full timelines, any banner time: still on beats, in order, never earlier.
+    AttackTimeline full;
+    full.clear();
+    for (int i = 0; i < static_cast<int>(kMaxTimelineHits); ++i) full.add({0.5 + 0.05 * i, 0.4, 0.0, 1.0f, false});
+    for (const double start : {0.0, 0.37, 3.99, 123.456}) {
+        CAPTURE(start);
+        const AttackTimeline f = snapToBeat(full, start, 72.0, 0.2);
+        REQUIRE(f.size() == kMaxTimelineHits);
+        for (std::size_t i = 0; i < f.size(); ++i) {
+            const double beats = (start + f[i].at - 0.2) / (60.0 / 72.0);
+            CHECK(beats == doctest::Approx(std::round(beats)).epsilon(1e-9));
+            CHECK(f[i].at >= full[i].at - 1e-9);
+            if (i > 0) CHECK(f[i].at > f[i - 1].at);
+        }
+    }
 }

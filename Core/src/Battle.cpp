@@ -162,11 +162,42 @@ void Battle::startEnemyTurn(double now) {
     // No party chart during an enemy turn (swaps buffers: no allocation).
     noteScratch_.clear();
     combo_.reset(noteScratch_, scaled(tuning_.windows, 1.0), tuning_.lockout, tuning_.weights);
-    // The banner is now; the hits follow at the skill's fixed offsets.
+    // The banner is now; the hits follow at the skill's offsets, each moved later onto the song's
+    // next beat when music is on (a fixed-size copy: no allocation).
     landedWeight_ = 0.0f;
-    defence_.reset(enemy.skills[idx].timeline, now, tuning_.defence);
+    const MusicConfig& music = tuning_.music;
+    defence_.reset(music.enabled() ? snapToBeat(enemy.skills[idx].timeline, now, music.bpm, music.offset)
+                                   : enemy.skills[idx].timeline,
+                   now, tuning_.defence);
+    // The count: the beats before the first hit, as many of tuning_.countIn as fit after the banner.
+    countLeft_ = 0;
+    if (music.enabled() && tuning_.countIn > 0 && defence_.size() > 0) {
+        const double spb = 60.0 / music.bpm;
+        countHit_ = defence_.impact(0);
+        const int fits = static_cast<int>(std::floor((countHit_ - now) / spb + 1e-6));
+        countLeft_ = std::clamp(fits, 0, tuning_.countIn);
+    }
     emit({.type = EventType::SkillStarted, .source = actor_, .target = target, .time = now, .label = enemy.skills[idx].name});
-    if (defence_.complete()) finishSkill(now); // a skill without hits
+    if (defence_.complete()) {
+        finishSkill(now); // a skill without hits
+        return;
+    }
+    emitCountIn(now);
+}
+
+void Battle::emitCountIn(double now) {
+    const double spb = tuning_.music.enabled() ? 60.0 / tuning_.music.bpm : 0.0;
+    while (countLeft_ > 0 && phase_ == Phase::EnemySkill) {
+        const double at = countHit_ - countLeft_ * spb;
+        if (now + 1e-9 < at) return;
+        emit({.type = EventType::CountIn,
+              .source = actor_,
+              .target = targets_.front(),
+              .beat = static_cast<std::size_t>(countLeft_),
+              .time = at,
+              .label = {}});
+        --countLeft_;
+    }
 }
 
 void Battle::startCombo(const Skill& skill, CombatantId performer, CombatantId opponent, double firstNote,
@@ -378,6 +409,7 @@ void Battle::update(double now) {
         resolve(now);
         break;
     case Phase::EnemySkill:
+        emitCountIn(now);
         resolveDefence(defence_.update(now), now);
         break;
     case Phase::PartyAim:

@@ -95,7 +95,7 @@ void encHits(JsonValue s, const std::string& path, AttackTimeline& out, std::vec
             if (hit.at <= previous) errors.push_back(p + ".at: expected a time after the previous hit (and above 0)");
             previous = hit.at;
         }
-        encDouble(h, "tell", hit.tell, 0.0, kMaxTell, false, p, errors);
+        encDouble(h, "tell", hit.tell, kMinTell, kMaxTell, false, p, errors);
         encDouble(h, "telegraph", hit.telegraph, 0.0, kMaxTelegraph, false, p, errors);
         if (hit.tell > hit.at) errors.push_back(p + ".tell: longer than the time from the banner to the hit");
         if (hit.telegraph > hit.at) errors.push_back(p + ".telegraph: longer than the time from the banner to the hit");

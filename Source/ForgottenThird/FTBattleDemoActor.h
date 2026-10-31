@@ -139,6 +139,10 @@ public:
 	// An enemy entering a new phase of its fight ("Brass Regent enters Overdrive!").
 	const FString& GetPhaseBanner() const { return PhaseBanner; }
 	double GetPhaseBannerAge() const;
+	// The enemy's count before its first hit: the beats left (0: no count yet this battle) and how
+	// long ago the last count beat came.
+	int32 GetCountBeat() const { return CountBeat; }
+	double GetCountAge() const;
 	// The name of the skill enemy Id uses on its next turn (empty for a party member).
 	const FString& GetNextSkillName(int32 Id) const;
 	// The results after the outcome (none before it), then what a press does next (empty: the
@@ -291,6 +295,8 @@ private:
 	double NoticeWall = -100.0;
 	FString PhaseBanner;
 	double PhaseBannerWall = -100.0;
+	int32 CountBeat = 0;
+	double CountWall = -100.0;
 	TArray<TArray<FString>> SkillNames;
 	TArray<int32> NextSkill;
 	FString ResultLines[MaxResultLines];

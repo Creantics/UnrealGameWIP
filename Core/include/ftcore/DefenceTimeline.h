@@ -55,14 +55,16 @@ inline constexpr std::size_t kMaxTimelineHits = 8;
 // kDefaultTell seconds before that.
 inline constexpr double kDefaultImpact = 1.2;
 inline constexpr double kDefaultTell = 0.4;
-// Data limits (the loader refuses anything outside them).
+// Data limits (the loader refuses anything outside them). No tell is shorter than kMinTell: the
+// floor under which a hit can't be read and answered.
 inline constexpr double kMaxHitOffset = 30.0;
+inline constexpr double kMinTell = 0.4;
 inline constexpr double kMaxTell = 2.0;
 inline constexpr double kMaxTelegraph = 10.0;
 
 struct TimelineHit {
     double at = kDefaultImpact; // seconds after the banner
-    double tell = kDefaultTell; // tell cue this long before impact (0: none)
+    double tell = kDefaultTell; // tell cue this long before impact (data: kMinTell or more)
     double telegraph = 0.0;     // world-space marker on the target this long before impact (0: none)
     float weight = 1.0f;        // share of the skill's damage this hit carries (relative to the others)
     bool jumpable = false;      // Jump answers it; Dodge doesn't
@@ -92,6 +94,13 @@ struct AttackTimeline {
 };
 
 FTCORE_API bool sameTimeline(const AttackTimeline& a, const AttackTimeline& b);
+
+// `timeline` with every hit moved onto a beat of the song: `bpm`, its beat 0 at `offset` seconds,
+// for an attack whose banner is at `start`. A hit only ever moves later, to the first beat at or
+// after its own time and after the previous hit's beat, so the hits stay in order, two never share
+// a beat, and every tell and telegraph still fits after the banner. A bpm of 0 or less returns the
+// timeline as it is.
+FTCORE_API AttackTimeline snapToBeat(const AttackTimeline& timeline, double start, double bpm, double offset);
 
 // Window widths in seconds, each ending at the impact.
 struct DefenceWindows {

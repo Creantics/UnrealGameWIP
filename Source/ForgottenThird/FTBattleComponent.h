@@ -100,6 +100,12 @@ enum class EFTBattleEventType : uint8
 	// battle's EFTBattlePhase (that is OnPhaseChanged). Label = the phase's label (may be empty);
 	// Amount = HP it healed.
 	PhaseChanged,
+	// An item took effect on Target (one event per recipient): Source = the member who used it,
+	// Amount = the HP or AP restored, Label = the item's id.
+	ItemUsed,
+	// Enemy turn with music on: a count beat before the attack's first hit. Beat = the beats left to
+	// that hit (down to 1); Source = the enemy, Target = the defender.
+	CountIn,
 };
 
 // Same order as ftcore::CommandError.
@@ -486,6 +492,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFTBattleEventSignature, const FFTBa
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFTBattleTurnSignature, int32, Actor);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFTBattlePhaseSignature, EFTBattlePhase, Phase);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFTBattleOutcomeSignature, EFTBattleOutcome, Outcome);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFTBattleCountSignature, int32, BeatsLeft);
 
 UCLASS(ClassGroup = (ForgottenThird), meta = (BlueprintSpawnableComponent))
 class FORGOTTENTHIRD_API UFTBattleComponent : public UActorComponent
@@ -641,6 +648,10 @@ public:
 	FFTBattlePhaseSignature OnPhaseChanged;
 	UPROPERTY(BlueprintAssignable, Category = "Battle")
 	FFTBattleOutcomeSignature OnOutcome;
+	// The count to an enemy attack's first hit, on the song's beats (music on only): BeatsLeft runs
+	// down to 1, and the hit lands one beat after it.
+	UPROPERTY(BlueprintAssignable, Category = "Battle")
+	FFTBattleCountSignature OnCountIn;
 
 	// An arrow pressed at BattleSeconds on the battle clock (GetBattleTime scale) rather than now:
 	// an autopilot steps on a note exactly on time even when a frame is long (time dilation).

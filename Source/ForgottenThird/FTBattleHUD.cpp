@@ -782,6 +782,19 @@ void AFTBattleHUD::DrawMessages(const AFTBattleDemoActor& D)
 			DrawStrCentered(D.GetPhaseBanner(), WithAlpha(kOrange, A), CX, Y, Large, 1.6f);
 		}
 	}
+	if (D.GetCountBeat() > 0 && B->phase() == ftcore::Phase::EnemySkill)
+	{
+		// The count to the enemy's first hit: the beats left, each held a moment, then fading.
+		const float A = Fade(D.GetCountAge(), 0.2, 0.25);
+		if (A > 0.f)
+		{
+			const FString Count = FString::FromInt(D.GetCountBeat());
+			const float Pop = 1.f + 0.4f * static_cast<float>(FMath::Clamp(1.0 - D.GetCountAge() / 0.1, 0.0, 1.0));
+			const float Y = Canvas->ClipY * 0.42f;
+			DrawStrCentered(Count, WithAlpha(FLinearColor(0.f, 0.f, 0.f), A), CX + 2.f * S, Y + 2.f * S, Large, 2.f * Pop);
+			DrawStrCentered(Count, WithAlpha(kCyan, A), CX, Y, Large, 2.f * Pop);
+		}
+	}
 	if (!D.GetNotice().IsEmpty())
 	{
 		const float A = Fade(D.GetNoticeAge(), 1.0, 0.4);

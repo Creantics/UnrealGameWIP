@@ -2,6 +2,7 @@
 #include "AllocCounter.h"
 
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <initializer_list>
 #include <iterator>
@@ -400,16 +401,106 @@ TEST_CASE("perfect presses on a grid chart still deal full damage") {
     CHECK(b.combatant(1).hp == 175);
 }
 
-TEST_CASE("enemy attacks keep their own timeline with music on") {
+TEST_CASE("with music an enemy's hits land on the song's beats, never earlier than the data") {
     Battle b({hero()}, {monster()}, musicTuning());
     b.start(0.0);
     double now = 0.0;
     runToEnemyAttack(b, now);
     REQUIRE(b.defence().size() == 1);
-    CHECK(b.defence().impact(0) == doctest::Approx(b.phaseStart() + kDefaultImpact)); // not snapped
+    const double impact = b.defence().impact(0);
+    CHECK(impact >= b.phaseStart() + kDefaultImpact - 1e-9);
+    CHECK(impact < b.phaseStart() + kDefaultImpact + 0.5); // within one beat of where the data put it
+    CHECK(onBeat(impact - 0.3, 0.5));                      // 120 bpm, beat 0 at 0.3 s
+    CHECK(b.defence().hit(0).tell <= impact - b.phaseStart());
     b.drainEvents();
     defendAll(b);
     CHECK(b.combatant(0).hp == 100);
+}
+
+TEST_CASE("music off leaves an enemy's hits where the data put them, with no count") {
+    Battle b({hero()}, {monster()}, tuning());
+    b.start(0.0);
+    double now = 0.0;
+    runToEnemyAttack(b, now);
+    CHECK(b.defence().impact(0) == doctest::Approx(b.phaseStart() + kDefaultImpact));
+    while (b.phase() == Phase::EnemySkill) {
+        now += 0.01;
+        b.update(now);
+    }
+    CHECK(eventsOf(b.drainEvents(), EventType::CountIn).empty());
+}
+
+TEST_CASE("with music the count comes on the beats before the first hit") {
+    Battle b({hero()}, {monster()}, musicTuning());
+    b.start(0.0);
+    double now = 0.0;
+    runToEnemyAttack(b, now);
+    b.drainEvents();
+    const double first = b.defence().impact(0);
+    while (b.phase() == Phase::EnemySkill) {
+        now += 0.01;
+        b.update(now);
+    }
+    const auto all = b.drainEvents();
+    const auto count = eventsOf(all, EventType::CountIn);
+    REQUIRE(count.size() == 2); // the default countIn; the default hit is over a second out
+    CHECK(count[0].beat == 2);
+    CHECK(count[1].beat == 1);
+    CHECK(count[0].time == doctest::Approx(first - 1.0));
+    CHECK(count[1].time == doctest::Approx(first - 0.5));
+    CHECK(count[0].source == 1);
+    CHECK(count[0].target == 0);
+    // Both before the hit is judged.
+    std::size_t countAt = 0, defendedAt = 0;
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        if (all[i].type == EventType::CountIn) countAt = i;
+        if (all[i].type == EventType::Defended && defendedAt == 0) defendedAt = i;
+    }
+    CHECK(countAt < defendedAt);
+}
+
+TEST_CASE("the count is as long as the tuning asks, and only the beats after the banner count") {
+    for (const int asked : {0, 1, 3, 8}) {
+        CAPTURE(asked);
+        BattleTuning t = musicTuning();
+        t.countIn = asked;
+        Battle b({hero()}, {monster()}, t);
+        b.start(0.0);
+        double now = 0.0;
+        runToEnemyAttack(b, now);
+        const double banner = b.phaseStart(), first = b.defence().impact(0);
+        while (b.phase() == Phase::EnemySkill) {
+            now += 0.01;
+            b.update(now);
+        }
+        const auto count = eventsOf(b.drainEvents(), EventType::CountIn);
+        const int fits = static_cast<int>(std::floor((first - banner) / 0.5 + 1e-6));
+        CHECK(static_cast<int>(count.size()) == std::min(asked, fits));
+        for (const BattleEvent& e : count) CHECK(e.time >= banner - 1e-9);
+    }
+}
+
+TEST_CASE("an enemy turn with music allocates nothing") {
+    // The updates that start an enemy turn (snap and count) and play it out, after one warm-up turn.
+    Battle b({hero()}, {monster(10, 100000)}, musicTuning());
+    b.start(0.0);
+    double now = 0.0;
+    int enemyTurns = 0;
+    std::size_t allocs = 0;
+    for (int frame = 0; frame < 100000 && enemyTurns < 3; ++frame) {
+        if (b.phase() == Phase::AwaitingCommand) REQUIRE(b.command(0, 1, now) == CommandError::None);
+        const Phase was = b.phase();
+        const auto before = ftcore_test::allocStats().count;
+        now += 0.05;
+        b.update(now);
+        const auto spent = ftcore_test::allocStats().count - before;
+        const bool enemy = was == Phase::EnemySkill || b.phase() == Phase::EnemySkill;
+        if (was != Phase::EnemySkill && b.phase() == Phase::EnemySkill) ++enemyTurns;
+        if (enemy && enemyTurns >= 2) allocs += spent;
+        b.clearEvents();
+    }
+    REQUIRE(enemyTurns >= 2);
+    if (ftcore_test::allocHookInstalled()) CHECK(allocs == 0);
 }
 
 TEST_CASE("music off keeps the plain seconds chart") {

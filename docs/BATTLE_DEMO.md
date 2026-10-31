@@ -55,13 +55,23 @@ the story.
 ## Defence
 
 An enemy skill is an attack timeline (`ftcore::DefenceTimeline`, `Core/include/ftcore/DefenceTimeline.h`):
-the banner, then up to 8 hits at fixed offsets. The clock is the battle clock; enemy timelines are
-not snapped to the beat grid. Each hit can have:
+the banner, then up to 8 hits at the offsets the data gives. The clock is the battle clock. With
+music on (`BattleTuning::music`), the hits land on the song's beats: `ftcore::snapToBeat` moves each
+hit later, to the first beat at or after its own time and after the previous hit's beat, so no hit
+comes earlier than the data says, the hits stay in order, and two never share a beat. Quick hits
+that the data puts less than a beat apart are spread a beat apart. Music off, the hits stay where
+the data puts them. Each hit can have:
 
 - a **tell**: the cue before the impact. The attacker flashes white as the tell starts. The HUD
   draws a ring that closes in on the defender and lands on a faint inner ring at the impact, with
   "!" (or "JUMP!" in gold on a jumpable hit);
 - a **telegraph**: a longer warning for big hits. The HUD fills a red column next to the defender.
+
+**The count.** With music on, the beats before the attack's first hit count down to it: a
+`CountIn` event on each (`beat` = the beats left, down to 1), as many as `BattleTuning::countIn`
+asks (2 by default; 0 for none) and only those that come after the banner. The hit lands one beat
+after the last count. In Unreal, `UFTBattleComponent::OnCountIn` fires with the beats left, and the
+HUD shows the number in cyan in the middle of the screen, one per beat.
 
 Each hit is answered by one press inside its window, which ends at the impact:
 
@@ -89,7 +99,7 @@ Timelines come from the `hits` array of a skill in `Data/Battle/enemies.json`:
 ```
 
 - `at`: seconds after the banner, in (0, 30], required, strictly increasing.
-- `tell`: 0 to 2 s (default 0.4). `telegraph`: 0 to 10 s (default 0). Neither may be longer than `at`.
+- `tell`: 0.4 to 2 s (default 0.4; `kMinTell` is the floor, so no hit comes with less warning than that). `telegraph`: 0 to 10 s (default 0). Neither may be longer than `at`.
 - `weight`: share of the blow, above 0 (default 1). `jumpable`: true or false (default false).
 - 1 to 8 hits. A skill without `hits` (older data) gets one default hit at 1.2 s with a 0.4 s tell.
 

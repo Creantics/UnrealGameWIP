@@ -47,6 +47,9 @@ struct BattleTuning {
     int startingAp = 2;
     std::uint64_t seed = 0x5EEDC0DEull; // combo charts are generated deterministically from this
     MusicConfig music;                  // beat-synced charts when music.bpm > 0
+    // Enemy turns with music on: the hits land on the song's beats (snapToBeat), and this many
+    // CountIn cues come on the beats before the first one (0: none).
+    int countIn = 2;
     AimTuning aim;                      // the Aim command: cost, power, time limit, sway (WeakPoint.h)
 };
 
@@ -80,7 +83,10 @@ enum class EventType {
                   // label (may be empty); amount = HP it healed (appended: the Unreal mirror keeps its order)
     ItemUsed,     // an item took effect on `target`, one event per recipient: source = the member who used it,
                   // amount = the HP or AP restored (0 when the target was already full), label = the item's id
-                  // (appended: the Unreal mirror does not have it yet)
+                  // (appended: the Unreal mirror keeps its order)
+    CountIn,      // enemy turn with music on: a count beat before the attack's first hit; beat = the beats left
+                  // to that hit (countIn down to 1), time = the count beat, source = the enemy, target = the
+                  // defender (appended)
 };
 
 // Running totals over one battle (from start() to the outcome), for the results screen.
@@ -234,6 +240,7 @@ private:
     void resolve(double now); // judges results_ (filled by the combo)
     void resolveAttackNote(const NoteResult& r, double now);
     void resolveDefence(const DefenceResults& results, double now);
+    void emitCountIn(double now);
     void finishSkill(double now);
     bool targetsGone() const;
     void dealDamage(CombatantId source, CombatantId target, int amount, Grade grade, std::size_t beat, double now,
@@ -264,6 +271,8 @@ private:
     AimShot aim_;
     ShotResult lastShot_;
     float landedWeight_ = 0.0f; // defence: summed weight of the hits that landed
+    double countHit_ = 0.0;     // enemy turn: the first hit's impact, which the count leads to
+    int countLeft_ = 0;         // CountIn cues still to come
     std::uint64_t combosPlayed_ = 0;
     std::vector<int> enemyTurnCount_;      // turns taken in the current phase (the pattern cursor)
     std::vector<std::uint8_t> enemyPhase_; // per combatant: its current phase
