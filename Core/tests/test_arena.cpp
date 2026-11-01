@@ -63,6 +63,7 @@ ArenaFighter ruleFighter() {
     f.chainGap = 0.3f;
     f.heavy = swing(0.4f, 0.2f, 0.5f, 2.f, 30, 25.f);
     f.riposte = swing(0.1f, 0.1f, 0.4f, 2.5f, 50, 0.f);
+    f.release = swing(0.1f, 0.1f, 0.4f, 2.5f, 20, 0.f);
     f.dodgeTime = 0.6f;
     f.dodgeDistance = 3.f;
     f.dodgeInvulnStart = 0.1f;
@@ -155,7 +156,7 @@ struct Rig {
             l.event = e;
             log.push_back(l);
         }
-        in.light = in.heavy = in.dodge = in.heal = in.lock = false;
+        in.light = in.heavy = in.dodge = in.heal = in.lock = in.release = in.pair = false;
         in.lockSwitch = 0;
         return out;
     }
@@ -2362,10 +2363,11 @@ TEST_CASE("arena names and the default def") {
     const ArenaAction actions[] = {ArenaAction::Idle,    ArenaAction::Move,    ArenaAction::Light,
                                    ArenaAction::Heavy,   ArenaAction::Riposte, ArenaAction::Dodge,
                                    ArenaAction::Guard,   ArenaAction::Heal,    ArenaAction::Hitstun,
-                                   ArenaAction::GuardBreak, ArenaAction::Downed};
+                                   ArenaAction::GuardBreak, ArenaAction::Downed, ArenaAction::Release};
     for (const ArenaAction a : actions) CHECK(std::string(arenaActionName(a)).size() > 2);
     CHECK(std::string(arenaActionName(ArenaAction::Idle)) == "Idle");
     CHECK(std::string(arenaActionName(ArenaAction::GuardBreak)) == "GuardBreak");
+    CHECK(std::string(arenaActionName(ArenaAction::Release)) == "Release");
     const ArenaBrain brains[] = {ArenaBrain::Approach, ArenaBrain::Strafe, ArenaBrain::Attack, ArenaBrain::Staggered,
                                  ArenaBrain::Open,     ArenaBrain::Down,   ArenaBrain::Dead};
     for (const ArenaBrain b : brains) CHECK(std::string(arenaBrainName(b)).size() > 2);
@@ -2379,6 +2381,364 @@ TEST_CASE("arena names and the default def") {
     bool string = false;
     for (std::size_t m = 0; m < def.enemies[0].moveCount; ++m) string = string || def.enemies[0].moves[m].chain >= 0;
     CHECK(string);
+}
+
+// ---- Load, Release, the paired counter and the beat ----
+
+namespace {
+
+// A hitter's bite parried: guard pressed on tick 19 (t = 0.3 s), the hit at about 0.42 s. `pairAt` and `pairAgain`
+// press the partner's input on those ticks (1-based, 0 for none); `ticks` is how many to run.
+void parryRun(Rig& rig, int ticks, int pairAt = 0, int pairAgain = 0) {
+    rig.put(0, 1.5f, 0.f);
+    for (int k = 1; k <= ticks; ++k) {
+        if (k == 19) rig.in.guard = true;
+        if (k == pairAt || k == pairAgain) rig.in.pair = true;
+        rig.tick();
+    }
+}
+
+} // namespace
+
+TEST_CASE("arena Load: it never rises without a parry, and never refills or drains on its own") {
+    ArenaAttack bite = swing(0.4f, 0.15f, 0.5f, 2.f, 20);
+    bite.guardDamage = 10.f;
+    {   // a hit taken
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.put(0, 1.5f, 0.f);
+        rig.run(40);
+        CHECK(rig.count(ArenaEventType::Hit) >= 1);
+        CHECK(rig.fight.load() == 0);
+    }
+    {   // a block: the guard held from the start, the window long gone when the bite lands
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.put(0, 1.5f, 0.f);
+        rig.in.guard = true;
+        rig.run(40);
+        CHECK(rig.count(ArenaEventType::Blocked) == 1);
+        CHECK(rig.fight.load() == 0);
+    }
+    {   // a roll through it
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.put(0, 1.5f, 0.f);
+        rig.run(15);
+        rig.in.dodge = true;
+        rig.run(30);
+        CHECK(rig.count(ArenaEventType::Evaded) == 1);
+        CHECK(rig.fight.load() == 0);
+    }
+    {   // the player's own hits store nothing
+        Rig rig(ruleFighter(), {dummyKind()});
+        for (int i = 0; i < 3; ++i) {
+            rig.in.light = true;
+            rig.runFor(0.6f);
+        }
+        rig.in.heavy = true;
+        rig.runFor(1.2f);
+        CHECK(rig.count(ArenaEventType::Hit) >= 3);
+        CHECK(rig.fight.load() == 0);
+        CHECK(rig.count(ArenaEventType::LoadStored) == 0);
+    }
+    {   // a parry stores the parried damage; after that only another parry moves it
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        parryRun(rig, 40);
+        REQUIRE(rig.count(ArenaEventType::Parried) == 1);
+        CHECK(rig.fight.load() == 20);
+        CHECK(rig.out().player.load == 20);
+        rig.in.guard = false;
+        rig.runFor(5.f);
+        CHECK(rig.fight.load() == 20 * rig.count(ArenaEventType::Parried));
+    }
+}
+
+TEST_CASE("arena Load: a parry stores damage x loadShare and says so") {
+    const ArenaAttack bite = swing(0.4f, 0.15f, 0.5f, 2.f, 20);
+    {
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        parryRun(rig, 40);
+        const Logged* stored = rig.find(ArenaEventType::LoadStored);
+        REQUIRE(stored);
+        CHECK(stored->event.amount == 20);
+        CHECK(stored->event.source == 0);
+        CHECK(stored->event.target == kArenaPlayer);
+        REQUIRE(rig.find(ArenaEventType::Parried));
+        CHECK(stored->tick == rig.find(ArenaEventType::Parried)->tick);
+        CHECK(rig.fight.stats().loadStored == 20);
+    }
+    {
+        ArenaFighter f = ruleFighter();
+        f.loadShare = 0.5f;
+        Rig rig(f, {hitterKind(bite)});
+        parryRun(rig, 40);
+        CHECK(rig.fight.load() == 10);
+    }
+    {
+        ArenaFighter f = ruleFighter();
+        f.loadShare = 0.f;
+        Rig rig(f, {hitterKind(bite)});
+        parryRun(rig, 40);
+        CHECK(rig.count(ArenaEventType::Parried) == 1);
+        CHECK(rig.fight.load() == 0);
+        CHECK(rig.count(ArenaEventType::LoadStored) == 0);
+    }
+}
+
+TEST_CASE("arena Load: stamina and Load are apart; a Release costs no stamina and works at none") {
+    // Ten stamina, a light that costs ten and no regeneration: one swing empties it for good.
+    ArenaFighter f = ruleFighter();
+    f.stamina = 10.f;
+    f.staminaRegen = 0.f;
+    Rig rig(f, {hitterKind(swing(1.f, 0.15f, 0.5f, 2.f, 40))});
+    rig.put(0, 1.5f, 0.f);
+    rig.in.light = true;
+    rig.tick();
+    CHECK(rig.fight.stamina() == doctest::Approx(0.f));
+    CHECK(rig.fight.load() == 0); // spending stamina moves no Load
+    rig.runFor(0.85f);
+    rig.in.guard = true; // pressed at about 0.87 s: the window holds the hit at about 1.02 s
+    rig.run(20);
+    REQUIRE(rig.count(ArenaEventType::Parried) == 1);
+    CHECK(rig.fight.load() == 40);
+    CHECK(rig.fight.stamina() == doctest::Approx(0.f)); // storing Load gives no stamina
+    rig.in.guard = false;
+    rig.tick();
+    rig.in.release = true;
+    rig.tick();
+    CHECK(rig.count(ArenaEventType::Released) == 1);
+    CHECK(rig.out().player.action == ArenaAction::Release);
+    CHECK(rig.fight.load() == 0);
+    CHECK(rig.fight.stamina() == doctest::Approx(0.f));
+}
+
+TEST_CASE("arena Release: refused at 33 Load and under, open at 34; it spends it all as poise damage") {
+    {   // 33 stored: refused, nothing spent
+        Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 33))});
+        parryRun(rig, 40);
+        REQUIRE(rig.fight.load() == 33);
+        rig.in.guard = false;
+        rig.tick();
+        rig.in.release = true;
+        rig.tick();
+        CHECK(rig.count(ArenaEventType::Released) == 0);
+        CHECK(rig.out().player.action != ArenaAction::Release);
+        CHECK(rig.fight.load() == 33);
+        CHECK(rig.fight.stats().releases == 0);
+    }
+    {   // nothing stored: refused
+        Rig rig(ruleFighter(), {dummyKind()});
+        rig.in.release = true;
+        rig.tick();
+        CHECK(rig.count(ArenaEventType::Released) == 0);
+    }
+    {   // 34: the Release goes, spends all 34, is invulnerable, and an upright enemy loses 34 poise
+        ArenaEnemyKind upright = dummyKind();
+        upright.poise = 40.f;
+        Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 34)), upright});
+        rig.put(1, 0.f, 1.5f);
+        parryRun(rig, 40);
+        REQUIRE(rig.fight.load() == 34);
+        rig.in.guard = false;
+        rig.tick();
+        rig.in.release = true;
+        rig.tick();
+        const Logged* released = rig.find(ArenaEventType::Released);
+        REQUIRE(released);
+        CHECK(released->event.amount == 34);
+        CHECK(released->event.source == kArenaPlayer);
+        CHECK(rig.fight.load() == 0);
+        CHECK(rig.fight.stats().releases == 1);
+        CHECK(rig.out().player.action == ArenaAction::Release);
+        CHECK(rig.out().player.invulnerable);
+        rig.runFor(0.3f);
+        CHECK(rig.fight.enemyPoise(1) == doctest::Approx(6.f));
+        CHECK(rig.fight.enemyHp(1) == 80); // the Release's own damage
+    }
+    {   // releasePoise scales it; enough breaks the poise
+        ArenaFighter f = ruleFighter();
+        f.releasePoise = 2.f;
+        ArenaEnemyKind upright = dummyKind();
+        upright.poise = 40.f;
+        Rig rig(f, {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 34)), upright});
+        rig.put(1, 0.f, 1.5f);
+        parryRun(rig, 40);
+        rig.in.guard = false;
+        rig.tick();
+        rig.in.release = true;
+        rig.runFor(0.3f);
+        bool staggered = false;
+        for (const Logged& l : rig.log)
+            if (l.event.type == ArenaEventType::Staggered && l.event.target == 1) staggered = true;
+        CHECK(staggered);
+    }
+}
+
+TEST_CASE("arena Overload: at full Load attacks and heals are refused until a Release; the defence stays open") {
+    // A bite of 120 parried: only the 100 that fit are stored, and Overloaded comes once. It bites only once.
+    ArenaEnemyKind once = hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 120));
+    once.moves[0].cooldown = 60.f;
+    Rig rig(ruleFighter(), {once});
+    parryRun(rig, 40);
+    REQUIRE(rig.count(ArenaEventType::Parried) == 1);
+    CHECK(rig.fight.load() == kMaxLoad);
+    CHECK(rig.fight.overloaded());
+    CHECK(rig.out().player.overloaded);
+    REQUIRE(rig.find(ArenaEventType::LoadStored));
+    CHECK(rig.find(ArenaEventType::LoadStored)->event.amount == kMaxLoad);
+    CHECK(rig.count(ArenaEventType::Overloaded) == 1);
+    CHECK(rig.fight.stats().overloads == 1);
+    rig.in.guard = false;
+    rig.tick();
+    const int hp = rig.fight.hp();
+    rig.in.light = true; // the enemy is open, so this would be a riposte: refused all the same
+    rig.tick();
+    CHECK(rig.out().player.action != ArenaAction::Riposte);
+    CHECK(rig.out().player.action != ArenaAction::Light);
+    rig.runFor(0.3f); // the buffer runs out
+    rig.in.heavy = true;
+    rig.tick();
+    CHECK(rig.out().player.action != ArenaAction::Heavy);
+    rig.runFor(0.3f);
+    rig.in.heal = true;
+    rig.tick();
+    CHECK(rig.out().player.action != ArenaAction::Heal);
+    CHECK(rig.fight.healCharges() == 2);
+    CHECK(rig.fight.hp() == hp);
+    rig.runFor(0.3f);
+    rig.in.guard = true; // the guard goes up
+    rig.tick();
+    CHECK(rig.out().player.action == ArenaAction::Guard);
+    rig.in.guard = false;
+    rig.tick();
+    rig.in.dodge = true; // and the roll
+    rig.tick();
+    CHECK(rig.out().player.action == ArenaAction::Dodge);
+    rig.runFor(0.7f);
+    CHECK(rig.count(ArenaEventType::Overloaded) == 1);
+    rig.in.release = true; // the Release lifts it
+    rig.tick();
+    CHECK(rig.count(ArenaEventType::Released) == 1);
+    CHECK_FALSE(rig.fight.overloaded());
+    CHECK(rig.fight.load() == 0);
+    rig.runFor(0.7f);
+    rig.in.light = true;
+    rig.tick();
+    const ArenaAction after = rig.out().player.action;
+    CHECK((after == ArenaAction::Light || after == ArenaAction::Riposte));
+}
+
+TEST_CASE("arena beat: arenaWholeBeats, and every authored startup is a whole number of beats") {
+    CHECK(arenaWholeBeats(0.4f, 150.f) == 1);
+    CHECK(arenaWholeBeats(0.8f, 150.f) == 2);
+    CHECK(arenaWholeBeats(1.2f, 150.f) == 3);
+    CHECK(arenaWholeBeats(0.4f + kArenaBeatTolerance * 0.5f, 150.f) == 1);
+    CHECK(arenaWholeBeats(0.45f, 150.f) == -1);
+    CHECK(arenaWholeBeats(0.1f, 150.f) == -1); // under one beat
+    CHECK(arenaWholeBeats(0.5f, 120.f) == 1);
+    CHECK(arenaWholeBeats(0.4f, 0.f) == -1);
+    CHECK(arenaWholeBeats(0.f, 150.f) == -1);
+
+    const ArenaTable table = loadShipped();
+    REQUIRE(table.bpm > 0.f);
+    CHECK(table.fallback.bpm == table.bpm);
+    for (const ArenaFightEntry& e : table.entries) CHECK(e.def.bpm == table.bpm);
+    for (std::size_t i = 0; i < table.enemies.size(); ++i)
+        for (std::size_t m = 0; m < table.enemies[i].moveCount; ++m)
+            CHECK_MESSAGE(arenaWholeBeats(table.enemies[i].moves[m].attack.startup, table.bpm) > 0,
+                          table.enemyIds[i] << " move " << m);
+    const ArenaDef def = defaultArenaDef();
+    REQUIRE(def.bpm > 0.f);
+    for (std::size_t m = 0; m < def.enemies[0].moveCount; ++m)
+        CHECK(arenaWholeBeats(def.enemies[0].moves[m].attack.startup, def.bpm) > 0);
+}
+
+TEST_CASE("arena beat: the loader refuses an off-beat startup and a bpm out of range") {
+    const auto withBpm = [](const std::string& bpm, const char* startup) {
+        std::string json = tableJson(kFightersOk, std::string(R"([ { "id": "dummy", "moves": [ { "startup": )") + startup +
+                                                      R"(, "active": 0.1, "range": 2, "maxRange": 2, "weight": 1 } ] } ])");
+        const std::string version = R"("version": 1,)";
+        json.replace(json.find(version), version.size(), version + R"( "bpm": )" + bpm + ",");
+        return json;
+    };
+    ArenaTable t;
+    CHECK(loadError(withBpm("150", "0.4"), &t).empty());
+    CHECK(t.bpm == 150.f);
+    CHECK(t.fallback.bpm == 150.f);
+    const std::string off = loadError(withBpm("150", "0.45"));
+    CHECK(contains(off, "enemies[0].moves[0].startup"));
+    CHECK(contains(off, "whole number of beats"));
+    CHECK_FALSE(loadError(withBpm("120", "0.45")).empty());
+    CHECK(loadError(withBpm("120", "1.0")).empty());
+    CHECK(contains(loadError(withBpm("0", "0.4")), "bpm"));
+    CHECK(contains(loadError(withBpm("301", "0.4")), "bpm"));
+    CHECK(contains(loadError(withBpm(R"("fast")", "0.4")), "bpm"));
+    // Without a bpm nothing is checked.
+    ArenaTable plain;
+    const std::string noBpm =
+        tableJson(kFightersOk, R"([ { "id": "dummy", "moves": [ { "startup": 0.45, "active": 0.1, "range": 2, "maxRange": 2, "weight": 1 } ] } ])");
+    CHECK(loadError(noBpm, &plain).empty());
+    CHECK(plain.bpm == 0.f);
+}
+
+TEST_CASE("arena paired counter: the partner's press within pairWindow of a parry, either first, counter-staggers") {
+    // Where the parry lands.
+    Rig probe(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+    parryRun(probe, 40);
+    const Logged* parried = probe.find(ArenaEventType::Parried);
+    REQUIRE(parried);
+    const int p = parried->tick;
+    const int inside = 6;  // 0.1 s at 60 Hz
+    const int outside = 9; // 0.15 s
+    const auto check = [&](int pairAt, bool pairs) {
+        Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+        parryRun(rig, p + 15, pairAt);
+        CHECK(rig.count(ArenaEventType::Parried) == 1);
+        if (pairs) {
+            const Logged* counter = rig.find(ArenaEventType::CounterStagger);
+            REQUIRE(counter);
+            CHECK(counter->event.amount == 3 * ruleFighter().light[0].damage);
+            CHECK(counter->event.source == kArenaPlayer);
+            CHECK(counter->event.target == 0);
+            CHECK(rig.fight.enemyHp(0) == 100 - 30);
+            CHECK(rig.fight.stats().counterStaggers == 1);
+            const Logged* staggered = rig.find(ArenaEventType::Staggered);
+            REQUIRE(staggered);
+            CHECK(staggered->tick == counter->tick);
+            CHECK(rig.out().enemies[0].brain == ArenaBrain::Staggered);
+        } else {
+            CHECK(rig.count(ArenaEventType::CounterStagger) == 0);
+            CHECK(rig.fight.enemyHp(0) == 100);
+            CHECK(rig.out().enemies[0].brain == ArenaBrain::Open);
+        }
+    };
+    check(p, true);          // the same tick
+    check(p + inside, true); // after the parry
+    check(p - inside, true); // before it
+    check(p + outside, false);
+    check(p - outside, false);
+    {   // one press per parry: a second press pairs with nothing
+        Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+        parryRun(rig, p + 15, p + 1, p + 3);
+        CHECK(rig.count(ArenaEventType::CounterStagger) == 1);
+    }
+    {   // pairHits sets the worth, and the window is the fighter's
+        ArenaFighter f = ruleFighter();
+        f.pairHits = 5;
+        f.pairWindow = 0.2f;
+        Rig rig(f, {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+        parryRun(rig, p + 15, p + outside);
+        const Logged* counter = rig.find(ArenaEventType::CounterStagger);
+        REQUIRE(counter);
+        CHECK(counter->event.amount == 50);
+    }
+    {   // no parry, no counter
+        Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+        rig.put(0, 1.5f, 0.f);
+        for (int k = 1; k <= 40; ++k) {
+            rig.in.pair = k == 20;
+            rig.tick();
+        }
+        CHECK(rig.count(ArenaEventType::CounterStagger) == 0);
+    }
 }
 
 // ---- determinism ----
@@ -2498,6 +2858,7 @@ struct Outcome {
     int ripostes = 0;
     int guardBreaks = 0;
     int damageTaken = 0;
+    int releases = 0;
 };
 
 // Plays `def` at a fixed 1/60 s with arenaStep, the autopilot or a player who presses nothing.
@@ -2525,6 +2886,7 @@ Outcome playOut(const ArenaDef& def, std::uint32_t seed, bool autopilot) {
     o.ripostes = fight.stats().ripostes;
     o.guardBreaks = fight.stats().guardBreaks;
     o.damageTaken = fight.stats().damageTaken;
+    o.releases = fight.stats().releases;
     return o;
 }
 
@@ -2553,7 +2915,7 @@ void checkBalance(const std::string& name, const ArenaDef& def) {
         if (seed == 1)
             MESSAGE("arena balance: " << name << " seed 1: autopilot won in " << win.time << " s with " << win.hp
                                                   << " hp (heals " << win.heals << ", parries " << win.parries << ", evades "
-                                                  << win.evades << ", hits taken " << win.hitsTaken << "), idle lost in " << lose.time
+                                                  << win.evades << ", releases " << win.releases << ", hits taken " << win.hitsTaken << "), idle lost in " << lose.time
                                                   << " s");
     }
     MESSAGE("arena balance: " << name << " over 8 seeds: slowest win " << worstWin << " s, lowest hp left " << lowestHp
@@ -2631,6 +2993,28 @@ TEST_CASE("arena: tick, autopilot and arenaStep allocate nothing over a whole fi
     const auto allocs = ftcore_test::allocStats().count - before;
     if (counting) CHECK(allocs == 0);
     CHECK(ticks > 500);
+}
+
+TEST_CASE("arena: a whole autopilot fight that stores Load and releases it allocates nothing") {
+    const ArenaTable table = loadShipped();
+    const ArenaDef def = shippedFight(table, {"brute", "skirmisher", "breaker"}, 1);
+    const ArenaRing ring = arenaRingAt(Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, def.ringRadius, ArenaRing{Vec2{0.f, 0.f}, 36.f});
+    ArenaFight fight;
+    ArenaBodies bodies;
+    const bool counting = ftcore_test::allocHookInstalled();
+    const auto before = ftcore_test::allocStats().count;
+    fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    bodies.player = fight.playerStart();
+    for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
+    while (!fight.over() && fight.time() < 120.f) {
+        fight.tick(kDt, fight.autopilot(), bodies);
+        arenaStep(fight, bodies, kDt);
+    }
+    const auto allocs = ftcore_test::allocStats().count - before;
+    if (counting) CHECK(allocs == 0);
+    CHECK(fight.phase() == ArenaPhase::Victory);
+    CHECK(fight.stats().loadStored > 0); // the fight went through the Load and the Release
+    CHECK(fight.stats().releases > 0);
 }
 
 // ---- the arrow combos stay in the Turns battle ----

@@ -39,12 +39,12 @@
 //   active part: when a tick has more targets that qualify than slots left, the nearest win (centre
 //   distance, ties by lower index; a riposte's own enemy first, as it is aimed at it). So a long,
 //   narrow shot doesn't pierce the whole line.
-// * Player actions. Idle/Move, Light, Heavy, Riposte, Dodge, Guard, Heal; and the ones that happen to
+// * Player actions. Idle/Move, Light, Heavy, Riposte, Release, Dodge, Guard, Heal; and the ones that happen to
 //   the player: Hitstun, GuardBreak, Downed.
 //   - A new action may start from Idle/Move, from an attack once `cancel` of its recovery has passed,
 //     from a dodge once `dodgeCancel` of it has passed, and from Guard at any time. An action pressed
 //     while it can't start is buffered for `bufferTime` (only the latest press is kept) and starts as
-//     soon as it can.
+//     soon as it can. Pressed in one tick, Release beats dodge, which beats heal, heavy and light.
 //   - Light: the chain's next attack when it starts during the previous light's recovery or within
 //     `chainGap` after it, else the first. The chain wraps after lightCount.
 //   - Every attack and the dodge cost stamina; an action needs stamina > 0 to start and may take it
@@ -68,6 +68,21 @@
 //   - Riposte: a light press with an Open enemy within riposteReach and in front (dot >= 0.5)
 //     performs the riposte attack instead of a light, aimed at that enemy and invulnerable throughout.
 //     When it connects, the enemy goes Down for downTime.
+//   - Load (Load.h): a second gauge beside stamina, 0 to kMaxLoad, never a replacement for it. Only a
+//     parry (the perfect guard: the parry window, never wider) stores Load: the parried attack's damage
+//     times loadShare (LoadStored; a block stores nothing). It never refills or drains on its own, and
+//     no attack or roll spends it. At kMaxLoad the player is overloaded (Overloaded, once as it fills):
+//     light, heavy and heal are refused until a Release (dodge, guard, parry, movement and the lock
+//     stay open, as Turns refuses commands but never the defence).
+//   - Release: a strike shaped like the riposte (the `release` attack: invulnerable throughout, facing
+//     the lock target or the stick at its start), open only while Load is above kArenaReleaseOpenLoad
+//     (a third), from any state another action may start from, whatever the stamina. It spends all the
+//     Load at once (Released, amount = the Load spent): each enemy it connects with loses the attack's
+//     poiseDamage plus the Load spent times releasePoise (the usual armour share and upright rule).
+//   - Paired counter: the partner's input (`pair`, a second lead's press the host feeds) within
+//     pairWindow of a parry, before or after it, turns that parry into a counter-stagger: the parried
+//     enemy, if still open, takes pairHits times light[0]'s damage and is staggered (CounterStagger,
+//     then Staggered). A press is used once; a parry pairs with one press.
 //   - Heal: needs a charge; heals healAmount after healTime, then healRecovery; movement scaled by
 //     healMoveScale. Hitstun before the heal applies cancels it and keeps the charge.
 //   - Being hit: hp loses the damage; poise loses the poise damage, and at 0 the player goes into
@@ -108,16 +123,19 @@
 //
 // Data: Data/Battle/arena.json (ids and numbers only, no story text). Like encounters.json and
 // qte.json it is keyed by scene id + gameplay beat index + plan step index, with a `default` fight:
-//   { "version": 1,
+//   { "version": 1, "bpm": 150,
 //     "fighters": [ { "id": "default", "hp": 100, ...,
 //                     "light": [ { "startup": 0.18, "active": 0.12, "recovery": 0.35, "range": 2.1,
 //                                  "damage": 12, "stamina": 14 }, ... ],
-//                     "heavy": { ... }, "riposte": { ... } } ],
+//                     "heavy": { ... }, "riposte": { ... }, "release": { ... } } ],
 //     "enemies": [ { "id": "brute", "hp": 90, "poise": 40, ...,
-//                    "moves": [ { "startup": 0.7, "active": 0.2, "recovery": 0.8, "range": 2.4,
+//                    "moves": [ { "startup": 0.8, "active": 0.2, "recovery": 0.8, "range": 2.4,
 //                                 "damage": 18, "minRange": 0, "maxRange": 2.8, "chain": 1 }, ... ] } ],
 //     "default": { "enemies": ["brute"], "ring": 12, "attackers": 1, "spawn": 7 },
 //     "fights": [ { "scene": "SC-X", "beat": 4, "step": 0, "enemies": ["brute", "brute"], "attackers": 2 } ] }
+//   A top-level "bpm" (ArenaTable::bpm, copied to every fight's ArenaDef::bpm) is the arena's beat:
+//   every enemy move's startup must then be a whole number of its beats (1 or more, within
+//   kArenaBeatTolerance), so a count-in can land on the impact. Without it (0) no startup is checked.
 //   Fighter, enemy, move and attack keys are the struct fields below, spelled the same; a missing
 //   key keeps the struct's default, so entries list only what differs. A fighter's id is a lead id
 //   or "default" (required); ArenaTable::fighter falls back to it. A move's attack keys sit in the
@@ -135,6 +153,7 @@
 
 #include "ftcore/Api.h"
 #include "ftcore/Explore.h" // Vec2
+#include "ftcore/Load.h"
 
 #include <array>
 #include <cmath>
@@ -157,6 +176,15 @@ inline constexpr std::uint8_t kArenaNobody = 0xFF;
 // The player's move ids in events and ArenaPlayerOut::move: a light is its chain index.
 inline constexpr std::uint8_t kArenaHeavyMove = 8;
 inline constexpr std::uint8_t kArenaRiposteMove = 9;
+inline constexpr std::uint8_t kArenaReleaseMove = 10;
+// A Release is open only with more Load than this: a third of kMaxLoad.
+inline constexpr int kArenaReleaseOpenLoad = kMaxLoad / 3;
+// An enemy move's startup is on the beat when it is within this many seconds of a whole number of beats.
+inline constexpr float kArenaBeatTolerance = 0.002f;
+
+// How many whole beats of `bpm` `seconds` lasts (1 or more, within kArenaBeatTolerance), else -1 (also
+// for bpm <= 0). A host counts an attack in from it: the impact is that many beats after AttackStarted.
+FTCORE_API int arenaWholeBeats(float seconds, float bpm);
 // ArenaDef::enemyKind of a slot that is not a table kind (a def built in code).
 inline constexpr std::uint8_t kArenaNoKind = 0xFF;
 
@@ -227,6 +255,12 @@ struct ArenaFighter {
 
     float moveAccel = 0.f;      // m/s^2: how fast the velocity gains speed toward the one the stick asks for ...
     float moveBrake = 0.f;      // ... and loses it (a slower one asked for); 0: instant. Idle, Move, Guard, Heal only
+
+    float loadShare = 1.f;      // a parry stores the parried attack's damage times this as Load
+    ArenaAttack release;        // the Release strike (riposte-shaped)
+    float releasePoise = 1.f;   // poise each enemy the Release connects with loses per Load spent
+    float pairWindow = 0.12f;   // seconds between a parry and the partner's press that still pair
+    std::uint8_t pairHits = 3;  // a counter-stagger is worth this many of light[0]'s hits
 };
 
 // One of an enemy's moves: an attack plus when the enemy picks it.
@@ -280,6 +314,7 @@ struct ArenaDef {
     // Slot i's index into ArenaTable::enemyIds: the kind of enemies[i], from which the host picks that enemy's
     // mesh and clips. kArenaNoKind (the default, and what defaultArenaDef() leaves) is a def built in code.
     std::array<std::uint8_t, kMaxArenaEnemies> enemyKind = arenaNoKinds();
+    float bpm = 0.f;           // the arena's beat (arena.json's "bpm"); every enemy startup is whole beats of it. 0: none
 };
 
 // The built-in fight used when no data file is there: one enemy with a quick strike and a slow
@@ -327,6 +362,8 @@ struct ArenaInput {
     bool guard = false;         // held
     bool lock = false;          // lock on, or let go
     std::int8_t lockSwitch = 0; // -1 / +1: the next enemy to the left / right
+    bool release = false;       // the Release (open above kArenaReleaseOpenLoad)
+    bool pair = false;          // the partner's press: a second lead's input, paired with a parry within pairWindow
 };
 
 // Where the bodies stand, as the host moved them (enemies beyond enemyCount() are ignored).
@@ -337,7 +374,8 @@ struct ArenaBodies {
 
 // The player's action (append only: the Unreal side maps it to animations).
 enum class ArenaAction : std::uint8_t {
-    Idle, Move, Light, Heavy, Riposte, Dodge, Guard, Heal, Hitstun, GuardBreak, Downed
+    Idle, Move, Light, Heavy, Riposte, Dodge, Guard, Heal, Hitstun, GuardBreak, Downed,
+    Release, // appended
 };
 // An enemy's brain state (append only).
 enum class ArenaBrain : std::uint8_t { Approach, Strafe, Attack, Staggered, Open, Down, Dead };
@@ -351,15 +389,17 @@ struct ArenaPlayerOut {
     Vec2 velocity;                    // m/s this frame
     Vec2 facing{1.f, 0.f};            // unit
     ArenaAction action = ArenaAction::Idle;
-    ArenaPart part = ArenaPart::None; // Light, Heavy, Riposte
-    std::uint8_t move = 0;            // Light: the chain index; kArenaHeavyMove; kArenaRiposteMove
+    ArenaPart part = ArenaPart::None; // Light, Heavy, Riposte, Release
+    std::uint8_t move = 0;            // Light: the chain index; kArenaHeavyMove; kArenaRiposteMove; kArenaReleaseMove
     float actionTime = 0.f;           // seconds since the action started
-    bool invulnerable = false;        // dodge i-frames or a riposte
+    bool invulnerable = false;        // dodge i-frames, a riposte or a Release
     bool parrying = false;            // inside a parry window
     std::uint8_t lock = kArenaNobody; // the locked enemy
     Vec2 dodgeDir{1.f, 0.f};          // unit: set once when a dodge starts (the stick, or the backstep's direction,
                                       // before any ring cut) and kept until the next dodge
     bool backstep = false;            // whether the current or last dodge is a backstep
+    int load = 0;                     // the Load gauge, 0..kMaxLoad (beside stamina)
+    bool overloaded = false;          // Load at kMaxLoad: light, heavy and heal are refused until a Release
 };
 
 struct ArenaEnemyOut {
@@ -386,6 +426,10 @@ enum class ArenaEventType : std::uint8_t { // append only
     StaminaEmpty,  // the player spent the last stamina
     Victory,
     Defeat,
+    LoadStored,     // a parry stored `amount` Load from source's attack `move` (appended)
+    Overloaded,     // the player's Load reached kMaxLoad: only a Release lifts it (appended)
+    Released,       // the player began a Release, spending `amount` Load (appended)
+    CounterStagger, // a parry paired with the partner's press: target took `amount` hp and is staggered (appended)
 };
 
 struct ArenaEvent {
@@ -429,6 +473,10 @@ struct ArenaStats {
     int staggers = 0;  // enemy poise breaks
     int guardBreaks = 0;
     int restarts = 0;
+    int loadStored = 0;      // Load stored by parries
+    int releases = 0;
+    int overloads = 0;
+    int counterStaggers = 0; // parries paired with the partner's press
 };
 
 enum class ArenaPhase : std::uint8_t { NotStarted, Fighting, Victory, Defeat };
@@ -451,7 +499,9 @@ public:
     // else). It locks the nearest enemy, closes in and attacks with the light chain when its target
     // isn't winding up, parries or dodges sideways out of an enemy attack about to become active
     // (parry only for parryable moves and a fighter with parryWindow >= 0.12 s), ripostes an open
-    // enemy, and heals below 40% hp when nothing is near or winding up. It must win every fight in
+    // enemy, releases at 60 Load on an enemy on its feet in reach (and at once when overloaded), and
+    // heals below 40% hp when nothing is near or winding up. It never presses the partner's `pair`
+    // (one lead's pilot). It must win every fight in
     // arena.json within 120 s of fight time, and with no input every fight must be lost within 120 s
     // (the tests tick at a fixed 1/60 s and move the bodies with arenaStep).
     FTCORE_API ArenaInput autopilot() const;
@@ -478,6 +528,8 @@ public:
     FTCORE_API float stamina() const;
     FTCORE_API float poise() const;
     FTCORE_API std::uint8_t healCharges() const;
+    FTCORE_API int load() const;          // 0..kMaxLoad
+    FTCORE_API bool overloaded() const;
     FTCORE_API std::uint8_t lock() const; // kArenaNobody when nothing is locked
     FTCORE_API int enemyHp(std::size_t i) const;
     FTCORE_API float enemyPoise(std::size_t i) const;
@@ -488,7 +540,7 @@ private:
     // The rules are in ArenaFightImpl (ArenaFight.cpp), which reads and writes it directly.
     friend struct ArenaFightImpl;
 
-    enum class Press : std::uint8_t { None, Light, Heavy, Dodge, Heal }; // an action waiting in the input buffer
+    enum class Press : std::uint8_t { None, Light, Heavy, Dodge, Heal, Release }; // an action waiting in the input buffer
 
     struct PlayerState {
         Vec2 pos;
@@ -518,6 +570,11 @@ private:
         float lastGuardPress = -1.0e9f;     // fight time of the last guard press (every press counts)
         float parryLeft = 0.f;              // seconds left in the parry window
         std::uint8_t lock = kArenaNobody;
+        Load gauge;                         // the Load, beside stamina
+        int releaseSpent = 0;               // the Load the Release in progress spent
+        float pairPress = -1.0e9f;          // fight time of the partner's last unused press
+        float pairParry = -1.0e9f;          // fight time of the last unpaired parry ...
+        std::uint8_t pairFoe = kArenaNobody; // ... and the enemy it opened
     };
 
     struct EnemyState {
@@ -579,6 +636,7 @@ struct ArenaTable {
     std::vector<ArenaEnemyKind> enemies;
     ArenaDef fallback; // the "default" fight
     std::vector<ArenaFightEntry> entries;
+    float bpm = 0.f;   // the file's "bpm" (0: none), also in every fight's def
 
     // The lead's kit, else the "default" one (no allocation).
     FTCORE_API const ArenaFighter& fighter(std::string_view leadId) const;

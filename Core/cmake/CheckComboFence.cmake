@@ -1,9 +1,9 @@
 # Run as: cmake -DCORE_DIR=<Core> -P CheckComboFence.cmake
 # The skill arrow combos (ComboSequence, ComboGenerator) belong to the Turns battle alone
 # (docs/COMBAT_SYSTEMS.md). Fails if an Arena or Beat source names them. The arrows themselves
-# (Arrow.h) are the Turns battle's too: the Beat sources and the quick-time event, which answer with
-# the action buttons (ActionButton.h), must not name Arrow, kArrows or arrowName. Line comments are
-# ignored.
+# (Arrow.h) are the Turns battle's too: the Arena sources, which answer with their own inputs, and
+# the Beat sources and the quick-time event, which answer with the action buttons (ActionButton.h),
+# must not name Arrow, kArrows or arrowName. Line comments are ignored.
 
 set(files
     include/ftcore/ArenaFight.h src/ArenaFight.cpp
@@ -33,7 +33,7 @@ endforeach()
 
 set(buttonFiles include/ftcore/Qte.h src/Qte.cpp)
 foreach(rel IN LISTS files)
-    if(rel MATCHES "Beat")
+    if(rel MATCHES "Beat|Arena")
         list(APPEND buttonFiles "${rel}")
     endif()
 endforeach()
@@ -50,7 +50,7 @@ foreach(rel IN LISTS buttonFiles)
         math(EXPR number "${number} + 1")
         string(REGEX REPLACE "//.*$" "" code "${line}")
         if(code MATCHES "${arrowPattern}")
-            string(APPEND problems "  ${rel}:${number}: '${CMAKE_MATCH_2}' (answer with ActionButton)\n")
+            string(APPEND problems "  ${rel}:${number}: '${CMAKE_MATCH_2}' (not an arrow input)\n")
         endif()
     endforeach()
 endforeach()
@@ -60,4 +60,4 @@ if(problems)
 endif()
 list(LENGTH files count)
 list(LENGTH buttonFiles buttonCount)
-message(STATUS "No arrow combos in ${count} Arena and Beat sources, no arrows in ${buttonCount} Beat and QTE sources")
+message(STATUS "No arrow combos in ${count} Arena and Beat sources, no arrows in ${buttonCount} Arena, Beat and QTE sources")

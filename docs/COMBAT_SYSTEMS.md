@@ -58,6 +58,7 @@ The lead fights one to six enemies inside a ring.
 - A lock-on keeps the camera and attacks on one enemy.
 - Every enemy attack has a telegraph (its startup), and enemies take turns to attack (attack tokens).
 - Poise breaks into a stagger. A parry leaves an enemy open to a riposte.
+- A parry also stores Load, a second gauge beside stamina, which a Release spends as poise damage.
 
 The full rules are in `ArenaFight.h`.
 
@@ -99,6 +100,8 @@ Fights happen in place on the world map:
 | Dodge | A roll along the stick, or a backstep with the stick idle. Invulnerable in its middle part |
 | Guard (held) | Blocks from the front. A blocked hit costs stamina, and an empty bar breaks the guard. Pressing guard opens a short parry window, unless the previous press was too recent |
 | Heal | Uses a charge and heals after a short delay. Hitstun before then cancels it and keeps the charge |
+| Release | A riposte-shaped strike, invulnerable, open only above 33 Load (`kArenaReleaseOpenLoad`). It spends all the Load at once, and each enemy it hits loses `poiseDamage` plus the spent Load times `releasePoise` in poise. It costs no stamina |
+| Pair | The second lead's input. Pressed within `pairWindow` (0.12 s) of a parry, before or after it, the parried enemy takes a Counter-Stagger: `pairHits` (3) light hits' damage at once, and a stagger. One press per parry |
 | Lock / switch | Locks the best enemy near the view direction, or lets go. The switch moves the lock left or right |
 
 The other rules:
@@ -109,6 +112,9 @@ The other rules:
 - An input pressed while an action can't start is buffered for 0.2 s.
 - Stamina regenerates after a short delay.
 - Poise refills after a delay without poise damage.
+- Load sits beside stamina and never replaces it. Stamina still pays for attacks and the roll and refills on its own. Load fills only from parries (the parried attack's damage times `loadShare`, up to 100) and never refills or drains on its own.
+- At 100 Load the player is Overloaded, told once as the gauge fills. Light (and so the riposte), heavy and heal are refused until a Release. The guard, the parry, the roll, movement and the lock stay open, as the Turns battle never gates the defence.
+- With a `bpm` in the data, every enemy move's startup is a whole number of beats, so telegraphs land on the music's grid. The loader refuses a startup off the beat by more than `kArenaBeatTolerance` (2 ms), naming its path.
 
 ### Enemies
 
@@ -132,6 +138,8 @@ The enemy brain runs Approach, Strafe, Attack, Staggered, Open, Down and Dead:
   - `breaker`: a smash, and a grab that can be neither blocked nor parried.
 - The default fight is one brute. No scene fights ship yet.
 - An attack's damage rises with its telegraph, and a test checks this.
+- The top-level `bpm` (150 ships, a 0.4 s beat) sets the beat every startup lands on. Without it nothing is checked.
+- The fighter's `release` is an attack object like `riposte`. `loadShare`, `releasePoise`, `pairWindow` and `pairHits` tune the Load, the Release and the paired counter.
 
 ### Autopilot and balance
 
@@ -140,9 +148,10 @@ The enemy brain runs Approach, Strafe, Attack, Staggered, Open, Down and Dead:
 - It locks the nearest enemy and closes in.
 - It parries or sidesteps attacks about to land.
 - It ripostes open enemies and attacks with the light chain between enemy windups.
-- It heals when low and safe.
+- It releases at 60 Load on an upright enemy in reach, and at once when Overloaded.
+- It heals when low and safe. It never presses the paired counter, which needs the second lead.
 
-The tests run every fight at a fixed 1/60 s step with `arenaStep`. The autopilot must win each one within 120 s, and a player who presses nothing must lose. `tick`, `autopilot` and `arenaStep` never allocate.
+The tests run every fight at a fixed 1/60 s step with `arenaStep`. The autopilot must win each one within 120 s, and a player who presses nothing must lose. `tick`, `autopilot` and `arenaStep` never allocate, also over a fight that stores Load and releases it.
 
 ## Beat fight
 
