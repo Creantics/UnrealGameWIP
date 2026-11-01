@@ -9,8 +9,12 @@
 //     answer (PARRY for a parryable move, BLOCK for one that can only be blocked, DODGE! in red for an
 //     unblockable one) and a ring closes in on its body; the moment the move goes active the bar, the ring and
 //     a burst flash white. An enemy winding up off the screen shows as an arrow at the edge, in the tell's colour;
+//   - the Read: while a move's cards are dealt, three cards on its tell bar (bottom centre while the enemy is
+//     off the screen), each with its key (1 2 3; the pad's d-pad left, up, right) and the shape it names; the
+//     picked card turns green when right and red when wrong. The Read stacks are pips in the panel;
 //   - the lock-on marker: brackets around the locked enemy;
-//   - popups (damage, BLOCKED, PARRIED, EVADED, STAGGERED, GUARD BROKEN, heals) over the body they happened to,
+//   - popups (damage, BLOCKED, PARRIED, EVADED, STAGGERED, GUARD BROKEN, heals, READ, MISREAD, READ COUNTER)
+//     over the body they happened to,
 //     a red edge when the player is hit and a gold one on a parry;
 //   - banners: RELEASE with the Load it spent (and an orange edge), and OVERLOADED;
 //   - the result (VICTORY or DEFEAT with the counts) and the fight-again prompt, and the key hint.
@@ -55,6 +59,8 @@ private:
 	void DrawEnemies(const AFTArenaGameMode& Mode);
 	void DrawTargetBar(const AFTArenaGameMode& Mode);
 	void DrawTell(const AFTArenaGameMode& Mode, int32 Enemy, const FVector2D& Over, const FVector2D& Chest, bool bOnScreen);
+	// The open Read deal's cards, centred on X with their bottom at Bottom.
+	void DrawReadCards(const AFTArenaGameMode& Mode, float X, float Bottom);
 	void DrawEdgeArrow(const FVector2D& Toward, const FLinearColor& Color);
 	void DrawLock(const AFTArenaGameMode& Mode);
 	void DrawPopups(const AFTArenaGameMode& Mode);

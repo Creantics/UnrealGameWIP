@@ -57,6 +57,22 @@ const FTUiText kOverloadedArena(TEXT("arena.overloaded"));
 const FTUiText kOverloadLockedArena(TEXT("arena.overload_locked"));
 const FTUiText kReleaseArena(TEXT("arena.release"));
 const FTUiText kCounterArena(TEXT("arena.counter"));
+const FTUiText kReadArena(TEXT("arena.read"));
+const FTUiText kMisreadArena(TEXT("arena.misread"));
+const FTUiText kReadCounterArena(TEXT("arena.read_counter"));
+const FTUiText kReadStacksArena(TEXT("arena.read_stacks"));
+// The shapes a Read card names, in ftcore::ArenaTell's order.
+const FTUiText kTellStrikeArena(TEXT("arena.tell.strike"));
+const FTUiText kTellOverheadArena(TEXT("arena.tell.overhead"));
+const FTUiText kTellBackhandArena(TEXT("arena.tell.backhand"));
+const FTUiText kTellChargeArena(TEXT("arena.tell.charge"));
+const FTUiText kTellThrustArena(TEXT("arena.tell.thrust"));
+const FTUiText kTellSlashArena(TEXT("arena.tell.slash"));
+const FTUiText kTellSweepArena(TEXT("arena.tell.sweep"));
+const FTUiText kTellSlamArena(TEXT("arena.tell.slam"));
+const FTUiText* const kArenaTellWords[] = {&kTellStrikeArena, &kTellOverheadArena, &kTellBackhandArena, &kTellChargeArena,
+	&kTellThrustArena, &kTellSlashArena, &kTellSweepArena, &kTellSlamArena};
+static_assert(UE_ARRAY_COUNT(kArenaTellWords) == ftcore::kArenaTellCount, "a word for every ArenaTell");
 const FTUiText kNowArena(TEXT("battle.now"));
 const FTUiText kStaggeredArena(TEXT("battle.staggered"));
 const FTUiText kDownArena(TEXT("battle.down"));
@@ -263,6 +279,23 @@ void AFTArenaHUD::DrawPlayerPanel(const AFTArenaGameMode& Mode)
 			DrawFrame(PX, PY, 20.f * S, 20.f * S, kArenaDim, 2.f * S);
 		}
 	}
+
+	// the Read stacks: a pip each, lit while held
+	const int32 Stacks = Fight.readStacks();
+	DrawText(kReadStacksArena, kArenaDim, X + 250.f * S, Y + 126.f * S, Small, 1.1f * S);
+	for (int32 I = 0; I < ftcore::kMaxReadStacks; ++I)
+	{
+		const float PX = X + 320.f * S + static_cast<float>(I) * 22.f * S;
+		const float PY = Y + 130.f * S;
+		if (I < Stacks)
+		{
+			DrawRect(kArenaCyan, PX, PY, 16.f * S, 16.f * S);
+		}
+		else
+		{
+			DrawFrame(PX, PY, 16.f * S, 16.f * S, kArenaDim, 2.f * S);
+		}
+	}
 }
 
 void AFTArenaHUD::DrawEnemies(const AFTArenaGameMode& Mode)
@@ -324,8 +357,15 @@ void AFTArenaHUD::DrawTell(const AFTArenaGameMode& Mode, int32 Enemy, const FVec
 	}
 	const float Fill = bStartup ? FMath::Clamp(E.stateTime / FMath::Max(Move->attack.startup, 0.01f), 0.f, 1.f) : 1.f;
 
+	const ftcore::ArenaFight& Fight = Mode.GetFight();
+	const bool bCards = bStartup && Fight.readFoe() == static_cast<uint8>(Enemy) && Fight.readCards().dealt();
 	if (!bOnScreen)
 	{
+		if (bCards)
+		{
+			// The cards still want a pick: bottom centre, over the key hint.
+			DrawReadCards(Mode, Canvas->ClipX * 0.5f, Canvas->ClipY - 70.f * S);
+		}
 		// Off the screen: an arrow at the edge, toward the enemy, in the tell's colour (white at impact).
 		const AFTArenaFighter* Figure = Mode.GetEnemyFigure(Enemy);
 		const APlayerController* PC = GetOwningPlayerController();
@@ -348,7 +388,14 @@ void AFTArenaHUD::DrawTell(const AFTArenaGameMode& Mode, int32 Enemy, const FVec
 		DrawBar(BX, BY, W, H, Fill, Color, kArenaBack);
 		DrawRect(kArenaWhite, BX + W - 3.f * S, BY - 4.f * S, 3.f * S, H + 8.f * S);
 		DrawFrame(BX, BY, W, H, ArenaAlpha(Color, 0.9f), 2.f * S);
-		DrawStrCentered(*Word, Color, Over.X, BY - 44.f * S, GEngine->GetLargeFont(), 1.1f);
+		// The Read cards sit on the bar, the answer above them.
+		float WordY = BY - 44.f * S;
+		if (bCards)
+		{
+			DrawReadCards(Mode, Over.X, BY - 8.f * S);
+			WordY -= 62.f * S;
+		}
+		DrawStrCentered(*Word, Color, Over.X, WordY, GEngine->GetLargeFont(), 1.1f);
 		// A ring closes in on the body, meeting it at the hit.
 		const float Inner = 38.f * S;
 		DrawRing(Chest.X, Chest.Y, Inner, ArenaAlpha(Color, 0.55f), 2.f * S);
@@ -362,6 +409,44 @@ void AFTArenaHUD::DrawTell(const AFTArenaGameMode& Mode, int32 Enemy, const FVec
 		const float Spread = 1.f - Impact;
 		DrawRing(Chest.X, Chest.Y, (38.f + 90.f * Spread) * S, ArenaAlpha(kArenaWhite, Impact), (8.f * Impact + 2.f) * S);
 		DrawRing(Chest.X, Chest.Y, (30.f + 50.f * Spread) * S, ArenaAlpha(Color, Impact), 4.f * S);
+	}
+}
+
+void AFTArenaHUD::DrawReadCards(const AFTArenaGameMode& Mode, float X, float Bottom)
+{
+	static const FString KeyLabels[ftcore::kReadCards] = {TEXT("1"), TEXT("2"), TEXT("3")};
+	const float S = UiScale;
+	const ftcore::ArenaFight& Fight = Mode.GetFight();
+	const ftcore::ReadCards& Cards = Fight.readCards();
+	const int32 Count = FMath::Min(static_cast<int32>(Cards.size()), static_cast<int32>(ftcore::kReadCards));
+	const bool bPicked = Cards.picked();
+	const float CW = 104.f * S;
+	const float CH = 50.f * S;
+	const float Gap = 8.f * S;
+	const float Left = X - (static_cast<float>(Count) * CW + static_cast<float>(Count - 1) * Gap) * 0.5f;
+	const float Top = Bottom - CH;
+	for (int32 I = 0; I < Count; ++I)
+	{
+		const ftcore::ReadCard& Card = Cards[static_cast<size_t>(I)];
+		uint8 Tell = 0;
+		if (Card.actor < Fight.enemyCount())
+		{
+			const ftcore::ArenaEnemyKind& Kind = Fight.def().enemies[Card.actor];
+			if (Card.action < Kind.moveCount)
+			{
+				Tell = static_cast<uint8>(Kind.moves[Card.action].tell);
+			}
+		}
+		const bool bThis = bPicked && Cards.pickedIndex() == static_cast<size_t>(I);
+		const bool bRight = bThis && Cards.correct() == static_cast<size_t>(I);
+		const FLinearColor Edge = bThis ? (bRight ? kArenaGreen : kArenaRed) : (bPicked ? kArenaDim : kArenaCyan);
+		const FLinearColor Ink = bPicked && !bThis ? kArenaDim : kArenaWhite;
+		const float CX = Left + static_cast<float>(I) * (CW + Gap);
+		DrawRect(bThis ? ArenaAlpha(Edge, 0.35f) : kArenaPanel, CX, Top, CW, CH);
+		DrawFrame(CX, Top, CW, CH, Edge, (bThis ? 3.f : 2.f) * S);
+		DrawText(KeyLabels[I], Edge, CX + 6.f * S, Top + 3.f * S, GEngine->GetSmallFont(), 1.1f * S);
+		DrawStrCentered(*kArenaTellWords[Tell < ftcore::kArenaTellCount ? Tell : 0], Ink, CX + CW * 0.5f, Top + 18.f * S,
+			GEngine->GetMediumFont(), 0.95f);
 	}
 }
 
@@ -570,6 +655,34 @@ void AFTArenaHUD::DrawPopups(const AFTArenaGameMode& Mode)
 			}
 			DrawStrCentered(kCounterArena, kArenaGold * Fade, At.X, Y - 90.f * S, GEngine->GetLargeFont(), 1.5f);
 			DrawStrCentered(Cache.Text, kArenaGold * Fade, At.X + Side, Y + 40.f * S, GEngine->GetLargeFont(), 2.1f);
+			break;
+		case ftcore::ArenaEventType::Read:
+			// READ beside the attacker, with the stacks it makes.
+			if (Cache.Second != Serial || Cache.Value != P.Amount)
+			{
+				Cache.Value = P.Amount;
+				Cache.Second = Serial;
+				Cache.Text.Reset();
+				Cache.Text += kReadArena.Get();
+				Cache.Text += TEXT(" x");
+				Cache.Text.AppendInt(P.Amount);
+			}
+			DrawStrCentered(Cache.Text, kArenaCyan * Fade, At.X - 190.f * S, Y + 10.f * S, GEngine->GetMediumFont(), 1.4f);
+			break;
+		case ftcore::ArenaEventType::Misread:
+			DrawStrCentered(kMisreadArena, kArenaRed * Fade, At.X - 190.f * S, Y + 10.f * S, GEngine->GetMediumFont(), 1.4f);
+			break;
+		case ftcore::ArenaEventType::ReadCounter:
+			// The Read counter: READ COUNTER over the enemy, its damage beside it.
+			if (Cache.Second != Serial || Cache.Value != P.Amount)
+			{
+				Cache.Value = P.Amount;
+				Cache.Second = Serial;
+				Cache.Text.Reset();
+				Cache.Text.AppendInt(P.Amount);
+			}
+			DrawStrCentered(kReadCounterArena, kArenaCyan * Fade, At.X, Y - 90.f * S, GEngine->GetLargeFont(), 1.3f);
+			DrawStrCentered(Cache.Text, kArenaCyan * Fade, At.X + Side, Y + 40.f * S, GEngine->GetLargeFont(), 1.9f);
 			break;
 		case ftcore::ArenaEventType::StaminaEmpty:
 			DrawStrCentered(kNoStaminaArena, kArenaStamina * Fade, At.X, Y - 60.f * S, GEngine->GetSmallFont(), 1.3f);

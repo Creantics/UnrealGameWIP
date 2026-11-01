@@ -4,9 +4,11 @@
 // ftcore::ArenaFight (Core/include/ftcore/ArenaFight.h, docs/COMBAT_SYSTEMS.md "Arena melee") with this mode
 // as its host and AFTArenaHUD as its UI. No story on play; the map is built by FTBuildArenaWorld.
 //
-// The fight is Data/Battle/arena.json's default (the built-in ftcore::defaultArenaDef() when the file is
-// missing or refused); -ArenaLineup=<id>,<id>,... puts enemies of those kinds in it instead (with
-// -ArenaAttackers=<n> of them attacking at once, 1 by default), and -ArenaSeed=<n> picks the seed (1).
+// The fight is Data/Battle/arena.json's default fighter and ring against the three-kind wave (brute,
+// skirmisher, breaker; one attacking at a time); -ArenaLineup=<id>,<id>,... puts enemies of those kinds in it
+// instead (-ArenaLineup=brute: one brute), -ArenaAttackers=<n> sets how many attack at once (1 by default),
+// and -ArenaSeed=<n> picks the seed (1). The built-in ftcore::defaultArenaDef() stands in when the file is
+// missing or refused.
 //
 // Core judges, the host moves. The mode steps the fight at a fixed 1/60 s (an accumulator, at most 8 steps
 // a frame), the step the Core tests and the balance check use, and moves the bodies with ftcore::arenaStep:
@@ -22,9 +24,12 @@
 //   heavy attack   K / pad A / pad RT
 //   guard (hold)   I / right mouse / pad Y / pad LB  (a fresh press opens the parry window)
 //   dodge          L / Space / pad B
-//   heal           H / pad d-pad up
+//   heal           H / pad d-pad up (not while Read cards are up)
 //   lock on / off  Tab / middle mouse / pad right stick press
-//   switch lock    Q / E / pad d-pad left / right / a flick of the right stick while locked
+//   switch lock    Q / E / pad d-pad left / right (not while Read cards are up) / a flick of the right stick
+//                  while locked
+//   read           1 / 2 / 3 / pad d-pad left / up / right while Read cards are up (the second lead's pick
+//                  of the coming move, before it goes active)
 //   release        R / pad LT                         (open above a third of the Load; spends it all)
 //   partner        F / pad d-pad down                 (the second lead's press: within 0.12 s of a parry, either
 //                                                      side, it pairs with it into a counter that staggers)
@@ -168,6 +173,8 @@ private:
 	// Autoplay's partner: a parry came, so press the pair on the next step.
 	bool bPartnerDue = false;
 	int8 PressSwitch = 0;
+	// The partner's Read pick: a card index, -1 for none.
+	int8 PressRead = -1;
 	bool bGuardHeld = false;
 	ftcore::Vec2 Stick;
 	bool bStickFlicked = false;

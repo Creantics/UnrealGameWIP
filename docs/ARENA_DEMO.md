@@ -1,7 +1,7 @@
 # Arena demo
 
-A playable version of the real-time arena fight: one lead against one to six enemies (by default one
-brute; placeholder shapes) in a round ring, with a lock-on camera and a canvas HUD. The rules all live in
+A playable version of the real-time arena fight: one lead against one to six enemies (by default a wave
+of three, a brute, a skirmisher and a breaker, one attacking at a time; placeholder shapes) in a round ring, with a lock-on camera and a canvas HUD. The rules all live in
 Core (`ftcore::ArenaFight`, `Core/include/ftcore/ArenaFight.h`); the enemies, their moves and the ring
 come from `Data/Battle/arena.json`. See [COMBAT_SYSTEMS.md](COMBAT_SYSTEMS.md), "Arena melee", for the
 rules themselves.
@@ -35,8 +35,8 @@ UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -NullRH
 ```
 
 The same with `-ArenaIdle` instead of `-ArenaAutoPlay` plays a player who presses nothing; it ends in
-defeat. A single brute falls before the Load fills; to see a Release, fight a wave:
-`-ArenaLineup=brute,skirmisher,breaker`. From Git Bash, write the map as `Demo_Arena` (Git Bash rewrites a leading `/Game` into a path).
+defeat. The default wave is long enough for the Load to fill and the autopilot to release; to fight one
+enemy instead, pass its id: `-ArenaLineup=brute` (a single brute falls before the Load fills). From Git Bash, write the map as `Demo_Arena` (Git Bash rewrites a leading `/Game` into a path).
 
 ## Flow
 
@@ -54,7 +54,14 @@ defeat. A single brute falls before the Load fills; to see a Release, fight a wa
    (guard, parry, roll, moving and the lock still work).
 6. The partner key is the second lead's press. Pressed within 0.12 s of a parry, before or after it, the two
    pair into a counter: the parried enemy takes three light hits' worth at once and staggers.
-7. The fight ends in VICTORY when every enemy is down, DEFEAT when the lead is. After a moment Enter,
+7. The Read is the second lead's other verb. As each enemy move starts up, three cards are dealt above its
+   tell bar, each naming a shape of move (overhead, thrust, sweep, ...): the coming move and two decoys from
+   the living enemies' other moves. Nothing pauses. Pick one (1 / 2 / 3) before the move goes active; the
+   cards go when it does. Right: a Read stack (up to five) and, when the move's active part ends or a parry
+   or stagger cuts it short, the partner strikes the attacker (half a light hit, a fifth more per stack past
+   the first, and a little poise). Wrong: the stacks go back to none and the attacker regains some poise. While
+   one deal is open, a move that starts elsewhere deals nothing.
+8. The fight ends in VICTORY when every enemy is down, DEFEAT when the lead is. After a moment Enter,
    Space or pad A starts it again (the autopilot starts again by itself after 4 s unless told to quit).
 
 ## Controls
@@ -67,11 +74,12 @@ defeat. A single brute falls before the Load fills; to see a Release, fight a wa
 | Heavy attack | K | A or RT |
 | Guard (hold); parry (tap just before a hit) | I or right mouse | Y or LB |
 | Roll (backstep with no direction) | L or Space | B |
-| Heal (uses a charge) | H | D-pad up |
+| Heal (uses a charge) | H | D-pad up (not while Read cards are up) |
 | Release (above a third of the Load) | R | LT |
 | Partner (the second lead's press, paired with a parry) | F | D-pad down |
+| Read (the second lead's pick, while the cards are up) | 1 / 2 / 3 | D-pad left / up / right |
 | Lock on / off | Tab or middle mouse | R3 |
-| Switch lock target | Q / E | D-pad left / right, or flick the right stick |
+| Switch lock target | Q / E | D-pad left / right (not while Read cards are up), or flick the right stick |
 | Fight again (after the outcome) | Enter or Space | A |
 | Pause menu | Esc | Start |
 
@@ -83,7 +91,8 @@ each frame and handed to the fight on its next step, so no press is lost between
 
 - **Player panel**, bottom left: hp (red under a third, with the number), stamina, the Load gauge
   (orange, with its number and a white mark at a third where the Release opens; RELEASE READY above it;
-  red, pulsing and OVERLOADED with the locked verbs when full), poise and the heal charges left.
+  red, pulsing and OVERLOADED with the locked verbs when full), poise, the heal charges left and the Read
+  stacks (five pips, cyan while held).
 - **Target bar**, top centre: the locked enemy's hp and poise, or the nearest enemy's when nothing is
   locked.
 - **Over each enemy:** a small hp bar and poise bar; STAGGERED while it reels, RIPOSTE! in gold while
@@ -94,10 +103,15 @@ each frame and handed to the fight on its next step, so no press is lost between
   floor shows the move's reach. The moment the move goes active the bar turns white, NOW shows and a
   burst flashes. An enemy winding up off the screen shows as an arrow at the screen's edge in the
   tell's colour.
+- **Read cards:** while a deal is open, three cards sit on the tell bar (the answer moves above them), each
+  with its key number and the shape it names. The picked card turns green when right and red when wrong,
+  the others dim. If the enemy is off the screen the cards show at the bottom centre instead.
 - **Lock marker:** brackets and a dot on the locked enemy.
 - **Popups:** damage beside the body hit (red on the lead, gold for a riposte), heals in green, and
   BLOCKED, GUARD BROKEN, PARRIED, EVADED, STAGGERED, DOWN and NO STAMINA; +N LOAD beside the lead when a
-  parry stores Load, and COUNTER with its damage over an enemy the paired counter hits. The screen's edge flashes red
+  parry stores Load, and COUNTER with its damage over an enemy the paired counter hits; READ xN (the
+  stacks) or MISREAD beside the attacker on a pick, and READ COUNTER with its damage when the Read counter
+  lands. The screen's edge flashes red
   when the lead is hit and gold on a parry.
 - **Banners:** RELEASE with the Load it spent and an orange edge; OVERLOADED with the locked verbs.
 - **Result:** VICTORY or DEFEAT, the fight's time and counts, and the fight-again prompt.
@@ -107,20 +121,20 @@ each frame and handed to the fight on its next step, so no press is lost between
 
 | Flag | Effect |
 |---|---|
-| `-ArenaAutoPlay` | The Core autopilot (`ArenaFight::autopilot`) plays the lead, and the host plays the partner: it presses the pair on the step after each parry. |
+| `-ArenaAutoPlay` | The Core autopilot (`ArenaFight::autopilot`) plays the lead and picks the Read (the right card 0.2 s into a startup), releasing at 50 Load; the host presses the partner's pair on the step after each parry. |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |
 | `-ArenaQuitOnFinish` | Quit when the fight ends, after the result line (exit code 0). |
 | `-ArenaSeed=N` | The fight's seed (default 1). |
-| `-ArenaLineup=a,b,...` | The enemies by id from `arena.json` (`brute`, `skirmisher`, `breaker`), up to six. |
+| `-ArenaLineup=a,b,...` | The enemies by id from `arena.json` (`brute`, `skirmisher`, `breaker`), up to six, instead of the default wave (`brute,skirmisher,breaker`); `-ArenaLineup=brute` fights one brute. |
 | `-ArenaAttackers=N` | How many enemies may attack at once (1 to the line-up's size). |
 | `-ArenaHoldLoad` | The autopilot keeps its Load until it is overloaded (to see the overload; not a way to play). |
-| `-ArenaShot=<path prefix>` | Autoplay and save the views (`_1_ring`, `_2_tell`, `_3_impact`, `_4_load` with the gauge past a third, or the overload under `-ArenaHoldLoad`, `_5_release`, `_6_result` .png), then quit; a view the fight never reaches is skipped. Needs a renderer (`-RenderOffScreen`, not `-NullRHI`). |
+| `-ArenaShot=<path prefix>` | Autoplay and save the views (`_1_ring`, `_2_tell` with the Read cards picked, `_3_impact`, `_4_load` with the gauge past a third, or the overload under `-ArenaHoldLoad`, `_5_release`, `_6_result` .png), then quit; a view the fight never reaches is skipped. Needs a renderer (`-RenderOffScreen`, not `-NullRHI`). |
 | `-ArenaShotDelay=S` | Seconds before the first screenshot (the fight waits for it). |
 
 At the end of every fight the log gets one line with counts only:
 
 ```
-ARENA RESULT: Victory in 26.6 s (autoplay, seed 1, 3 enemies, hp 104/140, 3 heals left; 28 hits, 2 taken, ...; 92 load stored, 1 releases, 0 overloads, 5 counter staggers; dealt 530, took 36).
+ARENA RESULT: Victory in 22.9 s (autoplay, seed 1, 3 enemies, hp 96/140, 3 heals left; 25 hits, 3 taken, ...; 68 load stored, 1 releases, 0 overloads, 3 counter staggers; 10 reads dealt, 10 picked, 10 right, 10 read counters for 93; dealt 530, took 44).
 ```
 
 A fight that runs past 180 s of fight time (or 360 s of wall time) logs `ARENA RESULT: Timeout` as a

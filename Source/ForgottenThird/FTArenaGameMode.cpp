@@ -111,6 +111,9 @@ bool ArenaAnyJustPressed(const APlayerController& PC, const FKey& A, const FKey&
 		|| (D.IsValid() && PC.WasInputKeyJustPressed(D));
 }
 
+// The demo's lineup without -ArenaLineup: arena.json's enemy kind ids.
+const TCHAR* const kArenaDefaultWave = TEXT("brute,skirmisher,breaker");
+
 const TCHAR* ArenaPilotName(bool bAutoPlay, bool bIdle)
 {
 	return bIdle ? TEXT("idle") : (bAutoPlay ? TEXT("autoplay") : TEXT("player"));
@@ -227,8 +230,13 @@ void AFTArenaGameMode::BuildDef(bool bTable)
 		return;
 	}
 
+	// The lineup: -ArenaLineup's enemy kinds, else the three-kind wave (one of each shipped kind, one attacking
+	// at a time), so Load, the Release and the Read all come up without a flag.
 	FString Lineup;
-	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaLineup="), Lineup, false) && !Lineup.IsEmpty())
+	if (!FParse::Value(FCommandLine::Get(), TEXT("ArenaLineup="), Lineup, false) || Lineup.TrimStartAndEnd().IsEmpty())
+	{
+		Lineup = kArenaDefaultWave;
+	}
 	{
 		TArray<FString> Ids;
 		Lineup.ParseIntoArray(Ids, TEXT(","), true);
@@ -375,6 +383,7 @@ void AFTArenaGameMode::PutBodiesAtStart()
 	OverloadTime = -1e9;
 	bPressLight = bPressHeavy = bPressDodge = bPressHeal = bPressLock = bPressRelease = bPressPair = bPartnerDue = false;
 	PressSwitch = 0;
+	PressRead = -1;
 	CameraYaw = ArenaYaw(Fight.playerStartFacing());
 	CameraPitch = -16.f;
 }
@@ -456,17 +465,32 @@ void AFTArenaGameMode::PollInput(float DeltaSeconds)
 	bPressLight |= ArenaAnyJustPressed(*PC, Key(AttackB, 0), Key(AttackB, 1), EKeys::LeftMouseButton, EKeys::Gamepad_RightShoulder);
 	bPressHeavy |= ArenaAnyJustPressed(*PC, Key(HeavyB, 0), Key(HeavyB, 1), EKeys::Gamepad_RightTrigger);
 	bPressDodge |= ArenaAnyJustPressed(*PC, Key(DodgeB, 0), Key(DodgeB, 1), EKeys::SpaceBar);
-	bPressHeal |= ArenaAnyJustPressed(*PC, EKeys::H, EKeys::Gamepad_DPad_Up);
+	// The partner's Read: 1 / 2 / 3, or on a pad the d-pad's left, up and right while the cards are open (they
+	// switch the target and heal at any other time; the d-pad's down stays the partner's pair).
+	const bool bCardsOpen = Fight.readOpen();
+	if (PC->WasInputKeyJustPressed(EKeys::One) || (bCardsOpen && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Left)))
+	{
+		PressRead = 0;
+	}
+	else if (PC->WasInputKeyJustPressed(EKeys::Two) || (bCardsOpen && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Up)))
+	{
+		PressRead = 1;
+	}
+	else if (PC->WasInputKeyJustPressed(EKeys::Three) || (bCardsOpen && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Right)))
+	{
+		PressRead = 2;
+	}
+	bPressHeal |= PC->WasInputKeyJustPressed(EKeys::H) || (!bCardsOpen && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Up));
 	bPressLock |= ArenaAnyJustPressed(*PC, EKeys::Tab, EKeys::MiddleMouseButton, EKeys::Gamepad_RightThumbstick);
 	bPressRelease |= ArenaAnyJustPressed(*PC, EKeys::R, EKeys::Gamepad_LeftTrigger);
 	bPressPair |= ArenaAnyJustPressed(*PC, EKeys::F, EKeys::Gamepad_DPad_Down);
 	bGuardHeld = PC->IsInputKeyDown(Key(GuardB, 0)) || PC->IsInputKeyDown(Key(GuardB, 1)) || PC->IsInputKeyDown(EKeys::RightMouseButton)
 		|| PC->IsInputKeyDown(EKeys::Gamepad_LeftShoulder);
-	if (ArenaAnyJustPressed(*PC, EKeys::Q, EKeys::Gamepad_DPad_Left))
+	if (PC->WasInputKeyJustPressed(EKeys::Q) || (!bCardsOpen && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Left)))
 	{
 		PressSwitch = -1;
 	}
-	if (ArenaAnyJustPressed(*PC, EKeys::E, EKeys::Gamepad_DPad_Right))
+	if (PC->WasInputKeyJustPressed(EKeys::E) || (!bCardsOpen && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Right)))
 	{
 		PressSwitch = 1;
 	}
@@ -534,9 +558,11 @@ ftcore::ArenaInput AFTArenaGameMode::TakeInput()
 	In.lockSwitch = PressSwitch;
 	In.release = bPressRelease;
 	In.pair = bPressPair;
+	In.read = PressRead;
 	// Each press goes to one step.
 	bPressLight = bPressHeavy = bPressDodge = bPressHeal = bPressLock = bPressRelease = bPressPair = false;
 	PressSwitch = 0;
+	PressRead = -1;
 	return In;
 }
 
@@ -598,7 +624,14 @@ void AFTArenaGameMode::HandleEvents(const ftcore::ArenaEvents& Events)
 		case ftcore::ArenaEventType::Overloaded:
 			OverloadTime = Now;
 			continue; // a banner, not a popup
+		case ftcore::ArenaEventType::ReadCounter:
+			if (E.target < MaxEnemies)
+			{
+				EnemyHitTime[E.target] = Now;
+			}
+			break;
 		case ftcore::ArenaEventType::AttackStarted:
+		case ftcore::ArenaEventType::CardsDealt: // the cards themselves are the display
 		case ftcore::ArenaEventType::LockChanged:
 		case ftcore::ArenaEventType::Victory:
 		case ftcore::ArenaEventType::Defeat:
@@ -849,11 +882,11 @@ void AFTArenaGameMode::Finish()
 	const bool bWon = Fight.phase() == ftcore::ArenaPhase::Victory;
 	const ftcore::ArenaStats& S = Fight.stats();
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("ARENA RESULT: %s in %.1f s (%s, seed %u, %d enemies, hp %d/%d, %d heals left; %d hits, %d taken, %d blocks, %d parries, %d ripostes, %d evades, %d staggers, %d guard breaks, %d heals; %d load stored, %d releases, %d overloads, %d counter staggers; dealt %d, took %d)."),
+		TEXT("ARENA RESULT: %s in %.1f s (%s, seed %u, %d enemies, hp %d/%d, %d heals left; %d hits, %d taken, %d blocks, %d parries, %d ripostes, %d evades, %d staggers, %d guard breaks, %d heals; %d load stored, %d releases, %d overloads, %d counter staggers; %d reads dealt, %d picked, %d right, %d read counters for %d; dealt %d, took %d)."),
 		bWon ? TEXT("Victory") : TEXT("Defeat"), Fight.time(), ArenaPilotName(bAutoPlay, bIdle), Seed,
 		static_cast<int32>(Fight.enemyCount()), Fight.hp(), Fight.def().fighter.hp, static_cast<int32>(Fight.healCharges()),
 		S.hits, S.hitsTaken, S.blocks, S.parries, S.ripostes, S.evades, S.staggers, S.guardBreaks, S.heals, S.loadStored, S.releases, S.overloads, S.counterStaggers,
-		S.damageDealt, S.damageTaken);
+		S.readsDealt, S.reads, S.correctReads, S.readCounters, S.readDamage, S.damageDealt, S.damageTaken);
 	if (bQuitOnFinish && ShotPrefix.IsEmpty())
 	{
 		FPlatformMisc::RequestExitWithStatus(false, static_cast<uint8>(bWon ? 0 : 1), TEXT("Arena"));
@@ -891,13 +924,13 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 		TakeShot(TEXT("1_ring"));
 		return true;
 	case 1:
-		// An enemy winding up, its tell most of the way full, with the lock on it.
+		// An enemy winding up, its tell most of the way full, with the lock on it and its Read cards picked.
 		for (int32 I = 0; I < static_cast<int32>(Fight.enemyCount()); ++I)
 		{
 			const ftcore::ArenaEnemyOut& E = Fight.output().enemies[static_cast<size_t>(I)];
 			const ftcore::ArenaEnemyMove* Move = GetEnemyMove(I);
 			if (Move && E.part == ftcore::ArenaPart::Startup && Fight.lock() != ftcore::kArenaNobody
-				&& E.stateTime >= Move->attack.startup * 0.65f)
+				&& E.stateTime >= Move->attack.startup * 0.65f && Fight.readFoe() == static_cast<uint8>(I) && Fight.readCards().picked())
 			{
 				TakeShot(TEXT("2_tell"));
 				return true;
