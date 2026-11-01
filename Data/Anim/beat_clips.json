@@ -19,7 +19,7 @@
    "id": "lead_cross",
    "asset": "/Game/Combat/BeatAnims/Lead/lead_cross",
    "length_s": 1.5,
-   "impact_s": 1.0,
+   "impact_s": 0.733,
    "loop": false
   },
   {
@@ -117,14 +117,14 @@
    "id": "boss_hook",
    "asset": "/Game/Combat/BeatAnims/Boss/boss_hook",
    "length_s": 2.0,
-   "impact_s": 0.933,
+   "impact_s": 0.8,
    "loop": false
   },
   {
    "id": "boss_smash",
    "asset": "/Game/Combat/BeatAnims/Boss/boss_smash",
    "length_s": 2.5,
-   "impact_s": 0.633,
+   "impact_s": 1.7,
    "loop": false
   },
   {

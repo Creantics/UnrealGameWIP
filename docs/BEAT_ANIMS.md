@@ -40,7 +40,10 @@ A retargeted clip plays 1/30 s later than its source clip's own time line (the f
 `impact_s` is the contact time found in the source clip plus 1/30 s. The contact is the pose of full extension of the
 striking hand or foot just after its speed peak; for a block it is the forearm's rise, for a hit reaction the head's
 snap, for a dodge the furthest the body travels sideways, for a jump the apex. In the engine the peak hand and foot
-speeds of the jab, cross and kick land on the same frames.
+speeds of the jab and kick land on the source's frames. Three clips were set from their in-engine bone tracks instead,
+where the fastest-end rule picks the wrong stroke: the cross pumps twice (the first, which is also the speed peak, is
+used), the hook's blow is where the fist crosses the body's centre line, and the smash's is where the hands reach the
+bottom of the downward stroke.
 
 ## Checking a retarget
 
