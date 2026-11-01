@@ -8,7 +8,7 @@ The game has three combat systems, and every world has all three. Each fight pla
 | Arena melee | `arena` | Real time: free movement inside a ring, light and heavy attacks, a dodge roll, guard and parry, stamina, lock-on | `ArenaFight.h` |
 | Beat fight | `beat` | Real time on the music's beat grid: enemies take turns, one bar each, and the lead answers each prompt on its eighth note | `BeatFight.h` |
 
-The rhythm battle's enemy turns play on the song's beat: with music on, each hit is moved later onto a beat, no tell is shorter than 0.4 s, and a count runs down to the first hit (`CountIn`; see [BATTLE_DEMO.md](BATTLE_DEMO.md), "Defence"). This page covers the routing and the two new systems. The arena is Core only so far (rules, data, autopilot and tests); its Unreal screen comes after the animation merge (see "Unreal work still needed"). The beat fight has its screen too: a generated map and a game mode, described in [BEAT_SCREEN.md](BEAT_SCREEN.md).
+The rhythm battle's enemy turns play on the song's beat: with music on, each hit is moved later onto a beat, no tell is shorter than 0.4 s, and a count runs down to the first hit (`CountIn`; see [BATTLE_DEMO.md](BATTLE_DEMO.md), "Defence"). This page covers the routing and the two new systems. The arena has a demo screen too: a generated ring map, a game mode with a lock-on camera and a canvas HUD, described in [ARENA_DEMO.md](ARENA_DEMO.md); hosting it on the explore character comes after the animation merge (see "Unreal work still needed"). The beat fight has its screen too: a generated map and a game mode, described in [BEAT_SCREEN.md](BEAT_SCREEN.md).
 
 ## Arrow combos: Turns only
 
@@ -202,11 +202,9 @@ These are numbered as in [COMBAT_REFERENCE_STUDY.md](COMBAT_REFERENCE_STUDY.md):
 
 These wait until the animation session's merge is pushed.
 
-- **Arena:**
-  - The arena host on the explore character (the ring, the follower parking spots, enemy pawns).
+- **Arena:** the demo screen exists ([ARENA_DEMO.md](ARENA_DEMO.md): ring map, lock-on camera, HUD with hp, stamina, poise, heal charges, the tell, the lock marker and the enemy hp). Still to do:
+  - The arena host on the explore character (the ring, the follower parking spots), reached through the routing.
   - Attack, hit, guard and stagger animations, and a dodge roll that reuses the movement work.
-  - A lock-on camera.
-  - The HUD: hp, stamina, heal charges, the lock marker and the enemy hp.
 - **Logging:** the arena screen logs one line per fight with ids and counts only, like the other screens (the beat screen does already: see [BEAT_SCREEN.md](BEAT_SCREEN.md)). The routing is done (see "Routing").
 
 ## Follow-ups
