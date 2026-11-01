@@ -19,8 +19,11 @@
 //   { "version": 1, "enemies": [
 //       { "id": "brute", "name": "Brute", "stats": { "maxHp": 260, "attack": 18, "defense": 6, "speed": 8, "technique": 8 },
 //         "skills": [ { "id": "slam", "name": "Slam", "power": 1.3, "notes": 3, "difficulty": 1.0 } ] } ] }
-//   Skill keys: id, name, apCost, apGain (default 0), targeting ("single" default, or "all"), power,
-//   notes, difficulty, hits. Stats keys default to the Stats defaults. `name` defaults to the id.
+//   Skill keys: id, name, apCost, apGain (default 0), targeting ("single" default, "all", "back":
+//   an enemy move at the last living party member, or "front": at the first, see Targeting), power, notes, difficulty, hits,
+//   torn and tellId (Battle.h, ReadCards.h). Stats keys default to the Stats defaults. `name`
+//   defaults to the id. `child` (optional, default false) marks a roster entry that is a child
+//   (Combatant::child): fighting on the party's side, no one Intercepts a hit aimed at it.
 //   `reward` (optional, each part 0..100000, default 0) is what beating the enemy pays:
 //     "reward": { "xp": 20, "gold": 12, "items": [ { "id": "bandage_roll", "count": 1 } ] }
 //   `items` (optional) are the item drops: at most kMaxEnemyDrops entries, each an `id` (see
@@ -54,6 +57,9 @@
 //   every enemy in it (see
 //   makeEnemies). An unknown enemy id, a duplicate (scene, beat, step), an empty line-up or one of
 //   more than kMaxLineupEnemies is an error; unknown keys are warnings.
+//   `demos` (optional) are line-ups no story step plays, for the demo maps, each with an `id` (lower-case
+//   letters, digits and _, unique), `enemies` and `tier`:
+//     "demos": [ { "id": "turns", "enemies": ["brute", "shade"] } ]
 
 #include "ftcore/Api.h"
 #include "ftcore/CombatKind.h"
@@ -75,6 +81,7 @@ struct EnemyDef {
     std::vector<Skill> skills;
     Reward reward; // what beating it pays (see Progression.h)
     EnemyPhases phases;
+    bool child = false; // Combatant::child
 };
 
 struct EnemyRoster {
@@ -106,9 +113,19 @@ struct EncounterEntry {
     CombatKind combat = CombatKind::Rhythm; // the system it plays; Turns unless tagged
 };
 
+// A line-up no story step plays (a demo map's fight), by id.
+struct DemoLineup {
+    std::string id;
+    EncounterLineup lineup;
+};
+
 struct EncounterTable {
     EncounterLineup fallback; // the "default" line-up
     std::vector<EncounterEntry> entries;
+    std::vector<DemoLineup> demos;
+
+    // The demo line-up with that id, or nullptr. No allocation.
+    FTCORE_API const EncounterLineup* findDemo(std::string_view id) const;
 
     // The entry for (scene, beat, step), or nullptr. No allocation.
     FTCORE_API const EncounterEntry* findEntry(std::string_view scene, std::uint32_t beat, std::uint32_t step) const;

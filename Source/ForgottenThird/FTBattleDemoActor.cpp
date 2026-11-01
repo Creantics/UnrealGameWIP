@@ -4,6 +4,8 @@
 #include "Camera/CameraComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
@@ -98,6 +100,9 @@ FFTCombatant FromCore(const ftcore::Combatant& C)
 	Out.Stats.Defense = C.stats.defense;
 	Out.Stats.Speed = C.stats.speed;
 	Out.Stats.Technique = C.stats.technique;
+	Out.Stats.MaxPoise = C.stats.maxPoise;
+	Out.Verbs = C.verbs;
+	Out.bChild = C.child;
 	Out.Hp = C.hp;
 	Out.Ap = C.ap;
 	Out.MaxAp = C.maxAp;
@@ -111,6 +116,8 @@ FFTCombatant FromCore(const ftcore::Combatant& C)
 		D.Power = S.power;
 		D.Notes = S.notes;
 		D.Difficulty = S.difficulty;
+		D.bTorn = S.torn;
+		D.TellId = FT::ToFString(S.tellId);
 		// The default timeline stays implicit (an empty Hits array means the same single hit).
 		if (!ftcore::sameTimeline(S.timeline, ftcore::AttackTimeline()))
 		{
@@ -244,6 +251,13 @@ void AFTBattleDemoActor::BeginPlay()
 	// The exploration demo's autoplay runs its fights too.
 	bAutoPlay = bAutoPlay || FParse::Param(FCommandLine::Get(), TEXT("BattleAutoPlay")) || FParse::Param(FCommandLine::Get(), TEXT("ExploreAutoPlay"));
 	bQuitOnOutcome = bQuitOnOutcome || FParse::Param(FCommandLine::Get(), TEXT("BattleQuitOnOutcome"));
+	bIdlePilot = FParse::Param(FCommandLine::Get(), TEXT("BattleIdle"));
+	bAutoPlay = bAutoPlay || bIdlePilot;
+	if (FParse::Value(FCommandLine::Get(), TEXT("BattleShot="), ShotPrefix, false) && !ShotPrefix.IsEmpty())
+	{
+		bAutoPlay = true;
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: -BattleShot=%s: five views, then quit."), *ShotPrefix);
+	}
 	// So does the story's, when it hands a fight here.
 	bool bStoryAutoPlay = false;
 	if (const UFTGameInstance* StoryGI = GetGameInstance<UFTGameInstance>())
@@ -345,7 +359,21 @@ void AFTBattleDemoActor::LoadLineup()
 			UE_LOG(LogForgottenThird, Warning, TEXT("BattleDemo: -BattleEncounter=%s names no entry (scene,beat,step); the default line-up."), *Wanted);
 		}
 	}
-	const ftcore::EncounterLineup& Lineup = Entry ? Entry->lineup : Table.fallback;
+	// -BattleLineup=<id>: a demo line-up from encounters.json "demos" (the Turns demo is "turns").
+	const ftcore::EncounterLineup* Demo = nullptr;
+	FString DemoId;
+	if (!bCarry && !Entry && FParse::Value(FCommandLine::Get(), TEXT("BattleLineup="), DemoId, false))
+	{
+		Demo = Table.findDemo(FT::ToUtf8(DemoId));
+		if (!Demo)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("BattleDemo: -BattleLineup=%s names no demo line-up; the default line-up."), *DemoId);
+		}
+	}
+	bTurnsDemo = Demo && DemoId == TEXT("turns");
+	PilotSkill = ftcore::demo::PilotSkill();
+	PilotSkill.showTorn = bTurnsDemo;
+	const ftcore::EncounterLineup& Lineup = Entry ? Entry->lineup : Demo ? *Demo : Table.fallback;
 	ftcore::makeEnemies(Roster, Lineup, CoreFoes);
 	if (bStoryFight)
 	{
@@ -364,7 +392,11 @@ void AFTBattleDemoActor::LoadLineup()
 			ftcore::applyWeakPoints(Points, Roster, Lineup, CoreFoes);
 		}
 	}
-	if (Entry && !bCarry)
+	if (Demo)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: demo line-up %s of %d (tier %d)."), *DemoId, static_cast<int32>(CoreFoes.size()), Lineup.tier);
+	}
+	else if (Entry && !bCarry)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: line-up of %d (tier %d)."), static_cast<int32>(CoreFoes.size()), Lineup.tier);
 	}
@@ -414,6 +446,8 @@ void AFTBattleDemoActor::StartRound()
 	Judgement = EFTJudgement::None;
 	JudgementWall = -100.0;
 	PilotWeakPoint = ftcore::kMaxWeakPoints;
+	PilotState = ftcore::demo::PilotState();
+	GuardHolds = 0;
 	bWaitingForRestart = false;
 	bCanQuitToTitle = false;
 	SelectedSkill = 0;
@@ -459,11 +493,11 @@ void AFTBattleDemoActor::StartRound()
 	}
 	if (Attempt > 1)
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: battle started, attempt %d%s."), Attempt, bAutoPlay ? TEXT(" (autoplay)") : TEXT(""));
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: battle started, attempt %d%s."), Attempt, bIdlePilot ? TEXT(" (idle pilot)") : bAutoPlay ? TEXT(" (autoplay)") : TEXT(""));
 	}
 	else
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: battle started%s."), bAutoPlay ? TEXT(" (autoplay)") : TEXT(""));
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: battle started%s."), bIdlePilot ? TEXT(" (idle pilot)") : bAutoPlay ? TEXT(" (autoplay)") : TEXT(""));
 	}
 }
 
@@ -740,6 +774,11 @@ const FString& AFTBattleDemoActor::GetSkillLabel(int32 Id, int32 Skill) const
 	return SkillLabels.IsValidIndex(Id) && SkillLabels[Id].IsValidIndex(Skill) ? SkillLabels[Id][Skill] : kEmpty;
 }
 
+const FString& AFTBattleDemoActor::GetSkillName(int32 Id, int32 Skill) const
+{
+	return SkillNames.IsValidIndex(Id) && SkillNames[Id].IsValidIndex(Skill) ? SkillNames[Id][Skill] : kEmpty;
+}
+
 const FString& AFTBattleDemoActor::GetSkillCost(int32 Id, int32 Skill) const
 {
 	return SkillCosts.IsValidIndex(Id) && SkillCosts[Id].IsValidIndex(Skill) ? SkillCosts[Id][Skill] : kEmpty;
@@ -980,7 +1019,8 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 			const ftcore::ReadCards& Cards = B->readCards();
 			FString Tell = FT::ToFString(Cards[Cards.correct()].tell);
 			Tell.ReplaceInline(TEXT("_"), TEXT(" "));
-			SetBanner(FString::Printf(TEXT("%s: %s  (read it: 1 2 3)"), *GetFighterName(Event.Source), *Tell));
+			SetBanner(FString::Printf(TEXT("%s: %s  (read it: %s)"), *GetFighterName(Event.Source), *Tell,
+				Cards.size() >= 3 ? TEXT("1 2 3") : TEXT("1 2")));
 		}
 		break;
 	case EFTBattleEventType::CardPicked:
@@ -1065,6 +1105,14 @@ void AFTBattleDemoActor::HandleOutcome(EFTBattleOutcome Outcome)
 	const double GameSeconds = (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0) - RoundStartGame;
 	UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: %s after %.1f s (game %.1f s)."),
 		bWon ? TEXT("VICTORY") : TEXT("DEFEAT"), Seconds, GameSeconds);
+	if (const ftcore::Battle* B = Battle->GetBattle())
+	{
+		const ftcore::BattleStats& S = B->stats();
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("TURNS RESULT: %s in %.1f s, verbs used: Guard %d, Intercept %d, Release %d, Take Half %d, Read %d (%d right)"),
+			bWon ? TEXT("Victory") : TEXT("Defeat"), S.endTime - S.startTime, GuardHolds, S.intercepts, S.releases, S.takeHalves,
+			S.reads, S.correctReads);
+	}
 	BuildResults();
 	UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
 	if (GI && GI->ExploreCarry.bValid)
@@ -1449,9 +1497,30 @@ void AFTBattleDemoActor::TickAutoPlay(float DeltaSeconds)
 	}
 	if (B->phase() == ftcore::Phase::AwaitingCommand)
 	{
+		// The Turns demo: Take Half first when the party's Torn is uneven (ftcore::demo::pilotTakeHalf).
+		if (bTurnsDemo && !bIdlePilot)
+		{
+			const ftcore::CombatantId Ally = ftcore::demo::pilotTakeHalf(*B);
+			if (Ally != ftcore::demo::kNoAlly && Battle->TakeHalf(static_cast<int32>(Ally)) == EFTCommandError::None)
+			{
+				return;
+			}
+		}
 		const ftcore::demo::PilotChoice Choice = ftcore::demo::pilotChoice(*B);
+		if (bIdlePilot && !Choice.release)
+		{
+			SelectedSkill = static_cast<int32>(Choice.skill); // never aims
+			SelectedTarget = static_cast<int32>(Choice.target);
+			UseSelected();
+			return;
+		}
 		if (Choice.release)
 		{
+			// Under -BattleShot the Release waits for the Load view (the gauge still full) and a moment after it.
+			if (!ShotPrefix.IsEmpty() && ((ShotMask & 1) == 0 || Wall() - ShotLastWall < 0.25))
+			{
+				return;
+			}
 			Battle->Release();
 			return;
 		}
@@ -1460,6 +1529,10 @@ void AFTBattleDemoActor::TickAutoPlay(float DeltaSeconds)
 		PilotWeakPoint = Choice.aim ? Choice.weakPoint : ftcore::kMaxWeakPoints;
 		UseSelected();
 		return;
+	}
+	if (bIdlePilot)
+	{
+		return; // no presses, no defence, no reads
 	}
 	if (B->phase() == ftcore::Phase::PartyAim)
 	{
@@ -1489,9 +1562,11 @@ void AFTBattleDemoActor::TickAutoPlay(float DeltaSeconds)
 	if (Battle->IsDefenceActive())
 	{
 		// Same as ftcore::demo::pilotRead, never wrong: the card whose tell the coming action shows.
+		// Under -BattleShot the pick waits for the Read view (cards still open) and a moment after it.
+		const bool bShotWaits = !ShotPrefix.IsEmpty() && ((ShotMask & 2) == 0 || Wall() - ReadShotWall < 0.25);
 		const ftcore::ReadCards& Cards = B->readCards();
 		const ftcore::Skill* Coming = B->activeSkill();
-		if (Cards.dealt() && !Cards.picked() && Coming)
+		if (Cards.dealt() && !Cards.picked() && Coming && !bShotWaits)
 		{
 			for (size_t C = 0; C < Cards.size(); ++C)
 			{
@@ -1506,6 +1581,17 @@ void AFTBattleDemoActor::TickAutoPlay(float DeltaSeconds)
 		// before the next update is parried at that time, read from the timeline (never from audio).
 		const double Horizon = Battle->GetBattleTime()
 			+ FMath::Clamp(kPilotFrames * static_cast<double>(DeltaSeconds), kPilotMinLookahead, kPilotMaxLookahead);
+		// The Turns demo defends as ftcore::demo::pilotDefend in Guard mode: an Intercept when a party
+		// member can take the hit for the defender, else a Guard for a defender with the verb, else a
+		// parry; with PilotSkill.showTorn the first tearing attack lands unanswered.
+		ftcore::DefenceInput Hold = ftcore::DefenceInput::Guard;
+		const bool bHolds = bTurnsDemo && ftcore::demo::pilotHolds(*B, ftcore::DefenceInput::Guard, Hold);
+		const bool bLetTear = bTurnsDemo && ftcore::demo::pilotLetsTear(*B, PilotSkill, PilotState);
+		if (bHolds || bLetTear)
+		{
+			PilotHold(Horizon, Hold, bHolds && !bLetTear);
+			return;
+		}
 		while (Battle->IsDefenceActive())
 		{
 			const ftcore::DefenceTimeline& Defence = B->defence();
@@ -1544,6 +1630,107 @@ void AFTBattleDemoActor::TickAutoPlay(float DeltaSeconds)
 			break;
 		}
 	}
+}
+
+void AFTBattleDemoActor::PilotHold(double Horizon, ftcore::DefenceInput Hold, bool bAnswer)
+{
+	const ftcore::Battle* B = Battle->GetBattle();
+	if (!B || !Battle->IsDefenceActive())
+	{
+		return;
+	}
+	const ftcore::DefenceTimeline& Defence = B->defence();
+	const size_t I = Defence.nextIndex();
+	if (Defence.guarding() && (I >= Defence.size() || Defence.guardFrom() < Defence.idealPress(I, Hold) - 1e-9))
+	{
+		Battle->ReleaseGuardAtTime(Defence.now()); // the hold was for a hit that has come
+	}
+	if (!bAnswer || !Battle->IsDefenceActive() || I >= Defence.size() || Defence.guarding())
+	{
+		return;
+	}
+	const double Ideal = Defence.idealPress(I, Hold);
+	if (Ideal > Horizon || Ideal < Defence.now())
+	{
+		return;
+	}
+	DefencePressWall = Wall();
+	LastDefenceInput = static_cast<EFTDefenceInput>(Hold);
+	Battle->DefendAtTime(LastDefenceInput, Ideal);
+	GuardHolds += Hold == ftcore::DefenceInput::Guard ? 1 : 0;
+}
+
+void AFTBattleDemoActor::TickShots()
+{
+	const ftcore::Battle* B = Battle->GetBattle();
+	if (ShotPrefix.IsEmpty() || !B)
+	{
+		return;
+	}
+	const double Now = Wall();
+	if (ShotStartWall < 0.0)
+	{
+		ShotStartWall = Now;
+	}
+	constexpr uint8 kAll = 31;
+	if (ShotMask == kAll || Now - ShotStartWall > 300.0 || Battle->IsBattleOver())
+	{
+		if (ShotMask != kAll)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("BattleDemo: only views %d of 31 came; quitting."), ShotMask);
+		}
+		if (Now - ShotLastWall > 1.0) // the last view is written first
+		{
+			ShotPrefix.Reset();
+			FPlatformMisc::RequestExit(false, TEXT("BattleDemo"));
+		}
+		return;
+	}
+	if (Now - ShotStartWall < 3.0 || Now - ShotLastWall < 0.6)
+	{
+		return;
+	}
+	const bool bDefence = Battle->IsDefenceActive();
+	const ftcore::DefenceTimeline& T = B->defence();
+	bool bTorn = false;
+	for (const ftcore::Combatant& C : B->combatants())
+	{
+		bTorn = bTorn || (C.team == ftcore::Team::Party && C.tornTurns > 0);
+	}
+	if (!(ShotMask & 1) && B->phase() == ftcore::Phase::AwaitingCommand && B->combatant(0).load.value >= 40)
+	{
+		TakeShot(TEXT("1_load"), 1);
+	}
+	else if (!(ShotMask & 2) && bDefence && B->readCards().dealt() && !B->readCards().picked() && GetCountBeat() > 0)
+	{
+		TakeShot(TEXT("2_read"), 2);
+		ReadShotWall = Now;
+	}
+	else if (!(ShotMask & 4) && bTorn && B->phase() == ftcore::Phase::AwaitingCommand)
+	{
+		TakeShot(TEXT("3_torn"), 4);
+	}
+	else if (!(ShotMask & 8) && bDefence && GetCountBeat() > 0 && GetCountAge() < 0.12 && (ShotMask & 2))
+	{
+		TakeShot(TEXT("4_countin"), 8);
+	}
+	else if (!(ShotMask & 16) && (ShotMask & 4) && bDefence && T.intercepting())
+	{
+		TakeShot(TEXT("5_intercept"), 16);
+	}
+}
+
+void AFTBattleDemoActor::TakeShot(const TCHAR* Name, uint8 Bit)
+{
+	const FString File = FString::Printf(TEXT("%s_%s.png"), *ShotPrefix, Name);
+	// The game viewport handles HighResShot; the engine's own Exec doesn't.
+	if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
+	{
+		Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *File), *GLog);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: view %s."), *File);
+	ShotMask |= Bit;
+	ShotLastWall = Wall();
 }
 
 void AFTBattleDemoActor::TickAimInput(float DeltaSeconds)
@@ -1668,6 +1855,7 @@ void AFTBattleDemoActor::TickVerbInput()
 			DefencePressWall = Wall();
 			LastDefenceInput = EFTDefenceInput::Guard;
 			Battle->Defend(EFTDefenceInput::Guard);
+			GuardHolds += B->defence().guarding() && !B->defence().intercepting() ? 1 : 0;
 		}
 		else if (bInterceptPressed)
 		{
@@ -1723,15 +1911,15 @@ void AFTBattleDemoActor::TickVerbInput()
 bool AFTBattleDemoActor::TryPickCard(int32 Card)
 {
 	const ftcore::Battle* B = Battle->GetBattle();
-	if (!B || !Battle->IsDefenceActive() || !B->readCards().dealt() || B->readCards().picked())
+	// A key past the cards dealt (4, or 3 when two are dealt) is no pick: it falls through silently.
+	if (!B || !Battle->IsDefenceActive() || !B->readCards().dealt() || B->readCards().picked() || Card < 0
+		|| static_cast<size_t>(Card) >= B->readCards().size())
 	{
 		return false;
 	}
-	switch (Battle->PickCard(Card))
+	if (Battle->PickCard(Card) == EFTCommandError::WrongPhase)
 	{
-	case EFTCommandError::WrongPhase: SetNotice(TEXT("Too late to read")); break;
-	case EFTCommandError::InvalidTarget: SetNotice(TEXT("No such card")); break;
-	default: break;
+		SetNotice(TEXT("Too late to read"));
 	}
 	return true;
 }
@@ -1739,6 +1927,7 @@ bool AFTBattleDemoActor::TryPickCard(int32 Card)
 void AFTBattleDemoActor::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	TickShots();
 	if (bAutoPlay)
 	{
 		TickAutoPlay(DeltaSeconds);

@@ -262,6 +262,12 @@ const EncounterEntry* EncounterTable::findEntry(std::string_view scene, std::uin
     return nullptr;
 }
 
+const EncounterLineup* EncounterTable::findDemo(std::string_view id) const {
+    for (const DemoLineup& d : demos)
+        if (d.id == id) return &d.lineup;
+    return nullptr;
+}
+
 const EncounterLineup& EncounterTable::find(std::string_view scene, std::uint32_t beat, std::uint32_t step) const {
     const EncounterEntry* e = findEntry(scene, beat, step);
     return e ? e->lineup : fallback;
@@ -290,13 +296,16 @@ bool importEnemyRoster(std::string_view json, EnemyRoster& out, std::string* err
             errors.push_back(path + ": expected an object");
             continue;
         }
-        encUnknownKeys(j, path, {"id", "name", "stats", "skills", "reward", "phases"}, warnings);
+        encUnknownKeys(j, path, {"id", "name", "stats", "skills", "reward", "phases", "child"}, warnings);
         EnemyDef e;
         e.id = encStr(j["id"].string());
         if (!encId(e.id)) errors.push_back(path + ".id: expected lower-case letters, digits and _");
         else if (roster.find(e.id) >= 0) errors.push_back(path + ".id: duplicate \"" + e.id + "\"");
         e.name = j.has("name") ? encStr(j["name"].string()) : e.id;
         if (j.has("name") && !j["name"].isString()) errors.push_back(path + ".name: expected a string");
+        const JsonValue child = j["child"];
+        if (!child.isAbsent() && !child.isBool()) errors.push_back(path + ".child: expected true or false");
+        e.child = child.boolean(false);
 
         const JsonValue st = j["stats"];
         const std::string sp = path + ".stats";
@@ -362,7 +371,9 @@ bool importEnemyRoster(std::string_view json, EnemyRoster& out, std::string* err
             const std::string_view targeting = s["targeting"].string("single");
             if (targeting == "single") skill.targeting = Targeting::SingleEnemy;
             else if (targeting == "all") skill.targeting = Targeting::AllEnemies;
-            else errors.push_back(kp + ".targeting: expected \"single\" or \"all\"");
+            else if (targeting == "back") skill.targeting = Targeting::Back;
+            else if (targeting == "front") skill.targeting = Targeting::Front;
+            else errors.push_back(kp + ".targeting: expected \"single\", \"all\", \"back\" or \"front\"");
             e.skillIds.push_back(id);
             e.skills.push_back(std::move(skill));
         }
@@ -381,7 +392,7 @@ bool importEncounterTable(std::string_view json, const EnemyRoster& roster, Enco
     JsonDocument doc;
     if (!encRoot(json, doc, "encounters file", errors)) return encFinish(errors, error);
     const JsonValue root = doc.root();
-    encUnknownKeys(root, "", {"version", "default", "encounters"}, warnings);
+    encUnknownKeys(root, "", {"version", "default", "encounters", "demos"}, warnings);
 
     EncounterTable table;
     const JsonValue def = root["default"];
@@ -423,6 +434,25 @@ bool importEncounterTable(std::string_view json, const EnemyRoster& roster, Enco
                              std::to_string(e.step));
         table.entries.push_back(std::move(e));
     }
+
+    const JsonValue demos = root["demos"];
+    if (!demos.isAbsent() && !demos.isArray()) errors.push_back("demos: expected an array");
+    for (std::uint32_t i = 0; i < demos.size() && demos.isArray(); ++i) {
+        const JsonValue j = demos[i];
+        const std::string path = "demos[" + std::to_string(i) + "]";
+        if (!j.isObject()) {
+            errors.push_back(path + ": expected an object");
+            continue;
+        }
+        encUnknownKeys(j, path, {"id", "tier", "enemies"}, warnings);
+        DemoLineup d;
+        d.id = encStr(j["id"].string());
+        if (!encId(d.id)) errors.push_back(path + ".id: expected lower-case letters, digits and _");
+        else if (table.findDemo(d.id)) errors.push_back(path + ".id: duplicate \"" + d.id + "\"");
+        encLineup(j["enemies"], roster, path + ".enemies", d.lineup, errors);
+        encInt(j, "tier", d.lineup.tier, 0, kMaxTier, path, errors);
+        table.demos.push_back(std::move(d));
+    }
     if (!encFinish(errors, error)) return false;
     out = std::move(table);
     return true;
@@ -444,6 +474,7 @@ void makeEnemies(const EnemyRoster& roster, const EncounterLineup& lineup, std::
         c.hp = c.stats.maxHp;
         c.skills = e.skills;
         c.phases = e.phases;
+        c.child = e.child;
         out.push_back(std::move(c));
     }
 }

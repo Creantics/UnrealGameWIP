@@ -64,6 +64,9 @@ const FString kCardKeys[ftcore::kReadCards] = {FString(TEXT("1  LS left")), FStr
 const FString kDefenceKeys[5] = {FString(TEXT("Dodge  Left/Right  X/B")), FString(TEXT("Parry  Down  A")),
 	FString(TEXT("Jump  Up  Y")), FString(TEXT("Guard  hold G  RB")), FString(TEXT("Intercept  hold I  LB"))};
 const FString kTell(TEXT("!"));
+// The count-in's numbers, built once (no allocation per frame); beats past the last show it.
+const FString kCountNumbers[8] = {FString(TEXT("1")), FString(TEXT("2")), FString(TEXT("3")), FString(TEXT("4")),
+	FString(TEXT("5")), FString(TEXT("6")), FString(TEXT("7")), FString(TEXT("8"))};
 const FTUiText kJumpable(TEXT("battle.jump"));
 const FLinearColor kCyan(0.35f, 0.85f, 1.f);
 
@@ -277,7 +280,9 @@ void AFTBattleHUD::DrawPanel(const AFTBattleDemoActor& D, int32 Id, float X, flo
 	const bool bParty = C.team == ftcore::Team::Party;
 	const float S = UiScale;
 	const float W = 300.f * S;
-	const float H = bParty ? 84.f * S : 66.f * S;
+	// Party panels leave a row under the HP text for the Load gauge and Torn; enemy panels end below
+	// the HP text.
+	const float H = bParty ? 96.f * S : 70.f * S;
 	UFont* Font = GEngine->GetSmallFont();
 
 	DrawRect(kPanel, X, Y, W, H);
@@ -321,7 +326,7 @@ void AFTBattleHUD::DrawPanel(const AFTBattleDemoActor& D, int32 Id, float X, flo
 		DrawRect(kGold, BarX, BarY - 6.f * S, BarW * PoiseFrac, 4.f * S);
 	}
 
-	const float LoadY = BarY + BarH + 30.f * S;
+	const float LoadY = BarY + BarH + 28.f * S;
 	const float LoadX = BarX + 46.f * S;
 	const float LoadW = BarW * 0.5f;
 	if (bParty && (C.can(ftcore::Verb::Guard) || C.can(ftcore::Verb::Intercept) || C.load.value > 0))
@@ -373,18 +378,18 @@ void AFTBattleHUD::DrawPanels(const AFTBattleDemoActor& D)
 	{
 		if (B->combatant(static_cast<ftcore::CombatantId>(Id)).team == ftcore::Team::Party)
 		{
-			PartyY -= 92.f * S;
+			PartyY -= 104.f * S;
 			DrawPanel(D, Id, 24.f * S, PartyY, Id == Actor);
 		}
 	}
-	// Up to five enemy panels (ftcore::kMaxLineupEnemies): 74 px apart, closer when the stack would
-	// reach past the middle of the screen (never closer than a panel's height, 66 px).
+	// Up to five enemy panels (ftcore::kMaxLineupEnemies): 78 px apart, closer when the stack would
+	// reach past the middle of the screen (never closer than a panel's height, 70 px, and a gap).
 	int32 Enemies = 0;
 	for (int32 Id = 0; Id < Count; ++Id)
 	{
 		Enemies += B->combatant(static_cast<ftcore::CombatantId>(Id)).team == ftcore::Team::Enemies ? 1 : 0;
 	}
-	const float EnemyStep = Enemies > 0 ? FMath::Clamp((Canvas->ClipY * 0.5f - 24.f * S) / static_cast<float>(Enemies), 68.f * S, 74.f * S) : 74.f * S;
+	const float EnemyStep = Enemies > 0 ? FMath::Clamp((Canvas->ClipY * 0.5f - 24.f * S) / static_cast<float>(Enemies), 74.f * S, 78.f * S) : 78.f * S;
 	for (int32 Id = 0; Id < Count; ++Id)
 	{
 		if (B->combatant(static_cast<ftcore::CombatantId>(Id)).team == ftcore::Team::Enemies)
@@ -668,22 +673,22 @@ void AFTBattleHUD::DrawReadCards(const AFTBattleDemoActor& D)
 	const float CardW = 210.f * S;
 	const float CardH = 54.f * S;
 	const float Gap = 14.f * S;
-	const int32 Count = static_cast<int32>(Cards.size());
+	// size_t throughout (ReadCards' own index type), never past the key labels.
+	const size_t Count = FMath::Min(Cards.size(), ftcore::kReadCards);
 	float X = Canvas->ClipX * 0.5f - (static_cast<float>(Count) * (CardW + Gap) - Gap) * 0.5f;
 	const float Y = 165.f * S;
 	DrawStr(kRead, kCyan, X - 70.f * S, Y + 16.f * S, Font, 1.f);
-	for (int32 N = 0; N < Count; ++N)
+	for (size_t I = 0; I < Count; ++I)
 	{
-		const size_t I = static_cast<size_t>(N);
 		const ftcore::ReadCard& Card = Cards[I];
-		const ftcore::Combatant& Actor = B->combatant(Card.actor);
-		const FString Name = Card.action < Actor.skills.size() ? FT::ToFString(Actor.skills[Card.action].name) : FString();
+		// The names cached at the battle's start (no allocation per frame).
+		const FString& Name = D.GetSkillName(static_cast<int32>(Card.actor), static_cast<int32>(Card.action));
 		const bool bRight = Cards.picked() && I == Cards.correct();
 		const bool bWrong = Cards.picked() && !bRight && I == Cards.pickedIndex();
 		DrawRect(kPanel, X, Y, CardW, CardH);
 		DrawFrame(X, Y, CardW, CardH, bRight ? kGold : bWrong ? kRed : kDim, (bRight || bWrong ? 3.f : 1.f) * S);
 		DrawStrCentered(Name, bRight ? kGold : kWhite, X + CardW * 0.5f, Y + 6.f * S, Font, 1.f);
-		DrawStrCentered(kCardKeys[N], kDim, X + CardW * 0.5f, Y + 32.f * S, Small, 1.f);
+		DrawStrCentered(kCardKeys[I], kDim, X + CardW * 0.5f, Y + 32.f * S, Small, 1.f);
 		X += CardW + Gap;
 	}
 }
@@ -904,11 +909,14 @@ void AFTBattleHUD::DrawMessages(const AFTBattleDemoActor& D)
 		const float A = Fade(D.GetCountAge(), 0.2, 0.25);
 		if (A > 0.f)
 		{
-			const FString Count = FString::FromInt(D.GetCountBeat());
+			const FString& Count = kCountNumbers[FMath::Clamp(D.GetCountBeat(), 1, 8) - 1];
 			const float Pop = 1.f + 0.4f * static_cast<float>(FMath::Clamp(1.0 - D.GetCountAge() / 0.1, 0.0, 1.0));
 			const float Y = Canvas->ClipY * 0.42f;
-			DrawStrCentered(Count, WithAlpha(FLinearColor(0.f, 0.f, 0.f), A), CX + 2.f * S, Y + 2.f * S, Large, 2.f * Pop);
-			DrawStrCentered(Count, WithAlpha(kCyan, A), CX, Y, Large, 2.f * Pop);
+			// On a dark square, so it reads over the bright floor as well as the sky.
+			const float Box = 76.f * S;
+			DrawRect(WithAlpha(kPanel, A * kPanel.A), CX - Box * 0.5f, Y - 10.f * S, Box, Box);
+			DrawStrCentered(Count, WithAlpha(FLinearColor(0.f, 0.f, 0.f), A), CX + 2.f * S, Y + 2.f * S, Large, 3.f * Pop);
+			DrawStrCentered(Count, WithAlpha(kCyan, A), CX, Y, Large, 3.f * Pop);
 		}
 	}
 	if (!D.GetNotice().IsEmpty())

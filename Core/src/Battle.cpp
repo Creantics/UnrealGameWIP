@@ -188,13 +188,16 @@ void Battle::startEnemyTurn(double now) {
     const std::size_t idx = nextEnemySkill(actor_);
     ++enemyTurnCount_[actor_];
 
-    // Focus the most wounded party member (ties: lowest id) so behaviour is deterministic.
+    // Focus the most wounded party member (ties: lowest id) so behaviour is deterministic; a Back
+    // skill the last living one instead, a Front skill the first.
+    const bool back = enemy.skills[idx].targeting == Targeting::Back;
+    const bool front = enemy.skills[idx].targeting == Targeting::Front;
     CombatantId target = 0;
     bool found = false;
     for (CombatantId id = 0; id < combatants_.size(); ++id) {
         const Combatant& c = combatants_[id];
         if (c.team != Team::Party || !c.alive()) continue;
-        if (!found || c.hp < combatants_[target].hp) target = id;
+        if (!found || back || (!front && c.hp < combatants_[target].hp)) target = id;
         found = true;
     }
     FTCORE_ASSERT(found);
@@ -357,7 +360,7 @@ CommandError Battle::command(std::size_t skillIndex, CombatantId target, double 
     const Skill& skill = c.skills[skillIndex];
     if (c.ap < skill.apCost) return CommandError::NotEnoughAp;
 
-    if (skill.targeting == Targeting::SingleEnemy) {
+    if (skill.targeting != Targeting::AllEnemies) {
         if (target >= combatants_.size() || combatants_[target].team != Team::Enemies ||
             !combatants_[target].alive())
             return CommandError::InvalidTarget;
