@@ -1,0 +1,180 @@
+{
+ "version": 1,
+ "clips": [
+  {
+   "id": "lead_stance",
+   "asset": "/Game/Combat/BeatAnims/Lead/lead_stance",
+   "length_s": 1.567,
+   "impact_s": 0.0,
+   "loop": true
+  },
+  {
+   "id": "lead_jab",
+   "asset": "/Game/Combat/BeatAnims/Lead/lead_jab",
+   "length_s": 1.5,
+   "impact_s": 0.567,
+   "loop": false
+  },
+  {
+   "id": "lead_cross",
+   "asset": "/Game/Combat/BeatAnims/Lead/lead_cross",
+   "length_s": 1.5,
+   "impact_s": 1.0,
+   "loop": false
+  },
+  {
+   "id": "lead_kick_r",
+   "asset": "/Game/Combat/BeatAnims/Lead/lead_kick_r",
+   "length_s": 2.0,
+   "impact_s": 0.833,
+   "loop": false
+  },
+  {
+   "id": "lead_counter",
+   "asset": "/Game/Combat/BeatAnims/Lead/lead_counter",
+   "length_s": 1.5,
+   "impact_s": 1.0,
+   "loop": false
+  },
+  {
+   "id": "lead_finisher",
+   "asset": "/Game/Combat/BeatAnims/Lead/lead_finisher",
+   "length_s": 2.0,
+   "impact_s": 1.067,
+   "loop": false
+  },
+  {
+   "id": "lead_block",
+   "asset": "/Game/Combat/BeatAnims/Lead/lead_block",
+   "length_s": 1.5,
+   "impact_s": 0.333,
+   "loop": false
+  },
+  {
+   "id": "lead_parry",
+   "asset": "/Game/Combat/BeatAnims/Lead/lead_parry",
+   "length_s": 1.5,
+   "impact_s": 0.3,
+   "loop": false
+  },
+  {
+   "id": "lead_dodge_l",
+   "asset": "/Game/Combat/BeatAnims/Lead/lead_dodge_l",
+   "length_s": 2.0,
+   "impact_s": 1.0,
+   "loop": false
+  },
+  {
+   "id": "lead_jump",
+   "asset": "/Game/Combat/BeatAnims/Lead/lead_jump",
+   "length_s": 1.5,
+   "impact_s": 0.767,
+   "loop": false
+  },
+  {
+   "id": "lead_hitreact",
+   "asset": "/Game/Combat/BeatAnims/Lead/lead_hitreact",
+   "length_s": 1.5,
+   "impact_s": 0.133,
+   "loop": false
+  },
+  {
+   "id": "lead_hitreact2",
+   "asset": "/Game/Combat/BeatAnims/Lead/lead_hitreact2",
+   "length_s": 2.0,
+   "impact_s": 0.133,
+   "loop": false
+  },
+  {
+   "id": "lead_downed",
+   "asset": "/Game/Combat/BeatAnims/Lead/lead_downed",
+   "length_s": 2.0,
+   "impact_s": 0.0,
+   "loop": false
+  },
+  {
+   "id": "lead_victory",
+   "asset": "/Game/Combat/BeatAnims/Lead/lead_victory",
+   "length_s": 2.5,
+   "impact_s": 0.0,
+   "loop": false
+  },
+  {
+   "id": "boss_stance",
+   "asset": "/Game/Combat/BeatAnims/Boss/boss_stance",
+   "length_s": 1.233,
+   "impact_s": 0.0,
+   "loop": true
+  },
+  {
+   "id": "boss_windup",
+   "asset": "/Game/Combat/BeatAnims/Boss/boss_windup",
+   "length_s": 2.0,
+   "impact_s": 0.0,
+   "loop": false
+  },
+  {
+   "id": "boss_hook",
+   "asset": "/Game/Combat/BeatAnims/Boss/boss_hook",
+   "length_s": 2.0,
+   "impact_s": 0.933,
+   "loop": false
+  },
+  {
+   "id": "boss_smash",
+   "asset": "/Game/Combat/BeatAnims/Boss/boss_smash",
+   "length_s": 2.5,
+   "impact_s": 0.633,
+   "loop": false
+  },
+  {
+   "id": "boss_sweep",
+   "asset": "/Game/Combat/BeatAnims/Boss/boss_sweep",
+   "length_s": 2.0,
+   "impact_s": 1.0,
+   "loop": false
+  },
+  {
+   "id": "boss_thrust",
+   "asset": "/Game/Combat/BeatAnims/Boss/boss_thrust",
+   "length_s": 1.5,
+   "impact_s": 1.033,
+   "loop": false
+  },
+  {
+   "id": "boss_grab",
+   "asset": "/Game/Combat/BeatAnims/Boss/boss_grab",
+   "length_s": 2.0,
+   "impact_s": 0.733,
+   "loop": false
+  },
+  {
+   "id": "boss_roar",
+   "asset": "/Game/Combat/BeatAnims/Boss/boss_roar",
+   "length_s": 2.5,
+   "impact_s": 0.0,
+   "loop": false
+  },
+  {
+   "id": "boss_hitreact",
+   "asset": "/Game/Combat/BeatAnims/Boss/boss_hitreact",
+   "length_s": 1.5,
+   "impact_s": 0.2,
+   "loop": false
+  },
+  {
+   "id": "boss_stagger",
+   "asset": "/Game/Combat/BeatAnims/Boss/boss_stagger",
+   "length_s": 2.0,
+   "impact_s": 0.0,
+   "loop": false
+  },
+  {
+   "id": "boss_defeat",
+   "asset": "/Game/Combat/BeatAnims/Boss/boss_defeat",
+   "length_s": 3.0,
+   "impact_s": 0.0,
+   "loop": false
+  }
+ ]
+}
