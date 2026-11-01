@@ -16,6 +16,9 @@
 // Voices: kick, snare (a clap layered on later tiers), closed and open hat (a crash on the finisher), a bass
 // line, a stab or pad chord, a riser and an impact hit; and the move accents, an accent hit on each told
 // move's impact. Rules:
+// * The tier is frozen at the bar line. The driver reads the fight's hp once for each bar, when it first plans it
+//   (at most kMusicLookahead before the bar line), and plays the whole bar at that tier, so a hit in the middle
+//   of a bar cannot switch the music under it. BeatMusicDriver::tier() is the playing bar's.
 // * Intensity follows the fight. level = (phase + progress through the phase) / phase count, in four tiers:
 //   0 sparse (kick on the downbeat, a soft backbeat, hats on the beats, a held bass note), 1 (a pad, more
 //   kick, hats on the eighths, the bass on the beats), 2 (stabs, an open hat, bass on the eighths), 3 (full:
@@ -95,6 +98,7 @@ struct MusicBarContext {
     bool nextFinisher = false;      // a finisher bar follows: the build
     bool entry = false;             // the first bar of a phase, or of the track after a silence or a count: an impact
     bool silent = false;            // nothing plays
+    std::int8_t forcedTier = -1;    // 0..3: play at this tier whatever the fight's hp says (the driver freezes a bar's tier at its bar line)
     std::array<std::uint8_t, kMusicMaxSteps> accent{}; // a told move's impact on this step: 1 + its stem's timbre (0 thump, 1 snare, 2 bell)
 };
 
@@ -163,6 +167,8 @@ public:
     // `out` is cleared first.
     FTCORE_API void update(const BeatBoss& fight, const BeatLine& line, double now, BeatCountKind count, MusicEvents& out);
 
+    // The tier (0..3) the playing bar was planned at and keeps for all its length (-1 before the first bar).
+    int tier() const { return tierCur_; }
     std::uint32_t dropped() const { return dropped_; }
     std::uint32_t revoked() const { return revoked_; }
 
@@ -195,6 +201,8 @@ private:
     bool afterSilence_ = false;
     bool riserSent_[2] = {false, false}; // the current bar, the next
     float phaseStartHp_ = 0.0f;
+    int tierCur_ = -1;  // the playing bar's tier, fixed when it was first planned
+    int tierNext_ = -1; // the predicted next bar's
     bool over_ = false;
     bool silencePending_ = false;
     double silenceAt_ = 0.0;

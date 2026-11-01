@@ -862,3 +862,68 @@ TEST_CASE("beat music: the kicks in the audio start on the bar lines, to the sam
     }
     CHECK(exact * 10 >= static_cast<int>(lines.size()) * 8);
 }
+
+TEST_CASE("beat music: a bar keeps the tier it was planned at, whatever the hp does in the middle of it") {
+    // A forced tier overrides the hp, and a finisher is always the top.
+    MusicBarContext ctx;
+    ctx.phase = 0;
+    ctx.phaseCount = 2;
+    ctx.phaseProgress = 0.0f;
+    CHECK(musicTier(ctx) == 0);
+    ctx.forcedTier = 2;
+    CHECK(musicTier(ctx) == 2);
+    MusicPattern p;
+    planBeatMusic(ctx, p);
+    CHECK(p.tier == 2);
+    ctx.finisher = true;
+    CHECK(musicTier(ctx) == 3);
+
+    // A whole fight: the tier never changes between the first and the last frame of a bar (the boss loses hp
+    // all the way through them), changes between bars, and climbs through every tier on the way.
+    for (const double dt : {1.0 / 60.0, 1.0 / 30.0}) {
+        const BeatBossTrack track = loadTrack();
+        BeatBoss fight;
+        BeatMusicDriver driver;
+        MusicEvents ev;
+        BeatLine line;
+        fight.begin(track.def, BeatBossTuning{}, 0.0);
+        driver.reset(0.0, ev);
+        int bars = -1;
+        int tier = -1;
+        int changes = 0;
+        int hpDuringBar = 0; // bars in which the boss lost hp after the tier was taken
+        int bossHpAtBar = 0;
+        bool lostHp = false;
+        std::array<bool, 4> seen{};
+        int frames = 0;
+        for (double now = dt; !fight.over() && now < 120.0; now += dt) {
+            for (int guard = 0; guard < 16; ++guard) {
+                const QteAction a = fight.autopilot(now);
+                if (a.kind == QteAction::Kind::None) break;
+                for (const BeatBossEvent& x : a.kind == QteAction::Kind::Press ? fight.press(a.input, a.time) : fight.release(a.input, a.time)) driver.onEvent(x);
+            }
+            for (const BeatBossEvent& e : fight.update(now)) driver.onEvent(e);
+            fight.beatLine(line);
+            driver.update(fight, line, now, BeatCountKind::Click, ev);
+            if (!fight.trackRunning() || driver.tier() < 0) continue;
+            ++frames;
+            if (fight.stats().bars != bars) {
+                if (lostHp) ++hpDuringBar;
+                bars = fight.stats().bars;
+                if (driver.tier() != tier) ++changes;
+                tier = driver.tier();
+                bossHpAtBar = fight.bossHp();
+                lostHp = false;
+                seen[static_cast<std::size_t>(tier)] = true;
+            } else {
+                CHECK_MESSAGE(driver.tier() == tier, "bar " << bars << " at " << now);
+                if (fight.bossHp() < bossHpAtBar) lostHp = true;
+            }
+        }
+        CHECK(fight.state() == BeatBossState::Victory);
+        CHECK(frames > 500);
+        CHECK(hpDuringBar >= 3); // the boss really was hit inside bars that kept their tier
+        CHECK(changes >= 3);
+        for (int k = 0; k < 4; ++k) CHECK_MESSAGE(seen[static_cast<std::size_t>(k)], "tier " << k);
+    }
+}

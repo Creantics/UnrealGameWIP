@@ -66,6 +66,7 @@ int MusicPattern::velocitySum() const {
 
 int musicTier(const MusicBarContext& ctx) {
     if (ctx.finisher) return 3;
+    if (ctx.forcedTier >= 0) return std::min<int>(ctx.forcedTier, 3);
     const float progress = std::clamp(ctx.phaseProgress, 0.0f, 0.99f);
     const float phases = static_cast<float>(std::max<int>(1, ctx.phaseCount));
     const float level = (static_cast<float>(ctx.phase) + progress) / phases;
@@ -283,6 +284,7 @@ void BeatMusicDriver::reset(double now, MusicEvents& out) {
     entryNext_ = true;
     riserSent_[0] = riserSent_[1] = false;
     phaseStartHp_ = 0.0f;
+    tierCur_ = tierNext_ = -1;
     over_ = false;
     silencePending_ = false;
     endPending_ = false;
@@ -482,7 +484,9 @@ void BeatMusicDriver::update(const BeatBoss& fight, const BeatLine& line, double
                 riserSent_[0] = riserSent_[1];
                 riserSent_[1] = false;
                 entryCur_ = entryNext_;
+                tierCur_ = tierNext_;
             } else {
+                tierCur_ = -1;
                 // A bar nobody planned for (or not the one planned): what was sent from its line is dropped.
                 if (predictedValid_) ++revoked_;
                 MusicEvent revoke;
@@ -513,6 +517,8 @@ void BeatMusicDriver::update(const BeatBoss& fight, const BeatLine& line, double
         const bool nextFin = up.finisher && !up.newPhase && up.silence < 0 && !cur.finisher;
         MusicBarContext ctx;
         fillContext(fight, cur, startTrack, entryCur_, nextFin, ctx);
+        if (tierCur_ < 0) tierCur_ = musicTier(ctx); // a bar nobody planned: its tier is read now, once
+        ctx.forcedTier = static_cast<std::int8_t>(tierCur_);
         scheduleBar(ctx, barStart, stepSeconds, until, riserSent_[0], out);
 
         // The next bar's first steps go out before its bar line.
@@ -529,7 +535,10 @@ void BeatMusicDriver::update(const BeatBoss& fight, const BeatLine& line, double
         }
         if (up.silence < 0 && nextStart <= until && up.phase < def.phaseCount) {
             MusicBarContext nctx;
+            const bool planned = predictedValid_ && keyOf(up) == predicted_;
             fillContext(fight, up, startTrack + line.bars[0].seconds, up.newPhase, false, nctx);
+            if (!planned) tierNext_ = musicTier(nctx); // read at the first plan of the bar, then kept
+            nctx.forcedTier = static_cast<std::int8_t>(tierNext_);
             const BarMap& nm = def.phases[static_cast<std::size_t>(up.phase)];
             scheduleBar(nctx, nextStart, nm.eighthSeconds() * 0.5, until, riserSent_[1], out);
             predicted_ = keyOf(up);
@@ -563,10 +572,13 @@ void BeatMusicDriver::update(const BeatBoss& fight, const BeatLine& line, double
                         predictedValid_ = true;
                         riserSent_[0] = riserSent_[1] = false;
                         entryNext_ = true;
+                        tierNext_ = -1;
                     }
                     trackCues(fight);
                     MusicBarContext ctx;
                     fillContext(fight, up, fight.trackTime(), true, false, ctx);
+                    if (tierNext_ < 0) tierNext_ = musicTier(ctx);
+                    ctx.forcedTier = static_cast<std::int8_t>(tierNext_);
                     const BarMap& nm = def.phases[static_cast<std::size_t>(up.phase)];
                     scheduleBar(ctx, resumeAt, nm.eighthSeconds() * 0.5, until, riserSent_[1], out);
                 }
