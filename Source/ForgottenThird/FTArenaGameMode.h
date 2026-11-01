@@ -25,6 +25,9 @@
 //   heal           H / pad d-pad up
 //   lock on / off  Tab / middle mouse / pad right stick press
 //   switch lock    Q / E / pad d-pad left / right / a flick of the right stick while locked
+//   release        R / pad LT                         (open above a third of the Load; spends it all)
+//   partner        F / pad d-pad down                 (the second lead's press: within 0.12 s of a parry, either
+//                                                      side, it pairs with it into a counter that staggers)
 // After the fight Enter, Space or pad A fights again (the same fight). Esc and pad Start pause, as on
 // every screen (UFTPauseSubsystem); the world stops, and a key still held in the frame after the menu
 // closes is not a press.
@@ -36,6 +39,9 @@
 // play; -ArenaIdle presses nothing at all (the fight must be lost); -ArenaQuitOnFinish exits when the fight
 // is over (exit code 0 for a victory, 1 for a defeat, 2 if the fight outlasts kWatchdogSeconds, a hang
 // guard for headless runs). Without -ArenaQuitOnFinish the autopilot fights again 4 s after the outcome.
+// Under -ArenaAutoPlay the host plays the partner too: it presses the pair on the step after each parry (Core's
+// autopilot never presses it). -ArenaHoldLoad keeps the autopilot from releasing until it is overloaded, so the
+// overload shows (a check of the HUD, not a way to play).
 // One log line per fight, ids and counts only:
 //   ARENA RESULT: Victory in <t> s (autoplay, seed <s>, <n> enemies, hp <h>/<max>, <c> heals left; <x> hits, ...).
 // -ArenaShot=<path prefix> renders the HUD-on views docs/ARENA_DEMO.md lists (<prefix>_1_ring.png, ...)
@@ -106,6 +112,10 @@ public:
 	double GetEnemyHitTime(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? EnemyHitTime[Index] : -1e9; }
 	double GetPlayerHitTime() const { return PlayerHitTime; }
 	double GetParryTime() const { return ParryTime; }
+	// The last Release (when it began and the Load it spent) and the last time the Load overloaded.
+	double GetReleaseTime() const { return ReleaseTime; }
+	int32 GetReleaseSpent() const { return ReleaseSpent; }
+	double GetOverloadTime() const { return OverloadTime; }
 	int32 GetPopupCount() const { return FMath::Min(PopupTotal, MaxPopups); }
 	const FPopup& GetPopup(int32 Index) const { return Popups[(PopupTotal - GetPopupCount() + Index) % MaxPopups]; }
 	// Bumped on every new popup, so the HUD rebuilds a popup's number only when its slot changes.
@@ -153,6 +163,10 @@ private:
 	bool bPressDodge = false;
 	bool bPressHeal = false;
 	bool bPressLock = false;
+	bool bPressRelease = false;
+	bool bPressPair = false;
+	// Autoplay's partner: a parry came, so press the pair on the next step.
+	bool bPartnerDue = false;
 	int8 PressSwitch = 0;
 	bool bGuardHeld = false;
 	ftcore::Vec2 Stick;
@@ -165,6 +179,9 @@ private:
 	uint8 LastPart[ftcore::kMaxArenaEnemies] = {};
 	double PlayerHitTime = -1e9;
 	double ParryTime = -1e9;
+	double ReleaseTime = -1e9;
+	int32 ReleaseSpent = 0;
+	double OverloadTime = -1e9;
 	FPopup Popups[MaxPopups];
 	int32 PopupTotal = 0;
 
@@ -176,6 +193,7 @@ private:
 	bool bAutoPlay = false;
 	bool bIdle = false;
 	bool bQuitOnFinish = false;
+	bool bHoldLoad = false;
 	bool bResultLogged = false;
 	double ResultTime = 0.0;
 

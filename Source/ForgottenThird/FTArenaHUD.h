@@ -1,7 +1,8 @@
 #pragma once
 
 // Canvas UI of the arena demo (no UMG), drawn from AFTArenaGameMode (docs/ARENA_DEMO.md):
-//   - the player's panel, bottom left: hp, stamina, poise and the heal charges left;
+//   - the player's panel, bottom left: hp, stamina, the Load gauge (a mark at a third, where the Release opens;
+//     RELEASE READY above it, and OVERLOADED with the locked verbs at the top), poise and the heal charges left;
 //   - over each living enemy its hp and poise, and the target's (the locked enemy's, else the nearest's) as a
 //     wide bar at the top of the screen;
 //   - an enemy's tell: while a move starts up, a bar over the enemy fills toward the hit, labelled with the
@@ -11,6 +12,7 @@
 //   - the lock-on marker: brackets around the locked enemy;
 //   - popups (damage, BLOCKED, PARRIED, EVADED, STAGGERED, GUARD BROKEN, heals) over the body they happened to,
 //     a red edge when the player is hit and a gold one on a parry;
+//   - banners: RELEASE with the Load it spent (and an orange edge), and OVERLOADED;
 //   - the result (VICTORY or DEFEAT with the counts) and the fight-again prompt, and the key hint.
 // Drawing builds no strings: every word is a static FTUiText, and the numbers are rebuilt only when they change.
 
@@ -57,12 +59,15 @@ private:
 	void DrawLock(const AFTArenaGameMode& Mode);
 	void DrawPopups(const AFTArenaGameMode& Mode);
 	void DrawFlashes(const AFTArenaGameMode& Mode);
+	void DrawBanners(const AFTArenaGameMode& Mode);
 	void DrawResult(const AFTArenaGameMode& Mode);
 
 	float UiScale = 1.f;
 
 	FArenaNumberText HpText;
 	FArenaNumberText TargetText;
+	FArenaNumberText LoadText;
+	FArenaNumberText ReleaseText;
 	// One per popup slot, keyed by the popup's number (GetPopupTotal() when it was made).
 	FArenaNumberText PopupText[16];
 	FString StatsText;

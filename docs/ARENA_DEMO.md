@@ -35,7 +35,8 @@ UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -NullRH
 ```
 
 The same with `-ArenaIdle` instead of `-ArenaAutoPlay` plays a player who presses nothing; it ends in
-defeat. From Git Bash, write the map as `Demo_Arena` (Git Bash rewrites a leading `/Game` into a path).
+defeat. A single brute falls before the Load fills; to see a Release, fight a wave:
+`-ArenaLineup=brute,skirmisher,breaker`. From Git Bash, write the map as `Demo_Arena` (Git Bash rewrites a leading `/Game` into a path).
 
 ## Flow
 
@@ -47,7 +48,13 @@ defeat. From Git Bash, write the map as `Demo_Arena` (Git Bash rewrites a leadin
    that can only be blocked, roll away from an unblockable one. A parry leaves the enemy open: hit it
    then for a riposte.
 4. Hits drain the enemy's poise as well as its hp; at no poise it staggers and is open too.
-5. The fight ends in VICTORY when every enemy is down, DEFEAT when the lead is. After a moment Enter,
+5. Every parry stores Load (the parried blow's damage) in a second gauge beside stamina. Above a third of it
+   the Release opens: one invulnerable strike that spends all the Load at once and breaks the poise of every
+   enemy it reaches. At full Load the lead is overloaded: light, heavy and heal are locked until a Release
+   (guard, parry, roll, moving and the lock still work).
+6. The partner key is the second lead's press. Pressed within 0.12 s of a parry, before or after it, the two
+   pair into a counter: the parried enemy takes three light hits' worth at once and staggers.
+7. The fight ends in VICTORY when every enemy is down, DEFEAT when the lead is. After a moment Enter,
    Space or pad A starts it again (the autopilot starts again by itself after 4 s unless told to quit).
 
 ## Controls
@@ -61,6 +68,8 @@ defeat. From Git Bash, write the map as `Demo_Arena` (Git Bash rewrites a leadin
 | Guard (hold); parry (tap just before a hit) | I or right mouse | Y or LB |
 | Roll (backstep with no direction) | L or Space | B |
 | Heal (uses a charge) | H | D-pad up |
+| Release (above a third of the Load) | R | LT |
+| Partner (the second lead's press, paired with a parry) | F | D-pad down |
 | Lock on / off | Tab or middle mouse | R3 |
 | Switch lock target | Q / E | D-pad left / right, or flick the right stick |
 | Fight again (after the outcome) | Enter or Space | A |
@@ -72,8 +81,9 @@ each frame and handed to the fight on its next step, so no press is lost between
 
 ## HUD
 
-- **Player panel**, bottom left: hp (red under a third, with the number), stamina, poise and the heal
-  charges left.
+- **Player panel**, bottom left: hp (red under a third, with the number), stamina, the Load gauge
+  (orange, with its number and a white mark at a third where the Release opens; RELEASE READY above it;
+  red, pulsing and OVERLOADED with the locked verbs when full), poise and the heal charges left.
 - **Target bar**, top centre: the locked enemy's hp and poise, or the nearest enemy's when nothing is
   locked.
 - **Over each enemy:** a small hp bar and poise bar; STAGGERED while it reels, RIPOSTE! in gold while
@@ -86,8 +96,10 @@ each frame and handed to the fight on its next step, so no press is lost between
   tell's colour.
 - **Lock marker:** brackets and a dot on the locked enemy.
 - **Popups:** damage beside the body hit (red on the lead, gold for a riposte), heals in green, and
-  BLOCKED, GUARD BROKEN, PARRIED, EVADED, STAGGERED, DOWN and NO STAMINA. The screen's edge flashes red
+  BLOCKED, GUARD BROKEN, PARRIED, EVADED, STAGGERED, DOWN and NO STAMINA; +N LOAD beside the lead when a
+  parry stores Load, and COUNTER with its damage over an enemy the paired counter hits. The screen's edge flashes red
   when the lead is hit and gold on a parry.
+- **Banners:** RELEASE with the Load it spent and an orange edge; OVERLOADED with the locked verbs.
 - **Result:** VICTORY or DEFEAT, the fight's time and counts, and the fight-again prompt.
 - The key hint runs along the bottom.
 
@@ -95,19 +107,20 @@ each frame and handed to the fight on its next step, so no press is lost between
 
 | Flag | Effect |
 |---|---|
-| `-ArenaAutoPlay` | The Core autopilot (`ArenaFight::autopilot`) plays the lead. |
+| `-ArenaAutoPlay` | The Core autopilot (`ArenaFight::autopilot`) plays the lead, and the host plays the partner: it presses the pair on the step after each parry. |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |
 | `-ArenaQuitOnFinish` | Quit when the fight ends, after the result line (exit code 0). |
 | `-ArenaSeed=N` | The fight's seed (default 1). |
 | `-ArenaLineup=a,b,...` | The enemies by id from `arena.json` (`brute`, `skirmisher`, `breaker`), up to six. |
 | `-ArenaAttackers=N` | How many enemies may attack at once (1 to the line-up's size). |
-| `-ArenaShot=<path prefix>` | Autoplay and save four screenshots (`_1_ring`, `_2_tell`, `_3_impact`, `_4_result` .png), then quit. Needs a renderer (`-RenderOffScreen`, not `-NullRHI`). |
+| `-ArenaHoldLoad` | The autopilot keeps its Load until it is overloaded (to see the overload; not a way to play). |
+| `-ArenaShot=<path prefix>` | Autoplay and save the views (`_1_ring`, `_2_tell`, `_3_impact`, `_4_load` with the gauge past a third, or the overload under `-ArenaHoldLoad`, `_5_release`, `_6_result` .png), then quit; a view the fight never reaches is skipped. Needs a renderer (`-RenderOffScreen`, not `-NullRHI`). |
 | `-ArenaShotDelay=S` | Seconds before the first screenshot (the fight waits for it). |
 
 At the end of every fight the log gets one line with counts only:
 
 ```
-ARENA RESULT: Victory in 6.3 s (autoplay, seed 1, 1 enemies, hp 122/140, 3 heals left; 10 hits, 1 taken, 0 blocks, 2 parries, 1 ripostes, ...; dealt 200, took 18).
+ARENA RESULT: Victory in 26.6 s (autoplay, seed 1, 3 enemies, hp 104/140, 3 heals left; 28 hits, 2 taken, ...; 92 load stored, 1 releases, 0 overloads, 5 counter staggers; dealt 530, took 36).
 ```
 
 A fight that runs past 180 s of fight time (or 360 s of wall time) logs `ARENA RESULT: Timeout` as a

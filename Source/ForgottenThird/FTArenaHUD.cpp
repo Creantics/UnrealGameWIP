@@ -26,6 +26,7 @@ const FLinearColor kArenaEnemyPoise(1.f, 0.78f, 0.25f);
 const FLinearColor kArenaCyan(0.35f, 0.85f, 1.f);
 const FLinearColor kArenaOrange(1.f, 0.55f, 0.15f);
 const FLinearColor kArenaGold(1.f, 0.84f, 0.3f);
+const FLinearColor kArenaLoad(1.f, 0.5f, 0.12f);
 // The tell's colours: the answer it asks for.
 const FLinearColor kArenaTellParry(1.f, 0.84f, 0.3f);
 const FLinearColor kArenaTellBlock(1.f, 0.55f, 0.15f);
@@ -49,6 +50,13 @@ const FTUiText kAutoPlayArena(TEXT("arena.autoplay"));
 const FTUiText kIdleArena(TEXT("arena.idle"));
 const FTUiText kStatsArena(TEXT("arena.stats"));
 const FTUiText kHintArena(TEXT("arena.hint"));
+const FTUiText kLoadArena(TEXT("arena.load"));
+const FTUiText kLoadPlusArena(TEXT("arena.load_plus"));
+const FTUiText kReleaseReadyArena(TEXT("arena.release_ready"));
+const FTUiText kOverloadedArena(TEXT("arena.overloaded"));
+const FTUiText kOverloadLockedArena(TEXT("arena.overload_locked"));
+const FTUiText kReleaseArena(TEXT("arena.release"));
+const FTUiText kCounterArena(TEXT("arena.counter"));
 const FTUiText kNowArena(TEXT("battle.now"));
 const FTUiText kStaggeredArena(TEXT("battle.staggered"));
 const FTUiText kDownArena(TEXT("battle.down"));
@@ -61,6 +69,8 @@ constexpr double kArenaImpactLife = 0.3;  // the tell's flash once the move is a
 constexpr double kArenaHitEdgeLife = 0.45; // the red edge when the player is hit
 constexpr double kArenaParryEdgeLife = 0.4;
 constexpr double kArenaResultFade = 0.3;
+constexpr double kArenaReleaseBanner = 1.0;
+constexpr double kArenaOverloadBanner = 1.4;
 
 FLinearColor ArenaAlpha(const FLinearColor& C, float A)
 {
@@ -197,18 +207,41 @@ void AFTArenaHUD::DrawPlayerPanel(const AFTArenaGameMode& Mode)
 	const float Y = Canvas->ClipY - 230.f * S;
 	const float W = 340.f * S;
 	UFont* Small = GEngine->GetSmallFont();
-	DrawRect(kArenaPanel, X - 14.f * S, Y - 14.f * S, W + 150.f * S, 186.f * S);
+	DrawRect(kArenaPanel, X - 14.f * S, Y - 54.f * S, W + 150.f * S, 226.f * S);
+	const float Top = Y - 40.f * S; // hp and stamina sit above the Load row
 
 	// hp, with the number beside it; the bar goes red below a third.
 	const float Hp = F.hp > 0 ? static_cast<float>(Fight.hp()) / static_cast<float>(F.hp) : 0.f;
-	DrawText(kHpArena, kArenaDim, X, Y, Small, 1.1f * S);
-	DrawBar(X, Y + 20.f * S, W, 22.f * S, Hp, Hp < 0.34f ? kArenaRed : kArenaGreen, kArenaHpBack);
-	DrawText(ArenaNumberOf(HpText, Fight.hp(), F.hp), kArenaWhite, X + W + 12.f * S, Y + 20.f * S, GEngine->GetMediumFont(), 1.f * S);
+	DrawText(kHpArena, kArenaDim, X, Top, Small, 1.1f * S);
+	DrawBar(X, Top + 20.f * S, W, 22.f * S, Hp, Hp < 0.34f ? kArenaRed : kArenaGreen, kArenaHpBack);
+	DrawText(ArenaNumberOf(HpText, Fight.hp(), F.hp), kArenaWhite, X + W + 12.f * S, Top + 20.f * S, GEngine->GetMediumFont(), 1.f * S);
 
 	// stamina: dim while empty
 	const float Stamina = F.stamina > 0.f ? Fight.stamina() / F.stamina : 0.f;
-	DrawText(kStaminaArena, kArenaDim, X, Y + 50.f * S, Small, 1.1f * S);
-	DrawBar(X, Y + 70.f * S, W, 12.f * S, Stamina, Stamina < 0.05f ? kArenaDim : kArenaStamina, kArenaBack);
+	DrawText(kStaminaArena, kArenaDim, X, Top + 50.f * S, Small, 1.1f * S);
+	DrawBar(X, Top + 70.f * S, W, 12.f * S, Stamina, Stamina < 0.05f ? kArenaDim : kArenaStamina, kArenaBack);
+
+	// Load, beside stamina and never in its place: a mark at a third (the Release opens above it), RELEASE READY
+	// once past it, OVERLOADED (pulsing) at the top with the verbs it locks.
+	const int32 Load = Fight.load();
+	const float LoadShare = static_cast<float>(Load) / static_cast<float>(ftcore::kMaxLoad);
+	const bool bOver = Fight.overloaded();
+	const float Pulse = bOver ? 0.65f + 0.35f * FMath::Sin(static_cast<float>(Mode.GetNow()) * 10.f) : 1.f;
+	const FLinearColor LoadColor = bOver ? FLinearColor(1.f, 0.2f * Pulse, 0.1f, 1.f) : kArenaLoad;
+	DrawText(kLoadArena, kArenaDim, X, Y + 50.f * S, Small, 1.1f * S);
+	DrawText(ArenaNumberOf(LoadText, Load), LoadColor, X + 60.f * S, Y + 50.f * S, Small, 1.1f * S);
+	if (bOver)
+	{
+		DrawText(kOverloadedArena, LoadColor, X + 110.f * S, Y + 50.f * S, Small, 1.1f * S);
+		DrawText(kOverloadLockedArena, kArenaWhite, X + 215.f * S, Y + 50.f * S, Small, 1.1f * S);
+	}
+	else if (Load > ftcore::kArenaReleaseOpenLoad)
+	{
+		DrawText(kReleaseReadyArena, kArenaLoad, X + 110.f * S, Y + 50.f * S, Small, 1.1f * S);
+	}
+	DrawBar(X, Y + 70.f * S, W, 12.f * S, LoadShare, LoadColor, kArenaBack);
+	const float Mark = X + W * static_cast<float>(ftcore::kArenaReleaseOpenLoad) / static_cast<float>(ftcore::kMaxLoad);
+	DrawRect(kArenaWhite, Mark - 1.f * S, Y + 66.f * S, 2.f * S, 20.f * S);
 
 	const float Poise = F.poise > 0.f ? Fight.poise() / F.poise : 0.f;
 	DrawText(kPoiseArena, kArenaDim, X, Y + 90.f * S, Small, 1.1f * S);
@@ -512,6 +545,32 @@ void AFTArenaHUD::DrawPopups(const AFTArenaGameMode& Mode)
 		case ftcore::ArenaEventType::Downed:
 			DrawStrCentered(kDownArena, kArenaWhite * Fade, At.X, Y - 60.f * S, GEngine->GetMediumFont(), 1.3f);
 			break;
+		case ftcore::ArenaEventType::LoadStored:
+			// "+N LOAD" beside the lead, in the gauge's colour.
+			if (Cache.Second != Serial || Cache.Value != P.Amount)
+			{
+				Cache.Value = P.Amount;
+				Cache.Second = Serial;
+				Cache.Text.Reset();
+				Cache.Text += TEXT("+");
+				Cache.Text.AppendInt(P.Amount);
+				Cache.Text += TEXT(" ");
+				Cache.Text += kLoadPlusArena.Get();
+			}
+			DrawStrCentered(Cache.Text, kArenaLoad * Fade, At.X - 150.f * S, Y - 10.f * S, GEngine->GetMediumFont(), 1.3f);
+			break;
+		case ftcore::ArenaEventType::CounterStagger:
+			// The paired counter: COUNTER over the enemy, its damage beside it.
+			if (Cache.Second != Serial || Cache.Value != P.Amount)
+			{
+				Cache.Value = P.Amount;
+				Cache.Second = Serial;
+				Cache.Text.Reset();
+				Cache.Text.AppendInt(P.Amount);
+			}
+			DrawStrCentered(kCounterArena, kArenaGold * Fade, At.X, Y - 90.f * S, GEngine->GetLargeFont(), 1.5f);
+			DrawStrCentered(Cache.Text, kArenaGold * Fade, At.X + Side, Y + 40.f * S, GEngine->GetLargeFont(), 2.1f);
+			break;
 		case ftcore::ArenaEventType::StaminaEmpty:
 			DrawStrCentered(kNoStaminaArena, kArenaStamina * Fade, At.X, Y - 60.f * S, GEngine->GetSmallFont(), 1.3f);
 			break;
@@ -544,6 +603,38 @@ void AFTArenaHUD::DrawFlashes(const AFTArenaGameMode& Mode)
 		DrawRect(C, 0.f, 0.f, W, T * 0.6f);
 		DrawRect(C, 0.f, H - T * 0.6f, W, T * 0.6f);
 		DrawRect(FLinearColor(1.f, 0.95f, 0.8f, 0.12f * Parry), 0.f, 0.f, W, H);
+	}
+}
+
+void AFTArenaHUD::DrawBanners(const AFTArenaGameMode& Mode)
+{
+	const float S = UiScale;
+	const double Now = Mode.GetNow();
+	const float W = Canvas->ClipX;
+	const float H = Canvas->ClipY;
+	const float Release = ArenaPulse(Now, Mode.GetReleaseTime(), kArenaReleaseBanner);
+	if (Release > 0.f)
+	{
+		// An orange edge and RELEASE with the Load it spent, growing a little as it fades.
+		const float T = 30.f * S;
+		const FLinearColor Edge(1.f, 0.5f, 0.12f, 0.5f * Release);
+		DrawRect(Edge, 0.f, 0.f, W, T);
+		DrawRect(Edge, 0.f, H - T, W, T);
+		const float Grow = 1.f + 0.2f * (1.f - Release);
+		const float A = FMath::Min(1.f, Release * 2.f);
+		const FLinearColor C = ArenaAlpha(kArenaLoad, A);
+		DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.4f * A), 0.f, H * 0.2f - 12.f * S, W, 150.f * S);
+		DrawStrCentered(kReleaseArena, C, W * 0.5f, H * 0.2f, GEngine->GetLargeFont(), 3.f * Grow);
+		DrawStrCentered(ArenaNumberOf(ReleaseText, Mode.GetReleaseSpent()), ArenaAlpha(kArenaWhite, A), W * 0.5f, H * 0.2f + 84.f * S,
+			GEngine->GetLargeFont(), 2.f);
+	}
+	const float Over = ArenaPulse(Now, Mode.GetOverloadTime(), kArenaOverloadBanner);
+	if (Over > 0.f && Mode.GetFight().overloaded())
+	{
+		const FLinearColor C(1.f, 0.2f, 0.1f, FMath::Min(1.f, Over * 2.f));
+		DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.4f * C.A), 0.f, H * 0.2f - 12.f * S, W, 110.f * S);
+		DrawStrCentered(kOverloadedArena, C, W * 0.5f, H * 0.2f, GEngine->GetLargeFont(), 3.f);
+		DrawStrCentered(kOverloadLockedArena, ArenaAlpha(kArenaWhite, C.A), W * 0.5f, H * 0.2f + 60.f * S, GEngine->GetMediumFont(), 1.2f);
 	}
 }
 
@@ -599,6 +690,7 @@ void AFTArenaHUD::DrawHUD()
 	DrawTargetBar(*Mode);
 	DrawPlayerPanel(*Mode);
 	DrawPopups(*Mode);
+	DrawBanners(*Mode);
 	if (Mode->IsAutoPlay() || Mode->IsIdle())
 	{
 		DrawText(Mode->IsIdle() ? kIdleArena : kAutoPlayArena, kArenaDim, 40.f * S, 30.f * S, GEngine->GetSmallFont(), 1.2f * S);

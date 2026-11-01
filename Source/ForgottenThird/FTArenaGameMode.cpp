@@ -154,6 +154,7 @@ void AFTArenaGameMode::StartPlay()
 	bIdle = FParse::Param(Cmd, TEXT("ArenaIdle"));
 	bAutoPlay = !bIdle && (FParse::Param(Cmd, TEXT("ArenaAutoPlay")) || !ShotPrefix.IsEmpty());
 	bQuitOnFinish = FParse::Param(Cmd, TEXT("ArenaQuitOnFinish"));
+	bHoldLoad = FParse::Param(Cmd, TEXT("ArenaHoldLoad"));
 	int32 SeedValue = 1;
 	if (FParse::Value(Cmd, TEXT("ArenaSeed="), SeedValue))
 	{
@@ -369,7 +370,10 @@ void AFTArenaGameMode::PutBodiesAtStart()
 	}
 	PlayerHitTime = -1e9;
 	ParryTime = -1e9;
-	bPressLight = bPressHeavy = bPressDodge = bPressHeal = bPressLock = false;
+	ReleaseTime = -1e9;
+	ReleaseSpent = 0;
+	OverloadTime = -1e9;
+	bPressLight = bPressHeavy = bPressDodge = bPressHeal = bPressLock = bPressRelease = bPressPair = bPartnerDue = false;
 	PressSwitch = 0;
 	CameraYaw = ArenaYaw(Fight.playerStartFacing());
 	CameraPitch = -16.f;
@@ -454,6 +458,8 @@ void AFTArenaGameMode::PollInput(float DeltaSeconds)
 	bPressDodge |= ArenaAnyJustPressed(*PC, Key(DodgeB, 0), Key(DodgeB, 1), EKeys::SpaceBar);
 	bPressHeal |= ArenaAnyJustPressed(*PC, EKeys::H, EKeys::Gamepad_DPad_Up);
 	bPressLock |= ArenaAnyJustPressed(*PC, EKeys::Tab, EKeys::MiddleMouseButton, EKeys::Gamepad_RightThumbstick);
+	bPressRelease |= ArenaAnyJustPressed(*PC, EKeys::R, EKeys::Gamepad_LeftTrigger);
+	bPressPair |= ArenaAnyJustPressed(*PC, EKeys::F, EKeys::Gamepad_DPad_Down);
 	bGuardHeld = PC->IsInputKeyDown(Key(GuardB, 0)) || PC->IsInputKeyDown(Key(GuardB, 1)) || PC->IsInputKeyDown(EKeys::RightMouseButton)
 		|| PC->IsInputKeyDown(EKeys::Gamepad_LeftShoulder);
 	if (ArenaAnyJustPressed(*PC, EKeys::Q, EKeys::Gamepad_DPad_Left))
@@ -526,8 +532,10 @@ ftcore::ArenaInput AFTArenaGameMode::TakeInput()
 	In.guard = bGuardHeld;
 	In.lock = bPressLock;
 	In.lockSwitch = PressSwitch;
+	In.release = bPressRelease;
+	In.pair = bPressPair;
 	// Each press goes to one step.
-	bPressLight = bPressHeavy = bPressDodge = bPressHeal = bPressLock = false;
+	bPressLight = bPressHeavy = bPressDodge = bPressHeal = bPressLock = bPressRelease = bPressPair = false;
 	PressSwitch = 0;
 	return In;
 }
@@ -538,6 +546,13 @@ void AFTArenaGameMode::StepFight()
 	if (bAutoPlay)
 	{
 		In = Fight.autopilot();
+		// The partner's press, one step after the parry (well inside the pair window).
+		In.pair = bPartnerDue;
+		bPartnerDue = false;
+		if (bHoldLoad && !Fight.overloaded())
+		{
+			In.release = false;
+		}
 	}
 	else if (!bIdle)
 	{
@@ -568,7 +583,21 @@ void AFTArenaGameMode::HandleEvents(const ftcore::ArenaEvents& Events)
 			break;
 		case ftcore::ArenaEventType::Parried:
 			ParryTime = Now;
+			bPartnerDue = bAutoPlay;
 			break;
+		case ftcore::ArenaEventType::CounterStagger:
+			if (E.target < MaxEnemies)
+			{
+				EnemyHitTime[E.target] = Now;
+			}
+			break;
+		case ftcore::ArenaEventType::Released:
+			ReleaseTime = Now;
+			ReleaseSpent = E.amount;
+			continue; // a banner, not a popup
+		case ftcore::ArenaEventType::Overloaded:
+			OverloadTime = Now;
+			continue; // a banner, not a popup
 		case ftcore::ArenaEventType::AttackStarted:
 		case ftcore::ArenaEventType::LockChanged:
 		case ftcore::ArenaEventType::Victory:
@@ -657,6 +686,11 @@ void AFTArenaGameMode::PlaceFigures(float Alpha)
 		case ftcore::ArenaAction::Riposte:
 			Attack = &D.fighter.riposte;
 			Pose.Swing = EFTArenaSwing::Thrust;
+			break;
+		case ftcore::ArenaAction::Release:
+			Attack = &D.fighter.release;
+			Pose.Swing = EFTArenaSwing::Overhead;
+			Pose.Tint = FMath::Lerp(Pose.Tint, FLinearColor(1.f, 0.5f, 0.12f), 0.6f);
 			break;
 		case ftcore::ArenaAction::Dodge:
 		{
@@ -815,10 +849,11 @@ void AFTArenaGameMode::Finish()
 	const bool bWon = Fight.phase() == ftcore::ArenaPhase::Victory;
 	const ftcore::ArenaStats& S = Fight.stats();
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("ARENA RESULT: %s in %.1f s (%s, seed %u, %d enemies, hp %d/%d, %d heals left; %d hits, %d taken, %d blocks, %d parries, %d ripostes, %d evades, %d staggers, %d guard breaks, %d heals; dealt %d, took %d)."),
+		TEXT("ARENA RESULT: %s in %.1f s (%s, seed %u, %d enemies, hp %d/%d, %d heals left; %d hits, %d taken, %d blocks, %d parries, %d ripostes, %d evades, %d staggers, %d guard breaks, %d heals; %d load stored, %d releases, %d overloads, %d counter staggers; dealt %d, took %d)."),
 		bWon ? TEXT("Victory") : TEXT("Defeat"), Fight.time(), ArenaPilotName(bAutoPlay, bIdle), Seed,
 		static_cast<int32>(Fight.enemyCount()), Fight.hp(), Fight.def().fighter.hp, static_cast<int32>(Fight.healCharges()),
-		S.hits, S.hitsTaken, S.blocks, S.parries, S.ripostes, S.evades, S.staggers, S.guardBreaks, S.heals, S.damageDealt, S.damageTaken);
+		S.hits, S.hitsTaken, S.blocks, S.parries, S.ripostes, S.evades, S.staggers, S.guardBreaks, S.heals, S.loadStored, S.releases, S.overloads, S.counterStaggers,
+		S.damageDealt, S.damageTaken);
 	if (bQuitOnFinish && ShotPrefix.IsEmpty())
 	{
 		FPlatformMisc::RequestExitWithStatus(false, static_cast<uint8>(bWon ? 0 : 1), TEXT("Arena"));
@@ -881,9 +916,38 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 		}
 		break;
 	case 3:
+		// The Load gauge past the Release's threshold, a moment after the parry that filled it (its +LOAD and the
+		// partner's COUNTER still up); skipped if the fight ends first.
+		// Under -ArenaHoldLoad, the first frame overloaded (the autopilot releases at once when in reach).
+		if (bHoldLoad ? Fight.overloaded()
+					  : (Fight.load() > ftcore::kArenaReleaseOpenLoad + 10 && Now - ParryTime >= 0.15 && Now - ParryTime < 0.5))
+		{
+			TakeShot(TEXT("4_load"));
+			return true;
+		}
+		if (bResultLogged)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: the fight ended before the load view; no load or release view."));
+			ShotsTaken += 2;
+		}
+		break;
+	case 4:
+		// Just after a Release began: its banner and its pose (skipped if the fight ends first).
+		if (Now - ReleaseTime >= 0.12 && Now - ReleaseTime < 0.4)
+		{
+			TakeShot(TEXT("5_release"));
+			return true;
+		}
+		if (bResultLogged)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: no Release in this fight; no release view."));
+			++ShotsTaken;
+		}
+		break;
+	case 5:
 		if (bResultLogged && GetResultAge() >= 0.8)
 		{
-			TakeShot(TEXT("4_result"));
+			TakeShot(TEXT("6_result"));
 			return true;
 		}
 		break;
@@ -895,7 +959,7 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	}
 	if (ShotWall > ShotDelay + kArenaShotGiveUp)
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: only %d of 4 views came; quitting."), ShotsTaken);
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: only %d of 6 views came; quitting."), ShotsTaken);
 		ShotPrefix.Reset();
 		FPlatformMisc::RequestExitWithStatus(false, 2, TEXT("Arena"));
 		return true;

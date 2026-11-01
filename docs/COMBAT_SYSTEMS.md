@@ -211,7 +211,7 @@ These are numbered as in [COMBAT_REFERENCE_STUDY.md](COMBAT_REFERENCE_STUDY.md):
 
 These wait until the animation session's merge is pushed.
 
-- **Arena:** the demo screen exists ([ARENA_DEMO.md](ARENA_DEMO.md): ring map, lock-on camera, HUD with hp, stamina, poise, heal charges, the tell, the lock marker and the enemy hp). Still to do:
+- **Arena:** the demo screen exists ([ARENA_DEMO.md](ARENA_DEMO.md): ring map, lock-on camera, HUD with hp, stamina, the Load gauge, poise, heal charges, the tell, the lock marker and the enemy hp; the Release, the overload and the partner's paired press are hosted). Still to do:
   - The arena host on the explore character (the ring, the follower parking spots), reached through the routing.
   - Attack, hit, guard and stagger animations, and a dodge roll that reuses the movement work.
 - **Logging:** the arena screen logs one line per fight with ids and counts only, like the other screens (the beat screen does already: see [BEAT_SCREEN.md](BEAT_SCREEN.md)). The routing is done (see "Routing").
