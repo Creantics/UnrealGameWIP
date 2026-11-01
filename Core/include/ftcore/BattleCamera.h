@@ -103,6 +103,9 @@ struct CameraTuning {
     double blendWide = 0.6;
     double follow = 0.16;       // seconds: how fast the framing inside a shot follows its goal
     double sideHysteresis = 40.0; // the target must lie this far across before the shoulder swaps
+    double coverInner = 10.0;     // an ally whose body is this close to the line of sight (or closer) hides the target...
+    double coverAbove = 15.0;     // the line of sight clears an ally's head by this much
+    double coverOuter = 40.0;     // ...and none does beyond this: between, the camera rises over the ally's head by degrees
     // Clearance.
     double minClear = 70.0;  // the camera stays this far (horizontally, at ground level) from every figure's body
     double minAbove = 45.0;  // ...and this far above its head
@@ -143,7 +146,7 @@ public:
     FTCORE_API double lateralOf(const CamVec& p) const;
 
 private:
-    BattleCameraPose solve(const CameraCue& cue, std::span<const CameraFigure> figures) const;
+    BattleCameraPose solve(const CameraCue& cue, std::span<const CameraFigure> figures); // also moves cover_
     void clear(BattleCameraPose& pose, std::span<const CameraFigure> figures) const;
     void follow(double dt, const CameraCue& cue, std::span<const CameraFigure> figures, bool snap);
     CameraShot shotFor(const CameraCue& cue, std::span<const CameraFigure> figures) const;
@@ -165,9 +168,12 @@ private:
     // actor (-1..1 shoulders; sideSign_ is the shoulder it is heading for), and the sideways drift of the
     // behind shot.
     CamVec look_;
+    CamVec focus_; // Choose / Aim: the picked enemy's chest (smoothed), the point the line of sight must reach
     double side_ = 1.0;
     double sideSign_ = 1.0;
     double drift_ = 0.0;
+    double cover_ = 0.0;  // Choose / Aim: how far the camera has risen to look over an ally in the line of sight
+    double coverK_ = 1.0; // this frame's share of the way cover_ goes toward its goal
 };
 
 } // namespace ftcore

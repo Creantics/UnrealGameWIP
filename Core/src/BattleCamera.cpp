@@ -125,6 +125,7 @@ CameraShot BattleCamera::shotFor(const CameraCue& cue, std::span<const CameraFig
 void BattleCamera::follow(double dt, const CameraCue& cue, std::span<const CameraFigure> figures, bool snap) {
     const double k = snap ? 1.0 : 1.0 - std::exp(-dt / std::max(tuning_.follow, 1e-6));
     const double kSlow = snap ? 1.0 : 1.0 - std::exp(-dt / std::max(tuning_.follow * 2.0, 1e-6));
+    coverK_ = snap ? 1.0 : 1.0 - std::exp(-dt / std::max(tuning_.follow * 2.5, 1e-6));
 
     CamVec enemyC;
     double enemyH = 110.0;
@@ -149,6 +150,9 @@ void BattleCamera::follow(double dt, const CameraCue& cue, std::span<const Camer
         const double ahead = shot_ == CameraShot::Aim ? tuning_.aimLookAhead : tuning_.chooseLookAhead;
         goal = lerp(a.pos, at, ahead);
         goal.z = 0.5 * (0.8 * a.height + 0.55 * th);
+        CamVec chest = at;
+        chest.z = 0.55 * th;
+        focus_ = snap ? chest : lerp(focus_, chest, k);
         break;
     }
     case CameraShot::Behind: {
@@ -179,7 +183,7 @@ void BattleCamera::follow(double dt, const CameraCue& cue, std::span<const Camer
     look_ = snap ? goal : lerp(look_, goal, k);
 }
 
-BattleCameraPose BattleCamera::solve(const CameraCue& /*cue*/, std::span<const CameraFigure> figures) const {
+BattleCameraPose BattleCamera::solve(const CameraCue& /*cue*/, std::span<const CameraFigure> figures) {
     BattleCameraPose out;
     out.look = look_;
     const CamVec r = right();
@@ -190,6 +194,30 @@ BattleCameraPose BattleCamera::solve(const CameraCue& /*cue*/, std::span<const C
         out.eye = a.pos - forward_ * tuning_.chooseBack + r * (side_ * tuning_.chooseSide);
         out.eye.z = a.height * tuning_.chooseEye;
         out.fov = shot_ == CameraShot::Aim ? tuning_.aimFov : tuning_.chooseFov;
+        // The other lead may stand on the line between the camera and the target: then the camera rises until that line
+        // passes over their head, by degrees as the line nears their body, so the picked enemy is never hidden by an ally.
+        double lift = 0.0;
+        for (std::size_t i = 0; i < figures.size(); ++i) {
+            const CameraFigure& f = figures[i];
+            if (!f.party || !f.alive || static_cast<int>(i) == actor_) continue;
+            const double dx = focus_.x - out.eye.x;
+            const double dy = focus_.y - out.eye.y;
+            const double len2 = dx * dx + dy * dy;
+            if (len2 < 1e-6) continue;
+            const double s = ((f.pos.x - out.eye.x) * dx + (f.pos.y - out.eye.y) * dy) / len2;
+            if (s <= 0.0 || s >= 1.0) continue;
+            const double d = std::hypot(f.pos.x - (out.eye.x + dx * s), f.pos.y - (out.eye.y + dy * s));
+            const double span = std::max(tuning_.coverOuter - tuning_.coverInner, 1e-6);
+            const double w = 1.0 - std::clamp((d - f.radius - tuning_.coverInner) / span, 0.0, 1.0);
+            if (w <= 0.0) continue;
+            const double sc = std::min(s, 0.9);
+            const double need = f.height + tuning_.coverAbove;
+            const double req = std::min((need - sc * focus_.z) / (1.0 - sc), 380.0);
+            if (req > out.eye.z) lift = std::max(lift, w * w * (3.0 - 2.0 * w) * (req - out.eye.z));
+        }
+        // The rise follows its goal rather than jumping to it: the line of sight sweeps past an ally quickly when the pick moves.
+        cover_ += (lift - cover_) * coverK_;
+        out.eye.z += cover_;
         // The actor stays in the frame's lower corner: the look may turn from the actor by no more than a share of the
         // half field of view, whatever the target's bearing (so a target across the stage does not push the actor off
         // the edge of the picture).

@@ -63,6 +63,14 @@ double offAxis(const BattleCameraPose& pose, const CamVec& p) {
     return std::acos(std::clamp(c, -1.0, 1.0)) * 180.0 / kPi;
 }
 
+// Whether `p` is within the picture's height: the picture is 16:9 and `fov` is its horizontal angle.
+bool inFrameVertically(const BattleCameraPose& pose, const CamVec& p) {
+    const double halfV = std::atan(std::tan(pose.fov * 0.5 * kPi / 180.0) * 9.0 / 16.0);
+    const double pitch = std::atan2(pose.look.z - pose.eye.z, std::hypot(pose.look.x - pose.eye.x, pose.look.y - pose.eye.y));
+    const double to = std::atan2(p.z - pose.eye.z, std::hypot(p.x - pose.eye.x, p.y - pose.eye.y));
+    return std::fabs(to - pitch) < halfV;
+}
+
 // The distance from `p` to the segment a-b on the ground plane.
 double segmentDistance(const CamVec& a, const CamVec& b, const CamVec& p) {
     const double dx = b.x - a.x, dy = b.y - a.y;
@@ -129,7 +137,7 @@ TEST_CASE("camera: choosing is over the shoulder of whoever acts, behind them, w
                 // Close: behind the actor along the axis, a shoulder to one side, about head height.
                 CHECK(cam.depthOf(p.eye) == doctest::Approx(cam.depthOf(a.pos) - cam.tuning().chooseBack));
                 CHECK(std::fabs(cam.lateralOf(p.eye) - cam.lateralOf(a.pos)) == doctest::Approx(cam.tuning().chooseSide));
-                CHECK(p.eye.z == doctest::Approx(a.height * cam.tuning().chooseEye));
+                CHECK(p.eye.z >= a.height * cam.tuning().chooseEye - 1e-9); // head height, or higher when an ally is in the line of sight
                 CHECK(dist2(p.eye, a.pos) < 330.0);
                 // On the target's side of the actor.
                 const double across = cam.lateralOf(t.pos) - cam.lateralOf(a.pos);
@@ -139,11 +147,46 @@ TEST_CASE("camera: choosing is over the shoulder of whoever acts, behind them, w
                 // Both in the frame, and the target not behind the actor's body.
                 CHECK(offAxis(p, a.pos) < p.fov * 0.5);
                 CHECK(offAxis(p, t.pos) < p.fov * 0.5 * 0.9);
+                CHECK(inFrameVertically(p, {a.pos.x, a.pos.y, a.height})); // the actor's head
+                CHECK(inFrameVertically(p, {t.pos.x, t.pos.y, 0.55 * t.height}));
                 CHECK(segmentDistance(p.eye, t.pos, a.pos) > a.radius);
+                // ...nor behind the other lead: the line of sight to the target's chest clears their body sideways or passes
+                // over their head.
+                for (int o = 0; o < 2; ++o) {
+                    if (o == actor) continue;
+                    const CameraFigure& other = figures[static_cast<std::size_t>(o)];
+                    const double dx = t.pos.x - p.eye.x, dy = t.pos.y - p.eye.y;
+                    const double s = std::clamp(((other.pos.x - p.eye.x) * dx + (other.pos.y - p.eye.y) * dy) / (dx * dx + dy * dy), 0.0, 1.0);
+                    const double lineZ = p.eye.z + (0.55 * t.height - p.eye.z) * s;
+                    CHECK((segmentDistance(p.eye, t.pos, other.pos) > other.radius || lineZ >= other.height));
+                }
                 checkSafe(cam, figures);
             }
         }
     }
+}
+
+TEST_CASE("camera: an ally on the line of sight is looked over, and the lift comes smoothly as the line nears them") {
+    // Devin (slot 0) choosing against the far enemy of a four-line: the second lead stands in the way.
+    const auto figures = stage(2, 4);
+    BattleCamera cam;
+    cam.begin(figures);
+    run(cam, choosing(0, 5), figures, 2.0);
+    const double blocked = cam.pose().eye.z;
+    CHECK(blocked > figures[1].height);
+    // The same lead against the near enemy, which nothing hides, stays at head height.
+    BattleCamera clear;
+    clear.begin(figures);
+    run(clear, choosing(0, 2), figures, 2.0);
+    CHECK(clear.pose().eye.z == doctest::Approx(figures[0].height * clear.tuning().chooseEye));
+    // Cycling through every enemy moves the height by bounded steps (no pop when the ally enters the line).
+    double last = clear.pose().eye.z, worst = 0.0;
+    for (int frame = 0; frame < 600; ++frame) {
+        clear.update(kStep, choosing(0, 2 + (frame / 60) % 4), figures);
+        worst = std::max(worst, std::fabs(clear.pose().eye.z - last));
+        last = clear.pose().eye.z;
+    }
+    CHECK(worst < 15.0);
 }
 
 TEST_CASE("camera: a skill that hits them all frames the enemy line; aim zooms on its target") {
@@ -168,6 +211,19 @@ TEST_CASE("camera: a skill that hits them all frames the enemy line; aim zooms o
     CHECK(aim.pose().fov < choose.fov - 10.0);
     // The target is the middle of the picture.
     CHECK(offAxis(aim.pose(), figures[3].pos) < 8.0);
+    CHECK(inFrameVertically(aim.pose(), {figures[1].pos.x, figures[1].pos.y, figures[1].height}));
+
+    // Aiming past the other lead: the camera rises over them, and the aiming lead's head stays in the picture.
+    const auto four = stage(2, 4);
+    BattleCamera past;
+    past.begin(four);
+    CameraCue shot = choosing(0, 5);
+    shot.phase = Phase::PartyAim;
+    run(past, shot, four, 2.0);
+    CHECK(past.pose().eye.z > four[0].height * past.tuning().chooseEye + 20.0);
+    CHECK(inFrameVertically(past.pose(), {four[0].pos.x, four[0].pos.y, four[0].height}));
+    CHECK(inFrameVertically(past.pose(), {four[5].pos.x, four[5].pos.y, 0.55 * four[5].height}));
+    checkSafe(past, four);
     CHECK(aim.depthOf(aim.pose().eye) == doctest::Approx(aim.depthOf(figures[1].pos) - aim.tuning().chooseBack));
     checkSafe(aim, figures);
 }
