@@ -122,6 +122,8 @@ int32 FTArenaStage::Build(UWorld* World, const ftcore::ArenaStageLayout& Layout)
 			continue;
 		}
 		Lamp->PointLightComponent->SetMobility(EComponentMobility::Movable);
+		// Say the unit: the component's default is the legacy unitless one, a few hundred times dimmer.
+		Lamp->PointLightComponent->SetIntensityUnits(ELightUnits::Candelas);
 		Lamp->PointLightComponent->SetIntensity(L.intensity * kLampCandela);
 		Lamp->PointLightComponent->SetLightColor(FLinearColor(L.r, L.g, L.b));
 		Lamp->PointLightComponent->SetAttenuationRadius(L.radius * 100.f);

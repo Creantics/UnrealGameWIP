@@ -98,22 +98,24 @@ WorldLook worldLook(StylePack world) {
         w.roles = {StageRoleLook{0.05f, 0.05f, 0.06f, 0.45f, 0.f, 0.f},   StageRoleLook{0.03f, 0.03f, 0.04f, 0.8f, 0.f, 0.f},
                    StageRoleLook{0.10f, 0.09f, 0.12f, 0.7f, 0.f, 0.f},    StageRoleLook{0.55f, 0.12f, 1.f, 0.4f, 0.f, 6.f},
                    StageRoleLook{0.75f, 0.35f, 0.12f, 0.6f, 0.f, 0.8f},   StageRoleLook{0.02f, 0.015f, 0.03f, 0.9f, 0.f, 0.f},
-                   StageRoleLook{0.01f, 0.015f, 0.03f, 0.04f, 0.85f, 0.f}};
-        w.look.sunLux = 0.6f;
+                   StageRoleLook{0.15f, 0.4f, 0.9f, 0.04f, 0.f, 2.5f}};
+        w.look.sunLux = 0.8f;
         w.look.sunKelvin = 9000.f;
-        w.look.skyLight = 0.35f;
+        w.look.skyLight = 0.5f;
+        w.look.exposureMinEV100 = 6.5f; // held: a night street stays dark between its lamps
+        w.look.exposureMaxEV100 = 6.5f;
         w.look.fogDensity = 0.045f;
         w.look.fogFalloff = 0.25f;
         w.look.volumetricFog = 1.f;
         w.look.fogForward = 0.5f;
         w.look.clouds = 0.f;
-        w.look.exposureBias = 1.5f;
+        w.look.exposureBias = 0.5f;
         w.look.saturation = 1.08f;
         w.look.contrast = 1.1f;
         w.look.bloom = 1.1f;
         w.look.vignette = 0.5f;
         w.sunYaw = 215.f;
-        w.sunPitch = -24.f;
+        w.sunPitch = 8.f; // below the horizon: night
         w.fogR = 0.10f; w.fogG = 0.06f; w.fogB = 0.18f;
         w.lightA[0] = 1.f; w.lightA[1] = 0.55f; w.lightA[2] = 0.2f;   // sodium
         w.lightB[0] = 0.6f; w.lightB[1] = 0.2f; w.lightB[2] = 1.f;    // cursed purple
@@ -122,12 +124,14 @@ WorldLook worldLook(StylePack world) {
         break;
     case StylePack::Lattice: // a game-themed world: mid blue ground, pale structure, blue data light
         w.roles = {StageRoleLook{0.16f, 0.24f, 0.38f, 0.3f, 0.2f, 0.f},   StageRoleLook{0.08f, 0.12f, 0.2f, 0.5f, 0.f, 0.f},
-                   StageRoleLook{0.55f, 0.65f, 0.8f, 0.35f, 0.3f, 0.f},   StageRoleLook{0.15f, 0.55f, 1.f, 0.3f, 0.f, 5.f},
-                   StageRoleLook{0.3f, 0.7f, 1.f, 0.3f, 0.f, 3.f},        StageRoleLook{0.05f, 0.07f, 0.12f, 0.6f, 0.f, 0.f},
-                   StageRoleLook{0.02f, 0.14f, 0.32f, 0.03f, 0.6f, 0.6f}};
-        w.look.sunLux = 4.f;
-        w.look.sunKelvin = 7500.f;
-        w.look.skyLight = 0.9f;
+                   StageRoleLook{0.55f, 0.65f, 0.8f, 0.35f, 0.3f, 0.f},   StageRoleLook{0.15f, 0.55f, 1.f, 0.3f, 0.f, 14.f},
+                   StageRoleLook{0.3f, 0.7f, 1.f, 0.3f, 0.f, 8.f},        StageRoleLook{0.05f, 0.07f, 0.12f, 0.6f, 0.f, 0.f},
+                   StageRoleLook{0.1f, 0.5f, 1.f, 0.03f, 0.f, 30.f}};
+        w.look.sunLux = 300.f;
+        w.look.sunKelvin = 10000.f;
+        w.look.skyLight = 1.f;
+        w.look.exposureMinEV100 = 8.f; // held: the sky is a bright blue, the glow reads against it
+        w.look.exposureMaxEV100 = 8.f;
         w.look.fogDensity = 0.02f;
         w.look.fogFalloff = 0.2f;
         w.look.volumetricFog = 1.f;
@@ -138,7 +142,7 @@ WorldLook worldLook(StylePack world) {
         w.look.bloom = 1.3f;
         w.look.vignette = 0.35f;
         w.sunYaw = 40.f;
-        w.sunPitch = -42.f;
+        w.sunPitch = -35.f;
         w.fogR = 0.22f; w.fogG = 0.42f; w.fogB = 0.8f;
         w.lightA[0] = 0.3f; w.lightA[1] = 0.6f; w.lightA[2] = 1.f;
         w.lightB[0] = 0.5f; w.lightB[1] = 0.85f; w.lightB[2] = 1.f;
@@ -149,21 +153,23 @@ WorldLook worldLook(StylePack world) {
         w.roles = {StageRoleLook{0.10f, 0.11f, 0.12f, 0.85f, 0.f, 0.f},   StageRoleLook{0.05f, 0.055f, 0.06f, 0.9f, 0.f, 0.f},
                    StageRoleLook{0.17f, 0.18f, 0.19f, 0.8f, 0.f, 0.f},    StageRoleLook{0.5f, 0.65f, 0.8f, 0.5f, 0.f, 1.2f},
                    StageRoleLook{0.4f, 0.45f, 0.5f, 0.6f, 0.f, 0.3f},     StageRoleLook{0.02f, 0.02f, 0.025f, 0.9f, 0.f, 0.f},
-                   StageRoleLook{0.005f, 0.008f, 0.01f, 0.02f, 0.9f, 0.f}};
-        w.look.sunLux = 0.25f;
+                   StageRoleLook{0.5f, 0.6f, 0.7f, 0.02f, 0.f, 1.2f}};
+        w.look.sunLux = 0.1f;
         w.look.sunKelvin = 10000.f;
-        w.look.skyLight = 0.2f;
+        w.look.skyLight = 0.3f;
+        w.look.exposureMinEV100 = 5.5f;
+        w.look.exposureMaxEV100 = 5.5f;
         w.look.fogDensity = 0.14f;
         w.look.fogFalloff = 0.15f;
         w.look.volumetricFog = 1.5f;
         w.look.fogForward = 0.2f;
         w.look.clouds = 0.f;
-        w.look.exposureBias = 1.5f;
+        w.look.exposureBias = 0.5f;
         w.look.saturation = 0.6f;
         w.look.bloom = 0.5f;
         w.look.vignette = 0.7f;
         w.sunYaw = 120.f;
-        w.sunPitch = -15.f;
+        w.sunPitch = 12.f;
         w.fogR = 0.07f; w.fogG = 0.08f; w.fogB = 0.1f;
         w.lightA[0] = 0.7f; w.lightA[1] = 0.8f; w.lightA[2] = 1.f;
         w.lightB[0] = 0.55f; w.lightB[1] = 0.65f; w.lightB[2] = 0.8f;
@@ -181,7 +187,7 @@ WorldLook worldLook(StylePack world) {
         w.lightA[0] = 1.f; w.lightA[1] = 0.82f; w.lightA[2] = 0.6f;
         w.lightB[0] = 1.f; w.lightB[1] = 0.82f; w.lightB[2] = 0.6f;
         w.lightHeight = 1.f;
-        w.lightScale = 1.f;
+        w.lightScale = 0.05f; // the old demo's lamps were in the engine's legacy unit: next to a few lux of sun, a glow
         break;
     }
     return w;

@@ -1005,7 +1005,7 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	{
 		return true;
 	}
-	if (bOverview && OverviewPhase < 2 && OverviewShot())
+	if (bOverview && OverviewPhase < 3 && OverviewShot())
 	{
 		return true;
 	}
@@ -1107,9 +1107,33 @@ bool AFTArenaGameMode::OverviewShot()
 	{
 		// High over the south-west of the stage, looking at its middle: far enough to take in the landmarks.
 		const float Reach = Layout.floorRadius + 14.f * Layout.sizing.propScale;
-		const float Distance = Reach * 1.55f;
+		const float Distance = Reach * 1.4f;
 		const FVector Target(0.0, 0.0, 200.0 * Layout.sizing.propScale);
-		const FVector From = Target + FVector(-0.62 * Distance, -0.6 * Distance, 0.52 * Distance) * 100.0;
+		// From the side of the stage with the widest gap between landmarks, so none stands in front of the camera.
+		float BestAzimuth = 3.9f; // south-west
+		float BestGap = -1.f;
+		for (int32 Step = 0; Step < 72; ++Step)
+		{
+			const float Azimuth = UE_TWO_PI * static_cast<float>(Step) / 72.f;
+			float Gap = UE_PI;
+			for (const ftcore::StagePiece& Piece : Layout.pieces)
+			{
+				if (Piece.group == ftcore::StageGroup::Landmark)
+				{
+					Gap = FMath::Min(Gap, FMath::Abs(FMath::FindDeltaAngleRadians(Azimuth, FMath::Atan2(Piece.at.y, Piece.at.x))));
+				}
+			}
+			if (Gap > BestGap + 0.01f)
+			{
+				BestGap = Gap;
+				BestAzimuth = Azimuth;
+			}
+		}
+		if (BestGap >= UE_PI - 0.01f)
+		{
+			BestAzimuth = 3.9f; // no landmarks: the south-west
+		}
+		const FVector From = Target + FVector(FMath::Cos(BestAzimuth) * 0.7 * Distance, FMath::Sin(BestAzimuth) * 0.7 * Distance, 0.8 * Distance) * 100.0;
 		FActorSpawnParameters Params;
 		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 		ACameraActor* Camera = GetWorld()->SpawnActor<ACameraActor>(From, (Target - From).Rotation(), Params);
@@ -1129,7 +1153,13 @@ bool AFTArenaGameMode::OverviewShot()
 		ShotHoldUntil = ShotWall + 1.5;
 		return true;
 	}
-	TakeShot(TEXT("0_overview"), false);
+	if (OverviewPhase == 1)
+	{
+		// The screenshot is taken on the next frame, so the camera stays until the hold after it has passed.
+		TakeShot(TEXT("0_overview"), false);
+		OverviewPhase = 2;
+		return true;
+	}
 	PC->SetViewTarget(PlayerFigure);
 	if (AHUD* Hud = PC->GetHUD())
 	{
@@ -1139,7 +1169,8 @@ bool AFTArenaGameMode::OverviewShot()
 	{
 		OverviewCamera->Destroy();
 	}
-	OverviewPhase = 2;
+	OverviewPhase = 3;
+	ShotHoldUntil = ShotWall + 0.7;
 	return true;
 }
 

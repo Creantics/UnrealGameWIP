@@ -69,6 +69,13 @@ radius-derived height, 1.75 m at 0.4 m), held to 1..6: the shipped wave and a hu
 | Camera | arm 6.4 m x (0.35 + 0.65 k), at most 4.2x; the pivot's height, the shoulder offset and the lock pitch (-20 toward -8 degrees) follow, so a giant's head stays in frame |
 | Fog | thinned by 1 / (0.5 + 0.5 propScale), so a big boss stays readable |
 
+The worlds' light is set in `Core/src/ArenaStage.cpp` (`worldLook`): Solhaven is a night (the sun under the horizon, a held
+exposure, sodium and purple lamps, a faint blue water sheen), Lattice a bright blue sky with pale structure and glowing
+blue seams and water, Unwritten thick fog and one or two cold lamps over grey, half-formed ground. The lamps are in
+candelas (`SetIntensityUnits`): the old demo's unitless lamps were far dimmer than the same number in candelas, so the
+generic world's lamps are scaled down to match. A held exposure means the worlds do not brighten toward the same grey;
+if a world is retuned, retune its glow strengths with it (they are in the same units as the exposure).
+
 The figure of an enemy is as tall as its `height` and as wide as its `bodyRadius` (up to 6 m). The numbers for
 the shipped stages are printed by the `arena stage` tests and in the log line `Arena: built stage ...`.
 
@@ -210,6 +217,7 @@ each frame and handed to the fight on its next step, so no press is lost between
 | `-ArenaHoldLoad` | The autopilot keeps its Load until it is overloaded (to see the overload; not a way to play). |
 | `-ArenaShot=<path prefix>` | Autoplay and save the views (`_1_ring`, `_2_tell` with the Read cards picked, `_3_impact`, `_4_load` with the gauge past a third, or the overload under `-ArenaHoldLoad`, `_5_release`, `_6_result` .png), then quit; a view the fight never reaches is skipped. Needs a renderer (`-RenderOffScreen`, not `-NullRHI`). |
 | `-ArenaShotDelay=S` | Seconds before the first screenshot (the fight waits for it). |
+| `-ArenaOverview` | With `-ArenaShot`, a first view `_0_overview` of the whole stage from a camera high over the side with the widest gap between landmarks, HUD off. |
 
 At the end of every fight the log gets one line with counts only:
 

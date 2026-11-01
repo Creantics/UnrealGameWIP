@@ -229,7 +229,7 @@ private:
 	// each so the frame it renders is the moment it was taken for.
 	FString ShotPrefix;
 	bool bOverview = false;
-	int32 OverviewPhase = 0; // 0 not yet, 1 camera placed, 2 taken
+	int32 OverviewPhase = 0; // 0 not yet, 1 camera placed, 2 taken, 3 back on the player
 	UPROPERTY()
 	TObjectPtr<AActor> OverviewCamera;
 	float ShotDelay = 8.f;
