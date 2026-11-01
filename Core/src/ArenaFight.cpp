@@ -26,6 +26,7 @@ constexpr float kArenaLockNearWeight = 0.3f;
 constexpr int kArenaAutoHealPercent = 40;  // the autopilot heals below this share of its hp ...
 constexpr float kArenaAutoParryWindow = 0.12f; // ... and parries only with a window at least this long
 constexpr float kArenaAutoStand = 0.85f;   // it closes in to this share of its reach before it swings
+constexpr int kArenaAutoReleaseAt = 60;    // it releases its Load from this much on an upright enemy in reach
 constexpr float kArenaParkOffset = 1.5f;   // follower spots: metres outside the ring ...
 constexpr float kArenaParkSpacing = 2.0f;  // ... and metres between neighbours along its edge
 constexpr float kArenaSpawnGapRadii = 4.0f; // enemy start points: neighbours this many body radii apart along the arc
@@ -177,6 +178,7 @@ struct ArenaFightImpl {
         case ArenaAction::Light: return &f.light[std::min<std::size_t>(p.move, f.lightCount - 1u)];
         case ArenaAction::Heavy: return &f.heavy;
         case ArenaAction::Riposte: return &f.riposte;
+        case ArenaAction::Release: return &f.release;
         default: return nullptr;
         }
     }
@@ -191,7 +193,8 @@ struct ArenaFightImpl {
             return true;
         case ArenaAction::Light:
         case ArenaAction::Heavy:
-        case ArenaAction::Riposte: {
+        case ArenaAction::Riposte:
+        case ArenaAction::Release: {
             const ArenaAttack& a = *attackOf(p, f);
             return p.actionTime >= a.startup + a.active + a.cancel * a.recovery;
         }
@@ -245,13 +248,15 @@ struct ArenaFightImpl {
             po.part = arenaPartOf(*a, pl.actionTime);
             po.move = pl.move;
         }
-        po.invulnerable = pl.action == ArenaAction::Riposte ||
+        po.invulnerable = pl.action == ArenaAction::Riposte || pl.action == ArenaAction::Release ||
                           (pl.action == ArenaAction::Dodge && pl.actionTime >= fi.dodgeInvulnStart &&
                            pl.actionTime < fi.dodgeInvulnEnd);
         po.parrying = pl.action == ArenaAction::Guard && pl.parryLeft > 0.f;
         po.lock = pl.lock;
         po.dodgeDir = pl.dodgeDir;
         po.backstep = pl.backstep;
+        po.load = pl.gauge.value;
+        po.overloaded = pl.gauge.overloaded();
         for (std::size_t i = 0; i < kMaxArenaEnemies; ++i) {
             ArenaEnemyOut& eo = out.enemies[i];
             const Enemy& foe = foes[i];
@@ -529,19 +534,60 @@ struct ArenaFightImpl {
         pl.actionTime = 0.f;
     }
 
+    // The Release: open only above kArenaReleaseOpenLoad, whatever the stamina (the two gauges are apart). All the
+    // Load goes at once; the strike's hits turn it into poise damage.
+    bool startRelease(const ArenaInput& in) {
+        if (pl.gauge.value <= kArenaReleaseOpenLoad) return false;
+        pl.chainLive = false;
+        faceAtStart(in);
+        pl.releaseSpent = pl.gauge.release();
+        ++stats.releases;
+        beginAttack(ArenaAction::Release, kArenaReleaseMove, fi.release);
+        emit(ArenaEventType::Released, kArenaPlayer, kArenaNobody, kArenaReleaseMove, pl.releaseSpent, pl.pos);
+        return true;
+    }
+
     bool startAction(Press what, const ArenaInput& in) {
+        // Overloaded: light (and so the riposte), heavy and heal are refused until a Release.
+        const bool locked = pl.gauge.overloaded();
         switch (what) {
-        case Press::Light: return startLight(in);
-        case Press::Heavy: return startHeavy(in);
+        case Press::Light: return !locked && startLight(in);
+        case Press::Heavy: return !locked && startHeavy(in);
         case Press::Dodge: return startDodge(in);
-        case Press::Heal: return startHeal();
+        case Press::Heal: return !locked && startHeal();
+        case Press::Release: return startRelease(in);
         default: return false;
         }
+    }
+
+    // ---- the paired counter ----
+
+    // A parry and the partner's press within pairWindow of each other (either first) pair once: the parried enemy,
+    // if it is still open, takes pairHits of light[0]'s hits and is staggered.
+    void tryPair() {
+        if (pl.pairFoe == kArenaNobody || std::fabs(pl.pairParry - pl.pairPress) > fi.pairWindow + kArenaEps) return;
+        const std::size_t i = pl.pairFoe;
+        pl.pairFoe = kArenaNobody;
+        pl.pairParry = -1.0e9f;
+        pl.pairPress = -1.0e9f;
+        if (!alive(i) || foes[i].brain != ArenaBrain::Open) return;
+        Enemy& foe = foes[i];
+        const int amount = std::min(static_cast<int>(fi.pairHits) * fi.light[0].damage, foe.hp);
+        foe.hp -= amount;
+        stats.damageDealt += amount;
+        ++stats.counterStaggers;
+        emit(ArenaEventType::CounterStagger, kArenaPlayer, id(i), 0, amount, foe.pos);
+        if (foe.hp <= 0) killEnemy(i);
+        else staggerEnemy(i);
     }
 
     void stepPlayer(const ArenaInput& in) {
         regenerate();
         handleLock(in);
+        if (in.pair && pl.hp > 0) { // the partner's press: it pairs with a parry just before, or waits for one
+            pl.pairPress = t0;
+            tryPair();
+        }
 
         // The guard flag going up is a press; it opens the parry window unless the last press was less than
         // parryRearm ago. Every press counts, so mashing guard opens nothing.
@@ -560,6 +606,7 @@ struct ArenaFightImpl {
         if (in.heavy) press = Press::Heavy;
         if (in.heal) press = Press::Heal;
         if (in.dodge) press = Press::Dodge;
+        if (in.release) press = Press::Release;
         if (press != Press::None) {
             pl.buffered = press;
             pl.bufferAge = 0.f;
@@ -612,6 +659,7 @@ struct ArenaFightImpl {
         case ArenaAction::Light:
         case ArenaAction::Heavy:
         case ArenaAction::Riposte:
+        case ArenaAction::Release:
             vel = advanceAttack(stick, pushed, a0, a1);
             break;
         case ArenaAction::Dodge: {
@@ -671,7 +719,7 @@ struct ArenaFightImpl {
             }
             if (have) pl.facing = arenaTurn(pl.facing, want, a.tracking * (std::min(a1, a.startup) - a0));
         }
-        pl.invulnerable = pl.action == ArenaAction::Riposte;
+        pl.invulnerable = pl.action == ArenaAction::Riposte || pl.action == ArenaAction::Release;
         // Only the active part connects; a tick whose interval overlaps it tests, so a long frame can't skip it.
         if (a1 > a.startup && a0 < a.startup + a.active) playerStrike(a);
         // The lunge: `lunge` metres forward, spread over startup and active.
@@ -758,16 +806,19 @@ struct ArenaFightImpl {
                 continue;
             }
             // Poise: only an enemy on its feet loses it; `armor` ignores a share of it during an attack's startup
-            // and active parts.
+            // and active parts. A Release adds the Load it spent, times releasePoise.
             const bool upright = foe.brain == ArenaBrain::Approach || foe.brain == ArenaBrain::Strafe ||
                                  foe.brain == ArenaBrain::Attack;
-            if (a.poiseDamage <= 0.f || !upright) continue;
+            const float poise = a.poiseDamage + (pl.action == ArenaAction::Release
+                                                     ? static_cast<float>(pl.releaseSpent) * fi.releasePoise
+                                                     : 0.f);
+            if (poise <= 0.f || !upright) continue;
             float share = 0.f;
             if (foe.brain == ArenaBrain::Attack) {
                 const ArenaAttack& own = def.enemies[i].moves[foe.move].attack;
                 if (foe.stateTime < own.startup + own.active) share = std::clamp(own.armor, 0.f, 1.f);
             }
-            foe.poise -= a.poiseDamage * (1.f - share);
+            foe.poise -= poise * (1.f - share);
             foe.lastPoiseHit = t1;
             if (foe.poise <= 0.f) staggerEnemy(i);
         }
@@ -947,10 +998,15 @@ struct ArenaFightImpl {
         const bool guarding = pl.action == ArenaAction::Guard && arenaDot(pl.facing, toFoe) >= fi.guardArcCos;
         foe.hitPlayer = true; // connected: parried, blocked or landed, it is spent
         if (guarding && pl.parryLeft > 0.f && mv.parryable) {
-            // No damage, no stamina cost: the enemy is open.
+            // No damage, no stamina cost: the enemy is open. The parry is the perfect guard: it stores the blow as Load.
             ++stats.parries;
             emit(ArenaEventType::Parried, source, kArenaPlayer, foe.move, 0, pl.pos);
+            const std::uint8_t move = foe.move;
             interrupt(i, ArenaBrain::Open);
+            storeLoad(source, move, a.damage);
+            pl.pairParry = t0;
+            pl.pairFoe = source;
+            tryPair();
             return;
         }
         if (guarding && !mv.unblockable) {
@@ -991,6 +1047,20 @@ struct ArenaFightImpl {
             pl.actionTime = 0.f;
             pl.velocity = Vec2{};
             emit(ArenaEventType::Staggered, source, kArenaPlayer, foe.move, 0, pl.pos);
+        }
+    }
+
+    // A parry stores the parried attack's damage times loadShare; Overloaded comes once, as the gauge fills.
+    void storeLoad(std::uint8_t source, std::uint8_t move, int damage) {
+        const bool was = pl.gauge.overloaded();
+        const int stored = pl.gauge.store(static_cast<int>(std::lround(static_cast<float>(damage) * fi.loadShare)));
+        if (stored > 0) {
+            stats.loadStored += stored;
+            emit(ArenaEventType::LoadStored, source, kArenaPlayer, move, stored, pl.pos);
+        }
+        if (!was && pl.gauge.overloaded()) {
+            ++stats.overloads;
+            emit(ArenaEventType::Overloaded, kArenaPlayer, kArenaPlayer, 0, pl.gauge.value, pl.pos);
         }
     }
 
@@ -1205,7 +1275,8 @@ struct ArenaFightImpl {
         }
 
         // Heal when low, and nothing is near or winding up.
-        if (p.charges > 0 && p.hp * 100 < kArenaAutoHealPercent * f.hp && !windingUp) {
+        const bool locked = p.gauge.overloaded(); // Overloaded: no heal, no attack but the Release
+        if (!locked && p.charges > 0 && p.hp * 100 < kArenaAutoHealPercent * f.hp && !windingUp) {
             bool crowded = false;
             for (std::size_t i = 0; i < count; ++i) {
                 if (!living(i) || down(i)) continue;
@@ -1218,6 +1289,18 @@ struct ArenaFightImpl {
                 in.heal = true;
                 return in;
             }
+        }
+
+        // Overloaded: close on the target (the locked enemy, else the nearest) and release on it.
+        if (locked) {
+            const std::size_t target = (p.lock != kArenaNobody && living(p.lock)) ? static_cast<std::size_t>(p.lock)
+                                                                               : static_cast<std::size_t>(nearest);
+            const Vec2 to = arenaSub(self.enemy_[target].pos, p.pos);
+            if (arenaLength(to) > (f.release.range + self.def_.enemies[target].bodyRadius) * kArenaAutoStand)
+                in.move = arenaUnit(to, p.facing);
+            else
+                in.release = true;
+            return in;
         }
 
         // An open enemy: riposte it (in reach and in front), else turn to it and close in.
@@ -1248,6 +1331,12 @@ struct ArenaFightImpl {
         for (std::size_t l = 0; l < f.lightCount; ++l) {
             range = std::min(range, f.light[l].range);
             cost = std::max(cost, f.light[l].stamina);
+        }
+        // Enough Load and an upright target in the Release's reach: spend it as poise damage.
+        if (p.gauge.value >= kArenaAutoReleaseAt && !down(target) &&
+            d <= (f.release.range + self.def_.enemies[target].bodyRadius) * kArenaAutoStand) {
+            in.release = true;
+            return in;
         }
         const float reach = range + self.def_.enemies[target].bodyRadius;
         if (d > reach * kArenaAutoStand) {
@@ -1327,6 +1416,8 @@ Vec2 ArenaFight::enemyStart(std::size_t i) const { return i < kMaxArenaEnemies ?
 Vec2 ArenaFight::enemyStartFacing(std::size_t i) const { return i < kMaxArenaEnemies ? enemyStartFacing_[i] : Vec2{1.f, 0.f}; }
 
 int ArenaFight::hp() const { return player_.hp; }
+int ArenaFight::load() const { return player_.gauge.value; }
+bool ArenaFight::overloaded() const { return player_.gauge.overloaded(); }
 float ArenaFight::stamina() const { return player_.stamina; }
 float ArenaFight::poise() const { return player_.poise; }
 std::uint8_t ArenaFight::healCharges() const { return player_.charges; }
@@ -1350,8 +1441,17 @@ const char* arenaActionName(ArenaAction a) {
     case ArenaAction::Hitstun: return "Hitstun";
     case ArenaAction::GuardBreak: return "GuardBreak";
     case ArenaAction::Downed: return "Downed";
+    case ArenaAction::Release: return "Release";
     }
     return "";
+}
+
+int arenaWholeBeats(float seconds, float bpm) {
+    if (!(bpm > 0.f) || !(seconds > 0.f)) return -1;
+    const float beat = 60.f / bpm;
+    const long beats = std::lround(seconds / beat);
+    if (beats < 1 || std::fabs(seconds - static_cast<float>(beats) * beat) > kArenaBeatTolerance) return -1;
+    return static_cast<int>(beats);
 }
 
 const char* arenaBrainName(ArenaBrain b) {
@@ -1400,6 +1500,13 @@ ArenaDef defaultArenaDef() {
     ArenaAttack& r = f.riposte;
     r.startup = 0.12f; r.active = 0.15f; r.recovery = 0.5f; r.range = 2.6f; r.arcCos = 0.f;
     r.damage = 48; r.poiseDamage = 0.f; r.lunge = 0.5f; r.tracking = 12.f; r.stamina = 0.f; r.cancel = 0.5f; r.maxTargets = 1;
+    ArenaAttack& rel = f.release; // the Release: shaped like the riposte; its poise damage is the Load it spends
+    rel.startup = 0.2f; rel.active = 0.15f; rel.recovery = 0.5f; rel.range = 2.6f; rel.arcCos = 0.f;
+    rel.damage = 30; rel.poiseDamage = 0.f; rel.lunge = 0.5f; rel.tracking = 10.f; rel.stamina = 0.f; rel.cancel = 0.5f;
+    rel.maxTargets = 1;
+
+    // Enemy startups are whole beats at 150 bpm (0.4 s each).
+    def.bpm = 150.f;
 
     // One enemy with a quick strike (move 0) and a slow two-hit string (moves 1 and 2).
     ArenaEnemyKind& k = def.enemies[0];
@@ -1408,7 +1515,7 @@ ArenaDef defaultArenaDef() {
     k.accel = 8.f;
     k.moveCount = 3;
     ArenaEnemyMove& strike = k.moves[0];
-    strike.attack.startup = 0.5f; strike.attack.active = 0.15f; strike.attack.recovery = 0.6f; strike.attack.range = 2.2f;
+    strike.attack.startup = 0.4f; strike.attack.active = 0.15f; strike.attack.recovery = 0.6f; strike.attack.range = 2.2f;
     strike.attack.damage = 12; strike.attack.poiseDamage = 12.f; strike.attack.guardDamage = 16.f; strike.attack.lunge = 0.6f;
     strike.attack.tracking = 4.f;
     strike.minRange = 0.f; strike.maxRange = 2.4f; strike.weight = 1.f;
@@ -1418,8 +1525,8 @@ ArenaDef defaultArenaDef() {
     first.attack.tracking = 3.f;
     first.minRange = 0.f; first.maxRange = 2.6f; first.weight = 0.8f; first.chain = 2;
     ArenaEnemyMove& second = k.moves[2];
-    second.attack.startup = 0.6f; second.attack.active = 0.2f; second.attack.recovery = 0.9f; second.attack.range = 2.6f;
-    second.attack.damage = 14; second.attack.poiseDamage = 18.f; second.attack.guardDamage = 20.f; second.attack.lunge = 0.8f;
+    second.attack.startup = 0.4f; second.attack.active = 0.2f; second.attack.recovery = 0.9f; second.attack.range = 2.6f;
+    second.attack.damage = 12; second.attack.poiseDamage = 18.f; second.attack.guardDamage = 20.f; second.attack.lunge = 0.8f;
     second.attack.tracking = 2.5f;
     second.minRange = 0.f; second.maxRange = 3.f; second.weight = 0.f;
     def.enemyCount = 1;
@@ -1518,7 +1625,10 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             dodgeTime (0, 10]; dodgeDistance 0..100; dodgeInvulnStart <= dodgeInvulnEnd <= dodgeTime;
 //             dodgeStamina 0..100000; dodgeCancel, guardAbsorb, guardMoveScale, healMoveScale 0..1;
 //             guardArcCos -1..1; riposteReach (0, 100]; healCharges 0..99; healAmount 0..100000;
-//             lockRange (0, 1000]; lockBreak (0, 1000] and at least lockRange; moveAccel, moveBrake 0..1000
+//             lockRange (0, 1000]; lockBreak (0, 1000] and at least lockRange; moveAccel, moveBrake 0..1000;
+//             loadShare 0..10; releasePoise 0..1000; pairWindow 0..1; pairHits 0..10; release an attack
+//   bpm       (0, 300], optional; with it every move's startup is a whole number of beats, within
+//             kArenaBeatTolerance
 //   attack    startup, recovery 0..10; active (0, 10]; range (0, 100]; arcCos -1..1; damage, poiseDamage,
 //             guardDamage, stamina 0..100000; lunge, tracking 0..100; armor, cancel 0..1; maxTargets 0..6
 //   enemy     hp 1..100000; poise (0, 100000]; poiseDelay, staggerTime, openTime, downTime, attackDelay 0..10;
@@ -1619,7 +1729,7 @@ void arenaParseAttack(JsonValue j, const std::string& path, ArenaAttack& a, Aren
     arenaByte(j, "maxTargets", a.maxTargets, 0, static_cast<int>(kMaxArenaEnemies), path, errors);
 }
 
-// An attack object that is a value of its own (light entries, heavy, riposte).
+// An attack object that is a value of its own (light entries, heavy, riposte, release).
 void arenaParseAttackObject(JsonValue j, const std::string& path, ArenaAttack& a, ArenaStrings& errors,
                             ArenaStrings* warnings) {
     if (!j.isObject()) {
@@ -1638,7 +1748,8 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
                       "dodgeTime", "dodgeDistance", "dodgeInvulnStart", "dodgeInvulnEnd", "dodgeStamina",
                       "dodgeCancel", "guardArcCos", "guardAbsorb", "guardMoveScale", "guardBreakTime", "parryWindow",
                       "parryRearm", "riposteReach", "healCharges", "healAmount", "healTime", "healRecovery",
-                      "healMoveScale", "lockRange", "lockBreak", "moveAccel", "moveBrake"},
+                      "healMoveScale", "lockRange", "lockBreak", "moveAccel", "moveBrake", "loadShare", "release",
+                      "releasePoise", "pairWindow", "pairHits"},
                      false, warnings);
     arenaInt(j, "hp", f.hp, 1, 100000, path, errors);
     arenaNum(j, "stamina", f.stamina, 0, 100000, true, path, errors);
@@ -1674,6 +1785,10 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
     arenaNum(j, "lockBreak", f.lockBreak, 0, 1000, true, path, errors);
     arenaNum(j, "moveAccel", f.moveAccel, 0, 1000, false, path, errors);
     arenaNum(j, "moveBrake", f.moveBrake, 0, 1000, false, path, errors);
+    arenaNum(j, "loadShare", f.loadShare, 0, 10, false, path, errors);
+    arenaNum(j, "releasePoise", f.releasePoise, 0, 1000, false, path, errors);
+    arenaNum(j, "pairWindow", f.pairWindow, 0, 1, false, path, errors);
+    arenaByte(j, "pairHits", f.pairHits, 0, 10, path, errors);
 
     const JsonValue light = j["light"];
     if (!light.isAbsent()) {
@@ -1687,6 +1802,7 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
     }
     if (j.has("heavy")) arenaParseAttackObject(j["heavy"], path + ".heavy", f.heavy, errors, warnings);
     if (j.has("riposte")) arenaParseAttackObject(j["riposte"], path + ".riposte", f.riposte, errors, warnings);
+    if (j.has("release")) arenaParseAttackObject(j["release"], path + ".release", f.release, errors, warnings);
 
     if (f.dodgeInvulnStart > f.dodgeInvulnEnd)
         errors.push_back(path + ".dodgeInvulnStart: expected at most dodgeInvulnEnd");
@@ -1828,9 +1944,14 @@ bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error
     }
     if (const JsonValue v = root["version"]; !v.isAbsent() && !(v.isInteger() && v.integer() == 1))
         errors.push_back("version: expected 1");
-    arenaUnknownKeys(root, "", {"version", "fighters", "enemies", "default", "fights"}, false, warnings);
+    arenaUnknownKeys(root, "", {"version", "bpm", "fighters", "enemies", "default", "fights"}, false, warnings);
 
     ArenaTable table;
+    if (const JsonValue v = root["bpm"]; !v.isAbsent()) {
+        const double bpm = v.number(-1.0);
+        if (v.isNumber() && std::isfinite(bpm) && bpm > 0.0 && bpm <= 300.0) table.bpm = static_cast<float>(bpm);
+        else errors.push_back("bpm: expected a number in (0, 300]");
+    }
 
     // Fighters: ids unique, "default" among them (and moved to the front).
     const JsonValue fighters = root["fighters"];
@@ -1886,6 +2007,20 @@ bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error
     // ArenaDef::enemyKind holds an index in a byte, and kArenaNoKind is its last value.
     if (table.enemyIds.size() >= kArenaNoKind) errors.push_back("enemies: expected at most 254 kinds");
 
+    // With a bpm, every move's startup is a whole number of beats (within kArenaBeatTolerance).
+    if (table.bpm > 0.f) {
+        for (std::size_t i = 0; i < table.enemies.size(); ++i) {
+            const ArenaEnemyKind& k = table.enemies[i];
+            for (std::size_t m = 0; m < k.moveCount; ++m) {
+                if (arenaWholeBeats(k.moves[m].attack.startup, table.bpm) > 0) continue;
+                errors.push_back("enemies[" + std::to_string(i) + "].moves[" + std::to_string(m) +
+                                 "].startup: expected a whole number of beats at " + arenaFormat(table.bpm) + " bpm (" +
+                                 arenaFormat(60.0 / table.bpm) + " s each, within " +
+                                 arenaFormat(kArenaBeatTolerance) + " s)");
+            }
+        }
+    }
+
     // The default fight, and the fights keyed by scene, beat and step.
     const JsonValue def = root["default"];
     if (!def.isObject()) {
@@ -1893,6 +2028,7 @@ bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error
     } else {
         arenaUnknownKeys(def, "default", {"enemies", "ring", "attackers", "spawn"}, false, warnings);
         table.fallback.fighter = defaultFighter;
+        table.fallback.bpm = table.bpm;
         arenaParseFightBody(def, "default", table, table.fallback, errors);
     }
 
@@ -1925,6 +2061,7 @@ bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error
             entry.step = static_cast<std::uint32_t>(s.integer(0));
         }
         entry.def.fighter = defaultFighter;
+        entry.def.bpm = table.bpm;
         arenaParseFightBody(j, path, table, entry.def, errors);
         if (good && table.findEntry(entry.scene, entry.beat, entry.step))
             errors.push_back(path + ": duplicate entry for " + entry.scene + " beat " + std::to_string(entry.beat) +
