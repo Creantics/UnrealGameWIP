@@ -982,7 +982,7 @@ bool importBeatClips(std::string_view json, BeatClips& out, std::string* error, 
     for (std::uint32_t i = 0; i < list.size(); ++i) {
         const std::string where = "clips[" + std::to_string(i) + "]";
         const JsonValue c = list[i];
-        ld.unknownKeys(c, where, {"id", "length", "impact", "loop"});
+        ld.unknownKeys(c, where, {"id", "asset", "length_s", "impact_s", "loop"});
         BeatClip clip;
         const std::string_view id = c["id"].string();
         if (!choreoIdText(id)) {
@@ -992,15 +992,22 @@ bool importBeatClips(std::string_view json, BeatClips& out, std::string* error, 
             for (std::size_t k = 0; k < out.count; ++k)
                 if (out.items[k].id() == id) errors.push_back(where + ".id: duplicate clip " + std::string(id));
         }
-        const double length = c["length"].number(-1.0);
-        if (!c["length"].isNumber() || !std::isfinite(length) || !(length > 0.0) || length > static_cast<double>(kMaxChoreoClipLength))
-            errors.push_back(where + ".length: expected seconds over 0 and at most " + std::to_string(kMaxChoreoClipLength));
+        if (const JsonValue av = c["asset"]; !av.isAbsent()) {
+            const std::string_view asset = av.string();
+            if (!av.isString() || asset.empty() || asset.size() > kMaxClipAsset || asset[0] != '/')
+                errors.push_back(where + ".asset: expected a path of 1.." + std::to_string(kMaxClipAsset) + " characters beginning with /");
+            else
+                std::copy(asset.begin(), asset.end(), clip.assetText.begin());
+        }
+        const double length = c["length_s"].number(-1.0);
+        if (!c["length_s"].isNumber() || !std::isfinite(length) || !(length > 0.0) || length > static_cast<double>(kMaxChoreoClipLength))
+            errors.push_back(where + ".length_s: expected seconds over 0 and at most " + std::to_string(kMaxChoreoClipLength));
         else
             clip.length = length;
-        if (const JsonValue iv = c["impact"]; !iv.isAbsent()) {
+        if (const JsonValue iv = c["impact_s"]; !iv.isAbsent()) {
             const double impact = iv.number(-1.0);
             if (!iv.isNumber() || !std::isfinite(impact) || impact < 0.0 || impact > clip.length)
-                errors.push_back(where + ".impact: expected seconds within the clip (0: none), 0.." + choreoNumberText(clip.length));
+                errors.push_back(where + ".impact_s: expected seconds within the clip (0: none), 0.." + choreoNumberText(clip.length));
             else
                 clip.impact = impact;
         }

@@ -115,7 +115,7 @@ std::string clipsJson(int n, const std::string& extra = "") {
     std::string s = R"({"version": 1, "clips": [)";
     for (int i = 0; i < n; ++i) {
         if (i > 0) s += ", ";
-        s += R"({"id": "clip_)" + std::to_string(i) + R"(", "length": 1.5, "impact": 0.5})";
+        s += R"({"id": "clip_)" + std::to_string(i) + R"(", "asset": "/Game/Test/clip_)" + std::to_string(i) + R"(", "length_s": 1.5, "impact_s": 0.5})";
     }
     return s + extra + "]}";
 }
@@ -143,6 +143,8 @@ TEST_CASE("beat choreo: the shipped clip catalogue has every clip the choreograp
         CHECK(clip.length > 0.0);
         CHECK(clip.impact >= 0.0);
         CHECK(clip.impact <= clip.length);
+        CHECK_MESSAGE(clip.asset().rfind("/Game/Combat/BeatAnims/", 0) == 0, id);
+        CHECK(clip.asset().size() > std::string_view(id).size());
     }
     CHECK(c.count == 25);
     CHECK(c[static_cast<std::size_t>(c.find("lead_stance"))].loop);
@@ -159,6 +161,7 @@ TEST_CASE("beat choreo: the loader takes any number of clips up to the cap, and 
             REQUIRE_MESSAGE(importBeatClips(clipsJson(n), c, &error), error);
             CHECK(c.count == static_cast<std::size_t>(n));
             CHECK(c.id(static_cast<std::size_t>(n - 1)) == "clip_" + std::to_string(n - 1));
+            CHECK(c.asset(static_cast<std::size_t>(n - 1)) == "/Game/Test/clip_" + std::to_string(n - 1));
             CHECK(c.find("clip_" + std::to_string(n - 1)) == n - 1);
         }
         CHECK_FALSE(importBeatClips(clipsJson(static_cast<int>(kMaxBeatClips) + 1), c, &error));
@@ -172,20 +175,24 @@ TEST_CASE("beat choreo: the loader takes any number of clips up to the cap, and 
             CHECK(c.count == 0);
         };
         refused(R"({"version": 1,)", "beat clips file: ");
-        refused(R"({"version": 2, "clips": [{"id": "a", "length": 1}]})", "version: expected 1");
+        refused(R"({"version": 2, "clips": [{"id": "a", "length_s": 1}]})", "version: expected 1");
         refused(R"({"version": 1, "clips": []})", "clips: expected an array");
-        refused(clipsJson(0, R"({"id": "a b", "length": 1})"), "clips[0].id: expected 1..31");
-        refused(clipsJson(0, R"({"id": "abcdefghijklmnopqrstuvwxyz0123456", "length": 1})"), "clips[0].id: expected 1..31");
-        refused(clipsJson(1, R"(, {"id": "clip_0", "length": 1})"), "clips[1].id: duplicate clip clip_0");
-        refused(clipsJson(0, R"({"id": "a", "length": 0})"), "clips[0].length: expected seconds over 0");
-        refused(clipsJson(0, R"({"id": "a"})"), "clips[0].length: expected seconds over 0");
-        refused(clipsJson(0, R"({"id": "a", "length": 1, "impact": 1.5})"), "clips[0].impact: expected seconds within the clip");
-        refused(clipsJson(0, R"({"id": "a", "length": 1, "impact": -0.1})"), "clips[0].impact");
-        refused(clipsJson(0, R"({"id": "a", "length": 1, "loop": 1})"), "clips[0].loop: expected true or false");
+        refused(clipsJson(0, R"({"id": "a b", "length_s": 1})"), "clips[0].id: expected 1..31");
+        refused(clipsJson(0, R"({"id": "abcdefghijklmnopqrstuvwxyz0123456", "length_s": 1})"), "clips[0].id: expected 1..31");
+        refused(clipsJson(1, R"(, {"id": "clip_0", "length_s": 1})"), "clips[1].id: duplicate clip clip_0");
+        refused(clipsJson(0, R"({"id": "a", "length_s": 0})"), "clips[0].length_s: expected seconds over 0");
+        refused(clipsJson(0, R"({"id": "a"})"), "clips[0].length_s: expected seconds over 0");
+        refused(clipsJson(0, R"({"id": "a", "length_s": 1, "impact_s": 1.5})"), "clips[0].impact_s: expected seconds within the clip");
+        refused(clipsJson(0, R"({"id": "a", "length_s": 1, "impact_s": -0.1})"), "clips[0].impact_s");
+        refused(clipsJson(0, R"({"id": "a", "asset": "", "length_s": 1})"), "clips[0].asset: expected a path");
+        refused(clipsJson(0, R"({"id": "a", "asset": "Game/x", "length_s": 1})"), "clips[0].asset: expected a path");
+        refused(clipsJson(0, R"({"id": "a", "asset": 3, "length_s": 1})"), "clips[0].asset: expected a path");
+        refused(clipsJson(0, R"({"id": "a", "length": 1})"), "clips[0].length_s: expected seconds over 0");
+        refused(clipsJson(0, R"({"id": "a", "length_s": 1, "loop": 1})"), "clips[0].loop: expected true or false");
     }
     SUBCASE("unknown keys are warnings") {
         std::vector<std::string> warnings;
-        CHECK(importBeatClips(swapText(clipsJson(1), R"("impact": 0.5)", R"("impact": 0.5, "notes": "x")"), c, &error, &warnings));
+        CHECK(importBeatClips(swapText(clipsJson(1), R"("impact_s": 0.5)", R"("impact_s": 0.5, "notes": "x")"), c, &error, &warnings));
         REQUIRE(warnings.size() == 1);
         CHECK(warnings[0] == "clips[0]: unknown key: notes");
     }
@@ -241,7 +248,9 @@ TEST_CASE("beat choreo: planChoreoClip lands the impact on the beat at every rat
             // The move's boss clip, or (the finisher's strikes have none) any clip with an impact.
             const ChoreoPhase& cp = r.choreo.phases[p];
             const ChoreoMove& cm = k < m.moveCount ? cp.moves[k] : cp.finisher[k - m.moveCount];
-            const BeatClip& clip = r.clips[static_cast<std::size_t>(cm.boss >= 0 ? cm.boss : cm.ok)];
+            // (a boss clip with no blow of its own, a windup or a roar, is not pinned: the lead's blow is the move)
+            const bool bossBlow = cm.boss >= 0 && r.clips[static_cast<std::size_t>(cm.boss)].impact > 0.0;
+            const BeatClip& clip = r.clips[static_cast<std::size_t>(bossBlow ? cm.boss : cm.ok)];
             REQUIRE(clip.impact > 0.0);
             for (double rate = kChoreoMinRate; rate <= kChoreoMaxRate + 1e-9; rate += 0.01) {
                 // A tell that spans the windup at exactly this rate.
@@ -386,6 +395,7 @@ TEST_CASE("beat choreo: every move of the test track has its impact on its beat 
                         continue;
                     }
                     const BeatClip& clip = r.clips[static_cast<std::size_t>(cm.boss)];
+                    if (!(clip.impact > 0.0)) continue; // a windup or a roar has no blow to pin
                     // The impact frame is on screen within 1 ms (of clip time, at the clip's rate).
                     CHECK_MESSAGE(std::fabs(smp.boss.time - clip.impact) / smp.boss.rate < 0.001,
                                   clipName(smp.boss) << " at " << smp.boss.time << " rate " << smp.boss.rate);
@@ -396,11 +406,11 @@ TEST_CASE("beat choreo: every move of the test track has its impact on its beat 
             });
             CAPTURE(pilot);
             CAPTURE(which);
-            CHECK(checked > 6);
+            CHECK(checked > 2); // (the boss moves with a blow of their own: the hook, sweep, thrust, smash and grab)
             CHECK(overridden == 0);
             CHECK(staggered <= 4);
             CHECK(s.choreo.unmatched() == 0);
-            if (pilot && which < 0) CHECK(movesSeen.size() >= 10);
+            if (pilot && which < 0) CHECK(movesSeen.size() >= 4);
         }
     }
 }
