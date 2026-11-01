@@ -198,7 +198,7 @@ The tests require two things of every fight within 64 bars: the autopilot wins, 
 
 ## Beat boss
 
-A world's final is a beat boss: one authored track instead of the beat fight's round robin. Every move the boss makes is pinned to a bar and a beat of its music, so the fight is learned like a song. It is answered with the action buttons (Attack, Guard, Dodge, Jump), never arrows. `ftcore::BeatBoss` is Core only for now; the Unreal host comes later.
+A world's final is a beat boss: one authored track instead of the beat fight's round robin. Every move the boss makes is pinned to a bar and a beat of its music, so the fight is learned like a song. It is answered with the action buttons (Attack, Guard, Dodge, Jump), never arrows. `ftcore::BeatBoss` has a demo host on its own map, `Demo_BeatBoss` ([BEAT_BOSS_DEMO.md](BEAT_BOSS_DEMO.md)); no story step opens it yet.
 
 The full rules are in `BeatBoss.h`.
 
