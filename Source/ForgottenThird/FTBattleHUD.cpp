@@ -676,8 +676,8 @@ void AFTBattleHUD::DrawReadCards(const AFTBattleDemoActor& D)
 	{
 		const size_t I = static_cast<size_t>(N);
 		const ftcore::ReadCard& Card = Cards[I];
-		const ftcore::Combatant& Owner = B->combatant(Card.actor);
-		const FString Name = Card.action < Owner.skills.size() ? FT::ToFString(Owner.skills[Card.action].name) : FString();
+		const ftcore::Combatant& Actor = B->combatant(Card.actor);
+		const FString Name = Card.action < Actor.skills.size() ? FT::ToFString(Actor.skills[Card.action].name) : FString();
 		const bool bRight = Cards.picked() && I == Cards.correct();
 		const bool bWrong = Cards.picked() && !bRight && I == Cards.pickedIndex();
 		DrawRect(kPanel, X, Y, CardW, CardH);
