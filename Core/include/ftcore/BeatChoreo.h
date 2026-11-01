@@ -30,11 +30,21 @@
 // The rate aims for the clip's windup to span the tell and is clamped to [kChoreoMinRate, kChoreoMaxRate]
 // so the motion stays natural. If the windup still does not fit between the previous action's end and
 // the impact, the clip is started partway through (at the previous action's end, rate at the top of the
-// clamp) instead of playing it impossibly fast (planChoreoClip). The lead's clips start on the judged
-// press and run to their end; a blow lands kChoreoLeadLag after the press (a short windup is skipped),
-// and a counter pressed early waits so its contact lands on the boss's impact. A miss plays from the
-// impact. Between actions an actor loops its stance, started on a beat, its rate set so one cycle is a
-// whole number of beats (it bobs on the beat).
+// clamp) instead of playing it impossibly fast (planChoreoClip).
+// The lead's answer is pre-rolled the same way. When a move is told, the clip its `ok` names is scheduled so
+// its blow (or its guard, dodge or jump) lands on the move's impact, starting during the lead-in once the lead
+// is free of its previous answer. The choreography is committed to the music; the press decides which branch
+// plays out of it:
+// * a Perfect or Good keeps the clip as it is, and after a Perfect the `then` follow-up is thrown on the first
+//   beat it can land on after the lead is free, if that is before the lead's next answer (or the bar's end)
+//   needs him;
+// * a Miss (an unanswered move, a late press, a hold let go) cuts the clip at the impact to the `miss` clip,
+//   which begins on its own blow;
+// * a Whiff (a counter pressed before its window) cuts the lead to the stumble clip (the file's `whiff`, if
+//   any) at the press, and the answer then plays from the press, the old way: a blow kChoreoLeadLag after it, a
+//   counter at the impact at the earliest.
+// Between actions an actor loops its stance, started on a beat, its rate set so one cycle is a whole number of
+// beats (it bobs on the beat).
 //
 // Visual time. Hit-stop and slow motion bend only the visuals: the clip times in a sample are read
 // at visual time v(t) = t - lag(t), and the fight's clock and the music are never touched.
@@ -59,7 +69,7 @@
 //
 // Data: Data/Battle/beat_boss/<track id>.choreo.json, keyed to the track's moves by index:
 //   { "version": 1, "track": "test_track",
-//     "stance": {"lead": "lead_stance", "boss": "boss_stance"}, "opening": "wide",
+//     "stance": {"lead": "lead_stance", "boss": "boss_stance"}, "whiff": "lead_hitreact", "opening": "wide",
 //     "finisher": {"slow": 0.4},
 //     "stagger": {"lead": "lead_cross", "boss": "boss_stagger", "shot": "close_boss"},
 //     "victory": {...}, "defeat": {...},                     // the same three keys
@@ -96,6 +106,7 @@ inline constexpr double kChoreoMinRate = 0.75;
 inline constexpr double kChoreoMaxRate = 1.35;
 inline constexpr double kChoreoLeadLag = 0.06;  // a blow lands this long after the press
 inline constexpr double kChoreoReactionLag = 0.02; // the boss reacts at least this long after its own impact
+inline constexpr double kChoreoLateStop = 0.1;   // a hit-stop is left out when the verdict is this much later than the blow
 inline constexpr std::size_t kChoreoPrompts = 4; // shown at once
 
 // ---- the clip catalogue ----
@@ -179,6 +190,7 @@ struct ChoreoPhase {
 };
 
 struct BeatChoreoDef {
+    std::int16_t whiffLead = kNoClip; // the lead's stumble when a counter is pressed too early (optional)
     std::int16_t stanceLead = kNoClip;
     std::int16_t stanceBoss = kNoClip;
     ChoreoShot opening = ChoreoShot::Wide;
@@ -301,13 +313,15 @@ public:
 private:
     static constexpr std::size_t kMaxSegs = 32;
     static constexpr std::size_t kMaxWarps = 16;
-    enum class SegKind : std::uint8_t { Attack, Reaction };
+    // Attack: the boss's pinned move. Answer: the lead's clip for a move, pre-rolled so its impact lands on the
+    // move's impact. Reaction: anything else.
+    enum class SegKind : std::uint8_t { Attack, Answer, Reaction };
     struct Seg {
         std::int16_t clip = kNoClip;
         SegKind kind = SegKind::Reaction;
         double start = 0.0, offset = 0.0, rate = 1.0;
-        double impact = 0.0; // Attack: the pinned impact
-        double free = 0.0;   // Attack: when the actor is free for its next move
+        double impact = 0.0; // Attack, Answer: the pinned impact
+        double free = 0.0;   // Attack, Answer: when the actor is free for its next move
         std::uint32_t prompt = 0;
     };
     struct Actor {
@@ -324,6 +338,7 @@ private:
         ChoreoAnchor anchor = ChoreoAnchor::BossChest;
         double tell = 0.0, impact = 0.0;
         double press = -1.0;
+        bool broken = false; // a whiff cut the lead's pre-rolled answer
     };
     enum class WarpKind : std::uint8_t { Stop, Dip };
     struct Warp {
@@ -347,6 +362,10 @@ private:
     void removePrompt(Actor& a, std::uint32_t prompt, double t);
     void settle(double t);
     double bossFree(double impact) const;
+    double leadFree(double impact) const;
+    void whiffed(const BeatBoss& fight, double te);
+    double lateAnswer(const PromptRec& rec, const ChoreoMove& mv, double press);
+    bool planThen(std::int16_t clip, double after, double& landed);
     double segEnd(const Seg& s) const;
     void addCut(double t, ChoreoShot shot);
     void addStop(double t, double seconds);
@@ -396,7 +415,6 @@ private:
     std::uint32_t pendingPrompt_ = 0;
     double pendingContact_ = 0.0;
     std::int16_t pendingHit_ = kNoClip;
-    double lastLeadEnd_ = 0.0;
     double lastBossContact_ = 0.0;
     double staggerUntil_ = -1e30;
 };

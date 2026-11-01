@@ -2,6 +2,7 @@
   "version": 1,
   "track": "test_track",
   "stance": {"lead": "lead_stance", "boss": "boss_stance"},
+  "whiff": "lead_hitreact",
   "opening": "wide",
   "finisher": {"slow": 0.4},
   "stagger": {"lead": "lead_kick_r", "boss": "boss_stagger", "shot": "close_boss"},

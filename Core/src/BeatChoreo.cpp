@@ -171,7 +171,7 @@ void BeatChoreo::resetRun(const BeatBoss& fight, double clock) {
     phase_ = fight.phase();
     newPhaseBar_ = false;
     finisherNext_ = false;
-    lastLeadEnd_ = lastBossContact_ = fight.trackTime();
+    lastBossContact_ = fight.trackTime();
     staggerUntil_ = -kFar;
     retries_ = fight.stats().retries;
     synced_ = true;
@@ -262,7 +262,6 @@ void BeatChoreo::addSeg(Actor& a, const Seg& s) {
     }
     a.segs[at] = s;
     ++a.count;
-    if (&a == &actors_[kLead]) lastLeadEnd_ = segEnd(s);
 }
 
 void BeatChoreo::removeFuture(Actor& a, double t) {
@@ -272,10 +271,15 @@ void BeatChoreo::removeFuture(Actor& a, double t) {
     a.count = w;
 }
 
+// A prompt that is gone: its moves not yet started are dropped, and so is the lead's answer to it that has
+// started but not yet reached its blow (the lead does not strike at nothing).
 void BeatChoreo::removePrompt(Actor& a, std::uint32_t prompt, double t) {
     std::size_t w = 0;
-    for (std::size_t i = 0; i < a.count; ++i)
-        if (!(a.segs[i].prompt == prompt && a.segs[i].start > t + kEps)) a.segs[w++] = a.segs[i];
+    for (std::size_t i = 0; i < a.count; ++i) {
+        const Seg& s = a.segs[i];
+        const bool gone = s.prompt == prompt && (s.start > t + kEps || (s.kind == SegKind::Answer && s.impact > t + kEps));
+        if (!gone) a.segs[w++] = a.segs[i];
+    }
     a.count = w;
 }
 
@@ -302,6 +306,14 @@ double BeatChoreo::bossFree(double impact) const {
     const Actor& b = actors_[kBoss];
     for (std::size_t i = 0; i < b.count; ++i)
         if (b.segs[i].kind == SegKind::Attack && b.segs[i].impact < impact - kEps) free = std::max(free, b.segs[i].free);
+    return free;
+}
+
+double BeatChoreo::leadFree(double impact) const {
+    double free = -kFar;
+    const Actor& l = actors_[kLead];
+    for (std::size_t i = 0; i < l.count; ++i)
+        if (l.segs[i].kind == SegKind::Answer && l.segs[i].impact < impact - kEps) free = std::max(free, l.segs[i].free);
     return free;
 }
 
@@ -449,6 +461,7 @@ void BeatChoreo::observe(const BeatBoss& fight, const BeatBossEvents& events, do
         if (there) continue;
         r.open = false;
         removePrompt(actors_[kBoss], r.id, track_);
+        removePrompt(actors_[kLead], r.id, track_);
     }
     prune();
 }
@@ -465,6 +478,7 @@ void BeatChoreo::handle(const BeatBoss& fight, const BeatBossEvent& e, double te
     case BeatBossEventType::BarStart: barStart(fight, e.amount, te); break;
     case BeatBossEventType::Judged: judged(e, te); break;
     case BeatBossEventType::BossHit: bossHit(te); break;
+    case BeatBossEventType::Whiff: whiffed(fight, te); break;
     case BeatBossEventType::FinisherBroken: {
         // Its slow motion is let go from the strikes not yet reached.
         std::size_t w = 0;
@@ -475,6 +489,15 @@ void BeatChoreo::handle(const BeatBoss& fight, const BeatBossEvent& e, double te
     }
     case BeatBossEventType::Stagger: {
         removeFuture(actors_[kBoss], te);
+        {
+            // The lead keeps its answers to the moves that stay (the strikes; the counters are dropped and take
+            // theirs with them), but a follow-up blow not yet thrown is let go.
+            Actor& lead = actors_[kLead];
+            std::size_t k = 0;
+            for (std::size_t i = 0; i < lead.count; ++i)
+                if (!(lead.segs[i].prompt == 0 && lead.segs[i].kind == SegKind::Answer && lead.segs[i].start > te + kEps)) lead.segs[k++] = lead.segs[i];
+            lead.count = k;
+        }
         std::size_t w = 0;
         for (std::size_t i = 0; i < cutCount_; ++i)
             if (cuts_[i].time <= te + kEps) cuts_[w++] = cuts_[i];
@@ -577,6 +600,24 @@ void BeatChoreo::registerPrompt(const BeatBossPrompt& p, double te) {
     const ChoreoMove* mv = moveOf(r);
     if (!mv) return;
     r.anchor = mv->anchor;
+
+    // The lead's answer is pre-rolled: its clip is scheduled so its blow lands on the move's impact, whatever
+    // the press does (the judgement then keeps it, cuts it at the impact to a hit reaction, or - after a
+    // whiff - plays another from the press). It starts during the lead-in, once the lead is free.
+    if (const BeatClip* lc = clipOf(mv->ok)) {
+        const ChoreoPlan lp = planChoreoClip(*lc, p.impact, p.tell, std::max(te, leadFree(p.impact)));
+        Seg a;
+        a.clip = mv->ok;
+        a.kind = SegKind::Answer;
+        a.start = lp.start;
+        a.offset = lp.offset;
+        a.rate = lp.rate;
+        a.impact = p.impact;
+        a.free = p.impact + std::min(tuning_.followThrough, std::max(0.0, (lc->length - lc->impact) / lp.rate));
+        a.prompt = p.id;
+        addSeg(actors_[kLead], a);
+    }
+
     const BeatClip* c = clipOf(mv->boss);
     if (!c) return;
     const ChoreoPlan plan = planChoreoClip(*c, p.impact, p.tell, std::max(te, bossFree(p.impact)));
@@ -601,6 +642,78 @@ void BeatChoreo::registerPrompt(const BeatBossPrompt& p, double te) {
     addSeg(boss, s);
 }
 
+// The lead's answer from the press (the pre-rolled one is gone: a whiff cut it, or the move had none). Returns the
+// time of its blow, or a negative number when the move has no clip for it.
+double BeatChoreo::lateAnswer(const PromptRec& rec, const ChoreoMove& mv, double press) {
+    const BeatClip* c = clipOf(mv.ok);
+    if (!c) return -1.0;
+    const bool blow = strikes(rec.answer);
+    const double contact = blow ? press + kChoreoLeadLag : std::max(press, rec.impact);
+    const double desired = c->impact > 0.0 ? contact - c->impact : press;
+    const ChoreoPlan plan = planChoreoClip(*c, contact, desired, press);
+    Seg s;
+    s.clip = mv.ok;
+    s.kind = SegKind::Answer;
+    s.start = plan.start;
+    s.offset = plan.offset;
+    s.rate = plan.rate;
+    s.impact = contact;
+    s.free = contact + std::min(tuning_.followThrough, std::max(0.0, (c->length - c->impact) / plan.rate));
+    addSeg(actors_[kLead], s);
+    return c->impact > 0.0 ? plan.start + (c->impact - plan.offset) / plan.rate : plan.start;
+}
+
+// A follow-up blow after a Perfect, on the first beat it can land on once the lead is free at `after`. It is
+// played only if it lands before the lead's next answer must begin (the next pre-rolled answer's start, or the
+// bar's end, where a bar still to come may begin one); `landed` is then its blow.
+bool BeatChoreo::planThen(std::int16_t clip, double after, double& landed) {
+    const BeatClip* next = clipOf(clip);
+    if (!next || !(next->impact > 0.0)) return false;
+    const double target = boundary(after + next->impact / kChoreoMaxRate - kEps, true);
+    double due = barCount_ > 0 ? bars_[barCount_ - 1].end : kFar;
+    const Actor& lead = actors_[kLead];
+    for (std::size_t i = 0; i < lead.count; ++i)
+        if (lead.segs[i].kind == SegKind::Answer && lead.segs[i].start >= after - kEps) due = std::min(due, lead.segs[i].start);
+    if (target > due + kEps) return false;
+    const ChoreoPlan plan = planChoreoClip(*next, target, after, after);
+    Seg f;
+    f.clip = clip;
+    f.kind = SegKind::Answer; // no prompt: leadFree sees it, no judgement owns it
+    f.start = plan.start;
+    f.offset = plan.offset;
+    f.rate = plan.rate;
+    f.impact = target;
+    f.free = target + std::min(tuning_.followThrough, std::max(0.0, (next->length - next->impact) / plan.rate));
+    addSeg(actors_[kLead], f);
+    landed = target;
+    return true;
+}
+
+// A counter pressed before its window opened: the lead stumbles, and the counter's pre-rolled answer is gone (a
+// later press for it plays from the press). The stumble is left out if the lead is busy with another answer.
+void BeatChoreo::whiffed(const BeatBoss& fight, double te) {
+    PromptRec* best = nullptr;
+    for (PromptRec& r : recs_) {
+        if (!r.open || !isBossCounter(r.answer) || r.tell > te + kEps || r.impact - fight.tuning().counterEarly <= te) continue;
+        if (!best || r.impact < best->impact) best = &r;
+    }
+    if (!best) return;
+    best->broken = true;
+    Actor& lead = actors_[kLead];
+    bool busy = false;
+    for (std::size_t i = 0; i < lead.count; ++i) {
+        const Seg& s = lead.segs[i];
+        if (s.kind == SegKind::Answer && s.prompt != best->id && s.start <= te + kEps && te < s.free) busy = true;
+    }
+    removePrompt(lead, best->id, te);
+    if (!busy && clipOf(def_.whiffLead)) {
+        Seg s;
+        s.clip = def_.whiffLead;
+        s.start = te;
+        addSeg(lead, s);
+    }
+}
+
 void BeatChoreo::judged(const BeatBossEvent& e, double te) {
     pending_ = false;
     PromptRec* rec = findRec(e.prompt);
@@ -613,59 +726,52 @@ void BeatChoreo::judged(const BeatBossEvent& e, double te) {
     if (!mv) return;
     Actor& lead = actors_[kLead];
     if (e.grade != QteGrade::Perfect && e.grade != QteGrade::Good) {
-        // A miss: the lead's reaction plays from the impact (the verdict comes a moment after it).
+        // A miss: the pre-rolled answer is cut at the impact (the verdict comes a moment after it) to the lead's
+        // reaction, which begins on its own blow.
         const BeatClip* c = clipOf(mv->miss);
         if (!c) return;
-        const ChoreoPlan plan = planChoreoClip(*c, rec->impact, c->impact > 0.0 ? rec->impact - c->impact : rec->impact, -kFar);
         Seg s;
         s.clip = mv->miss;
-        s.start = plan.start;
-        s.offset = plan.offset;
-        s.rate = plan.rate;
+        s.start = rec->impact;
+        s.offset = std::min(c->impact, c->length);
         addSeg(lead, s);
         return;
     }
 
     const bool held = rec->answer == BeatBossAnswer::Guard || isBossHold(rec->answer);
     const double press = held && rec->press >= 0.0 ? rec->press : te;
-    const bool blow = strikes(rec->answer);
-    const double contact = blow ? press + kChoreoLeadLag : std::max(press, rec->impact);
-    const BeatClip* c = clipOf(mv->ok);
-    if (!c) return;
-    const double desired = c->impact > 0.0 ? contact - c->impact : press;
-    const ChoreoPlan plan = planChoreoClip(*c, contact, desired, press);
-    Seg s;
-    s.clip = mv->ok;
-    s.start = plan.start;
-    s.offset = plan.offset;
-    s.rate = plan.rate;
-    addSeg(lead, s);
-    double landed = c->impact > 0.0 ? plan.start + (c->impact - plan.offset) / plan.rate : plan.start;
+    // The pre-rolled answer stays: its blow is on the move's impact, whatever the grade.
+    double landed = rec->impact;
+    double after = rec->impact;
+    const Seg* kept = nullptr;
+    if (!rec->broken) {
+        for (std::size_t i = 0; i < lead.count; ++i)
+            if (lead.segs[i].kind == SegKind::Answer && lead.segs[i].prompt == rec->id) kept = &lead.segs[i];
+    }
+    if (kept) {
+        after = kept->free;
+    } else {
+        landed = lateAnswer(*rec, *mv, press);
+        if (landed < 0.0) return;
+        after = landed + tuning_.followThrough;
+    }
     const bool perfect = e.grade == QteGrade::Perfect;
     if (perfect) {
-        if (const BeatClip* next = clipOf(mv->then)) {
-            // The follow-up is played only if its blow lands before the lead's next answer can start (a
-            // press for the next move cuts it off), so the hit-stop and the boss's reaction are on a
-            // blow that shows.
-            double due = kFar;
-            for (const PromptRec& o : recs_)
-                if (o.open && o.impact > te) due = std::min(due, o.impact);
-            Seg f;
-            f.clip = mv->then;
-            f.start = segEnd(s);
-            if (f.start + next->impact <= due - 2.0 * kChoreoLeadLag) {
-                addSeg(lead, f);
-                landed = f.start + next->impact;
-            }
-        }
+        double next = landed;
+        if (planThen(mv->then, after, next)) landed = next;
     }
     pending_ = true;
     pendingPrompt_ = rec->id;
     pendingContact_ = landed;
     pendingHit_ = mv->hit;
     if (perfect) {
-        if (rec->answer == BeatBossAnswer::Guard) addStop(rec->impact, tuning_.hitStopLight);
-        else if (rec->answer != BeatBossAnswer::Dodge && rec->answer != BeatBossAnswer::Jump) addStop(landed, tuning_.hitStopStrong);
+        // The hit-stop is on the blow that shows, never in the past: a hold's verdict comes at its end, long
+        // after its blow, and gets none.
+        const double blow = rec->answer == BeatBossAnswer::Guard ? rec->impact : landed;
+        if (te - blow <= kChoreoLateStop) {
+            if (rec->answer == BeatBossAnswer::Guard) addStop(std::max(blow, te), tuning_.hitStopLight);
+            else if (rec->answer != BeatBossAnswer::Dodge && rec->answer != BeatBossAnswer::Jump) addStop(std::max(blow, te), tuning_.hitStopStrong);
+        }
     }
 }
 
@@ -716,7 +822,9 @@ void BeatChoreo::forceEnd(const ChoreoBeat& beat, double te, bool victory) {
     cutCount_ = w;
     if (beat.cut) addCut(boundary(te, false), beat.shot);
     // The lead's last blow plays out before its victory or its fall; the boss answers it.
-    const double leadAt = std::max(te, lastLeadEnd_);
+    double leadAt = te;
+    for (std::size_t i = 0; i < actors_[kLead].count; ++i)
+        leadAt = std::max(leadAt, std::min(segEnd(actors_[kLead].segs[i]), te + 1.0));
     if (clipOf(beat.lead)) {
         Seg s;
         s.clip = beat.lead;
@@ -1050,7 +1158,7 @@ bool importBeatChoreo(std::string_view json, const BeatBossTrack& track, const B
         return finish();
     }
     if (const JsonValue v = root["version"]; !(v.isInteger() && v.integer() == 1)) errors.push_back("version: expected 1");
-    ld.unknownKeys(root, "", {"version", "track", "stance", "opening", "finisher", "stagger", "victory", "defeat", "phases"});
+    ld.unknownKeys(root, "", {"version", "track", "stance", "whiff", "opening", "finisher", "stagger", "victory", "defeat", "phases"});
     if (root["track"].string() != track.id) errors.push_back("track: expected " + track.id);
 
     BeatChoreoDef def;
@@ -1064,6 +1172,7 @@ bool importBeatChoreo(std::string_view json, const BeatBossTrack& track, const B
     } else {
         errors.push_back("stance: expected {\"lead\": <clip>, \"boss\": <clip>}");
     }
+    if (root.has("whiff")) ld.clip(root, "whiff", clips, "choreography", false, def.whiffLead);
     if (root.has("opening")) ld.shot(root, "opening", "", false, def.opening, nullptr);
     if (const JsonValue f = root["finisher"]; !f.isAbsent()) {
         ld.unknownKeys(f, "finisher", {"slow"});

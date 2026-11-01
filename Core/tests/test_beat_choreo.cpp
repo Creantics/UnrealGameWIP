@@ -234,6 +234,8 @@ TEST_CASE("beat choreo: the choreography file is checked against the track and t
     refused(swapText(text, R"("ok": "lead_parry", )", ""), "phases[0].moves[0].ok: expected a clip id");
     refused(swapText(text, R"("stance": {"lead": "lead_stance")", R"("stance": {"lead": "lead_jab")"), "stance: lead_jab must be a looping clip");
     refused(swapText(text, R"("slow": 0.4)", R"("slow": 0.05)"), "finisher.slow: expected a speed in 0.2..1");
+    refused(swapText(text, R"("whiff": "lead_hitreact")", R"("whiff": "lead_nothing")"), "choreography.whiff: unknown clip lead_nothing");
+    CHECK(r.clips.id(static_cast<std::size_t>(d.whiffLead)) == "lead_hitreact");
 }
 
 // ---- the timing math ----
@@ -371,6 +373,8 @@ TEST_CASE("beat choreo: every move of the test track has its impact on its beat 
             s.start(def, cdef);
             std::vector<Seen> seen;
             int checked = 0;
+            int checkedLead = 0;
+            int leadOther = 0;
             int overridden = 0;
             int staggered = 0;
             std::set<int> movesSeen;
@@ -385,9 +389,21 @@ TEST_CASE("beat choreo: every move of the test track has its impact on its beat 
                     x.checked = true;
                     const ChoreoPhase& cp = cdef.phases[x.phase];
                     const ChoreoMove& cm = x.finisher ? cp.finisher[x.move] : cp.moves[x.move];
-                    if (cm.boss < 0) continue;
                     ChoreoSample smp;
                     s.choreo.sample(x.impact, smp);
+                    // The lead's answer is pre-rolled: its blow is on the move's impact, answered or not (the
+                    // press only decides what it turns into afterwards).
+                    if (cm.ok >= 0) {
+                        const BeatClip& ok = r.clips[static_cast<std::size_t>(cm.ok)];
+                        if (smp.lead.clip == cm.ok && ok.impact > 0.0) {
+                            CHECK_MESSAGE(std::fabs(smp.lead.time - ok.impact) / smp.lead.rate < 0.001,
+                                          clipName(smp.lead) << " at " << smp.lead.time << " rate " << smp.lead.rate << " impact " << x.impact << " phase " << x.phase << " move " << int(x.move) << " fin " << x.finisher << " visual " << smp.visualRate);
+                            ++checkedLead;
+                        } else {
+                            ++leadOther;
+                        }
+                    }
+                    if (cm.boss < 0) continue;
                     if (smp.boss.clip != cm.boss) {
                         // Only a stagger takes a pinned move's place (the boss is down and the move is dropped).
                         if (clipName(smp.boss) == "boss_stagger") ++staggered;
@@ -395,7 +411,7 @@ TEST_CASE("beat choreo: every move of the test track has its impact on its beat 
                         continue;
                     }
                     const BeatClip& clip = r.clips[static_cast<std::size_t>(cm.boss)];
-                    if (!(clip.impact > 0.0)) continue; // a windup or a roar has no blow to pin
+                    if (!(clip.impact > 0.0)) continue; // a windup or a roar has no blow of its own to pin (the lead's answer is checked above)
                     // The impact frame is on screen within 1 ms (of clip time, at the clip's rate).
                     CHECK_MESSAGE(std::fabs(smp.boss.time - clip.impact) / smp.boss.rate < 0.001,
                                   clipName(smp.boss) << " at " << smp.boss.time << " rate " << smp.boss.rate);
@@ -407,6 +423,8 @@ TEST_CASE("beat choreo: every move of the test track has its impact on its beat 
             CAPTURE(pilot);
             CAPTURE(which);
             CHECK(checked > 2); // (the boss moves with a blow of their own: the hook, sweep, thrust, smash and grab)
+            CHECK(checkedLead > 6);
+            CHECK(checkedLead > 4 * leadOther); // (an answer another clip took over: a stagger, a squeezed neighbour)
             CHECK(overridden == 0);
             CHECK(staggered <= 4);
             CHECK(s.choreo.unmatched() == 0);
@@ -1031,4 +1049,95 @@ TEST_CASE("beat choreo: a prompt opened and answered between two observe calls i
     s.choreo.sampleNow(smp);
     CHECK(smp.lead.clip >= 0);
     CHECK(smp.boss.clip >= 0);
+}
+
+TEST_CASE("beat choreo: a miss cuts the pre-rolled answer at the impact to the lead's hit reaction") {
+    const Rig& r = rig();
+    for (const int which : {0, 1}) {
+        Scene s;
+        s.start(onlyPhase(r.track.def, which), onlyChoreo(r.choreo, which));
+        struct Rec {
+            std::uint32_t id;
+            std::uint8_t move;
+            bool finisher;
+            double impact;
+        };
+        std::vector<Rec> recs;
+        std::size_t seen = 0;
+        int misses = 0;
+        int cut = 0;
+        play(s, 0.0, 60.0, false, [&](double) {
+            for (std::size_t i = 0; i < s.fight.promptCount(); ++i) {
+                const BeatBossPrompt& p = s.fight.prompt(i);
+                if (std::none_of(recs.begin(), recs.end(), [&](const Rec& x) { return x.id == p.id; }))
+                    recs.push_back(Rec{p.id, p.move, p.finisher, p.impact});
+            }
+            for (; seen < s.events.size(); ++seen) {
+                const BeatBossEvent& e = s.events[seen];
+                if (e.type != BeatBossEventType::Judged || e.grade == QteGrade::Perfect || e.grade == QteGrade::Good) continue;
+                const auto it = std::find_if(recs.begin(), recs.end(), [&](const Rec& x) { return x.id == e.prompt; });
+                if (it == recs.end()) continue;
+                const ChoreoPhase& cp = onlyChoreo(r.choreo, which).phases[0];
+                const ChoreoMove& cm = it->finisher ? cp.finisher[it->move] : cp.moves[it->move];
+                ++misses;
+                // Before the verdict the lead was in the pre-rolled answer; after it, from the impact, in the reaction.
+                ChoreoSample at;
+                s.choreo.sample(it->impact + 0.05, at);
+                if (clipName(at.lead) == clipName(ChoreoPose{cm.miss, 0.0, 1.0f})) {
+                    const BeatClip& mc = r.clips[static_cast<std::size_t>(cm.miss)];
+                    CHECK(at.lead.time == doctest::Approx(std::min(mc.impact, mc.length) + 0.05).epsilon(1e-6));
+                    ++cut;
+                }
+            }
+        });
+        CHECK(misses > 5);
+        CHECK(cut * 10 >= misses * 8); // (a stagger or a newer answer took the others)
+    }
+}
+
+TEST_CASE("beat choreo: a counter pressed too early makes the lead stumble, and its answer then plays from the press") {
+    const Rig& r = rig();
+    Scene s;
+    const BeatBossDef def = onlyPhase(r.track.def, 0);
+    s.start(def, onlyChoreo(r.choreo, 0));
+    // The first move is a parry: press Guard well before its window, once its marker shows.
+    bool whiffed = false;
+    bool pressed = false;
+    double whiffAt = 0.0;
+    bool stumbled = false;
+    bool answered = false;
+    double now = 0.0;
+    std::size_t seen = 0;
+    while (!s.fight.over() && now < 8.0) {
+        now += kFrame;
+        if (!pressed && s.fight.trackRunning() && s.fight.promptCount() > 0) {
+            const BeatBossPrompt& p = s.fight.prompt(0);
+            if (p.answer == BeatBossAnswer::Parry && p.impact - s.fight.trackTime() < 0.8 && p.impact - s.fight.trackTime() > 0.5) {
+                pressed = true;
+                s.take(s.fight.press(ActionButton::Guard, now), now);
+            }
+        }
+        s.frame(now, pressed); // (the autopilot answers on its own once it is time)
+        for (; seen < s.events.size(); ++seen) {
+            if (s.events[seen].type == BeatBossEventType::Whiff && !whiffed) {
+                whiffed = true;
+                whiffAt = s.fight.trackTime();
+            }
+        }
+        if (whiffed && !stumbled) {
+            ChoreoSample smp;
+            s.choreo.sampleNow(smp);
+            CHECK(clipName(smp.lead) == "lead_hitreact"); // the stumble
+            stumbled = true;
+        }
+        if (whiffed && s.fight.trackTime() > whiffAt + 0.6 && !answered) {
+            // The autopilot has answered after the lockout: the parry plays from its press.
+            ChoreoSample smp;
+            s.choreo.sampleNow(smp);
+            if (clipName(smp.lead) == "lead_parry") answered = true;
+        }
+    }
+    CHECK(whiffed);
+    CHECK(stumbled);
+    CHECK(answered);
 }
