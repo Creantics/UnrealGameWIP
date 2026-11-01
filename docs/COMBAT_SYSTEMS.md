@@ -102,6 +102,7 @@ Fights happen in place on the world map:
 | Heal | Uses a charge and heals after a short delay. Hitstun before then cancels it and keeps the charge |
 | Release | A riposte-shaped strike, invulnerable, open only above 33 Load (`kArenaReleaseOpenLoad`). It spends all the Load at once, and each enemy it hits loses `poiseDamage` plus the spent Load times `releasePoise` in poise. It costs no stamina |
 | Pair | The second lead's input. Pressed within `pairWindow` (0.12 s) of a parry, before or after it, the parried enemy takes a Counter-Stagger: `pairHits` (3) light hits' damage at once, and a stagger. One press per parry |
+| Read | The second lead's other input. As each enemy move starts, three cards are dealt: the coming move and two decoys from the living enemies' moves, each named by its `tell` (no two alike; `ReadCards`, as in the Turns battle). Nothing pauses. A pick counts while that move is still in its startup. Right: one Read stack (up to 5), and when the move's active part ends, or a parry or stagger cuts it short, the partner strikes the attacker: `readPower` (0.5) times light[0]'s damage, plus 20% per stack past the first, and `readPoise` poise. Wrong: the stacks go back to 0 and the attacker regains `readWrongPoise` (10) poise |
 | Lock / switch | Locks the best enemy near the view direction, or lets go. The switch moves the lock left or right |
 
 The other rules:
@@ -148,10 +149,10 @@ The enemy brain runs Approach, Strafe, Attack, Staggered, Open, Down and Dead:
 - It locks the nearest enemy and closes in.
 - It parries or sidesteps attacks about to land.
 - It ripostes open enemies and attacks with the light chain between enemy windups.
-- It releases at 60 Load on an upright enemy in reach, and at once when Overloaded.
-- It heals when low and safe. It never presses the paired counter, which needs the second lead.
+- It releases at 50 Load on an upright enemy in reach, and at once when Overloaded.
+- It heals when low and safe. It never presses the paired counter, which needs the second lead, but it reads for the partner: the right card, 0.2 s into the startup (half of a shorter one).
 
-The tests run every fight at a fixed 1/60 s step with `arenaStep`. The autopilot must win each one within 120 s, and a player who presses nothing must lose. `tick`, `autopilot` and `arenaStep` never allocate, also over a fight that stores Load and releases it.
+The tests run every fight at a fixed 1/60 s step with `arenaStep`. The autopilot must win each one within 120 s, and a player who presses nothing must lose. `tick`, `autopilot` and `arenaStep` never allocate, also over a fight that stores Load, releases it and deals and picks Read cards.
 
 ## Beat fight
 
