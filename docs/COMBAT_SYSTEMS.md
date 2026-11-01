@@ -196,6 +196,44 @@ The full rules are in `BeatFight.h`.
 
 The tests require two things of every fight within 64 bars: the autopilot wins, and no input loses. `ftcore::BeatScreen` (the screen's state machine) plays that autopilot under autoplay and checks the same thing through the screen: it wins the default fight and every fight in `beat.json`.
 
+## Beat boss
+
+A world's final is a beat boss: one authored track instead of the beat fight's round robin. Every move the boss makes is pinned to a bar and a beat of its music, so the fight is learned like a song. It is answered with the action buttons (Attack, Guard, Dodge, Jump), never arrows. `ftcore::BeatBoss` is Core only for now; the Unreal host comes later.
+
+The full rules are in `BeatBoss.h`.
+
+### Rules in brief
+
+- **The bar map.** Each phase has its own tempo (at most 150 bpm), meter and loop of bars. One bar can break the meter: a 5/4 or 3/4 bar in a 4/4 loop, or a 7/8 bar in a 6/8 one. 6/8 counts in dotted quarters. Beats can be left empty, and the beat line draws them hollow.
+- **Pinned moves.** Each move has a tell, where its marker appears, and an impact, where it is answered, both written as `bar.beat` (`"4.2&"`). It also has an answer, a stem tag for the marker's size, and a miss cost. The answers are strike, hold, release (spends the Load), guard, parry, dodge, jump and paired (two buttons together). Guard, parry, dodge, jump and paired are counters. Only a missed counter costs hp, and never more than 35% of the lead's max hp.
+- **Judging** uses the beat fight's windows. Strikes get ±0.05 s for Perfect and ±0.12 s for Good. A counter is Perfect within 0.06 s of its impact, and its window opens 0.3 s early. Mashing a counter's button before its window opens locks counters out briefly. Strikes and holds are never locked out.
+- **Streak.** Each answer adds one and any Miss resets it. The multiplier rises one step every eight, up to x4. Named rewards fire at set counts: they open a rest, heal, or store Load.
+- **Open rests.** These are beats the music leaves open on purpose. An answered counter marked `opens`, or a reward, opens the next one, and a Miss closes the last one opened. Four open at once stagger the boss, and the next bar plays without its counters.
+- **Phases and finishers.** The boss's hp stops at each phase's floor, and the next phase starts at the next bar line. When the boss is close to the floor, the phase's finisher bars replace the loop's next bar, once a loop. Every strike of the finisher takes an equal share of what's left, and a Miss breaks it at no cost.
+- **Scripted silences.** At a share of the boss's hp or at a given bar, the track stops for a set time. Nothing shows and nothing lands. Then a one-bar count brings it back.
+- **Checkpoints.** Each phase's first bar line saves the phase, the boss's hp, the Load and the silences already played. A retry goes back there with the lead at full hp, counts one bar in, and starts the phase's bar 1.
+- **The beat line** is the sound-off fallback. It holds the current bar and the next, with their ticks, rests and markers, laid out by time so a short bar is drawn short. It is filled into fixed arrays and allocates nothing.
+
+### Data
+
+`Data/Battle/beat_boss/<id>.json` holds one track per file, with ids and numbers only. Its schema is in `BeatBoss.h`. `test_track.json` is synthetic, and the tests run on it. It has two phases: a 4/4 one with a 5/4 bar and a 3/4 bar, an hp silence and a release bar, and a 6/8 one with a 7/8 bar, an empty beat and a bar silence. The loader refuses each of these with its path:
+
+- a tell or impact on an empty beat, or on a lost beat (one the bar doesn't have)
+- a tell under 0.4 s before its impact
+- a tempo over 150
+- two impacts closer than 0.2 s
+- a loop whose bars don't sum to its seconds
+- a miss cost over 35%
+
+### Autopilot and balance
+
+`BeatBoss::autopilot()` presses every prompt on its impact, holds each guard through its impact, and lets go of holds at their end. The `qteAutoComplete` assist lets it play the fight. The tests require the following:
+
+- The autopilot wins the test track within 24 bars, at 120 Hz, 60 Hz and 130 ms frames, with no miss.
+- Doing nothing loses.
+- One miss costs at most 35%.
+- A whole fight allocates nothing after loading, including its retries and the beat line.
+
 ## Techniques used
 
 These are numbered as in [COMBAT_REFERENCE_STUDY.md](COMBAT_REFERENCE_STUDY.md):
