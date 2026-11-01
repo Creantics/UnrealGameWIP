@@ -64,7 +64,7 @@
 //     strike.good Good; past impact + good it is a Miss (a Release nobody pressed just passes).
 //   - Counters: a press within perfect / 2 either side of the impact is Perfect, from impact -
 //     counterEarly up to that Good. Unanswered, the move lands at impact + perfect / 2: a Miss, and
-//     the lead loses round(miss cost x max hp). A Guard counts its press but resolves at the impact,
+//     the lead loses miss cost x max hp, rounded down. A Guard counts its press but resolves at the impact,
 //     and only if Guard is still down then (let go, it can be pressed again). A Paired counter
 //     records each of its buttons' latest press in its window and resolves when both are in and
 //     within pairWidth of each other, graded by the later.
