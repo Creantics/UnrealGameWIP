@@ -1,9 +1,9 @@
 #pragma once
 
-// Load: the weight a lead has taken on and not yet let go, 0 to kMaxLoad. Perfect Guards (and, later,
-// perfect Intercepts) store it; it never refills or drains on its own. Release spends it as a
-// counter that breaks poise; Take Half shares it with an ally. At kMaxLoad the lead is overloaded:
-// in a Turns battle every command but Release is refused until the Load comes down. It is never a
+// Load: the weight a lead has taken on and not yet let go, 0 to kMaxLoad. Perfect Guards and perfect
+// Intercepts store it; it never refills or drains on its own. Release spends it as a counter that
+// breaks poise; Take Half shares it with an ally. At kMaxLoad the lead is overloaded: in a Turns
+// battle every command but Release and Take Half is refused until the Load comes down. It is never a
 // pool to pay for skills. A plain value type, used by every battle mode.
 
 namespace ftcore {

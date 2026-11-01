@@ -112,12 +112,18 @@ enum class EFTBattleEventType : uint8
 	Staggered,
 	// Source's skipped turn: its poise refills (Amount = poise restored).
 	Steadied,
-	// A perfect Guard: Target stored Amount Load from hit Beat (Source = the enemy).
+	// A perfect Guard or Intercept: Target stored Amount Load from hit Beat (Source = the enemy).
 	LoadStored,
-	// Target's Load is full: only Release is open to it.
+	// Target's Load is full: only Release and Take Half are open to it.
 	Overloaded,
 	// Source let go of Amount Load: its Release combo finished (poise losses follow).
 	Released,
+	// A tearing hit Beat landed: Target is Torn for Amount turns (Source = the enemy). Each tick is a
+	// Hit with Source = Target, Beat = the turns left, Label "TORN".
+	TornApplied,
+	// Take Half, one per member, the actor's first: Source = the actor, Target = the member, Amount =
+	// the HP it healed.
+	HalfTaken,
 };
 
 // Same order as ftcore::CommandError.
@@ -134,8 +140,10 @@ enum class EFTCommandError : uint8
 	Overloaded,
 	// A Release with no Load.
 	NoLoad,
-	// The member lacks the verb (Guard / Release).
+	// The member lacks the verb (Guard / Release / Intercept / Take Half).
 	NoSuchVerb,
+	// A Take Half that would change nothing (no Load or Torn to even out).
+	NothingToShare,
 };
 
 // Same order as ftcore::DefenceInput.
@@ -151,6 +159,9 @@ enum class EFTDefenceInput : uint8
 	// Held (ReleaseGuard lets go): a held hit lands in part; begun within the parry width of the
 	// impact it is perfect, takes nothing and stores the hit as Load. Members with the Guard verb only.
 	Guard,
+	// Guard's hold, taken by GetInterceptor() for the defender, who takes nothing while it is held;
+	// a perfect one also costs the attacker poise. Never for a child.
+	Intercept,
 };
 
 // Same order as ftcore::DefenceOutcome.
@@ -164,6 +175,8 @@ enum class EFTDefenceOutcome : uint8
 	Hit,
 	Guarded,
 	PerfectGuard,
+	Intercepted,
+	PerfectIntercept,
 };
 
 UENUM(BlueprintType)
@@ -561,6 +574,14 @@ public:
 	// The acting member (Release verb) lets go of all its Load in an arrow combo against every enemy.
 	UFUNCTION(BlueprintCallable, Category = "Battle")
 	EFTCommandError Release();
+	// The acting member (Take Half verb) evens its Load and Torn with Ally, another living party
+	// member, and both heal a little; the turn is spent.
+	UFUNCTION(BlueprintCallable, Category = "Battle")
+	EFTCommandError TakeHalf(int32 Ally);
+	// During an enemy attack, the party member who would take (or is taking) an Intercept for the
+	// defender; -1 when there is none (the defender is a child, or no one else has the verb).
+	UFUNCTION(BlueprintPure, Category = "Battle")
+	int32 GetInterceptor() const;
 
 	// ---- aim (PartyAim) ----
 

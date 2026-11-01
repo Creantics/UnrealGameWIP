@@ -17,7 +17,9 @@ enum class Team { Party, Enemies };
 
 // The Turns verbs a party member has beyond its skills (bits of Combatant::verbs). Guard: a held
 // block, perfect in the parry's window, that stores Load. Release: the command that spends Load.
-enum class Verb : std::uint8_t { Guard, Release };
+// Intercept (appended): Guard's hold, taken for another party member an enemy hit aims at. TakeHalf
+// (appended): the command that evens Load and Torn with an ally and heals both (Battle.h).
+enum class Verb : std::uint8_t { Guard, Release, Intercept, TakeHalf };
 constexpr std::uint8_t verbBit(Verb v) { return static_cast<std::uint8_t>(1u << static_cast<unsigned>(v)); }
 
 struct Stats {
@@ -46,6 +48,7 @@ struct Skill {
     int notes = 4;            // base combo length before difficulty adds more
     float difficulty = 2.0f;  // move complexity on the 0-10 combo rating scale
     AttackTimeline timeline;  // enemy skills: the hits to defend (default: one hit, kDefaultImpact s in)
+    bool torn = false;        // enemy skills: a hit of it that lands in full leaves the defender Torn (Battle.h)
 };
 
 inline constexpr std::size_t kMaxEnemyPhases = 4;
@@ -117,7 +120,10 @@ struct Combatant {
     int poise = 0;          // Battle refills it to stats.maxPoise at setup and after a stagger
     bool staggered = false; // its poise broke: it skips its next turn (Battle.h)
     std::uint8_t verbs = 0; // party: verbBit()s of the Turns verbs it has
-    Load load;              // party: stored by perfect Guards, spent by Release (Load.h)
+    Load load;              // party: stored by perfect Guards and Intercepts, spent by Release (Load.h)
+    bool child = false;     // party: a child; no one Intercepts a hit aimed at it (Battle.h)
+    int tornTurns = 0;      // Torn: the turns of it left (0: not Torn); it ticks as each of its turns starts
+    float tornShare = 0.0f; // Torn: the share of max HP each tick takes
     std::vector<Skill> skills;
     WeakPoints weakPoints; // enemies: what aim mode reveals (see WeakPoint.h); none by default
     EnemyPhases phases;    // enemies: the stages of its fight and the skill pattern of each; none by default

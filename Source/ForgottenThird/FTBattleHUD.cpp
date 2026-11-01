@@ -57,8 +57,9 @@ const FTUiText kDown(TEXT("battle.down"));
 const FTUiText kStaggered(TEXT("battle.staggered"));
 const FTUiText kOverloaded(TEXT("battle.overloaded"));
 const FTUiText kLoad(TEXT("battle.load"));
-const FString kDefenceKeys[4] = {FString(TEXT("Dodge  Left/Right  X/B")), FString(TEXT("Parry  Down  A")),
-	FString(TEXT("Jump  Up  Y")), FString(TEXT("Guard  hold G  RB"))};
+const FTUiText kTorn(TEXT("battle.torn"));
+const FString kDefenceKeys[5] = {FString(TEXT("Dodge  Left/Right  X/B")), FString(TEXT("Parry  Down  A")),
+	FString(TEXT("Jump  Up  Y")), FString(TEXT("Guard  hold G  RB")), FString(TEXT("Intercept  hold I  LB"))};
 const FString kTell(TEXT("!"));
 const FTUiText kJumpable(TEXT("battle.jump"));
 const FLinearColor kCyan(0.35f, 0.85f, 1.f);
@@ -314,16 +315,30 @@ void AFTBattleHUD::DrawPanel(const AFTBattleDemoActor& D, int32 Id, float X, flo
 		DrawRect(kGold, BarX, BarY - 6.f * S, BarW * PoiseFrac, 4.f * S);
 	}
 
-	if (bParty && C.can(ftcore::Verb::Guard))
+	const float LoadY = BarY + BarH + 30.f * S;
+	const float LoadX = BarX + 46.f * S;
+	const float LoadW = BarW * 0.5f;
+	if (bParty && (C.can(ftcore::Verb::Guard) || C.can(ftcore::Verb::Intercept) || C.load.value > 0))
 	{
-		// Load: a cyan gauge under the HP text, orange when full (only Release is open then).
-		const float LoadY = BarY + BarH + 30.f * S;
-		const float LoadX = BarX + 46.f * S;
-		const float LoadW = BarW * 0.5f;
+		// Load: a cyan gauge under the HP text, orange when full (only Release and Take Half are open
+		// then). A member without the verbs shows it only while it holds Load shared to it.
 		const float LoadFrac = static_cast<float>(FMath::Clamp(C.load.value, 0, ftcore::kMaxLoad)) / static_cast<float>(ftcore::kMaxLoad);
 		DrawStr(kLoad, kDim, BarX, LoadY - 3.f * S, Font, 0.9f);
 		DrawRect(kHpBack, LoadX, LoadY, LoadW, 6.f * S);
 		DrawRect(C.load.overloaded() ? kOrange : kCyan, LoadX, LoadY, LoadW * LoadFrac, 6.f * S);
+	}
+	if (bParty && C.alive() && C.tornTurns > 0)
+	{
+		// Torn: the tag right of the Load gauge, then one red pip per turn of it left.
+		const float TornX = LoadX + LoadW + 16.f * S;
+		DrawStr(kTorn, kRed, TornX, LoadY - 3.f * S, Font, 0.9f);
+		const float Pip = 6.f * S;
+		float PX = TornX + 44.f * S;
+		for (int32 I = 0; I < C.tornTurns && I < 8; ++I)
+		{
+			DrawRect(kRed, PX, LoadY, Pip, Pip);
+			PX += Pip + 3.f * S;
+		}
 	}
 
 	if (bParty)
@@ -585,8 +600,10 @@ void AFTBattleHUD::DrawDefence(const AFTBattleDemoActor& D)
 		case ftcore::DefenceOutcome::Dodged:
 		case ftcore::DefenceOutcome::Jumped: Color = T.refunded(static_cast<size_t>(I)) ? kGold : kCyan; break;
 		case ftcore::DefenceOutcome::Hit: Color = T.late(static_cast<size_t>(I)) ? kOrange : kRed; break;
-		case ftcore::DefenceOutcome::PerfectGuard: Color = kGold; break;
-		case ftcore::DefenceOutcome::Guarded: Color = kCyan; break;
+		case ftcore::DefenceOutcome::PerfectGuard:
+		case ftcore::DefenceOutcome::PerfectIntercept: Color = kGold; break;
+		case ftcore::DefenceOutcome::Guarded:
+		case ftcore::DefenceOutcome::Intercepted: Color = kCyan; break;
 		default: break;
 		}
 		DrawRect(Color, PX, PY, Pip, Pip);
@@ -596,19 +613,32 @@ void AFTBattleHUD::DrawDefence(const AFTBattleDemoActor& D)
 	// The keys, the last one pressed lit for a moment.
 	const float Lit = static_cast<float>(FMath::Clamp(1.0 - D.GetDefencePressAge() / 0.2, 0.0, 1.0));
 	const int32 Pressed = static_cast<int32>(D.GetLastDefenceInput());
-	const float KeyW = 230.f * S;
-	// The Guard key only for a defender with the verb; it stays lit while held.
+	// The Guard key only for a defender with the verb, the Intercept key only when someone can take
+	// the attack for the defender (never for a child); a hold's key stays lit while it is held.
 	const bool bGuard = B->combatant(B->defender()).can(ftcore::Verb::Guard);
-	const int32 Keys = bGuard ? 4 : 3;
+	const bool bIntercept = B->interceptor().has_value();
+	int32 Shown[5] = {0, 1, 2, 0, 0};
+	int32 Keys = 3;
+	if (bGuard)
+	{
+		Shown[Keys++] = 3;
+	}
+	if (bIntercept)
+	{
+		Shown[Keys++] = 4;
+	}
+	const float KeyW = (Keys > 4 ? 200.f : 230.f) * S;
 	float KX = Canvas->ClipX * 0.5f - KeyW * 0.5f * static_cast<float>(Keys);
 	const float KY = PY + Pip + 14.f * S;
-	for (int32 K = 0; K < Keys; ++K)
+	for (int32 N = 0; N < Keys; ++N)
 	{
-		const bool bLit = (K == Pressed && Lit > 0.f) || (K == 3 && T.guarding());
+		const int32 K = Shown[N];
+		const bool bHeld = K == 3 ? T.guarding() && !T.intercepting() : K == 4 && T.intercepting();
+		const bool bLit = (K == Pressed && Lit > 0.f) || bHeld;
 		DrawRect(kPanel, KX + 4.f * S, KY, KeyW - 8.f * S, 30.f * S);
 		if (bLit)
 		{
-			DrawFrame(KX + 4.f * S, KY, KeyW - 8.f * S, 30.f * S, WithAlpha(kGold, Lit), 2.f * S);
+			DrawFrame(KX + 4.f * S, KY, KeyW - 8.f * S, 30.f * S, WithAlpha(kGold, bHeld ? 1.f : Lit), 2.f * S);
 		}
 		DrawStrCentered(kDefenceKeys[K], bLit ? kGold : kWhite, KX + KeyW * 0.5f, KY + 7.f * S, Small, 1.f);
 		KX += KeyW;

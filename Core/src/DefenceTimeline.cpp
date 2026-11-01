@@ -13,6 +13,8 @@ const char* defenceOutcomeName(DefenceOutcome o) {
     case DefenceOutcome::Hit: return "HIT";
     case DefenceOutcome::Guarded: return "GUARD";
     case DefenceOutcome::PerfectGuard: return "PERFECT GUARD";
+    case DefenceOutcome::Intercepted: return "INTERCEPT";
+    case DefenceOutcome::PerfectIntercept: return "PERFECT INTERCEPT";
     default: return "";
     }
 }
@@ -53,6 +55,7 @@ void DefenceTimeline::reset(const AttackTimeline& timeline, double start, const 
     late_.fill(false);
     lockoutUntil_.fill(-1e30);
     guarding_ = false;
+    holdInput_ = DefenceInput::Guard;
     guardFrom_ = start;
     start_ = start;
     now_ = start;
@@ -88,9 +91,11 @@ void DefenceTimeline::expire(double t, DefenceResults& out) {
     if (t > now_) now_ = t;
     while (next_ < timeline_.size() && impact(next_) <= t) {
         const double at = impact(next_);
-        const DefenceOutcome o = !guarding_                          ? DefenceOutcome::Hit
-                                 : at - guardFrom_ <= windows_.parry ? DefenceOutcome::PerfectGuard
-                                                                     : DefenceOutcome::Guarded;
+        const bool perfect = at - guardFrom_ <= windows_.parry;
+        const bool intercept = holdInput_ == DefenceInput::Intercept;
+        const DefenceOutcome o = !guarding_  ? DefenceOutcome::Hit
+                                 : intercept ? (perfect ? DefenceOutcome::PerfectIntercept : DefenceOutcome::Intercepted)
+                                             : (perfect ? DefenceOutcome::PerfectGuard : DefenceOutcome::Guarded);
         record(next_, o, false, at, out);
     }
 }
@@ -111,9 +116,10 @@ DefenceResults DefenceTimeline::update(double now) {
 DefenceResults DefenceTimeline::press(DefenceInput input, double t) {
     DefenceResults out;
     expire(t, out);
-    if (input == DefenceInput::Guard) { // a hold: judged at each impact while it lasts
+    if (input == DefenceInput::Guard || input == DefenceInput::Intercept) { // a hold: judged at each impact
         if (!guarding_) {
             guarding_ = true;
+            holdInput_ = input;
             guardFrom_ = t;
         }
         return out;
@@ -146,7 +152,8 @@ DefenceResults DefenceTimeline::press(DefenceInput input, double t) {
                     answered = true;
                 }
                 break;
-            case DefenceInput::Guard: break; // handled above
+            case DefenceInput::Guard:
+            case DefenceInput::Intercept: break; // handled above
             }
         }
         if (answered) return out;
@@ -199,7 +206,8 @@ double DefenceTimeline::idealPress(std::size_t i, DefenceInput input) const {
     const double at = impact(i);
     switch (input) {
     case DefenceInput::Parry:
-    case DefenceInput::Guard: return at - windows_.parry * 0.5;
+    case DefenceInput::Guard:
+    case DefenceInput::Intercept: return at - windows_.parry * 0.5;
     case DefenceInput::Dodge: return at - windows_.perfectDodge * 0.5;
     default: return at - windows_.jump * 0.5;
     }

@@ -335,7 +335,7 @@ bool importEnemyRoster(std::string_view json, EnemyRoster& out, std::string* err
                 continue;
             }
             encUnknownKeys(s, kp,
-                           {"id", "name", "apCost", "apGain", "targeting", "power", "notes", "difficulty", "hits"},
+                           {"id", "name", "apCost", "apGain", "targeting", "power", "notes", "difficulty", "hits", "torn"},
                            warnings);
             Skill skill;
             const std::string id = encStr(s["id"].string());
@@ -349,6 +349,9 @@ bool importEnemyRoster(std::string_view json, EnemyRoster& out, std::string* err
             encInt(s, "notes", skill.notes, 1, 64, kp, errors);
             encNum(s, "difficulty", skill.difficulty, 0.f, 10.f, kp, errors);
             encHits(s, kp, skill.timeline, errors, warnings);
+            const JsonValue torn = s["torn"];
+            if (!torn.isAbsent() && !torn.isBool()) errors.push_back(kp + ".torn: expected true or false");
+            skill.torn = torn.boolean(false);
             const std::string_view targeting = s["targeting"].string("single");
             if (targeting == "single") skill.targeting = Targeting::SingleEnemy;
             else if (targeting == "all") skill.targeting = Targeting::AllEnemies;

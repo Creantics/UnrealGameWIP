@@ -930,6 +930,18 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 		{
 			SetJudgement(EFTJudgement::Perfect, Event.Amount > 0 ? FString::Printf(TEXT("PERFECT  +%d AP"), Event.Amount) : FString(TEXT("PERFECT")));
 		}
+		else if (Event.Label == TEXT("PERFECT GUARD"))
+		{
+			SetJudgement(EFTJudgement::Perfect, TEXT("PERFECT GUARD"));
+		}
+		else if (Event.Label == TEXT("PERFECT INTERCEPT")) // Target is the interceptor
+		{
+			SetJudgement(EFTJudgement::Perfect, FString::Printf(TEXT("PERFECT INTERCEPT  %s"), *GetFighterName(Event.Target)));
+		}
+		else if (Event.Label == TEXT("INTERCEPT"))
+		{
+			SetJudgement(EFTJudgement::Defended, FString::Printf(TEXT("INTERCEPT  %s"), *GetFighterName(Event.Target)));
+		}
 		else
 		{
 			SetJudgement(EFTJudgement::Defended, TEXT("DEFENDED"));
@@ -956,6 +968,16 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 	case EFTBattleEventType::Released:
 		SetBanner(FString::Printf(TEXT("%s releases %d Load!"), *GetFighterName(Event.Source), Event.Amount));
 		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: %s releases %d Load."), *GetFighterName(Event.Source), Event.Amount);
+		break;
+	case EFTBattleEventType::TornApplied:
+		SetBanner(FString::Printf(TEXT("%s is torn for %d turns!"), *GetFighterName(Event.Target), Event.Amount));
+		break;
+	case EFTBattleEventType::HalfTaken:
+		// Two of these, the actor's first: the banner comes with the ally's.
+		if (Event.Target != Event.Source)
+		{
+			SetBanner(FString::Printf(TEXT("%s takes half with %s."), *GetFighterName(Event.Source), *GetFighterName(Event.Target)));
+		}
 		break;
 	case EFTBattleEventType::Downed:
 		if (Figures.IsValidIndex(Event.Target))
@@ -1567,12 +1589,18 @@ void AFTBattleDemoActor::TickVerbInput()
 	AFTPlayerController* PC = GetPlayer();
 	const bool bLive = PC && !bAutoPlay && !bWaitingForRestart && Battle->GetBattle();
 	const bool bGuardDown = bLive && (PC->IsInputKeyDown(EKeys::G) || PC->IsInputKeyDown(EKeys::Gamepad_RightShoulder));
+	const bool bInterceptDown = bLive && (PC->IsInputKeyDown(EKeys::I) || PC->IsInputKeyDown(EKeys::Gamepad_LeftShoulder));
 	const bool bReleaseDown = bLive && (PC->IsInputKeyDown(EKeys::R) || PC->IsInputKeyDown(EKeys::Gamepad_RightTrigger));
+	const bool bTakeHalfDown = bLive && (PC->IsInputKeyDown(EKeys::T) || PC->IsInputKeyDown(EKeys::Gamepad_LeftThumbstick));
 	const bool bResumed = UFTPauseSubsystem::IsJustResumed(this);
 	const bool bGuardPressed = bGuardDown && !bGuardKeyDown && !bResumed;
+	const bool bInterceptPressed = bInterceptDown && !bInterceptKeyDown && !bResumed;
 	const bool bReleasePressed = bReleaseDown && !bReleaseKeyDown && !bResumed;
+	const bool bTakeHalfPressed = bTakeHalfDown && !bTakeHalfKeyDown && !bResumed;
 	bGuardKeyDown = bGuardDown;
+	bInterceptKeyDown = bInterceptDown;
 	bReleaseKeyDown = bReleaseDown;
+	bTakeHalfKeyDown = bTakeHalfDown;
 	if (!bLive || UFTPauseSubsystem::IsBlocking(this))
 	{
 		return;
@@ -1580,28 +1608,62 @@ void AFTBattleDemoActor::TickVerbInput()
 	const ftcore::Battle* B = Battle->GetBattle();
 	if (Battle->IsDefenceActive())
 	{
-		// The hold lasts while the key is down; Battle ignores it for a defender without the verb.
+		// A hold lasts while its own key is down: Guard for a defender with the verb, Intercept when
+		// a party member can take the attack for the defender (Battle ignores either otherwise, and
+		// one hold at a time).
 		if (bGuardPressed)
 		{
 			DefencePressWall = Wall();
 			LastDefenceInput = EFTDefenceInput::Guard;
 			Battle->Defend(EFTDefenceInput::Guard);
 		}
-		else if (!bGuardDown && B->defence().guarding())
+		else if (bInterceptPressed)
+		{
+			DefencePressWall = Wall();
+			LastDefenceInput = EFTDefenceInput::Intercept;
+			Battle->Defend(EFTDefenceInput::Intercept);
+		}
+		else if (B->defence().guarding() && !(B->defence().intercepting() ? bInterceptDown : bGuardDown))
 		{
 			Battle->ReleaseGuard();
 		}
 		return;
 	}
 	const bool bPartyTurn = B->phase() == ftcore::Phase::AwaitingCommand && B->combatant(B->actor()).team == ftcore::Team::Party;
-	if (!bPartyTurn || !bReleasePressed)
+	if (!bPartyTurn)
 	{
 		return;
 	}
-	switch (Battle->Release())
+	if (bReleasePressed)
 	{
-	case EFTCommandError::NoLoad: SetNotice(TEXT("No Load to release")); break;
-	case EFTCommandError::NoSuchVerb: SetNotice(TEXT("Can't release")); break;
+		switch (Battle->Release())
+		{
+		case EFTCommandError::NoLoad: SetNotice(TEXT("No Load to release")); break;
+		case EFTCommandError::NoSuchVerb: SetNotice(TEXT("Can't release")); break;
+		default: break;
+		}
+		return;
+	}
+	if (!bTakeHalfPressed)
+	{
+		return;
+	}
+	// Take Half with the lowest-id living ally (another party member).
+	int32 Ally = -1;
+	const std::vector<ftcore::Combatant>& All = B->combatants();
+	for (size_t Id = 0; Id < All.size(); ++Id)
+	{
+		if (Id != B->actor() && All[Id].team == ftcore::Team::Party && All[Id].alive())
+		{
+			Ally = static_cast<int32>(Id);
+			break;
+		}
+	}
+	switch (Battle->TakeHalf(Ally))
+	{
+	case EFTCommandError::NoSuchVerb: SetNotice(TEXT("Can't take half")); break;
+	case EFTCommandError::InvalidTarget: SetNotice(TEXT("No ally to take half with")); break;
+	case EFTCommandError::NothingToShare: SetNotice(TEXT("Nothing to share")); break;
 	default: break;
 	}
 }
