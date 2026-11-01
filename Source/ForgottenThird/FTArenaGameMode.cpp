@@ -465,9 +465,10 @@ void AFTArenaGameMode::PollInput(float DeltaSeconds)
 	bPressLight |= ArenaAnyJustPressed(*PC, Key(AttackB, 0), Key(AttackB, 1), EKeys::LeftMouseButton, EKeys::Gamepad_RightShoulder);
 	bPressHeavy |= ArenaAnyJustPressed(*PC, Key(HeavyB, 0), Key(HeavyB, 1), EKeys::Gamepad_RightTrigger);
 	bPressDodge |= ArenaAnyJustPressed(*PC, Key(DodgeB, 0), Key(DodgeB, 1), EKeys::SpaceBar);
-	// The partner's Read: 1 / 2 / 3, or on a pad the d-pad's left, up and right while the cards are open (they
-	// switch the target and heal at any other time; the d-pad's down stays the partner's pair).
-	const bool bCardsOpen = Fight.readOpen();
+	// The partner's Read: 1 / 2 / 3, or on a pad the d-pad's left, up and right while the cards are up, picked or
+	// not, until the move goes active (they switch the target and heal at any other time; the d-pad's down stays
+	// the partner's pair). Core refuses a second pick, so after one those three do nothing until the cards go.
+	const bool bCardsOpen = Fight.readCards().dealt();
 	if (PC->WasInputKeyJustPressed(EKeys::One) || (bCardsOpen && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Left)))
 	{
 		PressRead = 0;
