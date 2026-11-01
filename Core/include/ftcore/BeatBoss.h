@@ -315,6 +315,17 @@ struct BeatBossPrompt {
     double pressB = -1.0;               // Paired: `second`'s latest press
 };
 
+// The bar the beat line shows as its second (the one the next bar line plays; in a pause that gives back
+// to a bar already begun, that bar). A host reads it to prepare for the bar before it starts.
+struct BossBarPreview {
+    std::int8_t phase = 0;
+    std::int8_t bar = 0;        // loop bar index (0-based), or finisher bar index
+    std::int32_t loop = 1;
+    bool finisher = false;
+    bool newPhase = false;      // the bar opens a new phase
+    int silence = -1;           // running only: a scripted silence stops the track at that bar line (its index; -1 none)
+};
+
 enum class BeatBossEventType : std::uint8_t { // append only
     Judged,         // `prompt` resolved with `grade` (`answer` is its answer)
     BossHit,        // the boss took `amount`
@@ -457,6 +468,8 @@ public:
     FTCORE_API QteAction autopilot(double now) const;
     // Fills `out` for the HUD. No allocation.
     FTCORE_API void beatLine(BeatLine& out) const;
+    // The bar to come, as the beat line's second bar shows it (read only; no rule reads it).
+    FTCORE_API BossBarPreview upcomingBar() const;
 
     BeatBossState state() const { return state_; }
     bool over() const { return state_ == BeatBossState::Victory || state_ == BeatBossState::Defeat; }

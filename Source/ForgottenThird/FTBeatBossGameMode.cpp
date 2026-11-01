@@ -14,6 +14,7 @@
 #include "FTActionButtons.h"
 #include "FTBeatBossHUD.h"
 #include "FTBeatBossMetronome.h"
+#include "FTBeatBossMusic.h"
 #include "FTConductorComponent.h"
 #include "FTGameInstance.h"
 #include "FTPauseSubsystem.h"
@@ -237,19 +238,35 @@ void AFTBeatBossGameMode::StartPlay()
 		}
 	}
 
-	// The stand-in music: one procedural sound for the whole fight. No audio device (-NullRHI runs may have
-	// none) leaves the component null and the triggers go nowhere.
-	Metronome = NewObject<UFTBeatBossMetronome>(this);
-	MetronomeAudio = UGameplayStatics::SpawnSound2D(this, Metronome, 1.f, 1.f, 0.f, nullptr, false, false);
-	if (Track.music.empty())
+	// The music: one procedural sound for the whole fight. No audio device (-NullRHI runs may have none) leaves
+	// the audio component null and nothing sounds. -BeatBossMetronome brings back the old click-and-stems stand-in.
+	if (FParse::Param(Cmd, TEXT("BeatBossMetronome")))
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("BeatBoss: track %s on the wall clock with the metronome."), *Id);
+		Metronome = NewObject<UFTBeatBossMetronome>(this);
+		MetronomeAudio = UGameplayStatics::SpawnSound2D(this, Metronome, 1.f, 1.f, 0.f, nullptr, false, false);
+		if (Track.music.empty())
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("BeatBoss: track %s on the wall clock with the metronome."), *Id);
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("BeatBoss: track %s on the wall clock with the metronome standing in for music cue %s."), *Id,
+				*FT::ToFString(Track.music));
+		}
 	}
 	else
 	{
-		// No music cue is played by this demo yet; the clicks and stems stand in for it.
-		UE_LOG(LogForgottenThird, Display, TEXT("BeatBoss: track %s on the wall clock with the metronome standing in for music cue %s."), *Id,
-			*FT::ToFString(Track.music));
+		Music = NewObject<UFTBeatBossMusic>(this);
+		MusicAudio = UGameplayStatics::SpawnSound2D(this, Music, 1.f, 1.f, 0.f, nullptr, false, false);
+		if (Track.music.empty())
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("BeatBoss: track %s on the wall clock with the procedural music."), *Id);
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("BeatBoss: track %s on the wall clock with the procedural music standing in for music cue %s."), *Id,
+				*FT::ToFString(Track.music));
+		}
 	}
 
 	// The fight reads the conductor's clock, so this tick comes after the conductor has taken its frame's.
@@ -261,6 +278,10 @@ void AFTBeatBossGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	if (MetronomeAudio)
 	{
 		MetronomeAudio->Stop();
+	}
+	if (MusicAudio)
+	{
+		MusicAudio->Stop();
 	}
 	Super::EndPlay(EndPlayReason);
 }
@@ -440,7 +461,14 @@ void AFTBeatBossGameMode::Tick(float DeltaSeconds)
 			Handle(Fight.update(Now));
 		}
 		Fight.beatLine(Line);
-		Sound();
+		if (Music)
+		{
+			MusicFrame();
+		}
+		else
+		{
+			Sound();
+		}
 		if (Fight.over())
 		{
 			Finish();
@@ -627,6 +655,7 @@ void AFTBeatBossGameMode::Begin()
 	SoundCueCount = 0;
 	SoundCueId = 0;
 	SoundTrack = Fight.trackTime();
+	MusicReset();
 	UE_LOG(LogForgottenThird, Display, TEXT("BeatBoss: begin (%d phases, boss %d hp, lead %d hp)%s%s; losing phase %d (0: none)."),
 		static_cast<int32>(Track.def.phaseCount), Track.def.bossHp, Track.def.leadHp, bAutoPlay ? TEXT(", autoplay") : TEXT(""),
 		bIdle ? TEXT(", idle") : TEXT(""), MissPhase);
@@ -647,6 +676,7 @@ void AFTBeatBossGameMode::Retry()
 	SoundBars = -1;
 	SoundCueCount = 0;
 	SoundTrack = Fight.trackTime();
+	MusicReset();
 	Pulse(EPulse::Phase, Now, Phase);
 	UE_LOG(LogForgottenThird, Display, TEXT("BeatBoss: retry %d from phase %d's checkpoint (boss %d hp, lead %d hp), lost after %d bars."), Retries,
 		Phase + 1, Fight.bossHp(), Fight.hp(), FromBar);
@@ -705,6 +735,12 @@ void AFTBeatBossGameMode::Quit(int32 Code)
 	}
 	bQuitting = true;
 	Stage = EStage::Done;
+	if (Music)
+	{
+		// Whether the stream ran at all (a run with no audio device never does), and how many sounds it started late.
+		UE_LOG(LogForgottenThird, Display, TEXT("BeatBoss: music %s, %u late, %u dropped, %u revoked."), Music->IsRunning() ? TEXT("ran") : TEXT("did not run"),
+			Music->GetLateCount(), Music->GetDroppedCount(), MusicDriver.revoked());
+	}
 	UE_LOG(LogForgottenThird, Display, TEXT("BeatBoss: quitting (%d)."), Code);
 	FTRequestExit(Code, TEXT("BeatBoss"));
 }
@@ -731,6 +767,10 @@ void AFTBeatBossGameMode::Handle(const ftcore::BeatBossEvents& Events)
 	using ftcore::BeatBossEventType;
 	for (const ftcore::BeatBossEvent& E : Events)
 	{
+		if (Music)
+		{
+			MusicDriver.onEvent(E);
+		}
 		switch (E.type)
 		{
 		case BeatBossEventType::Judged:
@@ -844,6 +884,43 @@ void AFTBeatBossGameMode::Voice(uint8 Which)
 	{
 		Metronome->Trigger(static_cast<UFTBeatBossMetronome::EVoice>(Which));
 	}
+	else if (Music)
+	{
+		// The music's own sounds (the count, the beats, the moves' accents) come from the driver; the answers' cues from here.
+		switch (static_cast<UFTBeatBossMetronome::EVoice>(Which))
+		{
+		case UFTBeatBossMetronome::EVoice::Good:
+			Music->Trigger(ftcore::MusicSound::Good);
+			break;
+		case UFTBeatBossMetronome::EVoice::Miss:
+			Music->Trigger(ftcore::MusicSound::Miss);
+			break;
+		default:
+			break;
+		}
+	}
+}
+
+void AFTBeatBossGameMode::MusicReset()
+{
+	if (!Music)
+	{
+		return;
+	}
+	MusicDriver.reset(Now, MusicOut);
+	Music->Post(MusicOut, Now);
+}
+
+void AFTBeatBossGameMode::MusicFrame()
+{
+	// A pause or a held view leaves the clock behind the wall clock: the mapping to the audio frames starts over.
+	if (Music->Sync(Now))
+	{
+		MusicDriver.reset(Now, MusicOut);
+		Music->Post(MusicOut, Now);
+	}
+	MusicDriver.update(Fight, Line, Now, CountKind, MusicOut);
+	Music->Post(MusicOut, Now);
 }
 
 void AFTBeatBossGameMode::Sound()

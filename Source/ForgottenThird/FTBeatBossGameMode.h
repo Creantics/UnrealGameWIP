@@ -12,9 +12,11 @@
 // The clock. ftcore::BeatBoss wants a pause-aware wall clock that keeps running through its own silences:
 // UFTConductorComponent on the wall clock (bWallClockWithoutAudio, nothing bound), which stands still while
 // the pause menu is open. Presses are stamped with the conductor's latency-compensated input time. The
-// track's music is a stand-in, UFTBeatBossMetronome, driven from the same clock: a click on every beat the
-// bar has (accented on its bar line, none on an empty beat) while the track runs, the count's blips, and
-// each told move's stem sounding on its impact, so what is heard and what the beat line draws agree.
+// track's music is procedural, UFTBeatBossMusic, driven from the same clock: ftcore::BeatMusicDriver plans each
+// bar from the fight (a drum and bass pattern that builds with the phases, into the finisher, with an accent
+// on each told move's impact and the count's blips) and the component places every sound on its exact frame,
+// so what is heard and what the beat line draws agree. -BeatBossMetronome brings back the old stand-in,
+// UFTBeatBossMetronome: a click on every beat the bar has, the count's blips and each move's stem.
 //
 // After a defeat the result shows, then Enter / Space / pad A retries from the phase's checkpoint
 // (BeatBoss::retry) and Q / Backspace / pad B gives up. After a victory Enter / Space / pad A plays the
@@ -32,6 +34,7 @@
 //                          (1 is the first) until the fight is lost, then plays on from the retry prompt
 //                          as above, which restarts at phase n's checkpoint: the checkpoint retry, headless.
 //   -BeatBossIdle          presses nothing at all and never retries: the fight must be lost.
+//   -BeatBossMetronome     the old click-and-stems stand-in instead of the procedural music.
 //   -BeatBossQuitOnFinish  exits when the fight is over: code 0 on a victory, 1 on a defeat, 2 if the
 //                          watchdog fired after 300 s, 3 if the track didn't load (FTRequestExit, which forces
 //                          a non-zero code past the engine's graceful exit, as the engine does for commandlets).
@@ -47,12 +50,14 @@
 #include "FTGameMode.h"
 
 #include "ftcore/BeatBoss.h"
+#include "ftcore/BeatMusic.h"
 
 #include "FTBeatBossGameMode.generated.h"
 
 class AActor;
 class UAudioComponent;
 class UFTBeatBossMetronome;
+class UFTBeatBossMusic;
 class UFTConductorComponent;
 class UMaterialInstanceDynamic;
 class USkeletalMeshComponent;
@@ -161,6 +166,9 @@ private:
 	// The stand-in music for this frame: beats crossed, impacts crossed (the count's blips come as events).
 	void Sound();
 	void Voice(uint8 Voice);
+	// The procedural music for this frame (UFTBeatBossMusic): the driver follows the fight, the component places it.
+	void MusicFrame();
+	void MusicReset();
 	// The boss's wind-up, lunge, flash and stagger; the lead's moves.
 	void Animate();
 	void Begin();
@@ -181,6 +189,12 @@ private:
 	TObjectPtr<UFTBeatBossMetronome> Metronome;
 	UPROPERTY(Transient)
 	TObjectPtr<UAudioComponent> MetronomeAudio;
+	UPROPERTY(Transient)
+	TObjectPtr<UFTBeatBossMusic> Music;
+	UPROPERTY(Transient)
+	TObjectPtr<UAudioComponent> MusicAudio;
+	ftcore::BeatMusicDriver MusicDriver;
+	ftcore::MusicEvents MusicOut;
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> BossMaterial;
 

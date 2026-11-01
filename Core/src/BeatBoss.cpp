@@ -832,6 +832,29 @@ QteAction BeatBoss::pilot(double limit) const {
 
 // ---- the beat line ----
 
+BossBarPreview BeatBoss::upcomingBar() const {
+    BossBarPreview out;
+    if (state_ == BeatBossState::NotStarted) return out;
+    BarRef r;
+    int silence = -1;
+    if (mode_ != Mode::Running && started_) {
+        r.phase = static_cast<std::int8_t>(phase_);
+        r.finisher = finisherBar_ >= 0;
+        r.bar = static_cast<std::int8_t>(r.finisher ? finisherBar_ : barIndex_);
+        r.loop = loop_;
+    } else {
+        r = nextBar();
+        if (mode_ == Mode::Running) silence = silenceDue(r);
+    }
+    out.phase = r.phase;
+    out.bar = r.bar;
+    out.loop = r.loop;
+    out.finisher = r.finisher;
+    out.newPhase = r.newPhase;
+    out.silence = silence;
+    return out;
+}
+
 void BeatBoss::beatLine(BeatLine& out) const {
     out.tickCount = 0;
     out.restCount = 0;
