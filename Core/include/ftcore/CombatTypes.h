@@ -34,7 +34,10 @@ struct Stats {
     int maxPoise = 0;
 };
 
-enum class Targeting { SingleEnemy, AllEnemies };
+// Back (enemy skills): aimed at the last living member of the party (the back of its line) rather
+// than the most wounded; Front at the first living one. A party skill with either takes a single
+// target, as SingleEnemy does.
+enum class Targeting { SingleEnemy, AllEnemies, Back, Front };
 
 // A move. Party skills are performed as an arrow combo by the attacker (accuracy scales damage
 // dealt). Enemy skills play their attack timeline instead, and the defender answers each hit with

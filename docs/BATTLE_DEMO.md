@@ -38,7 +38,7 @@ unchanged.
 | Intercept for the defender (enemy turn, held through the hit) | I | LB |
 | Release (the member's turn) | R | RT |
 | Take Half with an ally (the member's turn) | T | Left-stick click |
-| Read card 1, 2 or 3 (enemy turn, up to the first hit) | 1, 2, 3 | Left stick flicked left, up, right |
+| Read card 1, 2 or 3 (enemy turn, up to the first hit; a key past the dealt cards does nothing) | 1, 2, 3 | Left stick flicked left, up, right |
 | Choose a skill (menu) | Up / Down, or 1-4 to use at once | D-pad up / down |
 | Choose a target (menu) | Left / Right, Q / E, Tab | D-pad left / right, shoulders |
 | Use the skill (menu) | Enter or Space | A |
@@ -55,7 +55,14 @@ they put the shot back first. Pad Start used to use the skill and fight again; i
 The defence keys are the combo arrows (`AFTPlayerController::OnBattleArrow`), read as defence inputs
 while an enemy attack runs. The battle keys are a separate Enhanced Input context (`AFTPlayerController::BeginBattleInput`),
 active only while a battle runs. It sits above the story context, so the shared keys don't reach
-the story.
+the story (pad RT is both Release here and the story's Skip; only Release fires in a battle).
+
+No two battle keys clash, because each works in one phase only: the verb holds (G / RB, I / LB) and
+the card picks (1-3, stick flicks) during an enemy attack, Release and Take Half on the member's own
+turn, the shoulders as target keys only in the menu, and the sticks as the reticle only while
+aiming, which is a party phase. During an attack 1-3 pick cards; in the menu 1-4 use a skill. A card
+key past the dealt cards (4, or 3 when two are dealt) is ignored rather than refused on screen; a
+pick after the first impact says "Too late to read".
 
 ## Defence
 
@@ -187,7 +194,8 @@ guards, and takes half on its turn when one member is torn and the ally is not (
 share); Load alone never moves it, and the Parry and Dodge gates never use these verbs. The HUD
 adds an Intercept key to the defence row when someone can take the attack, intercept pips in gold
 (perfect) or cyan (held), a TORN tag with a red pip per turn left on a party panel, and the Load
-gauge on any member that holds Load. The layout is not yet checked on screen.
+gauge on any member that holds Load. The party panel is tall enough for the Load gauge and the
+TORN row under the HP and AP bars; both were checked in offscreen renders (see "Turns demo").
 
 ### Read cards
 
@@ -214,7 +222,47 @@ In Guard mode the autopilot reads every attack (a shaky pilot misreads at its de
 the next card); the Parry and Dodge gates never read. The Unreal demo banners the tell in place of
 the action's name, draws the cards under the enemy banner (the right one framed gold once picked, a
 wrong pick red), hides the enemies' next skills in the turn order while a reader lives, and its
-autopilot reads too. The layout is not yet checked on screen.
+autopilot reads too. The cards sit under the enemy banner without covering the enemy panels
+(checked in an offscreen render; see "Turns demo").
+
+### Turns demo
+
+`-BattleLineup=turns` plays the demo line-up `turns` from `encounters.json` (`"demos"`, a list of
+`{id, tier, enemies}` looked up with `EncounterTable::findDemo`) in place of the default: four
+generic enemies (`demo_mauler`, `demo_raider`, `demo_hexer`, `demo_skulker` in `enemies.json`), each
+with its own weak point and every skill with a distinct `tellId`, so every attack deals full Read
+cards. Two enemy skills aim past the most wounded member: `"targeting": "back"` takes the last
+living party member (the second lead, so the first lead's Intercept comes up) and `"front"` the
+first (so the first lead guards, stores Load and reaches Release). One back move tears (`"torn"`),
+so the second lead is left Torn and Take Half comes up. A roster entry may set `"child": true`
+(copied to `Combatant::child`; a child is never intercepted for).
+
+The autopilot uses every verb here: it guards and intercepts the hits (`demo::PilotSkill::showTorn`
+lets the first torn hit land rather than intercept it, then takes half once), reads every attack
+and releases at 60 Load. Each outcome logs one line:
+
+```
+TURNS RESULT: Victory in 89.4 s, verbs used: Guard 2, Intercept 10, Release 1, Take Half 1, Read 9 (9 right)
+```
+
+That is the measured autoplay run; with `-BattleIdle` (the autopilot picks skills but presses
+nothing in defence, never aims, plays no combo arrows) it loses in 79.0 s. Core plays the same line-up
+headless in `test_turns_demo.cpp` (victory in about 87 s with 10 intercepts, a Take Half, a Release
+and 9 right reads; idle loses; nothing allocates).
+
+`-BattleShot=<prefix>` (implies the autopilot; needs a renderer, so `-RenderOffScreen` rather than
+`-NullRHI`) renders five views with `HighResShot 1600x900` as the fight reaches each: `<prefix>1_load`
+(a member's Load at 40 or more, on a party turn; the autopilot holds its Release until it is taken),
+`2_read` (cards dealt, not yet picked; the pick waits for it), `3_torn` (a Torn party panel),
+`4_countin` (the count-in number) and `5_intercept` (an Intercept hold). It quits a second after the
+last view, or after 300 s. In the renders every panel, the cards, the Load and TORN rows and the
+count-in (a large number on a dark plate) are readable without overlap.
+
+```
+UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/BattleDemo -game -BattleLineup=turns
+```
+
+plays it by hand; add `-BattleAutoPlay` to watch the autopilot.
 
 ## From the exploration demo
 
@@ -482,6 +530,14 @@ entry of `encounters.json` instead, without a carry (so the win pays nothing); t
 `-BattleEncounter=SC-P2-01,12,0`, and its run logs both phase changes. Before the defence timeline it took about 61.5 s; expect roughly the
 headless figure above now (not yet measured in Unreal).
 
+For the Turns demo line-up:
+
+```
+UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/BattleDemo -game -NullRHI -BattleLineup=turns -BattleAutoPlay -BattleQuitOnOutcome -unattended -nosplash -nosound
+UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/BattleDemo -game -NullRHI -BattleLineup=turns -BattleIdle -BattleQuitOnOutcome -unattended -nosplash -nosound
+UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/BattleDemo -game -RenderOffScreen -BattleLineup=turns -BattleShot=<dir>/turns_ -unattended -nosplash -nosound
+```
+
 ## What's missing
 
 - **No music.** The song clock is a silent 120 BPM wall clock
@@ -494,9 +550,10 @@ headless figure above now (not yet measured in Unreal).
   autopilot and the no-input run; the rest play the default fight.
 - **Input timing.** Presses are judged at the time the frame handles them, not at the hardware
   event time, so low frame rates cost accuracy.
-- **Missing actions.** No flee, guard or party switching. Aim is the only extra command on the battle
+- **Missing actions.** No flee or party switching. Aim is the only extra command on the battle
   screen. Items exist in Core (see Items) but not on the screen yet. Enemies
-  follow their phase patterns (or their skills in order) against the most wounded target. No waves
+  follow their phase patterns (or their skills in order) against the most wounded target (or the
+  last or first living member for a back or front move). No waves
   or adds yet: a line-up is fixed for the whole fight.
 - **No shop screen.** `ftcore::buy` and `ftcore::sell` work, but nothing in Unreal calls them, so
   gold still piles up unspent in the game.

@@ -332,6 +332,10 @@ inline int pilotDefend(Battle& b, double horizon, DefenceInput mode = DefenceInp
 struct PilotSkill {
     double press = 1.0;
     double defend = 1.0;
+    // Lets the fight's first tearing attack (Skill::torn) land, unanswered, until a party member is
+    // Torn, so Torn shows and Take Half has something to even (the demo autopilot's showcase). Off
+    // for the balance gates.
+    bool showTorn = false;
 };
 
 inline bool pilotSucceeds(unsigned n, double rate) {
@@ -346,7 +350,21 @@ struct PilotState {
     unsigned hits = 0;  // enemy hits decided this fight
     unsigned reads = 0; // Read cards picked this fight
     std::size_t skippedHit = static_cast<std::size_t>(-1); // the incoming hit it lets land
+    bool tornShown = false; // showTorn: a party member has been Torn this fight
 };
+
+// PilotSkill::showTorn: whether the pilot lets the attack under way land, unanswered: a tearing one
+// while no party member has been Torn this fight yet. Notes in `state` once one has. No allocation.
+inline bool pilotLetsTear(const Battle& b, const PilotSkill& skill, PilotState& state) {
+    if (!skill.showTorn || state.tornShown) return false;
+    for (const Combatant& c : b.combatants())
+        if (c.team == Team::Party && c.tornTurns > 0) {
+            state.tornShown = true;
+            return false;
+        }
+    const Skill* coming = b.phase() == Phase::EnemySkill ? b.activeSkill() : nullptr;
+    return coming && coming->torn;
+}
 
 // Like pilotPress, but a note the skill misses gets a wrong arrow at its time (one that matches
 // neither it nor the next two notes), which grades it a miss without touching its neighbours.
@@ -373,12 +391,15 @@ inline int pilotPress(Battle& b, double now, const PilotSkill& skill, PilotState
     return presses;
 }
 
-// Like pilotDefend, but a hit the skill misses gets no press: the pilot waits for it to land.
+// Like pilotDefend, but a hit the skill misses gets no press: the pilot waits for it to land (and,
+// with skill.showTorn, so does every hit of a tearing attack until a party member is Torn).
 inline int pilotDefend(Battle& b, double horizon, DefenceInput mode, const PilotSkill& skill, PilotState& state) {
     int presses = 0;
     if (b.phase() != Phase::EnemySkill) state.skippedHit = static_cast<std::size_t>(-1);
     DefenceInput hold = DefenceInput::Guard;
-    if (pilotHolds(b, mode, hold)) {
+    const bool holds = pilotHolds(b, mode, hold);
+    if (pilotLetsTear(b, skill, state)) return holds ? pilotHold(b, horizon, hold, false) : 0;
+    if (holds) {
         const DefenceTimeline& d = b.defence();
         const std::size_t i = d.nextIndex();
         if (i >= d.size() || d.guarding() || i == state.skippedHit) return pilotHold(b, horizon, hold, false);
@@ -442,6 +463,7 @@ struct HeadlessResult {
     int releases = 0;    // Releases the pilot made
     int loadStored = 0;  // Load its perfect Guards and Intercepts stored
     int intercepts = 0;  // enemy hits it intercepted (Guard mode)
+    int hitsDefended = 0;  // enemy hits defended (dodged, jumped, parried, guarded or intercepted)
     int takeHalves = 0;  // Take Halves it made (Guard mode)
     int reads = 0;       // Read cards it picked (Guard mode)
     int correctReads = 0; // of those, the right one
@@ -557,6 +579,7 @@ inline HeadlessResult playHeadlessWith(std::vector<Combatant> party, std::vector
     r.outcome = b.phase();
     r.loadStored = b.stats().loadStored;
     r.intercepts = b.stats().intercepts;
+    r.hitsDefended = b.stats().hitsDefended;
     r.reads = b.stats().reads;
     r.correctReads = b.stats().correctReads;
     r.finished = r.outcome == Phase::Victory || r.outcome == Phase::Defeat;

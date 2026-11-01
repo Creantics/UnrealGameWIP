@@ -48,6 +48,7 @@
 #include "FTBattleComponent.h"
 #include "FTComboComponent.h"
 
+#include "ftcore/BattleDemo.h"
 #include "ftcore/Encounter.h"
 #include "ftcore/WeakPoint.h"
 
@@ -130,6 +131,8 @@ public:
 	const FString& GetFighterName(int32 Id) const;
 	// "1  Strike" style label of a skill of combatant Id, and "2 AP" style cost.
 	const FString& GetSkillLabel(int32 Id, int32 Skill) const;
+	// The skill's plain name (no key number), cached like the labels.
+	const FString& GetSkillName(int32 Id, int32 Skill) const;
 	const FString& GetSkillCost(int32 Id, int32 Skill) const;
 	const FString& GetHpText(int32 Id) const;
 	const FString& GetBanner() const { return Banner; }
@@ -223,6 +226,16 @@ private:
 	void UpdateHpText(int32 Id);
 	void TickFigures(double Wall);
 	void TickAutoPlay(float DeltaSeconds);
+	// -BattleShot=<prefix>: saves the Turns views (<prefix>_1_load.png: the Load gauge, 2_read: the
+	// Read cards before the pick, 3_torn: Torn on a party panel, 4_countin, 5_intercept: an Intercept
+	// held) with HighResShot as each first comes, then quits; it implies -BattleAutoPlay. Run it under
+	// -RenderOffScreen (the HUD is drawn into the shot).
+	void TickShots();
+	void TakeShot(const TCHAR* Name, uint8 Bit);
+	// The autopilot's Guard-mode hold (ftcore::demo::pilotHold through the component): lets go of a
+	// hold whose hit has come, then begins Hold (Guard or Intercept) at the next hit's ideal time when
+	// it is due by Horizon, unless bAnswer is false.
+	void PilotHold(double Horizon, ftcore::DefenceInput Hold, bool bAnswer);
 	// The player's reticle and the aim keys that are polled (mouse buttons, F, pad LT, sticks).
 	void TickAimInput(float DeltaSeconds);
 	// Guard (G / pad RB) and Intercept (I / pad LB), each held through the hit, Release (R / pad RT) and
@@ -335,6 +348,22 @@ private:
 	int32 CardStickDir = -1;
 	// The autopilot's weak point for the aim in progress.
 	size_t PilotWeakPoint = ftcore::kMaxWeakPoints;
+	// The Turns demo line-up (-BattleLineup=turns): the autopilot defends in Guard mode (Guard,
+	// Intercept, Take Half, Read) and lets the first tearing attack land so Torn shows (PilotSkill::showTorn).
+	bool bTurnsDemo = false;
+	ftcore::demo::PilotSkill PilotSkill;
+	ftcore::demo::PilotState PilotState;
+	// -BattleIdle: the autopilot picks each party command (as Core's idle pilot does) but never steps
+	// on a note, defends or reads, so the fight is lost; with -BattleQuitOnOutcome a headless check.
+	bool bIdlePilot = false;
+	// -BattleShot: the prefix, the views taken (bits), when the run began, the last view and the Read view.
+	FString ShotPrefix;
+	uint8 ShotMask = 0;
+	double ShotStartWall = -1.0;
+	double ShotLastWall = -100.0;
+	double ReadShotWall = -100.0;
+	// Guard holds begun this round (the player's and the autopilot's), for the TURNS RESULT line.
+	int32 GuardHolds = 0;
 
 	int32 SelectedSkill = 0;
 	int32 SelectedTarget = -1;

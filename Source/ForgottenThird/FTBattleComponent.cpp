@@ -13,6 +13,9 @@ static_assert(static_cast<int>(EFTTeam::Party) == static_cast<int>(ftcore::Team:
 static_assert(static_cast<int>(EFTTeam::Enemies) == static_cast<int>(ftcore::Team::Enemies));
 static_assert(static_cast<int>(EFTTargeting::SingleEnemy) == static_cast<int>(ftcore::Targeting::SingleEnemy));
 static_assert(static_cast<int>(EFTTargeting::AllEnemies) == static_cast<int>(ftcore::Targeting::AllEnemies));
+static_assert(static_cast<int>(EFTTargeting::Back) == static_cast<int>(ftcore::Targeting::Back));
+static_assert(static_cast<int>(EFTTargeting::Front) == static_cast<int>(ftcore::Targeting::Front));
+static_assert(ftcore::verbBit(ftcore::Verb::Read) == 16, "FFTCombatant::Verbs documents the bits");
 static_assert(static_cast<int>(EFTBattlePhase::NotStarted) == static_cast<int>(ftcore::Phase::NotStarted));
 static_assert(static_cast<int>(EFTBattlePhase::AwaitingCommand) == static_cast<int>(ftcore::Phase::AwaitingCommand));
 static_assert(static_cast<int>(EFTBattlePhase::PartySkill) == static_cast<int>(ftcore::Phase::PartySkill));
@@ -166,6 +169,9 @@ void ToCore(const FFTCombatant& In, ftcore::Combatant& Out)
 	Out.stats.defense = In.Stats.Defense;
 	Out.stats.speed = In.Stats.Speed;
 	Out.stats.technique = In.Stats.Technique;
+	Out.stats.maxPoise = In.Stats.MaxPoise;
+	Out.verbs = In.Verbs;
+	Out.child = In.bChild;
 	Out.hp = In.Hp;
 	Out.ap = In.Ap;
 	Out.maxAp = In.MaxAp;
@@ -181,6 +187,8 @@ void ToCore(const FFTCombatant& In, ftcore::Combatant& Out)
 		D.power = S.Power;
 		D.notes = S.Notes;
 		D.difficulty = S.Difficulty;
+		D.torn = S.bTorn;
+		D.tellId = FT::ToUtf8(S.TellId);
 		ToCore(S.Hits, D.timeline);
 	}
 	ToCore(In.WeakPoints, In.HalfWidth, Out.weakPoints);
@@ -387,6 +395,16 @@ void UFTBattleComponent::DefendAtTime(EFTDefenceInput Input, double BattleSecond
 		return;
 	}
 	Battle->defend(static_cast<ftcore::DefenceInput>(Input), BattleSeconds);
+	Flush();
+}
+
+void UFTBattleComponent::ReleaseGuardAtTime(double BattleSeconds)
+{
+	if (!Battle)
+	{
+		return;
+	}
+	Battle->releaseGuard(BattleSeconds);
 	Flush();
 }
 

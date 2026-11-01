@@ -42,5 +42,8 @@
     { "scene": "SC-24-Q1", "beat": 9, "step": 1, "tier": 7, "combat": "arena", "enemies": ["eclipse_maw", "wisp"] },
     { "scene": "SC-25-Q1", "beat": 3, "step": 0, "tier": 7, "combat": "arena", "enemies": ["eclipse_maw", "hound"] },
     { "scene": "SC-25-Q2", "beat": 0, "step": 0, "tier": 9, "combat": "arena", "enemies": ["eclipse_maw"] }
+  ],
+  "demos": [
+    { "id": "turns", "tier": 0, "enemies": ["demo_mauler", "demo_raider", "demo_hexer", "demo_skulker"] }
   ]
 }

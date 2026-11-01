@@ -138,6 +138,10 @@
         { "id": "void_eye", "x": 0.0, "y": 0.78, "radius": 0.09, "multiplier": 2.5 },
         { "id": "rim", "x": 0.3, "y": 0.5, "radius": 0.12, "multiplier": 1.7 }
       ]
-    }
+    },
+    "demo_raider": { "halfWidth": 0.45, "points": [ { "id": "head", "x": 0.0, "y": 0.88, "radius": 0.09, "multiplier": 2.0 } ] },
+    "demo_hexer": { "halfWidth": 0.4, "points": [ { "id": "hands", "x": 0.18, "y": 0.6, "radius": 0.1, "multiplier": 1.8 } ] },
+    "demo_mauler": { "halfWidth": 0.55, "points": [ { "id": "back", "x": -0.2, "y": 0.7, "radius": 0.12, "multiplier": 2.0 } ] },
+    "demo_skulker": { "halfWidth": 0.4, "points": [ { "id": "knee", "x": 0.15, "y": 0.2, "radius": 0.1, "multiplier": 1.8 } ] }
   }
 }

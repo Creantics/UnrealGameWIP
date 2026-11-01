@@ -54,6 +54,10 @@ enum class EFTTargeting : uint8
 {
 	SingleEnemy,
 	AllEnemies,
+	// Enemy skills: the last living party member rather than the most wounded.
+	Back,
+	// Enemy skills: the first living party member.
+	Front,
 };
 
 // Same order as ftcore::Phase.
@@ -210,6 +214,9 @@ struct FFTStats
 	// Higher than the opponent's makes this combatant's combos easier, attacking or defending.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
 	int32 Technique = 10;
+	// Enemies: what a stagger breaks (0: never staggered).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	int32 MaxPoise = 0;
 };
 
 // One hit of an enemy skill's attack timeline (see ftcore/DefenceTimeline.h).
@@ -260,6 +267,12 @@ struct FFTSkill
 	// after the banner.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
 	TArray<FFTAttackHit> Hits;
+	// Enemy skills: a hit of it that lands in full leaves the defender Torn.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	bool bTorn = false;
+	// Enemy skills: the tell it shows on Read cards (empty: its name).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	FString TellId;
 };
 
 // A spot on an enemy's figure that takes extra damage from an aimed shot (see ftcore/WeakPoint.h).
@@ -362,6 +375,13 @@ struct FFTCombatant
 	// Enemies: at most 4 phases (none: one phase that cycles through every skill).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
 	TArray<FFTEnemyPhase> Phases;
+	// Party: the Turns verbs it has, as bits (1 << ftcore::Verb: Guard 1, Release 2, Intercept 4,
+	// Take Half 8, Read 16).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	uint8 Verbs = 0;
+	// Party: a child; no one Intercepts a hit aimed at it.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battle")
+	bool bChild = false;
 };
 
 // Running totals of one battle for the results screen (ftcore::BattleStats).
@@ -723,6 +743,8 @@ public:
 	void PressAtTime(EFTArrow Arrow, double BattleSeconds);
 	// A defence press at BattleSeconds (the autopilot answers each hit at its ideal time).
 	void DefendAtTime(EFTDefenceInput Input, double BattleSeconds);
+	// Lets go of a Guard or Intercept at BattleSeconds (the autopilot, once the held hit has come).
+	void ReleaseGuardAtTime(double BattleSeconds);
 	// The shot at BattleSeconds (the autopilot places the reticle for that time, then fires).
 	bool FireAtTime(double BattleSeconds);
 
