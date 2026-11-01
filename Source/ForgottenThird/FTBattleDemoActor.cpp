@@ -229,7 +229,7 @@ AFTBattleDemoActor::AFTBattleDemoActor()
 	Camera->SetupAttachment(Root);
 	Camera->SetRelativeLocation(FVector(-10.0, -750.0, 310.0));
 	Camera->SetRelativeRotation(FRotator(-8.0, 90.0, 0.0));
-	Camera->SetFieldOfView(62.f);
+	Camera->SetFieldOfView(56.f);
 
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cylinder(TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Sphere(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
@@ -1585,9 +1585,9 @@ void AFTBattleDemoActor::TickAutoPlay(float DeltaSeconds)
 			Battle->SetReticle(FVector2D(At.x + (Want.x - At.x) * K, At.y + (Want.y - At.y) * K));
 			return;
 		}
-		if (!CamShotPrefix.IsEmpty() && !(CamShotMask & 8))
+		if (!CamShotPrefix.IsEmpty() && (!(CamShotMask & 8) || Wall() - CamShotLastWall < 0.5))
 		{
-			return; // under -BattleCamShot the shot waits for the Aim view
+			return; // under -BattleCamShot the shot waits for the Aim view, and a moment after it
 		}
 		Battle->SetReticle(FVector2D(Want.x, Want.y));
 		Battle->FireAtTime(Now);

@@ -274,9 +274,9 @@ left as seen from behind the party), and every shot looks toward the enemy side.
 
 | When | Shot |
 |---|---|
-| Choosing a command (`AwaitingCommand`: skill menu, target pick) | **Choose**: close, over the shoulder of the member about to act, from behind (270 cm) and 75 cm to the side the picked enemy lies on, at head height, looking about 70% of the way to the target, so the target shows past the actor's shoulder. A skill that hits every enemy frames the whole line. Cycling the target glides the framing (and swaps shoulders once the target is more than 40 cm across); when the choice passes to the other lead the camera glides to them. |
-| Aiming (`PartyAim`) | **Aim**: the same shoulder, zoomed (FOV 36) on the enemy aimed at. |
-| A party action (`PartySkill`, a Release included) | **Behind**: behind the rearmost living member (340 cm), 1.6 heads high, over the party's heads, looking at the enemy line, leaning half way toward the enemy being hit. |
+| Choosing a command (`AwaitingCommand`: skill menu, target pick) | **Choose**: close, over the shoulder of the member about to act, from behind (300 cm) and 90 cm to the side the picked enemy lies on, at head height, looking about 70% of the way to the target (never turning from the actor by more than 60% of the half field of view, so the actor stays in the frame's lower corner), so the target shows past the actor's shoulder. A skill that hits every enemy frames the whole line. Cycling the target glides the framing (and swaps shoulders once the target is more than 40 cm across); when the choice passes to the other lead the camera glides to them. |
+| Aiming (`PartyAim`) | **Aim**: the same shoulder, zoomed (FOV 40) on the enemy aimed at. |
+| A party action (`PartySkill`, a Release included) | **Behind**: behind the rearmost living member (440 cm), 1.7 heads high, over the party's heads, looking at the enemy line, leaning half way toward the enemy being hit. |
 | An enemy turn (`EnemySkill`: the defence, the Read cards, the Intercept) | **Behind** again, so the player sees their own team's backs and the attacks coming toward them. It drifts sideways toward the defender (60% of the way from the party's middle, at most 220 cm; toward the interceptor while an Intercept is held) and leans its look toward the attacker. It never goes forward of the rearmost living member. The Read cards stay on the HUD; the camera does not zoom on the reader. |
 | The pause after an action (`Recovery`) | Keeps the shot it follows (and the drift), so it does not swing out and back. |
 | `Victory`, `Defeat` | **Wide**: 700 cm behind and 430 cm above the party, 260 cm to the side, looking at the middle of the stage. |
@@ -289,10 +289,11 @@ around each, so it lifts over one instead of being shoved or passing through) an
 a lunge or the acting figure's bob does not shake the camera. The camera clock is the pause-aware wall clock: it stands still
 under the pause menu.
 
-The HUD needed nothing new: the panels stay in the corners (party bottom left, enemies top right), the tell ring, the pips and
-the Read cards project from the figures, so they follow the camera. `GetFigurePoint` (the weak points and the reticle in the Aim
+The HUD's panels stay in the corners (party bottom left, enemies top right), and the tell ring, the pips and the Read cards
+project from the figures, so they follow the camera. One thing moved: the arrow lane now stands at 73.5% of the screen's width
+(it was in the middle), since from behind the party the enemy line is in the middle of the picture and the lane covered it. `GetFigurePoint` (the weak points and the reticle in the Aim
 view) lays "across" along the camera's own right, so the aim keeps working from any shot. The sun in the map is rotated to light
-the party's backs and the enemies' faces (`-run=FTBuildBattleDemo` rebuilt the map).
+the party's backs and the enemies' faces (`-run=FTBuildBattleDemo` rebuilt the map, with a 120 m floor so its edge stays out of the picture).
 
 `-BattleCamShot=<prefix>` (implies the autopilot; needs a renderer, so `-RenderOffScreen`) holds each party command open until the
 camera has settled and renders seven views with `HighResShot 1600x900`: `<prefix>_1_choose` (the first lead choosing),

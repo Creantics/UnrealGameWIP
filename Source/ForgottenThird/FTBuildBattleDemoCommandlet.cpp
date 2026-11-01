@@ -60,7 +60,7 @@ int32 UFTBuildBattleDemoCommandlet::Main(const FString& /*Params*/)
 	FActorSpawnParameters Spawn;
 	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-	// Floor: a 40 m x 40 m slab whose top is at z = 0.
+	// Floor: a 120 m x 120 m slab whose top is at z = 0 (the camera looks along it, so its far edge stays out of the picture).
 	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
 	UMaterialInterface* Grey = FTScene::LoadSurface();
 	if (!Cube)
@@ -75,7 +75,7 @@ int32 UFTBuildBattleDemoCommandlet::Main(const FString& /*Params*/)
 	{
 		Floor->GetStaticMeshComponent()->SetMaterial(0, Grey);
 	}
-	Floor->SetActorScale3D(FVector(40, 40, 1));
+	Floor->SetActorScale3D(FVector(120, 120, 1));
 	Floor->SetActorLabel(TEXT("Floor"));
 
 	// Sun from behind the camera's left shoulder (the camera looks along +Y from behind the party), so the enemies'

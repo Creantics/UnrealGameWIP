@@ -130,7 +130,7 @@ TEST_CASE("camera: choosing is over the shoulder of whoever acts, behind them, w
                 CHECK(cam.depthOf(p.eye) == doctest::Approx(cam.depthOf(a.pos) - cam.tuning().chooseBack));
                 CHECK(std::fabs(cam.lateralOf(p.eye) - cam.lateralOf(a.pos)) == doctest::Approx(cam.tuning().chooseSide));
                 CHECK(p.eye.z == doctest::Approx(a.height * cam.tuning().chooseEye));
-                CHECK(dist2(p.eye, a.pos) < 300.0);
+                CHECK(dist2(p.eye, a.pos) < 330.0);
                 // On the target's side of the actor.
                 const double across = cam.lateralOf(t.pos) - cam.lateralOf(a.pos);
                 if (std::fabs(across) > cam.tuning().sideHysteresis) {
@@ -167,7 +167,7 @@ TEST_CASE("camera: a skill that hits them all frames the enemy line; aim zooms o
     CHECK(aim.shotActor() == 1);
     CHECK(aim.pose().fov < choose.fov - 10.0);
     // The target is the middle of the picture.
-    CHECK(offAxis(aim.pose(), figures[3].pos) < 5.0);
+    CHECK(offAxis(aim.pose(), figures[3].pos) < 8.0);
     CHECK(aim.depthOf(aim.pose().eye) == doctest::Approx(aim.depthOf(figures[1].pos) - aim.tuning().chooseBack));
     checkSafe(aim, figures);
 }

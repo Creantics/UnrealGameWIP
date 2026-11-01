@@ -190,6 +190,24 @@ BattleCameraPose BattleCamera::solve(const CameraCue& /*cue*/, std::span<const C
         out.eye = a.pos - forward_ * tuning_.chooseBack + r * (side_ * tuning_.chooseSide);
         out.eye.z = a.height * tuning_.chooseEye;
         out.fov = shot_ == CameraShot::Aim ? tuning_.aimFov : tuning_.chooseFov;
+        // The actor stays in the frame's lower corner: the look may turn from the actor by no more than a share of the
+        // half field of view, whatever the target's bearing (so a target across the stage does not push the actor off
+        // the edge of the picture).
+        {
+            constexpr double kPi = 3.14159265358979323846;
+            const double toActor = std::atan2(a.pos.y - out.eye.y, a.pos.x - out.eye.x);
+            const double toLook = std::atan2(out.look.y - out.eye.y, out.look.x - out.eye.x);
+            double turn = toLook - toActor;
+            while (turn > kPi) turn -= 2.0 * kPi;
+            while (turn < -kPi) turn += 2.0 * kPi;
+            const double limit = tuning_.actorFrame * 0.5 * out.fov * kPi / 180.0;
+            if (std::fabs(turn) > limit) {
+                const double yaw = toActor + (turn > 0.0 ? limit : -limit);
+                const double reach = std::hypot(out.look.x - out.eye.x, out.look.y - out.eye.y);
+                out.look.x = out.eye.x + std::cos(yaw) * reach;
+                out.look.y = out.eye.y + std::sin(yaw) * reach;
+            }
+        }
         break;
     }
     case CameraShot::Behind: {

@@ -22,6 +22,10 @@ const FLinearColor kLaneColors[4] = {
 	FLinearColor(0.78f, 0.35f, 0.95f), FLinearColor(0.25f, 0.75f, 1.0f), FLinearColor(0.35f, 0.95f, 0.45f), FLinearColor(1.0f, 0.35f, 0.35f)};
 const FVector2D kLaneDirs[4] = {FVector2D(-1, 0), FVector2D(0, 1), FVector2D(0, -1), FVector2D(1, 0)};
 
+// Where the arrow lane stands across the screen (a share of its width). The battle camera sits behind the party with the enemy
+// line in the middle of the picture, so the lane is to the right of it, left of the enemy panels, covering neither.
+constexpr float kLaneCentre = 0.735f;
+
 const FLinearColor kGold(1.0f, 0.82f, 0.25f);
 const FLinearColor kWhite(1.f, 1.f, 1.f);
 const FLinearColor kDim(0.55f, 0.55f, 0.6f);
@@ -498,7 +502,7 @@ void AFTBattleHUD::DrawLane(const AFTBattleDemoActor& D)
 	}
 	const float S = UiScale;
 	LaneWidth = 76.f * S;
-	LaneX0 = Canvas->ClipX * 0.5f - LaneWidth * 2.f;
+	LaneX0 = Canvas->ClipX * kLaneCentre - LaneWidth * 2.f;
 	HitY = Canvas->ClipY * 0.22f;
 	const float Bottom = Canvas->ClipY * 0.86f;
 	const double Now = BC->GetBattleTime();
@@ -546,7 +550,7 @@ void AFTBattleHUD::DrawLane(const AFTBattleDemoActor& D)
 	}
 
 	UFont* Small = GEngine->GetSmallFont();
-	DrawStrCentered(kLaneHint, kDim, Canvas->ClipX * 0.5f, Bottom + 8.f * S, Small, 1.f);
+	DrawStrCentered(kLaneHint, kDim, Canvas->ClipX * kLaneCentre, Bottom + 8.f * S, Small, 1.f);
 }
 
 void AFTBattleHUD::DrawDefence(const AFTBattleDemoActor& D)
@@ -804,7 +808,7 @@ void AFTBattleHUD::DrawPopups(const AFTBattleDemoActor& D)
 	if (LaneWidth <= 0.f)
 	{
 		LaneWidth = 76.f * S;
-		LaneX0 = Canvas->ClipX * 0.5f - LaneWidth * 2.f;
+		LaneX0 = Canvas->ClipX * kLaneCentre - LaneWidth * 2.f;
 		HitY = Canvas->ClipY * 0.22f;
 	}
 	for (int32 I = 0; I < AFTBattleDemoActor::MaxPopups; ++I)

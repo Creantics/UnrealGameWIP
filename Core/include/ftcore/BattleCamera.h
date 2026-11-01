@@ -75,18 +75,19 @@ struct CameraCue {
 
 struct CameraTuning {
     // Choose: over the shoulder.
-    double chooseBack = 270.0;    // behind the actor
-    double chooseSide = 75.0;     // to the side the target lies on
+    double chooseBack = 300.0;    // behind the actor
+    double chooseSide = 90.0;     // to the side the target lies on
     double chooseEye = 1.08;      // eye height, in actor heights
     double chooseLookAhead = 0.7; // the look point, from the actor toward the target
     double chooseFov = 54.0;
+    double actorFrame = 0.6;      // the actor stays within this share of the half field of view from the look direction
     // Aim: the same, zoomed on the target.
     double aimLookAhead = 0.92;
-    double aimFov = 36.0;
+    double aimFov = 40.0;
     // Behind: the party seen from behind.
-    double behindBack = 340.0;   // behind the rearmost living party member
-    double behindEye = 1.62;     // eye height, in the tallest party member's heights
-    double behindFov = 62.0;
+    double behindBack = 440.0;   // behind the rearmost living party member
+    double behindEye = 1.7;      // eye height, in the tallest party member's heights
+    double behindFov = 56.0;
     double driftShare = 0.6;     // enemy turn: share of the way from the party's middle to the defender
     double driftMax = 220.0;     // ...and no further than this
     double leanShare = 0.5;      // the look, from the enemy line's middle toward the attacker (or the enemy being hit)
