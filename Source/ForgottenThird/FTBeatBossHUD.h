@@ -24,9 +24,11 @@
 #include "CoreMinimal.h"
 #include "GameFramework/HUD.h"
 
+#include "FTBeatBossGameMode.h"
+
 #include "FTBeatBossHUD.generated.h"
 
-class AFTBeatBossGameMode;
+
 class UFont;
 
 UCLASS()
@@ -52,6 +54,9 @@ private:
 	void Diamond(float X, float Y, float Radius, const FLinearColor& Color, bool bFilled);
 
 	void DrawBoss(const AFTBeatBossGameMode& Mode);
+	void DrawPrompts(const AFTBeatBossGameMode& Mode);
+	void DrawJudgement(const AFTBeatBossGameMode::FPopup& P, float X, float Y, float Age);
+	float BeatLineY() const;
 	void DrawBeatLine(const AFTBeatBossGameMode& Mode);
 	void DrawLeadPanel(const AFTBeatBossGameMode& Mode);
 	void DrawCount(const AFTBeatBossGameMode& Mode);
@@ -63,6 +68,7 @@ private:
 	float FontScale = 1.f; // UiScale with the fonts' boost
 	bool bBuilt = false;
 
+	TArray<FString> ButtonLetters; // "J", "I", "L", "K": the keyboard letter of each action button
 	TArray<FString> Numbers;      // "0" .. "999"
 	TArray<FString> Damage;       // "-0" .. "-999"
 	TArray<FString> Multipliers;  // "x0" .. "x9"

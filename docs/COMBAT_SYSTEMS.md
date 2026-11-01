@@ -201,6 +201,9 @@ The tests require two things of every fight within 64 bars: the autopilot wins, 
 
 A world's final is a beat boss: one authored track instead of the beat fight's round robin. Every move the boss makes is pinned to a bar and a beat of its music, so the fight is learned like a song. It is answered with the action buttons (Attack, Guard, Dodge, Jump), never arrows. `ftcore::BeatBoss` has a demo host on its own map, `Demo_BeatBoss` ([BEAT_BOSS_DEMO.md](BEAT_BOSS_DEMO.md)); no story step opens it yet.
 
+
+It plays as a cinematic fight scene ([BEAT_BOSS_DEMO.md](BEAT_BOSS_DEMO.md), "The stage"): both fighters play real clips whose blows are pre-rolled onto the track's beats, the camera cuts between shots on the beat, and each prompt sits on the body part it answers with a ring closing on the impact; the beat line is a thin strip along the bottom. The rules below are unchanged.
+
 The full rules are in `BeatBoss.h`.
 
 ### Rules in brief

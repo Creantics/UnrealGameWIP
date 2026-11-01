@@ -86,11 +86,10 @@ int32 UFTBuildBeatBossWorldCommandlet::Main(const FString& Params)
 	const FString MapPath = FString::Printf(TEXT("%s/%s"), kBossMapFolder, *MapName);
 
 	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
-	UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 	UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
 	UMaterialInterface* Base = FTScene::LoadSurface();
 	USkeletalMesh* Human = LoadObject<USkeletalMesh>(nullptr, kBossLeadMesh);
-	if (!Cube || !Sphere || !Cylinder || !Base || !Human)
+	if (!Cube || !Cylinder || !Base || !Human)
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildBeatBossWorld: a /Engine/BasicShapes mesh, the world surface material or the test human is missing."));
 		return 1;
@@ -120,67 +119,52 @@ int32 UFTBuildBeatBossWorldCommandlet::Main(const FString& Params)
 	FActorSpawnParameters Spawn;
 	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-	// A room 22 m deep and 16 m wide: the floor's top at z = 0 (x from -8 m to 14 m), a back wall at x = 13 m
+	// A room 20 m long and 14 m wide, walled in: the floor's top at z = 0 (x from -8 m to 14 m), walls round it
 	// and two pillars either side of the boss for depth.
-	UMaterialInterface* Floor = MakeBossTint(Package, Base, TEXT("MI_BeatBoss_Floor"), FLinearColor(0.32f, 0.31f, 0.33f));
-	UMaterialInterface* Stone = MakeBossTint(Package, Base, TEXT("MI_BeatBoss_Stone"), FLinearColor(0.2f, 0.21f, 0.25f));
+	UMaterialInterface* Floor = MakeBossTint(Package, Base, TEXT("MI_BeatBoss_Floor"), FLinearColor(0.11f, 0.10f, 0.12f));
+	UMaterialInterface* Stone = MakeBossTint(Package, Base, TEXT("MI_BeatBoss_Stone"), FLinearColor(0.16f, 0.14f, 0.19f));
 	BossBlock(World, Spawn, Cube, Floor, TEXT("Floor"), FVector(300, 0, -50), FVector(22, 16, 1), FRotator::ZeroRotator, false);
-	BossBlock(World, Spawn, Cube, Stone, TEXT("Wall"), FVector(1300, 0, 350), FVector(1, 16, 8), FRotator::ZeroRotator, false);
+	BossBlock(World, Spawn, Cube, Stone, TEXT("Wall"), FVector(1300, 0, 750), FVector(1, 16, 16), FRotator::ZeroRotator, false);
+	BossBlock(World, Spawn, Cube, Stone, TEXT("WallBehindLead"), FVector(-700, 0, 750), FVector(1, 16, 16), FRotator::ZeroRotator, false);
+	BossBlock(World, Spawn, Cube, Stone, TEXT("WallNear"), FVector(300, 720, 750), FVector(21, 1, 16), FRotator::ZeroRotator, false);
+	BossBlock(World, Spawn, Cube, Stone, TEXT("WallFar"), FVector(300, -720, 750), FVector(21, 1, 16), FRotator::ZeroRotator, false);
 	BossBlock(World, Spawn, Cylinder, Stone, TEXT("PillarLeft"), FVector(900, -520, 300), FVector(1.1f, 1.1f, 6.f), FRotator::ZeroRotator, false);
 	BossBlock(World, Spawn, Cylinder, Stone, TEXT("PillarRight"), FVector(900, 560, 300), FVector(1.1f, 1.1f, 6.f), FRotator::ZeroRotator, false);
 
 	// Sun, sky, air and the camera finish: the shared photoreal look.
 	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, FRotator(-40, 25, 0));
 
-	APointLight* Lamp = World->SpawnActor<APointLight>(FVector(300, 120, 480), FRotator::ZeroRotator, Spawn);
-	Lamp->PointLightComponent->SetMobility(EComponentMobility::Movable);
-	Lamp->PointLightComponent->SetIntensity(6000.f);
-	Lamp->PointLightComponent->SetLightColor(FLinearColor(1.f, 0.82f, 0.7f));
-	Lamp->PointLightComponent->SetAttenuationRadius(1800.f);
-	Lamp->SetActorLabel(TEXT("Lamp"));
-
-	// The lead: the test human at the near end, turned to face the boss (+x).
-	ASkeletalMeshActor* Lead = World->SpawnActor<ASkeletalMeshActor>(AFTBeatBossGameMode::LeadLocation(), FRotator::ZeroRotator, Spawn);
-	USkeletalMeshComponent* Skin = Lead->GetSkeletalMeshComponent();
-	Skin->SetMobility(EComponentMobility::Movable);
-	Skin->SetSkeletalMesh(Human);
-	Skin->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Human), 0.0));
-	Lead->SetActorLabel(TEXT("Lead"));
-	Lead->Tags.Add(AFTBeatBossGameMode::LeadTag());
-
-	// The boss: a body of basic shapes facing the lead (-x), every part attached to the tagged body. The game
-	// mode gives the body and its limbs one material it tints; the visor keeps its own.
-	const FVector Body = AFTBeatBossGameMode::BossLocation();
-	const double Width = AFTBeatBossGameMode::BossWidth;
-	const double Height = AFTBeatBossGameMode::BossHeight;
-	const FRotator Facing(0.0, 180.0, 0.0);
-	UMaterialInterface* Hide = MakeBossTint(Package, Base, TEXT("MI_BeatBoss_Body"), FLinearColor(0.16f, 0.15f, 0.21f));
-	UMaterialInterface* Visor = MakeBossTint(Package, Base, TEXT("MI_BeatBoss_Visor"), FLinearColor(1.f, 0.55f, 0.1f));
-	AStaticMeshActor* Boss = BossBlock(World, Spawn, Cylinder, Hide, TEXT("Boss"), Body, FVector(Width / 100.0, Width / 100.0, Height / 100.0), Facing, true);
-	Boss->Tags.Add(AFTBeatBossGameMode::BossTag());
-	const double Top = Body.Z + Height * 0.5;
-	const auto Part = [&](UStaticMesh* Mesh, UMaterialInterface* Material, const TCHAR* Label, const FVector& Offset, const FVector& Scale,
-						  const FRotator& Rotation) {
-		AStaticMeshActor* Piece = BossBlock(World, Spawn, Mesh, Material, FString(TEXT("Boss_")) + Label, Offset, Scale, Rotation, true);
-		Piece->AttachToActor(Boss, FAttachmentTransformRules::KeepWorldTransform);
-		return Piece;
+	// Light: a warm key over the fighters, a red rim light behind the boss and a cold one behind the lead.
+	const auto Light = [&](const FVector& At, float Intensity, const FLinearColor& Color, float Radius, const TCHAR* Label) {
+		APointLight* Lamp = World->SpawnActor<APointLight>(At, FRotator::ZeroRotator, Spawn);
+		Lamp->PointLightComponent->SetMobility(EComponentMobility::Movable);
+		Lamp->PointLightComponent->SetIntensity(Intensity);
+		Lamp->PointLightComponent->SetLightColor(Color);
+		Lamp->PointLightComponent->SetAttenuationRadius(Radius);
+		Lamp->SetActorLabel(Label);
 	};
-	const double FrontX = Body.X - Width * 0.5;
-	Part(Sphere, Hide, TEXT("head"), FVector(Body.X, 0.0, Top + 62.0), FVector(1.5), Facing);
-	AStaticMeshActor* Slit = Part(Cube, Visor, TEXT("visor"), FVector(Body.X - 66.0, 0.0, Top + 70.0), FVector(0.2, 1.0, 0.16), Facing);
-	Slit->Tags.Add(TEXT("BeatBossVisor"));
-	for (const double Side : {-1.0, 1.0})
-	{
-		const double Y = Side * (Width * 0.5 + 45.0);
-		Part(Sphere, Hide, Side < 0.0 ? TEXT("shoulder_l") : TEXT("shoulder_r"), FVector(Body.X, Y, Top - 30.0), FVector(1.1), Facing);
-		// Arms hang forward a little, towards the lead.
-		Part(Cube, Hide, Side < 0.0 ? TEXT("arm_l") : TEXT("arm_r"), FVector(Body.X - 40.0, Y * 1.08, Top - 170.0), FVector(0.6, 0.6, 2.4),
-			FRotator(-14.0, 180.0, 0.0));
-		Part(Cube, Hide, Side < 0.0 ? TEXT("fist_l") : TEXT("fist_r"), FVector(FrontX + 40.0, Y * 1.1, Top - 300.0), FVector(0.9), Facing);
-	}
+	Light(FVector(60, 80, 520), 60000.f, FLinearColor(1.f, 0.84f, 0.7f), 2600.f, TEXT("Key"));
+	Light(FVector(560, 0, 260), 22000.f, FLinearColor(1.f, 0.22f, 0.1f), 2000.f, TEXT("RimBoss"));
+	Light(FVector(-420, -60, 240), 22000.f, FLinearColor(0.3f, 0.5f, 1.f), 2000.f, TEXT("RimLead"));
 
-	// The view: behind the lead's right shoulder, looking past it at the boss; the game mode makes it the view
-	// target.
+	// The lead: the test human at the near end, turned to face the boss (+x). The boss is the same body, 1.35 times the
+	// size, turned to face back (-x); the game mode gives it a dark red hide and plays the fight clips on both. The
+	// game mode also places them (AFTBeatBossGameMode::LeadLocation / BossLocation) and makes any missing one.
+	const auto Fighter = [&](const FVector& Location, double Yaw, double Scale, const TCHAR* Label, FName Tag) {
+		ASkeletalMeshActor* Actor = World->SpawnActor<ASkeletalMeshActor>(Location, FRotator(0.0, Yaw, 0.0), Spawn);
+		USkeletalMeshComponent* Skin = Actor->GetSkeletalMeshComponent();
+		Skin->SetMobility(EComponentMobility::Movable);
+		Skin->SetSkeletalMesh(Human);
+		Skin->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Human), 0.0));
+		Actor->SetActorScale3D(FVector(Scale));
+		Actor->SetActorLabel(Label);
+		Actor->Tags.Add(Tag);
+		return Actor;
+	};
+	Fighter(AFTBeatBossGameMode::LeadLocation(), 0.0, 1.0, TEXT("Lead"), AFTBeatBossGameMode::LeadTag());
+	Fighter(AFTBeatBossGameMode::BossLocation(), 180.0, AFTBeatBossGameMode::BossScaleFactor, TEXT("Boss"), AFTBeatBossGameMode::BossTag());
+
+	// The view: the wide shot from the side; the game mode makes it the view target and moves it with the shots.
 	ACameraActor* Camera = World->SpawnActor<ACameraActor>(AFTBeatBossGameMode::ViewerLocation(), AFTBeatBossGameMode::ViewerRotation(), Spawn);
 	Camera->SetActorLabel(TEXT("Camera"));
 

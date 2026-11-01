@@ -22,10 +22,14 @@
 // (BeatBoss::retry) and Q / Backspace / pad B gives up. After a victory Enter / Space / pad A plays the
 // track again from the top.
 //
-// The map's actors: the lead (a skeletal mesh actor tagged LeadTag(), the test human playing its idle) and
-// the boss (a body of basic shapes tagged BossTag(), the parts attached to it). The boss winds up as a
-// counter's marker closes in (it swells, leans back and reddens), lunges on the impact, flashes when hit
-// and sags while staggered; the lead lunges, sidesteps or hops with each answer.
+// The scene (docs/BEAT_BOSS_DEMO.md, "The stage"). The map has two skeletal mesh actors, the lead (tagged
+// LeadTag()) and the boss (tagged BossTag(), the same body scaled up with a dark red material made here), both
+// the test human, and a camera. ftcore::BeatChoreo (BeatChoreo.h) reads the fight and says, each frame, which
+// clip each fighter plays at what time and rate, which shot the camera is on, and the prompts to draw and
+// where: the host plays the clips through UFTBeatFighterAnimInstance (a crossfade between clips), puts the
+// camera on the shot (a hard cut on the beat the choreography says, finisher_orbit orbiting, a shake on heavy
+// blows), and AFTBeatBossHUD draws each prompt on the bone it belongs to. Hit-stop and the finisher's slow
+// motion are in the clip times; the fight's clock and the music are never touched.
 //
 // Flags (FParse::Param, docs/ALPHA.md style):
 //   -BeatBossAutoPlay      Core's autopilot plays (QteAssist::autoComplete); after a defeat the retry prompt
@@ -38,10 +42,14 @@
 //   -BeatBossQuitOnFinish  exits when the fight is over: code 0 on a victory, 1 on a defeat, 2 if the
 //                          watchdog fired after 300 s, 3 if the track didn't load (FTRequestExit, which forces
 //                          a non-zero code past the engine's graceful exit, as the engine does for commandlets).
+//   -BeatBossTrack=<id>    another track (cine_track by default; test_track is the dense old one).
 //   -BeatBossShot=<prefix> renders the views docs/BEAT_BOSS_DEMO.md lists with HighResShot (needs a
 //                          renderer: -RenderOffScreen, not -NullRHI), holding the fight still a moment for
 //                          each, then quits; implies -BeatBossAutoPlay. -BeatBossShotDelay=<s> (8) waits
 //                          before the fight begins, so shaders settle before the count-in.
+//   -BeatBossSeq=<prefix>  renders a short frame sequence of a counter exchange (every tenth of a second of the
+//                          fight's clock for three seconds from a parry's tell) as <prefix>_0000.png ...;
+//                          implies -BeatBossAutoPlay. -BeatBossSeqCount=<n> frames (30).
 // One result line per outcome, counts only:
 //   BEATBOSS RESULT: Victory in <bars> bars, <s> s, <p> perfect, <g> good, <m> miss, best streak <k>, ...
 
@@ -50,11 +58,14 @@
 #include "FTGameMode.h"
 
 #include "ftcore/BeatBoss.h"
+#include "ftcore/BeatChoreo.h"
 #include "ftcore/BeatMusic.h"
 
 #include "FTBeatBossGameMode.generated.h"
 
 class AActor;
+class ACameraActor;
+class UAnimSequence;
 class UAudioComponent;
 class UFTBeatBossMetronome;
 class UFTBeatBossMusic;
@@ -85,8 +96,27 @@ public:
 		ftcore::BeatBossAnswer Answer = ftcore::BeatBossAnswer::Attack;
 		int32 Amount = 0;
 		double Time = 0.0;
+		// Where the move's prompt stood in the world when it was judged: the judgement pops there.
+		FVector Anchor = FVector::ZeroVector;
+		bool bAnchored = false;
 	};
 	static constexpr int32 MaxPopups = 16;
+
+	// One prompt to draw on the action: where it is in the world (the bone of the body part it answers), how far its
+	// ring has closed, and what it asks.
+	struct FPromptView
+	{
+		uint32 Id = 0;
+		FVector World = FVector::ZeroVector;
+		float Progress = 0.f; // 0 at the tell, 1 at the impact
+		ftcore::BeatBossAnswer Answer = ftcore::BeatBossAnswer::Attack;
+		ftcore::ActionButton Button = ftcore::ActionButton::Attack;
+		ftcore::ActionButton Second = ftcore::ActionButton::Attack;
+		bool bFinisher = false;
+		bool bOnScreen = false; // sits at the middle of the screen, not on a body
+		ftcore::ChoreoAnchor Anchor = ftcore::ChoreoAnchor::BossChest;
+	};
+	static constexpr int32 MaxPromptViews = 4;
 
 	// Effects the HUD and the stage pulse with (times on the fight's clock, far in the past until they happen).
 	enum class EPulse : uint8
@@ -119,14 +149,16 @@ public:
 	// ---- the stage (shared with FTBuildBeatBossWorld) ----
 	static FName BossTag();
 	static FName LeadTag();
-	// Where the boss's body and the lead's feet stand (centimetres, x towards the boss).
+	// Where the fighters' feet stand (centimetres, x from the lead towards the boss, the floor's top at z = 0).
 	static FVector BossLocation();
 	static FVector LeadLocation();
 	static FVector ViewerLocation();
 	static FRotator ViewerRotation();
-	// The boss's body: a cylinder this wide and tall (cm), standing on the floor.
-	static constexpr double BossWidth = 230.0;
-	static constexpr double BossHeight = 360.0;
+	// The boss is the lead's body at this scale.
+	static constexpr double BossScaleFactor = 1.35;
+	// The distance between the two fighters' feet, centimetres: far enough that neither stands in the other, near
+	// enough that a fist or a foot reaches.
+	static constexpr double FightGap = 110.0;
 
 	// ---- for AFTBeatBossHUD (no allocation) ----
 	EStage GetStage() const { return Stage; }
@@ -150,17 +182,25 @@ public:
 	double GetResultAge() const { return Now - ResultTime; }
 	int32 GetRetries() const { return Retries; }
 	bool GaveUp() const { return bGaveUp; }
-	// Above the boss's head, in the world.
-	FVector GetBossAnchor() const;
-	// How wound up the boss is: 0 at rest to 1 as a counter's marker reaches the hit line.
-	float GetWindUp() const { return WindUp; }
+	// The button a prompt is answered with (the track names it only for a hold, a release or a pair).
+	static ftcore::ActionButton ButtonFor(ftcore::BeatBossAnswer Answer, ftcore::ActionButton Own);
+	// The boss's head in the world (its hp plate hangs over it, its damage rises from it).
+	FVector GetBossHead() const { return BossHeadWorld; }
+	// ---- the cinematic scene ----
+	// Whether a choreography is playing (a track without one leaves the fighters in their stance).
+	bool HasScene() const { return Choreo.begun(); }
+	const ftcore::ChoreoSample& GetSample() const { return Sample; }
+	int32 GetPromptViewCount() const { return PromptViewCount; }
+	const FPromptView& GetPromptView(int32 Index) const { return PromptViews[Index]; }
+	// The camera's shot now, and the seconds since the last cut.
+	ftcore::ChoreoShot GetShot() const { return Sample.shot; }
 
 private:
 	bool LoadTrack(const FString& Id);
 	void FindStage();
 	void PollKeys(double EventTime);
 	void PollChoice();
-	void Handle(const ftcore::BeatBossEvents& Events);
+	void Handle(const ftcore::BeatBossEvents& Events, double Clock);
 	void Pulse(EPulse Which, double Time, int32 Amount = 0);
 	void AddPopup(const ftcore::BeatBossEvent& E);
 	// The stand-in music for this frame: beats crossed, impacts crossed (the count's blips come as events).
@@ -169,8 +209,18 @@ private:
 	// The procedural music for this frame (UFTBeatBossMusic): the driver follows the fight, the component places it.
 	void MusicFrame();
 	void MusicReset();
-	// The boss's wind-up, lunge, flash and stagger; the lead's moves.
-	void Animate();
+	// The scene for this frame: the choreography's sample, the two fighters' poses, the camera and the prompts.
+	void Scene(float DeltaSeconds);
+	bool LoadChoreo(const FString& Id);
+	void SpawnFighters();
+	void PlaceFighter(AActor* Actor, const FVector& Location, double Yaw, double Scale);
+	void UpdateCamera(float DeltaSeconds);
+	void UpdatePrompts();
+	FVector AnchorWorld(ftcore::ChoreoAnchor Anchor) const;
+	void CalibrateFacing(USkeletalMeshComponent* Mesh, double TargetYaw);
+	FVector BoneWorld(USkeletalMeshComponent* Mesh, const TCHAR* Bone, const FVector& Fallback) const;
+	void Shake(float Amount);
+	void Observe(const ftcore::BeatBossEvents& Events, double Clock);
 	void Begin();
 	void Retry();
 	// -BeatBossMissPhase: the autopilot's presses for this frame, none while the phase is being lost.
@@ -180,7 +230,9 @@ private:
 	void Quit(int32 Code);
 	// -BeatBossShot's views; true while the fight should hold still.
 	bool Shots();
-	void TakeShot(int32 Index, const TCHAR* Name);
+	void TakeShot(int32 Index);
+	// -BeatBossSeq's frames; true while the fight should hold still.
+	bool Sequence();
 
 	UPROPERTY(VisibleAnywhere, Category = "Components")
 	TObjectPtr<UFTConductorComponent> Conductor;
@@ -196,14 +248,54 @@ private:
 	ftcore::BeatMusicDriver MusicDriver;
 	ftcore::MusicEvents MusicOut;
 	UPROPERTY(Transient)
-	TObjectPtr<UMaterialInstanceDynamic> BossMaterial;
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> BossMaterials; // one per body material, tinted for the boss
+	// The fight clips by catalogue index (null where an asset is missing). Kept above the big Core structs below:
+	// a UPROPERTY's offset must fit in 16 bits.
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UAnimSequence>> ClipAssets;
+
+	// The scene: the choreography, the clips it plays and the two fighters.
+	ftcore::BeatClips Clips;
+	ftcore::BeatChoreoDef ChoreoDef;
+	ftcore::BeatChoreo Choreo;
+	ftcore::ChoreoSample Sample;
+	int32 StanceLeadClip = -1;
+	int32 StanceBossClip = -1;
 
 	TWeakObjectPtr<AActor> Boss;
 	TWeakObjectPtr<AActor> Lead;
 	TWeakObjectPtr<USkeletalMeshComponent> LeadMesh;
+	TWeakObjectPtr<USkeletalMeshComponent> BossMesh;
+	TWeakObjectPtr<ACameraActor> Camera;
 	FVector BossHome = FVector::ZeroVector;
-	FVector BossScale = FVector::OneVector;
 	FVector LeadHome = FVector::ZeroVector;
+	FVector BossHeadWorld = FVector::ZeroVector;
+	TArray<FLinearColor> BossBase;     // each boss material's resting BaseColor and Emissive
+	TArray<FLinearColor> BossEmissive;
+	float BossDazedLast = -1.f;
+	float BossStruckLast = -1.f;
+	bool bRootMotion = false;
+	bool bFaced = false;
+	int32 SceneFrames = 0;
+
+	// The prompts to draw this frame, and where each one stood last (a judgement pops where its prompt was).
+	FPromptView PromptViews[MaxPromptViews];
+	int32 PromptViewCount = 0;
+	struct FAnchorMemo
+	{
+		uint32 Id = 0;
+		FVector World = FVector::ZeroVector;
+	};
+	static constexpr int32 MaxAnchorMemos = 16;
+	FAnchorMemo AnchorMemos[MaxAnchorMemos];
+	int32 AnchorMemoNext = 0;
+
+	// The camera: its trauma (a shake that dies away), the shot it is on and the clock of the last frame.
+	float Trauma = 0.f;
+	ftcore::ChoreoShot CameraShot = ftcore::ChoreoShot::Wide;
+	bool bCameraCut = true;
+	double OrbitAngle = 0.0;
+	double SceneWall = 0.0;
 
 	ftcore::BeatBossTrack Track;
 	ftcore::BeatBossTuning Tuning;
@@ -224,9 +316,6 @@ private:
 	// The lead's last answer (its move), and when.
 	ftcore::BeatBossAnswer LeadMove = ftcore::BeatBossAnswer::Attack;
 	double LeadMoveTime = -1e9;
-	// The boss's last blow (a counter's impact), and when.
-	double BossBlowTime = -1e9;
-	float WindUp = 0.f;
 
 	// The stand-in music: which bar (BeatBossStats::bars) and where on it the last frame was.
 	int32 SoundBars = -1;
@@ -268,4 +357,12 @@ private:
 	uint32 ShotsTaken = 0; // a bit per view
 	int32 ShotCount = 0;
 	double ShotHoldUntil = 0.0; // wall seconds
+
+	// -BeatBossSeq: frames of a counter exchange, one every SeqStep seconds of the fight's clock.
+	FString SeqPrefix;
+	int32 SeqCount = 30;
+	int32 SeqTaken = 0;
+	bool bSeqRunning = false;
+	double SeqNextClock = 0.0;
+	double SeqHoldUntil = 0.0;
 };
