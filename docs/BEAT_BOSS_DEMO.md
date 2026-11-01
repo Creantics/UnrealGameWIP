@@ -21,7 +21,7 @@ Writes `/Game/Maps/Demo_BeatBoss`: a floor, a back wall, two pillars, a sun, sky
 ## Flow
 
 1. `AFTBeatBossGameMode::StartPlay` reads the flags and loads `Data/Battle/beat_boss/<id>.json` (`-BeatBossTrack=<id>`, `test_track` by default; ids and numbers only). A track the loader refuses logs one warning with its errors, and an unattended run quits.
-2. It finds the lead and the boss by their tags, makes the map's camera the view and starts the stand-in music (below).
+2. It finds the lead and the boss by their tags, makes the map's camera the view and starts the music (below).
 3. The fight begins on the first tick, once the clock runs, with a bar counted in.
 4. Each frame it polls the keys, feeds `ftcore::BeatBoss` the presses and releases with their event times, ticks it with the clock, fills the beat line and sounds the music. `AFTBeatBossHUD` draws it.
 5. A defeat shows for 1.4 s, then asks: Retry goes back to the phase's checkpoint (`BeatBoss::retry`: the lead at full hp, the streak at 0, one bar counted in), Give up stays on the result. A victory shows the result and waits; the same key plays the track again from the top.
@@ -30,11 +30,38 @@ Writes `/Game/Maps/Demo_BeatBoss`: a floor, a back wall, two pillars, a sun, sky
 
 The fight runs on `UFTConductorComponent` on the wall clock (`bWallClockWithoutAudio`, no music bound). It keeps running through the fight's own silences and stands still while the pause menu is open. Presses are stamped with the conductor's latency-compensated input time.
 
-There is no music yet, so `UFTBeatBossMetronome` stands in, driven from the same clock. It clicks every beat the bar has (accented on the bar line, nothing on an empty beat), blips the count's numerals, and sounds each told move's stem as the track crosses its impact, so what is heard and what the beat line shows agree. It is a small synth: no recorded audio. The clock is logged once, when the map starts:
+The track's music cue has no recording, so the music is made in code, from the same clock. No audio file is involved anywhere. It is three layers, the first two plain C++20 in `Core/` with tests that run outside Unreal:
+
+- **The sequencer** (`Core/include/ftcore/BeatMusic.h`, `planBeatMusic`). For any bar of the bar map it decides which voices hit on which sixteenth (two per eighth of the bar map, so a 6/8 beat has six) and how hard: kick, snare (a clap layered on the later tiers), closed and open hat (a crash on the finisher), a bass line, a stab or pad chord, a riser and an impact. The same context always gives the same pattern, and nothing allocates.
+  - *Intensity follows the fight.* Four tiers from (phase + progress through the phase) / phases. Tier 0: kick on the downbeat, a soft backbeat, hats on the beats, one held bass note. Tier 1: a pad, a kick on the third beat, hats on the eighths, bass on the beats. Tier 2: stabs, an open hat before each backbeat, bass on the eighths. Tier 3: sixteenth hats, a driving bass, ghost notes, a kick on every beat. On the test track phase 1 plays tiers 0 and 1 and phase 2 tiers 2 and 3.
+  - *The build.* The bar before a finisher bar has a riser over the bar (joining late, over what is left, if the hit that opens the finisher lands mid-bar) and a snare roll that grows over the last half of the bar, with the bass, stabs and hats out of the way. The finisher bar plays tier 3 at full velocity: a kick on every beat, a crash and an impact.
+  - *Silences cut everything.* A scripted silence stops the music at its bar line (a short fade) and leaves the count; the bar that follows opens with an impact. A count bar has no music, only its blips.
+  - *Odd meters.* A bar the loop breaks keeps the kick on the downbeat; the snare falls on the second, fourth ... beat of the bar when the beat is whole (a 7/8 bar's short last beat takes none), hats and bass only on steps the bar has, and an empty beat has nothing but the riser and the impact.
+  - *Harmony.* A fixed progression in D minor per phase (Dm Bb F C; Dm Gm Bb A; ...), a chord a bar or two; the bar before a finisher plays the dominant, the finisher the tonic.
+  - *Told moves.* Each move's impact gets an accent hit (stem 0 a thump, 1 a snare crack, 2 a bell), and the hats, stabs and bass leave that step. The accents sit on their own bus above the music and each ducks the music to about a fifth for 90 ms, so the player's audio cue reads over a full mix.
+- **The driver** (`BeatMusicDriver`) follows `ftcore::BeatBoss` each frame and turns the patterns into timed events (`MusicEvent`: Play, Cut, Revoke) on the fight's clock, up to 0.1 s ahead. It reads the bar playing from the fight and the next bar from `BeatBoss::upcomingBar()` (a read-only view of what the beat line shows as its second bar), so the next downbeat goes out before its bar line. When the bar that comes is not the one predicted (the boss's hp crossed a threshold in that last tenth of a second: a finisher or an hp silence), it revokes what it sent and plans the real bar. The count's blips come from it too, and the count back after a silence is scheduled when the silence starts.
+- **The synth** (`Core/include/ftcore/BeatMusicSynth.h`, `BeatMusicSynth`) makes every sound: the kick a sine that drops from about 200 Hz to 46 Hz with a click, the snare noise plus a tone, hats high-passed noise, the bass a sine and two detuned saws through a low-pass that closes with each note, the stabs three notes of three detuned saws, the riser a noise band and a sine that climb, the impact a falling sub with a noise burst. It has its own sample clock: a sound is queued for an absolute frame and starts exactly there. The output is soft-clipped, so it never reaches full scale.
+
+`UFTBeatBossMusic` (`Source/ForgottenThird/FTBeatBossMusic.h`) is the Unreal side: a procedural sound that drains a lock-free ring into the synth on the audio thread. The game thread maps the fight's clock to the synth's frames with one fixed offset (found when the stream is first seen running, and again after a pause or a held view), so events keep exactly the spacing the clock gave them, whatever the frame time or the buffer size. The music sounds a small margin (40 ms) after the clock plus the device's own latency; a sound that still arrives behind the stream grows the offset by what it was late. The answers' own cues (a perfect, a miss) are triggered at once. `-BeatBossMetronome` brings back the old `UFTBeatBossMetronome`, a click on every beat with the count's blips and each move's stem, unchanged.
+
+The clock is logged once, when the map starts, and the stream's health once at the end:
 
 ```
-BeatBoss: track <id> on the wall clock with the metronome standing in for music cue <cue id>.
+BeatBoss: track <id> on the wall clock with the procedural music standing in for music cue <cue id>.
+BeatBoss: track <id> on the wall clock with the metronome standing in for music cue <cue id>.   (-BeatBossMetronome)
+BeatBoss: music ran|did not run, <n> late, <n> dropped, <n> revoked.
 ```
+
+`ran` means the audio thread produced sound (a run with no audio device, or `-nosound`, says `did not run`); `late` counts sounds the synth had to start after their frame, `dropped` those that found a queue full, and `revoked` the bars the driver had to re-plan. On the test track an autoplayed win logs 1 late and 2 revoked.
+
+To hear it without the game, the offline render drives the same driver and synth against an autoplayed fight and writes WAV files:
+
+```
+set FTCORE_MUSIC_RENDER_DIR=<folder>
+ctest --test-dir Core/build -C Debug -R ftcore_tests        (or ftcore_tests -tc="beat music*")
+```
+
+That writes `test_track_30s.wav` (the first 30 s), `test_track_full.wav` and `test_track_cues_only.wav` (the move accents and the count alone). The same test case checks, in memory, that the kicks start on the bar lines to the sample, that nothing sounds in a silence but its count, that the build and the finisher's impact are there, that the mix peaks under full scale, and that each accent is clearly louder than the music it sits on.
 
 ## Keys
 
@@ -70,6 +97,7 @@ UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_BeatBoss -game -NullRHI -BeatB
 - `-BeatBossIdle`: presses nothing and never retries, so the fight must be lost. On the test track the lead goes down in bar 8.
 - `-BeatBossQuitOnFinish`: exits when the fight is over (a victory, or a defeat under `-BeatBossIdle`, after the autoplay's retries or when the player gives up), with code 0 for a victory, 1 for a defeat, 2 when the 300 s watchdog ends a run that stalls and 3 when the track doesn't load. The engine's graceful exit returns 0 whatever it is asked, so `FTRequestExit` (`ForgottenThird.h`) keeps a non-zero code and, once the engine has torn the world down, ends the process with it as the engine ends a commandlet (the log flushed first); a victory takes the whole graceful exit. Checked: the idle run exits with 1 under `UnrealEditor-Cmd`, the autoplay and `-BeatBossMissPhase=2` runs with 0, each log complete to its last line.
 - `-BeatBossTrack=<id>`: another track in `Data/Battle/beat_boss/`.
+- `-BeatBossMetronome`: the old click-and-stems stand-in instead of the procedural music (the fight, its result and its numbers are the same either way).
 - `-BeatBossShot=<prefix>`: renders the views with `HighResShot` as `<prefix>_1_countin.png`, `_2_counter.png` (a counter's marker halfway in), `_3_silence.png`, `_4_release.png` and `_5_result.png` (the victory), and with `-BeatBossMissPhase` also `_6_retry.png` (the retry prompt after the lost phase), holding the fight's clock still a moment for each, then quits. It implies `-BeatBossAutoPlay` and needs a renderer, so not `-NullRHI`:
 
 ```
@@ -110,6 +138,6 @@ All of it is canvas (no UMG), and drawing builds no strings: every word is a sta
 
 ## Not yet
 
-- No story step opens the map, and the track's music cue has no recording: the metronome stands in.
+- No story step opens the map, and the track's music cue has no recording: the procedural music stands in. It is one fixed key, one voice set and one pattern family for every track; a track's own style, and a mix balanced by ear on real speakers, wait for a person to listen.
 - Giving up at the retry prompt is played by hand only; `-BeatBossMissPhase` covers the retry itself.
 - The boss and the room are placeholders, and the lead has only its idle and the host's nudges for moves.
