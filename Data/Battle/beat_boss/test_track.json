@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "id": "test_track",
+  "music": "test_track_cue",
+  "boss": {"hp": 400},
+  "lead": {"hp": 100},
+  "damage": {"strike": 10, "counter": 14, "hold": 6, "release": 1},
+  "leadIn": {"bars": 1, "count": "click"},
+  "stems": [
+    {"id": "bass", "size": 1.0},
+    {"id": "snare", "size": 0.7},
+    {"id": "chime", "size": 0.4}
+  ],
+  "streak": {
+    "step": 8,
+    "max": 4,
+    "rewards": [
+      {"at": 6, "id": "reward_open", "effect": "open"},
+      {"at": 12, "id": "reward_heal", "effect": "heal", "amount": 10},
+      {"at": 20, "id": "reward_load", "effect": "load", "amount": 10}
+    ]
+  },
+  "staggerOpens": 4,
+  "phases": [
+    {
+      "id": "phase_a",
+      "bpm": 120,
+      "meter": "4/4",
+      "loop": {"bars": 4, "seconds": 8.0},
+      "bars": [
+        {"bar": 3, "meter": "5/4"},
+        {"bar": 4, "meter": "3/4"}
+      ],
+      "endAt": 0.6,
+      "count": "click",
+      "rests": ["1.2", "1.4&", "3.5&", "4.2"],
+      "moves": [
+        {"id": "a_parry", "tell": "1.1", "impact": "1.3", "answer": "parry", "stem": "bass", "miss": 0.2},
+        {"id": "a_strike", "tell": "1.2", "impact": "1.4", "answer": "attack", "stem": "snare"},
+        {"id": "a_hold", "tell": "2.1", "impact": "2.2", "end": "2.3", "answer": "hold", "stem": "chime"},
+        {"id": "a_dodge", "tell": "2.2", "impact": "2.4", "answer": "dodge", "stem": "bass", "miss": 0.15},
+        {"id": "a_release", "tell": "3.1", "impact": "3.2", "end": "3.5", "answer": "release", "stem": "chime"},
+        {"id": "a_guard", "tell": "4.1", "impact": "4.3", "answer": "guard", "stem": "bass", "miss": 0.2}
+      ],
+      "finisher": {
+        "at": 0.1,
+        "bars": 1,
+        "moves": [
+          {"id": "a_fin_1", "tell": "1.1", "impact": "1.2", "answer": "attack", "stem": "snare"},
+          {"id": "a_fin_2", "tell": "1.1", "impact": "1.3", "answer": "attack", "stem": "snare"},
+          {"id": "a_fin_3", "tell": "1.1", "impact": "1.4", "answer": "attack", "stem": "bass"}
+        ]
+      },
+      "silences": [
+        {"hp": 0.8, "seconds": 2.0, "count": "click"}
+      ]
+    },
+    {
+      "id": "phase_b",
+      "bpm": 80,
+      "meter": "6/8",
+      "loop": {"bars": 5, "seconds": 7.75},
+      "bars": [
+        {"bar": 2, "empty": [2]},
+        {"bar": 3, "meter": "7/8"}
+      ],
+      "endAt": 0,
+      "count": "voice",
+      "rests": ["1.2&", "2.1&", "3.2&", "4.1&"],
+      "moves": [
+        {"id": "b_parry", "tell": "1.1", "impact": "1.2", "answer": "parry", "stem": "bass", "miss": 0.2},
+        {"id": "b_strike", "tell": "1.2", "impact": "2.1", "answer": "attack", "stem": "snare"},
+        {"id": "b_paired", "tell": "2.1", "impact": "3.1", "answer": "paired", "pair": ["guard", "attack"], "stem": "bass", "miss": 0.25, "opens": true},
+        {"id": "b_strike_2", "tell": "3.2", "impact": "3.3", "answer": "attack", "stem": "snare"},
+        {"id": "b_jump", "tell": "4.1", "impact": "4.2", "answer": "jump", "stem": "chime", "miss": 0.15},
+        {"id": "b_release", "tell": "4.2", "impact": "5.1", "end": "5.2&", "answer": "release", "stem": "chime"}
+      ],
+      "finisher": {
+        "at": 0.12,
+        "bars": 1,
+        "moves": [
+          {"id": "b_fin_1", "tell": "1.1", "impact": "1.2", "answer": "attack", "stem": "snare"},
+          {"id": "b_fin_2", "tell": "1.1", "impact": "1.2&", "answer": "attack", "stem": "snare"},
+          {"id": "b_fin_3", "tell": "1.1", "impact": "1.2a", "answer": "attack", "stem": "bass"}
+        ]
+      },
+      "silences": [
+        {"bar": 1, "loop": 2, "seconds": 1.5, "count": "silent"}
+      ]
+    }
+  ]
+}
