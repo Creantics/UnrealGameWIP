@@ -245,6 +245,16 @@ These are numbered as in [COMBAT_REFERENCE_STUDY.md](COMBAT_REFERENCE_STUDY.md):
 - **10:** perfect defence pays (a parry opens a riposte; a perfect counter deals damage).
 - **11:** mashing is punished on the hard input only (`parryRearm`; the counter whiff lockout).
 
+## Demo fights
+
+Each battle type has a demo fight that plays on its own map, with the mannequin standing in for the leads:
+
+- **Turns:** `BattleDemo` with `-BattleLineup=turns`, a fight that uses every Turns verb: Guard and Release, Intercept, Take Half and the Read cards ([BATTLE_DEMO.md](BATTLE_DEMO.md), "Turns demo").
+- **Arena:** `Demo_Arena` ([ARENA_DEMO.md](ARENA_DEMO.md)).
+- **Beat:** `Demo_BeatBoss`, the synthetic test track played as a beat boss with a metronome in place of music ([BEAT_BOSS_DEMO.md](BEAT_BOSS_DEMO.md)).
+
+Each demo takes an autoplay flag that wins the fight and an idle flag that loses it, and logs one result line, so it can be checked headless.
+
 ## Unreal work still needed
 
 These wait until the animation session's merge is pushed.
