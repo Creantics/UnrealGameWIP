@@ -1781,7 +1781,8 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             guardDamage, stamina 0..100000; lunge, tracking 0..100; armor, cancel 0..1; maxTargets 0..6
 //   enemy     hp 1..100000; poise (0, 100000]; poiseDelay, staggerTime, openTime, downTime, attackDelay 0..10;
 //             walkSpeed, runSpeed, strafeSpeed 0..50; turnRate (0, 100]; preferredRange (0, 100];
-//             runRange 0..100 and at least preferredRange; bodyRadius (0, 5]; moves 1..6; accel 0..1000;
+//             runRange 0..100 and at least preferredRange; bodyRadius (0, 5]; height (0, 30] metres, optional
+//             (see arenaEnemyHeight); moves 1..6; accel 0..1000;
 //             at most 254 kinds in the file (ArenaDef::enemyKind holds an index, kArenaNoKind is 255)
 //   move      the attack's keys; minRange 0..100; maxRange (0, 100] and at least minRange; cooldown 0..60;
 //             weight 0..1000 (0: only ever reached by a chain; at least one move needs more);
@@ -1969,7 +1970,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
                      ArenaStrings* warnings) {
     arenaUnknownKeys(j, path,
                      {"id", "hp", "poise", "poiseDelay", "staggerTime", "openTime", "downTime", "walkSpeed", "runSpeed",
-                      "strafeSpeed", "turnRate", "preferredRange", "runRange", "attackDelay", "bodyRadius", "moves",
+                      "strafeSpeed", "turnRate", "preferredRange", "runRange", "attackDelay", "bodyRadius", "height", "moves",
                       "accel"},
                      false, warnings);
     arenaInt(j, "hp", k.hp, 1, 100000, path, errors);
@@ -1987,6 +1988,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     arenaNum(j, "attackDelay", k.attackDelay, 0, 10, false, path, errors);
     arenaNum(j, "accel", k.accel, 0, 1000, false, path, errors);
     arenaNum(j, "bodyRadius", k.bodyRadius, 0, 5, true, path, errors);
+    arenaNum(j, "height", k.height, 0, 30, true, path, errors);
     if (k.runRange < k.preferredRange) errors.push_back(path + ".runRange: expected at least preferredRange");
 
     const JsonValue moves = j["moves"];

@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "default": "sand_ring",
+  "stages": [
+    {
+      "id": "sand_ring", "world": "none", "theme": "plain", "bosses": ["brute", "skirmisher", "breaker"],
+      "floor": "circle", "bound": "wall", "ring": 12, "spawn": 7, "attackers": 1, "seed": 1,
+      "features": { "pillars": 8, "lights": 8, "lightIntensity": 1, "fog": 1 }
+    },
+    {
+      "id": "solhaven_alley", "world": "solhaven", "theme": "street", "bosses": ["duelist"],
+      "floor": "square", "bound": "wall", "seed": 11,
+      "features": { "cover": 5, "pillars": 4, "landmarks": 3, "pools": 2, "cracks": 3, "lights": 4, "lightIntensity": 1.2, "fog": 1 }
+    },
+    {
+      "id": "solhaven_canal", "world": "solhaven", "theme": "canal", "bosses": ["hulk"],
+      "floor": "circle", "bound": "water", "seed": 12,
+      "features": { "cover": 6, "pillars": 6, "landmarks": 4, "pools": 1, "cracks": 4, "lights": 6, "lightIntensity": 1.2, "fog": 1 }
+    },
+    {
+      "id": "lattice_court", "world": "lattice", "theme": "circuit", "bosses": ["duelist"],
+      "floor": "square", "bound": "edge", "seed": 21,
+      "features": { "cover": 4, "pillars": 6, "landmarks": 3, "pools": 2, "cracks": 2, "lights": 6, "lightIntensity": 1, "fog": 1 }
+    },
+    {
+      "id": "lattice_platform", "world": "lattice", "theme": "grid", "bosses": ["titan"],
+      "floor": "island", "bound": "edge", "seed": 22,
+      "features": { "cover": 6, "pillars": 8, "landmarks": 5, "pools": 0, "cracks": 4, "lights": 10, "lightIntensity": 1, "fog": 1 }
+    },
+    {
+      "id": "unwritten_shore", "world": "unwritten", "theme": "shore", "bosses": ["duelist"],
+      "floor": "broken_ring", "bound": "fog_wall", "seed": 31,
+      "features": { "cover": 5, "pillars": 0, "landmarks": 3, "pools": 3, "cracks": 3, "lights": 2, "lightIntensity": 1, "fog": 0.8 }
+    },
+    {
+      "id": "unwritten_maw", "world": "unwritten", "theme": "void", "bosses": ["hulk"],
+      "floor": "island", "bound": "fog_wall", "seed": 32,
+      "features": { "cover": 4, "pillars": 5, "landmarks": 4, "pools": 0, "cracks": 4, "lights": 3, "lightIntensity": 1, "fog": 1 }
+    }
+  ]
+}

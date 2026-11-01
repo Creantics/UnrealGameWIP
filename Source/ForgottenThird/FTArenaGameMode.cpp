@@ -1,14 +1,18 @@
 #include "FTArenaGameMode.h"
 
+#include "Camera/CameraActor.h"
+#include "Camera/CameraComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "FTActionButtons.h"
 #include "FTArenaFighter.h"
 #include "FTArenaHUD.h"
+#include "FTArenaStage.h"
 #include "FTPauseSubsystem.h"
 #include "FTText.h"
 #include "ForgottenThird.h"
+#include "GameFramework/HUD.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
@@ -40,7 +44,6 @@ constexpr double kArenaTellFlash = 0.3;
 // Camera: pitch limits, the pitch while locked, how fast it turns to a lock, stick and mouse rates.
 constexpr float kArenaPitchMin = -50.f;
 constexpr float kArenaPitchMax = 10.f;
-constexpr float kArenaLockPitch = -20.f;
 constexpr float kArenaLockTurn = 7.f;
 constexpr float kArenaStickTurn = 140.f; // degrees a second at full stick
 constexpr float kArenaMouseTurn = 2.5f; // degrees per unit of mouse axis (as the engine's yaw scale)
@@ -122,7 +125,8 @@ const TCHAR* ArenaPilotName(bool bAutoPlay, bool bIdle)
 
 FVector AFTArenaGameMode::PlayerStartFor(float Radius)
 {
-	return FVector(-0.35 * static_cast<double>(Radius) * 100.0, 0.0, 0.0);
+	const ftcore::Vec2 Start = ftcore::arenaStagePlayerStart(Radius);
+	return FVector(static_cast<double>(Start.x) * 100.0, static_cast<double>(Start.y) * 100.0, 0.0);
 }
 
 AFTArenaGameMode::AFTArenaGameMode()
@@ -157,6 +161,7 @@ void AFTArenaGameMode::StartPlay()
 	bIdle = FParse::Param(Cmd, TEXT("ArenaIdle"));
 	bAutoPlay = !bIdle && (FParse::Param(Cmd, TEXT("ArenaAutoPlay")) || !ShotPrefix.IsEmpty());
 	bQuitOnFinish = FParse::Param(Cmd, TEXT("ArenaQuitOnFinish"));
+	bOverview = FParse::Param(Cmd, TEXT("ArenaOverview"));
 	bHoldLoad = FParse::Param(Cmd, TEXT("ArenaHoldLoad"));
 	int32 SeedValue = 1;
 	if (FParse::Value(Cmd, TEXT("ArenaSeed="), SeedValue))
@@ -164,7 +169,9 @@ void AFTArenaGameMode::StartPlay()
 		Seed = static_cast<uint32>(SeedValue);
 	}
 
-	BuildDef(LoadTable());
+	const bool bTable = LoadTable();
+	LoadStages(bTable);
+	BuildDef(bTable);
 
 	// The enemies' tells: every startup at least kArenaMinTell (the data's loader doesn't hold it to that).
 	float Shortest = 1e9f;
@@ -188,9 +195,9 @@ void AFTArenaGameMode::StartPlay()
 		Kinds += E > 0 ? TEXT(", ") : TEXT("");
 		Kinds += Kind < Table.enemyIds.size() ? FT::ToFString(Table.enemyIds[Kind]) : FString(TEXT("built-in"));
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena: %d enemies (%s), ring %.1f m, %d attacking at once, seed %u, %s; shortest tell %.2f s."),
-		static_cast<int32>(Def.enemyCount), *Kinds, Def.ringRadius, static_cast<int32>(Def.attackers), Seed,
-		ArenaPilotName(bAutoPlay, bIdle), Shortest);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: stage %s, %d enemies (%s), ring %.1f m, spawn %.1f m, %d attacking at once, seed %u, %s; shortest tell %.2f s."),
+		*FT::ToFString(Spec.id), static_cast<int32>(Def.enemyCount), *Kinds, Def.ringRadius, Def.spawnDistance,
+		static_cast<int32>(Def.attackers), Seed, ArenaPilotName(bAutoPlay, bIdle), Shortest);
 }
 
 bool AFTArenaGameMode::LoadTable()
@@ -222,20 +229,88 @@ bool AFTArenaGameMode::LoadTable()
 	return true;
 }
 
+void AFTArenaGameMode::LoadStages(bool bTable)
+{
+	bStageFromFile = false;
+	Stages = ftcore::ArenaStageTable();
+	// The stage when the file can't give one: the sand ring of the old demo, pinned to its 12 m ring and 7 m spawn.
+	Spec = ftcore::ArenaStageSpec();
+	Spec.id = "built-in";
+	Spec.ring = MapRingRadius;
+	Spec.spawn = 7.f;
+	Spec.pillars = 8;
+	Spec.lights = 8;
+
+	FString Want;
+	FParse::Value(FCommandLine::Get(), TEXT("ArenaStage="), Want, false);
+	Want = Want.TrimStartAndEnd();
+
+	const FString File = FPaths::ProjectDir() / TEXT("Data/Battle/arenas.json");
+	TArray<uint8> Bytes;
+	if (!bTable || !IFileManager::Get().FileExists(*File) || !FFileHelper::LoadFileToArray(Bytes, *File))
+	{
+		UE_LOG(LogForgottenThird, Log, TEXT("Arena: no usable Data/Battle/arenas.json; using the built-in stage."));
+		return;
+	}
+	std::string Error;
+	std::vector<std::string> Warnings;
+	if (!ftcore::importArenaStageTable(FT::BytesAsText(Bytes), Table, Stages, &Error, &Warnings))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: Data/Battle/arenas.json refused; using the built-in stage:\n%s"), *FT::ToFString(Error));
+		Stages = ftcore::ArenaStageTable();
+		return;
+	}
+	for (const std::string& W : Warnings)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s"), *FT::ToFString(W));
+	}
+	const ftcore::ArenaStageSpec* Found = Want.IsEmpty() ? Stages.defaultStage() : Stages.find(FT::ToUtf8(Want));
+	if (!Found)
+	{
+		FString Ids;
+		for (const ftcore::ArenaStageSpec& S : Stages.stages)
+		{
+			Ids += (Ids.IsEmpty() ? TEXT("") : TEXT(", ")) + FT::ToFString(S.id);
+		}
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaStage: no stage \"%s\" in arenas.json (%s); using the default."), *Want, *Ids);
+		Found = Stages.defaultStage();
+	}
+	if (Found)
+	{
+		Spec = *Found;
+		bStageFromFile = true;
+	}
+}
+
 void AFTArenaGameMode::BuildDef(bool bTable)
 {
 	Def = bTable ? Table.fallback : ftcore::defaultArenaDef();
+	int32 Attackers = 0;
+	const bool bAttackersFlag = FParse::Value(FCommandLine::Get(), TEXT("ArenaAttackers="), Attackers);
 	if (!bTable)
 	{
+		if (bAttackersFlag)
+		{
+			Def.attackers = static_cast<uint8>(FMath::Clamp(Attackers, 1, static_cast<int32>(Def.enemyCount)));
+		}
+		ftcore::arenaStageFit(Spec, Def);
 		return;
 	}
 
-	// The lineup: -ArenaLineup's enemy kinds, else the three-kind wave (one of each shipped kind, one attacking
-	// at a time), so Load, the Release and the Read all come up without a flag.
+	// The lineup: -ArenaLineup's enemy kinds, else the stage's bosses (the sand ring's are the three-kind wave: one
+	// of each shipped kind, one attacking at a time), so Load, the Release and the Read all come up without a flag.
 	FString Lineup;
 	if (!FParse::Value(FCommandLine::Get(), TEXT("ArenaLineup="), Lineup, false) || Lineup.TrimStartAndEnd().IsEmpty())
 	{
 		Lineup = kArenaDefaultWave;
+		if (bStageFromFile && !Spec.bosses.empty())
+		{
+			Lineup.Empty();
+			for (const std::string& Boss : Spec.bosses)
+			{
+				Lineup += (Lineup.IsEmpty() ? TEXT("") : TEXT(",")) + FT::ToFString(Boss);
+			}
+		}
 	}
 	{
 		TArray<FString> Ids;
@@ -273,12 +348,29 @@ void AFTArenaGameMode::BuildDef(bool bTable)
 			Def.attackers = 1;
 		}
 	}
-	int32 Attackers = 0;
-	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaAttackers="), Attackers))
+	if (bAttackersFlag)
 	{
 		Def.attackers = static_cast<uint8>(FMath::Clamp(Attackers, 1, static_cast<int32>(Def.enemyCount)));
+		Spec.attackers = Def.attackers; // the fit would otherwise put the stage's own back
 	}
-	Def.ringRadius = FMath::Min(Def.ringRadius, MapRingRadius);
+	// The ring, the spawn and (unless a flag said) the attackers for this stage and these enemies.
+	ftcore::arenaStageFit(Spec, Def);
+}
+
+void AFTArenaGameMode::BuildStage()
+{
+	std::string Error;
+	const bool bOk = ftcore::generateArenaStage(Spec, Def, Layout, &Error);
+	if (!bOk)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: stage %s breaks a rule:\n%s"), *FT::ToFString(Spec.id), *FT::ToFString(Error));
+	}
+	const int32 Made = FTArenaStage::Build(GetWorld(), Layout);
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("Arena: built stage %s (%s, %s floor, %s bound, theme %s): ring %.1f m, scale %.2f, %d pieces, %d lamps, %d actors; camera arm %.1f m."),
+		*FT::ToFString(Layout.id), UTF8_TO_TCHAR(ftcore::stylePackName(Layout.world)), UTF8_TO_TCHAR(ftcore::stageFloorName(Layout.floor)),
+		UTF8_TO_TCHAR(ftcore::stageBoundName(Layout.bound)), UTF8_TO_TCHAR(ftcore::stageThemeName(Layout.theme)), Layout.ringRadius,
+		Layout.sizing.k, static_cast<int32>(Layout.pieces.size()), static_cast<int32>(Layout.lights.size()), Made, Layout.camera.arm);
 }
 
 APlayerController* AFTArenaGameMode::GetPC() const
@@ -291,15 +383,11 @@ void AFTArenaGameMode::Begin()
 	bBegun = true;
 	BeginNow = Now;
 
-	// The ring: Def's radius around the map's centre (the player starts behind it), inside the map's wall.
-	const FVector Start = PlayerStartFor(Def.ringRadius);
-	const ftcore::Vec2 PlayerPos{static_cast<float>(Start.X / 100.0), static_cast<float>(Start.Y / 100.0)};
-	ftcore::ArenaRing Bounds;
-	Bounds.centre = ftcore::Vec2{0.f, 0.f};
-	Bounds.radius = MapRingRadius;
-	const ftcore::ArenaRing Ring = ftcore::arenaRingAt(PlayerPos, ftcore::Vec2{1.f, 0.f}, Def.ringRadius, Bounds);
-	Fight.begin(Def, Ring, PlayerPos, ftcore::Vec2{1.f, 0.f}, Seed);
+	// The ring: Def's radius around the origin (the player starts behind it); the stage is built around it.
+	const ftcore::Vec2 PlayerPos = ftcore::arenaStagePlayerStart(Def.ringRadius);
+	Fight.begin(Def, ftcore::arenaStageRing(Def.ringRadius), PlayerPos, ftcore::Vec2{1.f, 0.f}, Seed);
 
+	BuildStage();
 	SpawnFigures();
 	PutBodiesAtStart();
 	PlaceFigures(1.f);
@@ -339,6 +427,8 @@ void AFTArenaGameMode::SpawnFigures()
 	if (PlayerFigure)
 	{
 		PlayerFigure->Setup(true, Def.fighter.bodyRadius, kArenaPlayerColor);
+		const ftcore::StageCamera& Rig = Layout.camera;
+		PlayerFigure->SetCameraRig(Rig.arm, Rig.pivot, Rig.side, Rig.up, Rig.fov);
 	}
 	if (PC)
 	{
@@ -354,7 +444,8 @@ void AFTArenaGameMode::SpawnFigures()
 		}
 		const uint8 Kind = Def.enemyKind[static_cast<size_t>(I)];
 		const FLinearColor& Color = kArenaKindColors[(Kind == ftcore::kArenaNoKind ? 0 : Kind) % 6];
-		Enemy->Setup(false, Def.enemies[static_cast<size_t>(I)].bodyRadius, Color);
+		const ftcore::ArenaEnemyKind& EnemyKind = Def.enemies[static_cast<size_t>(I)];
+		Enemy->Setup(false, EnemyKind.bodyRadius, Color, ftcore::arenaEnemyHeight(EnemyKind));
 		EnemyFigures[I] = Enemy;
 	}
 }
@@ -870,7 +961,7 @@ void AFTArenaGameMode::SteerCamera(float DeltaSeconds)
 			const float Delta = FMath::FindDeltaAngleDegrees(CameraYaw, Want);
 			CameraYaw += Delta * FMath::Min(1.f, kArenaLockTurn * DeltaSeconds);
 		}
-		CameraPitch = FMath::FInterpTo(CameraPitch, kArenaLockPitch, DeltaSeconds, 4.f);
+		CameraPitch = FMath::FInterpTo(CameraPitch, Layout.camera.lockPitch, DeltaSeconds, 4.f);
 	}
 	CameraYaw = FMath::UnwindDegrees(CameraYaw);
 	PC->SetControlRotation(FRotator(CameraPitch, CameraYaw, 0.0));
@@ -911,6 +1002,10 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	}
 	ShotWall += DeltaSeconds;
 	if (ShotWall < ShotHoldUntil)
+	{
+		return true;
+	}
+	if (bOverview && OverviewPhase < 2 && OverviewShot())
 	{
 		return true;
 	}
@@ -1001,7 +1096,54 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	return false;
 }
 
-void AFTArenaGameMode::TakeShot(const TCHAR* Name)
+bool AFTArenaGameMode::OverviewShot()
+{
+	APlayerController* PC = GetPC();
+	if (!PC || ShotWall < ShotDelay)
+	{
+		return ShotWall < ShotDelay;
+	}
+	if (OverviewPhase == 0)
+	{
+		// High over the south-west of the stage, looking at its middle: far enough to take in the landmarks.
+		const float Reach = Layout.floorRadius + 14.f * Layout.sizing.propScale;
+		const float Distance = Reach * 1.55f;
+		const FVector Target(0.0, 0.0, 200.0 * Layout.sizing.propScale);
+		const FVector From = Target + FVector(-0.62 * Distance, -0.6 * Distance, 0.52 * Distance) * 100.0;
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		ACameraActor* Camera = GetWorld()->SpawnActor<ACameraActor>(From, (Target - From).Rotation(), Params);
+		if (!Camera)
+		{
+			OverviewPhase = 2;
+			return false;
+		}
+		Camera->GetCameraComponent()->SetFieldOfView(70.f);
+		OverviewCamera = Camera;
+		PC->SetViewTarget(Camera);
+		if (AHUD* Hud = PC->GetHUD())
+		{
+			Hud->bShowHUD = false;
+		}
+		OverviewPhase = 1;
+		ShotHoldUntil = ShotWall + 1.5;
+		return true;
+	}
+	TakeShot(TEXT("0_overview"), false);
+	PC->SetViewTarget(PlayerFigure);
+	if (AHUD* Hud = PC->GetHUD())
+	{
+		Hud->bShowHUD = true;
+	}
+	if (OverviewCamera)
+	{
+		OverviewCamera->Destroy();
+	}
+	OverviewPhase = 2;
+	return true;
+}
+
+void AFTArenaGameMode::TakeShot(const TCHAR* Name, bool bCounted)
 {
 	const FString File = FString::Printf(TEXT("%s_%s.png"), *ShotPrefix, Name);
 	// The game viewport handles HighResShot; the engine's own Exec doesn't.
@@ -1010,6 +1152,9 @@ void AFTArenaGameMode::TakeShot(const TCHAR* Name)
 		Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *File), *GLog);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: view %s."), *File);
-	++ShotsTaken;
+	if (bCounted)
+	{
+		++ShotsTaken;
+	}
 	ShotHoldUntil = ShotWall + kArenaShotHold;
 }

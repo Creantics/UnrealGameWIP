@@ -313,11 +313,21 @@ struct ArenaEnemyKind {
     float runRange = 8.f;
     float attackDelay = 1.2f; // after a string ends, before it asks for a token again
     float bodyRadius = 0.45f;
+    float height = 0.f;       // m, standing; 0: derived from bodyRadius (arenaEnemyHeight). Only the host's figure
+                              // and the arena stage's scale read it: the fight's rules never do
     std::array<ArenaEnemyMove, kMaxArenaMoves> moves{};
     std::uint8_t moveCount = 1;
     float accel = 0.f;        // m/s^2: how fast its velocity moves toward the one it wants, both ways; 0: instant.
                               // Approach and Strafe only
 };
+
+// An enemy kind's standing height in metres: its `height` when set, else 1.75 m at the default body radius
+// 0.4 m, scaled with the radius between 0.8x and 1.6x of that (the look the host's figure always had).
+inline float arenaEnemyHeight(const ArenaEnemyKind& kind) {
+    if (kind.height > 0.f) return kind.height;
+    const float scale = kind.bodyRadius / 0.4f;
+    return 1.75f * (scale < 0.8f ? 0.8f : (scale > 1.6f ? 1.6f : scale));
+}
 
 // kArenaNoKind in every slot (the default of ArenaDef::enemyKind).
 constexpr std::array<std::uint8_t, kMaxArenaEnemies> arenaNoKinds() {

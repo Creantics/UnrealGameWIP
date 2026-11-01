@@ -83,9 +83,13 @@ public:
 
 	AFTArenaFighter();
 
-	// Sizes the body (radius in metres, as Core's bodyRadius) and tints it; bPlayer picks the test human and
-	// the camera. Call once after spawning.
-	void Setup(bool bPlayer, float BodyRadius, const FLinearColor& BaseColor);
+	// Sizes the body (radius in metres, as Core's bodyRadius, and standing height in metres; 0 derives the
+	// height from the radius as the figure always did) and tints it; bPlayer picks the test human and the
+	// camera. Call once after spawning.
+	void Setup(bool bPlayer, float BodyRadius, const FLinearColor& BaseColor, float HeightMeters = 0.f);
+	// The camera's rig in metres (ftcore::StageCamera, scaled with the arena): the boom's length, the pivot's
+	// height over the feet, the shoulder offset sideways and up, and the field of view in degrees.
+	void SetCameraRig(float ArmMeters, float PivotMeters, float SideMeters, float UpMeters, float FovDegrees);
 	void ApplyPose(const FFTArenaPose& Pose);
 
 	// Where the HUD hangs this figure's markers: above its head, and its chest.

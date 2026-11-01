@@ -1,7 +1,8 @@
 # Arena demo
 
 A playable version of the real-time arena fight: one lead against one to six enemies (by default a wave
-of three, a brute, a skirmisher and a breaker, one attacking at a time; placeholder shapes) in a round ring, with a lock-on camera and a canvas HUD. The rules all live in
+of three, a brute, a skirmisher and a breaker, one attacking at a time; placeholder shapes) in a round ring on one of
+several generated arenas ("Stages" below), with a lock-on camera and a canvas HUD. The rules all live in
 Core (`ftcore::ArenaFight`, `Core/include/ftcore/ArenaFight.h`); the enemies, their moves and the ring
 come from `Data/Battle/arena.json`. See [COMBAT_SYSTEMS.md](COMBAT_SYSTEMS.md), "Arena melee", for the
 rules themselves.
@@ -9,16 +10,94 @@ rules themselves.
 Map: `/Game/Maps/Demo_Arena` (Content/Maps/Demo_Arena.umap). The map's game mode is `AFTArenaGameMode`
 (no story; HUD `AFTArenaHUD`; pawn `AFTArenaFighter`). The project's default map is unchanged.
 
-The map is built from code, never by hand. After a change to the commandlet or to
-`AFTArenaGameMode::MapRingRadius`, build it again:
+The map is built from code, never by hand, and holds only a player start: the arena itself is built at run time
+from the stage (below), so one map serves every stage. After a change to the commandlet, build it again:
 
 ```
 UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildArenaWorld -NullRHI -unattended -nopause -nosplash
 ```
 
-It makes a stone disc with the ring's edge painted on it, a knee-high wall just outside the ring (the
-camera looks over it), eight pillars with a lamp each, the shared sky and sun, and a player start.
+It also writes the glow material the stages' lit parts wear, `/Game/Rendering/M_ArenaGlow` (a colour times a
+strength into the emissive colour; a stage falls back to a bright plain surface when it is missing).
 Everything that fights is spawned by the game mode.
+
+## Stages
+
+Where the fight is held is data: a stage in `Data/Battle/arenas.json` (ids and numbers only). Core
+(`Core/include/ftcore/ArenaStage.h`) turns a stage and the fight it holds into a layout of boxes, cylinders,
+lamps, a scene look and a camera rig, deterministically from the stage's `seed`; `FTArenaStage::Build` makes it
+in the world on the first tick. `-ArenaStage=<id>` picks one; without it the default is `sand_ring`, which is the
+old demo (a stone disc, a knee-high wall, eight pillars with a lamp each, the same ring, spawn and camera).
+
+```json
+{ "id": "solhaven_canal", "world": "solhaven", "theme": "canal", "bosses": ["hulk"],
+  "floor": "circle", "bound": "water", "seed": 12,
+  "features": { "cover": 6, "pillars": 6, "landmarks": 4, "pools": 1, "cracks": 4, "lights": 6,
+                "lightIntensity": 1.2, "fog": 1 } }
+```
+
+- `world`: `none`, `solhaven`, `lattice`, `unwritten` (`ftcore::StylePack`). It sets the colours of the seven paint
+  roles, the lamp colours, and the scene look (sun, sky light, fog, exposure, bloom). The worlds are tuned light
+  and air on the photoreal base, not the post-process style packs, which stay off (STYLE_PACKS_UE.md).
+- `theme`: the shape of the cover, pillars and landmarks: `plain`, `street` (crates, stacked towers), `canal`
+  (bollards, arches), `circuit` (plinths, slim pylons), `grid` (plinths, tilted monoliths), `shore` (leaning
+  slabs, broken columns), `void` (broken chunks, leaning monoliths).
+- `bosses`: the enemy kinds it hosts, the default line-up (`-ArenaLineup` overrides it, and the scale follows
+  whoever is really in the fight).
+- `floor`: `circle`, `square` (the ring inside a square slab), `broken_ring` (a disc under the ring with slabs
+  sinking away around it) or `island` (a disc on a stalk over water).
+- `bound`: `wall` (a wall just outside the ring, ground beyond), `edge` (a kerb, then a drop), `water` (a low kerb,
+  then still water) or `fog_wall` (tall dark curtains far out in thicker fog).
+- `features`: counts of `cover`, `pillars` (with a lamp each when there are lamps), `landmarks` (set pieces
+  well outside the bound), `pools` (water on the floor), `cracks` (glowing seams on the floor) and `lights`;
+  `lightIntensity` multiplies the lamps and `fog` the world's fog.
+- `ring`, `spawn`, `attackers` (all optional): pin the ring radius, the spawn distance or the attackers. Without
+  them they come from the enemies' size.
+
+### Scale
+
+The stage grows with the biggest enemy in the fight. `k` is the larger of its `bodyRadius` / 0.5 m and its
+`height` / 2.2 m (`height` is an optional key of an enemy kind in `arena.json`; without it the old
+radius-derived height, 1.75 m at 0.4 m), held to 1..6: the shipped wave and a human duelist are 1, the 3.5 m
+`hulk` 2.4, the 7 m `titan` 4.4. Then:
+
+| | Rule |
+|---|---|
+| Ring radius | (8.5 m + 1.5 m per enemy past one + 0.75 m per attacker past one) x (0.4 + 0.6 k), held to 7..60 m (a pinned `ring` is 6..80 m) |
+| Spawn distance | 0.58 of the ring, at least the biggest body radius + 4 m, at most 12 m (the lock reaches 15 m) and 0.9 of the ring |
+| Props | `propScale` = 1 + 0.55 (k - 1): the wall's height and depth, the pillars' size and gaps, cover, landmarks (8 to 14 times it tall), the floor's rim (2.4 times it) and the lamps' height and reach |
+| Camera | arm 6.4 m x (0.35 + 0.65 k), at most 4.2x; the pivot's height, the shoulder offset and the lock pitch (-20 toward -8 degrees) follow, so a giant's head stays in frame |
+| Fog | thinned by 1 / (0.5 + 0.5 propScale), so a big boss stays readable |
+
+The figure of an enemy is as tall as its `height` and as wide as its `bodyRadius` (up to 6 m). The numbers for
+the shipped stages are printed by the `arena stage` tests and in the log line `Arena: built stage ...`.
+
+### What the generator guarantees
+
+The host moves bodies with `arenaStep`, which knows no props, so the layout keeps everything solid outside the
+ring: the wall, cover, pillars, landmarks and fragments never touch it (cover is a decoration of the rim, not a
+place to hide). Only floor-level decals (pools, cracks, loose slabs) lie inside the ring, and they keep out of
+the player's start (3 m), each enemy's spawn disc (its radius + 2.5 m) and the lane between the starts (2 m +
+the boss's radius). The player's start is at least the boss's radius + 3 m from every enemy's. Every stage in a
+world has water (a water bound, an island, or a pool). `checkArenaStage` holds all of it, the doctests run it on
+every stage and on every floor x bound x theme x world x boss size, and the host logs a broken layout
+(`Arena: stage ... breaks a rule`). Pools and cracks are scenery: nothing in the fight reads them.
+
+### The shipped stages
+
+Two for each world, one human-sized (the `duelist`) and one large, plus the default. The bosses are generic
+placeholders (a human-sized `duelist`, a 3.5 m `hulk`, a 7 m `titan`) built from the shipped enemies' numbers
+scaled; the real ones come with the story.
+
+| Stage | World | Boss | Floor, bound | Ring |
+|---|---|---|---|---|
+| `sand_ring` (default) | none | brute, skirmisher, breaker | circle, wall | 12 m |
+| `solhaven_alley` | Solhaven | duelist | square, wall | 8.5 m |
+| `solhaven_canal` | Solhaven | hulk | circle, water | 15.6 m |
+| `lattice_court` | Lattice | duelist | square, edge | 8.5 m |
+| `lattice_platform` | Lattice | titan | island, edge | 25.8 m |
+| `unwritten_shore` | Unwritten | duelist | broken ring, fog wall | 8.5 m |
+| `unwritten_maw` | Unwritten | hulk | island, fog wall | 15.6 m |
 
 ## Launch
 
@@ -125,7 +204,8 @@ each frame and handed to the fight on its next step, so no press is lost between
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |
 | `-ArenaQuitOnFinish` | Quit when the fight ends, after the result line (exit code 0). |
 | `-ArenaSeed=N` | The fight's seed (default 1). |
-| `-ArenaLineup=a,b,...` | The enemies by id from `arena.json` (`brute`, `skirmisher`, `breaker`), up to six, instead of the default wave (`brute,skirmisher,breaker`); `-ArenaLineup=brute` fights one brute. |
+| `-ArenaStage=<id>` | The arena, by id from `arenas.json` (see "Stages"); the default is `sand_ring`. Its bosses are the line-up, and the ring, spawn, props and camera are scaled to them. An unknown id logs the ids and uses the default. |
+| `-ArenaLineup=a,b,...` | The enemies by id from `arena.json` (`brute`, `skirmisher`, `breaker`, `duelist`, `hulk`, `titan`), up to six, instead of the stage's own bosses (the sand ring's are `brute,skirmisher,breaker`); `-ArenaLineup=brute` fights one brute. The stage is scaled to whoever is in the fight. |
 | `-ArenaAttackers=N` | How many enemies may attack at once (1 to the line-up's size). |
 | `-ArenaHoldLoad` | The autopilot keeps its Load until it is overloaded (to see the overload; not a way to play). |
 | `-ArenaShot=<path prefix>` | Autoplay and save the views (`_1_ring`, `_2_tell` with the Read cards picked, `_3_impact`, `_4_load` with the gauge past a third, or the overload under `-ArenaHoldLoad`, `_5_release`, `_6_result` .png), then quit; a view the fight never reaches is skipped. Needs a renderer (`-RenderOffScreen`, not `-NullRHI`). |
@@ -146,7 +226,9 @@ warning and quits with exit code 2, so an unattended run never hangs.
   two steps, so the speed of the frame never changes the fight.
 - The lead is `AFTArenaFighter` with the test human body; enemies are primitive figures in their kind's
   colour. Swings, guards, rolls, staggers and falls are posed from the fight's output each frame.
-- The camera is a spring arm over the lead's shoulder. Locked on, it turns toward the target; otherwise
-  the mouse or right stick turns it (the autopilot and an idle run face the nearest enemy).
+- The camera is a spring arm over the lead's shoulder, its length, height, shoulder offset and lock pitch from
+  the stage's camera rig (6.4 m, 1.5 m, 1.2 m and -20 degrees for a human-sized fight, longer and higher for a
+  giant). Locked on, it turns toward the target; otherwise the mouse or right stick turns it (the autopilot and
+  an idle run face the nearest enemy).
 - Nothing in the host allocates per frame: the HUD's words are static, and its numbers are rebuilt only
   when they change.

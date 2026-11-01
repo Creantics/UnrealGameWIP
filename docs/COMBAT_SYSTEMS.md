@@ -62,6 +62,8 @@ The lead fights one to six enemies inside a ring.
 
 The full rules are in `ArenaFight.h`.
 
+Where a fight is held is data too: a stage in `Data/Battle/arenas.json` (a world style, a floor shape, a bound, counts of cover, pillars, landmarks, pools, cracks and lamps) that `ArenaStage.h` turns into a layout the host builds. The ring, spawn distance, prop sizes and camera scale with the boss's size (`height` and `bodyRadius` of the enemy kind) and the number of enemies and attackers; the fight itself still knows only the ring, and the generator keeps everything solid outside it. See [ARENA_DEMO.md](ARENA_DEMO.md), "Stages".
+
 ### Host contract: Core judges, the host moves
 
 Each frame the host does three things:
@@ -251,7 +253,7 @@ These are numbered as in [COMBAT_REFERENCE_STUDY.md](COMBAT_REFERENCE_STUDY.md):
 Each battle type has a demo fight that plays on its own map, with the mannequin standing in for the leads:
 
 - **Turns:** `BattleDemo` with `-BattleLineup=turns`, a fight that uses every Turns verb: Guard and Release, Intercept, Take Half and the Read cards ([BATTLE_DEMO.md](BATTLE_DEMO.md), "Turns demo").
-- **Arena:** `Demo_Arena` ([ARENA_DEMO.md](ARENA_DEMO.md)).
+- **Arena:** `Demo_Arena` ([ARENA_DEMO.md](ARENA_DEMO.md)); `-ArenaStage=<id>` holds the fight on one of the generated arenas, each shaped by its world and scaled to its boss's size (ARENA_DEMO.md, "Stages").
 - **Beat:** `Demo_BeatBoss`, the synthetic test track played as a beat boss with a metronome in place of music ([BEAT_BOSS_DEMO.md](BEAT_BOSS_DEMO.md)).
 
 Each demo takes an autoplay flag that wins the fight and an idle flag that loses it, and logs one result line, so it can be checked headless.

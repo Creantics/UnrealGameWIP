@@ -148,12 +148,20 @@ AFTArenaFighter::AFTArenaFighter()
 	Camera->SetFieldOfView(70.f);
 }
 
-void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& InBaseColor)
+void AFTArenaFighter::SetCameraRig(float ArmMeters, float PivotMeters, float SideMeters, float UpMeters, float FovDegrees)
+{
+	Boom->TargetArmLength = ArmMeters * 100.f;
+	Boom->SetRelativeLocation(FVector(0.0, 0.0, PivotMeters * 100.f));
+	Boom->SocketOffset = FVector(0.0, SideMeters * 100.f, UpMeters * 100.f);
+	Camera->SetFieldOfView(FovDegrees);
+}
+
+void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& InBaseColor, float HeightMeters)
 {
 	BaseColor = InBaseColor;
-	Radius = FMath::Clamp(BodyRadius, 0.2f, 1.5f) * 100.f;
-	// A wider body stands taller: 175 cm at Core's default 0.4 m.
-	Height = FMath::Clamp(Radius / 40.f, 0.8f, 1.6f) * 175.f;
+	Radius = FMath::Clamp(BodyRadius, 0.2f, 6.f) * 100.f;
+	// A wider body stands taller: 175 cm at Core's default 0.4 m, up to 1.6x that, unless the data gives a height.
+	Height = HeightMeters > 0.f ? FMath::Clamp(HeightMeters, 0.5f, 30.f) * 100.f : FMath::Clamp(Radius / 40.f, 0.8f, 1.6f) * 175.f;
 
 	bHuman = false;
 	if (bPlayer)
