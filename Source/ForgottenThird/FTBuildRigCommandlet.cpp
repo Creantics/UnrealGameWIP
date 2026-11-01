@@ -8,6 +8,7 @@
 #include "Animation/AnimSequence.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/SkeletalMesh.h"
+#include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
@@ -502,16 +503,49 @@ bool SaveAsset(UObject* Asset)
 	return true;
 }
 
+// Moves a retargeted clip, not yet saved, to its own package PackagePath under the name PackagePath ends in, and
+// removes the file the batch retarget may have written for the old one. Returns the clip, or null when it can't move.
+UAnimSequence* MoveClip(UAnimSequence& Clip, const FString& PackagePath)
+{
+	UPackage* Old = Clip.GetOutermost();
+	const FString OldFile = FPackageName::LongPackageNameToFilename(Old->GetName(), FPackageName::GetAssetPackageExtension());
+	UPackage* Package = CreatePackage(*PackagePath);
+	Package->FullyLoad();
+	const FName Name(FPackageName::GetShortName(PackagePath));
+	if (UObject* Existing = FindObject<UObject>(Package, *Name.ToString()))
+	{
+		Existing->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
+		Existing->ClearFlags(RF_Public | RF_Standalone);
+	}
+	if (!Clip.Rename(*Name.ToString(), Package, REN_DontCreateRedirectors | REN_NonTransactional))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: couldn't move %s to %s."), *Clip.GetPathName(), *PackagePath);
+		return nullptr;
+	}
+	Clip.SetFlags(RF_Public | RF_Standalone);
+	// The retarget copies the source clip's import data, which names the local file it came from (and the pipeline's
+	// import folder); a clip that ships in the repository carries neither.
+	Clip.AssetImportData = nullptr;
+	FAssetRegistryModule::AssetCreated(&Clip);
+	if (Old != Package && FPaths::FileExists(OldFile))
+	{
+		IFileManager::Get().Delete(*OldFile, false, true, true);
+	}
+	return &Clip;
+}
+
 // Writes RTG_<source mesh>_to_<target mesh> in Dest (source = SourceRig, target = TargetRig, the
 // default op stack, chains mapped by exact name), then retargets each clip in Clips into
 // Dest/Retargeted and checks that every result has frames and moving tracks. With bAlignPose the
 // target gets a new retarget pose with its chains turned to the source's directions (for a T-pose
 // source onto an A-pose target). bNoAlign keeps the target's own rest pose as its retarget pose (no
 // chain turned), for comparing against the aligned result; chains named in KeepChains (Pelvis: the rig's pelvis bone)
-// are left at rest and the others aligned under them. False when a chain is unmapped, a clip can't be loaded, a result
-// is empty or a save fails.
+// are left at rest and the others aligned under them. With Names (one per clip, "Lead/lead_jab") each result is moved to
+// OutFolder/<name> under that name, instead of staying in Dest/Retargeted as <clip>_to_<mesh>. False when a chain is
+// unmapped, a clip can't be loaded, a result is empty or a save fails.
 bool RetargetClips(UIKRigDefinition& SourceRig, UIKRigDefinition& TargetRig, USkeletalMesh& TargetMesh, const FString& Dest,
-	const TArray<FString>& Clips, bool bAlignPose, bool bNoAlign, const TArray<FString>& KeepChains)
+	const TArray<FString>& Clips, bool bAlignPose, bool bNoAlign, const TArray<FString>& KeepChains, const TArray<FString>& Names,
+	const FString& OutFolder)
 {
 	USkeletalMesh* SourceMesh = SourceRig.GetPreviewMesh();
 	if (!SourceMesh || SourceMesh == &TargetMesh)
@@ -727,9 +761,19 @@ bool RetargetClips(UIKRigDefinition& SourceRig, UIKRigDefinition& TargetRig, USk
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: retargeting %d clips gave %d results."), Sources.Num(), Results.Num());
 		bOk = false;
 	}
+	const FString Suffix = TEXT("_to_") + TargetMesh.GetName();
 	for (const FAssetData& Result : Results)
 	{
 		UAnimSequence* Clip = Cast<UAnimSequence>(Result.GetAsset());
+		if (Clip && !Names.IsEmpty())
+		{
+			const int32 From = Sources.IndexOfByPredicate([&](const UAnimSequence* S) { return S->GetName() + Suffix == Clip->GetName(); });
+			Clip = Names.IsValidIndex(From) ? MoveClip(*Clip, OutFolder / Names[From]) : nullptr;
+			if (!Clip)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: no name for the result %s."), *Result.AssetName.ToString());
+			}
+		}
 		if (!Clip || !SaveAsset(Clip))
 		{
 			bOk = false;
@@ -896,8 +940,19 @@ int32 UFTBuildRigCommandlet::Main(const FString& Params)
 	}
 	TArray<FString> KeepChains;
 	KeepList.ParseIntoArray(KeepChains, TEXT(","));
+	// -Names=<id>,... (one per clip, "Lead/lead_jab") with -Out=<folder>: the results are named and put there.
+	FString NameList, OutFolder = TEXT("/Game/Combat/BeatAnims");
+	FParse::Value(*Params, TEXT("Names="), NameList, false);
+	FParse::Value(*Params, TEXT("Out="), OutFolder);
+	TArray<FString> Names;
+	NameList.ParseIntoArray(Names, TEXT(","));
+	if (!Names.IsEmpty() && Names.Num() != Clips.Num())
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: %d -Names for %d -Clips."), Names.Num(), Clips.Num());
+		return 1;
+	}
 	return RetargetClips(*FromRig, *RigAsset, *Mesh, Dest, Clips, FParse::Param(*Params, TEXT("AlignPose")),
-		FParse::Param(*Params, TEXT("NoAlign")), KeepChains) ? 0 : 1;
+		FParse::Param(*Params, TEXT("NoAlign")), KeepChains, Names, OutFolder) ? 0 : 1;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig needs an editor build."));
 	return 1;
