@@ -50,6 +50,12 @@ inline Skill withTimeline(Skill s, AttackTimeline t) {
     return s;
 }
 
+// The tell an enemy skill shows to a reader (Read cards).
+inline Skill withTell(Skill s, std::string_view tell) {
+    s.tellId = std::string(tell);
+    return s;
+}
+
 inline WeakPoint makeWeakPoint(std::string_view id, float x, float y, float radius, float multiplier) {
     WeakPoint w;
     w.setId(id);
@@ -85,7 +91,8 @@ inline Combatant makeCombatant(std::string name, Stats stats, std::vector<Skill>
 inline constexpr std::array<const char*, 2> kPartyNames{"Devin", "Duy"};
 
 // Stats are {maxHp, attack, defense, speed, technique}, at level 1.
-// The first lead has the Guard and Release verbs (Load: Load.h).
+// The first lead has the Guard, Release, Intercept and Take Half verbs (Load: Load.h; the rest:
+// Battle.h), the second lead Read (ReadCards.h).
 inline std::vector<Combatant> partyAtLevel1() {
     const Skill strike = makeSkill("Strike", 0, 1, Targeting::SingleEnemy, 1.0f, 4, 1.0f);
     std::vector<Combatant> members{
@@ -98,7 +105,9 @@ inline std::vector<Combatant> partyAtLevel1() {
                        makeSkill("Pierce", 2, 0, Targeting::SingleEnemy, 2.2f, 6, 4.5f),
                        makeSkill("Flare", 4, 0, Targeting::AllEnemies, 2.4f, 7, 5.0f)}),
     };
-    members[0].verbs = verbBit(Verb::Guard) | verbBit(Verb::Release);
+    members[0].verbs =
+        verbBit(Verb::Guard) | verbBit(Verb::Release) | verbBit(Verb::Intercept) | verbBit(Verb::TakeHalf);
+    members[1].verbs = verbBit(Verb::Read);
     return members;
 }
 
@@ -128,17 +137,17 @@ inline WeakPoints shadeWeakPoints() {
 inline std::vector<Combatant> enemies() {
     return {
         withWeakPoints(makeCombatant("Brute", {260, 18, 6, 8, 8},
-                      {withTimeline(makeSkill("Slam", 0, 0, Targeting::SingleEnemy, 1.3f, 3, 1.0f),
+                      {withTimeline(withTell(makeSkill("Slam", 0, 0, Targeting::SingleEnemy, 1.3f, 3, 1.0f), "winds_up"),
                                     makeTimeline({{1.6, 0.4, 1.2, 1.0f, false}})),
-                       withTimeline(makeSkill("Double Swipe", 0, 0, Targeting::SingleEnemy, 1.6f, 5, 2.5f),
+                       withTimeline(withTell(makeSkill("Double Swipe", 0, 0, Targeting::SingleEnemy, 1.6f, 5, 2.5f), "crouches_low"),
                                     makeTimeline({{0.9, 0.4, 0.0, 1.0f, false}, {1.4, 0.4, 0.0, 1.0f, false}}))}),
                        bruteWeakPoints()),
         withWeakPoints(makeCombatant("Shade", {180, 15, 3, 14, 14},
-                      {withTimeline(makeSkill("Flicker", 0, 0, Targeting::SingleEnemy, 1.6f, 5, 4.0f),
+                      {withTimeline(withTell(makeSkill("Flicker", 0, 0, Targeting::SingleEnemy, 1.6f, 5, 4.0f), "blurs"),
                                     makeTimeline({{0.8, 0.4, 0.0, 1.0f, false},
                                                   {1.1, 0.4, 0.0, 1.0f, false},
                                                   {1.4, 0.4, 0.0, 1.0f, false}})),
-                       withTimeline(makeSkill("Feint", 0, 0, Targeting::SingleEnemy, 1.8f, 5, 5.0f),
+                       withTimeline(withTell(makeSkill("Feint", 0, 0, Targeting::SingleEnemy, 1.8f, 5, 5.0f), "sways"),
                                     makeTimeline({{1.0, 0.4, 0.0, 1.0f, false}, {1.8, 0.4, 0.0, 2.0f, false}}))}),
                        shadeWeakPoints()),
     };
@@ -232,33 +241,74 @@ inline int pilotPress(Battle& b, double now) {
     return presses;
 }
 
-// Guard mode, for a defender with Verb::Guard: one hold per hit, begun at the hit's ideal time (a
-// perfect Guard) and let go once that hit has come. `answer` false: no hold for the next hit (it
+// Guard mode: one hold per hit (`hold` is Guard or Intercept), begun at the hit's ideal time (a
+// perfect one) and let go once that hit has come. `answer` false: no hold for the next hit (it
 // lands). Returns 1 when it began a hold.
-inline int pilotGuard(Battle& b, double horizon, bool answer = true) {
+inline int pilotHold(Battle& b, double horizon, DefenceInput hold, bool answer = true) {
     if (b.phase() != Phase::EnemySkill) return 0;
     const DefenceTimeline& d = b.defence();
     const std::size_t i = d.nextIndex();
-    if (d.guarding() && (i >= d.size() || d.guardFrom() < d.idealPress(i, DefenceInput::Guard) - 1e-9))
+    if (d.guarding() && (i >= d.size() || d.guardFrom() < d.idealPress(i, hold) - 1e-9))
         b.releaseGuard(d.now()); // the hold was for a hit that has come
     if (b.phase() != Phase::EnemySkill || i >= d.size() || d.guarding() || !answer) return 0;
-    const double t = d.idealPress(i, DefenceInput::Guard);
+    const double t = d.idealPress(i, hold);
     if (t > horizon || t < d.now()) return 0;
-    b.defend(DefenceInput::Guard, t);
+    b.defend(hold, t);
     return 1;
 }
 
+// pilotHold with a Guard, for a defender with Verb::Guard.
+inline int pilotGuard(Battle& b, double horizon, bool answer = true) {
+    return pilotHold(b, horizon, DefenceInput::Guard, answer);
+}
+
+// In Guard mode during an enemy attack, the hold the pilot answers with: an Intercept when a party
+// member can take the attack for the defender (Battle::interceptor), else a Guard when the defender
+// has the verb. False: no hold (it parries).
+inline bool pilotHolds(const Battle& b, DefenceInput mode, DefenceInput& hold) {
+    if (mode != DefenceInput::Guard || b.phase() != Phase::EnemySkill) return false;
+    if (b.interceptor()) {
+        hold = DefenceInput::Intercept;
+        return true;
+    }
+    if (!b.combatant(b.defender()).can(Verb::Guard)) return false;
+    hold = DefenceInput::Guard;
+    return true;
+}
+
 inline bool pilotGuards(const Battle& b, DefenceInput mode) {
-    return mode == DefenceInput::Guard && b.phase() == Phase::EnemySkill && b.combatant(b.defender()).can(Verb::Guard);
+    DefenceInput hold = DefenceInput::Guard;
+    return pilotHolds(b, mode, hold);
+}
+
+inline constexpr CombatantId kNoAlly = static_cast<CombatantId>(-1);
+
+// For the acting party member with Verb::TakeHalf: the ally to Take Half with when their Torn is
+// uneven (one is Torn and the other not, or at a different strength), the lowest-id such living
+// ally Battle::checkTakeHalf accepts; kNoAlly otherwise (Load alone never moves it). Only
+// meaningful in Phase::AwaitingCommand.
+inline CombatantId pilotTakeHalf(const Battle& b) {
+    const Combatant& me = b.combatant(b.actor());
+    if (!me.can(Verb::TakeHalf)) return kNoAlly;
+    const float mine = me.tornTurns > 0 ? me.tornShare : 0.0f;
+    const std::vector<Combatant>& all = b.combatants();
+    for (CombatantId id = 0; id < all.size(); ++id) {
+        const Combatant& c = all[id];
+        if (id == b.actor() || c.team != Team::Party || !c.alive()) continue;
+        const float theirs = c.tornTurns > 0 ? c.tornShare : 0.0f;
+        if (std::fabs(mine - theirs) > 1e-6f && b.checkTakeHalf(id) == CommandError::None) return id;
+    }
+    return kNoAlly;
 }
 
 // Answers every pending hit of the enemy attack whose ideal press time is at or before `horizon`,
 // at that ideal time: perfect parries with DefenceInput::Parry, perfect dodges with Dodge (jumps on
-// jumpable hits, which a dodge can't answer), perfect Guards with Guard (pilotGuard; a defender
-// without Verb::Guard parries). Call before Battle::update(horizon) (or with a small look-ahead past
+// jumpable hits, which a dodge can't answer), perfect Intercepts or Guards with Guard (pilotHolds;
+// with neither, it parries). Call before Battle::update(horizon) (or with a small look-ahead past
 // the current time, so a coarse frame clock never steps over a window). Returns the number of presses.
 inline int pilotDefend(Battle& b, double horizon, DefenceInput mode = DefenceInput::Parry) {
-    if (pilotGuards(b, mode)) return pilotGuard(b, horizon);
+    DefenceInput hold = DefenceInput::Guard;
+    if (pilotHolds(b, mode, hold)) return pilotHold(b, horizon, hold);
     int presses = 0;
     while (b.phase() == Phase::EnemySkill) {
         const DefenceTimeline& d = b.defence();
@@ -294,6 +344,7 @@ inline bool pilotSucceeds(unsigned n, double rate) {
 struct PilotState {
     unsigned notes = 0; // combo notes acted on this fight
     unsigned hits = 0;  // enemy hits decided this fight
+    unsigned reads = 0; // Read cards picked this fight
     std::size_t skippedHit = static_cast<std::size_t>(-1); // the incoming hit it lets land
 };
 
@@ -326,16 +377,17 @@ inline int pilotPress(Battle& b, double now, const PilotSkill& skill, PilotState
 inline int pilotDefend(Battle& b, double horizon, DefenceInput mode, const PilotSkill& skill, PilotState& state) {
     int presses = 0;
     if (b.phase() != Phase::EnemySkill) state.skippedHit = static_cast<std::size_t>(-1);
-    if (pilotGuards(b, mode)) {
+    DefenceInput hold = DefenceInput::Guard;
+    if (pilotHolds(b, mode, hold)) {
         const DefenceTimeline& d = b.defence();
         const std::size_t i = d.nextIndex();
-        if (i >= d.size() || d.guarding() || i == state.skippedHit) return pilotGuard(b, horizon, false);
-        if (d.idealPress(i, DefenceInput::Guard) > horizon) return 0;
+        if (i >= d.size() || d.guarding() || i == state.skippedHit) return pilotHold(b, horizon, hold, false);
+        if (d.idealPress(i, hold) > horizon) return 0;
         if (!pilotSucceeds(state.hits++, skill.defend)) {
             state.skippedHit = i;
-            return pilotGuard(b, horizon, false);
+            return pilotHold(b, horizon, hold, false);
         }
-        return pilotGuard(b, horizon);
+        return pilotHold(b, horizon, hold);
     }
     while (b.phase() == Phase::EnemySkill) {
         const DefenceTimeline& d = b.defence();
@@ -356,6 +408,25 @@ inline int pilotDefend(Battle& b, double horizon, DefenceInput mode, const Pilot
     return presses;
 }
 
+// Read: during an enemy attack whose cards are dealt and not yet picked, the reader picks the card
+// whose tell the coming action shows (tellOf its active skill); a shaky pilot misreads at
+// skill.defend's rate, taking the card after it. Returns 1 when it picked.
+inline int pilotRead(Battle& b, double now, const PilotSkill& skill, PilotState& state) {
+    if (b.phase() != Phase::EnemySkill) return 0;
+    const ReadCards& cards = b.readCards();
+    const Skill* coming = b.activeSkill();
+    if (!cards.dealt() || cards.picked() || !coming) return 0;
+    std::size_t pick = cards.size();
+    for (std::size_t i = 0; i < cards.size(); ++i)
+        if (cards[i].tell == tellOf(*coming)) {
+            pick = i;
+            break;
+        }
+    if (pick == cards.size()) return 0;
+    if (!pilotSucceeds(state.reads++, skill.defend)) pick = (pick + 1) % cards.size();
+    return b.pickCard(pick, now) == CommandError::None ? 1 : 0;
+}
+
 struct HeadlessResult {
     Phase outcome = Phase::NotStarted; // Victory or Defeat when the fight ended, else where it stopped
     bool finished = false;
@@ -369,7 +440,11 @@ struct HeadlessResult {
     double endTime = 0.0;
     int itemsUsed = 0;   // items the pilot used (only with PilotItems)
     int releases = 0;    // Releases the pilot made
-    int loadStored = 0;  // Load its perfect Guards stored
+    int loadStored = 0;  // Load its perfect Guards and Intercepts stored
+    int intercepts = 0;  // enemy hits it intercepted (Guard mode)
+    int takeHalves = 0;  // Take Halves it made (Guard mode)
+    int reads = 0;       // Read cards it picked (Guard mode)
+    int correctReads = 0; // of those, the right one
 };
 
 // An opt-in for the pilot: it uses carried items. The pilot never touches an item unless it is given
@@ -446,6 +521,13 @@ inline HeadlessResult playHeadlessWith(std::vector<Combatant> party, std::vector
                 ++r.itemsUsed;
             }
         }
+        if (press && defence == DefenceInput::Guard && b.phase() == Phase::AwaitingCommand) {
+            const CombatantId ally = pilotTakeHalf(b);
+            if (ally != kNoAlly && b.takeHalf(ally, now) == CommandError::None) {
+                ++r.partyTurns;
+                ++r.takeHalves;
+            }
+        }
         if (b.phase() == Phase::AwaitingCommand) {
             const PilotChoice choice = pilotChoice(b);
             const bool aim = press && choice.aim;
@@ -464,6 +546,7 @@ inline HeadlessResult playHeadlessWith(std::vector<Combatant> party, std::vector
             }
         }
         const Phase before = b.phase();
+        if (press && defence == DefenceInput::Guard) pilotRead(b, now, skill, state);
         if (press)
             r.presses += pilotPress(b, now, skill, state) + pilotDefend(b, now + step, defence, skill, state);
         now += step;
@@ -473,6 +556,9 @@ inline HeadlessResult playHeadlessWith(std::vector<Combatant> party, std::vector
     }
     r.outcome = b.phase();
     r.loadStored = b.stats().loadStored;
+    r.intercepts = b.stats().intercepts;
+    r.reads = b.stats().reads;
+    r.correctReads = b.stats().correctReads;
     r.finished = r.outcome == Phase::Victory || r.outcome == Phase::Defeat;
     r.endTime = now;
     for (const Combatant& c : b.combatants())

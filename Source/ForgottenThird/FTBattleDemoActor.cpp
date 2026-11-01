@@ -930,6 +930,18 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 		{
 			SetJudgement(EFTJudgement::Perfect, Event.Amount > 0 ? FString::Printf(TEXT("PERFECT  +%d AP"), Event.Amount) : FString(TEXT("PERFECT")));
 		}
+		else if (Event.Label == TEXT("PERFECT GUARD"))
+		{
+			SetJudgement(EFTJudgement::Perfect, TEXT("PERFECT GUARD"));
+		}
+		else if (Event.Label == TEXT("PERFECT INTERCEPT")) // Target is the interceptor
+		{
+			SetJudgement(EFTJudgement::Perfect, FString::Printf(TEXT("PERFECT INTERCEPT  %s"), *GetFighterName(Event.Target)));
+		}
+		else if (Event.Label == TEXT("INTERCEPT"))
+		{
+			SetJudgement(EFTJudgement::Defended, FString::Printf(TEXT("INTERCEPT  %s"), *GetFighterName(Event.Target)));
+		}
 		else
 		{
 			SetJudgement(EFTJudgement::Defended, TEXT("DEFENDED"));
@@ -941,7 +953,8 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 		                                : FString::Printf(TEXT("FULL COMBO!  %d%%"), Event.Amount));
 		break;
 	case EFTBattleEventType::Counter:
-		SetBanner(FString::Printf(TEXT("%s counters!"), *GetFighterName(Event.Source)));
+		SetBanner(Event.Label == TEXT("READ") ? FString::Printf(TEXT("%s strikes the read!"), *GetFighterName(Event.Source))
+			: FString::Printf(TEXT("%s counters!"), *GetFighterName(Event.Source)));
 		break;
 	case EFTBattleEventType::Staggered:
 		SetBanner(FString::Printf(TEXT("%s is staggered!"), *GetFighterName(Event.Target)));
@@ -956,6 +969,39 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 	case EFTBattleEventType::Released:
 		SetBanner(FString::Printf(TEXT("%s releases %d Load!"), *GetFighterName(Event.Source), Event.Amount));
 		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: %s releases %d Load."), *GetFighterName(Event.Source), Event.Amount);
+		break;
+	case EFTBattleEventType::TornApplied:
+		SetBanner(FString::Printf(TEXT("%s is torn for %d turns!"), *GetFighterName(Event.Target), Event.Amount));
+		break;
+	case EFTBattleEventType::CardsDealt:
+		// The reader sees the tell, not the action: the banner's skill name gives way to it.
+		if (B && B->readCards().dealt())
+		{
+			const ftcore::ReadCards& Cards = B->readCards();
+			FString Tell = FT::ToFString(Cards[Cards.correct()].tell);
+			Tell.ReplaceInline(TEXT("_"), TEXT(" "));
+			SetBanner(FString::Printf(TEXT("%s: %s  (read it: 1 2 3)"), *GetFighterName(Event.Source), *Tell));
+		}
+		break;
+	case EFTBattleEventType::CardPicked:
+	{
+		const FString Action = Battle->GetActiveSkillName();
+		if (Event.Grade == EFTGrade::Perfect)
+		{
+			SetBanner(FString::Printf(TEXT("%s reads %s!  x%d"), *GetFighterName(Event.Source), *Action, Event.Amount));
+		}
+		else
+		{
+			SetBanner(FString::Printf(TEXT("Misread: it is %s"), *Action));
+		}
+		break;
+	}
+	case EFTBattleEventType::HalfTaken:
+		// Two of these, the actor's first: the banner comes with the ally's.
+		if (Event.Target != Event.Source)
+		{
+			SetBanner(FString::Printf(TEXT("%s takes half with %s."), *GetFighterName(Event.Source), *GetFighterName(Event.Target)));
+		}
 		break;
 	case EFTBattleEventType::Downed:
 		if (Figures.IsValidIndex(Event.Target))
@@ -1252,6 +1298,10 @@ void AFTBattleDemoActor::HandleArrow(EFTArrow Arrow, bool bFaceButton)
 
 void AFTBattleDemoActor::HandleSkill(int32 Skill)
 {
+	if (!bAutoPlay && !bWaitingForRestart && !UFTPauseSubsystem::IsBlocking(this) && TryPickCard(Skill))
+	{
+		return;
+	}
 	if (bAutoPlay || bWaitingForRestart || Battle->GetPhase() != EFTBattlePhase::AwaitingCommand || UFTPauseSubsystem::IsBlocking(this))
 	{
 		return;
@@ -1438,6 +1488,20 @@ void AFTBattleDemoActor::TickAutoPlay(float DeltaSeconds)
 	}
 	if (Battle->IsDefenceActive())
 	{
+		// Same as ftcore::demo::pilotRead, never wrong: the card whose tell the coming action shows.
+		const ftcore::ReadCards& Cards = B->readCards();
+		const ftcore::Skill* Coming = B->activeSkill();
+		if (Cards.dealt() && !Cards.picked() && Coming)
+		{
+			for (size_t C = 0; C < Cards.size(); ++C)
+			{
+				if (Cards[C].tell == ftcore::tellOf(*Coming))
+				{
+					Battle->PickCard(static_cast<int32>(C));
+					break;
+				}
+			}
+		}
 		// Same as ftcore::demo::pilotDefend in parry mode: every hit whose ideal press time comes
 		// before the next update is parried at that time, read from the timeline (never from audio).
 		const double Horizon = Battle->GetBattleTime()
@@ -1567,12 +1631,24 @@ void AFTBattleDemoActor::TickVerbInput()
 	AFTPlayerController* PC = GetPlayer();
 	const bool bLive = PC && !bAutoPlay && !bWaitingForRestart && Battle->GetBattle();
 	const bool bGuardDown = bLive && (PC->IsInputKeyDown(EKeys::G) || PC->IsInputKeyDown(EKeys::Gamepad_RightShoulder));
+	const bool bInterceptDown = bLive && (PC->IsInputKeyDown(EKeys::I) || PC->IsInputKeyDown(EKeys::Gamepad_LeftShoulder));
 	const bool bReleaseDown = bLive && (PC->IsInputKeyDown(EKeys::R) || PC->IsInputKeyDown(EKeys::Gamepad_RightTrigger));
+	const bool bTakeHalfDown = bLive && (PC->IsInputKeyDown(EKeys::T) || PC->IsInputKeyDown(EKeys::Gamepad_LeftThumbstick));
 	const bool bResumed = UFTPauseSubsystem::IsJustResumed(this);
 	const bool bGuardPressed = bGuardDown && !bGuardKeyDown && !bResumed;
+	const bool bInterceptPressed = bInterceptDown && !bInterceptKeyDown && !bResumed;
 	const bool bReleasePressed = bReleaseDown && !bReleaseKeyDown && !bResumed;
+	const bool bTakeHalfPressed = bTakeHalfDown && !bTakeHalfKeyDown && !bResumed;
 	bGuardKeyDown = bGuardDown;
+	bInterceptKeyDown = bInterceptDown;
 	bReleaseKeyDown = bReleaseDown;
+	bTakeHalfKeyDown = bTakeHalfDown;
+	// A flick of the left stick past 0.6: left, up or right picks card 1, 2 or 3 on its edge.
+	const float StickX = bLive ? PC->GetInputAnalogKeyState(EKeys::Gamepad_LeftX) : 0.f;
+	const float StickY = bLive ? PC->GetInputAnalogKeyState(EKeys::Gamepad_LeftY) : 0.f;
+	const int32 StickDir = StickX < -0.6f ? 0 : StickY > 0.6f ? 1 : StickX > 0.6f ? 2 : -1;
+	const bool bCardFlicked = StickDir >= 0 && StickDir != CardStickDir && !bResumed;
+	CardStickDir = StickDir;
 	if (!bLive || UFTPauseSubsystem::IsBlocking(this))
 	{
 		return;
@@ -1580,30 +1656,84 @@ void AFTBattleDemoActor::TickVerbInput()
 	const ftcore::Battle* B = Battle->GetBattle();
 	if (Battle->IsDefenceActive())
 	{
-		// The hold lasts while the key is down; Battle ignores it for a defender without the verb.
+		if (bCardFlicked)
+		{
+			TryPickCard(StickDir);
+		}
+		// A hold lasts while its own key is down: Guard for a defender with the verb, Intercept when
+		// a party member can take the attack for the defender (Battle ignores either otherwise, and
+		// one hold at a time).
 		if (bGuardPressed)
 		{
 			DefencePressWall = Wall();
 			LastDefenceInput = EFTDefenceInput::Guard;
 			Battle->Defend(EFTDefenceInput::Guard);
 		}
-		else if (!bGuardDown && B->defence().guarding())
+		else if (bInterceptPressed)
+		{
+			DefencePressWall = Wall();
+			LastDefenceInput = EFTDefenceInput::Intercept;
+			Battle->Defend(EFTDefenceInput::Intercept);
+		}
+		else if (B->defence().guarding() && !(B->defence().intercepting() ? bInterceptDown : bGuardDown))
 		{
 			Battle->ReleaseGuard();
 		}
 		return;
 	}
 	const bool bPartyTurn = B->phase() == ftcore::Phase::AwaitingCommand && B->combatant(B->actor()).team == ftcore::Team::Party;
-	if (!bPartyTurn || !bReleasePressed)
+	if (!bPartyTurn)
 	{
 		return;
 	}
-	switch (Battle->Release())
+	if (bReleasePressed)
 	{
-	case EFTCommandError::NoLoad: SetNotice(TEXT("No Load to release")); break;
-	case EFTCommandError::NoSuchVerb: SetNotice(TEXT("Can't release")); break;
+		switch (Battle->Release())
+		{
+		case EFTCommandError::NoLoad: SetNotice(TEXT("No Load to release")); break;
+		case EFTCommandError::NoSuchVerb: SetNotice(TEXT("Can't release")); break;
+		default: break;
+		}
+		return;
+	}
+	if (!bTakeHalfPressed)
+	{
+		return;
+	}
+	// Take Half with the lowest-id living ally (another party member).
+	int32 Ally = -1;
+	const std::vector<ftcore::Combatant>& All = B->combatants();
+	for (size_t Id = 0; Id < All.size(); ++Id)
+	{
+		if (Id != B->actor() && All[Id].team == ftcore::Team::Party && All[Id].alive())
+		{
+			Ally = static_cast<int32>(Id);
+			break;
+		}
+	}
+	switch (Battle->TakeHalf(Ally))
+	{
+	case EFTCommandError::NoSuchVerb: SetNotice(TEXT("Can't take half")); break;
+	case EFTCommandError::InvalidTarget: SetNotice(TEXT("No ally to take half with")); break;
+	case EFTCommandError::NothingToShare: SetNotice(TEXT("Nothing to share")); break;
 	default: break;
 	}
+}
+
+bool AFTBattleDemoActor::TryPickCard(int32 Card)
+{
+	const ftcore::Battle* B = Battle->GetBattle();
+	if (!B || !Battle->IsDefenceActive() || !B->readCards().dealt() || B->readCards().picked())
+	{
+		return false;
+	}
+	switch (Battle->PickCard(Card))
+	{
+	case EFTCommandError::WrongPhase: SetNotice(TEXT("Too late to read")); break;
+	case EFTCommandError::InvalidTarget: SetNotice(TEXT("No such card")); break;
+	default: break;
+	}
+	return true;
 }
 
 void AFTBattleDemoActor::Tick(float DeltaSeconds)

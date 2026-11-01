@@ -20,6 +20,9 @@
 //          while it is held is guarded: it lands at a reduced share (Guarded), or, when the hold
 //          began no more than the parry window before the impact, not at all (PerfectGuard, which
 //          the battle stores as Load). No refund, no lockout, never a miss, and it answers any hit.
+//   Intercept  the same hold, taken by another party member for the defender (Battle.h): its hits
+//          are Intercepted or PerfectIntercept on exactly Guard's terms. One hold at a time: a
+//          press of either while a hold is on keeps the hold as it is.
 // A hit nobody answered in time lands (outcome Hit). A press that answers nothing but comes less
 // than `late` seconds after the impact of the hit that just landed (with an input that hit
 // accepts) marks that hit late instead of counting as a miss: no lockout, the hit still lands, and
@@ -47,12 +50,13 @@
 
 namespace ftcore {
 
-enum class DefenceInput : std::uint8_t { Dodge, Parry, Jump, Guard }; // Guard appended
-inline constexpr std::size_t kDefenceInputs = 4;
+enum class DefenceInput : std::uint8_t { Dodge, Parry, Jump, Guard, Intercept }; // Guard and Intercept appended
+inline constexpr std::size_t kDefenceInputs = 5;
 
-// Guarded and PerfectGuard appended.
-enum class DefenceOutcome : std::uint8_t { Pending, Perfect, Dodged, Jumped, Hit, Guarded, PerfectGuard };
-// "PERFECT", "DODGE", "JUMP", "HIT", "GUARD", "PERFECT GUARD" (or "" for Pending). A literal: valid forever.
+// Guarded and PerfectGuard appended, then Intercepted and PerfectIntercept.
+enum class DefenceOutcome : std::uint8_t { Pending, Perfect, Dodged, Jumped, Hit, Guarded, PerfectGuard, Intercepted, PerfectIntercept };
+// "PERFECT", "DODGE", "JUMP", "HIT", "GUARD", "PERFECT GUARD", "INTERCEPT", "PERFECT INTERCEPT" (or "" for
+// Pending). A literal: valid forever.
 FTCORE_API const char* defenceOutcomeName(DefenceOutcome o);
 
 inline constexpr std::size_t kMaxTimelineHits = 8;
@@ -157,10 +161,11 @@ public:
     // (lockout for parry and jump); a press during its input's lockout is ignored.
     FTCORE_API DefenceResults press(DefenceInput input, double t);
     DefenceResults press(DefenceInput input) { return press(input, now_); }
-    // Ends a Guard hold at t (moves the clock there first; the hits that came while it was held are
-    // guarded). Nothing else when no hold is on.
+    // Ends a Guard or Intercept hold at t (moves the clock there first; the hits that came while it
+    // was held are guarded or intercepted). Nothing else when no hold is on.
     FTCORE_API DefenceResults releaseGuard(double t);
-    bool guarding() const { return guarding_; }
+    bool guarding() const { return guarding_; }       // a hold is on, Guard or Intercept
+    bool intercepting() const { return guarding_ && holdInput_ == DefenceInput::Intercept; }
     double guardFrom() const { return guardFrom_; } // when the current hold began
 
     double now() const { return now_; }
@@ -189,8 +194,8 @@ public:
     // Whether `input` can answer hit i at all (Jump only on jumpable hits, Dodge only on the others).
     FTCORE_API bool accepts(std::size_t i, DefenceInput input) const;
     // A press time for hit i that gets the best result `input` can: the middle of the parry
-    // window, of the perfect-dodge part of the dodge window, or of the jump window. For Guard, a
-    // hold begun then (the middle of the parry window) is perfect.
+    // window, of the perfect-dodge part of the dodge window, or of the jump window. For Guard and
+    // Intercept, a hold begun then (the middle of the parry window) is perfect.
     FTCORE_API double idealPress(std::size_t i, DefenceInput input) const;
 
     FTCORE_API std::size_t count(DefenceOutcome o) const;
@@ -210,8 +215,9 @@ private:
     std::array<DefenceOutcome, kMaxTimelineHits> outcomes_{};
     std::array<bool, kMaxTimelineHits> refunds_{};
     std::array<bool, kMaxTimelineHits> late_{};
-    std::array<double, kDefenceInputs> lockoutUntil_{-1e30, -1e30, -1e30, -1e30};
+    std::array<double, kDefenceInputs> lockoutUntil_{-1e30, -1e30, -1e30, -1e30, -1e30};
     bool guarding_ = false;
+    DefenceInput holdInput_ = DefenceInput::Guard; // the hold that is on: Guard or Intercept
     double guardFrom_ = 0.0;
     double start_ = 0.0;
     double now_ = 0.0;

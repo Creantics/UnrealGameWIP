@@ -41,7 +41,8 @@ constexpr const char* kTable = R"J({
 
 bool sameSkill(const Skill& a, const Skill& b) {
     return a.name == b.name && a.apCost == b.apCost && a.apGain == b.apGain && a.targeting == b.targeting &&
-           a.power == b.power && a.notes == b.notes && a.difficulty == b.difficulty && sameTimeline(a.timeline, b.timeline);
+           a.power == b.power && a.notes == b.notes && a.difficulty == b.difficulty && a.tellId == b.tellId &&
+           sameTimeline(a.timeline, b.timeline);
 }
 
 } // namespace

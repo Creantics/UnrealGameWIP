@@ -34,6 +34,11 @@ unchanged.
 | Dodge (enemy turn) | Left / Right, or A / D | D-pad left / right, or X / B |
 | Parry (enemy turn) | Down, or S | D-pad down, or A |
 | Jump (enemy turn, jumpable hits) | Up, or W | D-pad up, or Y |
+| Guard (enemy turn, held through the hit) | G | RB |
+| Intercept for the defender (enemy turn, held through the hit) | I | LB |
+| Release (the member's turn) | R | RT |
+| Take Half with an ally (the member's turn) | T | Left-stick click |
+| Read card 1, 2 or 3 (enemy turn, up to the first hit) | 1, 2, 3 | Left stick flicked left, up, right |
 | Choose a skill (menu) | Up / Down, or 1-4 to use at once | D-pad up / down |
 | Choose a target (menu) | Left / Right, Q / E, Tab | D-pad left / right, shoulders |
 | Use the skill (menu) | Enter or Space | A |
@@ -123,7 +128,7 @@ shipped data has poise yet, so the balance gates are unchanged.
 ### Guard, Load and Release
 
 A party member may have verbs beyond the arrow combos (`Combatant::verbs`, a bitmask of
-`ftcore::Verb`); in the demo the first lead has Guard and Release. Load (`Load.h`) runs 0 to
+`ftcore::Verb`); in the demo the first lead has Guard, Release, Intercept and Take Half (below). Load (`Load.h`) runs 0 to
 `kMaxLoad` (100) and comes into the battle with the member.
 
 - **Guard** (`DefenceInput::Guard`, held; G or pad RB) answers any hit, jumpable or not, and never
@@ -136,12 +141,80 @@ A party member may have verbs beyond the arrow combos (`Combatant::verbs`, a bit
   `releasePower` damage and losing round(Load x accuracy x `releasePoise`) poise, a stagger at 0.
   `Released` (amount = the Load) comes when the combo ends. Refused with `NoSuchVerb` or `NoLoad`.
 - **Overload**: at full Load (`Overloaded`, once as it fills) `command`, `aim` and `useItem` return
-  `CommandError::Overloaded`; only Release is open until the Load is spent.
+  `CommandError::Overloaded`; only Release and Take Half are open until the Load is spent.
 
 The autopilot releases at 60 Load or more; in Guard mode it begins one hold per hit at the hit's
 ideal time and lets go once it has come. The HUD draws a Load gauge on a party panel (orange and
 tagged OVERLOADED when full), a fourth Guard key in the defence row for a defender with the verb,
 and the Guard pips in gold (perfect) or cyan (held). The layout is not yet checked on screen.
+
+### Intercept, Torn and Take Half
+
+- **Intercept** (`DefenceInput::Intercept`, held; I or pad LB; `Verb::Intercept`) is Guard's hold
+  taken for an ally: during an enemy attack, `Battle::interceptor()` names the lowest-id living party
+  member with the verb who is not the defender, and none when the defender is a `child`
+  (`Combatant::child`: no one takes a hit aimed at a child). Its perfect window is the parry's, as
+  Guard's is, and only one hold (Guard or Intercept) runs at a time. While it is held the defender
+  takes nothing from the attack's hits.
+  - Perfect ("PERFECT INTERCEPT", `DefenceOutcome::PerfectIntercept`): the hit's share of the blow,
+    worked out against the interceptor, is stored as the interceptor's Load (`LoadStored`), and the
+    attacker loses `BattleTuning::interceptPoise` (10) poise. No counter comes.
+  - Held earlier ("INTERCEPT", `DefenceOutcome::Intercepted`): `guardShare` (half) of that share lands
+    on the interceptor instead of the defender.
+  - Let go before the impact, the hit lands on the defender in full, as with Guard.
+  - `Defended` names the interceptor as its target; `BattleStats::intercepts` counts intercepted
+    hits, and a perfect one also counts as a perfect defence.
+- **Torn**: an enemy skill with `"torn": true` in `Data/Battle/enemies.json` (optional, default false)
+  tears the member a hit of it lands on in full (outcome Hit; a parried, dodged, guarded or
+  intercepted hit never tears). A torn member loses `BattleTuning::tornShare` (2%) of its max HP, at
+  least 1, at the start of each of its turns for `tornTurns` (3) turns: a `Hit` with source = target,
+  beat = the turns left and label "TORN" (not counted as damage dealt). A tick can down the member,
+  and that turn then passes. A fresh tear keeps the longer of the turns and the stronger share
+  (`TornApplied`, amount = the turns, only when something changes).
+- **Take Half** (`Battle::takeHalf(ally, now)`; T or the left-stick click on the member's turn;
+  `Verb::TakeHalf`) evens out what two party members carry, then heals both by
+  `BattleTuning::takeHalfHeal` (5%) of their max HP, capped at what each is missing. The Load is
+  pooled and split, the odd point to the actor. Torn is pooled too: both take the longer turn count
+  and half the sum of the two shares, so a torn member and a whole one each bleed half as fast, for
+  as long. It costs the turn and no AP, like an item, and stays open while overloaded. Two
+  `HalfTaken` events, the actor's first (amount = the HP healed), then Recovery;
+  `BattleStats::takeHalves` counts them. Refusals change nothing: `WrongPhase`, `NoSuchVerb`,
+  `InvalidTarget` (the actor itself, a dead ally, an enemy, or no ally at all: a lone lead) and
+  `NothingToShare` (the split would change neither the Load nor the Torn).
+
+In Guard mode the autopilot intercepts every hit it can (a perfect one at the ideal time), else
+guards, and takes half on its turn when one member is torn and the ally is not (or at a different
+share); Load alone never moves it, and the Parry and Dodge gates never use these verbs. The HUD
+adds an Intercept key to the defence row when someone can take the attack, intercept pips in gold
+(perfect) or cyan (held), a TORN tag with a red pip per turn left on a party panel, and the Load
+gauge on any member that holds Load. The layout is not yet checked on screen.
+
+### Read cards
+
+- **Read** (`Verb::Read`; in the demo the second lead's) deals cards as each enemy attack starts
+  (`ReadCards.h`). The pool is every action of every living enemy; each card is an action and its
+  tell (`tellOf`: the skill's optional `"tellId"` in `Data/Battle/enemies.json`, 1 to 64
+  characters, else its name). Up to `kReadCards` (3) are dealt: the coming action's card once, and
+  decoys whose tells differ from it and from each other (2 cards when only two tells exist, none
+  with one tell or no reader). The deal draws from `BattleTuning::seed` and a count of deals, so the
+  same battle deals the same cards, and the right card lands in any place. `CardsDealt` says it
+  (source = the enemy, target = the reader, amount = the cards); `Battle::readCards()` holds them.
+- **Picking** (`Battle::pickCard(i, now)`; 1 to 3, or a left-stick flick) is open once per attack,
+  up to the first hit's impact. The right card (`CardPicked`, grade Perfect, "READ", amount = the
+  stacks) adds a stack (`Combatant::readStacks`, up to `kMaxReadStacks`, 5) and, as the attack
+  ends and whatever the defence did, the reader strikes the attacker once for free: a `Counter`
+  labelled "READ" at `BattleTuning::readPower` (0.5, half a parry counter) times 1 plus
+  `readStackPower` (0.2) per stack past the first, costing `counterPoise` poise. A wrong card
+  (grade Miss, "MISREAD") drops the stacks to 0 and gives the attacker `readWrongPoise` (10) poise
+  back, up to its max (poise is the enemies' alone; amount = what it got back). Refusals change
+  nothing: `WrongPhase` (no cards, already picked, past the first impact, a dead reader) and
+  `InvalidTarget` (no such card). `BattleStats::reads` and `correctReads` count the picks.
+
+In Guard mode the autopilot reads every attack (a shaky pilot misreads at its defence rate, taking
+the next card); the Parry and Dodge gates never read. The Unreal demo banners the tell in place of
+the action's name, draws the cards under the enemy banner (the right one framed gold once picked, a
+wrong pick red), hides the enemies' next skills in the turn order while a reader lives, and its
+autopilot reads too. The layout is not yet checked on screen.
 
 ## From the exploration demo
 

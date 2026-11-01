@@ -20,6 +20,13 @@ void Battle::reset(const std::vector<Combatant>& party, const std::vector<Combat
     release_.apGain = 0;
     releasing_ = false;
     releaseLoad_ = 0;
+    intercepting_ = false;
+    interceptShare_ = {};
+    interceptWeight_ = 0.0f;
+    readCards_.clear();
+    readsDealt_ = 0;
+    readBy_ = 0;
+    readCorrect_ = false;
     const std::size_t count = party.size() + enemies.size();
     // Assign in place: strings and skill lists reuse their buffers, so a same-shaped line-up is free.
     if (combatants_.size() > count) combatants_.resize(count);
@@ -37,6 +44,9 @@ void Battle::reset(const std::vector<Combatant>& party, const std::vector<Combat
         d.load.value = std::clamp(d.load.value, 0, kMaxLoad); // Load comes in with the member
         d.poise = std::max(0, d.stats.maxPoise);
         d.staggered = false;
+        d.tornTurns = std::max(0, d.tornTurns); // Torn comes in with the member, as Load does
+        if (d.tornTurns == 0) d.tornShare = 0.0f;
+        d.readStacks = std::clamp(d.readStacks, 0, kMaxReadStacks); // and so do the Read stacks
     }
     for (const Combatant& c : enemies) {
         Combatant& d = put(c);
@@ -45,6 +55,11 @@ void Battle::reset(const std::vector<Combatant>& party, const std::vector<Combat
         d.staggered = false;
         FTCORE_ASSERT(!d.skills.empty());
     }
+    std::size_t actions = 0; // every enemy action, for the Read cards' pool
+    for (const Combatant& c : combatants_)
+        if (c.team == Team::Enemies) actions += c.skills.size();
+    readPool_.clear();
+    readPool_.reserve(actions);
     enemyTurnCount_.assign(combatants_.size(), 0);
     enemyPhase_.assign(combatants_.size(), 0);
     baseAttack_.resize(combatants_.size());
@@ -142,8 +157,17 @@ void Battle::beginTurn(double now) {
     releasing_ = false;
     targets_.clear();
     shares_.clear();
+    readCards_.clear();
+    readCorrect_ = false;
     emit({.type = EventType::TurnStarted, .source = actor_, .time = now, .label = {}});
+    tickTorn(now);
+    if (phase_ == Phase::Victory || phase_ == Phase::Defeat) return;
     Combatant& c = combatants_[actor_];
+    if (!c.alive()) { // Torn downed it: the turn passes
+        phase_ = Phase::Recovery;
+        recoveryEnd_ = now + tuning_.recovery;
+        return;
+    }
     if (c.staggered) { // a broken stance: the turn passes, the poise comes back
         c.staggered = false;
         const int restored = std::max(0, c.stats.maxPoise) - c.poise;
@@ -180,6 +204,9 @@ void Battle::startEnemyTurn(double now) {
     targets_.push_back(target);
     shares_.clear();
     shares_.push_back({target, damage(enemy, combatants_[target], enemy.skills[idx].power)});
+    intercepting_ = false;
+    interceptShare_ = {};
+    interceptWeight_ = 0.0f;
     phase_ = Phase::EnemySkill;
     phaseStart_ = now;
     // No party chart during an enemy turn (swaps buffers: no allocation).
@@ -205,7 +232,81 @@ void Battle::startEnemyTurn(double now) {
         finishSkill(now); // a skill without hits
         return;
     }
+    dealCards(now);
     emitCountIn(now);
+}
+
+std::optional<CombatantId> Battle::reader() const {
+    for (CombatantId id = 0; id < combatants_.size(); ++id) {
+        const Combatant& c = combatants_[id];
+        if (c.team == Team::Party && c.alive() && c.can(Verb::Read)) return id;
+    }
+    return std::nullopt;
+}
+
+// The pool is every action of every living enemy, in id and skill order; the attacker's coming one
+// is the right card. The pool's storage was sized at reset, so a deal never allocates.
+void Battle::dealCards(double now) {
+    readCards_.clear();
+    const std::optional<CombatantId> who = reader();
+    if (!who || !skillIndex_ || defence_.size() == 0) return;
+    readPool_.clear();
+    std::size_t right = 0;
+    for (CombatantId id = 0; id < combatants_.size(); ++id) {
+        const Combatant& c = combatants_[id];
+        if (c.team != Team::Enemies || !c.alive()) continue;
+        for (std::size_t s = 0; s < c.skills.size(); ++s) {
+            if (id == actor_ && s == *skillIndex_) right = readPool_.size();
+            readPool_.push_back({.actor = id, .action = static_cast<std::uint32_t>(s), .tell = tellOf(c.skills[s])});
+        }
+    }
+    const std::uint64_t seed = tuning_.seed ^ (++readsDealt_ * 0xA24BAED4963EE407ull);
+    const std::size_t dealt = readCards_.deal(readPool_, right, seed);
+    if (dealt == 0) return;
+    readBy_ = *who;
+    emit({.type = EventType::CardsDealt,
+          .source = actor_,
+          .target = readBy_,
+          .amount = static_cast<int>(dealt),
+          .time = now,
+          .label = {}});
+}
+
+CommandError Battle::pickCard(std::size_t i, double now) {
+    if (phase_ != Phase::EnemySkill || !readCards_.dealt() || readCards_.picked()) return CommandError::WrongPhase;
+    if (defence_.size() > 0 && now > defence_.impact(0) + 1e-9) return CommandError::WrongPhase; // too late
+    Combatant& r = combatants_[readBy_];
+    if (!r.alive()) return CommandError::WrongPhase;
+    if (i >= readCards_.size()) return CommandError::InvalidTarget;
+    if (readCards_.pick(i) == ReadPick::Correct) {
+        r.readStacks = std::min(r.readStacks + 1, kMaxReadStacks);
+        readCorrect_ = true;
+        emit({.type = EventType::CardPicked,
+              .source = readBy_,
+              .target = actor_,
+              .amount = r.readStacks,
+              .grade = Grade::Perfect,
+              .beat = i,
+              .time = now,
+              .label = "READ"});
+        return CommandError::None;
+    }
+    // A misread: the stacks are lost and the attacker steadies a little (poise is the enemies' alone).
+    r.readStacks = 0;
+    Combatant& e = combatants_[actor_];
+    int back = 0;
+    if (e.alive() && !e.staggered && e.stats.maxPoise > 0)
+        back = std::max(0, std::min(tuning_.readWrongPoise, e.stats.maxPoise - e.poise));
+    e.poise += back;
+    emit({.type = EventType::CardPicked,
+          .source = readBy_,
+          .target = actor_,
+          .amount = back,
+          .grade = Grade::Miss,
+          .beat = i,
+          .time = now,
+          .label = "MISREAD"});
+    return CommandError::None;
 }
 
 void Battle::emitCountIn(double now) {
@@ -316,6 +417,102 @@ void Battle::releaseGuard(double timestamp) {
     resolveDefence(defence_.releaseGuard(timestamp), timestamp);
 }
 
+std::optional<CombatantId> Battle::interceptor() const {
+    if (phase_ != Phase::EnemySkill || targets_.empty()) return std::nullopt;
+    if (intercepting_) return interceptShare_.target;
+    const CombatantId defender = targets_.front();
+    if (combatants_[defender].child) return std::nullopt;
+    for (CombatantId id = 0; id < combatants_.size(); ++id) {
+        const Combatant& c = combatants_[id];
+        if (id != defender && c.team == Team::Party && c.alive() && c.can(Verb::Intercept)) return id;
+    }
+    return std::nullopt;
+}
+
+void Battle::tear(CombatantId member, std::size_t hit, double now) {
+    Combatant& m = combatants_[member];
+    if (!m.alive() || tuning_.tornTurns <= 0 || !(tuning_.tornShare > 0.0f)) return;
+    if (m.tornTurns >= tuning_.tornTurns && m.tornShare >= tuning_.tornShare) return; // nothing to add
+    m.tornTurns = std::max(m.tornTurns, tuning_.tornTurns);
+    m.tornShare = std::max(m.tornShare, tuning_.tornShare);
+    emit({.type = EventType::TornApplied, .source = actor_, .target = member, .amount = m.tornTurns, .beat = hit,
+          .time = now, .label = {}});
+}
+
+void Battle::tickTorn(double now) {
+    Combatant& c = combatants_[actor_];
+    if (c.tornTurns <= 0 || !c.alive()) return;
+    const int amount = std::max(1, static_cast<int>(std::lround(static_cast<float>(c.stats.maxHp) * c.tornShare)));
+    --c.tornTurns;
+    if (c.tornTurns == 0) c.tornShare = 0.0f;
+    dealDamage(actor_, actor_, amount, Grade::Miss, static_cast<std::size_t>(c.tornTurns), now, "TORN");
+}
+
+namespace {
+
+// Take Half's split of two members' Load and Torn (Battle.h): the Load pooled and split with the odd
+// point on the actor's side, the Torn shares pooled and halved over the longer turn count.
+struct HalfSplit {
+    int actorLoad = 0;
+    int allyLoad = 0;
+    int tornTurns = 0;
+    float tornShare = 0.0f;
+    bool changes = false;
+};
+
+HalfSplit splitHalf(const Combatant& actor, const Combatant& ally) {
+    HalfSplit h;
+    const int pool = actor.load.value + ally.load.value;
+    h.actorLoad = (pool + 1) / 2;
+    h.allyLoad = pool / 2;
+    h.tornTurns = std::max(actor.tornTurns, ally.tornTurns);
+    const float share = (actor.tornTurns > 0 ? actor.tornShare : 0.0f) + (ally.tornTurns > 0 ? ally.tornShare : 0.0f);
+    h.tornShare = h.tornTurns > 0 ? share * 0.5f : 0.0f;
+    const auto tornChanges = [&](const Combatant& c) {
+        return h.tornTurns > 0 && (c.tornTurns != h.tornTurns || c.tornShare != h.tornShare);
+    };
+    h.changes = h.actorLoad != actor.load.value || tornChanges(actor) || tornChanges(ally);
+    return h;
+}
+
+} // namespace
+
+CommandError Battle::checkTakeHalf(CombatantId ally) const {
+    if (phase_ != Phase::AwaitingCommand) return CommandError::WrongPhase;
+    const Combatant& c = combatants_[actor_];
+    if (!c.can(Verb::TakeHalf)) return CommandError::NoSuchVerb;
+    if (ally >= combatants_.size() || ally == actor_ || combatants_[ally].team != Team::Party ||
+        !combatants_[ally].alive())
+        return CommandError::InvalidTarget;
+    if (!splitHalf(c, combatants_[ally]).changes) return CommandError::NothingToShare;
+    return CommandError::None;
+}
+
+CommandError Battle::takeHalf(CombatantId ally, double now) {
+    const CommandError e = checkTakeHalf(ally);
+    if (e != CommandError::None) return e;
+    const HalfSplit h = splitHalf(combatants_[actor_], combatants_[ally]);
+    skillIndex_.reset();
+    targets_.clear();
+    shares_.clear();
+    const CombatantId both[2] = {actor_, ally};
+    const int loads[2] = {h.actorLoad, h.allyLoad};
+    for (int i = 0; i < 2; ++i) {
+        Combatant& m = combatants_[both[i]];
+        m.load.value = loads[i];
+        m.tornTurns = h.tornTurns;
+        m.tornShare = h.tornShare;
+        const float heal = static_cast<float>(m.stats.maxHp) * std::max(0.0f, tuning_.takeHalfHeal);
+        const int healed = std::clamp(static_cast<int>(std::lround(heal)), 0, std::max(0, m.stats.maxHp - m.hp));
+        m.hp += healed;
+        emit({.type = EventType::HalfTaken, .source = actor_, .target = both[i], .amount = healed, .time = now, .label = {}});
+    }
+    phase_ = Phase::Recovery;
+    phaseStart_ = now;
+    recoveryEnd_ = now + tuning_.recovery;
+    return CommandError::None;
+}
+
 void Battle::storeLoad(CombatantId member, int amount, std::size_t hit, double now) {
     Combatant& m = combatants_[member];
     const bool was = m.load.overloaded();
@@ -340,6 +537,16 @@ void Battle::defend(DefenceInput input, double timestamp) {
     if (phase_ != Phase::EnemySkill && !afterAttack) return;
     if (input == DefenceInput::Guard && (phase_ != Phase::EnemySkill || !combatants_[defender()].can(Verb::Guard)))
         return;
+    if (input == DefenceInput::Intercept) {
+        if (phase_ != Phase::EnemySkill) return;
+        const std::optional<CombatantId> who = interceptor();
+        if (!who) return;
+        if (!intercepting_ && !defence_.guarding()) { // the blow, reckoned against the interceptor's defence
+            intercepting_ = true;
+            interceptShare_ = {.target = *who, .full = damage(combatants_[actor_], combatants_[*who], activeSkill()->power)};
+            interceptWeight_ = 0.0f;
+        }
+    }
     const int lateBefore = defence_.lateCount();
     resolveDefence(defence_.press(input, timestamp), timestamp);
     if (defence_.lateCount() == lateBefore) return;
@@ -531,10 +738,16 @@ void Battle::resolveAttackNote(const NoteResult& r, double now) {
 // Each hit carries its weight's share of the blow. A hit that lands deals its share (rounded
 // cumulatively, so every hit landing deals exactly the full blow); a dodged, jumped or parried hit
 // deals nothing, and a perfect parry or dodge refunds AP to the defender. A held Guard lets
-// guardShare of the hit's share land; a perfect Guard takes none of it and stores it as Load.
+// guardShare of the hit's share land; a perfect Guard takes none of it and stores it as Load. An
+// intercepted hit goes to the interceptor on the same terms (its own blow, interceptShare_), and a
+// perfect one also costs the attacker poise. A tearing hit that lands in full leaves the defender Torn.
 void Battle::resolveDefence(const DefenceResults& results, double now) {
     for (const DefenceResult& r : results) {
         if (phase_ != Phase::EnemySkill) return;
+        if (r.outcome == DefenceOutcome::Intercepted || r.outcome == DefenceOutcome::PerfectIntercept) {
+            resolveIntercept(r, now);
+            continue;
+        }
         Share& s = shares_.front();
         Combatant& d = combatants_[s.target];
         const int refund = r.refund && d.alive() ? std::max(0, std::min(tuning_.apOnPerfect, d.maxAp - d.ap)) : 0;
@@ -563,8 +776,34 @@ void Battle::resolveDefence(const DefenceResults& results, double now) {
         const int taken = static_cast<int>(std::lround(s.full * fraction)) - s.taken;
         s.taken += taken;
         if (taken > 0) dealDamage(actor_, s.target, taken, grade, r.hit, now);
+        if (r.outcome == DefenceOutcome::Hit && phase_ == Phase::EnemySkill && activeSkill()->torn) tear(s.target, r.hit, now);
     }
     if (phase_ == Phase::EnemySkill && (defence_.complete() || targetsGone())) finishSkill(now);
+}
+
+void Battle::resolveIntercept(const DefenceResult& r, double now) {
+    Share& s = interceptShare_;
+    const bool perfect = r.outcome == DefenceOutcome::PerfectIntercept;
+    emit({.type = EventType::Defended,
+          .source = actor_,
+          .target = s.target,
+          .grade = perfect ? Grade::Perfect : Grade::Good,
+          .beat = r.hit,
+          .time = r.time,
+          .label = defenceOutcomeName(r.outcome)});
+    if (!combatants_[s.target].alive()) return;
+    const float total = defence_.timeline().totalWeight();
+    if (perfect) {
+        const float part = total > 0.0f ? defence_.hit(r.hit).weight / total : 1.0f;
+        storeLoad(s.target, std::max(1, static_cast<int>(std::lround(s.full * part))), r.hit, r.time);
+        losePoise(s.target, actor_, tuning_.interceptPoise, r.time);
+        return;
+    }
+    interceptWeight_ += defence_.hit(r.hit).weight * std::clamp(tuning_.guardShare, 0.0f, 1.0f);
+    const float fraction = total > 0.0f ? std::min(interceptWeight_ / total, 1.0f) : 1.0f;
+    const int taken = static_cast<int>(std::lround(s.full * fraction)) - s.taken;
+    s.taken += taken;
+    if (taken > 0) dealDamage(actor_, s.target, taken, Grade::Good, r.hit, now);
 }
 
 bool Battle::targetsGone() const {
@@ -609,6 +848,21 @@ void Battle::finishSkill(double now) {
             dealDamage(defender, actor_, dmg, Grade::Perfect, defence_.size(), now);
             if (phase_ == Phase::Victory || phase_ == Phase::Defeat) return;
             losePoise(defender, actor_, tuning_.counterPoise, now);
+        }
+    }
+    // A correct Read: the reader strikes the attacker once, whatever the defence did.
+    if (phase_ == Phase::EnemySkill && readCorrect_) {
+        readCorrect_ = false;
+        Combatant& r = combatants_[readBy_];
+        if (r.alive() && combatants_[actor_].alive()) {
+            const float stacks = static_cast<float>(std::max(0, r.readStacks - 1));
+            const float power = tuning_.readPower * (1.0f + std::max(0.0f, tuning_.readStackPower) * stacks);
+            const int dmg = std::max(1, static_cast<int>(std::lround(damage(r, combatants_[actor_], power))));
+            emit({.type = EventType::Counter, .source = readBy_, .target = actor_, .amount = dmg, .time = now,
+                  .label = "READ"});
+            dealDamage(readBy_, actor_, dmg, Grade::Perfect, defence_.size(), now, "READ");
+            if (phase_ == Phase::Victory || phase_ == Phase::Defeat) return;
+            losePoise(readBy_, actor_, tuning_.counterPoise, now);
         }
     }
     if (checkEnd(now)) return;
@@ -684,7 +938,7 @@ void Battle::tally(const BattleEvent& e) {
         stats_.missedNotes += e.grade == Grade::Miss;
         break;
     case EventType::Hit:
-        if (onParty(e.source)) stats_.damageDealt += e.amount;
+        if (onParty(e.source) && e.source != e.target) stats_.damageDealt += e.amount; // not a Torn tick
         if (onParty(e.target)) stats_.damageTaken += e.amount;
         stats_.weakPointHits += e.label == shotKindName(ShotKind::Weak);
         break;
@@ -692,7 +946,8 @@ void Battle::tally(const BattleEvent& e) {
         if (e.label == "LATE") break;
         if (e.label == "HIT") ++stats_.hitsTaken;
         else ++stats_.hitsDefended;
-        stats_.perfectDefences += e.label == "PERFECT" || e.label == "PERFECT GUARD";
+        stats_.perfectDefences += e.label == "PERFECT" || e.label == "PERFECT GUARD" || e.label == "PERFECT INTERCEPT";
+        stats_.intercepts += e.label == "INTERCEPT" || e.label == "PERFECT INTERCEPT";
         break;
     case EventType::ComboFinished: stats_.fullCombos += e.label == "FULL COMBO"; break;
     case EventType::Counter: ++stats_.counters; break;
@@ -700,6 +955,11 @@ void Battle::tally(const BattleEvent& e) {
     case EventType::Staggered: ++stats_.staggers; break;
     case EventType::LoadStored: stats_.loadStored += e.amount; break;
     case EventType::Released: ++stats_.releases; break;
+    case EventType::HalfTaken: stats_.takeHalves += e.source == e.target; break;
+    case EventType::CardPicked:
+        ++stats_.reads;
+        stats_.correctReads += e.grade == Grade::Perfect;
+        break;
     case EventType::Victory:
     case EventType::Defeat: stats_.endTime = e.time; break;
     default: break;

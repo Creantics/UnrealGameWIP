@@ -6,6 +6,7 @@
 #include "ftcore/ComboSequence.h"
 #include "ftcore/DefenceTimeline.h"
 #include "ftcore/Inventory.h"
+#include "ftcore/ReadCards.h"
 #include "ftcore/TurnQueue.h"
 #include "ftcore/WeakPoint.h"
 
@@ -45,7 +46,15 @@ struct BattleTuning {
     float counterPower = 1.0f;     // defence: a fully parried attack is countered at this power
     int apOnCounter = 1;
     int counterPoise = 10;         // defence: a counter also costs the attacker this much poise
-    float guardShare = 0.5f;       // Guard: the share of a held-guarded hit that still lands
+    float guardShare = 0.5f;       // Guard: the share of a held-guarded hit that still lands (on the interceptor
+                                   // for a held Intercept)
+    int interceptPoise = 10;       // Intercept: each perfectly intercepted hit costs the attacker this much poise
+    float tornShare = 0.02f;       // Torn: the share of max HP each tick takes
+    int tornTurns = 3;             // Torn: the ticks a landed tearing hit leaves (0: nothing tears)
+    float takeHalfHeal = 0.05f;    // Take Half: both members heal this share of their max HP
+    float readPower = 0.5f;        // Read: the Read counter's power at one stack (a quick strike, half a parry counter)
+    float readStackPower = 0.2f;   // Read: each stack past the first adds this share of readPower
+    int readWrongPoise = 10;       // Read: a wrong card gives the attacker back this much poise
     float releasePower = 0.5f;     // Release: HP damage to each enemy at 100% accuracy
     float releasePoise = 1.0f;     // Release: poise lost by each enemy, per Load spent, at 100% accuracy
     float releaseDifficulty = 2.0f; // Release: the combo's move complexity (0-10)
@@ -97,9 +106,19 @@ enum class EventType {
     Steadied,     // `source`'s skipped turn: its poise refills (amount = poise restored), then the next turn
                   // comes after the recovery pause (appended)
     LoadStored,   // a perfect Guard: `target` stored `amount` Load from hit `beat`; source = the enemy (appended)
-    Overloaded,   // `target`'s Load reached kMaxLoad: only Release is open to it (appended)
+    Overloaded,   // `target`'s Load reached kMaxLoad: only Release and Take Half are open to it
+                  // (appended)
     Released,     // `source` let go of `amount` Load: its Release combo finished (the poise losses follow)
                   // (appended)
+    TornApplied,  // a tearing hit `beat` landed: `target` is Torn for `amount` turns; source = the enemy. Each tick
+                  // is a Hit with source = target = the member and label "TORN" (appended)
+    HalfTaken,    // Take Half, one per member, the actor's first: source = the actor, target = the member,
+                  // amount = the HP it healed. The Load and Torn are already evened (appended)
+    CardsDealt,   // Read: `amount` cards were dealt (readCards()) for the enemy attack that just started;
+                  // source = the enemy, target = the reader (appended)
+    CardPicked,   // Read: `source` (the reader) picked card `beat` against `target` (the enemy). Correct: grade
+                  // Perfect, label "READ", amount = its stacks now (the Read counter comes as the attack ends).
+                  // Wrong: grade Miss, label "MISREAD", amount = the poise the enemy got back (appended)
 };
 
 // Running totals over one battle (from start() to the outcome), for the results screen.
@@ -122,8 +141,12 @@ struct BattleStats {
     double endTime = 0.0;    // the time of the outcome (0 until then)
     int itemsUsed = 0;       // items used (an item for the whole party counts once)
     int staggers = 0;        // enemies staggered
-    int loadStored = 0;      // Load stored by perfect Guards
+    int loadStored = 0;      // Load stored by perfect Guards and Intercepts
     int releases = 0;
+    int intercepts = 0;      // enemy hits intercepted (perfect ones included; also in hitsDefended)
+    int takeHalves = 0;      // Take Half commands
+    int reads = 0;           // Read cards picked
+    int correctReads = 0;    // of those, the right card (each brings a Read counter, also in counters)
 };
 
 struct BattleEvent {
@@ -141,9 +164,12 @@ struct BattleEvent {
 
 // NoSuchItem (appended: the Unreal mirror does not have it yet): useItem's slot is empty or past the end, or
 // holds an id the item table does not know. Overloaded (appended): the member's Load is full, so only
-// Release is open. NoLoad (appended): a Release with no Load. NoSuchVerb (appended): the member lacks
-// the verb.
-enum class CommandError { None, WrongPhase, NoSuchSkill, NotEnoughAp, InvalidTarget, NoSuchItem, Overloaded, NoLoad, NoSuchVerb };
+// Release and Take Half are open. NoLoad (appended): a Release with no Load. NoSuchVerb (appended): the member lacks
+// the verb. NothingToShare (appended): a Take Half that would change nothing. pickCard uses WrongPhase and
+// InvalidTarget.
+enum class CommandError {
+    None, WrongPhase, NoSuchSkill, NotEnoughAp, InvalidTarget, NoSuchItem, Overloaded, NoLoad, NoSuchVerb, NothingToShare
+};
 
 class Battle {
 public:
@@ -167,15 +193,59 @@ public:
     // ends: a perfect Guard takes nothing and stores the hit's damage as the defender's Load, a held one
     // lets tuning().guardShare of it land. Its result is a Defended event with label "GUARD" or
     // "PERFECT GUARD" (then LoadStored, and Overloaded when the Load fills).
+    // Intercept starts the same hold for interceptor() (ignored when there is none): while it is held,
+    // the attack's hits go to the interceptor instead of the defender, who takes nothing from them. A
+    // perfect Intercept (begun within the parry width of the impact) stores the hit's share of the blow,
+    // reckoned against the interceptor's defence, as the interceptor's Load and costs the attacker
+    // tuning().interceptPoise poise; a held one lets guardShare of it land on the interceptor. Its
+    // Defended event targets the interceptor, labelled "INTERCEPT" or "PERFECT INTERCEPT".
     FTCORE_API void defend(DefenceInput input, double timestamp);
+    // Ends a Guard or Intercept hold.
     FTCORE_API void releaseGuard(double timestamp);
+    // During EnemySkill, the member who would take (or is taking) an Intercept for the defender: the
+    // lowest-id living party member with Verb::Intercept other than the defender. None when the
+    // defender is a child (Combatant::child), or outside an enemy attack.
+    FTCORE_API std::optional<CombatantId> interceptor() const;
+
+    // Torn: a hit of a tearing skill (Skill::torn) that lands in full leaves the defender Torn for
+    // tuning().tornTurns turns at tuning().tornShare (a fresh tear never shortens or weakens one it
+    // already has). As each of its turns starts it loses max(1, round(max HP x share)) HP (a Hit
+    // labelled "TORN", which can down it: the turn then passes) and a turn of Torn runs out.
+    //
+    // Take Half (Verb::TakeHalf): from AwaitingCommand, the acting member evens its Load and Torn with
+    // `ally` (another living party member) and both heal tuning().takeHalfHeal of their max HP; the
+    // turn is spent (no AP), as an item's is. The Load is pooled and split, the odd point staying with
+    // the actor. Torn is pooled too: the two shares add and both carry half of the sum for the longer
+    // of the two turn counts, so one member's tear becomes two at half strength. Open while overloaded
+    // (sharing lifts the lock). NoSuchVerb, InvalidTarget (no such ally: a lone lead), NothingToShare
+    // (the split would change nothing), WrongPhase. HalfTaken, one per member.
+    FTCORE_API CommandError takeHalf(CombatantId ally, double now);
+    // What takeHalf(ally) would return now, changing nothing.
+    FTCORE_API CommandError checkTakeHalf(CombatantId ally) const;
+
+    // Read (Verb::Read, ReadCards.h): as an enemy attack starts, the reader (reader()) is dealt up to
+    // kReadCards cards from the actions of the living enemies, each with its tell (tellOf); the right
+    // one is the coming action's, the decoys have other tells. Dealt from tuning().seed and a count of
+    // deals, so the same battle deals the same cards. No deal without a reader, a hit or another tell.
+    // CardsDealt says it. The living reader during the enemy turn; none without the verb.
+    FTCORE_API std::optional<CombatantId> reader() const;
+    // The cards of the attack in progress (empty outside an enemy attack, or when none were dealt).
+    const ReadCards& readCards() const { return readCards_; }
+    // During EnemySkill, up to the first hit's impact, the reader picks card `i`, once per attack.
+    // Correct: its readStacks rise by one (to kMaxReadStacks), and as the attack ends it strikes the
+    // attacker once for free (a Counter labelled "READ", no AP, at readPower times 1 + readStackPower
+    // per stack past the first, costing counterPoise poise), whatever the defence did. Wrong: the
+    // stacks go back to 0 and the attacker gets readWrongPoise poise back (up to its max; poise is
+    // the enemies' alone). CardPicked either way. WrongPhase: no cards, already picked, or past the
+    // first impact; InvalidTarget: no such card. A refused pick changes nothing. No allocation.
+    FTCORE_API CommandError pickCard(std::size_t i, double now);
 
     // Release (Verb::Release): from AwaitingCommand, the acting member lets go of all its Load in an
     // arrow combo of exactly load.releaseNotes() notes against every living enemy. Each takes
     // tuning().releasePower HP damage and loses round(Load x accuracy x releasePoise) poise (a stagger
     // at 0). The Load is spent at once; Released comes when the combo ends. NoSuchVerb / NoLoad /
-    // WrongPhase. An overloaded member (Load at kMaxLoad) can only Release: command, aim and useItem
-    // return Overloaded.
+    // WrongPhase. An overloaded member (Load at kMaxLoad) can only Release or Take Half: command, aim
+    // and useItem return Overloaded.
     FTCORE_API CommandError release(double now);
     // The Release in progress (PartySkill).
     bool releasing() const { return releasing_; }
@@ -273,9 +343,13 @@ private:
     void startCombo(const Skill& skill, CombatantId performer, CombatantId opponent, double firstNote, double now,
                     int exactSteps = 0);
     void storeLoad(CombatantId member, int amount, std::size_t hit, double now);
+    void tear(CombatantId member, std::size_t hit, double now);
+    void tickTorn(double now);
     void resolve(double now); // judges results_ (filled by the combo)
     void resolveAttackNote(const NoteResult& r, double now);
     void resolveDefence(const DefenceResults& results, double now);
+    void resolveIntercept(const DefenceResult& r, double now);
+    void dealCards(double now);
     void emitCountIn(double now);
     void finishSkill(double now);
     bool targetsGone() const;
@@ -311,6 +385,14 @@ private:
     Skill release_;             // the Release's move (its notes set per use); activeSkill() while releasing
     bool releasing_ = false;
     int releaseLoad_ = 0;       // the Load the Release in progress spends
+    bool intercepting_ = false; // enemy turn: an Intercept began; interceptShare_ is its blow on the interceptor
+    Share interceptShare_{};
+    float interceptWeight_ = 0.0f; // the summed weight of held-intercepted hits (times guardShare)
+    ReadCards readCards_;               // enemy turn: the reader's cards
+    std::vector<ReadCard> readPool_;    // scratch: the living enemies' actions, sized at reset
+    std::uint64_t readsDealt_ = 0;      // deals so far: with tuning_.seed, what the next deal draws from
+    CombatantId readBy_ = 0;            // the reader the cards were dealt to
+    bool readCorrect_ = false;          // a correct pick this attack: the Read counter comes as it ends
     double countHit_ = 0.0;     // enemy turn: the first hit's impact, which the count leads to
     int countLeft_ = 0;         // CountIn cues still to come
     std::uint64_t combosPlayed_ = 0;
