@@ -83,6 +83,17 @@
 //     pairWindow of a parry, before or after it, turns that parry into a counter-stagger: the parried
 //     enemy, if still open, takes pairHits times light[0]'s damage and is staggered (CounterStagger,
 //     then Staggered). A press is used once; a parry pairs with one press.
+//   - Read (ReadCards.h, the partner's second input, as in Turns): as an enemy move starts (AttackStarted,
+//     each move of a string too) the partner is dealt up to kReadCards cards (CardsDealt): that move and
+//     decoys from the living enemies' other moves, each naming a move and its `tell`, no two tells alike.
+//     Nothing pauses. A pick (`read`, the card's index) counts only while that move is still in its
+//     startup; the cards go when its active part begins, or it ends, is cut short or the attacker dies,
+//     and only one deal is open at a time (a move starting while another is open deals nothing).
+//     Correct (Read): one Read stack more (up to kMaxReadStacks), and when that move's active part ends
+//     or a parry or stagger cuts it short, the partner strikes the attacker once (ReadCounter): readPower
+//     times light[0]'s damage, times 1 + readStackPower per stack past the first, plus readPoise poise
+//     damage (an upright enemy only). Wrong (Misread): the stacks go back to 0 and the attacker regains
+//     readWrongPoise poise, up to its kind's. A pick with nothing open, or a second one, does nothing.
 //   - Heal: needs a charge; heals healAmount after healTime, then healRecovery; movement scaled by
 //     healMoveScale. Hitstun before the heal applies cancels it and keeps the charge.
 //   - Being hit: hp loses the damage; poise loses the poise damage, and at 0 the player goes into
@@ -154,6 +165,7 @@
 #include "ftcore/Api.h"
 #include "ftcore/Explore.h" // Vec2
 #include "ftcore/Load.h"
+#include "ftcore/ReadCards.h"
 
 #include <array>
 #include <cmath>
@@ -261,7 +273,17 @@ struct ArenaFighter {
     float releasePoise = 1.f;   // poise each enemy the Release connects with loses per Load spent
     float pairWindow = 0.12f;   // seconds between a parry and the partner's press that still pair
     std::uint8_t pairHits = 3;  // a counter-stagger is worth this many of light[0]'s hits
+    float readPower = 0.5f;     // a Read counter at one stack: this many of light[0]'s damage ...
+    float readStackPower = 0.2f; // ... plus this share for each stack past the first
+    float readPoise = 5.f;      // poise a Read counter costs the attacker (upright only)
+    float readWrongPoise = 10.f; // poise a misread gives the attacker back (up to its kind's poise)
 };
+
+// What an enemy move shows during its startup: the word on its Read card (append only; generic shapes,
+// the host shows each through its own ui string). arena.json spells it as arenaTellName gives it.
+enum class ArenaTell : std::uint8_t { Strike, Overhead, Backhand, Charge, Thrust, Slash, Sweep, Slam };
+inline constexpr std::size_t kArenaTellCount = 8;
+FTCORE_API const char* arenaTellName(ArenaTell t); // "strike", "overhead", ... Literals.
 
 // One of an enemy's moves: an attack plus when the enemy picks it.
 struct ArenaEnemyMove {
@@ -273,6 +295,7 @@ struct ArenaEnemyMove {
     std::int8_t chain = -1;   // the move that follows at once (a string), or -1
     bool unblockable = false; // a guard doesn't stop it: dodge it
     bool parryable = true;
+    ArenaTell tell = ArenaTell::Strike; // its Read card's word; arena.json names a different one per move
 };
 
 struct ArenaEnemyKind {
@@ -364,6 +387,7 @@ struct ArenaInput {
     std::int8_t lockSwitch = 0; // -1 / +1: the next enemy to the left / right
     bool release = false;       // the Release (open above kArenaReleaseOpenLoad)
     bool pair = false;          // the partner's press: a second lead's input, paired with a parry within pairWindow
+    std::int8_t read = -1;      // the partner's Read: the index of the card picked, or -1
 };
 
 // Where the bodies stand, as the host moved them (enemies beyond enemyCount() are ignored).
@@ -430,6 +454,10 @@ enum class ArenaEventType : std::uint8_t { // append only
     Overloaded,     // the player's Load reached kMaxLoad: only a Release lifts it (appended)
     Released,       // the player began a Release, spending `amount` Load (appended)
     CounterStagger, // a parry paired with the partner's press: target took `amount` hp and is staggered (appended)
+    CardsDealt,     // Read cards dealt for source's move `move`: amount = how many (ArenaFight::readCards) (appended)
+    Read,           // the partner picked the right card for source's `move`: amount = the stacks now (appended)
+    Misread,        // ... a decoy: the stacks are 0 and source regained `amount` poise (appended)
+    ReadCounter,    // the partner's Read counter hit target for `amount` hp; move = the stacks (appended)
 };
 
 struct ArenaEvent {
@@ -477,6 +505,11 @@ struct ArenaStats {
     int releases = 0;
     int overloads = 0;
     int counterStaggers = 0; // parries paired with the partner's press
+    int readsDealt = 0;      // deals of Read cards
+    int reads = 0;           // cards picked
+    int correctReads = 0;
+    int readCounters = 0;    // Read counters that landed
+    int readDamage = 0;      // their damage (also in damageDealt)
 };
 
 enum class ArenaPhase : std::uint8_t { NotStarted, Fighting, Victory, Defeat };
@@ -499,9 +532,10 @@ public:
     // else). It locks the nearest enemy, closes in and attacks with the light chain when its target
     // isn't winding up, parries or dodges sideways out of an enemy attack about to become active
     // (parry only for parryable moves and a fighter with parryWindow >= 0.12 s), ripostes an open
-    // enemy, releases at 60 Load on an enemy on its feet in reach (and at once when overloaded), and
-    // heals below 40% hp when nothing is near or winding up. It never presses the partner's `pair`
-    // (one lead's pilot). It must win every fight in
+    // enemy, releases at 50 Load on an enemy on its feet in reach (and at once when overloaded), and
+    // heals below 40% hp when nothing is near or winding up. It never presses the partner's `pair`,
+    // but reads for the partner: the right card, 0.2 s into the startup (or half of a
+    // shorter one). It must win every fight in
     // arena.json within 120 s of fight time, and with no input every fight must be lost within 120 s
     // (the tests tick at a fixed 1/60 s and move the bodies with arenaStep).
     FTCORE_API ArenaInput autopilot() const;
@@ -534,6 +568,14 @@ public:
     FTCORE_API int enemyHp(std::size_t i) const;
     FTCORE_API float enemyPoise(std::size_t i) const;
     FTCORE_API bool enemyAlive(std::size_t i) const;
+
+    // The Read deal open now (empty when none): its cards, the enemy and move it is for, and whether a pick
+    // still counts (dealt, not picked, the move still in its startup). The Read stacks, 0..kMaxReadStacks.
+    FTCORE_API const ReadCards& readCards() const;
+    FTCORE_API std::uint8_t readFoe() const; // kArenaNobody when nothing is dealt
+    FTCORE_API std::uint8_t readMove() const;
+    FTCORE_API bool readOpen() const;
+    FTCORE_API int readStacks() const;
 
 private:
     // The fight's state: the implementer's, fixed capacity only (copying a fight never allocates).
@@ -575,6 +617,7 @@ private:
         float pairPress = -1.0e9f;          // fight time of the partner's last unused press
         float pairParry = -1.0e9f;          // fight time of the last unpaired parry ...
         std::uint8_t pairFoe = kArenaNobody; // ... and the enemy it opened
+        int readStacks = 0;                 // correct Reads in a row, 0..kMaxReadStacks
     };
 
     struct EnemyState {
@@ -595,6 +638,7 @@ private:
         std::int8_t strafeDir = 1;
         float strafeLeft = 0.f;             // seconds until the strafe may change direction
         std::array<float, kMaxArenaMoves> cooldown{};
+        bool readRight = false;             // this move was read right: the partner's counter is due
     };
 
     ArenaDef def_;
@@ -613,6 +657,11 @@ private:
     ArenaOutput out_;
     ArenaStats stats_;
     std::uint32_t dropped_ = 0;
+    ReadCards read_;                        // the open Read deal
+    std::array<ReadCard, kMaxArenaEnemies * kMaxArenaMoves> readPool_{}; // the deal's pool (tells are literals)
+    std::uint8_t readFoe_ = kArenaNobody;
+    std::uint8_t readMove_ = 0;
+    std::uint32_t readDeals_ = 0;           // deals since begin() / restart(): seeds the next deal
 };
 
 // Moves `bodies` the way a host with no walls would: each body at its output velocity for dt, then

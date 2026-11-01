@@ -158,6 +158,7 @@ struct Rig {
         }
         in.light = in.heavy = in.dodge = in.heal = in.lock = in.release = in.pair = false;
         in.lockSwitch = 0;
+        in.read = -1;
         return out;
     }
     void run(int n) {
@@ -2842,6 +2843,318 @@ TEST_CASE("arena determinism: the same seed, inputs and dts give the same fight,
     CHECK_FALSE(sameTrace(first, other));
 }
 
+// ---- Read ----
+
+namespace {
+
+// An enemy that asks at once and swings one of three moves alike in all but their tells.
+ArenaEnemyKind readKind() {
+    ArenaEnemyKind k = hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20));
+    k.moveCount = 3;
+    k.moves[1] = k.moves[0];
+    k.moves[2] = k.moves[0];
+    k.moves[0].tell = ArenaTell::Thrust;
+    k.moves[1].tell = ArenaTell::Sweep;
+    k.moves[2].tell = ArenaTell::Slam;
+    return k;
+}
+
+// The rule kit with hp to stand there and be hit for as long as a test needs, and round Read numbers.
+ArenaFighter sturdyFighter() {
+    ArenaFighter f = ruleFighter();
+    f.hp = 100000;
+    f.readPower = 1.5f; // round numbers: a counter of 15 at one stack, 3 more per stack
+    f.readStackPower = 0.2f;
+    f.readPoise = 10.f;
+    f.readWrongPoise = 10.f;
+    return f;
+}
+
+// Ticks until a tick deals Read cards (true), or `most` ticks pass.
+bool untilDealt(Rig& rig, int most = 600) {
+    for (int t = 0; t < most; ++t) {
+        const ArenaOutput& out = rig.tick();
+        for (const ArenaEvent& e : out.events)
+            if (e.type == ArenaEventType::CardsDealt) return true;
+    }
+    return false;
+}
+
+// Ticks until the nth ReadCounter is logged (its log entry), or `most` ticks pass.
+const Logged* untilCounter(Rig& rig, int nth, int most = 120) {
+    for (int t = 0; t < most && !rig.find(ArenaEventType::ReadCounter, nth); ++t) rig.tick();
+    return rig.find(ArenaEventType::ReadCounter, nth);
+}
+
+} // namespace
+
+TEST_CASE("arena Read: every enemy move deals three cards as it starts, and the right card is always that move") {
+    Rig rig(sturdyFighter(), {readKind(), readKind()});
+    rig.put(1, -1.5f, 0.f);
+    int starts = 0, deals = 0;
+    bool at[kReadCards] = {};
+    for (int t = 0; t < 1800; ++t) { // 30 s: both enemies, every move, many times
+        const ArenaOutput& out = rig.tick();
+        for (const ArenaEvent& e : out.events) {
+            if (e.type == ArenaEventType::AttackStarted) ++starts;
+            if (e.type != ArenaEventType::CardsDealt) continue;
+            ++deals;
+            const ReadCards& cards = rig.fight.readCards();
+            REQUIRE(cards.size() == kReadCards);
+            CHECK(e.amount == static_cast<int>(kReadCards));
+            CHECK(e.target == kArenaPlayer);
+            CHECK(rig.fight.readFoe() == e.source);
+            CHECK(rig.fight.readMove() == e.move);
+            CHECK(rig.fight.readOpen());
+            const ReadCard& right = cards[cards.correct()];
+            CHECK(right.actor == e.source); // the coming move ...
+            CHECK(right.action == e.move);
+            CHECK(right.tell == std::string_view(arenaTellName(rig.def.enemies[e.source].moves[e.move].tell))); // ... and its tell
+            CHECK(cards[0].tell != cards[1].tell);
+            CHECK(cards[0].tell != cards[2].tell);
+            CHECK(cards[1].tell != cards[2].tell);
+            at[cards.correct()] = true;
+        }
+        // The cards stay only while the move is in its startup; nothing is ever paused for them.
+        if (rig.fight.readCards().dealt()) CHECK(out.enemies[rig.fight.readFoe()].part == ArenaPart::Startup);
+    }
+    CHECK(rig.fight.time() == doctest::Approx(1800 * kDt));
+    CHECK(starts > 20);
+    CHECK(deals == starts); // one attacker at a time: every move gets its deal
+    CHECK(rig.fight.stats().readsDealt == deals);
+    CHECK(rig.fight.stats().reads == 0); // nobody picked: nothing happened
+    CHECK(rig.count(ArenaEventType::Read) == 0);
+    CHECK(rig.count(ArenaEventType::Misread) == 0);
+    CHECK(rig.count(ArenaEventType::ReadCounter) == 0);
+    CHECK((at[0] && at[1] && at[2])); // the right card turns up in every place
+}
+
+TEST_CASE("arena Read: the decoys come from every enemy's moves; fewer tells, fewer cards; one tell, none") {
+    {   // a lone enemy with two tells: two cards
+        ArenaEnemyKind k = readKind();
+        k.moveCount = 2;
+        Rig rig(sturdyFighter(), {k});
+        REQUIRE(untilDealt(rig));
+        CHECK(rig.fight.readCards().size() == 2);
+    }
+    {   // every move with the same tell: nothing to read, nothing dealt
+        Rig rig(sturdyFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+        CHECK_FALSE(untilDealt(rig, 300));
+        CHECK(rig.count(ArenaEventType::AttackStarted) > 0);
+        CHECK(rig.fight.stats().readsDealt == 0);
+        CHECK(rig.fight.readFoe() == kArenaNobody);
+    }
+    {   // the decoys may be another enemy's moves: a one-tell hitter beside a three-tell enemy that never attacks
+        ArenaEnemyKind still = readKind();
+        still.attackDelay = 1000.f;
+        Rig rig(sturdyFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20)), still});
+        rig.put(1, 0.f, 1.5f);
+        REQUIRE(untilDealt(rig));
+        const ReadCards& cards = rig.fight.readCards();
+        REQUIRE(cards.size() == kReadCards);
+        for (std::size_t c = 0; c < cards.size(); ++c) CHECK(cards[c].actor == (c == cards.correct() ? 0u : 1u));
+        CHECK(cards[cards.correct()].tell == std::string_view("strike"));
+    }
+}
+
+TEST_CASE("arena Read: a pick before the active part counts; right stacks and counters, wrong resets and steadies") {
+    ArenaEnemyKind k = readKind();
+    k.poiseDelay = 100.f; // the poise stays where the reads leave it
+    Rig rig(sturdyFighter(), {k});
+
+    // A right pick a moment into the startup; the fight ran on while the cards were up.
+    REQUIRE(untilDealt(rig));
+    const int dealt = rig.ticks;
+    const float time0 = rig.fight.time(), state0 = rig.out().enemies[0].stateTime;
+    rig.run(6);
+    CHECK(rig.fight.time() == doctest::Approx(time0 + 6 * kDt));
+    CHECK(rig.out().enemies[0].stateTime == doctest::Approx(state0 + 6 * kDt));
+    REQUIRE(rig.fight.readOpen());
+    const std::size_t right = rig.fight.readCards().correct();
+    rig.in.read = static_cast<std::int8_t>(right);
+    rig.tick();
+    const Logged* read = rig.find(ArenaEventType::Read);
+    REQUIRE(read);
+    CHECK(read->event.source == 0);
+    CHECK(read->event.amount == 1);
+    CHECK(rig.fight.readStacks() == 1);
+    CHECK(rig.fight.stats().reads == 1);
+    CHECK(rig.fight.stats().correctReads == 1);
+    CHECK(rig.fight.readCards().picked());
+    CHECK_FALSE(rig.fight.readOpen());
+    // A second pick of the same deal does nothing.
+    rig.in.read = static_cast<std::int8_t>((right + 1) % kReadCards);
+    rig.tick();
+    CHECK(rig.count(ArenaEventType::Misread) == 0);
+    CHECK(rig.fight.stats().reads == 1);
+    // The partner's counter as the move's active part ends (0.55 s in): 1.5 x light[0]'s 10, and readPoise.
+    const Logged* first = untilCounter(rig, 0);
+    REQUIRE(first);
+    CHECK(first->tick - dealt >= 32);
+    CHECK(first->tick - dealt <= 34);
+    CHECK(first->event.amount == 15);
+    CHECK(first->event.source == kArenaPlayer);
+    CHECK(first->event.target == 0);
+    CHECK(first->event.move == 1);
+    CHECK(rig.fight.enemyHp(0) == 85);
+    CHECK(rig.fight.enemyPoise(0) == doctest::Approx(20.f));
+    CHECK(rig.fight.stats().readCounters == 1);
+    CHECK(rig.fight.stats().readDamage == 15);
+
+    // Another right pick: two stacks, a counter 20% stronger.
+    REQUIRE(untilDealt(rig));
+    rig.in.read = static_cast<std::int8_t>(rig.fight.readCards().correct());
+    rig.tick();
+    CHECK(rig.fight.readStacks() == 2);
+    const Logged* second = untilCounter(rig, 1);
+    REQUIRE(second);
+    CHECK(second->event.amount == 18);
+    CHECK(rig.fight.enemyHp(0) == 67);
+    CHECK(rig.fight.enemyPoise(0) == doctest::Approx(10.f));
+
+    // A wrong pick: the stacks are gone, the attacker gets readWrongPoise back, and no counter comes.
+    REQUIRE(untilDealt(rig));
+    rig.in.read = static_cast<std::int8_t>((rig.fight.readCards().correct() + 1) % kReadCards);
+    rig.tick();
+    const Logged* misread = rig.find(ArenaEventType::Misread);
+    REQUIRE(misread);
+    CHECK(misread->event.amount == 10);
+    CHECK(rig.fight.readStacks() == 0);
+    CHECK(rig.fight.enemyPoise(0) == doctest::Approx(20.f));
+    CHECK(rig.fight.stats().reads == 3);
+    CHECK(rig.fight.stats().correctReads == 2);
+    rig.run(60);
+    CHECK(rig.count(ArenaEventType::ReadCounter) == 2);
+    CHECK(rig.fight.enemyHp(0) == 67);
+
+    // A pick on the last tick of the startup still counts ...
+    REQUIRE(untilDealt(rig));
+    const float startup = rig.def.enemies[0].moves[0].attack.startup;
+    while (rig.out().enemies[0].stateTime + kDt < startup) rig.tick();
+    REQUIRE(rig.fight.readOpen());
+    rig.in.read = static_cast<std::int8_t>(rig.fight.readCards().correct());
+    rig.tick();
+    CHECK(rig.count(ArenaEventType::Read) == 3);
+    CHECK(rig.fight.readStacks() == 1);
+    // ... and one once the active part has begun is too late: the cards are gone.
+    REQUIRE(untilDealt(rig));
+    while (rig.out().enemies[0].part == ArenaPart::Startup) rig.tick();
+    CHECK_FALSE(rig.fight.readCards().dealt());
+    CHECK_FALSE(rig.fight.readOpen());
+    rig.in.read = 0;
+    rig.tick();
+    CHECK(rig.fight.stats().reads == 4);
+    CHECK(rig.count(ArenaEventType::Read) == 3);
+    CHECK(rig.count(ArenaEventType::Misread) == 1);
+}
+
+TEST_CASE("arena Read: the stacks top out at kMaxReadStacks; restart() clears them") {
+    ArenaEnemyKind k = readKind();
+    k.hp = 1000;
+    Rig rig(sturdyFighter(), {k});
+    const int want[] = {15, 18, 21, 24, 27, 27, 27};
+    for (int r = 0; r < 7; ++r) {
+        REQUIRE(untilDealt(rig));
+        rig.in.read = static_cast<std::int8_t>(rig.fight.readCards().correct());
+        rig.tick();
+        CHECK(rig.fight.readStacks() == std::min(r + 1, kMaxReadStacks));
+        const Logged* counter = untilCounter(rig, r);
+        REQUIRE(counter);
+        CHECK(counter->event.amount == want[r]);
+    }
+    rig.fight.restart();
+    CHECK(rig.fight.readStacks() == 0);
+    CHECK_FALSE(rig.fight.readCards().dealt());
+    CHECK(rig.fight.readFoe() == kArenaNobody);
+}
+
+TEST_CASE("arena Read: a read move that is parried brings the counter at once, without poise on the open enemy") {
+    Rig rig(sturdyFighter(), {readKind()});
+    rig.put(0, 1.5f, 0.f);
+    for (int t = 1; t <= 40; ++t) {
+        if (t == 19) rig.in.guard = true;
+        if (rig.fight.readOpen() && !rig.fight.readCards().picked())
+            rig.in.read = static_cast<std::int8_t>(rig.fight.readCards().correct());
+        rig.tick();
+    }
+    const Logged* parried = rig.find(ArenaEventType::Parried);
+    const Logged* counter = rig.find(ArenaEventType::ReadCounter);
+    REQUIRE(parried);
+    REQUIRE(counter);
+    CHECK(counter->tick == parried->tick);
+    CHECK(counter->event.amount == 15);
+    CHECK(rig.fight.enemyHp(0) == 85);
+    CHECK(rig.fight.enemyPoise(0) == doctest::Approx(30.f)); // Open: not on its feet, no poise lost
+    CHECK(rig.out().enemies[0].brain == ArenaBrain::Open);
+    CHECK(rig.count(ArenaEventType::ReadCounter) == 1);
+}
+
+TEST_CASE("arena Read: the autopilot picks the right card a moment into the startup") {
+    Rig rig(sturdyFighter(), {readKind()});
+    int picks = 0;
+    for (int t = 0; t < 600; ++t) {
+        const ArenaInput pilot = rig.fight.autopilot();
+        if (pilot.read >= 0) {
+            ++picks;
+            CHECK(rig.fight.readOpen());
+            CHECK(static_cast<std::size_t>(pilot.read) == rig.fight.readCards().correct());
+            CHECK(rig.out().enemies[rig.fight.readFoe()].stateTime >= 0.2f - 1e-4f);
+        }
+        rig.in.read = pilot.read;
+        rig.tick();
+    }
+    CHECK(picks > 3);
+    CHECK(rig.fight.stats().correctReads == picks);
+    CHECK(rig.count(ArenaEventType::Misread) == 0);
+}
+
+TEST_CASE("arena Read loader: tells by name, an unknown one and two alike are errors; the read numbers") {
+    {
+        ArenaTable t;
+        const std::string err = loadError(
+            tableJson(R"([ { "id": "default", "readPower": 2, "readStackPower": 0.5, "readPoise": 12, "readWrongPoise": 7 } ])",
+                      R"([ { "id": "dummy", "moves": [ { "tell": "sweep" }, { "tell": "slam", "weight": 0 }, { "weight": 0 } ] } ])"),
+            &t);
+        CHECK(err.empty());
+        REQUIRE(t.enemies.size() == 1);
+        CHECK(t.enemies[0].moves[0].tell == ArenaTell::Sweep);
+        CHECK(t.enemies[0].moves[1].tell == ArenaTell::Slam);
+        CHECK(t.enemies[0].moves[2].tell == ArenaTell::Strike); // the default
+        CHECK(t.fighters[0].readPower == doctest::Approx(2.f));
+        CHECK(t.fighters[0].readStackPower == doctest::Approx(0.5f));
+        CHECK(t.fighters[0].readPoise == doctest::Approx(12.f));
+        CHECK(t.fighters[0].readWrongPoise == doctest::Approx(7.f));
+    }
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "moves": [ { "tell": "wobble" } ] } ])")),
+                   "moves[0].tell: expected one of"));
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "moves": [ { "tell": 3 } ] } ])")),
+                   "moves[0].tell: expected one of"));
+    CHECK(contains(loadError(tableJson(kFightersOk,
+                                       R"([ { "id": "dummy", "moves": [ { "tell": "sweep" }, { "tell": "sweep" } ] } ])")),
+                   "moves[1].tell: the same as moves[0]'s"));
+    CHECK(contains(loadError(tableJson(R"([ { "id": "default", "readPower": 101 } ])", kEnemiesOk)), "readPower"));
+    CHECK(contains(loadError(tableJson(R"([ { "id": "default", "readWrongPoise": -1 } ])", kEnemiesOk)), "readWrongPoise"));
+    // Moves that name no tell all read "strike": allowed, they just deal no cards on their own.
+    CHECK(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "moves": [ {}, { "weight": 0 } ] } ])")).empty());
+    for (std::size_t t = 0; t < kArenaTellCount; ++t) CHECK(std::string_view(arenaTellName(static_cast<ArenaTell>(t))).size() > 0);
+}
+
+TEST_CASE("arena Read: every shipped enemy names a different tell for each move, and the built-in one too") {
+    const ArenaTable table = loadShipped();
+    REQUIRE_FALSE(table.enemies.empty());
+    const auto distinct = [](const ArenaEnemyKind& k) {
+        for (std::size_t m = 1; m < k.moveCount; ++m)
+            for (std::size_t o = 0; o < m; ++o)
+                if (k.moves[m].tell == k.moves[o].tell) return false;
+        return true;
+    };
+    for (std::size_t e = 0; e < table.enemies.size(); ++e) {
+        CHECK_MESSAGE(distinct(table.enemies[e]), table.enemyIds[e]);
+        CHECK(table.enemies[e].moveCount >= 2); // so a lone one is dealt at least two cards
+    }
+    CHECK(distinct(defaultArenaDef().enemies[0]));
+}
+
 // ---- balance ----
 
 namespace {
@@ -2859,6 +3172,10 @@ struct Outcome {
     int guardBreaks = 0;
     int damageTaken = 0;
     int releases = 0;
+    int readsDealt = 0;
+    int reads = 0;
+    int correctReads = 0;
+    int readCounters = 0;
 };
 
 // Plays `def` at a fixed 1/60 s with arenaStep, the autopilot or a player who presses nothing.
@@ -2887,6 +3204,10 @@ Outcome playOut(const ArenaDef& def, std::uint32_t seed, bool autopilot) {
     o.guardBreaks = fight.stats().guardBreaks;
     o.damageTaken = fight.stats().damageTaken;
     o.releases = fight.stats().releases;
+    o.readsDealt = fight.stats().readsDealt;
+    o.reads = fight.stats().reads;
+    o.correctReads = fight.stats().correctReads;
+    o.readCounters = fight.stats().readCounters;
     return o;
 }
 
@@ -2905,6 +3226,13 @@ void checkBalance(const std::string& name, const ArenaDef& def) {
         CHECK_MESSAGE(win.time <= 120.f, "Error: autopilot too slow in " << name << " seed " << seed);
         CHECK_MESSAGE(lose.phase == ArenaPhase::Defeat, "Error: a player pressing nothing survived " << name << " seed " << seed);
         CHECK_MESSAGE(lose.time <= 120.f, "Error: idle loss too slow in " << name << " seed " << seed);
+        // The autopilot reads for the partner, always right; nobody at the controls reads nothing.
+        CHECK_MESSAGE(win.readsDealt > 0, "Error: no Read cards dealt in " << name << " seed " << seed);
+        CHECK(win.correctReads == win.reads);
+        CHECK(win.correctReads > 0);
+        CHECK(win.readCounters > 0);
+        CHECK(lose.reads == 0);
+        CHECK(lose.readsDealt > 0);
         if (seed == 1) {
             firstWin = win.time;
             firstLoss = lose.time;
@@ -2915,7 +3243,7 @@ void checkBalance(const std::string& name, const ArenaDef& def) {
         if (seed == 1)
             MESSAGE("arena balance: " << name << " seed 1: autopilot won in " << win.time << " s with " << win.hp
                                                   << " hp (heals " << win.heals << ", parries " << win.parries << ", evades "
-                                                  << win.evades << ", releases " << win.releases << ", hits taken " << win.hitsTaken << "), idle lost in " << lose.time
+                                                  << win.evades << ", releases " << win.releases << ", reads " << win.correctReads << "/" << win.readsDealt << ", read counters " << win.readCounters << ", hits taken " << win.hitsTaken << "), idle lost in " << lose.time
                                                   << " s");
     }
     MESSAGE("arena balance: " << name << " over 8 seeds: slowest win " << worstWin << " s, lowest hp left " << lowestHp
@@ -3006,15 +3334,26 @@ TEST_CASE("arena: a whole autopilot fight that stores Load and releases it alloc
     fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
     bodies.player = fight.playerStart();
     for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
+    int fullDeals = 0, deals = 0;
     while (!fight.over() && fight.time() < 120.f) {
-        fight.tick(kDt, fight.autopilot(), bodies);
+        const ArenaOutput& out = fight.tick(kDt, fight.autopilot(), bodies);
+        for (const ArenaEvent& e : out.events) {
+            if (e.type != ArenaEventType::CardsDealt) continue;
+            ++deals;
+            if (e.amount == static_cast<int>(kReadCards)) ++fullDeals;
+        }
         arenaStep(fight, bodies, kDt);
     }
     const auto allocs = ftcore_test::allocStats().count - before;
-    if (counting) CHECK(allocs == 0);
+    if (counting) CHECK(allocs == 0); // every Read deal and pick included
+    INFO("load stored " << fight.stats().loadStored << ", load " << fight.load() << ", time " << fight.time());
     CHECK(fight.phase() == ArenaPhase::Victory);
     CHECK(fight.stats().loadStored > 0); // the fight went through the Load and the Release
     CHECK(fight.stats().releases > 0);
+    CHECK(deals == fight.stats().readsDealt);
+    CHECK(deals > 5);
+    CHECK(fullDeals > 0); // three kinds alive: three cards (fewer only once two of them are down)
+    CHECK(fight.stats().correctReads > 0);
 }
 
 // ---- the arrow combos stay in the Turns battle ----
