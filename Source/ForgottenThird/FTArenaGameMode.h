@@ -37,8 +37,8 @@
 //
 // Flags (FParse::Param, docs/ALPHA.md style): -ArenaAutoPlay lets Core's autopilot (ArenaFight::autopilot)
 // play; -ArenaIdle presses nothing at all (the fight must be lost); -ArenaQuitOnFinish exits when the fight
-// is over (exit code 0 for a victory, 1 for a defeat, 2 if the fight outlasts kWatchdogSeconds, a hang
-// guard for headless runs). Without -ArenaQuitOnFinish the autopilot fights again 4 s after the outcome.
+// is over (it asks for 0 on a victory and 1 on a defeat, but UnrealEditor-Cmd exits 0 either way: read the
+// ARENA RESULT line; a fight that outlasts WatchdogSeconds, a hang guard for headless runs, logs a Timeout). Without -ArenaQuitOnFinish the autopilot fights again 4 s after the outcome.
 // Under -ArenaAutoPlay the host plays the partner too: it presses the pair on the step after each parry (Core's
 // autopilot never presses it). -ArenaHoldLoad keeps the autopilot from releasing until it is overloaded, so the
 // overload shows (a check of the HUD, not a way to play).
