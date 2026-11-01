@@ -136,6 +136,7 @@ void BeatChoreo::begin(const BeatChoreoDef& def, const BeatClips& clips, const B
     synced_ = false;
     unmatched_ = 0;
     hitStops_ = 0;
+    followUps_ = 0;
     retries_ = 0;
     clock_ = 0.0;
     track_ = 0.0;
@@ -686,6 +687,7 @@ bool BeatChoreo::planThen(std::int16_t clip, double after, double& landed) {
     f.free = target + std::min(tuning_.followThrough, std::max(0.0, (next->length - next->impact) / plan.rate));
     addSeg(actors_[kLead], f);
     landed = target;
+    ++followUps_;
     return true;
 }
 

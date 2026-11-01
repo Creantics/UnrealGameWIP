@@ -299,6 +299,8 @@ public:
     std::uint32_t unmatched() const { return unmatched_; }
     // Hit-stops started so far.
     std::uint32_t hitStops() const { return hitStops_; }
+    // Follow-up blows (`then`) scheduled so far.
+    std::uint32_t followUps() const { return followUps_; }
 
     // The cuts scheduled (the newest kMaxCuts, oldest first) and the bars seen: for tools and tests.
     static constexpr std::size_t kMaxCuts = 32;
@@ -384,6 +386,7 @@ private:
     bool synced_ = false;
     std::uint32_t unmatched_ = 0;
     std::uint32_t hitStops_ = 0;
+    std::uint32_t followUps_ = 0;
     int retries_ = 0;
 
     // Clocks. The track clock is walked along the events (it runs only while the track does) and
