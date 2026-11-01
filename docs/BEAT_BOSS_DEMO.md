@@ -108,6 +108,24 @@ All of it is canvas (no UMG), and drawing builds no strings: every word is a sta
 - **Result**: VICTORY or DEFEAT in a band across the screen with the counts (perfect, good, miss, best streak, bars, retries). After a defeat the retry prompt follows in the band: Retry from phase n in gold (the checkpoint's phase) and Give up under it; it shows on an autoplay run too. After a victory, Play again, when keys are read.
 - **Pause**: the pause overlay is drawn last.
 
+## Choreography
+
+`ftcore::BeatChoreo` (`Core/include/ftcore/BeatChoreo.h`) is the logic of the fight as a cinematic scene: the lead and the boss play fight clips, the camera cuts between shots, and each prompt sits by the part of the body it answers. It only reads the fight, so the judging, the scores and the results are `BeatBoss`'s, unchanged. The demo host does not draw it yet; the host's job each frame is:
+
+```
+events = fight.update(clock);  scene.observe(fight, events, clock);   // after every press and release too
+scene.sampleNow(s);
+```
+
+then play `s.lead` and `s.boss` (clip index, seconds into the clip, rate; look the clip up with `scene.clips().id(i)`), put the camera on `s.shot`, draw `s.prompts[0..promptCount)` at their anchors with `progress` 0..1 as the lead-in, and, when `s.frozen`, keep the stance going. After `fight.retry(clock)` call `scene.retry(fight)`. `observe` must also run every frame after the fight is over, so the end poses keep time.
+
+- **Timing.** A boss move's clip is started so its impact frame lands on the move's impact, at a rate clamped to 0.75 to 1.35; if the windup does not fit after the last move, the clip starts partway in. The lead's clip starts on the judged press (a blow lands 0.06 s after it, a counter pressed early waits for the boss's impact) and a miss plays from the impact. The stance loops on the beat, one cycle a whole number of beats.
+- **Hit-stop and slow motion** are visual only. A Perfect blow pauses the animation for 50 to 80 ms, and it has caught up by the next beat; in a finisher bar the animation dips between the strikes. The clip times in a sample already have both applied, and the fight's clock and the music are never touched, so every impact is on screen on its beat. `visualRate` and `slowMo` are for effects that should follow (sparks, the camera's move).
+- **Shots.** `wide`, `over_lead`, `over_boss`, `close_lead`, `close_boss`, `low_hero`, `top_down` and `finisher_orbit`; the host maps each to a camera. A cut is only ever on a beat or a bar line: at the beat a move's tell falls on, to that move's shot; to `finisher_orbit` on a finisher bar's line; on the next beat after a stagger, the victory and the defeat. A silence cuts nothing.
+- **Data.** `Data/Anim/beat_clips.json` lists the clips (id, length in seconds, impact offset, loop; up to 128; the animation side overwrites the placeholder numbers and may add ids). `Data/Battle/beat_boss/<track>.choreo.json` has the stance clips, the stagger, victory and defeat, and for each move, by index and checked by id, the boss's clip, the lead's clip on an answer (`ok`, `then` after a Perfect), on a miss, the boss's reaction to a blow (`hit`), the shot and the prompt's anchor (`boss_head`, `boss_fist_r`, `boss_fist_l`, `boss_chest`, `lead_head`, `lead_chest`, `screen_center`). Ids and numbers only; the loader refuses an unknown clip, a wrong move id or count, or a stance that does not loop.
+- **Limits.** `observe` must see a move's prompt while it is open (every frame does); one opened and answered between two calls is not choreographed and is counted in `unmatched()`. A boss move whose windup is on screen is not interrupted by a reaction to a blow, and a `then` follow-up that could not land before the next move's answer is due is not played.
+- **For the animation side.** The lead's answer clips start on the press, so the blow can land only 0.06 s later (`kChoreoLeadLag`): a clip whose impact offset is longer than that starts partway through its windup, at up to 1.35 times speed. Author the lead's answer clips with the blow within about 60 ms of their start, or the lead's windup is skipped every time.
+
 ## Not yet
 
 - No story step opens the map, and the track's music cue has no recording: the metronome stands in.

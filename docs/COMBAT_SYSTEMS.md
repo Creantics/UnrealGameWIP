@@ -226,6 +226,10 @@ The full rules are in `BeatBoss.h`.
 - a loop whose bars don't sum to its seconds
 - a miss cost over 35%
 
+### Choreography
+
+`ftcore::BeatChoreo` (`BeatChoreo.h`, [BEAT_BOSS_DEMO.md](BEAT_BOSS_DEMO.md#choreography)) turns the fight into a cinematic fight scene. It reads the boss's events and schedules the lead's and boss's animation clips, the camera cuts and the on-screen prompts from per-move data, with each blow landing on its beat. `BeatBoss` stays the judge, and its rules and results do not change.
+
 ### Autopilot and balance
 
 `BeatBoss::autopilot()` presses every prompt on its impact, holds each guard through its impact, and lets go of holds at their end. The `qteAutoComplete` assist lets it play the fight. The tests require the following:
