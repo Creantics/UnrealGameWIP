@@ -78,15 +78,16 @@ int32 UFTBuildBattleDemoCommandlet::Main(const FString& /*Params*/)
 	Floor->SetActorScale3D(FVector(40, 40, 1));
 	Floor->SetActorLabel(TEXT("Floor"));
 
-	// Sun from behind the camera's left shoulder, so both lines are lit from the front.
-	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, FRotator(-40, 25, 0));
+	// Sun from behind the camera's left shoulder (the camera looks along +Y from behind the party), so the enemies'
+	// faces and the party's backs are both lit.
+	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, FRotator(-40, 110, 0));
 
 	// The battle at the origin; its own camera frames the fight once play starts.
 	AFTBattleDemoActor* Battle = World->SpawnActor<AFTBattleDemoActor>(FVector::ZeroVector, FRotator::ZeroRotator, Spawn);
 	Battle->SetActorLabel(TEXT("BattleDemo"));
 
-	// The pawn spawns where the battle camera is, looking the same way.
-	APlayerStart* Start = World->SpawnActor<APlayerStart>(FVector(-1000, 0, 200), FRotator(0, 0, 0), Spawn);
+	// The pawn spawns where the battle camera starts, looking the same way.
+	APlayerStart* Start = World->SpawnActor<APlayerStart>(FVector(-10, -750, 200), FRotator(0, 90, 0), Spawn);
 	Start->SetActorLabel(TEXT("PlayerStart"));
 
 	FAssetRegistryModule::AssetCreated(World);

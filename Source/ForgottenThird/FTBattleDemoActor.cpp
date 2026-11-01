@@ -15,6 +15,7 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "InputCoreTypes.h"
 #include "Materials/MaterialInterface.h"
+#include "Math/RotationMatrix.h"
 #include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
@@ -222,12 +223,13 @@ AFTBattleDemoActor::AFTBattleDemoActor()
 	Battle->Tuning.Lockout = Tuning.lockout;
 	Battle->Tuning.StartingAp = Tuning.startingAp;
 
-	// Looking along +X at the two lines: the party on the left (-Y), the enemies on the right (+Y).
+	// The two lines face each other along +Y, the party at -Y. The camera starts behind the party; once play begins
+	// ftcore::BattleCamera places it every frame (TickCamera).
 	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
 	Camera->SetupAttachment(Root);
-	Camera->SetRelativeLocation(FVector(-1000.0, 0.0, 380.0));
-	Camera->SetRelativeRotation(FRotator(-13.0, 0.0, 0.0));
-	Camera->SetFieldOfView(60.f);
+	Camera->SetRelativeLocation(FVector(-10.0, -750.0, 310.0));
+	Camera->SetRelativeRotation(FRotator(-8.0, 90.0, 0.0));
+	Camera->SetFieldOfView(62.f);
 
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cylinder(TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Sphere(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
@@ -257,6 +259,11 @@ void AFTBattleDemoActor::BeginPlay()
 	{
 		bAutoPlay = true;
 		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: -BattleShot=%s: five views, then quit."), *ShotPrefix);
+	}
+	if (FParse::Value(FCommandLine::Get(), TEXT("BattleCamShot="), CamShotPrefix, false) && !CamShotPrefix.IsEmpty())
+	{
+		bAutoPlay = true;
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: -BattleCamShot=%s: the camera's views, then quit."), *CamShotPrefix);
 	}
 	// So does the story's, when it hands a fight here.
 	bool bStoryAutoPlay = false;
@@ -466,6 +473,8 @@ void AFTBattleDemoActor::StartRound()
 	CacheText();
 	RefreshNextSkills();
 	ResetFigures();
+	CameraDirector.begin(CameraFigures);
+	CameraWall = -1.0;
 
 	if (AFTPlayerController* PC = GetPlayer())
 	{
@@ -514,13 +523,10 @@ void AFTBattleDemoActor::BuildFigures()
 		const int32 Slot = bParty ? Id : Id - PartyCount;
 		FFigure& F = Figures[Id];
 		F.Color = bParty ? kPartyColors[Slot % UE_ARRAY_COUNT(kPartyColors)] : kEnemyColors[Slot % UE_ARRAY_COUNT(kEnemyColors)];
-		// Two staggered rows facing each other across the middle of the screen. A third enemy gets a
-		// tighter stagger so the row stays in frame, and a fourth and fifth (ftcore::kMaxLineupEnemies)
-		// tighter still.
-		const int32 EnemyCount = Battle->Enemies.Num();
-		const double EnemyStepX = EnemyCount > 3 ? 105.0 : EnemyCount > 2 ? 140.0 : 180.0;
-		const double EnemyStepY = EnemyCount > 3 ? 70.0 : EnemyCount > 2 ? 95.0 : 130.0;
-		F.Home = bParty ? FVector(-80.0 + 180.0 * Slot, -400.0 + 130.0 * Slot, 0.0) : FVector(-80.0 + EnemyStepX * Slot, 360.0 + EnemyStepY * Slot, 0.0);
+		// Two staggered rows facing each other along +Y, the party at -Y; the camera looks over the party at the
+		// enemies. Where they stand is Core's (ftcore::stageHome), which the camera tests use too.
+		const ftcore::CamVec Home = ftcore::stageHome(bParty, static_cast<size_t>(Slot), static_cast<size_t>(Battle->Enemies.Num()));
+		F.Home = FVector(Home.x, Home.y, Home.z);
 		F.FallSign = bParty ? 1.f : -1.f;
 
 		F.Pivot = NewObject<USceneComponent>(this);
@@ -584,6 +590,19 @@ void AFTBattleDemoActor::BuildFigures()
 			F.Body = MakePart(EnemyMesh, FVector(0, 0, 50.f * Size), FVector(Size));
 			F.Head = nullptr;
 		}
+	}
+
+	// The same figures for the camera director, at rest, in world space: a lead is about 90 cm across, an enemy a cube.
+	CameraFigures.assign(static_cast<size_t>(Count), ftcore::CameraFigure());
+	for (int32 Id = 0; Id < Count; ++Id)
+	{
+		const FFigure& F = Figures[Id];
+		const FVector At = GetActorLocation() + F.Home;
+		ftcore::CameraFigure& C = CameraFigures[static_cast<size_t>(Id)];
+		C.pos = {At.X, At.Y, At.Z};
+		C.party = Id < PartyCount;
+		C.height = F.Height;
+		C.radius = C.party ? 45.0 : F.Height * 0.55;
 	}
 }
 
@@ -682,9 +701,16 @@ FVector AFTBattleDemoActor::GetFigurePoint(int32 Id, float X, float Y) const
 	{
 		return GetActorLocation();
 	}
-	// The camera looks along +X, so screen-right is +Y.
+	// Across is the camera's own right, flat: the weak points and the reticle are laid out for the view the player has.
+	const ftcore::BattleCameraPose& View = CameraDirector.pose();
+	FVector Right(-(View.look.y - View.eye.y), View.look.x - View.eye.x, 0.0);
+	Right = Right.GetSafeNormal();
+	if (Right.IsNearlyZero())
+	{
+		Right = FVector(1.0, 0.0, 0.0);
+	}
 	const float H = Figures[Id].Height;
-	return Figures[Id].Pivot->GetComponentTransform().TransformPosition(FVector(0, X * H, Y * H));
+	return Figures[Id].Pivot->GetComponentLocation() + Right * (X * H) + FVector(0.0, 0.0, Y * H);
 }
 
 float AFTBattleDemoActor::GetFigureHeight(int32 Id) const
@@ -1497,6 +1523,11 @@ void AFTBattleDemoActor::TickAutoPlay(float DeltaSeconds)
 	}
 	if (B->phase() == ftcore::Phase::AwaitingCommand)
 	{
+		// -BattleCamShot keeps the command open for the camera's views (and may pick the target or the Aim row itself).
+		if (CameraShotHolds())
+		{
+			return;
+		}
 		// The Turns demo: Take Half first when the party's Torn is uneven (ftcore::demo::pilotTakeHalf).
 		if (bTurnsDemo && !bIdlePilot)
 		{
@@ -1553,6 +1584,10 @@ void AFTBattleDemoActor::TickAutoPlay(float DeltaSeconds)
 			const float K = FMath::Clamp(static_cast<float>(DeltaSeconds) * 8.f, 0.f, 1.f);
 			Battle->SetReticle(FVector2D(At.x + (Want.x - At.x) * K, At.y + (Want.y - At.y) * K));
 			return;
+		}
+		if (!CamShotPrefix.IsEmpty() && !(CamShotMask & 8))
+		{
+			return; // under -BattleCamShot the shot waits for the Aim view
 		}
 		Battle->SetReticle(FVector2D(Want.x, Want.y));
 		Battle->FireAtTime(Now);
@@ -1731,6 +1766,212 @@ void AFTBattleDemoActor::TakeShot(const TCHAR* Name, uint8 Bit)
 	UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: view %s."), *File);
 	ShotMask |= Bit;
 	ShotLastWall = Wall();
+}
+
+void AFTBattleDemoActor::TickCamera()
+{
+	const ftcore::Battle* B = Battle->GetBattle();
+	const double Now = Wall();
+	// The pause-aware clock: the camera stands still with the rest of the battle while the pause menu is up.
+	const double Dt = CameraWall < 0.0 ? 0.0 : Now - CameraWall;
+	CameraWall = Now;
+	if (!B || CameraFigures.size() != B->combatants().size())
+	{
+		return;
+	}
+	for (size_t Id = 0; Id < CameraFigures.size(); ++Id)
+	{
+		CameraFigures[Id].alive = B->combatant(static_cast<ftcore::CombatantId>(Id)).alive();
+	}
+	ftcore::CameraCue Cue;
+	Cue.phase = B->phase();
+	Cue.actor = static_cast<int>(B->actor());
+	switch (Cue.phase)
+	{
+	case ftcore::Phase::AwaitingCommand:
+	{
+		// A skill that hits every enemy frames the whole line; the Aim row and the rest frame the picked enemy.
+		const ftcore::Combatant& Actor = B->combatant(B->actor());
+		const bool bAll = SelectedSkill >= 0 && static_cast<size_t>(SelectedSkill) < Actor.skills.size()
+			&& Actor.skills[static_cast<size_t>(SelectedSkill)].targeting == ftcore::Targeting::AllEnemies;
+		Cue.target = bAll ? -1 : SelectedTarget;
+		break;
+	}
+	case ftcore::Phase::PartyAim:
+		Cue.target = static_cast<int>(B->aimTarget());
+		break;
+	case ftcore::Phase::PartySkill:
+		Cue.target = B->activeTargets().size() == 1 ? static_cast<int>(B->activeTargets().front()) : -1;
+		break;
+	case ftcore::Phase::EnemySkill:
+	{
+		// The camera leans toward whoever takes the hit: the interceptor while an Intercept is held.
+		const std::optional<ftcore::CombatantId> Interceptor = B->defence().intercepting() ? B->interceptor() : std::nullopt;
+		Cue.defender = static_cast<int>(Interceptor ? *Interceptor : B->defender());
+		break;
+	}
+	default:
+		break;
+	}
+	CameraDirector.update(Dt, Cue, CameraFigures);
+
+	const ftcore::BattleCameraPose& Pose = CameraDirector.pose();
+	const FVector Eye(Pose.eye.x, Pose.eye.y, Pose.eye.z);
+	const FVector Look(Pose.look.x, Pose.look.y, Pose.look.z);
+	Camera->SetWorldLocationAndRotation(Eye, FRotationMatrix::MakeFromX(Look - Eye).Rotator());
+	Camera->SetFieldOfView(static_cast<float>(Pose.fov));
+}
+
+bool AFTBattleDemoActor::CameraShotHolds()
+{
+	const ftcore::Battle* B = Battle->GetBattle();
+	if (CamShotPrefix.IsEmpty() || !B)
+	{
+		return false;
+	}
+	const double Now = Wall();
+	const int32 Actor = static_cast<int32>(B->actor());
+	if (CamChooseWall < 0.0 || CamChooseActor != Actor)
+	{
+		CamChooseWall = Now;
+		CamChooseActor = Actor;
+		CamTargetWall = -1.0;
+	}
+	if (Now - CamShotLastWall < 0.6)
+	{
+		return true; // a view was just written
+	}
+	// The camera has settled into the choosing shot on this lead.
+	const bool bSettled = Now - CamChooseWall > 1.0 && CameraDirector.shot() == ftcore::CameraShot::Choose
+		&& CameraDirector.shotActor() == Actor && CameraDirector.blend() >= 1.0;
+	if (!(CamShotMask & 1))
+	{
+		if (bSettled)
+		{
+			CamFirstActor = Actor;
+			TakeCameraShot(TEXT("1_choose"), 1);
+		}
+		return true;
+	}
+	if (!(CamShotMask & 2) && Actor == CamFirstActor)
+	{
+		// The player moves the pick to the last living enemy; the camera reframes so it shows past the shoulder.
+		if (CamTargetWall < 0.0)
+		{
+			const int32 First = SelectedTarget;
+			CycleTarget(-1);
+			CamTargetWall = Now;
+			UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: camera view: target %d -> %d."), First, SelectedTarget);
+		}
+		else if (Now - CamTargetWall > 1.0 && bSettled)
+		{
+			TakeCameraShot(TEXT("2_target"), 2);
+		}
+		return true;
+	}
+	if (Actor == CamFirstActor)
+	{
+		return false; // this lead has had its views: let the autopilot play the turn
+	}
+	if (!(CamShotMask & 4))
+	{
+		if (bSettled)
+		{
+			TakeCameraShot(TEXT("3_ally"), 4);
+		}
+		return true;
+	}
+	if (!(CamShotMask & 8) && CamAimWall < 0.0 && B->combatant(B->actor()).ap >= Battle->Tuning.AimApCost)
+	{
+		// Take the Aim row for this one turn: the autopilot glides the reticle, and TickCameraShots writes the view.
+		SelectedSkill = GetAimRow();
+		UseSelected();
+		if (B->phase() == ftcore::Phase::PartyAim)
+		{
+			CamAimWall = Now;
+			return true;
+		}
+	}
+	return false;
+}
+
+void AFTBattleDemoActor::TickCameraShots()
+{
+	const ftcore::Battle* B = Battle->GetBattle();
+	if (CamShotPrefix.IsEmpty() || !B)
+	{
+		return;
+	}
+	const double Now = Wall();
+	if (CamShotStartWall < 0.0)
+	{
+		CamShotStartWall = Now;
+	}
+	if (B->phase() != ftcore::Phase::AwaitingCommand && B->phase() != ftcore::Phase::PartyAim)
+	{
+		CamChooseWall = -1.0;
+	}
+	constexpr uint8 kAll = 127;
+	const bool bOver = Battle->IsBattleOver();
+	if (CamShotMask == kAll || Now - CamShotStartWall > 300.0 || (bOver && (CamShotMask & 64)))
+	{
+		if (CamShotMask != kAll)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("BattleDemo: only camera views %d of 127 came; quitting."), CamShotMask);
+		}
+		if (Now - CamShotLastWall > 1.0) // the last view is written first
+		{
+			CamShotPrefix.Reset();
+			FPlatformMisc::RequestExit(false, TEXT("BattleDemo"));
+		}
+		return;
+	}
+	if (Now - CamShotStartWall < 3.0 || Now - CamShotLastWall < 0.6)
+	{
+		return;
+	}
+	const double PhaseAge = Battle->GetBattleTime() - B->phaseStart();
+	const bool bSettled = CameraDirector.blend() >= 1.0;
+	if (bOver)
+	{
+		if (!(CamShotMask & 64) && bSettled && CameraDirector.shot() == ftcore::CameraShot::Wide && Now - OutcomeWall > 1.0)
+		{
+			TakeCameraShot(TEXT("7_outcome"), 64);
+		}
+	}
+	else if (!(CamShotMask & 8) && B->phase() == ftcore::Phase::PartyAim)
+	{
+		if (bSettled && CameraDirector.shot() == ftcore::CameraShot::Aim && PhaseAge > 0.7)
+		{
+			TakeCameraShot(TEXT("4_aim"), 8);
+		}
+	}
+	else if (!(CamShotMask & 16) && B->phase() == ftcore::Phase::PartySkill && Battle->IsComboActive())
+	{
+		if (bSettled && CameraDirector.shot() == ftcore::CameraShot::Behind && PhaseAge > 1.0)
+		{
+			TakeCameraShot(TEXT("5_party"), 16);
+		}
+	}
+	else if (!(CamShotMask & 32) && Battle->IsDefenceActive() && B->readCards().dealt())
+	{
+		if (bSettled && CameraDirector.shot() == ftcore::CameraShot::Behind && PhaseAge > 0.9)
+		{
+			TakeCameraShot(TEXT("6_enemy"), 32);
+		}
+	}
+}
+
+void AFTBattleDemoActor::TakeCameraShot(const TCHAR* Name, uint8 Bit)
+{
+	const FString File = FString::Printf(TEXT("%s_%s.png"), *CamShotPrefix, Name);
+	if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
+	{
+		Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *File), *GLog);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: camera view %s."), *File);
+	CamShotMask |= Bit;
+	CamShotLastWall = Wall();
 }
 
 void AFTBattleDemoActor::TickAimInput(float DeltaSeconds)
@@ -1928,6 +2169,7 @@ void AFTBattleDemoActor::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	TickShots();
+	TickCameraShots();
 	if (bAutoPlay)
 	{
 		TickAutoPlay(DeltaSeconds);
@@ -1951,4 +2193,5 @@ void AFTBattleDemoActor::Tick(float DeltaSeconds)
 		bQKeyDown = false;
 	}
 	TickFigures(Wall());
+	TickCamera();
 }

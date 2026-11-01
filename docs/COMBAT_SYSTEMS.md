@@ -250,7 +250,7 @@ These are numbered as in [COMBAT_REFERENCE_STUDY.md](COMBAT_REFERENCE_STUDY.md):
 
 Each battle type has a demo fight that plays on its own map, with the mannequin standing in for the leads:
 
-- **Turns:** `BattleDemo` with `-BattleLineup=turns`, a fight that uses every Turns verb: Guard and Release, Intercept, Take Half and the Read cards ([BATTLE_DEMO.md](BATTLE_DEMO.md), "Turns demo").
+- **Turns:** `BattleDemo` with `-BattleLineup=turns`, a fight that uses every Turns verb: Guard and Release, Intercept, Take Half and the Read cards ([BATTLE_DEMO.md](BATTLE_DEMO.md), "Turns demo"). The camera goes over the shoulder of the lead who is choosing and sits behind the party while an action or an enemy attack runs ([BATTLE_DEMO.md](BATTLE_DEMO.md), "Camera").
 - **Arena:** `Demo_Arena` ([ARENA_DEMO.md](ARENA_DEMO.md)).
 - **Beat:** `Demo_BeatBoss`, the synthetic test track played as a beat boss with a metronome in place of music ([BEAT_BOSS_DEMO.md](BEAT_BOSS_DEMO.md)).
 

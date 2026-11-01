@@ -34,6 +34,7 @@ add_library(ftcore STATIC
     src/Backlog.cpp
     src/Banter.cpp
     src/Battle.cpp
+    src/BattleCamera.cpp
     src/Calibration.cpp
     src/ComboGenerator.cpp
     src/ActionButton.cpp
@@ -126,6 +127,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_backlog.cpp
         tests/test_banter.cpp
         tests/test_battle.cpp
+        tests/test_battle_camera.cpp
         tests/test_turns_verbs.cpp
         tests/test_read_cards.cpp
         tests/test_turns_demo.cpp

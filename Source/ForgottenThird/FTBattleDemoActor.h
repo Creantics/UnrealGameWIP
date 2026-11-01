@@ -15,6 +15,11 @@
 // that flash or squash on hits and fall over when downed, frames the fight with its camera and turns the player controller's battle
 // input into commands and presses. AFTBattleHUD draws the UI from the getters below.
 //
+// The camera is directed by ftcore::BattleCamera (Core): over the shoulder of the party member who is choosing (the picked
+// enemy past it), from behind the party, low, while an action runs (the enemy turn's defence included), a wide shot from
+// behind and above for the outcome. This actor feeds it the phase, the actor, the defender and the menu's target each frame
+// and places the camera component at its pose; see docs/BATTLE_DEMO.md, "Camera".
+//
 // Command menu (phase AwaitingCommand): Up/Down pick the skill, Left/Right or Tab/Q/E the target,
 // Enter/Space/pad A use it; 1-4 use a skill at once. The row after the skills is Aim (also F, the
 // right mouse button or pad LT): the reticle moves with the mouse, either stick or the held arrows,
@@ -48,6 +53,7 @@
 #include "FTBattleComponent.h"
 #include "FTComboComponent.h"
 
+#include "ftcore/BattleCamera.h"
 #include "ftcore/BattleDemo.h"
 #include "ftcore/Encounter.h"
 #include "ftcore/WeakPoint.h"
@@ -156,10 +162,13 @@ public:
 	bool IsWaitingForRestart() const { return bWaitingForRestart; }
 	// After a loss in a story fight: the screen offers Retry and Quit to title.
 	bool CanQuitToTitle() const { return bCanQuitToTitle; }
+	// The camera director's shot now, and the party member it is on (-1 when none).
+	ftcore::CameraShot GetCameraShot() const { return CameraDirector.shot(); }
+	int32 GetCameraActor() const { return CameraDirector.shotActor(); }
 	// World position above a combatant's figure (for markers and numbers).
 	FVector GetFigureTop(int32 Id) const;
 	// World position of a point in figure space (ftcore/WeakPoint.h: X across in figure heights,
-	// screen-right positive; Y up from the feet).
+	// screen-right positive for the camera's current view; Y up from the feet).
 	FVector GetFigurePoint(int32 Id, float X, float Y) const;
 	float GetFigureHeight(int32 Id) const;
 	// 0..1, high right after the figure was hit.
@@ -232,6 +241,16 @@ private:
 	// -RenderOffScreen (the HUD is drawn into the shot).
 	void TickShots();
 	void TakeShot(const TCHAR* Name, uint8 Bit);
+	// The camera: builds the cue from the battle and the menu, lets ftcore::BattleCamera move, and places the component.
+	void TickCamera();
+	// -BattleCamShot=<prefix>: saves the camera's views (<prefix>_1_choose.png: the lead choosing, 2_target: the target
+	// pick, 3_ally: the other lead choosing, 4_aim, 5_party: a party action, 6_enemy: an enemy attack with its Read cards,
+	// 7_outcome) with HighResShot, holding each party command open until its view is taken, then quits. It implies
+	// -BattleAutoPlay and needs a renderer (-RenderOffScreen).
+	void TickCameraShots();
+	void TakeCameraShot(const TCHAR* Name, uint8 Bit);
+	// Under -BattleCamShot: true while the autopilot should leave the command open (and may pick the target or the Aim row).
+	bool CameraShotHolds();
 	// The autopilot's Guard-mode hold (ftcore::demo::pilotHold through the component): lets go of a
 	// hold whose hit has come, then begins Hold (Guard or Intercept) at the next hit's ideal time when
 	// it is due by Horizon, unless bAnswer is false.
@@ -304,6 +323,11 @@ private:
 	TArray<TObjectPtr<UObject>> FigureObjects;
 	TArray<FFigure> Figures;
 
+	// The camera director (Core) and the figures as it sees them (rest positions), indexed by combatant id.
+	ftcore::BattleCamera CameraDirector;
+	std::vector<ftcore::CameraFigure> CameraFigures;
+	double CameraWall = -1.0;
+
 	TArray<FString> Names;
 	TArray<FString> HpTexts;
 	TArray<int32> HpShown;
@@ -362,6 +386,17 @@ private:
 	double ShotStartWall = -1.0;
 	double ShotLastWall = -100.0;
 	double ReadShotWall = -100.0;
+	// -BattleCamShot: the prefix, the views taken (bits), when the run began and the last view; the command held open
+	// (when it began, who is choosing, the target pick's start).
+	FString CamShotPrefix;
+	uint8 CamShotMask = 0;
+	double CamShotStartWall = -1.0;
+	double CamShotLastWall = -100.0;
+	double CamChooseWall = -1.0;
+	int32 CamChooseActor = -1;
+	int32 CamFirstActor = -1;
+	double CamTargetWall = -1.0;
+	double CamAimWall = -1.0;
 	// Guard holds begun this round (the player's and the autopilot's), for the TURNS RESULT line.
 	int32 GuardHolds = 0;
 
