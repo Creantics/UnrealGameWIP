@@ -28,9 +28,9 @@ constexpr float kArenaWalkFrom = 0.6f;
 const FLinearColor kArenaBlade(0.75f, 0.78f, 0.82f);
 const FLinearColor kArenaShield(0.32f, 0.36f, 0.42f);
 const FLinearColor kArenaShieldParry(1.f, 0.85f, 0.3f);
-const FLinearColor kArenaTellBlock(1.f, 0.55f, 0.1f);
-const FLinearColor kArenaTellDodge(1.f, 0.12f, 0.08f);
-const FLinearColor kArenaTellFlash(1.f, 1.f, 0.85f);
+const FLinearColor kFighterTellBlock(1.f, 0.55f, 0.1f);
+const FLinearColor kFighterTellDodge(1.f, 0.12f, 0.08f);
+const FLinearColor kFighterTellFlash(1.f, 1.f, 0.85f);
 
 // The arm at rest: the blade held low and a little to the right of straight ahead.
 const FRotator kArenaArmRest(-60.0, 20.0, 0.0);
@@ -41,7 +41,7 @@ float ArenaEase(float T)
 	return T * T * (3.f - 2.f * T);
 }
 
-FRotator ArenaLerp(const FRotator& A, const FRotator& B, float T)
+FRotator FighterLerp(const FRotator& A, const FRotator& B, float T)
 {
 	return FRotator(FMath::Lerp(A.Pitch, B.Pitch, static_cast<double>(T)), FMath::Lerp(A.Yaw, B.Yaw, static_cast<double>(T)),
 		FMath::Lerp(A.Roll, B.Roll, static_cast<double>(T)));
@@ -301,21 +301,21 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 		switch (static_cast<ftcore::ArenaPart>(Pose.Part))
 		{
 		case ftcore::ArenaPart::Startup:
-			ArmRotation = ArenaLerp(kArenaArmRest, Wound, T);
+			ArmRotation = FighterLerp(kArenaArmRest, Wound, T);
 			if (Pose.Swing == EFTArenaSwing::Thrust)
 			{
 				ArmReach.X = -30.f * T;
 			}
 			break;
 		case ftcore::ArenaPart::Active:
-			ArmRotation = ArenaLerp(Wound, Through, T);
+			ArmRotation = FighterLerp(Wound, Through, T);
 			if (Pose.Swing == EFTArenaSwing::Thrust)
 			{
 				ArmReach.X = FMath::Lerp(-30.f, 45.f, T);
 			}
 			break;
 		case ftcore::ArenaPart::Recovery:
-			ArmRotation = ArenaLerp(Through, kArenaArmRest, T);
+			ArmRotation = FighterLerp(Through, kArenaArmRest, T);
 			if (Pose.Swing == EFTArenaSwing::Thrust)
 			{
 				ArmReach.X = FMath::Lerp(45.f, 0.f, T);
@@ -377,8 +377,8 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 		}
 		if (TellMaterial)
 		{
-			const FLinearColor Base = Pose.bTellUnblockable ? kArenaTellDodge : kArenaTellBlock;
-			const FLinearColor Color = FMath::Lerp(Base, kArenaTellFlash, FMath::Clamp(Pose.TellFlash, 0.f, 1.f));
+			const FLinearColor Base = Pose.bTellUnblockable ? kFighterTellDodge : kFighterTellBlock;
+			const FLinearColor Color = FMath::Lerp(Base, kFighterTellFlash, FMath::Clamp(Pose.TellFlash, 0.f, 1.f));
 			if (!ArenaSameColor(Color, LastTell))
 			{
 				LastTell = Color;

@@ -98,7 +98,7 @@ float ArenaPartFraction(const ftcore::ArenaAttack& Attack, ftcore::ArenaPart Par
 }
 
 // 1 at Time, falling to 0 over Life seconds.
-float ArenaPulse(double Now, double Time, double Life)
+float ArenaModePulse(double Now, double Time, double Life)
 {
 	const double Age = Now - Time;
 	return (Age >= 0.0 && Age < Life) ? static_cast<float>(1.0 - Age / Life) : 0.f;
@@ -732,7 +732,7 @@ void AFTArenaGameMode::PlaceFigures(float Alpha)
 		{
 			Pose.Tint = FMath::Lerp(Pose.Tint, FLinearColor(0.85f, 0.95f, 1.f), 0.45f);
 		}
-		Pose.Tint = FMath::Lerp(Pose.Tint, FLinearColor(1.f, 0.2f, 0.15f), ArenaPulse(Now, PlayerHitTime, kArenaHitTint));
+		Pose.Tint = FMath::Lerp(Pose.Tint, FLinearColor(1.f, 0.2f, 0.15f), ArenaModePulse(Now, PlayerHitTime, kArenaHitTint));
 		PlayerFigure->ApplyPose(Pose);
 	}
 
@@ -761,7 +761,7 @@ void AFTArenaGameMode::PlaceFigures(float Alpha)
 				Pose.PartFraction = ArenaPartFraction(Move.attack, E.part, E.stateTime);
 				Pose.Swing = (!Move.parryable || Move.unblockable) ? EFTArenaSwing::Overhead
 					: ((E.move % 2) == 0 ? EFTArenaSwing::Across : EFTArenaSwing::Backhand);
-				const float Flash = ArenaPulse(Now, ActiveSince[I], kArenaTellFlash);
+				const float Flash = ArenaModePulse(Now, ActiveSince[I], kArenaTellFlash);
 				if (E.part == ftcore::ArenaPart::Startup || Flash > 0.f)
 				{
 					Pose.TellReach = (Move.attack.range + D.fighter.bodyRadius) * 100.f;
@@ -793,7 +793,7 @@ void AFTArenaGameMode::PlaceFigures(float Alpha)
 		}
 		if (E.brain != ftcore::ArenaBrain::Dead)
 		{
-			Pose.Tint = FMath::Lerp(Pose.Tint, kArenaHitColor, ArenaPulse(Now, EnemyHitTime[I], kArenaHitTint));
+			Pose.Tint = FMath::Lerp(Pose.Tint, kArenaHitColor, ArenaModePulse(Now, EnemyHitTime[I], kArenaHitTint));
 		}
 		Figure->ApplyPose(Pose);
 	}
