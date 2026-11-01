@@ -11,7 +11,7 @@ public class ForgottenThird : ModuleRules
 	
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "ForgottenCore", "Niagara", "PhysicsCore", "CinematicCamera", "NavigationSystem" });
 
-		PrivateDependencyModuleNames.AddRange(new string[] {  });
+		PrivateDependencyModuleNames.AddRange(new string[] { "AudioExtensions" });
 
 		// The game reads its JSON data (story, face presets, emotion map) from the project's Data/
 		// folder at run time. Stage it next to the packaged game at the same relative path.
