@@ -42,6 +42,8 @@ static_assert(static_cast<int>(EFTBattleEventType::Overloaded) == static_cast<in
 static_assert(static_cast<int>(EFTBattleEventType::Released) == static_cast<int>(ftcore::EventType::Released));
 static_assert(static_cast<int>(EFTBattleEventType::TornApplied) == static_cast<int>(ftcore::EventType::TornApplied));
 static_assert(static_cast<int>(EFTBattleEventType::HalfTaken) == static_cast<int>(ftcore::EventType::HalfTaken));
+static_assert(static_cast<int>(EFTBattleEventType::CardsDealt) == static_cast<int>(ftcore::EventType::CardsDealt));
+static_assert(static_cast<int>(EFTBattleEventType::CardPicked) == static_cast<int>(ftcore::EventType::CardPicked));
 static_assert(static_cast<int>(EFTCommandError::None) == static_cast<int>(ftcore::CommandError::None));
 static_assert(static_cast<int>(EFTCommandError::WrongPhase) == static_cast<int>(ftcore::CommandError::WrongPhase));
 static_assert(static_cast<int>(EFTCommandError::NoSuchSkill) == static_cast<int>(ftcore::CommandError::NoSuchSkill));
@@ -431,6 +433,31 @@ int32 UFTBattleComponent::GetInterceptor() const
 		return -1;
 	}
 	const std::optional<ftcore::CombatantId> Who = Battle->interceptor();
+	return Who ? static_cast<int32>(*Who) : -1;
+}
+
+EFTCommandError UFTBattleComponent::PickCard(int32 Card)
+{
+	if (!Battle)
+	{
+		return EFTCommandError::WrongPhase;
+	}
+	if (Card < 0)
+	{
+		return EFTCommandError::InvalidTarget;
+	}
+	const ftcore::CommandError Err = Battle->pickCard(static_cast<std::size_t>(Card), InputNow());
+	Flush();
+	return static_cast<EFTCommandError>(Err);
+}
+
+int32 UFTBattleComponent::GetReader() const
+{
+	if (!Battle)
+	{
+		return -1;
+	}
+	const std::optional<ftcore::CombatantId> Who = Battle->reader();
 	return Who ? static_cast<int32>(*Who) : -1;
 }
 

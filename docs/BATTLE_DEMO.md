@@ -38,6 +38,7 @@ unchanged.
 | Intercept for the defender (enemy turn, held through the hit) | I | LB |
 | Release (the member's turn) | R | RT |
 | Take Half with an ally (the member's turn) | T | Left-stick click |
+| Read card 1, 2 or 3 (enemy turn, up to the first hit) | 1, 2, 3 | Left stick flicked left, up, right |
 | Choose a skill (menu) | Up / Down, or 1-4 to use at once | D-pad up / down |
 | Choose a target (menu) | Left / Right, Q / E, Tab | D-pad left / right, shoulders |
 | Use the skill (menu) | Enter or Space | A |
@@ -187,6 +188,33 @@ share); Load alone never moves it, and the Parry and Dodge gates never use these
 adds an Intercept key to the defence row when someone can take the attack, intercept pips in gold
 (perfect) or cyan (held), a TORN tag with a red pip per turn left on a party panel, and the Load
 gauge on any member that holds Load. The layout is not yet checked on screen.
+
+### Read cards
+
+- **Read** (`Verb::Read`; in the demo the second lead's) deals cards as each enemy attack starts
+  (`ReadCards.h`). The pool is every action of every living enemy; each card is an action and its
+  tell (`tellOf`: the skill's optional `"tellId"` in `Data/Battle/enemies.json`, 1 to 64
+  characters, else its name). Up to `kReadCards` (3) are dealt: the coming action's card once, and
+  decoys whose tells differ from it and from each other (2 cards when only two tells exist, none
+  with one tell or no reader). The deal draws from `BattleTuning::seed` and a count of deals, so the
+  same battle deals the same cards, and the right card lands in any place. `CardsDealt` says it
+  (source = the enemy, target = the reader, amount = the cards); `Battle::readCards()` holds them.
+- **Picking** (`Battle::pickCard(i, now)`; 1 to 3, or a left-stick flick) is open once per attack,
+  up to the first hit's impact. The right card (`CardPicked`, grade Perfect, "READ", amount = the
+  stacks) adds a stack (`Combatant::readStacks`, up to `kMaxReadStacks`, 5) and, as the attack
+  ends and whatever the defence did, the reader strikes the attacker once for free: a `Counter`
+  labelled "READ" at `BattleTuning::readPower` (0.5, half a parry counter) times 1 plus
+  `readStackPower` (0.2) per stack past the first, costing `counterPoise` poise. A wrong card
+  (grade Miss, "MISREAD") drops the stacks to 0 and gives the attacker `readWrongPoise` (10) poise
+  back, up to its max (poise is the enemies' alone; amount = what it got back). Refusals change
+  nothing: `WrongPhase` (no cards, already picked, past the first impact, a dead reader) and
+  `InvalidTarget` (no such card). `BattleStats::reads` and `correctReads` count the picks.
+
+In Guard mode the autopilot reads every attack (a shaky pilot misreads at its defence rate, taking
+the next card); the Parry and Dodge gates never read. The Unreal demo banners the tell in place of
+the action's name, draws the cards under the enemy banner (the right one framed gold once picked, a
+wrong pick red), hides the enemies' next skills in the turn order while a reader lives, and its
+autopilot reads too. The layout is not yet checked on screen.
 
 ## From the exploration demo
 

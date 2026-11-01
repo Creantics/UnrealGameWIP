@@ -124,6 +124,13 @@ enum class EFTBattleEventType : uint8
 	// Take Half, one per member, the actor's first: Source = the actor, Target = the member, Amount =
 	// the HP it healed.
 	HalfTaken,
+	// Read: Amount cards were dealt (GetBattle()->readCards()) for the enemy attack that just started;
+	// Source = the enemy, Target = the reader.
+	CardsDealt,
+	// Read: Source (the reader) picked card Beat against Target (the enemy). Grade Perfect, Label
+	// "READ", Amount = its stacks: the right card (the Read counter comes as the attack ends). Grade
+	// Miss, Label "MISREAD", Amount = the poise the enemy got back: a wrong one.
+	CardPicked,
 };
 
 // Same order as ftcore::CommandError.
@@ -582,6 +589,13 @@ public:
 	// defender; -1 when there is none (the defender is a child, or no one else has the verb).
 	UFUNCTION(BlueprintPure, Category = "Battle")
 	int32 GetInterceptor() const;
+	// During an enemy attack whose cards are dealt, the reader picks card Card (0 to 2), once, up to
+	// the first hit's impact. WrongPhase: no cards, already picked or too late; InvalidTarget: no such card.
+	UFUNCTION(BlueprintCallable, Category = "Battle")
+	EFTCommandError PickCard(int32 Card);
+	// The party member with the Read verb who is dealt the cards; -1 when there is none.
+	UFUNCTION(BlueprintPure, Category = "Battle")
+	int32 GetReader() const;
 
 	// ---- aim (PartyAim) ----
 

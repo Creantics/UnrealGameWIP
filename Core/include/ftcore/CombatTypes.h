@@ -19,7 +19,7 @@ enum class Team { Party, Enemies };
 // block, perfect in the parry's window, that stores Load. Release: the command that spends Load.
 // Intercept (appended): Guard's hold, taken for another party member an enemy hit aims at. TakeHalf
 // (appended): the command that evens Load and Torn with an ally and heals both (Battle.h).
-enum class Verb : std::uint8_t { Guard, Release, Intercept, TakeHalf };
+enum class Verb : std::uint8_t { Guard, Release, Intercept, TakeHalf, Read };
 constexpr std::uint8_t verbBit(Verb v) { return static_cast<std::uint8_t>(1u << static_cast<unsigned>(v)); }
 
 struct Stats {
@@ -49,7 +49,13 @@ struct Skill {
     float difficulty = 2.0f;  // move complexity on the 0-10 combo rating scale
     AttackTimeline timeline;  // enemy skills: the hits to defend (default: one hit, kDefaultImpact s in)
     bool torn = false;        // enemy skills: a hit of it that lands in full leaves the defender Torn (Battle.h)
+    std::string tellId;       // enemy skills: the tell it shows, for Read cards (ReadCards.h); empty: its name
 };
+
+// The tell an enemy skill shows (Read cards): its tellId, else its name.
+inline std::string_view tellOf(const Skill& s) {
+    return s.tellId.empty() ? std::string_view(s.name) : std::string_view(s.tellId);
+}
 
 inline constexpr std::size_t kMaxEnemyPhases = 4;
 inline constexpr std::size_t kMaxPatternSteps = 8;
@@ -124,6 +130,7 @@ struct Combatant {
     bool child = false;     // party: a child; no one Intercepts a hit aimed at it (Battle.h)
     int tornTurns = 0;      // Torn: the turns of it left (0: not Torn); it ticks as each of its turns starts
     float tornShare = 0.0f; // Torn: the share of max HP each tick takes
+    int readStacks = 0;     // Read: correct Reads in a row, up to kMaxReadStacks (Battle.h)
     std::vector<Skill> skills;
     WeakPoints weakPoints; // enemies: what aim mode reveals (see WeakPoint.h); none by default
     EnemyPhases phases;    // enemies: the stages of its fight and the skill pattern of each; none by default

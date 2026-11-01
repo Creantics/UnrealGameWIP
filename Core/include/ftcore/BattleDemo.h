@@ -50,6 +50,12 @@ inline Skill withTimeline(Skill s, AttackTimeline t) {
     return s;
 }
 
+// The tell an enemy skill shows to a reader (Read cards).
+inline Skill withTell(Skill s, std::string_view tell) {
+    s.tellId = std::string(tell);
+    return s;
+}
+
 inline WeakPoint makeWeakPoint(std::string_view id, float x, float y, float radius, float multiplier) {
     WeakPoint w;
     w.setId(id);
@@ -86,7 +92,7 @@ inline constexpr std::array<const char*, 2> kPartyNames{"Devin", "Duy"};
 
 // Stats are {maxHp, attack, defense, speed, technique}, at level 1.
 // The first lead has the Guard, Release, Intercept and Take Half verbs (Load: Load.h; the rest:
-// Battle.h).
+// Battle.h), the second lead Read (ReadCards.h).
 inline std::vector<Combatant> partyAtLevel1() {
     const Skill strike = makeSkill("Strike", 0, 1, Targeting::SingleEnemy, 1.0f, 4, 1.0f);
     std::vector<Combatant> members{
@@ -101,6 +107,7 @@ inline std::vector<Combatant> partyAtLevel1() {
     };
     members[0].verbs =
         verbBit(Verb::Guard) | verbBit(Verb::Release) | verbBit(Verb::Intercept) | verbBit(Verb::TakeHalf);
+    members[1].verbs = verbBit(Verb::Read);
     return members;
 }
 
@@ -130,17 +137,17 @@ inline WeakPoints shadeWeakPoints() {
 inline std::vector<Combatant> enemies() {
     return {
         withWeakPoints(makeCombatant("Brute", {260, 18, 6, 8, 8},
-                      {withTimeline(makeSkill("Slam", 0, 0, Targeting::SingleEnemy, 1.3f, 3, 1.0f),
+                      {withTimeline(withTell(makeSkill("Slam", 0, 0, Targeting::SingleEnemy, 1.3f, 3, 1.0f), "winds_up"),
                                     makeTimeline({{1.6, 0.4, 1.2, 1.0f, false}})),
-                       withTimeline(makeSkill("Double Swipe", 0, 0, Targeting::SingleEnemy, 1.6f, 5, 2.5f),
+                       withTimeline(withTell(makeSkill("Double Swipe", 0, 0, Targeting::SingleEnemy, 1.6f, 5, 2.5f), "crouches_low"),
                                     makeTimeline({{0.9, 0.4, 0.0, 1.0f, false}, {1.4, 0.4, 0.0, 1.0f, false}}))}),
                        bruteWeakPoints()),
         withWeakPoints(makeCombatant("Shade", {180, 15, 3, 14, 14},
-                      {withTimeline(makeSkill("Flicker", 0, 0, Targeting::SingleEnemy, 1.6f, 5, 4.0f),
+                      {withTimeline(withTell(makeSkill("Flicker", 0, 0, Targeting::SingleEnemy, 1.6f, 5, 4.0f), "blurs"),
                                     makeTimeline({{0.8, 0.4, 0.0, 1.0f, false},
                                                   {1.1, 0.4, 0.0, 1.0f, false},
                                                   {1.4, 0.4, 0.0, 1.0f, false}})),
-                       withTimeline(makeSkill("Feint", 0, 0, Targeting::SingleEnemy, 1.8f, 5, 5.0f),
+                       withTimeline(withTell(makeSkill("Feint", 0, 0, Targeting::SingleEnemy, 1.8f, 5, 5.0f), "sways"),
                                     makeTimeline({{1.0, 0.4, 0.0, 1.0f, false}, {1.8, 0.4, 0.0, 2.0f, false}}))}),
                        shadeWeakPoints()),
     };
@@ -337,6 +344,7 @@ inline bool pilotSucceeds(unsigned n, double rate) {
 struct PilotState {
     unsigned notes = 0; // combo notes acted on this fight
     unsigned hits = 0;  // enemy hits decided this fight
+    unsigned reads = 0; // Read cards picked this fight
     std::size_t skippedHit = static_cast<std::size_t>(-1); // the incoming hit it lets land
 };
 
@@ -400,6 +408,25 @@ inline int pilotDefend(Battle& b, double horizon, DefenceInput mode, const Pilot
     return presses;
 }
 
+// Read: during an enemy attack whose cards are dealt and not yet picked, the reader picks the card
+// whose tell the coming action shows (tellOf its active skill); a shaky pilot misreads at
+// skill.defend's rate, taking the card after it. Returns 1 when it picked.
+inline int pilotRead(Battle& b, double now, const PilotSkill& skill, PilotState& state) {
+    if (b.phase() != Phase::EnemySkill) return 0;
+    const ReadCards& cards = b.readCards();
+    const Skill* coming = b.activeSkill();
+    if (!cards.dealt() || cards.picked() || !coming) return 0;
+    std::size_t pick = cards.size();
+    for (std::size_t i = 0; i < cards.size(); ++i)
+        if (cards[i].tell == tellOf(*coming)) {
+            pick = i;
+            break;
+        }
+    if (pick == cards.size()) return 0;
+    if (!pilotSucceeds(state.reads++, skill.defend)) pick = (pick + 1) % cards.size();
+    return b.pickCard(pick, now) == CommandError::None ? 1 : 0;
+}
+
 struct HeadlessResult {
     Phase outcome = Phase::NotStarted; // Victory or Defeat when the fight ended, else where it stopped
     bool finished = false;
@@ -416,6 +443,8 @@ struct HeadlessResult {
     int loadStored = 0;  // Load its perfect Guards and Intercepts stored
     int intercepts = 0;  // enemy hits it intercepted (Guard mode)
     int takeHalves = 0;  // Take Halves it made (Guard mode)
+    int reads = 0;       // Read cards it picked (Guard mode)
+    int correctReads = 0; // of those, the right one
 };
 
 // An opt-in for the pilot: it uses carried items. The pilot never touches an item unless it is given
@@ -517,6 +546,7 @@ inline HeadlessResult playHeadlessWith(std::vector<Combatant> party, std::vector
             }
         }
         const Phase before = b.phase();
+        if (press && defence == DefenceInput::Guard) pilotRead(b, now, skill, state);
         if (press)
             r.presses += pilotPress(b, now, skill, state) + pilotDefend(b, now + step, defence, skill, state);
         now += step;
@@ -527,6 +557,8 @@ inline HeadlessResult playHeadlessWith(std::vector<Combatant> party, std::vector
     r.outcome = b.phase();
     r.loadStored = b.stats().loadStored;
     r.intercepts = b.stats().intercepts;
+    r.reads = b.stats().reads;
+    r.correctReads = b.stats().correctReads;
     r.finished = r.outcome == Phase::Victory || r.outcome == Phase::Defeat;
     r.endTime = now;
     for (const Combatant& c : b.combatants())

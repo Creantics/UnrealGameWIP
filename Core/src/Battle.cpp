@@ -23,6 +23,10 @@ void Battle::reset(const std::vector<Combatant>& party, const std::vector<Combat
     intercepting_ = false;
     interceptShare_ = {};
     interceptWeight_ = 0.0f;
+    readCards_.clear();
+    readsDealt_ = 0;
+    readBy_ = 0;
+    readCorrect_ = false;
     const std::size_t count = party.size() + enemies.size();
     // Assign in place: strings and skill lists reuse their buffers, so a same-shaped line-up is free.
     if (combatants_.size() > count) combatants_.resize(count);
@@ -42,6 +46,7 @@ void Battle::reset(const std::vector<Combatant>& party, const std::vector<Combat
         d.staggered = false;
         d.tornTurns = std::max(0, d.tornTurns); // Torn comes in with the member, as Load does
         if (d.tornTurns == 0) d.tornShare = 0.0f;
+        d.readStacks = std::clamp(d.readStacks, 0, kMaxReadStacks); // and so do the Read stacks
     }
     for (const Combatant& c : enemies) {
         Combatant& d = put(c);
@@ -50,6 +55,11 @@ void Battle::reset(const std::vector<Combatant>& party, const std::vector<Combat
         d.staggered = false;
         FTCORE_ASSERT(!d.skills.empty());
     }
+    std::size_t actions = 0; // every enemy action, for the Read cards' pool
+    for (const Combatant& c : combatants_)
+        if (c.team == Team::Enemies) actions += c.skills.size();
+    readPool_.clear();
+    readPool_.reserve(actions);
     enemyTurnCount_.assign(combatants_.size(), 0);
     enemyPhase_.assign(combatants_.size(), 0);
     baseAttack_.resize(combatants_.size());
@@ -147,6 +157,8 @@ void Battle::beginTurn(double now) {
     releasing_ = false;
     targets_.clear();
     shares_.clear();
+    readCards_.clear();
+    readCorrect_ = false;
     emit({.type = EventType::TurnStarted, .source = actor_, .time = now, .label = {}});
     tickTorn(now);
     if (phase_ == Phase::Victory || phase_ == Phase::Defeat) return;
@@ -220,7 +232,81 @@ void Battle::startEnemyTurn(double now) {
         finishSkill(now); // a skill without hits
         return;
     }
+    dealCards(now);
     emitCountIn(now);
+}
+
+std::optional<CombatantId> Battle::reader() const {
+    for (CombatantId id = 0; id < combatants_.size(); ++id) {
+        const Combatant& c = combatants_[id];
+        if (c.team == Team::Party && c.alive() && c.can(Verb::Read)) return id;
+    }
+    return std::nullopt;
+}
+
+// The pool is every action of every living enemy, in id and skill order; the attacker's coming one
+// is the right card. The pool's storage was sized at reset, so a deal never allocates.
+void Battle::dealCards(double now) {
+    readCards_.clear();
+    const std::optional<CombatantId> who = reader();
+    if (!who || !skillIndex_ || defence_.size() == 0) return;
+    readPool_.clear();
+    std::size_t right = 0;
+    for (CombatantId id = 0; id < combatants_.size(); ++id) {
+        const Combatant& c = combatants_[id];
+        if (c.team != Team::Enemies || !c.alive()) continue;
+        for (std::size_t s = 0; s < c.skills.size(); ++s) {
+            if (id == actor_ && s == *skillIndex_) right = readPool_.size();
+            readPool_.push_back({.actor = id, .action = static_cast<std::uint32_t>(s), .tell = tellOf(c.skills[s])});
+        }
+    }
+    const std::uint64_t seed = tuning_.seed ^ (++readsDealt_ * 0xA24BAED4963EE407ull);
+    const std::size_t dealt = readCards_.deal(readPool_, right, seed);
+    if (dealt == 0) return;
+    readBy_ = *who;
+    emit({.type = EventType::CardsDealt,
+          .source = actor_,
+          .target = readBy_,
+          .amount = static_cast<int>(dealt),
+          .time = now,
+          .label = {}});
+}
+
+CommandError Battle::pickCard(std::size_t i, double now) {
+    if (phase_ != Phase::EnemySkill || !readCards_.dealt() || readCards_.picked()) return CommandError::WrongPhase;
+    if (defence_.size() > 0 && now > defence_.impact(0) + 1e-9) return CommandError::WrongPhase; // too late
+    Combatant& r = combatants_[readBy_];
+    if (!r.alive()) return CommandError::WrongPhase;
+    if (i >= readCards_.size()) return CommandError::InvalidTarget;
+    if (readCards_.pick(i) == ReadPick::Correct) {
+        r.readStacks = std::min(r.readStacks + 1, kMaxReadStacks);
+        readCorrect_ = true;
+        emit({.type = EventType::CardPicked,
+              .source = readBy_,
+              .target = actor_,
+              .amount = r.readStacks,
+              .grade = Grade::Perfect,
+              .beat = i,
+              .time = now,
+              .label = "READ"});
+        return CommandError::None;
+    }
+    // A misread: the stacks are lost and the attacker steadies a little (poise is the enemies' alone).
+    r.readStacks = 0;
+    Combatant& e = combatants_[actor_];
+    int back = 0;
+    if (e.alive() && !e.staggered && e.stats.maxPoise > 0)
+        back = std::max(0, std::min(tuning_.readWrongPoise, e.stats.maxPoise - e.poise));
+    e.poise += back;
+    emit({.type = EventType::CardPicked,
+          .source = readBy_,
+          .target = actor_,
+          .amount = back,
+          .grade = Grade::Miss,
+          .beat = i,
+          .time = now,
+          .label = "MISREAD"});
+    return CommandError::None;
 }
 
 void Battle::emitCountIn(double now) {
@@ -764,6 +850,21 @@ void Battle::finishSkill(double now) {
             losePoise(defender, actor_, tuning_.counterPoise, now);
         }
     }
+    // A correct Read: the reader strikes the attacker once, whatever the defence did.
+    if (phase_ == Phase::EnemySkill && readCorrect_) {
+        readCorrect_ = false;
+        Combatant& r = combatants_[readBy_];
+        if (r.alive() && combatants_[actor_].alive()) {
+            const float stacks = static_cast<float>(std::max(0, r.readStacks - 1));
+            const float power = tuning_.readPower * (1.0f + std::max(0.0f, tuning_.readStackPower) * stacks);
+            const int dmg = std::max(1, static_cast<int>(std::lround(damage(r, combatants_[actor_], power))));
+            emit({.type = EventType::Counter, .source = readBy_, .target = actor_, .amount = dmg, .time = now,
+                  .label = "READ"});
+            dealDamage(readBy_, actor_, dmg, Grade::Perfect, defence_.size(), now, "READ");
+            if (phase_ == Phase::Victory || phase_ == Phase::Defeat) return;
+            losePoise(readBy_, actor_, tuning_.counterPoise, now);
+        }
+    }
     if (checkEnd(now)) return;
     phase_ = Phase::Recovery;
     recoveryEnd_ = now + tuning_.recovery;
@@ -855,6 +956,10 @@ void Battle::tally(const BattleEvent& e) {
     case EventType::LoadStored: stats_.loadStored += e.amount; break;
     case EventType::Released: ++stats_.releases; break;
     case EventType::HalfTaken: stats_.takeHalves += e.source == e.target; break;
+    case EventType::CardPicked:
+        ++stats_.reads;
+        stats_.correctReads += e.grade == Grade::Perfect;
+        break;
     case EventType::Victory:
     case EventType::Defeat: stats_.endTime = e.time; break;
     default: break;

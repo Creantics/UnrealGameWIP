@@ -33,6 +33,7 @@
     "battle.overloaded": "OVERLOADED",
     "battle.load": "LOAD",
     "battle.torn": "TORN",
+    "battle.read": "READ",
     "battle.jump": "JUMP!",
 
     "beat.chain": "CHAIN",

@@ -10,6 +10,7 @@
 #include "FTConductorComponent.h"
 #include "FTPauseOverlay.h"
 #include "FTPauseSubsystem.h"
+#include "FTText.h"
 #include "FTUiText.h"
 
 #include "ftcore/Battle.h"
@@ -58,6 +59,8 @@ const FTUiText kStaggered(TEXT("battle.staggered"));
 const FTUiText kOverloaded(TEXT("battle.overloaded"));
 const FTUiText kLoad(TEXT("battle.load"));
 const FTUiText kTorn(TEXT("battle.torn"));
+const FTUiText kRead(TEXT("battle.read"));
+const FString kCardKeys[ftcore::kReadCards] = {FString(TEXT("1  LS left")), FString(TEXT("2  LS up")), FString(TEXT("3  LS right"))};
 const FString kDefenceKeys[5] = {FString(TEXT("Dodge  Left/Right  X/B")), FString(TEXT("Parry  Down  A")),
 	FString(TEXT("Jump  Up  Y")), FString(TEXT("Guard  hold G  RB")), FString(TEXT("Intercept  hold I  LB"))};
 const FString kTell(TEXT("!"));
@@ -126,6 +129,7 @@ void AFTBattleHUD::DrawHUD()
 	DrawSkillMenu(D);
 	DrawLane(D);
 	DrawDefence(D);
+	DrawReadCards(D);
 	DrawJudgement(D);
 	DrawAim(D);
 	DrawPopups(D);
@@ -212,6 +216,8 @@ void AFTBattleHUD::DrawTurnOrder(const AFTBattleDemoActor& D)
 	X += 44.f * S;
 	const std::span<const ftcore::CombatantId> Order = D.GetBattle()->PeekTurnOrder(6);
 	uint64 Named = 0; // enemies whose next skill is already shown (under their soonest turn)
+	// With a reader in the party the attacks are read as they come (Read cards): no intent is shown.
+	const bool bHideIntent = B->reader().has_value();
 	for (const ftcore::CombatantId Id : Order)
 	{
 		const bool bParty = B->combatant(Id).team == ftcore::Team::Party;
@@ -224,7 +230,7 @@ void AFTBattleHUD::DrawTurnOrder(const AFTBattleDemoActor& D)
 		{
 			Named |= Bit;
 			const FString& Skill = D.GetNextSkillName(static_cast<int32>(Id));
-			if (!Skill.IsEmpty())
+			if (!Skill.IsEmpty() && !bHideIntent)
 			{
 				DrawStr(Skill, kOrange, X + 10.f * S, Y + BoxH - 4.f * S, Font, 0.9f);
 			}
@@ -642,6 +648,43 @@ void AFTBattleHUD::DrawDefence(const AFTBattleDemoActor& D)
 		}
 		DrawStrCentered(kDefenceKeys[K], bLit ? kGold : kWhite, KX + KeyW * 0.5f, KY + 7.f * S, Small, 1.f);
 		KX += KeyW;
+	}
+}
+
+// The Read cards, under the enemy banner while the attack is up: each names an action, with its key and
+// stick flick. Once picked, the right card is framed gold and a wrong pick red.
+void AFTBattleHUD::DrawReadCards(const AFTBattleDemoActor& D)
+{
+	UFTBattleComponent* BC = D.GetBattle();
+	const ftcore::Battle* B = BC->GetBattle();
+	if (!BC->IsDefenceActive() || !B->readCards().dealt())
+	{
+		return;
+	}
+	const ftcore::ReadCards& Cards = B->readCards();
+	const float S = UiScale;
+	UFont* Font = GEngine->GetMediumFont();
+	UFont* Small = GEngine->GetSmallFont();
+	const float CardW = 210.f * S;
+	const float CardH = 54.f * S;
+	const float Gap = 14.f * S;
+	const int32 Count = static_cast<int32>(Cards.size());
+	float X = Canvas->ClipX * 0.5f - (static_cast<float>(Count) * (CardW + Gap) - Gap) * 0.5f;
+	const float Y = 165.f * S;
+	DrawStr(kRead, kCyan, X - 70.f * S, Y + 16.f * S, Font, 1.f);
+	for (int32 N = 0; N < Count; ++N)
+	{
+		const size_t I = static_cast<size_t>(N);
+		const ftcore::ReadCard& Card = Cards[I];
+		const ftcore::Combatant& Owner = B->combatant(Card.actor);
+		const FString Name = Card.action < Owner.skills.size() ? FT::ToFString(Owner.skills[Card.action].name) : FString();
+		const bool bRight = Cards.picked() && I == Cards.correct();
+		const bool bWrong = Cards.picked() && !bRight && I == Cards.pickedIndex();
+		DrawRect(kPanel, X, Y, CardW, CardH);
+		DrawFrame(X, Y, CardW, CardH, bRight ? kGold : bWrong ? kRed : kDim, (bRight || bWrong ? 3.f : 1.f) * S);
+		DrawStrCentered(Name, bRight ? kGold : kWhite, X + CardW * 0.5f, Y + 6.f * S, Font, 1.f);
+		DrawStrCentered(kCardKeys[N], kDim, X + CardW * 0.5f, Y + 32.f * S, Small, 1.f);
+		X += CardW + Gap;
 	}
 }
 

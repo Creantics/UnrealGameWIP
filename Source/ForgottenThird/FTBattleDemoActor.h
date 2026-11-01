@@ -226,8 +226,12 @@ private:
 	// The player's reticle and the aim keys that are polled (mouse buttons, F, pad LT, sticks).
 	void TickAimInput(float DeltaSeconds);
 	// Guard (G / pad RB) and Intercept (I / pad LB), each held through the hit, Release (R / pad RT) and
-	// Take Half (T / pad left-stick click), polled like the aim keys.
+	// Take Half (T / pad left-stick click), polled like the aim keys, and the Read cards' left-stick
+	// flicks (left, up, right: cards 1, 2, 3; the keys 1-3 come through HandleSkill).
 	void TickVerbInput();
+	// During an enemy attack whose Read cards are dealt and not yet picked, picks card Card (with a
+	// notice when it is refused) and returns true; false when there are no cards to pick from.
+	bool TryPickCard(int32 Card);
 	void UseSelected();
 	void EnterAim();
 	void SetJudgement(EFTJudgement Kind, const FString& Text);
@@ -327,6 +331,8 @@ private:
 	bool bInterceptKeyDown = false;
 	bool bReleaseKeyDown = false;
 	bool bTakeHalfKeyDown = false;
+	// The left stick's last flick for the Read cards (0 left, 1 up, 2 right), -1 when centred.
+	int32 CardStickDir = -1;
 	// The autopilot's weak point for the aim in progress.
 	size_t PilotWeakPoint = ftcore::kMaxWeakPoints;
 

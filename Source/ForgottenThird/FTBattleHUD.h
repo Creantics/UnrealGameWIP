@@ -39,6 +39,7 @@ private:
 	void DrawSkillMenu(const AFTBattleDemoActor& Demo);
 	void DrawLane(const AFTBattleDemoActor& Demo);
 	void DrawDefence(const AFTBattleDemoActor& Demo);
+	void DrawReadCards(const AFTBattleDemoActor& Demo);
 	void DrawJudgement(const AFTBattleDemoActor& Demo);
 	void DrawAim(const AFTBattleDemoActor& Demo);
 	void DrawPopups(const AFTBattleDemoActor& Demo);
