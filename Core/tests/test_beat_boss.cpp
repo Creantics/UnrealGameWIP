@@ -732,6 +732,138 @@ TEST_CASE("beat boss: the autopilot wins the test track within the bar budget, a
     CHECK(a.stats().bars <= kWinBars);
 }
 
+TEST_CASE("beat boss: the auto-complete assist wins at uneven frame times too, never stalling on a press it can't land") {
+    // A host's frames are never even: each frame here is dt stretched by up to +-jitter, from a fixed
+    // sequence, so a frame can land anywhere in an answer's window, or just past it.
+    const BeatBossTrack track = loadTrack();
+    int runs = 0;
+    for (const bool toggle : {false, true})
+    for (const double start : {0.0, 1.733})
+    for (const double dt : {0.0004, 0.002, 1.0 / 30.0, 1.0 / 60.0, 1.0 / 90.0, 1.0 / 144.0, 0.05, 0.13}) {
+        for (const double jitter : {0.0, 0.3, 0.6}) {
+            for (unsigned seed = 1; seed <= 12; ++seed) {
+                CAPTURE(dt);
+                CAPTURE(jitter);
+                CAPTURE(seed);
+                CAPTURE(toggle);
+                CAPTURE(start);
+                QteAssist autoPlay;
+                autoPlay.autoComplete = true;
+                autoPlay.holdToggle = toggle;
+                BeatBoss f;
+                f.begin(track.def, BeatBossTuning{}, start, autoPlay);
+                unsigned s = seed * 2654435761u;
+                double now = start;
+                double lastProgress = start;
+                double lastNow = f.now();
+                bool stalled = false;
+                while (!f.over() && now < start + 300.0) {
+                    s = s * 1664525u + 1013904223u;
+                    const double u = static_cast<double>(s >> 8) / static_cast<double>(1u << 24); // [0, 1)
+                    now += dt * (1.0 + jitter * (2.0 * u - 1.0));
+                    (void)f.update(now);
+                    if (f.now() > lastNow) {
+                        lastNow = f.now();
+                        lastProgress = now;
+                    }
+                    if (now - lastProgress > 1.0) { // the fight's clock stood still for a second
+                        stalled = true;
+                        break;
+                    }
+                }
+                ++runs;
+                REQUIRE_FALSE(stalled);
+                CHECK(f.state() == BeatBossState::Victory);
+                CHECK(f.stats().misses == 0);
+                CHECK(f.stats().bars <= kWinBars);
+            }
+        }
+    }
+    CHECK(runs == 2 * 2 * 8 * 3 * 12);
+}
+
+TEST_CASE("beat boss: the auto-complete assist rides out a long frame anywhere in the fight") {
+    // A hitch (a load, a shader compile) hands update() one long frame; the fight must carry on after it.
+    const BeatBossTrack track = loadTrack();
+    QteAssist autoPlay;
+    autoPlay.autoComplete = true;
+    for (const double hitch : {0.25, 0.6, 1.0, 2.5}) {
+        for (double at = 0.5; at < 40.0; at += 0.173) {
+            CAPTURE(hitch);
+            CAPTURE(at);
+            BeatBoss f;
+            f.begin(track.def, BeatBossTuning{}, 0.0, autoPlay);
+            double now = 0.0;
+            bool hitched = false;
+            while (!f.over() && now < 300.0) {
+                if (!hitched && now >= at) {
+                    now += hitch;
+                    hitched = true;
+                } else {
+                    now += 1.0 / 60.0;
+                }
+                (void)f.update(now);
+                if (!f.over()) REQUIRE(f.now() == doctest::Approx(now));
+            }
+            CHECK(f.state() == BeatBossState::Victory);
+        }
+    }
+}
+
+TEST_CASE("beat boss: the auto-complete assist crosses a bar line however the fight's start rounds") {
+    // Recorded from a host: the fight began at an uneven wall time, and a frame landed just past the
+    // first phase's second bar line (begin + 4 s). The bar line as horizon() put it in wall time and as
+    // advance() reached it in track time differed in the last bit, so the fight stood on the line for good.
+    const BeatBossTrack track = loadTrack();
+    QteAssist autoPlay;
+    autoPlay.autoComplete = true;
+    const double begin = 0.65682400241494177;
+    for (const double last : {4.6560614556074142, 4.65682400241494177, 4.6567, 4.65681})
+    {
+        CAPTURE(last);
+        BeatBoss f;
+        f.begin(track.def, BeatBossTuning{}, begin, autoPlay);
+        double now = begin;
+        while (now + 0.0004 < last) {
+            now += 0.0004;
+            (void)f.update(now);
+        }
+        (void)f.update(last);
+        now = 4.6569608561694622;
+        (void)f.update(now);
+        REQUIRE(f.now() == doctest::Approx(now).epsilon(1e-12));
+        while (!f.over() && now < begin + 300.0) {
+            now += 0.0004;
+            (void)f.update(now);
+        }
+        CHECK(f.state() == BeatBossState::Victory);
+    }
+    // Starts spread over a second, at the host's frame rate: every one plays through.
+    for (int i = 0; i < 40; ++i) {
+        const double start = 0.6568240024149417 + 0.0253 * i;
+        CAPTURE(start);
+        BeatBoss f;
+        f.begin(track.def, BeatBossTuning{}, start, autoPlay);
+        double now = start;
+        bool stalled = false;
+        double lastNow = f.now();
+        double lastProgress = now;
+        while (!f.over() && now < start + 300.0) {
+            now += 0.00045;
+            (void)f.update(now);
+            if (f.now() > lastNow) {
+                lastNow = f.now();
+                lastProgress = now;
+            } else if (now - lastProgress > 0.5) {
+                stalled = true;
+                break;
+            }
+        }
+        REQUIRE_FALSE(stalled);
+        CHECK(f.state() == BeatBossState::Victory);
+    }
+}
+
 TEST_CASE("beat boss: rests open on answers, enough at once stagger the boss and the next bar has no counters") {
     const BeatBossTrack track = loadTrack();
     BeatBossDef d = onlyPhase(track.def, 1);

@@ -292,9 +292,11 @@ void BeatBoss::advance(double t, BeatBossEvents& out) {
             expire(which, out);
             continue;
         }
-        if (line <= target) {
+        // Within the slack the line counts as reached: a stop at horizon(), the line put in wall time,
+        // can come back to track time a bit short of it, and the bar would then never turn.
+        if (line <= target + kBossSlack) {
             if (line > track_) {
-                now_ += line - track_;
+                now_ = std::min(now_ + (line - track_), t);
                 track_ = line;
             }
             barLine(out);
