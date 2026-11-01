@@ -847,10 +847,9 @@ void AFTBeatBossHUD::DrawResult(const AFTBeatBossGameMode& Mode)
 	Text(bWon ? kVictoryBoss.Get() : kDefeatBoss.Get(), BossAlpha(bWon ? kBossGold : kBossRed, A), Canvas->ClipX * 0.5f, CY - 56.f * S,
 		GEngine->GetLargeFont(), 2.4f, 1);
 	Text(StatsText, BossAlpha(kBossWhite, A), Canvas->ClipX * 0.5f, CY + 30.f * S, GEngine->GetMediumFont(), 1.1f, 1);
-	if (Mode.IsAutoPlay() || Mode.IsIdle())
-	{
-		return;
-	}
+	// The retry prompt shows on an autoplay run too, which confirms it on its own a second later; the
+	// play-again prompt only when keys are read.
+	const bool bKeys = !Mode.IsAutoPlay() && !Mode.IsIdle();
 	switch (Mode.GetStage())
 	{
 	case AFTBeatBossGameMode::EStage::RetryPrompt:
@@ -861,10 +860,14 @@ void AFTBeatBossHUD::DrawResult(const AFTBeatBossGameMode& Mode)
 		break;
 	}
 	case AFTBeatBossGameMode::EStage::Done:
+		if (!bKeys)
+		{
+			break;
+		}
 		Text(kAgainBoss, BossAlpha(kBossDim, A), Canvas->ClipX * 0.5f, CY + 70.f * S, GEngine->GetMediumFont(), 1.1f, 1);
 		break;
 	case AFTBeatBossGameMode::EStage::Result:
-		if (bWon)
+		if (bWon && bKeys)
 		{
 			Text(kAgainBoss, BossAlpha(kBossDim, A), Canvas->ClipX * 0.5f, CY + 70.f * S, GEngine->GetMediumFont(), 1.1f, 1);
 		}

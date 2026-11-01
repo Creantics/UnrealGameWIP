@@ -546,7 +546,7 @@ void AFTBeatGameMode::Finish()
 		// A fight on its own has nowhere to go back to.
 		if (bQuitOnFinish)
 		{
-			FPlatformMisc::RequestExitWithStatus(false, static_cast<uint8>(bWon ? 0 : 1), TEXT("Beat"));
+			FTRequestExit(bWon ? 0 : 1, TEXT("Beat"));
 		}
 		return;
 	}

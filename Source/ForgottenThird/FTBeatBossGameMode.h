@@ -26,12 +26,15 @@
 // and sags while staggered; the lead lunges, sidesteps or hops with each answer.
 //
 // Flags (FParse::Param, docs/ALPHA.md style):
-//   -BeatBossAutoPlay      Core's autopilot plays (QteAssist::autoComplete); a defeat retries on its own,
-//                          three times at most.
+//   -BeatBossAutoPlay      Core's autopilot plays (QteAssist::autoComplete); after a defeat the retry prompt
+//                          shows and is confirmed on its own a second later, three times at most.
+//   -BeatBossMissPhase=<n> the autopilot (implied), driven by the host, presses nothing from phase n's start
+//                          (1 is the first) until the fight is lost, then plays on from the retry prompt
+//                          as above, which restarts at phase n's checkpoint: the checkpoint retry, headless.
 //   -BeatBossIdle          presses nothing at all and never retries: the fight must be lost.
-//   -BeatBossQuitOnFinish  exits when the fight is over, asking for 0 on a victory, 1 on a defeat and 2 if the
-//                          watchdog fired after 300 s; the engine's graceful exit returns 0 whatever it is asked,
-//                          so the BEATBOSS RESULT line is what tells the outcome.
+//   -BeatBossQuitOnFinish  exits when the fight is over: code 0 on a victory, 1 on a defeat, 2 if the
+//                          watchdog fired after 300 s, 3 if the track didn't load (FTRequestExit, which forces
+//                          a non-zero code past the engine's graceful exit, as the engine does for commandlets).
 //   -BeatBossShot=<prefix> renders the views docs/BEAT_BOSS_DEMO.md lists with HighResShot (needs a
 //                          renderer: -RenderOffScreen, not -NullRHI), holding the fight still a moment for
 //                          each, then quits; implies -BeatBossAutoPlay. -BeatBossShotDelay=<s> (8) waits
@@ -162,6 +165,8 @@ private:
 	void Animate();
 	void Begin();
 	void Retry();
+	// -BeatBossMissPhase: the autopilot's presses for this frame, none while the phase is being lost.
+	void Pilot();
 	void Finish();
 	void LogResult() const;
 	void Quit(int32 Code);
@@ -234,6 +239,9 @@ private:
 	double BeginTime = 0.0;
 	int32 Retries = 0;
 	int32 AutoRetries = 0;
+	int32 MissPhase = 0;     // -BeatBossMissPhase, 1-based; 0: none
+	bool bMissing = false;   // the miss phase has started and is being lost
+	double PromptTime = 0.0; // when the retry prompt showed
 	bool bAutoPlay = false;
 	bool bIdle = false;
 	bool bQuitOnFinish = false;

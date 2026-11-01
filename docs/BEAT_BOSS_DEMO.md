@@ -65,11 +65,12 @@ For checking the map headless:
 UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_BeatBoss -game -NullRHI -BeatBossAutoPlay -BeatBossQuitOnFinish -unattended -nosplash
 ```
 
-- `-BeatBossAutoPlay`: Core's autopilot plays (`QteAssist::autoComplete`), and keys are ignored. A defeat retries on its own, three times at most, and after that logs a warning. It wins the test track in 17 bars, about 38 s, with no miss.
+- `-BeatBossAutoPlay`: Core's autopilot plays (`QteAssist::autoComplete`), and keys are ignored. After a defeat the retry prompt shows as it would for a player and is confirmed on its own a second later, three times at most; after that the run logs a warning and ends lost. It wins the test track in 17 bars, about 38 s, with no miss.
+- `-BeatBossMissPhase=<n>`: the checkpoint retry, headless. It implies `-BeatBossAutoPlay`, but the host drives the autopilot itself (`BeatBoss::autopilot`, each action at its own time, as the Core tests' pilot does) and presses nothing from phase n's first bar (1 is the first phase) until the lead is down. The retry prompt then shows and is confirmed, `BeatBoss::retry` restarts at that phase's checkpoint, and the autopilot plays on to the end. On the test track with `-BeatBossMissPhase=2`: phase 2 starts after 11 bars with the boss at 240 hp, is lost in bar 18, and the retry restarts phase 2 on its bar 1 with the boss at 240 and the lead at 100, not the track's bar 1; the run then wins in 32 bars, 67.3 s, with 1 retry.
 - `-BeatBossIdle`: presses nothing and never retries, so the fight must be lost. On the test track the lead goes down in bar 8.
-- `-BeatBossQuitOnFinish`: exits when the fight is over (a victory, or a defeat under `-BeatBossIdle` or after the autoplay's retries). It asks for code 0 for a victory, 1 for a defeat and 2 when the 300 s watchdog ends a run that stalls. The engine's graceful exit returns 0 whatever it is asked, so read the result line.
+- `-BeatBossQuitOnFinish`: exits when the fight is over (a victory, or a defeat under `-BeatBossIdle`, after the autoplay's retries or when the player gives up), with code 0 for a victory, 1 for a defeat, 2 when the 300 s watchdog ends a run that stalls and 3 when the track doesn't load. The engine's graceful exit returns 0 whatever it is asked, so `FTRequestExit` (`ForgottenThird.h`) keeps a non-zero code and, once the engine has torn the world down, ends the process with it as the engine ends a commandlet (the log flushed first); a victory takes the whole graceful exit. Checked: the idle run exits with 1 under `UnrealEditor-Cmd`, the autoplay and `-BeatBossMissPhase=2` runs with 0, each log complete to its last line.
 - `-BeatBossTrack=<id>`: another track in `Data/Battle/beat_boss/`.
-- `-BeatBossShot=<prefix>`: renders the views with `HighResShot` as `<prefix>_1_countin.png`, `_2_counter.png` (a counter's marker halfway in), `_3_silence.png`, `_4_release.png` and `_5_result.png`, holding the fight's clock still a moment for each, then quits. It implies `-BeatBossAutoPlay` and needs a renderer, so not `-NullRHI`:
+- `-BeatBossShot=<prefix>`: renders the views with `HighResShot` as `<prefix>_1_countin.png`, `_2_counter.png` (a counter's marker halfway in), `_3_silence.png`, `_4_release.png` and `_5_result.png` (the victory), and with `-BeatBossMissPhase` also `_6_retry.png` (the retry prompt after the lost phase), holding the fight's clock still a moment for each, then quits. It implies `-BeatBossAutoPlay` and needs a renderer, so not `-NullRHI`:
 
 ```
 UnrealEditor.exe ForgottenThird.uproject Demo_BeatBoss -game -RenderOffScreen -ResX=1600 -ResY=900 -nosound -unattended -nosplash -BeatBossShot=<folder>/beatboss
@@ -82,13 +83,17 @@ UnrealEditor.exe ForgottenThird.uproject Demo_BeatBoss -game -RenderOffScreen -R
 One line per outcome, counts only, never text:
 
 ```
-BeatBoss: begin (<phases> phases, boss <hp> hp, lead <hp> hp)[, autoplay][, idle].
+BeatBoss: begin (<phases> phases, boss <hp> hp, lead <hp> hp)[, autoplay][, idle]; losing phase <n> (0: none).
+BeatBoss: phase <n> starts on its bar <b> (boss <hp> hp, <bars> bars played).
+BeatBoss: losing phase <n> on purpose (boss <hp> hp).
+BeatBoss: retry <r> from phase <n>'s checkpoint (boss <hp> hp, lead <hp> hp), lost after <bars> bars.
 BEATBOSS RESULT: Victory in <bars> bars, <s> s, <p> perfect, <g> good, <m> miss, best streak <k>, <r> retries, boss <hp>/<max> hp, lead <hp>/<max> hp, <w> whiffs, <s> strays, <f> finishers, <rel> releases, <st> staggers, <si> silences, phase <n>/<N>[, autoplay][, idle].
 BEATBOSS RESULT: Defeat in ...
 BeatBoss: quitting (<code>).
+Exiting with code <code>.
 ```
 
-The counts run on through retries.
+The counts run on through retries. The last line comes only for a non-zero code, just before the process ends.
 
 ## Screen
 
@@ -100,11 +105,11 @@ All of it is canvas (no UMG), and drawing builds no strings: every word is a sta
 - **The boss** has its hp across the top, with the phase's floor marked, PHASE n/N and the bar playing. Over the boss, the next counter's answer and a ring that closes as its impact comes. The boss itself winds up as a counter's marker closes in (it swells, leans back and reddens), lunges on the impact, flashes white when hit, sags while staggered and sinks when beaten.
 - **The lead's panel**, under the line: hp, the Load gauge, the open rests, the streak and the multiplier. The lead lunges, sidesteps or hops with each answer and recoils when hit.
 - **Popups**: PERFECT, GOOD, MISS, TOO EARLY, the rewards and Load gains rise from the hit line on dark plates, the boss's damage over the boss. The hit line flashes gold, green or red with each judgement and the screen's edges flash red when the lead is hit. Banners, left of the boss, mark a finisher, a broken finisher, a stagger, a Release and a new phase.
-- **Result**: VICTORY or DEFEAT in a band across the screen with the counts (perfect, good, miss, best streak, bars, retries), then the Retry or Play again line.
+- **Result**: VICTORY or DEFEAT in a band across the screen with the counts (perfect, good, miss, best streak, bars, retries). After a defeat the retry prompt follows in the band: Retry from phase n in gold (the checkpoint's phase) and Give up under it; it shows on an autoplay run too. After a victory, Play again, when keys are read.
 - **Pause**: the pause overlay is drawn last.
 
 ## Not yet
 
 - No story step opens the map, and the track's music cue has no recording: the metronome stands in.
-- The retry from a checkpoint is played by hand only. The autopilot never loses and `-BeatBossIdle` never retries, so no headless run reaches it. Core's tests cover `retry()` itself.
+- Giving up at the retry prompt is played by hand only; `-BeatBossMissPhase` covers the retry itself.
 - The boss and the room are placeholders, and the lead has only its idle and the host's nudges for moves.

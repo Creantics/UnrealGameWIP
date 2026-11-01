@@ -66,7 +66,7 @@ UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/Beat -game -NullRHI -Bea
 ```
 
 - `-BeatAutoPlay`: the autopilot plays the fight. (A story step also autoplays with `StoryCarry.bAutoPlay`.)
-- `-BeatQuitOnFinish`: a fight on its own exits when it ends, with code 0 for a victory and 1 otherwise. It does nothing for a story step.
+- `-BeatQuitOnFinish`: a fight on its own exits when it ends, with code 0 for a victory and 1 otherwise (a defeat the player quits, or the autopilot giving up). The engine's graceful exit returns 0 whatever it is asked, so `FTRequestExit` (`ForgottenThird.h`) keeps the 1 and ends the process with it once the engine has torn the world down, the log flushed first, as the engine ends a commandlet. The autopilot never loses, so a headless run only shows the 0; the beat boss's idle run (`docs/BEAT_BOSS_DEMO.md`) checks the 1 through the same call. The `Beat: VICTORY` or `Beat: DEFEAT` line says the same. It does nothing for a story step.
 
 The pause menu stays available under both: `UFTPauseSubsystem::IsHeadlessRun()` does not know them.
 

@@ -49,13 +49,17 @@ constexpr double kBossWatchdog = 300.0;
 // A defeat shows this long (the fight's seconds) before the retry prompt (or an autoplay's own retry).
 constexpr double kBossDefeatShow = 1.4;
 constexpr double kBossAutoDefeatShow = 0.5;
-// An autoplay run retries a lost phase this many times, then ends lost.
+// An autoplay run confirms the retry prompt once it has shown this long (the fight's seconds), for a lost
+// phase this many times at most, then ends lost.
+constexpr double kBossAutoConfirm = 1.0;
 constexpr int32 kBossAutoRetries = 3;
 // A won fight with -BeatBossQuitOnFinish quits after showing its result this long.
 constexpr double kBossVictoryShow = 1.0;
 // Each -BeatBossShot view holds the fight still this long (wall seconds) while the shot is written.
 constexpr double kBossShotHold = 1.0;
 constexpr int32 kBossShotViews = 5;
+// -BeatBossMissPhase adds a sixth, the retry prompt.
+constexpr int32 kBossShotViewsMiss = 6;
 
 const TCHAR* const kBossHumanMesh = TEXT("/Game/Characters/TestHuman/test_human/SkeletalMeshes/test_human.test_human");
 const TCHAR* const kBossHumanIdle = TEXT("/Game/Characters/TestHuman/test_human/SkeletalMeshes/test_humanidle.test_humanidle");
@@ -177,7 +181,12 @@ void AFTBeatBossGameMode::StartPlay()
 		}
 	}
 	bIdle = FParse::Param(Cmd, TEXT("BeatBossIdle"));
-	bAutoPlay = !bIdle && (FParse::Param(Cmd, TEXT("BeatBossAutoPlay")) || !ShotPrefix.IsEmpty());
+	int32 Miss = 0;
+	if (!bIdle && FParse::Value(Cmd, TEXT("BeatBossMissPhase="), Miss) && Miss > 0)
+	{
+		MissPhase = Miss;
+	}
+	bAutoPlay = !bIdle && (FParse::Param(Cmd, TEXT("BeatBossAutoPlay")) || !ShotPrefix.IsEmpty() || MissPhase > 0);
 	bQuitOnFinish = FParse::Param(Cmd, TEXT("BeatBossQuitOnFinish"));
 
 	FString Id = TEXT("test_track");
@@ -207,6 +216,12 @@ void AFTBeatBossGameMode::StartPlay()
 	}
 	if (bIdle)
 	{
+		Assist.autoComplete = false;
+	}
+	if (MissPhase > 0)
+	{
+		// The host drives the autopilot itself (Pilot), so it can leave a phase unanswered.
+		MissPhase = FMath::Min(MissPhase, static_cast<int32>(Track.def.phaseCount));
 		Assist.autoComplete = false;
 	}
 
@@ -412,7 +427,11 @@ void AFTBeatBossGameMode::Tick(float DeltaSeconds)
 	{
 	case EStage::Playing:
 		// Presses first: they are stamped with the clock as it reads in this frame, then the fight takes the frame.
-		if (!bAutoPlay && !bIdle)
+		if (MissPhase > 0)
+		{
+			Pilot();
+		}
+		else if (!bAutoPlay && !bIdle)
 		{
 			PollKeys(Conductor->GetInputSongTime() - HeldSeconds);
 		}
@@ -456,8 +475,9 @@ void AFTBeatBossGameMode::Tick(float DeltaSeconds)
 		{
 			if (AutoRetries < kBossAutoRetries)
 			{
-				++AutoRetries;
-				Retry();
+				// The prompt shows as it would for a player, then is confirmed on its own.
+				Stage = EStage::RetryPrompt;
+				PromptTime = Now;
 			}
 			else
 			{
@@ -478,6 +498,18 @@ void AFTBeatBossGameMode::Tick(float DeltaSeconds)
 		break;
 
 	case EStage::RetryPrompt:
+		if (bAutoPlay)
+		{
+			if (Now - PromptTime >= kBossAutoConfirm)
+			{
+				++AutoRetries;
+				Retry();
+			}
+			break;
+		}
+		PollChoice();
+		break;
+
 	case EStage::Done:
 		PollChoice();
 		break;
@@ -577,6 +609,7 @@ void AFTBeatBossGameMode::Begin()
 	ResultTime = Now;
 	Retries = 0;
 	AutoRetries = 0;
+	bMissing = false;
 	bGaveUp = false;
 	bResultLogged = false;
 	PopupTotal = 0;
@@ -594,15 +627,18 @@ void AFTBeatBossGameMode::Begin()
 	SoundCueCount = 0;
 	SoundCueId = 0;
 	SoundTrack = Fight.trackTime();
-	UE_LOG(LogForgottenThird, Display, TEXT("BeatBoss: begin (%d phases, boss %d hp, lead %d hp)%s%s."), static_cast<int32>(Track.def.phaseCount),
-		Track.def.bossHp, Track.def.leadHp, bAutoPlay ? TEXT(", autoplay") : TEXT(""), bIdle ? TEXT(", idle") : TEXT(""));
+	UE_LOG(LogForgottenThird, Display, TEXT("BeatBoss: begin (%d phases, boss %d hp, lead %d hp)%s%s; losing phase %d (0: none)."),
+		static_cast<int32>(Track.def.phaseCount), Track.def.bossHp, Track.def.leadHp, bAutoPlay ? TEXT(", autoplay") : TEXT(""),
+		bIdle ? TEXT(", idle") : TEXT(""), MissPhase);
 }
 
 void AFTBeatBossGameMode::Retry()
 {
+	const int32 FromBar = Fight.stats().bars;
 	Fight.retry(Now);
 	Fight.beatLine(Line);
 	++Retries;
+	bMissing = false;
 	Stage = EStage::Playing;
 	bResultLogged = false;
 	LockoutUntil = -1e9;
@@ -612,7 +648,31 @@ void AFTBeatBossGameMode::Retry()
 	SoundCueCount = 0;
 	SoundTrack = Fight.trackTime();
 	Pulse(EPulse::Phase, Now, Phase);
-	UE_LOG(LogForgottenThird, Display, TEXT("BeatBoss: retry %d from phase %d (boss %d hp)."), Retries, Phase + 1, Fight.bossHp());
+	UE_LOG(LogForgottenThird, Display, TEXT("BeatBoss: retry %d from phase %d's checkpoint (boss %d hp, lead %d hp), lost after %d bars."), Retries,
+		Phase + 1, Fight.bossHp(), Fight.hp(), FromBar);
+}
+
+void AFTBeatBossGameMode::Pilot()
+{
+	if (!bMissing && Retries == 0 && Fight.phase() + 1 == MissPhase && !Fight.counting())
+	{
+		bMissing = true;
+		UE_LOG(LogForgottenThird, Display, TEXT("BeatBoss: losing phase %d on purpose (boss %d hp)."), MissPhase, Fight.bossHp());
+	}
+	if (bMissing)
+	{
+		return;
+	}
+	// As the tests' pilot does: every action due by now, each at its own time (several may fall in a frame).
+	for (int32 Guard = 0; Guard < 64; ++Guard)
+	{
+		const ftcore::QteAction A = Fight.autopilot(Now);
+		if (A.kind == ftcore::QteAction::Kind::None)
+		{
+			break;
+		}
+		Handle(A.kind == ftcore::QteAction::Kind::Press ? Fight.press(A.input, A.time) : Fight.release(A.input, A.time));
+	}
 }
 
 void AFTBeatBossGameMode::Finish()
@@ -646,7 +706,7 @@ void AFTBeatBossGameMode::Quit(int32 Code)
 	bQuitting = true;
 	Stage = EStage::Done;
 	UE_LOG(LogForgottenThird, Display, TEXT("BeatBoss: quitting (%d)."), Code);
-	FPlatformMisc::RequestExitWithStatus(false, static_cast<uint8>(Code), TEXT("BeatBoss"));
+	FTRequestExit(Code, TEXT("BeatBoss"));
 }
 
 void AFTBeatBossGameMode::Pulse(EPulse Which, double Time, int32 Amount)
@@ -732,6 +792,8 @@ void AFTBeatBossGameMode::Handle(const ftcore::BeatBossEvents& Events)
 			break;
 		case BeatBossEventType::PhaseStart:
 			Pulse(EPulse::Phase, E.time, E.amount);
+			UE_LOG(LogForgottenThird, Display, TEXT("BeatBoss: phase %d starts on its bar %d (boss %d hp, %d bars played)."), E.amount + 1,
+				Fight.bar(), Fight.bossHp(), Fight.stats().bars);
 			break;
 		case BeatBossEventType::Count:
 			Pulse(EPulse::Count, E.time, E.amount);
@@ -942,12 +1004,13 @@ bool AFTBeatBossGameMode::Shots()
 	{
 		return true;
 	}
-	const uint32 All = (1u << kBossShotViews) - 1u;
+	const int32 Views = MissPhase > 0 ? kBossShotViewsMiss : kBossShotViews;
+	const uint32 All = (1u << Views) - 1u;
 	if (ShotsTaken == All || (ShotsTaken & (1u << 4)) != 0)
 	{
 		if (ShotsTaken != All)
 		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("BeatBoss: only %d of %d views came (mask %u); quitting."), ShotCount, kBossShotViews, ShotsTaken);
+			UE_LOG(LogForgottenThird, Warning, TEXT("BeatBoss: only %d of %d views came (mask %u); quitting."), ShotCount, Views, ShotsTaken);
 		}
 		else
 		{
@@ -993,6 +1056,12 @@ bool AFTBeatBossGameMode::Shots()
 			TakeShot(2, TEXT("3_silence"));
 			return true;
 		}
+	}
+	// -BeatBossMissPhase: the retry prompt after the lost phase.
+	if (Want(5) && MissPhase > 0 && Stage == EStage::RetryPrompt && Now - PromptTime >= 0.6)
+	{
+		TakeShot(5, TEXT("6_retry"));
+		return true;
 	}
 	if (Want(4) && Stage == EStage::Result && Fight.state() == ftcore::BeatBossState::Victory && GetResultAge() >= 0.6)
 	{
