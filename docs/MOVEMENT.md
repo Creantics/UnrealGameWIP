@@ -27,7 +27,7 @@ for its own dodge later. Today the arena keeps its own rules in `ArenaFight`.
 | Get up from a slide | Press crouch again (crouch is a toggle) | Same | Any time; a slide slower than `slide.outSpeed` gets up by itself |
 | Dodge roll | Left Alt | B | On the ground; it goes the way the stick points |
 | Landing roll | Be crouched as you land, or press Left Alt / B in the air | Same | See "Landing roll" below |
-| Grab a ledge | Hold Space or A in the air | Same | When a ledge is in reach |
+| Grab a ledge | Hold Space or push the stick into the wall, in the air | Hold A, or the stick into the wall | When a ledge is in reach |
 | Climb straight up at the grab | Hold jump and push the stick into the wall | Same | At the moment of the catch |
 | Climb up from a hang | Space or A, or push the stick into the wall | Same | After hanging for `ledge.minHang` |
 | Drop from a hang | Crouch, or pull the stick away from the wall | Same | After hanging for `ledge.minHang` |
@@ -156,3 +156,5 @@ Run these from `D:\projects\unrealgamewip` after merging this branch:
    - Climb from a hang with jump and with the stick.
    - Drop with crouch and with the stick away, and check the push clears the wall.
    - Hold jump and the stick into the wall: the lead should climb straight up.
+   - With followers shown (P): they replay the lead's catch straight through without hanging, so they
+     may climb while the lead still hangs. Check that this reads well.
