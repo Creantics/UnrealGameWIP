@@ -12,7 +12,7 @@
     "minGlyphPx": 48,
     "perfectBandH": 4.2,
     "word": { "anchor": "TR", "x": -35.3, "y": 35.5, "w": 16.7, "h": 4.0 },
-    "wordStartY": 38.5,
+    "wordStartY": 36.0,
     "streak": { "anchor": "TR", "x": -26.2, "y": 30.5, "w": 8.0, "h": 4.0 },
     "stamp": { "anchor": "TR", "x": -35.3, "y": 50.0, "w": 16.7, "h": 8.0 },
     "caption": { "anchor": "TR", "x": -35.7, "y": 94.0, "w": 17.5, "h": 3.5 }
@@ -53,7 +53,7 @@
     "burstToPerfect": 10.0,
     "burstToGreat": 8.5,
     "burstToGood": 7.0,
-    "wordRisePx": 24,
+    "wordRisePx": 10,
     "missSinkPx": 10
   },
   "colors": {

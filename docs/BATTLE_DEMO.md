@@ -330,9 +330,9 @@ tested in `test_arrow_lane.cpp`. A missing or refused file leaves the built-in n
 - **Grades** are told apart by shape and word, not hue: Perfect a ring (6 to 10% of the height in 260 ms) with a four-point
   star and the word at 1.15x; Great a ring to 8.5% in 220 ms; Good a small ring to 7% in 180 ms; a missed note stops where it
   was judged, greys, sinks 10 px and fades in 200 ms with an X on it. Wrong arrow: WRONG and an X on the note. The word sits
-  in the lane above the target and rises 24 px; a jump pair shows one word, the worse grade.
+  in the lane above the target and rises 10 px as it fades; a jump pair shows one word, the worse grade.
 - **Early or late.** `NoteJudged` carries the signed press error (`BattleEvent::error`, seconds, negative early; 0 for a note
-  that expired unpressed). A Great, Good or WRONG shows a small EARLY or LATE under the word and a notch on the lane where the
+  that expired unpressed). A Great, Good or WRONG shows a small EARLY or LATE above the plate and a notch on the lane where the
   arrow was when the press landed; a Miss that expired is LATE. A Perfect shows no tick.
 - **Streak.** A badge `xN` above the plate's top right from 2 in a row, popping 1.0 to 1.25 to 1.0 in 150 ms on every fourth
   (4, 8, 12, ...) with a gold rim on the receptors for 250 ms. A Miss leaves the old number grey for 300 ms.

@@ -696,8 +696,10 @@ void AFTBattleHUD::DrawLaneWord(const AFTBattleDemoActor& D, float Vis)
 	if (Tick != 0)
 	{
 		const FString& Label = Tick < 0 ? kEarly.Get() : kLate.Get();
-		DrawStrCentered(Label, WithAlpha(Black, A), CX + 1.5f * S, Y + 52.f * S + 1.5f * S, TickFont, 1.5f);
-		DrawStrCentered(Label, WithAlpha(Lc(L.colors.arrowFill), A * 0.95f), CX, Y + 52.f * S, TickFont, 1.5f);
+		// Above the plate's top edge, over the word (the receptor row is under the word).
+		const float LY = Geo.plate.y - 30.f * S;
+		DrawStrCentered(Label, WithAlpha(Black, A), CX + 1.5f * S, LY + 1.5f * S, TickFont, 1.5f);
+		DrawStrCentered(Label, WithAlpha(Lc(L.colors.arrowFill), A * 0.95f), CX, LY, TickFont, 1.5f);
 		if (!W.bExpired)
 		{
 			const float NY = Geo.targetY + ftcore::tickOffsetPx(Geo, W.Error, GoodWindow);

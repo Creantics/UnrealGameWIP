@@ -1985,11 +1985,11 @@ void AFTBattleDemoActor::TakeShot(const TCHAR* Name, uint8 Bit)
 
 void AFTBattleDemoActor::TickLaneShots()
 {
-	const ftcore::Battle* B = Battle->GetBattle();
-	if (LaneShotPrefix.IsEmpty() || !B)
+	if (LaneShotPrefix.IsEmpty())
 	{
 		return;
 	}
+	const ftcore::Battle* B = Battle->GetBattle();
 	const double Now = Wall();
 	if (LaneShotStartWall < 0.0)
 	{
@@ -2015,11 +2015,12 @@ void AFTBattleDemoActor::TickLaneShots()
 	}
 	if (!(LaneShotMask & 2048))
 	{
-		// The first HighResShot of a run stalls the frame for most of a second: spend one before the views that count.
-		if (B->phase() != ftcore::Phase::NotStarted)
-		{
-			TakeLaneShot(TEXT("0_warmup"), 2048);
-		}
+		// The first HighResShot of a run stalls the frame for most of a second: spend one before the battle begins.
+		TakeLaneShot(TEXT("0_warmup"), 2048);
+		return;
+	}
+	if (!B)
+	{
 		return;
 	}
 	const ftcore::ComboSequence& Combo = B->combo();
@@ -2031,7 +2032,7 @@ void AFTBattleDemoActor::TickLaneShots()
 	const bool bRunning = Battle->IsComboActive();
 	auto Want = [&](uint16 Bit) { return !(LaneShotMask & Bit); };
 
-	if (bFirst && bRunning && Want(1) && Age >= 0.1)
+	if (bFirst && bRunning && Want(1) && Age >= 0.1 && Age < 0.5 && Combo.judged() == 0)
 	{
 		TakeLaneShot(TEXT("1_fadein"), 1);
 	}

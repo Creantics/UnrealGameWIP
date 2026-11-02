@@ -96,7 +96,7 @@ struct ArrowLaneTimes {
     float unusedAlpha = 0.30f;    // a lane this combo does not use
     float burstFrom = 6.f;        // ring radius, percent of the box's height
     float burstToPerfect = 10.f, burstToGreat = 8.5f, burstToGood = 7.f;
-    float wordRisePx = 24.f;      // at 1080 high
+    float wordRisePx = 10.f;      // at 1080 high
     float missSinkPx = 10.f;
 };
 
@@ -111,7 +111,7 @@ struct ArrowLaneLayout {
     float minGlyphPx = 48.f;
     float perfectBandH = 4.2f;  // the Perfect window drawn on the target at scale 1.0, for the layout table
     LaneRect word{LaneAnchor::TopRight, -35.3f, 35.5f, 16.7f, 4.0f};
-    float wordStartY = 38.5f;
+    float wordStartY = 36.0f;
     LaneRect streak{LaneAnchor::TopRight, -26.2f, 30.5f, 8.0f, 4.0f};
     LaneRect stamp{LaneAnchor::TopRight, -35.3f, 50.0f, 16.7f, 8.0f};
     LaneRect caption{LaneAnchor::TopRight, -35.7f, 94.0f, 17.5f, 3.5f};
