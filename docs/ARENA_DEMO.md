@@ -129,14 +129,14 @@ An enemy kind in `arena.json` may be drawn as a skeletal mesh with its own anima
 Everything about it is data and host-side: the fight's rules never read it.
 
 ```json
-"look": { "clips": "Data/Anim/kite_clips.json", "hover": 0.9, "scale": 1, "yawOffset": 0 }
+"look": { "clips": "Data/Anim/kite_clips.json", "hover": 0.9, "scale": 1, "yawOffset": -90 }
 ```
 
 - `look.clips`: the project-relative path (under `Data/`) of a clip table in the beat clips' format (`id`, `asset`, `length_s`,
   `impact_s`, `loop`; see [BEAT_ANIMS.md](BEAT_ANIMS.md)) with one extra top-level key, `mesh`, the skeletal mesh asset path.
   `hover` (m) lifts the mesh above the enemy's position on the ground (the mesh's origin is its bottom; the tell arcs stay at
   ground level), `scale` scales it, `yawOffset` (degrees) turns it from its own facing (`FTMeshFacing`, which finds none on a
-  mesh with no head or feet bones: set it by eye).
+  mesh with no head or feet bones: set it by eye; a glTF export whose front is Blender -Y needs -90).
 - A move's `clip`: the id of the clip played for it (`tell` stays the Read card's word, one of the eight). Ids are 1..31
   letters, digits, `_` and `-`, one per move.
 - A kind's `bpm`: the beat its startups are whole numbers of, in place of the file's (the kite's 72 against the file's 150).
