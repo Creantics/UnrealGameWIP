@@ -1,4 +1,5 @@
 #include "ftcore/ArenaFight.h"
+#include "ftcore/BeatChoreo.h" // the skinned boss's clip table
 #include "ftcore/ComboSequence.h" // comboSequencesBuilt: the fence test
 
 #include "AllocCounter.h"
@@ -236,7 +237,7 @@ TEST_CASE("arena table: Data/Battle/arena.json loads without warnings") {
     CHECK(t.fighters.size() == t.fighterIds.size());
     CHECK(t.enemies.size() == t.enemyIds.size());
     CHECK(t.enemies.size() >= 2);
-    CHECK(t.enemies.size() <= 8); // the wave's three, a human-sized duelist and the sized placeholders (hulk, titan)
+    CHECK(t.enemies.size() <= 8); // the wave's three, a human-sized duelist, the sized placeholders (hulk, titan) and the skinned boss
     CHECK(t.fallback.enemyCount == 1);
     CHECK(t.entries.empty());
     // The default fight's slot says which table kind it holds.
@@ -261,10 +262,13 @@ TEST_CASE("arena data: every enemy attack telegraphs for at least 0.35 s, and a 
     const ArenaTable table = loadShipped();
     std::vector<ArenaEnemyKind> kinds = table.enemies;
     kinds.push_back(defaultArenaDef().enemies[0]); // the built-in fight's enemy follows the same rule
-    for (const ArenaEnemyKind& k : kinds) {
+    for (std::size_t e = 0; e < kinds.size(); ++e) {
+        const ArenaEnemyKind& k = kinds[e];
+        // The skinned boss's timings are authored move by move (to its animations), not by that ladder.
+        const bool authored = e < table.enemyIds.size() && table.enemyIds[e] == "kite_boss";
         for (std::size_t a = 0; a < k.moveCount; ++a) {
             CHECK(k.moves[a].attack.startup >= 0.35f);
-            for (std::size_t b = 0; b < k.moveCount; ++b)
+            for (std::size_t b = 0; b < k.moveCount && !authored; ++b)
                 if (k.moves[a].attack.damage > k.moves[b].attack.damage)
                     CHECK(k.moves[a].attack.startup > k.moves[b].attack.startup);
         }
@@ -2642,10 +2646,11 @@ TEST_CASE("arena beat: arenaWholeBeats, and every authored startup is a whole nu
     REQUIRE(table.bpm > 0.f);
     CHECK(table.fallback.bpm == table.bpm);
     for (const ArenaFightEntry& e : table.entries) CHECK(e.def.bpm == table.bpm);
-    for (std::size_t i = 0; i < table.enemies.size(); ++i)
+    for (std::size_t i = 0; i < table.enemies.size(); ++i) {
+        const float bpm = table.enemies[i].bpm > 0.f ? table.enemies[i].bpm : table.bpm; // a kind may keep its own beat
         for (std::size_t m = 0; m < table.enemies[i].moveCount; ++m)
-            CHECK_MESSAGE(arenaWholeBeats(table.enemies[i].moves[m].attack.startup, table.bpm) > 0,
-                          table.enemyIds[i] << " move " << m);
+            CHECK_MESSAGE(arenaWholeBeats(table.enemies[i].moves[m].attack.startup, bpm) > 0, table.enemyIds[i] << " move " << m);
+    }
     const ArenaDef def = defaultArenaDef();
     REQUIRE(def.bpm > 0.f);
     for (std::size_t m = 0; m < def.enemies[0].moveCount; ++m)
@@ -2678,6 +2683,168 @@ TEST_CASE("arena beat: the loader refuses an off-beat startup and a bpm out of r
         tableJson(kFightersOk, R"([ { "id": "dummy", "moves": [ { "startup": 0.45, "active": 0.1, "range": 2, "maxRange": 2, "weight": 1 } ] } ])");
     CHECK(loadError(noBpm, &plain).empty());
     CHECK(plain.bpm == 0.f);
+}
+
+TEST_CASE("arena kinds: a bpm of their own, a skinned look and a clip per move load, and a bad one is refused") {
+    const auto withKind = [](const char* extra, const char* moveExtra = "") {
+        return tableJson(kFightersOk, std::string(R"([ { "id": "dummy", )") + extra +
+                                          R"(, "moves": [ { "startup": 1.667, "active": 0.1, "range": 2, "maxRange": 2, "weight": 1)" +
+                                          moveExtra + " } ] } ]");
+    };
+    const auto withFileBpm = [](std::string json) {
+        const std::string version = R"("version": 1,)";
+        json.replace(json.find(version), version.size(), version + R"( "bpm": 150,)");
+        return json;
+    };
+    const char* const look = R"("look": { "clips": "Data/Anim/x.json", "hover": 0.9, "scale": 2, "yawOffset": 90 })";
+    // The file's beat (0.4 s) does not fit 1.667 s; the kind's own (72 bpm, 0.833 s) does.
+    CHECK(contains(loadError(withFileBpm(withKind(R"("hp": 5)"))), "whole number of beats at 150 bpm"));
+    ArenaTable t;
+    CHECK(loadError(withFileBpm(withKind(R"("bpm": 72)")), &t).empty());
+    REQUIRE(t.enemies.size() == 1);
+    CHECK(t.enemies[0].bpm == 72.f);
+    CHECK(contains(loadError(withFileBpm(withKind(R"("bpm": 90)"))), "whole number of beats at 90 bpm"));
+    CHECK(contains(loadError(withKind(R"("bpm": 0)")), "enemies[0].bpm"));
+    CHECK(contains(loadError(withKind(R"("bpm": 301)")), "enemies[0].bpm"));
+
+    CHECK(loadError(withKind(look, R"(, "clip": "swing_big")"), &t).empty());
+    CHECK(t.enemies[0].look.skinned());
+    CHECK(t.enemies[0].look.clips() == "Data/Anim/x.json");
+    CHECK(t.enemies[0].look.hover == 0.9f);
+    CHECK(t.enemies[0].look.scale == 2.f);
+    CHECK(t.enemies[0].look.yawOffset == 90.f);
+    CHECK(t.enemies[0].moves[0].clip() == "swing_big");
+    // No look and no clip: the shapes, as before.
+    CHECK(loadError(withKind(R"("hp": 5)"), &t).empty());
+    CHECK_FALSE(t.enemies[0].look.skinned());
+    CHECK(t.enemies[0].look.scale == 1.f);
+    CHECK(t.enemies[0].moves[0].clip().empty());
+
+    CHECK(contains(loadError(withKind(R"("look": 3)")), "enemies[0].look: expected an object"));
+    CHECK(contains(loadError(withKind(R"("look": {})")), "enemies[0].look.clips"));
+    CHECK(contains(loadError(withKind(R"("look": { "clips": "../x.json" })")), "enemies[0].look.clips"));
+    CHECK(contains(loadError(withKind(R"("look": { "clips": "C:/x.json" })")), "enemies[0].look.clips"));
+    CHECK(contains(loadError(withKind(R"("look": { "clips": "Data/x.json", "hover": -1 })")), "enemies[0].look.hover"));
+    CHECK(contains(loadError(withKind(R"("look": { "clips": "Data/x.json", "scale": 0 })")), "enemies[0].look.scale"));
+    CHECK(contains(loadError(withKind(R"("look": { "clips": "Data/x.json", "yawOffset": 400 })")), "enemies[0].look.yawOffset"));
+    CHECK(contains(loadError(withKind(look, R"(, "clip": "has space")")), "moves[0].clip"));
+    CHECK(contains(loadError(withKind(look, R"(, "clip": 4)")), "moves[0].clip"));
+    CHECK(contains(loadError(withKind(look, R"(, "clip": "this_clip_id_is_much_too_long_for_it")")), "moves[0].clip"));
+    CHECK(contains(loadError(withKind(R"("hp": 5)", R"(, "clip": "swing_big")")), "moves[0].clip: expected the enemy to have a look"));
+    std::vector<std::string> warnings;
+    CHECK(loadError(withKind(R"("look": { "clips": "Data/x.json", "colour": 1 })"), nullptr, &warnings).empty());
+    REQUIRE(warnings.size() == 1);
+    CHECK(contains(warnings[0], "enemies[0].look: unknown key: colour"));
+    // Two moves of one enemy cannot share a clip.
+    const std::string twice = tableJson(kFightersOk, std::string(R"([ { "id": "dummy", )") + look +
+                                                        R"(, "moves": [ { "clip": "a" }, { "clip": "a", "weight": 0 } ] } ])");
+    CHECK(contains(loadError(twice), "moves[1].clip: the same as moves[0]'s"));
+    // Up to kMaxArenaMoves (8) moves, each telling itself apart; a ninth is refused.
+    static_assert(kMaxArenaMoves == 8 && kArenaTellCount == 8, "a kind can name every tell once");
+    std::string eight = R"([ { "id": "dummy", "moves": [)";
+    for (std::size_t m = 0; m < kMaxArenaMoves; ++m)
+        eight += std::string(m ? "," : "") + R"({ "tell": ")" + arenaTellName(static_cast<ArenaTell>(m)) + R"(" })";
+    CHECK(loadError(tableJson(kFightersOk, eight + "] } ]")).empty());
+    CHECK(contains(loadError(tableJson(kFightersOk, eight + R"(, {}] } ])")), "moves: expected an array of 1..8 moves"));
+}
+
+namespace {
+
+// The shipped skinned boss (arena.json's kite_boss) and its clip table.
+struct KiteData {
+    ArenaTable table;
+    BeatClips clips;
+    std::size_t kind = 0;
+    const ArenaEnemyKind& boss() const { return table.enemies[kind]; }
+};
+
+KiteData loadKite() {
+    KiteData k;
+    k.table = loadShipped();
+    for (std::size_t e = 0; e < k.table.enemyIds.size(); ++e)
+        if (k.table.enemyIds[e] == "kite_boss") k.kind = e;
+    REQUIRE(k.table.enemyIds[k.kind] == "kite_boss");
+    std::string text, err;
+    std::vector<std::string> warnings;
+    if (!ftcore_test::readProjectData("Anim/kite_clips.json", text)) FAIL("Data/Anim/kite_clips.json not found");
+    REQUIRE_MESSAGE(importBeatClips(text, k.clips, &err, &warnings), err);
+    CHECK(warnings.empty());
+    return k;
+}
+
+} // namespace
+
+TEST_CASE("arena kite boss: its moves name clips of its table, with impacts that land at the end of the startup") {
+    const KiteData k = loadKite();
+    const ArenaEnemyKind& boss = k.boss();
+    CHECK(boss.hp == 1100);
+    CHECK(boss.height == 9.1f);
+    CHECK(boss.look.skinned());
+    CHECK(boss.look.clips() == "Data/Anim/kite_clips.json");
+    CHECK(boss.look.hover > 0.f);
+    CHECK(boss.bpm == 72.f);
+    CHECK(k.clips.mesh().rfind("/Game/", 0) == 0);
+    // The clips the host plays for a state, not a move.
+    for (const char* id : {"idle", "idle_p2", "stagger", "face_down", "defeat", "hit_light", "hit_heavy"})
+        CHECK_MESSAGE(k.clips.find(id) >= 0, id);
+    CHECK(k.clips[static_cast<std::size_t>(k.clips.find("idle"))].loop);
+    CHECK(k.clips[static_cast<std::size_t>(k.clips.find("face_down"))].loop);
+    REQUIRE(boss.moveCount == 8);
+    int parryable = 0;
+    for (std::size_t m = 0; m < boss.moveCount; ++m) {
+        const ArenaEnemyMove& mv = boss.moves[m];
+        const int clip = k.clips.find(mv.clip());
+        REQUIRE_MESSAGE(clip >= 0, "move " << m << " clip " << mv.clip());
+        const BeatClip& c = k.clips[static_cast<std::size_t>(clip)];
+        CHECK_MESSAGE(c.impact > 0.0, mv.clip());
+        // The clip's blow lands on the end of the startup at a play rate near 1, and the clip is as long as the move.
+        const double rate = c.impact / static_cast<double>(mv.attack.startup);
+        CHECK_MESSAGE(std::fabs(rate - 1.0) < 0.01, mv.clip() << " rate " << rate);
+        CHECK_MESSAGE(std::fabs(c.length - static_cast<double>(mv.attack.total())) < 0.01, mv.clip());
+        CHECK(mv.attack.lunge == 0.f);
+        if (mv.parryable && !mv.unblockable) ++parryable;
+    }
+    // Swoop is the marked move: the only big one a parry opens the boss on (the two basic strikes are parryable too).
+    for (std::size_t m = 0; m < boss.moveCount; ++m)
+        if (boss.moves[m].attack.damage >= 8)
+            CHECK_MESSAGE(boss.moves[m].parryable == (boss.moves[m].clip() == "swoop"), boss.moves[m].clip());
+    CHECK(parryable == 3);
+}
+
+TEST_CASE("arena kite boss: about one swoop in ten seconds") {
+    const KiteData k = loadKite();
+    std::size_t swoop = 0;
+    for (std::size_t m = 0; m < k.boss().moveCount; ++m)
+        if (k.boss().moves[m].clip() == "swoop") swoop = m;
+    // A lead who cannot die and presses nothing: the boss attacks without a pause.
+    ArenaDef def;
+    def.fighter = k.table.fighter("default");
+    def.fighter.hp = 1000000;
+    def.enemyCount = 1;
+    def.enemies[0] = k.boss();
+    def.ringRadius = 13.4f;
+    def.spawnDistance = 7.7f;
+    int swoops = 0;
+    float seconds = 0.f;
+    for (std::uint32_t seed = 1; seed <= 6; ++seed) {
+        const ArenaRing ring{Vec2{0.f, 0.f}, def.ringRadius};
+        ArenaFight fight;
+        fight.begin(def, ring, Vec2{-4.f, 0.f}, Vec2{1.f, 0.f}, seed);
+        ArenaBodies bodies;
+        bodies.player = fight.playerStart();
+        bodies.enemies[0] = fight.enemyStart(0);
+        while (fight.time() < 120.f) {
+            const ArenaOutput& out = fight.tick(kDt, ArenaInput{}, bodies);
+            arenaStep(fight, bodies, kDt);
+            for (const ArenaEvent& e : out.events)
+                if (e.type == ArenaEventType::AttackStarted && e.move == swoop) ++swoops;
+        }
+        seconds += fight.time();
+    }
+    const float every = seconds / static_cast<float>(std::max(swoops, 1));
+    MESSAGE("arena kite boss: one swoop every " << every << " s (" << swoops << " in " << seconds << " s)");
+    CHECK(every > 8.f);
+    CHECK(every < 13.f);
 }
 
 TEST_CASE("arena paired counter: the partner's press within pairWindow of a parry, either first, counter-staggers") {

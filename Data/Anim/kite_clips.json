@@ -1,0 +1,167 @@
+{
+ "version": 1,
+ "mesh": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_boss",
+ "clips": [
+  {
+   "id": "idle",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossidle",
+   "length_s": 5.0,
+   "impact_s": 0.0,
+   "loop": true
+  },
+  {
+   "id": "idle_p2",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossidle_p2",
+   "length_s": 5.0,
+   "impact_s": 0.0,
+   "loop": true
+  },
+  {
+   "id": "descent",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossdescent",
+   "length_s": 6.0,
+   "impact_s": 0.0,
+   "loop": false
+  },
+  {
+   "id": "mitten_drop",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossmitten_drop",
+   "length_s": 3.367,
+   "impact_s": 1.667,
+   "loop": false
+  },
+  {
+   "id": "mitten_drop_double",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossmitten_drop_double",
+   "length_s": 4.2,
+   "impact_s": 1.667,
+   "loop": false
+  },
+  {
+   "id": "swoop",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossswoop",
+   "length_s": 3.917,
+   "impact_s": 1.667,
+   "loop": false
+  },
+  {
+   "id": "swoop_feint",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossswoop_feint",
+   "length_s": 4.35,
+   "impact_s": 2.5,
+   "loop": false
+  },
+  {
+   "id": "swoop_slant",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossswoop_slant",
+   "length_s": 3.917,
+   "impact_s": 1.667,
+   "loop": false
+  },
+  {
+   "id": "peg_spray",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bosspeg_spray",
+   "length_s": 3.467,
+   "impact_s": 1.667,
+   "loop": false
+  },
+  {
+   "id": "snag",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bosssnag",
+   "length_s": 6.0,
+   "impact_s": 2.5,
+   "loop": false
+  },
+  {
+   "id": "wet_sheet",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bosswet_sheet",
+   "length_s": 6.0,
+   "impact_s": 2.5,
+   "loop": false
+  },
+  {
+   "id": "undertow",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossundertow",
+   "length_s": 3.567,
+   "impact_s": 1.667,
+   "loop": false
+  },
+  {
+   "id": "undertow_double",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossundertow_double",
+   "length_s": 3.967,
+   "impact_s": 1.667,
+   "loop": false
+  },
+  {
+   "id": "rockabye",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossrockabye",
+   "length_s": 6.2,
+   "impact_s": 3.333,
+   "loop": false
+  },
+  {
+   "id": "string_flick",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossstring_flick",
+   "length_s": 1.833,
+   "impact_s": 0.833,
+   "loop": false
+  },
+  {
+   "id": "sheet_slap",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bosssheet_slap",
+   "length_s": 1.833,
+   "impact_s": 0.833,
+   "loop": false
+  },
+  {
+   "id": "phase_break",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossphase_break",
+   "length_s": 4.0,
+   "impact_s": 0.0,
+   "loop": false
+  },
+  {
+   "id": "stagger",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossstagger",
+   "length_s": 2.0,
+   "impact_s": 0.0,
+   "loop": false
+  },
+  {
+   "id": "tail_break",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bosstail_break",
+   "length_s": 3.0,
+   "impact_s": 0.3,
+   "loop": false
+  },
+  {
+   "id": "hit_light",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bosshit_light",
+   "length_s": 0.6,
+   "impact_s": 0.05,
+   "loop": false
+  },
+  {
+   "id": "hit_heavy",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bosshit_heavy",
+   "length_s": 1.0,
+   "impact_s": 0.08,
+   "loop": false
+  },
+  {
+   "id": "face_down",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossface_down",
+   "length_s": 2.0,
+   "impact_s": 0.0,
+   "loop": true
+  },
+  {
+   "id": "defeat",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossdefeat",
+   "length_s": 6.0,
+   "impact_s": 0.0,
+   "loop": false
+  }
+ ]
+}

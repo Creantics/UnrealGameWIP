@@ -4,6 +4,7 @@
 #include "ftcore/Json.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <initializer_list>
@@ -976,7 +977,7 @@ struct ArenaFightImpl {
         if (foe.token || (foe.brain != ArenaBrain::Approach && foe.brain != ArenaBrain::Strafe)) return;
         const ArenaEnemyKind& k = def.enemies[i];
         const float distance = arenaDistance(pl.pos, foe.pos);
-        if (foe.brain == ArenaBrain::Approach && distance <= k.preferredRange) {
+        if (foe.brain == ArenaBrain::Approach && distance <= k.preferredRange + kArenaEps) { // approach() settles within kArenaEps of it
             enterStrafe(i);
         } else if (foe.brain == ArenaBrain::Strafe && distance > k.runRange) {
             foe.brain = ArenaBrain::Approach;
@@ -1776,19 +1777,24 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             loadShare 0..10; releasePoise 0..1000; pairWindow 0..1; pairHits 0..10; release an attack;
 //             readPower 0..100; readStackPower 0..10; readPoise, readWrongPoise 0..100000
 //   bpm       (0, 300], optional; with it every move's startup is a whole number of beats, within
-//             kArenaBeatTolerance
+//             kArenaBeatTolerance. An enemy may carry a bpm of its own, which its startups are checked against
+//             in place of the file's
 //   attack    startup, recovery 0..10; active (0, 10]; range (0, 100]; arcCos -1..1; damage, poiseDamage,
 //             guardDamage, stamina 0..100000; lunge, tracking 0..100; armor, cancel 0..1; maxTargets 0..6
 //   enemy     hp 1..100000; poise (0, 100000]; poiseDelay, staggerTime, openTime, downTime, attackDelay 0..10;
 //             walkSpeed, runSpeed, strafeSpeed 0..50; turnRate (0, 100]; preferredRange (0, 100];
 //             runRange 0..100 and at least preferredRange; bodyRadius (0, 5]; height (0, 30] metres, optional
-//             (see arenaEnemyHeight); moves 1..6; accel 0..1000;
+//             (see arenaEnemyHeight); moves 1..8; accel 0..1000; bpm (0, 300], optional (see above);
+//             look, optional, the host's skinned figure for it: { "clips": a path in Data/ of 1..95 characters,
+//             "hover" 0..30 m, "scale" (0, 100], "yawOffset" -360..360 degrees } (clips required)
 //             at most 254 kinds in the file (ArenaDef::enemyKind holds an index, kArenaNoKind is 255)
 //   move      the attack's keys; minRange 0..100; maxRange (0, 100] and at least minRange; cooldown 0..60;
 //             weight 0..1000 (0: only ever reached by a chain; at least one move needs more);
 //             chain -1 or another move of the same enemy, with no loop; unblockable, parryable booleans;
 //             tell one of arenaTellName's words, no two named alike in one enemy (default "strike": moves left
-//             at it read alike, so a lone enemy whose moves name no tell is dealt no Read cards)
+//             at it read alike, so a lone enemy whose moves name no tell is dealt no Read cards);
+//             clip an id of 1..31 letters, digits, _ and -, optional, only in an enemy with a look: the clip the
+//             host plays for the move (the host's business; no two moves of one enemy share one)
 //   fight     enemies 1..6 known enemy ids; ring (0, 1000]; spawn (0, 1000]; attackers 1..6;
 //             scene a non-empty id; beat 0..1000000; step 0..1000
 
@@ -1966,12 +1972,40 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
     if (f.lockBreak < f.lockRange) errors.push_back(path + ".lockBreak: expected at least lockRange");
 }
 
+// 1 or more letters, digits, _ and -.
+bool arenaIdText(std::string_view id) {
+    if (id.empty()) return false;
+    for (const char c : id)
+        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-')) return false;
+    return true;
+}
+
+// An enemy's `look`: absent keeps the shapes.
+void arenaParseLook(JsonValue j, const std::string& path, ArenaEnemyLook& look, ArenaStrings& errors, ArenaStrings* warnings) {
+    if (j.isAbsent()) return;
+    if (!j.isObject()) {
+        errors.push_back(path + ": expected an object");
+        return;
+    }
+    arenaUnknownKeys(j, path, {"clips", "hover", "scale", "yawOffset"}, false, warnings);
+    const JsonValue c = j["clips"];
+    const std::string_view clips = c.string();
+    if (!c.isString() || clips.empty() || clips.size() > kMaxArenaLookPath || clips.rfind("Data/", 0) != 0 ||
+        clips.find("..") != std::string_view::npos || clips.find('\\') != std::string_view::npos)
+        errors.push_back(path + ".clips: expected a path in Data/ of 1.." + std::to_string(kMaxArenaLookPath) + " characters");
+    else
+        std::copy(clips.begin(), clips.end(), look.clipsText.begin());
+    arenaNum(j, "hover", look.hover, 0, 30, false, path, errors);
+    arenaNum(j, "scale", look.scale, 0, 100, true, path, errors);
+    arenaNum(j, "yawOffset", look.yawOffset, -360, 360, false, path, errors);
+}
+
 void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, ArenaStrings& errors,
                      ArenaStrings* warnings) {
     arenaUnknownKeys(j, path,
                      {"id", "hp", "poise", "poiseDelay", "staggerTime", "openTime", "downTime", "walkSpeed", "runSpeed",
                       "strafeSpeed", "turnRate", "preferredRange", "runRange", "attackDelay", "bodyRadius", "height", "moves",
-                      "accel"},
+                      "accel", "bpm", "look"},
                      false, warnings);
     arenaInt(j, "hp", k.hp, 1, 100000, path, errors);
     arenaNum(j, "poise", k.poise, 0, 100000, true, path, errors);
@@ -1989,6 +2023,8 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     arenaNum(j, "accel", k.accel, 0, 1000, false, path, errors);
     arenaNum(j, "bodyRadius", k.bodyRadius, 0, 5, true, path, errors);
     arenaNum(j, "height", k.height, 0, 30, true, path, errors);
+    arenaNum(j, "bpm", k.bpm, 0, 300, true, path, errors);
+    arenaParseLook(j["look"], path + ".look", k.look, errors, warnings);
     if (k.runRange < k.preferredRange) errors.push_back(path + ".runRange: expected at least preferredRange");
 
     const JsonValue moves = j["moves"];
@@ -2009,7 +2045,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
         }
         ArenaEnemyMove& mv = k.moves[m];
         arenaUnknownKeys(mj, mp,
-                         {"minRange", "maxRange", "cooldown", "weight", "chain", "unblockable", "parryable", "tell"},
+                         {"minRange", "maxRange", "cooldown", "weight", "chain", "unblockable", "parryable", "tell", "clip"},
                          true, warnings);
         arenaParseAttack(mj, mp, mv.attack, errors);
         arenaNum(mj, "minRange", mv.minRange, 0, 100, false, mp, errors);
@@ -2030,6 +2066,17 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
             if (!known)
                 errors.push_back(mp + ".tell: expected one of strike, overhead, backhand, charge, thrust, slash, sweep, "
                                       "slam");
+        }
+        if (const JsonValue cj = mj["clip"]; !cj.isAbsent()) {
+            const std::string_view id = cj.string();
+            if (!cj.isString() || id.empty() || id.size() > kMaxArenaClipId || !arenaIdText(id))
+                errors.push_back(mp + ".clip: expected 1.." + std::to_string(kMaxArenaClipId) + " letters, digits, _ and -");
+            else if (!k.look.skinned())
+                errors.push_back(mp + ".clip: expected the enemy to have a look");
+            else
+                std::copy(id.begin(), id.end(), mv.clipText.begin());
+            for (std::uint32_t o = 0; o < m && !id.empty(); ++o)
+                if (k.moves[o].clip() == id) errors.push_back(mp + ".clip: the same as moves[" + std::to_string(o) + "]'s");
         }
         if (mv.minRange > mv.maxRange) errors.push_back(mp + ".minRange: expected at most maxRange");
         if (mv.weight > 0.f) pickable = true;
@@ -2188,17 +2235,17 @@ bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error
     // ArenaDef::enemyKind holds an index in a byte, and kArenaNoKind is its last value.
     if (table.enemyIds.size() >= kArenaNoKind) errors.push_back("enemies: expected at most 254 kinds");
 
-    // With a bpm, every move's startup is a whole number of beats (within kArenaBeatTolerance).
-    if (table.bpm > 0.f) {
-        for (std::size_t i = 0; i < table.enemies.size(); ++i) {
-            const ArenaEnemyKind& k = table.enemies[i];
-            for (std::size_t m = 0; m < k.moveCount; ++m) {
-                if (arenaWholeBeats(k.moves[m].attack.startup, table.bpm) > 0) continue;
-                errors.push_back("enemies[" + std::to_string(i) + "].moves[" + std::to_string(m) +
-                                 "].startup: expected a whole number of beats at " + arenaFormat(table.bpm) + " bpm (" +
-                                 arenaFormat(60.0 / table.bpm) + " s each, within " +
-                                 arenaFormat(kArenaBeatTolerance) + " s)");
-            }
+    // With a bpm (the file's, or the kind's own), every move's startup is a whole number of beats (within
+    // kArenaBeatTolerance).
+    for (std::size_t i = 0; i < table.enemies.size(); ++i) {
+        const ArenaEnemyKind& k = table.enemies[i];
+        const float bpm = k.bpm > 0.f ? k.bpm : table.bpm;
+        if (!(bpm > 0.f)) continue;
+        for (std::size_t m = 0; m < k.moveCount; ++m) {
+            if (arenaWholeBeats(k.moves[m].attack.startup, bpm) > 0) continue;
+            errors.push_back("enemies[" + std::to_string(i) + "].moves[" + std::to_string(m) +
+                             "].startup: expected a whole number of beats at " + arenaFormat(bpm) + " bpm (" +
+                             arenaFormat(60.0 / bpm) + " s each, within " + arenaFormat(kArenaBeatTolerance) + " s)");
         }
     }
 

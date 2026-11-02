@@ -65,6 +65,13 @@
 // -ArenaOverview adds a first view, <prefix>_0_overview.png: the whole zone from a camera high over its south-west
 // side, HUD off, with its walls (green), obstacles (red) and road mouths (yellow) drawn as debug lines for the
 // picture only, and a second, <prefix>_0b_edge.png: the player 1.4 m from the wall, to show the edge cue.
+//
+// The player's figure wears a lead's look from config (the explore character's PartyLooks, Config/UserGame.ini): the first
+// by default, -ArenaLead=<name> picks another; with none, or none that loads, the test human is worn (one warning).
+// An enemy kind whose arena.json entry has a `look` is drawn as a skeletal mesh (AFTArenaFighter::SetupSkinned) whose clips
+// come from the clip table the look names (Data/Anim/*.json, the beat clips' format): the mode picks the clip from Core's
+// state each frame and times it from Core's clocks (DriveSkin), so the pose is a function of the fight. If the mesh or
+// its idle clip doesn't load, the kind keeps its shapes (one warning).
 
 #include "CoreMinimal.h"
 
@@ -72,14 +79,40 @@
 
 #include "ftcore/ArenaFight.h"
 #include "ftcore/ArenaZone.h"
+#include "ftcore/BeatChoreo.h"
 #include "ftcore/WorldLayout.h"
 
+#include <array>
 #include <memory>
 
 #include "FTArenaGameMode.generated.h"
 
 class AFTArenaFighter;
 class APlayerController;
+class UAnimSequence;
+struct FFTLeadLook;
+
+// A skinned enemy's clips: the table, the sequences loaded for it (by table index) and the table index of each clip the
+// mode plays by role, -1 where it has none.
+USTRUCT()
+struct FFTArenaSkin
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<TObjectPtr<UAnimSequence>> Sequences;
+	TSharedPtr<ftcore::BeatClips> Clips;
+	int32 Idle = -1;
+	int32 IdleTwo = -1;
+	int32 Stagger = -1;
+	int32 FaceDown = -1;
+	int32 Defeat = -1;
+	int32 HitLight = -1;
+	int32 HitHeavy = -1;
+	std::array<int32, ftcore::kMaxArenaMoves> MoveClip{};
+
+	bool IsLoaded() const { return Clips.IsValid() && Idle >= 0; }
+};
 
 UCLASS()
 class FORGOTTENTHIRD_API AFTArenaGameMode : public AFTGameMode
@@ -168,6 +201,14 @@ private:
 	double SampleGround(const ftcore::Vec2& P) const;
 	void Begin();
 	void SpawnFigures();
+	// The lead look the player's figure wears: -ArenaLead=<name> among the explore character's PartyLooks, else the first;
+	// null (logged) when the config has none.
+	const FFTLeadLook* FindLead() const;
+	// Dresses enemy slot I as a skeletal mesh when its kind has a look that loads (see the top of this file).
+	void LoadSkin(int32 I);
+	// Picks and times slot I's clip from its Core state: the move's own clip through an attack, at the rate that lands its
+	// impact at the end of the startup; stagger; face down while open; the hit reaction between moves; defeat; idle.
+	void DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const ftcore::ArenaEnemyKind& Kind, float Alpha);
 	void PutBodiesAtStart();
 	// This frame's presses (edges kept until a step takes them), the held guard, the stick and the camera.
 	void PollInput(float DeltaSeconds);
@@ -194,6 +235,14 @@ private:
 	TObjectPtr<AFTArenaFighter> PlayerFigure;
 	UPROPERTY()
 	TObjectPtr<AFTArenaFighter> EnemyFigures[6]; // ftcore::kMaxArenaEnemies (a literal for UHT; checked in the .cpp)
+	UPROPERTY()
+	FFTArenaSkin Skins[6];                       // ... likewise
+	// What each skinned enemy plays: the clip (a table index; -2 none yet) and since when, the last hit reaction.
+	int32 SkinClip[ftcore::kMaxArenaEnemies];
+	double SkinSince[ftcore::kMaxArenaEnemies];
+	double HitSince[ftcore::kMaxArenaEnemies];
+	bool bHitHeavy[ftcore::kMaxArenaEnemies] = {};
+	float FrameDelta = 0.f; // the frame's seconds, for the clips' crossfades
 
 	ftcore::ArenaTable Table;
 	ftcore::WorldTable Worlds;

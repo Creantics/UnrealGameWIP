@@ -1148,7 +1148,14 @@ bool importBeatClips(std::string_view json, BeatClips& out, std::string* error, 
         return finish();
     }
     if (const JsonValue v = root["version"]; !(v.isInteger() && v.integer() == 1)) errors.push_back("version: expected 1");
-    ld.unknownKeys(root, "", {"version", "clips"});
+    ld.unknownKeys(root, "", {"version", "clips", "mesh"});
+    if (const JsonValue mv = root["mesh"]; !mv.isAbsent()) {
+        const std::string_view mesh = mv.string();
+        if (!mv.isString() || mesh.empty() || mesh.size() > kMaxClipAsset || mesh[0] != '/')
+            errors.push_back("mesh: expected a path of 1.." + std::to_string(kMaxClipAsset) + " characters beginning with /");
+        else
+            std::copy(mesh.begin(), mesh.end(), out.meshText.begin());
+    }
     const JsonValue list = root["clips"];
     if (!list.isArray() || list.size() == 0 || list.size() > kMaxBeatClips) {
         errors.push_back("clips: expected an array of 1.." + std::to_string(kMaxBeatClips) + " clips");

@@ -4,19 +4,24 @@
 // basic shapes and posed procedurally from what ftcore::ArenaFight says it is doing. AFTArenaGameMode spawns
 // and places every one of them; the figure never moves itself and owns no rules.
 //
-// The player's figure is the test human (a skeletal mesh looping its idle or walk clip by speed) when the
-// project has it, else a body of shapes like the enemies'. Every figure has a weapon arm (a pivot at the
+// The player's figure wears a lead's look from config (a MetaHuman body with its face, outfit and grooms, walking
+// and running by speed: FTLook.h, UFTLocomotionAnimInstance) when it loads, else the test human (a skeletal mesh
+// looping its idle or walk clip by speed) when the project has it, else a body of shapes like the enemies'. An
+// enemy kind with a skinned look (arena.json) is drawn as a skeletal mesh lifted off the ground whose clips the game
+// mode picks and times from Core's state (PlayClip, UFTBeatFighterAnimInstance), the shapes hidden. Every figure has a weapon arm (a pivot at the
 // shoulder and a blade) that winds up through an attack's startup, sweeps through its active part and
 // settles through its recovery: a light swings across (alternating sides along the chain), a heavy, a
 // riposte and an enemy's unparryable move come over the top. A guard raises a shield (gold while the parry
 // window is open); a dodge crouches and leans along the roll; hitstun, a broken guard, a stagger and an
-// open enemy lean back; the downed and the dead lie flat. An enemy's tell also shows on the floor: an arc
+// open enemy lean back; the downed and the dead lie flat (a skinned enemy's clips do that themselves). An enemy's tell also shows on the floor: an arc
 // of the move's reach and width that grows through its startup and flashes as the move goes active.
 //
 // Posing writes component transforms and material parameters only: nothing allocates per frame.
 
 #include "CoreMinimal.h"
 #include "GameFramework/Pawn.h"
+
+#include "FTLook.h"
 
 #include "FTArenaFighter.generated.h"
 
@@ -84,9 +89,20 @@ public:
 	AFTArenaFighter();
 
 	// Sizes the body (radius in metres, as Core's bodyRadius, and standing height in metres; 0 derives the
-	// height from the radius as the figure always did) and tints it; bPlayer picks the test human and the
-	// camera. Call once after spawning.
-	void Setup(bool bPlayer, float BodyRadius, const FLinearColor& BaseColor, float HeightMeters = 0.f);
+	// height from the radius as the figure always did) and tints it; bPlayer picks the lead's body and the
+	// camera. Call once after spawning. For the player, a Look is worn when it loads (its pieces and grooms too, and
+	// its locomotion clips); with none, or when its body doesn't load (one warning), the test human is.
+	void Setup(bool bPlayer, float BodyRadius, const FLinearColor& BaseColor, float HeightMeters = 0.f,
+		const FFTLeadLook* Look = nullptr);
+	// Draws an enemy as Mesh instead of the shapes: lifted HoverMeters off the ground, scaled, turned YawOffset degrees
+	// from the mesh's own facing. Its height (for the HUD's markers) is HeightMeters x Scale over the hover. Call after
+	// Setup. False when the mesh is null.
+	bool SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float Scale, float YawOffset, float HeightMeters);
+	// A skinned figure shows Clip at Time (seconds into it; looping wraps) over a short crossfade from the clip before it.
+	// bHoldRoot false lets the clip's root travel through (a fall). Call every frame; a null clip changes nothing.
+	void PlayClip(const UAnimSequence* Clip, float Time, bool bLoop, float DeltaSeconds, bool bHoldRoot = true);
+	bool IsSkinned() const { return SkinKind == ESkin::Creature; }
+	bool WearsLook() const { return SkinKind == ESkin::Lead; }
 	// The camera's rig in metres (ftcore::StageCamera, scaled with the arena): the boom's length, the pivot's
 	// height over the feet, the shoulder offset sideways and up, and the field of view in degrees.
 	void SetCameraRig(float ArmMeters, float PivotMeters, float SideMeters, float UpMeters, float FovDegrees);
@@ -102,6 +118,17 @@ public:
 
 private:
 	void SetTellVisible(bool bVisible);
+	// Puts Look on the player's skin: false (nothing changed) when its body doesn't load.
+	bool WearLook(const FFTLeadLook& Look);
+
+	// What the Skin component shows: nothing (the shapes), the test human, a lead's look or a creature's mesh.
+	enum class ESkin : uint8
+	{
+		Shapes,
+		TestHuman,
+		Lead,
+		Creature,
+	};
 
 	UPROPERTY(VisibleAnywhere, Category = "Arena")
 	TObjectPtr<USceneComponent> Root;
@@ -116,6 +143,11 @@ private:
 	TObjectPtr<UStaticMeshComponent> Visor;
 	UPROPERTY(VisibleAnywhere, Category = "Arena")
 	TObjectPtr<USkeletalMeshComponent> Skin;
+	// The lead's look: pieces worn on the body (clothes, a face) and the grooms bound to them.
+	UPROPERTY()
+	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
+	UPROPERTY()
+	TArray<TObjectPtr<USceneComponent>> Grooms;
 	UPROPERTY(VisibleAnywhere, Category = "Arena")
 	TObjectPtr<USceneComponent> Arm;
 	UPROPERTY(VisibleAnywhere, Category = "Arena")
@@ -149,7 +181,8 @@ private:
 	FLinearColor BaseColor = FLinearColor::White;
 	float Height = 180.f; // cm
 	float Radius = 40.f;  // cm
-	bool bHuman = false;
+	ESkin SkinKind = ESkin::Shapes;
+	float SkinHover = 0.f; // cm: a creature's lift
 	bool bWalking = false;
 	bool bTellShown = true;
 	bool bShieldShown = true;

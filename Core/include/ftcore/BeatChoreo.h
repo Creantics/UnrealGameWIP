@@ -138,6 +138,9 @@ struct BeatClip {
 struct BeatClips {
     std::array<BeatClip, kMaxBeatClips> items{};
     std::size_t count = 0;
+    std::array<char, kMaxClipAsset + 1> meshText{}; // the skeletal mesh the clips are for (optional top-level "mesh"), "" if none
+
+    std::string_view mesh() const { return std::string_view(meshText.data()); }
 
     // The index of the clip with this id, or -1.
     FTCORE_API int find(std::string_view id) const;
@@ -149,7 +152,8 @@ struct BeatClips {
 // Data/Anim/beat_clips.json: { "version": 1, "clips": [ {"id": "lead_stance", "asset":
 // "/Game/Combat/BeatAnims/Lead/lead_stance", "length_s": 2.0, "impact_s": 0, "loop": true} ] }. Ids
 // are 1..31 letters, digits, _ and -; the asset (optional) is a path of 1..127 characters beginning
-// with /, which the host loads; the length is over 0 and at most 60 s; the impact is within the clip. Unknown keys are warnings. On failure `out` is empty
+// with /, which the host loads; the length is over 0 and at most 60 s; the impact is within the clip. An optional
+// top-level "mesh" is the skeletal mesh asset the clips are for (a path like the asset's). Unknown keys are warnings. On failure `out` is empty
 // and *error lists each problem with its path, one per line.
 FTCORE_API bool importBeatClips(std::string_view json, BeatClips& out, std::string* error = nullptr,
                                 std::vector<std::string>* warnings = nullptr);

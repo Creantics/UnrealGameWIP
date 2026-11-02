@@ -1,5 +1,6 @@
 #include "FTArenaGameMode.h"
 
+#include "Animation/AnimSequence.h"
 #include "Camera/CameraActor.h"
 #include "DrawDebugHelpers.h"
 #include "Components/StaticMeshComponent.h"
@@ -11,7 +12,9 @@
 #include "Materials/MaterialInterface.h"
 #include "Camera/CameraComponent.h"
 #include "Engine/Engine.h"
+#include "Engine/SkeletalMesh.h"
 #include "EngineUtils.h"
+#include "FTExploreCharacter.h"
 #include "FTExploreDirector.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
@@ -30,6 +33,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "Misc/PackageName.h"
 
 #include <cmath>
 #include <string>
@@ -50,6 +54,17 @@ constexpr double kArenaAgainDelay = 0.6;
 constexpr double kArenaHitTint = 0.16;
 // The floor tell's flash after a move goes active (s).
 constexpr double kArenaTellFlash = 0.3;
+// A boss at least this tall (m) is looked up at: the camera's pitch rises toward its face, at this share of its height
+// (hover included), by at most kArenaFacePitchRise degrees over the zone's lock pitch.
+constexpr float kArenaTallBoss = 4.f;
+constexpr float kArenaFaceHeight = 0.7f;
+constexpr float kArenaFacePitchRise = 8.f;
+// A skinned enemy's hit reactions and playing rates: the rate that lands a clip's impact at the end of its startup is held
+// to these.
+constexpr float kArenaMinClipRate = 0.25f;
+constexpr float kArenaMaxClipRate = 4.f;
+// Under this share of its hp a skinned enemy idles its second-phase way (when its table has one).
+constexpr float kArenaSecondIdleHp = 0.6f;
 // Camera: pitch limits, the pitch while locked, how fast it turns to a lock, stick and mouse rates.
 constexpr float kArenaPitchMin = -50.f;
 constexpr float kArenaPitchMax = 10.f;
@@ -147,6 +162,9 @@ AFTArenaGameMode::AFTArenaGameMode()
 	{
 		ActiveSince[I] = -1e9;
 		EnemyHitTime[I] = -1e9;
+		SkinClip[I] = -2;
+		SkinSince[I] = -1e9;
+		HitSince[I] = -1e9;
 	}
 }
 
@@ -660,7 +678,7 @@ void AFTArenaGameMode::SpawnFigures()
 	}
 	if (PlayerFigure)
 	{
-		PlayerFigure->Setup(true, Def.fighter.bodyRadius, kArenaPlayerColor);
+		PlayerFigure->Setup(true, Def.fighter.bodyRadius, kArenaPlayerColor, 0.f, FindLead());
 		const ftcore::ZoneCamera& Rig = Fit.camera;
 		PlayerFigure->SetCameraRig(Rig.arm, Rig.pivot, Rig.side, Rig.up, Rig.fov);
 	}
@@ -681,7 +699,200 @@ void AFTArenaGameMode::SpawnFigures()
 		const ftcore::ArenaEnemyKind& EnemyKind = Def.enemies[static_cast<size_t>(I)];
 		Enemy->Setup(false, EnemyKind.bodyRadius, Color, ftcore::arenaEnemyHeight(EnemyKind));
 		EnemyFigures[I] = Enemy;
+		LoadSkin(I);
 	}
+}
+
+const FFTLeadLook* AFTArenaGameMode::FindLead() const
+{
+	const TArray<FFTLeadLook>& Party = GetDefault<AFTExploreCharacter>()->PartyLooks;
+	if (Party.IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Log, TEXT("Arena: no PartyLooks in config; the lead is the test human."));
+		return nullptr;
+	}
+	FString Want;
+	FParse::Value(FCommandLine::Get(), TEXT("ArenaLead="), Want, false);
+	Want = Want.TrimStartAndEnd();
+	if (!Want.IsEmpty())
+	{
+		for (const FFTLeadLook& Member : Party)
+		{
+			if (Member.Name.Equals(Want, ESearchCase::IgnoreCase))
+			{
+				return &Member;
+			}
+		}
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: no look named \"%s\" in PartyLooks; using %s."), *Want, *Party[0].Name);
+	}
+	return &Party[0];
+}
+
+void AFTArenaGameMode::LoadSkin(int32 I)
+{
+	AFTArenaFighter* Figure = EnemyFigures[I].Get();
+	const ftcore::ArenaEnemyKind& Kind = Def.enemies[static_cast<size_t>(I)];
+	if (!Figure || !Kind.look.skinned())
+	{
+		return;
+	}
+	FFTArenaSkin& Skin = Skins[I];
+	Skin = FFTArenaSkin();
+	// One warning for the kind, whatever fails to load: it then keeps its shapes (the assets live only on some machines).
+	const FString TablePath = FT::ToFString(std::string(Kind.look.clips()));
+	const auto Refuse = [&](const FString& Why)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: enemy %d keeps its shapes: %s (%s)."), I, *Why, *TablePath);
+		Skin = FFTArenaSkin();
+	};
+	TArray<uint8> Bytes;
+	const FString File = FPaths::ProjectDir() / TablePath;
+	if (!IFileManager::Get().FileExists(*File) || !FFileHelper::LoadFileToArray(Bytes, *File))
+	{
+		Refuse(TEXT("couldn't read the clip table"));
+		return;
+	}
+	std::string Error;
+	std::vector<std::string> Warnings;
+	Skin.Clips = MakeShared<ftcore::BeatClips>();
+	if (!ftcore::importBeatClips(FT::BytesAsText(Bytes), *Skin.Clips, &Error, &Warnings))
+	{
+		Refuse(FString::Printf(TEXT("the clip table was refused:\n%s"), *FT::ToFString(Error)));
+		return;
+	}
+	for (const std::string& W : Warnings)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s: %s"), *TablePath, *FT::ToFString(W));
+	}
+	const auto LoadAsset = [](const FString& Package) -> UObject*
+	{
+		return Package.IsEmpty() ? nullptr : StaticLoadObject(UObject::StaticClass(), nullptr, *(Package + TEXT(".") + FPackageName::GetShortName(Package)), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	};
+	USkeletalMesh* Mesh = Cast<USkeletalMesh>(LoadAsset(FT::ToFString(std::string(Skin.Clips->mesh()))));
+	if (!Mesh)
+	{
+		Refuse(FString::Printf(TEXT("no skeletal mesh at %s"), *FT::ToFString(std::string(Skin.Clips->mesh()))));
+		return;
+	}
+	Skin.Sequences.SetNum(static_cast<int32>(Skin.Clips->count));
+	int32 Missing = 0;
+	FString FirstMissing;
+	for (size_t C = 0; C < Skin.Clips->count; ++C)
+	{
+		const FString Package = FT::ToFString(std::string(Skin.Clips->asset(C)));
+		UAnimSequence* Sequence = Cast<UAnimSequence>(LoadAsset(Package));
+		Skin.Sequences[static_cast<int32>(C)] = Sequence;
+		if (!Sequence && !Package.IsEmpty())
+		{
+			FirstMissing = Missing == 0 ? Package : FirstMissing;
+			++Missing;
+		}
+	}
+	// The clip of an id, as the table has it and the assets loaded; -1 for none.
+	const auto Find = [&Skin](std::string_view Id)
+	{
+		const int32 C = Id.empty() ? -1 : Skin.Clips->find(Id);
+		return (C >= 0 && Skin.Sequences[C]) ? C : -1;
+	};
+	Skin.Idle = Find("idle");
+	Skin.IdleTwo = Find("idle_p2");
+	Skin.Stagger = Find("stagger");
+	Skin.FaceDown = Find("face_down");
+	Skin.Defeat = Find("defeat");
+	Skin.HitLight = Find("hit_light");
+	Skin.HitHeavy = Find("hit_heavy");
+	for (size_t M = 0; M < ftcore::kMaxArenaMoves; ++M)
+	{
+		Skin.MoveClip[M] = M < Kind.moveCount ? Find(Kind.moves[M].clip()) : -1;
+	}
+	if (Skin.Idle < 0)
+	{
+		Refuse(FString::Printf(TEXT("no idle clip loaded (%d of %d clips missing, the first %s)"), Missing, static_cast<int32>(Skin.Clips->count), *FirstMissing));
+		return;
+	}
+	if (Missing > 0)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: enemy %d: %d of %d clips are missing (the first %s); those moves play the idle."), I, Missing,
+			static_cast<int32>(Skin.Clips->count), *FirstMissing);
+	}
+	Figure->SetupSkinned(Mesh, Kind.look.hover, Kind.look.scale, Kind.look.yawOffset, ftcore::arenaEnemyHeight(Kind));
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: enemy %d is skinned: %s, hover %.1f m, scale %.2f, %d clips."), I, *Mesh->GetName(), Kind.look.hover,
+		Kind.look.scale, static_cast<int32>(Skin.Clips->count) - Missing);
+}
+
+void AFTArenaGameMode::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const ftcore::ArenaEnemyKind& Kind, float Alpha)
+{
+	AFTArenaFighter* Figure = EnemyFigures[I].Get();
+	const FFTArenaSkin& Skin = Skins[I];
+	if (!Figure || !Figure->IsSkinned() || !Skin.IsLoaded())
+	{
+		return;
+	}
+	int32 Clip = Skin.Idle;
+	bool bTimed = false; // the time is Core's, not the time since the clip began
+	double Time = 0.0;
+	bool bHoldRoot = true;
+	switch (Out.brain)
+	{
+	case ftcore::ArenaBrain::Dead:
+		Clip = Skin.Defeat >= 0 ? Skin.Defeat : Skin.Idle;
+		bHoldRoot = false; // it falls
+		break;
+	case ftcore::ArenaBrain::Staggered:
+		Clip = Skin.Stagger >= 0 ? Skin.Stagger : Skin.Idle;
+		break;
+	case ftcore::ArenaBrain::Open:
+	case ftcore::ArenaBrain::Down:
+		Clip = Skin.FaceDown >= 0 ? Skin.FaceDown : (Skin.Stagger >= 0 ? Skin.Stagger : Skin.Idle);
+		break;
+	case ftcore::ArenaBrain::Attack:
+	{
+		const int32 MoveClip = Out.move < Kind.moveCount ? Skin.MoveClip[Out.move] : -1;
+		if (MoveClip >= 0)
+		{
+			// The clip's impact lands at the end of the move's startup: Core's own clock for the move, at that rate.
+			const ftcore::BeatClip& Row = (*Skin.Clips)[static_cast<size_t>(MoveClip)];
+			const float Startup = Kind.moves[Out.move].attack.startup;
+			const float Rate = (Row.impact > 0.0 && Startup > 0.f) ? FMath::Clamp(static_cast<float>(Row.impact) / Startup, kArenaMinClipRate, kArenaMaxClipRate) : 1.f;
+			Clip = MoveClip;
+			Time = (static_cast<double>(Out.stateTime) + static_cast<double>(Alpha) * StepSeconds) * Rate;
+			bTimed = true;
+		}
+		break;
+	}
+	default:
+	{
+		// Between moves: a hit reaction while it lasts, else the idle (the second one once it is hurt).
+		const int32 Hit = bHitHeavy[I] ? Skin.HitHeavy : Skin.HitLight;
+		if (Hit >= 0 && Now - HitSince[I] < static_cast<double>(Skin.Sequences[Hit]->GetPlayLength()))
+		{
+			Clip = Hit;
+			Time = Now - HitSince[I];
+			bTimed = true;
+		}
+		else if (Skin.IdleTwo >= 0 && Kind.hp > 0 && static_cast<float>(Fight.enemyHp(static_cast<size_t>(I))) < kArenaSecondIdleHp * static_cast<float>(Kind.hp))
+		{
+			Clip = Skin.IdleTwo;
+		}
+		break;
+	}
+	}
+	if (Clip != SkinClip[I])
+	{
+		SkinClip[I] = Clip;
+		SkinSince[I] = Now;
+	}
+	const UAnimSequence* Sequence = Skin.Sequences[Clip];
+	const ftcore::BeatClip& Row = (*Skin.Clips)[static_cast<size_t>(Clip)];
+	const float Length = Sequence->GetPlayLength();
+	if (!bTimed)
+	{
+		Time = Now - SkinSince[I];
+	}
+	// A loop wraps; anything else holds its last frame.
+	const bool bLoop = Row.loop && !bTimed;
+	const float At = bLoop && Length > 0.f ? FMath::Fmod(static_cast<float>(Time), Length) : FMath::Clamp(static_cast<float>(Time), 0.f, Length);
+	Figure->PlayClip(Sequence, At, bLoop, FrameDelta, bHoldRoot);
 }
 
 void AFTArenaGameMode::PutBodiesAtStart()
@@ -701,6 +912,12 @@ void AFTArenaGameMode::PutBodiesAtStart()
 		EnemyHitTime[I] = -1e9;
 		LastPart[I] = 0;
 	}
+	for (int32 I = 0; I < MaxEnemies; ++I)
+	{
+		SkinClip[I] = -2;
+		SkinSince[I] = -1e9;
+		HitSince[I] = -1e9;
+	}
 	PlayerHitTime = -1e9;
 	ParryTime = -1e9;
 	ReleaseTime = -1e9;
@@ -716,6 +933,7 @@ void AFTArenaGameMode::PutBodiesAtStart()
 void AFTArenaGameMode::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	FrameDelta = DeltaSeconds;
 	if (bTravelPending)
 	{
 		if (!bTravelStarted && GetWorld())
@@ -941,6 +1159,9 @@ void AFTArenaGameMode::HandleEvents(const ftcore::ArenaEvents& Events)
 			else if (E.target < MaxEnemies)
 			{
 				EnemyHitTime[E.target] = Now;
+				// A heavy blow, a riposte or a Release is a heavy reaction.
+				HitSince[E.target] = Now;
+				bHitHeavy[E.target] = E.move == ftcore::kArenaHeavyMove || E.move == ftcore::kArenaRiposteMove || E.move == ftcore::kArenaReleaseMove;
 			}
 			break;
 		case ftcore::ArenaEventType::Parried:
@@ -951,6 +1172,8 @@ void AFTArenaGameMode::HandleEvents(const ftcore::ArenaEvents& Events)
 			if (E.target < MaxEnemies)
 			{
 				EnemyHitTime[E.target] = Now;
+				HitSince[E.target] = Now;
+				bHitHeavy[E.target] = true;
 			}
 			break;
 		case ftcore::ArenaEventType::Released:
@@ -964,6 +1187,8 @@ void AFTArenaGameMode::HandleEvents(const ftcore::ArenaEvents& Events)
 			if (E.target < MaxEnemies)
 			{
 				EnemyHitTime[E.target] = Now;
+				HitSince[E.target] = Now;
+				bHitHeavy[E.target] = false;
 			}
 			break;
 		case ftcore::ArenaEventType::AttackStarted:
@@ -1165,6 +1390,7 @@ void AFTArenaGameMode::PlaceFigures(float Alpha)
 			Pose.Tint = FMath::Lerp(Pose.Tint, kArenaHitColor, ArenaModePulse(Now, EnemyHitTime[I], kArenaHitTint));
 		}
 		Figure->ApplyPose(Pose);
+		DriveSkin(I, E, Kind, Alpha);
 	}
 }
 
@@ -1205,7 +1431,28 @@ void AFTArenaGameMode::SteerCamera(float DeltaSeconds)
 			const float Delta = FMath::FindDeltaAngleDegrees(CameraYaw, Want);
 			CameraYaw += Delta * FMath::Min(1.f, kArenaLockTurn * DeltaSeconds);
 		}
-		CameraPitch = FMath::FInterpTo(CameraPitch, Fit.camera.lockPitch, DeltaSeconds, 4.f);
+		// A tall boss (a hanging one, hover included) is looked up at: the pitch that sends the view through its face from
+		// where the arm puts the camera (the pivot and shoulder height over the feet, the boom swung back along the pitch),
+		// no more than kArenaFacePitchRise over the rig's own, so the lead stays in the frame.
+		float WantPitch = Fit.camera.lockPitch;
+		const ftcore::ArenaEnemyKind& Foe = Fight.def().enemies[static_cast<size_t>(Target)];
+		const float Hover = Foe.look.skinned() ? Foe.look.hover : 0.f;
+		const float Tall = ftcore::arenaEnemyHeight(Foe) * (Foe.look.skinned() ? Foe.look.scale : 1.f) + Hover;
+		if (Tall >= kArenaTallBoss)
+		{
+			const ftcore::ZoneCamera& Rig = Fit.camera;
+			const float Away = ArenaLength(To);
+			float Pitch = Rig.lockPitch;
+			for (int32 Pass = 0; Pass < 3; ++Pass)
+			{
+				const float Rad = FMath::DegreesToRadians(Pitch);
+				const float CameraHeight = Rig.pivot + Rig.up - Rig.arm * FMath::Sin(Rad);
+				const float Along = Rig.arm * FMath::Cos(Rad) + Away;
+				Pitch = FMath::RadiansToDegrees(FMath::Atan2(Tall * kArenaFaceHeight - CameraHeight, Along));
+			}
+			WantPitch = FMath::Clamp(Pitch, Rig.lockPitch, FMath::Min(Rig.lockPitch + kArenaFacePitchRise, 0.f));
+		}
+		CameraPitch = FMath::FInterpTo(CameraPitch, WantPitch, DeltaSeconds, 4.f);
 	}
 	CameraYaw = FMath::UnwindDegrees(CameraYaw);
 	PC->SetControlRotation(FRotator(CameraPitch, CameraYaw, 0.0));

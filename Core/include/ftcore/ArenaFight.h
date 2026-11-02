@@ -146,7 +146,10 @@
 //     "fights": [ { "scene": "SC-X", "beat": 4, "step": 0, "enemies": ["brute", "brute"], "attackers": 2 } ] }
 //   A top-level "bpm" (ArenaTable::bpm, copied to every fight's ArenaDef::bpm) is the arena's beat:
 //   every enemy move's startup must then be a whole number of its beats (1 or more, within
-//   kArenaBeatTolerance), so a count-in can land on the impact. Without it (0) no startup is checked.
+//   kArenaBeatTolerance), so a count-in can land on the impact. Without it (0) no startup is checked. An
+//   enemy kind with a "bpm" of its own (ArenaEnemyKind::bpm) is checked against that one instead. An enemy
+//   kind may also carry a "look" (ArenaEnemyLook: a skinned figure's clip table, hover, scale, yawOffset) and its
+//   moves a "clip" (the clip id the host plays); both are the host's alone (docs/ARENA_DEMO.md).
 //   Fighter, enemy, move and attack keys are the struct fields below, spelled the same; a missing
 //   key keeps the struct's default, so entries list only what differs. A fighter's id is a lead id
 //   or "default" (required); ArenaTable::fighter falls back to it. A move's attack keys sit in the
@@ -178,7 +181,7 @@
 namespace ftcore {
 
 inline constexpr std::size_t kMaxArenaEnemies = 6;
-inline constexpr std::size_t kMaxArenaMoves = 6;   // per enemy
+inline constexpr std::size_t kMaxArenaMoves = 8;   // per enemy
 inline constexpr std::size_t kMaxLightChain = 4;
 inline constexpr std::size_t kMaxArenaEvents = 32; // per tick; more are dropped (ArenaFight::droppedEvents)
 
@@ -197,6 +200,9 @@ inline constexpr float kArenaBeatTolerance = 0.002f;
 // How many whole beats of `bpm` `seconds` lasts (1 or more, within kArenaBeatTolerance), else -1 (also
 // for bpm <= 0). A host counts an attack in from it: the impact is that many beats after AttackStarted.
 FTCORE_API int arenaWholeBeats(float seconds, float bpm);
+// Longest clip id of a move and longest clip table path of a kind's look, in characters.
+inline constexpr std::size_t kMaxArenaClipId = 31;
+inline constexpr std::size_t kMaxArenaLookPath = 95;
 // ArenaDef::enemyKind of a slot that is not a table kind (a def built in code).
 inline constexpr std::uint8_t kArenaNoKind = 0xFF;
 
@@ -296,6 +302,23 @@ struct ArenaEnemyMove {
     bool unblockable = false; // a guard doesn't stop it: dodge it
     bool parryable = true;
     ArenaTell tell = ArenaTell::Strike; // its Read card's word; arena.json names a different one per move
+    // The id of the animation clip the host plays for this move (a skinned enemy's look.clips table), "" for none.
+    // Only the host reads it: the fight's rules never do.
+    std::array<char, kMaxArenaClipId + 1> clipText{};
+
+    std::string_view clip() const { return std::string_view(clipText.data()); }
+};
+
+// How the host draws an enemy kind as a skinned mesh instead of its placeholder shapes (arena.json's `look`). All
+// host-side: the fight's rules never read it. An empty `clipsText` is no look (the shapes).
+struct ArenaEnemyLook {
+    std::array<char, kMaxArenaLookPath + 1> clipsText{}; // project-relative path of the clip table (Data/Anim/*.json)
+    float hover = 0.f;     // m: the mesh is lifted this far above the enemy's position on the ground
+    float scale = 1.f;     // the mesh's scale
+    float yawOffset = 0.f; // degrees added to the mesh's own facing
+
+    std::string_view clips() const { return std::string_view(clipsText.data()); }
+    bool skinned() const { return clipsText[0] != 0; }
 };
 
 struct ArenaEnemyKind {
@@ -319,6 +342,8 @@ struct ArenaEnemyKind {
     std::uint8_t moveCount = 1;
     float accel = 0.f;        // m/s^2: how fast its velocity moves toward the one it wants, both ways; 0: instant.
                               // Approach and Strafe only
+    float bpm = 0.f;          // the beat its startups are whole numbers of, when the file's own doesn't fit it; 0: the file's
+    ArenaEnemyLook look;      // the host's skinned figure for it, if any
 };
 
 // An enemy kind's standing height in metres: its `height` when set, else 1.75 m at the default body radius

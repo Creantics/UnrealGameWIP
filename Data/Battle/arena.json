@@ -88,6 +88,23 @@
         { "tell": "overhead", "startup": 1.2, "active": 0.25, "recovery": 1.2, "range": 4.8, "arcCos": 0.5, "damage": 26, "poiseDamage": 28, "guardDamage": 32, "lunge": 0.6, "tracking": 2, "minRange": 0, "maxRange": 5, "weight": 0.6 },
         { "tell": "slam", "startup": 2, "active": 0.3, "recovery": 1.6, "range": 4.6, "arcCos": -0.2, "damage": 36, "poiseDamage": 40, "guardDamage": 0, "lunge": 0.4, "tracking": 1.5, "armor": 0.5, "minRange": 0, "maxRange": 4.8, "cooldown": 7, "weight": 0.5, "unblockable": true, "parryable": false }
       ]
+    },
+    {
+      "id": "kite_boss",
+      "hp": 1100, "poise": 120, "poiseDelay": 3, "staggerTime": 2, "openTime": 2, "downTime": 1.5,
+      "walkSpeed": 0.6, "runSpeed": 1, "strafeSpeed": 0.5, "accel": 2, "turnRate": 1.2,
+      "preferredRange": 6.5, "runRange": 11, "attackDelay": 0.8, "bodyRadius": 2.5, "height": 9.1, "bpm": 72,
+      "look": { "clips": "Data/Anim/kite_clips.json", "hover": 0.9, "scale": 1, "yawOffset": 0 },
+      "moves": [
+        { "clip": "mitten_drop", "tell": "slam", "startup": 1.667, "active": 0.2, "recovery": 1.5, "range": 7, "arcCos": 0.3, "damage": 8, "poiseDamage": 10, "guardDamage": 14, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 7.6, "weight": 1.0, "parryable": false },
+        { "clip": "swoop", "tell": "sweep", "startup": 1.667, "active": 0.25, "recovery": 2.0, "range": 8, "arcCos": 0.5, "damage": 22, "poiseDamage": 28, "guardDamage": 30, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 8.6, "weight": 20, "cooldown": 8 },
+        { "clip": "peg_spray", "tell": "strike", "startup": 1.667, "active": 0.8, "recovery": 1.0, "range": 7, "arcCos": -0.3, "damage": 11, "poiseDamage": 10, "guardDamage": 14, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 7.6, "weight": 1.0, "parryable": false },
+        { "clip": "snag", "tell": "charge", "startup": 2.5, "active": 1.5, "recovery": 2.0, "range": 8, "arcCos": 0.3, "damage": 11, "poiseDamage": 14, "guardDamage": 14, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 8.6, "weight": 0.8, "parryable": false },
+        { "clip": "wet_sheet", "tell": "overhead", "startup": 2.5, "active": 2.5, "recovery": 1.0, "range": 7, "arcCos": 0.0, "damage": 7, "poiseDamage": 8, "guardDamage": 12, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 7.6, "weight": 0.8, "parryable": false },
+        { "clip": "undertow", "tell": "thrust", "startup": 1.667, "active": 0.4, "recovery": 1.5, "range": 8, "arcCos": -0.5, "damage": 11, "poiseDamage": 14, "guardDamage": 14, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 8.6, "weight": 1.0, "parryable": false },
+        { "clip": "string_flick", "tell": "slash", "startup": 0.833, "active": 0.2, "recovery": 0.8, "range": 7, "arcCos": 0.5, "damage": 4, "poiseDamage": 4, "guardDamage": 5, "lunge": 0, "tracking": 2.5, "minRange": 0, "maxRange": 7.6, "weight": 0.6 },
+        { "clip": "sheet_slap", "tell": "backhand", "startup": 0.833, "active": 0.2, "recovery": 0.8, "range": 7, "arcCos": 0.5, "damage": 6, "poiseDamage": 6, "guardDamage": 7, "lunge": 0, "tracking": 2.5, "minRange": 0, "maxRange": 7.6, "weight": 0.6 }
+      ]
     }
   ],
   "default": { "enemies": ["brute"], "ring": 12, "attackers": 1, "spawn": 7 },

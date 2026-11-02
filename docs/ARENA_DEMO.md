@@ -108,6 +108,7 @@ the one listed.
 | Zone | World, district | Offset | Shape | Yaw | Boss | Ring |
 |---|---|---|---|---|---|---|
 | `sand_ring` (default) | none | 0, 0 | circle | 0 | brute, skirmisher, breaker | 12 m |
+| `kite_ring` | none | 0, 0 | rect 2.86, c 0.15 | 0 | kite_boss | 13.4 m (pinned), about 40 x 14 m |
 | `sol_plaza_a` | Solhaven 3 | 0, 0 | circle | 180 | hulk | 15.6 m |
 | `sol_facade_a` | Solhaven 2 | 0, 34 | rect 1.6, c 0.3 | 90 | duelist | 8.5 m, cut |
 | `sol_climax_a` | Solhaven 14 (climax) | 22, 0 | circle | 0 | titan | 36 m (pinned) |
@@ -121,6 +122,51 @@ the one listed.
 The climax zones span the open half of the climax district's ring, up to the pad's rim; the court's ruin walls become cover and
 its landmark an obstacle. Zones off the flat pad (a quay, a pool, the rim of the square, open ground) come later: they need a
 ground-height query and a slope check in place of the flat-pad one.
+
+## Skinned enemies and the kite boss
+
+An enemy kind in `arena.json` may be drawn as a skeletal mesh with its own animation clips instead of the placeholder shapes.
+Everything about it is data and host-side: the fight's rules never read it.
+
+```json
+"look": { "clips": "Data/Anim/kite_clips.json", "hover": 0.9, "scale": 1, "yawOffset": 0 }
+```
+
+- `look.clips`: the project-relative path (under `Data/`) of a clip table in the beat clips' format (`id`, `asset`, `length_s`,
+  `impact_s`, `loop`; see [BEAT_ANIMS.md](BEAT_ANIMS.md)) with one extra top-level key, `mesh`, the skeletal mesh asset path.
+  `hover` (m) lifts the mesh above the enemy's position on the ground (the mesh's origin is its bottom; the tell arcs stay at
+  ground level), `scale` scales it, `yawOffset` (degrees) turns it from its own facing (`FTMeshFacing`, which finds none on a
+  mesh with no head or feet bones: set it by eye).
+- A move's `clip`: the id of the clip played for it (`tell` stays the Read card's word, one of the eight). Ids are 1..31
+  letters, digits, `_` and `-`, one per move.
+- A kind's `bpm`: the beat its startups are whole numbers of, in place of the file's (the kite's 72 against the file's 150).
+- Up to 8 moves per kind (it was 6).
+
+The mode plays, from Core's state each frame (`UFTBeatFighterAnimInstance`, a pose that is a function of the fight, with a 0.12 s
+crossfade between clips): a move's own clip through an attack, timed by Core's clock for the move at the rate
+`impact_s / startup` (so the blow lands as the startup ends; held on its last frame if the clip is shorter than the move);
+`stagger` while staggered; `face_down` (looping) while open after a parry or down after a riposte; `hit_light` or `hit_heavy`
+(a heavy blow, a riposte or a Release) between moves; `defeat` on death, held on its last frame; else `idle`, or `idle_p2` under
+60% hp. A clip the table lacks is left out (that state plays the idle). If the clip table, the mesh or the idle clip doesn't load, the
+kind keeps its shapes and the log has one warning. The camera looks up at a boss at least 4 m tall (hover included) toward 70%
+of its height, by at most 8 degrees over the zone's own pitch. The assets are local; nothing here needs them to load.
+
+The kite boss (`kite_boss`, `Data/Anim/kite_clips.json`, assets under `/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/`,
+the import being `FTImportCharacter -Source=kite_boss.glb -Dest=/Game/Bosses/KiteBoss -Face=0`): 1100 hp, 9.1 m tall and
+hanging 0.9 m off the ground, drifting at 0.6 to 1 m/s. Eight moves, each its clip's id: `mitten_drop`, `swoop`, `peg_spray`,
+`snag`, `wet_sheet`, `undertow`, `string_flick`, `sheet_slap` (Read card words slam, sweep, strike, charge, overhead, thrust,
+slash, backhand). Core has no "parry-opener" flag or multi-hit, so the marked move is made by `parryable`: only `swoop` (and the
+two basic strikes) can be parried; a parry of it opens the boss, the big ones are blocked or dodged, and `peg_spray` is one hit.
+`swoop` has weight 20 and a cooldown of 8 s, which comes to about one every 11 s. No phase system exists, so the second-phase moves
+(`*_double`, `swoop_feint`, `rockabye`) are not wired; `idle_p2` is the only second-phase clip played.
+
+Play it in the 40 x 14 m ring:
+
+```
+UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=kite_ring
+```
+
+or in the plain 12 m sand ring with `-ArenaLineup=kite_boss` instead of `-ArenaStage=kite_ring` (cramped for a body of 3.5 m).
 
 ## Launch
 
@@ -229,6 +275,7 @@ each frame and handed to the fight on its next step, so no press is lost between
 | `-ArenaSeed=N` | The fight's seed (default 1). |
 | `-ArenaStage=<id>` | The zone, by id from `arenas.json` (see "Zones"); the default is `sand_ring`. A zone in a world opens that world's map. Its bosses are the line-up, and the walls, spawn, obstacles and camera are fitted to the enemies in it. An unknown id logs the ids and uses the default. |
 | `-ArenaLineup=a,b,...` | The enemies by id from `arena.json` (`brute`, `skirmisher`, `breaker`, `duelist`, `hulk`, `titan`), up to six, instead of the stage's own bosses (the sand ring's are `brute,skirmisher,breaker`); `-ArenaLineup=brute` fights one brute. The stage is scaled to whoever is in the fight. |
+| `-ArenaLead=<name>` | The look the player's figure wears: the entry of that name in the explore character's `PartyLooks` (`Config/UserGame.ini`, local), else the first. With none, or none whose body loads (one warning), it is the test human. |
 | `-ArenaAttackers=N` | How many enemies may attack at once (1 to the line-up's size). |
 | `-ArenaHoldLoad` | The autopilot keeps its Load until it is overloaded (to see the overload; not a way to play). |
 | `-ArenaShot=<path prefix>` | Autoplay and save the views (`_1_ring`, `_2_tell` with the Read cards picked, `_3_impact`, `_4_load` with the gauge past a third, or the overload under `-ArenaHoldLoad`, `_5_release`, `_6_result` .png), then quit; a view the fight never reaches is skipped. Needs a renderer (`-RenderOffScreen`, not `-NullRHI`). |
@@ -248,8 +295,10 @@ warning and quits with exit code 2, so an unattended run never hangs.
 
 - The fight steps at a fixed 1/60 s (at most 8 steps a frame); the figures are drawn between the last
   two steps, so the speed of the frame never changes the fight.
-- The lead is `AFTArenaFighter` with the test human body; enemies are primitive figures in their kind's
-  colour. Swings, guards, rolls, staggers and falls are posed from the fight's output each frame.
+- The lead is `AFTArenaFighter` wearing a look from `PartyLooks` (body, face, outfit and grooms; idle, walk and run by speed
+  from the look's retargeted locomotion clips, `UFTLocomotionAnimInstance`), else the test human; there are no combat clips for
+  the look yet, so its swings, guard and roll stay the figure's own overlay (a blade on a pivot arm, a shield plate, a
+  crouch and lean). Enemies are primitive figures in their kind's colour, or a skinned mesh (above). Swings, guards, rolls, staggers and falls are posed from the fight's output each frame.
 - The camera is a spring arm over the lead's shoulder, its length, height, shoulder offset and lock pitch from
   the zone's camera rig (6.4 m, 1.5 m, 1.2 m and -20 degrees for a human-sized fight, longer and higher for a
   giant). The arm probes the world (it may leave the zone's walls but never passes through a building or the

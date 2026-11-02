@@ -190,6 +190,18 @@ TEST_CASE("beat choreo: the loader takes any number of clips up to the cap, and 
         refused(clipsJson(0, R"({"id": "a", "length": 1})"), "clips[0].length_s: expected seconds over 0");
         refused(clipsJson(0, R"({"id": "a", "length_s": 1, "loop": 1})"), "clips[0].loop: expected true or false");
     }
+    SUBCASE("the optional top-level mesh") {
+        REQUIRE_MESSAGE(importBeatClips(clipsJson(1), c, &error), error);
+        CHECK(c.mesh().empty());
+        std::vector<std::string> warnings;
+        REQUIRE_MESSAGE(importBeatClips(swapText(clipsJson(1), R"("clips")", R"("mesh": "/Game/Test/body", "clips")"), c, &error, &warnings), error);
+        CHECK(warnings.empty());
+        CHECK(c.mesh() == "/Game/Test/body");
+        CHECK_FALSE(importBeatClips(swapText(clipsJson(1), R"("clips")", R"("mesh": "Game/body", "clips")"), c, &error));
+        CHECK(error.find("mesh: expected a path") != std::string::npos);
+        CHECK_FALSE(importBeatClips(swapText(clipsJson(1), R"("clips")", R"("mesh": 3, "clips")"), c, &error));
+        CHECK(c.mesh().empty());
+    }
     SUBCASE("unknown keys are warnings") {
         std::vector<std::string> warnings;
         CHECK(importBeatClips(swapText(clipsJson(1), R"("impact_s": 0.5)", R"("impact_s": 0.5, "notes": "x")"), c, &error, &warnings));

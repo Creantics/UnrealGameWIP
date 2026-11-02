@@ -11,6 +11,11 @@
 #include "Materials/MaterialInterface.h"
 #include "UObject/ConstructorHelpers.h"
 
+#include "FTBeatFighterAnimInstance.h"
+#include "FTLocomotionAnimInstance.h"
+#include "FTMeshFacing.h"
+#include "ForgottenThird.h"
+
 #include "ftcore/ArenaFight.h"
 
 namespace
@@ -24,6 +29,10 @@ constexpr float kArenaHumanHeight = 178.f;
 constexpr float kArenaHumanWalkSpeed = 1.4f;
 // Above this ground speed (m/s) the human walks.
 constexpr float kArenaWalkFrom = 0.6f;
+// A lead's body is about this tall when its mesh says nothing sensible (cm), and never taller or shorter than these.
+constexpr float kArenaLeadHeight = 175.f;
+constexpr float kArenaLeadMinHeight = 140.f;
+constexpr float kArenaLeadMaxHeight = 210.f;
 
 const FLinearColor kArenaBlade(0.75f, 0.78f, 0.82f);
 const FLinearColor kArenaShield(0.32f, 0.36f, 0.42f);
@@ -159,21 +168,30 @@ void AFTArenaFighter::SetCameraRig(float ArmMeters, float PivotMeters, float Sid
 	Camera->SetFieldOfView(FovDegrees);
 }
 
-void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& InBaseColor, float HeightMeters)
+void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& InBaseColor, float HeightMeters, const FFTLeadLook* Look)
 {
 	BaseColor = InBaseColor;
 	Radius = FMath::Clamp(BodyRadius, 0.2f, 6.f) * 100.f;
 	// A wider body stands taller: 175 cm at Core's default 0.4 m, up to 1.6x that, unless the data gives a height.
 	Height = HeightMeters > 0.f ? FMath::Clamp(HeightMeters, 0.5f, 30.f) * 100.f : FMath::Clamp(Radius / 40.f, 0.8f, 1.6f) * 175.f;
 
-	bHuman = false;
+	SkinKind = ESkin::Shapes;
+	bool bLead = false;
 	if (bPlayer)
 	{
+		bLead = Look && WearLook(*Look);
+		if (Look && !bLead)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTArenaFighter: the look %s has no body; using the test human."), *Look->Name);
+		}
 		// Quietly: a checkout without the test human plays with the body of shapes.
 		HumanMesh = LoadObject<USkeletalMesh>(nullptr, kArenaHumanMesh, nullptr, LOAD_NoWarn | LOAD_Quiet);
 		HumanIdle = LoadObject<UAnimSequence>(nullptr, kArenaHumanIdle, nullptr, LOAD_NoWarn | LOAD_Quiet);
 		HumanWalk = LoadObject<UAnimSequence>(nullptr, kArenaHumanWalk, nullptr, LOAD_NoWarn | LOAD_Quiet);
-		bHuman = HumanMesh && HumanIdle && HumanWalk;
+		if (!bLead && HumanMesh && HumanIdle && HumanWalk)
+		{
+			SkinKind = ESkin::TestHuman;
+		}
 	}
 	else
 	{
@@ -210,7 +228,7 @@ void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& 
 	Head->SetRelativeScale3D(FVector(HeadSize / 100.f));
 	Visor->SetRelativeLocation(FVector(HeadSize * 0.4f, 0.0, BodyTall + HeadSize * 0.5f));
 	Visor->SetRelativeScale3D(FVector(0.08f, HeadSize * 0.7f / 100.f, HeadSize * 0.22f / 100.f));
-	if (bHuman)
+	if (SkinKind == ESkin::TestHuman)
 	{
 		Height = kArenaHumanHeight;
 		Body->SetVisibility(false);
@@ -220,6 +238,17 @@ void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& 
 		Skin->SetVisibility(true);
 		Skin->PlayAnimation(HumanIdle, true);
 		bWalking = false;
+	}
+	else if (bLead)
+	{
+		// WearLook set the body, the pieces and the clips; the height comes from its mesh.
+		const USkeletalMesh* Mesh = Skin->GetSkeletalMeshAsset();
+		Height = Mesh ? FMath::Clamp(static_cast<float>(Mesh->GetBounds().BoxExtent.Z) * 2.f, kArenaLeadMinHeight, kArenaLeadMaxHeight)
+					  : kArenaLeadHeight;
+		Body->SetVisibility(false);
+		Head->SetVisibility(false);
+		Visor->SetVisibility(false);
+		Skin->SetVisibility(true);
 	}
 
 	// The weapon: from the right shoulder, a blade a little over half the body's height.
@@ -234,6 +263,66 @@ void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& 
 	Shield->SetVisibility(false);
 	bShieldShown = false;
 	SetTellVisible(false);
+}
+
+bool AFTArenaFighter::WearLook(const FFTLeadLook& Look)
+{
+	const FFTLoadedLook Loaded = FTLook::LoadLook(Look, TEXT("FTArenaFighter"));
+	if (!Loaded.Body)
+	{
+		return false;
+	}
+	Skin->SetSkeletalMesh(Loaded.Body);
+	// Turn the body to face the figure's forward (+X).
+	Skin->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Loaded.Body), 0.0));
+	Skin->SetAnimInstanceClass(UFTLocomotionAnimInstance::StaticClass());
+	const int32 Cloth = FTLook::AddPieces(*this, *Skin, Look.PiecePaths, Pieces, TEXT("FTArenaFighter"));
+	FTLook::AddGrooms(*this, *Skin, Pieces, Look.Grooms, Grooms, TEXT("FTArenaFighter"));
+	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()))
+	{
+		Anim->SetBaseClips(Loaded.Clips, false);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTArenaFighter: no locomotion anim instance; %s stays in the ref pose."), *Look.Name);
+	}
+	SkinKind = ESkin::Lead;
+	UE_LOG(LogForgottenThird, Display, TEXT("FTArenaFighter: %s: body %s facing %.0f, %d pieces (%d with cloth), %d grooms, clips from %s."),
+		*Look.Name, *Loaded.Body->GetName(), Skin->GetRelativeRotation().Yaw, Pieces.Num(), Cloth, Grooms.Num(), *Loaded.ClipFolder);
+	return true;
+}
+
+bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float Scale, float YawOffset, float HeightMeters)
+{
+	if (!Mesh)
+	{
+		return false;
+	}
+	SkinKind = ESkin::Creature;
+	SkinHover = FMath::Max(HoverMeters, 0.f) * 100.f;
+	Height = FMath::Max(HeightMeters, 0.5f) * Scale * 100.f + SkinHover;
+	// The shapes (the body, head and visor, the weapon arm's blade) are the placeholder: the mesh replaces them.
+	Body->SetVisibility(false);
+	Head->SetVisibility(false);
+	Visor->SetVisibility(false);
+	Blade->SetVisibility(false);
+	Skin->SetSkeletalMesh(Mesh);
+	Skin->SetAnimInstanceClass(UFTBeatFighterAnimInstance::StaticClass());
+	Skin->SetRelativeLocation(FVector(0.0, 0.0, SkinHover));
+	Skin->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Mesh) + YawOffset, 0.0));
+	Skin->SetRelativeScale3D(FVector(Scale));
+	Skin->SetVisibility(true);
+	return true;
+}
+
+void AFTArenaFighter::PlayClip(const UAnimSequence* Clip, float Time, bool bLoop, float DeltaSeconds, bool bHoldRoot)
+{
+	UFTBeatFighterAnimInstance* Anim = SkinKind == ESkin::Creature ? Cast<UFTBeatFighterAnimInstance>(Skin->GetAnimInstance()) : nullptr;
+	if (Anim)
+	{
+		Anim->SetHoldRoot(bHoldRoot);
+		Anim->SetPose(Clip, Time, bLoop, DeltaSeconds);
+	}
 }
 
 void AFTArenaFighter::SetTellVisible(bool bVisible)
@@ -263,11 +352,15 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 {
 	SetActorLocationAndRotation(Pose.Feet, FRotator(0.0, Pose.Yaw, 0.0));
 
-	// The whole body: lean back, crouch and lean along a roll, or lie flat.
+	// The whole body: lean back, crouch and lean along a roll, or lie flat. A skinned enemy's clips do all that.
 	FRotator Lean = FRotator::ZeroRotator;
 	FVector Lift = FVector::ZeroVector;
 	float Squash = 1.f;
-	if (Pose.bLying)
+	if (SkinKind == ESkin::Creature)
+	{
+		// The mesh stands as the clip poses it.
+	}
+	else if (Pose.bLying)
 	{
 		Lean.Pitch = 84.0;
 		Lift.Z = Radius * 0.7f;
@@ -287,7 +380,7 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 	Visual->SetRelativeLocationAndRotation(Lift, Lean);
 	Visual->SetRelativeScale3D(FVector(1.0, 1.0, Squash));
 
-	if (bHuman)
+	if (SkinKind == ESkin::TestHuman)
 	{
 		const bool bWalk = Pose.Speed > kArenaWalkFrom && !Pose.bLying;
 		if (bWalk != bWalking)
@@ -298,6 +391,16 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 		if (bWalking)
 		{
 			Skin->SetPlayRate(FMath::Clamp(Pose.Speed / kArenaHumanWalkSpeed, 0.6f, 2.4f));
+		}
+	}
+	else if (SkinKind == ESkin::Lead)
+	{
+		// The locomotion blends idle, walk and run from the ground speed (cm/s); the dodge, the guard and the swings are the
+		// figure's own overlay, there being no combat clips for the look yet. An unknown intent plays no starts or stops.
+		if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()))
+		{
+			Anim->SetGroundSpeed(Pose.bLying || Pose.bDodging ? 0.f : Pose.Speed * 100.f);
+			Anim->SetIntent(-1.f, -1.f);
 		}
 	}
 
