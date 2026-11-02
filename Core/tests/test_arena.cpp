@@ -236,7 +236,7 @@ TEST_CASE("arena table: Data/Battle/arena.json loads without warnings") {
     CHECK(t.fighters.size() == t.fighterIds.size());
     CHECK(t.enemies.size() == t.enemyIds.size());
     CHECK(t.enemies.size() >= 2);
-    CHECK(t.enemies.size() <= 3);
+    CHECK(t.enemies.size() <= 8); // the wave's three, a human-sized duelist and the sized placeholders (hulk, titan)
     CHECK(t.fallback.enemyCount == 1);
     CHECK(t.entries.empty());
     // The default fight's slot says which table kind it holds.

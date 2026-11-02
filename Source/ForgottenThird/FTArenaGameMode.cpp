@@ -1,6 +1,18 @@
 #include "FTArenaGameMode.h"
 
+#include "Camera/CameraActor.h"
+#include "DrawDebugHelpers.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
+#include "FTSceneLook.h"
+#include "Kismet/GameplayStatics.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
+#include "Camera/CameraComponent.h"
 #include "Engine/Engine.h"
+#include "EngineUtils.h"
+#include "FTExploreDirector.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "FTActionButtons.h"
@@ -9,6 +21,7 @@
 #include "FTPauseSubsystem.h"
 #include "FTText.h"
 #include "ForgottenThird.h"
+#include "GameFramework/HUD.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
@@ -40,7 +53,6 @@ constexpr double kArenaTellFlash = 0.3;
 // Camera: pitch limits, the pitch while locked, how fast it turns to a lock, stick and mouse rates.
 constexpr float kArenaPitchMin = -50.f;
 constexpr float kArenaPitchMax = 10.f;
-constexpr float kArenaLockPitch = -20.f;
 constexpr float kArenaLockTurn = 7.f;
 constexpr float kArenaStickTurn = 140.f; // degrees a second at full stick
 constexpr float kArenaMouseTurn = 2.5f; // degrees per unit of mouse axis (as the engine's yaw scale)
@@ -140,9 +152,6 @@ AFTArenaGameMode::AFTArenaGameMode()
 
 void AFTArenaGameMode::StartPlay()
 {
-	// Skips AFTGameMode::StartPlay on purpose, as the other fight screens do: the story must not start here.
-	AGameModeBase::StartPlay();
-
 	const TCHAR* Cmd = FCommandLine::Get();
 	FString Shot;
 	if (FParse::Value(Cmd, TEXT("ArenaShot="), Shot) && !Shot.IsEmpty())
@@ -157,6 +166,7 @@ void AFTArenaGameMode::StartPlay()
 	bIdle = FParse::Param(Cmd, TEXT("ArenaIdle"));
 	bAutoPlay = !bIdle && (FParse::Param(Cmd, TEXT("ArenaAutoPlay")) || !ShotPrefix.IsEmpty());
 	bQuitOnFinish = FParse::Param(Cmd, TEXT("ArenaQuitOnFinish"));
+	bOverview = FParse::Param(Cmd, TEXT("ArenaOverview"));
 	bHoldLoad = FParse::Param(Cmd, TEXT("ArenaHoldLoad"));
 	int32 SeedValue = 1;
 	if (FParse::Value(Cmd, TEXT("ArenaSeed="), SeedValue))
@@ -164,7 +174,30 @@ void AFTArenaGameMode::StartPlay()
 		Seed = static_cast<uint32>(SeedValue);
 	}
 
-	BuildDef(LoadTable());
+	const bool bTable = LoadTable();
+	LoadZones(bTable);
+
+	// A zone in a world is held in that world's map. From another map (Demo_Arena), open it with this game mode on
+	// the first tick; on it, the explore director that map carries is taken out before it begins play.
+	if (bZoneFromFile && !Spec.world.empty() && GetWorld())
+	{
+		const FString Want = FT::ToFString(Worlds.worlds[Spec.worldIndex].map);
+		if (UWorld::RemovePIEPrefix(GetWorld()->GetMapName()) != Want)
+		{
+			bTravelPending = true;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: zone %s is in %s; opening that map."), *FT::ToFString(Spec.id), *Want);
+			AGameModeBase::StartPlay();
+			return;
+		}
+		for (TActorIterator<AFTExploreDirector> It(GetWorld()); It; ++It)
+		{
+			It->Destroy();
+		}
+	}
+	// Skips AFTGameMode::StartPlay on purpose, as the other fight screens do: the story must not start here.
+	AGameModeBase::StartPlay();
+
+	BuildDef(bTable);
 
 	// The enemies' tells: every startup at least kArenaMinTell (the data's loader doesn't hold it to that).
 	float Shortest = 1e9f;
@@ -188,9 +221,9 @@ void AFTArenaGameMode::StartPlay()
 		Kinds += E > 0 ? TEXT(", ") : TEXT("");
 		Kinds += Kind < Table.enemyIds.size() ? FT::ToFString(Table.enemyIds[Kind]) : FString(TEXT("built-in"));
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena: %d enemies (%s), ring %.1f m, %d attacking at once, seed %u, %s; shortest tell %.2f s."),
-		static_cast<int32>(Def.enemyCount), *Kinds, Def.ringRadius, static_cast<int32>(Def.attackers), Seed,
-		ArenaPilotName(bAutoPlay, bIdle), Shortest);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: zone %s, %d enemies (%s), ring %.1f m, spawn %.1f m, %d attacking at once, seed %u, %s; shortest tell %.2f s."),
+		*FT::ToFString(Spec.id), static_cast<int32>(Def.enemyCount), *Kinds, Def.ringRadius, Def.spawnDistance,
+		static_cast<int32>(Def.attackers), Seed, ArenaPilotName(bAutoPlay, bIdle), Shortest);
 }
 
 bool AFTArenaGameMode::LoadTable()
@@ -222,22 +255,93 @@ bool AFTArenaGameMode::LoadTable()
 	return true;
 }
 
+void AFTArenaGameMode::LoadZones(bool bTable)
+{
+	bZoneFromFile = false;
+	Zones = ftcore::ArenaZoneTable();
+	Worlds = ftcore::WorldTable();
+	// The zone when the files can't give one: the plain 12 m ring of the old demo.
+	Spec = ftcore::ArenaZoneSpec();
+	Spec.id = "built-in";
+	Spec.ring = MapRingRadius;
+	Spec.spawn = 7.f;
+
+	FString Want;
+	FParse::Value(FCommandLine::Get(), TEXT("ArenaStage="), Want, false);
+	Want = Want.TrimStartAndEnd();
+
+	const auto ReadData = [](const TCHAR* Relative, TArray<uint8>& Bytes)
+	{
+		const FString File = FPaths::ProjectDir() / Relative;
+		return IFileManager::Get().FileExists(*File) && FFileHelper::LoadFileToArray(Bytes, *File);
+	};
+	TArray<uint8> Bytes;
+	if (!bTable || !ReadData(TEXT("Data/Battle/arenas.json"), Bytes))
+	{
+		UE_LOG(LogForgottenThird, Log, TEXT("Arena: no usable Data/Battle/arenas.json; using the built-in zone."));
+		return;
+	}
+	std::string Error;
+	std::vector<std::string> Warnings;
+	{
+		TArray<uint8> WorldBytes;
+		if (ReadData(TEXT("Data/Field/worlds.json"), WorldBytes) && !ftcore::importWorldTable(FT::BytesAsText(WorldBytes), Worlds, &Error))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: Data/Field/worlds.json refused:\n%s"), *FT::ToFString(Error));
+			Worlds = ftcore::WorldTable();
+		}
+	}
+	if (!ftcore::importArenaZoneTable(FT::BytesAsText(Bytes), Table, Worlds, Zones, &Error, &Warnings))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: Data/Battle/arenas.json refused; using the built-in zone:\n%s"), *FT::ToFString(Error));
+		Zones = ftcore::ArenaZoneTable();
+		return;
+	}
+	for (const std::string& W : Warnings)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s"), *FT::ToFString(W));
+	}
+	const ftcore::ArenaZoneSpec* Found = Want.IsEmpty() ? Zones.defaultZone() : Zones.find(FT::ToUtf8(Want));
+	if (!Found)
+	{
+		FString Ids;
+		for (const ftcore::ArenaZoneSpec& Z : Zones.zones)
+		{
+			Ids += (Ids.IsEmpty() ? TEXT("") : TEXT(", ")) + FT::ToFString(Z.id);
+		}
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaStage: no zone \"%s\" in arenas.json (%s); using the default."), *Want, *Ids);
+		Found = Zones.defaultZone();
+	}
+	if (Found)
+	{
+		Spec = *Found;
+		bZoneFromFile = true;
+	}
+}
+
 void AFTArenaGameMode::BuildDef(bool bTable)
 {
 	Def = bTable ? Table.fallback : ftcore::defaultArenaDef();
-	if (!bTable)
+	int32 Attackers = 0;
+	const bool bAttackersFlag = FParse::Value(FCommandLine::Get(), TEXT("ArenaAttackers="), Attackers);
+	if (bTable)
 	{
-		return;
-	}
-
-	// The lineup: -ArenaLineup's enemy kinds, else the three-kind wave (one of each shipped kind, one attacking
-	// at a time), so Load, the Release and the Read all come up without a flag.
-	FString Lineup;
-	if (!FParse::Value(FCommandLine::Get(), TEXT("ArenaLineup="), Lineup, false) || Lineup.TrimStartAndEnd().IsEmpty())
-	{
-		Lineup = kArenaDefaultWave;
-	}
-	{
+		// The lineup: -ArenaLineup's enemy kinds, else the zone's bosses (the sand ring's are the three-kind wave:
+		// one of each shipped kind, one attacking at a time), so Load, the Release and the Read all come up without
+		// a flag.
+		FString Lineup;
+		if (!FParse::Value(FCommandLine::Get(), TEXT("ArenaLineup="), Lineup, false) || Lineup.TrimStartAndEnd().IsEmpty())
+		{
+			Lineup = kArenaDefaultWave;
+			if (bZoneFromFile && !Spec.bosses.empty())
+			{
+				Lineup.Empty();
+				for (const std::string& Boss : Spec.bosses)
+				{
+					Lineup += (Lineup.IsEmpty() ? TEXT("") : TEXT(",")) + FT::ToFString(Boss);
+				}
+			}
+		}
 		TArray<FString> Ids;
 		Lineup.ParseIntoArray(Ids, TEXT(","), true);
 		int32 Count = 0;
@@ -273,12 +377,211 @@ void AFTArenaGameMode::BuildDef(bool bTable)
 			Def.attackers = 1;
 		}
 	}
-	int32 Attackers = 0;
-	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaAttackers="), Attackers))
+	if (bAttackersFlag)
 	{
 		Def.attackers = static_cast<uint8>(FMath::Clamp(Attackers, 1, static_cast<int32>(Def.enemyCount)));
+		Spec.attackers = Def.attackers; // the fit would otherwise put the zone's own back
 	}
-	Def.ringRadius = FMath::Min(Def.ringRadius, MapRingRadius);
+
+	// The zone, fitted to these enemies in its world's real layout: its walls, obstacles, ring and spawn. A world
+	// that can't give the zone room falls back to the plain zone, with a warning.
+	WorldData.reset();
+	if (!Spec.world.empty() && Spec.worldIndex < Worlds.worlds.size())
+	{
+		std::string LayoutError;
+		WorldData = std::make_unique<ftcore::WorldLayout>();
+		if (!ftcore::generateWorldLayout(Worlds.worlds[Spec.worldIndex], *WorldData, &LayoutError))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: world %s has no layout:\n%s"), *FT::ToFString(Spec.world), *FT::ToFString(LayoutError));
+			WorldData.reset();
+		}
+	}
+	std::string FitError;
+	std::vector<std::string> FitWarnings;
+	if (!ftcore::fitArenaZone(Spec, WorldData.get(), Def, Fit, &FitError, &FitWarnings))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s\nArena: using the plain zone instead."), *FT::ToFString(FitError));
+		WorldData.reset();
+		Spec.world.clear();
+		Spec.district = -1;
+		Spec.offset = ftcore::Vec2{};
+		Spec.yaw = 0.f;
+		Spec.kind = ftcore::ZoneKind::Circle;
+		Spec.ring = MapRingRadius;
+		Spec.spawn = 7.f;
+		FitWarnings.clear();
+		ftcore::fitArenaZone(Spec, nullptr, Def, Fit, nullptr, nullptr);
+	}
+	for (const std::string& W : FitWarnings)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s"), *FT::ToFString(W));
+	}
+	Fit.apply(Def);
+}
+
+void AFTArenaGameMode::BuildPlainGround()
+{
+	UWorld* World = GetWorld();
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	// The shared look: the sun, sky, air and the camera finish.
+	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, FRotator(-38, 35, 0));
+	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	if (!Cube || !World)
+	{
+		return;
+	}
+	// A slab 200 m across, its top at z = 0.
+	AStaticMeshActor* Ground = World->SpawnActor<AStaticMeshActor>(FVector(0.0, 0.0, -50.0), FRotator::ZeroRotator, Spawn);
+	if (!Ground)
+	{
+		return;
+	}
+	UStaticMeshComponent* Mesh = Ground->GetStaticMeshComponent();
+	Mesh->SetMobility(EComponentMobility::Movable);
+	Mesh->SetStaticMesh(Cube);
+	if (Base)
+	{
+		UMaterialInstanceDynamic* Paint = UMaterialInstanceDynamic::Create(Base, World);
+		Paint->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.34f, 0.32f, 0.29f));
+		Mesh->SetMaterial(0, Paint);
+	}
+	Mesh->SetCastShadow(false);
+	Ground->SetActorScale3D(FVector(200.0, 200.0, 1.0));
+}
+
+void AFTArenaGameMode::BuildZoneDressing()
+{
+	UWorld* World = GetWorld();
+	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+	UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Rendering/M_WorldSurface.M_WorldSurface"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	if (!Base)
+	{
+		Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	}
+	if (!World || !Cube || !Cylinder || !Base)
+	{
+		return;
+	}
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	// Water and the stuff built for the zone, in the world's tints: a wet dark sheet, dark concrete.
+	static const FLinearColor WaterTint[4] = {FLinearColor(0.06f, 0.08f, 0.1f), FLinearColor(0.06f, 0.1f, 0.15f), FLinearColor(0.05f, 0.22f, 0.4f), FLinearColor(0.02f, 0.03f, 0.04f)};
+	static const FLinearColor StuffTint[4] = {FLinearColor(0.2f, 0.19f, 0.17f), FLinearColor(0.07f, 0.07f, 0.09f), FLinearColor(0.4f, 0.5f, 0.65f), FLinearColor(0.14f, 0.14f, 0.15f)};
+	const int32 Style = FMath::Clamp(ZoneStyle, 0, 3);
+	const auto Paint = [&](const FLinearColor& Color, float Roughness, float Metallic)
+	{
+		UMaterialInstanceDynamic* Instance = UMaterialInstanceDynamic::Create(Base, World);
+		Instance->SetVectorParameterValue(TEXT("Color"), Color);
+		Instance->SetScalarParameterValue(TEXT("Roughness"), Roughness);
+		Instance->SetScalarParameterValue(TEXT("Metallic"), Metallic);
+		return Instance;
+	};
+	UMaterialInstanceDynamic* Water = Paint(WaterTint[Style], 0.06f, 0.4f);
+	UMaterialInstanceDynamic* Stuff = Paint(StuffTint[Style], 0.8f, 0.f);
+	const auto Place = [&](UStaticMesh* Mesh, UMaterialInterface* Material, const FVector& At, const FRotator& Turn, const FVector& Size, bool bBlocks)
+	{
+		AStaticMeshActor* Prop = World->SpawnActor<AStaticMeshActor>(At, Turn, Spawn);
+		if (!Prop)
+		{
+			return;
+		}
+		UStaticMeshComponent* Component = Prop->GetStaticMeshComponent();
+		Component->SetMobility(EComponentMobility::Movable);
+		Component->SetStaticMesh(Mesh);
+		Component->SetMaterial(0, Material);
+		if (!bBlocks)
+		{
+			Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Component->SetCastShadow(false);
+		}
+		Component->SetCanEverAffectNavigation(false);
+		Prop->SetActorScale3D(Size); // both shapes are 1 m across and 1 m tall
+	};
+	const auto Cm = [this](const ftcore::Vec2& P, double HeightM) { return FVector(P.x * 100.0, P.y * 100.0, ZoneZ + HeightM * 100.0); };
+
+	// Shallow sheets: a plaza's paving stands 3 cm over its pad, so these lie 2 cm over that.
+	for (int32 W = 0; W < static_cast<int32>(Fit.waterCount); ++W)
+	{
+		const ftcore::ZoneWater& Sheet = Fit.water[static_cast<size_t>(W)];
+		Place(Cylinder, Water, Cm(Sheet.at, 0.04), FRotator::ZeroRotator, FVector(Sheet.radius * 2.0, Sheet.radius * 2.0, 0.02), false);
+	}
+	// The zone's own cover.
+	for (int32 O = 0; O < static_cast<int32>(Fit.zone.obstacleCount); ++O)
+	{
+		const ftcore::ZoneObstacle& Piece = Fit.zone.obstacles[static_cast<size_t>(O)];
+		if (!Piece.authored)
+		{
+			continue;
+		}
+		if (Piece.box)
+		{
+			Place(Cube, Stuff, Cm(Piece.at, 0.55), FRotator(0.0, FMath::RadiansToDegrees(Piece.yaw), 0.0), FVector(Piece.half.x * 2.0, Piece.half.y * 2.0, 1.1), true);
+		}
+		else
+		{
+			Place(Cylinder, Stuff, Cm(Piece.at, 0.5), FRotator::ZeroRotator, FVector(Piece.radius * 2.0, Piece.radius * 2.0, 1.0), true);
+		}
+	}
+	// A barrier across each road the wall crosses, just outside it: crates in a row, the way the wall runs.
+	int32 Plugs = 0;
+	for (int32 M = 0; M < static_cast<int32>(Fit.mouthCount); ++M)
+	{
+		const ftcore::ZoneMouth& Mouth = Fit.mouths[static_cast<size_t>(M)];
+		const ftcore::Vec2 Along{-Mouth.out.y, Mouth.out.x};
+		const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Along.y, Along.x));
+		const int32 Count = FMath::Max(2, FMath::CeilToInt((Mouth.width + 1.f) / 1.4f));
+		for (int32 K = 0; K < Count; ++K)
+		{
+			const float Off = (static_cast<float>(K) - 0.5f * static_cast<float>(Count - 1)) * 1.4f;
+			const double Tall = (K % 2 == 0) ? 1.1 : 1.6;
+			const ftcore::Vec2 At{Mouth.at.x + Mouth.out.x * 0.9f + Along.x * Off, Mouth.at.y + Mouth.out.y * 0.9f + Along.y * Off};
+			Place(Cube, Stuff, Cm(At, Tall * 0.5), FRotator(0.0, Yaw, 0.0), FVector(1.3, 0.7, Tall), true);
+			++Plugs;
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: dressed the zone: %d water sheets, %d road barriers across %d mouths."), static_cast<int32>(Fit.waterCount), Plugs,
+		static_cast<int32>(Fit.mouthCount));
+}
+
+double AFTArenaGameMode::SampleGround(const ftcore::Vec2& P) const
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return 0.0;
+	}
+	// From far above, down: what stops the line first is a roof, a crown or the plaza's paving, not the ground. Take the
+	// paving's top (the figures stand on it) and for anything else skip the actor and look again, until the Landscape.
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(ArenaGround), false);
+	const FVector Top(P.x * 100.0, P.y * 100.0, 60000.0);
+	for (int32 Try = 0; Try < 8; ++Try)
+	{
+		FHitResult Hit;
+		if (!World->LineTraceSingleByChannel(Hit, Top, Top - FVector(0.0, 0.0, 120000.0), ECC_Visibility, Params))
+		{
+			break;
+		}
+		const UPrimitiveComponent* Component = Hit.GetComponent();
+		if (Component && Component->GetClass()->GetName().Contains(TEXT("Landscape")))
+		{
+			return Hit.ImpactPoint.Z;
+		}
+		if (Component && Component->GetName().Contains(TEXT("PlazaDiscs")))
+		{
+			return Hit.ImpactPoint.Z;
+		}
+		if (!Hit.GetActor())
+		{
+			break;
+		}
+		Params.AddIgnoredActor(Hit.GetActor());
+	}
+	UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no ground under the zone; the figures stand at 0."));
+	return 0.0;
 }
 
 APlayerController* AFTArenaGameMode::GetPC() const
@@ -291,14 +594,33 @@ void AFTArenaGameMode::Begin()
 	bBegun = true;
 	BeginNow = Now;
 
-	// The ring: Def's radius around the map's centre (the player starts behind it), inside the map's wall.
-	const FVector Start = PlayerStartFor(Def.ringRadius);
-	const ftcore::Vec2 PlayerPos{static_cast<float>(Start.X / 100.0), static_cast<float>(Start.Y / 100.0)};
-	ftcore::ArenaRing Bounds;
-	Bounds.centre = ftcore::Vec2{0.f, 0.f};
-	Bounds.radius = MapRingRadius;
-	const ftcore::ArenaRing Ring = ftcore::arenaRingAt(PlayerPos, ftcore::Vec2{1.f, 0.f}, Def.ringRadius, Bounds);
-	Fight.begin(Def, Ring, PlayerPos, ftcore::Vec2{1.f, 0.f}, Seed);
+	// The fitted zone's ring, and where the player starts in it.
+	Fight.begin(Def, Fit.ring, Fit.playerStart, Fit.playerFacing, Seed);
+
+	if (Spec.world.empty())
+	{
+		BuildPlainGround();
+		ZoneZ = 0.0;
+	}
+	else
+	{
+		ZoneZ = SampleGround(Fit.zone.centre);
+	}
+	if (WorldData && Fit.district >= 0)
+	{
+		const ftcore::WorldDistrict& Home = WorldData->district(static_cast<size_t>(Fit.district));
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: zone anchored on district %d of %s: plaza centre (%.1f, %.1f) m, facing %.1f degrees, landmark at (%.1f, %.1f) m."),
+			Fit.district, *FT::ToFString(Spec.world), Home.centre.x, Home.centre.y, FMath::RadiansToDegrees(FMath::Atan2(Home.forward.y, Home.forward.x)),
+			Home.landmark.x, Home.landmark.y);
+	}
+	ZoneStyle = Spec.world == "solhaven" ? 1 : (Spec.world == "lattice" ? 2 : (Spec.world == "unwritten" ? 3 : 0));
+	BuildZoneDressing();
+	const ftcore::ArenaZone& Z = Fit.zone;
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("Arena: zone %s%s%s: %s of %d vertices, %d obstacles, ring %.1f m (asked %.1f m, %.0f%%), area %.0f m2, ground at %.2f m; camera arm %.1f m."),
+		*FT::ToFString(Fit.id), Spec.world.empty() ? TEXT("") : TEXT(" in "), *FT::ToFString(Spec.world),
+		Z.shape == ftcore::ZoneShape::Circle ? TEXT("a circle") : TEXT("a polygon"), static_cast<int32>(Z.vertCount),
+		static_cast<int32>(Z.obstacleCount), Fit.ring.radius, Fit.askedRing, Fit.scale * 100.f, Z.area(), ZoneZ / 100.0, Fit.camera.arm);
 
 	SpawnFigures();
 	PutBodiesAtStart();
@@ -339,6 +661,8 @@ void AFTArenaGameMode::SpawnFigures()
 	if (PlayerFigure)
 	{
 		PlayerFigure->Setup(true, Def.fighter.bodyRadius, kArenaPlayerColor);
+		const ftcore::ZoneCamera& Rig = Fit.camera;
+		PlayerFigure->SetCameraRig(Rig.arm, Rig.pivot, Rig.side, Rig.up, Rig.fov);
 	}
 	if (PC)
 	{
@@ -354,7 +678,8 @@ void AFTArenaGameMode::SpawnFigures()
 		}
 		const uint8 Kind = Def.enemyKind[static_cast<size_t>(I)];
 		const FLinearColor& Color = kArenaKindColors[(Kind == ftcore::kArenaNoKind ? 0 : Kind) % 6];
-		Enemy->Setup(false, Def.enemies[static_cast<size_t>(I)].bodyRadius, Color);
+		const ftcore::ArenaEnemyKind& EnemyKind = Def.enemies[static_cast<size_t>(I)];
+		Enemy->Setup(false, EnemyKind.bodyRadius, Color, ftcore::arenaEnemyHeight(EnemyKind));
 		EnemyFigures[I] = Enemy;
 	}
 }
@@ -391,6 +716,16 @@ void AFTArenaGameMode::PutBodiesAtStart()
 void AFTArenaGameMode::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (bTravelPending)
+	{
+		if (!bTravelStarted && GetWorld())
+		{
+			bTravelStarted = true;
+			UGameplayStatics::OpenLevel(this, FName(*FT::ToFString(ftcore::mapPackage(Worlds.worlds[Spec.worldIndex].map))), true,
+				TEXT("game=/Script/ForgottenThird.FTArenaGameMode"));
+		}
+		return;
+	}
 	if (!bBegun)
 	{
 		Begin();
@@ -587,7 +922,7 @@ void AFTArenaGameMode::StepFight()
 	}
 	PrevBodies = Bodies;
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
-	ftcore::arenaStep(Fight, Bodies, StepSeconds);
+	ftcore::arenaStep(Fight, Bodies, StepSeconds, Fit.zone);
 	HandleEvents(Out.events);
 	TrackParts(Out);
 }
@@ -870,7 +1205,7 @@ void AFTArenaGameMode::SteerCamera(float DeltaSeconds)
 			const float Delta = FMath::FindDeltaAngleDegrees(CameraYaw, Want);
 			CameraYaw += Delta * FMath::Min(1.f, kArenaLockTurn * DeltaSeconds);
 		}
-		CameraPitch = FMath::FInterpTo(CameraPitch, kArenaLockPitch, DeltaSeconds, 4.f);
+		CameraPitch = FMath::FInterpTo(CameraPitch, Fit.camera.lockPitch, DeltaSeconds, 4.f);
 	}
 	CameraYaw = FMath::UnwindDegrees(CameraYaw);
 	PC->SetControlRotation(FRotator(CameraPitch, CameraYaw, 0.0));
@@ -911,6 +1246,14 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	}
 	ShotWall += DeltaSeconds;
 	if (ShotWall < ShotHoldUntil)
+	{
+		return true;
+	}
+	if (bOverview && OverviewPhase < 3 && OverviewShot())
+	{
+		return true;
+	}
+	if (bOverview && EdgePhase < 3 && EdgeShot())
 	{
 		return true;
 	}
@@ -1001,7 +1344,165 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	return false;
 }
 
-void AFTArenaGameMode::TakeShot(const TCHAR* Name)
+bool AFTArenaGameMode::OverviewShot()
+{
+	APlayerController* PC = GetPC();
+	if (!PC || ShotWall < ShotDelay)
+	{
+		return ShotWall < ShotDelay;
+	}
+	if (OverviewPhase == 0)
+	{
+		// High over the south-west of the zone, looking at its middle; if the scene is in the way (a building), the
+		// camera comes in along the line until it is clear.
+		const float Distance = FMath::Max(Fit.ring.radius * 2.6f, 30.f);
+		const FVector Target(Fit.zone.centre.x * 100.0, Fit.zone.centre.y * 100.0, ZoneZ + 200.0);
+		FVector From = Target + FVector(-0.55 * Distance, -0.55 * Distance, 0.75 * Distance) * 100.0;
+		FHitResult Block;
+		FCollisionQueryParams Query(SCENE_QUERY_STAT(ArenaOverview), false);
+		if (GetWorld()->SweepSingleByChannel(Block, Target, From, FQuat::Identity, ECC_Camera, FCollisionShape::MakeSphere(80.f), Query))
+		{
+			From = Target + (From - Target) * FMath::Max(0.25f, Block.Time * 0.9f);
+		}
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		ACameraActor* Camera = GetWorld()->SpawnActor<ACameraActor>(From, (Target - From).Rotation(), Params);
+		if (!Camera)
+		{
+			OverviewPhase = 2;
+			return false;
+		}
+		Camera->GetCameraComponent()->SetFieldOfView(70.f);
+		OverviewCamera = Camera;
+		// The walls are invisible in play; for this picture they are drawn: green where the zone ends, red for an
+		// obstacle, yellow across a road the wall meets.
+		const float LineZ = static_cast<float>(ZoneZ) + 60.f;
+		const auto Line = [&](const ftcore::Vec2& A, const ftcore::Vec2& B, const FColor& Colour, float Thick)
+		{
+			DrawDebugLine(GetWorld(), FVector(A.x * 100.0, A.y * 100.0, LineZ), FVector(B.x * 100.0, B.y * 100.0, LineZ), Colour, false, 6.f, 0, Thick);
+		};
+		const ftcore::ArenaZone& Z = Fit.zone;
+		const int32 Sides = Z.shape == ftcore::ZoneShape::Circle ? 72 : static_cast<int32>(Z.vertCount);
+		for (int32 I = 0; I < Sides; ++I)
+		{
+			ftcore::Vec2 A, B;
+			if (Z.shape == ftcore::ZoneShape::Circle)
+			{
+				const float A0 = UE_TWO_PI * static_cast<float>(I) / 72.f, A1 = UE_TWO_PI * static_cast<float>(I + 1) / 72.f;
+				A = ftcore::Vec2{Z.centre.x + Z.radius * FMath::Cos(A0), Z.centre.y + Z.radius * FMath::Sin(A0)};
+				B = ftcore::Vec2{Z.centre.x + Z.radius * FMath::Cos(A1), Z.centre.y + Z.radius * FMath::Sin(A1)};
+			}
+			else
+			{
+				A = Z.verts[static_cast<size_t>(I)];
+				B = Z.verts[static_cast<size_t>((I + 1) % Z.vertCount)];
+			}
+			Line(A, B, FColor(60, 255, 90), 25.f);
+		}
+		for (int32 O = 0; O < static_cast<int32>(Z.obstacleCount); ++O)
+		{
+			const ftcore::ZoneObstacle& Piece = Z.obstacles[static_cast<size_t>(O)];
+			for (int32 K = 0; K < 8; ++K)
+			{
+				ftcore::Vec2 A, B;
+				if (Piece.box)
+				{
+					const float Cx[4] = {-1.f, 1.f, 1.f, -1.f}, Cy[4] = {-1.f, -1.f, 1.f, 1.f};
+					if (K >= 4)
+					{
+						break;
+					}
+					const auto Corner = [&](int32 N)
+					{
+						const float Lx = Cx[N] * Piece.half.x, Ly = Cy[N] * Piece.half.y;
+						return ftcore::Vec2{Piece.at.x + Lx * FMath::Cos(Piece.yaw) - Ly * FMath::Sin(Piece.yaw), Piece.at.y + Lx * FMath::Sin(Piece.yaw) + Ly * FMath::Cos(Piece.yaw)};
+					};
+					A = Corner(K);
+					B = Corner((K + 1) % 4);
+				}
+				else
+				{
+					const float A0 = UE_TWO_PI * static_cast<float>(K) / 8.f, A1 = UE_TWO_PI * static_cast<float>(K + 1) / 8.f;
+					A = ftcore::Vec2{Piece.at.x + Piece.radius * FMath::Cos(A0), Piece.at.y + Piece.radius * FMath::Sin(A0)};
+					B = ftcore::Vec2{Piece.at.x + Piece.radius * FMath::Cos(A1), Piece.at.y + Piece.radius * FMath::Sin(A1)};
+				}
+				Line(A, B, FColor(255, 70, 60), 20.f);
+			}
+		}
+		for (int32 M = 0; M < static_cast<int32>(Fit.mouthCount); ++M)
+		{
+			const ftcore::ZoneMouth& Mouth = Fit.mouths[static_cast<size_t>(M)];
+			const ftcore::Vec2 Along{-Mouth.out.y * Mouth.width * 0.5f, Mouth.out.x * Mouth.width * 0.5f};
+			Line(ftcore::Vec2{Mouth.at.x - Along.x, Mouth.at.y - Along.y}, ftcore::Vec2{Mouth.at.x + Along.x, Mouth.at.y + Along.y}, FColor(255, 220, 40), 30.f);
+		}
+		PC->SetViewTarget(Camera);
+		if (AHUD* Hud = PC->GetHUD())
+		{
+			Hud->bShowHUD = false;
+		}
+		OverviewPhase = 1;
+		ShotHoldUntil = ShotWall + 1.5;
+		return true;
+	}
+	if (OverviewPhase == 1)
+	{
+		// The screenshot is taken on the next frame, so the camera stays until the hold after it has passed.
+		TakeShot(TEXT("0_overview"), false);
+		OverviewPhase = 2;
+		return true;
+	}
+	PC->SetViewTarget(PlayerFigure);
+	if (AHUD* Hud = PC->GetHUD())
+	{
+		Hud->bShowHUD = true;
+	}
+	if (OverviewCamera)
+	{
+		OverviewCamera->Destroy();
+	}
+	OverviewPhase = 3;
+	ShotHoldUntil = ShotWall + 0.7;
+	return true;
+}
+
+bool AFTArenaGameMode::EdgeShot()
+{
+	if (OverviewPhase < 3 || ShotWall < ShotHoldUntil)
+	{
+		return OverviewPhase < 3;
+	}
+	if (EdgePhase == 0)
+	{
+		// The wall point on the player's left (the lane's normal), the player 1.4 m inside it.
+		const ftcore::Vec2 Face = Fit.playerFacing;
+		const ftcore::Vec2 Left{-Face.y, Face.x};
+		float Lo = 0.f, Hi = Fit.zone.radius * 1.05f;
+		for (int32 It = 0; It < 24; ++It)
+		{
+			const float Mid = 0.5f * (Lo + Hi);
+			(Fit.zone.contains(ftcore::Vec2{Fit.zone.centre.x + Left.x * Mid, Fit.zone.centre.y + Left.y * Mid}, 0.f) ? Lo : Hi) = Mid;
+		}
+		const float Inside = FMath::Max(0.f, Lo - 1.4f);
+		const ftcore::Vec2 At{Fit.zone.centre.x + Left.x * Inside, Fit.zone.centre.y + Left.y * Inside};
+		Bodies.player = At;
+		PrevBodies.player = At;
+		EdgePhase = 1;
+		ShotHoldUntil = ShotWall + 2.0; // the camera's lag settles
+		return true;
+	}
+	if (EdgePhase == 1)
+	{
+		TakeShot(TEXT("0b_edge"), false);
+		EdgePhase = 2;
+		return true;
+	}
+	Restart(); // the fight as it began
+	EdgePhase = 3;
+	ShotHoldUntil = ShotWall + 1.0;
+	return true;
+}
+
+void AFTArenaGameMode::TakeShot(const TCHAR* Name, bool bCounted)
 {
 	const FString File = FString::Printf(TEXT("%s_%s.png"), *ShotPrefix, Name);
 	// The game viewport handles HighResShot; the engine's own Exec doesn't.
@@ -1010,6 +1511,9 @@ void AFTArenaGameMode::TakeShot(const TCHAR* Name)
 		Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *File), *GLog);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: view %s."), *File);
-	++ShotsTaken;
+	if (bCounted)
+	{
+		++ShotsTaken;
+	}
 	ShotHoldUntil = ShotWall + kArenaShotHold;
 }

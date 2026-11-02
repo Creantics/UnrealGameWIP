@@ -5,11 +5,10 @@
 //   UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildArenaWorld [-Map=Demo_Arena] -NullRHI -unattended
 //       -nopause -nosplash
 //
-// A lit round arena: a stone disc a little wider than AFTArenaGameMode::MapRingRadius (12 m) on a wider ground,
-// a pale line painted where ftcore::ArenaFight's ring holds everyone, a knee-high wall of blocks just outside
-// it (low enough for the camera to look over), eight pillars with a lamp by each around it, the shared look
-// (FTScene::SpawnLook) and a player start where the game mode puts the player (PlayerStartFor). Everything
-// that fights is spawned by AFTArenaGameMode, the map's game mode. It overwrites the map.
+// The map holds only a player start, where the game mode puts the player for the plain zone's ring
+// (AFTArenaGameMode::PlayerStartFor). A zone in a world is held in that world's own map (World_Solhaven, ...), which
+// the game mode opens; the plain zone gets its ground and look from the game mode at run time. Nothing is built
+// into the map. It overwrites the map.
 
 #include "CoreMinimal.h"
 #include "Commandlets/Commandlet.h"

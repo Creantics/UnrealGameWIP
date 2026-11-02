@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "default": "sand_ring",
+  "zones": [
+    {
+      "id": "sand_ring", "bosses": ["brute", "skirmisher", "breaker"],
+      "shape": { "kind": "circle" }, "ring": 12, "spawn": 7, "attackers": 1, "seed": 1
+    },
+    {
+      "id": "sol_plaza_a", "world": "solhaven", "district": 3, "bosses": ["hulk"],
+      "offset": [0, 0], "yaw": 180, "shape": { "kind": "circle" }, "seed": 11,
+      "water": [ { "at": [-10, 12], "radius": 4 }, { "at": [6, -14], "radius": 3 } ]
+    },
+    {
+      "id": "sol_facade_a", "world": "solhaven", "district": 2, "bosses": ["duelist"],
+      "offset": [0, 34], "yaw": 90, "shape": { "kind": "rect", "aspect": 1.6, "corner": 0.3 }, "seed": 12,
+      "water": [ { "at": [7, 24], "radius": 3 } ]
+    },
+    {
+      "id": "sol_climax_a", "world": "solhaven", "district": 14, "bosses": ["titan"],
+      "offset": [22, 0], "yaw": 0, "shape": { "kind": "circle" }, "ring": 36, "seed": 13,
+      "water": [ { "at": [30, 14], "radius": 5 } ]
+    },
+    {
+      "id": "lat_plaza_a", "world": "lattice", "district": 6, "bosses": ["hulk"],
+      "offset": [0, 0], "yaw": 180, "shape": { "kind": "circle" }, "seed": 21,
+      "water": [ { "at": [-10, -12], "radius": 4 } ]
+    },
+    {
+      "id": "lat_facade_a", "world": "lattice", "district": 5, "bosses": ["duelist"],
+      "offset": [0, -34], "yaw": -90, "shape": { "kind": "rect", "aspect": 1.6, "corner": 0.3 }, "seed": 22,
+      "water": [ { "at": [7, -24], "radius": 3 } ]
+    },
+    {
+      "id": "lat_climax_a", "world": "lattice", "district": 1, "bosses": ["titan"],
+      "offset": [22, 0], "yaw": 0, "shape": { "kind": "circle" }, "ring": 36, "seed": 23
+    },
+    {
+      "id": "unw_plaza_a", "world": "unwritten", "district": 3, "bosses": ["duelist"],
+      "offset": [0, 0], "yaw": 180, "shape": { "kind": "circle" }, "seed": 31,
+      "water": [ { "at": [-10, 12], "radius": 5 } ]
+    },
+    {
+      "id": "unw_court_a", "world": "unwritten", "district": 3, "bosses": ["hulk"],
+      "offset": [0, 0], "yaw": 180, "shape": { "kind": "circle" }, "ring": 54, "seed": 32,
+      "water": [ { "at": [-10, 12], "radius": 5 } ]
+    },
+    {
+      "id": "unw_climax_a", "world": "unwritten", "district": 4, "bosses": ["titan"],
+      "offset": [22, 0], "yaw": 0, "shape": { "kind": "circle" }, "ring": 36, "seed": 33,
+      "water": [ { "at": [30, 14], "radius": 5 } ]
+    }
+  ]
+}

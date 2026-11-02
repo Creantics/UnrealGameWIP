@@ -776,6 +776,113 @@ void AFTArenaHUD::DrawResult(const AFTArenaGameMode& Mode)
 	}
 }
 
+void AFTArenaHUD::DrawEdgeCue(const AFTArenaGameMode& Mode)
+{
+	constexpr float Band = 3.f;   // the cue is full at the wall and gone this far from it
+	constexpr float Reach = 8.f;  // how much of the wall along from the player is drawn
+	constexpr float Step = 0.8f;  // metres between the cue's marks along the wall
+	const ftcore::ArenaZone& Zone = Mode.GetZone();
+	const ftcore::Vec2 Player = Mode.GetPlayerPosition();
+	const float Wall = Zone.wallDistance(Player);
+	if (Wall > Band + 0.5f)
+	{
+		return;
+	}
+	const float Strength = FMath::Clamp(1.f - Wall / (Band + 0.5f), 0.f, 1.f);
+	const double Now = Mode.GetNow();
+	const double Z0 = Mode.GetZoneZ();
+	const int32 Style = Mode.GetZoneStyle();
+	const float S = UiScale;
+	int32 Index = 0;
+	ftcore::Vec2 Last{};
+	bool bHaveLast = false;
+	// One mark at wall point P: its fade by distance from the player, and the style's drawing.
+	const auto Mark = [&](const ftcore::Vec2& P)
+	{
+		const float Away = FMath::Sqrt((P.x - Player.x) * (P.x - Player.x) + (P.y - Player.y) * (P.y - Player.y));
+		const float Fade = Strength * FMath::Clamp(1.f - Away / Reach, 0.f, 1.f);
+		const int32 I = Index++;
+		if (Fade <= 0.01f)
+		{
+			bHaveLast = false;
+			return;
+		}
+		const auto At = [&](const ftcore::Vec2& Q, double Height) { return FVector(Q.x * 100.0, Q.y * 100.0, Z0 + Height * 100.0); };
+		FVector2D A, B;
+		switch (Style)
+		{
+		case 1: // Solhaven: rain streaks falling through sodium and violet haze
+		{
+			const double Phase = FMath::Frac(Now * 1.6 + static_cast<double>((I * 37) % 100) * 0.01);
+			const double Top = 3.2 - Phase * 3.2;
+			const FLinearColor Colour = (I % 3 == 0) ? FLinearColor(0.75f, 0.55f, 1.f, 0.9f * Fade) : FLinearColor(1.f, 0.66f, 0.3f, 0.85f * Fade);
+			if (ToScreen(At(P, Top + 0.9), A) && ToScreen(At(ftcore::Vec2{P.x + 0.05f, P.y + 0.05f}, Top), B))
+			{
+				DrawLine(A.X, A.Y, B.X, B.Y, Colour, 2.6f * S);
+			}
+			break;
+		}
+		case 2: // the Lattice: a faint blue ruled grid, pulsing
+		{
+			const float Pulse = 0.55f + 0.45f * FMath::Sin(static_cast<float>(Now) * 3.f + static_cast<float>(I) * 0.35f);
+			const FLinearColor Colour(0.3f, 0.7f, 1.f, 0.75f * Fade * Pulse);
+			if ((I % 2 == 0) && ToScreen(At(P, 0.0), A) && ToScreen(At(P, 3.0), B))
+			{
+				DrawLine(A.X, A.Y, B.X, B.Y, Colour, 1.4f * S);
+			}
+			if (bHaveLast)
+			{
+				for (double Height : {0.6, 1.8, 3.0})
+				{
+					if (ToScreen(At(Last, Height), A) && ToScreen(At(P, Height), B))
+					{
+						DrawLine(A.X, A.Y, B.X, B.Y, Colour, 1.2f * S);
+					}
+				}
+			}
+			break;
+		}
+		case 3: // the Unwritten: paper-edge fog, pale bars drifting up from the ground
+		default: // the plain zone: dust, in sand
+		{
+			const float Drift = 0.6f + 0.4f * FMath::Sin(static_cast<float>(Now) * 0.8f + static_cast<float>(I));
+			const FLinearColor Colour = Style == 3 ? FLinearColor(0.92f, 0.9f, 0.82f, 0.16f * Fade * Drift) : FLinearColor(0.85f, 0.78f, 0.6f, 0.16f * Fade * Drift);
+			if (ToScreen(At(P, 0.0), A) && ToScreen(At(P, 1.2 + 1.4 * Drift), B))
+			{
+				DrawLine(A.X, A.Y, B.X, B.Y, Colour, 16.f * S);
+			}
+			break;
+		}
+		}
+		Last = P;
+		bHaveLast = true;
+	};
+	// The wall's points about every Step metres, from the zone's own shape.
+	if (Zone.shape == ftcore::ZoneShape::Circle)
+	{
+		const int32 Count = FMath::Max(16, FMath::CeilToInt(2.f * UE_PI * Zone.radius / Step));
+		for (int32 N = 0; N < Count; ++N)
+		{
+			const float Angle = 2.f * UE_PI * static_cast<float>(N) / static_cast<float>(Count);
+			Mark(ftcore::Vec2{Zone.centre.x + Zone.radius * FMath::Cos(Angle), Zone.centre.y + Zone.radius * FMath::Sin(Angle)});
+		}
+	}
+	else
+	{
+		for (int32 V = 0; V < static_cast<int32>(Zone.vertCount); ++V)
+		{
+			const ftcore::Vec2 From = Zone.verts[static_cast<size_t>(V)], To = Zone.verts[static_cast<size_t>((V + 1) % Zone.vertCount)];
+			const float Length = FMath::Sqrt((To.x - From.x) * (To.x - From.x) + (To.y - From.y) * (To.y - From.y));
+			const int32 Count = FMath::Max(1, FMath::CeilToInt(Length / Step));
+			for (int32 N = 0; N < Count; ++N)
+			{
+				const float T = static_cast<float>(N) / static_cast<float>(Count);
+				Mark(ftcore::Vec2{From.x + (To.x - From.x) * T, From.y + (To.y - From.y) * T});
+			}
+		}
+	}
+}
+
 void AFTArenaHUD::DrawHUD()
 {
 	Super::DrawHUD();
@@ -797,6 +904,7 @@ void AFTArenaHUD::DrawHUD()
 		bStatsBuilt = false; // the next result gets its own counts
 	}
 
+	DrawEdgeCue(*Mode);
 	DrawFlashes(*Mode);
 	DrawEnemies(*Mode);
 	DrawLock(*Mode);

@@ -4,11 +4,22 @@
 // ftcore::ArenaFight (Core/include/ftcore/ArenaFight.h, docs/COMBAT_SYSTEMS.md "Arena melee") with this mode
 // as its host and AFTArenaHUD as its UI. No story on play; the map is built by FTBuildArenaWorld.
 //
-// The fight is Data/Battle/arena.json's default fighter and ring against the three-kind wave (brute,
-// skirmisher, breaker; one attacking at a time); -ArenaLineup=<id>,<id>,... puts enemies of those kinds in it
-// instead (-ArenaLineup=brute: one brute), -ArenaAttackers=<n> sets how many attack at once (1 by default),
-// and -ArenaSeed=<n> picks the seed (1). The built-in ftcore::defaultArenaDef() stands in when the file is
-// missing or refused.
+// The fight is Data/Battle/arena.json's default fighter against the enemies of the zone it is held in
+// (Data/Battle/arenas.json; by default the sand ring, a plain 12 m circle of flat ground, which hosts the
+// three-kind wave: brute, skirmisher, breaker, one attacking at a time). -ArenaStage=<id> picks another zone;
+// most are a portion of one of the worlds' own scenes (a plaza, a street between buildings): the mode opens that
+// world's map (World_Solhaven, World_Lattice, World_Unwritten) with itself as the game mode and holds the player and
+// the enemies inside the zone's invisible walls, with the real buildings, trees and landmark there as obstacles.
+// -ArenaLineup=<id>,<id>,... puts enemies of those kinds in it instead (-ArenaLineup=brute: one brute),
+// -ArenaAttackers=<n> sets how many attack at once (1 by default), and -ArenaSeed=<n> picks the seed (1). The
+// zone's size, spawn distance and camera scale with the enemies (ftcore::fitArenaZone). The built-in
+// ftcore::defaultArenaDef() stands in when arena.json is missing or refused.
+//
+// Nothing is built for a zone in a world: the world's own art and light stay. Only the plain zone gets a flat
+// ground and the shared look (FTScene::SpawnLook), so the demo map (Demo_Arena, a player start and nothing else)
+// still plays with no flag. The walls are Core's: ftcore::arenaStep(fight, bodies, dt, zone) holds every body inside
+// the zone and out of its obstacles; Unreal blocks nothing. The camera may leave the walls but not pass through
+// the scene: its spring arm probes the world and is pulled in.
 //
 // Core judges, the host moves. The mode steps the fight at a fixed 1/60 s (an accumulator, at most 8 steps
 // a frame), the step the Core tests and the balance check use, and moves the bodies with ftcore::arenaStep:
@@ -51,12 +62,19 @@
 //   ARENA RESULT: Victory in <t> s (autoplay, seed <s>, <n> enemies, hp <h>/<max>, <c> heals left; <x> hits, ...).
 // -ArenaShot=<path prefix> renders the HUD-on views docs/ARENA_DEMO.md lists (<prefix>_1_ring.png, ...)
 // with HighResShot after an 8 s settle (-ArenaShotDelay=<s>) and then quits; it implies -ArenaAutoPlay.
+// -ArenaOverview adds a first view, <prefix>_0_overview.png: the whole zone from a camera high over its south-west
+// side, HUD off, with its walls (green), obstacles (red) and road mouths (yellow) drawn as debug lines for the
+// picture only, and a second, <prefix>_0b_edge.png: the player 1.4 m from the wall, to show the edge cue.
 
 #include "CoreMinimal.h"
 
 #include "FTGameMode.h"
 
 #include "ftcore/ArenaFight.h"
+#include "ftcore/ArenaZone.h"
+#include "ftcore/WorldLayout.h"
+
+#include <memory>
 
 #include "FTArenaGameMode.generated.h"
 
@@ -71,7 +89,7 @@ class FORGOTTENTHIRD_API AFTArenaGameMode : public AFTGameMode
 public:
 	static constexpr int32 MaxEnemies = static_cast<int32>(ftcore::kMaxArenaEnemies);
 	static constexpr int32 MaxPopups = 16;
-	// The ring the map builds (metres), centred on the world's origin.
+	// The ring of the plain zone and of the map's player start (metres), centred on the world's origin.
 	static constexpr float MapRingRadius = 12.f;
 	static constexpr float StepSeconds = 1.f / 60.f;
 	static constexpr int32 MaxStepsPerFrame = 8;
@@ -108,6 +126,12 @@ public:
 	bool IsAutoPlay() const { return bAutoPlay; }
 	bool IsIdle() const { return bIdle; }
 	AFTArenaFighter* GetPlayerFigure() const { return PlayerFigure; }
+	// The zone the fight is held in, for the HUD's edge cue: its walls, the world's look (0 the plain zone, 1 Solhaven,
+	// 2 the Lattice, 3 the Unwritten), where the player stands (metres) and the height of the ground there (cm).
+	const ftcore::ArenaZone& GetZone() const { return Fit.zone; }
+	int32 GetZoneStyle() const { return ZoneStyle; }
+	ftcore::Vec2 GetPlayerPosition() const { return Bodies.player; }
+	double GetZoneZ() const { return ZoneZ; }
 	AFTArenaFighter* GetEnemyFigure(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? EnemyFigures[Index].Get() : nullptr; }
 	// The move enemy Index is in (its attack's numbers), or null when it isn't attacking.
 	const ftcore::ArenaEnemyMove* GetEnemyMove(int32 Index) const;
@@ -129,8 +153,19 @@ public:
 private:
 	// Reads Data/Battle/arena.json into Table; false (logged, ids only) when missing or refused.
 	bool LoadTable();
-	// The fight's def: the table's default, -ArenaLineup's kinds, or the built-in one.
+	// Reads Data/Battle/arenas.json (and Data/Field/worlds.json for the worlds) and picks the zone (-ArenaStage, else
+	// the file's default) into Spec; a built-in plain zone when the files or the table are missing or refused.
+	void LoadZones(bool bTable);
+	// The fight's def: the table's default, the zone's bosses or -ArenaLineup's kinds, or the built-in one; then the
+	// zone fitted to those enemies in the world's real layout (ring, spawn, walls and obstacles).
 	void BuildDef(bool bTable);
+	// The plain zone's ground and look.
+	void BuildPlainGround();
+	// What a zone in a world adds to its scene: the zone's sheets of water, its own cover, and a barrier across each
+	// road its wall crosses (so the invisible wall is a thing there).
+	void BuildZoneDressing();
+	// The world's ground height at p (metres), from a trace onto its Landscape (0 when there is none).
+	double SampleGround(const ftcore::Vec2& P) const;
 	void Begin();
 	void SpawnFigures();
 	void PutBodiesAtStart();
@@ -146,9 +181,14 @@ private:
 	void Restart();
 	// -ArenaShot's views; true while the fight should hold still (before the first view and just after each).
 	bool Shots(float DeltaSeconds);
-	void TakeShot(const TCHAR* Name);
+	void TakeShot(const TCHAR* Name, bool bCounted = true);
+	// -ArenaOverview's view: true while it holds the fight still (before the first view and just after it).
+	bool OverviewShot();
+	// -ArenaOverview's second view, _0b_edge: the player moved to 1.4 m from the zone's wall on his left, to show the
+	// edge cue; then the fight is put back as it began.
+	bool EdgeShot();
 	APlayerController* GetPC() const;
-	FVector ToWorld(const ftcore::Vec2& P) const { return FVector(P.x * 100.0, P.y * 100.0, 0.0); }
+	FVector ToWorld(const ftcore::Vec2& P) const { return FVector(P.x * 100.0, P.y * 100.0, ZoneZ); }
 
 	UPROPERTY()
 	TObjectPtr<AFTArenaFighter> PlayerFigure;
@@ -156,6 +196,16 @@ private:
 	TObjectPtr<AFTArenaFighter> EnemyFigures[6]; // ftcore::kMaxArenaEnemies (a literal for UHT; checked in the .cpp)
 
 	ftcore::ArenaTable Table;
+	ftcore::WorldTable Worlds;
+	ftcore::ArenaZoneTable Zones;
+	ftcore::ArenaZoneSpec Spec;
+	ftcore::ArenaZoneFit Fit;
+	std::unique_ptr<ftcore::WorldLayout> WorldData; // the zone's world (generated at load), when it has one
+	bool bZoneFromFile = false;
+	bool bTravelPending = false;
+	bool bTravelStarted = false;
+	double ZoneZ = 0.0; // cm: the height of the ground in the zone
+	int32 ZoneStyle = 0; // the world's look: 0 the plain zone, 1 Solhaven, 2 the Lattice, 3 the Unwritten
 	ftcore::ArenaDef Def;
 	ftcore::ArenaFight Fight;
 	ftcore::ArenaBodies Bodies;
@@ -207,6 +257,11 @@ private:
 	// -ArenaShot: the prefix, the settle before the first, which have been taken, and a short hold after
 	// each so the frame it renders is the moment it was taken for.
 	FString ShotPrefix;
+	bool bOverview = false;
+	int32 OverviewPhase = 0; // 0 not yet, 1 camera placed, 2 taken, 3 back on the player
+	int32 EdgePhase = 0;     // 0 not yet, 1 player at the wall, 2 taken, 3 put back
+	UPROPERTY()
+	TObjectPtr<AActor> OverviewCamera;
 	float ShotDelay = 8.f;
 	int32 ShotsTaken = 0;
 	double ShotWall = 0.0;
