@@ -48,6 +48,8 @@ constexpr float kSideArm = 450.f;      // and, filming a follower's turn, behind
 // In the air the stick asks for a catch pointing at least this squarely (the cosine) into the face. -LocoCatch jumps at a
 // wall between these distances ahead (cm).
 constexpr float kCatchStick = 0.5f;
+// -LocoCatch hangs this long at each catch before it climbs (s).
+constexpr float kCourseHang = 0.5f;
 constexpr float kCourseJumpFrom = 80.f;
 constexpr float kCourseJumpTo = 120.f;
 // A roll press the body can't act on yet is kept this long (s), and a roll or a slide turns the body to its way (a catch
@@ -125,6 +127,7 @@ void AFTExploreCharacter::BeginPlay()
 	Super::BeginPlay();
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 	Dodge.setTuning(UFTLocomotionAnimInstance::GetMoveTuning().dodge);
+	Ledge.setTuning(UFTLocomotionAnimInstance::GetMoveTuning().ledge);
 	DodgeNow = Dodge.fresh();
 	const bool bPortrait = FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait"));
 	// The lead and the party toggle: the player's last choice this session, else the command line, else config. A
@@ -515,6 +518,12 @@ void AFTExploreCharacter::HandleJump()
 		SlideJumpAsked = kRollBuffer;
 		return;
 	}
+	// Hanging from a ledge, it climbs up (Tick, through ftcore::LedgeHang).
+	if (LedgeNow.phase == ftcore::LedgePhase::Hanging)
+	{
+		LedgeJumpAsked = kRollBuffer;
+		return;
+	}
 	if (bTraversing)
 	{
 		return;
@@ -609,7 +618,7 @@ bool AFTExploreCharacter::TryCatch(bool bLog)
 {
 	UCharacterMovementComponent* Move = GetCharacterMovement();
 	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
-	if (bTraversing || !Anim || !Move->IsFalling() || bIsCrouched)
+	if (bTraversing || !Anim || !Move->IsFalling() || bIsCrouched || !Ledge.canCatch(LedgeNow))
 	{
 		return false;
 	}
@@ -667,6 +676,20 @@ bool AFTExploreCharacter::TryCatch(bool bLog)
 		Plan.clip, Clip.ledgeHeight, Plan.start, Lead, Obstacle.height, Obstacle.distance, Obstacle.depth, Velocity.x, Velocity.y, Velocity.z,
 		Plan.atContact.x, Plan.atContact.z, Plan.atContact.x - Velocity.x * Lead, Plan.atContact.z - Flight);
 	return true;
+}
+
+ftcore::LedgeInput AFTExploreCharacter::MakeLedgeInput() const
+{
+	const UCharacterMovementComponent* Move = GetCharacterMovement();
+	ftcore::LedgeInput In;
+	In.jumpHeld = bJumpHeld;
+	In.jumpPressed = LedgeJumpAsked > 0.f;
+	In.dropPressed = LedgeDropAsked > 0.f;
+	const FVector Stick = Move->GetCurrentAcceleration();
+	In.stick = FMath::Min(static_cast<float>(Stick.Size2D()) / FMath::Max(Move->GetMaxAcceleration(), 1.f), 1.f);
+	In.stickOff = In.stick > 0.f ? FMath::FindDeltaAngleDegrees(static_cast<float>(TravFrame.Rotator().Yaw),
+		static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(Stick.Y, Stick.X)))) : 0.f;
+	return In;
 }
 
 bool AFTExploreCharacter::TryRoll(bool bLanding, bool bLog)
@@ -764,13 +787,36 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 	const ftcore::TraversalClipInfo& Clip = Set.clip(static_cast<std::size_t>(TravPlan.clip));
 	const bool bRoll = Clip.move == ftcore::TraversalMove::Roll;
 	const bool bCatch = Clip.move == ftcore::TraversalMove::Catch;
+	// Let go of a ledge: the body falls from where it hangs, pushed off the face; the clip fades out from the hang.
+	if (bCatch && LedgeNow.phase == ftcore::LedgePhase::Dropping)
+	{
+		bTraversing = false;
+		Anim->LetGoTraversal(1.f, false);
+		Move->SetMovementMode(MOVE_Falling);
+		Move->Velocity = -TravFrame.GetRotation().GetForwardVector() * Ledge.tuning().dropPush;
+		UE_LOG(LogForgottenThird, Display, TEXT("Ledge: dropped %.2f s into the catch."), TravClock);
+		return;
+	}
+	const bool bHanging = bCatch && LedgeNow.phase == ftcore::LedgePhase::Hanging;
 	// For its log: how long it has gone and its slowest speed, from its first frame.
 	if (TravTime <= TravPlan.start)
 	{
 		TravClock = 0.f;
 		TravSlowest = TNumericLimits<float>::Max();
 	}
-	TravTime = Set.advance(TravPlan, TravTime, DeltaSeconds);
+	// A hang holds the catch clip at its catch; anything else plays on.
+	TravTime = bHanging ? TravTime : Set.advance(TravPlan, TravTime, DeltaSeconds);
+	if (bCatch && LedgeNow.phase == ftcore::LedgePhase::None && TravTime >= Clip.contact)
+	{
+		const ftcore::LedgeInput LIn = MakeLedgeInput();
+		if (Ledge.reach(LedgeNow, LIn) == ftcore::LedgePhase::Hanging)
+		{
+			TravTime = Clip.contact;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Ledge: %s at %.2f s (jump %s, stick %.2f at %.0f deg off the face)."),
+			LedgeNow.through ? TEXT("climbing straight up") : TEXT("hanging"), TravClock, LIn.jumpHeld ? TEXT("held") : TEXT("not held"),
+			LIn.stick, LIn.stickOff);
+	}
 	TravClock += DeltaSeconds;
 	const float Length = Clip.length;
 	const float T = FMath::Min(TravTime, Length);
@@ -820,6 +866,10 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 	const float Back = FMath::Max(DeltaSeconds, 1.f / 60.f);
 	Move->Velocity = (FeetAt(T) - FeetAt(FMath::Max(TravPlan.start, T - Back))) / Back * Rate;
 	Move->Velocity.Z = bRoll ? 0.0 : Move->Velocity.Z;
+	if (LedgeNow.phase == ftcore::LedgePhase::Hanging)
+	{
+		Move->Velocity = FVector::ZeroVector;
+	}
 	if (T - Back >= TravPlan.start)
 	{
 		TravSlowest = FMath::Min(TravSlowest, static_cast<float>(Move->Velocity.Size2D()));
@@ -839,6 +889,10 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 		if (bRoll)
 		{
 			Dodge.stop(DodgeNow);
+		}
+		if (bCatch)
+		{
+			Ledge.finish(LedgeNow);
 		}
 		// The clip plays on at the pace it had while it fades out, and under a roll's the body may set off on a turn.
 		Anim->LetGoTraversal(Rate, bRoll);
@@ -1090,6 +1144,12 @@ void AFTExploreCharacter::SpawnTraversalCourse()
 
 void AFTExploreCharacter::HandleCrouch()
 {
+	// Hanging from a ledge, crouch lets go (Tick, through ftcore::LedgeHang).
+	if (LedgeNow.phase == ftcore::LedgePhase::Hanging)
+	{
+		LedgeDropAsked = kRollBuffer;
+		return;
+	}
 	// In a sprint, crouch slides (TrySlide); pressed again mid-slide it gets the body up.
 	if (!GetCharacterMovement()->bWantsToCrouch && TrySlide())
 	{
@@ -1116,6 +1176,7 @@ void AFTExploreCharacter::ResetHeldInput()
 	RollAsked = 0.f;
 	bRollAskedAir = false;
 	SlideJumpAsked = 0.f;
+	LedgeJumpAsked = LedgeDropAsked = 0.f;
 	bJumpHeld = false;
 	UnCrouch();
 }
@@ -1355,6 +1416,21 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 		HandleCrouch();
 	}
 	Dodge.tick(DodgeNow, DeltaSeconds);
+	if (bCatchCourse && LedgeNow.phase == ftcore::LedgePhase::Hanging && LedgeNow.time >= kCourseHang)
+	{
+		LedgeJumpAsked = kRollBuffer;
+	}
+	{
+		const ftcore::LedgePhase Was = LedgeNow.phase;
+		Ledge.step(LedgeNow, MakeLedgeInput(), DeltaSeconds);
+		LedgeJumpAsked = FMath::Max(LedgeJumpAsked - DeltaSeconds, 0.f);
+		LedgeDropAsked = FMath::Max(LedgeDropAsked - DeltaSeconds, 0.f);
+		if (Was == ftcore::LedgePhase::Hanging && LedgeNow.phase == ftcore::LedgePhase::Climbing)
+		{
+			LedgeJumpAsked = 0.f;
+			UE_LOG(LogForgottenThird, Display, TEXT("Ledge: climbing up %.2f s into the catch."), TravClock);
+		}
+	}
 	if (RollEvery > 0.f && (RollTimer += DeltaSeconds) >= RollEvery)
 	{
 		RollTimer = 0.f;

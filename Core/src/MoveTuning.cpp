@@ -124,6 +124,17 @@ void readDodge(Reader& rd, const JsonValue& s, DodgeTuning& t) {
     if (rd.ok && t.staminaCost > t.staminaMax) rd.fail(n, "staminaCost", "above staminaMax");
 }
 
+void readLedge(Reader& rd, const JsonValue& s, LedgeTuning& t) {
+    constexpr std::string_view n = "ledge";
+    rd.only(s, n, {"hang", "minHang", "stickShare", "intoFace", "dropPush", "regrab"});
+    rd.number(s, n, "hang", t.hang, 0.0, 1.0);
+    rd.number(s, n, "minHang", t.minHang, 0.0, 5.0);
+    rd.number(s, n, "stickShare", t.stickShare, 0.0, 1.0);
+    rd.number(s, n, "intoFace", t.intoFace, 0.0, 90.0);
+    rd.number(s, n, "dropPush", t.dropPush, 0.0, 1000.0);
+    rd.number(s, n, "regrab", t.regrab, 0.0, 5.0);
+}
+
 } // namespace
 
 bool importMoveTuning(std::string_view json, MoveTuning& out, std::string* error) {
@@ -144,11 +155,12 @@ bool importMoveTuning(std::string_view json, MoveTuning& out, std::string* error
     }
     MoveTuning t = out;
     Reader rd{error};
-    rd.only(root, "", {"version", "slide", "traversal", "landing", "dodge"});
+    rd.only(root, "", {"version", "slide", "traversal", "landing", "dodge", "ledge"});
     readSlide(rd, rd.section(root, "slide"), t.slide);
     readTraversal(rd, rd.section(root, "traversal"), t.traversal);
     readLanding(rd, rd.section(root, "landing"), t.landing);
     readDodge(rd, rd.section(root, "dodge"), t.dodge);
+    readLedge(rd, rd.section(root, "ledge"), t.ledge);
     if (!rd.ok) return false;
     out = t;
     return true;

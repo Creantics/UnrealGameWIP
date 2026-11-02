@@ -25,6 +25,9 @@ TEST_CASE("The shipped Data/Movement/movement.json reads, and every move's secti
     CHECK(t.dodge.invulnEnd == DodgeTuning{}.invulnEnd);
     CHECK(t.dodge.staminaCost == DodgeTuning{}.staminaCost);
     CHECK(t.dodge.shortSpeed == DodgeTuning{}.shortSpeed);
+    CHECK(text.find("\"ledge\"") != std::string::npos);
+    CHECK(t.ledge.hang == LedgeTuning{}.hang);
+    CHECK(t.ledge.regrab == LedgeTuning{}.regrab);
 }
 
 TEST_CASE("A member left out keeps its default; one given is read") {

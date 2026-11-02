@@ -35,8 +35,12 @@
 // or the stick points into it: one of the catch clips (SetTraversalFromRun's too) plays from where its catch is timed to
 // meet the body's flight (ftcore::TraversalSet::planCatch), the body turns square into the face, and the capsule is
 // carried from its flight into the catch and up onto the top as a climb is. Each catch begun is marked for the followers
-// too, who catch the same ledge where they meet it in the air. -LocoCatch builds deep blocks 150, 300 and 260 cm high
-// ahead and jumps at each from about a metre out.
+// too, who catch the same ledge where they meet it in the air. At the catch the body hangs (ftcore::LedgeHang: the
+// catch clip held at its catch), unless jump is still held with the stick into the face, which climbs straight up.
+// Hanging, jump or the stick into the face climbs up (the clip plays on); crouch or the stick away from the face lets
+// go, and the body falls pushed off the face, catching no ledge for a moment. The tunables are the "ledge" section of
+// Data/Movement/movement.json. -LocoCatch builds deep blocks 150, 300 and 260 cm high ahead, jumps at each from about a
+// metre out, hangs half a second and climbs.
 //
 // Roll goes the way the stick points (else the way the body moves, else the way it faces): one of the roll clips
 // (SetTraversalFromRun's too) plays from its start, the body turns to the roll's way and the capsule follows the
@@ -72,6 +76,7 @@
 
 #include "FTLocomotionAnimInstance.h"
 #include "ftcore/DodgeRoll.h"
+#include "ftcore/LedgeHang.h"
 #include "FTLook.h"
 #include "FTTraversalProbe.h"
 
@@ -300,6 +305,13 @@ private:
 	// The dodge roll: an asked roll is one (its rules from Data/Movement/movement.json).
 	ftcore::DodgeRoll Dodge;
 	ftcore::DodgeState DodgeNow;
+	// The ledge hang (a catch's), and a jump or crouch pressed while hanging, still kept (s).
+	ftcore::LedgeHang Ledge;
+	ftcore::LedgeState LedgeNow;
+	float LedgeJumpAsked = 0.f;
+	float LedgeDropAsked = 0.f;
+	// What the player asks of a hang now: jump and crouch, and the stick against the face caught.
+	ftcore::LedgeInput MakeLedgeInput() const;
 	// -LocoVaultWall: the course still to build, then (a course built and run) its way, run along every frame, traversing
 	// whatever is ahead; -LocoCatch's course jumps at its walls instead.
 	bool bCoursePending = false;

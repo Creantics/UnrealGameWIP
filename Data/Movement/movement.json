@@ -19,5 +19,8 @@
     "staminaCost": 25, "staminaMax": 100, "staminaRegen": 30, "regenDelay": 1,
     "longFrom": 500, "shortSpeed": 550, "longSpeed": 650, "tiredSpeed": 300, "tiredInvuln": 0,
     "needsDirection": 0
+  },
+  "ledge": {
+    "hang": 1, "minHang": 0.2, "stickShare": 0.5, "intoFace": 50, "dropPush": 80, "regrab": 0.5
   }
 }
