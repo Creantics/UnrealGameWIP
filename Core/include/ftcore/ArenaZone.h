@@ -174,8 +174,8 @@ struct ArenaZoneSizing {
     float k = 1.f;           // the boss scale, 1..6: the larger of bodyRadius / 0.5 and height / 2.2
 };
 
-// The camera rig of the player's figure, scaled with the boss (metres and degrees). A human-sized fight is arm
-// 6.4, pivot 1.5, side 1.2, up 0.7, FOV 70, lock pitch -20; a giant's is longer, higher and looks more level.
+// The camera rig of the player's figure (metres and degrees): arm 6.4, pivot 1.5, side 1.2, up 0.7, FOV 70, lock
+// pitch -20, the same for every fight. A big boss does not pull the camera out: the player locks on or looks up.
 struct ZoneCamera {
     float arm = 6.4f;
     float pivot = 1.5f;

@@ -149,7 +149,7 @@ crossfade between clips): a move's own clip through an attack, timed by Core's c
 (a heavy blow, a riposte or a Release) between moves; `defeat` on death, held on its last frame; else `idle`, or `idle_p2` under
 60% hp. A clip the table lacks is left out (that state plays the idle). If the clip table, the mesh or the idle clip doesn't load, the
 kind keeps its shapes and the log has one warning. The camera looks up at a boss at least 4 m tall (hover included) toward 70%
-of its height, by at most 8 degrees over the zone's own pitch. The assets are local; nothing here needs them to load.
+of its height, up to 15 degrees above level (the free camera's limit too); the camera never pulls out for a big boss. The assets are local; nothing here needs them to load.
 
 The kite boss (`kite_boss`, `Data/Anim/kite_clips.json`, assets under `/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/`,
 the import being `FTImportCharacter -Source=kite_boss.glb -Dest=/Game/Bosses/KiteBoss -Face=0`): 1100 hp, 9.1 m tall and
@@ -300,8 +300,8 @@ warning and quits with exit code 2, so an unattended run never hangs.
   the look yet, so its swings, guard and roll stay the figure's own overlay (a blade on a pivot arm, a shield plate, a
   crouch and lean). Enemies are primitive figures in their kind's colour, or a skinned mesh (above). Swings, guards, rolls, staggers and falls are posed from the fight's output each frame.
 - The camera is a spring arm over the lead's shoulder, its length, height, shoulder offset and lock pitch from
-  the zone's camera rig (6.4 m, 1.5 m, 1.2 m and -20 degrees for a human-sized fight, longer and higher for a
-  giant). The arm probes the world (it may leave the zone's walls but never passes through a building or the
+  the zone's camera rig (6.4 m, 1.5 m, 1.2 m and -20 degrees, the same for every fight: a giant is found by locking
+  on or looking up, from -50 to +15 degrees). The arm probes the world (it may leave the zone's walls but never passes through a building or the
   ground) and is pulled in. Locked on, it turns toward the target and holds it; otherwise the mouse or right
   stick turns it (the autopilot and an idle run face the nearest enemy).
 - Nothing in the host allocates per frame: the HUD's words are static, and its numbers are rebuilt only

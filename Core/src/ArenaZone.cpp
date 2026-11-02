@@ -375,15 +375,8 @@ float arenaZoneAskedRing(const ArenaZoneSpec& spec, const ArenaDef& def) {
     return clampf(base * (0.4f + 0.6f * z.k), kMinRing, kMaxRing);
 }
 
-ZoneCamera arenaZoneCamera(const ArenaZoneSizing& sizing) {
-    ZoneCamera c;
-    const float arm = clampf(0.35f + 0.65f * sizing.k, 1.f, 4.2f);
-    c.arm = 6.4f * arm;
-    c.pivot = 1.5f * (1.f + 0.5f * (arm - 1.f));
-    c.side = 1.2f * arm;
-    c.up = 0.7f * arm;
-    c.lockPitch = clampf(-20.f + 4.f * (arm - 1.f), -20.f, -8.f);
-    return c;
+ZoneCamera arenaZoneCamera(const ArenaZoneSizing& /*sizing*/) {
+    return ZoneCamera{};
 }
 
 namespace {

@@ -55,10 +55,9 @@ constexpr double kArenaHitTint = 0.16;
 // The floor tell's flash after a move goes active (s).
 constexpr double kArenaTellFlash = 0.3;
 // A boss at least this tall (m) is looked up at: the camera's pitch rises toward its face, at this share of its height
-// (hover included), by at most kArenaFacePitchRise degrees over the zone's lock pitch.
+// (hover included), to at most kArenaPitchMax (above that the boom swings into the ground).
 constexpr float kArenaTallBoss = 4.f;
 constexpr float kArenaFaceHeight = 0.7f;
-constexpr float kArenaFacePitchRise = 8.f;
 // A skinned enemy's hit reactions and playing rates: the rate that lands a clip's impact at the end of its startup is held
 // to these.
 constexpr float kArenaMinClipRate = 0.25f;
@@ -67,7 +66,7 @@ constexpr float kArenaMaxClipRate = 4.f;
 constexpr float kArenaSecondIdleHp = 0.6f;
 // Camera: pitch limits, the pitch while locked, how fast it turns to a lock, stick and mouse rates.
 constexpr float kArenaPitchMin = -50.f;
-constexpr float kArenaPitchMax = 10.f;
+constexpr float kArenaPitchMax = 15.f;
 constexpr float kArenaLockTurn = 7.f;
 constexpr float kArenaStickTurn = 140.f; // degrees a second at full stick
 constexpr float kArenaMouseTurn = 2.5f; // degrees per unit of mouse axis (as the engine's yaw scale)
@@ -1433,7 +1432,7 @@ void AFTArenaGameMode::SteerCamera(float DeltaSeconds)
 		}
 		// A tall boss (a hanging one, hover included) is looked up at: the pitch that sends the view through its face from
 		// where the arm puts the camera (the pivot and shoulder height over the feet, the boom swung back along the pitch),
-		// no more than kArenaFacePitchRise over the rig's own, so the lead stays in the frame.
+		// no higher than the free camera may look.
 		float WantPitch = Fit.camera.lockPitch;
 		const ftcore::ArenaEnemyKind& Foe = Fight.def().enemies[static_cast<size_t>(Target)];
 		const float Hover = Foe.look.skinned() ? Foe.look.hover : 0.f;
@@ -1450,7 +1449,7 @@ void AFTArenaGameMode::SteerCamera(float DeltaSeconds)
 				const float Along = Rig.arm * FMath::Cos(Rad) + Away;
 				Pitch = FMath::RadiansToDegrees(FMath::Atan2(Tall * kArenaFaceHeight - CameraHeight, Along));
 			}
-			WantPitch = FMath::Clamp(Pitch, Rig.lockPitch, FMath::Min(Rig.lockPitch + kArenaFacePitchRise, 0.f));
+			WantPitch = FMath::Clamp(Pitch, Rig.lockPitch, kArenaPitchMax);
 		}
 		CameraPitch = FMath::FInterpTo(CameraPitch, WantPitch, DeltaSeconds, 4.f);
 	}

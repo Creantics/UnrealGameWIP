@@ -366,16 +366,12 @@ TEST_CASE("arena zone size: a human gets a tight ring, a giant a huge one, and t
     CHECK(arenaZoneAskedRing(spec, crowd) == 60.f);
     spec.ring = 20.f;
     CHECK(arenaZoneAskedRing(spec, duel) == 20.f);
-    // The camera grows with the boss, in held ranges.
-    float last = 0.f;
+    // The camera stays the human rig whatever the boss's size.
     for (const ArenaDef* d : {&duel, &hulk, &titan}) {
         const ZoneCamera c = arenaZoneCamera(arenaZoneSizing(*d));
-        CHECK(c.arm >= last);
-        CHECK(c.arm >= 6.4f);
-        CHECK(c.arm <= 6.4f * 4.2f + 1e-3f);
-        CHECK(c.lockPitch >= -20.f);
-        CHECK(c.lockPitch <= -8.f);
-        last = c.arm;
+        CHECK(c.arm == doctest::Approx(6.4f));
+        CHECK(c.pivot == doctest::Approx(1.5f));
+        CHECK(c.lockPitch == doctest::Approx(-20.f));
     }
     CHECK(arenaZoneCamera(arenaZoneSizing(duel)).arm == doctest::Approx(6.4f));
     CHECK(arenaZoneCamera(arenaZoneSizing(duel)).lockPitch == doctest::Approx(-20.f));
@@ -736,7 +732,7 @@ TEST_CASE("arena zone fit: road mouths lie on the wall and on a road, and a plai
     CHECK(total >= 3); // the plazas are crossed by their roads
 }
 
-TEST_CASE("arena zone fit: the camera room of a giant: a climax half is open, a tower plaza is not") {
+TEST_CASE("arena zone fit: the camera room: the human rig stays clear of the buildings, even round a giant") {
     const ArenaTable arena = loadArena();
     const WorldTable worlds = loadWorlds();
     const ArenaZoneTable zones = loadZones(arena, worlds);
@@ -746,16 +742,18 @@ TEST_CASE("arena zone fit: the camera room of a giant: a climax half is open, a 
         fitShipped(arena, worlds, spec, f);
         CHECK_MESSAGE(f.fit.cameraBlocked <= 0.3f, spec.id << " camera blocked " << f.fit.cameraBlocked);
     }
-    // The same plaza with the giant, in the tower world, has the camera in the wall along much of its edge.
+    // The same plaza with the giant, in the tower world: the camera does not pull out, so it stays clear,
+    // and a warning is given exactly when some of the edge is blocked.
     ArenaZoneSpec spec = *zones.find("lat_plaza_a");
     spec.bosses = {"titan"};
     Fitted f;
     fitShipped(arena, worlds, spec, f);
     MESSAGE("lat_plaza_a with the titan: camera blocked " << f.fit.cameraBlocked << ", ring " << f.fit.ring.radius);
-    CHECK(f.fit.cameraBlocked > 0.1f);
+    CHECK(f.fit.cameraBlocked <= 0.3f);
+    CHECK(f.fit.camera.arm == doctest::Approx(6.4f));
     bool said = false;
     for (const std::string& w : f.warnings) said = said || contains(w, "camera");
-    CHECK(said);
+    CHECK(said == (f.fit.cameraBlocked > 0.f));
 }
 
 TEST_CASE("arena zone water and cover: the file's lists are read, put in the world, and kept off the lanes") {
