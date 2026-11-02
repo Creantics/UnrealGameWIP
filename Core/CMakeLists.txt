@@ -65,6 +65,7 @@ add_library(ftcore STATIC
     src/FightAnimator.cpp
     src/Traversal.cpp
     src/Slide.cpp
+    src/MoveTuning.cpp
     src/Locomotion.cpp
     src/Mini.cpp
     src/UiText.cpp
@@ -166,6 +167,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_fight_animator.cpp
         tests/test_traversal.cpp
         tests/test_slide.cpp
+        tests/test_move_tuning.cpp
         tests/test_locomotion.cpp
         tests/test_mini.cpp
         tests/test_music_loop.cpp

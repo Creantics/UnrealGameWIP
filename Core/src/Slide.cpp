@@ -169,6 +169,14 @@ void SlideSet::beginOut(SlideState& s, const SlideInput& in) const {
 void SlideSet::step(SlideState& s, const SlideInput& in, float dt) const {
     if (!s.sliding()) return;
     const SlideTuning& t = tuning_;
+    s.elapsed += dt;
+    if (in.jump && s.elapsed >= t.jumpFrom) {
+        s.speed = std::min(s.speed * t.jumpCarry, t.jumpMaxSpeed);
+        s.yawStep = 0.f;
+        s.jumped = true;
+        s.phase = SlidePhase::Done;
+        return;
+    }
     if (s.phase == SlidePhase::Out) {
         const SlideOutInfo& o = outs_[slot(s.out)];
         s.yawStep = 0.f;

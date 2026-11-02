@@ -507,6 +507,12 @@ void AFTExploreCharacter::HandleJump()
 	// Crouched, jump stands the body up; standing in front of a low wall or a ledge, it goes over or up; otherwise it jumps.
 	// Held in the air, it catches a ledge within reach (Tick).
 	bJumpHeld = true;
+	// Mid-slide, the press is kept a moment for TickSlide, which cancels the slide into a jump once Core allows it.
+	if (SlideNow.sliding())
+	{
+		SlideJumpAsked = kRollBuffer;
+		return;
+	}
 	if (bTraversing)
 	{
 		return;
@@ -890,12 +896,33 @@ void AFTExploreCharacter::TickSlide(float DeltaSeconds)
 	In.sprint = Move->MaxWalkSpeed >= RunSpeed;
 	In.crouch = Move->bWantsToCrouch;
 	In.blocked = bSlideBlocked;
+	In.jump = SlideJumpAsked > 0.f;
+	SlideJumpAsked = FMath::Max(SlideJumpAsked - DeltaSeconds, 0.f);
 	bSlideBlocked = false;
 	const ftcore::SlideSet& Set = Anim->GetSlide();
 	const ftcore::SlidePhase Was = SlideNow.phase;
 	Set.step(SlideNow, In, DeltaSeconds);
 	SlideTime += DeltaSeconds;
 	const FVector Feet = GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+	if (SlideNow.jumped)
+	{
+		// Cancelled into a jump: the body stands, lets the slide's clip go and takes off along the way it slid at the
+		// speed Core hands back (the slide's momentum), the jump's own rise on top.
+		const FVector Off = WayOf(SlideHeading) * SlideNow.speed;
+		UE_LOG(LogForgottenThird, Display, TEXT("Slide: jumped out at %.2f s (%s) at %.0f cm/s, %.0f cm from the start."), SlideTime,
+			Was == ftcore::SlidePhase::Into ? TEXT("dropping in") : Was == ftcore::SlidePhase::Down ? TEXT("down") : TEXT("getting up"),
+			SlideNow.speed, FVector::Dist2D(Feet, TravFrame.GetLocation()));
+		bTraversing = false;
+		bSlideBlocked = false;
+		SlideJumpAsked = 0.f;
+		SlideNow = ftcore::SlideState();
+		UnCrouch();
+		Anim->SetTraversal(-1, 0.f);
+		Move->SetMovementMode(MOVE_Walking);
+		Move->Velocity = Off;
+		LaunchCharacter(FVector(Off.X, Off.Y, Move->JumpZVelocity), true, true);
+		return;
+	}
 	if (Was == ftcore::SlidePhase::Into && SlideNow.phase != ftcore::SlidePhase::Into)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Slide: down at %.2f s (clip %d at %.2f), %.0f cm/s, %.0f cm from the start, slope %+.2f."), SlideTime,
@@ -1051,6 +1078,7 @@ void AFTExploreCharacter::ResetHeldInput()
 {
 	HandleRunStop();
 	RollAsked = 0.f;
+	SlideJumpAsked = 0.f;
 	bJumpHeld = false;
 	UnCrouch();
 }

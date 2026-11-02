@@ -35,6 +35,7 @@
 #include "Animation/BoneReference.h"
 
 #include "ftcore/Locomotion.h"
+#include "ftcore/MoveTuning.h"
 #include "ftcore/Slide.h"
 #include "ftcore/Traversal.h"
 
@@ -187,6 +188,9 @@ public:
 	void SetTraversalFromRun();
 	const ftcore::TraversalSet& GetTraversal() const { return Traversal; }
 	const ftcore::SlideSet& GetSlide() const { return Slide; }
+	// The movement tunables, read once from Data/Movement/movement.json (the built-in defaults without it, or with
+	// one it refuses: logged). Every body's slide, traversals and landings take them as it initialises.
+	static const ftcore::MoveTuning& GetMoveTuning();
 	// Slide clip k (ftcore::SlideState::clip) plays as traversal clip FirstSlideClip + k.
 	static constexpr int32 FirstSlideClip = 20;
 	// The catches are traversal clips FirstCatchClip on, in the TraversalSet with the vaults and climbs.

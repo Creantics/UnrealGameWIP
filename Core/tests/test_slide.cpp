@@ -523,6 +523,65 @@ TEST_CASE("The body turns toward the stick at no more than steerRate until it ge
     CHECK(s.yawStep == 0.f);
 }
 
+TEST_CASE("A jump cancels the slide in any phase once it has gone jumpFrom, taking off with the slide's speed") {
+    SlideSet set = makeSet();
+    SlideInput jump;
+    jump.jump = true;
+
+    // Too early: the press does nothing and the slide goes on.
+    SlideState s = set.start(700.f, 1);
+    set.step(s, jump, 0.05f);
+    CHECK(s.phase == SlidePhase::Into);
+    CHECK_FALSE(s.jumped);
+    // Past jumpFrom, still in the Into: it is over at once with the body's speed.
+    set.step(s, jump, 0.06f);
+    CHECK_FALSE(s.sliding());
+    CHECK(s.jumped);
+    CHECK(s.speed == 700.f);
+    CHECK(s.yawStep == 0.f);
+
+    // Down and slowing: the jump keeps what speed is left, the momentum the slide has lost staying lost.
+    s = set.start(700.f, 1);
+    for (int i = 0; i < 120 && s.phase != SlidePhase::Down; ++i) set.step(s, SlideInput{}, kStep);
+    for (int i = 0; i < 30; ++i) set.step(s, SlideInput{}, kStep);
+    REQUIRE(s.phase == SlidePhase::Down);
+    const float left = s.speed;
+    CHECK(left < 700.f);
+    set.step(s, jump, kStep);
+    CHECK(s.jumped);
+    CHECK(s.speed == doctest::Approx(left));
+
+    // Getting up: the jump takes off at the get-up's speed.
+    s = slideToOut(set, SlideInput{});
+    REQUIRE(s.phase == SlidePhase::Out);
+    const float up = s.speed;
+    set.step(s, jump, kStep);
+    CHECK(s.jumped);
+    CHECK(s.speed == doctest::Approx(up));
+
+    // jumpCarry scales the speed and jumpMaxSpeed caps it.
+    SlideTuning t = set.tuning();
+    t.jumpCarry = 1.2f;
+    t.jumpMaxSpeed = 800.f;
+    set.setTuning(t);
+    s = set.start(700.f, 1);
+    set.step(s, SlideInput{}, 0.2f);
+    set.step(s, jump, kStep);
+    CHECK(s.speed == doctest::Approx(800.f));
+    s = set.start(600.f, 1);
+    set.step(s, SlideInput{}, 0.2f);
+    set.step(s, jump, kStep);
+    CHECK(s.speed == doctest::Approx(720.f));
+
+    // A slide that ends without one never says it jumped.
+    SlideState plain = set.start(700.f, 1);
+    SlideInput still;
+    still.crouch = false;
+    for (int i = 0; i < 1200 && plain.sliding(); ++i) set.step(plain, still, kStep);
+    CHECK_FALSE(plain.sliding());
+    CHECK_FALSE(plain.jumped);
+}
+
 TEST_CASE("Slides allocate nothing") {
     const SlideSet set = makeSet();
     const bool hooked = ftcore_test::allocHookInstalled();
@@ -535,6 +594,7 @@ TEST_CASE("Slides allocate nothing") {
         in.turn = static_cast<float>(i);
         in.wantSpeed = static_cast<float>(i % 3) * 200.f;
         in.sprint = i % 4 == 0;
+        in.jump = i % 7 == 0;
         for (int k = 0; k < 300 && s.sliding(); ++k) {
             set.step(s, in, kStep);
             sum += s.speed + s.clipTime + s.yawStep + set.rate(s);

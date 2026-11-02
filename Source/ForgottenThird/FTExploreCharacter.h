@@ -52,8 +52,10 @@
 // speed plays from its take-off, and the body slides on the way it was going along the real floor, steered a little by
 // the stick, slowing by friction and faster downhill. A wall met at a glance turns it along the wall; one met square on
 // stops it. Letting go of the crouch (sprint pressed stands it up too) or slowing down gets it up into what the stick,
-// sprint and crouch ask then: a sprint, a run, a walk, a crouch walk or a stand. With -LocoRun, -LocoCrouchEvery=<s>
-// slides every s seconds.
+// sprint and crouch ask then: a sprint, a run, a walk, a crouch walk or a stand. Jump mid-slide (once it has gone
+// ftcore::SlideTuning::jumpFrom; a press before is kept a moment) cancels it into a jump that takes off along the slide
+// at the slide's speed. The tunables are in Data/Movement/movement.json. With -LocoRun, -LocoCrouchEvery=<s> slides
+// every s seconds.
 //
 // -ExplorePortrait puts the camera in front of the face and keeps it there, for checking a look;
 // -ExplorePortraitYaw= (180 front, 90 side, 0 back), -ExplorePortraitArm=, -ExplorePortraitHeight= and
@@ -284,6 +286,7 @@ private:
 	FVector SlideFloor = FVector::UpVector;
 	bool bSlideBlocked = false;
 	float SlideTime = 0.f;
+	float SlideJumpAsked = 0.f; // a jump pressed mid-slide, still kept (s)
 	// -LocoVaultWall: the course still to build, then (a course built and run) its way, run along every frame, traversing
 	// whatever is ahead; -LocoCatch's course jumps at its walls instead.
 	bool bCoursePending = false;
