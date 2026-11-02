@@ -35,10 +35,15 @@ spots say which objective they wait for.
 | Look | Mouse | Right stick |
 | Run | Left Shift (hold) | Left trigger (hold) |
 | Jump | Space | A |
+| Crouch (while sprinting: slide) | C or Left Ctrl | Right stick click |
+| Roll (dodge) | Left Alt | B |
 | Use (talk, pick up, open) | E or Enter | X |
 | Switch lead (with a party in config) | Tab | RB |
 | Show or hide the followers | P | LB |
 | Pause menu | Esc | Start |
+
+The slide, landing roll, dodge roll and ledge grab, and their tunables, are in
+[MOVEMENT.md](MOVEMENT.md).
 
 The keys are an Enhanced Input context made at runtime (`AFTExploreCharacter`), priority 2, above
 the story context. The pause menu (see [GAME_FRAME.md](GAME_FRAME.md), "Pause") is the player

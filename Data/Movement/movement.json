@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "slide": {
+    "minEntrySpeed": 350, "friction": 400, "gravity": 980, "outSpeed": 250, "maxSpeed": 900, "steerRate": 45,
+    "exitAfter": 0.3, "speedCost": 0.005, "footCost": 0.3, "minEntryRate": 0.8, "maxEntryRate": 1.5,
+    "jumpFrom": 0.1, "jumpCarry": 1, "jumpMaxSpeed": 900
+  },
+  "traversal": {
+    "standDepth": 60, "heightSlack": 0.3, "minHeightSlack": 30, "maxDrop": 150, "minLead": 0.15, "maxPush": 40, "maxPull": 40,
+    "heightCost": 0.01, "speedCost": 0.005, "footCost": 0.3, "exitAfter": 0.3, "minEntryRate": 0.8, "maxEntryRate": 1.5,
+    "rollMinSpeed": 550, "rollMaxRate": 2.5, "rollTurnOff": 30,
+    "minCatchLead": 0.1, "maxCatchLead": 0.4, "maxCatchMiss": 40, "maxCatchStretch": 15, "catchMissCost": 0.025
+  },
+  "landing": {
+    "rollMinAir": 0.4, "rollDrop": 250, "pressWindow": 0.3
+  },
+  "dodge": {
+    "length": 0.8, "invulnStart": 0.05, "invulnEnd": 0.4, "cooldown": 0.25,
+    "staminaCost": 25, "staminaMax": 100, "staminaRegen": 30, "regenDelay": 1,
+    "longFrom": 500, "shortSpeed": 550, "longSpeed": 650, "tiredSpeed": 300, "tiredInvuln": 0,
+    "needsDirection": 0
+  },
+  "ledge": {
+    "hang": 1, "minHang": 0.2, "stickShare": 0.5, "intoFace": 50, "dropPush": 80, "regrab": 0.5
+  }
+}

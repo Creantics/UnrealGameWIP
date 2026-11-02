@@ -1,11 +1,14 @@
 #include "ftcore/Locomotion.h"
+#include "ftcore/MoveTuning.h"
 #include "ftcore/PartyTrail.h"
 
 #include "AllocCounter.h"
+#include "TestAssets.h"
 
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <string>
 
 using namespace ftcore;
 
@@ -2273,4 +2276,33 @@ TEST_CASE("locomotion: a body without the crouch clips ignores crouch") {
     run(l, 0.5f, in);
     CHECK(l.target() == LocoClip::Walk);
     CHECK(l.weight(LocoClip::Walk) == doctest::Approx(1.f));
+}
+
+TEST_CASE("locomotion: with the shipped landing tunables a long fall rolls by itself, a hop doesn't, and a run rolls on crouch") {
+    std::string text;
+    if (!ftcore_test::readProjectData("Movement/movement.json", text)) FAIL("Data/Movement/movement.json not found");
+    MoveTuning move;
+    REQUIRE(importMoveTuning(text, move));
+    // A fall from `height` cm at ground speed `speed`, from still in the air, touching down holding crouch or not.
+    const auto land = [&](float height, float speed, bool crouch) {
+        Locomotion l = makeLoco();
+        l.tuning().rollMinAir = move.landing.rollMinAir;
+        l.tuning().rollDrop = move.landing.rollDrop;
+        run(l, 1.f, {0.f, speed});
+        float vz = 0.f, z = height;
+        while (z > 0.f) {
+            vz -= 980.f * kDt;
+            z += vz * kDt;
+            l.update({kDt, speed, 0.f, true, vz});
+        }
+        LocoInput in{kDt, speed};
+        in.crouch = crouch;
+        l.update(in);
+        return l.landRoll();
+    };
+    CHECK(land(move.landing.rollDrop + 50.f, 0.f, false));   // past rollDrop: rolls holding nothing, even standing
+    CHECK(land(move.landing.rollDrop + 50.f, 600.f, false));
+    CHECK_FALSE(land(60.f, 600.f, true));                    // a hop: too short in the air
+    CHECK_FALSE(land(150.f, 600.f, false));                  // under rollDrop holding nothing: a plain landing
+    CHECK(land(150.f, 600.f, true));                         // ...the same holding crouch rolls
 }

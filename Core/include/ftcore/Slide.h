@@ -31,6 +31,10 @@
 // handed back once it has settled; one that wants to move exitAfter past being up, or once settled if that
 // comes first (asked live, so pushing the stick mid get-up hands back then); never past the clip's end.
 //
+// A jump cancels the slide once it has gone jumpFrom, in any phase: the slide is Done at once with jumped set,
+// and its speed (times jumpCarry, no more than jumpMaxSpeed) is the ground speed the body takes off with, along
+// the way it slides. A press before jumpFrom does nothing here (the host may keep it for a moment).
+//
 // Space: x forward, y to the left, z up; cm and seconds. Fixed size: nothing allocates.
 
 #include "ftcore/Api.h"
@@ -101,6 +105,9 @@ struct SlideTuning {
     float footCost = 0.3f;         // an Into taking off from the other foot
     float minEntryRate = 0.8f;     // the play rate at the entry keeps the body's speed within these
     float maxEntryRate = 1.5f;
+    float jumpFrom = 0.1f;         // a jump cancels the slide once it has gone this long (s)...
+    float jumpCarry = 1.f;         // ...the body taking off with this share of the slide's speed...
+    float jumpMaxSpeed = 900.f;    // ...but no faster than this (cm/s)
 };
 
 // What the player asks for and the floor under the body, each frame.
@@ -111,6 +118,7 @@ struct SlideInput {
     bool sprint = false;   // sprint held
     bool crouch = true;    // the crouch still on (let go, the body gets up)
     bool blocked = false;  // the body ran into something it can't go on along
+    bool jump = false;     // jump pressed (a press the host keeps for a moment): cancels into a jump
 };
 
 enum class SlidePhase : std::uint8_t { Into, Down, Out, Done };
@@ -128,6 +136,8 @@ struct SlideState {
     float entryRate = 1.f;    // the Into's play rate there
     float outFrom = 0.f;      // the speed it got up at
     bool getUp = false;       // asked to get up before the down: it does at the down
+    float elapsed = 0.f;      // how long it has gone (s)
+    bool jumped = false;      // it ended in a jump: speed is the ground speed to take off with
     bool sliding() const { return phase != SlidePhase::Done; }
 };
 

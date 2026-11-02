@@ -35,6 +35,7 @@
 #include "Animation/BoneReference.h"
 
 #include "ftcore/Locomotion.h"
+#include "ftcore/MoveTuning.h"
 #include "ftcore/Slide.h"
 #include "ftcore/Traversal.h"
 
@@ -187,6 +188,9 @@ public:
 	void SetTraversalFromRun();
 	const ftcore::TraversalSet& GetTraversal() const { return Traversal; }
 	const ftcore::SlideSet& GetSlide() const { return Slide; }
+	// The movement tunables, read once from Data/Movement/movement.json (the built-in defaults without it, or with
+	// one it refuses: logged). Every body's slide, traversals and landings take them as it initialises.
+	static const ftcore::MoveTuning& GetMoveTuning();
 	// Slide clip k (ftcore::SlideState::clip) plays as traversal clip FirstSlideClip + k.
 	static constexpr int32 FirstSlideClip = 20;
 	// The catches are traversal clips FirstCatchClip on, in the TraversalSet with the vaults and climbs.
@@ -255,6 +259,9 @@ public:
 	}
 	// A non-character owner crouches while bCrouch holds (a character's own crouch is read from it).
 	void SetCrouch(bool bCrouch) { bPushedCrouch = bCrouch; }
+	// A roll asked for and still kept (Locomotion's roll input): touching down with it, a moving body rolls out of
+	// the landing. Any owner.
+	void SetRollAsked(bool bAsked) { bPushedRoll = bAsked; }
 	// A non-character owner: replay a running turn by Delta degrees on the next update.
 	void ReplayTurn(float Delta) { PushedTurnBy = Delta; }
 	// The owner's ground speed (cm/s) for this frame, for owners that aren't characters.
@@ -357,6 +364,7 @@ private:
 	bool bPushedFace = false;
 	bool bPushedAir = false;
 	bool bPushedCrouch = false;
+	bool bPushedRoll = false;
 	float PushedVerticalSpeed = 0.f;
 	float LastYaw = 0.f;
 	bool bHasYaw = false;

@@ -35,8 +35,12 @@
 // or the stick points into it: one of the catch clips (SetTraversalFromRun's too) plays from where its catch is timed to
 // meet the body's flight (ftcore::TraversalSet::planCatch), the body turns square into the face, and the capsule is
 // carried from its flight into the catch and up onto the top as a climb is. Each catch begun is marked for the followers
-// too, who catch the same ledge where they meet it in the air. -LocoCatch builds deep blocks 150, 300 and 260 cm high
-// ahead and jumps at each from about a metre out.
+// too, who catch the same ledge where they meet it in the air. At the catch the body hangs (ftcore::LedgeHang: the
+// catch clip held at its catch), unless jump is still held with the stick into the face, which climbs straight up.
+// Hanging, jump or the stick into the face climbs up (the clip plays on); crouch or the stick away from the face lets
+// go, and the body falls pushed off the face, catching no ledge for a moment. The tunables are the "ledge" section of
+// Data/Movement/movement.json. -LocoCatch builds deep blocks 150, 300 and 260 cm high ahead, jumps at each from about a
+// metre out, hangs half a second and climbs.
 //
 // Roll goes the way the stick points (else the way the body moves, else the way it faces): one of the roll clips
 // (SetTraversalFromRun's too) plays from its start, the body turns to the roll's way and the capsule follows the
@@ -44,16 +48,23 @@
 // lets go and falls). The roll keeps a speed of its own the whole way (the body's, but no slower than a run's, or a
 // landing's than its clip's: ftcore::TraversalPlan::speed), the clip playing faster where its root slows in the tuck.
 // The body is handed back once it is up and a moment on, or as soon as it is up when the stick points well off the
-// roll's way. A press the body can't act on yet (in the air, mid-traversal) is kept for a moment, and a moving landing
-// from a real fall with crouch on rolls out of it. -LocoRollEvery=<s> rolls every s seconds; -LocoRollTurn=<deg>
+// roll's way. A press the body can't act on yet (mid-traversal) is kept for a moment. An asked roll is a dodge
+// (ftcore::DodgeRoll, the dodge section of Data/Movement/movement.json): it waits out the last one's cooldown, its
+// kind sets its speed (a sprint's Long roll keeps its momentum, a walk's Short one its own pace, a Tired one with too
+// little stamina goes slow), and IsInvulnerable() holds through its cover window. Landings: touching down after
+// landing.rollMinAir in the air, a moving body with crouch on, or with a roll pressed in the air within
+// landing.pressWindow of the touchdown, rolls out of it, and any body does from a fall of landing.rollDrop or more
+// (Data/Movement/movement.json), keeping its speed rather than landing hard. -LocoRollEvery=<s> rolls every s seconds; -LocoRollTurn=<deg>
 // turns the stick that far off each roll's way until a second after it hands back.
 //
 // Crouch in a sprint slides (ftcore::SlideSet, from SetTraversalFromRun's slide clips): the drop-in nearest the body's
 // speed plays from its take-off, and the body slides on the way it was going along the real floor, steered a little by
 // the stick, slowing by friction and faster downhill. A wall met at a glance turns it along the wall; one met square on
 // stops it. Letting go of the crouch (sprint pressed stands it up too) or slowing down gets it up into what the stick,
-// sprint and crouch ask then: a sprint, a run, a walk, a crouch walk or a stand. With -LocoRun, -LocoCrouchEvery=<s>
-// slides every s seconds.
+// sprint and crouch ask then: a sprint, a run, a walk, a crouch walk or a stand. Jump mid-slide (once it has gone
+// ftcore::SlideTuning::jumpFrom; a press before is kept a moment) cancels it into a jump that takes off along the slide
+// at the slide's speed. The tunables are in Data/Movement/movement.json. With -LocoRun, -LocoCrouchEvery=<s> slides
+// every s seconds.
 //
 // -ExplorePortrait puts the camera in front of the face and keeps it there, for checking a look;
 // -ExplorePortraitYaw= (180 front, 90 side, 0 back), -ExplorePortraitArm=, -ExplorePortraitHeight= and
@@ -64,6 +75,8 @@
 #include "InputActionValue.h"
 
 #include "FTLocomotionAnimInstance.h"
+#include "ftcore/DodgeRoll.h"
+#include "ftcore/LedgeHang.h"
 #include "FTLook.h"
 #include "FTTraversalProbe.h"
 
@@ -135,6 +148,9 @@ public:
 	// Whether a traversal (a vault, a climb, a catch, a roll or a slide) is carrying the body: a scene played in place waits
 	// for it to end.
 	bool IsTraversing() const { return bTraversing; }
+	// The dodge roll's state (stamina, cooldown, the one going on), and whether a hit now does nothing (its cover).
+	const ftcore::DodgeState& GetDodge() const { return DodgeNow; }
+	bool IsInvulnerable() const { return Dodge.invulnerable(DodgeNow); }
 	// For the followers: how many vaults, climbs and catches the body has begun (not rolls or slides), and where and which
 	// way the last one began, and whether it was a catch.
 	uint32 GetTraversalsBegun() const { return TraversalsBegun; }
@@ -245,6 +261,7 @@ private:
 	bool bJumpHeld = false; // the jump pressed and not yet let go
 	int32 CatchMissSaid = -1; // the last "none" TryCatch logged this flight: 0 none fits, 1 out of reach
 	float RollAsked = 0.f; // a roll press still kept (s)
+	bool bRollAskedAir = false; // ...pressed in the air: the touchdown rolls out of the landing
 	float RollEvery = 0.f; // -LocoRollEvery=<s>
 	float RollTimer = 0.f;
 	float RollTurn = 0.f;     // -LocoRollTurn=<deg>
@@ -284,6 +301,17 @@ private:
 	FVector SlideFloor = FVector::UpVector;
 	bool bSlideBlocked = false;
 	float SlideTime = 0.f;
+	float SlideJumpAsked = 0.f; // a jump pressed mid-slide, still kept (s)
+	// The dodge roll: an asked roll is one (its rules from Data/Movement/movement.json).
+	ftcore::DodgeRoll Dodge;
+	ftcore::DodgeState DodgeNow;
+	// The ledge hang (a catch's), and a jump or crouch pressed while hanging, still kept (s).
+	ftcore::LedgeHang Ledge;
+	ftcore::LedgeState LedgeNow;
+	float LedgeJumpAsked = 0.f;
+	float LedgeDropAsked = 0.f;
+	// What the player asks of a hang now: jump and crouch, and the stick against the face caught.
+	ftcore::LedgeInput MakeLedgeInput() const;
 	// -LocoVaultWall: the course still to build, then (a course built and run) its way, run along every frame, traversing
 	// whatever is ahead; -LocoCatch's course jumps at its walls instead.
 	bool bCoursePending = false;

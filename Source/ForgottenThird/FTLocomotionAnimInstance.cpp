@@ -9,10 +9,14 @@
 #include "Engine/SkeletalMesh.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "HAL/FileManager.h"
 #include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
+#include "Misc/Paths.h"
 
 #include "ForgottenThird.h"
+#include "FTText.h"
 
 namespace
 {
@@ -761,6 +765,31 @@ void UFTLocomotionAnimInstance::MovementIntent(const UCharacterMovementComponent
 	}
 }
 
+const ftcore::MoveTuning& UFTLocomotionAnimInstance::GetMoveTuning()
+{
+	static const ftcore::MoveTuning Tuning = []
+	{
+		ftcore::MoveTuning Read;
+		const FString File = FPaths::ProjectDir() / TEXT("Data/Movement/movement.json");
+		TArray<uint8> Bytes;
+		if (!IFileManager::Get().FileExists(*File) || !FFileHelper::LoadFileToArray(Bytes, *File))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Movement: no Data/Movement/movement.json; using the built-in tunables."));
+			return Read;
+		}
+		std::string Error;
+		if (!ftcore::importMoveTuning(FT::BytesAsText(Bytes), Read, &Error))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Movement: Data/Movement/movement.json refused; using the built-in tunables: %s"),
+				*FT::ToFString(Error));
+			return ftcore::MoveTuning();
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Movement: tunables read from Data/Movement/movement.json."));
+		return Read;
+	}();
+	return Tuning;
+}
+
 void UFTLocomotionAnimInstance::NativeInitializeAnimation()
 {
 	Super::NativeInitializeAnimation();
@@ -777,6 +806,11 @@ void UFTLocomotionAnimInstance::NativeInitializeAnimation()
 		ftcore::tuneForFollower(Loco.tuning());
 	}
 	bHasYaw = false;
+	const ftcore::MoveTuning& Move = GetMoveTuning();
+	Slide.setTuning(Move.slide);
+	Traversal.setTuning(Move.traversal);
+	Loco.tuning().rollMinAir = Move.landing.rollMinAir;
+	Loco.tuning().rollDrop = Move.landing.rollDrop;
 	bLog = FParse::Param(FCommandLine::Get(), TEXT("LocoLog"));
 	// -LocoRunPitch=<deg> tries another run lean for a capture (negative pulls the mocap upright).
 	FParse::Value(FCommandLine::Get(), TEXT("LocoRunPitch="), Loco.tuning().runPitch);
@@ -820,6 +854,7 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	}
 	ftcore::LocoInput In;
 	In.dt = DeltaSeconds;
+	In.roll = bPushedRoll;
 	if (const ACharacter* Character = Cast<ACharacter>(Owner))
 	{
 		const FVector V = Character->GetVelocity();
