@@ -1393,6 +1393,7 @@ void AFTArenaGameMode::PlaceFigures(float Alpha)
 				{
 					Pose.TellReach = (Move.attack.range + D.fighter.bodyRadius) * 100.f;
 					Pose.TellHalfAngle = FMath::Acos(FMath::Clamp(Move.attack.arcCos, -1.f, 1.f));
+					Pose.TellWidth = Move.attack.width > 0.f ? (Move.attack.width + 2.f * D.fighter.bodyRadius) * 100.f : 0.f;
 					Pose.TellFraction = E.part == ftcore::ArenaPart::Startup ? Pose.PartFraction : 1.f;
 					Pose.TellFlash = E.part == ftcore::ArenaPart::Startup ? 0.f : Flash;
 					Pose.bTellUnblockable = Move.unblockable;

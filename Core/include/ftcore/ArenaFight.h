@@ -216,6 +216,9 @@ struct ArenaAttack {
     float recovery = 0.45f;
     float range = 2.0f;       // metres from the attacker's centre; the target's body radius is added
     float arcCos = 0.5f;      // cos of half the arc it sweeps: 0.5 = 120 degrees wide, -1 = all round
+    float width = 0.f;        // > 0: a straight lane this many metres wide instead of the arc (a shot): it reaches
+                              // a body whose centre lies ahead within range + radius and off the line by at most
+                              // width / 2 + radius; arcCos is then unused
     int damage = 10;
     float poiseDamage = 10.f;
     float guardDamage = 15.f; // stamina a guard that blocks it loses
@@ -291,8 +294,8 @@ struct ArenaFighter {
 
 // What an enemy move shows during its startup: the word on its Read card (append only; generic shapes,
 // the host shows each through its own ui string). arena.json spells it as arenaTellName gives it.
-enum class ArenaTell : std::uint8_t { Strike, Overhead, Backhand, Charge, Thrust, Slash, Sweep, Slam };
-inline constexpr std::size_t kArenaTellCount = 8;
+enum class ArenaTell : std::uint8_t { Strike, Overhead, Backhand, Charge, Thrust, Slash, Sweep, Slam, Shot };
+inline constexpr std::size_t kArenaTellCount = 9;
 FTCORE_API const char* arenaTellName(ArenaTell t); // "strike", "overhead", ... Literals.
 
 // One of an enemy's moves: an attack plus when the enemy picks it.

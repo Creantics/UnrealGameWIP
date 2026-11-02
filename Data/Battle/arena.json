@@ -146,6 +146,17 @@
         { "clip": "string_flick", "tell": "slash", "startup": 0.833, "active": 0.2, "recovery": 0.8, "range": 7, "arcCos": 0.5, "damage": 4, "poiseDamage": 4, "guardDamage": 5, "lunge": 0, "tracking": 2.5, "minRange": 0, "maxRange": 7.6, "weight": 0.6 },
         { "clip": "sheet_slap", "tell": "backhand", "startup": 0.833, "active": 0.2, "recovery": 0.8, "range": 7, "arcCos": 0.5, "damage": 6, "poiseDamage": 6, "guardDamage": 7, "lunge": 0, "tracking": 2.5, "minRange": 0, "maxRange": 7.6, "weight": 0.6 }
       ]
+    },
+    {
+      "id": "spitter",
+      "hp": 70, "poise": 25, "poiseDelay": 2.5, "staggerTime": 0.8, "openTime": 1.4, "downTime": 1,
+      "walkSpeed": 2, "runSpeed": 3.6, "strafeSpeed": 1.6, "accel": 10, "turnRate": 6,
+      "preferredRange": 6, "runRange": 10, "attackDelay": 1.4, "bodyRadius": 0.4,
+      "moves": [
+        { "tell": "strike", "startup": 0.4, "active": 0.12, "recovery": 0.6, "range": 1.8, "arcCos": 0.5, "damage": 6, "poiseDamage": 6, "guardDamage": 8, "lunge": 0.5, "tracking": 4, "minRange": 0, "maxRange": 2.2, "weight": 1 },
+        { "tell": "shot", "startup": 0.8, "active": 0.08, "recovery": 0.6, "range": 9, "width": 0.5, "damage": 12, "poiseDamage": 10, "guardDamage": 14, "lunge": 0, "tracking": 0.3, "minRange": 3, "maxRange": 8.5, "cooldown": 1.5, "weight": 1.5, "parryable": false },
+        { "tell": "sweep", "startup": 1.2, "active": 0.1, "recovery": 0.9, "range": 9.5, "width": 1.6, "damage": 20, "poiseDamage": 20, "guardDamage": 0, "lunge": 0, "tracking": 0.2, "minRange": 3.5, "maxRange": 9, "cooldown": 5, "weight": 0.5, "unblockable": true, "parryable": false }
+      ]
     }
   ],
   "default": { "enemies": ["brute"], "ring": 12, "attackers": 1, "spawn": 7 },

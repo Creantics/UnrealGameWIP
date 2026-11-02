@@ -75,6 +75,12 @@ Vec2 arenaTurn(Vec2 facing, Vec2 dir, float maxAngle) {
 bool arenaReaches(Vec2 from, Vec2 facing, const ArenaAttack& a, Vec2 to, float radius) {
     const Vec2 d = arenaSub(to, from);
     const float distance = arenaLength(d);
+    if (a.width > 0.f) {
+        // A lane: ahead of the attacker along its facing, and off that line by at most half the width.
+        const float along = arenaDot(facing, d);
+        const float off = std::fabs(facing.x * d.y - facing.y * d.x);
+        return along >= -radius && along <= a.range + radius && off <= a.width * 0.5f + radius;
+    }
     if (distance > a.range + radius) return false;
     if (distance <= kArenaEps) return true;
     const float dot = std::clamp(arenaDot(facing, d) / distance, -1.f, 1.f);
@@ -1598,6 +1604,7 @@ const char* arenaTellName(ArenaTell t) {
     case ArenaTell::Slash: return "slash";
     case ArenaTell::Sweep: return "sweep";
     case ArenaTell::Slam: return "slam";
+    case ArenaTell::Shot: return "shot";
     }
     return "";
 }
@@ -1780,7 +1787,7 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             kArenaBeatTolerance. An enemy may carry a bpm of its own, which its startups are checked against
 //             in place of the file's
 //   attack    startup, recovery 0..10; active (0, 10]; range (0, 100]; arcCos -1..1; damage, poiseDamage,
-//             guardDamage, stamina 0..100000; lunge, tracking 0..100; armor, cancel 0..1; maxTargets 0..6
+//             guardDamage, stamina 0..100000; lunge, tracking 0..100; armor, cancel 0..1; maxTargets 0..6; width 0..20
 //   enemy     hp 1..100000; poise (0, 100000]; poiseDelay, staggerTime, openTime, downTime, attackDelay 0..10;
 //             walkSpeed, runSpeed, strafeSpeed 0..50; turnRate (0, 100]; preferredRange (0, 100];
 //             runRange 0..100 and at least preferredRange; bodyRadius (0, 5]; height (0, 30] metres, optional
@@ -1804,7 +1811,7 @@ using ArenaStrings = std::vector<std::string>;
 
 constexpr std::string_view kArenaAttackKeys[] = {"startup", "active",      "recovery",    "range",  "arcCos",
                                                  "damage",  "poiseDamage", "guardDamage", "lunge",  "tracking",
-                                                 "armor",   "stamina",     "cancel",      "maxTargets"};
+                                                 "armor",   "stamina",     "cancel",      "maxTargets", "width"};
 
 std::string arenaFormat(double v) {
     char buffer[32];
@@ -1875,6 +1882,7 @@ void arenaParseAttack(JsonValue j, const std::string& path, ArenaAttack& a, Aren
     arenaNum(j, "recovery", a.recovery, 0, 10, false, path, errors);
     arenaNum(j, "range", a.range, 0, 100, true, path, errors);
     arenaNum(j, "arcCos", a.arcCos, -1, 1, false, path, errors);
+    arenaNum(j, "width", a.width, 0, 20, false, path, errors);
     arenaInt(j, "damage", a.damage, 0, 100000, path, errors);
     arenaNum(j, "poiseDamage", a.poiseDamage, 0, 100000, false, path, errors);
     arenaNum(j, "guardDamage", a.guardDamage, 0, 100000, false, path, errors);
@@ -2065,7 +2073,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
             }
             if (!known)
                 errors.push_back(mp + ".tell: expected one of strike, overhead, backhand, charge, thrust, slash, sweep, "
-                                      "slam");
+                                      "slam, shot");
         }
         if (const JsonValue cj = mj["clip"]; !cj.isAbsent()) {
             const std::string_view id = cj.string();

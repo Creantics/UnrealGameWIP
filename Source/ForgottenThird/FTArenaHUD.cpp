@@ -70,8 +70,9 @@ const FTUiText kTellThrustArena(TEXT("arena.tell.thrust"));
 const FTUiText kTellSlashArena(TEXT("arena.tell.slash"));
 const FTUiText kTellSweepArena(TEXT("arena.tell.sweep"));
 const FTUiText kTellSlamArena(TEXT("arena.tell.slam"));
+const FTUiText kTellShotArena(TEXT("arena.tell.shot"));
 const FTUiText* const kArenaTellWords[] = {&kTellStrikeArena, &kTellOverheadArena, &kTellBackhandArena, &kTellChargeArena,
-	&kTellThrustArena, &kTellSlashArena, &kTellSweepArena, &kTellSlamArena};
+	&kTellThrustArena, &kTellSlashArena, &kTellSweepArena, &kTellSlamArena, &kTellShotArena};
 static_assert(UE_ARRAY_COUNT(kArenaTellWords) == ftcore::kArenaTellCount, "a word for every ArenaTell");
 const FTUiText kNowArena(TEXT("battle.now"));
 const FTUiText kStaggeredArena(TEXT("battle.staggered"));

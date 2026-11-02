@@ -110,6 +110,7 @@ Fights happen in place on the world map:
 The other rules:
 
 - Each attack has a startup, an active part and a recovery. It can connect only in its active part, at most once per target. A hit test covers the whole tick, so a long frame can't skip a short active part.
+- An attack hits in an arc (`range` and `arcCos`, measured from the attacker's centre) or, with a `width`, down a straight lane: a body whose centre is ahead within `range` plus its radius and off the line by at most half the width plus its radius. A lane is a shot; it reads with the sound off as two dashed rails on the floor, and it can be sidestepped while it is told, because a shot turns slowly (`tracking`) and never after its startup.
 - An attack's `maxTargets` caps how many targets it connects with over its whole active part, nearest first, so a long, narrow attack doesn't pierce a whole line. The shipped riposte hits only its own enemy.
 - Movement ramps up and down. The player's velocity moves toward the stick's at `moveAccel` and `moveBrake` (in Idle, Move, Guard and Heal), and an enemy's at its kind's `accel` (in Approach and Strafe). Lunges, dodges and reactions set their velocity directly, without a ramp.
 - An input pressed while an action can't start is buffered for 0.2 s.
@@ -127,6 +128,7 @@ The enemy brain runs Approach, Strafe, Attack, Staggered, Open, Down and Dead:
 - An enemy picks a move whose range fits, weighted, from a seeded RNG.
 - A move's `chain` names the move that follows it at once.
 - A move can be unblockable, or not parryable.
+- A shooter keeps its distance: it backs off from a lead closing in (at `walkSpeed`, slower than any lead) and shoots from its lanes' `minRange` out.
 
 ### Data
 
@@ -136,14 +138,15 @@ The enemy brain runs Approach, Strafe, Attack, Staggered, Open, Down and Dead:
 - A missing key keeps the struct's default, so entries list only what differs.
 - Each lead has its own fighter kit, keyed by the lead's id in lower case (`devin`, `duy`, `third`); `default` is the fallback for any other id. A lead's kit starts from the `default` fighter and lists only what differs: an omitted key keeps the default's value, `light[i]` starts from the default's `light[i]`, and a listed `light` array is the whole chain.
   - **Devin, the expert with a blade:** a four-hit chain with quicker startups and more damage, more hp, the widest parry (0.2 s) with the quickest rearm, a bigger riposte, a full frontal guard.
-  - **Duy, kicks and a gun:** kicks that reach 2.5 m and hit poise hard; the heavy is a gun shot (9 m, a narrow line, one target, no lunge). Less hp, quicker on his feet; a narrow guard that leaks a little but barely slows him, and breaks sooner.
+  - **Duy, kicks and a gun:** kicks that reach 2.5 m and hit poise hard; the heavy is a gun shot (9 m, a narrow arc, one target, no lunge). Less hp, quicker on his feet; a narrow guard that leaks a little but barely slows him, and breaks sooner.
   - **The Third, average, with spells:** spell bolts that reach 3.2 m with no lunge, and an all-round burst for the heavy and the Release. A ward that covers every side but lets more through, slows the most and breaks the slowest; the plainest parry (0.12 s, the least the autopilot still parries).
   - Each lead's blocks are its guard and parry numbers (`guardArcCos`, `guardAbsorb`, `guardMoveScale`, `guardBreakTime`, `parryWindow`, `parryRearm`); there is no block or weapon type in Core yet. One comes when the attack, guard and hit clips land and the host has to pick a clip by it.
-  - The tests play every kit's autopilot through the default fight, the three-kind wave and each enemy alone (8 seeds each): it must win and idle must lose, each within 120 s.
-- Three placeholder enemy kinds ship:
+  - The tests play every kit's autopilot through the default fight, the three-kind wave a brute with a spitter (two attacking at once) and each enemy alone (8 seeds each): it must win and idle must lose, each within 120 s.
+- Placeholder enemy kinds ship (and `duelist`, `hulk`, `titan` and the skinned `kite_boss` beyond these):
   - `brute`: a slam with a follow-up, and a slow overhead that can't be parried.
   - `skirmisher`: quick two-hit jabs.
   - `breaker`: a smash, and a grab that can be neither blocked nor parried.
+  - `spitter`, the ranged kind: a shot down a narrow lane (0.8 s tell, blockable, not parryable), a wide volley lane that can only be dodged or stepped out of (1.2 s tell), and a weak shove for close in. It keeps about 6 m off. Its tell words are `shot` and `sweep`.
 - The default fight is one brute. No scene fights ship yet.
 - An attack's damage rises with its telegraph, and a test checks this.
 - The top-level `bpm` (150 ships, a 0.4 s beat) sets the beat every startup lands on. Without it nothing is checked.
@@ -281,6 +284,5 @@ These wait until the animation session's merge is pushed.
 ## Follow-ups
 
 - Status effects (parked).
-- Ranged enemy attacks in the arena.
 - A synthesized beat loop for fights with no cue.
 - In-place staging of beat fights on the world map (the fight plays on its step's world map, as an arena fight does, instead of opening the `Beat` map).

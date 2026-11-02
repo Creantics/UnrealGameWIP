@@ -137,7 +137,7 @@ Everything about it is data and host-side: the fight's rules never read it.
   `hover` (m) lifts the mesh above the enemy's position on the ground (the mesh's origin is its bottom; the tell arcs stay at
   ground level), `scale` scales it, `yawOffset` (degrees) turns it from its own facing (`FTMeshFacing`, which finds none on a
   mesh with no head or feet bones: set it by eye; a glTF export whose front is Blender -Y needs -90).
-- A move's `clip`: the id of the clip played for it (`tell` stays the Read card's word, one of the eight). Ids are 1..31
+- A move's `clip`: the id of the clip played for it (`tell` stays the Read card's word, one of the nine). Ids are 1..31
   letters, digits, `_` and `-`, one per move.
 - A kind's `bpm`: the beat its startups are whole numbers of, in place of the file's (the kite's 72 against the file's 150).
 - Up to 8 moves per kind (it was 6).
@@ -248,7 +248,9 @@ each frame and handed to the fight on its next step, so no press is lost between
 - **The tell:** while an enemy's move starts up, a bar over it fills toward the hit, labelled with the
   answer: PARRY (gold) for a parryable move, BLOCK (orange) for one that can only be blocked, DODGE!
   (red) for an unblockable one. A ring closes in on the enemy's body as it fills, and an arc on the
-  floor shows the move's reach. The moment the move goes active the bar turns white, NOW shows and a
+  floor shows the move's reach. A shot (a move with a `width`, a straight lane) shows two dashed rails
+  instead, the lane's edges for the player's centre, running out from the shooter to its reach; step
+  outside them before it fires and it misses. The moment the move goes active the bar turns white, NOW shows and a
   burst flashes. An enemy winding up off the screen shows as an arrow at the screen's edge in the
   tell's colour.
 - **Read cards:** while a deal is open, three cards sit on the tell bar (the answer moves above them), each
@@ -274,7 +276,7 @@ each frame and handed to the fight on its next step, so no press is lost between
 | `-ArenaQuitOnFinish` | Quit when the fight ends, after the result line (exit code 0). |
 | `-ArenaSeed=N` | The fight's seed (default 1). |
 | `-ArenaStage=<id>` | The zone, by id from `arenas.json` (see "Zones"); the default is `sand_ring`. A zone in a world opens that world's map. Its bosses are the line-up, and the walls, spawn, obstacles and camera are fitted to the enemies in it. An unknown id logs the ids and uses the default. |
-| `-ArenaLineup=a,b,...` | The enemies by id from `arena.json` (`brute`, `skirmisher`, `breaker`, `duelist`, `hulk`, `titan`), up to six, instead of the stage's own bosses (the sand ring's are `brute,skirmisher,breaker`); `-ArenaLineup=brute` fights one brute. The stage is scaled to whoever is in the fight. |
+| `-ArenaLineup=a,b,...` | The enemies by id from `arena.json` (`brute`, `skirmisher`, `breaker`, `duelist`, `hulk`, `titan`, `spitter`), up to six, instead of the stage's own bosses (the sand ring's are `brute,skirmisher,breaker`); `-ArenaLineup=brute` fights one brute. The stage is scaled to whoever is in the fight. |
 | `-ArenaLead=<name>` | The lead the player plays. Its look is the entry of that name in the explore character's `PartyLooks` (`Config/UserGame.ini`, local), else the first; with none, or none whose body loads (one warning), it is the test human. Its fighter kit is the `arena.json` fighter of that name in lower case (`devin`, `duy`, `third`), even when no look loads; without the flag it is the first look's name, and an id with no kit plays `default`. The start line names the kit (`kit devin`). |
 | `-ArenaAttackers=N` | How many enemies may attack at once (1 to the line-up's size). |
 | `-ArenaHoldLoad` | The autopilot keeps its Load until it is overloaded (to see the overload; not a way to play). |

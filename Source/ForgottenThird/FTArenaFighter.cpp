@@ -473,10 +473,25 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 	}
 
 	// The floor tell: an arc of short bars at the move's reach, as wide as it sweeps, growing from 40% of the
-	// reach to all of it through the startup, then flashing pale as it goes active.
+	// reach to all of it through the startup, then flashing pale as it goes active. A lane (a shot) is two
+	// dashed rails instead, its edges, running out from the body and growing the same way.
 	const bool bTell = Pose.TellReach > 1.f;
 	SetTellVisible(bTell);
-	if (bTell)
+	if (bTell && Pose.TellWidth > 1.f)
+	{
+		const float Reach = Pose.TellReach * (Pose.TellFlash > 0.f ? 1.f : (0.4f + 0.6f * ArenaEase(Pose.TellFraction)));
+		const int32 PerRail = TellSegments / 2;
+		const float Dash = Reach / static_cast<float>(PerRail);
+		for (int32 I = 0; I < TellSegments; ++I)
+		{
+			const int32 Along = I % PerRail;
+			const float Side = (I < PerRail ? 0.5f : -0.5f) * Pose.TellWidth;
+			const FVector At(Dash * (static_cast<float>(Along) + 0.5f), Side, 2.0);
+			Tell[I]->SetRelativeLocationAndRotation(At, FRotator::ZeroRotator);
+			Tell[I]->SetRelativeScale3D(FVector(Dash * 0.7f / 100.f, 0.14f, 0.03f));
+		}
+	}
+	else if (bTell)
 	{
 		const float Reach = Pose.TellReach * (Pose.TellFlash > 0.f ? 1.f : (0.4f + 0.6f * ArenaEase(Pose.TellFraction)));
 		const float Half = FMath::Clamp(Pose.TellHalfAngle, 0.1f, PI);
@@ -489,6 +504,9 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 			Tell[I]->SetRelativeLocationAndRotation(At, FRotator(0.0, FMath::RadiansToDegrees(A) + 90.0, 0.0));
 			Tell[I]->SetRelativeScale3D(FVector(Chord / 100.f, 0.14f, 0.03f));
 		}
+	}
+	if (bTell)
+	{
 		if (TellMaterial)
 		{
 			const FLinearColor Base = Pose.bTellUnblockable ? kFighterTellDodge : kFighterTellBlock;
