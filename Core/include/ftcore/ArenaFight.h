@@ -152,7 +152,10 @@
 //   moves a "clip" (the clip id the host plays); both are the host's alone (docs/ARENA_DEMO.md).
 //   Fighter, enemy, move and attack keys are the struct fields below, spelled the same; a missing
 //   key keeps the struct's default, so entries list only what differs. A fighter's id is a lead id
-//   or "default" (required); ArenaTable::fighter falls back to it. A move's attack keys sit in the
+//   (lower case: "devin", "duy", "third") or "default" (required); ArenaTable::fighter falls back to it.
+//   A lead's kit starts from the "default" fighter, not the struct: a key it leaves out keeps the
+//   default's value, and its light[i] starts from the default's light[i] (the struct's past the
+//   default's chain), so a kit lists only what makes it that lead's. A move's attack keys sit in the
 //   move object itself. `ring`, `attackers` and `spawn` are ArenaDef's ringRadius, attackers and
 //   spawnDistance. 1..kMaxArenaEnemies enemies per fight, 1..kMaxArenaMoves moves per enemy,
 //   1..kMaxLightChain lights; `chain` must name another move of the same enemy and no string may
@@ -227,7 +230,8 @@ struct ArenaAttack {
     float total() const { return startup + active + recovery; }
 };
 
-// The player's kit. arena.json has one per lead id and a "default".
+// The player's kit. arena.json has one per lead id and a "default"; each lead's own blocks are its guard and
+// parry numbers (guardArcCos, guardAbsorb, guardMoveScale, guardBreakTime, parryWindow, parryRearm).
 struct ArenaFighter {
     int hp = 100;
     float stamina = 100.f;

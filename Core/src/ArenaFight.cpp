@@ -2181,9 +2181,18 @@ bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error
         else errors.push_back("bpm: expected a number in (0, 300]");
     }
 
-    // Fighters: ids unique, "default" among them (and moved to the front).
+    // Fighters: ids unique, "default" among them (and moved to the front). The "default" is read first, from the
+    // struct's defaults; a lead's kit starts from it, so a lead lists only what differs.
     const JsonValue fighters = root["fighters"];
     if (!fighters.isAbsent() && !fighters.isArray()) errors.push_back("fighters: expected an array");
+    ArenaFighter base;
+    for (std::uint32_t i = 0; i < fighters.size() && fighters.isArray(); ++i) {
+        const JsonValue j = fighters[i];
+        if (!j.isObject() || j["id"].string() != "default") continue;
+        ArenaStrings ignored; // its errors and warnings are reported in order below
+        arenaParseFighter(j, "", base, ignored, nullptr);
+        break;
+    }
     for (std::uint32_t i = 0; i < fighters.size() && fighters.isArray(); ++i) {
         const JsonValue j = fighters[i];
         const std::string path = "fighters[" + std::to_string(i) + "]";
@@ -2195,7 +2204,7 @@ bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error
         if (fid.empty()) errors.push_back(path + ".id: expected an id");
         for (const std::string& known : table.fighterIds)
             if (!fid.empty() && known == fid) errors.push_back(path + ".id: duplicate id: " + fid);
-        ArenaFighter f;
+        ArenaFighter f = fid == "default" ? ArenaFighter{} : base;
         arenaParseFighter(j, path, f, errors, warnings);
         table.fighterIds.push_back(fid);
         table.fighters.push_back(f);

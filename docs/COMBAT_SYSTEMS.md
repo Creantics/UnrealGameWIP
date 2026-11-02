@@ -134,7 +134,12 @@ The enemy brain runs Approach, Strafe, Attack, Staggered, Open, Down and Dead:
 
 - Fighters, enemy kinds with their moves, a `default` fight, and fights keyed by scene id, gameplay beat index and plan step index.
 - A missing key keeps the struct's default, so entries list only what differs.
-- Only the `default` fighter ships. Per-lead fighters are allowed by the schema and fall back to it.
+- Each lead has its own fighter kit, keyed by the lead's id in lower case (`devin`, `duy`, `third`); `default` is the fallback for any other id. A lead's kit starts from the `default` fighter and lists only what differs: an omitted key keeps the default's value, `light[i]` starts from the default's `light[i]`, and a listed `light` array is the whole chain.
+  - **Devin, the expert with a blade:** a four-hit chain with quicker startups and more damage, more hp, the widest parry (0.2 s) with the quickest rearm, a bigger riposte, a full frontal guard.
+  - **Duy, kicks and a gun:** kicks that reach 2.5 m and hit poise hard; the heavy is a gun shot (9 m, a narrow line, one target, no lunge). Less hp, quicker on his feet; a narrow guard that leaks a little but barely slows him, and breaks sooner.
+  - **The Third, average, with spells:** spell bolts that reach 3.2 m with no lunge, and an all-round burst for the heavy and the Release. A ward that covers every side but lets more through, slows the most and breaks the slowest; the plainest parry (0.12 s, the least the autopilot still parries).
+  - Each lead's blocks are its guard and parry numbers (`guardArcCos`, `guardAbsorb`, `guardMoveScale`, `guardBreakTime`, `parryWindow`, `parryRearm`); there is no block or weapon type in Core yet. One comes when the attack, guard and hit clips land and the host has to pick a clip by it.
+  - The tests play every kit's autopilot through the default fight, the three-kind wave and each enemy alone (8 seeds each): it must win and idle must lose, each within 120 s.
 - Three placeholder enemy kinds ship:
   - `brute`: a slam with a follow-up, and a slow overhead that can't be parried.
   - `skirmisher`: quick two-hit jabs.
@@ -280,4 +285,3 @@ These wait until the animation session's merge is pushed.
 - Ranged enemy attacks in the arena.
 - A synthesized beat loop for fights with no cue.
 - In-place staging of beat fights on the world map (the fight plays on its step's world map, as an arena fight does, instead of opening the `Beat` map).
-- Per-lead fighter kits in `arena.json`.

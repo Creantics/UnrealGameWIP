@@ -479,6 +479,101 @@ TEST_CASE("arena table: the default fighter comes first, fighter() and find() fa
     CHECK(&empty.find("S", 0, 0) == &empty.fallback);
 }
 
+TEST_CASE("arena table: a lead's kit starts from the default fighter, and lists only what differs") {
+    ArenaTable t;
+    const std::string err = loadError(
+        R"({ "version": 1,
+             "fighters": [ { "id": "lead", "hp": 80, "light": [ { "damage": 30 } ], "heavy": { "range": 9 } },
+                           { "id": "default", "hp": 150, "moveAccel": 25, "parryWindow": 0.2,
+                             "light": [ { "damage": 12, "range": 2.4 }, { "damage": 14 } ], "heavy": { "damage": 40 } } ],
+             "enemies": [ { "id": "dummy" } ],
+             "default": { "enemies": ["dummy"] } })",
+        &t);
+    CHECK(err.empty());
+    const ArenaFighter& lead = t.fighter("lead");
+    const ArenaFighter& def = t.fighter("default");
+    CHECK(lead.hp == 80);                      // its own
+    CHECK(lead.moveAccel == 25.f);             // the default's, not the struct's
+    CHECK(lead.parryWindow == doctest::Approx(0.2f));
+    CHECK(lead.lightCount == 1);               // a listed chain is the whole chain
+    CHECK(lead.light[0].damage == 30);         // its own, on top of the default's light[0]
+    CHECK(lead.light[0].range == doctest::Approx(2.4f));
+    CHECK(lead.heavy.range == doctest::Approx(9.f));
+    CHECK(lead.heavy.damage == 40);
+    // The default itself still starts from the struct's values, whichever order the fighters come in.
+    CHECK(def.hp == 150);
+    CHECK(def.lightCount == 2);
+    CHECK(t.fighter("lead").heavy.startup == doctest::Approx(ArenaFighter{}.heavy.startup));
+}
+
+TEST_CASE("arena data: each lead ships its own kit and its own blocks") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter& base = t.fighter("default");
+    const ArenaFighter& devin = t.fighter("devin");
+    const ArenaFighter& duy = t.fighter("duy");
+    const ArenaFighter& third = t.fighter("third");
+    for (const char* id : {"devin", "duy", "third"}) {
+        bool found = false;
+        for (const std::string& f : t.fighterIds) found = found || f == id;
+        CHECK_MESSAGE(found, "Error: no fighter kit for " << id);
+    }
+    // Devin, the expert blade: a longer chain, a wider parry than anyone.
+    CHECK(devin.lightCount > base.lightCount);
+    CHECK(devin.parryWindow > base.parryWindow);
+    CHECK(devin.parryWindow > duy.parryWindow);
+    CHECK(devin.parryWindow > third.parryWindow);
+    // Duy: kicks that reach further and break poise, a gun for the heavy (long, narrow, one target, no lunge).
+    CHECK(duy.light[0].range > base.light[0].range);
+    CHECK(duy.light[0].poiseDamage > base.light[0].poiseDamage);
+    CHECK(duy.heavy.range >= 8.f);
+    CHECK(duy.heavy.arcCos >= 0.95f);
+    CHECK(duy.heavy.maxTargets == 1);
+    CHECK(duy.heavy.lunge == 0.f);
+    // The Third: spells at range with no lunge, a ward all round, and an even-handed parry.
+    CHECK(third.light[0].range > base.light[0].range);
+    CHECK(third.light[0].lunge == 0.f);
+    CHECK(third.heavy.arcCos <= -1.f);
+    CHECK(third.guardArcCos <= -1.f);
+    // Each lead blocks its own way.
+    CHECK(devin.guardArcCos != duy.guardArcCos);
+    CHECK(duy.guardArcCos != third.guardArcCos);
+    CHECK(devin.guardAbsorb > duy.guardAbsorb);
+    CHECK(duy.guardAbsorb > third.guardAbsorb);
+    // Every lead keeps the default's handling where it says nothing.
+    CHECK(duy.moveBrake == base.moveBrake);
+    CHECK(third.moveAccel == base.moveAccel);
+    CHECK(third.hp == base.hp);
+}
+
+TEST_CASE("arena attack: Duy's gun heavy connects far off, with the nearest body only, and not past its range") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter duy = t.fighter("duy");
+    {   // 8 m out, straight ahead, with another body behind it
+        Rig rig(duy, {dummyKind(), dummyKind()});
+        rig.put(0, 8.f, 0.f);
+        rig.put(1, 8.8f, 0.f);
+        rig.in.heavy = true;
+        rig.runFor(1.5f);
+        REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+        CHECK(rig.find(ArenaEventType::Hit)->event.target == 0);
+        CHECK(rig.fight.enemyHp(1) == 100);
+    }
+    {   // well past its range: nothing
+        Rig rig(duy, {dummyKind()});
+        rig.put(0, 12.f, 0.f);
+        rig.in.heavy = true;
+        rig.runFor(1.5f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+    {   // a body well off the line of the shot is missed, where a kick's wide arc would not care
+        Rig rig(duy, {dummyKind()});
+        rig.put(0, 6.f, 4.f);
+        rig.in.heavy = true;
+        rig.runFor(1.5f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+}
+
 TEST_CASE("arena table: each fight records the table kind of its enemy slots") {
     ArenaTable t;
     const std::string err = loadError(
@@ -3417,10 +3512,11 @@ void checkBalance(const std::string& name, const ArenaDef& def) {
                                          << ", slowest idle loss " << worstLoss << " s (seed 1: " << firstWin << " / " << firstLoss << ")");
 }
 
-// A fight of the shipped enemies, by id.
-ArenaDef shippedFight(const ArenaTable& table, std::initializer_list<const char*> ids, std::uint8_t attackers) {
+// A fight of the shipped enemies, by id, played with one fighter's kit.
+ArenaDef shippedFight(const ArenaTable& table, std::initializer_list<const char*> ids, std::uint8_t attackers,
+                      const char* fighterId = "default") {
     ArenaDef def;
-    def.fighter = table.fighter("default");
+    def.fighter = table.fighter(fighterId);
     def.enemyCount = 0;
     for (const char* id : ids)
         for (std::size_t e = 0; e < table.enemyIds.size(); ++e)
@@ -3458,6 +3554,26 @@ TEST_CASE("arena balance: the shipped enemies each lose to the autopilot alone")
         def.enemies[0] = table.enemies[e];
         def.attackers = 1;
         checkBalance(table.enemyIds[e], def);
+    }
+}
+
+TEST_CASE("arena balance: every lead's kit plays the default's fights") {
+    const ArenaTable table = loadShipped();
+    REQUIRE(table.fighterIds.size() >= 4); // default, devin, duy, third
+    for (std::size_t f = 1; f < table.fighterIds.size(); ++f) {
+        const std::string& id = table.fighterIds[f];
+        ArenaDef fallback = table.fallback;
+        fallback.fighter = table.fighters[f];
+        checkBalance(id + ": shipped default fight", fallback);
+        checkBalance(id + ": three kinds, attackers 1", shippedFight(table, {"brute", "skirmisher", "breaker"}, 1, id.c_str()));
+        for (std::size_t e = 0; e < table.enemyIds.size(); ++e) {
+            ArenaDef def;
+            def.fighter = table.fighters[f];
+            def.enemyCount = 1;
+            def.enemies[0] = table.enemies[e];
+            def.attackers = 1;
+            checkBalance(id + ": " + table.enemyIds[e], def);
+        }
     }
 }
 

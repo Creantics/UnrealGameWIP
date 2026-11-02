@@ -238,8 +238,8 @@ void AFTArenaGameMode::StartPlay()
 		Kinds += E > 0 ? TEXT(", ") : TEXT("");
 		Kinds += Kind < Table.enemyIds.size() ? FT::ToFString(Table.enemyIds[Kind]) : FString(TEXT("built-in"));
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena: zone %s, %d enemies (%s), ring %.1f m, spawn %.1f m, %d attacking at once, seed %u, %s; shortest tell %.2f s."),
-		*FT::ToFString(Spec.id), static_cast<int32>(Def.enemyCount), *Kinds, Def.ringRadius, Def.spawnDistance,
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: zone %s, kit %s, %d enemies (%s), ring %.1f m, spawn %.1f m, %d attacking at once, seed %u, %s; shortest tell %.2f s."),
+		*FT::ToFString(Spec.id), *KitId, static_cast<int32>(Def.enemyCount), *Kinds, Def.ringRadius, Def.spawnDistance,
 		static_cast<int32>(Def.attackers), Seed, ArenaPilotName(bAutoPlay, bIdle), Shortest);
 }
 
@@ -339,6 +339,27 @@ void AFTArenaGameMode::LoadZones(bool bTable)
 void AFTArenaGameMode::BuildDef(bool bTable)
 {
 	Def = bTable ? Table.fallback : ftcore::defaultArenaDef();
+	if (bTable)
+	{
+		// The lead's own kit (its attacks and its blocks); a lead without one plays the default fighter.
+		const FString Want = FindKitId();
+		const std::string WantId = FT::ToUtf8(Want);
+		Def.fighter = Table.fighter(WantId);
+		bool bOwn = false;
+		for (const std::string& Id : Table.fighterIds)
+		{
+			bOwn = bOwn || Id == WantId;
+		}
+		KitId = bOwn ? Want : FString(TEXT("default"));
+		if (!bOwn && Want != TEXT("default"))
+		{
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: no fighter kit \"%s\" in arena.json; the lead plays the default kit."), *Want);
+		}
+	}
+	else
+	{
+		KitId = TEXT("built-in");
+	}
 	int32 Attackers = 0;
 	const bool bAttackersFlag = FParse::Value(FCommandLine::Get(), TEXT("ArenaAttackers="), Attackers);
 	if (bTable)
@@ -700,6 +721,19 @@ void AFTArenaGameMode::SpawnFigures()
 		EnemyFigures[I] = Enemy;
 		LoadSkin(I);
 	}
+}
+
+FString AFTArenaGameMode::FindKitId() const
+{
+	FString Want;
+	FParse::Value(FCommandLine::Get(), TEXT("ArenaLead="), Want, false);
+	Want = Want.TrimStartAndEnd();
+	if (Want.IsEmpty())
+	{
+		const TArray<FFTLeadLook>& Party = GetDefault<AFTExploreCharacter>()->PartyLooks;
+		Want = Party.IsEmpty() ? FString(TEXT("default")) : Party[0].Name;
+	}
+	return Want.ToLower();
 }
 
 const FFTLeadLook* AFTArenaGameMode::FindLead() const

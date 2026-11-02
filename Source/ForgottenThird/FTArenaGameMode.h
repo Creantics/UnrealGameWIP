@@ -204,6 +204,9 @@ private:
 	// The lead look the player's figure wears: -ArenaLead=<name> among the explore character's PartyLooks, else the first;
 	// null (logged) when the config has none.
 	const FFTLeadLook* FindLead() const;
+	// The fighter kit's id in arena.json: -ArenaLead=<name> lower-cased (even when no look of that name loads), else
+	// the first PartyLooks name lower-cased, else "default". The table falls back to "default" for an id it lacks.
+	FString FindKitId() const;
 	// Dresses enemy slot I as a skeletal mesh when its kind has a look that loads (see the top of this file).
 	void LoadSkin(int32 I);
 	// Picks and times slot I's clip from its Core state: the move's own clip through an attack, at the rate that lands its
@@ -302,6 +305,7 @@ private:
 	bool bHoldLoad = false;
 	bool bResultLogged = false;
 	double ResultTime = 0.0;
+	FString KitId; // the fighter kit the player plays (FindKitId), as the table resolved it
 
 	// -ArenaShot: the prefix, the settle before the first, which have been taken, and a short hold after
 	// each so the frame it renders is the moment it was taken for.
