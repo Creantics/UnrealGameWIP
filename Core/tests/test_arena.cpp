@@ -3520,7 +3520,10 @@ ArenaDef shippedFight(const ArenaTable& table, std::initializer_list<const char*
     def.enemyCount = 0;
     for (const char* id : ids)
         for (std::size_t e = 0; e < table.enemyIds.size(); ++e)
-            if (table.enemyIds[e] == id) def.enemies[def.enemyCount++] = table.enemies[e];
+            if (table.enemyIds[e] == id) {
+                def.enemyKind[def.enemyCount] = static_cast<std::uint8_t>(e);
+                def.enemies[def.enemyCount++] = table.enemies[e];
+            }
     def.attackers = attackers;
     def.ringRadius = 12.f;
     def.spawnDistance = 7.f;
@@ -3648,4 +3651,90 @@ TEST_CASE("arena fence: a whole autopilot fight and an idle one build no arrow c
     CHECK(won.phase == ArenaPhase::Victory);
     CHECK(lost.phase == ArenaPhase::Defeat);
     CHECK(comboSequencesBuilt() == before);
+}
+
+// ---- log ----
+
+namespace {
+
+// Plays def to its end under the autopilot (or nobody), then formats its result line.
+std::string resultLineOf(const ArenaDef& def, const ArenaTable& table, bool autopilot, const ArenaLogIds& ids, std::size_t cap = kArenaResultLineMax) {
+    const ArenaRing ring = arenaRingAt(Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, def.ringRadius, ArenaRing{Vec2{0.f, 0.f}, 36.f});
+    ArenaFight fight;
+    fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, ids.seed);
+    ArenaBodies bodies;
+    bodies.player = fight.playerStart();
+    for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
+    while (!fight.over() && fight.time() < 120.f) {
+        fight.tick(kDt, autopilot ? fight.autopilot() : ArenaInput{}, bodies);
+        arenaStep(fight, bodies, kDt);
+    }
+    std::array<char, kArenaResultLineMax> buf{};
+    const std::size_t n = arenaResultLine(buf.data(), cap, fight, table, ids);
+    CHECK(n < cap);
+    CHECK(buf[n] == '\0');
+    return std::string(buf.data(), n);
+}
+
+} // namespace
+
+TEST_CASE("arena log: one line per fight, ids and counts only, like the beat screen's") {
+    const ArenaTable table = loadShipped();
+    ArenaLogIds ids;
+    ids.zone = "sand_ring";
+    ids.kit = "devin";
+    ids.pilot = "autoplay";
+    ids.seed = 3;
+    const ArenaDef wave = shippedFight(table, {"brute", "skirmisher", "breaker"}, 1, "devin");
+    const std::string won = resultLineOf(wave, table, true, ids);
+    MESSAGE(won);
+    CHECK(won.rfind("Arena: VICTORY at standalone beat 0 step 0 after ", 0) == 0);
+    CHECK(contains(won, " s, zone sand_ring, kit devin, enemies brute+skirmisher+breaker, autoplay seed 3, hp "));
+    CHECK(contains(won, "/150, "));
+    CHECK(contains(won, " reads right, dealt "));
+    CHECK(contains(won, ", 0 restarts."));
+    CHECK(won.back() == '.');
+    // A story step names its scene, beat and step; a lost fight says DEFEAT; a built-in slot says so.
+    ids.scene = "SC-07";
+    ids.beat = 4;
+    ids.step = 2;
+    ids.pilot = "idle";
+    const std::string lost = resultLineOf(wave, table, false, ids);
+    CHECK(lost.rfind("Arena: DEFEAT at SC-07 beat 4 step 2 after ", 0) == 0);
+    CHECK(contains(lost, "idle seed 3, hp 0/150, 0 hits"));
+    const std::string builtIn = resultLineOf(defaultArenaDef(), ArenaTable{}, true, ids);
+    CHECK(contains(builtIn, ", enemies built-in, "));
+    // An id with a space or a comma can't break the line apart; a fight still running is a TIMEOUT.
+    ids.zone = "two words,here";
+    ArenaFight fresh;
+    fresh.begin(wave, arenaRingAt(Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 12.f, ArenaRing{Vec2{0.f, 0.f}, 36.f}), Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    std::array<char, kArenaResultLineMax> buf{};
+    const std::size_t n = arenaResultLine(buf.data(), buf.size(), fresh, table, ids);
+    const std::string running(buf.data(), n);
+    CHECK(running.rfind("Arena: TIMEOUT at SC-07 beat 4 step 2 after 0.0 s, zone two_words_here, kit devin, ", 0) == 0);
+}
+
+TEST_CASE("arena log: a short buffer is cut and zero-ended, and writing the line allocates nothing") {
+    const ArenaTable table = loadShipped();
+    const ArenaDef wave = shippedFight(table, {"brute", "skirmisher", "breaker"}, 1);
+    ArenaLogIds ids;
+    ids.zone = "sand_ring";
+    ids.kit = "default";
+    ids.pilot = "autoplay";
+    ids.seed = 1;
+    const std::string cut = resultLineOf(wave, table, true, ids, 20);
+    CHECK(cut == "Arena: VICTORY at s");
+    ArenaFight fight;
+    fight.begin(wave, arenaRingAt(Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 12.f, ArenaRing{Vec2{0.f, 0.f}, 36.f}), Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    char one[1] = {'x'};
+    CHECK(arenaResultLine(one, 1, fight, table, ids) == 0);
+    CHECK(one[0] == '\0');
+    CHECK(arenaResultLine(nullptr, 0, fight, table, ids) == 0);
+    std::array<char, kArenaResultLineMax> buf{};
+    const bool counting = ftcore_test::allocHookInstalled();
+    const auto before = ftcore_test::allocStats().count;
+    const std::size_t n = arenaResultLine(buf.data(), buf.size(), fight, table, ids);
+    const auto allocs = ftcore_test::allocStats().count - before;
+    CHECK(n > 0);
+    if (counting) CHECK(allocs == 0);
 }

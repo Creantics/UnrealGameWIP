@@ -54,12 +54,13 @@
 // Flags (FParse::Param, docs/ALPHA.md style): -ArenaAutoPlay lets Core's autopilot (ArenaFight::autopilot)
 // play; -ArenaIdle presses nothing at all (the fight must be lost); -ArenaQuitOnFinish exits when the fight
 // is over (it asks for 0 on a victory and 1 on a defeat, but UnrealEditor-Cmd exits 0 either way: read the
-// ARENA RESULT line; a fight that outlasts WatchdogSeconds, a hang guard for headless runs, logs a Timeout). Without -ArenaQuitOnFinish the autopilot fights again 4 s after the outcome.
+// result line; a fight that outlasts WatchdogSeconds, a hang guard for headless runs, logs a TIMEOUT and exits 2). Without -ArenaQuitOnFinish the autopilot fights again 4 s after the outcome.
 // Under -ArenaAutoPlay the host plays the partner too: it presses the pair on the step after each parry (Core's
 // autopilot never presses it). -ArenaHoldLoad keeps the autopilot from releasing until it is overloaded, so the
 // overload shows (a check of the HUD, not a way to play).
 // One log line per fight, ids and counts only:
-//   ARENA RESULT: Victory in <t> s (autoplay, seed <s>, <n> enemies, hp <h>/<max>, <c> heals left; <x> hits, ...).
+//   Arena: VICTORY at <scene> beat <b> step <s> after <t> s, zone <z>, kit <k>, enemies <id>+<id>, autoplay seed <n>, hp ...
+// (ftcore::arenaResultLine; DEFEAT for a loss, TIMEOUT for the watchdog; "standalone" with no story step).
 // -ArenaShot=<path prefix> renders the HUD-on views docs/ARENA_DEMO.md lists (<prefix>_1_ring.png, ...)
 // with HighResShot after an 8 s settle (-ArenaShotDelay=<s>) and then quits; it implies -ArenaAutoPlay.
 // -ArenaOverview adds a first view, <prefix>_0_overview.png: the whole zone from a camera high over its south-west
@@ -222,6 +223,8 @@ private:
 	void PlaceFigures(float Alpha);
 	void SteerCamera(float DeltaSeconds);
 	void Finish();
+	// The one result line per fight (VICTORY, DEFEAT, or TIMEOUT as a warning while it still runs).
+	void LogResult() const;
 	void Restart();
 	// -ArenaShot's views; true while the fight should hold still (before the first view and just after each).
 	bool Shots(float DeltaSeconds);

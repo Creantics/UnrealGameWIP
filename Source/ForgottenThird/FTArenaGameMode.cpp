@@ -16,6 +16,7 @@
 #include "EngineUtils.h"
 #include "FTExploreCharacter.h"
 #include "FTExploreDirector.h"
+#include "FTGameInstance.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "FTActionButtons.h"
@@ -1026,8 +1027,7 @@ void AFTArenaGameMode::Tick(float DeltaSeconds)
 	// A hang guard for unattended runs: a fight that outlasts the watchdog ends the run.
 	if (bQuitOnFinish && (Fight.time() > WatchdogSeconds || Now - BeginNow > WatchdogSeconds * 2.0))
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("ARENA RESULT: Timeout after %.1f s (%s, seed %u): the fight never ended."),
-			Fight.time(), ArenaPilotName(bAutoPlay, bIdle), Seed);
+		LogResult(); // a TIMEOUT line, as a warning
 		bQuitOnFinish = false;
 		FPlatformMisc::RequestExitWithStatus(false, 2, TEXT("Arena"));
 	}
@@ -1496,16 +1496,39 @@ void AFTArenaGameMode::Finish()
 	bResultLogged = true;
 	ResultTime = Now;
 	const bool bWon = Fight.phase() == ftcore::ArenaPhase::Victory;
-	const ftcore::ArenaStats& S = Fight.stats();
-	UE_LOG(LogForgottenThird, Display,
-		TEXT("ARENA RESULT: %s in %.1f s (%s, seed %u, %d enemies, hp %d/%d, %d heals left; %d hits, %d taken, %d blocks, %d parries, %d ripostes, %d evades, %d staggers, %d guard breaks, %d heals; %d load stored, %d releases, %d overloads, %d counter staggers; %d reads dealt, %d picked, %d right, %d read counters for %d; dealt %d, took %d)."),
-		bWon ? TEXT("Victory") : TEXT("Defeat"), Fight.time(), ArenaPilotName(bAutoPlay, bIdle), Seed,
-		static_cast<int32>(Fight.enemyCount()), Fight.hp(), Fight.def().fighter.hp, static_cast<int32>(Fight.healCharges()),
-		S.hits, S.hitsTaken, S.blocks, S.parries, S.ripostes, S.evades, S.staggers, S.guardBreaks, S.heals, S.loadStored, S.releases, S.overloads, S.counterStaggers,
-		S.readsDealt, S.reads, S.correctReads, S.readCounters, S.readDamage, S.damageDealt, S.damageTaken);
+	LogResult();
 	if (bQuitOnFinish && ShotPrefix.IsEmpty())
 	{
 		FPlatformMisc::RequestExitWithStatus(false, static_cast<uint8>(bWon ? 0 : 1), TEXT("Arena"));
+	}
+}
+
+void AFTArenaGameMode::LogResult() const
+{
+	// Ids and counts only, never text (Core's arenaResultLine). The scene, beat and step are the story step's
+	// when one carried the fight here, else "standalone".
+	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+	const bool bCarried = GI && GI->StoryCarry.bValid && GI->StoryCarry.Combat == ftcore::CombatKind::Arena;
+	const std::string Scene = bCarried ? FT::ToUtf8(GI->StoryCarry.Scene) : std::string("standalone");
+	const std::string Kit = FT::ToUtf8(KitId);
+	const std::string Pilot = FT::ToUtf8(ArenaPilotName(bAutoPlay, bIdle));
+	ftcore::ArenaLogIds Ids;
+	Ids.scene = Scene;
+	Ids.beat = bCarried ? static_cast<uint32>(FMath::Max(0, GI->StoryCarry.Beat)) : 0u;
+	Ids.step = bCarried ? static_cast<uint32>(FMath::Max(0, GI->StoryCarry.Step)) : 0u;
+	Ids.zone = Spec.id;
+	Ids.kit = Kit;
+	Ids.pilot = Pilot;
+	Ids.seed = Seed;
+	char Line[ftcore::kArenaResultLineMax];
+	ftcore::arenaResultLine(Line, sizeof Line, Fight, Table, Ids);
+	if (Fight.over())
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("%s"), UTF8_TO_TCHAR(Line));
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("%s"), UTF8_TO_TCHAR(Line));
 	}
 }
 

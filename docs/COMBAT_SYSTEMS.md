@@ -268,7 +268,7 @@ Each battle type has a demo fight that plays on its own map, with the mannequin 
 - **Arena:** `Demo_Arena` ([ARENA_DEMO.md](ARENA_DEMO.md)); `-ArenaStage=<id>` holds the fight in a zone of one of the worlds' own maps, fitted to its boss's size (ARENA_DEMO.md, "Zones").
 - **Beat:** `Demo_BeatBoss`, the synthetic test track played as a beat boss with procedural music in place of a recording ([BEAT_BOSS_DEMO.md](BEAT_BOSS_DEMO.md)).
 
-Each demo takes an autoplay flag that wins the fight and an idle flag that loses it, and logs one result line, so it can be checked headless.
+Each demo takes an autoplay flag that wins the fight and an idle flag that loses it, and logs one result line, so it can be checked headless. The arena's and the beat screen's lines have the same shape: `Arena: VICTORY at <scene> beat <b> step <s> after <t> s, ...` with the zone, the kit and the enemy kinds, ids and counts only ([ARENA_DEMO.md](ARENA_DEMO.md), "At the end of every fight").
 
 ## Unreal work still needed
 
@@ -277,7 +277,6 @@ These wait until the animation session's merge is pushed.
 - **Arena:** the demo screen exists ([ARENA_DEMO.md](ARENA_DEMO.md): ring map, lock-on camera, HUD with hp, stamina, the Load gauge, poise, heal charges, the tell, the lock marker and the enemy hp; the Release, the overload and the partner's paired press are hosted). Still to do:
   - The arena host on the explore character (the ring, the follower parking spots), reached through the routing.
   - Attack, hit, guard and stagger animations, and a dodge roll that reuses the movement work.
-- **Logging:** the arena screen logs one line per fight with ids and counts only, like the other screens (the beat screen does already: see [BEAT_SCREEN.md](BEAT_SCREEN.md)). The routing is done (see "Routing").
 
 ## Follow-ups
 

@@ -2311,4 +2311,69 @@ bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error
     return true;
 }
 
+// ---- log ----
+
+namespace {
+
+// Appends to a fixed buffer; whatever does not fit is dropped.
+struct LineWriter {
+    char* out;
+    std::size_t cap;
+    std::size_t len = 0;
+
+    void put(std::string_view text) {
+        for (const char c : text) {
+            if (len + 1 >= cap) return;
+            out[len++] = c;
+        }
+    }
+    template <typename... Args>
+    void print(const char* format, Args... args) {
+        if (len + 1 >= cap) return;
+        const int n = std::snprintf(out + len, cap - len, format, args...);
+        if (n > 0) len = std::min(len + static_cast<std::size_t>(n), cap - 1);
+    }
+    // An id: printable ASCII with no spaces or commas, cut to 48 characters, so a line always parses.
+    void id(std::string_view text) {
+        if (text.empty()) text = "-";
+        std::size_t n = 0;
+        for (const char c : text) {
+            if (n++ == 48) break;
+            put(std::string_view(c > ' ' && c < 127 && c != ',' ? &c : "_", 1));
+        }
+    }
+};
+
+} // namespace
+
+std::size_t arenaResultLine(char* out, std::size_t cap, const ArenaFight& fight, const ArenaTable& table,
+                            const ArenaLogIds& ids) {
+    if (!out || cap == 0) return 0;
+    LineWriter w{out, cap};
+    const ArenaStats& s = fight.stats();
+    const ArenaPhase phase = fight.phase();
+    w.put(phase == ArenaPhase::Victory ? "Arena: VICTORY at " : phase == ArenaPhase::Defeat ? "Arena: DEFEAT at " : "Arena: TIMEOUT at ");
+    w.id(ids.scene);
+    w.print(" beat %u step %u after %.1f s, zone ", ids.beat, ids.step, static_cast<double>(fight.time()));
+    w.id(ids.zone);
+    w.put(", kit ");
+    w.id(ids.kit);
+    w.put(", enemies ");
+    const ArenaDef& def = fight.def();
+    for (std::size_t e = 0; e < def.enemyCount; ++e) {
+        if (e > 0) w.put("+");
+        const std::uint8_t kind = def.enemyKind[e];
+        w.id(kind < table.enemyIds.size() ? std::string_view(table.enemyIds[kind]) : std::string_view("built-in"));
+    }
+    if (def.enemyCount == 0) w.put("none");
+    w.put(", ");
+    w.id(ids.pilot);
+    w.print(" seed %u, hp %d/%d, %d hits, %d taken, %d blocks, %d parries, %d ripostes, %d evades, %d guard breaks, %d heals, "
+            "%d releases, %d overloads, %d/%d reads right, dealt %d, took %d, %d restarts.",
+            ids.seed, fight.hp(), def.fighter.hp, s.hits, s.hitsTaken, s.blocks, s.parries, s.ripostes, s.evades, s.guardBreaks, s.heals,
+            s.releases, s.overloads, s.correctReads, s.readsDealt, s.damageDealt, s.damageTaken, s.restarts);
+    out[w.len] = '\0';
+    return w.len;
+}
+
 } // namespace ftcore

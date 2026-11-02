@@ -282,13 +282,16 @@ each frame and handed to the fight on its next step, so no press is lost between
 | `-ArenaShotDelay=S` | Seconds before the first screenshot (the fight waits for it). |
 | `-ArenaOverview` | With `-ArenaShot`, a first view `_0_overview` of the whole zone from a camera high over its south-west side (pulled in along the line if a building is in the way), HUD off, with the zone's walls (green), obstacles (red) and road mouths (yellow) drawn as debug lines for the picture only; then `_0b_edge`, the player 1.4 m from the wall on his left to show the edge cue. |
 
-At the end of every fight the log gets one line with counts only:
+At the end of every fight the log gets one line, ids and counts only, never text, as the beat screen logs its own ([BEAT_SCREEN.md](BEAT_SCREEN.md), "Log lines"). Core formats it into a fixed buffer (`ftcore::arenaResultLine`):
 
 ```
-ARENA RESULT: Victory in 22.9 s (autoplay, seed 1, 3 enemies, hp 96/140, 3 heals left; 25 hits, 3 taken, ...; 68 load stored, 1 releases, 0 overloads, 3 counter staggers; 10 reads dealt, 10 picked, 10 right, 10 read counters for 93; dealt 530, took 44).
+Arena: VICTORY at <scene> beat <b> step <s> after <t> s, zone <zone>, kit <kit>, enemies <id>+<id>+<id>, <pilot> seed <n>, hp <h>/<max>, <x> hits, <y> taken, <b> blocks, <p> parries, <r> ripostes, <e> evades, <g> guard breaks, <h> heals, <l> releases, <o> overloads, <c>/<d> reads right, dealt <n>, took <n>, <r> restarts.
+Arena: DEFEAT at <scene> beat <b> step <s> after <t> s, ...
 ```
 
-A fight that runs past 180 s of fight time (or 360 s of wall time) logs `ARENA RESULT: Timeout` as a
+A fight on its own logs `standalone` for the scene, with beat and step 0; a fight a story step carried here logs that step's scene, beat and step. `<t>` is the clock of the last try; the counts and the restarts run on through retries. The enemies are their `arena.json` kinds (`built-in` for the built-in fight's), the pilot is `autoplay`, `idle` or `player`. An id is cut to 48 characters, and a space or a comma in it becomes `_`, so the line always splits the same way.
+
+A fight that runs past 180 s of fight time (or 360 s of wall time) logs the same line with `TIMEOUT` as a
 warning and quits with exit code 2, so an unattended run never hangs.
 
 ## How it runs

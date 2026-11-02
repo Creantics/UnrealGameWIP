@@ -734,6 +734,31 @@ struct ArenaTable {
     FTCORE_API const ArenaDef& find(std::string_view scene, std::uint32_t beat, std::uint32_t step) const;
 };
 
+// ---- log ----
+
+// What the result line names besides the fight's own counts. Ids only, never text: the story step's scene id
+// ("standalone" for a fight on its own), the zone and the fighter kit, and who played ("autoplay", "idle", "player").
+struct ArenaLogIds {
+    std::string_view scene = "standalone";
+    std::uint32_t beat = 0, step = 0;
+    std::string_view zone;
+    std::string_view kit;
+    std::string_view pilot;
+    std::uint32_t seed = 0;
+};
+
+constexpr std::size_t kArenaResultLineMax = 512; // a buffer this size always holds the line (ids are cut to fit)
+
+// The arena's one line per fight, as the beat screen logs its own (docs/BEAT_SCREEN.md, "Log lines"):
+//   Arena: VICTORY at <scene> beat <b> step <s> after <t> s, zone <z>, kit <k>, enemies <id>+<id>, <pilot> seed <n>,
+//   hp <h>/<max>, <x> hits, <y> taken, <b> blocks, <p> parries, <r> ripostes, <e> evades, <g> guard breaks, <h> heals,
+//   <l> releases, <o> overloads, <c>/<d> reads right, dealt <n>, took <n>, <r> restarts.
+// DEFEAT for a lost fight, TIMEOUT for one still running. The enemies are named by their table kind (the fight's
+// enemyKind), "built-in" for a slot with none. Writes at most cap-1 characters and a terminating zero into out and
+// returns the length written; no allocation.
+FTCORE_API std::size_t arenaResultLine(char* out, std::size_t cap, const ArenaFight& fight, const ArenaTable& table,
+                                       const ArenaLogIds& ids);
+
 // On failure `out` is empty and *error lists each problem with its path, one per line.
 FTCORE_API bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error = nullptr,
                                  std::vector<std::string>* warnings = nullptr);
