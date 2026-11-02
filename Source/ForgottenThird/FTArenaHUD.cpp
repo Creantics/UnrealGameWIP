@@ -5,8 +5,10 @@
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "FTArenaFighter.h"
 #include "FTArenaGameMode.h"
+#include "FTArenaHost.h"
 #include "FTArenaRunner.h"
 #include "FTPauseOverlay.h"
 #include "FTUiText.h"
@@ -892,8 +894,13 @@ void AFTArenaHUD::DrawHUD()
 	{
 		return;
 	}
+	// The arena demo's fight, else the one this map's arena host runs (an arena step in a world).
 	const AFTArenaGameMode* Arena = GetWorld() ? GetWorld()->GetAuthGameMode<AFTArenaGameMode>() : nullptr;
 	const UFTArenaRunner* Mode = Arena ? Arena->GetRunner() : nullptr;
+	for (TActorIterator<AFTArenaHost> It(GetWorld()); !Mode && It; ++It)
+	{
+		Mode = It->GetRunner();
+	}
 	if (!Mode || !Mode->IsBegun())
 	{
 		FT::DrawPauseOverlay(*this, Canvas);

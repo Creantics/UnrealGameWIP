@@ -27,6 +27,7 @@
 
 class AFTArenaFighter;
 class APlayerController;
+class UWorld;
 class UAnimSequence;
 struct FFTLeadLook;
 
@@ -106,6 +107,8 @@ public:
 
 	// The result line's name for who plays: "autoplay", "idle" or "player".
 	static const TCHAR* PilotName(bool bAutoPlayRun, bool bIdleRun);
+	// The world's ground height at p (metres, in cm), from a trace onto its Landscape or a plaza's paving (0 when there is none).
+	static double SampleGround(const UWorld* World, const ftcore::Vec2& P);
 
 	// Begins the fight: spawns the figures (the player's possessed), puts the bodies at their starts and places them.
 	void Begin(const FFTArenaRunSetup& Setup);

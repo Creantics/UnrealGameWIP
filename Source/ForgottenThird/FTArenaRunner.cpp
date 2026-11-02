@@ -2,6 +2,7 @@
 
 #include "Animation/AnimSequence.h"
 #include "Engine/SkeletalMesh.h"
+#include "Components/PrimitiveComponent.h"
 #include "Engine/World.h"
 #include "FTActionButtons.h"
 #include "FTArenaFighter.h"
@@ -241,6 +242,42 @@ void UFTArenaRunner::End()
 	}
 	bFiguresSpawned = false;
 	bBegun = false;
+}
+
+double UFTArenaRunner::SampleGround(const UWorld* World, const ftcore::Vec2& P)
+{
+	if (!World)
+	{
+		return 0.0;
+	}
+	// From far above, down: what stops the line first is a roof, a crown or the plaza's paving, not the ground. Take the
+	// paving's top (the figures stand on it) and for anything else skip the actor and look again, until the Landscape.
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(ArenaGround), false);
+	const FVector Top(P.x * 100.0, P.y * 100.0, 60000.0);
+	for (int32 Try = 0; Try < 8; ++Try)
+	{
+		FHitResult Hit;
+		if (!World->LineTraceSingleByChannel(Hit, Top, Top - FVector(0.0, 0.0, 120000.0), ECC_Visibility, Params))
+		{
+			break;
+		}
+		const UPrimitiveComponent* Component = Hit.GetComponent();
+		if (Component && Component->GetClass()->GetName().Contains(TEXT("Landscape")))
+		{
+			return Hit.ImpactPoint.Z;
+		}
+		if (Component && Component->GetName().Contains(TEXT("PlazaDiscs")))
+		{
+			return Hit.ImpactPoint.Z;
+		}
+		if (!Hit.GetActor())
+		{
+			break;
+		}
+		Params.AddIgnoredActor(Hit.GetActor());
+	}
+	UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no ground under the zone; the figures stand at 0."));
+	return 0.0;
 }
 
 void UFTArenaRunner::PutPlayerAt(const ftcore::Vec2& P)

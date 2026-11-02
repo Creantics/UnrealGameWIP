@@ -128,8 +128,6 @@ private:
 	// What a zone in a world adds to its scene: the zone's sheets of water, its own cover, and a barrier across each
 	// road its wall crosses (so the invisible wall is a thing there).
 	void BuildZoneDressing();
-	// The world's ground height at p (metres), from a trace onto its Landscape (0 when there is none).
-	double SampleGround(const ftcore::Vec2& P) const;
 	// The ground, the zone's dressing, then the runner's fight.
 	void Begin();
 	// The lead look the player's figure wears: -ArenaLead=<name> among the explore character's PartyLooks, else the first;

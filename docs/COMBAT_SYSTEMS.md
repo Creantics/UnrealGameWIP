@@ -8,7 +8,7 @@ The game has three combat systems, and every world has all three. Each fight pla
 | Arena melee | `arena` | Real time: free movement inside a ring, light and heavy attacks, a dodge roll, guard and parry, stamina, lock-on | `ArenaFight.h` |
 | Beat fight | `beat` | Real time on the music's beat grid: enemies take turns, one bar each, and the lead answers each prompt on its eighth note | `BeatFight.h` |
 
-The rhythm battle's enemy turns play on the song's beat: with music on, each hit is moved later onto a beat, no tell is shorter than 0.4 s, and a count runs down to the first hit (`CountIn`; see [BATTLE_DEMO.md](BATTLE_DEMO.md), "Defence"). Its party members may also carry verbs beyond the arrow combos: Guard and Release with Load and Overload, Intercept (a hold taken for an ally), Take Half (an ally evens out Load and the Torn status) and Read (three cards dealt from the enemies' actions as an attack starts; the right one brings a free counter); see [BATTLE_DEMO.md](BATTLE_DEMO.md), "Guard, Load and Release", "Intercept, Torn and Take Half" and "Read cards". This page covers the routing and the two new systems. The arena has a demo screen too: a generated ring map, a game mode with a lock-on camera and a canvas HUD, described in [ARENA_DEMO.md](ARENA_DEMO.md); hosting it on the explore character comes after the animation merge (see "Unreal work still needed"). The beat fight has its screen too: a generated map and a game mode, described in [BEAT_SCREEN.md](BEAT_SCREEN.md).
+The rhythm battle's enemy turns play on the song's beat: with music on, each hit is moved later onto a beat, no tell is shorter than 0.4 s, and a count runs down to the first hit (`CountIn`; see [BATTLE_DEMO.md](BATTLE_DEMO.md), "Defence"). Its party members may also carry verbs beyond the arrow combos: Guard and Release with Load and Overload, Intercept (a hold taken for an ally), Take Half (an ally evens out Load and the Torn status) and Read (three cards dealt from the enemies' actions as an attack starts; the right one brings a free counter); see [BATTLE_DEMO.md](BATTLE_DEMO.md), "Guard, Load and Release", "Intercept, Torn and Take Half" and "Read cards". This page covers the routing and the two new systems. The arena has a demo screen too: a generated ring map, a game mode with a lock-on camera and a canvas HUD, described in [ARENA_DEMO.md](ARENA_DEMO.md); in a world an arena step is fought in place around the explore character (`AFTArenaHost`; ARENA_DEMO.md, "In a world"). The beat fight has its screen too: a generated map and a game mode, described in [BEAT_SCREEN.md](BEAT_SCREEN.md).
 
 ## Arrow combos: Turns only
 
@@ -32,7 +32,7 @@ Each fight names its system by what it is, not where it is. In `Data/Battle/enco
 | Fight | `combat` | Plays now |
 |---|---|---|
 | Every minor fight: any line-up without a boss | absent (Turns, `CombatKind::Rhythm`) | Turns |
-| A boss fight | `arena` | Turns, until the arena host is built |
+| A boss fight | `arena` | Arena, in place on the scene's world map (Turns when that map isn't built) |
 | A world's final (one per world) | `beat` | the beat fight, until the beat boss mode lands |
 
 - An encounter without the key, any fight not listed, and the `default` line-up are Turns fights. The `default` refuses the key; an unknown value is a load error with its path.
@@ -44,7 +44,7 @@ Each fight names its system by what it is, not where it is. In `Data/Battle/enco
 `GameplayPlan` is unchanged: a CMB step still lowers to `GameplayScreen::Battle`. The step dispatcher (`FTStep::Prepare`, `Source/ForgottenThird/FTStepHost.h`) asks the game instance's encounter table (loaded at Init) which system the step plays and opens its screen:
 
 - A beat fight opens the `Beat` map, once it is built (`FTBuildBeatWorld`; see [BEAT_SCREEN.md](BEAT_SCREEN.md)).
-- An arena fight plays in place on the scene's world map, like a field step, once the arena host exists. Until then the arena is left out of `FTStep::kPlayableCombat`.
+- An arena fight plays in place on the scene's world map, like a field step (`AFTArenaHost`, ARENA_DEMO.md, "In a world"): after a field step on that map it starts where the lead stands, else the map opens with the lead at the scene's district spawn. A scene with no built world map plays Turns.
 - Anything else, and any system whose screen isn't there yet, plays Turns on `BattleDemo`. That fallback logs one line per system per run and never counts as a warning.
 
 The story carry's `Combat` field tells the screen which system the step plays, and `WantedCombat` which one its encounter names. An alpha run ends with a second line counting both: `Alpha: FIGHTS <n> (tagged <t> turns, <a> arena, <b> beat; played <t> turns, <a> arena, <b> beat)` (`AlphaCounters::formatFights`).
@@ -89,7 +89,7 @@ Fights happen in place on the world map:
 
 - `arenaRingAt(playerPos, facing, radius, bounds)` centres the ring a little ahead of the player, so the enemies' side has room.
 - The ring is kept inside `bounds`, normally the district's plaza (`WorldLayout`'s plaza radius is 36 m, the default ring 12 m).
-- The followers wait just outside the ring at `arenaParkSpot()`.
+- The followers wait just outside the ring at `arenaParkSpot()`. In a world the host pulls those spots back inside the zone's walls, since the ring is the zone's bounding circle and a building may cut it.
 - The enemies start on an arc in front of the player, at the fight's `spawn` distance.
 
 ### Rules in brief
@@ -278,7 +278,6 @@ Each demo takes an autoplay flag that wins the fight and an idle flag that loses
 These wait until the animation session's merge is pushed.
 
 - **Arena:** the demo screen exists ([ARENA_DEMO.md](ARENA_DEMO.md): ring map, lock-on camera, HUD with hp, stamina, the Load gauge, poise, heal charges, the tell, the lock marker and the enemy hp; the Release, the overload and the partner's paired press are hosted). Still to do:
-  - The arena host on the explore character (the ring, the follower parking spots), reached through the routing.
   - Attack, hit, guard and stagger animations, and a dodge roll that reuses the movement work.
 
 ## Follow-ups

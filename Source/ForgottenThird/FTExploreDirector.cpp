@@ -19,6 +19,7 @@
 #include "TimerManager.h"
 
 #include "ForgottenThird.h"
+#include "FTArenaHost.h"
 #include "FTCutsceneDirector.h"
 #include "FTExploreCharacter.h"
 #include "FTExploreSpot.h"
@@ -148,7 +149,7 @@ void AFTExploreDirector::BeginPlay()
 	UWorld* World = GetWorld();
 	if (World && !Overworld && !bOverworld)
 	{
-		// The beat's next field step and its CG steps can play on this map (FTStepHost.h).
+		// The beat's next field step, its CG steps and its arena fights can play on this map (FTStepHost.h).
 		if (UFTStepHostSubsystem* Hosts = World->GetSubsystem<UFTStepHostSubsystem>())
 		{
 			Hosts->Register(EFTStepHost::Field, FFTStartStepHere::CreateUObject(this, &AFTExploreDirector::StartStepHere));
@@ -160,17 +161,28 @@ void AFTExploreDirector::BeginPlay()
 		{
 			CutsceneDirector->HostSteps(true, true);
 		}
-		const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
-		if (GI && GI->StoryCarry.bValid && !GI->StoryCarry.bDone && GI->StoryCarry.Screen == ftcore::GameplayScreen::Cutscene)
+		ArenaHost = World->SpawnActor<AFTArenaHost>(GetActorLocation(), FRotator::ZeroRotator, Spawn);
+		if (ArenaHost)
 		{
-			// Opened for a CG step (FTStepHost.h): the lead starts at the scene's district spawn and the
-			// cutscene host begins once it stands there (Tick).
-			bCutsceneCarry = true;
-			bCutsceneStartPending = true;
+			ArenaHost->HostSteps(this);
+		}
+		const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
+		const FFTStoryCarry* Step = (GI && GI->StoryCarry.bValid && !GI->StoryCarry.bDone) ? &GI->StoryCarry : nullptr;
+		const bool bArenaStep = Step && Step->Screen == ftcore::GameplayScreen::Battle && Step->Combat == ftcore::CombatKind::Arena;
+		if (Step && (Step->Screen == ftcore::GameplayScreen::Cutscene || bArenaStep))
+		{
+			// Opened for a CG step or an arena fight (FTStepHost.h): the lead starts at the scene's district
+			// spawn and the step's host begins once it stands there (Tick).
+			bStepCarry = true;
+			PendingHost = bArenaStep ? EFTStepHost::Arena : EFTStepHost::Cutscene;
 			if (Layout)
 			{
-				PlaceInDistrict(GI->StoryCarry, TEXT("CG step"));
+				PlaceInDistrict(GI->StoryCarry, bArenaStep ? TEXT("arena step") : TEXT("CG step"));
 			}
+		}
+		else if (!Step && FParse::Param(FCommandLine::Get(), TEXT("ArenaHere")))
+		{
+			PendingHost = EFTStepHost::Arena;
 		}
 	}
 	// Back from the last fight: everything may be done already.
@@ -182,6 +194,11 @@ void AFTExploreDirector::EndPlay(const EEndPlayReason::Type Reason)
 	if (UFTStepHostSubsystem* Hosts = GetWorld() ? GetWorld()->GetSubsystem<UFTStepHostSubsystem>() : nullptr)
 	{
 		Hosts->Unregister(EFTStepHost::Field, this);
+	}
+	if (ArenaHost)
+	{
+		ArenaHost->Destroy();
+		ArenaHost = nullptr;
 	}
 	Super::EndPlay(Reason);
 }
@@ -972,8 +989,8 @@ void AFTExploreDirector::StartStepHere()
 	PilotPathNext = -1;
 	PilotPathRefreshAt = 0.0;
 	bStoryReturning = false;
-	bCutsceneCarry = false;
-	bCutsceneStartPending = false;
+	bStepCarry = false;
+	PendingHost = EFTStepHost::None;
 	BeginStoryWalk();
 	bWorldSpawnPending = false;
 	bFieldReached = false;
@@ -1168,16 +1185,17 @@ void AFTExploreDirector::Tick(float DeltaSeconds)
 		UE_LOG(LogForgottenThird, Display, TEXT("World %s: the lead's feet at z %.0f cm in district %d, whose floor is %.0f cm."), *WorldId,
 			Player->GetActorLocation().Z - Player->GetSimpleCollisionHalfHeight(), At, DistrictFloors.IsValidIndex(At) ? DistrictFloors[At] : 0.f);
 	}
-	if (bCutsceneStartPending)
+	if (PendingHost != EFTStepHost::None)
 	{
-		// The lead stands at the spawn now (or where it started, when the district has none): the CG this
-		// map was opened for begins around it, or on the Cutscene map when there is no host here.
-		bCutsceneStartPending = false;
-		const FString Stage = FTStep::ScreenMap(ftcore::GameplayScreen::Cutscene);
+		// The lead stands at the spawn now (or where it started, when the district has none): the CG or the
+		// fight this map was opened for begins around it, or on its own map when there is no host here.
+		const EFTStepHost Host = PendingHost;
+		PendingHost = EFTStepHost::None;
+		const FString Stage = FTStep::ScreenMap(Host == EFTStepHost::Arena ? ftcore::GameplayScreen::Battle : ftcore::GameplayScreen::Cutscene);
 		UFTStepHostSubsystem* Hosts = GetWorld()->GetSubsystem<UFTStepHostSubsystem>();
-		if (!Hosts || !Hosts->StartHere(EFTStepHost::Cutscene, Stage))
+		if (!Hosts || !Hosts->StartHere(Host, Stage))
 		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: no cutscene host for the CG step; opening %s."), *Stage);
+			UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: no %s host for the step; opening %s."), FTStep::HostName(Host), *Stage);
 			FTStep::OpenMap(this, Stage);
 			return;
 		}
@@ -1198,9 +1216,9 @@ void AFTExploreDirector::Tick(float DeltaSeconds)
 		TickWorld(*Player, DeltaSeconds);
 		return;
 	}
-	if (bCutsceneCarry)
+	if (bStepCarry)
 	{
-		// A CG plays here: no demo walk, guards or fights.
+		// A CG or an arena fight plays here: no demo walk, guards or fights.
 		return;
 	}
 	if (!Player->PartyLooks.IsEmpty())
@@ -1420,7 +1438,8 @@ void AFTExploreDirector::BeginWorld()
 	}
 	const FFTStoryCarry& Carry = GI->StoryCarry;
 	const bool bStoryStep = Carry.bValid && !Carry.bDone
-		&& (Carry.Screen == ftcore::GameplayScreen::Field || Carry.Screen == ftcore::GameplayScreen::Cutscene);
+		&& (Carry.Screen == ftcore::GameplayScreen::Field || Carry.Screen == ftcore::GameplayScreen::Cutscene
+			|| (Carry.Screen == ftcore::GameplayScreen::Battle && Carry.Combat == ftcore::CombatKind::Arena));
 	// -WorldDistrict=<n>: outside a story step the lead starts on district n's spawn, on its floor, instead of the
 	// PlayerStart, and a tour starts there: for looking round a district, or from it with -ExplorePortrait.
 	int32 StartDistrict = -1;

@@ -31,7 +31,10 @@
 // (StartStepHere); when it goes on with a CG step, the cutscene plays around the lead. Otherwise the
 // story map opens as before. A big world's map opened for a CG step (the step host's lookahead) stays
 // quiet: no marker, tour or demo; the lead starts at the scene's district spawn and the cutscene host
-// begins there on the first tick.
+// begins there on the first tick. It also spawns an AFTArenaHost, the arena step's host: a story fight
+// that plays the arena system is fought around the lead, after a field step in place or on a map opened
+// for it (then the lead starts at the district spawn, as for a CG). -ArenaHere starts a standalone
+// arena fight in the lead's district (no story step).
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
@@ -42,8 +45,11 @@
 #include "ftcore/PartyTrail.h"
 #include "ftcore/WorldLayout.h"
 
+#include "FTStepHost.h"
+
 #include "FTExploreDirector.generated.h"
 
+class AFTArenaHost;
 class AFTCutsceneDirector;
 class AFTExploreCharacter;
 class AFTExploreSpot;
@@ -200,10 +206,14 @@ private:
 	// Plays the beat's CG steps on this map, around the lead (off the overworld).
 	UPROPERTY(Transient)
 	TObjectPtr<AFTCutsceneDirector> CutsceneDirector;
-	// The map was opened for a CG step: nothing here runs until a field step starts in place, and the
-	// cutscene host starts once the lead stands at the spawn.
-	bool bCutsceneCarry = false;
-	bool bCutsceneStartPending = false;
+	// Plays the beat's arena fights on this map, around the lead (off the overworld).
+	UPROPERTY(Transient)
+	TObjectPtr<AFTArenaHost> ArenaHost;
+	// The map was opened for a CG step or an arena fight: nothing here runs until a field step starts in
+	// place. PendingHost: the host that starts once the lead stands at the spawn (-ArenaHere: the arena's,
+	// without a step).
+	bool bStepCarry = false;
+	EFTStepHost PendingHost = EFTStepHost::None;
 
 	// The party following the lead on a field step, a big world and the overworld, and on the demo
 	// walk when the pawn has a party in config: the pawn's PartyLooks after the lead it wears, else

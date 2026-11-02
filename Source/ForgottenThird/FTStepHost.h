@@ -60,8 +60,10 @@ namespace FTStep
 inline constexpr int32 kHostKinds = 4;
 
 // The combat systems that have a screen. The others play the rhythm battle (ftcore::playableCombat).
-// Arena joins once its host is built; the Beat fights play the beat fight until the boss mode lands.
-inline constexpr uint32 kPlayableCombat = ftcore::combatBit(ftcore::CombatKind::Rhythm) | ftcore::combatBit(ftcore::CombatKind::Beat);
+// Arena plays in place on the scene's world map (AFTArenaHost); the Beat fights play the beat fight
+// until the boss mode lands.
+inline constexpr uint32 kPlayableCombat = ftcore::combatBit(ftcore::CombatKind::Rhythm) | ftcore::combatBit(ftcore::CombatKind::Arena)
+	| ftcore::combatBit(ftcore::CombatKind::Beat);
 
 // The map a screen opens when it doesn't play in place ("BattleDemo", "Explore", ...), and the beat
 // fight's map ("Beat").

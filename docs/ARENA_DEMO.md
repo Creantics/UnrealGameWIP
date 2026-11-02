@@ -18,7 +18,35 @@ the commandlet, build the map again:
 UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildArenaWorld -NullRHI -unattended -nopause -nosplash
 ```
 
-Everything that fights is spawned by the game mode.
+Everything that fights is spawned by the game mode's runner (`UFTArenaRunner`, a component): the game mode loads the
+table, fits the zone and builds the ground, and the runner holds the fight, the figures, the keys, the camera and the
+result line. The arena step's host in a world (below, "In a world") runs the same runner.
+
+## In a world
+
+A story fight that plays the arena system is fought in place on its scene's world map (`AFTArenaHost`, spawned by the
+explore director on every world map; see [COMBAT_SYSTEMS.md](COMBAT_SYSTEMS.md), "Routing"). It starts after a field step
+in place, or on a map opened for it, once the lead stands at the scene's district spawn.
+
+- The zone is the one `arenas.json` anchors on the step's world and district, with its bosses; else a zone on that
+  district's plaza with the default zone's line-up (`<world>_d<district>` in the result line). It is fitted to the
+  world's real layout like a `-ArenaStage` zone; a district with no room gives a plain zone about the lead.
+- The lead plays its own fighter kit (the explore character's look, `GetLeadIndex()`).
+- The explore character steps out: hidden, its collision and movement off. The controller takes the lead's figure,
+  which wears the same look, and the arena HUD replaces the explore HUD.
+- The followers are held and stand at `arenaParkSpot()` behind the lead's start, pulled inside the zone's walls.
+- The result stays up for 3 s (1 s under the autopilot). Then the explore character comes back where the figure
+  stands, the explore HUD and the party come back, the step is marked done (won or lost), and the beat's next step
+  starts in place or the story map opens (`FTStep::ContinueHere`). There is no fight-again.
+- Without a story step, `-ArenaHere` starts a standalone fight in the lead's district (with `-WorldDistrict=<n>` to pick
+  it); `-ArenaAutoPlay`, `-ArenaIdle` and `-ArenaQuitOnFinish` work as on `Demo_Arena`. A story step's autoplay comes from
+  its carry, and only a standalone fight may quit the process. The host logs one setup line, `Arena: in place on <map>,
+  district <n>: zone <id>, kit <id>, ...`, then the usual result line.
+- Not yet: the zone's dressing (its water sheets and the road barriers) is the demo's only.
+
+```
+UnrealEditor-Cmd ForgottenThird.uproject World_Solhaven -game -NullRHI -ArenaHere -ArenaAutoPlay -ArenaQuitOnFinish -WorldDistrict=3 -unattended -nosplash -nosound -stdout
+```
 
 ## Zones
 
