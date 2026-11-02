@@ -74,18 +74,19 @@ void clampSettings(Settings& s) {
 std::string encodeSettings(const Settings& in) {
     Settings s = in;
     clampSettings(s);
-    char buf[640];
+    char buf[704];
     std::snprintf(buf, sizeof buf,
                   "{\"version\":%d,\"textSpeed\":%d,\"autoAdvance\":%s,\"autoDelay\":%.3f,\"skipMode\":%d,"
                   "\"master\":%.3f,\"music\":%.3f,\"voice\":%.3f,\"sfx\":%.3f,\"defenceAssist\":%d,"
                   "\"subtitleSize\":%d,\"reduceFlashes\":%s,\"qteAutoComplete\":%s,\"holdToggle\":%s,"
-                  "\"skipChoices\":%s}",
+                  "\"skipChoices\":%s,\"stickFlicks\":%s}",
                   Settings::kVersion, static_cast<int>(s.textSpeed), s.autoAdvance ? "true" : "false",
                   static_cast<double>(s.autoDelay), static_cast<int>(s.skipMode), static_cast<double>(s.master),
                   static_cast<double>(s.music), static_cast<double>(s.voice), static_cast<double>(s.sfx),
                   static_cast<int>(s.defenceAssist), static_cast<int>(s.subtitleSize),
                   s.reduceFlashes ? "true" : "false", s.qteAutoComplete ? "true" : "false",
-                  s.holdToggle ? "true" : "false", s.skipChoices ? "true" : "false");
+                  s.holdToggle ? "true" : "false", s.skipChoices ? "true" : "false",
+                  s.stickFlicks ? "true" : "false");
     return buf;
 }
 
@@ -135,6 +136,7 @@ bool decodeSettings(std::string_view text, Settings& out, std::string* error) {
     s.qteAutoComplete = boolField("qteAutoComplete", s.qteAutoComplete);
     s.holdToggle = boolField("holdToggle", s.holdToggle);
     s.skipChoices = boolField("skipChoices", s.skipChoices);
+    s.stickFlicks = boolField("stickFlicks", s.stickFlicks);
     clampSettings(s);
     out = s;
     return true;
@@ -156,6 +158,7 @@ const char* settingsRowLabel(SettingsRow row) {
     case SettingsRow::QteAutoComplete: return "Quick-time events";
     case SettingsRow::HoldToggle: return "Hold inputs";
     case SettingsRow::SkipChoices: return "Skip choices";
+    case SettingsRow::StickFlicks: return "Stick flicks";
     case SettingsRow::Back: return "Back";
     }
     return "";
@@ -181,6 +184,7 @@ std::size_t settingsRowValue(const Settings& s, SettingsRow row, char* buf, std:
     case SettingsRow::QteAutoComplete: word = s.qteAutoComplete ? "Auto-complete" : "Play"; break;
     case SettingsRow::HoldToggle: word = s.holdToggle ? "Press once" : "Hold down"; break;
     case SettingsRow::SkipChoices: word = s.skipChoices ? "On" : "Off"; break;
+    case SettingsRow::StickFlicks: word = s.stickFlicks ? "On" : "Off"; break;
     case SettingsRow::Back: word = ""; break;
     default: break;
     }
@@ -220,6 +224,7 @@ bool adjustSetting(Settings& s, SettingsRow row, int dir, bool wrap) {
     case SettingsRow::QteAutoComplete: return setBool(s.qteAutoComplete, dir, wrap);
     case SettingsRow::HoldToggle: return setBool(s.holdToggle, dir, wrap);
     case SettingsRow::SkipChoices: return setBool(s.skipChoices, dir, wrap);
+    case SettingsRow::StickFlicks: return setBool(s.stickFlicks, dir, wrap);
     case SettingsRow::Back: break;
     }
     return false;

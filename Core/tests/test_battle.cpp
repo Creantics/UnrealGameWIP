@@ -155,6 +155,47 @@ TEST_CASE("attack damage is the percentage of the combo performed") {
     }
 }
 
+TEST_CASE("NoteJudged carries the signed press error") {
+    Battle b({hero()}, {monster()}, tuning());
+    b.start(0.0);
+    REQUIRE(b.command(0, 1, 0.0) == CommandError::None);
+    b.drainEvents();
+    const auto notes = b.combo().notes();
+    REQUIRE(notes.size() >= 4);
+    // Early by 60 ms, late by 100 ms, on time, and the last note left to expire.
+    b.press(notes[0].arrow, notes[0].time - 0.060);
+    b.press(notes[1].arrow, notes[1].time + 0.100);
+    b.press(notes[2].arrow, notes[2].time);
+    b.update(notes[3].time + b.combo().windows().good + 0.01);
+    const auto judged = eventsOf(b.drainEvents(), EventType::NoteJudged);
+    REQUIRE(judged.size() == 4);
+    CHECK(judged[0].error == doctest::Approx(-0.060));
+    CHECK(judged[0].grade != Grade::Perfect);
+    CHECK(judged[1].error == doctest::Approx(0.100));
+    CHECK(judged[2].error == doctest::Approx(0.0).epsilon(1e-9));
+    CHECK(judged[2].grade == Grade::Perfect);
+    // Expired unpressed: a Miss with no label and no error (late by definition).
+    CHECK(judged[3].grade == Grade::Miss);
+    CHECK(judged[3].label.empty());
+    CHECK(judged[3].error == 0.0);
+}
+
+TEST_CASE("a wrong arrow's NoteJudged error is signed too, and other events carry none") {
+    Battle b({hero()}, {monster()}, tuning());
+    b.start(0.0);
+    REQUIRE(b.command(0, 1, 0.0) == CommandError::None);
+    b.drainEvents();
+    const ComboNote first = b.combo().note(0);
+    b.press(other(first.arrow), first.time - 0.050);
+    const auto events = b.drainEvents();
+    const auto judged = eventsOf(events, EventType::NoteJudged);
+    REQUIRE(judged.size() == 1);
+    CHECK(judged[0].label == "WRONG");
+    CHECK(judged[0].error == doctest::Approx(-0.050));
+    for (const BattleEvent& e : events)
+        if (e.type != EventType::NoteJudged) CHECK(e.error == 0.0);
+}
+
 TEST_CASE("command validation") {
     Battle b({hero()}, {monster()}, tuning());
     CHECK(b.command(0, 1, 0.0) == CommandError::WrongPhase);

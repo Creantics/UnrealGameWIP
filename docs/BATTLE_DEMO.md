@@ -13,9 +13,9 @@ unchanged.
 1. Turn order comes from the speed-gauge turn queue (shown top left: NOW, then NEXT). Under an
    enemy's soonest NEXT slot, in orange, is the skill it will use on that turn.
 2. On a party turn, pick a skill and a target. The skill's arrow combo then scrolls up the
-   centre lane on the 120 BPM beat grid; step on each arrow as it reaches the hit line.
-   Each note is graded PERFECT / GREAT / GOOD / MISS (WRONG for the wrong arrow), and the
-   grades scale the damage. A full combo adds a bonus. Instead of a skill the member can **Aim**
+   rail on the right on the 120 BPM beat grid; step on each arrow as it reaches the target row
+   (see The arrow lane below). Each note is graded PERFECT / GREAT / GOOD / MISS (WRONG for the
+   wrong arrow), and the grades scale the damage. A full combo adds a bonus. Instead of a skill the member can **Aim**
    (2 AP): the enemy's weak points show, and a shot on one deals bonus damage. See
    [BATTLE_AIM.md](BATTLE_AIM.md).
 3. On an enemy turn the banner names the attack ("Name: Skill"), then its hits come in on the
@@ -263,6 +263,101 @@ UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/BattleDemo -game -Battle
 ```
 
 plays it by hand; add `-BattleAutoPlay` to watch the autopilot.
+
+### Camera
+
+The battle camera follows the action (`ftcore::BattleCamera`, `Core/include/ftcore/BattleCamera.h`, tested in
+`test_battle_camera.cpp`). Core decides the shot, who it is on and where the camera stands; `AFTBattleDemoActor::TickCamera`
+only feeds it the phase, the acting member, the defender and the menu's target and places the camera component at
+`pose()`. The two lines face each other along +Y with the party at -Y (`ftcore::stageHome`; the first of each side is on the
+left as seen from behind the party), and every shot looks toward the enemy side.
+
+| When | Shot |
+|---|---|
+| Choosing a command (`AwaitingCommand`: skill menu, target pick) | **Choose**: close, over the shoulder of the member about to act, from behind (300 cm) and 90 cm to the side the picked enemy lies on, at head height, looking about 70% of the way to the target (never turning from the actor by more than 60% of the half field of view, so the actor stays in the frame's lower corner), so the target shows past the actor's shoulder. When the other lead stands in the line of sight to the target (a body within 10 to 40 cm of it), the camera rises, smoothly, until the line passes over their head. A skill that hits every enemy frames the whole line. Cycling the target glides the framing (and swaps shoulders once the target is more than 40 cm across); when the choice passes to the other lead the camera glides to them. |
+| Aiming (`PartyAim`) | **Aim**: the same shoulder, zoomed (FOV 40) on the enemy aimed at. |
+| A party action (`PartySkill`, a Release included) | **Behind**: behind the rearmost living member (440 cm), 1.7 heads high, over the party's heads, looking at the enemy line, leaning half way toward the enemy being hit. |
+| An enemy turn (`EnemySkill`: the defence, the Read cards, the Intercept) | **Behind** again, so the player sees their own team's backs and the attacks coming toward them. It drifts sideways toward the defender (60% of the way from the party's middle, at most 220 cm; toward the interceptor while an Intercept is held) and leans its look toward the attacker. It never goes forward of the rearmost living member. The Read cards stay on the HUD; the camera does not zoom on the reader. |
+| The pause after an action (`Recovery`) | Keeps the shot it follows (and the drift), so it does not swing out and back. |
+| `Victory`, `Defeat` | **Wide**: 700 cm behind and 430 cm above the party, 260 cm to the side, looking at the middle of the stage. |
+
+Every move between shots is an eased (smootherstep) blend of 0.35 to 0.6 s (Aim 0.35, Behind 0.45, Choose 0.5, Wide 0.6),
+started from wherever the camera is when the shot changes, so a switch in mid-blend carries on without a jump; inside a shot
+the framing follows its goal with a 0.16 s smoothing. The camera never comes within 70 cm of a figure's body (an ellipsoid
+around each, so it lifts over one instead of being shoved or passing through) and never lower than 120 cm. The numbers are
+`CameraTuning` (constants in Core; the demo has no tuning file). Figures are given to the director at their rest positions, so
+a lunge or the acting figure's bob does not shake the camera. The camera clock is the pause-aware wall clock: it stands still
+under the pause menu.
+
+The HUD's panels stay in the corners (party bottom left, enemies top right), and the tell ring, the pips and the Read cards
+project from the figures, so they follow the camera. One thing moved: the arrow lane stands on the right, left of the enemy panels and
+lowered into the enemy band (see The arrow lane), since from behind the party the enemy line is in the middle of the picture
+and the lane covered it. `GetFigurePoint` (the weak points and the reticle in the Aim
+view) lays "across" along the camera's own right, so the aim keeps working from any shot. The sun in the map is rotated to light
+the party's backs and the enemies' faces (`-run=FTBuildBattleDemo` rebuilt the map, with a 120 m floor so its edge stays out of the picture).
+
+`-BattleCamShot=<prefix>` (implies the autopilot; needs a renderer, so `-RenderOffScreen`) holds each party command open until the
+camera has settled and renders seven views with `HighResShot 1600x900`: `<prefix>_1_choose` (the first lead choosing),
+`2_target` (the pick moved to the last living enemy), `3_ally` (the other lead choosing), `4_aim` (that lead on the Aim row),
+`5_party` (a party combo), `6_enemy` (an enemy attack with its Read cards dealt) and `7_outcome` (the wide shot over the results),
+then quits.
+
+## The arrow lane
+
+The skill and Release combos scroll on a fixed rail on the right (the Turns arrow combo UX spec, option A). It is drawn by
+`AFTBattleHUD::DrawLane` from `Data/Battle/arrow_lane.json`, read by `ftcore::importArrowLaneLayout`
+(`Core/include/ftcore/ArrowLane.h`), which also holds the rules the HUD draws from (the envelopes, the early or late tick),
+tested in `test_arrow_lane.cpp`. A missing or refused file leaves the built-in numbers, which are the file's.
+
+- **Where.** Every rectangle is in percent of the safe box: the centred 16:9 rectangle of the screen (the whole screen at
+  16:9, the middle 75% of the width at 21:9), anchored to one of its corners. The plate is x 64.3 to 81.8% and y 35 to 93%,
+  four columns Left, Down, Up, Right at a 4.17% pitch, the target row at y 44%. At 21:9 the rail keeps its place in the
+  middle 16:9 and the enemy panels stay at the screen's edge, so nothing overlaps. The enemy and party panels did not move.
+- **Scroll.** Arrows rise to the target. The lookahead is 1.0 s (two beats at 120 BPM; other tempos use 2 beats clamped to
+  0.7 to 1.2 s), 46% of the height, about 497 px/s at 1080: a 250 ms same-lane step is 124 px and a 125 ms burst 62 px,
+  against a 65 px glyph. A late arrow goes on up through the target until its Good window ends. `BattleTuning::leadIn` stays
+  1.0 s, so the first window opens at least 0.83 s after the confirm.
+- **Look.** A near-opaque dark plate (alpha 0.86, a hairline round it). Notes are solid arrowheads with a short shaft and a
+  dark edge; the receptors are the same shape hollow (filled is coming, hollow is the target). No squares. The Good and
+  Perfect windows are drawn on the target at the arrows' speed (from `combo().windows()`, so they follow the difficulty). A
+  beat line scrolls with the arrows, every fourth brighter, and the target row pulses on the beat. Direction is the
+  arrowhead and the column order; the lane hue is only a faint column tint and a bar at its foot. A jump pair has a bar
+  linking its two arrows. Lanes the chart does not use sit at 30%. While a lead is choosing, the receptor row shows at 25% so
+  its place is known.
+- **In and out.** The lane fades in over 200 ms from the confirm (a note enters at the bottom and ramps over its first 100
+  ms of travel). After the last judgement it holds 450 ms, then fades over 250 ms, gone at 700 ms, the end of the Recovery,
+  before the camera blends back to choosing. If the enemies fell mid-combo it fades in 150 ms with no stamp.
+- **Grades** are told apart by shape and word, not hue: Perfect a ring (6 to 10% of the height in 260 ms) with a four-point
+  star and the word at 1.15x; Great a ring to 8.5% in 220 ms; Good a small ring to 7% in 180 ms; a missed note stops where it
+  was judged, greys, sinks 10 px and fades in 200 ms with an X on it. Wrong arrow: WRONG and an X on the note. The word sits
+  in the lane above the target and rises 10 px as it fades; a jump pair shows one word, the worse grade.
+- **Early or late.** `NoteJudged` carries the signed press error (`BattleEvent::error`, seconds, negative early; 0 for a note
+  that expired unpressed). A Great, Good or WRONG shows a small EARLY or LATE above the plate and a notch on the lane where the
+  arrow was when the press landed; a Miss that expired is LATE. A Perfect shows no tick.
+- **Streak.** A badge `xN` above the plate's top right from 2 in a row, popping 1.0 to 1.25 to 1.0 in 150 ms on every fourth
+  (4, 8, 12, ...) with a gold rim on the receptors for 250 ms. A Miss leaves the old number grey for 300 ms.
+- **Lockout.** A stray press (no note in range) locks input 250 ms; the lane says so: the receptors grey to 35%, the windows
+  turn orange, a bar over the row shrinks to nothing and TOO EARLY shows. The cue is suppressed for a stray in the first 300 ms
+  after the confirm: pad A is both Confirm and the Down lane, and when Confirm is handled first the same press reaches the
+  combo as a stray, which costs nothing (no window is open for 0.83 s and the lockout ends long before).
+- **Summary.** The last judgement shows a stamp in the lane (it replaces the top banner for combos): the accuracy large,
+  FULL COMBO with a gold underline and a gold plate edge when there was no miss, and "best N" from the best streak. The plate
+  dims to 55% under it and both leave with the lane.
+- **Input caption.** Under the plate, the d-pad cross and "Arrows / WASD / d-pad" (`common.lanes_hint`); the face buttons X A
+  Y B still work but are not advertised, since they mean Attack, Guard, Dodge and Jump in Beat and the quick-time events.
+- **Stick flicks.** A setting (Settings, "Stick flicks", off by default; `ftcore::StickFlick`, `test_stick_flick.cpp`). With it
+  on the left stick fires an arrow in a combo: four ways by the dominant axis, on crossing 0.6, re-arming under 0.3, a flick
+  straight to the opposite direction needs no rest (so 125 ms alternations work), and the stick must rest below 0.3 for a
+  frame before the first flick of a combo. The stick cannot fire the opposite jump pairs (Left+Right, Up+Down) together;
+  both presses only have to land inside the shared window, so a quick roll works.
+- **Reduce flashes** (the setting): the beat pulse is a steady 60%, the streak rim a steady gold held 400 ms, bursts lose the
+  star.
+- **Not done.** Hold arrows (deferred; Core has no holds in Turns), the sound hooks (`SFX-TURNS-ARROW-*`) and haptics.
+
+`-BattleLaneShot=<prefix>` (implies the autopilot; needs a renderer, so `-RenderOffScreen`) plays the first combo clean and
+the first four clean, then the next ones with a Great or Good early, a Good late, a missed note and one stray press, and saves the lane's views with
+`HighResShot 1600x900`: `0_warmup` (a throwaway: the first screenshot of a run stalls), `1_fadein`, `2_entering`, `3_perfect`, `4_mid`, `5_streak`, `6_exit_full`, `7_early`, `8_late`,
+`9_miss`, `10_lockout`, `11_exit_stamp`, then quits.
 
 ## From the exploration demo
 

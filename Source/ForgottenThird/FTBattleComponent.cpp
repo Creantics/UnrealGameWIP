@@ -247,6 +247,7 @@ FFTBattleEvent FromCore(const ftcore::BattleEvent& E)
 	Out.Beat = static_cast<int32>(E.beat);
 	Out.Time = E.time;
 	Out.Label = FT::ToFString(E.label);
+	Out.Error = E.error;
 	return Out;
 }
 } // namespace

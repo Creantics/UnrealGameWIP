@@ -717,7 +717,8 @@ void Battle::resolve(double now) {
               .grade = r.grade,
               .beat = r.index,
               .time = now,
-              .label = r.wrongArrow ? "WRONG" : ""});
+              .label = r.wrongArrow ? "WRONG" : "",
+              .error = r.error});
         resolveAttackNote(r, now);
     }
     if (phase_ == Phase::PartySkill && (combo_.complete() || targetsGone())) finishSkill(now);

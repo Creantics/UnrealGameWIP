@@ -34,6 +34,7 @@ add_library(ftcore STATIC
     src/Backlog.cpp
     src/Banter.cpp
     src/Battle.cpp
+    src/BattleCamera.cpp
     src/Calibration.cpp
     src/ComboGenerator.cpp
     src/ActionButton.cpp
@@ -93,6 +94,8 @@ add_library(ftcore STATIC
     src/Shop.cpp
     src/ArenaFight.cpp
     src/ArenaZone.cpp
+    src/ArrowLane.cpp
+    src/StickFlick.cpp
     src/BeatFight.cpp
     src/BeatAccess.cpp
     src/BeatBoss.cpp
@@ -131,6 +134,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_backlog.cpp
         tests/test_banter.cpp
         tests/test_battle.cpp
+        tests/test_battle_camera.cpp
         tests/test_turns_verbs.cpp
         tests/test_read_cards.cpp
         tests/test_turns_demo.cpp
@@ -191,6 +195,8 @@ if(FTCORE_BUILD_TESTS)
         tests/test_pause.cpp
         tests/test_arena.cpp
         tests/test_arena_zone.cpp
+        tests/test_arrow_lane.cpp
+        tests/test_stick_flick.cpp
         tests/test_beat.cpp
         tests/test_beat_screen.cpp
         tests/test_beat_access.cpp

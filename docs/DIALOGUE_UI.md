@@ -70,6 +70,7 @@ too). The story is paused behind it.
 | Quick-time events | play / auto-complete | the QTE screen (see QTE_SCREEN.md) |
 | Hold inputs | hold down / press once | the QTE screen's hold prompts |
 | Skip choices | off / on | stored; mirrored to the script's flag, nothing acts on it yet |
+| Stick flicks | off / on | the Turns arrow combos also take the left stick's flicks (BATTLE_DEMO.md, The arrow lane) |
 
 The last three are the script's assist options. Each is mirrored onto the matching `F_SYS_OPT_*`
 flag (`ftcore::settingsOptionFlags`) when the story starts, after a save loads (the settings win

@@ -17,10 +17,9 @@
 
 namespace
 {
-// Lane order Left, Down, Up, Right.
-const FLinearColor kLaneColors[4] = {
-	FLinearColor(0.78f, 0.35f, 0.95f), FLinearColor(0.25f, 0.75f, 1.0f), FLinearColor(0.35f, 0.95f, 0.45f), FLinearColor(1.0f, 0.35f, 0.35f)};
+// Lane order Left, Down, Up, Right (screen directions of the arrowheads).
 const FVector2D kLaneDirs[4] = {FVector2D(-1, 0), FVector2D(0, 1), FVector2D(0, -1), FVector2D(1, 0)};
+
 
 const FLinearColor kGold(1.0f, 0.82f, 0.25f);
 const FLinearColor kWhite(1.f, 1.f, 1.f);
@@ -54,6 +53,10 @@ const FTUiText kAimHint(TEXT("battle.aim_hint"));
 const FString kWait(TEXT("..."));
 const FTUiText kMenuHint(TEXT("battle.menu_hint"));
 const FTUiText kLaneHint(TEXT("common.lanes_hint"));
+const FTUiText kEarly(TEXT("battle.early"));
+const FTUiText kLate(TEXT("battle.late"));
+const FTUiText kTooEarly(TEXT("battle.too_early"));
+const FTUiText kFullCombo(TEXT("battle.full_combo"));
 const FTUiText kDown(TEXT("battle.down"));
 const FTUiText kStaggered(TEXT("battle.staggered"));
 const FTUiText kOverloaded(TEXT("battle.overloaded"));
@@ -177,20 +180,6 @@ void AFTBattleHUD::DrawRing(float X, float Y, float Radius, const FLinearColor& 
 		PX = NX;
 		PY = NY;
 	}
-}
-
-void AFTBattleHUD::DrawArrow(int32 Lane, float X, float Y, float Radius, const FLinearColor& Color, float Thickness)
-{
-	const FVector2D Dir = kLaneDirs[Lane & 3];
-	const FVector2D Perp(-Dir.Y, Dir.X);
-	const FVector2D C(X, Y);
-	const FVector2D Tip = C + Dir * Radius * 0.75;
-	const FVector2D Tail = C - Dir * Radius * 0.75;
-	const FVector2D WingA = C + Perp * Radius * 0.7;
-	const FVector2D WingB = C - Perp * Radius * 0.7;
-	DrawLine(Tail.X, Tail.Y, Tip.X, Tip.Y, Color, Thickness);
-	DrawLine(WingA.X, WingA.Y, Tip.X, Tip.Y, Color, Thickness);
-	DrawLine(WingB.X, WingB.Y, Tip.X, Tip.Y, Color, Thickness);
 }
 
 // ---- sections ----
@@ -488,65 +477,473 @@ void AFTBattleHUD::DrawSkillMenu(const AFTBattleDemoActor& D)
 	DrawStrCentered(kMenuHint, kDim, Canvas->ClipX * 0.5f, Y + H - 30.f * S, Small, 1.f);
 }
 
+// ---- the arrow lane ----
+
+namespace
+{
+FLinearColor Lc(const ftcore::LaneColor& C, float Alpha = 1.f)
+{
+	return FLinearColor(C.r, C.g, C.b, C.a * Alpha);
+}
+
+// The grade's colour in the lane's token set.
+FLinearColor GradeColor(const ftcore::ArrowLaneColors& C, ftcore::Grade G)
+{
+	switch (G)
+	{
+	case ftcore::Grade::Perfect: return Lc(C.perfect);
+	case ftcore::Grade::Great: return Lc(C.great);
+	case ftcore::Grade::Good: return Lc(C.good);
+	default: return Lc(C.miss);
+	}
+}
+
+// The arrowhead in local axes: u along the arrow toward its tip (-R at the shaft's end, R at the tip), v across.
+// A short shaft of half width 0.30 R, a head of half width 0.95 R at u = 0 narrowing to the tip.
+constexpr float kShaftHalf = 0.30f;
+constexpr float kHeadHalf = 0.95f;
+} // namespace
+
+// A solid arrowhead drawn as strips along its length (rectangles only, so no per-frame allocation).
+void AFTBattleHUD::DrawArrowFill(int32 Lane, float X, float Y, float R, float Grow, const FLinearColor& Color)
+{
+	const FVector2D Dir = kLaneDirs[Lane & 3];
+	const bool bHorizontal = Dir.X != 0.0;
+	const float Sign = static_cast<float>(Dir.X + Dir.Y);
+	const float Step = FMath::Max(2.f * UiScale, 1.5f);
+	for (float U = -R - Grow; U < R + Grow; U += Step)
+	{
+		const float U1 = FMath::Min(U + Step, R + Grow);
+		const float Mid = (U + U1) * 0.5f;
+		float Half;
+		if (Mid < 0.f)
+		{
+			Half = kShaftHalf * R + Grow;
+		}
+		else if (Mid <= R)
+		{
+			Half = kHeadHalf * R * (1.f - Mid / R) + Grow;
+		}
+		else
+		{
+			Half = FMath::Max(R + Grow - Mid, 0.f);
+		}
+		// Along the arrow from U to U1; across it +-Half.
+		const float A = Sign * U;
+		const float B = Sign * U1;
+		const float Lo = FMath::Min(A, B);
+		const float Len = FMath::Abs(B - A);
+		if (bHorizontal)
+		{
+			DrawRect(Color, X + Lo, Y - Half, Len, Half * 2.f);
+		}
+		else
+		{
+			DrawRect(Color, X - Half, Y + Lo, Half * 2.f, Len);
+		}
+	}
+}
+
+// The same arrowhead, hollow.
+void AFTBattleHUD::DrawArrowOutline(int32 Lane, float X, float Y, float R, const FLinearColor& Color, float Thickness)
+{
+	const FVector2D Dir = kLaneDirs[Lane & 3];
+	const FVector2D Perp(-Dir.Y, Dir.X);
+	const FVector2D C(X, Y);
+	const auto At = [&](float U, float V) { return C + Dir * U + Perp * V; };
+	const FVector2D P[7] = {At(R, 0.f), At(0.f, kHeadHalf * R), At(0.f, kShaftHalf * R), At(-R, kShaftHalf * R),
+		At(-R, -kShaftHalf * R), At(0.f, -kShaftHalf * R), At(0.f, -kHeadHalf * R)};
+	for (int32 I = 0; I < 7; ++I)
+	{
+		const FVector2D& A = P[I];
+		const FVector2D& B = P[(I + 1) % 7];
+		DrawLine(A.X, A.Y, B.X, B.Y, Color, Thickness);
+	}
+}
+
+void AFTBattleHUD::DrawCross(float X, float Y, float R, const FLinearColor& Color, float Thickness)
+{
+	DrawLine(X - R, Y - R, X + R, Y + R, Color, Thickness);
+	DrawLine(X - R, Y + R, X + R, Y - R, Color, Thickness);
+}
+
+void AFTBattleHUD::DrawStar(float X, float Y, float R, const FLinearColor& Color, float Thickness)
+{
+	DrawLine(X - R, Y, X + R, Y, Color, Thickness);
+	DrawLine(X, Y - R, X, Y + R, Color, Thickness);
+	const float D = R * 0.6f;
+	DrawLine(X - D, Y - D, X + D, Y + D, Color, Thickness * 0.6f);
+	DrawLine(X - D, Y + D, X + D, Y - D, Color, Thickness * 0.6f);
+}
+
+// The d-pad cross: a plus of four arms.
+void AFTBattleHUD::DrawPadCross(float X, float Y, float Size, const FLinearColor& Color)
+{
+	const float Arm = Size * 0.34f;
+	const float Len = Size * 0.5f;
+	DrawRect(Color, X - Arm * 0.5f, Y - Len, Arm, Len * 2.f);
+	DrawRect(Color, X - Len, Y - Arm * 0.5f, Len * 2.f, Arm);
+}
+
+// The receptor row alone, faint: where the lane will stand, shown while a lead chooses.
+void AFTBattleHUD::DrawLanePreview(const AFTBattleDemoActor& D)
+{
+	const ftcore::ArrowLaneLayout& L = D.GetLaneLayout();
+	const float S = UiScale;
+	const float R = FMath::Min(Geo.glyphH, Geo.glyphW) * 0.5f;
+	for (int32 Lane = 0; Lane < 4; ++Lane)
+	{
+		DrawArrowOutline(Lane, Geo.columnCentre(Lane), Geo.targetY, R, Lc(L.colors.targetIdle, L.times.previewAlpha), 2.5f * S);
+	}
+}
+
+// Burst rings (and the Perfect's star) on the receptors, and the missed notes' ghosts.
+void AFTBattleHUD::DrawLaneBursts(const AFTBattleDemoActor& D, float Vis)
+{
+	const ftcore::ArrowLaneLayout& L = D.GetLaneLayout();
+	const ftcore::ArrowLaneTimes& T = L.times;
+	const float S = UiScale;
+	const double Now = HudWall();
+	const float R = FMath::Min(Geo.glyphH, Geo.glyphW) * 0.5f;
+	for (int32 Lane = 0; Lane < 4; ++Lane)
+	{
+		const AFTBattleDemoActor::FLaneJudge& J = D.GetLaneJudge(Lane);
+		const double Age = Now - J.Wall;
+		const float CX = Geo.columnCentre(Lane);
+		if (J.Grade == ftcore::Grade::Miss)
+		{
+			if (Age < 0.0 || Age >= T.missFade)
+			{
+				continue;
+			}
+			// The note stops where it was judged, greys, sinks a little and fades; an X marks it.
+			const float K = static_cast<float>(Age / T.missFade);
+			const float Y = FMath::Max(Geo.noteY(J.NoteDt) + T.missSinkPx * S * K, Geo.plate.y + R + 4.f * S);
+			const float A = (1.f - K) * Vis;
+			DrawArrowFill(Lane, CX, Y, R, 3.f * S, WithAlpha(Lc(L.colors.arrowEdge), A));
+			DrawArrowFill(Lane, CX, Y, R, 0.f, WithAlpha(FLinearColor(0.5f, 0.5f, 0.55f), A * 0.9f));
+			DrawCross(CX, Y, R * 0.55f, WithAlpha(Lc(L.colors.miss), A * 1.4f), 4.f * S);
+			continue;
+		}
+		const float Radius = ftcore::burstRadius(T, J.Grade, Age) * 0.01f * Geo.box.h * 0.5f; // the sizes are diameters
+		if (Radius <= 0.f)
+		{
+			continue;
+		}
+		const float K = static_cast<float>(Age / ftcore::burstLength(T, J.Grade));
+		const FLinearColor Color = WithAlpha(GradeColor(L.colors, J.Grade), (1.f - K * 0.8f) * Vis);
+		const float Thick = (J.Grade == ftcore::Grade::Perfect ? 4.f : J.Grade == ftcore::Grade::Great ? 3.f : 2.f) * S;
+		DrawRing(CX, Geo.targetY, Radius, Color, Thick);
+		if (ftcore::burstHasStar(J.Grade, D.IsReduceFlashes()))
+		{
+			DrawStar(CX, Geo.targetY, Radius * 1.25f, Color, 3.f * S);
+		}
+	}
+}
+
+// The lane's word: the last grade (a jump pair's worse one), or TOO EARLY after a stray; under a non-Perfect
+// grade the early or late tick, with a notch on the lane where the press landed.
+void AFTBattleHUD::DrawLaneWord(const AFTBattleDemoActor& D, float Vis)
+{
+	const ftcore::ArrowLaneLayout& L = D.GetLaneLayout();
+	const ftcore::ArrowLaneTimes& T = L.times;
+	const float S = UiScale;
+	UFont* Font = GEngine->GetLargeFont();
+	UFont* TickFont = GEngine->GetMediumFont();
+	const double Now = HudWall();
+	const AFTBattleDemoActor::FLaneJudge& W = D.GetLaneWord();
+	const double WordAge = Now - W.Wall;
+	const double StrayAge = D.GetStrayAge();
+	const float CX = Geo.plate.x + Geo.plate.w * 0.5f;
+	const double Span = T.wordHold + T.wordOut;
+	const float BaseY = Geo.box.y + L.wordStartY * 0.01f * Geo.box.h;
+	const FLinearColor Black(0.f, 0.f, 0.f, 1.f);
+
+	if (StrayAge >= 0.0 && StrayAge < WordAge && StrayAge < Span)
+	{
+		const float A = Fade(StrayAge, T.wordHold, T.wordOut) * Vis;
+		const float Y = BaseY - T.wordRisePx * S * static_cast<float>(FMath::Clamp(StrayAge / Span, 0.0, 1.0));
+		DrawStrCentered(kTooEarly, WithAlpha(Black, A), CX + 2.f * S, Y + 2.f * S, Font, 1.5f);
+		DrawStrCentered(kTooEarly, WithAlpha(Lc(L.colors.warn), A), CX, Y, Font, 1.5f);
+		return;
+	}
+	if (W.Grade == ftcore::Grade::Pending || WordAge < 0.0 || WordAge >= Span)
+	{
+		return;
+	}
+	const float A = Fade(WordAge, T.wordHold, T.wordOut) * Vis;
+	const float Y = BaseY - T.wordRisePx * S * static_cast<float>(FMath::Clamp(WordAge / Span, 0.0, 1.0));
+	const FString* Word = &kMiss.Get();
+	float Size = 1.6f;
+	switch (W.Grade)
+	{
+	case ftcore::Grade::Perfect: Word = &kPerfect.Get(); Size = 1.85f; break;
+	case ftcore::Grade::Great: Word = &kGreat.Get(); break;
+	case ftcore::Grade::Good: Word = &kGood.Get(); break;
+	default:
+		if (W.bWrong)
+		{
+			Word = &kWrong.Get();
+		}
+		break;
+	}
+	const FLinearColor Color = GradeColor(L.colors, W.Grade);
+	DrawStrCentered(*Word, WithAlpha(Black, A), CX + 2.f * S, Y + 2.f * S, Font, Size);
+	DrawStrCentered(*Word, WithAlpha(FLinearColor(Color.R, Color.G, Color.B, 1.f), A), CX, Y, Font, Size);
+
+	// Early or late: a small word under it, and a notch where the press landed on the lane.
+	const int32 Tick = ftcore::pressTick(W.Grade, !W.bExpired, W.Error);
+	if (Tick != 0)
+	{
+		const FString& Label = Tick < 0 ? kEarly.Get() : kLate.Get();
+		// Above the plate's top edge, over the word (the receptor row is under the word).
+		const float LY = Geo.plate.y - 30.f * S;
+		DrawStrCentered(Label, WithAlpha(Black, A), CX + 1.5f * S, LY + 1.5f * S, TickFont, 1.5f);
+		DrawStrCentered(Label, WithAlpha(Lc(L.colors.arrowFill), A * 0.95f), CX, LY, TickFont, 1.5f);
+		if (!W.bExpired)
+		{
+			const float NY = Geo.targetY + ftcore::tickOffsetPx(Geo, W.Error, GoodWindow);
+			const float NX = Geo.columnCentre(W.Lane);
+			const float Half = Geo.glyphW * 0.42f;
+			DrawRect(WithAlpha(Black, A), NX - Half - 1.f * S, NY - 3.f * S, Half * 2.f + 2.f * S, 6.f * S);
+			DrawRect(WithAlpha(Lc(L.colors.arrowFill), A), NX - Half, NY - 2.f * S, Half * 2.f, 4.f * S);
+		}
+	}
+}
+
+// The summary stamp in the lane once the last note is judged: the accuracy large, FULL COMBO, the best streak.
+void AFTBattleHUD::DrawLaneStamp(const AFTBattleDemoActor& D, float Alpha)
+{
+	if (Alpha <= 0.f || !D.HasComboStamp())
+	{
+		return;
+	}
+	const ftcore::ArrowLaneLayout& L = D.GetLaneLayout();
+	const float S = UiScale;
+	UFont* Font = GEngine->GetMediumFont();
+	UFont* Large = GEngine->GetLargeFont();
+	const ftcore::PxRect Rect = ftcore::resolve(L.stamp, Geo.box);
+	const float Scale = ftcore::stampScale(L.times, D.GetComboEndAge());
+	const float CX = Rect.x + Rect.w * 0.5f;
+	const FLinearColor Black(0.f, 0.f, 0.f, 1.f);
+	const bool bFull = D.IsStampFull();
+	DrawRect(Lc(L.colors.plate, Alpha), Rect.x - 6.f * S, Rect.y - 8.f * S, Rect.w + 12.f * S, (bFull ? 190.f : 150.f) * S);
+	const FLinearColor Main = bFull ? Lc(L.colors.perfect) : Lc(L.colors.arrowFill);
+	DrawStrCentered(D.GetStampAccuracyText(), WithAlpha(Black, Alpha), CX + 2.f * S, Rect.y + 2.f * S, Large, 3.2f * Scale);
+	DrawStrCentered(D.GetStampAccuracyText(), WithAlpha(Main, Alpha), CX, Rect.y, Large, 3.2f * Scale);
+	float LineY = Rect.y + 96.f * S;
+	if (bFull)
+	{
+		float W = 0.f, H = 0.f;
+		GetTextSize(kFullCombo, W, H, Font, UiScale * 1.7f);
+		DrawStrCentered(kFullCombo, WithAlpha(Lc(L.colors.perfect), Alpha), CX, LineY, Font, 1.7f);
+		DrawRect(WithAlpha(Lc(L.colors.perfect), Alpha), CX - W * 0.5f, LineY + H + 2.f * S, W, 3.f * S);
+		LineY += 44.f * S;
+	}
+	DrawStrCentered(D.GetStampBestText(), WithAlpha(Lc(L.colors.targetIdle), Alpha), CX, LineY, Font, 1.5f);
+}
+
 void AFTBattleHUD::DrawLane(const AFTBattleDemoActor& D)
 {
 	UFTBattleComponent* BC = D.GetBattle();
 	const ftcore::Battle* B = BC->GetBattle();
-	if (!BC->IsComboActive())
+	const ftcore::ArrowLaneLayout& L = D.GetLaneLayout();
+	const ftcore::ArrowLaneTimes& T = L.times;
+	const ftcore::ArrowLaneColors& Col = L.colors;
+	const bool bCombo = BC->IsComboActive();
+	const double EndAge = D.GetComboEndAge();
+	const bool bExiting = !bCombo && EndAge >= 0.0 && EndAge < T.exitEnd;
+	const double Bpm = D.GetConductor() ? D.GetConductor()->Bpm : 0.0;
+	Geo = ftcore::laneGeometry(L, Canvas->ClipX, Canvas->ClipY, ftcore::laneLookahead(T, Bpm));
+	if (!bCombo && !bExiting)
 	{
+		// Choosing: the receptor row, faint, so its place is known before the combo starts.
+		if (B->phase() == ftcore::Phase::AwaitingCommand && !D.IsWaitingForRestart() && !IsOver(*B)
+			&& B->combatant(B->actor()).team == ftcore::Team::Party)
+		{
+			DrawLanePreview(D);
+		}
 		return;
 	}
 	const float S = UiScale;
-	LaneWidth = 76.f * S;
-	LaneX0 = Canvas->ClipX * 0.5f - LaneWidth * 2.f;
-	HitY = Canvas->ClipY * 0.22f;
-	const float Bottom = Canvas->ClipY * 0.86f;
 	const double Now = BC->GetBattleTime();
+	const ftcore::ComboSequence& Combo = B->combo();
+	PerfectWindow = Combo.windows().perfect;
+	GoodWindow = Combo.windows().good;
+	const bool bQuick = bExiting && !D.HasComboStamp();
+	const float Vis = ftcore::laneVisibility(T, D.GetComboAge(), bCombo ? -1.0 : EndAge, bQuick);
+	if (Vis <= 0.f)
+	{
+		return;
+	}
+	const float Dim = bCombo ? 1.f : ftcore::plateDimming(T, EndAge);
+	const float R = FMath::Min(Geo.glyphH, Geo.glyphW) * 0.5f;
+	const float ColsX = Geo.columnX0;
+	const float ColsW = Geo.pitch * 4.f;
+	const float PlateBottom = Geo.plate.y + Geo.plate.h;
+	const double StrayAge = D.GetStrayAge();
+	const bool bLocked = StrayAge >= 0.0 && StrayAge < Combo.lockout();
 
-	// Lane background, with a beat pulse on the hit line.
-	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.45f), LaneX0, HitY - 50.f * S, LaneWidth * 4.f, Bottom - HitY + 50.f * S);
+	// The plate, a hairline round it, a faint tint and a hue bar per column.
+	DrawRect(Lc(Col.plate, Vis * Dim), Geo.plate.x, Geo.plate.y, Geo.plate.w, Geo.plate.h);
+	DrawFrame(Geo.plate.x, Geo.plate.y, Geo.plate.w, Geo.plate.h, FLinearColor(0.85f, 0.85f, 0.9f, 0.3f * Vis), 1.f * S);
+	for (int32 Lane = 0; Lane < 4; ++Lane)
+	{
+		const float X = ColsX + Geo.pitch * static_cast<float>(Lane);
+		DrawRect(Lc(Col.rim[Lane], 0.07f * Vis * Dim), X + 2.f * S, Geo.plate.y + 2.f * S, Geo.pitch - 4.f * S, Geo.plate.h - 4.f * S);
+		DrawRect(Lc(Col.rim[Lane], 0.9f * Vis * Dim), X + 6.f * S, PlateBottom - 5.f * S, Geo.pitch - 12.f * S, 3.f * S);
+	}
+	if (D.IsStampFull() && D.HasComboStamp() && !bCombo && EndAge < T.exitEnd)
+	{
+		// A full combo: a gold edge on the plate, steady (it fades with the lane).
+		DrawFrame(Geo.plate.x, Geo.plate.y, Geo.plate.w, Geo.plate.h, Lc(Col.perfect, Vis), 3.f * S);
+	}
+
+	// Beat lines, scrolling with the arrows (every fourth brighter): from the first chart note on the song's grid.
+	if (Bpm > 0.0 && Combo.size() > 0 && Combo.note(0).beat != ftcore::kNoBeat && !bExiting)
+	{
+		const ftcore::ComboNote& Ref = Combo.note(0);
+		const double Spb = 60.0 / Bpm;
+		const int64 First = static_cast<int64>(FMath::CeilToDouble(Ref.beat + (Now - 0.05 - Ref.time) / Spb));
+		for (int64 K = First;; ++K)
+		{
+			const double Dt = Ref.time + (static_cast<double>(K) - Ref.beat) * Spb - Now;
+			if (Dt > Geo.lookahead)
+			{
+				break;
+			}
+			const float Y = Geo.noteY(Dt);
+			if (Y > PlateBottom - 2.f * S || Y < Geo.plate.y + 2.f * S)
+			{
+				continue;
+			}
+			const bool bBar = (((K % 4) + 4) % 4) == 0;
+			DrawRect(Lc(Col.targetIdle, (bBar ? 0.30f : 0.14f) * Vis * Geo.noteAlpha(T, Dt)), ColsX, Y - 1.f * S, ColsW, (bBar ? 2.f : 1.f) * S);
+		}
+	}
+
+	// The target row: the Good and Perfect windows drawn on it at the arrows' speed, then a pulse on the beat.
+	const float GoodPx = Geo.windowPx(GoodWindow);
+	const float PerfectPx = Geo.windowPx(PerfectWindow);
+	const FLinearColor Warn = Lc(Col.warn);
+	DrawRect(bLocked ? WithAlpha(Warn, 0.16f * Vis) : Lc(Col.targetIdle, 0.08f * Vis * Dim), ColsX, Geo.targetY - GoodPx, ColsW, GoodPx * 2.f);
+	DrawRect(bLocked ? WithAlpha(Warn, 0.32f * Vis) : Lc(Col.perfect, 0.17f * Vis * Dim), ColsX, Geo.targetY - PerfectPx, ColsW, PerfectPx * 2.f);
 	double Beat = 0.0;
 	if (UFTConductorComponent* Conductor = D.GetConductor())
 	{
 		Beat = Conductor->GetBeat();
 	}
 	const float Pulse = static_cast<float>(1.0 - (Beat - FMath::FloorToDouble(Beat)));
-	DrawRect(WithAlpha(kGold, 0.35f + 0.5f * Pulse * Pulse), LaneX0, HitY - 2.f * S, LaneWidth * 4.f, 4.f * S);
+	const float PulseA = D.IsReduceFlashes() ? 0.6f : 0.25f + 0.45f * Pulse * Pulse; // under reduce flashes a steady 60%
+	DrawRect(bLocked ? WithAlpha(Warn, Vis) : Lc(Col.targetIdle, PulseA * Vis * Dim), ColsX, Geo.targetY - 1.5f * S, ColsW, 3.f * S);
+	if (bLocked)
+	{
+		// The lockout: a bar over the row that shrinks to nothing in the lockout's length.
+		const float K = 1.f - static_cast<float>(StrayAge / Combo.lockout());
+		DrawRect(WithAlpha(Warn, Vis), ColsX, Geo.targetY - R - 14.f * S, ColsW * K, 5.f * S);
+	}
 
-	const float R = LaneWidth * 0.36f;
+	// Which lanes this chart uses; the rest are dimmed.
+	uint32 Used = 0;
+	for (size_t I = 0; I < Combo.size(); ++I)
+	{
+		Used |= 1u << (static_cast<uint32>(Combo.note(I).arrow) & 3u);
+	}
+	const double RimAge = D.GetStreakStepAge();
+	const double RimHold = D.IsReduceFlashes() ? 0.4 : T.rimHold;
 	for (int32 Lane = 0; Lane < 4; ++Lane)
 	{
-		const float CX = LaneX0 + LaneWidth * (static_cast<float>(Lane) + 0.5f);
-		// Receptor: grey outline, lit briefly after a press.
-		const float Lit = static_cast<float>(FMath::Clamp(1.0 - D.GetLanePressAge(Lane) / 0.15, 0.0, 1.0));
-		const FLinearColor Receptor = FLinearColor::LerpUsingHSV(FLinearColor(0.45f, 0.45f, 0.5f), kWhite, Lit);
-		DrawArrow(Lane, CX, HitY, R * (1.f + 0.15f * Lit), Receptor, 3.f * S);
+		const float CX = Geo.columnCentre(Lane);
+		const float Lit = static_cast<float>(FMath::Clamp(1.0 - D.GetLanePressAge(Lane) / T.receptorDecay, 0.0, 1.0));
+		float A = ((Used >> Lane) & 1u) ? 1.f : T.unusedAlpha;
+		if (bLocked)
+		{
+			A *= 0.35f;
+		}
+		const FLinearColor Idle = Lc(Col.targetIdle, A * Vis * Dim);
+		const FLinearColor Color = FLinearColor::LerpUsingHSV(Idle, FLinearColor(1.f, 1.f, 1.f, Idle.A), Lit);
+		DrawArrowOutline(Lane, CX, Geo.targetY, R * (1.f + 0.15f * Lit), Color, (3.f + 2.f * Lit) * S);
+		if (RimAge >= 0.0 && RimAge < RimHold)
+		{
+			DrawArrowOutline(Lane, CX, Geo.targetY, R * 1.18f, Lc(Col.perfect, Vis), 3.f * S);
+		}
 	}
 
-	const ftcore::ComboSequence& Combo = B->combo();
-	const float Span = Bottom - HitY;
-	for (size_t I = Combo.nextIndex(); I < Combo.size(); ++I)
+	// The notes still to come: a link bar between a jump pair's arrows first, then the arrows.
+	for (int32 Pass = 0; Pass < 2; ++Pass)
 	{
-		if (Combo.grade(I) != ftcore::Grade::Pending)
+		for (size_t I = Combo.nextIndex(); I < Combo.size(); ++I)
 		{
-			continue;
+			if (Combo.grade(I) != ftcore::Grade::Pending)
+			{
+				continue;
+			}
+			const ftcore::ComboNote& Note = Combo.note(I);
+			const double Dt = Note.time - Now;
+			if (Dt > Geo.lookahead)
+			{
+				break; // notes are in time order
+			}
+			const float Y = Geo.noteY(Dt);
+			const float A = Geo.noteAlpha(T, Dt) * Vis;
+			const int32 Lane = static_cast<int32>(Note.arrow) & 3;
+			const float CX = Geo.columnCentre(Lane);
+			if (Pass == 0)
+			{
+				if (I + 1 < Combo.size() && Combo.grade(I + 1) == ftcore::Grade::Pending && Combo.note(I + 1).time == Note.time)
+				{
+					const float CX2 = Geo.columnCentre(static_cast<int32>(Combo.note(I + 1).arrow) & 3);
+					DrawRect(Lc(Col.arrowFill, A * 0.85f), FMath::Min(CX, CX2), Y - 1.5f * S, FMath::Abs(CX2 - CX), 3.f * S);
+				}
+				continue;
+			}
+			DrawArrowFill(Lane, CX, Y, R, 3.f * S, Lc(Col.arrowEdge, A));
+			DrawArrowFill(Lane, CX, Y, R, 0.f, Lc(Col.arrowFill, A));
 		}
-		const ftcore::ComboNote& Note = Combo.note(I);
-		const double Dt = Note.time - Now;
-		if (Dt > Lookahead)
-		{
-			break; // notes are in time order
-		}
-		const float Y = HitY + static_cast<float>(Dt / Lookahead) * Span;
-		const int32 Lane = static_cast<int32>(Note.arrow) & 3;
-		const float CX = LaneX0 + LaneWidth * (static_cast<float>(Lane) + 0.5f);
-		const FLinearColor Color = kLaneColors[Lane];
-		DrawRect(WithAlpha(Color, 0.3f), CX - R, Y - R, R * 2.f, R * 2.f);
-		DrawArrow(Lane, CX, Y, R, Color, 6.f * S);
 	}
 
-	UFont* Small = GEngine->GetSmallFont();
-	DrawStrCentered(kLaneHint, kDim, Canvas->ClipX * 0.5f, Bottom + 8.f * S, Small, 1.f);
+	DrawLaneBursts(D, Vis);
+	DrawLaneWord(D, Vis);
+
+	// The streak badge above the plate's top right: from two in a row, popping every fourth; a Miss leaves the old
+	// number grey for a moment.
+	{
+		const ftcore::PxRect Rect = ftcore::resolve(L.streak, Geo.box);
+		UFont* Font = GEngine->GetLargeFont();
+		const int32 Streak = D.GetStreak();
+		const float CX = Rect.x + Rect.w * 0.5f;
+		const float CY = Rect.y + Rect.h * 0.2f;
+		const FLinearColor Black(0.f, 0.f, 0.f, 1.f);
+		if (Streak >= T.streakFrom)
+		{
+			const float Pop = ftcore::streakPopScale(T, D.GetStreakStepAge());
+			DrawStrCentered(D.GetStreakText(Streak), WithAlpha(Black, Vis), CX + 2.f * S, CY + 2.f * S, Font, 1.8f * Pop);
+			DrawStrCentered(D.GetStreakText(Streak), Lc(Col.arrowFill, Vis), CX, CY, Font, 1.8f * Pop);
+		}
+		else if (Streak == 0 && D.GetBrokenStreak() >= T.streakFrom && D.GetBrokenStreakAge() < T.streakMissHold)
+		{
+			DrawStrCentered(D.GetStreakText(D.GetBrokenStreak()), FLinearColor(0.55f, 0.55f, 0.58f, Vis), CX, CY, Font, 1.8f);
+		}
+	}
+
+	// The input caption under the plate: the d-pad cross and the keys (never the face buttons, which belong to Beat).
+	{
+		const ftcore::PxRect Rect = ftcore::resolve(L.caption, Geo.box);
+		UFont* Small = GEngine->GetMediumFont();
+		const FLinearColor Dimmed = Lc(Col.targetIdle, Vis * Dim);
+		float TW = 0.f, TH = 0.f;
+		GetTextSize(kLaneHint, TW, TH, Small, UiScale);
+		const float Icon = Rect.h * 0.9f;
+		const float Total = Icon + 8.f * S + TW;
+		const float X0 = Rect.x + (Rect.w - Total) * 0.5f;
+		DrawPadCross(X0 + Icon * 0.5f, Rect.y + Rect.h * 0.5f, Icon, Dimmed);
+		DrawStr(kLaneHint, Dimmed, X0 + Icon + 8.f * S, Rect.y + (Rect.h - TH) * 0.5f, Small, 1.f);
+	}
+
+	if (!bCombo)
+	{
+		DrawLaneStamp(D, ftcore::stampAlpha(T, EndAge));
+	}
 }
 
 void AFTBattleHUD::DrawDefence(const AFTBattleDemoActor& D)
@@ -796,17 +1193,9 @@ void AFTBattleHUD::DrawAim(const AFTBattleDemoActor& D)
 
 void AFTBattleHUD::DrawPopups(const AFTBattleDemoActor& D)
 {
-	UFont* Font = GEngine->GetMediumFont();
 	UFont* Large = GEngine->GetLargeFont();
 	const double Now = HudWall();
 	const float S = UiScale;
-	// Grade popups use the last lane geometry (they can outlive the combo by a moment).
-	if (LaneWidth <= 0.f)
-	{
-		LaneWidth = 76.f * S;
-		LaneX0 = Canvas->ClipX * 0.5f - LaneWidth * 2.f;
-		HitY = Canvas->ClipY * 0.22f;
-	}
 	for (int32 I = 0; I < AFTBattleDemoActor::MaxPopups; ++I)
 	{
 		const AFTBattleDemoActor::FPopup& P = D.GetPopup(I);
@@ -846,33 +1235,6 @@ void AFTBattleHUD::DrawPopups(const AFTBattleDemoActor& D)
 			DrawStrCentered(P.Text, WithAlpha(FLinearColor(0.f, 0.f, 0.f), A), static_cast<float>(W.X) + 2.f * S,
 				static_cast<float>(W.Y) - 40.f * S - Rise + 2.f * S, Large, Size);
 			DrawStrCentered(P.Text, WithAlpha(Color, A), static_cast<float>(W.X), static_cast<float>(W.Y) - 40.f * S - Rise, Large, Size);
-		}
-		else
-		{
-			const float A = Fade(Age, 0.25, 0.35);
-			if (A <= 0.f)
-			{
-				continue;
-			}
-			const FString* Label = &kMiss.Get();
-			FLinearColor Color = kRed;
-			if (P.bWrong)
-			{
-				Label = &kWrong.Get();
-			}
-			else
-			{
-				switch (P.Grade)
-				{
-				case EFTGrade::Perfect: Label = &kPerfect.Get(); Color = kGold; break;
-				case EFTGrade::Great: Label = &kGreat.Get(); Color = FLinearColor(0.4f, 1.f, 0.45f); break;
-				case EFTGrade::Good: Label = &kGood.Get(); Color = FLinearColor(0.35f, 0.85f, 1.f); break;
-				default: break;
-				}
-			}
-			const float CX = LaneX0 + LaneWidth * (static_cast<float>(P.Lane & 3) + 0.5f);
-			const float Y = HitY - 44.f * S - static_cast<float>(Age) * 40.f * S;
-			DrawStrCentered(*Label, WithAlpha(Color, A), CX, Y, Font, 1.f);
 		}
 	}
 }
