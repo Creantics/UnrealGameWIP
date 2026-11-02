@@ -89,6 +89,8 @@ public:
 
     bool complete() const { return next_ >= notes_.size(); }
     bool lockedOut(double t) const { return t < lockoutUntil_; }
+    // Seconds a stray press locks input for (the cue's length on screen).
+    double lockout() const { return lockout_; }
     std::size_t size() const { return notes_.size(); }
     std::size_t nextIndex() const { return next_; } // earliest unjudged note
     const ComboNote& note(std::size_t i) const { return notes_[i]; }

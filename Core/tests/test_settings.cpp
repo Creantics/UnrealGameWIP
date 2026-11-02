@@ -28,6 +28,7 @@ TEST_CASE("settings defaults") {
     CHECK_FALSE(s.qteAutoComplete);
     CHECK_FALSE(s.holdToggle);
     CHECK_FALSE(s.skipChoices);
+    CHECK_FALSE(s.stickFlicks);
 
     Settings t;
     t.textSpeed = TextSpeed::Instant;
@@ -58,6 +59,7 @@ TEST_CASE("settings round-trip through JSON") {
     s.qteAutoComplete = true;
     s.holdToggle = true;
     s.skipChoices = true;
+    s.stickFlicks = true;
     const std::string text = encodeSettings(s);
     CHECK(text.find("\"version\":1") != std::string::npos);
 
@@ -286,6 +288,27 @@ TEST_CASE("settings menu: the assist option rows toggle their switches") {
     CHECK_FALSE(s.holdToggle);
     settingsRowValue(s, SettingsRow::HoldToggle, value, sizeof value);
     CHECK(std::string(value) == "Hold down");
+}
+
+TEST_CASE("settings menu: stick flicks are off by default and the row toggles them") {
+    Settings s;
+    CHECK_FALSE(s.stickFlicks);
+    SettingsMenu m;
+    char value[32];
+    settingsRowValue(s, SettingsRow::StickFlicks, value, sizeof value);
+    CHECK(std::string(value) == "Off");
+    CHECK(std::string(settingsRowLabel(SettingsRow::StickFlicks)) == "Stick flicks");
+    CHECK(m.click(s, SettingsRow::StickFlicks, 1) == SettingsAction::Changed);
+    CHECK(s.stickFlicks);
+    settingsRowValue(s, SettingsRow::StickFlicks, value, sizeof value);
+    CHECK(std::string(value) == "On");
+    // An old file without the field keeps it off.
+    Settings out;
+    out.stickFlicks = true;
+    REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
+    CHECK_FALSE(out.stickFlicks);
+    // The row sits just above Back.
+    CHECK(static_cast<std::uint32_t>(SettingsRow::StickFlicks) + 2u == kSettingsRowCount);
 }
 
 TEST_CASE("settings: option flags mirror the assist switches") {

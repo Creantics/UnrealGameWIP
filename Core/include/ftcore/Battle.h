@@ -81,7 +81,9 @@ enum class Phase {
 enum class EventType {
     TurnStarted,
     SkillStarted,
-    NoteJudged,    // one combo note resolved: grade, beat = note index, label = "WRONG" for a wrong arrow
+    NoteJudged,    // one combo note resolved: grade, beat = note index, label = "WRONG" for a wrong arrow;
+                   // error = the signed press error in seconds (press time - note time, negative = early). A
+                   // note that expired unpressed is a Miss with no label and error 0 (it is late by definition)
     Hit,           // damage dealt (amount); grade/beat of the note (or attack hit) that produced it. An aimed
                    // shot: label "WEAK POINT" (beat = the weak point), "HIT" or "GRAZE" (ShotKind)
     Defended,      // enemy turn: attack hit `beat` resolved; label "PERFECT" (a perfect parry or dodge),
@@ -160,6 +162,9 @@ struct BattleEvent {
     // A skill name, "WRONG", "FULL COMBO", a defence outcome or empty. Points into the battle's own data (or a
     // literal), so it is valid while the Battle lives and its skills are not edited.
     std::string_view label;
+    // NoteJudged only: press time - note time in seconds (negative = early); 0 for a note that expired
+    // unpressed. Zero on every other event. Last member, so existing designated initialisers hold.
+    double error = 0.0;
 };
 
 // NoSuchItem (appended: the Unreal mirror does not have it yet): useItem's slot is empty or past the end, or

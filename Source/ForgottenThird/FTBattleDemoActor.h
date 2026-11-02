@@ -53,9 +53,11 @@
 #include "FTBattleComponent.h"
 #include "FTComboComponent.h"
 
+#include "ftcore/ArrowLane.h"
 #include "ftcore/BattleCamera.h"
 #include "ftcore/BattleDemo.h"
 #include "ftcore/Encounter.h"
+#include "ftcore/StickFlick.h"
 #include "ftcore/WeakPoint.h"
 
 #include <vector>
@@ -175,6 +177,45 @@ public:
 	float GetFlash(int32 Id) const;
 	// Seconds since the player last pressed this lane during a combo.
 	double GetLanePressAge(int32 Lane) const;
+	// ---- the arrow lane's feedback (the HUD draws it; Data/Battle/arrow_lane.json sets its look) ----
+
+	// A judged note: the last on a lane (its burst, or the missed note's ghost), or the lane's one word.
+	struct FLaneJudge
+	{
+		double Wall = -100.0;
+		int32 Lane = 0;
+		ftcore::Grade Grade = ftcore::Grade::Pending;
+		bool bWrong = false;
+		bool bExpired = false; // a Miss with no press
+		double Error = 0.0;    // press time - note time, seconds (negative = early); 0 when expired
+		double NoteDt = 0.0;   // note time - the time it was judged: where the note was then, relative to the target
+	};
+	const FLaneJudge& GetLaneJudge(int32 Lane) const { return LaneJudges[Lane & 3]; }
+	// The word in the lane: the last judgement, a jump pair's two notes merged to the worse grade.
+	const FLaneJudge& GetLaneWord() const { return LaneWord; }
+	const ftcore::ArrowLaneLayout& GetLaneLayout() const { return LaneLayout; }
+	// Seconds since the combo's confirm (100 when none ever ran), and since its last judgement (-1 while it runs).
+	double GetComboAge() const;
+	double GetComboEndAge() const;
+	// The finished combo's summary stamp: false when the enemies fell first (the lane fades at once).
+	bool HasComboStamp() const { return bComboStamp; }
+	int32 GetStampAccuracy() const { return StampAccuracy; }
+	bool IsStampFull() const { return bStampFull; }
+	int32 GetStampBest() const { return StampBest; }
+	// The stamp's lines, built when the combo finishes ("87%", "best 9"), and "x7" style streak badges, built once.
+	const FString& GetStampAccuracyText() const { return StampAccuracyText; }
+	const FString& GetStampBestText() const { return StampBestText; }
+	const FString& GetStreakText(int32 N) const;
+	// The streak (notes in a row without a Miss), the one a Miss just broke (shown grey for a moment)
+	// and how long ago each last changed.
+	int32 GetStreak() const { return Streak; }
+	int32 GetBrokenStreak() const { return BrokenStreak; }
+	double GetBrokenStreakAge() const;
+	double GetStreakStepAge() const;
+	// Seconds since the TOO EARLY cue began (a stray press that locked input), 100 when none.
+	double GetStrayAge() const;
+	bool IsReduceFlashes() const { return bReduceFlashes; }
+
 	// Seconds since the last defence press on an enemy turn, and which input it was.
 	double GetDefencePressAge() const;
 	EFTDefenceInput GetLastDefenceInput() const { return LastDefenceInput; }
@@ -235,6 +276,21 @@ private:
 	void UpdateHpText(int32 Id);
 	void TickFigures(double Wall);
 	void TickAutoPlay(float DeltaSeconds);
+	// A press on a lane (the keyboard, the pad or a stick flick): lights the receptor, judges it, and shows the
+	// TOO EARLY cue when it was a stray.
+	void PressLane(EFTArrow Arrow);
+	// The lane's feedback begins afresh with a combo.
+	void BeginLane();
+	// The left stick as arrows when the Stick flicks setting is on.
+	void TickStickFlicks();
+	// -BattleLaneShot=<prefix>: the arrow lane's views (<prefix>_1_fadein.png ... see TickLaneShots), taken during
+	// the autopilot's combos: the first plays clean, the next ones early, late, missing a note and straying once.
+	// It implies -BattleAutoPlay and needs a renderer (-RenderOffScreen).
+	void TickLaneShots();
+	void TakeLaneShot(const TCHAR* Name, uint16 Bit);
+	// For the lane shots, what the autopilot does with note I of the combo now playing: the time offset of its
+	// press and whether to leave it unpressed.
+	void LaneShotPlan(size_t I, double& Offset, bool& bSkip) const;
 	// -BattleShot=<prefix>: saves the Turns views (<prefix>_1_load.png: the Load gauge, 2_read: the
 	// Read cards before the pick, 3_torn: Torn on a party panel, 4_countin, 5_intercept: an Intercept
 	// held) with HighResShot as each first comes, then quits; it implies -BattleAutoPlay. Run it under
@@ -350,6 +406,37 @@ private:
 	FPopup Popups[MaxPopups];
 	int32 NextPopup = 0;
 	double LanePressWall[4] = {-100.0, -100.0, -100.0, -100.0};
+	// The arrow lane: its data, the last note judged per lane and the lane's word, the combo's clocks, its
+	// summary, the streak and the stray cue.
+	ftcore::ArrowLaneLayout LaneLayout;
+	FLaneJudge LaneJudges[4];
+	FLaneJudge LaneWord;
+	double LaneWordNoteTime = -1.0;
+	double ComboStartWall = -100.0;
+	double ComboEndWall = -1.0;
+	bool bComboRunning = false;
+	bool bComboStamp = false;
+	int32 StampAccuracy = 0;
+	bool bStampFull = false;
+	int32 StampBest = 0;
+	FString StampAccuracyText;
+	FString StampBestText;
+	TArray<FString> StreakTexts;
+	int32 Streak = 0;
+	int32 BrokenStreak = 0;
+	double BrokenStreakWall = -100.0;
+	double StreakStepWall = -100.0;
+	double StrayWall = -100.0;
+	bool bReduceFlashes = false;
+	bool bStickFlicks = false;
+	ftcore::StickFlick StickFlick;
+	// -BattleLaneShot: the prefix, the views taken (bits), when the run began and the last view, the combos begun.
+	FString LaneShotPrefix;
+	uint16 LaneShotMask = 0;
+	double LaneShotStartWall = -1.0;
+	double LaneShotLastWall = -100.0;
+	int32 LaneShotCombos = 0;
+	bool bLaneShotStrayed = false;
 	double DefencePressWall = -100.0;
 	EFTDefenceInput LastDefenceInput = EFTDefenceInput::Parry;
 	EFTJudgement Judgement = EFTJudgement::None;

@@ -550,6 +550,10 @@ struct FFTBattleEvent
 	// A skill name, "AIM", "WRONG", "FULL COMBO", a defence outcome, "LATE", a shot kind or empty.
 	UPROPERTY(BlueprintReadOnly, Category = "Battle")
 	FString Label;
+	// NoteJudged: the press error in seconds (press time - note time, negative = early); 0 for a note that
+	// expired unpressed and for every other event.
+	UPROPERTY(BlueprintReadOnly, Category = "Battle")
+	double Error = 0.0;
 };
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFTBattleEventSignature, const FFTBattleEvent&, Event);

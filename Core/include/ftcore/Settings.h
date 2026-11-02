@@ -53,6 +53,7 @@ struct Settings {
     bool qteAutoComplete = false; // quick-time events play themselves
     bool holdToggle = false;      // a hold input is one press instead of keeping it down
     bool skipChoices = false;     // mirrored to its story flag only, for now
+    bool stickFlicks = false;     // the Turns arrow combos also take the left stick's flicks (StickFlick.h)
 
     // Characters per second the dialogue types out at (0: whole text at once).
     float textCharsPerSecond() const {
@@ -83,7 +84,7 @@ FTCORE_API void clampSettings(Settings& s);
 // ---- JSON text ----
 // {"version":1,"textSpeed":1,"autoAdvance":false,"autoDelay":1.5,"skipMode":1,"master":1.0,
 //  "music":0.8,"voice":1.0,"sfx":1.0,"defenceAssist":0,"subtitleSize":1,"reduceFlashes":false,
-//  "qteAutoComplete":false,"holdToggle":false,"skipChoices":false}
+//  "qteAutoComplete":false,"holdToggle":false,"skipChoices":false,"stickFlicks":false}
 // Enums are written as their number (the order above: textSpeed slow..instant, skipMode all/seen,
 // defenceAssist off/wide, subtitleSize small..large).
 FTCORE_API std::string encodeSettings(const Settings& s);
@@ -109,9 +110,10 @@ enum class SettingsRow : std::uint8_t {
     QteAutoComplete,
     HoldToggle,
     SkipChoices,
+    StickFlicks,
     Back,
 };
-inline constexpr std::uint32_t kSettingsRowCount = 15;
+inline constexpr std::uint32_t kSettingsRowCount = 16;
 
 enum class SettingsKey : std::uint8_t { Up, Down, Left, Right, Confirm };
 

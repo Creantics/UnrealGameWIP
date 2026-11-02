@@ -30,12 +30,15 @@
 #include "FTMeshFacing.h"
 #include "FTPauseSubsystem.h"
 #include "FTPlayerController.h"
+#include "FTSettingsSubsystem.h"
 #include "FTStepHost.h"
 #include "FTStorySubsystem.h"
 #include "FTText.h"
+#include "FTUiText.h"
 
 #include "ftcore/BattleDemo.h"
 
+#include <optional>
 #include <string>
 
 namespace
@@ -90,6 +93,25 @@ bool LoadWeakPointData(const ftcore::EnemyRoster& Roster, ftcore::WeakPointTable
 		return false;
 	}
 	return true;
+}
+
+// Data/Battle/arrow_lane.json: the arrow lane's layout, timings and colours. Missing or refused (logged), the
+// built-in numbers stay, which are the same as the file's.
+void LoadLaneLayout(ftcore::ArrowLaneLayout& Layout)
+{
+	const FString Path = FPaths::ProjectDir() / TEXT("Data/Battle/arrow_lane.json");
+	TArray<uint8> Bytes;
+	if (!FFileHelper::LoadFileToArray(Bytes, *Path))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("BattleDemo: %s not found; the arrow lane uses its built-in layout."), *Path);
+		return;
+	}
+	std::string Error;
+	if (!ftcore::importArrowLaneLayout(FT::BytesAsText(Bytes), Layout, &Error))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("BattleDemo: arrow_lane.json refused (%s); the arrow lane uses its built-in layout."),
+			UTF8_TO_TCHAR(Error.c_str()));
+	}
 }
 
 FFTCombatant FromCore(const ftcore::Combatant& C)
@@ -264,6 +286,25 @@ void AFTBattleDemoActor::BeginPlay()
 	{
 		bAutoPlay = true;
 		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: -BattleCamShot=%s: the camera's views, then quit."), *CamShotPrefix);
+	}
+	if (FParse::Value(FCommandLine::Get(), TEXT("BattleLaneShot="), LaneShotPrefix, false) && !LaneShotPrefix.IsEmpty())
+	{
+		bAutoPlay = true;
+		UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: -BattleLaneShot=%s: the arrow lane's views, then quit."), *LaneShotPrefix);
+	}
+	LoadLaneLayout(LaneLayout);
+	StreakTexts.Reserve(65);
+	for (int32 N = 0; N <= 64; ++N)
+	{
+		StreakTexts.Add(FString::Printf(TEXT("x%d"), N));
+	}
+	if (const UFTGameInstance* SettingsGI = GetGameInstance<UFTGameInstance>())
+	{
+		if (const UFTSettingsSubsystem* SettingsSub = SettingsGI->GetSubsystem<UFTSettingsSubsystem>())
+		{
+			bReduceFlashes = SettingsSub->Get().reduceFlashes;
+			bStickFlicks = SettingsSub->Get().stickFlicks;
+		}
 	}
 	// So does the story's, when it hands a fight here.
 	bool bStoryAutoPlay = false;
@@ -732,6 +773,37 @@ double AFTBattleDemoActor::GetLanePressAge(int32 Lane) const
 	return Lane >= 0 && Lane < 4 ? Wall() - LanePressWall[Lane] : 100.0;
 }
 
+double AFTBattleDemoActor::GetComboAge() const
+{
+	return ComboStartWall < 0.0 ? 100.0 : Wall() - ComboStartWall;
+}
+
+double AFTBattleDemoActor::GetComboEndAge() const
+{
+	return ComboEndWall < 0.0 ? -1.0 : Wall() - ComboEndWall;
+}
+
+const FString& AFTBattleDemoActor::GetStreakText(int32 N) const
+{
+	static const FString Empty;
+	return StreakTexts.Num() > 0 ? StreakTexts[FMath::Clamp(N, 0, StreakTexts.Num() - 1)] : Empty;
+}
+
+double AFTBattleDemoActor::GetBrokenStreakAge() const
+{
+	return Wall() - BrokenStreakWall;
+}
+
+double AFTBattleDemoActor::GetStreakStepAge() const
+{
+	return Wall() - StreakStepWall;
+}
+
+double AFTBattleDemoActor::GetStrayAge() const
+{
+	return Wall() - StrayWall;
+}
+
 double AFTBattleDemoActor::GetDefencePressAge() const
 {
 	return Wall() - DefencePressWall;
@@ -943,18 +1015,54 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 				WeakPointLabels[I] = Points && I < Points->size() ? FString::Printf(TEXT("x%.1f"), (*Points)[I].multiplier) : FString();
 			}
 		}
+		else if (!bEnemy)
+		{
+			BeginLane(); // a party skill or a Release: its combo begins
+		}
 		break;
 	}
 	case EFTBattleEventType::NoteJudged:
 	{
-		FPopup P;
-		P.Grade = Event.Grade;
-		P.bWrong = Event.Label == TEXT("WRONG");
-		if (B && static_cast<size_t>(Event.Beat) < B->combo().size())
+		if (!B || static_cast<size_t>(Event.Beat) >= B->combo().size())
 		{
-			P.Lane = static_cast<int32>(B->combo().note(static_cast<size_t>(Event.Beat)).arrow);
+			break;
 		}
-		AddPopup(P);
+		const ftcore::ComboNote& Note = B->combo().note(static_cast<size_t>(Event.Beat));
+		FLaneJudge J;
+		J.Wall = Now;
+		J.Lane = static_cast<int32>(Note.arrow) & 3;
+		J.Grade = FT::ToCore(Event.Grade);
+		J.bWrong = Event.Label == TEXT("WRONG");
+		J.bExpired = J.Grade == ftcore::Grade::Miss && !J.bWrong;
+		J.Error = Event.Error;
+		J.NoteDt = FMath::Clamp(Note.time - Event.Time, -0.25, 0.25);
+		LaneJudges[J.Lane] = J;
+		// One word for the lane; a jump pair's second note (the same chart time, judged within a moment of the
+		// first) merges into it as the worse grade.
+		const bool bPartner = Now - LaneWord.Wall < 0.4 && FMath::IsNearlyEqual(LaneWordNoteTime, Note.time, 1e-9);
+		FLaneJudge Word = J;
+		if (bPartner && ftcore::worseGrade(LaneWord.Grade, J.Grade) != J.Grade)
+		{
+			Word = LaneWord; // the first note's judgement was the worse one: it stays, shown again
+			Word.Wall = Now;
+		}
+		LaneWord = Word;
+		LaneWordNoteTime = Note.time;
+		// The streak: a Miss breaks it (the old number lingers grey), anything else adds; a step pops the badge.
+		if (J.Grade == ftcore::Grade::Miss)
+		{
+			BrokenStreak = Streak;
+			BrokenStreakWall = Now;
+			Streak = 0;
+		}
+		else
+		{
+			++Streak;
+			if (ftcore::streakStep(LaneLayout.times, Streak))
+			{
+				StreakStepWall = Now;
+			}
+		}
 		break;
 	}
 	case EFTBattleEventType::Hit:
@@ -1014,8 +1122,15 @@ void AFTBattleDemoActor::HandleBattleEvent(const FFTBattleEvent& Event)
 		break;
 	}
 	case EFTBattleEventType::ComboFinished:
-		SetBanner(Event.Label.IsEmpty() ? FString::Printf(TEXT("Accuracy %d%%"), Event.Amount)
-		                                : FString::Printf(TEXT("FULL COMBO!  %d%%"), Event.Amount));
+		// The summary stamp in the lane replaces the top banner. A combo that ended early (the enemies it was aimed
+		// at fell) has no stamp: its lane fades at once.
+		ComboEndWall = Now;
+		bComboStamp = B && B->combo().complete();
+		StampAccuracy = Event.Amount;
+		bStampFull = !Event.Label.IsEmpty();
+		StampBest = B ? B->combo().maxCombo() : 0;
+		StampAccuracyText = FString::Printf(TEXT("%d%%"), Event.Amount);
+		StampBestText = FString::Format(*FTUiText::Lookup(TEXT("battle.best")), {StampBest});
 		break;
 	case EFTBattleEventType::Counter:
 		SetBanner(Event.Label == TEXT("READ") ? FString::Printf(TEXT("%s strikes the read!"), *GetFighterName(Event.Source))
@@ -1307,8 +1422,7 @@ void AFTBattleDemoActor::HandleArrow(EFTArrow Arrow, bool bFaceButton)
 	}
 	if (Battle->IsComboActive())
 	{
-		LanePressWall[static_cast<int32>(Arrow)] = Wall();
-		Battle->Press(Arrow);
+		PressLane(Arrow);
 		return;
 	}
 	if (Battle->IsAimActive())
@@ -1367,6 +1481,68 @@ void AFTBattleDemoActor::HandleArrow(EFTArrow Arrow, bool bFaceButton)
 	case EFTArrow::Right:
 		CycleTarget(1);
 		break;
+	}
+}
+
+void AFTBattleDemoActor::PressLane(EFTArrow Arrow)
+{
+	const ftcore::Battle* B = Battle->GetBattle();
+	const int32 StraysBefore = B ? B->combo().strays() : 0;
+	LanePressWall[static_cast<int32>(Arrow) & 3] = Wall();
+	Battle->Press(Arrow);
+	// A stray press (no note in range) locks input for a moment: the lane says so, except for the press that
+	// confirmed the skill (pad A is both Confirm and the Down lane, so that press can reach the combo as a stray).
+	if (B && B->combo().strays() > StraysBefore && ftcore::strayCueShows(LaneLayout.times, Wall() - ComboStartWall))
+	{
+		StrayWall = Wall();
+	}
+}
+
+void AFTBattleDemoActor::BeginLane()
+{
+	const double Now = Wall();
+	ComboStartWall = Now;
+	ComboEndWall = -1.0;
+	bComboRunning = true;
+	bComboStamp = false;
+	Streak = 0;
+	BrokenStreak = 0;
+	BrokenStreakWall = -100.0;
+	StreakStepWall = -100.0;
+	StrayWall = -100.0;
+	LaneWord = FLaneJudge();
+	LaneWordNoteTime = -1.0;
+	for (FLaneJudge& J : LaneJudges)
+	{
+		J = FLaneJudge();
+	}
+	StickFlick.reset();
+	++LaneShotCombos;
+	bLaneShotStrayed = false;
+	if (const UFTGameInstance* SettingsGI = GetGameInstance<UFTGameInstance>())
+	{
+		if (const UFTSettingsSubsystem* SettingsSub = SettingsGI->GetSubsystem<UFTSettingsSubsystem>())
+		{
+			bReduceFlashes = SettingsSub->Get().reduceFlashes;
+			bStickFlicks = SettingsSub->Get().stickFlicks;
+		}
+	}
+}
+
+void AFTBattleDemoActor::TickStickFlicks()
+{
+	AFTPlayerController* PC = GetPlayer();
+	if (!bStickFlicks || !PC || bAutoPlay || bWaitingForRestart || !Battle->GetBattle() || !Battle->IsComboActive()
+		|| UFTPauseSubsystem::IsBlocking(this) || UFTPauseSubsystem::IsJustResumed(this))
+	{
+		StickFlick.reset(); // the next combo waits for the stick to be at rest
+		return;
+	}
+	const float X = PC->GetInputAnalogKeyState(EKeys::Gamepad_LeftX);
+	const float Y = PC->GetInputAnalogKeyState(EKeys::Gamepad_LeftY);
+	if (const std::optional<ftcore::Arrow> Flick = StickFlick.update(X, Y))
+	{
+		PressLane(FT::FromCore(*Flick));
 	}
 }
 
@@ -1652,18 +1828,57 @@ void AFTBattleDemoActor::TickAutoPlay(float DeltaSeconds)
 	}
 	const double Now = Battle->GetBattleTime();
 	const ftcore::ComboSequence& Combo = B->combo();
-	for (size_t I = Combo.nextIndex(); I < Combo.size() && Combo.note(I).time <= Now; ++I)
+	const bool bLaneShot = !LaneShotPrefix.IsEmpty();
+	if (bLaneShot && LaneShotCombos >= 2 && !bLaneShotStrayed && GetComboAge() > 0.45 && Now < Combo.note(0).time - Combo.windows().good - 0.05)
 	{
-		if (Combo.grade(I) == ftcore::Grade::Pending)
+		// One stray press well ahead of the first note, for the lockout cue's view.
+		bLaneShotStrayed = true;
+		PressLane(EFTArrow::Left);
+		return;
+	}
+	for (size_t I = Combo.nextIndex(); I < Combo.size(); ++I)
+	{
+		// -BattleLaneShot plays some notes early, late or not at all; otherwise every note on its own time.
+		double Offset = 0.0;
+		bool bSkip = false;
+		if (bLaneShot)
+		{
+			LaneShotPlan(I, Offset, bSkip);
+		}
+		const double PressTime = Combo.note(I).time + Offset;
+		if (PressTime > Now)
+		{
+			break;
+		}
+		if (Combo.grade(I) == ftcore::Grade::Pending && !bSkip)
 		{
 			LanePressWall[static_cast<int32>(Combo.note(I).arrow)] = Wall();
 			// At the note's own time, not "now": a long (dilated) frame must not turn PERFECT into late.
-			Battle->PressAtTime(FT::FromCore(Combo.note(I).arrow), Combo.note(I).time);
+			Battle->PressAtTime(FT::FromCore(Combo.note(I).arrow), PressTime);
 		}
 		if (!Battle->IsComboActive())
 		{
 			break;
 		}
+	}
+}
+
+void AFTBattleDemoActor::LaneShotPlan(size_t I, double& Offset, bool& bSkip) const
+{
+	Offset = 0.0;
+	bSkip = false;
+	const ftcore::Battle* B = Battle->GetBattle();
+	if (!B || LaneShotCombos < 2)
+	{
+		return; // the first combo plays clean
+	}
+	const ftcore::JudgeWindows& W = B->combo().windows();
+	switch (I)
+	{
+	case 1: Offset = -(W.perfect + W.great) * 0.5; break; // a Great or Good, early
+	case 2: Offset = (W.great + W.good) * 0.5; break;     // a Good, late
+	case 3: bSkip = true; break;                          // a Miss
+	default: break;
 	}
 }
 
@@ -1766,6 +1981,106 @@ void AFTBattleDemoActor::TakeShot(const TCHAR* Name, uint8 Bit)
 	UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: view %s."), *File);
 	ShotMask |= Bit;
 	ShotLastWall = Wall();
+}
+
+void AFTBattleDemoActor::TickLaneShots()
+{
+	const ftcore::Battle* B = Battle->GetBattle();
+	if (LaneShotPrefix.IsEmpty() || !B)
+	{
+		return;
+	}
+	const double Now = Wall();
+	if (LaneShotStartWall < 0.0)
+	{
+		LaneShotStartWall = Now;
+	}
+	constexpr uint16 kAll = 2047;
+	if (LaneShotMask == kAll || Now - LaneShotStartWall > 300.0 || Battle->IsBattleOver())
+	{
+		if (LaneShotMask != kAll)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("BattleDemo: only lane views %d of %d came; quitting."), LaneShotMask, kAll);
+		}
+		if (Now - LaneShotLastWall > 1.0) // the last view is written first
+		{
+			LaneShotPrefix.Reset();
+			FPlatformMisc::RequestExit(false, TEXT("BattleDemo"));
+		}
+		return;
+	}
+	if (Now - LaneShotStartWall < 3.0 || Now - LaneShotLastWall < 0.2)
+	{
+		return;
+	}
+	const ftcore::ComboSequence& Combo = B->combo();
+	const double Age = GetComboAge();
+	const double EndAge = GetComboEndAge();
+	const double WordAge = Now - LaneWord.Wall;
+	const bool bFirst = LaneShotCombos == 1;
+	const bool bLater = LaneShotCombos >= 2;
+	const bool bRunning = Battle->IsComboActive();
+	auto Want = [&](uint16 Bit) { return !(LaneShotMask & Bit); };
+
+	if (bFirst && bRunning && Want(1) && Age >= 0.1)
+	{
+		TakeLaneShot(TEXT("1_fadein"), 1);
+	}
+	else if (bFirst && bRunning && Want(2) && Combo.nextIndex() == 0 && Combo.size() > 0
+		&& Combo.note(0).time - Battle->GetBattleTime() <= LaneLayout.times.lookahead - 0.15)
+	{
+		TakeLaneShot(TEXT("2_entering"), 2);
+	}
+	else if (bFirst && Want(4) && LaneWord.Grade == ftcore::Grade::Perfect && WordAge >= 0.04 && WordAge < 0.12 && Combo.judged() == 1)
+	{
+		TakeLaneShot(TEXT("3_perfect"), 4);
+	}
+	else if (bFirst && bRunning && Want(8) && Combo.judged() >= 2 && Combo.size() - Combo.judged() >= 2 && WordAge >= 0.15 && WordAge < 0.3)
+	{
+		TakeLaneShot(TEXT("4_mid"), 8);
+	}
+	else if (bFirst && Want(16) && Streak >= LaneLayout.times.streakEvery && GetStreakStepAge() >= 0.04 && GetStreakStepAge() < 0.12)
+	{
+		TakeLaneShot(TEXT("5_streak"), 16);
+	}
+	else if (bFirst && Want(32) && bComboStamp && bStampFull && EndAge >= 0.2 && EndAge < 0.35)
+	{
+		TakeLaneShot(TEXT("6_exit_full"), 32);
+	}
+	else if (bLater && Want(64) && LaneWord.Grade != ftcore::Grade::Perfect && LaneWord.Grade != ftcore::Grade::Miss && LaneWord.Error < 0.0
+		&& WordAge >= 0.05 && WordAge < 0.14)
+	{
+		TakeLaneShot(TEXT("7_early"), 64);
+	}
+	else if (bLater && Want(128) && LaneWord.Grade != ftcore::Grade::Perfect && LaneWord.Grade != ftcore::Grade::Miss && LaneWord.Error > 0.0
+		&& WordAge >= 0.05 && WordAge < 0.14)
+	{
+		TakeLaneShot(TEXT("8_late"), 128);
+	}
+	else if (bLater && Want(256) && LaneWord.Grade == ftcore::Grade::Miss && LaneWord.bExpired && WordAge >= 0.05 && WordAge < 0.14)
+	{
+		TakeLaneShot(TEXT("9_miss"), 256);
+	}
+	else if (bLater && Want(512) && GetStrayAge() >= 0.05 && GetStrayAge() < 0.15)
+	{
+		TakeLaneShot(TEXT("10_lockout"), 512);
+	}
+	else if (bLater && Want(1024) && bComboStamp && !bStampFull && EndAge >= 0.2 && EndAge < 0.35)
+	{
+		TakeLaneShot(TEXT("11_exit_stamp"), 1024);
+	}
+}
+
+void AFTBattleDemoActor::TakeLaneShot(const TCHAR* Name, uint16 Bit)
+{
+	const FString File = FString::Printf(TEXT("%s_%s.png"), *LaneShotPrefix, Name);
+	if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
+	{
+		Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *File), *GLog);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: lane view %s."), *File);
+	LaneShotMask |= Bit;
+	LaneShotLastWall = Wall();
 }
 
 void AFTBattleDemoActor::TickCamera()
@@ -2176,6 +2491,16 @@ void AFTBattleDemoActor::Tick(float DeltaSeconds)
 	}
 	TickAimInput(DeltaSeconds);
 	TickVerbInput();
+	TickStickFlicks();
+	// A combo that ended without a ComboFinished (the last enemy fell to a note): the lane fades at once.
+	const bool bComboNow = Battle->GetBattle() && Battle->IsComboActive();
+	if (bComboRunning && !bComboNow && ComboEndWall < 0.0)
+	{
+		ComboEndWall = Wall();
+		bComboStamp = false;
+	}
+	bComboRunning = bComboNow;
+	TickLaneShots();
 	if (bCanQuitToTitle && bWaitingForRestart)
 	{
 		// Q quits on its press edge. It is polled: after the battle the story keys are live, and Q has

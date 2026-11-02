@@ -257,3 +257,8 @@ TEST_CASE("combo: every constructor and reset() counts one built combo") {
     CHECK(b.size() == 0);
     CHECK(ftcore::comboSequencesBuilt() == before + 3);
 }
+
+TEST_CASE("a combo reports its lockout length") {
+    auto s = three();
+    CHECK(s.lockout() == doctest::Approx(0.3));
+}
