@@ -41,7 +41,8 @@ const FTUiText kDefeatBoss(TEXT("battle.defeat"));
 const FTUiText kLoadBoss(TEXT("battle.load"));
 const FTUiText kLockedBoss(TEXT("beat.locked"));
 const FTUiText kFinisherBoss(TEXT("beat.finisher"));
-const FTUiText kQuitBoss(TEXT("beat.quit"));
+const FTUiText kQuitBoss(TEXT("beatboss.quit"));
+const FTUiText kConfirmBoss(TEXT("beatboss.confirm"));
 const FTUiText kPhaseBoss(TEXT("beatboss.phase"));
 const FTUiText kBarBoss(TEXT("beatboss.bar"));
 const FTUiText kCountBoss(TEXT("beatboss.count"));
@@ -83,6 +84,10 @@ constexpr double kBossLineAhead = 4.6;
 constexpr float kBossHitShare = 0.2f;
 constexpr float kBossPopupLife = 0.8f;
 constexpr float kBossBannerLife = 1.4f;
+// The closing ring's speed, pixels a second at 1080p, and the farthest out it begins (a ring that would start farther
+// waits and enters at the cap).
+constexpr float kBossRingSpeed = 300.f;
+constexpr float kBossRingCap = 570.f;
 
 FLinearColor BossAlpha(const FLinearColor& C, float A)
 {
@@ -214,19 +219,127 @@ void AFTBeatBossHUD::Text(const FString& Str, const FLinearColor& Color, float X
 	DrawText(Str, Color, X, Y, Font, Sc);
 }
 
-void AFTBeatBossHUD::Ring(float X, float Y, float Radius, const FLinearColor& Color, float Thickness, int32 Segments)
+void AFTBeatBossHUD::Ring(float X, float Y, float Radius, const FLinearColor& Color, float Thickness, int32 Segments, float Start)
 {
 	const float Turn = 6.2831853f / static_cast<float>(Segments);
-	float PrevX = X + Radius;
-	float PrevY = Y;
+	float PrevX = X + Radius * FMath::Cos(Start);
+	float PrevY = Y + Radius * FMath::Sin(Start);
 	for (int32 I = 1; I <= Segments; ++I)
 	{
-		const float A = Turn * static_cast<float>(I);
+		const float A = Start + Turn * static_cast<float>(I);
 		const float NextX = X + Radius * FMath::Cos(A);
 		const float NextY = Y + Radius * FMath::Sin(A);
 		AHUD::DrawLine(PrevX, PrevY, NextX, NextY, Color, Thickness);
 		PrevX = NextX;
 		PrevY = NextY;
+	}
+}
+
+// An arc from Start (radians, 0 to the right, clockwise on the screen) sweeping Sweep.
+void AFTBeatBossHUD::Arc(float X, float Y, float Radius, float Start, float Sweep, const FLinearColor& Color, float Thickness)
+{
+	if (Sweep <= 0.001f)
+	{
+		return;
+	}
+	const int32 Segments = FMath::Clamp(static_cast<int32>(Sweep / 6.2831853f * 40.f) + 1, 2, 48);
+	float PrevX = X + Radius * FMath::Cos(Start);
+	float PrevY = Y + Radius * FMath::Sin(Start);
+	for (int32 I = 1; I <= Segments; ++I)
+	{
+		const float A = Start + Sweep * static_cast<float>(I) / static_cast<float>(Segments);
+		const float NextX = X + Radius * FMath::Cos(A);
+		const float NextY = Y + Radius * FMath::Sin(A);
+		AHUD::DrawLine(PrevX, PrevY, NextX, NextY, Color, Thickness);
+		PrevX = NextX;
+		PrevY = NextY;
+	}
+}
+
+// Half the height, in pixels, of a 24 cm sphere at this world point: what a prompt's size follows, so one in the far
+// shot is not a speck and one in a close shot does not fill a face.
+float AFTBeatBossHUD::ProjectedRadius(const FVector& World) const
+{
+	const APlayerController* PC = GetOwningPlayerController();
+	if (!PC)
+	{
+		return 46.f;
+	}
+	FVector Location;
+	FRotator Rotation;
+	PC->GetPlayerViewPoint(Location, Rotation);
+	const FVector Up = FRotationMatrix(Rotation).GetUnitAxis(EAxis::Z);
+	const FVector A = Project(World);
+	const FVector B = Project(World + Up * 12.0);
+	if (A.Z <= 0.0 || B.Z <= 0.0)
+	{
+		return 46.f;
+	}
+	return static_cast<float>(FVector2D::Distance(FVector2D(A.X, A.Y), FVector2D(B.X, B.Y))) * 1080.f / FMath::Max(1.f, Canvas->ClipY);
+}
+
+void AFTBeatBossHUD::AnswerShape(ftcore::BeatBossAnswer Answer, bool bFinisher, float X, float Y, float R, const FLinearColor& Color, float T,
+	float Held, int32 Left, float S)
+{
+	constexpr float Up = -1.5707963f;
+	constexpr float Turn = 6.2831853f;
+	if (bFinisher)
+	{
+		Ring(X, Y, R, Color, T, 36);
+		// A pip for each strike still to come, over it.
+		for (int32 I = 0; I < Left; ++I)
+		{
+			Disc(X + (static_cast<float>(I) - 0.5f * static_cast<float>(Left - 1)) * 16.f * S, Y - R * 1.42f, 5.f * S, Color);
+		}
+		return;
+	}
+	switch (Answer)
+	{
+	case ftcore::BeatBossAnswer::Parry:
+		Ring(X, Y, R, Color, T, 36);
+		Spikes(X, Y, R * 0.98f, Color, T * 0.7f);
+		break;
+	case ftcore::BeatBossAnswer::Guard:
+		// A double hexagon; once it is pressed, an arc fills round it to the impact.
+		Ring(X, Y, R * 1.12f, Color, T, 6);
+		Ring(X, Y, R * 0.9f, Color, T * 0.6f, 6);
+		if (Held >= 0.f)
+		{
+			Arc(X, Y, R * 1.34f, Up, Held * Turn, kBossGold, T * 0.9f);
+		}
+		break;
+	case ftcore::BeatBossAnswer::Dodge:
+	{
+		// A diamond, and a chevron to the side the lead goes.
+		Ring(X, Y, R * 1.22f, Color, T, 4);
+		const float Cx = X - R * 1.62f;
+		AHUD::DrawLine(Cx, Y, Cx + R * 0.32f, Y - R * 0.34f, Color, T * 0.8f);
+		AHUD::DrawLine(Cx, Y, Cx + R * 0.32f, Y + R * 0.34f, Color, T * 0.8f);
+		break;
+	}
+	case ftcore::BeatBossAnswer::Jump:
+		Ring(X, Y + R * 0.1f, R * 1.28f, Color, T, 3, Up);
+		break;
+	case ftcore::BeatBossAnswer::Hold:
+		// A circle with a tail that drains as the hold is kept.
+		Ring(X, Y, R, Color, T, 36);
+		Arc(X, Y, R * 1.22f, Up, (Held < 0.f ? 1.f : 1.f - Held) * Turn, Color, T * 0.8f);
+		break;
+	case ftcore::BeatBossAnswer::Release:
+		Ring(X, Y, R * 1.1f, Color, T, 8, 0.3926991f);
+		Arc(X, Y, R * 1.3f, Up, (Held < 0.f ? 1.f : 1.f - Held) * Turn, Color, T * 0.8f);
+		break;
+	case ftcore::BeatBossAnswer::Paired:
+		// Two half discs, one for each button.
+		Arc(X - 3.f * S, Y, R, Up + Turn * 0.5f, Turn * 0.5f, Color, T);
+		Arc(X + 3.f * S, Y, R, Up, Turn * 0.5f, Color, T);
+		AHUD::DrawLine(X - 3.f * S, Y - R, X - 3.f * S, Y + R, Color, T * 0.6f);
+		AHUD::DrawLine(X + 3.f * S, Y - R, X + 3.f * S, Y + R, Color, T * 0.6f);
+		break;
+	case ftcore::BeatBossAnswer::Attack:
+	default:
+		Ring(X, Y, R, Color, T, 36);
+		break;
 	}
 }
 
@@ -493,9 +606,9 @@ void AFTBeatBossHUD::DrawBeatLine(const AFTBeatBossGameMode& Mode)
 	const FLinearColor Flash = Grade == static_cast<int32>(ftcore::QteGrade::Perfect) ? kBossGold
 		: Grade == static_cast<int32>(ftcore::QteGrade::Good)                          ? kBossGreen
 																						: kBossRed;
-	if (Judged > 0.f)
+	if (Judged > 0.f && FlashLevel < 2)
 	{
-		DrawRect(BossAlpha(Flash, 0.45f * Judged), HitX - 18.f * S, LY - 34.f * S, 36.f * S, 68.f * S);
+		DrawRect(BossAlpha(Flash, (FlashLevel == 0 ? 0.45f : 0.2f) * Judged), HitX - 18.f * S, LY - 34.f * S, 36.f * S, 68.f * S);
 	}
 	const bool bLocked = Now < Mode.GetLockoutUntil();
 	DrawRect(BossAlpha(bLocked ? kBossOrange : kBossWhite, Shade), HitX - 2.f * S, LY - 34.f * S, 4.f * S, 68.f * S);
@@ -541,14 +654,14 @@ void AFTBeatBossHUD::DrawBeatLine(const AFTBeatBossGameMode& Mode)
 		const FLinearColor C = BossAlpha(bGrey ? kBossGrey : AnswerColor(M.answer), A);
 
 		Disc(X, LY, R, BossAlpha(kBossPanel, 0.95f * A));
-		if (bCounter)
+		AnswerShape(M.answer, P && P->finisher, X, LY, R, C, 3.f * S, P && P->pressA >= 0.0 && P->answer == ftcore::BeatBossAnswer::Guard ? 0.5f : -1.f, 0, S);
+		// What it asks, over it, so the strip alone is enough to play by with the sound off.
 		{
-			Ring(X, LY, R, C, 3.f * S, 24);
-			Spikes(X, LY, R * 1.25f, C, 2.f * S);
-		}
-		else
-		{
-			Ring(X, LY, R, C, 3.f * S, 24);
+			const int32 Word = static_cast<int32>(M.answer);
+			if (Word < kAnswerBossCount && X > X0 && X < X1 - 20.f * S)
+			{
+				Text(*kAnswerBoss[Word], BossAlpha(bGrey ? kBossGrey : C, A), X, LY - R - 30.f * S, Small, 0.9f * WordBoost, 1);
+			}
 		}
 		if (bGrey)
 		{
@@ -661,20 +774,23 @@ static float PopCurve(float X)
 	return 1.f + (C1 + 1.f) * T * T * T + C1 * T * T;
 }
 
-// The prompts of the scene, each on the body part it answers: a dark disc with the button on it in the answer's
-// colour, and a ring that closes onto it so the two meet on the impact (the beat). The next prompt is large, the
-// others behind it smaller. A prompt pops in with an overshoot, flares as the ring lands, and greys out and
-// crosses while counters are locked out.
+// The prompts of the scene, each on the body part it answers: a dark disc with the button on it in the answer's colour
+// and its own shape, and a ring that closes onto it at one steady speed so the two meet on the impact (the beat). The
+// next prompt is large, the others behind it smaller; the disc's size follows how far the prompt is from the camera. A
+// prompt pops in with an overshoot, flares as the ring lands (not under the flash options), breathes with the beat and
+// greys out and crosses while counters are locked out. Every open prompt says what it asks.
 void AFTBeatBossHUD::DrawPrompts(const AFTBeatBossGameMode& Mode)
 {
 	const float S = UiScale;
 	const double Now = Mode.GetNow();
 	const bool bLocked = Now < Mode.GetLockoutUntil();
+	const float Beat = 1.f - FMath::Clamp(Mode.GetBeatPhase(), 0.f, 1.f); // 1 on the beat, falling to 0 before the next
 	for (int32 I = Mode.GetPromptViewCount() - 1; I >= 0; --I)
 	{
 		const AFTBeatBossGameMode::FPromptView& V = Mode.GetPromptView(I);
 		float X = Canvas->ClipX * 0.5f;
 		float Y = Canvas->ClipY * 0.42f;
+		float Radius = 46.f;
 		if (!V.bOnScreen)
 		{
 			const FVector Q = Project(V.World);
@@ -684,41 +800,42 @@ void AFTBeatBossHUD::DrawPrompts(const AFTBeatBossGameMode& Mode)
 			}
 			X = FMath::Clamp(static_cast<float>(Q.X), 150.f * S, Canvas->ClipX - 150.f * S);
 			Y = FMath::Clamp(static_cast<float>(Q.Y), 170.f * S, Canvas->ClipY - 280.f * S);
+			Radius = FMath::Clamp(ProjectedRadius(V.World), 34.f, 60.f);
 		}
 		const bool bNext = I == 0;
 		const float Size = bNext ? 1.f : 0.72f;
 		const float Prog = FMath::Clamp(V.Progress, 0.f, 1.f);
+		const float SecondsLeft = (1.f - Prog) * V.Span;
 		const bool bCounter = ftcore::isBossCounter(V.Answer);
 		const bool bGrey = bCounter && bLocked;
 		const FLinearColor Base = bGrey ? kBossGrey : (V.bFinisher ? kBossGold : AnswerColor(V.Answer));
-		const float Alpha = bNext ? 1.f : 0.8f;
+		// The ring pulses with the beat; the disc swells a little on it.
+		const float Alpha = (bNext ? 1.f : 0.8f) * (0.8f + 0.2f * Beat);
 
 		// Pops in over the first moments of its lead-in; flares in the last of it.
 		const float Pop = PopCurve(Prog / 0.08f);
-		const float Flare = FMath::Clamp((Prog - 0.86f) / 0.14f, 0.f, 1.f);
-		const float Core = 46.f * S * Size * Pop;
-		const float Outer = Core + 190.f * S * Size * FMath::Pow(1.f - Prog, 1.7f);
-		const FLinearColor Hot = FMath::Lerp(Base, kBossWhite, FMath::Square(Prog));
+		const float Flare = FlashLevel == 0 ? FMath::Clamp((Prog - 0.86f) / 0.14f, 0.f, 1.f) : 0.f;
+		const float Core = Radius * S * Size * Pop * (1.f + 0.06f * Beat * Beat);
+		// One speed for every prompt: the ring starts as far out as its lead-in is long (a ring that would start off the
+		// screen waits until it can enter at the cap).
+		const float Reach = kBossRingSpeed * S * SecondsLeft;
+		const float Outer = Core + Reach;
+		const bool bRing = Reach <= kBossRingCap * S;
+		const FLinearColor Hot = FMath::Lerp(Base, kBossWhite, FlashLevel == 0 ? FMath::Square(Prog) : 0.f);
 
-		// The disc: dark, a coloured ring on it (spiked for a counter), and a flare as the impact comes.
+		// The disc: dark, its answer's shape on it, and a flare as the impact comes.
 		Disc(X, Y, Core + 8.f * S * Size, BossAlpha(kBossShadow, 0.55f * Alpha));
 		Disc(X, Y, Core, BossAlpha(kBossPanel, 0.96f * Alpha));
 		if (Flare > 0.f)
 		{
 			Disc(X, Y, Core, BossAlpha(Hot, 0.55f * Flare * Alpha));
 		}
-		Ring(X, Y, Core, BossAlpha(Base, Alpha), 7.f * S * Size, 36);
-		if (bCounter)
+		AnswerShape(V.Answer, V.bFinisher, X, Y, Core, BossAlpha(Base, Alpha), 7.f * S * Size, V.Held, V.Left, S);
+		// The closing ring: a dark underlay a little wider than the bright line (so it never vanishes against a pale wall),
+		// a glow, and the line, white-hot as it lands.
+		if (bRing && Outer > Core + 1.f)
 		{
-			Spikes(X, Y, Core * 0.98f, BossAlpha(Base, Alpha), 5.f * S * Size);
-		}
-		else if (V.Answer == ftcore::BeatBossAnswer::Hold || V.Answer == ftcore::BeatBossAnswer::Release)
-		{
-			Ring(X, Y, Core + 9.f * S * Size, BossAlpha(Base, 0.7f * Alpha), 3.f * S * Size, 36);
-		}
-		// The closing ring: a glow behind a bright line, white-hot as it lands.
-		if (Outer > Core + 1.f)
-		{
+			Ring(X, Y, Outer, BossAlpha(kBossShadow, 0.6f * Alpha), 6.f * S * Size + 8.f * S, 40);
 			Ring(X, Y, Outer + 6.f * S * Size, BossAlpha(Hot, 0.25f * Alpha), 12.f * S * Size, 40);
 			Ring(X, Y, Outer, BossAlpha(Hot, Alpha), 6.f * S * Size, 40);
 		}
@@ -726,29 +843,31 @@ void AFTBeatBossHUD::DrawPrompts(const AFTBeatBossGameMode& Mode)
 		// The button: a big letter on the disc, the face-button diamond under it (both for a paired answer).
 		const int32 First = static_cast<int32>(V.Button) & 3;
 		const FLinearColor Ink = bGrey ? kBossDim : kBossWhite;
+		const float Sc = Core / (46.f * S);
 		if (V.Answer == ftcore::BeatBossAnswer::Paired)
 		{
 			const int32 Second = static_cast<int32>(V.Second) & 3;
-			Text(ButtonLetters[First], Ink, X - Core * 0.42f, Y - 24.f * S * Size, GEngine->GetLargeFont(), 1.0f * Size, 1);
-			Text(ButtonLetters[Second], Ink, X + Core * 0.42f, Y - 24.f * S * Size, GEngine->GetLargeFont(), 1.0f * Size, 1);
-			FTActionButtons::DrawGlyph(*this, First, X - Core * 0.42f, Y + 22.f * S * Size, 12.f * S * Size, BossAlpha(Base, Alpha), 2.f * S);
-			FTActionButtons::DrawGlyph(*this, Second, X + Core * 0.42f, Y + 22.f * S * Size, 12.f * S * Size, BossAlpha(Base, Alpha), 2.f * S);
+			Text(ButtonLetters[First], Ink, X - Core * 0.42f, Y - 24.f * S * Sc, GEngine->GetLargeFont(), 1.0f * Sc, 1);
+			Text(ButtonLetters[Second], Ink, X + Core * 0.42f, Y - 24.f * S * Sc, GEngine->GetLargeFont(), 1.0f * Sc, 1);
+			FTActionButtons::DrawGlyph(*this, First, X - Core * 0.42f, Y + 22.f * S * Sc, 12.f * S * Sc, BossAlpha(Base, Alpha), 2.f * S);
+			FTActionButtons::DrawGlyph(*this, Second, X + Core * 0.42f, Y + 22.f * S * Sc, 12.f * S * Sc, BossAlpha(Base, Alpha), 2.f * S);
 		}
 		else
 		{
-			Text(ButtonLetters[First], Ink, X, Y - 30.f * S * Size, GEngine->GetLargeFont(), 1.5f * Size, 1);
-			FTActionButtons::DrawGlyph(*this, First, X, Y + 22.f * S * Size, 15.f * S * Size, BossAlpha(Base, Alpha), 2.5f * S);
+			Text(ButtonLetters[First], Ink, X, Y - 30.f * S * Sc, GEngine->GetLargeFont(), 1.5f * Sc, 1);
+			FTActionButtons::DrawGlyph(*this, First, X, Y + 22.f * S * Sc, 15.f * S * Sc, BossAlpha(Base, Alpha), 2.5f * S);
 		}
 		if (bGrey)
 		{
 			AHUD::DrawLine(X - Core * 0.7f, Y - Core * 0.7f, X + Core * 0.7f, Y + Core * 0.7f, BossAlpha(kBossWhite, 0.9f), 5.f * S);
 			AHUD::DrawLine(X - Core * 0.7f, Y + Core * 0.7f, X + Core * 0.7f, Y - Core * 0.7f, BossAlpha(kBossWhite, 0.9f), 5.f * S);
 		}
-		// What it asks, over the disc.
+		// What it asks, over the disc: every open prompt says it, not just the next.
 		const int32 Answer = static_cast<int32>(V.Answer);
-		if (Answer < kAnswerBossCount && bNext)
+		if (Answer < kAnswerBossCount)
 		{
-			Text(*kAnswerBoss[Answer], BossAlpha(bGrey ? kBossGrey : Hot, Alpha), X, Y - Core - 52.f * S, GEngine->GetLargeFont(), 1.0f, 1);
+			Text(*kAnswerBoss[Answer], BossAlpha(bGrey ? kBossGrey : Hot, Alpha), X, Y - Core * 1.7f - (V.bFinisher ? 18.f * S : 0.f) - 16.f * S,
+				GEngine->GetLargeFont(), (bNext ? 1.0f : 0.8f) * WordBoost, 1);
 		}
 	}
 }
@@ -772,22 +891,29 @@ void AFTBeatBossHUD::DrawJudgement(const AFTBeatBossGameMode::FPopup& P, float X
 		const float R0 = (50.f + 40.f * T) * S;
 		const float R1 = (60.f + 200.f * FMath::Sqrt(T)) * S;
 		constexpr int32 Rays = 14;
-		for (int32 K = 0; K < Rays; ++K)
+		for (int32 K = 0; K < (FlashLevel == 0 ? Rays : 0); ++K)
 		{
 			const float A = 6.2831853f * (static_cast<float>(K) + 0.5f) / static_cast<float>(Rays);
 			const float Cs = FMath::Cos(A);
 			const float Sn = FMath::Sin(A);
 			AHUD::DrawLine(X + R0 * Cs, Y + R0 * Sn, X + R1 * Cs, Y + R1 * Sn, BossAlpha(K % 2 ? kBossWhite : kBossGold, (1.f - T) * 0.95f), (K % 2 ? 4.f : 7.f) * S);
 		}
-		Ring(X, Y, (46.f + 150.f * FMath::Sqrt(T)) * S, BossAlpha(kBossWhite, (1.f - T)), 9.f * S * (1.f - T) + 2.f * S, 40);
-		Scale = 1.5f + 1.1f * FMath::Max(0.f, 1.f - Age / 0.14f);
+		if (FlashLevel < 2)
+		{
+			// Under the flash options the ring is dimmer and fades over the whole of its life.
+			Ring(X, Y, (46.f + 150.f * FMath::Sqrt(T)) * S, BossAlpha(FlashLevel == 0 ? kBossWhite : kBossGold, (1.f - T) * (FlashLevel == 0 ? 1.f : 0.5f)), 9.f * S * (1.f - T) + 2.f * S, 40);
+		}
+		Scale = 1.5f + (FlashLevel == 0 ? 1.1f : 0.f) * FMath::Max(0.f, 1.f - Age / 0.14f);
 	}
 	else if (P.Grade == ftcore::QteGrade::Good)
 	{
 		Word = &kGoodBoss.Get();
 		C = kBossGreen;
 		const float T = FMath::Clamp(Age / 0.3f, 0.f, 1.f);
-		Ring(X, Y, (46.f + 90.f * FMath::Sqrt(T)) * S, BossAlpha(kBossGreen, 1.f - T), 7.f * S * (1.f - T) + 2.f * S, 36);
+		if (FlashLevel < 2)
+		{
+			Ring(X, Y, (46.f + 90.f * FMath::Sqrt(T)) * S, BossAlpha(kBossGreen, (1.f - T) * (FlashLevel == 0 ? 1.f : 0.5f)), 7.f * S * (1.f - T) + 2.f * S, 36);
+		}
 		Scale = 1.3f + 0.5f * FMath::Max(0.f, 1.f - Age / 0.12f);
 	}
 	else
@@ -946,7 +1072,7 @@ void AFTBeatBossHUD::DrawBanners(const AFTBeatBossGameMode& Mode)
 
 	// The lead was hit: the screen's edges flash red.
 	const float Hit = BossFade(Now, Mode.GetPulse(AFTBeatBossGameMode::EPulse::LeadHit), 0.45f);
-	if (Hit > 0.f)
+	if (Hit > 0.f && FlashLevel == 0)
 	{
 		const FLinearColor C = BossAlpha(kBossRed, 0.55f * Hit);
 		const float T = 26.f * S;
@@ -1026,7 +1152,14 @@ void AFTBeatBossHUD::DrawResult(const AFTBeatBossGameMode& Mode)
 	{
 		const int32 Phase = FMath::Clamp(Fight.checkpointPhase(), 0, RetryLabels.Num() - 1);
 		Text(RetryLabels[Phase], BossAlpha(kBossGold, A), Canvas->ClipX * 0.5f, CY + 70.f * S, GEngine->GetMediumFont(), 1.1f, 1);
-		Text(kQuitBoss, BossAlpha(kBossDim, A), Canvas->ClipX * 0.5f, CY + 100.f * S, GEngine->GetMediumFont(), 1.0f, 1);
+		if (Mode.IsGiveUpAsked())
+		{
+			Text(kConfirmBoss, BossAlpha(kBossOrange, A), Canvas->ClipX * 0.5f, CY + 100.f * S, GEngine->GetMediumFont(), 1.1f, 1);
+		}
+		else
+		{
+			Text(kQuitBoss, BossAlpha(kBossDim, A), Canvas->ClipX * 0.5f, CY + 100.f * S, GEngine->GetMediumFont(), 1.0f, 1);
+		}
 		break;
 	}
 	case AFTBeatBossGameMode::EStage::Done:
@@ -1065,8 +1198,17 @@ void AFTBeatBossHUD::DrawHUD()
 	{
 		BuildTexts(*Mode);
 	}
-	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
+	// beat.ui_scale: the prompts, the strip and every label scale together.
+	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f) * Mode->GetAccess().uiScale;
 	FontScale = UiScale * kBossFontBoost;
+	FlashLevel = Mode->GetFlashLevel();
+	{
+		// The answer words are at least 18 px at 1080p (a medium label is about that at 1.0).
+		float W = 0.f;
+		float H = 0.f;
+		GetTextSize(TEXT("Ag"), W, H, GEngine->GetMediumFont(), FontScale);
+		WordBoost = H > 1.f ? FMath::Max(1.f, 18.f * UiScale / H) : 1.f;
+	}
 	const float S = UiScale;
 	const bool bPlaying = Mode->GetStage() == AFTBeatBossGameMode::EStage::Playing;
 	if (bPlaying)

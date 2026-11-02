@@ -18,7 +18,7 @@
   "victory": {
     "lead": "lead_victory",
     "boss": "boss_defeat",
-    "shot": "low_hero"
+    "shot": "wide"
   },
   "defeat": {
     "lead": "lead_downed",

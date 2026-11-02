@@ -52,7 +52,7 @@ TEST_CASE("vfx: every Data/Vfx effect loads without warnings") {
     };
     const Expect files[] = {{"ember_swirl", 1}, {"falling_leaves", 1}, {"fireworks", 3}, {"flipbook_fire", 1},
                             {"heal", 2},        {"heal_ring", 1},      {"hit_spark", 2}, {"magic_ribbon", 2},
-                            {"perfect_burst", 2}, {"smoke", 1},        {"speed_sparks", 1}, {"stretched_sparks", 2}};
+                            {"perfect_burst", 2}, {"smoke", 1},        {"speed_sparks", 1}, {"stretched_sparks", 2}, {"dust_puff", 2}};
     for (const Expect& f : files) {
         CAPTURE(f.file);
         VfxEffect e;

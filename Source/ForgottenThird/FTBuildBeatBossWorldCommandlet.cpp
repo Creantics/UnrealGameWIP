@@ -7,9 +7,12 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Camera/CameraActor.h"
 #include "Components/PointLightComponent.h"
+#include "Components/SkyLightComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/PointLight.h"
+#include "Engine/PostProcessVolume.h"
+#include "Engine/SkyLight.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
@@ -121,31 +124,65 @@ int32 UFTBuildBeatBossWorldCommandlet::Main(const FString& Params)
 
 	// A room 20 m long and 14 m wide, walled in: the floor's top at z = 0 (x from -8 m to 14 m), walls round it
 	// and two pillars either side of the boss for depth.
-	UMaterialInterface* Floor = MakeBossTint(Package, Base, TEXT("MI_BeatBoss_Floor"), FLinearColor(0.11f, 0.10f, 0.12f));
-	UMaterialInterface* Stone = MakeBossTint(Package, Base, TEXT("MI_BeatBoss_Stone"), FLinearColor(0.16f, 0.14f, 0.19f));
+	// Dark and neutral: the demo stage is a closed room with a roof, so nothing of the sky shows and the light on the
+	// fighters is the lamps' alone (docs/BEAT_BOSS_DEMO.md, "The stage").
+	UMaterialInterface* Floor = MakeBossTint(Package, Base, TEXT("MI_BeatBoss_Floor"), FLinearColor(0.07f, 0.065f, 0.075f));
+	UMaterialInterface* Stone = MakeBossTint(Package, Base, TEXT("MI_BeatBoss_Stone"), FLinearColor(0.085f, 0.08f, 0.1f));
 	BossBlock(World, Spawn, Cube, Floor, TEXT("Floor"), FVector(300, 0, -50), FVector(22, 16, 1), FRotator::ZeroRotator, false);
 	BossBlock(World, Spawn, Cube, Stone, TEXT("Wall"), FVector(1300, 0, 750), FVector(1, 16, 16), FRotator::ZeroRotator, false);
 	BossBlock(World, Spawn, Cube, Stone, TEXT("WallBehindLead"), FVector(-700, 0, 750), FVector(1, 16, 16), FRotator::ZeroRotator, false);
 	BossBlock(World, Spawn, Cube, Stone, TEXT("WallNear"), FVector(300, 720, 750), FVector(21, 1, 16), FRotator::ZeroRotator, false);
 	BossBlock(World, Spawn, Cube, Stone, TEXT("WallFar"), FVector(300, -720, 750), FVector(21, 1, 16), FRotator::ZeroRotator, false);
+	BossBlock(World, Spawn, Cube, Stone, TEXT("Roof"), FVector(300, 0, 1600), FVector(24, 18, 1), FRotator::ZeroRotator, false);
 	BossBlock(World, Spawn, Cylinder, Stone, TEXT("PillarLeft"), FVector(900, -520, 300), FVector(1.1f, 1.1f, 6.f), FRotator::ZeroRotator, false);
 	BossBlock(World, Spawn, Cylinder, Stone, TEXT("PillarRight"), FVector(900, 560, 300), FVector(1.1f, 1.1f, 6.f), FRotator::ZeroRotator, false);
 
-	// Sun, sky, air and the camera finish: the shared photoreal look.
-	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, FRotator(-40, 25, 0));
+	// The air and the camera finish, with no sun, atmosphere or clouds: a very low sky light (the closed room's own
+	// bounce), manual exposure so the per-shot lens never changes the brightness, a little bloom and vignette. The game
+	// mode sets the same on the camera, which wins over this volume.
+	{
+		ASkyLight* Sky = World->SpawnActor<ASkyLight>(FVector(0, 0, 800), FRotator::ZeroRotator, Spawn);
+		USkyLightComponent* SkyLight = Sky->GetLightComponent();
+		SkyLight->SetMobility(EComponentMobility::Movable);
+		SkyLight->bRealTimeCapture = true;
+		SkyLight->SetIntensity(0.35f);
+		Sky->SetActorLabel(TEXT("SkyLight"));
+		APostProcessVolume* Volume = World->SpawnActor<APostProcessVolume>(FVector(0, 0, 200), FRotator::ZeroRotator, Spawn);
+		Volume->bUnbound = true;
+		Volume->Priority = 0.f;
+		FPostProcessSettings& Finish = Volume->Settings;
+		Finish.bOverride_AutoExposureMethod = true;
+		Finish.AutoExposureMethod = EAutoExposureMethod::AEM_Manual;
+		Finish.bOverride_AutoExposureApplyPhysicalCameraExposure = true;
+		Finish.AutoExposureApplyPhysicalCameraExposure = false;
+		Finish.bOverride_AutoExposureBias = true;
+		Finish.AutoExposureBias = AFTBeatBossGameMode::StageExposure();
+		Finish.bOverride_BloomIntensity = true;
+		Finish.BloomIntensity = 0.35f;
+		Finish.bOverride_VignetteIntensity = true;
+		Finish.VignetteIntensity = 0.4f;
+		Finish.bOverride_FilmGrainIntensity = true;
+		Finish.FilmGrainIntensity = 0.f;
+		Volume->SetActorLabel(TEXT("PostProcessVolume"));
+	}
 
-	// Light: a warm key over the fighters, a red rim light behind the boss and a cold one behind the lead.
-	const auto Light = [&](const FVector& At, float Intensity, const FLinearColor& Color, float Radius, const TCHAR* Label) {
+	// Light: a warm key over the fighters (the only light that casts a shadow), a red rim light behind the boss and a cold
+	// one behind the lead, and a kicker from above and behind the boss. The game mode scales them apart for each shot
+	// (the key from the rims), so each is tagged.
+	const auto Light = [&](const FVector& At, float Intensity, const FLinearColor& Color, float Radius, const TCHAR* Label, FName Tag, bool bShadow) {
 		APointLight* Lamp = World->SpawnActor<APointLight>(At, FRotator::ZeroRotator, Spawn);
 		Lamp->PointLightComponent->SetMobility(EComponentMobility::Movable);
 		Lamp->PointLightComponent->SetIntensity(Intensity);
 		Lamp->PointLightComponent->SetLightColor(Color);
 		Lamp->PointLightComponent->SetAttenuationRadius(Radius);
+		Lamp->PointLightComponent->SetCastShadows(bShadow);
 		Lamp->SetActorLabel(Label);
+		Lamp->Tags.Add(Tag);
 	};
-	Light(FVector(60, 80, 520), 60000.f, FLinearColor(1.f, 0.84f, 0.7f), 2600.f, TEXT("Key"));
-	Light(FVector(560, 0, 260), 22000.f, FLinearColor(1.f, 0.22f, 0.1f), 2000.f, TEXT("RimBoss"));
-	Light(FVector(-420, -60, 240), 22000.f, FLinearColor(0.3f, 0.5f, 1.f), 2000.f, TEXT("RimLead"));
+	Light(FVector(-60, 320, 560), 90000.f, FLinearColor(1.f, 0.84f, 0.7f), 2600.f, TEXT("Key"), AFTBeatBossGameMode::KeyTag(), true);
+	Light(FVector(560, 0, 260), 22000.f, FLinearColor(1.f, 0.22f, 0.1f), 2000.f, TEXT("RimBoss"), AFTBeatBossGameMode::RimBossTag(), false);
+	Light(FVector(-420, -60, 240), 22000.f, FLinearColor(0.3f, 0.5f, 1.f), 2000.f, TEXT("RimLead"), AFTBeatBossGameMode::RimLeadTag(), false);
+	Light(FVector(900, -120, 620), 26000.f, FLinearColor(0.9f, 0.85f, 0.8f), 2200.f, TEXT("Kicker"), AFTBeatBossGameMode::KickerTag(), false);
 
 	// The lead: the test human at the near end, turned to face the boss (+x). The boss is the same body, 1.35 times the
 	// size, turned to face back (-x); the game mode gives it a dark red hide and plays the fight clips on both. The

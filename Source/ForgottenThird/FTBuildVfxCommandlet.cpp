@@ -677,6 +677,19 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx: no effects in %s."), *DataDir);
 		return 1;
 	}
+	// -Only=<name>: build that one effect and leave every other asset (and the sprite materials) as it is.
+	FString Only;
+	FParse::Value(*Params, TEXT("Only="), Only);
+	if (!Only.IsEmpty())
+	{
+		const FString Wanted = Only + TEXT(".json");
+		Files.RemoveAll([&Wanted](const FString& File) { return File != Wanted; });
+		if (Files.IsEmpty())
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx: no effect called %s in %s."), *Only, *DataDir);
+			return 1;
+		}
+	}
 
 	if (FParse::Param(*Params, TEXT("Verify")))
 	{
@@ -727,34 +740,55 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 		}
 	}
 
-	// Start from nothing: delete every NS_* and the sprite materials up front, before anything loads them.
-	TArray<FString> Old;
-	IFileManager::Get().FindFiles(Old, *(FPaths::ProjectContentDir() / TEXT("VFX/NS_*.uasset")), true, false);
-	for (const FString& File : Old)
-	{
-		if (!RemoveFile(FPaths::ProjectContentDir() / TEXT("VFX") / File))
-		{
-			return 1;
-		}
-	}
-	for (const FSpriteMaterialSpec& Spec : SpriteMaterials)
-	{
-		if (!RemoveFile(PackageFile(MaterialPackage(Spec))))
-		{
-			return 1;
-		}
-	}
-	IFileManager::Get().MakeDirectory(*FPaths::GetPath(PackageFile(MaterialPackage(SpriteMaterials[0]))), true);
-
+	// Start from nothing: delete every NS_* and the sprite materials up front, before anything loads them. With -Only just
+	// that effect's asset goes, and the materials already built are used.
 	bool bOk = true;
 	UMaterialInterface* Materials[4] = {};
-	for (int32 I = 0; I < 4; ++I)
+	if (Only.IsEmpty())
 	{
-		UPackage* Package = CreatePackage(*MaterialPackage(SpriteMaterials[I]));
-		UMaterial* Material = BuildSpriteMaterial(Package, SpriteMaterials[I]);
-		Materials[I] = Material;
-		FAssetCompilingManager::Get().FinishAllCompilation();
-		bOk &= SaveVfxAsset(Package, Material);
+		TArray<FString> Old;
+		IFileManager::Get().FindFiles(Old, *(FPaths::ProjectContentDir() / TEXT("VFX/NS_*.uasset")), true, false);
+		for (const FString& File : Old)
+		{
+			if (!RemoveFile(FPaths::ProjectContentDir() / TEXT("VFX") / File))
+			{
+				return 1;
+			}
+		}
+		for (const FSpriteMaterialSpec& Spec : SpriteMaterials)
+		{
+			if (!RemoveFile(PackageFile(MaterialPackage(Spec))))
+			{
+				return 1;
+			}
+		}
+		IFileManager::Get().MakeDirectory(*FPaths::GetPath(PackageFile(MaterialPackage(SpriteMaterials[0]))), true);
+
+		for (int32 I = 0; I < 4; ++I)
+		{
+			UPackage* Package = CreatePackage(*MaterialPackage(SpriteMaterials[I]));
+			UMaterial* Material = BuildSpriteMaterial(Package, SpriteMaterials[I]);
+			Materials[I] = Material;
+			FAssetCompilingManager::Get().FinishAllCompilation();
+			bOk &= SaveVfxAsset(Package, Material);
+		}
+	}
+	else
+	{
+		if (!RemoveFile(FPaths::ProjectContentDir() / TEXT("VFX") / (TEXT("NS_") + Only + TEXT(".uasset"))))
+		{
+			return 1;
+		}
+		for (int32 I = 0; I < 4; ++I)
+		{
+			const FString Package = MaterialPackage(SpriteMaterials[I]);
+			Materials[I] = LoadObject<UMaterialInterface>(nullptr, *(Package + TEXT(".") + FPackageName::GetShortName(Package)));
+			if (!Materials[I])
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx: sprite material %s is missing; run FTBuildVfx without -Only first."), *Package);
+				return 1;
+			}
+		}
 	}
 	if (!bOk)
 	{

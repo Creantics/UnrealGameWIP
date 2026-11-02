@@ -405,14 +405,12 @@ TEST_CASE("beat cine: the boss roars in the silence, the camera cuts to it and c
     Scene s;
     s.start();
     bool silent = false;
-    double silenceTrack = 0.0;
+    double silenceTrack = 0.0; // the track time the silence stopped at
     bool onLine = false;
     double silenceAt = 0.0;
-    ChoreoShot before = ChoreoShot::Wide;
     ChoreoSample during, late, after;
     bool gotDuring = false, gotLate = false, gotAfter = false;
     int roarFrames = 0, silenceFrames = 0;
-    double won = -1.0;
     play(s, 0.0, 200.0, true, [&](double now) {
         ChoreoSample smp;
         s.choreo.sampleNow(smp);
@@ -439,8 +437,6 @@ TEST_CASE("beat cine: the boss roars in the silence, the camera cuts to it and c
             after = smp;
             gotAfter = true;
         }
-        if (!silent) before = smp.shot;
-        if (s.fight.state() == BeatBossState::Victory && won < 0.0) won = now;
     });
     REQUIRE(s.fight.state() == BeatBossState::Victory);
     REQUIRE(gotDuring);
@@ -455,8 +451,6 @@ TEST_CASE("beat cine: the boss roars in the silence, the camera cuts to it and c
     if (gotLate) CHECK(late.boss.clip != r.choreo.silence.boss);
     // The track runs again: the shot that was there before is back unless the next move cuts to its own.
     CHECK(after.shot != ChoreoShot::CloseBoss);
-    (void)before;
-    (void)silenceTrack;
     // The cut to the roar is on the bar line the silence stopped at.
     CHECK(onLine);
 
@@ -480,5 +474,4 @@ TEST_CASE("beat cine: the boss roars in the silence, the camera cuts to it and c
     CHECK(f.visualRate == 1.0f);
     CHECK_FALSE(f.hitStop);
     CHECK(f.over);
-    (void)won;
 }

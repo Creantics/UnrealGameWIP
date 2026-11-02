@@ -43,6 +43,10 @@
 //                          watchdog fired after 300 s, 3 if the track didn't load (FTRequestExit, which forces
 //                          a non-zero code past the engine's graceful exit, as the engine does for commandlets).
 //   -BeatBossTrack=<id>    another track (cine_track by default; test_track is the dense old one).
+//   Accessibility (Core/include/ftcore/BeatAccess.h; the file Saved/BeatAccess.json, read at the start and on every retry,
+//   and these flags over it): -BeatWindowScale=<1..2> -BeatWhiffMs=<0..400> -BeatPairMode=<0..2> -BeatUiScale=<1..2>
+//   -BeatCuts=<0..2> -BeatShake=<0..1> -BeatFlash=<0..2> -BeatTempo=<0.5..1>.
+//   -BeatBossExposure=<ev> the stage's manual exposure (the camera's AutoExposureBias), to tune by eye.
 //   -BeatBossShot=<prefix> renders the views docs/BEAT_BOSS_DEMO.md lists with HighResShot (needs a
 //                          renderer: -RenderOffScreen, not -NullRHI), holding the fight still a moment for
 //                          each, then quits; implies -BeatBossAutoPlay. -BeatBossShotDelay=<s> (8) waits
@@ -57,6 +61,7 @@
 
 #include "FTGameMode.h"
 
+#include "ftcore/BeatAccess.h"
 #include "ftcore/BeatBoss.h"
 #include "ftcore/BeatChoreo.h"
 #include "ftcore/BeatMusic.h"
@@ -71,6 +76,9 @@ class UFTBeatBossMetronome;
 class UFTBeatBossMusic;
 class UFTConductorComponent;
 class UMaterialInstanceDynamic;
+class UNiagaraComponent;
+class UNiagaraSystem;
+class UPointLightComponent;
 class USkeletalMeshComponent;
 
 UCLASS()
@@ -115,6 +123,9 @@ public:
 		bool bFinisher = false;
 		bool bOnScreen = false; // sits at the middle of the screen, not on a body
 		ftcore::ChoreoAnchor Anchor = ftcore::ChoreoAnchor::BossChest;
+		float Span = 1.f;       // seconds from its tell to its impact
+		float Held = -1.f;      // a guard pressed, a hold held: how far on the way to its impact or its end it has run (0..1; -1: not pressed)
+		int32 Left = 0;         // a finisher's strikes still to come (its own included)
 	};
 	static constexpr int32 MaxPromptViews = 4;
 
@@ -136,6 +147,7 @@ public:
 		RestOpened,
 		Reward,
 		Judged,
+		FinisherStrike, // a finisher's strike answered (a Perfect or a Good)
 		Count, // a count beat
 		Num
 	};
@@ -149,6 +161,13 @@ public:
 	// ---- the stage (shared with FTBuildBeatBossWorld) ----
 	static FName BossTag();
 	static FName LeadTag();
+	// The map's lights, tagged so each shot can scale them apart (the key from the rims).
+	static FName KeyTag();
+	static FName RimBossTag();
+	static FName RimLeadTag();
+	static FName KickerTag();
+	// The stage's manual exposure (the AutoExposureBias of the map's volume and of the camera).
+	static float StageExposure();
 	// Where the fighters' feet stand (centimetres, x from the lead towards the boss, the floor's top at z = 0).
 	static FVector BossLocation();
 	static FVector LeadLocation();
@@ -194,6 +213,15 @@ public:
 	const FPromptView& GetPromptView(int32 Index) const { return PromptViews[Index]; }
 	// The camera's shot now, and the seconds since the last cut.
 	ftcore::ChoreoShot GetShot() const { return Sample.shot; }
+	// ---- accessibility, and the beat, for the HUD ----
+	const ftcore::BeatAccessOptions& GetAccess() const { return Access; }
+	// 0 reduced flashes off, 1 reduced, 2 minimal (beat.flash_level, raised by Settings::reduceFlashes).
+	int32 GetFlashLevel() const { return FlashLevel; }
+	// Where the beat is: 0 on a beat, rising to 1 just before the next (the fight's clock).
+	float GetBeatPhase() const { return BeatPhase; }
+	// A guard's or a hold's press: the HUD asks which prompt it is for.
+	bool IsResultInputArmed() const { return bResultArmed; }
+	bool IsGiveUpAsked() const { return bGiveUpAsked; }
 
 private:
 	bool LoadTrack(const FString& Id);
@@ -206,6 +234,16 @@ private:
 	// The stand-in music for this frame: beats crossed, impacts crossed (the count's blips come as events).
 	void Sound();
 	void Voice(uint8 Voice);
+	// beat.* options: the file, the flags, the settings; the tuning and the track's tempo from them.
+	void LoadAccess();
+	void ApplyAccess(bool bRetry);
+	void PollAccess(double Wall);
+	void LandHit(const ftcore::BeatBossEvent& E, double Time);
+	void PendHit(const ftcore::BeatBossEvent& E);
+	void FlushHits();
+	void UpdateLights(float Key, float RimBoss, float RimLead, float Kicker);
+	void UpdateBossBody(float DeltaSeconds);
+	void SpawnHitPuff(const FVector& At, float Scale);
 	// The procedural music for this frame (UFTBeatBossMusic): the driver follows the fight, the component places it.
 	void MusicFrame();
 	void MusicReset();
@@ -267,6 +305,14 @@ private:
 	TWeakObjectPtr<USkeletalMeshComponent> LeadMesh;
 	TWeakObjectPtr<USkeletalMeshComponent> BossMesh;
 	TWeakObjectPtr<ACameraActor> Camera;
+	// The lights (tagged in the map) and what they were built at; the hand light that glows on the fist about to strike.
+	TArray<TWeakObjectPtr<UPointLightComponent>> StageLights;
+	TArray<float> StageLightBase;
+	TArray<FName> StageLightTags;
+	TWeakObjectPtr<UPointLightComponent> HandLight; // owned by the boss's actor
+	FName HandLightBone;
+	TWeakObjectPtr<UNiagaraSystem> PuffSystem; // loaded once and rooted: the host keeps it for the run
+	TArray<TWeakObjectPtr<UNiagaraComponent>> Puffs;
 	FVector BossHome = FVector::ZeroVector;
 	FVector LeadHome = FVector::ZeroVector;
 	FVector BossHeadWorld = FVector::ZeroVector;
@@ -274,6 +320,8 @@ private:
 	TArray<FLinearColor> BossEmissive;
 	float BossDazedLast = -1.f;
 	float BossStruckLast = -1.f;
+	float BossEyesLast = -1.f;
+	float LeadGuardDown = 0.f; // the lead's hands, lowered in his stance (smoothed)
 	bool bRootMotion = false;
 	bool bFaced = false;
 	int32 SceneFrames = 0;
@@ -296,6 +344,40 @@ private:
 	bool bCameraCut = true;
 	double OrbitAngle = 0.0;
 	double SceneWall = 0.0;
+	double ShakePhase = 0.0;      // the shake's clock: the visuals' (it freezes in a hit-stop, slows in a dip)
+	double LastCutNow = -1e9;     // the fight's clock at the last cut shown
+	double CutKick = 0.0;         // seconds into the 120 ms the new shot settles over
+	bool bStopLast = false;       // the animation was in a hit-stop last frame
+	double JoltStart = -1e9;
+	float ExposureEv = 0.f;
+	ftcore::ChoreoShot RequestedShot = ftcore::ChoreoShot::Wide;
+	float BeatPhase = 0.f;
+	// A blow the lead's follow-up has not landed yet: its popup, flash and shake wait for the contact.
+	struct FPendingHit
+	{
+		double Due = 0.0; // the fight's clock
+		ftcore::BeatBossEvent Event;
+	};
+	static constexpr int32 MaxPendingHits = 8;
+	FPendingHit PendingHits[MaxPendingHits];
+	int32 PendingHitCount = 0;
+
+	// The beat.* options, the tuning they make and the settings last applied.
+	ftcore::BeatAccessOptions Access;
+	FDateTime AccessStamp;
+	uint32 LastHitContacts = 0;
+	bool bPuffTried = false;
+	TArray<bool> BossAttackClip; // by clip: the boss plays it as a move of its own (a swing it leans into)
+	TArray<uint8> BossClipArm;   // by clip: the arm it strikes with (1 right, 2 left), from its move's anchor
+	int32 FlashLevel = 0;
+	bool bReduceFlashesSeen = false; // Settings::reduceFlashes as last read
+	ftcore::QteAssist AppliedAssist;
+	double AccessCheckWall = 0.0;
+	// The result: its keys are read once the screen has shown 0.5 s and every key has been let go; Give up asks twice.
+	bool bResultArmed = false;
+	bool bGiveUpAsked = false;
+	double GiveUpAskedAt = -1e9;
+	double ResultShownAt = 0.0;
 
 	ftcore::BeatBossTrack Track;
 	ftcore::BeatBossTuning Tuning;

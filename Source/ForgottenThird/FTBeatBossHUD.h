@@ -18,6 +18,13 @@
 //     damage over it, a red edge flash when the lead is hit, banners for a finisher, a stagger, a
 //     Release and a phase;
 //   - the result (VICTORY or DEFEAT with the counts) and the retry prompt.
+// A prompt is its answer's own shape, so the seven read apart in greyscale and with the sound off: a strike a plain
+// circle, a parry a spiked one, a guard a double hexagon that fills once it is pressed, a dodge a diamond with a
+// chevron to the side it goes, a jump a triangle point up, a hold a circle with a tail that drains, a release an
+// octagon, a pair two half discs, a finisher's strike a gold circle with a pip for each strike left. The ring that
+// closes on it moves at one fixed speed (300 px a second at 1080p), so a prompt told earlier starts farther out, and it
+// pulses with the beat. The beat line's markers have the same shapes and the answer written over them.
+// beat.ui_scale scales all of it; beat.flash_level takes the bursts, the flares and the edge frame down.
 // Drawing builds no strings: every word is a static FTUiText, and numbers and the few composed labels
 // are built once, when the first fight begins.
 
@@ -46,7 +53,11 @@ private:
 
 	// Text with a drop shadow; Align 0 left, 1 centred, 2 right.
 	void Text(const FString& Str, const FLinearColor& Color, float X, float Y, UFont* Font, float Scale, int32 Align = 0);
-	void Ring(float X, float Y, float Radius, const FLinearColor& Color, float Thickness, int32 Segments = 32);
+	void Ring(float X, float Y, float Radius, const FLinearColor& Color, float Thickness, int32 Segments = 32, float Start = 0.f);
+	void Arc(float X, float Y, float Radius, float Start, float Sweep, const FLinearColor& Color, float Thickness);
+	// An answer's outline of radius R at (X, Y).
+	void AnswerShape(ftcore::BeatBossAnswer Answer, bool bFinisher, float X, float Y, float R, const FLinearColor& Color, float Thickness, float Held, int32 Left, float Scale);
+	float ProjectedRadius(const FVector& World) const;
 	void Disc(float X, float Y, float Radius, const FLinearColor& Color);
 	void Spikes(float X, float Y, float Radius, const FLinearColor& Color, float Thickness);
 	void Frame(float X, float Y, float W, float H, const FLinearColor& Color, float Thickness);
@@ -64,6 +75,8 @@ private:
 	void DrawBanners(const AFTBeatBossGameMode& Mode);
 	void DrawResult(const AFTBeatBossGameMode& Mode);
 
+	int32 FlashLevel = 0;
+	float WordBoost = 1.f; // the answer words are at least 18 px at 1080p
 	float UiScale = 1.f;
 	float FontScale = 1.f; // UiScale with the fonts' boost
 	bool bBuilt = false;

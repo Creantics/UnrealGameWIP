@@ -77,6 +77,133 @@ void FFTBeatFighterProxy::PreUpdate(UAnimInstance* InAnimInstance, float DeltaSe
 		Layers[I].Weight /= Sum;
 	}
 	bHoldRoot = Instance->bHoldRoot;
+	BuildChest = Instance->BuildChest;
+	BuildHead = Instance->BuildHead;
+	BuildHands = Instance->BuildHands;
+	Lean = Instance->Lean;
+	GuardDown = Instance->GuardDown;
+	ArmDropR = Instance->ArmDropR;
+	ArmDropL = Instance->ArmDropL;
+}
+
+// The boss's mass and swing, put on the blended pose.
+void FFTBeatFighterProxy::ApplyBuild(FPoseContext& Output) const
+{
+	const FBoneContainer& Container = Output.Pose.GetBoneContainer();
+	const auto Find = [&Container](const TCHAR* Name)
+	{
+		const int32 Mesh = Container.GetPoseBoneIndexForBoneName(FName(Name));
+		return Mesh == INDEX_NONE ? FCompactPoseBoneIndex(INDEX_NONE) : Container.MakeCompactPoseIndex(FMeshPoseBoneIndex(Mesh));
+	};
+	const FCompactPoseBoneIndex Chest = Find(TEXT("spine_03"));
+	const FCompactPoseBoneIndex Head = Find(TEXT("head"));
+	const FCompactPoseBoneIndex HandR = Find(TEXT("hand_r"));
+	const FCompactPoseBoneIndex HandL = Find(TEXT("hand_l"));
+
+	// The lean first: the upper body pitched about the line across the hips, in component space, so every clip
+	// swings the same way whatever its own bone axes are. Forward is across x up, as the host finds it.
+	if (FMath::Abs(Lean) > 0.01f && Chest.IsValid())
+	{
+		const FCompactPoseBoneIndex ThighR = Find(TEXT("thigh_r"));
+		const FCompactPoseBoneIndex ThighL = Find(TEXT("thigh_l"));
+		if (ThighR.IsValid() && ThighL.IsValid())
+		{
+			FCSPose<FCompactPose> Component;
+			Component.InitPose(Output.Pose);
+			FVector Across = Component.GetComponentSpaceTransform(ThighR).GetLocation() - Component.GetComponentSpaceTransform(ThighL).GetLocation();
+			Across.Z = 0.0;
+			if (Across.Normalize())
+			{
+				FTransform Spine = Component.GetComponentSpaceTransform(Chest);
+				Spine.SetRotation((FQuat(Across, FMath::DegreesToRadians(static_cast<double>(Lean))) * Spine.GetRotation()).GetNormalized());
+				Component.SetComponentSpaceTransform(Chest, Spine);
+				FCSPose<FCompactPose>::ConvertComponentPosesToLocalPoses(Component, Output.Pose);
+			}
+		}
+	}
+
+	// The guard comes down: from hands held at the face to a guard at the chest. Each upper arm swings down a little, and
+	// each elbow opens about its own hinge (the line across the arm's bend), in component space, the same for any clip.
+	if (GuardDown > 0.001f)
+	{
+		FCSPose<FCompactPose> Component;
+		Component.InitPose(Output.Pose);
+		for (const TCHAR* Side : {TEXT("l"), TEXT("r")})
+		{
+			const FCompactPoseBoneIndex Upper = Find(*FString::Printf(TEXT("upperarm_%s"), Side));
+			const FCompactPoseBoneIndex Lower = Find(*FString::Printf(TEXT("lowerarm_%s"), Side));
+			const FCompactPoseBoneIndex Hand = Find(*FString::Printf(TEXT("hand_%s"), Side));
+			if (!Upper.IsValid() || !Lower.IsValid() || !Hand.IsValid())
+			{
+				continue;
+			}
+			// The upper arm's direction (shoulder to elbow) swung towards straight down.
+			FTransform UpperCS = Component.GetComponentSpaceTransform(Upper);
+			const FVector ToElbow = UpperCS.GetRotation().RotateVector(Output.Pose[Lower].GetTranslation()).GetSafeNormal();
+			const FVector Down(0.0, 0.0, -1.0);
+			FVector Swing = FVector::CrossProduct(ToElbow, Down);
+			if (Swing.Normalize())
+			{
+				UpperCS.SetRotation((FQuat(Swing, FMath::DegreesToRadians(24.0 * static_cast<double>(GuardDown))) * UpperCS.GetRotation()).GetNormalized());
+				Component.SetComponentSpaceTransform(Upper, UpperCS);
+			}
+			// The elbow: the forearm turned about the hinge towards the upper arm's line (straighter).
+			FTransform LowerCS = Component.GetComponentSpaceTransform(Lower);
+			const FVector Upward = UpperCS.GetRotation().RotateVector(Output.Pose[Lower].GetTranslation()).GetSafeNormal();
+			const FVector Forearm = LowerCS.GetRotation().RotateVector(Output.Pose[Hand].GetTranslation()).GetSafeNormal();
+			FVector Hinge = FVector::CrossProduct(Upward, Forearm);
+			if (Hinge.Normalize())
+			{
+				LowerCS.SetRotation((FQuat(Hinge, FMath::DegreesToRadians(-48.0 * static_cast<double>(GuardDown))) * LowerCS.GetRotation()).GetNormalized());
+				Component.SetComponentSpaceTransform(Lower, LowerCS);
+			}
+		}
+		FCSPose<FCompactPose>::ConvertComponentPosesToLocalPoses(Component, Output.Pose);
+	}
+
+	// A blow aimed lower: the upper arm swung down about the line across it, so the fist of a swing made at the boss's own
+	// height comes down onto an opponent who stands a head shorter.
+	if (ArmDropR > 0.01f || ArmDropL > 0.01f)
+	{
+		FCSPose<FCompactPose> Component;
+		Component.InitPose(Output.Pose);
+		for (int32 Side = 0; Side < 2; ++Side)
+		{
+			const float Degrees = Side == 0 ? ArmDropR : ArmDropL;
+			if (Degrees <= 0.01f)
+			{
+				continue;
+			}
+			const FCompactPoseBoneIndex Upper = Find(Side == 0 ? TEXT("upperarm_r") : TEXT("upperarm_l"));
+			const FCompactPoseBoneIndex Lower = Find(Side == 0 ? TEXT("lowerarm_r") : TEXT("lowerarm_l"));
+			if (!Upper.IsValid() || !Lower.IsValid())
+			{
+				continue;
+			}
+			FTransform UpperCS = Component.GetComponentSpaceTransform(Upper);
+			const FVector ToElbow = UpperCS.GetRotation().RotateVector(Output.Pose[Lower].GetTranslation()).GetSafeNormal();
+			FVector Swing = FVector::CrossProduct(ToElbow, FVector(0.0, 0.0, -1.0));
+			if (Swing.Normalize())
+			{
+				UpperCS.SetRotation((FQuat(Swing, FMath::DegreesToRadians(static_cast<double>(Degrees))) * UpperCS.GetRotation()).GetNormalized());
+				Component.SetComponentSpaceTransform(Upper, UpperCS);
+			}
+		}
+		FCSPose<FCompactPose>::ConvertComponentPosesToLocalPoses(Component, Output.Pose);
+	}
+
+	// The build: net sizes, so each bone's own scale is its size over its parent's.
+	const auto Scale = [&Output](const FCompactPoseBoneIndex Bone, float Local)
+	{
+		if (Bone.IsValid() && FMath::Abs(Local - 1.f) > 0.001f)
+		{
+			Output.Pose[Bone].SetScale3D(Output.Pose[Bone].GetScale3D() * static_cast<double>(Local));
+		}
+	};
+	Scale(Chest, BuildChest);
+	Scale(Head, BuildChest > 0.f ? BuildHead / BuildChest : 1.f);
+	Scale(HandR, BuildChest > 0.f ? BuildHands / BuildChest : 1.f);
+	Scale(HandL, BuildChest > 0.f ? BuildHands / BuildChest : 1.f);
 }
 
 bool FFTBeatFighterProxy::Evaluate(FPoseContext& Output)
@@ -119,6 +246,11 @@ bool FFTBeatFighterProxy::Evaluate(FPoseContext& Output)
 		// The host places the actor: the root bone does not travel (its turning stays, the clips' own).
 		const FCompactPoseBoneIndex Root(0);
 		Output.Pose[Root].SetTranslation(Output.Pose.GetRefPose(Root).GetTranslation());
+	}
+	if (FMath::Abs(BuildChest - 1.f) > 0.001f || FMath::Abs(BuildHead - 1.f) > 0.001f || FMath::Abs(BuildHands - 1.f) > 0.001f || FMath::Abs(Lean) > 0.01f
+		|| GuardDown > 0.001f || ArmDropR > 0.01f || ArmDropL > 0.01f)
+	{
+		ApplyBuild(Output);
 	}
 	return true;
 }

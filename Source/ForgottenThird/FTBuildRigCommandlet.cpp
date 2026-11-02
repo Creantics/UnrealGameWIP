@@ -602,13 +602,13 @@ bool RetargetClips(UIKRigDefinition& SourceRig, UIKRigDefinition& TargetRig, USk
 		}
 		if (Source == NAME_None)
 		{
-			FString Names;
+			FString SourceNames;
 			for (const FBoneChain& C : SourceRig.GetRetargetChains())
 			{
-				Names += TEXT(" ") + C.ChainName.ToString();
+				SourceNames += TEXT(" ") + C.ChainName.ToString();
 			}
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: target chain %s has no source chain (source chains:%s)."),
-				*Chain.ChainName.ToString(), *Names);
+				*Chain.ChainName.ToString(), *SourceNames);
 			bOk = false;
 		}
 		else
