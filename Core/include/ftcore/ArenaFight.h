@@ -152,7 +152,10 @@
 //   moves a "clip" (the clip id the host plays); both are the host's alone (docs/ARENA_DEMO.md).
 //   Fighter, enemy, move and attack keys are the struct fields below, spelled the same; a missing
 //   key keeps the struct's default, so entries list only what differs. A fighter's id is a lead id
-//   or "default" (required); ArenaTable::fighter falls back to it. A move's attack keys sit in the
+//   (lower case: "devin", "duy", "third") or "default" (required); ArenaTable::fighter falls back to it.
+//   A lead's kit starts from the "default" fighter, not the struct: a key it leaves out keeps the
+//   default's value, and its light[i] starts from the default's light[i] (the struct's past the
+//   default's chain), so a kit lists only what makes it that lead's. A move's attack keys sit in the
 //   move object itself. `ring`, `attackers` and `spawn` are ArenaDef's ringRadius, attackers and
 //   spawnDistance. 1..kMaxArenaEnemies enemies per fight, 1..kMaxArenaMoves moves per enemy,
 //   1..kMaxLightChain lights; `chain` must name another move of the same enemy and no string may
@@ -213,6 +216,9 @@ struct ArenaAttack {
     float recovery = 0.45f;
     float range = 2.0f;       // metres from the attacker's centre; the target's body radius is added
     float arcCos = 0.5f;      // cos of half the arc it sweeps: 0.5 = 120 degrees wide, -1 = all round
+    float width = 0.f;        // > 0: a straight lane this many metres wide instead of the arc (a shot): it reaches
+                              // a body whose centre lies ahead within range + radius and off the line by at most
+                              // width / 2 + radius; arcCos is then unused
     int damage = 10;
     float poiseDamage = 10.f;
     float guardDamage = 15.f; // stamina a guard that blocks it loses
@@ -227,7 +233,8 @@ struct ArenaAttack {
     float total() const { return startup + active + recovery; }
 };
 
-// The player's kit. arena.json has one per lead id and a "default".
+// The player's kit. arena.json has one per lead id and a "default"; each lead's own blocks are its guard and
+// parry numbers (guardArcCos, guardAbsorb, guardMoveScale, guardBreakTime, parryWindow, parryRearm).
 struct ArenaFighter {
     int hp = 100;
     float stamina = 100.f;
@@ -287,8 +294,8 @@ struct ArenaFighter {
 
 // What an enemy move shows during its startup: the word on its Read card (append only; generic shapes,
 // the host shows each through its own ui string). arena.json spells it as arenaTellName gives it.
-enum class ArenaTell : std::uint8_t { Strike, Overhead, Backhand, Charge, Thrust, Slash, Sweep, Slam };
-inline constexpr std::size_t kArenaTellCount = 8;
+enum class ArenaTell : std::uint8_t { Strike, Overhead, Backhand, Charge, Thrust, Slash, Sweep, Slam, Shot };
+inline constexpr std::size_t kArenaTellCount = 9;
 FTCORE_API const char* arenaTellName(ArenaTell t); // "strike", "overhead", ... Literals.
 
 // One of an enemy's moves: an attack plus when the enemy picks it.
@@ -729,6 +736,31 @@ struct ArenaTable {
     // The fight for (scene, beat, step): the entry's, else the default. No allocation.
     FTCORE_API const ArenaDef& find(std::string_view scene, std::uint32_t beat, std::uint32_t step) const;
 };
+
+// ---- log ----
+
+// What the result line names besides the fight's own counts. Ids only, never text: the story step's scene id
+// ("standalone" for a fight on its own), the zone and the fighter kit, and who played ("autoplay", "idle", "player").
+struct ArenaLogIds {
+    std::string_view scene = "standalone";
+    std::uint32_t beat = 0, step = 0;
+    std::string_view zone;
+    std::string_view kit;
+    std::string_view pilot;
+    std::uint32_t seed = 0;
+};
+
+constexpr std::size_t kArenaResultLineMax = 512; // a buffer this size always holds the line (ids are cut to fit)
+
+// The arena's one line per fight, as the beat screen logs its own (docs/BEAT_SCREEN.md, "Log lines"):
+//   Arena: VICTORY at <scene> beat <b> step <s> after <t> s, zone <z>, kit <k>, enemies <id>+<id>, <pilot> seed <n>,
+//   hp <h>/<max>, <x> hits, <y> taken, <b> blocks, <p> parries, <r> ripostes, <e> evades, <g> guard breaks, <h> heals,
+//   <l> releases, <o> overloads, <c>/<d> reads right, dealt <n>, took <n>, <r> restarts.
+// DEFEAT for a lost fight, TIMEOUT for one still running. The enemies are named by their table kind (the fight's
+// enemyKind), "built-in" for a slot with none. Writes at most cap-1 characters and a terminating zero into out and
+// returns the length written; no allocation.
+FTCORE_API std::size_t arenaResultLine(char* out, std::size_t cap, const ArenaFight& fight, const ArenaTable& table,
+                                       const ArenaLogIds& ids);
 
 // On failure `out` is empty and *error lists each problem with its path, one per line.
 FTCORE_API bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error = nullptr,

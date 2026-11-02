@@ -70,9 +70,11 @@ struct FFTArenaPose
 	FLinearColor Tint = FLinearColor::White; // the body's colour this frame
 
 	// An enemy's floor tell: its reach (cm) and half-width (radians, pi for all round) and how far
-	// through the startup (0..1); Flash 0..1 after it goes active. Reach 0: none.
+	// through the startup (0..1); Flash 0..1 after it goes active. Reach 0: none. Width > 0 (cm): a
+	// straight lane that wide out to the reach (a shot) instead of the arc.
 	float TellReach = 0.f;
 	float TellHalfAngle = 0.f;
+	float TellWidth = 0.f;
 	float TellFraction = 0.f;
 	float TellFlash = 0.f;
 	bool bTellUnblockable = false;

@@ -237,7 +237,7 @@ TEST_CASE("arena table: Data/Battle/arena.json loads without warnings") {
     CHECK(t.fighters.size() == t.fighterIds.size());
     CHECK(t.enemies.size() == t.enemyIds.size());
     CHECK(t.enemies.size() >= 2);
-    CHECK(t.enemies.size() <= 8); // the wave's three, a human-sized duelist, the sized placeholders (hulk, titan) and the skinned boss
+    CHECK(t.enemies.size() <= 8); // the wave's three, a human-sized duelist, the sized placeholders (hulk, titan) the skinned boss and the ranged spitter
     CHECK(t.fallback.enemyCount == 1);
     CHECK(t.entries.empty());
     // The default fight's slot says which table kind it holds.
@@ -477,6 +477,248 @@ TEST_CASE("arena table: the default fighter comes first, fighter() and find() fa
     const ArenaTable empty;
     CHECK(empty.fighter("lead").hp == ArenaFighter{}.hp);
     CHECK(&empty.find("S", 0, 0) == &empty.fallback);
+}
+
+TEST_CASE("arena table: a lead's kit starts from the default fighter, and lists only what differs") {
+    ArenaTable t;
+    const std::string err = loadError(
+        R"({ "version": 1,
+             "fighters": [ { "id": "lead", "hp": 80, "light": [ { "damage": 30 } ], "heavy": { "range": 9 } },
+                           { "id": "default", "hp": 150, "moveAccel": 25, "parryWindow": 0.2,
+                             "light": [ { "damage": 12, "range": 2.4 }, { "damage": 14 } ], "heavy": { "damage": 40 } } ],
+             "enemies": [ { "id": "dummy" } ],
+             "default": { "enemies": ["dummy"] } })",
+        &t);
+    CHECK(err.empty());
+    const ArenaFighter& lead = t.fighter("lead");
+    const ArenaFighter& def = t.fighter("default");
+    CHECK(lead.hp == 80);                      // its own
+    CHECK(lead.moveAccel == 25.f);             // the default's, not the struct's
+    CHECK(lead.parryWindow == doctest::Approx(0.2f));
+    CHECK(lead.lightCount == 1);               // a listed chain is the whole chain
+    CHECK(lead.light[0].damage == 30);         // its own, on top of the default's light[0]
+    CHECK(lead.light[0].range == doctest::Approx(2.4f));
+    CHECK(lead.heavy.range == doctest::Approx(9.f));
+    CHECK(lead.heavy.damage == 40);
+    // The default itself still starts from the struct's values, whichever order the fighters come in.
+    CHECK(def.hp == 150);
+    CHECK(def.lightCount == 2);
+    CHECK(t.fighter("lead").heavy.startup == doctest::Approx(ArenaFighter{}.heavy.startup));
+}
+
+TEST_CASE("arena data: each lead ships its own kit and its own blocks") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter& base = t.fighter("default");
+    const ArenaFighter& devin = t.fighter("devin");
+    const ArenaFighter& duy = t.fighter("duy");
+    const ArenaFighter& third = t.fighter("third");
+    for (const char* id : {"devin", "duy", "third"}) {
+        bool found = false;
+        for (const std::string& f : t.fighterIds) found = found || f == id;
+        CHECK_MESSAGE(found, "Error: no fighter kit for " << id);
+    }
+    // Devin, the expert blade: a longer chain, a wider parry than anyone.
+    CHECK(devin.lightCount > base.lightCount);
+    CHECK(devin.parryWindow > base.parryWindow);
+    CHECK(devin.parryWindow > duy.parryWindow);
+    CHECK(devin.parryWindow > third.parryWindow);
+    // Duy: kicks that reach further and break poise, a gun for the heavy (long, narrow, one target, no lunge).
+    CHECK(duy.light[0].range > base.light[0].range);
+    CHECK(duy.light[0].poiseDamage > base.light[0].poiseDamage);
+    CHECK(duy.heavy.range >= 8.f);
+    CHECK(duy.heavy.arcCos >= 0.95f);
+    CHECK(duy.heavy.maxTargets == 1);
+    CHECK(duy.heavy.lunge == 0.f);
+    // The Third: spells at range with no lunge, a ward all round, and an even-handed parry.
+    CHECK(third.light[0].range > base.light[0].range);
+    CHECK(third.light[0].lunge == 0.f);
+    CHECK(third.heavy.arcCos <= -1.f);
+    CHECK(third.guardArcCos <= -1.f);
+    // Each lead blocks its own way.
+    CHECK(devin.guardArcCos != duy.guardArcCos);
+    CHECK(duy.guardArcCos != third.guardArcCos);
+    CHECK(devin.guardAbsorb > duy.guardAbsorb);
+    CHECK(duy.guardAbsorb > third.guardAbsorb);
+    // Every lead keeps the default's handling where it says nothing.
+    CHECK(duy.moveBrake == base.moveBrake);
+    CHECK(third.moveAccel == base.moveAccel);
+    CHECK(third.hp == base.hp);
+}
+
+TEST_CASE("arena attack: Duy's gun heavy connects far off, with the nearest body only, and not past its range") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter duy = t.fighter("duy");
+    {   // 8 m out, straight ahead, with another body behind it
+        Rig rig(duy, {dummyKind(), dummyKind()});
+        rig.put(0, 8.f, 0.f);
+        rig.put(1, 8.8f, 0.f);
+        rig.in.heavy = true;
+        rig.runFor(1.5f);
+        REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+        CHECK(rig.find(ArenaEventType::Hit)->event.target == 0);
+        CHECK(rig.fight.enemyHp(1) == 100);
+    }
+    {   // well past its range: nothing
+        Rig rig(duy, {dummyKind()});
+        rig.put(0, 12.f, 0.f);
+        rig.in.heavy = true;
+        rig.runFor(1.5f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+    {   // a body well off the line of the shot is missed, where a kick's wide arc would not care
+        Rig rig(duy, {dummyKind()});
+        rig.put(0, 6.f, 4.f);
+        rig.in.heavy = true;
+        rig.runFor(1.5f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+}
+
+namespace {
+
+// A shot: a lane half a metre wide out to 9 m, told for 0.8 s, turning slowly while it is told.
+ArenaAttack laneShot() {
+    ArenaAttack a = swing(0.8f, 0.08f, 0.6f, 9.f, 12);
+    a.width = 0.5f;
+    a.tracking = 0.3f;
+    return a;
+}
+
+// A shooter that asks for the token from anywhere in its lane's reach (its bodies are pinned, so it never walks in).
+ArenaEnemyKind laneKind(const ArenaAttack& attack = laneShot(), float maxRange = 9.f) {
+    ArenaEnemyKind k = hitterKind(attack, maxRange);
+    k.preferredRange = maxRange;
+    k.runRange = maxRange + 3.f;
+    return k;
+}
+
+// Ticks until the first enemy attack starts (or `most` ticks pass); the tick it started on, or -1.
+int runToAttack(Rig& rig, int most = 400) {
+    for (int i = 0; i < most; ++i) {
+        rig.tick();
+        if (const Logged* l = rig.find(ArenaEventType::AttackStarted)) return l->tick;
+    }
+    return -1;
+}
+
+} // namespace
+
+TEST_CASE("arena lane: a shot hits down its lane, close or far, and misses off it where an arc of its width would not") {
+    for (const float x : {1.5f, 4.f, 8.f}) {
+        Rig rig(ruleFighter(), {laneKind()});
+        rig.put(0, x, 0.f);
+        REQUIRE(runToAttack(rig) > 0);
+        rig.runFor(1.f);
+        CHECK_MESSAGE(rig.count(ArenaEventType::Hit) == 1, "at " << x << " m");
+        CHECK(rig.fight.hp() == 88);
+    }
+    {   // Past its range plus the body: nothing.
+        Rig rig(ruleFighter(), {laneKind(laneShot(), 12.f)});
+        rig.put(0, 10.f, 0.f);
+        REQUIRE(runToAttack(rig) > 0);
+        rig.runFor(1.f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+}
+
+TEST_CASE("arena lane: a late sidestep out of the lane makes the shot miss; standing still it lands") {
+    // 7 m off, the shooter turns 0.3 rad/s while it tells: stepping 1.5 m aside 0.2 s before the shot leaves the
+    // lane (0.25 m + the body's 0.4 m off its line) far behind.
+    for (const bool step : {false, true}) {
+        Rig rig(ruleFighter(), {laneKind()});
+        rig.put(0, 7.f, 0.f);
+        REQUIRE(runToAttack(rig) > 0);
+        rig.runFor(0.6f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0); // still told
+        if (step) rig.bodies.player = Vec2{0.f, 1.5f};
+        rig.runFor(0.6f);
+        CHECK(rig.count(ArenaEventType::Hit) == (step ? 0 : 1));
+        CHECK(rig.count(ArenaEventType::Evaded) == 0); // no roll: it simply missed
+    }
+}
+
+TEST_CASE("arena lane: a guard blocks a shot, an unblockable volley goes through it, and a roll's i-frames evade it") {
+    {   // guard held: blocked
+        Rig rig(ruleFighter(), {laneKind()});
+        rig.put(0, 6.f, 0.f);
+        rig.in.guard = true;
+        REQUIRE(runToAttack(rig) > 0);
+        rig.runFor(1.f);
+        CHECK(rig.count(ArenaEventType::Blocked) == 1);
+        CHECK(rig.fight.hp() > 88); // at most the guard's chip of the shot's 12
+    }
+    ArenaEnemyKind volley = laneKind();
+    volley.moves[0].attack.width = 1.6f;
+    volley.moves[0].attack.damage = 20;
+    volley.moves[0].unblockable = true;
+    volley.moves[0].parryable = false;
+    {   // the same guard against the volley: hit
+        Rig rig(ruleFighter(), {volley});
+        rig.put(0, 6.f, 0.f);
+        rig.in.guard = true;
+        REQUIRE(runToAttack(rig) > 0);
+        rig.runFor(1.f);
+        CHECK(rig.count(ArenaEventType::Blocked) == 0);
+        CHECK(rig.count(ArenaEventType::Hit) == 1);
+        CHECK(rig.fight.hp() == 80);
+    }
+    {   // a roll pressed 0.65 s into the 0.8 s tell: its i-frames cover the shot
+        Rig rig(ruleFighter(), {volley});
+        rig.put(0, 6.f, 0.f);
+        REQUIRE(runToAttack(rig) > 0);
+        rig.runFor(0.65f);
+        rig.in.dodge = true;
+        rig.tick();
+        rig.runFor(0.6f);
+        CHECK(rig.count(ArenaEventType::Evaded) == 1);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+}
+
+TEST_CASE("arena data: the spitter shoots down lanes, told well before they land, and keeps a shove for close in") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind* spitter = nullptr;
+    for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+        if (t.enemyIds[e] == "spitter") spitter = &t.enemies[e];
+    REQUIRE(spitter);
+    int lanes = 0, unblockableLanes = 0, close = 0;
+    for (std::size_t m = 0; m < spitter->moveCount; ++m) {
+        const ArenaEnemyMove& mv = spitter->moves[m];
+        if (mv.attack.width > 0.f) {
+            ++lanes;
+            CHECK(mv.attack.startup >= 0.8f); // two beats: the lane reads with the sound off
+            CHECK(mv.attack.range >= 8.f);
+            CHECK(mv.attack.lunge == 0.f);
+            CHECK(mv.attack.tracking <= 0.5f); // slow enough that a late sidestep beats it
+            CHECK(mv.minRange >= 3.f);         // it shoots from afar only
+            if (mv.unblockable) ++unblockableLanes;
+        } else if (mv.maxRange <= 2.5f) {
+            ++close;
+        }
+    }
+    CHECK(lanes >= 2);
+    CHECK(unblockableLanes >= 1);
+    CHECK(close >= 1);
+    // It backs off from a lead closing in, but slower than any lead moves, so it can be caught.
+    for (const ArenaFighter& f : t.fighters) {
+        CHECK(spitter->walkSpeed < f.moveSpeed);
+        CHECK(spitter->runSpeed < f.moveSpeed);
+    }
+    // Every shipped lane, the spitter's or a lead's, tells for at least 0.4 s in an enemy.
+    for (const ArenaEnemyKind& k : t.enemies)
+        for (std::size_t m = 0; m < k.moveCount; ++m)
+            if (k.moves[m].attack.width > 0.f) CHECK(k.moves[m].attack.startup >= 0.4f);
+}
+
+TEST_CASE("arena table: an attack's width is a lane, 0..20 m") {
+    ArenaTable t;
+    CHECK(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "moves": [ { "tell": "shot", "width": 0.5, "range": 9 } ] } ])"), &t).empty());
+    REQUIRE(t.enemies.size() == 1);
+    CHECK(t.enemies[0].moves[0].attack.width == doctest::Approx(0.5f));
+    CHECK(t.enemies[0].moves[0].tell == ArenaTell::Shot);
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "moves": [ { "width": -1 } ] } ])")), "moves[0].width"));
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "moves": [ { "width": 21 } ] } ])")), "moves[0].width"));
+    CHECK(std::string_view(arenaTellName(ArenaTell::Shot)) == "shot");
 }
 
 TEST_CASE("arena table: each fight records the table kind of its enemy slots") {
@@ -2740,7 +2982,7 @@ TEST_CASE("arena kinds: a bpm of their own, a skinned look and a clip per move l
                                                         R"(, "moves": [ { "clip": "a" }, { "clip": "a", "weight": 0 } ] } ])");
     CHECK(contains(loadError(twice), "moves[1].clip: the same as moves[0]'s"));
     // Up to kMaxArenaMoves (8) moves, each telling itself apart; a ninth is refused.
-    static_assert(kMaxArenaMoves == 8 && kArenaTellCount == 8, "a kind can name every tell once");
+    static_assert(kMaxArenaMoves == 8 && kArenaTellCount >= kMaxArenaMoves, "a kind can name a tell per move");
     std::string eight = R"([ { "id": "dummy", "moves": [)";
     for (std::size_t m = 0; m < kMaxArenaMoves; ++m)
         eight += std::string(m ? "," : "") + R"({ "tell": ")" + arenaTellName(static_cast<ArenaTell>(m)) + R"(" })";
@@ -3417,14 +3659,18 @@ void checkBalance(const std::string& name, const ArenaDef& def) {
                                          << ", slowest idle loss " << worstLoss << " s (seed 1: " << firstWin << " / " << firstLoss << ")");
 }
 
-// A fight of the shipped enemies, by id.
-ArenaDef shippedFight(const ArenaTable& table, std::initializer_list<const char*> ids, std::uint8_t attackers) {
+// A fight of the shipped enemies, by id, played with one fighter's kit.
+ArenaDef shippedFight(const ArenaTable& table, std::initializer_list<const char*> ids, std::uint8_t attackers,
+                      const char* fighterId = "default") {
     ArenaDef def;
-    def.fighter = table.fighter("default");
+    def.fighter = table.fighter(fighterId);
     def.enemyCount = 0;
     for (const char* id : ids)
         for (std::size_t e = 0; e < table.enemyIds.size(); ++e)
-            if (table.enemyIds[e] == id) def.enemies[def.enemyCount++] = table.enemies[e];
+            if (table.enemyIds[e] == id) {
+                def.enemyKind[def.enemyCount] = static_cast<std::uint8_t>(e);
+                def.enemies[def.enemyCount++] = table.enemies[e];
+            }
     def.attackers = attackers;
     def.ringRadius = 12.f;
     def.spawnDistance = 7.f;
@@ -3447,6 +3693,7 @@ TEST_CASE("arena balance: three enemies, one attacking at a time") {
     checkBalance("three kinds, attackers 1", shippedFight(table, {"brute", "skirmisher", "breaker"}, 1));
     checkBalance("two brutes, attackers 2", shippedFight(table, {"brute", "brute"}, 2));
     checkBalance("three skirmishers, attackers 1", shippedFight(table, {"skirmisher", "skirmisher", "skirmisher"}, 1));
+    checkBalance("a brute and a spitter, attackers 2", shippedFight(table, {"brute", "spitter"}, 2));
 }
 
 TEST_CASE("arena balance: the shipped enemies each lose to the autopilot alone") {
@@ -3458,6 +3705,27 @@ TEST_CASE("arena balance: the shipped enemies each lose to the autopilot alone")
         def.enemies[0] = table.enemies[e];
         def.attackers = 1;
         checkBalance(table.enemyIds[e], def);
+    }
+}
+
+TEST_CASE("arena balance: every lead's kit plays the default's fights") {
+    const ArenaTable table = loadShipped();
+    REQUIRE(table.fighterIds.size() >= 4); // default, devin, duy, third
+    for (std::size_t f = 1; f < table.fighterIds.size(); ++f) {
+        const std::string& id = table.fighterIds[f];
+        ArenaDef fallback = table.fallback;
+        fallback.fighter = table.fighters[f];
+        checkBalance(id + ": shipped default fight", fallback);
+        checkBalance(id + ": three kinds, attackers 1", shippedFight(table, {"brute", "skirmisher", "breaker"}, 1, id.c_str()));
+        checkBalance(id + ": a brute and a spitter, attackers 2", shippedFight(table, {"brute", "spitter"}, 2, id.c_str()));
+        for (std::size_t e = 0; e < table.enemyIds.size(); ++e) {
+            ArenaDef def;
+            def.fighter = table.fighters[f];
+            def.enemyCount = 1;
+            def.enemies[0] = table.enemies[e];
+            def.attackers = 1;
+            checkBalance(id + ": " + table.enemyIds[e], def);
+        }
     }
 }
 
@@ -3532,4 +3800,90 @@ TEST_CASE("arena fence: a whole autopilot fight and an idle one build no arrow c
     CHECK(won.phase == ArenaPhase::Victory);
     CHECK(lost.phase == ArenaPhase::Defeat);
     CHECK(comboSequencesBuilt() == before);
+}
+
+// ---- log ----
+
+namespace {
+
+// Plays def to its end under the autopilot (or nobody), then formats its result line.
+std::string resultLineOf(const ArenaDef& def, const ArenaTable& table, bool autopilot, const ArenaLogIds& ids, std::size_t cap = kArenaResultLineMax) {
+    const ArenaRing ring = arenaRingAt(Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, def.ringRadius, ArenaRing{Vec2{0.f, 0.f}, 36.f});
+    ArenaFight fight;
+    fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, ids.seed);
+    ArenaBodies bodies;
+    bodies.player = fight.playerStart();
+    for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
+    while (!fight.over() && fight.time() < 120.f) {
+        fight.tick(kDt, autopilot ? fight.autopilot() : ArenaInput{}, bodies);
+        arenaStep(fight, bodies, kDt);
+    }
+    std::array<char, kArenaResultLineMax> buf{};
+    const std::size_t n = arenaResultLine(buf.data(), cap, fight, table, ids);
+    CHECK(n < cap);
+    CHECK(buf[n] == '\0');
+    return std::string(buf.data(), n);
+}
+
+} // namespace
+
+TEST_CASE("arena log: one line per fight, ids and counts only, like the beat screen's") {
+    const ArenaTable table = loadShipped();
+    ArenaLogIds ids;
+    ids.zone = "sand_ring";
+    ids.kit = "devin";
+    ids.pilot = "autoplay";
+    ids.seed = 3;
+    const ArenaDef wave = shippedFight(table, {"brute", "skirmisher", "breaker"}, 1, "devin");
+    const std::string won = resultLineOf(wave, table, true, ids);
+    MESSAGE(won);
+    CHECK(won.rfind("Arena: VICTORY at standalone beat 0 step 0 after ", 0) == 0);
+    CHECK(contains(won, " s, zone sand_ring, kit devin, enemies brute+skirmisher+breaker, autoplay seed 3, hp "));
+    CHECK(contains(won, "/150, "));
+    CHECK(contains(won, " reads right, dealt "));
+    CHECK(contains(won, ", 0 restarts."));
+    CHECK(won.back() == '.');
+    // A story step names its scene, beat and step; a lost fight says DEFEAT; a built-in slot says so.
+    ids.scene = "SC-07";
+    ids.beat = 4;
+    ids.step = 2;
+    ids.pilot = "idle";
+    const std::string lost = resultLineOf(wave, table, false, ids);
+    CHECK(lost.rfind("Arena: DEFEAT at SC-07 beat 4 step 2 after ", 0) == 0);
+    CHECK(contains(lost, "idle seed 3, hp 0/150, 0 hits"));
+    const std::string builtIn = resultLineOf(defaultArenaDef(), ArenaTable{}, true, ids);
+    CHECK(contains(builtIn, ", enemies built-in, "));
+    // An id with a space or a comma can't break the line apart; a fight still running is a TIMEOUT.
+    ids.zone = "two words,here";
+    ArenaFight fresh;
+    fresh.begin(wave, arenaRingAt(Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 12.f, ArenaRing{Vec2{0.f, 0.f}, 36.f}), Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    std::array<char, kArenaResultLineMax> buf{};
+    const std::size_t n = arenaResultLine(buf.data(), buf.size(), fresh, table, ids);
+    const std::string running(buf.data(), n);
+    CHECK(running.rfind("Arena: TIMEOUT at SC-07 beat 4 step 2 after 0.0 s, zone two_words_here, kit devin, ", 0) == 0);
+}
+
+TEST_CASE("arena log: a short buffer is cut and zero-ended, and writing the line allocates nothing") {
+    const ArenaTable table = loadShipped();
+    const ArenaDef wave = shippedFight(table, {"brute", "skirmisher", "breaker"}, 1);
+    ArenaLogIds ids;
+    ids.zone = "sand_ring";
+    ids.kit = "default";
+    ids.pilot = "autoplay";
+    ids.seed = 1;
+    const std::string cut = resultLineOf(wave, table, true, ids, 20);
+    CHECK(cut == "Arena: VICTORY at s");
+    ArenaFight fight;
+    fight.begin(wave, arenaRingAt(Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 12.f, ArenaRing{Vec2{0.f, 0.f}, 36.f}), Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    char one[1] = {'x'};
+    CHECK(arenaResultLine(one, 1, fight, table, ids) == 0);
+    CHECK(one[0] == '\0');
+    CHECK(arenaResultLine(nullptr, 0, fight, table, ids) == 0);
+    std::array<char, kArenaResultLineMax> buf{};
+    const bool counting = ftcore_test::allocHookInstalled();
+    const auto before = ftcore_test::allocStats().count;
+    const std::size_t n = arenaResultLine(buf.data(), buf.size(), fight, table, ids);
+    const auto allocs = ftcore_test::allocStats().count - before;
+    CHECK(n > 0);
+    if (counting) CHECK(allocs == 0);
 }

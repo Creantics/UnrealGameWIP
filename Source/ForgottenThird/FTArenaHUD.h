@@ -1,6 +1,6 @@
 #pragma once
 
-// Canvas UI of the arena demo (no UMG), drawn from AFTArenaGameMode (docs/ARENA_DEMO.md):
+// Canvas UI of the arena fight (no UMG), drawn from its UFTArenaRunner (docs/ARENA_DEMO.md):
 //   - the player's panel, bottom left: hp, stamina, the Load gauge (a mark at a third, where the Release opens;
 //     RELEASE READY above it, and OVERLOADED with the locked verbs at the top), poise and the heal charges left;
 //   - over each living enemy its hp and poise, and the target's (the locked enemy's, else the nearest's) as a
@@ -25,7 +25,7 @@
 
 #include "FTArenaHUD.generated.h"
 
-class AFTArenaGameMode;
+class UFTArenaRunner;
 class UFont;
 
 // A number as text, rebuilt only when the number changes.
@@ -55,21 +55,21 @@ private:
 	bool ToScreen(const FVector& World, FVector2D& Out);
 	bool OnScreen(const FVector2D& P, float Margin) const;
 
-	void DrawPlayerPanel(const AFTArenaGameMode& Mode);
-	void DrawEnemies(const AFTArenaGameMode& Mode);
-	void DrawTargetBar(const AFTArenaGameMode& Mode);
-	void DrawTell(const AFTArenaGameMode& Mode, int32 Enemy, const FVector2D& Over, const FVector2D& Chest, bool bOnScreen);
+	void DrawPlayerPanel(const UFTArenaRunner& Mode);
+	void DrawEnemies(const UFTArenaRunner& Mode);
+	void DrawTargetBar(const UFTArenaRunner& Mode);
+	void DrawTell(const UFTArenaRunner& Mode, int32 Enemy, const FVector2D& Over, const FVector2D& Chest, bool bOnScreen);
 	// The open Read deal's cards, centred on X with their bottom at Bottom.
-	void DrawReadCards(const AFTArenaGameMode& Mode, float X, float Bottom);
+	void DrawReadCards(const UFTArenaRunner& Mode, float X, float Bottom);
 	void DrawEdgeArrow(const FVector2D& Toward, const FLinearColor& Color);
-	void DrawLock(const AFTArenaGameMode& Mode);
-	void DrawPopups(const AFTArenaGameMode& Mode);
-	void DrawFlashes(const AFTArenaGameMode& Mode);
-	void DrawBanners(const AFTArenaGameMode& Mode);
-	void DrawResult(const AFTArenaGameMode& Mode);
+	void DrawLock(const UFTArenaRunner& Mode);
+	void DrawPopups(const UFTArenaRunner& Mode);
+	void DrawFlashes(const UFTArenaRunner& Mode);
+	void DrawBanners(const UFTArenaRunner& Mode);
+	void DrawResult(const UFTArenaRunner& Mode);
 	// The air near the zone's wall, in the world's own look (rain haze, a pulsing blue grid, paper-edge fog), within
 	// about 3 m of it and nowhere else: how the player learns where the invisible wall is.
-	void DrawEdgeCue(const AFTArenaGameMode& Mode);
+	void DrawEdgeCue(const UFTArenaRunner& Mode);
 
 	float UiScale = 1.f;
 

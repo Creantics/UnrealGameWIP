@@ -75,6 +75,12 @@ Vec2 arenaTurn(Vec2 facing, Vec2 dir, float maxAngle) {
 bool arenaReaches(Vec2 from, Vec2 facing, const ArenaAttack& a, Vec2 to, float radius) {
     const Vec2 d = arenaSub(to, from);
     const float distance = arenaLength(d);
+    if (a.width > 0.f) {
+        // A lane: ahead of the attacker along its facing, and off that line by at most half the width.
+        const float along = arenaDot(facing, d);
+        const float off = std::fabs(facing.x * d.y - facing.y * d.x);
+        return along >= -radius && along <= a.range + radius && off <= a.width * 0.5f + radius;
+    }
     if (distance > a.range + radius) return false;
     if (distance <= kArenaEps) return true;
     const float dot = std::clamp(arenaDot(facing, d) / distance, -1.f, 1.f);
@@ -1598,6 +1604,7 @@ const char* arenaTellName(ArenaTell t) {
     case ArenaTell::Slash: return "slash";
     case ArenaTell::Sweep: return "sweep";
     case ArenaTell::Slam: return "slam";
+    case ArenaTell::Shot: return "shot";
     }
     return "";
 }
@@ -1780,7 +1787,7 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             kArenaBeatTolerance. An enemy may carry a bpm of its own, which its startups are checked against
 //             in place of the file's
 //   attack    startup, recovery 0..10; active (0, 10]; range (0, 100]; arcCos -1..1; damage, poiseDamage,
-//             guardDamage, stamina 0..100000; lunge, tracking 0..100; armor, cancel 0..1; maxTargets 0..6
+//             guardDamage, stamina 0..100000; lunge, tracking 0..100; armor, cancel 0..1; maxTargets 0..6; width 0..20
 //   enemy     hp 1..100000; poise (0, 100000]; poiseDelay, staggerTime, openTime, downTime, attackDelay 0..10;
 //             walkSpeed, runSpeed, strafeSpeed 0..50; turnRate (0, 100]; preferredRange (0, 100];
 //             runRange 0..100 and at least preferredRange; bodyRadius (0, 5]; height (0, 30] metres, optional
@@ -1804,7 +1811,7 @@ using ArenaStrings = std::vector<std::string>;
 
 constexpr std::string_view kArenaAttackKeys[] = {"startup", "active",      "recovery",    "range",  "arcCos",
                                                  "damage",  "poiseDamage", "guardDamage", "lunge",  "tracking",
-                                                 "armor",   "stamina",     "cancel",      "maxTargets"};
+                                                 "armor",   "stamina",     "cancel",      "maxTargets", "width"};
 
 std::string arenaFormat(double v) {
     char buffer[32];
@@ -1875,6 +1882,7 @@ void arenaParseAttack(JsonValue j, const std::string& path, ArenaAttack& a, Aren
     arenaNum(j, "recovery", a.recovery, 0, 10, false, path, errors);
     arenaNum(j, "range", a.range, 0, 100, true, path, errors);
     arenaNum(j, "arcCos", a.arcCos, -1, 1, false, path, errors);
+    arenaNum(j, "width", a.width, 0, 20, false, path, errors);
     arenaInt(j, "damage", a.damage, 0, 100000, path, errors);
     arenaNum(j, "poiseDamage", a.poiseDamage, 0, 100000, false, path, errors);
     arenaNum(j, "guardDamage", a.guardDamage, 0, 100000, false, path, errors);
@@ -2065,7 +2073,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
             }
             if (!known)
                 errors.push_back(mp + ".tell: expected one of strike, overhead, backhand, charge, thrust, slash, sweep, "
-                                      "slam");
+                                      "slam, shot");
         }
         if (const JsonValue cj = mj["clip"]; !cj.isAbsent()) {
             const std::string_view id = cj.string();
@@ -2181,9 +2189,18 @@ bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error
         else errors.push_back("bpm: expected a number in (0, 300]");
     }
 
-    // Fighters: ids unique, "default" among them (and moved to the front).
+    // Fighters: ids unique, "default" among them (and moved to the front). The "default" is read first, from the
+    // struct's defaults; a lead's kit starts from it, so a lead lists only what differs.
     const JsonValue fighters = root["fighters"];
     if (!fighters.isAbsent() && !fighters.isArray()) errors.push_back("fighters: expected an array");
+    ArenaFighter base;
+    for (std::uint32_t i = 0; i < fighters.size() && fighters.isArray(); ++i) {
+        const JsonValue j = fighters[i];
+        if (!j.isObject() || j["id"].string() != "default") continue;
+        ArenaStrings ignored; // its errors and warnings are reported in order below
+        arenaParseFighter(j, "", base, ignored, nullptr);
+        break;
+    }
     for (std::uint32_t i = 0; i < fighters.size() && fighters.isArray(); ++i) {
         const JsonValue j = fighters[i];
         const std::string path = "fighters[" + std::to_string(i) + "]";
@@ -2195,7 +2212,7 @@ bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error
         if (fid.empty()) errors.push_back(path + ".id: expected an id");
         for (const std::string& known : table.fighterIds)
             if (!fid.empty() && known == fid) errors.push_back(path + ".id: duplicate id: " + fid);
-        ArenaFighter f;
+        ArenaFighter f = fid == "default" ? ArenaFighter{} : base;
         arenaParseFighter(j, path, f, errors, warnings);
         table.fighterIds.push_back(fid);
         table.fighters.push_back(f);
@@ -2300,6 +2317,71 @@ bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error
     if (!finish()) return false;
     out = std::move(table);
     return true;
+}
+
+// ---- log ----
+
+namespace {
+
+// Appends to a fixed buffer; whatever does not fit is dropped.
+struct LineWriter {
+    char* out;
+    std::size_t cap;
+    std::size_t len = 0;
+
+    void put(std::string_view text) {
+        for (const char c : text) {
+            if (len + 1 >= cap) return;
+            out[len++] = c;
+        }
+    }
+    template <typename... Args>
+    void print(const char* format, Args... args) {
+        if (len + 1 >= cap) return;
+        const int n = std::snprintf(out + len, cap - len, format, args...);
+        if (n > 0) len = std::min(len + static_cast<std::size_t>(n), cap - 1);
+    }
+    // An id: printable ASCII with no spaces or commas, cut to 48 characters, so a line always parses.
+    void id(std::string_view text) {
+        if (text.empty()) text = "-";
+        std::size_t n = 0;
+        for (const char c : text) {
+            if (n++ == 48) break;
+            put(std::string_view(c > ' ' && c < 127 && c != ',' ? &c : "_", 1));
+        }
+    }
+};
+
+} // namespace
+
+std::size_t arenaResultLine(char* out, std::size_t cap, const ArenaFight& fight, const ArenaTable& table,
+                            const ArenaLogIds& ids) {
+    if (!out || cap == 0) return 0;
+    LineWriter w{out, cap};
+    const ArenaStats& s = fight.stats();
+    const ArenaPhase phase = fight.phase();
+    w.put(phase == ArenaPhase::Victory ? "Arena: VICTORY at " : phase == ArenaPhase::Defeat ? "Arena: DEFEAT at " : "Arena: TIMEOUT at ");
+    w.id(ids.scene);
+    w.print(" beat %u step %u after %.1f s, zone ", ids.beat, ids.step, static_cast<double>(fight.time()));
+    w.id(ids.zone);
+    w.put(", kit ");
+    w.id(ids.kit);
+    w.put(", enemies ");
+    const ArenaDef& def = fight.def();
+    for (std::size_t e = 0; e < def.enemyCount; ++e) {
+        if (e > 0) w.put("+");
+        const std::uint8_t kind = def.enemyKind[e];
+        w.id(kind < table.enemyIds.size() ? std::string_view(table.enemyIds[kind]) : std::string_view("built-in"));
+    }
+    if (def.enemyCount == 0) w.put("none");
+    w.put(", ");
+    w.id(ids.pilot);
+    w.print(" seed %u, hp %d/%d, %d hits, %d taken, %d blocks, %d parries, %d ripostes, %d evades, %d guard breaks, %d heals, "
+            "%d releases, %d overloads, %d/%d reads right, dealt %d, took %d, %d restarts.",
+            ids.seed, fight.hp(), def.fighter.hp, s.hits, s.hitsTaken, s.blocks, s.parries, s.ripostes, s.evades, s.guardBreaks, s.heals,
+            s.releases, s.overloads, s.correctReads, s.readsDealt, s.damageDealt, s.damageTaken, s.restarts);
+    out[w.len] = '\0';
+    return w.len;
 }
 
 } // namespace ftcore

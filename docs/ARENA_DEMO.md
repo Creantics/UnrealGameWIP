@@ -18,7 +18,35 @@ the commandlet, build the map again:
 UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildArenaWorld -NullRHI -unattended -nopause -nosplash
 ```
 
-Everything that fights is spawned by the game mode.
+Everything that fights is spawned by the game mode's runner (`UFTArenaRunner`, a component): the game mode loads the
+table, fits the zone and builds the ground, and the runner holds the fight, the figures, the keys, the camera and the
+result line. The arena step's host in a world (below, "In a world") runs the same runner.
+
+## In a world
+
+A story fight that plays the arena system is fought in place on its scene's world map (`AFTArenaHost`, spawned by the
+explore director on every world map; see [COMBAT_SYSTEMS.md](COMBAT_SYSTEMS.md), "Routing"). It starts after a field step
+in place, or on a map opened for it, once the lead stands at the scene's district spawn.
+
+- The zone is the one `arenas.json` anchors on the step's world and district, with its bosses; else a zone on that
+  district's plaza with the default zone's line-up (`<world>_d<district>` in the result line). It is fitted to the
+  world's real layout like a `-ArenaStage` zone; a district with no room gives a plain zone about the lead.
+- The lead plays its own fighter kit (the explore character's look, `GetLeadIndex()`).
+- The explore character steps out: hidden, its collision and movement off. The controller takes the lead's figure,
+  which wears the same look, and the arena HUD replaces the explore HUD.
+- The followers are held and stand at `arenaParkSpot()` behind the lead's start, pulled inside the zone's walls.
+- The result stays up for 3 s (1 s under the autopilot). Then the explore character comes back where the figure
+  stands, the explore HUD and the party come back, the step is marked done (won or lost), and the beat's next step
+  starts in place or the story map opens (`FTStep::ContinueHere`). There is no fight-again.
+- Without a story step, `-ArenaHere` starts a standalone fight in the lead's district (with `-WorldDistrict=<n>` to pick
+  it); `-ArenaAutoPlay`, `-ArenaIdle` and `-ArenaQuitOnFinish` work as on `Demo_Arena`. A story step's autoplay comes from
+  its carry, and only a standalone fight may quit the process. The host logs one setup line, `Arena: in place on <map>,
+  district <n>: zone <id>, kit <id>, ...`, then the usual result line.
+- Not yet: the zone's dressing (its water sheets and the road barriers) is the demo's only.
+
+```
+UnrealEditor-Cmd ForgottenThird.uproject World_Solhaven -game -NullRHI -ArenaHere -ArenaAutoPlay -ArenaQuitOnFinish -WorldDistrict=3 -unattended -nosplash -nosound -stdout
+```
 
 ## Zones
 
@@ -137,7 +165,7 @@ Everything about it is data and host-side: the fight's rules never read it.
   `hover` (m) lifts the mesh above the enemy's position on the ground (the mesh's origin is its bottom; the tell arcs stay at
   ground level), `scale` scales it, `yawOffset` (degrees) turns it from its own facing (`FTMeshFacing`, which finds none on a
   mesh with no head or feet bones: set it by eye; a glTF export whose front is Blender -Y needs -90).
-- A move's `clip`: the id of the clip played for it (`tell` stays the Read card's word, one of the eight). Ids are 1..31
+- A move's `clip`: the id of the clip played for it (`tell` stays the Read card's word, one of the nine). Ids are 1..31
   letters, digits, `_` and `-`, one per move.
 - A kind's `bpm`: the beat its startups are whole numbers of, in place of the file's (the kite's 72 against the file's 150).
 - Up to 8 moves per kind (it was 6).
@@ -248,7 +276,9 @@ each frame and handed to the fight on its next step, so no press is lost between
 - **The tell:** while an enemy's move starts up, a bar over it fills toward the hit, labelled with the
   answer: PARRY (gold) for a parryable move, BLOCK (orange) for one that can only be blocked, DODGE!
   (red) for an unblockable one. A ring closes in on the enemy's body as it fills, and an arc on the
-  floor shows the move's reach. The moment the move goes active the bar turns white, NOW shows and a
+  floor shows the move's reach. A shot (a move with a `width`, a straight lane) shows two dashed rails
+  instead, the lane's edges for the player's centre, running out from the shooter to its reach; step
+  outside them before it fires and it misses. The moment the move goes active the bar turns white, NOW shows and a
   burst flashes. An enemy winding up off the screen shows as an arrow at the screen's edge in the
   tell's colour.
 - **Read cards:** while a deal is open, three cards sit on the tell bar (the answer moves above them), each
@@ -274,21 +304,24 @@ each frame and handed to the fight on its next step, so no press is lost between
 | `-ArenaQuitOnFinish` | Quit when the fight ends, after the result line (exit code 0). |
 | `-ArenaSeed=N` | The fight's seed (default 1). |
 | `-ArenaStage=<id>` | The zone, by id from `arenas.json` (see "Zones"); the default is `sand_ring`. A zone in a world opens that world's map. Its bosses are the line-up, and the walls, spawn, obstacles and camera are fitted to the enemies in it. An unknown id logs the ids and uses the default. |
-| `-ArenaLineup=a,b,...` | The enemies by id from `arena.json` (`brute`, `skirmisher`, `breaker`, `duelist`, `hulk`, `titan`), up to six, instead of the stage's own bosses (the sand ring's are `brute,skirmisher,breaker`); `-ArenaLineup=brute` fights one brute. The stage is scaled to whoever is in the fight. |
-| `-ArenaLead=<name>` | The look the player's figure wears: the entry of that name in the explore character's `PartyLooks` (`Config/UserGame.ini`, local), else the first. With none, or none whose body loads (one warning), it is the test human. |
+| `-ArenaLineup=a,b,...` | The enemies by id from `arena.json` (`brute`, `skirmisher`, `breaker`, `duelist`, `hulk`, `titan`, `spitter`), up to six, instead of the stage's own bosses (the sand ring's are `brute,skirmisher,breaker`); `-ArenaLineup=brute` fights one brute. The stage is scaled to whoever is in the fight. |
+| `-ArenaLead=<name>` | The lead the player plays. Its look is the entry of that name in the explore character's `PartyLooks` (`Config/UserGame.ini`, local), else the first; with none, or none whose body loads (one warning), it is the test human. Its fighter kit is the `arena.json` fighter of that name in lower case (`devin`, `duy`, `third`), even when no look loads; without the flag it is the first look's name, and an id with no kit plays `default`. The start line names the kit (`kit devin`). |
 | `-ArenaAttackers=N` | How many enemies may attack at once (1 to the line-up's size). |
 | `-ArenaHoldLoad` | The autopilot keeps its Load until it is overloaded (to see the overload; not a way to play). |
 | `-ArenaShot=<path prefix>` | Autoplay and save the views (`_1_ring`, `_2_tell` with the Read cards picked, `_3_impact`, `_4_load` with the gauge past a third, or the overload under `-ArenaHoldLoad`, `_5_release`, `_6_result` .png), then quit; a view the fight never reaches is skipped. Needs a renderer (`-RenderOffScreen`, not `-NullRHI`). |
 | `-ArenaShotDelay=S` | Seconds before the first screenshot (the fight waits for it). |
 | `-ArenaOverview` | With `-ArenaShot`, a first view `_0_overview` of the whole zone from a camera high over its south-west side (pulled in along the line if a building is in the way), HUD off, with the zone's walls (green), obstacles (red) and road mouths (yellow) drawn as debug lines for the picture only; then `_0b_edge`, the player 1.4 m from the wall on his left to show the edge cue. |
 
-At the end of every fight the log gets one line with counts only:
+At the end of every fight the log gets one line, ids and counts only, never text, as the beat screen logs its own ([BEAT_SCREEN.md](BEAT_SCREEN.md), "Log lines"). Core formats it into a fixed buffer (`ftcore::arenaResultLine`):
 
 ```
-ARENA RESULT: Victory in 22.9 s (autoplay, seed 1, 3 enemies, hp 96/140, 3 heals left; 25 hits, 3 taken, ...; 68 load stored, 1 releases, 0 overloads, 3 counter staggers; 10 reads dealt, 10 picked, 10 right, 10 read counters for 93; dealt 530, took 44).
+Arena: VICTORY at <scene> beat <b> step <s> after <t> s, zone <zone>, kit <kit>, enemies <id>+<id>+<id>, <pilot> seed <n>, hp <h>/<max>, <x> hits, <y> taken, <b> blocks, <p> parries, <r> ripostes, <e> evades, <g> guard breaks, <h> heals, <l> releases, <o> overloads, <c>/<d> reads right, dealt <n>, took <n>, <r> restarts.
+Arena: DEFEAT at <scene> beat <b> step <s> after <t> s, ...
 ```
 
-A fight that runs past 180 s of fight time (or 360 s of wall time) logs `ARENA RESULT: Timeout` as a
+A fight on its own logs `standalone` for the scene, with beat and step 0; a fight a story step carried here logs that step's scene, beat and step. `<t>` is the clock of the last try; the counts and the restarts run on through retries. The enemies are their `arena.json` kinds (`built-in` for the built-in fight's), the pilot is `autoplay`, `idle` or `player`. An id is cut to 48 characters, and a space or a comma in it becomes `_`, so the line always splits the same way.
+
+A fight that runs past 180 s of fight time (or 360 s of wall time) logs the same line with `TIMEOUT` as a
 warning and quits with exit code 2, so an unattended run never hangs.
 
 ## How it runs

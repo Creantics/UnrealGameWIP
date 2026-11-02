@@ -3,7 +3,9 @@
 #include "Camera/CameraActor.h"
 #include "EngineUtils.h"
 #include "FTActionButtons.h"
+#include "Components/AudioComponent.h"
 #include "FTAudioSubsystem.h"
+#include "FTBeatBossMetronome.h"
 #include "FTBeatHUD.h"
 #include "FTConductorComponent.h"
 #include "FTGameInstance.h"
@@ -203,6 +205,10 @@ void AFTBeatGameMode::StartPlay()
 	}
 
 	ChooseClock();
+	if (!bClockIsMusic && !bDilated)
+	{
+		StartBeatLoop();
+	}
 	// The fight reads the conductor's clock, so this tick comes after the conductor has taken its frame's.
 	AddTickPrerequisiteComponent(Conductor);
 }
@@ -210,6 +216,10 @@ void AFTBeatGameMode::StartPlay()
 void AFTBeatGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	RestoreDilation();
+	if (MetronomeAudio)
+	{
+		MetronomeAudio->Stop();
+	}
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -303,7 +313,52 @@ bool AFTBeatGameMode::ClockReady()
 	Conductor->ResetClock();
 	bClockIsMusic = false;
 	UE_LOG(LogForgottenThird, Warning, TEXT("Beat: the music clock didn't start within %.0f s; the fight uses the wall clock."), kBeatClockWait);
+	StartBeatLoop();
 	return Conductor->IsClockValid();
+}
+
+void AFTBeatGameMode::StartBeatLoop()
+{
+	if (Metronome)
+	{
+		return;
+	}
+	// No sound asset: the metronome synthesises its clicks on the audio thread. Under -nosound the audio component is
+	// null and the triggers go nowhere.
+	Metronome = NewObject<UFTBeatBossMetronome>(this);
+	MetronomeAudio = UGameplayStatics::SpawnSound2D(this, Metronome, 1.f, 1.f, 0.f, nullptr, false, false);
+	UE_LOG(LogForgottenThird, Display, TEXT("Beat: the synthesized beat plays on the wall clock (%.2f bpm, offset %.3f s)."), Setup.def.bpm,
+		Setup.def.offset);
+}
+
+void AFTBeatGameMode::SoundBeat()
+{
+	if (!Metronome)
+	{
+		return;
+	}
+	if (!Screen.playing())
+	{
+		// A result, the retry prompt: quiet, and the beat is found again when play resumes.
+		bBeatKnown = false;
+		return;
+	}
+	const int64 Beat = FMath::FloorToInt64(Screen.fight().def().beatAt(Screen.now()));
+	if (!bBeatKnown)
+	{
+		// Play has just begun: the next beat is the first heard.
+		LastBeat = Beat;
+		bBeatKnown = true;
+		return;
+	}
+	if (Beat <= LastBeat)
+	{
+		return;
+	}
+	// One click for the newest beat, so a hitch never plays a burst. Bars are 4 beats from beat 0 (BeatFight.h).
+	LastBeat = Beat;
+	++BeatsSounded;
+	Metronome->Trigger(((Beat % 4) + 4) % 4 == 0 ? UFTBeatBossMetronome::EVoice::Accent : UFTBeatBossMetronome::EVoice::Click);
 }
 
 void AFTBeatGameMode::FindStandIns()
@@ -493,6 +548,7 @@ void AFTBeatGameMode::Tick(float DeltaSeconds)
 	// Presses first: they are stamped with the clock as it reads in this frame, then the screen takes the frame.
 	PollKeys();
 	Screen.tick(Conductor->GetSongTime());
+	SoundBeat();
 	AddPopups(Screen.takeFresh());
 	RefreshStandIns();
 	if (Screen.finished())
@@ -530,6 +586,10 @@ void AFTBeatGameMode::Finish()
 	UE_LOG(LogForgottenThird, Display, TEXT("Beat: %s at %s beat %d step %d after %.1f s, %d perfect, %d good, %d miss, best chain %d, %d restarts."),
 		bWon ? TEXT("VICTORY") : TEXT("DEFEAT"), *Scene, BeatIndex, StepIndex, Screen.playSeconds(), Stats.perfects, Stats.goods, Stats.misses,
 		Stats.maxChain, Stats.restarts);
+	if (Metronome)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Beat: the synthesized beat sounded %u beats."), BeatsSounded);
+	}
 	if (Screen.gaveUp())
 	{
 		// The autopilot lost the fight and every retry: a counted warning, which fails an alpha run.

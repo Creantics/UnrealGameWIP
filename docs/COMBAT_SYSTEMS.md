@@ -8,7 +8,7 @@ The game has three combat systems, and every world has all three. Each fight pla
 | Arena melee | `arena` | Real time: free movement inside a ring, light and heavy attacks, a dodge roll, guard and parry, stamina, lock-on | `ArenaFight.h` |
 | Beat fight | `beat` | Real time on the music's beat grid: enemies take turns, one bar each, and the lead answers each prompt on its eighth note | `BeatFight.h` |
 
-The rhythm battle's enemy turns play on the song's beat: with music on, each hit is moved later onto a beat, no tell is shorter than 0.4 s, and a count runs down to the first hit (`CountIn`; see [BATTLE_DEMO.md](BATTLE_DEMO.md), "Defence"). Its party members may also carry verbs beyond the arrow combos: Guard and Release with Load and Overload, Intercept (a hold taken for an ally), Take Half (an ally evens out Load and the Torn status) and Read (three cards dealt from the enemies' actions as an attack starts; the right one brings a free counter); see [BATTLE_DEMO.md](BATTLE_DEMO.md), "Guard, Load and Release", "Intercept, Torn and Take Half" and "Read cards". This page covers the routing and the two new systems. The arena has a demo screen too: a generated ring map, a game mode with a lock-on camera and a canvas HUD, described in [ARENA_DEMO.md](ARENA_DEMO.md); hosting it on the explore character comes after the animation merge (see "Unreal work still needed"). The beat fight has its screen too: a generated map and a game mode, described in [BEAT_SCREEN.md](BEAT_SCREEN.md).
+The rhythm battle's enemy turns play on the song's beat: with music on, each hit is moved later onto a beat, no tell is shorter than 0.4 s, and a count runs down to the first hit (`CountIn`; see [BATTLE_DEMO.md](BATTLE_DEMO.md), "Defence"). Its party members may also carry verbs beyond the arrow combos: Guard and Release with Load and Overload, Intercept (a hold taken for an ally), Take Half (an ally evens out Load and the Torn status) and Read (three cards dealt from the enemies' actions as an attack starts; the right one brings a free counter); see [BATTLE_DEMO.md](BATTLE_DEMO.md), "Guard, Load and Release", "Intercept, Torn and Take Half" and "Read cards". This page covers the routing and the two new systems. The arena has a demo screen too: a generated ring map, a game mode with a lock-on camera and a canvas HUD, described in [ARENA_DEMO.md](ARENA_DEMO.md); in a world an arena step is fought in place around the explore character (`AFTArenaHost`; ARENA_DEMO.md, "In a world"). The beat fight has its screen too: a generated map and a game mode, described in [BEAT_SCREEN.md](BEAT_SCREEN.md).
 
 ## Arrow combos: Turns only
 
@@ -32,7 +32,7 @@ Each fight names its system by what it is, not where it is. In `Data/Battle/enco
 | Fight | `combat` | Plays now |
 |---|---|---|
 | Every minor fight: any line-up without a boss | absent (Turns, `CombatKind::Rhythm`) | Turns |
-| A boss fight | `arena` | Turns, until the arena host is built |
+| A boss fight | `arena` | Arena, in place on the scene's world map (Turns when that map isn't built) |
 | A world's final (one per world) | `beat` | the beat fight, until the beat boss mode lands |
 
 - An encounter without the key, any fight not listed, and the `default` line-up are Turns fights. The `default` refuses the key; an unknown value is a load error with its path.
@@ -44,7 +44,7 @@ Each fight names its system by what it is, not where it is. In `Data/Battle/enco
 `GameplayPlan` is unchanged: a CMB step still lowers to `GameplayScreen::Battle`. The step dispatcher (`FTStep::Prepare`, `Source/ForgottenThird/FTStepHost.h`) asks the game instance's encounter table (loaded at Init) which system the step plays and opens its screen:
 
 - A beat fight opens the `Beat` map, once it is built (`FTBuildBeatWorld`; see [BEAT_SCREEN.md](BEAT_SCREEN.md)).
-- An arena fight plays in place on the scene's world map, like a field step, once the arena host exists. Until then the arena is left out of `FTStep::kPlayableCombat`.
+- An arena fight plays in place on the scene's world map, like a field step (`AFTArenaHost`, ARENA_DEMO.md, "In a world"): after a field step on that map it starts where the lead stands, else the map opens with the lead at the scene's district spawn. A scene with no built world map plays Turns.
 - Anything else, and any system whose screen isn't there yet, plays Turns on `BattleDemo`. That fallback logs one line per system per run and never counts as a warning.
 
 The story carry's `Combat` field tells the screen which system the step plays, and `WantedCombat` which one its encounter names. An alpha run ends with a second line counting both: `Alpha: FIGHTS <n> (tagged <t> turns, <a> arena, <b> beat; played <t> turns, <a> arena, <b> beat)` (`AlphaCounters::formatFights`).
@@ -89,7 +89,7 @@ Fights happen in place on the world map:
 
 - `arenaRingAt(playerPos, facing, radius, bounds)` centres the ring a little ahead of the player, so the enemies' side has room.
 - The ring is kept inside `bounds`, normally the district's plaza (`WorldLayout`'s plaza radius is 36 m, the default ring 12 m).
-- The followers wait just outside the ring at `arenaParkSpot()`.
+- The followers wait just outside the ring at `arenaParkSpot()`. In a world the host pulls those spots back inside the zone's walls, since the ring is the zone's bounding circle and a building may cut it.
 - The enemies start on an arc in front of the player, at the fight's `spawn` distance.
 
 ### Rules in brief
@@ -110,6 +110,7 @@ Fights happen in place on the world map:
 The other rules:
 
 - Each attack has a startup, an active part and a recovery. It can connect only in its active part, at most once per target. A hit test covers the whole tick, so a long frame can't skip a short active part.
+- An attack hits in an arc (`range` and `arcCos`, measured from the attacker's centre) or, with a `width`, down a straight lane: a body whose centre is ahead within `range` plus its radius and off the line by at most half the width plus its radius. A lane is a shot; it reads with the sound off as two dashed rails on the floor, and it can be sidestepped while it is told, because a shot turns slowly (`tracking`) and never after its startup.
 - An attack's `maxTargets` caps how many targets it connects with over its whole active part, nearest first, so a long, narrow attack doesn't pierce a whole line. The shipped riposte hits only its own enemy.
 - Movement ramps up and down. The player's velocity moves toward the stick's at `moveAccel` and `moveBrake` (in Idle, Move, Guard and Heal), and an enemy's at its kind's `accel` (in Approach and Strafe). Lunges, dodges and reactions set their velocity directly, without a ramp.
 - An input pressed while an action can't start is buffered for 0.2 s.
@@ -127,6 +128,7 @@ The enemy brain runs Approach, Strafe, Attack, Staggered, Open, Down and Dead:
 - An enemy picks a move whose range fits, weighted, from a seeded RNG.
 - A move's `chain` names the move that follows it at once.
 - A move can be unblockable, or not parryable.
+- A shooter keeps its distance: it backs off from a lead closing in (at `walkSpeed`, slower than any lead) and shoots from its lanes' `minRange` out.
 
 ### Data
 
@@ -134,11 +136,17 @@ The enemy brain runs Approach, Strafe, Attack, Staggered, Open, Down and Dead:
 
 - Fighters, enemy kinds with their moves, a `default` fight, and fights keyed by scene id, gameplay beat index and plan step index.
 - A missing key keeps the struct's default, so entries list only what differs.
-- Only the `default` fighter ships. Per-lead fighters are allowed by the schema and fall back to it.
-- Three placeholder enemy kinds ship:
+- Each lead has its own fighter kit, keyed by the lead's id in lower case (`devin`, `duy`, `third`); `default` is the fallback for any other id. A lead's kit starts from the `default` fighter and lists only what differs: an omitted key keeps the default's value, `light[i]` starts from the default's `light[i]`, and a listed `light` array is the whole chain.
+  - **Devin, the expert with a blade:** a four-hit chain with quicker startups and more damage, more hp, the widest parry (0.2 s) with the quickest rearm, a bigger riposte, a full frontal guard.
+  - **Duy, kicks and a gun:** kicks that reach 2.5 m and hit poise hard; the heavy is a gun shot (9 m, a narrow arc, one target, no lunge). Less hp, quicker on his feet; a narrow guard that leaks a little but barely slows him, and breaks sooner.
+  - **The Third, average, with spells:** spell bolts that reach 3.2 m with no lunge, and an all-round burst for the heavy and the Release. A ward that covers every side but lets more through, slows the most and breaks the slowest; the plainest parry (0.12 s, the least the autopilot still parries).
+  - Each lead's blocks are its guard and parry numbers (`guardArcCos`, `guardAbsorb`, `guardMoveScale`, `guardBreakTime`, `parryWindow`, `parryRearm`); there is no block or weapon type in Core yet. One comes when the attack, guard and hit clips land and the host has to pick a clip by it.
+  - The tests play every kit's autopilot through the default fight, the three-kind wave a brute with a spitter (two attacking at once) and each enemy alone (8 seeds each): it must win and idle must lose, each within 120 s.
+- Placeholder enemy kinds ship (and `duelist`, `hulk`, `titan` and the skinned `kite_boss` beyond these):
   - `brute`: a slam with a follow-up, and a slow overhead that can't be parried.
   - `skirmisher`: quick two-hit jabs.
   - `breaker`: a smash, and a grab that can be neither blocked nor parried.
+  - `spitter`, the ranged kind: a shot down a narrow lane (0.8 s tell, blockable, not parryable), a wide volley lane that can only be dodged or stepped out of (1.2 s tell), and a weak shove for close in. It keeps about 6 m off. Its tell words are `shot` and `sweep`.
 - The default fight is one brute. No scene fights ship yet.
 - An attack's damage rises with its telegraph, and a test checks this.
 - The top-level `bpm` (150 ships, a 0.4 s beat) sets the beat every startup lands on. Without it nothing is checked.
@@ -172,7 +180,7 @@ The full rules are in `BeatFight.h`.
 
 ### Clock
 
-`BeatFight` runs on the fight's clock: the music's song time from the host's `Conductor`, or a pause-aware wall clock when no music plays. The def's `bpm` and `offset` place the beat grid, so they must match the cue. Presses are stamped with `Conductor::songTimeForEvent`, as the rhythm battle's are. The host's rule for choosing between the two (and for `-AlphaFast`) is in [BEAT_SCREEN.md](BEAT_SCREEN.md), "The clock".
+`BeatFight` runs on the fight's clock: the music's song time from the host's `Conductor`, or a pause-aware wall clock when no music plays. The def's `bpm` and `offset` place the beat grid, so they must match the cue. Presses are stamped with `Conductor::songTimeForEvent`, as the rhythm battle's are. The host's rule for choosing between the two (and for `-AlphaFast`) is in [BEAT_SCREEN.md](BEAT_SCREEN.md), "The clock". On the wall clock a synthesized beat (the beat boss demo's metronome) clicks the grid, with an accent on each bar line.
 
 ### Judging
 
@@ -263,21 +271,17 @@ Each battle type has a demo fight that plays on its own map, with the mannequin 
 - **Arena:** `Demo_Arena` ([ARENA_DEMO.md](ARENA_DEMO.md)); `-ArenaStage=<id>` holds the fight in a zone of one of the worlds' own maps, fitted to its boss's size (ARENA_DEMO.md, "Zones").
 - **Beat:** `Demo_BeatBoss`, the synthetic test track played as a beat boss with procedural music in place of a recording ([BEAT_BOSS_DEMO.md](BEAT_BOSS_DEMO.md)).
 
-Each demo takes an autoplay flag that wins the fight and an idle flag that loses it, and logs one result line, so it can be checked headless.
+Each demo takes an autoplay flag that wins the fight and an idle flag that loses it, and logs one result line, so it can be checked headless. The arena's and the beat screen's lines have the same shape: `Arena: VICTORY at <scene> beat <b> step <s> after <t> s, ...` with the zone, the kit and the enemy kinds, ids and counts only ([ARENA_DEMO.md](ARENA_DEMO.md), "At the end of every fight").
 
 ## Unreal work still needed
 
 These wait until the animation session's merge is pushed.
 
 - **Arena:** the demo screen exists ([ARENA_DEMO.md](ARENA_DEMO.md): ring map, lock-on camera, HUD with hp, stamina, the Load gauge, poise, heal charges, the tell, the lock marker and the enemy hp; the Release, the overload and the partner's paired press are hosted). Still to do:
-  - The arena host on the explore character (the ring, the follower parking spots), reached through the routing.
   - Attack, hit, guard and stagger animations, and a dodge roll that reuses the movement work.
-- **Logging:** the arena screen logs one line per fight with ids and counts only, like the other screens (the beat screen does already: see [BEAT_SCREEN.md](BEAT_SCREEN.md)). The routing is done (see "Routing").
 
 ## Follow-ups
 
 - Status effects (parked).
-- Ranged enemy attacks in the arena.
-- A synthesized beat loop for fights with no cue.
+- Full procedural music for Beat fights with no cue: a Core driver like the beat boss's `BeatMusicDriver` (which reads a `BeatBoss`) for `BeatFight`'s 4/4 grid, with intensity from the enemies' hp. Until then the metronome clicks the beat ([BEAT_SCREEN.md](BEAT_SCREEN.md), "The synthesized beat").
 - In-place staging of beat fights on the world map (the fight plays on its step's world map, as an arena fight does, instead of opening the `Beat` map).
-- Per-lead fighter kits in `arena.json`.

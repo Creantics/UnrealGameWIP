@@ -5,8 +5,11 @@
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "FTArenaFighter.h"
 #include "FTArenaGameMode.h"
+#include "FTArenaHost.h"
+#include "FTArenaRunner.h"
 #include "FTPauseOverlay.h"
 #include "FTUiText.h"
 #include "GameFramework/PlayerController.h"
@@ -70,8 +73,9 @@ const FTUiText kTellThrustArena(TEXT("arena.tell.thrust"));
 const FTUiText kTellSlashArena(TEXT("arena.tell.slash"));
 const FTUiText kTellSweepArena(TEXT("arena.tell.sweep"));
 const FTUiText kTellSlamArena(TEXT("arena.tell.slam"));
+const FTUiText kTellShotArena(TEXT("arena.tell.shot"));
 const FTUiText* const kArenaTellWords[] = {&kTellStrikeArena, &kTellOverheadArena, &kTellBackhandArena, &kTellChargeArena,
-	&kTellThrustArena, &kTellSlashArena, &kTellSweepArena, &kTellSlamArena};
+	&kTellThrustArena, &kTellSlashArena, &kTellSweepArena, &kTellSlamArena, &kTellShotArena};
 static_assert(UE_ARRAY_COUNT(kArenaTellWords) == ftcore::kArenaTellCount, "a word for every ArenaTell");
 const FTUiText kNowArena(TEXT("battle.now"));
 const FTUiText kStaggeredArena(TEXT("battle.staggered"));
@@ -214,7 +218,7 @@ bool AFTArenaHUD::OnScreen(const FVector2D& P, float Margin) const
 	return P.X >= Margin && P.Y >= Margin && P.X <= Canvas->ClipX - Margin && P.Y <= Canvas->ClipY - Margin;
 }
 
-void AFTArenaHUD::DrawPlayerPanel(const AFTArenaGameMode& Mode)
+void AFTArenaHUD::DrawPlayerPanel(const UFTArenaRunner& Mode)
 {
 	const float S = UiScale;
 	const ftcore::ArenaFight& Fight = Mode.GetFight();
@@ -298,7 +302,7 @@ void AFTArenaHUD::DrawPlayerPanel(const AFTArenaGameMode& Mode)
 	}
 }
 
-void AFTArenaHUD::DrawEnemies(const AFTArenaGameMode& Mode)
+void AFTArenaHUD::DrawEnemies(const UFTArenaRunner& Mode)
 {
 	const float S = UiScale;
 	const ftcore::ArenaFight& Fight = Mode.GetFight();
@@ -336,7 +340,7 @@ void AFTArenaHUD::DrawEnemies(const AFTArenaGameMode& Mode)
 	}
 }
 
-void AFTArenaHUD::DrawTell(const AFTArenaGameMode& Mode, int32 Enemy, const FVector2D& Over, const FVector2D& Chest, bool bOnScreen)
+void AFTArenaHUD::DrawTell(const UFTArenaRunner& Mode, int32 Enemy, const FVector2D& Over, const FVector2D& Chest, bool bOnScreen)
 {
 	const ftcore::ArenaEnemyMove* Move = Mode.GetEnemyMove(Enemy);
 	if (!Move)
@@ -412,7 +416,7 @@ void AFTArenaHUD::DrawTell(const AFTArenaGameMode& Mode, int32 Enemy, const FVec
 	}
 }
 
-void AFTArenaHUD::DrawReadCards(const AFTArenaGameMode& Mode, float X, float Bottom)
+void AFTArenaHUD::DrawReadCards(const UFTArenaRunner& Mode, float X, float Bottom)
 {
 	static const FString KeyLabels[ftcore::kReadCards] = {TEXT("1"), TEXT("2"), TEXT("3")};
 	const float S = UiScale;
@@ -479,7 +483,7 @@ void AFTArenaHUD::DrawEdgeArrow(const FVector2D& Toward, const FLinearColor& Col
 	DrawRing(TipX - static_cast<float>(Dir.X) * Len * 0.45f, TipY - static_cast<float>(Dir.Y) * Len * 0.45f, Len * 0.9f, ArenaAlpha(Color, 0.5f), 3.f * S);
 }
 
-void AFTArenaHUD::DrawTargetBar(const AFTArenaGameMode& Mode)
+void AFTArenaHUD::DrawTargetBar(const UFTArenaRunner& Mode)
 {
 	const ftcore::ArenaFight& Fight = Mode.GetFight();
 	int32 Target = Fight.lock() != ftcore::kArenaNobody ? static_cast<int32>(Fight.lock()) : -1;
@@ -524,7 +528,7 @@ void AFTArenaHUD::DrawTargetBar(const AFTArenaGameMode& Mode)
 		kArenaEnemyPoise, kArenaBack);
 }
 
-void AFTArenaHUD::DrawLock(const AFTArenaGameMode& Mode)
+void AFTArenaHUD::DrawLock(const UFTArenaRunner& Mode)
 {
 	const ftcore::ArenaFight& Fight = Mode.GetFight();
 	const uint8 Lock = Fight.lock();
@@ -557,7 +561,7 @@ void AFTArenaHUD::DrawLock(const AFTArenaGameMode& Mode)
 	DrawRect(Color, C.X - 4.f * S, C.Y - 4.f * S, 8.f * S, 8.f * S);
 }
 
-void AFTArenaHUD::DrawPopups(const AFTArenaGameMode& Mode)
+void AFTArenaHUD::DrawPopups(const UFTArenaRunner& Mode)
 {
 	const float S = UiScale;
 	const double Now = Mode.GetNow();
@@ -565,7 +569,7 @@ void AFTArenaHUD::DrawPopups(const AFTArenaGameMode& Mode)
 	const int32 First = Mode.GetPopupTotal() - Count;
 	for (int32 I = 0; I < Count; ++I)
 	{
-		const AFTArenaGameMode::FPopup& P = Mode.GetPopup(I);
+		const UFTArenaRunner::FPopup& P = Mode.GetPopup(I);
 		const float Life = ArenaPulse(Now, P.Time, kArenaPopupLife);
 		if (Life <= 0.f)
 		{
@@ -577,7 +581,7 @@ void AFTArenaHUD::DrawPopups(const AFTArenaGameMode& Mode)
 			continue;
 		}
 		const int32 Serial = First + I;
-		FArenaNumberText& Cache = PopupText[Serial % AFTArenaGameMode::MaxPopups];
+		FArenaNumberText& Cache = PopupText[Serial % UFTArenaRunner::MaxPopups];
 		const float Rise = (1.f - Life) * 70.f * S;
 		const float Y = At.Y - 40.f * S - Rise;
 		// Numbers stand beside the body (right of an enemy, left of the player), clear of its bars and its tell.
@@ -693,7 +697,7 @@ void AFTArenaHUD::DrawPopups(const AFTArenaGameMode& Mode)
 	}
 }
 
-void AFTArenaHUD::DrawFlashes(const AFTArenaGameMode& Mode)
+void AFTArenaHUD::DrawFlashes(const UFTArenaRunner& Mode)
 {
 	const float S = UiScale;
 	const double Now = Mode.GetNow();
@@ -719,7 +723,7 @@ void AFTArenaHUD::DrawFlashes(const AFTArenaGameMode& Mode)
 	}
 }
 
-void AFTArenaHUD::DrawBanners(const AFTArenaGameMode& Mode)
+void AFTArenaHUD::DrawBanners(const UFTArenaRunner& Mode)
 {
 	const float S = UiScale;
 	const double Now = Mode.GetNow();
@@ -751,7 +755,7 @@ void AFTArenaHUD::DrawBanners(const AFTArenaGameMode& Mode)
 	}
 }
 
-void AFTArenaHUD::DrawResult(const AFTArenaGameMode& Mode)
+void AFTArenaHUD::DrawResult(const UFTArenaRunner& Mode)
 {
 	const float S = UiScale;
 	const ftcore::ArenaFight& Fight = Mode.GetFight();
@@ -770,13 +774,13 @@ void AFTArenaHUD::DrawResult(const AFTArenaGameMode& Mode)
 	DrawStrCentered(bWon ? kVictoryArena : kDefeatArena, ArenaAlpha(bWon ? kArenaGold : kArenaRed, Fade), CX, Top + 28.f * S,
 		GEngine->GetLargeFont(), 3.f);
 	DrawStrCentered(StatsText, ArenaAlpha(kArenaWhite, Fade), CX, Top + 140.f * S, GEngine->GetMediumFont(), 1.1f);
-	if (!Mode.IsAutoPlay())
+	if (!Mode.IsAutoPlay() && Mode.CanFightAgain())
 	{
 		DrawStrCentered(kAgainArena, ArenaAlpha(kArenaDim, Fade), CX, Top + 196.f * S, GEngine->GetMediumFont(), 1.f);
 	}
 }
 
-void AFTArenaHUD::DrawEdgeCue(const AFTArenaGameMode& Mode)
+void AFTArenaHUD::DrawEdgeCue(const UFTArenaRunner& Mode)
 {
 	constexpr float Band = 3.f;   // the cue is full at the wall and gone this far from it
 	constexpr float Reach = 8.f;  // how much of the wall along from the player is drawn
@@ -890,7 +894,13 @@ void AFTArenaHUD::DrawHUD()
 	{
 		return;
 	}
-	const AFTArenaGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AFTArenaGameMode>() : nullptr;
+	// The arena demo's fight, else the one this map's arena host runs (an arena step in a world).
+	const AFTArenaGameMode* Arena = GetWorld() ? GetWorld()->GetAuthGameMode<AFTArenaGameMode>() : nullptr;
+	const UFTArenaRunner* Mode = Arena ? Arena->GetRunner() : nullptr;
+	for (TActorIterator<AFTArenaHost> It(GetWorld()); !Mode && It; ++It)
+	{
+		Mode = It->GetRunner();
+	}
 	if (!Mode || !Mode->IsBegun())
 	{
 		FT::DrawPauseOverlay(*this, Canvas);

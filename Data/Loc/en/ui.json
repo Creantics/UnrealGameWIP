@@ -48,6 +48,7 @@
     "arena.tell.slash": "SLASH",
     "arena.tell.sweep": "SWEEP",
     "arena.tell.slam": "SLAM",
+    "arena.tell.shot": "SHOT",
 
     "banter.prompt": "Space / Enter: next    Backspace: skip",
 
