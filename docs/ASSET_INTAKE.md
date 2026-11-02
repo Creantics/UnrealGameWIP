@@ -127,7 +127,7 @@ UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildRig -Mesh=/Game/Characters/
 UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildDemoWorld -Mesh=/Game/Characters/<Name>/<stem>/SkeletalMeshes/<stem>.<stem> -NullRHI -unattended -nopause -nosplash
 ```
 
-- **Import** (`-Source=` relative to the project, `-Dest=` default `/Game/Characters/ProofHead`, `-Face=0` skips the shape check, `-Pack=` and `-Role=` pick the asset rules in section 2). It checks the `.glb` against the asset rules first and imports nothing if any rule fails. Pass means exit 0 with `0 errors` on the asset-rules line, `7/7 face bones` and `56/56 face shapes bound`. Exit 1 names the broken rule, missing bone or shape.
+- **Import** (`-Source=` relative to the project, `-Dest=` default `/Game/Characters/ProofHead`, `-Face=0` skips the shape check and only warns about missing face bones, for a creature with no human head, `-Pack=` and `-Role=` pick the asset rules in section 2). It checks the `.glb` against the asset rules first and imports nothing if any rule fails. Pass means exit 0 with `0 errors` on the asset-rules line, `7/7 face bones` and `56/56 face shapes bound`. Exit 1 names the broken rule, missing bone or shape.
 - **Rig** logs every clip's frames, moving tracks and curves, then builds `IK_<stem>` and `RTG_<stem>`. Pass means exit 0. A clip with 1 frame and no tracks means a CUBICSPLINE sampler got through.
 - **Demo map** puts the character on `Demo` (it overwrites the map).
 - Blender-side check, before export (needs `bpy`, see `docs/BLENDER.md`): `rig_validate.py <file.glb|.blend> --template <newengine>/assets/rig/canonical_humanoid.json --out <dir> --presets Data/Rig/face_presets.json`. Accepted only on PASS.

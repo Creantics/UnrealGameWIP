@@ -22,7 +22,7 @@ const TCHAR* const kFaceBones[] = {
 	TEXT("head"), TEXT("jaw"), TEXT("tongue_01"), TEXT("tongue_02"), TEXT("tongue_03"), TEXT("eye_l"), TEXT("eye_r"),
 };
 
-// Logs the rig check; false when a face bone or (with bCheckFace) a face shape's morph is missing.
+// Logs the rig check; with bCheckFace, false when a face bone or a face shape's morph is missing.
 bool CheckRig(const USkeletalMesh& Mesh, bool bCheckFace)
 {
 	bool bOk = true;
@@ -45,10 +45,15 @@ bool CheckRig(const USkeletalMesh& Mesh, bool bCheckFace)
 		{
 			++BonesFound;
 		}
-		else
+		else if (bCheckFace)
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("FTImportCharacter: face bone '%s' is missing."), Bone);
 			bOk = false;
+		}
+		else
+		{
+			// A creature with no human head (a boss) imports with -Face=0.
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTImportCharacter: face bone '%s' is missing."), Bone);
 		}
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTImportCharacter: %d/%d face bones, %d bones in all."), BonesFound,
