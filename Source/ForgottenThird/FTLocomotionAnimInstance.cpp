@@ -854,6 +854,7 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	}
 	ftcore::LocoInput In;
 	In.dt = DeltaSeconds;
+	In.roll = bPushedRoll;
 	if (const ACharacter* Character = Cast<ACharacter>(Owner))
 	{
 		const FVector V = Character->GetVelocity();

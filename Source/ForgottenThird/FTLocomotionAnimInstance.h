@@ -259,6 +259,9 @@ public:
 	}
 	// A non-character owner crouches while bCrouch holds (a character's own crouch is read from it).
 	void SetCrouch(bool bCrouch) { bPushedCrouch = bCrouch; }
+	// A roll asked for and still kept (Locomotion's roll input): touching down with it, a moving body rolls out of
+	// the landing. Any owner.
+	void SetRollAsked(bool bAsked) { bPushedRoll = bAsked; }
 	// A non-character owner: replay a running turn by Delta degrees on the next update.
 	void ReplayTurn(float Delta) { PushedTurnBy = Delta; }
 	// The owner's ground speed (cm/s) for this frame, for owners that aren't characters.
@@ -361,6 +364,7 @@ private:
 	bool bPushedFace = false;
 	bool bPushedAir = false;
 	bool bPushedCrouch = false;
+	bool bPushedRoll = false;
 	float PushedVerticalSpeed = 0.f;
 	float LastYaw = 0.f;
 	bool bHasYaw = false;

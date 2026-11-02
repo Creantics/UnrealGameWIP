@@ -537,8 +537,11 @@ void AFTExploreCharacter::HandleJumpRelease()
 
 void AFTExploreCharacter::HandleRoll()
 {
-	// A press the body can't act on yet (in the air, mid-traversal) is kept for a moment: Tick tries it again.
-	RollAsked = TryRoll(false, true) ? 0.f : kRollBuffer;
+	// A press the body can't act on yet (in the air, mid-traversal) is kept for a moment: Tick tries it again. One in
+	// the air is kept for the landing's press window, and the touchdown it lasts to rolls out of the landing.
+	const bool bAir = GetCharacterMovement()->IsFalling();
+	RollAsked = TryRoll(false, true) ? 0.f : bAir ? UFTLocomotionAnimInstance::GetMoveTuning().landing.pressWindow : kRollBuffer;
+	bRollAskedAir = bAir && RollAsked > 0.f;
 }
 
 bool AFTExploreCharacter::ProbeObstacle(const ftcore::TraversalSet& Set, bool bAir, ftcore::TraversalObstacle& Out, FVector& In) const
@@ -1078,6 +1081,7 @@ void AFTExploreCharacter::ResetHeldInput()
 {
 	HandleRunStop();
 	RollAsked = 0.f;
+	bRollAskedAir = false;
 	SlideJumpAsked = 0.f;
 	bJumpHeld = false;
 	UnCrouch();
@@ -1190,12 +1194,19 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	{
 		CatchMissSaid = -1;
 	}
-	// A roll press still kept is tried again, and a landing the locomotion rolls out of starts one.
+	// A roll press still kept is tried again, and a landing the locomotion rolls out of starts one, as does touching
+	// down with a press from the air still kept (the locomotion may not have seen the touchdown yet).
 	RollAsked = FMath::Max(RollAsked - DeltaSeconds, 0.f);
-	const bool bLandingRoll = LocoAnim && LocoAnim->GetLocomotion().landRoll();
+	bRollAskedAir = bRollAskedAir && RollAsked > 0.f;
+	const bool bLandingRoll = LocoAnim && (LocoAnim->GetLocomotion().landRoll() || (bRollAskedAir && GetCharacterMovement()->IsMovingOnGround()));
 	if ((RollAsked > 0.f || bLandingRoll) && TryRoll(bLandingRoll, bLandingRoll))
 	{
 		RollAsked = 0.f;
+		bRollAskedAir = false;
+	}
+	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance()))
+	{
+		Anim->SetRollAsked(RollAsked > 0.f);
 	}
 	if (bTraversing)
 	{

@@ -12,6 +12,6 @@
     "minCatchLead": 0.1, "maxCatchLead": 0.4, "maxCatchMiss": 40, "maxCatchStretch": 15, "catchMissCost": 0.025
   },
   "landing": {
-    "rollMinAir": 0.4, "rollDrop": 250
+    "rollMinAir": 0.4, "rollDrop": 250, "pressWindow": 0.3
   }
 }

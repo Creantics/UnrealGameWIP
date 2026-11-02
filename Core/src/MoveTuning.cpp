@@ -96,9 +96,10 @@ void readTraversal(Reader& rd, const JsonValue& s, TraversalTuning& t) {
 
 void readLanding(Reader& rd, const JsonValue& s, LandingTuning& t) {
     constexpr std::string_view n = "landing";
-    rd.only(s, n, {"rollMinAir", "rollDrop"});
+    rd.only(s, n, {"rollMinAir", "rollDrop", "pressWindow"});
     rd.number(s, n, "rollMinAir", t.rollMinAir, 0.0, 5.0);
     rd.number(s, n, "rollDrop", t.rollDrop, 0.0, 10000.0);
+    rd.number(s, n, "pressWindow", t.pressWindow, 0.0, 2.0);
 }
 
 } // namespace

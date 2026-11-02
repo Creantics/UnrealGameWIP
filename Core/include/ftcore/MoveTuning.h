@@ -24,10 +24,12 @@
 
 namespace ftcore {
 
-// The landing rules Locomotion applies (LocoTuning's rollMinAir and rollDrop): copied into it by the host.
+// The landing rules Locomotion applies (LocoTuning's rollMinAir and rollDrop), copied into it by the host, and how
+// long the host keeps a roll pressed in the air for the touchdown.
 struct LandingTuning {
-    float rollMinAir = 0.4f; // a body touching down after this long in the air may roll out of it...
-    float rollDrop = 250.f;  // ...and does, whatever it holds, once it has fallen this far (cm)
+    float rollMinAir = 0.4f;  // a body touching down after this long in the air may roll out of it...
+    float rollDrop = 250.f;   // ...and does, whatever it holds, once it has fallen this far (cm)
+    float pressWindow = 0.3f; // a roll pressed in the air this long or less before touchdown rolls out of it (s)
 };
 
 struct MoveTuning {

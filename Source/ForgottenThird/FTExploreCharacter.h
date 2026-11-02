@@ -44,8 +44,10 @@
 // lets go and falls). The roll keeps a speed of its own the whole way (the body's, but no slower than a run's, or a
 // landing's than its clip's: ftcore::TraversalPlan::speed), the clip playing faster where its root slows in the tuck.
 // The body is handed back once it is up and a moment on, or as soon as it is up when the stick points well off the
-// roll's way. A press the body can't act on yet (in the air, mid-traversal) is kept for a moment, and a moving landing
-// from a real fall with crouch on rolls out of it. -LocoRollEvery=<s> rolls every s seconds; -LocoRollTurn=<deg>
+// roll's way. A press the body can't act on yet (mid-traversal) is kept for a moment. Landings: touching down after
+// landing.rollMinAir in the air, a moving body with crouch on, or with a roll pressed in the air within
+// landing.pressWindow of the touchdown, rolls out of it, and any body does from a fall of landing.rollDrop or more
+// (Data/Movement/movement.json), keeping its speed rather than landing hard. -LocoRollEvery=<s> rolls every s seconds; -LocoRollTurn=<deg>
 // turns the stick that far off each roll's way until a second after it hands back.
 //
 // Crouch in a sprint slides (ftcore::SlideSet, from SetTraversalFromRun's slide clips): the drop-in nearest the body's
@@ -247,6 +249,7 @@ private:
 	bool bJumpHeld = false; // the jump pressed and not yet let go
 	int32 CatchMissSaid = -1; // the last "none" TryCatch logged this flight: 0 none fits, 1 out of reach
 	float RollAsked = 0.f; // a roll press still kept (s)
+	bool bRollAskedAir = false; // ...pressed in the air: the touchdown rolls out of the landing
 	float RollEvery = 0.f; // -LocoRollEvery=<s>
 	float RollTimer = 0.f;
 	float RollTurn = 0.f;     // -LocoRollTurn=<deg>

@@ -17,8 +17,9 @@ TEST_CASE("The shipped Data/Movement/movement.json reads, and every move's secti
     CHECK(text.find("\"slide\"") != std::string::npos);
     CHECK(text.find("\"traversal\"") != std::string::npos);
     CHECK(text.find("\"landing\"") != std::string::npos);
-    // The slide's jump cancel is tuned there.
+    // The slide's jump cancel and the landing roll's press window are tuned there.
     CHECK(text.find("\"jumpFrom\"") != std::string::npos);
+    CHECK(text.find("\"pressWindow\"") != std::string::npos);
 }
 
 TEST_CASE("A member left out keeps its default; one given is read") {
