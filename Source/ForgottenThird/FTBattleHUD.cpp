@@ -618,14 +618,14 @@ void AFTBattleHUD::DrawLaneBursts(const AFTBattleDemoActor& D, float Vis)
 			}
 			// The note stops where it was judged, greys, sinks a little and fades; an X marks it.
 			const float K = static_cast<float>(Age / T.missFade);
-			const float Y = Geo.noteY(J.NoteDt) + T.missSinkPx * S * K;
+			const float Y = FMath::Max(Geo.noteY(J.NoteDt) + T.missSinkPx * S * K, Geo.plate.y + R + 4.f * S);
 			const float A = (1.f - K) * Vis;
 			DrawArrowFill(Lane, CX, Y, R, 3.f * S, WithAlpha(Lc(L.colors.arrowEdge), A));
 			DrawArrowFill(Lane, CX, Y, R, 0.f, WithAlpha(FLinearColor(0.5f, 0.5f, 0.55f), A * 0.9f));
 			DrawCross(CX, Y, R * 0.55f, WithAlpha(Lc(L.colors.miss), A * 1.4f), 4.f * S);
 			continue;
 		}
-		const float Radius = ftcore::burstRadius(T, J.Grade, Age) * 0.01f * Geo.box.h;
+		const float Radius = ftcore::burstRadius(T, J.Grade, Age) * 0.01f * Geo.box.h * 0.5f; // the sizes are diameters
 		if (Radius <= 0.f)
 		{
 			continue;
@@ -648,7 +648,8 @@ void AFTBattleHUD::DrawLaneWord(const AFTBattleDemoActor& D, float Vis)
 	const ftcore::ArrowLaneLayout& L = D.GetLaneLayout();
 	const ftcore::ArrowLaneTimes& T = L.times;
 	const float S = UiScale;
-	UFont* Font = GEngine->GetMediumFont();
+	UFont* Font = GEngine->GetLargeFont();
+	UFont* TickFont = GEngine->GetMediumFont();
 	const double Now = HudWall();
 	const AFTBattleDemoActor::FLaneJudge& W = D.GetLaneWord();
 	const double WordAge = Now - W.Wall;
@@ -662,8 +663,8 @@ void AFTBattleHUD::DrawLaneWord(const AFTBattleDemoActor& D, float Vis)
 	{
 		const float A = Fade(StrayAge, T.wordHold, T.wordOut) * Vis;
 		const float Y = BaseY - T.wordRisePx * S * static_cast<float>(FMath::Clamp(StrayAge / Span, 0.0, 1.0));
-		DrawStrCentered(kTooEarly, WithAlpha(Black, A), CX + 2.f * S, Y + 2.f * S, Font, 1.f);
-		DrawStrCentered(kTooEarly, WithAlpha(Lc(L.colors.warn), A), CX, Y, Font, 1.f);
+		DrawStrCentered(kTooEarly, WithAlpha(Black, A), CX + 2.f * S, Y + 2.f * S, Font, 1.5f);
+		DrawStrCentered(kTooEarly, WithAlpha(Lc(L.colors.warn), A), CX, Y, Font, 1.5f);
 		return;
 	}
 	if (W.Grade == ftcore::Grade::Pending || WordAge < 0.0 || WordAge >= Span)
@@ -673,10 +674,10 @@ void AFTBattleHUD::DrawLaneWord(const AFTBattleDemoActor& D, float Vis)
 	const float A = Fade(WordAge, T.wordHold, T.wordOut) * Vis;
 	const float Y = BaseY - T.wordRisePx * S * static_cast<float>(FMath::Clamp(WordAge / Span, 0.0, 1.0));
 	const FString* Word = &kMiss.Get();
-	float Size = 1.f;
+	float Size = 1.6f;
 	switch (W.Grade)
 	{
-	case ftcore::Grade::Perfect: Word = &kPerfect.Get(); Size = 1.15f; break;
+	case ftcore::Grade::Perfect: Word = &kPerfect.Get(); Size = 1.85f; break;
 	case ftcore::Grade::Great: Word = &kGreat.Get(); break;
 	case ftcore::Grade::Good: Word = &kGood.Get(); break;
 	default:
@@ -695,8 +696,8 @@ void AFTBattleHUD::DrawLaneWord(const AFTBattleDemoActor& D, float Vis)
 	if (Tick != 0)
 	{
 		const FString& Label = Tick < 0 ? kEarly.Get() : kLate.Get();
-		DrawStrCentered(Label, WithAlpha(Black, A), CX + 1.5f * S, Y + 26.f * S + 1.5f * S, Font, 0.7f);
-		DrawStrCentered(Label, WithAlpha(Lc(L.colors.arrowFill), A * 0.9f), CX, Y + 26.f * S, Font, 0.7f);
+		DrawStrCentered(Label, WithAlpha(Black, A), CX + 1.5f * S, Y + 52.f * S + 1.5f * S, TickFont, 1.5f);
+		DrawStrCentered(Label, WithAlpha(Lc(L.colors.arrowFill), A * 0.95f), CX, Y + 52.f * S, TickFont, 1.5f);
 		if (!W.bExpired)
 		{
 			const float NY = Geo.targetY + ftcore::tickOffsetPx(Geo, W.Error, GoodWindow);
@@ -724,20 +725,20 @@ void AFTBattleHUD::DrawLaneStamp(const AFTBattleDemoActor& D, float Alpha)
 	const float CX = Rect.x + Rect.w * 0.5f;
 	const FLinearColor Black(0.f, 0.f, 0.f, 1.f);
 	const bool bFull = D.IsStampFull();
-	DrawRect(Lc(L.colors.plate, Alpha * 0.8f), Rect.x - 6.f * S, Rect.y - 8.f * S, Rect.w + 12.f * S, (bFull ? 128.f : 104.f) * S);
+	DrawRect(Lc(L.colors.plate, Alpha), Rect.x - 6.f * S, Rect.y - 8.f * S, Rect.w + 12.f * S, (bFull ? 190.f : 150.f) * S);
 	const FLinearColor Main = bFull ? Lc(L.colors.perfect) : Lc(L.colors.arrowFill);
-	DrawStrCentered(D.GetStampAccuracyText(), WithAlpha(Black, Alpha), CX + 2.f * S, Rect.y + 2.f * S, Large, 1.6f * Scale);
-	DrawStrCentered(D.GetStampAccuracyText(), WithAlpha(Main, Alpha), CX, Rect.y, Large, 1.6f * Scale);
-	float LineY = Rect.y + 62.f * S;
+	DrawStrCentered(D.GetStampAccuracyText(), WithAlpha(Black, Alpha), CX + 2.f * S, Rect.y + 2.f * S, Large, 3.2f * Scale);
+	DrawStrCentered(D.GetStampAccuracyText(), WithAlpha(Main, Alpha), CX, Rect.y, Large, 3.2f * Scale);
+	float LineY = Rect.y + 96.f * S;
 	if (bFull)
 	{
 		float W = 0.f, H = 0.f;
-		GetTextSize(kFullCombo, W, H, Font, UiScale);
-		DrawStrCentered(kFullCombo, WithAlpha(Lc(L.colors.perfect), Alpha), CX, LineY, Font, 1.f);
+		GetTextSize(kFullCombo, W, H, Font, UiScale * 1.7f);
+		DrawStrCentered(kFullCombo, WithAlpha(Lc(L.colors.perfect), Alpha), CX, LineY, Font, 1.7f);
 		DrawRect(WithAlpha(Lc(L.colors.perfect), Alpha), CX - W * 0.5f, LineY + H + 2.f * S, W, 3.f * S);
-		LineY += 30.f * S;
+		LineY += 44.f * S;
 	}
-	DrawStrCentered(D.GetStampBestText(), WithAlpha(Lc(L.colors.targetIdle), Alpha), CX, LineY, Font, 0.8f);
+	DrawStrCentered(D.GetStampBestText(), WithAlpha(Lc(L.colors.targetIdle), Alpha), CX, LineY, Font, 1.5f);
 }
 
 void AFTBattleHUD::DrawLane(const AFTBattleDemoActor& D)
@@ -906,7 +907,7 @@ void AFTBattleHUD::DrawLane(const AFTBattleDemoActor& D)
 	// number grey for a moment.
 	{
 		const ftcore::PxRect Rect = ftcore::resolve(L.streak, Geo.box);
-		UFont* Font = GEngine->GetMediumFont();
+		UFont* Font = GEngine->GetLargeFont();
 		const int32 Streak = D.GetStreak();
 		const float CX = Rect.x + Rect.w * 0.5f;
 		const float CY = Rect.y + Rect.h * 0.2f;
@@ -914,20 +915,20 @@ void AFTBattleHUD::DrawLane(const AFTBattleDemoActor& D)
 		if (Streak >= T.streakFrom)
 		{
 			const float Pop = ftcore::streakPopScale(T, D.GetStreakStepAge());
-			DrawStrCentered(D.GetStreakText(Streak), WithAlpha(Black, Vis), CX + 2.f * S, CY + 2.f * S, Font, 1.3f * Pop);
-			DrawStrCentered(D.GetStreakText(Streak), Lc(Col.arrowFill, Vis), CX, CY, Font, 1.3f * Pop);
+			DrawStrCentered(D.GetStreakText(Streak), WithAlpha(Black, Vis), CX + 2.f * S, CY + 2.f * S, Font, 1.8f * Pop);
+			DrawStrCentered(D.GetStreakText(Streak), Lc(Col.arrowFill, Vis), CX, CY, Font, 1.8f * Pop);
 		}
 		else if (Streak == 0 && D.GetBrokenStreak() >= T.streakFrom && D.GetBrokenStreakAge() < T.streakMissHold)
 		{
-			DrawStrCentered(D.GetStreakText(D.GetBrokenStreak()), FLinearColor(0.55f, 0.55f, 0.58f, Vis), CX, CY, Font, 1.3f);
+			DrawStrCentered(D.GetStreakText(D.GetBrokenStreak()), FLinearColor(0.55f, 0.55f, 0.58f, Vis), CX, CY, Font, 1.8f);
 		}
 	}
 
 	// The input caption under the plate: the d-pad cross and the keys (never the face buttons, which belong to Beat).
 	{
 		const ftcore::PxRect Rect = ftcore::resolve(L.caption, Geo.box);
-		UFont* Small = GEngine->GetSmallFont();
-		const FLinearColor Dimmed = Lc(Col.targetIdle, 0.85f * Vis * Dim);
+		UFont* Small = GEngine->GetMediumFont();
+		const FLinearColor Dimmed = Lc(Col.targetIdle, Vis * Dim);
 		float TW = 0.f, TH = 0.f;
 		GetTextSize(kLaneHint, TW, TH, Small, UiScale);
 		const float Icon = Rect.h * 0.9f;

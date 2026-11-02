@@ -1829,7 +1829,7 @@ void AFTBattleDemoActor::TickAutoPlay(float DeltaSeconds)
 	const double Now = Battle->GetBattleTime();
 	const ftcore::ComboSequence& Combo = B->combo();
 	const bool bLaneShot = !LaneShotPrefix.IsEmpty();
-	if (bLaneShot && LaneShotCombos >= 2 && !bLaneShotStrayed && GetComboAge() > 0.45 && Now < Combo.note(0).time - Combo.windows().good - 0.05)
+	if (bLaneShot && LaneShotCombos >= 5 && !bLaneShotStrayed && GetComboAge() > 0.45 && Now < Combo.note(0).time - Combo.windows().good - 0.05)
 	{
 		// One stray press well ahead of the first note, for the lockout cue's view.
 		bLaneShotStrayed = true;
@@ -1868,9 +1868,9 @@ void AFTBattleDemoActor::LaneShotPlan(size_t I, double& Offset, bool& bSkip) con
 	Offset = 0.0;
 	bSkip = false;
 	const ftcore::Battle* B = Battle->GetBattle();
-	if (!B || LaneShotCombos < 2)
+	if (!B || LaneShotCombos < 5)
 	{
-		return; // the first combo plays clean
+		return; // the first four combos play clean
 	}
 	const ftcore::JudgeWindows& W = B->combo().windows();
 	switch (I)
@@ -1995,7 +1995,7 @@ void AFTBattleDemoActor::TickLaneShots()
 	{
 		LaneShotStartWall = Now;
 	}
-	constexpr uint16 kAll = 2047;
+	constexpr uint16 kAll = 4095;
 	if (LaneShotMask == kAll || Now - LaneShotStartWall > 300.0 || Battle->IsBattleOver())
 	{
 		if (LaneShotMask != kAll)
@@ -2009,16 +2009,25 @@ void AFTBattleDemoActor::TickLaneShots()
 		}
 		return;
 	}
-	if (Now - LaneShotStartWall < 3.0 || Now - LaneShotLastWall < 0.2)
+	if (Now - LaneShotStartWall < 0.5 || Now - LaneShotLastWall < 0.2)
 	{
+		return;
+	}
+	if (!(LaneShotMask & 2048))
+	{
+		// The first HighResShot of a run stalls the frame for most of a second: spend one before the views that count.
+		if (B->phase() != ftcore::Phase::NotStarted)
+		{
+			TakeLaneShot(TEXT("0_warmup"), 2048);
+		}
 		return;
 	}
 	const ftcore::ComboSequence& Combo = B->combo();
 	const double Age = GetComboAge();
 	const double EndAge = GetComboEndAge();
 	const double WordAge = Now - LaneWord.Wall;
-	const bool bFirst = LaneShotCombos == 1;
-	const bool bLater = LaneShotCombos >= 2;
+	const bool bFirst = LaneShotCombos <= 4;
+	const bool bLater = LaneShotCombos >= 5;
 	const bool bRunning = Battle->IsComboActive();
 	auto Want = [&](uint16 Bit) { return !(LaneShotMask & Bit); };
 
@@ -2031,41 +2040,41 @@ void AFTBattleDemoActor::TickLaneShots()
 	{
 		TakeLaneShot(TEXT("2_entering"), 2);
 	}
-	else if (bFirst && Want(4) && LaneWord.Grade == ftcore::Grade::Perfect && WordAge >= 0.04 && WordAge < 0.12 && Combo.judged() == 1)
+	else if (bFirst && Want(4) && LaneWord.Grade == ftcore::Grade::Perfect && WordAge >= 0.03 && WordAge < 0.3 && Combo.judged() == 1)
 	{
 		TakeLaneShot(TEXT("3_perfect"), 4);
 	}
-	else if (bFirst && bRunning && Want(8) && Combo.judged() >= 2 && Combo.size() - Combo.judged() >= 2 && WordAge >= 0.15 && WordAge < 0.3)
+	else if (bFirst && bRunning && Want(8) && Combo.judged() >= 2 && Combo.size() - Combo.judged() >= 2 && WordAge >= 0.08 && WordAge < 0.4)
 	{
 		TakeLaneShot(TEXT("4_mid"), 8);
 	}
-	else if (bFirst && Want(16) && Streak >= LaneLayout.times.streakEvery && GetStreakStepAge() >= 0.04 && GetStreakStepAge() < 0.12)
+	else if (bFirst && Want(16) && Streak >= LaneLayout.times.streakEvery && GetStreakStepAge() >= 0.03 && GetStreakStepAge() < 0.3)
 	{
 		TakeLaneShot(TEXT("5_streak"), 16);
 	}
-	else if (bFirst && Want(32) && bComboStamp && bStampFull && EndAge >= 0.2 && EndAge < 0.35)
+	else if (bFirst && Want(32) && bComboStamp && bStampFull && EndAge >= 0.1 && EndAge < 0.4)
 	{
 		TakeLaneShot(TEXT("6_exit_full"), 32);
 	}
 	else if (bLater && Want(64) && LaneWord.Grade != ftcore::Grade::Perfect && LaneWord.Grade != ftcore::Grade::Miss && LaneWord.Error < 0.0
-		&& WordAge >= 0.05 && WordAge < 0.14)
+		&& WordAge >= 0.03 && WordAge < 0.25)
 	{
 		TakeLaneShot(TEXT("7_early"), 64);
 	}
 	else if (bLater && Want(128) && LaneWord.Grade != ftcore::Grade::Perfect && LaneWord.Grade != ftcore::Grade::Miss && LaneWord.Error > 0.0
-		&& WordAge >= 0.05 && WordAge < 0.14)
+		&& WordAge >= 0.03 && WordAge < 0.25)
 	{
 		TakeLaneShot(TEXT("8_late"), 128);
 	}
-	else if (bLater && Want(256) && LaneWord.Grade == ftcore::Grade::Miss && LaneWord.bExpired && WordAge >= 0.05 && WordAge < 0.14)
+	else if (bLater && Want(256) && LaneWord.Grade == ftcore::Grade::Miss && LaneWord.bExpired && WordAge >= 0.03 && WordAge < 0.25)
 	{
 		TakeLaneShot(TEXT("9_miss"), 256);
 	}
-	else if (bLater && Want(512) && GetStrayAge() >= 0.05 && GetStrayAge() < 0.15)
+	else if (bLater && Want(512) && GetStrayAge() >= 0.03 && GetStrayAge() < 0.24)
 	{
 		TakeLaneShot(TEXT("10_lockout"), 512);
 	}
-	else if (bLater && Want(1024) && bComboStamp && !bStampFull && EndAge >= 0.2 && EndAge < 0.35)
+	else if (bLater && Want(1024) && bComboStamp && !bStampFull && EndAge >= 0.1 && EndAge < 0.4)
 	{
 		TakeLaneShot(TEXT("11_exit_stamp"), 1024);
 	}

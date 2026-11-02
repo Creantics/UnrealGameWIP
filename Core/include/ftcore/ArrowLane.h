@@ -52,7 +52,7 @@ struct LaneColor {
 
 // Colour tokens. Hue is secondary: the grades are told apart by shape and word.
 struct ArrowLaneColors {
-    LaneColor plate{0.02f, 0.02f, 0.05f, 0.72f};
+    LaneColor plate{0.02f, 0.02f, 0.05f, 0.86f};
     LaneColor arrowFill{0.96f, 0.96f, 0.92f, 1.f};
     LaneColor arrowEdge{0.02f, 0.02f, 0.05f, 0.9f};
     LaneColor targetIdle{0.78f, 0.78f, 0.82f, 1.f};

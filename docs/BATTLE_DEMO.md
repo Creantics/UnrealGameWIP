@@ -317,7 +317,7 @@ tested in `test_arrow_lane.cpp`. A missing or refused file leaves the built-in n
   0.7 to 1.2 s), 46% of the height, about 497 px/s at 1080: a 250 ms same-lane step is 124 px and a 125 ms burst 62 px,
   against a 65 px glyph. A late arrow goes on up through the target until its Good window ends. `BattleTuning::leadIn` stays
   1.0 s, so the first window opens at least 0.83 s after the confirm.
-- **Look.** A near-opaque dark plate (alpha 0.72, a hairline round it). Notes are solid arrowheads with a short shaft and a
+- **Look.** A near-opaque dark plate (alpha 0.86, a hairline round it). Notes are solid arrowheads with a short shaft and a
   dark edge; the receptors are the same shape hollow (filled is coming, hollow is the target). No squares. The Good and
   Perfect windows are drawn on the target at the arrows' speed (from `combo().windows()`, so they follow the difficulty). A
   beat line scrolls with the arrows, every fourth brighter, and the target row pulses on the beat. Direction is the
@@ -355,8 +355,8 @@ tested in `test_arrow_lane.cpp`. A missing or refused file leaves the built-in n
 - **Not done.** Hold arrows (deferred; Core has no holds in Turns), the sound hooks (`SFX-TURNS-ARROW-*`) and haptics.
 
 `-BattleLaneShot=<prefix>` (implies the autopilot; needs a renderer, so `-RenderOffScreen`) plays the first combo clean and
-the next ones with a Great or Good early, a Good late, a missed note and one stray press, and saves the lane's views with
-`HighResShot 1600x900`: `1_fadein`, `2_entering`, `3_perfect`, `4_mid`, `5_streak`, `6_exit_full`, `7_early`, `8_late`,
+the first four clean, then the next ones with a Great or Good early, a Good late, a missed note and one stray press, and saves the lane's views with
+`HighResShot 1600x900`: `0_warmup` (a throwaway: the first screenshot of a run stalls), `1_fadein`, `2_entering`, `3_perfect`, `4_mid`, `5_streak`, `6_exit_full`, `7_early`, `8_late`,
 `9_miss`, `10_lockout`, `11_exit_stamp`, then quits.
 
 ## From the exploration demo
