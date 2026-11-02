@@ -138,7 +138,10 @@ AFTArenaFighter::AFTArenaFighter()
 	Boom->TargetArmLength = 640.f;
 	Boom->SocketOffset = FVector(0.0, 120.0, 70.0);
 	Boom->bUsePawnControlRotation = true;
-	Boom->bDoCollisionTest = false;
+	// The camera may leave the zone's walls but not pass through the scene: the arm probes the world and is pulled in.
+	Boom->bDoCollisionTest = true;
+	Boom->ProbeSize = 12.f;
+	Boom->ProbeChannel = ECC_Camera;
 	Boom->bEnableCameraLag = true;
 	Boom->CameraLagSpeed = 9.f;
 	Boom->bEnableCameraRotationLag = true;

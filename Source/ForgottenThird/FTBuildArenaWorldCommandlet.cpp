@@ -6,14 +6,9 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/World.h"
 #include "FTArenaGameMode.h"
-#include "FTArenaStage.h"
 #include "GameFramework/PlayerStart.h"
 #include "GameFramework/WorldSettings.h"
 #include "HAL/FileManager.h"
-#include "Materials/Material.h"
-#include "Materials/MaterialExpressionMultiply.h"
-#include "Materials/MaterialExpressionScalarParameter.h"
-#include "Materials/MaterialExpressionVectorParameter.h"
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
@@ -24,19 +19,6 @@ namespace
 const TCHAR* const kArenaMapFolder = TEXT("/Game/Maps");
 
 #if WITH_EDITOR
-// Adds an expression to the material the way the material editor does.
-template <typename T>
-T* AddArenaExpression(UMaterial* Material, int32 X, int32 Y)
-{
-	T* Expression = NewObject<T>(Material, NAME_None, RF_Transactional);
-	Material->GetExpressionCollection().AddExpression(Expression);
-	Expression->Material = Material;
-	Expression->MaterialExpressionEditorX = X;
-	Expression->MaterialExpressionEditorY = Y;
-	Expression->UpdateMaterialExpressionGuid(true, false);
-	return Expression;
-}
-
 bool SaveArenaPackage(UPackage* Package, UObject* Asset, const FString& File)
 {
 	FAssetRegistryModule::AssetCreated(Asset);
@@ -51,38 +33,6 @@ bool SaveArenaPackage(UPackage* Package, UObject* Asset, const FString& File)
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildArenaWorld: saved %s."), *File);
 	return true;
-}
-
-// The glow master the stages' lit bands, cracks and caps wear: Color times Strength into the emissive colour, on
-// a black surface.
-bool BuildGlowMaterial()
-{
-	const FString PackageName = FTArenaStage::GlowMaterial;
-	const FString File = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
-	if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
-	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildArenaWorld: couldn't replace %s."), *File);
-		return false;
-	}
-	UPackage* Package = CreatePackage(*PackageName);
-	UMaterial* Material = NewObject<UMaterial>(Package, FName(*FPackageName::GetShortName(PackageName)), RF_Public | RF_Standalone | RF_Transactional);
-	Material->MaterialDomain = MD_Surface;
-	Material->BlendMode = BLEND_Opaque;
-
-	UMaterialExpressionVectorParameter* Color = AddArenaExpression<UMaterialExpressionVectorParameter>(Material, -600, 0);
-	Color->ParameterName = TEXT("Color");
-	Color->DefaultValue = FLinearColor(1.f, 1.f, 1.f, 1.f);
-	UMaterialExpressionScalarParameter* Strength = AddArenaExpression<UMaterialExpressionScalarParameter>(Material, -600, 200);
-	Strength->ParameterName = TEXT("Strength");
-	Strength->DefaultValue = 1.f;
-	UMaterialExpressionMultiply* Product = AddArenaExpression<UMaterialExpressionMultiply>(Material, -300, 0);
-	Product->A.Connect(0, Color);
-	Product->B.Connect(0, Strength);
-	Material->GetEditorOnlyData()->EmissiveColor.Connect(0, Product);
-
-	Material->PreEditChange(nullptr);
-	Material->PostEditChange();
-	return SaveArenaPackage(Package, Material, File);
 }
 #endif
 } // namespace
@@ -106,11 +56,6 @@ int32 UFTBuildArenaWorldCommandlet::Main(const FString& Params)
 		return 1;
 	}
 	const FString MapPath = FString::Printf(TEXT("%s/%s"), kArenaMapFolder, *MapName);
-
-	if (!BuildGlowMaterial())
-	{
-		return 1;
-	}
 
 	// Start from nothing (as FTBuildBeatWorld: loading the old map into the package clashes with the new world).
 	const FString File = FPackageName::LongPackageNameToFilename(MapPath, FPackageName::GetMapPackageExtension());
@@ -136,8 +81,9 @@ int32 UFTBuildArenaWorldCommandlet::Main(const FString& Params)
 	FActorSpawnParameters Spawn;
 	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-	// Only the player start (where the game mode puts the player for the default stage's ring; the pawn spawns here
-	// first). The stage, its light and its sky are built at run time from Data/Battle/arenas.json.
+	// Only the player start (where the game mode puts the player for the plain zone's ring; the pawn spawns here
+	// first). A zone in a world is held in that world's own map, and the plain zone gets its ground and look from the
+	// game mode at run time (Data/Battle/arenas.json).
 	APlayerStart* Start = World->SpawnActor<APlayerStart>(
 		AFTArenaGameMode::PlayerStartFor(AFTArenaGameMode::MapRingRadius) + FVector(0, 0, 100), FRotator::ZeroRotator, Spawn);
 	Start->SetActorLabel(TEXT("PlayerStart"));

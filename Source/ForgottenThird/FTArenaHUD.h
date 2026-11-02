@@ -67,6 +67,9 @@ private:
 	void DrawFlashes(const AFTArenaGameMode& Mode);
 	void DrawBanners(const AFTArenaGameMode& Mode);
 	void DrawResult(const AFTArenaGameMode& Mode);
+	// The air near the zone's wall, in the world's own look (rain haze, a pulsing blue grid, paper-edge fog), within
+	// about 3 m of it and nowhere else: how the player learns where the invisible wall is.
+	void DrawEdgeCue(const AFTArenaGameMode& Mode);
 
 	float UiScale = 1.f;
 

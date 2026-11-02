@@ -92,7 +92,7 @@ add_library(ftcore STATIC
     src/Inventory.cpp
     src/Shop.cpp
     src/ArenaFight.cpp
-    src/ArenaStage.cpp
+    src/ArenaZone.cpp
     src/BeatFight.cpp
     src/BeatBoss.cpp
     src/BeatScreen.cpp
@@ -186,7 +186,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_shop.cpp
         tests/test_pause.cpp
         tests/test_arena.cpp
-        tests/test_arena_stage.cpp
+        tests/test_arena_zone.cpp
         tests/test_beat.cpp
         tests/test_beat_screen.cpp
         tests/test_beat_boss.cpp

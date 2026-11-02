@@ -1,8 +1,8 @@
 # Arena demo
 
 A playable version of the real-time arena fight: one lead against one to six enemies (by default a wave
-of three, a brute, a skirmisher and a breaker, one attacking at a time; placeholder shapes) in a round ring on one of
-several generated arenas ("Stages" below), with a lock-on camera and a canvas HUD. The rules all live in
+of three, a brute, a skirmisher and a breaker, one attacking at a time; placeholder shapes) held inside invisible walls
+in a zone of a world's own scene ("Zones" below), with a lock-on camera and a canvas HUD. The rules all live in
 Core (`ftcore::ArenaFight`, `Core/include/ftcore/ArenaFight.h`); the enemies, their moves and the ring
 come from `Data/Battle/arena.json`. See [COMBAT_SYSTEMS.md](COMBAT_SYSTEMS.md), "Arena melee", for the
 rules themselves.
@@ -10,101 +10,117 @@ rules themselves.
 Map: `/Game/Maps/Demo_Arena` (Content/Maps/Demo_Arena.umap). The map's game mode is `AFTArenaGameMode`
 (no story; HUD `AFTArenaHUD`; pawn `AFTArenaFighter`). The project's default map is unchanged.
 
-The map is built from code, never by hand, and holds only a player start: the arena itself is built at run time
-from the stage (below), so one map serves every stage. After a change to the commandlet, build it again:
+The map is built from code, never by hand, and holds only a player start: a zone in a world is held in that world's own
+map, which the game mode opens, and the plain zone gets its ground and look from the game mode at run time. After a change to
+the commandlet, build the map again:
 
 ```
 UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildArenaWorld -NullRHI -unattended -nopause -nosplash
 ```
 
-It also writes the glow material the stages' lit parts wear, `/Game/Rendering/M_ArenaGlow` (a colour times a
-strength into the emissive colour; a stage falls back to a bright plain surface when it is missing).
 Everything that fights is spawned by the game mode.
 
-## Stages
+## Zones
 
-Where the fight is held is data: a stage in `Data/Battle/arenas.json` (ids and numbers only). Core
-(`Core/include/ftcore/ArenaStage.h`) turns a stage and the fight it holds into a layout of boxes, cylinders,
-lamps, a scene look and a camera rig, deterministically from the stage's `seed`; `FTArenaStage::Build` makes it
-in the world on the first tick. `-ArenaStage=<id>` picks one; without it the default is `sand_ring`, which is the
-old demo (a stone disc, a knee-high wall, eight pillars with a lamp each, the same ring, spawn and camera).
+Where the fight is held is data: a zone in `Data/Battle/arenas.json` (ids and numbers only). A zone is a portion of
+a world's own scene, a plaza or a street between buildings: nothing is built for it, the fight happens in the world map
+with the world's art and light, and the player, the boss and the minions are held inside the zone's invisible walls.
+`-ArenaStage=<id>` picks one. Without it the default is `sand_ring`, a plain 12 m circle of flat ground (the old demo's
+ring, spawn and camera, with the shared look and no props) so `Demo_Arena` plays with no flag.
+
+For a zone in a world the game mode opens that world's map (`World_Solhaven`, `World_Lattice`, `World_Unwritten`) with
+itself as the game mode (`?game=`), takes the map's explore director out before it begins play, finds the ground height
+there with a trace onto the Landscape (the zone stands on one district's flat pad, so it is one height), and runs the
+fight. The map's own lighting stays.
 
 ```json
-{ "id": "solhaven_canal", "world": "solhaven", "theme": "canal", "bosses": ["hulk"],
-  "floor": "circle", "bound": "water", "seed": 12,
-  "features": { "cover": 6, "pillars": 6, "landmarks": 4, "pools": 1, "cracks": 4, "lights": 6,
-                "lightIntensity": 1.2, "fog": 1 } }
+{ "id": "sol_facade_a", "world": "solhaven", "district": 2, "bosses": ["duelist"],
+  "offset": [0, 34], "yaw": 90, "shape": { "kind": "rect", "aspect": 1.6, "corner": 0.3 }, "seed": 12,
+  "water": [ { "at": [7, 24], "radius": 3 } ] }
 ```
 
-- `world`: `none`, `solhaven`, `lattice`, `unwritten` (`ftcore::StylePack`). It sets the colours of the seven paint
-  roles, the lamp colours, and the scene look (sun, sky light, fog, exposure, bloom). The worlds are tuned light
-  and air on the photoreal base, not the post-process style packs, which stay off (STYLE_PACKS_UE.md).
-- `theme`: the shape of the cover, pillars and landmarks: `plain`, `street` (crates, stacked towers), `canal`
-  (bollards, arches), `circuit` (plinths, slim pylons), `grid` (plinths, tilted monoliths), `shore` (leaning
-  slabs, broken columns), `void` (broken chunks, leaning monoliths).
-- `bosses`: the enemy kinds it hosts, the default line-up (`-ArenaLineup` overrides it, and the scale follows
-  whoever is really in the fight).
-- `floor`: `circle`, `square` (the ring inside a square slab), `broken_ring` (a disc under the ring with slabs
-  sinking away around it) or `island` (a disc on a stalk over water).
-- `bound`: `wall` (a wall just outside the ring, ground beyond), `edge` (a kerb, then a drop), `water` (a low kerb,
-  then still water) or `fog_wall` (tall dark curtains far out in thicker fog).
-- `features`: counts of `cover`, `pillars` (with a lamp each when there are lamps), `landmarks` (set pieces
-  well outside the bound), `pools` (water on the floor), `cracks` (glowing seams on the floor) and `lights`;
-  `lightIntensity` multiplies the lamps and `fog` the world's fog.
-- `ring`, `spawn`, `attackers` (all optional): pin the ring radius, the spawn distance or the attackers. Without
-  them they come from the enemies' size.
+- Anchor: `world` (a `worlds.json` id) with a `scene` (one of its scene ids) or a `district`, or an `at` [x, y] in world
+  metres. A district's frame has its plaza centre as the origin, +x the way its spawn faces (toward the world's
+  centre) and +y to the left; `offset` is in that frame. The log prints each zone's district centre, and the Core test
+  `arena zone frame` prints every district's centre, facing and landmark, so coordinates can be checked.
+- `shape`: `circle`, `rect` (rounded rectangle: `aspect` long over short, `corner` of the short half) or `polygon`
+  (`points`, in multiples of the ring radius, convex). `yaw` (degrees, in the anchor's frame) turns the shape and
+  also the lane the fight starts along: the player starts behind the centre against it and the boss ahead.
+- `bosses`: the enemy kinds it hosts, the default line-up (`-ArenaLineup` overrides it; the zone is fitted to whoever
+  is in the fight). `ring`, `spawn`, `attackers`: pin the ring radius, the spawn distance or the attackers; without them
+  they come from the enemies' size.
+- `water`: shallow sheets (`at`, `radius`) in the anchor's frame; they are drawn and never block. The plazas are dry
+  paving and the Unwritten has no water of its own, so a zone brings some.
+- `cover`: things that block both sides (`kind` circle with `radius`, or box with `half` and `yaw` degrees, `at`), drawn
+  as plain crates and posts. A plaza has none of its own.
 
-### Scale
+### Size and fit
 
-The stage grows with the biggest enemy in the fight. `k` is the larger of its `bodyRadius` / 0.5 m and its
-`height` / 2.2 m (`height` is an optional key of an enemy kind in `arena.json`; without it the old
-radius-derived height, 1.75 m at 0.4 m), held to 1..6: the shipped wave and a human duelist are 1, the 3.5 m
-`hulk` 2.4, the 7 m `titan` 4.4. Then:
+The zone's size follows its boss, as the old rings did: `k` is the larger of the biggest enemy's `bodyRadius` / 0.5 m
+and `height` / 2.2 m (`height` is an optional key of an enemy kind in `arena.json`), held to 1..6. The ring asked for
+is (8.5 m + 1.5 per enemy past one + 0.75 per attacker past one) x (0.4 + 0.6 k), held to 7..60 m: a duelist 8.5 m, the 3.5 m
+hulk 15.6 m, the 7 m titan 25.8 m. The spawn distance is 0.58 of it, at least the biggest radius + 4 m and at most 12 m (the
+lock reaches 15 m). The camera arm is 6.4 m x (0.35 + 0.65 k) (at most 4.2x; 6.4, 12.2 and 20.5 m for those three), with
+the pivot, shoulder offset and lock pitch following.
 
-| | Rule |
-|---|---|
-| Ring radius | (8.5 m + 1.5 m per enemy past one + 0.75 m per attacker past one) x (0.4 + 0.6 k), held to 7..60 m (a pinned `ring` is 6..80 m) |
-| Spawn distance | 0.58 of the ring, at least the biggest body radius + 4 m, at most 12 m (the lock reaches 15 m) and 0.9 of the ring |
-| Props | `propScale` = 1 + 0.55 (k - 1): the wall's height and depth, the pillars' size and gaps, cover, landmarks (8 to 14 times it tall), the floor's rim (2.4 times it) and the lamps' height and reach |
-| Camera | arm 6.4 m x (0.35 + 0.65 k), at most 4.2x; the pivot's height, the shoulder offset and the lock pitch (-20 toward -8 degrees) follow, so a giant's head stays in frame |
-| Fog | thinned by 1 / (0.5 + 0.5 propScale), so a big boss stays readable |
+`fitArenaZone` (Core, `ArenaZone.h`) then puts that size in the world's real layout (`generateWorldLayout`):
 
-The worlds' light is set in `Core/src/ArenaStage.cpp` (`worldLook`): Solhaven is a night (the sun under the horizon, a held
-exposure, sodium and purple lamps, a faint blue water sheen), Lattice a bright blue sky with pale structure and glowing
-blue seams and water, Unwritten thick fog and one or two cold lamps over grey, half-formed ground. The lamps are in
-candelas (`SetIntensityUnits`): the old demo's unitless lamps were far dimmer than the same number in candelas, so the
-generic world's lamps are scaled down to match. A held exposure means the worlds do not brighten toward the same grey;
-if a world is retuned, retune its glow strengths with it (they are in the same units as the exposure).
+- A building the shape crosses **cuts** it: a half-plane along the face that costs the least area, the zone's centre staying
+  on the open side, with 0.6 m between wall and face. So a zone pressed on a facade becomes a polygon with a flat wall
+  along it, and the wall never runs through a building.
+- A building that stands wholly inside the zone, the district's landmark (r 4 m) and every tree or rock touching it are
+  **obstacles**: boxes and circles that block both sides.
+- The size may shrink up to three steps (0.88, 0.77, 0.68), and the centre may move up to two steps off the anchor, until
+  what is left is room enough: at least half the area of its circle, an inscribed radius of the biggest body radius + 3 m,
+  a size of at least 0.65 of what was asked, and wholly on the district's flat pad (61 m from its plaza centre). A shrink
+  or a move is logged as a warning; no room at all is a refusal (the host then uses the plain zone, with a warning).
+- The lanes: the fit tries a fan of 16 lanes, the longest spawn first, until the player's start and every enemy's are
+  inside the walls, clear of obstacles, and the lines between them are clear. Nothing the fit finds ever stands on a start
+  or a lane.
 
-The figure of an enemy is as tall as its `height` and as wide as its `bodyRadius` (up to 6 m). The numbers for
-the shipped stages are printed by the `arena stage` tests and in the log line `Arena: built stage ...`.
+### The walls
 
-### What the generator guarantees
+`arenaStep(fight, bodies, dt, zone)` is the old `arenaStep` plus the zone: every body is held inside the shape (shrunk by
+its own radius) and pushed out of every obstacle, by Core, with no Unreal blocking volume. Core's fight still judges the same
+fight in the zone's bounding circle (`ArenaZoneFit::ring`). A body that walks into a wall slides along it, and in a zone in a
+world it is **braked** over the last 1.5 m to 60% of its speed (no hit-stop; the plain zone is the old ring and does not
+brake, so the default fight is step for step the old one). Velocity is not cut at obstacles, and the enemies do not path
+around them: one pressing into a pillar stays put.
 
-The host moves bodies with `arenaStep`, which knows no props, so the layout keeps everything solid outside the
-ring: the wall, cover, pillars, landmarks and fragments never touch it (cover is a decoration of the rim, not a
-place to hide). Only floor-level decals (pools, cracks, loose slabs) lie inside the ring, and they keep out of
-the player's start (3 m), each enemy's spawn disc (its radius + 2.5 m) and the lane between the starts (2 m +
-the boss's radius). The player's start is at least the boss's radius + 3 m from every enemy's. Every stage in a
-world has water (a water bound, an island, or a pool). `checkArenaStage` holds all of it, the doctests run it on
-every stage and on every floor x bound x theme x world x boss size, and the host logs a broken layout
-(`Arena: stage ... breaks a rule`). Pools and cracks are scenery: nothing in the fight reads them.
+The wall is learned from the air, never drawn as a line: within about 3 m of it the HUD adds the world's own weather,
+in the world's colours: rain streaks falling through sodium and violet haze in Solhaven, a faint blue ruled grid that pulses
+in the Lattice, paper-edge fog bars in the Unwritten (dust in sand on the plain zone). Where the wall crosses a **road** (the
+fit lists these mouths) the host puts a row of crates across it, just outside, so the wall is a thing there.
 
-### The shipped stages
+### Camera
 
-Two for each world, one human-sized (the `duelist`) and one large, plus the default. The bosses are generic
-placeholders (a human-sized `duelist`, a 3.5 m `hulk`, a 7 m `titan`) built from the shipped enemies' numbers
-scaled; the real ones come with the story.
+The camera stays on the boss: the lock turns it, never to show the wall. It may leave the zone but not pass through the
+scene: the spring arm now probes the world (`ECC_Camera`) and is pulled in. `cameraBlocked` (a fit result, logged as a
+warning when above 0) is the share of the zone's edge where a player standing on it would have the camera inside a building
+taller than the camera, so a bad spot is known before it is played: a giant at a tower plaza is 67% (`lat_plaza_a` with
+`-ArenaLineup=titan`), a giant's climax zone 0 to 15%, the human-sized facades 27%.
 
-| Stage | World | Boss | Floor, bound | Ring |
-|---|---|---|---|---|
-| `sand_ring` (default) | none | brute, skirmisher, breaker | circle, wall | 12 m |
-| `solhaven_alley` | Solhaven | duelist | square, wall | 8.5 m |
-| `solhaven_canal` | Solhaven | hulk | circle, water | 15.6 m |
-| `lattice_court` | Lattice | duelist | square, edge | 8.5 m |
-| `lattice_platform` | Lattice | titan | island, edge | 25.8 m |
-| `unwritten_shore` | Unwritten | duelist | broken ring, fog wall | 8.5 m |
-| `unwritten_maw` | Unwritten | hulk | island, fog wall | 15.6 m |
+### The shipped zones
+
+District-frame offsets from the level layout notes (ids and numbers only). Each runs with any boss; the default line-up is
+the one listed.
+
+| Zone | World, district | Offset | Shape | Yaw | Boss | Ring |
+|---|---|---|---|---|---|---|
+| `sand_ring` (default) | none | 0, 0 | circle | 0 | brute, skirmisher, breaker | 12 m |
+| `sol_plaza_a` | Solhaven 3 | 0, 0 | circle | 180 | hulk | 15.6 m |
+| `sol_facade_a` | Solhaven 2 | 0, 34 | rect 1.6, c 0.3 | 90 | duelist | 8.5 m, cut |
+| `sol_climax_a` | Solhaven 14 (climax) | 22, 0 | circle | 0 | titan | 36 m (pinned) |
+| `lat_plaza_a` | Lattice 6 | 0, 0 | circle | 180 | hulk | 15.6 m |
+| `lat_facade_a` | Lattice 5 | 0, -34 | rect 1.6, c 0.3 | -90 | duelist | 8.5 m, cut |
+| `lat_climax_a` | Lattice 1 (climax) | 22, 0 | circle | 0 | titan | 36 m (pinned) |
+| `unw_plaza_a` | Unwritten 3 | 0, 0 | circle | 180 | duelist | 8.5 m |
+| `unw_court_a` | Unwritten 3 | 0, 0 | circle | 180 | hulk | 54 m (pinned) |
+| `unw_climax_a` | Unwritten 4 (climax) | 22, 0 | circle | 0 | titan | 36 m (pinned) |
+
+The climax zones span the open half of the climax district's ring, up to the pad's rim; the court's ruin walls become cover and
+its landmark an obstacle. Zones off the flat pad (a quay, a pool, the rim of the square, open ground) come later: they need a
+ground-height query and a slope check in place of the flat-pad one.
 
 ## Launch
 
@@ -211,13 +227,13 @@ each frame and handed to the fight on its next step, so no press is lost between
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |
 | `-ArenaQuitOnFinish` | Quit when the fight ends, after the result line (exit code 0). |
 | `-ArenaSeed=N` | The fight's seed (default 1). |
-| `-ArenaStage=<id>` | The arena, by id from `arenas.json` (see "Stages"); the default is `sand_ring`. Its bosses are the line-up, and the ring, spawn, props and camera are scaled to them. An unknown id logs the ids and uses the default. |
+| `-ArenaStage=<id>` | The zone, by id from `arenas.json` (see "Zones"); the default is `sand_ring`. A zone in a world opens that world's map. Its bosses are the line-up, and the walls, spawn, obstacles and camera are fitted to the enemies in it. An unknown id logs the ids and uses the default. |
 | `-ArenaLineup=a,b,...` | The enemies by id from `arena.json` (`brute`, `skirmisher`, `breaker`, `duelist`, `hulk`, `titan`), up to six, instead of the stage's own bosses (the sand ring's are `brute,skirmisher,breaker`); `-ArenaLineup=brute` fights one brute. The stage is scaled to whoever is in the fight. |
 | `-ArenaAttackers=N` | How many enemies may attack at once (1 to the line-up's size). |
 | `-ArenaHoldLoad` | The autopilot keeps its Load until it is overloaded (to see the overload; not a way to play). |
 | `-ArenaShot=<path prefix>` | Autoplay and save the views (`_1_ring`, `_2_tell` with the Read cards picked, `_3_impact`, `_4_load` with the gauge past a third, or the overload under `-ArenaHoldLoad`, `_5_release`, `_6_result` .png), then quit; a view the fight never reaches is skipped. Needs a renderer (`-RenderOffScreen`, not `-NullRHI`). |
 | `-ArenaShotDelay=S` | Seconds before the first screenshot (the fight waits for it). |
-| `-ArenaOverview` | With `-ArenaShot`, a first view `_0_overview` of the whole stage from a camera high over the side with the widest gap between landmarks, HUD off. |
+| `-ArenaOverview` | With `-ArenaShot`, a first view `_0_overview` of the whole zone from a camera high over its south-west side (pulled in along the line if a building is in the way), HUD off. |
 
 At the end of every fight the log gets one line with counts only:
 
@@ -235,8 +251,9 @@ warning and quits with exit code 2, so an unattended run never hangs.
 - The lead is `AFTArenaFighter` with the test human body; enemies are primitive figures in their kind's
   colour. Swings, guards, rolls, staggers and falls are posed from the fight's output each frame.
 - The camera is a spring arm over the lead's shoulder, its length, height, shoulder offset and lock pitch from
-  the stage's camera rig (6.4 m, 1.5 m, 1.2 m and -20 degrees for a human-sized fight, longer and higher for a
-  giant). Locked on, it turns toward the target; otherwise the mouse or right stick turns it (the autopilot and
-  an idle run face the nearest enemy).
+  the zone's camera rig (6.4 m, 1.5 m, 1.2 m and -20 degrees for a human-sized fight, longer and higher for a
+  giant). The arm probes the world (it may leave the zone's walls but never passes through a building or the
+  ground) and is pulled in. Locked on, it turns toward the target and holds it; otherwise the mouse or right
+  stick turns it (the autopilot and an idle run face the nearest enemy).
 - Nothing in the host allocates per frame: the HUD's words are static, and its numbers are rebuilt only
   when they change.
