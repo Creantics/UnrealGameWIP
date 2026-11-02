@@ -66,6 +66,7 @@ add_library(ftcore STATIC
     src/Traversal.cpp
     src/Slide.cpp
     src/MoveTuning.cpp
+    src/DodgeRoll.cpp
     src/Locomotion.cpp
     src/Mini.cpp
     src/UiText.cpp
@@ -168,6 +169,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_traversal.cpp
         tests/test_slide.cpp
         tests/test_move_tuning.cpp
+    tests/test_dodge_roll.cpp
         tests/test_locomotion.cpp
         tests/test_mini.cpp
         tests/test_music_loop.cpp

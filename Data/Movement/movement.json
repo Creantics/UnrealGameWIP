@@ -13,5 +13,11 @@
   },
   "landing": {
     "rollMinAir": 0.4, "rollDrop": 250, "pressWindow": 0.3
+  },
+  "dodge": {
+    "length": 0.8, "invulnStart": 0.05, "invulnEnd": 0.4, "cooldown": 0.25,
+    "staminaCost": 25, "staminaMax": 100, "staminaRegen": 30, "regenDelay": 1,
+    "longFrom": 500, "shortSpeed": 550, "longSpeed": 650, "tiredSpeed": 300, "tiredInvuln": 0,
+    "needsDirection": 0
   }
 }

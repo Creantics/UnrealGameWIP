@@ -44,7 +44,10 @@
 // lets go and falls). The roll keeps a speed of its own the whole way (the body's, but no slower than a run's, or a
 // landing's than its clip's: ftcore::TraversalPlan::speed), the clip playing faster where its root slows in the tuck.
 // The body is handed back once it is up and a moment on, or as soon as it is up when the stick points well off the
-// roll's way. A press the body can't act on yet (mid-traversal) is kept for a moment. Landings: touching down after
+// roll's way. A press the body can't act on yet (mid-traversal) is kept for a moment. An asked roll is a dodge
+// (ftcore::DodgeRoll, the dodge section of Data/Movement/movement.json): it waits out the last one's cooldown, its
+// kind sets its speed (a sprint's Long roll keeps its momentum, a walk's Short one its own pace, a Tired one with too
+// little stamina goes slow), and IsInvulnerable() holds through its cover window. Landings: touching down after
 // landing.rollMinAir in the air, a moving body with crouch on, or with a roll pressed in the air within
 // landing.pressWindow of the touchdown, rolls out of it, and any body does from a fall of landing.rollDrop or more
 // (Data/Movement/movement.json), keeping its speed rather than landing hard. -LocoRollEvery=<s> rolls every s seconds; -LocoRollTurn=<deg>
@@ -68,6 +71,7 @@
 #include "InputActionValue.h"
 
 #include "FTLocomotionAnimInstance.h"
+#include "ftcore/DodgeRoll.h"
 #include "FTLook.h"
 #include "FTTraversalProbe.h"
 
@@ -139,6 +143,9 @@ public:
 	// Whether a traversal (a vault, a climb, a catch, a roll or a slide) is carrying the body: a scene played in place waits
 	// for it to end.
 	bool IsTraversing() const { return bTraversing; }
+	// The dodge roll's state (stamina, cooldown, the one going on), and whether a hit now does nothing (its cover).
+	const ftcore::DodgeState& GetDodge() const { return DodgeNow; }
+	bool IsInvulnerable() const { return Dodge.invulnerable(DodgeNow); }
 	// For the followers: how many vaults, climbs and catches the body has begun (not rolls or slides), and where and which
 	// way the last one began, and whether it was a catch.
 	uint32 GetTraversalsBegun() const { return TraversalsBegun; }
@@ -290,6 +297,9 @@ private:
 	bool bSlideBlocked = false;
 	float SlideTime = 0.f;
 	float SlideJumpAsked = 0.f; // a jump pressed mid-slide, still kept (s)
+	// The dodge roll: an asked roll is one (its rules from Data/Movement/movement.json).
+	ftcore::DodgeRoll Dodge;
+	ftcore::DodgeState DodgeNow;
 	// -LocoVaultWall: the course still to build, then (a course built and run) its way, run along every frame, traversing
 	// whatever is ahead; -LocoCatch's course jumps at its walls instead.
 	bool bCoursePending = false;

@@ -102,6 +102,28 @@ void readLanding(Reader& rd, const JsonValue& s, LandingTuning& t) {
     rd.number(s, n, "pressWindow", t.pressWindow, 0.0, 2.0);
 }
 
+void readDodge(Reader& rd, const JsonValue& s, DodgeTuning& t) {
+    constexpr std::string_view n = "dodge";
+    rd.only(s, n, {"length", "invulnStart", "invulnEnd", "cooldown", "staminaCost", "staminaMax", "staminaRegen",
+                   "regenDelay", "longFrom", "shortSpeed", "longSpeed", "tiredSpeed", "tiredInvuln", "needsDirection"});
+    rd.number(s, n, "length", t.length, 0.05, 5.0);
+    rd.number(s, n, "invulnStart", t.invulnStart, 0.0, 5.0);
+    rd.number(s, n, "invulnEnd", t.invulnEnd, 0.0, 5.0);
+    rd.number(s, n, "cooldown", t.cooldown, 0.0, 10.0);
+    rd.number(s, n, "staminaCost", t.staminaCost, 0.0, 1000.0);
+    rd.number(s, n, "staminaMax", t.staminaMax, 0.0, 1000.0);
+    rd.number(s, n, "staminaRegen", t.staminaRegen, 0.0, 1000.0);
+    rd.number(s, n, "regenDelay", t.regenDelay, 0.0, 10.0);
+    rd.number(s, n, "longFrom", t.longFrom, 0.0, 2000.0);
+    rd.number(s, n, "shortSpeed", t.shortSpeed, 0.0, 2000.0);
+    rd.number(s, n, "longSpeed", t.longSpeed, 0.0, 2000.0);
+    rd.number(s, n, "tiredSpeed", t.tiredSpeed, 0.0, 2000.0);
+    rd.number(s, n, "tiredInvuln", t.tiredInvuln, 0.0, 1.0);
+    rd.number(s, n, "needsDirection", t.needsDirection, 0.0, 1.0);
+    if (rd.ok && t.invulnStart > t.invulnEnd) rd.fail(n, "invulnStart", "above invulnEnd");
+    if (rd.ok && t.staminaCost > t.staminaMax) rd.fail(n, "staminaCost", "above staminaMax");
+}
+
 } // namespace
 
 bool importMoveTuning(std::string_view json, MoveTuning& out, std::string* error) {
@@ -122,10 +144,11 @@ bool importMoveTuning(std::string_view json, MoveTuning& out, std::string* error
     }
     MoveTuning t = out;
     Reader rd{error};
-    rd.only(root, "", {"version", "slide", "traversal", "landing"});
+    rd.only(root, "", {"version", "slide", "traversal", "landing", "dodge"});
     readSlide(rd, rd.section(root, "slide"), t.slide);
     readTraversal(rd, rd.section(root, "traversal"), t.traversal);
     readLanding(rd, rd.section(root, "landing"), t.landing);
+    readDodge(rd, rd.section(root, "dodge"), t.dodge);
     if (!rd.ok) return false;
     out = t;
     return true;

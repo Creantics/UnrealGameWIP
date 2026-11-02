@@ -124,6 +124,8 @@ void AFTExploreCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
+	Dodge.setTuning(UFTLocomotionAnimInstance::GetMoveTuning().dodge);
+	DodgeNow = Dodge.fresh();
 	const bool bPortrait = FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait"));
 	// The lead and the party toggle: the player's last choice this session, else the command line, else config. A
 	// portrait shows the lead alone.
@@ -675,9 +677,21 @@ bool AFTExploreCharacter::TryRoll(bool bLanding, bool bLog)
 	{
 		return false;
 	}
+	// An asked roll is a dodge: Core says whether one may start yet (the last one and its cooldown over, a direction
+	// if the tuning needs one). A landing's roll is the landing's, free.
+	const bool bAskedWay = Move->GetCurrentAcceleration().SizeSquared2D() > 1.0;
+	if (!bLanding && !Dodge.canStart(DodgeNow, bAskedWay))
+	{
+		if (bLog)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Roll: not yet (%s)."), DodgeNow.active() ? TEXT("dodging")
+				: DodgeNow.cooldown > 0.f ? TEXT("cooling down") : TEXT("no direction asked"));
+		}
+		return false;
+	}
 	const ftcore::TraversalSet& Set = Anim->GetTraversal();
 	const float Speed = static_cast<float>(GetVelocity().Size2D());
-	const ftcore::TraversalPlan Plan = Set.planRoll(Speed, -1, bLanding);
+	ftcore::TraversalPlan Plan = Set.planRoll(Speed, -1, bLanding);
 	if (!Plan.ok())
 	{
 		if (bLog)
@@ -707,6 +721,20 @@ bool AFTExploreCharacter::TryRoll(bool bLanding, bool bLog)
 	const FVector Way = bLanding ? (bGoing ? Going : bStick ? Stick : GetActorForwardVector())
 		: (bStick ? Stick : bGoing ? Going : GetActorForwardVector());
 	const double Heading = FMath::RadiansToDegrees(FMath::Atan2(Way.Y, Way.X));
+	// The dodge sets the roll's speed by its kind (a sprint's Long roll keeps its momentum, a Short one goes at its own
+	// pace, a Tired one slow), and lasts as long as the clip has left.
+	if (!bLanding)
+	{
+		const float Stamina = DodgeNow.stamina;
+		Dodge.start(DodgeNow, Speed, bAskedWay, Set.clip(static_cast<std::size_t>(Plan.clip)).length - Plan.start);
+		Plan.speed = DodgeNow.speed;
+		Plan.entryRate = Set.rate(Plan, Plan.start);
+		const ftcore::DodgeTuning& DT = Dodge.tuning();
+		UE_LOG(LogForgottenThird, Display, TEXT("Dodge: %s at %.0f cm/s, stamina %.0f -> %.0f, covered %.2f-%.2f s of %.2f."),
+			DodgeNow.kind == ftcore::DodgeKind::Long ? TEXT("long") : DodgeNow.kind == ftcore::DodgeKind::Short ? TEXT("short") : TEXT("tired"),
+			DodgeNow.speed, Stamina, DodgeNow.stamina, DT.invulnStart,
+			DodgeNow.kind == ftcore::DodgeKind::Tired ? DT.invulnStart + (DT.invulnEnd - DT.invulnStart) * DT.tiredInvuln : DT.invulnEnd, DodgeNow.length);
+	}
 	bTraversing = true;
 	TravPlan = Plan;
 	TravTime = Plan.start;
@@ -807,6 +835,11 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 	{
 		if (bBlocked) Move->Velocity = FVector::ZeroVector;
 		bTraversing = false;
+		// A dodge ends with its roll, however it ends; its cooldown runs from here.
+		if (bRoll)
+		{
+			Dodge.stop(DodgeNow);
+		}
 		// The clip plays on at the pace it had while it fades out, and under a roll's the body may set off on a turn.
 		Anim->LetGoTraversal(Rate, bRoll);
 		Move->Velocity.Z = 0.0;
@@ -1321,6 +1354,7 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 		CrouchTimer = 0.f;
 		HandleCrouch();
 	}
+	Dodge.tick(DodgeNow, DeltaSeconds);
 	if (RollEvery > 0.f && (RollTimer += DeltaSeconds) >= RollEvery)
 	{
 		RollTimer = 0.f;

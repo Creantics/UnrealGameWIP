@@ -1,7 +1,7 @@
 #pragma once
 
 // The movement moves' tunables, from Data/Movement/movement.json: the slide, the traversals (vaults, climbs,
-// rolls and ledge catches) and the landings. Every member is optional and keeps its built-in default when
+// rolls and ledge catches), the landings and the dodge roll. Every member is optional and keeps its built-in default when
 // left out, so the file only needs the numbers being tuned; a member that is there must be a number within
 // its range, and a section or member the reader doesn't know is refused (a misspelt tunable would otherwise
 // be silently ignored).
@@ -11,11 +11,12 @@
 //   if (!ftcore::importMoveTuning(text, t, &error)) ...; // t is left as it was
 //   slideSet.setTuning(t.slide);
 //
-// {"version": 1, "slide": {"friction": 400, ...}, "traversal": {...}, "landing": {...}}
+// {"version": 1, "slide": {"friction": 400, ...}, "traversal": {...}, "landing": {...}, "dodge": {...}}
 //
 // Parsing allocates (load time only).
 
 #include "ftcore/Api.h"
+#include "ftcore/DodgeRoll.h"
 #include "ftcore/Slide.h"
 #include "ftcore/Traversal.h"
 
@@ -36,6 +37,7 @@ struct MoveTuning {
     SlideTuning slide;
     TraversalTuning traversal;
     LandingTuning landing;
+    DodgeTuning dodge;
 };
 
 // Reads `json` into `out`. On failure `out` is unchanged and `error` (if given) says which member and why.

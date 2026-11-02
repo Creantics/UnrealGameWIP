@@ -20,6 +20,11 @@ TEST_CASE("The shipped Data/Movement/movement.json reads, and every move's secti
     // The slide's jump cancel and the landing roll's press window are tuned there.
     CHECK(text.find("\"jumpFrom\"") != std::string::npos);
     CHECK(text.find("\"pressWindow\"") != std::string::npos);
+    CHECK(text.find("\"dodge\"") != std::string::npos);
+    // The file's numbers are the built-in defaults: tuning starts from the code's values.
+    CHECK(t.dodge.invulnEnd == DodgeTuning{}.invulnEnd);
+    CHECK(t.dodge.staminaCost == DodgeTuning{}.staminaCost);
+    CHECK(t.dodge.shortSpeed == DodgeTuning{}.shortSpeed);
 }
 
 TEST_CASE("A member left out keeps its default; one given is read") {
