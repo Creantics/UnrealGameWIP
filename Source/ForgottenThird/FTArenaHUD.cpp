@@ -815,17 +815,17 @@ void AFTArenaHUD::DrawEdgeCue(const AFTArenaGameMode& Mode)
 		{
 			const double Phase = FMath::Frac(Now * 1.6 + static_cast<double>((I * 37) % 100) * 0.01);
 			const double Top = 3.2 - Phase * 3.2;
-			const FLinearColor Colour = (I % 3 == 0) ? FLinearColor(0.7f, 0.5f, 1.f, 0.55f * Fade) : FLinearColor(1.f, 0.62f, 0.28f, 0.5f * Fade);
+			const FLinearColor Colour = (I % 3 == 0) ? FLinearColor(0.75f, 0.55f, 1.f, 0.9f * Fade) : FLinearColor(1.f, 0.66f, 0.3f, 0.85f * Fade);
 			if (ToScreen(At(P, Top + 0.9), A) && ToScreen(At(ftcore::Vec2{P.x + 0.05f, P.y + 0.05f}, Top), B))
 			{
-				DrawLine(A.X, A.Y, B.X, B.Y, Colour, 1.6f * S);
+				DrawLine(A.X, A.Y, B.X, B.Y, Colour, 2.6f * S);
 			}
 			break;
 		}
 		case 2: // the Lattice: a faint blue ruled grid, pulsing
 		{
 			const float Pulse = 0.55f + 0.45f * FMath::Sin(static_cast<float>(Now) * 3.f + static_cast<float>(I) * 0.35f);
-			const FLinearColor Colour(0.3f, 0.7f, 1.f, 0.42f * Fade * Pulse);
+			const FLinearColor Colour(0.3f, 0.7f, 1.f, 0.75f * Fade * Pulse);
 			if ((I % 2 == 0) && ToScreen(At(P, 0.0), A) && ToScreen(At(P, 3.0), B))
 			{
 				DrawLine(A.X, A.Y, B.X, B.Y, Colour, 1.4f * S);
@@ -846,7 +846,7 @@ void AFTArenaHUD::DrawEdgeCue(const AFTArenaGameMode& Mode)
 		default: // the plain zone: dust, in sand
 		{
 			const float Drift = 0.6f + 0.4f * FMath::Sin(static_cast<float>(Now) * 0.8f + static_cast<float>(I));
-			const FLinearColor Colour = Style == 3 ? FLinearColor(0.92f, 0.9f, 0.82f, 0.09f * Fade * Drift) : FLinearColor(0.85f, 0.78f, 0.6f, 0.09f * Fade * Drift);
+			const FLinearColor Colour = Style == 3 ? FLinearColor(0.92f, 0.9f, 0.82f, 0.16f * Fade * Drift) : FLinearColor(0.85f, 0.78f, 0.6f, 0.16f * Fade * Drift);
 			if (ToScreen(At(P, 0.0), A) && ToScreen(At(P, 1.2 + 1.4 * Drift), B))
 			{
 				DrawLine(A.X, A.Y, B.X, B.Y, Colour, 16.f * S);

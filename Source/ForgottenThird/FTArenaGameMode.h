@@ -62,8 +62,9 @@
 //   ARENA RESULT: Victory in <t> s (autoplay, seed <s>, <n> enemies, hp <h>/<max>, <c> heals left; <x> hits, ...).
 // -ArenaShot=<path prefix> renders the HUD-on views docs/ARENA_DEMO.md lists (<prefix>_1_ring.png, ...)
 // with HighResShot after an 8 s settle (-ArenaShotDelay=<s>) and then quits; it implies -ArenaAutoPlay.
-// -ArenaOverview adds a first view, <prefix>_0_overview.png: the whole stage from a camera high over its south-west
-// side, HUD off, before the fight starts moving.
+// -ArenaOverview adds a first view, <prefix>_0_overview.png: the whole zone from a camera high over its south-west
+// side, HUD off, with its walls (green), obstacles (red) and road mouths (yellow) drawn as debug lines for the
+// picture only, and a second, <prefix>_0b_edge.png: the player 1.4 m from the wall, to show the edge cue.
 
 #include "CoreMinimal.h"
 
@@ -183,6 +184,9 @@ private:
 	void TakeShot(const TCHAR* Name, bool bCounted = true);
 	// -ArenaOverview's view: true while it holds the fight still (before the first view and just after it).
 	bool OverviewShot();
+	// -ArenaOverview's second view, _0b_edge: the player moved to 1.4 m from the zone's wall on his left, to show the
+	// edge cue; then the fight is put back as it began.
+	bool EdgeShot();
 	APlayerController* GetPC() const;
 	FVector ToWorld(const ftcore::Vec2& P) const { return FVector(P.x * 100.0, P.y * 100.0, ZoneZ); }
 
@@ -255,6 +259,7 @@ private:
 	FString ShotPrefix;
 	bool bOverview = false;
 	int32 OverviewPhase = 0; // 0 not yet, 1 camera placed, 2 taken, 3 back on the player
+	int32 EdgePhase = 0;     // 0 not yet, 1 player at the wall, 2 taken, 3 put back
 	UPROPERTY()
 	TObjectPtr<AActor> OverviewCamera;
 	float ShotDelay = 8.f;
