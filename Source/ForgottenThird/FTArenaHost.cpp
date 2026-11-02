@@ -77,10 +77,16 @@ void AFTArenaHost::EndPlay(const EEndPlayReason::Type Reason)
 		}
 		bRegistered = false;
 	}
-	// Destroyed mid-fight on a map that stays: the lead gets its body, view and party back.
-	if (bFighting && Reason == EEndPlayReason::Destroyed)
+	// Destroyed mid-fight on a map that stays: the lead gets its body, view and party back. A world being torn down
+	// (the director destroys this on its way out, a quit) gets nothing back: nothing may spawn then, the HUD included.
+	if (bFighting && Reason == EEndPlayReason::Destroyed && GetWorld() && !GetWorld()->bIsTearingDown)
 	{
 		EndInPlace();
+	}
+	else if (bFighting && Runner)
+	{
+		bFighting = false;
+		Runner->End();
 	}
 	Super::EndPlay(Reason);
 }

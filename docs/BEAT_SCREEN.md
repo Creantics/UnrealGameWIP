@@ -30,7 +30,7 @@ Opened without a story step (the map on its own, or after the story handed its c
 The fight runs on one clock, `UFTConductorComponent`'s song time, and the rule is:
 
 - **Music.** When the fight (`beat.json`) names a music cue, and the audio subsystem is playing that cue, and the cue has a tempo, the conductor is bound to it (`BindMusic`). The fight's clock is the song's, and presses are stamped with `songTimeForEvent` (latency compensated), as the rhythm battle's are. The fight's own `bpm` and `offset` place the grid, so they must match the cue's; a mismatch is logged as a warning. The screen never starts or stops music: the story's cue carries over the hand-off.
-- **Wall clock.** Otherwise (no cue named, a named cue that isn't the one playing, no tempo, `-nosound`, headless) the conductor runs on `UFTPauseSubsystem::WallSeconds()`, which stands still while the pause menu is open.
+- **Wall clock.** Otherwise (no cue named, a named cue that isn't the one playing, no tempo, `-nosound`, headless) the conductor runs on `UFTPauseSubsystem::WallSeconds()`, which stands still while the pause menu is open, and a synthesized beat stands in for the music (below).
 - **`-AlphaFast`.** A story step on autoplay under `-AlphaFast` binds no music (it isn't dilated). The conductor's clock follows game time (`bWallClockFollowsGameTime`, then `ResetClock()`) and the world runs at global time dilation 8, as the battle's does. The dilation is put back when the screen finishes.
 - A bound music clock that has not reported its first position after two seconds gives way to the wall clock, with a warning.
 
@@ -45,6 +45,13 @@ Beat: clock: game time (wall clock following it), -AlphaFast, game time x8.
 ```
 
 The pause menu freezes all of it: the world, the wall clock and the music stop together, so the fight's clock does not move.
+
+**The synthesized beat.** On the wall clock (but not under `-AlphaFast`, and also when a music clock gives way to it) the screen plays the beat boss demo's metronome (`UFTBeatBossMetronome`): no sound asset, the clicks are made on the audio thread. While the fight plays it clicks each beat of the fight's grid (`offset + b * 60 / bpm`, read from the fight's clock), with an accent on each bar line (every 4 beats from beat 0). It starts at the first beat after play begins, falls quiet on the result and the retry prompt, and finds the beat again after a retry; after a hitch it clicks only the newest beat, never a burst. A click lands on the next audio buffer, a few tens of milliseconds after its beat. Under `-nosound` nothing sounds, but the beats are still counted. Two lines are logged, one at the start and one with the result:
+
+```
+Beat: the synthesized beat plays on the wall clock (<bpm> bpm, offset <s> s).
+Beat: the synthesized beat sounded <n> beats.
+```
 
 ## Keys
 

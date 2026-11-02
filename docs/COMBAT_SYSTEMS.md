@@ -180,7 +180,7 @@ The full rules are in `BeatFight.h`.
 
 ### Clock
 
-`BeatFight` runs on the fight's clock: the music's song time from the host's `Conductor`, or a pause-aware wall clock when no music plays. The def's `bpm` and `offset` place the beat grid, so they must match the cue. Presses are stamped with `Conductor::songTimeForEvent`, as the rhythm battle's are. The host's rule for choosing between the two (and for `-AlphaFast`) is in [BEAT_SCREEN.md](BEAT_SCREEN.md), "The clock".
+`BeatFight` runs on the fight's clock: the music's song time from the host's `Conductor`, or a pause-aware wall clock when no music plays. The def's `bpm` and `offset` place the beat grid, so they must match the cue. Presses are stamped with `Conductor::songTimeForEvent`, as the rhythm battle's are. The host's rule for choosing between the two (and for `-AlphaFast`) is in [BEAT_SCREEN.md](BEAT_SCREEN.md), "The clock". On the wall clock a synthesized beat (the beat boss demo's metronome) clicks the grid, with an accent on each bar line.
 
 ### Judging
 
@@ -283,5 +283,5 @@ These wait until the animation session's merge is pushed.
 ## Follow-ups
 
 - Status effects (parked).
-- A synthesized beat loop for fights with no cue.
+- Full procedural music for Beat fights with no cue: a Core driver like the beat boss's `BeatMusicDriver` (which reads a `BeatBoss`) for `BeatFight`'s 4/4 grid, with intensity from the enemies' hp. Until then the metronome clicks the beat ([BEAT_SCREEN.md](BEAT_SCREEN.md), "The synthesized beat").
 - In-place staging of beat fights on the world map (the fight plays on its step's world map, as an arena fight does, instead of opening the `Beat` map).

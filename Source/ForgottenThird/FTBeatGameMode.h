@@ -11,7 +11,8 @@
 // The clock. The fight runs on one clock, UFTConductorComponent's song time. When the fight names a music
 // cue and the audio subsystem is playing that cue with a tempo, the conductor is bound to it and the clock
 // is the song's (presses are stamped with songTimeForEvent); otherwise (no cue, -nosound, a cue that isn't
-// the one playing) the conductor runs on the pause-aware wall clock. With a story step on autoplay and
+// the one playing) the conductor runs on the pause-aware wall clock and a synthesized beat stands in for the music: the beat boss
+// demo's metronome (UFTBeatBossMetronome) clicks every beat of the fight's grid and accents its bar lines. With a story step on autoplay and
 // -AlphaFast the clock follows game time and the world runs at time dilation 8, as the battle's does; music
 // is never bound then. Which clock it chose is logged once. The fight begins on the first tick, once the
 // clock is running, so a load hitch can't cost the lead-in.
@@ -44,6 +45,8 @@
 
 #include "FTBeatGameMode.generated.h"
 
+class UAudioComponent;
+class UFTBeatBossMetronome;
 class UFTConductorComponent;
 
 UCLASS()
@@ -116,12 +119,20 @@ private:
 	// Polls the four direction key sets and feeds the screen presses and releases, and the Retry and Quit keys.
 	void PollKeys();
 	void AddPopups(const ftcore::BeatEvents& Events);
+	// The synthesized beat, when no music sets the clock: started once the clock is the wall clock.
+	void StartBeatLoop();
+	// Clicks the beat the fight's clock has reached (an accent on a bar line); quiet outside play.
+	void SoundBeat();
 	void RestoreDilation();
 	void Finish();
 	void OpenReturnMap();
 
 	UPROPERTY(VisibleAnywhere, Category = "Components")
 	TObjectPtr<UFTConductorComponent> Conductor;
+	UPROPERTY(Transient)
+	TObjectPtr<UFTBeatBossMetronome> Metronome;
+	UPROPERTY(Transient)
+	TObjectPtr<UAudioComponent> MetronomeAudio;
 
 	ftcore::BeatTable Table;
 	ftcore::BeatSetup Setup;
@@ -142,6 +153,9 @@ private:
 	bool bStoryAutoPlay = false;
 	bool bClockIsMusic = false;
 	bool bDilated = false;
+	bool bBeatKnown = false;
+	int64 LastBeat = 0;
+	uint32 BeatsSounded = 0;
 	bool bReturning = false;
 
 	double LockoutUntil = -1e9;
