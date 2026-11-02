@@ -37,7 +37,7 @@ float svf(float in, float fc, float q, float invRate, float& low, float& band) {
     return low;
 }
 
-constexpr float kMusicGain = 0.5f;
+constexpr float kMusicGain = 0.4f;
 constexpr float kCueGain = 1.0f;
 constexpr float kMaster = 0.97f;
 constexpr float kDuckLevel = 0.2f;
@@ -58,6 +58,7 @@ void BeatMusicSynth::init(int sampleRate) {
     dropped_ = 0;
     duck_ = 1.0f;
     duckHold_ = 0;
+    peak_ = 0.0f;
     duckRelease_ = 1.0f - std::exp(-invRate_ / kDuckRelease);
 }
 
@@ -188,6 +189,19 @@ void BeatMusicSynth::start(const Pending& p) {
     case MusicSound::CountVoice: v.length = frames(0.16f); break;
     case MusicSound::Good: v.length = frames(0.07f); break;
     case MusicSound::Miss: v.length = frames(0.24f); break;
+    case MusicSound::TellTick:
+        v.aux = p.aux;
+        v.length = p.aux == 8 ? frames(0.34f) : p.aux == 5 ? frames(0.2f) : frames(0.16f);
+        break;
+    case MusicSound::Pickup: v.length = frames(0.06f); break;
+    case MusicSound::PerfectChime:
+        v.freq = midiFreq(p.note);
+        v.length = frames(0.34f);
+        break;
+    case MusicSound::GoodCue:
+        v.freq = midiFreq(p.note);
+        v.length = frames(0.16f);
+        break;
     case MusicSound::Count: v.active = false; return;
     }
     if (v.length == 0) v.length = 1;
@@ -299,12 +313,12 @@ float BeatMusicSynth::voiceSample(Voice& v) {
         const float n = noiseOf(v.rng);
         const float hp = n - v.prev;
         v.prev = n;
-        x = 0.5f * hp * std::exp(-t * 24.0f) + 0.75f * std::sin(kTwoPi * 220.0f * t) * std::exp(-t * 35.0f) +
-            0.2f * std::sin(kTwoPi * 3200.0f * t) * std::exp(-t * 90.0f);
+        x = 0.3f * hp * std::exp(-t * 24.0f) + 0.5f * std::sin(kTwoPi * 220.0f * t) * std::exp(-t * 35.0f) +
+            0.12f * std::sin(kTwoPi * 3200.0f * t) * std::exp(-t * 90.0f);
         break;
     }
     case MusicSound::AccentBell:
-        x = 0.65f * std::exp(-t * 7.0f) *
+        x = 0.58f * std::exp(-t * 7.0f) *
             (std::sin(kTwoPi * 1320.0f * t) + 0.5f * std::sin(kTwoPi * 1980.0f * t) + 0.3f * std::sin(kTwoPi * 2640.0f * t));
         break;
     case MusicSound::CountClick: x = 0.45f * std::exp(-t * 45.0f) * std::sin(kTwoPi * 1000.0f * t); break;
@@ -315,6 +329,60 @@ float BeatMusicSynth::voiceSample(Voice& v) {
     }
     case MusicSound::Good: x = 0.22f * std::exp(-t * 55.0f) * std::sin(kTwoPi * 1760.0f * t); break;
     case MusicSound::Miss: x = 0.3f * std::exp(-t * 13.0f) * saw(98.0f * t); break;
+    case MusicSound::TellTick: {
+        // A move told. Each answer has its own voice, so the ear can tell a Guard from a Parry: the amplitudes are
+        // the spec's -18 dB (a strike) and -16 dB (a counter or a hold) under the accent's peak.
+        struct Voice2 {
+            float f1, f2, gap, decay, amp;
+        };
+        static constexpr Voice2 kVoices[9] = {
+            {1500.0f, 0.0f, 0.0f, 90.0f, 0.125f}, // attack: a dry tock
+            {330.0f, 440.0f, 0.045f, 38.0f, 0.16f},  // guard: a low rise
+            {392.0f, 523.0f, 0.045f, 38.0f, 0.16f},  // parry: the rise a fourth higher
+            {880.0f, 0.0f, 0.0f, 55.0f, 0.15f},      // dodge: one clean blip
+            {1175.0f, 0.0f, 0.0f, 55.0f, 0.15f},     // jump: the blip higher
+            {392.0f, 0.0f, 0.0f, 14.0f, 0.16f},      // hold: a note that stays a moment
+            {392.0f, 587.0f, 0.0f, 38.0f, 0.16f},    // paired: two notes together
+            {330.0f, 0.0f, 0.0f, 14.0f, 0.16f},      // release: a lower held note
+            {500.0f, 1000.0f, 0.0f, 9.0f, 0.2f},     // a finisher's tell: a shimmer that climbs
+        };
+        const Voice2& vc = kVoices[std::min<int>(v.aux, 8)];
+        if (v.aux == 8) {
+            const float f = vc.f1 * std::exp2(t * 3.0f);
+            v.tone = wrap(v.tone + f * invRate_);
+            x = vc.amp * std::sin(kTwoPi * v.tone) * std::min(1.0f, t / 0.02f) * std::exp(-std::max(0.0f, t - 0.22f) * 40.0f);
+        } else if (v.aux == 5 || v.aux == 7) {
+            x = vc.amp * std::sin(kTwoPi * vc.f1 * t) * std::min(1.0f, t / 0.012f) * std::exp(-t * vc.decay);
+        } else if (v.aux == 6) {
+            x = vc.amp * 0.6f * (std::sin(kTwoPi * vc.f1 * t) + std::sin(kTwoPi * vc.f2 * t)) * std::exp(-t * vc.decay);
+        } else {
+            x = vc.amp * std::sin(kTwoPi * vc.f1 * t) * std::exp(-t * vc.decay);
+            if (vc.f2 > 0.0f && t >= vc.gap) {
+                const float u = t - vc.gap;
+                x += vc.amp * std::sin(kTwoPi * vc.f2 * u) * std::exp(-u * vc.decay);
+            }
+        }
+        break;
+    }
+    case MusicSound::Pickup: {
+        // A quiet ride-top tick: a high noise band and a thin tone, -14 dB under the accent.
+        const float n = noiseOf(v.rng);
+        const float hp = n - v.prev;
+        v.prev = n;
+        x = 0.2f * (0.7f * hp * std::exp(-t * 90.0f) + 0.3f * std::sin(kTwoPi * 3100.0f * t) * std::exp(-t * 110.0f));
+        break;
+    }
+    case MusicSound::PerfectChime: {
+        // A tone of the playing chord with a bright shimmer over it (-6 dB, the spec's PRF).
+        const float e = std::exp(-t * 14.0f) * std::min(1.0f, t / 0.002f);
+        x = 0.17f * e *
+            (std::sin(kTwoPi * v.freq * t) + 0.45f * std::sin(kTwoPi * v.freq * 2.0f * t) + 0.25f * std::sin(kTwoPi * v.freq * 3.0f * t));
+        break;
+    }
+    case MusicSound::GoodCue:
+        // The Perfect's dull cousin: one soft tone of the chord, no shimmer, four dB lower.
+        x = 0.17f * std::sin(kTwoPi * v.freq * t) * std::min(1.0f, t / 0.004f) * std::exp(-t * 26.0f);
+        break;
     case MusicSound::Count: break;
     }
     x *= v.velocity;
@@ -345,7 +413,9 @@ void BeatMusicSynth::render(float* out, int frames) {
         }
         if (duckHold_ > 0) --duckHold_;
         else duck_ += (1.0f - duck_) * duckRelease_;
-        out[i] = std::tanh(kMusicGain * duck_ * music + kCueGain * cue) * kMaster;
+        const float mix = kMusicGain * duck_ * music + kCueGain * cue;
+        peak_ = std::max(peak_, std::fabs(mix));
+        out[i] = std::tanh(mix) * kMaster;
     }
     position_ += static_cast<std::uint64_t>(frames);
 }

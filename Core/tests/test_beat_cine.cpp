@@ -6,6 +6,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <set>
 #include <string>
@@ -60,9 +61,22 @@ struct Scene {
         fight.begin(rig().track.def, BeatBossTuning{}, now);
         choreo.begin(rig().choreo, rig().clips);
     }
+    // A blow that hurt the boss: where it was judged (the answer), when (track time) and when it lands on screen.
+    struct Contact {
+        BeatBossAnswer answer;
+        double judgedAt, lands;
+    };
+    std::vector<Contact> contacts;
     void take(const BeatBossEvents& e, double clock) {
         for (const BeatBossEvent& x : e) events.push_back(x);
+        const std::uint32_t before = choreo.hitContacts();
         choreo.observe(fight, e, clock);
+        if (choreo.hitContacts() != before) {
+            BeatBossAnswer answer = BeatBossAnswer::Attack;
+            for (const BeatBossEvent& x : e)
+                if (x.type == BeatBossEventType::Judged) answer = x.answer;
+            contacts.push_back(Contact{answer, fight.trackTime(), choreo.hitContact()});
+        }
     }
     void frame(double now, bool pilot) {
         if (pilot) {
@@ -271,4 +285,200 @@ TEST_CASE("beat cine: the choreography is a varied scene, no two moves in a row 
     CHECK(anchors.size() >= 6);
     CHECK(boss.size() >= 5);
     CHECK(lead.size() >= 8);
+}
+
+TEST_CASE("beat cine: every phase has a Release move, and the Load a perfect Guard stores can be spent") {
+    const Rig& r = rig();
+    for (std::size_t p = 0; p < r.track.def.phaseCount; ++p) {
+        const BarMap& m = r.track.def.phases[p];
+        int releases = 0;
+        for (std::size_t k = 0; k < m.moveCount; ++k) {
+            const PinnedMove& mv = m.moves[k];
+            if (mv.answer != BeatBossAnswer::Release) continue;
+            ++releases;
+            CHECK(mv.endAt > mv.impactAt);
+            // A hold across the beat line, with room before the next impact and after the one before.
+            if (k > 0) CHECK_MESSAGE(mv.impactAt - m.moves[k - 1].impactAt >= 0.8, "phase " << p);
+            if (k + 1 < m.moveCount) CHECK_MESSAGE(m.moves[k + 1].impactAt - mv.endAt >= 0.3, "phase " << p);
+            // The lead meets it with a clip of its own and the boss does not attack.
+            const ChoreoMove& cm = r.choreo.phases[p].moves[k];
+            CHECK(cm.ok >= 0);
+            CHECK(cm.boss == kNoClip);
+        }
+        CHECK_MESSAGE(releases == 1, "phase " << p << " has " << releases << " release moves");
+    }
+
+    // The autopilot spends Load where it has some: stored by a perfect Guard in the first and the third phase.
+    {
+        Scene s;
+        s.start();
+        play(s, 0.0, 200.0, true, [](double) {});
+        std::array<int, 3> perPhase{};
+        int phase = -1;
+        for (const BeatBossEvent& e : s.events) {
+            if (e.type == BeatBossEventType::PhaseStart) phase = e.amount;
+            if (e.type == BeatBossEventType::Released && phase >= 0 && phase < 3) ++perPhase[static_cast<std::size_t>(phase)];
+        }
+        CHECK(s.fight.state() == BeatBossState::Victory);
+        CHECK(perPhase[0] >= 1);
+        CHECK(perPhase[2] >= 1);
+        CHECK(s.fight.stats().releases == perPhase[0] + perPhase[1] + perPhase[2]);
+        CHECK(s.fight.stats().misses == 0);
+    }
+
+    // The second phase has no Guard of its own: a player who saves the first phase's Load (lets its Release pass)
+    // spends it in the second, where the same Release is offered.
+    {
+        Scene s;
+        s.start();
+        double now = 0.0;
+        std::array<int, 3> perPhase{};
+        int phase = -1;
+        while (!s.fight.over() && now < 200.0) {
+            now += kFrame;
+            for (int guard = 0; guard < 64; ++guard) {
+                const QteAction a = s.fight.autopilot(now);
+                if (a.kind == QteAction::Kind::None) break;
+                // The first phase's Release press is held back.
+                bool saving = false;
+                if (a.kind == QteAction::Kind::Press && s.fight.phase() == 0) {
+                    const double track = s.fight.trackTime() + (a.time - s.fight.now());
+                    for (std::size_t i = 0; i < s.fight.promptCount(); ++i) {
+                        const BeatBossPrompt& p = s.fight.prompt(i);
+                        saving |= p.answer == BeatBossAnswer::Release && std::fabs(track - p.impact) < 0.01;
+                    }
+                }
+                if (saving) {
+                    // Nothing else to do at this moment: let the clock pass the prompt.
+                    s.take(s.fight.update(a.time + 0.2), a.time + 0.2);
+                    now = std::max(now, a.time + 0.2);
+                    continue;
+                }
+                s.take(a.kind == QteAction::Kind::Press ? s.fight.press(a.input, a.time) : s.fight.release(a.input, a.time), a.time);
+            }
+            s.take(s.fight.update(now), now);
+        }
+        for (const BeatBossEvent& e : s.events) {
+            if (e.type == BeatBossEventType::PhaseStart) phase = e.amount;
+            if (e.type == BeatBossEventType::Released && phase >= 0 && phase < 3) ++perPhase[static_cast<std::size_t>(phase)];
+        }
+        MESSAGE("saving the first phase's Load: releases per phase " << perPhase[0] << " " << perPhase[1] << " " << perPhase[2]);
+        CHECK(perPhase[0] == 0);
+        CHECK(perPhase[1] >= 1);
+    }
+}
+
+TEST_CASE("beat cine: a Perfect parry's counter lands a beat after it, and the blow is announced for the host to wait for") {
+    Scene s;
+    s.start();
+    play(s, 0.0, 200.0, true, [](double) {});
+    REQUIRE(s.fight.state() == BeatBossState::Victory);
+    int parries = 0;
+    int others = 0;
+    for (const Scene::Contact& c : s.contacts) {
+        const double wait = c.lands - c.judgedAt;
+        CHECK(wait >= -0.02);
+        if (c.answer == BeatBossAnswer::Parry) {
+            ++parries;
+            // The counter's windup is a second long; thrown straight from the parry, entered partway through, it lands
+            // on the first eighth after 0.4 s: a beat, not the beat and a bar it used to wait for.
+            CHECK_MESSAGE(wait <= 0.7, "a parry's counter lands " << wait << " s after it");
+            CHECK_MESSAGE(wait >= 0.3, "a parry's counter lands " << wait << " s after it");
+        } else if (c.answer == BeatBossAnswer::Attack) {
+            ++others;
+            CHECK_MESSAGE(wait <= 0.2, "a strike lands " << wait << " s after its verdict");
+        }
+    }
+    CHECK(parries >= 4);
+    CHECK(others >= 8);
+    CHECK(s.choreo.followUps() >= 8);
+    CHECK(s.choreo.hitContacts() == s.contacts.size());
+}
+
+TEST_CASE("beat cine: the boss roars in the silence, the camera cuts to it and comes back, and the win freezes then ramps up") {
+    const Rig& r = rig();
+    REQUIRE(r.choreo.silence.cut);
+    CHECK(r.choreo.silence.shot == ChoreoShot::CloseBoss);
+    REQUIRE(r.choreo.silence.boss != kNoClip);
+    CHECK(r.clips.id(static_cast<std::size_t>(r.choreo.silence.boss)) == "boss_roar");
+
+    Scene s;
+    s.start();
+    bool silent = false;
+    double silenceTrack = 0.0;
+    bool onLine = false;
+    double silenceAt = 0.0;
+    ChoreoShot before = ChoreoShot::Wide;
+    ChoreoSample during, late, after;
+    bool gotDuring = false, gotLate = false, gotAfter = false;
+    int roarFrames = 0, silenceFrames = 0;
+    double won = -1.0;
+    play(s, 0.0, 200.0, true, [&](double now) {
+        ChoreoSample smp;
+        s.choreo.sampleNow(smp);
+        for (const BeatBossEvent& e : s.events) {
+            if (e.type == BeatBossEventType::SilenceStart && !silent && silenceAt == 0.0) {
+                silent = true;
+                silenceAt = e.time;
+                silenceTrack = s.fight.trackTime();
+                onLine = std::fabs(s.choreo.boundary(silenceTrack, true) - silenceTrack) < 1e-6;
+            }
+        }
+        if (silent && !s.fight.trackRunning() && !s.fight.over()) {
+            ++silenceFrames;
+            if (smp.boss.clip == r.choreo.silence.boss) ++roarFrames;
+            if (!gotDuring && now >= silenceAt + 0.5) {
+                during = smp;
+                gotDuring = true;
+            }
+            if (!gotLate && now >= silenceAt + 3.0) {
+                late = smp;
+                gotLate = true;
+            }
+        } else if (silent && s.fight.trackRunning() && !gotAfter && now > silenceAt + 2.0) {
+            after = smp;
+            gotAfter = true;
+        }
+        if (!silent) before = smp.shot;
+        if (s.fight.state() == BeatBossState::Victory && won < 0.0) won = now;
+    });
+    REQUIRE(s.fight.state() == BeatBossState::Victory);
+    REQUIRE(gotDuring);
+    REQUIRE(gotAfter);
+    // The silence is two seconds and a bar of count (2 + 2.4 s at 100 bpm): the roar (2.5 s) plays in it from its start.
+    CHECK(during.frozen);
+    CHECK(during.shot == ChoreoShot::CloseBoss);
+    CHECK(during.boss.clip == r.choreo.silence.boss);
+    CHECK(during.boss.time == doctest::Approx(0.5).epsilon(0.1));
+    CHECK(roarFrames > silenceFrames / 3);
+    CHECK(roarFrames < silenceFrames); // then the stance
+    if (gotLate) CHECK(late.boss.clip != r.choreo.silence.boss);
+    // The track runs again: the shot that was there before is back unless the next move cuts to its own.
+    CHECK(after.shot != ChoreoShot::CloseBoss);
+    (void)before;
+    (void)silenceTrack;
+    // The cut to the roar is on the bar line the silence stopped at.
+    CHECK(onLine);
+
+    // The win: the final blow holds for 0.2 s, then the visuals ramp up from a quarter speed over 1.5 s, and rest at full.
+    ChoreoSample f;
+    const double end = s.fight.trackTime();
+    s.choreo.sample(end + 0.05, f);
+    CHECK(f.hitStop);
+    CHECK(f.visualRate == 0.0f);
+    s.choreo.sample(end + kVictoryFreeze + 0.001, f);
+    CHECK_FALSE(f.hitStop);
+    CHECK(f.visualRate == doctest::Approx(kVictoryFrom).epsilon(0.05));
+    CHECK(f.slowMo == doctest::Approx(kVictoryFrom).epsilon(0.05));
+    float last = f.visualRate;
+    for (double t = 0.1; t < kVictoryRamp; t += 0.1) {
+        s.choreo.sample(end + kVictoryFreeze + t, f);
+        CHECK(f.visualRate > last);
+        last = f.visualRate;
+    }
+    s.choreo.sample(end + kVictoryFreeze + kVictoryRamp + 0.5, f);
+    CHECK(f.visualRate == 1.0f);
+    CHECK_FALSE(f.hitStop);
+    CHECK(f.over);
+    (void)won;
 }

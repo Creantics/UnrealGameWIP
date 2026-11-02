@@ -92,6 +92,7 @@
     {"id": "SFX-ROLL", "bus": "sfx", "playback": "oneshot"},
     {"id": "SFX-SETDN", "bus": "sfx", "playback": "oneshot"},
     {"id": "SFX-QUES", "bus": "sfx", "playback": "oneshot"},
-    {"id": "MUS-WRD", "bus": "music", "playback": "loop", "bpm": 72, "fadeIn": 1.0, "fadeOut": 2.0}
+    {"id": "MUS-WRD", "bus": "music", "playback": "loop", "bpm": 72, "fadeIn": 1.0, "fadeOut": 2.0},
+    {"id": "MUS-BB-CINE", "bus": "music", "playback": "loop"}
   ]
 }

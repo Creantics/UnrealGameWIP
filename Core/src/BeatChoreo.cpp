@@ -137,6 +137,10 @@ void BeatChoreo::begin(const BeatChoreoDef& def, const BeatClips& clips, const B
     unmatched_ = 0;
     hitStops_ = 0;
     followUps_ = 0;
+    hitContact_ = 0.0;
+    hitContacts_ = 0;
+    silenceCut_ = false;
+    inSilence_ = false;
     retries_ = 0;
     clock_ = 0.0;
     track_ = 0.0;
@@ -163,6 +167,8 @@ void BeatChoreo::resetRun(const BeatBoss& fight, double clock) {
     barCount_ = cutCount_ = warpCount_ = 0;
     pending_ = false;
     ended_ = false;
+    silenceCut_ = false;
+    inSilence_ = false;
     frozen_ = true;
     running_ = false;
     frozenSince_ = clock;
@@ -236,6 +242,13 @@ double BeatChoreo::floorBoundary(double t) const {
         }
     }
     return t;
+}
+
+// The first eighth of the beat (a half beat) at or after t: a beat boundary, or the middle of the beat before it.
+double BeatChoreo::halfBoundary(double t) const {
+    const double next = boundary(t, true);
+    const double half = next - beatAt(next - kEps) * 0.5;
+    return half >= t - kEps && half < next - kEps ? half : next;
 }
 
 double BeatChoreo::beatAt(double t) const {
@@ -376,6 +389,22 @@ double BeatChoreo::lagAt(double t, double* slope, bool* stop) const {
     bool held = false;
     for (std::size_t i = 0; i < warpCount_; ++i) {
         const Warp& w = warps_[i];
+        if (w.kind == WarpKind::Victory) {
+            // The final blow holds, then the visuals ramp up from w.from to full speed; the lag it leaves stays.
+            if (t <= w.t0) continue;
+            const double since = t - w.t0;
+            if (since < w.amount) {
+                lag += since;
+                ds += 1.0;
+                held = true;
+                continue;
+            }
+            const double u = std::min(since - w.amount, w.ramp);
+            const double gain = w.ramp > 0.0 ? (1.0 - w.from) / w.ramp : 0.0;
+            lag += w.amount + u - (w.from * u + 0.5 * gain * u * u);
+            if (since - w.amount < w.ramp) ds += 1.0 - (w.from + gain * u);
+            continue;
+        }
         if (t <= w.t0 || t >= w.t1) continue;
         if (w.kind == WarpKind::Stop) {
             const double over = w.t0 + w.amount;
@@ -524,11 +553,27 @@ void BeatChoreo::handle(const BeatBoss& fight, const BeatBossEvent& e, double te
         frozen_ = true;
         frozenSince_ = e.time;
         running_ = false;
+        inSilence_ = true;
+        silenceTrack_ = te;
+        // The camera cuts to the roar on the bar line the track stopped at, and comes back to its shot after.
+        if (def_.silence.cut) {
+            ChoreoShot shot = def_.opening;
+            for (std::size_t i = 0; i < cutCount_; ++i)
+                if (cuts_[i].time <= te + kEps) shot = cuts_[i].shot;
+            silenceShot_ = shot;
+            silenceCut_ = true;
+            addCut(te, def_.silence.shot);
+        }
         break;
     case BeatBossEventType::Resumed:
         running_ = true;
         frozen_ = false;
         settle(te);
+        inSilence_ = false;
+        if (silenceCut_) {
+            silenceCut_ = false;
+            addCut(te, silenceShot_);
+        }
         break;
     case BeatBossEventType::Victory: forceEnd(def_.victory, te, true); break;
     case BeatBossEventType::Defeat: forceEnd(def_.defeat, te, false); break;
@@ -670,7 +715,10 @@ double BeatChoreo::lateAnswer(const PromptRec& rec, const ChoreoMove& mv, double
 bool BeatChoreo::planThen(std::int16_t clip, double after, double& landed) {
     const BeatClip* next = clipOf(clip);
     if (!next || !(next->impact > 0.0)) return false;
-    const double target = boundary(after + next->impact / kChoreoMaxRate - kEps, true);
+    // As soon as it can land, on an eighth of the beat: no sooner than thenQuick after it starts (the windup is entered
+    // partway through when it is longer), no later than the windup at full speed allows.
+    const double fit = std::min(next->impact / kChoreoMaxRate, tuning_.thenQuick);
+    const double target = halfBoundary(after + fit - kEps);
     double due = barCount_ > 0 ? bars_[barCount_ - 1].end : kFar;
     const Actor& lead = actors_[kLead];
     for (std::size_t i = 0; i < lead.count; ++i)
@@ -759,8 +807,10 @@ void BeatChoreo::judged(const BeatBossEvent& e, double te) {
     }
     const bool perfect = e.grade == QteGrade::Perfect;
     if (perfect) {
+        // The pre-rolled answer's recovery is not waited for: the follow-up goes on from the contact.
+        const double from = kept ? std::min(after, rec->impact + tuning_.thenGap) : after;
         double next = landed;
-        if (planThen(mv->then, after, next)) landed = next;
+        if (planThen(mv->then, from, next)) landed = next;
     }
     pending_ = true;
     pendingPrompt_ = rec->id;
@@ -782,6 +832,8 @@ void BeatChoreo::judged(const BeatBossEvent& e, double te) {
 void BeatChoreo::bossHit(double te) {
     if (!pending_) return;
     pending_ = false;
+    hitContact_ = std::max(te, pendingContact_);
+    ++hitContacts_;
     const BeatClip* c = clipOf(pendingHit_);
     if (!c || te < staggerUntil_) return;
     Actor& boss = actors_[kBoss];
@@ -816,6 +868,9 @@ void BeatChoreo::forceEnd(const ChoreoBeat& beat, double te, bool victory) {
     for (std::size_t i = 0; i < warpCount_; ++i)
         if (warps_[i].t1 <= te + kEps) warps_[w++] = warps_[i];
     warpCount_ = w;
+    if (victory && warpCount_ < warps_.size() && tuning_.victoryFreeze + tuning_.victoryRamp > 0.0)
+        warps_[warpCount_++] = Warp{WarpKind::Victory, te, te + tuning_.victoryFreeze + tuning_.victoryRamp, tuning_.victoryFreeze,
+                                    tuning_.victoryRamp, tuning_.victoryFrom};
     removeFuture(actors_[kLead], te);
     removeFuture(actors_[kBoss], te);
     w = 0;
@@ -913,6 +968,16 @@ void BeatChoreo::sample(double trackTime, ChoreoSample& out) const {
         out.sinceCut += idle;
         stancePose(def_.stanceLead, idle, barBeat_, out.lead);
         stancePose(def_.stanceBoss, idle, barBeat_, out.boss);
+        // The scripted silence: the boss roars, in the time of the silence and its count.
+        if (inSilence_) {
+            if (const BeatClip* roar = clipOf(def_.silence.boss)) {
+                if (idle < roar->length) {
+                    out.boss.clip = def_.silence.boss;
+                    out.boss.time = idle;
+                    out.boss.rate = 1.0f;
+                }
+            }
+        }
         return;
     }
 
@@ -1160,7 +1225,7 @@ bool importBeatChoreo(std::string_view json, const BeatBossTrack& track, const B
         return finish();
     }
     if (const JsonValue v = root["version"]; !(v.isInteger() && v.integer() == 1)) errors.push_back("version: expected 1");
-    ld.unknownKeys(root, "", {"version", "track", "stance", "whiff", "opening", "finisher", "stagger", "victory", "defeat", "phases"});
+    ld.unknownKeys(root, "", {"version", "track", "stance", "whiff", "opening", "finisher", "stagger", "victory", "defeat", "silence", "phases"});
     if (root["track"].string() != track.id) errors.push_back("track: expected " + track.id);
 
     BeatChoreoDef def;
@@ -1188,6 +1253,7 @@ bool importBeatChoreo(std::string_view json, const BeatBossTrack& track, const B
     choreoBeat(ld, root, "stagger", clips, def.stagger);
     choreoBeat(ld, root, "victory", clips, def.victory);
     choreoBeat(ld, root, "defeat", clips, def.defeat);
+    choreoBeat(ld, root, "silence", clips, def.silence);
 
     const JsonValue phases = root["phases"];
     if (!phases.isArray() || phases.size() != track.def.phaseCount) {

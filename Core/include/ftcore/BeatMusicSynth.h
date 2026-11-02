@@ -16,6 +16,9 @@
 // that knows how a clock second maps to a frame places every sound exactly. A sound due before position() starts
 // at the next frame (late()). revokeFrom drops sounds not yet started; cut also fades what is sounding.
 //
+// The player's cues sit on the cue bus with the accents: a tick when a move is told (a voice per answer), a quiet pickup,
+// a chime on a Perfect (a tone of the playing chord) and a duller one on a Good.
+//
 // One thread (the host's audio thread drains its own queue into it). Output is soft-clipped: it never reaches 1.
 // Fixed capacity (24 voices, 256 pending), no allocation after init; deterministic.
 
@@ -50,6 +53,11 @@ public:
     std::size_t pending() const { return pendingCount_; }
     std::uint32_t late() const { return late_; }       // sounds queued after their frame
     std::uint32_t dropped() const { return dropped_; } // sounds that found the queue full
+    // The largest the mix has been before the soft clip since init() or resetPeak(): the output itself never
+    // reaches 1, so only this says whether the mix is asking too much of it. Past about 1.2 the clip is bending
+    // the sound audibly.
+    float preClipPeak() const { return peak_; }
+    void resetPeak() { peak_ = 0.0f; }
 
 private:
     struct Pending {
@@ -93,6 +101,7 @@ private:
     std::uint32_t started_ = 0; // sounds started so far: seeds each voice's noise
     std::uint32_t late_ = 0;
     std::uint32_t dropped_ = 0;
+    float peak_ = 0.0f;
     float duck_ = 1.0f;
     std::uint32_t duckHold_ = 0;
     float duckRelease_ = 0.0f;

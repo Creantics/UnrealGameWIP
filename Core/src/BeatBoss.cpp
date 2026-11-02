@@ -103,6 +103,7 @@ void BeatBoss::begin(const BeatBossDef& def, const BeatBossTuning& tuning, doubl
     def_ = def;
     tuning_ = tuning;
     assist_ = assist;
+    accessPending_ = false;
     stats_ = BeatBossStats{};
     droppedEvents_ = 0;
     nextId_ = 1;
@@ -118,8 +119,22 @@ void BeatBoss::begin(const BeatBossDef& def, const BeatBossTuning& tuning, doubl
     startCount(def_.leadInBars, m.beatSeconds(), bossBeats(m.meter, m.beatEighths));
 }
 
+void BeatBoss::requestAccess(const BeatBossTuning& tuning, const QteAssist& assist) {
+    pendingTuning_ = tuning;
+    pendingAssist_ = assist;
+    accessPending_ = true;
+}
+
+void BeatBoss::applyAccess() {
+    if (!accessPending_) return;
+    tuning_ = pendingTuning_;
+    assist_ = pendingAssist_;
+    accessPending_ = false;
+}
+
 void BeatBoss::retry(double now) {
     if (state_ == BeatBossState::NotStarted) return;
+    applyAccess();
     ++stats_.retries;
     reset(now, checkpoint_.phase);
     const BarMap& m = def_.phases[static_cast<std::size_t>(phase_)];
@@ -376,6 +391,7 @@ int BeatBoss::silenceDue(const BarRef& r) const {
 }
 
 void BeatBoss::barLine(BeatBossEvents& out) {
+    applyAccess();
     const BarRef r = nextBar();
     const BarMap& m = def_.phases[static_cast<std::size_t>(r.phase)];
     if (r.newPhase) {
@@ -495,7 +511,7 @@ int BeatBoss::finisherLeft() const { return finisherStrikes_ > 0 ? finisherStrik
 // ---- judging ----
 
 double BeatBoss::dueTime(const BeatBossPrompt& p) const {
-    const double half = tuning_.perfect * 0.5;
+    const double half = tuning_.lateLimit();
     switch (p.answer) {
     case BeatBossAnswer::Attack: return p.impact + tuning_.strikeGood;
     case BeatBossAnswer::Hold:
@@ -689,6 +705,7 @@ void BeatBoss::judgePress(ActionButton input, BeatBossEvents& out) {
     }
     const double t = track_;
     const double half = tuning_.perfect * 0.5;
+    const double pairWidth = tuning_.pairMode == 1 ? std::max(tuning_.pairWidth, kBossPairWide) : tuning_.pairWidth;
     bool lockedOut = false;
     bool whiff = false;
     for (std::size_t i = 0; i < promptCount_; ++i) {
@@ -729,10 +746,15 @@ void BeatBoss::judgePress(ActionButton input, BeatBossEvents& out) {
             }
             return;
         case BeatBossAnswer::Paired: {
+            if (tuning_.pairMode >= 2) { // one press counts as both
+                p.pressA = p.pressB = t;
+                resolve(i, g, out);
+                return;
+            }
             if (input == p.button) p.pressA = t;
             else p.pressB = t;
             if (p.pressA < 0.0 || p.pressB < 0.0) return;
-            if (std::fabs(p.pressA - p.pressB) <= tuning_.pairWidth + kBossSlack) {
+            if (std::fabs(p.pressA - p.pressB) <= pairWidth + kBossSlack) {
                 resolve(i, g, out); // graded by this press, the later of the two
             } else if (input == p.button) {
                 p.pressB = -1.0; // too far apart: the older press no longer counts
@@ -1630,6 +1652,125 @@ bool importBeatBossTrack(std::string_view json, BeatBossTrack& out, std::string*
     if (!finish()) return false;
     out = std::move(track);
     return true;
+}
+
+// ---- practice tempo ----
+
+double minBossTempoScale(const BeatBossDef& def) {
+    double need = 0.0;
+    for (std::size_t i = 0; i < def.phaseCount && i < kMaxBossPhases; ++i)
+        if (def.phases[i].bpm > 0.0) need = std::max(need, kMinBossBpm / def.phases[i].bpm);
+    return std::min(1.0, need + 1e-9);
+}
+
+BeatBossDef rescaleBeatBossDef(const BeatBossDef& def, double scale) {
+    BeatBossDef out = def;
+    if (!(scale < 1.0)) return out;
+    scale = std::max(scale, minBossTempoScale(def));
+    const double k = 1.0 / scale;
+    const auto move = [k](PinnedMove& m) {
+        m.tellAt *= k;
+        m.impactAt *= k;
+        m.endAt *= k;
+    };
+    for (std::size_t i = 0; i < out.phaseCount && i < kMaxBossPhases; ++i) {
+        BarMap& m = out.phases[i];
+        m.bpm *= scale;
+        m.loopSeconds *= k;
+        for (std::size_t j = 0; j < m.moveCount; ++j) move(m.moves[j]);
+        for (std::size_t j = 0; j < m.finisherCount; ++j) move(m.finisher[j]);
+        for (std::size_t j = 0; j < m.restCount; ++j) m.rests[j].time *= k;
+        for (std::size_t j = 0; j < m.silenceCount; ++j) m.silences[j].seconds *= k;
+    }
+    return out;
+}
+
+// ---- widening the windows ----
+
+namespace {
+
+// One prompt's reach on its button, as times from its impact.
+struct WindowReach {
+    double before = 0.0; // the window opens this long before the impact
+    double after = 0.0;  // it is open this long after (a hold to its end)
+};
+
+WindowReach windowReach(const PinnedMove& m, const BeatBossTuning& t) {
+    WindowReach r;
+    switch (m.answer) {
+    case BeatBossAnswer::Attack:
+        r.before = r.after = t.strikeGood;
+        break;
+    case BeatBossAnswer::Hold:
+    case BeatBossAnswer::Release:
+        r.before = t.strikeGood;
+        r.after = std::max(t.strikeGood, m.endAt - m.impactAt);
+        break;
+    default:
+        r.before = t.counterEarly;
+        r.after = t.lateLimit();
+        break;
+    }
+    return r;
+}
+
+bool usesButton(const PinnedMove& m, ActionButton b) {
+    switch (m.answer) {
+    case BeatBossAnswer::Attack: return b == ActionButton::Attack;
+    case BeatBossAnswer::Guard:
+    case BeatBossAnswer::Parry: return b == ActionButton::Guard;
+    case BeatBossAnswer::Dodge: return b == ActionButton::Dodge;
+    case BeatBossAnswer::Jump: return b == ActionButton::Jump;
+    case BeatBossAnswer::Hold:
+    case BeatBossAnswer::Release: return b == m.button;
+    case BeatBossAnswer::Paired: return b == m.button || b == m.second;
+    }
+    return false;
+}
+
+struct TimedMove {
+    const PinnedMove* move;
+    double offset; // seconds added to the move's times (the loop it is in)
+};
+
+bool movesOverlap(const TimedMove* list, std::size_t n, const BeatBossTuning& t) {
+    for (std::size_t a = 0; a < n; ++a) {
+        for (std::size_t b = 0; b < n; ++b) {
+            if (a == b) continue;
+            const double ta = list[a].move->impactAt + list[a].offset;
+            const double tb = list[b].move->impactAt + list[b].offset;
+            if (!(ta < tb)) continue;
+            bool share = false;
+            for (int bt = 0; bt < 4 && !share; ++bt) {
+                const auto button = static_cast<ActionButton>(bt);
+                share = usesButton(*list[a].move, button) && usesButton(*list[b].move, button);
+            }
+            if (!share) continue;
+            const WindowReach ra = windowReach(*list[a].move, t);
+            const WindowReach rb = windowReach(*list[b].move, t);
+            if (tb - rb.before < ta + ra.after) return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+bool beatBossWindowsOverlap(const BeatBossDef& def, const BeatBossTuning& tuning) {
+    for (std::size_t i = 0; i < def.phaseCount && i < kMaxBossPhases; ++i) {
+        const BarMap& m = def.phases[i];
+        // Two loops, so the move before the loop's end meets the first ones of the next.
+        std::array<TimedMove, 2 * kMaxBossMoves> list{};
+        std::size_t n = 0;
+        for (int loop = 0; loop < 2; ++loop)
+            for (std::size_t j = 0; j < m.moveCount; ++j) list[n++] = TimedMove{&m.moves[j], loop * m.loopSeconds};
+        if (movesOverlap(list.data(), n, tuning)) return true;
+        std::array<TimedMove, kMaxBossFinisherMoves> fin{};
+        std::size_t f = 0;
+        for (std::size_t j = 0; j < m.finisherCount; ++j) fin[f++] = TimedMove{&m.finisher[j], 0.0};
+        if (movesOverlap(fin.data(), f, tuning)) return true;
+    }
+    return false;
 }
 
 } // namespace ftcore

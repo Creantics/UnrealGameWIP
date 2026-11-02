@@ -64,13 +64,32 @@ int MusicPattern::velocitySum() const {
     return n;
 }
 
+int musicTierFloor(const MusicBarContext& ctx) {
+    int floorTier = ctx.phase >= 1 ? 2 : 0; // every phase after the first starts where the one before ended, at least
+    if (ctx.lift) floorTier = std::max(floorTier, 2);
+    return floorTier;
+}
+
 int musicTier(const MusicBarContext& ctx) {
     if (ctx.finisher) return 3;
     if (ctx.forcedTier >= 0) return std::min<int>(ctx.forcedTier, 3);
     const float progress = std::clamp(ctx.phaseProgress, 0.0f, 0.99f);
     const float phases = static_cast<float>(std::max<int>(1, ctx.phaseCount));
     const float level = (static_cast<float>(ctx.phase) + progress) / phases;
-    return std::clamp(static_cast<int>(level * 4.0f), 0, 3);
+    return std::clamp(std::max(static_cast<int>(level * 4.0f), musicTierFloor(ctx)), 0, 3);
+}
+
+MusicChord musicChord(const MusicBarContext& ctx) {
+    // The harmony: a progression per phase, a chord a bar (the first phase a bar or two); the dominant in the build,
+    // the tonic in the finisher.
+    const bool fin = ctx.finisher;
+    const bool build = ctx.nextFinisher && !fin;
+    const int chordBars = ctx.phase == 0 ? 2 : 1;
+    const int chordIndex = ctx.bar == 0 ? 0 : ((static_cast<int>(ctx.bar) - 1) / chordBars) % 4;
+    Chord chord = kProgressions[ctx.phase % 4][chordIndex];
+    if (build) chord = kDominant;
+    if (fin) chord = kTonic;
+    return MusicChord{bassNote(chord.root), chord.major != 0};
 }
 
 void planBeatMusic(const MusicBarContext& ctx, MusicPattern& out) {
@@ -91,14 +110,9 @@ void planBeatMusic(const MusicBarContext& ctx, MusicPattern& out) {
     const auto beatStep = [&](int i) { return 2 * i * B; };
     const auto beatLen = [&](int i) { return std::min(B, E - i * B); }; // in eighths
 
-    // The harmony: a progression per phase, a chord a bar or two; the dominant in the build, the tonic in the finisher.
-    const int chordBars = (ctx.phase % 2 == 0) ? 2 : 1;
-    const int chordIndex = ctx.bar == 0 ? 0 : ((static_cast<int>(ctx.bar) - 1) / chordBars) % 4;
-    Chord chord = kProgressions[ctx.phase % 4][chordIndex];
-    if (build) chord = kDominant;
-    if (fin) chord = kTonic;
-    const int root = bassNote(chord.root);
-    const int major = chord.major;
+    const MusicChord chord = musicChord(ctx);
+    const int root = chord.root;
+    const int major = chord.isMajor ? 1 : 0;
 
     // Kick: the downbeat always; the rest by tier.
     pl.put(0, MusicVoice::Kick, fin ? 127 : 118);
@@ -127,7 +141,7 @@ void planBeatMusic(const MusicBarContext& ctx, MusicPattern& out) {
         const bool onBeat = e % B == 0;
         const int s = 2 * e;
         if (tier == 0) {
-            if (onBeat) pl.put(s, MusicVoice::HatClosed, 44);
+            pl.put(s, MusicVoice::HatClosed, onBeat ? 44 : 30); // a quiet pulse on every eighth: the off-beat impacts have a grid
             continue;
         }
         if (tier == 1) {
@@ -163,7 +177,7 @@ void planBeatMusic(const MusicBarContext& ctx, MusicPattern& out) {
         for (int e = 0; e < E; ++e) {
             const bool onBeat = e % B == 0;
             const bool lift = e % B == B - 1 && ((e / B) & 1) == 1;
-            pl.put(2 * e, MusicVoice::Bass, (onBeat ? 112 : 84) + (fin ? 12 : 0), lift ? root + 12 : root, 1);
+            pl.put(2 * e, MusicVoice::Bass, (onBeat ? 112 : 84) + (fin ? 4 : 0), lift ? root + 12 : root, 1);
         }
         if (tier >= 3) {
             for (int s = 3; s < steps; s += 4) pl.put(s, MusicVoice::Bass, fin ? 88 : 70, root + 7, 1);
@@ -173,7 +187,7 @@ void planBeatMusic(const MusicBarContext& ctx, MusicPattern& out) {
 
     // Stabs and the pad.
     if (fin) {
-        for (int i = 0; i < beats; ++i) pl.put(beatStep(i), MusicVoice::Stab, 122, root + 24, 3, major);
+        for (int i = 0; i < beats; ++i) pl.put(beatStep(i), MusicVoice::Stab, 100, root + 24, 3, major);
     } else if (tier == 1) {
         pl.put(0, MusicVoice::Stab, 56, root + 24, steps, major | 2);
     } else if (tier == 2) {
@@ -208,10 +222,14 @@ void planBeatMusic(const MusicBarContext& ctx, MusicPattern& out) {
                 pl.clear(s, v);
     }
 
-    // The first bar of a phase or after a silence, and the finisher: an impact (and a crash).
-    if (ctx.entry || fin) {
+    // The first bar of a phase or after a silence, and the finisher's first bar: an impact and a crash. The
+    // finisher's later bars have a lighter crash alone: the impact is still ringing, and a second one on top of the
+    // kick, the snare and the accent would stack four loud sounds on one downbeat.
+    if (ctx.entry || (fin && ctx.finisherBar == 0)) {
         pl.put(0, MusicVoice::Impact, fin ? 127 : 112, 0, std::min(steps, 32));
         pl.put(0, MusicVoice::HatOpen, fin ? 127 : 104, 0, std::min(steps, 32), 1);
+    } else if (fin) {
+        pl.put(0, MusicVoice::HatOpen, 84, 0, std::min(steps, 16), 1);
     }
 
     // Told moves: an accent on each impact, and the music leaves room for it.
@@ -291,6 +309,11 @@ void BeatMusicDriver::reset(double now, MusicEvents& out) {
     lastPrompt_ = 0;
     cueCount_ = 0;
     afterSilence_ = false;
+    liftCur_ = liftNext_ = false;
+    chordCur_ = chordNext_ = MusicChord{};
+    chimes_ = 0;
+    judgementCount_ = 0;
+    sentCount_ = 0;
 }
 
 void BeatMusicDriver::onEvent(const BeatBossEvent& e) {
@@ -299,6 +322,10 @@ void BeatMusicDriver::onEvent(const BeatBossEvent& e) {
         silencePending_ = true;
         silenceAt_ = e.time;
         silenceMs_ = e.amount;
+        break;
+    case BeatBossEventType::Judged:
+        if (judgementCount_ < judgements_.size() && e.grade != QteGrade::Pending)
+            judgements_[judgementCount_++] = Judgement{e.prompt, e.grade, e.time};
         break;
     case BeatBossEventType::Victory:
     case BeatBossEventType::Defeat:
@@ -317,7 +344,7 @@ void BeatMusicDriver::trackCues(const BeatBoss& fight) {
         if (p.id <= lastPrompt_) continue;
         lastPrompt_ = std::max(lastPrompt_, p.id);
         if (cueCount_ >= cues_.size()) continue;
-        cues_[cueCount_++] = Cue{p.impact, static_cast<std::uint8_t>(p.stem % 3)};
+        cues_[cueCount_++] = Cue{p.impact, p.id, static_cast<std::uint8_t>(p.stem % 3)};
     }
     // Impacts long past are forgotten.
     for (std::size_t i = 0; i < cueCount_;) {
@@ -327,7 +354,7 @@ void BeatMusicDriver::trackCues(const BeatBoss& fight) {
 }
 
 void BeatMusicDriver::fillContext(const BeatBoss& fight, const BossBarPreview& bar, double startTrack, bool entry,
-                                  bool nextFinisher, MusicBarContext& ctx) const {
+                                  bool nextFinisher, bool lift, MusicBarContext& ctx) const {
     const BeatBossDef& def = fight.def();
     const BarMap& m = def.phases[static_cast<std::size_t>(bar.phase)];
     const BossBar shape = bar.finisher ? m.meter : m.bars[static_cast<std::size_t>(bar.bar)];
@@ -339,8 +366,10 @@ void BeatMusicDriver::fillContext(const BeatBoss& fight, const BossBarPreview& b
     ctx.phaseCount = def.phaseCount;
     ctx.bar = bar.finisher ? 0 : static_cast<std::uint16_t>(bar.bar + 1);
     ctx.finisher = bar.finisher;
+    ctx.finisherBar = static_cast<std::uint8_t>(bar.finisher ? std::max<int>(0, bar.bar) : 0);
     ctx.nextFinisher = nextFinisher;
     ctx.entry = entry;
+    ctx.lift = lift;
     if (bar.phase == fight.phase() && !bar.newPhase) {
         const float floorHp = static_cast<float>(fight.floorHp());
         if (phaseStartHp_ > floorHp)
@@ -405,6 +434,124 @@ void BeatMusicDriver::sendCountBlip(MusicEvents& out, BeatCountKind kind, double
     else if (kind == BeatCountKind::Voice) play(out, MusicSound::CountVoice, time, 127);
 }
 
+// ---- the player's cues ----
+
+namespace {
+
+constexpr double kTickYield = 0.08;   // a tell tick is left out when an impact falls this close to it
+constexpr double kPickInside = 0.04;  // a pickup sounds at least this long after its window opens
+constexpr double kSameCue = 0.02;     // two cues of a kind this close are one (a finisher's three tells)
+constexpr double kMaxChimeLead = 0.5; // a verdict is never sounded further ahead than this
+
+} // namespace
+
+bool BeatMusicDriver::wasSent(MusicSound s, std::uint8_t, double time) const {
+    for (std::size_t i = 0; i < sentCount_; ++i)
+        if (sent_[i].sound == s && std::fabs(sent_[i].time - time) < kSameCue) return true;
+    return false;
+}
+
+void BeatMusicDriver::markSent(MusicSound s, std::uint8_t aux, double time) {
+    if (sentCount_ >= sent_.size()) {
+        for (std::size_t i = 1; i < sentCount_; ++i) sent_[i - 1] = sent_[i];
+        --sentCount_;
+    }
+    sent_[sentCount_++] = Sent{s, aux, time};
+}
+
+void BeatMusicDriver::forgetSent(double from) {
+    std::size_t w = 0;
+    for (std::size_t i = 0; i < sentCount_; ++i)
+        if (sent_[i].time < from) sent_[w++] = sent_[i];
+    sentCount_ = w;
+}
+
+void BeatMusicDriver::scheduleCues(const BeatBoss& fight, const BossBarPreview* up, double upStart, double anchorClock,
+                                   double anchorTrack, double now, double until, MusicEvents& out) {
+    const BeatBossDef& def = fight.def();
+    std::array<Candidate, kCandidates> list{};
+    std::size_t n = 0;
+    const auto push = [&](MusicSound s, std::uint8_t aux, double t, bool isImpact) {
+        if (n < list.size()) list[n++] = Candidate{s, aux, 127, t, isImpact};
+    };
+    const auto clockOf = [&](double track) { return anchorClock + (track - anchorTrack); };
+    const double early = fight.tuning().counterEarly;
+    // The pickup: an eighth before the impact, but inside the window that opens `early` before it.
+    const auto pickLead = [&](int phase) {
+        const BarMap& m = def.phases[static_cast<std::size_t>(std::clamp(phase, 0, static_cast<int>(def.phaseCount) - 1))];
+        return std::min(m.eighthSeconds(), std::max(0.05, early - kPickInside));
+    };
+
+    const int phase = fight.phase();
+    for (std::size_t i = 0; i < fight.promptCount(); ++i) {
+        const BeatBossPrompt& p = fight.prompt(i);
+        const double impact = clockOf(p.impact);
+        push(MusicSound::Count, 0, impact, true);
+        push(MusicSound::TellTick, p.finisher ? 8 : static_cast<std::uint8_t>(p.answer), clockOf(p.tell), false);
+        push(MusicSound::Pickup, static_cast<std::uint8_t>(p.answer), impact - pickLead(phase), false);
+    }
+    if (up && up->phase >= 0 && up->phase < def.phaseCount) {
+        const BarMap& m = def.phases[static_cast<std::size_t>(up->phase)];
+        const bool fin = up->finisher;
+        const double base = fin ? m.finisherBarSeconds() * up->bar : m.barOffset(static_cast<std::size_t>(up->bar));
+        const std::size_t count = fin ? m.finisherCount : m.moveCount;
+        for (std::size_t k = 0; k < count; ++k) {
+            const PinnedMove& mv = fin ? m.finisher[k] : m.moves[k];
+            if (mv.tell.bar != up->bar + 1) continue;
+            if (isBossCounter(mv.answer) && fight.skippingCounters()) continue;
+            if (mv.answer == BeatBossAnswer::Release && fight.load() <= 0) continue;
+            const double impact = upStart + (mv.impactAt - base);
+            push(MusicSound::Count, 0, impact, true);
+            push(MusicSound::TellTick, fin ? 8 : static_cast<std::uint8_t>(mv.answer), upStart + (mv.tellAt - base), false);
+            push(MusicSound::Pickup, static_cast<std::uint8_t>(mv.answer), impact - pickLead(up->phase), false);
+        }
+    }
+
+    for (std::size_t i = 0; i < n; ++i) {
+        const Candidate& c = list[i];
+        if (c.impact) continue;
+        if (c.time > until || c.time < now - kMusicStale) continue;
+        if (c.sound == MusicSound::TellTick) {
+            bool yield = false;
+            for (std::size_t j = 0; j < n && !yield; ++j)
+                yield = list[j].impact && std::fabs(list[j].time - c.time) < kTickYield;
+            if (yield) {
+                markSent(c.sound, c.aux, c.time); // decided: the neighbour's answer must not bring it back
+                continue;
+            }
+        }
+        if (wasSent(c.sound, c.aux, c.time)) continue;
+        play(out, c.sound, c.time, c.velocity, 0, c.aux);
+        markSent(c.sound, c.aux, c.time);
+    }
+}
+
+void BeatMusicDriver::scheduleJudgements(const BeatBoss& fight, double now, MusicEvents& out) {
+    for (std::size_t i = 0; i < judgementCount_; ++i) {
+        const Judgement& j = judgements_[i];
+        double time = j.time;
+        for (std::size_t k = 0; k < cueCount_; ++k) {
+            if (cues_[k].id != j.prompt) continue;
+            time = std::max(time, fight.now() + (cues_[k].impact - fight.trackTime()));
+            break;
+        }
+        time = std::min(time, now + kMaxChimeLead);
+        if (j.grade == QteGrade::Miss) {
+            play(out, MusicSound::Miss, j.time, 127);
+            continue;
+        }
+        const MusicChord& chord = time >= nextBarClock_ ? chordNext_ : chordCur_;
+        const int tones[3] = {0, chord.isMajor ? 4 : 3, 7};
+        if (j.grade == QteGrade::Perfect) {
+            const int tone = tones[chimes_++ % 3];
+            play(out, MusicSound::PerfectChime, time, 127, static_cast<std::uint8_t>(chord.root + 48 + tone));
+        } else {
+            play(out, MusicSound::GoodCue, time, 127, static_cast<std::uint8_t>(chord.root + 36));
+        }
+    }
+    judgementCount_ = 0;
+}
+
 namespace {
 MusicBarKey keyOf(const BossBarPreview& b) {
     MusicBarKey k;
@@ -434,6 +581,7 @@ void BeatMusicDriver::update(const BeatBoss& fight, const BeatLine& line, double
         if (victory) play(out, MusicSound::Impact, at, 127, 0, 0, 1.2);
         over_ = true;
         endPending_ = false;
+        judgementCount_ = 0;
         return;
     }
 
@@ -451,6 +599,8 @@ void BeatMusicDriver::update(const BeatBoss& fight, const BeatLine& line, double
         cut.time = silenceAt_;
         add(out, cut);
         ++revoked_;
+        forgetSent(silenceAt_);
+        judgementCount_ = 0;
         predictedValid_ = false;
         afterSilence_ = true;
         // The count back: one bar of the phase's beats, once the silence is over.
@@ -485,8 +635,10 @@ void BeatMusicDriver::update(const BeatBoss& fight, const BeatLine& line, double
                 riserSent_[1] = false;
                 entryCur_ = entryNext_;
                 tierCur_ = tierNext_;
+                liftCur_ = liftNext_;
             } else {
                 tierCur_ = -1;
+                liftCur_ = afterSilence_;
                 // A bar nobody planned for (or not the one planned): what was sent from its line is dropped.
                 if (predictedValid_) ++revoked_;
                 MusicEvent revoke;
@@ -494,6 +646,7 @@ void BeatMusicDriver::update(const BeatBoss& fight, const BeatLine& line, double
                 revoke.time = barStart - kMusicRewind;
                 add(out, revoke);
                 mark_ = barStart - kMusicRewind;
+                forgetSent(barStart - kMusicRewind);
                 riserSent_[0] = riserSent_[1] = false;
                 entryCur_ = changedPhase || afterSilence_;
             }
@@ -516,9 +669,10 @@ void BeatMusicDriver::update(const BeatBoss& fight, const BeatLine& line, double
         const BossBarPreview up = fight.upcomingBar();
         const bool nextFin = up.finisher && !up.newPhase && up.silence < 0 && !cur.finisher;
         MusicBarContext ctx;
-        fillContext(fight, cur, startTrack, entryCur_, nextFin, ctx);
+        fillContext(fight, cur, startTrack, entryCur_, nextFin, liftCur_, ctx);
         if (tierCur_ < 0) tierCur_ = musicTier(ctx); // a bar nobody planned: its tier is read now, once
         ctx.forcedTier = static_cast<std::int8_t>(tierCur_);
+        chordCur_ = musicChord(ctx);
         scheduleBar(ctx, barStart, stepSeconds, until, riserSent_[0], out);
 
         // The next bar's first steps go out before its bar line.
@@ -529,6 +683,7 @@ void BeatMusicDriver::update(const BeatBoss& fight, const BeatLine& line, double
             revoke.time = nextStart - kMusicRewind;
             add(out, revoke);
             ++revoked_;
+            forgetSent(nextStart - kMusicRewind);
             mark_ = std::min(mark_, nextStart - kMusicRewind);
             riserSent_[1] = false;
             predictedValid_ = false;
@@ -536,15 +691,21 @@ void BeatMusicDriver::update(const BeatBoss& fight, const BeatLine& line, double
         if (up.silence < 0 && nextStart <= until && up.phase < def.phaseCount) {
             MusicBarContext nctx;
             const bool planned = predictedValid_ && keyOf(up) == predicted_;
-            fillContext(fight, up, startTrack + line.bars[0].seconds, up.newPhase, false, nctx);
+            fillContext(fight, up, startTrack + line.bars[0].seconds, up.newPhase, false, false, nctx);
             if (!planned) tierNext_ = musicTier(nctx); // read at the first plan of the bar, then kept
             nctx.forcedTier = static_cast<std::int8_t>(tierNext_);
+            chordNext_ = musicChord(nctx);
+            liftNext_ = false;
             const BarMap& nm = def.phases[static_cast<std::size_t>(up.phase)];
             scheduleBar(nctx, nextStart, nm.eighthSeconds() * 0.5, until, riserSent_[1], out);
             predicted_ = keyOf(up);
             predictedValid_ = true;
             entryNext_ = up.newPhase;
         }
+        nextBarClock_ = nextStart;
+        scheduleCues(fight, up.silence < 0 && up.phase < def.phaseCount ? &up : nullptr, nextStart, fight.now(),
+                     fight.trackTime(), now, until, out);
+        scheduleJudgements(fight, now, out);
         return;
     }
 
@@ -573,14 +734,19 @@ void BeatMusicDriver::update(const BeatBoss& fight, const BeatLine& line, double
                         riserSent_[0] = riserSent_[1] = false;
                         entryNext_ = true;
                         tierNext_ = -1;
+                        liftNext_ = afterSilence_;
+                        forgetSent(resumeAt - kMusicRewind);
                     }
                     trackCues(fight);
                     MusicBarContext ctx;
-                    fillContext(fight, up, fight.trackTime(), true, false, ctx);
+                    fillContext(fight, up, fight.trackTime(), true, false, liftNext_, ctx);
                     if (tierNext_ < 0) tierNext_ = musicTier(ctx);
                     ctx.forcedTier = static_cast<std::int8_t>(tierNext_);
+                    chordNext_ = musicChord(ctx);
                     const BarMap& nm = def.phases[static_cast<std::size_t>(up.phase)];
                     scheduleBar(ctx, resumeAt, nm.eighthSeconds() * 0.5, until, riserSent_[1], out);
+                    nextBarClock_ = resumeAt;
+                    scheduleCues(fight, &up, resumeAt, resumeAt, fight.trackTime(), now, until, out);
                 }
             }
         }

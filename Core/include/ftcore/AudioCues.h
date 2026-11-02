@@ -17,7 +17,10 @@
 //   ("loop", "stinger", "oneshot"; required), file (default "<Bus>/<id>.wav" under Data/Audio, e.g.
 //   "Music/MUS-001.wav"), bpm (> 0, optional), offset (seconds of lead-in before the first beat,
 //   >= 0), loopStart / loopEnd (seconds, loops only, both or neither, start < end), fadeIn /
-//   fadeOut (seconds, 0..30), gainDb (-40..12). Unknown keys are warnings.
+//   fadeOut (seconds, 0..30), gainDb (-40..12). The beat boss's cues carry how the synth places and mixes
+//   them: quant (where a cue sits on the music's grid: "NOW", "TELL", "IMP", "IMP-8", "IMP-60", "END", "8TH",
+//   "BEAT", "BAR" or "BAR-1B"), duckDb (the music's duck, -24..0), duckHoldMs (0..2000), duckRelMs (0..5000),
+//   max (voices at once, 1..32) and prio (steal priority, 0..100). Unknown keys are warnings.
 //
 // Mix rules (docs/ASSET_INTAKE.md): 44.1 or 48 kHz, mono or stereo (voice mono), integrated
 // loudness within the bus target's tolerance (sfx: no loudness target), true peak at most -1 dBTP.
@@ -54,6 +57,12 @@ struct AudioCue {
     float fadeInSeconds = 0.f;
     float fadeOutSeconds = 0.f;
     float gainDb = 0.f;
+    std::string quant;               // "": not placed on a grid
+    float duckDb = 0.f;              // how far the music ducks under it (0: not at all)
+    float duckHoldMs = 0.f;
+    float duckRelMs = 0.f;
+    int maxVoices = 0;               // 0: unlimited
+    int priority = 0;                // higher wins a steal
 
     bool hasLoopPoints() const { return loopStartSeconds >= 0.f && loopEndSeconds > loopStartSeconds; }
 };

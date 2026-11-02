@@ -20,9 +20,14 @@
 //   (at most kMusicLookahead before the bar line), and plays the whole bar at that tier, so a hit in the middle
 //   of a bar cannot switch the music under it. BeatMusicDriver::tier() is the playing bar's.
 // * Intensity follows the fight. level = (phase + progress through the phase) / phase count, in four tiers:
-//   0 sparse (kick on the downbeat, a soft backbeat, hats on the beats, a held bass note), 1 (a pad, more
-//   kick, hats on the eighths, the bass on the beats), 2 (stabs, an open hat, bass on the eighths), 3 (full:
-//   sixteenth hats, a driving bass, ghost notes). The first phase of a two-phase fight stays in tiers 0 and 1.
+//   0 sparse (kick on the downbeat, a soft backbeat, a quiet hat on every eighth, a held bass note), 1 (a pad,
+//   more kick, the hats louder, the bass on the beats), 2 (stabs, an open hat, bass on the eighths), 3 (full:
+//   sixteenth hats, a driving bass, ghost notes). Each phase has a floor that rises: the first phase none, every
+//   later one tier 2, so a phase never starts below where the one before it ended. The bar after a scripted
+//   silence is a lift: tier 2 at least.
+// * Each phase has its own chords (a progression a bar or two long); the finisher is the tonic and the build
+//   before it the dominant. A finisher's first bar has the impact and the crash; its later bars a lighter crash
+//   alone, so that four loud sounds are never stacked on one downbeat.
 // * The bar before a finisher bar (`nextFinisher`) gets a riser over the whole bar and a snare roll that
 //   crescendos over the last half of the bar; the bass and the stabs drop out for the roll. The finisher bar
 //   plays tier 3 at full velocity, a kick on every beat, a crash and an impact.
@@ -48,7 +53,13 @@
 // can give each event an exact sample position. The next bar's first steps go out before its bar line, from
 // BeatBoss::upcomingBar; if the bar that comes is not the one predicted (the boss's hp crossed a threshold in
 // the last tenth of a second), the driver revokes the pending events from the bar line and plans the real bar.
-// A scripted silence cuts everything and leaves the count: the count blips for the silence's count back are
+// The driver also sounds the player's cues, on the same queue (docs/BEAT_BOSS_AUDIO.md, "the synth is the only place
+// the music ducks"): a tick at every move's tell (TellTick; one for a finisher's three, none when an impact falls
+// within 80 ms of it) and a quiet pickup (Pickup) shortly before the move's window opens, at an eighth before the
+// impact but never earlier than 40 ms inside the window's open edge, so pressing on it is never a whiff; and the
+// verdicts, on the impact (or at once if that has passed): a Perfect rings a tone of the playing chord
+// (PerfectChime, the three chord tones in turn), a Good a softer, duller one (GoodCue), a Miss the buzz at once.
+// The host triggers none of them. A scripted silence cuts everything and leaves the count: the count blips for the silence's count back are
 // scheduled when it starts, and the bar that follows is planned during its count, with an impact.
 
 #include "ftcore/Api.h"
@@ -62,6 +73,12 @@ namespace ftcore {
 
 inline constexpr int kMusicMaxSteps = 2 * static_cast<int>(kMaxBossBarEighths); // sixteenths in the longest bar
 inline constexpr double kMusicLookahead = 0.1;                                  // seconds scheduled ahead
+
+// The chord a bar plays: its root as a MIDI note (the bass's) and its quality.
+struct MusicChord {
+    int root = 38;
+    bool isMajor = false;
+};
 
 enum class MusicVoice : std::uint8_t { Kick, Snare, HatClosed, HatOpen, Bass, Stab, Riser, Impact, Accent, Count };
 inline constexpr std::size_t kMusicVoices = static_cast<std::size_t>(MusicVoice::Count);
@@ -98,12 +115,18 @@ struct MusicBarContext {
     bool nextFinisher = false;      // a finisher bar follows: the build
     bool entry = false;             // the first bar of a phase, or of the track after a silence or a count: an impact
     bool silent = false;            // nothing plays
+    bool lift = false;              // the bar after a scripted silence: tier 2 at least
+    std::uint8_t finisherBar = 0;   // a finisher bar: its index (0 the first)
     std::int8_t forcedTier = -1;    // 0..3: play at this tier whatever the fight's hp says (the driver freezes a bar's tier at its bar line)
     std::array<std::uint8_t, kMusicMaxSteps> accent{}; // a told move's impact on this step: 1 + its stem's timbre (0 thump, 1 snare, 2 bell)
 };
 
 // The tier (0..3) the context plays at.
 FTCORE_API int musicTier(const MusicBarContext& ctx);
+// The tier no bar of that phase (or after a silence) plays under.
+FTCORE_API int musicTierFloor(const MusicBarContext& ctx);
+// The chord the bar plays (the bass's root and the quality).
+FTCORE_API MusicChord musicChord(const MusicBarContext& ctx);
 // Fills `out` (every field). No allocation.
 FTCORE_API void planBeatMusic(const MusicBarContext& ctx, MusicPattern& out);
 
@@ -114,6 +137,10 @@ enum class MusicSound : std::uint8_t {
     Kick, Snare, HatClosed, HatOpen, Bass, Stab, Riser, Impact, // the music
     AccentThump, AccentSnare, AccentBell,                       // a told move's impact
     CountClick, CountVoice, Good, Miss,                         // the count and the answers
+    TellTick,     // a move told: aux = its answer (0..7), 8 a finisher's tell
+    Pickup,       // a quiet tick shortly before a move's window opens, inside it
+    PerfectChime, // a Perfect: note = a tone of the playing chord
+    GoodCue,      // a Good: the Perfect's softer, duller cousin; note = a tone of the playing chord
     Count
 };
 
@@ -175,20 +202,49 @@ public:
 private:
     struct Cue {
         double impact = 0.0; // track time
+        std::uint32_t id = 0;
         std::uint8_t timbre = 0;
     };
     static constexpr std::size_t kCues = 64;
+    struct Judgement {
+        std::uint32_t prompt = 0;
+        QteGrade grade = QteGrade::Pending;
+        double time = 0.0; // the fight's clock
+    };
+    static constexpr std::size_t kJudgements = 16;
+    struct Sent {
+        MusicSound sound = MusicSound::TellTick;
+        std::uint8_t aux = 0;
+        double time = 0.0;
+    };
+    static constexpr std::size_t kSent = 64;
+    struct Candidate {
+        MusicSound sound = MusicSound::TellTick;
+        std::uint8_t aux = 0;
+        std::uint8_t velocity = 0;
+        double time = 0.0;
+        bool impact = false; // not a cue: an impact (for the ticks to yield to)
+    };
+    static constexpr std::size_t kCandidates = 128;
 
     void add(MusicEvents& out, const MusicEvent& e);
     void play(MusicEvents& out, MusicSound s, double time, std::uint8_t velocity, std::uint8_t note = 0,
               std::uint8_t aux = 0, double length = 0.0);
     void trackCues(const BeatBoss& fight);
     void fillContext(const BeatBoss& fight, const BossBarPreview& bar, double startTrack, bool entry, bool nextFinisher,
-                     MusicBarContext& ctx) const;
+                     bool lift, MusicBarContext& ctx) const;
     // Plans the bar that starts at `start` (the fight's clock) and sends its steps after the mark, up to `until`.
     void scheduleBar(const MusicBarContext& ctx, double start, double stepSeconds, double until, bool& riserSent,
                      MusicEvents& out);
     void sendCountBlip(MusicEvents& out, BeatCountKind kind, double time);
+    // The ticks and pickups of the open moves and of the bar `up` (null: none; it starts at `upStart` on the fight's
+    // clock), sent once each when they fall inside the lookahead. Track time t is clock anchorClock + (t - anchorTrack).
+    void scheduleCues(const BeatBoss& fight, const BossBarPreview* up, double upStart, double anchorClock,
+                      double anchorTrack, double now, double until, MusicEvents& out);
+    void scheduleJudgements(const BeatBoss& fight, double now, MusicEvents& out);
+    bool wasSent(MusicSound s, std::uint8_t aux, double time) const;
+    void markSent(MusicSound s, std::uint8_t aux, double time);
+    void forgetSent(double from);
 
     double mark_ = -1e30;      // music events up to this time are sent
     double countMark_ = -1e30; // count blips up to this time are sent
@@ -199,6 +255,16 @@ private:
     bool entryNext_ = true;
     bool entryCur_ = true;
     bool afterSilence_ = false;
+    bool liftCur_ = false;  // the playing bar follows a silence
+    bool liftNext_ = false;
+    MusicChord chordCur_{}; // the playing bar's chord, and the next bar's once planned
+    MusicChord chordNext_{};
+    double nextBarClock_ = 0.0; // the next bar's line on the fight's clock
+    std::uint32_t chimes_ = 0;  // Perfects so far: which chord tone rings
+    std::array<Judgement, kJudgements> judgements_{};
+    std::size_t judgementCount_ = 0;
+    std::array<Sent, kSent> sent_{};
+    std::size_t sentCount_ = 0;
     bool riserSent_[2] = {false, false}; // the current bar, the next
     float phaseStartHp_ = 0.0f;
     int tierCur_ = -1;  // the playing bar's tier, fixed when it was first planned

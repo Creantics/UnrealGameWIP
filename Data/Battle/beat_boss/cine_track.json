@@ -1,7 +1,7 @@
 {
   "version": 1,
   "id": "cine_track",
-  "music": "cine_track_cue",
+  "music": "MUS-BB-CINE",
   "boss": {
     "hp": 1000
   },
@@ -39,6 +39,7 @@
       "rests": ["1.4", "2.2&", "3.2&", "4.4"],
       "moves": [
         {"id": "a_hook", "tell": "1.1", "impact": "1.3", "answer": "parry", "stem": "bass", "miss": 0.15, "opens": true},
+        {"id": "a_rel", "tell": "1.4", "impact": "2.1", "end": "2.2", "answer": "release", "stem": "chime"},
         {"id": "a_jab", "tell": "2.1", "impact": "2.3", "answer": "attack", "stem": "snare"},
         {"id": "a_cross", "tell": "2.3", "impact": "2.4&", "answer": "attack", "stem": "snare"},
         {"id": "a_smash", "tell": "3.1", "impact": "3.4", "answer": "guard", "stem": "bass", "miss": 0.25},
@@ -59,6 +60,7 @@
       "rests": ["1.4", "2.4", "3.1&", "4.1&"],
       "moves": [
         {"id": "b_thrust", "tell": "1.1", "impact": "1.3", "answer": "parry", "stem": "bass", "miss": 0.15, "opens": true},
+        {"id": "b_rel", "tell": "1.4", "impact": "2.1", "end": "2.2", "answer": "release", "stem": "chime"},
         {"id": "b_cross", "tell": "2.1", "impact": "2.3", "answer": "attack", "stem": "snare"},
         {"id": "b_sweep", "tell": "2.3", "impact": "3.2", "answer": "dodge", "stem": "chime", "miss": 0.2},
         {"id": "b_grab", "tell": "3.3", "impact": "4.2", "answer": "paired", "stem": "bass", "pair": ["guard", "attack"], "miss": 0.25, "opens": true}
@@ -87,6 +89,7 @@
       "rests": ["1.4", "3.2", "4.2", "4.4"],
       "moves": [
         {"id": "c_hook", "tell": "1.1", "impact": "1.3", "answer": "parry", "stem": "bass", "miss": 0.15, "opens": true},
+        {"id": "c_rel", "tell": "1.4", "impact": "2.1", "end": "2.2", "answer": "release", "stem": "chime"},
         {"id": "c_hold", "tell": "2.1", "impact": "2.3", "answer": "hold", "stem": "chime", "end": "2.4&"},
         {"id": "c_smash", "tell": "3.1", "impact": "3.4", "answer": "guard", "stem": "bass", "miss": 0.25},
         {"id": "c_sweep", "tell": "4.1", "impact": "4.3", "answer": "dodge", "stem": "chime", "miss": 0.2, "opens": true},

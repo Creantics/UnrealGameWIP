@@ -38,6 +38,10 @@
 // * a Perfect or Good keeps the clip as it is, and after a Perfect the `then` follow-up is thrown on the first
 //   beat it can land on after the lead is free, if that is before the lead's next answer (or the bar's end)
 //   needs him;
+//   The follow-up is quick: it starts as soon as the parry's contact is over (kThenGap after the impact) and lands
+//   on the first eighth of the beat at least kThenQuick later, its windup entered partway through if it does not fit
+//   (planChoreoClip), so a Perfect parry's counter lands a beat after it, not a bar. BeatChoreo::hitContact() tells
+//   the host when the last blow landed that hurt the boss, for the popup and the flash to wait for.
 // * a Miss (an unanswered move, a late press, a hold let go) cuts the clip at the impact to the `miss` clip,
 //   which begins on its own blow;
 // * a Whiff (a counter pressed before its window) cuts the lead to the stumble clip (the file's `whiff`, if
@@ -54,6 +58,12 @@
 //   impact and on the bar line, so the finisher still lands on the beat.
 // So every pinned impact is on screen at its beat. A sample's clip rates are the scheduled ones
 // (0 while a finished clip holds its last frame); `visualRate` is the bend on top (0 in a hit-stop).
+//
+// The silence. When the track stops for a scripted silence the boss roars (the file's `silence` clip, if any, played in
+// the time of the silence and its count) and the camera cuts to the silence's shot, on the bar line the silence
+// stops at; when the track runs again the shot that was there comes back. The actors loop their stance otherwise.
+// The victory. The final blow freezes for kVictoryFreeze, then the visuals ramp up from kVictoryFrom to full speed
+// over kVictoryRamp (visualRate, hitStop and slowMo of the sample say so).
 //
 // Shots (ChoreoShot) are ids the host maps to cameras. A cut happens on a beat or bar boundary, never
 // between: at the beat holding a move's tell, to that move's shot. A finisher bar cuts to finisher_orbit
@@ -72,7 +82,7 @@
 //     "stance": {"lead": "lead_stance", "boss": "boss_stance"}, "whiff": "lead_hitreact", "opening": "wide",
 //     "finisher": {"slow": 0.4},
 //     "stagger": {"lead": "lead_cross", "boss": "boss_stagger", "shot": "close_boss"},
-//     "victory": {...}, "defeat": {...},                     // the same three keys
+//     "victory": {...}, "defeat": {...}, "silence": {...},   // the same three keys (silence: the boss's clip and the shot)
 //     "phases": [ { "id": "phase_a",
 //                   "moves": [ {"id": "a_parry", "boss": "boss_hook", "ok": "lead_parry", "then": "lead_counter",
 //                               "miss": "lead_hitreact", "hit": "boss_hitreact",
@@ -108,6 +118,9 @@ inline constexpr double kChoreoLeadLag = 0.06;  // a blow lands this long after 
 inline constexpr double kChoreoReactionLag = 0.02; // the boss reacts at least this long after its own impact
 inline constexpr double kChoreoLateStop = 0.1;   // a hit-stop is left out when the verdict is this much later than the blow
 inline constexpr std::size_t kChoreoPrompts = 4; // shown at once
+inline constexpr double kVictoryFreeze = 0.2;  // the final blow holds this long
+inline constexpr double kVictoryRamp = 1.5;    // then the visuals ramp up over this long
+inline constexpr double kVictoryFrom = 0.25;   // from this share of full speed
 
 // ---- the clip catalogue ----
 
@@ -196,6 +209,7 @@ struct BeatChoreoDef {
     ChoreoShot opening = ChoreoShot::Wide;
     float finisherSlow = 0.4f; // the animation's speed, at its slowest, in a finisher bar
     ChoreoBeat stagger, victory, defeat;
+    ChoreoBeat silence; // lead: unused; boss: the roar; shot: the cut (cut = true when given)
     std::array<ChoreoPhase, kMaxBossPhases> phases{};
     std::uint8_t phaseCount = 0;
 };
@@ -205,6 +219,12 @@ struct BeatChoreoTuning {
     double hitStopLight = 0.050;  // a Perfect Guard
     double catchUp = 4.0;         // the catch-up after a hit-stop lasts at least this many stops
     double followThrough = 0.20;  // the most of a boss clip's recovery kept before its next move
+    double thenGap = 0.08;        // a follow-up may start this long after the contact it follows
+    double thenQuick = 0.40;      // and lands on the first eighth at least this long after it starts (a windup that is
+                                  // longer is entered partway through)
+    double victoryFreeze = kVictoryFreeze;
+    double victoryRamp = kVictoryRamp;
+    double victoryFrom = kVictoryFrom;
 };
 
 // On failure `out` is empty and *error lists each problem with its path, one per line. Checks the
@@ -301,6 +321,11 @@ public:
     std::uint32_t hitStops() const { return hitStops_; }
     // Follow-up blows (`then`) scheduled so far.
     std::uint32_t followUps() const { return followUps_; }
+    // Where the lead's last blow that hurt the boss lands on screen (track time; not before the BossHit that
+    // announced it, a follow-up's later), and how many there have been: the host holds its popup, flash and shake
+    // until the track reaches it.
+    double hitContact() const { return hitContact_; }
+    std::uint32_t hitContacts() const { return hitContacts_; }
 
     // The cuts scheduled (the newest kMaxCuts, oldest first) and the bars seen: for tools and tests.
     static constexpr std::size_t kMaxCuts = 32;
@@ -342,11 +367,12 @@ private:
         double press = -1.0;
         bool broken = false; // a whiff cut the lead's pre-rolled answer
     };
-    enum class WarpKind : std::uint8_t { Stop, Dip };
+    enum class WarpKind : std::uint8_t { Stop, Dip, Victory };
     struct Warp {
         WarpKind kind = WarpKind::Stop;
         double t0 = 0.0, t1 = 0.0;
-        double amount = 0.0; // Stop: the pause; Dip: the deepest lag
+        double amount = 0.0; // Stop: the pause; Dip: the deepest lag; Victory: the freeze
+        double ramp = 0.0, from = 1.0; // Victory: the ramp's length and its first speed
     };
 
     void resetRun(const BeatBoss& fight, double clock);
@@ -375,6 +401,7 @@ private:
     double lagAt(double t, double* slope, bool* stop) const;
     double beatAt(double t) const;
     double floorBoundary(double t) const;
+    double halfBoundary(double t) const;
     void poseOf(const Actor& a, std::int16_t stance, double v, ChoreoPose& out) const;
     void stancePose(std::int16_t stance, double clockTime, double beat, ChoreoPose& out) const;
     void prune();
@@ -420,6 +447,13 @@ private:
     std::int16_t pendingHit_ = kNoClip;
     double lastBossContact_ = 0.0;
     double staggerUntil_ = -1e30;
+    double hitContact_ = 0.0;
+    std::uint32_t hitContacts_ = 0;
+    // The silence: the shot to come back to, and whether the boss is roaring in it.
+    bool silenceCut_ = false;
+    bool inSilence_ = false;
+    ChoreoShot silenceShot_ = ChoreoShot::Wide;
+    double silenceTrack_ = 0.0;
 };
 
 } // namespace ftcore

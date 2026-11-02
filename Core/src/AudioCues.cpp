@@ -15,6 +15,7 @@ namespace {
 
 constexpr const char* kBusNames[] = {"music", "voice", "sfx", "ambience"};
 constexpr const char* kBusFolders[] = {"Music", "Voice", "Sfx", "Ambience"};
+constexpr const char* kCueQuants[] = {"NOW", "TELL", "IMP", "IMP-8", "IMP-60", "END", "8TH", "BEAT", "BAR", "BAR-1B"};
 
 std::string audStr(std::string_view s) { return std::string(s); }
 
@@ -109,7 +110,7 @@ bool importAudioCues(std::string_view json, AudioCueTable& out, std::string* err
                 continue;
             }
             audUnknownKeys(j, path, {"id", "bus", "playback", "file", "bpm", "offset", "loopStart", "loopEnd", "fadeIn",
-                                     "fadeOut", "gainDb"},
+                                     "fadeOut", "gainDb", "quant", "duckDb", "duckHoldMs", "duckRelMs", "max", "prio"},
                            warnings);
             AudioCue cue;
             cue.id = audStr(j["id"].string());
@@ -134,6 +135,26 @@ bool importAudioCues(std::string_view json, AudioCueTable& out, std::string* err
             audNumber(j, "fadeIn", cue.fadeInSeconds, 0, 30, path, errors);
             audNumber(j, "fadeOut", cue.fadeOutSeconds, 0, 30, path, errors);
             audNumber(j, "gainDb", cue.gainDb, -40, 12, path, errors);
+            audNumber(j, "duckDb", cue.duckDb, -24, 0, path, errors);
+            audNumber(j, "duckHoldMs", cue.duckHoldMs, 0, 2000, path, errors);
+            audNumber(j, "duckRelMs", cue.duckRelMs, 0, 5000, path, errors);
+            if (j.has("max")) {
+                const JsonValue v = j["max"];
+                if (!v.isInteger() || v.integer() < 1 || v.integer() > 32) errors.push_back(path + ".max: expected a whole number in 1..32");
+                else cue.maxVoices = static_cast<int>(v.integer());
+            }
+            if (j.has("prio")) {
+                const JsonValue v = j["prio"];
+                if (!v.isInteger() || v.integer() < 0 || v.integer() > 100) errors.push_back(path + ".prio: expected a whole number in 0..100");
+                else cue.priority = static_cast<int>(v.integer());
+            }
+            if (j.has("quant")) {
+                const JsonValue v = j["quant"];
+                bool ok = false;
+                for (const char* q : kCueQuants) ok = ok || (v.isString() && v.string() == q);
+                if (!ok) errors.push_back(path + ".quant: expected NOW, TELL, IMP, IMP-8, IMP-60, END, 8TH, BEAT, BAR or BAR-1B");
+                else cue.quant = audStr(v.string());
+            }
             if (j.has("loopStart") || j.has("loopEnd")) {
                 audNumber(j, "loopStart", cue.loopStartSeconds, 0, 3600, path, errors);
                 audNumber(j, "loopEnd", cue.loopEndSeconds, 0, 3600, path, errors);

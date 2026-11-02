@@ -68,10 +68,21 @@ bool isAccentSound(MusicSound s) {
 
 // ---- an autoplayed fight, rendered offline ----
 
+struct PromptSeen {
+    std::uint32_t id = 0;
+    BeatBossAnswer answer = BeatBossAnswer::Attack;
+    bool finisher = false;
+    double tell = 0.0, impact = 0.0; // on the fight's clock, as the prompt first showed
+};
+
 struct Render {
+    std::vector<PromptSeen> prompts;
     std::vector<float> audio;
     std::vector<MusicEvent> played;         // what the synth was left to play (revoked and cut sounds removed)
     std::vector<BeatBossEvent> fightEvents;
+    std::vector<float> framePeak;           // the mix's largest value before the soft clip, in each frame of the render
+    float preClip = 0.0f;
+    double dt = 1.0 / 60.0;
     std::uint32_t late = 0, dropped = 0, revoked = 0;
     bool won = false;
     double endTime = 0.0;
@@ -140,15 +151,29 @@ Render renderFight(const BeatBossTrack& track, const RenderOptions& opt) {
         }
         handle(fight.update(now));
         fight.beatLine(line);
+        if (fight.trackRunning()) {
+            for (std::size_t i = 0; i < fight.promptCount(); ++i) {
+                const BeatBossPrompt& p = fight.prompt(i);
+                bool known = false;
+                for (const PromptSeen& k : r.prompts) known |= k.id == p.id;
+                if (known) continue;
+                const auto clockOf = [&](double track) { return fight.now() + (track - fight.trackTime()); };
+                r.prompts.push_back(PromptSeen{p.id, p.answer, p.finisher, clockOf(p.tell), clockOf(p.impact)});
+            }
+        }
         driver.update(fight, line, now, countKind, ev);
         apply(ev);
         const std::uint64_t to = sampleOf(now);
         const std::size_t before = r.audio.size();
         r.audio.resize(to);
+        synth.resetPeak();
         synth.render(r.audio.data() + before, static_cast<int>(to - before));
+        r.framePeak.push_back(synth.preClipPeak());
+        r.preClip = std::max(r.preClip, synth.preClipPeak());
         if (fight.over() && tail < 0.0) tail = now + 2.5;
         if (tail >= 0.0 && now >= tail) break;
     }
+    r.dt = opt.dt;
     r.late = synth.late();
     r.dropped = synth.dropped() + driver.dropped();
     r.revoked = driver.revoked();
@@ -346,8 +371,8 @@ TEST_CASE("beat music: the intensity follows the phase and the boss's hp") {
     CHECK(voiceHits(first, MusicVoice::Bass) == 1);
     CHECK(voiceHits(late, MusicVoice::Stab) > 0);
     CHECK(voiceHits(late, MusicVoice::HatClosed) > voiceHits(first, MusicVoice::HatClosed));
-    // Four phases: one tier each.
-    for (int phase = 0; phase < 4; ++phase) CHECK(musicTier(bar(8, 2, phase, 4, 0.3f)) == phase);
+    // Four phases: a tier each, but no phase under the floor (every phase after the first starts at tier 2).
+    for (int phase = 0; phase < 4; ++phase) CHECK(musicTier(bar(8, 2, phase, 4, 0.3f)) == std::max(phase, phase >= 1 ? 2 : 0));
     // A single phase climbs with its hp.
     CHECK(musicTier(bar(8, 2, 0, 1, 0.0f)) == 0);
     CHECK(musicTier(bar(8, 2, 0, 1, 0.9f)) == 3);
@@ -726,6 +751,7 @@ TEST_CASE("beat music: the render is deterministic, does not clip, and the move 
         const double with = rmsOf(a.audio, from, to);
         const double bare = rmsOf(without.audio, from, to);
         if (with > 1.25 * bare && with > 0.1) ++clear;
+
     }
     MESSAGE(accents << " accents, " << clear << " clear over the music");
     CHECK(accents >= 20);
@@ -925,5 +951,389 @@ TEST_CASE("beat music: a bar keeps the tier it was planned at, whatever the hp d
         CHECK(hpDuringBar >= 3); // the boss really was hit inside bars that kept their tier
         CHECK(changes >= 3);
         for (int k = 0; k < 4; ++k) CHECK_MESSAGE(seen[static_cast<std::size_t>(k)], "tier " << k);
+    }
+}
+
+// ---- the cinematic track ----
+
+namespace {
+
+BeatBossTrack loadNamed(const char* name) {
+    std::string text;
+    BeatBossTrack track;
+    if (!ftcore_test::readProjectData(std::string("Battle/beat_boss/") + name + ".json", text)) {
+        FAIL(name << " not found");
+        return track;
+    }
+    std::string error;
+    REQUIRE_MESSAGE(importBeatBossTrack(text, track, &error), error);
+    return track;
+}
+
+} // namespace
+
+
+TEST_CASE("beat music: every phase has a floor, the first with an eighth pulse, and a bar after a silence is a lift") {
+    // Phase 0: no floor, and a quiet hat on every eighth, so the off-beat impacts have a grid.
+    MusicBarContext c = bar(8, 2, 0, 3, 0.0f);
+    MusicPattern p;
+    planBeatMusic(c, p);
+    CHECK(p.tier == 0);
+    CHECK(musicTierFloor(c) == 0);
+    for (int e = 0; e < 8; ++e) CHECK_MESSAGE(p.at(2 * e, MusicVoice::HatClosed).velocity > 0, "eighth " << e);
+    CHECK(p.at(0, MusicVoice::HatClosed).velocity > p.at(2, MusicVoice::HatClosed).velocity); // the beat louder
+
+    // Later phases never start under tier 2, however little of them has been fought.
+    for (int phase = 1; phase < 4; ++phase) {
+        MusicBarContext x = bar(8, 2, phase, 4, 0.0f);
+        CHECK(musicTierFloor(x) == 2);
+        CHECK(musicTier(x) >= 2);
+    }
+    CHECK(musicTier(bar(8, 2, 1, 3, 0.0f)) == 2);
+    CHECK(musicTier(bar(8, 2, 2, 3, 0.0f)) == 2);
+    CHECK(musicTier(bar(8, 2, 2, 3, 0.9f)) == 3);
+
+    // The bar after a silence lifts to tier 2 whatever the boss's hp says.
+    MusicBarContext after = bar(8, 2, 0, 3, 0.0f);
+    CHECK(musicTier(after) == 0);
+    after.lift = true;
+    CHECK(musicTier(after) == 2);
+    planBeatMusic(after, p);
+    CHECK(p.tier == 2);
+    // A bar the driver froze keeps its tier, lift or not.
+    after.forcedTier = 1;
+    CHECK(musicTier(after) == 1);
+}
+
+TEST_CASE("beat music: the third phase has its own chords, and the finisher's later bars do not repeat its impact") {
+    const auto chordOf = [](int phase, int barNumber) {
+        MusicBarContext x = bar(8, 2, phase, 3, 0.5f);
+        x.bar = static_cast<std::uint16_t>(barNumber);
+        const MusicChord ch = musicChord(x);
+        return ch.root * 2 + (ch.isMajor ? 1 : 0);
+    };
+    // The four chords of the loop, per phase: phase 2 is not phase 0 over again.
+    std::vector<int> a, b, c;
+    for (int barNumber = 1; barNumber <= 4; ++barNumber) {
+        a.push_back(chordOf(0, barNumber));
+        b.push_back(chordOf(1, barNumber));
+        c.push_back(chordOf(2, barNumber));
+    }
+    CHECK(a != c);
+    CHECK(b != c);
+    CHECK(a != b);
+    // Phase 2 reaches four different chords across its loop, phase 0 only two.
+    const auto distinct = [](std::vector<int> v) {
+        std::sort(v.begin(), v.end());
+        return static_cast<int>(std::unique(v.begin(), v.end()) - v.begin());
+    };
+    CHECK(distinct(c) == 4);
+    CHECK(distinct(a) == 2);
+    // The planner plays the chord the function names.
+    MusicBarContext x = bar(8, 2, 2, 3, 0.5f);
+    x.bar = 3;
+    x.forcedTier = 1;
+    MusicPattern p;
+    planBeatMusic(x, p);
+    CHECK(p.at(0, MusicVoice::Bass).note == musicChord(x).root);
+    // The build is the dominant (A major), the finisher the tonic (D minor).
+    x.nextFinisher = true;
+    CHECK(musicChord(x).isMajor);
+    x.nextFinisher = false;
+    x.finisher = true;
+    CHECK(musicChord(x).root == 38);
+    CHECK_FALSE(musicChord(x).isMajor);
+
+    // A finisher's first bar has the impact and the crash; a later one the crash alone, lighter.
+    MusicBarContext f = bar(8, 2, 1, 3, 0.5f);
+    f.finisher = true;
+    f.bar = 0;
+    f.finisherBar = 0;
+    MusicPattern first, second;
+    planBeatMusic(f, first);
+    f.finisherBar = 1;
+    planBeatMusic(f, second);
+    CHECK(first.at(0, MusicVoice::Impact).velocity > 0);
+    CHECK(second.at(0, MusicVoice::Impact).velocity == 0);
+    CHECK(first.at(0, MusicVoice::HatOpen).aux == 1);
+    CHECK(second.at(0, MusicVoice::HatOpen).aux == 1);
+    CHECK(second.at(0, MusicVoice::HatOpen).velocity < first.at(0, MusicVoice::HatOpen).velocity);
+    CHECK(second.at(0, MusicVoice::Kick).velocity > 0); // the bar still hits hard
+    // An entry bar of a phase keeps its impact (it is not a finisher bar).
+    MusicBarContext entry = bar(8, 2, 1, 3, 0.0f);
+    entry.entry = true;
+    planBeatMusic(entry, p);
+    CHECK(p.at(0, MusicVoice::Impact).velocity > 0);
+}
+
+TEST_CASE("beat music: the mix is measured before the soft clip, and nothing in a whole fight leans on it") {
+    // The output is soft-clipped, so its own peak can never fail a test; the meter in front of the clip can.
+    for (int s = 0; s < static_cast<int>(MusicSound::Count); ++s) {
+        BeatMusicSynth synth;
+        synth.init(kRate);
+        std::vector<float> out(kRate * 3, 0.0f);
+        synth.play(100, static_cast<MusicSound>(s), 127, 38, 1, 24000);
+        synth.render(out.data(), kRate * 3);
+        INFO("sound " << s);
+        CHECK(synth.preClipPeak() > 0.02f);
+        CHECK(synth.preClipPeak() < 1.0f); // alone, no sound asks the clip for anything
+    }
+    // Everything at once does: the meter sees what the clip hides (the output stays under 1).
+    BeatMusicSynth stack;
+    stack.init(kRate);
+    std::vector<float> out(kRate, 0.0f);
+    for (int s = 0; s < static_cast<int>(MusicSound::Count); ++s) stack.play(100, static_cast<MusicSound>(s), 127, 38, 0, 24000);
+    stack.render(out.data(), kRate);
+    CHECK(stack.preClipPeak() > 1.5f);
+    CHECK(peakOf(out) < 1.0f);
+    stack.resetPeak();
+    CHECK(stack.preClipPeak() == 0.0f);
+
+    // The cinematic track, autoplayed: the mix stays inside the clip's near-linear range, and the finisher's
+    // bars (kick, snare, bass, stab and crash on one downbeat) are no louder than the rest of the fight.
+    const BeatBossTrack track = loadNamed("cine_track");
+    RenderOptions o;
+    o.maxSeconds = 200.0;
+    const Render r = renderFight(track, o);
+    REQUIRE(r.won);
+    float finisher = 0.0f, rest = 0.0f;
+    for (std::size_t i = 0; i < r.framePeak.size(); ++i) {
+        const double t = static_cast<double>(i + 1) * r.dt;
+        bool inFinisher = false;
+        for (const BeatBossEvent& e : r.fightEvents)
+            if (e.type == BeatBossEventType::BarStart && e.amount == 0 && t >= e.time && t < e.time + 2.4) inFinisher = true;
+        float& slot = inFinisher ? finisher : rest;
+        slot = std::max(slot, r.framePeak[i]);
+    }
+    MESSAGE("pre-clip peak " << r.preClip << ", finisher bars " << finisher << ", the rest " << rest);
+    CHECK(r.preClip < 1.3f); // the clip only bends the tips of the accents
+    CHECK(finisher > 0.5f);
+    CHECK(finisher <= rest * 1.1f);
+}
+
+TEST_CASE("beat music: each move is ticked when it is told and picked up inside its window, and the verdicts ring the chord") {
+    const BeatBossTrack track = loadNamed("cine_track");
+    RenderOptions o;
+    o.maxSeconds = 200.0;
+    const Render r = renderFight(track, o);
+    REQUIRE(r.won);
+    const BeatBossTuning tuning;
+    REQUIRE(r.prompts.size() > 25);
+
+    std::vector<const MusicEvent*> ticks, picks, chimes;
+    for (const MusicEvent& e : r.played) {
+        if (e.sound == MusicSound::TellTick) ticks.push_back(&e);
+        if (e.sound == MusicSound::Pickup) picks.push_back(&e);
+        if (e.sound == MusicSound::PerfectChime) chimes.push_back(&e);
+    }
+
+    // A tick at every tell, one for a finisher's three, none within 80 ms of an impact.
+    std::vector<double> want;
+    for (const PromptSeen& p : r.prompts) {
+        bool nearImpact = false;
+        for (const PromptSeen& q : r.prompts) nearImpact |= std::fabs(q.impact - p.tell) < 0.08;
+        if (nearImpact) continue;
+        bool dup = false;
+        for (double w : want) dup |= std::fabs(w - p.tell) < 0.02;
+        if (dup) continue;
+        want.push_back(p.tell);
+        const MusicEvent* tick = nullptr;
+        for (const MusicEvent* t : ticks)
+            if (std::fabs(t->time - p.tell) < 0.002) tick = t;
+        INFO("prompt " << p.id << " tell " << p.tell);
+        REQUIRE(tick != nullptr);
+        CHECK(tick->aux == (p.finisher ? 8 : static_cast<int>(p.answer)));
+    }
+    for (const MusicEvent* t : ticks) {
+        bool found = false;
+        for (double w : want) found |= std::fabs(t->time - w) < 0.002;
+        if (!found) MESSAGE("extra tick at " << t->time << " aux " << static_cast<int>(t->aux));
+    }
+    CHECK(ticks.size() == want.size());
+    CHECK(want.size() >= 20);
+    // The tells that fell on a neighbour's impact were left out (a_jab 2.3 and a_cross's tell 2.3, and the like).
+    CHECK(want.size() < r.prompts.size());
+
+    // A pickup for every move: an eighth before the impact, held inside the window that opens 0.3 s before it.
+    for (const PromptSeen& p : r.prompts) {
+        const MusicEvent* pick = nullptr;
+        for (const MusicEvent* m : picks)
+            if (std::fabs(m->time - (p.impact - 0.26)) < 0.002) pick = m;
+        INFO("prompt " << p.id << " impact " << p.impact);
+        CHECK(pick != nullptr);
+    }
+    CHECK(picks.size() == r.prompts.size());
+    for (const MusicEvent* m : picks) {
+        bool inside = false;
+        for (const PromptSeen& p : r.prompts)
+            inside |= m->time >= p.impact - tuning.counterEarly + 0.039 && m->time < p.impact - 0.1;
+        CHECK_MESSAGE(inside, "pickup at " << m->time << " is outside every window");
+    }
+
+    // The autopilot makes only Perfects: one chime on each, on the impact (or on the verdict if that came later),
+    // and the three chord tones take turns.
+    REQUIRE(r.fightEvents.size() > 100);
+    int perfects = 0;
+    std::vector<int> notes;
+    double won = 1e30;
+    for (const BeatBossEvent& e : r.fightEvents)
+        if (e.type == BeatBossEventType::Victory) won = e.time;
+    for (const BeatBossEvent& e : r.fightEvents) {
+        // The blow that wins the fight gets the victory's impact, not a chime on top of it.
+        if (e.type != BeatBossEventType::Judged || e.grade != QteGrade::Perfect || e.time >= won - 1e-9) continue;
+        ++perfects;
+        const PromptSeen* seen = nullptr;
+        for (const PromptSeen& p : r.prompts)
+            if (p.id == e.prompt) seen = &p;
+        REQUIRE(seen != nullptr);
+        const double at = std::max(seen->impact, e.time);
+        const MusicEvent* chime = nullptr;
+        for (const MusicEvent* c : chimes)
+            if (std::fabs(c->time - at) < 0.002) chime = c;
+        INFO("prompt " << e.prompt << " at " << at);
+        CHECK(chime != nullptr);
+        if (chime) notes.push_back(chime->note);
+    }
+    CHECK(perfects == static_cast<int>(chimes.size()));
+    CHECK(perfects >= 25);
+    std::vector<int> pitches = notes;
+    std::sort(pitches.begin(), pitches.end());
+    pitches.erase(std::unique(pitches.begin(), pitches.end()), pitches.end());
+    CHECK(pitches.size() >= 5); // three tones of each of several chords
+    for (const int n : notes) CHECK((n >= 70 && n <= 110));
+}
+
+TEST_CASE("beat music: a Good rings softer and duller than a Perfect, a Miss buzzes at once") {
+    const BeatBossTrack track = loadTrack();
+    BeatBossDef def = track.def;
+    def.phaseCount = 1;
+    def.phases[0].endAt = 0.0f;
+    BeatBoss fight;
+    BeatMusicDriver driver;
+    MusicEvents ev;
+    BeatLine line;
+    fight.begin(def, BeatBossTuning{}, 0.0);
+    driver.reset(0.0, ev);
+    std::vector<MusicEvent> heard;
+    const auto frame = [&](double now) {
+        for (const BeatBossEvent& e : fight.update(now)) driver.onEvent(e);
+        fight.beatLine(line);
+        driver.update(fight, line, now, BeatCountKind::Click, ev);
+        for (const MusicEvent& e : ev)
+            if (e.kind == MusicEventKind::Play) heard.push_back(e);
+    };
+    const auto press = [&](ActionButton b, double t) {
+        for (const BeatBossEvent& e : fight.press(b, t)) driver.onEvent(e);
+    };
+    // a_strike's impact is clock 3.5: pressed 0.09 s late it is a Good; the parry at 3.0 goes unanswered (a Miss).
+    double now = 0.0;
+    for (; now < 3.59; now += 1.0 / 60.0) frame(now);
+    press(ActionButton::Attack, 3.59);
+    for (; now < 3.9; now += 1.0 / 60.0) frame(now);
+
+    const MusicEvent* good = nullptr;
+    const MusicEvent* miss = nullptr;
+    for (const MusicEvent& e : heard) {
+        if (e.sound == MusicSound::GoodCue) good = &e;
+        if (e.sound == MusicSound::Miss && !miss) miss = &e;
+    }
+    REQUIRE(good != nullptr);
+    REQUIRE(miss != nullptr);
+    CHECK(good->time == doctest::Approx(3.59).epsilon(0.02)); // the impact had passed: at the verdict
+    CHECK(miss->time == doctest::Approx(3.06).epsilon(0.02)); // the parry lands 0.06 s after its impact
+    for (const MusicEvent& e : heard) CHECK(e.sound != MusicSound::PerfectChime);
+
+    // Softer and duller: rendered alone, the Good is quieter than the Perfect, and changes more slowly.
+    const auto render = [&](MusicSound s, int note) {
+        BeatMusicSynth synth;
+        synth.init(kRate);
+        std::vector<float> out(kRate / 2, 0.0f);
+        synth.play(0, s, 127, static_cast<std::uint8_t>(note), 0, 0);
+        synth.render(out.data(), kRate / 2);
+        return out;
+    };
+    const std::vector<float> perfect = render(MusicSound::PerfectChime, 86);
+    const std::vector<float> dull = render(MusicSound::GoodCue, 74);
+    CHECK(peakOf(dull) < peakOf(perfect));
+    CHECK(rmsOf(dull, 0, kRate / 2) < 0.7 * rmsOf(perfect, 0, kRate / 2));
+    // Brightness: the first difference over the level (more partials, more of it).
+    const auto bright = [](const std::vector<float>& v) {
+        double d = 0.0, l = 0.0;
+        for (std::size_t i = 1; i < v.size(); ++i) {
+            d += std::fabs(static_cast<double>(v[i] - v[i - 1]));
+            l += std::fabs(static_cast<double>(v[i]));
+        }
+        return l > 0.0 ? d / l : 0.0;
+    };
+    CHECK(bright(dull) < bright(perfect));
+}
+
+TEST_CASE("beat music: the bar after a silence is a lift, and the finisher's bars sound once each") {
+    const BeatBossTrack track = loadNamed("cine_track");
+    BeatBoss fight;
+    BeatMusicDriver driver;
+    MusicEvents ev;
+    BeatLine line;
+    fight.begin(track.def, BeatBossTuning{}, 0.0);
+    driver.reset(0.0, ev);
+    bool silenced = false;
+    int afterSilenceBars = 0;
+    int afterSilenceTier = -1;
+    int lastBars = -1;
+    int impactsInFinisher = 0, finisherBars = 0;
+    for (double now = 1.0 / 60.0; !fight.over() && now < 200.0; now += 1.0 / 60.0) {
+        for (int guard = 0; guard < 16; ++guard) {
+            const QteAction a = fight.autopilot(now);
+            if (a.kind == QteAction::Kind::None) break;
+            for (const BeatBossEvent& x : a.kind == QteAction::Kind::Press ? fight.press(a.input, a.time) : fight.release(a.input, a.time))
+                driver.onEvent(x);
+        }
+        for (const BeatBossEvent& e : fight.update(now)) {
+            driver.onEvent(e);
+            if (e.type == BeatBossEventType::SilenceStart) silenced = true;
+        }
+        fight.beatLine(line);
+        driver.update(fight, line, now, BeatCountKind::Click, ev);
+        for (const MusicEvent& e : ev)
+            if (e.kind == MusicEventKind::Play && e.sound == MusicSound::Impact && fight.inFinisher() && fight.trackRunning()) ++impactsInFinisher;
+        if (fight.trackRunning() && fight.stats().bars != lastBars) {
+            lastBars = fight.stats().bars;
+            if (fight.inFinisher()) ++finisherBars;
+            if (silenced && afterSilenceBars == 0) {
+                afterSilenceBars = 1;
+                afterSilenceTier = driver.tier();
+            }
+        }
+    }
+    REQUIRE(fight.state() == BeatBossState::Victory);
+    REQUIRE(silenced);
+    CHECK(afterSilenceTier >= 2);
+    CHECK(finisherBars >= 4); // two finishers of two bars
+    // The impact is sent once per finisher, on its first bar.
+    CHECK(impactsInFinisher <= finisherBars / 2 + 1);
+}
+
+TEST_CASE("beat music: the cinematic track's music, rendered to listen to") {
+    // Set FTCORE_MUSIC_RENDER_DIR to a folder: the whole fight as it plays on autoplay, and one file per phase.
+    const BeatBossTrack track = loadNamed("cine_track");
+    RenderOptions o;
+    o.maxSeconds = 200.0;
+    const Render r = renderFight(track, o);
+    REQUIRE(r.won);
+    CHECK(r.dropped == 0);
+    CHECK(r.late <= 6);
+    const std::string dir = renderDir();
+    if (dir.empty()) return;
+    CHECK(writeWav(dir + "/cine_track_full.wav", r.audio.data(), r.audio.size()));
+    std::vector<double> starts;
+    for (const BeatBossEvent& e : r.fightEvents)
+        if (e.type == BeatBossEventType::PhaseStart) starts.push_back(e.time);
+    REQUIRE(starts.size() == 3);
+    const char* names[3] = {"a", "b", "c"};
+    for (std::size_t i = 0; i < 3; ++i) {
+        const std::size_t from = sampleOf(i == 0 ? 0.0 : starts[i]);
+        const std::size_t to = i + 1 < 3 ? sampleOf(starts[i + 1]) : r.audio.size();
+        REQUIRE(to > from);
+        CHECK(writeWav(dir + "/cine_track_phase_" + names[i] + ".wav", r.audio.data() + from, to - from));
     }
 }

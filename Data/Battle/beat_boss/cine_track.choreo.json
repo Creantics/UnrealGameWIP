@@ -25,11 +25,16 @@
     "boss": "boss_roar",
     "shot": "top_down"
   },
+  "silence": {
+    "boss": "boss_roar",
+    "shot": "close_boss"
+  },
   "phases": [
     {
       "id": "cine_a",
       "moves": [
         {"id": "a_hook", "boss": "boss_hook", "ok": "lead_parry", "then": "lead_counter", "miss": "lead_hitreact", "hit": "boss_hitreact", "shot": "over_lead", "anchor": "boss_fist_r"},
+        {"id": "a_rel", "ok": "lead_block", "miss": "lead_hitreact2", "hit": "boss_hitreact", "shot": "wide", "anchor": "boss_chest"},
         {"id": "a_jab", "ok": "lead_jab", "miss": "lead_hitreact2", "hit": "boss_hitreact", "shot": "close_boss", "anchor": "boss_head"},
         {"id": "a_cross", "ok": "lead_cross", "miss": "lead_hitreact2", "hit": "boss_hitreact", "shot": "low_hero", "anchor": "boss_chest"},
         {"id": "a_smash", "boss": "boss_smash", "ok": "lead_block", "miss": "lead_hitreact2", "hit": "boss_hitreact", "shot": "wide", "anchor": "boss_fist_l"},
@@ -41,6 +46,7 @@
       "id": "cine_b",
       "moves": [
         {"id": "b_thrust", "boss": "boss_thrust", "ok": "lead_parry", "then": "lead_jab", "miss": "lead_hitreact", "hit": "boss_hitreact", "shot": "low_hero", "anchor": "boss_fist_r"},
+        {"id": "b_rel", "ok": "lead_block", "miss": "lead_hitreact2", "hit": "boss_hitreact", "shot": "wide", "anchor": "boss_chest"},
         {"id": "b_cross", "ok": "lead_cross", "miss": "lead_hitreact2", "hit": "boss_hitreact", "shot": "over_lead", "anchor": "boss_head"},
         {"id": "b_sweep", "boss": "boss_sweep", "ok": "lead_dodge_l", "miss": "lead_hitreact2", "hit": "boss_hitreact", "shot": "wide", "anchor": "lead_head"},
         {"id": "b_grab", "boss": "boss_grab", "ok": "lead_counter", "then": "lead_kick_r", "miss": "lead_hitreact2", "hit": "boss_hitreact", "shot": "top_down", "anchor": "boss_chest"}
@@ -55,6 +61,7 @@
       "id": "cine_c",
       "moves": [
         {"id": "c_hook", "boss": "boss_hook", "ok": "lead_parry", "then": "lead_counter", "miss": "lead_hitreact", "hit": "boss_hitreact", "shot": "over_lead", "anchor": "boss_fist_r"},
+        {"id": "c_rel", "ok": "lead_block", "miss": "lead_hitreact2", "hit": "boss_hitreact", "shot": "wide", "anchor": "boss_chest"},
         {"id": "c_hold", "ok": "lead_kick_r", "miss": "lead_hitreact2", "hit": "boss_hitreact", "shot": "low_hero", "anchor": "boss_chest"},
         {"id": "c_smash", "boss": "boss_smash", "ok": "lead_block", "miss": "lead_hitreact2", "hit": "boss_hitreact", "shot": "close_boss", "anchor": "boss_fist_l"},
         {"id": "c_sweep", "boss": "boss_sweep", "ok": "lead_dodge_l", "miss": "lead_hitreact", "hit": "boss_hitreact", "shot": "wide", "anchor": "lead_head"},

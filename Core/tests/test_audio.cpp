@@ -396,3 +396,63 @@ TEST_CASE("Data/Audio/cues.json loads and covers every cue the real story fires"
     }
     CHECK(missing == 0);
 }
+
+TEST_CASE("importAudioCues reads how the synth places and mixes a cue") {
+    const char* json = R"J({"version": 1, "cues": [
+      {"id": "SFX-BB-STRK", "bus": "sfx", "playback": "oneshot", "gainDb": -2, "quant": "IMP",
+       "duckDb": -6, "duckHoldMs": 60, "duckRelMs": 120, "max": 3, "prio": 62},
+      {"id": "SFX-BB-PICK", "bus": "sfx", "playback": "oneshot", "quant": "IMP-8"},
+      {"id": "MUS-BB-CINE", "bus": "music", "playback": "loop"}]})J";
+    AudioCueTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(importAudioCues(json, t, &error, &warnings), error);
+    CHECK(warnings.empty());
+    const AudioCue* strk = t.find("SFX-BB-STRK");
+    REQUIRE(strk);
+    CHECK(strk->quant == "IMP");
+    CHECK(strk->duckDb == -6.f);
+    CHECK(strk->duckHoldMs == 60.f);
+    CHECK(strk->duckRelMs == 120.f);
+    CHECK(strk->maxVoices == 3);
+    CHECK(strk->priority == 62);
+    const AudioCue* pick = t.find("SFX-BB-PICK");
+    REQUIRE(pick);
+    CHECK(pick->quant == "IMP-8");
+    CHECK(pick->duckDb == 0.f);
+    CHECK(pick->maxVoices == 0);
+    CHECK(pick->priority == 0);
+    CHECK(t.find("MUS-BB-CINE")->quant.empty());
+
+    const auto refused = [](const char* entry, const char* needle) {
+        const std::string text = std::string(R"J({"version": 1, "cues": [{"id": "X", "bus": "sfx", "playback": "oneshot", )J") + entry + "}]}";
+        AudioCueTable table;
+        std::string err;
+        CHECK_FALSE(importAudioCues(text, table, &err));
+        CHECK_MESSAGE(err.find(needle) != std::string::npos, err);
+    };
+    refused(R"J("quant": "SOON")J", "cues[0].quant");
+    refused(R"J("quant": 3)J", "cues[0].quant");
+    refused(R"J("duckDb": 6)J", "cues[0].duckDb");
+    refused(R"J("duckHoldMs": -1)J", "cues[0].duckHoldMs");
+    refused(R"J("duckRelMs": 9000)J", "cues[0].duckRelMs");
+    refused(R"J("max": 0)J", "cues[0].max");
+    refused(R"J("max": 2.5)J", "cues[0].max");
+    refused(R"J("prio": 101)J", "cues[0].prio");
+}
+
+TEST_CASE("the beat boss's music cue is registered as a loop with no tempo") {
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Audio/cues.json", text));
+    AudioCueTable table;
+    REQUIRE(importAudioCues(text, table));
+    const AudioCue* cue = table.find("MUS-BB-CINE");
+    REQUIRE(cue);
+    CHECK(cue->bus == AudioBus::Music);
+    CHECK(cue->playback == CuePlayback::Loop);
+    CHECK(cue->bpm == 0.f); // the tempo changes with the phase
+    // The cinematic track names it.
+    std::string track;
+    REQUIRE(ftcore_test::readProjectData("Battle/beat_boss/cine_track.json", track));
+    CHECK(track.find("\"music\": \"MUS-BB-CINE\"") != std::string::npos);
+}

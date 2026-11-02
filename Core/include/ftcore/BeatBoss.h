@@ -289,12 +289,22 @@ struct BeatBossTuning {
     double strikeGood = 0.120;
     double perfect = 0.12;       // a counter's perfect width, centred on its impact
     double counterEarly = 0.30;  // a counter's window opens this long before the impact
+    double counterLate = -1.0;   // an unanswered counter lands this long after its impact (< 0: half the perfect width)
     double pairWidth = 0.12;     // a paired prompt's two presses, at most this far apart
     double counterLockout = 0.40;
     double lockoutBeats = 0.75;
     double holdSlack = kQteHoldSlack;
     double goodFactor = 0.6;
+    // How a Paired prompt is pressed (BeatAccess.h, beat.pair_mode): 0 two buttons within pairWidth; 1 the same,
+    // but the second may follow the first by kBossPairWide at most (nothing has to be simultaneous); 2 one press
+    // of either button counts as both.
+    std::uint8_t pairMode = 0;
+
+    // How long after its impact an unanswered counter still can be answered (and then lands).
+    double lateLimit() const { return counterLate >= 0.0 ? counterLate : perfect * 0.5; }
 };
+
+inline constexpr double kBossPairWide = 0.5; // pair mode 1: the most the second press may trail the first
 
 // One open prompt (track times).
 struct BeatBossPrompt {
@@ -459,6 +469,11 @@ public:
                           const QteAssist& assist = {});
     // Back to the last checkpoint with the clock at `now` (see "Checkpoints"); stats keep counting.
     FTCORE_API void retry(double now);
+    // Changes the assists and the tuning (BeatAccess.h) from the next bar line on, and at once from a retry:
+    // a change never lands in the middle of a bar. A later request replaces an earlier one that has not applied.
+    FTCORE_API void requestAccess(const BeatBossTuning& tuning, const QteAssist& assist);
+    bool accessPending() const { return accessPending_; }
+    const QteAssist& assist() const { return assist_; }
 
     FTCORE_API BeatBossEvents update(double now);
     FTCORE_API BeatBossEvents press(ActionButton input, double t);
@@ -506,6 +521,8 @@ public:
     int load() const { return load_.value; }
     FTCORE_API int openRests() const;
     bool counterLockedOut() const { return track_ < lockoutUntil_; }
+    // A stagger took the next bar's counters: the bar plays without them (a host predicting the bar leaves them out).
+    bool skippingCounters() const { return skipCounters_; }
 
 private:
     enum class Mode : std::uint8_t { Count, Silent, Running };
@@ -525,6 +542,7 @@ private:
     };
 
     void reset(double now, int phase);
+    void applyAccess();
     void runTo(double t, BeatBossEvents& out);
     void advance(double t, BeatBossEvents& out);
     void doPress(ActionButton input, double t, BeatBossEvents& out);
@@ -562,6 +580,9 @@ private:
     BeatBossDef def_{};
     BeatBossTuning tuning_{};
     QteAssist assist_{};
+    BeatBossTuning pendingTuning_{};
+    QteAssist pendingAssist_{};
+    bool accessPending_ = false;
     BeatBossStats stats_{};
     BeatBossState state_ = BeatBossState::NotStarted;
     Mode mode_ = Mode::Count;
@@ -626,5 +647,22 @@ FTCORE_API bool importBeatBossTrack(std::string_view json, BeatBossTrack& out, s
 // "4.2&" -> bar 4, eighth (beat - 1) x beatEighths + 1. False for anything malformed (the bar map
 // checks whether the place exists).
 FTCORE_API bool parseBossPos(std::string_view text, std::uint8_t beatEighths, BossPos& out);
+
+// ---- practice tempo ----
+
+// The shortest tempo scale `def` can take: no phase may fall under kMinBossBpm.
+FTCORE_API double minBossTempoScale(const BeatBossDef& def);
+// `def` played at `scale` of its tempo (clamped to 1 and minBossTempoScale): every bpm times the scale, and every
+// time (the loops, the tells, impacts and ends of every move and finisher move, the rests, the silences) divided
+// by it, so the bars still sum to the loop's seconds and every rule the loader checks still holds. Pure; the same
+// def and scale give the same result.
+FTCORE_API BeatBossDef rescaleBeatBossDef(const BeatBossDef& def, double scale);
+
+// ---- widening the windows ----
+
+// True when two prompts of one button could be answered by the same press under `tuning`: the window of one (from
+// its early edge to its late edge, a hold to its end) reaches the next's. A track is playable at a window scale
+// only if this is false.
+FTCORE_API bool beatBossWindowsOverlap(const BeatBossDef& def, const BeatBossTuning& tuning);
 
 } // namespace ftcore

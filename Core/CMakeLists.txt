@@ -93,6 +93,7 @@ add_library(ftcore STATIC
     src/Shop.cpp
     src/ArenaFight.cpp
     src/BeatFight.cpp
+    src/BeatAccess.cpp
     src/BeatBoss.cpp
     src/BeatChoreo.cpp
     src/BeatMusic.cpp
@@ -190,6 +191,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_arena.cpp
         tests/test_beat.cpp
         tests/test_beat_screen.cpp
+        tests/test_beat_access.cpp
         tests/test_beat_boss.cpp
         tests/test_beat_choreo.cpp
         tests/test_beat_cine.cpp
