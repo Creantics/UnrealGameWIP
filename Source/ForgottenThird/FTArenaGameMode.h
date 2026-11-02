@@ -21,11 +21,13 @@
 // the zone and out of its obstacles; Unreal blocks nothing. The camera may leave the walls but not pass through
 // the scene: its spring arm probes the world and is pulled in.
 //
-// Core judges, the host moves. The mode steps the fight at a fixed 1/60 s (an accumulator, at most 8 steps
+// Core judges, the host moves. The fight itself runs in the mode's UFTArenaRunner (FTArenaRunner.h), the same runner the
+// arena step's host on the explore map uses: it steps the fight at a fixed 1/60 s (an accumulator, at most 8 steps
 // a frame), the step the Core tests and the balance check use, and moves the bodies with ftcore::arenaStep:
 // the ring has nothing inside it to collide with, and Core keeps every body inside it. The figures
 // (AFTArenaFighter: the player's pawn, which the player controller possesses, and one per enemy) are placed
-// between the last two steps, turned to Core's facings and posed from Core's actions.
+// between the last two steps, turned to Core's facings and posed from Core's actions. The mode reads the flags, loads
+// the table, fits the zone, builds the plain ground and takes -ArenaShot's views.
 //
 // Keys, read by polling. The four action buttons are FTActionButtons' (the J I L K diamond and the pad's
 // face buttons), each with a second home:
@@ -80,40 +82,15 @@
 
 #include "ftcore/ArenaFight.h"
 #include "ftcore/ArenaZone.h"
-#include "ftcore/BeatChoreo.h"
 #include "ftcore/WorldLayout.h"
 
-#include <array>
 #include <memory>
 
 #include "FTArenaGameMode.generated.h"
 
-class AFTArenaFighter;
 class APlayerController;
-class UAnimSequence;
+class UFTArenaRunner;
 struct FFTLeadLook;
-
-// A skinned enemy's clips: the table, the sequences loaded for it (by table index) and the table index of each clip the
-// mode plays by role, -1 where it has none.
-USTRUCT()
-struct FFTArenaSkin
-{
-	GENERATED_BODY()
-
-	UPROPERTY()
-	TArray<TObjectPtr<UAnimSequence>> Sequences;
-	TSharedPtr<ftcore::BeatClips> Clips;
-	int32 Idle = -1;
-	int32 IdleTwo = -1;
-	int32 Stagger = -1;
-	int32 FaceDown = -1;
-	int32 Defeat = -1;
-	int32 HitLight = -1;
-	int32 HitHeavy = -1;
-	std::array<int32, ftcore::kMaxArenaMoves> MoveClip{};
-
-	bool IsLoaded() const { return Clips.IsValid() && Idle >= 0; }
-};
 
 UCLASS()
 class FORGOTTENTHIRD_API AFTArenaGameMode : public AFTGameMode
@@ -122,67 +99,20 @@ class FORGOTTENTHIRD_API AFTArenaGameMode : public AFTGameMode
 
 public:
 	static constexpr int32 MaxEnemies = static_cast<int32>(ftcore::kMaxArenaEnemies);
-	static constexpr int32 MaxPopups = 16;
 	// The ring of the plain zone and of the map's player start (metres), centred on the world's origin.
 	static constexpr float MapRingRadius = 12.f;
-	static constexpr float StepSeconds = 1.f / 60.f;
-	static constexpr int32 MaxStepsPerFrame = 8;
-	static constexpr float WatchdogSeconds = 180.f;
 
 	// Where the player starts (cm) for a ring of Radius metres: Radius * 0.35 behind the centre, facing +X,
 	// so ftcore::arenaRingAt puts the ring's centre on the origin. Shared with FTBuildArenaWorld.
 	static FVector PlayerStartFor(float Radius);
-
-	// What the HUD pops up over a body, and when (seconds on the screen's clock, GetNow()).
-	struct FPopup
-	{
-		ftcore::ArenaEventType Type = ftcore::ArenaEventType::Hit;
-		uint8 Source = ftcore::kArenaNobody;
-		uint8 Target = ftcore::kArenaNobody;
-		uint8 Move = 0;
-		int32 Amount = 0;
-		FVector At = FVector::ZeroVector;
-		double Time = -1e9;
-	};
 
 	AFTArenaGameMode();
 
 	virtual void StartPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
 
-	// ---- for AFTArenaHUD (no allocation) ----
-	bool IsBegun() const { return bBegun; }
-	const ftcore::ArenaFight& GetFight() const { return Fight; }
-	// The screen's clock: seconds of play since the map started, stopped while paused.
-	double GetNow() const { return Now; }
-	// Seconds since the fight ended (0 while it runs).
-	double GetResultAge() const { return bResultLogged ? Now - ResultTime : 0.0; }
-	bool IsAutoPlay() const { return bAutoPlay; }
-	bool IsIdle() const { return bIdle; }
-	AFTArenaFighter* GetPlayerFigure() const { return PlayerFigure; }
-	// The zone the fight is held in, for the HUD's edge cue: its walls, the world's look (0 the plain zone, 1 Solhaven,
-	// 2 the Lattice, 3 the Unwritten), where the player stands (metres) and the height of the ground there (cm).
-	const ftcore::ArenaZone& GetZone() const { return Fit.zone; }
-	int32 GetZoneStyle() const { return ZoneStyle; }
-	ftcore::Vec2 GetPlayerPosition() const { return Bodies.player; }
-	double GetZoneZ() const { return ZoneZ; }
-	AFTArenaFighter* GetEnemyFigure(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? EnemyFigures[Index].Get() : nullptr; }
-	// The move enemy Index is in (its attack's numbers), or null when it isn't attacking.
-	const ftcore::ArenaEnemyMove* GetEnemyMove(int32 Index) const;
-	// When enemy Index's current attack went active (far in the past when it hasn't this attack).
-	double GetEnemyActiveSince(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? ActiveSince[Index] : -1e9; }
-	// When enemy Index was last hit (far in the past when never).
-	double GetEnemyHitTime(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? EnemyHitTime[Index] : -1e9; }
-	double GetPlayerHitTime() const { return PlayerHitTime; }
-	double GetParryTime() const { return ParryTime; }
-	// The last Release (when it began and the Load it spent) and the last time the Load overloaded.
-	double GetReleaseTime() const { return ReleaseTime; }
-	int32 GetReleaseSpent() const { return ReleaseSpent; }
-	double GetOverloadTime() const { return OverloadTime; }
-	int32 GetPopupCount() const { return FMath::Min(PopupTotal, MaxPopups); }
-	const FPopup& GetPopup(int32 Index) const { return Popups[(PopupTotal - GetPopupCount() + Index) % MaxPopups]; }
-	// Bumped on every new popup, so the HUD rebuilds a popup's number only when its slot changes.
-	int32 GetPopupTotal() const { return PopupTotal; }
+	// The fight, for AFTArenaHUD.
+	const UFTArenaRunner* GetRunner() const { return Runner; }
 
 private:
 	// Reads Data/Battle/arena.json into Table; false (logged, ids only) when missing or refused.
@@ -200,32 +130,14 @@ private:
 	void BuildZoneDressing();
 	// The world's ground height at p (metres), from a trace onto its Landscape (0 when there is none).
 	double SampleGround(const ftcore::Vec2& P) const;
+	// The ground, the zone's dressing, then the runner's fight.
 	void Begin();
-	void SpawnFigures();
 	// The lead look the player's figure wears: -ArenaLead=<name> among the explore character's PartyLooks, else the first;
 	// null (logged) when the config has none.
 	const FFTLeadLook* FindLead() const;
 	// The fighter kit's id in arena.json: -ArenaLead=<name> lower-cased (even when no look of that name loads), else
 	// the first PartyLooks name lower-cased, else "default". The table falls back to "default" for an id it lacks.
 	FString FindKitId() const;
-	// Dresses enemy slot I as a skeletal mesh when its kind has a look that loads (see the top of this file).
-	void LoadSkin(int32 I);
-	// Picks and times slot I's clip from its Core state: the move's own clip through an attack, at the rate that lands its
-	// impact at the end of the startup; stagger; face down while open; the hit reaction between moves; defeat; idle.
-	void DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const ftcore::ArenaEnemyKind& Kind, float Alpha);
-	void PutBodiesAtStart();
-	// This frame's presses (edges kept until a step takes them), the held guard, the stick and the camera.
-	void PollInput(float DeltaSeconds);
-	ftcore::ArenaInput TakeInput();
-	void StepFight();
-	void HandleEvents(const ftcore::ArenaEvents& Events);
-	void TrackParts(const ftcore::ArenaOutput& Out);
-	void PlaceFigures(float Alpha);
-	void SteerCamera(float DeltaSeconds);
-	void Finish();
-	// The one result line per fight (VICTORY, DEFEAT, or TIMEOUT as a warning while it still runs).
-	void LogResult() const;
-	void Restart();
 	// -ArenaShot's views; true while the fight should hold still (before the first view and just after each).
 	bool Shots(float DeltaSeconds);
 	void TakeShot(const TCHAR* Name, bool bCounted = true);
@@ -235,20 +147,9 @@ private:
 	// edge cue; then the fight is put back as it began.
 	bool EdgeShot();
 	APlayerController* GetPC() const;
-	FVector ToWorld(const ftcore::Vec2& P) const { return FVector(P.x * 100.0, P.y * 100.0, ZoneZ); }
 
 	UPROPERTY()
-	TObjectPtr<AFTArenaFighter> PlayerFigure;
-	UPROPERTY()
-	TObjectPtr<AFTArenaFighter> EnemyFigures[6]; // ftcore::kMaxArenaEnemies (a literal for UHT; checked in the .cpp)
-	UPROPERTY()
-	FFTArenaSkin Skins[6];                       // ... likewise
-	// What each skinned enemy plays: the clip (a table index; -2 none yet) and since when, the last hit reaction.
-	int32 SkinClip[ftcore::kMaxArenaEnemies];
-	double SkinSince[ftcore::kMaxArenaEnemies];
-	double HitSince[ftcore::kMaxArenaEnemies];
-	bool bHitHeavy[ftcore::kMaxArenaEnemies] = {};
-	float FrameDelta = 0.f; // the frame's seconds, for the clips' crossfades
+	TObjectPtr<UFTArenaRunner> Runner;
 
 	ftcore::ArenaTable Table;
 	ftcore::WorldTable Worlds;
@@ -262,52 +163,12 @@ private:
 	double ZoneZ = 0.0; // cm: the height of the ground in the zone
 	int32 ZoneStyle = 0; // the world's look: 0 the plain zone, 1 Solhaven, 2 the Lattice, 3 the Unwritten
 	ftcore::ArenaDef Def;
-	ftcore::ArenaFight Fight;
-	ftcore::ArenaBodies Bodies;
-	ftcore::ArenaBodies PrevBodies;
 	uint32 Seed = 1;
 
-	// Presses waiting for a step, the held guard, the stick on the ground and the switch.
-	bool bPressLight = false;
-	bool bPressHeavy = false;
-	bool bPressDodge = false;
-	bool bPressHeal = false;
-	bool bPressLock = false;
-	bool bPressRelease = false;
-	bool bPressPair = false;
-	// Autoplay's partner: a parry came, so press the pair on the next step.
-	bool bPartnerDue = false;
-	int8 PressSwitch = 0;
-	// The partner's Read pick: a card index, -1 for none.
-	int8 PressRead = -1;
-	bool bGuardHeld = false;
-	ftcore::Vec2 Stick;
-	bool bStickFlicked = false;
-
-	double Now = 0.0;
-	double Accumulator = 0.0;
-	double ActiveSince[ftcore::kMaxArenaEnemies];
-	double EnemyHitTime[ftcore::kMaxArenaEnemies];
-	uint8 LastPart[ftcore::kMaxArenaEnemies] = {};
-	double PlayerHitTime = -1e9;
-	double ParryTime = -1e9;
-	double ReleaseTime = -1e9;
-	int32 ReleaseSpent = 0;
-	double OverloadTime = -1e9;
-	FPopup Popups[MaxPopups];
-	int32 PopupTotal = 0;
-
-	float CameraYaw = 0.f;
-	float CameraPitch = -16.f;
-
-	bool bBegun = false;
-	bool bFiguresSpawned = false;
 	bool bAutoPlay = false;
 	bool bIdle = false;
 	bool bQuitOnFinish = false;
 	bool bHoldLoad = false;
-	bool bResultLogged = false;
-	double ResultTime = 0.0;
 	FString KitId; // the fighter kit the player plays (FindKitId), as the table resolved it
 
 	// -ArenaShot: the prefix, the settle before the first, which have been taken, and a short hold after
@@ -322,5 +183,4 @@ private:
 	int32 ShotsTaken = 0;
 	double ShotWall = 0.0;
 	double ShotHoldUntil = -1.0;
-	double BeginNow = 0.0;
 };
