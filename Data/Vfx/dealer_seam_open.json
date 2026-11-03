@@ -1,0 +1,132 @@
+{
+  "name": "dealer_seam_open",
+  "emitters": [
+    {
+      "name": "drips",
+      "rate": 22,
+      "duration": 1.0,
+      "loop": true,
+      "maxParticles": 48,
+      "lifetime": [
+        0.5,
+        0.8
+      ],
+      "shape": "sphere",
+      "radius": 0.05,
+      "speed": [
+        0.0,
+        0.15
+      ],
+      "gravity": [
+        0.0,
+        -6.0,
+        0.0
+      ],
+      "drag": 0.3,
+      "startSize": [
+        0.025,
+        0.045
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 0.6
+        },
+        {
+          "t": 0.2,
+          "v": 1.0
+        },
+        {
+          "t": 1,
+          "v": 0.8
+        }
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            0.55,
+            0.0,
+            0.02,
+            0.0
+          ]
+        },
+        {
+          "t": 0.1,
+          "color": [
+            0.5,
+            0.0,
+            0.02,
+            1.0
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            0.3,
+            0.0,
+            0.01,
+            0.9
+          ]
+        }
+      ],
+      "blend": "alpha",
+      "sprite": "soft",
+      "stretch": 0.05,
+      "stretchMax": 3.0,
+      "softness": 0.0
+    },
+    {
+      "name": "pulse",
+      "rate": 3.4,
+      "duration": 1.0,
+      "loop": true,
+      "maxParticles": 4,
+      "lifetime": 0.58,
+      "shape": "point",
+      "startSize": 0.4,
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 0.5
+        },
+        {
+          "t": 1,
+          "v": 1.2
+        }
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            1.6,
+            0.05,
+            0.04,
+            0.0
+          ]
+        },
+        {
+          "t": 0.25,
+          "color": [
+            1.4,
+            0.04,
+            0.03,
+            0.7
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            0.8,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "blend": "additive",
+      "sprite": "soft",
+      "softness": 0.0
+    }
+  ]
+}

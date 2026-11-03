@@ -18,6 +18,7 @@
 #include "Components/ActorComponent.h"
 
 #include "ftcore/ArenaFight.h"
+#include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
 #include "ftcore/BeatChoreo.h"
 
@@ -26,6 +27,9 @@
 
 #include <array>
 #include <string>
+#include <string_view>
+
+class UFTVfxComponent;
 
 #include "FTArenaRunner.generated.h"
 
@@ -171,6 +175,12 @@ public:
 	// The first Arena boss's host while it fights here (null otherwise), and the Intercept button as the step took it.
 	const FFTStoneBearerHost* GetStoneBearer() const { return StoneBearer.IsActive() ? &StoneBearer : nullptr; }
 	bool IsInterceptHeld() const { return bInterceptHeld; }
+	// Enemy Index's weak points when its kind has an entry in arena_crit.json and they are on this fight (null otherwise):
+	// whether the window is open (at GetFight().time()), when it closes, and the crits landed, for the HUD and effects.
+	const ftcore::ArenaKindCrit* GetKindCrit(int32 Index) const
+	{
+		return (Index >= 0 && Index < MaxEnemies && bKindCritSlot[Index]) ? &KindCrits[static_cast<size_t>(Index)] : nullptr;
+	}
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -188,6 +198,21 @@ private:
 	FVector BossWeakPoint() const;
 	// The boss broke its carried piece: its figure takes the parts in its hands (once a fight).
 	void SplitBossCarried();
+	// Plain kinds' weak points (ftcore/ArenaKindCrit.h): Data/Battle/arena_crit.json read once, then on each begin and
+	// restart one ArenaKindCrit per slot whose kind has an entry, and the blow hook that rules on the lead's blows on them.
+	// After each step the slots' AttackStarted events open the windows; an opening and every crit are one log line each.
+	void BeginKindCrits();
+	void EndKindCrits();
+	void FeedKindCrits(const ftcore::ArenaEvents& Events);
+	static ftcore::ArenaBlowRuling RuleKindCritBlow(void* User, const ftcore::ArenaBlow& Blow);
+	// The entry's effects (ArenaKindCritEffects) on each crit slot's figure, made once after the figures: the tell plays
+	// from the opening move's start until the window opens, the open effect while it is open, the crit and hit effects
+	// on the lead's blows on the slot. Hung from the entry's socket on a skinned figure (else its root).
+	void SpawnKindCritEffects();
+	void StopKindCritEffects();
+	UFTVfxComponent* MakeKindCritEffect(AFTArenaFighter* Figure, std::string_view Effect, std::string_view Socket);
+	// The kind id of slot I, as the table names it ("" for a def built in code).
+	const char* SlotKindId(int32 I) const;
 	// Dresses enemy slot I as a skeletal mesh when its kind has a look that loads (see AFTArenaGameMode's header).
 	void LoadSkin(int32 I);
 	// Picks and times slot I's clip from its Core state: the move's own clip through an attack, at the rate that lands its
@@ -223,6 +248,15 @@ private:
 	// The stone_bearer's effects: telegraph, impact, hit chips, crit burst and the open weak point's glow.
 	UPROPERTY()
 	FFTArenaBossVfx BossVfx;
+	// Each crit slot's effects (see SpawnKindCritEffects), owned by its figure.
+	UPROPERTY()
+	TObjectPtr<UFTVfxComponent> KindCritTellFx[6]; // ftcore::kMaxArenaEnemies (a literal for UHT)
+	UPROPERTY()
+	TObjectPtr<UFTVfxComponent> KindCritOpenFx[6];
+	UPROPERTY()
+	TObjectPtr<UFTVfxComponent> KindCritCritFx[6];
+	UPROPERTY()
+	TObjectPtr<UFTVfxComponent> KindCritHitFx[6];
 	// What each skinned enemy plays: the clip (a table index; -2 none yet) and since when, the last hit reaction.
 	int32 SkinClip[ftcore::kMaxArenaEnemies];
 	double SkinSince[ftcore::kMaxArenaEnemies];
@@ -297,4 +331,16 @@ private:
 	float ZoneYaw = 0.f;
 	int32 StoneBearerLogged = 0;
 	mutable bool bWeakPointWarned = false; // the mesh has no weak-point bone (warned once)
+
+	// Plain kinds' weak points: the file (read once), each slot's crit and whether it is on, whether the window was open
+	// after the last step, and whether this runner holds the fight's blow hook for them.
+	ftcore::ArenaKindCritTable KindCritTable;
+	bool bKindCritTableRead = false;
+	std::array<ftcore::ArenaKindCrit, ftcore::kMaxArenaEnemies> KindCrits{};
+	bool bKindCritSlot[ftcore::kMaxArenaEnemies] = {};
+	bool bKindCritWasOpen[ftcore::kMaxArenaEnemies] = {};
+	bool bKindCritHook = false;
+	// The crit count each slot's effects have answered (ArenaKindCrit::crits), and whether its tell is playing.
+	int32 KindCritCritsSeen[ftcore::kMaxArenaEnemies] = {};
+	bool bKindCritTelling[ftcore::kMaxArenaEnemies] = {};
 };

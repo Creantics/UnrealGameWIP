@@ -146,7 +146,7 @@
 //     Every shape then goes through the keep-out clamp.
 //   - Answer "intercept" is not parryable: the run answers it, ArenaFight only lands it.
 //
-// Nothing here allocates except importArenaBoss (load time).
+// Nothing here allocates except importArenaBoss and importArenaWeakPoints (load time).
 
 #include "ftcore/Api.h"
 #include "ftcore/Explore.h" // Vec2
@@ -541,6 +541,14 @@ struct ArenaBossDef {
 FTCORE_API bool importArenaBoss(std::string_view json, ArenaBossDef& out, std::string* error = nullptr,
                                 std::vector<std::string>* warnings = nullptr,
                                 std::initializer_list<std::string_view> ownKeys = {});
+
+class JsonValue;
+// Reads a "weakPoints" object (the format above) at `path` into `out`, for every loader that carries
+// one (importArenaBoss, ArenaKindCrit.h): out of range or wrong is an error on `errors` with its path
+// under `path`, an unknown key a warning. `out` starts default. False when it added an error.
+FTCORE_API bool importArenaWeakPoints(const JsonValue& v, const std::string& path, ArenaWeakPoints& out,
+                                      std::vector<std::string>& errors,
+                                      std::vector<std::string>* warnings = nullptr);
 
 // ---- The run ---------------------------------------------------------------------------------------
 
