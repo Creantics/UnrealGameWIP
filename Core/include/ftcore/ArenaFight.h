@@ -131,6 +131,11 @@
 //   radius); a dodge toward the edge slides along it.
 // * Victory: every enemy Dead. Defeat: the player Downed. Then tick() does nothing but report the
 //   phase. restart() puts everything back as begin() left it (the same seed, so the same fight).
+// * Host hooks (generic: a boss's own rules live in its own Core class and the host, never here). The host
+//   may hold an enemy Open or Down from outside (holdEnemy, releaseEnemy), keep an enemy's hp above a floor
+//   (setEnemyHpFloor) and rule on every blow before it applies (setBlowHook): scale its damage and poise
+//   damage, or veto it. Holds and floors are fight state (begin() and restart() clear them); the blow hook
+//   is the host's and stays until it sets another.
 //
 // Data: Data/Battle/arena.json (ids and numbers only, no story text). Like encounters.json and
 // qte.json it is keyed by scene id + gameplay beat index + plan step index, with a `default` fight:
@@ -184,7 +189,7 @@
 namespace ftcore {
 
 inline constexpr std::size_t kMaxArenaEnemies = 6;
-inline constexpr std::size_t kMaxArenaMoves = 8;   // per enemy
+inline constexpr std::size_t kMaxArenaMoves = 24;  // per enemy (a boss move of n impacts is n chained moves)
 inline constexpr std::size_t kMaxLightChain = 4;
 inline constexpr std::size_t kMaxArenaEvents = 32; // per tick; more are dropped (ArenaFight::droppedEvents)
 
@@ -556,6 +561,35 @@ struct ArenaStats {
 
 enum class ArenaPhase : std::uint8_t { NotStarted, Fighting, Victory, Defeat };
 
+// A blow about to land, as the blow hook sees it (ArenaFight::setBlowHook): one of the player's attacks or the
+// partner's counters on an enemy, or an enemy's attack on the player.
+struct ArenaBlow {
+    ArenaEventType type = ArenaEventType::Hit; // the event it reports with: Hit (an attack, either way),
+                                               // CounterStagger or ReadCounter (the partner's, on an enemy)
+    std::uint8_t source = kArenaNobody;        // kArenaPlayer (the partner's counters too) or the enemy
+    std::uint8_t target = kArenaNobody;        // the enemy, or kArenaPlayer
+    std::uint8_t move = 0;                     // as the event's
+    int damage = 0;                            // hp, before the ruling (and before a guard)
+    float poise = 0.f;                         // poise damage, before the ruling (and before armor). A counter-stagger:
+                                               // the enemy kind's whole poise, as it breaks it
+    Vec2 from;                                 // the source's position (the partner's counters: the player's) ...
+    Vec2 facing{1.f, 0.f};                     // ... and facing
+    Vec2 at;                                   // the target's position
+    float time = 0.f;                          // fight time at the end of the tick it lands in
+};
+
+// The host's ruling on a blow. A vetoed blow is spent (that attack never connects with that target again) and does
+// nothing else: no hp, poise, Load, stamina, stats or events.
+struct ArenaBlowRuling {
+    float damage = 1.f; // the damage becomes round(damage * this); NaN or below 0 counts as 0
+    float poise = 1.f;  // the poise damage is multiplied by this; NaN or below 0 counts as 0
+    bool veto = false;
+};
+
+// Called inside tick(), once per blow, in the order the blows land. It may call holdEnemy, releaseEnemy and
+// setEnemyHpFloor (a floor counts from the next blow) and read the fight's getters; never tick, begin or restart.
+using ArenaBlowHook = ArenaBlowRuling (*)(void* user, const ArenaBlow& blow);
+
 class ArenaFight {
 public:
     // Starts `def`: the player at playerPos facing playerFacing (unit), the enemies spread on an arc
@@ -619,12 +653,32 @@ public:
     FTCORE_API bool readOpen() const;
     FTCORE_API int readStacks() const;
 
+    // ---- host hooks ----
+    // Holds enemy i in `brain` (Open or Down) for `seconds` (> 0; +infinity: until releaseEnemy), from the start of the
+    // next tick with dt > 0: a live move is cut short and its token goes back, as a parry does (a read move brings the
+    // partner's counter), and `seconds` stands in for the kind's openTime or downTime. Holding again starts it over.
+    // Open invites a riposte, which ends the hold (Down for the kind's downTime), and a counter-stagger ends it too
+    // (Staggered); Down invites neither. False, and nothing asked, for an enemy out of range or dead, another brain,
+    // or seconds NaN or <= 0.
+    FTCORE_API bool holdEnemy(std::size_t i, ArenaBrain brain, float seconds);
+    // Ends enemy i's hold at the start of the next tick with dt > 0 (it walks again: Approach). Nothing for an enemy
+    // that is not held then. Before a tick, the latest of holdEnemy and releaseEnemy for an enemy wins.
+    FTCORE_API void releaseEnemy(std::size_t i);
+    FTCORE_API bool enemyHeld(std::size_t i) const; // a hold is running (not one still waiting for its tick)
+    // Enemy i's hp never falls below hpFloor (0, the default: none; below 0 counts as 0), from now: a blow that would
+    // take it lower takes it to hpFloor (the event's amount is what it lost), so the enemy stays alive.
+    FTCORE_API void setEnemyHpFloor(std::size_t i, int hpFloor);
+    FTCORE_API int enemyHpFloor(std::size_t i) const;
+    // Every blow goes to `hook` with `user` before it applies (ArenaBlowHook); nullptr: none (every blow as it is).
+    FTCORE_API void setBlowHook(ArenaBlowHook hook, void* user);
+
 private:
     // The fight's state: the implementer's, fixed capacity only (copying a fight never allocates).
     // The rules are in ArenaFightImpl (ArenaFight.cpp), which reads and writes it directly.
     friend struct ArenaFightImpl;
 
     enum class Press : std::uint8_t { None, Light, Heavy, Dodge, Heal, Release }; // an action waiting in the input buffer
+    enum class HoldAsk : std::uint8_t { None, Hold, Release };                     // a host's hold request
 
     struct PlayerState {
         Vec2 pos;
@@ -681,6 +735,11 @@ private:
         float strafeLeft = 0.f;             // seconds until the strafe may change direction
         std::array<float, kMaxArenaMoves> cooldown{};
         bool readRight = false;             // this move was read right: the partner's counter is due
+        float holdFor = -1.f;               // a host's hold: seconds Open or Down lasts in place of the kind's; < 0: none
+        HoldAsk holdAsk = HoldAsk::None;    // the host's request waiting for the next tick ...
+        ArenaBrain holdBrain = ArenaBrain::Open; // ... and the hold it asks for
+        float holdSeconds = 0.f;
+        int hpFloor = 0;                    // the host's hp floor (0: none)
     };
 
     ArenaDef def_;
@@ -704,6 +763,8 @@ private:
     std::uint8_t readFoe_ = kArenaNobody;
     std::uint8_t readMove_ = 0;
     std::uint32_t readDeals_ = 0;           // deals since begin() / restart(): seeds the next deal
+    ArenaBlowHook blowHook_ = nullptr;      // the host's (begin() and restart() keep it)
+    void* blowUser_ = nullptr;
 };
 
 // Moves `bodies` the way a host with no walls would: each body at its output velocity for dt, then

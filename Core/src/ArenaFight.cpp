@@ -30,6 +30,7 @@ constexpr float kArenaAutoStand = 0.85f;   // it closes in to this share of its 
 constexpr int kArenaAutoReleaseAt = 50;    // it releases its Load from this much on an upright enemy in reach
 constexpr float kArenaAutoReadDelay = 0.2f; // it reads this long into a startup (half of a shorter one)
 constexpr std::uint64_t kArenaReadSeedStep = 0xA24BAED4963EE407ull; // spreads the deals of one fight over the seeds
+constexpr float kArenaMaxBlow = 1.0e9f;   // a host's scaled damage or poise damage stops here (it fits an int)
 constexpr float kArenaParkOffset = 1.5f;   // follower spots: metres outside the ring ...
 constexpr float kArenaParkSpacing = 2.0f;  // ... and metres between neighbours along its edge
 constexpr float kArenaSpawnGapRadii = 4.0f; // enemy start points: neighbours this many body radii apart along the arc
@@ -308,6 +309,7 @@ struct ArenaFightImpl {
         dt = step;
         t0 = fight.time_;
         t1 = t0 + dt;
+        applyHolds();
         stepPlayer(in);
         stepEnemies();
         if (fight.read_.dealt() && !readStillOpen()) closeRead(); // the active part began, or the move is gone
@@ -588,13 +590,16 @@ struct ArenaFightImpl {
         pl.pairPress = -1.0e9f;
         if (!alive(i) || foes[i].brain != ArenaBrain::Open) return;
         Enemy& foe = foes[i];
-        const int amount = std::min(static_cast<int>(fi.pairHits) * fi.light[0].damage, foe.hp);
-        foe.hp -= amount;
+        ArenaBlowRuling r;
+        if (!rule(ArenaEventType::CounterStagger, kArenaPlayer, id(i), 0, static_cast<int>(fi.pairHits) * fi.light[0].damage,
+                  def.enemies[i].poise, pl.pos, pl.facing, foe.pos, r))
+            return;
+        const int amount = lose(i, scaledDamage(static_cast<int>(fi.pairHits) * fi.light[0].damage, r.damage));
         stats.damageDealt += amount;
         ++stats.counterStaggers;
         emit(ArenaEventType::CounterStagger, kArenaPlayer, id(i), 0, amount, foe.pos);
         if (foe.hp <= 0) killEnemy(i);
-        else staggerEnemy(i);
+        else if (scaledPoise(1.f, r.poise) > 0.f) staggerEnemy(i); // a ruling that zeroes the poise keeps it up
     }
 
     // ---- Read ----
@@ -670,9 +675,11 @@ struct ArenaFightImpl {
         const float stacks = static_cast<float>(std::max(0, pl.readStacks - 1));
         const float power = fi.readPower * (1.f + std::max(0.f, fi.readStackPower) * stacks);
         const int damage = std::max(0, static_cast<int>(std::lround(power * static_cast<float>(fi.light[0].damage))));
-        ++stats.readCounters;
-        stats.readDamage +=
+        const int dealt =
             hitEnemy(i, damage, fi.readPoise, ArenaEventType::ReadCounter, static_cast<std::uint8_t>(pl.readStacks));
+        if (dealt < 0) return; // vetoed
+        ++stats.readCounters;
+        stats.readDamage += dealt;
     }
 
     void stepPlayer(const ArenaInput& in) {
@@ -853,12 +860,73 @@ struct ArenaFightImpl {
         emit(ArenaEventType::Staggered, kArenaPlayer, id(i), 0, 0, foe.pos);
     }
 
-    // Enemy i loses `damage` hp (Downed at 0), then `poise` poise (poiseHit). Reports `type` with the hp it lost and
-    // returns that.
+    // ---- host hooks ----
+
+    // The host's ruling on a blow (none without a hook): false when it is vetoed.
+    bool rule(ArenaEventType type, std::uint8_t source, std::uint8_t target, std::uint8_t move, int damage, float poise,
+              Vec2 from, Vec2 facing, Vec2 at, ArenaBlowRuling& r) const {
+        r = ArenaBlowRuling{};
+        if (!fight.blowHook_) return true;
+        ArenaBlow b;
+        b.type = type;
+        b.source = source;
+        b.target = target;
+        b.move = move;
+        b.damage = damage;
+        b.poise = poise;
+        b.from = from;
+        b.facing = facing;
+        b.at = at;
+        b.time = t1;
+        r = fight.blowHook_(fight.blowUser_, b);
+        return !r.veto;
+    }
+
+    static int scaledDamage(int damage, float scale) {
+        const float v = static_cast<float>(damage) * (scale > 0.f ? scale : 0.f); // NaN: 0
+        if (!(v > 0.f)) return 0;
+        return v >= kArenaMaxBlow ? static_cast<int>(kArenaMaxBlow) : static_cast<int>(std::lround(v));
+    }
+    static float scaledPoise(float poise, float scale) {
+        const float v = poise * (scale > 0.f ? scale : 0.f);
+        return v > 0.f ? std::min(v, kArenaMaxBlow) : 0.f;
+    }
+
+    // Enemy i loses up to `damage` hp, never below its floor; returns what it lost.
+    int lose(std::size_t i, int damage) {
+        Enemy& foe = foes[i];
+        const int amount = std::clamp(damage, 0, std::max(0, foe.hp - foe.hpFloor));
+        foe.hp -= amount;
+        return amount;
+    }
+
+    // The host's hold requests, at the start of a tick that advances (so its events land in this tick's output).
+    void applyHolds() {
+        for (std::size_t i = 0; i < n; ++i) {
+            Enemy& foe = foes[i];
+            const ArenaFight::HoldAsk ask = foe.holdAsk;
+            foe.holdAsk = ArenaFight::HoldAsk::None;
+            if (ask == ArenaFight::HoldAsk::None || !alive(i)) continue;
+            if (ask == ArenaFight::HoldAsk::Release) {
+                if (foe.holdFor < 0.f) continue;
+                foe.holdFor = -1.f;
+                foe.brain = ArenaBrain::Approach;
+                foe.stateTime = 0.f;
+                continue;
+            }
+            interrupt(i, foe.holdBrain); // a read move cut short brings the partner's counter, which may kill it
+            if (alive(i)) foe.holdFor = foe.holdSeconds;
+        }
+    }
+
+    // Enemy i loses `damage` hp (Downed at 0; never below its floor), then `poise` poise (poiseHit), as the host
+    // rules. Reports `type` with the hp it lost and returns that, or -1 when the host vetoes it.
     int hitEnemy(std::size_t i, int damage, float poise, ArenaEventType type, std::uint8_t move) {
         Enemy& foe = foes[i];
-        const int amount = std::min(damage, foe.hp);
-        foe.hp -= amount;
+        ArenaBlowRuling r;
+        if (!rule(type, kArenaPlayer, id(i), move, damage, poise, pl.pos, pl.facing, foe.pos, r)) return -1;
+        poise = scaledPoise(poise, r.poise);
+        const int amount = lose(i, scaledDamage(damage, r.damage));
         stats.damageDealt += amount;
         emit(type, kArenaPlayer, id(i), move, amount, foe.pos);
         if (foe.hp <= 0) killEnemy(i);
@@ -915,9 +983,15 @@ struct ArenaFightImpl {
         for (std::size_t k = 0; k < count; ++k) {
             const std::size_t i = reached[k];
             Enemy& foe = foes[i];
-            pl.hitMask = static_cast<std::uint8_t>(pl.hitMask | (1u << i));
-            const int amount = std::min(a.damage, foe.hp);
-            foe.hp -= amount;
+            pl.hitMask = static_cast<std::uint8_t>(pl.hitMask | (1u << i)); // spent, even when vetoed
+            // A Release adds the Load it spent, times releasePoise, to the poise damage.
+            const float poise = a.poiseDamage + (pl.action == ArenaAction::Release
+                                                     ? static_cast<float>(pl.releaseSpent) * fi.releasePoise
+                                                     : 0.f);
+            ArenaBlowRuling r;
+            if (!rule(ArenaEventType::Hit, kArenaPlayer, id(i), pl.move, a.damage, poise, pl.pos, pl.facing, foe.pos, r))
+                continue;
+            const int amount = lose(i, scaledDamage(a.damage, r.damage));
             ++stats.hits;
             stats.damageDealt += amount;
             emit(ArenaEventType::Hit, kArenaPlayer, id(i), pl.move, amount, foe.pos);
@@ -925,16 +999,14 @@ struct ArenaFightImpl {
                 killEnemy(i);
                 continue;
             }
-            if (riposte && foe.brain == ArenaBrain::Open) { // the riposte punishes the open enemy
+            if (riposte && foe.brain == ArenaBrain::Open) { // the riposte punishes the open enemy (and ends a hold)
                 foe.brain = ArenaBrain::Down;
                 foe.stateTime = 0.f;
+                foe.holdFor = -1.f;
                 ++stats.ripostes;
                 continue;
             }
-            // A Release adds the Load it spent, times releasePoise, to the poise damage.
-            poiseHit(i, a.poiseDamage + (pl.action == ArenaAction::Release
-                                             ? static_cast<float>(pl.releaseSpent) * fi.releasePoise
-                                             : 0.f));
+            poiseHit(i, scaledPoise(poise, r.poise));
         }
     }
 
@@ -952,6 +1024,7 @@ struct ArenaFightImpl {
         foe.brain = brain;
         foe.stateTime = 0.f;
         foe.stringEnd = t1;
+        foe.holdFor = -1.f;
         releaseToken(i);
         readCounter(i);
     }
@@ -1112,16 +1185,22 @@ struct ArenaFightImpl {
             }
             return;
         }
+        foe.hitPlayer = true; // connected: parried, blocked, landed or vetoed, it is spent
+        ArenaBlowRuling r;
+        if (!rule(ArenaEventType::Hit, source, kArenaPlayer, foe.move, a.damage, a.poiseDamage, foe.pos, foe.facing,
+                  pl.pos, r))
+            return;
+        const int damage = scaledDamage(a.damage, r.damage); // the ruling's damage: landed, chip and Load alike
+        const float poiseDamage = scaledPoise(a.poiseDamage, r.poise);
         const Vec2 toFoe = arenaUnit(arenaSub(foe.pos, pl.pos), pl.facing);
         const bool guarding = pl.action == ArenaAction::Guard && arenaDot(pl.facing, toFoe) >= fi.guardArcCos;
-        foe.hitPlayer = true; // connected: parried, blocked or landed, it is spent
         if (guarding && pl.parryLeft > 0.f && mv.parryable) {
             // No damage, no stamina cost: the enemy is open. The parry is the perfect guard: it stores the blow as Load.
             ++stats.parries;
             emit(ArenaEventType::Parried, source, kArenaPlayer, foe.move, 0, pl.pos);
             const std::uint8_t move = foe.move;
             interrupt(i, ArenaBrain::Open);
-            storeLoad(source, move, a.damage);
+            storeLoad(source, move, damage);
             pl.pairParry = t0;
             pl.pairFoe = source;
             tryPair();
@@ -1134,7 +1213,7 @@ struct ArenaFightImpl {
             ++stats.blocks;
             emit(ArenaEventType::Blocked, source, kArenaPlayer, foe.move,
                  static_cast<int>(std::lround(before - pl.stamina)), pl.pos);
-            const int chip = std::max(0, static_cast<int>(std::lround(a.damage * (1.f - fi.guardAbsorb))));
+            const int chip = std::max(0, static_cast<int>(std::lround(damage * (1.f - fi.guardAbsorb))));
             if (chip > 0) damagePlayer(source, chip, foe.move);
             if (pl.hp > 0 && pl.stamina <= 0.f) { // the block emptied the stamina: the guard breaks
                 ++stats.guardBreaks;
@@ -1147,16 +1226,16 @@ struct ArenaFightImpl {
             return;
         }
         ++stats.hitsTaken;
-        damagePlayer(source, a.damage, foe.move);
+        damagePlayer(source, damage, foe.move);
         if (pl.hp <= 0) return;
         // Poise: a player in hitstun or guard break is already down; `armor` ignores a share of it during the player's
         // own attack's startup and active parts.
-        if (pl.action == ArenaAction::Hitstun || pl.action == ArenaAction::GuardBreak || a.poiseDamage <= 0.f) return;
+        if (pl.action == ArenaAction::Hitstun || pl.action == ArenaAction::GuardBreak || poiseDamage <= 0.f) return;
         float share = 0.f;
         if (const ArenaAttack* own = attackOf(pl, fi)) {
             if (pl.actionTime < own->startup + own->active) share = std::clamp(own->armor, 0.f, 1.f);
         }
-        pl.poise -= a.poiseDamage * (1.f - share);
+        pl.poise -= poiseDamage * (1.f - share);
         pl.lastPoiseHit = t1;
         if (pl.poise <= 0.f) { // the poise broke: hitstun cancels the current action (a heal keeps its charge)
             pl.poise = fi.poise;
@@ -1256,13 +1335,15 @@ struct ArenaFightImpl {
     void recover(std::size_t i) {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
-        const float length = foe.brain == ArenaBrain::Staggered ? k.staggerTime
-                             : foe.brain == ArenaBrain::Open    ? k.openTime
-                                                                : k.downTime;
+        const float length = foe.holdFor >= 0.f                ? foe.holdFor // the host's hold
+                             : foe.brain == ArenaBrain::Staggered ? k.staggerTime
+                             : foe.brain == ArenaBrain::Open      ? k.openTime
+                                                                  : k.downTime;
         foe.stateTime += dt;
         if (foe.stateTime >= length) {
             foe.brain = ArenaBrain::Approach;
             foe.stateTime = 0.f;
+            foe.holdFor = -1.f;
         }
     }
 
@@ -1565,6 +1646,27 @@ bool ArenaFight::readOpen() const {
            foe.stateTime < def_.enemies[readFoe_].moves[readMove_].attack.startup;
 }
 int ArenaFight::readStacks() const { return player_.readStacks; }
+
+bool ArenaFight::holdEnemy(std::size_t i, ArenaBrain brain, float seconds) {
+    if (!enemyAlive(i) || (brain != ArenaBrain::Open && brain != ArenaBrain::Down) || !(seconds > 0.f)) return false;
+    EnemyState& foe = enemy_[i];
+    foe.holdAsk = HoldAsk::Hold;
+    foe.holdBrain = brain;
+    foe.holdSeconds = seconds;
+    return true;
+}
+void ArenaFight::releaseEnemy(std::size_t i) {
+    if (i < enemyCount_) enemy_[i].holdAsk = HoldAsk::Release;
+}
+bool ArenaFight::enemyHeld(std::size_t i) const { return enemyAlive(i) && enemy_[i].holdFor >= 0.f; }
+void ArenaFight::setEnemyHpFloor(std::size_t i, int hpFloor) {
+    if (i < enemyCount_) enemy_[i].hpFloor = std::max(0, hpFloor);
+}
+int ArenaFight::enemyHpFloor(std::size_t i) const { return i < enemyCount_ ? enemy_[i].hpFloor : 0; }
+void ArenaFight::setBlowHook(ArenaBlowHook hook, void* user) {
+    blowHook_ = hook;
+    blowUser_ = hook ? user : nullptr;
+}
 
 // ---- free functions ----
 
