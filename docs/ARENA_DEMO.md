@@ -268,10 +268,13 @@ closed:
 |---|---|---|---|
 | the Unbending | `stone_bearer` | `stone_ring` | `-Source=<path>/stone_bearer.glb -Dest=/Game/Bosses/StoneBearer -Face=0` |
 | the Kite-Mother | `kite_boss` | `kite_ring` | `-Source=<path>/kite_boss.glb -Dest=/Game/Bosses/KiteBoss -Face=0` |
+| the Dealer | `white_glove` | `stone_ring` with `-ArenaLineup=white_glove` | `-Source=<path>/white_glove.glb -Dest=/Game/Bosses/WhiteGlove -Face=0` |
 
 ```
 UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTImportCharacter <the import column> -NullRHI -unattended -nopause -nosplash
 ```
+
+The Unbending also needs its slab halves, which its Broke split puts in the fists: `UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTImportProp -Source=<path>/slab_halves.glb -Dest=/Game/Props/StoneBearerHalves -NullRHI -unattended -nopause -nosplash`.
 
 An import replaces what is there, so rerunning it after a boss's model changes is safe. Exit code 0 is a clean import (the
 log's "face bones" line is a warning for a boss, which has no human head).
@@ -283,6 +286,7 @@ Without the flag the lead is the first look (Devin in the main checkout).
 ```
 UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=stone_ring -ArenaLead=Devin
 UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=kite_ring -ArenaLead=Duy
+UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=stone_ring -ArenaLineup=white_glove -ArenaLead=Third
 ```
 
 `-ArenaStage=stone_ring` hosts `stone_bearer` and `-ArenaStage=kite_ring` hosts `kite_boss`; `-ArenaLineup=<kind>` fights a
