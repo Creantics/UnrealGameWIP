@@ -10,7 +10,9 @@ set(files
     include/ftcore/BeatFight.h src/BeatFight.cpp
     include/ftcore/BeatScreen.h src/BeatScreen.cpp)
 file(GLOB more RELATIVE "${CORE_DIR}" "${CORE_DIR}/include/ftcore/BeatBoss*.h" "${CORE_DIR}/src/BeatBoss*.cpp"
-    "${CORE_DIR}/include/ftcore/ArenaLoad*.h" "${CORE_DIR}/src/ArenaLoad*.cpp")
+    "${CORE_DIR}/include/ftcore/ArenaLoad*.h" "${CORE_DIR}/src/ArenaLoad*.cpp"
+    "${CORE_DIR}/include/ftcore/ArenaBoss*.h" "${CORE_DIR}/src/ArenaBoss*.cpp"
+    "${CORE_DIR}/include/ftcore/StoneBearer*.h" "${CORE_DIR}/src/StoneBearer*.cpp")
 list(APPEND files ${more})
 set(pattern "(ComboSequence|ComboGenerator|generateCombo)")
 set(problems "")
