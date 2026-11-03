@@ -1,4 +1,6 @@
 #include "ftcore/ArenaKindCrit.h"
+#include "ftcore/ArenaZone.h"
+#include "ftcore/WorldLayout.h"
 
 #include "AllocCounter.h"
 #include "TestAssets.h"
@@ -440,4 +442,103 @@ TEST_CASE("arena kind crit: a fight's worth of deals and blows allocates nothing
     CHECK(ftcore_test::allocStats().count == before);
     CHECK(sink > 0.0f);
     CHECK(crit.crits() > 0);
+}
+
+// ---- The shipped Dealer under the autopilot --------------------------------------------------------
+
+namespace {
+
+// The host's side of the hook, as FTArenaRunner plays it: the slot's window opened by its moves' starts, each blow
+// ruled on with the slot's facing from the last tick.
+struct DealerHost {
+    ArenaFight* fight = nullptr;
+    ArenaKindCrit crit;
+};
+
+ArenaBlowRuling ruleDealerBlow(void* user, const ArenaBlow& blow) {
+    DealerHost& host = *static_cast<DealerHost*>(user);
+    if (blow.target != 0) return ArenaBlowRuling();
+    return host.crit.rule(blow, 0, blow.at, host.fight->output().enemies[0].facing);
+}
+
+struct DealerRun {
+    ArenaPhase phase = ArenaPhase::NotStarted;
+    float time = 0.0f;
+    int staggers = 0;
+    int crits = 0;
+    int hp = 0;
+};
+
+// white_glove alone in the stone ring, as `Demo_Arena -ArenaStage=stone_ring -ArenaLineup=white_glove -ArenaLead=<lead>
+// -ArenaAutoPlay` plays it: the lead's kit, the zone fitted to the Dealer, the seam's hook.
+DealerRun playDealer(const char* lead, std::uint32_t seed) {
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena.json", text));
+    ArenaTable arena;
+    std::string error;
+    REQUIRE_MESSAGE(importArenaTable(text, arena, &error), error);
+    REQUIRE(ftcore_test::readProjectData("Field/worlds.json", text));
+    WorldTable worlds;
+    REQUIRE_MESSAGE(importWorldTable(text, worlds, &error), error);
+    REQUIRE(ftcore_test::readProjectData("Battle/arenas.json", text));
+    ArenaZoneTable zones;
+    REQUIRE_MESSAGE(importArenaZoneTable(text, arena, worlds, zones, &error), error);
+    REQUIRE(ftcore_test::readProjectData("Battle/arena_crit.json", text));
+    ArenaKindCritTable crits;
+    REQUIRE_MESSAGE(importArenaKindCrits(text, crits, &error), error);
+
+    const ArenaZoneSpec* spec = zones.find("stone_ring");
+    REQUIRE(spec);
+    ArenaDef def = arena.fallback;
+    def.fighter = arena.fighter(lead);
+    def.enemyCount = 0;
+    for (std::size_t e = 0; e < arena.enemyIds.size(); ++e)
+        if (arena.enemyIds[e] == "white_glove") {
+            def.enemies[0] = arena.enemies[e];
+            def.enemyKind[0] = static_cast<std::uint8_t>(e);
+            def.enemyCount = 1;
+        }
+    REQUIRE(def.enemyCount == 1);
+    def.attackers = 1;
+    ArenaZoneFit fit;
+    REQUIRE_MESSAGE(fitArenaZone(*spec, nullptr, def, fit, &error), error);
+    fit.apply(def);
+
+    ArenaFight fight;
+    DealerHost host;
+    host.fight = &fight;
+    host.crit.reset(*crits.find("white_glove"));
+    fight.setBlowHook(&ruleDealerBlow, &host);
+    fight.begin(def, fit.ring, fit.playerStart, fit.playerFacing, seed);
+    ArenaBodies bodies;
+    bodies.player = fight.playerStart();
+    bodies.enemies[0] = fight.enemyStart(0);
+    DealerRun run;
+    while (!fight.over() && fight.time() < 180.0f) {
+        const ArenaOutput& out = fight.tick(1.0f / 60.0f, fight.autopilot(), bodies);
+        arenaStep(fight, bodies, 1.0f / 60.0f, fit.zone);
+        for (const ArenaEvent& e : out.events) {
+            if (e.type == ArenaEventType::AttackStarted && e.source == 0) host.crit.onAttackStarted(e.move, fight.time(), def.enemies[0]);
+            if (e.type == ArenaEventType::Staggered && e.target == 0) ++run.staggers;
+        }
+    }
+    run.phase = fight.phase();
+    run.time = fight.time();
+    run.crits = host.crit.crits();
+    run.hp = fight.hp();
+    return run;
+}
+
+} // namespace
+
+// Its poise breaks a few times a fight, whoever fights it: the demo's seed (1), each lead's kit.
+TEST_CASE("arena kind crit: the shipped Dealer staggers under each lead's autopilot") {
+    for (const std::string lead : {"devin", "duy", "third"}) {
+        const DealerRun run = playDealer(lead.c_str(), 1);
+        MESSAGE(lead << ": " << std::string(run.phase == ArenaPhase::Victory ? "won" : "lost") << " in " << run.time << " s, hp " << run.hp
+                     << ", staggers " << run.staggers << ", crits " << run.crits);
+        CHECK_MESSAGE(run.phase == ArenaPhase::Victory, "Error: " << lead << "'s autopilot did not beat white_glove in 180 s");
+        CHECK_MESSAGE(run.staggers >= 2, "Error: white_glove staggered " << run.staggers << " times against " << lead);
+        CHECK(run.crits > 0);
+    }
 }
