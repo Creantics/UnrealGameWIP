@@ -104,6 +104,18 @@ void sbPedestal(JsonValue v, double bpm, PedestalTuning& p, std::vector<std::str
         errors.push_back("pedestal.releaseWindow: expected below half of pedestal.callEveryBeats");
 }
 
+void sbBreakable(JsonValue v, float pedestalAt, BreakableTuning& b, std::vector<std::string>& errors,
+                 std::vector<std::string>* warnings) {
+    sbUnknownKeys(v, "breakable", {"at"}, warnings);
+    const std::size_t before = errors.size();
+    sbNum(v, "breakable", "at", b.at, 0.0, 1.0, errors);
+    if (errors.size() == before && !(b.at > 0.0f && b.at < 1.0f))
+        errors.push_back("breakable.at: expected a number above 0 and below 1");
+    // pedestalAt is 0 when the pedestal was refused: the cross-check is then skipped.
+    if (errors.size() == before && pedestalAt > 0.0f && !(b.at > pedestalAt))
+        errors.push_back("breakable.at: expected above pedestal.at");
+}
+
 } // namespace
 
 bool importStoneBearer(std::string_view json, StoneBearerDef& out, std::string* error,
@@ -111,7 +123,7 @@ bool importStoneBearer(std::string_view json, StoneBearerDef& out, std::string* 
     out = StoneBearerDef{};
     std::vector<std::string> errors;
     std::string bossError;
-    if (!importArenaBoss(json, out.boss, &bossError, warnings, {"weight", "pedestal"})) {
+    if (!importArenaBoss(json, out.boss, &bossError, warnings, {"weight", "breakable", "pedestal"})) {
         std::size_t from = 0;
         while (from <= bossError.size()) {
             const std::size_t nl = std::min(bossError.find('\n', from), bossError.size());
@@ -128,9 +140,14 @@ bool importStoneBearer(std::string_view json, StoneBearerDef& out, std::string* 
             bpm.isNumber() && bpm.number() >= 40.0 && bpm.number() <= 240.0 ? bpm.number() : 0.0;
         if (const JsonValue v = root["weight"]; v.isObject()) sbWeight(v, out.weight, errors, warnings);
         else errors.push_back("weight: expected an object");
+        const std::size_t beforePedestal = errors.size();
         if (const JsonValue v = root["pedestal"]; v.isObject())
             sbPedestal(v, beatsPerMinute, out.pedestal, errors, warnings);
         else errors.push_back("pedestal: expected an object");
+        const float pedestalAt = errors.size() == beforePedestal ? out.pedestal.at : 0.0f;
+        if (const JsonValue v = root["breakable"]; v.isObject())
+            sbBreakable(v, pedestalAt, out.breakable, errors, warnings);
+        else errors.push_back("breakable: expected an object");
     }
     if (errors.empty()) return true;
     out = StoneBearerDef{};
@@ -151,6 +168,7 @@ void StoneBearer::begin(const StoneBearerDef& def, double now) {
     run_.begin(def.boss, now);
     weight_.reset(def.weight);
     pedestal_.reset(def.pedestal);
+    breakAt_ = ArenaHpTrigger{def.breakable.at};
     hpShare_ = 1.0f;
     nextCall_ = 0.0;
     recoverDue_ = false;
@@ -159,11 +177,12 @@ void StoneBearer::begin(const StoneBearerDef& def, double now) {
 // finish() reads the stack gains back from the run's events, so no call may drop one. The most a tick
 // emits: the run's phase change, a call and an answer per impact, the shift, two crit windows closing
 // (a long frame passes the old one's close and a new one's) and one opening, the load; up to three
-// events per stack change (one change per answer); and the pedestal's switch, its calls and the
-// recovery. A call adds at most four to a tick: a Crit and its shed (onHit), a block's or a lift's
-// stack change (onBlocked, onSoloLift), Invulnerable and Lifted (onRelease), or Broke (onStagger).
+// events per stack change (one change per answer); the hp break; and the pedestal's switch, its calls
+// and the recovery. A call adds at most four to a tick: a Crit and its shed (onHit), a block's or a
+// lift's stack change (onBlocked, onSoloLift), Invulnerable and Lifted (onRelease), or Broke
+// (onStagger; never a second one after the tick's hp break).
 constexpr std::size_t kSbTickEvents =
-    1 + 2 * kMaxCalledImpacts + 1 + 2 + 1 + 1 + 3 * kMaxCalledImpacts + 1 + kPedestalMaxCalls + 1;
+    1 + 2 * kMaxCalledImpacts + 1 + 2 + 1 + 1 + 3 * kMaxCalledImpacts + 1 + 1 + kPedestalMaxCalls + 1;
 static_assert(kSbTickEvents + 1 + 3 <= kMaxArenaBossEvents);
 
 void StoneBearer::weigh(int n, double at) {
@@ -233,6 +252,10 @@ const ArenaBossEvents& StoneBearer::finish(float* takenAtHit, bool* frozenAtHit)
 
 const ArenaBossEvents& StoneBearer::tick(double t) {
     run_.update(t, hpShare_);
+    // The hp break after the phase (PhaseChanged first) and before the pedestal (Broke before
+    // Invulnerable). Not a stagger: the live move plays on, and neither the freeze nor the pedestal stops
+    // it. Already broken by a Stagger, it does nothing.
+    if (breakAt_.update(hpShare_)) run_.breakNow();
     if (pedestal_.update(hpShare_, run_.now())) {
         run_.cancelMove();
         run_.push(

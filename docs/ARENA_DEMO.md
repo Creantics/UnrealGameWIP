@@ -241,7 +241,13 @@ ArenaFight body, hosted by `FFTStoneBearerHost` (`Source/ForgottenThird/FTStoneB
   third of the Load on the guest's call lifts it (floor off, Down for `downTime`). The boss offers no parries there, so a
   lead who reaches it with too little Load is topped up to one Release (`giveLoad`). CritOpened holds it Open until
   `until` (a riposte invites), CritClosed ends that;
-- a full intercept's Load (the marked throw's `LoadGained`) is given to the lead with `ArenaFight::giveLoad`.
+- a full intercept's Load (the marked throw's `LoadGained`) is given to the lead with `ArenaFight::giveLoad`;
+- the carried piece breaks (`Broke`, and the runner puts its halves in the fists) on the boss's first Stagger, or when its
+  hp share first falls to `breakable.at` (0.4), whichever comes first. The hp break cancels no move and comes even with
+  the poise frozen, so every fight that gets that far plays it.
+
+The kind's hp, poise, staggerTime and openTime come from the boss file (the kind's own values in `arena.json` are
+overwritten); the rest of the kind, `poiseDelay` among it, comes from `arena.json`.
 
 Its weak point (`nape` in the json, on the lower back) is the mesh socket `setstone`
 (`FFTStoneBearerHost::WeakPointSocket`); any marker or crit VFX uses that name.
@@ -417,7 +423,7 @@ each frame and handed to the fight on its next step, so no press is lost between
 At the end of every fight the log gets one line, ids and counts only, never text, as the beat screen logs its own ([BEAT_SCREEN.md](BEAT_SCREEN.md), "Log lines"). Core formats it into a fixed buffer (`ftcore::arenaResultLine`):
 
 ```
-Arena: VICTORY at <scene> beat <b> step <s> after <t> s, zone <zone>, kit <kit>, enemies <id>+<id>+<id>, <pilot> seed <n>, hp <h>/<max>, <x> hits, <y> taken, <b> blocks, <p> parries, <r> ripostes, <e> evades, <g> guard breaks, <h> heals, <l> releases, <o> overloads, <c>/<d> reads right, dealt <n>, took <n>, <r> restarts.
+Arena: VICTORY at <scene> beat <b> step <s> after <t> s, zone <zone>, kit <kit>, enemies <id>+<id>+<id>, <pilot> seed <n>, hp <h>/<max>, <x> hits, <y> taken, <b> blocks, <p> parries, <r> ripostes, <e> evades, <g> guard breaks, <s> staggers, <h> heals, <l> releases, <o> overloads, <c>/<d> reads right, dealt <n>, took <n>, <r> restarts.
 Arena: DEFEAT at <scene> beat <b> step <s> after <t> s, ...
 ```
 

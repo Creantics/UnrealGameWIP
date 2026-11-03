@@ -3847,6 +3847,8 @@ TEST_CASE("arena log: one line per fight, ids and counts only, like the beat scr
     CHECK(won.rfind("Arena: VICTORY at standalone beat 0 step 0 after ", 0) == 0);
     CHECK(contains(won, " s, zone sand_ring, kit devin, enemies brute+skirmisher+breaker, autoplay seed 3, hp "));
     CHECK(contains(won, "/150, "));
+    CHECK(contains(won, " guard breaks, "));
+    CHECK(contains(won, " staggers, "));
     CHECK(contains(won, " reads right, dealt "));
     CHECK(contains(won, ", 0 restarts."));
     CHECK(won.back() == '.');
@@ -3858,6 +3860,7 @@ TEST_CASE("arena log: one line per fight, ids and counts only, like the beat scr
     const std::string lost = resultLineOf(wave, table, false, ids);
     CHECK(lost.rfind("Arena: DEFEAT at SC-07 beat 4 step 2 after ", 0) == 0);
     CHECK(contains(lost, "idle seed 3, hp 0/150, 0 hits"));
+    CHECK(contains(lost, " guard breaks, 0 staggers, ")); // nobody hit anything: no poise broke
     const std::string builtIn = resultLineOf(defaultArenaDef(), ArenaTable{}, true, ids);
     CHECK(contains(builtIn, ", enemies built-in, "));
     // An id with a space or a comma can't break the line apart; a fight still running is a TIMEOUT.

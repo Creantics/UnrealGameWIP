@@ -32,8 +32,17 @@
 //   half-arc), x2.0. It opens for a move's `opens` seconds after every impact of an intercept move is
 //   Intercepted (3 s after the side blows, 4 s after the marked throw).
 //
-// * The breakable: the first Stagger breaks the carried piece, and each phase plays its broken table
-//   from then on (the doubled and halved blows).
+// * The breakable: the carried piece breaks once, on the first Stagger or the first time the boss's hp
+//   share falls to `breakable.at` (0.4), whichever comes first, and each phase plays its broken table
+//   from then on (the doubled and halved blows). The beat does not wait on the tuning:
+//     - a Stagger breaks it as ArenaBossRun::onStagger does: Broke names the move it cut, the live move
+//       is cancelled. A frozen poise or the pedestal loses the stagger, so it breaks nothing then;
+//     - the hp share breaks it in update() (ArenaBossRun::breakNow): not a stagger, so Broke names no
+//       move (kArenaBossNoMove) and the live move plays on. It breaks the piece even with the poise
+//       frozen: once the share is reached the beat always plays. On a frame that crosses a phase floor
+//       too, PhaseChanged comes first; on one that also reaches the pedestal's share (the loader keeps
+//       breakable.at above it), Broke comes before Invulnerable;
+//     - after either, the other does nothing (no second Broke).
 //
 // * The keep-out: the data's keepOut is a disc on the guest's spot at the arena's edge. The host clamps
 //   every arc, lane and area the boss swings with it (ArenaKeepOut), so nothing reaches the guest.
@@ -78,12 +87,14 @@
 // Data, after importArenaBoss's keys (ArenaBoss.h):
 //   "weight": { "cap": 5, "damagePerStack": 0.1, "defencePerStack": 0.1, "shockRingAt": 3,
 //               "poiseFreezeAt": 5, "guard": 1, "soloLift": 1, "interceptShed": 1, "critShed": 1 },
+//   "breakable": { "at": 0.4 },
 //   "pedestal": { "at": 0.25, "firstCallBeats": 4, "callEveryBeats": 4, "releaseWindow": 0.15,
 //                 "downTime": 3.0 }
 //   weight: cap 1..10; damagePerStack 0..0.5; defencePerStack 0..0.5 with cap x it below 1; shockRingAt
-//   and poiseFreezeAt 1..cap; guard, soloLift, interceptShed and critShed 0..5. pedestal: at in (0, 1);
-//   firstCallBeats 0..16; callEveryBeats 1..16; releaseWindow 0.02..0.5 s, below half the call period;
-//   downTime 0..10 s. Both objects are required; errors and warnings as importArenaBoss.
+//   and poiseFreezeAt 1..cap; guard, soloLift, interceptShed and critShed 0..5. breakable: at in (0, 1),
+//   above pedestal.at (the piece breaks before the boss climbs). pedestal: at in (0, 1); firstCallBeats
+//   0..16; callEveryBeats 1..16; releaseWindow 0.02..0.5 s, below half the call period; downTime 0..10 s.
+//   All three objects are required; errors and warnings as importArenaBoss.
 //
 // Nothing here allocates except importStoneBearer (load time).
 
@@ -194,9 +205,14 @@ private:
     double downUntil_ = -1.0e300;
 };
 
+struct BreakableTuning {
+    float at = 0.4f; // hp share that breaks the carried piece (once), if no Stagger broke it first
+};
+
 struct StoneBearerDef {
     ArenaBossDef boss;
     WeightTuning weight;
+    BreakableTuning breakable;
     PedestalTuning pedestal;
 };
 
@@ -255,6 +271,7 @@ private:
     ArenaBossRun run_{};
     WeightStacks weight_{};
     PedestalPhase pedestal_{};
+    ArenaHpTrigger breakAt_{};
     float hpShare_ = 1.0f;
     double nextCall_ = 0.0;
     bool recoverDue_ = false;
