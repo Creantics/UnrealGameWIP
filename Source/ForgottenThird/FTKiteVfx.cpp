@@ -7,7 +7,9 @@
 #include "FTVfxComponent.h"
 #include "ForgottenThird.h"
 #include "HAL/FileManager.h"
+#include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
+#include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "NiagaraSystem.h"
 
@@ -80,6 +82,12 @@ void FFTKiteVfx::Spawn(AFTArenaFighter* Figure)
 {
 	if (bSpawned || !Figure)
 	{
+		return;
+	}
+	// The OFF half of an OFF/ON capture: the fight runs the same, nothing plays.
+	if (FParse::Param(FCommandLine::Get(), TEXT("ArenaNoKiteFx")))
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: kite fx off (-ArenaNoKiteFx)."));
 		return;
 	}
 	ReadTuning();
@@ -176,9 +184,12 @@ void FFTKiteVfx::Feed(const ftcore::ArenaEvents& Events, const FFTKiteHost& Host
 				TellUntil = T + static_cast<double>(Move.attack.startup + Move.attack.active);
 			}
 		}
-		else if (E.type == ftcore::ArenaEventType::Hit && E.source == ftcore::kArenaPlayer && E.target == Slot)
+		else if ((E.type == ftcore::ArenaEventType::Hit || E.type == ftcore::ArenaEventType::CounterStagger
+					 || E.type == ftcore::ArenaEventType::ReadCounter)
+			&& E.source == ftcore::kArenaPlayer && E.target == Slot)
 		{
-			// The blow hook counted a crit for this blow, or it landed plain: the burst at the seam, or the puff where it struck.
+			// A lead blow (its own, or the partner's paired or Read counter). The blow hook counted a crit for it, or it
+			// landed plain: the burst at the seam, or the puff where it struck.
 			const int32 Crits = Host.GetCrits();
 			const bool bCrit = Crits != CritsSeen;
 			CritsSeen = Crits;

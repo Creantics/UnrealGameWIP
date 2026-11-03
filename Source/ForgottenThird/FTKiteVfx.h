@@ -10,7 +10,8 @@
 //   - open: the seam's glow, on the mesh's `seam` bone, for as long as the weak point is open (FFTKiteHost::IsOpen);
 //   - crit: a burst at the seam on each lead blow the host counted as a crit;
 //   - hit: a puff where a plain lead blow lands, on the kite's body edge toward the lead at the lead's chest height.
-// Each start logs one line, "Arena: kite fx <effect> at <fight time>".
+// Each start logs one line, "Arena: kite fx <effect> at <fight time>". `-ArenaNoKiteFx` leaves them all off (the OFF half of
+// an OFF/ON capture).
 //
 // Nothing here allocates after Spawn.
 
@@ -29,7 +30,7 @@ struct FFTKiteVfx
 	static constexpr const TCHAR* DataPath = TEXT("Data/Battle/arena_boss/kite_boss_vfx.json");
 
 	// Reads the json and hangs the effects on Figure, the kite's (a missing system leaves that effect off, with one warning).
-	// Again before Reset: nothing.
+	// Again before Reset: nothing. With -ArenaNoKiteFx: nothing, with one note.
 	void Spawn(AFTArenaFighter* Figure);
 	// One step. Events are this tick's, Host the kite's host (already stepped) and Fight the fight; KiteGround is the kite's
 	// position on the floor and LeadChest the lead's chest (world, cm).

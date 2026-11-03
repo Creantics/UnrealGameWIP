@@ -128,23 +128,21 @@ ftcore::ArenaBlowRuling FFTKiteHost::RuleLeadBlow(const ftcore::ArenaBlow& Blow)
 	return Ruling;
 }
 
-// ---- hook points: no effects yet; each leaves a note the runner logs and a later step spawns systems from ----
+// ---- hook points: each leaves a note the runner logs (the effects play in FFTKiteVfx, from the fight's events) ----
 
 void FFTKiteHost::OnTelegraph(std::uint8_t Move, double T)
 {
-	// The move's tell (its Niagara system, on the hand or string it comes from) goes here.
 	Note(FFTKiteNote::EKind::Telegraph, T).Move = Move;
 }
 
 void FFTKiteHost::OnCritOpened(double At, double Until)
 {
-	// The seam's glow goes here, on the socket WeakPointSocket, until Until.
 	Note(FFTKiteNote::EKind::CritOpened, At).Until = Until;
 }
 
 void FFTKiteHost::OnCritLanded(const ftcore::CritResult& Result, double At)
 {
-	// The crit's burst goes here, on the socket WeakPointSocket; Result.first flags the first of the opening.
+	// Result.first flags the first of the opening.
 	FFTKiteNote& N = Note(FFTKiteNote::EKind::CritLanded, At);
 	N.Point = Result.point;
 	N.Multiplier = Result.multiplier;
@@ -153,6 +151,5 @@ void FFTKiteHost::OnCritLanded(const ftcore::CritResult& Result, double At)
 
 void FFTKiteHost::OnHitTaken(bool bCrit, double At)
 {
-	// The hit reaction's effect (paper tearing, string snapping) goes here; a crit has its own, above.
 	Note(FFTKiteNote::EKind::HitTaken, At).bCrit = bCrit;
 }
