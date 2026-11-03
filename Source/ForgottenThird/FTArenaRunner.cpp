@@ -171,6 +171,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	PrepareStoneBearer();
 	Fight.begin(Def, Fit.ring, Fit.playerStart, Fit.playerFacing, Seed);
 	BeginStoneBearer();
+	BeginKindCrits();
 	SpawnFigures(Setup.Lead);
 	PutBodiesAtStart();
 	PlaceFigures(1.f);
@@ -235,6 +236,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 void UFTArenaRunner::End()
 {
 	EndStoneBearer();
+	EndKindCrits();
 	for (int32 I = 0; I < MaxEnemies; ++I)
 	{
 		if (EnemyFigures[I])
@@ -725,6 +727,10 @@ void UFTArenaRunner::StepFight()
 		// Onto its plinth: put there, not walked there.
 		PrevBodies.enemies[StoneBearer.GetSlot()] = Bodies.enemies[StoneBearer.GetSlot()];
 	}
+	if (bKindCritHook)
+	{
+		FeedKindCrits(Out.events);
+	}
 	HandleEvents(Out.events);
 	TrackParts(Out);
 	if (bBoss)
@@ -1102,6 +1108,7 @@ void UFTArenaRunner::Restart()
 {
 	Fight.restart();
 	BeginStoneBearer();
+	BeginKindCrits();
 	bResultLogged = false;
 	PutBodiesAtStart();
 	BeginNow = Now;
@@ -1272,4 +1279,140 @@ void UFTArenaRunner::LogStoneBearerNotes()
 			break;
 		}
 	}
+}
+
+const char* UFTArenaRunner::SlotKindId(int32 I) const
+{
+	const size_t KindIndex = Def.enemyKind[static_cast<size_t>(I)];
+	return KindIndex < Table.enemyIds.size() ? Table.enemyIds[KindIndex].c_str() : "";
+}
+
+void UFTArenaRunner::BeginKindCrits()
+{
+	for (int32 I = 0; I < MaxEnemies; ++I)
+	{
+		bKindCritSlot[I] = false;
+		bKindCritWasOpen[I] = false;
+	}
+	const bool bHadHook = bKindCritHook;
+	bKindCritHook = false;
+
+	if (!bKindCritTableRead)
+	{
+		bKindCritTableRead = true;
+		static constexpr const TCHAR* DataPath = TEXT("Data/Battle/arena_crit.json");
+		TArray<uint8> Bytes;
+		std::string LoadError;
+		std::vector<std::string> Warnings;
+		if (!FFileHelper::LoadFileToArray(Bytes, *(FPaths::ProjectDir() / DataPath)))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: couldn't read %s; no kind has weak points."), DataPath);
+		}
+		else if (!ftcore::importArenaKindCrits(FT::BytesAsText(Bytes), KindCritTable, &LoadError, &Warnings))
+		{
+			// The loader's errors name paths and keys only.
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s refused; no kind has weak points:\n%s"), DataPath, *FT::ToFString(LoadError));
+		}
+		for (const std::string& W : Warnings)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: arena_crit: %s"), *FT::ToFString(W));
+		}
+	}
+
+	// One blow hook per fight, and the stone_bearer's host owns it while it fights here (BeginStoneBearer runs first), so
+	// a line-up of a stone_bearer and a crit kind isn't supported yet: the crit kind fights without its weak points.
+	bool bAny = false;
+	for (int32 I = 0; I < static_cast<int32>(Def.enemyCount) && I < MaxEnemies; ++I)
+	{
+		const ftcore::ArenaKindCritDef* Entry = KindCritTable.find(SlotKindId(I));
+		if (!Entry)
+		{
+			continue;
+		}
+		if (StoneBearerSlot >= 0)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s in slot %d fights without its weak points beside the stone_bearer."), UTF8_TO_TCHAR(SlotKindId(I)), I);
+			continue;
+		}
+		ftcore::ArenaKindCrit& Crit = KindCrits[static_cast<size_t>(I)];
+		Crit.reset(*Entry);
+		if (!Crit.opensOn(Fight.def().enemies[static_cast<size_t>(I)]))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s in slot %d has no move playing \"%s\"; its weak points never open."), UTF8_TO_TCHAR(SlotKindId(I)), I,
+				UTF8_TO_TCHAR(Entry->opensAfterChars.data()));
+		}
+		bKindCritSlot[I] = true;
+		bAny = true;
+	}
+	if (bAny)
+	{
+		Fight.setBlowHook(&UFTArenaRunner::RuleKindCritBlow, this);
+		bKindCritHook = true;
+	}
+	else if (bHadHook && StoneBearerSlot < 0)
+	{
+		// The last fight's hook, not the stone_bearer's: nothing rules on this one.
+		Fight.setBlowHook(nullptr, nullptr);
+	}
+}
+
+void UFTArenaRunner::EndKindCrits()
+{
+	if (bKindCritHook)
+	{
+		Fight.setBlowHook(nullptr, nullptr);
+	}
+	bKindCritHook = false;
+	for (int32 I = 0; I < MaxEnemies; ++I)
+	{
+		bKindCritSlot[I] = false;
+		bKindCritWasOpen[I] = false;
+	}
+}
+
+void UFTArenaRunner::FeedKindCrits(const ftcore::ArenaEvents& Events)
+{
+	const double T = static_cast<double>(Fight.time());
+	for (const ftcore::ArenaEvent& E : Events)
+	{
+		if (E.type == ftcore::ArenaEventType::AttackStarted && E.source < ftcore::kMaxArenaEnemies && bKindCritSlot[E.source])
+		{
+			KindCrits[E.source].onAttackStarted(E.move, T, Fight.def().enemies[E.source]);
+		}
+	}
+	// The window opens at the end of the move's active part, later than its AttackStarted: logged when it does.
+	for (int32 I = 0; I < MaxEnemies; ++I)
+	{
+		if (!bKindCritSlot[I])
+		{
+			continue;
+		}
+		const ftcore::ArenaKindCrit& Crit = KindCrits[static_cast<size_t>(I)];
+		const bool bOpen = Crit.isOpen(T);
+		if (bOpen && !bKindCritWasOpen[I])
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %s seam open %.1f s"), UTF8_TO_TCHAR(SlotKindId(I)), Crit.opens());
+		}
+		bKindCritWasOpen[I] = bOpen;
+	}
+}
+
+ftcore::ArenaBlowRuling UFTArenaRunner::RuleKindCritBlow(void* User, const ftcore::ArenaBlow& Blow)
+{
+	UFTArenaRunner* Runner = static_cast<UFTArenaRunner*>(User);
+	if (!Runner || Blow.target >= ftcore::kMaxArenaEnemies || !Runner->bKindCritSlot[Blow.target])
+	{
+		return ftcore::ArenaBlowRuling();
+	}
+	ftcore::ArenaKindCrit& Crit = Runner->KindCrits[Blow.target];
+	const int Before = Crit.crits();
+	// ArenaBlow carries only the source's facing: the slot's is the last tick's output. Its position is Blow.at, the body
+	// as reported for this tick (ArenaEnemyOut has none), as the stone_bearer's host reads it.
+	const ftcore::ArenaBlowRuling Ruling = Crit.rule(Blow, Blow.target, Blow.at, Runner->Fight.output().enemies[Blow.target].facing);
+	if (Crit.crits() != Before)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %s crit x%.1f on %s, %d hp"), UTF8_TO_TCHAR(Runner->SlotKindId(Blow.target)), Crit.lastMultiplier(),
+			UTF8_TO_TCHAR(Crit.points().points[Crit.lastPoint()].idChars.data()), Crit.lastDamage());
+	}
+	return Ruling;
 }

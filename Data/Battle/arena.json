@@ -168,12 +168,12 @@
       "id": "white_glove",
       "hp": 1100, "poise": 100, "poiseDelay": 3, "staggerTime": 2, "openTime": 1.6, "downTime": 2.5,
       "walkSpeed": 1.1, "runSpeed": 2.4, "strafeSpeed": 1.0, "accel": 4, "turnRate": 2.2,
-      "preferredRange": 3, "runRange": 9, "attackDelay": 0.8, "bodyRadius": 0.5, "height": 2.7, "bpm": 104,
-      "look": { "clips": "Data/Anim/white_glove_clips.json", "scale": 1, "yawOffset": -90 },
+      "preferredRange": 4, "runRange": 9, "attackDelay": 0.8, "bodyRadius": 0.5, "height": 2.7, "bpm": 104,
+      "look": { "clips": "Data/Anim/white_glove_clips.json", "scale": 1, "yawOffset": 0 },
       "moves": [
-        { "clip": "glove_cut", "tell": "slash", "startup": 1.154, "active": 0.15, "recovery": 0.9, "range": 2.6, "arcCos": 0.4, "damage": 10, "poiseDamage": 12, "guardDamage": 15, "lunge": 0.5, "tracking": 2.0, "minRange": 0, "maxRange": 3.0, "weight": 1.0 },
-        { "clip": "palm_push", "tell": "thrust", "startup": 1.731, "active": 0.2, "recovery": 1.2, "range": 2.4, "arcCos": 0.5, "damage": 14, "poiseDamage": 18, "guardDamage": 22, "lunge": 0.8, "tracking": 1.5, "minRange": 0, "maxRange": 2.8, "weight": 0.8 },
-        { "clip": "bow_sweep", "tell": "sweep", "startup": 2.308, "active": 0.3, "recovery": 1.4, "range": 2.8, "arcCos": -0.2, "damage": 16, "poiseDamage": 20, "guardDamage": 24, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 3.2, "weight": 0.6, "cooldown": 6, "unblockable": true, "parryable": false }
+        { "clip": "deal", "tell": "shot", "startup": 2.308, "active": 0.2, "recovery": 1.6, "range": 12, "width": 0.5, "damage": 20, "poiseDamage": 24, "guardDamage": 0, "lunge": 0, "tracking": 0.4, "minRange": 0, "maxRange": 11.5, "cooldown": 8, "weight": 1.5, "unblockable": true, "parryable": false },
+        { "clip": "fan_of_blades", "tell": "sweep", "startup": 1.731, "active": 0.6, "recovery": 1.2, "range": 8, "arcCos": 0.5, "damage": 14, "poiseDamage": 14, "guardDamage": 18, "lunge": 0, "tracking": 1.0, "minRange": 0, "maxRange": 7.5, "cooldown": 4, "weight": 1.0, "parryable": false },
+        { "clip": "extra_elbow", "tell": "backhand", "startup": 1.154, "active": 0.2, "recovery": 1.0, "range": 3, "arcCos": 0.3, "damage": 13, "poiseDamage": 16, "guardDamage": 15, "lunge": 0.6, "tracking": 2.0, "minRange": 0, "maxRange": 3.0, "weight": 1.0 }
       ]
     },
     {

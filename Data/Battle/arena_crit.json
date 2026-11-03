@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "kinds": {
+    "white_glove": {
+      "opensAfter": "deal",
+      "opens": 1.6,
+      "weakPoints": {
+        "halfWidth": 0.5,
+        "points": [
+          { "id": "fingertip_seam", "x": -0.22, "y": 0.37, "radius": 0.08, "multiplier": 2.0, "facing": 0, "arc": 90 }
+        ]
+      }
+    }
+  }
+}

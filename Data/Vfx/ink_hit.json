@@ -1,0 +1,121 @@
+{
+  "name": "ink_hit",
+  "emitters": [
+    {
+      "name": "ink",
+      "bursts": [
+        {
+          "time": 0.0,
+          "count": 18
+        }
+      ],
+      "duration": 0.1,
+      "maxParticles": 24,
+      "lifetime": [
+        0.3,
+        0.6
+      ],
+      "shape": "sphere",
+      "radius": 0.08,
+      "speed": [
+        1.5,
+        4.0
+      ],
+      "gravity": [
+        0.0,
+        -9.0,
+        0.0
+      ],
+      "drag": 2.5,
+      "startSize": [
+        0.03,
+        0.08
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 1.0
+        },
+        {
+          "t": 1,
+          "v": 0.4
+        }
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            0.02,
+            0.02,
+            0.03,
+            1.0
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            0.02,
+            0.02,
+            0.03,
+            0.0
+          ]
+        }
+      ],
+      "blend": "alpha",
+      "sprite": "spark",
+      "stretch": 0.04,
+      "stretchMax": 4.0,
+      "softness": 0.0
+    },
+    {
+      "name": "smudge",
+      "bursts": [
+        {
+          "time": 0.0,
+          "count": 2
+        }
+      ],
+      "duration": 0.1,
+      "maxParticles": 4,
+      "lifetime": 0.35,
+      "shape": "point",
+      "startSize": [
+        0.3,
+        0.45
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 0.6
+        },
+        {
+          "t": 1,
+          "v": 1.4
+        }
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            0.05,
+            0.05,
+            0.06,
+            0.55
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            0.05,
+            0.05,
+            0.06,
+            0.0
+          ]
+        }
+      ],
+      "blend": "alpha",
+      "sprite": "puff",
+      "softness": 0.0
+    }
+  ]
+}

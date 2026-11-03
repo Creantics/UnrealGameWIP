@@ -17,6 +17,7 @@
 #include "Components/ActorComponent.h"
 
 #include "ftcore/ArenaFight.h"
+#include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
 #include "ftcore/BeatChoreo.h"
 
@@ -168,6 +169,12 @@ public:
 	// The first Arena boss's host while it fights here (null otherwise), and the Intercept button as the step took it.
 	const FFTStoneBearerHost* GetStoneBearer() const { return StoneBearer.IsActive() ? &StoneBearer : nullptr; }
 	bool IsInterceptHeld() const { return bInterceptHeld; }
+	// Enemy Index's weak points when its kind has an entry in arena_crit.json and they are on this fight (null otherwise):
+	// whether the window is open (at GetFight().time()), when it closes, and the crits landed, for the HUD and effects.
+	const ftcore::ArenaKindCrit* GetKindCrit(int32 Index) const
+	{
+		return (Index >= 0 && Index < MaxEnemies && bKindCritSlot[Index]) ? &KindCrits[static_cast<size_t>(Index)] : nullptr;
+	}
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -178,6 +185,15 @@ private:
 	void EndStoneBearer();
 	// The host's new notes, one log line each (ids, counts and outcome words only).
 	void LogStoneBearerNotes();
+	// Plain kinds' weak points (ftcore/ArenaKindCrit.h): Data/Battle/arena_crit.json read once, then on each begin and
+	// restart one ArenaKindCrit per slot whose kind has an entry, and the blow hook that rules on the lead's blows on them.
+	// After each step the slots' AttackStarted events open the windows; an opening and every crit are one log line each.
+	void BeginKindCrits();
+	void EndKindCrits();
+	void FeedKindCrits(const ftcore::ArenaEvents& Events);
+	static ftcore::ArenaBlowRuling RuleKindCritBlow(void* User, const ftcore::ArenaBlow& Blow);
+	// The kind id of slot I, as the table names it ("" for a def built in code).
+	const char* SlotKindId(int32 I) const;
 	// Dresses enemy slot I as a skeletal mesh when its kind has a look that loads (see AFTArenaGameMode's header).
 	void LoadSkin(int32 I);
 	// Picks and times slot I's clip from its Core state: the move's own clip through an attack, at the rate that lands its
@@ -282,4 +298,13 @@ private:
 	int32 StoneBearerSlot = -1;
 	float ZoneYaw = 0.f;
 	int32 StoneBearerLogged = 0;
+
+	// Plain kinds' weak points: the file (read once), each slot's crit and whether it is on, whether the window was open
+	// after the last step, and whether this runner holds the fight's blow hook for them.
+	ftcore::ArenaKindCritTable KindCritTable;
+	bool bKindCritTableRead = false;
+	std::array<ftcore::ArenaKindCrit, ftcore::kMaxArenaEnemies> KindCrits{};
+	bool bKindCritSlot[ftcore::kMaxArenaEnemies] = {};
+	bool bKindCritWasOpen[ftcore::kMaxArenaEnemies] = {};
+	bool bKindCritHook = false;
 };
