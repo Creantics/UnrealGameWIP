@@ -176,6 +176,10 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	SpawnFigures(Setup.Lead);
 	PutBodiesAtStart();
 	PlaceFigures(1.f);
+	if (KiteSlot >= 0)
+	{
+		KiteFx.Spawn(EnemyFigures[KiteSlot].Get());
+	}
 }
 
 void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
@@ -731,6 +735,8 @@ void UFTArenaRunner::StepFight()
 	if (Kite.IsActive())
 	{
 		Kite.AfterTick(Out.events);
+		KiteFx.Feed(Out.events, Kite, Fight, ToWorld(Bodies.enemies[static_cast<size_t>(KiteSlot)]),
+			PlayerFigure ? PlayerFigure->GetChest() : ToWorld(Bodies.player));
 	}
 	HandleEvents(Out.events);
 	TrackParts(Out);
@@ -1338,6 +1344,7 @@ void UFTArenaRunner::PrepareKite()
 
 void UFTArenaRunner::BeginKite()
 {
+	KiteFx.Stop();
 	if (KiteSlot < 0)
 	{
 		Kite.End();
@@ -1351,6 +1358,7 @@ void UFTArenaRunner::BeginKite()
 
 void UFTArenaRunner::EndKite()
 {
+	KiteFx.Reset();
 	Kite.End();
 	KiteSlot = -1;
 }
@@ -1368,7 +1376,7 @@ void UFTArenaRunner::LogKiteNotes()
 		switch (N.Kind)
 		{
 		case FFTKiteNote::EKind::Telegraph:
-			UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: kite %.2f move %d telegraph (stub, no effect)"), N.At, static_cast<int32>(N.Move));
+			UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: kite %.2f move %d telegraph"), N.At, static_cast<int32>(N.Move));
 			break;
 		case FFTKiteNote::EKind::CritOpened:
 			UE_LOG(LogForgottenThird, Log, TEXT("Arena: kite %.2f: crit opened until %.2f"), N.At, N.Until);
@@ -1381,7 +1389,7 @@ void UFTArenaRunner::LogKiteNotes()
 			UE_LOG(LogForgottenThird, Log, TEXT("Arena: kite %.2f: crit closed"), N.At);
 			break;
 		case FFTKiteNote::EKind::HitTaken:
-			UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: kite %.2f hit taken%s (stub, no effect)"), N.At, N.bCrit ? TEXT(", crit") : TEXT(""));
+			UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: kite %.2f hit taken%s"), N.At, N.bCrit ? TEXT(", crit") : TEXT(""));
 			break;
 		default:
 			break;

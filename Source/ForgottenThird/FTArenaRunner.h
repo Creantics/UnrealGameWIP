@@ -21,6 +21,7 @@
 #include "ftcore/BeatChoreo.h"
 
 #include "FTKiteHost.h"
+#include "FTKiteVfx.h"
 #include "FTStoneBearerHost.h"
 
 #include <array>
@@ -292,8 +293,9 @@ private:
 	int32 StoneBearerSlot = -1;
 	float ZoneYaw = 0.f;
 	int32 StoneBearerLogged = 0;
-	// The Kite-Mother's weak-point host, its slot in the line-up (-1 without one) and the notes logged so far.
+	// The Kite-Mother's weak-point host, its slot in the line-up (-1 without one), the notes logged so far and its effects.
 	FFTKiteHost Kite;
 	int32 KiteSlot = -1;
 	int32 KiteLogged = 0;
+	FFTKiteVfx KiteFx;
 };
