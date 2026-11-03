@@ -88,7 +88,7 @@ void kcEntry(JsonValue j, const std::string& path, ArenaKindCritDef& d, std::vec
         errors.push_back(path + ": expected an object");
         return;
     }
-    kcUnknownKeys(j, path, {"opensAfter", "opens", "weakPoints"}, warnings);
+    kcUnknownKeys(j, path, {"opensAfter", "opens", "weakPoints", "effects"}, warnings);
 
     const JsonValue clip = j["opensAfter"];
     if (!clip.isString() || !kcId(clip.string(), kMaxArenaClipId))
@@ -103,6 +103,28 @@ void kcEntry(JsonValue j, const std::string& path, ArenaKindCritDef& d, std::vec
         errors.push_back(path + ".opens: expected a number in 0.1..10");
     else
         d.opens = s;
+
+    const JsonValue fx = j["effects"];
+    if (fx.isObject()) {
+        const std::string fp = path + ".effects";
+        kcUnknownKeys(fx, fp, {"socket", "tell", "open", "crit", "hit"}, warnings);
+        const auto name = [&](const char* key, std::array<char, kMaxArenaKindCritId + 1>& outName) {
+            const JsonValue v = fx[key];
+            if (v.isAbsent()) return;
+            if (!v.isString() || !kcId(v.string(), kMaxArenaKindCritId))
+                errors.push_back(fp + "." + key + ": expected a name of 1.." + std::to_string(kMaxArenaKindCritId) +
+                                 " letters, digits, _ and -");
+            else
+                kcCopy(v.string(), outName);
+        };
+        name("socket", d.effects.socketChars);
+        name("tell", d.effects.tellChars);
+        name("open", d.effects.openChars);
+        name("crit", d.effects.critChars);
+        name("hit", d.effects.hitChars);
+    } else if (!fx.isAbsent()) {
+        errors.push_back(path + ".effects: expected an object");
+    }
 
     const std::string wp = path + ".weakPoints";
     if (importArenaWeakPoints(j["weakPoints"], wp, d.weakPoints, errors, warnings) && d.weakPoints.points.empty())

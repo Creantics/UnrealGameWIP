@@ -25,6 +25,9 @@
 
 #include <array>
 #include <string>
+#include <string_view>
+
+class UFTVfxComponent;
 
 #include "FTArenaRunner.generated.h"
 
@@ -192,6 +195,12 @@ private:
 	void EndKindCrits();
 	void FeedKindCrits(const ftcore::ArenaEvents& Events);
 	static ftcore::ArenaBlowRuling RuleKindCritBlow(void* User, const ftcore::ArenaBlow& Blow);
+	// The entry's effects (ArenaKindCritEffects) on each crit slot's figure, made once after the figures: the tell plays
+	// from the opening move's start until the window opens, the open effect while it is open, the crit and hit effects
+	// on the lead's blows on the slot. Hung from the entry's socket on a skinned figure (else its root).
+	void SpawnKindCritEffects();
+	void StopKindCritEffects();
+	UFTVfxComponent* MakeKindCritEffect(AFTArenaFighter* Figure, std::string_view Effect, std::string_view Socket);
 	// The kind id of slot I, as the table names it ("" for a def built in code).
 	const char* SlotKindId(int32 I) const;
 	// Dresses enemy slot I as a skeletal mesh when its kind has a look that loads (see AFTArenaGameMode's header).
@@ -226,6 +235,15 @@ private:
 	TObjectPtr<AStaticMeshActor> PlinthActor;
 	UPROPERTY()
 	TObjectPtr<AStaticMeshActor> KeepOutActor;
+	// Each crit slot's effects (see SpawnKindCritEffects), owned by its figure.
+	UPROPERTY()
+	TObjectPtr<UFTVfxComponent> KindCritTellFx[6]; // ftcore::kMaxArenaEnemies (a literal for UHT)
+	UPROPERTY()
+	TObjectPtr<UFTVfxComponent> KindCritOpenFx[6];
+	UPROPERTY()
+	TObjectPtr<UFTVfxComponent> KindCritCritFx[6];
+	UPROPERTY()
+	TObjectPtr<UFTVfxComponent> KindCritHitFx[6];
 	// What each skinned enemy plays: the clip (a table index; -2 none yet) and since when, the last hit reaction.
 	int32 SkinClip[ftcore::kMaxArenaEnemies];
 	double SkinSince[ftcore::kMaxArenaEnemies];
@@ -307,4 +325,7 @@ private:
 	bool bKindCritSlot[ftcore::kMaxArenaEnemies] = {};
 	bool bKindCritWasOpen[ftcore::kMaxArenaEnemies] = {};
 	bool bKindCritHook = false;
+	// The crit count each slot's effects have answered (ArenaKindCrit::crits), and whether its tell is playing.
+	int32 KindCritCritsSeen[ftcore::kMaxArenaEnemies] = {};
+	bool bKindCritTelling[ftcore::kMaxArenaEnemies] = {};
 };

@@ -1,6 +1,7 @@
 #include "FTArenaRunner.h"
 
 #include "Animation/AnimSequence.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -14,6 +15,7 @@
 #include "FTGameInstance.h"
 #include "FTPauseSubsystem.h"
 #include "FTText.h"
+#include "FTVfxComponent.h"
 #include "ForgottenThird.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/FileManager.h"
@@ -173,6 +175,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	BeginStoneBearer();
 	BeginKindCrits();
 	SpawnFigures(Setup.Lead);
+	SpawnKindCritEffects();
 	PutBodiesAtStart();
 	PlaceFigures(1.f);
 }
@@ -237,6 +240,14 @@ void UFTArenaRunner::End()
 {
 	EndStoneBearer();
 	EndKindCrits();
+	for (int32 I = 0; I < MaxEnemies; ++I)
+	{
+		// Owned by the figures, which go next.
+		KindCritTellFx[I] = nullptr;
+		KindCritOpenFx[I] = nullptr;
+		KindCritCritFx[I] = nullptr;
+		KindCritHitFx[I] = nullptr;
+	}
 	for (int32 I = 0; I < MaxEnemies; ++I)
 	{
 		if (EnemyFigures[I])
@@ -1289,10 +1300,12 @@ const char* UFTArenaRunner::SlotKindId(int32 I) const
 
 void UFTArenaRunner::BeginKindCrits()
 {
+	StopKindCritEffects();
 	for (int32 I = 0; I < MaxEnemies; ++I)
 	{
 		bKindCritSlot[I] = false;
 		bKindCritWasOpen[I] = false;
+		KindCritCritsSeen[I] = 0;
 	}
 	const bool bHadHook = bKindCritHook;
 	bKindCritHook = false;
@@ -1358,6 +1371,7 @@ void UFTArenaRunner::BeginKindCrits()
 
 void UFTArenaRunner::EndKindCrits()
 {
+	StopKindCritEffects();
 	if (bKindCritHook)
 	{
 		Fight.setBlowHook(nullptr, nullptr);
@@ -1377,7 +1391,30 @@ void UFTArenaRunner::FeedKindCrits(const ftcore::ArenaEvents& Events)
 	{
 		if (E.type == ftcore::ArenaEventType::AttackStarted && E.source < ftcore::kMaxArenaEnemies && bKindCritSlot[E.source])
 		{
-			KindCrits[E.source].onAttackStarted(E.move, T, Fight.def().enemies[E.source]);
+			if (KindCrits[E.source].onAttackStarted(E.move, T, Fight.def().enemies[E.source]) && KindCritTellFx[E.source])
+			{
+				KindCritTellFx[E.source]->Play();
+				bKindCritTelling[E.source] = true;
+			}
+		}
+		else if (E.type == ftcore::ArenaEventType::Hit && E.source == ftcore::kArenaPlayer && E.target < ftcore::kMaxArenaEnemies &&
+				 bKindCritSlot[E.target])
+		{
+			// The blow hook counted a crit for this blow, or it landed plain: the burst at the seam, or ink where it struck.
+			const int32 Crits = KindCrits[E.target].crits();
+			const bool bCrit = Crits != KindCritCritsSeen[E.target];
+			KindCritCritsSeen[E.target] = Crits;
+			if (bCrit && KindCritCritFx[E.target])
+			{
+				KindCritCritFx[E.target]->Play();
+			}
+			else if (!bCrit && KindCritHitFx[E.target])
+			{
+				const FVector At = ToWorld(E.at);
+				const AFTArenaFighter* Figure = EnemyFigures[E.target].Get();
+				KindCritHitFx[E.target]->SetWorldLocation(FVector(At.X, At.Y, Figure ? Figure->GetChest().Z : At.Z));
+				KindCritHitFx[E.target]->Play();
+			}
 		}
 	}
 	// The window opens at the end of the move's active part, later than its AttackStarted: logged when it does.
@@ -1392,6 +1429,19 @@ void UFTArenaRunner::FeedKindCrits(const ftcore::ArenaEvents& Events)
 		if (bOpen && !bKindCritWasOpen[I])
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %s seam open %.1f s"), UTF8_TO_TCHAR(SlotKindId(I)), Crit.opens());
+			if (bKindCritTelling[I] && KindCritTellFx[I])
+			{
+				KindCritTellFx[I]->Stop();
+			}
+			bKindCritTelling[I] = false;
+			if (KindCritOpenFx[I])
+			{
+				KindCritOpenFx[I]->Play();
+			}
+		}
+		else if (!bOpen && bKindCritWasOpen[I] && KindCritOpenFx[I])
+		{
+			KindCritOpenFx[I]->Stop();
 		}
 		bKindCritWasOpen[I] = bOpen;
 	}
@@ -1415,4 +1465,71 @@ ftcore::ArenaBlowRuling UFTArenaRunner::RuleKindCritBlow(void* User, const ftcor
 			UTF8_TO_TCHAR(Crit.points().points[Crit.lastPoint()].idChars.data()), Crit.lastDamage());
 	}
 	return Ruling;
+}
+
+void UFTArenaRunner::SpawnKindCritEffects()
+{
+	for (int32 I = 0; I < static_cast<int32>(Def.enemyCount) && I < MaxEnemies; ++I)
+	{
+		AFTArenaFighter* Figure = EnemyFigures[I].Get();
+		const ftcore::ArenaKindCritDef* Entry = bKindCritSlot[I] ? KindCritTable.find(SlotKindId(I)) : nullptr;
+		if (!Figure || !Entry || KindCritTellFx[I])
+		{
+			continue;
+		}
+		const ftcore::ArenaKindCritEffects& Fx = Entry->effects;
+		KindCritTellFx[I] = MakeKindCritEffect(Figure, Fx.tell(), Fx.socket());
+		KindCritOpenFx[I] = MakeKindCritEffect(Figure, Fx.open(), Fx.socket());
+		KindCritCritFx[I] = MakeKindCritEffect(Figure, Fx.crit(), Fx.socket());
+		// Where the blow lands, not the seam: put there on each hit.
+		KindCritHitFx[I] = MakeKindCritEffect(Figure, Fx.hit(), std::string_view());
+		if (KindCritHitFx[I])
+		{
+			KindCritHitFx[I]->SetUsingAbsoluteLocation(true);
+		}
+	}
+}
+
+UFTVfxComponent* UFTArenaRunner::MakeKindCritEffect(AFTArenaFighter* Figure, std::string_view Effect, std::string_view Socket)
+{
+	if (Effect.empty())
+	{
+		return nullptr;
+	}
+	UFTVfxComponent* Fx = NewObject<UFTVfxComponent>(Figure);
+	Fx->Effect = FName(*FT::ToFString(std::string(Effect)));
+	Fx->bPlayOnBeginPlay = false;
+	USkeletalMeshComponent* Skin = Figure->GetSkin();
+	const FName SocketName = Socket.empty() ? NAME_None : FName(*FT::ToFString(std::string(Socket)));
+	if (Skin)
+	{
+		if (!SocketName.IsNone() && !Skin->DoesSocketExist(SocketName))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: effect %s: the mesh has no bone or socket %s; it plays at the mesh's origin."),
+				*Fx->Effect.ToString(), *SocketName.ToString());
+		}
+		Fx->SetupAttachment(Skin, SocketName);
+	}
+	else
+	{
+		Fx->SetupAttachment(Figure->GetRootComponent());
+	}
+	Fx->RegisterComponent();
+	return Fx;
+}
+
+void UFTArenaRunner::StopKindCritEffects()
+{
+	for (int32 I = 0; I < MaxEnemies; ++I)
+	{
+		if (KindCritTellFx[I])
+		{
+			KindCritTellFx[I]->Stop();
+		}
+		if (KindCritOpenFx[I])
+		{
+			KindCritOpenFx[I]->Stop();
+		}
+		bKindCritTelling[I] = false;
+	}
 }

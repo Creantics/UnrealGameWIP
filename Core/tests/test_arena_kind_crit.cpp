@@ -228,6 +228,64 @@ TEST_CASE("arena kind crit data: the shipped file loads clean, white_glove's sea
     CHECK(p.x < 0.0f);
     CHECK(g->weakPoints.gates[0].facing == doctest::Approx(0.0));
     CHECK(g->weakPoints.gates[0].arc == doctest::Approx(90.0));
+    // Its effects hang from the seam's finger, and each is one of Data/Vfx's.
+    CHECK(g->effects.socket() == "middle_03_r");
+    for (const std::string_view fx : {g->effects.tell(), g->effects.open(), g->effects.crit(), g->effects.hit()}) {
+        CAPTURE(fx);
+        REQUIRE_FALSE(fx.empty());
+        std::string vfx;
+        CHECK(ftcore_test::readProjectData("Vfx/" + std::string(fx) + ".json", vfx));
+    }
+}
+
+TEST_CASE("arena kind crit loader: effects are optional names, each refused with its path") {
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena_crit.json", text));
+    const auto load = [](const std::string& json, std::string& error, std::vector<std::string>& warnings) {
+        ArenaKindCritTable table;
+        error.clear();
+        warnings.clear();
+        const bool ok = importArenaKindCrits(json, table, &error, &warnings);
+        return ok ? *table.find("white_glove") : ArenaKindCritDef{};
+    };
+    const auto swap = [&](std::string_view from, std::string_view to) {
+        std::string t = text;
+        const std::size_t at = t.find(from);
+        REQUIRE(at != std::string::npos);
+        t.replace(at, from.size(), to);
+        return t;
+    };
+    std::string error;
+    std::vector<std::string> warnings;
+    // Without the block, every name is empty.
+    // (From the comma before it: a checkout may have either line ending.)
+    const std::size_t key = text.find("\"effects\"");
+    REQUIRE(key != std::string::npos);
+    const std::size_t at = text.rfind(',', key);
+    REQUIRE(at != std::string::npos);
+    const std::size_t end = text.find('}', at);
+    std::string bare = text;
+    bare.erase(at, end + 1 - at);
+    const ArenaKindCritDef none = load(bare, error, warnings);
+    CHECK(error.empty());
+    CHECK(none.kind() == "white_glove");
+    CHECK(none.effects.socket().empty());
+    CHECK(none.effects.hit().empty());
+    // A missing key stays empty; the others load.
+    const ArenaKindCritDef noHit = load(swap(", \"hit\": \"ink_hit\"", ""), error, warnings);
+    CHECK(error.empty());
+    CHECK(noHit.effects.hit().empty());
+    CHECK(noHit.effects.crit() == "dealer_seam_crit");
+    load(swap("\"crit\": \"dealer_seam_crit\"", "\"crit\": \"seam crit\""), error, warnings);
+    CHECK(error.find("kinds.white_glove.effects.crit: expected a name of 1..31") != std::string::npos);
+    load(swap("\"socket\": \"middle_03_r\"", "\"socket\": 3"), error, warnings);
+    CHECK(error.find("kinds.white_glove.effects.socket:") != std::string::npos);
+    load(swap("\"effects\": {", "\"effects\": [ ], \"x\": {"), error, warnings);
+    CHECK(error.find("kinds.white_glove.effects: expected an object") != std::string::npos);
+    load(swap("\"hit\": \"ink_hit\"", "\"hit\": \"ink_hit\", \"miss\": \"x\""), error, warnings);
+    CHECK(error.empty());
+    REQUIRE(warnings.size() == 1);
+    CHECK(warnings[0] == "kinds.white_glove.effects: unknown key: miss");
 }
 
 // ---- The window and the ruling ---------------------------------------------------------------------
