@@ -596,7 +596,7 @@ struct ArenaBlowRuling {
 // one tick: by enemy index). It may read the fight's getters and call holdEnemy and releaseEnemy (they count from
 // the next tick), setEnemyHpFloor (it counts for this blow already) and setBlowHook (from the next blow). tick,
 // begin and restart called from inside it do nothing (tick only returns the last output). A copy of a fight copies
-// the hook and its user pointer.
+// the hook and its user pointer (a copy made inside the hook ticks as any other).
 using ArenaBlowHook = ArenaBlowRuling (*)(void* user, const ArenaBlow& blow);
 
 class ArenaFight {
@@ -744,7 +744,7 @@ private:
         float strafeLeft = 0.f;             // seconds until the strafe may change direction
         std::array<float, kMaxArenaMoves> cooldown{};
         bool readRight = false;             // this move was read right: the partner's counter is due
-        float holdFor = -1.f;               // a host's hold: seconds Open or Down lasts in place of the kind's; < 0: none
+        float holdFor = -1.f;               // a host's hold: seconds Open or Down lasts (not the kind's); < 0: none
         HoldAsk holdAsk = HoldAsk::None;    // the host's request waiting for the next tick ...
         ArenaBrain holdBrain = ArenaBrain::Open; // ... and the hold it asks for
         float holdSeconds = 0.f;
@@ -773,7 +773,15 @@ private:
     std::uint8_t readMove_ = 0;
     std::uint32_t readDeals_ = 0;           // deals since begin() / restart(): seeds the next deal
     ArenaBlowHook blowHook_ = nullptr;      // the host's (begin() and restart() keep it)
-    bool inHook_ = false;                   // the blow hook is running: tick, begin and restart do nothing
+    // The blow hook is running: tick, begin and restart do nothing. A copy starts clear (its hook isn't running),
+    // and assigning to a fight keeps its own.
+    struct HookFlag {
+        bool on = false;
+        HookFlag() = default;
+        HookFlag(const HookFlag&) {}
+        HookFlag& operator=(const HookFlag&) { return *this; }
+    };
+    HookFlag inHook_;
     void* blowUser_ = nullptr;
 };
 

@@ -4034,11 +4034,12 @@ TEST_CASE("arena hooks: a hold cuts a live move at the next tick, lasts its seco
         rig.runFor(1.1f);
         CHECK(rig.out().enemies[0].brain != ArenaBrain::Down); // downTime 1 s
     }
-    {   // asked from inside the blow hook, a hold waits for the next tick
+    {   // asked from inside the blow hook, a hold waits for the next tick; a release from outside ends it
         struct Holder {
             ArenaFight* fight = nullptr;
             static ArenaBlowRuling hook(void* user, const ArenaBlow& b) {
-                if (b.source == kArenaPlayer) static_cast<Holder*>(user)->fight->holdEnemy(b.target, ArenaBrain::Down, 1.f);
+                if (b.source == kArenaPlayer)
+                    static_cast<Holder*>(user)->fight->holdEnemy(b.target, ArenaBrain::Down, kForever);
                 return ArenaBlowRuling{};
             }
         };
@@ -4053,6 +4054,38 @@ TEST_CASE("arena hooks: a hold cuts a live move at the next tick, lasts its seco
         rig.tick();
         CHECK(rig.out().enemies[0].brain == ArenaBrain::Down);
         CHECK(rig.fight.enemyHeld(0));
+        rig.fight.setBlowHook(nullptr, nullptr);
+        rig.runFor(2.f); // past downTime
+        CHECK(rig.fight.enemyHeld(0));
+        rig.fight.releaseEnemy(0);
+        rig.tick();
+        CHECK_FALSE(rig.fight.enemyHeld(0));
+        CHECK(rig.out().enemies[0].brain != ArenaBrain::Down);
+    }
+    {   // a hold asked for an enemy the same blow kills is dropped; the other enemy fights on
+        struct Holder {
+            ArenaFight* fight = nullptr;
+            static ArenaBlowRuling hook(void* user, const ArenaBlow& b) {
+                if (b.source == kArenaPlayer)
+                    static_cast<Holder*>(user)->fight->holdEnemy(b.target, ArenaBrain::Open, 1.f);
+                return ArenaBlowRuling{};
+            }
+        };
+        ArenaEnemyKind frail = dummyKind();
+        frail.hp = 5;
+        Rig rig(ruleFighter(), {frail, dummyKind()});
+        rig.put(1, -10.f, 0.f);
+        Holder holder;
+        holder.fight = &rig.fight;
+        rig.fight.setBlowHook(&Holder::hook, &holder);
+        rig.in.light = true;
+        for (int t = 0; t < 30 && !rig.find(ArenaEventType::Hit); ++t) rig.tick();
+        REQUIRE_FALSE(rig.fight.enemyAlive(0));
+        rig.tick();
+        CHECK_FALSE(rig.fight.enemyHeld(0));
+        CHECK(rig.out().enemies[0].brain == ArenaBrain::Dead);
+        CHECK_FALSE(rig.fight.enemyHeld(1));
+        CHECK(rig.fight.phase() == ArenaPhase::Fighting);
     }
 }
 
@@ -4205,6 +4238,30 @@ TEST_CASE("arena hooks: the blow hook scales an enemy's blow, landed, blocked or
         const Logged* broke = rig.find(ArenaEventType::Staggered);
         REQUIRE(broke);
         CHECK(broke->event.target == kArenaPlayer);
+    }
+    {   // scaled past anything: the player loses what hp it has, and a broken poise comes back whole
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.put(0, 1.5f, 0.f);
+        BlowRecorder rec;
+        rec.ruling = ruling(1.0e30f, std::numeric_limits<float>::infinity());
+        rig.fight.setBlowHook(&BlowRecorder::hook, &rec);
+        rig.run(40);
+        const Logged* hit = rig.find(ArenaEventType::Hit);
+        REQUIRE(hit);
+        CHECK(hit->event.amount == 100);
+        CHECK(rig.fight.hp() == 0);
+        CHECK(rig.fight.stats().damageTaken == 100);
+        CHECK(rig.fight.phase() == ArenaPhase::Defeat);
+    }
+    {   // an endless poise scale breaks the player's poise, which comes back whole (no inf or NaN left behind)
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.put(0, 1.5f, 0.f);
+        BlowRecorder rec;
+        rec.ruling = ruling(0.f, std::numeric_limits<float>::infinity());
+        rig.fight.setBlowHook(&BlowRecorder::hook, &rec);
+        rig.run(40);
+        REQUIRE(rig.find(ArenaEventType::Staggered));
+        CHECK(rig.fight.poise() == doctest::Approx(30.f));
     }
     {   // blocked: the chip is the ruled damage's, 30 x (1 - 0.75) = 7.5, rounded to 8
         Rig rig(ruleFighter(), {hitterKind(bite)});
@@ -4390,6 +4447,19 @@ TEST_CASE("arena hooks: an hp floor keeps an enemy alive through any blow until 
         rig.fight.setEnemyHpFloor(1, 50);
         CHECK(rig.fight.enemyHpFloor(1) == 0);
     }
+    {   // a riposte stops at the floor, and still downs the open enemy
+        Rig rig(ruleFighter(), {dummyKind()});
+        rig.fight.setEnemyHpFloor(0, 90);
+        CHECK(rig.fight.holdEnemy(0, ArenaBrain::Open, kForever));
+        rig.tick();
+        rig.in.light = true;
+        CHECK(rig.tick().player.action == ArenaAction::Riposte);
+        rig.run(12);
+        REQUIRE(rig.find(ArenaEventType::Hit));
+        CHECK(rig.find(ArenaEventType::Hit)->event.amount == 10);
+        CHECK(rig.fight.enemyHp(0) == 90);
+        CHECK(rig.out().enemies[0].brain == ArenaBrain::Down);
+    }
     {   // the partner's counter stops at the floor too
         Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
         rig.fight.setEnemyHpFloor(0, 90);
@@ -4439,7 +4509,7 @@ TEST_CASE("arena hooks: restart and begin clear holds and floors, and keep the b
 }
 
 TEST_CASE("arena: a kind of kMaxArenaMoves moves plays a string of all of them") {
-    // A boss move of n impacts is n chained moves; the arena boss shipped now needs 20.
+    // A boss move of n impacts is n chained moves: a boss list of 15 moves and 20 impacts needs 20.
     static_assert(kMaxArenaMoves >= 20, "room for the chained impacts of an arena boss");
     ArenaEnemyKind k = hitterKind(swing(0.05f, 0.05f, 0.f, 2.f, 1));
     k.moveCount = static_cast<std::uint8_t>(kMaxArenaMoves);
@@ -4679,3 +4749,73 @@ TEST_CASE("arena hooks: a counter-stagger ends a host's hold, and a ruled parry'
         CHECK(rig.fight.overloaded());
     }
 }
+
+TEST_CASE("arena hooks: a hold the hook asks while holds apply waits a tick, and a copy made in the hook is live") {
+    {   // enemy 0's read move is cut by a hold; ruling on the counter, the hook holds enemy 1: that waits a tick
+        struct Host {
+            ArenaFight* fight = nullptr;
+            static ArenaBlowRuling hook(void* user, const ArenaBlow& b) {
+                if (b.type == ArenaEventType::ReadCounter)
+                    static_cast<Host*>(user)->fight->holdEnemy(1, ArenaBrain::Down, kForever);
+                return ArenaBlowRuling{};
+            }
+        };
+        Rig rig(sturdyFighter(), {readKind(), dummyKind()});
+        rig.put(0, 1.5f, 0.f);
+        rig.put(1, -10.f, 0.f);
+        Host host;
+        host.fight = &rig.fight;
+        rig.fight.setBlowHook(&Host::hook, &host);
+        REQUIRE(untilDealt(rig));
+        REQUIRE(rig.fight.readFoe() == 0);
+        rig.in.read = static_cast<std::int8_t>(rig.fight.readCards().correct());
+        rig.tick();
+        CHECK(rig.fight.holdEnemy(0, ArenaBrain::Open, kForever));
+        rig.tick();
+        REQUIRE(rig.find(ArenaEventType::ReadCounter));
+        CHECK(rig.fight.enemyHeld(0));
+        CHECK_FALSE(rig.fight.enemyHeld(1));
+        CHECK(rig.out().enemies[1].brain != ArenaBrain::Down);
+        rig.tick();
+        CHECK(rig.fight.enemyHeld(1));
+        CHECK(rig.out().enemies[1].brain == ArenaBrain::Down);
+    }
+    {   // a fight copied or assigned inside the hook is not stuck in it
+        struct Host {
+            ArenaFight* fight = nullptr;
+            ArenaFight* assigned = nullptr;
+            bool copyTicked = false;
+            static ArenaBlowRuling hook(void* user, const ArenaBlow& b) {
+                Host& h = *static_cast<Host*>(user);
+                if (b.source != kArenaPlayer) return ArenaBlowRuling{};
+                ArenaFight copy(*h.fight);
+                const float before = copy.time();
+                copy.tick(kDt, ArenaInput{}, ArenaBodies{});
+                h.copyTicked = copy.time() > before;
+                *h.assigned = *h.fight;
+                return ArenaBlowRuling{};
+            }
+        };
+        Rig rig(ruleFighter(), {dummyKind()});
+        ArenaFight assigned;
+        Host host;
+        host.fight = &rig.fight;
+        host.assigned = &assigned;
+        rig.fight.setBlowHook(&Host::hook, &host);
+        rig.in.light = true;
+        rig.run(20);
+        REQUIRE(rig.find(ArenaEventType::Hit));
+        CHECK(host.copyTicked);
+        assigned.setBlowHook(nullptr, nullptr);
+        const float before = assigned.time();
+        assigned.tick(kDt, ArenaInput{}, ArenaBodies{});
+        CHECK(assigned.time() > before);
+        assigned.restart();
+        CHECK(assigned.stats().restarts == 1);
+    }
+}
+
+// The bigger move cap is fixed storage: these ceilings make the next bump a deliberate one (MSVC x64 now: ArenaDef
+// 17824 bytes, ArenaFight 23592).
+static_assert(sizeof(ArenaDef) <= 20 * 1024, "ArenaDef grew: check kMaxArenaMoves and the enemy kinds");
+static_assert(sizeof(ArenaFight) <= 28 * 1024, "ArenaFight grew: check kMaxArenaMoves and the Read pool");

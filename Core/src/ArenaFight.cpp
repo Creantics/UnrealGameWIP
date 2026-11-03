@@ -590,11 +590,12 @@ struct ArenaFightImpl {
         pl.pairPress = -1.0e9f;
         if (!alive(i) || foes[i].brain != ArenaBrain::Open) return;
         Enemy& foe = foes[i];
+        const int damage = static_cast<int>(fi.pairHits) * fi.light[0].damage;
         ArenaBlowRuling r;
-        if (!rule(ArenaEventType::CounterStagger, kArenaPlayer, id(i), 0, static_cast<int>(fi.pairHits) * fi.light[0].damage,
-                  def.enemies[i].poise, pl.pos, pl.facing, foe.pos, r))
+        if (!rule(ArenaEventType::CounterStagger, kArenaPlayer, id(i), 0, damage, def.enemies[i].poise, pl.pos,
+                  pl.facing, foe.pos, r))
             return;
-        const int amount = lose(i, scaledDamage(static_cast<int>(fi.pairHits) * fi.light[0].damage, r.damage));
+        const int amount = lose(i, scaledDamage(damage, r.damage));
         stats.damageDealt += amount;
         ++stats.counterStaggers;
         emit(ArenaEventType::CounterStagger, kArenaPlayer, id(i), 0, amount, foe.pos);
@@ -878,9 +879,9 @@ struct ArenaFightImpl {
         b.facing = facing;
         b.at = at;
         b.time = t1;
-        fight.inHook_ = true;
+        fight.inHook_.on = true;
         r = fight.blowHook_(fight.blowUser_, b);
-        fight.inHook_ = false;
+        fight.inHook_.on = false;
         return !r.veto;
     }
 
@@ -904,10 +905,21 @@ struct ArenaFightImpl {
 
     // The host's hold requests, at the start of a tick that advances (so its events land in this tick's output).
     void applyHolds() {
+        // Every request is taken first: one a blow hook makes while these apply (a cut read move's counter) waits for
+        // the next tick, whichever enemy it is for.
+        struct Ask {
+            ArenaFight::HoldAsk ask = ArenaFight::HoldAsk::None;
+            ArenaBrain brain = ArenaBrain::Open;
+            float seconds = 0.f;
+        };
+        std::array<Ask, kMaxArenaEnemies> asks{};
+        for (std::size_t i = 0; i < n; ++i) {
+            asks[i] = Ask{foes[i].holdAsk, foes[i].holdBrain, foes[i].holdSeconds};
+            foes[i].holdAsk = ArenaFight::HoldAsk::None;
+        }
         for (std::size_t i = 0; i < n; ++i) {
             Enemy& foe = foes[i];
-            const ArenaFight::HoldAsk ask = foe.holdAsk;
-            foe.holdAsk = ArenaFight::HoldAsk::None;
+            const ArenaFight::HoldAsk ask = asks[i].ask;
             if (ask == ArenaFight::HoldAsk::None || !alive(i)) continue;
             if (ask == ArenaFight::HoldAsk::Release) {
                 if (foe.holdFor < 0.f) continue;
@@ -916,8 +928,8 @@ struct ArenaFightImpl {
                 foe.stateTime = 0.f;
                 continue;
             }
-            interrupt(i, foe.holdBrain); // a read move cut short brings the partner's counter, which may kill it
-            if (alive(i)) foe.holdFor = foe.holdSeconds;
+            interrupt(i, asks[i].brain); // a read move cut short brings the partner's counter, which may kill it
+            if (alive(i)) foe.holdFor = asks[i].seconds;
         }
     }
 
@@ -991,7 +1003,8 @@ struct ArenaFightImpl {
                                                      ? static_cast<float>(pl.releaseSpent) * fi.releasePoise
                                                      : 0.f);
             ArenaBlowRuling r;
-            if (!rule(ArenaEventType::Hit, kArenaPlayer, id(i), pl.move, a.damage, poise, pl.pos, pl.facing, foe.pos, r))
+            if (!rule(ArenaEventType::Hit, kArenaPlayer, id(i), pl.move, a.damage, poise, pl.pos, pl.facing, foe.pos,
+                      r))
                 continue;
             const int amount = lose(i, scaledDamage(a.damage, r.damage));
             ++stats.hits;
@@ -1568,7 +1581,7 @@ struct ArenaFightImpl {
 // ---- ArenaFight ----
 
 void ArenaFight::begin(const ArenaDef& d, const ArenaRing& where, Vec2 playerPos, Vec2 playerFacing, std::uint32_t seed) {
-    if (inHook_) return;
+    if (inHook_.on) return;
     def_ = d;
     // A def built in code may say anything; hold it to the capacities.
     def_.enemyCount = static_cast<std::uint8_t>(std::clamp<int>(def_.enemyCount, 1, static_cast<int>(kMaxArenaEnemies)));
@@ -1604,13 +1617,13 @@ void ArenaFight::begin(const ArenaDef& d, const ArenaRing& where, Vec2 playerPos
 }
 
 void ArenaFight::restart() {
-    if (inHook_ || phase_ == ArenaPhase::NotStarted) return;
+    if (inHook_.on || phase_ == ArenaPhase::NotStarted) return;
     ++stats_.restarts;
     ArenaFightImpl(*this).reset();
 }
 
 const ArenaOutput& ArenaFight::tick(float dt, const ArenaInput& input, const ArenaBodies& bodies) {
-    if (inHook_) return out_;
+    if (inHook_.on) return out_;
     ArenaFightImpl(*this).tick(dt, input, bodies);
     return out_;
 }
@@ -1898,7 +1911,7 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //   enemy     hp 1..100000; poise (0, 100000]; poiseDelay, staggerTime, openTime, downTime, attackDelay 0..10;
 //             walkSpeed, runSpeed, strafeSpeed 0..50; turnRate (0, 100]; preferredRange (0, 100];
 //             runRange 0..100 and at least preferredRange; bodyRadius (0, 5]; height (0, 30] metres, optional
-//             (see arenaEnemyHeight); moves 1..24 (kMaxArenaMoves); accel 0..1000; bpm (0, 300], optional (see above);
+//             (see arenaEnemyHeight); moves 1..kMaxArenaMoves; accel 0..1000; bpm (0, 300], optional (see above);
 //             look, optional, the host's skinned figure for it: { "clips": a path in Data/ of 1..95 characters,
 //             "hover" 0..30 m, "scale" (0, 100], "yawOffset" -360..360 degrees } (clips required)
 //             at most 254 kinds in the file (ArenaDef::enemyKind holds an index, kArenaNoKind is 255)
