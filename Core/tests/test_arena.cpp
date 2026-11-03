@@ -4851,7 +4851,7 @@ TEST_CASE("arena hooks: a hold the hook asks while holds apply waits a tick, and
 }
 
 // The bigger move cap is fixed storage: these ceilings make the next bump a deliberate one (MSVC x64 now: ArenaDef
-// 17824 bytes, ArenaFight 23592).
+// 17824 bytes, ArenaFight 23600).
 static_assert(sizeof(ArenaDef) <= 20 * 1024, "ArenaDef grew: check kMaxArenaMoves and the enemy kinds");
 static_assert(sizeof(ArenaFight) <= 28 * 1024, "ArenaFight grew: check kMaxArenaMoves and the Read pool");
 
@@ -4888,4 +4888,164 @@ TEST_CASE("arena hooks: a Release's spent Load is in the poise the hook sees and
         REQUIRE(rig.fight.enemyAlive(0));
         CHECK_FALSE(rig.fight.holdEnemy(0, ArenaBrain::Open, 1.f));
     }
+}
+
+TEST_CASE("arena hooks: giveLoad stores Load now, clamps it, and the next tick reports it as a parry's") {
+    {   // before begin(): nothing
+        ArenaFight fight;
+        CHECK(fight.giveLoad(50) == 0);
+        CHECK(fight.load() == 0);
+    }
+    {   // stored at once, reported on the next tick; the parries' stat stays theirs
+        Rig rig(ruleFighter(), {dummyKind()});
+        CHECK(rig.fight.giveLoad(40) == 40);
+        CHECK(rig.fight.load() == 40);
+        CHECK(rig.fight.output().player.load == 40);
+        CHECK(rig.fight.output().events.count == 0);
+        rig.tick();
+        REQUIRE(rig.count(ArenaEventType::LoadStored) == 1);
+        const ArenaEvent& e = rig.find(ArenaEventType::LoadStored)->event;
+        CHECK(e.source == kArenaNobody);
+        CHECK(e.target == kArenaPlayer);
+        CHECK(e.move == 0);
+        CHECK(e.amount == 40);
+        CHECK(rig.count(ArenaEventType::Overloaded) == 0);
+        CHECK(rig.fight.stats().loadStored == 0);
+        rig.run(5);
+        CHECK(rig.count(ArenaEventType::LoadStored) == 1); // reported once
+        CHECK(rig.fight.giveLoad(0) == 0);
+        CHECK(rig.fight.giveLoad(-30) == 0);
+        CHECK(rig.fight.load() == 40);
+    }
+    {   // clamped at the cap; gifts before a tick make one LoadStored; filling it overloads once
+        Rig rig(ruleFighter(), {dummyKind()});
+        CHECK(rig.fight.giveLoad(30) == 30);
+        CHECK(rig.fight.giveLoad(std::numeric_limits<int>::max()) == kMaxLoad - 30);
+        CHECK(rig.fight.load() == kMaxLoad);
+        CHECK(rig.fight.overloaded());
+        CHECK(rig.fight.output().player.overloaded);
+        CHECK(rig.fight.stats().overloads == 1); // counted as it fills
+        CHECK(rig.fight.giveLoad(5) == 0);
+        rig.tick(0.f); // a refresh reports it too
+        REQUIRE(rig.count(ArenaEventType::LoadStored) == 1);
+        CHECK(rig.find(ArenaEventType::LoadStored)->event.amount == kMaxLoad);
+        REQUIRE(rig.count(ArenaEventType::Overloaded) == 1);
+        CHECK(rig.find(ArenaEventType::Overloaded)->event.amount == kMaxLoad);
+        CHECK(rig.fight.stats().overloads == 1);
+        rig.run(5);
+        CHECK(rig.count(ArenaEventType::LoadStored) == 1);
+        CHECK(rig.count(ArenaEventType::Overloaded) == 1);
+        rig.in.light = true; // overloaded: the light is refused, as after parries
+        rig.tick();
+        CHECK(rig.out().player.action != ArenaAction::Light);
+    }
+    {   // given Load opens the Release and is spent by it: the gift is reported first in that tick
+        Rig rig(ruleFighter(), {dummyKind()});
+        CHECK(rig.fight.giveLoad(kMaxLoad) == kMaxLoad);
+        rig.in.release = true;
+        const ArenaOutput& out = rig.tick();
+        REQUIRE(out.events.count >= 3);
+        CHECK(out.events.items[0].type == ArenaEventType::LoadStored);
+        CHECK(out.events.items[1].type == ArenaEventType::Overloaded);
+        std::size_t released = 0;
+        while (released < out.events.count && out.events.items[released].type != ArenaEventType::Released) ++released;
+        REQUIRE(released < out.events.count); // after the gift's two
+        CHECK(out.events.items[released].amount == kMaxLoad);
+        CHECK(rig.fight.load() == 0);
+        CHECK_FALSE(rig.fight.overloaded());
+    }
+    {   // a gauge a gift filled: a parry after it stores nothing and overloads nothing again
+        Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 30))});
+        rig.fight.giveLoad(kMaxLoad);
+        parryRun(rig, 40);
+        REQUIRE(rig.count(ArenaEventType::Parried) == 1);
+        CHECK(rig.count(ArenaEventType::LoadStored) == 1); // the gift's
+        CHECK(rig.count(ArenaEventType::Overloaded) == 1);
+        CHECK(rig.fight.stats().overloads == 1);
+        CHECK(rig.fight.stats().loadStored == 0);
+        CHECK(rig.fight.load() == kMaxLoad);
+    }
+    {   // restart and begin drop it, reported or not
+        Rig rig(ruleFighter(), {dummyKind()});
+        rig.fight.giveLoad(20);
+        rig.fight.restart();
+        CHECK(rig.fight.load() == 0);
+        rig.fight.giveLoad(20);
+        rig.fight.begin(rig.def, rig.fight.ring(), Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+        CHECK(rig.fight.load() == 0);
+        rig.run(3);
+        CHECK(rig.count(ArenaEventType::LoadStored) == 0);
+        rig.fight.giveLoad(kMaxLoad); // a fill counts at once and stays counted through a restart
+        rig.fight.restart();
+        CHECK(rig.fight.stats().overloads == 1);
+        CHECK_FALSE(rig.fight.overloaded());
+        rig.run(3);
+        CHECK(rig.count(ArenaEventType::Overloaded) == 0);
+    }
+    {   // the fight over: nothing
+        Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 200))});
+        rig.put(0, 1.5f, 0.f);
+        rig.run(40);
+        REQUIRE(rig.fight.phase() == ArenaPhase::Defeat);
+        CHECK(rig.fight.giveLoad(50) == 0);
+        CHECK(rig.fight.load() == 0);
+    }
+    {   // from inside the blow hook: stored at once and reported in this tick, with the blow
+        struct Giver {
+            ArenaFight* fight = nullptr;
+            int calls = 0;
+            int given = 0;
+            int loadSeen = -1;
+            static ArenaBlowRuling hook(void* user, const ArenaBlow&) {
+                Giver& g = *static_cast<Giver*>(user);
+                ++g.calls;
+                g.given += g.fight->giveLoad(25);
+                g.loadSeen = g.fight->load();
+                return ArenaBlowRuling{};
+            }
+        };
+        Rig rig(ruleFighter(), {dummyKind()});
+        Giver giver;
+        giver.fight = &rig.fight;
+        rig.fight.setBlowHook(&Giver::hook, &giver);
+        rig.in.light = true;
+        rig.run(20);
+        REQUIRE(giver.calls >= 1);
+        CHECK(giver.given == 25 * giver.calls);
+        CHECK(giver.loadSeen == 25 * giver.calls);
+        const Logged* hit = rig.find(ArenaEventType::Hit);
+        const Logged* stored = rig.find(ArenaEventType::LoadStored);
+        REQUIRE(hit);
+        REQUIRE(stored);
+        CHECK(stored->tick == hit->tick);
+        CHECK(stored->event.amount == 25);
+        CHECK(rig.count(ArenaEventType::LoadStored) == giver.calls);
+    }
+}
+
+TEST_CASE("arena hooks: giveLoad inside the blow hook fills the gauge and overloads in that tick") {
+    struct Filler {
+        ArenaFight* fight = nullptr;
+        static ArenaBlowRuling hook(void* user, const ArenaBlow&) {
+            static_cast<Filler*>(user)->fight->giveLoad(kMaxLoad);
+            return ArenaBlowRuling{};
+        }
+    };
+    Rig rig(ruleFighter(), {dummyKind()});
+    Filler filler;
+    filler.fight = &rig.fight;
+    rig.fight.setBlowHook(&Filler::hook, &filler);
+    rig.in.light = true;
+    rig.run(20);
+    const Logged* hit = rig.find(ArenaEventType::Hit);
+    const Logged* full = rig.find(ArenaEventType::Overloaded);
+    REQUIRE(hit);
+    REQUIRE(full);
+    CHECK(full->tick == hit->tick);
+    CHECK(full->event.amount == kMaxLoad);
+    CHECK(rig.count(ArenaEventType::Overloaded) == 1);
+    CHECK(rig.count(ArenaEventType::LoadStored) == 1);
+    CHECK(rig.fight.stats().overloads == 1);
+    CHECK(rig.fight.overloaded());
+    CHECK(rig.out().player.overloaded);
 }

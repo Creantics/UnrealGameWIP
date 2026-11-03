@@ -302,6 +302,11 @@ struct ArenaFightImpl {
         }
         pl.pos = bodies.player;
         for (std::size_t i = 0; i < n; ++i) foes[i].pos = bodies.enemies[i];
+        if (pl.giftLoad > 0 || pl.giftFilled) { // the host's giveLoad since the last tick
+            reportGift(pl.giftLoad, pl.giftFilled);
+            pl.giftLoad = 0;
+            pl.giftFilled = false;
+        }
         if (!(step > 0.f)) { // only refresh
             fillOutput();
             return;
@@ -1278,6 +1283,29 @@ struct ArenaFightImpl {
         }
     }
 
+    // The host's Load (giveLoad): stored, counted and shown now. Inside the blow hook its events join this tick's;
+    // otherwise they wait for the next tick, which reports them first.
+    int giveLoad(int amount) {
+        const bool was = pl.gauge.overloaded();
+        const int stored = pl.gauge.store(amount);
+        const bool filled = !was && pl.gauge.overloaded();
+        if (filled) ++stats.overloads;
+        out.player.load = pl.gauge.value;
+        out.player.overloaded = pl.gauge.overloaded();
+        if (fight.inHook_.on) {
+            reportGift(stored, filled);
+        } else {
+            pl.giftLoad += stored;
+            pl.giftFilled = pl.giftFilled || filled;
+        }
+        return stored;
+    }
+
+    void reportGift(int stored, bool filled) {
+        if (stored > 0) emit(ArenaEventType::LoadStored, kArenaNobody, kArenaPlayer, 0, stored, pl.pos);
+        if (filled) emit(ArenaEventType::Overloaded, kArenaPlayer, kArenaPlayer, 0, pl.gauge.value, pl.pos);
+    }
+
     void damagePlayer(std::uint8_t source, int damage, std::uint8_t move) {
         const int amount = std::min(damage, pl.hp);
         pl.hp -= amount;
@@ -1687,6 +1715,10 @@ int ArenaFight::enemyHpFloor(std::size_t i) const { return i < enemyCount_ ? ene
 void ArenaFight::setBlowHook(ArenaBlowHook hook, void* user) {
     blowHook_ = hook;
     blowUser_ = hook ? user : nullptr;
+}
+int ArenaFight::giveLoad(int amount) {
+    if (phase_ != ArenaPhase::Fighting) return 0;
+    return ArenaFightImpl(*this).giveLoad(amount);
 }
 
 // ---- free functions ----
