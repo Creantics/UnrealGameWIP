@@ -392,8 +392,9 @@ bool AFTArenaFighter::SplitCarried(FName HideSlot, TConstArrayView<FFTCarriedPie
 		}
 	}
 
-	// Each part was modelled where it sat at rest, in the mesh's own space: move its centre to the hand and keep how it
-	// was turned against the hand's rest pose, so the clip that swings the hand swings it.
+	// Each part was modelled where it sits in its hand at rest, in the mesh's own space: turned about its centre and moved
+	// there by the piece's tweak, then held at that place against the hand's rest pose, so the clip that swings the hand
+	// swings it.
 	const FReferenceSkeleton& Ref = Mesh->GetRefSkeleton();
 	for (const FFTCarriedPiece& Piece : Split)
 	{
@@ -406,8 +407,9 @@ bool AFTArenaFighter::SplitCarried(FName HideSlot, TConstArrayView<FFTCarriedPie
 		}
 		const FTransform Hand = FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, Bone);
 		const FVector Centre = Part->GetBounds().Origin;
-		const FTransform InHand = FTransform(FQuat::Identity, -Centre) * FTransform(Hand.GetRotation().Inverse())
-			* FTransform(Piece.Turn.Quaternion(), Piece.OffsetMeters * 100.0);
+		const FTransform Rest = FTransform(FQuat::Identity, -Centre)
+			* FTransform(Piece.Turn.Quaternion(), Centre + Piece.OffsetMeters * 100.0);
+		const FTransform InHand = Rest * Hand.Inverse();
 		UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(this);
 		C->SetStaticMesh(Part);
 		C->SetCollisionEnabled(ECollisionEnabled::NoCollision);

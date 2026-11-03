@@ -83,10 +83,10 @@ struct FFTArenaPose
 // One part of a skinned figure's carried piece after it splits (AFTArenaFighter::SplitCarried).
 struct FFTCarriedPiece
 {
-	FString Mesh;                           // a static mesh's object path
+	FString Mesh;                           // a static mesh's object path, modelled where it sits in the hand at rest
 	FName Bone;                             // the hand it goes into
-	FVector OffsetMeters = FVector::ZeroVector; // from the bone, along its axes
-	FRotator Turn = FRotator::ZeroRotator;  // in the bone's frame
+	FVector OffsetMeters = FVector::ZeroVector; // a tweak, along the mesh's axes
+	FRotator Turn = FRotator::ZeroRotator;  // a tweak about the part's centre, in the mesh's axes
 };
 
 UCLASS()
@@ -126,9 +126,9 @@ public:
 	// drawn as shapes or its mesh has no such name.
 	bool GetSkinPoint(FName Name, FVector& Out) const;
 	// A skinned figure's carried piece splits: the mesh's sections drawn with material slot HideSlot go, and each piece
-	// (a static mesh modelled where it sat on the figure at rest) goes into the hand of its bone, its centre at the bone
-	// plus OffsetMeters along the bone's axes, turned by Turn there. Once a figure; false when it isn't skinned or already
-	// split. A piece that doesn't load is skipped with a warning.
+	// (a static mesh modelled where it sits in its hand at rest, in the mesh's own space) is held by the bone from there,
+	// after its Turn and OffsetMeters tweak. Once a figure; false when it isn't skinned or already split. A piece that
+	// doesn't load is skipped with a warning.
 	bool SplitCarried(FName HideSlot, TConstArrayView<FFTCarriedPiece> Split);
 	// Undoes SplitCarried (a fight begun again): the piece whole on the figure, the parts gone.
 	void MendCarried();
