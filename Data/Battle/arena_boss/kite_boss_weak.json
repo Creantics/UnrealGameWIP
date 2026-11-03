@@ -3,7 +3,7 @@
   "weakPoints": {
     "halfWidth": 0.5,
     "points": [
-      { "id": "seam", "x": 0.0, "y": 0.7088, "radius": 0.06, "multiplier": 2.0, "facing": 0, "arc": 60 }
+      { "id": "seam", "x": 0.0, "y": 0.7365, "radius": 0.06, "multiplier": 2.0, "facing": 0, "arc": 60 }
     ]
   }
 }
