@@ -9,7 +9,8 @@
 // Core judges, the host moves. The runner steps the fight with an accumulator (at most 8 steps a frame), the step the Core
 // tests and the balance check use, and moves the bodies with ftcore::arenaStep, which keeps every body inside the zone and
 // out of its obstacles. The figures are placed between the last two steps, turned to Core's facings and posed from Core's
-// actions; a skinned enemy's clip is picked and timed from Core's state (DriveSkin).
+// actions; a skinned enemy's clip is picked and timed from Core's state (DriveSkin). The first Arena boss's effects
+// (FFTArenaBossVfx) are played from the same state: its parts, the blows on it and its host's notes.
 //
 // The keys, the camera and the flags are as docs/ARENA_DEMO.md and AFTArenaGameMode list them.
 
@@ -20,6 +21,7 @@
 #include "ftcore/ArenaZone.h"
 #include "ftcore/BeatChoreo.h"
 
+#include "FTArenaBossVfx.h"
 #include "FTStoneBearerHost.h"
 
 #include <array>
@@ -176,8 +178,13 @@ private:
 	void PrepareStoneBearer();
 	void BeginStoneBearer();
 	void EndStoneBearer();
-	// The host's new notes, one log line each (ids, counts and outcome words only).
+	// The host's new notes, one log line each (ids, counts and outcome words only); a crit's burst.
 	void LogStoneBearerNotes();
+	// The boss's effects: its attack part going From -> To (its tell through the startup, its impact as it turns active),
+	// a blow landing on it (E: Hit, CounterStagger or ReadCounter), and where its weak point is now.
+	void BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 From, uint8 To);
+	void BossHitVfx(const ftcore::ArenaEvent& E);
+	FVector BossWeakPoint() const;
 	// Dresses enemy slot I as a skeletal mesh when its kind has a look that loads (see AFTArenaGameMode's header).
 	void LoadSkin(int32 I);
 	// Picks and times slot I's clip from its Core state: the move's own clip through an attack, at the rate that lands its
@@ -210,6 +217,9 @@ private:
 	TObjectPtr<AStaticMeshActor> PlinthActor;
 	UPROPERTY()
 	TObjectPtr<AStaticMeshActor> KeepOutActor;
+	// The stone_bearer's effects: telegraph, impact, hit chips, crit burst and the open weak point's glow.
+	UPROPERTY()
+	FFTArenaBossVfx BossVfx;
 	// What each skinned enemy plays: the clip (a table index; -2 none yet) and since when, the last hit reaction.
 	int32 SkinClip[ftcore::kMaxArenaEnemies];
 	double SkinSince[ftcore::kMaxArenaEnemies];
@@ -282,4 +292,5 @@ private:
 	int32 StoneBearerSlot = -1;
 	float ZoneYaw = 0.f;
 	int32 StoneBearerLogged = 0;
+	mutable bool bWeakPointWarned = false; // the mesh has no weak-point bone (warned once)
 };

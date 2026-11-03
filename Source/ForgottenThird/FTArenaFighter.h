@@ -113,6 +113,9 @@ public:
 	// Where the HUD hangs this figure's markers: above its head, and its chest.
 	FVector GetAnchor() const;
 	FVector GetChest() const;
+	// Where a skinned figure's bone or socket Name is now, in the world (effects hang there). False when the figure is
+	// drawn as shapes or its mesh has no such name.
+	bool GetSkinPoint(FName Name, FVector& Out) const;
 	float GetHeight() const { return Height; }
 	const FLinearColor& GetBaseColor() const { return BaseColor; }
 

@@ -1,0 +1,17 @@
+{
+  "effects": {
+    "tell": { "effect": "stone_tell", "speedScale": 1.0, "shapeScale": 1.0 },
+    "impact": { "effect": "stone_impact", "speedScale": 1.0, "shapeScale": 1.0 },
+    "chips": { "effect": "stone_chips", "speedScale": 1.0, "shapeScale": 1.0 },
+    "crit": { "effect": "crit_burst", "speedScale": 1.0, "shapeScale": 1.0 },
+    "glow": { "effect": "weak_glow", "speedScale": 1.0, "shapeScale": 1.0 }
+  },
+  "lift": 0.05,
+  "calledAhead": 1.2,
+  "calledSide": 1.8,
+  "reachShare": 0.8,
+  "laneMarks": 3,
+  "areaScale": 2.5,
+  "surface": 0.9,
+  "weakDepth": 0.85
+}

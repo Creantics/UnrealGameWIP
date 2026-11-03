@@ -55,6 +55,18 @@ struct FFTStoneBearerNote
 	ftcore::PedestalRelease Release = ftcore::PedestalRelease::NotHolding; // ReleaseMissed
 };
 
+// Where one of the boss's blows lands, for its effects (no rule reads it): From is the boss's spot, To the point.
+struct FFTStoneBearerStrike
+{
+	// Area: all round, To the area's centre (the boss's spot as the keep-out moves it). Lane: To the lane's end. Side: a
+	// called impact to one side of the boss. Arc: a share of the arc's reach ahead.
+	enum class EShape : std::uint8_t { Arc, Lane, Area, Side };
+
+	EShape Shape = EShape::Arc;
+	ftcore::Vec2 From;
+	ftcore::Vec2 To;
+};
+
 class FFTStoneBearerHost
 {
 public:
@@ -115,6 +127,17 @@ public:
 	const FFTStoneBearerNote& GetNoteBySerial(int32_t Serial) const { return Notes[static_cast<std::size_t>(Serial) % MaxNotes]; }
 	int32_t GetRefusals() const { return Refusals; }
 	int32_t GetIntercepts() const { return Intercepts; }
+
+	// ---- for the effects ----
+	// The use in progress was refused: it is cut and its blows are vetoed, so nothing of it is drawn.
+	bool UseRefused() const { return bUseRefused; }
+	// Where arena move Move of the boss lands, from the bodies and the boss's facing now, cut by the keep-out as its blows
+	// are: a called impact to a side lands Side metres to that side and Ahead metres ahead, an arc blow ReachShare of its
+	// reach ahead. False when the host isn't active, the use was refused or Move isn't one of the boss's.
+	bool StrikeOf(std::uint8_t Move, const ftcore::ArenaBodies& Bodies, float Ahead, float Side, float ReachShare,
+		FFTStoneBearerStrike& Out) const;
+	// The weak points are open (from CritOpened until CritClosed).
+	bool CritOpen() const { return IsActive() && Boss.run().crit().isOpen(static_cast<double>(FightPtr->time())); }
 
 private:
 	static ftcore::ArenaBlowRuling RuleBlow(void* User, const ftcore::ArenaBlow& Blow);

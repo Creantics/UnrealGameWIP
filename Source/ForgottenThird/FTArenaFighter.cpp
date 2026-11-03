@@ -348,6 +348,16 @@ FVector AFTArenaFighter::GetChest() const
 	return GetActorLocation() + FVector(0.0, 0.0, Height * 0.6);
 }
 
+bool AFTArenaFighter::GetSkinPoint(FName Name, FVector& Out) const
+{
+	if (SkinKind != ESkin::Creature || !Skin || !Skin->DoesSocketExist(Name))
+	{
+		return false;
+	}
+	Out = Skin->GetSocketLocation(Name);
+	return true;
+}
+
 void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 {
 	SetActorLocationAndRotation(Pose.Feet, FRotator(0.0, Pose.Yaw, 0.0));

@@ -31,6 +31,8 @@ static_assert(UFTArenaRunner::MaxEnemies == 6, "EnemyFigures[6] in FTArenaRunner
 
 namespace
 {
+// The stone_bearer's effects and where they are placed (FFTArenaBossVfx).
+constexpr const TCHAR* kStoneBearerVfx = TEXT("Data/Battle/arena_boss/stone_bearer_vfx.json");
 // After the outcome, the autopilot (without -ArenaQuitOnFinish) fights again this much later (s).
 constexpr double kArenaAutoAgain = 4.0;
 // A press to fight again counts only once the result has been up this long (s), so a held attack doesn't skip it.
@@ -731,6 +733,12 @@ void UFTArenaRunner::StepFight()
 	{
 		LogStoneBearerNotes();
 	}
+	// The open weak point's glow follows the boss's state, not its notes, so a missed note can't leave it on.
+	const bool bGlow = bBoss && StoneBearer.CritOpen();
+	if (bGlow != BossVfx.IsGlowing())
+	{
+		BossVfx.SetGlow(bGlow, bGlow ? BossWeakPoint() : FVector::ZeroVector);
+	}
 }
 
 void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
@@ -746,6 +754,7 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			}
 			else if (E.target < MaxEnemies)
 			{
+				BossHitVfx(E);
 				EnemyHitTime[E.target] = Now;
 				// A heavy blow, a riposte or a Release is a heavy reaction.
 				HitSince[E.target] = Now;
@@ -759,6 +768,7 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 		case ftcore::ArenaEventType::CounterStagger:
 			if (E.target < MaxEnemies)
 			{
+				BossHitVfx(E);
 				EnemyHitTime[E.target] = Now;
 				HitSince[E.target] = Now;
 				bHitHeavy[E.target] = true;
@@ -774,6 +784,7 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 		case ftcore::ArenaEventType::ReadCounter:
 			if (E.target < MaxEnemies)
 			{
+				BossHitVfx(E);
 				EnemyHitTime[E.target] = Now;
 				HitSince[E.target] = Now;
 				bHitHeavy[E.target] = false;
@@ -816,9 +827,124 @@ void UFTArenaRunner::TrackParts(const ftcore::ArenaOutput& Out)
 			{
 				ActiveSince[I] = -1e9;
 			}
+			if (I == StoneBearerSlot)
+			{
+				BossPartChanged(E, LastPart[I], Part);
+			}
 			LastPart[I] = Part;
 		}
 	}
+}
+
+void UFTArenaRunner::BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 From, uint8 To)
+{
+	constexpr uint8 Startup = static_cast<uint8>(ftcore::ArenaPart::Startup);
+	constexpr uint8 Active = static_cast<uint8>(ftcore::ArenaPart::Active);
+	if (!BossVfx.IsSpawned())
+	{
+		return;
+	}
+	if (From == Startup)
+	{
+		BossVfx.StopTells();
+	}
+	// A refused pick is cut and its blows vetoed: nothing of it is drawn.
+	if ((To != Startup && To != Active) || StoneBearer.UseRefused())
+	{
+		return;
+	}
+	const FFTArenaBossVfx::FTuning& T = BossVfx.GetTuning();
+	FFTStoneBearerStrike S;
+	if (!StoneBearer.StrikeOf(Out.move, Bodies, T.CalledAhead, T.CalledSide, T.ReachShare, S))
+	{
+		return;
+	}
+	const bool bArea = S.Shape == FFTStoneBearerStrike::EShape::Area;
+	const float ShapeMul = bArea ? T.AreaScale : 1.f;
+	const double Lift = T.Lift * 100.0;
+	const FVector At = ToWorld(S.To) + FVector(0.0, 0.0, Lift);
+	if (To == Active)
+	{
+		BossVfx.Play(FFTArenaBossVfx::EEffect::Impact, At, ShapeMul, TEXT("blow lands"));
+		return;
+	}
+	if (S.Shape != FFTStoneBearerStrike::EShape::Lane)
+	{
+		BossVfx.Play(FFTArenaBossVfx::EEffect::Tell, At, ShapeMul, bArea ? TEXT("tell all round") : TEXT("tell"));
+		return;
+	}
+	// A lane: its marks spaced from the boss's edge to the lane's end (one log line for them all).
+	const ftcore::Vec2 Span{S.To.x - S.From.x, S.To.y - S.From.y};
+	const float Length = ArenaLength(Span);
+	const float Edge = FMath::Min(Fight.def().enemies[static_cast<size_t>(StoneBearerSlot)].bodyRadius, Length);
+	for (int32 K = 0; K < T.LaneMarks; ++K)
+	{
+		const float Along = T.LaneMarks > 1 ? FMath::Lerp(Edge, Length, static_cast<float>(K) / static_cast<float>(T.LaneMarks - 1)) : Length;
+		const float Share = Length > 1e-4f ? Along / Length : 0.f;
+		const FVector Mark = ToWorld(ftcore::Vec2{S.From.x + Span.x * Share, S.From.y + Span.y * Share}) + FVector(0.0, 0.0, Lift);
+		BossVfx.Play(FFTArenaBossVfx::EEffect::Tell, Mark, ShapeMul, K == 0 ? TEXT("tell along a lane") : nullptr);
+	}
+}
+
+void UFTArenaRunner::BossHitVfx(const ftcore::ArenaEvent& E)
+{
+	if (StoneBearerSlot < 0 || E.target != static_cast<uint8>(StoneBearerSlot) || E.amount <= 0 || !BossVfx.IsSpawned())
+	{
+		return;
+	}
+	// On the boss's surface toward the lead, at the lead's chest height.
+	const size_t Slot = static_cast<size_t>(StoneBearerSlot);
+	const ftcore::Vec2& Boss = Bodies.enemies[Slot];
+	ftcore::Vec2 Dir{Bodies.player.x - Boss.x, Bodies.player.y - Boss.y};
+	const float Length = ArenaLength(Dir);
+	if (Length > 1e-4f)
+	{
+		Dir = ftcore::Vec2{Dir.x / Length, Dir.y / Length};
+	}
+	else
+	{
+		Dir = Fight.output().enemies[Slot].facing;
+	}
+	const float Out = Fight.def().enemies[Slot].bodyRadius * BossVfx.GetTuning().Surface;
+	FVector At = ToWorld(ftcore::Vec2{Boss.x + Dir.x * Out, Boss.y + Dir.y * Out});
+	At.Z = PlayerFigure ? PlayerFigure->GetChest().Z : At.Z + 100.0;
+	BossVfx.Play(FFTArenaBossVfx::EEffect::Chips, At, 1.f, TEXT("hit"));
+}
+
+FVector UFTArenaRunner::BossWeakPoint() const
+{
+	if (StoneBearerSlot < 0 || StoneBearerSlot >= MaxEnemies)
+	{
+		return FVector::ZeroVector;
+	}
+	const size_t Slot = static_cast<size_t>(StoneBearerSlot);
+	const AFTArenaFighter* Figure = EnemyFigures[StoneBearerSlot].Get();
+	if (!Figure)
+	{
+		return ToWorld(Bodies.enemies[Slot]);
+	}
+	static const FName Socket(FFTStoneBearerHost::WeakPointSocket);
+	FVector At;
+	if (Figure->GetSkinPoint(Socket, At))
+	{
+		return At;
+	}
+	if (!bWeakPointWarned)
+	{
+		bWeakPointWarned = true;
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena VFX: the stone_bearer figure has no %s bone; its weak-point effects use the boss file's point."),
+			UTF8_TO_TCHAR(FFTStoneBearerHost::WeakPointSocket));
+	}
+	// The boss file's first point: its height up the figure, out on its gate's side (degrees in the boss's frame).
+	const ftcore::ArenaWeakPoints& W = StoneBearer.GetDef().boss.weakPoints;
+	const float Up = W.points.count > 0 ? W.points.items[0].y : 0.5f;
+	const float Rad = FMath::DegreesToRadians(W.points.count > 0 ? W.gates[0].facing : 180.f);
+	const ftcore::Vec2 F = Fight.output().enemies[Slot].facing;
+	const ftcore::Vec2 Right{-F.y, F.x};
+	const float Out = Fight.def().enemies[Slot].bodyRadius * 100.f * BossVfx.GetTuning().WeakDepth;
+	const float C = FMath::Cos(Rad);
+	const float Sn = FMath::Sin(Rad);
+	return Figure->GetActorLocation() + FVector((F.x * C + Right.x * Sn) * Out, (F.y * C + Right.y * Sn) * Out, Up * Figure->GetHeight());
 }
 
 const ftcore::ArenaEnemyMove* UFTArenaRunner::GetEnemyMove(int32 Index) const
@@ -991,6 +1117,10 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		Figure->ApplyPose(Pose);
 		DriveSkin(I, E, Kind, Alpha);
 	}
+	if (BossVfx.IsGlowing())
+	{
+		BossVfx.MoveGlow(BossWeakPoint());
+	}
 }
 
 void UFTArenaRunner::SteerCamera(float DeltaSeconds)
@@ -1161,6 +1291,7 @@ void UFTArenaRunner::BeginStoneBearer()
 	if (StoneBearerSlot < 0)
 	{
 		StoneBearer.End();
+		BossVfx.Destroy();
 		return;
 	}
 	StoneBearer.Begin(Fight, static_cast<size_t>(StoneBearerSlot), Fit.zone.centre, ZoneYaw);
@@ -1168,9 +1299,16 @@ void UFTArenaRunner::BeginStoneBearer()
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: stone_bearer in slot %d: %d arena moves from %d boss moves."), StoneBearerSlot,
 		static_cast<int32>(Fight.def().enemies[static_cast<size_t>(StoneBearerSlot)].moveCount), static_cast<int32>(StoneBearer.GetDef().boss.moveCount));
 
+	// Its effects: the pool spawned once, everything stopped at each (re)start.
+	BossVfx.StopAll();
+	UWorld* World = GetWorld();
+	if (World && !BossVfx.IsSpawned())
+	{
+		BossVfx.Spawn(World, kStoneBearerVfx);
+	}
+
 	// Its plinth at the zone's centre and the guest's keep-out disc: markers, nothing to bump into (the plinth is the
 	// host's: arenas.json's cover blocks).
-	UWorld* World = GetWorld();
 	if (!World || PlinthActor)
 	{
 		return;
@@ -1214,6 +1352,7 @@ void UFTArenaRunner::EndStoneBearer()
 {
 	StoneBearer.End();
 	StoneBearerSlot = -1;
+	BossVfx.Destroy();
 	if (PlinthActor)
 	{
 		PlinthActor->Destroy();
@@ -1241,6 +1380,11 @@ void UFTArenaRunner::LogStoneBearerNotes()
 		switch (N.Kind)
 		{
 		case FFTStoneBearerNote::EKind::Run:
+			if (E.type == ftcore::ArenaBossEventType::Crit)
+			{
+				BossVfx.Play(FFTArenaBossVfx::EEffect::Crit, BossWeakPoint(), 1.f,
+					E.value > 0 ? TEXT("weak point crit, first of the opening") : TEXT("weak point crit"));
+			}
 			if (E.type == ftcore::ArenaBossEventType::Answered)
 			{
 				UE_LOG(LogForgottenThird, Log, TEXT("Arena: boss %.2f move %d impact %d: %s"), E.at, Move, static_cast<int32>(E.impact),
