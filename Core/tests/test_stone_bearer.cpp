@@ -9,6 +9,7 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <vector>
@@ -245,6 +246,72 @@ TEST_CASE("stone bearer data: the shipped file loads clean, with the outline's t
     CHECK(halves.missStacks == 2);
     CHECK(b.moves[b.find("ground_punch")].guardStacks == 1);
     CHECK(b.moves[b.find("ground_punch")].missStacks == 0);
+
+    // The body and the generic tuning.
+    CHECK(b.hp == 1400);
+    CHECK(b.poise == doctest::Approx(160.0));
+    CHECK(b.staggerTime == doctest::Approx(2.0));
+    CHECK(b.openTime == doctest::Approx(3.0));
+    CHECK(b.intercept.window == doctest::Approx(0.15));
+    CHECK(b.intercept.rearm == doctest::Approx(0.4));
+    CHECK(b.guestCall.fromBeats == doctest::Approx(1.0));
+    CHECK(b.guestCall.minLeadBeats == doctest::Approx(2.0));
+    CHECK(b.guestCall.missShiftBeats == doctest::Approx(0.5));
+
+    // Every move: impacts (beats), active, recovery, range, damage, damageMax, opens.
+    struct Row {
+        const char* id;
+        ArenaBossAnswer answer;
+        float first, second; // impact beats (second 0: one impact)
+        float active, recovery, range, damage, damageMax, opens;
+    };
+    const Row rows[] = {
+        {"called_fist", ArenaBossAnswer::Intercept, 3, 0, 0.2f, 1.2f, 2.6f, 0.12f, 0.12f, 3},
+        {"called_fist_twice", ArenaBossAnswer::Intercept, 3, 4, 0.2f, 3.0f, 2.6f, 0.12f, 0.24f, 3},
+        {"slab_drive", ArenaBossAnswer::Dodge, 2, 0, 0.3f, 1.6f, 4.5f, 0.14f, 0.14f, 0},
+        {"slab_drive_halves", ArenaBossAnswer::Dodge, 2, 3, 0.3f, 1.6f, 4.5f, 0.08f, 0.16f, 0},
+        {"debris_shower", ArenaBossAnswer::Tile, 3, 0, 1.0f, 1.6f, 10.0f, 0.03f, 0.12f, 0},
+        {"debris_shower_twice", ArenaBossAnswer::Tile, 3, 4, 1.0f, 1.6f, 10.0f, 0.03f, 0.12f, 0},
+        {"low_sweep", ArenaBossAnswer::Jump, 2, 0, 0.3f, 1.6f, 4.5f, 0.10f, 0.10f, 0},
+        {"low_sweep_halves", ArenaBossAnswer::Jump, 2, 3, 0.3f, 1.6f, 4.5f, 0.10f, 0.20f, 0},
+        {"ground_punch", ArenaBossAnswer::Intercept, 4, 0, 0.2f, 2.0f, 1.5f, 0.14f, 0.14f, 3},
+        {"block_throw", ArenaBossAnswer::Cover, 3, 0, 0.3f, 1.3f, 20.0f, 0.12f, 0.12f, 0},
+        {"marked_throw", ArenaBossAnswer::Intercept, 4, 0, 0.3f, 1.4f, 24.0f, 0.14f, 0.14f, 4},
+        {"marked_throw_halves", ArenaBossAnswer::Intercept, 4, 5, 0.3f, 1.4f, 24.0f, 0.09f, 0.18f, 4},
+        {"edge_jab", ArenaBossAnswer::Any, 1, 0, 0.15f, 0.8f, 2.0f, 0.06f, 0.06f, 0},
+        {"stamp", ArenaBossAnswer::Any, 1, 0, 0.15f, 0.8f, 2.0f, 0.06f, 0.06f, 0},
+        {"backhand", ArenaBossAnswer::Any, 1, 0, 0.15f, 0.8f, 2.2f, 0.06f, 0.06f, 0},
+    };
+    REQUIRE(std::size(rows) == b.moveCount);
+    for (const Row& r : rows) {
+        CAPTURE(r.id);
+        const std::uint8_t i = b.find(r.id);
+        REQUIRE(i != kArenaBossNoMove);
+        const ArenaBossMove& m = b.moves[i];
+        CHECK(m.answer == r.answer);
+        REQUIRE(m.impactCount == (r.second > 0 ? 2 : 1));
+        CHECK(m.impacts[0] == doctest::Approx(r.first));
+        if (r.second > 0) CHECK(m.impacts[1] == doctest::Approx(r.second));
+        CHECK(m.active == doctest::Approx(r.active));
+        CHECK(m.recovery == doctest::Approx(r.recovery));
+        CHECK(m.range == doctest::Approx(r.range));
+        CHECK(m.damage == doctest::Approx(r.damage));
+        CHECK(m.damageMax == doctest::Approx(r.damageMax));
+        CHECK(m.opens == doctest::Approx(r.opens));
+        CHECK(m.floor == (std::string_view(r.id) == "ground_punch" || std::string_view(r.id) == "stamp"));
+    }
+
+    // The tables, exactly. A break in phase 1 keeps the single shower (it doubles only in phase 2).
+    const auto ids = [&](const ArenaBossMoveTable& t) {
+        std::string s;
+        for (const std::uint8_t m : t) s += std::string(b.moves[m].id()) + " ";
+        return s;
+    };
+    CHECK(ids(p1.whole) == "called_fist slab_drive debris_shower low_sweep ground_punch block_throw edge_jab stamp backhand ");
+    CHECK(ids(p1.broken) == "called_fist slab_drive_halves debris_shower low_sweep_halves ground_punch edge_jab stamp backhand ");
+    CHECK(ids(p2.whole) == "called_fist_twice slab_drive debris_shower_twice low_sweep marked_throw edge_jab stamp backhand ");
+    CHECK(ids(p2.broken) ==
+          "called_fist_twice slab_drive_halves debris_shower_twice low_sweep_halves marked_throw_halves edge_jab stamp backhand ");
 
     CHECK(def.weight.cap == 5);
     CHECK(def.weight.shockRingAt == 3);
@@ -696,10 +763,18 @@ TEST_CASE("stone bearer: a non-finite time or hp stalls the boss instead of hang
     const double kNaN = std::numeric_limits<double>::quiet_NaN();
     const float kNaNf = std::numeric_limits<float>::quiet_NaN();
 
-    {
+    for (const double bad : {kInf, -kInf, kNaN}) {
+        // A fight begun at a bad time starts at 0 and plays its blows normally.
+        CAPTURE(bad);
         StoneBearer b;
-        b.begin(def, kNaN);
+        b.begin(def, bad);
         CHECK(b.run().now() == 0.0);
+        bool ok = false;
+        b.startMove(move("called_fist"), 1.0, CalledZone::Left, &ok);
+        REQUIRE(ok);
+        CHECK(countOf(b.update(1.5, 1.0f), ArenaBossEventType::Answered) == 0);
+        CHECK(countOf(b.update(1.0 + 3 * B + 0.01, 1.0f), ArenaBossEventType::Answered) == 1);
+        CHECK(b.stacks() == 1); // the miss
     }
     StoneBearer b;
     b.begin(def, 0.0);
@@ -855,6 +930,12 @@ TEST_CASE("stone bearer: no blow in the data reaches the guest's spot") {
         }
     }
     CHECK(sampled > 100000);
+    // A reach that is not above 0, NaN included, is no attack.
+    const float kNaNf = std::numeric_limits<float>::quiet_NaN();
+    CHECK(keep.clampArc({0, 0}, {0, 1}, 0.5f, kNaNf) == 0.0f);
+    CHECK(keep.clampLane({0, 0}, {0, 1}, 1.0f, kNaNf) == 0.0f);
+    CHECK(keep.clampLane({0, 0}, {0, 1}, 1.0f, -2.0f) == 0.0f);
+    CHECK(ArenaKeepOut{}.clampArc({0, 0}, {0, 1}, 0.5f, kNaNf) == 0.0f);
     // An area pushed off the spot only ever touches its edge.
     for (const Vec2 p : {Vec2{0, 20}, Vec2{0.5f, 19}, Vec2{-2, 22}, Vec2{4, 18}}) {
         const Vec2 c = keep.clampArea(p, 2.0f);

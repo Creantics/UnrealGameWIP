@@ -578,6 +578,10 @@ TEST_CASE("arena boss loader: refusals carry their path; unknown keys warn; own 
     CHECK(has(importError(patched("\"zones\": [\"path\"], ", "")), "moves[2].zones: expected one zone"));
     CHECK(has(importError(patched("\"floor\": true", "\"floor\": true, \"load\": 5")),
               "moves[3].load: only an intercept move has it"));
+    CHECK(has(importError(patched("\"floor\": true", "\"floor\": true, \"guardStacks\": 1")),
+              "moves[3].guardStacks: only an intercept move has it"));
+    CHECK(has(importError(patched("\"floor\": true", "\"floor\": true, \"missStacks\": 1")),
+              "moves[3].missStacks: only an intercept move has it"));
     CHECK(has(importError(patched("\"answer\": \"jump\"", "\"answer\": \"run\"")), "moves[3].answer:"));
     CHECK(has(importError(patched("\"id\": \"jab\"", "\"id\": \"fist\"")), "moves[4].id: duplicate id fist"));
     CHECK(has(importError(patched("\"id\": \"jab\"", "\"id\": \"Jab\"")), "moves[4].id: expected 1..23 characters"));

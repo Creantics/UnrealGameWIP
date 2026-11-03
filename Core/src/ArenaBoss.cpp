@@ -227,7 +227,8 @@ double GuestCaller::nearestRepeat(double start, double everyBeats, double t) con
 // ---- The keep-out ----------------------------------------------------------------------------------
 
 float ArenaKeepOut::clampArc(Vec2 origin, Vec2 dir, float arcCos, float reach) const {
-    if (none() || !(reach > 0.0f)) return std::max(reach, 0.0f);
+    if (!(reach > 0.0f)) return 0.0f; // NaN included
+    if (none()) return reach;
     const Vec2 c = abSub(centre, origin);
     const float dist = abLen(c);
     if (dist <= radius) return 0.0f;
@@ -252,7 +253,8 @@ float ArenaKeepOut::clampArc(Vec2 origin, Vec2 dir, float arcCos, float reach) c
 }
 
 float ArenaKeepOut::clampLane(Vec2 origin, Vec2 dir, float width, float reach) const {
-    if (none() || !(reach > 0.0f)) return std::max(reach, 0.0f);
+    if (!(reach > 0.0f)) return 0.0f; // NaN included
+    if (none()) return reach;
     const Vec2 u = abUnit(dir);
     if (u.x == 0.0f && u.y == 0.0f) return clampArc(origin, dir, -1.0f, reach);
     const Vec2 c = abSub(centre, origin);
@@ -492,7 +494,7 @@ void abMove(JsonValue m, const std::string& path, const ArenaBossDef& def, Arena
     abInt(m, "load", out.load, 0, kMaxLoad, false, path, errors);
 
     if (!icpt) {
-        for (const char* key : {"zones", "sheds", "marked", "opens", "load"})
+        for (const char* key : {"zones", "sheds", "marked", "opens", "load", "guardStacks", "missStacks"})
             if (m.has(key)) errors.push_back(abJoin(path, key) + ": only an intercept move has it");
     } else if (n > 1) {
         // Each impact must be answerable: the rearm runs out before the next one's window.
@@ -652,12 +654,12 @@ void ArenaBossRun::begin(const ArenaBossDef& def, double now) {
     phases_.reset(def.phases.data(), def.phaseCount);
     breakable_ = {};
     strike_ = CalledStrike{};
+    now_ = std::isfinite(now) ? now : 0.0;
     strike_.setWindows(def.intercept);
-    strike_.update(now);
+    strike_.update(now_);
     guest_.reset(def.bpm, def.guestCall);
     crit_.reset(def.weakPoints);
     events_.clear();
-    now_ = std::isfinite(now) ? now : 0.0;
     live_ = kArenaBossNoMove;
     liveStart_ = now_;
     cueCount_ = cueNext_ = 0;

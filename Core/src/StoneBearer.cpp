@@ -192,12 +192,15 @@ const ArenaBossEvents& StoneBearer::finish() {
         const GuestCaller& guest = run_.guest();
         const double series = pedestal_.from() + arenaBeats(p.firstCallBeats, guest.bpm());
         const double period = arenaBeats(p.callEveryBeats, guest.bpm());
-        // A frame that jumped further plays only the calls of the last kPedestalCatchUp periods.
-        if (nextCall_ < now - kPedestalCatchUp * period)
-            nextCall_ = guest.nextRepeat(series, p.callEveryBeats, now - kPedestalCatchUp * period);
-        while (nextCall_ <= now) {
-            run_.push({ArenaBossEventType::Call, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, nextCall_, 0.0});
-            nextCall_ = guest.nextRepeat(series, p.callEveryBeats, nextCall_ + 0.5 * period);
+        if (period > 0.0) {
+            // A frame that jumped further plays only the calls of the last kPedestalCatchUp periods.
+            if (nextCall_ < now - kPedestalCatchUp * period)
+                nextCall_ = guest.nextRepeat(series, p.callEveryBeats, now - kPedestalCatchUp * period);
+            // Bounded too where a period is below the clock's rounding (a clock past ~1e15 s).
+            for (int k = 0; nextCall_ <= now && k < kPedestalMaxCalls; ++k) {
+                run_.push({ArenaBossEventType::Call, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, nextCall_, 0.0});
+                nextCall_ = guest.nextRepeat(series, p.callEveryBeats, nextCall_ + 0.5 * period);
+            }
         }
     }
     if (recoverDue_ && now >= pedestal_.downUntil()) {

@@ -147,6 +147,7 @@ struct PedestalTuning {
 };
 
 inline constexpr double kPedestalCatchUp = 4.0; // call periods one late frame catches up
+inline constexpr int kPedestalMaxCalls = 6;       // calls one frame emits at most
 
 enum class PedestalRelease : std::uint8_t { Lifted, OffBeat, LowLoad, NotHolding }; // append only
 

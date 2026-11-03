@@ -82,8 +82,9 @@
 //   window for the move's `opens` seconds from that impact (CritOpened) and gives its `load`
 //   (LoadGained). The first Missed or WrongZone impact of each use of a move is flagged (its Answered has
 //   value 1; a boss rule that charges a miss once per use reads it); on a marked move it also turns the
-//   miss shift on at once (CallsShifted, once a phase), so a cancel after it keeps the shift. A Guard is
-//   not a miss. A cancelled move's pending calls and impacts are dropped with no event.
+//   miss shift on at once (CallsShifted, once a phase), so a cancel after it keeps the shift; calls the
+//   live move already scheduled keep their times (the shift reaches the next move's). A Guard is not a
+//   miss. A cancelled move's pending calls and impacts are dropped with no event.
 //   liveMove() is the last started move until the next startMove, cancelMove or Stagger (a move whose
 //   impacts have all landed stays live; pending() says whether anything of it is still to come).
 //
@@ -109,7 +110,8 @@
 //   arena's centre, radius 0..20 m (0: none). Absent: none.
 //   moves: 1..kMaxArenaBossMoves, ids lowercase [a-z0-9_] of 1..kMaxArenaBossMoveId characters, unique.
 //     answer: "intercept", "dodge", "jump", "tile" (stand where the call says), "cover" (put something
-//       between), "any" (a plain blow). Only an intercept move has zones, sheds, opens or load.
+//       between), "any" (a plain blow). Only an intercept move has zones, sheds, marked, opens, load,
+//       guardStacks or missStacks.
 //     impacts: 1..kMaxCalledImpacts beats from the move's start, each in (0, 32], strictly rising.
 //     calls: none, or one per impact, rising, each at least fromBeats and at least minLeadBeats before
 //       its impact.
@@ -132,6 +134,10 @@
 //     lead's max hp); the last has the move's recovery, the others none.
 //   - poiseDamage and guardDamage are the enemy kind's own defaults; guardBreak (when above 0) is the
 //     ArenaAttack's guard-break time.
+//   - damageMax caps what one use deals in all: the host stops landing the move's blows on the lead
+//     once their damage reaches it. A "tile" move rains fragments over its area during `active`, each
+//     a blow of `damage` on a lead off the clear tile; the host owns the fragments, which tile is
+//     clear (the one its call names) and, for a move of two calls, the second tile.
 //   - The hit shape by answer: "intercept" and "any" an arc (arcCos 0.5, the kind's default width);
 //     "path" impacts and "cover" a lane (width 1 m) from the boss to the aimed point; "tile" all round.
 //     Every shape then goes through the keep-out clamp.
@@ -455,7 +461,7 @@ struct ArenaKeepOut {
     FTCORE_API float clampArc(Vec2 origin, Vec2 dir, float arcCos, float reach) const;
     // The same for a straight lane `width` wide (ArenaAttack::width), starting on the segment `width`
     // across `origin`. 0 when even that start touches the disc. A reach of 0 is no attack: the host
-    // drops the blow instead of swinging it.
+    // drops the blow instead of swinging it. Both return 0 for a reach that is not above 0 (or NaN).
     FTCORE_API float clampLane(Vec2 origin, Vec2 dir, float width, float reach) const;
     // `point` moved straight away from the centre until a circle of `areaRadius` round it touches at
     // most the edge (a point on the centre moves along +X).
@@ -534,7 +540,8 @@ FTCORE_API bool importArenaBoss(std::string_view json, ArenaBossDef& out, std::s
 enum class ArenaBossEventType : std::uint8_t { // append only
     PhaseChanged,  // value = the phase now
     Broke,         // the breakable broke: the broken tables play from now
-    Call,          // the guest calls `impact` of `move` (move kArenaBossNoMove: a repeating call)
+    Call,          // the guest's k-th call of `move`, for its k-th impact (impact = k; move
+                   // kArenaBossNoMove: a repeating call, impact 0)
     Answered,      // `impact` of `move` resolved: `outcome`
     CallsShifted,  // a marked miss: every call is late by the miss shift for the rest of the phase
     CritOpened,    // the weak points open until `until`
