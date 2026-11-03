@@ -2531,9 +2531,9 @@ std::size_t arenaResultLine(char* out, std::size_t cap, const ArenaFight& fight,
     if (def.enemyCount == 0) w.put("none");
     w.put(", ");
     w.id(ids.pilot);
-    w.print(" seed %u, hp %d/%d, %d hits, %d taken, %d blocks, %d parries, %d ripostes, %d evades, %d guard breaks, %d heals, "
-            "%d releases, %d overloads, %d/%d reads right, dealt %d, took %d, %d restarts.",
-            ids.seed, fight.hp(), def.fighter.hp, s.hits, s.hitsTaken, s.blocks, s.parries, s.ripostes, s.evades, s.guardBreaks, s.heals,
+    w.print(" seed %u, hp %d/%d, %d hits, %d taken, %d blocks, %d parries, %d ripostes, %d evades, %d guard breaks, %d staggers, "
+            "%d heals, %d releases, %d overloads, %d/%d reads right, dealt %d, took %d, %d restarts.",
+            ids.seed, fight.hp(), def.fighter.hp, s.hits, s.hitsTaken, s.blocks, s.parries, s.ripostes, s.evades, s.guardBreaks, s.staggers, s.heals,
             s.releases, s.overloads, s.correctReads, s.readsDealt, s.damageDealt, s.damageTaken, s.restarts);
     out[w.len] = '\0';
     return w.len;

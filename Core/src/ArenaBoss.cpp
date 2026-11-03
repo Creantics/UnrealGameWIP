@@ -823,6 +823,12 @@ void ArenaBossRun::staggerNow() {
     cancelMove();
 }
 
+bool ArenaBossRun::breakNow() {
+    if (!breakable_.onStagger(now_)) return false;
+    events_.push({ArenaBossEventType::Broke, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, now_, 0.0});
+    return true;
+}
+
 const ArenaBossEvents& ArenaBossRun::onHit(Vec2 from, Vec2 pos, Vec2 facing, double t, const AimPoint* at,
                                            CritResult* result) {
     events_.clear();

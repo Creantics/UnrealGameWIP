@@ -64,6 +64,7 @@ const char* const kMini = R"({
   "phases": [ { "endAt": 0, "moves": ["jab"] } ],
   "weight": { "cap": 5, "damagePerStack": 0.1, "defencePerStack": 0.1, "shockRingAt": 3, "poiseFreezeAt": 5,
               "guard": 1, "soloLift": 1, "interceptShed": 1, "critShed": 1 },
+  "breakable": { "at": 0.5 },
   "pedestal": { "at": 0.25, "firstCallBeats": 4, "callEveryBeats": 4, "releaseWindow": 0.15, "downTime": 3.0 }
 })";
 
@@ -379,6 +380,9 @@ TEST_CASE("stone bearer data: the shipped file loads clean, with the outline's t
     CHECK(def.weight.soloLift == 1);
     CHECK(def.weight.interceptShed == 1);
     CHECK(def.weight.critShed == 1);
+    CHECK(def.breakable.at == doctest::Approx(0.4)); // inside phase 2, above the pedestal
+    CHECK(def.breakable.at < b.phases[0].endAt);
+    CHECK(def.breakable.at > def.pedestal.at);
     CHECK(def.pedestal.at == doctest::Approx(0.25));
     CHECK(def.pedestal.firstCallBeats == doctest::Approx(4.0));
     CHECK(def.pedestal.callEveryBeats == doctest::Approx(4.0));
@@ -392,13 +396,29 @@ TEST_CASE("stone bearer loader: refusals carry their paths") {
         std::string error;
         std::vector<std::string> warnings;
         CHECK(importStoneBearer(kMini, def, &error, &warnings));
-        CHECK(warnings.empty()); // weight and pedestal are not unknown keys
+        CHECK(warnings.empty()); // weight, breakable and pedestal are not unknown keys
         CHECK(def.weight.guard == 1);
+        CHECK(def.breakable.at == doctest::Approx(0.5));
         CHECK(def.pedestal.downTime == doctest::Approx(3.0));
     }
     CHECK(refusal(edited(R"("weight": {)", R"("heft": {)")).find("weight: expected an object") != std::string::npos);
     CHECK(refusal(edited(R"("pedestal": {)", R"("stand": {)")).find("pedestal: expected an object") !=
           std::string::npos);
+    CHECK(refusal(edited(R"("breakable": {)", R"("crack": {)")).find("breakable: expected an object") !=
+          std::string::npos);
+    CHECK(refusal(edited(R"("breakable": { "at": 0.5 })", R"("breakable": { "at": 1 })")) ==
+          "breakable.at: expected a number above 0 and below 1");
+    CHECK(refusal(edited(R"("breakable": { "at": 0.5 })", R"("breakable": { "at": "half" })")) ==
+          "breakable.at: expected a number in 0..1");
+    CHECK(refusal(edited(R"("breakable": { "at": 0.5 })", R"("breakable": {})")) ==
+          "breakable.at: expected a number in 0..1");
+    // The piece breaks before the boss climbs: at or below the pedestal's share is refused.
+    CHECK(refusal(edited(R"("breakable": { "at": 0.5 })", R"("breakable": { "at": 0.25 })")) ==
+          "breakable.at: expected above pedestal.at");
+    CHECK(refusal(edited(R"("breakable": { "at": 0.5 })", R"("breakable": { "at": 0.1 })")) ==
+          "breakable.at: expected above pedestal.at");
+    // A refused pedestal skips the cross-check: one error, the pedestal's.
+    CHECK(refusal(edited(R"("at": 0.25)", R"("at": 0)")) == "pedestal.at: expected a number above 0 and below 1");
     CHECK(refusal(edited(R"("cap": 5)", R"("cap": 0)")).find("weight.cap: expected an integer in 1..10") !=
           std::string::npos);
     CHECK(refusal(edited(R"("shockRingAt": 3)", R"("shockRingAt": 6)")) ==
@@ -438,11 +458,13 @@ TEST_CASE("stone bearer loader: refusals carry their paths") {
     std::string s = edited(R"("cap": 5,)", R"("cap": 5, "heft": 2,)");
     s = s.replace(s.find(R"("downTime")"), 10, R"("tempo": 1, "downTime")");
     s = s.replace(s.find(R"("version")"), 9, R"("mood": 1, "version")");
+    s = s.replace(s.find(R"("at": 0.5)"), 9, R"("at": 0.5, "when": 2)");
     CHECK(importStoneBearer(s, def, &error, &warnings));
-    REQUIRE(warnings.size() == 3);
+    REQUIRE(warnings.size() == 4);
     CHECK(warnings[0] == "unknown key: mood");
     CHECK(warnings[1] == "weight: unknown key: heft");
     CHECK(warnings[2] == "pedestal: unknown key: tempo");
+    CHECK(warnings[3] == "breakable: unknown key: when");
 }
 
 TEST_CASE("stone bearer: guards gain stacks, intercepts and the first crit of an opening shed them") {
@@ -646,7 +668,9 @@ TEST_CASE("stone bearer: blocks, solo lifts and the poise freeze") {
     CHECK(b.run().liveMove() == move("slab_drive"));
 }
 
-TEST_CASE("stone bearer: a frozen boss keeps its carried piece, and phase 2 and the pedestal still play") {
+TEST_CASE("stone bearer: a frozen boss keeps its carried piece through a stagger, but its hp share still breaks it") {
+    // The rule: the poise freeze stops a Stagger, not the beat. Once the hp share reaches breakable.at
+    // the piece breaks, frozen or not; phase 2 and the pedestal play as ever.
     const StoneBearerDef& def = shipped();
     StoneBearer b;
     b.begin(def, 0.0);
@@ -657,25 +681,134 @@ TEST_CASE("stone bearer: a frozen boss keeps its carried piece, and phase 2 and 
 
     CHECK(countOf(b.update(3.0, 0.45f), ArenaBossEventType::PhaseChanged) == 1);
     CHECK(b.run().phase() == 1);
+    CHECK_FALSE(b.run().broken()); // above the share: still whole
     CHECK(b.table().contains(move("marked_throw"))); // the whole table
     CHECK_FALSE(b.table().contains(move("marked_throw_halves")));
     bool started = false;
     b.startMove(move("marked_throw"), 3.5, CalledZone::Left, &started);
-    CHECK(started);
+    REQUIRE(started);
+    CHECK(b.onStagger(3.6).empty()); // still lost: the throw plays on
+    CHECK(b.run().liveMove() == move("marked_throw"));
+
+    {
+        // At the share, still frozen: it breaks, and the throw plays on (a break is not a stagger).
+        const ArenaBossEvents& e = b.update(3.7, 0.4f);
+        REQUIRE(countOf(e, ArenaBossEventType::Broke) == 1);
+        CHECK(firstOf(e, ArenaBossEventType::Broke)->move == kArenaBossNoMove);
+        CHECK(firstOf(e, ArenaBossEventType::Broke)->at == doctest::Approx(3.7));
+    }
+    CHECK(b.poiseFrozen());
+    CHECK(b.run().broken());
+    CHECK(b.run().liveMove() == move("marked_throw"));
+    CHECK(b.run().pending());
+    CHECK(b.table().contains(move("marked_throw_halves")));
+    CHECK_FALSE(b.table().contains(move("marked_throw")));
 
     const ArenaBossEvents& e = b.update(4.0, 0.2f);
     REQUIRE(firstOf(e, ArenaBossEventType::Invulnerable));
     CHECK(firstOf(e, ArenaBossEventType::Invulnerable)->value == 1);
+    CHECK(countOf(e, ArenaBossEventType::Broke) == 0); // once
     CHECK(b.invulnerable());
-    CHECK(b.run().liveMove() == kArenaBossNoMove); // the throw was cancelled
+    CHECK(b.run().liveMove() == kArenaBossNoMove); // the pedestal cancelled the throw
     CHECK(b.onStagger(4.5).empty());
-    CHECK_FALSE(b.run().broken());
 
     const double call = b.pedestal().firstCall(b.run().guest());
     PedestalRelease r = PedestalRelease::NotHolding;
     b.onRelease(call + 0.05, 60, &r);
     CHECK(r == PedestalRelease::Lifted);
     CHECK_FALSE(b.invulnerable());
+}
+
+TEST_CASE("stone bearer: the hp share breaks the carried piece once, at its share, and the live move plays on") {
+    const StoneBearerDef& def = shipped();
+    const double B = def.boss.beat();
+    const float at = def.breakable.at;
+    StoneBearer b;
+    b.begin(def, 0.0);
+    b.update(0.5, 0.45f); // phase 2, whole
+    REQUIRE(b.run().phase() == 1);
+    bool started = false;
+    b.startMove(move("called_fist_twice"), 1.0, CalledZone::Left, &started);
+    REQUIRE(started);
+    CHECK(countOf(b.update(1.1, at + 0.01f), ArenaBossEventType::Broke) == 0);
+    CHECK_FALSE(b.run().broken());
+    {
+        const ArenaBossEvents& e = b.update(1.2, at);
+        REQUIRE(countOf(e, ArenaBossEventType::Broke) == 1);
+        const ArenaBossEvent* broke = firstOf(e, ArenaBossEventType::Broke);
+        CHECK(broke->move == kArenaBossNoMove); // it cut nothing
+        CHECK(broke->at == doctest::Approx(1.2));
+    }
+    CHECK(b.run().broken());
+    CHECK(b.run().liveMove() == move("called_fist_twice"));
+    CHECK(b.run().pending());
+    CHECK(b.table().contains(move("marked_throw_halves")));
+    CHECK_FALSE(b.table().contains(move("marked_throw")));
+
+    // Both fists still come: their calls and impacts land as scheduled.
+    int calls = 0;
+    int answered = 0;
+    int broke = 0;
+    for (double t = 1.2 + kDt; t < 1.0 + 5 * B; t += kDt) {
+        const ArenaBossEvents& e = b.update(t, at - 0.05f);
+        calls += countOf(e, ArenaBossEventType::Call);
+        answered += countOf(e, ArenaBossEventType::Answered);
+        broke += countOf(e, ArenaBossEventType::Broke);
+    }
+    CHECK(calls == 2); // at +1 and +2 beats, both after the break
+    CHECK(answered == 2);
+    CHECK(broke == 0); // once
+    CHECK(b.run().strike().complete());
+
+    // A stagger after it breaks nothing more; it only cuts the move, as ever.
+    b.startMove(move("slab_drive_halves"), 6.0, CalledZone::Left, &started);
+    REQUIRE(started);
+    CHECK(countOf(b.onStagger(6.1), ArenaBossEventType::Broke) == 0);
+    CHECK(b.run().liveMove() == kArenaBossNoMove);
+    CHECK(countOf(b.update(7.0, 0.3f), ArenaBossEventType::Broke) == 0);
+}
+
+TEST_CASE("stone bearer: a stagger before the hp share still breaks the piece, and the share then does nothing") {
+    const StoneBearerDef& def = shipped();
+    const double B = def.boss.beat();
+    StoneBearer b;
+    b.begin(def, 0.0);
+    bool started = false;
+    b.startMove(move("called_fist"), 1.0, CalledZone::Left, &started);
+    REQUIRE(started);
+    {
+        const ArenaBossEvents& e = b.onStagger(1.0 + 2 * B);
+        REQUIRE(countOf(e, ArenaBossEventType::Broke) == 1);
+        CHECK(firstOf(e, ArenaBossEventType::Broke)->move == move("called_fist")); // a stagger cuts the move
+    }
+    CHECK(b.run().liveMove() == kArenaBossNoMove);
+    CHECK(b.run().broken());
+    CHECK(countOf(b.update(3.0, 0.7f), ArenaBossEventType::Broke) == 0);
+    CHECK(countOf(b.update(4.0, def.breakable.at), ArenaBossEventType::Broke) == 0);
+    CHECK(countOf(b.update(5.0, 0.3f), ArenaBossEventType::Broke) == 0);
+    CHECK(b.run().broken());
+}
+
+TEST_CASE("stone bearer: a frame past several shares plays them in order: phase, break, pedestal") {
+    const StoneBearerDef& def = shipped();
+    StoneBearer b;
+    b.begin(def, 0.0);
+    const ArenaBossEvents& e = b.update(1.0, 0.2f);
+    int phase = -1;
+    int broke = -1;
+    int climb = -1;
+    for (std::size_t i = 0; i < e.size(); ++i) {
+        if (e[i].type == ArenaBossEventType::PhaseChanged) phase = static_cast<int>(i);
+        if (e[i].type == ArenaBossEventType::Broke) broke = static_cast<int>(i);
+        if (e[i].type == ArenaBossEventType::Invulnerable) climb = static_cast<int>(i);
+    }
+    REQUIRE(phase >= 0);
+    REQUIRE(broke >= 0);
+    REQUIRE(climb >= 0);
+    CHECK(phase < broke);
+    CHECK(broke < climb);
+    CHECK(b.run().broken());
+    CHECK(b.invulnerable());
 }
 
 TEST_CASE("stone bearer: the pedestal (invulnerable, called every 4 beats, lifted by a Release on a call)") {
@@ -1081,56 +1214,70 @@ TEST_CASE("stone bearer: a whole scripted fight allocates nothing") {
         return;
     }
     const StoneBearerDef& def = shipped();
-    StoneBearer b;
     int sink = 0;
     int moves = 0;
     StoneBearerHit hit;
     const AimPoint nape{0.0f, 0.61f};
+    // Twice: with a stagger now and then (the stagger breaks the piece), and with none (the hp share does).
+    int hpBreaks = 0;
+    const auto fight = [&](StoneBearer& b, bool staggers) {
+        b.begin(def, 0.0);
+        moves = 0;
+        double nextMove = 1.0;
+        int frame = 0;
+        for (double now = kDt; now < 180.0; now += kDt, ++frame) {
+            const float hp = static_cast<float>(1.0 - now / 200.0);
+            if (now >= nextMove) {
+                const ArenaBossMoveTable& t = b.table();
+                bool started = false;
+                const std::uint8_t m = t.moves[static_cast<std::size_t>(moves) % t.count];
+                const CalledZone side = (moves & 1) ? CalledZone::Left : CalledZone::Right;
+                sink += static_cast<int>(b.startMove(m, now, side, &started).size());
+                sink += started ? 1 : 0;
+                ++moves;
+                nextMove = now + 4.0;
+            }
+            const CalledStrike& s = b.run().strike();
+            if (!s.complete()) {
+                const double press = s.idealPress(s.nextIndex());
+                if (now >= press && now < press + kDt) {
+                    const ArenaBossEvents& e =
+                        moves % 3 == 0 ? b.guardDown(s.nextZone(), now) : b.interceptDown(s.nextZone(), now);
+                    sink += static_cast<int>(e.size());
+                }
+            }
+            if (s.hold() == ArenaHold::Intercept && now - s.holdFrom() > 0.2)
+                sink += static_cast<int>(b.interceptUp(now).size());
+            if (s.hold() == ArenaHold::Guard && now - s.holdFrom() > 0.2) sink += static_cast<int>(b.guardUp(now).size());
+            if (frame % 900 == 450) sink += static_cast<int>(b.onBlocked(def.boss.find("slab_drive"), now).size());
+            if (frame % 1300 == 650) sink += static_cast<int>(b.onSoloLift(now).size());
+            if (staggers && frame % 1500 == 777) sink += static_cast<int>(b.onStagger(now).size());
+            if (b.invulnerable()) {
+                const double call = b.pedestal().nearestCall(b.run().guest(), now);
+                if (std::fabs(now - call) < kDt * 0.5 && b.pedestal().from() + 10.0 < now) {
+                    PedestalRelease r;
+                    sink += static_cast<int>(b.onRelease(now, 60, &r).size());
+                }
+            }
+            sink += static_cast<int>(b.onHit({-2, 0}, {0, 0}, {1, 0}, now, &nape, &hit).size());
+            const ArenaBossEvents& e = b.update(now, hp);
+            sink += static_cast<int>(e.size());
+            hpBreaks += countOf(e, ArenaBossEventType::Broke);
+        }
+    };
+    StoneBearer staggered;
+    StoneBearer still;
     const std::uint64_t before = ftcore_test::allocStats().count;
-    b.begin(def, 0.0);
-    double nextMove = 1.0;
-    int frame = 0;
-    for (double now = kDt; now < 180.0; now += kDt, ++frame) {
-        const float hp = static_cast<float>(1.0 - now / 200.0);
-        if (now >= nextMove) {
-            const ArenaBossMoveTable& t = b.table();
-            bool started = false;
-            const std::uint8_t m = t.moves[static_cast<std::size_t>(moves) % t.count];
-            const CalledZone side = (moves & 1) ? CalledZone::Left : CalledZone::Right;
-            sink += static_cast<int>(b.startMove(m, now, side, &started).size());
-            sink += started ? 1 : 0;
-            ++moves;
-            nextMove = now + 4.0;
-        }
-        const CalledStrike& s = b.run().strike();
-        if (!s.complete()) {
-            const double press = s.idealPress(s.nextIndex());
-            if (now >= press && now < press + kDt) {
-                const ArenaBossEvents& e =
-                    moves % 3 == 0 ? b.guardDown(s.nextZone(), now) : b.interceptDown(s.nextZone(), now);
-                sink += static_cast<int>(e.size());
-            }
-        }
-        if (s.hold() == ArenaHold::Intercept && now - s.holdFrom() > 0.2)
-            sink += static_cast<int>(b.interceptUp(now).size());
-        if (s.hold() == ArenaHold::Guard && now - s.holdFrom() > 0.2) sink += static_cast<int>(b.guardUp(now).size());
-        if (frame % 900 == 450) sink += static_cast<int>(b.onBlocked(def.boss.find("slab_drive"), now).size());
-        if (frame % 1300 == 650) sink += static_cast<int>(b.onSoloLift(now).size());
-        if (frame % 1500 == 777) sink += static_cast<int>(b.onStagger(now).size());
-        if (b.invulnerable()) {
-            const double call = b.pedestal().nearestCall(b.run().guest(), now);
-            if (std::fabs(now - call) < kDt * 0.5 && b.pedestal().from() + 10.0 < now) {
-                PedestalRelease r;
-                sink += static_cast<int>(b.onRelease(now, 60, &r).size());
-            }
-        }
-        sink += static_cast<int>(b.onHit({-2, 0}, {0, 0}, {1, 0}, now, &nape, &hit).size());
-        sink += static_cast<int>(b.update(now, hp).size());
-    }
+    fight(staggered, true);
+    fight(still, false);
     const std::uint64_t after = ftcore_test::allocStats().count;
     CHECK(after == before);
     CHECK(sink > 0);
-    CHECK(b.run().phase() == 1);
-    CHECK(b.pedestal().lifted());
-    CHECK(b.run().crit().openings() > 0);
+    for (const StoneBearer* f : {&staggered, &still}) {
+        CHECK(f->run().phase() == 1);
+        CHECK(f->run().broken());
+        CHECK(f->pedestal().lifted());
+        CHECK(f->run().crit().openings() > 0);
+    }
+    CHECK(hpBreaks == 1); // the boss that never staggered, on its share
 }
