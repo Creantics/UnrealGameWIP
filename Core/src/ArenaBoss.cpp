@@ -657,11 +657,12 @@ void ArenaBossRun::begin(const ArenaBossDef& def, double now) {
     guest_.reset(def.bpm, def.guestCall);
     crit_.reset(def.weakPoints);
     events_.clear();
-    now_ = now;
+    now_ = std::isfinite(now) ? now : 0.0;
     live_ = kArenaBossNoMove;
-    liveStart_ = now;
+    liveStart_ = now_;
     cueCount_ = cueNext_ = 0;
     critWasOpen_ = false;
+    missed_ = false;
 }
 
 void ArenaBossRun::cancelMove() {
@@ -678,17 +679,21 @@ void ArenaBossRun::absorb(const CalledResults& results) {
         e.impact = r.impact;
         e.outcome = r.outcome;
         e.at = r.at;
-        events_.push(e);
-        if (r.impact + 1u != strike_.size() || live_ == kArenaBossNoMove) continue;
-        // The move's last impact: judge the move as a whole.
-        const ArenaBossMove& m = def_->moves[live_];
-        bool all = true;
-        bool missed = false;
-        for (std::size_t i = 0; i < strike_.size(); ++i) {
-            const CalledOutcome o = strike_.outcome(i);
-            all = all && o == CalledOutcome::Intercepted;
-            missed = missed || o == CalledOutcome::Missed || o == CalledOutcome::WrongZone;
+        const bool miss = r.outcome == CalledOutcome::Missed || r.outcome == CalledOutcome::WrongZone;
+        const bool firstMiss = miss && !missed_;
+        if (firstMiss) {
+            missed_ = true;
+            e.value = 1;
         }
+        events_.push(e);
+        if (live_ == kArenaBossNoMove) continue;
+        const ArenaBossMove& m = def_->moves[live_];
+        if (firstMiss && m.marked && guest_.onMarkedMiss())
+            events_.push({ArenaBossEventType::CallsShifted, live_, r.impact, r.outcome, 0, 0, r.at, 0.0});
+        if (r.impact + 1u != strike_.size()) continue;
+        // The move's last impact: every impact turned opens the window.
+        bool all = true;
+        for (std::size_t i = 0; i < strike_.size(); ++i) all = all && strike_.outcome(i) == CalledOutcome::Intercepted;
         if (all) {
             if (m.opens > 0.0f) {
                 crit_.open(r.at, m.opens);
@@ -696,20 +701,18 @@ void ArenaBossRun::absorb(const CalledResults& results) {
                 events_.push({ArenaBossEventType::CritOpened, live_, r.impact, r.outcome, 0, 0, r.at, crit_.closesAt()});
             }
             if (m.load > 0) events_.push({ArenaBossEventType::LoadGained, live_, r.impact, r.outcome, m.load, 0, r.at, 0.0});
-        } else if (m.marked && missed && guest_.onMarkedMiss()) {
-            events_.push({ArenaBossEventType::CallsShifted, live_, r.impact, r.outcome, 0, 0, r.at, 0.0});
         }
     }
 }
 
 void ArenaBossRun::advance(double t) {
-    if (t < now_) t = now_;
+    t = timeOf(t);
     for (;;) {
         const double call = cueNext_ < cueCount_ ? cues_[cueNext_] : kNever;
         const double close = critWasOpen_ ? crit_.closesAt() : kNever;
         const double hit = strike_.complete() ? kNever : strike_.impact(strike_.nextIndex()).at;
         const double first = std::min({call, close, hit});
-        if (first > t) break;
+        if (!(first <= t)) break; // nothing due (kNever and NaN included)
         if (call == first) {
             events_.push({ArenaBossEventType::Call, live_, cueNext_, CalledOutcome::Pending, 0, 0, call, 0.0});
             ++cueNext_;
@@ -734,6 +737,7 @@ const ArenaBossEvents& ArenaBossRun::startMove(std::uint8_t move, double t, Call
     const ArenaBossMove& m = def_->moves[move];
     live_ = move;
     liveStart_ = now_;
+    missed_ = false;
     cueCount_ = m.callCount;
     cueNext_ = 0;
     for (std::size_t k = 0; k < m.callCount; ++k) cues_[k] = guest_.cue(now_, m.calls[k]);
@@ -757,7 +761,7 @@ const ArenaBossEvents& ArenaBossRun::startMove(std::uint8_t move, double t, Call
 
 const ArenaBossEvents& ArenaBossRun::update(double now, float hpShare) {
     events_.clear();
-    if (now < now_) now = now_;
+    now = timeOf(now);
     if (phases_.update(hpShare) > 0) {
         guest_.onPhaseChange();
         events_.push({ArenaBossEventType::PhaseChanged, kArenaBossNoMove, 0, CalledOutcome::Pending,
@@ -799,7 +803,8 @@ const ArenaBossEvents& ArenaBossRun::onStagger(double t) {
     events_.clear();
     advance(t);
     if (breakable_.onStagger(now_))
-        events_.push({ArenaBossEventType::Broke, live_, 0, CalledOutcome::Pending, 0, 0, now_, 0.0});
+        events_.push({ArenaBossEventType::Broke, pending() ? live_ : kArenaBossNoMove, 0, CalledOutcome::Pending, 0,
+                      0, now_, 0.0});
     cancelMove();
     return events_;
 }

@@ -6,8 +6,9 @@
 // make of them. Every Arena boss reuses them; a boss's own rules compose them (StoneBearer.h is the
 // first).
 //
-// Time. Every time passed in is the fight's clock in seconds, fed in order; an earlier time is read as
-// now(). Data counts in beats of the boss's tempo (one beat is 60 / bpm seconds); Core converts once,
+// Time. Every time passed in is the fight's clock in seconds, fed in order; an earlier time, or one that
+// is not finite (inf, NaN), is read as now(), so a bad clock stalls the run instead of hanging it. A hp
+// share that is NaN moves no phase and fires no trigger. Data counts in beats of the boss's tempo (one beat is 60 / bpm seconds); Core converts once,
 // with arenaBeats(). Comparisons in beats never go through seconds.
 //
 // Ground plane. Positions and facings are ArenaFight's: Vec2 in metres on the host's X/Y, X forward and
@@ -73,12 +74,18 @@
 //                                fell due by now in time order: Call, CritClosed (the window ran out),
 //                                Answered (an impact), in that order on a tie.
 //     intercept/guard Down/Up    the lead's buttons (Answered for impacts they resolve).
-//     onStagger(t)               Broke the first time (the tables swap); cancels the live move.
+//     onStagger(t)               Broke the first time (the tables swap); cancels the live move. Broke
+//                                names the move it cut (one with a call or impact still pending), else
+//                                kArenaBossNoMove.
 //     onHit(...)                 a lead's blow on the boss: the crit judge (Crit).
 //   Answered for the last impact of an Intercept move whose impacts were all Intercepted opens the crit
 //   window for the move's `opens` seconds from that impact (CritOpened) and gives its `load`
-//   (LoadGained). A Missed or WrongZone impact on a marked move turns the miss shift on (CallsShifted,
-//   once a phase); a Guard is not a miss. A cancelled move's pending calls and impacts are dropped with no event.
+//   (LoadGained). The first Missed or WrongZone impact of each use of a move is flagged (its Answered has
+//   value 1; a boss rule that charges a miss once per use reads it); on a marked move it also turns the
+//   miss shift on at once (CallsShifted, once a phase), so a cancel after it keeps the shift. A Guard is
+//   not a miss. A cancelled move's pending calls and impacts are dropped with no event.
+//   liveMove() is the last started move until the next startMove, cancelMove or Stagger (a move whose
+//   impacts have all landed stays live; pending() says whether anything of it is still to come).
 //
 // The data (one file per boss, Data/Battle/arena_boss/<id>.json; importArenaBoss reads the generic
 // keys, a boss's own loader the rest):
@@ -117,8 +124,18 @@
 //   phases: 1..kMaxArenaBossPhases; endAt in [0, 1), strictly falling, the last 0. moves and brokenMoves
 //     (default: moves): 1..kMaxArenaPhaseMoves known move ids, no repeats.
 //   An unknown key is a warning; anything else wrong is an error with its path, and `out` is left
-//   default. The wiring maps a move onto ArenaEnemyMove/ArenaAttack: startup = the first impact,
-//   active, recovery, range and damage (times the lead's max hp); answer "intercept" is not parryable.
+//   default.
+//
+// Wiring a move onto ArenaFight (ArenaEnemyMove/ArenaAttack, ArenaFight.h):
+//   - A move of n impacts is n chained ArenaEnemyMoves: the first's startup is impacts[0] beats, each
+//     next one's startup the gap to its impact; each has the move's active, range and damage (times the
+//     lead's max hp); the last has the move's recovery, the others none.
+//   - poiseDamage and guardDamage are the enemy kind's own defaults; guardBreak (when above 0) is the
+//     ArenaAttack's guard-break time.
+//   - The hit shape by answer: "intercept" and "any" an arc (arcCos 0.5, the kind's default width);
+//     "path" impacts and "cover" a lane (width 1 m) from the boss to the aimed point; "tile" all round.
+//     Every shape then goes through the keep-out clamp.
+//   - Answer "intercept" is not parryable: the run answers it, ArenaFight only lands it.
 //
 // Nothing here allocates except importArenaBoss (load time).
 
@@ -127,6 +144,7 @@
 #include "ftcore/WeakPoint.h"
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -271,6 +289,7 @@ class CritWindow {
 public:
     void reset(const ArenaWeakPoints& points) {
         points_ = points;
+        openings_ = 0;
         close();
     }
     // A new opening, ending at now + seconds (an open window is replaced).
@@ -372,13 +391,13 @@ private:
     std::size_t phase_ = 0;
 };
 
-// Fires once, the first time the hp share is at or below `at`.
+// Fires once, the first time the hp share is at or below `at` (NaN never fires it).
 struct ArenaHpTrigger {
     float at = 0.0f;
     bool fired = false;
 
     bool update(float hpShare) {
-        if (fired || hpShare > at) return false;
+        if (fired || !(hpShare <= at)) return false;
         fired = true;
         return true;
     }
@@ -434,7 +453,9 @@ struct ArenaKeepOut {
     // wide (ArenaAttack::arcCos; -1 all round), that touches at most the disc's edge. 0 with the origin
     // in the disc.
     FTCORE_API float clampArc(Vec2 origin, Vec2 dir, float arcCos, float reach) const;
-    // The same for a straight lane `width` wide (ArenaAttack::width).
+    // The same for a straight lane `width` wide (ArenaAttack::width), starting on the segment `width`
+    // across `origin`. 0 when even that start touches the disc. A reach of 0 is no attack: the host
+    // drops the blow instead of swinging it.
     FTCORE_API float clampLane(Vec2 origin, Vec2 dir, float width, float reach) const;
     // `point` moved straight away from the centre until a circle of `areaRadius` round it touches at
     // most the edge (a point on the centre moves along +X).
@@ -540,7 +561,7 @@ struct ArenaBossEvent {
     double until = 0.0; // CritOpened, Lifted
 };
 
-inline constexpr std::size_t kMaxArenaBossEvents = 24; // per call; more are dropped (dropped())
+inline constexpr std::size_t kMaxArenaBossEvents = 24; // per call; more are dropped (counted in `dropped`)
 
 struct ArenaBossEvents {
     std::array<ArenaBossEvent, kMaxArenaBossEvents> items{};
@@ -583,6 +604,10 @@ public:
     bool broken() const { return breakable_.broken; }
     const ArenaBossMoveTable& table() const { return phases_.table(breakable_.broken); }
     std::uint8_t liveMove() const { return live_; }
+    // The live move still has a call or an impact to come.
+    bool pending() const { return live_ != kArenaBossNoMove && (cueNext_ < cueCount_ || !strike_.complete()); }
+    // `t` as the run reads it: now() when it is earlier or not finite.
+    double timeOf(double t) const { return std::isfinite(t) && t > now_ ? t : now_; }
     double liveStart() const { return liveStart_; }
     const CalledStrike& strike() const { return strike_; }
     const GuestCaller& guest() const { return guest_; }
@@ -596,7 +621,6 @@ public:
 private:
     void advance(double t);
     void absorb(const CalledResults& results);
-    void emitCallsUpTo(double t);
 
     const ArenaBossDef* def_ = nullptr;
     ArenaBossPhaseTrack phases_{};
@@ -612,6 +636,7 @@ private:
     std::uint8_t cueCount_ = 0;
     std::uint8_t cueNext_ = 0;
     bool critWasOpen_ = false;
+    bool missed_ = false; // the live use has had its first miss
 };
 
 } // namespace ftcore

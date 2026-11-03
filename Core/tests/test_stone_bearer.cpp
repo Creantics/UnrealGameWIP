@@ -9,13 +9,14 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
 using namespace ftcore;
 
 // The first Arena boss's own rules (StoneBearer.h) on top of the generic pieces: the weight stacks,
-// the nape, the slab, the pedestal, and the shipped Data/Battle/arena_boss/stone_bearer.json.
+// the rear weak point, the breakable, the pedestal, and the shipped Data/Battle/arena_boss/stone_bearer.json.
 
 namespace {
 
@@ -218,7 +219,7 @@ TEST_CASE("stone bearer data: the shipped file loads clean, with the outline's t
     CHECK(b.weakPoints.gates[0].arc == doctest::Approx(60.0));
     CHECK(b.keepOutRadius > 0.0f);
 
-    // The marked throw is phase 2's; the slab's loss swaps in the halves and drops the block throw.
+    // The marked throw is phase 2's; the break swaps in the halves and drops the block throw.
     const ArenaBossPhase& p1 = b.phases[0];
     const ArenaBossPhase& p2 = b.phases[1];
     CHECK(p1.endAt == doctest::Approx(0.5));
@@ -230,6 +231,20 @@ TEST_CASE("stone bearer data: the shipped file loads clean, with the outline's t
     CHECK(p2.whole.contains(b.find("called_fist_twice")));
     CHECK(p2.broken.contains(b.find("marked_throw_halves")));
     CHECK_FALSE(p2.broken.contains(b.find("marked_throw")));
+
+    // The stack costs. A Guard held against a blow costs 1, except the single side blow whose Guard
+    // costs 2; so a two-blow side move guarded twice costs 1 + 1. A miss costs its move's missStacks
+    // once per use: 1 for the side blows, 2 for the marked throw, whole or in halves.
+    CHECK(fist.guardStacks == 2);
+    CHECK(fist.missStacks == 1);
+    CHECK(twice.guardStacks == 1);
+    CHECK(twice.missStacks == 1);
+    CHECK(thrown.guardStacks == 1);
+    CHECK(thrown.missStacks == 2);
+    CHECK(halves.guardStacks == 1);
+    CHECK(halves.missStacks == 2);
+    CHECK(b.moves[b.find("ground_punch")].guardStacks == 1);
+    CHECK(b.moves[b.find("ground_punch")].missStacks == 0);
 
     CHECK(def.weight.cap == 5);
     CHECK(def.weight.shockRingAt == 3);
@@ -339,8 +354,9 @@ TEST_CASE("stone bearer: guards gain stacks, intercepts and the first crit of an
     CHECK(b.stacks() == 4);
     CHECK(b.damageScale() == doctest::Approx(1.4));
     CHECK(b.shockRing(move("stamp")));
-    CHECK(b.shockRing(move("low_sweep")));
-    CHECK_FALSE(b.shockRing(move("edge_jab"))); // not a floor blow
+    CHECK(b.shockRing(move("ground_punch")));
+    CHECK_FALSE(b.shockRing(move("edge_jab")));  // not a floor blow
+    CHECK_FALSE(b.shockRing(move("low_sweep"))); // a sweep along the floor, not into it
     CHECK_FALSE(b.shockRing(kArenaBossNoMove));
 
     // Intercepted (the impact sheds): 3, and the nape opens.
@@ -386,6 +402,12 @@ TEST_CASE("stone bearer: guards gain stacks, intercepts and the first crit of an
     b.startMove(fist, 20.0, CalledZone::Left);
     b.update(20.0 + 3 * B + 0.01, 1.0f);
     CHECK(b.stacks() == 3);
+
+    // A new fight starts with no openings counted.
+    CHECK(b.run().crit().openings() > 0);
+    b.begin(def, 0.0);
+    CHECK(b.run().crit().openings() == 0);
+    CHECK(b.stacks() == 0);
 }
 
 TEST_CASE("stone bearer: blocks, solo lifts and the poise freeze") {
@@ -419,7 +441,7 @@ TEST_CASE("stone bearer: blocks, solo lifts and the poise freeze") {
     CHECK(hit.damage == doctest::Approx(0.5));
     CHECK(hit.poise == doctest::Approx(0.0));
 
-    // A stagger reported anyway is lost: the slab stays whole and the live move plays on.
+    // A stagger reported anyway is lost: the piece stays whole and the live move plays on.
     bool started = false;
     b.startMove(move("slab_drive"), 4.0, CalledZone::Left, &started);
     REQUIRE(started);
@@ -428,7 +450,7 @@ TEST_CASE("stone bearer: blocks, solo lifts and the poise freeze") {
     CHECK(b.run().liveMove() == move("slab_drive"));
 }
 
-TEST_CASE("stone bearer: a frozen boss keeps its slab, and phase 2 and the pedestal still play") {
+TEST_CASE("stone bearer: a frozen boss keeps its carried piece, and phase 2 and the pedestal still play") {
     const StoneBearerDef& def = shipped();
     StoneBearer b;
     b.begin(def, 0.0);
@@ -575,6 +597,163 @@ TEST_CASE("stone bearer: the break swaps in the halves, and doubles the marked t
     CHECK(b.run().strike().impact(1).zone == CalledZone::Path);
 }
 
+TEST_CASE("stone bearer: a stagger names the move it cut, none when nothing of it is pending") {
+    const StoneBearerDef& def = shipped();
+    const double B = def.boss.beat();
+    bool started = false;
+    {
+        StoneBearer b;
+        b.begin(def, 0.0);
+        b.startMove(move("called_fist"), 1.0, CalledZone::Left, &started);
+        REQUIRE(started);
+        const ArenaBossEvents& e = b.onStagger(1.0 + 2 * B); // before the blow lands
+        REQUIRE(firstOf(e, ArenaBossEventType::Broke));
+        CHECK(firstOf(e, ArenaBossEventType::Broke)->move == move("called_fist"));
+        CHECK(b.run().liveMove() == kArenaBossNoMove);
+    }
+    {
+        StoneBearer b;
+        b.begin(def, 0.0);
+        b.startMove(move("called_fist"), 1.0, CalledZone::Left, &started);
+        REQUIRE(started);
+        b.update(1.0 + 3 * B + 0.01, 1.0f); // it landed (missed): nothing of it is pending
+        CHECK_FALSE(b.run().pending());
+        CHECK(b.run().liveMove() == move("called_fist")); // live until the next start or a stagger
+        const ArenaBossEvents& e = b.onStagger(1.0 + 3 * B + 0.5);
+        REQUIRE(firstOf(e, ArenaBossEventType::Broke));
+        CHECK(firstOf(e, ArenaBossEventType::Broke)->move == kArenaBossNoMove);
+    }
+    {
+        StoneBearer b;
+        b.begin(def, 0.0);
+        b.startMove(move("slab_drive"), 1.0, CalledZone::Left, &started); // no call, no called impact
+        REQUIRE(started);
+        CHECK_FALSE(b.run().pending());
+        CHECK(firstOf(b.onStagger(1.2), ArenaBossEventType::Broke)->move == kArenaBossNoMove);
+    }
+}
+
+TEST_CASE("stone bearer: the thrown halves charge a miss once per use, and a cancel keeps the shift") {
+    const StoneBearerDef& def = shipped();
+    const double B = def.boss.beat();
+    StoneBearer b;
+    b.begin(def, 0.0);
+    REQUIRE(countOf(b.onStagger(0.5), ArenaBossEventType::Broke) == 1);
+    b.update(1.0, 0.45f);
+    const std::uint8_t halves = move("marked_throw_halves");
+    bool started = false;
+
+    // The first half missed, then the move cut before the second: +2 and the shift, both kept.
+    b.startMove(halves, 2.0, CalledZone::Left, &started);
+    REQUIRE(started);
+    {
+        const ArenaBossEvents& e = b.update(2.0 + 4 * B + 0.01, 0.45f); // no hold: out of the path
+        REQUIRE(firstOf(e, ArenaBossEventType::Answered));
+        CHECK(firstOf(e, ArenaBossEventType::Answered)->outcome == CalledOutcome::Missed);
+        CHECK(firstOf(e, ArenaBossEventType::Answered)->value == 1);
+        REQUIRE(firstOf(e, ArenaBossEventType::CallsShifted));
+        CHECK(firstOf(e, ArenaBossEventType::CallsShifted)->at == doctest::Approx(2.0 + 4 * B));
+        CHECK(firstOf(e, ArenaBossEventType::StacksChanged)->amount == 2);
+    }
+    b.onStagger(2.0 + 4 * B + 0.2); // already broken: only cancels the move
+    CHECK(b.run().liveMove() == kArenaBossNoMove);
+    CHECK(b.run().guest().shifted());
+    CHECK(countOf(b.update(2.0 + 6 * B, 0.45f), ArenaBossEventType::Answered) == 0); // the second half dropped
+    CHECK(b.stacks() == 2);
+
+    // Both halves missed: still +2 for the use, the second Answered unflagged, no second shift.
+    b.startMove(halves, 10.0, CalledZone::Left, &started);
+    REQUIRE(started);
+    int answered = 0;
+    int flagged = 0;
+    int shifted = 0;
+    for (double t = 10.0; t < 10.0 + 8 * B; t += kDt) {
+        const ArenaBossEvents& e = b.update(t, 0.45f);
+        for (const ArenaBossEvent& x : e) {
+            answered += x.type == ArenaBossEventType::Answered ? 1 : 0;
+            flagged += x.type == ArenaBossEventType::Answered && x.value == 1 ? 1 : 0;
+            shifted += x.type == ArenaBossEventType::CallsShifted ? 1 : 0;
+        }
+    }
+    CHECK(answered == 2);
+    CHECK(flagged == 1);
+    CHECK(shifted == 0); // once a phase
+    CHECK(b.stacks() == 4);
+
+    // Both halves guarded: guardStacks for each (1 + 1).
+    b.startMove(halves, 20.0, CalledZone::Left, &started);
+    REQUIRE(started);
+    b.guardDown(CalledZone::Path, 20.0 + 3 * B);
+    play(b, 20.0 + 3 * B, 20.0 + 6 * B, 0.45f);
+    b.guardUp(20.0 + 6 * B);
+    CHECK(b.stacks() == 5); // 4 + 2, kept at the cap
+}
+
+TEST_CASE("stone bearer: a non-finite time or hp stalls the boss instead of hanging it") {
+    const StoneBearerDef& def = shipped();
+    const double B = def.boss.beat();
+    const double kInf = std::numeric_limits<double>::infinity();
+    const double kNaN = std::numeric_limits<double>::quiet_NaN();
+    const float kNaNf = std::numeric_limits<float>::quiet_NaN();
+
+    {
+        StoneBearer b;
+        b.begin(def, kNaN);
+        CHECK(b.run().now() == 0.0);
+    }
+    StoneBearer b;
+    b.begin(def, 0.0);
+    bool started = false;
+    b.startMove(move("called_fist"), 1.0, CalledZone::Left, &started);
+    REQUIRE(started);
+    for (const double bad : {kInf, -kInf, kNaN}) {
+        CAPTURE(bad);
+        CHECK(countOf(b.update(bad, 1.0f), ArenaBossEventType::Answered) == 0);
+        b.interceptDown(CalledZone::Left, bad);
+        b.interceptUp(bad);
+        b.guardDown(CalledZone::Left, bad);
+        b.guardUp(bad);
+        StoneBearerHit hit;
+        b.onHit({-2, 0}, {0, 0}, {1, 0}, bad, nullptr, &hit);
+        CHECK_FALSE(hit.crit.crit);
+        PedestalRelease r = PedestalRelease::Lifted;
+        b.onRelease(bad, 60, &r);
+        CHECK(r == PedestalRelease::NotHolding);
+        CHECK(b.run().now() == 1.0);
+        CHECK(b.run().liveMove() == move("called_fist"));
+        CHECK(b.run().pending()); // its call and impact still to come
+        CHECK(b.stacks() == 0);
+    }
+    // A NaN hp moves no phase and starts no pedestal; the last good share stands.
+    b.update(1.1, kNaNf);
+    CHECK(b.run().phase() == 0);
+    CHECK_FALSE(b.invulnerable());
+    // An event at a bad time lands at now.
+    const ArenaBossEvents& e = b.onBlocked(move("slab_drive"), kNaN);
+    REQUIRE(firstOf(e, ArenaBossEventType::StacksChanged));
+    CHECK(firstOf(e, ArenaBossEventType::StacksChanged)->at == doctest::Approx(1.1));
+    // The move plays on from there.
+    CHECK(countOf(b.update(1.0 + 3 * B + 0.01, 1.0f), ArenaBossEventType::Answered) == 1);
+
+    // On the pedestal: a stalled clock emits no call storm, and a huge jump plays only the last period.
+    b.update(20.0, 0.2f);
+    REQUIRE(b.invulnerable());
+    CHECK(countOf(b.update(kInf, 0.2f), ArenaBossEventType::Call) == 0);
+    const ArenaBossEvents& jump = b.update(20.0 + 1.0e7, 0.2f);
+    CHECK(countOf(jump, ArenaBossEventType::Call) >= 4);
+    CHECK(countOf(jump, ArenaBossEventType::Call) <= 5);
+    CHECK(jump.dropped == 0);
+    // A NaN Release is off the beat for the pedestal itself; through the boss it is a Release at now.
+    PedestalPhase p;
+    p.reset(def.pedestal);
+    REQUIRE(p.update(0.1f, 0.0));
+    CHECK(p.release(b.run().guest(), kNaN, 60) == PedestalRelease::OffBeat);
+    CHECK(p.holding());
+    ArenaHpTrigger trigger{0.5f};
+    CHECK_FALSE(trigger.update(kNaNf));
+    CHECK(trigger.update(0.5f));
+}
+
 TEST_CASE("stone bearer: a missed marked throw adds 2 and shifts the calls, the pedestal's too") {
     const StoneBearerDef& def = shipped();
     const double B = def.boss.beat();
@@ -619,20 +798,69 @@ TEST_CASE("stone bearer: no blow in the data reaches the guest's spot") {
     const ArenaKeepOut keep = arenaKeepOutAt({0, 0}, 0.0f, boss.keepOutBearing, boss.keepOutDistance, boss.keepOutRadius);
     CHECK(keep.centre.x == doctest::Approx(0.0).epsilon(1e-4));
     CHECK(keep.centre.y == doctest::Approx(20.0));
-    for (const Vec2 at : {Vec2{0, 0}, Vec2{0, 10}, Vec2{3, 14}, Vec2{-5, 5}}) {
-        const Vec2 d{keep.centre.x - at.x, keep.centre.y - at.y};
-        const float dist = std::sqrt(d.x * d.x + d.y * d.y);
-        const Vec2 dir{d.x / dist, d.y / dist}; // aimed straight at the spot: the worst case
-        for (std::size_t i = 0; i < boss.moveCount; ++i) {
-            const ArenaBossMove& m = boss.moves[i];
-            CAPTURE(m.id());
-            const float arc = keep.clampArc(at, dir, 0.5f, m.range);
-            const float lane = keep.clampLane(at, dir, 1.0f, m.range);
-            CHECK(arc <= m.range);
-            CHECK(lane <= m.range);
-            CHECK(arc <= dist - keep.radius + 1e-3f);
-            CHECK(lane <= dist - keep.radius + 1e-3f);
+    // Inside the disc, with a little slack for float rounding. A clamped reach of 0 is no attack (the
+    // host drops it), so only the points a blow actually sweeps (beyond the origin) are sampled.
+    const auto inside = [&](Vec2 p) {
+        const float dx = p.x - keep.centre.x;
+        const float dy = p.y - keep.centre.y;
+        return dx * dx + dy * dy < (keep.radius - 1e-3f) * (keep.radius - 1e-3f);
+    };
+    int sampled = 0;
+    for (const Vec2 at : {Vec2{0, 0}, Vec2{0, 10}, Vec2{3, 14}, Vec2{-5, 5}, Vec2{0, 15.5f}}) {
+        const float aim = std::atan2(keep.centre.y - at.y, keep.centre.x - at.x);
+        for (const float turn : {0.0f, 0.35f, -0.35f, 1.0f, -1.0f, 2.5f}) { // at the spot, then off it
+            const Vec2 dir{std::cos(aim + turn), std::sin(aim + turn)};
+            const Vec2 right{-dir.y, dir.x};
+            for (std::size_t i = 0; i < boss.moveCount; ++i) {
+                const ArenaBossMove& m = boss.moves[i];
+                CAPTURE(m.id());
+                CAPTURE(turn);
+                // Arcs from a forward cone to all round.
+                for (const float arcCos : {0.9f, 0.5f, 0.0f, -0.5f, -1.0f}) {
+                    const float reach = keep.clampArc(at, dir, arcCos, m.range);
+                    CHECK(reach <= m.range);
+                    const float half = std::acos(arcCos);
+                    for (int a = 0; a <= 24; ++a) {
+                        const float th = -half + 2.0f * half * static_cast<float>(a) / 24.0f;
+                        const Vec2 ray{dir.x * std::cos(th) + right.x * std::sin(th),
+                                       dir.y * std::cos(th) + right.y * std::sin(th)};
+                        for (int r = 1; r <= 24; ++r) {
+                            const float d = reach * static_cast<float>(r) / 24.0f;
+                            ++sampled;
+                            if (inside({at.x + ray.x * d, at.y + ray.y * d})) {
+                                FAIL_CHECK("an arc reaches the spot");
+                                r = a = 99;
+                            }
+                        }
+                    }
+                }
+                // Lanes from a thin throw to one wider than the spot.
+                for (const float width : {0.25f, 1.0f, 4.0f, 8.0f}) {
+                    const float reach = keep.clampLane(at, dir, width, m.range);
+                    CHECK(reach <= m.range);
+                    if (!(reach > 0.0f)) continue;
+                    for (int w = 0; w <= 8; ++w) {
+                        const float off = width * (static_cast<float>(w) / 8.0f - 0.5f);
+                        for (int r = 1; r <= 24; ++r) {
+                            const float d = reach * static_cast<float>(r) / 24.0f;
+                            ++sampled;
+                            if (inside({at.x + dir.x * d + right.x * off, at.y + dir.y * d + right.y * off})) {
+                                FAIL_CHECK("a lane reaches the spot");
+                                r = w = 99;
+                            }
+                        }
+                    }
+                }
+            }
         }
+    }
+    CHECK(sampled > 100000);
+    // An area pushed off the spot only ever touches its edge.
+    for (const Vec2 p : {Vec2{0, 20}, Vec2{0.5f, 19}, Vec2{-2, 22}, Vec2{4, 18}}) {
+        const Vec2 c = keep.clampArea(p, 2.0f);
+        const float dx = c.x - keep.centre.x;
+        const float dy = c.y - keep.centre.y;
+        CHECK(std::sqrt(dx * dx + dy * dy) >= keep.radius + 2.0f - 1e-3f);
     }
 }
 

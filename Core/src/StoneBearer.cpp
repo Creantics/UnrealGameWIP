@@ -15,7 +15,7 @@ namespace ftcore {
 PedestalRelease PedestalPhase::release(const GuestCaller& guest, double t, int load) {
     if (!holding_) return PedestalRelease::NotHolding;
     if (load <= kArenaReleaseOpenLoad) return PedestalRelease::LowLoad;
-    if (std::fabs(t - nearestCall(guest, t)) > tuning_.releaseWindow) return PedestalRelease::OffBeat;
+    if (!(std::fabs(t - nearestCall(guest, t)) <= tuning_.releaseWindow)) return PedestalRelease::OffBeat;
     holding_ = false;
     lifted_ = true;
     downUntil_ = t + tuning_.downTime;
@@ -98,7 +98,7 @@ void sbPedestal(JsonValue v, double bpm, PedestalTuning& p, std::vector<std::str
     sbNum(v, "pedestal", "callEveryBeats", p.callEveryBeats, 1.0, 16.0, errors);
     sbNum(v, "pedestal", "releaseWindow", p.releaseWindow, 0.02, 0.5, errors);
     sbNum(v, "pedestal", "downTime", p.downTime, 0.0, 10.0, errors);
-    if (errors.size() != before) return;
+    if (errors.size() != before || !(bpm > 0.0)) return; // a bad bpm is the generic loader's error
     // The windows either side of two calls may not meet, or a Release would sit in both.
     if (!(p.releaseWindow < 0.5 * arenaBeats(p.callEveryBeats, bpm)))
         errors.push_back("pedestal.releaseWindow: expected below half of pedestal.callEveryBeats");
@@ -122,8 +122,10 @@ bool importStoneBearer(std::string_view json, StoneBearerDef& out, std::string* 
     JsonDocument doc;
     if (doc.parse(json, nullptr) && doc.root().isObject()) {
         const JsonValue root = doc.root();
+        // The tempo the generic loader accepted (0 when it refused it: the cross-check is then skipped).
         const JsonValue bpm = root["bpm"];
-        const double beatsPerMinute = bpm.isNumber() && bpm.number() > 0.0 ? bpm.number() : 120.0;
+        const double beatsPerMinute =
+            bpm.isNumber() && bpm.number() >= 40.0 && bpm.number() <= 240.0 ? bpm.number() : 0.0;
         if (const JsonValue v = root["weight"]; v.isObject()) sbWeight(v, out.weight, errors, warnings);
         else errors.push_back("weight: expected an object");
         if (const JsonValue v = root["pedestal"]; v.isObject()) sbPedestal(v, beatsPerMinute, out.pedestal, errors, warnings);
@@ -181,8 +183,7 @@ const ArenaBossEvents& StoneBearer::finish() {
             const ArenaBossMove& m = def_->boss.moves[e.move];
             if (e.outcome == CalledOutcome::Intercepted && m.sheds[e.impact]) weigh(-w.interceptShed, e.at);
             else if (e.outcome == CalledOutcome::Guarded) weigh(m.guardStacks, e.at);
-            else if (e.outcome == CalledOutcome::Missed || e.outcome == CalledOutcome::WrongZone)
-                weigh(m.missStacks, e.at);
+            else if (e.value == 1) weigh(m.missStacks, e.at); // the use's first miss: once per use
         }
     }
     const double now = run_.now();
@@ -190,9 +191,13 @@ const ArenaBossEvents& StoneBearer::finish() {
         const PedestalTuning& p = def_->pedestal;
         const GuestCaller& guest = run_.guest();
         const double series = pedestal_.from() + arenaBeats(p.firstCallBeats, guest.bpm());
+        const double period = arenaBeats(p.callEveryBeats, guest.bpm());
+        // A frame that jumped further plays only the calls of the last kPedestalCatchUp periods.
+        if (nextCall_ < now - kPedestalCatchUp * period)
+            nextCall_ = guest.nextRepeat(series, p.callEveryBeats, now - kPedestalCatchUp * period);
         while (nextCall_ <= now) {
             run_.push({ArenaBossEventType::Call, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, nextCall_, 0.0});
-            nextCall_ = guest.nextRepeat(series, p.callEveryBeats, nextCall_ + 0.5 * arenaBeats(p.callEveryBeats, guest.bpm()));
+            nextCall_ = guest.nextRepeat(series, p.callEveryBeats, nextCall_ + 0.5 * period);
         }
     }
     if (recoverDue_ && now >= pedestal_.downUntil()) {
@@ -214,7 +219,7 @@ const ArenaBossEvents& StoneBearer::tick(double t) {
 }
 
 const ArenaBossEvents& StoneBearer::startMove(std::uint8_t move, double t, CalledZone side, bool* started) {
-    if (pedestal_.holding() || pedestal_.down(t)) {
+    if (pedestal_.holding() || pedestal_.down(run_.timeOf(t))) {
         if (started) *started = false;
         return tick(t);
     }
@@ -223,7 +228,7 @@ const ArenaBossEvents& StoneBearer::startMove(std::uint8_t move, double t, Calle
 }
 
 const ArenaBossEvents& StoneBearer::update(double now, float hpShare) {
-    hpShare_ = hpShare;
+    if (!std::isnan(hpShare)) hpShare_ = hpShare;
     return tick(now);
 }
 

@@ -1,35 +1,42 @@
 #pragma once
 
 // The first Arena boss (id `stone_bearer`): its own rules on top of the generic pieces (ArenaBoss.h).
-// A heavy stone figure that carries a slab on its back and grows heavier each time the lead meets its
-// blows head-on instead of turning them. The data is Data/Battle/arena_boss/stone_bearer.json.
+// A stacking debuff that grows each time the lead blocks a blow instead of turning it, a breakable
+// carried piece, one rear weak point, a keep-out disc and an invulnerable phase. The data is
+// Data/Battle/arena_boss/stone_bearer.json.
 //
 // * Weight (WeightStacks). The boss carries 0..cap stacks (cap 5).
-//     - It gains them when the lead meets its blows with a Guard: `guard` (1) for a blow the lead
-//       blocks that has no called answer (onBlocked: ArenaFight's Blocked; a timed guard counts too),
-//       a called blow's own `guardStacks` for each of its impacts Guarded, and its `missStacks` for each
-//       impact Missed or WrongZone; `soloLift` (1) when the lead lifts a stone alone (onSoloLift).
+//     - It gains them when the lead meets its blows alone:
+//         `guard` (1) for each blow of a move that is not an intercept move stopped by the lead's
+//         Guard, held or timed (onBlocked, fed ArenaFight's Blocked; a Parried blow is never fed to it).
+//         Every blocked blow counts, a tile move's fragments included: each is a blow held;
+//         an intercept move's own `guardStacks` for each of its impacts Guarded (the run counts these, so
+//         onBlocked ignores intercept moves);
+//         an intercept move's own `missStacks` once per use, on its first Missed or WrongZone impact
+//         (the Answered with value 1), however many of its impacts miss;
+//         `soloLift` (1) when the lead lifts a stone alone (onSoloLift).
 //     - It sheds `interceptShed` (1) for each Intercepted impact flagged `sheds`, and `critShed` (1) for
 //       the first crit of each weak-point opening (later crits in the same opening shed nothing).
-//     - Dodges, jumps and parries change nothing (there is no entry for them).
+//     - Dodges, jumps and parries change nothing (there is no entry for them; the host feeds a
+//       parry nowhere here).
 //     - Each stack adds `damagePerStack` (0.10) to the boss's damage (damageScale(), on the lead's
 //       damage taken from its blows) and takes `defencePerStack` (0.10) off the damage it takes
 //       (takenScale(), never below 0; the loader keeps cap x defencePerStack below 1).
 //     - At `shockRingAt` (3) or more its floor blows send a shock ring (shockRing(move)); at
 //       `poiseFreezeAt` (5) or more its poise is frozen: hits do no poise damage and a Stagger the host
-//       reports anyway is ignored, so the slab cannot break.
+//       reports anyway is ignored, so the carried piece cannot break.
 //   StacksChanged on every change (value = the stacks, amount = the change), ShockRing and PoiseFrozen
 //   (value 1 / 0) as each threshold is crossed either way.
 //
-// * The nape: the data's one weak point, gated behind the boss (facing 180, a 60-degree half-arc), x2.0.
-//   It opens for a move's `opens` seconds after every impact of an intercept move is Intercepted (3 s
-//   after the called blows, 4 s after the marked throw).
+// * The rear weak point: the data's one point (`nape`), gated behind the boss (facing 180, a 60-degree
+//   half-arc), x2.0. It opens for a move's `opens` seconds after every impact of an intercept move is
+//   Intercepted (3 s after the side blows, 4 s after the marked throw).
 //
-// * The slab is the breakable: the first Stagger breaks it, and each phase plays its broken table from
-//   then on (the doubled and halved blows).
+// * The breakable: the first Stagger breaks the carried piece, and each phase plays its broken table
+//   from then on (the doubled and halved blows).
 //
-// * The arch clamp: the data's keepOut is a disc on the guest's spot at the open arch. The host clamps
-//   every arc, lane and area the boss swings with it (ArenaKeepOut), so nothing reaches the arch.
+// * The keep-out: the data's keepOut is a disc on the guest's spot at the arena's edge. The host clamps
+//   every arc, lane and area the boss swings with it (ArenaKeepOut), so nothing reaches the guest.
 //
 // * The pedestal (PedestalPhase). Once, when the boss's hp share first falls to `pedestal.at` (0.25),
 //   it steps onto its pedestal: Invulnerable on, the live move cancelled, every move refused. From
@@ -37,18 +44,26 @@
 //   kArenaBossNoMove; the miss shift moves them too). A Release (onRelease) within `releaseWindow`
 //   (0.15 s) either side of the nearest call, with Load above kArenaReleaseOpenLoad (a third), lifts
 //   it: Invulnerable off, Lifted, and the boss is down for `downTime` (3.0 s; every move refused) until
-//   Recovered. Any other Release costs nothing (OffBeat, LowLoad).
+//   Recovered. Any other Release costs nothing (OffBeat, LowLoad). A frame that jumps further than
+//   kPedestalCatchUp call periods plays only the calls of the last kPedestalCatchUp periods.
+//   The hp floor: the host keeps the boss's hp above 0 until pedestal().lifted(), so one big blow
+//   cannot skip the phase (while holding, onHit already deals 0).
+//
+// Times and hp as ArenaBossRun: an earlier or non-finite time reads as now; a NaN hp share is ignored
+// (the last one stands).
 //
 // The host (the wiring session) drives one StoneBearer beside the boss's ArenaFight body:
 //   begin(def, now)                   when the fight starts.
 //   startMove(move, t, side)          on the boss's AttackStarted, with the move it chose from table()
 //                                     and the side of it the lead stands on (arenaSideOf); refused while
-//                                     invulnerable or down.
+//                                     invulnerable or down. Each move maps onto ArenaFight as ArenaBoss.h's
+//                                     wiring notes say.
 //   update(now, hpShare)              every frame, after ArenaFight's tick.
 //   intercept/guard Down/Up(zone, t)  the lead's Intercept and Guard buttons, with the zone from
 //                                     arenaZoneOf (the lane to the marked throw's point for Path).
-//   onBlocked(move, t)                ArenaFight's Blocked on the lead against a boss blow; ignored for
-//                                     intercept moves, whose Guard the called blow already counted.
+//   onBlocked(move, t)                ArenaFight's Blocked on the lead against a boss blow (never its
+//                                     Parried); ignored for intercept moves, whose Guard the run already
+//                                     counted.
 //   onSoloLift(t)                     the lead lifted a stone alone.
 //   onStagger(t)                      ArenaFight's Staggered on the boss.
 //   onHit(from, pos, facing, t, at)   before ArenaFight applies a lead's blow: multiply its damage by
@@ -131,6 +146,8 @@ struct PedestalTuning {
     double downTime = 3.0;       // the boss is down this long after
 };
 
+inline constexpr double kPedestalCatchUp = 4.0; // call periods one late frame catches up
+
 enum class PedestalRelease : std::uint8_t { Lifted, OffBeat, LowLoad, NotHolding }; // append only
 
 class PedestalPhase {
@@ -157,7 +174,7 @@ public:
     double nextCall(const GuestCaller& guest, double t) const {
         return guest.nextRepeat(from_ + arenaBeats(tuning_.firstCallBeats, guest.bpm()), tuning_.callEveryBeats, t);
     }
-    // A Release at t with `load`.
+    // A Release at t with `load` (a NaN t is off the beat).
     FTCORE_API PedestalRelease release(const GuestCaller& guest, double t, int load);
 
     bool holding() const { return holding_; }
