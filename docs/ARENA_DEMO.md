@@ -216,16 +216,16 @@ ArenaFight body, hosted by `FFTStoneBearerHost` (`Source/ForgottenThird/FTStoneB
   `damageScale()` and capped per move, an intercepted called blow vetoed, the guest's keep-out clamps (`clampArea`,
   `clampLane`, `clampArc`);
 - the pedestal: at its share the boss is held Down (drawn standing) on a 0.5 m plinth at the zone's centre; a Release over a
-  third of the Load on the guest's call lifts it (floor off, Down for `downTime`); CritOpened holds it Open until `until`
-  (a riposte invites), CritClosed ends that.
+  third of the Load on the guest's call lifts it (floor off, Down for `downTime`). The boss offers no parries there, so a
+  lead who reaches it with too little Load is topped up to one Release (`giveLoad`). CritOpened holds it Open until
+  `until` (a riposte invites), CritClosed ends that;
+- a full intercept's Load (the marked throw's `LoadGained`) is given to the lead with `ArenaFight::giveLoad`.
 
 Its weak point (`nape` in the json, on the lower back) is the mesh socket `setstone`
 (`FFTStoneBearerHost::WeakPointSocket`); any marker or crit VFX uses that name.
 
 Stubs, each a named hook that logs: `OnBroke` (no breakable prop yet), `OnShockRing` (no second ring blow), `OnGuestCall`
-(no guest voice or figure), `OnTileRain` (one all-round blow, no falling tiles), `OnLoadGained` (ArenaFight has no call
-that adds Load, so the Load a marked throw earns is logged, not given; a lead who reaches the plinth with too little Load
-can't lift it until parries store more), and stone pickups (`onSoloLift` is never called: no pickups in the zone).
+(no guest voice or figure), `OnTileRain` (one all-round blow, no falling tiles), and stone pickups (`onSoloLift` is never called: no pickups in the zone).
 
 ```
 UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=stone_ring

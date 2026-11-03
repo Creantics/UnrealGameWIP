@@ -1261,9 +1261,8 @@ void UFTArenaRunner::LogStoneBearerNotes()
 		case FFTStoneBearerNote::EKind::TileRain:
 			UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: boss %.2f move %d: tile rain (stub, one all-round blow)"), E.at, Move);
 			break;
-		case FFTStoneBearerNote::EKind::LoadNotGiven:
-			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: boss %.2f move %d: %d Load earned, not given (ArenaFight has no call that adds Load)"), E.at, Move,
-				E.value);
+		case FFTStoneBearerNote::EKind::LoadGiven:
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: boss %.2f move %d: %d Load given"), E.at, Move, E.value);
 			break;
 		case FFTStoneBearerNote::EKind::ReleaseMissed:
 			UE_LOG(LogForgottenThird, Log, TEXT("Arena: boss %.2f: a Release on the plinth missed (%s)"), E.at,

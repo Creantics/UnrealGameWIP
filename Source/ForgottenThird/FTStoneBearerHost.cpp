@@ -482,6 +482,13 @@ void FFTStoneBearerHost::Absorb(const ftcore::ArenaBossEvents& Events)
 				Fight.holdEnemy(Slot, ftcore::ArenaBrain::Down, INFINITY);
 				bCritHold = false;
 				bPlinthPending = true;
+				// The boss offers no parries while it is held on the plinth, so a lead who comes too low to Release
+				// could never lift it: they are topped up to just enough for one Release.
+				const int Short = ftcore::kArenaReleaseOpenLoad + 1 - Fight.load();
+				if (Short > 0)
+				{
+					Fight.giveLoad(Short);
+				}
 			}
 			break;
 		case ftcore::ArenaBossEventType::Lifted:
@@ -648,9 +655,10 @@ void FFTStoneBearerHost::OnGuestCall(const ftcore::ArenaBossEvent& Call)
 
 void FFTStoneBearerHost::OnLoadGained(const ftcore::ArenaBossEvent& Gained)
 {
-	// A full intercept's Load (Gained.value): ArenaFight has no host call that adds Load, so it is noted, not given.
-	Note(FFTStoneBearerNote::EKind::LoadNotGiven, Gained.move, Gained.at);
-	Notes[static_cast<std::size_t>(NoteTotal - 1) % MaxNotes].Event.value = Gained.value;
+	// A full intercept's Load (Gained.value), given to the lead; the note keeps what was stored (the gauge caps it).
+	const int Stored = FightPtr->giveLoad(Gained.value);
+	Note(FFTStoneBearerNote::EKind::LoadGiven, Gained.move, Gained.at);
+	Notes[static_cast<std::size_t>(NoteTotal - 1) % MaxNotes].Event.value = Stored;
 }
 
 void FFTStoneBearerHost::OnTileRain(std::uint8_t BossMove, double At)

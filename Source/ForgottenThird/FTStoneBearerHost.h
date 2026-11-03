@@ -22,12 +22,14 @@
 //     scaled by damageScale(), kept to the keep-out (ArenaKeepOut's clamps on the arc, lane or area), capped by the
 //     move's damageMax per use, and vetoed when the run judged the impact Intercepted;
 //   - the run's events: CritOpened holds the boss Open until `until` (CritClosed lets go), Invulnerable holds it Down
-//     on its plinth (the runner moves the body there), Lifted ends the floor and holds it Down for the down time.
+//     on its plinth (the runner moves the body there; the lead's Load is topped up to one Release), Lifted ends the floor and holds it Down for the down time.
 //     Everything the HUD shows (the calls, the answers, the stacks) is kept as a note.
 //
+// OnLoadGained gives a full intercept's Load to the lead (ArenaFight::giveLoad), and onto the plinth a lead too low to
+// Release is topped up to just enough for one (the boss offers no parries there).
+//
 // Stubs, each a named hook point that only leaves a note: OnBroke (the carried piece's halves have no meshes),
-// OnShockRing (the ring a floor blow sends at 3+ stacks), OnGuestCall (the guest's voice), OnLoadGained (ArenaFight has
-// no host call that adds Load), OnTileRain (a tile move's fragments: ArenaFight lands one all-round blow instead) and
+// OnShockRing (the ring a floor blow sends at 3+ stacks), OnGuestCall (the guest's voice), OnTileRain (a tile move's fragments: ArenaFight lands one all-round blow instead) and
 // SoloLift (no stone pickups exist in the arena yet; nothing calls it).
 //
 // Nothing here allocates after Load.
@@ -46,7 +48,7 @@
 // One of the boss's notes: a run event, or one of the host's own (Kind).
 struct FFTStoneBearerNote
 {
-	enum class EKind : std::uint8_t { Run, Refused, ShockRingSent, TileRain, LoadNotGiven, ReleaseMissed };
+	enum class EKind : std::uint8_t { Run, Refused, ShockRingSent, TileRain, LoadGiven, ReleaseMissed };
 
 	EKind Kind = EKind::Run;
 	ftcore::ArenaBossEvent Event; // the run's event (Kind Run); else type unused, move and at set
