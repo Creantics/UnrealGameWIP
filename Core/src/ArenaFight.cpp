@@ -30,7 +30,7 @@ constexpr float kArenaAutoStand = 0.85f;   // it closes in to this share of its 
 constexpr int kArenaAutoReleaseAt = 50;    // it releases its Load from this much on an upright enemy in reach
 constexpr float kArenaAutoReadDelay = 0.2f; // it reads this long into a startup (half of a shorter one)
 constexpr std::uint64_t kArenaReadSeedStep = 0xA24BAED4963EE407ull; // spreads the deals of one fight over the seeds
-constexpr float kArenaMaxBlow = 1.0e9f;   // a host's scaled damage or poise damage stops here (it fits an int)
+constexpr float kArenaMaxBlow = 1.0e6f;   // a host's scaled damage or poise damage stops here (an int, times any share)
 constexpr float kArenaParkOffset = 1.5f;   // follower spots: metres outside the ring ...
 constexpr float kArenaParkSpacing = 2.0f;  // ... and metres between neighbours along its edge
 constexpr float kArenaSpawnGapRadii = 4.0f; // enemy start points: neighbours this many body radii apart along the arc
@@ -599,7 +599,7 @@ struct ArenaFightImpl {
         ++stats.counterStaggers;
         emit(ArenaEventType::CounterStagger, kArenaPlayer, id(i), 0, amount, foe.pos);
         if (foe.hp <= 0) killEnemy(i);
-        else if (scaledPoise(1.f, r.poise) > 0.f) staggerEnemy(i); // a ruling that zeroes the poise keeps it up
+        else if (r.poise >= 1.f) staggerEnemy(i); // it breaks the whole poise or nothing (NaN: nothing)
     }
 
     // ---- Read ----
@@ -878,7 +878,9 @@ struct ArenaFightImpl {
         b.facing = facing;
         b.at = at;
         b.time = t1;
+        fight.inHook_ = true;
         r = fight.blowHook_(fight.blowUser_, b);
+        fight.inHook_ = false;
         return !r.veto;
     }
 
@@ -1250,7 +1252,8 @@ struct ArenaFightImpl {
     // A parry stores the parried attack's damage times loadShare; Overloaded comes once, as the gauge fills.
     void storeLoad(std::uint8_t source, std::uint8_t move, int damage) {
         const bool was = pl.gauge.overloaded();
-        const int stored = pl.gauge.store(static_cast<int>(std::lround(static_cast<float>(damage) * fi.loadShare)));
+        const float share = std::min(static_cast<float>(damage) * fi.loadShare, static_cast<float>(kMaxLoad));
+        const int stored = pl.gauge.store(static_cast<int>(std::lround(share)));
         if (stored > 0) {
             stats.loadStored += stored;
             emit(ArenaEventType::LoadStored, source, kArenaPlayer, move, stored, pl.pos);
@@ -1565,6 +1568,7 @@ struct ArenaFightImpl {
 // ---- ArenaFight ----
 
 void ArenaFight::begin(const ArenaDef& d, const ArenaRing& where, Vec2 playerPos, Vec2 playerFacing, std::uint32_t seed) {
+    if (inHook_) return;
     def_ = d;
     // A def built in code may say anything; hold it to the capacities.
     def_.enemyCount = static_cast<std::uint8_t>(std::clamp<int>(def_.enemyCount, 1, static_cast<int>(kMaxArenaEnemies)));
@@ -1600,12 +1604,13 @@ void ArenaFight::begin(const ArenaDef& d, const ArenaRing& where, Vec2 playerPos
 }
 
 void ArenaFight::restart() {
-    if (phase_ == ArenaPhase::NotStarted) return;
+    if (inHook_ || phase_ == ArenaPhase::NotStarted) return;
     ++stats_.restarts;
     ArenaFightImpl(*this).reset();
 }
 
 const ArenaOutput& ArenaFight::tick(float dt, const ArenaInput& input, const ArenaBodies& bodies) {
+    if (inHook_) return out_;
     ArenaFightImpl(*this).tick(dt, input, bodies);
     return out_;
 }
@@ -1893,7 +1898,7 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //   enemy     hp 1..100000; poise (0, 100000]; poiseDelay, staggerTime, openTime, downTime, attackDelay 0..10;
 //             walkSpeed, runSpeed, strafeSpeed 0..50; turnRate (0, 100]; preferredRange (0, 100];
 //             runRange 0..100 and at least preferredRange; bodyRadius (0, 5]; height (0, 30] metres, optional
-//             (see arenaEnemyHeight); moves 1..8; accel 0..1000; bpm (0, 300], optional (see above);
+//             (see arenaEnemyHeight); moves 1..24 (kMaxArenaMoves); accel 0..1000; bpm (0, 300], optional (see above);
 //             look, optional, the host's skinned figure for it: { "clips": a path in Data/ of 1..95 characters,
 //             "hover" 0..30 m, "scale" (0, 100], "yawOffset" -360..360 degrees } (clips required)
 //             at most 254 kinds in the file (ArenaDef::enemyKind holds an index, kArenaNoKind is 255)

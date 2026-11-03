@@ -578,16 +578,25 @@ struct ArenaBlow {
     float time = 0.f;                          // fight time at the end of the tick it lands in
 };
 
-// The host's ruling on a blow. A vetoed blow is spent (that attack never connects with that target again) and does
-// nothing else: no hp, poise, Load, stamina, stats or events.
+// The host's ruling on a blow. A vetoed blow is spent (that attack never connects with that target again, and it
+// uses up the target slot maxTargets counts) and does nothing else: no hp, poise, Load, stamina, stats or events.
+// Scales: NaN or below 0 count as 0, and a scaled blow stops at a million.
+// * damage: the damage becomes round(damage * this), wherever it goes: hp landed, a guard's chip, a parry's Load.
+// * poise: the poise damage is multiplied by this where the blow deals poise damage: an enemy's landed blow, a
+//   player's blow on an enemy on its feet. A counter-stagger breaks the whole poise or nothing: it staggers only with
+//   a poise scale of 1 or more. A guarded blow deals none (its stamina cost, guardDamage, is the attack's own), and
+//   a riposte on an open enemy downs it whatever the scale.
 struct ArenaBlowRuling {
-    float damage = 1.f; // the damage becomes round(damage * this); NaN or below 0 counts as 0
-    float poise = 1.f;  // the poise damage is multiplied by this; NaN or below 0 counts as 0
+    float damage = 1.f;
+    float poise = 1.f;
     bool veto = false;
 };
 
-// Called inside tick(), once per blow, in the order the blows land. It may call holdEnemy, releaseEnemy and
-// setEnemyHpFloor (a floor counts from the next blow) and read the fight's getters; never tick, begin or restart.
+// Called inside tick(), once per blow, in the order the blows land (a player's attack reaching several enemies on
+// one tick: by enemy index). It may read the fight's getters and call holdEnemy and releaseEnemy (they count from
+// the next tick), setEnemyHpFloor (it counts for this blow already) and setBlowHook (from the next blow). tick,
+// begin and restart called from inside it do nothing (tick only returns the last output). A copy of a fight copies
+// the hook and its user pointer.
 using ArenaBlowHook = ArenaBlowRuling (*)(void* user, const ArenaBlow& blow);
 
 class ArenaFight {
@@ -764,6 +773,7 @@ private:
     std::uint8_t readMove_ = 0;
     std::uint32_t readDeals_ = 0;           // deals since begin() / restart(): seeds the next deal
     ArenaBlowHook blowHook_ = nullptr;      // the host's (begin() and restart() keep it)
+    bool inHook_ = false;                   // the blow hook is running: tick, begin and restart do nothing
     void* blowUser_ = nullptr;
 };
 
