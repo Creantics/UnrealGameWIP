@@ -478,9 +478,13 @@ void abMove(JsonValue m, const std::string& path, const ArenaBossDef& def, Arena
     abNum(m, "active", out.active, 0.05, 5.0, true, path, errors);
     abNum(m, "recovery", out.recovery, 0.0, 10.0, true, path, errors);
     abNum(m, "range", out.range, 0.0, 50.0, true, path, errors);
-    abNum(m, "damage", out.damage, 0.0, 1.0, true, path, errors);
-    out.damageMax = std::min(1.0f, out.damage * static_cast<float>(std::max<std::size_t>(n, 1)));
-    abNum(m, "damageMax", out.damageMax, out.damage, 1.0, false, path, errors);
+    // Both read as written, so a damageMax equal to damage passes (a float damage can round above it).
+    double damage = 0.0;
+    abNum(m, "damage", damage, 0.0, 1.0, true, path, errors);
+    double damageMax = std::min(1.0, damage * static_cast<double>(std::max<std::size_t>(n, 1)));
+    abNum(m, "damageMax", damageMax, damage, 1.0, false, path, errors);
+    out.damage = static_cast<float>(damage);
+    out.damageMax = static_cast<float>(damageMax);
     abBool(m, "floor", out.floor, path, errors);
     abBool(m, "marked", out.marked, path, errors);
     abNum(m, "guardBreak", out.guardBreak, 0.0, 5.0, false, path, errors);
@@ -628,7 +632,8 @@ bool importArenaBoss(std::string_view json, ArenaBossDef& out, std::string* erro
                 abNum(p, "endAt", ph.endAt, 0.0, 0.999999, true, pp, errors);
                 if (i > 0 && ph.endAt >= 0.0f && !(ph.endAt < out.phases[i - 1].endAt))
                     errors.push_back(pp + ".endAt: expected below the phase before");
-                if (i + 1 == phases.size() && ph.endAt != 0.0f) errors.push_back(pp + ".endAt: the last phase ends at 0");
+                if (i + 1 == phases.size() && ph.endAt != 0.0f)
+                    errors.push_back(pp + ".endAt: the last phase ends at 0");
                 abTable(p["moves"], pp + ".moves", out, ph.whole, errors);
                 if (p.has("brokenMoves")) abTable(p["brokenMoves"], pp + ".brokenMoves", out, ph.broken, errors);
                 else ph.broken = ph.whole;
@@ -700,9 +705,11 @@ void ArenaBossRun::absorb(const CalledResults& results) {
             if (m.opens > 0.0f) {
                 crit_.open(r.at, m.opens);
                 critWasOpen_ = true;
-                events_.push({ArenaBossEventType::CritOpened, live_, r.impact, r.outcome, 0, 0, r.at, crit_.closesAt()});
+                events_.push(
+                    {ArenaBossEventType::CritOpened, live_, r.impact, r.outcome, 0, 0, r.at, crit_.closesAt()});
             }
-            if (m.load > 0) events_.push({ArenaBossEventType::LoadGained, live_, r.impact, r.outcome, m.load, 0, r.at, 0.0});
+            if (m.load > 0)
+                events_.push({ArenaBossEventType::LoadGained, live_, r.impact, r.outcome, m.load, 0, r.at, 0.0});
         }
     }
 }
@@ -720,7 +727,8 @@ void ArenaBossRun::advance(double t) {
             ++cueNext_;
         } else if (close == first) {
             critWasOpen_ = false;
-            events_.push({ArenaBossEventType::CritClosed, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, close, 0.0});
+            events_.push(
+                {ArenaBossEventType::CritClosed, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, close, 0.0});
         } else {
             absorb(strike_.update(hit));
         }

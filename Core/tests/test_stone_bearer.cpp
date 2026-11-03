@@ -9,9 +9,11 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <cstdio>
 #include <iterator>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace ftcore;
@@ -218,7 +220,14 @@ TEST_CASE("stone bearer data: the shipped file loads clean, with the outline's t
     CHECK(b.weakPoints.points.items[0].multiplier == doctest::Approx(2.0));
     CHECK(b.weakPoints.gates[0].facing == doctest::Approx(180.0));
     CHECK(b.weakPoints.gates[0].arc == doctest::Approx(60.0));
-    CHECK(b.keepOutRadius > 0.0f);
+    CHECK(b.weakPoints.points.halfWidth == doctest::Approx(0.45));
+    CHECK(b.weakPoints.points.items[0].x == doctest::Approx(0.0));
+    CHECK(b.weakPoints.points.items[0].y == doctest::Approx(0.78));
+    CHECK(b.weakPoints.points.items[0].radius == doctest::Approx(0.1));
+    // The keep-out: 3 m round the guest's spot, 20 m out at bearing 90.
+    CHECK(b.keepOutBearing == doctest::Approx(90.0));
+    CHECK(b.keepOutDistance == doctest::Approx(20.0));
+    CHECK(b.keepOutRadius == doctest::Approx(3.0));
 
     // The marked throw is phase 2's; the break swaps in the halves and drops the block throw.
     const ArenaBossPhase& p1 = b.phases[0];
@@ -301,6 +310,51 @@ TEST_CASE("stone bearer data: the shipped file loads clean, with the outline's t
         CHECK(m.floor == (std::string_view(r.id) == "ground_punch" || std::string_view(r.id) == "stamp"));
     }
 
+    // Every move's calls, zones, sheds, mark, guard break and Load, exactly.
+    const auto num = [](double v) {
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "%g", v);
+        return std::string(buf);
+    };
+    const auto rules = [&](const ArenaBossMove& m) {
+        std::string s = "calls";
+        for (std::size_t i = 0; i < m.callCount; ++i) s += " " + num(m.calls[i]);
+        if (m.intercept()) {
+            static const char* const kZones[] = {"side", "other", "path"};
+            s += " zones";
+            for (std::size_t i = 0; i < m.impactCount; ++i) s += std::string(" ") + kZones[int(m.zones[i])];
+            s += " sheds";
+            for (std::size_t i = 0; i < m.impactCount; ++i) s += m.sheds[i] ? " 1" : " 0";
+        }
+        if (m.marked) s += " marked";
+        if (m.guardBreak > 0.0f) s += " break " + num(m.guardBreak);
+        if (m.load > 0) s += " load " + std::to_string(m.load);
+        return s;
+    };
+    const std::pair<const char*, const char*> kRules[] = {
+        {"called_fist", "calls 1 zones side sheds 1"},
+        {"called_fist_twice", "calls 1 2 zones side other sheds 0 1"},
+        {"slab_drive", "calls"},
+        {"slab_drive_halves", "calls"},
+        {"debris_shower", "calls 1"},
+        {"debris_shower_twice", "calls 1 2"},
+        {"low_sweep", "calls"},
+        {"low_sweep_halves", "calls"},
+        {"ground_punch", "calls 2 zones side sheds 1"},
+        {"block_throw", "calls"},
+        {"marked_throw", "calls 2 zones path sheds 1 marked break 1.2 load 30"},
+        {"marked_throw_halves", "calls 2 3 zones path path sheds 0 1 marked break 1.2 load 30"},
+        {"edge_jab", "calls"},
+        {"stamp", "calls"},
+        {"backhand", "calls"},
+    };
+    REQUIRE(std::size(kRules) == b.moveCount);
+    for (const auto& [id, want] : kRules) {
+        CAPTURE(id);
+        REQUIRE(b.find(id) != kArenaBossNoMove);
+        CHECK(rules(b.moves[b.find(id)]) == want);
+    }
+
     // The tables, exactly. A break in phase 1 keeps the single shower (it doubles only in phase 2).
     const auto ids = [&](const ArenaBossMoveTable& t) {
         std::string s;
@@ -314,11 +368,19 @@ TEST_CASE("stone bearer data: the shipped file loads clean, with the outline's t
           "called_fist_twice slab_drive_halves debris_shower_twice low_sweep_halves marked_throw_halves edge_jab stamp backhand ");
 
     CHECK(def.weight.cap == 5);
+    CHECK(def.weight.damagePerStack == doctest::Approx(0.1));
+    CHECK(def.weight.defencePerStack == doctest::Approx(0.1));
     CHECK(def.weight.shockRingAt == 3);
     CHECK(def.weight.poiseFreezeAt == 5);
+    CHECK(def.weight.guard == 1);
+    CHECK(def.weight.soloLift == 1);
+    CHECK(def.weight.interceptShed == 1);
+    CHECK(def.weight.critShed == 1);
     CHECK(def.pedestal.at == doctest::Approx(0.25));
+    CHECK(def.pedestal.firstCallBeats == doctest::Approx(4.0));
     CHECK(def.pedestal.callEveryBeats == doctest::Approx(4.0));
     CHECK(def.pedestal.releaseWindow == doctest::Approx(0.15));
+    CHECK(def.pedestal.downTime == doctest::Approx(3.0));
 }
 
 TEST_CASE("stone bearer loader: refusals carry their paths") {
@@ -332,7 +394,7 @@ TEST_CASE("stone bearer loader: refusals carry their paths") {
         CHECK(def.pedestal.downTime == doctest::Approx(3.0));
     }
     CHECK(refusal(edited(R"("weight": {)", R"("heft": {)")).find("weight: expected an object") != std::string::npos);
-    CHECK(refusal(edited(R"("pedestal": {)", R"("plinth": {)")).find("pedestal: expected an object") !=
+    CHECK(refusal(edited(R"("pedestal": {)", R"("stand": {)")).find("pedestal: expected an object") !=
           std::string::npos);
     CHECK(refusal(edited(R"("cap": 5)", R"("cap": 0)")).find("weight.cap: expected an integer in 1..10") !=
           std::string::npos);

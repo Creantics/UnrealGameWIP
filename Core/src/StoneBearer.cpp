@@ -128,7 +128,8 @@ bool importStoneBearer(std::string_view json, StoneBearerDef& out, std::string* 
             bpm.isNumber() && bpm.number() >= 40.0 && bpm.number() <= 240.0 ? bpm.number() : 0.0;
         if (const JsonValue v = root["weight"]; v.isObject()) sbWeight(v, out.weight, errors, warnings);
         else errors.push_back("weight: expected an object");
-        if (const JsonValue v = root["pedestal"]; v.isObject()) sbPedestal(v, beatsPerMinute, out.pedestal, errors, warnings);
+        if (const JsonValue v = root["pedestal"]; v.isObject())
+            sbPedestal(v, beatsPerMinute, out.pedestal, errors, warnings);
         else errors.push_back("pedestal: expected an object");
     }
     if (errors.empty()) return true;
@@ -154,6 +155,13 @@ void StoneBearer::begin(const StoneBearerDef& def, double now) {
     nextCall_ = 0.0;
     recoverDue_ = false;
 }
+
+// finish() reads the stack gains back from the run's events, so no call may drop one. The most one call
+// emits: the run's phase change, a call and an answer per impact, the shift, a crit window closing and
+// one opening, the load; up to three events per stack change (one change per answer); and the
+// pedestal's switch, its calls and the recovery.
+static_assert(1 + 2 * kMaxCalledImpacts + 1 + 3 + 3 * kMaxCalledImpacts + 1 + kPedestalMaxCalls + 1 <=
+              kMaxArenaBossEvents);
 
 void StoneBearer::weigh(int n, double at) {
     const bool ring = weight_.shockRing();
@@ -198,7 +206,8 @@ const ArenaBossEvents& StoneBearer::finish() {
                 nextCall_ = guest.nextRepeat(series, p.callEveryBeats, now - kPedestalCatchUp * period);
             // Bounded too where a period is below the clock's rounding (a clock past ~1e15 s).
             for (int k = 0; nextCall_ <= now && k < kPedestalMaxCalls; ++k) {
-                run_.push({ArenaBossEventType::Call, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, nextCall_, 0.0});
+                run_.push(
+                    {ArenaBossEventType::Call, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, nextCall_, 0.0});
                 nextCall_ = guest.nextRepeat(series, p.callEveryBeats, nextCall_ + 0.5 * period);
             }
         }
@@ -215,7 +224,8 @@ const ArenaBossEvents& StoneBearer::tick(double t) {
     run_.update(t, hpShare_);
     if (pedestal_.update(hpShare_, run_.now())) {
         run_.cancelMove();
-        run_.push({ArenaBossEventType::Invulnerable, kArenaBossNoMove, 0, CalledOutcome::Pending, 1, 0, run_.now(), 0.0});
+        run_.push(
+            {ArenaBossEventType::Invulnerable, kArenaBossNoMove, 0, CalledOutcome::Pending, 1, 0, run_.now(), 0.0});
         nextCall_ = pedestal_.firstCall(run_.guest());
     }
     return finish();
@@ -300,7 +310,8 @@ const ArenaBossEvents& StoneBearer::onRelease(double t, int load, PedestalReleas
     const PedestalRelease r = pedestal_.release(run_.guest(), run_.now(), load);
     if (r == PedestalRelease::Lifted) {
         recoverDue_ = true;
-        run_.push({ArenaBossEventType::Invulnerable, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, run_.now(), 0.0});
+        run_.push(
+            {ArenaBossEventType::Invulnerable, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, run_.now(), 0.0});
         run_.push({ArenaBossEventType::Lifted, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, run_.now(),
                    pedestal_.downUntil()});
     }

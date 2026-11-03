@@ -8,8 +8,9 @@
 //
 // Time. Every time passed in is the fight's clock in seconds, fed in order; an earlier time, or one that
 // is not finite (inf, NaN), is read as now(), so a bad clock stalls the run instead of hanging it. A hp
-// share that is NaN moves no phase and fires no trigger. Data counts in beats of the boss's tempo (one beat is 60 / bpm seconds); Core converts once,
-// with arenaBeats(). Comparisons in beats never go through seconds.
+// share that is NaN moves no phase and fires no trigger. Data counts in beats of the boss's tempo (one
+// beat is 60 / bpm seconds); Core converts once, with arenaBeats(). Comparisons in beats never go
+// through seconds.
 //
 // Ground plane. Positions and facings are ArenaFight's: Vec2 in metres on the host's X/Y, X forward and
 // Y to the right seen from above (the host's yaw is atan2(y, x)). A facing f points to its right at
@@ -121,8 +122,7 @@
 //     active 0.05..5 s, recovery 0..10 s, range 0..50 m, damage 0..1 (a share of the lead's max hp per
 //     impact), damageMax damage..1 (most it deals in one use; default damage x impacts), floor and
 //     marked bools (marked: intercept moves only), guardBreak 0..5 s, guardStacks and missStacks 0..5
-//     (the boss's rule),
-//     opens 0..10 s, load 0..kMaxLoad.
+//     (the boss's rule), opens 0..10 s, load 0..kMaxLoad.
 //   phases: 1..kMaxArenaBossPhases; endAt in [0, 1), strictly falling, the last 0. moves and brokenMoves
 //     (default: moves): 1..kMaxArenaPhaseMoves known move ids, no repeats.
 //   An unknown key is a warning; anything else wrong is an error with its path, and `out` is left
@@ -134,6 +134,9 @@
 //     lead's max hp); the last has the move's recovery, the others none.
 //   - poiseDamage and guardDamage are the enemy kind's own defaults; guardBreak (when above 0) is the
 //     ArenaAttack's guard-break time.
+//   - The opening: on CritOpened the host holds the boss open (kneeling, no new move) until the
+//     event's `until`, the move's `opens` seconds from its last impact, instead of its plain
+//     `recovery`; CritClosed ends it. The recovery is the boss's time after a blow that was not turned.
 //   - damageMax caps what one use deals in all: the host stops landing the move's blows on the lead
 //     once their damage reaches it. A "tile" move rains fragments over its area during `active`, each
 //     a blow of `damage` on a lead off the clear tile; the host owns the fragments, which tile is
@@ -389,7 +392,9 @@ public:
     FTCORE_API int update(float hpShare);
     std::size_t phase() const { return phase_; }
     std::size_t count() const { return count_; }
-    const ArenaBossMoveTable& table(bool broken) const { return broken ? phases_[phase_].broken : phases_[phase_].whole; }
+    const ArenaBossMoveTable& table(bool broken) const {
+        return broken ? phases_[phase_].broken : phases_[phase_].whole;
+    }
 
 private:
     std::array<ArenaBossPhase, kMaxArenaBossPhases> phases_{};
@@ -548,7 +553,7 @@ enum class ArenaBossEventType : std::uint8_t { // append only
     CritClosed,    // ... and shut
     Crit,          // a crit landed on point `impact`: value = 1 for the first of its opening, else 0
     LoadGained,    // value = the Load the lead gains (a full intercept of `move`)
-    // A boss's own rules (appended; StoneBearer.h):
+    // A boss's own rules, appended here so the host reads one event stream (StoneBearer.h):
     StacksChanged,  // value = the stacks now, amount = the change
     ShockRing,      // value = 1 on, 0 off: floor blows send a shock ring
     PoiseFrozen,    // value = 1 on, 0 off
@@ -568,7 +573,10 @@ struct ArenaBossEvent {
     double until = 0.0; // CritOpened, Lifted
 };
 
-inline constexpr std::size_t kMaxArenaBossEvents = 24; // per call; more are dropped (counted in `dropped`)
+// Per call. Room for the most one call can emit (a boss's own rules static_assert their bound against
+// it, as StoneBearer.cpp does), so nothing a rule reads back is lost; past it events are dropped
+// (counted in `dropped`).
+inline constexpr std::size_t kMaxArenaBossEvents = 48;
 
 struct ArenaBossEvents {
     std::array<ArenaBossEvent, kMaxArenaBossEvents> items{};

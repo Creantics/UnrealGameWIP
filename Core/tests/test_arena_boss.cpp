@@ -68,7 +68,18 @@ std::string importError(const std::string& json) {
     ArenaBossDef def;
     std::string error;
     CHECK_FALSE(importArenaBoss(json, def, &error));
+    // `out` is left default, all of it.
+    const ArenaBossDef fresh;
+    CHECK(def.bpm == fresh.bpm);
+    CHECK(def.hp == fresh.hp);
+    CHECK(def.poise == fresh.poise);
+    CHECK(def.intercept.window == fresh.intercept.window);
+    CHECK(def.guestCall.minLeadBeats == fresh.guestCall.minLeadBeats);
+    CHECK(def.weakPoints.points.size() == 0);
+    CHECK(def.keepOutRadius == 0.0f);
     CHECK(def.moveCount == 0);
+    CHECK(def.phaseCount == 0);
+    CHECK(def.moves[0].id().empty());
     return error;
 }
 
@@ -599,6 +610,29 @@ TEST_CASE("arena boss loader: refusals carry their path; unknown keys warn; own 
     CHECK(has(importError(patched("\"radius\": 0.1", "\"radius\": 0.9")), "weakPoints.points[0].radius:"));
     CHECK(has(importError(patched("\"arc\": 60", "\"arc\": 200")), "weakPoints.points[0].arc:"));
     CHECK(has(importError(patched("\"distance\": 20", "\"distance\": -1")), "keepOut.distance:"));
+    CHECK(has(importError(patched(", \"radius\": 3 }", " }")), "keepOut.radius: expected a number in 0..20"));
+    CHECK(has(importError(patched("\"halfWidth\": 0.5", "\"halfWidth\": 0")),
+              "weakPoints.halfWidth: expected a number above 0"));
+    CHECK(has(importError(patched("\"arc\": 60 } ] }",
+                                  "\"arc\": 60 }, { \"id\": \"back\", \"x\": 0, \"y\": 0.5, \"radius\": 0.1, "
+                                  "\"multiplier\": 2.0 } ] }")),
+              "weakPoints.points[1].id: duplicate id back"));
+    CHECK(has(importError(patched("\"calls\": [1, 2]", "\"calls\": [1, 0.5]")),
+              "moves[1].calls[1]: expected calls strictly rising"));
+    {
+        // Too many moves, too many phases.
+        std::string moves;
+        for (std::size_t i = 0; i < kMaxArenaBossMoves; ++i)
+            moves += "{ \"id\": \"m" + std::to_string(i) +
+                     "\", \"answer\": \"any\", \"impacts\": [1], \"active\": 0.2, \"recovery\": 0.6, "
+                     "\"range\": 2, \"damage\": 0.06 },\n";
+        CHECK(has(importError(patched("\"moves\": [\n", "\"moves\": [\n" + moves)),
+                  "moves: expected an array of 1.." + std::to_string(kMaxArenaBossMoves) + " moves"));
+        std::string phases;
+        for (std::size_t i = 0; i < kMaxArenaBossPhases; ++i) phases += "{ \"endAt\": 0.9, \"moves\": [\"jab\"] },\n";
+        CHECK(has(importError(patched("\"phases\": [\n", "\"phases\": [\n" + phases)),
+                  "phases: expected an array of 1.." + std::to_string(kMaxArenaBossPhases) + " phases"));
+    }
     // Several problems: one per line.
     const std::string many = importError(patched("\"bpm\": 120, \"hp\": 1000", "\"bpm\": 1, \"hp\": 0"));
     CHECK(has(many, "bpm:"));
@@ -607,6 +641,13 @@ TEST_CASE("arena boss loader: refusals carry their path; unknown keys warn; own 
     ArenaBossDef def;
     std::string error;
     std::vector<std::string> warnings;
+    // A damageMax equal to damage loads, also where the float of damage rounds above the decimal.
+    for (const char* d : {"0.1", "0.14", "0.3"}) {
+        CAPTURE(d);
+        const std::string both = std::string("\"damage\": ") + d + ", \"damageMax\": " + d;
+        CHECK(importArenaBoss(patched("\"damage\": 0.06", both), def, &error));
+        CHECK(def.moves[4].damageMax == def.moves[4].damage);
+    }
     CHECK(importArenaBoss(patched("\"version\": 1", "\"version\": 1, \"tempo\": 3, \"weight\": {}"), def, &error,
                           &warnings, {"weight"}));
     REQUIRE(warnings.size() == 1);
@@ -815,6 +856,18 @@ TEST_CASE("arena boss run: events come in time order, calls first on a tie, phas
     CHECK(e[1].at == doctest::Approx(4.5));
     CHECK(e[2].at == doctest::Approx(4.5));
     CHECK(e[3].at == doctest::Approx(5.5));
+}
+
+TEST_CASE("arena boss events: past the cap they are dropped and counted; clear resets both") {
+    ArenaBossEvents events;
+    for (std::size_t i = 0; i < kMaxArenaBossEvents + 5; ++i)
+        events.push({ArenaBossEventType::Call, kArenaBossNoMove, 0, CalledOutcome::Pending, int(i), 0, 0.0, 0.0});
+    CHECK(events.size() == kMaxArenaBossEvents);
+    CHECK(events.dropped == 5);
+    CHECK(events.items[kMaxArenaBossEvents - 1].value == int(kMaxArenaBossEvents) - 1); // the first ones kept
+    events.clear();
+    CHECK(events.size() == 0);
+    CHECK(events.dropped == 0);
 }
 
 TEST_CASE("arena boss run: a whole scripted fight allocates nothing") {
