@@ -1,0 +1,20 @@
+{
+ "version": 1,
+ "mesh": "/Game/Bosses/WhiteGlove/white_glove/SkeletalMeshes/white_glove",
+ "clips": [
+  {
+   "id": "idle",
+   "asset": "/Game/Bosses/WhiteGlove/white_glove/SkeletalMeshes/white_gloveidle",
+   "length_s": 9.233,
+   "impact_s": 0,
+   "loop": true
+  },
+  {
+   "id": "idle_p2",
+   "asset": "/Game/Bosses/WhiteGlove/white_glove/SkeletalMeshes/white_gloveidle_p2",
+   "length_s": 9.233,
+   "impact_s": 0,
+   "loop": true
+  }
+ ]
+}

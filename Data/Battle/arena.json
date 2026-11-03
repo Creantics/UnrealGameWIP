@@ -165,6 +165,18 @@
       ]
     },
     {
+      "id": "white_glove",
+      "hp": 1100, "poise": 100, "poiseDelay": 3, "staggerTime": 2, "openTime": 1.6, "downTime": 2.5,
+      "walkSpeed": 1.1, "runSpeed": 2.4, "strafeSpeed": 1.0, "accel": 4, "turnRate": 2.2,
+      "preferredRange": 3, "runRange": 9, "attackDelay": 0.8, "bodyRadius": 0.5, "height": 2.7, "bpm": 104,
+      "look": { "clips": "Data/Anim/white_glove_clips.json", "scale": 1, "yawOffset": -90 },
+      "moves": [
+        { "clip": "glove_cut", "tell": "slash", "startup": 1.154, "active": 0.15, "recovery": 0.9, "range": 2.6, "arcCos": 0.4, "damage": 10, "poiseDamage": 12, "guardDamage": 15, "lunge": 0.5, "tracking": 2.0, "minRange": 0, "maxRange": 3.0, "weight": 1.0 },
+        { "clip": "palm_push", "tell": "thrust", "startup": 1.731, "active": 0.2, "recovery": 1.2, "range": 2.4, "arcCos": 0.5, "damage": 14, "poiseDamage": 18, "guardDamage": 22, "lunge": 0.8, "tracking": 1.5, "minRange": 0, "maxRange": 2.8, "weight": 0.8 },
+        { "clip": "bow_sweep", "tell": "sweep", "startup": 2.308, "active": 0.3, "recovery": 1.4, "range": 2.8, "arcCos": -0.2, "damage": 16, "poiseDamage": 20, "guardDamage": 24, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 3.2, "weight": 0.6, "cooldown": 6, "unblockable": true, "parryable": false }
+      ]
+    },
+    {
       "id": "spitter",
       "hp": 70, "poise": 25, "poiseDelay": 2.5, "staggerTime": 0.8, "openTime": 1.4, "downTime": 1,
       "walkSpeed": 2, "runSpeed": 3.6, "strafeSpeed": 1.6, "accel": 10, "turnRate": 6,
