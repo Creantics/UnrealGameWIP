@@ -80,6 +80,15 @@ struct FFTArenaPose
 	bool bTellUnblockable = false;
 };
 
+// One part of a skinned figure's carried piece after it splits (AFTArenaFighter::SplitCarried).
+struct FFTCarriedPiece
+{
+	FString Mesh;                           // a static mesh's object path
+	FName Bone;                             // the hand it goes into
+	FVector OffsetMeters = FVector::ZeroVector; // from the bone, along its axes
+	FRotator Turn = FRotator::ZeroRotator;  // in the bone's frame
+};
+
 UCLASS()
 class FORGOTTENTHIRD_API AFTArenaFighter : public APawn
 {
@@ -113,6 +122,17 @@ public:
 	// Where the HUD hangs this figure's markers: above its head, and its chest.
 	FVector GetAnchor() const;
 	FVector GetChest() const;
+	// Where a skinned figure's bone or socket Name is now, in the world (effects hang there). False when the figure is
+	// drawn as shapes or its mesh has no such name.
+	bool GetSkinPoint(FName Name, FVector& Out) const;
+	// A skinned figure's carried piece splits: the mesh's sections drawn with material slot HideSlot go, and each piece
+	// (a static mesh modelled where it sat on the figure at rest) goes into the hand of its bone, its centre at the bone
+	// plus OffsetMeters along the bone's axes, turned by Turn there. Once a figure; false when it isn't skinned or already
+	// split. A piece that doesn't load is skipped with a warning.
+	bool SplitCarried(FName HideSlot, TConstArrayView<FFTCarriedPiece> Split);
+	// Undoes SplitCarried (a fight begun again): the piece whole on the figure, the parts gone.
+	void MendCarried();
+	bool IsSplit() const { return bSplit; }
 	float GetHeight() const { return Height; }
 	const FLinearColor& GetBaseColor() const { return BaseColor; }
 
@@ -150,6 +170,10 @@ private:
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
 	UPROPERTY()
 	TArray<TObjectPtr<USceneComponent>> Grooms;
+	// The carried piece's parts in the hands, after SplitCarried.
+	UPROPERTY()
+	TArray<TObjectPtr<UStaticMeshComponent>> Carried;
+	bool bSplit = false;
 	UPROPERTY(VisibleAnywhere, Category = "Arena")
 	TObjectPtr<USceneComponent> Arm;
 	UPROPERTY(VisibleAnywhere, Category = "Arena")

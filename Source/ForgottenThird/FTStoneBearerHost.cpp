@@ -243,6 +243,49 @@ ftcore::CalledZone FFTStoneBearerHost::ZoneNow(const ftcore::ArenaBodies& Bodies
 	return ftcore::arenaZoneOf(Boss.run().strike().nextZone(), Pos, Facing, LaneEnd(Pos, Facing), kStoneLaneWidth, Bodies.player);
 }
 
+bool FFTStoneBearerHost::StrikeOf(std::uint8_t Move, const ftcore::ArenaBodies& Bodies, float Ahead, float Side, float ReachShare,
+	FFTStoneBearerStrike& Out) const
+{
+	if (!IsActive() || bUseRefused || Move >= FightPtr->def().enemies[Slot].moveCount || Move >= ftcore::kMaxArenaMoves)
+	{
+		return false;
+	}
+	const ftcore::ArenaAttack& A = FightPtr->def().enemies[Slot].moves[Move].attack;
+	const ftcore::Vec2 Pos = Bodies.enemies[Slot];
+	const ftcore::Vec2 Facing = BossFacing();
+	Out.From = Pos;
+	// The shapes as BuildKind laid them out and RuleBossBlow cuts them.
+	if (A.arcCos <= -1.f)
+	{
+		Out.Shape = FFTStoneBearerStrike::EShape::Area;
+		Out.To = KeepOut.none() ? Pos : KeepOut.clampArea(Pos, A.range);
+		return true;
+	}
+	if (A.width > 0.f)
+	{
+		Out.Shape = FFTStoneBearerStrike::EShape::Lane;
+		Out.To = Along(Pos, Facing, KeepOut.none() ? A.range : KeepOut.clampLane(Pos, Facing, A.width, A.range));
+		return true;
+	}
+	// A called impact to a side: the zone the run called for it (arenaSideOf's right is the facing turned a quarter).
+	const std::uint8_t M = MoveOf[Move];
+	const std::uint8_t K = ImpactOf[Move];
+	const ftcore::ArenaBossRun& Run = Boss.run();
+	if (M < Def.boss.moveCount && Def.boss.moves[M].intercept() && Run.liveMove() == M && K < Run.strike().size()
+		&& Run.strike().impact(K).zone != ftcore::CalledZone::Path)
+	{
+		const float Sign = Run.strike().impact(K).zone == ftcore::CalledZone::Right ? 1.f : -1.f;
+		const ftcore::Vec2 Right{-Facing.y, Facing.x};
+		Out.Shape = FFTStoneBearerStrike::EShape::Side;
+		Out.To = Along(Along(Pos, Facing, Ahead), Right, Side * Sign);
+		return true;
+	}
+	const float Reach = KeepOut.none() ? A.range : KeepOut.clampArc(Pos, Facing, A.arcCos, A.range);
+	Out.Shape = FFTStoneBearerStrike::EShape::Arc;
+	Out.To = Along(Pos, Facing, Reach * ReachShare);
+	return true;
+}
+
 bool FFTStoneBearerHost::DrawnStanding() const
 {
 	if (!IsActive())
