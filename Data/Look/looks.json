@@ -1,8 +1,12 @@
 {
   "version": 1,
+  "render": {
+    "r.Lumen.HardwareRayTracing": 1,
+    "r.Lumen.TranslucencyReflections.FrontLayer.Enable": 1
+  },
   "worlds": {
     "solhaven": {
-      "about": "A present-day coastal city with dark sorcery in it: hard grey daylight or wet night, ink-black shadow, desaturated skin and cloth, gold kept as the brightest accent.",
+      "about": "A present-day coastal city with dark sorcery in it: hard grey daylight or wet night, clear dark water, ink-black shadow, desaturated skin and cloth, gold kept as the brightest accent.",
       "sunKelvin": 6000,
       "skyLight": 0.7,
       "fogDensity": 0.04,
@@ -26,10 +30,25 @@
       "shadowTintHue": 250,
       "shadowTintChroma": 0.008,
       "highlightTintHue": 70,
-      "highlightTintChroma": 0.006
+      "highlightTintChroma": 0.006,
+      "wetness": 0.6,
+      "waterAbsorbR": 0.6,
+      "waterAbsorbG": 0.12,
+      "waterAbsorbB": 0.06,
+      "waterScatterR": 0.01,
+      "waterScatterG": 0.012,
+      "waterScatterB": 0.015,
+      "waterRoughness": 0.03,
+      "waterWaveStrength": 0.8,
+      "fogAlbedoR": 0.85,
+      "fogAlbedoG": 0.88,
+      "fogAlbedoB": 0.95,
+      "practicalKelvin": 2700,
+      "practicalCandela": 60,
+      "practicalScatter": 2
     },
     "lattice": {
-      "about": "A present-day city after a catastrophe, with a cold blue game-light glow: ash and dust in the air, a grey world, blue and violet light kept saturated.",
+      "about": "A present-day city after a catastrophe, with a cold blue game-light glow: ash and dust in the air, cold water, a grey world, blue and violet light kept saturated.",
       "sunKelvin": 7500,
       "skyLight": 0.8,
       "fogDensity": 0.08,
@@ -56,7 +75,25 @@
       "shadowTintHue": 265,
       "shadowTintChroma": 0.012,
       "highlightTintHue": 230,
-      "highlightTintChroma": 0.004
+      "highlightTintChroma": 0.004,
+      "wetness": 0.35,
+      "waterAbsorbR": 0.9,
+      "waterAbsorbG": 0.25,
+      "waterAbsorbB": 0.08,
+      "waterScatterR": 0.02,
+      "waterScatterG": 0.04,
+      "waterScatterB": 0.06,
+      "waterWaveStrength": 0.6,
+      "fogAlbedoR": 0.8,
+      "fogAlbedoG": 0.82,
+      "fogAlbedoB": 0.85,
+      "practicalKelvin": 9000,
+      "practicalCandela": 50,
+      "practicalScatter": 3,
+      "glowR": 0.25,
+      "glowG": 0.5,
+      "glowB": 1.0,
+      "glowStrength": 25
     },
     "unwritten": {
       "about": "A horror void: ruins in fog, ink-black still water, colour drained except blood, a sickly green in the shadows.",
@@ -85,7 +122,23 @@
       "shadowTintHue": 140,
       "shadowTintChroma": 0.01,
       "highlightTintHue": 95,
-      "highlightTintChroma": 0.004
+      "highlightTintChroma": 0.004,
+      "wetness": 0.2,
+      "waterAbsorbR": 8,
+      "waterAbsorbG": 8,
+      "waterAbsorbB": 8,
+      "waterScatterR": 0,
+      "waterScatterG": 0,
+      "waterScatterB": 0,
+      "waterRoughness": 0.02,
+      "waterWaveSpeed": 0.2,
+      "waterWaveStrength": 0.1,
+      "fogAlbedoR": 0.6,
+      "fogAlbedoG": 0.65,
+      "fogAlbedoB": 0.6,
+      "practicalKelvin": 4200,
+      "practicalCandela": 25,
+      "practicalScatter": 4
     }
   }
 }

@@ -17,8 +17,14 @@ gives each world its own values for all of them.
   A field a world leaves out keeps the shared value, and every field has a range the importer holds it to
   (`ftcore::importLookTable`, `Core/include/ftcore/LookTable.h`). The doctest tests load the shipped file.
 - **`ftcore::SceneLook`**: the shared look's fields plus the camera's tone curve (filmic slope, toe, shoulder, black and
-  white clip), auto-exposure speed, local exposure contrast, fringe, grain by tone, and the grade's fields. Every
-  default reproduces the shared look exactly.
+  white clip), auto-exposure speed, local exposure contrast, fringe, grain by tone, and the grade's fields, then
+  ground wetness, the water's absorption, scattering, waves and roughness, the fog's albedo, the practical lights'
+  colour, intensity and scattering, and the glow's colour and strength: 65 fields in all. Every default reproduces
+  the shared look exactly (no wetness, no glow, white fog, the engine's water and light values).
+- **The `render` block** of `looks.json`: engine console variables the game sets at start, such as
+  `r.Lumen.HardwareRayTracing`, as `"name": number` pairs in file order (`ftcore::LookTable::render`). Each key starts
+  with `r.`, uses letters, digits, `.` and `_`, and appears once; each value is a finite number. A bad entry refuses
+  the whole table, with an error naming `render.<key>`.
 - **The grade** (`ftcore::gradeSrgb`, `Core/include/ftcore/LookGrade.h`; on the GPU `Plugins/FTLook`): one full-screen
   pass right after the tonemapper, on the sRGB display values, in OKLab. It scales chroma by one global factor, except
   in two hue windows a world keeps (gold in Solhaven; blue and violet in the Lattice; blood red in the Unwritten), a
@@ -69,9 +75,43 @@ UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -Render
 
 `-ArenaWorldView` adds a clean wide view of the scene (`_0_world`) before the fight's views (docs/ARENA_DEMO.md).
 
+## The surfaces and the look lab
+
+The world's wetness, water and glow reach the materials through one material parameter collection,
+`/Game/Look/MPC_Look`. `FTScene::ApplyLookParameters` fills it once the world has its instance, and the subsystem's
+log line says how many parameters it wrote. `FTBuildLookMaterials` builds the collection and five surfaces over it,
+each graph a Custom HLSL node:
+
+| Material | What it shows |
+|---|---|
+| `M_Look_Water` | Single Layer Water: two panning wave layers that calm toward the shore (the depth behind the surface), the world's absorption and scattering (per metre in the data, per centimetre in the engine) and phase. |
+| `M_Look_WetStone` | A photographed stone that soaks, darkens and glosses with `Wetness`, and holds puddles in its dips past `PuddleStart`. |
+| `M_Look_Glass` | Lit translucent glass, index of refraction 1.5, with Lumen front-layer reflections (the `render` block turns them on). |
+| `M_Look_Chrome` | A near-mirror metal, to read the reflections by. |
+| `M_Look_Glow` | The world's glow colour times its strength: the Lattice's game-light. |
+
+ApplyLook also sets the fog's albedo and the practical lights: every light component tagged `FTPractical` takes the
+world's practical colour temperature, intensity and volumetric scattering.
+
+The look lab (`/Game/Maps/Look_Lab`, built by `FTBuildLookLabWorld`, game mode `AFTLookLabGameMode`) holds a water
+basin with a ramp into it, a wet-stone yard, a glass pane and ball, a chrome slab and ball in an alcove, a glow strip
+and one practical lamp in the fog, seen through three cameras. With `-LookLabShot=<prefix>` it takes three stills
+(`_1_wide`, `_2_water`, `_3_chrome`) and 192 frames of the water view a 24th of a second apart (`_loop_0000.png` ...)
+at a fixed step, then quits:
+
+```
+UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildLookMaterials -AllowCommandletRendering -unattended
+UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildLookLabWorld -NullRHI -unattended
+UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/Look_Lab -game -RenderOffScreen -ResX=1920 -ResY=1080
+  -unattended -nosound -Look=<world> -LookLabShot=<dir>/<world>
+```
+
+`-AllowCommandletRendering` lets the material build compile its shaders and report errors; under `-NullRHI` it can't.
+
 ## Later
 
-- Halation (a red-weighted glow round bright edges), per-world wetness on the ground master's flow mask, water
-  shading per world, practical lights per district, and a night variant (the maps' sun angle is set when they're
+- Halation (a red-weighted glow round bright edges), per-world wetness on the ground master (`M_WorldGround` reading
+  `Wetness` from the collection), the world maps' water bodies wearing `M_Look_Water`, practical lights per district,
+  and a night variant (the maps' sun angle is set when they're
   built).
 - Measure each map's exposure and narrow the auto-exposure range to about 1.5 EV either side (docs/SCENE_LOOK.md).

@@ -40,6 +40,73 @@ TEST_CASE("looks: Data/Look/looks.json loads clean with solhaven, lattice and un
     }
     CHECK(*t.find("solhaven") != *t.find("lattice"));
     CHECK(*t.find("lattice") != *t.find("unwritten"));
+    // The engine's ray-traced reflections are on for every world.
+    REQUIRE(t.render.size() == 2);
+    CHECK(t.render[0].name == "r.Lumen.HardwareRayTracing");
+    CHECK(t.render[0].value == 1.f);
+    CHECK(t.render[1].name == "r.Lumen.TranslucencyReflections.FrontLayer.Enable");
+    CHECK(t.render[1].value == 1.f);
+    // Water, wetness, fog albedo, practical lights and glow are set per world.
+    CHECK(t.find("solhaven")->wetness > 0.f);
+    CHECK(t.find("lattice")->glowStrength > 0.f);
+    CHECK(t.find("solhaven")->glowStrength == 0.f);
+    CHECK(t.find("unwritten")->waterWaveStrength < 0.5f);
+}
+
+TEST_CASE("looks: a render block parses in order, and no block means none, with no warning") {
+    LookTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(importLookTable(R"({"version":1,"render":{"r.B.Two":2.5,"r.A.One":-1,"r.Z_9":0},"worlds":{"w":{}}})", t,
+                                    &error, &warnings),
+                    error);
+    CHECK(warnings.empty());
+    REQUIRE(t.render.size() == 3);
+    CHECK(t.render[0].name == "r.B.Two");
+    CHECK(t.render[0].value == 2.5f);
+    CHECK(t.render[1].name == "r.A.One");
+    CHECK(t.render[1].value == -1.f);
+    CHECK(t.render[2].name == "r.Z_9");
+    CHECK(t.render[2].value == 0.f);
+
+    warnings.clear();
+    REQUIRE(importLookTable(R"({"version":1,"render":{},"worlds":{"w":{}}})", t, &error, &warnings));
+    CHECK(t.render.empty());
+    CHECK(warnings.empty());
+    REQUIRE(importLookTable(R"({"version":1,"worlds":{"w":{}}})", t, &error, &warnings));
+    CHECK(t.render.empty());
+    CHECK(warnings.empty());
+}
+
+TEST_CASE("looks: a bad render key or value refuses the table, naming render.<key>") {
+    LookTable t;
+    std::string error;
+    CHECK_FALSE(importLookTable(R"({"version":1,"render":{"Lumen.X":1},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "render.Lumen.X"));
+    CHECK(t.render.empty());
+    CHECK_FALSE(importLookTable(R"({"version":1,"render":{"r.":1},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "render.r."));
+    CHECK_FALSE(importLookTable(R"({"version":1,"render":{"r.Bad Name":1},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "render.r.Bad Name"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"render":{"r.A-B":1},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "render.r.A-B"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"render":{"r.A":1,"r.a":2},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "render.r.a"));
+    CHECK(contains(error, "duplicate"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"render":{"r.A":"on"},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "render.r.A"));
+    CHECK(contains(error, "not a number"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"render":{"r.A":null},"worlds":{"w":{}}})", t, &error));
+    CHECK_FALSE(importLookTable(R"({"version":1,"render":{"r.A":true},"worlds":{"w":{}}})", t, &error));
+    CHECK_FALSE(importLookTable(R"({"version":1,"render":{"r.A":1e999},"worlds":{"w":{}}})", t, &error));
+    CHECK_FALSE(importLookTable(R"({"version":1,"render":[1],"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "render"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"render":5,"worlds":{"w":{}}})", t, &error));
+    // A name over 128 characters.
+    const std::string longName(130, 'a');
+    CHECK_FALSE(importLookTable("{\"version\":1,\"render\":{\"r." + longName + "\":1},\"worlds\":{\"w\":{}}}", t, &error));
+    CHECK(t.render.empty());
+    CHECK(t.worlds.empty());
 }
 
 TEST_CASE("looks: a world leaves out what it keeps at the default, and an about note is ignored") {

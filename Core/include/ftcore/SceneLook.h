@@ -22,7 +22,9 @@ namespace ftcore {
 // Every field is a float. lo..hi is the range the look table accepts (Data/Look/looks.json); the engine's own
 // range is wider for some. Every default is the engine's or the project config's value, so a default look
 // renders as before. Hue fields are OKLab degrees (red ~30, gold ~85, green ~145, blue ~265, violet ~305) and
-// lerp linearly like the rest, so a blend between worlds should keep their hues close.
+// lerp linearly like the rest, so a blend between worlds should keep their hues close. The surface, water, fog
+// albedo, practical light and glow fields drive materials and lights the maps carry; their defaults add no
+// wetness or glow and leave the water, fog and lights as they were.
 #define FTCORE_LOOK_FIELDS(X)                                                                                  \
     /* Light. */                                                                                               \
     X(sunLux, 6.f, 0.f, 200.f)    /* directional light illuminance */                                          \
@@ -73,7 +75,34 @@ namespace ftcore {
     X(shadowTintHue, 0.f, 0.f, 360.f)    /* split tone: the shadows lean toward this hue... */                 \
     X(shadowTintChroma, 0.f, 0.f, 0.05f) /* ... by this much OKLab chroma at black */                         \
     X(highlightTintHue, 0.f, 0.f, 360.f)                                                                       \
-    X(highlightTintChroma, 0.f, 0.f, 0.05f)
+    X(highlightTintChroma, 0.f, 0.f, 0.05f)                                                                    \
+    /* Surfaces. */                                                                                            \
+    X(wetness, 0.f, 0.f, 1.f) /* ground and stone wetness: darker, smoother, puddles past 0.5 */               \
+    /* Water (Single Layer Water). Coefficients are per metre here; the material converts to per cm. */        \
+    X(waterAbsorbR, 0.45f, 0.f, 50.f) /* absorption per metre: how fast each colour dies with depth */         \
+    X(waterAbsorbG, 0.065f, 0.f, 50.f)                                                                         \
+    X(waterAbsorbB, 0.025f, 0.f, 50.f)                                                                         \
+    X(waterScatterR, 0.02f, 0.f, 50.f) /* scattering per metre: the colour the water gives back */             \
+    X(waterScatterG, 0.03f, 0.f, 50.f)                                                                         \
+    X(waterScatterB, 0.04f, 0.f, 50.f)                                                                         \
+    X(waterPhaseG, 0.f, -0.9f, 0.9f) /* the water's scattering phase g */                                      \
+    X(waterRoughness, 0.04f, 0.f, 1.f)                                                                         \
+    X(waterWaveCm, 150.f, 10.f, 5000.f) /* the first normal layer's cell size, cm; the second is finer */      \
+    X(waterWaveSpeed, 1.f, 0.f, 10.f) /* scale on the layers' pan speed; 0 = frozen */                         \
+    X(waterWaveStrength, 1.f, 0.f, 2.f) /* normal strength; 0 = a still mirror */                              \
+    /* Air, continued. */                                                                                      \
+    X(fogAlbedoR, 1.f, 0.f, 1.f) /* volumetric fog albedo (1 = white, the engine's default) */                 \
+    X(fogAlbedoG, 1.f, 0.f, 1.f)                                                                               \
+    X(fogAlbedoB, 1.f, 0.f, 1.f)                                                                               \
+    /* Practical lights (lights tagged FTPractical in a map). */                                               \
+    X(practicalKelvin, 3200.f, 1500.f, 15000.f)                                                                \
+    X(practicalCandela, 40.f, 0.f, 10000.f)                                                                    \
+    X(practicalScatter, 1.f, 0.f, 20.f) /* volumetric scattering intensity (the engine's default 1) */         \
+    /* Glow: emissive light sources. */                                                                        \
+    X(glowR, 0.3f, 0.f, 1.f) /* the glow's colour */                                                           \
+    X(glowG, 0.55f, 0.f, 1.f)                                                                                  \
+    X(glowB, 1.f, 0.f, 1.f)                                                                                    \
+    X(glowStrength, 0.f, 0.f, 200.f) /* emissive multiplier at the scenes' exposure scale (sun: a few lux); 0 = dark */
 
 struct SceneLook {
 #define FTCORE_LOOK_DECL(name, def, lo, hi) float name = def;

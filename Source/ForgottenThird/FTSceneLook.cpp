@@ -2,6 +2,7 @@
 
 #include "Components/DirectionalLightComponent.h"
 #include "Components/ExponentialHeightFogComponent.h"
+#include "Components/LocalLightComponent.h"
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Components/VolumetricCloudComponent.h"
@@ -17,6 +18,8 @@
 #include "FTText.h"
 #include "HAL/FileManager.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialParameterCollection.h"
+#include "Materials/MaterialParameterCollectionInstance.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
@@ -177,7 +180,34 @@ int32 FTScene::ApplyLook(UWorld* World, const ftcore::SceneLook& Look, const ftc
 			FT_LOOK_SET(fogFalloff, FogComponent->SetFogHeightFalloff(Look.fogFalloff))
 			FT_LOOK_SET(volumetricFog, FogComponent->SetVolumetricFog(Look.hasVolumetricFog()); FogComponent->SetVolumetricFogExtinctionScale(Look.volumetricFog))
 			FT_LOOK_SET(fogForward, FogComponent->SetVolumetricFogScatteringDistribution(Look.fogForward))
+			if (Look.fogAlbedoR != Current.fogAlbedoR || Look.fogAlbedoG != Current.fogAlbedoG || Look.fogAlbedoB != Current.fogAlbedoB)
+			{
+				FogComponent->SetVolumetricFogAlbedo(FLinearColor(Look.fogAlbedoR, Look.fogAlbedoG, Look.fogAlbedoB).ToFColor(true));
+				++Written;
+			}
 			break;
+		}
+	}
+
+	// Practical lights: every light the map tags as one. A map built before the look knew them keeps its own values until a
+	// world's look moves them.
+	const bool bPracticals = Look.practicalKelvin != Current.practicalKelvin || Look.practicalCandela != Current.practicalCandela
+		|| Look.practicalScatter != Current.practicalScatter;
+	for (TActorIterator<AActor> It(World); It && bPracticals; ++It)
+	{
+		if (!It->ActorHasTag(PracticalTag))
+		{
+			continue;
+		}
+		TInlineComponentArray<ULocalLightComponent*> Lights(*It);
+		for (ULocalLightComponent* Light : Lights)
+		{
+			Light->SetIntensityUnits(ELightUnits::Candelas);
+			Light->SetIntensity(Look.practicalCandela);
+			Light->SetUseTemperature(true);
+			Light->SetTemperature(Look.practicalKelvin);
+			Light->SetVolumetricScatteringIntensity(Look.practicalScatter);
+			++Written;
 		}
 	}
 	// The cloud layer can only be hidden or shown: a map built without one stays clear.
@@ -193,6 +223,44 @@ int32 FTScene::ApplyLook(UWorld* World, const ftcore::SceneLook& Look, const ftc
 		}
 	}
 #undef FT_LOOK_SET
+	return Written;
+}
+
+int32 FTScene::ApplyLookParameters(UWorld* World, const ftcore::SceneLook& Look)
+{
+	const FString Path = FString(LookCollection) + TEXT(".") + FPackageName::GetShortName(LookCollection);
+	const UMaterialParameterCollection* Collection = World ? LoadObject<UMaterialParameterCollection>(nullptr, *Path, nullptr, LOAD_Quiet | LOAD_NoWarn) : nullptr;
+	if (!Collection)
+	{
+		// Not built: no material reads it, so there is nothing to fill.
+		return 0;
+	}
+	UMaterialParameterCollectionInstance* Instance = World->GetParameterCollectionInstance(Collection);
+	if (!Instance)
+	{
+		return -1;
+	}
+	int32 Written = 0;
+	const auto Count = [&Written](bool bFound, const TCHAR* Name)
+	{
+		if (bFound)
+		{
+			++Written;
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Look: %s has no parameter %s; rebuild it with FTBuildLookMaterials."), LookCollection, Name);
+		}
+	};
+	for (const FLookScalarParameter& Parameter : LookScalarParameters)
+	{
+		Count(Instance->SetScalarParameterValue(Parameter.Name, Look.*(Parameter.Field)), Parameter.Name);
+	}
+	for (const FLookVectorParameter& Parameter : LookVectorParameters)
+	{
+		Count(Instance->SetVectorParameterValue(Parameter.Name, FLinearColor(Look.*(Parameter.R), Look.*(Parameter.G), Look.*(Parameter.B), 1.f)),
+			Parameter.Name);
+	}
 	return Written;
 }
 

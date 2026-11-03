@@ -34,6 +34,15 @@ bool worldName(std::string_view s) {
     return true;
 }
 
+// "r." then letters, digits, '.' and '_'; 3..128 characters.
+bool cvarName(std::string_view s) {
+    if (s.size() < 3 || s.size() > 128 || s.substr(0, 2) != "r.") return false;
+    for (const char c : s)
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_'))
+            return false;
+    return true;
+}
+
 std::string shortFloat(float v) {
     char buf[32];
     std::snprintf(buf, sizeof buf, "%g", static_cast<double>(v));
@@ -88,10 +97,39 @@ bool importLookTable(std::string_view json, LookTable& out, std::string* error, 
         errors.push_back("version: expected 1");
     for (std::uint32_t k = 0; k < root.size(); ++k) {
         const std::string_view key = root.key(k);
-        if (key != "version" && key != "worlds") warn("unknown key: " + std::string(key));
+        if (key != "version" && key != "worlds" && key != "render") warn("unknown key: " + std::string(key));
     }
 
     LookTable table;
+    if (root.has("render")) {
+        const JsonValue render = root["render"];
+        if (!render.isObject()) {
+            errors.push_back("render: expected an object");
+        } else {
+            for (std::uint32_t k = 0; k < render.size(); ++k) {
+                const std::string name(render.key(k));
+                const std::string at = "render." + name;
+                if (!cvarName(name)) {
+                    errors.push_back(at + ": expected a console variable name: r. then letters, digits, . and _ (3..128 chars)");
+                    continue;
+                }
+                bool duplicate = false;
+                for (const LookTable::RenderSetting& r : table.render)
+                    if (equalsNoCase(r.name, name)) duplicate = true;
+                if (duplicate) {
+                    errors.push_back(at + ": duplicate console variable");
+                    continue;
+                }
+                const JsonValue v = render.value(k);
+                const double d = v.number(0.0);
+                if (!v.isNumber() || !std::isfinite(d) || d > 3e38 || d < -3e38) {
+                    errors.push_back(at + ": " + std::string(v.raw()) + " is not a number a float holds");
+                    continue;
+                }
+                table.render.push_back({name, static_cast<float>(d)});
+            }
+        }
+    }
     const JsonValue worlds = root["worlds"];
     if (!worlds.isObject() || worlds.size() == 0) errors.push_back("worlds: expected a non-empty object");
     for (std::uint32_t w = 0; w < worlds.size() && worlds.isObject(); ++w) {

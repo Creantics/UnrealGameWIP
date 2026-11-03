@@ -2,7 +2,9 @@
 
 // The per-world photoreal look at run time. The maps are built with the shared default look (FTScene::SpawnLook), so
 // once a game world's look actors exist this writes the world's own look into them in place (FTScene::ApplyLook) and
-// hands the after-tonemap grade its constants (the FTLook plugin). The world comes from Data/Look/looks.json, picked by
+// hands the after-tonemap grade its constants (the FTLook plugin), and fills the look's material parameters (a world's
+// wetness, water and glow; FTScene::ApplyLookParameters). Once per run it also sets the render settings looks.json lists
+// (console variables, under the ini and the command line). The world comes from Data/Look/looks.json, picked by
 // the map's name (Solhaven, Lattice or Unwritten in it) or by -Look=<world>. -LookOff, or r.FT.Look 0 at start, applies
 // nothing, so the scene renders exactly as the shared look does. ft.Look <world|off> switches it while playing.
 //
@@ -56,4 +58,7 @@ private:
 	// Waiting for the level's look actors (the arena spawns them after the world begins).
 	bool bWaiting = false;
 	float Waited = 0.f;
+	// The look's material parameters still to write (the world's collection instance may not be there yet).
+	bool bParametersPending = false;
+	int32 ParametersWritten = 0;
 };

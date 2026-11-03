@@ -36,6 +36,17 @@ TEST_CASE("The default look keeps the light scale and one warm cast") {
     CHECK(look.hasClouds());
 }
 
+TEST_CASE("A default look adds no wetness or glow and leaves the fog white") {
+    const SceneLook look;
+    CHECK(look.wetness == 0.f);
+    CHECK(look.glowStrength == 0.f);
+    CHECK(look.fogAlbedoR == 1.f);
+    CHECK(look.fogAlbedoG == 1.f);
+    CHECK(look.fogAlbedoB == 1.f);
+    CHECK(look.practicalScatter == 1.f);
+    CHECK(look.waterWaveStrength == 1.f);
+}
+
 TEST_CASE("Every field takes part in ==") {
     const SceneLook base;
     const SceneLook changed = allChanged();
@@ -50,7 +61,8 @@ TEST_CASE("Every field takes part in ==") {
     }
     FTCORE_LOOK_FIELDS(FTCORE_LOOK_ONE)
 #undef FTCORE_LOOK_ONE
-    CHECK(fields == 43);
+    CHECK(fields == 65);
+    CHECK(ftcore::kSceneLookFieldCount == 65u);
     CHECK(base == SceneLook{});
 }
 
@@ -78,6 +90,21 @@ TEST_CASE("lerp blends every field linearly") {
     CHECK(approx(quarter.name, a.name + (b.name - a.name) * 0.25f));
     FTCORE_LOOK_FIELDS(FTCORE_LOOK_QUARTER)
 #undef FTCORE_LOOK_QUARTER
+}
+
+TEST_CASE("lerp blends the surface, water, fog albedo, practical and glow fields") {
+    SceneLook wet;
+    wet.wetness = 0.8f;
+    wet.glowStrength = 40.f;
+    wet.waterAbsorbR = 2.45f;
+    wet.fogAlbedoB = 0.5f;
+    wet.practicalKelvin = 9200.f;
+    const SceneLook mid = ftcore::lerp(SceneLook{}, wet, 0.5f);
+    CHECK(approx(mid.wetness, 0.4f));
+    CHECK(approx(mid.glowStrength, 20.f));
+    CHECK(approx(mid.waterAbsorbR, 1.45f));
+    CHECK(approx(mid.fogAlbedoB, 0.75f));
+    CHECK(approx(mid.practicalKelvin, 6200.f, 1e-3f));
 }
 
 TEST_CASE("The switches follow the blended values") {

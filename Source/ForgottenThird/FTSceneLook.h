@@ -33,6 +33,48 @@ inline constexpr const TCHAR* SurfaceFolder = TEXT("/Game/Rendering/Surfaces");
 // road mask.
 inline constexpr const TCHAR* GroundMaterial = TEXT("/Game/Rendering/M_WorldGround");
 
+// The look's materials, built by FTBuildLookMaterials: a parameter collection that carries a world's wetness, water
+// and glow to every material that reads it (ApplyLookParameters fills it), and the look lab's surfaces over it. See
+// docs/PHOTOREAL_LOOK.md.
+inline constexpr const TCHAR* LookCollection = TEXT("/Game/Look/MPC_Look");
+inline constexpr const TCHAR* LookWaterMaterial = TEXT("/Game/Look/M_Look_Water");
+inline constexpr const TCHAR* LookGlassMaterial = TEXT("/Game/Look/M_Look_Glass");
+inline constexpr const TCHAR* LookChromeMaterial = TEXT("/Game/Look/M_Look_Chrome");
+inline constexpr const TCHAR* LookWetStoneMaterial = TEXT("/Game/Look/M_Look_WetStone");
+inline constexpr const TCHAR* LookGlowMaterial = TEXT("/Game/Look/M_Look_Glow");
+// The tag of a map's practical lights (lamps, signs, fires): the look sets their colour, intensity and how much they
+// light the fog.
+inline constexpr const TCHAR* PracticalTag = TEXT("FTPractical");
+
+// The collection's parameters and the SceneLook fields they carry. A vector's alpha is 1.
+struct FLookScalarParameter
+{
+	const TCHAR* Name;
+	float ftcore::SceneLook::*Field;
+};
+inline constexpr FLookScalarParameter LookScalarParameters[] = {
+	{TEXT("Wetness"), &ftcore::SceneLook::wetness},
+	{TEXT("WaterRoughness"), &ftcore::SceneLook::waterRoughness},
+	{TEXT("WaterPhaseG"), &ftcore::SceneLook::waterPhaseG},
+	{TEXT("WaterWaveCm"), &ftcore::SceneLook::waterWaveCm},
+	{TEXT("WaterWaveSpeed"), &ftcore::SceneLook::waterWaveSpeed},
+	{TEXT("WaterWaveStrength"), &ftcore::SceneLook::waterWaveStrength},
+	{TEXT("GlowStrength"), &ftcore::SceneLook::glowStrength},
+};
+struct FLookVectorParameter
+{
+	const TCHAR* Name;
+	float ftcore::SceneLook::*R;
+	float ftcore::SceneLook::*G;
+	float ftcore::SceneLook::*B;
+};
+inline constexpr FLookVectorParameter LookVectorParameters[] = {
+	// Per metre; the water material takes the engine's per centimetre from them.
+	{TEXT("WaterAbsorb"), &ftcore::SceneLook::waterAbsorbR, &ftcore::SceneLook::waterAbsorbG, &ftcore::SceneLook::waterAbsorbB},
+	{TEXT("WaterScatter"), &ftcore::SceneLook::waterScatterR, &ftcore::SceneLook::waterScatterG, &ftcore::SceneLook::waterScatterB},
+	{TEXT("GlowColor"), &ftcore::SceneLook::glowR, &ftcore::SceneLook::glowG, &ftcore::SceneLook::glowB},
+};
+
 // The ground master's layers, each wearing the surface its kind gives the role. Its parameters are named after them:
 // "<Layer><Map>" for a texture, "<Layer>Tint", "<Layer>TileCm" and "<Layer>Roughness".
 struct FGroundLayer
@@ -83,6 +125,11 @@ FORGOTTENTHIRD_API void SpawnLook(UWorld* World, const FActorSpawnParameters& Sp
 // value keeps whatever the map has. The number of fields written, or -1, with nothing written, when World has no such
 // volume yet. See docs/PHOTOREAL_LOOK.md.
 FORGOTTENTHIRD_API int32 ApplyLook(UWorld* World, const ftcore::SceneLook& Look, const ftcore::SceneLook& Current);
+
+// Writes Look's wetness, water and glow into World's instance of the look's parameter collection (LookCollection). The
+// number of parameters written; 0 when the collection hasn't been built (no material reads it then); -1, with nothing
+// written, while World has no instance of it yet.
+FORGOTTENTHIRD_API int32 ApplyLookParameters(UWorld* World, const ftcore::SceneLook& Look);
 
 // Loads the world surface master: a "Color" vector held to a plausible albedo, "Roughness", "Metallic" and
 // a low-frequency mottle on the world position ("Variation", "VariationScale"). Null, with an error logged,

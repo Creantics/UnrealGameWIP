@@ -60,6 +60,31 @@ const ftcore::LookTable& LookTable()
 	return Table;
 }
 
+// Data/Look/looks.json's render settings, once per run: each console variable set at the game-setting priority, under
+// the project's ini and the command line (-dpcvars=), which keep theirs.
+void ApplyRenderSettings()
+{
+	static bool bApplied = false;
+	if (bApplied)
+	{
+		return;
+	}
+	bApplied = true;
+	for (const ftcore::LookTable::RenderSetting& Setting : LookTable().render)
+	{
+		const FString Name = FT::ToFString(Setting.name);
+		IConsoleVariable* Variable = IConsoleManager::Get().FindConsoleVariable(*Name);
+		if (!Variable)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Look: no console variable %s; its render setting is skipped."), *Name);
+			continue;
+		}
+		const FString Before = Variable->GetString();
+		Variable->Set(*FString::SanitizeFloat(Setting.value), ECVF_SetByGameSetting);
+		UE_LOG(LogForgottenThird, Display, TEXT("Look: %s %s -> %s."), *Name, *Before, *Variable->GetString());
+	}
+}
+
 // ft.Look <world|off>: switches the look of the world the console is in.
 void LookCommand(const TArray<FString>& Args, UWorld* World)
 {
@@ -96,6 +121,10 @@ void UFTLookSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Super::Initialize(Collection);
 	UWorld* World = GetWorld();
 	Grade = FSceneViewExtensions::NewExtension<FFTLookGradeExtension>(World);
+	if (!FParse::Param(FCommandLine::Get(), TEXT("LookOff")) && CVarLook.GetValueOnGameThread() != 0)
+	{
+		ApplyRenderSettings();
+	}
 
 	// -Look=<world> picks it; otherwise the map's name does. -LookOff (or r.FT.Look 0) keeps the shared look.
 	FString Want;
@@ -140,6 +169,7 @@ bool UFTLookSubsystem::SetWorldLook(const FString& World)
 	WorldId = Id;
 	Wanted = Look;
 	PushGrade();
+	bParametersPending = true;
 	// The scene's actors may not be there yet; Tick keeps trying.
 	bWaiting = true;
 	Waited = 0.f;
@@ -153,26 +183,45 @@ void UFTLookSubsystem::Tick(float DeltaTime)
 	{
 		return;
 	}
-	if (Wanted == Applied)
+	// The materials' parameters need only the world's collection instance, not the look actors.
+	if (bParametersPending)
 	{
-		bWaiting = false;
-		return;
+		ParametersWritten = FTScene::ApplyLookParameters(GetWorld(), Wanted);
+		bParametersPending = ParametersWritten < 0;
 	}
-	const int32 Written = FTScene::ApplyLook(GetWorld(), Wanted, Applied);
-	if (Written >= 0)
+	if (Wanted != Applied)
 	{
-		Applied = Wanted;
+		const int32 Written = FTScene::ApplyLook(GetWorld(), Wanted, Applied);
+		if (Written >= 0)
+		{
+			Applied = Wanted;
+			UE_LOG(LogForgottenThird, Display, TEXT("Look: %s (%d settings written; grade %s; %s)."),
+				WorldId.IsEmpty() ? TEXT("shared look") : *WorldId, Written, Grade.IsValid() && Grade->IsGrading() ? TEXT("on") : TEXT("off"),
+				bParametersPending ? TEXT("material parameters waiting")
+					: ParametersWritten == 0 ? TEXT("no material parameter collection built")
+					: *FString::Printf(TEXT("%d material parameters written"), ParametersWritten));
+		}
+	}
+	if (Wanted == Applied && !bParametersPending)
+	{
 		bWaiting = false;
-		UE_LOG(LogForgottenThird, Display, TEXT("Look: %s (%d settings written; grade %s)."), WorldId.IsEmpty() ? TEXT("shared look") : *WorldId,
-			Written, Grade.IsValid() && Grade->IsGrading() ? TEXT("on") : TEXT("off"));
 		return;
 	}
 	Waited += DeltaTime;
 	if (Waited > kLookWaitSeconds)
 	{
 		bWaiting = false;
-		UE_LOG(LogForgottenThird, Warning, TEXT("Look: no level post-process volume after %.0f s; %s's light and camera finish not applied (the grade still is)."),
-			kLookWaitSeconds, *WorldId);
+		if (Wanted != Applied)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Look: no level post-process volume after %.0f s; %s's light and camera finish not applied (the grade still is)."),
+				kLookWaitSeconds, *WorldId);
+		}
+		if (bParametersPending)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Look: the world has no instance of %s after %.0f s; the look's material parameters stay at their defaults."),
+				FTScene::LookCollection, kLookWaitSeconds);
+		}
+		bParametersPending = false;
 	}
 }
 
