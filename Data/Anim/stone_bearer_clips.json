@@ -1,0 +1,111 @@
+{
+ "version": 1,
+ "mesh": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearer",
+ "clips": [
+  {
+   "id": "idle",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_beareridle",
+   "length_s": 12.632,
+   "impact_s": 0,
+   "loop": true
+  },
+  {
+   "id": "idle_p2",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_beareridle_p2",
+   "length_s": 12.632,
+   "impact_s": 0,
+   "loop": true
+  },
+  {
+   "id": "stagger",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerstagger",
+   "length_s": 2.0,
+   "impact_s": 0,
+   "loop": false
+  },
+  {
+   "id": "face_down",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerface_down",
+   "length_s": 12.632,
+   "impact_s": 0,
+   "loop": true
+  },
+  {
+   "id": "defeat",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerdefeat",
+   "length_s": 6.0,
+   "impact_s": 0,
+   "loop": false
+  },
+  {
+   "id": "hit_light",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerhit_light",
+   "length_s": 0.5,
+   "impact_s": 0,
+   "loop": false
+  },
+  {
+   "id": "hit_heavy",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerhit_heavy",
+   "length_s": 0.9,
+   "impact_s": 0,
+   "loop": false
+  },
+  {
+   "id": "called_fist",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearercalled_fist",
+   "length_s": 3.768,
+   "impact_s": 2.368,
+   "loop": false
+  },
+  {
+   "id": "slab_drive",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerslab_drive",
+   "length_s": 3.479,
+   "impact_s": 1.579,
+   "loop": false
+  },
+  {
+   "id": "debris_shower",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerdebris_shower",
+   "length_s": 4.968,
+   "impact_s": 2.368,
+   "loop": false
+  },
+  {
+   "id": "low_sweep",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerlow_sweep",
+   "length_s": 3.479,
+   "impact_s": 1.579,
+   "loop": false
+  },
+  {
+   "id": "ground_punch",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerground_punch",
+   "length_s": 5.358,
+   "impact_s": 3.158,
+   "loop": false
+  },
+  {
+   "id": "edge_jab",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_beareredge_jab",
+   "length_s": 1.739,
+   "impact_s": 0.789,
+   "loop": false
+  },
+  {
+   "id": "stamp",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerstamp",
+   "length_s": 1.739,
+   "impact_s": 0.789,
+   "loop": false
+  },
+  {
+   "id": "backhand",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerbackhand",
+   "length_s": 1.739,
+   "impact_s": 0.789,
+   "loop": false
+  }
+ ]
+}

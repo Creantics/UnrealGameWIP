@@ -148,6 +148,23 @@
       ]
     },
     {
+      "id": "stone_bearer",
+      "hp": 1400, "poise": 160, "poiseDelay": 3, "staggerTime": 2, "openTime": 3, "downTime": 3,
+      "walkSpeed": 0.8, "runSpeed": 1.6, "strafeSpeed": 0.6, "accel": 2.5, "turnRate": 1.4,
+      "preferredRange": 3.5, "runRange": 9, "attackDelay": 0.8, "bodyRadius": 1.2, "height": 5.1, "bpm": 76,
+      "look": { "clips": "Data/Anim/stone_bearer_clips.json", "scale": 1, "yawOffset": -90 },
+      "moves": [
+        { "clip": "called_fist", "tell": "strike", "startup": 2.368, "active": 0.2, "recovery": 1.2, "range": 3.8, "arcCos": 0.3, "damage": 17, "poiseDamage": 20, "guardDamage": 26, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 4.2, "weight": 1.2 },
+        { "clip": "slab_drive", "tell": "charge", "startup": 1.579, "active": 0.3, "recovery": 1.6, "range": 5.7, "arcCos": 0.3, "damage": 14, "poiseDamage": 17, "guardDamage": 21, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 6.1, "weight": 1.0, "parryable": false },
+        { "clip": "debris_shower", "tell": "shot", "startup": 2.368, "active": 1.0, "recovery": 1.6, "range": 11.2, "arcCos": -1, "damage": 17, "poiseDamage": 20, "guardDamage": 26, "lunge": 0, "tracking": 1.0, "minRange": 0, "maxRange": 11.6, "cooldown": 8, "weight": 0.6, "parryable": false },
+        { "clip": "low_sweep", "tell": "sweep", "startup": 1.579, "active": 0.3, "recovery": 1.6, "range": 5.7, "arcCos": -0.2, "damage": 14, "poiseDamage": 17, "guardDamage": 21, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 6.1, "weight": 0.8, "unblockable": true, "parryable": false },
+        { "clip": "ground_punch", "tell": "overhead", "startup": 3.158, "active": 0.2, "recovery": 2.0, "range": 2.7, "arcCos": 0.3, "damage": 20, "poiseDamage": 24, "guardDamage": 30, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 3.1, "cooldown": 6, "weight": 0.6 },
+        { "clip": "edge_jab", "tell": "thrust", "startup": 0.789, "active": 0.15, "recovery": 0.8, "range": 3.2, "arcCos": 0.5, "damage": 9, "poiseDamage": 11, "guardDamage": 14, "lunge": 0, "tracking": 2.5, "minRange": 0, "maxRange": 3.6, "weight": 0.6 },
+        { "clip": "stamp", "tell": "slam", "startup": 0.789, "active": 0.15, "recovery": 0.8, "range": 3.2, "arcCos": -0.5, "damage": 9, "poiseDamage": 11, "guardDamage": 14, "lunge": 0, "tracking": 2.5, "minRange": 0, "maxRange": 3.6, "weight": 0.6 },
+        { "clip": "backhand", "tell": "backhand", "startup": 0.789, "active": 0.15, "recovery": 0.8, "range": 3.4, "arcCos": 0.0, "damage": 9, "poiseDamage": 11, "guardDamage": 14, "lunge": 0, "tracking": 2.5, "minRange": 0, "maxRange": 3.8, "weight": 0.6 }
+      ]
+    },
+    {
       "id": "spitter",
       "hp": 70, "poise": 25, "poiseDelay": 2.5, "staggerTime": 0.8, "openTime": 1.4, "downTime": 1,
       "walkSpeed": 2, "runSpeed": 3.6, "strafeSpeed": 1.6, "accel": 10, "turnRate": 6,
