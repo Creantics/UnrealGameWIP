@@ -211,8 +211,10 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	BeginNow = Now;
 	// The fitted zone's ring, and where the player starts in it.
 	PrepareStoneBearer();
+	PrepareKite();
 	Fight.begin(Def, Fit.ring, Fit.playerStart, Fit.playerFacing, Seed);
 	BeginStoneBearer();
+	BeginKite();
 	BeginKindCrits();
 	SpawnFigures(Setup.Lead);
 	if (bBossSplitAtStart)
@@ -283,6 +285,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 void UFTArenaRunner::End()
 {
 	EndStoneBearer();
+	EndKite();
 	EndKindCrits();
 	for (int32 I = 0; I < MaxEnemies; ++I)
 	{
@@ -782,6 +785,10 @@ void UFTArenaRunner::StepFight()
 		// Onto its plinth: put there, not walked there.
 		PrevBodies.enemies[StoneBearer.GetSlot()] = Bodies.enemies[StoneBearer.GetSlot()];
 	}
+	if (Kite.IsActive())
+	{
+		Kite.AfterTick(Out.events);
+	}
 	if (bKindCritHook)
 	{
 		FeedKindCrits(Out.events);
@@ -791,6 +798,10 @@ void UFTArenaRunner::StepFight()
 	if (bBoss)
 	{
 		LogStoneBearerNotes();
+	}
+	if (Kite.IsActive())
+	{
+		LogKiteNotes();
 	}
 	// The open weak point's glow follows the boss's state, not its notes, so a missed note can't leave it on.
 	const bool bGlow = bBoss && StoneBearer.CritOpen();
@@ -1315,6 +1326,7 @@ void UFTArenaRunner::Restart()
 	{
 		SplitBossCarried();
 	}
+	BeginKite();
 	BeginKindCrits();
 	bResultLogged = false;
 	PutBodiesAtStart();
@@ -1556,9 +1568,9 @@ void UFTArenaRunner::BeginKindCrits()
 		{
 			continue;
 		}
-		if (StoneBearerSlot >= 0)
+		if (StoneBearerSlot >= 0 || KiteSlot >= 0)
 		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s in slot %d fights without its weak points beside the stone_bearer."), UTF8_TO_TCHAR(SlotKindId(I)), I);
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s in slot %d fights without its weak points beside the stone_bearer or the kite_boss."), UTF8_TO_TCHAR(SlotKindId(I)), I);
 			continue;
 		}
 		ftcore::ArenaKindCrit& Crit = KindCrits[static_cast<size_t>(I)];
@@ -1576,7 +1588,7 @@ void UFTArenaRunner::BeginKindCrits()
 		Fight.setBlowHook(&UFTArenaRunner::RuleKindCritBlow, this);
 		bKindCritHook = true;
 	}
-	else if (bHadHook && StoneBearerSlot < 0)
+	else if (bHadHook && StoneBearerSlot < 0 && KiteSlot < 0)
 	{
 		// The last fight's hook, not the stone_bearer's: nothing rules on this one.
 		Fight.setBlowHook(nullptr, nullptr);
@@ -1745,5 +1757,108 @@ void UFTArenaRunner::StopKindCritEffects()
 			KindCritOpenFx[I]->Stop();
 		}
 		bKindCritTelling[I] = false;
+	}
+}
+
+void UFTArenaRunner::PrepareKite()
+{
+	KiteSlot = -1;
+	for (size_t I = 0; I < static_cast<size_t>(Def.enemyCount); ++I)
+	{
+		const size_t KindIndex = Def.enemyKind[I];
+		if (KindIndex < Table.enemyIds.size() && Table.enemyIds[KindIndex] == FFTKiteHost::KindId)
+		{
+			KiteSlot = static_cast<int32>(I);
+			break;
+		}
+	}
+	if (KiteSlot < 0)
+	{
+		return;
+	}
+	if (StoneBearerSlot >= 0)
+	{
+		// One blow hook per fight, and the stone_bearer's host has it.
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: kite_boss shares the fight with the stone_bearer, whose host holds the blow hook; the kite has no weak point."));
+		KiteSlot = -1;
+		return;
+	}
+	if (!Kite.IsLoaded())
+	{
+		TArray<uint8> Bytes;
+		const FString File = FPaths::ProjectDir() / UTF8_TO_TCHAR(FFTKiteHost::DataPath);
+		std::string LoadError;
+		std::vector<std::string> Warnings;
+		if (!FFileHelper::LoadFileToArray(Bytes, *File))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: couldn't read %s; kite_boss fights without a weak point."), UTF8_TO_TCHAR(FFTKiteHost::DataPath));
+		}
+		else if (!Kite.Load(FT::BytesAsText(Bytes), &LoadError, &Warnings))
+		{
+			// The loader's errors name paths and keys only.
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s refused; kite_boss fights without a weak point:\n%s"), UTF8_TO_TCHAR(FFTKiteHost::DataPath),
+				*FT::ToFString(LoadError));
+		}
+		for (const std::string& W : Warnings)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: kite: %s"), *FT::ToFString(W));
+		}
+	}
+	if (!Kite.IsLoaded())
+	{
+		KiteSlot = -1;
+	}
+}
+
+void UFTArenaRunner::BeginKite()
+{
+	if (KiteSlot < 0)
+	{
+		Kite.End();
+		return;
+	}
+	Kite.Begin(Fight, static_cast<size_t>(KiteSlot));
+	KiteLogged = Kite.GetNoteTotal();
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: kite in slot %d: %d weak point(s), socket %s."), KiteSlot,
+		static_cast<int32>(Kite.GetWeakPoints().points.size()), UTF8_TO_TCHAR(FFTKiteHost::WeakPointSocket));
+}
+
+void UFTArenaRunner::EndKite()
+{
+	Kite.End();
+	KiteSlot = -1;
+}
+
+void UFTArenaRunner::LogKiteNotes()
+{
+	const int32 Total = Kite.GetNoteTotal();
+	if (Total - KiteLogged > static_cast<int32>(FFTKiteHost::MaxNotes))
+	{
+		KiteLogged = Total - static_cast<int32>(FFTKiteHost::MaxNotes);
+	}
+	for (; KiteLogged < Total; ++KiteLogged)
+	{
+		const FFTKiteNote& N = Kite.GetNoteBySerial(KiteLogged);
+		switch (N.Kind)
+		{
+		case FFTKiteNote::EKind::Telegraph:
+			UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: kite %.2f move %d telegraph (stub, no effect)"), N.At, static_cast<int32>(N.Move));
+			break;
+		case FFTKiteNote::EKind::CritOpened:
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: kite %.2f: crit opened until %.2f"), N.At, N.Until);
+			break;
+		case FFTKiteNote::EKind::CritLanded:
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: kite %.2f: crit landed on point %d, x%.1f%s"), N.At, static_cast<int32>(N.Point), N.Multiplier,
+				N.bFirst ? TEXT(", first") : TEXT(""));
+			break;
+		case FFTKiteNote::EKind::CritClosed:
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: kite %.2f: crit closed"), N.At);
+			break;
+		case FFTKiteNote::EKind::HitTaken:
+			UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: kite %.2f hit taken%s (stub, no effect)"), N.At, N.bCrit ? TEXT(", crit") : TEXT(""));
+			break;
+		default:
+			break;
+		}
 	}
 }

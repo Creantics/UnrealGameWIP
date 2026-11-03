@@ -660,6 +660,35 @@ bool importArenaBoss(std::string_view json, ArenaBossDef& out, std::string* erro
     return false;
 }
 
+bool importArenaWeakPoints(std::string_view json, ArenaWeakPoints& out, std::string* error,
+                           std::vector<std::string>* warnings) {
+    out = ArenaWeakPoints{};
+    std::vector<std::string> errors;
+    JsonDocument doc;
+    std::string parseError;
+    if (!doc.parse(json, &parseError)) {
+        errors.push_back("arena weak points: " + parseError);
+    } else if (!doc.root().isObject()) {
+        errors.push_back("arena weak points: expected an object");
+    } else {
+        const JsonValue root = doc.root();
+        if (const JsonValue v = root["version"]; !v.isAbsent() && !(v.isInteger() && v.integer() == 1))
+            errors.push_back("version: expected 1");
+        abUnknownKeys(root, "", {"version", "weakPoints"}, {}, warnings);
+        importArenaWeakPoints(root["weakPoints"], "weakPoints", out, errors, warnings);
+    }
+    if (errors.empty()) return true;
+    out = ArenaWeakPoints{};
+    if (error) {
+        error->clear();
+        for (const std::string& e : errors) {
+            if (!error->empty()) *error += '\n';
+            *error += e;
+        }
+    }
+    return false;
+}
+
 // ---- The run ---------------------------------------------------------------------------------------
 
 void ArenaBossRun::begin(const ArenaBossDef& def, double now) {

@@ -23,6 +23,7 @@
 #include "ftcore/BeatChoreo.h"
 
 #include "FTArenaBossVfx.h"
+#include "FTKiteHost.h"
 #include "FTStoneBearerHost.h"
 
 #include <array>
@@ -181,6 +182,8 @@ public:
 	{
 		return (Index >= 0 && Index < MaxEnemies && bKindCritSlot[Index]) ? &KindCrits[static_cast<size_t>(Index)] : nullptr;
 	}
+	// The Kite-Mother's weak-point host while it fights here (null otherwise).
+	const FFTKiteHost* GetKite() const { return Kite.IsActive() ? &Kite : nullptr; }
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -213,6 +216,13 @@ private:
 	UFTVfxComponent* MakeKindCritEffect(AFTArenaFighter* Figure, std::string_view Effect, std::string_view Socket);
 	// The kind id of slot I, as the table names it ("" for a def built in code).
 	const char* SlotKindId(int32 I) const;
+	// The kite_boss's weak point, when the line-up has one and the stone_bearer's host isn't in the fight (ArenaFight has one
+	// blow hook): its file read (before the fight begins), then the host begun on the fight (after it begins or restarts).
+	void PrepareKite();
+	void BeginKite();
+	void EndKite();
+	// The host's new notes, one log line each.
+	void LogKiteNotes();
 	// Dresses enemy slot I as a skeletal mesh when its kind has a look that loads (see AFTArenaGameMode's header).
 	void LoadSkin(int32 I);
 	// Picks and times slot I's clip from its Core state: the move's own clip through an attack, at the rate that lands its
@@ -343,4 +353,8 @@ private:
 	// The crit count each slot's effects have answered (ArenaKindCrit::crits), and whether its tell is playing.
 	int32 KindCritCritsSeen[ftcore::kMaxArenaEnemies] = {};
 	bool bKindCritTelling[ftcore::kMaxArenaEnemies] = {};
+	// The Kite-Mother's weak-point host, its slot in the line-up (-1 without one) and the notes logged so far.
+	FFTKiteHost Kite;
+	int32 KiteSlot = -1;
+	int32 KiteLogged = 0;
 };
