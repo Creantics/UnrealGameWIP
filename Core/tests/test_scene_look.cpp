@@ -12,7 +12,7 @@ bool approx(float a, float b, float eps = 1e-5f) { return a - b <= eps && b - a 
 // A look that differs from the default in every field.
 SceneLook allChanged() {
     SceneLook l;
-#define FTCORE_LOOK_CHANGE(name, def) l.name = (def) * 2.f + 1.f;
+#define FTCORE_LOOK_CHANGE(name, def, lo, hi) l.name = (def) * 2.f + 1.f;
     FTCORE_LOOK_FIELDS(FTCORE_LOOK_CHANGE)
 #undef FTCORE_LOOK_CHANGE
     return l;
@@ -40,7 +40,7 @@ TEST_CASE("Every field takes part in ==") {
     const SceneLook base;
     const SceneLook changed = allChanged();
     int fields = 0;
-#define FTCORE_LOOK_ONE(name, def)                                                                             \
+#define FTCORE_LOOK_ONE(name, def, lo, hi)                                                                             \
     {                                                                                                          \
         SceneLook l = base;                                                                                    \
         l.name = changed.name;                                                                                 \
@@ -50,7 +50,7 @@ TEST_CASE("Every field takes part in ==") {
     }
     FTCORE_LOOK_FIELDS(FTCORE_LOOK_ONE)
 #undef FTCORE_LOOK_ONE
-    CHECK(fields == 17);
+    CHECK(fields == 43);
     CHECK(base == SceneLook{});
 }
 
@@ -73,7 +73,7 @@ TEST_CASE("lerp blends every field linearly") {
     const SceneLook a;
     const SceneLook b = allChanged();
     const SceneLook quarter = ftcore::lerp(a, b, 0.25f);
-#define FTCORE_LOOK_QUARTER(name, def)                                                                         \
+#define FTCORE_LOOK_QUARTER(name, def, lo, hi)                                                                         \
     CAPTURE(#name);                                                                                            \
     CHECK(approx(quarter.name, a.name + (b.name - a.name) * 0.25f));
     FTCORE_LOOK_FIELDS(FTCORE_LOOK_QUARTER)

@@ -1,0 +1,17 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "FT Look",
+	"Description": "The photoreal look's after-tonemap grade: one full-screen pass in OKLab that scales chroma per world, keeps chosen hues and skin, and split-tones shadows and highlights. Driven from C++ (docs/PHOTOREAL_LOOK.md).",
+	"Category": "Rendering",
+	"EnabledByDefault": true,
+	"CanContainContent": false,
+	"Modules": [
+		{
+			"Name": "FTLook",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit"
+		}
+	]
+}

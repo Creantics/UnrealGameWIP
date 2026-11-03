@@ -12,6 +12,7 @@
 #include "Engine/Texture.h"
 #include "Engine/Texture2D.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "ForgottenThird.h"
 #include "FTText.h"
 #include "HAL/FileManager.h"
@@ -96,6 +97,103 @@ void FTScene::SpawnLook(UWorld* World, const FActorSpawnParameters& Spawn, const
 	Finish.bOverride_FilmGrainIntensity = true;
 	Finish.FilmGrainIntensity = Look.filmGrain;
 	Label(Volume, TEXT("PostProcessVolume"));
+}
+
+int32 FTScene::ApplyLook(UWorld* World, const ftcore::SceneLook& Look, const ftcore::SceneLook& Current)
+{
+	if (!World)
+	{
+		return -1;
+	}
+	APostProcessVolume* Volume = nullptr;
+	for (TActorIterator<APostProcessVolume> It(World); It; ++It)
+	{
+		if (It->bUnbound && It->Priority == 0.f)
+		{
+			Volume = *It;
+			break;
+		}
+	}
+	if (!Volume)
+	{
+		return -1;
+	}
+	int32 Written = 0;
+	// Each field: written, with its override on, only where the new look differs from what's there.
+#define FT_LOOK_SET(Field, Statement) 	if (Look.Field != Current.Field) 	{ 		Statement; 		++Written; 	}
+
+	// Camera.
+	FPostProcessSettings& Finish = Volume->Settings;
+#define FT_LOOK_POST(Field, Setting, Value) FT_LOOK_SET(Field, Finish.bOverride_##Setting = true; Finish.Setting = Value)
+	FT_LOOK_POST(exposureBias, AutoExposureBias, Look.exposureBias)
+	FT_LOOK_POST(exposureMinEV100, AutoExposureMinBrightness, Look.exposureMinEV100)
+	FT_LOOK_POST(exposureMaxEV100, AutoExposureMaxBrightness, Look.exposureMaxEV100)
+	FT_LOOK_POST(exposureSpeedUp, AutoExposureSpeedUp, Look.exposureSpeedUp)
+	FT_LOOK_POST(exposureSpeedDown, AutoExposureSpeedDown, Look.exposureSpeedDown)
+	FT_LOOK_POST(whiteBalanceKelvin, WhiteTemp, Look.whiteBalanceKelvin)
+	FT_LOOK_POST(saturation, ColorSaturation, FVector4(Look.saturation, Look.saturation, Look.saturation, 1.f))
+	FT_LOOK_POST(contrast, ColorContrast, FVector4(Look.contrast, Look.contrast, Look.contrast, 1.f))
+	FT_LOOK_POST(filmSlope, FilmSlope, Look.filmSlope)
+	FT_LOOK_POST(filmToe, FilmToe, Look.filmToe)
+	FT_LOOK_POST(filmShoulder, FilmShoulder, Look.filmShoulder)
+	FT_LOOK_POST(filmBlackClip, FilmBlackClip, Look.filmBlackClip)
+	FT_LOOK_POST(filmWhiteClip, FilmWhiteClip, Look.filmWhiteClip)
+	FT_LOOK_POST(localHighlightContrast, LocalExposureHighlightContrastScale, Look.localHighlightContrast)
+	FT_LOOK_POST(localShadowContrast, LocalExposureShadowContrastScale, Look.localShadowContrast)
+	FT_LOOK_POST(bloom, BloomIntensity, Look.bloom)
+	FT_LOOK_POST(vignette, VignetteIntensity, Look.vignette)
+	FT_LOOK_POST(fringe, SceneFringeIntensity, Look.fringe)
+	FT_LOOK_POST(filmGrain, FilmGrainIntensity, Look.filmGrain)
+	FT_LOOK_POST(filmGrainShadows, FilmGrainIntensityShadows, Look.filmGrainShadows)
+	FT_LOOK_POST(filmGrainHighlights, FilmGrainIntensityHighlights, Look.filmGrainHighlights)
+#undef FT_LOOK_POST
+
+	// Light: the sun is the one the atmosphere takes as its sun.
+	for (TActorIterator<ADirectionalLight> It(World); It; ++It)
+	{
+		UDirectionalLightComponent* SunLight = It->GetComponent();
+		if (SunLight && SunLight->IsUsedAsAtmosphereSunLight())
+		{
+			FT_LOOK_SET(sunLux, SunLight->SetIntensity(Look.sunLux))
+			FT_LOOK_SET(sunKelvin, SunLight->SetUseTemperature(true); SunLight->SetTemperature(Look.sunKelvin))
+			break;
+		}
+	}
+	for (TActorIterator<ASkyLight> It(World); It; ++It)
+	{
+		if (USkyLightComponent* SkyLight = It->GetLightComponent())
+		{
+			FT_LOOK_SET(skyLight, SkyLight->SetIntensity(Look.skyLight))
+			break;
+		}
+	}
+
+	// Air.
+	for (TActorIterator<AExponentialHeightFog> It(World); It; ++It)
+	{
+		if (UExponentialHeightFogComponent* FogComponent = It->GetComponent())
+		{
+			FT_LOOK_SET(fogDensity, FogComponent->SetFogDensity(Look.fogDensity))
+			FT_LOOK_SET(fogFalloff, FogComponent->SetFogHeightFalloff(Look.fogFalloff))
+			FT_LOOK_SET(volumetricFog, FogComponent->SetVolumetricFog(Look.hasVolumetricFog()); FogComponent->SetVolumetricFogExtinctionScale(Look.volumetricFog))
+			FT_LOOK_SET(fogForward, FogComponent->SetVolumetricFogScatteringDistribution(Look.fogForward))
+			break;
+		}
+	}
+	// The cloud layer can only be hidden or shown: a map built without one stays clear.
+	if (Look.hasClouds() != Current.hasClouds())
+	{
+		for (TActorIterator<AVolumetricCloud> It(World); It; ++It)
+		{
+			if (USceneComponent* Root = It->GetRootComponent())
+			{
+				Root->SetVisibility(Look.hasClouds(), true);
+				++Written;
+			}
+		}
+	}
+#undef FT_LOOK_SET
+	return Written;
 }
 
 UMaterialInterface* FTScene::LoadSurface()

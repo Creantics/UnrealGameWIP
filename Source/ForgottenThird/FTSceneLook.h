@@ -77,6 +77,13 @@ FORGOTTENTHIRD_API UTexture2D* NewGroundMask(UObject* Outer, const TCHAR* Name, 
 FORGOTTENTHIRD_API void SpawnLook(UWorld* World, const FActorSpawnParameters& Spawn, const ftcore::SceneLook& Look,
 	const FRotator& SunRotation);
 
+// Writes Look into the look actors SpawnLook put in World (the unbound priority-0 post-process volume, the atmosphere's
+// sun, the sky light, the height fog and the clouds), in place: a field is written only where Look differs from
+// Current, what the actors carry now (ftcore::SceneLook{} for a map as built), so a field a world leaves at the shared
+// value keeps whatever the map has. The number of fields written, or -1, with nothing written, when World has no such
+// volume yet. See docs/PHOTOREAL_LOOK.md.
+FORGOTTENTHIRD_API int32 ApplyLook(UWorld* World, const ftcore::SceneLook& Look, const ftcore::SceneLook& Current);
+
 // Loads the world surface master: a "Color" vector held to a plausible albedo, "Roughness", "Metallic" and
 // a low-frequency mottle on the world position ("Variation", "VariationScale"). Null, with an error logged,
 // when it hasn't been built.

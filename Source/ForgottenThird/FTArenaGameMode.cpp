@@ -80,6 +80,7 @@ void AFTArenaGameMode::StartPlay()
 	bAutoPlay = !bIdle && (FParse::Param(Cmd, TEXT("ArenaAutoPlay")) || !ShotPrefix.IsEmpty());
 	bQuitOnFinish = FParse::Param(Cmd, TEXT("ArenaQuitOnFinish"));
 	bOverview = FParse::Param(Cmd, TEXT("ArenaOverview"));
+	bWorldView = !bOverview && FParse::Param(Cmd, TEXT("ArenaWorldView"));
 	bHoldLoad = FParse::Param(Cmd, TEXT("ArenaHoldLoad"));
 	int32 SeedValue = 1;
 	if (FParse::Value(Cmd, TEXT("ArenaSeed="), SeedValue))
@@ -600,7 +601,7 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	{
 		return true;
 	}
-	if (bOverview && OverviewPhase < 3 && OverviewShot())
+	if ((bOverview || bWorldView) && OverviewPhase < 3 && OverviewShot())
 	{
 		return true;
 	}
@@ -706,9 +707,11 @@ bool AFTArenaGameMode::OverviewShot()
 	{
 		// High over the south-west of the zone, looking at its middle; if the scene is in the way (a building), the
 		// camera comes in along the line until it is clear.
+		// -ArenaWorldView's camera is low over the same side, a wide look across the zone at the scene round it.
 		const float Distance = FMath::Max(Fit.ring.radius * 2.6f, 30.f);
 		const FVector Target(Fit.zone.centre.x * 100.0, Fit.zone.centre.y * 100.0, ZoneZ + 200.0);
-		FVector From = Target + FVector(-0.55 * Distance, -0.55 * Distance, 0.75 * Distance) * 100.0;
+		FVector From = Target + (bWorldView ? FVector(-0.7 * Distance, -0.7 * Distance, 0.16 * Distance)
+			: FVector(-0.55 * Distance, -0.55 * Distance, 0.75 * Distance)) * 100.0;
 		FHitResult Block;
 		FCollisionQueryParams Query(SCENE_QUERY_STAT(ArenaOverview), false);
 		if (GetWorld()->SweepSingleByChannel(Block, Target, From, FQuat::Identity, ECC_Camera, FCollisionShape::MakeSphere(80.f), Query))
@@ -725,6 +728,10 @@ bool AFTArenaGameMode::OverviewShot()
 		}
 		Camera->GetCameraComponent()->SetFieldOfView(70.f);
 		OverviewCamera = Camera;
+		const ftcore::ArenaZone& Z = Fit.zone;
+		const int32 Sides = bWorldView ? 0 : Z.shape == ftcore::ZoneShape::Circle ? 72 : static_cast<int32>(Z.vertCount);
+		const int32 Obstacles = bWorldView ? 0 : static_cast<int32>(Z.obstacleCount);
+		const int32 Mouths = bWorldView ? 0 : static_cast<int32>(Fit.mouthCount);
 		// The walls are invisible in play; for this picture they are drawn: green where the zone ends, red for an
 		// obstacle, yellow across a road the wall meets.
 		const float LineZ = static_cast<float>(ZoneZ) + 60.f;
@@ -732,8 +739,6 @@ bool AFTArenaGameMode::OverviewShot()
 		{
 			DrawDebugLine(GetWorld(), FVector(A.x * 100.0, A.y * 100.0, LineZ), FVector(B.x * 100.0, B.y * 100.0, LineZ), Colour, false, 6.f, 0, Thick);
 		};
-		const ftcore::ArenaZone& Z = Fit.zone;
-		const int32 Sides = Z.shape == ftcore::ZoneShape::Circle ? 72 : static_cast<int32>(Z.vertCount);
 		for (int32 I = 0; I < Sides; ++I)
 		{
 			ftcore::Vec2 A, B;
@@ -750,7 +755,7 @@ bool AFTArenaGameMode::OverviewShot()
 			}
 			Line(A, B, FColor(60, 255, 90), 25.f);
 		}
-		for (int32 O = 0; O < static_cast<int32>(Z.obstacleCount); ++O)
+		for (int32 O = 0; O < Obstacles; ++O)
 		{
 			const ftcore::ZoneObstacle& Piece = Z.obstacles[static_cast<size_t>(O)];
 			for (int32 K = 0; K < 8; ++K)
@@ -780,7 +785,7 @@ bool AFTArenaGameMode::OverviewShot()
 				Line(A, B, FColor(255, 70, 60), 20.f);
 			}
 		}
-		for (int32 M = 0; M < static_cast<int32>(Fit.mouthCount); ++M)
+		for (int32 M = 0; M < Mouths; ++M)
 		{
 			const ftcore::ZoneMouth& Mouth = Fit.mouths[static_cast<size_t>(M)];
 			const ftcore::Vec2 Along{-Mouth.out.y * Mouth.width * 0.5f, Mouth.out.x * Mouth.width * 0.5f};
@@ -798,7 +803,7 @@ bool AFTArenaGameMode::OverviewShot()
 	if (OverviewPhase == 1)
 	{
 		// The screenshot is taken on the next frame, so the camera stays until the hold after it has passed.
-		TakeShot(TEXT("0_overview"), false);
+		TakeShot(bWorldView ? TEXT("0_world") : TEXT("0_overview"), false);
 		OverviewPhase = 2;
 		return true;
 	}

@@ -87,6 +87,8 @@ add_library(ftcore STATIC
     src/StoryRunner.cpp
     src/StubScreen.cpp
     src/SceneLook.cpp
+    src/LookGrade.cpp
+    src/LookTable.cpp
     src/StylePack.cpp
     src/StorySave.cpp
     src/TurnQueue.cpp
@@ -189,6 +191,8 @@ if(FTCORE_BUILD_TESTS)
         tests/test_story_chain.cpp
         tests/test_story_import.cpp
         tests/test_scene_look.cpp
+        tests/test_look_grade.cpp
+        tests/test_look_table.cpp
         tests/test_style.cpp
         tests/test_stub_screen.cpp
         tests/test_title.cpp

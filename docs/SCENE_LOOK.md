@@ -2,8 +2,9 @@
 
 Since 2026-10-28 every map has the same photoreal base. The stylized post-process packs
 ([STYLE_PACKS_UE.md](STYLE_PACKS_UE.md)) are off unless a map is built with `-Style=<spec>`. Each world
-gets its own look later as tuned values on the same base: light, air, camera finish and shaders, not a
-drawn style.
+gets its own look as tuned values on the same base: light, air, camera finish and shaders, not a
+drawn style. Since 2026-11-03 those values are applied when a map starts, with a grade after the tonemapper:
+[PHOTOREAL_LOOK.md](PHOTOREAL_LOOK.md).
 
 ## Pieces
 
@@ -320,7 +321,8 @@ On a world map the director logs `World solhaven: field step in district 3 (phot
 ## Later
 
 - Measure each map's EV100 and narrow the exposure range to about ±1.5 EV round it.
-- One `SceneLook` per world, blended with `lerp` where the story crosses from one to another.
+- Blend two worlds' looks with `lerp` where the story crosses from one to another (each world has its own
+  `SceneLook` now: [PHOTOREAL_LOOK.md](PHOTOREAL_LOOK.md)).
 - Photographed surfaces for the towers' and ruins' buildings, plazas, roofs, landmarks and trees.
 - On the terrain: scattered grass, stones and decals that hide the repeats; a second ground surface per
   world, such as dirt or moss in patches; and a mask from the erosion that lays rock or scree along the
