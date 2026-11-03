@@ -189,7 +189,9 @@
 namespace ftcore {
 
 inline constexpr std::size_t kMaxArenaEnemies = 6;
-inline constexpr std::size_t kMaxArenaMoves = 24;  // per enemy (a boss move of n impacts is n chained moves)
+// Per enemy (a boss move of n impacts is n chained moves). Fixed storage: at 24 an ArenaDef is about 17.4 KiB and an
+// ArenaFight about 23 KiB (MSVC x64; 7 and 10 KiB at 8); test_arena.cpp holds them under 20 and 28 KiB.
+inline constexpr std::size_t kMaxArenaMoves = 24;
 inline constexpr std::size_t kMaxLightChain = 4;
 inline constexpr std::size_t kMaxArenaEvents = 32; // per tick; more are dropped (ArenaFight::droppedEvents)
 
@@ -593,10 +595,12 @@ struct ArenaBlowRuling {
 };
 
 // Called inside tick(), once per blow, in the order the blows land (a player's attack reaching several enemies on
-// one tick: by enemy index). It may read the fight's getters and call holdEnemy and releaseEnemy (they count from
-// the next tick), setEnemyHpFloor (it counts for this blow already) and setBlowHook (from the next blow). tick,
-// begin and restart called from inside it do nothing (tick only returns the last output). A copy of a fight copies
-// the hook and its user pointer (a copy made inside the hook ticks as any other).
+// one tick: by enemy index). It may read the fight's getters: mid-tick, time() and output() are still the last
+// tick's (ArenaBlow::time is this one's end), and enemyHp and hp don't count the blow being ruled yet. It may call
+// holdEnemy and releaseEnemy (they count from the next tick), setEnemyHpFloor (it counts for this blow already) and
+// setBlowHook (from the next blow). tick, begin and restart called from inside it do nothing (tick only returns the
+// last output). A copy of a fight copies the hook and its user pointer (a copy made inside the hook ticks as any
+// other).
 using ArenaBlowHook = ArenaBlowRuling (*)(void* user, const ArenaBlow& blow);
 
 class ArenaFight {
@@ -667,13 +671,16 @@ public:
     // next tick with dt > 0: a live move is cut short and its token goes back, as a parry does (a read move brings the
     // partner's counter), and `seconds` stands in for the kind's openTime or downTime. Holding again starts it over.
     // Open invites a riposte, which ends the hold (Down for the kind's downTime), and a counter-stagger ends it too
-    // (Staggered); Down invites neither. False, and nothing asked, for an enemy out of range or dead, another brain,
-    // or seconds NaN or <= 0.
+    // (Staggered); Down invites neither. When a hold ends (its time, or a release) the enemy walks again, and the
+    // kind's attackDelay counts from the hold's start, as after a parry. False, and nothing asked, for an enemy out of
+    // range or dead, a fight not running (before begin(), after Victory or Defeat), another brain, or seconds NaN or
+    // <= 0.
     FTCORE_API bool holdEnemy(std::size_t i, ArenaBrain brain, float seconds);
     // Ends enemy i's hold at the start of the next tick with dt > 0 (it walks again: Approach). Nothing for an enemy
     // that is not held then. Before a tick, the latest of holdEnemy and releaseEnemy for an enemy wins.
     FTCORE_API void releaseEnemy(std::size_t i);
-    FTCORE_API bool enemyHeld(std::size_t i) const; // a hold is running (not one still waiting for its tick)
+    // A hold is running: not one still waiting for its tick, and true until a pending release applies.
+    FTCORE_API bool enemyHeld(std::size_t i) const;
     // Enemy i's hp never falls below hpFloor (0, the default: none; below 0 counts as 0), from now: a blow that would
     // take it lower takes it to hpFloor (the event's amount is what it lost), so the enemy stays alive.
     FTCORE_API void setEnemyHpFloor(std::size_t i, int hpFloor);

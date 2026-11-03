@@ -849,6 +849,7 @@ struct ArenaFightImpl {
         foe.stateTime = 0.f;
         foe.velocity = Vec2{};
         foe.readRight = false;
+        foe.holdFor = -1.f;
         releaseToken(i);
         emit(ArenaEventType::Downed, kArenaPlayer, id(i), 0, 0, foe.pos);
     }
@@ -1666,7 +1667,9 @@ bool ArenaFight::readOpen() const {
 int ArenaFight::readStacks() const { return player_.readStacks; }
 
 bool ArenaFight::holdEnemy(std::size_t i, ArenaBrain brain, float seconds) {
-    if (!enemyAlive(i) || (brain != ArenaBrain::Open && brain != ArenaBrain::Down) || !(seconds > 0.f)) return false;
+    if (phase_ != ArenaPhase::Fighting || !enemyAlive(i) || (brain != ArenaBrain::Open && brain != ArenaBrain::Down) ||
+        !(seconds > 0.f))
+        return false;
     EnemyState& foe = enemy_[i];
     foe.holdAsk = HoldAsk::Hold;
     foe.holdBrain = brain;

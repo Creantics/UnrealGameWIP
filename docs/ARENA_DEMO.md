@@ -168,7 +168,8 @@ Everything about it is data and host-side: the fight's rules never read it.
 - A move's `clip`: the id of the clip played for it (`tell` stays the Read card's word, one of the nine). Ids are 1..31
   letters, digits, `_` and `-`, one per move.
 - A kind's `bpm`: the beat its startups are whole numbers of, in place of the file's (the kite's 72 against the file's 150).
-- Up to 24 moves per kind (it was 8): a boss move of n impacts is n chained moves.
+- Up to 24 moves per kind (it was 8): a boss move of n impacts is n chained moves. The storage is fixed, so an
+  `ArenaDef` grew from about 7 to 17.4 KiB and an `ArenaFight` from about 10 to 23 KiB (MSVC x64).
 
 The mode plays, from Core's state each frame (`UFTBeatFighterAnimInstance`, a pose that is a function of the fight, with a 0.12 s
 crossfade between clips): a move's own clip through an attack, timed by Core's clock for the move at the rate

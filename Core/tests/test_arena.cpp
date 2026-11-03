@@ -4286,6 +4286,20 @@ TEST_CASE("arena hooks: the blow hook scales an enemy's blow, landed, blocked or
         CHECK(stored->event.amount == 30);
         CHECK(rig.fight.load() == 30);
     }
+    {   // vetoed against a raised guard: no block, no chip, no stamina
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.put(0, 1.5f, 0.f);
+        BlowRecorder rec;
+        rec.ruling = ruling(1.f, 1.f, true);
+        rig.fight.setBlowHook(&BlowRecorder::hook, &rec);
+        rig.in.guard = true;
+        rig.run(40);
+        CHECK(rec.blows.size() == 1);
+        CHECK(rig.count(ArenaEventType::Blocked) == 0);
+        CHECK(rig.fight.hp() == 100);
+        CHECK(rig.fight.stamina() == doctest::Approx(100.f));
+        CHECK(rig.fight.stats().blocks == 0);
+    }
     {   // vetoed inside the parry window: no parry, no block, no hit, and it is spent
         Rig rig(ruleFighter(), {hitterKind(bite)});
         BlowRecorder rec;
@@ -4537,9 +4551,15 @@ TEST_CASE("arena: a kind of kMaxArenaMoves moves plays a string of all of them")
 TEST_CASE("arena hooks: a whole fight with a blow hook, a floor and holds allocates nothing") {
     struct Counter {
         int blows = 0;
+        int vetoes = 0;
         static ArenaBlowRuling hook(void* user, const ArenaBlow&) {
-            ++static_cast<Counter*>(user)->blows;
-            return ArenaBlowRuling{};
+            Counter& c = *static_cast<Counter*>(user);
+            ArenaBlowRuling r;
+            r.damage = 1.25f; // every blow scaled, every seventh vetoed
+            r.poise = 0.8f;
+            r.veto = ++c.blows % 7 == 0;
+            if (r.veto) ++c.vetoes;
+            return r;
         }
     };
     const ArenaTable table = loadShipped();
@@ -4566,6 +4586,7 @@ TEST_CASE("arena hooks: a whole fight with a blow hook, a floor and holds alloca
     const auto allocs = ftcore_test::allocStats().count - before;
     if (counting) CHECK(allocs == 0);
     CHECK(counter.blows > 0);
+    CHECK(counter.vetoes > 0);
     CHECK(holds > 0);
     CHECK(fight.phase() == ArenaPhase::Victory);
 }
@@ -4819,3 +4840,38 @@ TEST_CASE("arena hooks: a hold the hook asks while holds apply waits a tick, and
 // 17824 bytes, ArenaFight 23592).
 static_assert(sizeof(ArenaDef) <= 20 * 1024, "ArenaDef grew: check kMaxArenaMoves and the enemy kinds");
 static_assert(sizeof(ArenaFight) <= 28 * 1024, "ArenaFight grew: check kMaxArenaMoves and the Read pool");
+
+TEST_CASE("arena hooks: a Release's spent Load is in the poise the hook sees and scales; no hold after a Defeat") {
+    {   // 34 Load spent: 34 poise damage on the upright enemy, halved by the ruling
+        ArenaEnemyKind upright = dummyKind();
+        upright.poise = 40.f;
+        Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 34)), upright});
+        rig.put(1, 0.f, 1.5f);
+        BlowRecorder rec;
+        rec.only = kArenaPlayer;
+        rec.ruling = ruling(1.f, 0.5f);
+        rig.fight.setBlowHook(&BlowRecorder::hook, &rec);
+        parryRun(rig, 40);
+        REQUIRE(rig.fight.load() == 34);
+        rig.in.guard = false;
+        rig.tick();
+        rig.in.release = true;
+        rig.tick();
+        REQUIRE(rig.find(ArenaEventType::Released));
+        rig.runFor(0.3f);
+        const ArenaBlow* b = nullptr;
+        for (const ArenaBlow& x : rec.blows)
+            if (x.source == kArenaPlayer && x.target == 1) b = &x;
+        REQUIRE(b);
+        CHECK(b->poise == doctest::Approx(34.f));
+        CHECK(rig.fight.enemyPoise(1) == doctest::Approx(23.f)); // 40 - 34 x 0.5
+    }
+    {   // Defeat: the enemy lives, but the fight is over
+        Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 200))});
+        rig.put(0, 1.5f, 0.f);
+        rig.run(40);
+        REQUIRE(rig.fight.phase() == ArenaPhase::Defeat);
+        REQUIRE(rig.fight.enemyAlive(0));
+        CHECK_FALSE(rig.fight.holdEnemy(0, ArenaBrain::Open, 1.f));
+    }
+}
