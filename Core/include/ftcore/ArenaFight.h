@@ -68,10 +68,10 @@
 //   - Riposte: a light press with an Open enemy within riposteReach and in front (dot >= 0.5)
 //     performs the riposte attack instead of a light, aimed at that enemy and invulnerable throughout.
 //     When it connects, the enemy goes Down for downTime.
-//   - Load (Load.h): a second gauge beside stamina, 0 to kMaxLoad, never a replacement for it. Only a
-//     parry (the perfect guard: the parry window, never wider) stores Load: the parried attack's damage
-//     times loadShare (LoadStored; a block stores nothing); the host may give Load too (giveLoad). It
-//     never refills or drains on its own, and no attack or roll spends it. At kMaxLoad the player is
+//   - Load (Load.h): a second gauge beside stamina, 0 to kMaxLoad, never a replacement for it. A parry
+//     (the perfect guard: the parry window, never wider) stores Load: the parried attack's damage times
+//     loadShare (LoadStored; a block stores nothing). The host may give Load too (giveLoad); nothing
+//     else stores it. It never refills or drains on its own, and no attack or roll spends it. At kMaxLoad the player is
 //     overloaded (Overloaded, once as it fills): light, heavy and heal are refused until a Release
 //     (dodge, guard, parry, movement and the lock stay open, as Turns refuses commands but never the
 //     defence).
@@ -500,7 +500,8 @@ enum class ArenaEventType : std::uint8_t { // append only
     StaminaEmpty,  // the player spent the last stamina
     Victory,
     Defeat,
-    LoadStored,     // a parry stored `amount` Load from source's attack `move` (appended)
+    LoadStored,     // `amount` Load stored: by a parry of source's attack `move`, or the host's giveLoad
+                    // (source kArenaNobody, move 0) (appended)
     Overloaded,     // the player's Load reached kMaxLoad: only a Release lifts it (appended)
     Released,       // the player began a Release, spending `amount` Load (appended)
     CounterStagger, // a parry paired with the partner's press: target took `amount` hp and is staggered (appended)
@@ -691,10 +692,11 @@ public:
     FTCORE_API void setBlowHook(ArenaBlowHook hook, void* user);
     // Stores `amount` Load in the player's gauge now, as a parry would (never past kMaxLoad; amount <= 0: nothing),
     // and returns what was stored. The events a parry raises report it: LoadStored (source kArenaNobody, move 0) and,
-    // if the gauge filled, Overloaded (counted in stats().overloads; stats().loadStored stays the parries'). Inside
-    // the blow hook they join this tick's events; otherwise the next tick's (one LoadStored for all the Load given
-    // since). 0, and nothing stored, when the fight is not running (before begin(), after Victory or Defeat).
-    // load() reads the gauge and kMaxLoad (Load.h) is its cap.
+    // if the gauge filled, Overloaded. Inside the blow hook they join this tick's events; otherwise they open the
+    // next tick's, ahead of anything that tick does (one LoadStored for all the Load given since). load(),
+    // overloaded() and output().player show it at once; stats().overloads counts the fill at once, and
+    // stats().loadStored stays the parries'. 0, and nothing stored, when the fight is not running (before begin(),
+    // after Victory or Defeat). kMaxLoad (Load.h) is the gauge's cap.
     FTCORE_API int giveLoad(int amount);
 
 private:

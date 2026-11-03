@@ -1283,12 +1283,15 @@ struct ArenaFightImpl {
         }
     }
 
-    // The host's Load (giveLoad): stored now. Inside the blow hook its events join this tick's; otherwise they wait
-    // for the next tick, which reports them first.
+    // The host's Load (giveLoad): stored, counted and shown now. Inside the blow hook its events join this tick's;
+    // otherwise they wait for the next tick, which reports them first.
     int giveLoad(int amount) {
         const bool was = pl.gauge.overloaded();
         const int stored = pl.gauge.store(amount);
         const bool filled = !was && pl.gauge.overloaded();
+        if (filled) ++stats.overloads;
+        out.player.load = pl.gauge.value;
+        out.player.overloaded = pl.gauge.overloaded();
         if (fight.inHook_.on) {
             reportGift(stored, filled);
         } else {
@@ -1300,10 +1303,7 @@ struct ArenaFightImpl {
 
     void reportGift(int stored, bool filled) {
         if (stored > 0) emit(ArenaEventType::LoadStored, kArenaNobody, kArenaPlayer, 0, stored, pl.pos);
-        if (filled) {
-            ++stats.overloads;
-            emit(ArenaEventType::Overloaded, kArenaPlayer, kArenaPlayer, 0, pl.gauge.value, pl.pos);
-        }
+        if (filled) emit(ArenaEventType::Overloaded, kArenaPlayer, kArenaPlayer, 0, pl.gauge.value, pl.pos);
     }
 
     void damagePlayer(std::uint8_t source, int damage, std::uint8_t move) {
