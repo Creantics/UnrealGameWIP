@@ -514,6 +514,7 @@ void AFTArenaGameMode::Begin()
 	Setup.Fit = Fit;
 	Setup.ZoneId = Spec.id;
 	Setup.ZoneZ = ZoneZ;
+	Setup.ZoneYaw = Spec.yaw;
 	Setup.ZoneStyle = ZoneStyle;
 	Setup.KitId = KitId;
 	Setup.Lead = FindLead();

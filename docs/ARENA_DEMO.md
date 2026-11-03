@@ -136,6 +136,7 @@ the one listed.
 | Zone | World, district | Offset | Shape | Yaw | Boss | Ring |
 |---|---|---|---|---|---|---|
 | `sand_ring` (default) | none | 0, 0 | circle | 0 | brute, skirmisher, breaker | 12 m |
+| `stone_ring` | none | 0, 0 | circle, 12 cover posts | 0 | stone_bearer | 18 m (pinned) |
 | `kite_ring` | none | 0, 0 | rect 2.86, c 0.15 | 0 | kite_boss | 13.4 m (pinned), about 40 x 14 m |
 | `sol_plaza_a` | Solhaven 3 | 0, 0 | circle | 180 | hulk | 15.6 m |
 | `sol_facade_a` | Solhaven 2 | 0, 34 | rect 1.6, c 0.3 | 90 | duelist | 8.5 m, cut |
@@ -197,6 +198,42 @@ UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -
 
 or in the plain 12 m sand ring with `-ArenaLineup=kite_boss` instead of `-ArenaStage=kite_ring` (cramped for a body of 3.5 m).
 
+## The stone_bearer
+
+The first Arena boss (`stone_bearer`, `Data/Battle/arena_boss/stone_bearer.json`) is one `ftcore::StoneBearer` beside its
+ArenaFight body, hosted by `FFTStoneBearerHost` (`Source/ForgottenThird/FTStoneBearerHost.*`, no Unreal headers) as
+`StoneBearer.h`'s host section asks. When the zone's line-up holds it, the runner:
+
+- rebuilds the kind's moves from the boss file before `Fight.begin` (one chained arena move per impact, at most 24; a
+  follower has weight 0; startups from the beat gaps; tile moves strike all round, lane moves a 1 m lane, called moves a
+  front arc; only `Any` moves can be parried, dodge, jump, tile and cover moves can't be blocked);
+- `begin`s the boss with the fight, sets the hp floor at the pedestal's share (so no blow skips it) and hooks the blows;
+- on each AttackStarted `startMove`s the boss move (side from `arenaSideOf`); a move the boss refuses (invulnerable, down,
+  or not in its phase) is cut by a 0.05 s Down hold and its blows are vetoed, and it picks again;
+- each step: the Intercept and Guard buttons (zone from `arenaZoneOf` at the move's start), then Blocked → `onBlocked`,
+  the boss's Staggered → `onStagger`, Released → `onRelease` with the Load before it was spent, then `update`;
+- in the blow hook: the lead's blows through `onHit` (its damage and poise multipliers), the boss's blows scaled by
+  `damageScale()` and capped per move, an intercepted called blow vetoed, the guest's keep-out clamps (`clampArea`,
+  `clampLane`, `clampArc`);
+- the pedestal: at its share the boss is held Down (drawn standing) on a 0.5 m plinth at the zone's centre; a Release over a
+  third of the Load on the guest's call lifts it (floor off, Down for `downTime`); CritOpened holds it Open until `until`
+  (a riposte invites), CritClosed ends that.
+
+Its weak point (`nape` in the json, on the lower back) is the mesh socket `setstone`
+(`FFTStoneBearerHost::WeakPointSocket`); any marker or crit VFX uses that name.
+
+Stubs, each a named hook that logs: `OnBroke` (no breakable prop yet), `OnShockRing` (no second ring blow), `OnGuestCall`
+(no guest voice or figure), `OnTileRain` (one all-round blow, no falling tiles), `OnLoadGained` (ArenaFight has no call
+that adds Load, so the Load a marked throw earns is logged, not given; a lead who reaches the plinth with too little Load
+can't lift it until parries store more), and stone pickups (`onSoloLift` is never called: no pickups in the zone).
+
+```
+UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=stone_ring
+```
+
+Add `-ArenaAutoPlay` (the autopilot, with the host pressing Intercept and Guard on the call and releasing on the plinth) or
+`-ArenaIdle`. Intercept is U, the mouse's thumb button or the left stick's click, held; the boss's Guard is the guard.
+
 ## Launch
 
 Play it (a window, keyboard or pad):
@@ -254,6 +291,7 @@ enemy instead, pass its id: `-ArenaLineup=brute` (a single brute falls before th
 | Heal (uses a charge) | H | D-pad up (not while Read cards are up) |
 | Release (above a third of the Load) | R | LT |
 | Partner (the second lead's press, paired with a parry) | F | D-pad down |
+| Intercept a called blow (stone_bearer; hold) | U or mouse thumb button | L3 |
 | Read (the second lead's pick, while the cards are up) | 1 / 2 / 3 | D-pad left / up / right |
 | Lock on / off | Tab or middle mouse | R3 |
 | Switch lock target | Q / E | D-pad left / right (not while Read cards are up), or flick the right stick |
@@ -272,6 +310,9 @@ each frame and handed to the fight on its next step, so no press is lost between
   stacks (five pips, cyan while held).
 - **Target bar**, top centre: the locked enemy's hp and poise, or the nearest enemy's when nothing is
   locked.
+- **Boss panel** (stone_bearer), under the target bar: WEIGHT and its stacks as five pips; INVULNERABLE and "R on the call"
+  on the plinth, WEAK POINT OPEN, DOWN, or CALL and the called zone (LEFT, RIGHT, PATH; green when the lead stands in it);
+  and the latest answer or rule, fading: INTERCEPT, GUARD, WRONG SIDE, MISSED, BROKEN, SHOCK RING, CRITICAL, LIFTED.
 - **Over each enemy:** a small hp bar and poise bar; STAGGERED while it reels, RIPOSTE! in gold while
   it is open.
 - **The tell:** while an enemy's move starts up, a bar over it fills toward the hit, labelled with the
