@@ -214,7 +214,7 @@ TEST_CASE("stone bearer data: the shipped file loads clean, with the outline's t
         CHECK(m.impacts[1] == doctest::Approx(3.0));
     }
 
-    // The nape: one point, behind (60 degrees either side), x2.
+    // The nape: one point, behind (60 degrees either side), x2, on the lower back (3.1 m of the figure's 5.1 m).
     REQUIRE(b.weakPoints.points.size() == 1);
     CHECK(b.weakPoints.points.items[0].id() == "nape");
     CHECK(b.weakPoints.points.items[0].multiplier == doctest::Approx(2.0));
@@ -222,7 +222,7 @@ TEST_CASE("stone bearer data: the shipped file loads clean, with the outline's t
     CHECK(b.weakPoints.gates[0].arc == doctest::Approx(60.0));
     CHECK(b.weakPoints.points.halfWidth == doctest::Approx(0.45));
     CHECK(b.weakPoints.points.items[0].x == doctest::Approx(0.0));
-    CHECK(b.weakPoints.points.items[0].y == doctest::Approx(0.78));
+    CHECK(b.weakPoints.points.items[0].y == doctest::Approx(0.61));
     CHECK(b.weakPoints.points.items[0].radius == doctest::Approx(0.1));
     // The keep-out: 3 m round the guest's spot, 20 m out at bearing 90.
     CHECK(b.keepOutBearing == doctest::Approx(90.0));
@@ -1085,7 +1085,7 @@ TEST_CASE("stone bearer: a whole scripted fight allocates nothing") {
     int sink = 0;
     int moves = 0;
     StoneBearerHit hit;
-    const AimPoint nape{0.0f, 0.78f};
+    const AimPoint nape{0.0f, 0.61f};
     const std::uint64_t before = ftcore_test::allocStats().count;
     b.begin(def, 0.0);
     double nextMove = 1.0;

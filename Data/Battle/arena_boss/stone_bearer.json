@@ -10,7 +10,7 @@
   "weakPoints": {
     "halfWidth": 0.45,
     "points": [
-      { "id": "nape", "x": 0.0, "y": 0.78, "radius": 0.1, "multiplier": 2.0, "facing": 180, "arc": 60 }
+      { "id": "nape", "x": 0.0, "y": 0.61, "radius": 0.1, "multiplier": 2.0, "facing": 180, "arc": 60 }
     ]
   },
   "keepOut": { "bearing": 90, "distance": 20, "radius": 3 },
