@@ -234,6 +234,40 @@ UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -
 Add `-ArenaAutoPlay` (the autopilot, with the host pressing Intercept and Guard on the call and releasing on the plinth) or
 `-ArenaIdle`. Intercept is U, the mouse's thumb button or the left stick's click, held; the boss's Guard is the guard.
 
+## Boss demo: the bosses with the three leads
+
+The boss meshes and their clips are local assets (`Content/Bosses/`, never committed: the main checkout holds untracked
+ones, and committing `.uasset` files there would make a merge fail on them). Each is one `FTImportCharacter` run from the
+boss's `.glb`; the file's stem names the asset folder, so the glb must be called `<stem>.glb`. A boss kind whose assets
+are missing keeps its placeholder shapes and the log has one warning. Run from the project folder, with the editor
+closed:
+
+| Boss | Kind | Zone | Import |
+|---|---|---|---|
+| the Unbending | `stone_bearer` | `stone_ring` | `-Source=<path>/stone_bearer.glb -Dest=/Game/Bosses/StoneBearer -Face=0` |
+| the Kite-Mother | `kite_boss` | `kite_ring` | `-Source=<path>/kite_boss.glb -Dest=/Game/Bosses/KiteBoss -Face=0` |
+
+```
+UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTImportCharacter <the import column> -NullRHI -unattended -nopause -nosplash
+```
+
+An import replaces what is there, so rerunning it after a boss's model changes is safe. Exit code 0 is a clean import (the
+log's "face bones" line is a warning for a boss, which has no human head).
+
+Pick the lead with `-ArenaLead=Devin`, `-ArenaLead=Duy` or `-ArenaLead=Third` (the name of a `PartyLooks` entry in the local
+`Config/UserGame.ini`, any case); each plays its own fighter kit (Devin the blade, Duy kicks and a gun, the Third spells).
+Without the flag the lead is the first look (Devin in the main checkout).
+
+```
+UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=stone_ring -ArenaLead=Devin
+UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=kite_ring -ArenaLead=Duy
+```
+
+`-ArenaStage=stone_ring` hosts `stone_bearer` and `-ArenaStage=kite_ring` hosts `kite_boss`; `-ArenaLineup=<kind>` fights a
+kind in whatever zone `-ArenaStage` names (the sand ring by default). `-ArenaAutoPlay` has the autopilot play the lead.
+For a picture with no window: `-RenderOffScreen -ArenaShot=<path prefix> -ArenaShotDelay=8` in place of `-windowed`
+(needs a renderer, not `-NullRHI`).
+
 ## Launch
 
 Play it (a window, keyboard or pad):
