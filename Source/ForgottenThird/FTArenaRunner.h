@@ -20,12 +20,15 @@
 #include "ftcore/ArenaZone.h"
 #include "ftcore/BeatChoreo.h"
 
+#include "FTStoneBearerHost.h"
+
 #include <array>
 #include <string>
 
 #include "FTArenaRunner.generated.h"
 
 class AFTArenaFighter;
+class AStaticMeshActor;
 class APlayerController;
 class UWorld;
 class UAnimSequence;
@@ -62,6 +65,7 @@ struct FFTArenaRunSetup
 	ftcore::ArenaZoneFit Fit;
 	std::string ZoneId;
 	double ZoneZ = 0.0;  // cm: the height of the ground in the zone
+	float ZoneYaw = 0.f; // degrees: the zone's yaw (arenas.json), the frame of a boss's keep-out bearing
 	int32 ZoneStyle = 0; // the world's look: 0 the plain zone, 1 Solhaven, 2 the Lattice, 3 the Unwritten
 	FString KitId;       // the fighter kit the player plays, as the table resolved it
 	const FFTLeadLook* Lead = nullptr; // the look the player's figure wears (null: the test human)
@@ -141,6 +145,8 @@ public:
 	const ftcore::ArenaZone& GetZone() const { return Fit.zone; }
 	int32 GetZoneStyle() const { return ZoneStyle; }
 	ftcore::Vec2 GetPlayerPosition() const { return Bodies.player; }
+	// Everyone's position after the last step (metres).
+	const ftcore::ArenaBodies& GetBodies() const { return Bodies; }
 	double GetZoneZ() const { return ZoneZ; }
 	AFTArenaFighter* GetEnemyFigure(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? EnemyFigures[Index].Get() : nullptr; }
 	// The move enemy Index is in (its attack's numbers), or null when it isn't attacking.
@@ -159,9 +165,19 @@ public:
 	const FPopup& GetPopup(int32 Index) const { return Popups[(PopupTotal - GetPopupCount() + Index) % MaxPopups]; }
 	// Bumped on every new popup, so the HUD rebuilds a popup's number only when its slot changes.
 	int32 GetPopupTotal() const { return PopupTotal; }
+	// The first Arena boss's host while it fights here (null otherwise), and the Intercept button as the step took it.
+	const FFTStoneBearerHost* GetStoneBearer() const { return StoneBearer.IsActive() ? &StoneBearer : nullptr; }
+	bool IsInterceptHeld() const { return bInterceptHeld; }
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
+	// The stone_bearer boss, when the line-up has one: its file read and its kind rebuilt in Def (before the fight
+	// begins), then the host begun on the fight (after it begins or restarts), its plinth and keep-out drawn.
+	void PrepareStoneBearer();
+	void BeginStoneBearer();
+	void EndStoneBearer();
+	// The host's new notes, one log line each (ids, counts and outcome words only).
+	void LogStoneBearerNotes();
 	// Dresses enemy slot I as a skeletal mesh when its kind has a look that loads (see AFTArenaGameMode's header).
 	void LoadSkin(int32 I);
 	// Picks and times slot I's clip from its Core state: the move's own clip through an attack, at the rate that lands its
@@ -188,6 +204,12 @@ private:
 	TObjectPtr<AFTArenaFighter> EnemyFigures[6]; // ftcore::kMaxArenaEnemies (a literal for UHT; checked in the .cpp)
 	UPROPERTY()
 	FFTArenaSkin Skins[6];                       // ... likewise
+	// The stone_bearer's plinth and the guest's keep-out disc (markers). UPROPERTYs sit up here, ahead of the fight's
+	// large members: UHT stores a property's offset in 16 bits.
+	UPROPERTY()
+	TObjectPtr<AStaticMeshActor> PlinthActor;
+	UPROPERTY()
+	TObjectPtr<AStaticMeshActor> KeepOutActor;
 	// What each skinned enemy plays: the clip (a table index; -2 none yet) and since when, the last hit reaction.
 	int32 SkinClip[ftcore::kMaxArenaEnemies];
 	double SkinSince[ftcore::kMaxArenaEnemies];
@@ -220,6 +242,7 @@ private:
 	// The partner's Read pick: a card index, -1 for none.
 	int8 PressRead = -1;
 	bool bGuardHeld = false;
+	bool bInterceptHeld = false;
 	ftcore::Vec2 Stick;
 	bool bStickFlicked = false;
 
@@ -252,4 +275,11 @@ private:
 	double ResultTime = 0.0;
 	double BeginNow = 0.0;
 	FString KitId;
+
+	// The first Arena boss (stone_bearer): its host, its slot in the line-up (-1 without one), the zone's yaw and the
+	// notes logged so far (its plinth and keep-out disc are with the figures above).
+	FFTStoneBearerHost StoneBearer;
+	int32 StoneBearerSlot = -1;
+	float ZoneYaw = 0.f;
+	int32 StoneBearerLogged = 0;
 };

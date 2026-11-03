@@ -77,6 +77,22 @@ const FTUiText kTellShotArena(TEXT("arena.tell.shot"));
 const FTUiText* const kArenaTellWords[] = {&kTellStrikeArena, &kTellOverheadArena, &kTellBackhandArena, &kTellChargeArena,
 	&kTellThrustArena, &kTellSlashArena, &kTellSweepArena, &kTellSlamArena, &kTellShotArena};
 static_assert(UE_ARRAY_COUNT(kArenaTellWords) == ftcore::kArenaTellCount, "a word for every ArenaTell");
+const FTUiText kBossWeightArena(TEXT("arena.boss.weight"));
+const FTUiText kBossInvulnerableArena(TEXT("arena.boss.invulnerable"));
+const FTUiText kBossWeakPointArena(TEXT("arena.boss.weak_point"));
+const FTUiText kBossCallArena(TEXT("arena.boss.call"));
+const FTUiText kBossLeftArena(TEXT("arena.boss.left"));
+const FTUiText kBossRightArena(TEXT("arena.boss.right"));
+const FTUiText kBossPathArena(TEXT("arena.boss.path"));
+const FTUiText kBossInterceptArena(TEXT("arena.boss.intercept"));
+const FTUiText kBossGuardArena(TEXT("arena.boss.guard"));
+const FTUiText kBossWrongSideArena(TEXT("arena.boss.wrong_side"));
+const FTUiText kBossMissedArena(TEXT("arena.boss.missed"));
+const FTUiText kBossBrokenArena(TEXT("arena.boss.broken"));
+const FTUiText kBossShockRingArena(TEXT("arena.boss.shock_ring"));
+const FTUiText kBossCriticalArena(TEXT("arena.boss.critical"));
+const FTUiText kBossLiftedArena(TEXT("arena.boss.lifted"));
+const FTUiText kBossReleaseOnCallArena(TEXT("arena.boss.release_on_call"));
 const FTUiText kNowArena(TEXT("battle.now"));
 const FTUiText kStaggeredArena(TEXT("battle.staggered"));
 const FTUiText kDownArena(TEXT("battle.down"));
@@ -91,6 +107,53 @@ constexpr double kArenaParryEdgeLife = 0.4;
 constexpr double kArenaResultFade = 0.3;
 constexpr double kArenaReleaseBanner = 1.0;
 constexpr double kArenaOverloadBanner = 1.4;
+constexpr double kArenaBossWordLife = 1.2; // the boss panel's latest answer or rule, fading
+
+// The boss panel's word for a note, and its colour; null for a note it doesn't show.
+const FTUiText* ArenaBossWord(const FFTStoneBearerNote& Note, FLinearColor& OutColor)
+{
+	if (Note.Kind == FFTStoneBearerNote::EKind::ShockRingSent)
+	{
+		OutColor = kArenaOrange;
+		return &kBossShockRingArena;
+	}
+	if (Note.Kind != FFTStoneBearerNote::EKind::Run)
+	{
+		return nullptr;
+	}
+	switch (Note.Event.type)
+	{
+	case ftcore::ArenaBossEventType::Answered:
+		switch (Note.Event.outcome)
+		{
+		case ftcore::CalledOutcome::Intercepted:
+			OutColor = kArenaGreen;
+			return &kBossInterceptArena;
+		case ftcore::CalledOutcome::Guarded:
+			OutColor = kArenaCyan;
+			return &kBossGuardArena;
+		case ftcore::CalledOutcome::WrongZone:
+			OutColor = kArenaRed;
+			return &kBossWrongSideArena;
+		case ftcore::CalledOutcome::Missed:
+			OutColor = kArenaRed;
+			return &kBossMissedArena;
+		default:
+			return nullptr;
+		}
+	case ftcore::ArenaBossEventType::Broke:
+		OutColor = kArenaGold;
+		return &kBossBrokenArena;
+	case ftcore::ArenaBossEventType::Crit:
+		OutColor = kArenaGold;
+		return &kBossCriticalArena;
+	case ftcore::ArenaBossEventType::Lifted:
+		OutColor = kArenaGold;
+		return &kBossLiftedArena;
+	default:
+		return nullptr;
+	}
+}
 
 FLinearColor ArenaAlpha(const FLinearColor& C, float A)
 {
@@ -528,6 +591,84 @@ void AFTArenaHUD::DrawTargetBar(const UFTArenaRunner& Mode)
 		kArenaEnemyPoise, kArenaBack);
 }
 
+void AFTArenaHUD::DrawBossPanel(const UFTArenaRunner& Mode)
+{
+	const FFTStoneBearerHost* Host = Mode.GetStoneBearer();
+	const ftcore::ArenaFight& Fight = Mode.GetFight();
+	if (!Host || !Fight.enemyAlive(Host->GetSlot()))
+	{
+		return;
+	}
+	const ftcore::StoneBearer& Boss = Host->GetBoss();
+	const float S = UiScale;
+	UFont* Small = GEngine->GetSmallFont();
+	const float W = 640.f * S;
+	const float X = Canvas->ClipX * 0.5f - W * 0.5f;
+	const float Y = 100.f * S;
+	const double T = Fight.time();
+	DrawRect(kArenaPanel, X - 12.f * S, Y - 6.f * S, W + 24.f * S, 34.f * S);
+
+	// The stacks, as pips.
+	DrawText(kBossWeightArena, kArenaDim, X, Y, Small, 1.1f * S);
+	const int32 Cap = FMath::Clamp(Host->GetDef().weight.cap, 0, 8);
+	for (int32 I = 0; I < Cap; ++I)
+	{
+		const float PX = X + 86.f * S + static_cast<float>(I) * 22.f * S;
+		if (I < Boss.stacks())
+		{
+			DrawRect(kArenaLoad, PX, Y + 2.f * S, 16.f * S, 16.f * S);
+		}
+		else
+		{
+			DrawFrame(PX, Y + 2.f * S, 16.f * S, 16.f * S, kArenaDim, 2.f * S);
+		}
+	}
+
+	// What it is doing: on its plinth, open, down, or calling a blow (green when the lead stands in the called zone).
+	const float Mid = Canvas->ClipX * 0.5f + 40.f * S;
+	const ftcore::ArenaBossRun& Run = Boss.run();
+	const ftcore::CalledStrike& Strike = Run.strike();
+	const std::uint8_t Live = Run.liveMove();
+	if (Boss.invulnerable())
+	{
+		DrawStrCentered(kBossInvulnerableArena, kArenaCyan, Mid - 60.f * S, Y, Small, 1.2f);
+		DrawStrCentered(kBossReleaseOnCallArena, kArenaWhite, Mid + 90.f * S, Y, Small, 1.1f);
+	}
+	else if (Run.crit().isOpen(Run.now()))
+	{
+		DrawStrCentered(kBossWeakPointArena, ArenaAlpha(kArenaGold, 0.7f + 0.3f * FMath::Sin(static_cast<float>(Mode.GetNow()) * 10.f)), Mid, Y, Small, 1.2f);
+	}
+	else if (Boss.down())
+	{
+		DrawStrCentered(kDownArena, kArenaWhite, Mid, Y, Small, 1.2f);
+	}
+	else if (Live < Host->GetDef().boss.moveCount && Host->GetDef().boss.moves[Live].intercept() && !Strike.complete())
+	{
+		const ftcore::CalledZone Want = Strike.nextZone();
+		const bool bIn = Host->ZoneNow(Mode.GetBodies()) == Want;
+		const FTUiText& Zone = Want == ftcore::CalledZone::Left ? kBossLeftArena : (Want == ftcore::CalledZone::Right ? kBossRightArena : kBossPathArena);
+		DrawStrCentered(kBossCallArena, kArenaDim, Mid - 50.f * S, Y, Small, 1.2f);
+		DrawStrCentered(Zone, bIn ? kArenaGreen : kArenaRed, Mid + 30.f * S, Y, Small, 1.2f);
+	}
+
+	// The latest answer or rule, fading.
+	for (int32 Serial = Host->GetNoteTotal() - 1; Serial >= Host->GetNoteTotal() - Host->GetNoteCount(); --Serial)
+	{
+		const FFTStoneBearerNote& Note = Host->GetNoteBySerial(Serial);
+		const float Fade = ArenaPulse(T, Note.Event.at, kArenaBossWordLife);
+		if (Fade <= 0.f)
+		{
+			break;
+		}
+		FLinearColor Color = kArenaWhite;
+		if (const FTUiText* Word = ArenaBossWord(Note, Color))
+		{
+			DrawStrCentered(*Word, ArenaAlpha(Color, Fade), X + W - 80.f * S, Y, Small, 1.2f);
+			break;
+		}
+	}
+}
+
 void AFTArenaHUD::DrawLock(const UFTArenaRunner& Mode)
 {
 	const ftcore::ArenaFight& Fight = Mode.GetFight();
@@ -919,6 +1060,7 @@ void AFTArenaHUD::DrawHUD()
 	DrawEnemies(*Mode);
 	DrawLock(*Mode);
 	DrawTargetBar(*Mode);
+	DrawBossPanel(*Mode);
 	DrawPlayerPanel(*Mode);
 	DrawPopups(*Mode);
 	DrawBanners(*Mode);

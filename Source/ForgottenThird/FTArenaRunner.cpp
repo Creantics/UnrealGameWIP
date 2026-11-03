@@ -3,6 +3,11 @@
 #include "Animation/AnimSequence.h"
 #include "Engine/SkeletalMesh.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 #include "Engine/World.h"
 #include "FTActionButtons.h"
 #include "FTArenaFighter.h"
@@ -151,6 +156,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	ZoneStyle = Setup.ZoneStyle;
 	KitId = Setup.KitId;
 	Seed = Setup.Seed;
+	ZoneYaw = Setup.ZoneYaw;
 	bAutoPlay = Setup.bAutoPlay;
 	bIdle = Setup.bIdle;
 	bHoldLoad = Setup.bHoldLoad;
@@ -162,7 +168,9 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	bBegun = true;
 	BeginNow = Now;
 	// The fitted zone's ring, and where the player starts in it.
+	PrepareStoneBearer();
 	Fight.begin(Def, Fit.ring, Fit.playerStart, Fit.playerFacing, Seed);
+	BeginStoneBearer();
 	SpawnFigures(Setup.Lead);
 	PutBodiesAtStart();
 	PlaceFigures(1.f);
@@ -226,6 +234,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 
 void UFTArenaRunner::End()
 {
+	EndStoneBearer();
 	for (int32 I = 0; I < MaxEnemies; ++I)
 	{
 		if (EnemyFigures[I])
@@ -561,6 +570,7 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	if (!PC || bAutoPlay || bIdle || UFTPauseSubsystem::IsBlocking(this) || UFTPauseSubsystem::IsJustResumed(this))
 	{
 		bGuardHeld = false;
+		bInterceptHeld = false;
 		Stick = ftcore::Vec2();
 		return;
 	}
@@ -595,6 +605,10 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	bPressPair |= ArenaAnyJustPressed(*PC, EKeys::F, EKeys::Gamepad_DPad_Down);
 	bGuardHeld = PC->IsInputKeyDown(Key(GuardB, 0)) || PC->IsInputKeyDown(Key(GuardB, 1)) || PC->IsInputKeyDown(EKeys::RightMouseButton)
 		|| PC->IsInputKeyDown(EKeys::Gamepad_LeftShoulder);
+	// A called-blow boss's Intercept (its Guard is the guard above): U, the mouse's thumb button or the left stick's
+	// click, held.
+	bInterceptHeld = PC->IsInputKeyDown(EKeys::U) || PC->IsInputKeyDown(EKeys::ThumbMouseButton)
+		|| PC->IsInputKeyDown(EKeys::Gamepad_LeftThumbstick);
 	if (PC->WasInputKeyJustPressed(EKeys::Q) || (!bCardsOpen && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Left)))
 	{
 		PressSwitch = -1;
@@ -678,6 +692,7 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 void UFTArenaRunner::StepFight()
 {
 	ftcore::ArenaInput In;
+	bool bIntercept = false;
 	if (bAutoPlay)
 	{
 		In = Fight.autopilot();
@@ -688,16 +703,34 @@ void UFTArenaRunner::StepFight()
 		{
 			In.release = false;
 		}
+		// The boss's own buttons, which the autopilot knows nothing of.
+		StoneBearer.Assist(In, bIntercept, Bodies);
 	}
 	else if (!bIdle)
 	{
 		In = TakeInput();
+		bIntercept = bInterceptHeld;
+	}
+	const bool bBoss = StoneBearer.IsActive();
+	if (bBoss)
+	{
+		StoneBearer.Buttons(bIntercept, In.guard, Bodies);
+		StoneBearer.BeforeTick();
 	}
 	PrevBodies = Bodies;
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
 	ftcore::arenaStep(Fight, Bodies, StepSeconds, Fit.zone);
+	if (bBoss && StoneBearer.AfterTick(Out.events, Bodies))
+	{
+		// Onto its plinth: put there, not walked there.
+		PrevBodies.enemies[StoneBearer.GetSlot()] = Bodies.enemies[StoneBearer.GetSlot()];
+	}
 	HandleEvents(Out.events);
 	TrackParts(Out);
+	if (bBoss)
+	{
+		LogStoneBearerNotes();
+	}
 }
 
 void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
@@ -892,10 +925,20 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		{
 			continue;
 		}
-		const ftcore::ArenaEnemyOut& E = Out.enemies[static_cast<size_t>(I)];
+		// The boss on its plinth, or a refused pick being cut, is held Down but drawn on its feet.
+		const bool bBossStands = I == StoneBearerSlot && StoneBearer.DrawnStanding();
+		ftcore::ArenaEnemyOut E = Out.enemies[static_cast<size_t>(I)];
+		if (bBossStands && E.brain == ftcore::ArenaBrain::Down)
+		{
+			E.brain = ftcore::ArenaBrain::Strafe;
+		}
 		const ftcore::ArenaEnemyKind& Kind = D.enemies[static_cast<size_t>(I)];
 		FFTArenaPose Pose;
 		Pose.Feet = ToWorld(ArenaLerp(PrevBodies.enemies[static_cast<size_t>(I)], Bodies.enemies[static_cast<size_t>(I)], Alpha));
+		if (I == StoneBearerSlot && StoneBearer.OnPlinth())
+		{
+			Pose.Feet.Z += FFTStoneBearerHost::PlinthHeight * 100.0;
+		}
 		Pose.Yaw = ArenaYaw(E.facing);
 		Pose.Speed = ArenaLength(E.velocity);
 		Pose.Tint = Figure->GetBaseColor();
@@ -1058,8 +1101,175 @@ void UFTArenaRunner::LogResult() const
 void UFTArenaRunner::Restart()
 {
 	Fight.restart();
+	BeginStoneBearer();
 	bResultLogged = false;
 	PutBodiesAtStart();
 	BeginNow = Now;
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: fight again."));
+}
+
+void UFTArenaRunner::PrepareStoneBearer()
+{
+	StoneBearerSlot = -1;
+	for (size_t I = 0; I < static_cast<size_t>(Def.enemyCount); ++I)
+	{
+		const size_t KindIndex = Def.enemyKind[I];
+		if (KindIndex < Table.enemyIds.size() && Table.enemyIds[KindIndex] == FFTStoneBearerHost::KindId)
+		{
+			StoneBearerSlot = static_cast<int32>(I);
+			break;
+		}
+	}
+	if (StoneBearerSlot < 0)
+	{
+		return;
+	}
+	if (!StoneBearer.IsLoaded())
+	{
+		TArray<uint8> Bytes;
+		const FString File = FPaths::ProjectDir() / UTF8_TO_TCHAR(FFTStoneBearerHost::DataPath);
+		std::string LoadError;
+		std::vector<std::string> Warnings;
+		if (!FFileHelper::LoadFileToArray(Bytes, *File))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: couldn't read %s; stone_bearer fights as its arena.json kind."), UTF8_TO_TCHAR(FFTStoneBearerHost::DataPath));
+		}
+		else if (!StoneBearer.Load(FT::BytesAsText(Bytes), &LoadError, &Warnings))
+		{
+			// The loader's errors name paths and keys only.
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s refused; stone_bearer fights as its arena.json kind:\n%s"), UTF8_TO_TCHAR(FFTStoneBearerHost::DataPath),
+				*FT::ToFString(LoadError));
+		}
+		for (const std::string& W : Warnings)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: stone_bearer: %s"), *FT::ToFString(W));
+		}
+	}
+	std::string Error;
+	if (!StoneBearer.IsLoaded() || !StoneBearer.BuildKind(Def.enemies[static_cast<size_t>(StoneBearerSlot)], Def.fighter, &Error))
+	{
+		if (!Error.empty())
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s"), *FT::ToFString(Error));
+		}
+		StoneBearerSlot = -1;
+	}
+}
+
+void UFTArenaRunner::BeginStoneBearer()
+{
+	if (StoneBearerSlot < 0)
+	{
+		StoneBearer.End();
+		return;
+	}
+	StoneBearer.Begin(Fight, static_cast<size_t>(StoneBearerSlot), Fit.zone.centre, ZoneYaw);
+	StoneBearerLogged = StoneBearer.GetNoteTotal();
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: stone_bearer in slot %d: %d arena moves from %d boss moves."), StoneBearerSlot,
+		static_cast<int32>(Fight.def().enemies[static_cast<size_t>(StoneBearerSlot)].moveCount), static_cast<int32>(StoneBearer.GetDef().boss.moveCount));
+
+	// Its plinth at the zone's centre and the guest's keep-out disc: markers, nothing to bump into (the plinth is the
+	// host's: arenas.json's cover blocks).
+	UWorld* World = GetWorld();
+	if (!World || PlinthActor)
+	{
+		return;
+	}
+	UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+	UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	if (!Cylinder || !Base)
+	{
+		return;
+	}
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	const auto Place = [&](const ftcore::Vec2& At, float Radius, float Height, const FLinearColor& Color) -> AStaticMeshActor*
+	{
+		AStaticMeshActor* Prop = World->SpawnActor<AStaticMeshActor>(ToWorld(At) + FVector(0.0, 0.0, Height * 50.0), FRotator::ZeroRotator, Spawn);
+		if (!Prop)
+		{
+			return nullptr;
+		}
+		UStaticMeshComponent* Component = Prop->GetStaticMeshComponent();
+		Component->SetMobility(EComponentMobility::Movable);
+		Component->SetStaticMesh(Cylinder);
+		UMaterialInstanceDynamic* Paint = UMaterialInstanceDynamic::Create(Base, World);
+		Paint->SetVectorParameterValue(TEXT("Color"), Color);
+		Component->SetMaterial(0, Paint);
+		Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Component->SetCanEverAffectNavigation(false);
+		Prop->SetActorScale3D(FVector(Radius * 2.0, Radius * 2.0, Height)); // the cylinder is 1 m across and 1 m tall
+		return Prop;
+	};
+	const float BodyRadius = Fight.def().enemies[static_cast<size_t>(StoneBearerSlot)].bodyRadius;
+	PlinthActor = Place(StoneBearer.GetPlinthSpot(), BodyRadius + 0.4f, FFTStoneBearerHost::PlinthHeight, FLinearColor(0.3f, 0.29f, 0.27f));
+	const ftcore::ArenaKeepOut& KeepOut = StoneBearer.GetKeepOut();
+	if (!KeepOut.none())
+	{
+		KeepOutActor = Place(KeepOut.centre, KeepOut.radius, 0.03f, FLinearColor(0.75f, 0.62f, 0.25f));
+	}
+}
+
+void UFTArenaRunner::EndStoneBearer()
+{
+	StoneBearer.End();
+	StoneBearerSlot = -1;
+	if (PlinthActor)
+	{
+		PlinthActor->Destroy();
+		PlinthActor = nullptr;
+	}
+	if (KeepOutActor)
+	{
+		KeepOutActor->Destroy();
+		KeepOutActor = nullptr;
+	}
+}
+
+void UFTArenaRunner::LogStoneBearerNotes()
+{
+	const int32 Total = StoneBearer.GetNoteTotal();
+	if (Total - StoneBearerLogged > static_cast<int32>(FFTStoneBearerHost::MaxNotes))
+	{
+		StoneBearerLogged = Total - static_cast<int32>(FFTStoneBearerHost::MaxNotes);
+	}
+	for (; StoneBearerLogged < Total; ++StoneBearerLogged)
+	{
+		const FFTStoneBearerNote& N = StoneBearer.GetNoteBySerial(StoneBearerLogged);
+		const ftcore::ArenaBossEvent& E = N.Event;
+		const int32 Move = static_cast<int32>(E.move);
+		switch (N.Kind)
+		{
+		case FFTStoneBearerNote::EKind::Run:
+			if (E.type == ftcore::ArenaBossEventType::Answered)
+			{
+				UE_LOG(LogForgottenThird, Log, TEXT("Arena: boss %.2f move %d impact %d: %s"), E.at, Move, static_cast<int32>(E.impact),
+					UTF8_TO_TCHAR(ftcore::calledOutcomeName(E.outcome)));
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: boss %.2f event %d move %d impact %d value %d"), E.at, static_cast<int32>(E.type), Move,
+					static_cast<int32>(E.impact), E.value);
+			}
+			break;
+		case FFTStoneBearerNote::EKind::Refused:
+			UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: boss %.2f move %d refused and cut"), E.at, Move);
+			break;
+		case FFTStoneBearerNote::EKind::ShockRingSent:
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: boss %.2f move %d: shock ring (stub, no ring blow)"), E.at, Move);
+			break;
+		case FFTStoneBearerNote::EKind::TileRain:
+			UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: boss %.2f move %d: tile rain (stub, one all-round blow)"), E.at, Move);
+			break;
+		case FFTStoneBearerNote::EKind::LoadGiven:
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: boss %.2f move %d: %d Load given"), E.at, Move, E.value);
+			break;
+		case FFTStoneBearerNote::EKind::ReleaseMissed:
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: boss %.2f: a Release on the plinth missed (%s)"), E.at,
+				N.Release == ftcore::PedestalRelease::LowLoad ? TEXT("too little Load") : TEXT("off the call"));
+			break;
+		default:
+			break;
+		}
+	}
 }

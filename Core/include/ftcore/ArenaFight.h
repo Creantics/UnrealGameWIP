@@ -68,12 +68,13 @@
 //   - Riposte: a light press with an Open enemy within riposteReach and in front (dot >= 0.5)
 //     performs the riposte attack instead of a light, aimed at that enemy and invulnerable throughout.
 //     When it connects, the enemy goes Down for downTime.
-//   - Load (Load.h): a second gauge beside stamina, 0 to kMaxLoad, never a replacement for it. Only a
-//     parry (the perfect guard: the parry window, never wider) stores Load: the parried attack's damage
-//     times loadShare (LoadStored; a block stores nothing). It never refills or drains on its own, and
-//     no attack or roll spends it. At kMaxLoad the player is overloaded (Overloaded, once as it fills):
-//     light, heavy and heal are refused until a Release (dodge, guard, parry, movement and the lock
-//     stay open, as Turns refuses commands but never the defence).
+//   - Load (Load.h): a second gauge beside stamina, 0 to kMaxLoad, never a replacement for it. A parry
+//     (the perfect guard: the parry window, never wider) stores Load: the parried attack's damage times
+//     loadShare (LoadStored; a block stores nothing). The host may give Load too (giveLoad); nothing
+//     else stores it. It never refills or drains on its own, and no attack or roll spends it. At kMaxLoad the player is
+//     overloaded (Overloaded, once as it fills): light, heavy and heal are refused until a Release
+//     (dodge, guard, parry, movement and the lock stay open, as Turns refuses commands but never the
+//     defence).
 //   - Release: a strike shaped like the riposte (the `release` attack: invulnerable throughout, facing
 //     the lock target or the stick at its start), open only while Load is above kArenaReleaseOpenLoad
 //     (a third), from any state another action may start from, whatever the stamina. It spends all the
@@ -131,6 +132,11 @@
 //   radius); a dodge toward the edge slides along it.
 // * Victory: every enemy Dead. Defeat: the player Downed. Then tick() does nothing but report the
 //   phase. restart() puts everything back as begin() left it (the same seed, so the same fight).
+// * Host hooks (generic: a boss's own rules live in its own Core class and the host, never here). The host
+//   may hold an enemy Open or Down from outside (holdEnemy, releaseEnemy), keep an enemy's hp above a floor
+//   (setEnemyHpFloor), rule on every blow before it applies (setBlowHook): scale its damage and poise
+//   damage, or veto it, and give the player Load (giveLoad). Holds and floors are fight state (begin() and
+//   restart() clear them); the blow hook is the host's and stays until it sets another.
 //
 // Data: Data/Battle/arena.json (ids and numbers only, no story text). Like encounters.json and
 // qte.json it is keyed by scene id + gameplay beat index + plan step index, with a `default` fight:
@@ -184,7 +190,9 @@
 namespace ftcore {
 
 inline constexpr std::size_t kMaxArenaEnemies = 6;
-inline constexpr std::size_t kMaxArenaMoves = 8;   // per enemy
+// Per enemy (a boss move of n impacts is n chained moves). Fixed storage: at 24 an ArenaDef is about 17.4 KiB and an
+// ArenaFight about 23 KiB (MSVC x64; 7 and 10 KiB at 8); test_arena.cpp holds them under 20 and 28 KiB.
+inline constexpr std::size_t kMaxArenaMoves = 24;
 inline constexpr std::size_t kMaxLightChain = 4;
 inline constexpr std::size_t kMaxArenaEvents = 32; // per tick; more are dropped (ArenaFight::droppedEvents)
 
@@ -492,7 +500,8 @@ enum class ArenaEventType : std::uint8_t { // append only
     StaminaEmpty,  // the player spent the last stamina
     Victory,
     Defeat,
-    LoadStored,     // a parry stored `amount` Load from source's attack `move` (appended)
+    LoadStored,     // `amount` Load stored: by a parry of source's attack `move`, or the host's giveLoad
+                    // (source kArenaNobody, move 0) (appended)
     Overloaded,     // the player's Load reached kMaxLoad: only a Release lifts it (appended)
     Released,       // the player began a Release, spending `amount` Load (appended)
     CounterStagger, // a parry paired with the partner's press: target took `amount` hp and is staggered (appended)
@@ -555,6 +564,46 @@ struct ArenaStats {
 };
 
 enum class ArenaPhase : std::uint8_t { NotStarted, Fighting, Victory, Defeat };
+
+// A blow about to land, as the blow hook sees it (ArenaFight::setBlowHook): one of the player's attacks or the
+// partner's counters on an enemy, or an enemy's attack on the player.
+struct ArenaBlow {
+    ArenaEventType type = ArenaEventType::Hit; // the event it reports with: Hit (an attack, either way),
+                                               // CounterStagger or ReadCounter (the partner's, on an enemy)
+    std::uint8_t source = kArenaNobody;        // kArenaPlayer (the partner's counters too) or the enemy
+    std::uint8_t target = kArenaNobody;        // the enemy, or kArenaPlayer
+    std::uint8_t move = 0;                     // as the event's
+    int damage = 0;                            // hp, before the ruling (and before a guard)
+    float poise = 0.f;                         // poise damage, before the ruling (and before armor). A counter-stagger:
+                                               // the enemy kind's whole poise, as it breaks it
+    Vec2 from;                                 // the source's position (the partner's counters: the player's) ...
+    Vec2 facing{1.f, 0.f};                     // ... and facing
+    Vec2 at;                                   // the target's position
+    float time = 0.f;                          // fight time at the end of the tick it lands in
+};
+
+// The host's ruling on a blow. A vetoed blow is spent (that attack never connects with that target again, and it
+// uses up the target slot maxTargets counts) and does nothing else: no hp, poise, Load, stamina, stats or events.
+// Scales: NaN or below 0 count as 0, and a scaled blow stops at a million.
+// * damage: the damage becomes round(damage * this), wherever it goes: hp landed, a guard's chip, a parry's Load.
+// * poise: the poise damage is multiplied by this where the blow deals poise damage: an enemy's landed blow, a
+//   player's blow on an enemy on its feet. A counter-stagger breaks the whole poise or nothing: it staggers only with
+//   a poise scale of 1 or more. A guarded blow deals none (its stamina cost, guardDamage, is the attack's own), and
+//   a riposte on an open enemy downs it whatever the scale.
+struct ArenaBlowRuling {
+    float damage = 1.f;
+    float poise = 1.f;
+    bool veto = false;
+};
+
+// Called inside tick(), once per blow, in the order the blows land (a player's attack reaching several enemies on
+// one tick: by enemy index). It may read the fight's getters: mid-tick, time() and output() are still the last
+// tick's (ArenaBlow::time is this one's end), and enemyHp and hp don't count the blow being ruled yet. It may call
+// holdEnemy and releaseEnemy (they count from the next tick), setEnemyHpFloor (it counts for this blow already) and
+// setBlowHook (from the next blow). tick, begin and restart called from inside it do nothing (tick only returns the
+// last output). A copy of a fight copies the hook and its user pointer (a copy made inside the hook ticks as any
+// other).
+using ArenaBlowHook = ArenaBlowRuling (*)(void* user, const ArenaBlow& blow);
 
 class ArenaFight {
 public:
@@ -619,12 +668,45 @@ public:
     FTCORE_API bool readOpen() const;
     FTCORE_API int readStacks() const;
 
+    // ---- host hooks ----
+    // Holds enemy i in `brain` (Open or Down) for `seconds` (> 0; +infinity: until releaseEnemy), from the start of the
+    // next tick with dt > 0: a live move is cut short and its token goes back, as a parry does (a read move brings the
+    // partner's counter), and `seconds` stands in for the kind's openTime or downTime. Holding again starts it over.
+    // Open invites a riposte, which ends the hold (Down for the kind's downTime), and a counter-stagger ends it too
+    // (Staggered); Down invites neither. When a hold ends (its time, or a release) the enemy walks again, and the
+    // kind's attackDelay counts from the hold's start, as after a parry. False, and nothing asked, for an enemy out of
+    // range or dead, a fight not running (before begin(), after Victory or Defeat), another brain, or seconds NaN or
+    // <= 0.
+    FTCORE_API bool holdEnemy(std::size_t i, ArenaBrain brain, float seconds);
+    // Ends enemy i's hold at the start of the next tick with dt > 0 (it walks again: Approach). Nothing for an enemy
+    // that is not held then. Before a tick, the latest of holdEnemy and releaseEnemy for an enemy wins.
+    FTCORE_API void releaseEnemy(std::size_t i);
+    // A hold is running: not one still waiting for its tick, and true until a pending release applies.
+    FTCORE_API bool enemyHeld(std::size_t i) const;
+    // Enemy i's hp never falls below hpFloor (0, the default: none; below 0 counts as 0), from now: a blow that would
+    // take it lower takes it to hpFloor (the event's amount is what it lost), so the enemy stays alive. A floor never
+    // raises hp: at or below it, a blow takes nothing.
+    FTCORE_API void setEnemyHpFloor(std::size_t i, int hpFloor);
+    FTCORE_API int enemyHpFloor(std::size_t i) const;
+    // Every blow goes to `hook` with `user` before it applies (ArenaBlowHook); nullptr: none (every blow as it is).
+    FTCORE_API void setBlowHook(ArenaBlowHook hook, void* user);
+    // Stores `amount` Load in the player's gauge now, as a parry would (never past kMaxLoad; amount <= 0: nothing),
+    // and returns what was stored. The same event types a parry raises report it: LoadStored (source kArenaNobody,
+    // move 0) and, if the gauge filled, Overloaded. Inside the blow hook they join this tick's events; otherwise they
+    // open the next tick's, ahead of anything that tick does (one LoadStored for all the Load given since). load(),
+    // overloaded() and output().player show it at once; stats().overloads counts the fill at once, and
+    // stats().loadStored stays the parries'. begin() and restart() empty the gauge and drop events not yet reported;
+    // a fill already counted stays in the stats until begin() clears them. 0, and nothing stored, when the fight is
+    // not running (before begin(), after Victory or Defeat). kMaxLoad (Load.h) is the gauge's cap.
+    FTCORE_API int giveLoad(int amount);
+
 private:
     // The fight's state: the implementer's, fixed capacity only (copying a fight never allocates).
     // The rules are in ArenaFightImpl (ArenaFight.cpp), which reads and writes it directly.
     friend struct ArenaFightImpl;
 
     enum class Press : std::uint8_t { None, Light, Heavy, Dodge, Heal, Release }; // an action waiting in the input buffer
+    enum class HoldAsk : std::uint8_t { None, Hold, Release };                     // a host's hold request
 
     struct PlayerState {
         Vec2 pos;
@@ -656,6 +738,8 @@ private:
         std::uint8_t lock = kArenaNobody;
         Load gauge;                         // the Load, beside stamina
         int releaseSpent = 0;               // the Load the Release in progress spent
+        int giftLoad = 0;                   // Load giveLoad stored since the last tick, not yet reported ...
+        bool giftFilled = false;            // ... and whether it filled the gauge
         float pairPress = -1.0e9f;          // fight time of the partner's last unused press
         float pairParry = -1.0e9f;          // fight time of the last unpaired parry ...
         std::uint8_t pairFoe = kArenaNobody; // ... and the enemy it opened
@@ -681,6 +765,11 @@ private:
         float strafeLeft = 0.f;             // seconds until the strafe may change direction
         std::array<float, kMaxArenaMoves> cooldown{};
         bool readRight = false;             // this move was read right: the partner's counter is due
+        float holdFor = -1.f;               // a host's hold: seconds Open or Down lasts (not the kind's); < 0: none
+        HoldAsk holdAsk = HoldAsk::None;    // the host's request waiting for the next tick ...
+        ArenaBrain holdBrain = ArenaBrain::Open; // ... and the hold it asks for
+        float holdSeconds = 0.f;
+        int hpFloor = 0;                    // the host's hp floor (0: none)
     };
 
     ArenaDef def_;
@@ -704,6 +793,17 @@ private:
     std::uint8_t readFoe_ = kArenaNobody;
     std::uint8_t readMove_ = 0;
     std::uint32_t readDeals_ = 0;           // deals since begin() / restart(): seeds the next deal
+    ArenaBlowHook blowHook_ = nullptr;      // the host's (begin() and restart() keep it)
+    // The blow hook is running: tick, begin and restart do nothing. A copy starts clear (its hook isn't running),
+    // and assigning to a fight keeps its own.
+    struct HookFlag {
+        bool on = false;
+        HookFlag() = default;
+        HookFlag(const HookFlag&) {}
+        HookFlag& operator=(const HookFlag&) { return *this; }
+    };
+    HookFlag inHook_;
+    void* blowUser_ = nullptr;
 };
 
 // Moves `bodies` the way a host with no walls would: each body at its output velocity for dt, then

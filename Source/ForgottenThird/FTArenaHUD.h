@@ -17,6 +17,10 @@
 //     over the body they happened to,
 //     a red edge when the player is hit and a gold one on a parry;
 //   - banners: RELEASE with the Load it spent (and an orange edge), and OVERLOADED;
+//   - the first Arena boss (stone_bearer), under the target bar: its WEIGHT stacks as pips, its state (INVULNERABLE
+//     with "R on the call" on its plinth, WEAK POINT OPEN, DOWN, or the CALL of a called blow with the zone it is in,
+//     green when the lead stands in it) and the latest answer or rule (INTERCEPT, GUARD, WRONG SIDE, MISSED, BROKEN,
+//     SHOCK RING, CRITICAL, LIFTED), fading;
 //   - the result (VICTORY or DEFEAT with the counts) and the fight-again prompt, and the key hint.
 // Drawing builds no strings: every word is a static FTUiText, and the numbers are rebuilt only when they change.
 
@@ -58,6 +62,7 @@ private:
 	void DrawPlayerPanel(const UFTArenaRunner& Mode);
 	void DrawEnemies(const UFTArenaRunner& Mode);
 	void DrawTargetBar(const UFTArenaRunner& Mode);
+	void DrawBossPanel(const UFTArenaRunner& Mode);
 	void DrawTell(const UFTArenaRunner& Mode, int32 Enemy, const FVector2D& Over, const FVector2D& Chest, bool bOnScreen);
 	// The open Read deal's cards, centred on X with their bottom at Bottom.
 	void DrawReadCards(const UFTArenaRunner& Mode, float X, float Bottom);

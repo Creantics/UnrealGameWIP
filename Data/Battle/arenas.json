@@ -11,6 +11,11 @@
       "shape": { "kind": "rect", "aspect": 2.86, "corner": 0.15 }, "ring": 13.4, "attackers": 1, "seed": 2
     },
     {
+      "id": "stone_ring", "bosses": ["stone_bearer"],
+      "shape": { "kind": "circle" }, "ring": 18, "attackers": 1, "seed": 3,
+      "cover": [ { "kind": "circle", "at": [12.56, 3.36], "radius": 0.7 }, { "kind": "circle", "at": [9.19, 9.19], "radius": 0.7 }, { "kind": "circle", "at": [3.36, 12.56], "radius": 0.7 }, { "kind": "circle", "at": [-3.36, 12.56], "radius": 0.7 }, { "kind": "circle", "at": [-9.19, 9.19], "radius": 0.7 }, { "kind": "circle", "at": [-12.56, 3.36], "radius": 0.7 }, { "kind": "circle", "at": [-12.56, -3.36], "radius": 0.7 }, { "kind": "circle", "at": [-9.19, -9.19], "radius": 0.7 }, { "kind": "circle", "at": [-3.36, -12.56], "radius": 0.7 }, { "kind": "circle", "at": [3.36, -12.56], "radius": 0.7 }, { "kind": "circle", "at": [9.19, -9.19], "radius": 0.7 }, { "kind": "circle", "at": [12.56, -3.36], "radius": 0.7 } ]
+    },
+    {
       "id": "sol_plaza_a", "world": "solhaven", "district": 3, "bosses": ["hulk"],
       "offset": [0, 0], "yaw": 180, "shape": { "kind": "circle" }, "seed": 11,
       "water": [ { "at": [-10, 12], "radius": 4 }, { "at": [6, -14], "radius": 3 } ]
