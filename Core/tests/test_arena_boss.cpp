@@ -500,8 +500,9 @@ TEST_CASE("keep-out: lanes and areas") {
     ArenaKeepOut k;
     k.centre = {10, 0};
     k.radius = 2;
-    CHECK(k.clampLane({0, 0}, {1, 0}, 1.0f, 30.0f) == doctest::Approx(8.0f)); // a lane aimed at the centre ends at the edge
-    CHECK(k.clampLane({0, 2}, {1, 0}, 1.0f, 30.0f) == doctest::Approx(10.0f - std::sqrt(4.0f - 2.25f))); // its edge clips it
+    // A lane aimed at the centre ends at the edge; one off centre is clipped by its own edge.
+    CHECK(k.clampLane({0, 0}, {1, 0}, 1.0f, 30.0f) == doctest::Approx(8.0f));
+    CHECK(k.clampLane({0, 2}, {1, 0}, 1.0f, 30.0f) == doctest::Approx(10.0f - std::sqrt(4.0f - 2.25f)));
     CHECK(k.clampLane({0, 2}, {1, 0}, 4.0f, 30.0f) == doctest::Approx(8.0f)); // wide enough to meet it square-on
     CHECK(k.clampLane({0, 3}, {1, 0}, 2.0f, 30.0f) == 30.0f);                // its edge only touches the disc
     CHECK(k.clampLane({0, 5}, {1, 0}, 1.0f, 30.0f) == 30.0f);                // passes by
@@ -578,12 +579,14 @@ TEST_CASE("arena boss loader: refusals carry their path; unknown keys warn; own 
               "moves[0].calls[0]: a call lands at least guestCall.minLeadBeats"));
     CHECK(has(importError(patched("\"calls\": [1], \"zones\"", "\"calls\": [0.5], \"zones\"")),
               "moves[0].calls[0]: a call lands at least guestCall.fromBeats"));
-    CHECK(has(importError(patched("\"calls\": [1, 2]", "\"calls\": [1]")), "moves[1].calls: expected one call per impact"));
+    CHECK(has(importError(patched("\"calls\": [1, 2]", "\"calls\": [1]")),
+              "moves[1].calls: expected one call per impact"));
     CHECK(has(importError(patched("\"impacts\": [3, 4]", "\"impacts\": [4, 3]")),
               "moves[1].impacts[1]: expected beats strictly rising"));
     CHECK(has(importError(patched("\"impacts\": [3, 4]", "\"impacts\": [3, 3.5]")),
               "moves[1].impacts[1]: an intercept impact comes more than intercept.rearm"));
-    CHECK(has(importError(patched("\"impacts\": [1]", "\"impacts\": [0]")), "moves[4].impacts[0]: expected a beat in (0, 32]"));
+    CHECK(has(importError(patched("\"impacts\": [1]", "\"impacts\": [0]")),
+              "moves[4].impacts[0]: expected a beat in (0, 32]"));
     CHECK(has(importError(patched("\"zones\": [\"side\", \"other\"]", "\"zones\": [\"side\", \"up\"]")),
               "moves[1].zones[1]: expected side, other or path"));
     CHECK(has(importError(patched("\"zones\": [\"path\"], ", "")), "moves[2].zones: expected one zone"));
@@ -596,11 +599,14 @@ TEST_CASE("arena boss loader: refusals carry their path; unknown keys warn; own 
     CHECK(has(importError(patched("\"answer\": \"jump\"", "\"answer\": \"run\"")), "moves[3].answer:"));
     CHECK(has(importError(patched("\"id\": \"jab\"", "\"id\": \"fist\"")), "moves[4].id: duplicate id fist"));
     CHECK(has(importError(patched("\"id\": \"jab\"", "\"id\": \"Jab\"")), "moves[4].id: expected 1..23 characters"));
-    CHECK(has(importError(patched("\"damage\": 0.06", "\"damage\": 0.06, \"damageMax\": 0.01")), "moves[4].damageMax:"));
-    CHECK(has(importError(patched("\"sheds\": [true]", "\"sheds\": [1]")), "moves[0].sheds[0]: expected true or false"));
+    CHECK(has(importError(patched("\"damage\": 0.06", "\"damage\": 0.06, \"damageMax\": 0.01")),
+              "moves[4].damageMax:"));
+    CHECK(has(importError(patched("\"sheds\": [true]", "\"sheds\": [1]")),
+              "moves[0].sheds[0]: expected true or false"));
     CHECK(has(importError(patched("\"guardStacks\": 2", "\"guardStacks\": 6")), "moves[0].guardStacks:"));
     CHECK(has(importError(patched("\"endAt\": 0.5", "\"endAt\": 1")), "phases[0].endAt:"));
-    CHECK(has(importError(patched("\"endAt\": 0, ", "\"endAt\": 0.6, ")), "phases[1].endAt: expected below the phase before"));
+    CHECK(has(importError(patched("\"endAt\": 0, ", "\"endAt\": 0.6, ")),
+              "phases[1].endAt: expected below the phase before"));
     CHECK(has(importError(patched("\"endAt\": 0, ", "\"endAt\": 0.2, ")), "phases[1].endAt: the last phase ends at 0"));
     CHECK(has(importError(patched("[\"twice\", \"throw\", \"jab\"] }\n  ]", "[\"twice\", \"kick\"] }\n  ]")),
               "phases[1].moves[1]: no such move"));
@@ -899,6 +905,24 @@ TEST_CASE("arena boss run: a fight clock that starts below 0 plays its blows on 
         REQUIRE(r.size() == 1);
         CHECK(r[0].outcome == CalledOutcome::Intercepted);
     }
+    {
+        // A bare strike ignores a time that is not finite, in updates and presses.
+        CalledStrike s;
+        const CalledImpact imp = impactAt(2.0, CalledZone::Left);
+        s.start(&imp, 1);
+        CHECK(s.update(1.0).empty());
+        for (const double bad : {HUGE_VAL, -HUGE_VAL, std::nan("")}) {
+            CHECK(s.update(bad).empty());
+            CHECK(s.guardDown(CalledZone::Left, bad).empty());
+            CHECK(s.guardUp(bad).empty());
+            CHECK(s.now() == 1.0);
+        }
+        CHECK(s.interceptDown(CalledZone::Left, 1.9).empty());
+        CHECK(s.holdFrom() == doctest::Approx(1.9));
+        const CalledResults r = s.update(2.1);
+        REQUIRE(r.size() == 1);
+        CHECK(r[0].outcome == CalledOutcome::Intercepted);
+    }
 }
 
 TEST_CASE("arena boss events: past the cap they are dropped and counted; clear resets both") {
@@ -934,8 +958,8 @@ TEST_CASE("arena boss run: a whole scripted fight allocates nothing") {
         const float hp = static_cast<float>(1.0 - now / 120.0);
         if (now >= nextMove) {
             bool started = false;
-            sink += static_cast<int>(
-                run.startMove(order[moves % 5], now, (moves & 1) ? CalledZone::Left : CalledZone::Right, &started).size());
+            const CalledZone side = (moves & 1) ? CalledZone::Left : CalledZone::Right;
+            sink += static_cast<int>(run.startMove(order[moves % 5], now, side, &started).size());
             sink += started ? 1 : 0;
             ++moves;
             nextMove = now + 3.0;

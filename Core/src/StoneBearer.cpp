@@ -157,13 +157,13 @@ void StoneBearer::begin(const StoneBearerDef& def, double now) {
 }
 
 // finish() reads the stack gains back from the run's events, so no call may drop one. The most a tick
-// emits: the run's phase change, a call and an answer per impact, the shift, a crit window closing and
-// one opening, the load; up to three events per stack change (one change per answer); and the
-// pedestal's switch, its calls and the recovery. A call adds at most four to a tick: a Crit and its
-// shed (onHit), a block's or a lift's stack change (onBlocked, onSoloLift), or Invulnerable and Lifted
-// (onRelease).
+// emits: the run's phase change, a call and an answer per impact, the shift, two crit windows closing
+// (a long frame passes the old one's close and a new one's) and one opening, the load; up to three
+// events per stack change (one change per answer); and the pedestal's switch, its calls and the
+// recovery. A call adds at most four to a tick: a Crit and its shed (onHit), a block's or a lift's
+// stack change (onBlocked, onSoloLift), Invulnerable and Lifted (onRelease), or Broke (onStagger).
 constexpr std::size_t kSbTickEvents =
-    1 + 2 * kMaxCalledImpacts + 1 + 3 + 3 * kMaxCalledImpacts + 1 + kPedestalMaxCalls + 1;
+    1 + 2 * kMaxCalledImpacts + 1 + 2 + 1 + 1 + 3 * kMaxCalledImpacts + 1 + kPedestalMaxCalls + 1;
 static_assert(kSbTickEvents + 1 + 3 <= kMaxArenaBossEvents);
 
 void StoneBearer::weigh(int n, double at) {
@@ -289,10 +289,11 @@ const ArenaBossEvents& StoneBearer::onSoloLift(double t) {
 }
 
 const ArenaBossEvents& StoneBearer::onStagger(double t) {
-    // A frozen poise or the pedestal: the host should not stagger the boss; one it reports anyway is lost.
-    if (weight_.poiseFrozen() || pedestal_.holding()) return tick(t);
-    run_.onStagger(t);
-    return finish();
+    // The stacks first follow every answer up to t. Then a frozen poise or the pedestal loses the
+    // stagger: the host should not stagger the boss then; one it reports anyway is ignored.
+    tick(t);
+    if (!weight_.poiseFrozen() && !pedestal_.holding()) run_.staggerNow();
+    return run_.events();
 }
 
 const ArenaBossEvents& StoneBearer::onHit(Vec2 from, Vec2 pos, Vec2 facing, double t, const AimPoint* at,

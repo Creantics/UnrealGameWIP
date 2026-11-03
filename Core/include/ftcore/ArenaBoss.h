@@ -230,7 +230,8 @@ public:
     FTCORE_API void cancel();
 
     // Moves the clock to `now`: impacts at or before it resolve against the hold. The clock starts
-    // before any time, so the first update or press sets it (a fight clock may start below 0).
+    // before any time, so the first update or press sets it (a fight clock may start below 0). A time
+    // that is not finite moves nothing (here and in every press).
     FTCORE_API CalledResults update(double now);
     // The lead's buttons, pressed with the body in `zone`.
     FTCORE_API CalledResults interceptDown(CalledZone zone, double t);
@@ -608,6 +609,9 @@ public:
     FTCORE_API const ArenaBossEvents& guardDown(CalledZone zone, double t);
     FTCORE_API const ArenaBossEvents& guardUp(double t);
     FTCORE_API const ArenaBossEvents& onStagger(double t);
+    // The stagger at now(), appended to the last call's events instead of clearing them: for a boss
+    // rule that advanced the run to the stagger's time first, to judge it with every answer up to it.
+    FTCORE_API void staggerNow();
     // A lead's blow (see CritWindow::judge / judgeLockOn; `at` null: locked on).
     FTCORE_API const ArenaBossEvents& onHit(Vec2 from, Vec2 pos, Vec2 facing, double t, const AimPoint* at,
                                             CritResult* result);

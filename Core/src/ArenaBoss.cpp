@@ -91,7 +91,7 @@ CalledOutcome CalledStrike::judge(const CalledImpact& imp) const {
 
 CalledResults CalledStrike::resolveUpTo(double t) {
     CalledResults out;
-    if (t > now_) now_ = t;
+    if (std::isfinite(t) && t > now_) now_ = t;
     while (next_ < count_ && impacts_[next_].at <= now_) {
         const CalledOutcome o = judge(impacts_[next_]);
         outcomes_[next_] = o;
@@ -812,11 +812,15 @@ const ArenaBossEvents& ArenaBossRun::guardUp(double t) {
 const ArenaBossEvents& ArenaBossRun::onStagger(double t) {
     events_.clear();
     advance(t);
+    staggerNow();
+    return events_;
+}
+
+void ArenaBossRun::staggerNow() {
     if (breakable_.onStagger(now_))
         events_.push({ArenaBossEventType::Broke, pending() ? live_ : kArenaBossNoMove, 0, CalledOutcome::Pending, 0,
                       0, now_, 0.0});
     cancelMove();
-    return events_;
 }
 
 const ArenaBossEvents& ArenaBossRun::onHit(Vec2 from, Vec2 pos, Vec2 facing, double t, const AimPoint* at,

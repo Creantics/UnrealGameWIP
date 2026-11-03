@@ -361,11 +361,14 @@ TEST_CASE("stone bearer data: the shipped file loads clean, with the outline's t
         for (const std::uint8_t m : t) s += std::string(b.moves[m].id()) + " ";
         return s;
     };
-    CHECK(ids(p1.whole) == "called_fist slab_drive debris_shower low_sweep ground_punch block_throw edge_jab stamp backhand ");
-    CHECK(ids(p1.broken) == "called_fist slab_drive_halves debris_shower low_sweep_halves ground_punch edge_jab stamp backhand ");
-    CHECK(ids(p2.whole) == "called_fist_twice slab_drive debris_shower_twice low_sweep marked_throw edge_jab stamp backhand ");
-    CHECK(ids(p2.broken) ==
-          "called_fist_twice slab_drive_halves debris_shower_twice low_sweep_halves marked_throw_halves edge_jab stamp backhand ");
+    CHECK(ids(p1.whole) ==
+          "called_fist slab_drive debris_shower low_sweep ground_punch block_throw edge_jab stamp backhand ");
+    CHECK(ids(p1.broken) ==
+          "called_fist slab_drive_halves debris_shower low_sweep_halves ground_punch edge_jab stamp backhand ");
+    CHECK(ids(p2.whole) ==
+          "called_fist_twice slab_drive debris_shower_twice low_sweep marked_throw edge_jab stamp backhand ");
+    CHECK(ids(p2.broken) == "called_fist_twice slab_drive_halves debris_shower_twice low_sweep_halves "
+                            "marked_throw_halves edge_jab stamp backhand ");
 
     CHECK(def.weight.cap == 5);
     CHECK(def.weight.damagePerStack == doctest::Approx(0.1));
@@ -415,7 +418,8 @@ TEST_CASE("stone bearer loader: refusals carry their paths") {
     CHECK(refusal(edited(R"("downTime": 3.0)", R"("downTime": 11)")) ==
           "pedestal.downTime: expected a number in 0..10");
     // At 120 bpm one beat is 0.5 s: a 0.3 s window either side would cover the whole gap.
-    CHECK(refusal(edited(R"("callEveryBeats": 4, "releaseWindow": 0.15)", R"("callEveryBeats": 1, "releaseWindow": 0.3)")) ==
+    CHECK(refusal(edited(R"("callEveryBeats": 4, "releaseWindow": 0.15)",
+                         R"("callEveryBeats": 1, "releaseWindow": 0.3)")) ==
           "pedestal.releaseWindow: expected below half of pedestal.callEveryBeats");
     // The generic loader's errors and the boss's own come back together, one per line.
     {
@@ -557,6 +561,49 @@ TEST_CASE("stone bearer: a blow meets the stacks of every answer up to it, with 
     CHECK(b.stacks() == 1);
     CHECK(hit.damage == doctest::Approx(b.takenScale()));
     CHECK(hit.damage == doctest::Approx(1.0f - def.weight.defencePerStack));
+}
+
+TEST_CASE("stone bearer: a stagger is judged with every answer up to it, with no update between") {
+    const StoneBearerDef& def = shipped();
+    const double B = def.boss.beat();
+    const double T = 1.0 + 3 * B; // the fist's impact
+    {
+        // 4 stacks; the fist Guarded at T (+2: frozen at 5). A stagger after T is ignored, the piece whole.
+        StoneBearer b;
+        b.begin(def, 0.0);
+        for (int i = 0; i < 4; ++i) b.onSoloLift(0.1);
+        REQUIRE(b.stacks() == 4);
+        bool ok = false;
+        b.startMove(move("called_fist"), 1.0, CalledZone::Left, &ok);
+        REQUIRE(ok);
+        b.guardDown(CalledZone::Left, 1.5);
+        b.update(T - 0.05, 1.0f);
+        const ArenaBossEvents& e = b.onStagger(T + 0.03);
+        CHECK(countOf(e, ArenaBossEventType::Answered) == 1);
+        CHECK(countOf(e, ArenaBossEventType::PoiseFrozen) == 1);
+        CHECK(countOf(e, ArenaBossEventType::Broke) == 0);
+        CHECK(b.stacks() == 5);
+        CHECK_FALSE(b.run().broken());
+    }
+    {
+        // 5 stacks (frozen); the fist Intercepted at T sheds one. A stagger after T now breaks the piece.
+        StoneBearer b;
+        b.begin(def, 0.0);
+        for (int i = 0; i < 5; ++i) b.onSoloLift(0.1);
+        REQUIRE(b.poiseFrozen());
+        bool ok = false;
+        b.startMove(move("called_fist"), 1.0, CalledZone::Left, &ok);
+        REQUIRE(ok);
+        b.update(T - 0.1, 1.0f);
+        b.interceptDown(CalledZone::Left, T - 0.05);
+        const ArenaBossEvents& e = b.onStagger(T + 0.03);
+        const ArenaBossEvent* a = firstOf(e, ArenaBossEventType::Answered);
+        REQUIRE(a);
+        CHECK(a->outcome == CalledOutcome::Intercepted);
+        CHECK(countOf(e, ArenaBossEventType::Broke) == 1);
+        CHECK(b.stacks() == 4);
+        CHECK(b.run().broken());
+    }
 }
 
 TEST_CASE("stone bearer: blocks, solo lifts and the poise freeze") {
@@ -952,7 +999,8 @@ TEST_CASE("stone bearer: a missed marked throw adds 2 and shifts the calls, the 
 TEST_CASE("stone bearer: no blow in the data reaches the guest's spot") {
     const ArenaBossDef& boss = shipped().boss;
     // An arena centred on the origin, yaw 0: the spot sits on +Y (bearing 90), 20 m out, 3 m wide.
-    const ArenaKeepOut keep = arenaKeepOutAt({0, 0}, 0.0f, boss.keepOutBearing, boss.keepOutDistance, boss.keepOutRadius);
+    const ArenaKeepOut keep =
+        arenaKeepOutAt({0, 0}, 0.0f, boss.keepOutBearing, boss.keepOutDistance, boss.keepOutRadius);
     CHECK(keep.centre.x == doctest::Approx(0.0).epsilon(1e-4));
     CHECK(keep.centre.y == doctest::Approx(20.0));
     // Inside the disc, with a little slack for float rounding. A clamped reach of 0 is no attack (the
@@ -1048,7 +1096,8 @@ TEST_CASE("stone bearer: a whole scripted fight allocates nothing") {
             const ArenaBossMoveTable& t = b.table();
             bool started = false;
             const std::uint8_t m = t.moves[static_cast<std::size_t>(moves) % t.count];
-            sink += static_cast<int>(b.startMove(m, now, (moves & 1) ? CalledZone::Left : CalledZone::Right, &started).size());
+            const CalledZone side = (moves & 1) ? CalledZone::Left : CalledZone::Right;
+            sink += static_cast<int>(b.startMove(m, now, side, &started).size());
             sink += started ? 1 : 0;
             ++moves;
             nextMove = now + 4.0;
@@ -1057,10 +1106,13 @@ TEST_CASE("stone bearer: a whole scripted fight allocates nothing") {
         if (!s.complete()) {
             const double press = s.idealPress(s.nextIndex());
             if (now >= press && now < press + kDt) {
-                sink += static_cast<int>((moves % 3 == 0 ? b.guardDown(s.nextZone(), now) : b.interceptDown(s.nextZone(), now)).size());
+                const ArenaBossEvents& e =
+                    moves % 3 == 0 ? b.guardDown(s.nextZone(), now) : b.interceptDown(s.nextZone(), now);
+                sink += static_cast<int>(e.size());
             }
         }
-        if (s.hold() == ArenaHold::Intercept && now - s.holdFrom() > 0.2) sink += static_cast<int>(b.interceptUp(now).size());
+        if (s.hold() == ArenaHold::Intercept && now - s.holdFrom() > 0.2)
+            sink += static_cast<int>(b.interceptUp(now).size());
         if (s.hold() == ArenaHold::Guard && now - s.holdFrom() > 0.2) sink += static_cast<int>(b.guardUp(now).size());
         if (frame % 900 == 450) sink += static_cast<int>(b.onBlocked(def.boss.find("slab_drive"), now).size());
         if (frame % 1300 == 650) sink += static_cast<int>(b.onSoloLift(now).size());
