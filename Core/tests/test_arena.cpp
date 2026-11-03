@@ -4286,6 +4286,20 @@ TEST_CASE("arena hooks: the blow hook scales an enemy's blow, landed, blocked or
         CHECK(stored->event.amount == 30);
         CHECK(rig.fight.load() == 30);
     }
+    {   // vetoed, unguarded: no hit, no poise lost, no stagger
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.put(0, 1.5f, 0.f);
+        BlowRecorder rec;
+        rec.ruling = ruling(1.f, 1.f, true);
+        rig.fight.setBlowHook(&BlowRecorder::hook, &rec);
+        rig.run(40);
+        CHECK(rec.blows.size() == 1);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+        CHECK(rig.count(ArenaEventType::Staggered) == 0);
+        CHECK(rig.fight.poise() == doctest::Approx(30.f));
+        CHECK(rig.fight.hp() == 100);
+        CHECK(rig.fight.stats().damageTaken == 0);
+    }
     {   // vetoed against a raised guard: no block, no chip, no stamina
         Rig rig(ruleFighter(), {hitterKind(bite)});
         rig.put(0, 1.5f, 0.f);
@@ -4523,7 +4537,7 @@ TEST_CASE("arena hooks: restart and begin clear holds and floors, and keep the b
 }
 
 TEST_CASE("arena: a kind of kMaxArenaMoves moves plays a string of all of them") {
-    // A boss move of n impacts is n chained moves: a boss list of 15 moves and 20 impacts needs 20.
+    // A move of n impacts is n chained moves, so a long string needs more than the old 8.
     static_assert(kMaxArenaMoves >= 20, "room for the chained impacts of an arena boss");
     ArenaEnemyKind k = hitterKind(swing(0.05f, 0.05f, 0.f, 2.f, 1));
     k.moveCount = static_cast<std::uint8_t>(kMaxArenaMoves);

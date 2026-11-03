@@ -682,7 +682,8 @@ public:
     // A hold is running: not one still waiting for its tick, and true until a pending release applies.
     FTCORE_API bool enemyHeld(std::size_t i) const;
     // Enemy i's hp never falls below hpFloor (0, the default: none; below 0 counts as 0), from now: a blow that would
-    // take it lower takes it to hpFloor (the event's amount is what it lost), so the enemy stays alive.
+    // take it lower takes it to hpFloor (the event's amount is what it lost), so the enemy stays alive. A floor never
+    // raises hp: at or below it, a blow takes nothing.
     FTCORE_API void setEnemyHpFloor(std::size_t i, int hpFloor);
     FTCORE_API int enemyHpFloor(std::size_t i) const;
     // Every blow goes to `hook` with `user` before it applies (ArenaBlowHook); nullptr: none (every blow as it is).
