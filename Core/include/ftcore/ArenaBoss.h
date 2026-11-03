@@ -107,6 +107,9 @@
 //   guestCall: fromBeats 0..8, minLeadBeats 0.5..8, missShiftBeats 0..minLeadBeats (below it).
 //   weakPoints: as Data/Battle/weakpoints.json's entries (WeakPoint.h) plus each point's gate,
 //   facing 0..360 and arc 0..180 degrees (defaults 0 and 180: all round).
+//   A boss whose moves are not in this format (a kind that keeps arena.json's) can still have weak points:
+//   a standalone file { "version": 1, "weakPoints": { ... } } with the same block, read by
+//   importArenaWeakPoints (Data/Battle/arena_boss/kite_boss_weak.json is the first).
 //   keepOut: bearing 0..360 degrees (the arena's own frame, the host's yaw), distance 0..100 m from the
 //   arena's centre, radius 0..20 m (0: none). Absent: none.
 //   moves: 1..kMaxArenaBossMoves, ids lowercase [a-z0-9_] of 1..kMaxArenaBossMoveId characters, unique.
@@ -541,6 +544,12 @@ struct ArenaBossDef {
 FTCORE_API bool importArenaBoss(std::string_view json, ArenaBossDef& out, std::string* error = nullptr,
                                 std::vector<std::string>* warnings = nullptr,
                                 std::initializer_list<std::string_view> ownKeys = {});
+
+// Reads a standalone weak-point file ({ "version": 1, "weakPoints": { ... } }, the block importArenaBoss reads
+// and the same errors and warnings; "weakPoints" is required here). On failure `out` is default and *error lists
+// each problem with its path, one per line.
+FTCORE_API bool importArenaWeakPoints(std::string_view json, ArenaWeakPoints& out, std::string* error = nullptr,
+                                      std::vector<std::string>* warnings = nullptr);
 
 // ---- The run ---------------------------------------------------------------------------------------
 

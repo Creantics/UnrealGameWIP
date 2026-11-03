@@ -523,6 +523,42 @@ void abTable(JsonValue v, const std::string& path, const ArenaBossDef& def, Aren
     }
 }
 
+// The `weakPoints` object (WeakPoint.h's points plus each point's gate) into `out`.
+void abWeakPoints(JsonValue v, ArenaWeakPoints& out, std::vector<std::string>& errors,
+                  std::vector<std::string>* warnings) {
+    abUnknownKeys(v, "weakPoints", {"halfWidth", "points"}, {}, warnings);
+    WeakPoints& wp = out.points;
+    abNum(v, "halfWidth", wp.halfWidth, 0.0, 1.0, false, "weakPoints", errors);
+    if (!(wp.halfWidth > 0.0f)) errors.push_back("weakPoints.halfWidth: expected a number above 0");
+    const JsonValue list = v["points"];
+    if (!list.isAbsent() && (!list.isArray() || list.size() > kMaxWeakPoints)) {
+        errors.push_back("weakPoints.points: expected an array of 0.." + std::to_string(kMaxWeakPoints) + " points");
+        return;
+    }
+    for (std::uint32_t i = 0; i < list.size(); ++i) {
+        const JsonValue p = list[i];
+        const std::string pp = abAt("weakPoints.points", i);
+        if (!abObject(p, pp, true, errors)) continue;
+        abUnknownKeys(p, pp, {"id", "x", "y", "radius", "multiplier", "facing", "arc"}, {}, warnings);
+        WeakPoint w;
+        const std::string_view id = p["id"].string();
+        if (!p["id"].isString() || !abId(id, kWeakPointIdCapacity - 1))
+            errors.push_back(pp + ".id: expected 1.." + std::to_string(kWeakPointIdCapacity - 1) +
+                             " characters of a-z, 0-9 or _");
+        for (const WeakPoint& other : wp)
+            if (other.id() == id) errors.push_back(pp + ".id: duplicate id " + std::string(id));
+        w.setId(id);
+        abNum(p, "x", w.x, -1.0, 1.0, true, pp, errors);
+        abNum(p, "y", w.y, 0.0, 1.0, true, pp, errors);
+        abNum(p, "radius", w.radius, kMinWeakRadius, kMaxWeakRadius, true, pp, errors);
+        abNum(p, "multiplier", w.multiplier, kMinWeakMultiplier, kMaxWeakMultiplier, true, pp, errors);
+        ArenaWeakGate& g = out.gates[wp.size()];
+        abNum(p, "facing", g.facing, 0.0, 360.0, false, pp, errors);
+        abNum(p, "arc", g.arc, 0.0, 180.0, false, pp, errors);
+        wp.add(w);
+    }
+}
+
 } // namespace
 
 bool importArenaBoss(std::string_view json, ArenaBossDef& out, std::string* error, std::vector<std::string>* warnings,
@@ -563,40 +599,8 @@ bool importArenaBoss(std::string_view json, ArenaBossDef& out, std::string* erro
         if (!(out.guestCall.missShiftBeats < out.guestCall.minLeadBeats))
             errors.push_back("guestCall.missShiftBeats: expected below guestCall.minLeadBeats");
 
-        if (const JsonValue v = root["weakPoints"]; abObject(v, "weakPoints", false, errors)) {
-            abUnknownKeys(v, "weakPoints", {"halfWidth", "points"}, {}, warnings);
-            WeakPoints& wp = out.weakPoints.points;
-            abNum(v, "halfWidth", wp.halfWidth, 0.0, 1.0, false, "weakPoints", errors);
-            if (!(wp.halfWidth > 0.0f)) errors.push_back("weakPoints.halfWidth: expected a number above 0");
-            const JsonValue list = v["points"];
-            if (!list.isAbsent() && (!list.isArray() || list.size() > kMaxWeakPoints)) {
-                errors.push_back("weakPoints.points: expected an array of 0.." + std::to_string(kMaxWeakPoints) +
-                                 " points");
-            } else {
-                for (std::uint32_t i = 0; i < list.size(); ++i) {
-                    const JsonValue p = list[i];
-                    const std::string pp = abAt("weakPoints.points", i);
-                    if (!abObject(p, pp, true, errors)) continue;
-                    abUnknownKeys(p, pp, {"id", "x", "y", "radius", "multiplier", "facing", "arc"}, {}, warnings);
-                    WeakPoint w;
-                    const std::string_view id = p["id"].string();
-                    if (!p["id"].isString() || !abId(id, kWeakPointIdCapacity - 1))
-                        errors.push_back(pp + ".id: expected 1.." + std::to_string(kWeakPointIdCapacity - 1) +
-                                         " characters of a-z, 0-9 or _");
-                    for (const WeakPoint& other : wp)
-                        if (other.id() == id) errors.push_back(pp + ".id: duplicate id " + std::string(id));
-                    w.setId(id);
-                    abNum(p, "x", w.x, -1.0, 1.0, true, pp, errors);
-                    abNum(p, "y", w.y, 0.0, 1.0, true, pp, errors);
-                    abNum(p, "radius", w.radius, kMinWeakRadius, kMaxWeakRadius, true, pp, errors);
-                    abNum(p, "multiplier", w.multiplier, kMinWeakMultiplier, kMaxWeakMultiplier, true, pp, errors);
-                    ArenaWeakGate& g = out.weakPoints.gates[wp.size()];
-                    abNum(p, "facing", g.facing, 0.0, 360.0, false, pp, errors);
-                    abNum(p, "arc", g.arc, 0.0, 180.0, false, pp, errors);
-                    wp.add(w);
-                }
-            }
-        }
+        if (const JsonValue v = root["weakPoints"]; abObject(v, "weakPoints", false, errors))
+            abWeakPoints(v, out.weakPoints, errors, warnings);
         if (const JsonValue v = root["keepOut"]; abObject(v, "keepOut", false, errors)) {
             abUnknownKeys(v, "keepOut", {"bearing", "distance", "radius"}, {}, warnings);
             abNum(v, "bearing", out.keepOutBearing, 0.0, 360.0, true, "keepOut", errors);
@@ -642,6 +646,36 @@ bool importArenaBoss(std::string_view json, ArenaBossDef& out, std::string* erro
     }
     if (errors.empty()) return true;
     out = ArenaBossDef{};
+    if (error) {
+        error->clear();
+        for (const std::string& e : errors) {
+            if (!error->empty()) *error += '\n';
+            *error += e;
+        }
+    }
+    return false;
+}
+
+bool importArenaWeakPoints(std::string_view json, ArenaWeakPoints& out, std::string* error,
+                           std::vector<std::string>* warnings) {
+    out = ArenaWeakPoints{};
+    std::vector<std::string> errors;
+    JsonDocument doc;
+    std::string parseError;
+    if (!doc.parse(json, &parseError)) {
+        errors.push_back("arena weak points: " + parseError);
+    } else if (!doc.root().isObject()) {
+        errors.push_back("arena weak points: expected an object");
+    } else {
+        const JsonValue root = doc.root();
+        if (const JsonValue v = root["version"]; !v.isAbsent() && !(v.isInteger() && v.integer() == 1))
+            errors.push_back("version: expected 1");
+        abUnknownKeys(root, "", {"version", "weakPoints"}, {}, warnings);
+        if (const JsonValue v = root["weakPoints"]; abObject(v, "weakPoints", true, errors))
+            abWeakPoints(v, out, errors, warnings);
+    }
+    if (errors.empty()) return true;
+    out = ArenaWeakPoints{};
     if (error) {
         error->clear();
         for (const std::string& e : errors) {

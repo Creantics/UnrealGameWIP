@@ -182,13 +182,35 @@ kind keeps its shapes and the log has one warning. The camera looks up at a boss
 of its height, up to 15 degrees above level (the free camera's limit too); the camera never pulls out for a big boss. The assets are local; nothing here needs them to load.
 
 The kite boss (`kite_boss`, `Data/Anim/kite_clips.json`, assets under `/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/`,
-the import being `FTImportCharacter -Source=kite_boss.glb -Dest=/Game/Bosses/KiteBoss -Face=0`): 1100 hp, 9.1 m tall and
-hanging 0.9 m off the ground, drifting at 0.6 to 1 m/s. Eight moves, each its clip's id: `mitten_drop`, `swoop`, `peg_spray`,
+the import being `FTImportCharacter -Source=kite_boss.glb -Dest=/Game/Bosses/KiteBoss -Face=0`): 1100 hp, 9.1 m from its
+finial to its tail tip (the whole figure, `height` 9.1) and hanging 0.9 m off the ground, drifting at 0.6 to 1 m/s. The mesh is a
+rebuild of the first one with the same 48-bone rig and the same 23 clips, so the clip table did not change. Eight moves, each its
+clip's id: `mitten_drop`, `swoop`, `peg_spray`,
 `snag`, `wet_sheet`, `undertow`, `string_flick`, `sheet_slap` (Read card words slam, sweep, strike, charge, overhead, thrust,
 slash, backhand). Core has no "parry-opener" flag or multi-hit, so the marked move is made by `parryable`: only `swoop` (and the
 two basic strikes) can be parried; a parry of it opens the boss, the big ones are blocked or dodged, and `peg_spray` is one hit.
 `swoop` has weight 20 and a cooldown of 8 s, which comes to about one every 11 s. No phase system exists, so the second-phase moves
 (`*_double`, `swoop_feint`, `rockabye`) are not wired; `idle_p2` is the only second-phase clip played.
+
+Its weak point is the smile seam on the paper face, `seam` in `Data/Battle/arena_boss/kite_boss_weak.json`, read with
+`importArenaWeakPoints` (a standalone `{ "version": 1, "weakPoints": { ... } }` file: the block `importArenaBoss` reads from a boss
+file, because the kite keeps arena.json's moves and has no boss file of its own). One point on the front (`facing` 0, `arc` 60:
+the lead must stand within 60 degrees of the face), radius 0.06, multiplier 2.0, in figure space (the unit is the 9.1 m height, y
+up from the mesh's bottom; the 0.9 m hover lifts the whole mesh, so y does not count it). Its `y` is the seam's height above the
+mesh bottom over 9.1 m (provisional until the final mesh is measured). It is hosted by `FFTKiteHost`
+(`Source/ForgottenThird/FTKiteHost.*`, no Unreal headers), owned by the runner when the line-up holds a `kite_boss`:
+
+- the swoop's parry (any Parried of the kite) opens a `CritWindow` for the kind's `openTime`, a Staggered for its `staggerTime`;
+  the window shuts at its end;
+- in the blow hook a lead's blow on the kite is judged locked on, as the stone_bearer's are (`judgeLockOn`: the gate then the
+  point), and a crit scales the blow's damage and poise by the point's multiplier. The fight has one blow hook, so the runner
+  gives the kite no host (one warning) in a fight that has the stone_bearer's;
+- notes, one log line each as `Arena: kite ...`: crit opened (until when), crit landed (the point, its multiplier, `first` for
+  the first of an opening), crit closed; also each telegraph (a kite AttackStarted) and each hit taken, at Verbose. The weak
+  point's mesh socket is `seam` (`FFTKiteHost::WeakPointSocket`; the rig's bone has the same name).
+
+Stubs, each a named hook that only leaves a note, for the effects step to spawn Niagara systems from: `OnTelegraph(move, t)`,
+`OnCritOpened`, `OnCritLanded`, `OnHitTaken`.
 
 Play it in the 40 x 14 m ring:
 
@@ -196,7 +218,7 @@ Play it in the 40 x 14 m ring:
 UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=kite_ring
 ```
 
-or in the plain 12 m sand ring with `-ArenaLineup=kite_boss` instead of `-ArenaStage=kite_ring` (cramped for a body of 3.5 m).
+or in the plain 12 m sand ring with `-ArenaLineup=kite_boss` instead of `-ArenaStage=kite_ring` (cramped for a 9 m boss).
 
 ## The stone_bearer
 
