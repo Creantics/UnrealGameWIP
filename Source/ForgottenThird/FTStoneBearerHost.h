@@ -28,8 +28,8 @@
 // OnLoadGained gives a full intercept's Load to the lead (ArenaFight::giveLoad), and onto the plinth a lead too low to
 // Release is topped up to just enough for one (the boss offers no parries there).
 //
-// Stubs, each a named hook point that only leaves a note: OnBroke (the carried piece's halves have no meshes),
-// OnShockRing (the ring a floor blow sends at 3+ stacks), OnGuestCall (the guest's voice), OnTileRain (a tile move's fragments: ArenaFight lands one all-round blow instead) and
+// Stubs, each a named hook point that only leaves a note: OnBroke (the runner reads its note and puts the carried
+// piece's halves in the figure's hands: UFTArenaRunner::SplitBossCarried), OnShockRing (the ring a floor blow sends at 3+ stacks), OnGuestCall (the guest's voice), OnTileRain (a tile move's fragments: ArenaFight lands one all-round blow instead) and
 // SoloLift (no stone pickups exist in the arena yet; nothing calls it).
 //
 // Nothing here allocates after Load.

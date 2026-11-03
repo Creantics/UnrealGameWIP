@@ -1,5 +1,6 @@
 #include "FTArenaFighter.h"
 
+#include "AnimationRuntime.h"
 #include "Animation/AnimSequence.h"
 #include "Camera/CameraComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -9,6 +10,7 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
+#include "Rendering/SkeletalMeshRenderData.h"
 #include "UObject/ConstructorHelpers.h"
 
 #include "FTBeatFighterAnimInstance.h"
@@ -356,6 +358,89 @@ bool AFTArenaFighter::GetSkinPoint(FName Name, FVector& Out) const
 	}
 	Out = Skin->GetSocketLocation(Name);
 	return true;
+}
+
+bool AFTArenaFighter::SplitCarried(FName HideSlot, TConstArrayView<FFTCarriedPiece> Split)
+{
+	USkeletalMesh* Mesh = Skin ? Skin->GetSkeletalMeshAsset() : nullptr;
+	if (SkinKind != ESkin::Creature || !Mesh || bSplit)
+	{
+		return false;
+	}
+	bSplit = true;
+
+	// The whole piece goes: every LOD's sections drawn with its slot.
+	const TArray<FSkeletalMaterial>& Materials = Mesh->GetMaterials();
+	const int32 Slot = Materials.IndexOfByPredicate([HideSlot](const FSkeletalMaterial& M) { return M.MaterialSlotName == HideSlot; });
+	const FSkeletalMeshRenderData* Render = Mesh->GetResourceForRendering();
+	if (Slot == INDEX_NONE || !Render)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s has no material slot %s; the carried piece stays whole on it."), *Mesh->GetName(), *HideSlot.ToString());
+	}
+	else
+	{
+		for (int32 Lod = 0; Lod < Render->LODRenderData.Num(); ++Lod)
+		{
+			const TArray<FSkelMeshRenderSection>& Sections = Render->LODRenderData[Lod].RenderSections;
+			for (int32 S = 0; S < Sections.Num(); ++S)
+			{
+				if (Sections[S].MaterialIndex == Slot)
+				{
+					Skin->ShowMaterialSection(Slot, S, false, Lod);
+				}
+			}
+		}
+	}
+
+	// Each part was modelled where it sat at rest, in the mesh's own space: move its centre to the hand and keep how it
+	// was turned against the hand's rest pose, so the clip that swings the hand swings it.
+	const FReferenceSkeleton& Ref = Mesh->GetRefSkeleton();
+	for (const FFTCarriedPiece& Piece : Split)
+	{
+		UStaticMesh* Part = LoadObject<UStaticMesh>(nullptr, *Piece.Mesh, nullptr, LOAD_NoWarn | LOAD_Quiet);
+		const int32 Bone = Ref.FindBoneIndex(Piece.Bone);
+		if (!Part || Bone == INDEX_NONE)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: carried part %s (bone %s) is missing; skipped."), *Piece.Mesh, *Piece.Bone.ToString());
+			continue;
+		}
+		const FTransform Hand = FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, Bone);
+		const FVector Centre = Part->GetBounds().Origin;
+		const FTransform InHand = FTransform(FQuat::Identity, -Centre) * FTransform(Hand.GetRotation().Inverse())
+			* FTransform(Piece.Turn.Quaternion(), Piece.OffsetMeters * 100.0);
+		UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(this);
+		C->SetStaticMesh(Part);
+		C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		C->SetCastShadow(true);
+		C->SetupAttachment(Skin, Piece.Bone);
+		C->SetRelativeTransform(InHand);
+		C->RegisterComponent();
+		Carried.Add(C);
+	}
+	return true;
+}
+
+void AFTArenaFighter::MendCarried()
+{
+	if (!bSplit)
+	{
+		return;
+	}
+	bSplit = false;
+	const USkeletalMesh* Mesh = Skin ? Skin->GetSkeletalMeshAsset() : nullptr;
+	const FSkeletalMeshRenderData* Render = Mesh ? Mesh->GetResourceForRendering() : nullptr;
+	for (int32 Lod = 0; Render && Lod < Render->LODRenderData.Num(); ++Lod)
+	{
+		Skin->ShowAllMaterialSections(Lod);
+	}
+	for (UStaticMeshComponent* C : Carried)
+	{
+		if (C)
+		{
+			C->DestroyComponent();
+		}
+	}
+	Carried.Reset();
 }
 
 void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)

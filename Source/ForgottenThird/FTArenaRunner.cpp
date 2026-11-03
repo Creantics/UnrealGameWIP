@@ -23,6 +23,8 @@
 #include "Misc/Paths.h"
 #include "Misc/PackageName.h"
 
+#include "ftcore/Json.h"
+
 #include <cmath>
 #include <string>
 #include <vector>
@@ -33,6 +35,8 @@ namespace
 {
 // The stone_bearer's effects and where they are placed (FFTArenaBossVfx).
 constexpr const TCHAR* kStoneBearerVfx = TEXT("Data/Battle/arena_boss/stone_bearer_vfx.json");
+// The stone_bearer's carried piece after it splits: the slot that goes and the parts for the hands.
+constexpr const TCHAR* kStoneBearerSplit = TEXT("Data/Battle/arena_boss/stone_bearer_split.json");
 // After the outcome, the autopilot (without -ArenaQuitOnFinish) fights again this much later (s).
 constexpr double kArenaAutoAgain = 4.0;
 // A press to fight again counts only once the result has been up this long (s), so a held attack doesn't skip it.
@@ -124,6 +128,39 @@ const TCHAR* ArenaPilotName(bool bAutoPlay, bool bIdle)
 {
 	return bIdle ? TEXT("idle") : (bAutoPlay ? TEXT("autoplay") : TEXT("player"));
 }
+
+FVector ReadVector(const ftcore::JsonValue& V)
+{
+	return V.size() == 3 ? FVector(V[0].number(0.0), V[1].number(0.0), V[2].number(0.0)) : FVector::ZeroVector;
+}
+
+// The split's slot and parts from File; false (and logged) when it can't be read.
+bool ReadCarriedSplit(const FString& File, FName& HideSlot, TArray<FFTCarriedPiece>& Pieces)
+{
+	TArray<uint8> Bytes;
+	const FString Path = FPaths::ProjectDir() / File;
+	ftcore::JsonDocument Doc;
+	std::string Error;
+	if (!IFileManager::Get().FileExists(*Path) || !FFileHelper::LoadFileToArray(Bytes, *Path) || !Doc.parse(FT::BytesAsText(Bytes), &Error))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: couldn't read %s (%s); the carried piece stays whole."), *File, *FT::ToFString(Error));
+		return false;
+	}
+	const ftcore::JsonValue Root = Doc.root();
+	HideSlot = FName(*FT::ToFString(Root["hideSlot"].string()));
+	const ftcore::JsonValue List = Root["pieces"];
+	for (std::uint32_t I = 0; I < List.size(); ++I)
+	{
+		const ftcore::JsonValue V = List[I];
+		FFTCarriedPiece& P = Pieces.AddDefaulted_GetRef();
+		P.Mesh = FT::ToFString(V["mesh"].string());
+		P.Bone = FName(*FT::ToFString(V["bone"].string()));
+		P.OffsetMeters = ReadVector(V["offset"]);
+		const FVector Turn = ReadVector(V["turn"]); // pitch, yaw, roll (degrees)
+		P.Turn = FRotator(Turn.X, Turn.Y, Turn.Z);
+	}
+	return true;
+}
 } // namespace
 
 
@@ -162,6 +199,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	bAutoPlay = Setup.bAutoPlay;
 	bIdle = Setup.bIdle;
 	bHoldLoad = Setup.bHoldLoad;
+	bBossSplitAtStart = Setup.bBossSplitAtStart;
 	bQuitOnFinish = Setup.bQuitOnFinish;
 	bShots = Setup.bShots;
 	bFightAgain = Setup.bFightAgain;
@@ -174,6 +212,10 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	Fight.begin(Def, Fit.ring, Fit.playerStart, Fit.playerFacing, Seed);
 	BeginStoneBearer();
 	SpawnFigures(Setup.Lead);
+	if (bBossSplitAtStart)
+	{
+		SplitBossCarried();
+	}
 	PutBodiesAtStart();
 	PlaceFigures(1.f);
 }
@@ -911,6 +953,21 @@ void UFTArenaRunner::BossHitVfx(const ftcore::ArenaEvent& E)
 	BossVfx.Play(FFTArenaBossVfx::EEffect::Chips, At, 1.f, TEXT("hit"));
 }
 
+void UFTArenaRunner::SplitBossCarried()
+{
+	AFTArenaFighter* Figure = StoneBearerSlot >= 0 ? EnemyFigures[StoneBearerSlot].Get() : nullptr;
+	if (!Figure || !Figure->IsSkinned() || Figure->IsSplit())
+	{
+		return;
+	}
+	FName HideSlot;
+	TArray<FFTCarriedPiece> Pieces;
+	if (ReadCarriedSplit(kStoneBearerSplit, HideSlot, Pieces) && Figure->SplitCarried(HideSlot, Pieces))
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: boss %.2f: the carried piece split into %d parts in its hands."), Now, Pieces.Num());
+	}
+}
+
 FVector UFTArenaRunner::BossWeakPoint() const
 {
 	if (StoneBearerSlot < 0 || StoneBearerSlot >= MaxEnemies)
@@ -1232,6 +1289,15 @@ void UFTArenaRunner::Restart()
 {
 	Fight.restart();
 	BeginStoneBearer();
+	// The boss is whole again (its carried piece too) unless the run asks for it split.
+	if (AFTArenaFighter* Boss = StoneBearerSlot >= 0 ? EnemyFigures[StoneBearerSlot].Get() : nullptr)
+	{
+		Boss->MendCarried();
+	}
+	if (bBossSplitAtStart)
+	{
+		SplitBossCarried();
+	}
 	bResultLogged = false;
 	PutBodiesAtStart();
 	BeginNow = Now;
@@ -1380,6 +1446,10 @@ void UFTArenaRunner::LogStoneBearerNotes()
 		switch (N.Kind)
 		{
 		case FFTStoneBearerNote::EKind::Run:
+			if (E.type == ftcore::ArenaBossEventType::Broke)
+			{
+				SplitBossCarried();
+			}
 			if (E.type == ftcore::ArenaBossEventType::Crit)
 			{
 				BossVfx.Play(FFTArenaBossVfx::EEffect::Crit, BossWeakPoint(), 1.f,

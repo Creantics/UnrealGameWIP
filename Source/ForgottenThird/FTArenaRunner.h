@@ -75,6 +75,7 @@ struct FFTArenaRunSetup
 	bool bAutoPlay = false;
 	bool bIdle = false;
 	bool bHoldLoad = false;
+	bool bBossSplitAtStart = false; // -ArenaBossSplit
 	// Exit the process on the outcome (0 a victory, 1 a defeat), and end a fight that outlasts the watchdog.
 	bool bQuitOnFinish = false;
 	// A -ArenaShot run: the shots decide when to quit, and nothing fights again.
@@ -185,6 +186,8 @@ private:
 	void BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 From, uint8 To);
 	void BossHitVfx(const ftcore::ArenaEvent& E);
 	FVector BossWeakPoint() const;
+	// The boss broke its carried piece: its figure takes the parts in its hands (once a fight).
+	void SplitBossCarried();
 	// Dresses enemy slot I as a skeletal mesh when its kind has a look that loads (see AFTArenaGameMode's header).
 	void LoadSkin(int32 I);
 	// Picks and times slot I's clip from its Core state: the move's own clip through an attack, at the rate that lands its
@@ -281,6 +284,7 @@ private:
 	bool bFightAgain = true;
 	bool bReplacePawn = true;
 	bool bHoldLoad = false;
+	bool bBossSplitAtStart = false;
 	bool bResultLogged = false;
 	double ResultTime = 0.0;
 	double BeginNow = 0.0;
