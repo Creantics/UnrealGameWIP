@@ -70,10 +70,11 @@
 //     When it connects, the enemy goes Down for downTime.
 //   - Load (Load.h): a second gauge beside stamina, 0 to kMaxLoad, never a replacement for it. Only a
 //     parry (the perfect guard: the parry window, never wider) stores Load: the parried attack's damage
-//     times loadShare (LoadStored; a block stores nothing). It never refills or drains on its own, and
-//     no attack or roll spends it. At kMaxLoad the player is overloaded (Overloaded, once as it fills):
-//     light, heavy and heal are refused until a Release (dodge, guard, parry, movement and the lock
-//     stay open, as Turns refuses commands but never the defence).
+//     times loadShare (LoadStored; a block stores nothing); the host may give Load too (giveLoad). It
+//     never refills or drains on its own, and no attack or roll spends it. At kMaxLoad the player is
+//     overloaded (Overloaded, once as it fills): light, heavy and heal are refused until a Release
+//     (dodge, guard, parry, movement and the lock stay open, as Turns refuses commands but never the
+//     defence).
 //   - Release: a strike shaped like the riposte (the `release` attack: invulnerable throughout, facing
 //     the lock target or the stick at its start), open only while Load is above kArenaReleaseOpenLoad
 //     (a third), from any state another action may start from, whatever the stamina. It spends all the
@@ -133,9 +134,9 @@
 //   phase. restart() puts everything back as begin() left it (the same seed, so the same fight).
 // * Host hooks (generic: a boss's own rules live in its own Core class and the host, never here). The host
 //   may hold an enemy Open or Down from outside (holdEnemy, releaseEnemy), keep an enemy's hp above a floor
-//   (setEnemyHpFloor) and rule on every blow before it applies (setBlowHook): scale its damage and poise
-//   damage, or veto it. Holds and floors are fight state (begin() and restart() clear them); the blow hook
-//   is the host's and stays until it sets another.
+//   (setEnemyHpFloor), rule on every blow before it applies (setBlowHook): scale its damage and poise
+//   damage, or veto it, and give the player Load (giveLoad). Holds and floors are fight state (begin() and
+//   restart() clear them); the blow hook is the host's and stays until it sets another.
 //
 // Data: Data/Battle/arena.json (ids and numbers only, no story text). Like encounters.json and
 // qte.json it is keyed by scene id + gameplay beat index + plan step index, with a `default` fight:
@@ -688,6 +689,13 @@ public:
     FTCORE_API int enemyHpFloor(std::size_t i) const;
     // Every blow goes to `hook` with `user` before it applies (ArenaBlowHook); nullptr: none (every blow as it is).
     FTCORE_API void setBlowHook(ArenaBlowHook hook, void* user);
+    // Stores `amount` Load in the player's gauge now, as a parry would (never past kMaxLoad; amount <= 0: nothing),
+    // and returns what was stored. The events a parry raises report it: LoadStored (source kArenaNobody, move 0) and,
+    // if the gauge filled, Overloaded (counted in stats().overloads; stats().loadStored stays the parries'). Inside
+    // the blow hook they join this tick's events; otherwise the next tick's (one LoadStored for all the Load given
+    // since). 0, and nothing stored, when the fight is not running (before begin(), after Victory or Defeat).
+    // load() reads the gauge and kMaxLoad (Load.h) is its cap.
+    FTCORE_API int giveLoad(int amount);
 
 private:
     // The fight's state: the implementer's, fixed capacity only (copying a fight never allocates).
@@ -727,6 +735,8 @@ private:
         std::uint8_t lock = kArenaNobody;
         Load gauge;                         // the Load, beside stamina
         int releaseSpent = 0;               // the Load the Release in progress spent
+        int giftLoad = 0;                   // Load giveLoad stored since the last tick, not yet reported ...
+        bool giftFilled = false;            // ... and whether it filled the gauge
         float pairPress = -1.0e9f;          // fight time of the partner's last unused press
         float pairParry = -1.0e9f;          // fight time of the last unpaired parry ...
         std::uint8_t pairFoe = kArenaNobody; // ... and the enemy it opened
