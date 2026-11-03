@@ -246,7 +246,9 @@ public:
 
 private:
     void weigh(int n, double at);
-    const ArenaBossEvents& finish();
+    // `takenAtHit`/`frozenAtHit` (both or neither): the scales a lead's blow meets, read after the
+    // run's answers up to it and before its own crit's shed.
+    const ArenaBossEvents& finish(float* takenAtHit = nullptr, bool* frozenAtHit = nullptr);
     const ArenaBossEvents& tick(double t);
 
     const StoneBearerDef* def_ = nullptr;

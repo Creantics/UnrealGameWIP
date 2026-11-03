@@ -858,6 +858,49 @@ TEST_CASE("arena boss run: events come in time order, calls first on a tie, phas
     CHECK(e[3].at == doctest::Approx(5.5));
 }
 
+TEST_CASE("arena boss run: a fight clock that starts below 0 plays its blows on time") {
+    const ArenaBossDef def = loadTestBoss();
+    const std::uint8_t fist = def.find("fist");
+    {
+        // Left alone: the impact (3 beats, 1.5 s) resolves at -8.5, not when the clock passes 0.
+        ArenaBossRun run;
+        run.begin(def, -10.0);
+        bool ok = false;
+        run.startMove(fist, -10.0, CalledZone::Left, &ok);
+        REQUIRE(ok);
+        CHECK(countOf(run.update(-9.0, 1.0f), ArenaBossEventType::Answered) == 0);
+        CHECK(countOf(run.update(-8.6, 1.0f), ArenaBossEventType::Answered) == 0);
+        const ArenaBossEvent* a = findEvent(run.update(-8.4, 1.0f), ArenaBossEventType::Answered);
+        REQUIRE(a);
+        CHECK(a->outcome == CalledOutcome::Missed);
+        CHECK(a->at == doctest::Approx(-8.5));
+    }
+    {
+        // A press in the window, below 0, turns it.
+        ArenaBossRun run;
+        run.begin(def, -10.0);
+        bool ok = false;
+        run.startMove(fist, -10.0, CalledZone::Left, &ok);
+        REQUIRE(ok);
+        CHECK(countOf(run.interceptDown(CalledZone::Left, -8.55), ArenaBossEventType::Answered) == 0);
+        CHECK(run.strike().holdFrom() == doctest::Approx(-8.55));
+        const ArenaBossEvent* a = findEvent(run.update(-8.4, 1.0f), ArenaBossEventType::Answered);
+        REQUIRE(a);
+        CHECK(a->outcome == CalledOutcome::Intercepted);
+    }
+    {
+        // The strike on its own, never updated before its impacts.
+        CalledStrike s;
+        const CalledImpact imp = impactAt(-5.0, CalledZone::Left);
+        s.start(&imp, 1);
+        CHECK(s.update(-6.0).empty());
+        CHECK(s.interceptDown(CalledZone::Left, -5.1).empty());
+        const CalledResults r = s.update(-4.9);
+        REQUIRE(r.size() == 1);
+        CHECK(r[0].outcome == CalledOutcome::Intercepted);
+    }
+}
+
 TEST_CASE("arena boss events: past the cap they are dropped and counted; clear resets both") {
     ArenaBossEvents events;
     for (std::size_t i = 0; i < kMaxArenaBossEvents + 5; ++i)

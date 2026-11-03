@@ -229,7 +229,8 @@ public:
     // Drops every pending impact unresolved (the move was cancelled).
     FTCORE_API void cancel();
 
-    // Moves the clock to `now`: impacts at or before it resolve against the hold.
+    // Moves the clock to `now`: impacts at or before it resolve against the hold. The clock starts
+    // before any time, so the first update or press sets it (a fight clock may start below 0).
     FTCORE_API CalledResults update(double now);
     // The lead's buttons, pressed with the body in `zone`.
     FTCORE_API CalledResults interceptDown(CalledZone zone, double t);
@@ -264,7 +265,7 @@ private:
     std::array<CalledOutcome, kMaxCalledImpacts> outcomes_{};
     std::size_t count_ = 0;
     std::size_t next_ = 0;
-    double now_ = 0.0;
+    double now_ = -1.0e300;
     ArenaHold hold_ = ArenaHold::None;
     double holdFrom_ = 0.0;
     CalledZone holdZone_ = CalledZone::Left;

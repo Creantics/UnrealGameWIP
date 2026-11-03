@@ -539,6 +539,26 @@ TEST_CASE("stone bearer: guards gain stacks, intercepts and the first crit of an
     CHECK(b.stacks() == 0);
 }
 
+TEST_CASE("stone bearer: a blow meets the stacks of every answer up to it, with no update between") {
+    const StoneBearerDef& def = shipped();
+    const double B = def.boss.beat();
+    StoneBearer b;
+    b.begin(def, 0.0);
+    bool ok = false;
+    b.startMove(move("called_fist"), 1.0, CalledZone::Left, &ok);
+    REQUIRE(ok);
+    const double T = 1.0 + 3 * B;
+    b.update(T - 0.01, 1.0f);
+    CHECK(b.stacks() == 0);
+    // The fist is missed at T (+1); the lead's blow at T + 0.005 comes first in the frame.
+    StoneBearerHit hit;
+    const ArenaBossEvents& e = b.onHit({2, 0}, {0, 0}, {1, 0}, T + 0.005, nullptr, &hit);
+    CHECK(countOf(e, ArenaBossEventType::Answered) == 1);
+    CHECK(b.stacks() == 1);
+    CHECK(hit.damage == doctest::Approx(b.takenScale()));
+    CHECK(hit.damage == doctest::Approx(1.0f - def.weight.defencePerStack));
+}
+
 TEST_CASE("stone bearer: blocks, solo lifts and the poise freeze") {
     const StoneBearerDef& def = shipped();
     StoneBearer b;

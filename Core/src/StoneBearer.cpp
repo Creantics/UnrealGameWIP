@@ -156,12 +156,15 @@ void StoneBearer::begin(const StoneBearerDef& def, double now) {
     recoverDue_ = false;
 }
 
-// finish() reads the stack gains back from the run's events, so no call may drop one. The most one call
+// finish() reads the stack gains back from the run's events, so no call may drop one. The most a tick
 // emits: the run's phase change, a call and an answer per impact, the shift, a crit window closing and
 // one opening, the load; up to three events per stack change (one change per answer); and the
-// pedestal's switch, its calls and the recovery.
-static_assert(1 + 2 * kMaxCalledImpacts + 1 + 3 + 3 * kMaxCalledImpacts + 1 + kPedestalMaxCalls + 1 <=
-              kMaxArenaBossEvents);
+// pedestal's switch, its calls and the recovery. A call adds at most four to a tick: a Crit and its
+// shed (onHit), a block's or a lift's stack change (onBlocked, onSoloLift), or Invulnerable and Lifted
+// (onRelease).
+constexpr std::size_t kSbTickEvents =
+    1 + 2 * kMaxCalledImpacts + 1 + 3 + 3 * kMaxCalledImpacts + 1 + kPedestalMaxCalls + 1;
+static_assert(kSbTickEvents + 1 + 3 <= kMaxArenaBossEvents);
 
 void StoneBearer::weigh(int n, double at) {
     const bool ring = weight_.shockRing();
@@ -179,12 +182,19 @@ void StoneBearer::weigh(int n, double at) {
 }
 
 // Turns the run's events into the boss's own, then plays the pedestal up to now.
-const ArenaBossEvents& StoneBearer::finish() {
+const ArenaBossEvents& StoneBearer::finish(float* takenAtHit, bool* frozenAtHit) {
     const ArenaBossEvents& ev = run_.events();
     const WeightTuning& w = def_->weight;
+    const auto readHit = [&] {
+        if (!takenAtHit) return;
+        *takenAtHit = weight_.takenScale();
+        *frozenAtHit = weight_.poiseFrozen();
+        takenAtHit = nullptr;
+    };
     const std::size_t n = ev.size(); // weigh() appends: only the run's own events are read
     for (std::size_t i = 0; i < n; ++i) {
         const ArenaBossEvent e = ev[i];
+        if (e.type == ArenaBossEventType::Crit) readHit(); // the blow itself: after every answer before it
         if (e.type == ArenaBossEventType::Crit && e.value == 1) {
             weigh(-w.critShed, e.at);
         } else if (e.type == ArenaBossEventType::Answered && e.move < def_->boss.moveCount) {
@@ -194,6 +204,7 @@ const ArenaBossEvents& StoneBearer::finish() {
             else if (e.value == 1) weigh(m.missStacks, e.at); // the use's first miss: once per use
         }
     }
+    readHit(); // no crit: the blow meets the stacks after every answer
     const double now = run_.now();
     if (pedestal_.holding()) {
         const PedestalTuning& p = def_->pedestal;
@@ -292,14 +303,15 @@ const ArenaBossEvents& StoneBearer::onHit(Vec2 from, Vec2 pos, Vec2 facing, doub
         h.damage = 0.0f;
         h.poise = 0.0f;
     } else {
-        // The blow lands with the stacks it meets: a first crit's shed counts from the next blow.
-        const float taken = weight_.takenScale();
-        const bool frozen = weight_.poiseFrozen();
+        // The blow lands with the stacks it meets at t: the answers up to t count, a first crit's shed
+        // counts from the next blow.
         run_.onHit(from, pos, facing, t, at, &h.crit);
+        float taken = 1.0f;
+        bool frozen = false;
+        finish(&taken, &frozen);
         const float mult = h.crit.crit ? h.crit.multiplier : 1.0f;
         h.damage = mult * taken;
         h.poise = frozen ? 0.0f : mult;
-        finish();
     }
     if (hit) *hit = h;
     return run_.events();
