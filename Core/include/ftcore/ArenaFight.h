@@ -691,12 +691,13 @@ public:
     // Every blow goes to `hook` with `user` before it applies (ArenaBlowHook); nullptr: none (every blow as it is).
     FTCORE_API void setBlowHook(ArenaBlowHook hook, void* user);
     // Stores `amount` Load in the player's gauge now, as a parry would (never past kMaxLoad; amount <= 0: nothing),
-    // and returns what was stored. The events a parry raises report it: LoadStored (source kArenaNobody, move 0) and,
-    // if the gauge filled, Overloaded. Inside the blow hook they join this tick's events; otherwise they open the
-    // next tick's, ahead of anything that tick does (one LoadStored for all the Load given since). load(),
+    // and returns what was stored. The same event types a parry raises report it: LoadStored (source kArenaNobody,
+    // move 0) and, if the gauge filled, Overloaded. Inside the blow hook they join this tick's events; otherwise they
+    // open the next tick's, ahead of anything that tick does (one LoadStored for all the Load given since). load(),
     // overloaded() and output().player show it at once; stats().overloads counts the fill at once, and
-    // stats().loadStored stays the parries'. 0, and nothing stored, when the fight is not running (before begin(),
-    // after Victory or Defeat). kMaxLoad (Load.h) is the gauge's cap.
+    // stats().loadStored stays the parries'. begin() and restart() empty the gauge and drop events not yet reported;
+    // a fill already counted stays in the stats until begin() clears them. 0, and nothing stored, when the fight is
+    // not running (before begin(), after Victory or Defeat). kMaxLoad (Load.h) is the gauge's cap.
     FTCORE_API int giveLoad(int amount);
 
 private:

@@ -4975,6 +4975,12 @@ TEST_CASE("arena hooks: giveLoad stores Load now, clamps it, and the next tick r
         CHECK(rig.fight.load() == 0);
         rig.run(3);
         CHECK(rig.count(ArenaEventType::LoadStored) == 0);
+        rig.fight.giveLoad(kMaxLoad); // a fill counts at once and stays counted through a restart
+        rig.fight.restart();
+        CHECK(rig.fight.stats().overloads == 1);
+        CHECK_FALSE(rig.fight.overloaded());
+        rig.run(3);
+        CHECK(rig.count(ArenaEventType::Overloaded) == 0);
     }
     {   // the fight over: nothing
         Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 200))});
@@ -4987,10 +4993,12 @@ TEST_CASE("arena hooks: giveLoad stores Load now, clamps it, and the next tick r
     {   // from inside the blow hook: stored at once and reported in this tick, with the blow
         struct Giver {
             ArenaFight* fight = nullptr;
+            int calls = 0;
             int given = 0;
             int loadSeen = -1;
             static ArenaBlowRuling hook(void* user, const ArenaBlow&) {
                 Giver& g = *static_cast<Giver*>(user);
+                ++g.calls;
                 g.given += g.fight->giveLoad(25);
                 g.loadSeen = g.fight->load();
                 return ArenaBlowRuling{};
@@ -5002,15 +5010,16 @@ TEST_CASE("arena hooks: giveLoad stores Load now, clamps it, and the next tick r
         rig.fight.setBlowHook(&Giver::hook, &giver);
         rig.in.light = true;
         rig.run(20);
-        REQUIRE(giver.given == 25);
-        CHECK(giver.loadSeen == 25);
+        REQUIRE(giver.calls >= 1);
+        CHECK(giver.given == 25 * giver.calls);
+        CHECK(giver.loadSeen == 25 * giver.calls);
         const Logged* hit = rig.find(ArenaEventType::Hit);
         const Logged* stored = rig.find(ArenaEventType::LoadStored);
         REQUIRE(hit);
         REQUIRE(stored);
         CHECK(stored->tick == hit->tick);
         CHECK(stored->event.amount == 25);
-        CHECK(rig.count(ArenaEventType::LoadStored) == 1);
+        CHECK(rig.count(ArenaEventType::LoadStored) == giver.calls);
     }
 }
 
