@@ -1,5 +1,6 @@
 #include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
+#include "ftcore/BeatChoreo.h" // the skinned kind's clip table
 #include "ftcore/WorldLayout.h"
 
 #include "AllocCounter.h"
@@ -8,6 +9,7 @@
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
 
+#include <cmath>
 #include <limits>
 #include <string>
 #include <vector>
@@ -540,5 +542,36 @@ TEST_CASE("arena kind crit: the shipped Dealer staggers under each lead's autopi
         CHECK_MESSAGE(run.phase == ArenaPhase::Victory, "Error: " << lead << "'s autopilot did not beat white_glove in 180 s");
         CHECK_MESSAGE(run.staggers >= 2, "Error: white_glove staggered " << run.staggers << " times against " << lead);
         CHECK(run.crits > 0);
+    }
+}
+
+// Each of its moves plays its own clip: the blow on the end of the startup at a play rate of 1, the clip as long as the move.
+TEST_CASE("arena kind crit: the shipped Dealer's moves name clips of its table, impacts on the end of the startup") {
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena.json", text));
+    ArenaTable arena;
+    std::string error;
+    REQUIRE_MESSAGE(importArenaTable(text, arena, &error), error);
+    const ArenaEnemyKind* boss = nullptr;
+    for (std::size_t e = 0; e < arena.enemyIds.size(); ++e)
+        if (arena.enemyIds[e] == "white_glove") boss = &arena.enemies[e];
+    REQUIRE(boss);
+    CHECK(boss->look.clips() == "Data/Anim/white_glove_clips.json");
+    REQUIRE(ftcore_test::readProjectData("Anim/white_glove_clips.json", text));
+    BeatClips clips;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(importBeatClips(text, clips, &error, &warnings), error);
+    CHECK(warnings.empty());
+    CHECK(clips[static_cast<std::size_t>(clips.find("idle"))].loop);
+    REQUIRE(boss->moveCount == 3);
+    for (std::size_t m = 0; m < boss->moveCount; ++m) {
+        const ArenaEnemyMove& mv = boss->moves[m];
+        const int clip = clips.find(mv.clip());
+        REQUIRE_MESSAGE(clip >= 0, "move " << m << " clip " << mv.clip());
+        const BeatClip& c = clips[static_cast<std::size_t>(clip)];
+        CHECK_FALSE(c.loop);
+        const double rate = c.impact / static_cast<double>(mv.attack.startup);
+        CHECK_MESSAGE(std::fabs(rate - 1.0) < 0.01, mv.clip() << " rate " << rate);
+        CHECK_MESSAGE(std::fabs(c.length - static_cast<double>(mv.attack.total())) < 0.01, mv.clip());
     }
 }

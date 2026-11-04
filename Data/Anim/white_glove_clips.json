@@ -15,6 +15,27 @@
    "length_s": 9.233,
    "impact_s": 0,
    "loop": true
+  },
+  {
+   "id": "deal",
+   "asset": "/Game/Bosses/WhiteGlove/white_glove/SkeletalMeshes/white_glovedeal",
+   "length_s": 4.108,
+   "impact_s": 2.308,
+   "loop": false
+  },
+  {
+   "id": "fan_of_blades",
+   "asset": "/Game/Bosses/WhiteGlove/white_glove/SkeletalMeshes/white_glovefan_of_blades",
+   "length_s": 3.531,
+   "impact_s": 1.731,
+   "loop": false
+  },
+  {
+   "id": "extra_elbow",
+   "asset": "/Game/Bosses/WhiteGlove/white_glove/SkeletalMeshes/white_gloveextra_elbow",
+   "length_s": 2.354,
+   "impact_s": 1.154,
+   "loop": false
   }
  ]
 }

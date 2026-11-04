@@ -479,6 +479,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	bool bTimed = false; // the time is Core's, not the time since the clip began
 	double Time = 0.0;
 	bool bHoldRoot = true;
+	float MoveRate = 0.f; // a move's clip's playing rate, else 0
 	switch (Out.brain)
 	{
 	case ftcore::ArenaBrain::Dead:
@@ -504,6 +505,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 			Clip = MoveClip;
 			Time = (static_cast<double>(Out.stateTime) + static_cast<double>(Alpha) * StepSeconds) * Rate;
 			bTimed = true;
+			MoveRate = Rate;
 		}
 		break;
 	}
@@ -528,6 +530,11 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	{
 		SkinClip[I] = Clip;
 		SkinSince[I] = Now;
+		if (MoveRate > 0.f)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: enemy %d plays %s for move %d at rate %.2f (%.2f s)."), I,
+				*Skin.Sequences[Clip]->GetName(), static_cast<int32>(Out.move), MoveRate, Skin.Sequences[Clip]->GetPlayLength());
+		}
 	}
 	const UAnimSequence* Sequence = Skin.Sequences[Clip];
 	const ftcore::BeatClip& Row = (*Skin.Clips)[static_cast<size_t>(Clip)];
