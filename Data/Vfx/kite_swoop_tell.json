@@ -1,0 +1,151 @@
+{
+  "name": "kite_swoop_tell",
+  "emitters": [
+    {
+      "name": "dust",
+      "rate": 55,
+      "duration": 1.0,
+      "loop": true,
+      "maxParticles": 90,
+      "lifetime": [
+        0.9,
+        1.4
+      ],
+      "shape": "ring",
+      "radius": 2.6,
+      "innerRadius": 2.2,
+      "speed": [
+        0.8,
+        1.8
+      ],
+      "gravity": [
+        0.0,
+        0.4,
+        0.0
+      ],
+      "drag": 1.5,
+      "startSize": [
+        0.5,
+        0.9
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 0.4
+        },
+        {
+          "t": 0.35,
+          "v": 1.0
+        },
+        {
+          "t": 1,
+          "v": 1.6
+        }
+      ],
+      "startRotation": [
+        0.0,
+        6.28
+      ],
+      "angularVelocity": [
+        -0.8,
+        0.8
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            0.55,
+            0.5,
+            0.42,
+            0.0
+          ]
+        },
+        {
+          "t": 0.15,
+          "color": [
+            0.58,
+            0.52,
+            0.44,
+            0.45
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            0.5,
+            0.46,
+            0.4,
+            0.0
+          ]
+        }
+      ],
+      "blend": "alpha",
+      "sprite": "puff",
+      "coreShade": 0.5,
+      "softness": 0.9
+    },
+    {
+      "name": "grit",
+      "rate": 10,
+      "duration": 1.0,
+      "loop": true,
+      "maxParticles": 12,
+      "lifetime": [
+        0.5,
+        0.9
+      ],
+      "shape": "ring",
+      "radius": 2.4,
+      "innerRadius": 2.2,
+      "speed": [
+        1.5,
+        3.0
+      ],
+      "gravity": [
+        0.0,
+        -6.0,
+        0.0
+      ],
+      "drag": 0.8,
+      "startSize": [
+        0.04,
+        0.08
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 1.0
+        },
+        {
+          "t": 1,
+          "v": 0.6
+        }
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            0.42,
+            0.37,
+            0.3,
+            0.9
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            0.42,
+            0.37,
+            0.3,
+            0.0
+          ]
+        }
+      ],
+      "blend": "alpha",
+      "sprite": "spark",
+      "stretch": 0.03,
+      "stretchMax": 3.0,
+      "softness": 0.0
+    }
+  ]
+}

@@ -132,7 +132,7 @@
     },
     {
       "id": "kite_boss",
-      "hp": 1100, "poise": 120, "poiseDelay": 3, "staggerTime": 2, "openTime": 2, "downTime": 1.5,
+      "hp": 1100, "poise": 120, "poiseDelay": 4, "staggerTime": 2, "openTime": 2, "downTime": 1.5,
       "walkSpeed": 0.6, "runSpeed": 1, "strafeSpeed": 0.5, "accel": 2, "turnRate": 1.2,
       "preferredRange": 6.5, "runRange": 11, "attackDelay": 0.8, "bodyRadius": 2.5, "height": 9.1, "bpm": 72,
       "look": { "clips": "Data/Anim/kite_clips.json", "hover": 0.9, "scale": 1, "yawOffset": -90 },

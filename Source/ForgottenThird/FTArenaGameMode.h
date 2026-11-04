@@ -69,6 +69,8 @@
 // -ArenaOverview adds a first view, <prefix>_0_overview.png: the whole zone from a camera high over its south-west
 // side, HUD off, with its walls (green), obstacles (red) and road mouths (yellow) drawn as debug lines for the
 // picture only, and a second, <prefix>_0b_edge.png: the player 1.4 m from the wall, to show the edge cue.
+// -ArenaShotAt=<s>,<s>,... adds a view <prefix>_t_<s>.png at each of those fight times (uncounted: the six views and the
+// quit are unchanged), so two runs of the same fight (an OFF/ON pair) are shot at the same moments.
 //
 // The player's figure wears a lead's look from config (the explore character's PartyLooks, Config/UserGame.ini): the first
 // by default, -ArenaLead=<name> picks another; with none, or none that loads, the test human is worn (one warning).
@@ -183,4 +185,7 @@ private:
 	int32 ShotsTaken = 0;
 	double ShotWall = 0.0;
 	double ShotHoldUntil = -1.0;
+	// -ArenaShotAt: extra views at these fight times (seconds, ascending), and the next one due.
+	TArray<double> ShotAt;
+	int32 NextShotAt = 0;
 };

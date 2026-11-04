@@ -231,6 +231,10 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	SpawnKindCritEffects();
 	PutBodiesAtStart();
 	PlaceFigures(1.f);
+	if (KiteSlot >= 0)
+	{
+		KiteFx.Spawn(EnemyFigures[KiteSlot].Get());
+	}
 }
 
 void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
@@ -537,6 +541,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	bool bPhased = false; // the time is the walk's own phase (it still loops)
 	double Time = 0.0;
 	bool bHoldRoot = true;
+	float MoveRate = 0.f; // a move's clip's playing rate, else 0
 	if (Skin.Walk >= 0)
 	{
 		// The body's ground speed over the last step, smoothed. It walks between moves while that is over the start speed,
@@ -585,6 +590,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 			Clip = MoveClip;
 			Time = (static_cast<double>(Out.stateTime) + static_cast<double>(Alpha) * StepSeconds) * Rate;
 			bTimed = true;
+			MoveRate = Rate;
 		}
 		break;
 	}
@@ -616,6 +622,11 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	{
 		SkinClip[I] = Clip;
 		SkinSince[I] = Now;
+		if (MoveRate > 0.f)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: enemy %d plays %s for move %d at rate %.2f (%.2f s)."), I,
+				*Skin.Sequences[Clip]->GetName(), static_cast<int32>(Out.move), MoveRate, Skin.Sequences[Clip]->GetPlayLength());
+		}
 	}
 	const UAnimSequence* Sequence = Skin.Sequences[Clip];
 	const ftcore::BeatClip& Row = (*Skin.Clips)[static_cast<size_t>(Clip)];
@@ -832,6 +843,8 @@ void UFTArenaRunner::StepFight()
 	if (Kite.IsActive())
 	{
 		Kite.AfterTick(Out.events);
+		KiteFx.Feed(Out.events, Kite, Fight, ToWorld(Bodies.enemies[static_cast<size_t>(KiteSlot)]),
+			PlayerFigure ? PlayerFigure->GetChest() : ToWorld(Bodies.player));
 	}
 	if (bKindCritHook)
 	{
@@ -1860,6 +1873,7 @@ void UFTArenaRunner::PrepareKite()
 
 void UFTArenaRunner::BeginKite()
 {
+	KiteFx.Stop();
 	if (KiteSlot < 0)
 	{
 		Kite.End();
@@ -1873,6 +1887,7 @@ void UFTArenaRunner::BeginKite()
 
 void UFTArenaRunner::EndKite()
 {
+	KiteFx.Reset();
 	Kite.End();
 	KiteSlot = -1;
 }
@@ -1890,7 +1905,7 @@ void UFTArenaRunner::LogKiteNotes()
 		switch (N.Kind)
 		{
 		case FFTKiteNote::EKind::Telegraph:
-			UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: kite %.2f move %d telegraph (stub, no effect)"), N.At, static_cast<int32>(N.Move));
+			UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: kite %.2f move %d telegraph"), N.At, static_cast<int32>(N.Move));
 			break;
 		case FFTKiteNote::EKind::CritOpened:
 			UE_LOG(LogForgottenThird, Log, TEXT("Arena: kite %.2f: crit opened until %.2f"), N.At, N.Until);
@@ -1903,7 +1918,7 @@ void UFTArenaRunner::LogKiteNotes()
 			UE_LOG(LogForgottenThird, Log, TEXT("Arena: kite %.2f: crit closed"), N.At);
 			break;
 		case FFTKiteNote::EKind::HitTaken:
-			UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: kite %.2f hit taken%s (stub, no effect)"), N.At, N.bCrit ? TEXT(", crit") : TEXT(""));
+			UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: kite %.2f hit taken%s"), N.At, N.bCrit ? TEXT(", crit") : TEXT(""));
 			break;
 		default:
 			break;
