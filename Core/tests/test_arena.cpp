@@ -4083,6 +4083,29 @@ TEST_CASE("arena hooks: a hold cuts a live move at the next tick, lasts its seco
         rig.tick();
         CHECK(rig.out().enemies[0].brain == ArenaBrain::Open);
     }
+    {   // Staggered for 0.5 s, asked 10 ticks into the bite's startup: cut at the next tick, no stagger counted
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.put(0, 1.5f, 0.f);
+        rig.run(10);
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Attack);
+        const float poise = rig.fight.enemyPoise(0);
+        CHECK(rig.fight.holdEnemy(0, ArenaBrain::Staggered, 0.5f));
+        rig.tick();
+        CHECK(rig.fight.enemyHeld(0));
+        CHECK(rig.out().enemies[0].brain == ArenaBrain::Staggered);
+        CHECK(rig.out().enemies[0].stateLength == doctest::Approx(0.5f)); // the hold's, not the kind's staggerTime
+        CHECK_FALSE(rig.out().enemies[0].token);
+        CHECK(rig.count(ArenaEventType::Staggered) == 0);
+        CHECK(rig.fight.stats().staggers == 0);
+        CHECK(rig.fight.enemyPoise(0) == doctest::Approx(poise));
+        rig.run(27); // 28 ticks held: 0.47 s
+        CHECK(rig.out().enemies[0].brain == ArenaBrain::Staggered);
+        rig.run(3); // 31 ticks: 0.52 s
+        CHECK(rig.out().enemies[0].brain != ArenaBrain::Staggered);
+        CHECK_FALSE(rig.fight.enemyHeld(0));
+        CHECK(rig.count(ArenaEventType::Hit) == 0); // the cut bite never landed
+        CHECK(rig.fight.hp() == 100);
+    }
     {   // a staggered enemy can be held; holding again starts the hold over
         ArenaFighter f = ruleFighter();
         f.light[0].poiseDamage = 40.f;
@@ -4170,7 +4193,6 @@ TEST_CASE("arena hooks: a hold cuts a live move at the next tick, lasts its seco
 
 TEST_CASE("arena hooks: a hold is refused for a missing or dead enemy, another brain, or no time") {
     Rig rig(ruleFighter(), {dummyKind()});
-    CHECK_FALSE(rig.fight.holdEnemy(0, ArenaBrain::Staggered, 1.f));
     CHECK_FALSE(rig.fight.holdEnemy(0, ArenaBrain::Attack, 1.f));
     CHECK_FALSE(rig.fight.holdEnemy(0, ArenaBrain::Dead, 1.f));
     CHECK_FALSE(rig.fight.holdEnemy(0, ArenaBrain::Open, 0.f));

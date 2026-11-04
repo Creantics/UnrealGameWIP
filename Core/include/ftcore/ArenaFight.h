@@ -671,11 +671,12 @@ public:
     FTCORE_API int readStacks() const;
 
     // ---- host hooks ----
-    // Holds enemy i in `brain` (Open or Down) for `seconds` (> 0; +infinity: until releaseEnemy), from the start of the
-    // next tick with dt > 0: a live move is cut short and its token goes back, as a parry does (a read move brings the
-    // partner's counter), and `seconds` stands in for the kind's openTime or downTime. Holding again starts it over.
-    // Open invites a riposte, which ends the hold (Down for the kind's downTime), and a counter-stagger ends it too
-    // (Staggered); Down invites neither. When a hold ends (its time, or a release) the enemy walks again, and the
+    // Holds enemy i in `brain` (Open, Down or Staggered) for `seconds` (> 0; +infinity: until releaseEnemy), from the
+    // start of the next tick with dt > 0: a live move is cut short and its token goes back, as a parry does (a read move
+    // brings the partner's counter), and `seconds` stands in for the kind's openTime, downTime or staggerTime. Holding
+    // again starts it over. Open invites a riposte, which ends the hold (Down for the kind's downTime), and a
+    // counter-stagger ends it too (Staggered); Down invites neither. A held Staggered is not a stagger: no Staggered
+    // event, no stats.staggers and the poise is left as it is (a poise break in it staggers anew, ending the hold). When a hold ends (its time, or a release) the enemy walks again, and the
     // kind's attackDelay counts from the hold's start, as after a parry. False, and nothing asked, for an enemy out of
     // range or dead, a fight not running (before begin(), after Victory or Defeat), another brain, or seconds NaN or
     // <= 0.

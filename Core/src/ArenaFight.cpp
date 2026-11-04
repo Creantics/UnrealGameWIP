@@ -1707,8 +1707,8 @@ bool ArenaFight::readOpen() const {
 int ArenaFight::readStacks() const { return player_.readStacks; }
 
 bool ArenaFight::holdEnemy(std::size_t i, ArenaBrain brain, float seconds) {
-    if (phase_ != ArenaPhase::Fighting || !enemyAlive(i) || (brain != ArenaBrain::Open && brain != ArenaBrain::Down) ||
-        !(seconds > 0.f))
+    if (phase_ != ArenaPhase::Fighting || !enemyAlive(i) ||
+        (brain != ArenaBrain::Open && brain != ArenaBrain::Down && brain != ArenaBrain::Staggered) || !(seconds > 0.f))
         return false;
     EnemyState& foe = enemy_[i];
     foe.holdAsk = HoldAsk::Hold;
