@@ -259,7 +259,7 @@ TEST_CASE("stone bearer data: the shipped file loads clean, with the outline's t
 
     // The body and the generic tuning.
     CHECK(b.hp == 1400);
-    CHECK(b.poise == doctest::Approx(160.0));
+    CHECK(b.poise == doctest::Approx(175.0));
     CHECK(b.staggerTime == doctest::Approx(2.0));
     CHECK(b.openTime == doctest::Approx(3.0));
     CHECK(b.intercept.window == doctest::Approx(0.15));

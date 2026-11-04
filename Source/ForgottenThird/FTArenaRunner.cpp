@@ -848,6 +848,10 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			ParryTime = Now;
 			bPartnerDue = bAutoPlay;
 			break;
+		case ftcore::ArenaEventType::Staggered:
+			// Logged for the stagger spacing checks (tuning poise from -nullrhi runs).
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: enemy %d staggered."), Now, static_cast<int32>(E.target));
+			break;
 		case ftcore::ArenaEventType::CounterStagger:
 			if (E.target < MaxEnemies)
 			{
