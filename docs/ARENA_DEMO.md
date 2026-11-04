@@ -173,10 +173,12 @@ Everything about it is data and host-side: the fight's rules never read it.
   `ArenaDef` grew from about 7 to 17.4 KiB and an `ArenaFight` from about 10 to 23 KiB (MSVC x64).
 
 The mode plays, from Core's state each frame (`UFTBeatFighterAnimInstance`, a pose that is a function of the fight, with a 0.12 s
-crossfade between clips): a move's own clip through an attack, timed by Core's clock for the move at the rate
+crossfade between clips, or the table's own top-level `blend_s`): a move's own clip through an attack, timed by Core's clock for the move at the rate
 `impact_s / startup` (so the blow lands as the startup ends; held on its last frame if the clip is shorter than the move);
 `stagger` while staggered; `face_down` (looping) while open after a parry or down after a riposte; `hit_light` or `hit_heavy`
-(a heavy blow, a riposte or a Release) between moves; `defeat` on death, held on its last frame; else `idle`, or `idle_p2` under
+(a heavy blow, a riposte or a Release) between moves; `walk` (looping, optional) between moves while the body moves, once its
+smoothed ground speed passes 0.3 m/s and until it drops under 0.15 m/s, played at that speed over the row's `speed_mps` (rate 0.5 to
+1.6; a walk row without `speed_mps` is left out); `defeat` on death, held on its last frame; else `idle`, or `idle_p2` under
 60% hp. A clip the table lacks is left out (that state plays the idle). If the clip table, the mesh or the idle clip doesn't load, the
 kind keeps its shapes and the log has one warning. The camera looks up at a boss at least 4 m tall (hover included) toward 70%
 of its height, up to 15 degrees above level (the free camera's limit too); the camera never pulls out for a big boss. The assets are local; nothing here needs them to load.

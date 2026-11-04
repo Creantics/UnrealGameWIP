@@ -57,6 +57,13 @@ constexpr float kArenaMinClipRate = 0.25f;
 constexpr float kArenaMaxClipRate = 4.f;
 // Under this share of its hp a skinned enemy idles its second-phase way (when its table has one).
 constexpr float kArenaSecondIdleHp = 0.6f;
+// A skin with a walk clip walks above the first ground speed (m/s) and stops under the second; its speed is smoothed over
+// kArenaWalkSmooth seconds, and the walk plays at that speed over its authored one, held to these rates.
+constexpr float kArenaWalkStart = 0.3f;
+constexpr float kArenaWalkStop = 0.15f;
+constexpr float kArenaWalkSmooth = 0.15f;
+constexpr float kArenaMinWalkRate = 0.5f;
+constexpr float kArenaMaxWalkRate = 1.6f;
 // Camera: pitch limits, the pitch while locked, how fast it turns to a lock, stick and mouse rates.
 constexpr float kArenaPitchMin = -50.f;
 constexpr float kArenaPitchMax = 15.f;
@@ -495,6 +502,9 @@ void UFTArenaRunner::LoadSkin(int32 I)
 	Skin.Defeat = Find("defeat");
 	Skin.HitLight = Find("hit_light");
 	Skin.HitHeavy = Find("hit_heavy");
+	// The walk needs its authored speed to be played at the body's.
+	Skin.Walk = Find("walk");
+	Skin.Walk = Skin.Walk >= 0 && (*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed > 0.0 ? Skin.Walk : -1;
 	for (size_t M = 0; M < ftcore::kMaxArenaMoves; ++M)
 	{
 		Skin.MoveClip[M] = M < Kind.moveCount ? Find(Kind.moves[M].clip()) : -1;
@@ -523,9 +533,33 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		return;
 	}
 	int32 Clip = Skin.Idle;
-	bool bTimed = false; // the time is Core's, not the time since the clip began
+	bool bTimed = false;  // the time is Core's, not the time since the clip began
+	bool bPhased = false; // the time is the walk's own phase (it still loops)
 	double Time = 0.0;
 	bool bHoldRoot = true;
+	if (Skin.Walk >= 0)
+	{
+		// The body's ground speed over the last step, smoothed. It walks between moves while that is over the start speed,
+		// until it falls under the stop speed, at that speed over the clip's authored one.
+		const ftcore::Vec2 From = PrevBodies.enemies[static_cast<size_t>(I)];
+		const ftcore::Vec2 To = Bodies.enemies[static_cast<size_t>(I)];
+		const float Ground = FMath::Sqrt(FMath::Square(To.x - From.x) + FMath::Square(To.y - From.y)) / StepSeconds;
+		WalkSpeed[I] += (Ground - WalkSpeed[I]) * FMath::Min(1.f, FrameDelta / kArenaWalkSmooth);
+		const bool bWas = bWalking[I];
+		const bool bBetween = Out.brain == ftcore::ArenaBrain::Approach || Out.brain == ftcore::ArenaBrain::Strafe;
+		bWalking[I] = bBetween && WalkSpeed[I] > (bWas ? kArenaWalkStop : kArenaWalkStart);
+		if (bWalking[I])
+		{
+			const float Authored = static_cast<float>((*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed);
+			const float Rate = FMath::Clamp(WalkSpeed[I] / Authored, kArenaMinWalkRate, kArenaMaxWalkRate);
+			WalkPhase[I] = bWas ? WalkPhase[I] + static_cast<double>(FrameDelta * Rate) : 0.0;
+			if (!bWas)
+			{
+				// Logged for the walk checks in -nullrhi runs.
+				UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: enemy %d walks at %.2f m/s (rate %.2f)."), Now, I, WalkSpeed[I], Rate);
+			}
+		}
+	}
 	switch (Out.brain)
 	{
 	case ftcore::ArenaBrain::Dead:
@@ -556,13 +590,20 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	}
 	default:
 	{
-		// Between moves: a hit reaction while it lasts, else the idle (the second one once it is hurt).
+		// Between moves: a hit reaction while it lasts, else the walk while it moves, else the idle (the second one once it
+		// is hurt).
 		const int32 Hit = bHitHeavy[I] ? Skin.HitHeavy : Skin.HitLight;
 		if (Hit >= 0 && Now - HitSince[I] < static_cast<double>(Skin.Sequences[Hit]->GetPlayLength()))
 		{
 			Clip = Hit;
 			Time = Now - HitSince[I];
 			bTimed = true;
+		}
+		else if (bWalking[I])
+		{
+			Clip = Skin.Walk;
+			Time = WalkPhase[I];
+			bPhased = true;
 		}
 		else if (Skin.IdleTwo >= 0 && Kind.hp > 0 && static_cast<float>(Fight.enemyHp(static_cast<size_t>(I))) < kArenaSecondIdleHp * static_cast<float>(Kind.hp))
 		{
@@ -579,14 +620,14 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	const UAnimSequence* Sequence = Skin.Sequences[Clip];
 	const ftcore::BeatClip& Row = (*Skin.Clips)[static_cast<size_t>(Clip)];
 	const float Length = Sequence->GetPlayLength();
-	if (!bTimed)
+	if (!bTimed && !bPhased)
 	{
 		Time = Now - SkinSince[I];
 	}
-	// A loop wraps; anything else holds its last frame.
+	// A loop wraps; anything else holds its last frame. The crossfade is the table's own when it states one.
 	const bool bLoop = Row.loop && !bTimed;
 	const float At = bLoop && Length > 0.f ? FMath::Fmod(static_cast<float>(Time), Length) : FMath::Clamp(static_cast<float>(Time), 0.f, Length);
-	Figure->PlayClip(Sequence, At, bLoop, FrameDelta, bHoldRoot);
+	Figure->PlayClip(Sequence, At, bLoop, FrameDelta, bHoldRoot, static_cast<float>(Skin.Clips->blend));
 }
 
 void UFTArenaRunner::PutBodiesAtStart()
@@ -611,6 +652,9 @@ void UFTArenaRunner::PutBodiesAtStart()
 		SkinClip[I] = -2;
 		SkinSince[I] = -1e9;
 		HitSince[I] = -1e9;
+		WalkSpeed[I] = 0.f;
+		bWalking[I] = false;
+		WalkPhase[I] = 0.0;
 	}
 	PlayerHitTime = -1e9;
 	ParryTime = -1e9;

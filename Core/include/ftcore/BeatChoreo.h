@@ -111,6 +111,8 @@ namespace ftcore {
 inline constexpr std::size_t kMaxBeatClips = 128;
 inline constexpr std::size_t kMaxClipId = 31;   // characters
 inline constexpr std::size_t kMaxClipAsset = 127; // characters of an asset path
+inline constexpr double kMaxClipSpeed = 20.0;     // m/s, a clip's authored root speed
+inline constexpr double kMaxClipBlend = 1.0;      // s, the host's crossfade between clips
 inline constexpr std::int16_t kNoClip = -1;
 inline constexpr double kChoreoMinRate = 0.75;
 inline constexpr double kChoreoMaxRate = 1.35;
@@ -129,6 +131,7 @@ struct BeatClip {
     std::array<char, kMaxClipAsset + 1> assetText{}; // the host's asset path for the clip ("" if none)
     double length = 1.0;
     double impact = 0.0; // seconds into the clip; 0: none
+    double speed = 0.0;  // the root speed the clip was authored at, m/s (a walk plays at the body's speed over this); 0: none
     bool loop = false;
 
     std::string_view id() const { return std::string_view(idText.data()); }
@@ -139,6 +142,7 @@ struct BeatClips {
     std::array<BeatClip, kMaxBeatClips> items{};
     std::size_t count = 0;
     std::array<char, kMaxClipAsset + 1> meshText{}; // the skeletal mesh the clips are for (optional top-level "mesh"), "" if none
+    double blend = 0.0; // the crossfade between these clips, s (optional top-level "blend_s"); 0: the host's own
 
     std::string_view mesh() const { return std::string_view(meshText.data()); }
 
@@ -152,8 +156,9 @@ struct BeatClips {
 // Data/Anim/beat_clips.json: { "version": 1, "clips": [ {"id": "lead_stance", "asset":
 // "/Game/Combat/BeatAnims/Lead/lead_stance", "length_s": 2.0, "impact_s": 0, "loop": true} ] }. Ids
 // are 1..31 letters, digits, _ and -; the asset (optional) is a path of 1..127 characters beginning
-// with /, which the host loads; the length is over 0 and at most 60 s; the impact is within the clip. An optional
-// top-level "mesh" is the skeletal mesh asset the clips are for (a path like the asset's). Unknown keys are warnings. On failure `out` is empty
+// with /, which the host loads; the length is over 0 and at most 60 s; the impact is within the clip; the optional
+// "speed_mps" is over 0 and at most 20. An optional top-level "mesh" is the skeletal mesh asset the clips are for (a path like the
+// asset's), and an optional "blend_s" (over 0, at most 1) the crossfade between them. Unknown keys are warnings. On failure `out` is empty
 // and *error lists each problem with its path, one per line.
 FTCORE_API bool importBeatClips(std::string_view json, BeatClips& out, std::string* error = nullptr,
                                 std::vector<std::string>* warnings = nullptr);

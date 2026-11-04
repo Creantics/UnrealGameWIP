@@ -68,12 +68,12 @@ class FORGOTTENTHIRD_API UFTBeatFighterAnimInstance : public UAnimInstance
 	GENERATED_BODY()
 
 public:
-	// The crossfade between two clips, seconds.
+	// The crossfade between two clips, seconds, unless the caller gives its own.
 	static constexpr float BlendSeconds = 0.12f;
 
 	// The clip to show now, at clip time Time. Call it every frame. A different clip from last frame's fades in over
-	// BlendSeconds while the last fades out; a null clip leaves the pose as it was.
-	void SetPose(const UAnimSequence* Seq, float Time, bool bLoop, float DeltaSeconds);
+	// Blend seconds while the last fades out; a null clip leaves the pose as it was.
+	void SetPose(const UAnimSequence* Seq, float Time, bool bLoop, float DeltaSeconds, float Blend = BlendSeconds);
 	void SetHoldRoot(bool bHold) { bHoldRoot = bHold; }
 	void SetBuild(float InChest, float InHead, float InHands)
 	{

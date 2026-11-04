@@ -1148,13 +1148,20 @@ bool importBeatClips(std::string_view json, BeatClips& out, std::string* error, 
         return finish();
     }
     if (const JsonValue v = root["version"]; !(v.isInteger() && v.integer() == 1)) errors.push_back("version: expected 1");
-    ld.unknownKeys(root, "", {"version", "clips", "mesh"});
+    ld.unknownKeys(root, "", {"version", "clips", "mesh", "blend_s"});
     if (const JsonValue mv = root["mesh"]; !mv.isAbsent()) {
         const std::string_view mesh = mv.string();
         if (!mv.isString() || mesh.empty() || mesh.size() > kMaxClipAsset || mesh[0] != '/')
             errors.push_back("mesh: expected a path of 1.." + std::to_string(kMaxClipAsset) + " characters beginning with /");
         else
             std::copy(mesh.begin(), mesh.end(), out.meshText.begin());
+    }
+    if (const JsonValue bv = root["blend_s"]; !bv.isAbsent()) {
+        const double blend = bv.number(-1.0);
+        if (!bv.isNumber() || !std::isfinite(blend) || !(blend > 0.0) || blend > kMaxClipBlend)
+            errors.push_back("blend_s: expected seconds over 0 and at most " + choreoNumberText(kMaxClipBlend));
+        else
+            out.blend = blend;
     }
     const JsonValue list = root["clips"];
     if (!list.isArray() || list.size() == 0 || list.size() > kMaxBeatClips) {
@@ -1164,7 +1171,7 @@ bool importBeatClips(std::string_view json, BeatClips& out, std::string* error, 
     for (std::uint32_t i = 0; i < list.size(); ++i) {
         const std::string where = "clips[" + std::to_string(i) + "]";
         const JsonValue c = list[i];
-        ld.unknownKeys(c, where, {"id", "asset", "length_s", "impact_s", "loop"});
+        ld.unknownKeys(c, where, {"id", "asset", "length_s", "impact_s", "speed_mps", "loop"});
         BeatClip clip;
         const std::string_view id = c["id"].string();
         if (!choreoIdText(id)) {
@@ -1192,6 +1199,13 @@ bool importBeatClips(std::string_view json, BeatClips& out, std::string* error, 
                 errors.push_back(where + ".impact_s: expected seconds within the clip (0: none), 0.." + choreoNumberText(clip.length));
             else
                 clip.impact = impact;
+        }
+        if (const JsonValue sv = c["speed_mps"]; !sv.isAbsent()) {
+            const double speed = sv.number(-1.0);
+            if (!sv.isNumber() || !std::isfinite(speed) || !(speed > 0.0) || speed > kMaxClipSpeed)
+                errors.push_back(where + ".speed_mps: expected metres a second over 0 and at most " + choreoNumberText(kMaxClipSpeed));
+            else
+                clip.speed = speed;
         }
         if (const JsonValue lv = c["loop"]; !lv.isAbsent()) {
             if (!lv.isBool()) errors.push_back(where + ".loop: expected true or false");
