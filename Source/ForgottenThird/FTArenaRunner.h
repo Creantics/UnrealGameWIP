@@ -56,6 +56,7 @@ struct FFTArenaSkin
 	int32 IdleTwo = -1;
 	int32 Stagger = -1;
 	int32 FaceDown = -1;
+	int32 Open = -1;
 	int32 Defeat = -1;
 	int32 HitLight = -1;
 	int32 HitHeavy = -1;

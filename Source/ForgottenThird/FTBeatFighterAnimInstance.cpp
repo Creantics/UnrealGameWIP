@@ -12,7 +12,9 @@ void UFTBeatFighterAnimInstance::SetPose(const UAnimSequence* Seq, float Time, b
 	{
 		return;
 	}
-	if (Slots[0].Seq != Seq)
+	// The same clip begun again fades in over itself where the owner asks (SetFadeRestart), as a new clip does.
+	const bool bRestart = bFadeRestart && Slots[0].Seq == Seq && !bLoop && Time < Slots[0].Time - 0.05f;
+	if (Slots[0].Seq != Seq || bRestart)
 	{
 		// The clip showing becomes the first to fade out; the one that was fading out first, the second.
 		if (Slots[0].Seq)

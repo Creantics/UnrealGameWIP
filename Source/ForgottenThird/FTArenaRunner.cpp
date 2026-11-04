@@ -496,6 +496,7 @@ void UFTArenaRunner::LoadSkin(int32 I)
 	Skin.IdleTwo = Find("idle_p2");
 	Skin.Stagger = Find("stagger");
 	Skin.FaceDown = Find("face_down");
+	Skin.Open = Find("open");
 	Skin.Defeat = Find("defeat");
 	Skin.HitLight = Find("hit_light");
 	Skin.HitHeavy = Find("hit_heavy");
@@ -541,6 +542,9 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		Clip = Skin.Stagger >= 0 ? Skin.Stagger : Skin.Idle;
 		break;
 	case ftcore::ArenaBrain::Open:
+		// Its own clip where it has one: a parried enemy is open for openTime, and a riposte cuts it to the face-down clip.
+		Clip = Skin.Open >= 0 ? Skin.Open : (Skin.FaceDown >= 0 ? Skin.FaceDown : (Skin.Stagger >= 0 ? Skin.Stagger : Skin.Idle));
+		break;
 	case ftcore::ArenaBrain::Down:
 		Clip = Skin.FaceDown >= 0 ? Skin.FaceDown : (Skin.Stagger >= 0 ? Skin.Stagger : Skin.Idle);
 		break;
@@ -585,6 +589,12 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: enemy %d plays %s for move %d at rate %.2f (%.2f s)."), I,
 				*Skin.Sequences[Clip]->GetName(), static_cast<int32>(Out.move), MoveRate, Skin.Sequences[Clip]->GetPlayLength());
+		}
+		else
+		{
+			// Every other change too, at fight time, so a capture can be cut at each clip's start.
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: enemy %d plays %s at %.3f s (%.2f s)."), I, *Skin.Sequences[Clip]->GetName(),
+				Fight.time(), Skin.Sequences[Clip]->GetPlayLength());
 		}
 	}
 	const UAnimSequence* Sequence = Skin.Sequences[Clip];
