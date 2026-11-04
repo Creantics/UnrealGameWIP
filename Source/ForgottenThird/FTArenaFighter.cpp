@@ -317,14 +317,14 @@ bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float
 	return true;
 }
 
-void AFTArenaFighter::PlayClip(const UAnimSequence* Clip, float Time, bool bLoop, float DeltaSeconds, bool bHoldRoot)
+void AFTArenaFighter::PlayClip(const UAnimSequence* Clip, float Time, bool bLoop, float DeltaSeconds, bool bHoldRoot, float Blend)
 {
 	UFTBeatFighterAnimInstance* Anim = SkinKind == ESkin::Creature ? Cast<UFTBeatFighterAnimInstance>(Skin->GetAnimInstance()) : nullptr;
 	if (Anim)
 	{
 		Anim->SetHoldRoot(bHoldRoot);
 		Anim->SetFadeRestart(true); // a second hit while the first one's reaction plays
-		Anim->SetPose(Clip, Time, bLoop, DeltaSeconds);
+		Anim->SetPose(Clip, Time, bLoop, DeltaSeconds, Blend > 0.f ? Blend : UFTBeatFighterAnimInstance::BlendSeconds);
 	}
 }
 

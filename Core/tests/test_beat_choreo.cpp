@@ -202,6 +202,28 @@ TEST_CASE("beat choreo: the loader takes any number of clips up to the cap, and 
         CHECK_FALSE(importBeatClips(swapText(clipsJson(1), R"("clips")", R"("mesh": 3, "clips")"), c, &error));
         CHECK(c.mesh().empty());
     }
+    SUBCASE("the optional walk speed and blend") {
+        REQUIRE_MESSAGE(importBeatClips(clipsJson(1), c, &error), error);
+        CHECK(c[0].speed == 0.0);
+        CHECK(c.blend == 0.0);
+        std::vector<std::string> warnings;
+        REQUIRE_MESSAGE(importBeatClips(swapText(swapText(clipsJson(1), R"("impact_s": 0.5)", R"("impact_s": 0.5, "speed_mps": 1.15)"),
+                                                 R"("clips")", R"("blend_s": 0.3, "clips")"), c, &error, &warnings), error);
+        CHECK(warnings.empty());
+        CHECK(c[0].speed == doctest::Approx(1.15));
+        CHECK(c.blend == doctest::Approx(0.3));
+        const auto refused = [&](const std::string& json, const std::string& needle) {
+            CHECK_FALSE(importBeatClips(json, c, &error));
+            CHECK_MESSAGE(error.find(needle) != std::string::npos, error);
+            CHECK(c.blend == 0.0);
+        };
+        refused(clipsJson(0, R"({"id": "a", "length_s": 1, "speed_mps": 0})"), "clips[0].speed_mps: expected metres a second over 0 and at most 20");
+        refused(clipsJson(0, R"({"id": "a", "length_s": 1, "speed_mps": 21})"), "clips[0].speed_mps");
+        refused(clipsJson(0, R"({"id": "a", "length_s": 1, "speed_mps": "1"})"), "clips[0].speed_mps");
+        refused(swapText(clipsJson(1), R"("clips")", R"("blend_s": 0, "clips")"), "blend_s: expected seconds over 0 and at most 1");
+        refused(swapText(clipsJson(1), R"("clips")", R"("blend_s": 1.5, "clips")"), "blend_s");
+        refused(swapText(clipsJson(1), R"("clips")", R"("blend_s": true, "clips")"), "blend_s");
+    }
     SUBCASE("unknown keys are warnings") {
         std::vector<std::string> warnings;
         CHECK(importBeatClips(swapText(clipsJson(1), R"("impact_s": 0.5)", R"("impact_s": 0.5, "notes": "x")"), c, &error, &warnings));

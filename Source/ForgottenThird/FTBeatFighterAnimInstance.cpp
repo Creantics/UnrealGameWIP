@@ -6,7 +6,7 @@
 #include "AnimationRuntime.h"
 #include "BonePose.h"
 
-void UFTBeatFighterAnimInstance::SetPose(const UAnimSequence* Seq, float Time, bool bLoop, float DeltaSeconds)
+void UFTBeatFighterAnimInstance::SetPose(const UAnimSequence* Seq, float Time, bool bLoop, float DeltaSeconds, float Blend)
 {
 	if (!Seq)
 	{
@@ -31,7 +31,7 @@ void UFTBeatFighterAnimInstance::SetPose(const UAnimSequence* Seq, float Time, b
 	}
 
 	// The new clip's weight rises; the others share what is left in the proportion they had.
-	const float Step = BlendSeconds > 0.f ? DeltaSeconds / BlendSeconds : 1.f;
+	const float Step = Blend > 0.f ? DeltaSeconds / Blend : 1.f;
 	Slots[0].Weight = FMath::Min(1.f, Slots[0].Weight + Step);
 	const float Rest = 1.f - Slots[0].Weight;
 	const float Old = Slots[1].Weight + Slots[2].Weight;

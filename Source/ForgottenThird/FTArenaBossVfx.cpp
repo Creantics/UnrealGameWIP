@@ -5,7 +5,9 @@
 #include "FTVfxComponent.h"
 #include "ForgottenThird.h"
 #include "HAL/FileManager.h"
+#include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
+#include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "NiagaraSystem.h"
 
@@ -94,6 +96,12 @@ void FFTArenaBossVfx::Spawn(UWorld* World, const FString& File)
 		return;
 	}
 	ReadTuning(File);
+	// The OFF half of an OFF/ON capture: the fight runs the same, nothing plays.
+	if (FParse::Param(FCommandLine::Get(), TEXT("ArenaNoBossFx")))
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: boss fx off (-ArenaNoBossFx)."));
+		return;
+	}
 	bSpawned = true;
 	for (int32 E = 0; E < EffectCount; ++E)
 	{

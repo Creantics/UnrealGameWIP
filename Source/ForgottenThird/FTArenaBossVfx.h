@@ -53,7 +53,8 @@ struct FFTArenaBossVfx
 	};
 
 	// Reads the tunables (File, relative to the project), loads the systems and spawns the pool in World. Once: later calls
-	// do nothing until Destroy. An effect whose system doesn't load is off, with one warning.
+	// do nothing until Destroy. An effect whose system doesn't load is off, with one warning. With -ArenaNoBossFx: nothing,
+	// with one note.
 	void Spawn(UWorld* World, const FString& File);
 	void Destroy();
 	bool IsSpawned() const { return bSpawned; }

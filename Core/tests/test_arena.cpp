@@ -1591,11 +1591,13 @@ TEST_CASE("arena parry: a window after the press, no window on a mashed press, a
         CHECK(parried->event.source == 0);
         CHECK(parried->event.target == kArenaPlayer);
         CHECK(rig.out().enemies[0].brain == ArenaBrain::Open);
+        CHECK(rig.out().enemies[0].stateLength == doctest::Approx(1.5f)); // the kind's openTime
         CHECK_FALSE(rig.out().enemies[0].token);
         rig.runFor(1.0f);
         CHECK(rig.out().enemies[0].brain == ArenaBrain::Open); // openTime is 1.5 s
         rig.runFor(0.6f);
         CHECK(rig.out().enemies[0].brain != ArenaBrain::Open);
+        CHECK(rig.out().enemies[0].stateLength == 0.f);
         CHECK(rig.out().player.parrying == false);
     }
     {   // a second press 0.45 s after the first (parryRearm 0.5 s) opens no window: the bite at 0.52 s is blocked
@@ -3958,6 +3960,7 @@ TEST_CASE("arena hooks: a hold cuts a live move at the next tick, lasts its seco
         rig.tick();
         CHECK(rig.fight.enemyHeld(0));
         CHECK(rig.out().enemies[0].brain == ArenaBrain::Open);
+        CHECK(rig.out().enemies[0].stateLength == doctest::Approx(0.5f)); // the hold's, not the kind's openTime
         CHECK_FALSE(rig.out().enemies[0].token);
         const int started = rig.count(ArenaEventType::AttackStarted);
         rig.run(27); // 28 ticks held: 0.47 s
@@ -3978,6 +3981,7 @@ TEST_CASE("arena hooks: a hold cuts a live move at the next tick, lasts its seco
         const int started = rig.count(ArenaEventType::AttackStarted);
         rig.runFor(5.f);
         CHECK(rig.out().enemies[0].brain == ArenaBrain::Down);
+        CHECK(rig.out().enemies[0].stateLength == kForever);
         CHECK(rig.fight.enemyHeld(0));
         CHECK(rig.count(ArenaEventType::AttackStarted) == started);
         rig.fight.releaseEnemy(0);

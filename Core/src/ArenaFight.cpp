@@ -280,6 +280,7 @@ struct ArenaFightImpl {
             eo.part = ArenaPart::None;
             eo.move = 0;
             eo.stateTime = foe.stateTime;
+            eo.stateLength = i < n ? recoverLength(i) : 0.f;
             eo.token = foe.token;
             if (i < n && foe.brain == ArenaBrain::Attack) {
                 eo.part = arenaPartOf(def.enemies[i].moves[foe.move].attack, foe.stateTime);
@@ -1377,13 +1378,21 @@ struct ArenaFightImpl {
         return arenaClampLength(want, k.strafeSpeed);
     }
 
+    // How long enemy i's Staggered, Open or Down lasts in all: the host's hold while one runs, else the kind's time.
+    // 0 in any other state.
+    float recoverLength(std::size_t i) const {
+        const Enemy& foe = foes[i];
+        const ArenaEnemyKind& k = def.enemies[i];
+        if (foe.brain != ArenaBrain::Staggered && foe.brain != ArenaBrain::Open && foe.brain != ArenaBrain::Down) return 0.f;
+        return foe.holdFor >= 0.f                ? foe.holdFor // the host's hold
+               : foe.brain == ArenaBrain::Staggered ? k.staggerTime
+               : foe.brain == ArenaBrain::Open      ? k.openTime
+                                                    : k.downTime;
+    }
+
     void recover(std::size_t i) {
         Enemy& foe = foes[i];
-        const ArenaEnemyKind& k = def.enemies[i];
-        const float length = foe.holdFor >= 0.f                ? foe.holdFor // the host's hold
-                             : foe.brain == ArenaBrain::Staggered ? k.staggerTime
-                             : foe.brain == ArenaBrain::Open      ? k.openTime
-                                                                  : k.downTime;
+        const float length = recoverLength(i);
         foe.stateTime += dt;
         if (foe.stateTime >= length) {
             foe.brain = ArenaBrain::Approach;

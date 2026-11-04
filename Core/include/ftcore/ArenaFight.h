@@ -483,6 +483,8 @@ struct ArenaEnemyOut {
     ArenaPart part = ArenaPart::None; // Attack
     std::uint8_t move = 0;            // Attack: the move index
     float stateTime = 0.f;            // seconds in this brain state (Attack: in this move)
+    float stateLength = 0.f;          // Staggered, Open, Down: the state's whole length, s (the host's hold while one
+                                      // runs; +infinity until a release); 0 in any other state
     bool token = false;               // holds an attack token
 };
 

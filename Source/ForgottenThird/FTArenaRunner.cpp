@@ -57,6 +57,13 @@ constexpr float kArenaMinClipRate = 0.25f;
 constexpr float kArenaMaxClipRate = 4.f;
 // Under this share of its hp a skinned enemy idles its second-phase way (when its table has one).
 constexpr float kArenaSecondIdleHp = 0.6f;
+// A skin with a walk clip walks above the first ground speed (m/s) and stops under the second; its speed is smoothed over
+// kArenaWalkSmooth seconds, and the walk plays at that speed over its authored one, held to these rates.
+constexpr float kArenaWalkStart = 0.35f;
+constexpr float kArenaWalkStop = 0.1f;
+constexpr float kArenaWalkSmooth = 0.15f;
+constexpr float kArenaMinWalkRate = 0.5f;
+constexpr float kArenaMaxWalkRate = 1.6f;
 // Camera: pitch limits, the pitch while locked, how fast it turns to a lock, stick and mouse rates.
 constexpr float kArenaPitchMin = -50.f;
 constexpr float kArenaPitchMax = 15.f;
@@ -496,10 +503,16 @@ void UFTArenaRunner::LoadSkin(int32 I)
 	Skin.IdleTwo = Find("idle_p2");
 	Skin.Stagger = Find("stagger");
 	Skin.FaceDown = Find("face_down");
+	Skin.FaceDownIn = Skin.FaceDown >= 0 ? Find("face_down_in") : -1;
+	Skin.FaceDownOut = Skin.FaceDown >= 0 ? Find("face_down_out") : -1;
 	Skin.Open = Find("open");
 	Skin.Defeat = Find("defeat");
+	Skin.DefeatKneel = Find("defeat_kneel");
 	Skin.HitLight = Find("hit_light");
 	Skin.HitHeavy = Find("hit_heavy");
+	// The walk needs its authored speed to be played at the body's.
+	Skin.Walk = Find("walk");
+	Skin.Walk = Skin.Walk >= 0 && (*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed > 0.0 ? Skin.Walk : -1;
 	for (size_t M = 0; M < ftcore::kMaxArenaMoves; ++M)
 	{
 		Skin.MoveClip[M] = M < Kind.moveCount ? Find(Kind.moves[M].clip()) : -1;
@@ -528,26 +541,92 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		return;
 	}
 	int32 Clip = Skin.Idle;
-	bool bTimed = false; // the time is Core's, not the time since the clip began
+	bool bTimed = false;  // the time is Core's, not the time since the clip began
+	bool bPhased = false; // the time is the walk's own phase (it still loops)
 	double Time = 0.0;
 	bool bHoldRoot = true;
 	float MoveRate = 0.f; // a move's clip's playing rate, else 0
+	if (Skin.Walk >= 0)
+	{
+		// The body's ground speed over the last step, smoothed. It walks between moves while that is over the start speed,
+		// until it falls under the stop speed, at that speed over the clip's authored one.
+		const ftcore::Vec2 From = PrevBodies.enemies[static_cast<size_t>(I)];
+		const ftcore::Vec2 To = Bodies.enemies[static_cast<size_t>(I)];
+		const float Ground = FMath::Sqrt(FMath::Square(To.x - From.x) + FMath::Square(To.y - From.y)) / StepSeconds;
+		WalkSpeed[I] += (Ground - WalkSpeed[I]) * FMath::Min(1.f, FrameDelta / kArenaWalkSmooth);
+		const bool bWas = bWalking[I];
+		const bool bBetween = Out.brain == ftcore::ArenaBrain::Approach || Out.brain == ftcore::ArenaBrain::Strafe;
+		bWalking[I] = bBetween && WalkSpeed[I] > (bWas ? kArenaWalkStop : kArenaWalkStart);
+		if (bWalking[I])
+		{
+			const float Authored = static_cast<float>((*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed);
+			const float Rate = FMath::Clamp(WalkSpeed[I] / Authored, kArenaMinWalkRate, kArenaMaxWalkRate);
+			WalkPhase[I] = bWas ? WalkPhase[I] + static_cast<double>(FrameDelta * Rate) : 0.0;
+			if (!bWas)
+			{
+				// Logged for the walk checks in -nullrhi runs.
+				UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: enemy %d walks at %.2f m/s (rate %.2f)."), Now, I, WalkSpeed[I], Rate);
+			}
+		}
+	}
+	// Down, and Open without a clip of its own, are spent on its knees; one that dies there is still on them.
+	const bool bKnees = Out.brain == ftcore::ArenaBrain::Down || (Out.brain == ftcore::ArenaBrain::Open && Skin.Open < 0);
+	const double UpLength = Skin.FaceDownOut >= 0 ? static_cast<double>(Skin.Sequences[Skin.FaceDownOut]->GetPlayLength()) : 0.0;
+	if (Out.brain != ftcore::ArenaBrain::Dead)
+	{
+		if (bKnees && !bKneeling[I])
+		{
+			// The go-down is its reaction: a blow just before it, or on its knees, makes no flinch.
+			KneelSince[I] = Now;
+			HitSince[I] = -1e9;
+			UpAt[I] = 0.0;
+		}
+		else if (!bKnees && bKneeling[I] && UpAt[I] < UpLength)
+		{
+			// The spell ended before its get-up ran out (a release from a hold): it still gets up, from where it got to.
+			UpOwedUntil[I] = Now + (UpLength - UpAt[I]);
+		}
+		bKneeling[I] = bKnees;
+	}
+	bool bOwedUp = false;
 	switch (Out.brain)
 	{
 	case ftcore::ArenaBrain::Dead:
-		Clip = Skin.Defeat >= 0 ? Skin.Defeat : Skin.Idle;
+		Clip = bKneeling[I] && Skin.DefeatKneel >= 0 ? Skin.DefeatKneel : (Skin.Defeat >= 0 ? Skin.Defeat : Skin.Idle);
 		bHoldRoot = false; // it falls
 		break;
 	case ftcore::ArenaBrain::Staggered:
 		Clip = Skin.Stagger >= 0 ? Skin.Stagger : Skin.Idle;
 		break;
 	case ftcore::ArenaBrain::Open:
-		// Its own clip where it has one: a parried enemy is open for openTime, and a riposte cuts it to the face-down clip.
-		Clip = Skin.Open >= 0 ? Skin.Open : (Skin.FaceDown >= 0 ? Skin.FaceDown : (Skin.Stagger >= 0 ? Skin.Stagger : Skin.Idle));
-		break;
 	case ftcore::ArenaBrain::Down:
+	{
+		if (!bKnees)
+		{
+			// Its own clip where it has one: a parried enemy is open for openTime, and a riposte cuts it to the face-down clip.
+			Clip = Skin.Open;
+			break;
+		}
+		// On its knees: it goes down from the spell's start (an Open chained into a Down is one spell), holds there, and
+		// gets up so that it stands as the state ends (never early in a hold until a release). The get-up wins a short state.
 		Clip = Skin.FaceDown >= 0 ? Skin.FaceDown : (Skin.Stagger >= 0 ? Skin.Stagger : Skin.Idle);
+		const double Spell = Now - KneelSince[I];
+		const double Left = static_cast<double>(Out.stateLength) - (static_cast<double>(Out.stateTime) + static_cast<double>(Alpha) * StepSeconds);
+		if (Skin.FaceDownOut >= 0 && FMath::IsFinite(Left) && Left < UpLength)
+		{
+			Clip = Skin.FaceDownOut;
+			Time = UpLength - FMath::Max(Left, 0.0);
+			bTimed = true;
+			UpAt[I] = Time;
+		}
+		else if (Skin.FaceDownIn >= 0 && Spell < static_cast<double>(Skin.Sequences[Skin.FaceDownIn]->GetPlayLength()))
+		{
+			Clip = Skin.FaceDownIn;
+			Time = Spell;
+			bTimed = true;
+		}
 		break;
+	}
 	case ftcore::ArenaBrain::Attack:
 	{
 		const int32 MoveClip = Out.move < Kind.moveCount ? Skin.MoveClip[Out.move] : -1;
@@ -566,13 +645,27 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	}
 	default:
 	{
-		// Between moves: a hit reaction while it lasts, else the idle (the second one once it is hurt).
+		// Between moves: the rest of a get-up still owed, else a hit reaction while it lasts, else the walk while it moves,
+		// else the idle (the second one once it is hurt).
 		const int32 Hit = bHitHeavy[I] ? Skin.HitHeavy : Skin.HitLight;
-		if (Hit >= 0 && Now - HitSince[I] < static_cast<double>(Skin.Sequences[Hit]->GetPlayLength()))
+		if (Now < UpOwedUntil[I])
+		{
+			Clip = Skin.FaceDownOut;
+			Time = UpLength - (UpOwedUntil[I] - Now);
+			bTimed = true;
+			bOwedUp = true;
+		}
+		else if (Hit >= 0 && Now - HitSince[I] < static_cast<double>(Skin.Sequences[Hit]->GetPlayLength()))
 		{
 			Clip = Hit;
 			Time = Now - HitSince[I];
 			bTimed = true;
+		}
+		else if (bWalking[I])
+		{
+			Clip = Skin.Walk;
+			Time = WalkPhase[I];
+			bPhased = true;
 		}
 		else if (Skin.IdleTwo >= 0 && Kind.hp > 0 && static_cast<float>(Fight.enemyHp(static_cast<size_t>(I))) < kArenaSecondIdleHp * static_cast<float>(Kind.hp))
 		{
@@ -580,6 +673,10 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		}
 		break;
 	}
+	}
+	if (!bOwedUp)
+	{
+		UpOwedUntil[I] = -1e9; // anything else (a move, a stagger, a death) takes it from the get-up for good
 	}
 	if (Clip != SkinClip[I])
 	{
@@ -600,14 +697,14 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	const UAnimSequence* Sequence = Skin.Sequences[Clip];
 	const ftcore::BeatClip& Row = (*Skin.Clips)[static_cast<size_t>(Clip)];
 	const float Length = Sequence->GetPlayLength();
-	if (!bTimed)
+	if (!bTimed && !bPhased)
 	{
 		Time = Now - SkinSince[I];
 	}
-	// A loop wraps; anything else holds its last frame.
+	// A loop wraps; anything else holds its last frame. The crossfade is the table's own when it states one.
 	const bool bLoop = Row.loop && !bTimed;
 	const float At = bLoop && Length > 0.f ? FMath::Fmod(static_cast<float>(Time), Length) : FMath::Clamp(static_cast<float>(Time), 0.f, Length);
-	Figure->PlayClip(Sequence, At, bLoop, FrameDelta, bHoldRoot);
+	Figure->PlayClip(Sequence, At, bLoop, FrameDelta, bHoldRoot, static_cast<float>(Skin.Clips->blend));
 }
 
 void UFTArenaRunner::PutBodiesAtStart()
@@ -632,6 +729,13 @@ void UFTArenaRunner::PutBodiesAtStart()
 		SkinClip[I] = -2;
 		SkinSince[I] = -1e9;
 		HitSince[I] = -1e9;
+		WalkSpeed[I] = 0.f;
+		bWalking[I] = false;
+		WalkPhase[I] = 0.0;
+		bKneeling[I] = false;
+		KneelSince[I] = 0.0;
+		UpAt[I] = 0.0;
+		UpOwedUntil[I] = -1e9;
 	}
 	PlayerHitTime = -1e9;
 	ParryTime = -1e9;
@@ -850,8 +954,11 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 				BossHitVfx(E);
 				EnemyHitTime[E.target] = Now;
 				// A heavy blow, a riposte or a Release is a heavy reaction.
-				HitSince[E.target] = Now;
-				bHitHeavy[E.target] = E.move == ftcore::kArenaHeavyMove || E.move == ftcore::kArenaRiposteMove || E.move == ftcore::kArenaReleaseMove;
+				if (Flinches(E.target))
+				{
+					HitSince[E.target] = Now;
+					bHitHeavy[E.target] = E.move == ftcore::kArenaHeavyMove || E.move == ftcore::kArenaRiposteMove || E.move == ftcore::kArenaReleaseMove;
+				}
 			}
 			break;
 		case ftcore::ArenaEventType::Parried:
@@ -867,8 +974,11 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			{
 				BossHitVfx(E);
 				EnemyHitTime[E.target] = Now;
-				HitSince[E.target] = Now;
-				bHitHeavy[E.target] = true;
+				if (Flinches(E.target))
+				{
+					HitSince[E.target] = Now;
+					bHitHeavy[E.target] = true;
+				}
 			}
 			break;
 		case ftcore::ArenaEventType::Released:
@@ -883,8 +993,11 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			{
 				BossHitVfx(E);
 				EnemyHitTime[E.target] = Now;
-				HitSince[E.target] = Now;
-				bHitHeavy[E.target] = false;
+				if (Flinches(E.target))
+				{
+					HitSince[E.target] = Now;
+					bHitHeavy[E.target] = false;
+				}
 			}
 			break;
 		case ftcore::ArenaEventType::AttackStarted:
@@ -1019,7 +1132,7 @@ void UFTArenaRunner::SplitBossCarried()
 	TArray<FFTCarriedPiece> Pieces;
 	if (ReadCarriedSplit(kStoneBearerSplit, HideSlot, Pieces) && Figure->SplitCarried(HideSlot, Pieces))
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena: boss %.2f: the carried piece split into %d parts in its hands."), Now, Pieces.Num());
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: boss %.2f: the carried piece split into %d parts on its bones."), Now, Pieces.Num());
 	}
 }
 

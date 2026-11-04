@@ -58,8 +58,13 @@ struct FFTArenaSkin
 	int32 FaceDown = -1;
 	int32 Open = -1;
 	int32 Defeat = -1;
+	int32 DefeatKneel = -1; // optional: a death on its knees, else defeat
 	int32 HitLight = -1;
 	int32 HitHeavy = -1;
+	int32 Walk = -1; // optional: played at the body's ground speed over its authored speed_mps, else the idle
+	// Optional, with face_down: the go-down into it and the get-up out of it, else face_down throughout.
+	int32 FaceDownIn = -1;
+	int32 FaceDownOut = -1;
 	std::array<int32, ftcore::kMaxArenaMoves> MoveClip{};
 
 	bool IsLoaded() const { return Clips.IsValid() && Idle >= 0; }
@@ -201,7 +206,7 @@ private:
 	void BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 From, uint8 To);
 	void BossHitVfx(const ftcore::ArenaEvent& E);
 	FVector BossWeakPoint() const;
-	// The boss broke its carried piece: its figure takes the parts in its hands (once a fight).
+	// The boss broke its carried piece: its figure takes the parts on the split file's bones (once a fight).
 	void SplitBossCarried();
 	// Plain kinds' weak points (ftcore/ArenaKindCrit.h): Data/Battle/arena_crit.json read once, then on each begin and
 	// restart one ArenaKindCrit per slot whose kind has an entry, and the blow hook that rules on the lead's blows on them.
@@ -230,6 +235,8 @@ private:
 	// Picks and times slot I's clip from its Core state: the move's own clip through an attack, at the rate that lands its
 	// impact at the end of the startup; stagger; face down while open; the hit reaction between moves; defeat; idle.
 	void DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const ftcore::ArenaEnemyKind& Kind, float Alpha);
+	// Whether a blow makes slot I flinch: not on its knees (the go-down is its reaction), nor while it gets up from them.
+	bool Flinches(int32 I) const { return !bKneeling[I] && Now >= UpOwedUntil[I]; }
 	void PutBodiesAtStart();
 	// This frame's presses (edges kept until a step takes them), the held guard, the stick and the camera.
 	void PollInput(float DeltaSeconds);
@@ -274,6 +281,16 @@ private:
 	double SkinSince[ftcore::kMaxArenaEnemies];
 	double HitSince[ftcore::kMaxArenaEnemies];
 	bool bHitHeavy[ftcore::kMaxArenaEnemies] = {};
+	// A walking skin: its smoothed ground speed (m/s), whether it walks, and where it is in the walk clip (s).
+	float WalkSpeed[ftcore::kMaxArenaEnemies] = {};
+	bool bWalking[ftcore::kMaxArenaEnemies] = {};
+	double WalkPhase[ftcore::kMaxArenaEnemies] = {};
+	// A skin on its knees (Down, or Open without a clip of its own; one spell however the states chain) and since when, how
+	// far into its get-up it was last drawn (s), and until when a get-up cut short by the spell's end is still owed.
+	bool bKneeling[ftcore::kMaxArenaEnemies] = {};
+	double KneelSince[ftcore::kMaxArenaEnemies] = {};
+	double UpAt[ftcore::kMaxArenaEnemies] = {};
+	double UpOwedUntil[ftcore::kMaxArenaEnemies] = {};
 	float FrameDelta = 0.f; // the frame's seconds, for the clips' crossfades
 
 	ftcore::ArenaTable Table;
