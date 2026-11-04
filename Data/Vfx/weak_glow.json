@@ -3,20 +3,20 @@
   "emitters": [
     {
       "name": "core",
-      "rate": 16,
+      "rate": 32,
       "duration": 1.0,
       "loop": true,
       "maxParticles": 16,
-      "lifetime": [0.4, 0.6],
+      "lifetime": [0.22, 0.3],
       "shape": "sphere",
       "radius": 0.05,
       "speed": 0.0,
       "startSize": [0.9, 1.2],
       "sizeOverLife": [{"t": 0.0, "v": 0.7}, {"t": 0.5, "v": 1.05}, {"t": 1.0, "v": 0.85}],
       "colorOverLife": [
-        {"t": 0.0, "color": [1.6, 1.05, 0.35, 0.0]},
-        {"t": 0.4, "color": [1.6, 1.05, 0.35, 0.45]},
-        {"t": 1.0, "color": [1.2, 0.7, 0.2, 0.0]}
+        {"t": 0.0, "color": [1.9, 1.25, 0.42, 0.0]},
+        {"t": 0.2, "color": [1.9, 1.25, 0.42, 0.5]},
+        {"t": 1.0, "color": [1.4, 0.82, 0.24, 0.0]}
       ],
       "blend": "additive",
       "sprite": "soft",

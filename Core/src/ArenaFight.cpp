@@ -1123,15 +1123,18 @@ struct ArenaFightImpl {
         }
     }
 
-    // With the token, a move whose [minRange, maxRange] holds the player's distance and whose cooldown is over is
-    // picked, weighted by `weight`; when none fits, the nearest move's band is where to walk to.
+    // With the token, a move whose [minRange, maxRange] holds the player's distance, whose cooldown is over and whose
+    // bit the host's move mask sets is picked, weighted by `weight`; when none fits, the nearest such move's band is
+    // where to walk to.
     Pick pickMove(std::size_t i, float distance) {
         const Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         const auto gapOf = [&](const ArenaEnemyMove& mv) {
             return distance > mv.maxRange ? distance - mv.maxRange : (distance < mv.minRange ? mv.minRange - distance : 0.f);
         };
-        const auto ready = [&](std::size_t m) { return k.moves[m].weight > 0.f && foe.cooldown[m] <= 0.f; };
+        const auto ready = [&](std::size_t m) {
+            return k.moves[m].weight > 0.f && foe.cooldown[m] <= 0.f && ((foe.moveMask >> m) & 1u) != 0u;
+        };
         Pick pick;
         float total = 0.f;
         int nearest = -1;
@@ -1721,6 +1724,11 @@ void ArenaFight::setEnemyHpFloor(std::size_t i, int hpFloor) {
     if (i < enemyCount_) enemy_[i].hpFloor = std::max(0, hpFloor);
 }
 int ArenaFight::enemyHpFloor(std::size_t i) const { return i < enemyCount_ ? enemy_[i].hpFloor : 0; }
+static_assert(kMaxArenaMoves <= 32, "a move mask holds one bit per move");
+void ArenaFight::setEnemyMoveMask(std::size_t i, std::uint32_t mask) {
+    if (i < enemyCount_) enemy_[i].moveMask = mask;
+}
+std::uint32_t ArenaFight::enemyMoveMask(std::size_t i) const { return i < enemyCount_ ? enemy_[i].moveMask : 0u; }
 void ArenaFight::setBlowHook(ArenaBlowHook hook, void* user) {
     blowHook_ = hook;
     blowUser_ = hook ? user : nullptr;
