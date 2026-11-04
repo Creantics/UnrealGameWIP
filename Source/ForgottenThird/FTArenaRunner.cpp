@@ -505,6 +505,7 @@ void UFTArenaRunner::LoadSkin(int32 I)
 	Skin.FaceDown = Find("face_down");
 	Skin.FaceDownIn = Skin.FaceDown >= 0 ? Find("face_down_in") : -1;
 	Skin.FaceDownOut = Skin.FaceDown >= 0 ? Find("face_down_out") : -1;
+	Skin.Open = Find("open");
 	Skin.Defeat = Find("defeat");
 	Skin.HitLight = Find("hit_light");
 	Skin.HitHeavy = Find("hit_heavy");
@@ -567,7 +568,8 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 			}
 		}
 	}
-	const bool bKnees = Out.brain == ftcore::ArenaBrain::Open || Out.brain == ftcore::ArenaBrain::Down;
+	// Down, and Open without a clip of its own, are spent on its knees.
+	const bool bKnees = Out.brain == ftcore::ArenaBrain::Down || (Out.brain == ftcore::ArenaBrain::Open && Skin.Open < 0);
 	if (bKnees && !bKneeling[I])
 	{
 		KneelSince[I] = Now;
@@ -585,6 +587,12 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	case ftcore::ArenaBrain::Open:
 	case ftcore::ArenaBrain::Down:
 	{
+		if (!bKnees)
+		{
+			// Its own clip where it has one: a parried enemy is open for openTime, and a riposte cuts it to the face-down clip.
+			Clip = Skin.Open;
+			break;
+		}
 		// On its knees: it goes down from the spell's start (an Open chained into a Down is one spell), holds there, and
 		// gets up so that it stands as the state ends (never early in a hold until a release). The get-up wins a short state.
 		Clip = Skin.FaceDown >= 0 ? Skin.FaceDown : (Skin.Stagger >= 0 ? Skin.Stagger : Skin.Idle);
@@ -654,11 +662,11 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: enemy %d plays %s for move %d at rate %.2f (%.2f s)."), I,
 				*Skin.Sequences[Clip]->GetName(), static_cast<int32>(Out.move), MoveRate, Skin.Sequences[Clip]->GetPlayLength());
 		}
-		else if (Clip == Skin.FaceDownIn || Clip == Skin.FaceDownOut)
+		else
 		{
-			// Logged for the knee checks in -nullrhi runs.
-			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: enemy %d plays %s, %.2f s into a %.2f s state."), Now, I, *Skin.Sequences[Clip]->GetName(),
-				Out.stateTime, Out.stateLength);
+			// Every other change too, at fight time, so a capture can be cut at each clip's start.
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: enemy %d plays %s at %.3f s (%.2f s)."), I, *Skin.Sequences[Clip]->GetName(),
+				Fight.time(), Skin.Sequences[Clip]->GetPlayLength());
 		}
 	}
 	const UAnimSequence* Sequence = Skin.Sequences[Clip];

@@ -56,6 +56,7 @@ struct FFTArenaSkin
 	int32 IdleTwo = -1;
 	int32 Stagger = -1;
 	int32 FaceDown = -1;
+	int32 Open = -1;
 	int32 Defeat = -1;
 	int32 HitLight = -1;
 	int32 HitHeavy = -1;
@@ -281,7 +282,7 @@ private:
 	float WalkSpeed[ftcore::kMaxArenaEnemies] = {};
 	bool bWalking[ftcore::kMaxArenaEnemies] = {};
 	double WalkPhase[ftcore::kMaxArenaEnemies] = {};
-	// A skin on its knees (Open or Down, one spell however the states chain) and since when.
+	// A skin on its knees (Down, or Open without a clip of its own; one spell however the states chain) and since when.
 	bool bKneeling[ftcore::kMaxArenaEnemies] = {};
 	double KneelSince[ftcore::kMaxArenaEnemies] = {};
 	float FrameDelta = 0.f; // the frame's seconds, for the clips' crossfades

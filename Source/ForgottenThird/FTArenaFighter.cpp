@@ -323,6 +323,7 @@ void AFTArenaFighter::PlayClip(const UAnimSequence* Clip, float Time, bool bLoop
 	if (Anim)
 	{
 		Anim->SetHoldRoot(bHoldRoot);
+		Anim->SetFadeRestart(true); // a second hit while the first one's reaction plays
 		Anim->SetPose(Clip, Time, bLoop, DeltaSeconds, Blend > 0.f ? Blend : UFTBeatFighterAnimInstance::BlendSeconds);
 	}
 }

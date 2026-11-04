@@ -10,5 +10,6 @@ The design package (`design/forgotten_third/`) and the generated assets still li
 | `lipsync/bake_face_tracks.py` | Turns phoneme alignment into `.nface` tracks (`docs/reference/lipsync_track_format.md`). `gold_set.json` is its hand-check set. | It imports `tools/blender/face_spec.py` by relative path. |
 | `blender/face_spec.py` | The face shape spec: shapes, layers, visemes, expressions. With no argument it writes `assets/rig/face_presets.json`, so pass the output path. | `python3 -I tools/blender/face_spec.py ../newengine/assets/rig/face_presets.json` |
 | `vo_direction/` | Extracts VO lines, carries their directions forward between drafts, and validates them. `test_vo_direction.py` is its unittest. | `build_directions.py` reads `design/forgotten_third/voice/voice_prompts.md` relative to this repo's root, so run it in newengine until the design package moves. |
+| `anim/clip_curves.py` | Curve report for a skinned `.glb`: per-clip joint speed, acceleration and jerk peaks, spikes, one-frame jumps, holds, C1 breaks, foot drift, root speed, loop closure and idle boundary diffs. Needs numpy; PNGs need matplotlib. Writes `curves.json`, `curves.md` and per-clip CSVs. | `python3 -I tools/anim/clip_curves.py <file.glb> <out_dir> [--clips Data/Anim/<boss>_clips.json] [--idle idle]` |
 
 These tools haven't been run from this repo yet, because this PC has no Python.

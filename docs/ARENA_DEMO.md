@@ -175,7 +175,8 @@ Everything about it is data and host-side: the fight's rules never read it.
 The mode plays, from Core's state each frame (`UFTBeatFighterAnimInstance`, a pose that is a function of the fight, with a 0.12 s
 crossfade between clips, or the table's own top-level `blend_s`): a move's own clip through an attack, timed by Core's clock for the move at the rate
 `impact_s / startup` (so the blow lands as the startup ends; held on its last frame if the clip is shorter than the move);
-`stagger` while staggered; `face_down` (looping) while open after a parry or down after a riposte, after the optional one-shot
+`stagger` while staggered; `open` (optional) while open after a parry; `face_down` (looping) while down after a riposte, or open
+without an `open` clip, after the optional one-shot
 `face_down_in` from the start of the spell (an Open chained into a Down is one spell) and before the optional `face_down_out`, timed
 to end as the state does (Core's `stateLength`: the kind's openTime or downTime, or the host's hold; never in a hold until a
 release; it wins a state too short for both); `hit_light` or `hit_heavy`
