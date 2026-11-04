@@ -201,6 +201,13 @@ private:
 	void EndStoneBearer();
 	// The host's new notes, one log line each (ids, counts and outcome words only); a crit's burst.
 	void LogStoneBearerNotes();
+	// The stone_bearer's move mask, a log line each time it changes.
+	void LogStoneMoveMask();
+	// The stone_bearer's walk after each step (its skinned figure only): starts and stops it from Core's wanted speed, and
+	// between moves moves its body at the walk clip's speed, or holds it still (see kStoneWalkHold in the .cpp).
+	void StoneBearerWalk(const ftcore::ArenaOutput& Out);
+	// A hit reaction for slot I, light or heavy, when it flinches (the stone_bearer's slot holds a playing one a while).
+	void StartFlinch(int32 I, bool bHeavy);
 	// The boss's effects: its attack part going From -> To (its tell through the startup, its impact as it turns active),
 	// a blow landing on it (E: Hit, CounterStagger or ReadCounter), and where its weak point is now.
 	void BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 From, uint8 To);
@@ -292,6 +299,13 @@ private:
 	double UpAt[ftcore::kMaxArenaEnemies] = {};
 	double UpOwedUntil[ftcore::kMaxArenaEnemies] = {};
 	float FrameDelta = 0.f; // the frame's seconds, for the clips' crossfades
+	// The stone_bearer's figure: when its walk began, when its get-up began (-1e9: none under way) and whether it is up
+	// for the rest of its down, the death clip it chose (-1: not yet), and its move mask as last logged.
+	double StoneWalkSince = -1e9;
+	double StoneUpStart = -1e9;
+	bool bStoneStood = false;
+	int32 StoneDeathClip = -1;
+	uint32 StoneMoveMask = 0xFFFFFFFFu;
 
 	ftcore::ArenaTable Table;
 	ftcore::ArenaZoneFit Fit;
