@@ -29,7 +29,13 @@ float lengthM(const ftcore::SeaWave& w) { return 2.f * kPi / w.k * 0.01f; }
 
 TEST_CASE("A default look raises a flat sea") {
     const SeaWaves sea = ftcore::seaWaves(SceneLook{});
-    for (const ftcore::SeaWave& w : sea.waves) CHECK(w.amplitude == 0.f);
+    for (const ftcore::SeaWave& w : sea.waves) {
+        CHECK(w.amplitude == 0.f);
+        // The material reads these as MPC_Env's defaults; a NaN there would poison the sea even at amplitude 0.
+        float v[4];
+        ftcore::packSeaWave(w, v);
+        for (float c : v) CHECK(std::isfinite(c));
+    }
     CHECK(sea.q == 0.f);
     CHECK(ftcore::seaHeight(sea, 1234.f, -567.f, 42.f) == 0.f);
     CHECK(ftcore::seaJacobian(sea, 0.f, 0.f, 0.f) == 1.f);
