@@ -16,8 +16,8 @@
 //     (CritWindow::judgeLockOn), and a crit scales the blow's damage and poise by the point's multiplier;
 //   - every opening, crit and close is kept as a note, and the runner logs each as one line, "Arena: kite ...".
 //
-// Stubs, each a named hook point that only leaves a note (a later step spawns Niagara systems from them): OnTelegraph,
-// OnCritOpened, OnCritLanded, OnHitTaken.
+// Named hook points, each leaving a note: OnTelegraph, OnCritOpened, OnCritLanded, OnHitTaken. The effects (FTKiteVfx.h)
+// play from the fight's events and this host's state (IsOpen, GetCrits), not from the notes.
 //
 // Nothing here allocates after Load.
 
@@ -90,7 +90,7 @@ private:
 	FFTKiteNote& Note(FFTKiteNote::EKind Kind, double At);
 	ftcore::Vec2 BossFacing() const;
 
-	// The named hook points (stubs): see the header comment.
+	// The named hook points: see the header comment.
 	void OnTelegraph(std::uint8_t Move, double T);
 	void OnCritOpened(double At, double Until);
 	void OnCritLanded(const ftcore::CritResult& Result, double At);

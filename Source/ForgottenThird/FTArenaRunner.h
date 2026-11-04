@@ -24,6 +24,7 @@
 
 #include "FTArenaBossVfx.h"
 #include "FTKiteHost.h"
+#include "FTKiteVfx.h"
 #include "FTStoneBearerHost.h"
 
 #include <array>
@@ -353,8 +354,9 @@ private:
 	// The crit count each slot's effects have answered (ArenaKindCrit::crits), and whether its tell is playing.
 	int32 KindCritCritsSeen[ftcore::kMaxArenaEnemies] = {};
 	bool bKindCritTelling[ftcore::kMaxArenaEnemies] = {};
-	// The Kite-Mother's weak-point host, its slot in the line-up (-1 without one) and the notes logged so far.
+	// The Kite-Mother's weak-point host, its slot in the line-up (-1 without one), the notes logged so far and its effects.
 	FFTKiteHost Kite;
 	int32 KiteSlot = -1;
 	int32 KiteLogged = 0;
+	FFTKiteVfx KiteFx;
 };
