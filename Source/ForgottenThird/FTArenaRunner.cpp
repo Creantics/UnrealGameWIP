@@ -89,6 +89,18 @@ constexpr double kStoneFlinchHold = 2.0;
 constexpr double kStoneFlinchRestart = 0.4;
 // The stone_bearer dies kneeling only while the kneel is on screen: down, going down, or its get-up at most this share in.
 constexpr double kStoneKneelDeathUp = 0.4;
+// The stone_bearer's stepping turn (its slot only, skinned, with turn_l and turn_r): standing between moves, Core never turns
+// it on the spot. When the lead is kStoneTurnStart degrees or more off its facing, it doesn't walk and its idle has faded in,
+// it steps round in cycles of kStoneTurnCycle seconds, each turning it kStoneTurnDeg on the clips' own curve (smootherstep
+// over kStoneTurnPivot, then held while the pivot foot catches up), and at each cycle's end it goes on while the lead is
+// still more than kStoneTurnResidual degrees off that way and the walk doesn't want to start. The figure's yaw follows the
+// curve, scaled by the crossfade into the clip, so the pivot foot stays where it stood. (The clips' table can't carry these:
+// its rows take no unknown keys.)
+constexpr float kStoneTurnDeg = 30.f;
+constexpr double kStoneTurnPivot = 0.35;
+constexpr double kStoneTurnCycle = 0.8;
+constexpr float kStoneTurnStart = 20.f;
+constexpr float kStoneTurnResidual = 15.f;
 // Camera: pitch limits, the pitch while locked, how fast it turns to a lock, stick and mouse rates.
 constexpr float kArenaPitchMin = -50.f;
 constexpr float kArenaPitchMax = 15.f;
@@ -560,6 +572,14 @@ void UFTArenaRunner::LoadSkin(int32 I)
 	for (size_t M = 0; M < ftcore::kMaxArenaMoves; ++M)
 	{
 		Skin.MoveClip[M] = M < Kind.moveCount ? Find(Kind.moves[M].clip()) : -1;
+		Skin.MoveClipL[M] = Skin.MoveClip[M] >= 0 ? Find(std::string(Kind.moves[M].clip()) + "_l") : -1;
+	}
+	// Both turns or neither: one alone would turn it one way only.
+	Skin.TurnL = Find("turn_l");
+	Skin.TurnR = Find("turn_r");
+	if (Skin.TurnL < 0 || Skin.TurnR < 0)
+	{
+		Skin.TurnL = Skin.TurnR = -1;
 	}
 	if (Skin.Idle < 0)
 	{
@@ -754,7 +774,11 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	case ftcore::ArenaBrain::Attack:
 	{
 		// A use the stone_bearer's rules refused is cancelled silently: its blows are vetoed and it is drawn in the idle.
-		const int32 MoveClip = Out.move < Kind.moveCount && !(bStone && StoneBearer.UseRefused()) ? Skin.MoveClip[Out.move] : -1;
+		int32 MoveClip = Out.move < Kind.moveCount && !(bStone && StoneBearer.UseRefused()) ? Skin.MoveClip[Out.move] : -1;
+		if (MoveClip >= 0 && bStone && bStoneMoveLeft && Skin.MoveClipL[Out.move] >= 0)
+		{
+			MoveClip = Skin.MoveClipL[Out.move]; // the run called this blow to the left: the mirrored clip strikes there
+		}
 		if (MoveClip >= 0)
 		{
 			// The clip's impact lands at the end of the move's startup: Core's own clock for the move, at that rate.
@@ -770,8 +794,8 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	}
 	default:
 	{
-		// Between moves: the rest of a get-up still owed, else a hit reaction while it lasts, else the walk while it moves,
-		// else the idle (the second one once it is hurt).
+		// Between moves: the rest of a get-up still owed, else a hit reaction while it lasts, else the stepping turn while
+		// it turns, else the walk while it moves, else the idle (the second one once it is hurt).
 		const int32 Hit = bHitHeavy[I] ? Skin.HitHeavy : Skin.HitLight;
 		if (Now < UpOwedUntil[I])
 		{
@@ -789,6 +813,13 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 			Clip = Hit;
 			Time = Now - HitSince[I];
 			bTimed = true;
+		}
+		else if (bStone && StoneTurnSign != 0)
+		{
+			// Its cycles on the turn's own clock, the one StoneTurnFacing yaws the figure by (looping, so no restart fade).
+			Clip = StoneTurnSign > 0 ? Skin.TurnR : Skin.TurnL;
+			Time = static_cast<double>(Fight.time()) + static_cast<double>(Alpha) * StepSeconds - StoneTurnStart;
+			bPhased = true;
 		}
 		else if (bWalking[I])
 		{
@@ -887,8 +918,14 @@ void UFTArenaRunner::PutBodiesAtStart()
 	StoneSplitStaggerUntil = -1e9;
 	StoneTellMove = 255;
 	StoneWantApproach = StoneWantStrafe = StoneWantRuns = StoneWalksBegun = 0;
-	StoneHeldCone = StoneHeldUp = StoneHeldHit = 0;
+	StoneHeldCone = StoneHeldUp = StoneHeldHit = StoneHeldTurn = 0;
 	bStoneWanted = false;
+	StoneTurnSign = 0;
+	StoneTurnStart = -1e9;
+	StoneTurnCycles = 0;
+	bStoneTurnFoot = bStoneTurnChecked = false;
+	StoneTurnsBegun = StoneTurnSteps = StoneTurnsCancelled = 0;
+	bStoneMoveLeft = false;
 	PlayerHitTime = -1e9;
 	ParryTime = -1e9;
 	ReleaseTime = -1e9;
@@ -1082,6 +1119,7 @@ void UFTArenaRunner::StepFight()
 		StoneBearer.Buttons(bIntercept, In.guard, Bodies);
 		StoneBearer.BeforeTick();
 		LogStoneMoveMask();
+		StoneBearerTurnBeforeTick();
 	}
 	PrevBodies = Bodies;
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
@@ -1095,6 +1133,7 @@ void UFTArenaRunner::StepFight()
 	{
 		LogStoneMoveMask(); // a blow inside the tick can change it
 		StoneBearerWalk(Out);
+		StoneBearerTurn(Out);
 	}
 	if (Kite.IsActive())
 	{
@@ -1195,10 +1234,13 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 		case ftcore::ArenaEventType::AttackStarted:
 			if (StoneBearerSlot >= 0 && E.source == static_cast<uint8>(StoneBearerSlot))
 			{
-				// Each start (a chained impact's too), and whether the figure draws it with a clip of its own.
-				const bool bClip = Skins[StoneBearerSlot].IsLoaded() && E.move < ftcore::kMaxArenaMoves && Skins[StoneBearerSlot].MoveClip[E.move] >= 0;
-				UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: boss move %d starts (clip %s)."), Fight.time(), static_cast<int32>(E.move),
-					bClip ? TEXT("yes") : TEXT("no"));
+				// Each start (a chained impact's too), and whether the figure draws it with a clip of its own. Its left-hand
+				// clip is chosen here, once, for the whole move: the run's call for its blow is made as it starts.
+				const FFTArenaSkin& Skin = Skins[StoneBearerSlot];
+				const bool bClip = Skin.IsLoaded() && E.move < ftcore::kMaxArenaMoves && Skin.MoveClip[E.move] >= 0;
+				bStoneMoveLeft = bClip && Skin.MoveClipL[E.move] >= 0 && StoneBearer.CalledSideOf(E.move) == ftcore::CalledZone::Left;
+				UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: boss move %d starts (clip %s)%s."), Fight.time(), static_cast<int32>(E.move),
+					bClip ? TEXT("yes") : TEXT("no"), bStoneMoveLeft ? TEXT(", its left-hand clip") : TEXT(""));
 			}
 			continue; // no popup
 		case ftcore::ArenaEventType::CardsDealt: // the cards themselves are the display
@@ -1281,6 +1323,10 @@ void UFTArenaRunner::BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 Fro
 		if (Socket && FCStringAnsi::Strcmp(Socket, "slab_edge") == 0)
 		{
 			Socket = "slab";
+		}
+		else if (Socket && bStoneMoveLeft && FCStringAnsi::Strcmp(Socket, "hand_r") == 0)
+		{
+			Socket = "hand_l"; // its left-hand clip strikes with the other hand
 		}
 		if (Socket && Figure && Figure->GetSkinPoint(FName(Socket), Part))
 		{
@@ -1606,6 +1652,11 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 			Pose.Feet.Z += FFTStoneBearerHost::PlinthHeight * 100.0;
 		}
 		Pose.Yaw = ArenaYaw(E.facing);
+		if (I == StoneBearerSlot && StoneTurnSign != 0)
+		{
+			// Mid-turn, the turn's own yaw at the frame's time, in step with its clip (Core's facing is the last step's).
+			Pose.Yaw = ArenaYaw(StoneTurnFacing(static_cast<double>(Fight.time()) + static_cast<double>(Alpha) * StepSeconds - StoneTurnStart));
+		}
 		Pose.Speed = ArenaLength(E.velocity);
 		Pose.Tint = Figure->GetBaseColor();
 		switch (E.brain)
@@ -1979,7 +2030,7 @@ void UFTArenaRunner::StoneBearerWalk(const ftcore::ArenaOutput& Out)
 	}
 	else if (!bWas)
 	{
-		bWalk = Wanted > kArenaWalkStart && bAhead;
+		bWalk = Wanted > kArenaWalkStart && bAhead && StoneTurnSign == 0; // a turn under way ends at its cycle's end first
 	}
 	else if (Walked >= kStoneWalkHold && (Wanted < kArenaWalkStop || !bAhead))
 	{
@@ -1997,6 +2048,7 @@ void UFTArenaRunner::StoneBearerWalk(const ftcore::ArenaOutput& Out)
 			StoneHeldUp += bOwedUp ? 1 : 0;
 			StoneHeldHit += !bOwedUp && bHitPlays ? 1 : 0;
 			StoneHeldCone += !bOwedUp && !bHitPlays && !bAhead ? 1 : 0;
+			StoneHeldTurn += !bOwedUp && !bHitPlays && bAhead ? 1 : 0;
 		}
 	}
 	bStoneWanted = bWants;
@@ -2047,6 +2099,156 @@ void UFTArenaRunner::LogStoneWalkCounts() const
 	UE_LOG(LogForgottenThird, Log, TEXT("Arena: stone_bearer walk: wanted over %.2f m/s on %d steps (Approach %d, Strafe %d) in %d runs; %d walks begun; starts held by the cone %d, a get-up %d, a hit %d steps."),
 		kArenaWalkStart, StoneWantApproach + StoneWantStrafe, StoneWantApproach, StoneWantStrafe, StoneWantRuns, StoneWalksBegun,
 		StoneHeldCone, StoneHeldUp, StoneHeldHit);
+	if (Skins[StoneBearerSlot].TurnL >= 0)
+	{
+		UE_LOG(LogForgottenThird, Log, TEXT("Arena: stone_bearer turns: %d begun, %d steps, %d cancelled; walk starts held by a turn %d steps."),
+			StoneTurnsBegun, StoneTurnSteps, StoneTurnsCancelled, StoneHeldTurn);
+	}
+}
+
+bool UFTArenaRunner::StoneTurns() const
+{
+	if (StoneBearerSlot < 0 || StoneBearerSlot >= MaxEnemies || static_cast<size_t>(StoneBearerSlot) >= Fight.enemyCount())
+	{
+		return false;
+	}
+	const FFTArenaSkin& Skin = Skins[StoneBearerSlot];
+	const AFTArenaFighter* Figure = EnemyFigures[StoneBearerSlot].Get();
+	return Figure && Figure->IsSkinned() && Skin.IsLoaded() && Skin.TurnL >= 0 && Skin.TurnR >= 0;
+}
+
+ftcore::Vec2 UFTArenaRunner::StoneTurnFacing(double T) const
+{
+	// Its whole cycles, then the smootherstep of the one under way (held once it has settled), never past the cycles it is
+	// committed to; scaled while its clip fades in by the crossfade's weight (which the anim instance raises linearly).
+	const double At = FMath::Max(T, 0.0);
+	const double K = FMath::Floor(At / kStoneTurnCycle);
+	const double U = FMath::Min((At - K * kStoneTurnCycle) / kStoneTurnPivot, 1.0);
+	const double Eased = U * U * U * (10.0 - 15.0 * U + 6.0 * U * U);
+	const double Weight = StoneTurnBlend > 0.0 ? FMath::Min(1.0, (At + static_cast<double>(FrameDelta)) / StoneTurnBlend) : 1.0;
+	const double Angle = FMath::DegreesToRadians(static_cast<double>(kStoneTurnDeg)) * FMath::Min(K + Eased, static_cast<double>(StoneTurnCycles))
+		* Weight * static_cast<double>(StoneTurnSign);
+	const double C = FMath::Cos(Angle);
+	const double S = FMath::Sin(Angle);
+	return ftcore::Vec2{static_cast<float>(StoneTurnFrom.x * C - StoneTurnFrom.y * S), static_cast<float>(StoneTurnFrom.x * S + StoneTurnFrom.y * C)};
+}
+
+void UFTArenaRunner::StoneBearerTurnBeforeTick()
+{
+	if (!StoneTurns())
+	{
+		return;
+	}
+	const size_t Slot = static_cast<size_t>(StoneBearerSlot);
+	// Standing, only the turn turns it; walking, Core turns it as it goes.
+	Fight.setEnemyTurnHeld(Slot, !bWalking[StoneBearerSlot]);
+	if (StoneTurnSign != 0)
+	{
+		Fight.setEnemyFacing(Slot, StoneTurnFacing(static_cast<double>(Fight.time()) + StepSeconds - StoneTurnStart));
+	}
+}
+
+void UFTArenaRunner::StoneBearerTurn(const ftcore::ArenaOutput& Out)
+{
+	if (!StoneTurns())
+	{
+		return;
+	}
+	const int32 I = StoneBearerSlot;
+	const size_t Slot = static_cast<size_t>(I);
+	const FFTArenaSkin& Skin = Skins[I];
+	const AFTArenaFighter* Figure = EnemyFigures[I].Get();
+	const ftcore::ArenaEnemyOut& E = Out.enemies[Slot];
+	const int32 Hit = bHitHeavy[I] ? Skin.HitHeavy : Skin.HitLight;
+	const bool bHitPlays = Hit >= 0 && Now - HitSince[I] < static_cast<double>(Skin.Sequences[Hit]->GetPlayLength());
+	const bool bBetween = E.brain == ftcore::ArenaBrain::Approach || E.brain == ftcore::ArenaBrain::Strafe;
+	const bool bOwedUp = Now < UpOwedUntil[I];
+	const bool bFree = bBetween && !bWalking[I] && !bHitPlays && !bOwedUp && !StoneBearer.OnPlinth() && Fight.enemyAlive(Slot);
+	// How far the lead is off its facing (degrees): + to its right (the yaw rising), - to its left.
+	const ftcore::Vec2 To{Bodies.player.x - Bodies.enemies[Slot].x, Bodies.player.y - Bodies.enemies[Slot].y};
+	const float Off = FMath::RadiansToDegrees(FMath::Atan2(E.facing.x * To.y - E.facing.y * To.x, E.facing.x * To.x + E.facing.y * To.y));
+	if (StoneTurnSign != 0)
+	{
+		const TCHAR* Way = StoneTurnSign > 0 ? TEXT("right") : TEXT("left");
+		const TCHAR* PivotName = StoneTurnSign > 0 ? TEXT("foot_r") : TEXT("foot_l"); // turn_r pivots on its right foot
+		const double T = static_cast<double>(Fight.time()) - StoneTurnStart;
+		FVector Foot;
+		if (!bStoneTurnChecked && bFree && T >= kStoneTurnPivot)
+		{
+			// The sign check, logged for the -nullrhi runs: the pivot foot as drawn once the first cycle's yaw has settled,
+			// against where it stood as the turn began (it is planted until the catch-up step, 0.43 s in). A turn whose yaw
+			// runs against its clip moves it 0.2-0.4 m.
+			bStoneTurnChecked = true;
+			if (bStoneTurnFoot && Figure && Figure->GetSkinPoint(FName(PivotName), Foot))
+			{
+				UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d's turn (%s) has settled its first step: its pivot %s moved %.1f cm."), Fight.time(), I,
+					Way, PivotName, FVector::Dist2D(Foot, StoneTurnFoot));
+			}
+		}
+		if (!bFree)
+		{
+			// A move, a reaction or a hold takes it mid-turn: the facing stays where the turn had it. Logged with how far the
+			// pivot foot is from where it stood as the cycle began (the crossfade out of a cycle under way slides it).
+			const float Turned = FMath::RadiansToDegrees(FMath::Atan2(StoneTurnFrom.x * E.facing.y - StoneTurnFrom.y * E.facing.x,
+				StoneTurnFrom.x * E.facing.x + StoneTurnFrom.y * E.facing.y));
+			const TCHAR* Why = E.brain == ftcore::ArenaBrain::Attack ? TEXT("a move starts")
+				: (E.brain == ftcore::ArenaBrain::Staggered ? TEXT("a stagger")
+				: (!bBetween ? TEXT("it leaves its steps") : (bHitPlays ? TEXT("a hit reaction") : (bWalking[I] ? TEXT("a walk") : TEXT("a hold")))));
+			const double Moved = bStoneTurnFoot && Figure && Figure->GetSkinPoint(FName(PivotName), Foot) ? FVector::Dist2D(Foot, StoneTurnFoot) / 100.0 : -1.0;
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d's turn (%s) is cancelled at %.1f deg, %.2f s into step %d (%s): its pivot %s is %.2f m from where it stood."),
+				Fight.time(), I, Way, FMath::Abs(Turned), T - (StoneTurnCycles - 1) * kStoneTurnCycle, StoneTurnCycles, Why, PivotName, Moved);
+			++StoneTurnsCancelled;
+			StoneTurnSign = 0;
+			return;
+		}
+		if (T + 1e-6 < StoneTurnCycles * kStoneTurnCycle)
+		{
+			return;
+		}
+		// A cycle's end: its facing is exactly its cycles round (StoneTurnFacing holds it there). Another step while the lead
+		// is still that way past the residual and the walk doesn't want to start; else it ends, and the walk may start next.
+		const float Wanted = ArenaLength(E.velocity);
+		const float Cone = E.brain == ftcore::ArenaBrain::Approach ? kStoneApproachCone : kStoneWalkCone;
+		const bool bWalkWants = Wanted > kArenaWalkStart && E.velocity.x * E.facing.x + E.velocity.y * E.facing.y >= Cone * Wanted;
+		if (static_cast<float>(StoneTurnSign) * Off > kStoneTurnResidual && !bWalkWants)
+		{
+			++StoneTurnCycles;
+			++StoneTurnSteps;
+			bStoneTurnFoot = Figure && Figure->GetSkinPoint(FName(PivotName), StoneTurnFoot);
+			return;
+		}
+		UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d's turn (%s) ends after %d steps (%.0f deg): the lead is %.1f deg off%s."), Fight.time(), I, Way,
+			StoneTurnCycles, StoneTurnCycles * kStoneTurnDeg, Off, bWalkWants ? TEXT(", and it walks") : TEXT(""));
+		StoneTurnSign = 0;
+		return;
+	}
+	if (!bFree || FMath::Abs(Off) < kStoneTurnStart)
+	{
+		return;
+	}
+	// Only from a settled idle (its crossfade done), so the pivot foot starts from the stance the turn's cycle starts from.
+	const int32 Shown = SkinClip[I];
+	if (Shown < 0 || (Shown != Skin.Idle && Shown != Skin.IdleTwo))
+	{
+		return;
+	}
+	const ftcore::BeatClip& ShownRow = (*Skin.Clips)[static_cast<size_t>(Shown)];
+	if (Now - SkinSince[I] < (ShownRow.blend > 0.0 ? ShownRow.blend : Skin.Clips->blend))
+	{
+		return;
+	}
+	StoneTurnSign = Off > 0.f ? 1 : -1;
+	StoneTurnStart = static_cast<double>(Fight.time());
+	StoneTurnFrom = E.facing;
+	StoneTurnCycles = 1;
+	const ftcore::BeatClip& Row = (*Skin.Clips)[static_cast<size_t>(StoneTurnSign > 0 ? Skin.TurnR : Skin.TurnL)];
+	StoneTurnBlend = Row.blend > 0.0 ? Row.blend : Skin.Clips->blend;
+	bStoneTurnFoot = Figure && Figure->GetSkinPoint(FName(StoneTurnSign > 0 ? TEXT("foot_r") : TEXT("foot_l")), StoneTurnFoot);
+	bStoneTurnChecked = false;
+	++StoneTurnsBegun;
+	++StoneTurnSteps;
+	UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d turns %s: the lead is %.1f deg off (about %d steps)."), Fight.time(), I,
+		StoneTurnSign > 0 ? TEXT("right") : TEXT("left"), Off, FMath::Max(1, FMath::RoundToInt(FMath::Abs(Off) / kStoneTurnDeg)));
 }
 
 void UFTArenaRunner::StartFlinch(int32 I, bool bHeavy)

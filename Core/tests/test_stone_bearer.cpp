@@ -416,6 +416,25 @@ TEST_CASE("stone bearer clips: the shipped table loads clean, with its own cross
         CHECK_FALSE(clips[static_cast<std::size_t>(clip)].loop);
         CHECK(clips[static_cast<std::size_t>(clip)].length == doctest::Approx(length));
     }
+    // The stepping turns loop one 0.8 s cycle each.
+    for (const char* id : {"turn_l", "turn_r"}) {
+        const int clip = clips.find(id);
+        REQUIRE_MESSAGE(clip >= 0, id);
+        CHECK(clips[static_cast<std::size_t>(clip)].loop);
+        CHECK(clips[static_cast<std::size_t>(clip)].length == doctest::Approx(0.8));
+    }
+    // The called blows' left-hand clips are their mirrors: the same length, the impact on the same frame.
+    for (const char* id : {"called_fist", "ground_punch"}) {
+        const int right = clips.find(id);
+        const int left = clips.find(std::string(id) + "_l");
+        REQUIRE_MESSAGE(right >= 0, id);
+        REQUIRE_MESSAGE(left >= 0, id);
+        const ftcore::BeatClip& r = clips[static_cast<std::size_t>(right)];
+        const ftcore::BeatClip& l = clips[static_cast<std::size_t>(left)];
+        CHECK_FALSE(l.loop);
+        CHECK(l.length == doctest::Approx(r.length));
+        CHECK(l.impact == doctest::Approx(r.impact));
+    }
 }
 
 TEST_CASE("stone bearer loader: refusals carry their paths") {

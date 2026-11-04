@@ -379,6 +379,23 @@ bool FFTStoneBearerHost::StrikeOf(std::uint8_t Move, const ftcore::ArenaBodies& 
 	return true;
 }
 
+ftcore::CalledZone FFTStoneBearerHost::CalledSideOf(std::uint8_t Move) const
+{
+	if (!IsActive() || bUseRefused || Move >= FightPtr->def().enemies[Slot].moveCount || Move >= ftcore::kMaxArenaMoves)
+	{
+		return ftcore::CalledZone::Path;
+	}
+	// As StrikeOf rules a called impact to a side.
+	const std::uint8_t M = MoveOf[Move];
+	const std::uint8_t K = ImpactOf[Move];
+	const ftcore::ArenaBossRun& Run = Boss.run();
+	if (M < Def.boss.moveCount && Def.boss.moves[M].intercept() && Run.liveMove() == M && K < Run.strike().size())
+	{
+		return Run.strike().impact(K).zone;
+	}
+	return ftcore::CalledZone::Path;
+}
+
 bool FFTStoneBearerHost::DrawnStanding() const
 {
 	if (!IsActive())

@@ -65,7 +65,12 @@ struct FFTArenaSkin
 	// Optional, with face_down: the go-down into it and the get-up out of it, else face_down throughout.
 	int32 FaceDownIn = -1;
 	int32 FaceDownOut = -1;
+	// Optional, both or neither: the stepping turns in place (looping cycles; the runner yaws the figure along them).
+	int32 TurnL = -1;
+	int32 TurnR = -1;
 	std::array<int32, ftcore::kMaxArenaMoves> MoveClip{};
+	// Optional per move: its mirrored clip (the move's clip id with _l), played when the run calls its blow to the left.
+	std::array<int32, ftcore::kMaxArenaMoves> MoveClipL{};
 
 	bool IsLoaded() const { return Clips.IsValid() && Idle >= 0; }
 };
@@ -206,6 +211,14 @@ private:
 	// The stone_bearer's walk after each step (its skinned figure only): starts and stops it from Core's wanted speed, and
 	// between moves moves its body at the walk clip's speed, or holds it still (see kStoneWalkHold in the .cpp).
 	void StoneBearerWalk(const ftcore::ArenaOutput& Out);
+	// The stone_bearer's stepping turn (its skinned figure, with both turn clips; see kStoneTurnDeg in the .cpp). Before
+	// each step: Core's facing held while it stands, and the turn's facing written while one is under way. After each step:
+	// a turn begun, carried into another cycle, ended or cancelled, a log line each.
+	bool StoneTurns() const;
+	void StoneBearerTurnBeforeTick();
+	void StoneBearerTurn(const ftcore::ArenaOutput& Out);
+	// The turn's facing T seconds (Fight time) into it.
+	ftcore::Vec2 StoneTurnFacing(double T) const;
 	// A hit reaction for slot I, light or heavy, when it flinches (the stone_bearer's slot holds a playing one a while).
 	void StartFlinch(int32 I, bool bHeavy);
 	// The boss's effects: its attack part going From -> To (its tell through the startup, its impact as it turns active),
@@ -338,7 +351,24 @@ private:
 	int32 StoneHeldCone = 0;
 	int32 StoneHeldUp = 0;
 	int32 StoneHeldHit = 0;
+	int32 StoneHeldTurn = 0;
 	bool bStoneWanted = false;
+	// The stone_bearer's stepping turn: which way (+1 right, the yaw rising; -1 left; 0 none), since when (Fight time), the
+	// facing it began from, the cycles it is committed to, the crossfade into its clip (s), where its pivot foot stood as
+	// the cycle began (when found) and whether the first cycle's foot check is logged, and the fight's turn counts.
+	int32 StoneTurnSign = 0;
+	double StoneTurnStart = -1e9;
+	ftcore::Vec2 StoneTurnFrom;
+	int32 StoneTurnCycles = 0;
+	double StoneTurnBlend = 0.25;
+	FVector StoneTurnFoot = FVector::ZeroVector;
+	bool bStoneTurnFoot = false;
+	bool bStoneTurnChecked = false;
+	int32 StoneTurnsBegun = 0;
+	int32 StoneTurnSteps = 0;
+	int32 StoneTurnsCancelled = 0;
+	// The move under way plays its left-hand clip (decided once, as it starts: the run called its blow to the left).
+	bool bStoneMoveLeft = false;
 
 	ftcore::ArenaTable Table;
 	ftcore::ArenaZoneFit Fit;
