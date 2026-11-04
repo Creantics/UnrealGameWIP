@@ -601,7 +601,8 @@ ftcore::ArenaBlowRuling FFTStoneBearerHost::RuleLeadBlow(const ftcore::ArenaBlow
 	Absorb(Boss.onHit(Blow.from, Blow.at, BossFacing(), static_cast<double>(Blow.time), nullptr, &Hit));
 	ftcore::ArenaBlowRuling Ruling;
 	Ruling.damage = Hit.damage;
-	Ruling.poise = Hit.poise;
+	// A paired parry deals its damage but never staggers this boss: only its poise breaking does.
+	Ruling.poise = Blow.type == ftcore::ArenaEventType::CounterStagger ? 0.f : Hit.poise;
 	return Ruling;
 }
 

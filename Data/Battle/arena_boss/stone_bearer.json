@@ -2,7 +2,7 @@
   "version": 1,
   "bpm": 76,
   "hp": 1400,
-  "poise": 160,
+  "poise": 175,
   "staggerTime": 2.0,
   "openTime": 3.0,
   "intercept": { "window": 0.15, "rearm": 0.4 },

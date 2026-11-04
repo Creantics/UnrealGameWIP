@@ -69,6 +69,7 @@ int32 UFTImportPropCommandlet::Main(const FString& Params)
 	bool bOk = true;
 	TArray<UMaterialInterface*> Materials;
 	int32 Meshes = 0;
+	bool bNanite = false;
 	for (UObject* Object : Task->GetObjects())
 	{
 		if (!Object)
@@ -97,6 +98,7 @@ int32 UFTImportPropCommandlet::Main(const FString& Params)
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("FTImportProp: %s has no simple collision."), *Mesh->GetName());
 		}
+		bNanite |= Mesh->IsNaniteEnabled();
 		for (const FStaticMaterial& Slot : Mesh->GetStaticMaterials())
 		{
 			Materials.AddUnique(Slot.MaterialInterface);
@@ -108,6 +110,10 @@ int32 UFTImportPropCommandlet::Main(const FString& Params)
 		return 1;
 	}
 	bOk &= FT::UseProjectMasters(TEXT("FTImportProp"), Materials);
+	if (bNanite)
+	{
+		FT::AllowNanite(TEXT("FTImportProp"), Materials);
+	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTImportProp: %d static meshes, %s."), Meshes, bOk ? TEXT("ok") : TEXT("failed"));
 	return bOk ? 0 : 1;
 #else

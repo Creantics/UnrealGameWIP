@@ -417,6 +417,28 @@ bool UseProjectMasters(const TCHAR* Tag, TConstArrayView<UMaterialInterface*> Ma
 	return bOk;
 }
 
+void AllowNanite(const TCHAR* Tag, TConstArrayView<UMaterialInterface*> Materials)
+{
+	TArray<UPackage*> Dirty;
+	for (UMaterialInterface* Material : Materials)
+	{
+		UMaterial* Base = Material ? Material->GetMaterial() : nullptr;
+		if (!Base || !Base->GetPathName().StartsWith(TEXT("/Game/")) || Base->GetUsageByFlag(MATUSAGE_Nanite))
+		{
+			continue;
+		}
+		Base->SetUsageByFlag(MATUSAGE_Nanite, true);
+		Base->PostEditChange();
+		Base->MarkPackageDirty();
+		Dirty.AddUnique(Base->GetPackage());
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: %s now draws on Nanite meshes."), Tag, *Base->GetName());
+	}
+	if (!Dirty.IsEmpty())
+	{
+		UEditorLoadingAndSavingUtils::SavePackages(Dirty, false);
+	}
+}
+
 int32 CompileErrors(const TCHAR* Tag, UMaterial* Master)
 {
 	GTag = Tag;
