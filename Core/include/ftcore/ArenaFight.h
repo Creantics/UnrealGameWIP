@@ -704,6 +704,14 @@ public:
     // enemyFacingHeld is then false.
     FTCORE_API void setEnemyFacingHeld(std::size_t i, bool held);
     FTCORE_API bool enemyFacingHeld(std::size_t i) const;
+    // While set, enemy i keeps its facing between moves: Approach and Strafe turn it no more, and the host turns it
+    // with setEnemyFacing (a host whose figure turns on stepping clips). It applies from the next tick. begin() and
+    // restart() clear it. Nothing for an enemy out of range; enemyTurnHeld is then false.
+    FTCORE_API void setEnemyTurnHeld(std::size_t i, bool held);
+    FTCORE_API bool enemyTurnHeld(std::size_t i) const;
+    // Turns enemy i to `facing` (made unit) now; the next tick works from it and reports it. Nothing for a zero
+    // vector or an enemy out of range.
+    FTCORE_API void setEnemyFacing(std::size_t i, Vec2 facing);
     // Every blow goes to `hook` with `user` before it applies (ArenaBlowHook); nullptr: none (every blow as it is).
     FTCORE_API void setBlowHook(ArenaBlowHook hook, void* user);
     // Stores `amount` Load in the player's gauge now, as a parry would (never past kMaxLoad; amount <= 0: nothing),
@@ -788,6 +796,7 @@ private:
         int hpFloor = 0;                    // the host's hp floor (0: none)
         std::uint32_t moveMask = 0xFFFFFFFFu; // the moves a pick may begin (bit m: move m)
         bool facingHeld = false;            // the host's hold: a move keeps the facing it began with
+        bool turnHeld = false;              // the host's hold: Approach and Strafe keep the facing (the host turns it)
     };
 
     ArenaDef def_;

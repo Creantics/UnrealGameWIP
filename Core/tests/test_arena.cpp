@@ -4048,6 +4048,58 @@ TEST_CASE("arena hooks: a held facing keeps a move on the line it began on; unhe
     }
 }
 
+TEST_CASE("arena hooks: a held turn keeps the facing the host writes through Approach and Strafe; unheld it turns") {
+    ArenaEnemyKind k = dummyKind(); // never asks for a token: it approaches from beyond 3.5 m and strafes inside it
+    k.turnRate = 1.f;
+    // The lead stands straight down -y from the enemy; the host turns the enemy side-on, along +x.
+    const auto after = [&](bool held, float y, ArenaBrain& brain) {
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 0.f, y);
+        rig.fight.setEnemyTurnHeld(0, held);
+        CHECK(rig.fight.enemyTurnHeld(0) == held);
+        rig.fight.setEnemyFacing(0, Vec2{2.f, 0.f});
+        rig.runFor(0.5f);
+        brain = rig.out().enemies[0].brain;
+        return rig.out().enemies[0].facing;
+    };
+    ArenaBrain brain = ArenaBrain::Dead;
+    Vec2 f = after(true, 6.f, brain);
+    CHECK(brain == ArenaBrain::Approach);
+    CHECK(f.x == doctest::Approx(1.f).epsilon(1e-6));
+    CHECK(f.y == doctest::Approx(0.f).epsilon(1e-6));
+    f = after(true, 3.f, brain);
+    CHECK(brain == ArenaBrain::Strafe);
+    CHECK(f.x == doctest::Approx(1.f).epsilon(1e-6));
+    CHECK(f.y == doctest::Approx(0.f).epsilon(1e-6));
+    // Unheld it turns toward the lead at turnRate: 0.5 rad in 0.5 s, from +x toward -y.
+    f = after(false, 6.f, brain);
+    CHECK(brain == ArenaBrain::Approach);
+    CHECK(f.x == doctest::Approx(std::cos(0.5f)).epsilon(1e-3));
+    CHECK(f.y == doctest::Approx(-std::sin(0.5f)).epsilon(1e-3));
+    f = after(false, 3.f, brain);
+    CHECK(brain == ArenaBrain::Strafe);
+    CHECK(f.x == doctest::Approx(std::cos(0.5f)).epsilon(1e-3));
+    {   // held, the host's next facing is the one the next tick reports; a zero vector and an enemy out of range take
+        // nothing; restart clears the hold
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 0.f, 6.f);
+        rig.fight.setEnemyTurnHeld(0, true);
+        rig.run(5);
+        rig.fight.setEnemyFacing(0, Vec2{0.6f, -0.8f});
+        rig.tick();
+        CHECK(rig.out().enemies[0].facing.x == doctest::Approx(0.6f).epsilon(1e-6));
+        CHECK(rig.out().enemies[0].facing.y == doctest::Approx(-0.8f).epsilon(1e-6));
+        rig.fight.setEnemyFacing(0, Vec2{0.f, 0.f});
+        rig.tick();
+        CHECK(rig.out().enemies[0].facing.x == doctest::Approx(0.6f).epsilon(1e-6));
+        rig.fight.setEnemyTurnHeld(3, true);
+        rig.fight.setEnemyFacing(3, Vec2{1.f, 0.f});
+        CHECK_FALSE(rig.fight.enemyTurnHeld(3));
+        rig.fight.restart();
+        CHECK_FALSE(rig.fight.enemyTurnHeld(0));
+    }
+}
+
 TEST_CASE("arena hooks: a hold cuts a live move at the next tick, lasts its seconds, and a release ends it") {
     const ArenaAttack bite = swing(0.4f, 0.15f, 0.5f, 2.f, 20);
     {   // Open for 0.5 s, asked 10 ticks into the bite's startup
