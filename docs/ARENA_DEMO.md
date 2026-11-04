@@ -175,7 +175,10 @@ Everything about it is data and host-side: the fight's rules never read it.
 The mode plays, from Core's state each frame (`UFTBeatFighterAnimInstance`, a pose that is a function of the fight, with a 0.12 s
 crossfade between clips, or the table's own top-level `blend_s`): a move's own clip through an attack, timed by Core's clock for the move at the rate
 `impact_s / startup` (so the blow lands as the startup ends; held on its last frame if the clip is shorter than the move);
-`stagger` while staggered; `open` (optional) while open after a parry; `face_down` (looping) while down after a riposte, or open
+`stagger` while staggered, or after a parry of a move that has a `<clip>_recoil` row, that recoil, from the parry through
+the Open and the stagger after it (one clip on one clock from the parry, so the two states make no crossfade; an Open that
+outlasts the pair window, `pairWindow` plus one step, goes on as an open without an `open` clip does, below, and a stagger
+after that starts the recoil over); `open` (optional) while open after a parry; `face_down` (looping) while down after a riposte, or open
 without an `open` clip, after the optional one-shot
 `face_down_in` from the start of the spell (an Open chained into a Down is one spell) and before the optional `face_down_out`, timed
 to end as the state does (Core's `stateLength`: the kind's openTime or downTime, or the host's hold; never in a hold until a
@@ -194,7 +197,9 @@ of its height, up to 15 degrees above level (the free camera's limit too); the c
 The kite boss (`kite_boss`, `Data/Anim/kite_clips.json`, assets under `/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/`,
 the import being `FTImportCharacter -Source=kite_boss.glb -Dest=/Game/Bosses/KiteBoss -Face=0`): 1100 hp, 9.1 m from its
 finial to its tail tip (the whole figure, `height` 9.1) and hanging 0.9 m off the ground, drifting at 0.6 to 1 m/s. The mesh is a
-rebuild of the first one with the same 48-bone rig and the same 23 clips, so the clip table did not change. Eight moves, each its
+rebuild of the first one with the same 48-bone rig. Its 27 clips are the first one's 23 plus a recoil for each swoop
+(`swoop_recoil`, `swoop_slant_recoil`, `swoop_feint_recoil`: from that swoop's impact pose onto the stagger, as long as it) and
+`face_down_out`; only `swoop_recoil` plays, as the other two swoops aren't moves yet. Eight moves, each its
 clip's id: `mitten_drop`, `swoop`, `peg_spray`,
 `snag`, `wet_sheet`, `undertow`, `string_flick`, `sheet_slap` (Read card words slam, sweep, strike, charge, overhead, thrust,
 slash, backhand). Core has no "parry-opener" flag or multi-hit, so the marked move is made by `parryable`: only `swoop` (and the
@@ -426,6 +431,7 @@ each frame and handed to the fight on its next step, so no press is lost between
 | `-ArenaLead=<name>` | The lead the player plays. Its look is the entry of that name in the explore character's `PartyLooks` (`Config/UserGame.ini`, local), else the first; with none, or none whose body loads (one warning), it is the test human. Its fighter kit is the `arena.json` fighter of that name in lower case (`devin`, `duy`, `third`), even when no look loads; without the flag it is the first look's name, and an id with no kit plays `default`. The start line names the kit (`kit devin`). |
 | `-ArenaAttackers=N` | How many enemies may attack at once (1 to the line-up's size). |
 | `-ArenaHoldLoad` | The autopilot keeps its Load until it is overloaded (to see the overload; not a way to play). |
+| `-ArenaParryHold=<s>` | No follow-up for s seconds after each parry: the autopilot's blows and Release and the partner's press are dropped, so the open boss's own clips (face down, the get-up) show. A check of the clips, not a way to play; the fight differs from plain autoplay. |
 | `-ArenaShot=<path prefix>` | Autoplay and save the views (`_1_ring`, `_2_tell` with the Read cards picked, `_3_impact`, `_4_load` with the gauge past a third, or the overload under `-ArenaHoldLoad`, `_5_release`, `_6_result` .png), then quit; a view the fight never reaches is skipped. Needs a renderer (`-RenderOffScreen`, not `-NullRHI`). |
 | `-ArenaShotDelay=S` | Seconds before the first screenshot (the fight waits for it). |
 | `-ArenaOverview` | With `-ArenaShot`, a first view `_0_overview` of the whole zone from a camera high over its south-west side (pulled in along the line if a building is in the way), HUD off, with the zone's walls (green), obstacles (red) and road mouths (yellow) drawn as debug lines for the picture only; then `_0b_edge`, the player 1.4 m from the wall on his left to show the edge cue. |

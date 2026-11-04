@@ -3063,6 +3063,30 @@ TEST_CASE("arena kite boss: its moves name clips of its table, with impacts that
     CHECK(parryable == 3);
 }
 
+TEST_CASE("arena kite boss: each swoop has a recoil as long as the stagger, and face_down a get-up that fits an Open") {
+    const KiteData k = loadKite();
+    const ArenaEnemyKind& boss = k.boss();
+    // The host plays a parried move's `<clip>_recoil` from the parry through the Open and the stagger after it, so it
+    // runs the stagger's time (within 0.2 s, or the punish window would look wider than it is) and holds its end.
+    for (const char* id : {"swoop_recoil", "swoop_slant_recoil", "swoop_feint_recoil"}) {
+        const int c = k.clips.find(id);
+        REQUIRE_MESSAGE(c >= 0, id);
+        const BeatClip& r = k.clips[static_cast<std::size_t>(c)];
+        CHECK_FALSE_MESSAGE(r.loop, id);
+        CHECK_MESSAGE(std::fabs(r.length - static_cast<double>(boss.staggerTime)) <= 0.2 + 1e-6, id);
+    }
+    // Of the three, only swoop is one of the arena's moves.
+    int recoils = 0;
+    for (std::size_t m = 0; m < boss.moveCount; ++m)
+        if (k.clips.find(std::string(boss.moves[m].clip()) + "_recoil") >= 0) ++recoils;
+    CHECK(recoils == 1);
+    // The get-up ends the Open as it runs out, with room for face_down before it.
+    const int up = k.clips.find("face_down_out");
+    REQUIRE(up >= 0);
+    CHECK_FALSE(k.clips[static_cast<std::size_t>(up)].loop);
+    CHECK(k.clips[static_cast<std::size_t>(up)].length < static_cast<double>(boss.openTime) - 0.5);
+}
+
 TEST_CASE("arena kite boss: about one swoop in ten seconds") {
     const KiteData k = loadKite();
     std::size_t swoop = 0;

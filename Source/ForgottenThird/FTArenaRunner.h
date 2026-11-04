@@ -66,6 +66,9 @@ struct FFTArenaSkin
 	int32 FaceDownIn = -1;
 	int32 FaceDownOut = -1;
 	std::array<int32, ftcore::kMaxArenaMoves> MoveClip{};
+	// Optional, per move: its recoil (`<clip>_recoil`), played from a parry of it through the Open and the stagger after,
+	// else the stagger.
+	std::array<int32, ftcore::kMaxArenaMoves> RecoilClip{};
 
 	bool IsLoaded() const { return Clips.IsValid() && Idle >= 0; }
 };
@@ -87,6 +90,7 @@ struct FFTArenaRunSetup
 	bool bAutoPlay = false;
 	bool bIdle = false;
 	bool bHoldLoad = false;
+	float ParryHold = 0.f; // -ArenaParryHold=<s>
 	bool bBossSplitAtStart = false; // -ArenaBossSplit
 	// Exit the process on the outcome (0 a victory, 1 a defeat), and end a fight that outlasts the watchdog.
 	bool bQuitOnFinish = false;
@@ -291,6 +295,11 @@ private:
 	double KneelSince[ftcore::kMaxArenaEnemies] = {};
 	double UpAt[ftcore::kMaxArenaEnemies] = {};
 	double UpOwedUntil[ftcore::kMaxArenaEnemies] = {};
+	// A parried move's recoil still to play (a table index, -1 none) and since when (the parry), and whether the Open went
+	// face down first (a stagger after that starts it over). It lasts while the Open, Staggered or Down does.
+	int32 RecoilPending[ftcore::kMaxArenaEnemies];
+	double RecoilSince[ftcore::kMaxArenaEnemies] = {};
+	bool bRecoilDown[ftcore::kMaxArenaEnemies] = {};
 	float FrameDelta = 0.f; // the frame's seconds, for the clips' crossfades
 
 	ftcore::ArenaTable Table;
@@ -347,6 +356,7 @@ private:
 	bool bFightAgain = true;
 	bool bReplacePawn = true;
 	bool bHoldLoad = false;
+	float ParryHold = 0.f;
 	bool bBossSplitAtStart = false;
 	bool bResultLogged = false;
 	double ResultTime = 0.0;

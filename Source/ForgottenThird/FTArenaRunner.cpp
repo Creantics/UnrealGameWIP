@@ -208,6 +208,11 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	bAutoPlay = Setup.bAutoPlay;
 	bIdle = Setup.bIdle;
 	bHoldLoad = Setup.bHoldLoad;
+	ParryHold = Setup.ParryHold;
+	if (ParryHold > 0.f)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: no follow-up for %.1f s after a parry (-ArenaParryHold)."), ParryHold);
+	}
 	bBossSplitAtStart = Setup.bBossSplitAtStart;
 	bQuitOnFinish = Setup.bQuitOnFinish;
 	bShots = Setup.bShots;
@@ -516,6 +521,7 @@ void UFTArenaRunner::LoadSkin(int32 I)
 	for (size_t M = 0; M < ftcore::kMaxArenaMoves; ++M)
 	{
 		Skin.MoveClip[M] = M < Kind.moveCount ? Find(Kind.moves[M].clip()) : -1;
+		Skin.RecoilClip[M] = Skin.MoveClip[M] >= 0 ? Find(std::string(Kind.moves[M].clip()) + "_recoil") : -1;
 	}
 	if (Skin.Idle < 0)
 	{
@@ -589,6 +595,11 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		bKneeling[I] = bKnees;
 	}
 	bool bOwedUp = false;
+	// A parried move's recoil lasts while the spell does (Open, Staggered or Down, however they chain).
+	if (Out.brain != ftcore::ArenaBrain::Open && Out.brain != ftcore::ArenaBrain::Staggered && Out.brain != ftcore::ArenaBrain::Down)
+	{
+		RecoilPending[I] = -1;
+	}
 	switch (Out.brain)
 	{
 	case ftcore::ArenaBrain::Dead:
@@ -596,11 +607,39 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		bHoldRoot = false; // it falls
 		break;
 	case ftcore::ArenaBrain::Staggered:
+		if (RecoilPending[I] >= 0)
+		{
+			// The parry's recoil runs on into the stagger: the same clip from the parry, so no blend between them. One that
+			// went face down first starts it over.
+			if (bRecoilDown[I])
+			{
+				RecoilSince[I] = Now;
+				bRecoilDown[I] = false;
+			}
+			Clip = RecoilPending[I];
+			Time = Now - RecoilSince[I];
+			bTimed = true;
+			break;
+		}
 		Clip = Skin.Stagger >= 0 ? Skin.Stagger : Skin.Idle;
 		break;
 	case ftcore::ArenaBrain::Open:
 	case ftcore::ArenaBrain::Down:
 	{
+		if (RecoilPending[I] >= 0 && !bRecoilDown[I])
+		{
+			// The recoil holds the parried pose's motion while the partner's press may still turn the Open into a stagger;
+			// an Open that outlasts that goes face down.
+			const double PairWait = static_cast<double>(Fight.def().fighter.pairWindow + StepSeconds);
+			if (Out.brain == ftcore::ArenaBrain::Open && Now - RecoilSince[I] < PairWait)
+			{
+				Clip = RecoilPending[I];
+				Time = Now - RecoilSince[I];
+				bTimed = true;
+				break;
+			}
+			bRecoilDown[I] = true;
+		}
 		if (!bKnees)
 		{
 			// Its own clip where it has one: a parried enemy is open for openTime, and a riposte cuts it to the face-down clip.
@@ -736,6 +775,9 @@ void UFTArenaRunner::PutBodiesAtStart()
 		KneelSince[I] = 0.0;
 		UpAt[I] = 0.0;
 		UpOwedUntil[I] = -1e9;
+		RecoilPending[I] = -1;
+		RecoilSince[I] = 0.0;
+		bRecoilDown[I] = false;
 	}
 	PlayerHitTime = -1e9;
 	ParryTime = -1e9;
@@ -884,6 +926,12 @@ void UFTArenaRunner::StepFight()
 		// The partner's press, one step after the parry (well inside the pair window).
 		In.pair = bPartnerDue;
 		bPartnerDue = false;
+		if (ParryHold > 0.f && Now - ParryTime < static_cast<double>(ParryHold))
+		{
+			// -ArenaParryHold: no follow-up for a while after a parry, the partner's press included, so the open boss's own
+			// clips show (a check of the clips, not a way to play).
+			In.light = In.heavy = In.release = In.pair = false;
+		}
 		if (bHoldLoad && !Fight.overloaded())
 		{
 			In.release = false;
@@ -964,6 +1012,14 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 		case ftcore::ArenaEventType::Parried:
 			ParryTime = Now;
 			bPartnerDue = bAutoPlay;
+			// The parried move's recoil, if its skin has one (E.source is the enemy, E.move the move it was in).
+			if (E.source < MaxEnemies)
+			{
+				const FFTArenaSkin& Parried = Skins[E.source];
+				RecoilPending[E.source] = Parried.IsLoaded() && E.move < ftcore::kMaxArenaMoves ? Parried.RecoilClip[E.move] : -1;
+				RecoilSince[E.source] = Now;
+				bRecoilDown[E.source] = false;
+			}
 			break;
 		case ftcore::ArenaEventType::Staggered:
 			// Logged for the stagger spacing checks (tuning poise from -nullrhi runs).

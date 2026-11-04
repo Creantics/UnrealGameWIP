@@ -59,7 +59,9 @@
 // result line; a fight that outlasts WatchdogSeconds, a hang guard for headless runs, logs a TIMEOUT and exits 2). Without -ArenaQuitOnFinish the autopilot fights again 4 s after the outcome.
 // Under -ArenaAutoPlay the host plays the partner too: it presses the pair on the step after each parry (Core's
 // autopilot never presses it). -ArenaHoldLoad keeps the autopilot from releasing until it is overloaded, so the
-// overload shows (a check of the HUD, not a way to play). -ArenaBossSplit breaks the boss's carried piece into its
+// overload shows (a check of the HUD, not a way to play). -ArenaParryHold=<s> keeps the autopilot and the partner
+// from any follow-up for s seconds after each parry (no blow, Release or pair), so the open boss's clips show (a check
+// of the clips, not a way to play). -ArenaBossSplit breaks the boss's carried piece into its
 // hands as the fight begins, as its first stagger would (a check of the parts in its hands, not a way to play).
 // One log line per fight, ids and counts only:
 //   Arena: VICTORY at <scene> beat <b> step <s> after <t> s, zone <z>, kit <k>, enemies <id>+<id>, autoplay seed <n>, hp ...
@@ -170,6 +172,7 @@ private:
 	bool bIdle = false;
 	bool bQuitOnFinish = false;
 	bool bHoldLoad = false;
+	float ParryHold = 0.f;
 	bool bBossSplit = false;
 	FString KitId; // the fighter kit the player plays (FindKitId), as the table resolved it
 
