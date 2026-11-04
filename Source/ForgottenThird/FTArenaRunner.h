@@ -91,12 +91,14 @@ struct FFTArenaRunSetup
 	bool bIdle = false;
 	bool bHoldLoad = false;
 	float ParryHold = 0.f; // -ArenaParryHold=<s>
+	FString BossLoop;      // -ArenaBossLoop=<clip> (review only; empty: off)
 	bool bBossSplitAtStart = false; // -ArenaBossSplit
 	// Exit the process on the outcome (0 a victory, 1 a defeat), and end a fight that outlasts the watchdog.
 	bool bQuitOnFinish = false;
 	// A -ArenaShot run: the shots decide when to quit, and nothing fights again.
 	bool bShots = false;
-	// After the outcome, fight again on a press (the autopilot after 4 s); else the fight stays over for the owner.
+	// After the outcome, fight again on a press (the autopilot after 4 s, or once a boss's defeat clip has played out, if
+	// that is longer); else the fight stays over for the owner.
 	bool bFightAgain = true;
 	// The player's figure replaces the controller's pawn, which is destroyed; else the old pawn is only unpossessed.
 	bool bReplacePawn = true;
@@ -251,6 +253,9 @@ private:
 	void EndKite();
 	// The host's new notes, one log line each.
 	void LogKiteNotes();
+	// -ArenaBossLoop (review only): finds the boss's slot and the clip's table index once, then logs the loop's start (at each
+	// fight's begin). DriveSkin plays that clip looped from the fight's start whatever the fight does, one log line a wrap.
+	void BeginBossLoop();
 	// Dresses enemy slot I as a skeletal mesh when its kind has a look that loads (see AFTArenaGameMode's header).
 	void LoadSkin(int32 I);
 	// Picks and times slot I's clip from its Core state: the move's own clip through an attack, at the rate that lands its
@@ -404,9 +409,18 @@ private:
 	bool bReplacePawn = true;
 	bool bHoldLoad = false;
 	float ParryHold = 0.f;
+	// -ArenaBossLoop: the clip's name, the boss's slot and the clip's table index (-1: off, or not found), whether it was
+	// looked for, and the wraps logged this fight.
+	FString BossLoopName;
+	int32 BossLoopSlot = -1;
+	int32 BossLoopClip = -1;
+	bool bBossLoopResolved = false;
+	int32 BossLoopWraps = 0;
 	bool bBossSplitAtStart = false;
 	bool bResultLogged = false;
 	double ResultTime = 0.0;
+	// How long after the result the autopilot fights again (s): kArenaAutoAgain, or longer for a long defeat clip.
+	double AutoAgainWait = 4.0;
 	double BeginNow = 0.0;
 	FString KitId;
 

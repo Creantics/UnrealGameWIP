@@ -370,7 +370,9 @@ enemy instead, pass its id: `-ArenaLineup=brute` (a single brute falls before th
    the first, and a little poise). Wrong: the stacks go back to none and the attacker regains some poise. While
    one deal is open, a move that starts elsewhere deals nothing.
 8. The fight ends in VICTORY when every enemy is down, DEFEAT when the lead is. After a moment Enter,
-   Space or pad A starts it again (the autopilot starts again by itself after 4 s unless told to quit).
+   Space or pad A starts it again (the autopilot starts again by itself after 4 s unless told to quit; after a victory
+   over a boss whose `defeat` clip is longer than 3.5 s, 0.5 s after that clip ends instead, so the death plays out. The
+   log gets one line a fight, `Arena: autoplay fights again <s> s after the result (longest defeat clip <s> s).`).
 
 ## Controls
 
@@ -445,6 +447,7 @@ each frame and handed to the fight on its next step, so no press is lost between
 | `-ArenaAttackers=N` | How many enemies may attack at once (1 to the line-up's size). |
 | `-ArenaHoldLoad` | The autopilot keeps its Load until it is overloaded (to see the overload; not a way to play). |
 | `-ArenaParryHold=<s>` | No follow-up for s seconds after each parry: the autopilot's blows and Release and the partner's press are dropped, so the open boss's own clips (face down, the get-up) show. A check of the clips, not a way to play; the fight differs from plain autoplay. |
+| `-ArenaBossLoop=<clip>` | The boss's skin plays that clip of its table (by id, e.g. `idle`, `idle_p2`, `face_down`) looped from the fight's start, with the table's blend, whatever the fight does; the fight itself runs unchanged. A check of the clips' loops, not a way to play. One log line at each fight's start (`Arena: boss loop <clip> on enemy <n> from the fight's start (<len> s) (-ArenaBossLoop).`) and one at each wrap (`Arena: boss loop <clip> wraps (<n>) at <fight time> s (<len> s).`); the log's `[..][counter]` prefix (`GFrameCounter % 1000`) on a wrap line is the frame whose pose is the clip's first again, which is where a cutter finds the seam. An unknown clip (or no skinned boss) logs a warning and the flag does nothing. The boss is the Kite-Mother's slot, else the stone bearer's, else the first skinned enemy. |
 | `-ArenaNoKindFx` | No kind's crit effects (`arena_crit.json`: the tell, open, crit and hit) are made; the fight runs the same. The OFF half of an effects OFF/ON capture. |
 | `-ArenaShot=<path prefix>` | Autoplay and save the views (`_1_ring`, `_2_tell` with the Read cards picked, `_3_impact`, `_4_load` with the gauge past a third, or the overload under `-ArenaHoldLoad`, `_5_release`, `_6_result` .png), then quit; a view the fight never reaches is skipped. Needs a renderer (`-RenderOffScreen`, not `-NullRHI`). |
 | `-ArenaShotDelay=S` | Seconds before the first screenshot (the fight waits for it). |

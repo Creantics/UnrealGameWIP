@@ -42,8 +42,10 @@ namespace
 constexpr const TCHAR* kStoneBearerVfx = TEXT("Data/Battle/arena_boss/stone_bearer_vfx.json");
 // The stone_bearer's carried piece after it splits: the slot that goes and the parts for the hands.
 constexpr const TCHAR* kStoneBearerSplit = TEXT("Data/Battle/arena_boss/stone_bearer_split.json");
-// After the outcome, the autopilot (without -ArenaQuitOnFinish) fights again this much later (s).
+// After the outcome, the autopilot (without -ArenaQuitOnFinish) fights again this much later (s), or kArenaDefeatTail after
+// the longest defeat clip of the bosses that died, when that is later: the clip plays out on the result screen.
 constexpr double kArenaAutoAgain = 4.0;
+constexpr double kArenaDefeatTail = 0.5;
 // A press to fight again counts only once the result has been up this long (s), so a held attack doesn't skip it.
 constexpr double kArenaAgainDelay = 0.6;
 // How long a hit tints a body (s).
@@ -240,6 +242,10 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: no follow-up for %.1f s after a parry (-ArenaParryHold)."), ParryHold);
 	}
+	BossLoopName = Setup.BossLoop;
+	BossLoopSlot = -1;
+	BossLoopClip = -1;
+	bBossLoopResolved = false;
 	bBossSplitAtStart = Setup.bBossSplitAtStart;
 	bQuitOnFinish = Setup.bQuitOnFinish;
 	bShots = Setup.bShots;
@@ -263,6 +269,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	}
 	SpawnKindCritEffects();
 	PutBodiesAtStart();
+	BeginBossLoop();
 	PlaceFigures(1.f);
 	if (KiteSlot >= 0)
 	{
@@ -303,7 +310,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 		}
 		else if (bFightAgain && !bShots && !bQuitOnFinish)
 		{
-			bool bAgain = bAutoPlay && GetResultAge() >= kArenaAutoAgain;
+			bool bAgain = bAutoPlay && GetResultAge() >= AutoAgainWait;
 			const APlayerController* PC = GetPC();
 			if (!bAgain && PC && !bAutoPlay && GetResultAge() >= kArenaAgainDelay && !UFTPauseSubsystem::IsBlocking(this))
 			{
@@ -481,6 +488,40 @@ void UFTArenaRunner::SpawnFigures(const FFTLeadLook* Lead)
 		}
 		StoneBearer.SetPlayableMoves(Playable);
 		StoneBearer.RefreshMoveMask();
+	}
+}
+
+void UFTArenaRunner::BeginBossLoop()
+{
+	if (BossLoopName.IsEmpty())
+	{
+		return;
+	}
+	if (!bBossLoopResolved)
+	{
+		// Once: the boss is the Kite-Mother's slot, else the stone_bearer's, else the first skinned enemy; a name its table
+		// doesn't have (or whose asset didn't load) is refused, and the flag does nothing.
+		bBossLoopResolved = true;
+		BossLoopSlot = KiteSlot >= 0 ? KiteSlot : StoneBearerSlot;
+		for (int32 I = 0; BossLoopSlot < 0 && I < MaxEnemies; ++I)
+		{
+			BossLoopSlot = Skins[I].IsLoaded() ? I : -1;
+		}
+		const FFTArenaSkin* Skin = BossLoopSlot >= 0 && Skins[BossLoopSlot].IsLoaded() ? &Skins[BossLoopSlot] : nullptr;
+		const int32 Clip = Skin ? Skin->Clips->find(FT::ToUtf8(BossLoopName)) : -1;
+		if (!Skin || Clip < 0 || !Skin->Sequences[Clip])
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaBossLoop=%s: %s; the flag does nothing."), *BossLoopName,
+				Skin ? TEXT("the boss's clip table has no loaded clip of that name") : TEXT("there is no skinned boss in this fight"));
+			BossLoopSlot = -1;
+			return;
+		}
+		BossLoopClip = Clip;
+	}
+	if (BossLoopClip >= 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: boss loop %s on enemy %d from the fight's start (%.2f s) (-ArenaBossLoop)."), *BossLoopName,
+			BossLoopSlot, Skins[BossLoopSlot].Sequences[BossLoopClip]->GetPlayLength());
 	}
 }
 
@@ -854,6 +895,19 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		MoveRate = 0.f;
 		bOwedUp = false;
 	}
+	// -ArenaBossLoop: the one clip, looped from the fight's start, whatever the fight does (a check of the clips, not a way to
+	// play). Its time is its own phase; the row's blend still applies to the crossfade into it.
+	const bool bBossLoop = I == BossLoopSlot && BossLoopClip >= 0;
+	if (bBossLoop)
+	{
+		Clip = BossLoopClip;
+		Time = Now - BeginNow;
+		bTimed = false;
+		bPhased = true;
+		bHoldRoot = true;
+		MoveRate = 0.f;
+		bOwedUp = false;
+	}
 	if (!bOwedUp)
 	{
 		UpOwedUntil[I] = -1e9; // anything else (a move, a stagger, a death) takes it from the get-up for good
@@ -881,9 +935,19 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	{
 		Time = Now - SkinSince[I];
 	}
+	if (bBossLoop && Length > 0.f)
+	{
+		// One line a wrap, at the frame whose pose is the clip's first again (the log's frame counter finds the seam).
+		const int32 Wraps = static_cast<int32>(Time / Length);
+		if (Wraps > BossLoopWraps)
+		{
+			BossLoopWraps = Wraps;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: boss loop %s wraps (%d) at %.3f s (%.2f s)."), *BossLoopName, Wraps, Fight.time(), Length);
+		}
+	}
 	// A loop wraps; anything else holds its last frame. The crossfade into a clip is its row's own (blend_s) when it states
 	// one, else the table's; a clip the table marks additive_in (a short hit reaction) lands at once on the pose the blow finds.
-	const bool bLoop = Row.loop && !bTimed;
+	const bool bLoop = (Row.loop || bBossLoop) && !bTimed;
 	const float At = bLoop && Length > 0.f ? FMath::Fmod(static_cast<float>(Time), Length) : FMath::Clamp(static_cast<float>(Time), 0.f, Length);
 	const double Blend = Row.blend > 0.0 ? Row.blend : Skin.Clips->blend;
 	Figure->PlayClip(Sequence, At, bLoop, FrameDelta, bHoldRoot, static_cast<float>(Blend), Row.additiveIn);
@@ -922,6 +986,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 		RecoilSince[I] = 0.0;
 		bRecoilDown[I] = false;
 	}
+	BossLoopWraps = 0;
 	StoneWalkSince = -1e9;
 	StoneUpStart = -1e9;
 	StonePilotHeavyAt = -1e9;
@@ -1796,6 +1861,32 @@ void UFTArenaRunner::Finish()
 	{
 		FPlatformMisc::RequestExitWithStatus(false, static_cast<uint8>(bWon ? 0 : 1), TEXT("Arena"));
 	}
+	// The autopilot's wait before it fights again: long enough for the bosses' defeat clips (all dead on a victory) to play out.
+	float LongestDefeat = 0.f;
+	if (bWon)
+	{
+		for (int32 I = 0; I < static_cast<int32>(Fight.enemyCount()) && I < MaxEnemies; ++I)
+		{
+			const FFTArenaSkin& Skin = Skins[I];
+			if (!Skin.IsLoaded())
+			{
+				continue;
+			}
+			for (const int32 Clip : {Skin.Defeat, Skin.DefeatKneel})
+			{
+				if (Clip >= 0)
+				{
+					LongestDefeat = FMath::Max(LongestDefeat, Skin.Sequences[Clip]->GetPlayLength());
+				}
+			}
+		}
+	}
+	AutoAgainWait = FMath::Max(kArenaAutoAgain, static_cast<double>(LongestDefeat) + kArenaDefeatTail);
+	if (bAutoPlay && bFightAgain && !bShots && !bQuitOnFinish)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: autoplay fights again %.2f s after the result (longest defeat clip %.2f s)."), AutoAgainWait,
+			LongestDefeat);
+	}
 }
 
 void UFTArenaRunner::LogResult() const
@@ -1845,6 +1936,7 @@ void UFTArenaRunner::Restart()
 	bResultLogged = false;
 	PutBodiesAtStart();
 	BeginNow = Now;
+	BeginBossLoop();
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: fight again."));
 }
 

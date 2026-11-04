@@ -1,7 +1,7 @@
 {
   "socket": "seam",
   "tellMove": "swoop",
-  "lift": 0.05,
+  "lift": 0.25,
   "effects": {
     "tell": { "effect": "kite_swoop_tell", "speedScale": 1.0, "shapeScale": 1.0 },
     "open": { "effect": "kite_seam_open", "speedScale": 1.0, "shapeScale": 1.0 },

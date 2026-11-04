@@ -81,8 +81,8 @@ TEST_CASE("vfx: the Kite-Mother's effects load without warnings and keep their p
         std::uint32_t budget; // the sum of the emitters' maxParticles
         bool loops;
     };
-    const Expect files[] = {{"kite_swoop_tell", 2, 104, true},
-                            {"kite_seam_open", 2, 52, true},
+    const Expect files[] = {{"kite_swoop_tell", 3, 230, true},
+                            {"kite_seam_open", 3, 54, true},
                             {"kite_seam_crit", 3, 82, false},
                             {"kite_hit", 2, 28, false}};
     for (const Expect& f : files) {

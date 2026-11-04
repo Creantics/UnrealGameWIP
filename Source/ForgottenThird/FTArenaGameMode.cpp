@@ -99,6 +99,8 @@ void AFTArenaGameMode::StartPlay()
 	bHoldLoad = FParse::Param(Cmd, TEXT("ArenaHoldLoad"));
 	FParse::Value(Cmd, TEXT("ArenaParryHold="), ParryHold);
 	ParryHold = FMath::Clamp(ParryHold, 0.f, 10.f);
+	FParse::Value(Cmd, TEXT("ArenaBossLoop="), BossLoop);
+	BossLoop = BossLoop.TrimStartAndEnd();
 	bBossSplit = FParse::Param(Cmd, TEXT("ArenaBossSplit"));
 	int32 SeedValue = 1;
 	if (FParse::Value(Cmd, TEXT("ArenaSeed="), SeedValue))
@@ -542,6 +544,7 @@ void AFTArenaGameMode::Begin()
 	Setup.bIdle = bIdle;
 	Setup.bHoldLoad = bHoldLoad;
 	Setup.ParryHold = ParryHold;
+	Setup.BossLoop = BossLoop;
 	Setup.bBossSplitAtStart = bBossSplit;
 	Setup.bQuitOnFinish = bQuitOnFinish;
 	Setup.bShots = !ShotPrefix.IsEmpty();
