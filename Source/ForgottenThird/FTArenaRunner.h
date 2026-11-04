@@ -56,6 +56,7 @@ struct FFTArenaSkin
 	int32 Defeat = -1;
 	int32 HitLight = -1;
 	int32 HitHeavy = -1;
+	int32 Walk = -1; // optional: played at the body's ground speed over its authored speed_mps, else the idle
 	std::array<int32, ftcore::kMaxArenaMoves> MoveClip{};
 
 	bool IsLoaded() const { return Clips.IsValid() && Idle >= 0; }
@@ -250,6 +251,10 @@ private:
 	double SkinSince[ftcore::kMaxArenaEnemies];
 	double HitSince[ftcore::kMaxArenaEnemies];
 	bool bHitHeavy[ftcore::kMaxArenaEnemies] = {};
+	// A walking skin: its smoothed ground speed (m/s), whether it walks, and where it is in the walk clip (s).
+	float WalkSpeed[ftcore::kMaxArenaEnemies] = {};
+	bool bWalking[ftcore::kMaxArenaEnemies] = {};
+	double WalkPhase[ftcore::kMaxArenaEnemies] = {};
 	float FrameDelta = 0.f; // the frame's seconds, for the clips' crossfades
 
 	ftcore::ArenaTable Table;

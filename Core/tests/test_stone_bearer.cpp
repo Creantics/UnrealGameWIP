@@ -1,6 +1,7 @@
 #include "ftcore/StoneBearer.h"
 
 #include "ftcore/ArenaFight.h"
+#include "ftcore/BeatChoreo.h"
 
 #include "AllocCounter.h"
 #include "TestAssets.h"
@@ -384,6 +385,19 @@ TEST_CASE("stone bearer data: the shipped file loads clean, with the outline's t
     CHECK(def.pedestal.callEveryBeats == doctest::Approx(4.0));
     CHECK(def.pedestal.releaseWindow == doctest::Approx(0.15));
     CHECK(def.pedestal.downTime == doctest::Approx(3.0));
+}
+
+TEST_CASE("stone bearer clips: the shipped table loads clean, with its own crossfade") {
+    std::string text, err;
+    std::vector<std::string> warnings;
+    REQUIRE(ftcore_test::readProjectData("Anim/stone_bearer_clips.json", text));
+    ftcore::BeatClips clips;
+    REQUIRE_MESSAGE(ftcore::importBeatClips(text, clips, &err, &warnings), err);
+    CHECK(warnings.empty());
+    // A 5 m stone body fades between clips slower than the host's default.
+    CHECK(clips.blend == doctest::Approx(0.25));
+    for (const char* id : {"idle", "idle_p2", "stagger", "face_down", "defeat", "hit_light", "hit_heavy"})
+        CHECK_MESSAGE(clips.find(id) >= 0, id);
 }
 
 TEST_CASE("stone bearer loader: refusals carry their paths") {
