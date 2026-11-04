@@ -1,6 +1,6 @@
 #pragma once
 
-// An arrow combo (DDR-style steps) judged against the music: ftcore::ComboSequence timed by a
+// An arrow combo (directional steps) judged against the music: ftcore::ComboSequence timed by a
 // UFTConductorComponent. All judging rules live in Core; this feeds it presses and the song clock
 // and turns its results into events.
 //
