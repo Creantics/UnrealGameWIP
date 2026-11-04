@@ -223,13 +223,14 @@ TEST_CASE("arena kind crit data: the shipped file loads clean, white_glove's sea
     const ArenaKindCritDef* g = table.find("white_glove");
     REQUIRE(g);
     CHECK(g->opensAfter() == "deal");
-    CHECK(g->opens == doctest::Approx(1.6));
+    CHECK(g->opens == doctest::Approx(1.2));
     REQUIRE(g->weakPoints.points.size() == 1);
     const WeakPoint& p = g->weakPoints.points[0];
     CHECK(p.id() == "fingertip_seam");
     CHECK(p.multiplier == doctest::Approx(2.0));
-    // About 1.0 m up a 2.7 m figure, on its right hand: the viewer's left through the front gate.
-    CHECK(p.y * 2.7f == doctest::Approx(1.0).epsilon(0.05));
+    // About 1.9 m up a 2.7 m figure, the right hand held out at the chest after the Deal: the viewer's left through
+    // the front gate.
+    CHECK(p.y * 2.7f == doctest::Approx(1.89).epsilon(0.05));
     CHECK(p.x < 0.0f);
     CHECK(g->weakPoints.gates[0].facing == doctest::Approx(0.0));
     CHECK(g->weakPoints.gates[0].arc == doctest::Approx(90.0));

@@ -147,6 +147,8 @@ private:
 	// -ArenaOverview's second view, _0b_edge: the player moved to 1.4 m from the zone's wall on his left, to show the
 	// edge cue; then the fight is put back as it began.
 	bool EdgeShot();
+	// -ArenaBossCam: places the camera once the boss stands, then logs its yaw each time it has turned 10 degrees.
+	void BossCam();
 	APlayerController* GetPC() const;
 
 	UPROPERTY()
@@ -171,6 +173,12 @@ private:
 	bool bQuitOnFinish = false;
 	bool bHoldLoad = false;
 	bool bBossSplit = false;
+	// -ArenaBossCam: a fixed camera on the first enemy's side, so a capture shows the boss's own turns apart from the
+	// follow camera's; the yaw it last logged.
+	bool bBossCam = false;
+	UPROPERTY()
+	TObjectPtr<AActor> BossCamera;
+	float BossCamYaw = 0.f;
 	FString KitId; // the fighter kit the player plays (FindKitId), as the table resolved it
 
 	// -ArenaShot: the prefix, the settle before the first, which have been taken, and a short hold after
