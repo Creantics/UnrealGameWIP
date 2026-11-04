@@ -503,6 +503,8 @@ void UFTArenaRunner::LoadSkin(int32 I)
 	Skin.IdleTwo = Find("idle_p2");
 	Skin.Stagger = Find("stagger");
 	Skin.FaceDown = Find("face_down");
+	Skin.FaceDownIn = Skin.FaceDown >= 0 ? Find("face_down_in") : -1;
+	Skin.FaceDownOut = Skin.FaceDown >= 0 ? Find("face_down_out") : -1;
 	Skin.Defeat = Find("defeat");
 	Skin.HitLight = Find("hit_light");
 	Skin.HitHeavy = Find("hit_heavy");
@@ -565,6 +567,12 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 			}
 		}
 	}
+	const bool bKnees = Out.brain == ftcore::ArenaBrain::Open || Out.brain == ftcore::ArenaBrain::Down;
+	if (bKnees && !bKneeling[I])
+	{
+		KneelSince[I] = Now;
+	}
+	bKneeling[I] = bKnees;
 	switch (Out.brain)
 	{
 	case ftcore::ArenaBrain::Dead:
@@ -576,8 +584,27 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		break;
 	case ftcore::ArenaBrain::Open:
 	case ftcore::ArenaBrain::Down:
+	{
+		// On its knees: it goes down from the spell's start (an Open chained into a Down is one spell), holds there, and
+		// gets up so that it stands as the state ends (never early in a hold until a release). The get-up wins a short state.
 		Clip = Skin.FaceDown >= 0 ? Skin.FaceDown : (Skin.Stagger >= 0 ? Skin.Stagger : Skin.Idle);
+		const double Spell = Now - KneelSince[I];
+		const double Left = static_cast<double>(Out.stateLength) - (static_cast<double>(Out.stateTime) + static_cast<double>(Alpha) * StepSeconds);
+		const double UpLength = Skin.FaceDownOut >= 0 ? static_cast<double>(Skin.Sequences[Skin.FaceDownOut]->GetPlayLength()) : 0.0;
+		if (Skin.FaceDownOut >= 0 && FMath::IsFinite(Left) && Left < UpLength)
+		{
+			Clip = Skin.FaceDownOut;
+			Time = UpLength - FMath::Max(Left, 0.0);
+			bTimed = true;
+		}
+		else if (Skin.FaceDownIn >= 0 && Spell < static_cast<double>(Skin.Sequences[Skin.FaceDownIn]->GetPlayLength()))
+		{
+			Clip = Skin.FaceDownIn;
+			Time = Spell;
+			bTimed = true;
+		}
 		break;
+	}
 	case ftcore::ArenaBrain::Attack:
 	{
 		const int32 MoveClip = Out.move < Kind.moveCount ? Skin.MoveClip[Out.move] : -1;
@@ -627,6 +654,12 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: enemy %d plays %s for move %d at rate %.2f (%.2f s)."), I,
 				*Skin.Sequences[Clip]->GetName(), static_cast<int32>(Out.move), MoveRate, Skin.Sequences[Clip]->GetPlayLength());
 		}
+		else if (Clip == Skin.FaceDownIn || Clip == Skin.FaceDownOut)
+		{
+			// Logged for the knee checks in -nullrhi runs.
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: enemy %d plays %s, %.2f s into a %.2f s state."), Now, I, *Skin.Sequences[Clip]->GetName(),
+				Out.stateTime, Out.stateLength);
+		}
 	}
 	const UAnimSequence* Sequence = Skin.Sequences[Clip];
 	const ftcore::BeatClip& Row = (*Skin.Clips)[static_cast<size_t>(Clip)];
@@ -666,6 +699,8 @@ void UFTArenaRunner::PutBodiesAtStart()
 		WalkSpeed[I] = 0.f;
 		bWalking[I] = false;
 		WalkPhase[I] = 0.0;
+		bKneeling[I] = false;
+		KneelSince[I] = 0.0;
 	}
 	PlayerHitTime = -1e9;
 	ParryTime = -1e9;
