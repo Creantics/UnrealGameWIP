@@ -50,6 +50,8 @@ struct FFTArenaBossVfx
 		float AreaScale = 2.5f;   // an all-round blow's tell and impact: their ShapeScale times this
 		float Surface = 0.9f;     // a hit's chips: this share of the boss's body radius out from its centre
 		float WeakDepth = 0.85f;  // no weak-point bone: the point this share of the body radius out, on its gate's side
+		float FlashUp = 0.3f;       // m: the crit flash and the weak-point glow sit this far above the weak point ...
+		float FlashToCamera = 0.5f; // ... and this far from it toward the camera, clear of the carried piece
 	};
 
 	// Reads the tunables (File, relative to the project), loads the systems and spawns the pool in World. Once: later calls

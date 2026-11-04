@@ -131,7 +131,10 @@ public:
 	// after its Turn and OffsetMeters tweak. Once a figure; false when it isn't skinned or already split. A piece that
 	// doesn't load is skipped with a warning.
 	bool SplitCarried(FName HideSlot, TConstArrayView<FFTCarriedPiece> Split);
-	// Undoes SplitCarried (a fight begun again): the piece whole on the figure, the parts gone.
+	// Makes the split's parts ahead of it, on their bones and hidden, so SplitCarried only swaps what shows. Once a
+	// figure; false when it isn't skinned, has them already, or none loaded.
+	bool PrepareCarried(TConstArrayView<FFTCarriedPiece> Split);
+	// Undoes SplitCarried (a fight begun again): the piece whole on the figure, the parts hidden (kept for the next).
 	void MendCarried();
 	bool IsSplit() const { return bSplit; }
 	float GetHeight() const { return Height; }
@@ -143,6 +146,8 @@ public:
 
 private:
 	void SetTellVisible(bool bVisible);
+	void ShowSlot(USkeletalMesh* Mesh, FName HideSlot, bool bShow);
+	void MakeCarried(USkeletalMesh* Mesh, TConstArrayView<FFTCarriedPiece> Split, bool bVisible);
 	// Puts Look on the player's skin: false (nothing changed) when its body doesn't load.
 	bool WearLook(const FFTLeadLook& Look);
 

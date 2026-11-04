@@ -213,8 +213,18 @@ private:
 	void BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 From, uint8 To);
 	void BossHitVfx(const ftcore::ArenaEvent& E);
 	FVector BossWeakPoint() const;
-	// The boss broke its carried piece: its figure takes the parts on the split file's bones (once a fight).
-	void SplitBossCarried();
+	// Where the crit flash and the weak-point glow go: the weak point, lifted and moved toward the camera (the tuning's
+	// flashUp and flashToCamera).
+	FVector BossFlashPoint() const;
+	// The stone_bearer kneels in this clip (going down, down, getting up): its hits hang off the pelvis then.
+	bool StoneKneelShows() const;
+	// The boss broke its carried piece: its figure swaps in the parts on the split file's bones (once a fight). bStagger:
+	// a break in the fight (not the run's split at the start), which also plays the impact and the stagger at once.
+	void SplitBossCarried(bool bStagger);
+	// The split's parts made hidden on the figure as it is spawned, so the split only swaps visibility.
+	void PrepareBossCarried();
+	// The stone_bearer's walk counts for the fight, one log line at its end.
+	void LogStoneWalkCounts() const;
 	// Plain kinds' weak points (ftcore/ArenaKindCrit.h): Data/Battle/arena_crit.json read once, then on each begin and
 	// restart one ArenaKindCrit per slot whose kind has an entry, and the blow hook that rules on the lead's blows on them.
 	// After each step the slots' AttackStarted events open the windows; an opening and every crit are one log line each.
@@ -306,6 +316,22 @@ private:
 	bool bStoneStood = false;
 	int32 StoneDeathClip = -1;
 	uint32 StoneMoveMask = 0xFFFFFFFFu;
+	// The split's stagger, drawn from the split's frame until Core's held Stagger takes over (-1e9: none).
+	double StoneSplitStaggerSince = -1e9;
+	double StoneSplitStaggerUntil = -1e9;
+	// The tell's point, frozen as the startup begins, for the impact's distance check (move kArenaNoMove... none: 255).
+	ftcore::Vec2 StoneTellAt;
+	uint8 StoneTellMove = 255;
+	// The walk's counts this fight: steps between moves Core wanted over the start speed (by brain), the runs of them,
+	// the walks begun, and the wanted steps that couldn't start one (by what held it: the cone, a get-up, a hit).
+	int32 StoneWantApproach = 0;
+	int32 StoneWantStrafe = 0;
+	int32 StoneWantRuns = 0;
+	int32 StoneWalksBegun = 0;
+	int32 StoneHeldCone = 0;
+	int32 StoneHeldUp = 0;
+	int32 StoneHeldHit = 0;
+	bool bStoneWanted = false;
 
 	ftcore::ArenaTable Table;
 	ftcore::ArenaZoneFit Fit;
