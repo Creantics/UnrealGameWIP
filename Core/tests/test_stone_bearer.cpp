@@ -407,6 +407,13 @@ TEST_CASE("stone bearer clips: the shipped table loads clean, with its own cross
     REQUIRE(walk >= 0);
     CHECK(clips[static_cast<std::size_t>(walk)].loop);
     CHECK(clips[static_cast<std::size_t>(walk)].speed == doctest::Approx(1.15));
+    // The go-down into face_down and the get-up out of it play once, each its own authored length.
+    for (const auto& [id, length] : {std::pair{"face_down_in", 0.8}, std::pair{"face_down_out", 1.0}}) {
+        const int clip = clips.find(id);
+        REQUIRE_MESSAGE(clip >= 0, id);
+        CHECK_FALSE(clips[static_cast<std::size_t>(clip)].loop);
+        CHECK(clips[static_cast<std::size_t>(clip)].length == doctest::Approx(length));
+    }
 }
 
 TEST_CASE("stone bearer loader: refusals carry their paths") {

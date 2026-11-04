@@ -40,6 +40,20 @@
    "loop": true
   },
   {
+   "id": "face_down_in",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerface_down_in",
+   "length_s": 0.8,
+   "impact_s": 0,
+   "loop": false
+  },
+  {
+   "id": "face_down_out",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerface_down_out",
+   "length_s": 1.0,
+   "impact_s": 0,
+   "loop": false
+  },
+  {
    "id": "defeat",
    "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerdefeat",
    "length_s": 6.0,
