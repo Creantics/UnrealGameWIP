@@ -311,6 +311,16 @@ int32 FTScene::ApplyLookParameters(UWorld* World, const ftcore::SceneLook& Look)
 			Count(EnvInstance->SetScalarParameterValue(Parameter.Name, Look.*(Parameter.Field)), EnvCollection, Parameter.Name,
 				TEXT("FTBuildEnvMaterials"));
 		}
+		const ftcore::SeaWaves Sea = ftcore::seaWaves(Look);
+		for (int32 I = 0; I < ftcore::kSeaWaveCount; ++I)
+		{
+			float V[4];
+			ftcore::packSeaWave(Sea.waves[I], V);
+			Count(EnvInstance->SetVectorParameterValue(SeaWaveParameters[I], FLinearColor(V[0], V[1], V[2], V[3])), EnvCollection,
+				SeaWaveParameters[I], TEXT("FTBuildEnvMaterials"));
+		}
+		Count(EnvInstance->SetScalarParameterValue(SeaSteepnessParameter, Sea.q), EnvCollection, SeaSteepnessParameter,
+			TEXT("FTBuildEnvMaterials"));
 	}
 	return Written;
 }

@@ -13,10 +13,13 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionPixelDepth.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionSingleLayerWaterMaterialOutput.h"
 #include "Materials/MaterialExpressionTextureObject.h"
 #include "Materials/MaterialExpressionTime.h"
 #include "Materials/MaterialExpressionUtils.h"
+#include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionVolumetricAdvancedMaterialOutput.h"
 #include "Materials/MaterialExpressionWorldPosition.h"
 #include "Materials/MaterialParameterCollection.h"
@@ -24,6 +27,7 @@
 #include "Misc/Paths.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
+#include "ftcore/SeaWaves.h"
 #endif
 
 #if WITH_EDITOR
@@ -52,6 +56,21 @@ const TCHAR* const kCloudCoverCode = TEXT(R"HLSL(return FTEnvCloudCover(Position
 // The engine's tiling noise volumes the clouds take their shape and worn edges from.
 const TCHAR* const kCloudShapeNoise = TEXT("/Engine/EngineSky/VolumetricClouds/T_VolumeNoiseShape128.T_VolumeNoiseShape128");
 const TCHAR* const kCloudErosionNoise = TEXT("/Engine/EngineSky/VolumetricClouds/T_VolumeNoiseErosion32.T_VolumeNoiseErosion32");
+
+// The sea's include (Env/Waves.ush): the vertices' offset, the pixel's surface and the water's medium. A custom node's
+// inputs are single values, so the eight waves come in one by one and are gathered here.
+const TCHAR* const kWavesInclude = TEXT("/Plugin/FTLook/Private/Env/Waves.ush");
+const TCHAR* const kSeaOffsetCode = TEXT(R"HLSL(float4 W[8] = {W0, W1, W2, W3, W4, W5, W6, W7};
+return FTEnvSeaOffset(Rest.xy, SeaTime, W, Q, GridCm);
+)HLSL");
+const TCHAR* const kSeaSurfaceCode = TEXT(R"HLSL(float4 W[8] = {W0, W1, W2, W3, W4, W5, W6, W7};
+return FTEnvSeaSurface(Rest.xy, SeaTime, Time, W, Q, WaveCm, WaveSpeed, WaveStrength, Rough, EyeDepth, BehindDepth,
+	Foam, FoamBandCm, WindDeg, RoughOut, FoamOut);
+)HLSL");
+const TCHAR* const kSeaMediumCode = TEXT(R"HLSL(return FTEnvSeaMedium(Absorb.rgb, Scatter.rgb, ScatterOut);
+)HLSL");
+// The grid step, in centimetres, of the mesh the sea is drawn on: waves shorter than four steps stay out of its vertices.
+constexpr float kSeaGridCm = 100.f;
 
 FString PackageFile(const TCHAR* Package)
 {
@@ -124,6 +143,16 @@ UMaterialExpressionScalarParameter* AddScalar(UMaterial* Material, FName Name, f
 	return P;
 }
 
+UMaterialExpressionVectorParameter* AddVector(UMaterial* Material, FName Name, const FLinearColor& Value, int32 Y)
+{
+	UMaterialExpressionVectorParameter* P = AddExpression<UMaterialExpressionVectorParameter>(Material, -900, Y);
+	P->ParameterName = Name;
+	P->DefaultValue = Value;
+	P->Group = TEXT("Env");
+	P->UpdateParameterGuid(true, false);
+	return P;
+}
+
 // A fixed texture (an engine one), sampled the way its own settings ask.
 UMaterialExpressionTextureObject* AddTextureObject(UMaterial* Material, UTexture* Texture, int32 Y)
 {
@@ -144,7 +173,7 @@ UTexture* LoadEngineTexture(const TCHAR* Path)
 	return Texture;
 }
 
-// One of the environment collection's parameters.
+// One of a parameter collection's parameters (the environment's, or the look's for the sea's water).
 UMaterialExpressionCollectionParameter* AddEnv(UMaterial* Material, UMaterialParameterCollection* Collection, FName Name, int32 Y)
 {
 	UMaterialExpressionCollectionParameter* P = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, Y);
@@ -166,19 +195,35 @@ void Finish(UMaterial* Material)
 	Material->PostEditChange();
 }
 
-// The collection, its defaults SceneLook{}'s. Each parameter's id comes from its name, so a rebuild changes no id.
+// The collection, its defaults SceneLook{}'s (the sea's waves the ones ftcore::seaWaves builds from it). Each parameter's
+// id comes from its name, so a rebuild changes no id.
 UMaterialParameterCollection* BuildCollection()
 {
 	UPackage* Package = CreatePackage(FTScene::EnvCollection);
 	UMaterialParameterCollection* Collection = NewObject<UMaterialParameterCollection>(Package,
 		FName(FPackageName::GetShortName(Package->GetName())), RF_Public | RF_Standalone | RF_Transactional);
 	const ftcore::SceneLook Default;
-	for (const FTScene::FLookScalarParameter& Parameter : FTScene::EnvScalarParameters)
+	const auto AddScalarParameter = [Collection](const TCHAR* Name, float Value)
 	{
 		FCollectionScalarParameter& Scalar = Collection->ScalarParameters.AddDefaulted_GetRef();
-		Scalar.ParameterName = Parameter.Name;
-		Scalar.DefaultValue = Default.*(Parameter.Field);
-		Scalar.Id = FGuid::NewDeterministicGuid(FString(TEXT("FTEnv.")) + Parameter.Name);
+		Scalar.ParameterName = Name;
+		Scalar.DefaultValue = Value;
+		Scalar.Id = FGuid::NewDeterministicGuid(FString(TEXT("FTEnv.")) + Name);
+	};
+	for (const FTScene::FLookScalarParameter& Parameter : FTScene::EnvScalarParameters)
+	{
+		AddScalarParameter(Parameter.Name, Default.*(Parameter.Field));
+	}
+	const ftcore::SeaWaves Sea = ftcore::seaWaves(Default);
+	AddScalarParameter(FTScene::SeaSteepnessParameter, Sea.q);
+	for (int32 I = 0; I < ftcore::kSeaWaveCount; ++I)
+	{
+		float V[4];
+		ftcore::packSeaWave(Sea.waves[I], V);
+		FCollectionVectorParameter& Vector = Collection->VectorParameters.AddDefaulted_GetRef();
+		Vector.ParameterName = FTScene::SeaWaveParameters[I];
+		Vector.DefaultValue = FLinearColor(V[0], V[1], V[2], V[3]);
+		Vector.Id = FGuid::NewDeterministicGuid(FString(TEXT("FTEnv.")) + FTScene::SeaWaveParameters[I]);
 	}
 	Collection->PostEditChange();
 	return Collection;
@@ -310,6 +355,95 @@ UMaterial* BuildClouds(UMaterialParameterCollection* Env)
 	return Material;
 }
 
+// The sea: single-layer water over open water, on a grid mesh kSeaGridCm a step (Env/Waves.ush). The eight waves
+// (ftcore::seaWaves, through MPC_Env) move the vertices and give each pixel its exact normal and whitecaps, evaluated at
+// the pixel's rest place (the world position without the offset), so the two agree; the look water's ripples, colour
+// and medium (MPC_Look) ride over them, and the foam is the opaque top layer the water output blends in. The waves run
+// on a time that wraps every ftcore::kSeaLoopS, where they repeat exactly, so it keeps its precision on a long run;
+// the ripples and foam drift on the plain time.
+UMaterial* BuildSea(UMaterialParameterCollection* Env, UMaterialParameterCollection* Look)
+{
+	UMaterial* Material = NewMaterial(FTScene::EnvSeaMaterial);
+	Material->SetShadingModel(MSM_SingleLayerWater);
+	Material->BlendMode = BLEND_Opaque;
+	Material->bTangentSpaceNormal = false;
+
+	UMaterialExpression* Behind = AddEngineExpression(Material, TEXT("MaterialExpressionSceneDepthWithoutWater"), -900, 1500);
+	if (!Behind)
+	{
+		return nullptr;
+	}
+	UMaterialExpressionWorldPosition* Rest = AddExpression<UMaterialExpressionWorldPosition>(Material, -900, -700);
+	Rest->WorldPositionShaderOffset = WPT_ExcludeAllShaderOffsets;
+	UMaterialExpressionTime* SeaTime = AddExpression<UMaterialExpressionTime>(Material, -900, -600);
+	SeaTime->bOverride_Period = true;
+	SeaTime->Period = ftcore::kSeaLoopS;
+	UMaterialExpressionTime* Time = AddExpression<UMaterialExpressionTime>(Material, -900, -500);
+	UMaterialExpression* Waves[ftcore::kSeaWaveCount];
+	for (int32 I = 0; I < ftcore::kSeaWaveCount; ++I)
+	{
+		Waves[I] = AddEnv(Material, Env, FTScene::SeaWaveParameters[I], -400 + 100 * I);
+	}
+	UMaterialExpressionCollectionParameter* Q = AddEnv(Material, Env, FTScene::SeaSteepnessParameter, 400);
+	UMaterialExpressionCollectionParameter* WindDeg = AddEnv(Material, Env, TEXT("WindDeg"), 500);
+
+	UMaterialExpressionCustom* Offset = AddCustom(Material, TEXT("FTEnvSeaOffset"), kWavesInclude, kSeaOffsetCode, CMOT_Float3, -800);
+	AddInput(Offset, TEXT("Rest"), Rest);
+	AddInput(Offset, TEXT("SeaTime"), SeaTime);
+	for (int32 I = 0; I < ftcore::kSeaWaveCount; ++I)
+	{
+		AddInput(Offset, *FString::Printf(TEXT("W%d"), I), Waves[I]);
+	}
+	AddInput(Offset, TEXT("Q"), Q);
+	AddInput(Offset, TEXT("GridCm"), AddScalar(Material, TEXT("GridCm"), kSeaGridCm, -800));
+	Offset->RebuildOutputs();
+
+	UMaterialExpressionCustom* Surface = AddCustom(Material, TEXT("FTEnvSeaSurface"), kWavesInclude, kSeaSurfaceCode, CMOT_Float3, 0);
+	AddOutput(Surface, TEXT("RoughOut"), CMOT_Float1);
+	AddOutput(Surface, TEXT("FoamOut"), CMOT_Float1);
+	AddInput(Surface, TEXT("Rest"), Rest);
+	AddInput(Surface, TEXT("SeaTime"), SeaTime);
+	AddInput(Surface, TEXT("Time"), Time);
+	for (int32 I = 0; I < ftcore::kSeaWaveCount; ++I)
+	{
+		AddInput(Surface, *FString::Printf(TEXT("W%d"), I), Waves[I]);
+	}
+	AddInput(Surface, TEXT("Q"), Q);
+	AddInput(Surface, TEXT("WaveCm"), AddEnv(Material, Look, TEXT("WaterWaveCm"), 600));
+	AddInput(Surface, TEXT("WaveSpeed"), AddEnv(Material, Look, TEXT("WaterWaveSpeed"), 700));
+	AddInput(Surface, TEXT("WaveStrength"), AddEnv(Material, Look, TEXT("WaterWaveStrength"), 800));
+	AddInput(Surface, TEXT("Rough"), AddEnv(Material, Look, TEXT("WaterRoughness"), 900));
+	AddInput(Surface, TEXT("EyeDepth"), AddExpression<UMaterialExpressionPixelDepth>(Material, -900, 1000));
+	AddInput(Surface, TEXT("BehindDepth"), Behind);
+	AddInput(Surface, TEXT("Foam"), AddEnv(Material, Env, TEXT("SeaFoam"), 1100));
+	AddInput(Surface, TEXT("FoamBandCm"), AddEnv(Material, Env, TEXT("SeaFoamBandCm"), 1200));
+	AddInput(Surface, TEXT("WindDeg"), WindDeg);
+	Surface->RebuildOutputs();
+
+	UMaterialExpressionCustom* Medium = AddCustom(Material, TEXT("FTEnvSeaMedium"), kWavesInclude, kSeaMediumCode, CMOT_Float3, 1700);
+	AddOutput(Medium, TEXT("ScatterOut"), CMOT_Float3);
+	AddInput(Medium, TEXT("Absorb"), AddEnv(Material, Look, TEXT("WaterAbsorb"), 1700));
+	AddInput(Medium, TEXT("Scatter"), AddEnv(Material, Look, TEXT("WaterScatter"), 1800));
+	Medium->RebuildOutputs();
+
+	UMaterialExpressionSingleLayerWaterMaterialOutput* Water = AddExpression<UMaterialExpressionSingleLayerWaterMaterialOutput>(Material, 0, 1700);
+	Water->AbsorptionCoefficients.Connect(0, Medium);
+	Water->ScatteringCoefficients.Connect(1, Medium);
+	Water->PhaseG.Connect(0, AddEnv(Material, Look, TEXT("WaterPhaseG"), 1900));
+
+	// Water's own reflectance (F0 0.02) and index; the foam is an off-white top layer, matte by the surface's roughness.
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	Inputs->WorldPositionOffset.Connect(0, Offset);
+	Inputs->BaseColor.Connect(0, AddVector(Material, TEXT("FoamColor"), FLinearColor(0.8f, 0.8f, 0.78f), -300));
+	Inputs->Specular.Connect(0, AddScalar(Material, TEXT("Specular"), 0.25f, -200));
+	Inputs->Refraction.Connect(0, AddScalar(Material, TEXT("IOR"), 1.33f, -100));
+	Inputs->Normal.Connect(0, Surface);
+	Inputs->Roughness.Connect(1, Surface);
+	Inputs->Opacity.Connect(2, Surface);
+	Finish(Material);
+	return Material;
+}
+
 bool Save(UObject* Asset, const TCHAR* PackageName)
 {
 	const FString File = PackageFile(PackageName);
@@ -342,7 +476,17 @@ int32 UFTBuildEnvMaterialsCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
 	using namespace FTEnvMaterialsBuild;
-	const TCHAR* const Packages[] = {FTScene::EnvCollection, FTScene::EnvSkyMaterial, FTScene::EnvCloudMaterial};
+	// The sea reads the look's water from its collection, so that one is built first (FTBuildLookMaterials); it's looked
+	// for before anything here is replaced.
+	const FString LookPath = FString(FTScene::LookCollection) + TEXT(".") + FPackageName::GetShortName(FTScene::LookCollection);
+	UMaterialParameterCollection* Look = LoadObject<UMaterialParameterCollection>(nullptr, *LookPath);
+	if (!Look)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildEnvMaterials: %s is missing; build it first with FTBuildLookMaterials."),
+			FTScene::LookCollection);
+		return 1;
+	}
+	const TCHAR* const Packages[] = {FTScene::EnvCollection, FTScene::EnvSkyMaterial, FTScene::EnvCloudMaterial, FTScene::EnvSeaMaterial};
 	// Start from nothing: replace the files up front, before anything loads the old assets.
 	for (const TCHAR* Package : Packages)
 	{
@@ -368,6 +512,7 @@ int32 UFTBuildEnvMaterialsCommandlet::Main(const FString& Params)
 	const FBuilt Built[] = {
 		{BuildSky(Env), FTScene::EnvSkyMaterial},
 		{BuildClouds(Env), FTScene::EnvCloudMaterial},
+		{BuildSea(Env, Look), FTScene::EnvSeaMaterial},
 	};
 	FAssetCompilingManager::Get().FinishAllCompilation();
 	int32 Errors = 0;

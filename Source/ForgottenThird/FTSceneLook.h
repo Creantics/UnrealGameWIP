@@ -13,6 +13,7 @@
 #include "CoreMinimal.h"
 
 #include "ftcore/SceneLook.h"
+#include "ftcore/SeaWaves.h"
 #include "ftcore/SurfaceTable.h"
 
 class UMaterialInterface;
@@ -75,16 +76,19 @@ inline constexpr FLookVectorParameter LookVectorParameters[] = {
 	{TEXT("GlowColor"), &ftcore::SceneLook::glowR, &ftcore::SceneLook::glowG, &ftcore::SceneLook::glowB},
 };
 
-// The environment's materials, built by FTBuildEnvMaterials: a second parameter collection for the sky and clouds (and
-// the sea after them), filled beside the look's by ApplyLookParameters, and the materials over it, whose shading code is
-// in Plugins/FTLook/Shaders/Private/Env. MPC_Look and its materials stay as they are; a material that needs both reads
-// both, the most a material may. See docs/PHOTOREAL_LOOK.md.
+// The environment's materials, built by FTBuildEnvMaterials: a second parameter collection for the sky, the clouds and
+// the sea, filled beside the look's by ApplyLookParameters, and the materials over it, whose shading code is in
+// Plugins/FTLook/Shaders/Private/Env. MPC_Look and its materials stay as they are; a material that needs both reads
+// both (the sea does: its water's colour and ripples are the look's), the most a material may. See
+// docs/PHOTOREAL_LOOK.md.
 inline constexpr const TCHAR* EnvCollection = TEXT("/Game/Look/MPC_Env");
 inline constexpr const TCHAR* EnvSkyMaterial = TEXT("/Game/Look/Env/M_Env_Sky");
 // The cloud layer's material when a world has cloud cover (ApplyLook puts it on), and the engine's own, which it gives
 // back when the cover goes.
 inline constexpr const TCHAR* EnvCloudMaterial = TEXT("/Game/Look/Env/M_Env_Clouds");
 inline constexpr const TCHAR* EngineCloudMaterial = TEXT("/Engine/EngineSky/VolumetricClouds/m_SimpleVolumetricCloud_Inst");
+// The sea's surface: a single-layer water material for a grid mesh over open water.
+inline constexpr const TCHAR* EnvSeaMaterial = TEXT("/Game/Look/Env/M_Env_Sea");
 inline constexpr FLookScalarParameter EnvScalarParameters[] = {
 	{TEXT("SkyStars"), &ftcore::SceneLook::skyStars},
 	{TEXT("SkyStarMag"), &ftcore::SceneLook::skyStarMag},
@@ -103,7 +107,17 @@ inline constexpr FLookScalarParameter EnvScalarParameters[] = {
 	{TEXT("CloudDrift"), &ftcore::SceneLook::cloudDrift},
 	{TEXT("CloudUnderglow"), &ftcore::SceneLook::cloudUnderglow},
 	{TEXT("CloudUnderglowKelvin"), &ftcore::SceneLook::cloudUnderglowKelvin},
+	{TEXT("SeaFoam"), &ftcore::SceneLook::seaFoam},
+	{TEXT("SeaFoamBandCm"), &ftcore::SceneLook::seaFoamBandCm},
 };
+// The sea's waves aren't fields: ApplyLookParameters builds them from the look's swell, wind and fetch
+// (ftcore::seaWaves) and writes each wave's packed vector (ftcore::packSeaWave) and the shared steepness.
+inline constexpr const TCHAR* SeaWaveParameters[] = {
+	TEXT("SeaWave0"), TEXT("SeaWave1"), TEXT("SeaWave2"), TEXT("SeaWave3"),
+	TEXT("SeaWave4"), TEXT("SeaWave5"), TEXT("SeaWave6"), TEXT("SeaWave7"),
+};
+static_assert(UE_ARRAY_COUNT(SeaWaveParameters) == ftcore::kSeaWaveCount, "one vector a wave");
+inline constexpr const TCHAR* SeaSteepnessParameter = TEXT("SeaQ");
 
 // The ground master's layers, each wearing the surface its kind gives the role. Its parameters are named after them:
 // "<Layer><Map>" for a texture, "<Layer>Tint", "<Layer>TileCm" and "<Layer>Roughness".
@@ -157,8 +171,9 @@ FORGOTTENTHIRD_API void SpawnLook(UWorld* World, const FActorSpawnParameters& Sp
 FORGOTTENTHIRD_API int32 ApplyLook(UWorld* World, const ftcore::SceneLook& Look, const ftcore::SceneLook& Current);
 
 // Writes Look's wetness, water and glow into World's instance of the look's parameter collection (LookCollection), and
-// its sky, wind and clouds into the environment's (EnvCollection). The number of parameters written; 0 when neither collection has been
-// built (no material reads them then); -1, with nothing written, while World has no instance yet of one that has.
+// its sky, wind, clouds and sea into the environment's (EnvCollection). The number of parameters written; 0 when neither
+// collection has been built (no material reads them then); -1, with nothing written, while World has no instance yet of
+// one that has.
 FORGOTTENTHIRD_API int32 ApplyLookParameters(UWorld* World, const ftcore::SceneLook& Look);
 
 // Loads the world surface master: a "Color" vector held to a plausible albedo, "Roughness", "Metallic" and

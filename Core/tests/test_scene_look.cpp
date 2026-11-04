@@ -58,6 +58,8 @@ TEST_CASE("A default look draws the atmosphere's own sky and keeps the engine's 
     CHECK(look.cloudBaseKm == 5.f);
     CHECK(look.cloudThickKm == 10.f);
     CHECK(look.cloudUnderglow == 0.f);
+    // No swell, and with no wind no sea: the sea material, wherever a map puts it, lies flat.
+    CHECK(look.seaSwellM == 0.f);
 }
 
 TEST_CASE("Every field takes part in ==") {
@@ -74,8 +76,8 @@ TEST_CASE("Every field takes part in ==") {
     }
     FTCORE_LOOK_FIELDS(FTCORE_LOOK_ONE)
 #undef FTCORE_LOOK_ONE
-    CHECK(fields == 84);
-    CHECK(ftcore::kSceneLookFieldCount == 84u);
+    CHECK(fields == 91);
+    CHECK(ftcore::kSceneLookFieldCount == 91u);
     CHECK(base == SceneLook{});
 }
 

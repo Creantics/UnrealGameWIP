@@ -23,9 +23,9 @@ namespace ftcore {
 // range is wider for some. Every default is the engine's or the project config's value, so a default look
 // renders as before. Hue fields are OKLab degrees (red ~30, gold ~85, green ~145, blue ~265, violet ~305) and
 // lerp linearly like the rest, so a blend between worlds should keep their hues close. The surface, water, fog
-// albedo, practical light, glow, sky, wind and cloud fields drive materials and lights the maps carry; their defaults
-// add no wetness, glow, stars, skyglow or wind, keep the engine's own cloud layer, and leave the water, fog and lights
-// as they were.
+// albedo, practical light, glow, sky, wind, cloud and sea fields drive materials and lights the maps carry; their
+// defaults add no wetness, glow, stars, skyglow, wind or swell, keep the engine's own cloud layer, and leave the water,
+// fog and lights as they were.
 #define FTCORE_LOOK_FIELDS(X)                                                                                  \
     /* Light. */                                                                                               \
     X(sunLux, 6.f, 0.f, 200.f)    /* directional light illuminance */                                          \
@@ -128,7 +128,16 @@ namespace ftcore {
     X(cloudDensity, 0.05f, 0.f, 1.f) /* extinction inside a full cloud, per metre */                           \
     X(cloudDrift, 2.f, 0.f, 5.f)   /* the clouds' speed against windMps (the wind blows harder aloft) */       \
     X(cloudUnderglow, 0.f, 0.f, 10.f) /* a city's light on the cloud bases, luminance at the scene scale */    \
-    X(cloudUnderglowKelvin, 2100.f, 1500.f, 15000.f) /* its colour (2100 = high-pressure sodium) */
+    X(cloudUnderglowKelvin, 2100.f, 1500.f, 15000.f) /* its colour (2100 = high-pressure sodium) */            \
+    /* The sea (M_Env_Sea, through MPC_Env): a swell from far off and the wind's own sea, which */             \
+    /* ftcore::seaWaves builds. The defaults raise no swell, and with no wind no sea. */                       \
+    X(seaSwellM, 0.f, 0.f, 8.f)    /* the swell's significant height, metres; 0 = none */                      \
+    X(seaSwellPeriodS, 8.f, 4.f, 20.f) /* its period, seconds (8 s: crests about 100 m apart) */               \
+    X(seaSwellDeg, 0.f, 0.f, 360.f) /* the way it travels, degrees like a yaw */                               \
+    X(seaChop, 1.f, 0.f, 3.f)      /* scale on the sea windMps raises over seaFetchKm; 0 = none */             \
+    X(seaFetchKm, 2.f, 0.1f, 500.f) /* open water upwind, km: a harbour's few give short, steep chop */        \
+    X(seaFoam, 0.5f, 0.f, 1.f)     /* whitecaps where the crests crowd, and contact foam; 0 = none */          \
+    X(seaFoamBandCm, 60.f, 0.f, 500.f) /* contact foam where the water is shallower than this along the view */
 
 struct SceneLook {
 #define FTCORE_LOOK_DECL(name, def, lo, hi) float name = def;

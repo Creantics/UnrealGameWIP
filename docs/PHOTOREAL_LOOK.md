@@ -19,10 +19,10 @@ gives each world its own values for all of them.
 - **`ftcore::SceneLook`**: the shared look's fields plus the camera's tone curve (filmic slope, toe, shoulder, black and
   white clip), auto-exposure speed, local exposure contrast, fringe, grain by tone, and the grade's fields, then
   ground wetness, the water's absorption, scattering, waves and roughness, the fog's albedo, the practical lights'
-  colour, intensity and scattering, the glow's colour and strength, the sky's stars, skyglow and flat dome, the wind, and the cloud
-  layer's cover, kind, height, depth, density, drift and underglow: 84 fields in all. Every default reproduces the
-  shared look exactly (no wetness, no glow, no stars or skyglow, no wind, white fog, the engine's water and light
-  values and its own cloud layer).
+  colour, intensity and scattering, the glow's colour and strength, the sky's stars, skyglow and flat dome, the wind, the cloud
+  layer's cover, kind, height, depth, density, drift and underglow, and the sea's swell, chop, fetch and foam: 91 fields
+  in all. Every default reproduces the shared look exactly (no wetness, no glow, no stars or skyglow, no wind and so no
+  sea, white fog, the engine's water and light values and its own cloud layer).
 - **The `render` block** of `looks.json`: engine console variables the game sets at start, such as
   `r.Lumen.HardwareRayTracing`, as `"name": number` pairs in file order (`ftcore::LookTable::render`). Each key starts
   with `r.`, uses letters, digits, `.` and `_`, and appears once; each value is a finite number. A bad entry refuses
@@ -113,7 +113,7 @@ UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/Look_Lab -game -RenderOf
 
 ## The environment materials
 
-The sky and the clouds (and next the sea) read a second collection, `/Game/Look/MPC_Env`, which
+The sky, the clouds and the sea read a second collection, `/Game/Look/MPC_Env`, which
 `FTScene::ApplyLookParameters` fills beside `MPC_Look`. `FTBuildEnvMaterials` builds it and the materials over it.
 Their shading code lives in the FTLook plugin, under `Plugins/FTLook/Shaders/Private/Env` (the virtual path
 `/Plugin/FTLook/Private/Env`), so each material's Custom node is a single call into an include:
@@ -122,12 +122,15 @@ Their shading code lives in the FTLook plugin, under `Plugins/FTLook/Shaders/Pri
 |---|---|
 | `Env/M_Env_Sky` | An unlit sky for a sky dome (`Sky.ush`). It draws the atmosphere's own sky and its sun's disc through the engine's sky atmosphere nodes, then adds stars, a city's skyglow and a flat featureless dome on top. The stars come from a real magnitude count, dimmed by air mass and twinkling more near the horizon, and they fade as the sky brightens. The skyglow is a sodium-coloured band toward the city. With the defaults it draws the atmosphere alone. |
 | `Env/M_Env_Clouds` | A volume material for the volumetric cloud layer (`Clouds.ush`). A weather map of cover drifts with the wind and sets where cloud is and how tall it grows; `cloudType` runs from flat sheets to towering heaps. The engine's tiling noise volumes give the shape and wear its edges, a cheap bound lets the engine skip empty sky, and the light is a forward lobe for the silver edge, a weaker back lobe, one octave of multiple scattering and a marched shadow. `cloudUnderglow` adds a city's warm glow to the cloud bases. `FTScene::ApplyLook` puts it on the layer when `cloudCover` is above 0, gives the engine's own material back when the cover goes, and moves the layer to `cloudBaseKm` and `cloudThickKm`. |
+| `Env/M_Env_Sea` | Single-layer water for open water on a grid mesh (`Waves.ush`). The sea is eight Gerstner waves that `ftcore::seaWaves` (`Core/include/ftcore/SeaWaves.h`) builds from the look: three for a swell of `seaSwellM` at `seaSwellPeriodS` from `seaSwellDeg`, five for the sea `windMps` raises over `seaFetchKm` of water (a fetch-limited spectrum, scaled by `seaChop`). Each keeps deep-water dispersion, the set repeats exactly every 30 minutes, and the waves' shared steepness keeps the surface from ever folding over. They move the vertices (the waves shorter than four grid steps stay out of them), and each pixel takes its exact normal and whitecaps from the same waves at its rest place. The look water's ripples ride on top, its colour and medium fill it, and surf foams a `seaFoamBandCm` band where the water runs shallow (`seaFoam` scales both). `ftcore::seaHeight` gives the height anywhere, for floats and spray. |
 
 ```
 UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildEnvMaterials -AllowCommandletRendering -unattended
 ```
 
-The two material builds run in either order. No map places the sky dome yet.
+The sea reads `MPC_Look` too, so `FTBuildLookMaterials` runs first, once; this build stops, replacing nothing, if
+`MPC_Look` is missing. No map places the sky dome or a sea mesh yet. A sea mesh needs a grid of 100 cm steps (the
+material's `GridCm`) and bounds grown by the tallest swell, since the waves move its vertices.
 
 ## Later
 

@@ -9,20 +9,6 @@
 
 #include "/Plugin/FTLook/Private/Env/Common.ush"
 
-// Smooth 2D value noise, 0..1, one cell a unit; Seed picks the field.
-float FTEnvNoise2(float2 P, uint Seed)
-{
-	const float2 Cell = floor(P);
-	const float2 F = P - Cell;
-	const float2 S = F * F * (3.0 - 2.0 * F);
-	const uint2 I = uint2(int2(Cell));
-	const float A = FTEnvHash3(uint3(I, Seed)).x;
-	const float B = FTEnvHash3(uint3(I + uint2(1u, 0u), Seed)).x;
-	const float C = FTEnvHash3(uint3(I + uint2(0u, 1u), Seed)).x;
-	const float D = FTEnvHash3(uint3(I + uint2(1u, 1u), Seed)).x;
-	return lerp(lerp(A, B, S.x), lerp(C, D, S.x), S.y);
-}
-
 float FTEnvRemap(float V, float Lo, float Hi)
 {
 	return saturate((V - Lo) / max(Hi - Lo, 1e-4));
