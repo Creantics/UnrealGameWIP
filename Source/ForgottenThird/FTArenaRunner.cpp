@@ -812,11 +812,11 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		Time = Now - SkinSince[I];
 	}
 	// A loop wraps; anything else holds its last frame. The crossfade into a clip is its row's own (blend_s) when it states
-	// one, else the table's.
+	// one, else the table's; a clip the table marks additive_in (a short hit reaction) lands at once on the pose the blow finds.
 	const bool bLoop = Row.loop && !bTimed;
 	const float At = bLoop && Length > 0.f ? FMath::Fmod(static_cast<float>(Time), Length) : FMath::Clamp(static_cast<float>(Time), 0.f, Length);
 	const double Blend = Row.blend > 0.0 ? Row.blend : Skin.Clips->blend;
-	Figure->PlayClip(Sequence, At, bLoop, FrameDelta, bHoldRoot, static_cast<float>(Blend));
+	Figure->PlayClip(Sequence, At, bLoop, FrameDelta, bHoldRoot, static_cast<float>(Blend), Row.additiveIn);
 }
 
 void UFTArenaRunner::PutBodiesAtStart()

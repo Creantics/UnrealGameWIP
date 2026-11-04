@@ -588,4 +588,9 @@ TEST_CASE("arena kind crit: the shipped Dealer's moves name clips of its table, 
         CHECK_MESSAGE(std::fabs(c.length - static_cast<double>(time)) < 0.01, id << " length " << c.length);
     }
     for (const char* id : {"hit_light", "hit_heavy", "defeat"}) CHECK_MESSAGE(clips.find(id) >= 0, "clip " << id);
+    // The two short hit reactions land at once on whatever pose the blow finds (additive over the crossfade); the
+    // longer state clips and the idle ease in as every other clip does.
+    for (const char* id : {"hit_light", "hit_heavy"}) CHECK_MESSAGE(clips[static_cast<std::size_t>(clips.find(id))].additiveIn, id);
+    for (const char* id : {"idle", "stagger", "open", "face_down", "deal"})
+        CHECK_FALSE_MESSAGE(clips[static_cast<std::size_t>(clips.find(id))].additiveIn, id);
 }

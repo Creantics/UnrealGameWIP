@@ -111,8 +111,10 @@ public:
 	bool SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float Scale, float YawOffset, float HeightMeters);
 	// A skinned figure shows Clip at Time (seconds into it; looping wraps) over a short crossfade from the clip before it.
 	// bHoldRoot false lets the clip's root travel through (a fall). Call every frame; a null clip changes nothing.
-	// Blend: the crossfade into a new clip, seconds; 0 the anim instance's own.
-	void PlayClip(const UAnimSequence* Clip, float Time, bool bLoop, float DeltaSeconds, bool bHoldRoot = true, float Blend = 0.f);
+	// Blend: the crossfade into a new clip, seconds; 0 the anim instance's own. bAdditiveIn: a new clip fades in additively
+	// (its motion lands at full size on the pose it cuts in from; UFTBeatFighterAnimInstance).
+	void PlayClip(const UAnimSequence* Clip, float Time, bool bLoop, float DeltaSeconds, bool bHoldRoot = true, float Blend = 0.f,
+		bool bAdditiveIn = false);
 	bool IsSkinned() const { return SkinKind == ESkin::Creature; }
 	bool WearsLook() const { return SkinKind == ESkin::Lead; }
 	// The camera's rig in metres (ftcore::StageCamera, scaled with the arena): the boom's length, the pivot's

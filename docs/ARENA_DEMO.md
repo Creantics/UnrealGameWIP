@@ -196,6 +196,10 @@ again through `face_down_in` (or stands it out when too little is left); it dies
 restarts it, and after that only a heavy one does. A clip the table lacks is left out (that state plays the idle). If the clip table, the mesh or the idle clip doesn't load, the
 kind keeps its shapes and the log has one warning. The camera looks up at a boss at least 4 m tall (hover included) toward 70%
 of its height, up to 15 degrees above level (the free camera's limit too); the camera never pulls out for a big boss. The assets are local; nothing here needs them to load.
+A row marked `"additive_in": true` (the white glove's `hit_light` and `hit_heavy`) also fades in additively: while its crossfade
+runs, its own motion since its first frame goes on top of the blend by what is left of the fade, so a blow taken mid-swing jolts
+the held swing pose at the reaction's full size at once instead of easing into the reaction's rest start; cut off mid-fade (a
+second blow), it keeps that share and lets it go as it fades out.
 
 The kite boss (`kite_boss`, `Data/Anim/kite_clips.json`, assets under `/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/`,
 the import being `FTImportCharacter -Source=kite_boss.glb -Dest=/Game/Bosses/KiteBoss -Face=0`): 1100 hp, 9.1 m from its

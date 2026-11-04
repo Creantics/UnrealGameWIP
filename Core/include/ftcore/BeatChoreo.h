@@ -134,6 +134,9 @@ struct BeatClip {
     double speed = 0.0;  // the root speed the clip was authored at, m/s (a walk plays at the body's speed over this); 0: none
     double blend = 0.0;  // the crossfade into this clip, s (optional "blend_s"); 0: the table's
     bool loop = false;
+    // The host adds the clip's own motion (from its first frame) on top of the pose it cuts in from while it fades in,
+    // so a short reaction lands at its full size at once instead of easing in over the crossfade.
+    bool additiveIn = false;
 
     std::string_view id() const { return std::string_view(idText.data()); }
     std::string_view asset() const { return std::string_view(assetText.data()); }
@@ -159,7 +162,7 @@ struct BeatClips {
 // are 1..31 letters, digits, _ and -; the asset (optional) is a path of 1..127 characters beginning
 // with /, which the host loads; the length is over 0 and at most 60 s; the impact is within the clip; the optional
 // "speed_mps" is over 0 and at most 20; a clip's optional "blend_s" (over 0, at most 1) is the crossfade into it, in place of
-// the table's. An optional top-level "mesh" is the skeletal mesh asset the clips are for (a path like the
+// the table's, and its optional "additive_in" true or false. An optional top-level "mesh" is the skeletal mesh asset the clips are for (a path like the
 // asset's), and an optional "blend_s" (over 0, at most 1) the crossfade between them. Unknown keys are warnings. On failure `out` is empty
 // and *error lists each problem with its path, one per line.
 FTCORE_API bool importBeatClips(std::string_view json, BeatClips& out, std::string* error = nullptr,
