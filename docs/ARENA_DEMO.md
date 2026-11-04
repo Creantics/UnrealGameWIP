@@ -182,13 +182,35 @@ kind keeps its shapes and the log has one warning. The camera looks up at a boss
 of its height, up to 15 degrees above level (the free camera's limit too); the camera never pulls out for a big boss. The assets are local; nothing here needs them to load.
 
 The kite boss (`kite_boss`, `Data/Anim/kite_clips.json`, assets under `/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/`,
-the import being `FTImportCharacter -Source=kite_boss.glb -Dest=/Game/Bosses/KiteBoss -Face=0`): 1100 hp, 9.1 m tall and
-hanging 0.9 m off the ground, drifting at 0.6 to 1 m/s. Eight moves, each its clip's id: `mitten_drop`, `swoop`, `peg_spray`,
+the import being `FTImportCharacter -Source=kite_boss.glb -Dest=/Game/Bosses/KiteBoss -Face=0`): 1100 hp, 9.1 m from its
+finial to its tail tip (the whole figure, `height` 9.1) and hanging 0.9 m off the ground, drifting at 0.6 to 1 m/s. The mesh is a
+rebuild of the first one with the same 48-bone rig and the same 23 clips, so the clip table did not change. Eight moves, each its
+clip's id: `mitten_drop`, `swoop`, `peg_spray`,
 `snag`, `wet_sheet`, `undertow`, `string_flick`, `sheet_slap` (Read card words slam, sweep, strike, charge, overhead, thrust,
 slash, backhand). Core has no "parry-opener" flag or multi-hit, so the marked move is made by `parryable`: only `swoop` (and the
 two basic strikes) can be parried; a parry of it opens the boss, the big ones are blocked or dodged, and `peg_spray` is one hit.
 `swoop` has weight 20 and a cooldown of 8 s, which comes to about one every 11 s. No phase system exists, so the second-phase moves
 (`*_double`, `swoop_feint`, `rockabye`) are not wired; `idle_p2` is the only second-phase clip played.
+
+Its weak point is the smile seam on the paper face, `seam` in `Data/Battle/arena_boss/kite_boss_weak.json`, read with
+`importArenaWeakPoints` (a standalone `{ "version": 1, "weakPoints": { ... } }` file: the block `importArenaBoss` reads from a boss
+file, because the kite keeps arena.json's moves and has no boss file of its own). One point on the front (`facing` 0, `arc` 60:
+the lead must stand within 60 degrees of the face), radius 0.06, multiplier 2.0, in figure space (the unit is the 9.1 m height, y
+up from the mesh's bottom; the 0.9 m hover lifts the whole mesh, so y does not count it). Its `y` is the seam's height above the
+mesh bottom over 9.1 m (provisional until the final mesh is measured). It is hosted by `FFTKiteHost`
+(`Source/ForgottenThird/FTKiteHost.*`, no Unreal headers), owned by the runner when the line-up holds a `kite_boss`:
+
+- the swoop's parry (any Parried of the kite) opens a `CritWindow` for the kind's `openTime`, a Staggered for its `staggerTime`;
+  the window shuts at its end;
+- in the blow hook a lead's blow on the kite is judged locked on, as the stone_bearer's are (`judgeLockOn`: the gate then the
+  point), and a crit scales the blow's damage and poise by the point's multiplier. The fight has one blow hook, so the runner
+  gives the kite no host (one warning) in a fight that has the stone_bearer's;
+- notes, one log line each as `Arena: kite ...`: crit opened (until when), crit landed (the point, its multiplier, `first` for
+  the first of an opening), crit closed; also each telegraph (a kite AttackStarted) and each hit taken, at Verbose. The weak
+  point's mesh socket is `seam` (`FFTKiteHost::WeakPointSocket`; the rig's bone has the same name).
+
+Stubs, each a named hook that only leaves a note, for the effects step to spawn Niagara systems from: `OnTelegraph(move, t)`,
+`OnCritOpened`, `OnCritLanded`, `OnHitTaken`.
 
 Play it in the 40 x 14 m ring:
 
@@ -196,7 +218,7 @@ Play it in the 40 x 14 m ring:
 UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=kite_ring
 ```
 
-or in the plain 12 m sand ring with `-ArenaLineup=kite_boss` instead of `-ArenaStage=kite_ring` (cramped for a body of 3.5 m).
+or in the plain 12 m sand ring with `-ArenaLineup=kite_boss` instead of `-ArenaStage=kite_ring` (cramped for a 9 m boss).
 
 ## The stone_bearer
 
@@ -239,6 +261,44 @@ UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -
 
 Add `-ArenaAutoPlay` (the autopilot, with the host pressing Intercept and Guard on the call and releasing on the plinth) or
 `-ArenaIdle`. Intercept is U, the mouse's thumb button or the left stick's click, held; the boss's Guard is the guard.
+
+## Boss demo: the bosses with the three leads
+
+The boss meshes and their clips are local assets (`Content/Bosses/`, never committed: the main checkout holds untracked
+ones, and committing `.uasset` files there would make a merge fail on them). Each is one `FTImportCharacter` run from the
+boss's `.glb`; the file's stem names the asset folder, so the glb must be called `<stem>.glb`. A boss kind whose assets
+are missing keeps its placeholder shapes and the log has one warning. Run from the project folder, with the editor
+closed:
+
+| Boss | Kind | Zone | Import |
+|---|---|---|---|
+| the Unbending | `stone_bearer` | `stone_ring` | `-Source=<path>/stone_bearer.glb -Dest=/Game/Bosses/StoneBearer -Face=0` |
+| the Kite-Mother | `kite_boss` | `kite_ring` | `-Source=<path>/kite_boss.glb -Dest=/Game/Bosses/KiteBoss -Face=0` |
+| the Dealer | `white_glove` | `stone_ring` with `-ArenaLineup=white_glove` | `-Source=<path>/white_glove.glb -Dest=/Game/Bosses/WhiteGlove -Face=0` |
+
+```
+UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTImportCharacter <the import column> -NullRHI -unattended -nopause -nosplash
+```
+
+The Unbending also needs its slab halves, which its Broke split puts in the fists: `UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTImportProp -Source=<path>/slab_halves.glb -Dest=/Game/Props/StoneBearerHalves -NullRHI -unattended -nopause -nosplash`.
+
+An import replaces what is there, so rerunning it after a boss's model changes is safe. Exit code 0 is a clean import (the
+log's "face bones" line is a warning for a boss, which has no human head).
+
+Pick the lead with `-ArenaLead=Devin`, `-ArenaLead=Duy` or `-ArenaLead=Third` (the name of a `PartyLooks` entry in the local
+`Config/UserGame.ini`, any case); each plays its own fighter kit (Devin the blade, Duy kicks and a gun, the Third spells).
+Without the flag the lead is the first look (Devin in the main checkout).
+
+```
+UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=stone_ring -ArenaLead=Devin
+UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=kite_ring -ArenaLead=Duy
+UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=stone_ring -ArenaLineup=white_glove -ArenaLead=Third
+```
+
+`-ArenaStage=stone_ring` hosts `stone_bearer` and `-ArenaStage=kite_ring` hosts `kite_boss`; `-ArenaLineup=<kind>` fights a
+kind in whatever zone `-ArenaStage` names (the sand ring by default). `-ArenaAutoPlay` has the autopilot play the lead.
+For a picture with no window: `-RenderOffScreen -ArenaShot=<path prefix> -ArenaShotDelay=8` in place of `-windowed`
+(needs a renderer, not `-NullRHI`).
 
 ## Launch
 

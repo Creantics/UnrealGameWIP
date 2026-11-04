@@ -137,6 +137,8 @@ public:
 	const FLinearColor& GetBaseColor() const { return BaseColor; }
 
 	USpringArmComponent* GetBoom() const { return Boom; }
+	// The skeletal mesh a skinned figure is drawn with (null for the shapes), for hanging effects off its bones.
+	USkeletalMeshComponent* GetSkin() const { return IsSkinned() ? Skin.Get() : nullptr; }
 
 private:
 	void SetTellVisible(bool bVisible);
