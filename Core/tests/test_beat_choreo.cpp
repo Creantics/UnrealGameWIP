@@ -224,6 +224,19 @@ TEST_CASE("beat choreo: the loader takes any number of clips up to the cap, and 
         refused(swapText(clipsJson(1), R"("clips")", R"("blend_s": 1.5, "clips")"), "blend_s");
         refused(swapText(clipsJson(1), R"("clips")", R"("blend_s": true, "clips")"), "blend_s");
     }
+    SUBCASE("the optional additive fade-in") {
+        REQUIRE_MESSAGE(importBeatClips(clipsJson(1), c, &error), error);
+        CHECK_FALSE(c[0].additiveIn);
+        std::vector<std::string> warnings;
+        REQUIRE_MESSAGE(importBeatClips(clipsJson(0, R"({"id": "a", "length_s": 0.5, "additive_in": true}, {"id": "b", "length_s": 1, "additive_in": false})"),
+                                        c, &error, &warnings), error);
+        CHECK(warnings.empty());
+        CHECK(c[0].additiveIn);
+        CHECK_FALSE(c[1].additiveIn);
+        CHECK_FALSE(importBeatClips(clipsJson(0, R"({"id": "a", "length_s": 1, "additive_in": 1})"), c, &error));
+        CHECK_MESSAGE(error.find("clips[0].additive_in: expected true or false") != std::string::npos, error);
+        CHECK(c.count == 0);
+    }
     SUBCASE("unknown keys are warnings") {
         std::vector<std::string> warnings;
         CHECK(importBeatClips(swapText(clipsJson(1), R"("impact_s": 0.5)", R"("impact_s": 0.5, "notes": "x")"), c, &error, &warnings));

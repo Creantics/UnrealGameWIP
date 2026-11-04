@@ -1171,7 +1171,7 @@ bool importBeatClips(std::string_view json, BeatClips& out, std::string* error, 
     for (std::uint32_t i = 0; i < list.size(); ++i) {
         const std::string where = "clips[" + std::to_string(i) + "]";
         const JsonValue c = list[i];
-        ld.unknownKeys(c, where, {"id", "asset", "length_s", "impact_s", "speed_mps", "loop"});
+        ld.unknownKeys(c, where, {"id", "asset", "length_s", "impact_s", "speed_mps", "loop", "additive_in"});
         BeatClip clip;
         const std::string_view id = c["id"].string();
         if (!choreoIdText(id)) {
@@ -1210,6 +1210,10 @@ bool importBeatClips(std::string_view json, BeatClips& out, std::string* error, 
         if (const JsonValue lv = c["loop"]; !lv.isAbsent()) {
             if (!lv.isBool()) errors.push_back(where + ".loop: expected true or false");
             else clip.loop = lv.boolean();
+        }
+        if (const JsonValue av = c["additive_in"]; !av.isAbsent()) {
+            if (!av.isBool()) errors.push_back(where + ".additive_in: expected true or false");
+            else clip.additiveIn = av.boolean();
         }
         out.items[out.count++] = clip;
     }
