@@ -19,8 +19,9 @@ gives each world its own values for all of them.
 - **`ftcore::SceneLook`**: the shared look's fields plus the camera's tone curve (filmic slope, toe, shoulder, black and
   white clip), auto-exposure speed, local exposure contrast, fringe, grain by tone, and the grade's fields, then
   ground wetness, the water's absorption, scattering, waves and roughness, the fog's albedo, the practical lights'
-  colour, intensity and scattering, and the glow's colour and strength: 65 fields in all. Every default reproduces
-  the shared look exactly (no wetness, no glow, white fog, the engine's water and light values).
+  colour, intensity and scattering, the glow's colour and strength, and the sky's stars, skyglow and flat dome: 73
+  fields in all. Every default reproduces the shared look exactly (no wetness, no glow, no stars or skyglow, white fog,
+  the engine's water and light values).
 - **The `render` block** of `looks.json`: engine console variables the game sets at start, such as
   `r.Lumen.HardwareRayTracing`, as `"name": number` pairs in file order (`ftcore::LookTable::render`). Each key starts
   with `r.`, uses letters, digits, `.` and `_`, and appears once; each value is a finite number. A bad entry refuses
@@ -108,6 +109,23 @@ UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/Look_Lab -game -RenderOf
 ```
 
 `-AllowCommandletRendering` lets the material build compile its shaders and report errors; under `-NullRHI` it can't.
+
+## The environment materials
+
+The sky (and next the clouds and the sea) read a second collection, `/Game/Look/MPC_Env`, which
+`FTScene::ApplyLookParameters` fills beside `MPC_Look`. `FTBuildEnvMaterials` builds it and the materials over it.
+Their shading code lives in the FTLook plugin, under `Plugins/FTLook/Shaders/Private/Env` (the virtual path
+`/Plugin/FTLook/Private/Env`), so each material's Custom node is a single call into an include:
+
+| Material | What it shows |
+|---|---|
+| `Env/M_Env_Sky` | An unlit sky for a sky dome (`Sky.ush`). It draws the atmosphere's own sky and its sun's disc through the engine's sky atmosphere nodes, then adds stars, a city's skyglow and a flat featureless dome on top. The stars come from a real magnitude count, dimmed by air mass and twinkling more near the horizon, and they fade as the sky brightens. The skyglow is a sodium-coloured band toward the city. With the defaults it draws the atmosphere alone. |
+
+```
+UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildEnvMaterials -AllowCommandletRendering -unattended
+```
+
+The two material builds run in either order. No map places the sky dome yet.
 
 ## Later
 

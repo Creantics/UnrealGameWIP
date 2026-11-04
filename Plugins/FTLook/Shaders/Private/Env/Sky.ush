@@ -1,0 +1,173 @@
+// The environment's sky (M_Env_Sky, built by FTBuildEnvMaterials: Source/ForgottenThird/FTBuildEnvMaterialsCommandlet.h).
+// The engine atmosphere's own sky and light disc come in through its nodes; this adds what the atmosphere can't draw:
+// stars, a city's skyglow, and the flat dome of a world with no sky. The material's custom node includes this file, so
+// it holds only functions. Directions are world space, Z up; azimuths are degrees like an actor's yaw (0 toward +X, 90
+// toward +Y).
+
+#pragma once
+
+static const float FTEnvPi = 3.14159265358979;
+
+// Three hashes of a lattice point, each 0..1 (a PCG-style 3D hash).
+float3 FTEnvHash3(uint3 V)
+{
+	V = V * 1664525u + 1013904223u;
+	V.x += V.y * V.z;
+	V.y += V.z * V.x;
+	V.z += V.x * V.y;
+	V ^= V >> 16u;
+	V.x += V.y * V.z;
+	V.y += V.z * V.x;
+	V.z += V.x * V.y;
+	return float3(V & 0xFFFFFFu) / 16777216.0;
+}
+
+// Smooth value noise along one axis, 0..1, one cell a unit; Seed picks the strand.
+float FTEnvNoise1(float X, uint Seed)
+{
+	const float Cell = floor(X);
+	const float F = X - Cell;
+	const uint I = uint(int(Cell));
+	const float A = FTEnvHash3(uint3(I, Seed, 7u)).x;
+	const float B = FTEnvHash3(uint3(I + 1u, Seed, 7u)).x;
+	return lerp(A, B, F * F * (3.0 - 2.0 * F));
+}
+
+// The colour of a black body at Kelvin (held to 1667..25000), linear sRGB at about luminance 1: the Planckian locus by
+// Kang et al.'s cubic fits in CIE xy (in thousands of Kelvin, so the coefficients stay in float range), then XYZ to
+// linear sRGB (D65).
+float3 FTEnvBlackBody(float Kelvin)
+{
+	const float T = clamp(Kelvin, 1667.0, 25000.0);
+	const float I = 1000.0 / T;
+	const float Cx = T <= 4000.0 ? ((-0.2661239 * I - 0.2343589) * I + 0.8776956) * I + 0.179910
+		: ((-3.0258469 * I + 2.1070379) * I + 0.2226347) * I + 0.240390;
+	const float Cy = T <= 2222.0 ? ((-1.1063814 * Cx - 1.34811020) * Cx + 2.18555832) * Cx - 0.20219683
+		: (T <= 4000.0 ? ((-0.9549476 * Cx - 1.37418593) * Cx + 2.09137015) * Cx - 0.16748867
+			: ((3.0817580 * Cx - 5.87338670) * Cx + 3.75112997) * Cx - 0.37001483);
+	const float3 Xyz = float3(Cx / Cy, 1.0, (1.0 - Cx - Cy) / Cy);
+	return max(float3(
+		3.2404542 * Xyz.x - 1.5371385 * Xyz.y - 0.4985314 * Xyz.z,
+		-0.9692660 * Xyz.x + 1.8760108 * Xyz.y + 0.0415560 * Xyz.z,
+		0.0556434 * Xyz.x - 0.2040259 * Xyz.y + 1.0572252 * Xyz.z), 0.0);
+}
+
+// How many atmospheres deep the air is toward an elevation, in degrees (Kasten and Young's fit): 1 overhead, about 38
+// at the horizon.
+float FTEnvAirMass(float ElevationDeg)
+{
+	const float E = max(ElevationDeg, 0.0);
+	return 1.0 / (sin(E * FTEnvPi / 180.0) + 0.50572 * pow(E + 6.07995, -1.6364));
+}
+
+float FTEnvElevationDeg(float3 Dir)
+{
+	return asin(clamp(Dir.z, -1.0, 1.0)) * 180.0 / FTEnvPi;
+}
+
+// The cube face Dir points through (0..5: +X, -X, +Y, -Y, +Z, -Z) and where on it, -1..1.
+uint FTEnvCubeFace(float3 Dir, out float2 Uv)
+{
+	const float3 A = abs(Dir);
+	if (A.x >= A.y && A.x >= A.z)
+	{
+		Uv = Dir.yz / A.x;
+		return Dir.x > 0.0 ? 0u : 1u;
+	}
+	if (A.y >= A.z)
+	{
+		Uv = Dir.xz / A.y;
+		return Dir.y > 0.0 ? 2u : 3u;
+	}
+	Uv = Dir.xy / A.z;
+	return Dir.z > 0.0 ? 4u : 5u;
+}
+
+// The direction through Uv (-1..1) on cube face Face.
+float3 FTEnvCubeDir(uint Face, float2 Uv)
+{
+	const float S = (Face & 1u) == 0u ? 1.0 : -1.0;
+	return normalize(Face < 2u ? float3(S, Uv.x, Uv.y) : (Face < 4u ? float3(Uv.x, S, Uv.y) : float3(Uv.x, Uv.y, S)));
+}
+
+// Stars: one or none in each cell of a 128 x 128 grid on every cube face. A cell's first hash is its draw from the
+// sky's star count, about 9000 * 10^(0.46 (m - 6.5)) stars brighter than magnitude m over the whole sphere, weighted by
+// the cell's solid angle so the cube's corners aren't crowded; a draw fainter than MagLimit leaves the cell empty. A
+// star sits in the middle half of its cell, so its few pixels stay inside it, and has its own black-body colour
+// (3200-11000 K, most near 5000 K) and twinkle phase. Its core is Peak at magnitude 0 and 2.512 times fainter per
+// magnitude: a Gaussian 0.75 px wide (about 1.8 px at half height, so the temporal upscaler keeps it), dimmed by
+// ExtinctionMag magnitudes per air mass and twinkling by Twinkle times the root of the air mass, so more toward the
+// horizon. Nothing below the horizon.
+static const float FTEnvStarCells = 128.0;
+
+float3 FTEnvStars(float3 Dir, float PixelAngle, float Time, float Peak, float MagLimit, float Twinkle, float ExtinctionMag)
+{
+	const float Elevation = FTEnvElevationDeg(Dir);
+	if (Peak <= 0.0 || Elevation <= 0.0)
+	{
+		return 0.0;
+	}
+	float2 Uv;
+	const uint Face = FTEnvCubeFace(Dir, Uv);
+	const float2 Cell = min(floor((Uv * 0.5 + 0.5) * FTEnvStarCells), FTEnvStarCells - 1.0);
+	const uint3 Key = uint3(uint(Cell.x), uint(Cell.y), Face);
+	const float3 H0 = FTEnvHash3(Key);
+	const float3 H1 = FTEnvHash3(Key + uint3(0u, 0u, 6u));
+	const float2 Centre = (Cell + 0.25 + 0.5 * H0.yz) / FTEnvStarCells * 2.0 - 1.0;
+	// The cell's solid angle against the average cell's: 6/pi at a face's centre, falling as (1 + u^2 + v^2)^-1.5.
+	const float Weight = (6.0 / FTEnvPi) * pow(1.0 + dot(Centre, Centre), -1.5);
+	const float Cells = 6.0 * FTEnvStarCells * FTEnvStarCells;
+	const float Draw = max(H0.x / Weight, 1e-9) * Cells / 9000.0;
+	const float Magnitude = max(6.5 + log10(Draw) / 0.46, -1.5);
+	if (Magnitude > MagLimit)
+	{
+		return 0.0;
+	}
+	const float3 Star = FTEnvCubeDir(Face, Centre);
+	const float Sigma = 0.75 * max(PixelAngle, 1e-5);
+	const float Distance = length(Dir - Star);
+	const float Core = exp(-0.5 * Distance * Distance / (Sigma * Sigma));
+	const float AirMass = FTEnvAirMass(Elevation);
+	const uint Strand = Key.x ^ (Key.y << 8u) ^ (Face << 16u);
+	const float Flicker = 1.0 + Twinkle * sqrt(AirMass) * (2.0 * FTEnvNoise1(Time * 1.5 + 37.0 * H1.y, Strand) - 1.0);
+	const float Kelvin = 3200.0 + 7800.0 * H1.x * H1.x;
+	return FTEnvBlackBody(Kelvin) * (Peak * pow(10.0, -0.4 * (Magnitude + ExtinctionMag * AirMass)) * Core * max(Flicker, 0.0));
+}
+
+// A city's skyglow, its light scattered back by the air over it: an amber band along the horizon, Peak at the horizon
+// toward AzimuthDeg, falling by e every WidthDeg of elevation, toward Floor of that on the far side of the sky, over a
+// share Zenith that every part of the sky keeps. Below the horizon it holds the horizon's value for 5 degrees, then is
+// gone, so no seam shows where the ground meets the dome.
+float3 FTEnvSkyGlow(float3 Dir, float Peak, float Kelvin, float AzimuthDeg, float WidthDeg, float Floor, float Zenith)
+{
+	if (Peak <= 0.0)
+	{
+		return 0.0;
+	}
+	const float Elevation = FTEnvElevationDeg(Dir);
+	const float Toward = 0.5 + 0.5 * cos(atan2(Dir.y, Dir.x) - AzimuthDeg * FTEnvPi / 180.0);
+	const float Lobe = lerp(saturate(Floor), 1.0, Toward * Toward);
+	const float Band = exp(-max(Elevation, 0.0) / max(WidthDeg, 1.0)) * Lobe;
+	const float Keep = saturate(Zenith);
+	return FTEnvBlackBody(Kelvin) * (Peak * (Keep + (1.0 - Keep) * Band) * saturate(1.0 + Elevation / 5.0));
+}
+
+// The whole sky, M_Env_Sky's emissive. Atmosphere and Disk are the atmosphere's own luminance along the view and its
+// sun's disc. Stars fade out where the atmosphere is brighter than StarSkyFade of a magnitude-0 star's peak, and the
+// skyglow where the atmosphere outshines GlowSkyFade times the glow's horizon peak, so neither shows by day and both come
+// in through twilight. Flat (0..1) blends all of it toward a dome of FlatLuminance with no feature, gradient or disc.
+float3 FTEnvSky(float3 Dir, float3 Atmosphere, float3 Disk, float Time,
+	float StarPeak, float StarMag, float StarTwinkle, float StarExtinction, float StarSkyFade,
+	float GlowPeak, float GlowKelvin, float GlowDeg, float GlowWidthDeg, float GlowFloor, float GlowZenith, float GlowSkyFade,
+	float Flat, float FlatLuminance)
+{
+	Dir = normalize(Dir);
+	const float PixelAngle = max(length(ddx(Dir)), length(ddy(Dir)));
+	const float Background = dot(max(Atmosphere, 0.0), float3(0.2126, 0.7152, 0.0722));
+	const float StarFade = saturate(1.0 - Background / max(StarPeak * StarSkyFade, 1e-6));
+	const float GlowFade = saturate(1.0 - Background / max(GlowPeak * GlowSkyFade, 1e-6));
+	float3 Sky = max(Atmosphere, 0.0) + max(Disk, 0.0);
+	Sky += FTEnvStars(Dir, PixelAngle, Time, StarPeak, StarMag, StarTwinkle, StarExtinction) * (StarFade * StarFade);
+	Sky += FTEnvSkyGlow(Dir, GlowPeak, GlowKelvin, GlowDeg, GlowWidthDeg, GlowFloor, GlowZenith) * (GlowFade * GlowFade);
+	return lerp(Sky, max(FlatLuminance, 0.0).xxx, saturate(Flat));
+}

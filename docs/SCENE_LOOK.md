@@ -10,7 +10,7 @@ drawn style. Since 2026-11-03 those values are applied when a map starts, with a
 
 | Piece | File | Job |
 |---|---|---|
-| `ftcore::SceneLook` | `Core/include/ftcore/SceneLook.h`, `Core/src/SceneLook.cpp` | The look as 65 plain values: sun, sky light, fog and its albedo, clouds, exposure, white balance, the camera finish and grade, ground wetness, water, practical lights and glow. `lerp` blends two looks, so a later world-to-world blend is one call. Tests: `Core/tests/test_scene_look.cpp`. |
+| `ftcore::SceneLook` | `Core/include/ftcore/SceneLook.h`, `Core/src/SceneLook.cpp` | The look as 73 plain values: sun, sky light, fog and its albedo, clouds, exposure, white balance, the camera finish and grade, ground wetness, water, practical lights, glow and the sky's stars and skyglow. `lerp` blends two looks, so a later world-to-world blend is one call. Tests: `Core/tests/test_scene_look.cpp`. |
 | `FTScene::SpawnLook` | `Source/ForgottenThird/FTSceneLook.{h,cpp}` | Spawns a look into a map: a movable sun (colour from its temperature), a real-time sky light, the sky atmosphere, exponential height fog (volumetric when the look has it), the engine's volumetric clouds, and an unbound post-process volume at priority 0 for the camera finish. |
 | `FTScene::LoadSurface` | same | Loads the surface master that the builders tint for their blocks and props. |
 | Surface master | `FTBuildWorldMaterialsCommandlet` | Writes `/Game/Rendering/M_WorldSurface`. See below. |
@@ -47,7 +47,7 @@ Substrate, and the extended auto-exposure range.
 | `practicalKelvin`, `practicalCandela`, `practicalScatter` | 3200, 40, 1 | Lights tagged FTPractical in a map: colour temperature, intensity and volumetric scattering intensity (the engine's default 1). |
 | `glowR/G/B`, `glowStrength` | 0.3, 0.55, 1, 0 | Emissive light sources: colour, and the emissive multiplier at the scenes' exposure scale (the sun is a few lux). 0 = dark. |
 
-Each of these is a field of `ftcore::SceneLook` (65 in all, `kSceneLookFieldCount`); the table above lists only the ones whose
+Each of these is a field of `ftcore::SceneLook` (73 in all, `kSceneLookFieldCount`); the table above lists only the ones whose
 defaults the base look sets. The ranges are in `Core/include/ftcore/SceneLook.h`.
 
 ## The surface master

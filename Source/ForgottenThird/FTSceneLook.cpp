@@ -226,22 +226,31 @@ int32 FTScene::ApplyLook(UWorld* World, const ftcore::SceneLook& Look, const ftc
 	return Written;
 }
 
+namespace
+{
+// World's instance of the collection in Package; null, with bBuilt false, when the collection hasn't been built (no
+// material reads it, so there is nothing to fill).
+UMaterialParameterCollectionInstance* CollectionInstance(UWorld* World, const TCHAR* Package, bool& bBuilt)
+{
+	const FString Path = FString(Package) + TEXT(".") + FPackageName::GetShortName(Package);
+	const UMaterialParameterCollection* Collection = World ? LoadObject<UMaterialParameterCollection>(nullptr, *Path, nullptr, LOAD_Quiet | LOAD_NoWarn) : nullptr;
+	bBuilt = Collection != nullptr;
+	return Collection ? World->GetParameterCollectionInstance(Collection) : nullptr;
+}
+}
+
 int32 FTScene::ApplyLookParameters(UWorld* World, const ftcore::SceneLook& Look)
 {
-	const FString Path = FString(LookCollection) + TEXT(".") + FPackageName::GetShortName(LookCollection);
-	const UMaterialParameterCollection* Collection = World ? LoadObject<UMaterialParameterCollection>(nullptr, *Path, nullptr, LOAD_Quiet | LOAD_NoWarn) : nullptr;
-	if (!Collection)
-	{
-		// Not built: no material reads it, so there is nothing to fill.
-		return 0;
-	}
-	UMaterialParameterCollectionInstance* Instance = World->GetParameterCollectionInstance(Collection);
-	if (!Instance)
+	bool bLookBuilt = false;
+	bool bEnvBuilt = false;
+	UMaterialParameterCollectionInstance* LookInstance = CollectionInstance(World, LookCollection, bLookBuilt);
+	UMaterialParameterCollectionInstance* EnvInstance = CollectionInstance(World, EnvCollection, bEnvBuilt);
+	if ((bLookBuilt && !LookInstance) || (bEnvBuilt && !EnvInstance))
 	{
 		return -1;
 	}
 	int32 Written = 0;
-	const auto Count = [&Written](bool bFound, const TCHAR* Name)
+	const auto Count = [&Written](bool bFound, const TCHAR* Collection, const TCHAR* Name, const TCHAR* Builder)
 	{
 		if (bFound)
 		{
@@ -249,17 +258,29 @@ int32 FTScene::ApplyLookParameters(UWorld* World, const ftcore::SceneLook& Look)
 		}
 		else
 		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("Look: %s has no parameter %s; rebuild it with FTBuildLookMaterials."), LookCollection, Name);
+			UE_LOG(LogForgottenThird, Warning, TEXT("Look: %s has no parameter %s; rebuild it with %s."), Collection, Name, Builder);
 		}
 	};
-	for (const FLookScalarParameter& Parameter : LookScalarParameters)
+	if (LookInstance)
 	{
-		Count(Instance->SetScalarParameterValue(Parameter.Name, Look.*(Parameter.Field)), Parameter.Name);
+		for (const FLookScalarParameter& Parameter : LookScalarParameters)
+		{
+			Count(LookInstance->SetScalarParameterValue(Parameter.Name, Look.*(Parameter.Field)), LookCollection, Parameter.Name,
+				TEXT("FTBuildLookMaterials"));
+		}
+		for (const FLookVectorParameter& Parameter : LookVectorParameters)
+		{
+			Count(LookInstance->SetVectorParameterValue(Parameter.Name, FLinearColor(Look.*(Parameter.R), Look.*(Parameter.G), Look.*(Parameter.B), 1.f)),
+				LookCollection, Parameter.Name, TEXT("FTBuildLookMaterials"));
+		}
 	}
-	for (const FLookVectorParameter& Parameter : LookVectorParameters)
+	if (EnvInstance)
 	{
-		Count(Instance->SetVectorParameterValue(Parameter.Name, FLinearColor(Look.*(Parameter.R), Look.*(Parameter.G), Look.*(Parameter.B), 1.f)),
-			Parameter.Name);
+		for (const FLookScalarParameter& Parameter : EnvScalarParameters)
+		{
+			Count(EnvInstance->SetScalarParameterValue(Parameter.Name, Look.*(Parameter.Field)), EnvCollection, Parameter.Name,
+				TEXT("FTBuildEnvMaterials"));
+		}
 	}
 	return Written;
 }

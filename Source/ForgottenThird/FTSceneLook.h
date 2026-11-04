@@ -75,6 +75,23 @@ inline constexpr FLookVectorParameter LookVectorParameters[] = {
 	{TEXT("GlowColor"), &ftcore::SceneLook::glowR, &ftcore::SceneLook::glowG, &ftcore::SceneLook::glowB},
 };
 
+// The environment's materials, built by FTBuildEnvMaterials: a second parameter collection for the sky (and the clouds
+// and sea after it), filled beside the look's by ApplyLookParameters, and the materials over it, whose shading code is
+// in Plugins/FTLook/Shaders/Private/Env. MPC_Look and its materials stay as they are; a material that needs both reads
+// both, the most a material may. See docs/PHOTOREAL_LOOK.md.
+inline constexpr const TCHAR* EnvCollection = TEXT("/Game/Look/MPC_Env");
+inline constexpr const TCHAR* EnvSkyMaterial = TEXT("/Game/Look/Env/M_Env_Sky");
+inline constexpr FLookScalarParameter EnvScalarParameters[] = {
+	{TEXT("SkyStars"), &ftcore::SceneLook::skyStars},
+	{TEXT("SkyStarMag"), &ftcore::SceneLook::skyStarMag},
+	{TEXT("SkyGlow"), &ftcore::SceneLook::skyGlow},
+	{TEXT("SkyGlowKelvin"), &ftcore::SceneLook::skyGlowKelvin},
+	{TEXT("SkyGlowDeg"), &ftcore::SceneLook::skyGlowDeg},
+	{TEXT("SkyGlowWidthDeg"), &ftcore::SceneLook::skyGlowWidthDeg},
+	{TEXT("SkyFlat"), &ftcore::SceneLook::skyFlat},
+	{TEXT("SkyFlatLuminance"), &ftcore::SceneLook::skyFlatLuminance},
+};
+
 // The ground master's layers, each wearing the surface its kind gives the role. Its parameters are named after them:
 // "<Layer><Map>" for a texture, "<Layer>Tint", "<Layer>TileCm" and "<Layer>Roughness".
 struct FGroundLayer
@@ -126,9 +143,9 @@ FORGOTTENTHIRD_API void SpawnLook(UWorld* World, const FActorSpawnParameters& Sp
 // volume yet. See docs/PHOTOREAL_LOOK.md.
 FORGOTTENTHIRD_API int32 ApplyLook(UWorld* World, const ftcore::SceneLook& Look, const ftcore::SceneLook& Current);
 
-// Writes Look's wetness, water and glow into World's instance of the look's parameter collection (LookCollection). The
-// number of parameters written; 0 when the collection hasn't been built (no material reads it then); -1, with nothing
-// written, while World has no instance of it yet.
+// Writes Look's wetness, water and glow into World's instance of the look's parameter collection (LookCollection), and
+// its sky into the environment's (EnvCollection). The number of parameters written; 0 when neither collection has been
+// built (no material reads them then); -1, with nothing written, while World has no instance yet of one that has.
 FORGOTTENTHIRD_API int32 ApplyLookParameters(UWorld* World, const ftcore::SceneLook& Look);
 
 // Loads the world surface master: a "Color" vector held to a plausible albedo, "Roughness", "Metallic" and

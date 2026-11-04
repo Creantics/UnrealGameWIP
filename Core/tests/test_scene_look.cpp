@@ -61,8 +61,8 @@ TEST_CASE("Every field takes part in ==") {
     }
     FTCORE_LOOK_FIELDS(FTCORE_LOOK_ONE)
 #undef FTCORE_LOOK_ONE
-    CHECK(fields == 65);
-    CHECK(ftcore::kSceneLookFieldCount == 65u);
+    CHECK(fields == 73);
+    CHECK(ftcore::kSceneLookFieldCount == 73u);
     CHECK(base == SceneLook{});
 }
 

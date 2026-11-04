@@ -23,8 +23,8 @@ namespace ftcore {
 // range is wider for some. Every default is the engine's or the project config's value, so a default look
 // renders as before. Hue fields are OKLab degrees (red ~30, gold ~85, green ~145, blue ~265, violet ~305) and
 // lerp linearly like the rest, so a blend between worlds should keep their hues close. The surface, water, fog
-// albedo, practical light and glow fields drive materials and lights the maps carry; their defaults add no
-// wetness or glow and leave the water, fog and lights as they were.
+// albedo, practical light, glow and sky fields drive materials and lights the maps carry; their defaults add no
+// wetness, glow, stars or skyglow and leave the water, fog and lights as they were.
 #define FTCORE_LOOK_FIELDS(X)                                                                                  \
     /* Light. */                                                                                               \
     X(sunLux, 6.f, 0.f, 200.f)    /* directional light illuminance */                                          \
@@ -102,7 +102,18 @@ namespace ftcore {
     X(glowR, 0.3f, 0.f, 1.f) /* the glow's colour */                                                           \
     X(glowG, 0.55f, 0.f, 1.f)                                                                                  \
     X(glowB, 1.f, 0.f, 1.f)                                                                                    \
-    X(glowStrength, 0.f, 0.f, 200.f) /* emissive multiplier at the scenes' exposure scale (sun: a few lux); 0 = dark */
+    X(glowStrength, 0.f, 0.f, 200.f) /* emissive multiplier at the scenes' exposure scale (sun: a few lux); */ \
+                                     /* 0 = dark */                                                            \
+    /* The sky (M_Env_Sky, through the environment's collection MPC_Env). The defaults leave the sky as the */ \
+    /* atmosphere draws it. */                                                                                 \
+    X(skyStars, 0.f, 0.f, 20.f)    /* a magnitude-0 star's core luminance at the scene scale; 0 = no stars */  \
+    X(skyStarMag, 4.f, 1.f, 7.f)   /* limiting magnitude: about 3 under a lit city, 6 under a dark sky */      \
+    X(skyGlow, 0.f, 0.f, 10.f)     /* a city's skyglow at the horizon toward it, scene scale; 0 = none */      \
+    X(skyGlowKelvin, 2100.f, 1500.f, 15000.f) /* its colour (2100 = high-pressure sodium) */                   \
+    X(skyGlowDeg, 0.f, 0.f, 360.f) /* toward the city, degrees like a yaw (0 = +X, 90 = +Y) */                 \
+    X(skyGlowWidthDeg, 20.f, 1.f, 90.f) /* the band falls by e every this many degrees of elevation */         \
+    X(skyFlat, 0.f, 0.f, 1.f)      /* 1 = a dome of skyFlatLuminance with no feature or disc replaces it */    \
+    X(skyFlatLuminance, 1.f, 0.f, 50.f) /* that dome's luminance at the scene scale */
 
 struct SceneLook {
 #define FTCORE_LOOK_DECL(name, def, lo, hi) float name = def;
