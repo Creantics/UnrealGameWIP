@@ -563,6 +563,8 @@ TEST_CASE("arena kind crit: the shipped Dealer's moves name clips of its table, 
     std::vector<std::string> warnings;
     REQUIRE_MESSAGE(importBeatClips(text, clips, &error, &warnings), error);
     CHECK(warnings.empty());
+    // Its own crossfade, longer than the host's 0.12 s, so a blow taken mid-swing eases into the reaction.
+    CHECK(clips.blend >= 0.2);
     CHECK(clips[static_cast<std::size_t>(clips.find("idle"))].loop);
     REQUIRE(boss->moveCount == 3);
     for (std::size_t m = 0; m < boss->moveCount; ++m) {
