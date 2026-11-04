@@ -698,6 +698,12 @@ public:
     // enemy out of range; enemyMoveMask is then 0.
     FTCORE_API void setEnemyMoveMask(std::size_t i, std::uint32_t mask);
     FTCORE_API std::uint32_t enemyMoveMask(std::size_t i) const;
+    // While set, enemy i's moves keep the facing they began with: no tracking turn in startup, so the blow lands
+    // along the line it was told on (a host that draws the strike point as the move begins). It applies from the next
+    // tick, a move already in startup included. begin() and restart() clear it. Nothing for an enemy out of range;
+    // enemyFacingHeld is then false.
+    FTCORE_API void setEnemyFacingHeld(std::size_t i, bool held);
+    FTCORE_API bool enemyFacingHeld(std::size_t i) const;
     // Every blow goes to `hook` with `user` before it applies (ArenaBlowHook); nullptr: none (every blow as it is).
     FTCORE_API void setBlowHook(ArenaBlowHook hook, void* user);
     // Stores `amount` Load in the player's gauge now, as a parry would (never past kMaxLoad; amount <= 0: nothing),
@@ -781,6 +787,7 @@ private:
         float holdSeconds = 0.f;
         int hpFloor = 0;                    // the host's hp floor (0: none)
         std::uint32_t moveMask = 0xFFFFFFFFu; // the moves a pick may begin (bit m: move m)
+        bool facingHeld = false;            // the host's hold: a move keeps the facing it began with
     };
 
     ArenaDef def_;

@@ -4017,6 +4017,37 @@ TEST_CASE("arena hooks: a move mask keeps picks off a move, a chain still runs i
     }
 }
 
+TEST_CASE("arena hooks: a held facing keeps a move on the line it began on; unheld it tracks; restart clears it") {
+    ArenaAttack slow = swing(0.6f, 0.1f, 0.3f, 2.f, 1);
+    slow.tracking = 20.f;
+    // The move starts with the lead straight ahead; the lead then steps to the enemy's side for the whole startup.
+    const auto facingAtActive = [&](bool held) {
+        Rig rig(ruleFighter(), {hitterKind(slow)});
+        rig.put(0, 1.5f, 0.f);
+        rig.fight.setEnemyFacingHeld(0, held);
+        CHECK(rig.fight.enemyFacingHeld(0) == held);
+        int guard = 0;
+        while (rig.out().enemies[0].brain != ArenaBrain::Attack && guard++ < 240) rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Attack);
+        const Vec2 began = rig.out().enemies[0].facing;
+        rig.bodies.player = Vec2{1.5f, 1.5f};
+        guard = 0;
+        while (rig.out().enemies[0].part == ArenaPart::Startup && guard++ < 120) rig.tick();
+        const Vec2 now = rig.out().enemies[0].facing;
+        return began.x * now.x + began.y * now.y;
+    };
+    CHECK(facingAtActive(true) == doctest::Approx(1.f).epsilon(1e-4));
+    CHECK(facingAtActive(false) < 0.5f);
+    {   // restart clears it; an enemy out of range reads false and takes nothing
+        Rig rig(ruleFighter(), {hitterKind(slow)});
+        rig.fight.setEnemyFacingHeld(0, true);
+        rig.fight.setEnemyFacingHeld(3, true);
+        CHECK_FALSE(rig.fight.enemyFacingHeld(3));
+        rig.fight.restart();
+        CHECK_FALSE(rig.fight.enemyFacingHeld(0));
+    }
+}
+
 TEST_CASE("arena hooks: a hold cuts a live move at the next tick, lasts its seconds, and a release ends it") {
     const ArenaAttack bite = swing(0.4f, 0.15f, 0.5f, 2.f, 20);
     {   // Open for 0.5 s, asked 10 ticks into the bite's startup

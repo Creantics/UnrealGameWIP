@@ -1331,7 +1331,8 @@ struct ArenaFightImpl {
         const ArenaAttack& a = def.enemies[i].moves[foe.move].attack;
         const float a0 = foe.stateTime;
         const float a1 = a0 + dt;
-        if (a0 < a.startup) foe.facing = arenaTurn(foe.facing, dir, a.tracking * (std::min(a1, a.startup) - a0));
+        if (a0 < a.startup && !foe.facingHeld)
+            foe.facing = arenaTurn(foe.facing, dir, a.tracking * (std::min(a1, a.startup) - a0));
         if (!foe.hitPlayer && pl.hp > 0 && a1 > a.startup && a0 < a.startup + a.active &&
             arenaReaches(foe.pos, foe.facing, a, pl.pos, fi.bodyRadius)) {
             enemyStrike(i);
@@ -1729,6 +1730,10 @@ void ArenaFight::setEnemyMoveMask(std::size_t i, std::uint32_t mask) {
     if (i < enemyCount_) enemy_[i].moveMask = mask;
 }
 std::uint32_t ArenaFight::enemyMoveMask(std::size_t i) const { return i < enemyCount_ ? enemy_[i].moveMask : 0u; }
+void ArenaFight::setEnemyFacingHeld(std::size_t i, bool held) {
+    if (i < enemyCount_) enemy_[i].facingHeld = held;
+}
+bool ArenaFight::enemyFacingHeld(std::size_t i) const { return i < enemyCount_ && enemy_[i].facingHeld; }
 void ArenaFight::setBlowHook(ArenaBlowHook hook, void* user) {
     blowHook_ = hook;
     blowUser_ = hook ? user : nullptr;
