@@ -75,6 +75,8 @@ public:
 	// BlendSeconds while the last fades out; a null clip leaves the pose as it was.
 	void SetPose(const UAnimSequence* Seq, float Time, bool bLoop, float DeltaSeconds);
 	void SetHoldRoot(bool bHold) { bHoldRoot = bHold; }
+	// With it on, the same clip begun again (its time jumps back) fades in over itself as a new clip does.
+	void SetFadeRestart(bool bFade) { bFadeRestart = bFade; }
 	void SetBuild(float InChest, float InHead, float InHands)
 	{
 		BuildChest = InChest;
@@ -107,6 +109,7 @@ private:
 	// Slot 0 is the clip now showing; 1 and 2 are the ones fading out of it.
 	FSlot Slots[FFTBeatFighterProxy::MaxLayers];
 	bool bHoldRoot = true;
+	bool bFadeRestart = false;
 	float BuildChest = 1.f;
 	float BuildHead = 1.f;
 	float BuildHands = 1.f;
