@@ -36,6 +36,48 @@
    "length_s": 2.354,
    "impact_s": 1.154,
    "loop": false
+  },
+  {
+   "id": "stagger",
+   "asset": "/Game/Bosses/WhiteGlove/white_glove/SkeletalMeshes/white_glovestagger",
+   "length_s": 2.0,
+   "impact_s": 0,
+   "loop": false
+  },
+  {
+   "id": "hit_light",
+   "asset": "/Game/Bosses/WhiteGlove/white_glove/SkeletalMeshes/white_glovehit_light",
+   "length_s": 0.5,
+   "impact_s": 0,
+   "loop": false
+  },
+  {
+   "id": "hit_heavy",
+   "asset": "/Game/Bosses/WhiteGlove/white_glove/SkeletalMeshes/white_glovehit_heavy",
+   "length_s": 0.9,
+   "impact_s": 0,
+   "loop": false
+  },
+  {
+   "id": "open",
+   "asset": "/Game/Bosses/WhiteGlove/white_glove/SkeletalMeshes/white_gloveopen",
+   "length_s": 1.6,
+   "impact_s": 0,
+   "loop": false
+  },
+  {
+   "id": "face_down",
+   "asset": "/Game/Bosses/WhiteGlove/white_glove/SkeletalMeshes/white_gloveface_down",
+   "length_s": 2.5,
+   "impact_s": 0,
+   "loop": false
+  },
+  {
+   "id": "defeat",
+   "asset": "/Game/Bosses/WhiteGlove/white_glove/SkeletalMeshes/white_glovedefeat",
+   "length_s": 4.7,
+   "impact_s": 0,
+   "loop": false
   }
  ]
 }

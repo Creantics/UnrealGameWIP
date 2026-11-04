@@ -12,6 +12,7 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace ftcore;
@@ -574,4 +575,15 @@ TEST_CASE("arena kind crit: the shipped Dealer's moves name clips of its table, 
         CHECK_MESSAGE(std::fabs(rate - 1.0) < 0.01, mv.clip() << " rate " << rate);
         CHECK_MESSAGE(std::fabs(c.length - static_cast<double>(mv.attack.total())) < 0.01, mv.clip());
     }
+    // The state clips last as long as the state, so a riposte or a stagger never outlasts or cuts its clip.
+    const std::pair<const char*, float> states[] = {
+        {"stagger", boss->staggerTime}, {"open", boss->openTime}, {"face_down", boss->downTime}};
+    for (const auto& [id, time] : states) {
+        const int clip = clips.find(id);
+        REQUIRE_MESSAGE(clip >= 0, "clip " << id);
+        const BeatClip& c = clips[static_cast<std::size_t>(clip)];
+        CHECK_FALSE(c.loop);
+        CHECK_MESSAGE(std::fabs(c.length - static_cast<double>(time)) < 0.01, id << " length " << c.length);
+    }
+    for (const char* id : {"hit_light", "hit_heavy", "defeat"}) CHECK_MESSAGE(clips.find(id) >= 0, "clip " << id);
 }
