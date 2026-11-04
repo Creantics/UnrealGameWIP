@@ -696,6 +696,46 @@ std::string weakError(const std::string& json) {
 
 } // namespace
 
+TEST_CASE("arena boss loader: a move's contact point loads; without one there is none; bad ones refuse") {
+    const std::string jab = "\"id\": \"jab\",";
+    {
+        ArenaBossDef def;
+        std::string error;
+        std::vector<std::string> warnings;
+        REQUIRE(importArenaBoss(patched(jab, jab + " \"contact\": {\"socket\": \"hand_r\", \"ahead\": 2.1, "
+                                                  "\"side\": -1.5, \"up\": 1.68},"),
+                                def, &error, &warnings));
+        CHECK(warnings.empty());
+        const ArenaBossMove& m = def.moves[def.find("jab")];
+        CHECK(m.hasContact);
+        CHECK(m.contactSocket() == "hand_r");
+        CHECK(m.contactAhead == doctest::Approx(2.1f));
+        CHECK(m.contactSide == doctest::Approx(-1.5f));
+        CHECK(m.contactUp == doctest::Approx(1.68f));
+        CHECK_FALSE(def.moves[def.find("fist")].hasContact);
+        CHECK(def.moves[def.find("fist")].contactSocket().empty());
+    }
+    {
+        ArenaBossDef def;
+        std::string error;
+        std::vector<std::string> warnings;
+        REQUIRE(importArenaBoss(patched(jab, jab + " \"contact\": {\"socket\": \"slab\", \"ahead\": 1, "
+                                                  "\"side\": 0, \"up\": 3, \"frame\": 4},"),
+                                def, &error, &warnings));
+        REQUIRE(warnings.size() == 1);
+        CHECK(has(warnings[0], "moves[4].contact: unknown key: frame"));
+    }
+    CHECK(has(importError(patched(jab, jab + " \"contact\": 3,")), "moves[4].contact: expected an object"));
+    CHECK(has(importError(patched(jab, jab + " \"contact\": {\"socket\": \"Hand R\", \"ahead\": 1, \"side\": 0, "
+                                                "\"up\": 1},")),
+              "moves[4].contact.socket: expected"));
+    CHECK(has(importError(patched(jab, jab + " \"contact\": {\"socket\": \"hand_r\", \"ahead\": 30, "
+                                                "\"side\": 0, \"up\": 1},")),
+              "moves[4].contact.ahead: expected a number in -20..20"));
+    CHECK(has(importError(patched(jab, jab + " \"contact\": {\"socket\": \"hand_r\", \"ahead\": 1, \"up\": 1},")),
+              "moves[4].contact.side: expected a number"));
+}
+
 TEST_CASE("arena weak points loader: a good file loads its points and gates") {
     ArenaWeakPoints out;
     std::string error;

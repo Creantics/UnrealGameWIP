@@ -22,6 +22,10 @@ constexpr double kStoneReleaseSlack = 0.05;
 // A guard that blocks a guard-breaking blow loses this much more than the lead has (ArenaAttack has no guard-break
 // time of its own: an empty stamina breaks the guard for the kit's guardBreakTime).
 constexpr float kStoneGuardBreakExtra = 1.f;
+// The autopilot while the weak points are open: it walks round to the first point's gate, to a spot this far (m)
+// past both bodies behind the boss, by way of a side spot this far past the boss's body when it starts in front.
+constexpr float kStoneGateGap = 0.6f;
+constexpr float kStoneGateSide = 1.2f;
 
 float Dist(ftcore::Vec2 A, ftcore::Vec2 B)
 {
@@ -55,6 +59,29 @@ bool LaneMove(const ftcore::ArenaBossMove& Move, std::size_t Impact)
 		|| (Move.intercept() && Impact < Move.impactCount && Move.zones[Impact] == ftcore::CalledZoneRule::Path);
 }
 } // namespace
+
+float FFTStoneBearerHost::ContactPlanar(const ftcore::ArenaBossMove& Move)
+{
+	return std::sqrt(Move.contactAhead * Move.contactAhead + Move.contactSide * Move.contactSide);
+}
+
+bool FFTStoneBearerHost::UsableContact(const ftcore::ArenaBossMove& Move, float BodyRadius)
+{
+	// A grip inside the body (the carried piece, a foot under it) is no striking point: the move keeps the file's
+	// reach. Lane and tile moves keep their shapes.
+	if (!Move.hasContact || Move.answer == ftcore::ArenaBossAnswer::Tile || Move.answer == ftcore::ArenaBossAnswer::Cover)
+	{
+		return false;
+	}
+	for (std::size_t K = 0; K < Move.impactCount; ++K)
+	{
+		if (LaneMove(Move, K))
+		{
+			return false;
+		}
+	}
+	return ContactPlanar(Move) > BodyRadius;
+}
 
 bool FFTStoneBearerHost::Load(std::string_view Json, std::string* Error, std::vector<std::string>* Warnings)
 {
@@ -131,8 +158,9 @@ bool FFTStoneBearerHost::BuildKind(ftcore::ArenaEnemyKind& Kind, const ftcore::A
 			A.startup = Startup > kStoneMinStartup ? Startup : kStoneMinStartup;
 			A.active = Src.active;
 			A.recovery = K + 1 == Src.impactCount ? Src.recovery : 0.f;
-			// The boss file's reach is from the boss's body; ArenaFight's from its centre.
-			A.range = Src.range + Kind.bodyRadius;
+			// The boss file's reach is from the boss's body; ArenaFight's from its centre. A clip's contact point
+			// outside the body is the reach instead: the blow lands where the part strikes.
+			A.range = UsableContact(Src, Kind.bodyRadius) ? ContactPlanar(Src) : Src.range + Kind.bodyRadius;
 			A.damage = static_cast<int>(std::lround(static_cast<double>(Src.damage) * Lead.hp));
 			A.width = 0.f;
 			if (Src.answer == ftcore::ArenaBossAnswer::Tile)
@@ -188,10 +216,12 @@ void FFTStoneBearerHost::Begin(ftcore::ArenaFight& Fight, std::size_t InSlot, ft
 	UseMove = ftcore::kArenaBossNoMove;
 	bUseRefused = false;
 	UseDealt = 0;
-	RefusedUntil = -1.0e300;
 	LastPart = ftcore::ArenaPart::None;
 	bCritHold = false;
 	bPlinthPending = false;
+	bBreakPending = false;
+	bBreakStagger = false;
+	BreakStaggerNote = EBreakStagger::None;
 	bInterceptWas = bGuardWas = false;
 	LoadBefore = 0;
 	NoteTotal = 0;
@@ -203,6 +233,7 @@ void FFTStoneBearerHost::Begin(ftcore::ArenaFight& Fight, std::size_t InSlot, ft
 	const int Floor = static_cast<int>(std::floor(static_cast<double>(Def.pedestal.at) * Fight.def().enemies[Slot].hp));
 	Fight.setEnemyHpFloor(Slot, Floor > 1 ? Floor : 1);
 	Fight.setBlowHook(&FFTStoneBearerHost::RuleBlow, this);
+	RefreshMoveMask();
 }
 
 void FFTStoneBearerHost::End()
@@ -210,8 +241,57 @@ void FFTStoneBearerHost::End()
 	if (FightPtr)
 	{
 		FightPtr->setBlowHook(nullptr, nullptr);
+		if (Slot < FightPtr->enemyCount())
+		{
+			FightPtr->setEnemyMoveMask(Slot, 0xFFFFFFFFu);
+			FightPtr->setEnemyFacingHeld(Slot, false);
+		}
 	}
 	FightPtr = nullptr;
+}
+
+std::uint32_t FFTStoneBearerHost::PickMask() const
+{
+	if (!IsActive())
+	{
+		return 0xFFFFFFFFu;
+	}
+	// Nothing while the boss can't move (startMove would refuse every move); else the head impact of each boss move in
+	// this phase's table that the figure can draw (the chained impacts follow the head; their weight is 0 anyway).
+	if (Boss.invulnerable() || Boss.down())
+	{
+		return 0u;
+	}
+	const std::size_t Count = FightPtr->def().enemies[Slot].moveCount;
+	std::uint32_t Mask = 0u;
+	for (std::size_t M = 0; M < Count && M < ftcore::kMaxArenaMoves && M < 32; ++M)
+	{
+		if (ImpactOf[M] == 0 && Boss.table().contains(MoveOf[M]) && ((Playable >> M) & 1u) != 0u)
+		{
+			Mask |= 1u << M;
+		}
+	}
+	return Mask;
+}
+
+void FFTStoneBearerHost::RefreshMoveMask()
+{
+	if (IsActive())
+	{
+		FightPtr->setEnemyMoveMask(Slot, PickMask());
+	}
+}
+
+void FFTStoneBearerHost::BeforeTick()
+{
+	LoadBefore = FightPtr ? FightPtr->load() : 0;
+	RefreshMoveMask();
+	// The tell commits the direction: a move keeps the facing it began with, so the blow lands where the tell was
+	// drawn (set every tick: begin() and restart() clear it).
+	if (FightPtr && Slot < FightPtr->enemyCount())
+	{
+		FightPtr->setEnemyFacingHeld(Slot, true);
+	}
 }
 
 float FFTStoneBearerHost::HpShare() const
@@ -268,20 +348,33 @@ bool FFTStoneBearerHost::StrikeOf(std::uint8_t Move, const ftcore::ArenaBodies& 
 		return true;
 	}
 	// A called impact to a side: the zone the run called for it (arenaSideOf's right is the facing turned a quarter).
+	// With a clip contact the point is the contact's, mirrored to the called side; an arc's is the contact as it is.
 	const std::uint8_t M = MoveOf[Move];
 	const std::uint8_t K = ImpactOf[Move];
 	const ftcore::ArenaBossRun& Run = Boss.run();
+	const ftcore::Vec2 Right{-Facing.y, Facing.x};
+	const ftcore::ArenaBossMove* Contact = M < Def.boss.moveCount
+		&& UsableContact(Def.boss.moves[M], FightPtr->def().enemies[Slot].bodyRadius) ? &Def.boss.moves[M] : nullptr;
 	if (M < Def.boss.moveCount && Def.boss.moves[M].intercept() && Run.liveMove() == M && K < Run.strike().size()
 		&& Run.strike().impact(K).zone != ftcore::CalledZone::Path)
 	{
 		const float Sign = Run.strike().impact(K).zone == ftcore::CalledZone::Right ? 1.f : -1.f;
-		const ftcore::Vec2 Right{-Facing.y, Facing.x};
 		Out.Shape = FFTStoneBearerStrike::EShape::Side;
-		Out.To = Along(Along(Pos, Facing, Ahead), Right, Side * Sign);
+		Out.To = Contact ? Along(Along(Pos, Facing, Contact->contactAhead), Right, std::fabs(Contact->contactSide) * Sign)
+			: Along(Along(Pos, Facing, Ahead), Right, Side * Sign);
+		return true;
+	}
+	Out.Shape = FFTStoneBearerStrike::EShape::Arc;
+	if (Contact)
+	{
+		// The keep-out shortens the reach the way it shortens the blow (RuleBossBlow): the point slides in with it.
+		const float Planar = ContactPlanar(*Contact);
+		const float Reach = KeepOut.none() ? Planar : KeepOut.clampArc(Pos, Facing, A.arcCos, Planar);
+		const float Share = Planar > 0.f ? Reach / Planar : 0.f;
+		Out.To = Along(Along(Pos, Facing, Contact->contactAhead * Share), Right, Contact->contactSide * Share);
 		return true;
 	}
 	const float Reach = KeepOut.none() ? A.range : KeepOut.clampArc(Pos, Facing, A.arcCos, A.range);
-	Out.Shape = FFTStoneBearerStrike::EShape::Arc;
 	Out.To = Along(Pos, Facing, Reach * ReachShare);
 	return true;
 }
@@ -292,7 +385,7 @@ bool FFTStoneBearerHost::DrawnStanding() const
 	{
 		return false;
 	}
-	return Boss.invulnerable() || (FightPtr->enemyHeld(Slot) && FightPtr->time() < RefusedUntil);
+	return Boss.invulnerable();
 }
 
 void FFTStoneBearerHost::Assist(ftcore::ArenaInput& In, bool& bIntercept, const ftcore::ArenaBodies& Bodies) const
@@ -341,6 +434,31 @@ void FFTStoneBearerHost::Assist(ftcore::ArenaInput& In, bool& bIntercept, const 
 			{
 				const float Sign = Want == ftcore::CalledZone::Right ? 1.f : -1.f;
 				In.move = ftcore::Vec2{-Facing.y * Sign, Facing.x * Sign};
+			}
+		}
+	}
+	if (CritOpen() && Def.boss.weakPoints.points.size() > 0)
+	{
+		// The weak points face away from the lead's usual side: walk round to the first one's gate and strike only from
+		// inside it (a riposte from outside it would end the opening with no crit).
+		const ftcore::Vec2 Pos = Bodies.enemies[Slot];
+		const ftcore::Vec2 Facing = BossFacing();
+		if (!ftcore::arenaGatePasses(Def.boss.weakPoints.gates[0], Pos, Facing, Bodies.player))
+		{
+			In.light = In.heavy = In.dodge = In.guard = false;
+			const float BossR = FightPtr->def().enemies[Slot].bodyRadius;
+			const float LeadR = FightPtr->def().fighter.bodyRadius;
+			const ftcore::Vec2 To{Bodies.player.x - Pos.x, Bodies.player.y - Pos.y};
+			const ftcore::Vec2 Right{-Facing.y, Facing.x};
+			const float Ahead = To.x * Facing.x + To.y * Facing.y;
+			const float Across = To.x * Right.x + To.y * Right.y;
+			// In front: first out to the side the lead is on, then behind; past the side line: straight to the back.
+			const ftcore::Vec2 Goal = Ahead > 0.f ? Along(Pos, Right, (Across >= 0.f ? 1.f : -1.f) * (BossR + LeadR + kStoneGateSide))
+				: Along(Pos, Facing, -(BossR + LeadR + kStoneGateGap));
+			const float Length = Dist(Goal, Bodies.player);
+			if (Length > 0.f)
+			{
+				In.move = ftcore::Vec2{(Goal.x - Bodies.player.x) / Length, (Goal.y - Bodies.player.y) / Length};
 			}
 		}
 	}
@@ -435,7 +553,40 @@ bool FFTStoneBearerHost::AfterTick(const ftcore::ArenaEvents& Events, ftcore::Ar
 			break;
 		}
 	}
+	bBreakStagger = false;
+	BreakStaggerNote = EBreakStagger::None;
+	bBreakPending = false;
 	Absorb(Boss.update(T, HpShare()));
+	if (bBreakPending)
+	{
+		// The hp share broke the piece (not a stagger): the split staggers the boss all the same, as a held Stagger
+		// (no poise or stats change) and the run's stagger (it cancels the live move). Not while the poise is frozen
+		// or on the pedestal (the run keeps its move then), nor on the knees, nor in a stagger already.
+		bBreakPending = false;
+		const ftcore::ArenaBrain Brain = Out.brain;
+		if (Boss.poiseFrozen() || Boss.invulnerable())
+		{
+			BreakStaggerNote = EBreakStagger::Frozen;
+		}
+		else if (Brain == ftcore::ArenaBrain::Open || Brain == ftcore::ArenaBrain::Down || Brain == ftcore::ArenaBrain::Dead)
+		{
+			BreakStaggerNote = EBreakStagger::Kneeling;
+		}
+		else if (Brain == ftcore::ArenaBrain::Staggered)
+		{
+			BreakStaggerNote = EBreakStagger::Already;
+		}
+		else if (Fight.holdEnemy(Slot, ftcore::ArenaBrain::Staggered, Def.boss.staggerTime))
+		{
+			bBreakStagger = true;
+			BreakStaggerNote = EBreakStagger::Held;
+			Absorb(Boss.onStagger(T));
+		}
+		else
+		{
+			BreakStaggerNote = EBreakStagger::Refused;
+		}
+	}
 
 	// A floor blow turning active: its shock ring, when the stacks send one; a tile move: its fragments.
 	const ftcore::ArenaPart Part = Out.brain == ftcore::ArenaBrain::Attack ? Out.part : ftcore::ArenaPart::None;
@@ -479,15 +630,10 @@ void FFTStoneBearerHost::OnAttackStarted(std::uint8_t Move, float StateTime, con
 	bUseRefused = !bStarted;
 	if (bUseRefused)
 	{
-		// Not this phase's (or the boss can't move now): cut it, and the boss picks again. A hold already running
-		// (the plinth, the down time, the opening) is left as it is.
+		// Not this phase's (or the boss can't move now), past the move mask: a silent cancel. No hold (a hold is drawn
+		// as a knee), only its blows vetoed and nothing of it drawn until the next use.
 		++Refusals;
 		Note(FFTStoneBearerNote::EKind::Refused, BossMove, Start);
-		if (!Fight.enemyHeld(Slot))
-		{
-			Fight.holdEnemy(Slot, ftcore::ArenaBrain::Down, RefuseHold);
-			RefusedUntil = static_cast<double>(Fight.time()) + 2.0 * static_cast<double>(RefuseHold);
-		}
 	}
 }
 
@@ -549,6 +695,8 @@ void FFTStoneBearerHost::Absorb(const ftcore::ArenaBossEvents& Events)
 			break;
 		}
 		case ftcore::ArenaBossEventType::Broke:
+			// The hp share's break names no move; its stagger waits until this array is read (onStagger refills it).
+			bBreakPending = bBreakPending || E.move == ftcore::kArenaBossNoMove;
 			OnBroke(E.move, E.at);
 			break;
 		case ftcore::ArenaBossEventType::Call:
@@ -603,6 +751,8 @@ ftcore::ArenaBlowRuling FFTStoneBearerHost::RuleLeadBlow(const ftcore::ArenaBlow
 	Ruling.damage = Hit.damage;
 	// A paired parry deals its damage but never staggers this boss: only its poise breaking does.
 	Ruling.poise = Blow.type == ftcore::ArenaEventType::CounterStagger ? 0.f : Hit.poise;
+	// A blow can break a part and change the table, or start a down: the next pick sees it.
+	RefreshMoveMask();
 	return Ruling;
 }
 

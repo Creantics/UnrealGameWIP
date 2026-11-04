@@ -317,14 +317,14 @@ bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float
 	return true;
 }
 
-void AFTArenaFighter::PlayClip(const UAnimSequence* Clip, float Time, bool bLoop, float DeltaSeconds, bool bHoldRoot, float Blend)
+void AFTArenaFighter::PlayClip(const UAnimSequence* Clip, float Time, bool bLoop, float DeltaSeconds, bool bHoldRoot, float Blend, bool bAdditiveIn)
 {
 	UFTBeatFighterAnimInstance* Anim = SkinKind == ESkin::Creature ? Cast<UFTBeatFighterAnimInstance>(Skin->GetAnimInstance()) : nullptr;
 	if (Anim)
 	{
 		Anim->SetHoldRoot(bHoldRoot);
 		Anim->SetFadeRestart(true); // a second hit while the first one's reaction plays
-		Anim->SetPose(Clip, Time, bLoop, DeltaSeconds, Blend > 0.f ? Blend : UFTBeatFighterAnimInstance::BlendSeconds);
+		Anim->SetPose(Clip, Time, bLoop, DeltaSeconds, Blend > 0.f ? Blend : UFTBeatFighterAnimInstance::BlendSeconds, bAdditiveIn);
 	}
 }
 
@@ -361,6 +361,17 @@ bool AFTArenaFighter::GetSkinPoint(FName Name, FVector& Out) const
 	return true;
 }
 
+bool AFTArenaFighter::PrepareCarried(TConstArrayView<FFTCarriedPiece> Split)
+{
+	USkeletalMesh* Mesh = Skin ? Skin->GetSkeletalMeshAsset() : nullptr;
+	if (SkinKind != ESkin::Creature || !Mesh || Carried.Num() > 0)
+	{
+		return false;
+	}
+	MakeCarried(Mesh, Split, bSplit);
+	return Carried.Num() > 0;
+}
+
 bool AFTArenaFighter::SplitCarried(FName HideSlot, TConstArrayView<FFTCarriedPiece> Split)
 {
 	USkeletalMesh* Mesh = Skin ? Skin->GetSkeletalMeshAsset() : nullptr;
@@ -369,8 +380,29 @@ bool AFTArenaFighter::SplitCarried(FName HideSlot, TConstArrayView<FFTCarriedPie
 		return false;
 	}
 	bSplit = true;
+	// The swap is two visibility changes on one frame: the piece's sections go and the parts (made hidden by
+	// PrepareCarried, else made now) show, so no frame draws neither.
+	ShowSlot(Mesh, HideSlot, false);
+	if (Carried.Num() > 0)
+	{
+		for (UStaticMeshComponent* C : Carried)
+		{
+			if (C)
+			{
+				C->SetVisibility(true);
+			}
+		}
+	}
+	else
+	{
+		MakeCarried(Mesh, Split, true);
+	}
+	return true;
+}
 
-	// The whole piece goes: every LOD's sections drawn with its slot.
+void AFTArenaFighter::ShowSlot(USkeletalMesh* Mesh, FName HideSlot, bool bShow)
+{
+	// The whole piece: every LOD's sections drawn with its slot.
 	const TArray<FSkeletalMaterial>& Materials = Mesh->GetMaterials();
 	const int32 Slot = Materials.IndexOfByPredicate([HideSlot](const FSkeletalMaterial& M) { return M.MaterialSlotName == HideSlot; });
 	const FSkeletalMeshRenderData* Render = Mesh->GetResourceForRendering();
@@ -387,12 +419,15 @@ bool AFTArenaFighter::SplitCarried(FName HideSlot, TConstArrayView<FFTCarriedPie
 			{
 				if (Sections[S].MaterialIndex == Slot)
 				{
-					Skin->ShowMaterialSection(Slot, S, false, Lod);
+					Skin->ShowMaterialSection(Slot, S, bShow, Lod);
 				}
 			}
 		}
 	}
+}
 
+void AFTArenaFighter::MakeCarried(USkeletalMesh* Mesh, TConstArrayView<FFTCarriedPiece> Split, bool bVisible)
+{
 	// Each part was modelled where it sits in its hand at rest, in the mesh's own space: turned about its centre and moved
 	// there by the piece's tweak, then held at that place against the hand's rest pose, so the clip that swings the hand
 	// swings it.
@@ -417,10 +452,10 @@ bool AFTArenaFighter::SplitCarried(FName HideSlot, TConstArrayView<FFTCarriedPie
 		C->SetCastShadow(true);
 		C->SetupAttachment(Skin, Piece.Bone);
 		C->SetRelativeTransform(InHand);
+		C->SetVisibility(bVisible);
 		C->RegisterComponent();
 		Carried.Add(C);
 	}
-	return true;
 }
 
 void AFTArenaFighter::MendCarried()
@@ -436,14 +471,14 @@ void AFTArenaFighter::MendCarried()
 	{
 		Skin->ShowAllMaterialSections(Lod);
 	}
+	// The parts stay on their bones, hidden, for the next split.
 	for (UStaticMeshComponent* C : Carried)
 	{
 		if (C)
 		{
-			C->DestroyComponent();
+			C->SetVisibility(false);
 		}
 	}
-	Carried.Reset();
 }
 
 void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)

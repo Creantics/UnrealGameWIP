@@ -51,7 +51,7 @@ struct NoteResult {
     bool wrongArrow = false; // judged Miss because a different arrow was pressed in its window
 };
 
-// A string of directional notes the player steps through, DDR-style. Used both to power
+// A string of directional notes the player steps through in time with the music. Used both to power
 // attacks (accuracy scales damage dealt) and to defend (accuracy scales damage blocked).
 //
 // Rules:

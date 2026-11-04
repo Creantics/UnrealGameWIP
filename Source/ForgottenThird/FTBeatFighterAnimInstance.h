@@ -12,6 +12,11 @@
 // pose fades out of is held at the last time it was given. Root motion is never extracted (the host places the
 // actor); the root bone's translation is held at its reference pose unless SetHoldRoot(false) (a fall lets it go).
 //
+// A clip set to fade in additively (bAdditiveIn, a short hit reaction) also puts its own motion since its first frame on
+// top of the blend while it fades in, by what is left of the fade: the pose it cuts in from takes the jolt at its full
+// size at once, then settles into the clip. Cut off before its fade is done, it keeps that share and lets it go as it
+// fades out, so a second blow mid-fade does not pop.
+//
 // A build and a lean can be put on the pose after the clips are blended (the boss's mass and its swing):
 //   Anim->SetBuild(1.15f, 0.85f, 1.25f);  // net sizes of the shoulders and chest (spine_03 and all it carries), the head, the hands
 //   Anim->SetLean(12.f);                  // the upper body pitched this many degrees towards where the body faces (negative: back)
@@ -47,6 +52,7 @@ private:
 		float Time = 0.f;
 		float Weight = 0.f;
 		bool bLoop = false;
+		float Additive = 0.f; // the clip's own motion since its first frame, put on top of the blend at this weight
 	};
 	FLayer Layers[MaxLayers];
 	int32 NumLayers = 0;
@@ -72,8 +78,8 @@ public:
 	static constexpr float BlendSeconds = 0.12f;
 
 	// The clip to show now, at clip time Time. Call it every frame. A different clip from last frame's fades in over
-	// Blend seconds while the last fades out; a null clip leaves the pose as it was.
-	void SetPose(const UAnimSequence* Seq, float Time, bool bLoop, float DeltaSeconds, float Blend = BlendSeconds);
+	// Blend seconds while the last fades out; a null clip leaves the pose as it was. bAdditiveIn: it fades in additively.
+	void SetPose(const UAnimSequence* Seq, float Time, bool bLoop, float DeltaSeconds, float Blend = BlendSeconds, bool bAdditiveIn = false);
 	void SetHoldRoot(bool bHold) { bHoldRoot = bHold; }
 	// With it on, the same clip begun again (its time jumps back) fades in over itself as a new clip does.
 	void SetFadeRestart(bool bFade) { bFadeRestart = bFade; }
@@ -105,6 +111,9 @@ private:
 		float Time = 0.f;
 		float Weight = 0.f;
 		bool bLoop = false;
+		bool bAdditiveIn = false;
+		// Once faded out of: the share of its own motion still put on top, per unit of its weight.
+		float Additive = 0.f;
 	};
 	// Slot 0 is the clip now showing; 1 and 2 are the ones fading out of it.
 	FSlot Slots[FFTBeatFighterProxy::MaxLayers];

@@ -2,11 +2,13 @@
 
 #include "Animation/AnimAttributes.h"
 #include "Animation/AnimSequence.h"
+#include "Animation/AnimTypes.h"
 #include "Animation/AnimationPoseData.h"
+#include "Animation/AttributesRuntime.h"
 #include "AnimationRuntime.h"
 #include "BonePose.h"
 
-void UFTBeatFighterAnimInstance::SetPose(const UAnimSequence* Seq, float Time, bool bLoop, float DeltaSeconds, float Blend)
+void UFTBeatFighterAnimInstance::SetPose(const UAnimSequence* Seq, float Time, bool bLoop, float DeltaSeconds, float Blend, bool bAdditiveIn)
 {
 	if (!Seq)
 	{
@@ -19,10 +21,13 @@ void UFTBeatFighterAnimInstance::SetPose(const UAnimSequence* Seq, float Time, b
 		// The clip showing becomes the first to fade out; the one that was fading out first, the second.
 		if (Slots[0].Seq)
 		{
+			// An additive clip cut off mid-fade keeps the share of its motion it was showing (1 - its weight), from now on
+			// in proportion to its weight, so the share goes as the clip fades out.
+			Slots[0].Additive = Slots[0].bAdditiveIn && Slots[0].Weight > 0.001f ? (1.f - Slots[0].Weight) / Slots[0].Weight : 0.f;
 			Slots[2] = Slots[1];
 			Slots[1] = Slots[0];
 		}
-		Slots[0] = FSlot{Seq, Time, Slots[0].Seq ? 0.f : 1.f, bLoop};
+		Slots[0] = FSlot{Seq, Time, Slots[0].Seq ? 0.f : 1.f, bLoop, bAdditiveIn};
 	}
 	else
 	{
@@ -66,11 +71,14 @@ void FFTBeatFighterProxy::PreUpdate(UAnimInstance* InAnimInstance, float DeltaSe
 	const UFTBeatFighterAnimInstance* Instance = static_cast<UFTBeatFighterAnimInstance*>(InAnimInstance);
 	NumLayers = 0;
 	float Sum = 0.f;
-	for (const UFTBeatFighterAnimInstance::FSlot& Slot : Instance->Slots)
+	for (int32 I = 0; I < MaxLayers; ++I)
 	{
+		const UFTBeatFighterAnimInstance::FSlot& Slot = Instance->Slots[I];
 		if (Slot.Seq && Slot.Weight > 0.f && NumLayers < MaxLayers)
 		{
-			Layers[NumLayers++] = FLayer{Slot.Seq, Slot.Time, Slot.Weight, Slot.bLoop};
+			// The clip fading in puts on what is left of its fade; one faded out of, its kept share by its weight.
+			const float Additive = I == 0 ? (Slot.bAdditiveIn ? 1.f - Slot.Weight : 0.f) : Slot.Additive * Slot.Weight;
+			Layers[NumLayers++] = FLayer{Slot.Seq, Slot.Time, Slot.Weight, Slot.bLoop, FMath::Clamp(Additive, 0.f, 1.f)};
 			Sum += Slot.Weight;
 		}
 	}
@@ -242,6 +250,33 @@ bool FFTBeatFighterProxy::Evaluate(FPoseContext& Output)
 		FAnimationPoseData Out(Output);
 		FAnimationRuntime::BlendPosesTogether(MakeArrayView(Poses, NumLayers), MakeArrayView(Curves, NumLayers),
 			MakeArrayView(Attributes, NumLayers), MakeArrayView(Weights, NumLayers), Out);
+	}
+	// An additive fade-in: the clip's motion since its own first frame, put on top of the blend (local space).
+	for (int32 I = 0; I < NumLayers; ++I)
+	{
+		const FLayer& L = Layers[I];
+		if (L.Additive <= 0.001f)
+		{
+			continue;
+		}
+		const FBoneContainer& Container = Output.Pose.GetBoneContainer();
+		FCompactPose Motion, First;
+		FBlendedCurve MotionCurve, FirstCurve;
+		UE::Anim::FStackAttributeContainer MotionAttributes, FirstAttributes;
+		Motion.SetBoneContainer(&Container);
+		First.SetBoneContainer(&Container);
+		MotionCurve.InitFrom(Output.Curve);
+		FirstCurve.InitFrom(Output.Curve);
+		FAnimationPoseData MotionData(Motion, MotionCurve, MotionAttributes);
+		FAnimationPoseData FirstData(First, FirstCurve, FirstAttributes);
+		Sample(L, MotionData);
+		L.Seq->GetAnimationPose(FirstData, FAnimExtractContext(0.0, false, {}, L.bLoop));
+		FAnimationRuntime::ConvertPoseToAdditive(Motion, First);
+		MotionCurve.ConvertToAdditive(FirstCurve);
+		UE::Anim::Attributes::ConvertToAdditive(FirstAttributes, MotionAttributes);
+		FAnimationPoseData Out(Output);
+		FAnimationRuntime::AccumulateAdditivePose(Out, MotionData, L.Additive, AAT_LocalSpaceBase);
+		Output.Pose.NormalizeRotations();
 	}
 	if (bHoldRoot)
 	{

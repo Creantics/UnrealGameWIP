@@ -1123,15 +1123,18 @@ struct ArenaFightImpl {
         }
     }
 
-    // With the token, a move whose [minRange, maxRange] holds the player's distance and whose cooldown is over is
-    // picked, weighted by `weight`; when none fits, the nearest move's band is where to walk to.
+    // With the token, a move whose [minRange, maxRange] holds the player's distance, whose cooldown is over and whose
+    // bit the host's move mask sets is picked, weighted by `weight`; when none fits, the nearest such move's band is
+    // where to walk to.
     Pick pickMove(std::size_t i, float distance) {
         const Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         const auto gapOf = [&](const ArenaEnemyMove& mv) {
             return distance > mv.maxRange ? distance - mv.maxRange : (distance < mv.minRange ? mv.minRange - distance : 0.f);
         };
-        const auto ready = [&](std::size_t m) { return k.moves[m].weight > 0.f && foe.cooldown[m] <= 0.f; };
+        const auto ready = [&](std::size_t m) {
+            return k.moves[m].weight > 0.f && foe.cooldown[m] <= 0.f && ((foe.moveMask >> m) & 1u) != 0u;
+        };
         Pick pick;
         float total = 0.f;
         int nearest = -1;
@@ -1328,7 +1331,8 @@ struct ArenaFightImpl {
         const ArenaAttack& a = def.enemies[i].moves[foe.move].attack;
         const float a0 = foe.stateTime;
         const float a1 = a0 + dt;
-        if (a0 < a.startup) foe.facing = arenaTurn(foe.facing, dir, a.tracking * (std::min(a1, a.startup) - a0));
+        if (a0 < a.startup && !foe.facingHeld)
+            foe.facing = arenaTurn(foe.facing, dir, a.tracking * (std::min(a1, a.startup) - a0));
         if (!foe.hitPlayer && pl.hp > 0 && a1 > a.startup && a0 < a.startup + a.active &&
             arenaReaches(foe.pos, foe.facing, a, pl.pos, fi.bodyRadius)) {
             enemyStrike(i);
@@ -1704,8 +1708,8 @@ bool ArenaFight::readOpen() const {
 int ArenaFight::readStacks() const { return player_.readStacks; }
 
 bool ArenaFight::holdEnemy(std::size_t i, ArenaBrain brain, float seconds) {
-    if (phase_ != ArenaPhase::Fighting || !enemyAlive(i) || (brain != ArenaBrain::Open && brain != ArenaBrain::Down) ||
-        !(seconds > 0.f))
+    if (phase_ != ArenaPhase::Fighting || !enemyAlive(i) ||
+        (brain != ArenaBrain::Open && brain != ArenaBrain::Down && brain != ArenaBrain::Staggered) || !(seconds > 0.f))
         return false;
     EnemyState& foe = enemy_[i];
     foe.holdAsk = HoldAsk::Hold;
@@ -1721,6 +1725,15 @@ void ArenaFight::setEnemyHpFloor(std::size_t i, int hpFloor) {
     if (i < enemyCount_) enemy_[i].hpFloor = std::max(0, hpFloor);
 }
 int ArenaFight::enemyHpFloor(std::size_t i) const { return i < enemyCount_ ? enemy_[i].hpFloor : 0; }
+static_assert(kMaxArenaMoves <= 32, "a move mask holds one bit per move");
+void ArenaFight::setEnemyMoveMask(std::size_t i, std::uint32_t mask) {
+    if (i < enemyCount_) enemy_[i].moveMask = mask;
+}
+std::uint32_t ArenaFight::enemyMoveMask(std::size_t i) const { return i < enemyCount_ ? enemy_[i].moveMask : 0u; }
+void ArenaFight::setEnemyFacingHeld(std::size_t i, bool held) {
+    if (i < enemyCount_) enemy_[i].facingHeld = held;
+}
+bool ArenaFight::enemyFacingHeld(std::size_t i) const { return i < enemyCount_ && enemy_[i].facingHeld; }
 void ArenaFight::setBlowHook(ArenaBlowHook hook, void* user) {
     blowHook_ = hook;
     blowUser_ = hook ? user : nullptr;

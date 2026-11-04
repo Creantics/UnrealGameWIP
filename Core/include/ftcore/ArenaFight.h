@@ -601,10 +601,10 @@ struct ArenaBlowRuling {
 // Called inside tick(), once per blow, in the order the blows land (a player's attack reaching several enemies on
 // one tick: by enemy index). It may read the fight's getters: mid-tick, time() and output() are still the last
 // tick's (ArenaBlow::time is this one's end), and enemyHp and hp don't count the blow being ruled yet. It may call
-// holdEnemy and releaseEnemy (they count from the next tick), setEnemyHpFloor (it counts for this blow already) and
-// setBlowHook (from the next blow). tick, begin and restart called from inside it do nothing (tick only returns the
-// last output). A copy of a fight copies the hook and its user pointer (a copy made inside the hook ticks as any
-// other).
+// holdEnemy and releaseEnemy (they count from the next tick), setEnemyHpFloor (it counts for this blow already),
+// setEnemyMoveMask (from the next pick) and setBlowHook (from the next blow). tick, begin and restart called from
+// inside it do nothing (tick only returns the last output). A copy of a fight copies the hook and its user pointer
+// (a copy made inside the hook ticks as any other).
 using ArenaBlowHook = ArenaBlowRuling (*)(void* user, const ArenaBlow& blow);
 
 class ArenaFight {
@@ -671,11 +671,12 @@ public:
     FTCORE_API int readStacks() const;
 
     // ---- host hooks ----
-    // Holds enemy i in `brain` (Open or Down) for `seconds` (> 0; +infinity: until releaseEnemy), from the start of the
-    // next tick with dt > 0: a live move is cut short and its token goes back, as a parry does (a read move brings the
-    // partner's counter), and `seconds` stands in for the kind's openTime or downTime. Holding again starts it over.
-    // Open invites a riposte, which ends the hold (Down for the kind's downTime), and a counter-stagger ends it too
-    // (Staggered); Down invites neither. When a hold ends (its time, or a release) the enemy walks again, and the
+    // Holds enemy i in `brain` (Open, Down or Staggered) for `seconds` (> 0; +infinity: until releaseEnemy), from the
+    // start of the next tick with dt > 0: a live move is cut short and its token goes back, as a parry does (a read move
+    // brings the partner's counter), and `seconds` stands in for the kind's openTime, downTime or staggerTime. Holding
+    // again starts it over. Open invites a riposte, which ends the hold (Down for the kind's downTime), and a
+    // counter-stagger ends it too (Staggered); Down invites neither. A held Staggered is not a stagger: no Staggered
+    // event, no stats.staggers and the poise is left as it is (a poise break in it staggers anew, ending the hold). When a hold ends (its time, or a release) the enemy walks again, and the
     // kind's attackDelay counts from the hold's start, as after a parry. False, and nothing asked, for an enemy out of
     // range or dead, a fight not running (before begin(), after Victory or Defeat), another brain, or seconds NaN or
     // <= 0.
@@ -690,6 +691,19 @@ public:
     // raises hp: at or below it, a blow takes nothing.
     FTCORE_API void setEnemyHpFloor(std::size_t i, int hpFloor);
     FTCORE_API int enemyHpFloor(std::size_t i) const;
+    // Enemy i's picks may begin only the moves whose bit is set in `mask` (bit m: move m; every bit set, the
+    // default). A move with its bit clear counts as one with weight 0 for the pick: never begun by it, and no band to
+    // walk to, while a chain still runs into it. With no bit set, a pick holds (the enemy strafes). It applies from
+    // the next pick and never cuts a move already begun. begin() and restart() set every bit again. Nothing for an
+    // enemy out of range; enemyMoveMask is then 0.
+    FTCORE_API void setEnemyMoveMask(std::size_t i, std::uint32_t mask);
+    FTCORE_API std::uint32_t enemyMoveMask(std::size_t i) const;
+    // While set, enemy i's moves keep the facing they began with: no tracking turn in startup, so the blow lands
+    // along the line it was told on (a host that draws the strike point as the move begins). It applies from the next
+    // tick, a move already in startup included. begin() and restart() clear it. Nothing for an enemy out of range;
+    // enemyFacingHeld is then false.
+    FTCORE_API void setEnemyFacingHeld(std::size_t i, bool held);
+    FTCORE_API bool enemyFacingHeld(std::size_t i) const;
     // Every blow goes to `hook` with `user` before it applies (ArenaBlowHook); nullptr: none (every blow as it is).
     FTCORE_API void setBlowHook(ArenaBlowHook hook, void* user);
     // Stores `amount` Load in the player's gauge now, as a parry would (never past kMaxLoad; amount <= 0: nothing),
@@ -772,6 +786,8 @@ private:
         ArenaBrain holdBrain = ArenaBrain::Open; // ... and the hold it asks for
         float holdSeconds = 0.f;
         int hpFloor = 0;                    // the host's hp floor (0: none)
+        std::uint32_t moveMask = 0xFFFFFFFFu; // the moves a pick may begin (bit m: move m)
+        bool facingHeld = false;            // the host's hold: a move keeps the facing it began with
     };
 
     ArenaDef def_;

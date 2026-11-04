@@ -1,6 +1,7 @@
 {
  "version": 1,
  "mesh": "/Game/Bosses/WhiteGlove/white_glove/SkeletalMeshes/white_glove",
+ "blend_s": 0.25,
  "clips": [
   {
    "id": "idle",
@@ -49,14 +50,16 @@
    "asset": "/Game/Bosses/WhiteGlove/white_glove/SkeletalMeshes/white_glovehit_light",
    "length_s": 0.5,
    "impact_s": 0,
-   "loop": false
+   "loop": false,
+   "additive_in": true
   },
   {
    "id": "hit_heavy",
    "asset": "/Game/Bosses/WhiteGlove/white_glove/SkeletalMeshes/white_glovehit_heavy",
    "length_s": 0.9,
    "impact_s": 0,
-   "loop": false
+   "loop": false,
+   "additive_in": true
   },
   {
    "id": "open",

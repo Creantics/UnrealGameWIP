@@ -173,7 +173,7 @@ Everything about it is data and host-side: the fight's rules never read it.
   `ArenaDef` grew from about 7 to 17.4 KiB and an `ArenaFight` from about 10 to 23 KiB (MSVC x64).
 
 The mode plays, from Core's state each frame (`UFTBeatFighterAnimInstance`, a pose that is a function of the fight, with a 0.12 s
-crossfade between clips, or the table's own top-level `blend_s`): a move's own clip through an attack, timed by Core's clock for the move at the rate
+crossfade between clips, or the table's own top-level `blend_s`, or a row's own `blend_s` for the crossfade into that clip): a move's own clip through an attack, timed by Core's clock for the move at the rate
 `impact_s / startup` (so the blow lands as the startup ends; held on its last frame if the clip is shorter than the move);
 `stagger` while staggered, or after a parry of a move that has a `<clip>_recoil` row, that recoil, from the parry through
 the Open and the stagger after it (one clip on one clock from the parry, so the two states make no crossfade; an Open that
@@ -190,9 +190,19 @@ its reaction, and one landing just before it is dropped); `walk` (looping, optio
 smoothed ground speed passes 0.35 m/s and until it drops under 0.1 m/s, played at that speed over the row's `speed_mps` (rate 0.5 to
 1.6; a walk row without `speed_mps` is left out); `defeat` on death, held on its last frame, or the optional `defeat_kneel` for a
 death on its knees; else `idle`, or `idle_p2` under
-60% hp. A clip the table lacks is left out (that state plays the idle). If the clip table, the mesh or the idle clip doesn't load, the
+60% hp. The stone_bearer's slot differs in four ways: its walk plays at rate 1.0 and, between moves, the runner moves its body
+at the walk's `speed_mps` along Core's wanted direction while it plays and holds it still otherwise (an owed get-up too; Core's
+speed only starts the walk, above 0.35 m/s with the wanted direction within 60 degrees of the facing, and stops it under 0.1 m/s
+or outside that cone, after at least 1 s); a get-up once begun plays out in real time, and a down that runs on past it kneels
+again through `face_down_in` (or stands it out when too little is left); it dies on `defeat_kneel` only while the kneel shows
+(down, going down, or its get-up under 40% in), else on `defeat`; and a playing hit reaction holds 0.4 s before any blow
+restarts it, and after that only a heavy one does. A clip the table lacks is left out (that state plays the idle). If the clip table, the mesh or the idle clip doesn't load, the
 kind keeps its shapes and the log has one warning. The camera looks up at a boss at least 4 m tall (hover included) toward 70%
 of its height, up to 15 degrees above level (the free camera's limit too); the camera never pulls out for a big boss. The assets are local; nothing here needs them to load.
+A row marked `"additive_in": true` (the white glove's `hit_light` and `hit_heavy`) also fades in additively: while its crossfade
+runs, its own motion since its first frame goes on top of the blend by what is left of the fade, so a blow taken mid-swing jolts
+the held swing pose at the reaction's full size at once instead of easing into the reaction's rest start; cut off mid-fade (a
+second blow), it keeps that share and lets it go as it fades out.
 
 The kite boss (`kite_boss`, `Data/Anim/kite_clips.json`, assets under `/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/`,
 the import being `FTImportCharacter -Source=kite_boss.glb -Dest=/Game/Bosses/KiteBoss -Face=0`): 1100 hp, 9.1 m from its
@@ -245,8 +255,11 @@ ArenaFight body, hosted by `FFTStoneBearerHost` (`Source/ForgottenThird/FTStoneB
   follower has weight 0; startups from the beat gaps; tile moves strike all round, lane moves a 1 m lane, called moves a
   front arc; only `Any` moves can be parried, dodge, jump, tile and cover moves can't be blocked);
 - `begin`s the boss with the fight, sets the hp floor at the pedestal's share (so no blow skips it) and hooks the blows;
-- on each AttackStarted `startMove`s the boss move (side from `arenaSideOf`); a move the boss refuses (invulnerable, down,
-  or not in its phase) is cut by a 0.05 s Down hold and its blows are vetoed, and it picks again;
+- before each tick hands ArenaFight a move mask (`setEnemyMoveMask`): only the head impacts of the moves in the phase's table,
+  none while the boss is invulnerable or down, and only moves the figure has a clip for (a clipless move would stand in the
+  idle behind its tell); the lead's blows refresh it inside the tick;
+- on each AttackStarted `startMove`s the boss move (side from `arenaSideOf`); a move the boss still refuses is cancelled
+  silently (no hold, its blows vetoed, nothing of it drawn);
 - each step: the Intercept and Guard buttons (zone from `arenaZoneOf` at the move's start), then Blocked → `onBlocked`,
   the boss's Staggered → `onStagger`, Released → `onRelease` with the Load before it was spent, then `update`;
 - in the blow hook: the lead's blows through `onHit` (its damage and poise multipliers), the boss's blows scaled by
@@ -432,6 +445,7 @@ each frame and handed to the fight on its next step, so no press is lost between
 | `-ArenaAttackers=N` | How many enemies may attack at once (1 to the line-up's size). |
 | `-ArenaHoldLoad` | The autopilot keeps its Load until it is overloaded (to see the overload; not a way to play). |
 | `-ArenaParryHold=<s>` | No follow-up for s seconds after each parry: the autopilot's blows and Release and the partner's press are dropped, so the open boss's own clips (face down, the get-up) show. A check of the clips, not a way to play; the fight differs from plain autoplay. |
+| `-ArenaNoKindFx` | No kind's crit effects (`arena_crit.json`: the tell, open, crit and hit) are made; the fight runs the same. The OFF half of an effects OFF/ON capture. |
 | `-ArenaShot=<path prefix>` | Autoplay and save the views (`_1_ring`, `_2_tell` with the Read cards picked, `_3_impact`, `_4_load` with the gauge past a third, or the overload under `-ArenaHoldLoad`, `_5_release`, `_6_result` .png), then quit; a view the fight never reaches is skipped. Needs a renderer (`-RenderOffScreen`, not `-NullRHI`). |
 | `-ArenaShotDelay=S` | Seconds before the first screenshot (the fight waits for it). |
 | `-ArenaOverview` | With `-ArenaShot`, a first view `_0_overview` of the whole zone from a camera high over its south-west side (pulled in along the line if a building is in the way), HUD off, with the zone's walls (green), obstacles (red) and road mouths (yellow) drawn as debug lines for the picture only; then `_0b_edge`, the player 1.4 m from the wall on his left to show the edge cue. |

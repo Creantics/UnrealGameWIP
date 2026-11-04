@@ -129,6 +129,10 @@
 //     impact), damageMax damage..1 (most it deals in one use; default damage x impacts), floor and
 //     marked bools (marked: intercept moves only), guardBreak 0..5 s, guardStacks and missStacks 0..5
 //     (the boss's rule), opens 0..10 s, load 0..kMaxLoad.
+//     contact (optional): { "socket": id, "ahead": m, "side": m, "up": m }, where the part that strikes
+//       (socket, an id like a move's) sits at the clip's impact frame, from the boss's root in its own
+//       frame: ahead along its facing, side to its right, up; ahead and side -20..20, up -5..20. The host
+//       reads it for its strike point and reach; absent: none (hasContact false).
 //   phases: 1..kMaxArenaBossPhases; endAt in [0, 1), strictly falling, the last 0. moves and brokenMoves
 //     (default: moves): 1..kMaxArenaPhaseMoves known move ids, no repeats.
 //   An unknown key is a warning; anything else wrong is an error with its path, and `out` is left
@@ -513,8 +517,16 @@ struct ArenaBossMove {
     std::uint8_t missStacks = 0;
     float opens = 0.0f; // crit window after a full intercept, seconds
     int load = 0;       // Load a full intercept gives
+    // The striking part at the clip's impact frame, metres from the boss's root in its own frame (none: hasContact
+    // false, the rest zero).
+    bool hasContact = false;
+    float contactAhead = 0.0f; // along its facing
+    float contactSide = 0.0f;  // to its right
+    float contactUp = 0.0f;
+    std::array<char, kMaxArenaBossMoveId + 1> contactSocketChars{};
 
     std::string_view id() const { return std::string_view(idChars.data()); }
+    std::string_view contactSocket() const { return std::string_view(contactSocketChars.data()); }
     bool called() const { return callCount > 0; }
     bool intercept() const { return answer == ArenaBossAnswer::Intercept; }
 };

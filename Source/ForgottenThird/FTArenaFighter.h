@@ -111,8 +111,10 @@ public:
 	bool SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float Scale, float YawOffset, float HeightMeters);
 	// A skinned figure shows Clip at Time (seconds into it; looping wraps) over a short crossfade from the clip before it.
 	// bHoldRoot false lets the clip's root travel through (a fall). Call every frame; a null clip changes nothing.
-	// Blend: the crossfade into a new clip, seconds; 0 the anim instance's own.
-	void PlayClip(const UAnimSequence* Clip, float Time, bool bLoop, float DeltaSeconds, bool bHoldRoot = true, float Blend = 0.f);
+	// Blend: the crossfade into a new clip, seconds; 0 the anim instance's own. bAdditiveIn: a new clip fades in additively
+	// (its motion lands at full size on the pose it cuts in from; UFTBeatFighterAnimInstance).
+	void PlayClip(const UAnimSequence* Clip, float Time, bool bLoop, float DeltaSeconds, bool bHoldRoot = true, float Blend = 0.f,
+		bool bAdditiveIn = false);
 	bool IsSkinned() const { return SkinKind == ESkin::Creature; }
 	bool WearsLook() const { return SkinKind == ESkin::Lead; }
 	// The camera's rig in metres (ftcore::StageCamera, scaled with the arena): the boom's length, the pivot's
@@ -131,7 +133,10 @@ public:
 	// after its Turn and OffsetMeters tweak. Once a figure; false when it isn't skinned or already split. A piece that
 	// doesn't load is skipped with a warning.
 	bool SplitCarried(FName HideSlot, TConstArrayView<FFTCarriedPiece> Split);
-	// Undoes SplitCarried (a fight begun again): the piece whole on the figure, the parts gone.
+	// Makes the split's parts ahead of it, on their bones and hidden, so SplitCarried only swaps what shows. Once a
+	// figure; false when it isn't skinned, has them already, or none loaded.
+	bool PrepareCarried(TConstArrayView<FFTCarriedPiece> Split);
+	// Undoes SplitCarried (a fight begun again): the piece whole on the figure, the parts hidden (kept for the next).
 	void MendCarried();
 	bool IsSplit() const { return bSplit; }
 	float GetHeight() const { return Height; }
@@ -143,6 +148,8 @@ public:
 
 private:
 	void SetTellVisible(bool bVisible);
+	void ShowSlot(USkeletalMesh* Mesh, FName HideSlot, bool bShow);
+	void MakeCarried(USkeletalMesh* Mesh, TConstArrayView<FFTCarriedPiece> Split, bool bVisible);
 	// Puts Look on the player's skin: false (nothing changed) when its body doesn't load.
 	bool WearLook(const FFTLeadLook& Look);
 

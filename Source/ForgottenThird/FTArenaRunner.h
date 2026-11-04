@@ -205,13 +205,30 @@ private:
 	void EndStoneBearer();
 	// The host's new notes, one log line each (ids, counts and outcome words only); a crit's burst.
 	void LogStoneBearerNotes();
+	// The stone_bearer's move mask, a log line each time it changes.
+	void LogStoneMoveMask();
+	// The stone_bearer's walk after each step (its skinned figure only): starts and stops it from Core's wanted speed, and
+	// between moves moves its body at the walk clip's speed, or holds it still (see kStoneWalkHold in the .cpp).
+	void StoneBearerWalk(const ftcore::ArenaOutput& Out);
+	// A hit reaction for slot I, light or heavy, when it flinches (the stone_bearer's slot holds a playing one a while).
+	void StartFlinch(int32 I, bool bHeavy);
 	// The boss's effects: its attack part going From -> To (its tell through the startup, its impact as it turns active),
 	// a blow landing on it (E: Hit, CounterStagger or ReadCounter), and where its weak point is now.
 	void BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 From, uint8 To);
 	void BossHitVfx(const ftcore::ArenaEvent& E);
 	FVector BossWeakPoint() const;
-	// The boss broke its carried piece: its figure takes the parts on the split file's bones (once a fight).
-	void SplitBossCarried();
+	// Where the crit flash and the weak-point glow go: the weak point, lifted and moved toward the camera (the tuning's
+	// flashUp and flashToCamera).
+	FVector BossFlashPoint() const;
+	// The stone_bearer kneels in this clip (going down, down, getting up): its hits hang off the pelvis then.
+	bool StoneKneelShows() const;
+	// The boss broke its carried piece: its figure swaps in the parts on the split file's bones (once a fight). bStagger:
+	// a break in the fight (not the run's split at the start), which also plays the impact and the stagger at once.
+	void SplitBossCarried(bool bStagger);
+	// The split's parts made hidden on the figure as it is spawned, so the split only swaps visibility.
+	void PrepareBossCarried();
+	// The stone_bearer's walk counts for the fight, one log line at its end.
+	void LogStoneWalkCounts() const;
 	// Plain kinds' weak points (ftcore/ArenaKindCrit.h): Data/Battle/arena_crit.json read once, then on each begin and
 	// restart one ArenaKindCrit per slot whose kind has an entry, and the blow hook that rules on the lead's blows on them.
 	// After each step the slots' AttackStarted events open the windows; an opening and every crit are one log line each.
@@ -301,6 +318,36 @@ private:
 	double RecoilSince[ftcore::kMaxArenaEnemies] = {};
 	bool bRecoilDown[ftcore::kMaxArenaEnemies] = {};
 	float FrameDelta = 0.f; // the frame's seconds, for the clips' crossfades
+	// The stone_bearer's figure: when its walk began, when its get-up began (-1e9: none under way) and whether it is up
+	// for the rest of its down, the death clip it chose (-1: not yet), and its move mask as last logged.
+	double StoneWalkSince = -1e9;
+	double StoneUpStart = -1e9;
+	bool bStoneStood = false;
+	int32 StoneDeathClip = -1;
+	uint32 StoneMoveMask = 0xFFFFFFFFu;
+	// The split's stagger, drawn from the split's frame until Core's held Stagger takes over (-1e9: none).
+	double StoneSplitStaggerSince = -1e9;
+	double StoneSplitStaggerUntil = -1e9;
+	// The pilot's last heavy on the stone_bearer (kStonePilotHeavyEvery; -1e9: none yet).
+	double StonePilotHeavyAt = -1e9;
+	// The tell's point, frozen as the startup begins, for the impact's distance check (move kArenaNoMove... none: 255).
+	ftcore::Vec2 StoneTellAt;
+	uint8 StoneTellMove = 255;
+	// The tell's shape scale, Core's facing and the figure's place and yaw as the startup began (the blow's log line).
+	float StoneTellShapeMul = 1.f;
+	ftcore::Vec2 StoneTellFacing;
+	FVector StoneTellFigurePos = FVector::ZeroVector;
+	float StoneTellFigureYaw = 0.f;
+	// The walk's counts this fight: steps between moves Core wanted over the start speed (by brain), the runs of them,
+	// the walks begun, and the wanted steps that couldn't start one (by what held it: the cone, a get-up, a hit).
+	int32 StoneWantApproach = 0;
+	int32 StoneWantStrafe = 0;
+	int32 StoneWantRuns = 0;
+	int32 StoneWalksBegun = 0;
+	int32 StoneHeldCone = 0;
+	int32 StoneHeldUp = 0;
+	int32 StoneHeldHit = 0;
+	bool bStoneWanted = false;
 
 	ftcore::ArenaTable Table;
 	ftcore::ArenaZoneFit Fit;

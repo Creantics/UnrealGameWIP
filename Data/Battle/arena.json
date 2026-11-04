@@ -150,9 +150,9 @@
     {
       "id": "stone_bearer",
       "hp": 1400, "poise": 175, "poiseDelay": 8, "staggerTime": 2, "openTime": 3, "downTime": 3,
-      "walkSpeed": 0.8, "runSpeed": 1.6, "strafeSpeed": 0.6, "accel": 2.5, "turnRate": 1.4,
+      "walkSpeed": 0.8, "runSpeed": 0.8, "strafeSpeed": 0.8, "accel": 2.5, "turnRate": 1.4,
       "preferredRange": 3.5, "runRange": 9, "attackDelay": 0.8, "bodyRadius": 1.2, "height": 5.1, "bpm": 76,
-      "look": { "clips": "Data/Anim/stone_bearer_clips.json", "scale": 1, "yawOffset": -90 },
+      "look": { "clips": "Data/Anim/stone_bearer_clips.json", "scale": 1, "yawOffset": 0 },
       "moves": [
         { "clip": "called_fist", "tell": "strike", "startup": 2.368, "active": 0.2, "recovery": 1.2, "range": 3.8, "arcCos": 0.3, "damage": 17, "poiseDamage": 20, "guardDamage": 26, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 4.2, "weight": 1.2 },
         { "clip": "slab_drive", "tell": "charge", "startup": 1.579, "active": 0.3, "recovery": 1.6, "range": 5.7, "arcCos": 0.3, "damage": 14, "poiseDamage": 17, "guardDamage": 21, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 6.1, "weight": 1.0, "parryable": false },
