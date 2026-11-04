@@ -1413,7 +1413,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		{
 			continue;
 		}
-		// The boss on its plinth, or a refused pick being cut, is held Down but drawn on its feet.
+		// The boss on its plinth is held Down but drawn on its feet.
 		const bool bBossStands = I == StoneBearerSlot && StoneBearer.DrawnStanding();
 		ftcore::ArenaEnemyOut E = Out.enemies[static_cast<size_t>(I)];
 		if (bBossStands && E.brain == ftcore::ArenaBrain::Down)
