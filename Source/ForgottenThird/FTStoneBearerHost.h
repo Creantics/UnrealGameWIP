@@ -144,6 +144,9 @@ public:
 	// reach ahead. False when the host isn't active, the use was refused or Move isn't one of the boss's.
 	bool StrikeOf(std::uint8_t Move, const ftcore::ArenaBodies& Bodies, float Ahead, float Side, float ReachShare,
 		FFTStoneBearerStrike& Out) const;
+	// The side the run called for arena move Move's impact while that use is live (StrikeOf's Side shape): Left or
+	// Right; Path for anything else (not a called impact, not live, refused, or the host isn't active).
+	ftcore::CalledZone CalledSideOf(std::uint8_t Move) const;
 	// The weak points are open (from CritOpened until CritClosed).
 	bool CritOpen() const { return IsActive() && Boss.run().crit().isOpen(static_cast<double>(FightPtr->time())); }
 

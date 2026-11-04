@@ -136,6 +136,34 @@
    "length_s": 1.739,
    "impact_s": 0.789,
    "loop": false
+  },
+  {
+   "id": "called_fist_l",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearercalled_fist_l",
+   "length_s": 3.768,
+   "impact_s": 2.368,
+   "loop": false
+  },
+  {
+   "id": "ground_punch_l",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerground_punch_l",
+   "length_s": 5.358,
+   "impact_s": 3.158,
+   "loop": false
+  },
+  {
+   "id": "turn_l",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerturn_l",
+   "length_s": 0.8,
+   "impact_s": 0,
+   "loop": true
+  },
+  {
+   "id": "turn_r",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerturn_r",
+   "length_s": 0.8,
+   "impact_s": 0,
+   "loop": true
   }
  ]
 }

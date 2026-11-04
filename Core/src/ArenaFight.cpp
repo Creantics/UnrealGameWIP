@@ -1357,7 +1357,7 @@ struct ArenaFightImpl {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         foe.stateTime += dt;
-        foe.facing = arenaTurn(foe.facing, dir, k.turnRate * dt);
+        if (!foe.turnHeld) foe.facing = arenaTurn(foe.facing, dir, k.turnRate * dt);
         const float goal = foe.token ? pick.goal : k.preferredRange;
         const float error = distance - goal;
         if (std::fabs(error) <= kArenaEps) return Vec2{};
@@ -1369,7 +1369,7 @@ struct ArenaFightImpl {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         foe.stateTime += dt;
-        foe.facing = arenaTurn(foe.facing, dir, k.turnRate * dt);
+        if (!foe.turnHeld) foe.facing = arenaTurn(foe.facing, dir, k.turnRate * dt);
         foe.strafeLeft -= dt;
         if (foe.strafeLeft <= 0.f) flipStrafe(i);
         // Toward the point on the circle at the preferred range one step further round: the circling and a soft pull
@@ -1734,6 +1734,13 @@ void ArenaFight::setEnemyFacingHeld(std::size_t i, bool held) {
     if (i < enemyCount_) enemy_[i].facingHeld = held;
 }
 bool ArenaFight::enemyFacingHeld(std::size_t i) const { return i < enemyCount_ && enemy_[i].facingHeld; }
+void ArenaFight::setEnemyTurnHeld(std::size_t i, bool held) {
+    if (i < enemyCount_) enemy_[i].turnHeld = held;
+}
+bool ArenaFight::enemyTurnHeld(std::size_t i) const { return i < enemyCount_ && enemy_[i].turnHeld; }
+void ArenaFight::setEnemyFacing(std::size_t i, Vec2 facing) {
+    if (i < enemyCount_ && arenaLength(facing) > kArenaEps) enemy_[i].facing = arenaUnit(facing, enemy_[i].facing);
+}
 void ArenaFight::setBlowHook(ArenaBlowHook hook, void* user) {
     blowHook_ = hook;
     blowUser_ = hook ? user : nullptr;

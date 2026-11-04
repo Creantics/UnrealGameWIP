@@ -105,6 +105,44 @@ TEST_CASE("vfx: the Kite-Mother's effects load without warnings and keep their p
     }
 }
 
+TEST_CASE("vfx: the Unbending's effects load without warnings and keep their particle budgets") {
+    struct Expect {
+        const char* file;
+        std::size_t emitters;
+        std::uint32_t budget; // the sum of the emitters' maxParticles
+        bool loops;
+    };
+    const Expect files[] = {{"stone_tell", 4, 168, true},
+                            {"stone_impact", 4, 92, false},
+                            {"stone_chips", 4, 94, false},
+                            {"crit_burst", 5, 126, false},
+                            {"weak_glow", 3, 80, true}};
+    for (const Expect& f : files) {
+        CAPTURE(f.file);
+        VfxEffect e;
+        std::vector<std::string> warnings;
+        REQUIRE(loadEffect(f.file, e, &warnings));
+        CHECK(e.name == f.file);
+        CHECK(e.emitters.size() == f.emitters);
+        CHECK_MESSAGE(warnings.empty(), (warnings.empty() ? std::string() : warnings.front()));
+        std::uint32_t total = 0;
+        for (const VfxEmitter& em : e.emitters) {
+            total += em.maxParticles;
+            CHECK(em.loop == f.loops);
+        }
+        CHECK(total <= f.budget);
+        VfxNiagaraPlan plan;
+        planVfxNiagara(e, plan);
+        CHECK(plan.emitters.size() == f.emitters);
+        for (const VfxNiagaraEmitter& p : plan.emitters) {
+            CHECK(p.lifetime.lo > 0.f);
+            CHECK(p.boundsMin.x < p.boundsMax.x);
+            CHECK(p.boundsMin.z < p.boundsMax.z);
+            CHECK_FALSE(p.startColor.empty());
+        }
+    }
+}
+
 TEST_CASE("vfx: fireworks reads bursts, modules and sub-emitters") {
     VfxEffect e;
     REQUIRE(loadEffect("fireworks", e));
