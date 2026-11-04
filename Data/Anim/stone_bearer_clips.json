@@ -11,6 +11,14 @@
    "loop": true
   },
   {
+   "id": "walk",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerwalk",
+   "length_s": 1.867,
+   "impact_s": 0,
+   "speed_mps": 1.15,
+   "loop": true
+  },
+  {
    "id": "idle_p2",
    "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_beareridle_p2",
    "length_s": 12.632,
