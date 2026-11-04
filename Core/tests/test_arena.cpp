@@ -3946,6 +3946,78 @@ int parryTick() {
 
 } // namespace
 
+TEST_CASE("arena hooks: a move mask keeps picks off a move, a chain still runs into it, and no bit holds") {
+    const ArenaAttack bite = swing(0.2f, 0.1f, 0.3f, 2.f, 1);
+    ArenaEnemyKind two = hitterKind(bite);
+    two.moveCount = 2;
+    two.moves[1] = two.moves[0]; // the same weight: unmasked, both are picked
+    const auto starts = [](const Rig& rig, std::uint8_t move) {
+        int n = 0;
+        for (const Logged& l : rig.log)
+            if (l.event.type == ArenaEventType::AttackStarted && l.event.move == move) ++n;
+        return n;
+    };
+    {   // every bit (the default): both moves come up
+        Rig rig(ruleFighter(), {two});
+        rig.put(0, 1.5f, 0.f);
+        CHECK(rig.fight.enemyMoveMask(0) == 0xFFFFFFFFu);
+        rig.runFor(8.f);
+        CHECK(starts(rig, 0) > 0);
+        CHECK(starts(rig, 1) > 0);
+    }
+    {   // move 1's bit only: every pick is move 1
+        Rig rig(ruleFighter(), {two});
+        rig.put(0, 1.5f, 0.f);
+        rig.fight.setEnemyMoveMask(0, 0x2u);
+        CHECK(rig.fight.enemyMoveMask(0) == 0x2u);
+        rig.runFor(8.f);
+        CHECK(starts(rig, 0) == 0);
+        CHECK(starts(rig, 1) >= 3);
+    }
+    {   // a chain runs into a masked move: move 0 strings into move 1 (weight 0, its bit clear)
+        ArenaEnemyKind chained = two;
+        chained.moves[0].chain = 1;
+        chained.moves[1].weight = 0.f;
+        Rig rig(ruleFighter(), {chained});
+        rig.put(0, 1.5f, 0.f);
+        rig.fight.setEnemyMoveMask(0, 0x1u);
+        rig.runFor(4.f);
+        CHECK(starts(rig, 0) > 1);
+        CHECK(starts(rig, 1) >= starts(rig, 0) - 1); // the last string may still be in its first move
+        CHECK(starts(rig, 1) <= starts(rig, 0));
+    }
+    {   // no bit: no move begins, the enemy strafes; restart() sets every bit again
+        Rig rig(ruleFighter(), {two});
+        rig.put(0, 1.5f, 0.f);
+        rig.fight.setEnemyMoveMask(0, 0u);
+        rig.runFor(3.f);
+        CHECK(rig.count(ArenaEventType::AttackStarted) == 0);
+        CHECK(rig.out().enemies[0].brain == ArenaBrain::Strafe);
+        CHECK(rig.fight.hp() == 100);
+        rig.fight.restart();
+        CHECK(rig.fight.enemyMoveMask(0) == 0xFFFFFFFFu);
+        rig.runFor(2.f);
+        CHECK(rig.count(ArenaEventType::AttackStarted) > 0);
+    }
+    {   // a mask set during a move doesn't cut it: it still lands
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.put(0, 1.5f, 0.f);
+        int guard = 0;
+        while (rig.out().enemies[0].brain != ArenaBrain::Attack && guard++ < 120) rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Attack);
+        rig.fight.setEnemyMoveMask(0, 0u);
+        rig.run(30);
+        CHECK(rig.count(ArenaEventType::Hit) == 1);
+        CHECK(rig.count(ArenaEventType::AttackStarted) == 1);
+    }
+    {   // an enemy out of range: nothing set, and no bit read
+        Rig rig(ruleFighter(), {two});
+        rig.fight.setEnemyMoveMask(3, 0x1u);
+        CHECK(rig.fight.enemyMoveMask(3) == 0u);
+        CHECK(rig.fight.enemyMoveMask(0) == 0xFFFFFFFFu);
+    }
+}
+
 TEST_CASE("arena hooks: a hold cuts a live move at the next tick, lasts its seconds, and a release ends it") {
     const ArenaAttack bite = swing(0.4f, 0.15f, 0.5f, 2.f, 20);
     {   // Open for 0.5 s, asked 10 ticks into the bite's startup

@@ -1171,7 +1171,7 @@ bool importBeatClips(std::string_view json, BeatClips& out, std::string* error, 
     for (std::uint32_t i = 0; i < list.size(); ++i) {
         const std::string where = "clips[" + std::to_string(i) + "]";
         const JsonValue c = list[i];
-        ld.unknownKeys(c, where, {"id", "asset", "length_s", "impact_s", "speed_mps", "loop"});
+        ld.unknownKeys(c, where, {"id", "asset", "length_s", "impact_s", "speed_mps", "blend_s", "loop"});
         BeatClip clip;
         const std::string_view id = c["id"].string();
         if (!choreoIdText(id)) {
@@ -1206,6 +1206,13 @@ bool importBeatClips(std::string_view json, BeatClips& out, std::string* error, 
                 errors.push_back(where + ".speed_mps: expected metres a second over 0 and at most " + choreoNumberText(kMaxClipSpeed));
             else
                 clip.speed = speed;
+        }
+        if (const JsonValue bv = c["blend_s"]; !bv.isAbsent()) {
+            const double blend = bv.number(-1.0);
+            if (!bv.isNumber() || !std::isfinite(blend) || !(blend > 0.0) || blend > kMaxClipBlend)
+                errors.push_back(where + ".blend_s: expected seconds over 0 and at most " + choreoNumberText(kMaxClipBlend));
+            else
+                clip.blend = blend;
         }
         if (const JsonValue lv = c["loop"]; !lv.isAbsent()) {
             if (!lv.isBool()) errors.push_back(where + ".loop: expected true or false");
