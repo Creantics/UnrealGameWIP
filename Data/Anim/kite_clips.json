@@ -190,7 +190,7 @@
   {
    "id": "face_down_out",
    "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossface_down_out",
-   "length_s": 1.5,
+   "length_s": 1.4,
    "impact_s": 0.0,
    "loop": false
   }
