@@ -690,6 +690,13 @@ public:
     // raises hp: at or below it, a blow takes nothing.
     FTCORE_API void setEnemyHpFloor(std::size_t i, int hpFloor);
     FTCORE_API int enemyHpFloor(std::size_t i) const;
+    // Enemy i's picks may begin only the moves whose bit is set in `mask` (bit m: move m; every bit set, the
+    // default). A move with its bit clear counts as one with weight 0 for the pick: never begun by it, and no band to
+    // walk to, while a chain still runs into it. With no bit set, a pick holds (the enemy strafes). It applies from
+    // the next pick and never cuts a move already begun. begin() and restart() set every bit again. Nothing for an
+    // enemy out of range; enemyMoveMask is then 0.
+    FTCORE_API void setEnemyMoveMask(std::size_t i, std::uint32_t mask);
+    FTCORE_API std::uint32_t enemyMoveMask(std::size_t i) const;
     // Every blow goes to `hook` with `user` before it applies (ArenaBlowHook); nullptr: none (every blow as it is).
     FTCORE_API void setBlowHook(ArenaBlowHook hook, void* user);
     // Stores `amount` Load in the player's gauge now, as a parry would (never past kMaxLoad; amount <= 0: nothing),
@@ -772,6 +779,7 @@ private:
         ArenaBrain holdBrain = ArenaBrain::Open; // ... and the hold it asks for
         float holdSeconds = 0.f;
         int hpFloor = 0;                    // the host's hp floor (0: none)
+        std::uint32_t moveMask = 0xFFFFFFFFu; // the moves a pick may begin (bit m: move m)
     };
 
     ArenaDef def_;
