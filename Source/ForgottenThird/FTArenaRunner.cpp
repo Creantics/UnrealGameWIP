@@ -79,6 +79,9 @@ constexpr float kStoneApproachCone = 0.f;
 constexpr double kStoneSplitBridge = 0.1;
 // The get-up's "stands it out" line only when this much of the down is left (s).
 constexpr double kStoneStandOutLog = 0.05;
+// Fight.autopilot never presses heavy. On the stone_bearer the pilot does, at most this often (s): in the heavy's reach,
+// with the boss upright between its moves (no move of its own, not on its knees, not getting up).
+constexpr double kStonePilotHeavyEvery = 4.0;
 constexpr double kStoneWalkStartPhase = 0.833;
 // The stone_bearer's flinches: a playing hit reaction can't restart for this long (s), and after it only a heavy blow
 // restarts it.
@@ -876,6 +879,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 	}
 	StoneWalkSince = -1e9;
 	StoneUpStart = -1e9;
+	StonePilotHeavyAt = -1e9;
 	bStoneStood = false;
 	StoneDeathClip = -1;
 	StoneSplitStaggerSince = -1e9;
@@ -1035,8 +1039,36 @@ void UFTArenaRunner::StepFight()
 		{
 			In.release = false;
 		}
+		// The pilot's heavy (stone_bearer only), pressed before Assist so its holds (the weak point's gate, the plinth)
+		// can still take it back; the cooldown runs only from a press that stood.
+		bool bPilotHeavy = false;
+		float PilotGap = 0.f;
+		if (StoneBearer.IsActive() && StoneBearerSlot >= 0 && StoneBearerSlot < MaxEnemies && !In.release && !In.dodge
+			&& Fight.time() >= StonePilotHeavyAt + kStonePilotHeavyEvery)
+		{
+			const int32 I = StoneBearerSlot;
+			const size_t S = static_cast<size_t>(I);
+			const ftcore::ArenaEnemyOut& E = Fight.output().enemies[S];
+			const bool bBetween = (E.brain == ftcore::ArenaBrain::Approach || E.brain == ftcore::ArenaBrain::Strafe)
+				&& !bKneeling[I] && Now >= UpOwedUntil[I];
+			const ftcore::Vec2 To{Bodies.enemies[S].x - Bodies.player.x, Bodies.enemies[S].y - Bodies.player.y};
+			PilotGap = ArenaLength(To);
+			const float Reach = Fight.def().fighter.heavy.range + Fight.def().enemies[S].bodyRadius;
+			if (bBetween && Fight.enemyAlive(S) && PilotGap <= Reach)
+			{
+				In.heavy = true;
+				In.light = false;
+				bPilotHeavy = true;
+			}
+		}
 		// The boss's own buttons, which the autopilot knows nothing of.
 		StoneBearer.Assist(In, bIntercept, Bodies);
+		if (bPilotHeavy && In.heavy)
+		{
+			StonePilotHeavyAt = Fight.time();
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: the pilot presses heavy on enemy %d (%.2f m)."), Fight.time(),
+				StoneBearerSlot, PilotGap);
+		}
 	}
 	else if (!bIdle)
 	{

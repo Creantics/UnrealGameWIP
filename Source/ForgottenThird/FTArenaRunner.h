@@ -319,6 +319,8 @@ private:
 	// The split's stagger, drawn from the split's frame until Core's held Stagger takes over (-1e9: none).
 	double StoneSplitStaggerSince = -1e9;
 	double StoneSplitStaggerUntil = -1e9;
+	// The pilot's last heavy on the stone_bearer (kStonePilotHeavyEvery; -1e9: none yet).
+	double StonePilotHeavyAt = -1e9;
 	// The tell's point, frozen as the startup begins, for the impact's distance check (move kArenaNoMove... none: 255).
 	ftcore::Vec2 StoneTellAt;
 	uint8 StoneTellMove = 255;
