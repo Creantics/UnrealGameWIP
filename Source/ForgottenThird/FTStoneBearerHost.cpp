@@ -244,6 +244,7 @@ void FFTStoneBearerHost::End()
 		if (Slot < FightPtr->enemyCount())
 		{
 			FightPtr->setEnemyMoveMask(Slot, 0xFFFFFFFFu);
+			FightPtr->setEnemyFacingHeld(Slot, false);
 		}
 	}
 	FightPtr = nullptr;
@@ -285,6 +286,12 @@ void FFTStoneBearerHost::BeforeTick()
 {
 	LoadBefore = FightPtr ? FightPtr->load() : 0;
 	RefreshMoveMask();
+	// The tell commits the direction: a move keeps the facing it began with, so the blow lands where the tell was
+	// drawn (set every tick: begin() and restart() clear it).
+	if (FightPtr && Slot < FightPtr->enemyCount())
+	{
+		FightPtr->setEnemyFacingHeld(Slot, true);
+	}
 }
 
 float FFTStoneBearerHost::HpShare() const

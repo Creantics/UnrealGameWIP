@@ -324,6 +324,11 @@ private:
 	// The tell's point, frozen as the startup begins, for the impact's distance check (move kArenaNoMove... none: 255).
 	ftcore::Vec2 StoneTellAt;
 	uint8 StoneTellMove = 255;
+	// The tell's shape scale, Core's facing and the figure's place and yaw as the startup began (the blow's log line).
+	float StoneTellShapeMul = 1.f;
+	ftcore::Vec2 StoneTellFacing;
+	FVector StoneTellFigurePos = FVector::ZeroVector;
+	float StoneTellFigureYaw = 0.f;
 	// The walk's counts this fight: steps between moves Core wanted over the start speed (by brain), the runs of them,
 	// the walks begun, and the wanted steps that couldn't start one (by what held it: the cone, a get-up, a hit).
 	int32 StoneWantApproach = 0;

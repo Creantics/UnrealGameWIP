@@ -85,7 +85,7 @@ constexpr double kStonePilotHeavyEvery = 4.0;
 constexpr double kStoneWalkStartPhase = 0.833;
 // The stone_bearer's flinches: a playing hit reaction can't restart for this long (s), and after it only a heavy blow
 // restarts it.
-constexpr double kStoneFlinchHold = 0.4;
+constexpr double kStoneFlinchHold = 2.0;
 // The stone_bearer dies kneeling only while the kneel is on screen: down, going down, or its get-up at most this share in.
 constexpr double kStoneKneelDeathUp = 0.4;
 // Camera: pitch limits, the pitch while locked, how fast it turns to a lock, stick and mouse rates.
@@ -1263,6 +1263,41 @@ void UFTArenaRunner::BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 Fro
 		return;
 	}
 	const FFTArenaBossVfx::FTuning& T = BossVfx.GetTuning();
+	const double Lift = T.Lift * 100.0;
+	AFTArenaFighter* Figure = EnemyFigures[StoneBearerSlot].Get();
+	if (To == Active && StoneTellMove == Out.move)
+	{
+		// One strike point, literally: the dust rises where the tell was drawn (its point kept from the startup's
+		// start; Core holds the facing meanwhile, ArenaFight::setEnemyFacingHeld). Logged: how far the striking part is,
+		// on the ground, from the tell, and how the figure and Core's facing moved since the tell.
+		const FVector Tell = ToWorld(StoneTellAt);
+		BossVfx.Play(FFTArenaBossVfx::EEffect::Impact, Tell + FVector(0.0, 0.0, Lift), StoneTellShapeMul, TEXT("blow lands"));
+		const uint8 BossMove = StoneBearer.BossMoveOf(Out.move);
+		const ftcore::StoneBearerDef& D = StoneBearer.GetDef();
+		FVector Part;
+		const char* Socket = BossMove < D.boss.moveCount && D.boss.moves[BossMove].hasContact ? D.boss.moves[BossMove].contactSocketChars.data() : nullptr;
+		// The contact's socket is a label, not always a bone: the carried piece's striking edge rides the piece's bone.
+		if (Socket && FCStringAnsi::Strcmp(Socket, "slab_edge") == 0)
+		{
+			Socket = "slab";
+		}
+		if (Socket && Figure && Figure->GetSkinPoint(FName(Socket), Part))
+		{
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: boss move %d tell-to-impact %.2f m (%s, dust 0.00 m from the tell)."), Fight.time(),
+				static_cast<int32>(Out.move), FVector::Dist2D(Part, Tell) / 100.0, ANSI_TO_TCHAR(Socket));
+		}
+		if (Figure)
+		{
+			const float FacingWas = FMath::RadiansToDegrees(FMath::Atan2(StoneTellFacing.y, StoneTellFacing.x));
+			const float FacingNow = FMath::RadiansToDegrees(FMath::Atan2(Out.facing.y, Out.facing.x));
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: boss move %d from tell to blow: figure yaw %.1f -> %.1f deg at (%.2f, %.2f) -> (%.2f, %.2f) m (moved %.2f m); Core facing %.1f -> %.1f deg."),
+				Fight.time(), static_cast<int32>(Out.move), StoneTellFigureYaw, Figure->GetActorRotation().Yaw,
+				StoneTellFigurePos.X / 100.0, StoneTellFigurePos.Y / 100.0, Figure->GetActorLocation().X / 100.0, Figure->GetActorLocation().Y / 100.0,
+				FVector::Dist2D(StoneTellFigurePos, Figure->GetActorLocation()) / 100.0, FacingWas, FacingNow);
+		}
+		StoneTellMove = 255;
+		return;
+	}
 	FFTStoneBearerStrike S;
 	if (!StoneBearer.StrikeOf(Out.move, Bodies, T.CalledAhead, T.CalledSide, T.ReachShare, S))
 	{
@@ -1272,34 +1307,20 @@ void UFTArenaRunner::BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 Fro
 	S.To = Fit.zone.clamp(S.To, 0.f);
 	const bool bArea = S.Shape == FFTStoneBearerStrike::EShape::Area;
 	const float ShapeMul = bArea ? T.AreaScale : 1.f;
-	const double Lift = T.Lift * 100.0;
 	const FVector At = ToWorld(S.To) + FVector(0.0, 0.0, Lift);
 	if (To == Active)
 	{
-		// One strike point: the dust rises at S.To, which the clip's contact gives (the host's StrikeOf), where the tell
-		// was drawn. Logged: how far the striking part is, on the ground, from the tell drawn as the startup began.
+		// A blow whose startup drew no tell: its dust where it lands now.
 		BossVfx.Play(FFTArenaBossVfx::EEffect::Impact, At, ShapeMul, TEXT("blow lands"));
-		const uint8 BossMove = StoneBearer.BossMoveOf(Out.move);
-		const ftcore::StoneBearerDef& D = StoneBearer.GetDef();
-		AFTArenaFighter* Figure = EnemyFigures[StoneBearerSlot].Get();
-		FVector Part;
-		const char* Socket = BossMove < D.boss.moveCount && D.boss.moves[BossMove].hasContact ? D.boss.moves[BossMove].contactSocketChars.data() : nullptr;
-		// The contact's socket is a label, not always a bone: the carried piece's striking edge rides the piece's bone.
-		if (Socket && FCStringAnsi::Strcmp(Socket, "slab_edge") == 0)
-		{
-			Socket = "slab";
-		}
-		if (StoneTellMove == Out.move && Socket && Figure && Figure->GetSkinPoint(FName(Socket), Part))
-		{
-			const FVector Tell = ToWorld(StoneTellAt);
-			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: boss move %d tell-to-impact %.2f m (%s, dust %.2f m from the tell)."), Fight.time(),
-				static_cast<int32>(Out.move), FVector::Dist2D(Part, Tell) / 100.0, ANSI_TO_TCHAR(Socket), FVector::Dist2D(At, Tell) / 100.0);
-		}
 		StoneTellMove = 255;
 		return;
 	}
 	StoneTellAt = S.To;
 	StoneTellMove = Out.move;
+	StoneTellShapeMul = ShapeMul;
+	StoneTellFacing = Out.facing;
+	StoneTellFigurePos = Figure ? Figure->GetActorLocation() : FVector::ZeroVector;
+	StoneTellFigureYaw = Figure ? Figure->GetActorRotation().Yaw : 0.f;
 	if (S.Shape != FFTStoneBearerStrike::EShape::Lane)
 	{
 		BossVfx.Play(FFTArenaBossVfx::EEffect::Tell, At, ShapeMul, bArea ? TEXT("tell all round") : TEXT("tell"));
