@@ -83,9 +83,10 @@ constexpr double kStoneStandOutLog = 0.05;
 // with the boss upright between its moves (no move of its own, not on its knees, not getting up).
 constexpr double kStonePilotHeavyEvery = 4.0;
 constexpr double kStoneWalkStartPhase = 0.833;
-// The stone_bearer's flinches: a playing hit reaction can't restart for this long (s), and after it only a heavy blow
-// restarts it.
+// The stone_bearer's flinches: a light blow starts no hit reaction within this long (s) of the last one's start, and a
+// heavy blow restarts a playing one only after kStoneFlinchRestart.
 constexpr double kStoneFlinchHold = 2.0;
+constexpr double kStoneFlinchRestart = 0.4;
 // The stone_bearer dies kneeling only while the kneel is on screen: down, going down, or its get-up at most this share in.
 constexpr double kStoneKneelDeathUp = 0.4;
 // Camera: pitch limits, the pitch while locked, how fast it turns to a lock, stick and mouse rates.
@@ -2056,11 +2057,13 @@ void UFTArenaRunner::StartFlinch(int32 I, bool bHeavy)
 	}
 	if (I == StoneBearerSlot)
 	{
-		// A playing reaction holds kStoneFlinchHold seconds before any blow restarts it, and after that only a heavy one does.
+		// The statue shrugs off light blows for kStoneFlinchHold seconds after a reaction starts, playing or not; a heavy
+		// blow restarts a playing reaction once it has held kStoneFlinchRestart seconds.
 		const FFTArenaSkin& Skin = Skins[I];
 		const int32 Playing = bHitHeavy[I] ? Skin.HitHeavy : Skin.HitLight;
 		const double Since = Now - HitSince[I];
-		if (Skin.IsLoaded() && Playing >= 0 && Since < static_cast<double>(Skin.Sequences[Playing]->GetPlayLength()) && (Since < kStoneFlinchHold || !bHeavy))
+		const bool bPlays = Skin.IsLoaded() && Playing >= 0 && Since < static_cast<double>(Skin.Sequences[Playing]->GetPlayLength());
+		if (bHeavy ? (bPlays && Since < kStoneFlinchRestart) : Since < kStoneFlinchHold)
 		{
 			return;
 		}
