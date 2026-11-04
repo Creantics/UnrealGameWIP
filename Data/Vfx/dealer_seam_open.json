@@ -3,16 +3,16 @@
   "emitters": [
     {
       "name": "drips",
-      "rate": 22,
+      "rate": 30,
       "duration": 1.0,
       "loop": true,
-      "maxParticles": 48,
+      "maxParticles": 64,
       "lifetime": [
         0.5,
         0.8
       ],
       "shape": "sphere",
-      "radius": 0.05,
+      "radius": 0.07,
       "speed": [
         0.0,
         0.15
@@ -24,8 +24,8 @@
       ],
       "drag": 0.3,
       "startSize": [
-        0.025,
-        0.045
+        0.045,
+        0.075
       ],
       "sizeOverLife": [
         {
@@ -84,7 +84,7 @@
       "maxParticles": 4,
       "lifetime": 0.58,
       "shape": "point",
-      "startSize": 0.4,
+      "startSize": 0.65,
       "sizeOverLife": [
         {
           "t": 0,
@@ -99,19 +99,19 @@
         {
           "t": 0,
           "color": [
-            1.6,
+            1.8,
             0.05,
             0.04,
             0.0
           ]
         },
         {
-          "t": 0.25,
+          "t": 0.2,
           "color": [
-            1.4,
+            1.6,
             0.04,
             0.03,
-            0.7
+            0.85
           ]
         },
         {
@@ -120,6 +120,53 @@
             0.8,
             0.0,
             0.0,
+            0.0
+          ]
+        }
+      ],
+      "blend": "additive",
+      "sprite": "soft",
+      "softness": 0.0
+    },
+    {
+      "name": "split",
+      "bursts": [
+        {
+          "time": 0.0,
+          "count": 1
+        }
+      ],
+      "duration": 0.1,
+      "maxParticles": 2,
+      "lifetime": 0.3,
+      "shape": "point",
+      "startSize": 1.0,
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 0.7
+        },
+        {
+          "t": 1,
+          "v": 1.2
+        }
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            2.2,
+            0.08,
+            0.05,
+            0.95
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            2.2,
+            0.08,
+            0.05,
             0.0
           ]
         }

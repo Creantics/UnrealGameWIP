@@ -6,11 +6,11 @@
       "bursts": [
         {
           "time": 0.0,
-          "count": 18
+          "count": 30
         }
       ],
       "duration": 0.1,
-      "maxParticles": 24,
+      "maxParticles": 36,
       "lifetime": [
         0.3,
         0.6
@@ -28,8 +28,8 @@
       ],
       "drag": 2.5,
       "startSize": [
-        0.03,
-        0.08
+        0.05,
+        0.12
       ],
       "sizeOverLife": [
         {
@@ -80,8 +80,8 @@
       "lifetime": 0.35,
       "shape": "point",
       "startSize": [
-        0.3,
-        0.45
+        0.45,
+        0.65
       ],
       "sizeOverLife": [
         {
@@ -115,6 +115,53 @@
       ],
       "blend": "alpha",
       "sprite": "puff",
+      "softness": 0.0
+    },
+    {
+      "name": "flash",
+      "bursts": [
+        {
+          "time": 0.0,
+          "count": 1
+        }
+      ],
+      "duration": 0.1,
+      "maxParticles": 2,
+      "lifetime": 0.1,
+      "shape": "point",
+      "startSize": 0.55,
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 0.7
+        },
+        {
+          "t": 1,
+          "v": 1.2
+        }
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            2.0,
+            1.7,
+            1.4,
+            0.9
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            2.0,
+            1.7,
+            1.4,
+            0.0
+          ]
+        }
+      ],
+      "blend": "additive",
+      "sprite": "soft",
       "softness": 0.0
     }
   ]

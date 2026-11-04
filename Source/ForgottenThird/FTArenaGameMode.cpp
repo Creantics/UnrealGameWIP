@@ -102,6 +102,7 @@ void AFTArenaGameMode::StartPlay()
 	FParse::Value(Cmd, TEXT("ArenaBossLoop="), BossLoop);
 	BossLoop = BossLoop.TrimStartAndEnd();
 	bBossSplit = FParse::Param(Cmd, TEXT("ArenaBossSplit"));
+	bBossCam = FParse::Param(Cmd, TEXT("ArenaBossCam"));
 	int32 SeedValue = 1;
 	if (FParse::Value(Cmd, TEXT("ArenaSeed="), SeedValue))
 	{
@@ -607,6 +608,48 @@ void AFTArenaGameMode::Tick(float DeltaSeconds)
 		Begin();
 	}
 	Runner->TickFight(DeltaSeconds, Shots(DeltaSeconds));
+	if (bBossCam)
+	{
+		BossCam();
+	}
+}
+
+void AFTArenaGameMode::BossCam()
+{
+	APlayerController* PC = GetPC();
+	const AFTArenaFighter* Boss = Runner->GetEnemyFigure(0);
+	if (!PC || !Boss)
+	{
+		return;
+	}
+	const float Yaw = static_cast<float>(Boss->GetActorRotation().Yaw);
+	if (!BossCamera)
+	{
+		// Square to the boss's first facing, off its left side at half its height: the whole figure in frame, feet
+		// included, and a turn reads as the body swinging toward or away from the lens.
+		const FVector Target = Boss->GetActorLocation() + FVector(0.0, 0.0, Boss->GetHeight() * 0.5);
+		const FVector From = Target - Boss->GetActorRightVector() * 900.0;
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		ACameraActor* Camera = GetWorld()->SpawnActor<ACameraActor>(From, (Target - From).Rotation(), Params);
+		if (!Camera)
+		{
+			bBossCam = false;
+			return;
+		}
+		Camera->GetCameraComponent()->SetFieldOfView(40.f);
+		BossCamera = Camera;
+		PC->SetViewTarget(Camera);
+		BossCamYaw = Yaw;
+		UE_LOG(LogForgottenThird, Display, TEXT("ArenaBossCam: fixed camera 9 m off the boss's left side; t %.2f s yaw %.1f"),
+			Runner->GetFight().time(), Yaw);
+		return;
+	}
+	if (FMath::Abs(FMath::FindDeltaAngleDegrees(BossCamYaw, Yaw)) >= 10.f)
+	{
+		BossCamYaw = Yaw;
+		UE_LOG(LogForgottenThird, Display, TEXT("ArenaBossCam: t %.2f s yaw %.1f"), Runner->GetFight().time(), Yaw);
+	}
 }
 
 APlayerController* AFTArenaGameMode::GetPC() const
