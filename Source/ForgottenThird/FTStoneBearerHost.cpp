@@ -22,6 +22,10 @@ constexpr double kStoneReleaseSlack = 0.05;
 // A guard that blocks a guard-breaking blow loses this much more than the lead has (ArenaAttack has no guard-break
 // time of its own: an empty stamina breaks the guard for the kit's guardBreakTime).
 constexpr float kStoneGuardBreakExtra = 1.f;
+// The autopilot while the weak points are open: it walks round to the first point's gate, to a spot this far (m)
+// past both bodies behind the boss, by way of a side spot this far past the boss's body when it starts in front.
+constexpr float kStoneGateGap = 0.6f;
+constexpr float kStoneGateSide = 1.2f;
 
 float Dist(ftcore::Vec2 A, ftcore::Vec2 B)
 {
@@ -188,7 +192,6 @@ void FFTStoneBearerHost::Begin(ftcore::ArenaFight& Fight, std::size_t InSlot, ft
 	UseMove = ftcore::kArenaBossNoMove;
 	bUseRefused = false;
 	UseDealt = 0;
-	RefusedUntil = -1.0e300;
 	LastPart = ftcore::ArenaPart::None;
 	bCritHold = false;
 	bPlinthPending = false;
@@ -203,6 +206,7 @@ void FFTStoneBearerHost::Begin(ftcore::ArenaFight& Fight, std::size_t InSlot, ft
 	const int Floor = static_cast<int>(std::floor(static_cast<double>(Def.pedestal.at) * Fight.def().enemies[Slot].hp));
 	Fight.setEnemyHpFloor(Slot, Floor > 1 ? Floor : 1);
 	Fight.setBlowHook(&FFTStoneBearerHost::RuleBlow, this);
+	RefreshMoveMask();
 }
 
 void FFTStoneBearerHost::End()
@@ -210,8 +214,50 @@ void FFTStoneBearerHost::End()
 	if (FightPtr)
 	{
 		FightPtr->setBlowHook(nullptr, nullptr);
+		if (Slot < FightPtr->enemyCount())
+		{
+			FightPtr->setEnemyMoveMask(Slot, 0xFFFFFFFFu);
+		}
 	}
 	FightPtr = nullptr;
+}
+
+std::uint32_t FFTStoneBearerHost::PickMask() const
+{
+	if (!IsActive())
+	{
+		return 0xFFFFFFFFu;
+	}
+	// Nothing while the boss can't move (startMove would refuse every move); else the head impact of each boss move in
+	// this phase's table that the figure can draw (the chained impacts follow the head; their weight is 0 anyway).
+	if (Boss.invulnerable() || Boss.down())
+	{
+		return 0u;
+	}
+	const std::size_t Count = FightPtr->def().enemies[Slot].moveCount;
+	std::uint32_t Mask = 0u;
+	for (std::size_t M = 0; M < Count && M < ftcore::kMaxArenaMoves && M < 32; ++M)
+	{
+		if (ImpactOf[M] == 0 && Boss.table().contains(MoveOf[M]) && ((Playable >> M) & 1u) != 0u)
+		{
+			Mask |= 1u << M;
+		}
+	}
+	return Mask;
+}
+
+void FFTStoneBearerHost::RefreshMoveMask()
+{
+	if (IsActive())
+	{
+		FightPtr->setEnemyMoveMask(Slot, PickMask());
+	}
+}
+
+void FFTStoneBearerHost::BeforeTick()
+{
+	LoadBefore = FightPtr ? FightPtr->load() : 0;
+	RefreshMoveMask();
 }
 
 float FFTStoneBearerHost::HpShare() const
@@ -292,7 +338,7 @@ bool FFTStoneBearerHost::DrawnStanding() const
 	{
 		return false;
 	}
-	return Boss.invulnerable() || (FightPtr->enemyHeld(Slot) && FightPtr->time() < RefusedUntil);
+	return Boss.invulnerable();
 }
 
 void FFTStoneBearerHost::Assist(ftcore::ArenaInput& In, bool& bIntercept, const ftcore::ArenaBodies& Bodies) const
@@ -341,6 +387,31 @@ void FFTStoneBearerHost::Assist(ftcore::ArenaInput& In, bool& bIntercept, const 
 			{
 				const float Sign = Want == ftcore::CalledZone::Right ? 1.f : -1.f;
 				In.move = ftcore::Vec2{-Facing.y * Sign, Facing.x * Sign};
+			}
+		}
+	}
+	if (CritOpen() && Def.boss.weakPoints.points.size() > 0)
+	{
+		// The weak points face away from the lead's usual side: walk round to the first one's gate and strike only from
+		// inside it (a riposte from outside it would end the opening with no crit).
+		const ftcore::Vec2 Pos = Bodies.enemies[Slot];
+		const ftcore::Vec2 Facing = BossFacing();
+		if (!ftcore::arenaGatePasses(Def.boss.weakPoints.gates[0], Pos, Facing, Bodies.player))
+		{
+			In.light = In.heavy = In.dodge = In.guard = false;
+			const float BossR = FightPtr->def().enemies[Slot].bodyRadius;
+			const float LeadR = FightPtr->def().fighter.bodyRadius;
+			const ftcore::Vec2 To{Bodies.player.x - Pos.x, Bodies.player.y - Pos.y};
+			const ftcore::Vec2 Right{-Facing.y, Facing.x};
+			const float Ahead = To.x * Facing.x + To.y * Facing.y;
+			const float Across = To.x * Right.x + To.y * Right.y;
+			// In front: first out to the side the lead is on, then behind; past the side line: straight to the back.
+			const ftcore::Vec2 Goal = Ahead > 0.f ? Along(Pos, Right, (Across >= 0.f ? 1.f : -1.f) * (BossR + LeadR + kStoneGateSide))
+				: Along(Pos, Facing, -(BossR + LeadR + kStoneGateGap));
+			const float Length = Dist(Goal, Bodies.player);
+			if (Length > 0.f)
+			{
+				In.move = ftcore::Vec2{(Goal.x - Bodies.player.x) / Length, (Goal.y - Bodies.player.y) / Length};
 			}
 		}
 	}
@@ -479,15 +550,10 @@ void FFTStoneBearerHost::OnAttackStarted(std::uint8_t Move, float StateTime, con
 	bUseRefused = !bStarted;
 	if (bUseRefused)
 	{
-		// Not this phase's (or the boss can't move now): cut it, and the boss picks again. A hold already running
-		// (the plinth, the down time, the opening) is left as it is.
+		// Not this phase's (or the boss can't move now), past the move mask: a silent cancel. No hold (a hold is drawn
+		// as a knee), only its blows vetoed and nothing of it drawn until the next use.
 		++Refusals;
 		Note(FFTStoneBearerNote::EKind::Refused, BossMove, Start);
-		if (!Fight.enemyHeld(Slot))
-		{
-			Fight.holdEnemy(Slot, ftcore::ArenaBrain::Down, RefuseHold);
-			RefusedUntil = static_cast<double>(Fight.time()) + 2.0 * static_cast<double>(RefuseHold);
-		}
 	}
 }
 
@@ -603,6 +669,8 @@ ftcore::ArenaBlowRuling FFTStoneBearerHost::RuleLeadBlow(const ftcore::ArenaBlow
 	Ruling.damage = Hit.damage;
 	// A paired parry deals its damage but never staggers this boss: only its poise breaking does.
 	Ruling.poise = Blow.type == ftcore::ArenaEventType::CounterStagger ? 0.f : Hit.poise;
+	// A blow can break a part and change the table, or start a down: the next pick sees it.
+	RefreshMoveMask();
 	return Ruling;
 }
 

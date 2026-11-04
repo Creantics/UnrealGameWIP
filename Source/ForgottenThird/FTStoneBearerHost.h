@@ -11,11 +11,13 @@
 //     max hp. The rest of a move (its pick ranges, tell, tracking, poise and guard damage) comes from arena.json's move
 //     of the same clip, so the arena data still tunes how it is picked and how it reads;
 //   - Begin: StoneBearer::begin, the hp floor (above 0 until the pedestal is lifted) and the blow hook;
-//   - AfterTick: AttackStarted -> startMove (the move's boss move, the lead's side from arenaSideOf). ArenaFight picks
-//     its moves itself, so a pick the boss's rules refuse (not in table(), or invulnerable or down) is cut at once with
-//     a short Down hold (drawn standing) and its blows vetoed, and the boss picks again; Blocked -> onBlocked, the
-//     boss's Staggered -> onStagger, the lead's Released -> onRelease with the Load before the tick; then
-//     update(now, hp share);
+//   - BeforeTick: the boss's move mask (ArenaFight::setEnemyMoveMask), so ArenaFight only picks what the boss's rules
+//     take: the head impact of a boss move in table(), while it is neither invulnerable nor down, and (SetPlayableMoves)
+//     one the figure has a clip for. The lead's blows refresh it too (a break can change table() within a tick);
+//   - AfterTick: AttackStarted -> startMove (the move's boss move, the lead's side from arenaSideOf). A pick the rules
+//     still refuse (the mask makes it rare) is cancelled silently: no hold, its blows vetoed and nothing of it drawn,
+//     and a note; Blocked -> onBlocked, the boss's Staggered -> onStagger, the lead's Released -> onRelease with the
+//     Load before the tick; then update(now, hp share);
 //   - Buttons: the lead's Intercept and Guard presses, each with the zone from arenaZoneOf (the lane to the marked
 //     throw's point for Path);
 //   - the blow hook: a lead's blow on the boss goes through onHit and is scaled by StoneBearerHit; the boss's blows are
@@ -73,8 +75,6 @@ public:
 	static constexpr std::string_view KindId = "stone_bearer";
 	static constexpr const char* DataPath = "Data/Battle/arena_boss/stone_bearer.json";
 	static constexpr std::size_t MaxNotes = 32;
-	// A refused pick is cut with a Down hold this long, then the boss picks again (after its attackDelay).
-	static constexpr float RefuseHold = 0.05f;
 	// The plinth's height (m): the boss stands on it while the pedestal holds.
 	static constexpr float PlinthHeight = 0.5f;
 	// The mesh socket of its weak point (the json's `nape`, on the lower back): any marker, socket lookup or crit VFX
@@ -93,28 +93,36 @@ public:
 	// Starts the boss in a fight just begun (or restarted) with it in slot Slot, in a zone centred on Centre with yaw
 	// YawDegrees (the keep-out's frame). Fight must outlive the host's use of it (the blow hook points here).
 	void Begin(ftcore::ArenaFight& Fight, std::size_t Slot, ftcore::Vec2 Centre, float YawDegrees);
-	// Takes the blow hook back; the host does nothing until the next Begin.
+	// Takes the blow hook back (and the move mask: every bit again); the host does nothing until the next Begin.
 	void End();
+	// The arena moves the figure can draw (bit m: move m has a clip; every bit, the default, until a skin says so).
+	// Kept across Begin and End: the figure's clips don't change between fights.
+	void SetPlayableMoves(std::uint32_t Mask) { Playable = Mask; }
+	std::uint32_t GetPlayableMoves() const { return Playable; }
+	// The move mask the rules allow now (what BeforeTick hands ArenaFight), and handing it over now.
+	std::uint32_t PickMask() const;
+	void RefreshMoveMask();
 	bool IsActive() const { return FightPtr != nullptr; }
 	std::size_t GetSlot() const { return Slot; }
 
 	// ---- each step, around Fight.tick ----
 	// The autopilot's part of the boss's buttons (it knows nothing of them): it intercepts each called impact in the
-	// middle of its window, hoards Load as the pedestal nears and releases on the guest's call while it holds. In is
-	// the autopilot's input, changed in place; bIntercept is the Intercept button it holds.
+	// middle of its window, hoards Load as the pedestal nears and releases on the guest's call while it holds; while the
+	// weak points are open it walks round to the gate of the first one and strikes only from inside it. In is the
+	// autopilot's input, changed in place; bIntercept is the Intercept button it holds.
 	void Assist(ftcore::ArenaInput& In, bool& bIntercept, const ftcore::ArenaBodies& Bodies) const;
 	// The lead's Intercept and Guard buttons as they are now (held); presses and releases go to the boss with the
 	// zone the lead stands in. Before the tick, with the bodies the tick will get.
 	void Buttons(bool bInterceptDown, bool bGuardDown, const ftcore::ArenaBodies& Bodies);
-	// Before the tick: the Load a Release would spend.
-	void BeforeTick() { LoadBefore = FightPtr ? FightPtr->load() : 0; }
+	// Before the tick: the Load a Release would spend, and the move mask.
+	void BeforeTick();
 	// After the tick: the fight's events, the boss's update and what its rules ask for. Bodies as arenaStep left them;
 	// when the boss steps onto its plinth its body is moved there (true: the caller should not lerp it).
 	bool AfterTick(const ftcore::ArenaEvents& Events, ftcore::ArenaBodies& Bodies);
 
 	// ---- for the figures and the HUD ----
 	const ftcore::StoneBearer& GetBoss() const { return Boss; }
-	// The boss is held but drawn on its feet: on its plinth, or a refused pick being cut.
+	// The boss is held but drawn on its feet: on its plinth.
 	bool DrawnStanding() const;
 	bool OnPlinth() const { return IsActive() && Boss.invulnerable(); }
 	ftcore::Vec2 GetPlinthSpot() const { return Plinth; }
@@ -129,7 +137,7 @@ public:
 	int32_t GetIntercepts() const { return Intercepts; }
 
 	// ---- for the effects ----
-	// The use in progress was refused: it is cut and its blows are vetoed, so nothing of it is drawn.
+	// The use in progress was refused: its blows are vetoed, so nothing of it is drawn.
 	bool UseRefused() const { return bUseRefused; }
 	// Where arena move Move of the boss lands, from the bodies and the boss's facing now, cut by the keep-out as its blows
 	// are: a called impact to a side lands Side metres to that side and Ahead metres ahead, an arc blow ReachShare of its
@@ -178,7 +186,7 @@ private:
 	std::uint8_t UseMove = ftcore::kArenaBossNoMove;
 	bool bUseRefused = false;
 	int UseDealt = 0;
-	double RefusedUntil = -1.0e300;
+	std::uint32_t Playable = 0xFFFFFFFFu;
 	// The boss's attack part last step (a floor blow's shock ring goes when it turns active).
 	ftcore::ArenaPart LastPart = ftcore::ArenaPart::None;
 	bool bCritHold = false;
