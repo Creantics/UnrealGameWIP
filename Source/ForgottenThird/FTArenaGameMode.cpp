@@ -75,6 +75,22 @@ void AFTArenaGameMode::StartPlay()
 		{
 			ShotDelay = FMath::Clamp(Delay, 0.f, 60.f);
 		}
+		// The list has commas: read it to the next space.
+		FString At;
+		if (FParse::Value(Cmd, TEXT("ArenaShotAt="), At, false))
+		{
+			TArray<FString> Times;
+			At.ParseIntoArray(Times, TEXT(","));
+			for (const FString& Time : Times)
+			{
+				const double Seconds = FCString::Atod(*Time);
+				if (Seconds >= 0.0)
+				{
+					ShotAt.Add(Seconds);
+				}
+			}
+			ShotAt.Sort();
+		}
 	}
 	bIdle = FParse::Param(Cmd, TEXT("ArenaIdle"));
 	bAutoPlay = !bIdle && (FParse::Param(Cmd, TEXT("ArenaAutoPlay")) || !ShotPrefix.IsEmpty());
@@ -607,6 +623,14 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	}
 	if (bOverview && EdgePhase < 3 && EdgeShot())
 	{
+		return true;
+	}
+	// -ArenaShotAt's views, on the fight's clock, once the ring view is in (uncounted: the six views and the quit are
+	// unchanged).
+	if (NextShotAt < ShotAt.Num() && ShotsTaken > 0 && static_cast<double>(Runner->GetFight().time()) >= ShotAt[NextShotAt])
+	{
+		TakeShot(*FString::Printf(TEXT("t_%05.2f"), ShotAt[NextShotAt]), false);
+		++NextShotAt;
 		return true;
 	}
 	switch (ShotsTaken)

@@ -104,6 +104,14 @@ void FFTKiteVfx::Spawn(AFTArenaFighter* Figure)
 			Fx[E]->SetUsingAbsoluteLocation(true);
 		}
 	}
+	// The seam bone scales as the smile opens (face_down): the glow and the burst keep their own size (ShapeScale).
+	for (const EEffect E : {Open, Crit})
+	{
+		if (Fx[E].IsValid())
+		{
+			Fx[E]->SetUsingAbsoluteScale(true);
+		}
+	}
 	bTelling = bWasOpen = false;
 	TellUntil = 0.0;
 	CritsSeen = 0;
