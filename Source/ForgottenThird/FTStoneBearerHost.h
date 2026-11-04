@@ -147,6 +147,21 @@ public:
 	// The weak points are open (from CritOpened until CritClosed).
 	bool CritOpen() const { return IsActive() && Boss.run().crit().isOpen(static_cast<double>(FightPtr->time())); }
 
+	// A move's clip contact (ArenaBossMove::contact*) is its strike point and reach when it lies outside the body
+	// (planar distance from the root above BodyRadius) and the move is neither a lane nor a tile move.
+	static bool UsableContact(const ftcore::ArenaBossMove& Move, float BodyRadius);
+	static float ContactPlanar(const ftcore::ArenaBossMove& Move);
+	// The boss move of an arena move (kArenaBossNoMove past the table).
+	std::uint8_t BossMoveOf(std::size_t ArenaMove) const
+	{
+		return ArenaMove < MoveOf.size() ? MoveOf[ArenaMove] : ftcore::kArenaBossNoMove;
+	}
+	// What the last AfterTick did with an hp-share break of the carried piece: Held is a stagger hold from it (the
+	// runner draws the stagger on that same tick); the rest say why there is none.
+	enum class EBreakStagger : std::uint8_t { None, Held, Already, Kneeling, Frozen, Refused };
+	EBreakStagger GetBreakStagger() const { return BreakStaggerNote; }
+	bool BreakStaggered() const { return bBreakStagger; }
+
 private:
 	static ftcore::ArenaBlowRuling RuleBlow(void* User, const ftcore::ArenaBlow& Blow);
 	ftcore::ArenaBlowRuling RuleLeadBlow(const ftcore::ArenaBlow& Blow);
@@ -191,6 +206,9 @@ private:
 	ftcore::ArenaPart LastPart = ftcore::ArenaPart::None;
 	bool bCritHold = false;
 	bool bPlinthPending = false;
+	bool bBreakPending = false;
+	bool bBreakStagger = false;
+	EBreakStagger BreakStaggerNote = EBreakStagger::None;
 
 	bool bInterceptWas = false;
 	bool bGuardWas = false;

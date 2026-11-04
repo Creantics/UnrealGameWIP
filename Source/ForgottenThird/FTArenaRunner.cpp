@@ -17,6 +17,7 @@
 #include "FTText.h"
 #include "FTVfxComponent.h"
 #include "ForgottenThird.h"
+#include "Camera/PlayerCameraManager.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
@@ -73,10 +74,21 @@ constexpr float kArenaMaxWalkRate = 1.6f;
 // kStoneWalkStartPhase seconds into the clip (the walk's frame nearest the idle's first pose: frame 25 of 80 at 30 fps).
 constexpr double kStoneWalkHold = 1.0;
 constexpr float kStoneWalkCone = 0.5f;
+// On Approach the cone is wider (90 degrees each side: cosine 0). Core's velocity there points at the lead while its
+// facing turns at the kind's turn rate, so the narrow cone held most starts back.
+constexpr float kStoneApproachCone = 0.f;
+// The split's stagger is drawn by the runner this long from the split's frame (s), until Core's held Stagger plays it.
+constexpr double kStoneSplitBridge = 0.1;
+// The get-up's "stands it out" line only when this much of the down is left (s).
+constexpr double kStoneStandOutLog = 0.05;
+// Fight.autopilot never presses heavy. On the stone_bearer the pilot does, at most this often (s): in the heavy's reach,
+// with the boss upright between its moves (no move of its own, not on its knees, not getting up).
+constexpr double kStonePilotHeavyEvery = 4.0;
 constexpr double kStoneWalkStartPhase = 0.833;
-// The stone_bearer's flinches: a playing hit reaction can't restart for this long (s), and after it only a heavy blow
-// restarts it.
-constexpr double kStoneFlinchHold = 0.4;
+// The stone_bearer's flinches: a light blow starts no hit reaction within this long (s) of the last one's start, and a
+// heavy blow restarts a playing one only after kStoneFlinchRestart.
+constexpr double kStoneFlinchHold = 2.0;
+constexpr double kStoneFlinchRestart = 0.4;
 // The stone_bearer dies kneeling only while the kneel is on screen: down, going down, or its get-up at most this share in.
 constexpr double kStoneKneelDeathUp = 0.4;
 // Camera: pitch limits, the pitch while locked, how fast it turns to a lock, stick and mouse rates.
@@ -239,9 +251,10 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	BeginKite();
 	BeginKindCrits();
 	SpawnFigures(Setup.Lead);
+	PrepareBossCarried();
 	if (bBossSplitAtStart)
 	{
-		SplitBossCarried();
+		SplitBossCarried(false);
 	}
 	SpawnKindCritEffects();
 	PutBodiesAtStart();
@@ -699,7 +712,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 			StoneUpStart = -1e9;
 			if (bStoneStood || (FMath::IsFinite(Left) && Left < InLength + UpLength))
 			{
-				if (!bStoneStood)
+				if (!bStoneStood && Left >= kStoneStandOutLog)
 				{
 					UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d is up with %.2f s of its down left: it stands it out."), Fight.time(), I, Left);
 				}
@@ -717,6 +730,14 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		{
 			Clip = Skin.FaceDownOut;
 			Time = UpLength - FMath::Max(Left, 0.0);
+			const double InLength = Skin.FaceDownIn >= 0 ? static_cast<double>(Skin.Sequences[Skin.FaceDownIn]->GetPlayLength()) : 0.0;
+			if (bStone && SkinClip[I] == Skin.FaceDownIn && Skin.FaceDownIn >= 0 && InLength > 0.0 && Spell < InLength)
+			{
+				// The go-down cut at progress p: the get-up starts from the same pose, (1 - p) of the way in, and plays out.
+				Time = (1.0 - Spell / InLength) * UpLength;
+				UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d's go-down is cut at %.2f of it: its get-up starts %.2f s in."), Fight.time(), I,
+					Spell / InLength, Time);
+			}
 			bTimed = true;
 			UpAt[I] = Time;
 			if (bStone)
@@ -783,6 +804,16 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		}
 		break;
 	}
+	}
+	if (bStone && Skin.Stagger >= 0 && Now < StoneSplitStaggerUntil && Out.brain != ftcore::ArenaBrain::Dead
+		&& Out.brain != ftcore::ArenaBrain::Staggered && !bKnees)
+	{
+		// The split's frame: its stagger shows at once (Core's held Stagger plays the same clip from the next step on).
+		Clip = Skin.Stagger;
+		Time = Now - StoneSplitStaggerSince;
+		bTimed = true;
+		MoveRate = 0.f;
+		bOwedUp = false;
 	}
 	if (!bOwedUp)
 	{
@@ -851,8 +882,15 @@ void UFTArenaRunner::PutBodiesAtStart()
 	}
 	StoneWalkSince = -1e9;
 	StoneUpStart = -1e9;
+	StonePilotHeavyAt = -1e9;
 	bStoneStood = false;
 	StoneDeathClip = -1;
+	StoneSplitStaggerSince = -1e9;
+	StoneSplitStaggerUntil = -1e9;
+	StoneTellMove = 255;
+	StoneWantApproach = StoneWantStrafe = StoneWantRuns = StoneWalksBegun = 0;
+	StoneHeldCone = StoneHeldUp = StoneHeldHit = 0;
+	bStoneWanted = false;
 	PlayerHitTime = -1e9;
 	ParryTime = -1e9;
 	ReleaseTime = -1e9;
@@ -1004,8 +1042,36 @@ void UFTArenaRunner::StepFight()
 		{
 			In.release = false;
 		}
+		// The pilot's heavy (stone_bearer only), pressed before Assist so its holds (the weak point's gate, the plinth)
+		// can still take it back; the cooldown runs only from a press that stood.
+		bool bPilotHeavy = false;
+		float PilotGap = 0.f;
+		if (StoneBearer.IsActive() && StoneBearerSlot >= 0 && StoneBearerSlot < MaxEnemies && !In.release && !In.dodge
+			&& Fight.time() >= StonePilotHeavyAt + kStonePilotHeavyEvery)
+		{
+			const int32 I = StoneBearerSlot;
+			const size_t S = static_cast<size_t>(I);
+			const ftcore::ArenaEnemyOut& E = Fight.output().enemies[S];
+			const bool bBetween = (E.brain == ftcore::ArenaBrain::Approach || E.brain == ftcore::ArenaBrain::Strafe)
+				&& !bKneeling[I] && Now >= UpOwedUntil[I];
+			const ftcore::Vec2 To{Bodies.enemies[S].x - Bodies.player.x, Bodies.enemies[S].y - Bodies.player.y};
+			PilotGap = ArenaLength(To);
+			const float Reach = Fight.def().fighter.heavy.range + Fight.def().enemies[S].bodyRadius;
+			if (bBetween && Fight.enemyAlive(S) && PilotGap <= Reach)
+			{
+				In.heavy = true;
+				In.light = false;
+				bPilotHeavy = true;
+			}
+		}
 		// The boss's own buttons, which the autopilot knows nothing of.
 		StoneBearer.Assist(In, bIntercept, Bodies);
+		if (bPilotHeavy && In.heavy)
+		{
+			StonePilotHeavyAt = Fight.time();
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: the pilot presses heavy on enemy %d (%.2f m)."), Fight.time(),
+				StoneBearerSlot, PilotGap);
+		}
 	}
 	else if (!bIdle)
 	{
@@ -1053,10 +1119,11 @@ void UFTArenaRunner::StepFight()
 		LogKiteNotes();
 	}
 	// The open weak point's glow follows the boss's state, not its notes, so a missed note can't leave it on.
-	const bool bGlow = bBoss && StoneBearer.CritOpen();
+	// Off on the boss's death and the fight's end (the last step runs this before the fight stops stepping).
+	const bool bGlow = bBoss && StoneBearer.CritOpen() && !Fight.over() && Fight.enemyAlive(StoneBearer.GetSlot());
 	if (bGlow != BossVfx.IsGlowing())
 	{
-		BossVfx.SetGlow(bGlow, bGlow ? BossWeakPoint() : FVector::ZeroVector);
+		BossVfx.SetGlow(bGlow, bGlow ? BossFlashPoint() : FVector::ZeroVector);
 	}
 }
 
@@ -1076,7 +1143,24 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 				BossHitVfx(E);
 				EnemyHitTime[E.target] = Now;
 				// A heavy blow, a riposte or a Release is a heavy reaction.
-				StartFlinch(E.target, E.move == ftcore::kArenaHeavyMove || E.move == ftcore::kArenaRiposteMove || E.move == ftcore::kArenaReleaseMove);
+				const bool bHeavy = E.move == ftcore::kArenaHeavyMove || E.move == ftcore::kArenaRiposteMove || E.move == ftcore::kArenaReleaseMove;
+				const double HitWas = HitSince[E.target];
+				const bool bFlinches = Flinches(E.target);
+				StartFlinch(E.target, bHeavy);
+				if (bHeavy && static_cast<int32>(E.target) == StoneBearerSlot)
+				{
+					// Logged for the heavy reaction checks: whether the heavy reaction is what shows, else what holds it.
+					const ftcore::ArenaBrain Brain = Fight.output().enemies[E.target].brain;
+					const TCHAR* Shows = !bFlinches ? TEXT("no: on its knees or getting up")
+						: HitSince[E.target] == HitWas ? TEXT("no: a reaction is playing")
+						: Brain == ftcore::ArenaBrain::Attack ? TEXT("no: its move's clip plays")
+						: Brain == ftcore::ArenaBrain::Staggered ? TEXT("no: it staggers")
+						: Brain == ftcore::ArenaBrain::Dead ? TEXT("no: it dies")
+						: (Brain == ftcore::ArenaBrain::Open || Brain == ftcore::ArenaBrain::Down) ? TEXT("no: it goes down")
+						: TEXT("yes");
+					UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d takes a heavy blow (move %d, %d hp, brain %d): heavy reaction %s."),
+						Fight.time(), static_cast<int32>(E.target), static_cast<int32>(E.move), E.amount, static_cast<int32>(Brain), Shows);
+				}
 			}
 			break;
 		case ftcore::ArenaEventType::Parried:
@@ -1182,6 +1266,41 @@ void UFTArenaRunner::BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 Fro
 		return;
 	}
 	const FFTArenaBossVfx::FTuning& T = BossVfx.GetTuning();
+	const double Lift = T.Lift * 100.0;
+	AFTArenaFighter* Figure = EnemyFigures[StoneBearerSlot].Get();
+	if (To == Active && StoneTellMove == Out.move)
+	{
+		// One strike point, literally: the dust rises where the tell was drawn (its point kept from the startup's
+		// start; Core holds the facing meanwhile, ArenaFight::setEnemyFacingHeld). Logged: how far the striking part is,
+		// on the ground, from the tell, and how the figure and Core's facing moved since the tell.
+		const FVector Tell = ToWorld(StoneTellAt);
+		BossVfx.Play(FFTArenaBossVfx::EEffect::Impact, Tell + FVector(0.0, 0.0, Lift), StoneTellShapeMul, TEXT("blow lands"));
+		const uint8 BossMove = StoneBearer.BossMoveOf(Out.move);
+		const ftcore::StoneBearerDef& D = StoneBearer.GetDef();
+		FVector Part;
+		const char* Socket = BossMove < D.boss.moveCount && D.boss.moves[BossMove].hasContact ? D.boss.moves[BossMove].contactSocketChars.data() : nullptr;
+		// The contact's socket is a label, not always a bone: the carried piece's striking edge rides the piece's bone.
+		if (Socket && FCStringAnsi::Strcmp(Socket, "slab_edge") == 0)
+		{
+			Socket = "slab";
+		}
+		if (Socket && Figure && Figure->GetSkinPoint(FName(Socket), Part))
+		{
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: boss move %d tell-to-impact %.2f m (%s, dust 0.00 m from the tell)."), Fight.time(),
+				static_cast<int32>(Out.move), FVector::Dist2D(Part, Tell) / 100.0, ANSI_TO_TCHAR(Socket));
+		}
+		if (Figure)
+		{
+			const float FacingWas = FMath::RadiansToDegrees(FMath::Atan2(StoneTellFacing.y, StoneTellFacing.x));
+			const float FacingNow = FMath::RadiansToDegrees(FMath::Atan2(Out.facing.y, Out.facing.x));
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: boss move %d from tell to blow: figure yaw %.1f -> %.1f deg at (%.2f, %.2f) -> (%.2f, %.2f) m (moved %.2f m); Core facing %.1f -> %.1f deg."),
+				Fight.time(), static_cast<int32>(Out.move), StoneTellFigureYaw, Figure->GetActorRotation().Yaw,
+				StoneTellFigurePos.X / 100.0, StoneTellFigurePos.Y / 100.0, Figure->GetActorLocation().X / 100.0, Figure->GetActorLocation().Y / 100.0,
+				FVector::Dist2D(StoneTellFigurePos, Figure->GetActorLocation()) / 100.0, FacingWas, FacingNow);
+		}
+		StoneTellMove = 255;
+		return;
+	}
 	FFTStoneBearerStrike S;
 	if (!StoneBearer.StrikeOf(Out.move, Bodies, T.CalledAhead, T.CalledSide, T.ReachShare, S))
 	{
@@ -1191,32 +1310,20 @@ void UFTArenaRunner::BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 Fro
 	S.To = Fit.zone.clamp(S.To, 0.f);
 	const bool bArea = S.Shape == FFTStoneBearerStrike::EShape::Area;
 	const float ShapeMul = bArea ? T.AreaScale : 1.f;
-	const double Lift = T.Lift * 100.0;
 	const FVector At = ToWorld(S.To) + FVector(0.0, 0.0, Lift);
 	if (To == Active)
 	{
-		// A side or arc blow's dust rises under the part that strikes: the nearest of the hands and the slab to where
-		// the blow lands, on the ground (an all-round or lane blow keeps its own point).
-		FVector Dust = At;
-		AFTArenaFighter* Figure = EnemyFigures[StoneBearerSlot].Get();
-		if (Figure && (S.Shape == FFTStoneBearerStrike::EShape::Side || S.Shape == FFTStoneBearerStrike::EShape::Arc))
-		{
-			double Best = TNumericLimits<double>::Max();
-			static const TCHAR* const Sockets[] = {TEXT("hand_l"), TEXT("hand_r"), TEXT("slab")};
-			for (const TCHAR* Socket : Sockets)
-			{
-				FVector P;
-				const double D2 = Figure->GetSkinPoint(FName(Socket), P) ? FVector::DistSquared2D(P, At) : TNumericLimits<double>::Max();
-				if (D2 < Best)
-				{
-					Best = D2;
-					Dust = FVector(P.X, P.Y, At.Z);
-				}
-			}
-		}
-		BossVfx.Play(FFTArenaBossVfx::EEffect::Impact, Dust, ShapeMul, TEXT("blow lands"));
+		// A blow whose startup drew no tell: its dust where it lands now.
+		BossVfx.Play(FFTArenaBossVfx::EEffect::Impact, At, ShapeMul, TEXT("blow lands"));
+		StoneTellMove = 255;
 		return;
 	}
+	StoneTellAt = S.To;
+	StoneTellMove = Out.move;
+	StoneTellShapeMul = ShapeMul;
+	StoneTellFacing = Out.facing;
+	StoneTellFigurePos = Figure ? Figure->GetActorLocation() : FVector::ZeroVector;
+	StoneTellFigureYaw = Figure ? Figure->GetActorRotation().Yaw : 0.f;
 	if (S.Shape != FFTStoneBearerStrike::EShape::Lane)
 	{
 		BossVfx.Play(FFTArenaBossVfx::EEffect::Tell, At, ShapeMul, bArea ? TEXT("tell all round") : TEXT("tell"));
@@ -1255,12 +1362,35 @@ void UFTArenaRunner::BossHitVfx(const ftcore::ArenaEvent& E)
 		Dir = Fight.output().enemies[Slot].facing;
 	}
 	const float Out = Fight.def().enemies[Slot].bodyRadius * BossVfx.GetTuning().Surface;
+	// On its knees the body is the clip's, not the capsule's (no root motion yet): out from the pelvis, at its height.
+	FVector Pelvis;
+	const AFTArenaFighter* Figure = EnemyFigures[StoneBearerSlot].Get();
+	if (StoneKneelShows() && Figure && Figure->GetSkinPoint(FName(TEXT("pelvis")), Pelvis))
+	{
+		BossVfx.Play(FFTArenaBossVfx::EEffect::Chips, Pelvis + FVector(Dir.x * Out * 100.0, Dir.y * Out * 100.0, 0.0), 1.f, TEXT("hit on its knees"));
+		return;
+	}
 	FVector At = ToWorld(ftcore::Vec2{Boss.x + Dir.x * Out, Boss.y + Dir.y * Out});
 	At.Z = PlayerFigure ? PlayerFigure->GetChest().Z : At.Z + 100.0;
 	BossVfx.Play(FFTArenaBossVfx::EEffect::Chips, At, 1.f, TEXT("hit"));
 }
 
-void UFTArenaRunner::SplitBossCarried()
+void UFTArenaRunner::PrepareBossCarried()
+{
+	AFTArenaFighter* Figure = StoneBearerSlot >= 0 ? EnemyFigures[StoneBearerSlot].Get() : nullptr;
+	if (!Figure || !Figure->IsSkinned())
+	{
+		return;
+	}
+	FName HideSlot;
+	TArray<FFTCarriedPiece> Pieces;
+	if (ReadCarriedSplit(kStoneBearerSplit, HideSlot, Pieces) && Figure->PrepareCarried(Pieces))
+	{
+		UE_LOG(LogForgottenThird, Log, TEXT("Arena: the carried piece's %d parts wait hidden on their bones."), Pieces.Num());
+	}
+}
+
+void UFTArenaRunner::SplitBossCarried(bool bStagger)
 {
 	AFTArenaFighter* Figure = StoneBearerSlot >= 0 ? EnemyFigures[StoneBearerSlot].Get() : nullptr;
 	if (!Figure || !Figure->IsSkinned() || Figure->IsSplit())
@@ -1269,10 +1399,58 @@ void UFTArenaRunner::SplitBossCarried()
 	}
 	FName HideSlot;
 	TArray<FFTCarriedPiece> Pieces;
-	if (ReadCarriedSplit(kStoneBearerSplit, HideSlot, Pieces) && Figure->SplitCarried(HideSlot, Pieces))
+	if (!ReadCarriedSplit(kStoneBearerSplit, HideSlot, Pieces) || !Figure->SplitCarried(HideSlot, Pieces))
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena: boss %.2f: the carried piece split into %d parts on its bones."), Now, Pieces.Num());
+		return;
 	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: boss %.2f: the carried piece split into %d parts on its bones."), Now, Pieces.Num());
+	if (!bStagger)
+	{
+		return;
+	}
+	// On the split's own frame: the impact at the piece's bone, and the stagger (Core holds one from the next step; a
+	// poise break is one already). The host says why there is none when it holds none.
+	FVector Slab;
+	if (BossVfx.IsSpawned() && Figure->GetSkinPoint(FName(TEXT("slab")), Slab))
+	{
+		BossVfx.Play(FFTArenaBossVfx::EEffect::Impact, Slab, 1.f, TEXT("split"));
+	}
+	const ftcore::ArenaBrain Brain = Fight.output().enemies[StoneBearer.GetSlot()].brain;
+	const bool bStaggers = StoneBearer.BreakStaggered() || Brain == ftcore::ArenaBrain::Staggered;
+	if (bStaggers)
+	{
+		StoneSplitStaggerSince = Now;
+		StoneSplitStaggerUntil = Now + kStoneSplitBridge;
+	}
+	static const TCHAR* const Why[] = {TEXT("a poise break"), TEXT("held"), TEXT("already staggered"), TEXT("on its knees"),
+		TEXT("poise frozen or on the plinth"), TEXT("hold refused")};
+	const int32 Note = static_cast<int32>(StoneBearer.GetBreakStagger());
+	UE_LOG(LogForgottenThird, Log, TEXT("Arena: boss %.2f: the split staggers it: %s (%s)."), Now, bStaggers ? TEXT("yes") : TEXT("no"),
+		Note >= 0 && Note < static_cast<int32>(UE_ARRAY_COUNT(Why)) ? Why[Note] : TEXT("?"));
+}
+
+bool UFTArenaRunner::StoneKneelShows() const
+{
+	if (StoneBearerSlot < 0 || StoneBearerSlot >= MaxEnemies)
+	{
+		return false;
+	}
+	const FFTArenaSkin& Skin = Skins[StoneBearerSlot];
+	const int32 Clip = SkinClip[StoneBearerSlot];
+	return Skin.IsLoaded() && Clip >= 0 && (Clip == Skin.FaceDownIn || Clip == Skin.FaceDown || Clip == Skin.FaceDownOut);
+}
+
+FVector UFTArenaRunner::BossFlashPoint() const
+{
+	const FVector Weak = BossWeakPoint();
+	const FFTArenaBossVfx::FTuning& T = BossVfx.GetTuning();
+	FVector Toward = FVector::ZeroVector;
+	const APlayerController* PC = GetPC();
+	if (PC && PC->PlayerCameraManager)
+	{
+		Toward = (PC->PlayerCameraManager->GetCameraLocation() - Weak).GetSafeNormal();
+	}
+	return Weak + FVector(0.0, 0.0, T.FlashUp * 100.0) + Toward * (T.FlashToCamera * 100.0);
 }
 
 FVector UFTArenaRunner::BossWeakPoint() const
@@ -1483,7 +1661,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 	}
 	if (BossVfx.IsGlowing())
 	{
-		BossVfx.MoveGlow(BossWeakPoint());
+		BossVfx.MoveGlow(BossFlashPoint());
 	}
 }
 
@@ -1556,6 +1734,7 @@ void UFTArenaRunner::Finish()
 	bResultLogged = true;
 	ResultTime = Now;
 	const bool bWon = Fight.phase() == ftcore::ArenaPhase::Victory;
+	LogStoneWalkCounts();
 	LogResult();
 	if (bQuitOnFinish && !bShots)
 	{
@@ -1603,7 +1782,7 @@ void UFTArenaRunner::Restart()
 	}
 	if (bBossSplitAtStart)
 	{
-		SplitBossCarried();
+		SplitBossCarried(false);
 	}
 	BeginKite();
 	BeginKindCrits();
@@ -1673,6 +1852,21 @@ void UFTArenaRunner::BeginStoneBearer()
 	StoneBearerLogged = StoneBearer.GetNoteTotal();
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: stone_bearer in slot %d: %d arena moves from %d boss moves."), StoneBearerSlot,
 		static_cast<int32>(Fight.def().enemies[static_cast<size_t>(StoneBearerSlot)].moveCount), static_cast<int32>(StoneBearer.GetDef().boss.moveCount));
+	// Each boss move's strike point: its clip's contact, or the file's reach when the contact is inside the body.
+	const float BossRadius = Fight.def().enemies[static_cast<size_t>(StoneBearerSlot)].bodyRadius;
+	const ftcore::ArenaBossDef& BossDef = StoneBearer.GetDef().boss;
+	for (std::uint8_t M = 0; M < BossDef.moveCount; ++M)
+	{
+		const ftcore::ArenaBossMove& Move = BossDef.moves[M];
+		if (!Move.hasContact)
+		{
+			continue;
+		}
+		const bool bUsed = FFTStoneBearerHost::UsableContact(Move, BossRadius);
+		UE_LOG(LogForgottenThird, Log, TEXT("Arena: stone_bearer boss move %d: contact %s at %.2f m from the root (%.2f ahead, %.2f right): %s."),
+			static_cast<int32>(M), ANSI_TO_TCHAR(Move.contactSocketChars.data()), FFTStoneBearerHost::ContactPlanar(Move), Move.contactAhead,
+			Move.contactSide, bUsed ? TEXT("its strike point and reach") : TEXT("inside the body or a lane or tile move, the file's reach stays"));
+	}
 
 	// Its effects: the pool spawned once, everything stopped at each (re)start.
 	BossVfx.StopAll();
@@ -1776,7 +1970,8 @@ void UFTArenaRunner::StoneBearerWalk(const ftcore::ArenaOutput& Out)
 	// Core's wanted ground speed and direction (its velocity this step).
 	const float Wanted = ArenaLength(E.velocity);
 	const ftcore::Vec2 Dir = Wanted > 1e-4f ? ftcore::Vec2{E.velocity.x / Wanted, E.velocity.y / Wanted} : E.facing;
-	const bool bAhead = Wanted > 1e-4f && Dir.x * E.facing.x + Dir.y * E.facing.y >= kStoneWalkCone;
+	const float Cone = E.brain == ftcore::ArenaBrain::Approach ? kStoneApproachCone : kStoneWalkCone;
+	const bool bAhead = Wanted > 1e-4f && Dir.x * E.facing.x + Dir.y * E.facing.y >= Cone;
 	const bool bWas = bWalking[I];
 	const double Walked = Now - StoneWalkSince;
 	bool bWalk = bWas;
@@ -1792,10 +1987,26 @@ void UFTArenaRunner::StoneBearerWalk(const ftcore::ArenaOutput& Out)
 	{
 		bWalk = false;
 	}
+	// The counts for the fight's walk line: each step between moves that wanted the walk, and what held a start back.
+	const bool bWants = bBetween && Wanted > kArenaWalkStart;
+	if (bWants)
+	{
+		StoneWantApproach += E.brain == ftcore::ArenaBrain::Approach ? 1 : 0;
+		StoneWantStrafe += E.brain == ftcore::ArenaBrain::Strafe ? 1 : 0;
+		StoneWantRuns += bStoneWanted ? 0 : 1;
+		if (!bWas && !bWalk)
+		{
+			StoneHeldUp += bOwedUp ? 1 : 0;
+			StoneHeldHit += !bOwedUp && bHitPlays ? 1 : 0;
+			StoneHeldCone += !bOwedUp && !bHitPlays && !bAhead ? 1 : 0;
+		}
+	}
+	bStoneWanted = bWants;
 	const float Speed = static_cast<float>((*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed);
 	if (bWalk && !bWas)
 	{
 		StoneWalkSince = Now;
+		++StoneWalksBegun;
 		// Logged for the walk checks in -nullrhi runs.
 		UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d walks at %.2f m/s (rate 1.00, wanted %.2f m/s)."), Fight.time(), I, Speed, Wanted);
 	}
@@ -1829,6 +2040,17 @@ void UFTArenaRunner::StoneBearerWalk(const ftcore::ArenaOutput& Out)
 	Bodies.enemies[Slot] = P;
 }
 
+void UFTArenaRunner::LogStoneWalkCounts() const
+{
+	if (StoneBearerSlot < 0 || StoneBearerSlot >= MaxEnemies || !Skins[StoneBearerSlot].IsLoaded() || Skins[StoneBearerSlot].Walk < 0)
+	{
+		return;
+	}
+	UE_LOG(LogForgottenThird, Log, TEXT("Arena: stone_bearer walk: wanted over %.2f m/s on %d steps (Approach %d, Strafe %d) in %d runs; %d walks begun; starts held by the cone %d, a get-up %d, a hit %d steps."),
+		kArenaWalkStart, StoneWantApproach + StoneWantStrafe, StoneWantApproach, StoneWantStrafe, StoneWantRuns, StoneWalksBegun,
+		StoneHeldCone, StoneHeldUp, StoneHeldHit);
+}
+
 void UFTArenaRunner::StartFlinch(int32 I, bool bHeavy)
 {
 	if (I < 0 || I >= MaxEnemies || !Flinches(I))
@@ -1837,11 +2059,13 @@ void UFTArenaRunner::StartFlinch(int32 I, bool bHeavy)
 	}
 	if (I == StoneBearerSlot)
 	{
-		// A playing reaction holds kStoneFlinchHold seconds before any blow restarts it, and after that only a heavy one does.
+		// The statue shrugs off light blows for kStoneFlinchHold seconds after a reaction starts, playing or not; a heavy
+		// blow restarts a playing reaction once it has held kStoneFlinchRestart seconds.
 		const FFTArenaSkin& Skin = Skins[I];
 		const int32 Playing = bHitHeavy[I] ? Skin.HitHeavy : Skin.HitLight;
 		const double Since = Now - HitSince[I];
-		if (Skin.IsLoaded() && Playing >= 0 && Since < static_cast<double>(Skin.Sequences[Playing]->GetPlayLength()) && (Since < kStoneFlinchHold || !bHeavy))
+		const bool bPlays = Skin.IsLoaded() && Playing >= 0 && Since < static_cast<double>(Skin.Sequences[Playing]->GetPlayLength());
+		if (bHeavy ? (bPlays && Since < kStoneFlinchRestart) : Since < kStoneFlinchHold)
 		{
 			return;
 		}
@@ -1867,11 +2091,11 @@ void UFTArenaRunner::LogStoneBearerNotes()
 		case FFTStoneBearerNote::EKind::Run:
 			if (E.type == ftcore::ArenaBossEventType::Broke)
 			{
-				SplitBossCarried();
+				SplitBossCarried(true);
 			}
 			if (E.type == ftcore::ArenaBossEventType::Crit)
 			{
-				BossVfx.Play(FFTArenaBossVfx::EEffect::Crit, BossWeakPoint(), 1.f,
+				BossVfx.Play(FFTArenaBossVfx::EEffect::Crit, BossFlashPoint(), 1.f,
 					E.value > 0 ? TEXT("weak point crit, first of the opening") : TEXT("weak point crit"));
 				UE_LOG(LogForgottenThird, Log, TEXT("Arena: boss %.2f: crit%s."), E.at, E.value > 0 ? TEXT(", the first of the opening") : TEXT(""));
 			}

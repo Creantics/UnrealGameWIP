@@ -4018,6 +4018,37 @@ TEST_CASE("arena hooks: a move mask keeps picks off a move, a chain still runs i
     }
 }
 
+TEST_CASE("arena hooks: a held facing keeps a move on the line it began on; unheld it tracks; restart clears it") {
+    ArenaAttack slow = swing(0.6f, 0.1f, 0.3f, 2.f, 1);
+    slow.tracking = 20.f;
+    // The move starts with the lead straight ahead; the lead then steps to the enemy's side for the whole startup.
+    const auto facingAtActive = [&](bool held) {
+        Rig rig(ruleFighter(), {hitterKind(slow)});
+        rig.put(0, 1.5f, 0.f);
+        rig.fight.setEnemyFacingHeld(0, held);
+        CHECK(rig.fight.enemyFacingHeld(0) == held);
+        int guard = 0;
+        while (rig.out().enemies[0].brain != ArenaBrain::Attack && guard++ < 240) rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Attack);
+        const Vec2 began = rig.out().enemies[0].facing;
+        rig.bodies.player = Vec2{1.5f, 1.5f};
+        guard = 0;
+        while (rig.out().enemies[0].part == ArenaPart::Startup && guard++ < 120) rig.tick();
+        const Vec2 now = rig.out().enemies[0].facing;
+        return began.x * now.x + began.y * now.y;
+    };
+    CHECK(facingAtActive(true) == doctest::Approx(1.f).epsilon(1e-4));
+    CHECK(facingAtActive(false) < 0.5f);
+    {   // restart clears it; an enemy out of range reads false and takes nothing
+        Rig rig(ruleFighter(), {hitterKind(slow)});
+        rig.fight.setEnemyFacingHeld(0, true);
+        rig.fight.setEnemyFacingHeld(3, true);
+        CHECK_FALSE(rig.fight.enemyFacingHeld(3));
+        rig.fight.restart();
+        CHECK_FALSE(rig.fight.enemyFacingHeld(0));
+    }
+}
+
 TEST_CASE("arena hooks: a hold cuts a live move at the next tick, lasts its seconds, and a release ends it") {
     const ArenaAttack bite = swing(0.4f, 0.15f, 0.5f, 2.f, 20);
     {   // Open for 0.5 s, asked 10 ticks into the bite's startup
@@ -4083,6 +4114,29 @@ TEST_CASE("arena hooks: a hold cuts a live move at the next tick, lasts its seco
         rig.fight.releaseEnemy(0);
         rig.tick();
         CHECK(rig.out().enemies[0].brain == ArenaBrain::Open);
+    }
+    {   // Staggered for 0.5 s, asked 10 ticks into the bite's startup: cut at the next tick, no stagger counted
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.put(0, 1.5f, 0.f);
+        rig.run(10);
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Attack);
+        const float poise = rig.fight.enemyPoise(0);
+        CHECK(rig.fight.holdEnemy(0, ArenaBrain::Staggered, 0.5f));
+        rig.tick();
+        CHECK(rig.fight.enemyHeld(0));
+        CHECK(rig.out().enemies[0].brain == ArenaBrain::Staggered);
+        CHECK(rig.out().enemies[0].stateLength == doctest::Approx(0.5f)); // the hold's, not the kind's staggerTime
+        CHECK_FALSE(rig.out().enemies[0].token);
+        CHECK(rig.count(ArenaEventType::Staggered) == 0);
+        CHECK(rig.fight.stats().staggers == 0);
+        CHECK(rig.fight.enemyPoise(0) == doctest::Approx(poise));
+        rig.run(27); // 28 ticks held: 0.47 s
+        CHECK(rig.out().enemies[0].brain == ArenaBrain::Staggered);
+        rig.run(3); // 31 ticks: 0.52 s
+        CHECK(rig.out().enemies[0].brain != ArenaBrain::Staggered);
+        CHECK_FALSE(rig.fight.enemyHeld(0));
+        CHECK(rig.count(ArenaEventType::Hit) == 0); // the cut bite never landed
+        CHECK(rig.fight.hp() == 100);
     }
     {   // a staggered enemy can be held; holding again starts the hold over
         ArenaFighter f = ruleFighter();
@@ -4171,7 +4225,6 @@ TEST_CASE("arena hooks: a hold cuts a live move at the next tick, lasts its seco
 
 TEST_CASE("arena hooks: a hold is refused for a missing or dead enemy, another brain, or no time") {
     Rig rig(ruleFighter(), {dummyKind()});
-    CHECK_FALSE(rig.fight.holdEnemy(0, ArenaBrain::Staggered, 1.f));
     CHECK_FALSE(rig.fight.holdEnemy(0, ArenaBrain::Attack, 1.f));
     CHECK_FALSE(rig.fight.holdEnemy(0, ArenaBrain::Dead, 1.f));
     CHECK_FALSE(rig.fight.holdEnemy(0, ArenaBrain::Open, 0.f));

@@ -87,6 +87,8 @@ void FFTArenaBossVfx::ReadTuning(const FString& File)
 	Tuning.AreaScale = FMath::Max(ReadFloat(Root, "areaScale", Tuning.AreaScale), 0.f);
 	Tuning.Surface = FMath::Max(ReadFloat(Root, "surface", Tuning.Surface), 0.f);
 	Tuning.WeakDepth = FMath::Max(ReadFloat(Root, "weakDepth", Tuning.WeakDepth), 0.f);
+	Tuning.FlashUp = FMath::Clamp(ReadFloat(Root, "flashUp", Tuning.FlashUp), -2.f, 2.f);
+	Tuning.FlashToCamera = FMath::Clamp(ReadFloat(Root, "flashToCamera", Tuning.FlashToCamera), 0.f, 3.f);
 }
 
 void FFTArenaBossVfx::Spawn(UWorld* World, const FString& File)
