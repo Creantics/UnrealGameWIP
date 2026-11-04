@@ -71,7 +71,6 @@
    "id": "hit_light",
    "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerhit_light",
    "length_s": 0.5,
-   "blend_s": 0.1,
    "impact_s": 0,
    "loop": false
   },
@@ -79,7 +78,6 @@
    "id": "hit_heavy",
    "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerhit_heavy",
    "length_s": 0.9,
-   "blend_s": 0.1,
    "impact_s": 0,
    "loop": false
   },
