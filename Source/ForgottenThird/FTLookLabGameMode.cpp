@@ -106,6 +106,14 @@ void AFTLookLabGameMode::Tick(float DeltaSeconds)
 			UE_LOG(LogForgottenThird, Warning, TEXT("LookLab: %s never arrived."), *Pending);
 		}
 		Pending.Reset();
+		// A still is taken frames after it's asked for, so the next view comes in only once it's saved.
+		if (NextView > 0)
+		{
+			ShowView(NextView);
+			NextView = 0;
+			Wait = FTLookLab::kSettle;
+			return;
+		}
 	}
 	if (Wait > 0)
 	{
@@ -118,8 +126,7 @@ void AFTLookLabGameMode::Tick(float DeltaSeconds)
 		Shoot(FString::Printf(TEXT("%s_%s.png"), *ShotPrefix, FTLookLab::kStillNames[Stage]), TEXT("1920x1080"));
 		UE_LOG(LogForgottenThird, Display, TEXT("LookLab: still %s."), FTLookLab::kStillNames[Stage]);
 		++Stage;
-		ShowView(Stage < Stills ? Stage + 1 : FTLookLab::kLoopView);
-		Wait = FTLookLab::kSettle;
+		NextView = Stage < Stills ? Stage + 1 : FTLookLab::kLoopView;
 		return;
 	}
 	if (Frame < FTLookLab::kLoopFrames)

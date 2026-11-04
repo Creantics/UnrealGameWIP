@@ -144,6 +144,16 @@ void UFTLookSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	}
 }
 
+void UFTLookSubsystem::OnWorldBeginPlay(UWorld& InWorld)
+{
+	Super::OnWorldBeginPlay(InWorld);
+	// The world sets up its parameter collections after its subsystems, swapping a fresh instance (at the collection's
+	// defaults) for the one Initialize wrote into: write the look's parameters again now that the world's are final.
+	bParametersPending = true;
+	bWaiting = true;
+	Tick(0.f);
+}
+
 void UFTLookSubsystem::Deinitialize()
 {
 	// The registry holds extensions weakly: dropping ours unregisters it.

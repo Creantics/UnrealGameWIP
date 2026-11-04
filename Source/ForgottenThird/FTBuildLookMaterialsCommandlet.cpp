@@ -99,10 +99,11 @@ return max(Absorb.rgb, 0.0) * 0.01;
 )HLSL");
 
 // The wet stone: a photographed surface laid on the world position along each face's main axis (the floor's from above,
-// a wall's from the side). As Wetness rises the stone soaks: it darkens by WetDarken and its colour stands WetRich further
-// from its grey, and a film of water glosses it, its roughness falling toward 0.1 by WetSmooth (quickly at first: the
-// square root of Wetness). Past PuddleStart, water stands on the floor, first where the broad dips (noise 150 cm across)
-// and the occluded hollows meet, spreading as Wetness reaches 1: near black, mirror smooth and flat.
+// a wall's from the side). As Wetness rises the stone soaks, quickly at first (all by the square root of Wetness): it
+// darkens by WetDarken, its colour stands WetRich further from its grey, and a film of water glosses it, its roughness
+// falling toward 0.06 by WetSmooth. Past PuddleStart, water stands on the floor, first where the broad dips (noise 150 cm
+// across, its middle stretched to the full range) and the occluded hollows meet, spreading as Wetness reaches 1: near
+// black, mirror smooth and flat.
 const TCHAR* const kStoneCode = FT_LOOK_NOISE_STRUCT(FLookStone) TEXT(R"HLSL(FLookStone Stone;
 float3 Up = normalize(VertexNormal);
 float3 Axis = abs(Up);
@@ -116,13 +117,14 @@ float3 NM = UnpackNormalMap(
 	Texture2DSample(StoneNormal, GetMaterialSharedSampler(StoneNormalSampler, View.MaterialTextureBilinearWrapedSampler), Uv)).xyz;
 float Wet = saturate(Wetness);
 float Grey = dot(Color, float3(0.2126, 0.7152, 0.0722));
-float3 Soaked = max(Grey + (Color - Grey) * (1.0 + WetRich * Wet), 0.0) * (1.0 - saturate(WetDarken) * Wet);
+float Soak = sqrt(Wet);
+float3 Soaked = max(Grey + (Color - Grey) * (1.0 + WetRich * Soak), 0.0) * (1.0 - saturate(WetDarken) * Soak);
 float Fill = saturate((Wet - PuddleStart) / max(1.0 - PuddleStart, 0.01));
-float Low = 0.75 * Stone.Height(WorldPos.xy / 150.0 + 5.3) + 0.25 * saturate(1.0 - Pack.r);
+float Low = 0.8 * smoothstep(0.3, 0.7, Stone.Height(WorldPos.xy / 150.0 + 5.3)) + 0.2 * saturate(1.0 - Pack.r);
 float Floor = smoothstep(0.7, 0.9, Up.z);
 float Puddle = Fill > 0.0 ? Floor * smoothstep(1.0 - 0.75 * Fill, 1.0 - 0.75 * Fill + 0.05, Low) : 0.0;
 NormalOut = normalize((1.0 - Puddle) * (NM.x * AxisU + NM.y * AxisV) + NM.z * Up);
-float Rough = lerp(Roughness >= 0.0 ? Roughness : Pack.g, 0.1, saturate(WetSmooth) * sqrt(Wet));
+float Rough = lerp(Roughness >= 0.0 ? Roughness : Pack.g, 0.06, saturate(WetSmooth) * Soak);
 RoughOut = saturate(lerp(Rough, 0.02, Puddle));
 AOOut = lerp(Pack.r, 1.0, Puddle);
 return max(lerp(Soaked, 0.35 * Soaked, Puddle), 0.02);
@@ -353,7 +355,7 @@ UMaterial* BuildWetStone(UMaterialParameterCollection* Look, UTexture* const (&M
 	AddInput(Stone, TEXT("TileCm"), AddScalar(Material, TEXT("TileCm"), kStoneTileCm, -100));
 	AddInput(Stone, TEXT("Roughness"), AddScalar(Material, TEXT("Roughness"), -1.f, 0));
 	AddInput(Stone, TEXT("Wetness"), AddLook(Material, Look, TEXT("Wetness"), 100));
-	AddInput(Stone, TEXT("WetDarken"), AddScalar(Material, TEXT("WetDarken"), 0.45f, 200));
+	AddInput(Stone, TEXT("WetDarken"), AddScalar(Material, TEXT("WetDarken"), 0.5f, 200));
 	AddInput(Stone, TEXT("WetRich"), AddScalar(Material, TEXT("WetRich"), 0.35f, 300));
 	AddInput(Stone, TEXT("WetSmooth"), AddScalar(Material, TEXT("WetSmooth"), 0.85f, 400));
 	AddInput(Stone, TEXT("PuddleStart"), AddScalar(Material, TEXT("PuddleStart"), 0.25f, 500));

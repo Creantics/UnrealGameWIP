@@ -39,6 +39,8 @@ private:
 	// The shot being saved, and the ticks spent waiting for it.
 	FString Pending;
 	int32 PendingTicks = 0;
+	// The view to show once the pending still is saved, or 0.
+	int32 NextView = 0;
 	bool bAdvanced = false;
 	int32 Stage = 0;
 	int32 Frame = 0;

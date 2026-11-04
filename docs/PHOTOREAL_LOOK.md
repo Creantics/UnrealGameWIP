@@ -78,9 +78,10 @@ UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -Render
 ## The surfaces and the look lab
 
 The world's wetness, water and glow reach the materials through one material parameter collection,
-`/Game/Look/MPC_Look`. `FTScene::ApplyLookParameters` fills it once the world has its instance, and the subsystem's
-log line says how many parameters it wrote. `FTBuildLookMaterials` builds the collection and five surfaces over it,
-each graph a Custom HLSL node:
+`/Game/Look/MPC_Look`. `FTScene::ApplyLookParameters` fills it once the world has its instance (again when the world
+begins play: the world sets up its collections after its subsystems and swaps a fresh instance, at the defaults, for
+the one written during its start), and the subsystem's log line says how many parameters it wrote.
+`FTBuildLookMaterials` builds the collection and five surfaces over it, each graph a Custom HLSL node:
 
 | Material | What it shows |
 |---|---|
