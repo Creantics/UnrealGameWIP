@@ -682,13 +682,23 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 				const bool bUpEarly = Last == Skin.FaceDownOut && Last >= 0 && UpAt[I] < kStoneKneelDeathUp * UpLength;
 				const bool bKneelShows = Last >= 0 && (Last == Skin.FaceDownIn || Last == Skin.FaceDown || bUpEarly);
 				StoneDeathClip = bKneelShows && Skin.DefeatKneel >= 0 ? Skin.DefeatKneel : (Skin.Defeat >= 0 ? Skin.Defeat : Skin.Idle);
-				const TCHAR* Reason = bKneelShows ? (bUpEarly ? TEXT("its get-up had only begun") : TEXT("it was on its knees"))
+				const TCHAR* Reason = bKneelShows ? (bUpEarly ? TEXT("its get-up had only begun")
+					: (Last == Skin.FaceDownIn ? TEXT("it was going down (the go-down plays out first)") : TEXT("it was on its knees")))
 					: (Last >= 0 && Last == Skin.FaceDownOut ? TEXT("its get-up was mostly done") : TEXT("it was standing"));
 				UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d dies with %s: %s (last %s, get-up %.2f of %.2f s)."), Fight.time(), I,
 					*Skin.Sequences[StoneDeathClip]->GetName(), Reason, Last >= 0 && Skin.Sequences[Last] ? *Skin.Sequences[Last]->GetName() : TEXT("none"),
 					UpAt[I], UpLength);
 			}
 			Clip = StoneDeathClip;
+			// Dead while still going down: the fall plays out onto its knees and the kneeling death starts there (the poses
+			// in the middle of the fall are far from both deaths' first frames).
+			const double DownLength = Skin.FaceDownIn >= 0 ? static_cast<double>(Skin.Sequences[Skin.FaceDownIn]->GetPlayLength()) : 0.0;
+			if (Clip == Skin.DefeatKneel && Skin.FaceDownIn >= 0 && SkinClip[I] == Skin.FaceDownIn && Now - KneelSince[I] < DownLength)
+			{
+				Clip = Skin.FaceDownIn;
+				Time = Now - KneelSince[I];
+				bTimed = true;
+			}
 		}
 		else
 		{
