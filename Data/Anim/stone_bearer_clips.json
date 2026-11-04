@@ -13,9 +13,9 @@
   {
    "id": "walk",
    "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerwalk",
-   "length_s": 1.867,
+   "length_s": 2.667,
    "impact_s": 0,
-   "speed_mps": 1.15,
+   "speed_mps": 0.805,
    "loop": true
   },
   {
@@ -56,6 +56,13 @@
   {
    "id": "defeat",
    "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerdefeat",
+   "length_s": 6.0,
+   "impact_s": 0,
+   "loop": false
+  },
+  {
+   "id": "defeat_kneel",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerdefeat_kneel",
    "length_s": 6.0,
    "impact_s": 0,
    "loop": false

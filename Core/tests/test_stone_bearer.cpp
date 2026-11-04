@@ -402,13 +402,15 @@ TEST_CASE("stone bearer clips: the shipped table loads clean, with its own cross
     CHECK(clips.blend == doctest::Approx(0.25));
     for (const char* id : {"idle", "idle_p2", "stagger", "face_down", "defeat", "hit_light", "hit_heavy"})
         CHECK_MESSAGE(clips.find(id) >= 0, id);
-    // Its walk loops and states the speed it was made at, which the host plays it against.
+    // Its walk loops and states the speed it was made at, which the host plays it against: about the kind's 0.8 m/s
+    // walking speed, so it plays near its own rate.
     const int walk = clips.find("walk");
     REQUIRE(walk >= 0);
     CHECK(clips[static_cast<std::size_t>(walk)].loop);
-    CHECK(clips[static_cast<std::size_t>(walk)].speed == doctest::Approx(1.15));
-    // The go-down into face_down and the get-up out of it play once, each its own authored length.
-    for (const auto& [id, length] : {std::pair{"face_down_in", 0.8}, std::pair{"face_down_out", 1.0}}) {
+    CHECK(clips[static_cast<std::size_t>(walk)].speed == doctest::Approx(0.805));
+    CHECK(clips[static_cast<std::size_t>(walk)].length == doctest::Approx(2.667));
+    // The go-down into face_down, the get-up out of it and the death on its knees play once, each its own authored length.
+    for (const auto& [id, length] : {std::pair{"face_down_in", 0.8}, std::pair{"face_down_out", 1.0}, std::pair{"defeat_kneel", 6.0}}) {
         const int clip = clips.find(id);
         REQUIRE_MESSAGE(clip >= 0, id);
         CHECK_FALSE(clips[static_cast<std::size_t>(clip)].loop);
