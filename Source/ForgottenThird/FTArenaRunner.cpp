@@ -21,9 +21,11 @@
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
 #include "InputCoreTypes.h"
+#include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/PackageName.h"
+#include "Misc/Parse.h"
 
 #include <cmath>
 #include <string>
@@ -1486,6 +1488,12 @@ ftcore::ArenaBlowRuling UFTArenaRunner::RuleKindCritBlow(void* User, const ftcor
 
 void UFTArenaRunner::SpawnKindCritEffects()
 {
+	// The OFF half of an OFF/ON capture: the fight runs the same, no kind's tell, open, crit or hit effect plays.
+	if (FParse::Param(FCommandLine::Get(), TEXT("ArenaNoKindFx")))
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: kind crit fx off (-ArenaNoKindFx)."));
+		return;
+	}
 	for (int32 I = 0; I < static_cast<int32>(Def.enemyCount) && I < MaxEnemies; ++I)
 	{
 		AFTArenaFighter* Figure = EnemyFigures[I].Get();
