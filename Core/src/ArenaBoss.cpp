@@ -414,7 +414,8 @@ void abMove(JsonValue m, const std::string& path, const ArenaBossDef& def, Arena
     if (!abObject(m, path, true, errors)) return;
     abUnknownKeys(m, path,
                   {"id", "answer", "impacts", "calls", "zones", "sheds", "active", "recovery", "range", "damage",
-                   "damageMax", "floor", "marked", "guardBreak", "guardStacks", "missStacks", "opens", "load"},
+                   "damageMax", "floor", "marked", "guardBreak", "guardStacks", "missStacks", "opens", "load",
+                   "contact"},
                   {}, warnings);
     const std::string_view id = m["id"].string();
     if (!m["id"].isString() || !abId(id, kMaxArenaBossMoveId))
@@ -496,6 +497,24 @@ void abMove(JsonValue m, const std::string& path, const ArenaBossDef& def, Arena
     out.missStacks = static_cast<std::uint8_t>(stacks);
     abNum(m, "opens", out.opens, 0.0, 10.0, false, path, errors);
     abInt(m, "load", out.load, 0, kMaxLoad, false, path, errors);
+
+    const JsonValue contact = m["contact"];
+    const std::string cp = abJoin(path, "contact");
+    if (abObject(contact, cp, false, errors)) {
+        abUnknownKeys(contact, cp, {"socket", "ahead", "side", "up"}, {}, warnings);
+        const std::string_view socket = contact["socket"].string();
+        const std::size_t before = errors.size();
+        if (!contact["socket"].isString() || !abId(socket, kMaxArenaBossMoveId))
+            errors.push_back(cp + ".socket: expected 1.." + std::to_string(kMaxArenaBossMoveId) +
+                             " characters of a-z, 0-9 or _");
+        abNum(contact, "ahead", out.contactAhead, -20.0, 20.0, true, cp, errors);
+        abNum(contact, "side", out.contactSide, -20.0, 20.0, true, cp, errors);
+        abNum(contact, "up", out.contactUp, -5.0, 20.0, true, cp, errors);
+        if (errors.size() == before) {
+            std::copy(socket.begin(), socket.end(), out.contactSocketChars.begin());
+            out.hasContact = true;
+        }
+    }
 
     if (!icpt) {
         for (const char* key : {"zones", "sheds", "marked", "opens", "load", "guardStacks", "missStacks"})
