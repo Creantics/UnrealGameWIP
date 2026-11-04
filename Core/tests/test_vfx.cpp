@@ -74,6 +74,37 @@ TEST_CASE("vfx: every Data/Vfx effect loads without warnings") {
     }
 }
 
+TEST_CASE("vfx: the Kite-Mother's effects load without warnings and keep their particle budgets") {
+    struct Expect {
+        const char* file;
+        std::size_t emitters;
+        std::uint32_t budget; // the sum of the emitters' maxParticles
+        bool loops;
+    };
+    const Expect files[] = {{"kite_swoop_tell", 2, 104, true},
+                            {"kite_seam_open", 2, 52, true},
+                            {"kite_seam_crit", 3, 82, false},
+                            {"kite_hit", 2, 28, false}};
+    for (const Expect& f : files) {
+        CAPTURE(f.file);
+        VfxEffect e;
+        std::vector<std::string> warnings;
+        REQUIRE(loadEffect(f.file, e, &warnings));
+        CHECK(e.name == f.file);
+        CHECK(e.emitters.size() == f.emitters);
+        CHECK_MESSAGE(warnings.empty(), (warnings.empty() ? std::string() : warnings.front()));
+        std::uint32_t total = 0;
+        for (const VfxEmitter& em : e.emitters) {
+            total += em.maxParticles;
+            CHECK(em.loop == f.loops);
+        }
+        CHECK(total <= f.budget);
+        VfxNiagaraPlan plan;
+        planVfxNiagara(e, plan);
+        CHECK(plan.emitters.size() == f.emitters);
+    }
+}
+
 TEST_CASE("vfx: fireworks reads bursts, modules and sub-emitters") {
     VfxEffect e;
     REQUIRE(loadEffect("fireworks", e));

@@ -483,6 +483,8 @@ struct ArenaEnemyOut {
     ArenaPart part = ArenaPart::None; // Attack
     std::uint8_t move = 0;            // Attack: the move index
     float stateTime = 0.f;            // seconds in this brain state (Attack: in this move)
+    float stateLength = 0.f;          // Staggered, Open, Down: the state's whole length, s (the host's hold while one
+                                      // runs; +infinity until a release); 0 in any other state
     bool token = false;               // holds an attack token
 };
 
@@ -854,8 +856,9 @@ constexpr std::size_t kArenaResultLineMax = 512; // a buffer this size always ho
 
 // The arena's one line per fight, as the beat screen logs its own (docs/BEAT_SCREEN.md, "Log lines"):
 //   Arena: VICTORY at <scene> beat <b> step <s> after <t> s, zone <z>, kit <k>, enemies <id>+<id>, <pilot> seed <n>,
-//   hp <h>/<max>, <x> hits, <y> taken, <b> blocks, <p> parries, <r> ripostes, <e> evades, <g> guard breaks, <h> heals,
-//   <l> releases, <o> overloads, <c>/<d> reads right, dealt <n>, took <n>, <r> restarts.
+//   hp <h>/<max>, <x> hits, <y> taken, <b> blocks, <p> parries, <r> ripostes, <e> evades, <g> guard breaks,
+//   <s> staggers, <h> heals, <l> releases, <o> overloads, <c>/<d> reads right, dealt <n>, took <n>, <r> restarts.
+// (<s> staggers: the enemies' poise breaks, every enemy's.)
 // DEFEAT for a lost fight, TIMEOUT for one still running. The enemies are named by their table kind (the fight's
 // enemyKind), "built-in" for a slot with none. Writes at most cap-1 characters and a terminating zero into out and
 // returns the length written; no allocation.

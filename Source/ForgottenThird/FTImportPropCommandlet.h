@@ -9,7 +9,8 @@
 // The .glb is checked first (ftcore::propRules: textures up to 1024 px, no skin needed, the
 // Lattice emissive split with -Pack=Lattice); nothing is imported when a rule fails. It then logs
 // every imported asset and, for each static mesh, its triangle count, material slots and simple
-// collision. Returns 1 when a rule fails, no static mesh comes out, a skinned mesh comes out (use
+// collision. When a mesh comes out with Nanite, its project materials get the Nanite usage
+// (FT::AllowNanite). Returns 1 when a rule fails, no static mesh comes out, a skinned mesh comes out (use
 // FTImportCharacter), or a material can't be moved. A mesh without simple collision is a warning:
 // Interchange adds a box when the file has none of its own UCX_ shapes.
 

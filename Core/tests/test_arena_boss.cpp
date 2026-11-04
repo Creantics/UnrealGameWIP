@@ -664,6 +664,114 @@ TEST_CASE("arena boss loader: refusals carry their path; unknown keys warn; own 
     CHECK(warnings[0] == "moves[3]: unknown key: spin");
 }
 
+// ---- The standalone weak-point file ----------------------------------------------------------------
+
+namespace {
+
+const char* const kTestWeak = R"({
+  "version": 1,
+  "weakPoints": { "halfWidth": 0.4, "points": [
+      { "id": "seam", "x": 0, "y": 0.7, "radius": 0.06, "multiplier": 2.0, "facing": 0, "arc": 60 },
+      { "id": "back", "x": 0.1, "y": 0.5, "radius": 0.1, "multiplier": 3.0, "facing": 180 } ] }
+})";
+
+std::string weakPatched(const std::string& from, const std::string& to) {
+    std::string s = kTestWeak;
+    const std::size_t at = s.find(from);
+    REQUIRE(at != std::string::npos);
+    s.replace(at, from.size(), to);
+    return s;
+}
+
+std::string weakError(const std::string& json) {
+    ArenaWeakPoints out;
+    std::string error;
+    CHECK_FALSE(importArenaWeakPoints(json, out, &error));
+    // `out` is left default, all of it.
+    CHECK(out.points.size() == 0);
+    CHECK(out.points.halfWidth == kDefaultHalfWidth);
+    CHECK(out.gates[0].arc == 180.0f);
+    return error;
+}
+
+} // namespace
+
+TEST_CASE("arena weak points loader: a good file loads its points and gates") {
+    ArenaWeakPoints out;
+    std::string error;
+    std::vector<std::string> warnings;
+    const bool ok = importArenaWeakPoints(kTestWeak, out, &error, &warnings);
+    INFO(error);
+    REQUIRE(ok);
+    CHECK(warnings.empty());
+    CHECK(out.points.halfWidth == 0.4f);
+    REQUIRE(out.points.size() == 2);
+    CHECK(out.points[0].id() == "seam");
+    CHECK(out.points[0].y == 0.7f);
+    CHECK(out.points[0].radius == 0.06f);
+    CHECK(out.gates[0].facing == 0.0f);
+    CHECK(out.gates[0].arc == 60.0f);
+    CHECK(out.points[1].id() == "back");
+    CHECK(out.points[1].multiplier == 3.0f);
+    CHECK(out.gates[1].facing == 180.0f);
+    CHECK(out.gates[1].arc == 180.0f); // absent: all round
+
+    // The version may be left out, and so may the points (a body with no weak spot).
+    CHECK(importArenaWeakPoints(R"({ "weakPoints": { } })", out, &error));
+    CHECK(out.points.size() == 0);
+    CHECK(out.points.halfWidth == kDefaultHalfWidth);
+}
+
+TEST_CASE("arena weak points loader: refusals carry their path") {
+    CHECK(has(weakError("{"), "arena weak points:"));
+    CHECK(has(weakError("[]"), "arena weak points: expected an object"));
+    CHECK(has(weakError("{ \"version\": 2, \"weakPoints\": {} }"), "version: expected 1"));
+    CHECK(has(weakError("{ \"version\": 1 }"), "weakPoints: expected an object"));
+    CHECK(has(weakError("{ \"weakPoints\": [] }"), "weakPoints: expected an object"));
+    CHECK(has(weakError(weakPatched("\"radius\": 0.06", "\"radius\": 0.9")), "weakPoints.points[0].radius:"));
+    CHECK(has(weakError(weakPatched("\"arc\": 60", "\"arc\": 200")), "weakPoints.points[0].arc:"));
+    CHECK(has(weakError(weakPatched("\"y\": 0.5", "\"y\": 1.5")), "weakPoints.points[1].y:"));
+    CHECK(has(weakError(weakPatched("\"id\": \"back\"", "\"id\": \"seam\"")),
+              "weakPoints.points[1].id: duplicate id seam"));
+    CHECK(has(weakError(weakPatched("\"id\": \"back\"", "\"id\": \"Back\"")), "weakPoints.points[1].id: expected 1..15"));
+    CHECK(has(weakError(weakPatched("\"halfWidth\": 0.4", "\"halfWidth\": 0")),
+              "weakPoints.halfWidth: expected a number above 0"));
+    CHECK(has(weakError(weakPatched("\"multiplier\": 3.0, ", "")), "weakPoints.points[1].multiplier:"));
+    // More than kMaxWeakPoints.
+    std::string many = "{ \"weakPoints\": { \"points\": [";
+    for (std::size_t i = 0; i <= kMaxWeakPoints; ++i)
+        many += std::string(i ? "," : "") + "{ \"id\": \"p" + std::to_string(i) +
+                "\", \"x\": 0, \"y\": 0.5, \"radius\": 0.1, \"multiplier\": 2 }";
+    many += "] } }";
+    CHECK(has(weakError(many), "weakPoints.points: expected an array of 0.." + std::to_string(kMaxWeakPoints)));
+    // Several problems: one per line.
+    std::string two = weakPatched("\"radius\": 0.06", "\"radius\": 0.9");
+    two.replace(two.find("0.5,"), 3, "1.5");
+    const std::string both = weakError(two);
+    CHECK(has(both, "weakPoints.points[0].radius:"));
+    CHECK(has(both, "\nweakPoints.points[1].y:"));
+}
+
+TEST_CASE("arena weak points loader: unknown keys warn with their path") {
+    ArenaWeakPoints out;
+    std::string error;
+    std::vector<std::string> warnings;
+    CHECK(importArenaWeakPoints(weakPatched("\"version\": 1,", "\"version\": 1, \"note\": 1,"), out, &error, &warnings));
+    REQUIRE(warnings.size() == 1);
+    CHECK(warnings[0] == "unknown key: note");
+    warnings.clear();
+    CHECK(importArenaWeakPoints(weakPatched("\"halfWidth\": 0.4", "\"halfWidth\": 0.4, \"depth\": 1"), out, &error,
+                                &warnings));
+    REQUIRE(warnings.size() == 1);
+    CHECK(warnings[0] == "weakPoints: unknown key: depth");
+    warnings.clear();
+    CHECK(importArenaWeakPoints(weakPatched("\"arc\": 60", "\"arc\": 60, \"glow\": 1"), out, &error, &warnings));
+    REQUIRE(warnings.size() == 1);
+    CHECK(warnings[0] == "weakPoints.points[0]: unknown key: glow");
+    // Without a warnings list, nothing is collected and nothing breaks.
+    CHECK(importArenaWeakPoints(weakPatched("\"arc\": 60", "\"arc\": 60, \"glow\": 1"), out));
+}
+
 // ---- The run ---------------------------------------------------------------------------------------
 
 

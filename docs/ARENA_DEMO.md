@@ -175,22 +175,52 @@ Everything about it is data and host-side: the fight's rules never read it.
 The mode plays, from Core's state each frame (`UFTBeatFighterAnimInstance`, a pose that is a function of the fight, with a 0.12 s
 crossfade between clips, or the table's own top-level `blend_s`): a move's own clip through an attack, timed by Core's clock for the move at the rate
 `impact_s / startup` (so the blow lands as the startup ends; held on its last frame if the clip is shorter than the move);
-`stagger` while staggered; `face_down` (looping) while open after a parry or down after a riposte; `hit_light` or `hit_heavy`
-(a heavy blow, a riposte or a Release) between moves; `walk` (looping, optional) between moves while the body moves, once its
-smoothed ground speed passes 0.3 m/s and until it drops under 0.15 m/s, played at that speed over the row's `speed_mps` (rate 0.5 to
-1.6; a walk row without `speed_mps` is left out); `defeat` on death, held on its last frame; else `idle`, or `idle_p2` under
+`stagger` while staggered; `open` (optional) while open after a parry; `face_down` (looping) while down after a riposte, or open
+without an `open` clip, after the optional one-shot
+`face_down_in` from the start of the spell (an Open chained into a Down is one spell) and before the optional `face_down_out`, timed
+to end as the state does (Core's `stateLength`: the kind's openTime or downTime, or the host's hold; never in a hold until a
+release; it wins a state too short for both; a spell that ends before its get-up has run out, as a release from a hold does,
+still plays the rest of `face_down_out` from where it got to, ahead of everything between moves, unless a move, a stagger or
+a death comes first); `hit_light` or `hit_heavy`
+(a heavy blow, a riposte or a Release) between moves, but not for a blow on its knees or during its get-up (the go-down is
+its reaction, and one landing just before it is dropped); `walk` (looping, optional) between moves while the body moves, once its
+smoothed ground speed passes 0.35 m/s and until it drops under 0.1 m/s, played at that speed over the row's `speed_mps` (rate 0.5 to
+1.6; a walk row without `speed_mps` is left out); `defeat` on death, held on its last frame, or the optional `defeat_kneel` for a
+death on its knees; else `idle`, or `idle_p2` under
 60% hp. A clip the table lacks is left out (that state plays the idle). If the clip table, the mesh or the idle clip doesn't load, the
 kind keeps its shapes and the log has one warning. The camera looks up at a boss at least 4 m tall (hover included) toward 70%
 of its height, up to 15 degrees above level (the free camera's limit too); the camera never pulls out for a big boss. The assets are local; nothing here needs them to load.
 
 The kite boss (`kite_boss`, `Data/Anim/kite_clips.json`, assets under `/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/`,
-the import being `FTImportCharacter -Source=kite_boss.glb -Dest=/Game/Bosses/KiteBoss -Face=0`): 1100 hp, 9.1 m tall and
-hanging 0.9 m off the ground, drifting at 0.6 to 1 m/s. Eight moves, each its clip's id: `mitten_drop`, `swoop`, `peg_spray`,
+the import being `FTImportCharacter -Source=kite_boss.glb -Dest=/Game/Bosses/KiteBoss -Face=0`): 1100 hp, 9.1 m from its
+finial to its tail tip (the whole figure, `height` 9.1) and hanging 0.9 m off the ground, drifting at 0.6 to 1 m/s. The mesh is a
+rebuild of the first one with the same 48-bone rig and the same 23 clips, so the clip table did not change. Eight moves, each its
+clip's id: `mitten_drop`, `swoop`, `peg_spray`,
 `snag`, `wet_sheet`, `undertow`, `string_flick`, `sheet_slap` (Read card words slam, sweep, strike, charge, overhead, thrust,
 slash, backhand). Core has no "parry-opener" flag or multi-hit, so the marked move is made by `parryable`: only `swoop` (and the
 two basic strikes) can be parried; a parry of it opens the boss, the big ones are blocked or dodged, and `peg_spray` is one hit.
 `swoop` has weight 20 and a cooldown of 8 s, which comes to about one every 11 s. No phase system exists, so the second-phase moves
 (`*_double`, `swoop_feint`, `rockabye`) are not wired; `idle_p2` is the only second-phase clip played.
+
+Its weak point is the smile seam on the paper face, `seam` in `Data/Battle/arena_boss/kite_boss_weak.json`, read with
+`importArenaWeakPoints` (a standalone `{ "version": 1, "weakPoints": { ... } }` file: the block `importArenaBoss` reads from a boss
+file, because the kite keeps arena.json's moves and has no boss file of its own). One point on the front (`facing` 0, `arc` 60:
+the lead must stand within 60 degrees of the face), radius 0.06, multiplier 2.0, in figure space (the unit is the 9.1 m height, y
+up from the mesh's bottom; the 0.9 m hover lifts the whole mesh, so y does not count it). Its `y` is the seam's height above the
+mesh bottom over 9.1 m (provisional until the final mesh is measured). It is hosted by `FFTKiteHost`
+(`Source/ForgottenThird/FTKiteHost.*`, no Unreal headers), owned by the runner when the line-up holds a `kite_boss`:
+
+- the swoop's parry (any Parried of the kite) opens a `CritWindow` for the kind's `openTime`, a Staggered for its `staggerTime`;
+  the window shuts at its end;
+- in the blow hook a lead's blow on the kite is judged locked on, as the stone_bearer's are (`judgeLockOn`: the gate then the
+  point), and a crit scales the blow's damage and poise by the point's multiplier. The fight has one blow hook, so the runner
+  gives the kite no host (one warning) in a fight that has the stone_bearer's;
+- notes, one log line each as `Arena: kite ...`: crit opened (until when), crit landed (the point, its multiplier, `first` for
+  the first of an opening), crit closed; also each telegraph (a kite AttackStarted) and each hit taken, at Verbose. The weak
+  point's mesh socket is `seam` (`FFTKiteHost::WeakPointSocket`; the rig's bone has the same name).
+
+Stubs, each a named hook that only leaves a note, for the effects step to spawn Niagara systems from: `OnTelegraph(move, t)`,
+`OnCritOpened`, `OnCritLanded`, `OnHitTaken`.
 
 Play it in the 40 x 14 m ring:
 
@@ -198,7 +228,7 @@ Play it in the 40 x 14 m ring:
 UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=kite_ring
 ```
 
-or in the plain 12 m sand ring with `-ArenaLineup=kite_boss` instead of `-ArenaStage=kite_ring` (cramped for a body of 3.5 m).
+or in the plain 12 m sand ring with `-ArenaLineup=kite_boss` instead of `-ArenaStage=kite_ring` (cramped for a 9 m boss).
 
 ## The stone_bearer
 
@@ -221,7 +251,13 @@ ArenaFight body, hosted by `FFTStoneBearerHost` (`Source/ForgottenThird/FTStoneB
   third of the Load on the guest's call lifts it (floor off, Down for `downTime`). The boss offers no parries there, so a
   lead who reaches it with too little Load is topped up to one Release (`giveLoad`). CritOpened holds it Open until
   `until` (a riposte invites), CritClosed ends that;
-- a full intercept's Load (the marked throw's `LoadGained`) is given to the lead with `ArenaFight::giveLoad`.
+- a full intercept's Load (the marked throw's `LoadGained`) is given to the lead with `ArenaFight::giveLoad`;
+- the carried piece breaks (`Broke`, and the runner hangs its halves on the `slab` bone, each where its part of the slab was) on the boss's first Stagger, or when its
+  hp share first falls to `breakable.at` (0.4), whichever comes first. The hp break cancels no move and comes even with
+  the poise frozen, so every fight that gets that far plays it.
+
+The kind's hp, poise, staggerTime and openTime come from the boss file (the kind's own values in `arena.json` are
+overwritten); the rest of the kind, `poiseDelay` among it, comes from `arena.json`.
 
 Its weak point (`nape` in the json, on the lower back) is the mesh socket `setstone`
 (`FFTStoneBearerHost::WeakPointSocket`); any marker or crit VFX uses that name.
@@ -235,6 +271,44 @@ UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -
 
 Add `-ArenaAutoPlay` (the autopilot, with the host pressing Intercept and Guard on the call and releasing on the plinth) or
 `-ArenaIdle`. Intercept is U, the mouse's thumb button or the left stick's click, held; the boss's Guard is the guard.
+
+## Boss demo: the bosses with the three leads
+
+The boss meshes and their clips are local assets (`Content/Bosses/`, never committed: the main checkout holds untracked
+ones, and committing `.uasset` files there would make a merge fail on them). Each is one `FTImportCharacter` run from the
+boss's `.glb`; the file's stem names the asset folder, so the glb must be called `<stem>.glb`. A boss kind whose assets
+are missing keeps its placeholder shapes and the log has one warning. Run from the project folder, with the editor
+closed:
+
+| Boss | Kind | Zone | Import |
+|---|---|---|---|
+| the Unbending | `stone_bearer` | `stone_ring` | `-Source=<path>/stone_bearer.glb -Dest=/Game/Bosses/StoneBearer -Face=0` |
+| the Kite-Mother | `kite_boss` | `kite_ring` | `-Source=<path>/kite_boss.glb -Dest=/Game/Bosses/KiteBoss -Face=0` |
+| the Dealer | `white_glove` | `stone_ring` with `-ArenaLineup=white_glove` | `-Source=<path>/white_glove.glb -Dest=/Game/Bosses/WhiteGlove -Face=0` |
+
+```
+UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTImportCharacter <the import column> -NullRHI -unattended -nopause -nosplash
+```
+
+The Unbending also needs its slab halves, which its Broke split hangs on the `slab` bone: `UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTImportProp -Source=<path>/slab_halves.glb -Dest=/Game/Props/StoneBearerHalves -NullRHI -unattended -nopause -nosplash`.
+
+An import replaces what is there, so rerunning it after a boss's model changes is safe. Exit code 0 is a clean import (the
+log's "face bones" line is a warning for a boss, which has no human head).
+
+Pick the lead with `-ArenaLead=Devin`, `-ArenaLead=Duy` or `-ArenaLead=Third` (the name of a `PartyLooks` entry in the local
+`Config/UserGame.ini`, any case); each plays its own fighter kit (Devin the blade, Duy kicks and a gun, the Third spells).
+Without the flag the lead is the first look (Devin in the main checkout).
+
+```
+UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=stone_ring -ArenaLead=Devin
+UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=kite_ring -ArenaLead=Duy
+UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=stone_ring -ArenaLineup=white_glove -ArenaLead=Third
+```
+
+`-ArenaStage=stone_ring` hosts `stone_bearer` and `-ArenaStage=kite_ring` hosts `kite_boss`; `-ArenaLineup=<kind>` fights a
+kind in whatever zone `-ArenaStage` names (the sand ring by default). `-ArenaAutoPlay` has the autopilot play the lead.
+For a picture with no window: `-RenderOffScreen -ArenaShot=<path prefix> -ArenaShotDelay=8` in place of `-windowed`
+(needs a renderer, not `-NullRHI`).
 
 ## Launch
 
@@ -356,11 +430,14 @@ each frame and handed to the fight on its next step, so no press is lost between
 | `-ArenaShot=<path prefix>` | Autoplay and save the views (`_1_ring`, `_2_tell` with the Read cards picked, `_3_impact`, `_4_load` with the gauge past a third, or the overload under `-ArenaHoldLoad`, `_5_release`, `_6_result` .png), then quit; a view the fight never reaches is skipped. Needs a renderer (`-RenderOffScreen`, not `-NullRHI`). |
 | `-ArenaShotDelay=S` | Seconds before the first screenshot (the fight waits for it). |
 | `-ArenaOverview` | With `-ArenaShot`, a first view `_0_overview` of the whole zone from a camera high over its south-west side (pulled in along the line if a building is in the way), HUD off, with the zone's walls (green), obstacles (red) and road mouths (yellow) drawn as debug lines for the picture only; then `_0b_edge`, the player 1.4 m from the wall on his left to show the edge cue. |
+| `-ArenaShotAt=S,S,...` | With `-ArenaShot`, an extra view `_t_<S>` at each of those fight times (after `_1_ring`; the six views and the quit are unchanged), so two runs of the same fight are shot at the same moments. |
+| `-ArenaNoBossFx` | The stone bearer's effects (tells, impacts, chips, the weak point's glow) stay off and the fight runs the same (the OFF half of an OFF/ON capture). |
+| `-ArenaNoKiteFx` | The Kite-Mother's effects stay off and the fight runs the same (the OFF half of an OFF/ON capture). |
 
 At the end of every fight the log gets one line, ids and counts only, never text, as the beat screen logs its own ([BEAT_SCREEN.md](BEAT_SCREEN.md), "Log lines"). Core formats it into a fixed buffer (`ftcore::arenaResultLine`):
 
 ```
-Arena: VICTORY at <scene> beat <b> step <s> after <t> s, zone <zone>, kit <kit>, enemies <id>+<id>+<id>, <pilot> seed <n>, hp <h>/<max>, <x> hits, <y> taken, <b> blocks, <p> parries, <r> ripostes, <e> evades, <g> guard breaks, <h> heals, <l> releases, <o> overloads, <c>/<d> reads right, dealt <n>, took <n>, <r> restarts.
+Arena: VICTORY at <scene> beat <b> step <s> after <t> s, zone <zone>, kit <kit>, enemies <id>+<id>+<id>, <pilot> seed <n>, hp <h>/<max>, <x> hits, <y> taken, <b> blocks, <p> parries, <r> ripostes, <e> evades, <g> guard breaks, <s> staggers, <h> heals, <l> releases, <o> overloads, <c>/<d> reads right, dealt <n>, took <n>, <r> restarts.
 Arena: DEFEAT at <scene> beat <b> step <s> after <t> s, ...
 ```
 

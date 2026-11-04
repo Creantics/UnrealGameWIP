@@ -1,0 +1,7 @@
+{
+  "hideSlot": "UB_slab",
+  "pieces": [
+    { "mesh": "/Game/Props/StoneBearerHalves/slab_halves/StaticMeshes/slab_half_01.slab_half_01", "bone": "slab", "offset": [0, 0, 0], "turn": [0, 0, 0] },
+    { "mesh": "/Game/Props/StoneBearerHalves/slab_halves/StaticMeshes/slab_half_02.slab_half_02", "bone": "slab", "offset": [0, 0, 0], "turn": [0, 0, 0] }
+  ]
+}

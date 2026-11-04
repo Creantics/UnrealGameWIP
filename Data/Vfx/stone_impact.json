@@ -1,0 +1,86 @@
+{
+  "name": "stone_impact",
+  "emitters": [
+    {
+      "name": "dust",
+      "bursts": [{"time": 0.0, "count": 24}],
+      "duration": 0.1,
+      "maxParticles": 32,
+      "lifetime": [0.8, 1.4],
+      "shape": "ring",
+      "radius": 0.5,
+      "innerRadius": 0.25,
+      "speed": [2.0, 3.8],
+      "velocityMin": [0.0, 0.3, 0.0],
+      "velocityMax": [0.0, 0.7, 0.0],
+      "gravity": [0.0, -0.3, 0.0],
+      "drag": 3.0,
+      "startSize": [0.7, 1.2],
+      "sizeOverLife": [{"t": 0.0, "v": 0.5}, {"t": 0.35, "v": 1.4}, {"t": 1.0, "v": 2.1}],
+      "startRotation": [0.0, 6.28],
+      "angularVelocity": [-1.0, 1.0],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.66, 0.56, 0.42, 0.0]},
+        {"t": 0.08, "color": [0.68, 0.57, 0.43, 0.65]},
+        {"t": 1.0, "color": [0.6, 0.52, 0.4, 0.0]}
+      ],
+      "blend": "alpha",
+      "sprite": "puff",
+      "coreShade": 0.5,
+      "softness": 0.9
+    },
+    {
+      "name": "plume",
+      "bursts": [{"time": 0.0, "count": 8}],
+      "duration": 0.1,
+      "maxParticles": 12,
+      "lifetime": [0.5, 0.9],
+      "shape": "sphere",
+      "radius": 0.2,
+      "speed": [0.4, 1.0],
+      "velocityMin": [0.0, 0.8, 0.0],
+      "velocityMax": [0.0, 1.6, 0.0],
+      "drag": 2.0,
+      "startSize": [0.9, 1.4],
+      "sizeOverLife": [{"t": 0.0, "v": 0.6}, {"t": 0.4, "v": 1.2}, {"t": 1.0, "v": 1.6}],
+      "startRotation": [0.0, 6.28],
+      "angularVelocity": [-0.6, 0.6],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.76, 0.65, 0.5, 0.0]},
+        {"t": 0.1, "color": [0.78, 0.67, 0.52, 0.55]},
+        {"t": 1.0, "color": [0.7, 0.6, 0.47, 0.0]}
+      ],
+      "blend": "alpha",
+      "sprite": "puff",
+      "coreShade": 0.45,
+      "softness": 0.9
+    },
+    {
+      "name": "chunks",
+      "bursts": [{"time": 0.0, "count": 16}],
+      "duration": 0.1,
+      "maxParticles": 24,
+      "lifetime": [0.6, 1.0],
+      "shape": "sphere",
+      "radius": 0.25,
+      "speed": [3.0, 6.0],
+      "velocityMin": [0.0, 2.0, 0.0],
+      "velocityMax": [0.0, 3.5, 0.0],
+      "gravity": [0.0, -9.8, 0.0],
+      "drag": 0.6,
+      "startSize": [0.08, 0.18],
+      "sizeOverLife": [{"t": 0.0, "v": 1.0}, {"t": 1.0, "v": 0.8}],
+      "startRotation": [0.0, 6.28],
+      "angularVelocity": [-6.0, 6.0],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.5, 0.41, 0.3, 1.0]},
+        {"t": 0.8, "color": [0.48, 0.4, 0.29, 1.0]},
+        {"t": 1.0, "color": [0.46, 0.38, 0.28, 0.0]}
+      ],
+      "blend": "alpha",
+      "sprite": "soft",
+      "coreShade": 0.85,
+      "softness": 0.1
+    }
+  ]
+}

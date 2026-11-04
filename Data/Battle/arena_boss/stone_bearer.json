@@ -2,7 +2,7 @@
   "version": 1,
   "bpm": 76,
   "hp": 1400,
-  "poise": 160,
+  "poise": 175,
   "staggerTime": 2.0,
   "openTime": 3.0,
   "intercept": { "window": 0.15, "rearm": 0.4 },
@@ -63,5 +63,6 @@
   ],
   "weight": { "cap": 5, "damagePerStack": 0.1, "defencePerStack": 0.1, "shockRingAt": 3, "poiseFreezeAt": 5,
               "guard": 1, "soloLift": 1, "interceptShed": 1, "critShed": 1 },
+  "breakable": { "at": 0.4 },
   "pedestal": { "at": 0.25, "firstCallBeats": 4, "callEveryBeats": 4, "releaseWindow": 0.15, "downTime": 3.0 }
 }

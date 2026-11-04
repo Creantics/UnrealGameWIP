@@ -1591,11 +1591,13 @@ TEST_CASE("arena parry: a window after the press, no window on a mashed press, a
         CHECK(parried->event.source == 0);
         CHECK(parried->event.target == kArenaPlayer);
         CHECK(rig.out().enemies[0].brain == ArenaBrain::Open);
+        CHECK(rig.out().enemies[0].stateLength == doctest::Approx(1.5f)); // the kind's openTime
         CHECK_FALSE(rig.out().enemies[0].token);
         rig.runFor(1.0f);
         CHECK(rig.out().enemies[0].brain == ArenaBrain::Open); // openTime is 1.5 s
         rig.runFor(0.6f);
         CHECK(rig.out().enemies[0].brain != ArenaBrain::Open);
+        CHECK(rig.out().enemies[0].stateLength == 0.f);
         CHECK(rig.out().player.parrying == false);
     }
     {   // a second press 0.45 s after the first (parryRearm 0.5 s) opens no window: the bite at 0.52 s is blocked
@@ -3847,6 +3849,8 @@ TEST_CASE("arena log: one line per fight, ids and counts only, like the beat scr
     CHECK(won.rfind("Arena: VICTORY at standalone beat 0 step 0 after ", 0) == 0);
     CHECK(contains(won, " s, zone sand_ring, kit devin, enemies brute+skirmisher+breaker, autoplay seed 3, hp "));
     CHECK(contains(won, "/150, "));
+    CHECK(contains(won, " guard breaks, "));
+    CHECK(contains(won, " staggers, "));
     CHECK(contains(won, " reads right, dealt "));
     CHECK(contains(won, ", 0 restarts."));
     CHECK(won.back() == '.');
@@ -3858,6 +3862,7 @@ TEST_CASE("arena log: one line per fight, ids and counts only, like the beat scr
     const std::string lost = resultLineOf(wave, table, false, ids);
     CHECK(lost.rfind("Arena: DEFEAT at SC-07 beat 4 step 2 after ", 0) == 0);
     CHECK(contains(lost, "idle seed 3, hp 0/150, 0 hits"));
+    CHECK(contains(lost, " guard breaks, 0 staggers, ")); // nobody hit anything: no poise broke
     const std::string builtIn = resultLineOf(defaultArenaDef(), ArenaTable{}, true, ids);
     CHECK(contains(builtIn, ", enemies built-in, "));
     // An id with a space or a comma can't break the line apart; a fight still running is a TIMEOUT.
@@ -3955,6 +3960,7 @@ TEST_CASE("arena hooks: a hold cuts a live move at the next tick, lasts its seco
         rig.tick();
         CHECK(rig.fight.enemyHeld(0));
         CHECK(rig.out().enemies[0].brain == ArenaBrain::Open);
+        CHECK(rig.out().enemies[0].stateLength == doctest::Approx(0.5f)); // the hold's, not the kind's openTime
         CHECK_FALSE(rig.out().enemies[0].token);
         const int started = rig.count(ArenaEventType::AttackStarted);
         rig.run(27); // 28 ticks held: 0.47 s
@@ -3975,6 +3981,7 @@ TEST_CASE("arena hooks: a hold cuts a live move at the next tick, lasts its seco
         const int started = rig.count(ArenaEventType::AttackStarted);
         rig.runFor(5.f);
         CHECK(rig.out().enemies[0].brain == ArenaBrain::Down);
+        CHECK(rig.out().enemies[0].stateLength == kForever);
         CHECK(rig.fight.enemyHeld(0));
         CHECK(rig.count(ArenaEventType::AttackStarted) == started);
         rig.fight.releaseEnemy(0);

@@ -47,7 +47,8 @@
 //   each opening is flagged `first`.
 //
 // * The breakable (ArenaBreakable). A piece the boss carries breaks on its first Stagger, in any phase,
-//   once. The run then plays each phase's broken move table.
+//   once, or earlier when a boss rule breaks it (breakNow: a beat of its own, which cuts nothing). The
+//   run then plays each phase's broken move table.
 //
 // * Phases (ArenaBossPhaseTrack). The boss's hp falls through each phase to its floor (endAt x max hp,
 //   as BeatBoss): at or below it the next phase starts. Phases never go back. Each phase has a whole and
@@ -78,6 +79,8 @@
 //     onStagger(t)               Broke the first time (the tables swap); cancels the live move. Broke
 //                                names the move it cut (one with a call or impact still pending), else
 //                                kArenaBossNoMove.
+//     breakNow()                 a boss rule's break at now(): Broke the first time, with
+//                                kArenaBossNoMove (it cuts nothing: the live move plays on).
 //     onHit(...)                 a lead's blow on the boss: the crit judge (Crit).
 //   Answered for the last impact of an Intercept move whose impacts were all Intercepted opens the crit
 //   window for the move's `opens` seconds from that impact (CritOpened) and gives its `load`
@@ -107,6 +110,9 @@
 //   guestCall: fromBeats 0..8, minLeadBeats 0.5..8, missShiftBeats 0..minLeadBeats (below it).
 //   weakPoints: as Data/Battle/weakpoints.json's entries (WeakPoint.h) plus each point's gate,
 //   facing 0..360 and arc 0..180 degrees (defaults 0 and 180: all round).
+//   A boss whose moves are not in this format (a kind that keeps arena.json's) can still have weak points:
+//   a standalone file { "version": 1, "weakPoints": { ... } } with the same block, read by
+//   importArenaWeakPoints (Data/Battle/arena_boss/kite_boss_weak.json is the first).
 //   keepOut: bearing 0..360 degrees (the arena's own frame, the host's yaw), distance 0..100 m from the
 //   arena's centre, radius 0..20 m (0: none). Absent: none.
 //   moves: 1..kMaxArenaBossMoves, ids lowercase [a-z0-9_] of 1..kMaxArenaBossMoveId characters, unique.
@@ -343,7 +349,7 @@ struct ArenaBreakable {
     bool broken = false;
     double brokeAt = 0.0;
 
-    // A Stagger at t: true the first time (it breaks now), false after.
+    // A Stagger (or a boss rule's break) at t: true the first time (it breaks now), false after.
     bool onStagger(double t) {
         if (broken) return false;
         broken = true;
@@ -550,11 +556,18 @@ FTCORE_API bool importArenaWeakPoints(const JsonValue& v, const std::string& pat
                                       std::vector<std::string>& errors,
                                       std::vector<std::string>* warnings = nullptr);
 
+// Reads a standalone weak-point file ({ "version": 1, "weakPoints": { ... } }, the block importArenaBoss reads
+// and the same errors and warnings; "weakPoints" is required here). On failure `out` is default and *error lists
+// each problem with its path, one per line.
+FTCORE_API bool importArenaWeakPoints(std::string_view json, ArenaWeakPoints& out, std::string* error = nullptr,
+                                      std::vector<std::string>* warnings = nullptr);
+
 // ---- The run ---------------------------------------------------------------------------------------
 
 enum class ArenaBossEventType : std::uint8_t { // append only
     PhaseChanged,  // value = the phase now
-    Broke,         // the breakable broke: the broken tables play from now
+    Broke,         // the breakable broke: the broken tables play from now (move: the move a stagger cut,
+                   // else kArenaBossNoMove)
     Call,          // the guest's k-th call of `move`, for its k-th impact (impact = k; move
                    // kArenaBossNoMove: a repeating call, impact 0)
     Answered,      // `impact` of `move` resolved: `outcome`
@@ -620,6 +633,9 @@ public:
     // The stagger at now(), appended to the last call's events instead of clearing them: for a boss
     // rule that advanced the run to the stagger's time first, to judge it with every answer up to it.
     FTCORE_API void staggerNow();
+    // A boss rule breaks the breakable at now() without a stagger: Broke (move kArenaBossNoMove), appended
+    // as staggerNow's; the live move plays on. True when it broke now, false when it was already broken.
+    FTCORE_API bool breakNow();
     // A lead's blow (see CritWindow::judge / judgeLockOn; `at` null: locked on).
     FTCORE_API const ArenaBossEvents& onHit(Vec2 from, Vec2 pos, Vec2 facing, double t, const AimPoint* at,
                                             CritResult* result);

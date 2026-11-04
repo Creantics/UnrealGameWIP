@@ -132,7 +132,7 @@
     },
     {
       "id": "kite_boss",
-      "hp": 1100, "poise": 120, "poiseDelay": 3, "staggerTime": 2, "openTime": 2, "downTime": 1.5,
+      "hp": 1100, "poise": 120, "poiseDelay": 4, "staggerTime": 2, "openTime": 2, "downTime": 1.5,
       "walkSpeed": 0.6, "runSpeed": 1, "strafeSpeed": 0.5, "accel": 2, "turnRate": 1.2,
       "preferredRange": 6.5, "runRange": 11, "attackDelay": 0.8, "bodyRadius": 2.5, "height": 9.1, "bpm": 72,
       "look": { "clips": "Data/Anim/kite_clips.json", "hover": 0.9, "scale": 1, "yawOffset": -90 },
@@ -149,7 +149,7 @@
     },
     {
       "id": "stone_bearer",
-      "hp": 1400, "poise": 160, "poiseDelay": 3, "staggerTime": 2, "openTime": 3, "downTime": 3,
+      "hp": 1400, "poise": 175, "poiseDelay": 8, "staggerTime": 2, "openTime": 3, "downTime": 3,
       "walkSpeed": 0.8, "runSpeed": 1.6, "strafeSpeed": 0.6, "accel": 2.5, "turnRate": 1.4,
       "preferredRange": 3.5, "runRange": 9, "attackDelay": 0.8, "bodyRadius": 1.2, "height": 5.1, "bpm": 76,
       "look": { "clips": "Data/Anim/stone_bearer_clips.json", "scale": 1, "yawOffset": -90 },

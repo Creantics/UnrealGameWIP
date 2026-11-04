@@ -9,7 +9,8 @@
 // Core judges, the host moves. The runner steps the fight with an accumulator (at most 8 steps a frame), the step the Core
 // tests and the balance check use, and moves the bodies with ftcore::arenaStep, which keeps every body inside the zone and
 // out of its obstacles. The figures are placed between the last two steps, turned to Core's facings and posed from Core's
-// actions; a skinned enemy's clip is picked and timed from Core's state (DriveSkin).
+// actions; a skinned enemy's clip is picked and timed from Core's state (DriveSkin). The first Arena boss's effects
+// (FFTArenaBossVfx) are played from the same state: its parts, the blows on it and its host's notes.
 //
 // The keys, the camera and the flags are as docs/ARENA_DEMO.md and AFTArenaGameMode list them.
 
@@ -21,6 +22,9 @@
 #include "ftcore/ArenaZone.h"
 #include "ftcore/BeatChoreo.h"
 
+#include "FTArenaBossVfx.h"
+#include "FTKiteHost.h"
+#include "FTKiteVfx.h"
 #include "FTStoneBearerHost.h"
 
 #include <array>
@@ -54,9 +58,13 @@ struct FFTArenaSkin
 	int32 FaceDown = -1;
 	int32 Open = -1;
 	int32 Defeat = -1;
+	int32 DefeatKneel = -1; // optional: a death on its knees, else defeat
 	int32 HitLight = -1;
 	int32 HitHeavy = -1;
 	int32 Walk = -1; // optional: played at the body's ground speed over its authored speed_mps, else the idle
+	// Optional, with face_down: the go-down into it and the get-up out of it, else face_down throughout.
+	int32 FaceDownIn = -1;
+	int32 FaceDownOut = -1;
 	std::array<int32, ftcore::kMaxArenaMoves> MoveClip{};
 
 	bool IsLoaded() const { return Clips.IsValid() && Idle >= 0; }
@@ -79,6 +87,7 @@ struct FFTArenaRunSetup
 	bool bAutoPlay = false;
 	bool bIdle = false;
 	bool bHoldLoad = false;
+	bool bBossSplitAtStart = false; // -ArenaBossSplit
 	// Exit the process on the outcome (0 a victory, 1 a defeat), and end a fight that outlasts the watchdog.
 	bool bQuitOnFinish = false;
 	// A -ArenaShot run: the shots decide when to quit, and nothing fights again.
@@ -180,6 +189,8 @@ public:
 	{
 		return (Index >= 0 && Index < MaxEnemies && bKindCritSlot[Index]) ? &KindCrits[static_cast<size_t>(Index)] : nullptr;
 	}
+	// The Kite-Mother's weak-point host while it fights here (null otherwise).
+	const FFTKiteHost* GetKite() const { return Kite.IsActive() ? &Kite : nullptr; }
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -188,8 +199,15 @@ private:
 	void PrepareStoneBearer();
 	void BeginStoneBearer();
 	void EndStoneBearer();
-	// The host's new notes, one log line each (ids, counts and outcome words only).
+	// The host's new notes, one log line each (ids, counts and outcome words only); a crit's burst.
 	void LogStoneBearerNotes();
+	// The boss's effects: its attack part going From -> To (its tell through the startup, its impact as it turns active),
+	// a blow landing on it (E: Hit, CounterStagger or ReadCounter), and where its weak point is now.
+	void BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 From, uint8 To);
+	void BossHitVfx(const ftcore::ArenaEvent& E);
+	FVector BossWeakPoint() const;
+	// The boss broke its carried piece: its figure takes the parts on the split file's bones (once a fight).
+	void SplitBossCarried();
 	// Plain kinds' weak points (ftcore/ArenaKindCrit.h): Data/Battle/arena_crit.json read once, then on each begin and
 	// restart one ArenaKindCrit per slot whose kind has an entry, and the blow hook that rules on the lead's blows on them.
 	// After each step the slots' AttackStarted events open the windows; an opening and every crit are one log line each.
@@ -205,11 +223,20 @@ private:
 	UFTVfxComponent* MakeKindCritEffect(AFTArenaFighter* Figure, std::string_view Effect, std::string_view Socket);
 	// The kind id of slot I, as the table names it ("" for a def built in code).
 	const char* SlotKindId(int32 I) const;
+	// The kite_boss's weak point, when the line-up has one and the stone_bearer's host isn't in the fight (ArenaFight has one
+	// blow hook): its file read (before the fight begins), then the host begun on the fight (after it begins or restarts).
+	void PrepareKite();
+	void BeginKite();
+	void EndKite();
+	// The host's new notes, one log line each.
+	void LogKiteNotes();
 	// Dresses enemy slot I as a skeletal mesh when its kind has a look that loads (see AFTArenaGameMode's header).
 	void LoadSkin(int32 I);
 	// Picks and times slot I's clip from its Core state: the move's own clip through an attack, at the rate that lands its
 	// impact at the end of the startup; stagger; face down while open; the hit reaction between moves; defeat; idle.
 	void DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const ftcore::ArenaEnemyKind& Kind, float Alpha);
+	// Whether a blow makes slot I flinch: not on its knees (the go-down is its reaction), nor while it gets up from them.
+	bool Flinches(int32 I) const { return !bKneeling[I] && Now >= UpOwedUntil[I]; }
 	void PutBodiesAtStart();
 	// This frame's presses (edges kept until a step takes them), the held guard, the stick and the camera.
 	void PollInput(float DeltaSeconds);
@@ -237,6 +264,9 @@ private:
 	TObjectPtr<AStaticMeshActor> PlinthActor;
 	UPROPERTY()
 	TObjectPtr<AStaticMeshActor> KeepOutActor;
+	// The stone_bearer's effects: telegraph, impact, hit chips, crit burst and the open weak point's glow.
+	UPROPERTY()
+	FFTArenaBossVfx BossVfx;
 	// Each crit slot's effects (see SpawnKindCritEffects), owned by its figure.
 	UPROPERTY()
 	TObjectPtr<UFTVfxComponent> KindCritTellFx[6]; // ftcore::kMaxArenaEnemies (a literal for UHT)
@@ -255,6 +285,12 @@ private:
 	float WalkSpeed[ftcore::kMaxArenaEnemies] = {};
 	bool bWalking[ftcore::kMaxArenaEnemies] = {};
 	double WalkPhase[ftcore::kMaxArenaEnemies] = {};
+	// A skin on its knees (Down, or Open without a clip of its own; one spell however the states chain) and since when, how
+	// far into its get-up it was last drawn (s), and until when a get-up cut short by the spell's end is still owed.
+	bool bKneeling[ftcore::kMaxArenaEnemies] = {};
+	double KneelSince[ftcore::kMaxArenaEnemies] = {};
+	double UpAt[ftcore::kMaxArenaEnemies] = {};
+	double UpOwedUntil[ftcore::kMaxArenaEnemies] = {};
 	float FrameDelta = 0.f; // the frame's seconds, for the clips' crossfades
 
 	ftcore::ArenaTable Table;
@@ -311,6 +347,7 @@ private:
 	bool bFightAgain = true;
 	bool bReplacePawn = true;
 	bool bHoldLoad = false;
+	bool bBossSplitAtStart = false;
 	bool bResultLogged = false;
 	double ResultTime = 0.0;
 	double BeginNow = 0.0;
@@ -322,6 +359,7 @@ private:
 	int32 StoneBearerSlot = -1;
 	float ZoneYaw = 0.f;
 	int32 StoneBearerLogged = 0;
+	mutable bool bWeakPointWarned = false; // the mesh has no weak-point bone (warned once)
 
 	// Plain kinds' weak points: the file (read once), each slot's crit and whether it is on, whether the window was open
 	// after the last step, and whether this runner holds the fight's blow hook for them.
@@ -334,4 +372,9 @@ private:
 	// The crit count each slot's effects have answered (ArenaKindCrit::crits), and whether its tell is playing.
 	int32 KindCritCritsSeen[ftcore::kMaxArenaEnemies] = {};
 	bool bKindCritTelling[ftcore::kMaxArenaEnemies] = {};
+	// The Kite-Mother's weak-point host, its slot in the line-up (-1 without one), the notes logged so far and its effects.
+	FFTKiteHost Kite;
+	int32 KiteSlot = -1;
+	int32 KiteLogged = 0;
+	FFTKiteVfx KiteFx;
 };
