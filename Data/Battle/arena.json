@@ -150,7 +150,7 @@
     {
       "id": "stone_bearer",
       "hp": 1400, "poise": 175, "poiseDelay": 8, "staggerTime": 2, "openTime": 3, "downTime": 3,
-      "walkSpeed": 0.8, "runSpeed": 1.6, "strafeSpeed": 0.6, "accel": 2.5, "turnRate": 1.4,
+      "walkSpeed": 0.8, "runSpeed": 0.8, "strafeSpeed": 0.8, "accel": 2.5, "turnRate": 1.4,
       "preferredRange": 3.5, "runRange": 9, "attackDelay": 0.8, "bodyRadius": 1.2, "height": 5.1, "bpm": 76,
       "look": { "clips": "Data/Anim/stone_bearer_clips.json", "scale": 1, "yawOffset": -90 },
       "moves": [
