@@ -3035,6 +3035,7 @@ TEST_CASE("arena kite boss: its moves name clips of its table, with impacts that
     CHECK(boss.look.hover > 0.f);
     CHECK(boss.bpm == 72.f);
     CHECK(k.clips.mesh().rfind("/Game/", 0) == 0);
+    CHECK(k.clips.blend == doctest::Approx(0.25)); // a parried dive into the hovering stagger fades over 7-8 frames, not 4
     // The clips the host plays for a state, not a move.
     for (const char* id : {"idle", "idle_p2", "stagger", "face_down", "defeat", "hit_light", "hit_heavy"})
         CHECK_MESSAGE(k.clips.find(id) >= 0, id);
