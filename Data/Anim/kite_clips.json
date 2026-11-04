@@ -1,6 +1,7 @@
 {
  "version": 1,
  "mesh": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_boss",
+ "blend_s": 0.25,
  "clips": [
   {
    "id": "idle",
