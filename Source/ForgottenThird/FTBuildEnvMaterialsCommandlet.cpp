@@ -7,12 +7,18 @@
 #include "AssetCompilingManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "FTImportMaterials.h"
+#include "Engine/Texture.h"
 #include "HAL/FileManager.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionTextureObject.h"
 #include "Materials/MaterialExpressionTime.h"
+#include "Materials/MaterialExpressionUtils.h"
+#include "Materials/MaterialExpressionVolumetricAdvancedMaterialOutput.h"
+#include "Materials/MaterialExpressionWorldPosition.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
@@ -34,6 +40,18 @@ const TCHAR* const kSkyCode = TEXT(R"HLSL(return FTEnvSky(-Parameters.CameraVect
 	Glow, GlowKelvin, GlowDeg, GlowWidthDeg, GlowFloor, GlowZenith, GlowSkyFade,
 	Flat, FlatLuminance);
 )HLSL");
+
+// The clouds' include (Env/Clouds.ush): the full sample, and the cheap bound the engine marches by.
+const TCHAR* const kCloudsInclude = TEXT("/Plugin/FTLook/Private/Env/Clouds.ush");
+const TCHAR* const kCloudCode = TEXT(R"HLSL(return FTEnvCloudExtinction(Position, H, Altitude, Time,
+	Cover, Type, Density, WindDeg, WindMps, Drift, Underglow, UnderglowKelvin,
+	Shape, ShapeSampler, Erosion, ErosionSampler, Glow);
+)HLSL");
+const TCHAR* const kCloudCoverCode = TEXT(R"HLSL(return FTEnvCloudCover(Position, H, Time, Cover, Type, WindDeg, WindMps, Drift);
+)HLSL");
+// The engine's tiling noise volumes the clouds take their shape and worn edges from.
+const TCHAR* const kCloudShapeNoise = TEXT("/Engine/EngineSky/VolumetricClouds/T_VolumeNoiseShape128.T_VolumeNoiseShape128");
+const TCHAR* const kCloudErosionNoise = TEXT("/Engine/EngineSky/VolumetricClouds/T_VolumeNoiseErosion32.T_VolumeNoiseErosion32");
 
 FString PackageFile(const TCHAR* Package)
 {
@@ -70,11 +88,18 @@ UMaterialExpression* AddEngineExpression(UMaterial* Material, const TCHAR* Class
 	return AddExpressionOf(Material, Class, X, Y);
 }
 
-void AddInput(UMaterialExpressionCustom* Custom, FName Name, UMaterialExpression* From)
+void AddInput(UMaterialExpressionCustom* Custom, FName Name, UMaterialExpression* From, int32 Output = 0)
 {
 	FCustomInput& In = Custom->Inputs.AddDefaulted_GetRef();
 	In.InputName = Name;
-	In.Input.Connect(0, From);
+	In.Input.Connect(Output, From);
+}
+
+void AddOutput(UMaterialExpressionCustom* Custom, FName Name, ECustomMaterialOutputType Type)
+{
+	FCustomOutput& Out = Custom->AdditionalOutputs.AddDefaulted_GetRef();
+	Out.OutputName = Name;
+	Out.OutputType = Type;
 }
 
 UMaterialExpressionCustom* AddCustom(UMaterial* Material, const TCHAR* Description, const TCHAR* Include, const TCHAR* Code,
@@ -97,6 +122,26 @@ UMaterialExpressionScalarParameter* AddScalar(UMaterial* Material, FName Name, f
 	P->Group = TEXT("Env");
 	P->UpdateParameterGuid(true, false);
 	return P;
+}
+
+// A fixed texture (an engine one), sampled the way its own settings ask.
+UMaterialExpressionTextureObject* AddTextureObject(UMaterial* Material, UTexture* Texture, int32 Y)
+{
+	UMaterialExpressionTextureObject* T = AddExpression<UMaterialExpressionTextureObject>(Material, -900, Y);
+	T->Texture = Texture;
+	T->SamplerType = MaterialExpressionUtils::GetSamplerTypeForTexture(Texture);
+	return T;
+}
+
+// An engine texture; null, with an error logged, when the engine has none at Path.
+UTexture* LoadEngineTexture(const TCHAR* Path)
+{
+	UTexture* Texture = LoadObject<UTexture>(nullptr, Path);
+	if (!Texture)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildEnvMaterials: the engine has no texture %s."), Path);
+	}
+	return Texture;
 }
 
 // One of the environment collection's parameters.
@@ -185,6 +230,86 @@ UMaterial* BuildSky(UMaterialParameterCollection* Env)
 	return Material;
 }
 
+// The clouds: a volume material for the volumetric cloud layer (Env/Clouds.ush). Its albedo is the world's cloudAlbedo,
+// its extinction (the volume's SubsurfaceColor) and its glow the include's, and the output node holds the light: a
+// forward lobe that gives the silver edge with the sun or moon behind, a weaker back lobe, one octave of the engine's
+// multiple-scattering approximation so thick cloud stays bright (the second is the expensive one), and a marched
+// shadow so the bases go dark. The cheap bound (FTEnvCloudCover, no texture) is its conservative density, so the
+// engine skips the empty sky without running the full sample.
+UMaterial* BuildClouds(UMaterialParameterCollection* Env)
+{
+	UTexture* ShapeNoise = LoadEngineTexture(kCloudShapeNoise);
+	UTexture* ErosionNoise = LoadEngineTexture(kCloudErosionNoise);
+	if (!ShapeNoise || !ErosionNoise)
+	{
+		return nullptr;
+	}
+	UMaterial* Material = NewMaterial(FTScene::EnvCloudMaterial);
+	Material->MaterialDomain = MD_Volume;
+	Material->SetUsageByFlag(MATUSAGE_VolumetricCloud, true);
+
+	// The engine's cloud sample: its outputs are the altitude, the height in the layer and the share of the layer's depth.
+	UMaterialExpression* CloudSample = AddEngineExpression(Material, TEXT("MaterialExpressionCloudSampleAttribute"), -900, -500);
+	if (!CloudSample)
+	{
+		return nullptr;
+	}
+	UMaterialExpressionWorldPosition* Position = AddExpression<UMaterialExpressionWorldPosition>(Material, -900, -600);
+	UMaterialExpressionTime* Time = AddExpression<UMaterialExpressionTime>(Material, -900, -400);
+	UMaterialExpressionCollectionParameter* Cover = AddEnv(Material, Env, TEXT("CloudCover"), -300);
+	UMaterialExpressionCollectionParameter* Type = AddEnv(Material, Env, TEXT("CloudType"), -200);
+	UMaterialExpressionCollectionParameter* WindDeg = AddEnv(Material, Env, TEXT("WindDeg"), -100);
+	UMaterialExpressionCollectionParameter* WindMps = AddEnv(Material, Env, TEXT("WindMps"), 0);
+	UMaterialExpressionCollectionParameter* Drift = AddEnv(Material, Env, TEXT("CloudDrift"), 100);
+
+	UMaterialExpressionCustom* Cloud = AddCustom(Material, TEXT("FTEnvCloudExtinction"), kCloudsInclude, kCloudCode, CMOT_Float3, 0);
+	AddOutput(Cloud, TEXT("Glow"), CMOT_Float3);
+	AddInput(Cloud, TEXT("Position"), Position);
+	AddInput(Cloud, TEXT("H"), CloudSample, 2);
+	AddInput(Cloud, TEXT("Altitude"), CloudSample, 1);
+	AddInput(Cloud, TEXT("Time"), Time);
+	AddInput(Cloud, TEXT("Cover"), Cover);
+	AddInput(Cloud, TEXT("Type"), Type);
+	AddInput(Cloud, TEXT("Density"), AddEnv(Material, Env, TEXT("CloudDensity"), 200));
+	AddInput(Cloud, TEXT("WindDeg"), WindDeg);
+	AddInput(Cloud, TEXT("WindMps"), WindMps);
+	AddInput(Cloud, TEXT("Drift"), Drift);
+	AddInput(Cloud, TEXT("Underglow"), AddEnv(Material, Env, TEXT("CloudUnderglow"), 300));
+	AddInput(Cloud, TEXT("UnderglowKelvin"), AddEnv(Material, Env, TEXT("CloudUnderglowKelvin"), 400));
+	AddInput(Cloud, TEXT("Shape"), AddTextureObject(Material, ShapeNoise, 500));
+	AddInput(Cloud, TEXT("Erosion"), AddTextureObject(Material, ErosionNoise, 600));
+	Cloud->RebuildOutputs();
+
+	UMaterialExpressionCustom* Bound = AddCustom(Material, TEXT("FTEnvCloudCover"), kCloudsInclude, kCloudCoverCode, CMOT_Float1, 800);
+	AddInput(Bound, TEXT("Position"), Position);
+	AddInput(Bound, TEXT("H"), CloudSample, 2);
+	AddInput(Bound, TEXT("Time"), Time);
+	AddInput(Bound, TEXT("Cover"), Cover);
+	AddInput(Bound, TEXT("Type"), Type);
+	AddInput(Bound, TEXT("WindDeg"), WindDeg);
+	AddInput(Bound, TEXT("WindMps"), WindMps);
+	AddInput(Bound, TEXT("Drift"), Drift);
+	Bound->RebuildOutputs();
+
+	UMaterialExpressionVolumetricAdvancedMaterialOutput* Light = AddExpression<UMaterialExpressionVolumetricAdvancedMaterialOutput>(Material, 0, 800);
+	Light->ConstPhaseG = 0.7f;
+	Light->ConstPhaseG2 = -0.2f;
+	Light->ConstPhaseBlend = 0.3f;
+	Light->MultiScatteringApproximationOctaveCount = 1;
+	Light->ConstMultiScatteringContribution = 0.6f;
+	Light->ConstMultiScatteringOcclusion = 0.4f;
+	Light->ConstMultiScatteringEccentricity = 0.6f;
+	Light->bRayMarchVolumeShadow = true;
+	Light->ConservativeDensity.Connect(0, Bound);
+
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	Inputs->BaseColor.Connect(0, AddEnv(Material, Env, TEXT("CloudAlbedo"), -700));
+	Inputs->SubsurfaceColor.Connect(0, Cloud);
+	Inputs->EmissiveColor.Connect(1, Cloud);
+	Finish(Material);
+	return Material;
+}
+
 bool Save(UObject* Asset, const TCHAR* PackageName)
 {
 	const FString File = PackageFile(PackageName);
@@ -217,7 +342,7 @@ int32 UFTBuildEnvMaterialsCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
 	using namespace FTEnvMaterialsBuild;
-	const TCHAR* const Packages[] = {FTScene::EnvCollection, FTScene::EnvSkyMaterial};
+	const TCHAR* const Packages[] = {FTScene::EnvCollection, FTScene::EnvSkyMaterial, FTScene::EnvCloudMaterial};
 	// Start from nothing: replace the files up front, before anything loads the old assets.
 	for (const TCHAR* Package : Packages)
 	{
@@ -242,6 +367,7 @@ int32 UFTBuildEnvMaterialsCommandlet::Main(const FString& Params)
 	};
 	const FBuilt Built[] = {
 		{BuildSky(Env), FTScene::EnvSkyMaterial},
+		{BuildClouds(Env), FTScene::EnvCloudMaterial},
 	};
 	FAssetCompilingManager::Get().FinishAllCompilation();
 	int32 Errors = 0;

@@ -19,9 +19,10 @@ gives each world its own values for all of them.
 - **`ftcore::SceneLook`**: the shared look's fields plus the camera's tone curve (filmic slope, toe, shoulder, black and
   white clip), auto-exposure speed, local exposure contrast, fringe, grain by tone, and the grade's fields, then
   ground wetness, the water's absorption, scattering, waves and roughness, the fog's albedo, the practical lights'
-  colour, intensity and scattering, the glow's colour and strength, and the sky's stars, skyglow and flat dome: 73
-  fields in all. Every default reproduces the shared look exactly (no wetness, no glow, no stars or skyglow, white fog,
-  the engine's water and light values).
+  colour, intensity and scattering, the glow's colour and strength, the sky's stars, skyglow and flat dome, the wind, and the cloud
+  layer's cover, kind, height, depth, density, drift and underglow: 84 fields in all. Every default reproduces the
+  shared look exactly (no wetness, no glow, no stars or skyglow, no wind, white fog, the engine's water and light
+  values and its own cloud layer).
 - **The `render` block** of `looks.json`: engine console variables the game sets at start, such as
   `r.Lumen.HardwareRayTracing`, as `"name": number` pairs in file order (`ftcore::LookTable::render`). Each key starts
   with `r.`, uses letters, digits, `.` and `_`, and appears once; each value is a finite number. A bad entry refuses
@@ -112,7 +113,7 @@ UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/Look_Lab -game -RenderOf
 
 ## The environment materials
 
-The sky (and next the clouds and the sea) read a second collection, `/Game/Look/MPC_Env`, which
+The sky and the clouds (and next the sea) read a second collection, `/Game/Look/MPC_Env`, which
 `FTScene::ApplyLookParameters` fills beside `MPC_Look`. `FTBuildEnvMaterials` builds it and the materials over it.
 Their shading code lives in the FTLook plugin, under `Plugins/FTLook/Shaders/Private/Env` (the virtual path
 `/Plugin/FTLook/Private/Env`), so each material's Custom node is a single call into an include:
@@ -120,6 +121,7 @@ Their shading code lives in the FTLook plugin, under `Plugins/FTLook/Shaders/Pri
 | Material | What it shows |
 |---|---|
 | `Env/M_Env_Sky` | An unlit sky for a sky dome (`Sky.ush`). It draws the atmosphere's own sky and its sun's disc through the engine's sky atmosphere nodes, then adds stars, a city's skyglow and a flat featureless dome on top. The stars come from a real magnitude count, dimmed by air mass and twinkling more near the horizon, and they fade as the sky brightens. The skyglow is a sodium-coloured band toward the city. With the defaults it draws the atmosphere alone. |
+| `Env/M_Env_Clouds` | A volume material for the volumetric cloud layer (`Clouds.ush`). A weather map of cover drifts with the wind and sets where cloud is and how tall it grows; `cloudType` runs from flat sheets to towering heaps. The engine's tiling noise volumes give the shape and wear its edges, a cheap bound lets the engine skip empty sky, and the light is a forward lobe for the silver edge, a weaker back lobe, one octave of multiple scattering and a marched shadow. `cloudUnderglow` adds a city's warm glow to the cloud bases. `FTScene::ApplyLook` puts it on the layer when `cloudCover` is above 0, gives the engine's own material back when the cover goes, and moves the layer to `cloudBaseKm` and `cloudThickKm`. |
 
 ```
 UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildEnvMaterials -AllowCommandletRendering -unattended

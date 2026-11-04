@@ -23,8 +23,9 @@ namespace ftcore {
 // range is wider for some. Every default is the engine's or the project config's value, so a default look
 // renders as before. Hue fields are OKLab degrees (red ~30, gold ~85, green ~145, blue ~265, violet ~305) and
 // lerp linearly like the rest, so a blend between worlds should keep their hues close. The surface, water, fog
-// albedo, practical light, glow and sky fields drive materials and lights the maps carry; their defaults add no
-// wetness, glow, stars or skyglow and leave the water, fog and lights as they were.
+// albedo, practical light, glow, sky, wind and cloud fields drive materials and lights the maps carry; their defaults
+// add no wetness, glow, stars, skyglow or wind, keep the engine's own cloud layer, and leave the water, fog and lights
+// as they were.
 #define FTCORE_LOOK_FIELDS(X)                                                                                  \
     /* Light. */                                                                                               \
     X(sunLux, 6.f, 0.f, 200.f)    /* directional light illuminance */                                          \
@@ -36,7 +37,7 @@ namespace ftcore {
     X(fogFalloff, 0.2f, 0.001f, 2.f) /* height falloff (the engine's default 0.2): larger thins it faster */ \
     X(volumetricFog, 1.f, 0.f, 10.f) /* volumetric fog extinction scale; 0 = off, the plain height fog only */ \
     X(fogForward, 0.6f, -0.9f, 0.9f) /* volumetric fog phase g: > 0 makes it glow toward the sun */          \
-    X(clouds, 1.f, 0.f, 1.f)      /* 0.5 or more: the engine's default volumetric cloud layer; less: clear */  \
+    X(clouds, 1.f, 0.f, 1.f)      /* 0.5 or more: the volumetric cloud layer (see cloudCover); less: clear */  \
     /* Camera. */                                                                                              \
     X(exposureBias, 1.f, -15.f, 15.f)       /* exposure compensation, EV (the project default is 1) */        \
     X(exposureMinEV100, -10.f, -15.f, 25.f) /* auto exposure range, EV100 (the engine's extended range) */    \
@@ -113,7 +114,21 @@ namespace ftcore {
     X(skyGlowDeg, 0.f, 0.f, 360.f) /* toward the city, degrees like a yaw (0 = +X, 90 = +Y) */                 \
     X(skyGlowWidthDeg, 20.f, 1.f, 90.f) /* the band falls by e every this many degrees of elevation */         \
     X(skyFlat, 0.f, 0.f, 1.f)      /* 1 = a dome of skyFlatLuminance with no feature or disc replaces it */    \
-    X(skyFlatLuminance, 1.f, 0.f, 50.f) /* that dome's luminance at the scene scale */
+    X(skyFlatLuminance, 1.f, 0.f, 50.f) /* that dome's luminance at the scene scale */                         \
+    /* Wind, shared by the clouds and the sea. */                                                              \
+    X(windDeg, 0.f, 0.f, 360.f)    /* the way the wind blows, degrees like a yaw (0 = toward +X) */            \
+    X(windMps, 0.f, 0.f, 40.f)     /* its speed near the ground, metres a second */                            \
+    /* The clouds (M_Env_Clouds on the volumetric cloud layer, through MPC_Env). With no cover the layer */     \
+    /* keeps the engine's own material; the base and depth move whichever material it wears. */                \
+    X(cloudCover, 0.f, 0.f, 1.f)   /* share of the sky under cloud; above 0 the layer wears M_Env_Clouds */    \
+    X(cloudType, 0.5f, 0.f, 1.f)   /* 0 = flat stratus sheets .. 1 = tall heaped cumulus */                    \
+    X(cloudBaseKm, 5.f, 0.f, 20.f) /* the layer's bottom, km above the ground (the engine's default 5) */      \
+    X(cloudThickKm, 10.f, 0.1f, 20.f) /* the layer's depth, km (the engine's default 10) */                    \
+    X(cloudAlbedo, 1.f, 0.f, 1.f)  /* single-scattering albedo: 1 = water cloud, about 0.4 = soot smoke */     \
+    X(cloudDensity, 0.05f, 0.f, 1.f) /* extinction inside a full cloud, per metre */                           \
+    X(cloudDrift, 2.f, 0.f, 5.f)   /* the clouds' speed against windMps (the wind blows harder aloft) */       \
+    X(cloudUnderglow, 0.f, 0.f, 10.f) /* a city's light on the cloud bases, luminance at the scene scale */    \
+    X(cloudUnderglowKelvin, 2100.f, 1500.f, 15000.f) /* its colour (2100 = high-pressure sodium) */
 
 struct SceneLook {
 #define FTCORE_LOOK_DECL(name, def, lo, hi) float name = def;

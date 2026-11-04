@@ -75,12 +75,16 @@ inline constexpr FLookVectorParameter LookVectorParameters[] = {
 	{TEXT("GlowColor"), &ftcore::SceneLook::glowR, &ftcore::SceneLook::glowG, &ftcore::SceneLook::glowB},
 };
 
-// The environment's materials, built by FTBuildEnvMaterials: a second parameter collection for the sky (and the clouds
-// and sea after it), filled beside the look's by ApplyLookParameters, and the materials over it, whose shading code is
+// The environment's materials, built by FTBuildEnvMaterials: a second parameter collection for the sky and clouds (and
+// the sea after them), filled beside the look's by ApplyLookParameters, and the materials over it, whose shading code is
 // in Plugins/FTLook/Shaders/Private/Env. MPC_Look and its materials stay as they are; a material that needs both reads
 // both, the most a material may. See docs/PHOTOREAL_LOOK.md.
 inline constexpr const TCHAR* EnvCollection = TEXT("/Game/Look/MPC_Env");
 inline constexpr const TCHAR* EnvSkyMaterial = TEXT("/Game/Look/Env/M_Env_Sky");
+// The cloud layer's material when a world has cloud cover (ApplyLook puts it on), and the engine's own, which it gives
+// back when the cover goes.
+inline constexpr const TCHAR* EnvCloudMaterial = TEXT("/Game/Look/Env/M_Env_Clouds");
+inline constexpr const TCHAR* EngineCloudMaterial = TEXT("/Engine/EngineSky/VolumetricClouds/m_SimpleVolumetricCloud_Inst");
 inline constexpr FLookScalarParameter EnvScalarParameters[] = {
 	{TEXT("SkyStars"), &ftcore::SceneLook::skyStars},
 	{TEXT("SkyStarMag"), &ftcore::SceneLook::skyStarMag},
@@ -90,6 +94,15 @@ inline constexpr FLookScalarParameter EnvScalarParameters[] = {
 	{TEXT("SkyGlowWidthDeg"), &ftcore::SceneLook::skyGlowWidthDeg},
 	{TEXT("SkyFlat"), &ftcore::SceneLook::skyFlat},
 	{TEXT("SkyFlatLuminance"), &ftcore::SceneLook::skyFlatLuminance},
+	{TEXT("WindDeg"), &ftcore::SceneLook::windDeg},
+	{TEXT("WindMps"), &ftcore::SceneLook::windMps},
+	{TEXT("CloudCover"), &ftcore::SceneLook::cloudCover},
+	{TEXT("CloudType"), &ftcore::SceneLook::cloudType},
+	{TEXT("CloudAlbedo"), &ftcore::SceneLook::cloudAlbedo},
+	{TEXT("CloudDensity"), &ftcore::SceneLook::cloudDensity},
+	{TEXT("CloudDrift"), &ftcore::SceneLook::cloudDrift},
+	{TEXT("CloudUnderglow"), &ftcore::SceneLook::cloudUnderglow},
+	{TEXT("CloudUnderglowKelvin"), &ftcore::SceneLook::cloudUnderglowKelvin},
 };
 
 // The ground master's layers, each wearing the surface its kind gives the role. Its parameters are named after them:
@@ -144,7 +157,7 @@ FORGOTTENTHIRD_API void SpawnLook(UWorld* World, const FActorSpawnParameters& Sp
 FORGOTTENTHIRD_API int32 ApplyLook(UWorld* World, const ftcore::SceneLook& Look, const ftcore::SceneLook& Current);
 
 // Writes Look's wetness, water and glow into World's instance of the look's parameter collection (LookCollection), and
-// its sky into the environment's (EnvCollection). The number of parameters written; 0 when neither collection has been
+// its sky, wind and clouds into the environment's (EnvCollection). The number of parameters written; 0 when neither collection has been
 // built (no material reads them then); -1, with nothing written, while World has no instance yet of one that has.
 FORGOTTENTHIRD_API int32 ApplyLookParameters(UWorld* World, const ftcore::SceneLook& Look);
 

@@ -222,6 +222,36 @@ int32 FTScene::ApplyLook(UWorld* World, const ftcore::SceneLook& Look, const ftc
 			}
 		}
 	}
+	// The layer's base and depth, and with any cover the world's own clouds (M_Env_Clouds) in place of the engine's; the
+	// engine's come back when the cover goes. Without the built material the layer keeps the engine's, with a warning.
+	const bool bCloudCover = Look.cloudCover > 0.f;
+	const bool bCloudMaterial = bCloudCover != (Current.cloudCover > 0.f);
+	const bool bCloudLayer = bCloudMaterial || Look.cloudBaseKm != Current.cloudBaseKm || Look.cloudThickKm != Current.cloudThickKm;
+	for (TActorIterator<AVolumetricCloud> It(World); It && bCloudLayer; ++It)
+	{
+		UVolumetricCloudComponent* Layer = It->FindComponentByClass<UVolumetricCloudComponent>();
+		if (!Layer)
+		{
+			continue;
+		}
+		FT_LOOK_SET(cloudBaseKm, Layer->SetLayerBottomAltitude(Look.cloudBaseKm))
+		FT_LOOK_SET(cloudThickKm, Layer->SetLayerHeight(Look.cloudThickKm))
+		if (bCloudMaterial)
+		{
+			const TCHAR* Package = bCloudCover ? EnvCloudMaterial : EngineCloudMaterial;
+			const FString Path = FString(Package) + TEXT(".") + FPackageName::GetShortName(Package);
+			if (UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, *Path, nullptr, LOAD_Quiet | LOAD_NoWarn))
+			{
+				Layer->SetMaterial(Material);
+				++Written;
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("Look: no cloud material %s, so the layer keeps the one it has (FTBuildEnvMaterials builds %s)."),
+					Package, EnvCloudMaterial);
+			}
+		}
+	}
 #undef FT_LOOK_SET
 	return Written;
 }

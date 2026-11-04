@@ -47,6 +47,19 @@ TEST_CASE("A default look adds no wetness or glow and leaves the fog white") {
     CHECK(look.waterWaveStrength == 1.f);
 }
 
+TEST_CASE("A default look draws the atmosphere's own sky and keeps the engine's cloud layer") {
+    const SceneLook look;
+    CHECK(look.skyStars == 0.f);
+    CHECK(look.skyGlow == 0.f);
+    CHECK(look.skyFlat == 0.f);
+    CHECK(look.windMps == 0.f);
+    // No cover: the layer keeps the engine's material, at the engine's altitude and depth.
+    CHECK(look.cloudCover == 0.f);
+    CHECK(look.cloudBaseKm == 5.f);
+    CHECK(look.cloudThickKm == 10.f);
+    CHECK(look.cloudUnderglow == 0.f);
+}
+
 TEST_CASE("Every field takes part in ==") {
     const SceneLook base;
     const SceneLook changed = allChanged();
@@ -61,8 +74,8 @@ TEST_CASE("Every field takes part in ==") {
     }
     FTCORE_LOOK_FIELDS(FTCORE_LOOK_ONE)
 #undef FTCORE_LOOK_ONE
-    CHECK(fields == 73);
-    CHECK(ftcore::kSceneLookFieldCount == 73u);
+    CHECK(fields == 84);
+    CHECK(ftcore::kSceneLookFieldCount == 84u);
     CHECK(base == SceneLook{});
 }
 

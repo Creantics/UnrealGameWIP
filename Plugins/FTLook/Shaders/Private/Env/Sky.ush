@@ -6,51 +6,7 @@
 
 #pragma once
 
-static const float FTEnvPi = 3.14159265358979;
-
-// Three hashes of a lattice point, each 0..1 (a PCG-style 3D hash).
-float3 FTEnvHash3(uint3 V)
-{
-	V = V * 1664525u + 1013904223u;
-	V.x += V.y * V.z;
-	V.y += V.z * V.x;
-	V.z += V.x * V.y;
-	V ^= V >> 16u;
-	V.x += V.y * V.z;
-	V.y += V.z * V.x;
-	V.z += V.x * V.y;
-	return float3(V & 0xFFFFFFu) / 16777216.0;
-}
-
-// Smooth value noise along one axis, 0..1, one cell a unit; Seed picks the strand.
-float FTEnvNoise1(float X, uint Seed)
-{
-	const float Cell = floor(X);
-	const float F = X - Cell;
-	const uint I = uint(int(Cell));
-	const float A = FTEnvHash3(uint3(I, Seed, 7u)).x;
-	const float B = FTEnvHash3(uint3(I + 1u, Seed, 7u)).x;
-	return lerp(A, B, F * F * (3.0 - 2.0 * F));
-}
-
-// The colour of a black body at Kelvin (held to 1667..25000), linear sRGB at about luminance 1: the Planckian locus by
-// Kang et al.'s cubic fits in CIE xy (in thousands of Kelvin, so the coefficients stay in float range), then XYZ to
-// linear sRGB (D65).
-float3 FTEnvBlackBody(float Kelvin)
-{
-	const float T = clamp(Kelvin, 1667.0, 25000.0);
-	const float I = 1000.0 / T;
-	const float Cx = T <= 4000.0 ? ((-0.2661239 * I - 0.2343589) * I + 0.8776956) * I + 0.179910
-		: ((-3.0258469 * I + 2.1070379) * I + 0.2226347) * I + 0.240390;
-	const float Cy = T <= 2222.0 ? ((-1.1063814 * Cx - 1.34811020) * Cx + 2.18555832) * Cx - 0.20219683
-		: (T <= 4000.0 ? ((-0.9549476 * Cx - 1.37418593) * Cx + 2.09137015) * Cx - 0.16748867
-			: ((3.0817580 * Cx - 5.87338670) * Cx + 3.75112997) * Cx - 0.37001483);
-	const float3 Xyz = float3(Cx / Cy, 1.0, (1.0 - Cx - Cy) / Cy);
-	return max(float3(
-		3.2404542 * Xyz.x - 1.5371385 * Xyz.y - 0.4985314 * Xyz.z,
-		-0.9692660 * Xyz.x + 1.8760108 * Xyz.y + 0.0415560 * Xyz.z,
-		0.0556434 * Xyz.x - 0.2040259 * Xyz.y + 1.0572252 * Xyz.z), 0.0);
-}
+#include "/Plugin/FTLook/Private/Env/Common.ush"
 
 // How many atmospheres deep the air is toward an elevation, in degrees (Kasten and Young's fit): 1 overhead, about 38
 // at the horizon.
