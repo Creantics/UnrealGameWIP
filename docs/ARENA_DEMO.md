@@ -179,10 +179,14 @@ crossfade between clips, or the table's own top-level `blend_s`): a move's own c
 without an `open` clip, after the optional one-shot
 `face_down_in` from the start of the spell (an Open chained into a Down is one spell) and before the optional `face_down_out`, timed
 to end as the state does (Core's `stateLength`: the kind's openTime or downTime, or the host's hold; never in a hold until a
-release; it wins a state too short for both); `hit_light` or `hit_heavy`
-(a heavy blow, a riposte or a Release) between moves; `walk` (looping, optional) between moves while the body moves, once its
-smoothed ground speed passes 0.3 m/s and until it drops under 0.15 m/s, played at that speed over the row's `speed_mps` (rate 0.5 to
-1.6; a walk row without `speed_mps` is left out); `defeat` on death, held on its last frame; else `idle`, or `idle_p2` under
+release; it wins a state too short for both; a spell that ends before its get-up has run out, as a release from a hold does,
+still plays the rest of `face_down_out` from where it got to, ahead of everything between moves, unless a move, a stagger or
+a death comes first); `hit_light` or `hit_heavy`
+(a heavy blow, a riposte or a Release) between moves, but not for a blow on its knees or during its get-up (the go-down is
+its reaction, and one landing just before it is dropped); `walk` (looping, optional) between moves while the body moves, once its
+smoothed ground speed passes 0.35 m/s and until it drops under 0.1 m/s, played at that speed over the row's `speed_mps` (rate 0.5 to
+1.6; a walk row without `speed_mps` is left out); `defeat` on death, held on its last frame, or the optional `defeat_kneel` for a
+death on its knees; else `idle`, or `idle_p2` under
 60% hp. A clip the table lacks is left out (that state plays the idle). If the clip table, the mesh or the idle clip doesn't load, the
 kind keeps its shapes and the log has one warning. The camera looks up at a boss at least 4 m tall (hover included) toward 70%
 of its height, up to 15 degrees above level (the free camera's limit too); the camera never pulls out for a big boss. The assets are local; nothing here needs them to load.
@@ -248,7 +252,7 @@ ArenaFight body, hosted by `FFTStoneBearerHost` (`Source/ForgottenThird/FTStoneB
   lead who reaches it with too little Load is topped up to one Release (`giveLoad`). CritOpened holds it Open until
   `until` (a riposte invites), CritClosed ends that;
 - a full intercept's Load (the marked throw's `LoadGained`) is given to the lead with `ArenaFight::giveLoad`;
-- the carried piece breaks (`Broke`, and the runner puts its halves in the fists) on the boss's first Stagger, or when its
+- the carried piece breaks (`Broke`, and the runner hangs its halves on the `slab` bone, each where its part of the slab was) on the boss's first Stagger, or when its
   hp share first falls to `breakable.at` (0.4), whichever comes first. The hp break cancels no move and comes even with
   the poise frozen, so every fight that gets that far plays it.
 
@@ -286,7 +290,7 @@ closed:
 UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTImportCharacter <the import column> -NullRHI -unattended -nopause -nosplash
 ```
 
-The Unbending also needs its slab halves, which its Broke split puts in the fists: `UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTImportProp -Source=<path>/slab_halves.glb -Dest=/Game/Props/StoneBearerHalves -NullRHI -unattended -nopause -nosplash`.
+The Unbending also needs its slab halves, which its Broke split hangs on the `slab` bone: `UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTImportProp -Source=<path>/slab_halves.glb -Dest=/Game/Props/StoneBearerHalves -NullRHI -unattended -nopause -nosplash`.
 
 An import replaces what is there, so rerunning it after a boss's model changes is safe. Exit code 0 is a clean import (the
 log's "face bones" line is a warning for a boss, which has no human head).
