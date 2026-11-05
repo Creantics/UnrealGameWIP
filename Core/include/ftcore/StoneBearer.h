@@ -100,6 +100,7 @@
 
 #include "ftcore/Api.h"
 #include "ftcore/ArenaBoss.h"
+#include "ftcore/ArenaFight.h"
 
 #include <cstdint>
 #include <string>
@@ -276,5 +277,40 @@ private:
     double nextCall_ = 0.0;
     bool recoverDue_ = false;
 };
+
+// ---- the boss as ArenaFight moves (ArenaBoss.h's wiring notes) ----
+
+// Each boss move is a string of chained ArenaEnemyMoves, one per impact, in the file's order.
+// The width of a path impact's or a cover move's lane (m).
+inline constexpr float kStoneBearerLaneWidth = 1.f;
+
+struct StoneBearerLayout {
+    std::array<std::uint8_t, kMaxArenaMoves> moveOf{};   // arena move -> the boss move
+    std::array<std::uint8_t, kMaxArenaMoves> impactOf{}; // arena move -> which of its impacts it lands
+    // The clip runs on from the move before instead of being entered again: a tile move's later impacts (its
+    // active part outlasts the beat to the next impact, so the falling stone is one take).
+    std::array<bool, kMaxArenaMoves> runsOn{};
+    std::size_t count = 0;
+};
+
+// The id of the clip a boss move plays: its own, less a "_twice" or "_halves" ending (the variants play the base
+// move's clip).
+FTCORE_API std::string_view stoneBearerClipOf(std::string_view id);
+// The planar distance of a move's contact point from the boss's centre (m).
+FTCORE_API float stoneBearerContactPlanar(const ArenaBossMove& move);
+// A clip's contact point outside the body is the blow's reach; a grip inside it (the carried piece, a foot under it)
+// is not, and lane and tile moves keep their shapes.
+FTCORE_API bool stoneBearerUsableContact(const ArenaBossMove& move, float bodyRadius);
+// The layout alone (no kind). False when the impacts outnumber kMaxArenaMoves.
+FTCORE_API bool stoneBearerLayout(const StoneBearerDef& def, StoneBearerLayout& out, std::string* error = nullptr);
+// Lays the boss out over `kind` (the arena.json kind of the same id, whose moves of the same clip tune the pick and
+// the look): the first impact starts impacts[0] beats in, each next one the gap later less the active part before it.
+FTCORE_API bool buildStoneBearerKind(const StoneBearerDef& def, const ArenaFighter& lead, ArenaEnemyKind& kind,
+                                     StoneBearerLayout* layout = nullptr, std::string* error = nullptr);
+// Where the host enters an arena move's clip (s into it) at its start, at rate 1.0, so the clip's impact (s, `impact`)
+// lands at the end of the move's startup: impact - startup, or for a move that runs on, the time the clip had
+// reached as the move before it ended. Negative when a startup is longer than the clip's impact.
+FTCORE_API double stoneBearerClipEntry(const ArenaEnemyKind& kind, const StoneBearerLayout& layout, std::size_t move,
+                                       double impact);
 
 } // namespace ftcore

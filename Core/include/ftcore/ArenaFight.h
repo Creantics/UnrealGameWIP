@@ -207,6 +207,8 @@ inline constexpr std::uint8_t kArenaReleaseMove = 10;
 inline constexpr int kArenaReleaseOpenLoad = kMaxLoad / 3;
 // An enemy move's startup is on the beat when it is within this many seconds of a whole number of beats.
 inline constexpr float kArenaBeatTolerance = 0.002f;
+// ArenaFight::enemyPickIn when no time bounds the next pick: the enemy must walk somewhere first.
+inline constexpr float kArenaPickNever = 1.0e9f;
 
 // How many whole beats of `bpm` `seconds` lasts (1 or more, within kArenaBeatTolerance), else -1 (also
 // for bpm <= 0). A host counts an attack in from it: the impact is that many beats after AttackStarted.
@@ -661,6 +663,17 @@ public:
     FTCORE_API int enemyHp(std::size_t i) const;
     FTCORE_API float enemyPoise(std::size_t i) const;
     FTCORE_API bool enemyAlive(std::size_t i) const;
+    // How long (s) before enemy i's brain may begin a move, at the soonest, as of the last tick: a host that turns or
+    // walks the figure between moves on clips of its own reads it, so it starts a step only when the step can finish
+    // before a move takes the body. Between moves (Approach, Strafe):
+    // * holding a token: the soonest cooldown among the moves its picks may begin (weight > 0, mask bit set) whose
+    //   [minRange, maxRange] holds the player's distance, so 0 when one is ready now (it begins next tick);
+    //   kArenaPickNever when no such band holds it (it walks to one first);
+    // * strafing without one: what is left of its attackDelay since its last string ended (0 once it is over: it
+    //   asks next tick, though another enemy may hold the last token);
+    // * approaching without one: kArenaPickNever (it walks to its preferred range first).
+    // In any other brain (a move, a reaction, dead), for an enemy out of range or a fight not running: 0.
+    FTCORE_API float enemyPickIn(std::size_t i) const;
 
     // The Read deal open now (empty when none): its cards, the enemy and move it is for, and whether a pick
     // still counts (dealt, not picked, the move still in its startup). The Read stacks, 0..kMaxReadStacks.
@@ -833,8 +846,14 @@ private:
     void* blowUser_ = nullptr;
 };
 
+// Pushes two overlapping circles apart until they touch, along the line between their centres. Each
+// moves by the other's share of the mass (its radius cubed): equal radii split the overlap half and
+// half, and a big body (the Unbending, 1.2 m) gives way a few percent to a lead's 0.4 m. Bodies that
+// already clear each other don't move. Both arenaSteps use it.
+FTCORE_API void arenaPushApart(Vec2& a, float ra, Vec2& b, float rb);
+
 // Moves `bodies` the way a host with no walls would: each body at its output velocity for dt, then
-// overlapping bodies pushed apart (circles of their body radii; dead enemies don't block), then
+// overlapping bodies pushed apart by mass (arenaPushApart; dead enemies don't block), then
 // everything kept inside the ring. Tests, the balance check and headless runs use it in place of an
 // engine. Deterministic; no allocation.
 FTCORE_API void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt);

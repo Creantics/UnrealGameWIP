@@ -126,6 +126,11 @@ inline constexpr double kVictoryFrom = 0.25;   // from this share of full speed
 
 // ---- the clip catalogue ----
 
+// A move's clip is entered at (its impact - the move's startup), so the impact lands as the startup ends, at rate 1.0.
+// An entry less than this before the clip's start (s; the data's rounding) is entered at the start; further before
+// it, the host plays the clip faster instead. The data test holds every boss move to the same bound.
+inline constexpr double kBeatClipEntrySlack = 1.0 / 60.0;
+
 struct BeatClip {
     std::array<char, kMaxClipId + 1> idText{};
     std::array<char, kMaxClipAsset + 1> assetText{}; // the host's asset path for the clip ("" if none)

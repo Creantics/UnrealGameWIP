@@ -13,5 +13,7 @@
   "laneMarks": 3,
   "areaScale": 2.5,
   "surface": 0.9,
-  "weakDepth": 0.85
+  "weakDepth": 0.85,
+  "flashUp": 0.0,
+  "flashToCamera": 0.1
 }
