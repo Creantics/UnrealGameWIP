@@ -8,7 +8,9 @@
 #include "HAL/FileManager.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionDepthFade.h"
 #include "Materials/MaterialExpressionParticleColor.h"
+#include "Materials/MaterialExpressionParticleSize.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
@@ -83,8 +85,9 @@ bool RemoveFile(const FString& File)
 
 // ---- sprite materials ------------------------------------------------------------------------------------
 
-// The procedural sprites newengine draws when an emitter has no texture: a soft round glow, and a spark with a
-// hot core. Puff (an eroded cloud) uses the soft one.
+// The procedural sprites newengine draws when an emitter has no texture: a soft round glow, a spark with a hot core, a
+// hard ring (a flat mark on the ground, faintly filled), and an angular chip (an uneven six-sided flake, shaded in three
+// facets). Puff (an eroded cloud) uses the soft one.
 const TCHAR* const SoftMaskCode = TEXT(
 	"float2 d = UV * 2.0 - 1.0;\n"
 	"float m = 1.0 - saturate(dot(d, d));\n"
@@ -93,20 +96,99 @@ const TCHAR* const SparkMaskCode = TEXT(
 	"float2 d = UV * 2.0 - 1.0;\n"
 	"float r2 = saturate(dot(d, d));\n"
 	"return saturate(exp(-r2 * 18.0) + 0.45 * pow(1.0 - r2, 3.0));\n");
+const TCHAR* const RingMaskCode = TEXT(
+	"float r = length(UV * 2.0 - 1.0);\n"
+	"float band = 1.0 - smoothstep(0.0, 0.09, abs(r - 0.84));\n"
+	"float fill = 0.15 * (1.0 - smoothstep(0.70, 0.80, r));\n"
+	"return saturate(max(band, fill)) * (1.0 - smoothstep(0.97, 1.0, r));\n");
+const TCHAR* const ChipMaskCode = TEXT(
+	"float2 d = UV * 2.0 - 1.0;\n"
+	"float k = dot(d, float2(0.97, 0.24)) / 0.80;\n"
+	"k = max(k, dot(d, float2(0.31, 0.95)) / 0.62);\n"
+	"k = max(k, dot(d, float2(-0.62, 0.78)) / 0.85);\n"
+	"k = max(k, dot(d, float2(-0.99, -0.12)) / 0.70);\n"
+	"k = max(k, dot(d, float2(-0.40, -0.92)) / 0.88);\n"
+	"k = max(k, dot(d, float2(0.60, -0.80)) / 0.66);\n"
+	"return 1.0 - smoothstep(0.97, 1.0, k);\n");
+// A chip's three facets about an off-centre ridge point: one lit, one mid, one in shade.
+const TCHAR* const ChipShadeCode = TEXT(
+	"float2 p = UV * 2.0 - 1.0 - float2(0.12, 0.18);\n"
+	"float a = atan2(p.y, p.x);\n"
+	"float s = a < -1.2 ? 0.65 : (a < 1.6 ? 1.15 : 0.85);\n");
+
+enum class ESpriteMask : uint8 { Soft, Spark, Ring, Chip };
 
 struct FSpriteMaterialSpec
 {
 	const TCHAR* Name;
-	bool bSpark;
+	ESpriteMask Kind;
 	bool bAdditive;
+	bool bDepthFade; // soft against the scene: it fades where it nears what is behind it
 };
 
+// Indexed kind * 4 + additive + depth fade * 2 (SpriteMaterialIndex). The first two of each kind are the unfaded ones.
 const FSpriteMaterialSpec SpriteMaterials[] = {
-	{TEXT("M_VfxSoft"), false, false},
-	{TEXT("M_VfxSoftAdditive"), false, true},
-	{TEXT("M_VfxSpark"), true, false},
-	{TEXT("M_VfxSparkAdditive"), true, true},
+	{TEXT("M_VfxSoft"), ESpriteMask::Soft, false, false},
+	{TEXT("M_VfxSoftAdditive"), ESpriteMask::Soft, true, false},
+	{TEXT("M_VfxSoftFade"), ESpriteMask::Soft, false, true},
+	{TEXT("M_VfxSoftAdditiveFade"), ESpriteMask::Soft, true, true},
+	{TEXT("M_VfxSpark"), ESpriteMask::Spark, false, false},
+	{TEXT("M_VfxSparkAdditive"), ESpriteMask::Spark, true, false},
+	{TEXT("M_VfxSparkFade"), ESpriteMask::Spark, false, true},
+	{TEXT("M_VfxSparkAdditiveFade"), ESpriteMask::Spark, true, true},
+	{TEXT("M_VfxRing"), ESpriteMask::Ring, false, false},
+	{TEXT("M_VfxRingAdditive"), ESpriteMask::Ring, true, false},
+	{TEXT("M_VfxRingFade"), ESpriteMask::Ring, false, true},
+	{TEXT("M_VfxRingAdditiveFade"), ESpriteMask::Ring, true, true},
+	{TEXT("M_VfxChip"), ESpriteMask::Chip, false, false},
+	{TEXT("M_VfxChipAdditive"), ESpriteMask::Chip, true, false},
+	{TEXT("M_VfxChipFade"), ESpriteMask::Chip, false, true},
+	{TEXT("M_VfxChipAdditiveFade"), ESpriteMask::Chip, true, true},
 };
+constexpr int32 SpriteMaterialCount = UE_ARRAY_COUNT(SpriteMaterials);
+static_assert(SpriteMaterialCount == 16, "four kinds, additive or not, faded or not");
+
+int32 SpriteMaterialIndex(const ftcore::VfxNiagaraEmitter& P)
+{
+	using ftcore::VfxSprite;
+	const ESpriteMask Kind = P.sprite == VfxSprite::Spark ? ESpriteMask::Spark
+		: P.sprite == VfxSprite::Ring ? ESpriteMask::Ring
+		: P.sprite == VfxSprite::Chip ? ESpriteMask::Chip
+		: ESpriteMask::Soft;
+	return static_cast<int32>(Kind) * 4 + (P.additive ? 1 : 0) + (P.depthFade ? 2 : 0);
+}
+
+const TCHAR* MaskCode(ESpriteMask Kind)
+{
+	switch (Kind)
+	{
+	case ESpriteMask::Spark:
+		return SparkMaskCode;
+	case ESpriteMask::Ring:
+		return RingMaskCode;
+	case ESpriteMask::Chip:
+		return ChipMaskCode;
+	case ESpriteMask::Soft:
+		break;
+	}
+	return SoftMaskCode;
+}
+
+const TCHAR* MaskName(ESpriteMask Kind)
+{
+	switch (Kind)
+	{
+	case ESpriteMask::Spark:
+		return TEXT("SparkMask");
+	case ESpriteMask::Ring:
+		return TEXT("RingMask");
+	case ESpriteMask::Chip:
+		return TEXT("ChipMask");
+	case ESpriteMask::Soft:
+		break;
+	}
+	return TEXT("SoftMask");
+}
 
 FString MaterialPackage(const FSpriteMaterialSpec& Spec)
 {
@@ -126,7 +208,7 @@ T* AddVfxExpression(UMaterial* Material, int32 X, int32 Y)
 }
 
 UMaterialExpressionCustom* AddCustom(UMaterial* Material, int32 Y, const TCHAR* Description, ECustomMaterialOutputType Type,
-	const FString& Code, UMaterialExpression* Color, UMaterialExpression* Mask)
+	const FString& Code, UMaterialExpression* Color, UMaterialExpression* Mask, UMaterialExpression* UV = nullptr)
 {
 	UMaterialExpressionCustom* Custom = AddVfxExpression<UMaterialExpressionCustom>(Material, -300, Y);
 	Custom->Description = Description;
@@ -139,6 +221,12 @@ UMaterialExpressionCustom* AddCustom(UMaterial* Material, int32 Y, const TCHAR* 
 	FCustomInput& InMask = Custom->Inputs.AddDefaulted_GetRef();
 	InMask.InputName = TEXT("Mask");
 	InMask.Input.Connect(0, Mask);
+	if (UV)
+	{
+		FCustomInput& InUV = Custom->Inputs.AddDefaulted_GetRef();
+		InUV.InputName = TEXT("UV");
+		InUV.Input.Connect(0, UV);
+	}
 	return Custom;
 }
 
@@ -153,18 +241,53 @@ UMaterial* BuildSpriteMaterial(UPackage* Package, const FSpriteMaterialSpec& Spe
 	UMaterialExpressionTextureCoordinate* UV = AddVfxExpression<UMaterialExpressionTextureCoordinate>(Material, -900, 0);
 	UMaterialExpressionParticleColor* Color = AddVfxExpression<UMaterialExpressionParticleColor>(Material, -900, 150);
 
-	UMaterialExpressionCustom* Mask = AddVfxExpression<UMaterialExpressionCustom>(Material, -600, 0);
-	Mask->Description = Spec.bSpark ? TEXT("SparkMask") : TEXT("SoftMask");
-	Mask->OutputType = CMOT_Float1;
-	Mask->Code = Spec.bSpark ? SparkMaskCode : SoftMaskCode;
-	Mask->Inputs.Reset();
-	FCustomInput& InUV = Mask->Inputs.AddDefaulted_GetRef();
+	UMaterialExpressionCustom* Shape = AddVfxExpression<UMaterialExpressionCustom>(Material, -600, 0);
+	Shape->Description = MaskName(Spec.Kind);
+	Shape->OutputType = CMOT_Float1;
+	Shape->Code = MaskCode(Spec.Kind);
+	Shape->Inputs.Reset();
+	FCustomInput& InUV = Shape->Inputs.AddDefaulted_GetRef();
 	InUV.InputName = TEXT("UV");
 	InUV.Input.Connect(0, UV);
+	UMaterialExpression* Mask = Shape;
 
-	// Additive: light adds in proportion to alpha. Translucent: the colour over a masked alpha.
-	UMaterialExpressionCustom* Emissive = AddCustom(Material, 0, TEXT("Emissive"), CMOT_Float3,
-		Spec.bAdditive ? TEXT("return Color.rgb * Color.a * Mask;") : TEXT("return Color.rgb;"), Color, Mask);
+	// Soft against the scene: the mask fades out over a quarter of the sprite's size (5 cm at least) as it nears what is
+	// behind it (a cloud's lower edge on the floor, a chip's edge against the body).
+	if (Spec.bDepthFade)
+	{
+		UMaterialExpressionParticleSize* Size = AddVfxExpression<UMaterialExpressionParticleSize>(Material, -1200, 300);
+		UMaterialExpressionCustom* Distance = AddVfxExpression<UMaterialExpressionCustom>(Material, -900, 300);
+		Distance->Description = TEXT("FadeDistance");
+		Distance->OutputType = CMOT_Float1;
+		Distance->Code = TEXT("return max(Size.x * 0.25, 5.0);");
+		Distance->Inputs.Reset();
+		FCustomInput& InSize = Distance->Inputs.AddDefaulted_GetRef();
+		InSize.InputName = TEXT("Size");
+		InSize.Input.Connect(0, Size);
+		UMaterialExpressionDepthFade* Fade = AddVfxExpression<UMaterialExpressionDepthFade>(Material, -600, 300);
+		Fade->OpacityDefault = 1.0f;
+		Fade->FadeDistance.Connect(0, Distance);
+		UMaterialExpressionCustom* Faded = AddVfxExpression<UMaterialExpressionCustom>(Material, -450, 150);
+		Faded->Description = TEXT("FadedMask");
+		Faded->OutputType = CMOT_Float1;
+		Faded->Code = TEXT("return Mask * Fade;");
+		Faded->Inputs.Reset();
+		FCustomInput& InMask = Faded->Inputs.AddDefaulted_GetRef();
+		InMask.InputName = TEXT("Mask");
+		InMask.Input.Connect(0, Shape);
+		FCustomInput& InFade = Faded->Inputs.AddDefaulted_GetRef();
+		InFade.InputName = TEXT("Fade");
+		InFade.Input.Connect(0, Fade);
+		Mask = Faded;
+	}
+
+	// Additive: light adds in proportion to alpha. Translucent: the colour over a masked alpha. A chip's colour is shaded
+	// by its facets.
+	const bool bChip = Spec.Kind == ESpriteMask::Chip;
+	const FString EmissiveCode = bChip
+		? FString(ChipShadeCode) + (Spec.bAdditive ? TEXT("return Color.rgb * Color.a * Mask * s;\n") : TEXT("return Color.rgb * s;\n"))
+		: FString(Spec.bAdditive ? TEXT("return Color.rgb * Color.a * Mask;") : TEXT("return Color.rgb;"));
+	UMaterialExpressionCustom* Emissive = AddCustom(Material, 0, TEXT("Emissive"), CMOT_Float3, EmissiveCode, Color, Mask, bChip ? UV : nullptr);
 	Material->GetEditorOnlyData()->EmissiveColor.Connect(0, Emissive);
 	if (!Spec.bAdditive)
 	{
@@ -329,7 +452,7 @@ TValue* EmitterProperty(UNiagaraStatelessEmitter* Emitter, const TCHAR* Name)
 	return Property->ContainerPtrToValuePtr<TValue>(Emitter);
 }
 
-bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmitter& P, UMaterialInterface* const Materials[4])
+bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmitter& P, UMaterialInterface* const Materials[SpriteMaterialCount])
 {
 	using namespace ftcore;
 
@@ -510,8 +633,7 @@ bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmi
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx: the template emitter has no sprite renderer."));
 		return false;
 	}
-	const bool bSpark = P.sprite == VfxSprite::Spark;
-	Sprite->Material = Materials[(bSpark ? 2 : 0) + (P.additive ? 1 : 0)];
+	Sprite->Material = Materials[SpriteMaterialIndex(P)];
 	Sprite->SortMode = P.additive ? ENiagaraSortMode::None : ENiagaraSortMode::ViewDistance;
 	Sprite->FacingMode = ENiagaraSpriteFacingMode::FaceCamera;
 	Sprite->Alignment = ENiagaraSpriteAlignment::Unaligned;
@@ -541,7 +663,7 @@ bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmi
 }
 
 UNiagaraSystem* BuildSystem(UPackage* Package, UNiagaraSystem* Template, const ftcore::VfxNiagaraPlan& Plan,
-	UMaterialInterface* const Materials[4])
+	UMaterialInterface* const Materials[SpriteMaterialCount])
 {
 	const FString Name = FPackageName::GetShortName(Package->GetName());
 	UNiagaraSystem* System = CastChecked<UNiagaraSystem>(StaticDuplicateObject(Template, Package, *Name,
@@ -677,7 +799,8 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx: no effects in %s."), *DataDir);
 		return 1;
 	}
-	// -Only=<name>: build that one effect and leave every other asset (and the sprite materials) as it is.
+	// -Only=<name>: build that one effect and leave every other asset as it is (a sprite material it uses that isn't built
+	// yet is built and saved; the built ones are used as they are).
 	FString Only;
 	FParse::Value(*Params, TEXT("Only="), Only);
 	if (!Only.IsEmpty())
@@ -740,10 +863,19 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 		}
 	}
 
-	// Start from nothing: delete every NS_* and the sprite materials up front, before anything loads them. With -Only just
-	// that effect's asset goes, and the materials already built are used.
+	// Start from nothing: delete every NS_* and the sprite materials up front, before anything loads them, then build the
+	// materials the plans use. With -Only just that effect's asset goes, and the materials already built are used (one not
+	// built yet is built).
 	bool bOk = true;
-	UMaterialInterface* Materials[4] = {};
+	bool Used[SpriteMaterialCount] = {};
+	for (const ftcore::VfxNiagaraPlan& Plan : Plans)
+	{
+		for (const ftcore::VfxNiagaraEmitter& E : Plan.emitters)
+		{
+			Used[SpriteMaterialIndex(E)] = true;
+		}
+	}
+	UMaterialInterface* Materials[SpriteMaterialCount] = {};
 	if (Only.IsEmpty())
 	{
 		TArray<FString> Old;
@@ -762,33 +894,36 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 				return 1;
 			}
 		}
-		IFileManager::Get().MakeDirectory(*FPaths::GetPath(PackageFile(MaterialPackage(SpriteMaterials[0]))), true);
-
-		for (int32 I = 0; I < 4; ++I)
-		{
-			UPackage* Package = CreatePackage(*MaterialPackage(SpriteMaterials[I]));
-			UMaterial* Material = BuildSpriteMaterial(Package, SpriteMaterials[I]);
-			Materials[I] = Material;
-			FAssetCompilingManager::Get().FinishAllCompilation();
-			bOk &= SaveVfxAsset(Package, Material);
-		}
 	}
-	else
+	else if (!RemoveFile(FPaths::ProjectContentDir() / TEXT("VFX") / (TEXT("NS_") + Only + TEXT(".uasset"))))
 	{
-		if (!RemoveFile(FPaths::ProjectContentDir() / TEXT("VFX") / (TEXT("NS_") + Only + TEXT(".uasset"))))
+		return 1;
+	}
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(PackageFile(MaterialPackage(SpriteMaterials[0]))), true);
+	int32 MaterialsBuilt = 0;
+	for (int32 I = 0; I < SpriteMaterialCount; ++I)
+	{
+		if (!Used[I])
 		{
-			return 1;
+			continue;
 		}
-		for (int32 I = 0; I < 4; ++I)
+		const FString PackageName = MaterialPackage(SpriteMaterials[I]);
+		if (!Only.IsEmpty() && IFileManager::Get().FileExists(*PackageFile(PackageName)))
 		{
-			const FString Package = MaterialPackage(SpriteMaterials[I]);
-			Materials[I] = LoadObject<UMaterialInterface>(nullptr, *(Package + TEXT(".") + FPackageName::GetShortName(Package)));
+			Materials[I] = LoadObject<UMaterialInterface>(nullptr, *(PackageName + TEXT(".") + FPackageName::GetShortName(PackageName)));
 			if (!Materials[I])
 			{
-				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx: sprite material %s is missing; run FTBuildVfx without -Only first."), *Package);
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx: sprite material %s doesn't load."), *PackageName);
 				return 1;
 			}
+			continue;
 		}
+		UPackage* Package = CreatePackage(*PackageName);
+		UMaterial* Material = BuildSpriteMaterial(Package, SpriteMaterials[I]);
+		Materials[I] = Material;
+		FAssetCompilingManager::Get().FinishAllCompilation();
+		bOk &= SaveVfxAsset(Package, Material);
+		++MaterialsBuilt;
 	}
 	if (!bOk)
 	{
@@ -813,7 +948,7 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 		Emitters += System->GetEmitterHandles().Num();
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildVfx: built %d systems (%d emitters) and %d sprite materials."), Plans.Num(),
-		Emitters, int32(UE_ARRAY_COUNT(SpriteMaterials)));
+		Emitters, MaterialsBuilt);
 	return 0;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx needs an editor build."));

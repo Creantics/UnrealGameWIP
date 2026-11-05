@@ -53,7 +53,7 @@
       "guardBreak": 1.2, "guardStacks": 1, "missStacks": 2, "opens": 4, "load": 30 },
     { "id": "edge_jab", "answer": "any", "impacts": [1], "active": 0.15, "recovery": 0.8, "range": 2.0,
       "damage": 0.06,
-      "contact": {"socket": "slab_edge", "ahead": 2.128, "side": 0.064, "up": 4.370} },
+      "contact": {"socket": "slab_edge", "ahead": 2.128, "side": 0.064, "up": 4.370, "air": true} },
     { "id": "stamp", "answer": "any", "impacts": [1], "active": 0.15, "recovery": 0.8, "range": 2.0,
       "damage": 0.06, "floor": true,
       "contact": {"socket": "foot_r", "ahead": -0.125, "side": 0.724, "up": 0.550} },

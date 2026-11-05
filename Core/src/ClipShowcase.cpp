@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <utility>
 
 namespace ftcore {
 
@@ -14,6 +15,7 @@ const char* showCueKey(ShowCue c) {
     case ShowCue::GlowOn: return "glow_on";
     case ShowCue::GlowOff: return "glow_off";
     case ShowCue::Crit: return "crit";
+    case ShowCue::ChipsHeavy: return "chips_heavy";
     }
     return "?";
 }
@@ -216,9 +218,10 @@ bool buildClipShow(const BeatClips& clips, const ShowSpec& spec, ClipShow& out, 
     }
 
     // The hits (chips where the blow lands), the stagger, the go-down, its hold and the get-up.
-    for (std::int16_t hit : {spec.hitLight, spec.hitHeavy}) {
+    const std::pair<std::int16_t, ShowCue> hits[] = {{spec.hitLight, ShowCue::Chips}, {spec.hitHeavy, ShowCue::ChipsHeavy}};
+    for (const auto& [hit, chips] : hits) {
         if (hit != kNoClip) {
-            b.cue(b.t, ShowCue::Chips, ShowPlace::Surface);
+            b.cue(b.t, chips, ShowPlace::Surface);
             b.play("hit", hit);
             b.idle("idle", spec.after);
         }
@@ -264,6 +267,8 @@ bool buildClipShow(const BeatClips& clips, const ShowSpec& spec, ClipShow& out, 
     b.idle("fx_impact", 2.0);
     b.cue(b.t, ShowCue::Chips, ShowPlace::Surface);
     b.idle("fx_chips", 2.0);
+    b.cue(b.t, ShowCue::ChipsHeavy, ShowPlace::Surface);
+    b.idle("fx_chips_heavy", 2.0);
     if (turns) {
         b.turn(spec.turnL, -1.f, 2 * spec.turnSteps);
         b.idle("fx_glow", 1.0);

@@ -112,11 +112,13 @@ TEST_CASE("vfx: the Unbending's effects load without warnings and keep their par
         std::uint32_t budget; // the sum of the emitters' maxParticles
         bool loops;
     };
-    const Expect files[] = {{"stone_tell", 4, 168, true},
+    const Expect files[] = {{"stone_tell", 4, 68, true},
+                            {"stone_tell_area", 4, 120, true},
                             {"stone_impact", 4, 92, false},
-                            {"stone_chips", 4, 65, false},
-                            {"crit_burst", 5, 126, false},
-                            {"weak_glow", 3, 80, true}};
+                            {"stone_chips", 3, 42, false},
+                            {"stone_chips_heavy", 4, 70, false},
+                            {"crit_burst", 5, 90, false},
+                            {"weak_glow", 3, 28, true}};
     for (const Expect& f : files) {
         CAPTURE(f.file);
         VfxEffect e;
@@ -178,8 +180,13 @@ TEST_CASE("vfx: the Unbending's chips and impact keep a screen-cover budget") {
         const char* file;
         float solidCap, cloudCap;
     };
-    const Expect files[] = {{"stone_chips", kChipsSolidCap, kChipsCloudCap}, {"stone_impact", kImpactSolidCap, kImpactCloudCap}};
-    for (const Expect& f : files) {
+    // A heavy blow's chips (round 7) are their own effect, within the same caps but well apart from a light blow's.
+    const Expect files[] = {{"stone_chips", kChipsSolidCap, kChipsCloudCap},
+                            {"stone_chips_heavy", kChipsSolidCap, kChipsCloudCap},
+                            {"stone_impact", kImpactSolidCap, kImpactCloudCap}};
+    float solids[3] = {}, clouds[3] = {};
+    for (std::size_t i = 0; i < 3; ++i) {
+        const Expect& f = files[i];
         CAPTURE(f.file);
         VfxEffect e;
         REQUIRE(loadEffect(f.file, e));
@@ -192,6 +199,65 @@ TEST_CASE("vfx: the Unbending's chips and impact keep a screen-cover budget") {
         CAPTURE(cloud);
         CHECK(solid <= f.solidCap);
         CHECK(cloud <= f.cloudCap);
+        solids[i] = solid;
+        clouds[i] = cloud;
+    }
+    CHECK(solids[1] >= 3.f * solids[0]);
+    CHECK(clouds[1] >= 3.f * clouds[0]);
+}
+
+TEST_CASE("vfx: the Unbending's round-7 looks: a ring tell, angular chips soft against the scene, a short-lived glow") {
+    // The tell is a flat ring on the ground (no depth fade: it lies 5 cm over the floor); the chips and the impact's
+    // chunks are angular chip sprites and every alpha cloud fades against the scene; no glint disc on a hit; the crit's
+    // flash stays under about 0.7 m; the glow's particles all die within 0.27 s, so it fades over 6 to 8 frames at shut.
+    for (const char* file : {"stone_tell", "stone_tell_area"}) {
+        CAPTURE(file);
+        VfxEffect e;
+        REQUIRE(loadEffect(file, e));
+        bool ring = false;
+        for (const VfxEmitter& em : e.emitters) {
+            if (em.sprite == VfxSprite::Ring) {
+                ring = true;
+                CHECK(em.renderMode == VfxRenderMode::Horizontal);
+                CHECK_FALSE(em.depthFade);
+            }
+        }
+        CHECK(ring);
+    }
+    for (const char* file : {"stone_chips", "stone_chips_heavy", "stone_impact"}) {
+        CAPTURE(file);
+        VfxEffect e;
+        REQUIRE(loadEffect(file, e));
+        bool chip = false;
+        for (const VfxEmitter& em : e.emitters) {
+            CAPTURE(em.name);
+            CHECK(em.blend == VfxBlend::Alpha);
+            CHECK(em.sprite != VfxSprite::Soft);
+            CHECK(em.depthFade);
+            chip = chip || em.sprite == VfxSprite::Chip;
+        }
+        CHECK(chip);
+    }
+    {
+        VfxEffect e;
+        REQUIRE(loadEffect("crit_burst", e));
+        for (const VfxEmitter& em : e.emitters) {
+            if (em.name != "flash") continue;
+            float lo = 0.f, startHi = 0.f, growHi = 0.f;
+            em.startSize.bounds(lo, startHi);
+            em.sizeOverLife.bounds(lo, growHi);
+            CHECK(startHi * growHi <= 0.7f);
+        }
+    }
+    {
+        VfxEffect e;
+        REQUIRE(loadEffect("weak_glow", e));
+        for (const VfxEmitter& em : e.emitters) {
+            CAPTURE(em.name);
+            float lo = 0.f, hi = 0.f;
+            em.lifetime.bounds(lo, hi);
+            CHECK(hi <= 0.27f);
+        }
     }
 }
 
@@ -367,6 +433,35 @@ TEST_CASE("vfx: bad input reports a reason with its path") {
     const std::string many =
         importError(R"J({"name": "x", "emitters": [{"name": "a", "drag": true, "noise": {"octaves": 0}}]})J");
     CHECK(many == "emitters[0].drag: expected a number\nemitters[0].noise.octaves: expected 1..8");
+}
+
+TEST_CASE("vfx: ring and chip sprites and the depth fade reach the plan") {
+    VfxEffect e;
+    std::string err;
+    std::vector<std::string> warnings;
+    REQUIRE(importVfxEffect(R"J({"name": "s", "emitters": [
+                                  {"name": "mark", "sprite": "ring", "renderMode": "horizontal"},
+                                  {"name": "bits", "sprite": "chip", "depthFade": true},
+                                  {"name": "dust", "sprite": "puff"}]})J",
+                            e, &err, &warnings));
+    CHECK(warnings.empty());
+    REQUIRE(e.emitters.size() == 3);
+    CHECK(e.emitters[0].sprite == VfxSprite::Ring);
+    CHECK(e.emitters[1].sprite == VfxSprite::Chip);
+    CHECK(e.emitters[1].depthFade);
+    CHECK_FALSE(e.emitters[0].depthFade); // off unless asked for
+    VfxNiagaraPlan plan;
+    planVfxNiagara(e, plan);
+    REQUIRE(plan.emitters.size() == 3);
+    CHECK(plan.emitters[0].sprite == VfxSprite::Ring);
+    CHECK(plan.emitters[0].facing == VfxNiagaraFacing::Horizontal);
+    CHECK_FALSE(plan.emitters[0].depthFade);
+    CHECK(plan.emitters[1].sprite == VfxSprite::Chip);
+    CHECK(plan.emitters[1].depthFade);
+    // softness defaults on, so only the emitter that asks for the depth fade drops the gap.
+    CHECK(anyGap(plan.emitters[0], "depth fade"));
+    CHECK_FALSE(anyGap(plan.emitters[1], "depth fade"));
+    CHECK(contains(importError(R"J({"name": "x", "emitters": [{"name": "a", "sprite": "star"}]})J"), "ring, chip"));
 }
 
 TEST_CASE("vfx: coordinates map to Unreal centimetres, Z up") {

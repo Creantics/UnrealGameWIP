@@ -202,18 +202,20 @@ TEST_CASE("clip showcase: the effects alone, then the two deaths each from a hid
     const ftcore::ShowSpec spec = stoneSpec(clips);
     ftcore::ClipShow show;
     REQUIRE(ftcore::buildClipShow(clips, spec, show));
-    int ahead = 0, glow = 0, crit = 0, chips = 0;
+    int ahead = 0, glow = 0, crit = 0, chips = 0, heavy = 0;
     double glowOn = -1.0, glowOff = -1.0, critAt = -1.0;
     for (std::size_t c = 0; c < show.cueCount; ++c) {
         const ftcore::ShowCueAt& q = show.cues[c];
         if (q.place == ftcore::ShowPlace::Ahead) ++ahead;
         if (q.cue == ftcore::ShowCue::Chips) ++chips;
+        if (q.cue == ftcore::ShowCue::ChipsHeavy) ++heavy;
         if (q.cue == ftcore::ShowCue::GlowOn) glowOn = q.at, ++glow;
         if (q.cue == ftcore::ShowCue::GlowOff) glowOff = q.at, ++glow;
         if (q.cue == ftcore::ShowCue::Crit) critAt = q.at, ++crit;
     }
     CHECK(ahead == 3); // the tell, its stop, the dust
-    CHECK(chips == 3); // the two hits and the lone chips
+    CHECK(chips == 2); // the light hit and the lone light chips
+    CHECK(heavy == 2); // the heavy hit and the lone heavy chips
     CHECK(glow == 2);
     CHECK(crit == 1);
     CHECK(glowOff - glowOn == doctest::Approx(spec.glowFor));
@@ -319,5 +321,5 @@ TEST_CASE("clip showcase: refusals") {
     REQUIRE_MESSAGE(ftcore::buildClipShow(clips, bare, show, &err), err);
     for (std::size_t i = 0; i < show.segmentCount; ++i)
         CHECK((show.segments[i].clip == bare.idle || show.segments[i].clip == ftcore::kNoClip));
-    CHECK(show.cueCount == 7); // the tell, its stop, the dust, the chips, the glow on and off, the crit
+    CHECK(show.cueCount == 8); // the tell, its stop, the dust, the light and the heavy chips, the glow on and off, the crit
 }

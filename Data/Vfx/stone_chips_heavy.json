@@ -1,0 +1,109 @@
+{
+  "name": "stone_chips_heavy",
+  "emitters": [
+    {
+      "name": "chips",
+      "bursts": [{"time": 0.0, "count": 30}],
+      "duration": 0.1,
+      "maxParticles": 34,
+      "lifetime": [0.5, 0.9],
+      "shape": "cone",
+      "radius": 0.1,
+      "coneAngle": 80,
+      "speed": [3.0, 6.5],
+      "gravity": [0.0, -14.0, 0.0],
+      "drag": 0.5,
+      "startSize": [0.1, 0.22],
+      "sizeOverLife": [{"t": 0.0, "v": 1.0}, {"t": 1.0, "v": 0.9}],
+      "startRotation": [0.0, 6.28],
+      "angularVelocity": [-8.0, 8.0],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.07, 0.055, 0.04, 1.0]},
+        {"t": 0.85, "color": [0.068, 0.053, 0.039, 1.0]},
+        {"t": 1.0, "color": [0.068, 0.053, 0.039, 0.0]}
+      ],
+      "blend": "alpha",
+      "sprite": "chip",
+      "depthFade": true,
+      "softness": 0.1
+    },
+    {
+      "name": "flakes",
+      "bursts": [{"time": 0.0, "count": 10}],
+      "duration": 0.1,
+      "maxParticles": 12,
+      "lifetime": [0.5, 0.85],
+      "shape": "cone",
+      "radius": 0.1,
+      "coneAngle": 80,
+      "speed": [2.4000000000000004, 5.2],
+      "gravity": [0.0, -14.0, 0.0],
+      "drag": 0.5,
+      "startSize": [0.06, 0.12],
+      "sizeOverLife": [{"t": 0.0, "v": 1.0}, {"t": 1.0, "v": 0.9}],
+      "startRotation": [0.0, 6.28],
+      "angularVelocity": [-8.0, 8.0],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.42, 0.34, 0.24, 1.0]},
+        {"t": 0.85, "color": [0.4, 0.32, 0.23, 1.0]},
+        {"t": 1.0, "color": [0.4, 0.32, 0.23, 0.0]}
+      ],
+      "blend": "alpha",
+      "sprite": "chip",
+      "depthFade": true,
+      "softness": 0.1
+    },
+    {
+      "name": "chunks",
+      "bursts": [{"time": 0.0, "count": 4}],
+      "duration": 0.1,
+      "maxParticles": 6,
+      "lifetime": [0.7, 1.0],
+      "shape": "cone",
+      "radius": 0.12,
+      "coneAngle": 60,
+      "speed": [1.8, 3.2],
+      "gravity": [0.0, -14.0, 0.0],
+      "drag": 0.3,
+      "startSize": [0.25, 0.32],
+      "sizeOverLife": [{"t": 0.0, "v": 1.0}, {"t": 1.0, "v": 0.95}],
+      "startRotation": [0.0, 6.28],
+      "angularVelocity": [-5.0, 5.0],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.065, 0.05, 0.036, 1.0]},
+        {"t": 0.85, "color": [0.065, 0.05, 0.036, 1.0]},
+        {"t": 1.0, "color": [0.065, 0.05, 0.036, 0.0]}
+      ],
+      "blend": "alpha",
+      "sprite": "chip",
+      "depthFade": true,
+      "softness": 0.1
+    },
+    {
+      "name": "dust",
+      "bursts": [{"time": 0.0, "count": 14}],
+      "duration": 0.1,
+      "maxParticles": 18,
+      "lifetime": [0.4, 0.7],
+      "shape": "sphere",
+      "radius": 0.15,
+      "speed": [0.6, 1.6],
+      "gravity": [0.0, -0.5, 0.0],
+      "drag": 3.0,
+      "startSize": [0.5, 0.8],
+      "sizeOverLife": [{"t": 0.0, "v": 0.8}, {"t": 0.4, "v": 1.2}, {"t": 1.0, "v": 1.8}],
+      "startRotation": [0.0, 6.28],
+      "angularVelocity": [-1.2, 1.2],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.33, 0.27, 0.19, 0.55]},
+        {"t": 0.1, "color": [0.33, 0.27, 0.19, 0.5]},
+        {"t": 1.0, "color": [0.31, 0.255, 0.18, 0.0]}
+      ],
+      "blend": "alpha",
+      "sprite": "puff",
+      "coreShade": 0.5,
+      "depthFade": true,
+      "softness": 0.9
+    }
+  ]
+}

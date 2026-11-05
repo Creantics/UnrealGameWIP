@@ -4,7 +4,9 @@
     "impact": { "effect": "stone_impact", "speedScale": 1.0, "shapeScale": 1.0 },
     "chips": { "effect": "stone_chips", "speedScale": 1.0, "shapeScale": 1.0 },
     "crit": { "effect": "crit_burst", "speedScale": 1.0, "shapeScale": 1.0 },
-    "glow": { "effect": "weak_glow", "speedScale": 1.0, "shapeScale": 1.0 }
+    "glow": { "effect": "weak_glow", "speedScale": 1.0, "shapeScale": 1.0 },
+    "chipsHeavy": { "effect": "stone_chips_heavy", "speedScale": 1.0, "shapeScale": 1.0 },
+    "tellArea": { "effect": "stone_tell_area", "speedScale": 1.0, "shapeScale": 1.0 }
   },
   "lift": 0.05,
   "calledAhead": 1.2,
