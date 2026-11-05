@@ -185,35 +185,41 @@ bool FFTStoneBearerHost::StrikeOf(std::uint8_t Move, const ftcore::ArenaBodies& 
 	{
 		return false;
 	}
+	return StrikeAt(Move, Bodies.enemies[Slot], BossFacing(), CalledSideOf(Move), Ahead, Side, ReachShare, true, Out);
+}
+
+bool FFTStoneBearerHost::StrikeAt(std::uint8_t Move, ftcore::Vec2 Pos, ftcore::Vec2 Facing, ftcore::CalledZone Zone, float Ahead,
+	float Side, float ReachShare, bool bKeepOut, FFTStoneBearerStrike& Out) const
+{
+	if (!IsActive() || bUseRefused || Move >= FightPtr->def().enemies[Slot].moveCount || Move >= ftcore::kMaxArenaMoves)
+	{
+		return false;
+	}
 	const ftcore::ArenaAttack& A = FightPtr->def().enemies[Slot].moves[Move].attack;
-	const ftcore::Vec2 Pos = Bodies.enemies[Slot];
-	const ftcore::Vec2 Facing = BossFacing();
+	const bool bCut = bKeepOut && !KeepOut.none();
 	Out.From = Pos;
 	// The shapes as BuildKind laid them out and RuleBossBlow cuts them.
 	if (A.arcCos <= -1.f)
 	{
 		Out.Shape = FFTStoneBearerStrike::EShape::Area;
-		Out.To = KeepOut.none() ? Pos : KeepOut.clampArea(Pos, A.range);
+		Out.To = bCut ? KeepOut.clampArea(Pos, A.range) : Pos;
 		return true;
 	}
 	if (A.width > 0.f)
 	{
 		Out.Shape = FFTStoneBearerStrike::EShape::Lane;
-		Out.To = Along(Pos, Facing, KeepOut.none() ? A.range : KeepOut.clampLane(Pos, Facing, A.width, A.range));
+		Out.To = Along(Pos, Facing, bCut ? KeepOut.clampLane(Pos, Facing, A.width, A.range) : A.range);
 		return true;
 	}
 	// A called impact to a side: the zone the run called for it (arenaSideOf's right is the facing turned a quarter).
 	// With a clip contact the point is the contact's, mirrored to the called side; an arc's is the contact as it is.
 	const std::uint8_t M = Layout.moveOf[Move];
-	const std::uint8_t K = Layout.impactOf[Move];
-	const ftcore::ArenaBossRun& Run = Boss.run();
 	const ftcore::Vec2 Right{-Facing.y, Facing.x};
 	const ftcore::ArenaBossMove* Contact = M < Def.boss.moveCount
 		&& UsableContact(Def.boss.moves[M], FightPtr->def().enemies[Slot].bodyRadius) ? &Def.boss.moves[M] : nullptr;
-	if (M < Def.boss.moveCount && Def.boss.moves[M].intercept() && Run.liveMove() == M && K < Run.strike().size()
-		&& Run.strike().impact(K).zone != ftcore::CalledZone::Path)
+	if (M < Def.boss.moveCount && Def.boss.moves[M].intercept() && Zone != ftcore::CalledZone::Path)
 	{
-		const float Sign = Run.strike().impact(K).zone == ftcore::CalledZone::Right ? 1.f : -1.f;
+		const float Sign = Zone == ftcore::CalledZone::Right ? 1.f : -1.f;
 		Out.Shape = FFTStoneBearerStrike::EShape::Side;
 		Out.To = Contact ? Along(Along(Pos, Facing, Contact->contactAhead), Right, std::fabs(Contact->contactSide) * Sign)
 			: Along(Along(Pos, Facing, Ahead), Right, Side * Sign);
@@ -224,12 +230,12 @@ bool FFTStoneBearerHost::StrikeOf(std::uint8_t Move, const ftcore::ArenaBodies& 
 	{
 		// The keep-out shortens the reach the way it shortens the blow (RuleBossBlow): the point slides in with it.
 		const float Planar = ContactPlanar(*Contact);
-		const float Reach = KeepOut.none() ? Planar : KeepOut.clampArc(Pos, Facing, A.arcCos, Planar);
+		const float Reach = bCut ? KeepOut.clampArc(Pos, Facing, A.arcCos, Planar) : Planar;
 		const float Share = Planar > 0.f ? Reach / Planar : 0.f;
 		Out.To = Along(Along(Pos, Facing, Contact->contactAhead * Share), Right, Contact->contactSide * Share);
 		return true;
 	}
-	const float Reach = KeepOut.none() ? A.range : KeepOut.clampArc(Pos, Facing, A.arcCos, A.range);
+	const float Reach = bCut ? KeepOut.clampArc(Pos, Facing, A.arcCos, A.range) : A.range;
 	Out.To = Along(Pos, Facing, Reach * ReachShare);
 	return true;
 }

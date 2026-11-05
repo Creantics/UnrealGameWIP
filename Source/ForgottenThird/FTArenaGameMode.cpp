@@ -92,7 +92,8 @@ void AFTArenaGameMode::StartPlay()
 			ShotAt.Sort();
 		}
 	}
-	bIdle = FParse::Param(Cmd, TEXT("ArenaIdle"));
+	bShowcase = FParse::Param(Cmd, TEXT("ArenaShowcase"));
+	bIdle = bShowcase || FParse::Param(Cmd, TEXT("ArenaIdle"));
 	bAutoPlay = !bIdle && (FParse::Param(Cmd, TEXT("ArenaAutoPlay")) || !ShotPrefix.IsEmpty());
 	bQuitOnFinish = FParse::Param(Cmd, TEXT("ArenaQuitOnFinish"));
 	bOverview = FParse::Param(Cmd, TEXT("ArenaOverview"));
@@ -549,6 +550,7 @@ void AFTArenaGameMode::Begin()
 	Setup.bBossSplitAtStart = bBossSplit;
 	Setup.bQuitOnFinish = bQuitOnFinish;
 	Setup.bShots = !ShotPrefix.IsEmpty();
+	Setup.bShowcase = bShowcase;
 	Runner->Begin(Setup);
 }
 
@@ -608,7 +610,7 @@ void AFTArenaGameMode::Tick(float DeltaSeconds)
 		Begin();
 	}
 	Runner->TickFight(DeltaSeconds, Shots(DeltaSeconds));
-	if (bBossCam)
+	if (bBossCam && !bShowcase)
 	{
 		BossCam();
 	}

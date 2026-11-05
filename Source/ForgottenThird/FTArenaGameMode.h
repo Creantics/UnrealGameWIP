@@ -183,6 +183,8 @@ private:
 	// -ArenaBossCam: a fixed camera on the first enemy's side, so a capture shows the boss's own turns apart from the
 	// follow camera's; the yaw it last logged.
 	bool bBossCam = false;
+	// -ArenaShowcase: the boss's clips and effects alone for review, no fight (FFTArenaRunSetup::bShowcase); an idle run.
+	bool bShowcase = false;
 	UPROPERTY()
 	TObjectPtr<AActor> BossCamera;
 	float BossCamYaw = 0.f;

@@ -21,6 +21,7 @@
 #include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
 #include "ftcore/BeatChoreo.h"
+#include "ftcore/ClipShowcase.h"
 
 #include "FTArenaBossVfx.h"
 #include "FTKiteHost.h"
@@ -36,6 +37,7 @@ class UFTVfxComponent;
 #include "FTArenaRunner.generated.h"
 
 class AFTArenaFighter;
+class ACameraActor;
 class AStaticMeshActor;
 class APlayerController;
 class UWorld;
@@ -107,6 +109,9 @@ struct FFTArenaRunSetup
 	bool bFightAgain = true;
 	// The player's figure replaces the controller's pawn, which is destroyed; else the old pawn is only unpossessed.
 	bool bReplacePawn = true;
+	// -ArenaShowcase (review only): no fight; the boss's clips one at a time and its effects alone, from a fixed camera,
+	// then the process quits (see BeginShowcase).
+	bool bShowcase = false;
 };
 
 UCLASS()
@@ -247,6 +252,16 @@ private:
 	void PrepareBossCarried();
 	// The stone_bearer's walk counts for the fight, one log line at its end.
 	void LogStoneWalkCounts() const;
+	// -ArenaShowcase: the stone_bearer's reel (ftcore/ClipShowcase.h) built from its skin and moves, everyone else hidden,
+	// the HUD off and a fixed camera at play distance (the lead's rig: its arm plus the boss's reach) 30 degrees off the
+	// boss's front to its left. Each frame plays the reel's pose and the effects of the cues it crossed, logs each part's
+	// start (with the full frame counter, for the cutter) and quits at the end. False, with a warning, when there is no
+	// loaded stone_bearer to show (the flag then does nothing).
+	bool BeginShowcase();
+	void TickShowcase(float DeltaSeconds);
+	void ShowcaseCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& Figure);
+	// The boss's contact socket for arena move Move (a label mapped to its bone; bLeft: its left-hand clip), null: none.
+	const char* BossContactSocket(uint8 Move, bool bLeft) const;
 	// Plain kinds' weak points (ftcore/ArenaKindCrit.h): Data/Battle/arena_crit.json read once, then on each begin and
 	// restart one ArenaKindCrit per slot whose kind has an entry, and the blow hook that rules on the lead's blows on them.
 	// After each step the slots' AttackStarted events open the windows; an opening and every crit are one log line each.
@@ -306,6 +321,9 @@ private:
 	TObjectPtr<AStaticMeshActor> PlinthActor;
 	UPROPERTY()
 	TObjectPtr<AStaticMeshActor> KeepOutActor;
+	// The -ArenaShowcase reel's fixed camera.
+	UPROPERTY()
+	TObjectPtr<ACameraActor> ShowCamera;
 	// The stone_bearer's effects: telegraph, impact, hit chips, crit burst and the open weak point's glow.
 	UPROPERTY()
 	FFTArenaBossVfx BossVfx;
@@ -492,4 +510,21 @@ private:
 	int32 KiteSlot = -1;
 	int32 KiteLogged = 0;
 	FFTKiteVfx KiteFx;
+
+	// -ArenaShowcase: on, the reel (on the heap: it is large), its clock (s; it starts below 0 on the idle's first frame,
+	// for the exposure to settle), the last part and cue time played, where the boss stood and faced at the start (the
+	// reel's frame), each reel attack's arena move, the strike point its tell was drawn at (for its dust), and done.
+	bool bShowcase = false;
+	TSharedPtr<ftcore::ClipShow> Show;
+	ftcore::ShowSpec ShowSpecUsed;
+	double ShowTime = 0.0;
+	double ShowCueTime = -1.0;
+	int32 ShowSegment = -1;
+	bool bShowHidden = false;
+	FVector ShowOrigin = FVector::ZeroVector;
+	float ShowBaseYaw = 0.f;
+	ftcore::Vec2 ShowTellAt;
+	float ShowTellShapeMul = 1.f;
+	int16 ShowTellAttack = -1;
+	bool bShowDone = false;
 };

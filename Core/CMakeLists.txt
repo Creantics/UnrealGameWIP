@@ -105,6 +105,7 @@ add_library(ftcore STATIC
     src/ArenaBoss.cpp
     src/ArenaKindCrit.cpp
     src/StoneBearer.cpp
+    src/ClipShowcase.cpp
     src/BeatChoreo.cpp
     src/BeatMusic.cpp
     src/BeatMusicSynth.cpp
@@ -213,6 +214,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_arena_boss.cpp
         tests/test_arena_kind_crit.cpp
         tests/test_stone_bearer.cpp
+        tests/test_clip_showcase.cpp
         tests/test_beat_choreo.cpp
         tests/test_beat_cine.cpp
         tests/test_beat_music.cpp
