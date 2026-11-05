@@ -161,6 +161,9 @@ public:
 	double GetNow() const { return Now; }
 	// Seconds since the fight ended (0 while it runs).
 	double GetResultAge() const { return bResultLogged ? Now - ResultTime : 0.0; }
+	// Seconds since the result may show (negative before): a victory's banner waits for the death clips on screen as the
+	// fight ended to play out, so it never hides a boss's death.
+	double GetResultShowAge() const { return bResultLogged ? Now - ResultTime - ResultWait : 0.0; }
 	bool IsAutoPlay() const { return bAutoPlay; }
 	bool IsIdle() const { return bIdle; }
 	// The result offers to fight again.
@@ -318,6 +321,9 @@ private:
 	// What each skinned enemy plays: the clip (a table index; -2 none yet) and since when, the last hit reaction.
 	int32 SkinClip[ftcore::kMaxArenaEnemies];
 	double SkinSince[ftcore::kMaxArenaEnemies];
+	// The move whose clip it last drew (-1 none) and Core's time into that move then: a new start of a move logs its clip.
+	int32 SkinMove[ftcore::kMaxArenaEnemies];
+	float SkinMoveTime[ftcore::kMaxArenaEnemies] = {};
 	double HitSince[ftcore::kMaxArenaEnemies];
 	bool bHitHeavy[ftcore::kMaxArenaEnemies] = {};
 	// A walking skin: its smoothed ground speed (m/s), whether it walks, and where it is in the walk clip (s).
@@ -339,6 +345,10 @@ private:
 	// The stone_bearer's figure: when its walk began, when its get-up began (-1e9: none under way) and whether it is up
 	// for the rest of its down, the death clip it chose (-1: not yet), and its move mask as last logged.
 	double StoneWalkSince = -1e9;
+	// The walk's stop, latched when Core stops wanting it: seconds into the walk it stops at (its next passing pose; < 0: none
+	// latched) and why.
+	double StoneWalkStopAt = -1.0;
+	const TCHAR* StoneWalkStopWhy = TEXT("");
 	double StoneUpStart = -1e9;
 	bool bStoneStood = false;
 	int32 StoneDeathClip = -1;
@@ -357,7 +367,8 @@ private:
 	FVector StoneTellFigurePos = FVector::ZeroVector;
 	float StoneTellFigureYaw = 0.f;
 	// The walk's counts this fight: steps between moves Core wanted over the start speed (by brain), the runs of them,
-	// the walks begun, and the wanted steps that couldn't start one (by what held it: the cone, a get-up, a hit).
+	// the walks begun, and the wanted steps that couldn't start one (by what held it: the cone, a get-up, a hit, a turn, a
+	// move due within a cycle). And the steps a turn would have started on but a move was due within its step.
 	int32 StoneWantApproach = 0;
 	int32 StoneWantStrafe = 0;
 	int32 StoneWantRuns = 0;
@@ -366,10 +377,12 @@ private:
 	int32 StoneHeldUp = 0;
 	int32 StoneHeldHit = 0;
 	int32 StoneHeldTurn = 0;
+	int32 StoneHeldPick = 0;
+	int32 StoneTurnHeldPick = 0;
 	bool bStoneWanted = false;
 	// The stone_bearer's stepping turn: which way (+1 right, the yaw rising; -1 left; 0 none), since when (Fight time), the
 	// facing it began from, the cycles it is committed to, the crossfade into its clip (s), where its pivot foot stood as
-	// the cycle began (when found) and whether the first cycle's foot check is logged, and the fight's turn counts.
+	// the cycle began, from the actor's origin in world axes (when found) and whether the first cycle's foot check is logged, and the fight's turn counts.
 	int32 StoneTurnSign = 0;
 	double StoneTurnStart = -1e9;
 	ftcore::Vec2 StoneTurnFrom;
@@ -449,6 +462,7 @@ private:
 	bool bBossSplitAtStart = false;
 	bool bResultLogged = false;
 	double ResultTime = 0.0;
+	double ResultWait = 0.0; // how long after the result its banner waits (s)
 	// How long after the result the autopilot fights again (s): kArenaAutoAgain, or longer for a long defeat clip.
 	double AutoAgainWait = 4.0;
 	double BeginNow = 0.0;

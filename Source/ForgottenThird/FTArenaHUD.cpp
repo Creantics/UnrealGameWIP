@@ -908,7 +908,13 @@ void AFTArenaHUD::DrawResult(const UFTArenaRunner& Mode)
 			St.evades, St.blocks, St.hitsTaken});
 		bStatsBuilt = true;
 	}
-	const float Fade = FMath::Clamp(static_cast<float>(Mode.GetResultAge() / kArenaResultFade), 0.f, 1.f);
+	// A victory's banner waits for the death clips to play out (the runner's ResultWait): nothing over the boss's death.
+	const double ShowAge = Mode.GetResultShowAge();
+	if (ShowAge < 0.0)
+	{
+		return;
+	}
+	const float Fade = FMath::Clamp(static_cast<float>(ShowAge / kArenaResultFade), 0.f, 1.f);
 	const float CX = Canvas->ClipX * 0.5f;
 	const float Top = Canvas->ClipY * 0.36f;
 	DrawRect(ArenaAlpha(kArenaPanel, Fade), 0.f, Top, Canvas->ClipX, 250.f * S);

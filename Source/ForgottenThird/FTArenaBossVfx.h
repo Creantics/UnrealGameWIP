@@ -70,7 +70,7 @@ struct FFTArenaBossVfx
 	// The looping tells: stops every playing one.
 	void StopTells();
 	bool AnyTells() const { return bTells; }
-	// The weak point's glow: on at At, off, or moved to At while on.
+	// The weak point's glow: on at At, off (its live particles die at once), or moved to At while on.
 	void SetGlow(bool bOn, const FVector& At);
 	void MoveGlow(const FVector& At);
 	bool IsGlowing() const { return bGlowing; }

@@ -58,6 +58,16 @@ Vec2 arenaClampLength(Vec2 v, float most) {
     return arenaScaled(v, most / length);
 }
 
+// How far `distance` is outside a move's [minRange, maxRange]; 0 inside it. A pick takes a move within kArenaEps.
+float arenaBandGap(const ArenaEnemyMove& mv, float distance) {
+    return distance > mv.maxRange ? distance - mv.maxRange : (distance < mv.minRange ? mv.minRange - distance : 0.f);
+}
+
+// Move m may be begun by a pick at all (its cooldown aside): weighted, and its bit set in the host's mask.
+bool arenaPickable(const ArenaEnemyMove& mv, std::size_t m, std::uint32_t mask) {
+    return mv.weight > 0.f && ((mask >> m) & 1u) != 0u;
+}
+
 Vec2 arenaRotate(Vec2 v, float angle) {
     const float c = std::cos(angle), s = std::sin(angle);
     return Vec2{v.x * c - v.y * s, v.x * s + v.y * c};
@@ -1129,11 +1139,9 @@ struct ArenaFightImpl {
     Pick pickMove(std::size_t i, float distance) {
         const Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
-        const auto gapOf = [&](const ArenaEnemyMove& mv) {
-            return distance > mv.maxRange ? distance - mv.maxRange : (distance < mv.minRange ? mv.minRange - distance : 0.f);
-        };
+        const auto gapOf = [&](const ArenaEnemyMove& mv) { return arenaBandGap(mv, distance); };
         const auto ready = [&](std::size_t m) {
-            return k.moves[m].weight > 0.f && foe.cooldown[m] <= 0.f && ((foe.moveMask >> m) & 1u) != 0u;
+            return arenaPickable(k.moves[m], m, foe.moveMask) && foe.cooldown[m] <= 0.f;
         };
         Pick pick;
         float total = 0.f;
@@ -1696,6 +1704,24 @@ std::uint8_t ArenaFight::lock() const { return player_.lock; }
 int ArenaFight::enemyHp(std::size_t i) const { return i < enemyCount_ ? enemy_[i].hp : 0; }
 float ArenaFight::enemyPoise(std::size_t i) const { return i < enemyCount_ ? enemy_[i].poise : 0.f; }
 bool ArenaFight::enemyAlive(std::size_t i) const { return i < enemyCount_ && enemy_[i].brain != ArenaBrain::Dead; }
+float ArenaFight::enemyPickIn(std::size_t i) const {
+    if (phase_ != ArenaPhase::Fighting || i >= enemyCount_) return 0.f;
+    const EnemyState& foe = enemy_[i];
+    if (foe.brain != ArenaBrain::Approach && foe.brain != ArenaBrain::Strafe) return 0.f;
+    const ArenaEnemyKind& k = def_.enemies[i];
+    if (!foe.token) {
+        if (foe.brain == ArenaBrain::Approach) return kArenaPickNever;
+        return std::max(0.f, k.attackDelay - (time_ - foe.stringEnd));
+    }
+    // pickMove's own tests: a band holds the distance within kArenaEps, and a move is ready once its cooldown is out.
+    const float distance = arenaDistance(player_.pos, foe.pos);
+    float soonest = kArenaPickNever;
+    for (std::size_t m = 0; m < k.moveCount; ++m) {
+        if (!arenaPickable(k.moves[m], m, foe.moveMask) || arenaBandGap(k.moves[m], distance) > kArenaEps) continue;
+        soonest = std::min(soonest, std::max(0.f, foe.cooldown[m]));
+    }
+    return soonest;
+}
 const ReadCards& ArenaFight::readCards() const { return read_; }
 std::uint8_t ArenaFight::readFoe() const { return readFoe_; }
 std::uint8_t ArenaFight::readMove() const { return readMove_; }

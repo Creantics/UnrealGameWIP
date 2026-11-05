@@ -385,7 +385,7 @@ void AFTArenaHost::Tick(float DeltaSeconds)
 	}
 	Runner->TickFight(DeltaSeconds, false);
 	const double Hold = Runner->IsAutoPlay() ? kArenaHostAutoHold : kArenaHostHold;
-	if (Runner->IsFinished() && Runner->GetResultAge() >= Hold && !bFinished)
+	if (Runner->IsFinished() && Runner->GetResultShowAge() >= Hold && !bFinished)
 	{
 		Finish();
 	}

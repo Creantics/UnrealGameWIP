@@ -9,6 +9,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "NiagaraComponent.h"
 #include "NiagaraSystem.h"
 
 #include "ftcore/Json.h"
@@ -224,7 +225,13 @@ void FFTArenaBossVfx::SetGlow(bool bOnNow, const FVector& At)
 	AFTVfxActor* Actor = Slots[FirstSlot(EEffect::Glow)].Get();
 	if (Actor)
 	{
-		Actor->GetVfx()->Stop();
+		// Stop alone lets the live particles finish (0.3 to 1.1 s), so the glow would outlast the weak point by frames.
+		UFTVfxComponent* Vfx = Actor->GetVfx();
+		Vfx->Stop();
+		if (UNiagaraComponent* Niagara = Vfx->GetNiagara())
+		{
+			Niagara->DeactivateImmediate();
+		}
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena VFX: %s off (weak point shut)"), *Tuning.Looks[static_cast<int32>(EEffect::Glow)].Effect.ToString());
 	}
 	bGlowing = false;

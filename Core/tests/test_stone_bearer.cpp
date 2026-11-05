@@ -437,6 +437,100 @@ TEST_CASE("stone bearer clips: the shipped table loads clean, with its own cross
     }
 }
 
+TEST_CASE("stone bearer as arena moves: each clip is entered at rate 1.0, its impact landing as the startup ends") {
+    const StoneBearerDef& def = shipped();
+    std::string text, err;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena.json", text));
+    ArenaTable table;
+    REQUIRE_MESSAGE(importArenaTable(text, table, &err), err);
+    std::size_t at = table.enemyIds.size();
+    for (std::size_t i = 0; i < table.enemyIds.size(); ++i)
+        if (table.enemyIds[i] == "stone_bearer") at = i;
+    REQUIRE(at < table.enemies.size());
+    ArenaEnemyKind kind = table.enemies[at];
+    StoneBearerLayout layout;
+    REQUIRE_MESSAGE(buildStoneBearerKind(def, table.fighter("devin"), kind, &layout, &err), err);
+    REQUIRE(ftcore_test::readProjectData("Anim/stone_bearer_clips.json", text));
+    BeatClips clips;
+    REQUIRE_MESSAGE(importBeatClips(text, clips, &err), err);
+
+    // One chained arena move per impact, in the file's order.
+    std::size_t total = 0;
+    for (std::uint8_t m = 0; m < def.boss.moveCount; ++m) total += def.boss.moves[m].impactCount;
+    REQUIRE(layout.count == total);
+    CHECK(kind.moveCount == total);
+    StoneBearerLayout bare;
+    REQUIRE(stoneBearerLayout(def, bare));
+    CHECK(bare.count == layout.count);
+
+    const double frame = 1.0 / 30.0;
+    int entered = 0, chained = 0, ranOn = 0;
+    for (std::size_t a = 0; a < layout.count; ++a) {
+        const ArenaBossMove& src = def.boss.moves[layout.moveOf[a]];
+        const std::uint8_t k = layout.impactOf[a];
+        CAPTURE(src.id());
+        CAPTURE(static_cast<int>(k));
+        CHECK(bare.moveOf[a] == layout.moveOf[a]);
+        CHECK(bare.impactOf[a] == layout.impactOf[a]);
+        CHECK(bare.runsOn[a] == layout.runsOn[a]);
+        CHECK(static_cast<int>(kind.moves[a].chain) == (k + 1 < src.impactCount ? static_cast<int>(a + 1) : -1));
+        // Only a tile move's later impacts run on: its active part outlasts the beat to the next impact.
+        CHECK(layout.runsOn[a] == (k > 0 && src.answer == ArenaBossAnswer::Tile));
+        const std::string_view clip = stoneBearerClipOf(src.id());
+        CHECK(kind.moves[a].clip() == clip);
+        const int c = clips.find(clip);
+        if (c < 0) continue; // the throws have no clip of their own: they play the idle
+        const BeatClip& row = clips[static_cast<std::size_t>(c)];
+        REQUIRE(row.impact > 0.0);
+        const ArenaAttack& atk = kind.moves[a].attack;
+        const double entry = stoneBearerClipEntry(kind, layout, a, row.impact);
+        // Never entered before its start (that would need a rate under 1; the host enters a clip within a frame of its
+        // start at its start) nor past its end.
+        CHECK(entry >= -kBeatClipEntrySlack); // the runner's own slack: inside it, the clip starts at its start
+        CHECK(entry < row.length);
+        if (k == 0) {
+            // A first impact's startup is the clip's own impact: the clip plays from its first frame.
+            CHECK(std::fabs(static_cast<double>(atk.startup) - row.impact) <= frame);
+            CHECK(std::fabs(entry) <= frame);
+            ++entered;
+        } else if (layout.runsOn[a]) {
+            // The take goes on: where the clip had reached as the move before ended.
+            const ArenaAttack& before = kind.moves[a - 1].attack;
+            CHECK(entry == doctest::Approx(stoneBearerClipEntry(kind, layout, a - 1, row.impact) + before.startup
+                                           + before.active + before.recovery));
+            ++ranOn;
+        } else {
+            // A chained impact enters the clip again late enough for a wind-up a player can read, and never before it.
+            CHECK(atk.startup >= 0.35f);
+            CHECK(static_cast<double>(atk.startup) <= row.impact + 1e-4);
+            CHECK(entry == doctest::Approx(row.impact - atk.startup));
+            ++chained;
+        }
+    }
+    CHECK(entered >= 8);
+    CHECK(chained >= 3); // called_fist_twice, slab_drive_halves, low_sweep_halves
+    CHECK(ranOn >= 1);   // debris_shower_twice
+    CHECK(stoneBearerClipEntry(kind, layout, kMaxArenaMoves, 1.0) == 0.0);
+
+    // A run of moves that run on walks back to the take's start.
+    ArenaEnemyKind three;
+    three.moveCount = 3;
+    for (std::size_t i = 0; i < 3; ++i) {
+        three.moves[i].attack.startup = 0.5f;
+        three.moves[i].attack.active = 0.25f;
+        three.moves[i].attack.recovery = i == 2 ? 1.0f : 0.f;
+    }
+    StoneBearerLayout chain;
+    chain.count = 3;
+    chain.runsOn[1] = chain.runsOn[2] = true;
+    CHECK(stoneBearerClipEntry(three, chain, 0, 2.0) == doctest::Approx(1.5));
+    CHECK(stoneBearerClipEntry(three, chain, 1, 2.0) == doctest::Approx(2.25));
+    CHECK(stoneBearerClipEntry(three, chain, 2, 2.0) == doctest::Approx(3.0));
+    chain.runsOn[1] = false;
+    CHECK(stoneBearerClipEntry(three, chain, 1, 2.0) == doctest::Approx(1.5));
+    CHECK(stoneBearerClipEntry(three, chain, 2, 2.0) == doctest::Approx(2.25));
+}
+
 TEST_CASE("stone bearer loader: refusals carry their paths") {
     {
         StoneBearerDef def;

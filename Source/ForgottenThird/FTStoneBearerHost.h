@@ -157,7 +157,16 @@ public:
 	// The boss move of an arena move (kArenaBossNoMove past the table).
 	std::uint8_t BossMoveOf(std::size_t ArenaMove) const
 	{
-		return ArenaMove < MoveOf.size() ? MoveOf[ArenaMove] : ftcore::kArenaBossNoMove;
+		return ArenaMove < Layout.count ? Layout.moveOf[ArenaMove] : ftcore::kArenaBossNoMove;
+	}
+	// The arena moves BuildKind lays out (Load fills it).
+	const ftcore::StoneBearerLayout& GetLayout() const { return Layout; }
+	// Where the clip of arena move Move is entered (s) at the move's start, at rate 1.0, so its impact (Impact, s into
+	// the clip) lands as the startup ends; a tile move's later impacts run on from the move before
+	// (ftcore::stoneBearerClipEntry).
+	double ClipEntry(const ftcore::ArenaEnemyKind& Kind, std::size_t Move, double Impact) const
+	{
+		return ftcore::stoneBearerClipEntry(Kind, Layout, Move, Impact);
 	}
 	// What the last AfterTick did with an hp-share break of the carried piece: Held is a stagger hold from it (the
 	// runner draws the stagger on that same tick); the rest say why there is none.
@@ -196,9 +205,8 @@ private:
 	ftcore::ArenaKeepOut KeepOut;
 	int LeadHp = 100;
 
-	// Arena move index -> the boss move and which of its impacts it lands (rebuilt from Def as BuildKind lays it out).
-	std::array<std::uint8_t, ftcore::kMaxArenaMoves> MoveOf{};
-	std::array<std::uint8_t, ftcore::kMaxArenaMoves> ImpactOf{};
+	// Arena move index -> the boss move and which of its impacts it lands (from Def, as BuildKind lays it out).
+	ftcore::StoneBearerLayout Layout;
 
 	// The use in progress: its boss move, refused or not, the damage its blows dealt (for damageMax).
 	std::uint8_t UseMove = ftcore::kArenaBossNoMove;

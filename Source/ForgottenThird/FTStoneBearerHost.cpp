@@ -4,28 +4,18 @@
 
 namespace
 {
-// A boss blow's shape (ArenaBoss.h's wiring notes): a lane this wide for path impacts and cover moves.
-constexpr float kStoneLaneWidth = 1.f;
-// The arc of intercept and plain moves (arcCos), and of every move without a template of its own.
-constexpr float kStoneArcCos = 0.5f;
-// A chained move's startup never falls below this (s): a tile move's active part is longer than the beat to its
-// next impact, so that impact lands this late instead.
-constexpr float kStoneMinStartup = 0.05f;
-// A move's pick range reaches this far past its reach (m), as arena.json's moves do.
-constexpr float kStonePickSlack = 0.4f;
 // The autopilot: an Intercept is held from the middle of the window to just past the impact; the Load is hoarded
 // from this far above the pedestal's hp share; a Release goes this close to the guest's call (s).
 constexpr double kStoneHoardShare = 0.2;
 constexpr double kStonePressEarly = 0.025;
 constexpr double kStoneHoldPast = 0.05;
 constexpr double kStoneReleaseSlack = 0.05;
-// A guard that blocks a guard-breaking blow loses this much more than the lead has (ArenaAttack has no guard-break
-// time of its own: an empty stamina breaks the guard for the kit's guardBreakTime).
-constexpr float kStoneGuardBreakExtra = 1.f;
 // The autopilot while the weak points are open: it walks round to the first point's gate, to a spot this far (m)
 // past both bodies behind the boss, by way of a side spot this far past the boss's body when it starts in front.
 constexpr float kStoneGateGap = 0.6f;
 constexpr float kStoneGateSide = 1.2f;
+// A path impact's or a cover move's lane (ftcore's: BuildKind's blows are this wide).
+constexpr float kStoneLaneWidth = ftcore::kStoneBearerLaneWidth;
 
 float Dist(ftcore::Vec2 A, ftcore::Vec2 B)
 {
@@ -38,49 +28,16 @@ ftcore::Vec2 Along(ftcore::Vec2 P, ftcore::Vec2 Dir, float Length)
 {
 	return ftcore::Vec2{P.x + Dir.x * Length, P.y + Dir.y * Length};
 }
-
-// The id of the clip a boss move plays: its own, less a "_twice" or "_halves" ending (the variants play the base
-// move's clip).
-std::string_view ClipOf(std::string_view Id)
-{
-	for (const std::string_view Tail : {std::string_view("_twice"), std::string_view("_halves")})
-	{
-		if (Id.size() > Tail.size() && Id.substr(Id.size() - Tail.size()) == Tail)
-		{
-			return Id.substr(0, Id.size() - Tail.size());
-		}
-	}
-	return Id;
-}
-
-bool LaneMove(const ftcore::ArenaBossMove& Move, std::size_t Impact)
-{
-	return Move.answer == ftcore::ArenaBossAnswer::Cover
-		|| (Move.intercept() && Impact < Move.impactCount && Move.zones[Impact] == ftcore::CalledZoneRule::Path);
-}
 } // namespace
 
 float FFTStoneBearerHost::ContactPlanar(const ftcore::ArenaBossMove& Move)
 {
-	return std::sqrt(Move.contactAhead * Move.contactAhead + Move.contactSide * Move.contactSide);
+	return ftcore::stoneBearerContactPlanar(Move);
 }
 
 bool FFTStoneBearerHost::UsableContact(const ftcore::ArenaBossMove& Move, float BodyRadius)
 {
-	// A grip inside the body (the carried piece, a foot under it) is no striking point: the move keeps the file's
-	// reach. Lane and tile moves keep their shapes.
-	if (!Move.hasContact || Move.answer == ftcore::ArenaBossAnswer::Tile || Move.answer == ftcore::ArenaBossAnswer::Cover)
-	{
-		return false;
-	}
-	for (std::size_t K = 0; K < Move.impactCount; ++K)
-	{
-		if (LaneMove(Move, K))
-		{
-			return false;
-		}
-	}
-	return ContactPlanar(Move) > BodyRadius;
+	return ftcore::stoneBearerUsableContact(Move, BodyRadius);
 }
 
 bool FFTStoneBearerHost::Load(std::string_view Json, std::string* Error, std::vector<std::string>* Warnings)
@@ -89,116 +46,14 @@ bool FFTStoneBearerHost::Load(std::string_view Json, std::string* Error, std::ve
 	if (bLoaded)
 	{
 		// The arena moves BuildKind lays out: each boss move's impacts in order.
-		std::size_t Next = 0;
-		for (std::uint8_t M = 0; M < Def.boss.moveCount; ++M)
-		{
-			for (std::uint8_t K = 0; K < Def.boss.moves[M].impactCount && Next < ftcore::kMaxArenaMoves; ++K, ++Next)
-			{
-				MoveOf[Next] = M;
-				ImpactOf[Next] = K;
-			}
-		}
+		bLoaded = ftcore::stoneBearerLayout(Def, Layout, Error);
 	}
 	return bLoaded;
 }
 
 bool FFTStoneBearerHost::BuildKind(ftcore::ArenaEnemyKind& Kind, const ftcore::ArenaFighter& Lead, std::string* Error) const
 {
-	if (!bLoaded)
-	{
-		return false;
-	}
-	std::size_t Count = 0;
-	for (std::uint8_t M = 0; M < Def.boss.moveCount; ++M)
-	{
-		Count += Def.boss.moves[M].impactCount;
-	}
-	if (Count > ftcore::kMaxArenaMoves)
-	{
-		if (Error)
-		{
-			*Error = "stone_bearer: " + std::to_string(Count) + " impacts in all, more than kMaxArenaMoves";
-		}
-		return false;
-	}
-	ftcore::ArenaEnemyKind Out = Kind;
-	Out.hp = Def.boss.hp;
-	Out.poise = Def.boss.poise;
-	Out.staggerTime = Def.boss.staggerTime;
-	Out.openTime = Def.boss.openTime;
-	const double Beat = Def.boss.beat();
-	std::size_t Next = 0;
-	for (std::uint8_t M = 0; M < Def.boss.moveCount; ++M)
-	{
-		const ftcore::ArenaBossMove& Src = Def.boss.moves[M];
-		const std::string_view Clip = ClipOf(Src.id());
-		// The arena move of the same clip tunes the pick and the look; else the kind's first move does.
-		const ftcore::ArenaEnemyMove* Template = nullptr;
-		for (std::uint8_t T = 0; T < Kind.moveCount && !Template; ++T)
-		{
-			if (Kind.moves[T].clip() == Clip)
-			{
-				Template = &Kind.moves[T];
-			}
-		}
-		const bool bOwnTemplate = Template != nullptr;
-		if (!Template)
-		{
-			Template = &Kind.moves[0];
-		}
-		for (std::uint8_t K = 0; K < Src.impactCount; ++K, ++Next)
-		{
-			ftcore::ArenaEnemyMove& Move = Out.moves[Next];
-			Move = *Template;
-			ftcore::ArenaAttack& A = Move.attack;
-			const double Gap = K == 0 ? Src.impacts[0] : Src.impacts[K] - Src.impacts[K - 1];
-			// The first impact lands impacts[0] beats in; each next one the gap later, less the active part before it
-			// (a chained move starts when the one before it ends).
-			const float Startup = static_cast<float>(Gap * Beat) - (K == 0 ? 0.f : Src.active);
-			A.startup = Startup > kStoneMinStartup ? Startup : kStoneMinStartup;
-			A.active = Src.active;
-			A.recovery = K + 1 == Src.impactCount ? Src.recovery : 0.f;
-			// The boss file's reach is from the boss's body; ArenaFight's from its centre. A clip's contact point
-			// outside the body is the reach instead: the blow lands where the part strikes.
-			A.range = UsableContact(Src, Kind.bodyRadius) ? ContactPlanar(Src) : Src.range + Kind.bodyRadius;
-			A.damage = static_cast<int>(std::lround(static_cast<double>(Src.damage) * Lead.hp));
-			A.width = 0.f;
-			if (Src.answer == ftcore::ArenaBossAnswer::Tile)
-			{
-				A.arcCos = -1.f;
-			}
-			else if (LaneMove(Src, K))
-			{
-				A.width = kStoneLaneWidth;
-			}
-			else if (Src.intercept() || Src.answer == ftcore::ArenaBossAnswer::Any || !bOwnTemplate)
-			{
-				A.arcCos = kStoneArcCos;
-			}
-			if (Src.guardBreak > 0.f)
-			{
-				A.guardDamage = Lead.stamina + kStoneGuardBreakExtra;
-			}
-			Move.minRange = 0.f;
-			Move.maxRange = A.range + kStonePickSlack;
-			Move.chain = K + 1 < Src.impactCount ? static_cast<std::int8_t>(Next + 1) : -1;
-			Move.weight = K == 0 ? Template->weight : 0.f;
-			Move.cooldown = K == 0 ? Template->cooldown : 0.f;
-			// The run answers an intercept move (ArenaFight only lands it); a dodge, jump, tile or cover move is not
-			// one a guard stops.
-			Move.parryable = Template->parryable && Src.answer == ftcore::ArenaBossAnswer::Any;
-			Move.unblockable = Src.answer == ftcore::ArenaBossAnswer::Dodge || Src.answer == ftcore::ArenaBossAnswer::Jump
-				|| Src.answer == ftcore::ArenaBossAnswer::Tile || Src.answer == ftcore::ArenaBossAnswer::Cover;
-			Move.clipText = {};
-			for (std::size_t C = 0; C < Clip.size() && C < ftcore::kMaxArenaClipId; ++C)
-			{
-				Move.clipText[C] = Clip[C];
-			}
-		}
-	}
-	Out.moveCount = static_cast<std::uint8_t>(Count);
-	Kind = Out;
-	return true;
+	return bLoaded && ftcore::buildStoneBearerKind(Def, Lead, Kind, nullptr, Error);
 }
 
 void FFTStoneBearerHost::Begin(ftcore::ArenaFight& Fight, std::size_t InSlot, ftcore::Vec2 Centre, float YawDegrees)
@@ -266,7 +121,7 @@ std::uint32_t FFTStoneBearerHost::PickMask() const
 	std::uint32_t Mask = 0u;
 	for (std::size_t M = 0; M < Count && M < ftcore::kMaxArenaMoves && M < 32; ++M)
 	{
-		if (ImpactOf[M] == 0 && Boss.table().contains(MoveOf[M]) && ((Playable >> M) & 1u) != 0u)
+		if (Layout.impactOf[M] == 0 && Boss.table().contains(Layout.moveOf[M]) && ((Playable >> M) & 1u) != 0u)
 		{
 			Mask |= 1u << M;
 		}
@@ -349,8 +204,8 @@ bool FFTStoneBearerHost::StrikeOf(std::uint8_t Move, const ftcore::ArenaBodies& 
 	}
 	// A called impact to a side: the zone the run called for it (arenaSideOf's right is the facing turned a quarter).
 	// With a clip contact the point is the contact's, mirrored to the called side; an arc's is the contact as it is.
-	const std::uint8_t M = MoveOf[Move];
-	const std::uint8_t K = ImpactOf[Move];
+	const std::uint8_t M = Layout.moveOf[Move];
+	const std::uint8_t K = Layout.impactOf[Move];
 	const ftcore::ArenaBossRun& Run = Boss.run();
 	const ftcore::Vec2 Right{-Facing.y, Facing.x};
 	const ftcore::ArenaBossMove* Contact = M < Def.boss.moveCount
@@ -386,8 +241,8 @@ ftcore::CalledZone FFTStoneBearerHost::CalledSideOf(std::uint8_t Move) const
 		return ftcore::CalledZone::Path;
 	}
 	// As StrikeOf rules a called impact to a side.
-	const std::uint8_t M = MoveOf[Move];
-	const std::uint8_t K = ImpactOf[Move];
+	const std::uint8_t M = Layout.moveOf[Move];
+	const std::uint8_t K = Layout.impactOf[Move];
 	const ftcore::ArenaBossRun& Run = Boss.run();
 	if (M < Def.boss.moveCount && Def.boss.moves[M].intercept() && Run.liveMove() == M && K < Run.strike().size())
 	{
@@ -546,7 +401,7 @@ bool FFTStoneBearerHost::AfterTick(const ftcore::ArenaEvents& Events, ftcore::Ar
 			// Never Parried: a parried blow changes nothing.
 			if (E.source == Slot && E.move < ftcore::kMaxArenaMoves)
 			{
-				Absorb(Boss.onBlocked(MoveOf[E.move], T));
+				Absorb(Boss.onBlocked(Layout.moveOf[E.move], T));
 			}
 			break;
 		case ftcore::ArenaEventType::Staggered:
@@ -609,7 +464,7 @@ bool FFTStoneBearerHost::AfterTick(const ftcore::ArenaEvents& Events, ftcore::Ar
 	const ftcore::ArenaPart Part = Out.brain == ftcore::ArenaBrain::Attack ? Out.part : ftcore::ArenaPart::None;
 	if (Part == ftcore::ArenaPart::Active && LastPart != ftcore::ArenaPart::Active && Out.move < ftcore::kMaxArenaMoves && !bUseRefused)
 	{
-		const std::uint8_t M = MoveOf[Out.move];
+		const std::uint8_t M = Layout.moveOf[Out.move];
 		if (Boss.shockRing(M))
 		{
 			OnShockRing(M, T);
@@ -632,13 +487,13 @@ bool FFTStoneBearerHost::AfterTick(const ftcore::ArenaEvents& Events, ftcore::Ar
 
 void FFTStoneBearerHost::OnAttackStarted(std::uint8_t Move, float StateTime, const ftcore::ArenaBodies& Bodies)
 {
-	if (Move >= ftcore::kMaxArenaMoves || ImpactOf[Move] != 0)
+	if (Move >= ftcore::kMaxArenaMoves || Layout.impactOf[Move] != 0)
 	{
 		return; // a chained impact of the use in progress
 	}
 	ftcore::ArenaFight& Fight = *FightPtr;
 	const double Start = static_cast<double>(Fight.time()) - static_cast<double>(StateTime);
-	const std::uint8_t BossMove = MoveOf[Move];
+	const std::uint8_t BossMove = Layout.moveOf[Move];
 	const ftcore::Vec2 Pos = Bodies.enemies[Slot];
 	bool bStarted = false;
 	Absorb(Boss.startMove(BossMove, Start, ftcore::arenaSideOf(Pos, BossFacing(), Bodies.player), &bStarted));
@@ -781,8 +636,8 @@ ftcore::ArenaBlowRuling FFTStoneBearerHost::RuleBossBlow(const ftcore::ArenaBlow
 		Ruling.veto = true;
 		return Ruling;
 	}
-	const std::uint8_t M = MoveOf[Blow.move];
-	const std::uint8_t K = ImpactOf[Blow.move];
+	const std::uint8_t M = Layout.moveOf[Blow.move];
+	const std::uint8_t K = Layout.impactOf[Blow.move];
 	const ftcore::ArenaBossMove& Move = Def.boss.moves[M];
 	const ftcore::ArenaFighter& Lead = FightPtr->def().fighter;
 

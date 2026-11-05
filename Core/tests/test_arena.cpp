@@ -2500,6 +2500,92 @@ TEST_CASE("arena step: bodies move at their velocities, overlaps are pushed apar
     CHECK(corpse.player.y == 1.f);
 }
 
+TEST_CASE("arena: enemyPickIn is how long before the brain may begin a move") {
+    const ArenaAttack slow = swing(0.4f, 0.1f, 0.4f, 3.f, 0);
+    {   // approaching without a token: unbounded; strafing without one: what is left of its attackDelay
+        ArenaEnemyKind k = hitterKind(slow);
+        k.attackDelay = 1.f;
+        k.preferredRange = 2.f;
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 6.f, 0.f);
+        rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Approach);
+        CHECK_FALSE(rig.out().enemies[0].token);
+        CHECK(rig.fight.enemyPickIn(0) == kArenaPickNever);
+        rig.put(0, 2.f, 0.f); // at its preferred range: it strafes
+        rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Strafe);
+        CHECK_FALSE(rig.out().enemies[0].token);
+        CHECK(rig.fight.enemyPickIn(0) == doctest::Approx(1.f - rig.fight.time())); // its string "ended" at 0
+        float before = rig.fight.enemyPickIn(0);
+        float last = before;
+        int guard = 0;
+        while (rig.out().enemies[0].brain == ArenaBrain::Strafe && guard++ < 120) {
+            last = rig.fight.enemyPickIn(0);
+            CHECK(last <= before);
+            CHECK(last >= 0.f);
+            before = last;
+            rig.tick();
+        }
+        // It began its move on the tick that followed the 0: no sooner, no later.
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Attack);
+        CHECK(last == 0.f);
+        CHECK(rig.fight.time() >= 1.f);
+        CHECK(rig.fight.enemyPickIn(0) == 0.f); // in a move: 0
+    }
+    {   // with a token: 0 when a ready move's band holds the distance; unbounded when no band does
+        Rig rig(ruleFighter(), {hitterKind(slow)}); // attackDelay 0, band [0, 3]
+        rig.put(0, 2.f, 0.f);
+        rig.fight.setEnemyMoveMask(0, 0u); // no move to pick: it holds the token and strafes
+        rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Strafe);
+        REQUIRE(rig.out().enemies[0].token);
+        CHECK(rig.fight.enemyPickIn(0) == kArenaPickNever); // a masked move has no band
+        rig.fight.setEnemyMoveMask(0, 0xFFFFFFFFu);
+        CHECK(rig.fight.enemyPickIn(0) == 0.f);
+        rig.tick();
+        CHECK(rig.out().enemies[0].brain == ArenaBrain::Attack);
+        CHECK(rig.count(ArenaEventType::AttackStarted) == 1);
+    }
+    {   // with a token and the lead out of every band: it walks to one, unbounded
+        Rig rig(ruleFighter(), {hitterKind(slow)});
+        rig.put(0, 2.f, 0.f);
+        rig.fight.setEnemyMoveMask(0, 0u);
+        rig.tick();
+        REQUIRE(rig.out().enemies[0].token);
+        rig.fight.setEnemyMoveMask(0, 0xFFFFFFFFu);
+        rig.put(0, 6.f, 0.f);
+        rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Approach);
+        REQUIRE(rig.out().enemies[0].token);
+        CHECK(rig.fight.enemyPickIn(0) == kArenaPickNever);
+        CHECK(rig.count(ArenaEventType::AttackStarted) == 0);
+    }
+    {   // with a token and its one in-band move cooling down: the cooldown left
+        ArenaEnemyKind k = hitterKind(slow);
+        k.preferredRange = 2.f;
+        k.moves[0].cooldown = 2.f;
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 2.f, 0.f);
+        rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Attack); // begun on tick 1, its cooldown 2 s from then
+        int guard = 0;
+        while (!(rig.out().enemies[0].brain == ArenaBrain::Strafe && rig.out().enemies[0].token) && guard++ < 120) rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Strafe);
+        const float left = 2.f - (rig.fight.time() - kDt); // counted down from tick 2 on
+        CHECK(left > 0.5f);
+        CHECK(std::fabs(rig.fight.enemyPickIn(0) - left) < 1e-3f);
+        guard = 0;
+        while (rig.out().enemies[0].brain == ArenaBrain::Strafe && guard++ < 200) rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Attack);
+        CHECK(rig.fight.time() == doctest::Approx(2.f + kDt).epsilon(0.01));
+    }
+    {   // nothing to ask of an enemy out of range
+        Rig rig(ruleFighter(), {hitterKind(slow)});
+        CHECK(rig.fight.enemyPickIn(5) == 0.f);
+    }
+}
+
 TEST_CASE("arena push-apart: the helper both arenaSteps share splits the overlap by mass") {
     Vec2 lead{0.f, 0.f};
     Vec2 boss{1.f, 0.f};

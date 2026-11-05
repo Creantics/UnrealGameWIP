@@ -749,7 +749,7 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 		}
 		break;
 	case 5:
-		if (Runner->IsFinished() && Runner->GetResultAge() >= 0.8)
+		if (Runner->IsFinished() && Runner->GetResultShowAge() >= 0.8)
 		{
 			TakeShot(TEXT("6_result"));
 			return true;

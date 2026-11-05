@@ -114,7 +114,7 @@ TEST_CASE("vfx: the Unbending's effects load without warnings and keep their par
     };
     const Expect files[] = {{"stone_tell", 4, 168, true},
                             {"stone_impact", 4, 92, false},
-                            {"stone_chips", 4, 94, false},
+                            {"stone_chips", 4, 65, false},
                             {"crit_burst", 5, 126, false},
                             {"weak_glow", 3, 80, true}};
     for (const Expect& f : files) {
@@ -140,6 +140,58 @@ TEST_CASE("vfx: the Unbending's effects load without warnings and keep their par
             CHECK(p.boundsMin.z < p.boundsMax.z);
             CHECK_FALSE(p.startColor.empty());
         }
+    }
+}
+
+namespace {
+
+// An emitter's screen cover: the particles it makes per cycle (the bursts' counts, or maxParticles when it emits by rate)
+// times the square of the largest size they reach (startSize's top times sizeOverLife's peak, metres).
+float coverOf(const VfxEmitter& e) {
+    float n = 0.f;
+    for (const VfxBurst& b : e.bursts) n += static_cast<float>(b.count);
+    if (n == 0.f) n = static_cast<float>(e.maxParticles);
+    float lo = 0.f, startHi = 0.f, growHi = 0.f;
+    e.startSize.bounds(lo, startHi);
+    e.sizeOverLife.bounds(lo, growHi);
+    const float size = startHi * growHi;
+    return n * size * size;
+}
+
+// Round 5's numbers by hand: n particles at `size` metres, growing to `grow` times that.
+constexpr float cover(float n, float size, float grow = 1.f) { return n * size * grow * size * grow; }
+
+} // namespace
+
+TEST_CASE("vfx: the Unbending's chips and impact keep a screen-cover budget") {
+    // The gameplay camera sits behind the lead, so what a hit throws off lands between the camera and the boss. Each
+    // effect's cover is summed over its alpha-blended emitters, solid bits (soft sprites: chips, flakes, chunks) and
+    // clouds (puffs: dust, slam, plume) apart so a cloud can't hide a chip count. Additive flashes don't count.
+    // Round 5 (40 chips at up to 0.36 m, 16 flakes at 0.26 m; chips dust 18 at 1.1 m growing 1.7x; impact dust 32 at
+    // 1.4 m growing 2.2x) came to 6.3 solid and 63 cloud for the chips, 460 cloud for the impact; now 1.6, 25 and 260.
+    constexpr float kChipsSolidCap = 2.5f, kChipsCloudCap = 32.f, kImpactSolidCap = 5.f, kImpactCloudCap = 320.f;
+    CHECK(cover(40, 0.36f) + cover(16, 0.26f) > kChipsSolidCap);
+    CHECK(cover(18, 1.1f, 1.7f) > kChipsCloudCap);
+    CHECK(cover(6, 2.2f, 1.25f) + cover(32, 1.4f, 2.2f) + cover(12, 1.6f, 1.9f) > kImpactCloudCap);
+
+    struct Expect {
+        const char* file;
+        float solidCap, cloudCap;
+    };
+    const Expect files[] = {{"stone_chips", kChipsSolidCap, kChipsCloudCap}, {"stone_impact", kImpactSolidCap, kImpactCloudCap}};
+    for (const Expect& f : files) {
+        CAPTURE(f.file);
+        VfxEffect e;
+        REQUIRE(loadEffect(f.file, e));
+        float solid = 0.f, cloud = 0.f;
+        for (const VfxEmitter& em : e.emitters) {
+            if (em.blend != VfxBlend::Alpha) continue;
+            (em.sprite == VfxSprite::Puff ? cloud : solid) += coverOf(em);
+        }
+        CAPTURE(solid);
+        CAPTURE(cloud);
+        CHECK(solid <= f.solidCap);
+        CHECK(cloud <= f.cloudCap);
     }
 }
 
