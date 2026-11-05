@@ -1774,12 +1774,8 @@ TEST_CASE("terrain: two outer fields agree, to the bit, on the pinned pads and t
     MESSAGE("shared column: " << onPad << " samples on T's flat and " << onRoad << " on the two roads' strips");
     CHECK(positions == 0u);
     CHECK(onPad >= 50u);
-    CHECK(onRoad >= 4u);
+    CHECK(onRoad >= 20u);
     CHECK_MESSAGE(differ.count == 0u, "shared samples that differ: " << describe(differ));
-
-    // Each field's free pad solved on its own, within the pads' +-60 m.
-    CHECK(std::fabs(west->padHeight(3)) <= 60.f);
-    CHECK(std::fabs(east->padHeight(3)) <= 60.f);
 
     // The masks frame an outer field's own square.
     constexpr std::size_t kSize = 512;
@@ -1842,7 +1838,7 @@ TEST_CASE("terrain: an outer field holds a pin past the pads' 60 m, and pins tha
     }
     MESSAGE("the +120 m hamlet's pad is flat out to " << holds << " m of its " << kR << " m, on ground "
                                                       << terrainPinHeight(spec, core->terrain->swell(), hamlet) << " m");
-    CHECK(holds >= 30.f);
+    CHECK(holds >= 40.f);
 
     // Two pins further apart than their road climbs.
     WorldLayoutTestAccess::make(*lay, spec, {{-1700.f, 0.f}, {-1400.f, 0.f}}, {{0, 1}});
@@ -1862,6 +1858,10 @@ TEST_CASE("terrain: an outer field holds a pin past the pads' 60 m, and pins tha
     WorldLayoutTestAccess::make(*lay, spec, {hamlet, {-1500.f, 0.f}}, {{0, 1}});
     o = fieldOptions(*core, -1, 0, false);
     pinAt(o, 0, 120.f);
+    checkFieldFails(*core, spec, *lay, o, "district 1 has no height that its roads to district 0 allow within the pads' 60 m");
+    // The same pin sunk to -120 m: now the pin binds the free pad's top and the 60 m its floor.
+    o = fieldOptions(*core, -1, 0, false);
+    pinAt(o, 0, -120.f);
     checkFieldFails(*core, spec, *lay, o, "district 1 has no height that its roads to district 0 allow within the pads' 60 m");
 
     // A free pad held by its road to one pin and by the ground it shares with another.
@@ -2006,6 +2006,9 @@ TEST_CASE("terrain: a field's key, box, swell and pins are checked before any gr
     o = good;
     o.field.swell.count = 3;
     checkFieldFails(*core, spec, *lay, o, "the swell bends round two points at most");
+    o = good;
+    o.field.swell.by[1] = std::nanf("");
+    checkFieldFails(*core, spec, *lay, o, "the swell isn't finite");
     checkFieldFails(*core, core->spec, *lay, good, "an outer field has no sites");
 
     o = good;

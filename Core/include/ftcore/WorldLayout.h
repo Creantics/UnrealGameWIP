@@ -9,7 +9,9 @@
 //   if (!ftcore::generateWorldLayout(table.worlds[0], layout, &error)) ...; // deterministic per seed
 //   const ftcore::Vec2 at = layout.toWorld(district, goal);                // no allocation
 //
-// A world is a square of `side` metres centred on the origin. It holds districts (a clear plaza
+// A world's layout is a square of `side` metres centred on the origin: its core terrain field. An
+// outer terrain field's layout (TerrainField, Terrain.h) gives districts past that square, in the
+// same metres. A layout holds districts (a clear plaza
 // ringed by blockout buildings, with a tall landmark; the climax site's ring stays open over the
 // half that faces the world's centre, so its plaza looks out over the world), straight roads
 // between district centres that join every district, and scattered trees and rocks on the open
