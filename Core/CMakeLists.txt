@@ -122,12 +122,12 @@ endif()
 
 if(FTCORE_BUILD_TESTS)
     include(FetchContent)
-    # CMake 4 rejects cmake_minimum_required(< 3.5), which doctest 2.4.11 still declares.
-    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+    # doctest v2.5.3, pinned by its commit rather than its tag so that every fetch gets the same
+    # header. 2.5.3 includes <version>, not <ciso646>, in C++20 (clang with libstdc++ 15 warns on
+    # <ciso646>), and keeps MSVC's C5285 off its std forward declarations.
     FetchContent_Declare(doctest
         GIT_REPOSITORY https://github.com/doctest/doctest.git
-        GIT_TAG v2.4.11
-        GIT_SHALLOW TRUE)
+        GIT_TAG 2d0a9359a60c51affe2a9bebb1be1dca47868151) # v2.5.3
     FetchContent_MakeAvailable(doctest)
 
     enable_testing()
@@ -218,6 +218,10 @@ if(FTCORE_BUILD_TESTS)
         tests/test_beat_music.cpp
     )
     target_link_libraries(ftcore_tests PRIVATE ftcore doctest::doctest ftcore_warnings)
+    # doctest's header also as a system header (on gcc and clang -isystem wins over the target's -I
+    # for the same folder), so that a newer compiler's warnings inside it can't fail the -Werror
+    # build. The project's own sources keep every warning.
+    target_include_directories(ftcore_tests SYSTEM PRIVATE "${doctest_SOURCE_DIR}")
     # The real-data tests read the newengine checkout's assets in place (skipped when absent).
     set(FTCORE_NEWENGINE_ASSETS "${CMAKE_CURRENT_SOURCE_DIR}/../../newengine/assets" CACHE PATH
         "newengine assets folder (story script, face presets, golden data) for the real-data tests")
