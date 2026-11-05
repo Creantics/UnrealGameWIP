@@ -67,6 +67,10 @@ struct FFTStoneBearerStrike
 	EShape Shape = EShape::Arc;
 	ftcore::Vec2 From;
 	ftcore::Vec2 To;
+	// A contact in the air (its move's contact says "air"): the striking part is Up metres over To when it lands, and the
+	// dust bursts there; the tell stays on the ground under it.
+	bool bAir = false;
+	float Up = 0.f;
 };
 
 class FFTStoneBearerHost

@@ -9,7 +9,6 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
-#include "NiagaraComponent.h"
 #include "NiagaraSystem.h"
 
 #include "ftcore/Json.h"
@@ -19,15 +18,16 @@
 
 namespace
 {
-constexpr int32 SlotCount[FFTArenaBossVfx::EffectCount] = {FFTArenaBossVfx::MaxTellMarks, 2, 3, 2, 1};
-static_assert(SlotCount[0] + SlotCount[1] + SlotCount[2] + SlotCount[3] + SlotCount[4] == FFTArenaBossVfx::MaxSlots,
-	"Slots[12] in FTArenaBossVfx.h must hold every effect's slots");
-static_assert(FFTArenaBossVfx::MaxSlots == 12, "Slots[12] in FTArenaBossVfx.h must follow MaxSlots");
+constexpr int32 SlotCount[FFTArenaBossVfx::EffectCount] = {FFTArenaBossVfx::MaxTellMarks, 2, 3, 2, 1, 2, 1};
+static_assert(SlotCount[0] + SlotCount[1] + SlotCount[2] + SlotCount[3] + SlotCount[4] + SlotCount[5] + SlotCount[6] ==
+		FFTArenaBossVfx::MaxSlots,
+	"Slots[15] in FTArenaBossVfx.h must hold every effect's slots");
+static_assert(FFTArenaBossVfx::MaxSlots == 15, "Slots[15] in FTArenaBossVfx.h must follow MaxSlots");
 
 // The json's key for each effect, and its default system.
-constexpr const char* kEffectKeys[FFTArenaBossVfx::EffectCount] = {"tell", "impact", "chips", "crit", "glow"};
-constexpr const TCHAR* kEffectDefaults[FFTArenaBossVfx::EffectCount] = {
-	TEXT("stone_tell"), TEXT("stone_impact"), TEXT("stone_chips"), TEXT("crit_burst"), TEXT("weak_glow")};
+constexpr const char* kEffectKeys[FFTArenaBossVfx::EffectCount] = {"tell", "impact", "chips", "crit", "glow", "chipsHeavy", "tellArea"};
+constexpr const TCHAR* kEffectDefaults[FFTArenaBossVfx::EffectCount] = {TEXT("stone_tell"), TEXT("stone_impact"), TEXT("stone_chips"),
+	TEXT("crit_burst"), TEXT("weak_glow"), TEXT("stone_chips_heavy"), TEXT("stone_tell_area")};
 
 float ReadFloat(const ftcore::JsonValue& V, const char* Key, float Fallback)
 {
@@ -190,7 +190,7 @@ bool FFTArenaBossVfx::Play(EEffect Effect, const FVector& At, float ShapeMul, co
 	Actor->SetActorLocation(At);
 	Vfx->SetParameters(Look.SpeedScale, Look.ShapeScale * ShapeMul);
 	Vfx->Play();
-	bTells = bTells || Effect == EEffect::Tell;
+	bTells = bTells || Effect == EEffect::Tell || Effect == EEffect::TellArea;
 	if (Why)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena VFX: %s (%s) at %.0f %.0f %.0f"), *Look.Effect.ToString(), Why, At.X, At.Y, At.Z);
@@ -200,12 +200,15 @@ bool FFTArenaBossVfx::Play(EEffect Effect, const FVector& At, float ShapeMul, co
 
 void FFTArenaBossVfx::StopTells()
 {
-	const int32 First = FirstSlot(EEffect::Tell);
-	for (int32 S = First; S < First + SlotCount[static_cast<int32>(EEffect::Tell)]; ++S)
+	for (const EEffect Tell : {EEffect::Tell, EEffect::TellArea})
 	{
-		if (Slots[S])
+		const int32 First = FirstSlot(Tell);
+		for (int32 S = First; S < First + SlotCount[static_cast<int32>(Tell)]; ++S)
 		{
-			Slots[S]->GetVfx()->Stop();
+			if (Slots[S])
+			{
+				Slots[S]->GetVfx()->Stop();
+			}
 		}
 	}
 	bTells = false;
@@ -225,13 +228,9 @@ void FFTArenaBossVfx::SetGlow(bool bOnNow, const FVector& At)
 	AFTVfxActor* Actor = Slots[FirstSlot(EEffect::Glow)].Get();
 	if (Actor)
 	{
-		// Stop alone lets the live particles finish (0.3 to 1.1 s), so the glow would outlast the weak point by frames.
-		UFTVfxComponent* Vfx = Actor->GetVfx();
-		Vfx->Stop();
-		if (UNiagaraComponent* Niagara = Vfx->GetNiagara())
-		{
-			Niagara->DeactivateImmediate();
-		}
+		// No new particles; the live ones finish their lives (weak_glow keeps them all at 0.27 s or under), so the glow
+		// fades over 6 to 8 frames instead of vanishing on one.
+		Actor->GetVfx()->Stop();
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena VFX: %s off (weak point shut)"), *Tuning.Looks[static_cast<int32>(EEffect::Glow)].Effect.ToString());
 	}
 	bGlowing = false;
