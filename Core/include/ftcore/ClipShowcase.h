@@ -35,7 +35,7 @@ inline constexpr std::size_t kMaxShowAttacks = 24;
 inline constexpr std::size_t kMaxShowLabel = 39; // characters
 
 // What the host plays at a cue.
-enum class ShowCue : std::uint8_t { Tell, TellStop, Impact, Chips, GlowOn, GlowOff, Crit };
+enum class ShowCue : std::uint8_t { Tell, TellStop, Impact, Chips, GlowOn, GlowOff, Crit, ChipsHeavy };
 // Where: the attack's strike point (its tell and dust, as the fight places them), a point ahead of the boss, its body's
 // surface toward the camera, or its weak point (the glow and the crit, at the fight's flash point).
 enum class ShowPlace : std::uint8_t { Strike, Ahead, Surface, WeakPoint };

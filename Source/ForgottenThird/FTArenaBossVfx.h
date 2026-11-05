@@ -1,12 +1,15 @@
 #pragma once
 
 // The first Arena boss's effects (docs/VFX_UE.md's code-built systems): a small pool of AFTVfxActor spawned once, each slot
-// keeping one effect, played and moved by UFTArenaRunner from the fight's state. Five effects:
-//   Tell    looping at a blow's landing point through its startup (a lane: marks along it), stopped when it turns active;
-//   Impact  one-shot there when the blow turns active;
-//   Chips   one-shot on the boss's surface toward the lead when a lead's blow lands on it;
-//   Crit    one-shot at the weak point when the boss's rules score a crit;
-//   Glow    looping at the weak point while the weak points are open, moved there each frame.
+// keeping one effect, played and moved by UFTArenaRunner from the fight's state. Seven effects:
+//   Tell        looping at a blow's landing point through its startup (a lane: marks along it), stopped when it turns active;
+//   Impact      one-shot there when the blow turns active (a blow in the air: at its contact, over the tell);
+//   Chips       one-shot on the boss's surface toward the lead when a lead's light blow lands on it;
+//   Crit        one-shot at the weak point when the boss's rules score a crit;
+//   Glow        looping at the weak point while the weak points are open, moved there each frame; at shut its live
+//               particles finish their short lives (a fade of a few frames);
+//   ChipsHeavy  Chips for a heavy blow, a riposte, a Release or a counter-stagger;
+//   TellArea    Tell for an all-round blow (its ring drawn at the area's size).
 // Which effect each plays, its user parameters and the offsets the runner places them by are read from
 // Data/Battle/arena_boss/stone_bearer_vfx.json (the defaults below when it is missing). Every play logs one Display line
 // ("Arena VFX: ...").
@@ -25,11 +28,12 @@ struct FFTArenaBossVfx
 {
 	GENERATED_BODY()
 
-	enum class EEffect : uint8 { Tell, Impact, Chips, Crit, Glow };
-	static constexpr int32 EffectCount = 5;
-	// Slots: MaxTellMarks tells (a lane's marks), then 2 impacts, 3 chips, 2 crits and 1 glow (SlotCount in the .cpp).
+	enum class EEffect : uint8 { Tell, Impact, Chips, Crit, Glow, ChipsHeavy, TellArea };
+	static constexpr int32 EffectCount = 7;
+	// Slots: MaxTellMarks tells (a lane's marks), then 2 impacts, 3 chips, 2 crits, 1 glow, 2 heavy chips and 1 area tell
+	// (SlotCount in the .cpp).
 	static constexpr int32 MaxTellMarks = 4;
-	static constexpr int32 MaxSlots = 12;
+	static constexpr int32 MaxSlots = 15;
 
 	// One effect: its Data/Vfx name and user parameters.
 	struct FLook
@@ -67,16 +71,16 @@ struct FFTArenaBossVfx
 	// Plays Effect at At, its ShapeScale times ShapeMul, on the effect's next slot. Why (null: no log line) says what set it
 	// off. False when the effect is off.
 	bool Play(EEffect Effect, const FVector& At, float ShapeMul, const TCHAR* Why);
-	// The looping tells: stops every playing one.
+	// The looping tells (Tell and TellArea): stops every playing one.
 	void StopTells();
 	bool AnyTells() const { return bTells; }
-	// The weak point's glow: on at At, off (its live particles die at once), or moved to At while on.
+	// The weak point's glow: on at At, off (no new particles; the live ones finish their short lives), or moved to At while on.
 	void SetGlow(bool bOn, const FVector& At);
 	void MoveGlow(const FVector& At);
 	bool IsGlowing() const { return bGlowing; }
 
 	UPROPERTY()
-	TObjectPtr<AFTVfxActor> Slots[12]; // MaxSlots (a literal for UHT; checked in the .cpp)
+	TObjectPtr<AFTVfxActor> Slots[15]; // MaxSlots (a literal for UHT; checked in the .cpp)
 
 private:
 	void ReadTuning(const FString& File);

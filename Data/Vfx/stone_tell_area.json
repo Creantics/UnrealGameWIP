@@ -1,0 +1,106 @@
+{
+  "name": "stone_tell_area",
+  "emitters": [
+    {
+      "name": "ring",
+      "rate": 5,
+      "duration": 0.5,
+      "loop": true,
+      "maxParticles": 6,
+      "lifetime": 0.7,
+      "shape": "point",
+      "speed": 0.0,
+      "startSize": 5.0,
+      "sizeOverLife": [{"t": 0.0, "v": 1.12}, {"t": 1.0, "v": 0.94}],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.03, 0.022, 0.015, 0.0]},
+        {"t": 0.2, "color": [0.03, 0.022, 0.015, 0.85]},
+        {"t": 0.8, "color": [0.03, 0.022, 0.015, 0.85]},
+        {"t": 1.0, "color": [0.03, 0.022, 0.015, 0.0]}
+      ],
+      "blend": "alpha",
+      "renderMode": "horizontal",
+      "sprite": "ring",
+      "softness": 0.0
+    },
+    {
+      "name": "rim",
+      "rate": 5,
+      "duration": 0.5,
+      "loop": true,
+      "maxParticles": 6,
+      "lifetime": 0.7,
+      "shape": "point",
+      "speed": 0.0,
+      "startSize": 5.75,
+      "sizeOverLife": [{"t": 0.0, "v": 1.1}, {"t": 1.0, "v": 0.95}],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.52, 0.43, 0.31, 0.0]},
+        {"t": 0.25, "color": [0.52, 0.43, 0.31, 0.5]},
+        {"t": 0.8, "color": [0.52, 0.43, 0.31, 0.45]},
+        {"t": 1.0, "color": [0.52, 0.43, 0.31, 0.0]}
+      ],
+      "blend": "alpha",
+      "renderMode": "horizontal",
+      "sprite": "ring",
+      "softness": 0.0
+    },
+    {
+      "name": "grit",
+      "rate": 60,
+      "duration": 0.5,
+      "loop": true,
+      "maxParticles": 80,
+      "lifetime": [0.6, 0.9],
+      "shape": "ring",
+      "radius": 2.125,
+      "innerRadius": 1.7,
+      "velocityMin": [0.0, 0.6, 0.0],
+      "velocityMax": [0.0, 1.4, 0.0],
+      "drag": 0.6,
+      "startSize": [0.05, 0.1],
+      "sizeOverLife": [{"t": 0.0, "v": 1.0}, {"t": 1.0, "v": 0.85}],
+      "startRotation": [0.0, 6.28],
+      "angularVelocity": [-3.0, 3.0],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.05, 0.038, 0.026, 0.0]},
+        {"t": 0.1, "color": [0.05, 0.038, 0.026, 1.0]},
+        {"t": 0.85, "color": [0.06, 0.045, 0.03, 1.0]},
+        {"t": 1.0, "color": [0.06, 0.045, 0.03, 0.0]}
+      ],
+      "blend": "alpha",
+      "renderMode": "billboard",
+      "sprite": "chip",
+      "depthFade": true,
+      "softness": 0.2
+    },
+    {
+      "name": "haze",
+      "rate": 18,
+      "duration": 0.5,
+      "loop": true,
+      "maxParticles": 28,
+      "lifetime": [1.0, 1.4],
+      "shape": "ring",
+      "radius": 2.125,
+      "innerRadius": 1.487,
+      "velocityMin": [0.0, 0.3, 0.0],
+      "velocityMax": [0.0, 0.6, 0.0],
+      "drag": 1.0,
+      "startSize": [0.6, 0.9],
+      "sizeOverLife": [{"t": 0.0, "v": 0.6}, {"t": 0.4, "v": 1.1}, {"t": 1.0, "v": 1.4}],
+      "startRotation": [0.0, 6.28],
+      "angularVelocity": [-0.6, 0.6],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.3, 0.25, 0.18, 0.0]},
+        {"t": 0.25, "color": [0.3, 0.25, 0.18, 0.3]},
+        {"t": 1.0, "color": [0.32, 0.26, 0.19, 0.0]}
+      ],
+      "blend": "alpha",
+      "renderMode": "billboard",
+      "sprite": "puff",
+      "depthFade": true,
+      "softness": 0.9
+    }
+  ]
+}

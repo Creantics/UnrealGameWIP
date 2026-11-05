@@ -202,18 +202,20 @@ TEST_CASE("clip showcase: the effects alone, then the two deaths each from a hid
     const ftcore::ShowSpec spec = stoneSpec(clips);
     ftcore::ClipShow show;
     REQUIRE(ftcore::buildClipShow(clips, spec, show));
-    int ahead = 0, glow = 0, crit = 0, chips = 0;
+    int ahead = 0, glow = 0, crit = 0, chips = 0, heavy = 0;
     double glowOn = -1.0, glowOff = -1.0, critAt = -1.0;
     for (std::size_t c = 0; c < show.cueCount; ++c) {
         const ftcore::ShowCueAt& q = show.cues[c];
         if (q.place == ftcore::ShowPlace::Ahead) ++ahead;
         if (q.cue == ftcore::ShowCue::Chips) ++chips;
+        if (q.cue == ftcore::ShowCue::ChipsHeavy) ++heavy;
         if (q.cue == ftcore::ShowCue::GlowOn) glowOn = q.at, ++glow;
         if (q.cue == ftcore::ShowCue::GlowOff) glowOff = q.at, ++glow;
         if (q.cue == ftcore::ShowCue::Crit) critAt = q.at, ++crit;
     }
     CHECK(ahead == 3); // the tell, its stop, the dust
-    CHECK(chips == 3); // the two hits and the lone chips
+    CHECK(chips == 2); // the light hit and the lone light chips
+    CHECK(heavy == 2); // the heavy hit and the lone heavy chips
     CHECK(glow == 2);
     CHECK(crit == 1);
     CHECK(glowOff - glowOn == doctest::Approx(spec.glowFor));
@@ -273,22 +275,32 @@ TEST_CASE("clip showcase: the glow and the crit show the weak point to the front
             }
             REQUIRE(glowOn > 0.0);
             REQUIRE(critAt > glowOn);
-            const ftcore::ShowSegment* chips = findSegment(show, "fx_chips", spec.idle);
-            REQUIRE(chips != nullptr);
-            const std::size_t i = static_cast<std::size_t>(chips - show.segments.data());
-            REQUIRE(i + 1 < show.segmentCount);
-            const ftcore::ShowSegment& next = show.segments[i + 1];
+            // The segments between the last lone chips take (light or heavy) and the first glow take.
+            std::size_t glow = show.segmentCount, chips = show.segmentCount;
+            for (std::size_t s = 0; s < show.segmentCount && glow == show.segmentCount; ++s) {
+                if (show.segments[s].label() == "fx_glow") glow = s;
+            }
+            REQUIRE(glow < show.segmentCount);
+            for (std::size_t s = glow; s-- > 0;) {
+                if (show.segments[s].label().substr(0, 8) == "fx_chips") {
+                    chips = s;
+                    break;
+                }
+            }
+            REQUIRE(chips < glow);
+            const std::size_t between = glow - chips - 1;
             const float atGlow = ftcore::clipShowPose(show, glowOn + 0.01).yaw;
             const float atCrit = ftcore::clipShowPose(show, critAt + 0.01).yaw;
             if (facing < 90.f) {
                 // Ahead: the glow's take goes on from the chips', square to the front.
-                CHECK(next.label() == "fx_glow");
-                CHECK_FALSE(next.cut);
+                CHECK(between == 0);
+                CHECK_FALSE(show.segments[glow].cut);
                 CHECK(atGlow == doctest::Approx(0.0));
                 CHECK(atCrit == doctest::Approx(0.0));
             } else {
                 // Behind: a half turn, stepped round on the turn clip or cut to from a hidden moment.
-                CHECK(next.label() == (turns ? "turn" : "hidden"));
+                REQUIRE(between == 1);
+                CHECK(show.segments[chips + 1].label() == (turns ? "turn" : "hidden"));
                 CHECK(std::fabs(std::fabs(atGlow) - 180.f) < 1e-3f);
                 CHECK(std::fabs(std::fabs(atCrit) - 180.f) < 1e-3f);
             }
@@ -372,5 +384,5 @@ TEST_CASE("clip showcase: refusals") {
     REQUIRE_MESSAGE(ftcore::buildClipShow(clips, bare, show, &err), err);
     for (std::size_t i = 0; i < show.segmentCount; ++i)
         CHECK((show.segments[i].clip == bare.idle || show.segments[i].clip == ftcore::kNoClip));
-    CHECK(show.cueCount == 7); // the tell, its stop, the dust, the chips, the glow on and off, the crit
+    CHECK(show.cueCount == 8); // the tell, its stop, the dust, the light and the heavy chips, the glow on and off, the crit
 }

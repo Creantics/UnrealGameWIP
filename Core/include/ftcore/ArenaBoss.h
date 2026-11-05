@@ -523,6 +523,7 @@ struct ArenaBossMove {
     float contactAhead = 0.0f; // along its facing
     float contactSide = 0.0f;  // to its right
     float contactUp = 0.0f;
+    bool contactAir = false; // it strikes in the air (no floor under it): its dust bursts at the contact, not on the ground
     std::array<char, kMaxArenaBossMoveId + 1> contactSocketChars{};
 
     std::string_view id() const { return std::string_view(idChars.data()); }
