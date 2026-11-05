@@ -50,6 +50,7 @@ void UFTVfxComponent::EndPlay(const EEndPlayReason::Type Reason)
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(ReplayTimer);
+		World->GetTimerManager().ClearTimer(CutTimer);
 	}
 	Super::EndPlay(Reason);
 }
@@ -78,6 +79,11 @@ bool UFTVfxComponent::Play()
 		Niagara->SetAsset(System);
 	}
 	PushParameters();
+	// A StopWithin still pending would cut this play short.
+	if (UWorld* CutWorld = GetWorld())
+	{
+		CutWorld->GetTimerManager().ClearTimer(CutTimer);
+	}
 	Niagara->Activate(true);
 
 	UWorld* World = GetWorld();
@@ -98,6 +104,31 @@ void UFTVfxComponent::Stop()
 	{
 		Niagara->Deactivate();
 	}
+}
+
+void UFTVfxComponent::StopNow()
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(ReplayTimer);
+		World->GetTimerManager().ClearTimer(CutTimer);
+	}
+	if (Niagara)
+	{
+		Niagara->DeactivateImmediate();
+	}
+}
+
+void UFTVfxComponent::StopWithin(float Seconds)
+{
+	Stop();
+	UWorld* World = GetWorld();
+	if (!World || Seconds <= 0.f)
+	{
+		StopNow();
+		return;
+	}
+	World->GetTimerManager().SetTimer(CutTimer, this, &UFTVfxComponent::StopNow, Seconds, false);
 }
 
 void UFTVfxComponent::SetParameters(float InSpeedScale, float InShapeScale)

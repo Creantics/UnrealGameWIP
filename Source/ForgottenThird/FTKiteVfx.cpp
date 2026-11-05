@@ -169,6 +169,30 @@ void FFTKiteVfx::StopOne(EEffect Effect)
 	}
 }
 
+void FFTKiteVfx::CutOne(EEffect Effect, double T)
+{
+	if (UFTVfxComponent* Vfx = Fx[Effect].Get())
+	{
+		Vfx->StopNow();
+		if (T >= 0.0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: kite fx %s cut at %.2f"), *Looks[Effect].Effect.ToString(), T);
+		}
+	}
+}
+
+void FFTKiteVfx::FadeOne(EEffect Effect, double T)
+{
+	if (UFTVfxComponent* Vfx = Fx[Effect].Get())
+	{
+		Vfx->StopWithin(GlowFadeSeconds);
+		if (T >= 0.0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: kite fx %s fades at %.2f"), *Looks[Effect].Effect.ToString(), T);
+		}
+	}
+}
+
 void FFTKiteVfx::Feed(const ftcore::ArenaEvents& Events, const FFTKiteHost& Host, const ftcore::ArenaFight& Fight, const FVector& KiteGround,
 	const FVector& LeadChest)
 {
@@ -215,10 +239,13 @@ void FFTKiteVfx::Feed(const ftcore::ArenaEvents& Events, const FFTKiteHost& Host
 				Play(Hit, T);
 			}
 		}
-		else if ((E.type == ftcore::ArenaEventType::Staggered || E.type == ftcore::ArenaEventType::Downed) && E.target == Slot && bTelling)
+		else if (bTelling
+			&& (((E.type == ftcore::ArenaEventType::Staggered || E.type == ftcore::ArenaEventType::Downed) && E.target == Slot)
+				|| (E.type == ftcore::ArenaEventType::Parried && E.source == Slot)))
 		{
-			// The windup is broken off: its ring goes with it.
-			StopOne(Tell);
+			// The windup is broken off (the parry, a stagger, the kill): its ring goes with it, in this step, not after its
+			// particles' lifetimes.
+			CutOne(Tell, T);
 			bTelling = false;
 		}
 	}
@@ -227,13 +254,20 @@ void FFTKiteVfx::Feed(const ftcore::ArenaEvents& Events, const FFTKiteHost& Host
 		StopOne(Tell);
 		bTelling = false;
 	}
+	// The fight is over, or the kite is down: nobody steps the fight again, so the window's own end never reaches the glow
+	// (Host.IsOpen is a time, still true then). It ends here, in the step that ended the fight.
+	if (Fight.over() || !Fight.enemyAlive(Slot))
+	{
+		EndOfFight(T);
+		return;
+	}
 	// The window opens on a parry or a stagger and shuts itself: the glow follows it.
 	const bool bOpen = Host.IsOpen();
 	if (bOpen && !bWasOpen)
 	{
 		if (bTelling)
 		{
-			StopOne(Tell);
+			CutOne(Tell, T);
 			bTelling = false;
 		}
 		Play(Open, T);
@@ -245,11 +279,89 @@ void FFTKiteVfx::Feed(const ftcore::ArenaEvents& Events, const FFTKiteHost& Host
 	bWasOpen = bOpen;
 }
 
+void FFTKiteVfx::EndOfFight(double T)
+{
+	if (!bSpawned)
+	{
+		return;
+	}
+	// A no-op once done: Feed's last step and the runner's Finish both come here.
+	if (bTelling)
+	{
+		CutOne(Tell, T);
+		bTelling = false;
+	}
+	if (bWasOpen)
+	{
+		FadeOne(Open, T);
+		bWasOpen = false;
+	}
+}
+
+void FFTKiteVfx::ShowCue(const ftcore::ShowCueAt& Cue, const FVector& Ground, const FVector& HitAt)
+{
+	if (!bSpawned)
+	{
+		return;
+	}
+	const double T = Cue.at;
+	switch (Cue.cue)
+	{
+	case ftcore::ShowCue::Tell:
+		if (Fx[Tell].IsValid())
+		{
+			Fx[Tell]->SetWorldLocation(FVector(Ground.X, Ground.Y, Ground.Z + Lift * 100.f));
+			Play(Tell, T);
+			bTelling = true;
+		}
+		return;
+	case ftcore::ShowCue::TellStop:
+		if (bTelling)
+		{
+			if (Cue.place == ftcore::ShowPlace::Ahead)
+			{
+				CutOne(Tell, T);
+			}
+			else
+			{
+				StopOne(Tell);
+			}
+			bTelling = false;
+		}
+		return;
+	case ftcore::ShowCue::Impact:
+		return;
+	case ftcore::ShowCue::Chips:
+	case ftcore::ShowCue::ChipsHeavy: // the kite has one hit puff, for a light or a heavy blow
+		if (Fx[Hit].IsValid())
+		{
+			Fx[Hit]->SetWorldLocation(HitAt);
+			Play(Hit, T);
+		}
+		return;
+	case ftcore::ShowCue::GlowOn:
+		Play(Open, T);
+		bWasOpen = true;
+		return;
+	case ftcore::ShowCue::GlowOff:
+		// Finish's EndOfFight finds nothing left to do.
+		if (bWasOpen)
+		{
+			FadeOne(Open, T);
+			bWasOpen = false;
+		}
+		return;
+	case ftcore::ShowCue::Crit:
+		Play(Crit, T);
+		return;
+	}
+}
+
 void FFTKiteVfx::Stop()
 {
 	for (int32 E = 0; E < EffectCount; ++E)
 	{
-		StopOne(static_cast<EEffect>(E));
+		CutOne(static_cast<EEffect>(E), -1.0);
 	}
 	bTelling = bWasOpen = false;
 	TellUntil = 0.0;

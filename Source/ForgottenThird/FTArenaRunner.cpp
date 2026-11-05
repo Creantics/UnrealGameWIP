@@ -2096,6 +2096,8 @@ void UFTArenaRunner::Finish()
 {
 	bResultLogged = true;
 	ResultTime = Now;
+	// The kite's ring and glow end with the fight (the step that ended it did this already; a no-op then).
+	KiteFx.EndOfFight();
 	const bool bWon = Fight.phase() == ftcore::ArenaPhase::Victory;
 	LogStoneWalkCounts();
 	LogTurnCounts();
@@ -3212,6 +3214,17 @@ bool UFTArenaRunner::BeginShowcase()
 	Spec.walkFrom = bStone ? kStoneWalkStartPhase : 0.0;
 	Spec.turnDeg = kArenaTurnDeg;
 	Spec.turnPivot = kArenaTurnPivot;
+	// The weak point's facing (its first gate's, from the boss's data): the glow and crit takes turn it to the camera. A kind
+	// without weak points keeps the spec's default (behind).
+	const ftcore::ArenaWeakPoints* Weak = bStone ? &StoneBearer.GetDef().boss.weakPoints
+		: (ShowSlot == KiteSlot && GetKite()) ? &GetKite()->GetWeakPoints()
+		: GetKindCrit(ShowSlot) ? &GetKindCrit(ShowSlot)->points() : nullptr;
+	if (Weak && !Weak->points.empty())
+	{
+		Spec.weakFacing = Weak->gates[0].facing;
+	}
+	UE_LOG(LogForgottenThird, Log, TEXT("Arena showcase: the weak point faces %.0f deg in the boss's frame (%s); the glow and crit takes turn it to the camera."),
+		Spec.weakFacing, Weak && !Weak->points.empty() ? TEXT("its data") : TEXT("no weak point, the default"));
 
 	// Every move's clip once (a variant plays its base move's clip, and a tile move's later impacts run on from its
 	// first), then its left-hand twin: entered where the fight enters it at rate 1.0, left as the move ends.
@@ -3508,6 +3521,32 @@ void UFTArenaRunner::ShowcaseCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& 
 {
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena showcase: cue %s at reel %.3f s, frame %llu."), UTF8_TO_TCHAR(ftcore::showCueKey(Cue.cue)), Cue.at,
 		static_cast<unsigned long long>(GFrameCounter));
+	// The Kite-Mother's effects: its own (FFTKiteVfx::ShowCue), the ring on the floor under it, the puff on its body's edge
+	// toward the camera (where a lead's plain blow puts it, the camera standing in for the lead), at a lead's chest height.
+	if (ShowSlot >= 0 && ShowSlot == KiteSlot && KiteFx.IsSpawned())
+	{
+		const ftcore::ArenaEnemyKind& Kind = Fight.def().enemies[static_cast<size_t>(ShowSlot)];
+		// Inside an attack's take only the move the fight rings gets its ring.
+		if (Cue.cue == ftcore::ShowCue::Tell && Cue.place == ftcore::ShowPlace::Strike)
+		{
+			if (Cue.attack < 0 || static_cast<size_t>(Cue.attack) >= ShowSpecUsed.attackCount)
+			{
+				return;
+			}
+			const int32 Move = ShowSpecUsed.attacks[static_cast<size_t>(Cue.attack)].move;
+			if (Move < 0 || Move >= static_cast<int32>(Kind.moveCount) || !KiteFx.IsTellMove(Kind.moves[static_cast<size_t>(Move)].clip()))
+			{
+				return;
+			}
+		}
+		const FVector Feet = Figure.GetActorLocation();
+		FVector Toward = ShowCamera ? ShowCamera->GetActorLocation() - Feet : Figure.GetActorForwardVector();
+		Toward.Z = 0.0;
+		FVector HitAt = Feet + Toward.GetSafeNormal() * (static_cast<double>(Kind.bodyRadius) * 100.0);
+		HitAt.Z = PlayerFigure ? PlayerFigure->GetChest().Z : Feet.Z + 120.0;
+		KiteFx.ShowCue(Cue, ToWorld(ftcore::Vec2{static_cast<float>(Feet.X / 100.0), static_cast<float>(Feet.Y / 100.0)}), HitAt);
+		return;
+	}
 	// The effects: the stone_bearer's pool. Another boss's effects go here, beside it, keyed on its slot.
 	if (ShowSlot != StoneBearerSlot || !BossVfx.IsSpawned())
 	{
