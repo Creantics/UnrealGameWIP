@@ -3,175 +3,80 @@
   "emitters": [
     {
       "name": "flush",
-      "rate": 90,
+      "rate": 45,
       "duration": 1.0,
       "loop": true,
-      "maxParticles": 110,
-      "lifetime": [
-        0.35,
-        0.6
-      ],
+      "maxParticles": 30,
+      "lifetime": [0.3, 0.42],
       "shape": "sphere",
-      "radius": 0.18,
-      "speed": [
-        0.05,
-        0.25
-      ],
-      "gravity": [
-        0.0,
-        0.4,
-        0.0
-      ],
-      "drag": 1.5,
-      "startSize": [
-        0.1,
-        0.2
-      ],
+      "radius": 0.07,
+      "speed": [0.0, 0.05],
+      "space": "local",
+      "startSize": [0.12, 0.2],
       "sizeOverLife": [
-        {
-          "t": 0,
-          "v": 0.4
-        },
-        {
-          "t": 0.3,
-          "v": 1.0
-        },
-        {
-          "t": 1,
-          "v": 0.0
-        }
+        {"t": 0, "v": 0.7},
+        {"t": 0.3, "v": 1.0},
+        {"t": 1, "v": 0.9}
       ],
       "colorOverLife": [
-        {
-          "t": 0,
-          "color": [
-            4.0,
-            0.12,
-            0.08,
-            0.0
-          ]
-        },
-        {
-          "t": 0.2,
-          "color": [
-            3.6,
-            0.1,
-            0.07,
-            1.0
-          ]
-        },
-        {
-          "t": 1,
-          "color": [
-            1.8,
-            0.03,
-            0.03,
-            0.0
-          ]
-        }
+        {"t": 0, "color": [0.42, 0.005, 0.02, 0.0]},
+        {"t": 0.36, "color": [0.42, 0.005, 0.02, 0.8]},
+        {"t": 0.75, "color": [0.42, 0.005, 0.02, 0.75]},
+        {"t": 1, "color": [0.42, 0.005, 0.02, 0.0]}
       ],
-      "blend": "additive",
-      "sprite": "spark",
-      "stretch": 0.03,
-      "stretchMax": 2.5,
-      "softness": 0.0
-    },
-    {
-      "name": "glow",
-      "rate": 8,
-      "duration": 1.0,
-      "loop": true,
-      "maxParticles": 8,
-      "lifetime": 0.5,
-      "shape": "point",
-      "startSize": 1.2,
-      "sizeOverLife": [
-        {
-          "t": 0,
-          "v": 0.6
-        },
-        {
-          "t": 1,
-          "v": 1.1
-        }
-      ],
-      "colorOverLife": [
-        {
-          "t": 0,
-          "color": [
-            2.0,
-            0.06,
-            0.04,
-            0.4
-          ]
-        },
-        {
-          "t": 0.15,
-          "color": [
-            1.8,
-            0.05,
-            0.03,
-            0.9
-          ]
-        },
-        {
-          "t": 1,
-          "color": [
-            1.0,
-            0.0,
-            0.0,
-            0.0
-          ]
-        }
-      ],
-      "blend": "additive",
+      "blend": "alpha",
       "sprite": "soft",
       "softness": 0.0
     },
     {
-      "name": "onset",
-      "bursts": [
-        {
-          "time": 0.0,
-          "count": 1
-        }
-      ],
-      "duration": 0.1,
-      "maxParticles": 2,
-      "lifetime": 0.4,
-      "shape": "point",
-      "startSize": 1.4,
+      "name": "streaks",
+      "rate": 30,
+      "duration": 1.0,
+      "loop": true,
+      "maxParticles": 14,
+      "lifetime": [0.18, 0.3],
+      "shape": "sphere",
+      "radius": 0.05,
+      "speed": [0.25, 0.45],
+      "drag": 3.0,
+      "space": "local",
+      "startSize": [0.012, 0.022],
       "sizeOverLife": [
-        {
-          "t": 0,
-          "v": 0.7
-        },
-        {
-          "t": 1,
-          "v": 1.2
-        }
+        {"t": 0, "v": 1.0},
+        {"t": 1, "v": 0.7}
       ],
       "colorOverLife": [
-        {
-          "t": 0,
-          "color": [
-            2.4,
-            0.1,
-            0.06,
-            0.9
-          ]
-        },
-        {
-          "t": 1,
-          "color": [
-            2.4,
-            0.1,
-            0.06,
-            0.0
-          ]
-        }
+        {"t": 0, "color": [0.55, 0.01, 0.02, 0.0]},
+        {"t": 0.3, "color": [0.55, 0.01, 0.02, 1.0]},
+        {"t": 1, "color": [0.55, 0.01, 0.02, 0.0]}
       ],
-      "blend": "additive",
+      "blend": "alpha",
+      "sprite": "spark",
+      "softness": 0.0,
+      "renderMode": "stretched",
+      "lengthScale": 5.0,
+      "speedScale": 0.0
+    },
+    {
+      "name": "halo",
+      "rate": 5,
+      "duration": 1.0,
+      "loop": true,
+      "maxParticles": 5,
+      "lifetime": 0.6,
+      "shape": "point",
+      "space": "local",
+      "startSize": 0.2,
+      "sizeOverLife": [
+        {"t": 0, "v": 0.85},
+        {"t": 1, "v": 1.0}
+      ],
+      "colorOverLife": [
+        {"t": 0, "color": [0.7, 0.02, 0.03, 0.0]},
+        {"t": 0.3, "color": [0.7, 0.02, 0.03, 0.35]},
+        {"t": 1, "color": [0.7, 0.02, 0.03, 0.0]}
+      ],
+      "blend": "alpha",
       "sprite": "soft",
       "softness": 0.0
     }

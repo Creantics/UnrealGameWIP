@@ -223,7 +223,7 @@ TEST_CASE("arena kind crit data: the shipped file loads clean, white_glove's sea
     const ArenaKindCritDef* g = table.find("white_glove");
     REQUIRE(g);
     CHECK(g->opensAfter() == "deal");
-    CHECK(g->opens == doctest::Approx(1.2));
+    CHECK(g->opens == doctest::Approx(1.6)); // design sections 7 and 14: the fingertip seam is open 1.6 s
     REQUIRE(g->weakPoints.points.size() == 1);
     const WeakPoint& p = g->weakPoints.points[0];
     CHECK(p.id() == "fingertip_seam");

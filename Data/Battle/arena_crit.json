@@ -3,7 +3,7 @@
   "kinds": {
     "white_glove": {
       "opensAfter": "deal",
-      "opens": 1.2,
+      "opens": 1.6,
       "weakPoints": {
         "halfWidth": 0.5,
         "points": [

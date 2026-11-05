@@ -1,10 +1,12 @@
 #include "ftcore/Vfx.h"
+#include "ftcore/ArenaKindCrit.h" // white_glove's seam window, which dealer_seam_open covers
 
 #include "TestAssets.h"
 
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -43,6 +45,52 @@ bool anyGap(const VfxNiagaraEmitter& e, const char* part) {
     return false;
 }
 
+const VfxEmitter* findEmitter(const VfxEffect& e, const char* name) {
+    for (const VfxEmitter& em : e.emitters)
+        if (em.name == name) return &em;
+    return nullptr;
+}
+
+float peakAlpha(const VfxGradient& g) {
+    float peak = 0.f;
+    for (const VfxColorStop& s : g.stops) peak = std::max(peak, s.color.a);
+    return peak;
+}
+
+// Where in a particle's life its colour first reaches 90% of its peak alpha: the ramp-in.
+float rampInAt(const VfxGradient& g) {
+    const float peak = peakAlpha(g);
+    for (const VfxColorStop& s : g.stops)
+        if (s.color.a >= 0.9f * peak) return s.t;
+    return 1.f;
+}
+
+// Where in a particle's life its colour last holds 90% of its peak alpha: the fade starts after it.
+float fadeFrom(const VfxGradient& g) {
+    const float peak = peakAlpha(g);
+    float t = 0.f;
+    for (const VfxColorStop& s : g.stops)
+        if (s.color.a >= 0.9f * peak) t = s.t;
+    return t;
+}
+
+float lowest(const VfxCurve& c) {
+    float a = 0.f, b = 0.f;
+    c.bounds(a, b);
+    return a;
+}
+
+float highest(const VfxCurve& c) {
+    float a = 0.f, b = 0.f;
+    c.bounds(a, b);
+    return b;
+}
+
+// The largest quad edge an emitter's particles reach, in metres.
+float peakSize(const VfxEmitter& em) {
+    return highest(em.startSize) * (em.sizeOverLife.keys.empty() ? 1.f : highest(em.sizeOverLife));
+}
+
 } // namespace
 
 TEST_CASE("vfx: every Data/Vfx effect loads without warnings") {
@@ -53,7 +101,7 @@ TEST_CASE("vfx: every Data/Vfx effect loads without warnings") {
     const Expect files[] = {{"ember_swirl", 1}, {"falling_leaves", 1}, {"fireworks", 3}, {"flipbook_fire", 1},
                             {"heal", 2},        {"heal_ring", 1},      {"hit_spark", 2}, {"magic_ribbon", 2},
                             {"perfect_burst", 2}, {"smoke", 1},        {"speed_sparks", 1}, {"stretched_sparks", 2}, {"dust_puff", 2},
-                            {"dealer_deal_tell", 3}, {"dealer_seam_open", 3}, {"dealer_seam_crit", 3}, {"ink_hit", 3}};
+                            {"dealer_deal_tell", 3}, {"dealer_seam_open", 4}, {"dealer_seam_crit", 5}, {"ink_hit", 5}};
     for (const Expect& f : files) {
         CAPTURE(f.file);
         VfxEffect e;
@@ -102,6 +150,141 @@ TEST_CASE("vfx: the Kite-Mother's effects load without warnings and keep their p
         VfxNiagaraPlan plan;
         planVfxNiagara(e, plan);
         CHECK(plan.emitters.size() == f.emitters);
+    }
+}
+
+TEST_CASE("vfx: the Dealer's effects load without warnings and keep their particle budgets") {
+    struct Expect {
+        const char* file;
+        std::size_t emitters;
+        std::uint32_t budget; // the sum of the emitters' maxParticles
+        bool loops;
+    };
+    const Expect files[] = {{"dealer_deal_tell", 3, 49, true},
+                            {"dealer_seam_open", 4, 25, false},
+                            {"dealer_seam_crit", 5, 52, false},
+                            {"ink_hit", 5, 73, false}};
+    for (const Expect& f : files) {
+        CAPTURE(f.file);
+        VfxEffect e;
+        std::vector<std::string> warnings;
+        REQUIRE(loadEffect(f.file, e, &warnings));
+        CHECK(e.emitters.size() == f.emitters);
+        CHECK_MESSAGE(warnings.empty(), (warnings.empty() ? std::string() : warnings.front()));
+        std::uint32_t total = 0;
+        for (const VfxEmitter& em : e.emitters) {
+            total += em.maxParticles;
+            CHECK(em.loop == f.loops);
+        }
+        CHECK(total <= f.budget);
+    }
+}
+
+TEST_CASE("vfx: the Dealer's round-8 looks: red that ramps in, a seam open for the whole window, ink that falls") {
+    constexpr float kFrame = 1.f / 30.f; // the capture's frame
+    // The open seam covers white_glove's whole window: every emitter runs it, the crosshatch lives through it and the
+    // glow's pulses overlap to its end.
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena_crit.json", text));
+    ArenaKindCritTable table;
+    REQUIRE(importArenaKindCrits(text, table));
+    const ArenaKindCritDef* glove = table.find("white_glove");
+    REQUIRE(glove);
+    const float opens = static_cast<float>(glove->opens);
+    VfxEffect seam;
+    REQUIRE(loadEffect("dealer_seam_open", seam));
+    for (const VfxEmitter& em : seam.emitters) {
+        CAPTURE(em.name);
+        CHECK(em.duration == doctest::Approx(opens));
+    }
+    const VfxEmitter* glow = findEmitter(seam, "glow");
+    const VfxEmitter* hatch = findEmitter(seam, "hatch");
+    const VfxEmitter* drips = findEmitter(seam, "drips");
+    REQUIRE(glow);
+    REQUIRE(hatch);
+    REQUIRE(drips);
+    CHECK(lowest(hatch->lifetime) == doctest::Approx(opens));
+    REQUIRE(glow->bursts.size() >= 4); // the pulse
+    for (std::size_t i = 1; i < glow->bursts.size(); ++i)
+        CHECK(glow->bursts[i].time - glow->bursts[i - 1].time < lowest(glow->lifetime));
+    CHECK(glow->bursts.back().time + lowest(glow->lifetime) >= opens);
+    // The seam reads at play distance as crossed lines, not a disc: each line at least 0.4 m (9 px at 60 px of figure).
+    CHECK(hatch->renderMode == VfxRenderMode::Stretched);
+    CHECK(lowest(hatch->startSize) * hatch->lengthScale >= 0.4f);
+    CHECK(peakSize(*glow) <= 0.6f);
+    // The drips fall in the world, stretched along their fall, wide enough to survive 60 px.
+    CHECK(drips->space == VfxSpace::World);
+    CHECK(drips->gravity.y <= -9.f);
+    CHECK(drips->renderMode == VfxRenderMode::Stretched);
+    CHECK(lowest(drips->startSize) >= 0.04f);
+
+    // The tell and the seam ramp in over 3 frames or more and are real red: alpha-blended red, never a big additive
+    // disc (additive red on the pale glove clips to pink).
+    VfxEffect tell;
+    REQUIRE(loadEffect("dealer_deal_tell", tell));
+    const VfxEmitter* flush = findEmitter(tell, "flush");
+    REQUIRE(flush);
+    for (const VfxEmitter* em : {flush, glow, hatch}) {
+        CAPTURE(em->name);
+        REQUIRE_FALSE(em->colorOverLife.stops.empty());
+        CHECK(em->colorOverLife.stops.front().t == 0.f);
+        CHECK(em->colorOverLife.stops.front().color.a == 0.f);
+        CHECK(rampInAt(em->colorOverLife) * lowest(em->lifetime) >= 3.f * kFrame);
+    }
+    for (const VfxEffect* fx : {&tell, &seam}) {
+        for (const VfxEmitter& em : fx->emitters) {
+            CAPTURE(fx->name);
+            CAPTURE(em.name);
+            if (em.blend == VfxBlend::Additive) {
+                CHECK(peakSize(em) <= 0.2f);
+                continue;
+            }
+            for (const VfxColorStop& s : em.colorOverLife.stops)
+                CHECK(s.color.r >= 4.f * std::max(s.color.g, s.color.b));
+        }
+    }
+
+    // The plain hit: an ink core about 1 m across (the soft sprite reads at about 0.8 of its edge) that fades over
+    // 8 frames or more; the crit outgrows it and lasts 8 frames or more.
+    VfxEffect ink;
+    VfxEffect crit;
+    REQUIRE(loadEffect("ink_hit", ink));
+    REQUIRE(loadEffect("dealer_seam_crit", crit));
+    const VfxEmitter* core = findEmitter(ink, "core");
+    REQUIRE(core);
+    CHECK(lowest(core->startSize) >= 1.1f);
+    CHECK(lowest(core->lifetime) * (1.f - fadeFrom(core->colorOverLife)) >= 8.f * kFrame);
+    float inkPeak = 0.f;
+    float critPeak = 0.f;
+    float critLife = 0.f;
+    for (const VfxEmitter& em : ink.emitters) inkPeak = std::max(inkPeak, peakSize(em));
+    for (const VfxEmitter& em : crit.emitters) {
+        critPeak = std::max(critPeak, peakSize(em));
+        critLife = std::max(critLife, lowest(em.lifetime));
+    }
+    CHECK(critPeak > inkPeak);
+    CHECK(critLife >= 8.f * kFrame);
+
+    // Debris: whatever flies out falls under full gravity, as angular spinning chips or flecks stretched along their
+    // velocity, never the round soft sprite.
+    for (const VfxEffect* fx : {&ink, &crit}) {
+        bool chips = false;
+        for (const VfxEmitter& em : fx->emitters) {
+            if (highest(em.speed) < 0.5f) continue; // the cores, the flash, the pop
+            CAPTURE(fx->name);
+            CAPTURE(em.name);
+            CHECK(em.gravity.y <= -9.f);
+            CHECK(em.sprite != VfxSprite::Soft);
+            if (em.sprite == VfxSprite::Chip) {
+                chips = true;
+                CHECK(lowest(em.angularVelocity) < 0.f);
+                CHECK(highest(em.angularVelocity) > 0.f);
+                CHECK(highest(em.startRotation) > 3.f);
+            } else {
+                CHECK(em.renderMode == VfxRenderMode::Stretched);
+            }
+        }
+        CHECK(chips);
     }
 }
 
