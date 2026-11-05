@@ -80,6 +80,28 @@ struct FFTArenaSkin
 	bool IsLoaded() const { return Clips.IsValid() && Idle >= 0; }
 };
 
+// One enemy slot's stepping turn (UFTArenaRunner::StepTurn): which way (+1 right, the yaw rising; -1 left; 0 none), since
+// when (Fight time), the facing it began from, the cycles it is committed to, the crossfade into its clip (s), where its
+// pivot foot stood as the cycle began, from the actor's origin in world axes (when found), whether the first cycle's foot
+// check is logged, whether Core wanted its body moving on the last step (any kind but the stone_bearer), and the fight's
+// counts: turns begun, steps, turns cancelled, and starts held by a move due within a step.
+struct FFTArenaTurn
+{
+	int32 Sign = 0;
+	double Start = -1e9;
+	ftcore::Vec2 From;
+	int32 Cycles = 0;
+	double Blend = 0.25;
+	FVector Foot = FVector::ZeroVector;
+	bool bFoot = false;
+	bool bChecked = false;
+	bool bMoves = false;
+	int32 Begun = 0;
+	int32 Steps = 0;
+	int32 Cancelled = 0;
+	int32 HeldPick = 0;
+};
+
 // What a fight is begun with: the def (the fighter kit and the enemies, already fitted to the zone), the fitted zone, where
 // its ground is, who plays and what happens at the end. Copied in at Begin.
 struct FFTArenaRunSetup
@@ -225,14 +247,18 @@ private:
 	// The stone_bearer's walk after each step (its skinned figure only): starts and stops it from Core's wanted speed, and
 	// between moves moves its body at the walk clip's speed, or holds it still (see kStoneWalkHold in the .cpp).
 	void StoneBearerWalk(const ftcore::ArenaOutput& Out);
-	// The stone_bearer's stepping turn (its skinned figure, with both turn clips; see kStoneTurnDeg in the .cpp). Before
-	// each step: Core's facing held while it stands, and the turn's facing written while one is under way. After each step:
-	// a turn begun, carried into another cycle, ended or cancelled, a log line each.
-	bool StoneTurns() const;
-	void StoneBearerTurnBeforeTick();
-	void StoneBearerTurn(const ftcore::ArenaOutput& Out);
-	// The turn's facing T seconds (Fight time) into it.
-	ftcore::Vec2 StoneTurnFacing(double T) const;
+	// The stepping turn of any enemy whose skin has both turn clips (see kArenaTurnDeg in the .cpp). bHost: the
+	// stone_bearer's host is in the fight (the stone_bearer turns only with it). Before each step: Core's facing held while
+	// it stands, and the turn's facing written while one is under way. After each step: a turn begun, carried into another
+	// cycle, ended or cancelled, a log line each.
+	bool CanTurn(int32 I, bool bHost) const;
+	void TurnsBeforeTick(bool bHost);
+	void StepTurns(const ftcore::ArenaOutput& Out, bool bHost);
+	void StepTurn(int32 I, const ftcore::ArenaOutput& Out);
+	// Slot I's turn facing T seconds (Fight time) into it.
+	ftcore::Vec2 TurnFacing(int32 I, double T) const;
+	// The turn counts of every slot with turn clips but the stone_bearer's (LogStoneWalkCounts has its), a log line each.
+	void LogTurnCounts() const;
 	// A hit reaction for slot I, light or heavy, when it flinches (the stone_bearer's slot holds a playing one a while).
 	void StartFlinch(int32 I, bool bHeavy);
 	// The boss's effects: its attack part going From -> To (its tell through the startup, its impact as it turns active),
@@ -258,8 +284,9 @@ private:
 	// boss with a clip table). Each frame plays the reel's pose and the effects of the cues it crossed, logs each part's
 	// start (with the full frame counter, for the cutter) and quits at the end. False, with a warning, when there is no
 	// skinned enemy to show (the flag then does nothing).
-	// Shared by every boss: the clips, their entry points, the cross-fades, the camera and the log. Boss-specific: the
-	// stepping turns and the walk's start phase (the stone_bearer's host only), the left-hand twins and the strike points
+	// Shared by every boss: the clips, their entry points, the cross-fades, the camera, the log and the stepping turns (for
+	// a boss with turn_l and turn_r). Boss-specific: the walk's start phase (the stone_bearer's host only), the left-hand
+	// twins and the strike points
 	// (StrikeAt), and the effects, which ShowcaseCue plays only for a boss whose effects it knows (the stone_bearer's
 	// BossVfx); for any other it logs the cue and plays nothing, the seam where that boss's effects go.
 	bool BeginShowcase();
@@ -401,22 +428,9 @@ private:
 	int32 StoneHeldHit = 0;
 	int32 StoneHeldTurn = 0;
 	int32 StoneHeldPick = 0;
-	int32 StoneTurnHeldPick = 0;
 	bool bStoneWanted = false;
-	// The stone_bearer's stepping turn: which way (+1 right, the yaw rising; -1 left; 0 none), since when (Fight time), the
-	// facing it began from, the cycles it is committed to, the crossfade into its clip (s), where its pivot foot stood as
-	// the cycle began, from the actor's origin in world axes (when found) and whether the first cycle's foot check is logged, and the fight's turn counts.
-	int32 StoneTurnSign = 0;
-	double StoneTurnStart = -1e9;
-	ftcore::Vec2 StoneTurnFrom;
-	int32 StoneTurnCycles = 0;
-	double StoneTurnBlend = 0.25;
-	FVector StoneTurnFoot = FVector::ZeroVector;
-	bool bStoneTurnFoot = false;
-	bool bStoneTurnChecked = false;
-	int32 StoneTurnsBegun = 0;
-	int32 StoneTurnSteps = 0;
-	int32 StoneTurnsCancelled = 0;
+	// Each enemy slot's stepping turn.
+	FFTArenaTurn SlotTurn[ftcore::kMaxArenaEnemies];
 	// The move under way plays its left-hand clip (decided once, as it starts: the run called its blow to the left).
 	bool bStoneMoveLeft = false;
 
