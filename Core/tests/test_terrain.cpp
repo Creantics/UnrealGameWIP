@@ -1693,12 +1693,12 @@ TEST_CASE("terrain: the core field makes the swell its outer fields take, and pu
             CHECK(floatBits(t.samplePosition(ix, iy).x) == floatBits(core->at(ix, iy).x));
             CHECK(floatBits(t.samplePosition(ix, iy).y) == floatBits(core->at(ix, iy).y));
         }
-    // A pin from the ground at a point is the same function in every field.
+    // A pin from the ground at a point: within the pads' 60 m, on a whole step. (That every field
+    // pinning a pad gives it this height is the next case's.)
     const WorldSpec spec = outerSpec(*core);
     const float h = terrainPinHeight(spec, s, {-1500.f, 0.f});
     CHECK(std::fabs(h) <= 60.f);
     CHECK(std::round(h / kStep) * kStep == h);
-    CHECK(terrainPinHeight(spec, s, {-1500.f, 0.f}) == h);
 }
 
 TEST_CASE("terrain: two outer fields agree, to the bit, on the pinned pads and the roads across the line they share") {
@@ -1828,8 +1828,9 @@ TEST_CASE("terrain: an outer field holds a pin past the pads' 60 m, and pins tha
     std::size_t cx = 0, cy = 0;
     nearestSample(*t, hamlet, cx, cy);
     CHECK(t->sample(cx, cy) == 120.f);
-    // How far out its flat holds: the slope limit cuts a pad standing far over the ground round it
-    // back from its rim (its blend is 56 m at most).
+    // How far out its flat holds. An outer field has no upland ground yet (the plan's, later), so a
+    // lone pin 120 m over low ground stands steeper than kRockSlope at its blend (56 m at most) and
+    // the slope limit cuts it back from its rim; the next case raises the ground round it with pins.
     float holds = 0.f;
     for (float r = 2.f; r <= kR; r += 2.f) {
         bool flat = true;
@@ -1861,7 +1862,7 @@ TEST_CASE("terrain: an outer field holds a pin past the pads' 60 m, and pins tha
     WorldLayoutTestAccess::make(*lay, spec, {hamlet, {-1500.f, 0.f}}, {{0, 1}});
     o = fieldOptions(*core, -1, 0, false);
     pinAt(o, 0, 120.f);
-    checkFieldFails(*core, spec, *lay, o, "district 1 has no height within 60 m that its roads to the pinned districts allow");
+    checkFieldFails(*core, spec, *lay, o, "district 1 has no height that its roads to district 0 allow within the pads' 60 m");
 
     // A free pad held by its road to one pin and by the ground it shares with another.
     WorldLayoutTestAccess::make(*lay, spec, {{-1500.f, 0.f}, {-1700.f, 0.f}, {-1500.f, 200.f}}, {{0, 1}});
@@ -1869,6 +1870,66 @@ TEST_CASE("terrain: an outer field holds a pin past the pads' 60 m, and pins tha
     pinAt(o, 1, 0.f);
     pinAt(o, 2, 50.f);
     checkFieldFails(*core, spec, *lay, o, "districts 0, 2 break a rule at a pinned district");
+
+    // Two free pads, each held by its road to a pin, that the ground between them can't join: A
+    // (district 2) within 6.5 m of P's +50, B (3) within 6.5 m of Q's -50, 36 m apart between their
+    // flats (11 m of height at most). No pin shares a rule with another, and none with the rule
+    // they break; settling B can only put it as near as it may, and the field fails and names them.
+    WorldLayoutTestAccess::make(*lay, spec, {{-1500.f, -150.f}, {-1500.f, 310.f}, {-1500.f, 0.f}, {-1500.f, 160.f}},
+                                {{0, 2}, {3, 1}});
+    o = fieldOptions(*core, -1, 0, false);
+    pinAt(o, 0, 50.f);
+    pinAt(o, 1, -50.f);
+    checkFieldFails(*core, spec, *lay, o, "districts 2, 3 can't keep the ground between them walkable with the pins where they are");
+}
+
+TEST_CASE("terrain: an outer field's pins can raise an upland round a hamlet, which keeps its flat; the core's ceiling isn't applied") {
+    const Generated* core = fieldCore();
+    if (!core) return;
+    const WorldSpec spec = outerSpec(*core);
+    // A hamlet pinned at +120 m in a ring of six pads pinned at +120 m too, 130 m out (their flats
+    // 6 m apart), so the ground round it stands at the upland's height, not the field's.
+    const Vec2 hamlet{-1500.f, 0.f};
+    constexpr float kRing = 130.f, kSide = 112.583f; // 130 sin 60
+    auto lay = std::make_unique<WorldLayout>();
+    WorldLayoutTestAccess::make(*lay, spec,
+                                {hamlet,
+                                 {hamlet.x + kRing, 0.f},
+                                 {hamlet.x + 0.5f * kRing, kSide},
+                                 {hamlet.x - 0.5f * kRing, kSide},
+                                 {hamlet.x - kRing, 0.f},
+                                 {hamlet.x - 0.5f * kRing, -kSide},
+                                 {hamlet.x + 0.5f * kRing, -kSide}},
+                                {});
+    TerrainOptions o = fieldOptions(*core, -1, 0, false);
+    for (std::uint8_t d = 0; d < 7; ++d) pinAt(o, d, 120.f);
+    auto t = std::make_unique<WorldTerrain>();
+    std::string error;
+    REQUIRE_MESSAGE(generateWorldTerrain(spec, *lay, *t, &error, o), error);
+    for (std::size_t d = 0; d < 7; ++d) CHECK(t->padHeight(d) == 120.f);
+    // The hamlet's flat holds to its rim, every sample within kR - 1 of its centre at +120 m.
+    std::size_t cx = 0, cy = 0, onFlat = 0, off = 0;
+    nearestSample(*t, hamlet, cx, cy);
+    for (std::size_t iy = cy - 40; iy <= cy + 40; ++iy)
+        for (std::size_t ix = cx - 40; ix <= cx + 40; ++ix) {
+            if (between(t->samplePosition(ix, iy), hamlet) > kR - 1.f) continue;
+            ++onFlat;
+            off += static_cast<std::size_t>(t->sample(ix, iy) != 120.f);
+        }
+    MESSAGE("the ringed hamlet's flat: " << onFlat << " samples within " << kR - 1.f << " m, " << off
+                                         << " off +120 m, on ground " << terrainPinHeight(spec, core->terrain->swell(), hamlet)
+                                         << " m");
+    CHECK(onFlat >= 2900u); // pi 61^2 / spacing^2: about 2969
+    CHECK(off == 0u);
+
+    // The core's climax ceiling, carried in the swell, isn't applied: one far under every pad and
+    // all the ground makes the same field to the bit.
+    TerrainOptions low = o;
+    low.field.swell.ceiling = -100.f;
+    auto lowered = std::make_unique<WorldTerrain>();
+    REQUIRE_MESSAGE(generateWorldTerrain(spec, *lay, *lowered, &error, low), error);
+    CHECK(groundHash(*lowered) == groundHash(*t));
+    CHECK(terrainPinHeight(spec, low.field.swell, {-1300.f, 400.f}) == terrainPinHeight(spec, o.field.swell, {-1300.f, 400.f}));
 }
 
 TEST_CASE("terrain: an outer field's pads near a field line and its roads across one must be pinned") {
@@ -1888,6 +1949,19 @@ TEST_CASE("terrain: an outer field's pads near a field line and its roads across
     WorldLayoutTestAccess::make(*lay, spec, {{-2400.f, 0.f}, {-1600.f, 0.f}}, {{0, 1}});
     pin(o, 0);
     checkFieldFails(*core, spec, *lay, o, "road 0 leaves the field: both its ends must be pinned");
+
+    // A road inside the square whose banks reach the line: the strip there takes both its ends'
+    // heights, so the far end, 350 m in, is pinned too; then the field generates.
+    WorldLayoutTestAccess::make(*lay, spec, {{-2200.f, 0.f}, {-1900.f, 0.f}}, {{0, 1}});
+    o = fieldOptions(*core, -1, 0, false);
+    pin(o, 0);
+    checkFieldFails(*core, spec, *lay, o, "road 0 runs within 90 m of a field line: both its ends must be pinned");
+    pin(o, 1);
+    {
+        auto t = std::make_unique<WorldTerrain>();
+        std::string error;
+        CHECK_MESSAGE(generateWorldTerrain(spec, *lay, *t, &error, o), error);
+    }
 
     // Field (-2, 0)'s west line is the box's: no neighbour, so no pin, but the pad stays kEdgeMargin
     // inside the closed edge, kApron in from the box.
@@ -1932,11 +2006,11 @@ TEST_CASE("terrain: a field's key, box, swell and pins are checked before any gr
     o = good;
     o.field.swell.count = 3;
     checkFieldFails(*core, spec, *lay, o, "the swell bends round two points at most");
-    o = good;
-    o.field.swell.ceiling = std::nanf("");
-    checkFieldFails(*core, spec, *lay, o, "the swell's ceiling is out of range");
     checkFieldFails(*core, core->spec, *lay, good, "an outer field has no sites");
 
+    o = good;
+    o.field.pinCount = static_cast<std::uint8_t>(o.field.pins.size() + 1);
+    checkFieldFails(*core, spec, *lay, o, "more pins than districts");
     o = good;
     pinAt(o, 1, 0.f);
     checkFieldFails(*core, spec, *lay, o, "pinned district 1 is past the layout's 1");

@@ -427,13 +427,12 @@ void takeSwell(KindGround& ground, const TerrainSwell& swell) {
     ground.bends = std::min<std::size_t>(swell.count, 2);
 }
 
-// A pinned pad's height (terrainPinHeight()): the ground before the pads under `ceiling`, averaged
-// over the centre and eight points 30 m round it as a solved pad's first guess is, held to
-// +-kMaxPad and put on the nearest whole step.
-float pinHeightOn(const KindGround& ground, float ceiling, Vec2 c) {
-    const auto capped = [&](Vec2 p) { return underCeiling(ground.base(p), ceiling); };
-    float sum = capped(c);
-    for (const Vec2 d : kCompass) sum += capped({c.x + 30.f * d.x, c.y + 30.f * d.y});
+// A pinned pad's height (terrainPinHeight()): an outer field's ground before the pads, under no
+// ceiling (the climax's holds in the core alone), averaged over the centre and eight points 30 m
+// round it as a solved pad's first guess is, held to +-kMaxPad and put on the nearest whole step.
+float pinHeightOn(const KindGround& ground, Vec2 c) {
+    float sum = ground.base(c);
+    for (const Vec2 d : kCompass) sum += ground.base({c.x + 30.f * d.x, c.y + 30.f * d.y});
     const float unit = WorldTerrain::kHeightStep;
     return std::round(std::clamp(sum / 9.f, -kMaxPad, kMaxPad) / unit) * unit;
 }
@@ -754,7 +753,6 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
         for (std::size_t k = 0; k < 2; ++k)
             if (!std::isfinite(place.swell.at[k].x) || !std::isfinite(place.swell.at[k].y) || !std::isfinite(place.swell.by[k]))
                 return fail("the swell isn't finite");
-        if (!(place.swell.ceiling >= -WorldTerrain::kMaxAbsHeight)) return fail("the swell's ceiling is out of range");
     } else {
         if (place.pinCount != 0) return fail("the core field takes no pins");
         if (place.swell.count != 0 || place.swell.ceiling != TerrainSwell{}.ceiling)
@@ -783,32 +781,41 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
         if (!pin.fromBase && !(std::fabs(pin.height) <= WorldTerrain::kMaxAbsHeight &&
                                std::round(pin.height / WorldTerrain::kHeightStep) * WorldTerrain::kHeightStep == pin.height))
             return fail("pinned district " + std::to_string(pin.district) + "'s height isn't a whole step in range");
-        pad.height = pin.fromBase ? pinHeightOn(ground, place.swell.ceiling, pad.centre) : pin.height;
+        pad.height = pin.fromBase ? pinHeightOn(ground, pad.centre) : pin.height;
         pad.pinned = pad.settled = true;
     }
     // In an outer field every pad stays kEdgeMargin inside the box's closed edge, and every pad a
     // neighbouring field may hold too is pinned: one outside the field's square, or within kPinReach
-    // of a line it shares (one inside the world's box), and both ends of a road that leaves the square.
+    // of a line it shares (one inside the world's box); and both ends of a road that leaves the
+    // square, or whose banks (kReach) reach such a line, as its strip there takes both ends' heights.
     if (outer) {
         const auto outside = [&](Vec2 c) { return c.x < west || c.x > east || c.y < south || c.y > north; };
-        const auto byLine = [](float at, float line, std::int32_t lo, std::int32_t hi) {
-            return line > static_cast<float>(lo) && line < static_cast<float>(hi) && std::fabs(at - line) < TerrainField::kPinReach;
+        const auto byLine = [](float at, float line, std::int32_t lo, std::int32_t hi, float reach) {
+            return line > static_cast<float>(lo) && line < static_cast<float>(hi) && std::fabs(at - line) < reach;
+        };
+        const auto nearLine = [&](Vec2 c, float reach) {
+            return byLine(c.x, west, place.west, place.east, reach) || byLine(c.x, east, place.west, place.east, reach) ||
+                   byLine(c.y, south, place.south, place.north, reach) || byLine(c.y, north, place.south, place.north, reach);
         };
         for (std::size_t i = 0; i < n; ++i) {
             const Vec2 c = pads[i].centre;
             if (!(ground.beyond(c) <= -WorldLayout::kEdgeMargin))
                 return fail("district " + std::to_string(i) + " lies within " +
                             std::to_string(static_cast<int>(WorldLayout::kEdgeMargin)) + " m of the world's closed edge");
-            const bool shared = byLine(c.x, west, place.west, place.east) || byLine(c.x, east, place.west, place.east) ||
-                                byLine(c.y, south, place.south, place.north) || byLine(c.y, north, place.south, place.north);
-            if ((shared || outside(c)) && !pads[i].pinned)
+            if ((nearLine(c, TerrainField::kPinReach) || outside(c)) && !pads[i].pinned)
                 return fail("district " + std::to_string(i) + (outside(c) ? " lies outside the field" : " lies near a field line") +
                             ": it must be pinned");
         }
         for (std::size_t r = 0; r < layout.roadCount(); ++r) {
             const WorldRoad& road = layout.road(r);
-            if ((outside(pads[road.a].centre) || outside(pads[road.b].centre)) && !(pads[road.a].pinned && pads[road.b].pinned))
+            const Vec2 a = pads[road.a].centre, b = pads[road.b].centre;
+            if (pads[road.a].pinned && pads[road.b].pinned) continue;
+            if (outside(a) || outside(b))
                 return fail("road " + std::to_string(r) + " leaves the field: both its ends must be pinned");
+            // Both ends inside the square: the road comes nearest each line at one of them.
+            if (nearLine(a, kReach) || nearLine(b, kReach))
+                return fail("road " + std::to_string(r) + " runs within " + std::to_string(static_cast<int>(kReach)) +
+                            " m of a field line: both its ends must be pinned");
         }
     }
     int entry = -1, climax = -1;
@@ -974,21 +981,29 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
     // then inside each rule that this pad alone still moves, while that leaves a whole unit, and
     // where it doesn't, on the whole unit nearest the rule that the rest allow.
     // It can't where the pins leave the pad no height, or a rule on a pinned pad no room: it says so
-    // in `stuck` and returns false (option D's check), never moving a pin.
+    // in `stuck` and returns false (option D's check), never moving a pin. Each caller settles a pad
+    // not yet settled.
     std::string stuck;
     const auto settle = [&](std::size_t k, float want) {
-        if (pads[k].settled) {
-            stuck = "district " + std::to_string(k) + " is settled twice";
-            return false;
-        }
         float lo = -kMaxPad, hi = kMaxPad;
+        std::size_t loBy = n, hiBy = n; // the settled pads that set them; n for the pads' +-60 m
         for (std::size_t j = 0; j < n; ++j)
             if (pads[j].settled) {
-                lo = std::max(lo, pads[j].height - apart[k][j]);
-                hi = std::min(hi, pads[j].height + apart[k][j]);
+                if (pads[j].height - apart[k][j] > lo) {
+                    lo = pads[j].height - apart[k][j];
+                    loBy = j;
+                }
+                if (pads[j].height + apart[k][j] < hi) {
+                    hi = pads[j].height + apart[k][j];
+                    hiBy = j;
+                }
             }
         if (lo > hi) {
-            stuck = "district " + std::to_string(k) + " has no height within 60 m that its roads to the pinned districts allow";
+            // The pins keep to their roads among themselves (checked above), and each settled pad to
+            // its roads to those before it and within the 60 m, so the two bounds that miss are the
+            // 60 m and a pad's: name that pad.
+            stuck = "district " + std::to_string(k) + " has no height that its roads to district " +
+                    std::to_string(loBy == n ? hiBy : loBy) + " allow within the pads' 60 m";
             return false;
         }
         for (const Constraint& c : rules) {
@@ -1090,7 +1105,8 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
 
     // The ground between the pads eases toward a ceiling it never meets: kClimaxClear under the
     // climax, and under the sightline.
-    const float climaxCeiling = outer ? place.swell.ceiling : climax >= 0 ? top - kClimaxClear : 1e30f;
+    // An outer field has no sites, so no climax, and takes no ceiling from the core's: it holds there alone.
+    const float climaxCeiling = climax >= 0 ? top - kClimaxClear : 1e30f;
     const auto cappedBase = [&](Vec2 p) { return underCeiling(ground.base(p), std::min(climaxCeiling, sight.ceiling(p))); };
 
     // The other pads start level with the ground they stand on, stay under the climax, and relax
@@ -1120,6 +1136,17 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
     }
     for (std::size_t i = 0; i < n; ++i)
         if (!pads[i].settled && !settle(i, pads[i].height)) return fail(stuck);
+    // A field with pins keeps every rule: where the pins leave free pads no room, settle() puts the
+    // last of them as near as it can, and here generation fails and names them, rather than leave
+    // the slope limit to cut the ground. (The core, which has no pins, keeps that.) A millimetre's
+    // grace covers the sums' rounding.
+    if (place.pinCount > 0)
+        for (const Constraint& c : rules) {
+            float v = 0.f;
+            for (std::uint8_t m = 0; m < c.count; ++m) v += c.coef[m] * pads[c.pad[m]].height;
+            if (v < c.lo - 1e-3f || v > c.hi + 1e-3f)
+                return fail("districts " + named(c) + " can't keep the ground between them walkable with the pins where they are");
+        }
 
     // How wide each pad's blend is: wide enough that the blend's steepest part stays near 30
     // degrees for the deepest drop to the ground around it (a butte's near kButteSlope), within the
@@ -2084,7 +2111,7 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
 float terrainPinHeight(const WorldSpec& spec, const TerrainSwell& swell, Vec2 p) {
     KindGround ground = kindGround(spec);
     takeSwell(ground, swell);
-    return pinHeightOn(ground, swell.ceiling, p);
+    return pinHeightOn(ground, p);
 }
 
 void roadMask(const WorldLayout& layout, std::size_t size, std::uint8_t* out, Vec2 origin) {

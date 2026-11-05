@@ -119,8 +119,9 @@ struct TerrainFeature {
     FTCORE_API bool covers(Vec2 p, float inset = 0.f) const;
 };
 
-// The swell's bend and the climax's ceiling of a world's core field (WorldTerrain::swell()), which
-// its outer fields take (TerrainField::swell) so that their ground before the pads is the core's.
+// The swell's bend and the climax's ceiling of a world's core field (WorldTerrain::swell()). Its
+// outer fields take the bend (TerrainField::swell) so that their swell is the core's; the ceiling
+// holds in the core alone, so an outer field carries it but doesn't apply it.
 struct TerrainSwell {
     std::array<Vec2, 2> at{};  // core metres
     std::array<float, 2> by{}; // m
@@ -147,16 +148,20 @@ struct TerrainPin {
 // districts' centres in that frame, and a district two fields hold has the same centre, to the bit,
 // in both, so that the pins and the roads' strips match at the seam.
 //
-// An outer field (i, j) != (0, 0) has no sites, sea or features yet (the plan places them later).
-// Its ground closes only at the world's box, kApron inside its edge as the core's closes at its
-// square's, and a pad's centre stays kEdgeMargin inside that. Every pad within kPinReach of a line it
-// shares with a neighbouring field, every pad outside its own square, and both ends of every road
-// that leaves its square, must be pinned, with the same heights in every field that holds them; the
-// rest it solves on its own. Its layout holds every pinned pad and every road whose banks (90 m
-// either side) reach its square, so the strips and shoulders on the shared column are the same in
-// both. If the pins break a rule that the free pads can't mend, generation fails and names the
-// pads: it never moves a pin or re-seeds. The core field takes no pins and no swell (it makes them);
-// its box, if given, is checked and otherwise unused.
+// An outer field (i, j) != (0, 0) has no sites, sea or features yet (the plan places them later),
+// and no climax's ceiling: its ground before the pads is the core's swell and hills, uncapped. Its
+// ground closes only at the world's box, kApron inside its edge as the core's closes at its square's,
+// and a pad's centre stays kEdgeMargin inside that. Every pad within kPinReach of a line it shares
+// with a neighbouring field, every pad outside its own square, and both ends of every road that
+// leaves its square or comes within 90 m (its banks' reach) of such a line, must be pinned, with the
+// same heights in every field that holds them; the rest it solves on its own. Its layout holds every
+// pinned pad and every road whose banks reach its square, so the strips and shoulders on the shared
+// column are the same in both. Where the pins leave a rule no room, whether among the pins or for
+// the free pads, generation fails and names the pads: it never moves a pin, clamps a rule or
+// re-seeds. A pad pinned far over the ground round it keeps its flat only where the pins round it
+// raise that ground too (the slope limit cuts back what stands steeper than kRockSlope). The core
+// field takes no pins and no swell (it makes them); its box, if given, is checked and otherwise
+// unused.
 struct TerrainField {
     static constexpr std::int32_t kMaxBox = 12000; // m: the longest side of a world's box
     static constexpr std::int32_t kBoxStep = 250;  // m: the box's edges lie on multiples of this
@@ -238,8 +243,8 @@ public:
     }
     // Sample (ix, iy)'s position, core metres. No allocation.
     FTCORE_API Vec2 samplePosition(std::size_t ix, std::size_t iy) const;
-    // The swell's bend and the climax's ceiling the ground was made with: the core's, which its outer
-    // fields take (TerrainField::swell).
+    // The core's swell, its bend and its climax's ceiling: the core's own, or the one an outer field
+    // took (TerrainField::swell), whose bend it used and whose ceiling it carries unapplied.
     const TerrainSwell& swell() const { return swell_; }
 
     // The ground at p (core metres; outside the field, its nearest edge). No allocation.
@@ -286,7 +291,7 @@ FTCORE_API bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& l
                                      std::string* error = nullptr, const TerrainOptions& options = {});
 
 // The height a pinned pad takes from the ground (TerrainPin::fromBase): the ground before the pads,
-// with the core's swell bent as `swell` and held under its ceiling, averaged over p and eight points
+// with the core's swell bent as `swell` and under no ceiling, averaged over p and eight points
 // 30 m round it, as a solved pad starts, then held to the pads' +-60 m and put on the nearest whole
 // kHeightStep. A function of the spec, the swell and p only, so every field that pins a pad at p
 // gives it the same height to the bit. No allocation.
