@@ -1346,18 +1346,18 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
             wearTopAt[i] = std::max(std::min({climaxCeiling, sight.ceiling(p), bankHigh}), h0);
         }
 
-    // On a field n samples a side, along one axis (x where `alongX`), each sample becomes the least
-    // (`least`) or the mean of the 2 kWearSoftBlur + 1 round it, stopping at the field's edge.
+    // On a field `width` samples a side, along one axis (x where `alongX`), each sample becomes the
+    // least (`least`) or the mean of the 2 kWearSoftBlur + 1 round it, stopping at the field's edge.
     std::vector<float> eased;
-    const auto ease = [&](std::vector<float>& field, std::size_t n, bool alongX, bool least) {
-        const std::size_t along = alongX ? 1 : n, across = alongX ? n : 1;
-        eased.resize(n * n);
-        for (std::size_t a = 0; a < n; ++a)
-            for (std::size_t b = 0; b < n; ++b) {
+    const auto ease = [&](std::vector<float>& field, std::size_t width, bool alongX, bool least) {
+        const std::size_t along = alongX ? 1 : width, across = alongX ? width : 1;
+        eased.resize(width * width);
+        for (std::size_t a = 0; a < width; ++a)
+            for (std::size_t b = 0; b < width; ++b) {
                 float sum = 0.f, count = 0.f, low = 1.f;
                 for (int k = -kWearSoftBlur; k <= kWearSoftBlur; ++k) {
                     const std::ptrdiff_t c = static_cast<std::ptrdiff_t>(b) + k;
-                    if (c < 0 || c >= static_cast<std::ptrdiff_t>(n)) continue;
+                    if (c < 0 || c >= static_cast<std::ptrdiff_t>(width)) continue;
                     const float v = field[a * across + static_cast<std::size_t>(c) * along];
                     sum += v;
                     count += 1.f;
@@ -1367,20 +1367,20 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
             }
         field.swap(eased);
     };
-    // How freely a field of n x n heights `spacing` metres apart wears by its slope: fully up to
-    // `from`, less beyond, not at all from `from` + `run`; that share eased over kWearSoftBlur
+    // How freely a field of `width` x `width` heights `spacing` metres apart wears by its slope: fully
+    // up to `from`, less beyond, not at all from `from` + `run`; that share eased over kWearSoftBlur
     // samples, twice over, so that no sample wears much more than the next.
-    const auto softness = [&](const float* heights, std::size_t n, float spacing, float from, float run) {
-        std::vector<float> share(n * n, 1.f);
-        for (std::size_t iy = 1; iy + 1 < n; ++iy)
-            for (std::size_t ix = 1; ix + 1 < n; ++ix) {
-                const float* z = heights + iy * n + ix;
-                const float slope = std::hypot(z[1] - z[-1], z[n] - z[-static_cast<std::ptrdiff_t>(n)]) / (2.f * spacing);
-                share[iy * n + ix] = 1.f - smooth01((slope - from) / run);
+    const auto softness = [&](const float* heights, std::size_t width, float spacing, float from, float run) {
+        std::vector<float> share(width * width, 1.f);
+        for (std::size_t iy = 1; iy + 1 < width; ++iy)
+            for (std::size_t ix = 1; ix + 1 < width; ++ix) {
+                const float* z = heights + iy * width + ix;
+                const float slope = std::hypot(z[1] - z[-1], z[width] - z[-static_cast<std::ptrdiff_t>(width)]) / (2.f * spacing);
+                share[iy * width + ix] = 1.f - smooth01((slope - from) / run);
             }
         for (int round = 0; round < 2; ++round) {
-            ease(share, n, true, false);
-            ease(share, n, false, false);
+            ease(share, width, true, false);
+            ease(share, width, false, false);
         }
         return share;
     };
