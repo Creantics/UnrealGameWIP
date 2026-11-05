@@ -40,7 +40,13 @@ jobs:
             cmake -S Core -B build -DFTCORE_WERROR=ON
           fi
       - name: Build
+        if: ${{ github.event_name != 'workflow_dispatch' || !matrix.cxx }}
         run: cmake --build build --config Debug --parallel
+      # On a manual run, make keeps going past a failed object (-k), so one run lists every gcc or clang
+      # error instead of stopping at the first failing file. Pushes and pull requests stay fail-fast.
+      - name: Build (keep going, dispatch only)
+        if: ${{ github.event_name == 'workflow_dispatch' && matrix.cxx }}
+        run: cmake --build build --config Debug --parallel -- -k
       - name: Test
         if: ${{ !inputs.verbose_tests }}
         run: ctest --test-dir build -C Debug --output-on-failure
