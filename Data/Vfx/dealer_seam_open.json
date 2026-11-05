@@ -3,10 +3,50 @@
   "emitters": [
     {
       "name": "drips",
-      "rate": 30,
-      "duration": 1.0,
-      "loop": true,
-      "maxParticles": 64,
+      "bursts": [
+        {
+          "time": 0.22,
+          "count": 3
+        },
+        {
+          "time": 0.32,
+          "count": 3
+        },
+        {
+          "time": 0.42,
+          "count": 3
+        },
+        {
+          "time": 0.52,
+          "count": 3
+        },
+        {
+          "time": 0.62,
+          "count": 3
+        },
+        {
+          "time": 0.72,
+          "count": 3
+        },
+        {
+          "time": 0.82,
+          "count": 3
+        },
+        {
+          "time": 0.92,
+          "count": 3
+        },
+        {
+          "time": 1.02,
+          "count": 3
+        },
+        {
+          "time": 1.12,
+          "count": 3
+        }
+      ],
+      "duration": 1.2,
+      "maxParticles": 40,
       "lifetime": [
         0.5,
         0.8
@@ -24,8 +64,8 @@
       ],
       "drag": 0.3,
       "startSize": [
-        0.045,
-        0.075
+        0.05,
+        0.085
       ],
       "sizeOverLife": [
         {
@@ -45,25 +85,25 @@
         {
           "t": 0,
           "color": [
-            0.55,
-            0.0,
+            0.7,
             0.02,
+            0.03,
             0.0
           ]
         },
         {
           "t": 0.1,
           "color": [
-            0.5,
-            0.0,
-            0.02,
+            0.65,
+            0.01,
+            0.03,
             1.0
           ]
         },
         {
           "t": 1,
           "color": [
-            0.3,
+            0.35,
             0.0,
             0.01,
             0.9
@@ -77,49 +117,88 @@
       "softness": 0.0
     },
     {
-      "name": "pulse",
-      "rate": 3.4,
-      "duration": 1.0,
-      "loop": true,
-      "maxParticles": 4,
-      "lifetime": 0.58,
+      "name": "core",
+      "bursts": [
+        {
+          "time": 0.22,
+          "count": 1
+        }
+      ],
+      "duration": 1.2,
+      "maxParticles": 2,
+      "lifetime": 0.98,
       "shape": "point",
-      "startSize": 0.65,
+      "space": "local",
+      "startSize": 0.4,
       "sizeOverLife": [
         {
           "t": 0,
           "v": 0.5
         },
         {
+          "t": 0.06,
+          "v": 1.1
+        },
+        {
+          "t": 0.3,
+          "v": 0.95
+        },
+        {
+          "t": 0.59,
+          "v": 1.05
+        },
+        {
+          "t": 0.88,
+          "v": 0.95
+        },
+        {
           "t": 1,
-          "v": 1.2
+          "v": 0.9
         }
       ],
       "colorOverLife": [
         {
           "t": 0,
           "color": [
-            1.8,
-            0.05,
-            0.04,
+            3.4,
+            0.55,
+            0.38,
             0.0
           ]
         },
         {
-          "t": 0.2,
+          "t": 0.04,
           "color": [
-            1.6,
-            0.04,
-            0.03,
-            0.85
+            4.0,
+            0.8,
+            0.55,
+            1.0
+          ]
+        },
+        {
+          "t": 0.15,
+          "color": [
+            3.4,
+            0.55,
+            0.38,
+            1.0
+          ]
+        },
+        {
+          "t": 0.95,
+          "color": [
+            2.8,
+            0.32,
+            0.22,
+            1.0
           ]
         },
         {
           "t": 1,
           "color": [
-            0.8,
-            0.0,
-            0.0,
+            2.8,
+            0.32,
+            0.22,
             0.0
           ]
         }
@@ -129,43 +208,65 @@
       "softness": 0.0
     },
     {
-      "name": "split",
+      "name": "halo",
       "bursts": [
         {
-          "time": 0.0,
+          "time": 0.22,
+          "count": 1
+        },
+        {
+          "time": 0.508,
+          "count": 1
+        },
+        {
+          "time": 0.797,
+          "count": 1
+        },
+        {
+          "time": 1.085,
           "count": 1
         }
       ],
-      "duration": 0.1,
-      "maxParticles": 2,
-      "lifetime": 0.3,
+      "duration": 1.2,
+      "maxParticles": 4,
+      "lifetime": 0.4,
       "shape": "point",
-      "startSize": 1.0,
+      "space": "local",
+      "startSize": 0.8,
       "sizeOverLife": [
         {
           "t": 0,
-          "v": 0.7
+          "v": 0.6
         },
         {
           "t": 1,
-          "v": 1.2
+          "v": 1.15
         }
       ],
       "colorOverLife": [
         {
           "t": 0,
           "color": [
-            2.2,
-            0.08,
+            1.7,
+            0.07,
             0.05,
-            0.95
+            0.0
+          ]
+        },
+        {
+          "t": 0.15,
+          "color": [
+            1.7,
+            0.07,
+            0.05,
+            0.8
           ]
         },
         {
           "t": 1,
           "color": [
-            2.2,
-            0.08,
+            1.7,
+            0.07,
             0.05,
             0.0
           ]
