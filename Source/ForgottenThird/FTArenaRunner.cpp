@@ -2910,6 +2910,97 @@ void UFTArenaRunner::StopKindCritEffects()
 	}
 }
 
+// -ArenaShowcase: a plain blow's ink this share of the body radius out from the crit kind's centre, toward the camera. The
+// fight plays it at the body's centre; the reel puts it on the camera's side so the body doesn't hide it.
+constexpr float kShowKindHitSurface = 0.5f;
+
+void UFTArenaRunner::ShowcaseKindCritCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& Figure)
+{
+	if (ShowSlot < 0 || ShowSlot >= MaxEnemies || !bKindCritSlot[ShowSlot])
+	{
+		return;
+	}
+	const int32 I = ShowSlot;
+	const size_t Slot = static_cast<size_t>(ShowSlot);
+	switch (Cue.cue)
+	{
+	case ftcore::ShowCue::Tell:
+	{
+		// As in the fight, only the move whose clip opens the window tells (opensAfter); the lone tell plays it too.
+		bool bOpening = Cue.place == ftcore::ShowPlace::Ahead;
+		if (!bOpening && Cue.attack >= 0 && static_cast<size_t>(Cue.attack) < ShowSpecUsed.attackCount)
+		{
+			const ftcore::ArenaEnemyKind& EnemyKind = Fight.def().enemies[Slot];
+			const size_t Move = static_cast<size_t>(ShowSpecUsed.attacks[static_cast<size_t>(Cue.attack)].move);
+			bOpening = Move < EnemyKind.moveCount && EnemyKind.moves[Move].clip() == KindCrits[Slot].opensAfter();
+		}
+		if (bOpening && KindCritTellFx[I])
+		{
+			KindCritTellFx[I]->Play();
+			bKindCritTelling[I] = true;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena showcase: %s tell on (%s)."), UTF8_TO_TCHAR(SlotKindId(I)),
+				Cue.place == ftcore::ShowPlace::Ahead ? TEXT("alone") : TEXT("its opening move"));
+		}
+		return;
+	}
+	case ftcore::ShowCue::TellStop:
+		if (bKindCritTelling[I] && KindCritTellFx[I])
+		{
+			KindCritTellFx[I]->Stop();
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena showcase: %s tell off."), UTF8_TO_TCHAR(SlotKindId(I)));
+		}
+		bKindCritTelling[I] = false;
+		return;
+	case ftcore::ShowCue::Impact:
+		return;
+	case ftcore::ShowCue::Chips:
+	{
+		if (!KindCritHitFx[I])
+		{
+			return;
+		}
+		const FVector Feet = Figure.GetActorLocation();
+		FVector Toward = ShowCamera ? ShowCamera->GetActorLocation() - Feet : Figure.GetActorForwardVector();
+		Toward.Z = 0.0;
+		Toward = Toward.GetSafeNormal();
+		const double Out = static_cast<double>(Fight.def().enemies[Slot].bodyRadius * kShowKindHitSurface) * 100.0;
+		FVector At = Feet + Toward * Out;
+		At.Z = Figure.GetChest().Z;
+		KindCritHitFx[I]->SetWorldLocation(At);
+		KindCritHitFx[I]->Play();
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena showcase: %s ink %.2f m out at %.2f m up."), UTF8_TO_TCHAR(SlotKindId(I)), Out / 100.0, (At.Z - Feet.Z) / 100.0);
+		return;
+	}
+	case ftcore::ShowCue::GlowOn:
+		// The window opens: the tell ends, as in the fight.
+		if (bKindCritTelling[I] && KindCritTellFx[I])
+		{
+			KindCritTellFx[I]->Stop();
+		}
+		bKindCritTelling[I] = false;
+		if (KindCritOpenFx[I])
+		{
+			KindCritOpenFx[I]->Play();
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena showcase: %s seam open."), UTF8_TO_TCHAR(SlotKindId(I)));
+		}
+		return;
+	case ftcore::ShowCue::GlowOff:
+		if (KindCritOpenFx[I])
+		{
+			KindCritOpenFx[I]->Stop();
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena showcase: %s seam shut."), UTF8_TO_TCHAR(SlotKindId(I)));
+		}
+		return;
+	case ftcore::ShowCue::Crit:
+		if (KindCritCritFx[I])
+		{
+			KindCritCritFx[I]->Play();
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena showcase: %s seam crit."), UTF8_TO_TCHAR(SlotKindId(I)));
+		}
+		return;
+	}
+}
+
 void UFTArenaRunner::PrepareKite()
 {
 	KiteSlot = -1;
@@ -3342,6 +3433,13 @@ void UFTArenaRunner::ShowcaseCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& 
 {
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena showcase: cue %s at reel %.3f s, frame %llu."), UTF8_TO_TCHAR(ftcore::showCueKey(Cue.cue)), Cue.at,
 		static_cast<unsigned long long>(GFrameCounter));
+	// The Dealer's effects: its kind-crit components (ShowcaseKindCritCue). A crit kind never fights beside the stone_bearer
+	// (BeginKindCrits), so the stone block below never plays for it.
+	if (ShowSlot >= 0 && ShowSlot < MaxEnemies && bKindCritSlot[ShowSlot])
+	{
+		ShowcaseKindCritCue(Cue, Figure);
+		return;
+	}
 	// The effects: the stone_bearer's pool. Another boss's effects go here, beside it, keyed on its slot.
 	if (ShowSlot != StoneBearerSlot || !BossVfx.IsSpawned())
 	{

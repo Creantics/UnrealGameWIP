@@ -307,6 +307,13 @@ private:
 	void SpawnKindCritEffects();
 	void StopKindCritEffects();
 	UFTVfxComponent* MakeKindCritEffect(AFTArenaFighter* Figure, std::string_view Effect, std::string_view Socket);
+	// -ArenaShowcase, the Dealer's block of ShowcaseCue (any kind with an arena_crit entry gets it; white_glove is the one so
+	// far): the reel's cues on that entry's four effects, as the fight plays them. The tell for the opening move's clip and
+	// for the lone tell, stopped at TellStop; the open effect from GlowOn to GlowOff; the crit on Crit; the hit's ink on
+	// Chips, half the body radius out toward the camera at the boss's chest height (the fight plays it at the body's centre).
+	// Impact plays nothing (the Dealer has no dust of its own).
+	// Null components (-ArenaNoKindFx, or a system that didn't load) play nothing: the OFF half of an effect pair.
+	void ShowcaseKindCritCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& Figure);
 	// The kind id of slot I, as the table names it ("" for a def built in code).
 	const char* SlotKindId(int32 I) const;
 	// The kite_boss's weak point, when the line-up has one and the stone_bearer's host isn't in the fight (ArenaFight has one
