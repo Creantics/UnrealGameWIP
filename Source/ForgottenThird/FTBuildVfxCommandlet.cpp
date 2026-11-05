@@ -622,7 +622,8 @@ TValue* EmitterProperty(UNiagaraStatelessEmitter* Emitter, const TCHAR* Name)
 	return Property->ContainerPtrToValuePtr<TValue>(Emitter);
 }
 
-bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmitter& P, UMaterialInterface* const Materials[SpriteMaterialCount])
+bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmitter& P, UMaterialInterface* const Materials[SpriteMaterialCount],
+	int32 DrawOrder)
 {
 	using namespace ftcore;
 
@@ -805,6 +806,9 @@ bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmi
 	}
 	Sprite->Material = Materials[SpriteMaterialIndex(P)];
 	Sprite->SortMode = P.additive ? ENiagaraSortMode::None : ENiagaraSortMode::ViewDistance;
+	// The emitters draw in the data's order, later on top: Niagara sorts its renderers by this hint with an unstable
+	// sort, so equal hints draw in any order (the crit's red flash covered its ink cloud).
+	Sprite->SortOrderHint = DrawOrder;
 	Sprite->FacingMode = ENiagaraSpriteFacingMode::FaceCamera;
 	Sprite->Alignment = ENiagaraSpriteAlignment::Unaligned;
 	switch (P.facing)
@@ -867,7 +871,7 @@ UNiagaraSystem* BuildSystem(UPackage* Package, UNiagaraSystem* Template, const f
 	for (int32 I = 0; I < System->GetEmitterHandles().Num(); ++I)
 	{
 		UNiagaraStatelessEmitter* Emitter = System->GetEmitterHandles()[I].GetStatelessEmitter();
-		if (!Emitter || !BuildEmitter(Emitter, Plan.emitters[size_t(I)], Materials))
+		if (!Emitter || !BuildEmitter(Emitter, Plan.emitters[size_t(I)], Materials, I))
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx: couldn't build emitter %d of %s."), I, *Name);
 			return nullptr;
@@ -919,8 +923,13 @@ void Describe(const UNiagaraSystem* System)
 					{ Bindings += ModuleName + TEXT(":") + V.GetName().ToString() + TEXT(" "); });
 			}
 		}
-		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildVfx:   %s: %d spawn infos; modules %s; bindings %s"),
-			*Handle.GetName().ToString(), Emitter->GetNumSpawnInfos(), *Modules, *Bindings);
+		FString DrawOrders;
+		for (const UNiagaraRendererProperties* R : Emitter->GetRenderers())
+		{
+			DrawOrders += R ? FString::FromInt(R->SortOrderHint) + TEXT(" ") : FString();
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildVfx:   %s: %d spawn infos; draw order %s; modules %s; bindings %s"),
+			*Handle.GetName().ToString(), Emitter->GetNumSpawnInfos(), *DrawOrders, *Modules, *Bindings);
 	}
 }
 
