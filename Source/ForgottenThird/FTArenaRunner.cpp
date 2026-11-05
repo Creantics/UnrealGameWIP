@@ -3075,7 +3075,9 @@ void UFTArenaRunner::ShowcaseKindCritCue(const ftcore::ShowCueAt& Cue, AFTArenaF
 	case ftcore::ShowCue::Impact:
 		return;
 	case ftcore::ShowCue::Chips:
+	case ftcore::ShowCue::ChipsHeavy:
 	{
+		// The fight plays the kind's hit effect on every blow that isn't a crit, light or heavy, so the heavy hit's cue plays it too.
 		if (!KindCritHitFx[I])
 		{
 			return;
