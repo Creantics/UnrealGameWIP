@@ -14,6 +14,7 @@
 #include <fstream>
 #include <cstring>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 using namespace ftcore;
@@ -457,8 +458,12 @@ TEST_CASE("beat music: the same bar gives the same pattern, and the harmony move
     planBeatMusic(c, a);
     planBeatMusic(c, b);
     CHECK(samePattern(a, b));
-    // Dirty the output first: planning fills every field.
-    std::memset(&b, 0xAB, sizeof(b));
+    // Dirty every byte of the output first: planning fills every field. The pattern is plain bytes
+    // (trivially copyable, no padding), so the fill is sound; its member initialisers only make it
+    // non-trivial to construct. The void* cast is gcc's documented way past -Wclass-memaccess.
+    static_assert(std::is_trivially_copyable_v<MusicPattern> && std::has_unique_object_representations_v<MusicPattern>,
+                  "the byte fill, and samePattern's memcmp, need a pattern of plain bytes");
+    std::memset(static_cast<void*>(&b), 0xAB, sizeof(b));
     planBeatMusic(c, b);
     CHECK(samePattern(a, b));
 
