@@ -67,19 +67,24 @@ inline constexpr std::size_t kMaxArenaKindCritId = 31; // characters of a kind i
 
 // What the host shows for an entry, by name (all optional, empty when unset): the bone or socket of the kind's
 // mesh the effects hang from, and the Data/Vfx effects played on the opening move's start (tell), while the
-// window is open (open), on a crit (crit) and on any other blow of the lead's on the slot (hit).
+// window is open (open), on a crit (crit) and on any other blow of the lead's on the slot (hit). hitFloor and
+// critFloor play with hit and crit, on the floor under them: the marks their falling debris leaves.
 struct ArenaKindCritEffects {
     std::array<char, kMaxArenaKindCritId + 1> socketChars{};
     std::array<char, kMaxArenaKindCritId + 1> tellChars{};
     std::array<char, kMaxArenaKindCritId + 1> openChars{};
     std::array<char, kMaxArenaKindCritId + 1> critChars{};
     std::array<char, kMaxArenaKindCritId + 1> hitChars{};
+    std::array<char, kMaxArenaKindCritId + 1> hitFloorChars{};
+    std::array<char, kMaxArenaKindCritId + 1> critFloorChars{};
 
     std::string_view socket() const { return std::string_view(socketChars.data()); }
     std::string_view tell() const { return std::string_view(tellChars.data()); }
     std::string_view open() const { return std::string_view(openChars.data()); }
     std::string_view crit() const { return std::string_view(critChars.data()); }
     std::string_view hit() const { return std::string_view(hitChars.data()); }
+    std::string_view hitFloor() const { return std::string_view(hitFloorChars.data()); }
+    std::string_view critFloor() const { return std::string_view(critFloorChars.data()); }
 };
 
 // One kind's entry.

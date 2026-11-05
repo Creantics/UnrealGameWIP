@@ -10,7 +10,8 @@
           { "id": "fingertip_seam", "x": -0.33, "y": 0.70, "radius": 0.08, "multiplier": 2.0, "facing": 0, "arc": 90 }
         ]
       },
-      "effects": { "socket": "middle_03_r", "tell": "dealer_deal_tell", "open": "dealer_seam_open", "crit": "dealer_seam_crit", "hit": "ink_hit" }
+      "effects": { "socket": "middle_03_r", "tell": "dealer_deal_tell", "open": "dealer_seam_open", "crit": "dealer_seam_crit", "hit": "ink_hit",
+                   "hitFloor": "ink_hit_floor", "critFloor": "dealer_seam_crit_floor" }
     }
   }
 }

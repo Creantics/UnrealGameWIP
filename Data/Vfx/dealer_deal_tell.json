@@ -2,83 +2,61 @@
   "name": "dealer_deal_tell",
   "emitters": [
     {
-      "name": "flush",
-      "rate": 45,
+      "name": "veins",
+      "rate": 7,
       "duration": 1.0,
       "loop": true,
-      "maxParticles": 30,
-      "lifetime": [0.3, 0.42],
+      "maxParticles": 6,
+      "lifetime": [0.55, 0.7],
       "shape": "sphere",
-      "radius": 0.07,
-      "speed": [0.0, 0.05],
+      "radius": 0.03,
       "space": "local",
-      "startSize": [0.12, 0.2],
+      "startSize": [0.5, 0.62],
       "sizeOverLife": [
-        {"t": 0, "v": 0.7},
-        {"t": 0.3, "v": 1.0},
-        {"t": 1, "v": 0.9}
+        {"t": 0, "v": 0.8},
+        {"t": 0.25, "v": 1.0},
+        {"t": 1, "v": 1.06}
       ],
+      "startRotation": [0.0, 6.283],
+      "angularVelocity": [-0.6, 0.6],
       "colorOverLife": [
-        {"t": 0, "color": [0.42, 0.005, 0.02, 0.0]},
-        {"t": 0.36, "color": [0.42, 0.005, 0.02, 0.8]},
-        {"t": 0.75, "color": [0.42, 0.005, 0.02, 0.75]},
-        {"t": 1, "color": [0.42, 0.005, 0.02, 0.0]}
+        {"t": 0, "color": [0.62, 0.01, 0.035, 0.0]},
+        {"t": 0.2, "color": [0.62, 0.01, 0.035, 0.62]},
+        {"t": 0.6, "color": [0.62, 0.01, 0.035, 0.48]},
+        {"t": 1, "color": [0.62, 0.01, 0.035, 0.0]}
       ],
       "blend": "alpha",
-      "sprite": "soft",
+      "sprite": "splash",
       "softness": 0.0
     },
     {
-      "name": "streaks",
-      "rate": 30,
+      "name": "edge",
+      "rate": 24,
       "duration": 1.0,
       "loop": true,
-      "maxParticles": 14,
-      "lifetime": [0.18, 0.3],
+      "maxParticles": 10,
+      "lifetime": [0.2, 0.32],
       "shape": "sphere",
       "radius": 0.05,
-      "speed": [0.25, 0.45],
-      "drag": 3.0,
+      "speed": [0.35, 0.6],
+      "drag": 2.5,
       "space": "local",
-      "startSize": [0.012, 0.022],
+      "startSize": [0.022, 0.03],
       "sizeOverLife": [
         {"t": 0, "v": 1.0},
         {"t": 1, "v": 0.7}
       ],
       "colorOverLife": [
-        {"t": 0, "color": [0.55, 0.01, 0.02, 0.0]},
-        {"t": 0.3, "color": [0.55, 0.01, 0.02, 1.0]},
-        {"t": 1, "color": [0.55, 0.01, 0.02, 0.0]}
+        {"t": 0, "color": [0.62, 0.01, 0.035, 0.0]},
+        {"t": 0.25, "color": [0.62, 0.01, 0.035, 1.0]},
+        {"t": 1, "color": [0.62, 0.01, 0.035, 0.0]}
       ],
       "blend": "alpha",
       "sprite": "spark",
       "softness": 0.0,
       "renderMode": "stretched",
-      "lengthScale": 5.0,
+      "lengthScale": 7.0,
       "speedScale": 0.0
-    },
-    {
-      "name": "halo",
-      "rate": 5,
-      "duration": 1.0,
-      "loop": true,
-      "maxParticles": 5,
-      "lifetime": 0.6,
-      "shape": "point",
-      "space": "local",
-      "startSize": 0.2,
-      "sizeOverLife": [
-        {"t": 0, "v": 0.85},
-        {"t": 1, "v": 1.0}
-      ],
-      "colorOverLife": [
-        {"t": 0, "color": [0.7, 0.02, 0.03, 0.0]},
-        {"t": 0.3, "color": [0.7, 0.02, 0.03, 0.35]},
-        {"t": 1, "color": [0.7, 0.02, 0.03, 0.0]}
-      ],
-      "blend": "alpha",
-      "sprite": "soft",
-      "softness": 0.0
     }
   ]
 }

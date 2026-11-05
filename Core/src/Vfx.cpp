@@ -547,7 +547,9 @@ void readEmitter(Reader& r, VfxEmitter& d) {
                {"puff", VfxSprite::Puff},
                {"spark", VfxSprite::Spark},
                {"ring", VfxSprite::Ring},
-               {"chip", VfxSprite::Chip}});
+               {"chip", VfxSprite::Chip},
+               {"blot", VfxSprite::Blot},
+               {"splash", VfxSprite::Splash}});
     r.get("stretch", d.stretch);
     r.get("stretchMax", d.stretchMax);
     r.get("softness", d.softness);

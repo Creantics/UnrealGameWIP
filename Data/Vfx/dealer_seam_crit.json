@@ -32,25 +32,28 @@
       ],
       "duration": 0.1,
       "maxParticles": 2,
-      "lifetime": [0.4, 0.48],
+      "lifetime": [0.5, 0.56],
       "shape": "sphere",
-      "radius": 0.03,
-      "speed": [0.0, 0.2],
+      "radius": 0.05,
+      "speed": [0.0, 0.15],
       "drag": 4.0,
-      "startSize": [0.9, 1.0],
+      "startSize": [1.15, 1.35],
       "sizeOverLife": [
-        {"t": 0, "v": 0.55},
-        {"t": 0.12, "v": 1.0},
+        {"t": 0, "v": 0.45},
+        {"t": 0.08, "v": 1.0},
         {"t": 1, "v": 1.1}
       ],
+      "startRotation": [0.0, 6.283],
+      "angularVelocity": [-0.4, 0.4],
       "colorOverLife": [
-        {"t": 0, "color": [0.015, 0.015, 0.02, 0.92]},
-        {"t": 0.4, "color": [0.015, 0.015, 0.02, 0.85]},
-        {"t": 0.75, "color": [0.015, 0.015, 0.02, 0.4]},
+        {"t": 0, "color": [0.015, 0.015, 0.02, 1.0]},
+        {"t": 0.3, "color": [0.015, 0.015, 0.02, 0.95]},
+        {"t": 0.6, "color": [0.015, 0.015, 0.02, 0.6]},
+        {"t": 0.85, "color": [0.015, 0.015, 0.02, 0.25]},
         {"t": 1, "color": [0.015, 0.015, 0.02, 0.0]}
       ],
       "blend": "alpha",
-      "sprite": "soft",
+      "sprite": "splash",
       "softness": 0.0
     },
     {
@@ -82,58 +85,58 @@
       ],
       "duration": 0.1,
       "maxParticles": 14,
-      "lifetime": [0.5, 0.75],
-      "shape": "sphere",
-      "radius": 0.25,
+      "lifetime": [0.9, 1.1],
+      "shape": "cone",
+      "radius": 0.06,
+      "coneAngle": 60,
       "speed": [1.2, 2.6],
       "gravity": [0.0, -9.8, 0.0],
-      "drag": 1.8,
-      "startSize": [0.22, 0.5],
+      "drag": 1.4,
+      "startSize": [0.16, 0.36],
+      "startRotation": [0.0, 6.283],
+      "angularVelocity": [-8.0, 8.0],
       "sizeOverLife": [
         {"t": 0, "v": 0.6},
-        {"t": 0.1, "v": 1.0},
-        {"t": 1, "v": 0.8}
+        {"t": 0.06, "v": 1.0},
+        {"t": 1, "v": 1.0}
       ],
-      "startRotation": [0.0, 6.283],
-      "angularVelocity": [-9.0, 9.0],
       "colorOverLife": [
         {"t": 0, "color": [0.015, 0.015, 0.02, 1.0]},
-        {"t": 0.6, "color": [0.015, 0.015, 0.02, 0.9]},
-        {"t": 1, "color": [0.015, 0.015, 0.02, 0.0]}
+        {"t": 1, "color": [0.015, 0.015, 0.02, 1.0]}
       ],
       "blend": "alpha",
-      "sprite": "chip",
+      "sprite": "blot",
       "softness": 0.0
     },
     {
       "name": "streaks",
       "bursts": [
-        {"time": 0.0, "count": 30}
+        {"time": 0.0, "count": 18}
       ],
       "duration": 0.1,
-      "maxParticles": 34,
-      "lifetime": [0.35, 0.6],
-      "shape": "sphere",
-      "radius": 0.1,
-      "speed": [2.5, 4.5],
+      "maxParticles": 20,
+      "lifetime": [1.09, 1.24],
+      "shape": "cone",
+      "radius": 0.06,
+      "coneAngle": 70,
+      "speed": [2.2, 4.0],
       "gravity": [0.0, -9.8, 0.0],
-      "drag": 2.0,
-      "startSize": [0.03, 0.06],
+      "drag": 2.2,
+      "startSize": [0.035, 0.055],
       "sizeOverLife": [
         {"t": 0, "v": 1.0},
-        {"t": 1, "v": 0.5}
+        {"t": 1, "v": 0.8}
       ],
       "colorOverLife": [
-        {"t": 0, "color": [0.6, 0.01, 0.03, 1.0]},
-        {"t": 0.6, "color": [0.6, 0.01, 0.03, 0.9]},
-        {"t": 1, "color": [0.6, 0.01, 0.03, 0.0]}
+        {"t": 0, "color": [0.015, 0.015, 0.02, 1.0]},
+        {"t": 1, "color": [0.015, 0.015, 0.02, 1.0]}
       ],
       "blend": "alpha",
       "sprite": "spark",
       "softness": 0.0,
       "renderMode": "stretched",
-      "lengthScale": 2.5,
-      "speedScale": 0.035
+      "lengthScale": 4.0,
+      "speedScale": 0.03
     }
   ]
 }

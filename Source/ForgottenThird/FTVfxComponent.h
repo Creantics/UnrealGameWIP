@@ -5,7 +5,8 @@
 //
 // The Niagara component is created once, on the first Play. Parameters are pushed when the effect starts
 // and when SetParameters is called, never per frame; replaying a one-shot effect runs on a timer. Nothing
-// here allocates per frame.
+// here allocates per frame. A floor effect (the marks a burst's falling debris leaves) gets its own Niagara
+// component, created on the first Play too, and is laid on the floor under the effect each time it plays.
 
 #include "CoreMinimal.h"
 #include "Components/SceneComponent.h"
@@ -43,6 +44,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "VFX")
 	bool bPlayOnBeginPlay = true;
 
+	// A second effect that plays with this one, on the floor straight under where this one starts: the marks its
+	// falling debris leaves (/Game/VFX/NS_<FloorEffect>). The floor is the owning actor's height (a fighter's feet);
+	// the marks stay where they were laid. None: no floor effect.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "VFX")
+	FName FloorEffect;
+
+	// Each Play starts the effect where its attach point is then, upright and turned by the attach point's yaw, and
+	// leaves it there: a burst on a moving bone doesn't ride along, and its debris falls straight down. Off: it
+	// follows its attach point.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "VFX")
+	bool bStayWherePlayed = false;
+
 	// Restarts the effect every this many seconds (0: play once). For one-shot effects in a showcase.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "VFX", meta = (ClampMin = "0"))
 	float ReplayInterval = 0.f;
@@ -59,6 +72,7 @@ public:
 	void SetParameters(float InSpeedScale, float InShapeScale);
 
 	UNiagaraComponent* GetNiagara() const { return Niagara; }
+	UNiagaraComponent* GetFloorNiagara() const { return FloorNiagara; }
 
 	// "/Game/VFX/NS_<Effect>.NS_<Effect>".
 	static FString SystemPath(FName InEffect);
@@ -70,9 +84,17 @@ protected:
 private:
 	void PushParameters();
 	void Replay();
+	void PlaceWherePlayed();
+	void PlayFloor();
 
 	UPROPERTY(Transient)
 	TObjectPtr<UNiagaraComponent> Niagara;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UNiagaraSystem> FloorSystem;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UNiagaraComponent> FloorNiagara;
 
 	FTimerHandle ReplayTimer;
 };

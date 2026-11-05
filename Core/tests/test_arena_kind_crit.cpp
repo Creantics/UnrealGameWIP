@@ -236,7 +236,11 @@ TEST_CASE("arena kind crit data: the shipped file loads clean, white_glove's sea
     CHECK(g->weakPoints.gates[0].arc == doctest::Approx(90.0));
     // Its effects hang from the seam's finger, and each is one of Data/Vfx's.
     CHECK(g->effects.socket() == "middle_03_r");
-    for (const std::string_view fx : {g->effects.tell(), g->effects.open(), g->effects.crit(), g->effects.hit()}) {
+    // The floor effects lay the marks the hit's and the crit's ink leaves where it lands.
+    CHECK(g->effects.hitFloor() == "ink_hit_floor");
+    CHECK(g->effects.critFloor() == "dealer_seam_crit_floor");
+    for (const std::string_view fx : {g->effects.tell(), g->effects.open(), g->effects.crit(), g->effects.hit(),
+                                      g->effects.hitFloor(), g->effects.critFloor()}) {
         CAPTURE(fx);
         REQUIRE_FALSE(fx.empty());
         std::string vfx;
@@ -277,11 +281,19 @@ TEST_CASE("arena kind crit loader: effects are optional names, each refused with
     CHECK(none.kind() == "white_glove");
     CHECK(none.effects.socket().empty());
     CHECK(none.effects.hit().empty());
+    CHECK(none.effects.hitFloor().empty());
+    CHECK(none.effects.critFloor().empty());
     // A missing key stays empty; the others load.
     const ArenaKindCritDef noHit = load(swap(", \"hit\": \"ink_hit\"", ""), error, warnings);
     CHECK(error.empty());
     CHECK(noHit.effects.hit().empty());
     CHECK(noHit.effects.crit() == "dealer_seam_crit");
+    const ArenaKindCritDef noFloor = load(swap(", \"critFloor\": \"dealer_seam_crit_floor\"", ""), error, warnings);
+    CHECK(error.empty());
+    CHECK(noFloor.effects.critFloor().empty());
+    CHECK(noFloor.effects.hitFloor() == "ink_hit_floor");
+    load(swap("\"hitFloor\": \"ink_hit_floor\"", "\"hitFloor\": \"ink hit floor\""), error, warnings);
+    CHECK(error.find("kinds.white_glove.effects.hitFloor: expected a name of 1..31") != std::string::npos);
     load(swap("\"crit\": \"dealer_seam_crit\"", "\"crit\": \"seam crit\""), error, warnings);
     CHECK(error.find("kinds.white_glove.effects.crit: expected a name of 1..31") != std::string::npos);
     load(swap("\"socket\": \"middle_03_r\"", "\"socket\": 3"), error, warnings);

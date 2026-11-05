@@ -2978,11 +2978,19 @@ void UFTArenaRunner::SpawnKindCritEffects()
 		KindCritTellFx[I] = MakeKindCritEffect(Figure, Fx.tell(), Fx.socket());
 		KindCritOpenFx[I] = MakeKindCritEffect(Figure, Fx.open(), Fx.socket());
 		KindCritCritFx[I] = MakeKindCritEffect(Figure, Fx.crit(), Fx.socket());
-		// Where the blow lands, not the seam: put there on each hit.
+		// The crit's burst stays where it broke out, so its ink falls straight to the floor, where critFloor lays the
+		// marks it leaves.
+		if (KindCritCritFx[I])
+		{
+			KindCritCritFx[I]->bStayWherePlayed = true;
+			KindCritCritFx[I]->FloorEffect = FName(*FT::ToFString(std::string(Fx.critFloor())));
+		}
+		// Where the blow lands, not the seam: put there on each hit. hitFloor marks the floor under it.
 		KindCritHitFx[I] = MakeKindCritEffect(Figure, Fx.hit(), std::string_view());
 		if (KindCritHitFx[I])
 		{
 			KindCritHitFx[I]->SetUsingAbsoluteLocation(true);
+			KindCritHitFx[I]->FloorEffect = FName(*FT::ToFString(std::string(Fx.hitFloor())));
 		}
 	}
 }

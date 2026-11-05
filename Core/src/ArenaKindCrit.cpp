@@ -107,7 +107,7 @@ void kcEntry(JsonValue j, const std::string& path, ArenaKindCritDef& d, std::vec
     const JsonValue fx = j["effects"];
     if (fx.isObject()) {
         const std::string fp = path + ".effects";
-        kcUnknownKeys(fx, fp, {"socket", "tell", "open", "crit", "hit"}, warnings);
+        kcUnknownKeys(fx, fp, {"socket", "tell", "open", "crit", "hit", "hitFloor", "critFloor"}, warnings);
         const auto name = [&](const char* key, std::array<char, kMaxArenaKindCritId + 1>& outName) {
             const JsonValue v = fx[key];
             if (v.isAbsent()) return;
@@ -122,6 +122,8 @@ void kcEntry(JsonValue j, const std::string& path, ArenaKindCritDef& d, std::vec
         name("open", d.effects.openChars);
         name("crit", d.effects.critChars);
         name("hit", d.effects.hitChars);
+        name("hitFloor", d.effects.hitFloorChars);
+        name("critFloor", d.effects.critFloorChars);
     } else if (!fx.isAbsent()) {
         errors.push_back(path + ".effects: expected an object");
     }

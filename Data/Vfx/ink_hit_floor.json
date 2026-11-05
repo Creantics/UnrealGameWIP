@@ -1,0 +1,70 @@
+{
+  "name": "ink_hit_floor",
+  "emitters": [
+    {
+      "name": "splats",
+      "bursts": [
+        {"time": 0.69, "count": 3},
+        {"time": 0.749, "count": 3},
+        {"time": 0.808, "count": 2},
+        {"time": 0.866, "count": 2}
+      ],
+      "duration": 0.92,
+      "maxParticles": 10,
+      "lifetime": [1.4, 1.55],
+      "shape": "ring",
+      "radius": 0.45,
+      "innerRadius": 0.0,
+      "space": "local",
+      "startSize": [0.12, 0.28],
+      "sizeOverLife": [
+        {"t": 0, "v": 0.45},
+        {"t": 0.035, "v": 1.0},
+        {"t": 1, "v": 1.06}
+      ],
+      "startRotation": [0.0, 6.283],
+      "colorOverLife": [
+        {"t": 0, "color": [0.015, 0.015, 0.02, 0.0]},
+        {"t": 0.02, "color": [0.015, 0.015, 0.02, 1.0]},
+        {"t": 0.62, "color": [0.015, 0.015, 0.02, 1.0]},
+        {"t": 0.85, "color": [0.11, 0.1, 0.095, 0.5]},
+        {"t": 1, "color": [0.11, 0.1, 0.095, 0.0]}
+      ],
+      "blend": "alpha",
+      "sprite": "blot",
+      "softness": 0.0,
+      "renderMode": "horizontal"
+    },
+    {
+      "name": "spatter",
+      "bursts": [
+        {"time": 0.69, "count": 1}
+      ],
+      "duration": 0.86,
+      "maxParticles": 1,
+      "lifetime": [1.45, 1.6],
+      "shape": "ring",
+      "radius": 0.08,
+      "innerRadius": 0.0,
+      "space": "local",
+      "startSize": [0.55, 0.65],
+      "sizeOverLife": [
+        {"t": 0, "v": 0.45},
+        {"t": 0.035, "v": 1.0},
+        {"t": 1, "v": 1.06}
+      ],
+      "startRotation": [0.0, 6.283],
+      "colorOverLife": [
+        {"t": 0, "color": [0.015, 0.015, 0.02, 0.0]},
+        {"t": 0.02, "color": [0.015, 0.015, 0.02, 0.95]},
+        {"t": 0.62, "color": [0.015, 0.015, 0.02, 0.95]},
+        {"t": 0.85, "color": [0.11, 0.1, 0.095, 0.475]},
+        {"t": 1, "color": [0.11, 0.1, 0.095, 0.0]}
+      ],
+      "blend": "alpha",
+      "sprite": "splash",
+      "softness": 0.0,
+      "renderMode": "horizontal"
+    }
+  ]
+}

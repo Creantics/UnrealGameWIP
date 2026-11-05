@@ -101,7 +101,8 @@ TEST_CASE("vfx: every Data/Vfx effect loads without warnings") {
     const Expect files[] = {{"ember_swirl", 1}, {"falling_leaves", 1}, {"fireworks", 3}, {"flipbook_fire", 1},
                             {"heal", 2},        {"heal_ring", 1},      {"hit_spark", 2}, {"magic_ribbon", 2},
                             {"perfect_burst", 2}, {"smoke", 1},        {"speed_sparks", 1}, {"stretched_sparks", 2}, {"dust_puff", 2},
-                            {"dealer_deal_tell", 3}, {"dealer_seam_open", 4}, {"dealer_seam_crit", 5}, {"ink_hit", 5}};
+                            {"dealer_deal_tell", 2}, {"dealer_seam_open", 5}, {"dealer_seam_crit", 5}, {"ink_hit", 4},
+                            {"ink_hit_floor", 2}, {"dealer_seam_crit_floor", 2}};
     for (const Expect& f : files) {
         CAPTURE(f.file);
         VfxEffect e;
@@ -160,10 +161,12 @@ TEST_CASE("vfx: the Dealer's effects load without warnings and keep their partic
         std::uint32_t budget; // the sum of the emitters' maxParticles
         bool loops;
     };
-    const Expect files[] = {{"dealer_deal_tell", 3, 49, true},
-                            {"dealer_seam_open", 4, 25, false},
-                            {"dealer_seam_crit", 5, 52, false},
-                            {"ink_hit", 5, 73, false}};
+    const Expect files[] = {{"dealer_deal_tell", 2, 16, true},
+                            {"dealer_seam_open", 5, 28, false},
+                            {"dealer_seam_crit", 5, 38, false},
+                            {"ink_hit", 4, 39, false},
+                            {"ink_hit_floor", 2, 11, false},
+                            {"dealer_seam_crit_floor", 2, 13, false}};
     for (const Expect& f : files) {
         CAPTURE(f.file);
         VfxEffect e;
@@ -208,10 +211,12 @@ TEST_CASE("vfx: the Dealer's round-8 looks: red that ramps in, a seam open for t
     for (std::size_t i = 1; i < glow->bursts.size(); ++i)
         CHECK(glow->bursts[i].time - glow->bursts[i - 1].time < lowest(glow->lifetime));
     CHECK(glow->bursts.back().time + lowest(glow->lifetime) >= opens);
-    // The seam reads at play distance as crossed lines, not a disc: each line at least 0.4 m (9 px at 60 px of figure).
+    // The seam reads at play distance as long crossed lines, each at least 0.7 m (15 px at 60 px of figure), over a
+    // glow twice round 8b's: a 1.0-1.2 m soft quad, about 10-12 px.
     CHECK(hatch->renderMode == VfxRenderMode::Stretched);
-    CHECK(lowest(hatch->startSize) * hatch->lengthScale >= 0.4f);
-    CHECK(peakSize(*glow) <= 0.6f);
+    CHECK(lowest(hatch->startSize) * hatch->lengthScale >= 0.7f);
+    CHECK(peakSize(*glow) >= 1.f);
+    CHECK(peakSize(*glow) <= 1.2f);
     // The drips fall in the world, stretched along their fall, wide enough to survive 60 px.
     CHECK(drips->space == VfxSpace::World);
     CHECK(drips->gravity.y <= -9.f);
@@ -219,12 +224,23 @@ TEST_CASE("vfx: the Dealer's round-8 looks: red that ramps in, a seam open for t
     CHECK(lowest(drips->startSize) >= 0.04f);
 
     // The tell and the seam ramp in over 3 frames or more and are real red: alpha-blended red, never a big additive
-    // disc (additive red on the pale glove clips to pink).
+    // disc (additive red on the pale glove clips to pink). The tell is red on the fingers, not a ball: veins of red
+    // splash over them and thin red lines flicking off their edge.
     VfxEffect tell;
     REQUIRE(loadEffect("dealer_deal_tell", tell));
-    const VfxEmitter* flush = findEmitter(tell, "flush");
-    REQUIRE(flush);
-    for (const VfxEmitter* em : {flush, glow, hatch}) {
+    const VfxEmitter* veins = findEmitter(tell, "veins");
+    const VfxEmitter* edge = findEmitter(tell, "edge");
+    const VfxEmitter* stain = findEmitter(seam, "stain");
+    REQUIRE(veins);
+    REQUIRE(edge);
+    REQUIRE(stain);
+    CHECK(veins->sprite == VfxSprite::Splash);
+    CHECK(edge->renderMode == VfxRenderMode::Stretched);
+    for (const VfxEmitter& em : tell.emitters) {
+        CAPTURE(em.name);
+        CHECK(em.sprite != VfxSprite::Soft);
+    }
+    for (const VfxEmitter* em : {veins, glow, hatch, stain}) {
         CAPTURE(em->name);
         REQUIRE_FALSE(em->colorOverLife.stops.empty());
         CHECK(em->colorOverLife.stops.front().t == 0.f);
@@ -244,8 +260,8 @@ TEST_CASE("vfx: the Dealer's round-8 looks: red that ramps in, a seam open for t
         }
     }
 
-    // The plain hit: an ink core about 1 m across (the soft sprite reads at about 0.8 of its edge) that fades over
-    // 8 frames or more; the crit outgrows it and lasts 8 frames or more.
+    // The plain hit: a wet ink splash about 1 m across (its body reads at about 0.8 of its edge, tendrils beyond) that
+    // thins over 8 frames or more; the crit outgrows it and lasts 8 frames or more.
     VfxEffect ink;
     VfxEffect crit;
     REQUIRE(loadEffect("ink_hit", ink));
@@ -253,6 +269,7 @@ TEST_CASE("vfx: the Dealer's round-8 looks: red that ramps in, a seam open for t
     const VfxEmitter* core = findEmitter(ink, "core");
     REQUIRE(core);
     CHECK(lowest(core->startSize) >= 1.1f);
+    CHECK(core->sprite == VfxSprite::Splash);
     CHECK(lowest(core->lifetime) * (1.f - fadeFrom(core->colorOverLife)) >= 8.f * kFrame);
     float inkPeak = 0.f;
     float critPeak = 0.f;
@@ -265,26 +282,109 @@ TEST_CASE("vfx: the Dealer's round-8 looks: red that ramps in, a seam open for t
     CHECK(critPeak > inkPeak);
     CHECK(critLife >= 8.f * kFrame);
 
-    // Debris: whatever flies out falls under full gravity, as angular spinning chips or flecks stretched along their
-    // velocity, never the round soft sprite.
+    // Debris: whatever flies out falls under full gravity, as spinning wet blots (six silhouettes, one per particle) or
+    // drops and flecks stretched along their velocity, never the round soft sprite or the one chip.
     for (const VfxEffect* fx : {&ink, &crit}) {
-        bool chips = false;
+        bool blots = false;
         for (const VfxEmitter& em : fx->emitters) {
             if (highest(em.speed) < 0.5f) continue; // the cores, the flash, the pop
             CAPTURE(fx->name);
             CAPTURE(em.name);
             CHECK(em.gravity.y <= -9.f);
             CHECK(em.sprite != VfxSprite::Soft);
-            if (em.sprite == VfxSprite::Chip) {
-                chips = true;
+            CHECK(em.sprite != VfxSprite::Chip);
+            if (em.sprite == VfxSprite::Blot) {
+                blots = true;
                 CHECK(lowest(em.angularVelocity) < 0.f);
                 CHECK(highest(em.angularVelocity) > 0.f);
                 CHECK(highest(em.startRotation) > 3.f);
             } else {
                 CHECK(em.renderMode == VfxRenderMode::Stretched);
             }
+            // Untinted ink, never the seam's red: the crit's chunks too.
+            for (const VfxColorStop& s : em.colorOverLife.stops) CHECK(s.color.r < 0.05f);
         }
-        CHECK(chips);
+        CHECK(blots);
+    }
+}
+
+namespace {
+
+// How high (m, up) a particle thrown up at vy m/s is after t s, under gravity gy and drag k: the stateless model the
+// plan's lightweight emitters run (p = v0 f + g (t - f) / k, f = (1 - e^-kt) / k).
+float dragHeight(float vy, float gy, float k, float t) {
+    const float f = k > 0.f ? (1.f - std::exp(-k * t)) / k : t;
+    const float h = k > 0.f ? (t - f) / k : 0.5f * t * t;
+    return vy * f + gy * h;
+}
+
+// Seconds until a particle thrown up at vy m/s is `drop` metres under where it started.
+float fallTime(float vy, float gy, float k, float drop) {
+    float lo = 0.f;
+    float hi = 10.f;
+    for (int i = 0; i < 50; ++i) {
+        const float mid = 0.5f * (lo + hi);
+        if (dragHeight(vy, gy, k, mid) > -drop)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    return hi;
+}
+
+} // namespace
+
+TEST_CASE("vfx: the Dealer's ink lands: debris falls through the floor at full alpha, and marks splat in as it lands") {
+    constexpr float kFrame = 1.f / 30.f;
+    struct Landing {
+        const char* fx;
+        const char* floor;
+        float height; // metres over the floor the effect plays at
+    };
+    // ink_hit plays at chest height (the showcase's 1.62 m); the crit at the right hand, about 1.0 m up at its cue.
+    const Landing cases[] = {{"ink_hit", "ink_hit_floor", 1.62f}, {"dealer_seam_crit", "dealer_seam_crit_floor", 1.f}};
+    for (const Landing& c : cases) {
+        CAPTURE(c.fx);
+        VfxEffect fx;
+        VfxEffect floor;
+        REQUIRE(loadEffect(c.fx, fx));
+        REQUIRE(loadEffect(c.floor, floor));
+        float first = 1e9f;
+        float last = 0.f;
+        for (const VfxEmitter& em : fx.emitters) {
+            if (highest(em.speed) < 0.5f) continue;
+            CAPTURE(em.name);
+            // Full alpha to the end: debris vanishes under the floor (which hides it), never in mid-air.
+            for (const VfxColorStop& s : em.colorOverLife.stops) CHECK(s.color.a >= 0.9f);
+            // Even the fastest throw straight up is under the floor before it dies.
+            CHECK(lowest(em.lifetime) >= fallTime(highest(em.speed), em.gravity.y, em.drag, c.height));
+            // The flattest, slowest throw lands first; the fastest straight up, last.
+            const float tilt = em.shape == VfxShape::Cone ? em.coneAngle * kPi / 180.f : 0.5f * kPi;
+            first = std::min(first, fallTime(lowest(em.speed) * std::cos(tilt), em.gravity.y, em.drag, c.height));
+            last = std::max(last, fallTime(highest(em.speed), em.gravity.y, em.drag, c.height));
+        }
+        REQUIRE(last > first);
+        // The marks: wet silhouettes laid flat on the floor, splatting in over 2 frames or less as the first ink lands
+        // and while the rest does, held 0.8 s or more, then drying lighter as they go.
+        float firstMark = 1e9f;
+        for (const VfxEmitter& em : floor.emitters) {
+            CAPTURE(em.name);
+            CHECK(em.renderMode == VfxRenderMode::Horizontal);
+            CHECK_FALSE(em.depthFade);
+            CHECK((em.sprite == VfxSprite::Blot || em.sprite == VfxSprite::Splash));
+            CHECK(highest(em.speed) == 0.f);
+            CHECK(em.gravity.y == 0.f);
+            CHECK(rampInAt(em.colorOverLife) * highest(em.lifetime) <= 2.f * kFrame);
+            CHECK(fadeFrom(em.colorOverLife) * lowest(em.lifetime) >= 0.8f);
+            REQUIRE(em.colorOverLife.stops.size() >= 2);
+            CHECK(em.colorOverLife.stops.back().color.r > 2.f * em.colorOverLife.stops.front().color.r);
+            for (const VfxBurst& b : em.bursts) {
+                CHECK(b.time >= first - kFrame);
+                CHECK(b.time <= last);
+                firstMark = std::min(firstMark, b.time);
+            }
+        }
+        CHECK(firstMark <= first + 2.f * kFrame);
     }
 }
 
@@ -644,7 +744,28 @@ TEST_CASE("vfx: ring and chip sprites and the depth fade reach the plan") {
     // softness defaults on, so only the emitter that asks for the depth fade drops the gap.
     CHECK(anyGap(plan.emitters[0], "depth fade"));
     CHECK_FALSE(anyGap(plan.emitters[1], "depth fade"));
-    CHECK(contains(importError(R"J({"name": "x", "emitters": [{"name": "a", "sprite": "star"}]})J"), "ring, chip"));
+    CHECK(contains(importError(R"J({"name": "x", "emitters": [{"name": "a", "sprite": "star"}]})J"),
+                   "ring, chip, blot, splash"));
+}
+
+TEST_CASE("vfx: the blot and splash sprites reach the plan") {
+    VfxEffect e;
+    std::string err;
+    std::vector<std::string> warnings;
+    REQUIRE(importVfxEffect(R"J({"name": "s", "emitters": [
+                                  {"name": "bits", "sprite": "blot"},
+                                  {"name": "wet", "sprite": "splash", "renderMode": "horizontal"}]})J",
+                            e, &err, &warnings));
+    CHECK(warnings.empty());
+    REQUIRE(e.emitters.size() == 2);
+    CHECK(e.emitters[0].sprite == VfxSprite::Blot);
+    CHECK(e.emitters[1].sprite == VfxSprite::Splash);
+    VfxNiagaraPlan plan;
+    planVfxNiagara(e, plan);
+    REQUIRE(plan.emitters.size() == 2);
+    CHECK(plan.emitters[0].sprite == VfxSprite::Blot);
+    CHECK(plan.emitters[1].sprite == VfxSprite::Splash);
+    CHECK(plan.emitters[1].facing == VfxNiagaraFacing::Horizontal);
 }
 
 TEST_CASE("vfx: coordinates map to Unreal centimetres, Z up") {

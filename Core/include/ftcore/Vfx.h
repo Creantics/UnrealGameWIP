@@ -140,8 +140,11 @@ enum class VfxBlend : std::uint8_t { Alpha, Additive };
 enum class VfxShape : std::uint8_t { Point, Sphere, Cone, Box, Ring };
 enum class VfxSpace : std::uint8_t { World, Local };
 // Procedural sprite when an emitter has no texture: Soft (round glow), Puff (eroded cloud), Spark (hot core), Ring (a
-// thin annulus, for ground marks laid flat), Chip (an irregular hard-edged polygon, for stone fragments).
-enum class VfxSprite : std::uint8_t { Soft, Puff, Spark, Ring, Chip };
+// thin annulus, for ground marks laid flat), Chip (an irregular hard-edged polygon, for stone fragments), Blot (six wet
+// liquid silhouettes, one per particle: a splat, a falling drop, a torn shard, a crescent smear, a three-lobed blob and a
+// flick; alpha erodes the shape, thin parts first) and Splash (a wet splash with tendrils and drop tips, a different one
+// per particle; alpha erodes it into broken veins).
+enum class VfxSprite : std::uint8_t { Soft, Puff, Spark, Ring, Chip, Blot, Splash };
 enum class VfxRenderMode : std::uint8_t { Billboard, Stretched, Horizontal, Vertical, Mesh };
 enum class VfxSortMode : std::uint8_t { Auto, None, ByDistance, OldestInFront, YoungestInFront };
 enum class VfxNoiseQuality : std::uint8_t { Low, Medium, High };

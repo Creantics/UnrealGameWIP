@@ -10,6 +10,7 @@
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionDepthFade.h"
 #include "Materials/MaterialExpressionParticleColor.h"
+#include "Materials/MaterialExpressionParticleRandom.h"
 #include "Materials/MaterialExpressionParticleSize.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Misc/FileHelper.h"
@@ -116,7 +117,121 @@ const TCHAR* const ChipShadeCode = TEXT(
 	"float a = atan2(p.y, p.x);\n"
 	"float s = a < -1.2 ? 0.65 : (a < 1.6 ? 1.15 : 0.85);\n");
 
-enum class ESpriteMask : uint8 { Soft, Spark, Ring, Chip };
+// The liquid sprites. Each particle's random number (R) picks its silhouette, and its alpha (Color.a) erodes it: the
+// thin parts go first, so a fading blot or splash breaks up and shrinks instead of turning to a translucent ghost. Both
+// set mask (the eroded shape, with a soft edge) and gloss (a wet sheen added to the colour). sd is a signed
+// distance in the sprite's -1..1 square, positive inside.
+// Blot: six wet silhouettes (a splat with satellite drops, a falling drop, a torn shard, a crescent smear, a three-lobed
+// blob, a flick), a rim light on the upper-left edge and a small specular spot.
+const TCHAR* const BlotFieldCode = TEXT(
+	"float A = Color.a;\n"
+	"float2 d = UV * 2.0 - 1.0;\n"
+	"float r = length(d);\n"
+	"float a = atan2(d.y, d.x);\n"
+	"float v = floor(frac(R) * 5.999);\n"
+	"float sd = 0.0;\n"
+	"float mx = 0.5;\n"
+	"if (v < 0.5)\n"
+	"{\n"
+	"	float rs = 0.5 + 0.08 * cos(5.0 * a + 0.7) + 0.05 * cos(8.0 * a + 2.1) + 0.16 * pow(saturate(cos(7.0 * a + 1.3)), 12.0);\n"
+	"	sd = (rs - r) * 0.9;\n"
+	"	sd = max(sd, 0.11 - length(d - float2(0.74, 0.40)));\n"
+	"	sd = max(sd, 0.07 - length(d - float2(-0.40, 0.80)));\n"
+	"	sd = max(sd, 0.08 - length(d - float2(-0.82, -0.28)));\n"
+	"	sd = max(sd, 0.06 - length(d - float2(0.22, -0.84)));\n"
+	"	mx = 0.5;\n"
+	"}\n"
+	"else if (v < 1.5)\n"
+	"{\n"
+	"	float2 p = d - float2(0.0, -0.32);\n"
+	"	float2 b = float2(0.06, 1.18);\n"
+	"	float t = saturate(dot(p, b) / dot(b, b));\n"
+	"	float head = 0.38 - length(p);\n"
+	"	float tail = (0.30 - 0.26 * t) - length(p - b * t);\n"
+	"	float h = max(0.12 - abs(head - tail), 0.0) / 0.12;\n"
+	"	sd = max(head, tail) + h * h * 0.03;\n"
+	"	sd = max(sd, 0.07 - length(d - float2(-0.30, 0.62)));\n"
+	"	mx = 0.4;\n"
+	"}\n"
+	"else if (v < 2.5)\n"
+	"{\n"
+	"	float rs = 0.62 + 0.07 * cos(4.0 * a + 1.0) + 0.05 * cos(7.0 * a + 2.0) + 0.025 * cos(13.0 * a + 0.5);\n"
+	"	sd = (rs - r) * 0.9;\n"
+	"	sd = min(sd, 0.30 - dot(d, float2(0.80, 0.60)));\n"
+	"	sd = min(sd, 0.42 - dot(d, float2(-0.90, 0.44)));\n"
+	"	sd += 0.014 * sin(37.0 * d.x + 11.0 * d.y) * sin(29.0 * d.y - 17.0 * d.x);\n"
+	"	mx = 0.42;\n"
+	"}\n"
+	"else if (v < 3.5)\n"
+	"{\n"
+	"	sd = min(0.72 - r + 0.04 * cos(6.0 * a + 0.8), length(d - float2(0.30, -0.26)) - 0.62);\n"
+	"	float c = 0.16 - length(d - float2(-0.52, 0.30));\n"
+	"	float h = max(0.1 - abs(sd - c), 0.0) / 0.1;\n"
+	"	sd = max(sd, c) + h * h * 0.025;\n"
+	"	sd = max(sd, 0.06 - length(d - float2(0.62, 0.52)));\n"
+	"	mx = 0.22;\n"
+	"}\n"
+	"else if (v < 4.5)\n"
+	"{\n"
+	"	float c0 = 0.42 - length(d - float2(-0.22, -0.12));\n"
+	"	float c1 = 0.34 - length(d - float2(0.30, 0.10));\n"
+	"	float h = max(0.25 - abs(c0 - c1), 0.0) / 0.25;\n"
+	"	sd = max(c0, c1) + h * h * 0.0625;\n"
+	"	float c2 = 0.26 - length(d - float2(-0.05, 0.48));\n"
+	"	h = max(0.2 - abs(sd - c2), 0.0) / 0.2;\n"
+	"	sd = max(sd, c2) + h * h * 0.05;\n"
+	"	sd = max(sd, 0.08 - length(d - float2(0.70, -0.52)));\n"
+	"	mx = 0.42;\n"
+	"}\n"
+	"else\n"
+	"{\n"
+	"	float2 p = d + float2(0.62, -0.10);\n"
+	"	float2 b = float2(1.02, -0.22);\n"
+	"	float t = saturate(dot(p, b) / dot(b, b));\n"
+	"	sd = (0.20 - 0.15 * t) - length(p - b * t) + 0.02 * cos(19.0 * t);\n"
+	"	sd = max(sd, 0.07 - length(d - float2(0.55, -0.20)));\n"
+	"	sd = max(sd, 0.05 - length(d - float2(0.72, -0.27)));\n"
+	"	sd = max(sd, 0.035 - length(d - float2(0.85, -0.31)));\n"
+	"	sd = max(sd, 0.05 - length(d - float2(-0.30, 0.40)));\n"
+	"	mx = 0.2;\n"
+	"}\n"
+	"float aa = 0.035;\n"
+	"float e = (1.0 - A) * 1.05 * mx;\n"
+	"float mask = saturate((sd - e) / aa + 0.5) * saturate(A * 10.0);\n"
+	"float rim = (1.0 - smoothstep(0.0, 0.06, sd - e)) * saturate(dot(d, float2(-0.6, -0.8)) / max(r, 0.05));\n"
+	"float spec = (1.0 - smoothstep(0.03, 0.08, length(d + float2(0.14, 0.18)))) * smoothstep(0.05, 0.12, sd - e);\n"
+	"float gloss = rim * 0.12 + spec * 0.22;\n");
+// Splash: a wet body with six uneven tendrils, a drop on each tendril's tip, three loose drops, noise that breaks the
+// eroding edge into veins, and thinner (more see-through, lighter) edges than its core.
+const TCHAR* const SplashFieldCode = TEXT(
+	"float A = Color.a;\n"
+	"float2 d = UV * 2.0 - 1.0;\n"
+	"float r = length(d);\n"
+	"float a = atan2(d.y, d.x);\n"
+	"float p = frac(R) * 6.283;\n"
+	"float L = 0.22 + 0.12 * cos(3.0 * a + p * 2.0) + 0.06 * cos(2.0 * a + p * 3.0);\n"
+	"float fing = pow(saturate(cos(6.0 * a + p)), 3.0) * L;\n"
+	"float rb = 0.44 + 0.05 * cos(3.0 * a + p) + 0.03 * cos(7.0 * a + p * 4.0) + 0.015 * cos(13.0 * a + p * 5.0);\n"
+	"float sd = (rb + fing - r) * (0.6 + 0.4 * saturate((0.6 - r) * 3.0));\n"
+	"[unroll] for (int k = 0; k < 6; ++k)\n"
+	"{\n"
+	"	float ak = (6.283 * k - p) / 6.0;\n"
+	"	float lk = 0.22 + 0.12 * cos(3.0 * ak + p * 2.0) + 0.06 * cos(2.0 * ak + p * 3.0);\n"
+	"	float rk = 0.44 + lk;\n"
+	"	sd = max(sd, 0.04 + 0.12 * lk - length(d - rk * float2(cos(ak), sin(ak))));\n"
+	"}\n"
+	"float q = p + 0.4;\n"
+	"sd = max(sd, 0.05 - length(d - 0.86 * float2(cos(q), sin(q))));\n"
+	"sd = max(sd, 0.04 - length(d - 0.80 * float2(cos(q + 2.3), sin(q + 2.3))));\n"
+	"sd = max(sd, 0.03 - length(d - 0.90 * float2(cos(q + 3.9), sin(q + 3.9))));\n"
+	"float n = 0.06 * sin(17.0 * d.x + p * 3.0) * sin(15.0 * d.y - p * 2.0) + 0.04 * sin(29.0 * d.y + p) * sin(23.0 * d.x);\n"
+	"float aa = 0.03;\n"
+	"float e = (1.0 - A) * 0.30;\n"
+	"float thick = saturate(sd / 0.2);\n"
+	"float mask = saturate((sd + n * (1.0 - A) * 2.0 - e) / aa + 0.5) * (0.55 + 0.45 * thick) * saturate(A * 4.0);\n"
+	"float gloss = (1.0 - thick) * 0.08;\n");
+
+enum class ESpriteMask : uint8 { Soft, Spark, Ring, Chip, Blot, Splash };
 
 struct FSpriteMaterialSpec
 {
@@ -144,9 +259,17 @@ const FSpriteMaterialSpec SpriteMaterials[] = {
 	{TEXT("M_VfxChipAdditive"), ESpriteMask::Chip, true, false},
 	{TEXT("M_VfxChipFade"), ESpriteMask::Chip, false, true},
 	{TEXT("M_VfxChipAdditiveFade"), ESpriteMask::Chip, true, true},
+	{TEXT("M_VfxBlot"), ESpriteMask::Blot, false, false},
+	{TEXT("M_VfxBlotAdditive"), ESpriteMask::Blot, true, false},
+	{TEXT("M_VfxBlotFade"), ESpriteMask::Blot, false, true},
+	{TEXT("M_VfxBlotAdditiveFade"), ESpriteMask::Blot, true, true},
+	{TEXT("M_VfxSplash"), ESpriteMask::Splash, false, false},
+	{TEXT("M_VfxSplashAdditive"), ESpriteMask::Splash, true, false},
+	{TEXT("M_VfxSplashFade"), ESpriteMask::Splash, false, true},
+	{TEXT("M_VfxSplashAdditiveFade"), ESpriteMask::Splash, true, true},
 };
 constexpr int32 SpriteMaterialCount = UE_ARRAY_COUNT(SpriteMaterials);
-static_assert(SpriteMaterialCount == 16, "four kinds, additive or not, faded or not");
+static_assert(SpriteMaterialCount == 24, "six kinds, additive or not, faded or not");
 
 int32 SpriteMaterialIndex(const ftcore::VfxNiagaraEmitter& P)
 {
@@ -154,11 +277,19 @@ int32 SpriteMaterialIndex(const ftcore::VfxNiagaraEmitter& P)
 	const ESpriteMask Kind = P.sprite == VfxSprite::Spark ? ESpriteMask::Spark
 		: P.sprite == VfxSprite::Ring ? ESpriteMask::Ring
 		: P.sprite == VfxSprite::Chip ? ESpriteMask::Chip
+		: P.sprite == VfxSprite::Blot ? ESpriteMask::Blot
+		: P.sprite == VfxSprite::Splash ? ESpriteMask::Splash
 		: ESpriteMask::Soft;
 	return static_cast<int32>(Kind) * 4 + (P.additive ? 1 : 0) + (P.depthFade ? 2 : 0);
 }
 
-const TCHAR* MaskCode(ESpriteMask Kind)
+// The liquid kinds' field code (sets mask and gloss), or null for the plain masks.
+const TCHAR* LiquidFieldCode(ESpriteMask Kind)
+{
+	return Kind == ESpriteMask::Blot ? BlotFieldCode : Kind == ESpriteMask::Splash ? SplashFieldCode : nullptr;
+}
+
+FString MaskCode(ESpriteMask Kind)
 {
 	switch (Kind)
 	{
@@ -168,6 +299,9 @@ const TCHAR* MaskCode(ESpriteMask Kind)
 		return RingMaskCode;
 	case ESpriteMask::Chip:
 		return ChipMaskCode;
+	case ESpriteMask::Blot:
+	case ESpriteMask::Splash:
+		return FString(LiquidFieldCode(Kind)) + TEXT("return mask;\n");
 	case ESpriteMask::Soft:
 		break;
 	}
@@ -184,6 +318,10 @@ const TCHAR* MaskName(ESpriteMask Kind)
 		return TEXT("RingMask");
 	case ESpriteMask::Chip:
 		return TEXT("ChipMask");
+	case ESpriteMask::Blot:
+		return TEXT("BlotMask");
+	case ESpriteMask::Splash:
+		return TEXT("SplashMask");
 	case ESpriteMask::Soft:
 		break;
 	}
@@ -207,8 +345,16 @@ T* AddVfxExpression(UMaterial* Material, int32 X, int32 Y)
 	return Expression;
 }
 
+void AddCustomInput(UMaterialExpressionCustom* Custom, const TCHAR* Name, UMaterialExpression* From, int32 Output = 0)
+{
+	FCustomInput& In = Custom->Inputs.AddDefaulted_GetRef();
+	In.InputName = Name;
+	In.Input.Connect(Output, From);
+}
+
 UMaterialExpressionCustom* AddCustom(UMaterial* Material, int32 Y, const TCHAR* Description, ECustomMaterialOutputType Type,
-	const FString& Code, UMaterialExpression* Color, UMaterialExpression* Mask, UMaterialExpression* UV = nullptr)
+	const FString& Code, UMaterialExpression* Color, UMaterialExpression* Mask, UMaterialExpression* UV = nullptr,
+	UMaterialExpression* Random = nullptr)
 {
 	UMaterialExpressionCustom* Custom = AddVfxExpression<UMaterialExpressionCustom>(Material, -300, Y);
 	Custom->Description = Description;
@@ -227,6 +373,10 @@ UMaterialExpressionCustom* AddCustom(UMaterial* Material, int32 Y, const TCHAR* 
 		InUV.InputName = TEXT("UV");
 		InUV.Input.Connect(0, UV);
 	}
+	if (Random)
+	{
+		AddCustomInput(Custom, TEXT("R"), Random);
+	}
 	return Custom;
 }
 
@@ -240,15 +390,22 @@ UMaterial* BuildSpriteMaterial(UPackage* Package, const FSpriteMaterialSpec& Spe
 
 	UMaterialExpressionTextureCoordinate* UV = AddVfxExpression<UMaterialExpressionTextureCoordinate>(Material, -900, 0);
 	UMaterialExpressionParticleColor* Color = AddVfxExpression<UMaterialExpressionParticleColor>(Material, -900, 150);
+	// The liquid kinds pick a silhouette by the particle's random number and erode it by its alpha.
+	const TCHAR* const LiquidCode = LiquidFieldCode(Spec.Kind);
+	UMaterialExpressionParticleRandom* Random =
+		LiquidCode ? AddVfxExpression<UMaterialExpressionParticleRandom>(Material, -900, 450) : nullptr;
 
 	UMaterialExpressionCustom* Shape = AddVfxExpression<UMaterialExpressionCustom>(Material, -600, 0);
 	Shape->Description = MaskName(Spec.Kind);
 	Shape->OutputType = CMOT_Float1;
 	Shape->Code = MaskCode(Spec.Kind);
 	Shape->Inputs.Reset();
-	FCustomInput& InUV = Shape->Inputs.AddDefaulted_GetRef();
-	InUV.InputName = TEXT("UV");
-	InUV.Input.Connect(0, UV);
+	AddCustomInput(Shape, TEXT("UV"), UV);
+	if (LiquidCode)
+	{
+		AddCustomInput(Shape, TEXT("R"), Random);
+		AddCustomInput(Shape, TEXT("Color"), Color, 5); // RGBA
+	}
 	UMaterialExpression* Mask = Shape;
 
 	// Soft against the scene: the mask fades out over a quarter of the sprite's size (5 cm at least) as it nears what is
@@ -282,17 +439,30 @@ UMaterial* BuildSpriteMaterial(UPackage* Package, const FSpriteMaterialSpec& Spe
 	}
 
 	// Additive: light adds in proportion to alpha. Translucent: the colour over a masked alpha. A chip's colour is shaded
-	// by its facets.
+	// by its facets. A liquid sprite's alpha is already in its mask (it eroded the shape), and its colour takes the wet
+	// sheen.
 	const bool bChip = Spec.Kind == ESpriteMask::Chip;
-	const FString EmissiveCode = bChip
-		? FString(ChipShadeCode) + (Spec.bAdditive ? TEXT("return Color.rgb * Color.a * Mask * s;\n") : TEXT("return Color.rgb * s;\n"))
-		: FString(Spec.bAdditive ? TEXT("return Color.rgb * Color.a * Mask;") : TEXT("return Color.rgb;"));
-	UMaterialExpressionCustom* Emissive = AddCustom(Material, 0, TEXT("Emissive"), CMOT_Float3, EmissiveCode, Color, Mask, bChip ? UV : nullptr);
+	FString EmissiveCode;
+	if (LiquidCode)
+	{
+		EmissiveCode = Spec.bAdditive ? FString(TEXT("return Color.rgb * Mask;")) : FString(LiquidCode) + TEXT("return Color.rgb + gloss;\n");
+	}
+	else if (bChip)
+	{
+		EmissiveCode = FString(ChipShadeCode) + (Spec.bAdditive ? TEXT("return Color.rgb * Color.a * Mask * s;\n") : TEXT("return Color.rgb * s;\n"));
+	}
+	else
+	{
+		EmissiveCode = Spec.bAdditive ? TEXT("return Color.rgb * Color.a * Mask;") : TEXT("return Color.rgb;");
+	}
+	const bool bLiquidSheen = LiquidCode && !Spec.bAdditive;
+	UMaterialExpressionCustom* Emissive = AddCustom(Material, 0, TEXT("Emissive"), CMOT_Float3, EmissiveCode, Color, Mask,
+		bChip || bLiquidSheen ? UV : nullptr, bLiquidSheen ? Random : nullptr);
 	Material->GetEditorOnlyData()->EmissiveColor.Connect(0, Emissive);
 	if (!Spec.bAdditive)
 	{
-		UMaterialExpressionCustom* Opacity =
-			AddCustom(Material, 150, TEXT("Opacity"), CMOT_Float1, TEXT("return saturate(Color.a * Mask);"), Color, Mask);
+		UMaterialExpressionCustom* Opacity = AddCustom(Material, 150, TEXT("Opacity"), CMOT_Float1,
+			LiquidCode ? TEXT("return saturate(Mask);") : TEXT("return saturate(Color.a * Mask);"), Color, Mask);
 		Material->GetEditorOnlyData()->Opacity.Connect(0, Opacity);
 	}
 
