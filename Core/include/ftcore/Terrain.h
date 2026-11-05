@@ -233,6 +233,15 @@ public:
 
     // District i's pad height.
     float padHeight(std::size_t district) const { return pads_[district]; }
+    // How much of district i's pad keeps its height, given the layout the ground was made from:
+    // `footprint` counts this field's samples within kFlatRadius of the district's centre, `flat`
+    // those of them within half a kHeightStep of padHeight(i). The slope limit cuts back a pad that
+    // stands far over the ground round it (a lone pin over low ground), so flat < footprint marks a
+    // pad short of its flat. Both are 0 for a district this field doesn't hold. No allocation.
+    struct PadFlat {
+        std::uint32_t flat = 0, footprint = 0;
+    };
+    FTCORE_API PadFlat padFlat(const WorldLayout& layout, std::size_t district) const;
 
     // The field's key (TerrainField) and its centre, core metres: (0, 0) for the core.
     std::int32_t fieldX() const { return fieldX_; }

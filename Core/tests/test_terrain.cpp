@@ -696,6 +696,11 @@ TEST_CASE("terrain: every pad is flat out to kFlatRadius") {
                     const float off = std::fabs(t.height({c.x + dx, c.y + dy}) - pad);
                     if (off > 1e-4f) onTriangles.add(off, i);
                 }
+            // padFlat() counts the same disc: every sample on it at the pad's height.
+            const WorldTerrain::PadFlat flat = t.padFlat(*g.layout, i);
+            const double disc = 3.14159265 * kR * kR / (static_cast<double>(t.spacing()) * t.spacing());
+            CHECK(std::fabs(static_cast<double>(flat.footprint) - disc) < 0.03 * disc);
+            CHECK(flat.flat == flat.footprint);
         }
         CHECK_MESSAGE(onSamples.count == 0u, "samples off their pad: " << describe(onSamples));
         CHECK_MESSAGE(onTriangles.count == 0u, "points off their pad: " << describe(onTriangles));
@@ -1839,6 +1844,12 @@ TEST_CASE("terrain: an outer field holds a pin past the pads' 60 m, and pins tha
     MESSAGE("the +120 m hamlet's pad is flat out to " << holds << " m of its " << kR << " m, on ground "
                                                       << terrainPinHeight(spec, core->terrain->swell(), hamlet) << " m");
     CHECK(holds >= 40.f);
+    // padFlat() reports it short of its flat; a district the layout doesn't have has no footprint.
+    const WorldTerrain::PadFlat lone = t->padFlat(*lay, 0);
+    MESSAGE("padFlat: the lone hamlet keeps " << lone.flat << " of its " << lone.footprint << " samples");
+    CHECK(lone.flat < lone.footprint);
+    CHECK(lone.flat >= 1500u); // at least its 44 m: pi 44^2 / spacing^2, about 1545
+    CHECK(t->padFlat(*lay, 2).footprint == 0u);
 
     // Two pins further apart than their road climbs.
     WorldLayoutTestAccess::make(*lay, spec, {{-1700.f, 0.f}, {-1400.f, 0.f}}, {{0, 1}});
@@ -1921,6 +1932,9 @@ TEST_CASE("terrain: an outer field's pins can raise an upland round a hamlet, wh
                                          << " m");
     CHECK(onFlat >= 2900u); // pi 61^2 / spacing^2: about 2969
     CHECK(off == 0u);
+    const WorldTerrain::PadFlat ringed = t->padFlat(*lay, 0);
+    MESSAGE("padFlat: the ringed hamlet keeps " << ringed.flat << " of its " << ringed.footprint << " samples");
+    CHECK(ringed.flat >= onFlat);
 
     // The core's climax ceiling, carried in the swell, isn't applied: one far under every pad and
     // all the ground makes the same field to the bit.

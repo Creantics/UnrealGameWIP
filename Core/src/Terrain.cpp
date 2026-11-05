@@ -629,6 +629,32 @@ Vec2 WorldTerrain::samplePosition(std::size_t ix, std::size_t iy) const {
             -half + static_cast<float>(static_cast<std::int64_t>(iy) + fieldY_ * kStride) * cell};
 }
 
+WorldTerrain::PadFlat WorldTerrain::padFlat(const WorldLayout& layout, std::size_t district) const {
+    PadFlat out;
+    if (heights_.empty() || district >= districtCount_ || district >= layout.districtCount()) return out;
+    const Vec2 c = layout.district(district).centre;
+    const float pad = pads_[district], cell = spacing();
+    const Vec2 corner = samplePosition(0, 0);
+    // The samples' box round the disc, one sample wider each way; each sample's own position decides,
+    // as it did when the ground was made (dx^2 + dy^2 <= kR^2 stands at the pad's height).
+    constexpr auto kLast = static_cast<std::int64_t>(kSamples - 1);
+    const auto at = [&](float v, float from) {
+        return std::clamp(static_cast<std::int64_t>(std::floor((v - from) / cell)), std::int64_t{0}, kLast);
+    };
+    const std::int64_t x0 = std::max<std::int64_t>(at(c.x - kR, corner.x) - 1, 0), x1 = std::min(at(c.x + kR, corner.x) + 1, kLast);
+    const std::int64_t y0 = std::max<std::int64_t>(at(c.y - kR, corner.y) - 1, 0), y1 = std::min(at(c.y + kR, corner.y) + 1, kLast);
+    for (std::int64_t iy = y0; iy <= y1; ++iy)
+        for (std::int64_t ix = x0; ix <= x1; ++ix) {
+            const auto sx = static_cast<std::size_t>(ix), sy = static_cast<std::size_t>(iy);
+            const Vec2 p = samplePosition(sx, sy);
+            const float dx = p.x - c.x, dy = p.y - c.y;
+            if (dx * dx + dy * dy > kR * kR) continue;
+            ++out.footprint;
+            if (std::fabs(sample(sx, sy) - pad) <= 0.5f * kHeightStep) ++out.flat;
+        }
+    return out;
+}
+
 float WorldTerrain::height(Vec2 p) const {
     if (heights_.empty()) return 0.f;
     const Vec2 o = origin();
