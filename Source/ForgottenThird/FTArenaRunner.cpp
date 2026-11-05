@@ -386,6 +386,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	bFightAgain = Setup.bFightAgain;
 	bReplacePawn = Setup.bReplacePawn;
 	bShowcase = Setup.bShowcase;
+	bShowLead = Setup.bShowcase && Setup.bShowLead;
 
 	bBegun = true;
 	BeginNow = Now;
@@ -429,7 +430,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	}
 	if (bShowcase)
 	{
-		// The reel: no fight, no input, the camera fixed.
+		// The reel: no fight, no input, the camera fixed (or, under -ArenaShowLead, the idle lead's own, locked on the boss).
 		TickShowcase(DeltaSeconds);
 		return;
 	}
@@ -2028,7 +2029,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 	}
 }
 
-void UFTArenaRunner::SteerCamera(float DeltaSeconds)
+void UFTArenaRunner::SteerCamera(float DeltaSeconds, int32 Only)
 {
 	APlayerController* PC = GetPC();
 	if (!PC || !bBegun)
@@ -2036,8 +2037,8 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 		return;
 	}
 	// Locked: turn to look from the player at the target. The autopilot and an idle run with nothing locked
-	// look at the nearest living enemy, so the fight stays in frame.
-	int32 Target = Fight.lock() != ftcore::kArenaNobody ? static_cast<int32>(Fight.lock()) : -1;
+	// look at the nearest living enemy, so the fight stays in frame. The showcase names its boss (Only).
+	int32 Target = Only >= 0 ? Only : (Fight.lock() != ftcore::kArenaNobody ? static_cast<int32>(Fight.lock()) : -1);
 	if (Target < 0 && (bAutoPlay || bIdle))
 	{
 		float Best = 1e9f;
@@ -2096,6 +2097,8 @@ void UFTArenaRunner::Finish()
 {
 	bResultLogged = true;
 	ResultTime = Now;
+	// The kite's ring and glow end with the fight (the step that ended it did this already; a no-op then).
+	KiteFx.EndOfFight();
 	const bool bWon = Fight.phase() == ftcore::ArenaPhase::Victory;
 	LogStoneWalkCounts();
 	LogTurnCounts();
@@ -3212,6 +3215,17 @@ bool UFTArenaRunner::BeginShowcase()
 	Spec.walkFrom = bStone ? kStoneWalkStartPhase : 0.0;
 	Spec.turnDeg = kArenaTurnDeg;
 	Spec.turnPivot = kArenaTurnPivot;
+	// The weak point's facing (its first gate's, from the boss's data): the glow and crit takes turn it to the camera. A kind
+	// without weak points keeps the spec's default (behind).
+	const ftcore::ArenaWeakPoints* Weak = bStone ? &StoneBearer.GetDef().boss.weakPoints
+		: (ShowSlot == KiteSlot && GetKite()) ? &GetKite()->GetWeakPoints()
+		: GetKindCrit(ShowSlot) ? &GetKindCrit(ShowSlot)->points() : nullptr;
+	if (Weak && !Weak->points.empty())
+	{
+		Spec.weakFacing = Weak->gates[0].facing;
+	}
+	UE_LOG(LogForgottenThird, Log, TEXT("Arena showcase: the weak point faces %.0f deg in the boss's frame (%s); the glow and crit takes turn it to the camera."),
+		Spec.weakFacing, Weak && !Weak->points.empty() ? TEXT("its data") : TEXT("no weak point, the default"));
 
 	// Every move's clip once (a variant plays its base move's clip, and a tile move's later impacts run on from its
 	// first), then its left-hand twin: entered where the fight enters it at rate 1.0, left as the move ends.
@@ -3292,10 +3306,23 @@ bool UFTArenaRunner::BeginShowcase()
 		}
 	}
 
-	// Only the boss: the lead, the other enemies, the plinth and the keep-out disc hidden, the HUD off.
+	// Only the boss: the lead (unless -ArenaShowLead keeps it, idle where it starts), the other enemies, the plinth and the
+	// keep-out disc hidden, the HUD off.
 	if (PlayerFigure)
 	{
-		PlayerFigure->SetActorHiddenInGame(true);
+		if (bShowLead)
+		{
+			ShowLeadFeet = PlayerFigure->GetActorLocation();
+			ShowLeadYaw = static_cast<float>(PlayerFigure->GetActorRotation().Yaw);
+		}
+		else
+		{
+			PlayerFigure->SetActorHiddenInGame(true);
+		}
+	}
+	else
+	{
+		bShowLead = false;
 	}
 	for (int32 I = 0; I < MaxEnemies; ++I)
 	{
@@ -3330,7 +3357,8 @@ bool UFTArenaRunner::BeginShowcase()
 	const double Distance = static_cast<double>(Fit.camera.arm + Kind.bodyRadius + kShowCamGap) * 100.0;
 	const FVector Target = ShowOrigin + FVector(0.0, 0.0, Figure->GetHeight() * 0.5);
 	const FVector From = ShowOrigin + Dir * Distance + FVector(0.0, 0.0, static_cast<double>(Fit.camera.pivot + Fit.camera.up) * 100.0);
-	if (UWorld* World = GetWorld())
+	// -ArenaShowLead: no fixed camera; the view stays on the lead (SpawnFigures set it) and TickShowcase steers its arm.
+	if (UWorld* World = GetWorld(); World && !bShowLead)
 	{
 		FActorSpawnParameters Params;
 		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
@@ -3346,6 +3374,25 @@ bool UFTArenaRunner::BeginShowcase()
 			PC->SetViewTarget(ShowCamera);
 		}
 	}
+	else if (bShowLead && PC && PC->GetViewTarget() != PlayerFigure.Get())
+	{
+		PC->SetViewTarget(PlayerFigure.Get());
+	}
+	FString CameraLine;
+	if (bShowLead)
+	{
+		// Where the lead stands from the boss, its bearing measured off the boss's start front as the fixed camera's is (left +).
+		const FVector ToLead = ShowLeadFeet - ShowOrigin;
+		const double LeadBearing = FMath::FindDeltaAngleDegrees(static_cast<double>(ShowBaseYaw), ToLead.Rotation().Yaw);
+		CameraLine = FString::Printf(TEXT("the lead's own camera, locked on and looking up (the lead idle %.2f m from the boss at %.0f deg to its %s, the arm %.2f m, FOV %.0f)"),
+			ToLead.Size2D() / 100.0, FMath::Abs(LeadBearing), LeadBearing <= 0.0 ? TEXT("left") : TEXT("right"), static_cast<double>(Fit.camera.arm),
+			static_cast<double>(Fit.camera.fov));
+	}
+	else
+	{
+		CameraLine = FString::Printf(TEXT("the camera %.2f m out at %.0f deg to its left, %.2f m up, FOV %.0f"), Distance / 100.0,
+			static_cast<double>(kShowCamBearing), static_cast<double>(Fit.camera.pivot + Fit.camera.up), static_cast<double>(Fit.camera.fov));
+	}
 	ShowTime = -kShowLeadIn;
 	ShowCueTime = -1.0;
 	ShowSegment = -1;
@@ -3355,10 +3402,9 @@ bool UFTArenaRunner::BeginShowcase()
 	bShowTellAir = false;
 	bShowDone = false;
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("Arena showcase: enemy %d (%s), %d parts, %d cues, %.2f s (after a %.1f s lead-in), %d attacks; the boss at (%.2f, %.2f) m yaw %.1f, %.2f m tall; the camera %.2f m out at %.0f deg to its left, %.2f m up, FOV %.0f%s."),
+		TEXT("Arena showcase: enemy %d (%s), %d parts, %d cues, %.2f s (after a %.1f s lead-in), %d attacks; the boss at (%.2f, %.2f) m yaw %.1f, %.2f m tall; %s%s."),
 		ShowSlot, UTF8_TO_TCHAR(SlotKindId(ShowSlot)), static_cast<int32>(Show->segmentCount), static_cast<int32>(Show->cueCount), Show->length, kShowLeadIn, static_cast<int32>(Spec.attackCount),
-		ShowOrigin.X / 100.0, ShowOrigin.Y / 100.0, ShowBaseYaw, Figure->GetHeight() / 100.0, Distance / 100.0, kShowCamBearing,
-		static_cast<double>(Fit.camera.pivot + Fit.camera.up), Fit.camera.fov,
+		ShowOrigin.X / 100.0, ShowOrigin.Y / 100.0, ShowBaseYaw, Figure->GetHeight() / 100.0, *CameraLine,
 		bStone ? TEXT("") : (Spec.turnL == ftcore::kNoClip ? TEXT("; no stepping turns (no turn clips), and no effects until this boss's own are wired into ShowcaseCue")
 			: TEXT("; no effects until this boss's own are wired into ShowcaseCue")));
 	// The stone_bearer's scale, measured on the mesh as imported (the scale check's evidence: its body's top and its slab).
@@ -3404,9 +3450,10 @@ void UFTArenaRunner::TickShowcase(float DeltaSeconds)
 		{
 			Hud->bShowHUD = false;
 		}
-		if (ShowCamera && PC->GetViewTarget() != ShowCamera)
+		AActor* View = bShowLead ? static_cast<AActor*>(PlayerFigure.Get()) : static_cast<AActor*>(ShowCamera.Get());
+		if (View && PC->GetViewTarget() != View)
 		{
-			PC->SetViewTarget(ShowCamera);
+			PC->SetViewTarget(View);
 		}
 	}
 	const bool bLive = ShowTime >= 0.0;
@@ -3485,6 +3532,18 @@ void UFTArenaRunner::TickShowcase(float DeltaSeconds)
 	Place.Feet = ShowOrigin + Front * (static_cast<double>(Pose.pos.x) * 100.0) + Right * (static_cast<double>(Pose.pos.y) * 100.0);
 	Place.Yaw = ShowBaseYaw + Pose.yaw;
 	Figure->ApplyPose(Place);
+	if (bShowLead && PlayerFigure)
+	{
+		// The lead held idle where it started (no input, no fight), and its camera locked on the boss where the reel has it
+		// now: the fight's body is moved to the reel's spot, since the steering aims at the bodies, not the figures.
+		FFTArenaPose LeadPose;
+		LeadPose.Feet = ShowLeadFeet;
+		LeadPose.Yaw = ShowLeadYaw;
+		LeadPose.Tint = PlayerFigure->GetBaseColor();
+		PlayerFigure->ApplyPose(LeadPose);
+		Bodies.enemies[static_cast<size_t>(ShowSlot)] = ftcore::Vec2{static_cast<float>(Place.Feet.X / 100.0), static_cast<float>(Place.Feet.Y / 100.0)};
+		SteerCamera(DeltaSeconds, ShowSlot);
+	}
 	if (!bHide)
 	{
 		const UAnimSequence* Sequence = Skin.Sequences[Pose.clip];
@@ -3512,10 +3571,50 @@ void UFTArenaRunner::TickShowcase(float DeltaSeconds)
 	ShowTime += static_cast<double>(DeltaSeconds);
 }
 
+FVector UFTArenaRunner::ShowViewFrom(const AFTArenaFighter& Figure) const
+{
+	// Where the reel's blows come from: the lead under -ArenaShowLead, else the fixed camera, else straight ahead.
+	if (bShowLead && PlayerFigure)
+	{
+		return PlayerFigure->GetActorLocation();
+	}
+	if (ShowCamera)
+	{
+		return ShowCamera->GetActorLocation();
+	}
+	return Figure.GetActorLocation() + Figure.GetActorForwardVector() * 100.0;
+}
+
 void UFTArenaRunner::ShowcaseCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& Figure)
 {
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena showcase: cue %s at reel %.3f s, frame %llu."), UTF8_TO_TCHAR(ftcore::showCueKey(Cue.cue)), Cue.at,
 		static_cast<unsigned long long>(GFrameCounter));
+	// The Kite-Mother's effects: its own (FFTKiteVfx::ShowCue), the ring on the floor under it, the puff on its body's edge
+	// toward the camera (where a lead's plain blow puts it, the camera standing in for the lead), at a lead's chest height.
+	if (ShowSlot >= 0 && ShowSlot == KiteSlot && KiteFx.IsSpawned())
+	{
+		const ftcore::ArenaEnemyKind& Kind = Fight.def().enemies[static_cast<size_t>(ShowSlot)];
+		// Inside an attack's take only the move the fight rings gets its ring.
+		if (Cue.cue == ftcore::ShowCue::Tell && Cue.place == ftcore::ShowPlace::Strike)
+		{
+			if (Cue.attack < 0 || static_cast<size_t>(Cue.attack) >= ShowSpecUsed.attackCount)
+			{
+				return;
+			}
+			const int32 Move = ShowSpecUsed.attacks[static_cast<size_t>(Cue.attack)].move;
+			if (Move < 0 || Move >= static_cast<int32>(Kind.moveCount) || !KiteFx.IsTellMove(Kind.moves[static_cast<size_t>(Move)].clip()))
+			{
+				return;
+			}
+		}
+		const FVector Feet = Figure.GetActorLocation();
+		FVector Toward = ShowViewFrom(Figure) - Feet;
+		Toward.Z = 0.0;
+		FVector HitAt = Feet + Toward.GetSafeNormal() * (static_cast<double>(Kind.bodyRadius) * 100.0);
+		HitAt.Z = PlayerFigure ? PlayerFigure->GetChest().Z : Feet.Z + 120.0;
+		KiteFx.ShowCue(Cue, ToWorld(ftcore::Vec2{static_cast<float>(Feet.X / 100.0), static_cast<float>(Feet.Y / 100.0)}), HitAt);
+		return;
+	}
 	// The effects: the stone_bearer's pool. Another boss's effects go here, beside it, keyed on its slot.
 	if (ShowSlot != StoneBearerSlot || !BossVfx.IsSpawned())
 	{
@@ -3625,7 +3724,7 @@ void UFTArenaRunner::ShowcaseCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& 
 	{
 		// On the body's surface toward the camera, at a lead's chest height (a heavy blow's: the heavy chips).
 		const bool bHeavy = Cue.cue == ftcore::ShowCue::ChipsHeavy;
-		FVector Toward = ShowCamera ? ShowCamera->GetActorLocation() - Feet : Figure.GetActorForwardVector();
+		FVector Toward = ShowViewFrom(Figure) - Feet;
 		Toward.Z = 0.0;
 		Toward = Toward.GetSafeNormal();
 		const double Out = static_cast<double>(Fight.def().enemies[Slot].bodyRadius * Tune.Surface) * 100.0;

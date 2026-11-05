@@ -93,6 +93,7 @@ void AFTArenaGameMode::StartPlay()
 		}
 	}
 	bShowcase = FParse::Param(Cmd, TEXT("ArenaShowcase"));
+	bShowLead = bShowcase && FParse::Param(Cmd, TEXT("ArenaShowLead"));
 	bIdle = bShowcase || FParse::Param(Cmd, TEXT("ArenaIdle"));
 	bAutoPlay = !bIdle && (FParse::Param(Cmd, TEXT("ArenaAutoPlay")) || !ShotPrefix.IsEmpty());
 	bQuitOnFinish = FParse::Param(Cmd, TEXT("ArenaQuitOnFinish"));
@@ -551,6 +552,7 @@ void AFTArenaGameMode::Begin()
 	Setup.bQuitOnFinish = bQuitOnFinish;
 	Setup.bShots = !ShotPrefix.IsEmpty();
 	Setup.bShowcase = bShowcase;
+	Setup.bShowLead = bShowLead;
 	Runner->Begin(Setup);
 }
 

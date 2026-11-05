@@ -134,6 +134,9 @@ struct FFTArenaRunSetup
 	// -ArenaShowcase (review only): no fight; the boss's clips one at a time and its effects alone, from a fixed camera,
 	// then the process quits (see BeginShowcase).
 	bool bShowcase = false;
+	// -ArenaShowLead with -ArenaShowcase (review only): the lead stays in the ring, idle, and the reel is seen from the lead's
+	// own camera, locked on the boss and looking up at it, instead of the fixed camera.
+	bool bShowLead = false;
 };
 
 UCLASS()
@@ -293,6 +296,8 @@ private:
 	bool BeginShowcase();
 	void TickShowcase(float DeltaSeconds);
 	void ShowcaseCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& Figure);
+	// The point the reel's blows come from (world, cm): the lead under -ArenaShowLead, else the fixed camera.
+	FVector ShowViewFrom(const AFTArenaFighter& Figure) const;
 	// The boss's contact socket for arena move Move (a label mapped to its bone; bLeft: its left-hand clip), null: none.
 	const char* BossContactSocket(uint8 Move, bool bLeft) const;
 	// Plain kinds' weak points (ftcore/ArenaKindCrit.h): Data/Battle/arena_crit.json read once, then on each begin and
@@ -335,7 +340,7 @@ private:
 	void HandleEvents(const ftcore::ArenaEvents& Events);
 	void TrackParts(const ftcore::ArenaOutput& Out);
 	void PlaceFigures(float Alpha);
-	void SteerCamera(float DeltaSeconds);
+	void SteerCamera(float DeltaSeconds, int32 Only = -1); // Only: lock on that enemy (the showcase's boss), else the fight's lock
 	void Finish();
 	// The one result line per fight (VICTORY, DEFEAT, or TIMEOUT as a warning while it still runs).
 	void LogResult() const;
@@ -538,6 +543,10 @@ private:
 	// for the exposure to settle), the last part and cue time played, where the boss stood and faced at the start (the
 	// reel's frame), each reel attack's arena move, the strike point its tell was drawn at (for its dust), and done.
 	bool bShowcase = false;
+	// -ArenaShowLead: the lead where the fight put it, held idle, its camera on the boss (no fixed camera).
+	bool bShowLead = false;
+	FVector ShowLeadFeet = FVector::ZeroVector;
+	float ShowLeadYaw = 0.f;
 	int32 ShowSlot = -1; // the boss shown
 	TSharedPtr<ftcore::ClipShow> Show;
 	ftcore::ShowSpec ShowSpecUsed;

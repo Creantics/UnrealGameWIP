@@ -51,8 +51,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "VFX")
 	bool Play();
 
+	// Stops spawning; the live particles finish their lifetimes.
 	UFUNCTION(BlueprintCallable, Category = "VFX")
 	void Stop();
+
+	// Ends the effect at once: every live particle goes this frame.
+	UFUNCTION(BlueprintCallable, Category = "VFX")
+	void StopNow();
+
+	// Stops spawning, lets the live particles run out, and clears whatever is left after Seconds (a short fade-out with a hard end).
+	UFUNCTION(BlueprintCallable, Category = "VFX")
+	void StopWithin(float Seconds);
 
 	// Sets and pushes the user parameters (clamped by ftcore::sanitizeVfxUserParameters).
 	UFUNCTION(BlueprintCallable, Category = "VFX")
@@ -75,6 +84,7 @@ private:
 	TObjectPtr<UNiagaraComponent> Niagara;
 
 	FTimerHandle ReplayTimer;
+	FTimerHandle CutTimer;
 };
 
 // An actor that only holds a UFTVfxComponent, for placing effects in a map.

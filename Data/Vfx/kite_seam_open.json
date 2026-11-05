@@ -2,30 +2,25 @@
   "name": "kite_seam_open",
   "emitters": [
     {
-      "name": "drips",
-      "rate": 30,
-      "duration": 1.0,
+      "name": "flesh",
+      "rate": 100,
+      "duration": 0.8333,
       "loop": true,
-      "maxParticles": 46,
+      "maxParticles": 30,
       "lifetime": [
-        0.8,
-        1.2
+        0.18,
+        0.26
       ],
-      "shape": "sphere",
-      "radius": 0.4,
-      "speed": [
-        0.0,
-        0.2
+      "shape": "box",
+      "boxHalfExtents": [
+        0.42,
+        0.06,
+        0.1
       ],
-      "gravity": [
-        0.0,
-        -9.0,
-        0.0
-      ],
-      "drag": 0.2,
+      "space": "local",
       "startSize": [
         0.1,
-        0.2
+        0.17
       ],
       "sizeOverLife": [
         {
@@ -33,170 +28,286 @@
           "v": 0.8
         },
         {
-          "t": 0.15,
+          "t": 0.3,
           "v": 1.0
         },
         {
           "t": 1,
-          "v": 0.8
+          "v": 0.9
         }
+      ],
+      "startRotation": [
+        0.0,
+        6.28
       ],
       "colorOverLife": [
         {
           "t": 0,
           "color": [
-            0.9,
-            0.02,
-            0.05,
-            1.0
+            0.8,
+            0.1,
+            0.2,
+            0.0
+          ]
+        },
+        {
+          "t": 0.25,
+          "color": [
+            0.82,
+            0.11,
+            0.21,
+            0.8
+          ]
+        },
+        {
+          "t": 0.7,
+          "color": [
+            0.7,
+            0.07,
+            0.16,
+            0.6
           ]
         },
         {
           "t": 1,
           "color": [
-            0.5,
-            0.0,
-            0.02,
+            0.55,
+            0.05,
+            0.12,
             0.0
           ]
         }
       ],
       "blend": "alpha",
       "sprite": "soft",
-      "stretch": 0.06,
-      "stretchMax": 4.0,
-      "softness": 0.0
+      "softness": 0.3,
+      "coreShade": 0.45,
+      "depthFade": true
     },
     {
-      "name": "pulse",
+      "name": "throb",
       "bursts": [
         {
           "time": 0.0,
-          "count": 1
+          "count": 16
         }
       ],
-      "duration": 1.0,
+      "duration": 0.8333,
       "loop": true,
-      "maxParticles": 4,
-      "lifetime": 1.0,
-      "shape": "point",
-      "startSize": 2.4,
+      "maxParticles": 18,
+      "lifetime": [
+        0.2,
+        0.28
+      ],
+      "shape": "box",
+      "boxHalfExtents": [
+        0.44,
+        0.05,
+        0.1
+      ],
+      "space": "local",
+      "startSize": [
+        0.12,
+        0.2
+      ],
       "sizeOverLife": [
         {
           "t": 0,
-          "v": 0.8
+          "v": 0.7
         },
         {
-          "t": 0.1,
-          "v": 1.0
+          "t": 0.3,
+          "v": 1.25
         },
         {
           "t": 1,
-          "v": 1.15
+          "v": 1.0
         }
+      ],
+      "startRotation": [
+        0.0,
+        6.28
       ],
       "colorOverLife": [
         {
           "t": 0,
           "color": [
-            2.4,
-            0.1,
-            0.04,
-            0.75
+            1.4,
+            0.2,
+            0.4,
+            0.0
           ]
         },
         {
-          "t": 0.1,
+          "t": 0.2,
           "color": [
-            2.4,
-            0.1,
-            0.04,
-            1.0
+            1.4,
+            0.2,
+            0.4,
+            0.55
           ]
         },
         {
-          "t": 0.6,
+          "t": 1,
           "color": [
-            2.0,
-            0.08,
-            0.03,
-            0.85
+            1.0,
+            0.1,
+            0.25,
+            0.0
+          ]
+        }
+      ],
+      "blend": "additive",
+      "sprite": "soft",
+      "softness": 0.3,
+      "depthFade": true
+    },
+    {
+      "name": "glint",
+      "rate": 14,
+      "duration": 0.8333,
+      "loop": true,
+      "maxParticles": 5,
+      "lifetime": [
+        0.12,
+        0.2
+      ],
+      "shape": "box",
+      "boxHalfExtents": [
+        0.4,
+        0.04,
+        0.08
+      ],
+      "space": "local",
+      "startSize": [
+        0.04,
+        0.07
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 0.6
+        },
+        {
+          "t": 0.3,
+          "v": 1.0
+        },
+        {
+          "t": 1,
+          "v": 0.8
+        }
+      ],
+      "startRotation": [
+        0.0,
+        6.28
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            2.2,
+            1.5,
+            1.7,
+            0.0
+          ]
+        },
+        {
+          "t": 0.3,
+          "color": [
+            2.2,
+            1.5,
+            1.7,
+            0.9
           ]
         },
         {
           "t": 1,
           "color": [
             1.6,
-            0.06,
-            0.02,
-            0.6
+            0.8,
+            1.0,
+            0.0
           ]
         }
       ],
       "blend": "additive",
-      "sprite": "soft",
-      "softness": 0.0
+      "sprite": "spark",
+      "depthFade": true
     },
     {
-      "name": "core",
-      "bursts": [
-        {
-          "time": 0.0,
-          "count": 1
-        }
-      ],
-      "duration": 1.0,
+      "name": "drips",
+      "rate": 5,
+      "duration": 0.8333,
       "loop": true,
       "maxParticles": 4,
-      "lifetime": 1.0,
-      "shape": "point",
-      "startSize": 1.0,
+      "lifetime": [
+        0.3,
+        0.45
+      ],
+      "shape": "box",
+      "boxHalfExtents": [
+        0.38,
+        0.03,
+        0.03
+      ],
+      "gravity": [
+        0.0,
+        -9.0,
+        0.0
+      ],
+      "drag": 0.3,
+      "startSize": [
+        0.05,
+        0.08
+      ],
       "sizeOverLife": [
         {
           "t": 0,
-          "v": 0.9
+          "v": 0.8
         },
         {
-          "t": 0.1,
+          "t": 0.2,
           "v": 1.0
         },
         {
           "t": 1,
-          "v": 1.1
+          "v": 0.8
         }
       ],
       "colorOverLife": [
         {
           "t": 0,
           "color": [
-            4.0,
-            1.0,
-            0.25,
-            0.9
+            0.75,
+            0.07,
+            0.16,
+            0.95
           ]
         },
         {
-          "t": 0.1,
+          "t": 0.7,
           "color": [
-            4.0,
-            1.0,
-            0.25,
-            1.0
+            0.6,
+            0.05,
+            0.12,
+            0.8
           ]
         },
         {
           "t": 1,
           "color": [
-            3.0,
-            0.6,
-            0.12,
-            0.7
+            0.5,
+            0.04,
+            0.1,
+            0.0
           ]
         }
       ],
-      "blend": "additive",
+      "blend": "alpha",
       "sprite": "spark",
-      "softness": 0.0
+      "stretch": 0.05,
+      "stretchMax": 4.0,
+      "depthFade": true
     }
   ]
 }

@@ -185,6 +185,8 @@ private:
 	bool bBossCam = false;
 	// -ArenaShowcase: the boss's clips and effects alone for review, no fight (FFTArenaRunSetup::bShowcase); an idle run.
 	bool bShowcase = false;
+	// -ArenaShowLead with -ArenaShowcase: the reel seen from the idle lead's own camera (FFTArenaRunSetup::bShowLead).
+	bool bShowLead = false;
 	UPROPERTY()
 	TObjectPtr<AActor> BossCamera;
 	float BossCamYaw = 0.f;
