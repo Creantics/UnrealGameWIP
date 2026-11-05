@@ -48,14 +48,14 @@
   {
    "id": "swoop_feint",
    "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossswoop_feint",
-   "length_s": 4.35,
+   "length_s": 4.333,
    "impact_s": 2.5,
    "loop": false
   },
   {
    "id": "swoop_slant",
    "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossswoop_slant",
-   "length_s": 3.917,
+   "length_s": 3.933,
    "impact_s": 1.667,
    "loop": false
   },
@@ -133,7 +133,7 @@
    "id": "tail_break",
    "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bosstail_break",
    "length_s": 3.0,
-   "impact_s": 0.3,
+   "impact_s": 0.417,
    "loop": false
   },
   {
