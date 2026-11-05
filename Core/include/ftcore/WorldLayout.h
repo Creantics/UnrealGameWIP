@@ -202,6 +202,7 @@ public:
 
 private:
     friend FTCORE_API bool generateWorldLayout(const WorldSpec&, WorldLayout&, std::string*);
+    friend struct WorldLayoutTestAccess; // the tests' hand-built layouts (an outer terrain field's); defined only there
 
     float side_ = 0.f;
     WorldKind kind_ = WorldKind::Town;

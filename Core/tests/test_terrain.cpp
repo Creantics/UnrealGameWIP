@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <utility>
@@ -582,6 +583,31 @@ void checkFails(const WorldTerrain& ground, const WorldSpec& spec, const WorldLa
     CHECK(copy->waterDepth({0.f, 0.f}) == 0.f);
 }
 
+// Each world's core ground as the committed Data/Field/worlds.json makes it, pinned by its hash on the
+// compiler that measured it (MSVC 19.44.35229), so that a change to Core that moves
+// a core field's ground fails here. Other compilers print theirs until a CI run gives them; no pin
+// holds at another side (FTCORE_WORLD_SIDE).
+#if defined(_MSC_FULL_VER) && _MSC_FULL_VER == 194435229 && !defined(__clang__)
+constexpr bool kHashPinned = true;
+#else
+constexpr bool kHashPinned = false;
+#endif
+
+void checkPinnedHash(const Generated& g, const std::string& hash) {
+    static constexpr std::array<std::pair<const char*, const char*>, 3> kPins{
+        {{"solhaven", "f98734d847cf7eb7"}, {"lattice", "a8d6e66f35ed3ff6"}, {"unwritten", "15bc790d502e6e4f"}}};
+    static const bool otherSide = sideOverride() > 0.f;
+    const char* pin = nullptr;
+    for (const auto& [id, value] : kPins)
+        if (g.spec.id == id) pin = value;
+    if (pin == nullptr || otherSide) return;
+    if constexpr (kHashPinned) {
+        CHECK_MESSAGE(hash == pin, g.spec.id << "'s core ground moved: its hash was " << pin);
+    } else {
+        MESSAGE(g.spec.id << ": hash " << hash << " on this compiler, not pinned here (MSVC's is " << pin << ")");
+    }
+}
+
 } // namespace
 
 TEST_CASE("terrain: each world's ground lies on whole steps inside the height range") {
@@ -591,6 +617,13 @@ TEST_CASE("terrain: each world's ground lies on whole steps inside the height ra
         const WorldTerrain& t = *g.terrain;
         MESSAGE(g.spec.id << ": ground generated in " << g.seconds << " s at side " << g.spec.side << " m, hash "
                           << groundHash(t));
+        checkPinnedHash(g, groundHash(t));
+        CHECK(t.fieldX() == 0);
+        CHECK(t.fieldY() == 0);
+        CHECK(t.origin().x == 0.f);
+        CHECK(t.origin().y == 0.f);
+        CHECK(t.samplePosition(0, kN - 1).x == g.at(0, kN - 1).x);
+        CHECK(t.samplePosition(0, kN - 1).y == g.at(0, kN - 1).y);
         CHECK(t.side() == g.spec.side);
         CHECK(t.extent() == g.spec.side + 2.f * WorldTerrain::kApron);
         CHECK(t.districtCount() == g.layout->districtCount());
@@ -1544,4 +1577,388 @@ TEST_CASE("terrain: the flow mask reads 0 on the pads and the roads and gathers 
         CHECK(differ == 0u);
         break;
     }
+}
+
+// Outer fields (TerrainField): a world bigger than one field, its outer fields solved one at a time
+// round pads pinned where two fields meet.
+
+namespace ftcore {
+
+// The tests' hand-made layouts: the districts and roads the plan hands an outer field, in core metres.
+struct WorldLayoutTestAccess {
+    static void make(WorldLayout& out, const WorldSpec& spec, std::initializer_list<Vec2> centres,
+                     std::initializer_list<WorldRoad> roads) {
+        out.side_ = spec.side;
+        out.kind_ = spec.kind;
+        out.districtCount_ = out.roadCount_ = out.blockCount_ = out.propCount_ = 0;
+        for (const Vec2 c : centres) {
+            WorldDistrict& d = out.districts_[out.districtCount_++];
+            d = WorldDistrict{};
+            d.centre = d.origin = d.landmark = c;
+            d.forward = {1.f, 0.f};
+        }
+        for (const WorldRoad& road : roads) out.roads_[out.roadCount_++] = road;
+    }
+};
+
+} // namespace ftcore
+
+namespace {
+
+// Solhaven's box, core metres (the outline's less 500 m): fields i -2..1, j -4..3.
+constexpr std::int32_t kBoxWest = -3750, kBoxEast = 2250, kBoxSouth = -6500, kBoxNorth = 5000;
+
+// Solhaven's core, generated at its own side, whose spec (less its sites) and swell its outer fields
+// take; null, and a note, where it isn't there.
+const Generated* fieldCore() {
+    for (const Generated& g : worlds())
+        if (g.spec.id == "solhaven" && g.ok) {
+            if (g.spec.side == 1000.f) return &g;
+            MESSAGE("solhaven isn't at side 1000 m (FTCORE_WORLD_SIDE); the outer fields' tests skip");
+            return nullptr;
+        }
+    MESSAGE("no solhaven ground; the outer fields' tests skip");
+    return nullptr;
+}
+
+WorldSpec outerSpec(const Generated& core) {
+    WorldSpec spec = core.spec;
+    spec.sites.clear();
+    return spec;
+}
+
+TerrainOptions fieldOptions(const Generated& core, std::int32_t i, std::int32_t j, bool erode) {
+    TerrainOptions o;
+    o.erode = o.erodeMountains = erode;
+    o.field.i = i;
+    o.field.j = j;
+    o.field.west = kBoxWest;
+    o.field.east = kBoxEast;
+    o.field.south = kBoxSouth;
+    o.field.north = kBoxNorth;
+    o.field.swell = core.terrain->swell();
+    return o;
+}
+
+// Pins district d at terrainPinHeight(), or at `height` where given.
+void pin(TerrainOptions& o, std::uint8_t d) { o.field.pins[o.field.pinCount++] = TerrainPin{d, true, 0.f}; }
+void pinAt(TerrainOptions& o, std::uint8_t d, float height) { o.field.pins[o.field.pinCount++] = TerrainPin{d, false, height}; }
+
+std::uint32_t floatBits(float f) {
+    std::uint32_t v = 0;
+    std::memcpy(&v, &f, sizeof v);
+    return v;
+}
+
+// generateWorldTerrain with `options` on a copy of the core's ground fails, says `why` after
+// "terrain <id>: ", and leaves the copy with no ground, at the core's key, with no swell.
+void checkFieldFails(const Generated& core, const WorldSpec& spec, const WorldLayout& lay, const TerrainOptions& options,
+                     const std::string& why) {
+    INFO(why);
+    auto copy = std::make_unique<WorldTerrain>(*core.terrain);
+    REQUIRE(copy->side() > 0.f);
+    std::string error;
+    CHECK_FALSE(generateWorldTerrain(spec, lay, *copy, &error, options));
+    INFO(error);
+    CHECK(error.rfind("terrain " + spec.id + ": ", 0) == 0u);
+    CHECK(error.find(why) != std::string::npos);
+    CHECK(copy->side() == 0.f);
+    CHECK(copy->fieldX() == 0);
+    CHECK(copy->fieldY() == 0);
+    CHECK(copy->swell().count == 0u);
+    CHECK(copy->districtCount() == 0u);
+}
+
+// The sample of an outer field nearest p (core metres).
+void nearestSample(const WorldTerrain& t, Vec2 p, std::size_t& ix, std::size_t& iy) {
+    const Vec2 o = t.origin();
+    const float half = 0.5f * t.extent(), cell = t.spacing(), last = static_cast<float>(kN - 1);
+    ix = static_cast<std::size_t>(std::clamp(std::round((p.x - o.x + half) / cell), 0.f, last));
+    iy = static_cast<std::size_t>(std::clamp(std::round((p.y - o.y + half) / cell), 0.f, last));
+}
+
+} // namespace
+
+TEST_CASE("terrain: the core field makes the swell its outer fields take, and puts its samples where it always did") {
+    const Generated* core = fieldCore();
+    if (!core) return;
+    const WorldTerrain& t = *core->terrain;
+    const TerrainSwell& s = t.swell();
+    MESSAGE("solhaven's swell bends round " << static_cast<int>(s.count) << " points; its ceiling is " << s.ceiling << " m");
+    CHECK(s.count <= 2u);
+    REQUIRE(core->climax >= 0);
+    CHECK(s.ceiling == core->top() - kClimaxClear);
+    for (std::size_t iy = 0; iy < kN; iy += 151)
+        for (std::size_t ix = 0; ix < kN; ix += 151) {
+            CHECK(floatBits(t.samplePosition(ix, iy).x) == floatBits(core->at(ix, iy).x));
+            CHECK(floatBits(t.samplePosition(ix, iy).y) == floatBits(core->at(ix, iy).y));
+        }
+    // A pin from the ground at a point is the same function in every field.
+    const WorldSpec spec = outerSpec(*core);
+    const float h = terrainPinHeight(spec, s, {-1500.f, 0.f});
+    CHECK(std::fabs(h) <= 60.f);
+    CHECK(std::round(h / kStep) * kStep == h);
+    CHECK(terrainPinHeight(spec, s, {-1500.f, 0.f}) == h);
+}
+
+TEST_CASE("terrain: two outer fields agree, to the bit, on the pinned pads and the roads across the line they share") {
+    const Generated* core = fieldCore();
+    if (!core) return;
+    const WorldSpec spec = outerSpec(*core);
+    const TerrainSwell& swell = core->terrain->swell();
+    // Fields (-2, 0) and (-1, 0) share the line x = -2250. P stands 100 m east of it and T 20 m west,
+    // both within kPinReach, so both fields pin them; Q's road to P crosses the line, so both pin Q.
+    // S and R are each field's own, free.
+    const Vec2 P{-2150.f, 60.f}, Q{-2700.f, 150.f}, T{-2270.f, -400.f}, S{-3100.f, -200.f}, R{-1700.f, 0.f};
+    auto westLayout = std::make_unique<WorldLayout>(), eastLayout = std::make_unique<WorldLayout>();
+    WorldLayoutTestAccess::make(*westLayout, spec, {P, Q, T, S}, {{0, 1}, {2, 0}, {1, 3}});
+    WorldLayoutTestAccess::make(*eastLayout, spec, {P, Q, T, R}, {{0, 1}, {2, 0}, {0, 3}});
+    TerrainOptions westOptions = fieldOptions(*core, -2, 0, true), eastOptions = fieldOptions(*core, -1, 0, true);
+    for (std::uint8_t d = 0; d < 3; ++d) {
+        pin(westOptions, d);
+        pin(eastOptions, d);
+    }
+    auto west = std::make_unique<WorldTerrain>(), east = std::make_unique<WorldTerrain>();
+    std::string error;
+    const auto start = std::chrono::steady_clock::now();
+    REQUIRE_MESSAGE(generateWorldTerrain(spec, *westLayout, *west, &error, westOptions), error);
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    REQUIRE_MESSAGE(generateWorldTerrain(spec, *eastLayout, *east, &error, eastOptions), error);
+    MESSAGE("outer field (-2, 0) generated in " << seconds << " s, hash " << groundHash(*west) << "; (-1, 0) hash "
+                                                << groundHash(*east) << " (not pinned)");
+
+    CHECK(west->fieldX() == -2);
+    CHECK(east->fieldX() == -1);
+    CHECK(west->fieldY() == 0);
+    CHECK(std::fabs(west->origin().x + 3000.f) < 0.01f);
+    CHECK(std::fabs(east->origin().x + 1500.f) < 0.01f);
+    CHECK(west->featureCount() == 0u);
+    CHECK(east->featureCount() == 0u);
+    CHECK(east->swell().count == swell.count);
+    CHECK(east->swell().ceiling == swell.ceiling);
+
+    // The pins: the same height in both, the height terrainPinHeight() gives, flat out to kFlatRadius.
+    const std::array<Vec2, 3> pinned{P, Q, T};
+    for (std::size_t d = 0; d < pinned.size(); ++d) {
+        INFO("pinned district " << d);
+        const float want = terrainPinHeight(spec, swell, pinned[d]);
+        CHECK(west->padHeight(d) == want);
+        CHECK(east->padHeight(d) == want);
+    }
+    for (std::size_t r = 0; r < 2; ++r) {
+        CHECK(west->roadHeight(r, 0.f) == east->roadHeight(r, 0.f));
+        CHECK(west->roadHeight(r, 1.f) == east->roadHeight(r, 1.f));
+        CHECK(west->roadHeight(r, 0.37f) == east->roadHeight(r, 0.37f));
+    }
+
+    // The shared column: west's last, east's first, at the same positions to the bit; on the pins'
+    // flats and on the roads and their shoulders across the line, the same height, cliff and flow.
+    std::size_t onPad = 0, onRoad = 0, positions = 0;
+    Breaches differ;
+    for (std::size_t iy = 0; iy < kN; ++iy) {
+        const Vec2 p = west->samplePosition(kN - 1, iy), q = east->samplePosition(0, iy);
+        positions += static_cast<std::size_t>(floatBits(p.x) != floatBits(q.x) || floatBits(p.y) != floatBits(q.y));
+        const bool pad = between(p, P) <= kR - 0.01f || between(p, T) <= kR - 0.01f;
+        float dPQ = 0.f, dTP = 0.f;
+        nearestOnSegment(p, P, Q, dPQ);
+        nearestOnSegment(p, T, P, dTP);
+        const bool road = !pad && std::min(dPQ, dTP) <= kLevel;
+        if (!pad && !road) continue;
+        onPad += static_cast<std::size_t>(pad);
+        onRoad += static_cast<std::size_t>(road);
+        if (floatBits(west->sample(kN - 1, iy)) != floatBits(east->sample(0, iy)) ||
+            west->cliff(kN - 1, iy) != east->cliff(0, iy) || floatBits(west->flow(kN - 1, iy)) != floatBits(east->flow(0, iy)))
+            differ.add(std::fabs(west->sample(kN - 1, iy) - east->sample(0, iy)), kN - 1, iy);
+        if (pad) CHECK(west->sample(kN - 1, iy) == west->padHeight(2)); // only T's flat reaches the line
+    }
+    MESSAGE("shared column: " << onPad << " samples on T's flat and " << onRoad << " on the two roads' strips");
+    CHECK(positions == 0u);
+    CHECK(onPad >= 50u);
+    CHECK(onRoad >= 4u);
+    CHECK_MESSAGE(differ.count == 0u, "shared samples that differ: " << describe(differ));
+
+    // Each field's free pad solved on its own, within the pads' +-60 m.
+    CHECK(std::fabs(west->padHeight(3)) <= 60.f);
+    CHECK(std::fabs(east->padHeight(3)) <= 60.f);
+
+    // The masks frame an outer field's own square.
+    constexpr std::size_t kSize = 512;
+    std::vector<std::uint8_t> mask(kSize * kSize, 0xab);
+    const float pixel = east->extent() / static_cast<float>(kSize), half = 0.5f * east->extent();
+    const auto pixelAt = [&](Vec2 p) {
+        const Vec2 o = east->origin();
+        const auto ix = static_cast<std::size_t>(std::floor((p.x - o.x + half) / pixel));
+        const auto iy = static_cast<std::size_t>(std::floor((p.y - o.y + half) / pixel));
+        return iy * kSize + ix;
+    };
+    shapeMask(*east, kSize, mask.data());
+    CHECK(mask[pixelAt(R)] == 128u); // flat on R's pad
+    roadMask(*eastLayout, kSize, mask.data(), east->origin());
+    const Vec2 middle{0.5f * (P.x + R.x), 0.5f * (P.y + R.y)};
+    // roadMask frames `side`, not the extent: its pixels over the square centred on the origin.
+    const float roadPixel = eastLayout->side() / static_cast<float>(kSize), roadHalf = 0.5f * eastLayout->side();
+    const auto rx = static_cast<std::size_t>(std::floor((middle.x - east->origin().x + roadHalf) / roadPixel));
+    const auto ry = static_cast<std::size_t>(std::floor((middle.y - east->origin().y + roadHalf) / roadPixel));
+    REQUIRE(rx < kSize);
+    REQUIRE(ry < kSize);
+    CHECK(mask[ry * kSize + rx] >= 200u); // on the road, a pixel's centre within 1.4 m of its line
+    roadMask(*eastLayout, kSize, mask.data()); // centred on the core: the road lies outside
+    CHECK(std::all_of(mask.begin(), mask.end(), [](std::uint8_t v) { return v == 0u; }));
+}
+
+TEST_CASE("terrain: an outer field holds a pin past the pads' 60 m, and pins that break a rule fail and name the districts") {
+    const Generated* core = fieldCore();
+    if (!core) return;
+    const WorldSpec spec = outerSpec(*core);
+    auto lay = std::make_unique<WorldLayout>();
+
+    // An upland hamlet pinned at +120 m, past the solved pads' +-60 m: its pad stands there, as does
+    // the road from it, and the free pad 700 m down the road settles within reach of it.
+    const Vec2 hamlet{-1500.f, 300.f}, below{-1500.f, -400.f};
+    WorldLayoutTestAccess::make(*lay, spec, {hamlet, below}, {{0, 1}});
+    TerrainOptions o = fieldOptions(*core, -1, 0, false);
+    pinAt(o, 0, 120.f);
+    auto t = std::make_unique<WorldTerrain>();
+    std::string error;
+    REQUIRE_MESSAGE(generateWorldTerrain(spec, *lay, *t, &error, o), error);
+    CHECK(t->padHeight(0) == 120.f);
+    CHECK(t->roadHeight(0, 0.f) == 120.f);
+    CHECK(t->padHeight(1) >= 120.f - std::floor(WorldTerrain::kMaxRoadGrade * (700.f - 2.f * kR) / kStep) * kStep);
+    CHECK(t->padHeight(1) <= 60.f);
+    std::size_t cx = 0, cy = 0;
+    nearestSample(*t, hamlet, cx, cy);
+    CHECK(t->sample(cx, cy) == 120.f);
+    // How far out its flat holds: the slope limit cuts a pad standing far over the ground round it
+    // back from its rim (its blend is 56 m at most).
+    float holds = 0.f;
+    for (float r = 2.f; r <= kR; r += 2.f) {
+        bool flat = true;
+        for (std::size_t iy = cy - 40; iy <= cy + 40; ++iy)
+            for (std::size_t ix = cx - 40; ix <= cx + 40; ++ix)
+                if (between(t->samplePosition(ix, iy), hamlet) <= r && t->sample(ix, iy) != 120.f) flat = false;
+        if (!flat) break;
+        holds = r;
+    }
+    MESSAGE("the +120 m hamlet's pad is flat out to " << holds << " m of its " << kR << " m, on ground "
+                                                      << terrainPinHeight(spec, core->terrain->swell(), hamlet) << " m");
+    CHECK(holds >= 30.f);
+
+    // Two pins further apart than their road climbs.
+    WorldLayoutTestAccess::make(*lay, spec, {{-1700.f, 0.f}, {-1400.f, 0.f}}, {{0, 1}});
+    o = fieldOptions(*core, -1, 0, false);
+    pinAt(o, 0, 40.f);
+    pinAt(o, 1, -40.f);
+    checkFieldFails(*core, spec, *lay, o, "pinned districts 0 and 1 stand further apart than the roads between them climb");
+
+    // Two pins close together, without a road, further apart than the ground between them allows.
+    WorldLayoutTestAccess::make(*lay, spec, {{-1700.f, 0.f}, {-1500.f, 0.f}}, {});
+    o = fieldOptions(*core, -1, 0, false);
+    pinAt(o, 0, 0.f);
+    pinAt(o, 1, 40.f);
+    checkFieldFails(*core, spec, *lay, o, "pinned districts 0, 1 break a rule that keeps the ground between them walkable");
+
+    // A free pad that its road to the hamlet would lift past 60 m.
+    WorldLayoutTestAccess::make(*lay, spec, {hamlet, {-1500.f, 0.f}}, {{0, 1}});
+    o = fieldOptions(*core, -1, 0, false);
+    pinAt(o, 0, 120.f);
+    checkFieldFails(*core, spec, *lay, o, "district 1 has no height within 60 m that its roads to the pinned districts allow");
+
+    // A free pad held by its road to one pin and by the ground it shares with another.
+    WorldLayoutTestAccess::make(*lay, spec, {{-1500.f, 0.f}, {-1700.f, 0.f}, {-1500.f, 200.f}}, {{0, 1}});
+    o = fieldOptions(*core, -1, 0, false);
+    pinAt(o, 1, 0.f);
+    pinAt(o, 2, 50.f);
+    checkFieldFails(*core, spec, *lay, o, "districts 0, 2 break a rule at a pinned district");
+}
+
+TEST_CASE("terrain: an outer field's pads near a field line and its roads across one must be pinned") {
+    const Generated* core = fieldCore();
+    if (!core) return;
+    const WorldSpec spec = outerSpec(*core);
+    auto lay = std::make_unique<WorldLayout>();
+    TerrainOptions o = fieldOptions(*core, -1, 0, false);
+
+    WorldLayoutTestAccess::make(*lay, spec, {{-2200.f, 0.f}}, {});
+    checkFieldFails(*core, spec, *lay, o, "district 0 lies near a field line: it must be pinned");
+    WorldLayoutTestAccess::make(*lay, spec, {{-1500.f, 700.f}}, {});
+    checkFieldFails(*core, spec, *lay, o, "district 0 lies near a field line: it must be pinned");
+    WorldLayoutTestAccess::make(*lay, spec, {{-2400.f, 0.f}}, {});
+    checkFieldFails(*core, spec, *lay, o, "district 0 lies outside the field: it must be pinned");
+
+    WorldLayoutTestAccess::make(*lay, spec, {{-2400.f, 0.f}, {-1600.f, 0.f}}, {{0, 1}});
+    pin(o, 0);
+    checkFieldFails(*core, spec, *lay, o, "road 0 leaves the field: both its ends must be pinned");
+
+    // Field (-2, 0)'s west line is the box's: no neighbour, so no pin, but the pad stays kEdgeMargin
+    // inside the closed edge, kApron in from the box.
+    o = fieldOptions(*core, -2, 0, false);
+    WorldLayoutTestAccess::make(*lay, spec, {{-3460.f, 0.f}}, {});
+    checkFieldFails(*core, spec, *lay, o, "district 0 lies within 80 m of the world's closed edge");
+    WorldLayoutTestAccess::make(*lay, spec, {{-3400.f, 0.f}}, {});
+    auto t = std::make_unique<WorldTerrain>();
+    std::string error;
+    CHECK_MESSAGE(generateWorldTerrain(spec, *lay, *t, &error, o), error);
+}
+
+TEST_CASE("terrain: a field's key, box, swell and pins are checked before any ground is made") {
+    const Generated* core = fieldCore();
+    if (!core) return;
+    const WorldSpec spec = outerSpec(*core);
+    auto lay = std::make_unique<WorldLayout>();
+    WorldLayoutTestAccess::make(*lay, spec, {{-1500.f, 0.f}}, {});
+    const TerrainOptions good = fieldOptions(*core, -1, 0, false);
+
+    TerrainOptions o = good;
+    o.field.halo = TerrainField::kHalo;
+    checkFieldFails(*core, spec, *lay, o, "the field's halo waits for the stitch: it must be 0");
+    o = good;
+    o.field.west = o.field.east = o.field.south = o.field.north = 0;
+    checkFieldFails(*core, spec, *lay, o, "an outer field needs its world's box");
+    o = good;
+    o.field.west = -3700;
+    checkFieldFails(*core, spec, *lay, o, "the world's box must lie on whole 250 m steps within 12000 m of the core");
+    o = good;
+    o.field.south = -12250;
+    checkFieldFails(*core, spec, *lay, o, "the world's box must lie on whole 250 m steps within 12000 m of the core");
+    o = good;
+    o.field.south = -7250;
+    checkFieldFails(*core, spec, *lay, o, "the world's box is over 12000 m a side");
+    o = good;
+    o.field.east = 500;
+    checkFieldFails(*core, spec, *lay, o, "the world's box doesn't hold the core field");
+    o = good;
+    o.field.i = 3;
+    checkFieldFails(*core, spec, *lay, o, "field (3, 0) lies outside the world's box");
+    o = good;
+    o.field.swell.count = 3;
+    checkFieldFails(*core, spec, *lay, o, "the swell bends round two points at most");
+    o = good;
+    o.field.swell.ceiling = std::nanf("");
+    checkFieldFails(*core, spec, *lay, o, "the swell's ceiling is out of range");
+    checkFieldFails(*core, core->spec, *lay, good, "an outer field has no sites");
+
+    o = good;
+    pinAt(o, 1, 0.f);
+    checkFieldFails(*core, spec, *lay, o, "pinned district 1 is past the layout's 1");
+    o = good;
+    pin(o, 0);
+    pin(o, 0);
+    checkFieldFails(*core, spec, *lay, o, "district 0 is pinned twice");
+    o = good;
+    pinAt(o, 0, 120.001f);
+    checkFieldFails(*core, spec, *lay, o, "pinned district 0's height isn't a whole step in range");
+    o = good;
+    pinAt(o, 0, 250.f);
+    checkFieldFails(*core, spec, *lay, o, "pinned district 0's height isn't a whole step in range");
+
+    // The core field takes neither pins nor a swell, and with a box that holds it, is as it always was.
+    TerrainOptions coreOptions;
+    coreOptions.field.pinCount = 1;
+    checkFieldFails(*core, core->spec, *core->layout, coreOptions, "the core field takes no pins");
+    coreOptions = TerrainOptions{};
+    coreOptions.field.swell = core->terrain->swell();
+    checkFieldFails(*core, core->spec, *core->layout, coreOptions, "the core field makes the swell; it takes none");
+    coreOptions = TerrainOptions{};
+    coreOptions.field.west = -500;
+    checkFieldFails(*core, core->spec, *core->layout, coreOptions, "the world's box doesn't hold the core field");
 }

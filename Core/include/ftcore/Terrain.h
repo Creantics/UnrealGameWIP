@@ -119,10 +119,64 @@ struct TerrainFeature {
     FTCORE_API bool covers(Vec2 p, float inset = 0.f) const;
 };
 
+// The swell's bend and the climax's ceiling of a world's core field (WorldTerrain::swell()), which
+// its outer fields take (TerrainField::swell) so that their ground before the pads is the core's.
+struct TerrainSwell {
+    std::array<Vec2, 2> at{};  // core metres
+    std::array<float, 2> by{}; // m
+    std::uint8_t count = 0;
+    float ceiling = 1e30f;     // m: kClimaxClear under the climax; 1e30 without one
+};
+
+// A pad whose height a field takes as given instead of solving it (TerrainField::pins).
+struct TerrainPin {
+    std::uint8_t district = 0; // in the field's layout
+    bool fromBase = true;      // terrainPinHeight() at the district's centre; else `height`
+    float height = 0.f;        // m, a whole kHeightStep, inside +-kMaxAbsHeight: may stand past the
+                               // pads' +-60 m (an upland hamlet), which binds only solved pads
+};
+
+// Where a field lies in a world bigger than one field. The default is the world's core field, the
+// one every world had before: centred on the core frame's origin, closed at its own square's edge.
+//
+// Field (i, j) is centred i x (kSamples - 1) samples east and j north of the core's centre (1500 m a
+// field at side 1000): sample (ix, iy) lies at -extent/2 + float(ix + i (kSamples - 1)) spacing on x
+// (WorldTerrain::samplePosition()), so two neighbours compute their shared column's positions to the
+// same bits. All positions are core metres: the world outline's minus 500 on each axis, as the
+// outline's origin is the core square's south-west corner. An outer field's layout gives its
+// districts' centres in that frame, and a district two fields hold has the same centre, to the bit,
+// in both, so that the pins and the roads' strips match at the seam.
+//
+// An outer field (i, j) != (0, 0) has no sites, sea or features yet (the plan places them later).
+// Its ground closes only at the world's box, kApron inside its edge as the core's closes at its
+// square's, and a pad's centre stays kEdgeMargin inside that. Every pad within kPinReach of a line it
+// shares with a neighbouring field, every pad outside its own square, and both ends of every road
+// that leaves its square, must be pinned, with the same heights in every field that holds them; the
+// rest it solves on its own. Its layout holds every pinned pad and every road whose banks (90 m
+// either side) reach its square, so the strips and shoulders on the shared column are the same in
+// both. If the pins break a rule that the free pads can't mend, generation fails and names the
+// pads: it never moves a pin or re-seeds. The core field takes no pins and no swell (it makes them);
+// its box, if given, is checked and otherwise unused.
+struct TerrainField {
+    static constexpr std::int32_t kMaxBox = 12000; // m: the longest side of a world's box
+    static constexpr std::int32_t kBoxStep = 250;  // m: the box's edges lie on multiples of this
+    static constexpr std::int32_t kHalo = 126;     // samples round a field for the stitch, later
+    static constexpr float kPinReach = WorldLayout::kDistrictRadius + 60.f; // a pad's flat and widest blend
+
+    std::int32_t i = 0, j = 0; // the key: fields east and north of the core
+    std::int32_t halo = 0;     // samples; 0 only, until the stitch
+    // The world's box, core metres: closed past these less kApron. All 0 for none (the core only).
+    std::int32_t west = 0, east = 0, south = 0, north = 0;
+    TerrainSwell swell{}; // the core's (WorldTerrain::swell()); outer fields only
+    std::array<TerrainPin, WorldLayout::kMaxDistricts> pins{};
+    std::uint8_t pinCount = 0;
+};
+
 // How generateWorldTerrain shapes the ground. The defaults make the game's ground.
 struct TerrainOptions {
     bool erode = true;          // wear the open ground with rain; off only to measure what the wear adds
     bool erodeMountains = true; // wear the mountains past the square's edge; off only to measure, likewise
+    TerrainField field{};       // which field of the world; the default is its core
 };
 
 class WorldTerrain {
@@ -175,7 +229,20 @@ public:
     // District i's pad height.
     float padHeight(std::size_t district) const { return pads_[district]; }
 
-    // The ground at p (world metres; outside the field, its nearest edge). No allocation.
+    // The field's key (TerrainField) and its centre, core metres: (0, 0) for the core.
+    std::int32_t fieldX() const { return fieldX_; }
+    std::int32_t fieldY() const { return fieldY_; }
+    Vec2 origin() const {
+        constexpr auto kStride = static_cast<std::int64_t>(kSamples - 1);
+        return {static_cast<float>(fieldX_ * kStride) * spacing(), static_cast<float>(fieldY_ * kStride) * spacing()};
+    }
+    // Sample (ix, iy)'s position, core metres. No allocation.
+    FTCORE_API Vec2 samplePosition(std::size_t ix, std::size_t iy) const;
+    // The swell's bend and the climax's ceiling the ground was made with: the core's, which its outer
+    // fields take (TerrainField::swell).
+    const TerrainSwell& swell() const { return swell_; }
+
+    // The ground at p (core metres; outside the field, its nearest edge). No allocation.
     FTCORE_API float height(Vec2 p) const;
     // The slope of the triangle under p: (dz/dx, dz/dy). No allocation.
     FTCORE_API Vec2 gradient(Vec2 p) const;
@@ -200,6 +267,8 @@ private:
     };
 
     float side_ = 0.f;
+    std::int32_t fieldX_ = 0, fieldY_ = 0;
+    TerrainSwell swell_{};
     std::size_t districtCount_ = 0, roadCount_ = 0;
     std::array<float, WorldLayout::kMaxDistricts> pads_{};
     std::array<Road, WorldLayout::kMaxRoads> roads_{};
@@ -216,14 +285,22 @@ private:
 FTCORE_API bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, WorldTerrain& out,
                                      std::string* error = nullptr, const TerrainOptions& options = {});
 
+// The height a pinned pad takes from the ground (TerrainPin::fromBase): the ground before the pads,
+// with the core's swell bent as `swell` and held under its ceiling, averaged over p and eight points
+// 30 m round it, as a solved pad starts, then held to the pads' +-60 m and put on the nearest whole
+// kHeightStep. A function of the spec, the swell and p only, so every field that pins a pad at p
+// gives it the same height to the bit. No allocation.
+FTCORE_API float terrainPinHeight(const WorldSpec& spec, const TerrainSwell& swell, Vec2 p);
+
 // The roads as a mask over the playable square, for the ground's material: size x size bytes, row iy
 // then column ix, pixel (ix, iy) centred at (-side/2 + (ix + 0.5) side/size, -side/2 + (iy + 0.5)
-// side/size). Each byte is 255 clamp(0.5 + (kRoadHalfWidth - d) / (2 kRoadMaskFeather), 0, 1), d the
+// side/size), shifted by `origin` (an outer field's, WorldTerrain::origin()). Each byte is 255
+// clamp(0.5 + (kRoadHalfWidth - d) / (2 kRoadMaskFeather), 0, 1), d the
 // distance to the nearest road's centre line: 255 out to 1 m, about 128 at the road's edge, 0 from
 // 5 m, so a filtered read gives the distance back (d = 5 - 4 byte/255) wherever it lies between 1 and
 // 5 m. The outermost ring is 0 whatever lies near it, so a clamped read past the square finds no road.
 // Writes all size * size bytes. No allocation.
-FTCORE_API void roadMask(const WorldLayout& layout, std::size_t size, std::uint8_t* out);
+FTCORE_API void roadMask(const WorldLayout& layout, std::size_t size, std::uint8_t* out, Vec2 origin = {});
 
 // The ground's shape as a mask over the whole field, for the ground's material: size x size bytes, row
 // iy then column ix, pixel (ix, iy) centred at (-extent/2 + (ix + 0.5) extent/size, -extent/2 + (iy +

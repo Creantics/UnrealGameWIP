@@ -259,13 +259,21 @@ struct KindGround {
     std::size_t bends = 0;
     int coast = -1;  // the town's sea lies past this edge (past()), once chosen
     float sea = 0.f; // m: its level
+    // How far out from the core's centre each edge the ground closes at lies, along its side (0 +x,
+    // 1 +y, 2 -x, 3 -y): the playable square's (`half`) in the core field, and in an outer field the
+    // world's box less kApron (TerrainField).
+    std::array<float, 4> bounds{};
 
-    // How far p lies past the playable square's edge on `side` (0 +x, 1 +y, 2 -x, 3 -y): negative
-    // inside.
+    // How far p lies past the edge on `side` (0 +x, 1 +y, 2 -x, 3 -y): negative inside.
     float past(Vec2 p, int side) const {
         const float along = side % 2 == 0 ? p.x : p.y;
-        return (side < 2 ? along : -along) - half;
+        return (side < 2 ? along : -along) - bounds[static_cast<std::size_t>(side)];
     }
+    // How far p lies past the nearest edge it is past, or inside the nearest edge (negative): along
+    // an axis, not round a corner.
+    float beyond(Vec2 p) const { return std::max(std::max(past(p, 0), past(p, 2)), std::max(past(p, 1), past(p, 3))); }
+    // p's nearest point on or in the closed box.
+    Vec2 inside(Vec2 p) const { return {std::clamp(p.x, -bounds[2], bounds[0]), std::clamp(p.y, -bounds[3], bounds[1])}; }
 
     // The broad swell under everything else: slow noise, bent around the entry and the climax
     // (bend()).
@@ -323,7 +331,7 @@ struct KindGround {
             else ey = dry;
         }
         if (ex <= 0.f && ey <= 0.f) return 0.f;
-        const Vec2 edge{std::clamp(p.x, -half, half), std::clamp(p.y, -half, half)};
+        const Vec2 edge = inside(p);
         const float wander =
             std::clamp(0.5f + 0.9f * fbm({edge.x / 180.f + 2.3f, edge.y / 180.f - 6.7f}, 3, 0.5f, rangeSeed ^ 0x85ebca6bu), 0.f, 1.f);
         const float foot = std::hypot(std::max(ex, 0.f), std::max(ey, 0.f)) - kFootWander * wander;
@@ -342,15 +350,15 @@ struct KindGround {
     // noise still changes, so that no corner is a turned arc. Negative short of it: inside the square,
     // by kAbyssLip - kAbyssJag at least.
     float pastLip(Vec2 p) const {
-        const float ex = std::fabs(p.x) - half, ey = std::fabs(p.y) - half;
-        const float beyond = std::hypot(std::max(ex, 0.f), std::max(ey, 0.f));
-        const Vec2 edge{std::clamp(p.x, -half, half), std::clamp(p.y, -half, half)};
-        const float probe = beyond > 0.f ? kAbyssProbe / beyond : 0.f;
+        const float ex = std::max(past(p, 0), past(p, 2)), ey = std::max(past(p, 1), past(p, 3));
+        const float out = std::hypot(std::max(ex, 0.f), std::max(ey, 0.f));
+        const Vec2 edge = inside(p);
+        const float probe = out > 0.f ? kAbyssProbe / out : 0.f;
         const Vec2 q{edge.x + (p.x - edge.x) * probe, edge.y + (p.y - edge.y) * probe};
         const float spread = smooth01(0.5f + fbm({q.x / 200.f, q.y / 200.f}, 3, 0.5f, seed ^ 0x27220a95u));
         const float jag = kAbyssJag * std::clamp(fbm({q.x / 12.f + 6.1f, q.y / 12.f - 2.7f}, 2, 0.5f, seed ^ 0x7f4a7c15u),
                                                  -1.f, 1.f);
-        return beyond - (kAbyssLip + kAbyssSpread * spread + jag);
+        return out - (kAbyssLip + kAbyssSpread * spread + jag);
     }
 
     // Past their lip the ruins' ground crumbles kAbyssCrumble over kAbyssCrumbleRun, then falls sheer
@@ -404,6 +412,32 @@ struct KindGround {
     }
 };
 
+// A world's ground before the pads, closed at its playable square's edge, its swell unbent.
+KindGround kindGround(const WorldSpec& spec) {
+    KindGround ground{spec.kind, spec.side * 0.5f, detail::mixSeed(spec.seed ^ 0x7e5a1c3du)};
+    ground.rangeSeed = detail::mixSeed(ground.seed ^ (0x632be5abu * (static_cast<std::uint32_t>(spec.kind) + 1u)));
+    ground.bounds.fill(ground.half);
+    return ground;
+}
+
+// The swell bent as the core's was (TerrainSwell).
+void takeSwell(KindGround& ground, const TerrainSwell& swell) {
+    ground.bendAt = swell.at;
+    ground.bendBy = swell.by;
+    ground.bends = std::min<std::size_t>(swell.count, 2);
+}
+
+// A pinned pad's height (terrainPinHeight()): the ground before the pads under `ceiling`, averaged
+// over the centre and eight points 30 m round it as a solved pad's first guess is, held to
+// +-kMaxPad and put on the nearest whole step.
+float pinHeightOn(const KindGround& ground, float ceiling, Vec2 c) {
+    const auto capped = [&](Vec2 p) { return underCeiling(ground.base(p), ceiling); };
+    float sum = capped(c);
+    for (const Vec2 d : kCompass) sum += capped({c.x + 30.f * d.x, c.y + 30.f * d.y});
+    const float unit = WorldTerrain::kHeightStep;
+    return std::round(std::clamp(sum / 9.f, -kMaxPad, kMaxPad) / unit) * unit;
+}
+
 // The line from an eye over the entry pad to a point over the climax's centre, and the ceiling it
 // sets the ground: kSightClear under the line within kCorridorHalf of it, rising at kCorridorSlope
 // beyond. Past either end the line keeps that end's height, so the ceiling has no seam anywhere.
@@ -434,6 +468,7 @@ struct Pad {
     PadShape shape = PadShape::Plain;
     bool site = false;
     bool settled = false;
+    bool pinned = false; // its height given (TerrainField::pins), never solved
 };
 
 // A site's shape, and how far it stands above the swell around it (for the climax: above the
@@ -588,11 +623,19 @@ std::uint16_t WorldTerrain::heightmapValue(std::size_t ix, std::size_t iy) const
     return static_cast<std::uint16_t>(std::clamp(v, 0L, 65535L));
 }
 
+Vec2 WorldTerrain::samplePosition(std::size_t ix, std::size_t iy) const {
+    constexpr auto kStride = static_cast<std::int64_t>(kSamples - 1);
+    const float cell = spacing(), half = extent() * 0.5f;
+    return {-half + static_cast<float>(static_cast<std::int64_t>(ix) + fieldX_ * kStride) * cell,
+            -half + static_cast<float>(static_cast<std::int64_t>(iy) + fieldY_ * kStride) * cell};
+}
+
 float WorldTerrain::height(Vec2 p) const {
     if (heights_.empty()) return 0.f;
+    const Vec2 o = origin();
     const float cell = spacing(), last = static_cast<float>(kSamples - 1);
-    const float gx = std::clamp((p.x + extent() * 0.5f) / cell, 0.f, last);
-    const float gy = std::clamp((p.y + extent() * 0.5f) / cell, 0.f, last);
+    const float gx = std::clamp((p.x - o.x + extent() * 0.5f) / cell, 0.f, last);
+    const float gy = std::clamp((p.y - o.y + extent() * 0.5f) / cell, 0.f, last);
     const std::size_t ix = std::min(static_cast<std::size_t>(gx), kSamples - 2);
     const std::size_t iy = std::min(static_cast<std::size_t>(gy), kSamples - 2);
     const float fx = gx - static_cast<float>(ix), fy = gy - static_cast<float>(iy);
@@ -603,9 +646,10 @@ float WorldTerrain::height(Vec2 p) const {
 
 Vec2 WorldTerrain::gradient(Vec2 p) const {
     if (heights_.empty()) return {};
+    const Vec2 o = origin();
     const float cell = spacing(), last = static_cast<float>(kSamples - 1);
-    const float gx = std::clamp((p.x + extent() * 0.5f) / cell, 0.f, last);
-    const float gy = std::clamp((p.y + extent() * 0.5f) / cell, 0.f, last);
+    const float gx = std::clamp((p.x - o.x + extent() * 0.5f) / cell, 0.f, last);
+    const float gy = std::clamp((p.y - o.y + extent() * 0.5f) / cell, 0.f, last);
     const std::size_t ix = std::min(static_cast<std::size_t>(gx), kSamples - 2);
     const std::size_t iy = std::min(static_cast<std::size_t>(gy), kSamples - 2);
     const float fx = gx - static_cast<float>(ix), fy = gy - static_cast<float>(iy);
@@ -661,6 +705,8 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
                           const TerrainOptions& options) {
     const auto fail = [&](const std::string& why) {
         out.side_ = 0.f;
+        out.fieldX_ = out.fieldY_ = 0;
+        out.swell_ = TerrainSwell{};
         out.districtCount_ = out.roadCount_ = out.featureCount_ = 0;
         out.heights_.clear();
         out.cliffs_.clear();
@@ -672,9 +718,99 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
     if (n == 0) return fail("the layout has no districts");
     if (layout.side() != spec.side || layout.kind() != spec.kind) return fail("the layout isn't this world's");
 
-    // The pads, the sites first.
+    // Which field of the world this is (TerrainField): the core, closed at its square's edge, or an
+    // outer field, closed only at the world's box, its ground before the pads the core's.
+    const TerrainField& place = options.field;
+    const bool outer = place.i != 0 || place.j != 0;
+    const float extent = spec.side + 2.f * WorldTerrain::kApron, cell = extent / static_cast<float>(kN - 1);
+    const std::int64_t offX = static_cast<std::int64_t>(place.i) * static_cast<std::int64_t>(kN - 1);
+    const std::int64_t offY = static_cast<std::int64_t>(place.j) * static_cast<std::int64_t>(kN - 1);
+    // The field's own square, edge to edge: its first and last samples.
+    const float west = -0.5f * extent + static_cast<float>(offX) * cell;
+    const float east = -0.5f * extent + static_cast<float>(offX + static_cast<std::int64_t>(kN - 1)) * cell;
+    const float south = -0.5f * extent + static_cast<float>(offY) * cell;
+    const float north = -0.5f * extent + static_cast<float>(offY + static_cast<std::int64_t>(kN - 1)) * cell;
+    if (place.halo != 0) return fail("the field's halo waits for the stitch: it must be 0");
+    const bool boxed = place.west != 0 || place.east != 0 || place.south != 0 || place.north != 0;
+    if (outer && !boxed) return fail("an outer field needs its world's box");
+    if (boxed) {
+        constexpr std::int32_t most = TerrainField::kMaxBox, step = TerrainField::kBoxStep;
+        for (const std::int32_t e : {place.west, place.east, place.south, place.north})
+            if (e < -most || e > most || e % step != 0)
+                return fail("the world's box must lie on whole " + std::to_string(step) + " m steps within " +
+                            std::to_string(most) + " m of the core");
+        if (place.east - place.west > most || place.north - place.south > most)
+            return fail("the world's box is over " + std::to_string(most) + " m a side");
+        if (static_cast<float>(place.west) > -0.5f * extent || static_cast<float>(place.east) < 0.5f * extent ||
+            static_cast<float>(place.south) > -0.5f * extent || static_cast<float>(place.north) < 0.5f * extent)
+            return fail("the world's box doesn't hold the core field");
+        if (!(west < static_cast<float>(place.east) && east > static_cast<float>(place.west) &&
+              south < static_cast<float>(place.north) && north > static_cast<float>(place.south)))
+            return fail("field (" + std::to_string(place.i) + ", " + std::to_string(place.j) + ") lies outside the world's box");
+    }
+    if (outer) {
+        if (!spec.sites.empty()) return fail("an outer field has no sites");
+        if (place.swell.count > 2) return fail("the swell bends round two points at most");
+        for (std::size_t k = 0; k < 2; ++k)
+            if (!std::isfinite(place.swell.at[k].x) || !std::isfinite(place.swell.at[k].y) || !std::isfinite(place.swell.by[k]))
+                return fail("the swell isn't finite");
+        if (!(place.swell.ceiling >= -WorldTerrain::kMaxAbsHeight)) return fail("the swell's ceiling is out of range");
+    } else {
+        if (place.pinCount != 0) return fail("the core field takes no pins");
+        if (place.swell.count != 0 || place.swell.ceiling != TerrainSwell{}.ceiling)
+            return fail("the core field makes the swell; it takes none");
+    }
+
+    // The ground before the pads: an outer field's swell is the core's, and it closes at the box.
+    KindGround ground = kindGround(spec);
+    if (outer) {
+        takeSwell(ground, place.swell);
+        ground.bounds = {static_cast<float>(place.east) - WorldTerrain::kApron, static_cast<float>(place.north) - WorldTerrain::kApron,
+                         -(static_cast<float>(place.west) + WorldTerrain::kApron),
+                         -(static_cast<float>(place.south) + WorldTerrain::kApron)};
+    }
+
+    // The pads, the pinned first (TerrainField::pins), then the sites.
     std::array<Pad, kMaxPads> pads{};
     for (std::size_t i = 0; i < n; ++i) pads[i].centre = layout.district(i).centre;
+    if (place.pinCount > place.pins.size()) return fail("more pins than districts");
+    for (std::size_t k = 0; k < place.pinCount; ++k) {
+        const TerrainPin& pin = place.pins[k];
+        if (pin.district >= n)
+            return fail("pinned district " + std::to_string(pin.district) + " is past the layout's " + std::to_string(n));
+        Pad& pad = pads[pin.district];
+        if (pad.pinned) return fail("district " + std::to_string(pin.district) + " is pinned twice");
+        if (!pin.fromBase && !(std::fabs(pin.height) <= WorldTerrain::kMaxAbsHeight &&
+                               std::round(pin.height / WorldTerrain::kHeightStep) * WorldTerrain::kHeightStep == pin.height))
+            return fail("pinned district " + std::to_string(pin.district) + "'s height isn't a whole step in range");
+        pad.height = pin.fromBase ? pinHeightOn(ground, place.swell.ceiling, pad.centre) : pin.height;
+        pad.pinned = pad.settled = true;
+    }
+    // In an outer field every pad stays kEdgeMargin inside the box's closed edge, and every pad a
+    // neighbouring field may hold too is pinned: one outside the field's square, or within kPinReach
+    // of a line it shares (one inside the world's box), and both ends of a road that leaves the square.
+    if (outer) {
+        const auto outside = [&](Vec2 c) { return c.x < west || c.x > east || c.y < south || c.y > north; };
+        const auto byLine = [](float at, float line, std::int32_t lo, std::int32_t hi) {
+            return line > static_cast<float>(lo) && line < static_cast<float>(hi) && std::fabs(at - line) < TerrainField::kPinReach;
+        };
+        for (std::size_t i = 0; i < n; ++i) {
+            const Vec2 c = pads[i].centre;
+            if (!(ground.beyond(c) <= -WorldLayout::kEdgeMargin))
+                return fail("district " + std::to_string(i) + " lies within " +
+                            std::to_string(static_cast<int>(WorldLayout::kEdgeMargin)) + " m of the world's closed edge");
+            const bool shared = byLine(c.x, west, place.west, place.east) || byLine(c.x, east, place.west, place.east) ||
+                                byLine(c.y, south, place.south, place.north) || byLine(c.y, north, place.south, place.north);
+            if ((shared || outside(c)) && !pads[i].pinned)
+                return fail("district " + std::to_string(i) + (outside(c) ? " lies outside the field" : " lies near a field line") +
+                            ": it must be pinned");
+        }
+        for (std::size_t r = 0; r < layout.roadCount(); ++r) {
+            const WorldRoad& road = layout.road(r);
+            if ((outside(pads[road.a].centre) || outside(pads[road.b].centre)) && !(pads[road.a].pinned && pads[road.b].pinned))
+                return fail("road " + std::to_string(r) + " leaves the field: both its ends must be pinned");
+        }
+    }
     int entry = -1, climax = -1;
     std::array<float, kMaxPads> design{};
     for (const WorldSite& s : spec.sites) {
@@ -809,17 +945,52 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
     }
     const std::size_t sightEnd = rules.size();
 
+    // The pins among themselves (option D's check): every two pinned pads within what the roads
+    // between them climb, and every rule on pinned pads alone, must hold as pinned. Where one
+    // doesn't, generation fails and names the pads; it never moves a pin.
+    const auto named = [&](const Constraint& c) {
+        std::string list;
+        for (std::uint8_t m = 0; m < c.count; ++m) list += (m ? ", " : "") + std::to_string(c.pad[m]);
+        return list;
+    };
+    for (std::size_t a = 0; a < n; ++a)
+        for (std::size_t b = a + 1; b < n; ++b)
+            if (pads[a].pinned && pads[b].pinned && std::fabs(pads[a].height - pads[b].height) > apart[a][b])
+                return fail("pinned districts " + std::to_string(a) + " and " + std::to_string(b) +
+                            " stand further apart than the roads between them climb");
+    for (const Constraint& c : rules) {
+        bool all = true;
+        float v = 0.f;
+        for (std::uint8_t m = 0; m < c.count; ++m) {
+            all = all && pads[c.pad[m]].pinned;
+            v += c.coef[m] * pads[c.pad[m]].height;
+        }
+        if (all && (v < c.lo - 1e-4f || v > c.hi + 1e-4f))
+            return fail("pinned districts " + named(c) + " break a rule that keeps the ground between them walkable");
+    }
+
     // Settles one pad on the whole unit nearest `want` that the pads settled so far allow: inside
     // every road-grade interval they set (always possible, as they keep to them among themselves),
     // then inside each rule that this pad alone still moves, while that leaves a whole unit, and
     // where it doesn't, on the whole unit nearest the rule that the rest allow.
+    // It can't where the pins leave the pad no height, or a rule on a pinned pad no room: it says so
+    // in `stuck` and returns false (option D's check), never moving a pin.
+    std::string stuck;
     const auto settle = [&](std::size_t k, float want) {
+        if (pads[k].settled) {
+            stuck = "district " + std::to_string(k) + " is settled twice";
+            return false;
+        }
         float lo = -kMaxPad, hi = kMaxPad;
         for (std::size_t j = 0; j < n; ++j)
             if (pads[j].settled) {
                 lo = std::max(lo, pads[j].height - apart[k][j]);
                 hi = std::min(hi, pads[j].height + apart[k][j]);
             }
+        if (lo > hi) {
+            stuck = "district " + std::to_string(k) + " has no height within 60 m that its roads to the pinned districts allow";
+            return false;
+        }
         for (const Constraint& c : rules) {
             float rest = 0.f, mine = 0.f;
             bool involved = false, open = false;
@@ -841,17 +1012,21 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
                 lo = qlo;
                 hi = qhi;
             } else {
+                for (std::uint8_t m = 0; m < c.count; ++m)
+                    if (pads[c.pad[m]].pinned) {
+                        stuck = "districts " + named(c) + " break a rule at a pinned district";
+                        return false;
+                    }
                 lo = hi = chi < lo ? lo : clo > hi ? hi : std::clamp(std::round(0.5f * (clo + chi) / unit) * unit, lo, hi);
             }
         }
         pads[k].height = std::clamp(std::round(std::clamp(want, lo, hi) / unit) * unit, lo, hi);
         pads[k].settled = true;
+        return true;
     };
     // The entry at the base and the climax kClimaxWant high, where the roads allow; then the swell
     // bends to meet them both, and the majors stand above or below the swell where they are.
-    KindGround ground{spec.kind, spec.side * 0.5f, detail::mixSeed(spec.seed ^ 0x7e5a1c3du)};
-    ground.rangeSeed = detail::mixSeed(ground.seed ^ (0x632be5abu * (static_cast<std::uint32_t>(spec.kind) + 1u)));
-    if (entry >= 0) settle(static_cast<std::size_t>(entry), 0.f);
+    if (entry >= 0 && !settle(static_cast<std::size_t>(entry), 0.f)) return fail(stuck);
     // The climax stands no higher than the sightline can still clear the pads and roads between.
     // With the near pairs' limits joined to the roads' (`differ`), each other pad's lowest height
     // follows from the entry's and the climax's, and every rule under the sightline has to hold with
@@ -888,14 +1063,14 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
                 break;
             }
     }
-    if (climax >= 0) settle(static_cast<std::size_t>(climax), climaxWant);
+    if (climax >= 0 && !settle(static_cast<std::size_t>(climax), climaxWant)) return fail(stuck);
     const float top = climax >= 0 ? pads[static_cast<std::size_t>(climax)].height : kMaxPad;
     if (entry >= 0 && climax >= 0) {
         sight.zFrom = pads[static_cast<std::size_t>(entry)].height + kEyeHeight;
         sight.zTo = top + kAimHeight;
         sight.on = true;
     }
-    {
+    if (!outer) {
         std::array<Vec2, 2> at{};
         std::array<float, 2> want{};
         std::size_t count = 0;
@@ -909,11 +1084,13 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
     }
     // A major stays kClimaxClear under the climax.
     for (std::size_t i = 0; i < n; ++i)
-        if (pads[i].site && !pads[i].settled) settle(i, std::min(ground.swell(pads[i].centre) + design[i], top - kClimaxClear));
+        if (pads[i].site && !pads[i].settled &&
+            !settle(i, std::min(ground.swell(pads[i].centre) + design[i], top - kClimaxClear)))
+            return fail(stuck);
 
     // The ground between the pads eases toward a ceiling it never meets: kClimaxClear under the
     // climax, and under the sightline.
-    const float climaxCeiling = climax >= 0 ? top - kClimaxClear : 1e30f;
+    const float climaxCeiling = outer ? place.swell.ceiling : climax >= 0 ? top - kClimaxClear : 1e30f;
     const auto cappedBase = [&](Vec2 p) { return underCeiling(ground.base(p), std::min(climaxCeiling, sight.ceiling(p))); };
 
     // The other pads start level with the ground they stand on, stay under the climax, and relax
@@ -942,7 +1119,7 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
         if (worst < 1e-3f) break;
     }
     for (std::size_t i = 0; i < n; ++i)
-        if (!pads[i].settled) settle(i, pads[i].height);
+        if (!pads[i].settled && !settle(i, pads[i].height)) return fail(stuck);
 
     // How wide each pad's blend is: wide enough that the blend's steepest part stays near 30
     // degrees for the deepest drop to the ground around it (a butte's near kButteSlope), within the
@@ -979,7 +1156,6 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
         sp.from = pads[layout.road(r).a].height;
         sp.to = pads[layout.road(r).b].height;
     }
-    const float extent = spec.side + 2.f * WorldTerrain::kApron, cell = extent / static_cast<float>(kN - 1);
     // The spacing at kTunedSide, worked out the same way, that the rain's numbers follow cell from: at
     // that side the two are the same and each number stands exactly as tuned.
     const float tunedCell = (WorldTerrain::kTunedSide + 2.f * WorldTerrain::kApron) / static_cast<float>(kN - 1);
@@ -1067,7 +1243,8 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
 
     // Pass 1: the ground as the pads, the roads and the kind make it, everywhere.
     const auto sampleAt = [&](std::size_t ix, std::size_t iy) {
-        return Vec2{-0.5f * extent + static_cast<float>(ix) * cell, -0.5f * extent + static_cast<float>(iy) * cell};
+        return Vec2{-0.5f * extent + static_cast<float>(static_cast<std::int64_t>(ix) + offX) * cell,
+                    -0.5f * extent + static_cast<float>(static_cast<std::int64_t>(iy) + offY) * cell};
     };
     // How freely rain falls on the ground at p, gap metres from the nearest road's centre line, 0 to
     // 1: not at all on a pad or within two samples of it, nor on a road's shoulders or within two
@@ -1079,11 +1256,14 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
         return w;
     };
     // How freely the rain may wear the ground at p, where it falls `rain` freely (rainWeight()): as
-    // freely, fading out over kWearMargin past the square's edge, where the mountains and the abyss
+    // freely, fading out over kWearMargin past the closed edge, where the mountains and the abyss
     // (apron()) take the ground over.
     const auto wearWeight = [&](Vec2 p, float rain) {
-        return std::min(1.f - smooth01((std::max(std::fabs(p.x), std::fabs(p.y)) - ground.half) / kWearMargin), rain);
+        return std::min(1.f - smooth01(ground.beyond(p) / kWearMargin), rain);
     };
+    // An outer field's rain falls in its own pattern: its dice are keyed by the field too.
+    const std::uint32_t fieldDice =
+        outer ? detail::mixSeed(0x9e3779b9u * static_cast<std::uint32_t>(place.i) ^ 0x85ebca6bu * static_cast<std::uint32_t>(place.j)) : 0u;
     out.heights_.assign(kN * kN, 0.f);
     out.cliffs_.assign(kN * kN, 0);
     // Each sample's rain (rainWeight()), for the wear and for the rain's way over the finished ground.
@@ -1163,12 +1343,15 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
         ease(spread, kN, true, false);
         ease(spread, kN, false, false);
         for (std::size_t i = 0; i < kN * kN; ++i) wearAt[i] *= soft[i] * std::min(spread[i], keep[i]);
-        const float from = (WorldTerrain::kApron - kWearMargin) / cell, to = static_cast<float>(kN - 1) - from;
+        // The core's droplets fall over its square and kWearMargin round it; an outer field's over all
+        // of it, short of the brush's reach at its edge.
+        const float from = outer ? static_cast<float>(kWearBrush) : (WorldTerrain::kApron - kWearMargin) / cell;
+        const float to = outer ? static_cast<float>(kN - 2 - kWearBrush) : static_cast<float>(kN - 1) - from;
         // As many droplets to each sample of that box as at kTunedSide.
         const float tunedFrom = (WorldTerrain::kApron - kWearMargin) / tunedCell;
         const float box = to - from, tunedBox = (static_cast<float>(kN - 1) - tunedFrom) - tunedFrom;
         const int drops = static_cast<int>(std::lround(static_cast<float>(kWearDrops) * ((box * box) / (tunedBox * tunedBox))));
-        wear(out.heights_.data(), wearAt.data(), kN, drops, kWearBrush, from, to, detail::mixSeed(spec.seed ^ 0x2f6b3d1au));
+        wear(out.heights_.data(), wearAt.data(), kN, drops, kWearBrush, from, to, detail::mixSeed(spec.seed ^ 0x2f6b3d1au ^ fieldDice));
         for (std::size_t i = 0; i < kN * kN; ++i)
             if (wearAt[i] > 0.f) out.heights_[i] = std::clamp(out.heights_[i], bankLowAt[i], wearTopAt[i]);
     }
@@ -1223,8 +1406,10 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
 
     // The town's sea, past the edge whose band of ground inside lies lowest on average: kSeaUnder
     // under that band's lowest ground at least, and a metre under the lowest pad, on a whole metre.
+    // An outer field has neither yet: the plan places them (TerrainField).
     out.featureCount_ = 0;
-    if (spec.kind == WorldKind::Town) {
+    const bool features = !outer;
+    if (features && spec.kind == WorldKind::Town) {
         std::array<double, 4> sum{};
         std::array<std::size_t, 4> count{};
         std::array<float, 4> low{1e30f, 1e30f, 1e30f, 1e30f};
@@ -1343,7 +1528,7 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
     // the walls of the ones before, well past the band it tests.
     std::vector<std::uint8_t> steep;
     std::vector<std::uint32_t> steepSat;
-    if (towers || ruins) {
+    if (features && (towers || ruins)) {
         steep.assign(kN * kN, 0);
         steepSat.assign((kN + 1) * (kN + 1), 0);
         for (std::size_t iy = 0; iy + 1 < kN; ++iy)
@@ -1371,7 +1556,7 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
     // kTrenchRelief at most, so that its walls stand about as tall all round: the longest run on the
     // kFeatureGrid whose walls' furthest reach is open and walkable, and of those the one whose middle
     // lies nearest a road. Players are kept out from a sample outside its edge.
-    if (towers) {
+    if (features && towers) {
         const int steps = static_cast<int>(std::floor((half - kWallClear) / kFeatureGrid));
         const int longest = static_cast<int>(std::floor((kTrenchMax - kTrenchMin) / kFeatureGrid));
         std::vector<float> lineLow(kN), lineHigh(kN); // the ground across a window, at each sample along it
@@ -1529,7 +1714,7 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
     // level at the lowest ground there and banks up at kPoolBankSlope to meet the ground. The pool's bed
     // lies kPoolBed under the platform from a sample in from its edge, so the ground at the edge stays
     // on the platform and slopes gently in, and its water lies kPoolSurface under the platform.
-    if (towers) {
+    if (features && towers) {
         constexpr std::size_t kWays = 2 * (sizeof(kPoolSizes) / sizeof(kPoolSizes[0])); // each size along x, then along y
         const float grow = kPoolMargin + kPoolBank;
         const int steps = static_cast<int>(std::floor((half - kWallClear) / kFeatureGrid));
@@ -1632,7 +1817,7 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
     // its edge a funnel falls toward its middle at kTrenchWall from the highest ground round it, so it
     // meets the ground wherever that lies, until kPitFunnel in from the edge, give or take kPitJitter,
     // the shaft drops sheer to the floor. Players are kept out from a sample outside its edge.
-    if (ruins) {
+    if (features && ruins) {
         const int steps = static_cast<int>(std::floor((half - kWallClear) / kFeatureGrid));
         for (int t = 0; t < kMaxPits && out.featureCount_ < WorldTerrain::kMaxFeatures; ++t) {
             const std::uint32_t seed = detail::mixSeed(ground.seed ^ (0x85ebca6bu * static_cast<std::uint32_t>(t + 1)));
@@ -1712,9 +1897,13 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
     // less and from kRangeSoft + kRangeSoftRun not at all, as bare rock. The slope limit below rounds
     // each worn height to a whole step, and where the rim meets the worn ground it may trim the rim's
     // first samples by a few centimetres.
-    if (options.erodeMountains && !ruins) {
+    // An outer field wears them only if it reaches past the closed edge: the furthest of its corners.
+    float reachesPast = -1e30f;
+    for (const Vec2 corner : {Vec2{west, south}, Vec2{east, south}, Vec2{west, north}, Vec2{east, north}})
+        reachesPast = std::max(reachesPast, ground.beyond(corner));
+    if (options.erodeMountains && !ruins && (!outer || reachesPast > 0.f)) {
         const auto rangeWeight = [&](Vec2 p) {
-            const float beyond = std::max(std::fabs(p.x), std::fabs(p.y)) - ground.half;
+            const float beyond = ground.beyond(p);
             const float shore = ground.coast >= 0 ? smooth01(-ground.past(p, ground.coast) / kWearMargin) : 1.f;
             return shore * smooth01(beyond / kWearMargin) *
                    smooth01((WorldTerrain::kApron - kRangeRim - beyond) / kRangeRimRun);
@@ -1742,7 +1931,7 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
             for (std::size_t jx = 0; jx < kNc; ++jx)
                 coarseAt[jy * kNc + jx] *= kRangeRain * rangeWeight(sampleAt(jx * kRangeCoarse, jy * kRangeCoarse));
         wear(coarse.data(), coarseAt.data(), kNc, kRangeDrops, kRangeBrush, static_cast<float>(kRangeBrush),
-             static_cast<float>(kNc - 2 - kRangeBrush), detail::mixSeed(spec.seed ^ 0x6a09e667u));
+             static_cast<float>(kNc - 2 - kRangeBrush), detail::mixSeed(spec.seed ^ 0x6a09e667u ^ fieldDice));
         for (std::size_t iy = 0; iy < kN; ++iy)
             for (std::size_t ix = 0; ix < kN; ++ix) {
                 const float w = rangeWeight(sampleAt(ix, iy));
@@ -1764,7 +1953,7 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
         for (std::size_t iy = 0; iy < kN; ++iy)
             for (std::size_t ix = 0; ix < kN; ++ix) rangeAt[iy * kN + ix] *= rangeWeight(sampleAt(ix, iy));
         wear(out.heights_.data(), rangeAt.data(), kN, kWearDrops, kWearBrush, static_cast<float>(kWearBrush),
-             static_cast<float>(kN - 2 - kWearBrush), detail::mixSeed(spec.seed ^ 0xbb67ae85u));
+             static_cast<float>(kN - 2 - kWearBrush), detail::mixSeed(spec.seed ^ 0xbb67ae85u ^ fieldDice));
         for (const float level : out.heights_)
             if (!(std::fabs(level) <= WorldTerrain::kMaxAbsHeight)) return fail("the ground leaves the height range");
     }
@@ -1776,6 +1965,7 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
         const auto wall = [&](std::size_t i) {
             const Vec2 p = sampleAt(i % kN, i / kN);
             if (!ruins) {
+                if (ground.coast < 0) return false; // an outer field's town has no sea yet
                 const float c = ground.past(p, ground.coast);
                 return c > 0.f && c <= kQuayRun + cell;
             }
@@ -1880,6 +2070,9 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
     }
 
     out.side_ = spec.side;
+    out.fieldX_ = place.i;
+    out.fieldY_ = place.j;
+    out.swell_ = outer ? place.swell : TerrainSwell{ground.bendAt, ground.bendBy, static_cast<std::uint8_t>(ground.bends), climaxCeiling};
     out.districtCount_ = n;
     out.roadCount_ = roads;
     for (std::size_t i = 0; i < kMaxPads; ++i) out.pads_[i] = i < n ? pads[i].height : 0.f;
@@ -1888,7 +2081,13 @@ bool generateWorldTerrain(const WorldSpec& spec, const WorldLayout& layout, Worl
     return true;
 }
 
-void roadMask(const WorldLayout& layout, std::size_t size, std::uint8_t* out) {
+float terrainPinHeight(const WorldSpec& spec, const TerrainSwell& swell, Vec2 p) {
+    KindGround ground = kindGround(spec);
+    takeSwell(ground, swell);
+    return pinHeightOn(ground, swell.ceiling, p);
+}
+
+void roadMask(const WorldLayout& layout, std::size_t size, std::uint8_t* out, Vec2 origin) {
     if (out == nullptr || size == 0) return;
     std::fill(out, out + size * size, std::uint8_t{0});
     if (size < 3) return;
@@ -1896,20 +2095,22 @@ void roadMask(const WorldLayout& layout, std::size_t size, std::uint8_t* out) {
     const float pixel = layout.side() / static_cast<float>(size);
     const float clear = WorldTerrain::kRoadHalfWidth + WorldTerrain::kRoadMaskFeather; // 0 from here
     const float last = static_cast<float>(size - 2);
-    // The pixels whose centres span metres lo..hi along an axis, kept off the outermost ring.
-    const auto lowPixel = [&](float lo) {
-        return static_cast<std::size_t>(std::clamp(std::floor((lo + half) / pixel - 0.5f), 1.f, last));
+    // The pixels whose centres span metres lo..hi along an axis whose square starts at `from` - half,
+    // kept off the outermost ring.
+    const auto lowPixel = [&](float lo, float from) {
+        return static_cast<std::size_t>(std::clamp(std::floor(((lo - from) + half) / pixel - 0.5f), 1.f, last));
     };
-    const auto highPixel = [&](float hi) {
-        return static_cast<std::size_t>(std::clamp(std::ceil((hi + half) / pixel - 0.5f), 1.f, last));
+    const auto highPixel = [&](float hi, float from) {
+        return static_cast<std::size_t>(std::clamp(std::ceil(((hi - from) + half) / pixel - 0.5f), 1.f, last));
     };
     for (std::size_t r = 0; r < layout.roadCount(); ++r) {
         const Vec2 a = layout.district(layout.road(r).a).centre, b = layout.district(layout.road(r).b).centre;
-        const std::size_t x0 = lowPixel(std::min(a.x, b.x) - clear), x1 = highPixel(std::max(a.x, b.x) + clear);
-        const std::size_t y0 = lowPixel(std::min(a.y, b.y) - clear), y1 = highPixel(std::max(a.y, b.y) + clear);
+        const std::size_t x0 = lowPixel(std::min(a.x, b.x) - clear, origin.x), x1 = highPixel(std::max(a.x, b.x) + clear, origin.x);
+        const std::size_t y0 = lowPixel(std::min(a.y, b.y) - clear, origin.y), y1 = highPixel(std::max(a.y, b.y) + clear, origin.y);
         for (std::size_t iy = y0; iy <= y1; ++iy)
             for (std::size_t ix = x0; ix <= x1; ++ix) {
-                const Vec2 p{-half + (static_cast<float>(ix) + 0.5f) * pixel, -half + (static_cast<float>(iy) + 0.5f) * pixel};
+                const Vec2 p{(origin.x - half) + (static_cast<float>(ix) + 0.5f) * pixel,
+                             (origin.y - half) + (static_cast<float>(iy) + 0.5f) * pixel};
                 float d = 0.f;
                 nearestOnSegment(p, a, b, d);
                 const float v = 255.f * std::clamp(0.5f + (WorldTerrain::kRoadHalfWidth - d) /
@@ -1930,9 +2131,10 @@ void shapeMask(const WorldTerrain& terrain, std::size_t size, std::uint8_t* out)
                                          {-1.f, 0.f}, {-kDiagonal, -kDiagonal}, {0.f, -1.f}, {kDiagonal, -kDiagonal}}};
     const std::array<float, 2> radii{static_cast<float>(WorldTerrain::kShapeNear) * terrain.spacing(),
                                      static_cast<float>(WorldTerrain::kShapeFar) * terrain.spacing()};
+    const Vec2 o = terrain.origin(); // an outer field's pixels lie over its own square
     for (std::size_t iy = 0; iy < size; ++iy)
         for (std::size_t ix = 0; ix < size; ++ix) {
-            const Vec2 p{-half + (static_cast<float>(ix) + 0.5f) * pixel, -half + (static_cast<float>(iy) + 0.5f) * pixel};
+            const Vec2 p{o.x + (-half + (static_cast<float>(ix) + 0.5f) * pixel), o.y + (-half + (static_cast<float>(iy) + 0.5f) * pixel)};
             const float h = terrain.height(p);
             float t = 0.f;
             for (const float r : radii) {
