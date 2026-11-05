@@ -10,7 +10,8 @@
 // idle; every attack as idle -> its clip from the fight's entry to the move's end, its tell from the entry to the
 // impact and its dust at the impact -> idle; the light and heavy hits (chips at each); the stagger; the go-down, the
 // hold (two cycles) and the get-up; the stepping turns and the walk out and back; the effects alone (a tell ahead, its
-// dust, chips on the body, then turned away: the weak point's glow, then a crit); the two deaths.
+// dust, chips on the body, then turned so the weak point faces the front (weakFacing): its glow, then a crit); the two
+// deaths.
 //
 // Angles are degrees in the reel's frame, + turning right; positions are metres, x ahead of the reel's front, y to its
 // right. A stepping turn follows the fight's: each cycle of the turn clip yaws turnDeg, eased (smootherstep) over the
@@ -78,6 +79,10 @@ struct ShowSpec {
     double hidden = 0.5;    // the boss hidden between two takes (s)
     double tellFor = 2.4;   // the lone tell (s)
     double glowFor = 3.0;   // the lone glow (s)
+    // Where the weak point faces, deg in the boss's frame (0 ahead, 90 its right, 180 behind). The glow and crit takes
+    // turn the boss so it faces the front: with turn clips in whole steps (rounded), without them from a hidden cut; a
+    // weak point ahead is not turned.
+    float weakFacing = 180.f;
 };
 
 struct ShowSegment {
@@ -128,7 +133,8 @@ struct ShowPose {
 };
 
 // False (and `out` empty) when the idle is missing, a clip index is outside the table, only one turn is given, an
-// attack enters past its own end, or the reel outgrows its arrays; *error says which.
+// attack enters past its own end, the weak point's facing is not a number, or the reel outgrows its arrays; *error says
+// which.
 FTCORE_API bool buildClipShow(const BeatClips& clips, const ShowSpec& spec, ClipShow& out, std::string* error = nullptr);
 
 // The pose at `t` s into the reel.
