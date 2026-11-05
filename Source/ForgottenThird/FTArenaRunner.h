@@ -252,11 +252,16 @@ private:
 	void PrepareBossCarried();
 	// The stone_bearer's walk counts for the fight, one log line at its end.
 	void LogStoneWalkCounts() const;
-	// -ArenaShowcase: the stone_bearer's reel (ftcore/ClipShowcase.h) built from its skin and moves, everyone else hidden,
-	// the HUD off and a fixed camera at play distance (the lead's rig: its arm plus the boss's reach) 30 degrees off the
-	// boss's front to its left. Each frame plays the reel's pose and the effects of the cues it crossed, logs each part's
+	// -ArenaShowcase: one boss's reel (ftcore/ClipShowcase.h) built from its skin and moves, everyone else hidden, the HUD
+	// off and a fixed camera at play distance (the lead's rig: its arm plus the boss's reach) 30 degrees off the boss's
+	// front to its left. The boss is the stone_bearer, else the kite_boss, else the line-up's first skinned enemy (any
+	// boss with a clip table). Each frame plays the reel's pose and the effects of the cues it crossed, logs each part's
 	// start (with the full frame counter, for the cutter) and quits at the end. False, with a warning, when there is no
-	// loaded stone_bearer to show (the flag then does nothing).
+	// skinned enemy to show (the flag then does nothing).
+	// Shared by every boss: the clips, their entry points, the cross-fades, the camera and the log. Boss-specific: the
+	// stepping turns and the walk's start phase (the stone_bearer's host only), the left-hand twins and the strike points
+	// (StrikeAt), and the effects, which ShowcaseCue plays only for a boss whose effects it knows (the stone_bearer's
+	// BossVfx); for any other it logs the cue and plays nothing, the seam where that boss's effects go.
 	bool BeginShowcase();
 	void TickShowcase(float DeltaSeconds);
 	void ShowcaseCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& Figure);
@@ -515,6 +520,7 @@ private:
 	// for the exposure to settle), the last part and cue time played, where the boss stood and faced at the start (the
 	// reel's frame), each reel attack's arena move, the strike point its tell was drawn at (for its dust), and done.
 	bool bShowcase = false;
+	int32 ShowSlot = -1; // the boss shown
 	TSharedPtr<ftcore::ClipShow> Show;
 	ftcore::ShowSpec ShowSpecUsed;
 	double ShowTime = 0.0;
