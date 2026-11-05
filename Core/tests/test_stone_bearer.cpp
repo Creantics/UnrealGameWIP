@@ -479,7 +479,7 @@ TEST_CASE("stone bearer as arena moves: each clip is entered at rate 1.0, its im
         const std::string_view clip = stoneBearerClipOf(src.id());
         CHECK(kind.moves[a].clip() == clip);
         const int c = clips.find(clip);
-        if (c < 0) continue; // the throws have no clip of their own: they play the idle
+        REQUIRE(c >= 0); // every move has a clip, the throws included (7b)
         const BeatClip& row = clips[static_cast<std::size_t>(c)];
         REQUIRE(row.impact > 0.0);
         const ArenaAttack& atk = kind.moves[a].attack;
