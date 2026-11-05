@@ -9,6 +9,11 @@ on:
   pull_request:
     paths: ['Core/**', 'Source/ForgottenCore/Private/Core/**', '.github/workflows/core.yml']
   workflow_dispatch:
+    inputs:
+      verbose_tests:
+        description: 'Run ftcore_tests alone with ctest -V, so its printed messages (each world''s ground hash) reach the log'
+        type: boolean
+        default: false
 
 jobs:
   test:
@@ -37,4 +42,8 @@ jobs:
       - name: Build
         run: cmake --build build --config Debug --parallel
       - name: Test
+        if: ${{ !inputs.verbose_tests }}
         run: ctest --test-dir build -C Debug --output-on-failure
+      - name: Test (verbose, dispatch only)
+        if: ${{ inputs.verbose_tests }}
+        run: ctest --test-dir build -C Debug -V -R ftcore_tests
