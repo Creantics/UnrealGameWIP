@@ -133,6 +133,17 @@ bool validClip(const BeatClips& clips, std::int16_t c) {
     return c == kNoClip || (c >= 0 && static_cast<std::size_t>(c) < clips.count);
 }
 
+// An angle in (-180, 180].
+float wrapDeg(float a) {
+    float r = std::fmod(a, 360.f);
+    if (r <= -180.f) {
+        r += 360.f;
+    } else if (r > 180.f) {
+        r -= 360.f;
+    }
+    return r;
+}
+
 } // namespace
 
 bool buildClipShow(const BeatClips& clips, const ShowSpec& spec, ClipShow& out, std::string* error) {
@@ -155,6 +166,8 @@ bool buildClipShow(const BeatClips& clips, const ShowSpec& spec, ClipShow& out, 
         problem = "more attacks than kMaxShowAttacks";
     } else if (spec.walkCycles < 1 || spec.turnSteps < 1 || spec.turnPivot <= 0.0) {
         problem = "the walk's cycles, the turn's steps and its pivot must be over 0";
+    } else if (!std::isfinite(spec.weakFacing)) {
+        problem = "the weak point's facing is not a number";
     }
     for (std::size_t i = 0; !problem && i < spec.attackCount; ++i) {
         const ShowAttack& a = spec.attacks[i];
@@ -255,7 +268,8 @@ bool buildClipShow(const BeatClips& clips, const ShowSpec& spec, ClipShow& out, 
         b.idle("idle", spec.after);
     }
 
-    // The effects alone: a tell ahead and its dust, chips on the body; turned away, the weak point's glow, then a crit.
+    // The effects alone: a tell ahead and its dust, chips on the body; turned so the weak point faces the front (a half
+    // turn for one behind, none for one ahead), its glow, then a crit.
     b.idle("fx_tell", 0.5);
     b.cue(b.t, ShowCue::Tell, ShowPlace::Ahead);
     b.idle("fx_tell", spec.tellFor);
@@ -264,13 +278,21 @@ bool buildClipShow(const BeatClips& clips, const ShowSpec& spec, ClipShow& out, 
     b.idle("fx_impact", 2.0);
     b.cue(b.t, ShowCue::Chips, ShowPlace::Surface);
     b.idle("fx_chips", 2.0);
+    // The turn that brings the weak point to the front: + right; a half turn goes left.
+    const float face = wrapDeg(-spec.weakFacing - b.yaw);
     if (turns) {
-        b.turn(spec.turnL, -1.f, 2 * spec.turnSteps);
+        const int steps = spec.turnDeg > 0.f ? static_cast<int>(std::lround(std::fabs(face) / spec.turnDeg)) : 0;
+        if (steps > 0) {
+            const bool right = face > 0.f && face < 180.f;
+            b.turn(right ? spec.turnR : spec.turnL, right ? 1.f : -1.f, steps);
+        }
         b.idle("fx_glow", 1.0);
-    } else {
+    } else if (std::fabs(face) >= 0.5f) {
         b.hide();
-        b.yaw = 180.f;
+        b.yaw = wrapDeg(-spec.weakFacing);
         b.add("fx_glow", spec.idle, 1.0, 0.0, true, true);
+    } else {
+        b.idle("fx_glow", 1.0);
     }
     b.cue(b.t, ShowCue::GlowOn, ShowPlace::WeakPoint);
     b.idle("fx_glow", spec.glowFor);
