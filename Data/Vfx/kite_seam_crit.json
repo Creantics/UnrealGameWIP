@@ -2,112 +2,117 @@
   "name": "kite_seam_crit",
   "emitters": [
     {
-      "name": "flecks",
+      "name": "flash",
       "bursts": [
         {
           "time": 0.0,
-          "count": 40
+          "count": 28
         }
       ],
       "duration": 0.1,
-      "maxParticles": 48,
+      "maxParticles": 30,
       "lifetime": [
-        0.8,
-        1.4
+        0.1,
+        0.16
       ],
-      "shape": "sphere",
-      "radius": 0.25,
-      "speed": [
-        3.0,
-        7.0
+      "shape": "box",
+      "boxHalfExtents": [
+        0.46,
+        0.06,
+        0.1
       ],
-      "gravity": [
-        0.0,
-        -4.0,
-        0.0
-      ],
-      "drag": 1.6,
       "startSize": [
-        0.05,
-        0.11
+        0.14,
+        0.22
       ],
       "sizeOverLife": [
         {
           "t": 0,
-          "v": 1.0
+          "v": 0.8
+        },
+        {
+          "t": 0.25,
+          "v": 1.5
         },
         {
           "t": 1,
-          "v": 0.7
+          "v": 1.2
         }
       ],
       "startRotation": [
         0.0,
         6.28
       ],
-      "angularVelocity": [
-        -6.0,
-        6.0
-      ],
       "colorOverLife": [
         {
           "t": 0,
           "color": [
-            0.86,
-            0.82,
-            0.72,
-            1.0
+            3.2,
+            1.4,
+            1.8,
+            0.9
           ]
         },
         {
-          "t": 0.7,
+          "t": 0.3,
           "color": [
-            0.8,
-            0.76,
-            0.66,
-            1.0
+            2.6,
+            0.6,
+            1.0,
+            0.7
           ]
         },
         {
           "t": 1,
           "color": [
-            0.8,
-            0.76,
-            0.66,
+            1.6,
+            0.2,
+            0.45,
             0.0
           ]
         }
       ],
-      "blend": "alpha",
+      "blend": "additive",
       "sprite": "soft",
-      "softness": 0.0
+      "softness": 0.3,
+      "depthFade": true
     },
     {
       "name": "spray",
       "bursts": [
         {
           "time": 0.0,
-          "count": 24
+          "count": 26
         }
       ],
       "duration": 0.1,
       "maxParticles": 28,
       "lifetime": [
-        0.4,
-        0.8
+        0.35,
+        0.6
       ],
-      "shape": "sphere",
-      "radius": 0.15,
-      "speed": [
-        4.0,
-        9.0
+      "shape": "box",
+      "boxHalfExtents": [
+        0.42,
+        0.04,
+        0.08
+      ],
+      "velocityMin": [
+        -3.0,
+        -6.0,
+        -1.5
+      ],
+      "velocityMax": [
+        3.0,
+        -2.5,
+        2.5
       ],
       "gravity": [
         0.0,
         -9.0,
         0.0
       ],
-      "drag": 2.0,
+      "drag": 1.2,
       "startSize": [
         0.06,
         0.12
@@ -119,25 +124,34 @@
         },
         {
           "t": 1,
-          "v": 0.5
+          "v": 0.6
         }
       ],
       "colorOverLife": [
         {
           "t": 0,
           "color": [
-            0.55,
-            0.0,
-            0.02,
+            0.85,
+            0.08,
+            0.2,
             1.0
+          ]
+        },
+        {
+          "t": 0.6,
+          "color": [
+            0.6,
+            0.04,
+            0.12,
+            0.9
           ]
         },
         {
           "t": 1,
           "color": [
-            0.3,
-            0.0,
-            0.01,
+            0.5,
+            0.03,
+            0.1,
             0.0
           ]
         }
@@ -146,54 +160,99 @@
       "sprite": "spark",
       "stretch": 0.05,
       "stretchMax": 4.0,
-      "softness": 0.0
+      "depthFade": true
     },
     {
-      "name": "flash",
+      "name": "flecks",
       "bursts": [
         {
           "time": 0.0,
-          "count": 1
+          "count": 18
         }
       ],
       "duration": 0.1,
-      "maxParticles": 2,
-      "lifetime": 0.15,
-      "shape": "point",
-      "startSize": 2.6,
+      "maxParticles": 20,
+      "lifetime": [
+        0.6,
+        0.9
+      ],
+      "shape": "box",
+      "boxHalfExtents": [
+        0.4,
+        0.04,
+        0.08
+      ],
+      "velocityMin": [
+        -2.5,
+        -4.0,
+        -1.0
+      ],
+      "velocityMax": [
+        2.5,
+        -1.0,
+        2.0
+      ],
+      "gravity": [
+        0.0,
+        -6.0,
+        0.0
+      ],
+      "drag": 1.4,
+      "startSize": [
+        0.07,
+        0.16
+      ],
       "sizeOverLife": [
         {
           "t": 0,
-          "v": 0.7
+          "v": 1.0
         },
         {
           "t": 1,
-          "v": 1.3
+          "v": 0.8
         }
+      ],
+      "startRotation": [
+        0.0,
+        6.28
+      ],
+      "angularVelocity": [
+        -8.0,
+        8.0
       ],
       "colorOverLife": [
         {
           "t": 0,
           "color": [
-            3.0,
-            2.2,
-            1.8,
+            0.86,
+            0.78,
+            0.72,
+            1.0
+          ]
+        },
+        {
+          "t": 0.75,
+          "color": [
+            0.8,
+            0.7,
+            0.66,
             1.0
           ]
         },
         {
           "t": 1,
           "color": [
-            1.6,
-            0.2,
-            0.1,
+            0.8,
+            0.7,
+            0.66,
             0.0
           ]
         }
       ],
-      "blend": "additive",
-      "sprite": "soft",
-      "softness": 0.0
+      "blend": "alpha",
+      "sprite": "chip",
+      "coreShade": 0.55,
+      "depthFade": true
     }
   ]
 }

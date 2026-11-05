@@ -82,9 +82,9 @@ TEST_CASE("vfx: the Kite-Mother's effects load without warnings and keep their p
         bool loops;
     };
     const Expect files[] = {{"kite_swoop_tell", 3, 270, true},
-                            {"kite_seam_open", 3, 62, true},
+                            {"kite_seam_open", 4, 62, true},
                             {"kite_seam_crit", 3, 82, false},
-                            {"kite_hit", 3, 34, false}};
+                            {"kite_hit", 4, 50, false}};
     for (const Expect& f : files) {
         CAPTURE(f.file);
         VfxEffect e;
@@ -105,8 +105,8 @@ TEST_CASE("vfx: the Kite-Mother's effects load without warnings and keep their p
     }
 }
 
-// Round 6 (RUBRIC E5): the ring is whole in its first frames and does not stand over the lead, the glow empties within a third
-// of a second of a stop, and the plain-hit puff has a bright core the gameplay camera can see, still small next to the crit.
+// Round 6 (RUBRIC E5): the ring is whole in its first frames and does not stand over the lead. Round 7 (S-45): the seam's glow
+// and crit are slit-sized, and the plain hit is sized for the gameplay camera, still smaller than the crit.
 TEST_CASE("vfx: the Kite-Mother's effects read at the gameplay camera and stop within a third of a second") {
     const auto bounds = [](const VfxCurve& c, float& lo, float& hi) { c.bounds(lo, hi); };
     // The mean alpha of an emitter's colour over its life.
@@ -136,52 +136,118 @@ TEST_CASE("vfx: the Kite-Mother's effects read at the gameplay camera and stop w
     CHECK(edge.colorOverLife.evaluate(0.f, 0.f).a >= 0.5f);
     CHECK(dust.colorOverLife.evaluate(0.f, 0.f).a >= 0.3f);
 
+    // Round 7 (FXB4, FX4, FX5): the seam's glow is the slit, not the card. Spec x on the seam bone runs along the smile
+    // (about 1.0 m wide; Interchange and the Vfx plan both swap y and z, so the spec frame is the glb's seam-local frame).
+    // Every seam emitter spawns in a box about that wide and thin across it, no sprite grows past 0.35 m, and each fades
+    // against the card. The glow layers that ride the bone empty within 0.3 s of a stop and end clear; one of them throbs
+    // once a beat at 72 bpm; the wet layer is raw pink (red over blue over green), not a hot orange.
+    const auto peakSize = [&](const VfxEmitter& e) {
+        float lo = 0.f, startHi = 0.f, growHi = 0.f;
+        bounds(e.startSize, lo, startHi);
+        bounds(e.sizeOverLife, lo, growHi);
+        return startHi * growHi;
+    };
+    const auto slitShaped = [&](const VfxEmitter& e) {
+        CAPTURE(e.name);
+        CHECK(e.shape == VfxShape::Box);
+        CHECK(e.boxHalfExtents.x >= 0.35f);
+        CHECK(e.boxHalfExtents.x <= 0.5f);
+        CHECK(e.boxHalfExtents.y <= 0.12f);
+        CHECK(e.boxHalfExtents.z <= 0.12f);
+        CHECK(peakSize(e) <= 0.35f);
+        CHECK(e.depthFade);
+    };
     VfxEffect open;
     REQUIRE(loadEffect("kite_seam_open", open));
-    for (const char* name : {"pulse", "core"}) {
-        CAPTURE(name);
-        const int i = findVfxEmitter(open, name);
-        REQUIRE(i >= 0);
-        const VfxEmitter& e = open.emitters[static_cast<std::size_t>(i)];
+    bool beat = false;
+    for (const VfxEmitter& e : open.emitters) {
+        CAPTURE(e.name);
+        slitShaped(e);
         float lifeLo = 0.f, lifeHi = 0.f;
         bounds(e.lifetime, lifeLo, lifeHi);
-        CHECK(lifeHi <= 0.3f);                                    // a stop leaves nothing of the glow after 0.3 s
-        CHECK(e.colorOverLife.evaluate(1.f, 0.f).a == 0.f);       // and each sprite ends clear, no pop
-        CHECK(e.blend == VfxBlend::Additive);
-        // Strength in the steady state, sprites alive at once x their mean alpha: what the one-second sprite it replaced gave.
-        const float strength = e.rate * lifeHi * meanAlpha(e);
-        CHECK(strength >= 0.7f);
-        CHECK(strength <= 1.1f);
+        CHECK(e.colorOverLife.evaluate(1.f, 0.f).a == 0.f); // each sprite ends clear, no pop
+        if (e.space == VfxSpace::Local)
+            CHECK(lifeHi <= 0.3f); // a stop leaves nothing of the glow after 0.3 s
+        else
+            CHECK(lifeHi <= 0.45f); // the drips: a short run down the card's face
+        if (e.loop && e.bursts.size() == 1 && e.bursts[0].time == 0.f) {
+            CHECK(e.duration == doctest::Approx(60.f / 72.f).epsilon(0.01));
+            beat = true;
+        }
+    }
+    CHECK(beat);
+    const int flesh = findVfxEmitter(open, "flesh");
+    REQUIRE(flesh >= 0);
+    {
+        const VfxEmitter& e = open.emitters[static_cast<std::size_t>(flesh)];
+        CHECK(e.blend == VfxBlend::Alpha);
+        CHECK(meanAlpha(e) >= 0.4f);
+        const VfxColor c = e.colorOverLife.evaluate(0.25f, 0.f);
+        CHECK(c.r >= 2.f * c.b);
+        CHECK(c.b >= c.g);
+        CHECK(c.a >= 0.6f);
     }
 
     VfxEffect hit, crit;
     REQUIRE(loadEffect("kite_hit", hit));
     REQUIRE(loadEffect("kite_seam_crit", crit));
+    // The crit flares along the slit, flings wet pink and tumbles torn flecks: no single big sprite anywhere in it.
+    for (const VfxEmitter& e : crit.emitters) slitShaped(e);
+    const int flash = findVfxEmitter(crit, "flash");
+    const int torn = findVfxEmitter(crit, "flecks");
+    REQUIRE(flash >= 0);
+    REQUIRE(torn >= 0);
+    const VfxEmitter& critFlash = crit.emitters[static_cast<std::size_t>(flash)];
+    CHECK(critFlash.blend == VfxBlend::Additive);
+    CHECK(crit.emitters[static_cast<std::size_t>(torn)].sprite == VfxSprite::Chip);
+
+    // The plain hit reads at 10 m (FX1-FX3): a short bright core of 0.6 m or more, a damp puff over a metre, big pale
+    // droplets, and torn scraps that vary in size, spin, fall and fade.
     const int core = findVfxEmitter(hit, "core");
     const int droplets = findVfxEmitter(hit, "droplets");
-    const int flash = findVfxEmitter(crit, "flash");
+    const int mist = findVfxEmitter(hit, "mist");
+    const int scraps = findVfxEmitter(hit, "scraps");
     REQUIRE(core >= 0);
     REQUIRE(droplets >= 0);
-    REQUIRE(flash >= 0);
+    REQUIRE(mist >= 0);
+    REQUIRE(scraps >= 0);
     const VfxEmitter& puffCore = hit.emitters[static_cast<std::size_t>(core)];
-    float coreLo = 0.f, coreHi = 0.f, flashLo = 0.f, flashHi = 0.f;
+    float coreLo = 0.f, coreHi = 0.f;
     bounds(puffCore.startSize, coreLo, coreHi);
-    bounds(crit.emitters[static_cast<std::size_t>(flash)].startSize, flashLo, flashHi);
     CHECK(puffCore.blend == VfxBlend::Additive);
-    CHECK(coreLo >= 0.4f);                // a few pixels at 10 m
-    CHECK(coreHi <= 0.4f * flashHi);      // and small next to the crit's flash
+    CHECK(coreLo >= 0.6f);
     float lifeLo = 0.f, lifeHi = 0.f;
     bounds(puffCore.lifetime, lifeLo, lifeHi);
-    CHECK(lifeHi <= 0.2f);                // a short bright core
-    // The flecks are big enough to see and pale enough to read against the dark sheets.
-    const VfxEmitter& flecks = hit.emitters[static_cast<std::size_t>(droplets)];
-    float fleckLo = 0.f, fleckHi = 0.f;
-    bounds(flecks.startSize, fleckLo, fleckHi);
-    CHECK(fleckLo >= 0.1f);
-    const VfxColor c0 = flecks.colorOverLife.evaluate(0.f, 0.f);
+    CHECK(lifeHi <= 0.2f); // a short bright core
+    // Its one sprite still covers less than the crit's flash line.
+    float flashCount = 0.f;
+    for (const VfxBurst& b : critFlash.bursts) flashCount += static_cast<float>(b.count);
+    CHECK(peakSize(puffCore) * peakSize(puffCore) < flashCount * peakSize(critFlash) * peakSize(critFlash));
+    const VfxEmitter& puff = hit.emitters[static_cast<std::size_t>(mist)];
+    float mistLo = 0.f, mistHi = 0.f;
+    bounds(puff.startSize, mistLo, mistHi);
+    CHECK(mistLo >= 1.0f);
+    CHECK(puff.depthFade);
+    CHECK(puff.colorOverLife.evaluate(0.f, 0.f).a >= 0.6f);
+    // The droplets are big enough to see and pale enough to read against the dark sheets.
+    const VfxEmitter& drops = hit.emitters[static_cast<std::size_t>(droplets)];
+    float dropLo = 0.f, dropHi = 0.f;
+    bounds(drops.startSize, dropLo, dropHi);
+    CHECK(dropLo >= 0.2f);
+    const VfxColor c0 = drops.colorOverLife.evaluate(0.f, 0.f);
     CHECK((c0.r + c0.g + c0.b) / 3.f >= 0.6f);
     CHECK(c0.a >= 0.9f);
-    // The puff stays under the crit effect's particle count.
+    const VfxEmitter& bits = hit.emitters[static_cast<std::size_t>(scraps)];
+    CHECK(bits.sprite == VfxSprite::Chip);
+    float bitLo = 0.f, bitHi = 0.f, spinLo = 0.f, spinHi = 0.f;
+    bounds(bits.startSize, bitLo, bitHi);
+    bounds(bits.angularVelocity, spinLo, spinHi);
+    CHECK(bitHi >= 2.f * bitLo);
+    CHECK(spinLo < 0.f);
+    CHECK(spinHi > 0.f);
+    CHECK(bits.gravity.y < 0.f);
+    CHECK(bits.colorOverLife.evaluate(1.f, 0.f).a == 0.f);
+    // The hit stays under the crit effect's particle count.
     std::uint32_t hitTotal = 0, critTotal = 0;
     for (const VfxEmitter& e : hit.emitters) hitTotal += e.maxParticles;
     for (const VfxEmitter& e : crit.emitters) critTotal += e.maxParticles;
