@@ -92,11 +92,16 @@ void AFTArenaGameMode::StartPlay()
 			ShotAt.Sort();
 		}
 	}
-	bIdle = FParse::Param(Cmd, TEXT("ArenaIdle"));
+	bShowcase = FParse::Param(Cmd, TEXT("ArenaShowcase"));
+	bIdle = bShowcase || FParse::Param(Cmd, TEXT("ArenaIdle"));
 	bAutoPlay = !bIdle && (FParse::Param(Cmd, TEXT("ArenaAutoPlay")) || !ShotPrefix.IsEmpty());
 	bQuitOnFinish = FParse::Param(Cmd, TEXT("ArenaQuitOnFinish"));
 	bOverview = FParse::Param(Cmd, TEXT("ArenaOverview"));
 	bHoldLoad = FParse::Param(Cmd, TEXT("ArenaHoldLoad"));
+	FParse::Value(Cmd, TEXT("ArenaParryHold="), ParryHold);
+	ParryHold = FMath::Clamp(ParryHold, 0.f, 10.f);
+	FParse::Value(Cmd, TEXT("ArenaBossLoop="), BossLoop);
+	BossLoop = BossLoop.TrimStartAndEnd();
 	bBossSplit = FParse::Param(Cmd, TEXT("ArenaBossSplit"));
 	bBossCam = FParse::Param(Cmd, TEXT("ArenaBossCam"));
 	int32 SeedValue = 1;
@@ -540,9 +545,12 @@ void AFTArenaGameMode::Begin()
 	Setup.bAutoPlay = bAutoPlay;
 	Setup.bIdle = bIdle;
 	Setup.bHoldLoad = bHoldLoad;
+	Setup.ParryHold = ParryHold;
+	Setup.BossLoop = BossLoop;
 	Setup.bBossSplitAtStart = bBossSplit;
 	Setup.bQuitOnFinish = bQuitOnFinish;
 	Setup.bShots = !ShotPrefix.IsEmpty();
+	Setup.bShowcase = bShowcase;
 	Runner->Begin(Setup);
 }
 
@@ -602,7 +610,7 @@ void AFTArenaGameMode::Tick(float DeltaSeconds)
 		Begin();
 	}
 	Runner->TickFight(DeltaSeconds, Shots(DeltaSeconds));
-	if (bBossCam)
+	if (bBossCam && !bShowcase)
 	{
 		BossCam();
 	}
@@ -743,7 +751,7 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 		}
 		break;
 	case 5:
-		if (Runner->IsFinished() && Runner->GetResultAge() >= 0.8)
+		if (Runner->IsFinished() && Runner->GetResultShowAge() >= 0.8)
 		{
 			TakeShot(TEXT("6_result"));
 			return true;

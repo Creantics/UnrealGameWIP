@@ -21,6 +21,7 @@
 #include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
 #include "ftcore/BeatChoreo.h"
+#include "ftcore/ClipShowcase.h"
 
 #include "FTArenaBossVfx.h"
 #include "FTKiteHost.h"
@@ -36,6 +37,7 @@ class UFTVfxComponent;
 #include "FTArenaRunner.generated.h"
 
 class AFTArenaFighter;
+class ACameraActor;
 class AStaticMeshActor;
 class APlayerController;
 class UWorld;
@@ -65,9 +67,39 @@ struct FFTArenaSkin
 	// Optional, with face_down: the go-down into it and the get-up out of it, else face_down throughout.
 	int32 FaceDownIn = -1;
 	int32 FaceDownOut = -1;
+	// Optional, both or neither: the stepping turns in place (looping cycles; the runner yaws the figure along them).
+	int32 TurnL = -1;
+	int32 TurnR = -1;
 	std::array<int32, ftcore::kMaxArenaMoves> MoveClip{};
+	// Optional, per move: its recoil (`<clip>_recoil`), played from a parry of it through the Open and the stagger after,
+	// else the stagger.
+	std::array<int32, ftcore::kMaxArenaMoves> RecoilClip{};
+	// Optional per move: its mirrored clip (the move's clip id with _l), played when the run calls its blow to the left.
+	std::array<int32, ftcore::kMaxArenaMoves> MoveClipL{};
 
 	bool IsLoaded() const { return Clips.IsValid() && Idle >= 0; }
+};
+
+// One enemy slot's stepping turn (UFTArenaRunner::StepTurn): which way (+1 right, the yaw rising; -1 left; 0 none), since
+// when (Fight time), the facing it began from, the cycles it is committed to, the crossfade into its clip (s), where its
+// pivot foot stood as the cycle began, from the actor's origin in world axes (when found), whether the first cycle's foot
+// check is logged, whether Core wanted its body moving on the last step (any kind but the stone_bearer), and the fight's
+// counts: turns begun, steps, turns cancelled, and starts held by a move due within a step.
+struct FFTArenaTurn
+{
+	int32 Sign = 0;
+	double Start = -1e9;
+	ftcore::Vec2 From;
+	int32 Cycles = 0;
+	double Blend = 0.25;
+	FVector Foot = FVector::ZeroVector;
+	bool bFoot = false;
+	bool bChecked = false;
+	bool bMoves = false;
+	int32 Begun = 0;
+	int32 Steps = 0;
+	int32 Cancelled = 0;
+	int32 HeldPick = 0;
 };
 
 // What a fight is begun with: the def (the fighter kit and the enemies, already fitted to the zone), the fitted zone, where
@@ -87,15 +119,21 @@ struct FFTArenaRunSetup
 	bool bAutoPlay = false;
 	bool bIdle = false;
 	bool bHoldLoad = false;
+	float ParryHold = 0.f; // -ArenaParryHold=<s>
+	FString BossLoop;      // -ArenaBossLoop=<clip> (review only; empty: off)
 	bool bBossSplitAtStart = false; // -ArenaBossSplit
 	// Exit the process on the outcome (0 a victory, 1 a defeat), and end a fight that outlasts the watchdog.
 	bool bQuitOnFinish = false;
 	// A -ArenaShot run: the shots decide when to quit, and nothing fights again.
 	bool bShots = false;
-	// After the outcome, fight again on a press (the autopilot after 4 s); else the fight stays over for the owner.
+	// After the outcome, fight again on a press (the autopilot after 4 s, or once a boss's defeat clip has played out, if
+	// that is longer); else the fight stays over for the owner.
 	bool bFightAgain = true;
 	// The player's figure replaces the controller's pawn, which is destroyed; else the old pawn is only unpossessed.
 	bool bReplacePawn = true;
+	// -ArenaShowcase (review only): no fight; the boss's clips one at a time and its effects alone, from a fixed camera,
+	// then the process quits (see BeginShowcase).
+	bool bShowcase = false;
 };
 
 UCLASS()
@@ -150,6 +188,9 @@ public:
 	double GetNow() const { return Now; }
 	// Seconds since the fight ended (0 while it runs).
 	double GetResultAge() const { return bResultLogged ? Now - ResultTime : 0.0; }
+	// Seconds since the result may show (negative before): a victory's banner waits for the death clips on screen as the
+	// fight ended to play out, so it never hides a boss's death.
+	double GetResultShowAge() const { return bResultLogged ? Now - ResultTime - ResultWait : 0.0; }
 	bool IsAutoPlay() const { return bAutoPlay; }
 	bool IsIdle() const { return bIdle; }
 	// The result offers to fight again.
@@ -206,6 +247,18 @@ private:
 	// The stone_bearer's walk after each step (its skinned figure only): starts and stops it from Core's wanted speed, and
 	// between moves moves its body at the walk clip's speed, or holds it still (see kStoneWalkHold in the .cpp).
 	void StoneBearerWalk(const ftcore::ArenaOutput& Out);
+	// The stepping turn of any enemy whose skin has both turn clips (see kArenaTurnDeg in the .cpp). bHost: the
+	// stone_bearer's host is in the fight (the stone_bearer turns only with it). Before each step: Core's facing held while
+	// it stands, and the turn's facing written while one is under way. After each step: a turn begun, carried into another
+	// cycle, ended or cancelled, a log line each.
+	bool CanTurn(int32 I, bool bHost) const;
+	void TurnsBeforeTick(bool bHost);
+	void StepTurns(const ftcore::ArenaOutput& Out, bool bHost);
+	void StepTurn(int32 I, const ftcore::ArenaOutput& Out);
+	// Slot I's turn facing T seconds (Fight time) into it.
+	ftcore::Vec2 TurnFacing(int32 I, double T) const;
+	// The turn counts of every slot with turn clips but the stone_bearer's (LogStoneWalkCounts has its), a log line each.
+	void LogTurnCounts() const;
 	// A hit reaction for slot I, light or heavy, when it flinches (the stone_bearer's slot holds a playing one a while).
 	void StartFlinch(int32 I, bool bHeavy);
 	// The boss's effects: its attack part going From -> To (its tell through the startup, its impact as it turns active),
@@ -225,6 +278,22 @@ private:
 	void PrepareBossCarried();
 	// The stone_bearer's walk counts for the fight, one log line at its end.
 	void LogStoneWalkCounts() const;
+	// -ArenaShowcase: one boss's reel (ftcore/ClipShowcase.h) built from its skin and moves, everyone else hidden, the HUD
+	// off and a fixed camera at play distance (the lead's rig: its arm plus the boss's reach) 30 degrees off the boss's
+	// front to its left. The boss is the stone_bearer, else the kite_boss, else the line-up's first skinned enemy (any
+	// boss with a clip table). Each frame plays the reel's pose and the effects of the cues it crossed, logs each part's
+	// start (with the full frame counter, for the cutter) and quits at the end. False, with a warning, when there is no
+	// skinned enemy to show (the flag then does nothing).
+	// Shared by every boss: the clips, their entry points, the cross-fades, the camera, the log and the stepping turns (for
+	// a boss with turn_l and turn_r). Boss-specific: the walk's start phase (the stone_bearer's host only), the left-hand
+	// twins and the strike points
+	// (StrikeAt), and the effects, which ShowcaseCue plays only for a boss whose effects it knows (the stone_bearer's
+	// BossVfx); for any other it logs the cue and plays nothing, the seam where that boss's effects go.
+	bool BeginShowcase();
+	void TickShowcase(float DeltaSeconds);
+	void ShowcaseCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& Figure);
+	// The boss's contact socket for arena move Move (a label mapped to its bone; bLeft: its left-hand clip), null: none.
+	const char* BossContactSocket(uint8 Move, bool bLeft) const;
 	// Plain kinds' weak points (ftcore/ArenaKindCrit.h): Data/Battle/arena_crit.json read once, then on each begin and
 	// restart one ArenaKindCrit per slot whose kind has an entry, and the blow hook that rules on the lead's blows on them.
 	// After each step the slots' AttackStarted events open the windows; an opening and every crit are one log line each.
@@ -247,6 +316,9 @@ private:
 	void EndKite();
 	// The host's new notes, one log line each.
 	void LogKiteNotes();
+	// -ArenaBossLoop (review only): finds the boss's slot and the clip's table index once, then logs the loop's start (at each
+	// fight's begin). DriveSkin plays that clip looped from the fight's start whatever the fight does, one log line a wrap.
+	void BeginBossLoop();
 	// Dresses enemy slot I as a skeletal mesh when its kind has a look that loads (see AFTArenaGameMode's header).
 	void LoadSkin(int32 I);
 	// Picks and times slot I's clip from its Core state: the move's own clip through an attack, at the rate that lands its
@@ -281,6 +353,9 @@ private:
 	TObjectPtr<AStaticMeshActor> PlinthActor;
 	UPROPERTY()
 	TObjectPtr<AStaticMeshActor> KeepOutActor;
+	// The -ArenaShowcase reel's fixed camera.
+	UPROPERTY()
+	TObjectPtr<ACameraActor> ShowCamera;
 	// The stone_bearer's effects: telegraph, impact, hit chips, crit burst and the open weak point's glow.
 	UPROPERTY()
 	FFTArenaBossVfx BossVfx;
@@ -296,6 +371,9 @@ private:
 	// What each skinned enemy plays: the clip (a table index; -2 none yet) and since when, the last hit reaction.
 	int32 SkinClip[ftcore::kMaxArenaEnemies];
 	double SkinSince[ftcore::kMaxArenaEnemies];
+	// The move whose clip it last drew (-1 none) and Core's time into that move then: a new start of a move logs its clip.
+	int32 SkinMove[ftcore::kMaxArenaEnemies];
+	float SkinMoveTime[ftcore::kMaxArenaEnemies] = {};
 	double HitSince[ftcore::kMaxArenaEnemies];
 	bool bHitHeavy[ftcore::kMaxArenaEnemies] = {};
 	// A walking skin: its smoothed ground speed (m/s), whether it walks, and where it is in the walk clip (s).
@@ -308,10 +386,19 @@ private:
 	double KneelSince[ftcore::kMaxArenaEnemies] = {};
 	double UpAt[ftcore::kMaxArenaEnemies] = {};
 	double UpOwedUntil[ftcore::kMaxArenaEnemies] = {};
+	// A parried move's recoil still to play (a table index, -1 none) and since when (the parry), and whether the Open went
+	// face down first (a stagger after that starts it over). It lasts while the Open, Staggered or Down does.
+	int32 RecoilPending[ftcore::kMaxArenaEnemies];
+	double RecoilSince[ftcore::kMaxArenaEnemies] = {};
+	bool bRecoilDown[ftcore::kMaxArenaEnemies] = {};
 	float FrameDelta = 0.f; // the frame's seconds, for the clips' crossfades
 	// The stone_bearer's figure: when its walk began, when its get-up began (-1e9: none under way) and whether it is up
 	// for the rest of its down, the death clip it chose (-1: not yet), and its move mask as last logged.
 	double StoneWalkSince = -1e9;
+	// The walk's stop, latched when Core stops wanting it: seconds into the walk it stops at (its next passing pose; < 0: none
+	// latched) and why.
+	double StoneWalkStopAt = -1.0;
+	const TCHAR* StoneWalkStopWhy = TEXT("");
 	double StoneUpStart = -1e9;
 	bool bStoneStood = false;
 	int32 StoneDeathClip = -1;
@@ -330,7 +417,8 @@ private:
 	FVector StoneTellFigurePos = FVector::ZeroVector;
 	float StoneTellFigureYaw = 0.f;
 	// The walk's counts this fight: steps between moves Core wanted over the start speed (by brain), the runs of them,
-	// the walks begun, and the wanted steps that couldn't start one (by what held it: the cone, a get-up, a hit).
+	// the walks begun, and the wanted steps that couldn't start one (by what held it: the cone, a get-up, a hit, a turn, a
+	// move due within a cycle). And the steps a turn would have started on but a move was due within its step.
 	int32 StoneWantApproach = 0;
 	int32 StoneWantStrafe = 0;
 	int32 StoneWantRuns = 0;
@@ -338,7 +426,13 @@ private:
 	int32 StoneHeldCone = 0;
 	int32 StoneHeldUp = 0;
 	int32 StoneHeldHit = 0;
+	int32 StoneHeldTurn = 0;
+	int32 StoneHeldPick = 0;
 	bool bStoneWanted = false;
+	// Each enemy slot's stepping turn.
+	FFTArenaTurn SlotTurn[ftcore::kMaxArenaEnemies];
+	// The move under way plays its left-hand clip (decided once, as it starts: the run called its blow to the left).
+	bool bStoneMoveLeft = false;
 
 	ftcore::ArenaTable Table;
 	ftcore::ArenaZoneFit Fit;
@@ -394,9 +488,20 @@ private:
 	bool bFightAgain = true;
 	bool bReplacePawn = true;
 	bool bHoldLoad = false;
+	float ParryHold = 0.f;
+	// -ArenaBossLoop: the clip's name, the boss's slot and the clip's table index (-1: off, or not found), whether it was
+	// looked for, and the wraps logged this fight.
+	FString BossLoopName;
+	int32 BossLoopSlot = -1;
+	int32 BossLoopClip = -1;
+	bool bBossLoopResolved = false;
+	int32 BossLoopWraps = 0;
 	bool bBossSplitAtStart = false;
 	bool bResultLogged = false;
 	double ResultTime = 0.0;
+	double ResultWait = 0.0; // how long after the result its banner waits (s)
+	// How long after the result the autopilot fights again (s): kArenaAutoAgain, or longer for a long defeat clip.
+	double AutoAgainWait = 4.0;
 	double BeginNow = 0.0;
 	FString KitId;
 
@@ -424,4 +529,22 @@ private:
 	int32 KiteSlot = -1;
 	int32 KiteLogged = 0;
 	FFTKiteVfx KiteFx;
+
+	// -ArenaShowcase: on, the reel (on the heap: it is large), its clock (s; it starts below 0 on the idle's first frame,
+	// for the exposure to settle), the last part and cue time played, where the boss stood and faced at the start (the
+	// reel's frame), each reel attack's arena move, the strike point its tell was drawn at (for its dust), and done.
+	bool bShowcase = false;
+	int32 ShowSlot = -1; // the boss shown
+	TSharedPtr<ftcore::ClipShow> Show;
+	ftcore::ShowSpec ShowSpecUsed;
+	double ShowTime = 0.0;
+	double ShowCueTime = -1.0;
+	int32 ShowSegment = -1;
+	bool bShowHidden = false;
+	FVector ShowOrigin = FVector::ZeroVector;
+	float ShowBaseYaw = 0.f;
+	ftcore::Vec2 ShowTellAt;
+	float ShowTellShapeMul = 1.f;
+	int16 ShowTellAttack = -1;
+	bool bShowDone = false;
 };

@@ -175,7 +175,10 @@ Everything about it is data and host-side: the fight's rules never read it.
 The mode plays, from Core's state each frame (`UFTBeatFighterAnimInstance`, a pose that is a function of the fight, with a 0.12 s
 crossfade between clips, or the table's own top-level `blend_s`, or a row's own `blend_s` for the crossfade into that clip): a move's own clip through an attack, timed by Core's clock for the move at the rate
 `impact_s / startup` (so the blow lands as the startup ends; held on its last frame if the clip is shorter than the move);
-`stagger` while staggered; `open` (optional) while open after a parry; `face_down` (looping) while down after a riposte, or open
+`stagger` while staggered, or after a parry of a move that has a `<clip>_recoil` row, that recoil, from the parry through
+the Open and the stagger after it (one clip on one clock from the parry, so the two states make no crossfade; an Open that
+outlasts the pair window, `pairWindow` plus one step, goes on as an open without an `open` clip does, below, and a stagger
+after that starts the recoil over); `open` (optional) while open after a parry; `face_down` (looping) while down after a riposte, or open
 without an `open` clip, after the optional one-shot
 `face_down_in` from the start of the spell (an Open chained into a Down is one spell) and before the optional `face_down_out`, timed
 to end as the state does (Core's `stateLength`: the kind's openTime or downTime, or the host's hold; never in a hold until a
@@ -204,7 +207,9 @@ second blow), it keeps that share and lets it go as it fades out.
 The kite boss (`kite_boss`, `Data/Anim/kite_clips.json`, assets under `/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/`,
 the import being `FTImportCharacter -Source=kite_boss.glb -Dest=/Game/Bosses/KiteBoss -Face=0`): 1100 hp, 9.1 m from its
 finial to its tail tip (the whole figure, `height` 9.1) and hanging 0.9 m off the ground, drifting at 0.6 to 1 m/s. The mesh is a
-rebuild of the first one with the same 48-bone rig and the same 23 clips, so the clip table did not change. Eight moves, each its
+rebuild of the first one with the same 48-bone rig. Its 27 clips are the first one's 23 plus a recoil for each swoop
+(`swoop_recoil`, `swoop_slant_recoil`, `swoop_feint_recoil`: from that swoop's impact pose onto the stagger, as long as it) and
+`face_down_out`; only `swoop_recoil` plays, as the other two swoops aren't moves yet. Eight moves, each its
 clip's id: `mitten_drop`, `swoop`, `peg_spray`,
 `snag`, `wet_sheet`, `undertow`, `string_flick`, `sheet_slap` (Read card words slam, sweep, strike, charge, overhead, thrust,
 slash, backhand). Core has no "parry-opener" flag or multi-hit, so the marked move is made by `parryable`: only `swoop` (and the
@@ -365,7 +370,9 @@ enemy instead, pass its id: `-ArenaLineup=brute` (a single brute falls before th
    the first, and a little poise). Wrong: the stacks go back to none and the attacker regains some poise. While
    one deal is open, a move that starts elsewhere deals nothing.
 8. The fight ends in VICTORY when every enemy is down, DEFEAT when the lead is. After a moment Enter,
-   Space or pad A starts it again (the autopilot starts again by itself after 4 s unless told to quit).
+   Space or pad A starts it again (the autopilot starts again by itself after 4 s unless told to quit; after a victory
+   over a boss whose `defeat` clip is longer than 3.5 s, 0.5 s after that clip ends instead, so the death plays out. The
+   log gets one line a fight, `Arena: autoplay fights again <s> s after the result (longest defeat clip <s> s).`).
 
 ## Controls
 
@@ -439,6 +446,8 @@ each frame and handed to the fight on its next step, so no press is lost between
 | `-ArenaLead=<name>` | The lead the player plays. Its look is the entry of that name in the explore character's `PartyLooks` (`Config/UserGame.ini`, local), else the first; with none, or none whose body loads (one warning), it is the test human. Its fighter kit is the `arena.json` fighter of that name in lower case (`devin`, `duy`, `third`), even when no look loads; without the flag it is the first look's name, and an id with no kit plays `default`. The start line names the kit (`kit devin`). |
 | `-ArenaAttackers=N` | How many enemies may attack at once (1 to the line-up's size). |
 | `-ArenaHoldLoad` | The autopilot keeps its Load until it is overloaded (to see the overload; not a way to play). |
+| `-ArenaParryHold=<s>` | No follow-up for s seconds after each parry: the autopilot's blows and Release and the partner's press are dropped, so the open boss's own clips (face down, the get-up) show. A check of the clips, not a way to play; the fight differs from plain autoplay. |
+| `-ArenaBossLoop=<clip>` | The boss's skin plays that clip of its table (by id, e.g. `idle`, `idle_p2`, `face_down`) looped from the fight's start, with the table's blend, whatever the fight does; the fight itself runs unchanged. A check of the clips' loops, not a way to play. One log line at each fight's start (`Arena: boss loop <clip> on enemy <n> from the fight's start (<len> s) (-ArenaBossLoop).`) and one at each wrap (`Arena: boss loop <clip> wraps (<n>) at <fight time> s (<len> s).`); the log's `[..][counter]` prefix (`GFrameCounter % 1000`) on a wrap line is the frame whose pose is the clip's first again, which is where a cutter finds the seam. An unknown clip (or no skinned boss) logs a warning and the flag does nothing. The boss is the Kite-Mother's slot, else the stone bearer's, else the first skinned enemy. |
 | `-ArenaNoKindFx` | No kind's crit effects (`arena_crit.json`: the tell, open, crit and hit) are made; the fight runs the same. The OFF half of an effects OFF/ON capture. |
 | `-ArenaBossCam` | Once the first enemy stands, the view moves to a camera fixed 9 m off that enemy's left side at half its height (field of view 40), so a capture shows the boss's own turns apart from the follow camera's. The log gets `ArenaBossCam: t <s> s yaw <deg>` each time the boss has turned 10 degrees. Review captures only; the fight runs the same. |
 | `-ArenaShot=<path prefix>` | Autoplay and save the views (`_1_ring`, `_2_tell` with the Read cards picked, `_3_impact`, `_4_load` with the gauge past a third, or the overload under `-ArenaHoldLoad`, `_5_release`, `_6_result` .png), then quit; a view the fight never reaches is skipped. Needs a renderer (`-RenderOffScreen`, not `-NullRHI`). |

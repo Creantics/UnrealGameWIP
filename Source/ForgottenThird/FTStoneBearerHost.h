@@ -144,6 +144,13 @@ public:
 	// reach ahead. False when the host isn't active, the use was refused or Move isn't one of the boss's.
 	bool StrikeOf(std::uint8_t Move, const ftcore::ArenaBodies& Bodies, float Ahead, float Side, float ReachShare,
 		FFTStoneBearerStrike& Out) const;
+	// StrikeOf from a given spot and facing, the called impact's side given (Left or Right; Path: none), and the keep-out
+	// cut only when bKeepOut (the -ArenaShowcase reel places a blow with no fight running).
+	bool StrikeAt(std::uint8_t Move, ftcore::Vec2 Pos, ftcore::Vec2 Facing, ftcore::CalledZone Zone, float Ahead, float Side,
+		float ReachShare, bool bKeepOut, FFTStoneBearerStrike& Out) const;
+	// The side the run called for arena move Move's impact while that use is live (StrikeOf's Side shape): Left or
+	// Right; Path for anything else (not a called impact, not live, refused, or the host isn't active).
+	ftcore::CalledZone CalledSideOf(std::uint8_t Move) const;
 	// The weak points are open (from CritOpened until CritClosed).
 	bool CritOpen() const { return IsActive() && Boss.run().crit().isOpen(static_cast<double>(FightPtr->time())); }
 
@@ -154,7 +161,16 @@ public:
 	// The boss move of an arena move (kArenaBossNoMove past the table).
 	std::uint8_t BossMoveOf(std::size_t ArenaMove) const
 	{
-		return ArenaMove < MoveOf.size() ? MoveOf[ArenaMove] : ftcore::kArenaBossNoMove;
+		return ArenaMove < Layout.count ? Layout.moveOf[ArenaMove] : ftcore::kArenaBossNoMove;
+	}
+	// The arena moves BuildKind lays out (Load fills it).
+	const ftcore::StoneBearerLayout& GetLayout() const { return Layout; }
+	// Where the clip of arena move Move is entered (s) at the move's start, at rate 1.0, so its impact (Impact, s into
+	// the clip) lands as the startup ends; a tile move's later impacts run on from the move before
+	// (ftcore::stoneBearerClipEntry).
+	double ClipEntry(const ftcore::ArenaEnemyKind& Kind, std::size_t Move, double Impact) const
+	{
+		return ftcore::stoneBearerClipEntry(Kind, Layout, Move, Impact);
 	}
 	// What the last AfterTick did with an hp-share break of the carried piece: Held is a stagger hold from it (the
 	// runner draws the stagger on that same tick); the rest say why there is none.
@@ -193,9 +209,8 @@ private:
 	ftcore::ArenaKeepOut KeepOut;
 	int LeadHp = 100;
 
-	// Arena move index -> the boss move and which of its impacts it lands (rebuilt from Def as BuildKind lays it out).
-	std::array<std::uint8_t, ftcore::kMaxArenaMoves> MoveOf{};
-	std::array<std::uint8_t, ftcore::kMaxArenaMoves> ImpactOf{};
+	// Arena move index -> the boss move and which of its impacts it lands (from Def, as BuildKind lays it out).
+	ftcore::StoneBearerLayout Layout;
 
 	// The use in progress: its boss move, refused or not, the damage its blows dealt (for damageMax).
 	std::uint8_t UseMove = ftcore::kArenaBossNoMove;

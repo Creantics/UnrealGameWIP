@@ -56,10 +56,15 @@
 // Flags (FParse::Param, docs/ALPHA.md style): -ArenaAutoPlay lets Core's autopilot (ArenaFight::autopilot)
 // play; -ArenaIdle presses nothing at all (the fight must be lost); -ArenaQuitOnFinish exits when the fight
 // is over (it asks for 0 on a victory and 1 on a defeat, but UnrealEditor-Cmd exits 0 either way: read the
-// result line; a fight that outlasts WatchdogSeconds, a hang guard for headless runs, logs a TIMEOUT and exits 2). Without -ArenaQuitOnFinish the autopilot fights again 4 s after the outcome.
+// result line; a fight that outlasts WatchdogSeconds, a hang guard for headless runs, logs a TIMEOUT and exits 2). Without -ArenaQuitOnFinish the autopilot fights again 4 s after the outcome, or 0.5 s after the longest defeat clip of the bosses it beat, when that is later.
 // Under -ArenaAutoPlay the host plays the partner too: it presses the pair on the step after each parry (Core's
 // autopilot never presses it). -ArenaHoldLoad keeps the autopilot from releasing until it is overloaded, so the
-// overload shows (a check of the HUD, not a way to play). -ArenaBossSplit breaks the boss's carried piece into its
+// overload shows (a check of the HUD, not a way to play). -ArenaParryHold=<s> keeps the autopilot and the partner
+// from any follow-up for s seconds after each parry (no blow, Release or pair), so the open boss's clips show (a check
+// of the clips, not a way to play). -ArenaBossLoop=<clip> has the boss's skin play that clip of its table looped from the
+// fight's start, whatever the fight does (the fight itself runs unchanged; a check of the clips' loops, not a way to play):
+// one log line at the start and one at each wrap, whose frame counter prefix finds the seam; an unknown clip logs a
+// warning and the flag does nothing. -ArenaBossSplit breaks the boss's carried piece into its
 // hands as the fight begins, as its first stagger would (a check of the parts in its hands, not a way to play).
 // One log line per fight, ids and counts only:
 //   Arena: VICTORY at <scene> beat <b> step <s> after <t> s, zone <z>, kit <k>, enemies <id>+<id>, autoplay seed <n>, hp ...
@@ -172,10 +177,14 @@ private:
 	bool bIdle = false;
 	bool bQuitOnFinish = false;
 	bool bHoldLoad = false;
+	float ParryHold = 0.f;
+	FString BossLoop; // -ArenaBossLoop=<clip>
 	bool bBossSplit = false;
 	// -ArenaBossCam: a fixed camera on the first enemy's side, so a capture shows the boss's own turns apart from the
 	// follow camera's; the yaw it last logged.
 	bool bBossCam = false;
+	// -ArenaShowcase: the boss's clips and effects alone for review, no fight (FFTArenaRunSetup::bShowcase); an idle run.
+	bool bShowcase = false;
 	UPROPERTY()
 	TObjectPtr<AActor> BossCamera;
 	float BossCamYaw = 0.f;

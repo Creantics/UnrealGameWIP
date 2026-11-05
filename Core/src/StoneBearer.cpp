@@ -355,4 +355,133 @@ const ArenaBossEvents& StoneBearer::onRelease(double t, int load, PedestalReleas
     return run_.events();
 }
 
+// ---- The boss as ArenaFight moves ------------------------------------------------------------------
+
+namespace {
+
+constexpr float kStoneArcCos = 0.5f;     // the arc of intercept and plain moves, and of every move without a template
+constexpr float kStoneMinStartup = 0.05f; // a chained startup never falls below this (a tile move's lands this late)
+constexpr float kStonePickSlack = 0.4f;  // a move's pick range reaches this far past its reach (m), as arena.json's do
+constexpr float kStoneGuardBreakExtra = 1.f; // a guard-breaking blow takes this much more than the lead's stamina
+
+bool sbLaneMove(const ArenaBossMove& move, std::size_t impact) {
+    return move.answer == ArenaBossAnswer::Cover
+        || (move.intercept() && impact < move.impactCount && move.zones[impact] == CalledZoneRule::Path);
+}
+
+} // namespace
+
+std::string_view stoneBearerClipOf(std::string_view id) {
+    for (const std::string_view tail : {std::string_view("_twice"), std::string_view("_halves")}) {
+        if (id.size() > tail.size() && id.substr(id.size() - tail.size()) == tail) return id.substr(0, id.size() - tail.size());
+    }
+    return id;
+}
+
+float stoneBearerContactPlanar(const ArenaBossMove& move) {
+    return std::sqrt(move.contactAhead * move.contactAhead + move.contactSide * move.contactSide);
+}
+
+bool stoneBearerUsableContact(const ArenaBossMove& move, float bodyRadius) {
+    if (!move.hasContact || move.answer == ArenaBossAnswer::Tile || move.answer == ArenaBossAnswer::Cover) return false;
+    for (std::size_t k = 0; k < move.impactCount; ++k) {
+        if (sbLaneMove(move, k)) return false;
+    }
+    return stoneBearerContactPlanar(move) > bodyRadius;
+}
+
+bool stoneBearerLayout(const StoneBearerDef& def, StoneBearerLayout& out, std::string* error) {
+    out = StoneBearerLayout{};
+    std::size_t count = 0;
+    for (std::uint8_t m = 0; m < def.boss.moveCount; ++m) count += def.boss.moves[m].impactCount;
+    if (count > kMaxArenaMoves) {
+        if (error) *error = "stone_bearer: " + std::to_string(count) + " impacts in all, more than kMaxArenaMoves";
+        return false;
+    }
+    for (std::uint8_t m = 0; m < def.boss.moveCount; ++m) {
+        const ArenaBossMove& src = def.boss.moves[m];
+        for (std::uint8_t k = 0; k < src.impactCount; ++k, ++out.count) {
+            out.moveOf[out.count] = m;
+            out.impactOf[out.count] = k;
+            out.runsOn[out.count] = k > 0 && src.answer == ArenaBossAnswer::Tile;
+        }
+    }
+    return true;
+}
+
+bool buildStoneBearerKind(const StoneBearerDef& def, const ArenaFighter& lead, ArenaEnemyKind& kind,
+                          StoneBearerLayout* layout, std::string* error) {
+    StoneBearerLayout lay;
+    if (!stoneBearerLayout(def, lay, error)) return false;
+    ArenaEnemyKind out = kind;
+    out.hp = def.boss.hp;
+    out.poise = def.boss.poise;
+    out.staggerTime = def.boss.staggerTime;
+    out.openTime = def.boss.openTime;
+    const double beat = def.boss.beat();
+    for (std::size_t next = 0; next < lay.count; ++next) {
+        const ArenaBossMove& src = def.boss.moves[lay.moveOf[next]];
+        const std::uint8_t k = lay.impactOf[next];
+        const std::string_view clip = stoneBearerClipOf(src.id());
+        // The arena move of the same clip tunes the pick and the look; else the kind's first move does.
+        const ArenaEnemyMove* tmpl = nullptr;
+        for (std::uint8_t t = 0; t < kind.moveCount && !tmpl; ++t) {
+            if (kind.moves[t].clip() == clip) tmpl = &kind.moves[t];
+        }
+        const bool ownTemplate = tmpl != nullptr;
+        if (!tmpl) tmpl = &kind.moves[0];
+        ArenaEnemyMove& mv = out.moves[next];
+        mv = *tmpl;
+        ArenaAttack& a = mv.attack;
+        const double gap = k == 0 ? src.impacts[0] : src.impacts[k] - src.impacts[k - 1];
+        // A chained move starts when the one before it ends, so its startup is the gap less that move's active part.
+        const float startup = static_cast<float>(gap * beat) - (k == 0 ? 0.f : src.active);
+        a.startup = startup > kStoneMinStartup ? startup : kStoneMinStartup;
+        a.active = src.active;
+        a.recovery = k + 1 == src.impactCount ? src.recovery : 0.f;
+        // The boss file's reach is from the boss's body; ArenaFight's from its centre. A clip's contact point outside
+        // the body is the reach instead: the blow lands where the part strikes.
+        a.range = stoneBearerUsableContact(src, kind.bodyRadius) ? stoneBearerContactPlanar(src) : src.range + kind.bodyRadius;
+        a.damage = static_cast<int>(std::lround(static_cast<double>(src.damage) * lead.hp));
+        a.width = 0.f;
+        if (src.answer == ArenaBossAnswer::Tile) {
+            a.arcCos = -1.f;
+        } else if (sbLaneMove(src, k)) {
+            a.width = kStoneBearerLaneWidth;
+        } else if (src.intercept() || src.answer == ArenaBossAnswer::Any || !ownTemplate) {
+            a.arcCos = kStoneArcCos;
+        }
+        if (src.guardBreak > 0.f) a.guardDamage = lead.stamina + kStoneGuardBreakExtra;
+        mv.minRange = 0.f;
+        mv.maxRange = a.range + kStonePickSlack;
+        mv.chain = k + 1 < src.impactCount ? static_cast<std::int8_t>(next + 1) : -1;
+        mv.weight = k == 0 ? tmpl->weight : 0.f;
+        mv.cooldown = k == 0 ? tmpl->cooldown : 0.f;
+        // The run answers an intercept move (ArenaFight only lands it); a dodge, jump, tile or cover move is not one a
+        // guard stops.
+        mv.parryable = tmpl->parryable && src.answer == ArenaBossAnswer::Any;
+        mv.unblockable = src.answer == ArenaBossAnswer::Dodge || src.answer == ArenaBossAnswer::Jump
+            || src.answer == ArenaBossAnswer::Tile || src.answer == ArenaBossAnswer::Cover;
+        mv.clipText = {};
+        for (std::size_t c = 0; c < clip.size() && c < kMaxArenaClipId; ++c) mv.clipText[c] = clip[c];
+    }
+    out.moveCount = static_cast<std::uint8_t>(lay.count);
+    kind = out;
+    if (layout) *layout = lay;
+    return true;
+}
+
+double stoneBearerClipEntry(const ArenaEnemyKind& kind, const StoneBearerLayout& layout, std::size_t move, double impact) {
+    if (move >= kind.moveCount) return 0.0;
+    // A move that runs on starts where the one before it ended (chained moves are laid out next to each other).
+    std::size_t root = move;
+    double ran = 0.0;
+    while (root > 0 && root < layout.count && layout.runsOn[root]) {
+        --root;
+        const ArenaAttack& a = kind.moves[root].attack;
+        ran += static_cast<double>(a.startup) + static_cast<double>(a.active) + static_cast<double>(a.recovery);
+    }
+    return impact - static_cast<double>(kind.moves[root].attack.startup) + ran;
+}
+
 } // namespace ftcore

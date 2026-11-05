@@ -141,14 +141,16 @@
    "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bosshit_light",
    "length_s": 0.6,
    "impact_s": 0.05,
-   "loop": false
+   "loop": false,
+   "additive_in": true
   },
   {
    "id": "hit_heavy",
    "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bosshit_heavy",
    "length_s": 1.0,
    "impact_s": 0.08,
-   "loop": false
+   "loop": false,
+   "additive_in": true
   },
   {
    "id": "face_down",
@@ -161,6 +163,34 @@
    "id": "defeat",
    "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossdefeat",
    "length_s": 6.0,
+   "impact_s": 0.0,
+   "loop": false
+  },
+  {
+   "id": "swoop_recoil",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossswoop_recoil",
+   "length_s": 2.0,
+   "impact_s": 0.0,
+   "loop": false
+  },
+  {
+   "id": "swoop_slant_recoil",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossswoop_slant_recoil",
+   "length_s": 2.0,
+   "impact_s": 0.0,
+   "loop": false
+  },
+  {
+   "id": "swoop_feint_recoil",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossswoop_feint_recoil",
+   "length_s": 2.0,
+   "impact_s": 0.0,
+   "loop": false
+  },
+  {
+   "id": "face_down_out",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossface_down_out",
+   "length_s": 1.4,
    "impact_s": 0.0,
    "loop": false
   }

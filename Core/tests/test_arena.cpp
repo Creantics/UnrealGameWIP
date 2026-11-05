@@ -2500,6 +2500,182 @@ TEST_CASE("arena step: bodies move at their velocities, overlaps are pushed apar
     CHECK(corpse.player.y == 1.f);
 }
 
+TEST_CASE("arena: enemyPickIn is how long before the brain may begin a move") {
+    const ArenaAttack slow = swing(0.4f, 0.1f, 0.4f, 3.f, 0);
+    {   // approaching without a token: unbounded; strafing without one: what is left of its attackDelay
+        ArenaEnemyKind k = hitterKind(slow);
+        k.attackDelay = 1.f;
+        k.preferredRange = 2.f;
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 6.f, 0.f);
+        rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Approach);
+        CHECK_FALSE(rig.out().enemies[0].token);
+        CHECK(rig.fight.enemyPickIn(0) == kArenaPickNever);
+        rig.put(0, 2.f, 0.f); // at its preferred range: it strafes
+        rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Strafe);
+        CHECK_FALSE(rig.out().enemies[0].token);
+        CHECK(rig.fight.enemyPickIn(0) == doctest::Approx(1.f - rig.fight.time())); // its string "ended" at 0
+        float before = rig.fight.enemyPickIn(0);
+        float last = before;
+        int guard = 0;
+        while (rig.out().enemies[0].brain == ArenaBrain::Strafe && guard++ < 120) {
+            last = rig.fight.enemyPickIn(0);
+            CHECK(last <= before);
+            CHECK(last >= 0.f);
+            before = last;
+            rig.tick();
+        }
+        // It began its move on the tick that followed the 0: no sooner, no later.
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Attack);
+        CHECK(last == 0.f);
+        CHECK(rig.fight.time() >= 1.f);
+        CHECK(rig.fight.enemyPickIn(0) == 0.f); // in a move: 0
+    }
+    {   // with a token: 0 when a ready move's band holds the distance; unbounded when no band does
+        Rig rig(ruleFighter(), {hitterKind(slow)}); // attackDelay 0, band [0, 3]
+        rig.put(0, 2.f, 0.f);
+        rig.fight.setEnemyMoveMask(0, 0u); // no move to pick: it holds the token and strafes
+        rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Strafe);
+        REQUIRE(rig.out().enemies[0].token);
+        CHECK(rig.fight.enemyPickIn(0) == kArenaPickNever); // a masked move has no band
+        rig.fight.setEnemyMoveMask(0, 0xFFFFFFFFu);
+        CHECK(rig.fight.enemyPickIn(0) == 0.f);
+        rig.tick();
+        CHECK(rig.out().enemies[0].brain == ArenaBrain::Attack);
+        CHECK(rig.count(ArenaEventType::AttackStarted) == 1);
+    }
+    {   // with a token and the lead out of every band: it walks to one, unbounded
+        Rig rig(ruleFighter(), {hitterKind(slow)});
+        rig.put(0, 2.f, 0.f);
+        rig.fight.setEnemyMoveMask(0, 0u);
+        rig.tick();
+        REQUIRE(rig.out().enemies[0].token);
+        rig.fight.setEnemyMoveMask(0, 0xFFFFFFFFu);
+        rig.put(0, 6.f, 0.f);
+        rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Approach);
+        REQUIRE(rig.out().enemies[0].token);
+        CHECK(rig.fight.enemyPickIn(0) == kArenaPickNever);
+        CHECK(rig.count(ArenaEventType::AttackStarted) == 0);
+    }
+    {   // with a token and its one in-band move cooling down: the cooldown left
+        ArenaEnemyKind k = hitterKind(slow);
+        k.preferredRange = 2.f;
+        k.moves[0].cooldown = 2.f;
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 2.f, 0.f);
+        rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Attack); // begun on tick 1, its cooldown 2 s from then
+        int guard = 0;
+        while (!(rig.out().enemies[0].brain == ArenaBrain::Strafe && rig.out().enemies[0].token) && guard++ < 120) rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Strafe);
+        const float left = 2.f - (rig.fight.time() - kDt); // counted down from tick 2 on
+        CHECK(left > 0.5f);
+        CHECK(std::fabs(rig.fight.enemyPickIn(0) - left) < 1e-3f);
+        guard = 0;
+        while (rig.out().enemies[0].brain == ArenaBrain::Strafe && guard++ < 200) rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Attack);
+        CHECK(rig.fight.time() == doctest::Approx(2.f + kDt).epsilon(0.01));
+    }
+    {   // nothing to ask of an enemy out of range
+        Rig rig(ruleFighter(), {hitterKind(slow)});
+        CHECK(rig.fight.enemyPickIn(5) == 0.f);
+    }
+}
+
+TEST_CASE("arena push-apart: the helper both arenaSteps share splits the overlap by mass") {
+    Vec2 lead{0.f, 0.f};
+    Vec2 boss{1.f, 0.f};
+    arenaPushApart(lead, 0.4f, boss, 1.2f); // 0.6 to find
+    const float bossShare = (0.4f * 0.4f * 0.4f) / (0.4f * 0.4f * 0.4f + 1.2f * 1.2f * 1.2f);
+    CHECK(boss.x - 1.f == doctest::Approx(0.6f * bossShare));
+    CHECK(-lead.x == doctest::Approx(0.6f * (1.f - bossShare)));
+    CHECK(boss.x - lead.x == doctest::Approx(1.6f));
+    Vec2 clearA{0.f, 0.f};
+    Vec2 clearB{0.f, 2.f};
+    arenaPushApart(clearA, 0.4f, clearB, 1.2f); // already clear: nothing moves
+    CHECK(clearA.y == 0.f);
+    CHECK(clearB.y == 2.f);
+    Vec2 sameA{0.f, 0.f};
+    Vec2 sameB{0.f, 0.f};
+    arenaPushApart(sameA, 0.f, sameB, 0.f); // no size, no push
+    CHECK(sameA.x == 0.f);
+    CHECK(sameB.x == 0.f);
+}
+
+TEST_CASE("arena step: the push-apart is weighted by mass (body radius cubed)") {
+    // The bodies sit where the test puts them; dt 0, so only the push-apart moves anything.
+    const auto kindOfRadius = [](float radius) {
+        ArenaEnemyKind k = dummyKind();
+        k.bodyRadius = radius;
+        return k;
+    };
+    {   // equal bodies split the overlap half and half, as before
+        Rig rig(ruleFighter(), {kindOfRadius(0.4f)});
+        rig.bodies.player = Vec2{0.f, 0.f};
+        rig.put(0, 0.5f, 0.f); // 0.5 apart, 0.8 wanted: 0.3 to find
+        arenaStep(rig.fight, rig.bodies, 0.f);
+        CHECK(rig.bodies.player.x == doctest::Approx(-0.15f));
+        CHECK(rig.bodies.enemies[0].x == doctest::Approx(0.65f));
+        CHECK(rig.bodies.player.y == 0.f);
+        CHECK(rig.bodies.enemies[0].y == 0.f);
+    }
+    {   // a lead against a big body: the big one gives way a little, the lead the rest
+        Rig rig(ruleFighter(), {kindOfRadius(1.2f)});
+        rig.bodies.player = Vec2{0.f, 0.f};
+        rig.put(0, 1.f, 0.f); // 1.6 wanted: 0.6 to find
+        arenaStep(rig.fight, rig.bodies, 0.f);
+        const float bigMoved = rig.bodies.enemies[0].x - 1.f;
+        const float leadMoved = -rig.bodies.player.x;
+        CHECK(bigMoved > 0.f);
+        CHECK(bigMoved < 0.05f * 0.6f);
+        CHECK(bigMoved == doctest::Approx(0.6f * (0.4f * 0.4f * 0.4f) / (0.4f * 0.4f * 0.4f + 1.2f * 1.2f * 1.2f)));
+        CHECK(leadMoved + bigMoved == doctest::Approx(0.6f));
+        CHECK(distanceOf(rig.bodies.player, rig.bodies.enemies[0]) == doctest::Approx(1.6f));
+    }
+    {   // the same between two enemies, whichever index holds the big one
+        Rig rig(ruleFighter(), {kindOfRadius(1.2f), kindOfRadius(0.4f)});
+        rig.bodies.player = Vec2{-10.f, 0.f};
+        rig.put(0, 0.f, 0.f);
+        rig.put(1, 1.f, 0.f); // 1.6 wanted: 0.6 to find
+        arenaStep(rig.fight, rig.bodies, 0.f);
+        CHECK(std::fabs(rig.bodies.enemies[0].x) < 0.05f * 0.6f);
+        CHECK(rig.bodies.enemies[1].x - 1.f > 0.9f * 0.6f);
+        CHECK(distanceOf(rig.bodies.enemies[0], rig.bodies.enemies[1]) == doctest::Approx(1.6f));
+        Rig flipped(ruleFighter(), {kindOfRadius(0.4f), kindOfRadius(1.2f)});
+        flipped.bodies.player = Vec2{-10.f, 0.f};
+        flipped.put(0, 0.f, 0.f);
+        flipped.put(1, 1.f, 0.f);
+        arenaStep(flipped.fight, flipped.bodies, 0.f);
+        CHECK(std::fabs(flipped.bodies.enemies[1].x - 1.f) < 0.05f * 0.6f);
+        CHECK(-flipped.bodies.enemies[0].x > 0.9f * 0.6f);
+        CHECK(distanceOf(flipped.bodies.enemies[0], flipped.bodies.enemies[1]) == doctest::Approx(1.6f));
+    }
+    {   // a huge body is as good as a wall to a lead
+        Rig rig(ruleFighter(), {kindOfRadius(2.3f)});
+        rig.bodies.player = Vec2{0.f, 0.f};
+        rig.put(0, 2.f, 0.f);
+        arenaStep(rig.fight, rig.bodies, 0.f);
+        CHECK(rig.bodies.enemies[0].x - 2.f < 0.01f);
+        CHECK(distanceOf(rig.bodies.player, rig.bodies.enemies[0]) == doctest::Approx(2.7f));
+    }
+    {   // a crowd of mixed sizes ends with no two live bodies overlapping
+        Rig rig(ruleFighter(), {kindOfRadius(0.45f), kindOfRadius(1.2f), kindOfRadius(0.4f)});
+        rig.bodies.player = Vec2{0.f, 0.f};
+        rig.put(0, 0.6f, 0.2f);
+        rig.put(1, 1.4f, -0.3f);
+        rig.put(2, 0.2f, -0.7f);
+        arenaStep(rig.fight, rig.bodies, 0.f);
+        const float radii[4] = {0.4f, 0.45f, 1.2f, 0.4f};
+        const Vec2 at[4] = {rig.bodies.player, rig.bodies.enemies[0], rig.bodies.enemies[1], rig.bodies.enemies[2]};
+        for (int i = 0; i < 4; ++i)
+            for (int j = i + 1; j < 4; ++j) CHECK(distanceOf(at[i], at[j]) >= radii[i] + radii[j] - 1e-2f);
+    }
+}
+
 // ---- begin, restart, refresh ----
 
 TEST_CASE("arena begin: the enemies spread on an arc in front, inside the ring, facing the player") {
@@ -3061,6 +3237,30 @@ TEST_CASE("arena kite boss: its moves name clips of its table, with impacts that
         if (boss.moves[m].attack.damage >= 8)
             CHECK_MESSAGE(boss.moves[m].parryable == (boss.moves[m].clip() == "swoop"), boss.moves[m].clip());
     CHECK(parryable == 3);
+}
+
+TEST_CASE("arena kite boss: each swoop has a recoil as long as the stagger, and face_down a get-up that fits an Open") {
+    const KiteData k = loadKite();
+    const ArenaEnemyKind& boss = k.boss();
+    // The host plays a parried move's `<clip>_recoil` from the parry through the Open and the stagger after it, so it
+    // runs the stagger's time (within 0.2 s, or the punish window would look wider than it is) and holds its end.
+    for (const char* id : {"swoop_recoil", "swoop_slant_recoil", "swoop_feint_recoil"}) {
+        const int c = k.clips.find(id);
+        REQUIRE_MESSAGE(c >= 0, id);
+        const BeatClip& r = k.clips[static_cast<std::size_t>(c)];
+        CHECK_FALSE_MESSAGE(r.loop, id);
+        CHECK_MESSAGE(std::fabs(r.length - static_cast<double>(boss.staggerTime)) <= 0.2 + 1e-6, id);
+    }
+    // Of the three, only swoop is one of the arena's moves.
+    int recoils = 0;
+    for (std::size_t m = 0; m < boss.moveCount; ++m)
+        if (k.clips.find(std::string(boss.moves[m].clip()) + "_recoil") >= 0) ++recoils;
+    CHECK(recoils == 1);
+    // The get-up ends the Open as it runs out, with room for face_down before it.
+    const int up = k.clips.find("face_down_out");
+    REQUIRE(up >= 0);
+    CHECK_FALSE(k.clips[static_cast<std::size_t>(up)].loop);
+    CHECK(k.clips[static_cast<std::size_t>(up)].length < static_cast<double>(boss.openTime) - 0.5);
 }
 
 TEST_CASE("arena kite boss: about one swoop in ten seconds") {
@@ -3776,7 +3976,7 @@ TEST_CASE("arena: a whole autopilot fight that stores Load and releases it alloc
     ArenaBodies bodies;
     const bool counting = ftcore_test::allocHookInstalled();
     const auto before = ftcore_test::allocStats().count;
-    fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 2); // seed 2: the autopilot releases in this one
     bodies.player = fight.playerStart();
     for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
     int fullDeals = 0, deals = 0;
@@ -4046,6 +4246,58 @@ TEST_CASE("arena hooks: a held facing keeps a move on the line it began on; unhe
         CHECK_FALSE(rig.fight.enemyFacingHeld(3));
         rig.fight.restart();
         CHECK_FALSE(rig.fight.enemyFacingHeld(0));
+    }
+}
+
+TEST_CASE("arena hooks: a held turn keeps the facing the host writes through Approach and Strafe; unheld it turns") {
+    ArenaEnemyKind k = dummyKind(); // never asks for a token: it approaches from beyond 3.5 m and strafes inside it
+    k.turnRate = 1.f;
+    // The lead stands straight down -y from the enemy; the host turns the enemy side-on, along +x.
+    const auto after = [&](bool held, float y, ArenaBrain& brain) {
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 0.f, y);
+        rig.fight.setEnemyTurnHeld(0, held);
+        CHECK(rig.fight.enemyTurnHeld(0) == held);
+        rig.fight.setEnemyFacing(0, Vec2{2.f, 0.f});
+        rig.runFor(0.5f);
+        brain = rig.out().enemies[0].brain;
+        return rig.out().enemies[0].facing;
+    };
+    ArenaBrain brain = ArenaBrain::Dead;
+    Vec2 f = after(true, 6.f, brain);
+    CHECK(brain == ArenaBrain::Approach);
+    CHECK(f.x == doctest::Approx(1.f).epsilon(1e-6));
+    CHECK(f.y == doctest::Approx(0.f).epsilon(1e-6));
+    f = after(true, 3.f, brain);
+    CHECK(brain == ArenaBrain::Strafe);
+    CHECK(f.x == doctest::Approx(1.f).epsilon(1e-6));
+    CHECK(f.y == doctest::Approx(0.f).epsilon(1e-6));
+    // Unheld it turns toward the lead at turnRate: 0.5 rad in 0.5 s, from +x toward -y.
+    f = after(false, 6.f, brain);
+    CHECK(brain == ArenaBrain::Approach);
+    CHECK(f.x == doctest::Approx(std::cos(0.5f)).epsilon(1e-3));
+    CHECK(f.y == doctest::Approx(-std::sin(0.5f)).epsilon(1e-3));
+    f = after(false, 3.f, brain);
+    CHECK(brain == ArenaBrain::Strafe);
+    CHECK(f.x == doctest::Approx(std::cos(0.5f)).epsilon(1e-3));
+    {   // held, the host's next facing is the one the next tick reports; a zero vector and an enemy out of range take
+        // nothing; restart clears the hold
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 0.f, 6.f);
+        rig.fight.setEnemyTurnHeld(0, true);
+        rig.run(5);
+        rig.fight.setEnemyFacing(0, Vec2{0.6f, -0.8f});
+        rig.tick();
+        CHECK(rig.out().enemies[0].facing.x == doctest::Approx(0.6f).epsilon(1e-6));
+        CHECK(rig.out().enemies[0].facing.y == doctest::Approx(-0.8f).epsilon(1e-6));
+        rig.fight.setEnemyFacing(0, Vec2{0.f, 0.f});
+        rig.tick();
+        CHECK(rig.out().enemies[0].facing.x == doctest::Approx(0.6f).epsilon(1e-6));
+        rig.fight.setEnemyTurnHeld(3, true);
+        rig.fight.setEnemyFacing(3, Vec2{1.f, 0.f});
+        CHECK_FALSE(rig.fight.enemyTurnHeld(3));
+        rig.fight.restart();
+        CHECK_FALSE(rig.fight.enemyTurnHeld(0));
     }
 }
 

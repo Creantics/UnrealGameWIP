@@ -58,6 +58,16 @@ Vec2 arenaClampLength(Vec2 v, float most) {
     return arenaScaled(v, most / length);
 }
 
+// How far `distance` is outside a move's [minRange, maxRange]; 0 inside it. A pick takes a move within kArenaEps.
+float arenaBandGap(const ArenaEnemyMove& mv, float distance) {
+    return distance > mv.maxRange ? distance - mv.maxRange : (distance < mv.minRange ? mv.minRange - distance : 0.f);
+}
+
+// Move m may be begun by a pick at all (its cooldown aside): weighted, and its bit set in the host's mask.
+bool arenaPickable(const ArenaEnemyMove& mv, std::size_t m, std::uint32_t mask) {
+    return mv.weight > 0.f && ((mask >> m) & 1u) != 0u;
+}
+
 Vec2 arenaRotate(Vec2 v, float angle) {
     const float c = std::cos(angle), s = std::sin(angle);
     return Vec2{v.x * c - v.y * s, v.x * s + v.y * c};
@@ -1129,11 +1139,9 @@ struct ArenaFightImpl {
     Pick pickMove(std::size_t i, float distance) {
         const Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
-        const auto gapOf = [&](const ArenaEnemyMove& mv) {
-            return distance > mv.maxRange ? distance - mv.maxRange : (distance < mv.minRange ? mv.minRange - distance : 0.f);
-        };
+        const auto gapOf = [&](const ArenaEnemyMove& mv) { return arenaBandGap(mv, distance); };
         const auto ready = [&](std::size_t m) {
-            return k.moves[m].weight > 0.f && foe.cooldown[m] <= 0.f && ((foe.moveMask >> m) & 1u) != 0u;
+            return arenaPickable(k.moves[m], m, foe.moveMask) && foe.cooldown[m] <= 0.f;
         };
         Pick pick;
         float total = 0.f;
@@ -1357,7 +1365,7 @@ struct ArenaFightImpl {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         foe.stateTime += dt;
-        foe.facing = arenaTurn(foe.facing, dir, k.turnRate * dt);
+        if (!foe.turnHeld) foe.facing = arenaTurn(foe.facing, dir, k.turnRate * dt);
         const float goal = foe.token ? pick.goal : k.preferredRange;
         const float error = distance - goal;
         if (std::fabs(error) <= kArenaEps) return Vec2{};
@@ -1369,7 +1377,7 @@ struct ArenaFightImpl {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         foe.stateTime += dt;
-        foe.facing = arenaTurn(foe.facing, dir, k.turnRate * dt);
+        if (!foe.turnHeld) foe.facing = arenaTurn(foe.facing, dir, k.turnRate * dt);
         foe.strafeLeft -= dt;
         if (foe.strafeLeft <= 0.f) flipStrafe(i);
         // Toward the point on the circle at the preferred range one step further round: the circling and a soft pull
@@ -1696,6 +1704,24 @@ std::uint8_t ArenaFight::lock() const { return player_.lock; }
 int ArenaFight::enemyHp(std::size_t i) const { return i < enemyCount_ ? enemy_[i].hp : 0; }
 float ArenaFight::enemyPoise(std::size_t i) const { return i < enemyCount_ ? enemy_[i].poise : 0.f; }
 bool ArenaFight::enemyAlive(std::size_t i) const { return i < enemyCount_ && enemy_[i].brain != ArenaBrain::Dead; }
+float ArenaFight::enemyPickIn(std::size_t i) const {
+    if (phase_ != ArenaPhase::Fighting || i >= enemyCount_) return 0.f;
+    const EnemyState& foe = enemy_[i];
+    if (foe.brain != ArenaBrain::Approach && foe.brain != ArenaBrain::Strafe) return 0.f;
+    const ArenaEnemyKind& k = def_.enemies[i];
+    if (!foe.token) {
+        if (foe.brain == ArenaBrain::Approach) return kArenaPickNever;
+        return std::max(0.f, k.attackDelay - (time_ - foe.stringEnd));
+    }
+    // pickMove's own tests: a band holds the distance within kArenaEps, and a move is ready once its cooldown is out.
+    const float distance = arenaDistance(player_.pos, foe.pos);
+    float soonest = kArenaPickNever;
+    for (std::size_t m = 0; m < k.moveCount; ++m) {
+        if (!arenaPickable(k.moves[m], m, foe.moveMask) || arenaBandGap(k.moves[m], distance) > kArenaEps) continue;
+        soonest = std::min(soonest, std::max(0.f, foe.cooldown[m]));
+    }
+    return soonest;
+}
 const ReadCards& ArenaFight::readCards() const { return read_; }
 std::uint8_t ArenaFight::readFoe() const { return readFoe_; }
 std::uint8_t ArenaFight::readMove() const { return readMove_; }
@@ -1734,6 +1760,13 @@ void ArenaFight::setEnemyFacingHeld(std::size_t i, bool held) {
     if (i < enemyCount_) enemy_[i].facingHeld = held;
 }
 bool ArenaFight::enemyFacingHeld(std::size_t i) const { return i < enemyCount_ && enemy_[i].facingHeld; }
+void ArenaFight::setEnemyTurnHeld(std::size_t i, bool held) {
+    if (i < enemyCount_) enemy_[i].turnHeld = held;
+}
+bool ArenaFight::enemyTurnHeld(std::size_t i) const { return i < enemyCount_ && enemy_[i].turnHeld; }
+void ArenaFight::setEnemyFacing(std::size_t i, Vec2 facing) {
+    if (i < enemyCount_ && arenaLength(facing) > kArenaEps) enemy_[i].facing = arenaUnit(facing, enemy_[i].facing);
+}
 void ArenaFight::setBlowHook(ArenaBlowHook hook, void* user) {
     blowHook_ = hook;
     blowUser_ = hook ? user : nullptr;
@@ -1890,6 +1923,21 @@ Vec2 arenaParkSpot(const ArenaRing& ring, Vec2 playerStart, std::size_t i) {
     return arenaMadd(ring.centre, arenaRotate(base, angle), radius);
 }
 
+void arenaPushApart(Vec2& a, float ra, Vec2& b, float rb) {
+    const Vec2 d = arenaSub(b, a);
+    const float distance = arenaLength(d);
+    const float least = ra + rb;
+    if (distance >= least) return;
+    const Vec2 dir = distance > kArenaEps ? Vec2{d.x / distance, d.y / distance} : Vec2{1.f, 0.f};
+    const float overlap = least - distance;
+    const float ma = ra * ra * ra;
+    const float mb = rb * rb * rb;
+    const float total = ma + mb;
+    const float shareA = total > 0.f ? mb / total : 0.5f; // a moves by b's share of the mass
+    a = arenaMadd(a, dir, -overlap * shareA);
+    b = arenaMadd(b, dir, overlap * (1.f - shareA));
+}
+
 void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
     const std::size_t n = fight.enemyCount();
     const ArenaOutput& out = fight.output();
@@ -1899,25 +1947,16 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
         bodies.player = arenaMadd(bodies.player, out.player.velocity, dt);
         for (std::size_t i = 0; i < n; ++i) bodies.enemies[i] = arenaMadd(bodies.enemies[i], out.enemies[i].velocity, dt);
     }
-    // Overlapping bodies are pushed apart, half each; dead enemies don't block.
-    const auto separate = [](Vec2& a, float ra, Vec2& b, float rb) {
-        const Vec2 d = arenaSub(b, a);
-        const float distance = arenaLength(d);
-        const float least = ra + rb;
-        if (distance >= least) return;
-        const Vec2 dir = distance > kArenaEps ? Vec2{d.x / distance, d.y / distance} : Vec2{1.f, 0.f};
-        const float push = 0.5f * (least - distance);
-        a = arenaMadd(a, dir, -push);
-        b = arenaMadd(b, dir, push);
-    };
+    // Overlapping bodies are pushed apart by mass (arenaPushApart): the bigger one gives way less. Dead
+    // enemies don't block.
     for (int pass = 0; pass < kArenaPushPasses; ++pass) {
         for (std::size_t i = 0; i < n; ++i)
-            if (fight.enemyAlive(i)) separate(bodies.player, playerRadius, bodies.enemies[i], def.enemies[i].bodyRadius);
+            if (fight.enemyAlive(i)) arenaPushApart(bodies.player, playerRadius, bodies.enemies[i], def.enemies[i].bodyRadius);
         for (std::size_t i = 0; i < n; ++i) {
             if (!fight.enemyAlive(i)) continue;
             for (std::size_t j = i + 1; j < n; ++j)
                 if (fight.enemyAlive(j))
-                    separate(bodies.enemies[i], def.enemies[i].bodyRadius, bodies.enemies[j], def.enemies[j].bodyRadius);
+                    arenaPushApart(bodies.enemies[i], def.enemies[i].bodyRadius, bodies.enemies[j], def.enemies[j].bodyRadius);
         }
     }
     // Everything stays inside the ring.
