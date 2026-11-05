@@ -252,6 +252,69 @@ TEST_CASE("clip showcase: the effects alone, then the two deaths each from a hid
     CHECK(ftcore::clipShowPose(show, show.length).segment == -1);
 }
 
+TEST_CASE("clip showcase: the glow and the crit show the weak point to the front: one ahead is not turned, one behind is") {
+    ftcore::BeatClips clips;
+    REQUIRE(loadClips(clips));
+    ftcore::ShowSpec turning = stoneSpec(clips);
+    ftcore::ShowSpec still; // no turn clips: the half turn is a hidden cut
+    still.idle = idOf(clips, "idle");
+    for (const ftcore::ShowSpec* base : {&turning, &still}) {
+        const bool turns = base->turnL != ftcore::kNoClip;
+        for (float facing : {0.f, 180.f}) {
+            CAPTURE(turns);
+            CAPTURE(facing);
+            ftcore::ShowSpec spec = *base;
+            spec.weakFacing = facing;
+            ftcore::ClipShow show;
+            std::string err;
+            REQUIRE_MESSAGE(ftcore::buildClipShow(clips, spec, show, &err), err);
+            double glowOn = -1.0, critAt = -1.0;
+            for (std::size_t c = 0; c < show.cueCount; ++c) {
+                if (show.cues[c].cue == ftcore::ShowCue::GlowOn) glowOn = show.cues[c].at;
+                if (show.cues[c].cue == ftcore::ShowCue::Crit) critAt = show.cues[c].at;
+            }
+            REQUIRE(glowOn > 0.0);
+            REQUIRE(critAt > glowOn);
+            // The segments between the last lone chips take (light or heavy) and the first glow take.
+            std::size_t glow = show.segmentCount, chips = show.segmentCount;
+            for (std::size_t s = 0; s < show.segmentCount && glow == show.segmentCount; ++s) {
+                if (show.segments[s].label() == "fx_glow") glow = s;
+            }
+            REQUIRE(glow < show.segmentCount);
+            for (std::size_t s = glow; s-- > 0;) {
+                if (show.segments[s].label().substr(0, 8) == "fx_chips") {
+                    chips = s;
+                    break;
+                }
+            }
+            REQUIRE(chips < glow);
+            const std::size_t between = glow - chips - 1;
+            const float atGlow = ftcore::clipShowPose(show, glowOn + 0.01).yaw;
+            const float atCrit = ftcore::clipShowPose(show, critAt + 0.01).yaw;
+            if (facing < 90.f) {
+                // Ahead: the glow's take goes on from the chips', square to the front.
+                CHECK(between == 0);
+                CHECK_FALSE(show.segments[glow].cut);
+                CHECK(atGlow == doctest::Approx(0.0));
+                CHECK(atCrit == doctest::Approx(0.0));
+            } else {
+                // Behind: a half turn, stepped round on the turn clip or cut to from a hidden moment.
+                REQUIRE(between == 1);
+                CHECK(show.segments[chips + 1].label() == (turns ? "turn" : "hidden"));
+                CHECK(std::fabs(std::fabs(atGlow) - 180.f) < 1e-3f);
+                CHECK(std::fabs(std::fabs(atCrit) - 180.f) < 1e-3f);
+            }
+        }
+    }
+    // A facing that is not a number is refused.
+    ftcore::ShowSpec bad = still;
+    bad.weakFacing = std::nanf("");
+    ftcore::ClipShow show;
+    std::string err;
+    CHECK_FALSE(ftcore::buildClipShow(clips, bad, show, &err));
+    CHECK(err.find("facing") != std::string::npos);
+}
+
 TEST_CASE("clip showcase: the cues crossed in a frame") {
     ftcore::BeatClips clips;
     REQUIRE(loadClips(clips));
