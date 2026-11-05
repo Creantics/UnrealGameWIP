@@ -3212,6 +3212,17 @@ bool UFTArenaRunner::BeginShowcase()
 	Spec.walkFrom = bStone ? kStoneWalkStartPhase : 0.0;
 	Spec.turnDeg = kArenaTurnDeg;
 	Spec.turnPivot = kArenaTurnPivot;
+	// The weak point's facing (its first gate's, from the boss's data): the glow and crit takes turn it to the camera. A kind
+	// without weak points keeps the spec's default (behind).
+	const ftcore::ArenaWeakPoints* Weak = bStone ? &StoneBearer.GetDef().boss.weakPoints
+		: (ShowSlot == KiteSlot && GetKite()) ? &GetKite()->GetWeakPoints()
+		: GetKindCrit(ShowSlot) ? &GetKindCrit(ShowSlot)->points() : nullptr;
+	if (Weak && !Weak->points.empty())
+	{
+		Spec.weakFacing = Weak->gates[0].facing;
+	}
+	UE_LOG(LogForgottenThird, Log, TEXT("Arena showcase: the weak point faces %.0f deg in the boss's frame (%s); the glow and crit takes turn it to the camera."),
+		Spec.weakFacing, Weak && !Weak->points.empty() ? TEXT("its data") : TEXT("no weak point, the default"));
 
 	// Every move's clip once (a variant plays its base move's clip, and a tile move's later impacts run on from its
 	// first), then its left-hand twin: entered where the fight enters it at rate 1.0, left as the move ends.
