@@ -2500,6 +2500,96 @@ TEST_CASE("arena step: bodies move at their velocities, overlaps are pushed apar
     CHECK(corpse.player.y == 1.f);
 }
 
+TEST_CASE("arena push-apart: the helper both arenaSteps share splits the overlap by mass") {
+    Vec2 lead{0.f, 0.f};
+    Vec2 boss{1.f, 0.f};
+    arenaPushApart(lead, 0.4f, boss, 1.2f); // 0.6 to find
+    const float bossShare = (0.4f * 0.4f * 0.4f) / (0.4f * 0.4f * 0.4f + 1.2f * 1.2f * 1.2f);
+    CHECK(boss.x - 1.f == doctest::Approx(0.6f * bossShare));
+    CHECK(-lead.x == doctest::Approx(0.6f * (1.f - bossShare)));
+    CHECK(boss.x - lead.x == doctest::Approx(1.6f));
+    Vec2 clearA{0.f, 0.f};
+    Vec2 clearB{0.f, 2.f};
+    arenaPushApart(clearA, 0.4f, clearB, 1.2f); // already clear: nothing moves
+    CHECK(clearA.y == 0.f);
+    CHECK(clearB.y == 2.f);
+    Vec2 sameA{0.f, 0.f};
+    Vec2 sameB{0.f, 0.f};
+    arenaPushApart(sameA, 0.f, sameB, 0.f); // no size, no push
+    CHECK(sameA.x == 0.f);
+    CHECK(sameB.x == 0.f);
+}
+
+TEST_CASE("arena step: the push-apart is weighted by mass (body radius cubed)") {
+    // The bodies sit where the test puts them; dt 0, so only the push-apart moves anything.
+    const auto kindOfRadius = [](float radius) {
+        ArenaEnemyKind k = dummyKind();
+        k.bodyRadius = radius;
+        return k;
+    };
+    {   // equal bodies split the overlap half and half, as before
+        Rig rig(ruleFighter(), {kindOfRadius(0.4f)});
+        rig.bodies.player = Vec2{0.f, 0.f};
+        rig.put(0, 0.5f, 0.f); // 0.5 apart, 0.8 wanted: 0.3 to find
+        arenaStep(rig.fight, rig.bodies, 0.f);
+        CHECK(rig.bodies.player.x == doctest::Approx(-0.15f));
+        CHECK(rig.bodies.enemies[0].x == doctest::Approx(0.65f));
+        CHECK(rig.bodies.player.y == 0.f);
+        CHECK(rig.bodies.enemies[0].y == 0.f);
+    }
+    {   // a lead against a big body: the big one gives way a little, the lead the rest
+        Rig rig(ruleFighter(), {kindOfRadius(1.2f)});
+        rig.bodies.player = Vec2{0.f, 0.f};
+        rig.put(0, 1.f, 0.f); // 1.6 wanted: 0.6 to find
+        arenaStep(rig.fight, rig.bodies, 0.f);
+        const float bigMoved = rig.bodies.enemies[0].x - 1.f;
+        const float leadMoved = -rig.bodies.player.x;
+        CHECK(bigMoved > 0.f);
+        CHECK(bigMoved < 0.05f * 0.6f);
+        CHECK(bigMoved == doctest::Approx(0.6f * (0.4f * 0.4f * 0.4f) / (0.4f * 0.4f * 0.4f + 1.2f * 1.2f * 1.2f)));
+        CHECK(leadMoved + bigMoved == doctest::Approx(0.6f));
+        CHECK(distanceOf(rig.bodies.player, rig.bodies.enemies[0]) == doctest::Approx(1.6f));
+    }
+    {   // the same between two enemies, whichever index holds the big one
+        Rig rig(ruleFighter(), {kindOfRadius(1.2f), kindOfRadius(0.4f)});
+        rig.bodies.player = Vec2{-10.f, 0.f};
+        rig.put(0, 0.f, 0.f);
+        rig.put(1, 1.f, 0.f); // 1.6 wanted: 0.6 to find
+        arenaStep(rig.fight, rig.bodies, 0.f);
+        CHECK(std::fabs(rig.bodies.enemies[0].x) < 0.05f * 0.6f);
+        CHECK(rig.bodies.enemies[1].x - 1.f > 0.9f * 0.6f);
+        CHECK(distanceOf(rig.bodies.enemies[0], rig.bodies.enemies[1]) == doctest::Approx(1.6f));
+        Rig flipped(ruleFighter(), {kindOfRadius(0.4f), kindOfRadius(1.2f)});
+        flipped.bodies.player = Vec2{-10.f, 0.f};
+        flipped.put(0, 0.f, 0.f);
+        flipped.put(1, 1.f, 0.f);
+        arenaStep(flipped.fight, flipped.bodies, 0.f);
+        CHECK(std::fabs(flipped.bodies.enemies[1].x - 1.f) < 0.05f * 0.6f);
+        CHECK(-flipped.bodies.enemies[0].x > 0.9f * 0.6f);
+        CHECK(distanceOf(flipped.bodies.enemies[0], flipped.bodies.enemies[1]) == doctest::Approx(1.6f));
+    }
+    {   // a huge body is as good as a wall to a lead
+        Rig rig(ruleFighter(), {kindOfRadius(2.3f)});
+        rig.bodies.player = Vec2{0.f, 0.f};
+        rig.put(0, 2.f, 0.f);
+        arenaStep(rig.fight, rig.bodies, 0.f);
+        CHECK(rig.bodies.enemies[0].x - 2.f < 0.01f);
+        CHECK(distanceOf(rig.bodies.player, rig.bodies.enemies[0]) == doctest::Approx(2.7f));
+    }
+    {   // a crowd of mixed sizes ends with no two live bodies overlapping
+        Rig rig(ruleFighter(), {kindOfRadius(0.45f), kindOfRadius(1.2f), kindOfRadius(0.4f)});
+        rig.bodies.player = Vec2{0.f, 0.f};
+        rig.put(0, 0.6f, 0.2f);
+        rig.put(1, 1.4f, -0.3f);
+        rig.put(2, 0.2f, -0.7f);
+        arenaStep(rig.fight, rig.bodies, 0.f);
+        const float radii[4] = {0.4f, 0.45f, 1.2f, 0.4f};
+        const Vec2 at[4] = {rig.bodies.player, rig.bodies.enemies[0], rig.bodies.enemies[1], rig.bodies.enemies[2]};
+        for (int i = 0; i < 4; ++i)
+            for (int j = i + 1; j < 4; ++j) CHECK(distanceOf(at[i], at[j]) >= radii[i] + radii[j] - 1e-2f);
+    }
+}
+
 // ---- begin, restart, refresh ----
 
 TEST_CASE("arena begin: the enemies spread on an arc in front, inside the ring, facing the player") {
@@ -3800,7 +3890,7 @@ TEST_CASE("arena: a whole autopilot fight that stores Load and releases it alloc
     ArenaBodies bodies;
     const bool counting = ftcore_test::allocHookInstalled();
     const auto before = ftcore_test::allocStats().count;
-    fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 2); // seed 2: the autopilot releases in this one
     bodies.player = fight.playerStart();
     for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
     int fullDeals = 0, deals = 0;

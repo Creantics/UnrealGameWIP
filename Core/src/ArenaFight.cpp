@@ -1897,6 +1897,21 @@ Vec2 arenaParkSpot(const ArenaRing& ring, Vec2 playerStart, std::size_t i) {
     return arenaMadd(ring.centre, arenaRotate(base, angle), radius);
 }
 
+void arenaPushApart(Vec2& a, float ra, Vec2& b, float rb) {
+    const Vec2 d = arenaSub(b, a);
+    const float distance = arenaLength(d);
+    const float least = ra + rb;
+    if (distance >= least) return;
+    const Vec2 dir = distance > kArenaEps ? Vec2{d.x / distance, d.y / distance} : Vec2{1.f, 0.f};
+    const float overlap = least - distance;
+    const float ma = ra * ra * ra;
+    const float mb = rb * rb * rb;
+    const float total = ma + mb;
+    const float shareA = total > 0.f ? mb / total : 0.5f; // a moves by b's share of the mass
+    a = arenaMadd(a, dir, -overlap * shareA);
+    b = arenaMadd(b, dir, overlap * (1.f - shareA));
+}
+
 void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
     const std::size_t n = fight.enemyCount();
     const ArenaOutput& out = fight.output();
@@ -1906,25 +1921,16 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
         bodies.player = arenaMadd(bodies.player, out.player.velocity, dt);
         for (std::size_t i = 0; i < n; ++i) bodies.enemies[i] = arenaMadd(bodies.enemies[i], out.enemies[i].velocity, dt);
     }
-    // Overlapping bodies are pushed apart, half each; dead enemies don't block.
-    const auto separate = [](Vec2& a, float ra, Vec2& b, float rb) {
-        const Vec2 d = arenaSub(b, a);
-        const float distance = arenaLength(d);
-        const float least = ra + rb;
-        if (distance >= least) return;
-        const Vec2 dir = distance > kArenaEps ? Vec2{d.x / distance, d.y / distance} : Vec2{1.f, 0.f};
-        const float push = 0.5f * (least - distance);
-        a = arenaMadd(a, dir, -push);
-        b = arenaMadd(b, dir, push);
-    };
+    // Overlapping bodies are pushed apart by mass (arenaPushApart): the bigger one gives way less. Dead
+    // enemies don't block.
     for (int pass = 0; pass < kArenaPushPasses; ++pass) {
         for (std::size_t i = 0; i < n; ++i)
-            if (fight.enemyAlive(i)) separate(bodies.player, playerRadius, bodies.enemies[i], def.enemies[i].bodyRadius);
+            if (fight.enemyAlive(i)) arenaPushApart(bodies.player, playerRadius, bodies.enemies[i], def.enemies[i].bodyRadius);
         for (std::size_t i = 0; i < n; ++i) {
             if (!fight.enemyAlive(i)) continue;
             for (std::size_t j = i + 1; j < n; ++j)
                 if (fight.enemyAlive(j))
-                    separate(bodies.enemies[i], def.enemies[i].bodyRadius, bodies.enemies[j], def.enemies[j].bodyRadius);
+                    arenaPushApart(bodies.enemies[i], def.enemies[i].bodyRadius, bodies.enemies[j], def.enemies[j].bodyRadius);
         }
     }
     // Everything stays inside the ring.

@@ -833,8 +833,14 @@ private:
     void* blowUser_ = nullptr;
 };
 
+// Pushes two overlapping circles apart until they touch, along the line between their centres. Each
+// moves by the other's share of the mass (its radius cubed): equal radii split the overlap half and
+// half, and a big body (the Unbending, 1.2 m) gives way a few percent to a lead's 0.4 m. Bodies that
+// already clear each other don't move. Both arenaSteps use it.
+FTCORE_API void arenaPushApart(Vec2& a, float ra, Vec2& b, float rb);
+
 // Moves `bodies` the way a host with no walls would: each body at its output velocity for dt, then
-// overlapping bodies pushed apart (circles of their body radii; dead enemies don't block), then
+// overlapping bodies pushed apart by mass (arenaPushApart; dead enemies don't block), then
 // everything kept inside the ring. Tests, the balance check and headless runs use it in place of an
 // engine. Deterministic; no allocation.
 FTCORE_API void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt);

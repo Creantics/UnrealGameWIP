@@ -317,16 +317,6 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const Are
         brake(bodies.player, before.player, playerRadius);
         for (std::size_t i = 0; i < n; ++i) brake(bodies.enemies[i], before.enemies[i], def.enemies[i].bodyRadius);
     }
-    const auto separate = [](Vec2& a, float ra, Vec2& b, float rb) {
-        const Vec2 d = minus(b, a);
-        const float distance = lengthOf(d);
-        const float least = ra + rb;
-        if (distance >= least) return;
-        const Vec2 dir = distance > 1e-4f ? scaled(d, 1.f / distance) : Vec2{1.f, 0.f};
-        const float push = 0.5f * (least - distance);
-        a = minus(a, scaled(dir, push));
-        b = plus(b, scaled(dir, push));
-    };
     for (int pass = 0; pass < 2; ++pass) {
         bool moved = false;
         const auto hold = [&](Vec2& p, float r) {
@@ -338,14 +328,15 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const Are
         for (std::size_t i = 0; i < n; ++i) hold(bodies.enemies[i], def.enemies[i].bodyRadius);
         // Nothing the walls or the obstacles had to move: the step is arenaStep's.
         if (!moved || pass == 1) break;
-        // A wall can press two bodies together: push them apart once more, then hold them again.
+        // A wall can press two bodies together: push them apart once more (by mass, as arenaStep does), then hold
+        // them again.
         for (std::size_t i = 0; i < n; ++i)
-            if (fight.enemyAlive(i)) separate(bodies.player, playerRadius, bodies.enemies[i], def.enemies[i].bodyRadius);
+            if (fight.enemyAlive(i)) arenaPushApart(bodies.player, playerRadius, bodies.enemies[i], def.enemies[i].bodyRadius);
         for (std::size_t i = 0; i < n; ++i) {
             if (!fight.enemyAlive(i)) continue;
             for (std::size_t j = i + 1; j < n; ++j)
                 if (fight.enemyAlive(j))
-                    separate(bodies.enemies[i], def.enemies[i].bodyRadius, bodies.enemies[j], def.enemies[j].bodyRadius);
+                    arenaPushApart(bodies.enemies[i], def.enemies[i].bodyRadius, bodies.enemies[j], def.enemies[j].bodyRadius);
         }
     }
 }
