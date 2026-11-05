@@ -145,7 +145,8 @@ public:
 	bool UseRefused() const { return bUseRefused; }
 	// Where arena move Move of the boss lands, from the bodies and the boss's facing now, cut by the keep-out as its blows
 	// are: a called impact to a side lands Side metres to that side and Ahead metres ahead, an arc blow ReachShare of its
-	// reach ahead. False when the host isn't active, the use was refused or Move isn't one of the boss's.
+	// reach ahead (a floor blow whose clip contact sits under the body lands at that contact, where the part meets the
+	// floor). False when the host isn't active, the use was refused or Move isn't one of the boss's.
 	bool StrikeOf(std::uint8_t Move, const ftcore::ArenaBodies& Bodies, float Ahead, float Side, float ReachShare,
 		FFTStoneBearerStrike& Out) const;
 	// StrikeOf from a given spot and facing, the called impact's side given (Left or Right; Path: none), and the keep-out

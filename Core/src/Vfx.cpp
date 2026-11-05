@@ -529,13 +529,19 @@ void readEmitter(Reader& r, VfxEmitter& d) {
     r.get("innerRadius", d.innerRadius);
     r.get("coneAngle", d.coneAngle);
     readVec3(r, "boxHalfExtents", d.boxHalfExtents);
+    readVec3(r, "offset", d.offset);
     readCurve(r, "speed", d.speed);
     readVec3(r, "velocityMin", d.velocityMin);
     readVec3(r, "velocityMax", d.velocityMax);
     readVec3(r, "gravity", d.gravity);
     r.get("drag", d.drag);
     r.get("orbit", d.orbit);
+    if (r.get("floor", d.floorY)) d.hasFloor = true;
     readCurve(r, "startSize", d.startSize);
+    if (r.has("startSizeY")) {
+        readCurve(r, "startSizeY", d.startSizeY);
+        d.hasStartSizeY = true;
+    }
     readCurve(r, "sizeOverLife", d.sizeOverLife);
     readGradient(r, "startColor", d.startColor);
     readGradient(r, "colorOverLife", d.colorOverLife);
@@ -547,11 +553,17 @@ void readEmitter(Reader& r, VfxEmitter& d) {
                {"puff", VfxSprite::Puff},
                {"spark", VfxSprite::Spark},
                {"ring", VfxSprite::Ring},
-               {"chip", VfxSprite::Chip}});
+               {"chip", VfxSprite::Chip},
+               {"dust", VfxSprite::Dust},
+               {"crack", VfxSprite::Crack}});
     r.get("stretch", d.stretch);
     r.get("stretchMax", d.stretchMax);
     r.get("softness", d.softness);
     r.get("depthFade", d.depthFade);
+    if (r.get("depthFadeDistance", d.depthFadeDistance) && !(d.depthFadeDistance >= 0.f))
+        r.errorAt("depthFadeDistance", "expected >= 0");
+    if (r.get("ringStroke", d.ringStroke) && !(d.ringStroke >= 0.f && d.ringStroke <= 0.45f))
+        r.errorAt("ringStroke", "expected 0..0.45");
     r.get("coreShade", d.coreShade);
     r.get("turbulence", d.turbulence);
     r.get("texture", d.texture);
@@ -1049,6 +1061,18 @@ void planShapeAndVelocity(const VfxEmitter& e, VfxNiagaraEmitter& p) {
             p.gaps.push_back("velocityOverLifetime.radial: not mapped");
     }
     if (e.orbit != 0.f) p.gaps.push_back("orbit: turning the velocity about the vertical axis is not mapped");
+
+    // The spawn offset moves the shape and the point a FromPoint velocity pushes away from alike. A point shape
+    // becomes a tiny sphere, since ShapeLocation carries the offset.
+    if (!isZero(e.offset)) {
+        const VfxVec3 o = vfxToUnreal(e.offset);
+        p.shapeOffset = add(p.shapeOffset, o);
+        p.pointOrigin = add(p.pointOrigin, o);
+        if (p.shape == VfxNiagaraShape::None) {
+            p.shape = VfxNiagaraShape::Sphere;
+            p.sphereRadius = 0.1f;
+        }
+    }
 }
 
 void planForces(const VfxEmitter& e, VfxNiagaraEmitter& p) {
@@ -1079,9 +1103,73 @@ void planForces(const VfxEmitter& e, VfxNiagaraEmitter& p) {
     if (e.inheritVelocity.enabled) p.gaps.push_back("inheritVelocity: not mapped");
 }
 
+// Lightweight emitters have no collision. With a floor, every particle lives until the slowest-falling one (the
+// highest spawn with the fastest upward start) has come down through it, plus one frame: none dies in the air, and
+// the earlier ones pass under the (opaque) floor where they land.
+void planFloor(const VfxEmitter& e, VfxNiagaraEmitter& p) {
+    if (!e.hasFloor) return;
+    const float floorZ = e.floorY * kVfxUnrealUnitsPerMetre;
+    float zLo = p.shapeOffset.z, zHi = p.shapeOffset.z;
+    switch (p.shape) {
+    case VfxNiagaraShape::None:
+    case VfxNiagaraShape::Ring: break; // the ring lies flat
+    case VfxNiagaraShape::Sphere:
+        zLo -= p.sphereRadius;
+        zHi += p.sphereRadius;
+        break;
+    case VfxNiagaraShape::Box:
+        zLo -= 0.5f * p.boxSize.z;
+        zHi += 0.5f * p.boxSize.z;
+        break;
+    }
+    float vLo = 0.f, vHi = 0.f;
+    switch (p.velocity) {
+    case VfxNiagaraVelocity::None: break;
+    case VfxNiagaraVelocity::Linear:
+        vLo = std::min(p.linearLo.z, p.linearHi.z);
+        vHi = std::max(p.linearLo.z, p.linearHi.z);
+        break;
+    case VfxNiagaraVelocity::FromPoint: {
+        const float s = std::max(std::fabs(p.speed.lo), std::fabs(p.speed.hi));
+        vLo = -s;
+        vHi = s;
+        break;
+    }
+    case VfxNiagaraVelocity::Cone: {
+        const float len = length(p.coneDirection);
+        const float tilt = std::acos(std::clamp(len > 0.f ? p.coneDirection.z / len : 1.f, -1.f, 1.f));
+        const float half = 0.5f * p.coneAngle / kDegPerRad;
+        const float up = std::cos(std::max(0.f, tilt - half));
+        const float down = std::cos(std::min(kPi, tilt + half));
+        vHi = std::max(p.speed.lo * up, p.speed.hi * up);
+        vLo = std::min(p.speed.lo * down, p.speed.hi * down);
+        break;
+    }
+    }
+    const float g = p.gravity.z + p.acceleration.z;
+    const float late = vfxFloorTime(zHi, vHi, g, p.drag, floorZ);
+    if (late < 0.f) {
+        p.gaps.push_back("floor: needs a downward gravity; the lifetime is kept");
+        return;
+    }
+    const float early = vfxFloorTime(zLo, vLo, g, p.drag, floorZ);
+    p.floorTime = {std::max(early, 0.f), late};
+    const float life = late + 1.f / 30.f;
+    p.lifetime = {life, life};
+    p.gaps.push_back("floor " + fmt(e.floorY) + " m: no collision; the lifetime is " + fmt(life) +
+                     " s (the last particle reaches the floor at " + fmt(late) + " s, the first at " +
+                     fmt(p.floorTime.lo) + " s; the others pass under the floor)");
+}
+
 void planLook(const VfxEmitter& e, VfxNiagaraEmitter& p) {
     p.spriteSize = curveRange(e.startSize, kVfxUnrealUnitsPerMetre);
     if (!e.startSize.isConstant()) p.gaps.push_back("startSize: varies over the emitter cycle; its full range is used");
+    if (e.hasStartSizeY) {
+        p.nonUniformSize = true;
+        p.spriteSizeY = curveRange(e.startSizeY, kVfxUnrealUnitsPerMetre);
+        if (!e.startSizeY.isConstant())
+            p.gaps.push_back("startSizeY: varies over the emitter cycle; its full range is used");
+    }
     p.spriteRotation = curveRange(e.startRotation, kDegPerRad);
     VfxRange rate = curveRange(e.angularVelocity, kDegPerRad);
     if (e.rotationOverLifetime.enabled) {
@@ -1097,6 +1185,10 @@ void planLook(const VfxEmitter& e, VfxNiagaraEmitter& p) {
     p.additive = e.blend == VfxBlend::Additive;
     p.sprite = e.sprite;
     p.depthFade = e.depthFade;
+    if (e.depthFade) p.fadeDistance = e.depthFadeDistance * kVfxUnrealUnitsPerMetre;
+    else if (e.depthFadeDistance > 0.f) p.gaps.push_back("depthFadeDistance: ignored without depthFade");
+    if (e.sprite == VfxSprite::Ring) p.ringStroke = e.ringStroke;
+    else if (e.ringStroke > 0.f) p.gaps.push_back("ringStroke: ignored on a sprite other than ring");
 
     // Typical and largest start speed, for the velocity stretch.
     float vmax = 0.f;
@@ -1132,7 +1224,9 @@ void planLook(const VfxEmitter& e, VfxNiagaraEmitter& p) {
         break;
     }
 
-    if (e.sprite == VfxSprite::Puff) p.gaps.push_back("sprite puff: drawn with the soft round sprite (no eroded cloud)");
+    if (e.sprite == VfxSprite::Puff)
+        p.gaps.push_back("sprite puff: drawn with the soft round sprite (no eroded cloud; sprite dust has one)");
+    if (e.sprite == VfxSprite::Crack) p.gaps.push_back("sprite crack: a camera-facing sprite, not a decal on the surface");
     if (!e.texture.empty()) p.gaps.push_back("texture \"" + e.texture + "\": not mapped (procedural sprite used)");
     if (e.textureSheet.enabled) p.gaps.push_back("textureSheet: not mapped (needs a flipbook texture)");
     if (e.softness > 0.f && !e.depthFade) p.gaps.push_back("softness: no soft-particle depth fade (set depthFade)");
@@ -1199,7 +1293,7 @@ void planSubEmitters(const VfxEffect& effect, VfxNiagaraPlan& plan) {
                                      "\": its continuous deaths become a continuous rate at the expected death place");
             }
             const VfxVec3 at = expectedDeathPosition(parent, pp);
-            child.shapeOffset = at;
+            child.shapeOffset = add(vfxToUnreal(effect.emitters[static_cast<std::size_t>(ci)].offset), at);
             child.pointOrigin = add(child.pointOrigin, at);
             if (child.shape == VfxNiagaraShape::None && !isZero(at)) {
                 child.shape = VfxNiagaraShape::Sphere; // ShapeLocation carries the offset
@@ -1233,8 +1327,8 @@ void planBounds(VfxNiagaraEmitter& p) {
     float sizeScale = 1.f;
     for (const VfxKey& k : p.sizeOverLife) sizeScale = std::max(sizeScale, k.v);
     const float stretch = std::max(1.f, std::max(p.maxScale.y, p.minScale.y));
-    const float reach = extent + vmax * travel + p.noiseStrength * t +
-                        0.5f * p.spriteSize.hi * sizeScale * stretch;
+    const float spriteHi = std::max(p.spriteSize.hi, p.nonUniformSize ? p.spriteSizeY.hi : 0.f);
+    const float reach = extent + vmax * travel + p.noiseStrength * t + 0.5f * spriteHi * sizeScale * stretch;
     const VfxVec3 g = scale(add(p.gravity, p.acceleration), 0.5f * t * t);
     const VfxVec3 c = p.shapeOffset;
     p.boundsMin = add(c, {std::min(0.f, g.x) - reach, std::min(0.f, g.y) - reach, std::min(0.f, g.z) - reach});
@@ -1257,6 +1351,7 @@ void planVfxNiagara(const VfxEffect& effect, VfxNiagaraPlan& out) {
         if (!e.lifetime.isConstant()) p.gaps.push_back("lifetime: varies over the emitter cycle; its full range is used");
         planShapeAndVelocity(e, p);
         planForces(e, p);
+        planFloor(e, p);
         planLook(e, p);
         out.emitters.push_back(std::move(p));
     }
@@ -1266,6 +1361,32 @@ void planVfxNiagara(const VfxEffect& effect, VfxNiagaraPlan& out) {
         if (p.loop) out.loops = true;
         else out.duration = std::max(out.duration, p.loopDuration + p.lifetime.hi);
     }
+}
+
+float vfxFloorTime(float y0, float vy, float g, float k, float floorY) {
+    if (!(g < 0.f)) return -1.f;
+    const bool dragged = k > 1e-4f; // the Lightweight solver's own threshold
+    const double G = g, K = k, Y0 = y0, V = vy;
+    auto height = [&](double t) {
+        if (!dragged) return Y0 + V * t + 0.5 * G * t * t;
+        const double terminal = G / K;
+        return Y0 + (V - terminal) * (1.0 - std::exp(-K * t)) / K + terminal * t;
+    };
+    double apex = 0.0;
+    if (V > 0.0) apex = dragged ? std::log(1.0 + V * K / -G) / K : V / -G;
+    if (height(apex) <= floorY) return 0.f;
+    double lo = apex, hi = apex + 0.25;
+    int steps = 0;
+    while (height(hi) > floorY) {
+        lo = hi;
+        hi = apex + 2.0 * (hi - apex);
+        if (++steps > 40) return -1.f;
+    }
+    for (int i = 0; i < 48; ++i) {
+        const double m = 0.5 * (lo + hi);
+        (height(m) > floorY ? lo : hi) = m;
+    }
+    return static_cast<float>(hi);
 }
 
 VfxUserParameters sanitizeVfxUserParameters(VfxUserParameters p) {

@@ -164,6 +164,20 @@
    "length_s": 0.8,
    "impact_s": 0,
    "loop": true
+  },
+  {
+   "id": "block_throw",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearerblock_throw",
+   "length_s": 3.968,
+   "impact_s": 2.368,
+   "loop": false
+  },
+  {
+   "id": "marked_throw",
+   "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearermarked_throw",
+   "length_s": 4.858,
+   "impact_s": 3.158,
+   "loop": false
   }
  ]
 }

@@ -14,7 +14,7 @@ with 0 errors. Nobody has looked at them in a viewport yet, so sizes, colours an
 | Niagara plan | the same files | `planVfxNiagara` gives Lightweight module values in centimetres, Z up and degrees. Each emitter lists its `gaps`: what the plan drops or approximates. |
 | User parameters | the same files | `kVfxUserSpeedScale` and `kVfxUserShapeScale`. `sanitizeVfxUserParameters` clamps each to [0, 10] and turns non-finite values into 1. |
 | Tests | `Core/tests/test_vfx.cpp` | Loads all 12 real `Data/Vfx` files and checks the loader errors and the plan. |
-| Builder | `Source/ForgottenThird/FTBuildVfxCommandlet.{h,cpp}` | `-run=FTBuildVfx` writes `/Game/VFX/NS_<file>` for every JSON file, plus four sprite materials in `/Game/VFX/Materials`. |
+| Builder | `Source/ForgottenThird/FTBuildVfxCommandlet.{h,cpp}` | `-run=FTBuildVfx` writes `/Game/VFX/NS_<file>` for every JSON file, plus the sprite materials in `/Game/VFX/Materials` (24, see below). |
 | Runtime | `Source/ForgottenThird/FTVfxComponent.{h,cpp}` | `UFTVfxComponent` plays a named effect and fills its user parameters. `AFTVfxActor` holds one component, for placing effects in a map. |
 | Demo map | `FTBuildDemoWorldCommandlet` | Places `ember_swirl`, `heal_ring` and `smoke` beside the character. `-NoVfx` leaves them out. |
 
@@ -41,6 +41,9 @@ about Unreal's Z.
 | `duration`, `loop` | EmitterState: loop behaviour and loop duration |
 | `rate`, `bursts` | Spawn infos: one Rate, and one Burst per burst (count range, time) |
 | `lifetime`, `startSize`, `startRotation`, `startColor` | InitializeParticle: lifetime, sprite size, sprite rotation, colour. Several colour stops become a random pick. |
+| `startSizeY` | The sprite's height, drawn apart from its width: InitializeParticle's size goes NonUniformRange (each axis gets its own random, so the aspect varies per particle). |
+| `floor` | A height in the emitter frame. The lifetime becomes the time the particles take to fall to it (launch height, upward speed, gravity and drag; `vfxFloorTime`), so they die at the floor. There is no collision. |
+| `offset` | Moves the spawn shape (and a point velocity's origin). A sub-emitter's burst sits at its own offset plus the parent's expected death position. |
 | `shape` sphere, box, ring, cone | ShapeLocation: sphere, box, or ring with a disc coverage. A cone spawns on its base disc. |
 | `speed`, `velocityMin/Max` | AddVelocity. Speed from a point or ring is FromPoint, speed from a cone is InCone (full angle = 2 × the spec's half angle), and a box of velocities is Linear. |
 | `gravity`, `drag`, `forceOverLifetime` | GravityForce, Drag, AccelerationForce. A force curve is replaced by its mean. |
@@ -49,7 +52,8 @@ about Unreal's Z.
 | `angularVelocity` | SpriteRotationRate |
 | `stretch` / speed scaling | ScaleSpriteSizeBySpeed plus velocity-aligned sprites |
 | `renderMode`, `alignment` | Sprite renderer: facing mode, alignment and sort mode |
-| `blend`, `sprite` | One of four materials: `M_VfxSoft`, `M_VfxSoftAdditive`, `M_VfxSpark` or `M_VfxSparkAdditive`. They are unlit, procedural round masks with no textures, and take the particle colour and alpha. |
+| `blend`, `sprite`, `depthFade` | One of 24 materials, `M_Vfx<Mask>[Additive][Fade]`, with Mask one of Soft, Spark, Ring, Chip, Dust and Crack (`puff` uses Soft). They are unlit procedural masks with no textures, and take the particle colour and alpha. Chip (a faceted polygon) and Dust (two octaves of value noise, an eroded edge and uneven density) read the per-particle random, so each particle gets its own outline and shading. Crack is a jagged bright line with a branch and a soft rim. |
+| `depthFadeDistance`, `ringStroke` | Dynamic material parameter 0: x is the depth fade's distance (cm), y the Ring band's half-width share. The builder turns on the DynamicMaterialParameters module only for emitters that set one. 0, or the module off, keeps the material's own (a quarter of the sprite size, at least 5 cm; a 0.09 band). |
 | sub-emitters on death | A burst in the child at the parent's mean lifetime, placed at the parent's expected death position |
 
 ### User parameters
@@ -80,7 +84,7 @@ The build log prints every gap as `FTBuildVfx: gap <effect>/<emitter>: ...`. The
   at each dying particle. Inherit flags are dropped.
 - **Textures.** `flipbook_fire` has no flipbook sheet, the leaf mesh is drawn as sprites, and `puff`
   uses the soft round mask.
-- **Smaller losses.** No soft-particle depth fade. No speed limit (`limitVelocity`). No colour or size
+- **Smaller losses.** No speed limit (`limitVelocity`). No colour or size
   by speed, except the stretch. Noise is one octave and doesn't scroll. A box of start velocities
   keeps only its mean.
 
@@ -99,6 +103,11 @@ $proj = '"D:\projects\unrealgamewip\ForgottenThird.uproject"'
 # 1. All systems and the sprite materials. Run again after changing Data/Vfx, the Core plan or the builder.
 $p = Start-Process $ue -ArgumentList "$proj -run=FTBuildVfx -NullRHI -unattended -nopause -nosplash -log -abslog=$env:TEMP\ft_vfx.log" -PassThru -NoNewWindow
 $null = $p.Handle; $p.WaitForExit(); $p.ExitCode
+
+# 1b. Or just some effects: -Only=<name>[,<name>...] rebuilds those NS_ assets and leaves the rest. A sprite material
+#     they use that isn't built yet is built; the built ones are kept, except those named in
+#     -RebuildMaterials=<name>[,<name>...] (run that after the builder's material graph for them changes).
+#     Example: -Only=stone_impact,stone_tell -RebuildMaterials=M_VfxRing
 
 # 2. Optional: list modules and user-parameter bindings of the saved systems.
 $p = Start-Process $ue -ArgumentList "$proj -run=FTBuildVfx -Verify -NullRHI -unattended -nopause -nosplash -log -abslog=$env:TEMP\ft_vfx_verify.log" -PassThru -NoNewWindow
