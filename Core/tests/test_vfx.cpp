@@ -13,8 +13,6 @@ using namespace ftcore;
 
 namespace {
 
-constexpr float kPi = 3.14159265358979323846f;
-
 bool loadEffect(const std::string& name, VfxEffect& out, std::vector<std::string>* warnings = nullptr) {
     std::string text, err;
     if (!ftcore_test::readProjectData("Vfx/" + name + ".json", text)) {

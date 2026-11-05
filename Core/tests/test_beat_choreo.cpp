@@ -1142,7 +1142,8 @@ TEST_CASE("beat choreo: a miss cuts the pre-rolled answer at the impact to the l
                 if (e.type != BeatBossEventType::Judged || e.grade == QteGrade::Perfect || e.grade == QteGrade::Good) continue;
                 const auto it = std::find_if(recs.begin(), recs.end(), [&](const Rec& x) { return x.id == e.prompt; });
                 if (it == recs.end()) continue;
-                const ChoreoPhase& cp = onlyChoreo(r.choreo, which).phases[0];
+                // The phase s plays (onlyChoreo's phase 0), from the rig, not from a temporary copy.
+                const ChoreoPhase& cp = r.choreo.phases[static_cast<std::size_t>(which)];
                 const ChoreoMove& cm = it->finisher ? cp.finisher[it->move] : cp.moves[it->move];
                 ++misses;
                 // Before the verdict the lead was in the pre-rolled answer; after it, from the impact, in the reaction.

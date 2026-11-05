@@ -157,7 +157,7 @@ Render renderFight(const BeatBossTrack& track, const RenderOptions& opt) {
                 bool known = false;
                 for (const PromptSeen& k : r.prompts) known |= k.id == p.id;
                 if (known) continue;
-                const auto clockOf = [&](double track) { return fight.now() + (track - fight.trackTime()); };
+                const auto clockOf = [&](double songTime) { return fight.now() + (songTime - fight.trackTime()); };
                 r.prompts.push_back(PromptSeen{p.id, p.answer, p.finisher, clockOf(p.tell), clockOf(p.impact)});
             }
         }

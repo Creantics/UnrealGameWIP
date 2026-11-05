@@ -50,9 +50,9 @@ struct Skill {
     float power = 1.0f;       // damage multiplier for the whole move at 100% accuracy
     int notes = 4;            // base combo length before difficulty adds more
     float difficulty = 2.0f;  // move complexity on the 0-10 combo rating scale
-    AttackTimeline timeline;  // enemy skills: the hits to defend (default: one hit, kDefaultImpact s in)
-    bool torn = false;        // enemy skills: a hit of it that lands in full leaves the defender Torn (Battle.h)
-    std::string tellId;       // enemy skills: the tell it shows, for Read cards (ReadCards.h); empty: its name
+    AttackTimeline timeline{};  // enemy skills: the hits to defend (default: one hit, kDefaultImpact s in)
+    bool torn = false;          // enemy skills: a hit of it that lands in full leaves the defender Torn (Battle.h)
+    std::string tellId{};       // enemy skills: the tell it shows, for Read cards (ReadCards.h); empty: its name
 };
 
 // The tell an enemy skill shows (Read cards): its tellId, else its name.
