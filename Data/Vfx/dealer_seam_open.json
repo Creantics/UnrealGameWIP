@@ -5,48 +5,44 @@
       "name": "drips",
       "bursts": [
         {
-          "time": 0.22,
+          "time": 0.3,
           "count": 3
         },
         {
-          "time": 0.32,
+          "time": 0.4,
           "count": 3
         },
         {
-          "time": 0.42,
+          "time": 0.5,
           "count": 3
         },
         {
-          "time": 0.52,
+          "time": 0.6,
           "count": 3
         },
         {
-          "time": 0.62,
+          "time": 0.7,
           "count": 3
         },
         {
-          "time": 0.72,
+          "time": 0.8,
           "count": 3
         },
         {
-          "time": 0.82,
+          "time": 0.9,
           "count": 3
         },
         {
-          "time": 0.92,
+          "time": 1.0,
           "count": 3
         },
         {
-          "time": 1.02,
-          "count": 3
-        },
-        {
-          "time": 1.12,
+          "time": 1.1,
           "count": 3
         }
       ],
       "duration": 1.2,
-      "maxParticles": 40,
+      "maxParticles": 36,
       "lifetime": [
         0.5,
         0.8
@@ -120,13 +116,13 @@
       "name": "core",
       "bursts": [
         {
-          "time": 0.22,
+          "time": 0.3,
           "count": 1
         }
       ],
       "duration": 1.2,
       "maxParticles": 2,
-      "lifetime": 0.98,
+      "lifetime": 0.9,
       "shape": "point",
       "space": "local",
       "startSize": 0.4,
@@ -211,19 +207,19 @@
       "name": "halo",
       "bursts": [
         {
-          "time": 0.22,
+          "time": 0.3,
           "count": 1
         },
         {
-          "time": 0.508,
+          "time": 0.589,
           "count": 1
         },
         {
-          "time": 0.797,
+          "time": 0.877,
           "count": 1
         },
         {
-          "time": 1.085,
+          "time": 1.165,
           "count": 1
         }
       ],
