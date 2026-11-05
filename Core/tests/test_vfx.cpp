@@ -81,10 +81,10 @@ TEST_CASE("vfx: the Kite-Mother's effects load without warnings and keep their p
         std::uint32_t budget; // the sum of the emitters' maxParticles
         bool loops;
     };
-    const Expect files[] = {{"kite_swoop_tell", 3, 230, true},
-                            {"kite_seam_open", 3, 54, true},
+    const Expect files[] = {{"kite_swoop_tell", 3, 270, true},
+                            {"kite_seam_open", 3, 62, true},
                             {"kite_seam_crit", 3, 82, false},
-                            {"kite_hit", 2, 28, false}};
+                            {"kite_hit", 3, 34, false}};
     for (const Expect& f : files) {
         CAPTURE(f.file);
         VfxEffect e;
@@ -103,6 +103,89 @@ TEST_CASE("vfx: the Kite-Mother's effects load without warnings and keep their p
         planVfxNiagara(e, plan);
         CHECK(plan.emitters.size() == f.emitters);
     }
+}
+
+// Round 6 (RUBRIC E5): the ring is whole in its first frames and does not stand over the lead, the glow empties within a third
+// of a second of a stop, and the plain-hit puff has a bright core the gameplay camera can see, still small next to the crit.
+TEST_CASE("vfx: the Kite-Mother's effects read at the gameplay camera and stop within a third of a second") {
+    const auto bounds = [](const VfxCurve& c, float& lo, float& hi) { c.bounds(lo, hi); };
+    // The mean alpha of an emitter's colour over its life.
+    const auto meanAlpha = [](const VfxEmitter& e) {
+        float sum = 0.f;
+        for (int i = 0; i <= 100; ++i) sum += e.colorOverLife.evaluate(static_cast<float>(i) / 100.f, 0.f).a;
+        return sum / 101.f;
+    };
+
+    VfxEffect tell;
+    REQUIRE(loadEffect("kite_swoop_tell", tell));
+    REQUIRE(tell.emitters.size() == 3);
+    const VfxEmitter& dust = tell.emitters[0];
+    const VfxEmitter& edge = tell.emitters[1];
+    // The haze lies on the floor: a sprite standing up at the ring tinted the lead standing in it.
+    CHECK(dust.renderMode == VfxRenderMode::Horizontal);
+    // A burst at 0 puts the ring's beads all round at once; the loop is longer than the tell (startup 1.667 s + active 0.25 s),
+    // so the burst does not fire again while it plays.
+    REQUIRE(edge.bursts.size() == 1);
+    CHECK(edge.bursts[0].time == 0.f);
+    float sizeLo = 0.f, sizeHi = 0.f;
+    bounds(edge.startSize, sizeLo, sizeHi);
+    CHECK(static_cast<float>(edge.bursts[0].count) * sizeLo >= 2.f * kPi * edge.radius);
+    CHECK(edge.duration > 1.917f);
+    CHECK(dust.duration > 1.917f);
+    // Not clear at birth: the first frames already show it.
+    CHECK(edge.colorOverLife.evaluate(0.f, 0.f).a >= 0.5f);
+    CHECK(dust.colorOverLife.evaluate(0.f, 0.f).a >= 0.3f);
+
+    VfxEffect open;
+    REQUIRE(loadEffect("kite_seam_open", open));
+    for (const char* name : {"pulse", "core"}) {
+        CAPTURE(name);
+        const int i = findVfxEmitter(open, name);
+        REQUIRE(i >= 0);
+        const VfxEmitter& e = open.emitters[static_cast<std::size_t>(i)];
+        float lifeLo = 0.f, lifeHi = 0.f;
+        bounds(e.lifetime, lifeLo, lifeHi);
+        CHECK(lifeHi <= 0.3f);                                    // a stop leaves nothing of the glow after 0.3 s
+        CHECK(e.colorOverLife.evaluate(1.f, 0.f).a == 0.f);       // and each sprite ends clear, no pop
+        CHECK(e.blend == VfxBlend::Additive);
+        // Strength in the steady state, sprites alive at once x their mean alpha: what the one-second sprite it replaced gave.
+        const float strength = e.rate * lifeHi * meanAlpha(e);
+        CHECK(strength >= 0.7f);
+        CHECK(strength <= 1.1f);
+    }
+
+    VfxEffect hit, crit;
+    REQUIRE(loadEffect("kite_hit", hit));
+    REQUIRE(loadEffect("kite_seam_crit", crit));
+    const int core = findVfxEmitter(hit, "core");
+    const int droplets = findVfxEmitter(hit, "droplets");
+    const int flash = findVfxEmitter(crit, "flash");
+    REQUIRE(core >= 0);
+    REQUIRE(droplets >= 0);
+    REQUIRE(flash >= 0);
+    const VfxEmitter& puffCore = hit.emitters[static_cast<std::size_t>(core)];
+    float coreLo = 0.f, coreHi = 0.f, flashLo = 0.f, flashHi = 0.f;
+    bounds(puffCore.startSize, coreLo, coreHi);
+    bounds(crit.emitters[static_cast<std::size_t>(flash)].startSize, flashLo, flashHi);
+    CHECK(puffCore.blend == VfxBlend::Additive);
+    CHECK(coreLo >= 0.4f);                // a few pixels at 10 m
+    CHECK(coreHi <= 0.4f * flashHi);      // and small next to the crit's flash
+    float lifeLo = 0.f, lifeHi = 0.f;
+    bounds(puffCore.lifetime, lifeLo, lifeHi);
+    CHECK(lifeHi <= 0.2f);                // a short bright core
+    // The flecks are big enough to see and pale enough to read against the dark sheets.
+    const VfxEmitter& flecks = hit.emitters[static_cast<std::size_t>(droplets)];
+    float fleckLo = 0.f, fleckHi = 0.f;
+    bounds(flecks.startSize, fleckLo, fleckHi);
+    CHECK(fleckLo >= 0.1f);
+    const VfxColor c0 = flecks.colorOverLife.evaluate(0.f, 0.f);
+    CHECK((c0.r + c0.g + c0.b) / 3.f >= 0.6f);
+    CHECK(c0.a >= 0.9f);
+    // The puff stays under the crit effect's particle count.
+    std::uint32_t hitTotal = 0, critTotal = 0;
+    for (const VfxEmitter& e : hit.emitters) hitTotal += e.maxParticles;
+    for (const VfxEmitter& e : crit.emitters) critTotal += e.maxParticles;
+    CHECK(hitTotal < critTotal);
 }
 
 TEST_CASE("vfx: the Unbending's effects load without warnings and keep their particle budgets") {

@@ -69,96 +69,23 @@
     },
     {
       "name": "pulse",
+      "rate": 20,
       "bursts": [
         {
           "time": 0.0,
           "count": 1
         }
       ],
-      "duration": 1.0,
+      "duration": 4.0,
       "loop": true,
-      "maxParticles": 4,
-      "lifetime": 1.0,
+      "maxParticles": 8,
+      "lifetime": 0.25,
       "shape": "point",
       "startSize": 2.4,
       "sizeOverLife": [
         {
           "t": 0,
-          "v": 0.8
-        },
-        {
-          "t": 0.1,
-          "v": 1.0
-        },
-        {
-          "t": 1,
-          "v": 1.15
-        }
-      ],
-      "colorOverLife": [
-        {
-          "t": 0,
-          "color": [
-            2.4,
-            0.1,
-            0.04,
-            0.75
-          ]
-        },
-        {
-          "t": 0.1,
-          "color": [
-            2.4,
-            0.1,
-            0.04,
-            1.0
-          ]
-        },
-        {
-          "t": 0.6,
-          "color": [
-            2.0,
-            0.08,
-            0.03,
-            0.85
-          ]
-        },
-        {
-          "t": 1,
-          "color": [
-            1.6,
-            0.06,
-            0.02,
-            0.6
-          ]
-        }
-      ],
-      "blend": "additive",
-      "sprite": "soft",
-      "softness": 0.0
-    },
-    {
-      "name": "core",
-      "bursts": [
-        {
-          "time": 0.0,
-          "count": 1
-        }
-      ],
-      "duration": 1.0,
-      "loop": true,
-      "maxParticles": 4,
-      "lifetime": 1.0,
-      "shape": "point",
-      "startSize": 1.0,
-      "sizeOverLife": [
-        {
-          "t": 0,
           "v": 0.9
-        },
-        {
-          "t": 0.1,
-          "v": 1.0
         },
         {
           "t": 1,
@@ -169,19 +96,77 @@
         {
           "t": 0,
           "color": [
-            4.0,
-            1.0,
-            0.25,
-            0.9
+            2.4,
+            0.1,
+            0.04,
+            0.0
           ]
         },
         {
-          "t": 0.1,
+          "t": 0.2,
+          "color": [
+            2.4,
+            0.1,
+            0.04,
+            0.34
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            1.6,
+            0.06,
+            0.02,
+            0.0
+          ]
+        }
+      ],
+      "blend": "additive",
+      "sprite": "soft",
+      "softness": 0.0
+    },
+    {
+      "name": "core",
+      "rate": 20,
+      "bursts": [
+        {
+          "time": 0.0,
+          "count": 1
+        }
+      ],
+      "duration": 4.0,
+      "loop": true,
+      "maxParticles": 8,
+      "lifetime": 0.25,
+      "shape": "point",
+      "startSize": 1.0,
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 0.95
+        },
+        {
+          "t": 1,
+          "v": 1.05
+        }
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
           "color": [
             4.0,
             1.0,
             0.25,
-            1.0
+            0.0
+          ]
+        },
+        {
+          "t": 0.2,
+          "color": [
+            4.0,
+            1.0,
+            0.25,
+            0.36
           ]
         },
         {
@@ -190,7 +175,7 @@
             3.0,
             0.6,
             0.12,
-            0.7
+            0.0
           ]
         }
       ],
