@@ -30,6 +30,10 @@
 #include "Misc/Paths.h"
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
+#if WITH_EDITORONLY_DATA
+#include "Rendering/SkeletalMeshLODModel.h"
+#include "Rendering/SkeletalMeshModel.h"
+#endif
 
 #include "ftcore/Json.h"
 
@@ -232,6 +236,100 @@ bool ReadCarriedSplit(const FString& File, FName& HideSlot, TArray<FFTCarriedPie
 		P.Turn = FRotator(Turn.X, Turn.Y, Turn.Z);
 	}
 	return true;
+}
+
+// The mesh as imported (its bind pose, before any clip), in metres at Scale: the body's top over its lowest point (every
+// section but Slot's) and Slot's piece along its longest axis (the principal axis of its vertices). False when the
+// mesh's source model isn't loaded (a cooked build) or it has no section drawn with Slot.
+bool MeasureCarried(const USkeletalMesh& Mesh, FName Slot, double Scale, double& BodyTop, double& PieceLength)
+{
+#if WITH_EDITORONLY_DATA
+	const FSkeletalMeshModel* Model = const_cast<USkeletalMesh&>(Mesh).GetImportedModel();
+	if (!Model || Model->LODModels.Num() == 0)
+	{
+		return false;
+	}
+	const int32 SlotIndex = Mesh.GetMaterials().IndexOfByPredicate([Slot](const FSkeletalMaterial& M) { return M.MaterialSlotName == Slot; });
+	const TArray<FSkelMeshSection>& Sections = Model->LODModels[0].Sections;
+	double MinZ = TNumericLimits<double>::Max();
+	double MaxZ = TNumericLimits<double>::Lowest();
+	FVector Sum = FVector::ZeroVector;
+	int64 Count = 0;
+	for (const FSkelMeshSection& Section : Sections)
+	{
+		const bool bPiece = static_cast<int32>(Section.MaterialIndex) == SlotIndex;
+		for (const FSoftSkinVertex& V : Section.SoftVertices)
+		{
+			const FVector P(V.Position);
+			if (bPiece)
+			{
+				Sum += P;
+				++Count;
+			}
+			else
+			{
+				MinZ = FMath::Min(MinZ, P.Z);
+				MaxZ = FMath::Max(MaxZ, P.Z);
+			}
+		}
+	}
+	if (Count == 0 || MinZ > MaxZ)
+	{
+		return false;
+	}
+	const FVector Mean = Sum / static_cast<double>(Count);
+	double Cov[3][3] = {};
+	for (const FSkelMeshSection& Section : Sections)
+	{
+		if (static_cast<int32>(Section.MaterialIndex) != SlotIndex)
+		{
+			continue;
+		}
+		for (const FSoftSkinVertex& V : Section.SoftVertices)
+		{
+			const FVector D = FVector(V.Position) - Mean;
+			for (int32 A = 0; A < 3; ++A)
+			{
+				for (int32 B = 0; B < 3; ++B)
+				{
+					Cov[A][B] += D[A] * D[B];
+				}
+			}
+		}
+	}
+	// The principal axis by power iteration (the covariance is symmetric, its largest eigenvalue well apart for a slab).
+	FVector Axis = FVector(1.0, 0.5, 0.25).GetSafeNormal();
+	for (int32 I = 0; I < 64; ++I)
+	{
+		const FVector Next(Cov[0][0] * Axis.X + Cov[0][1] * Axis.Y + Cov[0][2] * Axis.Z, Cov[1][0] * Axis.X + Cov[1][1] * Axis.Y + Cov[1][2] * Axis.Z,
+			Cov[2][0] * Axis.X + Cov[2][1] * Axis.Y + Cov[2][2] * Axis.Z);
+		if (Next.IsNearlyZero())
+		{
+			break;
+		}
+		Axis = Next.GetSafeNormal();
+	}
+	double Lo = TNumericLimits<double>::Max();
+	double Hi = TNumericLimits<double>::Lowest();
+	for (const FSkelMeshSection& Section : Sections)
+	{
+		if (static_cast<int32>(Section.MaterialIndex) != SlotIndex)
+		{
+			continue;
+		}
+		for (const FSoftSkinVertex& V : Section.SoftVertices)
+		{
+			const double Along = FVector::DotProduct(FVector(V.Position) - Mean, Axis);
+			Lo = FMath::Min(Lo, Along);
+			Hi = FMath::Max(Hi, Along);
+		}
+	}
+	BodyTop = (MaxZ - MinZ) * Scale / 100.0;
+	PieceLength = (Hi - Lo) * Scale / 100.0;
+	return true;
+#else
+	return false;
+#endif
 }
 } // namespace
 
@@ -1373,10 +1471,10 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			}
 			else if (E.target < MaxEnemies)
 			{
-				BossHitVfx(E);
-				EnemyHitTime[E.target] = Now;
-				// A heavy blow, a riposte or a Release is a heavy reaction.
+				// A heavy blow, a riposte or a Release is a heavy reaction (and its chips are the heavy ones).
 				const bool bHeavy = E.move == ftcore::kArenaHeavyMove || E.move == ftcore::kArenaRiposteMove || E.move == ftcore::kArenaReleaseMove;
+				BossHitVfx(E, bHeavy);
+				EnemyHitTime[E.target] = Now;
 				const double HitWas = HitSince[E.target];
 				const bool bFlinches = Flinches(E.target);
 				StartFlinch(E.target, bHeavy);
@@ -1415,7 +1513,7 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 		case ftcore::ArenaEventType::CounterStagger:
 			if (E.target < MaxEnemies)
 			{
-				BossHitVfx(E);
+				BossHitVfx(E, true);
 				EnemyHitTime[E.target] = Now;
 				StartFlinch(E.target, true);
 			}
@@ -1430,7 +1528,7 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 		case ftcore::ArenaEventType::ReadCounter:
 			if (E.target < MaxEnemies)
 			{
-				BossHitVfx(E);
+				BossHitVfx(E, false);
 				EnemyHitTime[E.target] = Now;
 				StartFlinch(E.target, false);
 			}
@@ -1517,14 +1615,25 @@ void UFTArenaRunner::BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 Fro
 		// One strike point, literally: the dust rises where the tell was drawn (its point kept from the startup's
 		// start; Core holds the facing meanwhile, ArenaFight::setEnemyFacingHeld). Logged: how far the striking part is,
 		// on the ground, from the tell, and how the figure and Core's facing moved since the tell.
+		// A blow in the air (its contact's "air": nothing under it to strike) bursts at its contact's height over the tell.
 		const FVector Tell = ToWorld(StoneTellAt);
-		BossVfx.Play(FFTArenaBossVfx::EEffect::Impact, Tell + FVector(0.0, 0.0, Lift), StoneTellShapeMul, TEXT("blow lands"));
+		const FVector Burst = Tell + FVector(0.0, 0.0, bStoneTellAir ? static_cast<double>(StoneTellUp) * 100.0 : Lift);
+		BossVfx.Play(FFTArenaBossVfx::EEffect::Impact, Burst, StoneTellShapeMul, bStoneTellAir ? TEXT("blow lands in the air") : TEXT("blow lands"));
 		FVector Part;
 		const char* Socket = BossContactSocket(Out.move, bStoneMoveLeft);
 		if (Socket && Figure && Figure->GetSkinPoint(FName(Socket), Part))
 		{
-			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: boss move %d tell-to-impact %.2f m (%s, dust 0.00 m from the tell)."), Fight.time(),
-				static_cast<int32>(Out.move), FVector::Dist2D(Part, Tell) / 100.0, ANSI_TO_TCHAR(Socket));
+			if (bStoneTellAir)
+			{
+				UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: boss move %d tell-to-impact %.2f m (%s, in the air: it is %.2f m up, the dust %.2f m up and %.2f m from it)."),
+					Fight.time(), static_cast<int32>(Out.move), FVector::Dist2D(Part, Tell) / 100.0, ANSI_TO_TCHAR(Socket), (Part.Z - Tell.Z) / 100.0,
+					static_cast<double>(StoneTellUp), FVector::Dist(Part, Burst) / 100.0);
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: boss move %d tell-to-impact %.2f m (%s, dust 0.00 m from the tell)."), Fight.time(),
+					static_cast<int32>(Out.move), FVector::Dist2D(Part, Tell) / 100.0, ANSI_TO_TCHAR(Socket));
+			}
 		}
 		if (Figure)
 		{
@@ -1550,8 +1659,9 @@ void UFTArenaRunner::BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 Fro
 	const FVector At = ToWorld(S.To) + FVector(0.0, 0.0, Lift);
 	if (To == Active)
 	{
-		// A blow whose startup drew no tell: its dust where it lands now.
-		BossVfx.Play(FFTArenaBossVfx::EEffect::Impact, At, ShapeMul, TEXT("blow lands"));
+		// A blow whose startup drew no tell: its dust where it lands now (in the air: at its contact's height).
+		BossVfx.Play(FFTArenaBossVfx::EEffect::Impact, S.bAir ? ToWorld(S.To) + FVector(0.0, 0.0, static_cast<double>(S.Up) * 100.0) : At, ShapeMul,
+			S.bAir ? TEXT("blow lands in the air") : TEXT("blow lands"));
 		StoneTellMove = 255;
 		return;
 	}
@@ -1561,9 +1671,19 @@ void UFTArenaRunner::BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 Fro
 	StoneTellFacing = Out.facing;
 	StoneTellFigurePos = Figure ? Figure->GetActorLocation() : FVector::ZeroVector;
 	StoneTellFigureYaw = Figure ? Figure->GetActorRotation().Yaw : 0.f;
+	bStoneTellAir = S.bAir;
+	StoneTellUp = S.Up;
 	if (S.Shape != FFTStoneBearerStrike::EShape::Lane)
 	{
-		BossVfx.Play(FFTArenaBossVfx::EEffect::Tell, At, ShapeMul, bArea ? TEXT("tell all round") : TEXT("tell"));
+		// All round: the area tell, its ring drawn at the area's size (its ShapeScale 1).
+		if (bArea)
+		{
+			BossVfx.Play(FFTArenaBossVfx::EEffect::TellArea, At, 1.f, TEXT("tell all round"));
+		}
+		else
+		{
+			BossVfx.Play(FFTArenaBossVfx::EEffect::Tell, At, ShapeMul, TEXT("tell"));
+		}
 		return;
 	}
 	// A lane: its marks spaced from the boss's edge to the lane's end (one log line for them all).
@@ -1579,7 +1699,7 @@ void UFTArenaRunner::BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 Fro
 	}
 }
 
-void UFTArenaRunner::BossHitVfx(const ftcore::ArenaEvent& E)
+void UFTArenaRunner::BossHitVfx(const ftcore::ArenaEvent& E, bool bHeavy)
 {
 	if (StoneBearerSlot < 0 || E.target != static_cast<uint8>(StoneBearerSlot) || E.amount <= 0 || !BossVfx.IsSpawned())
 	{
@@ -1599,17 +1719,18 @@ void UFTArenaRunner::BossHitVfx(const ftcore::ArenaEvent& E)
 		Dir = Fight.output().enemies[Slot].facing;
 	}
 	const float Out = Fight.def().enemies[Slot].bodyRadius * BossVfx.GetTuning().Surface;
+	const FFTArenaBossVfx::EEffect Chips = bHeavy ? FFTArenaBossVfx::EEffect::ChipsHeavy : FFTArenaBossVfx::EEffect::Chips;
 	// On its knees the body is the clip's, not the capsule's (no root motion yet): out from the pelvis, at its height.
 	FVector Pelvis;
 	const AFTArenaFighter* Figure = EnemyFigures[StoneBearerSlot].Get();
 	if (StoneKneelShows() && Figure && Figure->GetSkinPoint(FName(TEXT("pelvis")), Pelvis))
 	{
-		BossVfx.Play(FFTArenaBossVfx::EEffect::Chips, Pelvis + FVector(Dir.x * Out * 100.0, Dir.y * Out * 100.0, 0.0), 1.f, TEXT("hit on its knees"));
+		BossVfx.Play(Chips, Pelvis + FVector(Dir.x * Out * 100.0, Dir.y * Out * 100.0, 0.0), 1.f, bHeavy ? TEXT("heavy hit on its knees") : TEXT("hit on its knees"));
 		return;
 	}
 	FVector At = ToWorld(ftcore::Vec2{Boss.x + Dir.x * Out, Boss.y + Dir.y * Out});
 	At.Z = PlayerFigure ? PlayerFigure->GetChest().Z : At.Z + 100.0;
-	BossVfx.Play(FFTArenaBossVfx::EEffect::Chips, At, 1.f, TEXT("hit"));
+	BossVfx.Play(Chips, At, 1.f, bHeavy ? TEXT("heavy hit") : TEXT("hit"));
 }
 
 void UFTArenaRunner::PrepareBossCarried()
@@ -3182,6 +3303,17 @@ bool UFTArenaRunner::BeginShowcase()
 	Spec.walkFrom = bStone ? kStoneWalkStartPhase : 0.0;
 	Spec.turnDeg = kArenaTurnDeg;
 	Spec.turnPivot = kArenaTurnPivot;
+	// The weak point's facing (its first gate's, from the boss's data): the glow and crit takes turn it to the camera. A kind
+	// without weak points keeps the spec's default (behind).
+	const ftcore::ArenaWeakPoints* Weak = bStone ? &StoneBearer.GetDef().boss.weakPoints
+		: (ShowSlot == KiteSlot && GetKite()) ? &GetKite()->GetWeakPoints()
+		: GetKindCrit(ShowSlot) ? &GetKindCrit(ShowSlot)->points() : nullptr;
+	if (Weak && !Weak->points.empty())
+	{
+		Spec.weakFacing = Weak->gates[0].facing;
+	}
+	UE_LOG(LogForgottenThird, Log, TEXT("Arena showcase: the weak point faces %.0f deg in the boss's frame (%s); the glow and crit takes turn it to the camera."),
+		Spec.weakFacing, Weak && !Weak->points.empty() ? TEXT("its data") : TEXT("no weak point, the default"));
 
 	// Every move's clip once (a variant plays its base move's clip, and a tile move's later impacts run on from its
 	// first), then its left-hand twin: entered where the fight enters it at rate 1.0, left as the move ends.
@@ -3283,6 +3415,11 @@ bool UFTArenaRunner::BeginShowcase()
 		KeepOutActor->SetActorHiddenInGame(true);
 	}
 	BossVfx.StopAll();
+	// Hidden between parts it still poses, so the frame it shows again isn't a stale pose.
+	if (USkeletalMeshComponent* FigureSkin = Figure->GetSkin())
+	{
+		FigureSkin->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+	}
 
 	// The boss on the ground at its start, facing as it began; the camera where the lead's would be, off its front-left.
 	ShowOrigin = ToWorld(Bodies.enemies[Slot]);
@@ -3315,7 +3452,9 @@ bool UFTArenaRunner::BeginShowcase()
 	ShowCueTime = -1.0;
 	ShowSegment = -1;
 	bShowHidden = false;
+	bShowUnhideDue = false;
 	ShowTellAttack = -1;
+	bShowTellAir = false;
 	bShowDone = false;
 	UE_LOG(LogForgottenThird, Display,
 		TEXT("Arena showcase: enemy %d (%s), %d parts, %d cues, %.2f s (after a %.1f s lead-in), %d attacks; the boss at (%.2f, %.2f) m yaw %.1f, %.2f m tall; the camera %.2f m out at %.0f deg to its left, %.2f m up, FOV %.0f%s."),
@@ -3324,6 +3463,27 @@ bool UFTArenaRunner::BeginShowcase()
 		static_cast<double>(Fit.camera.pivot + Fit.camera.up), Fit.camera.fov,
 		bStone ? TEXT("") : (Spec.turnL == ftcore::kNoClip ? TEXT("; no stepping turns (no turn clips), and no effects until this boss's own are wired into ShowcaseCue")
 			: TEXT("; no effects until this boss's own are wired into ShowcaseCue")));
+	// The stone_bearer's scale, measured on the mesh as imported (the scale check's evidence: its body's top and its slab).
+	if (bStone)
+	{
+		FName HideSlot;
+		TArray<FFTCarriedPiece> Pieces;
+		double BodyTop = 0.0;
+		double SlabLength = 0.0;
+		const USkeletalMeshComponent* FigureSkin = Figure->GetSkin();
+		const USkeletalMesh* Mesh = FigureSkin ? FigureSkin->GetSkeletalMeshAsset() : nullptr;
+		if (Mesh && ReadCarriedSplit(kStoneBearerSplit, HideSlot, Pieces)
+			&& MeasureCarried(*Mesh, HideSlot, FigureSkin->GetComponentScale().Z, BodyTop, SlabLength))
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena showcase: scale: %s's body top %.3f m over its feet, its slab (%s) %.3f m long (the bind pose as imported, at scale %.3f)."),
+				*Mesh->GetName(), BodyTop, *HideSlot.ToString(), SlabLength, FigureSkin->GetComponentScale().Z);
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena showcase: scale: the body's top and the slab's length can't be measured (no source model, or no %s section)."),
+				*HideSlot.ToString());
+		}
+	}
 	for (size_t K = 0; K < Spec.attackCount; ++K)
 	{
 		const ftcore::ShowAttack& A = Spec.attacks[K];
@@ -3388,11 +3548,28 @@ void UFTArenaRunner::TickShowcase(float DeltaSeconds)
 			}
 		}
 	}
+	// Shown again a frame late: posed (and its bones refreshed) the frame its part starts while still hidden, drawn from
+	// the next with its motion vectors cleared, so its first drawn frame is neither the last part's pose nor a smear from it.
 	const bool bHide = Pose.clip < 0;
+	if (bShowUnhideDue && !bHide)
+	{
+		bShowUnhideDue = false;
+		Figure->SetActorHiddenInGame(false);
+		if (USkeletalMeshComponent* FigureSkin = Figure->GetSkin())
+		{
+			FigureSkin->ClearMotionVector();
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena showcase: shown again at reel %.3f s, frame %llu (posed the frame before)."), T,
+			static_cast<unsigned long long>(GFrameCounter));
+	}
 	if (bHide != bShowHidden)
 	{
 		bShowHidden = bHide;
-		Figure->SetActorHiddenInGame(bHide);
+		bShowUnhideDue = !bHide;
+		if (bHide)
+		{
+			Figure->SetActorHiddenInGame(true);
+		}
 	}
 	// Placed in the reel's frame, turned with the boss's start.
 	const FRotator Base(0.0, ShowBaseYaw, 0.0);
@@ -3461,6 +3638,7 @@ void UFTArenaRunner::ShowcaseCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& 
 			ShowTellAt = ftcore::Vec2{Pos.x + Facing.x * kShowAhead, Pos.y + Facing.y * kShowAhead};
 			ShowTellShapeMul = 1.f;
 			ShowTellAttack = -1;
+			bShowTellAir = false;
 			BossVfx.Play(FFTArenaBossVfx::EEffect::Tell, ToWorld(ShowTellAt) + FVector(0.0, 0.0, Lift), 1.f, TEXT("tell alone"));
 			return;
 		}
@@ -3480,9 +3658,18 @@ void UFTArenaRunner::ShowcaseCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& 
 		ShowTellAt = S.To;
 		ShowTellShapeMul = bArea ? Tune.AreaScale : 1.f;
 		ShowTellAttack = Cue.attack;
+		bShowTellAir = S.bAir;
+		ShowTellUp = S.Up;
 		if (S.Shape != FFTStoneBearerStrike::EShape::Lane)
 		{
-			BossVfx.Play(FFTArenaBossVfx::EEffect::Tell, ToWorld(S.To) + FVector(0.0, 0.0, Lift), ShowTellShapeMul, bArea ? TEXT("tell all round") : TEXT("tell"));
+			if (bArea)
+			{
+				BossVfx.Play(FFTArenaBossVfx::EEffect::TellArea, ToWorld(S.To) + FVector(0.0, 0.0, Lift), 1.f, TEXT("tell all round"));
+			}
+			else
+			{
+				BossVfx.Play(FFTArenaBossVfx::EEffect::Tell, ToWorld(S.To) + FVector(0.0, 0.0, Lift), ShowTellShapeMul, TEXT("tell"));
+			}
 			return;
 		}
 		// A lane: its marks spaced from the boss's edge to the lane's end, as the fight draws them.
@@ -3503,10 +3690,13 @@ void UFTArenaRunner::ShowcaseCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& 
 		return;
 	case ftcore::ShowCue::Impact:
 	{
-		// The dust where the tell was drawn, and how far the striking part is from it on the ground.
+		// The dust where the tell was drawn (a blow in the air: at its contact's height over it), and how far the striking
+		// part is from it.
 		const FVector Tell = ToWorld(ShowTellAt);
-		BossVfx.Play(FFTArenaBossVfx::EEffect::Impact, Tell + FVector(0.0, 0.0, Lift), ShowTellShapeMul,
-			Cue.place == ftcore::ShowPlace::Ahead ? TEXT("dust alone") : TEXT("blow lands"));
+		const bool bAir = bShowTellAir && Cue.place != ftcore::ShowPlace::Ahead;
+		const FVector Burst = Tell + FVector(0.0, 0.0, bAir ? static_cast<double>(ShowTellUp) * 100.0 : Lift);
+		BossVfx.Play(FFTArenaBossVfx::EEffect::Impact, Burst, ShowTellShapeMul,
+			Cue.place == ftcore::ShowPlace::Ahead ? TEXT("dust alone") : (bAir ? TEXT("blow lands in the air") : TEXT("blow lands")));
 		if (ShowTellAttack >= 0 && static_cast<size_t>(ShowTellAttack) < ShowSpecUsed.attackCount)
 		{
 			const ftcore::ShowAttack& A = ShowSpecUsed.attacks[static_cast<size_t>(ShowTellAttack)];
@@ -3514,23 +3704,35 @@ void UFTArenaRunner::ShowcaseCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& 
 			FVector Part;
 			if (Socket && Figure.GetSkinPoint(FName(Socket), Part))
 			{
-				UE_LOG(LogForgottenThird, Display, TEXT("Arena showcase: attack %d's %s lands %.2f m from its tell."), static_cast<int32>(ShowTellAttack),
-					UTF8_TO_TCHAR(Socket), FVector::Dist2D(Part, Tell) / 100.0);
+				if (bAir)
+				{
+					UE_LOG(LogForgottenThird, Display, TEXT("Arena showcase: attack %d's %s lands %.2f m from its tell on the ground (in the air: it is %.2f m up, the dust %.2f m up and %.2f m from it)."),
+						static_cast<int32>(ShowTellAttack), UTF8_TO_TCHAR(Socket), FVector::Dist2D(Part, Tell) / 100.0, (Part.Z - Tell.Z) / 100.0,
+						static_cast<double>(ShowTellUp), FVector::Dist(Part, Burst) / 100.0);
+				}
+				else
+				{
+					UE_LOG(LogForgottenThird, Display, TEXT("Arena showcase: attack %d's %s lands %.2f m from its tell."), static_cast<int32>(ShowTellAttack),
+						UTF8_TO_TCHAR(Socket), FVector::Dist2D(Part, Tell) / 100.0);
+				}
 			}
 		}
 		ShowTellAttack = -1;
+		bShowTellAir = false;
 		return;
 	}
 	case ftcore::ShowCue::Chips:
+	case ftcore::ShowCue::ChipsHeavy:
 	{
-		// On the body's surface toward the camera, at a lead's chest height.
+		// On the body's surface toward the camera, at a lead's chest height (a heavy blow's: the heavy chips).
+		const bool bHeavy = Cue.cue == ftcore::ShowCue::ChipsHeavy;
 		FVector Toward = ShowCamera ? ShowCamera->GetActorLocation() - Feet : Figure.GetActorForwardVector();
 		Toward.Z = 0.0;
 		Toward = Toward.GetSafeNormal();
 		const double Out = static_cast<double>(Fight.def().enemies[Slot].bodyRadius * Tune.Surface) * 100.0;
 		FVector At = Feet + Toward * Out;
 		At.Z = PlayerFigure ? PlayerFigure->GetChest().Z : Feet.Z + 120.0;
-		BossVfx.Play(FFTArenaBossVfx::EEffect::Chips, At, 1.f, TEXT("hit"));
+		BossVfx.Play(bHeavy ? FFTArenaBossVfx::EEffect::ChipsHeavy : FFTArenaBossVfx::EEffect::Chips, At, 1.f, bHeavy ? TEXT("heavy hit") : TEXT("hit"));
 		return;
 	}
 	case ftcore::ShowCue::GlowOn:

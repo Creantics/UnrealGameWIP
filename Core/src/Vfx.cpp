@@ -542,10 +542,16 @@ void readEmitter(Reader& r, VfxEmitter& d) {
     readCurve(r, "startRotation", d.startRotation);
     readCurve(r, "angularVelocity", d.angularVelocity);
     r.getEnum("blend", d.blend, {{"alpha", VfxBlend::Alpha}, {"additive", VfxBlend::Additive}});
-    r.getEnum("sprite", d.sprite, {{"soft", VfxSprite::Soft}, {"puff", VfxSprite::Puff}, {"spark", VfxSprite::Spark}});
+    r.getEnum("sprite", d.sprite,
+              {{"soft", VfxSprite::Soft},
+               {"puff", VfxSprite::Puff},
+               {"spark", VfxSprite::Spark},
+               {"ring", VfxSprite::Ring},
+               {"chip", VfxSprite::Chip}});
     r.get("stretch", d.stretch);
     r.get("stretchMax", d.stretchMax);
     r.get("softness", d.softness);
+    r.get("depthFade", d.depthFade);
     r.get("coreShade", d.coreShade);
     r.get("turbulence", d.turbulence);
     r.get("texture", d.texture);
@@ -1090,6 +1096,7 @@ void planLook(const VfxEmitter& e, VfxNiagaraEmitter& p) {
 
     p.additive = e.blend == VfxBlend::Additive;
     p.sprite = e.sprite;
+    p.depthFade = e.depthFade;
 
     // Typical and largest start speed, for the velocity stretch.
     float vmax = 0.f;
@@ -1128,7 +1135,7 @@ void planLook(const VfxEmitter& e, VfxNiagaraEmitter& p) {
     if (e.sprite == VfxSprite::Puff) p.gaps.push_back("sprite puff: drawn with the soft round sprite (no eroded cloud)");
     if (!e.texture.empty()) p.gaps.push_back("texture \"" + e.texture + "\": not mapped (procedural sprite used)");
     if (e.textureSheet.enabled) p.gaps.push_back("textureSheet: not mapped (needs a flipbook texture)");
-    if (e.softness > 0.f) p.gaps.push_back("softness: no soft-particle depth fade");
+    if (e.softness > 0.f && !e.depthFade) p.gaps.push_back("softness: no soft-particle depth fade (set depthFade)");
     if (e.trails.enabled) p.gaps.push_back("trails: not mapped (Lightweight emitters have no ribbons)");
     if (e.colorBySpeed.enabled) p.gaps.push_back("colorBySpeed: not mapped");
     if (e.sizeBySpeed.enabled) p.gaps.push_back("sizeBySpeed: not mapped");

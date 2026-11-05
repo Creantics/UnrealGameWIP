@@ -264,7 +264,8 @@ private:
 	// The boss's effects: its attack part going From -> To (its tell through the startup, its impact as it turns active),
 	// a blow landing on it (E: Hit, CounterStagger or ReadCounter), and where its weak point is now.
 	void BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 From, uint8 To);
-	void BossHitVfx(const ftcore::ArenaEvent& E);
+	// bHeavy: a heavy blow, a riposte, a Release or a counter-stagger (the heavy chips).
+	void BossHitVfx(const ftcore::ArenaEvent& E, bool bHeavy);
 	FVector BossWeakPoint() const;
 	// Where the crit flash and the weak-point glow go: the weak point, lifted and moved toward the camera (the tuning's
 	// flashUp and flashToCamera).
@@ -423,6 +424,9 @@ private:
 	ftcore::Vec2 StoneTellFacing;
 	FVector StoneTellFigurePos = FVector::ZeroVector;
 	float StoneTellFigureYaw = 0.f;
+	// The tell's blow strikes in the air (its contact's "air"): its dust bursts this high (m) over the tell.
+	bool bStoneTellAir = false;
+	float StoneTellUp = 0.f;
 	// The walk's counts this fight: steps between moves Core wanted over the start speed (by brain), the runs of them,
 	// the walks begun, and the wanted steps that couldn't start one (by what held it: the cone, a get-up, a hit, a turn, a
 	// move due within a cycle). And the steps a turn would have started on but a move was due within its step.
@@ -548,10 +552,13 @@ private:
 	double ShowCueTime = -1.0;
 	int32 ShowSegment = -1;
 	bool bShowHidden = false;
+	bool bShowUnhideDue = false; // shown again from the next frame (posed this one while still hidden)
 	FVector ShowOrigin = FVector::ZeroVector;
 	float ShowBaseYaw = 0.f;
 	ftcore::Vec2 ShowTellAt;
 	float ShowTellShapeMul = 1.f;
 	int16 ShowTellAttack = -1;
+	bool bShowTellAir = false; // its blow strikes in the air: its dust ShowTellUp (m) over the tell
+	float ShowTellUp = 0.f;
 	bool bShowDone = false;
 };

@@ -712,8 +712,19 @@ TEST_CASE("arena boss loader: a move's contact point loads; without one there is
         CHECK(m.contactAhead == doctest::Approx(2.1f));
         CHECK(m.contactSide == doctest::Approx(-1.5f));
         CHECK(m.contactUp == doctest::Approx(1.68f));
+        CHECK_FALSE(m.contactAir); // on the floor unless it says so
         CHECK_FALSE(def.moves[def.find("fist")].hasContact);
         CHECK(def.moves[def.find("fist")].contactSocket().empty());
+    }
+    {
+        ArenaBossDef def;
+        std::string error;
+        std::vector<std::string> warnings;
+        REQUIRE(importArenaBoss(patched(jab, jab + " \"contact\": {\"socket\": \"slab_edge\", \"ahead\": 2.1, "
+                                                  "\"side\": 0.1, \"up\": 4.4, \"air\": true},"),
+                                def, &error, &warnings));
+        CHECK(warnings.empty());
+        CHECK(def.moves[def.find("jab")].contactAir);
     }
     {
         ArenaBossDef def;

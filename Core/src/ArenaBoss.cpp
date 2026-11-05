@@ -501,7 +501,7 @@ void abMove(JsonValue m, const std::string& path, const ArenaBossDef& def, Arena
     const JsonValue contact = m["contact"];
     const std::string cp = abJoin(path, "contact");
     if (abObject(contact, cp, false, errors)) {
-        abUnknownKeys(contact, cp, {"socket", "ahead", "side", "up"}, {}, warnings);
+        abUnknownKeys(contact, cp, {"socket", "ahead", "side", "up", "air"}, {}, warnings);
         const std::string_view socket = contact["socket"].string();
         const std::size_t before = errors.size();
         if (!contact["socket"].isString() || !abId(socket, kMaxArenaBossMoveId))
@@ -510,6 +510,7 @@ void abMove(JsonValue m, const std::string& path, const ArenaBossDef& def, Arena
         abNum(contact, "ahead", out.contactAhead, -20.0, 20.0, true, cp, errors);
         abNum(contact, "side", out.contactSide, -20.0, 20.0, true, cp, errors);
         abNum(contact, "up", out.contactUp, -5.0, 20.0, true, cp, errors);
+        abBool(contact, "air", out.contactAir, cp, errors);
         if (errors.size() == before) {
             std::copy(socket.begin(), socket.end(), out.contactSocketChars.begin());
             out.hasContact = true;

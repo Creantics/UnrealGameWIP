@@ -198,6 +198,8 @@ bool FFTStoneBearerHost::StrikeAt(std::uint8_t Move, ftcore::Vec2 Pos, ftcore::V
 	const ftcore::ArenaAttack& A = FightPtr->def().enemies[Slot].moves[Move].attack;
 	const bool bCut = bKeepOut && !KeepOut.none();
 	Out.From = Pos;
+	Out.bAir = false;
+	Out.Up = 0.f;
 	// The shapes as BuildKind laid them out and RuleBossBlow cuts them.
 	if (A.arcCos <= -1.f)
 	{
@@ -217,6 +219,11 @@ bool FFTStoneBearerHost::StrikeAt(std::uint8_t Move, ftcore::Vec2 Pos, ftcore::V
 	const ftcore::Vec2 Right{-Facing.y, Facing.x};
 	const ftcore::ArenaBossMove* Contact = M < Def.boss.moveCount
 		&& UsableContact(Def.boss.moves[M], FightPtr->def().enemies[Slot].bodyRadius) ? &Def.boss.moves[M] : nullptr;
+	if (Contact && Contact->contactAir)
+	{
+		Out.bAir = true;
+		Out.Up = Contact->contactUp;
+	}
 	if (M < Def.boss.moveCount && Def.boss.moves[M].intercept() && Zone != ftcore::CalledZone::Path)
 	{
 		const float Sign = Zone == ftcore::CalledZone::Right ? 1.f : -1.f;

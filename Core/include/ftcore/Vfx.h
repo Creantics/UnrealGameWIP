@@ -139,8 +139,9 @@ struct VfxGradient {
 enum class VfxBlend : std::uint8_t { Alpha, Additive };
 enum class VfxShape : std::uint8_t { Point, Sphere, Cone, Box, Ring };
 enum class VfxSpace : std::uint8_t { World, Local };
-// Procedural sprite when an emitter has no texture: Soft (round glow), Puff (eroded cloud), Spark (hot core).
-enum class VfxSprite : std::uint8_t { Soft, Puff, Spark };
+// Procedural sprite when an emitter has no texture: Soft (round glow), Puff (eroded cloud), Spark (hot core), Ring (a
+// thin annulus, for ground marks laid flat), Chip (an irregular hard-edged polygon, for stone fragments).
+enum class VfxSprite : std::uint8_t { Soft, Puff, Spark, Ring, Chip };
 enum class VfxRenderMode : std::uint8_t { Billboard, Stretched, Horizontal, Vertical, Mesh };
 enum class VfxSortMode : std::uint8_t { Auto, None, ByDistance, OldestInFront, YoungestInFront };
 enum class VfxNoiseQuality : std::uint8_t { Low, Medium, High };
@@ -314,6 +315,7 @@ struct VfxEmitter {
     float stretch = 0.f; // seconds of travel the billboard stretches along its velocity
     float stretchMax = 8.f;
     float softness = 0.35f;
+    bool depthFade = false; // fade the sprite where it meets the scene behind it (a soft particle), over half its size
     float coreShade = 0.55f;
     float turbulence = 0.55f;
     std::string texture;
@@ -434,6 +436,7 @@ struct VfxNiagaraEmitter {
     // Renderer
     bool additive = false;
     VfxSprite sprite = VfxSprite::Soft;
+    bool depthFade = false;
     VfxNiagaraFacing facing = VfxNiagaraFacing::Camera;
     bool scaleBySpeed = false; // ScaleSpriteSizeBySpeed: scale lerps min..max as speed goes 0..threshold
     float speedThreshold = 0.f; // cm/s
