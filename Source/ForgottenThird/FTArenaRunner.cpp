@@ -3457,6 +3457,14 @@ void UFTArenaRunner::TickShowcase(float DeltaSeconds)
 		{
 			FigureSkin->ClearMotionVector();
 		}
+		// Clearing the bones' history isn't enough: the figure was turned and moved while hidden, so its parts' last
+		// drawn transforms are stale too and the first frame smears. Reset each part's velocity, and cut the camera
+		// for this one frame so neither motion blur nor the temporal history reaches back into the hidden stretch.
+		Figure->ForEachComponent<UPrimitiveComponent>(false, [](UPrimitiveComponent* Part) { Part->ResetSceneVelocity(); });
+		if (APlayerController* CutPC = GetPC(); CutPC && CutPC->PlayerCameraManager)
+		{
+			CutPC->PlayerCameraManager->SetGameCameraCutThisFrame();
+		}
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena showcase: shown again at reel %.3f s, frame %llu (posed the frame before)."), T,
 			static_cast<unsigned long long>(GFrameCounter));
 	}
