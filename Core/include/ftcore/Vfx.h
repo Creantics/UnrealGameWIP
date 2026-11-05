@@ -140,8 +140,10 @@ enum class VfxBlend : std::uint8_t { Alpha, Additive };
 enum class VfxShape : std::uint8_t { Point, Sphere, Cone, Box, Ring };
 enum class VfxSpace : std::uint8_t { World, Local };
 // Procedural sprite when an emitter has no texture: Soft (round glow), Puff (eroded cloud), Spark (hot core), Ring (a
-// thin annulus, for ground marks laid flat), Chip (an irregular hard-edged polygon, for stone fragments).
-enum class VfxSprite : std::uint8_t { Soft, Puff, Spark, Ring, Chip };
+// thin annulus, for ground marks laid flat), Chip (an irregular hard-edged polygon, for stone fragments; each particle
+// gets its own outline and facet shading from its random seed), Dust (a noisy, eroded cloud whose edge and inner
+// density vary per particle), Crack (a jagged bright line with a branch and a soft rim, for light seen through a split).
+enum class VfxSprite : std::uint8_t { Soft, Puff, Spark, Ring, Chip, Dust, Crack };
 enum class VfxRenderMode : std::uint8_t { Billboard, Stretched, Horizontal, Vertical, Mesh };
 enum class VfxSortMode : std::uint8_t { Auto, None, ByDistance, OldestInFront, YoungestInFront };
 enum class VfxNoiseQuality : std::uint8_t { Low, Medium, High };
@@ -295,6 +297,7 @@ struct VfxEmitter {
     float innerRadius = 0.f; // ring
     float coneAngle = 25.f;  // degrees, half-angle around +Y
     VfxVec3 boxHalfExtents{0.5f, 0.5f, 0.5f};
+    VfxVec3 offset; // moves the whole spawn shape (and a point velocity's origin), emitter frame
 
     // motion
     VfxCurve speed = VfxCurve::constant(0.f); // along the shape's outward direction (point: any direction)
@@ -302,9 +305,16 @@ struct VfxEmitter {
     VfxVec3 gravity;                           // acceleration, world space
     float drag = 0.f;                          // v *= exp(-drag * dt)
     float orbit = 0.f;                         // rad/s: turns the velocity about the emitter's Y axis
+    // Floor height in the emitter frame ("floor" in the JSON). When set, the particles' lifetime is replaced by the
+    // time the slowest-falling one takes to reach it (launch height, upward speed, gravity and drag), so they die at
+    // the floor instead of hanging in the air or passing through it. Needs a downward gravity.
+    float floorY = 0.f;
+    bool hasFloor = false;
 
     // look
     VfxCurve startSize = VfxCurve::constant(0.1f); // world units (quad edge)
+    VfxCurve startSizeY = VfxCurve::constant(0.1f); // the quad's height, drawn apart from its width (hasStartSizeY)
+    bool hasStartSizeY = false;
     VfxCurve sizeOverLife = VfxCurve::curve({});
     VfxGradient startColor = VfxGradient::color({});
     VfxGradient colorOverLife;
@@ -316,6 +326,8 @@ struct VfxEmitter {
     float stretchMax = 8.f;
     float softness = 0.35f;
     bool depthFade = false; // fade the sprite where it meets the scene behind it (a soft particle), over half its size
+    float depthFadeDistance = 0.f; // world units the depth fade runs over; 0 = a quarter of the size, at least 0.05
+    float ringStroke = 0.f;        // Ring sprite: the band's half-width as a share of the quad's half-size; 0 = 0.09
     float coreShade = 0.55f;
     float turbulence = 0.55f;
     std::string texture;
@@ -397,8 +409,11 @@ struct VfxNiagaraEmitter {
 
     // InitializeParticle
     VfxRange lifetime{1.f, 1.f};
-    VfxRange spriteSize{10.f, 10.f}; // cm, square sprites
+    VfxRange spriteSize{10.f, 10.f}; // cm; square sprites unless nonUniformSize
+    VfxRange spriteSizeY;            // cm, the sprite's height when nonUniformSize (drawn apart from the width)
+    bool nonUniformSize = false;
     VfxRange spriteRotation;         // degrees
+    VfxRange floorTime;              // seconds until the first and the last particle reach the floor (VfxEmitter::floorY)
     std::vector<VfxColorStop> startColor; // one stop = constant; several = a random pick along the stops
     bool startColorRandom = false;        // pick per particle (several stops)
 
@@ -437,6 +452,8 @@ struct VfxNiagaraEmitter {
     bool additive = false;
     VfxSprite sprite = VfxSprite::Soft;
     bool depthFade = false;
+    float fadeDistance = 0.f; // cm, the depth fade's distance (dynamic material parameter 0.x); 0 = the material's own
+    float ringStroke = 0.f;   // Ring sprite band half-width share (dynamic material parameter 0.y); 0 = the default
     VfxNiagaraFacing facing = VfxNiagaraFacing::Camera;
     bool scaleBySpeed = false; // ScaleSpriteSizeBySpeed: scale lerps min..max as speed goes 0..threshold
     float speedThreshold = 0.f; // cm/s
@@ -458,6 +475,11 @@ struct VfxNiagaraPlan {
 
 // Builds the plan for `effect` (which importVfxEffect accepted).
 FTCORE_API void planVfxNiagara(const VfxEffect& effect, VfxNiagaraPlan& out);
+
+// Seconds until a particle launched at height y0 with upward speed vy, under gravity g (< 0) and drag k
+// (v' = g - k v, any units as long as they agree), comes down through floorY. 0 when it never rises above the
+// floor; -1 when it never reaches it (g >= 0).
+FTCORE_API float vfxFloorTime(float y0, float vy, float g, float k, float floorY);
 
 // Runtime knobs every built Niagara system exposes as user parameters ("User.<name>"); UFTVfxComponent
 // fills them. Each multiplies a module value, so 1 leaves the effect as authored.

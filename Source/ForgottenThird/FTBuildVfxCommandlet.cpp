@@ -9,7 +9,9 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionDepthFade.h"
+#include "Materials/MaterialExpressionDynamicParameter.h"
 #include "Materials/MaterialExpressionParticleColor.h"
+#include "Materials/MaterialExpressionParticleRandom.h"
 #include "Materials/MaterialExpressionParticleSize.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Misc/FileHelper.h"
@@ -24,6 +26,7 @@
 #include "Stateless/Modules/NiagaraStatelessModule_AddVelocity.h"
 #include "Stateless/Modules/NiagaraStatelessModule_CurlNoiseForce.h"
 #include "Stateless/Modules/NiagaraStatelessModule_Drag.h"
+#include "Stateless/Modules/NiagaraStatelessModule_DynamicMaterialParameters.h"
 #include "Stateless/Modules/NiagaraStatelessModule_GravityForce.h"
 #include "Stateless/Modules/NiagaraStatelessModule_InitializeParticle.h"
 #include "Stateless/Modules/NiagaraStatelessModule_ScaleColor.h"
@@ -86,8 +89,13 @@ bool RemoveFile(const FString& File)
 // ---- sprite materials ------------------------------------------------------------------------------------
 
 // The procedural sprites newengine draws when an emitter has no texture: a soft round glow, a spark with a hot core, a
-// hard ring (a flat mark on the ground, faintly filled), and an angular chip (an uneven six-sided flake, shaded in three
-// facets). Puff (an eroded cloud) uses the soft one.
+// hard ring (a flat mark on the ground, faintly filled), an angular chip (an uneven six-sided flake, shaded in three
+// facets, its outline and ridge varied per particle), a dust cloud (two octaves of noise erode its edge and vary its
+// density per particle) and a crack of light (a jagged bright line with a branch and a soft rim). Puff (an eroded cloud)
+// still uses the soft one.
+//
+// Inputs: UV always; Seed (the particle's material random, 0..1) for chip and dust; Stroke (dynamic material parameter
+// 0.y) for the ring.
 const TCHAR* const SoftMaskCode = TEXT(
 	"float2 d = UV * 2.0 - 1.0;\n"
 	"float m = 1.0 - saturate(dot(d, d));\n"
@@ -96,27 +104,88 @@ const TCHAR* const SparkMaskCode = TEXT(
 	"float2 d = UV * 2.0 - 1.0;\n"
 	"float r2 = saturate(dot(d, d));\n"
 	"return saturate(exp(-r2 * 18.0) + 0.45 * pow(1.0 - r2, 3.0));\n");
+// Stroke: the band's half-width as a share of the half-size; 0 keeps the old 0.09 band at 0.84. A set stroke draws the
+// band solid over its inner 45% and pulls its centre in so the band stays inside the quad.
 const TCHAR* const RingMaskCode = TEXT(
 	"float r = length(UV * 2.0 - 1.0);\n"
-	"float band = 1.0 - smoothstep(0.0, 0.09, abs(r - 0.84));\n"
-	"float fill = 0.15 * (1.0 - smoothstep(0.70, 0.80, r));\n"
+	"float w = Stroke > 0.0 ? Stroke : 0.09;\n"
+	"float c = min(0.84, 0.96 - w);\n"
+	"float band = 1.0 - smoothstep(Stroke > 0.0 ? w * 0.45 : 0.0, w, abs(r - c));\n"
+	"float fill = 0.15 * (1.0 - smoothstep(c - 0.14, c - 0.04, r));\n"
 	"return saturate(max(band, fill)) * (1.0 - smoothstep(0.97, 1.0, r));\n");
-const TCHAR* const ChipMaskCode = TEXT(
+// Six numbers per chip from its seed: four plane distances (j) and the ridge point (q).
+const TCHAR* const ChipSeedCode = TEXT(
+	"float4 j = frac(sin(Seed * float4(127.1, 311.7, 74.7, 269.5) + float4(0.0, 1.3, 2.7, 4.1)) * 43758.5453);\n"
+	"float2 q = frac(sin(Seed * float2(183.3, 246.1) + float2(5.9, 7.3)) * 43758.5453);\n");
+// Each side's distance varies by -18% to +8%, so no two chips share an outline and none reaches the quad's edge.
+const TCHAR* const ChipMaskBody = TEXT(
 	"float2 d = UV * 2.0 - 1.0;\n"
-	"float k = dot(d, float2(0.97, 0.24)) / 0.80;\n"
-	"k = max(k, dot(d, float2(0.31, 0.95)) / 0.62);\n"
-	"k = max(k, dot(d, float2(-0.62, 0.78)) / 0.85);\n"
-	"k = max(k, dot(d, float2(-0.99, -0.12)) / 0.70);\n"
-	"k = max(k, dot(d, float2(-0.40, -0.92)) / 0.88);\n"
-	"k = max(k, dot(d, float2(0.60, -0.80)) / 0.66);\n"
+	"float k = dot(d, float2(0.97, 0.24)) / (0.80 * (0.82 + 0.26 * j.x));\n"
+	"k = max(k, dot(d, float2(0.31, 0.95)) / (0.62 * (0.82 + 0.26 * j.y)));\n"
+	"k = max(k, dot(d, float2(-0.62, 0.78)) / (0.85 * (0.82 + 0.26 * j.z)));\n"
+	"k = max(k, dot(d, float2(-0.99, -0.12)) / (0.70 * (0.82 + 0.26 * j.w)));\n"
+	"k = max(k, dot(d, float2(-0.40, -0.92)) / (0.88 * (0.82 + 0.26 * q.x)));\n"
+	"k = max(k, dot(d, float2(0.60, -0.80)) / (0.66 * (0.82 + 0.26 * q.y)));\n"
 	"return 1.0 - smoothstep(0.97, 1.0, k);\n");
-// A chip's three facets about an off-centre ridge point: one lit, one mid, one in shade.
+// A chip's three facets about a seeded off-centre ridge point: one lit, one mid, one in deep shade.
 const TCHAR* const ChipShadeCode = TEXT(
-	"float2 p = UV * 2.0 - 1.0 - float2(0.12, 0.18);\n"
-	"float a = atan2(p.y, p.x);\n"
-	"float s = a < -1.2 ? 0.65 : (a < 1.6 ? 1.15 : 0.85);\n");
+	"float2 p = UV * 2.0 - 1.0 - (float2(0.12, 0.18) + (q - 0.5) * 0.3);\n"
+	"float a = atan2(p.y, p.x) + (j.x - 0.5) * 1.2;\n"
+	"float s = a < -1.2 ? 0.45 : (a < 1.6 ? 1.25 : 0.8);\n");
+// Two octaves of value noise, offset per particle by its seed: n (0..1) erodes the cloud's edge and thins it in places.
+const TCHAR* const DustNoiseCode = TEXT(
+	"float2 d = UV * 2.0 - 1.0;\n"
+	"float r = length(d);\n"
+	"float2 o = frac(Seed * float2(17.13, 31.71)) * 9.0;\n"
+	"float2 p = UV * 3.0 + o;\n"
+	"float2 i = floor(p);\n"
+	"float2 f = frac(p);\n"
+	"f = f * f * (3.0 - 2.0 * f);\n"
+	"float4 h = frac(sin(float4(dot(i, float2(127.1, 311.7)), dot(i + float2(1.0, 0.0), float2(127.1, 311.7)),\n"
+	"    dot(i + float2(0.0, 1.0), float2(127.1, 311.7)), dot(i + float2(1.0, 1.0), float2(127.1, 311.7)))) * 43758.5453);\n"
+	"float n = lerp(lerp(h.x, h.y, f.x), lerp(h.z, h.w, f.x), f.y) * 0.65;\n"
+	"p = UV * 7.0 + o.yx;\n"
+	"i = floor(p);\n"
+	"f = frac(p);\n"
+	"f = f * f * (3.0 - 2.0 * f);\n"
+	"h = frac(sin(float4(dot(i, float2(127.1, 311.7)), dot(i + float2(1.0, 0.0), float2(127.1, 311.7)),\n"
+	"    dot(i + float2(0.0, 1.0), float2(127.1, 311.7)), dot(i + float2(1.0, 1.0), float2(127.1, 311.7)))) * 43758.5453);\n"
+	"n += lerp(lerp(h.x, h.y, f.x), lerp(h.z, h.w, f.x), f.y) * 0.35;\n");
+// The edge wanders between 55% and 95% of the half-size and falls off softly from a third of it; the core's density
+// varies by half.
+const TCHAR* const DustMaskBody = TEXT(
+	"float edge = 0.55 + 0.4 * n;\n"
+	"float m = 1.0 - smoothstep(edge * 0.3, edge, r);\n"
+	"m *= 0.5 + 0.5 * n;\n"
+	"return saturate(m) * (1.0 - smoothstep(0.9, 1.0, r));\n");
+// Thick parts of the cloud a little darker, thin wisps a little lighter (a self-shadowed look that doesn't turn with the
+// sprite).
+const TCHAR* const DustShadeCode = TEXT("float s = 1.12 - 0.3 * n;\n");
+// A crack of light along the sprite's height: a jagged line, widest mid-way and tapering to its ends, with a branch off to
+// one side and a soft rim of light around both. Not seeded: a stack of these draws one steady crack.
+const TCHAR* const CrackMaskCode = TEXT(
+	"float2 d = UV * 2.0 - 1.0;\n"
+	"float y = d.y;\n"
+	"float cx = y < -0.55 ? lerp(0.05, -0.08, (y + 0.9) / 0.35)\n"
+	"    : (y < -0.15 ? lerp(-0.08, 0.07, (y + 0.55) / 0.4)\n"
+	"    : (y < 0.25 ? lerp(0.07, -0.04, (y + 0.15) / 0.4)\n"
+	"    : (y < 0.6 ? lerp(-0.04, 0.06, (y - 0.25) / 0.35) : lerp(0.06, -0.02, (y - 0.6) / 0.3))));\n"
+	"float taper = saturate(1.0 - abs(y) / 0.9);\n"
+	"float w = 0.012 + 0.05 * taper;\n"
+	"float dx = abs(d.x - cx);\n"
+	"float ends = 1.0 - smoothstep(0.82, 0.92, abs(y));\n"
+	"float core = (1.0 - smoothstep(w * 0.5, w, dx)) * ends;\n"
+	"float rim = exp(-dx * dx / (0.02 * (0.3 + taper))) * 0.55 * taper;\n"
+	"float2 a = float2(0.07, -0.15);\n"
+	"float2 ba = float2(0.31, 0.27);\n"
+	"float h = saturate(dot(d - a, ba) / dot(ba, ba));\n"
+	"float db = length(d - a - ba * h);\n"
+	"float wb = 0.006 + 0.03 * (1.0 - h);\n"
+	"float branch = (1.0 - smoothstep(wb * 0.5, wb, db)) * (1.0 - 0.4 * h);\n"
+	"float brim = exp(-db * db / 0.008) * 0.3 * (1.0 - h);\n"
+	"return saturate(max(core, branch) + rim + brim) * (1.0 - smoothstep(0.9, 1.0, max(abs(d.x), abs(d.y))));\n");
 
-enum class ESpriteMask : uint8 { Soft, Spark, Ring, Chip };
+enum class ESpriteMask : uint8 { Soft, Spark, Ring, Chip, Dust, Crack };
 
 struct FSpriteMaterialSpec
 {
@@ -144,9 +213,17 @@ const FSpriteMaterialSpec SpriteMaterials[] = {
 	{TEXT("M_VfxChipAdditive"), ESpriteMask::Chip, true, false},
 	{TEXT("M_VfxChipFade"), ESpriteMask::Chip, false, true},
 	{TEXT("M_VfxChipAdditiveFade"), ESpriteMask::Chip, true, true},
+	{TEXT("M_VfxDust"), ESpriteMask::Dust, false, false},
+	{TEXT("M_VfxDustAdditive"), ESpriteMask::Dust, true, false},
+	{TEXT("M_VfxDustFade"), ESpriteMask::Dust, false, true},
+	{TEXT("M_VfxDustAdditiveFade"), ESpriteMask::Dust, true, true},
+	{TEXT("M_VfxCrack"), ESpriteMask::Crack, false, false},
+	{TEXT("M_VfxCrackAdditive"), ESpriteMask::Crack, true, false},
+	{TEXT("M_VfxCrackFade"), ESpriteMask::Crack, false, true},
+	{TEXT("M_VfxCrackAdditiveFade"), ESpriteMask::Crack, true, true},
 };
 constexpr int32 SpriteMaterialCount = UE_ARRAY_COUNT(SpriteMaterials);
-static_assert(SpriteMaterialCount == 16, "four kinds, additive or not, faded or not");
+static_assert(SpriteMaterialCount == 24, "six kinds, additive or not, faded or not");
 
 int32 SpriteMaterialIndex(const ftcore::VfxNiagaraEmitter& P)
 {
@@ -154,11 +231,18 @@ int32 SpriteMaterialIndex(const ftcore::VfxNiagaraEmitter& P)
 	const ESpriteMask Kind = P.sprite == VfxSprite::Spark ? ESpriteMask::Spark
 		: P.sprite == VfxSprite::Ring ? ESpriteMask::Ring
 		: P.sprite == VfxSprite::Chip ? ESpriteMask::Chip
-		: ESpriteMask::Soft;
+		: P.sprite == VfxSprite::Dust ? ESpriteMask::Dust
+		: P.sprite == VfxSprite::Crack ? ESpriteMask::Crack
+		: ESpriteMask::Soft; // Soft and Puff
 	return static_cast<int32>(Kind) * 4 + (P.additive ? 1 : 0) + (P.depthFade ? 2 : 0);
 }
 
-const TCHAR* MaskCode(ESpriteMask Kind)
+bool IsSeeded(ESpriteMask Kind)
+{
+	return Kind == ESpriteMask::Chip || Kind == ESpriteMask::Dust;
+}
+
+FString MaskCode(ESpriteMask Kind)
 {
 	switch (Kind)
 	{
@@ -167,7 +251,11 @@ const TCHAR* MaskCode(ESpriteMask Kind)
 	case ESpriteMask::Ring:
 		return RingMaskCode;
 	case ESpriteMask::Chip:
-		return ChipMaskCode;
+		return FString(ChipSeedCode) + ChipMaskBody;
+	case ESpriteMask::Dust:
+		return FString(DustNoiseCode) + DustMaskBody;
+	case ESpriteMask::Crack:
+		return CrackMaskCode;
 	case ESpriteMask::Soft:
 		break;
 	}
@@ -184,6 +272,10 @@ const TCHAR* MaskName(ESpriteMask Kind)
 		return TEXT("RingMask");
 	case ESpriteMask::Chip:
 		return TEXT("ChipMask");
+	case ESpriteMask::Dust:
+		return TEXT("DustMask");
+	case ESpriteMask::Crack:
+		return TEXT("CrackMask");
 	case ESpriteMask::Soft:
 		break;
 	}
@@ -207,25 +299,30 @@ T* AddVfxExpression(UMaterial* Material, int32 X, int32 Y)
 	return Expression;
 }
 
-UMaterialExpressionCustom* AddCustom(UMaterial* Material, int32 Y, const TCHAR* Description, ECustomMaterialOutputType Type,
-	const FString& Code, UMaterialExpression* Color, UMaterialExpression* Mask, UMaterialExpression* UV = nullptr)
+// One input of a custom expression: its name in the code, and the expression and output that feed it (none: left out).
+struct FCustomIn
 {
-	UMaterialExpressionCustom* Custom = AddVfxExpression<UMaterialExpressionCustom>(Material, -300, Y);
+	const TCHAR* Name;
+	UMaterialExpression* Expression;
+	int32 Output;
+};
+
+UMaterialExpressionCustom* AddCustom(UMaterial* Material, int32 X, int32 Y, const TCHAR* Description, ECustomMaterialOutputType Type,
+	const FString& Code, std::initializer_list<FCustomIn> Ins)
+{
+	UMaterialExpressionCustom* Custom = AddVfxExpression<UMaterialExpressionCustom>(Material, X, Y);
 	Custom->Description = Description;
 	Custom->OutputType = Type;
 	Custom->Code = Code;
 	Custom->Inputs.Reset();
-	FCustomInput& InColor = Custom->Inputs.AddDefaulted_GetRef();
-	InColor.InputName = TEXT("Color");
-	InColor.Input.Connect(5, Color); // RGBA
-	FCustomInput& InMask = Custom->Inputs.AddDefaulted_GetRef();
-	InMask.InputName = TEXT("Mask");
-	InMask.Input.Connect(0, Mask);
-	if (UV)
+	for (const FCustomIn& In : Ins)
 	{
-		FCustomInput& InUV = Custom->Inputs.AddDefaulted_GetRef();
-		InUV.InputName = TEXT("UV");
-		InUV.Input.Connect(0, UV);
+		if (In.Expression)
+		{
+			FCustomInput& Input = Custom->Inputs.AddDefaulted_GetRef();
+			Input.InputName = In.Name;
+			Input.Input.Connect(In.Output, In.Expression);
+		}
 	}
 	return Custom;
 }
@@ -240,59 +337,75 @@ UMaterial* BuildSpriteMaterial(UPackage* Package, const FSpriteMaterialSpec& Spe
 
 	UMaterialExpressionTextureCoordinate* UV = AddVfxExpression<UMaterialExpressionTextureCoordinate>(Material, -900, 0);
 	UMaterialExpressionParticleColor* Color = AddVfxExpression<UMaterialExpressionParticleColor>(Material, -900, 150);
+	// The particle's own random number seeds a chip's outline and a cloud's noise.
+	UMaterialExpressionParticleRandom* Seed =
+		IsSeeded(Spec.Kind) ? AddVfxExpression<UMaterialExpressionParticleRandom>(Material, -1200, 0) : nullptr;
+	// Dynamic material parameter 0: x = the depth fade distance (cm), y = the ring's stroke. An emitter that doesn't set
+	// them (the module off) reads the default, 0, which keeps the material's own values.
+	UMaterialExpressionDynamicParameter* Dynamic = nullptr;
+	if (Spec.bDepthFade || Spec.Kind == ESpriteMask::Ring)
+	{
+		Dynamic = AddVfxExpression<UMaterialExpressionDynamicParameter>(Material, -1200, 450);
+		Dynamic->ParameterIndex = 0;
+		Dynamic->DefaultValue = FLinearColor(0.f, 0.f, 0.f, 0.f);
+		if (Dynamic->ParamNames.Num() == 4) // fixed at four by the expression's constructor
+		{
+			Dynamic->ParamNames[0] = TEXT("FadeDistance");
+			Dynamic->ParamNames[1] = TEXT("RingStroke");
+		}
+	}
 
-	UMaterialExpressionCustom* Shape = AddVfxExpression<UMaterialExpressionCustom>(Material, -600, 0);
-	Shape->Description = MaskName(Spec.Kind);
-	Shape->OutputType = CMOT_Float1;
-	Shape->Code = MaskCode(Spec.Kind);
-	Shape->Inputs.Reset();
-	FCustomInput& InUV = Shape->Inputs.AddDefaulted_GetRef();
-	InUV.InputName = TEXT("UV");
-	InUV.Input.Connect(0, UV);
+	UMaterialExpressionCustom* Shape = AddCustom(Material, -600, 0, MaskName(Spec.Kind), CMOT_Float1, MaskCode(Spec.Kind),
+		{{TEXT("UV"), UV, 0}, {TEXT("Seed"), Seed, 0}, {TEXT("Stroke"), Spec.Kind == ESpriteMask::Ring ? Dynamic : nullptr, 1}});
 	UMaterialExpression* Mask = Shape;
 
-	// Soft against the scene: the mask fades out over a quarter of the sprite's size (5 cm at least) as it nears what is
-	// behind it (a cloud's lower edge on the floor, a chip's edge against the body).
+	// Soft against the scene: the mask fades out as it nears what is behind it (a cloud's lower edge on the floor, a chip's
+	// edge against the body), over the emitter's distance when it sets one, else a quarter of the sprite's size (5 cm at
+	// least).
 	if (Spec.bDepthFade)
 	{
 		UMaterialExpressionParticleSize* Size = AddVfxExpression<UMaterialExpressionParticleSize>(Material, -1200, 300);
-		UMaterialExpressionCustom* Distance = AddVfxExpression<UMaterialExpressionCustom>(Material, -900, 300);
-		Distance->Description = TEXT("FadeDistance");
-		Distance->OutputType = CMOT_Float1;
-		Distance->Code = TEXT("return max(Size.x * 0.25, 5.0);");
-		Distance->Inputs.Reset();
-		FCustomInput& InSize = Distance->Inputs.AddDefaulted_GetRef();
-		InSize.InputName = TEXT("Size");
-		InSize.Input.Connect(0, Size);
+		UMaterialExpressionCustom* Distance = AddCustom(Material, -900, 300, TEXT("FadeDistance"), CMOT_Float1,
+			TEXT("return Param > 0.0 ? Param : max(Size.x * 0.25, 5.0);"), {{TEXT("Size"), Size, 0}, {TEXT("Param"), Dynamic, 0}});
 		UMaterialExpressionDepthFade* Fade = AddVfxExpression<UMaterialExpressionDepthFade>(Material, -600, 300);
 		Fade->OpacityDefault = 1.0f;
 		Fade->FadeDistance.Connect(0, Distance);
-		UMaterialExpressionCustom* Faded = AddVfxExpression<UMaterialExpressionCustom>(Material, -450, 150);
-		Faded->Description = TEXT("FadedMask");
-		Faded->OutputType = CMOT_Float1;
-		Faded->Code = TEXT("return Mask * Fade;");
-		Faded->Inputs.Reset();
-		FCustomInput& InMask = Faded->Inputs.AddDefaulted_GetRef();
-		InMask.InputName = TEXT("Mask");
-		InMask.Input.Connect(0, Shape);
-		FCustomInput& InFade = Faded->Inputs.AddDefaulted_GetRef();
-		InFade.InputName = TEXT("Fade");
-		InFade.Input.Connect(0, Fade);
-		Mask = Faded;
+		Mask = AddCustom(Material, -450, 150, TEXT("FadedMask"), CMOT_Float1, TEXT("return Mask * Fade;"),
+			{{TEXT("Mask"), Shape, 0}, {TEXT("Fade"), Fade, 0}});
 	}
 
 	// Additive: light adds in proportion to alpha. Translucent: the colour over a masked alpha. A chip's colour is shaded
-	// by its facets.
-	const bool bChip = Spec.Kind == ESpriteMask::Chip;
-	const FString EmissiveCode = bChip
-		? FString(ChipShadeCode) + (Spec.bAdditive ? TEXT("return Color.rgb * Color.a * Mask * s;\n") : TEXT("return Color.rgb * s;\n"))
-		: FString(Spec.bAdditive ? TEXT("return Color.rgb * Color.a * Mask;") : TEXT("return Color.rgb;"));
-	UMaterialExpressionCustom* Emissive = AddCustom(Material, 0, TEXT("Emissive"), CMOT_Float3, EmissiveCode, Color, Mask, bChip ? UV : nullptr);
+	// by its facets, a cloud's by its density, and a crack's core runs hotter than its rim.
+	FString Shade;
+	FString Scale;
+	switch (Spec.Kind)
+	{
+	case ESpriteMask::Chip:
+		Shade = FString(ChipSeedCode) + ChipShadeCode;
+		Scale = TEXT(" * s");
+		break;
+	case ESpriteMask::Dust:
+		Shade = FString(DustNoiseCode) + DustShadeCode;
+		Scale = TEXT(" * s");
+		break;
+	case ESpriteMask::Crack:
+		Scale = TEXT(" * (1.0 + 0.6 * Mask * Mask)");
+		break;
+	case ESpriteMask::Soft:
+	case ESpriteMask::Spark:
+	case ESpriteMask::Ring:
+		break;
+	}
+	const FString EmissiveCode = Shade + (Spec.bAdditive ? TEXT("return Color.rgb * Color.a * Mask") : TEXT("return Color.rgb")) + Scale + TEXT(";\n");
+	const bool bShadeReadsUV = !Shade.IsEmpty();
+	UMaterialExpressionCustom* Emissive = AddCustom(Material, -300, 0, TEXT("Emissive"), CMOT_Float3, EmissiveCode,
+		{{TEXT("Color"), Color, 5}, {TEXT("Mask"), Mask, 0}, {TEXT("UV"), bShadeReadsUV ? UV : nullptr, 0},
+			{TEXT("Seed"), bShadeReadsUV ? Seed : nullptr, 0}}); // Color output 5: RGBA
 	Material->GetEditorOnlyData()->EmissiveColor.Connect(0, Emissive);
 	if (!Spec.bAdditive)
 	{
-		UMaterialExpressionCustom* Opacity =
-			AddCustom(Material, 150, TEXT("Opacity"), CMOT_Float1, TEXT("return saturate(Color.a * Mask);"), Color, Mask);
+		UMaterialExpressionCustom* Opacity = AddCustom(Material, -300, 150, TEXT("Opacity"), CMOT_Float1,
+			TEXT("return saturate(Color.a * Mask);"), {{TEXT("Color"), Color, 5}, {TEXT("Mask"), Mask, 0}});
 		Material->GetEditorOnlyData()->Opacity.Connect(0, Opacity);
 	}
 
@@ -514,7 +627,16 @@ bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmi
 
 	// InitializeParticle.
 	SetRange(Init->LifetimeDistribution, P.lifetime);
-	SetRange(Init->SpriteSizeDistribution, P.spriteSize);
+	if (P.nonUniformSize)
+	{
+		// Width and height drawn apart (a random number each), so chips differ in outline as well as size.
+		SetValues(Init->SpriteSizeDistribution, ENiagaraDistributionMode::NonUniformRange,
+			{P.spriteSize.lo, P.spriteSizeY.lo, P.spriteSize.hi, P.spriteSizeY.hi});
+	}
+	else
+	{
+		SetRange(Init->SpriteSizeDistribution, P.spriteSize);
+	}
 	SetRange(Init->SpriteRotationDistribution, P.spriteRotation);
 	SetColorStops(Init->ColorDistribution, P.startColor, P.startColorRandom ? 0xff : 0);
 
@@ -620,6 +742,34 @@ bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmi
 		SetFloat(BySpeed->VelocityThreshold, P.speedThreshold);
 		SetVector2(BySpeed->MinScaleFactor, P.minScale);
 		SetVector2(BySpeed->MaxScaleFactor, P.maxScale);
+	}
+	// Dynamic material parameter 0: x = the depth fade distance (cm), y = the ring's stroke (the sprite materials read
+	// them; 0 keeps the material's own). Left off when the emitter sets neither.
+	if (P.fadeDistance > 0.f || P.ringStroke > 0.f)
+	{
+		UNiagaraStatelessModule_DynamicMaterialParameters* Dynamic = Cast<UNiagaraStatelessModule_DynamicMaterialParameters>(
+			Emitter->GetModule(UNiagaraStatelessModule_DynamicMaterialParameters::StaticClass()));
+		if (Dynamic)
+		{
+			Dynamic->SetIsModuleEnabled(true);
+			Dynamic->bParameter0Enabled = true;
+			Dynamic->bParameter1Enabled = false;
+			Dynamic->bParameter2Enabled = false;
+			Dynamic->bParameter3Enabled = false;
+			FNiagaraStatelessDynamicParameterSet& Set = Dynamic->Parameter0;
+			Set.bXChannelEnabled = true;
+			Set.bYChannelEnabled = true;
+			Set.bZChannelEnabled = false;
+			Set.bWChannelEnabled = false;
+			SetFloat(Set.XChannelDistribution, P.fadeDistance);
+			SetFloat(Set.YChannelDistribution, P.ringStroke);
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning,
+				TEXT("FTBuildVfx: %s: the template emitter has no dynamic material parameters; the fade distance and ring stroke keep the material's own."),
+				UTF8_TO_TCHAR(P.name.c_str()));
+		}
 	}
 
 	// Renderer.
@@ -799,19 +949,44 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx: no effects in %s."), *DataDir);
 		return 1;
 	}
-	// -Only=<name>: build that one effect and leave every other asset as it is (a sprite material it uses that isn't built
-	// yet is built and saved; the built ones are used as they are).
+	// -Only=<name>[,<name>...]: build those effects and leave every other asset as it is (a sprite material they use that
+	// isn't built yet is built and saved; the built ones are used as they are, except those named in -RebuildMaterials).
 	FString Only;
-	FParse::Value(*Params, TEXT("Only="), Only);
-	if (!Only.IsEmpty())
+	FParse::Value(*Params, TEXT("Only="), Only, false);
+	TArray<FString> OnlyNames;
+	Only.ParseIntoArray(OnlyNames, TEXT(","), true);
+	if (!OnlyNames.IsEmpty())
 	{
-		const FString Wanted = Only + TEXT(".json");
-		Files.RemoveAll([&Wanted](const FString& File) { return File != Wanted; });
-		if (Files.IsEmpty())
+		for (const FString& Name : OnlyNames)
 		{
-			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx: no effect called %s in %s."), *Only, *DataDir);
+			if (!Files.Contains(Name + TEXT(".json")))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx: no effect called %s in %s."), *Name, *DataDir);
+				return 1;
+			}
+		}
+		Files.RemoveAll([&OnlyNames](const FString& File) { return !OnlyNames.Contains(FPaths::GetBaseFilename(File)); });
+	}
+	// -RebuildMaterials=<name>[,<name>...] (with -Only): delete and rebuild those sprite materials even when they are built
+	// (a full build rebuilds them all anyway).
+	FString Rebuild;
+	FParse::Value(*Params, TEXT("RebuildMaterials="), Rebuild, false);
+	TArray<FString> RebuildNames;
+	Rebuild.ParseIntoArray(RebuildNames, TEXT(","), true);
+	bool RebuildMaterial[SpriteMaterialCount] = {};
+	for (const FString& Name : RebuildNames)
+	{
+		int32 Found = INDEX_NONE;
+		for (int32 I = 0; I < SpriteMaterialCount; ++I)
+		{
+			Found = Name == SpriteMaterials[I].Name ? I : Found;
+		}
+		if (Found == INDEX_NONE)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx: no sprite material called %s."), *Name);
 			return 1;
 		}
+		RebuildMaterial[Found] = true;
 	}
 
 	if (FParse::Param(*Params, TEXT("Verify")))
@@ -864,8 +1039,8 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 	}
 
 	// Start from nothing: delete every NS_* and the sprite materials up front, before anything loads them, then build the
-	// materials the plans use. With -Only just that effect's asset goes, and the materials already built are used (one not
-	// built yet is built).
+	// materials the plans use. With -Only just those effects' assets go (and the materials named in -RebuildMaterials), and
+	// the other materials already built are used (one not built yet is built).
 	bool bOk = true;
 	bool Used[SpriteMaterialCount] = {};
 	for (const ftcore::VfxNiagaraPlan& Plan : Plans)
@@ -876,7 +1051,7 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 		}
 	}
 	UMaterialInterface* Materials[SpriteMaterialCount] = {};
-	if (Only.IsEmpty())
+	if (OnlyNames.IsEmpty())
 	{
 		TArray<FString> Old;
 		IFileManager::Get().FindFiles(Old, *(FPaths::ProjectContentDir() / TEXT("VFX/NS_*.uasset")), true, false);
@@ -895,20 +1070,33 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 			}
 		}
 	}
-	else if (!RemoveFile(FPaths::ProjectContentDir() / TEXT("VFX") / (TEXT("NS_") + Only + TEXT(".uasset"))))
+	else
 	{
-		return 1;
+		for (const FString& Name : OnlyNames)
+		{
+			if (!RemoveFile(FPaths::ProjectContentDir() / TEXT("VFX") / (TEXT("NS_") + Name + TEXT(".uasset"))))
+			{
+				return 1;
+			}
+		}
+		for (int32 I = 0; I < SpriteMaterialCount; ++I)
+		{
+			if (RebuildMaterial[I] && !RemoveFile(PackageFile(MaterialPackage(SpriteMaterials[I]))))
+			{
+				return 1;
+			}
+		}
 	}
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(PackageFile(MaterialPackage(SpriteMaterials[0]))), true);
 	int32 MaterialsBuilt = 0;
 	for (int32 I = 0; I < SpriteMaterialCount; ++I)
 	{
-		if (!Used[I])
+		if (!Used[I] && !RebuildMaterial[I])
 		{
 			continue;
 		}
 		const FString PackageName = MaterialPackage(SpriteMaterials[I]);
-		if (!Only.IsEmpty() && IFileManager::Get().FileExists(*PackageFile(PackageName)))
+		if (!OnlyNames.IsEmpty() && !RebuildMaterial[I] && IFileManager::Get().FileExists(*PackageFile(PackageName)))
 		{
 			Materials[I] = LoadObject<UMaterialInterface>(nullptr, *(PackageName + TEXT(".") + FPackageName::GetShortName(PackageName)));
 			if (!Materials[I])

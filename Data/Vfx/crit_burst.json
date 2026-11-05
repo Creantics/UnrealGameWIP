@@ -6,13 +6,14 @@
       "bursts": [{"time": 0.0, "count": 1}],
       "duration": 0.1,
       "maxParticles": 2,
-      "lifetime": 0.2,
+      "lifetime": 0.27,
       "shape": "point",
       "startSize": 0.55,
-      "sizeOverLife": [{"t": 0.0, "v": 0.9}, {"t": 0.3, "v": 1.25}, {"t": 1.0, "v": 1.1}],
+      "sizeOverLife": [{"t": 0.0, "v": 0.3}, {"t": 0.37, "v": 1.25}, {"t": 1.0, "v": 1.1}],
       "colorOverLife": [
-        {"t": 0.0, "color": [3.0, 1.9, 0.45, 1.0]},
-        {"t": 0.35, "color": [2.0, 1.1, 0.2, 0.7]},
+        {"t": 0.0, "color": [3.0, 1.9, 0.45, 0.3]},
+        {"t": 0.37, "color": [3.0, 1.9, 0.45, 1.0]},
+        {"t": 0.6, "color": [2.0, 1.1, 0.2, 0.7]},
         {"t": 1.0, "color": [0.8, 0.35, 0.04, 0.0]}
       ],
       "blend": "additive",

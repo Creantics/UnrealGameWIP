@@ -242,6 +242,14 @@ bool FFTStoneBearerHost::StrikeAt(std::uint8_t Move, ftcore::Vec2 Pos, ftcore::V
 		Out.To = Along(Along(Pos, Facing, Contact->contactAhead * Share), Right, Contact->contactSide * Share);
 		return true;
 	}
+	// A blow into the floor whose clip contact sits under the body (too close to be a usable contact, so its reach is the
+	// file's): its tell and dust go where the striking part meets the floor, not out along the reach.
+	if (M < Def.boss.moveCount && Def.boss.moves[M].hasContact && Def.boss.moves[M].floor && !Def.boss.moves[M].contactAir)
+	{
+		const ftcore::ArenaBossMove& Part = Def.boss.moves[M];
+		Out.To = Along(Along(Pos, Facing, Part.contactAhead), Right, Part.contactSide);
+		return true;
+	}
 	const float Reach = bCut ? KeepOut.clampArc(Pos, Facing, A.arcCos, A.range) : A.range;
 	Out.To = Along(Pos, Facing, Reach * ReachShare);
 	return true;
