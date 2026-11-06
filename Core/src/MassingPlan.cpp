@@ -342,6 +342,16 @@ bool massingFootprintsOverlap(const MassingBox& a, const MassingBox& b) {
     return true;
 }
 
+double massingFootprintGap(const MassingBox& box, double x, double y) {
+    const double a = box.rot * kPi / 180.0;
+    const double c = std::cos(a), s = std::sin(a);
+    const double dx = x - box.cx, dy = y - box.cy;
+    // The point in the box's own axes, past each half-size.
+    const double u = std::fabs(dx * c + dy * s) - box.sx * 0.5;
+    const double w = std::fabs(dy * c - dx * s) - box.sy * 0.5;
+    return std::hypot(std::max(u, 0.0), std::max(w, 0.0));
+}
+
 void massingTopNudges(const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
                       std::vector<double>& out) {
     const std::size_t n = boxes.size();

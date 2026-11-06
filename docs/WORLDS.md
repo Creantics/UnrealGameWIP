@@ -212,6 +212,12 @@ Positions in the log are the plan frame's metres, as in the tables. It then plac
 
 A path that stops at a box's face points at a goal inside a box that is still solid; one that stops at a step or a drop points at a gap in the massing.
 
+Three optional goal-table columns name massing ids. `held` lists a goal apart: it stands inside or on a box held back for its own piece, so it is neither walked nor counted, and the summary names it by box (`goals reached <n> of <m> (listed apart, not counted: D10 on <id>, ...)`). `goal_box` and `spawn_box` mark the goal or the spawn as a temporary placement just outside that box, until the piece lands. Each is logged with its box and where it stands against it; a `spawn_box` line also gives the generator's own spawn, which stands in that box's footprint (a warning when it doesn't):
+
+`FTBuildMassingWorld: goal D4 (363.5, 585.0, +60.0) is a temporary placement outside <id> (a hidden kind, not built, which holds the plan's own point): 7.0 m over its top.`
+
+The summary line closes with `temporary placements: <g> goals, <s> spawns`, and `-Strict` counts only the goals not listed apart.
+
 ## Headless checks
 
 - Core: `Core/tests/test_world_layout.cpp` covers:

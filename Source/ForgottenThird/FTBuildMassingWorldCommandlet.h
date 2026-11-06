@@ -11,7 +11,11 @@
 // -Height names the world's 1 m height field's json (samples_x, samples_y, spacing_m,
 // origin_of_sample_0_0_m and the raw 16-bit file beside it, ftcore::massingHeightFromValue's encoding);
 // -Boxes and -Walls name massing tables (ftcore/MassingPlan.h), the walls table holding WALL rows only;
-// -Goals names a CSV with the columns id, x, y, z and optionally spawn_x, spawn_y (plan frame, metres).
+// -Goals names a CSV with the columns id, x, y, z and optionally spawn_x, spawn_y (plan frame, metres) and
+// held, goal_box, spawn_box (massing ids): a held goal stands inside or on a box held for its own piece and
+// is listed apart, never walked or counted; goal_box and spawn_box mark the goal or the spawn as a temporary
+// placement just outside that box. Each is logged with its box, and a spawn_box with the generator's spawn
+// that stands in it.
 // Every position is in the plan frame of a square -Side metres across (MassingPlan.h); the map is in the
 // engine frame, so it reads true from above.
 //

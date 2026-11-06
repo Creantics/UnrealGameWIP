@@ -176,10 +176,19 @@ struct FGoal
 	bool bSpawn = false; // the row names a spawn (spawn_x, spawn_y)
 	double SpawnX = 0.0;
 	double SpawnY = 0.0;
+	// Massing ids, each optional: held, a box held for its own piece that the goal stands inside or on (the goal is
+	// listed apart, not walked or counted); goal_box and spawn_box, a box the goal or the spawn is a temporary
+	// placement just outside of. Their rows in the massing table once it is read, else INDEX_NONE.
+	FString Held;
+	FString GoalBox;
+	FString SpawnBox;
+	int32 HeldAt = INDEX_NONE;
+	int32 GoalBoxAt = INDEX_NONE;
+	int32 SpawnBoxAt = INDEX_NONE;
 };
 
-// A CSV with the columns id, x, y, z and optionally spawn_x, spawn_y (in any order, others skipped; a row may leave
-// both spawn fields empty); '#' lines are comments.
+// A CSV with the columns id, x, y, z and optionally spawn_x, spawn_y, held, goal_box, spawn_box (in any order,
+// others skipped; a row may leave the optional fields empty); '#' lines are comments.
 bool LoadGoals(const FString& File, TArray<FGoal>& Goals)
 {
 	FString Text;
@@ -194,6 +203,8 @@ bool LoadGoals(const FString& File, TArray<FGoal>& Goals)
 	const TCHAR* const Names[4] = {TEXT("id"), TEXT("x"), TEXT("y"), TEXT("z")};
 	int32 SpawnCol[2] = {INDEX_NONE, INDEX_NONE};
 	const TCHAR* const SpawnNames[2] = {TEXT("spawn_x"), TEXT("spawn_y")};
+	int32 BoxCol[3] = {INDEX_NONE, INDEX_NONE, INDEX_NONE};
+	const TCHAR* const BoxNames[3] = {TEXT("held"), TEXT("goal_box"), TEXT("spawn_box")};
 	bool bHeader = false;
 	for (int32 L = 0; L < Lines.Num(); ++L)
 	{
@@ -224,6 +235,10 @@ bool LoadGoals(const FString& File, TArray<FGoal>& Goals)
 				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s has one of spawn_x and spawn_y without the other."), *File);
 				return false;
 			}
+			for (int32 C = 0; C < 3; ++C)
+			{
+				BoxCol[C] = Fields.IndexOfByPredicate([&](const FString& F) { return F.TrimStartAndEnd() == BoxNames[C]; });
+			}
 			bHeader = true;
 			continue;
 		}
@@ -251,9 +266,62 @@ bool LoadGoals(const FString& File, TArray<FGoal>& Goals)
 				return false;
 			}
 		}
+		FString* const Refs[3] = {&Goal.Held, &Goal.GoalBox, &Goal.SpawnBox};
+		for (int32 C = 0; C < 3; ++C)
+		{
+			if (Fields.IsValidIndex(BoxCol[C]))
+			{
+				*Refs[C] = Fields[BoxCol[C]].TrimStartAndEnd();
+			}
+		}
+		if (!Goal.Held.IsEmpty() && !Goal.GoalBox.IsEmpty())
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: a goal is held or a temporary placement, not both: '%s'."), *File, *Line);
+			return false;
+		}
+		if (!Goal.SpawnBox.IsEmpty() && !Goal.bSpawn)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: a spawn_box needs the row's spawn_x and spawn_y: '%s'."), *File, *Line);
+			return false;
+		}
 		Goals.Add(Goal);
 	}
 	return true;
+}
+
+// What a box is, for the log.
+const TCHAR* BoxKind(const ftcore::MassingBox& Box)
+{
+	const ftcore::MassingRole Role = ftcore::massingRole(Box);
+	if (ftcore::massingVisible(Role))
+	{
+		return TEXT("a built box");
+	}
+	return Role == ftcore::MassingRole::Hidden ? TEXT("a hidden kind, not built") : TEXT("a row the build skips");
+}
+
+// Where a plan point stands against a box, for the log: off its footprint, over its top or under its bottom (true), or
+// inside it (false).
+bool Against(const ftcore::MassingBox& Box, double X, double Y, double Z, FString& Out)
+{
+	const double Gap = ftcore::massingFootprintGap(Box, X, Y);
+	if (Gap > 0.0)
+	{
+		Out = FString::Printf(TEXT("%.1f m off its footprint"), Gap);
+		return true;
+	}
+	if (Z >= Box.z1)
+	{
+		Out = FString::Printf(TEXT("%.1f m over its top"), Z - Box.z1);
+		return true;
+	}
+	if (Z <= Box.z0)
+	{
+		Out = FString::Printf(TEXT("%.1f m under its bottom"), Box.z0 - Z);
+		return true;
+	}
+	Out = TEXT("inside it");
+	return false;
 }
 
 // "x,y" or "x,y,z" (metres); false if malformed.
@@ -445,6 +513,64 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 	}
 
+	// The goals table's box ids name rows of the massing table. Each held goal and temporary placement is logged with its
+	// box (a temporary spawn with the districts, below).
+	int32 Counted = 0, GoalPlacements = 0, SpawnPlacements = 0;
+	FString Apart;
+	for (FGoal& Goal : Goals)
+	{
+		const FString* const Refs[3] = {&Goal.Held, &Goal.GoalBox, &Goal.SpawnBox};
+		int32* const At[3] = {&Goal.HeldAt, &Goal.GoalBoxAt, &Goal.SpawnBoxAt};
+		for (int32 C = 0; C < 3; ++C)
+		{
+			for (int32 I = 0; I < static_cast<int32>(Boxes.size()) && !Refs[C]->IsEmpty() && *At[C] == INDEX_NONE; ++I)
+			{
+				*At[C] = Utf8(Boxes[static_cast<size_t>(I)].id) == *Refs[C] ? I : INDEX_NONE;
+			}
+			if (!Refs[C]->IsEmpty() && *At[C] == INDEX_NONE)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: goal %s names %s, which is not in the massing table."), *GoalsFile,
+					*Goal.Id, **Refs[C]);
+				return 1;
+			}
+		}
+		SpawnPlacements += Goal.SpawnBoxAt != INDEX_NONE ? 1 : 0;
+		if (Goal.HeldAt != INDEX_NONE)
+		{
+			const ftcore::MassingBox& Box = Boxes[static_cast<size_t>(Goal.HeldAt)];
+			const double Gap = ftcore::massingFootprintGap(Box, Goal.X, Goal.Y);
+			Apart += FString::Printf(TEXT("%s%s on %s"), Apart.IsEmpty() ? TEXT("") : TEXT(", "), *Goal.Id, *Goal.Held);
+			if (Gap > 0.0)
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: goal %s (%.1f, %.1f, %+.1f) is listed apart for held box %s, but stands "
+					"%.1f m off its footprint."), *Goal.Id, Goal.X, Goal.Y, Goal.Z, *Goal.Held, Gap);
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: goal %s (%.1f, %.1f, %+.1f) is listed apart: inside or on held box %s (%s), "
+					"so it is not walked or counted."), *Goal.Id, Goal.X, Goal.Y, Goal.Z, *Goal.Held, BoxKind(Box));
+			}
+			continue;
+		}
+		++Counted;
+		if (Goal.GoalBoxAt != INDEX_NONE)
+		{
+			++GoalPlacements;
+			const ftcore::MassingBox& Box = Boxes[static_cast<size_t>(Goal.GoalBoxAt)];
+			FString Where;
+			if (Against(Box, Goal.X, Goal.Y, Goal.Z, Where))
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: goal %s (%.1f, %.1f, %+.1f) is a temporary placement outside %s (%s, which "
+					"holds the plan's own point): %s."), *Goal.Id, Goal.X, Goal.Y, Goal.Z, *Goal.GoalBox, BoxKind(Box), *Where);
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: goal %s (%.1f, %.1f, %+.1f) is listed as a temporary placement outside %s, "
+					"but stands inside it."), *Goal.Id, Goal.X, Goal.Y, Goal.Z, *Goal.GoalBox);
+			}
+		}
+	}
+
 	// With -World: the world's districts where the plan puts them. The goals table's rows D0, D1, ... are their plazas'
 	// centres and floors; each spawn is the row's spawn_x, spawn_y or else the generator's rule (spawnFor), set down on
 	// the highest deck or landing within kSpawnStepUp, and the lot is pinned here as the director pins it at run time.
@@ -455,6 +581,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		int32 OnBox = -1;  // the box the spawn stands on, or -1 for the ground
 		int32 Inside = -1; // a box (or with bInsideWall, a wall) the lead would stand inside at the spawn
 		bool bInsideWall = false;
+		double RuleX = 0.0, RuleY = 0.0; // the generator's spawn (spawnFor), plan frame
+		int32 SpawnBox = INDEX_NONE;     // the row's spawn_box: the spawn is a temporary placement outside it
 	};
 	TArray<FDistrictPlace> Places;
 	FString WorldId;
@@ -506,17 +634,12 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			Place.CentreY = Row->Y;
 			Place.Floor = Row->Z;
 			const ftcore::MassingVec Centre = ftcore::massingEnginePoint(Side, Row->X, Row->Y, 0.0);
-			if (Row->bSpawn)
-			{
-				Place.SpawnX = Row->SpawnX;
-				Place.SpawnY = Row->SpawnY;
-			}
-			else
-			{
-				const ftcore::Vec2 Rule = ftcore::WorldLayout::spawnFor({static_cast<float>(Centre.x), static_cast<float>(Centre.y)});
-				Place.SpawnX = Rule.x + Side * 0.5; // back to the plan frame
-				Place.SpawnY = Side * 0.5 - Rule.y;
-			}
+			const ftcore::Vec2 Rule = ftcore::WorldLayout::spawnFor({static_cast<float>(Centre.x), static_cast<float>(Centre.y)});
+			Place.RuleX = Rule.x + Side * 0.5; // back to the plan frame
+			Place.RuleY = Side * 0.5 - Rule.y;
+			Place.SpawnX = Row->bSpawn ? Row->SpawnX : Place.RuleX;
+			Place.SpawnY = Row->bSpawn ? Row->SpawnY : Place.RuleY;
+			Place.SpawnBox = Row->SpawnBoxAt;
 			const double Ground = ftcore::massingGroundAt(Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX),
 				static_cast<size_t>(Field.SamplesY), Field.Spacing, Field.OriginX, Field.OriginY, Place.SpawnX, Place.SpawnY);
 			int OnBox = -1;
@@ -558,6 +681,26 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				UE_LOG(LogForgottenThird, Warning,
 					TEXT("FTBuildMassingWorld: district %d's spawn stands inside %s (%.1f to %.1f m); the goals table can name its spawn_x, spawn_y."),
 					D, *Utf8(In.id), In.z0, In.z1);
+			}
+			if (Place.SpawnBox != INDEX_NONE)
+			{
+				// The reason the spawn was placed by hand: the generator's own would stand in this box.
+				const ftcore::MassingBox& Box = Boxes[static_cast<size_t>(Place.SpawnBox)];
+				const double RuleGap = ftcore::massingFootprintGap(Box, Place.RuleX, Place.RuleY);
+				FString Where;
+				const bool bOutside = Against(Box, Place.SpawnX, Place.SpawnY, Place.SpawnFloor, Where);
+				if (RuleGap > 0.0 || !bOutside)
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: district %d's spawn (%.1f, %.1f) is listed as a temporary placement outside "
+						"%s, but the generator's spawn (%.1f, %.1f) is %.1f m off its footprint and the placed one is %s."), D, Place.SpawnX,
+						Place.SpawnY, *Utf8(Box.id), Place.RuleX, Place.RuleY, RuleGap, *Where);
+				}
+				else
+				{
+					UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: district %d's spawn (%.1f, %.1f) is a temporary placement outside %s (%s): "
+						"the generator's spawn (%.1f, %.1f) stands in its footprint; the placed one is %s."), D, Place.SpawnX, Place.SpawnY,
+						*Utf8(Box.id), BoxKind(Box), Place.RuleX, Place.RuleY, *Where);
+				}
 			}
 		}
 	}
@@ -829,7 +972,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			};
 			for (const FGoal& Goal : Goals)
 			{
-				Reached += Walk(TEXT("goal ") + Goal.Id, Goal.X, Goal.Y, Goal.Z) ? 1 : 0;
+				// A held goal is listed apart (logged with the table), never walked or counted.
+				Reached += Goal.HeldAt == INDEX_NONE && Walk(TEXT("goal ") + Goal.Id, Goal.X, Goal.Y, Goal.Z) ? 1 : 0;
 			}
 			for (int32 D = 0; D < Places.Num(); ++D)
 			{
@@ -844,14 +988,18 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	{
 		++Actors;
 	}
+	const FString ApartLine = Apart.IsEmpty() ? FString() : FString::Printf(TEXT(" (listed apart, not counted: %s)"), *Apart);
 	const FString SpawnLine =
 		Places.IsEmpty() ? FString() : FString::Printf(TEXT(", district spawns reached %d of %d"), SpawnsReached, Places.Num());
+	const FString PlacedLine = GoalPlacements + SpawnPlacements == 0
+		? FString()
+		: FString::Printf(TEXT("; temporary placements: %d goals, %d spawns"), GoalPlacements, Places.IsEmpty() ? 0 : SpawnPlacements);
 	UE_LOG(LogForgottenThird, Display,
 		TEXT("FTBuildMassingWorld: %d rows: %d named and %d kit built (%d sloped meshes, %d tops nudged), %d not built; %d hidden walls; "
-			 "ground %d x %d samples (%.1f to %.1f m); %d actors; goals reached %d of %d%s%s."),
+			 "ground %d x %d samples (%.1f to %.1f m); %d actors; goals reached %d of %d%s%s%s%s."),
 		static_cast<int32>(Boxes.size()), Named, Kit, Sloped, Nudged, Skipped, static_cast<int32>(Walls.size()), Samples, Samples,
-		ftcore::massingHeightFromValue(Lowest), ftcore::massingHeightFromValue(Highest), Actors, Reached, Goals.Num(), *SpawnLine,
-		bNav ? TEXT("") : TEXT(" (no navmesh)"));
+		ftcore::massingHeightFromValue(Lowest), ftcore::massingHeightFromValue(Highest), Actors, Reached, Counted, *ApartLine, *SpawnLine,
+		*PlacedLine, bNav ? TEXT("") : TEXT(" (no navmesh)"));
 
 	FAssetCompilingManager::Get().FinishAllCompilation();
 	FAssetRegistryModule::AssetCreated(World);
@@ -867,7 +1015,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		return 1;
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: saved %s."), *File);
-	return bStrict && bNav && (Reached < Goals.Num() || SpawnsReached < Places.Num()) ? 1 : 0;
+	return bStrict && bNav && (Reached < Counted || SpawnsReached < Places.Num()) ? 1 : 0;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld needs an editor build."));
 	return 1;

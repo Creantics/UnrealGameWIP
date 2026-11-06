@@ -331,6 +331,20 @@ TEST_CASE("massing: footprints overlap only with area") {
     CHECK(massingFootprintsOverlap(a, flatBox(6, 6, 4, 4, 45, 0, 1)));
 }
 
+TEST_CASE("massing: how far a point lies off a footprint") {
+    const MassingBox a = flatBox(0, 0, 10, 4, 0, 0, 1);
+    CHECK(massingFootprintGap(a, 0, 0) == 0.0);
+    CHECK(massingFootprintGap(a, 5, 2) == 0.0); // the corner itself
+    CHECK(near(massingFootprintGap(a, 6.5, 0), 1.5));
+    CHECK(near(massingFootprintGap(a, -8, -6), 5.0)); // 3 and 4 past the corner
+    // A quarter turn: u runs north, so the box is 4 m across and 10 m along.
+    const MassingBox b = flatBox(0, 0, 10, 4, 90, 0, 1);
+    CHECK(near(massingFootprintGap(b, 0, 6.5), 1.5));
+    CHECK(near(massingFootprintGap(b, 3.5, 0), 1.5));
+    CHECK(near(massingFootprintGap(b, -6.5, 0), 4.5));
+    CHECK(massingFootprintGap(b, 1.9, 4.9) == 0.0);
+}
+
 TEST_CASE("massing: shared tops step down, smallest first") {
     std::vector<MassingBox> boxes = {
         flatBox(0, 0, 30, 30, 0, 0, 10),   // 0: big

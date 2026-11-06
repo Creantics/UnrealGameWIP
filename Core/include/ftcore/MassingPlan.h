@@ -128,6 +128,9 @@ FTCORE_API void massingTopNudges(const std::vector<MassingBox>& boxes, const std
 // Whether two boxes' footprints overlap with positive area (touching edges don't).
 FTCORE_API bool massingFootprintsOverlap(const MassingBox& a, const MassingBox& b);
 
+// How far a plan point lies outside a box's footprint, in metres: 0 on its edge or inside it.
+FTCORE_API double massingFootprintGap(const MassingBox& box, double x, double y);
+
 // The world's 1 m height field (a raw grid of 16-bit samples, south-west corner first, rows running
 // north) as an Unreal Landscape takes it: a square whose side is the smallest quadsPerComponent * n + 1
 // that holds both of the grid's sides, the grid's last column and row repeated east and north to fill
