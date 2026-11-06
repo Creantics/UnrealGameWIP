@@ -65,6 +65,7 @@ add_library(ftcore STATIC
     src/FightAnimator.cpp
     src/Traversal.cpp
     src/Slide.cpp
+    src/KneelGetUp.cpp
     src/MoveTuning.cpp
     src/DodgeRoll.cpp
     src/LedgeHang.cpp
@@ -173,6 +174,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_fight_animator.cpp
         tests/test_traversal.cpp
         tests/test_slide.cpp
+        tests/test_kneel_getup.cpp
         tests/test_move_tuning.cpp
     tests/test_dodge_roll.cpp
     tests/test_ledge_hang.cpp

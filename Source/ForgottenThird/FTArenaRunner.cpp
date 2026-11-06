@@ -838,24 +838,17 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		if (bKnees && !bKneeling[I])
 		{
 			// The go-down is its reaction: a blow just before it, or on its knees, makes no flinch.
-			KneelSince[I] = Now;
+			ftcore::kneelStart(Kneel[I], KneelSince[I], UpAt[I], Now);
 			HitSince[I] = -1e9;
-			UpAt[I] = 0.0;
-			if (bStone)
-			{
-				StoneUpStart = -1e9;
-				bStoneStood = false;
-			}
 		}
 		else if (!bKnees && bKneeling[I] && UpAt[I] < UpLength)
 		{
 			// The spell ended before its get-up ran out (a release from a hold): it still gets up, from where it got to.
 			UpOwedUntil[I] = Now + (UpLength - UpAt[I]);
 		}
-		if (bStone && !bKnees)
+		if (!bKnees)
 		{
-			StoneUpStart = -1e9;
-			bStoneStood = false;
+			ftcore::kneelEnd(Kneel[I]);
 		}
 		bKneeling[I] = bKnees;
 	}
@@ -944,63 +937,48 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		}
 		// On its knees: it goes down from the spell's start (an Open chained into a Down is one spell), holds there, and
 		// gets up so that it stands as the state ends (never early in a hold until a release). The get-up wins a short state.
-		Clip = Skin.FaceDown >= 0 ? Skin.FaceDown : (Skin.Stagger >= 0 ? Skin.Stagger : Skin.Idle);
+		// A go-down the get-up cuts short hands over at the same pose, for every skin (ftcore/KneelGetUp.h); the
+		// stone_bearer's get-up, once begun, always plays out in real time.
 		const double Left = static_cast<double>(Out.stateLength) - (static_cast<double>(Out.stateTime) + static_cast<double>(Alpha) * StepSeconds);
-		if (bStone && Skin.FaceDownOut >= 0 && (StoneUpStart > -1e8 || bStoneStood))
+		ftcore::KneelClips Kc;
+		Kc.hasIn = Skin.FaceDownIn >= 0;
+		Kc.hasUp = Skin.FaceDownOut >= 0;
+		Kc.inLength = Kc.hasIn ? static_cast<double>(Skin.Sequences[Skin.FaceDownIn]->GetPlayLength()) : 0.0;
+		Kc.upLength = UpLength;
+		Kc.goingDown = Kc.hasIn && SkinClip[I] == Skin.FaceDownIn;
+		Kneel[I].track = bStone;
+		const ftcore::KneelFrame Kf = ftcore::kneelShow(Kneel[I], KneelSince[I], UpAt[I], Now, Left, Kc);
+		if (Kf.standsOut && Left >= kStoneStandOutLog)
 		{
-			// The stone_bearer's get-up, once begun, never sinks back into the hold: it plays out in real time. If the state
-			// runs on past it (a riposte turns an opening into a full down), it kneels again, or stands out the rest when
-			// too little is left to go down and up again.
-			const double Into = Now - StoneUpStart;
-			if (!bStoneStood && Into < UpLength)
-			{
-				Clip = Skin.FaceDownOut;
-				Time = Into;
-				bTimed = true;
-				UpAt[I] = Time;
-				break;
-			}
-			const double InLength = Skin.FaceDownIn >= 0 ? static_cast<double>(Skin.Sequences[Skin.FaceDownIn]->GetPlayLength()) : 0.0;
-			StoneUpStart = -1e9;
-			if (bStoneStood || (FMath::IsFinite(Left) && Left < InLength + UpLength))
-			{
-				if (!bStoneStood && Left >= kStoneStandOutLog)
-				{
-					UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d is up with %.2f s of its down left: it stands it out."), Fight.time(), I, Left);
-				}
-				bStoneStood = true;
-				Clip = Skin.Idle;
-				UpAt[I] = UpLength;
-				break;
-			}
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d is up with %.2f s of its down left: it stands it out."), Fight.time(), I, Left);
+		}
+		if (Kf.kneelsAgain)
+		{
 			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d is up with %.2f s of its down left: it kneels again."), Fight.time(), I, Left);
-			KneelSince[I] = Now;
-			UpAt[I] = 0.0;
 		}
-		const double Spell = Now - KneelSince[I];
-		if (Skin.FaceDownOut >= 0 && FMath::IsFinite(Left) && Left < UpLength)
+		if (Kf.cut)
 		{
-			Clip = Skin.FaceDownOut;
-			Time = UpLength - FMath::Max(Left, 0.0);
-			const double InLength = Skin.FaceDownIn >= 0 ? static_cast<double>(Skin.Sequences[Skin.FaceDownIn]->GetPlayLength()) : 0.0;
-			if (bStone && SkinClip[I] == Skin.FaceDownIn && Skin.FaceDownIn >= 0 && InLength > 0.0 && Spell < InLength)
-			{
-				// The go-down cut at progress p: the get-up starts from the same pose, (1 - p) of the way in, and plays out.
-				Time = (1.0 - Spell / InLength) * UpLength;
-				UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d's go-down is cut at %.2f of it: its get-up starts %.2f s in."), Fight.time(), I,
-					Spell / InLength, Time);
-			}
-			bTimed = true;
-			UpAt[I] = Time;
-			if (bStone)
-			{
-				StoneUpStart = Now - Time;
-			}
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d's go-down is cut at %.2f of it: its get-up starts %.2f s in."), Fight.time(), I,
+				Kf.cutAt, Kf.time);
 		}
-		else if (Skin.FaceDownIn >= 0 && Spell < static_cast<double>(Skin.Sequences[Skin.FaceDownIn]->GetPlayLength()))
+		switch (Kf.clip)
 		{
+		case ftcore::KneelClip::GoDown:
 			Clip = Skin.FaceDownIn;
-			Time = Spell;
+			break;
+		case ftcore::KneelClip::GetUp:
+			Clip = Skin.FaceDownOut;
+			break;
+		case ftcore::KneelClip::Stand:
+			Clip = Skin.Idle;
+			break;
+		default:
+			Clip = Skin.FaceDown >= 0 ? Skin.FaceDown : (Skin.Stagger >= 0 ? Skin.Stagger : Skin.Idle);
+			break;
+		}
+		if (Kf.timed)
+		{
+			Time = Kf.time;
 			bTimed = true;
 		}
 		break;
@@ -1278,15 +1256,14 @@ void UFTArenaRunner::PutBodiesAtStart()
 		KneelSince[I] = 0.0;
 		UpAt[I] = 0.0;
 		UpOwedUntil[I] = -1e9;
+		Kneel[I] = ftcore::KneelTrack{};
 		RecoilPending[I] = -1;
 		RecoilSince[I] = 0.0;
 		bRecoilDown[I] = false;
 	}
 	BossLoopWraps = 0;
 	StoneWalkSince = -1e9;
-	StoneUpStart = -1e9;
 	StonePilotHeavyAt = -1e9;
-	bStoneStood = false;
 	StoneDeathClip = -1;
 	StoneSplitStaggerSince = -1e9;
 	StoneSplitStaggerUntil = -1e9;

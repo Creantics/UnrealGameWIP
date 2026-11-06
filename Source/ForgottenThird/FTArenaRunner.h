@@ -22,6 +22,7 @@
 #include "ftcore/ArenaZone.h"
 #include "ftcore/BeatChoreo.h"
 #include "ftcore/ClipShowcase.h"
+#include "ftcore/KneelGetUp.h"
 
 #include "FTArenaBossVfx.h"
 #include "FTKiteHost.h"
@@ -399,21 +400,20 @@ private:
 	double KneelSince[ftcore::kMaxArenaEnemies] = {};
 	double UpAt[ftcore::kMaxArenaEnemies] = {};
 	double UpOwedUntil[ftcore::kMaxArenaEnemies] = {};
+	// Its get-up under way and whether it is up for the rest of its down (ftcore::kneelShow; the stone_bearer's is tracked).
+	ftcore::KneelTrack Kneel[ftcore::kMaxArenaEnemies];
 	// A parried move's recoil still to play (a table index, -1 none) and since when (the parry), and whether the Open went
 	// face down first (a stagger after that starts it over). It lasts while the Open, Staggered or Down does.
 	int32 RecoilPending[ftcore::kMaxArenaEnemies];
 	double RecoilSince[ftcore::kMaxArenaEnemies] = {};
 	bool bRecoilDown[ftcore::kMaxArenaEnemies] = {};
 	float FrameDelta = 0.f; // the frame's seconds, for the clips' crossfades
-	// The stone_bearer's figure: when its walk began, when its get-up began (-1e9: none under way) and whether it is up
-	// for the rest of its down, the death clip it chose (-1: not yet), and its move mask as last logged.
+	// The stone_bearer's figure: when its walk began, the death clip it chose (-1: not yet), and its move mask as last logged.
 	double StoneWalkSince = -1e9;
 	// The walk's stop, latched when Core stops wanting it: seconds into the walk it stops at (its next passing pose; < 0: none
 	// latched) and why.
 	double StoneWalkStopAt = -1.0;
 	const TCHAR* StoneWalkStopWhy = TEXT("");
-	double StoneUpStart = -1e9;
-	bool bStoneStood = false;
 	int32 StoneDeathClip = -1;
 	uint32 StoneMoveMask = 0xFFFFFFFFu;
 	// The split's stagger, drawn from the split's frame until Core's held Stagger takes over (-1e9: none).
