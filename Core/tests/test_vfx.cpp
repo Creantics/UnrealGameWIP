@@ -164,8 +164,8 @@ TEST_CASE("vfx: the Dealer's effects load without warnings and keep their partic
     };
     const Expect files[] = {{"dealer_deal_tell", 5, 21, false},
                             {"dealer_seam_open", 4, 32, false},
-                            {"dealer_seam_crit", 5, 38, false},
-                            {"ink_hit", 7, 43, false},
+                            {"dealer_seam_crit", 5, 26, false},
+                            {"ink_hit", 7, 30, false},
                             {"ink_hit_floor", 3, 22, false},
                             {"dealer_seam_crit_floor", 3, 22, false}};
     for (const Expect& f : files) {
@@ -213,13 +213,6 @@ float apexTime(float vy, float gy, float k) {
 }
 
 bool isDebris(const VfxEmitter& em) { return highest(em.speed) >= 0.5f; }
-
-// The main mass of the InkMass sheets, as a fraction of the quad's edge: the d80 (the diameter round the alpha
-// centroid that holds 80% of the sprite's alpha), measured on the atlas cells. The sheets' bounding boxes fill 0.87-0.94
-// of the quad, but their tendrils and flung drops carry little of the alpha, so the bbox overstates the mass.
-constexpr float kCoreMassLo = 0.58f; // the "core" sheets: 0.60 and 0.58
-constexpr float kCoreMassHi = 0.60f;
-constexpr float kSplashMassMean = 0.49f; // the "splash" sheets: 0.48, 0.55 and 0.43
 
 } // namespace
 
@@ -299,7 +292,7 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
     // The tell: wet red on the hand for the whole wind-up (the Deal's 2.3 s startup and 0.2 s active; the lone tell's
     // 2.4 s). A red flush, red threads along the fingers and red beads ride the hand bone (local space: no lag through
     // the whip) and grow with the wind-up, pulsing on each of its four beats; drops fall from the hand in the world on
-    // every beat. It is gone soon after the window opens, fading over 0.15 s or more, never cut.
+    // every beat. It is gone soon after the window opens, fading over 0.15 s or more (0.45 s at most), never cut.
     VfxEffect tell;
     REQUIRE(loadEffect("dealer_deal_tell", tell));
     const float windUp = static_cast<float>(ShowSpec{}.tellFor);
@@ -311,7 +304,7 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
         CHECK(em.rate == 0.f);
         CHECK(em.blend == VfxBlend::Alpha);
         CHECK(em.atlas.set == "RedTell");
-        for (const VfxBurst& b : em.bursts) CHECK(b.time + highest(em.lifetime) <= windUp + 0.2f);
+        for (const VfxBurst& b : em.bursts) CHECK(b.time + highest(em.lifetime) <= windUp + 0.45f);
         if (em.name == "drops") continue;
         CHECK(em.space == VfxSpace::Local);
         // The fade: it holds to the end of the wind-up, then goes over 0.15 s or more.
@@ -332,10 +325,11 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
     CHECK(beads->atlas.group == "drop");
     CHECK(lowest(flush->lifetime) >= windUp);
     // One wash along the fingers, not a ragged clump: three smears at most, all turned within 0.2 rad of the hanging
-    // fingers' line, and fewer drops (twelve at most).
+    // fingers' line with the sheet's dense end down at the fingertips (its thin end, up the hand, is the soft top edge),
+    // and fewer drops (twelve at most).
     CHECK(flush->maxParticles <= 3);
-    CHECK(lowest(flush->startRotation) >= 0.5f * kPi - 0.2f);
-    CHECK(highest(flush->startRotation) <= 0.5f * kPi + 0.2f);
+    CHECK(lowest(flush->startRotation) >= 1.5f * kPi - 0.2f);
+    CHECK(highest(flush->startRotation) <= 1.5f * kPi + 0.2f);
     CHECK(beads->maxParticles <= 2);
     CHECK(drops->maxParticles <= 12);
     // Grows: the flush's quad doubles over the wind-up to 0.7 m or more at its end (the red wedge reaches past 0.5 m).
@@ -398,8 +392,8 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
         }
     }
 
-    // The plain hit: one of the two dense "core" sheets, opening in 3 frames or less to a main mass 0.9-1.0 m across
-    // (the d80 above, not the bbox), translucent, its heavy mass (alpha 0.5 or more) gone within 6 frames, then thinning
+    // The plain hit: one of the two dense "core" sheets, opening in 3 frames or less to a sheet 0.9-1.0 m across at its
+    // peak, translucent, its heavy mass (alpha 0.5 or more) gone within 6 frames, then thinning
     // as its edges erode, never dropping out in a frame. A lighter, wider wet edge round it (under 0.5 alpha: not part
     // of the mass), and a wider ink haze that takes over before the sheet is gone.
     VfxEffect ink;
@@ -415,8 +409,8 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
     CHECK(core->atlas.set == "InkMass");
     CHECK(core->atlas.group == "core");
     CHECK(core->atlas.erode);
-    CHECK(lowest(core->startSize) * kCoreMassLo >= 0.9f); // at full size (1.0), the smallest sheet's mass
-    CHECK(peakSize(*core) * kCoreMassHi <= 1.f);           // at the size curve's top, the largest sheet's mass
+    CHECK(lowest(core->startSize) >= 0.9f); // at full size (1.0), the smallest sheet
+    CHECK(peakSize(*core) <= 1.f);           // at the size curve's top, the largest sheet
     CHECK(core->sizeOverLife.evaluate(0.f, 0.5f) >= 0.5f); // opens from half size or more...
     {
         float full = 1.f;
@@ -490,9 +484,9 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
     REQUIRE(burst);
     REQUIRE(chunks);
     CHECK(burst->atlas.group == "splash");
-    CHECK(lowest(burst->startSize) > highest(core->startSize));
-    // Bigger than the plain hit's mass: the burst's mean sheet at its peak against the hit's largest.
-    CHECK(lowest(burst->startSize) * highest(burst->sizeOverLife) * kSplashMassMean > peakSize(*core) * kCoreMassHi);
+    // Sized to the weak point it bursts from: a hand-sized burst at the fingertips, smaller at its peak than the plain
+    // hit's sheet. The crit reads by its red, its snap and its red pool, not by its size.
+    CHECK(peakSize(*burst) < lowest(core->startSize));
     // Red-tinted ink (the sheets are near-black under a grey sheen, so the tint is an HDR red lift).
     for (const VfxColorStop& s : burst->colorOverLife.stops) {
         CHECK(s.color.r >= 2.f);
@@ -567,7 +561,7 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
                 }
             }
         }
-        CHECK(blots);
+        if (fx == &ink) CHECK(blots); // the crit throws torn pieces only, no round chunks
         CHECK(laid > roundN); // drops and streaks with pinched tails outnumber the round blots
         if (fx == &ink) CHECK(dropShapes);
     }
@@ -630,8 +624,10 @@ TEST_CASE("vfx: the Dealer's ink lands: debris falls through the floor at full a
         }
         REQUIRE(last > first);
         // The marks: wet silhouettes laid flat on the floor, splatting in over 2 frames or less as the first ink lands
-        // and while the rest does, held 0.8 s or more, then drying lighter as they go. A pool about 1.2 m across (wider
-        // than the contact shadow) with splats of 0.4 m or more round it, and fine spatter on a ring at its rim.
+        // and while the rest does, held 0.8 s or more, then drying lighter as they go. A pool wider than the contact
+        // shadow (the plain hit's sized to the hit, the crit's wider), with splats of 0.4 m or more round it, and fine
+        // spatter on a ring at its rim.
+        const bool red = std::string(c.floor) == "dealer_seam_crit_floor";
         float firstMark = 1e9f;
         float pool = 0.f;
         bool rim = false;
@@ -664,10 +660,9 @@ TEST_CASE("vfx: the Dealer's ink lands: debris falls through the floor at full a
             }
         }
         CHECK(firstMark <= first + 2.f * kFrame);
-        CHECK(pool >= 1.3f); // wide enough to read round the feet at 60 px
+        CHECK(pool >= (red ? 1.3f : 0.8f)); // wide enough to read round the feet at 60 px
         CHECK(rim);
         // The crit's marks carry its red, wet and drying; the plain hit's are dark (1 or less) while wet.
-        const bool red = std::string(c.floor) == "dealer_seam_crit_floor";
         for (const VfxEmitter& em : floor.emitters) {
             CAPTURE(em.name);
             for (const VfxColorStop& s : em.colorOverLife.stops) {

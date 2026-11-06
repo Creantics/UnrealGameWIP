@@ -13,7 +13,7 @@
       "radius": 0.05,
       "speed": [0.0, 0.15],
       "drag": 4.0,
-      "startSize": [2.0, 2.15],
+      "startSize": [0.66, 0.71],
       "sizeOverLife": [
         {"t": 0, "v": 0.45},
         {"t": 0.08, "v": 1.0},
@@ -39,9 +39,9 @@
       ],
       "duration": 0.1,
       "maxParticles": 1,
-      "lifetime": [0.3, 0.34],
+      "lifetime": [0.28, 0.3],
       "shape": "point",
-      "startSize": [1.7, 1.9],
+      "startSize": [0.561, 0.627],
       "sizeOverLife": [
         {"t": 0, "v": 0.7},
         {"t": 0.2, "v": 1.0},
@@ -61,49 +61,50 @@
     {
       "name": "chunks",
       "bursts": [
-        {"time": 0.0, "count": 7},
-        {"time": 0.04, "count": 6}
+        {"time": 0.0, "count": 6},
+        {"time": 0.04, "count": 5}
       ],
       "duration": 0.1,
-      "maxParticles": 13,
-      "lifetime": [1.04, 1.19],
+      "maxParticles": 11,
+      "lifetime": [0.95, 1.1],
       "shape": "cone",
       "radius": 0.06,
       "coneAngle": 70,
-      "speed": [2.0, 4.0],
+      "speed": [1.8, 3.4],
       "gravity": [0.0, -9.8, 0.0],
       "drag": 0.8,
-      "startSize": [0.1, 0.36],
+      "startSize": [0.1, 0.2],
       "sizeOverLife": [
-        {"t": 0, "v": 0.6},
-        {"t": 0.06, "v": 1.0},
-        {"t": 1, "v": 1.0}
+        {"t": 0, "v": 0.85},
+        {"t": 0.05, "v": 1.0},
+        {"t": 1, "v": 0.95}
       ],
-      "startRotation": [0.0, 6.283],
-      "angularVelocity": [-3.5, 3.5],
       "colorOverLife": [
         {"t": 0, "color": [3.6, 0.36, 0.33, 1.0]},
         {"t": 1, "color": [3.6, 0.36, 0.33, 1.0]}
       ],
       "blend": "alpha",
-      "atlas": {"set": "InkBlot", "group": "blot"},
-      "softness": 0.0
+      "atlas": {"set": "InkBlot", "group": "drop"},
+      "softness": 0.0,
+      "renderMode": "stretched",
+      "lengthScale": 1.0,
+      "speedScale": 0.0
     },
     {
       "name": "streaks",
       "bursts": [
-        {"time": 0.0, "count": 18}
+        {"time": 0.0, "count": 10}
       ],
       "duration": 0.1,
-      "maxParticles": 20,
-      "lifetime": [1.04, 1.19],
+      "maxParticles": 10,
+      "lifetime": [0.92, 1.07],
       "shape": "cone",
       "radius": 0.06,
       "coneAngle": 70,
-      "speed": [2.2, 4.0],
+      "speed": [1.6, 3.0],
       "gravity": [0.0, -9.8, 0.0],
       "drag": 2.2,
-      "startSize": [0.5, 0.7],
+      "startSize": [0.4, 0.5],
       "sizeOverLife": [
         {"t": 0, "v": 0.85},
         {"t": 0.05, "v": 1.0},
@@ -130,7 +131,7 @@
       "maxParticles": 2,
       "lifetime": [0.24, 0.27],
       "shape": "point",
-      "startSize": [1.6, 1.8],
+      "startSize": [0.528, 0.594],
       "sizeOverLife": [
         {"t": 0, "v": 0.8},
         {"t": 0.3, "v": 1.1},
