@@ -1580,6 +1580,18 @@ void AFTExploreDirector::TickWorld(AFTExploreCharacter& Player, float DeltaSecon
 	const int32 Spot = kTourTargetBase + TourLeg;
 	const float Dist = static_cast<float>(FVector2D(Target.x - Pos.x, Target.y - Pos.y).Size());
 	const double Game = GetWorld()->GetTimeSeconds() - TourGameStart;
+	// Once a game second, what the pilot's stuck test looks at and what it doesn't, so a STUCK can be read from the log as a
+	// stall or as a lead still walking. Log only.
+	if (Game >= TourTraceAt)
+	{
+		TourTraceAt = FMath::FloorToDouble(Game) + 1.0;
+		const bool bAsked = PilotTarget == Spot; // a new leg's first tick comes before the pilot has seen its target
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("World %s: trace leg %d/%d (spot %d) at %.1f s game time: the lead at (%.1f, %.1f) m in the engine frame, feet at z %.0f cm, %.2f m/s; ")
+			TEXT("%.1f m from the goal, best %.1f m, %.1f s without a new best."),
+			*WorldId, TourLeg + 1, TourCount, Spot, Game, Pos.x, Pos.y, Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight(),
+			Player.GetVelocity().Size2D() / 100.0, Dist, bAsked ? PilotBestDist : Dist, bAsked ? FMath::Max(PilotStuck, 0.f) : 0.f);
+	}
 	if (Dist > kTourReach)
 	{
 		// Roads run straight between plaza centres and nothing stands on them, so no navmesh is needed; a map that places

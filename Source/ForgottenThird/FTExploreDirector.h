@@ -291,6 +291,7 @@ private:
 	uint8 TourMissLegs[2 * ftcore::WorldLayout::kMaxDistricts] = {}; // their leg numbers, from 1
 	double TourStart = 0.0;
 	double TourGameStart = 0.0;
+	double TourTraceAt = 0.0; // tour game time of the next per-second trace line
 	int32 WorldLineDistrict = -2;
 	FString WorldLine;
 
