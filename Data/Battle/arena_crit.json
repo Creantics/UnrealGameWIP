@@ -4,6 +4,7 @@
     "white_glove": {
       "opensAfter": "deal",
       "opens": 1.6,
+      "showHitFor": 4.0,
       "weakPoints": {
         "halfWidth": 0.5,
         "points": [

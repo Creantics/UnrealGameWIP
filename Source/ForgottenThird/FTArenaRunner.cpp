@@ -3301,6 +3301,13 @@ bool UFTArenaRunner::BeginShowcase()
 		return Clip >= 0 && Skin.Sequences.IsValidIndex(Clip) && Skin.Sequences[Clip] ? static_cast<int16>(Clip) : ftcore::kNoClip;
 	};
 	ftcore::ShowSpec Spec;
+	if (const ftcore::ArenaKindCrit* KindCrit = GetKindCrit(ShowSlot))
+	{
+		if (KindCrit->showHitFor() > 0.0)
+		{
+			Spec.hitFor = KindCrit->showHitFor();
+		}
+	}
 	Spec.idle = Role(Skin.Idle);
 	Spec.idleTwo = Role(Skin.IdleTwo);
 	Spec.walk = Role(Skin.Walk);

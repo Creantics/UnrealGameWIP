@@ -1,6 +1,7 @@
 #include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
 #include "ftcore/BeatChoreo.h" // the skinned kind's clip table
+#include "ftcore/Vfx.h"        // the shipped hit floor's last mark
 #include "ftcore/WorldLayout.h"
 
 #include "AllocCounter.h"
@@ -9,6 +10,7 @@
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <string>
@@ -137,6 +139,15 @@ TEST_CASE("arena kind crit loader: the test file loads every field") {
     CHECK(k->weakPoints.points.halfWidth == doctest::Approx(kDefaultHalfWidth));
     CHECK(k->weakPoints.gates[0].arc == doctest::Approx(180.0));
     CHECK_FALSE(t.find("spitter"));
+    // The showcase's lone hit hold is optional: unset, the showcase keeps its own.
+    CHECK(g->showHitFor == doctest::Approx(0.0));
+    ArenaKindCritTable held;
+    REQUIRE(importArenaKindCrits(patched("\"opens\": 1.6", "\"opens\": 1.6, \"showHitFor\": 4"), held));
+    REQUIRE(held.find("white_glove"));
+    CHECK(held.find("white_glove")->showHitFor == doctest::Approx(4.0));
+    ArenaKindCrit crit;
+    crit.reset(*held.find("white_glove"));
+    CHECK(crit.showHitFor() == doctest::Approx(4.0));
 
     ArenaKindCritTable empty;
     CHECK(importArenaKindCrits(R"({ "version": 1, "kinds": {} })", empty));
@@ -159,6 +170,10 @@ TEST_CASE("arena kind crit loader: refusals carry their path; unknown keys warn"
     CHECK(has(importError(patched("\"opens\": 1.6", "\"opens\": 0")),
               "kinds.white_glove.opens: expected a number in 0.1..10"));
     CHECK(has(importError(patched("\"opens\": 1.6", "\"opens\": \"long\"")), "kinds.white_glove.opens:"));
+    CHECK(has(importError(patched("\"opens\": 1.6", "\"opens\": 1.6, \"showHitFor\": 0.2")),
+              "kinds.white_glove.showHitFor: expected a number in 0.5..10"));
+    CHECK(has(importError(patched("\"opens\": 1.6", "\"opens\": 1.6, \"showHitFor\": \"long\"")),
+              "kinds.white_glove.showHitFor:"));
     // The weak points through ArenaBoss.h's own parser, under the entry's path.
     CHECK(has(importError(patched("\"x\": -0.22", "\"x\": -1.5")),
               "kinds.white_glove.weakPoints.points[0].x: expected a number in -1..1"));
@@ -239,6 +254,23 @@ TEST_CASE("arena kind crit data: the shipped file loads clean, white_glove's sea
     // The floor effects lay the marks the hit's and the crit's ink leaves where it lands.
     CHECK(g->effects.hitFloor() == "ink_hit_floor");
     CHECK(g->effects.critFloor() == "dealer_seam_crit_floor");
+    // The showcase holds each lone hit take till the plain hit's last floor mark has dried and gone, and not much
+    // longer: its end measured from the hit, the last burst plus its longest life.
+    {
+        std::string text2;
+        REQUIRE(ftcore_test::readProjectData("Vfx/" + std::string(g->effects.hitFloor()) + ".json", text2));
+        VfxEffect marks;
+        REQUIRE(importVfxEffect(text2, marks));
+        float end = 0.f;
+        for (const VfxEmitter& em : marks.emitters) {
+            float shortest = 0.f, longest = 0.f;
+            em.lifetime.bounds(shortest, longest);
+            for (const VfxBurst& b : em.bursts) end = std::max(end, b.time + longest);
+        }
+        CHECK(end > 2.f); // past the showcase's own hold
+        CHECK(g->showHitFor >= end);
+        CHECK(g->showHitFor <= end + 0.5f);
+    }
     for (const std::string_view fx : {g->effects.tell(), g->effects.open(), g->effects.crit(), g->effects.hit(),
                                       g->effects.hitFloor(), g->effects.critFloor()}) {
         CAPTURE(fx);

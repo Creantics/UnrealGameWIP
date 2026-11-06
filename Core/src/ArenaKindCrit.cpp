@@ -15,6 +15,7 @@ void ArenaKindCrit::reset(const ArenaKindCritDef& def) {
     window_.reset(def.weakPoints);
     opensAfter_ = def.opensAfterChars;
     opens_ = def.opens;
+    showHitFor_ = def.showHitFor;
     opensAt_ = -1.0e300;
     crits_ = 0;
     lastPoint_ = kMaxWeakPoints;
@@ -88,7 +89,7 @@ void kcEntry(JsonValue j, const std::string& path, ArenaKindCritDef& d, std::vec
         errors.push_back(path + ": expected an object");
         return;
     }
-    kcUnknownKeys(j, path, {"opensAfter", "opens", "weakPoints", "effects"}, warnings);
+    kcUnknownKeys(j, path, {"opensAfter", "opens", "showHitFor", "weakPoints", "effects"}, warnings);
 
     const JsonValue clip = j["opensAfter"];
     if (!clip.isString() || !kcId(clip.string(), kMaxArenaClipId))
@@ -103,6 +104,15 @@ void kcEntry(JsonValue j, const std::string& path, ArenaKindCritDef& d, std::vec
         errors.push_back(path + ".opens: expected a number in 0.1..10");
     else
         d.opens = s;
+
+    const JsonValue hitFor = j["showHitFor"];
+    if (!hitFor.isAbsent()) {
+        const double h = hitFor.number(-1.0);
+        if (!hitFor.isNumber() || !std::isfinite(h) || h < 0.5 || h > 10.0)
+            errors.push_back(path + ".showHitFor: expected a number in 0.5..10");
+        else
+            d.showHitFor = h;
+    }
 
     const JsonValue fx = j["effects"];
     if (fx.isObject()) {

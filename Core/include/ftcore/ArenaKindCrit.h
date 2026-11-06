@@ -92,6 +92,7 @@ struct ArenaKindCritDef {
     std::array<char, kMaxArenaKindCritId + 1> kindChars{};
     std::array<char, kMaxArenaClipId + 1> opensAfterChars{}; // the clip of the move that opens the window
     double opens = 1.0;                                      // seconds the window stays open
+    double showHitFor = 0.0; // the showcase's lone hit takes (s), so the kind's floor marks end on camera; 0 keeps the default
     ArenaWeakPoints weakPoints{};
     ArenaKindCritEffects effects{};
 
@@ -146,12 +147,14 @@ public:
     double lastCritAt() const { return lastCritAt_; }
     std::string_view opensAfter() const { return std::string_view(opensAfter_.data()); }
     double opens() const { return opens_; }
+    double showHitFor() const { return showHitFor_; }
     const ArenaWeakPoints& points() const { return window_.points(); }
 
 private:
     CritWindow window_{};
     std::array<char, kMaxArenaClipId + 1> opensAfter_{};
     double opens_ = 0.0;
+    double showHitFor_ = 0.0;
     double opensAt_ = -1.0e300;
     int crits_ = 0;
     std::uint8_t lastPoint_ = kMaxWeakPoints;

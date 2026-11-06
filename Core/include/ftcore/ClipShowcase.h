@@ -79,6 +79,7 @@ struct ShowSpec {
     double hidden = 0.5;    // the boss hidden between two takes (s)
     double tellFor = 2.4;   // the lone tell (s)
     double glowFor = 3.0;   // the lone glow (s)
+    double hitFor = 2.0;    // each lone hit take, light then heavy (s): long enough for its floor marks to dry and go
     // Where the weak point faces, deg in the boss's frame (0 ahead, 90 its right, 180 behind). The glow and crit takes
     // turn the boss so it faces the front: with turn clips in whole steps (rounded), without them from a hidden cut; a
     // weak point ahead is not turned.

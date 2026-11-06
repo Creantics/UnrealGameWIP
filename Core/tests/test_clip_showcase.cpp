@@ -252,6 +252,31 @@ TEST_CASE("clip showcase: the effects alone, then the two deaths each from a hid
     CHECK(ftcore::clipShowPose(show, show.length).segment == -1);
 }
 
+TEST_CASE("clip showcase: each lone hit take holds for the spec's hitFor, so a kind's floor marks can end on camera") {
+    ftcore::BeatClips clips;
+    REQUIRE(loadClips(clips));
+    ftcore::ShowSpec spec = stoneSpec(clips);
+    CHECK(spec.hitFor == doctest::Approx(2.0)); // the default
+    ftcore::ClipShow show;
+    REQUIRE(ftcore::buildClipShow(clips, spec, show));
+    // The last cue of each kind is the lone take's (the first is the attack's hit).
+    const auto last = [](const ftcore::ClipShow& s, ftcore::ShowCue cue) {
+        double at = -1.0;
+        for (std::size_t c = 0; c < s.cueCount; ++c)
+            if (s.cues[c].cue == cue) at = s.cues[c].at;
+        return at;
+    };
+    CHECK(last(show, ftcore::ShowCue::ChipsHeavy) - last(show, ftcore::ShowCue::Chips) == doctest::Approx(2.0));
+    const double length = show.length;
+    const double glowOn = last(show, ftcore::ShowCue::GlowOn);
+    spec.hitFor = 4.0;
+    REQUIRE(ftcore::buildClipShow(clips, spec, show));
+    CHECK(last(show, ftcore::ShowCue::ChipsHeavy) - last(show, ftcore::ShowCue::Chips) == doctest::Approx(4.0));
+    // Both lone takes 2 s longer: everything after them moves on by 4 s.
+    CHECK(last(show, ftcore::ShowCue::GlowOn) - glowOn == doctest::Approx(4.0));
+    CHECK(show.length - length == doctest::Approx(4.0));
+}
+
 TEST_CASE("clip showcase: the glow and the crit show the weak point to the front: one ahead is not turned, one behind is") {
     ftcore::BeatClips clips;
     REQUIRE(loadClips(clips));

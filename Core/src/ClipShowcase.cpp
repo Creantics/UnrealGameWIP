@@ -280,9 +280,9 @@ bool buildClipShow(const BeatClips& clips, const ShowSpec& spec, ClipShow& out, 
     b.cue(b.t, ShowCue::Impact, ShowPlace::Ahead);
     b.idle("fx_impact", 2.0);
     b.cue(b.t, ShowCue::Chips, ShowPlace::Surface);
-    b.idle("fx_chips", 2.0);
+    b.idle("fx_chips", spec.hitFor);
     b.cue(b.t, ShowCue::ChipsHeavy, ShowPlace::Surface);
-    b.idle("fx_chips_heavy", 2.0);
+    b.idle("fx_chips_heavy", spec.hitFor);
     // The turn that brings the weak point to the front: + right; a half turn goes left.
     const float face = wrapDeg(-spec.weakFacing - b.yaw);
     if (turns) {
