@@ -80,12 +80,20 @@ void FFTKiteVfx::ReadTuning()
 	MittenLook = FLook();
 	MittenLook.Effect = FName(kMittenDefault);
 	MoveCount = MittenCount = HitBoneCount = 0;
+	LoneRow = -1;
 	ShowDownGlowTwo = 0.0;
+	// Without a usable json the glow and the burst still ride the seam socket.
+	const auto SeamDefaults = [this]()
+	{
+		Looks[Open].Bone = Socket;
+		Looks[Crit].Bone = Socket;
+	};
 	TArray<uint8> Bytes;
 	const FString Path = FPaths::ProjectDir() / DataPath;
 	if (!IFileManager::Get().FileExists(*Path) || !FFileHelper::LoadFileToArray(Bytes, *Path))
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: kite fx: couldn't read %s; the effects use their defaults and no move has a tell."), DataPath);
+		SeamDefaults();
 		return;
 	}
 	ftcore::JsonDocument Doc;
@@ -94,6 +102,7 @@ void FFTKiteVfx::ReadTuning()
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: kite fx: %s refused (%s); the effects use their defaults and no move has a tell."), DataPath,
 			*FT::ToFString(Error));
+		SeamDefaults();
 		return;
 	}
 	const ftcore::JsonValue Root = Doc.root();
