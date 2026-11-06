@@ -431,7 +431,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	if (bShowcase)
 	{
 		// The reel: no fight, no input, the camera fixed (or, under -ArenaShowLead, the idle lead's own, locked on the boss).
-		TickShowcase(DeltaSeconds);
+		TickShowcase(DeltaSeconds, bHold);
 		return;
 	}
 	PollInput(DeltaSeconds);
@@ -3449,7 +3449,7 @@ bool UFTArenaRunner::BeginShowcase()
 	return true;
 }
 
-void UFTArenaRunner::TickShowcase(float DeltaSeconds)
+void UFTArenaRunner::TickShowcase(float DeltaSeconds, bool bHold)
 {
 	AFTArenaFighter* Figure = ShowSlot >= 0 ? EnemyFigures[ShowSlot].Get() : nullptr;
 	if (!Show || !Figure || bShowDone)
@@ -3463,7 +3463,8 @@ void UFTArenaRunner::TickShowcase(float DeltaSeconds)
 			Hud->bShowHUD = false;
 		}
 		AActor* View = bShowLead ? static_cast<AActor*>(PlayerFigure.Get()) : static_cast<AActor*>(ShowCamera.Get());
-		if (View && PC->GetViewTarget() != View)
+		// While the game mode holds for a view it owns the view target (-ArenaOverview's camera); the reel takes it back after.
+		if (View && !bHold && PC->GetViewTarget() != View)
 		{
 			PC->SetViewTarget(View);
 		}

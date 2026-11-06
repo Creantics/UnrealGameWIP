@@ -294,7 +294,9 @@ private:
 	// (StrikeAt), and the effects, which ShowcaseCue plays only for a boss whose effects it knows (the stone_bearer's
 	// BossVfx); for any other it logs the cue and plays nothing, the seam where that boss's effects go.
 	bool BeginShowcase();
-	void TickShowcase(float DeltaSeconds);
+	// bHold: the game mode is holding for a view (-ArenaShot); the reel runs on, but the view target is left to the game mode
+	// (-ArenaOverview's high camera).
+	void TickShowcase(float DeltaSeconds, bool bHold);
 	void ShowcaseCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& Figure);
 	// The point the reel's blows come from (world, cm): the lead under -ArenaShowLead, else the fixed camera.
 	FVector ShowViewFrom(const AFTArenaFighter& Figure) const;

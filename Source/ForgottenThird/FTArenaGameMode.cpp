@@ -676,7 +676,9 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	{
 		return true;
 	}
-	if (bOverview && EdgePhase < 3 && EdgeShot())
+	// Not under the showcase: the reel poses the idle lead at its own spot every frame and isn't a fight to restart, so
+	// there is no 0b_edge view there; 0_overview (the zone's edge drawn) still comes.
+	if (bOverview && !bShowcase && EdgePhase < 3 && EdgeShot())
 	{
 		return true;
 	}
