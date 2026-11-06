@@ -220,6 +220,16 @@ Three optional goal-table columns name massing ids. `held` lists a goal apart: i
 
 The summary line closes with `temporary placements: <g> goals, <s> spawns`, and `-Strict` counts only the goals not listed apart.
 
+`-Dump=<csv>` also writes the saved map's actors to that file, so a check can read what the map holds rather than what the tables asked for. It reads them back from the actors after the save, so it changes nothing in the map. Each actor gets one row:
+
+- `label`, empty for an actor the build leaves unlabelled, and `class`;
+- location in cm and rotation in degrees, in the engine frame;
+- scale, and whether the actor is hidden in game;
+- `mesh_vertices_cm`, on a sloped box's row: its mesh's vertices as `x y z` relative to the actor, `;` between them, in `massingMesh`'s order (0 to 3 the bottom ring, 4 to 7 the top ring over them, 0 to 1 along the box's +u axis);
+- `district_floors_cm`, on the director's row: its floors in cm, D0 first, `;` between them.
+
+`#` lines at the top of the file repeat this. The log adds `dumped <n> actors to <csv>`, and a dump it can't write fails the run. Like the tables, keep the file outside the repo.
+
 ### Stills from a fixed eye
 
 A look-lock frame, or any review frame named by its eye, is taken off-screen from the built map (`FTWorldEyeShotSubsystem.h`):

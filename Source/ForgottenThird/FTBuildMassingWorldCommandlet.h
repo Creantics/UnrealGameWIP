@@ -5,7 +5,7 @@
 //
 //   UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildMassingWorld -Height=<json> -Boxes=<csv>
 //       [-Walls=<csv>] [-Goals=<csv>] -Entry=<x,y,z> [-Look=<x,y>] [-Sea=<x>] [-Side=1000] [-Map=<name>]
-//       [-World=<id>] [-NoNav] [-Strict]
+//       [-World=<id>] [-NoNav] [-Strict] [-Dump=<csv>]
 //       -NullRHI -unattended -nopause -nosplash
 //
 // -Height names the world's 1 m height field's json (samples_x, samples_y, spacing_m,
@@ -42,6 +42,9 @@
 //   (with -Strict, a missing path fails).
 // Without -World there is no director: the map is a free walk. Zones, hidden kinds, open options and
 // proxies are not built.
+//
+// -Dump=<csv> also writes the saved map's actors to that file, read back from the actors after the save,
+// so it changes nothing in the map; docs/WORLDS.md gives the columns. A dump it can't write fails the run.
 
 #include "CoreMinimal.h"
 #include "Commandlets/Commandlet.h"

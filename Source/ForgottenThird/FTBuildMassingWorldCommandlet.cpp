@@ -448,6 +448,54 @@ ANavMeshBoundsVolume* NavBounds(UWorld* World, const FActorSpawnParameters& Spaw
 	Bounds->SetActorLabel(TEXT("NavMeshBounds"));
 	return Bounds;
 }
+
+// The world's actors as a CSV, read back from the actors themselves, one row each, and how many rows. A mesh held in
+// the map's own package is a sloped box's, so its row gives the vertices; the director's row gives its floors. Labels
+// are read without creating one, so an unlabelled actor stays unlabelled and its row's label is empty.
+FString ActorDump(UWorld* World, int32& Rows)
+{
+	FString Text = TEXT("# FTBuildMassingWorld -Dump: every actor of the saved map, in the engine frame; location in cm, rotation in degrees.\n"
+						"# mesh_vertices_cm: a sloped box's own mesh, each vertex 'x y z' relative to the actor, ';' between them, in massingMesh's\n"
+						"# order: 0-3 the bottom ring, 4-7 the top ring over them; 0 to 1 runs along the box's +u axis, whose heading here is minus the plan's rot.\n"
+						"# district_floors_cm: the director's floors, D0 first, ';' between them.\n"
+						"label,class,x_cm,y_cm,z_cm,pitch,yaw,roll,scale_x,scale_y,scale_z,hidden,mesh_vertices_cm,district_floors_cm\n");
+	Rows = 0;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		const AActor* Actor = *It;
+		FString Vertices;
+		if (const AStaticMeshActor* Prop = Cast<AStaticMeshActor>(Actor))
+		{
+			const UStaticMesh* Mesh = Prop->GetStaticMeshComponent()->GetStaticMesh().Get();
+			const FMeshDescription* Desc = Mesh && Mesh->GetPackage() == World->GetPackage() ? Mesh->GetMeshDescription(0) : nullptr;
+			if (Desc)
+			{
+				const TVertexAttributesRef<const FVector3f> Positions = Desc->GetVertexPositions();
+				for (const FVertexID Vertex : Desc->Vertices().GetElementIDs())
+				{
+					const FVector3f At = Positions[Vertex];
+					Vertices += FString::Printf(TEXT("%s%.3f %.3f %.3f"), Vertices.IsEmpty() ? TEXT("") : TEXT(";"), At.X, At.Y, At.Z);
+				}
+			}
+		}
+		FString Floors;
+		if (const AFTExploreDirector* Director = Cast<AFTExploreDirector>(Actor))
+		{
+			for (const float Floor : Director->DistrictFloors)
+			{
+				Floors += FString::Printf(TEXT("%s%.3f"), Floors.IsEmpty() ? TEXT("") : TEXT(";"), Floor);
+			}
+		}
+		const FVector Location = Actor->GetActorLocation();
+		const FRotator Rotation = Actor->GetActorRotation();
+		const FVector Scale = Actor->GetActorScale3D();
+		Text += FString::Printf(TEXT("%s,%s,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%s,%s\n"), *Actor->GetActorLabel(false),
+			*Actor->GetClass()->GetName(), Location.X, Location.Y, Location.Z, Rotation.Pitch, Rotation.Yaw, Rotation.Roll, Scale.X, Scale.Y, Scale.Z,
+			Actor->IsHidden() ? 1 : 0, *Vertices, *Floors);
+		++Rows;
+	}
+	return Text;
+}
 #endif
 } // namespace
 
@@ -462,12 +510,13 @@ UFTBuildMassingWorldCommandlet::UFTBuildMassingWorldCommandlet()
 int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
-	FString HeightFile, BoxesFile, WallsFile, GoalsFile, EntryText, LookText, WorldText;
+	FString HeightFile, BoxesFile, WallsFile, GoalsFile, DumpFile, EntryText, LookText, WorldText;
 	FString MapName = TEXT("World_Massing");
 	FParse::Value(*Params, TEXT("Height="), HeightFile);
 	FParse::Value(*Params, TEXT("Boxes="), BoxesFile);
 	FParse::Value(*Params, TEXT("Walls="), WallsFile);
 	FParse::Value(*Params, TEXT("Goals="), GoalsFile);
+	FParse::Value(*Params, TEXT("Dump="), DumpFile);
 	// The separator flag is off so "x,y,z" keeps its commas.
 	FParse::Value(*Params, TEXT("Entry="), EntryText, false);
 	FParse::Value(*Params, TEXT("Look="), LookText, false);
@@ -1008,6 +1057,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	Save.TopLevelFlags = RF_Public | RF_Standalone;
 	Save.SaveFlags = SAVE_NoError;
 	const bool bSaved = UPackage::SavePackage(Package, World, *File, Save);
+	// Read after the save, from the world that was saved, so asking for the dump can't change the map.
+	int32 DumpRows = 0;
+	const FString DumpText = bSaved && !DumpFile.IsEmpty() ? ActorDump(World, DumpRows) : FString();
 	World->DestroyWorld(false);
 	if (!bSaved)
 	{
@@ -1015,6 +1067,15 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		return 1;
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: saved %s."), *File);
+	if (!DumpFile.IsEmpty())
+	{
+		if (!FFileHelper::SaveStringToFile(DumpText, *DumpFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: couldn't write the dump to %s."), *DumpFile);
+			return 1;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: dumped %d actors to %s."), DumpRows, *DumpFile);
+	}
 	return bStrict && bNav && (Reached < Counted || SpawnsReached < Places.Num()) ? 1 : 0;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld needs an editor build."));
