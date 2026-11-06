@@ -1413,6 +1413,12 @@ const ftcore::Vec2* AFTExploreDirector::PilotWaypoint(const AFTExploreCharacter&
 		}
 		const FVector To(Goal.x * 100.0, Goal.y * 100.0, GoalFloor.IsSet() ? GoalFloor.GetValue() + Player.GetSimpleCollisionHalfHeight() : From.Z);
 		const UNavigationPath* Path = Nav->FindPathToLocationSynchronously(World, From, To);
+		PilotPathGoal = To;
+		PilotPathState = !(Path && Path->IsValid()) ? 1 : Path->IsPartial() ? 2 : 3;
+		if (PilotPathState > 1 && Path->PathPoints.Num() > 0)
+		{
+			PilotPathEnd = Path->PathPoints.Last();
+		}
 		if (Path && Path->IsValid())
 		{
 			for (const FVector& Point : Path->PathPoints)
@@ -1589,11 +1595,29 @@ void AFTExploreDirector::TickWorld(AFTExploreCharacter& Player, float DeltaSecon
 		}
 		UE_LOG(LogForgottenThird, Error, TEXT("World %s: gave up on district %d (leg %d/%d), %.1f m short, at %.1f s game time."), *WorldId,
 			District, TourLeg + 1, TourCount, Dist, Game);
+		// Where it stopped and what the pilot's last navmesh query answered, so the stall can be placed without a rerun.
+		static const TCHAR* const kPathStates[] = {TEXT("never asked"), TEXT("no path"), TEXT("a partial path"), TEXT("a full path")};
+		const FString PathEnd = PilotPathState > 1
+			? FString::Printf(TEXT(", ending %.1f m from the goal at z %.0f cm"),
+				  FVector2D::Distance(FVector2D(PilotPathEnd), FVector2D(PilotPathGoal)) / 100.0, PilotPathEnd.Z)
+			: FString();
+		UE_LOG(LogForgottenThird, Error,
+			TEXT("World %s: leg %d stopped with the lead at (%.1f, %.1f) m in the engine frame, feet at z %.0f cm; the goal asked at z %.0f cm; ")
+			TEXT("the last query found %s (%d points)%s."),
+			*WorldId, TourLeg + 1, Pos.x, Pos.y, Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight(), PilotPathGoal.Z,
+			kPathStates[FMath::Min<int32>(PilotPathState, 3)], PilotPath.Num(), *PathEnd);
 		if (TourMisses < static_cast<int32>(UE_ARRAY_COUNT(TourMissLegs)))
 		{
 			TourMissLegs[TourMisses] = static_cast<uint8>(TourLeg + 1);
 		}
 		++TourMisses;
+		// The next leg starts on this leg's spawn, where the tour meant it to start, so one stall is given up once and not
+		// again on every leg after it. The leg still counts as given up.
+		if (TourLeg + 1 < TourCount && QueueDistrictSpawn(District))
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("World %s: leg %d given up; the lead is set down on district %d's spawn for leg %d."), *WorldId,
+				TourLeg + 1, District, TourLeg + 2);
+		}
 	}
 	else if (bDistrictsPinned && DistrictSpawns.IsValidIndex(District))
 	{

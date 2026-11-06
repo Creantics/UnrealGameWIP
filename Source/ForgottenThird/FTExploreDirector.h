@@ -329,4 +329,8 @@ private:
 	int32 PilotPathNext = -1;
 	double PilotPathRefreshAt = 0.0;
 	bool bPilotPathLogged = false;
+	// The last refresh's answer, for a world tour's give-up line: 0 never asked, 1 no path, 2 a partial path, 3 a full one.
+	uint8 PilotPathState = 0;
+	FVector PilotPathGoal = FVector::ZeroVector; // the goal as asked (engine cm), its z the query's
+	FVector PilotPathEnd = FVector::ZeroVector; // that path's last point (engine cm), when it has one
 };
