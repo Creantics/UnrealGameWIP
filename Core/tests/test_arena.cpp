@@ -3217,6 +3217,11 @@ TEST_CASE("arena kite boss: its moves name clips of its table, with impacts that
         CHECK_MESSAGE(k.clips.find(id) >= 0, id);
     CHECK(k.clips[static_cast<std::size_t>(k.clips.find("idle"))].loop);
     CHECK(k.clips[static_cast<std::size_t>(k.clips.find("face_down"))].loop);
+    // The hurt idle is a different hover from the idle (0.86 m mean, 1.62 m max apart at frame 0), and every clip before it
+    // ends on the idle's frame 0: it fades in over 0.8 s (about 1.1 m/s added on average, under its own 3 m/s), not the 0.25 s.
+    CHECK(k.clips[static_cast<std::size_t>(k.clips.find("idle_p2"))].loop);
+    CHECK(k.clips[static_cast<std::size_t>(k.clips.find("idle_p2"))].blend == doctest::Approx(0.8));
+    CHECK(k.clips[static_cast<std::size_t>(k.clips.find("idle"))].blend == 0.0); // the table's 0.25 s
     REQUIRE(boss.moveCount == 8);
     int parryable = 0;
     for (std::size_t m = 0; m < boss.moveCount; ++m) {
