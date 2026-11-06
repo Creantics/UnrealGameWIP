@@ -6,6 +6,17 @@ Private notes (character references, concept-art review, script status) are in `
 
 ## Resume here (updated 2026-10-21, Max plan)
 
+### Stop at 98% weekly usage (2026-11-06, 10:04 EST)
+
+- Work stopped under the standing usage rule: nothing launches above 94% weekly usage, and at 98% the runs in flight land and both handoffs are written. The weekly reset is 2026-11-08 04:00 UTC.
+- Branch tips at the stop:
+  - world-build: claude/solhaven-world-build-05a276 at b5cde28 (pushed)
+  - dealer-r6: claude/dealer-r6-d9c0c3 at 435a818 (pushed)
+  - kite-r5: claude/kite-r5-2ec302 at a9b7f36 (pushed)
+  - unbending-r5: claude/unbending-r5-7c3497 at 79776ee (pushed, tracked edits uncommitted)
+- Waiting for the reset: the Dealer's capture and effects review, the Kite-Mother round review (after its final check pass), the Solhaven world-build block and its massing review (after a walking tour that completes with no stuck points), a Tripo kit edit review, and the Unbending's stone body pass with its review.
+- The rulings, the review briefs and the resume order are in the private handoff.
+
 - **NEWEST (2026-10-31 ~12:50): the design overhaul of 2026-10-30/31, held at the usage stop.** The Fable
   session (the advisor; the user gave it authority overnight) ran three design changes the user asked for; all the
   text is private in `D:\projectst_private\` (read `HANDOFF_PRIVATE.md` there first: it has the rulings, the scores
