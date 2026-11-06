@@ -6,14 +6,14 @@
       "bursts": [
         {
           "time": 0.0,
-          "count": 28
+          "count": 34
         }
       ],
       "duration": 0.1,
-      "maxParticles": 30,
+      "maxParticles": 36,
       "lifetime": [
-        0.1,
-        0.16
+        0.3,
+        0.42
       ],
       "shape": "box",
       "boxHalfExtents": [
@@ -22,21 +22,21 @@
         0.1
       ],
       "startSize": [
-        0.14,
-        0.22
+        0.18,
+        0.24
       ],
       "sizeOverLife": [
         {
           "t": 0,
-          "v": 0.8
+          "v": 0.9
         },
         {
-          "t": 0.25,
-          "v": 1.5
+          "t": 0.2,
+          "v": 1.45
         },
         {
           "t": 1,
-          "v": 1.2
+          "v": 1.1
         }
       ],
       "startRotation": [
@@ -47,27 +47,27 @@
         {
           "t": 0,
           "color": [
-            3.2,
-            1.4,
+            4.0,
             1.8,
-            0.9
+            2.2,
+            1.0
           ]
         },
         {
           "t": 0.3,
           "color": [
-            2.6,
-            0.6,
-            1.0,
-            0.7
+            3.2,
+            0.8,
+            1.2,
+            0.8
           ]
         },
         {
           "t": 1,
           "color": [
-            1.6,
-            0.2,
-            0.45,
+            1.8,
+            0.25,
+            0.5,
             0.0
           ]
         }
@@ -78,18 +78,94 @@
       "depthFade": true
     },
     {
+      "name": "bloom",
+      "bursts": [
+        {
+          "time": 0.0,
+          "count": 2
+        }
+      ],
+      "duration": 0.1,
+      "maxParticles": 3,
+      "lifetime": [
+        0.35,
+        0.45
+      ],
+      "shape": "box",
+      "boxHalfExtents": [
+        0.1,
+        0.02,
+        0.03
+      ],
+      "startSize": [
+        2.2,
+        2.6
+      ],
+      "startSizeY": [
+        0.8,
+        1.0
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 0.7
+        },
+        {
+          "t": 0.2,
+          "v": 1.1
+        },
+        {
+          "t": 1,
+          "v": 1.2
+        }
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            3.0,
+            1.2,
+            1.6,
+            0.9
+          ]
+        },
+        {
+          "t": 0.35,
+          "color": [
+            2.2,
+            0.5,
+            0.9,
+            0.6
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            1.4,
+            0.2,
+            0.4,
+            0.0
+          ]
+        }
+      ],
+      "blend": "additive",
+      "sprite": "soft",
+      "softness": 0.5,
+      "depthFade": true
+    },
+    {
       "name": "spray",
       "bursts": [
         {
           "time": 0.0,
-          "count": 26
+          "count": 30
         }
       ],
       "duration": 0.1,
-      "maxParticles": 28,
+      "maxParticles": 32,
       "lifetime": [
-        0.35,
-        0.6
+        0.4,
+        0.65
       ],
       "shape": "box",
       "boxHalfExtents": [
@@ -98,14 +174,14 @@
         0.08
       ],
       "velocityMin": [
-        -3.0,
-        -6.0,
+        -3.5,
+        -7.0,
         -1.5
       ],
       "velocityMax": [
-        3.0,
-        -2.5,
-        2.5
+        3.5,
+        -3.0,
+        3.0
       ],
       "gravity": [
         0.0,
@@ -114,8 +190,8 @@
       ],
       "drag": 1.2,
       "startSize": [
-        0.06,
-        0.12
+        0.08,
+        0.14
       ],
       "sizeOverLife": [
         {
@@ -167,11 +243,11 @@
       "bursts": [
         {
           "time": 0.0,
-          "count": 18
+          "count": 20
         }
       ],
       "duration": 0.1,
-      "maxParticles": 20,
+      "maxParticles": 22,
       "lifetime": [
         0.6,
         0.9
@@ -200,7 +276,11 @@
       "drag": 1.4,
       "startSize": [
         0.07,
-        0.16
+        0.17
+      ],
+      "startSizeY": [
+        0.05,
+        0.14
       ],
       "sizeOverLife": [
         {

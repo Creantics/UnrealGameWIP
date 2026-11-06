@@ -170,6 +170,11 @@ bool buildClipShow(const BeatClips& clips, const ShowSpec& spec, ClipShow& out, 
         problem = "the walk's cycles, the turn's steps and its pivot must be over 0";
     } else if (!std::isfinite(spec.weakFacing)) {
         problem = "the weak point's facing is not a number";
+    } else if (!(spec.downGlow >= 0.0) || !(spec.downGlowTwo >= 0.0) || !std::isfinite(spec.downGlow) || !std::isfinite(spec.downGlowTwo)) {
+        problem = "a window in the go-down's hold is not a number of seconds, 0 or more";
+    } else if (spec.down != kNoClip && validClip(clips, spec.down)
+               && std::fmax(spec.downGlow, spec.downGlowTwo) > 2.0 * clips.items[static_cast<std::size_t>(spec.down)].length + 1.0) {
+        problem = "a window in the go-down's hold is longer than the hold";
     }
     for (std::size_t i = 0; !problem && i < spec.attackCount; ++i) {
         const ShowAttack& a = spec.attacks[i];
@@ -243,11 +248,24 @@ bool buildClipShow(const BeatClips& clips, const ShowSpec& spec, ClipShow& out, 
         b.play("stagger", spec.stagger);
         b.idle("idle", spec.after);
     }
+    // A window in the hold opens on its first frame, takes a crit at its middle and shuts at its end; a second window
+    // (a later phase's) is a second go-down.
     if (spec.down != kNoClip) {
-        b.play("down_in", spec.downIn);
-        b.add("down", spec.down, 2.0 * b.len(spec.down) + 1.0, 0.0, true);
-        b.play("down_out", spec.downOut);
-        b.idle("idle", spec.after);
+        const double windows[] = {spec.downGlow, spec.downGlowTwo};
+        for (std::size_t w = 0; w < 2; ++w) {
+            if (w > 0 && !(windows[w] > 0.0)) {
+                break;
+            }
+            b.play("down_in", spec.downIn);
+            const ShowSegment* hold = b.add("down", spec.down, 2.0 * b.len(spec.down) + 1.0, 0.0, true);
+            if (hold && windows[w] > 0.0) {
+                b.cue(hold->start, ShowCue::GlowOn, ShowPlace::WeakPoint);
+                b.cue(hold->start + 0.5 * windows[w], ShowCue::Crit, ShowPlace::WeakPoint);
+                b.cue(hold->start + windows[w], ShowCue::GlowOff, ShowPlace::WeakPoint);
+            }
+            b.play("down_out", spec.downOut);
+            b.idle("idle", spec.after);
+        }
     }
 
     // The stepping turns and the walk out and back.

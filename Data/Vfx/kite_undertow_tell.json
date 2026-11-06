@@ -1,0 +1,171 @@
+{
+  "name": "kite_undertow_tell",
+  "emitters": [
+    {
+      "name": "streak",
+      "rate": 40,
+      "duration": 1.0,
+      "loop": true,
+      "maxParticles": 44,
+      "lifetime": [
+        0.7,
+        1.0
+      ],
+      "shape": "sphere",
+      "radius": 0.4,
+      "velocityMin": [
+        0.0,
+        0.05,
+        0.0
+      ],
+      "velocityMax": [
+        0.0,
+        0.3,
+        0.0
+      ],
+      "drag": 2.0,
+      "startSize": [
+        0.7,
+        1.1
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 0.6
+        },
+        {
+          "t": 0.3,
+          "v": 1.0
+        },
+        {
+          "t": 1,
+          "v": 1.5
+        }
+      ],
+      "startRotation": [
+        0.0,
+        6.28
+      ],
+      "angularVelocity": [
+        -0.8,
+        0.8
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            0.55,
+            0.2,
+            0.25,
+            0.0
+          ]
+        },
+        {
+          "t": 0.15,
+          "color": [
+            0.55,
+            0.2,
+            0.25,
+            0.55
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            0.45,
+            0.25,
+            0.25,
+            0.0
+          ]
+        }
+      ],
+      "blend": "alpha",
+      "sprite": "dust",
+      "coreShade": 0.5,
+      "softness": 0.9,
+      "depthFade": true,
+      "depthFadeDistance": 0.5
+    },
+    {
+      "name": "spray",
+      "rate": 22,
+      "duration": 1.0,
+      "loop": true,
+      "maxParticles": 16,
+      "lifetime": [
+        0.4,
+        0.6
+      ],
+      "shape": "sphere",
+      "radius": 0.3,
+      "speed": [
+        1.5,
+        3.0
+      ],
+      "velocityMin": [
+        0.0,
+        0.5,
+        0.0
+      ],
+      "velocityMax": [
+        0.0,
+        1.5,
+        0.0
+      ],
+      "gravity": [
+        0.0,
+        -9.8,
+        0.0
+      ],
+      "drag": 0.6,
+      "startSize": [
+        0.06,
+        0.1
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 1.0
+        },
+        {
+          "t": 1,
+          "v": 0.7
+        }
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            0.62,
+            0.66,
+            0.7,
+            0.9
+          ]
+        },
+        {
+          "t": 0.7,
+          "color": [
+            0.62,
+            0.66,
+            0.7,
+            0.8
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            0.62,
+            0.66,
+            0.7,
+            0.0
+          ]
+        }
+      ],
+      "blend": "alpha",
+      "sprite": "spark",
+      "stretch": 0.04,
+      "stretchMax": 4.0,
+      "depthFade": true
+    }
+  ]
+}

@@ -315,6 +315,81 @@ TEST_CASE("clip showcase: the glow and the crit show the weak point to the front
     CHECK(err.find("facing") != std::string::npos);
 }
 
+TEST_CASE("clip showcase: the weak point's window in the go-down's hold, none by default, one per phase when set") {
+    ftcore::BeatClips clips;
+    REQUIRE(loadClips(clips));
+    const ftcore::ShowSpec base = stoneSpec(clips);
+    CHECK(base.downGlow == 0.0); // the default reels play the hold without a window
+    CHECK(base.downGlowTwo == 0.0);
+    const double hold = 2.0 * clips[static_cast<std::size_t>(base.down)].length + 1.0;
+
+    struct Case { double one, two; std::size_t downs; };
+    const Case cases[] = {{0.0, 0.0, 1}, {2.0, 0.0, 1}, {2.0, 1.6, 2}};
+    for (const Case& k : cases) {
+        CAPTURE(k.one);
+        CAPTURE(k.two);
+        ftcore::ShowSpec spec = base;
+        spec.downGlow = k.one;
+        spec.downGlowTwo = k.two;
+        ftcore::ClipShow show;
+        std::string err;
+        REQUIRE_MESSAGE(ftcore::buildClipShow(clips, spec, show, &err), err);
+        std::vector<const ftcore::ShowSegment*> downs;
+        for (std::size_t s = 0; s < show.segmentCount; ++s) {
+            if (show.segments[s].label() == "down") downs.push_back(&show.segments[s]);
+        }
+        // The go-downs before the effects alone; the kneel death's hold is the last segment and has no window.
+        const ftcore::ShowSegment* glowTake = findSegment(show, "fx_glow", ftcore::kNoClip);
+        REQUIRE(glowTake != nullptr);
+        std::size_t before = 0;
+        for (const ftcore::ShowSegment* d : downs) before += d->start < glowTake->start ? 1 : 0;
+        REQUIRE(before == k.downs);
+        int glowOn = 0, glowOff = 0, crit = 0;
+        for (std::size_t c = 0; c < show.cueCount; ++c) {
+            const ftcore::ShowCueAt& q = show.cues[c];
+            if (c > 0) CHECK(q.at >= show.cues[c - 1].at); // still in time order
+            glowOn += q.cue == ftcore::ShowCue::GlowOn;
+            glowOff += q.cue == ftcore::ShowCue::GlowOff;
+            crit += q.cue == ftcore::ShowCue::Crit;
+        }
+        const int windows = (k.one > 0.0 ? 1 : 0) + (k.two > 0.0 ? 1 : 0);
+        CHECK(glowOn == 1 + windows); // the lone glow stays
+        CHECK(glowOff == 1 + windows);
+        CHECK(crit == 1 + windows);
+        const double lengths[] = {k.one, k.two};
+        for (int w = 0; w < windows; ++w) {
+            const ftcore::ShowSegment& d = *downs[static_cast<std::size_t>(w)];
+            CHECK(d.clip == spec.down);
+            CHECK(d.length == doctest::Approx(hold));
+            double on = -1.0, mid = -1.0, off = -1.0;
+            for (std::size_t c = 0; c < show.cueCount; ++c) {
+                const ftcore::ShowCueAt& q = show.cues[c];
+                if (q.at < d.start - 1e-9 || q.at > d.start + d.length + 1e-9) continue;
+                CHECK(q.place == ftcore::ShowPlace::WeakPoint);
+                if (q.cue == ftcore::ShowCue::GlowOn) on = q.at;
+                if (q.cue == ftcore::ShowCue::Crit) mid = q.at;
+                if (q.cue == ftcore::ShowCue::GlowOff) off = q.at;
+            }
+            CHECK(on == doctest::Approx(d.start)); // opens with the hold
+            CHECK(off - on == doctest::Approx(lengths[w]));
+            CHECK(mid - on == doctest::Approx(0.5 * lengths[w]));
+            // The pose is the hold's own clip all through the window.
+            CHECK(ftcore::clipShowPose(show, on + 0.01).clip == spec.down);
+            CHECK(ftcore::clipShowPose(show, off - 0.01).clip == spec.down);
+        }
+    }
+    // A window that is not a number, below 0 or longer than the hold is refused.
+    const double bad[] = {std::nan(""), -0.5, hold + 0.1};
+    for (double v : bad) {
+        ftcore::ShowSpec spec = base;
+        spec.downGlowTwo = v;
+        ftcore::ClipShow show;
+        std::string err;
+        CHECK_FALSE(ftcore::buildClipShow(clips, spec, show, &err));
+        CHECK(err.find("window") != std::string::npos);
+    }
+}
+
 TEST_CASE("clip showcase: the cues crossed in a frame") {
     ftcore::BeatClips clips;
     REQUIRE(loadClips(clips));

@@ -1,0 +1,239 @@
+{
+  "name": "kite_sheet_tell",
+  "emitters": [
+    {
+      "name": "drips",
+      "rate": 45,
+      "duration": 1.0,
+      "loop": true,
+      "maxParticles": 66,
+      "lifetime": [
+        1.1,
+        1.4
+      ],
+      "shape": "box",
+      "boxHalfExtents": [
+        2.2,
+        0.2,
+        0.4
+      ],
+      "velocityMin": [
+        0.0,
+        -0.5,
+        0.0
+      ],
+      "velocityMax": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "gravity": [
+        0.0,
+        -9.8,
+        0.0
+      ],
+      "drag": 0.1,
+      "startSize": [
+        0.07,
+        0.11
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 0.8
+        },
+        {
+          "t": 0.2,
+          "v": 1.0
+        },
+        {
+          "t": 1,
+          "v": 1.0
+        }
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            0.62,
+            0.66,
+            0.7,
+            0.9
+          ]
+        },
+        {
+          "t": 0.85,
+          "color": [
+            0.62,
+            0.66,
+            0.7,
+            0.8
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            0.62,
+            0.66,
+            0.7,
+            0.0
+          ]
+        }
+      ],
+      "blend": "alpha",
+      "sprite": "spark",
+      "stretch": 0.04,
+      "stretchMax": 5.0,
+      "depthFade": true
+    },
+    {
+      "name": "sheen",
+      "rate": 14,
+      "duration": 1.0,
+      "loop": true,
+      "maxParticles": 6,
+      "lifetime": [
+        0.2,
+        0.3
+      ],
+      "shape": "box",
+      "boxHalfExtents": [
+        2.2,
+        0.15,
+        0.3
+      ],
+      "space": "local",
+      "startSize": [
+        0.12,
+        0.2
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 0.6
+        },
+        {
+          "t": 0.3,
+          "v": 1.0
+        },
+        {
+          "t": 1,
+          "v": 0.8
+        }
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            2.0,
+            2.0,
+            2.1,
+            0.0
+          ]
+        },
+        {
+          "t": 0.3,
+          "color": [
+            2.0,
+            2.0,
+            2.1,
+            0.8
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            1.4,
+            1.4,
+            1.5,
+            0.0
+          ]
+        }
+      ],
+      "blend": "additive",
+      "sprite": "spark",
+      "depthFade": true
+    },
+    {
+      "name": "mist",
+      "rate": 7,
+      "duration": 1.0,
+      "loop": true,
+      "maxParticles": 10,
+      "lifetime": [
+        0.9,
+        1.2
+      ],
+      "shape": "box",
+      "boxHalfExtents": [
+        2.0,
+        0.3,
+        0.4
+      ],
+      "velocityMin": [
+        -0.3,
+        -0.8,
+        -0.3
+      ],
+      "velocityMax": [
+        0.3,
+        -0.3,
+        0.3
+      ],
+      "drag": 1.0,
+      "startSize": [
+        1.0,
+        1.6
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 0.6
+        },
+        {
+          "t": 1,
+          "v": 1.4
+        }
+      ],
+      "startRotation": [
+        0.0,
+        6.28
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            0.62,
+            0.66,
+            0.7,
+            0.0
+          ]
+        },
+        {
+          "t": 0.25,
+          "color": [
+            0.62,
+            0.66,
+            0.7,
+            0.25
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            0.62,
+            0.66,
+            0.7,
+            0.0
+          ]
+        }
+      ],
+      "blend": "alpha",
+      "sprite": "dust",
+      "coreShade": 0.5,
+      "softness": 0.9,
+      "depthFade": true,
+      "depthFadeDistance": 0.6
+    }
+  ]
+}

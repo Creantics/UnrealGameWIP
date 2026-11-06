@@ -83,6 +83,11 @@ struct ShowSpec {
     // turn the boss so it faces the front: with turn clips in whole steps (rounded), without them from a hidden cut; a
     // weak point ahead is not turned.
     float weakFacing = 180.f;
+    // The weak point's window inside the go-down's hold (s), as the fight opens it there: 0 (the default) plays the hold
+    // without one. Over 0, the hold's first frame takes a glow_on, the window's middle a crit and its end a glow_off.
+    // downGlowTwo over 0 adds a second go-down (a later phase's) with a window that long. Each must fit in the hold.
+    double downGlow = 0.0;
+    double downGlowTwo = 0.0;
 };
 
 struct ShowSegment {

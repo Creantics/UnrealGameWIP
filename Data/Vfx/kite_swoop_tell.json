@@ -223,6 +223,107 @@
       "stretch": 0.03,
       "stretchMax": 3.0,
       "softness": 0.0
+    },
+    {
+      "name": "posts",
+      "rate": 90,
+      "bursts": [
+        {
+          "time": 0.0,
+          "count": 60
+        }
+      ],
+      "duration": 4.0,
+      "loop": true,
+      "maxParticles": 140,
+      "lifetime": [
+        0.6,
+        0.85
+      ],
+      "shape": "ring",
+      "radius": 7.6,
+      "innerRadius": 7.4,
+      "offset": [
+        0.0,
+        0.6,
+        0.0
+      ],
+      "velocityMin": [
+        0.0,
+        0.3,
+        0.0
+      ],
+      "velocityMax": [
+        0.0,
+        0.7,
+        0.0
+      ],
+      "drag": 0.5,
+      "startSize": [
+        0.14,
+        0.2
+      ],
+      "startSizeY": [
+        1.0,
+        1.5
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 0.7
+        },
+        {
+          "t": 0.25,
+          "v": 1.0
+        },
+        {
+          "t": 1,
+          "v": 0.9
+        }
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            1.0,
+            0.16,
+            0.32,
+            0.0
+          ]
+        },
+        {
+          "t": 0.15,
+          "color": [
+            1.0,
+            0.16,
+            0.32,
+            0.7
+          ]
+        },
+        {
+          "t": 0.6,
+          "color": [
+            0.9,
+            0.12,
+            0.28,
+            0.45
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            0.8,
+            0.1,
+            0.25,
+            0.0
+          ]
+        }
+      ],
+      "blend": "alpha",
+      "sprite": "soft",
+      "softness": 0.5,
+      "renderMode": "vertical",
+      "depthFade": true
     }
   ]
 }

@@ -1,11 +1,34 @@
 {
   "socket": "seam",
-  "tellMove": "swoop",
+  "loneMove": "swoop",
   "lift": 0.25,
+  "showcase": { "downGlowTwo": 1.6 },
   "effects": {
-    "tell": { "effect": "kite_swoop_tell", "speedScale": 1.0, "shapeScale": 1.0 },
+    "ring": { "effect": "kite_swoop_tell", "speedScale": 1.0, "shapeScale": 1.0 },
     "open": { "effect": "kite_seam_open", "speedScale": 1.0, "shapeScale": 1.0 },
     "crit": { "effect": "kite_seam_crit", "speedScale": 1.0, "shapeScale": 1.0 },
-    "hit": { "effect": "kite_hit", "speedScale": 1.0, "shapeScale": 1.0 }
+    "hit": { "effect": "kite_hit", "speedScale": 1.0, "shapeScale": 1.0 },
+    "hitFloor": { "effect": "kite_hit_floor", "speedScale": 1.0, "shapeScale": 1.0 },
+    "impactHeavy": { "effect": "kite_impact_heavy", "speedScale": 1.0, "shapeScale": 1.0 },
+    "impactLight": { "effect": "kite_impact_light", "speedScale": 1.0, "shapeScale": 1.0 },
+    "pegTell": { "effect": "kite_peg_tell", "bone": "body", "speedScale": 1.0, "shapeScale": 1.0 },
+    "tailTell": { "effect": "kite_snag_tell", "bone": "tail_09", "speedScale": 1.0, "shapeScale": 1.0 },
+    "sheetTell": { "effect": "kite_sheet_tell", "bone": "corner_top", "speedScale": 1.0, "shapeScale": 1.0 },
+    "ropeTell": { "effect": "kite_undertow_tell", "bone": "str_R1_3", "speedScale": 1.0, "shapeScale": 1.0 },
+    "mitten": { "effect": "kite_mitten_tell", "speedScale": 1.0, "shapeScale": 1.0 }
+  },
+  "mittenBones": ["str_R3_2", "str_R2_3", "str_R1_3", "str_R0_3", "str_L0_3", "str_L1_3", "str_L2_3", "str_L3_2"],
+  "hitBones": ["tail_09", "tail_07", "tail_05", "corner_bottom", "corner_L", "corner_R", "corner_top",
+    "str_R3_2", "str_R2_3", "str_R1_3", "str_R0_3", "str_L0_3", "str_L1_3", "str_L2_3", "str_L3_2"],
+  "moves": {
+    "mitten_drop": { "mittens": ["str_R3_2", "str_R2_3", "str_R1_3", "str_R0_3"], "impact": "impactHeavy",
+      "contact": ["str_R3_2", "str_R2_3", "str_R1_3", "str_R0_3"] },
+    "swoop": { "ring": true, "impact": "impactHeavy", "contact": ["face", "corner_bottom", "body"] },
+    "peg_spray": { "tell": "pegTell", "impact": "impactLight", "contact": ["corner_bottom", "corner_L", "corner_R"] },
+    "snag": { "tell": "tailTell", "impact": "impactLight", "contact": ["tail_09", "tail_08"] },
+    "wet_sheet": { "tell": "sheetTell", "impact": "impactHeavy", "contact": ["corner_top", "face"] },
+    "undertow": { "tell": "ropeTell", "impact": "impactLight", "contact": ["str_R3_2", "str_R2_3", "str_R1_3", "str_R0_3"] },
+    "string_flick": { "impact": "impactLight", "contact": ["str_R0_3", "str_R1_3"] },
+    "sheet_slap": { "impact": "impactLight", "contact": ["corner_L"] }
   }
 }

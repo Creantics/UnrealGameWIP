@@ -6,20 +6,20 @@
       "bursts": [
         {
           "time": 0.0,
-          "count": 24
+          "count": 26
         }
       ],
       "duration": 0.1,
-      "maxParticles": 26,
+      "maxParticles": 28,
       "lifetime": [
         0.35,
         0.65
       ],
       "shape": "sphere",
-      "radius": 0.15,
+      "radius": 0.25,
       "speed": [
-        3.0,
-        7.0
+        3.5,
+        8.0
       ],
       "gravity": [
         0.0,
@@ -28,8 +28,8 @@
       ],
       "drag": 2.0,
       "startSize": [
-        0.2,
-        0.32
+        0.22,
+        0.34
       ],
       "sizeOverLife": [
         {
@@ -86,11 +86,11 @@
       ],
       "duration": 0.1,
       "maxParticles": 2,
-      "lifetime": 0.12,
+      "lifetime": 0.14,
       "shape": "point",
       "startSize": [
-        0.7,
-        0.85
+        0.9,
+        1.1
       ],
       "sizeOverLife": [
         {
@@ -132,34 +132,38 @@
       "bursts": [
         {
           "time": 0.0,
-          "count": 5
+          "count": 6
         }
       ],
       "duration": 0.1,
-      "maxParticles": 6,
+      "maxParticles": 8,
       "lifetime": [
-        0.5,
-        0.7
+        0.6,
+        0.85
       ],
       "shape": "sphere",
-      "radius": 0.2,
+      "radius": 0.35,
       "speed": [
-        0.3,
-        0.8
+        0.4,
+        1.0
       ],
       "drag": 2.0,
       "startSize": [
-        1.2,
-        1.8
+        1.8,
+        2.6
       ],
       "sizeOverLife": [
         {
           "t": 0,
-          "v": 0.6
+          "v": 0.55
+        },
+        {
+          "t": 0.4,
+          "v": 1.1
         },
         {
           "t": 1,
-          "v": 1.4
+          "v": 1.5
         }
       ],
       "startRotation": [
@@ -186,7 +190,7 @@
             0.7,
             0.66,
             0.6,
-            0.55
+            0.5
           ]
         },
         {
@@ -200,26 +204,28 @@
         }
       ],
       "blend": "alpha",
-      "sprite": "puff",
-      "softness": 0.4,
-      "depthFade": true
+      "sprite": "dust",
+      "coreShade": 0.5,
+      "softness": 0.9,
+      "depthFade": true,
+      "depthFadeDistance": 0.8
     },
     {
       "name": "scraps",
       "bursts": [
         {
           "time": 0.0,
-          "count": 10
+          "count": 12
         }
       ],
       "duration": 0.1,
-      "maxParticles": 12,
+      "maxParticles": 14,
       "lifetime": [
-        0.5,
-        0.8
+        0.45,
+        0.7
       ],
       "shape": "sphere",
-      "radius": 0.15,
+      "radius": 0.25,
       "speed": [
         2.0,
         4.5
@@ -231,8 +237,12 @@
       ],
       "drag": 0.8,
       "startSize": [
+        0.08,
+        0.26
+      ],
+      "startSizeY": [
         0.06,
-        0.18
+        0.2
       ],
       "sizeOverLife": [
         {
@@ -249,34 +259,50 @@
         6.28
       ],
       "angularVelocity": [
-        -9.0,
-        9.0
+        -10.0,
+        10.0
       ],
+      "startColor": {
+        "between": [
+          [
+            0.62,
+            0.58,
+            0.52,
+            1.0
+          ],
+          [
+            0.8,
+            0.76,
+            0.7,
+            1.0
+          ]
+        ]
+      },
       "colorOverLife": [
         {
           "t": 0,
           "color": [
-            0.78,
-            0.74,
-            0.68,
+            1,
+            1,
+            1,
             1.0
           ]
         },
         {
-          "t": 0.6,
+          "t": 0.7,
           "color": [
-            0.74,
-            0.7,
-            0.64,
+            1,
+            1,
+            1,
             1.0
           ]
         },
         {
           "t": 1,
           "color": [
-            0.7,
-            0.66,
-            0.6,
+            1,
+            1,
+            1,
             0.0
           ]
         }

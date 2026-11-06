@@ -1,0 +1,624 @@
+{
+  "name": "kite_impact_light",
+  "emitters": [
+    {
+      "name": "dust",
+      "bursts": [
+        {
+          "time": 0.0,
+          "count": 16
+        }
+      ],
+      "duration": 0.1,
+      "maxParticles": 18,
+      "lifetime": [
+        0.9,
+        1.4
+      ],
+      "shape": "ring",
+      "radius": 0.63,
+      "innerRadius": 0.21,
+      "offset": [
+        0.0,
+        0.3,
+        0.0
+      ],
+      "speed": [
+        2.45,
+        4.55
+      ],
+      "velocityMin": [
+        0.0,
+        0.2,
+        0.0
+      ],
+      "velocityMax": [
+        0.0,
+        0.8,
+        0.0
+      ],
+      "gravity": [
+        0.0,
+        -0.3,
+        0.0
+      ],
+      "drag": 3.0,
+      "startSize": [
+        0.77,
+        1.33
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 0.6
+        },
+        {
+          "t": 0.35,
+          "v": 1.3
+        },
+        {
+          "t": 1,
+          "v": 1.9
+        }
+      ],
+      "startRotation": [
+        0.0,
+        6.28
+      ],
+      "angularVelocity": [
+        -0.9,
+        0.9
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            0.3,
+            0.28,
+            0.25,
+            0.3
+          ]
+        },
+        {
+          "t": 0.12,
+          "color": [
+            0.3,
+            0.28,
+            0.25,
+            0.72
+          ]
+        },
+        {
+          "t": 0.45,
+          "color": [
+            0.3,
+            0.28,
+            0.25,
+            0.5
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            0.3,
+            0.28,
+            0.25,
+            0.0
+          ]
+        }
+      ],
+      "blend": "alpha",
+      "sprite": "dust",
+      "coreShade": 0.5,
+      "depthFade": true,
+      "depthFadeDistance": 1.2,
+      "softness": 0.9
+    },
+    {
+      "name": "shock",
+      "bursts": [
+        {
+          "time": 0.0,
+          "count": 72
+        }
+      ],
+      "duration": 0.1,
+      "maxParticles": 76,
+      "lifetime": [
+        0.5,
+        0.6
+      ],
+      "shape": "ring",
+      "radius": 0.56,
+      "innerRadius": 0.5,
+      "offset": [
+        0.0,
+        0.08,
+        0.0
+      ],
+      "speed": [
+        4.9,
+        5.32
+      ],
+      "drag": 2.2,
+      "startSize": [
+        0.52,
+        0.66
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 1.0
+        },
+        {
+          "t": 0.4,
+          "v": 0.62
+        },
+        {
+          "t": 1,
+          "v": 0.3
+        }
+      ],
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            0.85,
+            0.82,
+            0.78,
+            0.7
+          ]
+        },
+        {
+          "t": 0.35,
+          "color": [
+            0.8,
+            0.77,
+            0.72,
+            0.45
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            0.75,
+            0.72,
+            0.68,
+            0.0
+          ]
+        }
+      ],
+      "blend": "alpha",
+      "sprite": "soft",
+      "softness": 0.6,
+      "renderMode": "horizontal",
+      "depthFade": true
+    },
+    {
+      "name": "grit",
+      "bursts": [
+        {
+          "time": 0.0,
+          "count": 12
+        }
+      ],
+      "duration": 0.1,
+      "maxParticles": 14,
+      "lifetime": 0.688,
+      "shape": "sphere",
+      "radius": 0.25,
+      "offset": [
+        0.0,
+        0.15,
+        0.0
+      ],
+      "velocityMin": [
+        -2.0999999999999996,
+        2.4000000000000004,
+        -2.0999999999999996
+      ],
+      "velocityMax": [
+        2.0999999999999996,
+        4.0,
+        2.0999999999999996
+      ],
+      "gravity": [
+        0.0,
+        -13.0,
+        0.0
+      ],
+      "drag": 0.35,
+      "floor": 0.0,
+      "startSize": [
+        0.05,
+        0.16
+      ],
+      "startSizeY": [
+        0.04,
+        0.13
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 1.0
+        },
+        {
+          "t": 1,
+          "v": 0.95
+        }
+      ],
+      "startRotation": [
+        0.0,
+        6.28
+      ],
+      "angularVelocity": [
+        -14.0,
+        14.0
+      ],
+      "startColor": {
+        "between": [
+          [
+            0.06,
+            0.055,
+            0.05,
+            1.0
+          ],
+          [
+            0.12,
+            0.11,
+            0.095,
+            1.0
+          ]
+        ]
+      },
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "t": 0.94,
+          "color": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            1,
+            1,
+            1,
+            0
+          ]
+        }
+      ],
+      "blend": "alpha",
+      "sprite": "chip",
+      "depthFade": true,
+      "softness": 0.1
+    },
+    {
+      "name": "scraps",
+      "bursts": [
+        {
+          "time": 0.0,
+          "count": 8
+        }
+      ],
+      "duration": 0.1,
+      "maxParticles": 10,
+      "lifetime": 0.649,
+      "shape": "sphere",
+      "radius": 0.25,
+      "offset": [
+        0.0,
+        0.2,
+        0.0
+      ],
+      "velocityMin": [
+        -1.75,
+        2.0,
+        -1.75
+      ],
+      "velocityMax": [
+        1.75,
+        3.6,
+        1.75
+      ],
+      "gravity": [
+        0.0,
+        -13.0,
+        0.0
+      ],
+      "drag": 0.35,
+      "floor": 0.0,
+      "startSize": [
+        0.08,
+        0.26
+      ],
+      "startSizeY": [
+        0.06,
+        0.2
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 1.0
+        },
+        {
+          "t": 1,
+          "v": 0.95
+        }
+      ],
+      "startRotation": [
+        0.0,
+        6.28
+      ],
+      "angularVelocity": [
+        -10.0,
+        10.0
+      ],
+      "startColor": {
+        "between": [
+          [
+            0.62,
+            0.58,
+            0.52,
+            1.0
+          ],
+          [
+            0.8,
+            0.76,
+            0.7,
+            1.0
+          ]
+        ]
+      },
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "t": 0.94,
+          "color": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            1,
+            1,
+            1,
+            0
+          ]
+        }
+      ],
+      "blend": "alpha",
+      "sprite": "chip",
+      "depthFade": true,
+      "softness": 0.1
+    },
+    {
+      "name": "pegs",
+      "bursts": [
+        {
+          "time": 0.0,
+          "count": 4
+        }
+      ],
+      "duration": 0.1,
+      "maxParticles": 6,
+      "lifetime": 0.699,
+      "shape": "sphere",
+      "radius": 0.25,
+      "offset": [
+        0.0,
+        0.2,
+        0.0
+      ],
+      "velocityMin": [
+        -1.54,
+        2.4000000000000004,
+        -1.54
+      ],
+      "velocityMax": [
+        1.54,
+        4.0,
+        1.54
+      ],
+      "gravity": [
+        0.0,
+        -13.0,
+        0.0
+      ],
+      "drag": 0.35,
+      "floor": 0.0,
+      "startSize": [
+        0.05,
+        0.07
+      ],
+      "startSizeY": [
+        0.16,
+        0.24
+      ],
+      "sizeOverLife": [
+        {
+          "t": 0,
+          "v": 1.0
+        },
+        {
+          "t": 1,
+          "v": 0.95
+        }
+      ],
+      "startRotation": [
+        0.0,
+        6.28
+      ],
+      "angularVelocity": [
+        -12.0,
+        12.0
+      ],
+      "startColor": {
+        "between": [
+          [
+            0.3,
+            0.19,
+            0.09,
+            1.0
+          ],
+          [
+            0.46,
+            0.31,
+            0.16,
+            1.0
+          ]
+        ]
+      },
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "t": 0.94,
+          "color": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            1,
+            1,
+            1,
+            0
+          ]
+        }
+      ],
+      "blend": "alpha",
+      "sprite": "chip",
+      "depthFade": true,
+      "softness": 0.1
+    },
+    {
+      "name": "settled",
+      "bursts": [
+        {
+          "time": 0.274,
+          "count": 3
+        },
+        {
+          "time": 0.486,
+          "count": 4
+        },
+        {
+          "time": 0.699,
+          "count": 3
+        }
+      ],
+      "duration": 0.749,
+      "maxParticles": 12,
+      "lifetime": [
+        1.3,
+        1.8
+      ],
+      "shape": "ring",
+      "radius": 1.54,
+      "innerRadius": 0.385,
+      "offset": [
+        0.0,
+        0.02,
+        0.0
+      ],
+      "startSize": [
+        0.08,
+        0.22
+      ],
+      "startSizeY": [
+        0.06,
+        0.2
+      ],
+      "startRotation": [
+        0.0,
+        6.28
+      ],
+      "startColor": {
+        "between": [
+          [
+            0.8,
+            0.76,
+            0.7,
+            1.0
+          ],
+          [
+            0.46,
+            0.31,
+            0.16,
+            1.0
+          ]
+        ]
+      },
+      "colorOverLife": [
+        {
+          "t": 0,
+          "color": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "t": 0.75,
+          "color": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "t": 1,
+          "color": [
+            1,
+            1,
+            1,
+            0
+          ]
+        }
+      ],
+      "blend": "alpha",
+      "sprite": "chip",
+      "renderMode": "horizontal",
+      "depthFade": true,
+      "softness": 0.1
+    }
+  ]
+}

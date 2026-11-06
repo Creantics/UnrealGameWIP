@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -84,10 +85,14 @@ TEST_CASE("vfx: the Kite-Mother's effects load without warnings and keep their p
         std::uint32_t budget; // the sum of the emitters' maxParticles
         bool loops;
     };
-    const Expect files[] = {{"kite_swoop_tell", 3, 270, true},
-                            {"kite_seam_open", 4, 62, true},
-                            {"kite_seam_crit", 3, 82, false},
-                            {"kite_hit", 4, 50, false}};
+    // Round 7 (a2, S-65 (3)): an impact per move, the hit's scraps landing, a tell per move; the mitten tell plays on each of
+    // up to 4 mittens at once (400 at most).
+    const Expect files[] = {{"kite_swoop_tell", 4, 410, true},     {"kite_seam_open", 5, 80, true},
+                            {"kite_seam_crit", 4, 94, false},      {"kite_hit", 4, 52, false},
+                            {"kite_hit_floor", 4, 36, false},      {"kite_impact_heavy", 6, 190, false},
+                            {"kite_impact_light", 6, 140, false},  {"kite_mitten_tell", 3, 50, true},
+                            {"kite_peg_tell", 2, 32, true},        {"kite_snag_tell", 2, 44, true},
+                            {"kite_sheet_tell", 3, 82, true},      {"kite_undertow_tell", 2, 60, true}};
     for (const Expect& f : files) {
         CAPTURE(f.file);
         VfxEffect e;
@@ -98,8 +103,12 @@ TEST_CASE("vfx: the Kite-Mother's effects load without warnings and keep their p
         CHECK_MESSAGE(warnings.empty(), (warnings.empty() ? std::string() : warnings.front()));
         std::uint32_t total = 0;
         for (const VfxEmitter& em : e.emitters) {
+            CAPTURE(em.name);
             total += em.maxParticles;
             CHECK(em.loop == f.loops);
+            // S-65 (3) fix 5, RUBRIC E5: a stopped effect's live particles fade out over their own lives, so every one of
+            // them ends clear: none is left standing to vanish in a frame.
+            CHECK(em.colorOverLife.evaluate(1.f, 0.f).a == 0.f);
         }
         CHECK(total <= f.budget);
         VfxNiagaraPlan plan;
@@ -121,7 +130,7 @@ TEST_CASE("vfx: the Kite-Mother's effects read at the gameplay camera and stop w
 
     VfxEffect tell;
     REQUIRE(loadEffect("kite_swoop_tell", tell));
-    REQUIRE(tell.emitters.size() == 3);
+    REQUIRE(tell.emitters.size() == 4);
     const VfxEmitter& dust = tell.emitters[0];
     const VfxEmitter& edge = tell.emitters[1];
     // The haze lies on the floor: a sprite standing up at the ring tinted the lead standing in it.
@@ -138,6 +147,27 @@ TEST_CASE("vfx: the Kite-Mother's effects read at the gameplay camera and stop w
     // Not clear at birth: the first frames already show it.
     CHECK(edge.colorOverLife.evaluate(0.f, 0.f).a >= 0.5f);
     CHECK(dust.colorOverLife.evaluate(0.f, 0.f).a >= 0.3f);
+    // Round 7 (a2, S-65 (3) fix 4): from the lead's low camera a ring on the floor is a line, so it has a standing part:
+    // narrow streaks drawn upright round the ring's edge, taller than a metre, raised off the floor.
+    const int posts = findVfxEmitter(tell, "posts");
+    REQUIRE(posts >= 0);
+    {
+        const VfxEmitter& e = tell.emitters[static_cast<std::size_t>(posts)];
+        CHECK(e.renderMode == VfxRenderMode::Vertical);
+        CHECK(e.hasStartSizeY);
+        float wLo = 0.f, wHi = 0.f, hLo = 0.f, hHi = 0.f;
+        bounds(e.startSize, wLo, wHi);
+        bounds(e.startSizeY, hLo, hHi);
+        CHECK(hLo >= 1.f);
+        CHECK(hLo >= 4.f * wHi);
+        CHECK(e.offset.y > 0.f);
+        CHECK(e.shape == VfxShape::Ring);
+        CHECK(e.radius == doctest::Approx(edge.radius).epsilon(0.1));
+        // Whole from its first frames, like the edge.
+        REQUIRE_FALSE(e.bursts.empty());
+        CHECK(e.bursts[0].time == 0.f);
+        CHECK(e.duration > 1.917f);
+    }
 
     // Round 7 (FXB4, FX4, FX5): the seam's glow is the slit, not the card. Spec x on the seam bone runs along the smile
     // (about 1.0 m wide; Interchange and the Vfx plan both swap y and z, so the spec frame is the glb's seam-local frame).
@@ -163,9 +193,25 @@ TEST_CASE("vfx: the Kite-Mother's effects read at the gameplay camera and stop w
     VfxEffect open;
     REQUIRE(loadEffect("kite_seam_open", open));
     bool beat = false;
+    // Round 7 (a2, S-65 (3) fix 6): the open seam reads at 10 m: a wide, low glow round the slit (the halo) over the slit's
+    // own layers, still gone within 0.3 s of a stop.
+    const auto wideGlow = [&](const VfxEmitter& e, float minWidth) {
+        CAPTURE(e.name);
+        CHECK(e.blend == VfxBlend::Additive);
+        CHECK(e.hasStartSizeY);
+        float wLo = 0.f, wHi = 0.f, hLo = 0.f, hHi = 0.f;
+        bounds(e.startSize, wLo, wHi);
+        bounds(e.startSizeY, hLo, hHi);
+        CHECK(wLo >= minWidth);
+        CHECK(hHi <= 0.5f * wLo); // wide and low, like the smile
+        CHECK(e.depthFade);
+    };
+    const int halo = findVfxEmitter(open, "halo");
+    REQUIRE(halo >= 0);
+    wideGlow(open.emitters[static_cast<std::size_t>(halo)], 1.2f);
     for (const VfxEmitter& e : open.emitters) {
         CAPTURE(e.name);
-        slitShaped(e);
+        if (e.name != "halo") slitShaped(e);
         float lifeLo = 0.f, lifeHi = 0.f;
         bounds(e.lifetime, lifeLo, lifeHi);
         CHECK(e.colorOverLife.evaluate(1.f, 0.f).a == 0.f); // each sprite ends clear, no pop
@@ -195,13 +241,31 @@ TEST_CASE("vfx: the Kite-Mother's effects read at the gameplay camera and stop w
     REQUIRE(loadEffect("kite_hit", hit));
     REQUIRE(loadEffect("kite_seam_crit", crit));
     // The crit flares along the slit, flings wet pink and tumbles torn flecks: no single big sprite anywhere in it.
-    for (const VfxEmitter& e : crit.emitters) slitShaped(e);
+    // Round 7 (a2, fix 6): read at 10 m, it adds one bloom round the slit, two metres across, and the flare holds 0.3 s or
+    // more (ten frames, not three), brighter than the open glow.
+    const int bloom = findVfxEmitter(crit, "bloom");
+    REQUIRE(bloom >= 0);
+    wideGlow(crit.emitters[static_cast<std::size_t>(bloom)], 2.f);
+    for (const VfxEmitter& e : crit.emitters)
+        if (e.name != "bloom") slitShaped(e);
     const int flash = findVfxEmitter(crit, "flash");
     const int torn = findVfxEmitter(crit, "flecks");
     REQUIRE(flash >= 0);
     REQUIRE(torn >= 0);
     const VfxEmitter& critFlash = crit.emitters[static_cast<std::size_t>(flash)];
     CHECK(critFlash.blend == VfxBlend::Additive);
+    for (const int i : {flash, bloom}) {
+        const VfxEmitter& e = crit.emitters[static_cast<std::size_t>(i)];
+        CAPTURE(e.name);
+        float lo = 0.f, hi = 0.f;
+        bounds(e.lifetime, lo, hi);
+        CHECK(lo >= 0.3f);
+    }
+    {
+        const VfxColor hot = critFlash.colorOverLife.evaluate(0.f, 0.f);
+        const VfxColor glow = open.emitters[static_cast<std::size_t>(halo)].colorOverLife.evaluate(0.35f, 0.f);
+        CHECK(hot.r > glow.r);
+    }
     CHECK(crit.emitters[static_cast<std::size_t>(torn)].sprite == VfxSprite::Chip);
 
     // The plain hit reads at 10 m (FX1-FX3): a short bright core of 0.6 m or more, a damp puff over a metre, big pale
@@ -229,7 +293,8 @@ TEST_CASE("vfx: the Kite-Mother's effects read at the gameplay camera and stop w
     const VfxEmitter& puff = hit.emitters[static_cast<std::size_t>(mist)];
     float mistLo = 0.f, mistHi = 0.f;
     bounds(puff.startSize, mistLo, mistHi);
-    CHECK(mistLo >= 1.0f);
+    CHECK(mistLo >= 1.6f); // round 7 (a2, fix 2): sized to the 10 m body, not the lead
+    CHECK(puff.sprite == VfxSprite::Dust); // eroded, not a round puff (fix 3)
     CHECK(puff.depthFade);
     CHECK(puff.colorOverLife.evaluate(0.f, 0.f).a >= 0.6f);
     // The droplets are big enough to see and pale enough to read against the dark sheets.
@@ -255,6 +320,186 @@ TEST_CASE("vfx: the Kite-Mother's effects read at the gameplay camera and stop w
     for (const VfxEmitter& e : hit.emitters) hitTotal += e.maxParticles;
     for (const VfxEmitter& e : crit.emitters) critTotal += e.maxParticles;
     CHECK(hitTotal < critTotal);
+}
+
+// Round 7 (a2, S-65 (3) fixes 1 and 3): every move lands with dust and a shock ring that thins as it spreads and fades soft,
+// and the chips, pegs and scraps it throws spin, vary, fall and lie on the floor a moment where they came down.
+TEST_CASE("vfx: the Kite-Mother's impacts thin their ring and settle their debris on the floor") {
+    const auto bounds = [](const VfxCurve& c, float& lo, float& hi) { c.bounds(lo, hi); };
+    const auto at = [](const VfxEffect& e, const char* name) -> const VfxEmitter& {
+        const int i = findVfxEmitter(e, name);
+        REQUIRE(i >= 0);
+        return e.emitters[static_cast<std::size_t>(i)];
+    };
+    // The falling pieces come down through the floor; a flat emitter lays them there over the plan's landing times.
+    const auto settles = [&](const VfxEffect& e, std::initializer_list<const char*> falling) {
+        VfxNiagaraPlan plan;
+        planVfxNiagara(e, plan);
+        REQUIRE(plan.emitters.size() == e.emitters.size());
+        float first = 1e9f, last = 0.f;
+        for (const char* name : falling) {
+            CAPTURE(name);
+            const VfxEmitter& f = at(e, name);
+            CHECK(f.hasFloor);
+            CHECK(f.floorY == 0.f);
+            CHECK(f.gravity.y < 0.f);
+            CHECK(f.sprite == VfxSprite::Chip);
+            float spinLo = 0.f, spinHi = 0.f;
+            bounds(f.angularVelocity, spinLo, spinHi);
+            CHECK(spinLo < 0.f);
+            CHECK(spinHi > 0.f);
+            const VfxNiagaraEmitter& p = plan.emitters[static_cast<std::size_t>(findVfxEmitter(e, name))];
+            CHECK(p.floorTime.hi > 0.f);
+            first = std::min(first, p.floorTime.lo);
+            last = std::max(last, p.floorTime.hi);
+        }
+        const VfxEmitter& lie = at(e, "settled");
+        CHECK(lie.renderMode == VfxRenderMode::Horizontal);
+        CHECK(lie.sprite == VfxSprite::Chip);
+        CHECK_FALSE(lie.hasFloor);
+        CHECK(lie.gravity.y == 0.f);
+        REQUIRE_FALSE(lie.bursts.empty());
+        for (const VfxBurst& b : lie.bursts) {
+            CHECK(b.time >= first - 0.1f);
+            CHECK(b.time <= last + 0.1f);
+        }
+        float lifeLo = 0.f, lifeHi = 0.f;
+        bounds(lie.lifetime, lifeLo, lifeHi);
+        CHECK(lifeLo >= 1.f); // a moment on the floor
+        CHECK(lie.colorOverLife.evaluate(0.5f, 0.f).a == 1.f);
+    };
+
+    VfxEffect heavy, light;
+    REQUIRE(loadEffect("kite_impact_heavy", heavy));
+    REQUIRE(loadEffect("kite_impact_light", light));
+    for (const VfxEffect* e : {&heavy, &light}) {
+        CAPTURE(e->name);
+        // The ground cloud: eroded dust, soft against the floor and the legs in it.
+        const VfxEmitter& dust = at(*e, "dust");
+        CHECK(dust.sprite == VfxSprite::Dust);
+        CHECK(dust.depthFade);
+        CHECK(dust.depthFadeDistance >= 0.5f);
+        // The shock ring: flat on the floor, whole from its first frame, racing out, its band thinning to under half and its
+        // edges soft, fading out to nothing.
+        const VfxEmitter& shock = at(*e, "shock");
+        CHECK(shock.renderMode == VfxRenderMode::Horizontal);
+        CHECK(shock.shape == VfxShape::Ring);
+        CHECK(shock.sprite == VfxSprite::Soft);
+        CHECK(shock.softness >= 0.5f);
+        REQUIRE(shock.bursts.size() == 1);
+        CHECK(shock.bursts[0].time == 0.f);
+        float sLo = 0.f, sHi = 0.f;
+        bounds(shock.startSize, sLo, sHi);
+        CHECK(static_cast<float>(shock.bursts[0].count) * sLo >= 2.f * kPi * shock.radius);
+        float vLo = 0.f, vHi = 0.f;
+        bounds(shock.speed, vLo, vHi);
+        CHECK(vLo > 0.f);
+        CHECK(shock.sizeOverLife.evaluate(1.f, 0.f) <= 0.5f * shock.sizeOverLife.evaluate(0.f, 0.f));
+        CHECK(shock.colorOverLife.evaluate(0.f, 0.f).a >= 0.5f);
+        // Chips in three kinds: dark grit and pale scraps of varied size, and pegs drawn long.
+        for (const char* name : {"grit", "scraps"}) {
+            CAPTURE(name);
+            float lo = 0.f, hi = 0.f;
+            bounds(at(*e, name).startSize, lo, hi);
+            CHECK(hi >= 2.f * lo);
+        }
+        const VfxEmitter& pegs = at(*e, "pegs");
+        CHECK(pegs.hasStartSizeY);
+        float wLo = 0.f, wHi = 0.f, hLo = 0.f, hHi = 0.f;
+        bounds(pegs.startSize, wLo, wHi);
+        bounds(pegs.startSizeY, hLo, hHi);
+        CHECK(hLo >= 2.f * wHi);
+        settles(*e, {"grit", "scraps", "pegs"});
+    }
+    // The heavy moves land wider and dustier than the light ones.
+    CHECK(at(heavy, "shock").radius > at(light, "shock").radius);
+    float hLo = 0.f, hHi = 0.f, lLo = 0.f, lHi = 0.f;
+    bounds(at(heavy, "dust").startSize, hLo, hHi);
+    bounds(at(light, "dust").startSize, lLo, lHi);
+    CHECK(hHi > lHi);
+
+    // Fix 3 for the plain hit: what it knocks loose comes down under the bone and lies there, with a little dust where it lands.
+    VfxEffect under;
+    REQUIRE(loadEffect("kite_hit_floor", under));
+    settles(under, {"fall", "pegs"});
+    CHECK(at(under, "fall").offset.y >= 1.f); // from the hit's height, not the floor
+    CHECK(at(under, "kick").sprite == VfxSprite::Dust);
+}
+
+// Round 7 (a2, S-65 (3) fix 4): Mitten Drop, Peg Spray, Snag, Wet Sheet and Undertow each have a tell of their own; the mitten
+// cue is raw pink (design section 7). They loop while the move winds up.
+TEST_CASE("vfx: the Kite-Mother's move tells") {
+    const auto bounds = [](const VfxCurve& c, float& lo, float& hi) { c.bounds(lo, hi); };
+    const auto at = [](const VfxEffect& e, const char* name) -> const VfxEmitter& {
+        const int i = findVfxEmitter(e, name);
+        REQUIRE(i >= 0);
+        return e.emitters[static_cast<std::size_t>(i)];
+    };
+    const auto rawPink = [](const VfxColor& c) {
+        CHECK(c.r >= 2.f * c.b);
+        CHECK(c.b >= c.g);
+        CHECK(c.r >= 0.5f);
+    };
+
+    VfxEffect mitten, pegs, snag, sheet, undertow;
+    REQUIRE(loadEffect("kite_mitten_tell", mitten));
+    REQUIRE(loadEffect("kite_peg_tell", pegs));
+    REQUIRE(loadEffect("kite_snag_tell", snag));
+    REQUIRE(loadEffect("kite_sheet_tell", sheet));
+    REQUIRE(loadEffect("kite_undertow_tell", undertow));
+
+    // The flush fills the mitten hanging up its string from the end the effect rides: a tall box raised above the bone.
+    const VfxEmitter& flush = at(mitten, "flush");
+    CHECK(flush.shape == VfxShape::Box);
+    CHECK(flush.boxHalfExtents.y >= 2.f * flush.boxHalfExtents.x);
+    CHECK(flush.offset.y > 0.f);
+    CHECK(flush.blend == VfxBlend::Alpha);
+    rawPink(flush.colorOverLife.evaluate(0.3f, 0.f));
+    CHECK(flush.colorOverLife.evaluate(0.3f, 0.f).a >= 0.5f);
+    const VfxEmitter& pulse = at(mitten, "pulse");
+    REQUIRE(pulse.bursts.size() == 1);
+    CHECK(pulse.duration == doctest::Approx(60.f / 72.f).epsilon(0.01)); // a throb a beat
+    rawPink(at(mitten, "drips").colorOverLife.evaluate(0.f, 0.f));
+
+    // The pegs rattle loose round the body and drop, drawn long, spinning.
+    const VfxEmitter& rattle = at(pegs, "rattle");
+    CHECK(rattle.sprite == VfxSprite::Chip);
+    CHECK(rattle.hasStartSizeY);
+    CHECK(rattle.gravity.y < 0.f);
+    CHECK(rattle.radius >= 2.5f); // round the 10 m body, not a point
+    float spinLo = 0.f, spinHi = 0.f;
+    bounds(rattle.angularVelocity, spinLo, spinHi);
+    CHECK(spinLo < 0.f);
+    CHECK(spinHi > 0.f);
+
+    // The tail's hooked end trails raw pink in the world as it swings low.
+    const VfxEmitter& trail = at(snag, "trail");
+    CHECK(trail.space == VfxSpace::World);
+    rawPink(trail.colorOverLife.evaluate(0.f, 0.f));
+
+    // The soaked top sheet runs with water down to the floor along its whole edge.
+    const VfxEmitter& drips = at(sheet, "drips");
+    CHECK(drips.boxHalfExtents.x >= 1.5f);
+    CHECK(drips.gravity.y < 0.f);
+    float lifeLo = 0.f, lifeHi = 0.f;
+    bounds(drips.lifetime, lifeLo, lifeHi);
+    CHECK(lifeLo >= 1.f); // about 9 m of fall from the top edge
+    CHECK(at(sheet, "sheen").blend == VfxBlend::Additive);
+
+    // The undertow's wake lies low along the floor, soft where it meets it.
+    const VfxEmitter& streak = at(undertow, "streak");
+    CHECK(streak.sprite == VfxSprite::Dust);
+    CHECK(streak.depthFade);
+    CHECK(streak.gravity.y <= 0.f);
+    CHECK(at(undertow, "spray").gravity.y < 0.f);
+
+    for (const VfxEffect* e : {&mitten, &pegs, &snag, &sheet, &undertow})
+        for (const VfxEmitter& em : e->emitters) {
+            CAPTURE(e->name);
+            CAPTURE(em.name);
+            CHECK(em.loop);
+            CHECK(em.depthFade);
+        }
 }
 
 TEST_CASE("vfx: the Unbending's effects load without warnings and keep their particle budgets") {
