@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <optional>
 #include <utility>
 
 namespace ftcore {
@@ -16,6 +17,8 @@ const char* showCueKey(ShowCue c) {
     case ShowCue::GlowOff: return "glow_off";
     case ShowCue::Crit: return "crit";
     case ShowCue::ChipsHeavy: return "chips_heavy";
+    case ShowCue::LightOn: return "light_on";
+    case ShowCue::LightOff: return "light_off";
     }
     return "?";
 }
@@ -222,11 +225,22 @@ bool buildClipShow(const BeatClips& clips, const ShowSpec& spec, ClipShow& out, 
         b.idle("idle", spec.before);
         const std::int16_t index = static_cast<std::int16_t>(i);
         ShowSegment* s = b.add("attack", a.clip, until - a.entry, a.entry, false);
-        const double impact = clips.items[static_cast<std::size_t>(a.clip)].impact;
+        const BeatClip& row = clips.items[static_cast<std::size_t>(a.clip)];
+        const double impact = row.impact;
         if (s && impact > 0.0) {
             const double at = s->start + std::fmax(0.0, impact - a.entry);
             s->attack = index;
             b.cue(s->start, ShowCue::Tell, ShowPlace::Strike, index);
+            // A marked move's tell light, at its window's clip times (from the part's start when entered past `on`);
+            // out with the tell at the impact.
+            if (const std::optional<TellLightWindow> w = tellLightWindow(row, a.marked, 0)) {
+                const double on = s->start + std::fmax(0.0, w->on - a.entry);
+                const double off = s->start + std::fmax(0.0, w->off - a.entry);
+                if (on < off) {
+                    b.cue(on, ShowCue::LightOn, ShowPlace::Strike, index);
+                    b.cue(off, ShowCue::LightOff, ShowPlace::Strike, index);
+                }
+            }
             b.cue(at, ShowCue::TellStop, ShowPlace::Strike, index);
             b.cue(at, ShowCue::Impact, ShowPlace::Strike, index);
         } else if (s) {

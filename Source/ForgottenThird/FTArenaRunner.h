@@ -267,6 +267,11 @@ private:
 	// The boss's effects: its attack part going From -> To (its tell through the startup, its impact as it turns active),
 	// a blow landing on it (E: Hit, CounterStagger or ReadCounter), and where its weak point is now.
 	void BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 From, uint8 To);
+	// The marked move's tell light (ftcore::tellLightWindow on its clip row): on through the window while the boss plays
+	// the move's own clip (Clip; -1: another clip or none) in its startup at ClipTime (s into the clip), ramped out at the
+	// impact, cut at once on anything else that ends it (stagger, a parry, down, death, the move's end, the fight's end).
+	// Once a frame from DriveSkin, before the clip plays.
+	void StoneTellLight(const ftcore::ArenaEnemyOut& Out, int32 Clip, double ClipTime);
 	// bHeavy: a heavy blow, a riposte, a Release or a counter-stagger (the heavy chips).
 	void BossHitVfx(const ftcore::ArenaEvent& E, bool bHeavy);
 	FVector BossWeakPoint() const;
@@ -419,6 +424,10 @@ private:
 	// The tell's point, frozen as the startup begins, for the impact's distance check (move kArenaNoMove... none: 255).
 	ftcore::Vec2 StoneTellAt;
 	uint8 StoneTellMove = 255;
+	// Where the tell's blow comes from (Core's strike From: the boss's place as the startup began) and the move whose tell
+	// light is on (255: none), for StoneTellLight.
+	ftcore::Vec2 StoneTellFrom;
+	uint8 StoneLightMove = 255;
 	// The tell's shape scale, Core's facing and the figure's place and yaw as the startup began (the blow's log line).
 	float StoneTellShapeMul = 1.f;
 	ftcore::Vec2 StoneTellFacing;
@@ -560,6 +569,7 @@ private:
 	FVector ShowOrigin = FVector::ZeroVector;
 	float ShowBaseYaw = 0.f;
 	ftcore::Vec2 ShowTellAt;
+	ftcore::Vec2 ShowTellFrom; // where that blow comes from (the tell light's lane starts at the boss's edge on it)
 	float ShowTellShapeMul = 1.f;
 	int16 ShowTellAttack = -1;
 	bool bShowTellAir = false; // its blow strikes in the air: its dust ShowTellUp (m) over the tell

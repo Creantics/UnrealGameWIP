@@ -1,6 +1,8 @@
 #include "ftcore/ClipShowcase.h"
 
+#include "ftcore/ArenaFight.h"
 #include "ftcore/BeatChoreo.h"
+#include "ftcore/StoneBearer.h"
 
 #include "AllocCounter.h"
 #include "TestAssets.h"
@@ -10,6 +12,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -460,4 +463,183 @@ TEST_CASE("clip showcase: refusals") {
     for (std::size_t i = 0; i < show.segmentCount; ++i)
         CHECK((show.segments[i].clip == bare.idle || show.segments[i].clip == ftcore::kNoClip));
     CHECK(show.cueCount == 8); // the tell, its stop, the dust, the light and the heavy chips, the glow on and off, the crit
+}
+
+// ---- the marked move's tell light, and the fight's clip rates ----
+
+namespace {
+
+// The shipped boss laid out as arena moves over the shipped arena kind (the default lead).
+struct ShippedBoss {
+    ftcore::StoneBearerDef def;
+    ftcore::StoneBearerLayout layout;
+    ftcore::ArenaEnemyKind kind;
+    ftcore::BeatClips clips;
+};
+
+void loadShipped(ShippedBoss& s) {
+    std::string text, err;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena_boss/stone_bearer.json", text));
+    REQUIRE_MESSAGE(ftcore::importStoneBearer(text, s.def, &err), err);
+    REQUIRE(ftcore_test::readProjectData("Battle/arena.json", text));
+    ftcore::ArenaTable table;
+    REQUIRE_MESSAGE(ftcore::importArenaTable(text, table, &err), err);
+    std::size_t at = table.enemyIds.size();
+    for (std::size_t i = 0; i < table.enemyIds.size(); ++i)
+        if (table.enemyIds[i] == "stone_bearer") at = i;
+    REQUIRE(at < table.enemies.size());
+    REQUIRE(!table.fighters.empty());
+    s.kind = table.enemies[at];
+    REQUIRE_MESSAGE(ftcore::buildStoneBearerKind(s.def, table.fighters[0], s.kind, &s.layout, &err), err);
+    REQUIRE(loadClips(s.clips));
+}
+
+} // namespace
+
+TEST_CASE("tell light: from the shipped data, every marked move's first impact has the window, on at its time, off at that impact") {
+    ShippedBoss s;
+    loadShipped(s);
+    const double frame = 1.0 / 30.0;
+    int lit = 0, later = 0;
+    for (std::size_t a = 0; a < s.layout.count; ++a) {
+        const ftcore::ArenaBossMove& src = s.def.boss.moves[s.layout.moveOf[a]];
+        const std::uint8_t k = s.layout.impactOf[a];
+        CAPTURE(src.id());
+        CAPTURE(static_cast<int>(k));
+        const int c = s.clips.find(ftcore::stoneBearerClipOf(src.id()));
+        REQUIRE(c >= 0);
+        const ftcore::BeatClip& row = s.clips[static_cast<std::size_t>(c)];
+        const std::optional<ftcore::TellLightWindow> w = ftcore::tellLightWindow(row, src.marked, k);
+        if (!src.marked) {
+            CHECK_FALSE(w.has_value()); // the flag drives it: an unmarked move never lights, whatever its clip has
+            continue;
+        }
+        if (k > 0) {
+            // A later impact of the same use enters the clip again: it lights nothing.
+            CHECK_FALSE(w.has_value());
+            ++later;
+            continue;
+        }
+        // Every marked move's clip carries the field (a variant plays its base move's clip, so it gets the same window).
+        REQUIRE(w.has_value());
+        CHECK(w->on == doctest::Approx(row.tellLightOn));
+        CHECK(w->on > 0.0);
+        CHECK(w->off == doctest::Approx(row.impact));
+        // Off at the move's first impact: its beats at the file's bpm, and in the fight as its startup ends (entered
+        // at rate 1.0, so the clip's impact lands there).
+        CHECK(std::fabs(w->off - ftcore::arenaBeats(static_cast<double>(src.impacts[0]), s.def.boss.bpm)) <= frame);
+        const double entry = ftcore::stoneBearerClipEntry(s.kind, s.layout, a, row.impact);
+        CHECK(std::fabs(entry + static_cast<double>(s.kind.moves[a].attack.startup) - w->off) <= frame);
+        ++lit;
+    }
+    CHECK(lit == 2); // the marked move and its two-impact variant
+    CHECK(later == 1);
+    // A row with the field is played by a marked move (else it would never light).
+    for (std::size_t c = 0; c < s.clips.count; ++c) {
+        if (s.clips[c].tellLightOn < 0.0) continue;
+        CAPTURE(s.clips.id(c));
+        bool byMarked = false;
+        for (std::uint8_t m = 0; m < s.def.boss.moveCount; ++m)
+            byMarked = byMarked || (s.def.boss.moves[m].marked && ftcore::stoneBearerClipOf(s.def.boss.moves[m].id()) == s.clips.id(c));
+        CHECK(byMarked);
+    }
+}
+
+TEST_CASE("tell light: the reel lights a marked attack at its window's clip times, out with the tell at the impact") {
+    ftcore::BeatClips clips;
+    REQUIRE(loadClips(clips));
+    const std::int16_t thrown = idOf(clips, "marked_throw");
+    REQUIRE(thrown >= 0);
+    const ftcore::BeatClip& row = clips[static_cast<std::size_t>(thrown)];
+    const std::optional<ftcore::TellLightWindow> w = ftcore::tellLightWindow(row, true);
+    REQUIRE(w.has_value());
+    ftcore::ShowSpec spec = stoneSpec(clips);
+    REQUIRE(spec.attackCount + 3 <= ftcore::kMaxShowAttacks);
+    // Marked, entered at its start as the fight enters it; the same clip unmarked; marked, entered past `on`.
+    const double entries[] = {0.0, 0.0, w->on + 0.2};
+    const bool marks[] = {true, false, true};
+    const std::size_t first = spec.attackCount;
+    for (std::size_t i = 0; i < 3; ++i) {
+        ftcore::ShowAttack& a = spec.attacks[spec.attackCount++];
+        a.clip = thrown;
+        a.move = static_cast<std::int16_t>(10 + i);
+        a.entry = entries[i];
+        a.until = row.length;
+        a.marked = marks[i];
+    }
+    ftcore::ClipShow show;
+    std::string err;
+    REQUIRE_MESSAGE(ftcore::buildClipShow(clips, spec, show, &err), err);
+    for (std::size_t i = 1; i < show.cueCount; ++i) CHECK(show.cues[i].at >= show.cues[i - 1].at);
+    int ons = 0, offs = 0;
+    for (std::size_t c = 0; c < show.cueCount; ++c) {
+        ons += show.cues[c].cue == ftcore::ShowCue::LightOn ? 1 : 0;
+        offs += show.cues[c].cue == ftcore::ShowCue::LightOff ? 1 : 0;
+    }
+    CHECK(ons == 2); // the two marked attacks only (stoneSpec's own attacks are unmarked)
+    CHECK(offs == 2);
+    for (std::size_t i = 0; i < 3; ++i) {
+        const std::int16_t index = static_cast<std::int16_t>(first + i);
+        CAPTURE(i);
+        const ftcore::ShowSegment* part = nullptr;
+        for (std::size_t g = 0; g < show.segmentCount; ++g)
+            if (show.segments[g].attack == index) part = &show.segments[g];
+        REQUIRE(part);
+        double on = -1.0, off = -1.0, stop = -1.0;
+        std::size_t tellAt = show.cueCount, onAt = show.cueCount;
+        for (std::size_t c = 0; c < show.cueCount; ++c) {
+            const ftcore::ShowCueAt& q = show.cues[c];
+            if (q.attack != index) continue;
+            if (q.cue == ftcore::ShowCue::Tell && tellAt == show.cueCount) {
+                tellAt = c;
+            }
+            if (q.cue == ftcore::ShowCue::LightOn || q.cue == ftcore::ShowCue::LightOff) {
+                CHECK(q.place == ftcore::ShowPlace::Strike);
+                (q.cue == ftcore::ShowCue::LightOn ? on : off) = q.at;
+                if (q.cue == ftcore::ShowCue::LightOn) {
+                    onAt = c;
+                }
+            }
+            if (q.cue == ftcore::ShowCue::TellStop) {
+                stop = q.at;
+            }
+        }
+        // The host lights the lane its Tell drew: the Tell comes first, even at the same time (entered past `on`).
+        if (marks[i]) {
+            CHECK(tellAt < onAt);
+        }
+        if (!marks[i]) {
+            CHECK(on < 0.0);
+            CHECK(off < 0.0);
+            continue;
+        }
+        const double entry = entries[i];
+        // On at its clip time (from the part's start when entered past it), off at the impact with the tell's stop.
+        CHECK(on == doctest::Approx(part->start + std::fmax(0.0, w->on - entry)));
+        CHECK(off == doctest::Approx(part->start + w->off - entry));
+        CHECK(off == doctest::Approx(stop));
+        const ftcore::ShowPose p = ftcore::clipShowPose(show, on + 1e-6);
+        CHECK(p.clip == thrown);
+        CHECK(p.clipTime == doctest::Approx(std::fmax(w->on, entry)).epsilon(1e-4));
+        const ftcore::ShowPose q = ftcore::clipShowPose(show, off + 1e-6);
+        CHECK(q.clipTime == doctest::Approx(w->off).epsilon(1e-4));
+    }
+}
+
+TEST_CASE("fight rate: every shipped arena move's clip plays at rate 1.0, from the shared rate") {
+    ShippedBoss s;
+    loadShipped(s);
+    for (std::size_t a = 0; a < s.layout.count; ++a) {
+        const ftcore::ArenaBossMove& src = s.def.boss.moves[s.layout.moveOf[a]];
+        CAPTURE(src.id());
+        CAPTURE(static_cast<int>(s.layout.impactOf[a]));
+        const int c = s.clips.find(ftcore::stoneBearerClipOf(src.id()));
+        REQUIRE(c >= 0);
+        const ftcore::BeatClip& row = s.clips[static_cast<std::size_t>(c)];
+        const double entry = ftcore::stoneBearerClipEntry(s.kind, s.layout, a, row.impact);
+        // The runner's clamp (kArenaMinClipRate, kArenaMaxClipRate).
+        CHECK(ftcore::beatClipRate(row.impact, entry, static_cast<double>(s.kind.moves[a].attack.startup), 0.25, 4.0) == 1.0);
+    }
+    // A startup longer than the clip's impact would stretch it from its start: the rate the reel's log reports.
+    CHECK(ftcore::beatClipRate(3.158, 3.158 - 4.0, 4.0, 0.25, 4.0) == doctest::Approx(3.158 / 4.0));
 }

@@ -177,6 +177,7 @@
    "asset": "/Game/Bosses/StoneBearer/stone_bearer/SkeletalMeshes/stone_bearermarked_throw",
    "length_s": 4.858,
    "impact_s": 3.158,
+   "tell_light_on_s": 0.933,
    "loop": false
   }
  ]

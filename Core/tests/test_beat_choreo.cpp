@@ -1206,3 +1206,91 @@ TEST_CASE("beat choreo: a counter pressed too early makes the lead stumble, and 
     CHECK(stumbled);
     CHECK(answered);
 }
+
+// ---- the tell light's window and the clip rate ----
+
+TEST_CASE("beat clips: the optional tell light time, from the clip's start to its impact") {
+    BeatClips c;
+    std::string error;
+    std::vector<std::string> warnings;
+    SUBCASE("none by default") {
+        REQUIRE_MESSAGE(importBeatClips(clipsJson(2), c, &error), error);
+        CHECK(c[0].tellLightOn < 0.0);
+        CHECK(c[1].tellLightOn < 0.0);
+    }
+    SUBCASE("accepted on any row, the ends included, in either key order") {
+        REQUIRE_MESSAGE(importBeatClips(clipsJson(0, R"({"id": "a", "length_s": 1.5, "impact_s": 0.5, "tell_light_on_s": 0.2},
+                                                      {"id": "b", "length_s": 1.5, "tell_light_on_s": 0.5, "impact_s": 0.5},
+                                                      {"id": "c", "length_s": 1.5, "impact_s": 0.5, "tell_light_on_s": 0},
+                                                      {"id": "d", "length_s": 1.5, "impact_s": 0.5})"),
+                                        c, &error, &warnings), error);
+        CHECK(warnings.empty());
+        REQUIRE(c.count == 4);
+        CHECK(c[0].tellLightOn == doctest::Approx(0.2));
+        CHECK(c[1].tellLightOn == doctest::Approx(0.5));
+        CHECK(c[2].tellLightOn == 0.0);
+        CHECK(c[3].tellLightOn < 0.0);
+    }
+    SUBCASE("refused outside 0..impact_s, or not a number") {
+        const auto refused = [&](const std::string& row, const std::string& needle) {
+            CHECK_FALSE(importBeatClips(clipsJson(1, ", " + row), c, &error));
+            CHECK_MESSAGE(error.find(needle) != std::string::npos, error);
+            CHECK(c.count == 0);
+        };
+        refused(R"({"id": "a", "length_s": 1.5, "impact_s": 0.5, "tell_light_on_s": 0.6})",
+                "clips[1].tell_light_on_s: expected seconds from the clip's start to its impact, 0..0.5");
+        refused(R"({"id": "a", "length_s": 1.5, "tell_light_on_s": 0.6, "impact_s": 0.5})", "clips[1].tell_light_on_s");
+        refused(R"({"id": "a", "length_s": 1.5, "impact_s": 0.5, "tell_light_on_s": -0.1})", "clips[1].tell_light_on_s");
+        refused(R"({"id": "a", "length_s": 1.5, "impact_s": 0.5, "tell_light_on_s": "0.2"})", "clips[1].tell_light_on_s");
+        refused(R"({"id": "a", "length_s": 1.5, "impact_s": 0.5, "tell_light_on_s": true})", "clips[1].tell_light_on_s");
+        // No impact: nothing but 0 is inside the clip's start to its impact.
+        refused(R"({"id": "a", "length_s": 1.5, "tell_light_on_s": 0.2})", "clips[1].tell_light_on_s");
+    }
+}
+
+TEST_CASE("beat clips: the tell light's window: a marked move's first impact only, on at its time, off at the impact") {
+    BeatClips c;
+    std::string error;
+    REQUIRE_MESSAGE(importBeatClips(clipsJson(0, R"({"id": "lit", "length_s": 2.0, "impact_s": 1.25, "tell_light_on_s": 0.4},
+                                                  {"id": "plain", "length_s": 2.0, "impact_s": 1.25},
+                                                  {"id": "at_impact", "length_s": 2.0, "impact_s": 1.25, "tell_light_on_s": 1.25})"),
+                                    c, &error), error);
+    const BeatClip& lit = c[static_cast<std::size_t>(c.find("lit"))];
+    const std::optional<TellLightWindow> w = tellLightWindow(lit, true);
+    REQUIRE(w.has_value());
+    CHECK(w->on == doctest::Approx(0.4));
+    CHECK(w->off == doctest::Approx(1.25));
+    // Unmarked, a later impact of the same use, a row without the field, a window with no length: nothing.
+    CHECK_FALSE(tellLightWindow(lit, false).has_value());
+    CHECK_FALSE(tellLightWindow(lit, true, 1).has_value());
+    CHECK_FALSE(tellLightWindow(c[static_cast<std::size_t>(c.find("plain"))], true).has_value());
+    CHECK_FALSE(tellLightWindow(c[static_cast<std::size_t>(c.find("at_impact"))], true).has_value());
+    // Allocates nothing (the host asks every frame).
+    double sink = 0.0;
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    for (int i = 0; i < 100; ++i) {
+        if (const std::optional<TellLightWindow> v = tellLightWindow(lit, true, static_cast<std::uint8_t>(i % 2))) sink += v->off - v->on;
+        sink += beatClipRate(lit.impact, -0.5, 1.75, 0.25, 4.0);
+    }
+    CHECK(ftcore_test::allocStats().count == before);
+    CHECK(sink > 0.0);
+}
+
+TEST_CASE("beat clips: the clip rate: 1.0 entered inside the slack, else from the start at impact / startup, held") {
+    // Entered at or after its start, or less than the slack before it: rate 1.0.
+    CHECK(beatClipRate(3.158, 0.0, 3.158, 0.25, 4.0) == 1.0);
+    CHECK(beatClipRate(3.158, 0.4, 2.758, 0.25, 4.0) == 1.0);
+    CHECK(beatClipRate(1.0, -kBeatClipEntrySlack, 1.0 + kBeatClipEntrySlack, 0.25, 4.0) == 1.0);
+    // Just past the slack: from the start, slower, so the impact still lands as the startup ends.
+    const double startup = 1.0 + kBeatClipEntrySlack + 1e-6;
+    CHECK(beatClipRate(1.0, 1.0 - startup, startup, 0.25, 4.0) == doctest::Approx(1.0 / startup));
+    CHECK(beatClipRate(1.0, -1.0, 2.0, 0.25, 4.0) == doctest::Approx(0.5));
+    // Held to the bounds.
+    CHECK(beatClipRate(0.5, -9.5, 10.0, 0.25, 4.0) == doctest::Approx(0.25));
+    CHECK(beatClipRate(1.0, -1.0, 2.0, 0.75, 4.0) == doctest::Approx(0.75));
+    CHECK(beatClipRate(1.0, -1.0, 2.0, 0.1, 0.4) == doctest::Approx(0.4));
+    // No startup or no impact: 1.0.
+    CHECK(beatClipRate(1.0, -1.0, 0.0, 0.25, 4.0) == 1.0);
+    CHECK(beatClipRate(1.0, -1.0, -0.5, 0.25, 4.0) == 1.0);
+    CHECK(beatClipRate(0.0, -1.0, 1.0, 0.25, 4.0) == 1.0);
+}

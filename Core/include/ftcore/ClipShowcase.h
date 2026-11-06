@@ -8,7 +8,8 @@
 //
 // The order: a turntable on the idle (one turn over its first cycle, then still, so its seam shows twice); the second
 // idle; every attack as idle -> its clip from the fight's entry to the move's end, its tell from the entry to the
-// impact and its dust at the impact -> idle; the light and heavy hits (chips at each); the stagger; the go-down, the
+// impact and its dust at the impact (a marked move's tell light through its window, tellLightWindow) -> idle; the light
+// and heavy hits (chips at each); the stagger; the go-down, the
 // hold (two cycles) and the get-up; the stepping turns and the walk out and back; the effects alone (a tell ahead, its
 // dust, chips on the body, then turned so the weak point faces the front (weakFacing): its glow, then a crit); the two
 // deaths.
@@ -34,8 +35,8 @@ inline constexpr std::size_t kMaxShowCues = 128;
 inline constexpr std::size_t kMaxShowAttacks = 24;
 inline constexpr std::size_t kMaxShowLabel = 39; // characters
 
-// What the host plays at a cue.
-enum class ShowCue : std::uint8_t { Tell, TellStop, Impact, Chips, GlowOn, GlowOff, Crit, ChipsHeavy };
+// What the host plays at a cue (append only). LightOn and LightOff: a marked move's tell light, at its window's clip times.
+enum class ShowCue : std::uint8_t { Tell, TellStop, Impact, Chips, GlowOn, GlowOff, Crit, ChipsHeavy, LightOn, LightOff };
 // Where: the attack's strike point (its tell and dust, as the fight places them), a point ahead of the boss, its body's
 // surface toward the camera, or its weak point (the glow and the crit, at the fight's flash point).
 enum class ShowPlace : std::uint8_t { Strike, Ahead, Surface, WeakPoint };
@@ -48,6 +49,8 @@ struct ShowAttack {
     double entry = 0.0;     // s into the clip the fight enters it at (at rate 1.0)
     double until = 0.0;     // s into the clip the fight leaves it for the idle (the move's end); 0: the clip's end
     bool left = false;      // the clip strikes to the left (the called side, for the strike point)
+    bool marked = false;    // the move is marked (its data's flag): its clip's tell light window gets a LightOn/LightOff pair
+    double fightRate = 1.0; // the rate the fight plays the clip at for this move (beatClipRate; the reel plays it at 1.0)
 };
 
 // The clips are indices into the table (kNoClip: the part is left out). The idle is required.

@@ -1171,7 +1171,7 @@ bool importBeatClips(std::string_view json, BeatClips& out, std::string* error, 
     for (std::uint32_t i = 0; i < list.size(); ++i) {
         const std::string where = "clips[" + std::to_string(i) + "]";
         const JsonValue c = list[i];
-        ld.unknownKeys(c, where, {"id", "asset", "length_s", "impact_s", "speed_mps", "blend_s", "loop", "additive_in"});
+        ld.unknownKeys(c, where, {"id", "asset", "length_s", "impact_s", "speed_mps", "blend_s", "loop", "additive_in", "tell_light_on_s"});
         BeatClip clip;
         const std::string_view id = c["id"].string();
         if (!choreoIdText(id)) {
@@ -1200,6 +1200,14 @@ bool importBeatClips(std::string_view json, BeatClips& out, std::string* error, 
             else
                 clip.impact = impact;
         }
+        // Checked against the row's impact as read above (keys are looked up by name, so their order in the row is free).
+        if (const JsonValue tv = c["tell_light_on_s"]; !tv.isAbsent()) {
+            const double on = tv.number(-1.0);
+            if (!tv.isNumber() || !std::isfinite(on) || on < 0.0 || on > clip.impact)
+                errors.push_back(where + ".tell_light_on_s: expected seconds from the clip's start to its impact, 0.." + choreoNumberText(clip.impact));
+            else
+                clip.tellLightOn = on;
+        }
         if (const JsonValue sv = c["speed_mps"]; !sv.isAbsent()) {
             const double speed = sv.number(-1.0);
             if (!sv.isNumber() || !std::isfinite(speed) || !(speed > 0.0) || speed > kMaxClipSpeed)
@@ -1225,6 +1233,16 @@ bool importBeatClips(std::string_view json, BeatClips& out, std::string* error, 
         out.items[out.count++] = clip;
     }
     return finish();
+}
+
+double beatClipRate(double impact, double entry, double startup, double minRate, double maxRate) {
+    if (!(impact > 0.0) || !(startup > 0.0) || !(entry < -kBeatClipEntrySlack)) return 1.0;
+    return std::clamp(impact / startup, minRate, maxRate);
+}
+
+std::optional<TellLightWindow> tellLightWindow(const BeatClip& clip, bool marked, std::uint8_t impact) {
+    if (!marked || impact != 0 || clip.tellLightOn < 0.0 || !(clip.tellLightOn < clip.impact)) return std::nullopt;
+    return TellLightWindow{clip.tellLightOn, clip.impact};
 }
 
 bool importBeatChoreo(std::string_view json, const BeatBossTrack& track, const BeatClips& clips, BeatChoreoDef& out,
