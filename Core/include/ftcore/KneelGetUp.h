@@ -17,6 +17,8 @@
 // kneels again, or stands out the rest when too little is left to go down and up again. An untracked get-up that was not
 // cut is placed by the time left (upLength - left), as before.
 
+#include "ftcore/Api.h"
+
 namespace ftcore {
 
 enum class KneelClip : unsigned char { GoDown, Hold, GetUp, Stand };
@@ -47,10 +49,10 @@ struct KneelTrack {
     bool stood = false;        // up for the rest of the down
 };
 
-void kneelStart(KneelTrack& k, double& kneelSince, double& upAt, double now);
-void kneelEnd(KneelTrack& k);
+FTCORE_API void kneelStart(KneelTrack& k, double& kneelSince, double& upAt, double now);
+FTCORE_API void kneelEnd(KneelTrack& k);
 // left: seconds of the spell still to run (+infinity in a hold). Updates kneelSince (a kneel-again) and upAt (how far
 // into its get-up it is drawn: upLength once up).
-KneelFrame kneelShow(KneelTrack& k, double& kneelSince, double& upAt, double now, double left, const KneelClips& c);
+FTCORE_API KneelFrame kneelShow(KneelTrack& k, double& kneelSince, double& upAt, double now, double left, const KneelClips& c);
 
 } // namespace ftcore
