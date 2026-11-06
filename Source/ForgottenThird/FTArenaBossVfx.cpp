@@ -1,6 +1,9 @@
 #include "FTArenaBossVfx.h"
 
+#include "Components/RectLightComponent.h"
+#include "Engine/Scene.h"
 #include "Engine/World.h"
+#include "GameFramework/Actor.h"
 #include "FTText.h"
 #include "FTVfxComponent.h"
 #include "ForgottenThird.h"
@@ -90,6 +93,17 @@ void FFTArenaBossVfx::ReadTuning(const FString& File)
 	Tuning.WeakDepth = FMath::Max(ReadFloat(Root, "weakDepth", Tuning.WeakDepth), 0.f);
 	Tuning.FlashUp = FMath::Clamp(ReadFloat(Root, "flashUp", Tuning.FlashUp), -2.f, 2.f);
 	Tuning.FlashToCamera = FMath::Clamp(ReadFloat(Root, "flashToCamera", Tuning.FlashToCamera), 0.f, 3.f);
+	const ftcore::JsonValue Light = Root["tellLight"];
+	Tuning.LightUp = FMath::Clamp(ReadFloat(Light, "up", Tuning.LightUp), 0.05f, 3.f);
+	Tuning.LightAcross = FMath::Clamp(ReadFloat(Light, "across", Tuning.LightAcross), 0.05f, 2.f);
+	Tuning.LightCandelaPerMetre = FMath::Clamp(ReadFloat(Light, "candelaPerMetre", Tuning.LightCandelaPerMetre), 0.f, 1000.f);
+	Tuning.LightKelvin = FMath::Clamp(ReadFloat(Light, "kelvin", Tuning.LightKelvin), 1700.f, 12000.f);
+	Tuning.LightPast = FMath::Clamp(ReadFloat(Light, "past", Tuning.LightPast), 0.f, 5.f);
+	Tuning.LightBarnDeg = FMath::Clamp(ReadFloat(Light, "barnDoorDeg", Tuning.LightBarnDeg), 0.f, 88.f);
+	Tuning.LightBarnLength = FMath::Clamp(ReadFloat(Light, "barnDoorLength", Tuning.LightBarnLength), 0.01f, 1.f);
+	// The ramps stay short: in over 2-3 frames, out over 1-2.
+	Tuning.LightRampIn = FMath::Clamp(static_cast<int32>(Light["rampIn"].integer(Tuning.LightRampIn)), 2, 3);
+	Tuning.LightRampOut = FMath::Clamp(static_cast<int32>(Light["rampOut"].integer(Tuning.LightRampOut)), 1, 2);
 }
 
 void FFTArenaBossVfx::Spawn(UWorld* World, const FString& File)
@@ -106,6 +120,7 @@ void FFTArenaBossVfx::Spawn(UWorld* World, const FString& File)
 		return;
 	}
 	bSpawned = true;
+	SpawnLight(World);
 	for (int32 E = 0; E < EffectCount; ++E)
 	{
 		const FLook& Look = Tuning.Looks[E];
@@ -151,6 +166,13 @@ void FFTArenaBossVfx::Destroy()
 			Slot = nullptr;
 		}
 	}
+	if (LightHost)
+	{
+		LightHost->Destroy();
+	}
+	LightHost = nullptr;
+	TellLight = nullptr;
+	LightLevel = LightGoal = LightFull = 0.f;
 	bSpawned = bTells = bGlowing = false;
 }
 
@@ -163,7 +185,111 @@ void FFTArenaBossVfx::StopAll()
 			Slot->GetVfx()->Stop();
 		}
 	}
+	LightOff(true, TEXT("everything stopped"));
 	bTells = bGlowing = false;
+}
+
+void FFTArenaBossVfx::SpawnLight(UWorld* World)
+{
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AActor* Host = World->SpawnActor<AActor>(FVector::ZeroVector, FRotator::ZeroRotator, Params);
+	if (!Host)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena VFX: the tell light's actor didn't spawn; the marked move's light is off."));
+		return;
+	}
+	URectLightComponent* Light = NewObject<URectLightComponent>(Host, TEXT("TellLight"));
+	Light->SetMobility(EComponentMobility::Movable);
+	Host->SetRootComponent(Light);
+	Light->SetIntensityUnits(ELightUnits::Candelas);
+	Light->SetUseTemperature(true);
+	Light->SetTemperature(Tuning.LightKelvin);
+	Light->SetLightColor(FLinearColor::White);
+	Light->SetCastShadows(false);
+	Light->SetSourceWidth(100.f);
+	Light->SetSourceHeight(Tuning.LightAcross * 100.f);
+	// Barn doors keep the floor's pool a bar (a rect light alone spreads over its whole hemisphere).
+	Light->SetBarnDoorAngle(FMath::Min(Tuning.LightBarnDeg, GetRectLightBarnDoorMaxAngle()));
+	Light->SetBarnDoorLength(Tuning.LightBarnLength * 100.f);
+	Light->SetAttenuationRadius(100.f);
+	Light->SetIntensity(0.f);
+	Light->SetVisibility(false);
+	Light->RegisterComponent();
+	Host->AddInstanceComponent(Light);
+	LightHost = Host;
+	TellLight = Light;
+	LightLevel = LightGoal = LightFull = 0.f;
+	LightStepIn = 1.f / static_cast<float>(Tuning.LightRampIn);
+	LightStepOut = 1.f / static_cast<float>(Tuning.LightRampOut);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena VFX: tell light ready: %.0f K, %.2f m up, %.2f m across, %.1f cd/m, %.2f m past the lane, barn doors %.0f deg %.2f m, in %d frames, out %d (no shadows)."),
+		Tuning.LightKelvin, Tuning.LightUp, Tuning.LightAcross, Tuning.LightCandelaPerMetre, Tuning.LightPast, Tuning.LightBarnDeg, Tuning.LightBarnLength,
+		Tuning.LightRampIn, Tuning.LightRampOut);
+}
+
+void FFTArenaBossVfx::ApplyLight()
+{
+	TellLight->SetIntensity(LightFull * LightLevel);
+	TellLight->SetVisibility(LightLevel > 0.f);
+}
+
+bool FFTArenaBossVfx::LightOn(const FVector& From, const FVector& To, const TCHAR* Why)
+{
+	if (!TellLight)
+	{
+		return false;
+	}
+	FVector Along = To - From;
+	Along.Z = 0.0;
+	const double Length = Along.Size();
+	if (Length < 1.0)
+	{
+		return false;
+	}
+	const FVector Dir = Along / Length;
+	// Emitting along its X (down), its width along its Y (the lane), its height along its Z (across the lane).
+	const FVector Mid = (From + To) * 0.5;
+	TellLight->SetWorldLocationAndRotation(FVector(Mid.X, Mid.Y, From.Z + static_cast<double>(Tuning.LightUp) * 100.0),
+		FRotationMatrix::MakeFromXY(FVector::DownVector, Dir).Rotator());
+	TellLight->SetSourceWidth(static_cast<float>(Length));
+	TellLight->SetAttenuationRadius(static_cast<float>(Length * 0.5 + static_cast<double>(Tuning.LightPast) * 100.0));
+	LightFull = Tuning.LightCandelaPerMetre * static_cast<float>(Length / 100.0);
+	LightGoal = 1.f;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena VFX: tell light on (%s): %.2f m along the lane from (%.2f, %.2f) to (%.2f, %.2f) m, %.1f cd at full, in over %d frames."),
+		Why ? Why : TEXT("marked"), Length / 100.0, From.X / 100.0, From.Y / 100.0, To.X / 100.0, To.Y / 100.0, LightFull, Tuning.LightRampIn);
+	return true;
+}
+
+void FFTArenaBossVfx::LightOff(bool bAtOnce, const TCHAR* Why)
+{
+	if (!TellLight || (LightGoal <= 0.f && LightLevel <= 0.f))
+	{
+		return;
+	}
+	const float Was = LightLevel;
+	LightGoal = 0.f;
+	if (bAtOnce)
+	{
+		LightLevel = 0.f;
+		ApplyLight();
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena VFX: tell light off (%s): %s from level %.2f."), Why ? Why : TEXT("off"),
+		bAtOnce ? TEXT("at once") : TEXT("ramped"), Was);
+}
+
+void FFTArenaBossVfx::TickLight()
+{
+	if (!TellLight || LightLevel == LightGoal)
+	{
+		return;
+	}
+	LightLevel = LightGoal > LightLevel ? FMath::Min(LightGoal, LightLevel + LightStepIn) : FMath::Max(LightGoal, LightLevel - LightStepOut);
+	// Exactly 1 or 0 at the ramp's last step (the steps are 1/n).
+	if (FMath::IsNearlyEqual(LightLevel, LightGoal, 1e-4f))
+	{
+		LightLevel = LightGoal;
+	}
+	ApplyLight();
 }
 
 AFTVfxActor* FFTArenaBossVfx::NextSlot(EEffect Effect)

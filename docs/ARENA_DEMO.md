@@ -166,6 +166,12 @@ Everything about it is data and host-side: the fight's rules never read it.
   `hover` (m) lifts the mesh above the enemy's position on the ground (the mesh's origin is its bottom; the tell arcs stay at
   ground level), `scale` scales it, `yawOffset` (degrees) turns it from its own facing (`FTMeshFacing`, which finds none on a
   mesh with no head or feet bones: set it by eye; a glTF export whose front is Blender -Y needs -90).
+- A clip row's optional `tell_light_on_s` (seconds from the clip's start, 0..`impact_s`): the time a marked move's tell light
+  comes on (Core's `tellLightWindow`). The window ends at the clip's first impact; only a move with `"marked": true` gets it,
+  and a later impact of the same clip gets none. The host draws it as one warm rect light over the tell's lane (no shadows,
+  in over 3 frames, out over 2 at the impact, cut at once on an interrupt), tunable through an optional `tellLight` object
+  in the boss's effects json (`up`, `across`, `candelaPerMetre`, `kelvin`, `past`, `barnDoorDeg`, `barnDoorLength`,
+  `rampIn`, `rampOut`). The showcase reel gives it a `light_on` / `light_off` cue pair inside the move's attack part.
 - A move's `clip`: the id of the clip played for it (`tell` stays the Read card's word, one of the nine). Ids are 1..31
   letters, digits, `_` and `-`, one per move.
 - A kind's `bpm`: the beat its startups are whole numbers of, in place of the file's (the kite's 72 against the file's 150).

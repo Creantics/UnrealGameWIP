@@ -1027,10 +1027,8 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 			{
 				Entry = bStone ? StoneBearer.ClipEntry(Kind, Out.move, Row.impact) : Row.impact - static_cast<double>(Startup);
 				bRunsOn = bStone && Out.move < StoneBearer.GetLayout().count && StoneBearer.GetLayout().runsOn[Out.move];
-				if (Entry < -ftcore::kBeatClipEntrySlack && Startup > 0.f)
-				{
-					Rate = FMath::Clamp(static_cast<float>(Row.impact) / Startup, kArenaMinClipRate, kArenaMaxClipRate);
-				}
+				// The rate's one path (the showcase's attack line logs the same function's value as the fight rate).
+				Rate = static_cast<float>(ftcore::beatClipRate(Row.impact, Entry, static_cast<double>(Startup), kArenaMinClipRate, kArenaMaxClipRate));
 				Entry = FMath::Max(Entry, 0.0);
 			}
 			Clip = MoveClip;
@@ -1158,7 +1156,95 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	const bool bLoop = (Row.loop || bBossLoop) && !bTimed;
 	const float At = bLoop && Length > 0.f ? FMath::Fmod(static_cast<float>(Time), Length) : FMath::Clamp(static_cast<float>(Time), 0.f, Length);
 	const double Blend = Row.blend > 0.0 ? Row.blend : Skin.Clips->blend;
+	if (bStone)
+	{
+		// The tell light, on the clip time this frame plays (the move's own clip only: any other clip, a stagger over it
+		// or the review loop cuts it).
+		StoneTellLight(Out, MoveRate > 0.f && !bBossLoop ? Clip : -1, Time);
+	}
 	Figure->PlayClip(Sequence, At, bLoop, FrameDelta, bHoldRoot, static_cast<float>(Blend), Row.additiveIn);
+}
+
+void UFTArenaRunner::StoneTellLight(const ftcore::ArenaEnemyOut& Out, int32 Clip, double ClipTime)
+{
+	constexpr uint8 NoMove = 255;
+	if (!BossVfx.IsSpawned() || StoneBearerSlot < 0)
+	{
+		return;
+	}
+	const FFTArenaSkin& Skin = Skins[StoneBearerSlot];
+	const bool bAttack = Out.brain == ftcore::ArenaBrain::Attack;
+	const bool bStartup = bAttack && Out.part == ftcore::ArenaPart::Startup;
+	const ftcore::StoneBearerLayout& Layout = StoneBearer.GetLayout();
+	// The move's window: its clip row's, when the move is marked (the data's flag, never its id) and this use is its first
+	// impact (a halves move's later impact runs on in the same clip: no second window).
+	std::optional<ftcore::TellLightWindow> Window;
+	if (bAttack && Clip >= 0 && Skin.Clips && Out.move < Layout.count)
+	{
+		const uint8 BossMove = StoneBearer.BossMoveOf(Out.move);
+		const ftcore::ArenaBossDef& Boss = StoneBearer.GetDef().boss;
+		const bool bMarked = BossMove < Boss.moveCount && Boss.moves[BossMove].marked;
+		Window = ftcore::tellLightWindow((*Skin.Clips)[static_cast<size_t>(Clip)], bMarked, Layout.impactOf[Out.move]);
+	}
+	const bool bWant = Window && bStartup && !Fight.over() && StoneTellMove == Out.move && ClipTime >= Window->on && ClipTime < Window->off;
+	if (StoneLightMove != NoMove && (!bWant || StoneLightMove != Out.move))
+	{
+		// Out: ramped at the impact (the same move gone active, or its clip at the impact), else at once.
+		const bool bSameMove = bAttack && StoneLightMove == Out.move;
+		const bool bImpact = bSameMove && !Fight.over() && (Out.part != ftcore::ArenaPart::Startup || (Window && ClipTime >= Window->off));
+		const TCHAR* Why = TEXT("its move ended");
+		if (bImpact)
+		{
+			Why = TEXT("the impact");
+		}
+		else if (Fight.over())
+		{
+			Why = TEXT("the fight is over");
+		}
+		else if (Out.brain == ftcore::ArenaBrain::Staggered)
+		{
+			Why = TEXT("stagger");
+		}
+		else if (Out.brain == ftcore::ArenaBrain::Open || Out.brain == ftcore::ArenaBrain::Down)
+		{
+			Why = TEXT("down");
+		}
+		else if (Out.brain == ftcore::ArenaBrain::Dead)
+		{
+			Why = TEXT("death");
+		}
+		else if (SlotTurn[StoneBearerSlot].Sign != 0)
+		{
+			Why = TEXT("the boss's turn");
+		}
+		else if (bSameMove && Clip < 0)
+		{
+			Why = TEXT("another clip over its move");
+		}
+		else if (bAttack && StoneLightMove != Out.move)
+		{
+			Why = TEXT("another move");
+		}
+		BossVfx.LightOff(!bImpact, Why);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.3f: boss move %d tell light off (%s) at clip %.3f s."), Fight.time(),
+			static_cast<int32>(StoneLightMove), Why, ClipTime);
+		StoneLightMove = NoMove;
+	}
+	if (bWant && StoneLightMove == NoMove)
+	{
+		// The lane from the boss's edge (as the tell's marks start) to the tell's point, both as the startup began.
+		const ftcore::Vec2 Span{StoneTellAt.x - StoneTellFrom.x, StoneTellAt.y - StoneTellFrom.y};
+		const float Length = ArenaLength(Span);
+		const float Edge = FMath::Min(Fight.def().enemies[static_cast<size_t>(StoneBearerSlot)].bodyRadius, Length);
+		const float Share = Length > 1e-4f ? Edge / Length : 0.f;
+		const FVector From = ToWorld(ftcore::Vec2{StoneTellFrom.x + Span.x * Share, StoneTellFrom.y + Span.y * Share});
+		if (BossVfx.LightOn(From, ToWorld(StoneTellAt), TEXT("marked")))
+		{
+			StoneLightMove = Out.move;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.3f: boss move %d tell light on at clip %.3f s (window %.3f-%.3f s)."), Fight.time(),
+				static_cast<int32>(Out.move), ClipTime, Window->on, Window->off);
+		}
+	}
 }
 
 void UFTArenaRunner::PutBodiesAtStart()
@@ -1205,6 +1291,11 @@ void UFTArenaRunner::PutBodiesAtStart()
 	StoneSplitStaggerSince = -1e9;
 	StoneSplitStaggerUntil = -1e9;
 	StoneTellMove = 255;
+	if (StoneLightMove != 255)
+	{
+		BossVfx.LightOff(true, TEXT("the fight restarts"));
+	}
+	StoneLightMove = 255;
 	StoneWantApproach = StoneWantStrafe = StoneWantRuns = StoneWalksBegun = 0;
 	StoneHeldCone = StoneHeldUp = StoneHeldHit = StoneHeldTurn = StoneHeldPick = 0;
 	StoneWalkStopAt = -1.0;
@@ -1667,6 +1758,7 @@ void UFTArenaRunner::BossPartChanged(const ftcore::ArenaEnemyOut& Out, uint8 Fro
 		return;
 	}
 	StoneTellAt = S.To;
+	StoneTellFrom = S.From;
 	StoneTellMove = Out.move;
 	StoneTellShapeMul = ShapeMul;
 	StoneTellFacing = Out.facing;
@@ -2027,6 +2119,8 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 	{
 		BossVfx.MoveGlow(BossFlashPoint());
 	}
+	// The tell light's ramp, one step a frame after DriveSkin turned it on or off.
+	BossVfx.TickLight();
 }
 
 void UFTArenaRunner::SteerCamera(float DeltaSeconds, int32 Only)
@@ -3252,18 +3346,30 @@ bool UFTArenaRunner::BeginShowcase()
 		{
 			Entry = bStone ? StoneBearer.ClipEntry(Kind, Move, Impact) : Impact - static_cast<double>(A.startup);
 		}
+		// The fight's rate for this clip, from the same function DriveSkin plays it by (the reel itself stays at 1.0).
+		const double FightRate = ftcore::beatClipRate(Impact, Entry, static_cast<double>(A.startup), kArenaMinClipRate, kArenaMaxClipRate);
 		if (Entry < -ftcore::kBeatClipEntrySlack)
 		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("Arena showcase: move %d's clip %s is entered at %.2f s; the fight plays it faster, the reel at rate 1.0 from 0."),
-				static_cast<int32>(Move), *Skin.Sequences[C]->GetName(), Entry);
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena showcase: move %d's clip %s is entered at %.2f s; the fight plays it slower from its start (rate %.2f), the reel at rate 1.0 from 0."),
+				static_cast<int32>(Move), *Skin.Sequences[C]->GetName(), Entry, FightRate);
 		}
 		Entry = FMath::Max(Entry, 0.0);
+		// Marked (the boss's data flag): its clip's tell light window gets a cue pair (ftcore::tellLightWindow).
+		bool bMarked = false;
+		if (bStone)
+		{
+			const uint8 BossMove = StoneBearer.BossMoveOf(Move);
+			const ftcore::ArenaBossDef& Boss = StoneBearer.GetDef().boss;
+			bMarked = BossMove < Boss.moveCount && Boss.moves[BossMove].marked;
+		}
 		ftcore::ShowAttack& S = Spec.attacks[Spec.attackCount++];
 		S.clip = C;
 		S.move = static_cast<int16>(Move);
 		S.entry = Entry;
 		S.until = Entry + static_cast<double>(A.startup + A.active + A.recovery);
 		S.left = bLeft;
+		S.marked = bMarked;
+		S.fightRate = FightRate;
 	};
 	if (bStone)
 	{
@@ -3482,9 +3588,10 @@ void UFTArenaRunner::TickShowcase(float DeltaSeconds)
 			// The fight's own lines, so the loops cutter reads the reel as it reads a fight.
 			if (Seg.attack >= 0)
 			{
-				UE_LOG(LogForgottenThird, Display, TEXT("Arena: enemy %d plays %s for move %d at rate %.2f (%.2f s) from %.2f s."), ShowSlot,
-					*Skin.Sequences[Seg.clip]->GetName(), static_cast<int32>(ShowSpecUsed.attacks[static_cast<size_t>(Seg.attack)].move), 1.0,
-					Seg.clipLength, Seg.clipFrom);
+				// The reel plays at 1.0; the fight's rate for the clip (ftcore::beatClipRate, DriveSkin's path) after it.
+				const ftcore::ShowAttack& A = ShowSpecUsed.attacks[static_cast<size_t>(Seg.attack)];
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: enemy %d plays %s for move %d at rate %.2f (%.2f s) from %.2f s (reel rate 1.00, fight rate %.2f)."),
+					ShowSlot, *Skin.Sequences[Seg.clip]->GetName(), static_cast<int32>(A.move), 1.0, Seg.clipLength, Seg.clipFrom, A.fightRate);
 			}
 			else
 			{
@@ -3568,6 +3675,8 @@ void UFTArenaRunner::TickShowcase(float DeltaSeconds)
 	{
 		BossVfx.MoveGlow(BossFlashPoint());
 	}
+	// The tell light's ramp, one step a frame after the cues turned it on or off.
+	BossVfx.TickLight();
 	ShowTime += static_cast<double>(DeltaSeconds);
 }
 
@@ -3593,6 +3702,11 @@ void UFTArenaRunner::ShowcaseCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& 
 	// toward the camera (where a lead's plain blow puts it, the camera standing in for the lead), at a lead's chest height.
 	if (ShowSlot >= 0 && ShowSlot == KiteSlot && KiteFx.IsSpawned())
 	{
+		// No tell light of its own (only the stone_bearer's reel marks its attacks).
+		if (Cue.cue == ftcore::ShowCue::LightOn || Cue.cue == ftcore::ShowCue::LightOff)
+		{
+			return;
+		}
 		const ftcore::ArenaEnemyKind& Kind = Fight.def().enemies[static_cast<size_t>(ShowSlot)];
 		// Inside an attack's take only the move the fight rings gets its ring.
 		if (Cue.cue == ftcore::ShowCue::Tell && Cue.place == ftcore::ShowPlace::Strike)
@@ -3654,6 +3768,7 @@ void UFTArenaRunner::ShowcaseCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& 
 		S.To = Fit.zone.clamp(S.To, 0.f);
 		const bool bArea = S.Shape == FFTStoneBearerStrike::EShape::Area;
 		ShowTellAt = S.To;
+		ShowTellFrom = S.From;
 		ShowTellShapeMul = bArea ? Tune.AreaScale : 1.f;
 		ShowTellAttack = Cue.attack;
 		bShowTellAir = S.bAir;
@@ -3741,6 +3856,37 @@ void UFTArenaRunner::ShowcaseCue(const ftcore::ShowCueAt& Cue, AFTArenaFighter& 
 		return;
 	case ftcore::ShowCue::Crit:
 		BossVfx.Play(FFTArenaBossVfx::EEffect::Crit, BossFlashPoint(), 1.f, TEXT("weak point crit"));
+		return;
+	case ftcore::ShowCue::LightOn:
+	{
+		// A marked attack's tell light along the lane its tell was drawn on (from the boss's edge, as the marks start).
+		if (Cue.attack < 0 || Cue.attack != ShowTellAttack)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena showcase: tell light for attack %d without its tell; it stays off."), static_cast<int32>(Cue.attack));
+			return;
+		}
+		const ftcore::Vec2 Span{ShowTellAt.x - ShowTellFrom.x, ShowTellAt.y - ShowTellFrom.y};
+		const float Length = ArenaLength(Span);
+		const float Edge = FMath::Min(Fight.def().enemies[Slot].bodyRadius, Length);
+		const float Share = Length > 1e-4f ? Edge / Length : 0.f;
+		const FVector From = ToWorld(ftcore::Vec2{ShowTellFrom.x + Span.x * Share, ShowTellFrom.y + Span.y * Share});
+		if (BossVfx.LightOn(From, ToWorld(ShowTellAt), TEXT("marked")))
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena showcase: tell light on for attack %d at reel %.3f s, clip %.3f s (frame reel %.3f s, frame %llu)."),
+				static_cast<int32>(Cue.attack), Cue.at, ftcore::clipShowPose(*Show, Cue.at).clipTime, FMath::Max(ShowTime, 0.0),
+				static_cast<unsigned long long>(GFrameCounter));
+		}
+		return;
+	}
+	case ftcore::ShowCue::LightOff:
+		if (BossVfx.IsLightOn())
+		{
+			// Out at the impact, ramped (the reel has no interrupt inside an attack's take).
+			BossVfx.LightOff(false, TEXT("the impact"));
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena showcase: tell light off for attack %d at reel %.3f s, clip %.3f s (frame reel %.3f s, frame %llu)."),
+				static_cast<int32>(Cue.attack), Cue.at, ftcore::clipShowPose(*Show, Cue.at).clipTime, FMath::Max(ShowTime, 0.0),
+				static_cast<unsigned long long>(GFrameCounter));
+		}
 		return;
 	}
 }

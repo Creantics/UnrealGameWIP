@@ -14,13 +14,22 @@
 // Data/Battle/arena_boss/stone_bearer_vfx.json (the defaults below when it is missing). Every play logs one Display line
 // ("Arena VFX: ...").
 //
-// Nothing here allocates after Spawn: a play moves a slot and restarts its Niagara component.
+// Besides the pool, the marked move's tell light: one rect light (URectLightComponent on its own actor, made once in Spawn
+// and reused), a bar of warm white over the floor along the move's lane, facing down, casting no shadows. The runner turns
+// it on and off through the window Core gives (ftcore::tellLightWindow): LightOn ramps it in over a few frames, LightOff
+// ramps it out at the impact or cuts it at once on an interrupt, and TickLight steps the ramp once a frame. Its tunables
+// are the json's optional "tellLight" object (the defaults below when it is missing).
+//
+// Nothing here allocates after Spawn: a play moves a slot and restarts its Niagara component; the light only moves and
+// changes its intensity.
 
 #include "CoreMinimal.h"
 
 #include "FTArenaBossVfx.generated.h"
 
+class AActor;
 class AFTVfxActor;
+class URectLightComponent;
 class UWorld;
 
 USTRUCT()
@@ -56,6 +65,21 @@ struct FFTArenaBossVfx
 		float WeakDepth = 0.85f;  // no weak-point bone: the point this share of the body radius out, on its gate's side
 		float FlashUp = 0.3f;       // m: the crit flash and the weak-point glow sit this far above the weak point ...
 		float FlashToCamera = 0.5f; // ... and this far from it toward the camera, clear of the carried piece
+		// The tell light ("tellLight": {"up", "across", "candelaPerMetre", "kelvin", "past", "barnDoorDeg", "barnDoorLength",
+		// "rampIn", "rampOut"}): a bar over the lane from the boss's edge to its end, LightUp m over the floor, LightAcross m
+		// across the lane; its intensity LightCandelaPerMetre cd for each metre of its length (about 23 lux on the floor
+		// under it at the defaults: pi * 8 / (2 * 0.55)); its reach LightPast m past the bar's ends; barn doors LightBarnDeg
+		// degrees open (0: straight down, 88: none) and LightBarnLength m long, so its pool on the floor stays narrow across
+		// the lane; full over LightRampIn frames, out over LightRampOut.
+		float LightUp = 0.55f;
+		float LightAcross = 0.3f;
+		float LightCandelaPerMetre = 8.f;
+		float LightKelvin = 3500.f;
+		float LightPast = 0.75f;
+		float LightBarnDeg = 25.f;
+		float LightBarnLength = 0.2f;
+		int32 LightRampIn = 3;  // 2..3
+		int32 LightRampOut = 2; // 1..2
 	};
 
 	// Reads the tunables (File, relative to the project), loads the systems and spawns the pool in World. Once: later calls
@@ -79,13 +103,34 @@ struct FFTArenaBossVfx
 	void MoveGlow(const FVector& At);
 	bool IsGlowing() const { return bGlowing; }
 
+	// The tell light: on along the floor from From to To (world, cm; the bar spans them, lifted LightUp over From's
+	// height), ramping in from the next TickLight. False (nothing changes) without the light or with From and To under a
+	// centimetre apart.
+	bool LightOn(const FVector& From, const FVector& To, const TCHAR* Why);
+	// Out: ramped over LightRampOut frames (the impact), or bAtOnce out and hidden this frame (an interrupt). Nothing when
+	// it is out already.
+	void LightOff(bool bAtOnce, const TCHAR* Why);
+	// One step of the ramp; once a frame, after anything that turns the light on or off that frame.
+	void TickLight();
+	// On (ramping in or full), and its level now (0..1 of full).
+	bool IsLightOn() const { return LightGoal > 0.f; }
+	float GetLightLevel() const { return LightLevel; }
+
 	UPROPERTY()
 	TObjectPtr<AFTVfxActor> Slots[15]; // MaxSlots (a literal for UHT; checked in the .cpp)
+	// The tell light and the actor that holds it (made once in Spawn).
+	UPROPERTY()
+	TObjectPtr<AActor> LightHost;
+	UPROPERTY()
+	TObjectPtr<URectLightComponent> TellLight;
 
 private:
 	void ReadTuning(const FString& File);
 	static int32 FirstSlot(EEffect Effect);
 	AFTVfxActor* NextSlot(EEffect Effect);
+	void SpawnLight(UWorld* World);
+	// The light's intensity at LightLevel, hidden at 0.
+	void ApplyLight();
 
 	FTuning Tuning;
 	int32 Next[EffectCount] = {};
@@ -93,4 +138,10 @@ private:
 	bool bSpawned = false;
 	bool bTells = false;
 	bool bGlowing = false;
+	// The ramp: the level now and the one it heads for (0..1), its full intensity (cd) and the steps per frame.
+	float LightLevel = 0.f;
+	float LightGoal = 0.f;
+	float LightFull = 0.f;
+	float LightStepIn = 1.f;
+	float LightStepOut = 1.f;
 };

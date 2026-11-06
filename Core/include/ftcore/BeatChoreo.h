@@ -102,6 +102,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -128,7 +129,7 @@ inline constexpr double kVictoryFrom = 0.25;   // from this share of full speed
 
 // A move's clip is entered at (its impact - the move's startup), so the impact lands as the startup ends, at rate 1.0.
 // An entry less than this before the clip's start (s; the data's rounding) is entered at the start; further before
-// it, the host plays the clip faster instead. The data test holds every boss move to the same bound.
+// it, the host plays the clip from its start, slower (beatClipRate). The data test holds every boss move to the same bound.
 inline constexpr double kBeatClipEntrySlack = 1.0 / 60.0;
 
 struct BeatClip {
@@ -138,6 +139,7 @@ struct BeatClip {
     double impact = 0.0; // seconds into the clip; 0: none
     double speed = 0.0;  // the root speed the clip was authored at, m/s (a walk plays at the body's speed over this); 0: none
     double blend = 0.0;  // the crossfade into this clip, s (optional "blend_s"); 0: the table's
+    double tellLightOn = -1.0; // s into the clip a marked move's tell light comes on (optional "tell_light_on_s"); -1: none
     bool loop = false;
     // The host adds the clip's own motion (from its first frame) on top of the pose it cuts in from while it fades in,
     // so a short reaction lands at its full size at once instead of easing in over the crossfade.
@@ -167,11 +169,31 @@ struct BeatClips {
 // are 1..31 letters, digits, _ and -; the asset (optional) is a path of 1..127 characters beginning
 // with /, which the host loads; the length is over 0 and at most 60 s; the impact is within the clip; the optional
 // "speed_mps" is over 0 and at most 20; a clip's optional "blend_s" (over 0, at most 1) is the crossfade into it, in place of
-// the table's, and its optional "additive_in" true or false. An optional top-level "mesh" is the skeletal mesh asset the clips are for (a path like the
-// asset's), and an optional "blend_s" (over 0, at most 1) the crossfade between them. Unknown keys are warnings. On failure `out` is empty
-// and *error lists each problem with its path, one per line.
+// the table's, and its optional "additive_in" true or false. A clip's optional "tell_light_on_s" is when a marked move's
+// tell light comes on, s into the clip, 0..its impact_s (tellLightWindow). An optional top-level "mesh" is the skeletal
+// mesh asset the clips are for (a path like the asset's), and an optional "blend_s" (over 0, at most 1) the crossfade
+// between them. Unknown keys are warnings. On failure `out` is empty and *error lists each problem with its path, one
+// per line.
 FTCORE_API bool importBeatClips(std::string_view json, BeatClips& out, std::string* error = nullptr,
                                 std::vector<std::string>* warnings = nullptr);
+
+// The rate a host plays a move's clip at so the clip's impact (s into it) lands as the move's startup (s) ends. 1.0 when
+// the clip is entered (`entry`, s into it: impact - startup, or where a take running on had reached) at its start or
+// later, or less than kBeatClipEntrySlack before it; further before it the clip plays from its start at impact /
+// startup (slower), held to [minRate, maxRate]. 1.0 with no impact or no startup.
+FTCORE_API double beatClipRate(double impact, double entry, double startup, double minRate, double maxRate);
+
+// A marked move's tell light, s into its clip: on at the clip's "tell_light_on_s", off at the clip's impact (the move's
+// first impact).
+struct TellLightWindow {
+    double on = 0.0;
+    double off = 0.0;
+};
+// The window when the move is marked (its data's "marked" flag), `impact` is the use's first impact (0: a later impact of
+// the same use enters the clip again and lights nothing), and the clip has "tell_light_on_s" before its impact; else
+// nothing. The host lights it from `on`, puts it out at `off`, and puts it out at once when anything ends the move before
+// `off` (a stagger, a turn, the fight's end).
+FTCORE_API std::optional<TellLightWindow> tellLightWindow(const BeatClip& clip, bool marked, std::uint8_t impact = 0);
 
 // ---- shots and anchors ----
 
