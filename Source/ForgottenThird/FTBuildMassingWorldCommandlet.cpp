@@ -791,20 +791,39 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				FNavLocation To;
 				const UNavigationPath* Route = nullptr;
 				const bool bOnMesh = Nav->ProjectPointToNavigation(Cm(ftcore::massingEnginePoint(Side, X, Y, Z)), To, kNavProjectExtent);
-				if (bOnMesh)
+				// A point on the entry's own spot: the engine answers with a one-point path, which is not a valid one.
+				const bool bAtEntry = bOnMesh && FVector::Dist(From.Location, To.Location) < 100.0;
+				if (bOnMesh && !bAtEntry)
 				{
 					Route = Nav->FindPathToLocationSynchronously(World, From.Location, To.Location);
 				}
-				const bool bReached = Route && Route->IsValid() && !Route->IsPartial();
+				const bool bReached = bAtEntry || (Route && Route->IsValid() && !Route->IsPartial());
+				// Engine cm back to the plan's metres, for the log.
+				const auto PlanOf = [Side](const FVector& At) {
+					return FVector(At.X / 100.0 + Side * 0.5, Side * 0.5 - At.Y / 100.0, At.Z / 100.0);
+				};
 				if (bReached)
 				{
 					UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: %s (%.0f, %.0f, %+.0f): reached, %.0f m of path."), *What, X, Y, Z,
-						Route->GetPathLength() / 100.0);
+						bAtEntry ? 0.0 : Route->GetPathLength() / 100.0);
+				}
+				else if (!bOnMesh)
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: %s (%.0f, %.0f, %+.0f): not on the navmesh."), *What, X, Y, Z);
 				}
 				else
 				{
-					UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: %s (%.0f, %.0f, %+.0f): %s."), *What, X, Y, Z,
-						bOnMesh ? TEXT("no full path from the entry") : TEXT("not on the navmesh"));
+					// Where the point met the navmesh, and where the nearest path from the entry stops short of it.
+					const FVector Met = PlanOf(To.Location);
+					FString Stop = TEXT("no path at all");
+					if (Route && Route->PathPoints.Num() > 0)
+					{
+						const FVector End = PlanOf(Route->PathPoints.Last());
+						Stop = FString::Printf(TEXT("the path stops at (%.1f, %.1f, %+.1f), %.1f m short"), End.X, End.Y, End.Z,
+							FVector::Dist(Route->PathPoints.Last(), To.Location) / 100.0);
+					}
+					UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: %s (%.0f, %.0f, %+.0f): no full path from the entry; on the navmesh at "
+						"(%.1f, %.1f, %+.1f); %s."), *What, X, Y, Z, Met.X, Met.Y, Met.Z, *Stop);
 				}
 				return bReached;
 			};
