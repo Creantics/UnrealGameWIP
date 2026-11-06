@@ -212,7 +212,25 @@ float apexTime(float vy, float gy, float k) {
     return k > 0.f ? std::log(1.f + vy * k / -gy) / k : vy / -gy;
 }
 
-bool isDebris(const VfxEmitter& em) { return highest(em.speed) >= 0.5f; }
+// A piece that falls: the sheets, the cloud, the ring, the snap and everything on the hand carry no gravity.
+bool isDebris(const VfxEmitter& em) { return em.gravity.y < 0.f; }
+
+// The fastest and the slowest speed a velocity box throws a piece at.
+float boxSpeedHi(const VfxEmitter& em) {
+    const auto top = [](float a, float b) { return std::max(std::fabs(a), std::fabs(b)); };
+    const float x = top(em.velocityMin.x, em.velocityMax.x);
+    const float y = top(em.velocityMin.y, em.velocityMax.y);
+    const float z = top(em.velocityMin.z, em.velocityMax.z);
+    return std::sqrt(x * x + y * y + z * z);
+}
+
+float boxSpeedLo(const VfxEmitter& em) {
+    const auto foot = [](float a, float b) { return a <= 0.f && b >= 0.f ? 0.f : std::min(std::fabs(a), std::fabs(b)); };
+    const float x = foot(em.velocityMin.x, em.velocityMax.x);
+    const float y = foot(em.velocityMin.y, em.velocityMax.y);
+    const float z = foot(em.velocityMin.z, em.velocityMax.z);
+    return std::sqrt(x * x + y * y + z * z);
+}
 
 } // namespace
 
@@ -492,8 +510,8 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
         CHECK(s.color.r >= 2.f);
         CHECK(s.color.r >= 4.f * std::max(s.color.g, s.color.b));
     }
-    // The ring: red, on the hit frame and for about 0.3 s, gone before the fastest chunk thrown straight up starts
-    // to fall. Only its edge (eroding) and its fade-out are soft.
+    // The ring: red, on the hit frame and for about 0.3 s, gone well before the chunks come down. Only its edge
+    // (eroding) and its fade-out are soft.
     CHECK(ring->atlas.set == "InkMass");
     CHECK(ring->atlas.group == "redring");
     CHECK(ring->blend == VfxBlend::Alpha);
@@ -506,7 +524,7 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
         CHECK(s.color.r >= 3.f); // hot: the ring sprites' own red, lifted
         CHECK(s.color.r >= 2.f * std::max(s.color.g, s.color.b));
     }
-    CHECK(highest(ring->lifetime) <= apexTime(highest(chunks->speed), chunks->gravity.y, chunks->drag));
+    CHECK(highest(ring->lifetime) <= 0.6f * lowest(chunks->lifetime));
     float critLife = 0.f;
     for (const VfxEmitter& em : crit.emitters) critLife = std::max(critLife, lowest(em.lifetime));
     CHECK(critLife >= 8.f * kFrame);
@@ -515,8 +533,8 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
     // from all eleven blot shapes and drops from all five drop shapes; each emitter's sizes span 2x or more and its
     // speeds 1.8x or more. Drops and streaks laid along their velocity keep the sprite's own shape (lengthScale 1, no
     // speed stretch on top) and outnumber the round blots; round sprites turn slowly both ways from any start (liquid,
-    // not tumbling chips). The blots leave at 1.8 m/s or more under light drag, so they clear the body before they fall.
-    // The hit's ink is a matte grey-black tint (0.7 or less, no sheen lift); the crit's is red.
+    // not tumbling chips). The blots spread 1.8 m/s or more sideways under light drag, so they clear the body as they
+    // fall. The hit's ink is a matte grey-black tint (0.7 or less, no sheen lift); the crit's is red.
     for (const VfxEffect* fx : {&ink, &crit}) {
         bool blots = false;
         bool dropShapes = false;
@@ -528,7 +546,7 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
             CAPTURE(em.name);
             CHECK(em.gravity.y <= -9.f);
             CHECK((em.atlas.set == "InkBlot" || em.atlas.set == "InkStreak"));
-            CHECK(highest(em.speed) >= 1.8f * lowest(em.speed));
+            CHECK(boxSpeedHi(em) >= 1.8f * boxSpeedLo(em));
             blots = blots || em.atlas.group == "blot";
             dropShapes = dropShapes || (em.atlas.set == "InkBlot" && em.atlas.group == "drop");
             if (em.renderMode == VfxRenderMode::Stretched) {
@@ -547,7 +565,8 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
             }
             if (em.atlas.set == "InkBlot") {
                 CHECK(highest(em.startSize) >= 2.f * lowest(em.startSize));
-                CHECK(lowest(em.speed) >= 1.8f);
+                CHECK(em.velocityMax.x >= 1.8f);
+                CHECK(em.velocityMin.x <= -1.8f);
                 CHECK(em.drag <= 1.f);
             }
             for (const VfxColorStop& s : em.colorOverLife.stops) {
@@ -593,8 +612,33 @@ float fallTime(float vy, float gy, float k, float drop) {
 
 } // namespace
 
-TEST_CASE("vfx: the Dealer's ink lands: debris falls through the floor at full alpha, and marks splat in as it lands") {
+TEST_CASE("vfx: no falling piece of the Dealer's six effects ends at full alpha: each fades out over 3 frames or more") {
     constexpr float kFrame = 1.f / 30.f;
+    std::size_t pieces = 0;
+    for (const char* file : {"dealer_deal_tell", "dealer_seam_open", "dealer_seam_crit", "ink_hit", "ink_hit_floor",
+                             "dealer_seam_crit_floor"}) {
+        CAPTURE(file);
+        VfxEffect fx;
+        REQUIRE(loadEffect(file, fx));
+        for (const VfxEmitter& em : fx.emitters) {
+            if (!isDebris(em)) continue;
+            ++pieces;
+            CAPTURE(em.name);
+            REQUIRE(em.colorOverLife.stops.size() >= 2);
+            CHECK(em.colorOverLife.stops.back().t == 1.f);
+            CHECK(em.colorOverLife.stops.back().color.a == 0.f);
+            CHECK((1.f - fadeOutStart(em)) * lowest(em.lifetime) >= 3.f * kFrame);
+        }
+    }
+    CHECK(pieces == 8); // the tell's drops, the seam's drips, the hit's four and the crit's two
+}
+
+TEST_CASE("vfx: the Dealer's ink lands: debris has faded out just over the floor, and marks splat in as it lands") {
+    constexpr float kFrame = 1.f / 30.f;
+    // A Lightweight emitter has no collision: a piece at full alpha crosses the floor at 0.25 m a frame, which reads as
+    // a pop. So each emitter throws one narrow vertical band, its life matched to that band's landing.
+    constexpr float kClear = 0.15f; // the lowest piece's centre is this far over the floor, or more, when it is gone
+    constexpr float kLand = 0.4f;   // and the highest piece of the band is within this, so it still reads as landing
     struct Landing {
         const char* fx;
         const char* floor;
@@ -611,22 +655,23 @@ TEST_CASE("vfx: the Dealer's ink lands: debris falls through the floor at full a
         float first = 1e9f;
         float last = 0.f;
         for (const VfxEmitter& em : fx.emitters) {
-            if (highest(em.speed) < 0.5f) continue;
+            if (!isDebris(em)) continue;
             CAPTURE(em.name);
-            // Full alpha to the end: debris vanishes under the floor (which hides it), never in mid-air.
-            for (const VfxColorStop& s : em.colorOverLife.stops) CHECK(s.color.a >= 0.9f);
-            // Even the fastest throw straight up is under the floor before it dies.
-            CHECK(lowest(em.lifetime) >= fallTime(highest(em.speed), em.gravity.y, em.drag, c.height));
-            // The flattest, slowest throw lands first; the fastest straight up, last.
-            const float tilt = em.shape == VfxShape::Cone ? em.coneAngle * kPi / 180.f : 0.5f * kPi;
-            first = std::min(first, fallTime(lowest(em.speed) * std::cos(tilt), em.gravity.y, em.drag, c.height));
-            last = std::max(last, fallTime(highest(em.speed), em.gravity.y, em.drag, c.height));
+            CHECK(highest(em.speed) == 0.f); // the box alone sets the throw
+            CHECK(em.velocityMax.y - em.velocityMin.y <= 0.21f);
+            CHECK(highest(em.lifetime) <= fallTime(em.velocityMin.y, em.gravity.y, em.drag, c.height - kClear));
+            CHECK(c.height + dragHeight(em.velocityMax.y, em.gravity.y, em.drag, lowest(em.lifetime)) <= kLand);
+            // Nothing hangs in the air at the top of its throw.
+            CHECK(apexTime(em.velocityMax.y, em.gravity.y, em.drag) <= 8.f * kFrame);
+            // The band thrown lowest lands first; the band thrown highest, last.
+            first = std::min(first, fallTime(em.velocityMin.y, em.gravity.y, em.drag, c.height));
+            last = std::max(last, fallTime(em.velocityMax.y, em.gravity.y, em.drag, c.height));
         }
         REQUIRE(last > first);
         // The marks: wet silhouettes laid flat on the floor, splatting in over 2 frames or less as the first ink lands
-        // and while the rest does, held 0.8 s or more, then drying lighter as they go. A pool wider than the contact
-        // shadow (the plain hit's sized to the hit, the crit's wider), with splats of 0.4 m or more round it, and fine
-        // spatter on a ring at its rim.
+        // and while the rest does, held 0.8 s or more, then fading as they go, never turning lighter. A pool wider than
+        // the contact shadow (the plain hit's sized to the hit, the crit's wider), with splats of 0.4 m or more round it,
+        // and fine spatter on a ring at its rim.
         const bool red = std::string(c.floor) == "dealer_seam_crit_floor";
         float firstMark = 1e9f;
         float pool = 0.f;
@@ -652,7 +697,11 @@ TEST_CASE("vfx: the Dealer's ink lands: debris falls through the floor at full a
             CHECK(rampInAt(em.colorOverLife) * highest(em.lifetime) <= 2.f * kFrame);
             CHECK(fadeFrom(em.colorOverLife) * lowest(em.lifetime) >= 0.8f);
             REQUIRE(em.colorOverLife.stops.size() >= 2);
-            CHECK(em.colorOverLife.stops.back().color.r > 2.f * em.colorOverLife.stops.front().color.r);
+            for (const VfxColorStop& s : em.colorOverLife.stops) { // only the alpha moves: no light halo as it dries
+                CHECK(s.color.r == em.colorOverLife.stops.front().color.r);
+                CHECK(s.color.g == em.colorOverLife.stops.front().color.g);
+                CHECK(s.color.b == em.colorOverLife.stops.front().color.b);
+            }
             for (const VfxBurst& b : em.bursts) {
                 CHECK(b.time >= first - kFrame);
                 CHECK(b.time <= last);
@@ -662,7 +711,7 @@ TEST_CASE("vfx: the Dealer's ink lands: debris falls through the floor at full a
         CHECK(firstMark <= first + 2.f * kFrame);
         CHECK(pool >= (red ? 1.3f : 0.8f)); // wide enough to read round the feet at 60 px
         CHECK(rim);
-        // The crit's marks carry its red, wet and drying; the plain hit's are dark (1 or less) while wet.
+        // The crit's marks carry its red; the plain hit's are dark (1 or less).
         for (const VfxEmitter& em : floor.emitters) {
             CAPTURE(em.name);
             for (const VfxColorStop& s : em.colorOverLife.stops) {

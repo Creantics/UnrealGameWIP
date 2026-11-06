@@ -14,9 +14,9 @@
       "maxParticles": 10,
       "lifetime": 0.5,
       "shape": "sphere",
-      "radius": 0.03,
+      "radius": 0.04,
       "space": "local",
-      "startSize": [0.355, 0.385],
+      "startSize": [0.39, 0.42],
       "sizeOverLife": [
         {"t": 0, "v": 0.9},
         {"t": 0.22, "v": 1.0},
@@ -48,7 +48,7 @@
       "shape": "sphere",
       "radius": 0.045,
       "space": "local",
-      "startSize": [0.34, 0.39],
+      "startSize": [0.37, 0.42],
       "sizeOverLife": [
         {"t": 0, "v": 0.9},
         {"t": 0.22, "v": 1.0},
@@ -86,7 +86,7 @@
       "colorOverLife": [
         {"t": 0, "color": [1.0, 1.0, 1.0, 0.0]},
         {"t": 0.22, "color": [1.0, 1.0, 1.0, 0.95]},
-        {"t": 0.85, "color": [1.0, 1.0, 1.0, 0.95]},
+        {"t": 0.79, "color": [1.0, 1.0, 1.0, 0.95]},
         {"t": 1, "color": [1.0, 1.0, 1.0, 0.0]}
       ],
       "blend": "alpha",
