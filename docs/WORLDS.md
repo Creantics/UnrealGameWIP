@@ -192,6 +192,20 @@ The build logs the ground's numbers, then the map's. For Solhaven:
 | lattice | -38.6 to 146.3 m | -12.1 to 36.0 m | 1.0% | 2, 8 | 3 | 25 |
 | unwritten | -185.5 to 36.0 m | -18.0 to 36.0 m | 2.8% | 2, 64 | 0 | 78 |
 
+### Massing maps
+
+A world whose production plan blocks its town out in a massing table is built from that plan's files instead, which stay outside the repo and are named on the command line (the commandlet's header, `FTBuildMassingWorldCommandlet.h`, lists them):
+
+```
+UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildMassingWorld -Height=<json> -Boxes=<csv> -Walls=<csv> -Goals=<csv> -Entry=<x,y,z> -Look=<x,y> -Sea=<x> -Map=<name> -World=<id> -NullRHI -unattended -nopause -nosplash
+```
+
+Without `-World` the map is a free walk with no director. With `-World=<id>` it is that world's: the goals table's rows `D0`, `D1`, ... give each district's plaza centre and floor, and each district's spawn is the row's `spawn_x`, `spawn_y` when given, or else the generator's own rule (9 m behind the plaza's centre, facing the square's centre). The spawn stands on the highest deck or landing at most 6 m over the higher of the plaza's floor and the ground there. The build pins the world's layout to these places (`WorldLayout::pinDistricts`), so every district's frame, `districtAt` and a story step's placing follow the plan while the generated roads and blocks stay as they were (the massing map doesn't build them). It logs each district, warning when the lead would stand inside a box or wall at its spawn:
+
+`FTBuildMassingWorld: district 9: plaza (-65.0, 105.0) at 35.0 m; spawn (-69.7, 112.6) on <id> at 40.0 m.`
+
+It then places the director with the districts' floors, centres and spawns, and with the navmesh checks each district's spawn as well as each goal for a path from the entry; the summary line adds `district spawns reached <n> of <m>`, and `-Strict` fails on a missing one.
+
 ## Headless checks
 
 - Core: `Core/tests/test_world_layout.cpp` covers:
@@ -206,6 +220,8 @@ The build logs the ground's numbers, then the map's. For Solhaven:
   ```
   UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/World_Solhaven -game -NullRHI -WorldAutoPlay -AlphaFast -WorldQuitOnDone -unattended -nosplash -nosound
   ```
+
+  On a massing map built with `-World`, whose districts the map pins, the tour walks the navmesh between the spawns instead of the generated roads, which that map doesn't have, and says so when it starts.
 
   It logs `World solhaven: reached district <d> (leg i/n) at <t> s game time.` for each leg, then `TOUR DONE`. Solhaven takes 18 legs and 814 s of game time, about 106 s real with `-AlphaFast`; Lattice 15 legs and 803 s, Unwritten 17 legs and 992 s, each with the lead's feet 5 cm over the entry's floor.
 - `-WorldDistrict=<n>`, outside a story step, starts the lead on district n's spawn and floor instead of the PlayerStart, and starts a tour there. With `-ExplorePortrait` it frames the ground from that district's pad, such as the climax's hilltop (Solhaven's district 14, Lattice's 1, Unwritten's 4).

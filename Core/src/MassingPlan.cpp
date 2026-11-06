@@ -402,4 +402,67 @@ MassingVec massingLandscapeCorner(double squareSide, double originX, double orig
     return massingEnginePoint(squareSide, originX, north, 0.0);
 }
 
+double massingGroundAt(const std::uint16_t* grid, std::size_t samplesX, std::size_t samplesY, double spacing,
+                       double originX, double originY, double x, double y) {
+    if (!grid || samplesX == 0 || samplesY == 0 || !(spacing > 0.0) || !std::isfinite(x) || !std::isfinite(y))
+        return 0.0;
+    const double fx = std::clamp((x - originX) / spacing, 0.0, static_cast<double>(samplesX - 1));
+    const double fy = std::clamp((y - originY) / spacing, 0.0, static_cast<double>(samplesY - 1));
+    const std::size_t c0 = static_cast<std::size_t>(fx), r0 = static_cast<std::size_t>(fy);
+    const std::size_t c1 = std::min(c0 + 1, samplesX - 1), r1 = std::min(r0 + 1, samplesY - 1);
+    const double tx = fx - static_cast<double>(c0), ty = fy - static_cast<double>(r0);
+    const auto h = [&](std::size_t c, std::size_t r) { return massingHeightFromValue(grid[r * samplesX + c]); };
+    const double south = h(c0, r0) + (h(c1, r0) - h(c0, r0)) * tx;
+    const double north = h(c0, r1) + (h(c1, r1) - h(c0, r1)) * tx;
+    return south + (north - south) * ty;
+}
+
+namespace {
+
+// The box's solid over a plan point: false when its footprint doesn't hold the point.
+bool solidAt(const MassingBox& b, double x, double y, double& bottom, double& top) {
+    if (!(b.sx > 0.0) || !(b.sy > 0.0)) return false;
+    const double a = b.rot * kPi / 180.0;
+    const double c = std::cos(a), s = std::sin(a);
+    const double dx = x - b.cx, dy = y - b.cy;
+    const double u = dx * c + dy * s, w = -dx * s + dy * c; // massingCorners' rotation, undone
+    if (std::fabs(u) > b.sx * 0.5 || std::fabs(w) > b.sy * 0.5) return false;
+    std::array<MassingVec, 8> corners;
+    massingCorners(b, 0.0, corners);
+    const double t = u / b.sx + 0.5; // the rings run (-u) to (+u) from their first corner to their second
+    bottom = corners[0].z + (corners[1].z - corners[0].z) * t;
+    top = corners[4].z + (corners[5].z - corners[4].z) * t;
+    return true;
+}
+
+} // namespace
+
+double massingFloorAt(const std::vector<MassingBox>& boxes, const std::vector<bool>& include, double x, double y,
+                      double ground, double ceiling, int* onBox) {
+    double floor = ground;
+    int on = -1;
+    const std::size_t n = std::min(boxes.size(), include.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        double bottom = 0.0, top = 0.0;
+        if (!include[i] || !solidAt(boxes[i], x, y, bottom, top)) continue;
+        if (top <= ceiling && top > floor) {
+            floor = top;
+            on = static_cast<int>(i);
+        }
+    }
+    if (onBox) *onBox = on;
+    return floor;
+}
+
+int massingBlockingAt(const std::vector<MassingBox>& boxes, const std::vector<bool>& include, double x, double y,
+                      double floor, double height) {
+    const std::size_t n = std::min(boxes.size(), include.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        double bottom = 0.0, top = 0.0;
+        if (!include[i] || !solidAt(boxes[i], x, y, bottom, top)) continue;
+        if (top > floor + kMassingStandClear && bottom < floor + height) return static_cast<int>(i);
+    }
+    return -1;
+}
+
 } // namespace ftcore

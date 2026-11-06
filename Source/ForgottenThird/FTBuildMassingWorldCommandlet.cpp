@@ -36,11 +36,13 @@
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 
+#include "FTExploreDirector.h"
 #include "FTExploreGameMode.h"
 #include "FTSceneLook.h"
 
 #include "ftcore/Json.h"
 #include "ftcore/MassingPlan.h"
+#include "ftcore/WorldLayout.h"
 
 #include <array>
 #include <string>
@@ -62,6 +64,11 @@ const FVector kNavProjectExtent(300.0, 300.0, 600.0);
 const FName kMassingSlot(TEXT("Massing"));
 // The sun's angle, as in the big worlds.
 const FRotator kMassingSun(-38, 35, 0);
+// With -World: a district's spawn stands on the highest deck or landing at most this far (m) over the higher of its
+// plaza's floor and the ground there, so a raised landing counts and a roof over the spawn doesn't.
+constexpr double kSpawnStepUp = 6.0;
+// The lead's height (m), for a spawn that would stand inside a box.
+constexpr double kLeadHeight = 1.8;
 
 FVector Cm(const ftcore::MassingVec& V)
 {
@@ -166,9 +173,13 @@ struct FGoal
 	double X = 0.0;
 	double Y = 0.0;
 	double Z = 0.0;
+	bool bSpawn = false; // the row names a spawn (spawn_x, spawn_y)
+	double SpawnX = 0.0;
+	double SpawnY = 0.0;
 };
 
-// A CSV with the columns id, x, y, z (in any order, others skipped); '#' lines are comments.
+// A CSV with the columns id, x, y, z and optionally spawn_x, spawn_y (in any order, others skipped; a row may leave
+// both spawn fields empty); '#' lines are comments.
 bool LoadGoals(const FString& File, TArray<FGoal>& Goals)
 {
 	FString Text;
@@ -181,6 +192,8 @@ bool LoadGoals(const FString& File, TArray<FGoal>& Goals)
 	Text.ParseIntoArrayLines(Lines);
 	int32 Col[4] = {INDEX_NONE, INDEX_NONE, INDEX_NONE, INDEX_NONE};
 	const TCHAR* const Names[4] = {TEXT("id"), TEXT("x"), TEXT("y"), TEXT("z")};
+	int32 SpawnCol[2] = {INDEX_NONE, INDEX_NONE};
+	const TCHAR* const SpawnNames[2] = {TEXT("spawn_x"), TEXT("spawn_y")};
 	bool bHeader = false;
 	for (int32 L = 0; L < Lines.Num(); ++L)
 	{
@@ -202,6 +215,15 @@ bool LoadGoals(const FString& File, TArray<FGoal>& Goals)
 					return false;
 				}
 			}
+			for (int32 C = 0; C < 2; ++C)
+			{
+				SpawnCol[C] = Fields.IndexOfByPredicate([&](const FString& F) { return F.TrimStartAndEnd() == SpawnNames[C]; });
+			}
+			if ((SpawnCol[0] == INDEX_NONE) != (SpawnCol[1] == INDEX_NONE))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s has one of spawn_x and spawn_y without the other."), *File);
+				return false;
+			}
 			bHeader = true;
 			continue;
 		}
@@ -214,6 +236,18 @@ bool LoadGoals(const FString& File, TArray<FGoal>& Goals)
 			{
 				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: a goal row needs an id and numbers for x, y and z: '%s'."), *File,
 					*Line);
+				return false;
+			}
+		}
+		if (SpawnCol[0] != INDEX_NONE)
+		{
+			const FString SX = Fields.IsValidIndex(SpawnCol[0]) ? Fields[SpawnCol[0]].TrimStartAndEnd() : FString();
+			const FString SY = Fields.IsValidIndex(SpawnCol[1]) ? Fields[SpawnCol[1]].TrimStartAndEnd() : FString();
+			Goal.bSpawn = !SX.IsEmpty() || !SY.IsEmpty();
+			if (Goal.bSpawn && (!LexTryParseString(Goal.SpawnX, *SX) || !LexTryParseString(Goal.SpawnY, *SY)))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: a goal's spawn needs numbers for both spawn_x and spawn_y: '%s'."),
+					*File, *Line);
 				return false;
 			}
 		}
@@ -360,7 +394,7 @@ UFTBuildMassingWorldCommandlet::UFTBuildMassingWorldCommandlet()
 int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
-	FString HeightFile, BoxesFile, WallsFile, GoalsFile, EntryText, LookText;
+	FString HeightFile, BoxesFile, WallsFile, GoalsFile, EntryText, LookText, WorldText;
 	FString MapName = TEXT("World_Massing");
 	FParse::Value(*Params, TEXT("Height="), HeightFile);
 	FParse::Value(*Params, TEXT("Boxes="), BoxesFile);
@@ -370,6 +404,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	FParse::Value(*Params, TEXT("Entry="), EntryText, false);
 	FParse::Value(*Params, TEXT("Look="), LookText, false);
 	FParse::Value(*Params, TEXT("Map="), MapName);
+	FParse::Value(*Params, TEXT("World="), WorldText);
 	double Side = 1000.0;
 	FParse::Value(*Params, TEXT("Side="), Side);
 	double SeaWest = 0.0;
@@ -407,6 +442,123 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s is not a WALL row."), *WallsFile, *Utf8(Wall.id));
 			return 1;
+		}
+	}
+
+	// With -World: the world's districts where the plan puts them. The goals table's rows D0, D1, ... are their plazas'
+	// centres and floors; each spawn is the row's spawn_x, spawn_y or else the generator's rule (spawnFor), set down on
+	// the highest deck or landing within kSpawnStepUp, and the lot is pinned here as the director pins it at run time.
+	struct FDistrictPlace
+	{
+		double CentreX = 0.0, CentreY = 0.0, Floor = 0.0; // plan frame, m
+		double SpawnX = 0.0, SpawnY = 0.0, SpawnFloor = 0.0;
+		int32 OnBox = -1;  // the box the spawn stands on, or -1 for the ground
+		int32 Inside = -1; // a box (or with bInsideWall, a wall) the lead would stand inside at the spawn
+		bool bInsideWall = false;
+	};
+	TArray<FDistrictPlace> Places;
+	FString WorldId;
+	if (!WorldText.IsEmpty())
+	{
+		TArray<uint8> WorldBytes;
+		ftcore::WorldTable Worlds;
+		std::string Error;
+		if (!LoadBytes(FPaths::ProjectDir() / TEXT("Data/Field/worlds.json"), WorldBytes) ||
+			!ftcore::importWorldTable(View(WorldBytes), Worlds, &Error))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: Data/Field/worlds.json refused: %s"), *Utf8(Error).TrimEnd());
+			return 1;
+		}
+		const FTCHARToUTF8 WorldUtf8(*WorldText);
+		const int32 Index = Worlds.findWorld(std::string_view(WorldUtf8.Get(), static_cast<size_t>(WorldUtf8.Length())));
+		if (Index < 0)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -World=%s is not in Data/Field/worlds.json."), *WorldText);
+			return 1;
+		}
+		const ftcore::WorldSpec& Spec = Worlds.worlds[static_cast<size_t>(Index)];
+		WorldId = Utf8(Spec.id);
+		const int32 Count = static_cast<int32>(Spec.districts);
+		if (Count < 1 || Count > static_cast<int32>(ftcore::WorldLayout::kMaxDistricts))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: world %s has %d districts."), *WorldId, Count);
+			return 1;
+		}
+		std::vector<bool> Visible(Boxes.size(), false);
+		for (size_t I = 0; I < Boxes.size(); ++I)
+		{
+			Visible[I] = ftcore::massingVisible(ftcore::massingRole(Boxes[I]));
+		}
+		const std::vector<bool> EveryWall(Walls.size(), true);
+		ftcore::DistrictPin Pins[ftcore::WorldLayout::kMaxDistricts];
+		for (int32 D = 0; D < Count; ++D)
+		{
+			const FString RowId = FString::Printf(TEXT("D%d"), D);
+			const FGoal* Row = Goals.FindByPredicate([&](const FGoal& G) { return G.Id == RowId; });
+			if (!Row)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -World=%s needs the goals table's row %s (district %d's plaza centre)."),
+					*WorldId, *RowId, D);
+				return 1;
+			}
+			FDistrictPlace Place;
+			Place.CentreX = Row->X;
+			Place.CentreY = Row->Y;
+			Place.Floor = Row->Z;
+			const ftcore::MassingVec Centre = ftcore::massingEnginePoint(Side, Row->X, Row->Y, 0.0);
+			if (Row->bSpawn)
+			{
+				Place.SpawnX = Row->SpawnX;
+				Place.SpawnY = Row->SpawnY;
+			}
+			else
+			{
+				const ftcore::Vec2 Rule = ftcore::WorldLayout::spawnFor({static_cast<float>(Centre.x), static_cast<float>(Centre.y)});
+				Place.SpawnX = Rule.x + Side * 0.5; // back to the plan frame
+				Place.SpawnY = Side * 0.5 - Rule.y;
+			}
+			const double Ground = ftcore::massingGroundAt(Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX),
+				static_cast<size_t>(Field.SamplesY), Field.Spacing, Field.OriginX, Field.OriginY, Place.SpawnX, Place.SpawnY);
+			int OnBox = -1;
+			Place.SpawnFloor = ftcore::massingFloorAt(Boxes, Visible, Place.SpawnX, Place.SpawnY, Ground,
+				FMath::Max(Place.Floor, Ground) + kSpawnStepUp, &OnBox);
+			Place.OnBox = OnBox;
+			Place.Inside = ftcore::massingBlockingAt(Boxes, Visible, Place.SpawnX, Place.SpawnY, Place.SpawnFloor, kLeadHeight);
+			if (Place.Inside < 0)
+			{
+				Place.Inside = ftcore::massingBlockingAt(Walls, EveryWall, Place.SpawnX, Place.SpawnY, Place.SpawnFloor, kLeadHeight);
+				Place.bInsideWall = Place.Inside >= 0;
+			}
+			const ftcore::MassingVec SpawnAt = ftcore::massingEnginePoint(Side, Place.SpawnX, Place.SpawnY, 0.0);
+			Pins[D].centre = {static_cast<float>(Centre.x), static_cast<float>(Centre.y)};
+			Pins[D].spawn = {static_cast<float>(SpawnAt.x), static_cast<float>(SpawnAt.y)};
+			Pins[D].hasSpawn = true;
+			Places.Add(Place);
+		}
+		TUniquePtr<ftcore::WorldLayout> Layout = MakeUnique<ftcore::WorldLayout>();
+		if (!ftcore::generateWorldLayout(Spec, *Layout, &Error) || !Layout->pinDistricts(Pins, static_cast<size_t>(Count), &Error))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: world %s's districts don't pin: %s"), *WorldId, *Utf8(Error).TrimEnd());
+			return 1;
+		}
+		if (Spec.side != Side)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: world %s's layout is %.0f m across, the plan %.0f m."), *WorldId,
+				Spec.side, Side);
+		}
+		for (int32 D = 0; D < Count; ++D)
+		{
+			const FDistrictPlace& Place = Places[D];
+			const FString On = Place.OnBox >= 0 ? Utf8(Boxes[static_cast<size_t>(Place.OnBox)].id) : FString(TEXT("the ground"));
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: district %d: plaza (%.1f, %.1f) at %.1f m; spawn (%.1f, %.1f) on %s at %.1f m."),
+				D, Place.CentreX, Place.CentreY, Place.Floor, Place.SpawnX, Place.SpawnY, *On, Place.SpawnFloor);
+			if (Place.Inside >= 0)
+			{
+				const ftcore::MassingBox& In = Place.bInsideWall ? Walls[static_cast<size_t>(Place.Inside)] : Boxes[static_cast<size_t>(Place.Inside)];
+				UE_LOG(LogForgottenThird, Warning,
+					TEXT("FTBuildMassingWorld: district %d's spawn stands inside %s (%.1f to %.1f m); the goals table can name its spawn_x, spawn_y."),
+					D, *Utf8(In.id), In.z0, In.z1);
+			}
 		}
 	}
 
@@ -582,11 +734,28 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	APlayerStart* Start = World->SpawnActor<APlayerStart>(EntryAt + FVector(0.0, 0.0, 100.0), FRotator(0.0, EntryYaw, 0.0), Spawn);
 	Start->SetActorLabel(TEXT("PlayerStart"));
 
+	// With -World, the director that plays the world's story steps and tours here, with the districts where the plan
+	// puts them.
+	if (!Places.IsEmpty())
+	{
+		AFTExploreDirector* Director = World->SpawnActor<AFTExploreDirector>(FVector(0.0, 0.0, 200.0), FRotator::ZeroRotator, Spawn);
+		Director->WorldId = WorldId;
+		for (const FDistrictPlace& Place : Places)
+		{
+			const ftcore::MassingVec Centre = ftcore::massingEnginePoint(Side, Place.CentreX, Place.CentreY, Place.Floor);
+			Director->DistrictFloors.Add(static_cast<float>(Centre.z * 100.0));
+			Director->DistrictCentres.Add(FVector2D(Centre.x * 100.0, Centre.y * 100.0));
+			Director->DistrictSpawns.Add(Cm(ftcore::massingEnginePoint(Side, Place.SpawnX, Place.SpawnY, Place.SpawnFloor)));
+		}
+		Director->SetActorLabel(TEXT("ExploreDirector"));
+	}
+
 	// Whatever is still building (the sloped meshes' collision, the ground's) finishes before the navmesh reads it.
 	FAssetCompilingManager::Get().FinishAllCompilation();
 
 	int32 Reached = 0;
-	if (bNav && Goals.Num() > 0)
+	int32 SpawnsReached = 0;
+	if (bNav && (Goals.Num() > 0 || Places.Num() > 0))
 	{
 		const double Low = ftcore::massingHeightFromValue(Lowest) - 10.0;
 		const double High = ftcore::massingHeightFromValue(Highest) + 20.0;
@@ -617,28 +786,36 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		else
 		{
-			for (const FGoal& Goal : Goals)
-			{
+			// Whether a full path runs from the entry to a plan point, logged either way.
+			const auto Walk = [&](const FString& What, double X, double Y, double Z) {
 				FNavLocation To;
 				const UNavigationPath* Route = nullptr;
-				const bool bOnMesh =
-					Nav->ProjectPointToNavigation(Cm(ftcore::massingEnginePoint(Side, Goal.X, Goal.Y, Goal.Z)), To, kNavProjectExtent);
+				const bool bOnMesh = Nav->ProjectPointToNavigation(Cm(ftcore::massingEnginePoint(Side, X, Y, Z)), To, kNavProjectExtent);
 				if (bOnMesh)
 				{
 					Route = Nav->FindPathToLocationSynchronously(World, From.Location, To.Location);
 				}
 				const bool bReached = Route && Route->IsValid() && !Route->IsPartial();
-				Reached += bReached ? 1 : 0;
 				if (bReached)
 				{
-					UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: goal %s (%.0f, %.0f, %+.0f): reached, %.0f m of path."), *Goal.Id,
-						Goal.X, Goal.Y, Goal.Z, Route->GetPathLength() / 100.0);
+					UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: %s (%.0f, %.0f, %+.0f): reached, %.0f m of path."), *What, X, Y, Z,
+						Route->GetPathLength() / 100.0);
 				}
 				else
 				{
-					UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: goal %s (%.0f, %.0f, %+.0f): %s."), *Goal.Id, Goal.X, Goal.Y, Goal.Z,
+					UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: %s (%.0f, %.0f, %+.0f): %s."), *What, X, Y, Z,
 						bOnMesh ? TEXT("no full path from the entry") : TEXT("not on the navmesh"));
 				}
+				return bReached;
+			};
+			for (const FGoal& Goal : Goals)
+			{
+				Reached += Walk(TEXT("goal ") + Goal.Id, Goal.X, Goal.Y, Goal.Z) ? 1 : 0;
+			}
+			for (int32 D = 0; D < Places.Num(); ++D)
+			{
+				const FDistrictPlace& Place = Places[D];
+				SpawnsReached += Walk(FString::Printf(TEXT("district %d's spawn"), D), Place.SpawnX, Place.SpawnY, Place.SpawnFloor) ? 1 : 0;
 			}
 		}
 	}
@@ -648,11 +825,13 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	{
 		++Actors;
 	}
+	const FString SpawnLine =
+		Places.IsEmpty() ? FString() : FString::Printf(TEXT(", district spawns reached %d of %d"), SpawnsReached, Places.Num());
 	UE_LOG(LogForgottenThird, Display,
 		TEXT("FTBuildMassingWorld: %d rows: %d named and %d kit built (%d sloped meshes, %d tops nudged), %d not built; %d hidden walls; "
-			 "ground %d x %d samples (%.1f to %.1f m); %d actors; goals reached %d of %d%s."),
+			 "ground %d x %d samples (%.1f to %.1f m); %d actors; goals reached %d of %d%s%s."),
 		static_cast<int32>(Boxes.size()), Named, Kit, Sloped, Nudged, Skipped, static_cast<int32>(Walls.size()), Samples, Samples,
-		ftcore::massingHeightFromValue(Lowest), ftcore::massingHeightFromValue(Highest), Actors, Reached, Goals.Num(),
+		ftcore::massingHeightFromValue(Lowest), ftcore::massingHeightFromValue(Highest), Actors, Reached, Goals.Num(), *SpawnLine,
 		bNav ? TEXT("") : TEXT(" (no navmesh)"));
 
 	FAssetCompilingManager::Get().FinishAllCompilation();
@@ -669,7 +848,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		return 1;
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: saved %s."), *File);
-	return bStrict && bNav && Reached < Goals.Num() ? 1 : 0;
+	return bStrict && bNav && (Reached < Goals.Num() || SpawnsReached < Places.Num()) ? 1 : 0;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld needs an editor build."));
 	return 1;

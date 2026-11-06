@@ -476,16 +476,7 @@ void AFTExploreDirector::PlaceInDistrict(const FFTStoryCarry& Carry, const TCHAR
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("World %s: the %s's scene %s isn't placed here; using district 0."), *WorldId, What, *Carry.Scene);
 	}
-	FVector2D Spot;
-	float Yaw = 0.f;
-	if (GetDistrictSpawn(WorldDistrict, Spot, Yaw))
-	{
-		// The spawn is the district's origin, on its pad's flat.
-		bWorldSpawnOnFloor = DistrictFloors.IsValidIndex(WorldDistrict);
-		WorldSpawn = FVector(Spot.X, Spot.Y, bWorldSpawnOnFloor ? DistrictFloors[WorldDistrict] : 0.0);
-		WorldSpawnRotation = FRotator(0.f, Yaw, 0.f);
-		bWorldSpawnPending = true;
-	}
+	QueueDistrictSpawn(WorldDistrict);
 	// The maps are photoreal unless built with -Style=, so a carried style lands only on a style controller.
 	int32 Styled = 0;
 	if (!Carry.Style.IsEmpty())
@@ -736,6 +727,36 @@ bool AFTExploreDirector::GetDistrictSpawn(int32 District, FVector2D& Spot, float
 	const ftcore::Vec2 Origin = Layout->district(D).origin;
 	Spot = FVector2D(Origin.x * 100.0, Origin.y * 100.0);
 	Yaw = FMath::RadiansToDegrees(Layout->spawnYaw(D));
+	return true;
+}
+
+bool AFTExploreDirector::QueueDistrictSpawn(int32 District)
+{
+	FVector2D Spot;
+	float Yaw = 0.f;
+	if (!GetDistrictSpawn(District, Spot, Yaw))
+	{
+		return false;
+	}
+	// The spawn is the district's origin: on a map that places its own districts, on the floor the builder found
+	// there; on a generated world, on its pad's flat (the district's floor).
+	double Floor = 0.0;
+	bWorldSpawnOnFloor = true;
+	if (bDistrictsPinned && DistrictSpawns.IsValidIndex(District))
+	{
+		Floor = DistrictSpawns[District].Z;
+	}
+	else if (DistrictFloors.IsValidIndex(District))
+	{
+		Floor = DistrictFloors[District];
+	}
+	else
+	{
+		bWorldSpawnOnFloor = false;
+	}
+	WorldSpawn = FVector(Spot.X, Spot.Y, Floor);
+	WorldSpawnRotation = FRotator(0.f, Yaw, 0.f);
+	bWorldSpawnPending = true;
 	return true;
 }
 
@@ -1182,8 +1203,13 @@ void AFTExploreDirector::Tick(float DeltaSeconds)
 		// stands in, which agree to a few cm when the ground under it is the one the builder imported.
 		FloorLogAt = -1.0;
 		const int32 At = Layout->districtAt(ToGround(Player->GetActorLocation()));
-		UE_LOG(LogForgottenThird, Display, TEXT("World %s: the lead's feet at z %.0f cm in district %d, whose floor is %.0f cm."), *WorldId,
-			Player->GetActorLocation().Z - Player->GetSimpleCollisionHalfHeight(), At, DistrictFloors.IsValidIndex(At) ? DistrictFloors[At] : 0.f);
+		// On a map that places its own districts the spawn may stand on a deck above the plaza's floor.
+		const FString SpawnFloor = bDistrictsPinned && DistrictSpawns.IsValidIndex(At)
+			? FString::Printf(TEXT(" (its spawn's %.0f cm)"), DistrictSpawns[At].Z)
+			: FString();
+		UE_LOG(LogForgottenThird, Display, TEXT("World %s: the lead's feet at z %.0f cm in district %d, whose floor is %.0f cm%s."), *WorldId,
+			Player->GetActorLocation().Z - Player->GetSimpleCollisionHalfHeight(), At, DistrictFloors.IsValidIndex(At) ? DistrictFloors[At] : 0.f,
+			*SpawnFloor);
 	}
 	if (PendingHost != EFTStepHost::None)
 	{
@@ -1431,6 +1457,42 @@ void AFTExploreDirector::BeginWorld()
 	UE_LOG(LogForgottenThird, Display, TEXT("World %s: %d districts, %d roads, %d buildings, %d props over %.0f m."), *WorldId,
 		static_cast<int32>(Layout->districtCount()), static_cast<int32>(Layout->roadCount()), static_cast<int32>(Layout->blockCount()),
 		static_cast<int32>(Layout->propCount()), Layout->side());
+	if (!DistrictCentres.IsEmpty())
+	{
+		// The map's own districts (FTBuildMassingWorld -World=): every district's frame moves there, so a story step's
+		// goals and the tour land in the map's plazas. The generated roads and buildings aren't on this map.
+		const int32 Count = DistrictCentres.Num();
+		const bool bSpawns = DistrictSpawns.Num() == Count;
+		ftcore::DistrictPin Pins[ftcore::WorldLayout::kMaxDistricts];
+		Error.clear();
+		if (Count > static_cast<int32>(UE_ARRAY_COUNT(Pins)))
+		{
+			Error = "the map places more districts than a world holds";
+		}
+		else
+		{
+			for (int32 i = 0; i < Count; ++i)
+			{
+				Pins[i].centre = ftcore::Vec2{static_cast<float>(DistrictCentres[i].X / 100.0), static_cast<float>(DistrictCentres[i].Y / 100.0)};
+				Pins[i].hasSpawn = bSpawns;
+				if (bSpawns)
+				{
+					Pins[i].spawn = ftcore::Vec2{static_cast<float>(DistrictSpawns[i].X / 100.0), static_cast<float>(DistrictSpawns[i].Y / 100.0)};
+				}
+			}
+		}
+		if (Error.empty() && Layout->pinDistricts(Pins, static_cast<size_t>(Count), &Error))
+		{
+			bDistrictsPinned = true;
+			UE_LOG(LogForgottenThird, Display, TEXT("World %s: %d districts placed by the map%s."), *WorldId, Count,
+				bSpawns ? TEXT(", with their spawns") : TEXT(""));
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("World %s: the map's own districts don't fit the layout (%s); the generated places stand."), *WorldId,
+				*FT::ToFString(Error).TrimEnd());
+		}
+	}
 	// The lead starts on the PlayerStart (a story step moves it to its district's spawn on the first tick, which logs again).
 	if (!DistrictFloors.IsEmpty())
 	{
@@ -1445,15 +1507,9 @@ void AFTExploreDirector::BeginWorld()
 	int32 StartDistrict = -1;
 	if (!bStoryStep && FParse::Value(FCommandLine::Get(), TEXT("WorldDistrict="), StartDistrict))
 	{
-		FVector2D Spot;
-		float Yaw = 0.f;
-		if (GetDistrictSpawn(StartDistrict, Spot, Yaw))
+		if (QueueDistrictSpawn(StartDistrict))
 		{
 			WorldDistrict = StartDistrict;
-			bWorldSpawnOnFloor = DistrictFloors.IsValidIndex(StartDistrict);
-			WorldSpawn = FVector(Spot.X, Spot.Y, bWorldSpawnOnFloor ? DistrictFloors[StartDistrict] : 0.0);
-			WorldSpawnRotation = FRotator(0.f, Yaw, 0.f);
-			bWorldSpawnPending = true;
 		}
 		else
 		{
@@ -1474,7 +1530,8 @@ void AFTExploreDirector::BeginWorld()
 	{
 		UGameplayStatics::SetGlobalTimeDilation(this, 8.f);
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("World %s: tour of %d legs over the roads."), *WorldId, TourCount);
+	UE_LOG(LogForgottenThird, Display, TEXT("World %s: tour of %d legs %s."), *WorldId, TourCount,
+		bDistrictsPinned ? TEXT("on the navmesh") : TEXT("over the roads"));
 }
 
 void AFTExploreDirector::UpdateWorldLine(ftcore::Vec2 Pos)
@@ -1503,8 +1560,9 @@ void AFTExploreDirector::TickWorld(AFTExploreCharacter& Player, float DeltaSecon
 	const ftcore::Vec2 Target = Layout->district(static_cast<size_t>(District)).centre;
 	if (FVector2D(Target.x - Pos.x, Target.y - Pos.y).Size() > kTourReach)
 	{
-		// Roads run straight between plaza centres and nothing stands on them, so no navmesh is needed.
-		PilotWalk(Player, Pos, Target, kTourTargetBase + TourLeg, DeltaSeconds, false);
+		// Roads run straight between plaza centres and nothing stands on them, so no navmesh is needed; a map that places
+		// its own districts has none of those roads, so there the pilot follows the navmesh.
+		PilotWalk(Player, Pos, Target, kTourTargetBase + TourLeg, DeltaSeconds, bDistrictsPinned);
 		return;
 	}
 	const double Game = GetWorld()->GetTimeSeconds() - TourGameStart;

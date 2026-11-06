@@ -16,7 +16,9 @@
 // field step puts the player at the spawn of the scene's district and its goal (goals.json, in the
 // district's frame) in that district's plaza, with the scene's style. -WorldAutoPlay walks the roads
 // from district to district until it has reached them all (logging each), then exits with
-// -ExploreQuitOnComplete.
+// -ExploreQuitOnComplete. A map built from the world's own plan (FTBuildMassingWorld -World=) places
+// its districts itself (DistrictCentres, DistrictSpawns): the layout's districts move there, and the
+// tour walks between them on the navmesh.
 //
 // On the overworld (bOverworld, FTBuildExploreWorld -World=overworld) the director lays out the
 // overworld (ftcore::OverworldLayout). A story field step whose carry has FromWorld set is a hop: the
@@ -86,6 +88,15 @@ public:
 	// flat map, where everything stands at 0.
 	UPROPERTY(EditAnywhere, Category = "Explore")
 	TArray<float> DistrictFloors;
+	// A map built from its world's own plan (FTBuildMassingWorld -World=) places its districts itself: each district's
+	// plaza centre and spawn (cm; a spawn's Z is the floor the lead lands on there), by district index, filled by the
+	// builder. Empty on a generated world's map. When set, BeginWorld moves the layout's districts there
+	// (ftcore::WorldLayout::pinDistricts) and the tour walks between them on the navmesh, since the generated roads and
+	// buildings aren't on such a map.
+	UPROPERTY(EditAnywhere, Category = "Explore")
+	TArray<FVector2D> DistrictCentres;
+	UPROPERTY(EditAnywhere, Category = "Explore")
+	TArray<FVector> DistrictSpawns;
 
 	virtual void Tick(float DeltaSeconds) override;
 
@@ -166,6 +177,9 @@ private:
 	// A big world's district for the carried step (district 0, with a warning, when the scene isn't
 	// placed here), its spawn for the first tick and the scene's style. What: "field step", "CG step".
 	void PlaceInDistrict(const FFTStoryCarry& Carry, const TCHAR* What);
+	// Moves the lead to the district's spawn on the next tick, set down on the spawn's floor when the map has one. False
+	// for no such district.
+	bool QueueDistrictSpawn(int32 District);
 	void BeginWorld();
 	void TickWorld(AFTExploreCharacter& Player, float DeltaSeconds);
 	void UpdateWorldLine(ftcore::Vec2 Pos);
@@ -262,6 +276,7 @@ private:
 	FVector WorldSpawn = FVector::ZeroVector;
 	FRotator WorldSpawnRotation = FRotator::ZeroRotator;
 	bool bWorldSpawnOnFloor = false; // WorldSpawn.Z is the district's floor, so the lead is set down on it
+	bool bDistrictsPinned = false;   // the layout's districts stand at DistrictCentres / DistrictSpawns
 	double FloorLogAt = -1.0;        // game time to log where the lead's feet stand against the floor; -1 when done
 	bool bWorldTour = false;
 	bool bWorldTourDone = false;

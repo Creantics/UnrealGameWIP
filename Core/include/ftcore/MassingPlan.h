@@ -145,4 +145,26 @@ FTCORE_API MassingVec massingLandscapeCorner(double squareSide, double originX, 
 // Heights the way Core's ground stores them (Terrain.h heightmapValue): a 16-bit Landscape at Z scale 100.
 inline double massingHeightFromValue(std::uint16_t value) { return (static_cast<double>(value) - 32768.0) / 128.0; }
 
+// The ground at a plan point (metres): bilinear between the grid's samples (south-west first, rows
+// running north, `spacing` apart from (originX, originY)), clamped to the grid's edge. 0 for an empty
+// grid, a spacing that isn't positive or a point that isn't finite.
+FTCORE_API double massingGroundAt(const std::uint16_t* grid, std::size_t samplesX, std::size_t samplesY,
+                                  double spacing, double originX, double originY, double x, double y);
+
+// What a player dropped at a plan point stands on: the highest of `ground` and the stated tops (a
+// sloped top read along u, a zone's raised by kMassingZonePlate, nudges left out) of the boxes
+// `include` marks whose footprints hold the point, among those no higher than `ceiling`. `onBox`, when
+// given, gets the index of the box it stands on, or -1 for the ground. A box past the end of `include`
+// is left out. No allocation.
+FTCORE_API double massingFloorAt(const std::vector<MassingBox>& boxes, const std::vector<bool>& include, double x,
+                                 double y, double ground, double ceiling, int* onBox = nullptr);
+
+// A box that a player of `height` standing at a plan point on `floor` would stand inside: the first of
+// the boxes `include` marks whose footprint holds the point and whose solid there (bottom to top, read
+// as massingFloorAt reads tops) reaches over floor + kMassingStandClear and under floor + height. -1
+// for none. No allocation.
+inline constexpr double kMassingStandClear = 0.05;
+FTCORE_API int massingBlockingAt(const std::vector<MassingBox>& boxes, const std::vector<bool>& include, double x,
+                                 double y, double floor, double height);
+
 } // namespace ftcore

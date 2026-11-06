@@ -5,15 +5,24 @@
 //
 //   UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildMassingWorld -Height=<json> -Boxes=<csv>
 //       [-Walls=<csv>] [-Goals=<csv>] -Entry=<x,y,z> [-Look=<x,y>] [-Sea=<x>] [-Side=1000] [-Map=<name>]
-//       [-NoNav] [-Strict]
+//       [-World=<id>] [-NoNav] [-Strict]
 //       -NullRHI -unattended -nopause -nosplash
 //
 // -Height names the world's 1 m height field's json (samples_x, samples_y, spacing_m,
 // origin_of_sample_0_0_m and the raw 16-bit file beside it, ftcore::massingHeightFromValue's encoding);
 // -Boxes and -Walls name massing tables (ftcore/MassingPlan.h), the walls table holding WALL rows only;
-// -Goals names a CSV with the columns id, x, y, z (plan frame, metres). Every position is in the plan
-// frame of a square -Side metres across (MassingPlan.h); the map is in the engine frame, so it reads
-// true from above.
+// -Goals names a CSV with the columns id, x, y, z and optionally spawn_x, spawn_y (plan frame, metres).
+// Every position is in the plan frame of a square -Side metres across (MassingPlan.h); the map is in the
+// engine frame, so it reads true from above.
+//
+// -World=<id> (a world of Data/Field/worlds.json) makes the map that world's: the goals table's rows D0,
+// D1, ... (one per district) give each district's plaza centre and floor, and its spawn is the row's
+// spawn_x, spawn_y or else the generator's rule (ftcore::WorldLayout::spawnFor), set down on the highest
+// deck or landing at most 6 m over the higher of the plaza's floor and the ground there. The build pins
+// the world's layout to them (ftcore::WorldLayout::pinDistricts, refused on a missing row or a place
+// outside the square), logs each district's spawn and what it stands on (warning when the lead would
+// stand inside a box or wall there), and places an AFTExploreDirector with them, so a story step, a
+// -WorldDistrict=<n> start and the -WorldAutoPlay tour play in the plan's own districts.
 //
 // The map (/Game/Maps/<Map>, World_Massing by default; overwritten):
 // - the height field as a Landscape, a vertex per sample, padded to whole components;
@@ -24,9 +33,11 @@
 // - the walls table's rows as hidden walls that stop pawns, not the camera;
 // - with -Sea, a sea plane at the datum from plan x = <x> east past the horizon (no collision);
 // - the shared photoreal look (FTSceneLook.h), and a player start at -Entry facing -Look;
-// - unless -NoNav, a navmesh over the square, and each goal checked for a path from the entry; the map
-//   is saved either way and the count of goals reached is logged (with -Strict, a missing path fails).
-// No director: the map is a free walk. Zones, hidden kinds, open options and proxies are not built.
+// - unless -NoNav, a navmesh over the square, and each goal (and with -World, each district's spawn)
+//   checked for a path from the entry; the map is saved either way and the counts reached are logged
+//   (with -Strict, a missing path fails).
+// Without -World there is no director: the map is a free walk. Zones, hidden kinds, open options and
+// proxies are not built.
 
 #include "CoreMinimal.h"
 #include "Commandlets/Commandlet.h"

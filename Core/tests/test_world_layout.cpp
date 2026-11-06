@@ -257,6 +257,103 @@ TEST_CASE("worlds: the frame, the tour and the queries don't allocate") {
     CHECK(sink != 0.f);
 }
 
+TEST_CASE("worlds: a map pins its own districts; their frames move and the rest stays as generated") {
+    auto w = std::make_unique<WorldLayout>();
+    REQUIRE(generateWorldLayout(spec(4, 3), *w));
+    // The generator's rule is spawnFor: every generated spawn is it.
+    for (std::size_t i = 0; i < w->districtCount(); ++i) {
+        CAPTURE(i);
+        const Vec2 s = WorldLayout::spawnFor(w->district(i).centre);
+        CHECK(s.x == doctest::Approx(w->district(i).origin.x));
+        CHECK(s.y == doctest::Approx(w->district(i).origin.y));
+    }
+    CHECK(WorldLayout::spawnFor({0.f, 0.f}).x == doctest::Approx(-WorldLayout::kPlazaCentreX)); // faces +x from the centre
+
+    const std::size_t roads = w->roadCount();
+    const WorldRoad firstRoad = w->road(0);
+    const Vec2 firstBlock = w->block(0).pos;
+    const std::unique_ptr<WorldLayout> before = std::make_unique<WorldLayout>(*w);
+
+    // District 0 by the rule; district 1 at a spawn the map names, 60 m east of its centre; 2 and 3 only
+    // 20 m apart, so their rings overlap.
+    DistrictPin pins[4];
+    pins[0].centre = {-65.f, 105.f};
+    pins[1].centre = {-50.f, -245.f};
+    pins[1].spawn = {15.f, -245.f};
+    pins[1].hasSpawn = true;
+    pins[2].centre = {290.f, 100.f};
+    pins[3].centre = {300.f, 82.f};
+    std::string error;
+    REQUIRE(w->pinDistricts(pins, 4, &error));
+
+    // By the rule: 9 m behind the centre, facing the world's centre, so the plaza's centre is 9 m ahead.
+    const WorldDistrict& d0 = w->district(0);
+    CHECK(d0.centre.x == doctest::Approx(-65.f));
+    CHECK(d0.centre.y == doctest::Approx(105.f));
+    const float len0 = std::hypot(65.f, 105.f);
+    CHECK(d0.forward.x == doctest::Approx(65.f / len0));
+    CHECK(d0.forward.y == doctest::Approx(-105.f / len0));
+    CHECK(dist(d0.origin, d0.centre) == doctest::Approx(WorldLayout::kPlazaCentreX));
+    const Vec2 ahead = w->toWorld(0, {WorldLayout::kPlazaCentreX, 0.f});
+    CHECK(ahead.x == doctest::Approx(-65.f));
+    CHECK(ahead.y == doctest::Approx(105.f));
+
+    // A named spawn stands where the map says and faces its centre: due west here.
+    const WorldDistrict& d1 = w->district(1);
+    CHECK(d1.origin.x == doctest::Approx(15.f));
+    CHECK(d1.origin.y == doctest::Approx(-245.f));
+    CHECK(d1.forward.x == doctest::Approx(-1.f));
+    CHECK(d1.forward.y == doctest::Approx(0.f).epsilon(1e-6));
+    CHECK(std::fabs(w->spawnYaw(1)) == doctest::Approx(3.14159265f));
+    const Vec2 local = w->toLocal(1, {-50.f, -245.f});
+    CHECK(local.x == doctest::Approx(65.f));
+
+    // Overlapping rings: the nearest centre wins, whichever comes first.
+    CHECK(w->districtAt({290.f, 100.f}) == 2);
+    CHECK(w->districtAt({300.f, 82.f}) == 3);
+    CHECK(w->districtAt({299.f, 85.f}) == 3);
+    CHECK(w->districtAt({0.f, 0.f}) == -1);
+
+    // The roads, blocks and the road graph are untouched.
+    CHECK(w->roadCount() == roads);
+    CHECK(w->road(0).a == firstRoad.a);
+    CHECK(w->road(0).b == firstRoad.b);
+    CHECK(w->block(0).pos.x == doctest::Approx(firstBlock.x));
+    std::uint8_t walk[32];
+    std::uint8_t walkBefore[32];
+    const std::size_t steps = w->tour(0, walk, 32);
+    REQUIRE(steps == before->tour(0, walkBefore, 32));
+    for (std::size_t i = 0; i < steps; ++i) CHECK(walk[i] == walkBefore[i]);
+
+    // Refused, and the layout left as it was: a wrong count, a centre or a spawn outside the square, a
+    // spawn on its centre.
+    const std::unique_ptr<WorldLayout> pinned = std::make_unique<WorldLayout>(*w);
+    const auto unchanged = [&] {
+        for (std::size_t i = 0; i < w->districtCount(); ++i) {
+            if (w->district(i).origin.x != pinned->district(i).origin.x || w->district(i).centre.y != pinned->district(i).centre.y)
+                return false;
+        }
+        return true;
+    };
+    CHECK_FALSE(w->pinDistricts(pins, 3, &error));
+    CHECK(error.find("3 districts") != std::string::npos);
+    CHECK(unchanged());
+    DistrictPin bad[4] = {pins[0], pins[1], pins[2], pins[3]};
+    bad[3].centre = {501.f, 0.f};
+    CHECK_FALSE(w->pinDistricts(bad, 4, &error));
+    CHECK(error.find("district 3's centre") != std::string::npos);
+    CHECK(unchanged());
+    bad[3] = pins[3];
+    bad[1].spawn = {15.f, -501.f};
+    CHECK_FALSE(w->pinDistricts(bad, 4, &error));
+    CHECK(error.find("district 1's spawn lies outside") != std::string::npos);
+    bad[1].spawn = {-50.5f, -245.f};
+    CHECK_FALSE(w->pinDistricts(bad, 4, &error));
+    CHECK(error.find("under 1 m") != std::string::npos);
+    CHECK(unchanged());
+    CHECK_FALSE(w->pinDistricts(nullptr, 4, &error));
+}
+
 TEST_CASE("worlds: the committed worlds lay out, are big, and neighbours are 20-40 s apart at a run") {
     WorldTable t;
     if (!loadWorlds(t)) return;

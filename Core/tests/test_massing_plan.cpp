@@ -387,3 +387,54 @@ TEST_CASE("massing: the 1 m grid as a Landscape") {
     CHECK(massingHeightFromValue(32768 + 4 * 128) == 4.0);
     CHECK(massingHeightFromValue(32768 - 33 * 128) == -33.0);
 }
+
+TEST_CASE("massing: the ground between samples, and the floor a player lands on") {
+    // 3 columns, 2 rows from (10, 20), 2 m apart, south row first: heights 0, 2, 4 m south and 1, 3, 5 m north.
+    const auto v = [](double m) { return static_cast<std::uint16_t>(32768 + m * 128); };
+    const std::uint16_t grid[6] = {v(0), v(2), v(4), v(1), v(3), v(5)};
+    CHECK(near(massingGroundAt(grid, 3, 2, 2.0, 10, 20, 10, 20), 0.0));
+    CHECK(near(massingGroundAt(grid, 3, 2, 2.0, 10, 20, 14, 22), 5.0));
+    CHECK(near(massingGroundAt(grid, 3, 2, 2.0, 10, 20, 11, 21), 1.5)); // the middle of the first cell
+    CHECK(near(massingGroundAt(grid, 3, 2, 2.0, 10, 20, 13, 20), 3.0));
+    CHECK(near(massingGroundAt(grid, 3, 2, 2.0, 10, 20, -50, -50), 0.0)); // clamped to the edge
+    CHECK(near(massingGroundAt(grid, 3, 2, 2.0, 10, 20, 99, 21), 4.5));
+    CHECK(massingGroundAt(nullptr, 3, 2, 2.0, 10, 20, 11, 21) == 0.0);
+    CHECK(massingGroundAt(grid, 3, 2, 0.0, 10, 20, 11, 21) == 0.0);
+    CHECK(massingGroundAt(grid, 3, 2, 2.0, 10, 20, std::nan(""), 21) == 0.0);
+
+    // A deck at 5 m, a roof at 12 m over part of it, a ramp from 0 to 4 m turned 90 degrees (its u runs
+    // north), and a box left out.
+    std::vector<MassingBox> boxes = {flatBox(0, 0, 10, 10, 0, 0, 5), flatBox(2, 0, 4, 4, 0, 5, 12),
+                                     flatBox(30, 0, 8, 2, 90, 0, 0), flatBox(-20, 0, 4, 4, 0, 0, 50)};
+    boxes[2].sloped = true;
+    boxes[2].slopeFrom = 0.0;
+    boxes[2].slopeTo = 4.0;
+    const std::vector<bool> include = {true, true, true, false};
+    CHECK(near(massingFloorAt(boxes, include, -3, 0, 1.0, 100), 5.0));
+    CHECK(near(massingFloorAt(boxes, include, 2, 0, 1.0, 100), 12.0));
+    CHECK(near(massingFloorAt(boxes, include, 2, 0, 1.0, 6.0), 5.0)); // the roof is over the ceiling
+    CHECK(near(massingFloorAt(boxes, include, 2, 0, 7.0, 6.0), 7.0)); // the ground is never lowered
+    CHECK(near(massingFloorAt(boxes, include, 30, 0, -1.0, 100), 2.0));
+    CHECK(near(massingFloorAt(boxes, include, 30, 3, -1.0, 100), 3.5));
+    CHECK(near(massingFloorAt(boxes, include, 30, -4, -1.0, 100), 0.0));
+    CHECK(near(massingFloorAt(boxes, include, 31.5, 0, -1.0, 100), -1.0)); // off the ramp's 2 m width
+    CHECK(near(massingFloorAt(boxes, include, -20, 0, 1.0, 100), 1.0));    // left out
+    CHECK(near(massingFloorAt(boxes, {true}, 2, 0, 1.0, 100), 5.0));       // include shorter than the table
+    int on = 99;
+    CHECK(near(massingFloorAt(boxes, include, 2, 0, 1.0, 6.0, &on), 5.0));
+    CHECK(on == 0);
+    CHECK(near(massingFloorAt(boxes, include, 50, 50, 1.0, 100, &on), 1.0));
+    CHECK(on == -1);
+
+    // Standing on the deck under the roof (which starts at 5 m): inside the roof's box. On the roof, or
+    // on the ground beside the deck, nothing is in the way; on the ground under the deck, the deck is.
+    CHECK(massingBlockingAt(boxes, include, 2, 0, 5.0, 1.8) == 1);
+    CHECK(massingBlockingAt(boxes, include, 2, 0, 12.0, 1.8) == -1);
+    CHECK(massingBlockingAt(boxes, include, -3, 0, 5.0, 1.8) == -1);
+    CHECK(massingBlockingAt(boxes, include, 8, 0, 0.0, 1.8) == -1);
+    CHECK(massingBlockingAt(boxes, include, -3, 0, 0.0, 1.8) == 0);
+    // On the ramp at 2 m its top is the floor; a metre lower the ramp is in the way.
+    CHECK(massingBlockingAt(boxes, include, 30, 0, 2.0, 1.8) == -1);
+    CHECK(massingBlockingAt(boxes, include, 30, 0, 1.0, 1.8) == 2);
+    CHECK(massingBlockingAt(boxes, include, -20, 0, 1.0, 1.8) == -1); // left out
+}
