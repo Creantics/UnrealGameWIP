@@ -362,7 +362,102 @@ public:
     FTCORE_API bool counterLockedOut(double t) const;
 
 private:
-    // The fight's state: the implementer's, fixed capacity only (copying a fight never allocates).
+    // The fight's state: fixed capacity only (copying a fight never allocates). Times are seconds on the
+    // fight's clock.
+
+    // How a press stands to one prompt.
+    enum class Reach : std::uint8_t {
+        Outside,   // outside its window (a counter's dodge window hasn't opened yet)
+        Hidden,    // a counter whose marker isn't showing yet
+        Answers,   // inside its window: it answers the prompt
+        LockedOut, // it would answer a counter, but the counter lockout drops it
+    };
+    struct Judgement {
+        Reach reach = Reach::Outside;
+        QteGrade grade = QteGrade::Pending;
+    };
+    // A generated bar (the last two are kept, for turnEnemy()): its number counted from the first bar,
+    // and its enemy (-1: none alive).
+    struct Bar {
+        std::int32_t index = -1;
+        std::int32_t enemy = -1;
+    };
+    // A counter that landed lately: a press of its arrow within counter.late of its impact is LATE.
+    struct Landed {
+        std::uint32_t id = 0;
+        Arrow input = Arrow::Left;
+        std::uint8_t enemy = 0;
+        bool open = false; // not reported late yet
+        double impact = 0.0;
+    };
+
+    // The state begin() and restart() leave (the stats stay).
+    void reset(double now);
+    // update(): the autopilot's moves first when the assist is on, then advance().
+    void runTo(double t, BeatEvents& out);
+    // Moves the clock to t, in time order: bars are generated, start and resolve prompts that ran out
+    // (at the same moment a bar is generated first, then prompts resolve, then the bar starts).
+    void advance(double t, BeatEvents& out);
+    void doPress(Arrow input, double t, BeatEvents& out);
+    void doRelease(Arrow input, double t, BeatEvents& out);
+    QteAction pilot(double horizon) const; // autopilot()
+
+    double generationTime() const;                                  // when the next bar is generated
+    double startTime() const;                                       // when the next bar starts
+    void generate(double time, BeatEvents& out);                    // the next bar: enemy, pattern, prompts
+    void addPrompt(BeatKind kind, Arrow input, std::uint8_t enemy, std::uint8_t length, bool finisher, double beat);
+    double dueTime(const BeatPrompt& p) const;                      // when p resolves if nothing answers it
+    bool isDue(const BeatPrompt& p, double t) const;
+    void expire(std::size_t i, BeatEvents& out);                    // prompt i ran out or reached its end
+    void resolve(std::size_t i, QteGrade grade, double time, BeatEvents& out); // prompt i is over
+    void answer(std::size_t i, QteGrade grade, double t, BeatEvents& out);     // a press answered it
+    void finishHolds(double t, BeatEvents& out);                    // holds within holdSlack of their end
+    void judgePress(Arrow input, double t, BeatEvents& out);
+    void classify(Arrow input, double t, BeatEvents& out);          // a press that answered nothing
+    Judgement judge(const BeatPrompt& p, double t) const;
+    void hitLead(const BeatPrompt& p, double time, BeatEvents& out);
+    void dropEnemy(std::uint8_t enemy);                             // its open prompts, silently
+    void dropFinisher(const BeatPrompt& p);                         // the rest of p's finisher, silently
+    std::size_t finisherLeft(const BeatPrompt& p) const;            // strikes of p's finisher still open
+    std::size_t indexOf(std::uint32_t id) const;                    // an open prompt's place (or the max value)
+    double barOf(const BeatPrompt& p) const;                        // the bar p belongs to (a number)
+    void removePrompt(std::size_t i);
+    void push(BeatEvents& out, const BeatEvent& e);
+
+    BeatFightDef def_{};
+    BeatTuning tuning_{};
+    QteAssist assist_{};
+    BeatStats stats_{};
+    BeatPhase phase_ = BeatPhase::NotStarted;
+    std::uint32_t droppedEvents_ = 0;
+    std::uint32_t seed_ = 1;
+    std::uint32_t rng_ = 1; // xorshift32: a copied or restarted fight replays the same draws
+
+    // Worked out once in begin().
+    BeatWindows strikeWindows_{};
+    DefenceWindows counterWindows_{};
+    double counterHalf_ = 0.06;    // a counter's impact comes this long after its eighth
+    double lockoutLength_ = 0.0;   // counters are locked out this long after a whiff
+    double approachSeconds_ = 1.0; // approachBeats in seconds
+    double firstBarBeat_ = 4.0;
+
+    double now_ = 0.0;
+    int hp_ = 0;
+    int maxHp_ = 0;
+    int chain_ = 0;
+    std::array<int, kMaxBeatEnemies> enemyHp_{};
+    std::array<std::int8_t, kMaxBeatEnemies> lastPattern_{}; // each enemy's last pattern (-1: none yet)
+    int turnCursor_ = 0;                                     // the enemy the round robin tries next
+    std::int32_t nextGenBar_ = 0;                            // the next bar to generate
+    std::int32_t nextStartBar_ = 0;                          // the next bar to start (stats().bars counts them)
+    std::array<Bar, 2> bars_{};
+    std::uint32_t nextId_ = 1;
+    double lockoutUntil_ = -1e30;
+
+    std::array<BeatPrompt, kMaxBeatPrompts> prompts_{}; // open prompts, in time order
+    std::size_t promptCount_ = 0;
+    std::array<Landed, 8> landed_{};
+    std::size_t landedNext_ = 0;
 };
 
 // ---- data ----

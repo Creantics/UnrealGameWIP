@@ -1,9 +1,9 @@
 {
   "version": 1,
   "worlds": [
-    {"id": "solhaven", "map": "World_Solhaven", "style": "solhaven", "kind": "town", "side": 1000, "seed": 3, "districts": 16, "story": ["Solhaven", "Ink-Solhaven", "Restored"]},
-    {"id": "lattice", "map": "World_Lattice", "style": "lattice", "kind": "towers", "side": 1000, "seed": 3, "districts": 12, "story": ["Lattice"]},
-    {"id": "unwritten", "map": "World_Unwritten", "style": "unwritten", "kind": "ruins", "side": 1000, "seed": 5, "districts": 10, "story": ["Unwritten"]}
+    {"id": "solhaven", "map": "World_Solhaven", "style": "solhaven", "kind": "town", "side": 1000, "seed": 3, "districts": 16, "combat": "arena", "story": ["Solhaven", "Ink-Solhaven", "Restored"]},
+    {"id": "lattice", "map": "World_Lattice", "style": "lattice", "kind": "towers", "side": 1000, "seed": 3, "districts": 12, "combat": "rhythm", "story": ["Lattice"]},
+    {"id": "unwritten", "map": "World_Unwritten", "style": "unwritten", "kind": "ruins", "side": 1000, "seed": 5, "districts": 10, "combat": "beat", "story": ["Unwritten"]}
   ],
   "scenes": [
     {"scene": "SC-01-D1", "world": "solhaven", "district": 0},

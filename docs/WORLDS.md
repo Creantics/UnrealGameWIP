@@ -33,6 +33,7 @@ Each world entry has:
 - `kind`: town, towers or ruins
 - `side` in metres
 - `seed` and `districts`
+- `combat` (optional): `rhythm` (the default), `arena` or `beat`, the combat system every fight in its scenes plays (see [COMBAT_SYSTEMS.md](COMBAT_SYSTEMS.md)); an unknown value is a load error
 - `story`: the script's world names it plays
 
 Each row of `scenes` places one scene in a district of a world. It can also set a `style` that overrides the world's own. A test checks that every scene of a world named in `story` is placed, and that no house or pocket scene is.
