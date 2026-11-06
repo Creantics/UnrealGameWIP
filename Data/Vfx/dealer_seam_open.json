@@ -2,91 +2,130 @@
   "name": "dealer_seam_open",
   "emitters": [
     {
-      "name": "glow",
+      "name": "wet",
       "bursts": [
-        {"time": 0.0, "count": 1},
-        {"time": 0.32, "count": 1},
-        {"time": 0.64, "count": 1},
-        {"time": 0.96, "count": 1},
-        {"time": 1.28, "count": 1}
+        {"time": 0.0, "count": 2},
+        {"time": 0.32, "count": 2},
+        {"time": 0.64, "count": 2},
+        {"time": 0.96, "count": 2},
+        {"time": 1.28, "count": 2}
       ],
       "duration": 1.6,
-      "maxParticles": 3,
+      "maxParticles": 4,
       "lifetime": 0.5,
-      "shape": "point",
+      "shape": "sphere",
+      "radius": 0.03,
       "space": "local",
-      "startSize": 1.1,
+      "startSize": [0.28, 0.32],
       "sizeOverLife": [
-        {"t": 0, "v": 0.85},
-        {"t": 0.24, "v": 1.0},
-        {"t": 1, "v": 1.05}
+        {"t": 0, "v": 0.9},
+        {"t": 0.22, "v": 1.0},
+        {"t": 1, "v": 1.03}
       ],
+      "startRotation": [1.3, 1.84],
       "colorOverLife": [
-        {"t": 0, "color": [0.72, 0.012, 0.04, 0.0]},
-        {"t": 0.24, "color": [0.72, 0.012, 0.04, 0.75]},
-        {"t": 1, "color": [0.72, 0.012, 0.04, 0.0]}
+        {"t": 0, "color": [1.0, 1.0, 1.0, 0.0]},
+        {"t": 0.22, "color": [1.0, 1.0, 1.0, 0.95]},
+        {"t": 0.6, "color": [1.0, 1.0, 1.0, 0.8]},
+        {"t": 1, "color": [1.0, 1.0, 1.0, 0.0]}
       ],
       "blend": "alpha",
-      "sprite": "soft",
+      "atlas": {"set": "RedTell", "group": "flush", "erode": false},
       "softness": 0.0
     },
     {
-      "name": "seam",
+      "name": "cuts",
       "bursts": [
-        {"time": 0.0, "count": 1},
-        {"time": 0.32, "count": 1},
-        {"time": 0.64, "count": 1},
-        {"time": 0.96, "count": 1},
-        {"time": 1.28, "count": 1}
+        {"time": 0.0, "count": 2},
+        {"time": 0.32, "count": 2},
+        {"time": 0.64, "count": 2},
+        {"time": 0.96, "count": 2},
+        {"time": 1.28, "count": 2}
       ],
       "duration": 1.6,
-      "maxParticles": 3,
+      "maxParticles": 4,
       "lifetime": 0.5,
-      "shape": "point",
+      "shape": "sphere",
+      "radius": 0.045,
       "space": "local",
-      "startSize": [0.72, 0.82],
+      "startSize": [0.3, 0.36],
       "sizeOverLife": [
         {"t": 0, "v": 0.9},
-        {"t": 0.24, "v": 1.0},
-        {"t": 1, "v": 1.04}
+        {"t": 0.22, "v": 1.0},
+        {"t": 1, "v": 1.02}
       ],
-      "startRotation": [-0.35, 0.35],
+      "startRotation": [-0.3, 0.3],
       "colorOverLife": [
-        {"t": 0, "color": [1.0, 0.4, 0.4, 0.0]},
-        {"t": 0.24, "color": [1.0, 0.4, 0.4, 0.85]},
-        {"t": 1, "color": [1.0, 0.4, 0.4, 0.0]}
+        {"t": 0, "color": [1.0, 1.0, 1.0, 0.0]},
+        {"t": 0.22, "color": [1.0, 1.0, 1.0, 0.92]},
+        {"t": 0.6, "color": [1.0, 1.0, 1.0, 0.8]},
+        {"t": 1, "color": [1.0, 1.0, 1.0, 0.0]}
       ],
-      "blend": "additive",
-      "sprite": "spark",
-      "atlas": {"set": "SeamLight", "group": "seam", "erode": false},
+      "blend": "alpha",
+      "atlas": {"set": "RedTell", "group": "line", "erode": false},
       "softness": 0.0
     },
     {
       "name": "drips",
-      "rate": 8,
+      "rate": 9,
       "duration": 1.6,
       "maxParticles": 6,
-      "lifetime": [0.45, 0.6],
+      "lifetime": 0.5,
       "shape": "sphere",
       "radius": 0.05,
-      "speed": [0.0, 0.12],
+      "velocityMin": [-0.1, -0.6, -0.1],
+      "velocityMax": [0.1, -0.3, 0.1],
       "gravity": [0.0, -9.8, 0.0],
       "drag": 0.3,
-      "startSize": [0.05, 0.08],
+      "startSize": [0.13, 0.19],
       "sizeOverLife": [
-        {"t": 0, "v": 0.7},
-        {"t": 0.2, "v": 1.0},
-        {"t": 1, "v": 0.9}
+        {"t": 0, "v": 0.75},
+        {"t": 0.22, "v": 1.0},
+        {"t": 1, "v": 1.0}
       ],
       "colorOverLife": [
         {"t": 0, "color": [1.0, 1.0, 1.0, 0.0]},
-        {"t": 0.1, "color": [1.0, 1.0, 1.0, 1.0]},
-        {"t": 0.75, "color": [1.0, 1.0, 1.0, 0.95]},
+        {"t": 0.22, "color": [1.0, 1.0, 1.0, 0.95]},
+        {"t": 0.85, "color": [1.0, 1.0, 1.0, 0.95]},
         {"t": 1, "color": [1.0, 1.0, 1.0, 0.0]}
       ],
       "blend": "alpha",
-      "sprite": "spark",
       "atlas": {"set": "RedTell", "group": "drop", "erode": false},
+      "softness": 0.0,
+      "renderMode": "stretched",
+      "lengthScale": 1.0,
+      "speedScale": 0.0
+    },
+    {
+      "name": "seam",
+      "bursts": [
+        {"time": 0.0, "count": 2},
+        {"time": 0.32, "count": 2},
+        {"time": 0.64, "count": 2},
+        {"time": 0.96, "count": 2},
+        {"time": 1.28, "count": 2}
+      ],
+      "duration": 1.6,
+      "maxParticles": 4,
+      "lifetime": 0.5,
+      "shape": "sphere",
+      "radius": 0.045,
+      "space": "local",
+      "startSize": [0.34, 0.42],
+      "sizeOverLife": [
+        {"t": 0, "v": 0.9},
+        {"t": 0.22, "v": 1.0},
+        {"t": 1, "v": 1.03}
+      ],
+      "startRotation": [-0.3, 0.3],
+      "colorOverLife": [
+        {"t": 0, "color": [1.25, 0.16, 0.1, 0.0]},
+        {"t": 0.22, "color": [1.25, 0.16, 0.1, 0.9]},
+        {"t": 0.6, "color": [1.25, 0.16, 0.1, 0.55]},
+        {"t": 1, "color": [1.25, 0.16, 0.1, 0.0]}
+      ],
+      "blend": "additive",
+      "atlas": {"set": "SeamLight", "group": "seam", "erode": false},
       "softness": 0.0
     }
   ]
