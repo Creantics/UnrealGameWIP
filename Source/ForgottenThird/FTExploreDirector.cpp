@@ -1351,7 +1351,7 @@ bool AFTExploreDirector::TickFace(AFTExploreCharacter& Player, ftcore::Vec2 Pos,
 }
 
 void AFTExploreDirector::PilotWalk(AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 Target, float DeltaSeconds,
-	bool bUseNav)
+	bool bUseNav, TOptional<double> GoalFloor)
 {
 	const FVector2D To(Goal.x - Pos.x, Goal.y - Pos.y);
 	const float Dist = static_cast<float>(To.Size());
@@ -1360,6 +1360,7 @@ void AFTExploreDirector::PilotWalk(AFTExploreCharacter& Player, ftcore::Vec2 Pos
 		PilotTarget = Target;
 		PilotBestDist = Dist;
 		PilotStuck = 0.f;
+		bPilotGaveUp = false;
 	}
 	else
 	{
@@ -1368,21 +1369,24 @@ void AFTExploreDirector::PilotWalk(AFTExploreCharacter& Player, ftcore::Vec2 Pos
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("ExploreDemo: STUCK %.1f m from spot %d."), Dist, Target);
 			PilotStuck = -1e9f; // log once
-			if (bQuitOnComplete)
+			bPilotGaveUp = true;
+			// A world map's tour gives the leg up itself (TickWorld) and exits 1 when it ends.
+			if (bQuitOnComplete && !(bWorldTour && !bOverworld))
 			{
 				FPlatformMisc::RequestExit(false, TEXT("ExploreDemo"));
 			}
 		}
 	}
 	FVector2D Dir = To.GetSafeNormal();
-	if (const ftcore::Vec2* Waypoint = bUseNav ? PilotWaypoint(Player, Pos, Goal, Target) : nullptr)
+	if (const ftcore::Vec2* Waypoint = bUseNav ? PilotWaypoint(Player, Pos, Goal, Target, GoalFloor) : nullptr)
 	{
 		Dir = FVector2D(Waypoint->x - Pos.x, Waypoint->y - Pos.y).GetSafeNormal();
 	}
 	Player.AddMovementInput(FVector(Dir.X, Dir.Y, 0.0), 1.f);
 }
 
-const ftcore::Vec2* AFTExploreDirector::PilotWaypoint(const AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 Target)
+const ftcore::Vec2* AFTExploreDirector::PilotWaypoint(const AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 Target,
+	TOptional<double> GoalFloor)
 {
 	UWorld* World = GetWorld();
 	UNavigationSystemV1* Nav = World ? FNavigationSystem::GetCurrent<UNavigationSystemV1>(World) : nullptr;
@@ -1400,10 +1404,14 @@ const ftcore::Vec2* AFTExploreDirector::PilotWaypoint(const AFTExploreCharacter&
 		PilotPathNext = 1;
 		const FVector From = Player.GetActorLocation();
 		// On a big world's ground a goal in another district stands at that district's floor, which may be metres off
-		// the lead's height, too far for the navmesh to find under a point at the lead's.
+		// the lead's height, too far for the navmesh to find under a point at the lead's. A spawn on a pinned map has its
+		// own floor (a deck or a terrace above the plaza's), which the caller passes.
 		const int32 GoalDistrict = Layout ? Layout->districtAt(Goal) : -1;
-		const FVector To(Goal.x * 100.0, Goal.y * 100.0,
-			DistrictFloors.IsValidIndex(GoalDistrict) ? DistrictFloors[GoalDistrict] + Player.GetSimpleCollisionHalfHeight() : From.Z);
+		if (!GoalFloor.IsSet() && DistrictFloors.IsValidIndex(GoalDistrict))
+		{
+			GoalFloor = DistrictFloors[GoalDistrict];
+		}
+		const FVector To(Goal.x * 100.0, Goal.y * 100.0, GoalFloor.IsSet() ? GoalFloor.GetValue() + Player.GetSimpleCollisionHalfHeight() : From.Z);
 		const UNavigationPath* Path = Nav->FindPathToLocationSynchronously(World, From, To);
 		if (Path && Path->IsValid())
 		{
@@ -1524,6 +1532,8 @@ void AFTExploreDirector::BeginWorld()
 	}
 	TourCount = static_cast<int32>(Layout->tour(static_cast<size_t>(WorldDistrict), Tour, UE_ARRAY_COUNT(Tour)));
 	TourLeg = 0;
+	TourMisses = 0;
+	bTourQuitOnDone = bQuitOnComplete || FParse::Param(FCommandLine::Get(), TEXT("WorldQuitOnDone"));
 	TourStart = Now();
 	TourGameStart = GetWorld()->GetTimeSeconds();
 	if (IsAlphaFast())
@@ -1531,7 +1541,7 @@ void AFTExploreDirector::BeginWorld()
 		UGameplayStatics::SetGlobalTimeDilation(this, 8.f);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("World %s: tour of %d legs %s."), *WorldId, TourCount,
-		bDistrictsPinned ? TEXT("on the navmesh") : TEXT("over the roads"));
+		bDistrictsPinned ? TEXT("on the navmesh, spawn to spawn") : TEXT("over the roads"));
 }
 
 void AFTExploreDirector::UpdateWorldLine(ftcore::Vec2 Pos)
@@ -1557,28 +1567,72 @@ void AFTExploreDirector::TickWorld(AFTExploreCharacter& Player, float DeltaSecon
 		return;
 	}
 	const int32 District = Tour[TourLeg];
-	const ftcore::Vec2 Target = Layout->district(static_cast<size_t>(District)).centre;
-	if (FVector2D(Target.x - Pos.x, Target.y - Pos.y).Size() > kTourReach)
+	// On a map that places its own districts the tour walks spawn to spawn: the builder checks every spawn for a path
+	// from the entry, while a plaza's centre may stand inside a piece that is still a box.
+	const ftcore::WorldDistrict& Place = Layout->district(static_cast<size_t>(District));
+	const ftcore::Vec2 Target = bDistrictsPinned ? Place.origin : Place.centre;
+	const int32 Spot = kTourTargetBase + TourLeg;
+	const float Dist = static_cast<float>(FVector2D(Target.x - Pos.x, Target.y - Pos.y).Size());
+	const double Game = GetWorld()->GetTimeSeconds() - TourGameStart;
+	if (Dist > kTourReach)
 	{
 		// Roads run straight between plaza centres and nothing stands on them, so no navmesh is needed; a map that places
 		// its own districts has none of those roads, so there the pilot follows the navmesh.
-		PilotWalk(Player, Pos, Target, kTourTargetBase + TourLeg, DeltaSeconds, bDistrictsPinned);
-		return;
+		const TOptional<double> SpawnFloor =
+			bDistrictsPinned && DistrictSpawns.IsValidIndex(District) ? TOptional<double>(DistrictSpawns[District].Z) : TOptional<double>();
+		PilotWalk(Player, Pos, Target, Spot, DeltaSeconds, bDistrictsPinned, SpawnFloor);
+		// A run that quits when the tour is done gives a stuck leg up and goes on from where the lead stands, so one stall
+		// can't hold the run open; without the flag the lead stays put (someone may be watching).
+		if (!bTourQuitOnDone || !bPilotGaveUp || PilotTarget != Spot)
+		{
+			return;
+		}
+		UE_LOG(LogForgottenThird, Error, TEXT("World %s: gave up on district %d (leg %d/%d), %.1f m short, at %.1f s game time."), *WorldId,
+			District, TourLeg + 1, TourCount, Dist, Game);
+		if (TourMisses < static_cast<int32>(UE_ARRAY_COUNT(TourMissLegs)))
+		{
+			TourMissLegs[TourMisses] = static_cast<uint8>(TourLeg + 1);
+		}
+		++TourMisses;
 	}
-	const double Game = GetWorld()->GetTimeSeconds() - TourGameStart;
-	UE_LOG(LogForgottenThird, Display, TEXT("World %s: reached district %d (leg %d/%d) at %.1f s game time."), *WorldId, District,
-		TourLeg + 1, TourCount, Game);
+	else if (bDistrictsPinned && DistrictSpawns.IsValidIndex(District))
+	{
+		// The reach is on the ground plan, so the feet say whether the lead stands on the spawn's own deck or terrace.
+		UE_LOG(LogForgottenThird, Display, TEXT("World %s: reached district %d (leg %d/%d) at %.1f s game time, feet at z %.0f cm (its spawn's %.0f cm)."),
+			*WorldId, District, TourLeg + 1, TourCount, Game, Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight(),
+			DistrictSpawns[District].Z);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("World %s: reached district %d (leg %d/%d) at %.1f s game time."), *WorldId, District,
+			TourLeg + 1, TourCount, Game);
+	}
 	if (++TourLeg < TourCount)
 	{
 		return;
 	}
 	bWorldTourDone = true;
-	UE_LOG(LogForgottenThird, Display, TEXT("World %s: TOUR DONE, all %d districts in %d legs, %.1f s game time (%.1f s real)."), *WorldId,
-		static_cast<int32>(Layout->districtCount()), TourCount, Game, Now() - TourStart);
 	UGameplayStatics::SetGlobalTimeDilation(this, 1.f);
-	if (bQuitOnComplete || FParse::Param(FCommandLine::Get(), TEXT("WorldQuitOnDone")))
+	if (TourMisses == 0)
 	{
-		FPlatformMisc::RequestExit(false, TEXT("WorldTour"));
+		UE_LOG(LogForgottenThird, Display, TEXT("World %s: TOUR DONE, all %d districts in %d legs, %.1f s game time (%.1f s real)."), *WorldId,
+			static_cast<int32>(Layout->districtCount()), TourCount, Game, Now() - TourStart);
+		if (bTourQuitOnDone)
+		{
+			FPlatformMisc::RequestExit(false, TEXT("WorldTour"));
+		}
+		return;
+	}
+	FString Legs; // once, when the tour ends
+	for (int32 i = 0; i < FMath::Min(TourMisses, static_cast<int32>(UE_ARRAY_COUNT(TourMissLegs))); ++i)
+	{
+		Legs += FString::Printf(TEXT("%s%d"), i ? TEXT(", ") : TEXT(""), static_cast<int32>(TourMissLegs[i]));
+	}
+	UE_LOG(LogForgottenThird, Error, TEXT("World %s: TOUR ENDED, %d of %d legs given up (legs %s), %.1f s game time (%.1f s real)."), *WorldId,
+		TourMisses, TourCount, *Legs, Game, Now() - TourStart);
+	if (bTourQuitOnDone)
+	{
+		FTRequestExit(1, TEXT("WorldTour"));
 	}
 }
 

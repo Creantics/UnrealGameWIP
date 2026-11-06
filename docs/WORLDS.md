@@ -218,6 +218,16 @@ Three optional goal-table columns name massing ids. `held` lists a goal apart: i
 
 The summary line closes with `temporary placements: <g> goals, <s> spawns`, and `-Strict` counts only the goals not listed apart.
 
+### Stills from a fixed eye
+
+A look-lock frame, or any review frame named by its eye, is taken off-screen from the built map (`FTWorldEyeShotSubsystem.h`):
+
+```
+UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/<map> -game -RenderOffScreen -unattended -nosplash -nosound -WorldEyeShot=<file.png> -WorldEye=<x,y,z> -WorldEyeAt=<x,y,z> [-WorldEyeLens=35] [-WorldEyeSide=1000] [-WorldEyeSize=2560x1440] [-WorldEyeDelay=8]
+```
+
+The eye and the point it looks at are in the plan frame, as in the tables. The lens is a focal length on a 36 mm-wide frame (35 mm sees about 54.4 degrees across). The view stays on the eye with the HUD hidden while every shader compiles and the delay passes; then the still is saved and the game quits, with 1 if it never arrives. The log gives the eye in both frames: `WorldEyeShot: eye (430.26, 387.35, 41.70) to (110.00, 500.00, 110.00) in the plan frame, 35.0 mm (54.4 degrees across), ...`. A `-NullRHI` run draws nothing.
+
 ## Headless checks
 
 - Core: `Core/tests/test_world_layout.cpp` covers:
@@ -233,7 +243,9 @@ The summary line closes with `temporary placements: <g> goals, <s> spawns`, and 
   UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/World_Solhaven -game -NullRHI -WorldAutoPlay -AlphaFast -WorldQuitOnDone -unattended -nosplash -nosound
   ```
 
-  On a massing map built with `-World`, whose districts the map pins, the tour walks the navmesh between the spawns instead of the generated roads, which that map doesn't have, and says so when it starts.
+  On a massing map built with `-World`, whose districts the map pins, the tour walks the navmesh between the spawns instead of the generated roads, which that map doesn't have, and says so when it starts (`tour of 18 legs on the navmesh, spawn to spawn`). Each leg ends at the district's spawn, not its plaza's centre: the builder checks every spawn for a path from the entry, while a centre can stand inside a piece that is still a box. The pilot asks the navmesh for a path to the spawn's own floor, which may be a deck or terrace above the plaza. Reaching is judged on the ground plan, so each reached line also gives the lead's feet against the spawn's floor: `reached district 9 (leg 17/18) at <t> s game time, feet at z <cm> cm (its spawn's <cm> cm)`. The first leg is the district the tour starts in, so it is reached at once when the lead starts on that district's spawn.
+
+  When the lead stops getting closer for 15 s of game time, the tour logs `ExploreDemo: STUCK <m> m from spot <300 + leg>.`. With `-WorldQuitOnDone`, it then gives that leg up and logs `World solhaven: gave up on district <d> (leg i/n), <m> m short, at <t> s game time.`, then goes on to the next district from where the lead stands. A tour with a leg given up ends with `TOUR ENDED, <k> of <n> legs given up (legs ...)` instead of `TOUR DONE`, and the run exits 1. Without the flag the lead stays where it stopped.
 
   It logs `World solhaven: reached district <d> (leg i/n) at <t> s game time.` for each leg, then `TOUR DONE`. Solhaven takes 18 legs and 814 s of game time, about 106 s real with `-AlphaFast`; Lattice 15 legs and 803 s, Unwritten 17 legs and 992 s, each with the lead's feet 5 cm over the entry's floor.
 - `-WorldDistrict=<n>`, outside a story step, starts the lead on district n's spawn and floor instead of the PlayerStart, and starts a tour there. With `-ExplorePortrait` it frames the ground from that district's pad, such as the climax's hilltop (Solhaven's district 14, Lattice's 1, Unwritten's 4).

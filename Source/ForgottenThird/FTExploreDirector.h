@@ -18,7 +18,8 @@
 // from district to district until it has reached them all (logging each), then exits with
 // -ExploreQuitOnComplete. A map built from the world's own plan (FTBuildMassingWorld -World=) places
 // its districts itself (DistrictCentres, DistrictSpawns): the layout's districts move there, and the
-// tour walks between them on the navmesh.
+// tour walks between their spawns on the navmesh. With -WorldQuitOnDone a stuck leg is given up and the
+// tour goes on, ending in TOUR ENDED and exit code 1 instead of TOUR DONE.
 //
 // On the overworld (bOverworld, FTBuildExploreWorld -World=overworld) the director lays out the
 // overworld (ftcore::OverworldLayout). A story field step whose carry has FromWorld set is a hop: the
@@ -164,11 +165,13 @@ private:
 	bool TickFace(AFTExploreCharacter& Player, ftcore::Vec2 Pos, float DeltaSeconds);
 	void TickStoryWalk(AFTExploreCharacter& Player, float DeltaSeconds);
 	// Walks the pawn toward Goal (metres) and runs the stuck detection for TargetId; straight at it
-	// without the navmesh when !bUseNav.
+	// without the navmesh when !bUseNav. GoalFloor (cm), when set, is the floor at Goal for the navmesh query;
+	// otherwise that of the district Goal stands in.
 	void PilotWalk(AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 TargetId, float DeltaSeconds,
-		bool bUseNav = true);
+		bool bUseNav = true, TOptional<double> GoalFloor = {});
 	// The navmesh point to steer at on the way to Goal, or null to walk straight at it.
-	const ftcore::Vec2* PilotWaypoint(const AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 TargetId);
+	const ftcore::Vec2* PilotWaypoint(const AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 TargetId,
+		TOptional<double> GoalFloor);
 	void SpawnFieldGoal();
 	void SetNotice(const FString& Text);
 	void SetBanner(const FString& Text);
@@ -283,6 +286,9 @@ private:
 	uint8 Tour[2 * ftcore::WorldLayout::kMaxDistricts] = {};
 	int32 TourCount = 0;
 	int32 TourLeg = 0;
+	bool bTourQuitOnDone = false;                                 // -WorldQuitOnDone (or -ExploreQuitOnComplete), read when the tour starts
+	int32 TourMisses = 0;                                         // legs given up stuck (quitting runs only)
+	uint8 TourMissLegs[2 * ftcore::WorldLayout::kMaxDistricts] = {}; // their leg numbers, from 1
 	double TourStart = 0.0;
 	double TourGameStart = 0.0;
 	int32 WorldLineDistrict = -2;
@@ -315,6 +321,7 @@ private:
 	int32 PilotTarget = -1;
 	float PilotBestDist = 0.f;
 	float PilotStuck = 0.f;
+	bool bPilotGaveUp = false; // the stuck line is logged for PilotTarget; cleared on a new target or any progress
 	// Autopilot: its navmesh path to the target in ground metres, refreshed about once a second.
 	// Empty (walk straight at the target) when the map has no navmesh or no path was found.
 	TArray<ftcore::Vec2> PilotPath;
