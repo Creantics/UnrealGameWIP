@@ -3261,6 +3261,14 @@ TEST_CASE("arena kite boss: each swoop has a recoil as long as the stagger, and 
     REQUIRE(up >= 0);
     CHECK_FALSE(k.clips[static_cast<std::size_t>(up)].loop);
     CHECK(k.clips[static_cast<std::size_t>(up)].length < static_cast<double>(boss.openTime) - 0.5);
+    // The eased drop into face_down plays once from the spell's start, its authored 2.5 s, with no blow of its own; the
+    // get-up takes over when the state runs short.
+    const int down = k.clips.find("face_down_in");
+    REQUIRE(down >= 0);
+    const BeatClip& in = k.clips[static_cast<std::size_t>(down)];
+    CHECK_FALSE(in.loop);
+    CHECK(in.length == doctest::Approx(2.5));
+    CHECK(in.impact == 0.0);
 }
 
 TEST_CASE("arena kite boss: about one swoop in ten seconds") {

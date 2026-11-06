@@ -160,6 +160,13 @@
    "loop": true
   },
   {
+   "id": "face_down_in",
+   "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossface_down_in",
+   "length_s": 2.5,
+   "impact_s": 0.0,
+   "loop": false
+  },
+  {
    "id": "defeat",
    "asset": "/Game/Bosses/KiteBoss/kite_boss/SkeletalMeshes/kite_bossdefeat",
    "length_s": 6.0,
