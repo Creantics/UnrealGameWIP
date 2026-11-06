@@ -44,6 +44,7 @@
       "fogAlbedoG": 0.88,
       "fogAlbedoB": 0.95,
       "practicalKelvin": 2700,
+      "sodiumKelvin": 2000,
       "practicalCandela": 60,
       "practicalScatter": 2
     },

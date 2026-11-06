@@ -190,22 +190,23 @@ int32 FTScene::ApplyLook(UWorld* World, const ftcore::SceneLook& Look, const ftc
 	}
 
 	// Practical lights: every light the map tags as one. A map built before the look knew them keeps its own values until a
-	// world's look moves them.
-	const bool bPracticals = Look.practicalKelvin != Current.practicalKelvin || Look.practicalCandela != Current.practicalCandela
-		|| Look.practicalScatter != Current.practicalScatter;
+	// world's look moves them. A sodium street lamp (also tagged FTSodium) takes the sodium colour.
+	const bool bPracticals = Look.practicalKelvin != Current.practicalKelvin || Look.sodiumKelvin != Current.sodiumKelvin
+		|| Look.practicalCandela != Current.practicalCandela || Look.practicalScatter != Current.practicalScatter;
 	for (TActorIterator<AActor> It(World); It && bPracticals; ++It)
 	{
 		if (!It->ActorHasTag(PracticalTag))
 		{
 			continue;
 		}
+		const float Kelvin = It->ActorHasTag(SodiumTag) ? Look.sodiumKelvin : Look.practicalKelvin;
 		TInlineComponentArray<ULocalLightComponent*> Lights(*It);
 		for (ULocalLightComponent* Light : Lights)
 		{
 			Light->SetIntensityUnits(ELightUnits::Candelas);
 			Light->SetIntensity(Look.practicalCandela);
 			Light->SetUseTemperature(true);
-			Light->SetTemperature(Look.practicalKelvin);
+			Light->SetTemperature(Kelvin);
 			Light->SetVolumetricScatteringIntensity(Look.practicalScatter);
 			++Written;
 		}

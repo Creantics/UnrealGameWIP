@@ -45,9 +45,10 @@ Substrate, and the extended auto-exposure range.
 | `waterWaveCm`, `waterWaveSpeed`, `waterWaveStrength` | 150, 1, 1 | The first normal layer's cell size in cm (the second is finer), the scale on the layers' pan speed (0 = frozen) and the normal strength (0 = a still mirror). |
 | `fogAlbedoR/G/B` | 1, 1, 1 | Volumetric fog albedo. |
 | `practicalKelvin`, `practicalCandela`, `practicalScatter` | 3200, 40, 1 | Lights tagged FTPractical in a map: colour temperature, intensity and volumetric scattering intensity (the engine's default 1). |
+| `sodiumKelvin` | 2000 | The colour of practical lights also tagged FTSodium, the sodium street lamps, in place of `practicalKelvin`. Solhaven's street lamps are high-pressure sodium at 2000 K, and its other practicals, interior lamps, 2700 K. |
 | `glowR/G/B`, `glowStrength` | 0.3, 0.55, 1, 0 | Emissive light sources: colour, and the emissive multiplier at the scenes' exposure scale (the sun is a few lux). 0 = dark. |
 
-Each of these is a field of `ftcore::SceneLook` (91 in all, `kSceneLookFieldCount`); the table above lists only the ones whose
+Each of these is a field of `ftcore::SceneLook` (92 in all, `kSceneLookFieldCount`); the table above lists only the ones whose
 defaults the base look sets. The ranges are in `Core/include/ftcore/SceneLook.h`.
 
 ## The surface master

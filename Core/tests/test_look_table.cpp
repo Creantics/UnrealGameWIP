@@ -51,6 +51,9 @@ TEST_CASE("looks: Data/Look/looks.json loads clean with solhaven, lattice and un
     CHECK(t.find("lattice")->glowStrength > 0.f);
     CHECK(t.find("solhaven")->glowStrength == 0.f);
     CHECK(t.find("unwritten")->waterWaveStrength < 0.5f);
+    // The town's street lamps are high-pressure sodium at 2000 K; its other practicals, interior lamps, are 2700 K.
+    CHECK(t.find("solhaven")->sodiumKelvin == 2000.f);
+    CHECK(t.find("solhaven")->practicalKelvin == 2700.f);
 }
 
 TEST_CASE("looks: a render block parses in order, and no block means none, with no warning") {

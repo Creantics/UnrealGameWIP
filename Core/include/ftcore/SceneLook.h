@@ -95,8 +95,10 @@ namespace ftcore {
     X(fogAlbedoR, 1.f, 0.f, 1.f) /* volumetric fog albedo (1 = white, the engine's default) */                 \
     X(fogAlbedoG, 1.f, 0.f, 1.f)                                                                               \
     X(fogAlbedoB, 1.f, 0.f, 1.f)                                                                               \
-    /* Practical lights (lights tagged FTPractical in a map). */                                               \
+    /* Practical lights (lights tagged FTPractical in a map): interior lamps, signs, fires. */                 \
     X(practicalKelvin, 3200.f, 1500.f, 15000.f)                                                                \
+    X(sodiumKelvin, 2000.f, 1500.f, 15000.f) /* the colour of those also tagged FTSodium, the */               \
+                                             /* sodium street lamps (high-pressure sodium) */                  \
     X(practicalCandela, 40.f, 0.f, 10000.f)                                                                    \
     X(practicalScatter, 1.f, 0.f, 20.f) /* volumetric scattering intensity (the engine's default 1) */         \
     /* Glow: emissive light sources. */                                                                        \

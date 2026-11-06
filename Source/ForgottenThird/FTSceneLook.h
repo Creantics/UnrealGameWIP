@@ -46,6 +46,8 @@ inline constexpr const TCHAR* LookGlowMaterial = TEXT("/Game/Look/M_Look_Glow");
 // The tag of a map's practical lights (lamps, signs, fires): the look sets their colour, intensity and how much they
 // light the fog.
 inline constexpr const TCHAR* PracticalTag = TEXT("FTPractical");
+// A practical light that is also a sodium street lamp: it takes the look's sodium colour in place of the practicals'.
+inline constexpr const TCHAR* SodiumTag = TEXT("FTSodium");
 
 // The collection's parameters and the SceneLook fields they carry. A vector's alpha is 1.
 struct FLookScalarParameter
