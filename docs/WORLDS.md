@@ -202,9 +202,15 @@ UnrealEditor-Cmd.exe ForgottenThird.uproject -run=FTBuildMassingWorld -Height=<j
 
 Without `-World` the map is a free walk with no director. With `-World=<id>` it is that world's: the goals table's rows `D0`, `D1`, ... give each district's plaza centre and floor, and each district's spawn is the row's `spawn_x`, `spawn_y` when given, or else the generator's own rule (9 m behind the plaza's centre, facing the square's centre). The spawn stands on the highest deck or landing at most 6 m over the higher of the plaza's floor and the ground there. The build pins the world's layout to these places (`WorldLayout::pinDistricts`), so every district's frame, `districtAt` and a story step's placing follow the plan while the generated roads and blocks stay as they were (the massing map doesn't build them). It logs each district, warning when the lead would stand inside a box or wall at its spawn:
 
-`FTBuildMassingWorld: district 9: plaza (-65.0, 105.0) at 35.0 m; spawn (-69.7, 112.6) on <id> at 40.0 m.`
+`FTBuildMassingWorld: district 9: plaza (435.0, 395.0) at 35.0 m; spawn (430.3, 387.3) on <id> at 40.0 m.`
 
-It then places the director with the districts' floors, centres and spawns, and with the navmesh checks each district's spawn as well as each goal for a path from the entry; the summary line adds `district spawns reached <n> of <m>`, and `-Strict` fails on a missing one.
+Positions in the log are the plan frame's metres, as in the tables. It then places the director with the districts' floors, centres and spawns, and with the navmesh checks each district's spawn as well as each goal for a path from the entry; the summary line adds `district spawns reached <n> of <m>`, and `-Strict` fails on a missing one.
+
+`-Entry`'s z is the surface the lead stands on at x, y (the ground, or a deck or landing), not the floor of the plaza it serves: a z inside a box, such as a bowl's floor, is off the navmesh, and then no walk starts. A point within 1 m of the entry counts as reached. A miss says where the navmesh met the point and where the path from the entry stops:
+
+`FTBuildMassingWorld: goal D5 (190, 430, +80): no full path from the entry; on the navmesh at (190.0, 430.0, +80.1); the path stops at (190.0, 437.5, +80.1), 7.5 m short.`
+
+A path that stops at a box's face points at a goal inside a box that is still solid; one that stops at a step or a drop points at a gap in the massing.
 
 ## Headless checks
 
