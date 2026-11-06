@@ -59,16 +59,21 @@ basic shape material.
 
 The world maps' ground, plazas, walls, roofs, landmarks, tree trunks and rocks wear photographed
 surfaces: colour, normal and ambient occlusion/roughness/metal maps of real ground, stone, plaster, tiles
-and bark. They are all CC0 and come from one library. `Data/Field/surfaces.json` lists:
+and bark. The photographed ones are CC0 and come from one library; Solhaven's own sets (board-formed
+concrete, paving slabs, bitumen roofing, soot-dark brick, steel and the rest, `solhaven_*`) were made for
+this game. `Data/Field/surfaces.json` lists:
 
 - each surface: its `id` (the library's own name), `tileCm` (the real width one copy of the photo
-  covers, from the source page), `res` (1k, 2k or 4k), the source URL and the licence. The loader
-  refuses any licence but CC0 and any source that isn't https. An optional `roughness` (0..1) stands in
+  covers, from the source page, or for a made set from the size of its bricks, slabs or boards), `res`
+  (1k, 2k or 4k), and its licence: CC0 with an https source URL, or `project` with no source at all. The
+  loader refuses any other licence, a CC0 source that isn't https, and a project surface that names a
+  source. An optional `roughness` (0..1) stands in
   for the packed map's roughness when the file's roughness channel is empty. The gravel road's is: without
   it the road rendered as a mirror.
 - per world kind (town, towers, ruins), the surface each role wears and an optional `tint`, a
-  multiplier on the photo's colour (0 to 2 per channel). Solhaven's walls are tinted warm this way, and its
-  grass greener, (0.5, 0.9, 0.35): the photo's grass is dry and showed as khaki from any distance. The towers'
+  multiplier on the photo's colour (0 to 2 per channel). The town's cobbles are tinted toward grey this way,
+  (0.82, 0.85, 0.92), its landmark stone grey, (0.78, 0.82, 1.0), and its rock a cool grey, (0.62, 0.78,
+  1.2): Solhaven is grey and wet, with nothing saturated. The towers'
   ground is tinted a touch cooler, (0.85, 0.9, 1.0), and their rock, the ruins' worn rock, grey, (0.45, 0.6,
   0.9). The towers first wore a dark rock photo, but even at the cap of 2 it stayed darker than the shadows
   beside it, and the mountains' steep faces read as holes from afar.
@@ -278,7 +283,8 @@ needs the material logs `/Game/Rendering/M_WorldSurface is missing; run FTBuildW
 when it hasn't been built.
 
 `fetch_surfaces.py` downloads the photos into `<dir>/<id>/`. It keeps a file that's already there with
-the right checksum, and refuses any source that isn't CC0. The photos aren't committed; the built
+the right checksum, skips the project surfaces, and refuses any other source that isn't CC0. The photos
+and the made sets' maps aren't committed; the built
 textures are, through LFS. `FTBuildSurfaces` checks that every file is there before it changes anything,
 replaces the master and every surface's assets, and saves nothing if the master doesn't compile.
 `-AllowCommandletRendering` without `-NullRHI` makes that compile check real. It ends with a line like

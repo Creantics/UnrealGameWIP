@@ -1,6 +1,6 @@
 // The world surface library: Data/Field/surfaces.json (loader), what each world kind's roles wear, and that the
-// committed file dresses every role of a town, and the ground, road and rock of the other kinds, in a CC0 surface at
-// its real scale.
+// committed file dresses every role of a town, and the ground, road and rock of the other kinds, in a surface at its
+// real scale, with no CC0 surface left unworn.
 
 #include "ftcore/SurfaceTable.h"
 
@@ -129,6 +129,23 @@ TEST_CASE("surfaces: the loader refuses bad files and warns on unknown keys") {
     CHECK_FALSE(importSurfaceTable(lib(R"({"id":"a","tileCm":200,"source":"https://example.org/a","license":"CC-BY"})"), t, &error));
     CHECK(error.find("surfaces[0].license") != std::string::npos);
     CHECK(t.surfaces.empty());
+    CHECK_FALSE(importSurfaceTable(lib(R"({"id":"a","tileCm":200,"source":"https://example.org/a","license":"MIT"})"), t, &error));
+    CHECK_FALSE(importSurfaceTable(lib(R"({"id":"a","tileCm":200,"source":"https://example.org/a"})"), t, &error));
+    CHECK_FALSE(importSurfaceTable(lib(R"({"id":"a","tileCm":200,"license":"CC0"})"), t, &error));
+    CHECK(error.find("surfaces[0].source") != std::string::npos);
+    // a project surface (made for this game) has no source; naming one is an error, so no path or page leaks in
+    REQUIRE_MESSAGE(importSurfaceTable(lib(R"({"id":"a","tileCm":120,"res":"1k","license":"project"})"), t, &error), error);
+    REQUIRE(t.surfaces.size() == 1);
+    CHECK(t.surfaces[0].project);
+    CHECK(t.surfaces[0].source.empty());
+    CHECK(t.surfaces[0].resK == 1);
+    CHECK_FALSE(importSurfaceTable(lib(R"({"id":"a","tileCm":120,"license":"project","source":"https://example.org/a"})"), t, &error));
+    CHECK(error.find("surfaces[0].source") != std::string::npos);
+    CHECK_FALSE(importSurfaceTable(lib(R"({"id":"a","tileCm":120,"license":"project","source":""})"), t, &error));
+    CHECK_FALSE(importSurfaceTable(lib(R"({"id":"a","tileCm":5,"license":"project"})"), t, &error));
+    CHECK_FALSE(importSurfaceTable(lib(R"({"id":"a","tileCm":120,"license":"Project"})"), t, &error));
+    REQUIRE_MESSAGE(importSurfaceTable(lib(good), t, &error), error);
+    CHECK_FALSE(t.surfaces[0].project);
     // roughness: 0..1 when present
     REQUIRE_MESSAGE(
         importSurfaceTable(lib(R"({"id":"a","tileCm":200,"roughness":0,"source":"https://example.org/a","license":"CC0"})"), t, &error),
@@ -174,8 +191,8 @@ TEST_CASE("surfaces: lookups allocate nothing") {
     CHECK(found == 4 + 2 + 4);
 }
 
-TEST_CASE("surfaces: Data/Field/surfaces.json dresses every town role, and every world's ground, in a CC0 surface at "
-          "its real scale") {
+TEST_CASE("surfaces: Data/Field/surfaces.json dresses every town role, and every world's ground, in a surface at its "
+          "real scale") {
     std::string text;
     if (!ftcore_test::readProjectData("Field/surfaces.json", text)) {
         MESSAGE("Field/surfaces.json not readable; skipping");
@@ -198,11 +215,18 @@ TEST_CASE("surfaces: Data/Field/surfaces.json dresses every town role, and every
     // The ground material draws each world's ground, its roads and its steep ground.
     for (const WorldKind kind : {WorldKind::Towers, WorldKind::Ruins})
         for (const SurfaceRole role : {SurfaceRole::Ground, SurfaceRole::Road, SurfaceRole::Rock}) dressed(kind, role);
-    // Every surface in the library is worn somewhere.
+    // Every CC0 surface in the library is worn somewhere, so the fetch downloads nothing unused. A project surface
+    // may be in the library for kit meshes only, which no role wears, but it has a real scale too.
     for (std::size_t i = 0; i < t.surfaces.size(); ++i) {
+        const SurfaceSpec& s = t.surfaces[i];
+        if (s.project) {
+            CHECK_MESSAGE(s.tileCm >= 50.f, s.id);
+            CHECK_MESSAGE(s.tileCm <= 500.f, s.id);
+            continue;
+        }
         bool worn = false;
         for (const auto& kind : t.uses)
             for (const SurfaceUse& use : kind) worn = worn || use.surface == static_cast<int>(i);
-        CHECK_MESSAGE(worn, t.surfaces[i].id);
+        CHECK_MESSAGE(worn, s.id);
     }
 }

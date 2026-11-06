@@ -5,9 +5,10 @@
 For each surface, it downloads three JPEG maps from the Poly Haven API at the surface's `res`:
 the colour (diff), the DirectX normal (nor_dx) and the packed AO/roughness/metal (arm). Each
 surface goes into its own folder, <dir>/<id>/<id>_{diff,nor_dx,arm}_<res>.jpg, the names that
--run=FTBuildSurfaces reads. A file that's already there with the API's MD5 is kept. Every source
-must be CC0; anything else is refused. The files aren't committed: the import keeps each JPEG
-inside its texture asset.
+-run=FTBuildSurfaces reads. A file that's already there with the API's MD5 is kept. A "project"
+surface (made for this game, with no source) is skipped: its files are already on disk. Every
+other surface must be CC0 from Poly Haven; anything else is refused. The files aren't committed:
+the import keeps each JPEG inside its texture asset.
 """
 import argparse
 import hashlib
@@ -46,8 +47,12 @@ def main():
     table = json.loads(pathlib.Path(args.data).read_text(encoding="utf-8"))
     out = pathlib.Path(args.out)
     plan = []
+    skipped = 0
     for s in table["surfaces"]:
         sid, res = s["id"], s.get("res", "2k")
+        if s.get("license") == "project":
+            skipped += 1
+            continue
         if s.get("license") != "CC0" or s.get("source") != PAGE + sid:
             print(f"fetch_surfaces: {sid}: only CC0 surfaces from {PAGE}<id> are fetched")
             return 1
@@ -60,7 +65,9 @@ def main():
             plan.append((sid, out / sid / f"{sid}_{short}_{res}.jpg", entry["url"], entry["size"], entry["md5"]))
 
     total = sum(p[3] for p in plan)
-    print(f"fetch_surfaces: {len(plan)} files for {len(table['surfaces'])} surfaces, {total / 1e6:.1f} MB")
+    fetched_surfaces = len(table["surfaces"]) - skipped
+    print(f"fetch_surfaces: {len(plan)} files for {fetched_surfaces} surfaces, {total / 1e6:.1f} MB"
+          f" ({skipped} project surfaces skipped)")
     if args.dry_run:
         for sid, path, url, size, _ in plan:
             print(f"  {path.name}  {size / 1e6:.1f} MB")

@@ -161,6 +161,8 @@ The ground wears the ground master: the kind's ground surface, rock wherever the
 | World | Ground | Rock | Road | On a road | Roles dressed |
 |---|---|---|---|---|---|
 | solhaven | leafy_grass (tinted) | worn_rock_natural_01 (tinted) | gravel_road | 2.5% | 8 of 8 |
+
+Since 2026-11-06 surfaces.json gives the town solhaven_paving_slab for its ground, clean_asphalt for its roads and worn_rock_natural_01 at (0.62, 0.78, 1.2) for its rock, and board-formed concrete, bitumen roofing and grey-tinted stone and cobbles for its buildings, roofs, landmarks and plazas. World_Solhaven still wears the row above until it is rebuilt.
 | lattice | gravel_floor_02 (tinted) | worn_rock_natural_01 (tinted) | clean_asphalt | 2.1% | 3 of 8 |
 | unwritten | gravelly_sand | worn_rock_natural_01 | dry_mud_field_001 | 1.7% | 3 of 8 |
 

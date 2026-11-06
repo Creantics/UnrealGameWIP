@@ -129,10 +129,17 @@ bool importSurfaceTable(std::string_view json, SurfaceTable& out, std::string* e
             else if (r == "4k") s.resK = 4;
             else errors.push_back(path + ".res: expected 1k, 2k or 4k");
         }
-        s.source = std::string(j["source"].string());
-        if (s.source.rfind("https://", 0) != 0 || s.source.size() <= 8)
-            errors.push_back(path + ".source: expected an https page");
-        if (j["license"].string() != "CC0") errors.push_back(path + ".license: expected CC0");
+        const std::string_view license = j["license"].string();
+        s.project = license == "project";
+        if (s.project) {
+            // Made for this game: its files come from a folder outside the repo, which the table never names.
+            if (!j["source"].isAbsent()) errors.push_back(path + ".source: a project surface has none");
+        } else {
+            if (license != "CC0") errors.push_back(path + ".license: expected CC0 or project");
+            s.source = std::string(j["source"].string());
+            if (s.source.rfind("https://", 0) != 0 || s.source.size() <= 8)
+                errors.push_back(path + ".source: expected an https page");
+        }
         if (const JsonValue rough = j["roughness"]; !rough.isAbsent()) {
             const double r = rough.number(-1.0);
             if (!rough.isNumber() || !std::isfinite(r) || r < 0.0 || r > 1.0)

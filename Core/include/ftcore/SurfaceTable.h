@@ -1,9 +1,9 @@
 #pragma once
 
-// The world surface library (Data/Field/surfaces.json): photographed surfaces under a free licence, which
-// -run=FTBuildSurfaces turns into textured materials, and the surface each world kind's shapes wear. A role
-// is one kind of shape the world map builder places (ground, road, plaza, building, roof, landmark, wood,
-// rock); a role a kind doesn't list keeps the builder's flat tint.
+// The world surface library (Data/Field/surfaces.json): photographed surfaces under a free licence and surfaces
+// made for this game, which -run=FTBuildSurfaces turns into textured materials, and the surface each world kind's
+// shapes wear. A role is one kind of shape the world map builder places (ground, road, plaza, building, roof,
+// landmark, wood, rock); a role a kind doesn't list keeps the builder's flat tint.
 //
 //   ftcore::SurfaceTable table;
 //   if (!ftcore::importSurfaceTable(text, table, &error)) ...;                      // allocates: at load
@@ -11,16 +11,19 @@
 //
 // surfaces.json (ids and numbers only):
 //   { "version": 1,
-//     "surfaces": [ { "id": "clay_roof_tiles_02", "tileCm": 250, "res": "2k",
-//                     "source": "https://polyhaven.com/a/clay_roof_tiles_02", "license": "CC0" } ],
-//     "kinds": { "town": { "roof": { "surface": "clay_roof_tiles_02", "tint": [1, 1, 1] } } } }
+//     "surfaces": [ { "id": "clean_asphalt", "tileCm": 210, "res": "2k",
+//                     "source": "https://polyhaven.com/a/clean_asphalt", "license": "CC0" },
+//                   { "id": "solhaven_bitumen_roof", "tileCm": 400, "res": "1k", "license": "project" } ],
+//     "kinds": { "town": { "road": { "surface": "clean_asphalt" },
+//                          "roof": { "surface": "solhaven_bitumen_roof", "tint": [1, 1, 1] } } } }
 //   `tileCm` is the real width one copy of the texture covers (the source's own scale). `res` is 1k, 2k or 4k
-//   (2k when absent): the size of the files tools/fetch_surfaces.py fetches and the import reads. `license`
-//   must be CC0 and `source` an https page. `roughness` (optional, 0..1) is a constant roughness in place of
-//   the packed map's, for a surface whose file has an empty roughness channel; -run=FTBuildSurfaces refuses it
-//   on a map that has its own. A kind is town, towers or ruins (WorldKind). `tint` (optional, three numbers in
-//   0..2, [1, 1, 1] when absent) multiplies the texture's colour. Unknown keys are warnings; an unknown kind or
-//   role, or anything else wrong, is an error.
+//   (2k when absent): the size of the files tools/fetch_surfaces.py fetches and the import reads. `license` is
+//   CC0, with `source` an https page, or "project": a surface made for this game, with no `source`, whose files
+//   the import reads from a folder outside the repo (fetch_surfaces.py skips it). `roughness` (optional, 0..1) is
+//   a constant roughness in place of the packed map's, for a surface whose file has an empty roughness channel;
+//   -run=FTBuildSurfaces refuses it on a map that has its own. A kind is town, towers or ruins (WorldKind).
+//   `tint` (optional, three numbers in 0..2, [1, 1, 1] when absent) multiplies the texture's colour. Unknown keys
+//   are warnings; an unknown kind or role, or anything else wrong, is an error.
 
 #include "ftcore/Api.h"
 #include "ftcore/WorldLayout.h"
@@ -50,7 +53,8 @@ struct SurfaceSpec {
     std::string id;          // lower-case letters, digits and '_'
     float tileCm = 200.f;
     std::uint32_t resK = 2;  // 1, 2 or 4: the texture files are this many thousand pixels across ("2k")
-    std::string source;      // the page it came from
+    std::string source;      // the page it came from; empty for a project surface
+    bool project = false;    // made for this game ("license": "project"), not fetched
     float roughness = -1.f;  // 0..1 in place of the packed map's roughness; negative: the map's
 };
 
