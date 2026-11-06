@@ -2,14 +2,15 @@
 
 Since 2026-10-28 every map has the same photoreal base. The stylized post-process packs
 ([STYLE_PACKS_UE.md](STYLE_PACKS_UE.md)) are off unless a map is built with `-Style=<spec>`. Each world
-gets its own look later as tuned values on the same base: light, air, camera finish and shaders, not a
-drawn style.
+gets its own look as tuned values on the same base: light, air, camera finish and shaders, not a
+drawn style. Since 2026-11-03 those values are applied when a map starts, with a grade after the tonemapper:
+[PHOTOREAL_LOOK.md](PHOTOREAL_LOOK.md).
 
 ## Pieces
 
 | Piece | File | Job |
 |---|---|---|
-| `ftcore::SceneLook` | `Core/include/ftcore/SceneLook.h`, `Core/src/SceneLook.cpp` | The look as 17 plain values: sun, sky light, fog, clouds, exposure, white balance and grade. `lerp` blends two looks, so a later world-to-world blend is one call. Tests: `Core/tests/test_scene_look.cpp`. |
+| `ftcore::SceneLook` | `Core/include/ftcore/SceneLook.h`, `Core/src/SceneLook.cpp` | The look as 84 plain values: sun, sky light, fog and its albedo, clouds, exposure, white balance, the camera finish and grade, ground wetness, water, practical lights, glow, the sky's stars and skyglow, the wind, the cloud layer's cover, height and light, and the sea's swell, chop and foam. `lerp` blends two looks, so a later world-to-world blend is one call. Tests: `Core/tests/test_scene_look.cpp`. |
 | `FTScene::SpawnLook` | `Source/ForgottenThird/FTSceneLook.{h,cpp}` | Spawns a look into a map: a movable sun (colour from its temperature), a real-time sky light, the sky atmosphere, exponential height fog (volumetric when the look has it), the engine's volumetric clouds, and an unbound post-process volume at priority 0 for the camera finish. |
 | `FTScene::LoadSurface` | same | Loads the surface master that the builders tint for their blocks and props. |
 | Surface master | `FTBuildWorldMaterialsCommandlet` | Writes `/Game/Rendering/M_WorldSurface`. See below. |
@@ -31,12 +32,23 @@ Substrate, and the extended auto-exposure range.
 | `fogDensity`, `fogFalloff` | 0.03, 0.2 | Height fog. |
 | `volumetricFog` | 1 | Volumetric fog extinction scale; 0 turns volumetric fog off. |
 | `fogForward` | 0.6 | Scattering distribution: light scattered forward, so the air glows towards the sun. |
-| `clouds` | 1 | The volumetric cloud layer: on at 0.5 or more. |
+| `clouds` | 1 | The volumetric cloud layer: on at 0.5 or more. Its look is the engine's own until `cloudCover` is above 0 (see `docs/PHOTOREAL_LOOK.md`). |
 | `exposureBias` | 1 | Auto-exposure bias, EV. |
 | `exposureMinEV100`, `exposureMaxEV100` | -10, 20 | The engine's extended-range defaults until the scenes are measured. |
 | `whiteBalanceKelvin` | 6500 | Neutral camera white balance. |
 | `saturation`, `contrast` | 1, 1 | Grade, neutral. |
 | `bloom`, `vignette`, `filmGrain` | 0.675, 0.4, 0 | Lens. |
+| `wetness` | 0 | How wet the ground and stone are: darker, porous albedo, smoother, puddles in hollows past 0.5. 0 adds none. |
+| `waterAbsorbR/G/B` | 0.45, 0.065, 0.025 | Single Layer Water absorption, per metre (the material converts to the engine's per centimetre). 0 to 50. |
+| `waterScatterR/G/B` | 0.02, 0.03, 0.04 | Water scattering, per metre. 0 to 50. |
+| `waterPhaseG`, `waterRoughness` | 0, 0.04 | The water's scattering phase (-0.9 to 0.9) and surface roughness. |
+| `waterWaveCm`, `waterWaveSpeed`, `waterWaveStrength` | 150, 1, 1 | The first normal layer's cell size in cm (the second is finer), the scale on the layers' pan speed (0 = frozen) and the normal strength (0 = a still mirror). |
+| `fogAlbedoR/G/B` | 1, 1, 1 | Volumetric fog albedo. |
+| `practicalKelvin`, `practicalCandela`, `practicalScatter` | 3200, 40, 1 | Lights tagged FTPractical in a map: colour temperature, intensity and volumetric scattering intensity (the engine's default 1). |
+| `glowR/G/B`, `glowStrength` | 0.3, 0.55, 1, 0 | Emissive light sources: colour, and the emissive multiplier at the scenes' exposure scale (the sun is a few lux). 0 = dark. |
+
+Each of these is a field of `ftcore::SceneLook` (91 in all, `kSceneLookFieldCount`); the table above lists only the ones whose
+defaults the base look sets. The ranges are in `Core/include/ftcore/SceneLook.h`.
 
 ## The surface master
 
@@ -326,7 +338,8 @@ On a world map the director logs `World solhaven: field step in district 3 (phot
 ## Later
 
 - Measure each map's EV100 and narrow the exposure range to about ±1.5 EV round it.
-- One `SceneLook` per world, blended with `lerp` where the story crosses from one to another.
+- Blend two worlds' looks with `lerp` where the story crosses from one to another (each world has its own
+  `SceneLook` now: [PHOTOREAL_LOOK.md](PHOTOREAL_LOOK.md)).
 - Photographed surfaces for the towers' and ruins' buildings, plazas, roofs, landmarks and trees.
 - On the terrain: scattered grass, stones and decals that hide the repeats; a second ground surface per
   world, such as dirt or moss in patches; and a mask from the erosion that lays rock or scree along the

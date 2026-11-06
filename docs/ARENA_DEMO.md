@@ -456,6 +456,7 @@ each frame and handed to the fight on its next step, so no press is lost between
 | `-ArenaShotAt=S,S,...` | With `-ArenaShot`, an extra view `_t_<S>` at each of those fight times (after `_1_ring`; the six views and the quit are unchanged), so two runs of the same fight are shot at the same moments. |
 | `-ArenaNoBossFx` | The stone bearer's effects (tells, impacts, chips, the weak point's glow) stay off and the fight runs the same (the OFF half of an OFF/ON capture). |
 | `-ArenaNoKiteFx` | The Kite-Mother's effects stay off and the fight runs the same (the OFF half of an OFF/ON capture). |
+| `-ArenaWorldView` | With `-ArenaShot` (and without `-ArenaOverview`), a first view `_0_world`: a low wide look across the zone at the scene round it, HUD off, nothing drawn; for judging the world's look (docs/PHOTOREAL_LOOK.md). |
 
 At the end of every fight the log gets one line, ids and counts only, never text, as the beat screen logs its own ([BEAT_SCREEN.md](BEAT_SCREEN.md), "Log lines"). Core formats it into a fixed buffer (`ftcore::arenaResultLine`):
 

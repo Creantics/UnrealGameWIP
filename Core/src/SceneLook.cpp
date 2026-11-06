@@ -9,7 +9,7 @@ SceneLook lerp(const SceneLook& a, const SceneLook& b, float t) {
     if (t <= 0.f) return a;
     if (t >= 1.f) return b;
     SceneLook r;
-#define FTCORE_LOOK_LERP(name, def) r.name = a.name + (b.name - a.name) * t;
+#define FTCORE_LOOK_LERP(name, def, lo, hi) r.name = a.name + (b.name - a.name) * t;
     FTCORE_LOOK_FIELDS(FTCORE_LOOK_LERP)
 #undef FTCORE_LOOK_LERP
     return r;

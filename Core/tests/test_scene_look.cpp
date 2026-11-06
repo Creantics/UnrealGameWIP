@@ -12,7 +12,7 @@ bool approx(float a, float b, float eps = 1e-5f) { return a - b <= eps && b - a 
 // A look that differs from the default in every field.
 SceneLook allChanged() {
     SceneLook l;
-#define FTCORE_LOOK_CHANGE(name, def) l.name = (def) * 2.f + 1.f;
+#define FTCORE_LOOK_CHANGE(name, def, lo, hi) l.name = (def) * 2.f + 1.f;
     FTCORE_LOOK_FIELDS(FTCORE_LOOK_CHANGE)
 #undef FTCORE_LOOK_CHANGE
     return l;
@@ -36,11 +36,37 @@ TEST_CASE("The default look keeps the light scale and one warm cast") {
     CHECK(look.hasClouds());
 }
 
+TEST_CASE("A default look adds no wetness or glow and leaves the fog white") {
+    const SceneLook look;
+    CHECK(look.wetness == 0.f);
+    CHECK(look.glowStrength == 0.f);
+    CHECK(look.fogAlbedoR == 1.f);
+    CHECK(look.fogAlbedoG == 1.f);
+    CHECK(look.fogAlbedoB == 1.f);
+    CHECK(look.practicalScatter == 1.f);
+    CHECK(look.waterWaveStrength == 1.f);
+}
+
+TEST_CASE("A default look draws the atmosphere's own sky and keeps the engine's cloud layer") {
+    const SceneLook look;
+    CHECK(look.skyStars == 0.f);
+    CHECK(look.skyGlow == 0.f);
+    CHECK(look.skyFlat == 0.f);
+    CHECK(look.windMps == 0.f);
+    // No cover: the layer keeps the engine's material, at the engine's altitude and depth.
+    CHECK(look.cloudCover == 0.f);
+    CHECK(look.cloudBaseKm == 5.f);
+    CHECK(look.cloudThickKm == 10.f);
+    CHECK(look.cloudUnderglow == 0.f);
+    // No swell, and with no wind no sea: the sea material, wherever a map puts it, lies flat.
+    CHECK(look.seaSwellM == 0.f);
+}
+
 TEST_CASE("Every field takes part in ==") {
     const SceneLook base;
     const SceneLook changed = allChanged();
     int fields = 0;
-#define FTCORE_LOOK_ONE(name, def)                                                                             \
+#define FTCORE_LOOK_ONE(name, def, lo, hi)                                                                             \
     {                                                                                                          \
         SceneLook l = base;                                                                                    \
         l.name = changed.name;                                                                                 \
@@ -50,7 +76,8 @@ TEST_CASE("Every field takes part in ==") {
     }
     FTCORE_LOOK_FIELDS(FTCORE_LOOK_ONE)
 #undef FTCORE_LOOK_ONE
-    CHECK(fields == 17);
+    CHECK(fields == 91);
+    CHECK(ftcore::kSceneLookFieldCount == 91u);
     CHECK(base == SceneLook{});
 }
 
@@ -73,11 +100,26 @@ TEST_CASE("lerp blends every field linearly") {
     const SceneLook a;
     const SceneLook b = allChanged();
     const SceneLook quarter = ftcore::lerp(a, b, 0.25f);
-#define FTCORE_LOOK_QUARTER(name, def)                                                                         \
+#define FTCORE_LOOK_QUARTER(name, def, lo, hi)                                                                         \
     CAPTURE(#name);                                                                                            \
     CHECK(approx(quarter.name, a.name + (b.name - a.name) * 0.25f));
     FTCORE_LOOK_FIELDS(FTCORE_LOOK_QUARTER)
 #undef FTCORE_LOOK_QUARTER
+}
+
+TEST_CASE("lerp blends the surface, water, fog albedo, practical and glow fields") {
+    SceneLook wet;
+    wet.wetness = 0.8f;
+    wet.glowStrength = 40.f;
+    wet.waterAbsorbR = 2.45f;
+    wet.fogAlbedoB = 0.5f;
+    wet.practicalKelvin = 9200.f;
+    const SceneLook mid = ftcore::lerp(SceneLook{}, wet, 0.5f);
+    CHECK(approx(mid.wetness, 0.4f));
+    CHECK(approx(mid.glowStrength, 20.f));
+    CHECK(approx(mid.waterAbsorbR, 1.45f));
+    CHECK(approx(mid.fogAlbedoB, 0.75f));
+    CHECK(approx(mid.practicalKelvin, 6200.f, 1e-3f));
 }
 
 TEST_CASE("The switches follow the blended values") {

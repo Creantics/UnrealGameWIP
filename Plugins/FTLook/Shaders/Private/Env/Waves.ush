@@ -1,0 +1,174 @@
+// The environment's sea (M_Env_Sea, built by FTBuildEnvMaterials: Source/ForgottenThird/FTBuildEnvMaterialsCommandlet.h),
+// a single-layer water material for open water. The swell and the wind's sea are eight Gerstner waves that
+// ftcore::seaWaves builds from the world's look (Core/src/SeaWaves.cpp, which this mirrors) and the material reads as
+// eight vectors: they move the surface's vertices and give each pixel its exact normal and whitecaps at its rest place,
+// and the look water's two layers of noise ripples ride on top. Positions are world space in centimetres, Z up; the
+// wind's way is degrees like an actor's yaw (0 toward +X). The material's custom nodes include this file, so it holds
+// only functions.
+
+#pragma once
+
+#include "/Plugin/FTLook/Private/Env/Common.ush"
+
+// Centimetres a second squared, as ftcore::kSeaGravity.
+static const float FTEnvSeaGravity = 981.0;
+
+// A wave as the material reads it, from its vector {k dirX, k dirY, amplitude, phase} (ftcore::packSeaWave): deep water,
+// so its angular frequency is sqrt(g k).
+struct FTEnvSeaWave
+{
+	float2 Dir;
+	float K;
+	float Omega;
+	float A;
+	float Phase;
+};
+
+FTEnvSeaWave FTEnvSeaUnpack(float4 V)
+{
+	FTEnvSeaWave W;
+	W.K = max(length(V.xy), 1e-7);
+	W.Dir = V.xy / W.K;
+	W.Omega = sqrt(FTEnvSeaGravity * W.K);
+	W.A = V.z;
+	W.Phase = V.w;
+	return W;
+}
+
+float FTEnvSeaTheta(FTEnvSeaWave W, float2 Rest, float Time)
+{
+	return W.K * dot(W.Dir, Rest) - W.Omega * Time + W.Phase;
+}
+
+// The set's significant height, centimetres (ftcore::seaSignificantHeightCm).
+float FTEnvSeaHeightCm(float4 Waves[8])
+{
+	float M0 = 0.0;
+	[unroll]
+	for (int I = 0; I < 8; ++I)
+	{
+		M0 += 0.5 * Waves[I].z * Waves[I].z;
+	}
+	return 4.0 * sqrt(M0);
+}
+
+// How far the surface point resting at Rest has moved by Time (ftcore::seaOffset), for the vertices. A wave shorter than
+// four of the mesh's grid steps (GridCm) fades out of it, so the grid never aliases it; the normal keeps every wave.
+float3 FTEnvSeaOffset(float2 Rest, float Time, float4 Waves[8], float Q, float GridCm)
+{
+	float3 Offset = 0.0;
+	[unroll]
+	for (int I = 0; I < 8; ++I)
+	{
+		const FTEnvSeaWave W = FTEnvSeaUnpack(Waves[I]);
+		const float Th = FTEnvSeaTheta(W, Rest, Time);
+		const float Keep = smoothstep(4.0, 6.0, 2.0 * FTEnvPi / (W.K * max(GridCm, 1.0)));
+		Offset.xy += (Keep * Q * W.A * cos(Th)) * W.Dir;
+		Offset.z += Keep * W.A * sin(Th);
+	}
+	return Offset;
+}
+
+// The surface's normal at the point resting at Rest: the cross of the two tangents along the rest grid, not normalized.
+// Its z is the horizontal map's Jacobian determinant (ftcore::seaJacobian): 1 on a flat sea, lower where the crests
+// crowd the surface together, and never 0, since ftcore::seaWaves holds Q to that.
+float3 FTEnvSeaNormal(float2 Rest, float Time, float4 Waves[8], float Q)
+{
+	float XX = 0.0;
+	float YY = 0.0;
+	float XY = 0.0;
+	float2 Slope = 0.0;
+	[unroll]
+	for (int I = 0; I < 8; ++I)
+	{
+		const FTEnvSeaWave W = FTEnvSeaUnpack(Waves[I]);
+		const float Th = FTEnvSeaTheta(W, Rest, Time);
+		const float KA = W.K * W.A;
+		const float S = Q * KA * sin(Th);
+		XX += S * W.Dir.x * W.Dir.x;
+		YY += S * W.Dir.y * W.Dir.y;
+		XY += S * W.Dir.x * W.Dir.y;
+		Slope += (KA * cos(Th)) * W.Dir;
+	}
+	return cross(float3(1.0 - XX, -XY, Slope.x), float3(-XY, 1.0 - YY, Slope.y));
+}
+
+// The ripples' height: two octaves of noise, one cell a unit.
+float FTEnvSeaRippleHeight(float2 P)
+{
+	return (2.0 / 3.0) * FTEnvNoise2(P, 21u) + (1.0 / 3.0) * FTEnvNoise2(P * 2.03 + 3.7, 22u);
+}
+
+// Its slope along x and y, per unit, by central differences.
+float2 FTEnvSeaRippleSlope(float2 P)
+{
+	const float E = 0.04;
+	return float2(FTEnvSeaRippleHeight(P + float2(E, 0.0)) - FTEnvSeaRippleHeight(P - float2(E, 0.0)),
+		FTEnvSeaRippleHeight(P + float2(0.0, E)) - FTEnvSeaRippleHeight(P - float2(0.0, E))) / (2.0 * E);
+}
+
+// The small waves the eight don't carry, as the look water draws its own (M_Look_Water: the broad layer's cells WaveCm
+// across and 5% of that high, the fine one 0.37 of the size, turned 1.1 radians and 3.5% high), here drifting downwind
+// at 0.05 and 0.09 of a cell a second times WaveSpeed, the fine layer a little across the wind. The slope of their
+// height, per centimetre.
+float2 FTEnvSeaRipple(float2 Rest, float Time, float WaveCm, float WaveSpeed, float WindDeg)
+{
+	const float Cell = max(WaveCm, 1.0);
+	const float T = Time * WaveSpeed;
+	const float Way = WindDeg * FTEnvPi / 180.0;
+	const float2 Down = float2(cos(Way), sin(Way));
+	const float2 Across = float2(cos(Way + 0.3), sin(Way + 0.3));
+	const float2 GradA = 0.05 * FTEnvSeaRippleSlope(Rest / Cell - (T * 0.05) * Down);
+	const float CosB = 0.4535961;
+	const float SinB = 0.8912074;
+	const float2 P = Rest - (T * 0.09 * 0.37 * Cell) * Across;
+	const float2 G = FTEnvSeaRippleSlope(float2(CosB * P.x + SinB * P.y, CosB * P.y - SinB * P.x) / (0.37 * Cell));
+	const float2 GradB = 0.035 * float2(CosB * G.x - SinB * G.y, SinB * G.x + CosB * G.y);
+	return GradA + GradB;
+}
+
+// The foam, 0..1: whitecaps where the crests crowd the surface (J, the normal's z, under 0.6, fully by 0.2), and surf in a
+// band FoamBandCm wide along anything the water stands shallow over (Depth, the water's depth along the view), which a
+// sea of 1 m significant height (HeightCm) foams fully and a calm one not at all; Foam scales both. Two sizes of noise,
+// the larger drifting downwind, break the cover into streaks and patches rather than a flat wash.
+float FTEnvSeaFoam(float2 Rest, float Time, float J, float Depth, float Foam, float FoamBandCm, float HeightCm, float WindDeg)
+{
+	const float Caps = 1.0 - smoothstep(0.2, 0.6, J);
+	const float Band = FoamBandCm > 0.0 ? 1.0 - saturate(Depth / FoamBandCm) : 0.0;
+	const float Surf = Band * Band * saturate(HeightCm / 100.0);
+	const float Cover = saturate(max(Foam, 0.0) * 2.0 * max(Caps, Surf));
+	if (Cover <= 0.0)
+	{
+		return 0.0;
+	}
+	const float Way = WindDeg * FTEnvPi / 180.0;
+	const float2 Down = float2(cos(Way), sin(Way));
+	const float Breakup = 0.6 * FTEnvNoise2(Rest / 45.0 - (Time * 0.02) * Down, 23u) + 0.4 * FTEnvNoise2(Rest / 13.0, 24u);
+	return saturate((Breakup - (1.0 - Cover)) / 0.15);
+}
+
+// The surface at a pixel: its normal in world space (returned), its roughness and its foam. Rest is the pixel's rest
+// place (the world position without the material's offset). SeaTime is the material's looping time (it wraps every
+// ftcore::kSeaLoopS, where the eight repeat) and Time the plain one, for the ripples and the foam, so they never jump at
+// the wrap. Where the water lies less than 40 cm deep along the view (EyeDepth to BehindDepth) the ripples calm to a
+// third and the surface roughens toward 0.18, as the look water's do; foam is rough, 0.55.
+float3 FTEnvSeaSurface(float2 Rest, float SeaTime, float Time, float4 Waves[8], float Q,
+	float WaveCm, float WaveSpeed, float WaveStrength, float Rough, float EyeDepth, float BehindDepth,
+	float Foam, float FoamBandCm, float WindDeg, out float RoughOut, out float FoamOut)
+{
+	const float3 N = FTEnvSeaNormal(Rest, SeaTime, Waves, Q);
+	const float Depth = max(BehindDepth - EyeDepth, 0.0);
+	const float Deep = saturate(Depth / 40.0);
+	FoamOut = FTEnvSeaFoam(Rest, Time, N.z, Depth, Foam, FoamBandCm, FTEnvSeaHeightCm(Waves), WindDeg);
+	const float2 Ripple = FTEnvSeaRipple(Rest, Time, WaveCm, WaveSpeed, WindDeg) * (max(WaveStrength, 0.0) * lerp(0.35, 1.0, Deep));
+	const float2 Grad = -N.xy / max(N.z, 1e-3) + Ripple;
+	RoughOut = lerp(saturate(lerp(max(Rough, 0.18), Rough, Deep)), 0.55, FoamOut);
+	return normalize(float3(-Grad, 1.0));
+}
+
+// The water's medium: the look's coefficients are per metre, the engine's per centimetre.
+float3 FTEnvSeaMedium(float3 Absorb, float3 Scatter, out float3 ScatterOut)
+{
+	ScatterOut = max(Scatter, 0.0) * 0.01;
+	return max(Absorb, 0.0) * 0.01;
+}

@@ -76,6 +76,8 @@
 // picture only, and a second, <prefix>_0b_edge.png: the player 1.4 m from the wall, to show the edge cue.
 // -ArenaShotAt=<s>,<s>,... adds a view <prefix>_t_<s>.png at each of those fight times (uncounted: the six views and the
 // quit are unchanged), so two runs of the same fight (an OFF/ON pair) are shot at the same moments.
+// -ArenaWorldView (without -ArenaOverview) adds instead one clean first view, <prefix>_0_world.png: a low wide look
+// across the zone at the scene round it, HUD off, nothing drawn, for judging the world's look.
 //
 // The player's figure wears a lead's look from config (the explore character's PartyLooks, Config/UserGame.ini): the first
 // by default, -ArenaLead=<name> picks another; with none, or none that loads, the test human is worn (one warning).
@@ -192,6 +194,7 @@ private:
 	// each so the frame it renders is the moment it was taken for.
 	FString ShotPrefix;
 	bool bOverview = false;
+	bool bWorldView = false;
 	int32 OverviewPhase = 0; // 0 not yet, 1 camera placed, 2 taken, 3 back on the player
 	int32 EdgePhase = 0;     // 0 not yet, 1 player at the wall, 2 taken, 3 put back
 	UPROPERTY()
