@@ -56,6 +56,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "VFX")
 	bool bStayWherePlayed = false;
 
+	// Ticks the effect last in the frame, after the owner's pose is final, so an effect that follows a bone (a tell on a
+	// hand) sits on it in every frame instead of trailing a frame behind on fast moves.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "VFX")
+	bool bTickAfterPose = false;
+
 	// Restarts the effect every this many seconds (0: play once). For one-shot effects in a showcase.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "VFX", meta = (ClampMin = "0"))
 	float ReplayInterval = 0.f;

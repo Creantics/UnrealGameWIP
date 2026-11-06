@@ -2977,6 +2977,15 @@ void UFTArenaRunner::SpawnKindCritEffects()
 		const ftcore::ArenaKindCritEffects& Fx = Entry->effects;
 		KindCritTellFx[I] = MakeKindCritEffect(Figure, Fx.tell(), Fx.socket());
 		KindCritOpenFx[I] = MakeKindCritEffect(Figure, Fx.open(), Fx.socket());
+		// The tell and the open sit on a moving bone through the whole wind-up and follow-through: they tick after the
+		// pose, so they never trail the hand.
+		for (UFTVfxComponent* OnBone : {KindCritTellFx[I], KindCritOpenFx[I]})
+		{
+			if (OnBone)
+			{
+				OnBone->bTickAfterPose = true;
+			}
+		}
 		KindCritCritFx[I] = MakeKindCritEffect(Figure, Fx.crit(), Fx.socket());
 		// The crit's burst stays where it broke out, so its ink falls straight to the floor, where critFloor lays the
 		// marks it leaves.

@@ -5,6 +5,7 @@
 #include "Engine/World.h"
 #include "NiagaraComponent.h"
 #include "NiagaraSystem.h"
+#include "NiagaraTickBehaviorEnum.h"
 #include "TimerManager.h"
 
 #include "ftcore/Vfx.h"
@@ -84,6 +85,7 @@ bool UFTVfxComponent::Play()
 	{
 		Niagara->SetAsset(System);
 	}
+	Niagara->SetTickBehavior(bTickAfterPose ? ENiagaraTickBehavior::ForceTickLast : ENiagaraTickBehavior::UsePrereqs);
 	PushParameters();
 	Niagara->Activate(true);
 	PlayFloor();
