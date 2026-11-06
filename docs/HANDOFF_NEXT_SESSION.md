@@ -17,6 +17,19 @@ Private notes (character references, concept-art review, script status) are in `
 - Waiting for the reset: the Dealer's capture and effects review, the Kite-Mother round review (after its final check pass), the Solhaven world-build block and its massing review (after a walking tour that completes with no stuck points), a Tripo kit edit review, and the Unbending's stone body pass with its review.
 - The rulings, the review briefs and the resume order are in the private handoff.
 
+### Next agent: start here (2026-11-06)
+
+- Nothing launches before the weekly reset (2026-11-08 04:00 UTC). First moves: read the usage, read the orchestrator inbox from line 241, then ask the advisor for the PC order.
+- The full start file is in the private handoff folder on the work PC.
+- Live branches and their first step after the reset:
+  - claude/dealer-r6-d9c0c3 at 435a818 (pushed): the Dealer's capture block, then its effects review.
+  - claude/solhaven-world-build-05a276 at b5cde28 (pushed): the Solhaven world-build block (the map rebuild, then a walking tour with no stuck points), then its massing review.
+  - claude/kite-r5-2ec302 at a9b7f36 (pushed): the Kite-Mother's final check pass, then its round review.
+  - claude/unbending-r5-7c3497 at 79776ee (pushed): the Unbending's stone body pass, then its review.
+  - The Tripo kit edit review has no branch.
+- Commits that exist only on the work PC: claude/dealer-model-4dbfd2 at f361473, claude/unbending-finish-a762b1 at ec0ccb7 (2 commits), claude/photoreal-shader at ad11652 (5 commits) and worktree-agent-a26d572ab2bd4a967 at 2710efb (a work-in-progress save of 10-27 code, never gated). Rebase and run the gate before using or pushing any of them.
+- Content/Bosses and Content/Props stay local imports in every worktree and are not committed.
+
 - **NEWEST (2026-10-31 ~12:50): the design overhaul of 2026-10-30/31, held at the usage stop.** The Fable
   session (the advisor; the user gave it authority overnight) ran three design changes the user asked for; all the
   text is private in `D:\projectst_private\` (read `HANDOFF_PRIVATE.md` there first: it has the rulings, the scores
