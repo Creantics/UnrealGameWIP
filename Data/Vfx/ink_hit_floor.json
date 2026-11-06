@@ -13,10 +13,10 @@
       "maxParticles": 10,
       "lifetime": [1.4, 1.55],
       "shape": "ring",
-      "radius": 0.45,
+      "radius": 0.6,
       "innerRadius": 0.0,
       "space": "local",
-      "startSize": [0.12, 0.28],
+      "startSize": [0.5, 0.75],
       "sizeOverLife": [
         {"t": 0, "v": 0.45},
         {"t": 0.035, "v": 1.0},
@@ -24,14 +24,15 @@
       ],
       "startRotation": [0.0, 6.283],
       "colorOverLife": [
-        {"t": 0, "color": [0.015, 0.015, 0.02, 0.0]},
-        {"t": 0.02, "color": [0.015, 0.015, 0.02, 1.0]},
-        {"t": 0.62, "color": [0.015, 0.015, 0.02, 1.0]},
-        {"t": 0.85, "color": [0.11, 0.1, 0.095, 0.5]},
-        {"t": 1, "color": [0.11, 0.1, 0.095, 0.0]}
+        {"t": 0, "color": [1.0, 1.0, 1.0, 0.0]},
+        {"t": 0.02, "color": [1.0, 1.0, 1.0, 1.0]},
+        {"t": 0.62, "color": [1.0, 1.0, 1.0, 1.0]},
+        {"t": 0.85, "color": [2.2, 2.0, 1.9, 0.5]},
+        {"t": 1, "color": [2.2, 2.0, 1.9, 0.0]}
       ],
       "blend": "alpha",
       "sprite": "blot",
+      "atlas": {"set": "InkFloor", "group": "floor", "erode": false},
       "softness": 0.0,
       "renderMode": "horizontal"
     },
@@ -47,7 +48,7 @@
       "radius": 0.08,
       "innerRadius": 0.0,
       "space": "local",
-      "startSize": [0.55, 0.65],
+      "startSize": [0.9, 1.0],
       "sizeOverLife": [
         {"t": 0, "v": 0.45},
         {"t": 0.035, "v": 1.0},
@@ -55,14 +56,15 @@
       ],
       "startRotation": [0.0, 6.283],
       "colorOverLife": [
-        {"t": 0, "color": [0.015, 0.015, 0.02, 0.0]},
-        {"t": 0.02, "color": [0.015, 0.015, 0.02, 0.95]},
-        {"t": 0.62, "color": [0.015, 0.015, 0.02, 0.95]},
-        {"t": 0.85, "color": [0.11, 0.1, 0.095, 0.475]},
-        {"t": 1, "color": [0.11, 0.1, 0.095, 0.0]}
+        {"t": 0, "color": [1.0, 1.0, 1.0, 0.0]},
+        {"t": 0.02, "color": [1.0, 1.0, 1.0, 0.95]},
+        {"t": 0.62, "color": [1.0, 1.0, 1.0, 0.95]},
+        {"t": 0.85, "color": [2.2, 2.0, 1.9, 0.475]},
+        {"t": 1, "color": [2.2, 2.0, 1.9, 0.0]}
       ],
       "blend": "alpha",
       "sprite": "splash",
+      "atlas": {"set": "InkFloor", "group": "floor", "erode": false},
       "softness": 0.0,
       "renderMode": "horizontal"
     }

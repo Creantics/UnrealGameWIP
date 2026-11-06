@@ -1,0 +1,10 @@
+{
+ "atlases": [
+  {"name": "InkMass", "grid": [4, 4], "cell": [512, 512], "blend": "alpha", "groups": {"splash": [0, 6], "cloud": [6, 6], "redring": [12, 4]}},
+  {"name": "InkBlot", "grid": [4, 4], "cell": [256, 256], "blend": "alpha", "groups": {"blot": [0, 11], "drop": [11, 5]}},
+  {"name": "InkStreak", "grid": [8, 2], "cell": [128, 512], "blend": "alpha", "groups": {"streak": [0, 10]}},
+  {"name": "InkFloor", "grid": [4, 2], "cell": [256, 256], "blend": "alpha", "groups": {"floor": [0, 8]}},
+  {"name": "RedTell", "grid": [4, 4], "cell": [256, 256], "blend": "alpha", "groups": {"flush": [0, 2], "line": [2, 4], "drop": [6, 6]}},
+  {"name": "SeamLight", "grid": [4, 2], "cell": [256, 512], "blend": "additive", "groups": {"seam": [0, 3], "snap": [3, 2]}}
+ ]
+}

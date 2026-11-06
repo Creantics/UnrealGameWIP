@@ -1,5 +1,6 @@
 #include "ftcore/Vfx.h"
 #include "ftcore/ArenaKindCrit.h" // white_glove's seam window, which dealer_seam_open covers
+#include "ftcore/ClipShowcase.h" // the lone tell's length, which dealer_deal_tell spans
 
 #include "TestAssets.h"
 
@@ -101,7 +102,7 @@ TEST_CASE("vfx: every Data/Vfx effect loads without warnings") {
     const Expect files[] = {{"ember_swirl", 1}, {"falling_leaves", 1}, {"fireworks", 3}, {"flipbook_fire", 1},
                             {"heal", 2},        {"heal_ring", 1},      {"hit_spark", 2}, {"magic_ribbon", 2},
                             {"perfect_burst", 2}, {"smoke", 1},        {"speed_sparks", 1}, {"stretched_sparks", 2}, {"dust_puff", 2},
-                            {"dealer_deal_tell", 2}, {"dealer_seam_open", 5}, {"dealer_seam_crit", 5}, {"ink_hit", 4},
+                            {"dealer_deal_tell", 4}, {"dealer_seam_open", 3}, {"dealer_seam_crit", 5}, {"ink_hit", 5},
                             {"ink_hit_floor", 2}, {"dealer_seam_crit_floor", 2}};
     for (const Expect& f : files) {
         CAPTURE(f.file);
@@ -161,10 +162,10 @@ TEST_CASE("vfx: the Dealer's effects load without warnings and keep their partic
         std::uint32_t budget; // the sum of the emitters' maxParticles
         bool loops;
     };
-    const Expect files[] = {{"dealer_deal_tell", 2, 16, true},
-                            {"dealer_seam_open", 5, 28, false},
+    const Expect files[] = {{"dealer_deal_tell", 4, 9, false},
+                            {"dealer_seam_open", 3, 12, false},
                             {"dealer_seam_crit", 5, 38, false},
-                            {"ink_hit", 4, 39, false},
+                            {"ink_hit", 5, 39, false},
                             {"ink_hit_floor", 2, 11, false},
                             {"dealer_seam_crit_floor", 2, 13, false}};
     for (const Expect& f : files) {
@@ -183,10 +184,11 @@ TEST_CASE("vfx: the Dealer's effects load without warnings and keep their partic
     }
 }
 
-TEST_CASE("vfx: the Dealer's round-8 looks: red that ramps in, a seam open for the whole window, ink that falls") {
+TEST_CASE("vfx: the Dealer's round-8d looks: a wet-red tell that builds on the hand, a seam that pulses on the beat, ink "
+          "that holds then thins, a crit with no pop") {
     constexpr float kFrame = 1.f / 30.f; // the capture's frame
-    // The open seam covers white_glove's whole window: every emitter runs it, the crosshatch lives through it and the
-    // glow's pulses overlap to its end.
+    // The open seam covers white_glove's whole window: every emitter runs it, and the red underlay's and the seam
+    // light's pulses keep the 0.32 s beat and overlap to its end.
     std::string text;
     REQUIRE(ftcore_test::readProjectData("Battle/arena_crit.json", text));
     ArenaKindCritTable table;
@@ -201,76 +203,157 @@ TEST_CASE("vfx: the Dealer's round-8 looks: red that ramps in, a seam open for t
         CHECK(em.duration == doctest::Approx(opens));
     }
     const VfxEmitter* glow = findEmitter(seam, "glow");
-    const VfxEmitter* hatch = findEmitter(seam, "hatch");
+    const VfxEmitter* light = findEmitter(seam, "seam");
     const VfxEmitter* drips = findEmitter(seam, "drips");
     REQUIRE(glow);
-    REQUIRE(hatch);
+    REQUIRE(light);
     REQUIRE(drips);
-    CHECK(lowest(hatch->lifetime) == doctest::Approx(opens));
-    REQUIRE(glow->bursts.size() >= 4); // the pulse
-    for (std::size_t i = 1; i < glow->bursts.size(); ++i)
-        CHECK(glow->bursts[i].time - glow->bursts[i - 1].time < lowest(glow->lifetime));
-    CHECK(glow->bursts.back().time + lowest(glow->lifetime) >= opens);
-    // The seam reads at play distance as long crossed lines, each at least 0.7 m (15 px at 60 px of figure), over a
-    // glow twice round 8b's: a 1.0-1.2 m soft quad, about 10-12 px.
-    CHECK(hatch->renderMode == VfxRenderMode::Stretched);
-    CHECK(lowest(hatch->startSize) * hatch->lengthScale >= 0.7f);
+    for (const VfxEmitter* em : {glow, light}) {
+        CAPTURE(em->name);
+        REQUIRE(em->bursts.size() >= 4); // the pulse
+        for (std::size_t i = 0; i < em->bursts.size(); ++i)
+            CHECK(em->bursts[i].time == doctest::Approx(0.32f * static_cast<float>(i)));
+        for (std::size_t i = 1; i < em->bursts.size(); ++i)
+            CHECK(em->bursts[i].time - em->bursts[i - 1].time < lowest(em->lifetime));
+        CHECK(em->bursts.back().time + lowest(em->lifetime) >= opens);
+    }
+    // At play distance (60 px for the whole 2.7 m figure, about 22 px/m) the seam reads: a 1.0-1.2 m soft red underlay
+    // and, over it, a seam light whose slit (0.84-0.91 of its quad) is 0.6 m or more, about 13 px.
     CHECK(peakSize(*glow) >= 1.f);
     CHECK(peakSize(*glow) <= 1.2f);
-    // The drips fall in the world, stretched along their fall, wide enough to survive 60 px.
+    CHECK(light->atlas.set == "SeamLight");
+    CHECK(light->atlas.group == "seam");
+    CHECK(lowest(light->startSize) * 0.84f >= 0.6f);
+    // The drips fall in the world: red drops wide enough to survive 60 px.
     CHECK(drips->space == VfxSpace::World);
     CHECK(drips->gravity.y <= -9.f);
-    CHECK(drips->renderMode == VfxRenderMode::Stretched);
+    CHECK(drips->atlas.set == "RedTell");
+    CHECK(drips->atlas.group == "drop");
     CHECK(lowest(drips->startSize) >= 0.04f);
 
-    // The tell and the seam ramp in over 3 frames or more and are real red: alpha-blended red, never a big additive
-    // disc (additive red on the pale glove clips to pink). The tell is red on the fingers, not a ball: veins of red
-    // splash over them and thin red lines flicking off their edge.
+    // The tell is wet red on the hand in layers, never over it: a translucent flush on the fingertips, hairlines along
+    // the fingers and a few slow drops, all on the hand bone (local space: no lag through the whip). It builds once
+    // with the wind-up (the Deal's 2.3 s startup and 0.2 s active; the lone tell's 2.4 s) and never pulses: one cycle,
+    // no rate, the flush strongest at the end of the wind-up, and every layer gone soon after the window opens.
     VfxEffect tell;
     REQUIRE(loadEffect("dealer_deal_tell", tell));
-    const VfxEmitter* veins = findEmitter(tell, "veins");
-    const VfxEmitter* edge = findEmitter(tell, "edge");
-    const VfxEmitter* stain = findEmitter(seam, "stain");
-    REQUIRE(veins);
-    REQUIRE(edge);
-    REQUIRE(stain);
-    CHECK(veins->sprite == VfxSprite::Splash);
-    CHECK(edge->renderMode == VfxRenderMode::Stretched);
+    const float windUp = static_cast<float>(ShowSpec{}.tellFor);
+    bool flush = false;
+    bool lines = false;
+    bool drops = false;
     for (const VfxEmitter& em : tell.emitters) {
         CAPTURE(em.name);
-        CHECK(em.sprite != VfxSprite::Soft);
+        CHECK_FALSE(em.loop);
+        CHECK(em.rate == 0.f);
+        CHECK(em.space == VfxSpace::Local);
+        CHECK(em.blend == VfxBlend::Alpha);
+        CHECK(em.atlas.set == "RedTell");
+        CHECK(peakSize(em) <= 0.26f); // a hand's width at most: the fingers show between the layers
+        flush = flush || em.atlas.group == "flush";
+        lines = lines || em.atlas.group == "line";
+        drops = drops || em.atlas.group == "drop";
+        for (const VfxBurst& b : em.bursts) CHECK(b.time + highest(em.lifetime) <= windUp + 0.2f);
     }
-    for (const VfxEmitter* em : {veins, glow, hatch, stain}) {
+    CHECK(flush);
+    CHECK(lines);
+    CHECK(drops);
+    const VfxEmitter* film = findEmitter(tell, "flush");
+    REQUIRE(film);
+    CHECK(peakAlpha(film->colorOverLife) <= 0.6f);
+    CHECK(lowest(film->lifetime) >= windUp);
+    CHECK(rampInAt(film->colorOverLife) >= 0.75f);
+
+    // Everything on the hand ramps in over 3 frames or more.
+    std::vector<const VfxEmitter*> ramped = {glow, light};
+    for (const VfxEmitter& em : tell.emitters) ramped.push_back(&em);
+    for (const VfxEmitter* em : ramped) {
         CAPTURE(em->name);
         REQUIRE_FALSE(em->colorOverLife.stops.empty());
         CHECK(em->colorOverLife.stops.front().t == 0.f);
         CHECK(em->colorOverLife.stops.front().color.a == 0.f);
         CHECK(rampInAt(em->colorOverLife) * lowest(em->lifetime) >= 3.f * kFrame);
     }
+    // Real red. The procedural underlay is red itself and the sprites are red under a neutral or red tint; the one
+    // additive layer is the seam light, red-leaning and drawn over the alpha red underlay, so it neither clips to pink
+    // on the pale glove nor greys out on sand.
     for (const VfxEffect* fx : {&tell, &seam}) {
         for (const VfxEmitter& em : fx->emitters) {
             CAPTURE(fx->name);
             CAPTURE(em.name);
-            if (em.blend == VfxBlend::Additive) {
-                CHECK(peakSize(em) <= 0.2f);
-                continue;
+            if (em.blend == VfxBlend::Additive) CHECK(&em == light);
+            for (const VfxColorStop& s : em.colorOverLife.stops) {
+                if (em.atlas.set.empty())
+                    CHECK(s.color.r >= 4.f * std::max(s.color.g, s.color.b));
+                else if (em.blend == VfxBlend::Additive)
+                    CHECK(std::max(s.color.g, s.color.b) <= 0.6f * s.color.r);
+                else
+                    CHECK(std::max(s.color.g, s.color.b) <= s.color.r);
             }
-            for (const VfxColorStop& s : em.colorOverLife.stops)
-                CHECK(s.color.r >= 4.f * std::max(s.color.g, s.color.b));
         }
     }
+    CHECK(light->blend == VfxBlend::Additive);
+    CHECK(glow->blend == VfxBlend::Alpha);
+    CHECK(glow < light); // drawn first, under it
 
-    // The plain hit: a wet ink splash about 1 m across (its body reads at about 0.8 of its edge, tendrils beyond) that
-    // thins over 8 frames or more; the crit outgrows it and lasts 8 frames or more.
+    // The plain hit: one of six wet splash sheets whose main mass is 0.9-1.0 m (the sheets fill 0.87-0.88 of their
+    // quad), held at full strength for 3 frames or more, then thinning over 8 frames or more as its edges erode, never
+    // dropping out in a frame; an ink cloud takes over before the sheet is gone.
     VfxEffect ink;
     VfxEffect crit;
     REQUIRE(loadEffect("ink_hit", ink));
     REQUIRE(loadEffect("dealer_seam_crit", crit));
     const VfxEmitter* core = findEmitter(ink, "core");
+    const VfxEmitter* cloud = findEmitter(ink, "cloud");
     REQUIRE(core);
-    CHECK(lowest(core->startSize) >= 1.1f);
-    CHECK(core->sprite == VfxSprite::Splash);
+    REQUIRE(cloud);
+    CHECK(core->atlas.set == "InkMass");
+    CHECK(core->atlas.group == "splash");
+    CHECK(core->atlas.erode);
+    CHECK(lowest(core->startSize) * 0.87f >= 0.9f);
+    CHECK(highest(core->startSize) * 0.88f <= 1.f);
+    CHECK(fadeFrom(core->colorOverLife) * lowest(core->lifetime) >= 3.f * kFrame);
     CHECK(lowest(core->lifetime) * (1.f - fadeFrom(core->colorOverLife)) >= 8.f * kFrame);
+    const std::vector<VfxColorStop>& stops = core->colorOverLife.stops;
+    for (std::size_t i = 1; i < stops.size(); ++i) {
+        CAPTURE(i);
+        const float fall = stops[i - 1].color.a - stops[i].color.a;
+        const float span = (stops[i].t - stops[i - 1].t) * lowest(core->lifetime);
+        CHECK(fall <= span / (4.f * kFrame)); // never faster than full strength to nothing in 4 frames
+    }
+    CHECK(cloud->atlas.set == "InkMass");
+    CHECK(cloud->atlas.group == "cloud");
+    REQUIRE_FALSE(cloud->bursts.empty());
+    CHECK(cloud->bursts.front().time < lowest(core->lifetime) * fadeFrom(core->colorOverLife) + 3.f * kFrame);
+
+    // The crit: no additive pop and no soft flash. A black burst bigger than the plain hit's, ringed in red ink, its
+    // chunks and streaks, and one short irregular red-white snap drawn over them all.
+    CHECK_FALSE(findEmitter(crit, "pop"));
+    CHECK_FALSE(findEmitter(crit, "flash"));
+    int additive = 0;
+    for (const VfxEmitter& em : crit.emitters) {
+        CAPTURE(em.name);
+        CHECK_FALSE(em.atlas.set.empty());
+        if (em.blend != VfxBlend::Additive) continue;
+        ++additive;
+        CHECK(em.atlas.set == "SeamLight");
+        CHECK(em.atlas.group == "snap");
+        CHECK(highest(em.lifetime) <= 0.16f);
+        CHECK(&em == &crit.emitters.back());
+        for (const VfxColorStop& s : em.colorOverLife.stops) {
+            CHECK(s.color.r >= std::max(s.color.g, s.color.b));
+            CHECK(std::min(s.color.g, s.color.b) >= 0.5f * s.color.r);
+        }
+    }
+    CHECK(additive == 1);
+    const VfxEmitter* ring = findEmitter(crit, "redring");
+    const VfxEmitter* burst = findEmitter(crit, "ink");
+    REQUIRE(ring);
+    REQUIRE(burst);
+    CHECK(ring->atlas.set == "InkMass");
+    CHECK(ring->atlas.group == "redring");
+    CHECK(ring->blend == VfxBlend::Alpha);
+    CHECK(burst->atlas.group == "splash");
+    CHECK(lowest(burst->startSize) > highest(core->startSize));
     float inkPeak = 0.f;
     float critPeak = 0.f;
     float critLife = 0.f;
@@ -282,27 +365,35 @@ TEST_CASE("vfx: the Dealer's round-8 looks: red that ramps in, a seam open for t
     CHECK(critPeak > inkPeak);
     CHECK(critLife >= 8.f * kFrame);
 
-    // Debris: whatever flies out falls under full gravity, as spinning wet blots (six silhouettes, one per particle) or
-    // drops and flecks stretched along their velocity, never the round soft sprite or the one chip.
+    // Debris: what flies out falls under full gravity as untinted ink sprites: spinning blots that vary in size, or
+    // drops and streaks laid along their velocity at the sprite's own shape (lengthScale 1, no speed stretch on top),
+    // thick enough to read at 60-90 px.
     for (const VfxEffect* fx : {&ink, &crit}) {
         bool blots = false;
         for (const VfxEmitter& em : fx->emitters) {
-            if (highest(em.speed) < 0.5f) continue; // the cores, the flash, the pop
+            if (highest(em.speed) < 0.5f) continue; // the sheets, the cloud, the ring, the snap
             CAPTURE(fx->name);
             CAPTURE(em.name);
             CHECK(em.gravity.y <= -9.f);
-            CHECK(em.sprite != VfxSprite::Soft);
-            CHECK(em.sprite != VfxSprite::Chip);
-            if (em.sprite == VfxSprite::Blot) {
+            CHECK((em.atlas.set == "InkBlot" || em.atlas.set == "InkStreak"));
+            if (em.atlas.group == "blot") {
                 blots = true;
                 CHECK(lowest(em.angularVelocity) < 0.f);
                 CHECK(highest(em.angularVelocity) > 0.f);
                 CHECK(highest(em.startRotation) > 3.f);
+                CHECK(lowest(em.startSize) >= 0.14f);
+                CHECK(highest(em.startSize) >= 1.5f * lowest(em.startSize));
             } else {
                 CHECK(em.renderMode == VfxRenderMode::Stretched);
+                CHECK(em.lengthScale == 1.f);
+                CHECK(em.speedScale <= 0.05f);
+                CHECK(lowest(em.startSize) >= (em.atlas.set == "InkStreak" ? 0.4f : 0.1f));
             }
-            // Untinted ink, never the seam's red: the crit's chunks too.
-            for (const VfxColorStop& s : em.colorOverLife.stops) CHECK(s.color.r < 0.05f);
+            for (const VfxColorStop& s : em.colorOverLife.stops) {
+                CHECK(s.color.r == s.color.g);
+                CHECK(s.color.g == s.color.b);
+                CHECK(s.color.r <= 1.f);
+            }
         }
         CHECK(blots);
     }
@@ -371,7 +462,9 @@ TEST_CASE("vfx: the Dealer's ink lands: debris falls through the floor at full a
             CAPTURE(em.name);
             CHECK(em.renderMode == VfxRenderMode::Horizontal);
             CHECK_FALSE(em.depthFade);
-            CHECK((em.sprite == VfxSprite::Blot || em.sprite == VfxSprite::Splash));
+            CHECK(em.atlas.set == "InkFloor");
+            CHECK_FALSE(em.atlas.erode); // flat marks fade, they do not eat away
+            CHECK(lowest(em.startSize) * 0.84f >= 0.4f); // most marks' long side is 0.84-0.90 of the quad: 0.4 m reads at 60 px
             CHECK(highest(em.speed) == 0.f);
             CHECK(em.gravity.y == 0.f);
             CHECK(rampInAt(em.colorOverLife) * highest(em.lifetime) <= 2.f * kFrame);
@@ -889,4 +982,197 @@ TEST_CASE("vfx: user parameters are clamped") {
     p.speedScale = 50.f;
     CHECK(sanitizeVfxUserParameters(p).speedScale == 10.f);
     CHECK(sanitizeVfxUserParameters(VfxUserParameters{}).speedScale == 1.f);
+}
+
+// ---- sprite atlases ---------------------------------------------------------------------------------------
+
+namespace {
+
+// The error lines of a failed atlas import, or "" when it succeeded.
+std::string atlasError(const char* json) {
+    VfxAtlasTable t;
+    std::string err;
+    if (importVfxAtlases(json, t, &err)) return "";
+    CHECK(t.sets.empty());
+    return err;
+}
+
+bool loadAtlases(VfxAtlasTable& out, std::vector<std::string>* warnings = nullptr) {
+    std::string text, err;
+    if (!ftcore_test::readProjectData("Assets/vfx_atlases.json", text)) {
+        FAIL("cannot read Data/Assets/vfx_atlases.json");
+        return false;
+    }
+    const bool ok = importVfxAtlases(text, out, &err, warnings);
+    CHECK_MESSAGE(ok, err);
+    return ok;
+}
+
+} // namespace
+
+TEST_CASE("vfx: the project's atlas table loads without warnings") {
+    VfxAtlasTable t;
+    std::vector<std::string> warnings;
+    REQUIRE(loadAtlases(t, &warnings));
+    CHECK_MESSAGE(warnings.empty(), (warnings.empty() ? std::string() : warnings.front()));
+    REQUIRE(t.sets.size() == 6);
+    const VfxAtlasDef* mass = findVfxAtlas(t, "InkMass");
+    REQUIRE(mass);
+    CHECK(mass->gridX == 4);
+    CHECK(mass->blend == VfxBlend::Alpha);
+    const VfxAtlasGroup* cloud = findVfxAtlasGroup(*mass, "cloud");
+    REQUIRE(cloud);
+    CHECK(cloud->start == 6);
+    CHECK(cloud->count == 6);
+    const VfxAtlasDef* light = findVfxAtlas(t, "SeamLight");
+    REQUIRE(light);
+    CHECK(light->blend == VfxBlend::Additive);
+    CHECK_FALSE(findVfxAtlas(t, "inkmass")); // names are case-sensitive, like the asset names
+    // Every group of every set has at least two sprites, so no emitter repeats a single one.
+    for (const VfxAtlasDef& d : t.sets)
+        for (const VfxAtlasGroup& g : d.groups) {
+            CAPTURE(d.name);
+            CAPTURE(g.name);
+            CHECK(g.count >= 2);
+        }
+}
+
+TEST_CASE("vfx: bad atlas tables are rejected with the path of each problem") {
+    CHECK(atlasError(R"J({"atlases": [{"name": "A", "grid": [4, 4], "cell": [64, 64], "blend": "alpha",
+                          "groups": {"a": [0, 4], "b": [4, 2]}}]})J") == "");
+    CHECK(atlasError(R"J({"atlases": []})J") == "atlases: expected at least one atlas");
+    CHECK(atlasError(R"J({"atlases": [{"name": "A", "grid": [4, 4], "cell": [64, 64], "blend": "alpha",
+                          "groups": {"a": [0, 4], "b": [3, 2]}}]})J") == "atlases[0].groups.b: overlaps group \"a\"");
+    CHECK(atlasError(R"J({"atlases": [{"name": "A", "grid": [4, 2], "cell": [64, 64], "blend": "alpha",
+                          "groups": {"a": [6, 3]}}]})J") == "atlases[0].groups.a: cells 6..8 run past the grid's 8");
+    CHECK(atlasError(R"J({"atlases": [{"name": "A", "grid": [4, 4], "cell": [64, 64], "blend": "alpha",
+                          "groups": {"a": [0, 0]}}]})J") == "atlases[0].groups.a: a group needs at least one cell");
+    CHECK(atlasError(R"J({"atlases": [{"name": "A", "grid": [3, 4], "cell": [64, 64], "blend": "alpha",
+                          "groups": {"a": [0, 2]}}]})J") ==
+          "atlases[0].cell: the atlas (grid x cell) must be a power of two on each side, up to 8192, so it mips");
+    CHECK(atlasError(R"J({"atlases": [{"name": "A", "grid": [0, 4], "cell": [64, 64], "blend": "alpha",
+                          "groups": {"a": [0, 2]}}]})J") == "atlases[0].grid: expected 1 to 16 cells a side");
+    CHECK(atlasError(R"J({"atlases": [{"name": "Ink Mass", "grid": [4, 4], "cell": [64, 64], "blend": "alpha",
+                          "groups": {"a": [0, 2]}}]})J") == "atlases[0].name: expected letters, digits and _");
+    CHECK(atlasError(R"J({"atlases": [{"name": "A", "grid": [4, 4], "cell": [64, 64], "blend": "glow",
+                          "groups": {"a": [0, 2]}}]})J") == "atlases[0].blend: unknown value \"glow\" (alpha, additive)");
+    CHECK(atlasError(R"J({"atlases": [{"name": "A", "grid": [4, 4], "cell": [64, 64], "blend": "alpha",
+                          "groups": {}}]})J") == "atlases[0].groups: expected at least one group");
+    CHECK(atlasError(R"J({"atlases": [{"name": "A", "grid": [4, 4], "cell": [64, 64], "blend": "alpha", "groups": {"a": [0, 2]}},
+                                      {"name": "A", "grid": [4, 4], "cell": [64, 64], "blend": "alpha", "groups": {"a": [0, 2]}}]})J") ==
+          "atlases[1].name: a second atlas called \"A\"");
+    CHECK(contains(atlasError(R"J({"atlases": [{"name": "A", "grid": [4, 4], "cell": [64, 64],
+                                   "groups": {"a": [0, 2]}}]})J"), "atlases[0].blend: missing"));
+
+    VfxAtlasTable t;
+    std::vector<std::string> warnings;
+    REQUIRE(importVfxAtlases(R"J({"atlases": [{"name": "A", "grid": [4, 4], "cell": [64, 64], "blend": "alpha",
+                                  "groups": {"a": [0, 2]}, "note": "x"}]})J", t, nullptr, &warnings));
+    REQUIRE(warnings.size() == 1);
+    CHECK(warnings[0] == "atlases[0].note: unknown key (ignored)");
+}
+
+TEST_CASE("vfx: an emitter's atlas reference parses and resolves to grid numbers") {
+    VfxAtlasTable t;
+    REQUIRE(loadAtlases(t));
+
+    VfxEffect e;
+    std::string err;
+    REQUIRE(importVfxEffect(R"J({"name": "x", "emitters": [
+        {"name": "core", "bursts": [{"count": 1}], "atlas": {"set": "InkMass", "group": "cloud"}},
+        {"name": "streak", "bursts": [{"count": 4}], "atlas": {"set": "InkStreak", "group": "streak", "erode": false}},
+        {"name": "glow", "bursts": [{"count": 1}], "blend": "additive", "atlas": {"set": "SeamLight", "group": "seam"}},
+        {"name": "plain", "bursts": [{"count": 1}], "sprite": "spark"}]})J",
+                            e, &err));
+    CHECK(e.emitters[0].atlas.set == "InkMass");
+    CHECK(e.emitters[0].atlas.erode);
+    CHECK_FALSE(e.emitters[1].atlas.erode);
+
+    VfxNiagaraPlan plan;
+    planVfxNiagara(e, t, plan);
+    const VfxNiagaraAtlas& core = plan.emitters[0].atlas;
+    CHECK(core.resolved);
+    CHECK(core.gridX == 4);
+    CHECK(core.gridY == 4);
+    CHECK(core.cellStart == 6);
+    CHECK(core.cellCount == 6);
+    CHECK(core.cellAspect == doctest::Approx(1.f));
+    const VfxNiagaraAtlas& streak = plan.emitters[1].atlas;
+    CHECK(streak.resolved);
+    CHECK_FALSE(streak.erode);
+    CHECK(streak.gridX == 8);
+    CHECK(streak.gridY == 2);
+    CHECK(streak.cellCount == 10);
+    CHECK(streak.cellAspect == doctest::Approx(0.25f));
+    CHECK(plan.emitters[2].atlas.resolved);
+    CHECK(plan.emitters[2].atlas.cellAspect == doctest::Approx(0.5f));
+    CHECK(plan.emitters[3].atlas.set.empty());
+    CHECK_FALSE(plan.emitters[3].atlas.resolved);
+    for (const VfxNiagaraEmitter& p : plan.emitters) CHECK_FALSE(anyGap(p, "atlas"));
+
+    // Without the table every reference stays unresolved, with a gap.
+    planVfxNiagara(e, plan);
+    CHECK_FALSE(plan.emitters[0].atlas.resolved);
+    CHECK(anyGap(plan.emitters[0], "no atlas table"));
+}
+
+TEST_CASE("vfx: an atlas reference that does not resolve is a gap, never a silent fallback") {
+    VfxAtlasTable t;
+    REQUIRE(loadAtlases(t));
+    VfxEffect e;
+    std::string err;
+    REQUIRE(importVfxEffect(R"J({"name": "x", "emitters": [
+        {"name": "a", "bursts": [{"count": 1}], "atlas": {"set": "InkMud", "group": "splash"}},
+        {"name": "b", "bursts": [{"count": 1}], "atlas": {"set": "InkMass", "group": "spray"}},
+        {"name": "c", "bursts": [{"count": 1}], "atlas": {"set": "SeamLight", "group": "seam"}},
+        {"name": "d", "bursts": [{"count": 1}], "blend": "additive", "atlas": {"set": "InkBlot", "group": "blot"}}]})J",
+                            e, &err));
+    VfxNiagaraPlan plan;
+    planVfxNiagara(e, t, plan);
+    for (const VfxNiagaraEmitter& p : plan.emitters) {
+        CAPTURE(p.name);
+        CHECK_FALSE(p.atlas.resolved);
+        CHECK(p.atlas.cellCount == 0);
+    }
+    CHECK(anyGap(plan.emitters[0], "atlas \"InkMud/splash\": unknown atlas set"));
+    CHECK(anyGap(plan.emitters[1], "the set has no such group"));
+    CHECK(anyGap(plan.emitters[2], "light sprites (an additive set) on an alpha emitter"));
+    CHECK(anyGap(plan.emitters[3], "ink sprites (an alpha set) on an additive emitter"));
+
+    CHECK(importError(R"J({"name": "x", "emitters": [{"name": "a", "atlas": {"set": "InkMass"}}]})J") ==
+          "emitters[0].atlas.group: missing");
+    CHECK(importError(R"J({"name": "x", "emitters": [{"name": "a", "atlas": {"set": "", "group": "splash"}}]})J") ==
+          "emitters[0].atlas.set: empty");
+    CHECK(importError(R"J({"name": "x", "emitters": [{"name": "a", "atlas": "InkMass"}]})J") ==
+          "emitters[0].atlas: expected an object");
+}
+
+TEST_CASE("vfx: the Dealer's effects draw from the sprite atlases, and every reference resolves") {
+    VfxAtlasTable t;
+    REQUIRE(loadAtlases(t));
+    const char* files[] = {"dealer_deal_tell", "dealer_seam_open", "dealer_seam_crit",
+                           "ink_hit",          "ink_hit_floor",    "dealer_seam_crit_floor"};
+    for (const char* f : files) {
+        CAPTURE(f);
+        VfxEffect e;
+        REQUIRE(loadEffect(f, e));
+        VfxNiagaraPlan plan;
+        planVfxNiagara(e, t, plan);
+        REQUIRE(plan.emitters.size() == e.emitters.size());
+        for (std::size_t i = 0; i < e.emitters.size(); ++i) {
+            const VfxEmitter& em = e.emitters[i];
+            const VfxNiagaraEmitter& p = plan.emitters[i];
+            CAPTURE(em.name);
+            CHECK_FALSE(anyGap(p, "atlas"));
+            if (em.atlas.set.empty()) {
+                // Only the seam's soft red underlay stays procedural: a plain radial glow, not a sprite.
+                CHECK(std::string(f) == "dealer_seam_open");
+                CHECK(em.sprite == VfxSprite::Soft);
+                continue;
+            }
+            CHECK(p.atlas.resolved);
+            CHECK(p.atlas.cellCount >= 2); // no emitter repeats one sprite
+            if (em.atlas.group == "blot") CHECK(p.atlas.cellCount >= 4); // four blot shapes or more
+        }
+    }
 }

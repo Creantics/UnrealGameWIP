@@ -557,6 +557,14 @@ void readEmitter(Reader& r, VfxEmitter& d) {
     r.get("coreShade", d.coreShade);
     r.get("turbulence", d.turbulence);
     r.get("texture", d.texture);
+    if (std::optional<Reader> a = r.child("atlas")) {
+        if (a->expectObject()) {
+            if (a->require("set", d.atlas.set) && d.atlas.set.empty()) a->errorAt("set", "empty");
+            if (a->require("group", d.atlas.group) && d.atlas.group.empty()) a->errorAt("group", "empty");
+            a->get("erode", d.atlas.erode);
+            a->finish();
+        }
+    }
     readSpace(r, d.space);
     r.getEnum("renderMode", d.renderMode,
               {{"billboard", VfxRenderMode::Billboard},
@@ -785,6 +793,146 @@ int findVfxEmitter(const VfxEffect& effect, std::string_view name) {
     for (std::size_t i = 0; i < effect.emitters.size(); ++i)
         if (effect.emitters[i].name == name) return static_cast<int>(i);
     return -1;
+}
+
+// ---- sprite atlases -----------------------------------------------------------------------------------
+
+namespace {
+
+constexpr std::uint32_t kAtlasMaxGrid = 16;
+constexpr std::uint32_t kAtlasMaxSide = 8192; // texels
+
+bool isPowerOfTwo(std::uint32_t n) { return n != 0 && (n & (n - 1)) == 0; }
+
+// Atlas and group names end up in asset names (T_Vfx_<set>, MI_Vfx_<set>_<group>).
+bool isAssetName(std::string_view s) {
+    if (s.empty()) return false;
+    for (const char c : s)
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) return false;
+    return true;
+}
+
+// [a, b] of non-negative integers.
+bool readUintPair(const Reader& v, std::uint32_t& a, std::uint32_t& b) {
+    if (!v.json().isArray() || v.size() != 2) return v.error("expected [a, b]"), false;
+    std::uint32_t n[2] = {0, 0};
+    bool ok = true;
+    for (std::uint32_t i = 0; i < 2; ++i) ok = v.element(i).readUint(n[i]) && ok;
+    if (ok) a = n[0], b = n[1];
+    return ok;
+}
+
+void readAtlas(Reader& r, VfxAtlasDef& d) {
+    if (!r.expectObject()) return;
+    if (r.require("name", d.name) && !isAssetName(d.name)) r.errorAt("name", "expected letters, digits and _");
+
+    bool gridOk = false;
+    if (std::optional<Reader> g = r.requireChild("grid")) {
+        if (readUintPair(*g, d.gridX, d.gridY)) {
+            gridOk = d.gridX >= 1 && d.gridY >= 1 && d.gridX <= kAtlasMaxGrid && d.gridY <= kAtlasMaxGrid;
+            if (!gridOk) g->error("expected 1 to 16 cells a side");
+        }
+    }
+    if (std::optional<Reader> c = r.requireChild("cell")) {
+        if (readUintPair(*c, d.cellWidth, d.cellHeight)) {
+            if (d.cellWidth < 1 || d.cellHeight < 1 || d.cellWidth > kAtlasMaxSide || d.cellHeight > kAtlasMaxSide)
+                c->error("expected 1 to 8192 texels a side");
+            else if (gridOk) {
+                const std::uint32_t w = d.gridX * d.cellWidth, h = d.gridY * d.cellHeight;
+                if (!isPowerOfTwo(w) || !isPowerOfTwo(h) || w > kAtlasMaxSide || h > kAtlasMaxSide)
+                    c->error("the atlas (grid x cell) must be a power of two on each side, up to 8192, so it mips");
+            }
+        }
+    }
+    if (!r.has("blend")) r.errorAt("blend", "missing");
+    r.getEnum("blend", d.blend, {{"alpha", VfxBlend::Alpha}, {"additive", VfxBlend::Additive}});
+
+    if (std::optional<Reader> gs = r.requireChild("groups")) {
+        if (gs->expectObject()) {
+            const JsonValue groups = gs->json();
+            if (groups.size() == 0) gs->error("expected at least one group");
+            for (std::uint32_t i = 0; i < groups.size(); ++i) {
+                VfxAtlasGroup g;
+                g.name = std::string(groups.key(i));
+                const Reader e(groups.value(i), joinPath(gs->path(), g.name), gs->diagnostics());
+                if (!isAssetName(g.name)) {
+                    e.error("expected a name of letters, digits and _");
+                    continue;
+                }
+                if (!readUintPair(e, g.start, g.count)) continue;
+                if (g.count == 0) {
+                    e.error("a group needs at least one cell");
+                    continue;
+                }
+                if (gridOk && (g.start >= d.gridX * d.gridY || g.count > d.gridX * d.gridY - g.start)) {
+                    e.error("cells " + std::to_string(g.start) + ".." + std::to_string(g.start + g.count - 1) +
+                            " run past the grid's " + std::to_string(d.gridX * d.gridY));
+                    continue;
+                }
+                bool ok = true;
+                for (const VfxAtlasGroup& o : d.groups) {
+                    if (o.name == g.name) {
+                        e.error("a second group of this name");
+                        ok = false;
+                    } else if (g.start < o.start + o.count && o.start < g.start + g.count) {
+                        e.error("overlaps group \"" + o.name + "\"");
+                        ok = false;
+                    }
+                }
+                if (ok) d.groups.push_back(std::move(g));
+            }
+        }
+    }
+    r.finish();
+}
+
+} // namespace
+
+bool importVfxAtlases(std::string_view json, VfxAtlasTable& out, std::string* error, std::vector<std::string>* warnings) {
+    out = VfxAtlasTable{};
+    JsonDocument doc;
+    std::string parseError;
+    if (!doc.parse(json, &parseError)) {
+        if (error) *error = parseError;
+        return false;
+    }
+    Diagnostics diag;
+    Reader root(doc.root(), "", diag);
+    if (root.expectObject()) {
+        if (std::optional<Reader> list = root.requireChild("atlases")) {
+            if (list->expectArray()) {
+                for (std::uint32_t i = 0; i < list->size(); ++i) {
+                    Reader a = list->element(i);
+                    VfxAtlasDef d;
+                    readAtlas(a, d);
+                    if (!d.name.empty() && findVfxAtlas(out, d.name))
+                        a.errorAt("name", "a second atlas called \"" + d.name + "\"");
+                    out.sets.push_back(std::move(d));
+                }
+                if (list->size() == 0) list->error("expected at least one atlas");
+            }
+        }
+        root.finish();
+    }
+    if (warnings) warnings->insert(warnings->end(), diag.warnings.begin(), diag.warnings.end());
+    if (!diag.errors.empty()) {
+        if (error) *error = joinLines(diag.errors);
+        out = VfxAtlasTable{};
+        return false;
+    }
+    return true;
+}
+
+const VfxAtlasDef* findVfxAtlas(const VfxAtlasTable& table, std::string_view name) {
+    for (const VfxAtlasDef& d : table.sets)
+        if (d.name == name) return &d;
+    return nullptr;
+}
+
+const VfxAtlasGroup* findVfxAtlasGroup(const VfxAtlasDef& set, std::string_view name) {
+    for (const VfxAtlasGroup& g : set.groups)
+        if (g.name == name) return &g;
+    return nullptr;
 }
 
 // ---- Niagara plan -------------------------------------------------------------------------------------
@@ -1134,7 +1282,8 @@ void planLook(const VfxEmitter& e, VfxNiagaraEmitter& p) {
         break;
     }
 
-    if (e.sprite == VfxSprite::Puff) p.gaps.push_back("sprite puff: drawn with the soft round sprite (no eroded cloud)");
+    if (e.sprite == VfxSprite::Puff && e.atlas.set.empty())
+        p.gaps.push_back("sprite puff: drawn with the soft round sprite (no eroded cloud)");
     if (!e.texture.empty()) p.gaps.push_back("texture \"" + e.texture + "\": not mapped (procedural sprite used)");
     if (e.textureSheet.enabled) p.gaps.push_back("textureSheet: not mapped (needs a flipbook texture)");
     if (e.softness > 0.f && !e.depthFade) p.gaps.push_back("softness: no soft-particle depth fade (set depthFade)");
@@ -1243,9 +1392,38 @@ void planBounds(VfxNiagaraEmitter& p) {
     p.boundsMax = add(c, {std::max(0.f, g.x) + reach, std::max(0.f, g.y) + reach, std::max(0.f, g.z) + reach});
 }
 
-} // namespace
+// The emitter's atlas group as grid numbers, or a gap saying why it does not resolve.
+void planAtlas(const VfxEmitter& e, const VfxAtlasTable* atlases, VfxNiagaraEmitter& p) {
+    if (e.atlas.set.empty()) return;
+    VfxNiagaraAtlas& a = p.atlas;
+    a.set = e.atlas.set;
+    a.group = e.atlas.group;
+    a.erode = e.atlas.erode;
+    const std::string what = "atlas \"" + a.set + "/" + a.group + "\": ";
+    const VfxAtlasDef* def = atlases ? findVfxAtlas(*atlases, a.set) : nullptr;
+    if (!def) {
+        p.gaps.push_back(what + (atlases ? "unknown atlas set" : "no atlas table to resolve it"));
+        return;
+    }
+    const VfxAtlasGroup* g = findVfxAtlasGroup(*def, a.group);
+    if (!g) {
+        p.gaps.push_back(what + "the set has no such group");
+        return;
+    }
+    if (def->blend != e.blend) {
+        p.gaps.push_back(what + (def->blend == VfxBlend::Additive ? "light sprites (an additive set) on an alpha emitter"
+                                                                  : "ink sprites (an alpha set) on an additive emitter"));
+        return;
+    }
+    a.gridX = def->gridX;
+    a.gridY = def->gridY;
+    a.cellStart = g->start;
+    a.cellCount = g->count;
+    a.cellAspect = static_cast<float>(def->cellWidth) / static_cast<float>(def->cellHeight);
+    a.resolved = true;
+}
 
-void planVfxNiagara(const VfxEffect& effect, VfxNiagaraPlan& out) {
+void planEffect(const VfxEffect& effect, const VfxAtlasTable* atlases, VfxNiagaraPlan& out) {
     out = VfxNiagaraPlan{};
     out.name = effect.name;
     for (const VfxEmitter& e : effect.emitters) {
@@ -1260,6 +1438,7 @@ void planVfxNiagara(const VfxEffect& effect, VfxNiagaraPlan& out) {
         planShapeAndVelocity(e, p);
         planForces(e, p);
         planLook(e, p);
+        planAtlas(e, atlases, p);
         out.emitters.push_back(std::move(p));
     }
     planSubEmitters(effect, out);
@@ -1269,6 +1448,14 @@ void planVfxNiagara(const VfxEffect& effect, VfxNiagaraPlan& out) {
         else out.duration = std::max(out.duration, p.loopDuration + p.lifetime.hi);
     }
 }
+
+} // namespace
+
+void planVfxNiagara(const VfxEffect& effect, const VfxAtlasTable& atlases, VfxNiagaraPlan& out) {
+    planEffect(effect, &atlases, out);
+}
+
+void planVfxNiagara(const VfxEffect& effect, VfxNiagaraPlan& out) { planEffect(effect, nullptr, out); }
 
 VfxUserParameters sanitizeVfxUserParameters(VfxUserParameters p) {
     auto clean = [](float v) { return std::isfinite(v) ? std::clamp(v, 0.f, 10.f) : 1.f; };

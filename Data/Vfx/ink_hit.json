@@ -7,29 +7,60 @@
         {"time": 0.0, "count": 2}
       ],
       "duration": 0.1,
-      "maxParticles": 3,
-      "lifetime": [0.42, 0.5],
+      "maxParticles": 2,
+      "lifetime": [0.5, 0.58],
       "shape": "sphere",
-      "radius": 0.06,
-      "speed": [0.0, 0.15],
+      "radius": 0.04,
+      "speed": [0.0, 0.1],
       "drag": 4.0,
-      "startSize": [1.15, 1.35],
+      "startSize": [1.05, 1.12],
       "sizeOverLife": [
-        {"t": 0, "v": 0.45},
-        {"t": 0.07, "v": 1.0},
-        {"t": 1, "v": 1.08}
+        {"t": 0, "v": 0.5},
+        {"t": 0.08, "v": 1.0},
+        {"t": 1, "v": 1.06}
       ],
       "startRotation": [0.0, 6.283],
-      "angularVelocity": [-0.4, 0.4],
+      "angularVelocity": [-0.3, 0.3],
       "colorOverLife": [
-        {"t": 0, "color": [0.015, 0.015, 0.02, 1.0]},
-        {"t": 0.2, "color": [0.015, 0.015, 0.02, 0.92]},
-        {"t": 0.5, "color": [0.015, 0.015, 0.02, 0.55]},
-        {"t": 0.8, "color": [0.015, 0.015, 0.02, 0.22]},
-        {"t": 1, "color": [0.015, 0.015, 0.02, 0.0]}
+        {"t": 0, "color": [1.0, 1.0, 1.0, 1.0]},
+        {"t": 0.3, "color": [1.0, 1.0, 1.0, 1.0]},
+        {"t": 0.55, "color": [1.0, 1.0, 1.0, 0.7]},
+        {"t": 0.8, "color": [1.0, 1.0, 1.0, 0.35]},
+        {"t": 1, "color": [1.0, 1.0, 1.0, 0.0]}
       ],
       "blend": "alpha",
       "sprite": "splash",
+      "atlas": {"set": "InkMass", "group": "splash"},
+      "softness": 0.0
+    },
+    {
+      "name": "cloud",
+      "bursts": [
+        {"time": 0.1, "count": 1}
+      ],
+      "duration": 0.2,
+      "maxParticles": 1,
+      "lifetime": [0.75, 0.85],
+      "shape": "sphere",
+      "radius": 0.04,
+      "startSize": [1.15, 1.25],
+      "sizeOverLife": [
+        {"t": 0, "v": 0.85},
+        {"t": 0.2, "v": 1.0},
+        {"t": 1, "v": 1.15}
+      ],
+      "startRotation": [0.0, 6.283],
+      "angularVelocity": [-0.2, 0.2],
+      "colorOverLife": [
+        {"t": 0, "color": [1.0, 1.0, 1.0, 0.0]},
+        {"t": 0.12, "color": [1.0, 1.0, 1.0, 0.75]},
+        {"t": 0.45, "color": [1.0, 1.0, 1.0, 0.6]},
+        {"t": 0.8, "color": [1.0, 1.0, 1.0, 0.25]},
+        {"t": 1, "color": [1.0, 1.0, 1.0, 0.0]}
+      ],
+      "blend": "alpha",
+      "sprite": "puff",
+      "atlas": {"set": "InkMass", "group": "cloud"},
       "softness": 0.0
     },
     {
@@ -46,7 +77,7 @@
       "speed": [0.8, 1.8],
       "gravity": [0.0, -9.8, 0.0],
       "drag": 1.5,
-      "startSize": [0.14, 0.3],
+      "startSize": [0.16, 0.32],
       "startRotation": [0.0, 6.283],
       "angularVelocity": [-6.0, 6.0],
       "sizeOverLife": [
@@ -55,11 +86,12 @@
         {"t": 1, "v": 1.0}
       ],
       "colorOverLife": [
-        {"t": 0, "color": [0.015, 0.015, 0.02, 1.0]},
-        {"t": 1, "color": [0.015, 0.015, 0.02, 1.0]}
+        {"t": 0, "color": [1.0, 1.0, 1.0, 1.0]},
+        {"t": 1, "color": [1.0, 1.0, 1.0, 1.0]}
       ],
       "blend": "alpha",
       "sprite": "blot",
+      "atlas": {"set": "InkBlot", "group": "blot"},
       "softness": 0.0
     },
     {
@@ -76,22 +108,23 @@
       "speed": [0.8, 1.8],
       "gravity": [0.0, -9.8, 0.0],
       "drag": 1.0,
-      "startSize": [0.08, 0.13],
+      "startSize": [0.12, 0.18],
       "sizeOverLife": [
         {"t": 0, "v": 0.8},
         {"t": 0.05, "v": 1.0},
         {"t": 1, "v": 0.95}
       ],
       "colorOverLife": [
-        {"t": 0, "color": [0.015, 0.015, 0.02, 1.0]},
-        {"t": 1, "color": [0.015, 0.015, 0.02, 1.0]}
+        {"t": 0, "color": [1.0, 1.0, 1.0, 1.0]},
+        {"t": 1, "color": [1.0, 1.0, 1.0, 1.0]}
       ],
       "blend": "alpha",
       "sprite": "spark",
+      "atlas": {"set": "InkBlot", "group": "drop"},
       "softness": 0.0,
       "renderMode": "stretched",
-      "lengthScale": 1.6,
-      "speedScale": 0.04
+      "lengthScale": 1.0,
+      "speedScale": 0.0
     },
     {
       "name": "streaks",
@@ -107,21 +140,22 @@
       "speed": [1.8, 3.2],
       "gravity": [0.0, -9.8, 0.0],
       "drag": 2.5,
-      "startSize": [0.035, 0.05],
+      "startSize": [0.45, 0.6],
       "sizeOverLife": [
         {"t": 0, "v": 1.0},
         {"t": 1, "v": 0.8}
       ],
       "colorOverLife": [
-        {"t": 0, "color": [0.015, 0.015, 0.02, 1.0]},
-        {"t": 1, "color": [0.015, 0.015, 0.02, 1.0]}
+        {"t": 0, "color": [1.0, 1.0, 1.0, 1.0]},
+        {"t": 1, "color": [1.0, 1.0, 1.0, 1.0]}
       ],
       "blend": "alpha",
       "sprite": "spark",
+      "atlas": {"set": "InkStreak", "group": "streak"},
       "softness": 0.0,
       "renderMode": "stretched",
-      "lengthScale": 5.0,
-      "speedScale": 0.03
+      "lengthScale": 1.0,
+      "speedScale": 0.0
     }
   ]
 }

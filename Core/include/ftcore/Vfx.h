@@ -281,6 +281,16 @@ struct VfxSubEmitter {
     float velocityScale = 1.f;
 };
 
+// A group of cells in a sprite atlas (Data/Assets/vfx_atlases.json). Each particle draws one cell of the group,
+// picked at random, from the photographed sprites in the set's texture, in place of the procedural `sprite`.
+struct VfxAtlasRef {
+    std::string set;   // e.g. "InkMass"; empty: no atlas
+    std::string group; // e.g. "splash"
+    // Thin the sprite from its rim inward as the particle's alpha falls (the set's erosion key), instead of
+    // fading it evenly. Alpha 1 shows the whole sprite, 0 none of it.
+    bool erode = true;
+};
+
 struct VfxEmitter {
     std::string name;
 
@@ -322,6 +332,7 @@ struct VfxEmitter {
     float coreShade = 0.55f;
     float turbulence = 0.55f;
     std::string texture;
+    VfxAtlasRef atlas;
     VfxSpace space = VfxSpace::World;
     VfxRenderMode renderMode = VfxRenderMode::Billboard;
     float lengthScale = 2.f;
@@ -359,6 +370,39 @@ FTCORE_API bool importVfxEffect(std::string_view json, VfxEffect& out, std::stri
 // Index of the emitter called `name`, or -1.
 FTCORE_API int findVfxEmitter(const VfxEffect& effect, std::string_view name);
 
+// ---- sprite atlases -------------------------------------------------------------------------------------
+
+struct VfxAtlasGroup {
+    std::string name;
+    std::uint32_t start = 0, count = 0; // cells start .. start + count - 1, numbered row by row from the top left
+};
+
+// One atlas set: textures T_Vfx_<name> (colour and alpha) and T_Vfx_<name>_Key (the erosion key: 1 in a
+// sprite's core, falling to 0 at its rim), a grid of equal cells, one sprite centred in each.
+struct VfxAtlasDef {
+    std::string name;
+    std::uint32_t gridX = 1, gridY = 1;
+    std::uint32_t cellWidth = 1, cellHeight = 1; // texels
+    VfxBlend blend = VfxBlend::Alpha;            // what the sprites were cut for: ink on alpha, light on additive
+    std::vector<VfxAtlasGroup> groups;
+};
+
+struct VfxAtlasTable {
+    std::vector<VfxAtlasDef> sets;
+};
+
+// Reads Data/Assets/vfx_atlases.json: {"atlases": [{"name", "grid": [x, y], "cell": [w, h], "blend",
+// "groups": {"<name>": [start, count], ...}}]}. False on bad input (`out` is then empty and `*error` lists
+// every problem, one per line): a bad name, a grid or cell out of range, an atlas that is not a power of two
+// on each side, a group out of the grid, overlapping another, or empty. Unknown keys go to `*warnings`.
+FTCORE_API bool importVfxAtlases(std::string_view json, VfxAtlasTable& out, std::string* error = nullptr,
+                                 std::vector<std::string>* warnings = nullptr);
+
+// The set called `name`, or null.
+FTCORE_API const VfxAtlasDef* findVfxAtlas(const VfxAtlasTable& table, std::string_view name);
+// The group called `name` in `set`, or null.
+FTCORE_API const VfxAtlasGroup* findVfxAtlasGroup(const VfxAtlasDef& set, std::string_view name);
+
 // ---- Unreal ---------------------------------------------------------------------------------------------
 
 inline constexpr float kVfxUnrealUnitsPerMetre = 100.f;
@@ -386,6 +430,17 @@ enum class VfxNiagaraShape : std::uint8_t { None, Sphere, Box, Ring };
 enum class VfxNiagaraVelocity : std::uint8_t { None, Linear, FromPoint, Cone };
 // Sprite renderer facing / alignment.
 enum class VfxNiagaraFacing : std::uint8_t { Camera, VelocityAligned, Horizontal, Vertical };
+
+// An emitter's atlas sprite, resolved against the table: the material picks cell
+// cellStart + floor(random * cellCount) of a gridX x gridY atlas, fitted into the square quad by cellAspect.
+struct VfxNiagaraAtlas {
+    std::string set, group; // set empty: the emitter has no atlas (the procedural sprite)
+    bool resolved = false;  // false with a set: unknown set or group, or the wrong blend (see gaps)
+    bool erode = true;
+    std::uint32_t gridX = 1, gridY = 1;
+    std::uint32_t cellStart = 0, cellCount = 0;
+    float cellAspect = 1.f; // cell width / height
+};
 
 // One spec emitter as Niagara Lightweight module values. Units: centimetres, seconds, degrees; Z up.
 // Fields mirror the module properties the builder writes (docs/VFX_UE.md has the table).
@@ -438,7 +493,8 @@ struct VfxNiagaraEmitter {
 
     // Renderer
     bool additive = false;
-    VfxSprite sprite = VfxSprite::Soft;
+    VfxSprite sprite = VfxSprite::Soft; // the procedural sprite, used when atlas.set is empty
+    VfxNiagaraAtlas atlas;
     bool depthFade = false;
     VfxNiagaraFacing facing = VfxNiagaraFacing::Camera;
     bool scaleBySpeed = false; // ScaleSpriteSizeBySpeed: scale lerps min..max as speed goes 0..threshold
@@ -459,7 +515,10 @@ struct VfxNiagaraPlan {
     float duration = 0.f;  // one-shot effects: seconds until the last particle can have died
 };
 
-// Builds the plan for `effect` (which importVfxEffect accepted).
+// Builds the plan for `effect` (which importVfxEffect accepted). Emitters with an atlas are resolved against
+// `atlases`; one that does not resolve keeps atlas.resolved false and a gap saying why (the builder refuses it).
+FTCORE_API void planVfxNiagara(const VfxEffect& effect, const VfxAtlasTable& atlases, VfxNiagaraPlan& out);
+// The same with no atlas table: any atlas reference stays unresolved.
 FTCORE_API void planVfxNiagara(const VfxEffect& effect, VfxNiagaraPlan& out);
 
 // Runtime knobs every built Niagara system exposes as user parameters ("User.<name>"); UFTVfxComponent
