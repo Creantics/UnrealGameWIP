@@ -25,6 +25,9 @@ public class ForgottenThird : ModuleRules
 			// FTBuildExploreWorld imports each big world's ground as a Landscape.
 			PrivateDependencyModuleNames.Add("Landscape");
 
+			// FTBuildMassingWorld builds a sloped massing box's own static mesh from a mesh description.
+			PrivateDependencyModuleNames.AddRange(new string[] { "MeshDescription", "StaticMeshDescription" });
+
 			// FTBuildCloth makes Chaos cloth from an imported mesh section.
 			PrivateDependencyModuleNames.AddRange(new string[] { "ClothingSystemEditor", "ClothingSystemEditorInterface", "ClothingSystemRuntimeCommon", "ClothingSystemRuntimeInterface", "SkeletalMeshEditor" });
 
