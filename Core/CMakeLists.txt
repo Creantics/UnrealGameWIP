@@ -51,6 +51,7 @@ add_library(ftcore STATIC
     src/FieldGoals.cpp
     src/WorldLayout.cpp
     src/Terrain.cpp
+    src/MassingPlan.cpp
     src/SurfaceTable.cpp
     src/HairCardSpec.cpp
     src/Overworld.cpp
@@ -160,6 +161,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_field_goals.cpp
         tests/test_world_layout.cpp
         tests/test_terrain.cpp
+        tests/test_massing_plan.cpp
         tests/test_surface_table.cpp
         tests/test_hair_card_spec.cpp
         tests/test_overworld.cpp
