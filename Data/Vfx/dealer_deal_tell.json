@@ -12,7 +12,7 @@
       "shape": "sphere",
       "radius": 0.09,
       "space": "local",
-      "startSize": [0.78, 0.86],
+      "startSize": [0.94, 1.04],
       "sizeOverLife": [
         {"t": 0.0, "v": 0.5},
         {"t": 0.0389, "v": 0.58},
