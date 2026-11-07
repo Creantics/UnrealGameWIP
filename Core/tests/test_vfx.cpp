@@ -102,7 +102,7 @@ TEST_CASE("vfx: every Data/Vfx effect loads without warnings") {
     const Expect files[] = {{"ember_swirl", 1}, {"falling_leaves", 1}, {"fireworks", 3}, {"flipbook_fire", 1},
                             {"heal", 2},        {"heal_ring", 1},      {"hit_spark", 2}, {"magic_ribbon", 2},
                             {"perfect_burst", 2}, {"smoke", 1},        {"speed_sparks", 1}, {"stretched_sparks", 2}, {"dust_puff", 2},
-                            {"dealer_deal_tell", 5}, {"dealer_seam_open", 4}, {"dealer_seam_crit", 5}, {"ink_hit", 7},
+                            {"dealer_deal_tell", 5}, {"dealer_seam_open", 3}, {"dealer_seam_crit", 5}, {"ink_hit", 7},
                             {"ink_hit_floor", 3}, {"dealer_seam_crit_floor", 3}};
     for (const Expect& f : files) {
         CAPTURE(f.file);
@@ -163,7 +163,7 @@ TEST_CASE("vfx: the Dealer's effects load without warnings and keep their partic
         bool loops;
     };
     const Expect files[] = {{"dealer_deal_tell", 5, 21, false},
-                            {"dealer_seam_open", 4, 32, false},
+                            {"dealer_seam_open", 3, 14, false},
                             {"dealer_seam_crit", 5, 26, false},
                             {"ink_hit", 7, 30, false},
                             {"ink_hit_floor", 3, 22, false},
@@ -237,10 +237,11 @@ float boxSpeedLo(const VfxEmitter& em) {
 TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on the hand, a hot red seam that beats on "
           "the fingertips, a 0.9-1.0 m ink mass, liquid debris thrown clear, a red crit") {
     constexpr float kFrame = 1.f / 30.f; // the capture's frame
-    // The open seam covers white_glove's whole window. Every layer is an atlas sprite (no procedural glow): wet red
-    // smears splayed from the fingertips with red cut lines, red-hot seam light drawn over them, and dark drops falling
-    // in the world. The smears, the cuts and the light come on the 0.32 s beat and overlap to the window's end; the
-    // read is 0.3-0.4 m across, every quad under 0.45 m.
+    // The open seam covers white_glove's whole window. Every layer is an atlas sprite (no procedural glow): a thin wet
+    // red slit, red-hot seam light drawn over it, and dark drips falling in the world. Round r8i (review fix 2): no fan
+    // and no cut lines, so it reads as one vertical unfinished seam, not a crossed star, and the fingers stay readable.
+    // The slit and the light come on the 0.32 s beat and overlap to the window's end; the read is 0.3-0.4 m long, every
+    // quad under 0.45 m.
     std::string text;
     REQUIRE(ftcore_test::readProjectData("Battle/arena_crit.json", text));
     ArenaKindCritTable table;
@@ -251,12 +252,11 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
     VfxEffect seam;
     REQUIRE(loadEffect("dealer_seam_open", seam));
     CHECK_FALSE(findEmitter(seam, "glow"));
+    CHECK_FALSE(findEmitter(seam, "cuts")); // RedTell's line group holds an arc, which drew as a stray thread
     const VfxEmitter* wet = findEmitter(seam, "wet");
-    const VfxEmitter* cuts = findEmitter(seam, "cuts");
     const VfxEmitter* light = findEmitter(seam, "seam");
     const VfxEmitter* drips = findEmitter(seam, "drips");
     REQUIRE(wet);
-    REQUIRE(cuts);
     REQUIRE(light);
     REQUIRE(drips);
     for (const VfxEmitter& em : seam.emitters) {
@@ -266,7 +266,7 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
         // Never a ball bigger than the hand: no layer's quad passes 0.45 m.
         CHECK(peakSize(em) <= 0.45f);
     }
-    for (const VfxEmitter* em : {wet, cuts, light}) {
+    for (const VfxEmitter* em : {wet, light}) {
         CAPTURE(em->name);
         CHECK(em->space == VfxSpace::Local); // on the fingertips through the swing
         REQUIRE(em->bursts.size() >= 4); // the pulse
@@ -278,17 +278,19 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
     }
     CHECK(wet->atlas.set == "RedTell");
     CHECK(wet->atlas.group == "flush");
-    CHECK(cuts->atlas.set == "RedTell");
-    CHECK(cuts->atlas.group == "line");
     CHECK(light->atlas.set == "SeamLight");
     CHECK(light->atlas.group == "seam");
     CHECK(light->blend == VfxBlend::Additive);
     CHECK(wet < light); // the wet red is drawn first, under the light
-    CHECK(cuts < light);
-    // The read: the wet smears are 0.35 m or more, several a pulse, fanned round the fingers (not one blob).
+    // The read: the wet smears are 0.35 m or more, two a pulse, each within about 0.1 rad of the vertical, and so is
+    // the light drawn over them: a slit, not a fan.
     CHECK(lowest(wet->startSize) >= 0.35f);
-    CHECK(wet->bursts.front().count >= 3);
-    CHECK(highest(wet->startRotation) - lowest(wet->startRotation) >= 1.5f);
+    CHECK(wet->bursts.front().count == 2);
+    CHECK(light->bursts.front().count == 2);
+    CHECK(lowest(wet->startRotation) >= 1.5f * kPi - 0.11f);
+    CHECK(highest(wet->startRotation) <= 1.5f * kPi + 0.11f);
+    CHECK(lowest(light->startRotation) >= -0.11f);
+    CHECK(highest(light->startRotation) <= 0.11f);
     // The light beats: on each pulse it flares to full within 0.12 s, then falls to 0.2 or less before the next pulse,
     // so the 0.32 s beat shows as a rise and a trough. Hot red: brighter than the sprites' own red (HDR).
     {
@@ -299,11 +301,13 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
         CHECK(highest(light->lifetime) <= 0.45f); // gone soon after the next pulse lands
         for (const VfxColorStop& st : light->colorOverLife.stops) CHECK(st.color.r >= 3.f);
     }
-    // The drips fall in the world: dark red drops big enough to show at 60 px, about 14 a second at most.
+    // The drips fall in the world: dark red drops big enough to show at 60 px, about 14 a second at most. Round r8i
+    // (review fix 2): drawn from the ten different streak shapes, laid along their fall, not one clump.
     CHECK(drips->space == VfxSpace::World);
     CHECK(drips->gravity.y <= -9.f);
-    CHECK(drips->atlas.set == "RedTell");
-    CHECK(drips->atlas.group == "drop");
+    CHECK(drips->atlas.set == "InkStreak");
+    CHECK(drips->atlas.group == "streak");
+    CHECK(drips->renderMode == VfxRenderMode::Stretched);
     CHECK(lowest(drips->startSize) >= 0.12f);
     CHECK(drips->rate <= 14.f);
 
@@ -410,10 +414,13 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
         }
     }
 
-    // The plain hit: one of the two dense "core" sheets, opening in 3 frames or less to a sheet 0.9-1.0 m across at its
-    // peak, translucent, its heavy mass (alpha 0.5 or more) gone within 6 frames, then thinning
-    // as its edges erode, never dropping out in a frame. A lighter, wider wet edge round it (under 0.5 alpha: not part
-    // of the mass), and a wider ink haze that takes over before the sheet is gone.
+    // The plain hit. Round r8i (review fix 1): the dense body is the one solid sheet, so every draw of it matches (the
+    // other splash cell drew glassy shards), two of it stacked at different turns so no hit repeats a shape. It opens
+    // to 0.9 of its size in 3 frames and spreads on to full by 8, its visible long side 0.9-1.0 m at its peak on every
+    // draw, translucent, its heavy mass (alpha 0.5 or more) gone within 6 frames, then thinning as its edges erode,
+    // never dropping out in a frame. A lighter, wider wet edge round it (under 0.5 alpha: not part of the mass) and a
+    // wider ink haze that takes over before the sheet is gone, both from the smoke cells without erosion: soft, not
+    // hair or fur.
     VfxEffect ink;
     VfxEffect crit;
     REQUIRE(loadEffect("ink_hit", ink));
@@ -425,17 +432,26 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
     REQUIRE(edge);
     REQUIRE(cloud);
     CHECK(core->atlas.set == "InkMass");
-    CHECK(core->atlas.group == "core");
+    CHECK(core->atlas.group == "mass");
     CHECK(core->atlas.erode);
-    CHECK(lowest(core->startSize) >= 0.9f); // at full size (1.0), the smallest sheet
-    CHECK(peakSize(*core) <= 1.f);           // at the size curve's top, the largest sheet
+    CHECK(core->bursts.front().count == 2);
+    CHECK(highest(core->startRotation) - lowest(core->startRotation) >= 6.f);
+    {
+        // The mass sprite's long side is 0.79 of its quad, eroded at the core's 0.8 alpha (measured on the sheet). The
+        // alpha still holds at 0.13 s, so that is the size the body shows at its peak, smallest and largest draw alike.
+        constexpr float kMassLong = 0.79f;
+        const float grown = core->sizeOverLife.evaluate(0.13f / highest(core->lifetime), 0.5f);
+        CHECK(lowest(core->startSize) * grown * kMassLong >= 0.9f);
+        CHECK(highest(core->startSize) * grown * kMassLong <= 1.f);
+    }
     CHECK(core->sizeOverLife.evaluate(0.f, 0.5f) >= 0.5f); // opens from half size or more...
+    CHECK(core->sizeOverLife.evaluate(3.f * kFrame / highest(core->lifetime), 0.5f) >= 0.9f); // ...to 0.9 in 3 frames...
     {
         float full = 1.f;
         for (int i = 100; i >= 0; --i)
             if (core->sizeOverLife.evaluate(static_cast<float>(i) / 100.f, 0.5f) >= 0.999f)
                 full = static_cast<float>(i) / 100.f;
-        CHECK(full * highest(core->lifetime) <= 3.f * kFrame); // ...to full in 3 frames or less
+        CHECK(full * highest(core->lifetime) <= 8.f * kFrame); // ...and spreads to full by 8
     }
     CHECK(peakAlpha(core->colorOverLife) <= 0.85f);
     float heavy = 0.f;
@@ -453,13 +469,15 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
         CHECK(fall <= span / (4.f * kFrame)); // never faster than full strength to nothing in 4 frames
     }
     CHECK(edge->atlas.set == "InkMass");
-    CHECK(edge->atlas.group == "splash");
+    CHECK(edge->atlas.group == "cloud");
+    CHECK_FALSE(edge->atlas.erode);
     CHECK(lowest(edge->startSize) > highest(core->startSize));
     CHECK(peakAlpha(edge->colorOverLife) <= 0.6f * peakAlpha(core->colorOverLife));
     CHECK(peakAlpha(edge->colorOverLife) < 0.5f);
     CHECK(highest(edge->lifetime) < lowest(core->lifetime));
     CHECK(cloud->atlas.set == "InkMass");
     CHECK(cloud->atlas.group == "cloud");
+    CHECK_FALSE(cloud->atlas.erode);
     CHECK(peakAlpha(cloud->colorOverLife) <= 0.6f);
     CHECK(lowest(cloud->startSize) > highest(edge->startSize)); // the haze spreads wider than the mass and the edge
     REQUIRE_FALSE(cloud->bursts.empty());
@@ -505,6 +523,12 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
     // Sized to the weak point it bursts from: a hand-sized burst at the fingertips, smaller at its peak than the plain
     // hit's sheet. The crit reads by its red, its snap and its red pool, not by its size.
     CHECK(peakSize(*burst) < lowest(core->startSize));
+    // Round r8i (review fix 2): it doesn't stay pinned: thrown off the hand in every direction under drag, gone by 0.35 s.
+    CHECK(burst->velocityMax.x >= 1.5f);
+    CHECK(burst->velocityMin.x <= -1.5f);
+    CHECK(burst->velocityMax.y >= 1.5f);
+    CHECK(burst->velocityMin.y <= -1.5f);
+    CHECK(highest(burst->lifetime) <= 0.35f);
     // Red-tinted ink (the sheets are near-black under a grey sheen, so the tint is an HDR red lift).
     for (const VfxColorStop& s : burst->colorOverLife.stops) {
         CHECK(s.color.r >= 2.f);
@@ -569,6 +593,9 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
                 CHECK(em.velocityMin.x <= -1.8f);
                 CHECK(em.drag <= 1.f);
             }
+            // Round r8i (review fix 1): the hit's pieces are thrown on the hit but stay unseen for its first 3 frames
+            // or more, so the mass alone sets the hit's size as it opens, and they come out of it.
+            if (fx == &ink) CHECK(alphaAt(em, 3.f * kFrame / highest(em.lifetime)) == 0.f);
             for (const VfxColorStop& s : em.colorOverLife.stops) {
                 if (fx == &ink) {
                     CHECK(s.color.r == s.color.g);
@@ -587,6 +614,9 @@ TEST_CASE("vfx: the Dealer's round-8f looks: a red tell that grows and pulses on
 }
 
 namespace {
+
+// Where (0..1 of the shortest life) a floor mark's last 10 frames start, the only part of its life its tint may move in.
+float tailStart(const VfxEmitter& em) { return 1.f - (10.f / 30.f) / lowest(em.lifetime) + 0.001f; }
 
 // How high (m, up) a particle thrown up at vy m/s is after t s, under gravity gy and drag k: the stateless model the
 // plan's lightweight emitters run (p = v0 f + g (t - f) / k, f = (1 - e^-kt) / k).
@@ -637,8 +667,9 @@ TEST_CASE("vfx: the Dealer's ink lands: debris has faded out just over the floor
     constexpr float kFrame = 1.f / 30.f;
     // A Lightweight emitter has no collision: a piece at full alpha crosses the floor at 0.25 m a frame, which reads as
     // a pop. So each emitter throws one narrow vertical band, its life matched to that band's landing.
-    constexpr float kClear = 0.15f; // the lowest piece's centre is this far over the floor, or more, when it is gone
-    constexpr float kLand = 0.4f;   // and the highest piece of the band is within this, so it still reads as landing
+    // Round r8i (review fix 3): they fade at floor height, since a splat on touching would need collision.
+    constexpr float kClear = 0.03f; // the lowest piece's centre is this far over the floor, or more, when it is gone
+    constexpr float kLand = 0.25f;  // and the highest piece of the band is within this, so it still reads as landing
     struct Landing {
         const char* fx;
         const char* floor;
@@ -658,7 +689,7 @@ TEST_CASE("vfx: the Dealer's ink lands: debris has faded out just over the floor
             if (!isDebris(em)) continue;
             CAPTURE(em.name);
             CHECK(highest(em.speed) == 0.f); // the box alone sets the throw
-            CHECK(em.velocityMax.y - em.velocityMin.y <= 0.21f);
+            CHECK(em.velocityMax.y - em.velocityMin.y <= 0.15f);
             CHECK(highest(em.lifetime) <= fallTime(em.velocityMin.y, em.gravity.y, em.drag, c.height - kClear));
             CHECK(c.height + dragHeight(em.velocityMax.y, em.gravity.y, em.drag, lowest(em.lifetime)) <= kLand);
             // Nothing hangs in the air at the top of its throw.
@@ -668,10 +699,13 @@ TEST_CASE("vfx: the Dealer's ink lands: debris has faded out just over the floor
             last = std::max(last, fallTime(em.velocityMax.y, em.gravity.y, em.drag, c.height));
         }
         REQUIRE(last > first);
-        // The marks: wet silhouettes laid flat on the floor, splatting in over 2 frames or less as the first ink lands
-        // and while the rest does, held 0.8 s or more, then fading as they go, never turning lighter. A pool wider than
-        // the contact shadow (the plain hit's sized to the hit, the crit's wider), with splats of 0.4 m or more round it,
-        // and fine spatter on a ring at its rim.
+        // The marks: wet silhouettes laid flat on the floor, showing within 2 frames as the first ink lands and while
+        // the rest does, spreading from small to their full size over 6 frames or less (round r8i, review fix 3), held
+        // 0.8 s or more, then fading as they go. Round r8i (review fix 4): only the alpha moves until the last 10 frames
+        // of the shortest life; there the tint rises too, so the near-black sprites thin out rather than leave a tan-grey
+        // ghost, stopping at a warm 3x, since the sprites' pale rims would show lighter than the sand above that. A pool
+        // wider than the contact shadow (the plain hit's sized to the hit, the crit's wider), with splats of 0.4 m or more
+        // round it, and fine spatter on a ring at its rim.
         const bool red = std::string(c.floor) == "dealer_seam_crit_floor";
         float firstMark = 1e9f;
         float pool = 0.f;
@@ -697,11 +731,31 @@ TEST_CASE("vfx: the Dealer's ink lands: debris has faded out just over the floor
             CHECK(rampInAt(em.colorOverLife) * highest(em.lifetime) <= 2.f * kFrame);
             CHECK(fadeFrom(em.colorOverLife) * lowest(em.lifetime) >= 0.8f);
             REQUIRE(em.colorOverLife.stops.size() >= 2);
-            for (const VfxColorStop& s : em.colorOverLife.stops) { // only the alpha moves: no light halo as it dries
-                CHECK(s.color.r == em.colorOverLife.stops.front().color.r);
-                CHECK(s.color.g == em.colorOverLife.stops.front().color.g);
-                CHECK(s.color.b == em.colorOverLife.stops.front().color.b);
+            CHECK(em.sizeOverLife.evaluate(0.f, 1.f) <= 0.15f);
+            {
+                float full = 1.f;
+                for (int i = 1000; i >= 0; --i)
+                    if (em.sizeOverLife.evaluate(static_cast<float>(i) / 1000.f, 1.f) >= 0.999f)
+                        full = static_cast<float>(i) / 1000.f;
+                CHECK(full * lowest(em.lifetime) <= 6.f * kFrame);
             }
+            const VfxColor& wet = em.colorOverLife.stops.front().color;
+            const float tail = tailStart(em);
+            for (const VfxColorStop& s : em.colorOverLife.stops) {
+                CAPTURE(s.t);
+                if (s.t <= tail) {
+                    CHECK(s.color.r == wet.r);
+                    CHECK(s.color.g == wet.g);
+                    CHECK(s.color.b == wet.b);
+                } else {
+                    CHECK(s.color.g >= wet.g); // the tint rises to the warm 3x (the crit's hot red already sits there)...
+                    CHECK(s.color.b >= wet.b);
+                    CHECK(s.color.r <= std::max(wet.r, 3.f * 1.45f) + 0.01f); // ...and never past it
+                    CHECK(s.color.g <= 3.f * 1.24f + 0.01f);
+                    CHECK(s.color.b <= 3.f + 0.01f);
+                }
+            }
+            CHECK(em.colorOverLife.stops.back().color.g >= 3.f);
             for (const VfxBurst& b : em.bursts) {
                 CHECK(b.time >= first - kFrame);
                 CHECK(b.time <= last);
@@ -711,10 +765,12 @@ TEST_CASE("vfx: the Dealer's ink lands: debris has faded out just over the floor
         CHECK(firstMark <= first + 2.f * kFrame);
         CHECK(pool >= (red ? 1.3f : 0.8f)); // wide enough to read round the feet at 60 px
         CHECK(rim);
-        // The crit's marks carry its red; the plain hit's are dark (1 or less).
+        // Until those last 10 frames the crit's marks carry its red; the plain hit's are dark (1 or less).
         for (const VfxEmitter& em : floor.emitters) {
             CAPTURE(em.name);
+            const float tail = tailStart(em);
             for (const VfxColorStop& s : em.colorOverLife.stops) {
+                if (s.t > tail) continue;
                 if (red)
                     CHECK(s.color.r >= 3.f * std::max(s.color.g, s.color.b));
                 else if (s.color.a > 0.9f)
@@ -1271,12 +1327,17 @@ TEST_CASE("vfx: the project's atlas table loads without warnings") {
     REQUIRE(light);
     CHECK(light->blend == VfxBlend::Additive);
     CHECK_FALSE(findVfxAtlas(t, "inkmass")); // names are case-sensitive, like the asset names
-    // Every group of every set has at least two sprites, so no emitter repeats a single one.
+    // Every group of every set has at least two sprites, so no emitter repeats a single one. One named exception (round
+    // r8i, the review's fix 1 asks every draw of the plain hit's mass to match): InkMass's mass, the one solid sheet, which
+    // the hit draws twice at different turns.
     for (const VfxAtlasDef& d : t.sets)
         for (const VfxAtlasGroup& g : d.groups) {
             CAPTURE(d.name);
             CAPTURE(g.name);
-            CHECK(g.count >= 2);
+            if (std::string(d.name) == "InkMass" && std::string(g.name) == "mass")
+                CHECK(g.count == 1);
+            else
+                CHECK(g.count >= 2);
         }
 }
 
@@ -1410,7 +1471,10 @@ TEST_CASE("vfx: the Dealer's effects draw from the sprite atlases, and every ref
             // Every layer is an atlas sprite: no procedural glow, disc or soft primitive anywhere.
             CHECK_FALSE(em.atlas.set.empty());
             CHECK(p.atlas.resolved);
-            CHECK(p.atlas.cellCount >= 2); // no emitter repeats one sprite
+            if (em.atlas.set == "InkMass" && em.atlas.group == "mass")
+                CHECK(p.atlas.cellCount == 1); // the one named exception: see the atlas table's test
+            else
+                CHECK(p.atlas.cellCount >= 2); // no emitter repeats one sprite
             if (em.atlas.group == "blot") CHECK(p.atlas.cellCount >= 11); // all eleven blot shapes
             if (em.atlas.set == "InkBlot" && em.atlas.group == "drop") CHECK(p.atlas.cellCount >= 5); // all five drops
         }
