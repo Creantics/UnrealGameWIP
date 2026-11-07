@@ -220,6 +220,8 @@ Three optional goal-table columns name massing ids. `held` lists a goal apart: i
 
 The summary line closes with `temporary placements: <g> goals, <s> spawns`, and `-Strict` counts only the goals not listed apart.
 
+`-Kit=<csv>` swaps boxes for finished meshes already imported with `FTImportProp`. Each row has `box` (a massing id) and `asset` (the mesh's object path), and optionally `fit`, `turn` and `dz`. The mesh's bounds land on the box's centre at the box's rotation, with their bottom on the box's lowest corner, raised by `dz`; `turn` adds degrees for a mesh whose axes differ from the box's. `fit` is `real` by default (the mesh keeps its size) or `footprint` (scaled on each axis to the box's footprint and height). The mesh is labelled with the box's id and collides with nothing. The box stays as its hidden collider, labelled `<id>-COL`, so the lead walks on the box's shape rather than the mesh's. A missing box or mesh fails the run. The log gives each mesh's size and scale, how many boxes each asset stands in for, and the built boxes left.
+
 `-Dump=<csv>` also writes the saved map's actors to that file, so a check can read what the map holds rather than what the tables asked for. It reads them back from the actors after the save, so it changes nothing in the map. Each actor gets one row:
 
 - `label`, empty for an actor the build leaves unlabelled, and `class`;

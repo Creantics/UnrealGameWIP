@@ -345,6 +345,118 @@ TEST_CASE("massing: how far a point lies off a footprint") {
     CHECK(massingFootprintGap(b, 1.9, 4.9) == 0.0);
 }
 
+namespace {
+
+// Where a point of the mesh, in its own axes, lands in the engine frame.
+MassingVec placedPoint(const MassingKitPlace& p, const MassingVec& m) {
+    const double a = p.yaw * 3.14159265358979323846 / 180.0;
+    const double x = m.x * p.scale.x, y = m.y * p.scale.y;
+    return {p.at.x + x * std::cos(a) - y * std::sin(a), p.at.y + x * std::sin(a) + y * std::cos(a), p.at.z + m.z * p.scale.z};
+}
+
+} // namespace
+
+TEST_CASE("massing: a mesh stands in a box's stead at its own size") {
+    // Plan (100, 200) in a 1000 m square is engine (-400, 300).
+    const MassingBox box = flatBox(100, 200, 10, 20, 0, 10, 30);
+    MassingKitPlace p;
+    REQUIRE(massingKitPlacement(box, 1000.0, {-1, -2, 0}, {1, 2, 5}, false, 0.0, 0.0, p));
+    CHECK(near(p.at.x, -400.0));
+    CHECK(near(p.at.y, 300.0));
+    CHECK(near(p.at.z, 10.0));
+    CHECK(p.scale.x == 1.0);
+    CHECK(p.scale.y == 1.0);
+    CHECK(p.scale.z == 1.0);
+    CHECK(p.yaw == 0.0);
+
+    // A pivot at the mesh's corner, under its base: the bounds still land on the box.
+    REQUIRE(massingKitPlacement(box, 1000.0, {0, 0, -1}, {4, 2, 3}, false, 0.0, 0.0, p));
+    CHECK(near(p.at.x, -402.0));
+    CHECK(near(p.at.y, 299.0));
+    CHECK(near(p.at.z, 11.0));
+
+    // dz raises it off the box's bottom.
+    REQUIRE(massingKitPlacement(box, 1000.0, {-1, -2, 0}, {1, 2, 5}, false, 0.0, 2.5, p));
+    CHECK(near(p.at.z, 12.5));
+
+    // A flat mesh has no size to fit, and at its own size that is fine.
+    CHECK(massingKitPlacement(box, 1000.0, {-1, -2, 0}, {1, 2, 0}, false, 0.0, 0.0, p));
+}
+
+TEST_CASE("massing: a mesh takes the box's rotation, and its turn on top") {
+    const MassingBox box = flatBox(100, 200, 10, 20, 90, 0, 5);
+    const MassingVec lo{0, 0, 0}, hi{4, 2, 3};
+    const MassingVec mid{2, 1, 1.5};
+    for (const double turn : {0.0, 90.0, -90.0, 180.0, 30.0}) {
+        MassingKitPlace p;
+        REQUIRE(massingKitPlacement(box, 1000.0, lo, hi, false, turn, 0.0, p));
+        CHECK(near(p.yaw, -90.0 + turn));
+        const MassingVec at = placedPoint(p, mid);
+        CHECK(near(at.x, -400.0, 1e-9));
+        CHECK(near(at.y, 300.0, 1e-9));
+    }
+    // By the numbers at no turn: yaw -90 turns the bounds' centre (2, 1) to (1, -2).
+    MassingKitPlace p;
+    REQUIRE(massingKitPlacement(box, 1000.0, lo, hi, false, 0.0, 0.0, p));
+    CHECK(near(p.at.x, -401.0, 1e-9));
+    CHECK(near(p.at.y, 302.0, 1e-9));
+
+    // The mesh's +X runs along the box's +u: plan north at rot 90, which is engine -Y.
+    const MassingVec end = placedPoint(p, {4, 1, 0});
+    CHECK(near(end.x, -400.0, 1e-9));
+    CHECK(near(end.y, 298.0, 1e-9));
+}
+
+TEST_CASE("massing: a mesh fitted to a box's footprint and height") {
+    const MassingBox box = flatBox(0, 0, 10, 20, 0, 5, 15);
+    MassingKitPlace p;
+    REQUIRE(massingKitPlacement(box, 100.0, {-1, -2, 0}, {1, 2, 5}, true, 0.0, 0.0, p));
+    CHECK(near(p.scale.x, 5.0));
+    CHECK(near(p.scale.y, 5.0));
+    CHECK(near(p.scale.z, 2.0));
+    CHECK(near(placedPoint(p, {1, 2, 5}).z, 15.0));
+
+    // An odd quarter turn lays the mesh's X along the box's w, either way round.
+    for (const double turn : {90.0, -90.0, 270.0}) {
+        REQUIRE(massingKitPlacement(box, 100.0, {0, 0, 0}, {4, 2, 5}, true, turn, 0.0, p));
+        CHECK(near(p.scale.x, 5.0));
+        CHECK(near(p.scale.y, 5.0));
+    }
+    REQUIRE(massingKitPlacement(box, 100.0, {0, 0, 0}, {4, 2, 5}, true, 180.0, 0.0, p));
+    CHECK(near(p.scale.x, 2.5));
+    CHECK(near(p.scale.y, 10.0));
+
+    // Scale moves an off-centre pivot too: the bounds' centre still lands on the box.
+    REQUIRE(massingKitPlacement(box, 100.0, {0, 0, -1}, {4, 2, 3}, true, 0.0, 0.0, p));
+    const MassingVec at = placedPoint(p, {2, 1, 1});
+    CHECK(near(at.x, -50.0, 1e-9));
+    CHECK(near(at.y, 50.0, 1e-9));
+    CHECK(near(placedPoint(p, {2, 1, -1}).z, 5.0, 1e-9));
+}
+
+TEST_CASE("massing: a sloped box's lowest and highest corners bound a mesh") {
+    MassingBox box = flatBox(0, 0, 10, 4, 0, 2, 3);
+    box.sloped = true;
+    box.slopeFrom = 8.0;
+    box.slopeTo = 4.0;
+    box.slopeThick = 1.0;
+    // The top runs 8 to 4 and the underside 1 m under it: 3 at the bottom, 8 at the top.
+    MassingKitPlace p;
+    REQUIRE(massingKitPlacement(box, 100.0, {-1, -1, 0}, {1, 1, 1}, true, 0.0, 0.0, p));
+    CHECK(near(p.at.z, 3.0));
+    CHECK(near(p.scale.z, 5.0));
+}
+
+TEST_CASE("massing: a mesh that can't be placed") {
+    const MassingBox box = flatBox(0, 0, 10, 20, 0, 0, 10);
+    MassingKitPlace p;
+    p.yaw = 77.0;
+    CHECK_FALSE(massingKitPlacement(box, 100.0, {1, 0, 0}, {0, 1, 1}, false, 0.0, 0.0, p)); // inverted
+    CHECK_FALSE(massingKitPlacement(box, 100.0, {0, 0, 0}, {0, 1, 1}, true, 0.0, 0.0, p));  // no X to fit
+    CHECK_FALSE(massingKitPlacement(box, 100.0, {0, 0, 0}, {1, 1, 0}, true, 0.0, 0.0, p));  // no Z to fit
+    CHECK(p.yaw == 77.0); // left alone
+}
+
 TEST_CASE("massing: shared tops step down, smallest first") {
     std::vector<MassingBox> boxes = {
         flatBox(0, 0, 30, 30, 0, 0, 10),   // 0: big

@@ -131,6 +131,23 @@ FTCORE_API bool massingFootprintsOverlap(const MassingBox& a, const MassingBox& 
 // How far a plan point lies outside a box's footprint, in metres: 0 on its edge or inside it.
 FTCORE_API double massingFootprintGap(const MassingBox& box, double x, double y);
 
+// How a finished mesh stands in for a box, in the engine frame: the actor's location (m), its scale on
+// each of the mesh's own axes, and its engine yaw (degrees).
+struct MassingKitPlace {
+    MassingVec at;
+    MassingVec scale{1.0, 1.0, 1.0};
+    double yaw = 0.0;
+};
+
+// Places a mesh in a box's stead, whatever the mesh's own pivot, from its bounds in its own axes (m). The
+// bounds' centre lands over the box's centre at the box's rotation, turned turnDeg more for a mesh whose
+// long axis lies across the box's +u, and their bottom on the box's lowest corner (massingCorners), raised
+// by dz. With fitFootprint the mesh is scaled on each axis to the box's footprint and height, an odd
+// quarter turn trading the two footprint sides; without it the mesh keeps its size. False, leaving `out`
+// alone, on bounds that are inverted or, with fitFootprint, without size on an axis.
+FTCORE_API bool massingKitPlacement(const MassingBox& box, double side, const MassingVec& meshMin, const MassingVec& meshMax,
+                                    bool fitFootprint, double turnDeg, double dz, MassingKitPlace& out);
+
 // The world's 1 m height field (a raw grid of 16-bit samples, south-west corner first, rows running
 // north) as an Unreal Landscape takes it: a square whose side is the smallest quadsPerComponent * n + 1
 // that holds both of the grid's sides, the grid's last column and row repeated east and north to fill

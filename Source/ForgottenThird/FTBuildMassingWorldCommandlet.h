@@ -5,11 +5,11 @@
 //
 //   UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildMassingWorld -Height=<json> -Boxes=<csv>
 //       [-Walls=<csv>] [-Goals=<csv>] -Entry=<x,y,z> [-Look=<x,y>] [-Sea=<x>] [-Side=1000] [-Map=<name>]
-//       [-World=<id>] [-NoNav] [-Strict] [-Dump=<csv>]
+//       [-World=<id>] [-Kit=<csv>] [-NoNav] [-Strict] [-Dump=<csv>]
 //       -NullRHI -unattended -nopause -nosplash
 //
-// -Height names the world's 1 m height field's json (samples_x, samples_y, spacing_m,
-// origin_of_sample_0_0_m and the raw 16-bit file beside it, ftcore::massingHeightFromValue's encoding);
+// -Height names a height field's json (samples_x, samples_y, spacing_m, origin_of_sample_0_0_m and the raw
+// 16-bit file beside it, ftcore::massingHeightFromValue's encoding), the world's 1 m field or a coarser one;
 // -Boxes and -Walls name massing tables (ftcore/MassingPlan.h), the walls table holding WALL rows only;
 // -Goals names a CSV with the columns id, x, y, z and optionally spawn_x, spawn_y (plan frame, metres) and
 // held, goal_box, spawn_box (massing ids): a held goal stands inside or on a box held for its own piece and
@@ -42,6 +42,13 @@
 //   (with -Strict, a missing path fails).
 // Without -World there is no director: the map is a free walk. Zones, hidden kinds, open options and
 // proxies are not built.
+//
+// -Kit=<csv> swaps boxes for finished meshes already imported to the project, the table's columns being box (a
+// massing id), asset (a static mesh's object path) and optionally fit (real, the default, or footprint), turn and
+// dz (ftcore::massingKitPlacement). The mesh is labelled with the box's id and collides with nothing; the box stays
+// as its hidden collider, labelled <id>-COL. A missing box or mesh fails the run before anything is built. A row on
+// a box the build doesn't make places its mesh without a collider and says so. The log gives each mesh's size and
+// scale, and the built boxes left.
 //
 // -Dump=<csv> also writes the saved map's actors to that file, read back from the actors after the save,
 // so it changes nothing in the map; docs/WORLDS.md gives the columns. A dump it can't write fails the run.

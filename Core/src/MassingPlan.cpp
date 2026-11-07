@@ -352,6 +352,37 @@ double massingFootprintGap(const MassingBox& box, double x, double y) {
     return std::hypot(std::max(u, 0.0), std::max(w, 0.0));
 }
 
+bool massingKitPlacement(const MassingBox& box, double side, const MassingVec& meshMin, const MassingVec& meshMax,
+                         bool fitFootprint, double turnDeg, double dz, MassingKitPlace& out) {
+    const MassingVec size{meshMax.x - meshMin.x, meshMax.y - meshMin.y, meshMax.z - meshMin.z};
+    if (size.x < 0.0 || size.y < 0.0 || size.z < 0.0) return false;
+    std::array<MassingVec, 8> corners;
+    massingCorners(box, 0.0, corners);
+    double bottom = corners[0].z, top = corners[0].z;
+    for (const MassingVec& c : corners) {
+        bottom = std::min(bottom, c.z);
+        top = std::max(top, c.z);
+    }
+    MassingKitPlace place;
+    if (fitFootprint) {
+        if (size.x <= 0.0 || size.y <= 0.0 || size.z <= 0.0) return false;
+        // An odd quarter turn lays the mesh's X along the box's w.
+        const bool across = std::fmod(std::fabs(std::round(turnDeg / 90.0)), 2.0) == 1.0;
+        place.scale = {(across ? box.sy : box.sx) / size.x, (across ? box.sx : box.sy) / size.y, (top - bottom) / size.z};
+    }
+    place.yaw = massingEngineYaw(box.rot) + turnDeg;
+    // Engine yaw turns (x, y) to (x cos - y sin, x sin + y cos). The bounds' centre, scaled and turned, is
+    // where it stands against the actor's location.
+    const double a = place.yaw * kPi / 180.0;
+    const double c = std::cos(a), s = std::sin(a);
+    const double mx = (meshMin.x + meshMax.x) * 0.5 * place.scale.x;
+    const double my = (meshMin.y + meshMax.y) * 0.5 * place.scale.y;
+    const MassingVec centre = massingEnginePoint(side, box.cx, box.cy, 0.0);
+    place.at = {centre.x - (mx * c - my * s), centre.y - (mx * s + my * c), bottom + dz - meshMin.z * place.scale.z};
+    out = place;
+    return true;
+}
+
 void massingTopNudges(const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
                       std::vector<double>& out) {
     const std::size_t n = boxes.size();
