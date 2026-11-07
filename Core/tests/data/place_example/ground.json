@@ -1,0 +1,7 @@
+{
+  "samples_x": 101,
+  "samples_y": 101,
+  "spacing_m": 2.0,
+  "origin_of_sample_0_0_m": [-100.0, -100.0],
+  "note": "synthetic test ground: flat at +4 with a 25 degree ramp west of x = -60"
+}
