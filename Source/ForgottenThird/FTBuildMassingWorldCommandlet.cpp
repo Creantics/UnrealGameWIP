@@ -8,6 +8,7 @@
 #include "Builders/CubeBuilder.h"
 #include "Components/BrushComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "EditorWorldUtils.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/Polys.h"
 #include "Engine/StaticMesh.h"
@@ -29,6 +30,7 @@
 #include "Misc/Paths.h"
 #include "Model.h"
 #include "NavMesh/NavMeshBoundsVolume.h"
+#include "NavMesh/RecastNavMesh.h"
 #include "NavigationPath.h"
 #include "NavigationSystem.h"
 #include "PhysicsEngine/BodySetup.h"
@@ -571,6 +573,89 @@ FString ActorDump(UWorld* World, int32& Rows)
 	}
 	return Text;
 }
+
+// The reach check's path search budget: well over the engine's default of 2048 nodes, and under the 65535 a search
+// node's 16-bit index allows.
+constexpr uint32 kReachSearchNodes = 32768;
+
+// What the reach check's path queries came back with, for its summary line.
+struct FReachTally
+{
+	int32 Reached = 0, Full = 0, Partial = 0, NoPath = 0, OffMesh = 0, AtEntry = 0, LimitHit = 0;
+};
+
+FString ReachLine(const TCHAR* What, const FReachTally& Tally, int32 Of)
+{
+	return FString::Printf(TEXT("%s %d of %d reached (%d full paths, %d at the entry; %d partial, %d no path, %d off the navmesh; the node limit hit on %d)"),
+		What, Tally.Reached, Of, Tally.Full, Tally.AtEntry, Tally.Partial, Tally.NoPath, Tally.OffMesh, Tally.LimitHit);
+}
+
+// Whether a full path runs from the entry (From, on NavData) to a plan point (m), logged either way with the query's own
+// answer: a full path, a partial one or none, and whether its search ran out of nodes. Filter carries the budget.
+bool WalkFromEntry(UNavigationSystemV1& Nav, const ANavigationData& NavData, const FSharedConstNavQueryFilter& Filter, const FNavLocation& From,
+	double Side, const FString& What, double X, double Y, double Z, FReachTally& Tally)
+{
+	FNavLocation To;
+	const bool bOnMesh = Nav.ProjectPointToNavigation(Cm(ftcore::massingEnginePoint(Side, X, Y, Z)), To, kNavProjectExtent, &NavData);
+	// A point on the entry's own spot: the engine answers with a one-point path, which is not a valid one.
+	const bool bAtEntry = bOnMesh && FVector::Dist(From.Location, To.Location) < 100.0;
+	FPathFindingResult Route;
+	if (bOnMesh && !bAtEntry)
+	{
+		Route = Nav.FindPathSync(FPathFindingQuery(static_cast<const UObject*>(nullptr), NavData, From.Location, To.Location, Filter),
+			EPathFindingMode::Regular);
+	}
+	const bool bPath = Route.IsSuccessful() && Route.Path.IsValid() && Route.Path->IsValid();
+	const bool bFull = bPath && !Route.Path->IsPartial();
+	const bool bLimit = Route.Path.IsValid() && Route.Path->DidSearchReachedLimit();
+	const bool bReached = bAtEntry || bFull;
+	Tally.Reached += bReached ? 1 : 0;
+	Tally.AtEntry += bAtEntry ? 1 : 0;
+	Tally.Full += bFull ? 1 : 0;
+	Tally.Partial += bPath && !bFull ? 1 : 0;
+	Tally.NoPath += bOnMesh && !bAtEntry && !bPath ? 1 : 0;
+	Tally.OffMesh += bOnMesh ? 0 : 1;
+	Tally.LimitHit += bLimit ? 1 : 0;
+	const FString Query = !bOnMesh || bAtEntry
+		? FString(TEXT("no query"))
+		: FString::Printf(TEXT("query %s, node limit %s"), bFull ? TEXT("full") : bPath ? TEXT("partial") : TEXT("none"), bLimit ? TEXT("hit") : TEXT("not hit"));
+	// Engine cm back to the plan's metres, for the log.
+	const auto PlanOf = [Side](const FVector& At) { return FVector(At.X / 100.0 + Side * 0.5, Side * 0.5 - At.Y / 100.0, At.Z / 100.0); };
+	if (bReached)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: %s (%.0f, %.0f, %+.0f): reached, %.0f m of path; %s."), *What, X, Y, Z,
+			bAtEntry ? 0.0 : Route.Path->GetLength() / 100.0, *Query);
+	}
+	else if (!bOnMesh)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: %s (%.0f, %.0f, %+.0f): not on the navmesh; %s."), *What, X, Y, Z, *Query);
+	}
+	else
+	{
+		// Where the point met the navmesh, and where the nearest path from the entry stops short of it.
+		const FVector Met = PlanOf(To.Location);
+		FString Stop = TEXT("no path at all");
+		if (bPath && Route.Path->GetPathPoints().Num() > 0)
+		{
+			const FVector Last = Route.Path->GetPathPoints().Last().Location;
+			const FVector End = PlanOf(Last);
+			Stop = FString::Printf(TEXT("the path stops at (%.1f, %.1f, %+.1f), %.1f m short"), End.X, End.Y, End.Z, FVector::Dist(Last, To.Location) / 100.0);
+		}
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: %s (%.0f, %.0f, %+.0f): no full path from the entry; on the navmesh at "
+			"(%.1f, %.1f, %+.1f); %s; %s."), *What, X, Y, Z, Met.X, Met.Y, Met.Z, *Stop, *Query);
+	}
+	return bReached;
+}
+
+// The reach check's filter: the navmesh's own, with the raised search budget.
+FSharedConstNavQueryFilter ReachFilter(const ANavigationData& NavData)
+{
+	FSharedNavQueryFilter Filter = NavData.GetDefaultQueryFilter()->GetCopy();
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: reach check: the path search budget is %u nodes (the navmesh's own %u)."),
+		kReachSearchNodes, NavData.GetDefaultQueryFilter()->GetMaxSearchNodes());
+	Filter->SetMaxSearchNodes(kReachSearchNodes);
+	return Filter;
+}
 #endif
 } // namespace
 
@@ -604,6 +689,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	const bool bSea = FParse::Value(*Params, TEXT("Sea="), SeaWest);
 	const bool bNav = !FParse::Param(*Params, TEXT("NoNav"));
 	const bool bStrict = FParse::Param(*Params, TEXT("Strict"));
+	// The reach check on the saved map as it stands: nothing is built, rebuilt or saved.
+	const bool bLoad = FParse::Param(*Params, TEXT("Load"));
 
 	double Entry[3] = {0.0, 0.0, 0.0};
 	double Look[2] = {0.0, 0.0};
@@ -853,6 +940,119 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 	}
 
+	const FString MapPath = FString::Printf(TEXT("/Game/Maps/%s"), *MapName);
+	const FString File = FPackageName::LongPackageNameToFilename(MapPath, FPackageName::GetMapPackageExtension());
+	const FVector EntryAt = Cm(ftcore::massingEnginePoint(Side, Entry[0], Entry[1], Entry[2]));
+
+	// With -Load: the saved map in an editor world of its own, with the navmesh saved with it, which is the one the game
+	// walks. The world is destroyed unsaved; the map's file isn't written. Only a map saved without navmesh tiles has
+	// them built, in memory.
+	if (bLoad)
+	{
+		if (!IFileManager::Get().FileExists(*File))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Load: there is no %s."), *File);
+			return 1;
+		}
+		UWorld::InitializationValues Init;
+		Init.RequiresHitProxies(false)
+			.ShouldSimulatePhysics(false)
+			.EnableTraceCollision(false)
+			.CreateNavigation(true)
+			.CreateAISystem(false)
+			.AllowAudioPlayback(false)
+			.CreatePhysicsScene(true);
+		FScopedEditorWorld Loaded(FStringView(MapPath), Init);
+		UWorld* World = Loaded.GetWorld();
+		if (!World)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Load: couldn't load %s."), *MapPath);
+			return 1;
+		}
+		FNavigationSystem::AddNavigationSystemToWorld(*World, FNavigationSystemRunMode::EditorMode);
+		UNavigationSystemV1* Nav = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+		ARecastNavMesh* NavMesh = Nav ? Cast<ARecastNavMesh>(Nav->GetDefaultNavDataInstance(FNavigationSystem::DontCreate)) : nullptr;
+		const bool bRegistered = NavMesh != nullptr;
+		for (TActorIterator<ARecastNavMesh> It(World); It && !NavMesh; ++It)
+		{
+			NavMesh = *It;
+		}
+		if (!Nav || !NavMesh)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Load: %s has no navigation system or no navmesh."), *MapPath);
+			return 1;
+		}
+		const int32 Tiles = NavMesh->GetNavMeshTilesCount();
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Load: loaded %s, not to be saved; its navmesh (%s) has %d tiles."), *MapPath,
+			bRegistered ? TEXT("the navigation system's own") : TEXT("found among the actors"), Tiles);
+		if (Tiles == 0)
+		{
+			Nav->RemoveNavigationBuildLock(ENavigationBuildLock::AsyncLoadLock, UNavigationSystemV1::ELockRemovalRebuildAction::NoRebuild);
+			Nav->Build();
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: -Load: the saved map has no navmesh tiles; built %d in memory, not saved."),
+				NavMesh->GetNavMeshTilesCount());
+		}
+
+		// The spawns the tour walks to are the director's, saved with the map; the check walks the plan's, worked out
+		// above. They should be the same points.
+		const AFTExploreDirector* Director = nullptr;
+		for (TActorIterator<AFTExploreDirector> It(World); It && !Director; ++It)
+		{
+			Director = *It;
+		}
+		if (!Places.IsEmpty())
+		{
+			double Worst = 0.0;
+			const int32 Saved = Director ? Director->DistrictSpawns.Num() : 0;
+			for (int32 D = 0; D < FMath::Min(Saved, Places.Num()); ++D)
+			{
+				const FVector Plan = Cm(ftcore::massingEnginePoint(Side, Places[D].SpawnX, Places[D].SpawnY, Places[D].SpawnFloor));
+				Worst = FMath::Max(Worst, FVector::Dist(Plan, Director->DistrictSpawns[D]) / 100.0);
+			}
+			if (Saved == Places.Num() && Worst <= 1.0)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Load: the map's director has the plan's %d district spawns, the "
+					"furthest %.2f m from the plan's."), Saved, Worst);
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: -Load: the map's director has %d district spawns, the plan %d; the "
+					"furthest is %.2f m from the plan's, so the check doesn't walk to the spawns the tour walks to."), Saved, Places.Num(), Worst);
+			}
+		}
+
+		FReachTally GoalTally, SpawnTally;
+		FNavLocation From;
+		if (!Nav->ProjectPointToNavigation(EntryAt, From, kNavProjectExtent, NavMesh))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: the entry (%.1f, %.1f, %.1f) is not on the navmesh."), Entry[0], Entry[1],
+				Entry[2]);
+		}
+		else
+		{
+			const FSharedConstNavQueryFilter Filter = ReachFilter(*NavMesh);
+			for (const FGoal& Goal : Goals)
+			{
+				// A held goal is listed apart (logged with the table), never walked or counted.
+				if (Goal.HeldAt == INDEX_NONE)
+				{
+					WalkFromEntry(*Nav, *NavMesh, Filter, From, Side, TEXT("goal ") + Goal.Id, Goal.X, Goal.Y, Goal.Z, GoalTally);
+				}
+			}
+			for (int32 D = 0; D < Places.Num(); ++D)
+			{
+				const FDistrictPlace& Place = Places[D];
+				WalkFromEntry(*Nav, *NavMesh, Filter, From, Side, FString::Printf(TEXT("district %d's spawn"), D), Place.SpawnX, Place.SpawnY,
+					Place.SpawnFloor, SpawnTally);
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: reach (search budget %u nodes): %s; %s."), kReachSearchNodes,
+			*ReachLine(TEXT("goals"), GoalTally, Counted), *ReachLine(TEXT("district spawns"), SpawnTally, Places.Num()));
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Load: %s checked, not saved: goals reached %d of %d, district spawns reached %d of %d."),
+			*MapPath, GoalTally.Reached, Counted, SpawnTally.Reached, Places.Num());
+		return bStrict && (GoalTally.Reached < Counted || SpawnTally.Reached < Places.Num()) ? 1 : 0;
+	}
+
 	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
 	UStaticMesh* Plane = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
 	UMaterialInterface* Base = FTScene::LoadSurface();
@@ -863,8 +1063,6 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 
 	// A new editor world (so it gets a navigation system), replacing the map.
-	const FString MapPath = FString::Printf(TEXT("/Game/Maps/%s"), *MapName);
-	const FString File = FPackageName::LongPackageNameToFilename(MapPath, FPackageName::GetMapPackageExtension());
 	if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: couldn't replace %s."), *File);
@@ -1082,7 +1280,6 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 
 	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, kMassingSun);
 
-	const FVector EntryAt = Cm(ftcore::massingEnginePoint(Side, Entry[0], Entry[1], Entry[2]));
 	double EntryYaw = 0.0;
 	if (bLook)
 	{
@@ -1137,65 +1334,35 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		const double BuildStart = FPlatformTime::Seconds();
 		Nav->Build();
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: navmesh built in %.0f s."), FPlatformTime::Seconds() - BuildStart);
+		const ANavigationData* NavData = Nav->GetDefaultNavDataInstance(FNavigationSystem::DontCreate);
 		FNavLocation From;
-		if (!Nav->ProjectPointToNavigation(EntryAt, From, kNavProjectExtent))
+		if (!NavData || !Nav->ProjectPointToNavigation(EntryAt, From, kNavProjectExtent, NavData))
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: the entry (%.1f, %.1f, %.1f) is not on the navmesh."), Entry[0], Entry[1],
 				Entry[2]);
 		}
 		else
 		{
-			// Whether a full path runs from the entry to a plan point, logged either way.
-			const auto Walk = [&](const FString& What, double X, double Y, double Z) {
-				FNavLocation To;
-				const UNavigationPath* Route = nullptr;
-				const bool bOnMesh = Nav->ProjectPointToNavigation(Cm(ftcore::massingEnginePoint(Side, X, Y, Z)), To, kNavProjectExtent);
-				// A point on the entry's own spot: the engine answers with a one-point path, which is not a valid one.
-				const bool bAtEntry = bOnMesh && FVector::Dist(From.Location, To.Location) < 100.0;
-				if (bOnMesh && !bAtEntry)
-				{
-					Route = Nav->FindPathToLocationSynchronously(World, From.Location, To.Location);
-				}
-				const bool bReached = bAtEntry || (Route && Route->IsValid() && !Route->IsPartial());
-				// Engine cm back to the plan's metres, for the log.
-				const auto PlanOf = [Side](const FVector& At) {
-					return FVector(At.X / 100.0 + Side * 0.5, Side * 0.5 - At.Y / 100.0, At.Z / 100.0);
-				};
-				if (bReached)
-				{
-					UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: %s (%.0f, %.0f, %+.0f): reached, %.0f m of path."), *What, X, Y, Z,
-						bAtEntry ? 0.0 : Route->GetPathLength() / 100.0);
-				}
-				else if (!bOnMesh)
-				{
-					UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: %s (%.0f, %.0f, %+.0f): not on the navmesh."), *What, X, Y, Z);
-				}
-				else
-				{
-					// Where the point met the navmesh, and where the nearest path from the entry stops short of it.
-					const FVector Met = PlanOf(To.Location);
-					FString Stop = TEXT("no path at all");
-					if (Route && Route->PathPoints.Num() > 0)
-					{
-						const FVector End = PlanOf(Route->PathPoints.Last());
-						Stop = FString::Printf(TEXT("the path stops at (%.1f, %.1f, %+.1f), %.1f m short"), End.X, End.Y, End.Z,
-							FVector::Dist(Route->PathPoints.Last(), To.Location) / 100.0);
-					}
-					UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: %s (%.0f, %.0f, %+.0f): no full path from the entry; on the navmesh at "
-						"(%.1f, %.1f, %+.1f); %s."), *What, X, Y, Z, Met.X, Met.Y, Met.Z, *Stop);
-				}
-				return bReached;
-			};
+			const FSharedConstNavQueryFilter Filter = ReachFilter(*NavData);
+			FReachTally GoalTally, SpawnTally;
 			for (const FGoal& Goal : Goals)
 			{
 				// A held goal is listed apart (logged with the table), never walked or counted.
-				Reached += Goal.HeldAt == INDEX_NONE && Walk(TEXT("goal ") + Goal.Id, Goal.X, Goal.Y, Goal.Z) ? 1 : 0;
+				if (Goal.HeldAt == INDEX_NONE)
+				{
+					WalkFromEntry(*Nav, *NavData, Filter, From, Side, TEXT("goal ") + Goal.Id, Goal.X, Goal.Y, Goal.Z, GoalTally);
+				}
 			}
 			for (int32 D = 0; D < Places.Num(); ++D)
 			{
 				const FDistrictPlace& Place = Places[D];
-				SpawnsReached += Walk(FString::Printf(TEXT("district %d's spawn"), D), Place.SpawnX, Place.SpawnY, Place.SpawnFloor) ? 1 : 0;
+				WalkFromEntry(*Nav, *NavData, Filter, From, Side, FString::Printf(TEXT("district %d's spawn"), D), Place.SpawnX, Place.SpawnY,
+					Place.SpawnFloor, SpawnTally);
 			}
+			Reached = GoalTally.Reached;
+			SpawnsReached = SpawnTally.Reached;
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: reach (search budget %u nodes): %s; %s."), kReachSearchNodes,
+				*ReachLine(TEXT("goals"), GoalTally, Counted), *ReachLine(TEXT("district spawns"), SpawnTally, Places.Num()));
 		}
 	}
 

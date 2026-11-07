@@ -5,7 +5,7 @@
 //
 //   UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildMassingWorld -Height=<json> -Boxes=<csv>
 //       [-Walls=<csv>] [-Goals=<csv>] -Entry=<x,y,z> [-Look=<x,y>] [-Sea=<x>] [-Side=1000] [-Map=<name>]
-//       [-World=<id>] [-Kit=<csv>] [-NoNav] [-Strict] [-Dump=<csv>]
+//       [-World=<id>] [-Kit=<csv>] [-NoNav] [-Strict] [-Dump=<csv>] [-Load]
 //       -NullRHI -unattended -nopause -nosplash
 //
 // -Height names a height field's json (samples_x, samples_y, spacing_m, origin_of_sample_0_0_m and the raw
@@ -39,7 +39,9 @@
 // - the shared photoreal look (FTSceneLook.h), and a player start at -Entry facing -Look;
 // - unless -NoNav, a navmesh over the square, and each goal (and with -World, each district's spawn)
 //   checked for a path from the entry; the map is saved either way and the counts reached are logged
-//   (with -Strict, a missing path fails).
+//   (with -Strict, a missing path fails). The check's path search has a budget of 32768 nodes (the engine's
+//   default is 2048); each target's line says whether its query came back full, partial or with none, and
+//   whether it hit the node limit, and a summary line counts them.
 // Without -World there is no director: the map is a free walk. Zones, hidden kinds, open options and
 // proxies are not built.
 //
@@ -52,7 +54,12 @@
 //
 // -Dump=<csv> also writes the saved map's actors to that file, read back from the actors after the save,
 // so it changes nothing in the map; docs/WORLDS.md gives the columns. A dump it can't write fails the run.
-
+//
+// -Load builds nothing: it loads the saved /Game/Maps/<Map> in an editor world of its own, with the navmesh
+// saved with it (the one the game walks), and runs the same reach check from -Entry to the goals and the
+// district spawns, worked out from the same files as a build would. It logs the navmesh's tile count and
+// how far the map director's spawns lie from the plan's, and never saves: the map file is not written. Only a
+// map saved without navmesh tiles has them built, in memory, and the log says so. A -Kit table is still checked; -Dump is ignored.
 #include "CoreMinimal.h"
 #include "Commandlets/Commandlet.h"
 

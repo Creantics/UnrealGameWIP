@@ -166,9 +166,14 @@ private:
 	void TickStoryWalk(AFTExploreCharacter& Player, float DeltaSeconds);
 	// Walks the pawn toward Goal (metres) and runs the stuck detection for TargetId; straight at it
 	// without the navmesh when !bUseNav. GoalFloor (cm), when set, is the floor at Goal for the navmesh query;
-	// otherwise that of the district Goal stands in.
+	// otherwise that of the district Goal stands in. With bPathProgress (a pinned world tour, which caps its legs),
+	// getting closer along a full navmesh path counts as progress too.
 	void PilotWalk(AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 TargetId, float DeltaSeconds,
-		bool bUseNav = true, TOptional<double> GoalFloor = {});
+		bool bUseNav = true, TOptional<double> GoalFloor = {}, bool bPathProgress = false);
+	// The path length (m) left from Pos along the pilot's full navmesh path to TargetId, or -1 when it has none.
+	float PilotPathLeftFrom(ftcore::Vec2 Pos, int32 TargetId) const;
+	// The STUCK line, with why it fired and the pilot's path.
+	void LogPilotStuck(float Dist, int32 TargetId, const FString& Why) const;
 	// The navmesh point to steer at on the way to Goal, or null to walk straight at it.
 	const ftcore::Vec2* PilotWaypoint(const AFTExploreCharacter& Player, ftcore::Vec2 Pos, ftcore::Vec2 Goal, int32 TargetId,
 		TOptional<double> GoalFloor);
@@ -292,6 +297,9 @@ private:
 	double TourStart = 0.0;
 	double TourGameStart = 0.0;
 	double TourTraceAt = 0.0; // tour game time of the next per-second trace line
+	int32 TourLegFor = -1;     // the leg TourLegStartAt is for
+	double TourLegStartAt = 0.0; // tour game time the leg started, for kTourLegCapSeconds
+	bool bTourLegCapped = false; // the cap fired on this leg (logged once)
 	int32 WorldLineDistrict = -2;
 	FString WorldLine;
 
@@ -321,7 +329,10 @@ private:
 	// Autopilot: stuck detection.
 	int32 PilotTarget = -1;
 	float PilotBestDist = 0.f;
-	float PilotStuck = 0.f;
+	float PilotStuck = 0.f;    // s without a new best
+	float PilotStall = 0.f;    // s under kPilotStallSpeed; negative once that has fired, until the lead walks at speed
+	float PilotBestPath = -1.f; // with bPathProgress: the shortest path left (m) on a full path to PilotTarget, -1 for none yet
+	float PilotPathLeft = -1.f; // with bPathProgress: the path left now (m), -1 when the pilot has no full path
 	bool bPilotGaveUp = false; // the stuck line is logged for PilotTarget; cleared on a new target or any progress
 	// Autopilot: its navmesh path to the target in ground metres, refreshed about once a second.
 	// Empty (walk straight at the target) when the map has no navmesh or no path was found.
@@ -332,6 +343,7 @@ private:
 	bool bPilotPathLogged = false;
 	// The last refresh's answer, for a world tour's give-up line: 0 never asked, 1 no path, 2 a partial path, 3 a full one.
 	uint8 PilotPathState = 0;
+	bool bPilotPathLimit = false; // the last refresh's search ran out of nodes
 	FVector PilotPathGoal = FVector::ZeroVector; // the goal as asked (engine cm), its z the query's
 	FVector PilotPathEnd = FVector::ZeroVector; // that path's last point (engine cm), when it has one
 };
