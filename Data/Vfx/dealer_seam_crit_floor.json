@@ -2,6 +2,40 @@
   "name": "dealer_seam_crit_floor",
   "emitters": [
     {
+      "name": "film",
+      "bursts": [
+        {"time": 0.501, "count": 1},
+        {"time": 0.601, "count": 1}
+      ],
+      "duration": 0.661,
+      "maxParticles": 2,
+      "lifetime": [1.45, 1.6],
+      "shape": "ring",
+      "radius": 0.1,
+      "innerRadius": 0.0,
+      "space": "local",
+      "startSize": [1.25, 1.35],
+      "sizeOverLife": [
+        {"t": 0, "v": 0.12},
+        {"t": 0.0469, "v": 0.5},
+        {"t": 0.1172, "v": 1.0},
+        {"t": 1, "v": 1.06}
+      ],
+      "startRotation": [0.0, 6.283],
+      "colorOverLife": [
+        {"t": 0, "color": [4.5, 0.5, 0.45, 0.0]},
+        {"t": 0.02, "color": [4.5, 0.5, 0.45, 0.42]},
+        {"t": 0.62, "color": [4.5, 0.5, 0.45, 0.42]},
+        {"t": 0.7701, "color": [4.5, 0.5, 0.45, 0.273]},
+        {"t": 0.8851, "color": [4.433, 1.949, 1.597, 0.151]},
+        {"t": 1.0, "color": [4.35, 3.72, 3.0, 0.0]}
+      ],
+      "blend": "alpha",
+      "atlas": {"set": "InkMass", "group": "cloud", "erode": false},
+      "softness": 0.0,
+      "renderMode": "horizontal"
+    },
+    {
       "name": "pool",
       "bursts": [
         {"time": 0.501, "count": 1},
@@ -11,10 +45,10 @@
       "maxParticles": 2,
       "lifetime": [1.45, 1.6],
       "shape": "ring",
-      "radius": 0.25,
+      "radius": 0.08,
       "innerRadius": 0.0,
       "space": "local",
-      "startSize": [1.62, 1.75],
+      "startSize": [1.0, 1.1],
       "sizeOverLife": [
         {"t": 0, "v": 0.12},
         {"t": 0.0469, "v": 0.5},
@@ -31,7 +65,7 @@
         {"t": 1.0, "color": [4.35, 3.72, 3.0, 0.0]}
       ],
       "blend": "alpha",
-      "atlas": {"set": "InkFloor", "group": "floor", "erode": false},
+      "atlas": {"set": "InkFloor", "group": "puddle", "erode": false},
       "softness": 0.0,
       "renderMode": "horizontal"
     },
@@ -48,10 +82,10 @@
       "maxParticles": 10,
       "lifetime": [1.4, 1.55],
       "shape": "ring",
-      "radius": 0.8,
+      "radius": 0.22,
       "innerRadius": 0.0,
       "space": "local",
-      "startSize": [0.55, 0.9],
+      "startSize": [0.48, 0.58],
       "sizeOverLife": [
         {"t": 0, "v": 0.12},
         {"t": 0.0343, "v": 0.5},
@@ -68,7 +102,7 @@
         {"t": 1.0, "color": [4.35, 3.72, 3.0, 0.0]}
       ],
       "blend": "alpha",
-      "atlas": {"set": "InkFloor", "group": "floor", "erode": false},
+      "atlas": {"set": "InkFloor", "group": "splat", "erode": false},
       "softness": 0.0,
       "renderMode": "horizontal"
     },
@@ -82,10 +116,10 @@
       "maxParticles": 10,
       "lifetime": [1.3, 1.45],
       "shape": "ring",
-      "radius": 0.95,
-      "innerRadius": 0.55,
+      "radius": 0.62,
+      "innerRadius": 0.6,
       "space": "local",
-      "startSize": [0.14, 0.3],
+      "startSize": [0.1, 0.2],
       "sizeOverLife": [
         {"t": 0, "v": 0.12},
         {"t": 0.0206, "v": 0.5},
@@ -102,7 +136,7 @@
         {"t": 1.0, "color": [4.35, 3.72, 3.0, 0.0]}
       ],
       "blend": "alpha",
-      "atlas": {"set": "InkFloor", "group": "floor", "erode": false},
+      "atlas": {"set": "InkFloor", "group": "splat", "erode": false},
       "softness": 0.0,
       "renderMode": "horizontal"
     }
