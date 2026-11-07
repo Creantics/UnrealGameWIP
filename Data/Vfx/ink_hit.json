@@ -113,7 +113,7 @@
       "velocityMax": [0.0, 0.05, 0.0],
       "gravity": [0.0, -9.8, 0.0],
       "drag": 2.0,
-      "startSize": [0.08, 0.3],
+      "startSize": [0.12, 0.42],
       "sizeOverLife": [
         {"t": 0, "v": 0.3},
         {"t": 0.2837, "v": 0.42},
@@ -151,7 +151,7 @@
       "velocityMax": [0.0, 0.9, 0.0],
       "gravity": [0.0, -9.8, 0.0],
       "drag": 2.0,
-      "startSize": [0.08, 0.3],
+      "startSize": [0.06, 0.24],
       "sizeOverLife": [
         {"t": 0, "v": 0.3},
         {"t": 0.2538, "v": 0.42},
@@ -189,7 +189,7 @@
       "velocityMax": [0.0, 0.4, 0.0],
       "gravity": [0.0, -9.8, 0.0],
       "drag": 1.8,
-      "startSize": [0.1, 0.28],
+      "startSize": [0.1, 0.34],
       "sizeOverLife": [
         {"t": 0, "v": 0.3},
         {"t": 0.277, "v": 0.42},
