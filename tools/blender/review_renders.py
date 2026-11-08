@@ -2,8 +2,9 @@
 (garment_bind.py or head_prop.py FBXs on the same armature) at rest, in walk and turn poses, and close up.
 
     blender -b --factory-startup --python-exit-code 1 --python tools/blender/review_renders.py -- \
-        BODY.fbx FACE.fbx OUT_DIR PIECE.fbx [PIECE.fbx ...] [shots=rest,walk,turn,close] [close=hem,seam,neck,face,ears]
-        [res=900] [samples=96] [gpu=1] [skin=r,g,b] [prefix=set_b] [exposure=0]
+        BODY.fbx FACE.fbx OUT_DIR PIECE.fbx [PIECE.fbx ...] [shots=rest,walk,turn,close]
+        [close=hem,seam,neck,face,ears,feet,wrists,chest] [res=900] [samples=96] [gpu=1] [skin=r,g,b]
+        [prefix=set_b] [exposure=0]
 
 Every piece is imported with its own armature copy; the body armature is posed and every other armature (the face's,
 each piece's) follows it bone for bone (Copy Transforms on the bones they share; the facial bones ride the head), so
@@ -16,7 +17,8 @@ rest: front, side (the wearer's left), back and three-quarter (front left), the 
 walk: four frames of a stride (left contact, passing, right contact, passing), front three-quarter and side.
 turn: two frames of a turn in place to the wearer's left (hips 35 deg, shoulders 55), front and back three-quarter.
 close: hem (the lowest rim of the lowest piece, front and side), seam (the waist at each side), neck (the collar, front
-and back), face (the head front and three-quarter: glasses, a mask), ears (each side of the head).
+and back), face (the head front and three-quarter: glasses, a mask), ears (each side of the head), feet (both
+feet front, side and back: shoes), wrists (each forearm: wraps, cuffs), chest (front, side and upper back: a harness).
 Writes OUT_DIR/PREFIX_<shot>.png and OUT_DIR/PREFIX_shots.json (the list with what each shows, for the reviewer)."""
 import json
 import math
@@ -420,6 +422,21 @@ if "close" in SHOTS:
         nk = head("neck_01")
         shoot("close_neck_front", nk, fwd + up * 0.2, 0.8, 60, (1, 1), "close: the collar from the front")
         shoot("close_neck_back", nk, -fwd + up * 0.2, 0.8, 60, (1, 1), "close: the collar from the back")
+    if "feet" in CLOSE:
+        ft = (head("foot_l") + head("foot_r")) * 0.5 + up * 0.02
+        shoot("close_feet_front", ft, fwd + up * 0.35, 1.0, 60, (4, 3), "close: both feet from the front")
+        shoot("close_feet_side", ft, left + up * 0.25, 1.0, 60, (4, 3), "close: both feet from the wearer's left")
+        shoot("close_feet_back", ft, -fwd + left * 0.3 + up * 0.3, 1.0, 60, (4, 3), "close: both feet from behind")
+    if "wrists" in CLOSE:
+        for s, sd in (("l", 1), ("r", -1)):
+            fa = (head("lowerarm_" + s) + head("hand_" + s)) * 0.5
+            shoot("close_wrist_%s" % s, fa, fwd + left * sd * 0.7, 0.8, 60, (1, 1),
+                  "close: the wearer's %s forearm and wrist" % ("left" if sd > 0 else "right"))
+    if "chest" in CLOSE:
+        ch = head("spine_04")
+        shoot("close_chest_front", ch, fwd + up * 0.1, 1.0, 60, (1, 1), "close: the chest from the front")
+        shoot("close_chest_side", ch, left + fwd * 0.3, 1.0, 60, (1, 1), "close: the chest from the wearer's left")
+        shoot("close_chest_back", ch, -fwd + up * 0.1, 1.0, 60, (1, 1), "close: the upper back")
     if "face" in CLOSE:
         fc = hd + up * 0.07 + fwd * 0.06
         shoot("close_face_front", fc, fwd, 0.75, 85, (1, 1), "close: the face from the front")

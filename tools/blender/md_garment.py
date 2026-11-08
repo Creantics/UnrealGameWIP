@@ -16,7 +16,8 @@ is in world space (an OBJ in centimetres, Y up, -Z forward by default). Groups n
 dropped. Colours are sRGB. A group's "box" is its pattern bounding box in millimetres (x0, y0, x1, y1); the group's UV
 bounding box is mapped onto it, so a rule reads pattern coordinates. Without a box the rule coordinates are 0..1 of the
 UV box. A strip paints where |x| lies between x0(y) and x1(y), each linear in y between the listed "y" stations
-(mirrored about x = 0; "mirror": false paints only the listed side). A "crest" {"center": [x, y], "r", "rays", "color",
+(mirrored about x = 0; "mirror": false paints only the listed side); with a "surface", a strip's "rib" {"pitch" (rule
+units), "depth" (weave heights, default 1), "sharp"} adds knit ribs in the height there, wales running along y. A "crest" {"center": [x, y], "r", "rays", "color",
 "sharp" (ray exponent: above 1 pointed), "disc" (radius fraction), "base" (where the rays start), "alt" (shorter rays
 between the long ones, that fraction long), "outline": [width, RGB]} paints a rayed sun over the strips, in the rule's
 units. A rule's "patches" lay patch pockets on the group: {"rect": [x0, y0, x1, y1] (rule units, mirrored about x = 0
@@ -527,6 +528,17 @@ def build_piece(name, ps, objs, weld, out):
             hgt = weave_height(tu * w, tv * h, surf.get("weave", {}))
             down = lambda a: a.reshape(a.shape[0] // ss, ss, a.shape[1] // ss, ss).mean(axis=(1, 3))
             height[y0p:y1p, x0p:x1p] = down(hgt)
+            ribs = [s_ for s_ in rule.get("strips", []) if s_.get("rib")]
+            if ribs:  # knit ribs (a cuff or hem band): wales along y, one per "pitch" across x
+                rh = np.zeros_like(px)
+                for s_ in ribs:
+                    ax = np.abs(px) if s_.get("mirror", True) else px
+                    m = (ax >= np.interp(py, s_["y"], s_["x0"])) & (ax <= np.interp(py, s_["y"], s_["x1"]))
+                    rb = s_["rib"]
+                    wale = (0.5 * (1 + np.cos(2 * np.pi * px / rb.get("pitch", 3.0)))) ** rb.get("sharp", 1.0)
+                    rh = np.where(m, rb.get("depth", 1.0) * wale, rh)
+                height[y0p:y1p, x0p:x1p] += down(rh)
+                print("md_garment: %s: %d ribbed strips" % (g, len(ribs)))
             if rule.get("patches"):
                 st = surf.get("stitch", {})
                 rel, dk, th = (down(a) for a in patch_relief(px, py, rule, st))

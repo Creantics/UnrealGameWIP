@@ -25,7 +25,10 @@ b's end; "auto" picks the pairing with the shorter springs once the pieces are p
 PLACE wraps the flat piece round an axis before the solver starts, the way a cloth tool's arrangement points do:
     {"type": "cylinder", "center": [x, y, z], "axis": [x, y, z] (pattern v runs along it), "front": [x, y, z] (angle 0),
      "radius": r or "radius_at": [[v mm, r], ...] (a cone), "angle": deg (where "at" lands, positive towards the viewer's right seen from outside), "at": [u, v]
-     (the pattern point placed on "center"'s height), "conform": "out" | "in" | null, "gap": m}
+     (the pattern point placed on "center"'s height), "conform": "out" | "in" | null, "gap": m,
+     "v_at": [[v mm, along mm], ...] (optional: where each pattern v lands along the axis, straight on 1:1 past both
+     ends; a stretch of pattern longer than its stretch of axis is laid in gathered, and the solver buckles it into
+     folds: a trouser leg stacking over its cuff)}
     {"type": "plane", "center": [...], "normal": [...] (the outside), "up": [...], "at": [u, v]}
     {"type": "ribbon", "path": [[x, y, z], ...], "width": [x, y, z] or one per path point, "at": [u, v], "s_at": m,
      "gather": f or one per path point, "u_at": [u mm, ...] one per path point}
@@ -277,6 +280,13 @@ def place(uv_mm, pl):
         r = np.full(len(uv_mm), float(pl["radius"]))
     phi = math.radians(pl.get("angle", 0.0)) + du / r
     radial = np.cos(phi)[:, None] * fr[None] + np.sin(phi)[:, None] * side[None]
+    if "v_at" in pl:  # pattern v -> distance along the axis (mm), so a stretch of the pattern is laid in gathered
+        va = np.array(pl["v_at"], float)
+
+        def along(v):
+            s = np.interp(v, va[:, 0], va[:, 1])
+            return np.where(v < va[0, 0], va[0, 1] + v - va[0, 0], np.where(v > va[-1, 0], va[-1, 1] + v - va[-1, 0], s))
+        dv = (along(uv_mm[:, 1]) - along(np.array([at[1]]))[0]) / 1000.0
     axis_pt = c[None] + dv[:, None] * ax[None]
     return axis_pt + r[:, None] * radial, (axis_pt, radial)
 
