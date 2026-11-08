@@ -42,7 +42,9 @@ A collider's "extra" OBJs (a garment sewn before this one, as sew_cloth writes i
 on the under layer instead of through it. "conform" pushes each vertex off the body along the cylinder's radius so the
 piece starts outside it: "out" casts from the axis outwards (a torso piece: the first hit is the torso, not the arm
 hanging beside it), "in" from outside inwards (a skirt round both legs; "reach", default 1.5 m, is how far out the cast
-starts). The vertex lands "gap" (default 0.01 m) off the surface it hit, never inside it.
+starts). For "out", "reach" caps how far the cast looks: a sleeve's underarm ray that misses the arm and would land on
+the torso or a lower garment leaves the vertex where it was placed. The vertex lands "gap" (default 0.01 m) off the
+surface it hit, never inside it.
 
 REGION picks pattern vertices: {"v_above": mm} | {"v_below": mm} | {"u_above": mm} | {"u_below": mm} |
 {"rect": [u0, v0, u1, v1]}; several keys in one region must all hold. "pin" holds the region where it was placed
@@ -287,7 +289,7 @@ def conform(co, frame, bvh, mode, gap, reach=1.5):
         o, d = Vector(axis_pt[k]), Vector(radial[k])
         r_now = (Vector(co[k]) - o).dot(d)
         if mode == "out":
-            hit = bvh.ray_cast(o, d, 2.0)
+            hit = bvh.ray_cast(o, d, reach)
             if hit[0] is None:
                 continue
             need = (hit[0] - o).dot(d) + gap

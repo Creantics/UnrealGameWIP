@@ -19,7 +19,12 @@ UV box. A strip paints where |x| lies between x0(y) and x1(y), each linear in y 
 (mirrored about x = 0; "mirror": false paints only the listed side). A "crest" {"center": [x, y], "r", "rays", "color",
 "sharp" (ray exponent: above 1 pointed), "disc" (radius fraction), "base" (where the rays start), "alt" (shorter rays
 between the long ones, that fraction long), "outline": [width, RGB]} paints a rayed sun over the strips, in the rule's
-units. A group with no rule takes its own "color" or the piece's.
+units. A rule's "patches" lay patch pockets on the group: {"rect": [x0, y0, x1, y1] (rule units, mirrored about x = 0
+like a strip unless "mirror": false), "color" (optional; else the strips show through), "flap" (mm: a flap across the
+top, its lower edge a fold line with its own stitch), "stitch_in" (mm, default 4: the topstitch line inside the
+edge)}. With a "surface" the patch stands proud of the panel in the height (normal) with a shadow line round it and
+a dashed topstitch in the stitch thread; without one only its colour is painted. Patches assume the rule units are
+millimetres (a "box"). A group with no rule takes its own "color" or the piece's.
 
 A piece's "surface" adds the base layer stack a texture painter lays under fabric: {"weave": {"pitch" (thread spacing,
 mm; keep it at 4 texels or more), "slub", "kind": plain | twill | leather}, "ao", "cavity", "edge" (how much AO, creases and crests shade the albedo),
@@ -114,7 +119,46 @@ def rule_colour(px, py, rule, base):
             c[rr - ol[0] < np.maximum.reduce([sun(aa), sun(aa + da), sun(aa - da)])] = ol[1]
             inside &= np.abs(rr - cr["r"] * disc) > ol[0] / 2
         c[inside] = cr["color"]
+    for pt in rule.get("patches", []):  # the patch cloth's colour; patch_relief adds its edges
+        if pt.get("color") is not None:
+            x0, y0, x1, y1 = pt["rect"]
+            ax = np.abs(px) if pt.get("mirror", True) else px
+            c[(ax >= x0) & (ax <= x1) & (py >= y0) & (py <= y1)] = pt["color"]
     return c
+
+
+def patch_relief(px, py, rule, st):
+    """Height, shade and thread weight per texel (px, py in pattern mm) for a rule's "patches": the patch a layer
+    proud of the panel, a shadow line just outside its edge, a dashed topstitch "stitch_in" mm inside it, and with a
+    "flap" a fold line across the top with the flap standing a little prouder and its own stitch."""
+    rel, dark, thr = np.zeros(px.shape), np.zeros(px.shape), np.zeros(px.shape)
+    dash, pitch = st.get("stitch", 3.0), st.get("pitch", 4.0)
+    gauss = lambda x, w: np.exp(-(x / w) ** 2)
+    for pt in rule.get("patches", []):
+        x0, y0, x1, y1 = pt["rect"]
+        ax = np.abs(px) if pt.get("mirror", True) else px
+        dx, dy = np.minimum(ax - x0, x1 - ax), np.minimum(py - y0, y1 - py)
+        din = np.minimum(dx, dy)  # mm inside the patch's edge (negative outside)
+        along = np.where(dx < dy, py, ax)  # the edge's own coordinate, so the dashes run along each edge
+        on_dash = (along % pitch) < dash
+        near = din > -6.0
+        rel += near * 0.3 * np.clip(din / 0.8, 0, 1)
+        dark += near * 0.45 * gauss(np.minimum(din, 0) - 0.4, 1.2) * (din < 1.0)
+        si = pt.get("stitch_in", 4.0)
+        ts = gauss(din - si, 0.45) * on_dash * (din > 0)
+        rel += 0.4 * ts
+        thr += ts
+        f = pt.get("flap")
+        if f:  # the flap: proud over the top f mm, its fold edge shading the patch under it
+            fy = y1 - f
+            inside_x = dx > 0
+            dfl = py - fy  # mm above the fold
+            rel += inside_x * 0.18 * np.clip(dfl / 0.8, 0, 1) * (py <= y1)
+            dark += inside_x * 0.5 * gauss(np.minimum(dfl, 0) - 0.4, 1.4) * (dfl < 1.0) * (din > -1.0)
+            fs = gauss(dfl - si, 0.45) * ((ax % pitch) < dash) * inside_x * (py <= y1)
+            rel += 0.4 * fs
+            thr += fs
+    return rel, np.clip(dark, 0, 1), np.clip(thr, 0, 1)
 
 
 def value_noise(u, v, seed=0.0):
@@ -481,7 +525,18 @@ def build_piece(name, ps, objs, weld, out):
         img[y0p:y1p, x0p:x1p] = np.where(lin <= 0.0031308, lin * 12.92, 1.055 * lin ** (1 / 2.4) - 0.055)
         if surf:  # weave height from the tile's real size, so the threads keep one pitch on every panel
             hgt = weave_height(tu * w, tv * h, surf.get("weave", {}))
-            height[y0p:y1p, x0p:x1p] = hgt.reshape(hgt.shape[0] // ss, ss, hgt.shape[1] // ss, ss).mean(axis=(1, 3))
+            down = lambda a: a.reshape(a.shape[0] // ss, ss, a.shape[1] // ss, ss).mean(axis=(1, 3))
+            height[y0p:y1p, x0p:x1p] = down(hgt)
+            if rule.get("patches"):
+                st = surf.get("stitch", {})
+                rel, dk, th = (down(a) for a in patch_relief(px, py, rule, st))
+                height[y0p:y1p, x0p:x1p] += rel * st.get("depth", 1.0)
+                tile = img[y0p:y1p, x0p:x1p] * (1 - st.get("darken", 0.25) * 1.4 * dk)[..., None]
+                if st.get("thread") is not None:
+                    tw = th[..., None] * 0.85
+                    tile = tile * (1 - tw) + np.array(st["thread"])[None, None] * tw
+                img[y0p:y1p, x0p:x1p] = tile
+                print("md_garment: %s: %d patches" % (g, len(rule["patches"])))
     if surf and surf.get("stitch"):
         stitch_relief(objs, groups, img, height, res, side, surf["stitch"], weld)
     # Join the groups into one object and weld the seams the cloth tool sewed.
