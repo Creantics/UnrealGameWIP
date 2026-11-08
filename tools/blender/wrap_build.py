@@ -83,13 +83,17 @@ def main():
     ap.add_argument("--bin-sides", type=int, default=20, help="body sampling bins round the limb")
     ap.add_argument("--rows", type=int, default=6, help="rings per cm along the limb")
     ap.add_argument("--sides", type=int, default=72)
+    ap.add_argument("--keep-axis", action="store_true",
+                    help="use the given axis as is (a band round the torso: slice centroids there are lopsided and "
+                         "would tilt it)")
     a = ap.parse_args()
 
     body = np.array([l.split()[1:4] for l in open(a.body) if l.startswith("v ")], float)
     out, base, tbase = ["# wrap_build"], 1, 1
     for name, *nums in a.limb:
         p0, p1, (t0, t1) = np.array(nums[:3], float), np.array(nums[3:6], float), map(float, nums[6:])
-        p0, p1 = recentre(body, p0, p1, t0, t1, a.reach * 1.6)
+        if not a.keep_axis:
+            p0, p1 = recentre(body, p0, p1, t0, t1, a.reach * 1.6)
         length = np.linalg.norm(p1 - p0) * (t1 - t0)
         nt, na = max(8, int(length * a.rows)), a.sides
         # sample the body on a coarse grid (bins wider than its vertex spacing), then upsample to the tube's rings
