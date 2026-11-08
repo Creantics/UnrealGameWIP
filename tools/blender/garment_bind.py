@@ -9,7 +9,8 @@ BIND.json:
                          "smooth_gap": 0.01, "smooth_full": 0.05, "rigid": "foot_l", "limit": 8,
                          "legs": {"below": 0.92, "fade": 0.1, "blend": 0.04, "mid": 0.0, "k": 12, "yscale": 0.3,
                                   "fold": 0.5, "hold": 1}, "keep_below": 0.84,
-                         "free_below": {"z": 0.5, "fade": 0.1, "bone": "pelvis"}}}}
+                         "free_below": {"z": 0.5, "fade": 0.1, "bone": "pelvis"},
+                         "liner": {"mid": 0.0, "x": 0.02, "y": [-0.15, -0.05], "z": [0.56, 0.70], "offset": 0.0025}}}}
 
 Paths are read against the spec's folder. Each named piece is appended from the garments file and takes the weights of
 the nearest point on the LOD0 body's surface (Data Transfer, nearest face interpolated, as bind_r3 proved on Real3).
@@ -34,6 +35,12 @@ first (an under-layer variant cut where a closed outer layer always covers it; t
 above it, after the leg split and the relaxing: a loose hem below the knee that runtime cloth will move, so a posed
 review shows it hanging free from the hips instead of gathered round each shin by the per-leg weights.
 Then the weights are cleaned, limited to "limit" (8) bones a vertex and normalised.
+"liner" then joins a gusset copied from the body into the piece: the LOD0 faces with every vertex inside the box (rest
+metres: |x - "mid"| up to "x", y and z between the given pairs), "offset" metres out along the body's normals, with
+the body's own weights on each vertex unchanged (no transfer, no limit), all its UVs on the piece's UV at the vertex
+nearest its centre (plain cloth of the piece's colour). Where the body's own skinning parts a seam the cloth can't
+follow (a MetaHuman crotch midline is weighted left and right in a zigzag, so in a stride its vertices swing a few
+centimetres apart), the liner moves exactly as the skin under it does, so what shows through is cloth, not skin.
 
 Each piece leaves as OUT_DIR/EXPORT.fbx (the piece on the body armature, bind_r3's export settings) with
 EXPORT_BC.png (sRGB), EXPORT_N.png (DirectX, green flipped from md_garment's OpenGL map, for UE), EXPORT_N_gl.png
@@ -179,6 +186,57 @@ def leg_split(o, W, gnames, body, lg):
     log("%s: leg-split weights on %d vertices below z %.2f (mid x %.3f, blend %.0f mm, k %d, fold %.2f)"
         % (o.name, n, below, mid, blend * 1000, k, fold))
     return W / np.maximum(W.sum(1, keepdims=True), 1e-12), f
+
+def add_liner(o, lod0, lin):
+    """Join to o a copy of the body faces inside the liner box, pushed out along the body normals, with the body's
+    weights verbatim and one UV (the piece's, at its vertex nearest the liner's centre). Returns (faces, tris, max
+    influences)."""
+    mid, hx = float(lin.get("mid", 0.0)), float(lin.get("x", 0.02))
+    (y0, y1), (z0, z1) = lin["y"], lin["z"]
+    off = float(lin.get("offset", 0.0025))
+    BP = wverts(lod0)
+    nrm = np.empty(len(lod0.data.vertices) * 3)
+    lod0.data.vertices.foreach_get("normal", nrm)
+    M3 = np.array(lod0.matrix_world.to_3x3().inverted().transposed())
+    N = nrm.reshape(-1, 3) @ M3.T
+    N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-12)
+    inside = ((np.abs(BP[:, 0] - mid) <= hx) & (BP[:, 1] >= y0) & (BP[:, 1] <= y1) & (BP[:, 2] >= z0)
+              & (BP[:, 2] <= z1))
+    faces = [tuple(p.vertices) for p in lod0.data.polygons if all(inside[i] for i in p.vertices)]
+    if not faces:
+        log("WARNING: %s: the liner box holds no body faces; no liner" % o.name)
+        return 0, 0, 0
+    used = sorted({i for f in faces for i in f})
+    remap = {v: k for k, v in enumerate(used)}
+    P = BP[used] + N[used] * off
+    me = bpy.data.meshes.new(o.name + "_liner")
+    me.from_pydata(P.tolist(), [], [[remap[i] for i in f] for f in faces])
+    me.update()
+    lo = bpy.data.objects.new(o.name + "_liner", me)
+    bpy.context.scene.collection.objects.link(lo)
+    BW = read_weights(lod0)[used]
+    bn = [vg.name for vg in lod0.vertex_groups]
+    for gi in np.nonzero(BW.max(0) > 0)[0]:
+        vg = lo.vertex_groups.new(name=bn[int(gi)])
+        for k in np.nonzero(BW[:, gi] > 0)[0]:
+            vg.add([int(k)], float(BW[k, gi]), "REPLACE")
+    uvl = o.data.uv_layers.active
+    if uvl is not None:
+        GP = wverts(o)
+        near = int(np.argmin(np.linalg.norm(GP - P.mean(0), axis=1)))
+        lv = np.empty(len(o.data.loops), np.int64)
+        o.data.loops.foreach_get("vertex_index", lv)
+        uv = tuple(uvl.data[int(np.nonzero(lv == near)[0][0])].uv)
+        lu = me.uv_layers.new(name=uvl.name)
+        for d in lu.data:
+            d.uv = uv
+    for m in o.data.materials:
+        me.materials.append(m)
+    activate(o)
+    lo.select_set(True)
+    bpy.ops.object.join()
+    tris = sum(len(f) - 2 for f in faces)
+    return len(faces), tris, int((BW > 0).sum(1).max())
 
 
 def copy_textures(gdir, name, export, out):
@@ -338,6 +396,11 @@ def main():
             activate(o)
             bpy.ops.object.vertex_group_limit_total(group_select_mode="ALL", limit=int(ps.get("limit", 8)))
             bpy.ops.object.vertex_group_normalize_all(lock_active=False)
+        liner = None
+        if ps.get("liner"):
+            liner = add_liner(o, lod0, ps["liner"])
+            log("%s: liner of %d body faces (%d tris, up to %d bones a vertex, the body's own weights) joined"
+                % (name, *liner))
         # bones by weight, for the log
         Wf = read_weights(o)
         tot = Wf.sum(0)
@@ -361,7 +424,8 @@ def main():
         tris = sum(len(p.vertices) - 2 for p in o.data.polygons)
         report[export] = {"piece": name, "fbx": fbx, "tris": tris, "verts": len(o.data.vertices), "bones": len(top),
                           "top_bones": [(n, round(w, 3)) for n, w in top[:6]], "orphans_refilled": orphans,
-                          "smooth": n_smooth, "rigid": ps.get("rigid"), "textures": tex}
+                          "smooth": n_smooth, "rigid": ps.get("rigid"), "textures": tex,
+                          "liner_tris": liner[1] if liner else 0}
         log("WROTE %s: %d tris, %d verts, %d bones (%s), %d orphans refilled; textures %s"
             % (fbx, tris, len(o.data.vertices), len(top), ", ".join("%s %.2f" % kv for kv in top[:4]), orphans,
                sorted(tex)))
