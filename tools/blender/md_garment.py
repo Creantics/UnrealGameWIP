@@ -26,7 +26,8 @@ top, its lower edge a fold line with its own stitch), "stitch_in" (mm, default 4
 edge)}. With a "surface" the patch stands proud of the panel in the height (normal) with a shadow line round it and
 a dashed topstitch in the stitch thread; without one only its colour is painted. Patches assume the rule units are
 millimetres (a "box"). A group with no rule takes its own "color" or the piece's. A rule's "weave"
-replaces the piece's surface weave on that group ("kind": "smooth" for moulded rubber or metal, no grain).
+replaces the piece's surface weave on that group ("kind": "smooth" for moulded rubber or metal, no grain), and its
+"roughness" and "metallic" replace the piece's there (a buckle or a metal cuff on a webbing or leather piece).
 
 A piece's "surface" adds the base layer stack a texture painter lays under fabric: {"weave": {"pitch" (thread spacing,
 mm; keep it at 4 texels or more), "slub", "kind": plain | twill | leather | smooth}, "ao", "cavity", "edge" (how much AO, creases and crests shade the albedo),
@@ -288,7 +289,7 @@ def blur(a, r):
     return a
 
 
-def base_stack(o, name, ps, img, height, out):
+def base_stack(o, name, ps, img, height, out, rbase=None, metal=None):
     """The base layer stack a texture painter puts under every fabric: baked ambient occlusion multiplied in, curvature
     as cavity (creases darker, crests a touch lighter), a weave normal map and roughness that varies with the weave and
     the creases. Writes NAME_normal.png and NAME_orm.png (glTF packing: occlusion R, roughness G, metallic B) beside
@@ -331,9 +332,10 @@ def base_stack(o, name, ps, img, height, out):
     # Roughness: rougher in the thread gaps and creases, with slow mottling so a big panel doesn't read as one sheet.
     mott = blur(np.random.default_rng(7).standard_normal((res, res)), max(res // 64, 2))
     mott /= max(np.abs(mott).max(), 1e-6)
-    rough = (ps.get("roughness", 0.8) + sf.get("rough_weave", 0.08) * (1 - height) + 0.06 * np.maximum(-curv, 0)
+    r0 = ps.get("roughness", 0.8) if rbase is None else rbase
+    rough = (r0 + sf.get("rough_weave", 0.08) * (1 - height) + 0.06 * np.maximum(-curv, 0)
              + sf.get("rough_mottle", 0.05) * mott)
-    orm = np.dstack([1 - 0.5 * (1 - ao), np.clip(rough, 0.05, 1), np.zeros_like(rough)])
+    orm = np.dstack([1 - 0.5 * (1 - ao), np.clip(rough, 0.05, 1), np.zeros_like(rough) if metal is None else metal])
     im_alb = save_image(name + "_albedo", np.clip(alb, 0, 1), out)
     im_nrm = save_image(name + "_normal", nrm * 0.5 + 0.5, out, colour=False)
     im_orm = save_image(name + "_orm", orm, out, colour=False)
@@ -502,6 +504,8 @@ def build_piece(name, ps, objs, weld, out):
     img[:] = base
     surf = ps.get("surface")
     height = np.zeros((res, res)) if surf else None
+    rbase = np.full((res, res), float(ps.get("roughness", 0.8))) if surf else None  # per-group roughness, metallic
+    metal = np.zeros((res, res)) if surf else None
     for i, (ox, oy) in zip(info, pos):
         g, (w, h) = i["g"], i["size"]
         me = objs[g].data
@@ -529,6 +533,10 @@ def build_piece(name, ps, objs, weld, out):
         img[y0p:y1p, x0p:x1p] = np.where(lin <= 0.0031308, lin * 12.92, 1.055 * lin ** (1 / 2.4) - 0.055)
         if surf:  # weave height from the tile's real size, so the threads keep one pitch on every panel
             hgt = weave_height(tu * w, tv * h, rule.get("weave", surf.get("weave", {})))
+            if "roughness" in rule:
+                rbase[y0p:y1p, x0p:x1p] = rule["roughness"]
+            if "metallic" in rule:
+                metal[y0p:y1p, x0p:x1p] = rule["metallic"]
             down = lambda a: a.reshape(a.shape[0] // ss, ss, a.shape[1] // ss, ss).mean(axis=(1, 3))
             height[y0p:y1p, x0p:x1p] = down(hgt)
             ribs = [s_ for s_ in rule.get("strips", []) if s_.get("rib")]
@@ -586,7 +594,7 @@ def build_piece(name, ps, objs, weld, out):
     o.data.materials.clear()
     o.data.materials.append(mat)
     if surf:
-        base_stack(o, name, ps, img, height, out)
+        base_stack(o, name, ps, img, height, out, rbase, metal)
     # Game geometry after the bakes, which want the single sheet: fewer faces, then the cloth's thickness, so a hem
     # or a tail end shows a turned edge instead of a paper-thin card.
     if ps.get("decimate"):

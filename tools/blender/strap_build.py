@@ -28,10 +28,11 @@ leg where the thighs touch (its inner side then runs along the crease).
 A strap with "over_straps": [names] also goes round those straps (built earlier in the list), so where the two cross
 it lies on top and the other runs under it.
 A pouch (a holster, a pocket on a strap) is a closed box hung on a strap at the strap point nearest "near": "size" is
-its width along the strap and its height down (world -Z, square to the strap's outward direction), its top "drop"
-below the strap's centre line, its width narrowing to "taper" of the top at the bottom; the inner face is pushed out
-until it clears everything under it by "gap", and the outer face stands "depth" off the inner one with its rim pulled
-in by "round" so the box reads stitched rather than cut."""
+its width along the strap and its height down (world -Z, or "down": [x, y, z] such as a thigh's axis, square to the
+strap's outward direction), its top "drop" below the strap's centre line, its width narrowing to "taper" of the top
+at the bottom; the inner face is pushed out until it clears everything under it by "gap", and the outer face stands
+"depth" off the inner one with its rim pulled in by "round" so the box reads stitched rather than cut. A pouch also
+clears the pouches before it in the list (a holster stands off the hanger that carries it)."""
 import json
 import os
 import sys
@@ -192,7 +193,8 @@ for pc in SP.get("pouches", []):
     out = np.cross(t, n)
     if out @ (p - mid.mean(0)) < 0:
         out = -out
-    down = np.array([0.0, 0.0, -1.0]) + out * out[2]
+    dn = np.array(pc.get("down", [0.0, 0.0, -1.0]), float)
+    down = dn - out * (dn @ out)
     down /= np.linalg.norm(down)
     side = np.cross(out, down)
     (W, Hh), dep = pc.get("size", [0.07, 0.18]), pc.get("depth", 0.035)
@@ -242,6 +244,7 @@ for pc in SP.get("pouches", []):
     uvs.extend(zip(arc, np.full(L, Hh + 0.02 + dep)))
     faces += [[o + k, o + L + k, o + L + k + 1, o + k + 1] for k in range(L - 1)]
     objs.append((pc["name"], np.array(verts), faces, uvs))
+    Q = np.vstack([Q, np.array(verts)])
     print("strap_build: %s on %s at %s, pushed out up to %.3f m" % (pc["name"], pc["strap"], np.round(p, 3), s.max()))
 
 lines, vb = ["# strap_build, metres, Z up, UVs in metres"], 1
