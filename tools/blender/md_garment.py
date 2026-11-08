@@ -25,10 +25,11 @@ like a strip unless "mirror": false), "color" (optional; else the strips show th
 top, its lower edge a fold line with its own stitch), "stitch_in" (mm, default 4: the topstitch line inside the
 edge)}. With a "surface" the patch stands proud of the panel in the height (normal) with a shadow line round it and
 a dashed topstitch in the stitch thread; without one only its colour is painted. Patches assume the rule units are
-millimetres (a "box"). A group with no rule takes its own "color" or the piece's.
+millimetres (a "box"). A group with no rule takes its own "color" or the piece's. A rule's "weave"
+replaces the piece's surface weave on that group ("kind": "smooth" for moulded rubber or metal, no grain).
 
 A piece's "surface" adds the base layer stack a texture painter lays under fabric: {"weave": {"pitch" (thread spacing,
-mm; keep it at 4 texels or more), "slub", "kind": plain | twill | leather}, "ao", "cavity", "edge" (how much AO, creases and crests shade the albedo),
+mm; keep it at 4 texels or more), "slub", "kind": plain | twill | leather | smooth}, "ao", "cavity", "edge" (how much AO, creases and crests shade the albedo),
 "normal" (weave normal strength), "ao_distance" (m), "rough_weave", "rough_mottle", "samples", "stitch": {"hem",
 "topstitch", "stitch", "pitch" (mm)}}. "stitch" puts the seams (a pressed groove, the allowance and a topstitch) and
 the hems (a turned band, a rolled edge and its stitch line) into the height that drives the normal. It bakes ambient
@@ -185,6 +186,8 @@ def weave_height(xm, ym, wv):
     p = wv.get("pitch", 2.5) / 1000.0
     u, v = xm / p, ym / p
     kind = wv.get("kind", "plain")
+    if kind == "smooth":  # moulded rubber or metal: no grain, only a faint broad mottle
+        return 0.5 + 0.12 * (value_noise(u * 0.15, v * 0.15, 4.0) - 0.5)
     if kind == "leather":
         cells = value_noise(u, v, 1.0) * 0.65 + value_noise(u * 2.7, v * 2.7, 2.0) * 0.35
         crease = np.abs(value_noise(u * 0.35, v * 0.35, 3.0) - 0.5) * 2.0
@@ -525,7 +528,7 @@ def build_piece(name, ps, objs, weld, out):
         lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4).mean(axis=(1, 3))
         img[y0p:y1p, x0p:x1p] = np.where(lin <= 0.0031308, lin * 12.92, 1.055 * lin ** (1 / 2.4) - 0.055)
         if surf:  # weave height from the tile's real size, so the threads keep one pitch on every panel
-            hgt = weave_height(tu * w, tv * h, surf.get("weave", {}))
+            hgt = weave_height(tu * w, tv * h, rule.get("weave", surf.get("weave", {})))
             down = lambda a: a.reshape(a.shape[0] // ss, ss, a.shape[1] // ss, ss).mean(axis=(1, 3))
             height[y0p:y1p, x0p:x1p] = down(hgt)
             ribs = [s_ for s_ in rule.get("strips", []) if s_.get("rib")]
