@@ -19,16 +19,18 @@ lands on top of the ear root, and bows outward wherever it comes nearer the head
 and any UCX_ hulls are removed (the lenses wait for a translucent master); the rest is decimated to at most "tris"
 triangles in one material. Options: tilt (deg, 4), lens_eye (mm, -2), pad_gap (1), front_gap (1.5), temple_gap (1.5),
 temple_start (mm behind the lenses' back where the temples start, 9), tris (11000), textures (folder holding *_BC.png,
-*_N.png (DirectX) and *_ORM.png; default the glasses FBX's folder).
+*_N.png (DirectX) and *_ORM.png; default the glasses FBX's folder), tint (sRGB "r,g,b": the non-metal frame parts take
+this colour, keeping the source's light and dark; the metal hinges keep theirs).
 
 mask: a shell over the face from the forehead to under the chin, "half_width" mm each side at its widest, its top "top"
 mm above the eyes, its bottom "chin_under" mm below where the chin turns under. The sheet starts "standoff" mm off the
-skin, is smoothed "smooth" times (the features soften to a faint nose and lips, the eye hollows fill), is held at least
+skin, is smoothed "smooth" times (the features soften to a broad nose ridge, the lips and eye hollows fill), is held at least
 "min_standoff" mm off the skin and the lashes everywhere and at most "max_off" mm (along forward) near its edge, then
 solidified "shell" mm outward with a closed, flat-shaded rim. Planar UVs from the front and a procedural
-cracked-porcelain set. Options: half_width (68), top (75), chin_under (2), standoff (4.5), min_standoff (3.0),
-max_off (8), shell (3.0), smooth (60), spacing (3.5 mm), tex (2048), seed (3), crack (0..1, how much of the fine crack
-net shows, 0.55), colour (sRGB "r,g,b", 0.86,0.84,0.80).
+cracked-porcelain set: a clean glaze with "cracks" long cracks run in from the rim (jagged, with short branches) and a
+patchy fine net, mostly near them. Options: half_width (68), top (75), chin_under (2), standoff (4.5),
+min_standoff (3.5), max_off (8), shell (3.0), smooth (250), spacing (3.5 mm), tex (2048), seed (3), cracks (4),
+crack (0..1, how much of the fine net shows away from the cracks, 0.25), colour (sRGB "r,g,b", 0.86,0.84,0.80).
 
 Writes OUT_DIR/NAME.fbx (the prop on the body armature, bind_r3's proven export settings), NAME_BC.png, NAME_N.png
 (DirectX, for UE), NAME_N_gl.png (OpenGL, for the .blend), NAME_ORM.png (R occlusion, G roughness, B metal),
@@ -558,6 +560,16 @@ def run_glasses(head, gl_fbx, out, opt):
     if None in files.values():
         sys.exit("head_prop: textures missing in %s: %s" % (tdir, files))
     bc, nx, orm = (load_png(files[k]) for k in ("_BC", "_N", "_ORM"))
+    if opt.get("tint"):
+        tint = np.array([float(x) for x in opt["tint"].split(",")])
+        frame = orm[..., 2] < 0.5
+        lum = bc[..., :3].mean(2)
+        used = frame & (lum > 0.05)
+        ref = float(np.median(lum[used])) if used.any() else 1.0
+        shade = np.clip(lum / max(ref, 1e-3), 0.6, 1.4)
+        bc = bc.copy()
+        bc[..., :3] = np.where(frame[..., None], tint[None, None] * shade[..., None], bc[..., :3])
+        log("glasses: non-metal frame tinted %s (source median %.3f), %.0f %% of the map" % (tint, ref, 100 * frame.mean()))
     ngl = nx.copy()
     ngl[..., 1] = 1.0 - ngl[..., 1]
     im_bc = save_png(os.path.join(out, name + "_BC.png"), bc, True)
@@ -614,23 +626,67 @@ def voronoi_edge(X, Y, cell, rng):
     return (d2 - d1) * cell
 
 
-def porcelain_maps(res, side_mm, seed, crack, colour):
-    """Cracked porcelain: a glazed off-white with slow warm mottling, a few long cracks and a patchy fine net, grime
-    in the cracks. Returns BC (sRGB), normal (OpenGL, +Y up the rows) and ORM."""
+def crack_paths(res, side_mm, rim_mm, n, rng):
+    """n long cracks run in from the rim (points in texture mm, x along the columns, y along the rows): jagged walks of
+    1.2 mm steps, 45-95 mm long, tapering, with short side branches. Returns the crack core, a 2 mm halo and a 6 mm
+    'near' field (each 0..1) and the segment count."""
+    px = res / side_mm
+    core, halo, near = np.zeros((res, res)), np.zeros((res, res)), np.zeros((res, res))
+    cen = rim_mm.mean(0)
+    segs = []
+
+    def walk(p, ang, length, w0, depth):
+        steps = max(int(length / 1.2), 2)
+        da = 0.0
+        for i in range(steps):
+            da = 0.6 * da + rng.normal(0, 0.35)
+            ang += 0.5 * da
+            q = p + 1.2 * np.array([math.cos(ang), math.sin(ang)])
+            w = w0 * (1 - 0.7 * i / steps)
+            segs.append((p, q, w))
+            if depth < 2 and i > 3 and rng.random() < 0.05:
+                walk(q, ang + rng.choice([-1, 1]) * rng.uniform(0.5, 0.9), rng.uniform(8, 22), w * 0.6, depth + 1)
+            p = q
+    off = rng.random()
+    for i in range(n):
+        k = int(((off + (i + rng.uniform(-0.25, 0.25)) / max(n, 1)) % 1.0) * len(rim_mm))
+        p = rim_mm[k].astype(float)
+        to_c = cen - p
+        ang = math.atan2(to_c[1], to_c[0]) + rng.uniform(-0.5, 0.5)
+        walk(p, ang, rng.uniform(45, 95), rng.uniform(0.28, 0.40), 0)
+    r = 12.0
+    for p, q, w in segs:
+        lo = np.floor((np.minimum(p, q) - r) * px).astype(int).clip(0, res - 1)
+        hi = np.ceil((np.maximum(p, q) + r) * px).astype(int).clip(0, res - 1)
+        xs = (np.arange(lo[0], hi[0] + 1) + 0.5) / px
+        ys = (np.arange(lo[1], hi[1] + 1) + 0.5) / px
+        X, Y = np.meshgrid(xs, ys)
+        d_ = q - p
+        tt = np.clip(((X - p[0]) * d_[0] + (Y - p[1]) * d_[1]) / max(float(d_ @ d_), 1e-9), 0, 1)
+        d = np.hypot(X - p[0] - tt * d_[0], Y - p[1] - tt * d_[1])
+        sl = (slice(lo[1], hi[1] + 1), slice(lo[0], hi[0] + 1))
+        core[sl] = np.maximum(core[sl], np.exp(-(d / w) ** 2))
+        halo[sl] = np.maximum(halo[sl], np.exp(-(d / 2.0) ** 2))
+        near[sl] = np.maximum(near[sl], np.exp(-(d / 6.0) ** 2))
+    return core, halo, near, len(segs)
+
+
+def porcelain_maps(res, side_mm, seed, crack, colour, rim_mm, n_cracks):
+    """Cracked porcelain: a glazed off-white with slow warm mottling, a few long cracks in from the rim and a patchy
+    fine net, mostly near them, grime in the cracks. Returns BC (sRGB), normal (OpenGL, +Y up the rows) and ORM."""
     rng = np.random.default_rng(seed)
     x = (np.arange(res) + 0.5) / res * side_mm
     X, Y = np.meshgrid(x, x)
-    wx = (fbm(X, Y, 14.0, rng) - 0.5) * 6.0
-    wy = (fbm(X, Y, 14.0, rng) - 0.5) * 6.0
-    major = voronoi_edge(X + wx, Y + wy, 26.0, rng)
+    core, near_c, near6, nseg = crack_paths(res, side_mm, rim_mm, n_cracks, rng)
+    log("mask: %d cracks from the rim, %d segments" % (n_cracks, nseg))
     fx = (fbm(X, Y, 5.0, rng, 3) - 0.5) * 2.0
     fy = (fbm(X, Y, 5.0, rng, 3) - 0.5) * 2.0
     fine = voronoi_edge(X + fx, Y + fy, 7.0, rng)
-    show_major = np.clip((fbm(X, Y, 45.0, rng, 2) - 0.38) / 0.12, 0, 1)
-    show_fine = np.clip((fbm(X, Y, 30.0, rng, 3) - (0.72 - 0.4 * crack)) / 0.1, 0, 1)
-    line_major = np.exp(-(major / (2 * 0.22)) ** 2) * show_major
-    line_fine = np.exp(-(fine / (2 * 0.12)) ** 2) * show_fine * 0.8
-    halo = np.exp(-(major / (2 * 1.2)) ** 2) * show_major * 0.25
+    patch = np.clip((fbm(X, Y, 30.0, rng, 3) - (0.72 - 0.4 * crack)) / 0.1, 0, 1)
+    show_fine = np.maximum(patch, 0.7 * near6)
+    line_major = core
+    line_fine = np.exp(-(fine / (2 * 0.12)) ** 2) * show_fine * 0.6
+    halo = near_c * 0.25
     lines = np.clip(line_major + line_fine, 0, 1)
     mott = fbm(X, Y, 40.0, rng, 3) - 0.5
     base = np.array(colour, float)[None, None] * (1 + 0.04 * mott[..., None])
@@ -746,7 +802,7 @@ def run_mask(head, out, opt):
     ea, eb = np.concatenate([nbr_a, nbr_b]), np.concatenate([nbr_b, nbr_a])
     deg = np.bincount(ea, minlength=nV).astype(float)
     standoff = fopt(opt, "standoff", 4.5) * MM
-    min_off = fopt(opt, "min_standoff", 3.0) * MM
+    min_off = fopt(opt, "min_standoff", 3.5) * MM
     max_off = fopt(opt, "max_off", 8) * MM
     h = hd + standoff
     # the lashes as a floor: the sheet stays min_off in front of the most forward lash within 3 mm of each point
@@ -770,7 +826,7 @@ def run_mask(head, out, opt):
         hh = np.maximum(hh, lash_floor)
         cap = hd + max_off  # the edge band is drawn back towards the face
         return np.where(edge_band > 0, np.minimum(hh, cap * edge_band + hh * (1 - edge_band)), hh)
-    n_smooth = int(opt.get("smooth", 60))
+    n_smooth = int(opt.get("smooth", 250))
     for it in range(n_smooth):
         s = np.zeros(nV)
         np.add.at(s, ea, h[eb])
@@ -823,7 +879,9 @@ def run_mask(head, out, opt):
     # porcelain set
     res = int(opt.get("tex", 2048))
     col = [float(x) for x in opt.get("colour", "0.86,0.84,0.80").split(",")]
-    bc, n_gl, orm = porcelain_maps(res, side / MM, int(opt.get("seed", 3)), fopt(opt, "crack", 0.55), col)
+    rim_mm = (ol - c2) / MM + side / MM / 2  # the outline in texture mm
+    bc, n_gl, orm = porcelain_maps(res, side / MM, int(opt.get("seed", 3)), fopt(opt, "crack", 0.25), col, rim_mm,
+                                   int(opt.get("cracks", 4)))
     n_dx = n_gl.copy()
     n_dx[..., 1] = 1.0 - n_dx[..., 1]
     im_bc = save_png(os.path.join(out, name + "_BC.png"), bc, True)

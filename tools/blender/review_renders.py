@@ -9,7 +9,8 @@ Every piece is imported with its own armature copy; the body armature is posed a
 each piece's) follows it bone for bone (Copy Transforms on the bones they share; the facial bones ride the head), so
 the pieces deform as they would in the game. A piece finds its textures next to its FBX: NAME_BC.png, NAME_N_gl.png
 (else NAME_N.png, read as DirectX and flipped) and NAME_ORM.png. The face keeps its skin, eye, mouth and lash sections
-in plain colours and drops the hidden and the see-through ones, told apart by shape (face_roles), not by slot name.
+in plain colours and drops the hidden and the see-through ones and the lash cards (lashes=1 keeps them), told apart
+by shape (face_roles), not by slot name.
 
 rest: front, side (the wearer's left), back and three-quarter (front left), the whole figure.
 walk: four frames of a stride (left contact, passing, right contact, passing), front three-quarter and side.
@@ -188,10 +189,12 @@ if any(e is None for e in eyes):
 roles = face_roles(face, *eyes)
 log("face sections (slot name: role) " + ", ".join(
     "%s: %s" % (fm.materials[i].name if i < len(fm.materials) and fm.materials[i] else i, r) for i, r in sorted(roles.items())))
-drop_slots = [i for i in range(len(fm.materials)) if roles.get(i, "cover") == "cover"]
+# the lashes are opacity-mapped cards: without their mask they render as solid tufts, so they go unless lashes=1
+dropped = ("cover",) if opt.get("lashes") == "1" else ("cover", "lash")
+drop_slots = [i for i in range(len(fm.materials)) if roles.get(i, "cover") in dropped]
 for i in range(len(fm.materials)):
     r = roles.get(i, "cover")
-    if r != "cover":
+    if r not in dropped:
         fm.materials[i] = SKIN if r == "skin" else plain("f_%s_%d" % (r, i), *cols[r])
 if drop_slots:
     import bmesh
