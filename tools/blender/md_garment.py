@@ -23,14 +23,16 @@ units. A group with no rule takes its own "color" or the piece's.
 
 A piece's "surface" adds the base layer stack a texture painter lays under fabric: {"weave": {"pitch" (thread spacing,
 mm; keep it at 4 texels or more), "slub"}, "ao", "cavity", "edge" (how much AO, creases and crests shade the albedo),
-"normal" (weave normal strength), "ao_distance" (m), "rough_weave", "rough_mottle", "samples"}. It bakes ambient
+"normal" (weave normal strength), "ao_distance" (m), "rough_weave", "rough_mottle", "samples", "stitch": {"hem",
+"topstitch", "stitch", "pitch" (mm)}}. "stitch" puts the seams (a pressed groove, the allowance and a topstitch) and
+the hems (a turned band, a rolled edge and its stitch line) into the height that drives the normal. It bakes ambient
 occlusion and curvature in Cycles, folds them into the albedo, and writes NAME_normal.png and NAME_orm.png (occlusion,
 roughness, metallic) wired into the material, so a glTF export carries all three. "occluders" (top level) lists glTF
 files, or {"file", "objects": [names]}, that shade the AO bake (the body under the garment) and are not kept. After the
 bakes, a piece's "decimate" (face ratio) thins the mesh and its "thickness" (m) solidifies it with a closed rim, so
 hems and cut ends read as cloth with a turned edge. "thickness_offset" picks the side it grows to: 0 about the sheet,
 1 outward, -1 inward (an under layer grows in and an over layer out, so the gap between them is kept). Each piece is written to OUT_DIR/NAME_albedo.png and kept as object NAME in OUT_DIR/garments.blend, with one
-double-sided material using that texture; shell_bind.py --keep-material then skins it to the body.
+double-sided material using that texture; garment_bind.py (or shell_bind.py --keep-material) then skins it to the body.
 """
 import json
 import os
@@ -287,6 +289,110 @@ def base_stack(o, name, ps, img, height, out):
           % (name, sf.get("weave", {}).get("pitch", 2.5), rough.min(), rough.max(), shade.min(), shade.max()))
 
 
+def stitch_relief(objs, groups, img, height, res, side, st, weld):
+    """Seams and hems drawn into the height (so the normal map) and the albedo, from the pieces' own outlines in
+    atlas space. A boundary edge whose two ends meet another piece's boundary (within the weld) is a seam: a pressed
+    groove on the line with the seam allowance raised beside it, and a topstitch "topstitch" mm in. Any other
+    boundary edge is a hem: a turned band "hem" mm wide standing proud, a rolled edge, and a stitch line near the
+    band's inner edge. Stitches are dashes "stitch" mm long at "pitch" mm. Widths never go below 1.5 texels."""
+    from mathutils import kdtree
+    px_mm = res / (side * 1000.0)  # texels per millimetre
+    hem_mm, top_mm = st.get("hem", 12.0), st.get("topstitch", 6.0)
+    dash, pitch = st.get("stitch", 3.0), st.get("pitch", 4.0)
+    groove = max(st.get("groove", 0.8), 1.5 / px_mm)
+    thread_rgb = st.get("thread")
+    bnd = []  # (group, vert index, co)
+    edges = []  # (group, a uv, b uv, inward uv dir, va, vb)
+    for g in groups:
+        bm = bmesh.new()
+        bm.from_mesh(objs[g].data)
+        uvl = bm.loops.layers.uv.active
+        for e in bm.edges:
+            if not e.is_boundary or not e.link_loops:
+                continue
+            lp = e.link_loops[0]
+            a, b = np.array(lp[uvl].uv), np.array(lp.link_loop_next[uvl].uv)
+            fc = np.mean([np.array(l[uvl].uv) for l in lp.face.loops], axis=0)
+            d = b - a
+            nrm = np.array([-d[1], d[0]])
+            if nrm @ (fc - a) < 0:
+                nrm = -nrm
+            nrm /= max(np.linalg.norm(nrm), 1e-12)
+            edges.append((g, a, b, nrm, lp.vert.index, lp.link_loop_next.vert.index))
+        for v in bm.verts:
+            if v.is_boundary:
+                bnd.append((g, v.index, v.co.copy()))
+        bm.free()
+    kd = kdtree.KDTree(len(bnd))
+    for k, (_, _, co) in enumerate(bnd):
+        kd.insert(co, k)
+    kd.balance()
+    where = {(g, i): co for g, i, co in bnd}
+
+    def sewn(g, i):
+        co = where[(g, i)]
+        return any(bnd[k][:2] != (g, i) for _, k, _ in kd.find_range(co, weld * 1.5))
+    dmin = np.full((res, res), np.inf)
+    s_al = np.zeros((res, res))
+    kind = np.zeros((res, res), np.int8)  # 1 seam, 2 hem
+    band = (max(hem_mm, top_mm) + 3.0) * px_mm
+    n_seam = n_hem = 0
+    for g, a, b, nrm, va, vb in edges:
+        is_seam = sewn(g, va) and sewn(g, vb)
+        n_seam += is_seam
+        n_hem += not is_seam
+        A, B = a * res, b * res
+        lo = np.floor(np.minimum(A, B) - band).astype(int)
+        hi = np.ceil(np.maximum(A, B) + band).astype(int)
+        x0, y0 = max(lo[0], 0), max(lo[1], 0)
+        x1, y1 = min(hi[0], res), min(hi[1], res)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        xs, ys = np.meshgrid(np.arange(x0, x1) + 0.5, np.arange(y0, y1) + 0.5)
+        ab = B - A
+        L = max(np.linalg.norm(ab), 1e-9)
+        t = ((xs - A[0]) * ab[0] + (ys - A[1]) * ab[1]) / (L * L)
+        d = ((xs - A[0]) * nrm[0] + (ys - A[1]) * nrm[1])  # texels, positive inside the piece
+        ok = (t >= -0.02) & (t <= 1.02) & (d >= -1.0) & (d <= band)
+        cur = dmin[y0:y1, x0:x1]
+        better = ok & (d < cur)
+        cur[better] = d[better]
+        # texels along the edge's own line, so the dashes run on unbroken across the many short edges of one hem
+        s_al[y0:y1, x0:x1][better] = (t * L + (A @ ab) / L)[better]
+        kind[y0:y1, x0:x1][better] = 1 if is_seam else 2
+    d_mm = np.where(np.isfinite(dmin), dmin / px_mm, np.inf)
+    s_mm = s_al / px_mm
+    on_dash = (s_mm % pitch) < dash
+    gauss = lambda x, w: np.exp(-(x / w) ** 2)
+    relief = np.zeros((res, res))
+    dark = np.zeros((res, res))
+    thread = np.zeros((res, res))
+    seam, hem = kind == 1, kind == 2
+    dm = np.where(np.isfinite(d_mm), d_mm, 1e9)
+    # seam: the pressed line, the allowance under the fabric beside it, a topstitch
+    relief += seam * (-0.7 * gauss(dm, groove * 1.2) + 0.25 * np.clip((dm - groove) / 2.0, 0, 1)
+                      * np.clip((top_mm + 3 - dm) / 2.0, 0, 1))
+    dark += seam * 0.35 * gauss(dm, groove * 1.5)
+    ts = gauss(dm - top_mm, groove * 0.6) * on_dash
+    relief += seam * (0.45 * ts - 0.3 * gauss(dm - top_mm, groove) * ~on_dash)
+    thread += seam * ts
+    # hem: the turned band, its rolled edge, the stitch near the band's inner edge
+    band_up = np.clip(dm / 1.5, 0, 1) * np.clip((hem_mm - dm) / 1.5, 0, 1)
+    relief += hem * (0.35 * band_up - 0.4 * gauss(dm, groove))
+    hs = gauss(dm - (hem_mm - 3.0), groove * 0.6) * on_dash
+    relief += hem * (0.45 * hs - 0.3 * gauss(dm - (hem_mm - 3.0), groove) * ~on_dash)
+    thread += hem * hs
+    dark += hem * 0.2 * gauss(dm - hem_mm, groove * 1.5)
+    height += relief * st.get("depth", 1.0)
+    shade = 1 - st.get("darken", 0.25) * np.clip(dark, 0, 1)
+    img *= shade[..., None]
+    if thread_rgb is not None:
+        tw = np.clip(thread, 0, 1)[..., None] * 0.85
+        img[:] = img * (1 - tw) + np.array(thread_rgb)[None, None] * tw
+    print("md_garment: stitch relief: %d seam edges, %d hem edges, %.2f texels/mm, groove %.2f mm"
+          % (n_seam, n_hem, px_mm, groove))
+
+
 def build_piece(name, ps, objs, weld, out):
     groups = [g for g in ps["groups"] if g in objs]
     missing = set(ps["groups"]) - set(groups)
@@ -351,6 +457,8 @@ def build_piece(name, ps, objs, weld, out):
         if surf:  # weave height from the tile's real size, so the threads keep one pitch on every panel
             hgt = weave_height(tu * w, tv * h, surf.get("weave", {}))
             height[y0p:y1p, x0p:x1p] = hgt.reshape(hgt.shape[0] // ss, ss, hgt.shape[1] // ss, ss).mean(axis=(1, 3))
+    if surf and surf.get("stitch"):
+        stitch_relief(objs, groups, img, height, res, side, surf["stitch"], weld)
     # Join the groups into one object and weld the seams the cloth tool sewed.
     bpy.ops.object.select_all(action="DESELECT")
     for g in groups:
