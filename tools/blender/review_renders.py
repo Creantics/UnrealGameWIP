@@ -294,13 +294,15 @@ def walk(phase):
 def turn(step):
     reset()
     k = 1.0 if step == 0 else 0.6
+    # the legs swing about the rest pose's left axis before the pelvis turns (as in walk), so the swing stays pure
+    # flexion; swinging after a 35 deg pelvis turn tipped the thighs sideways and drove one thigh into the other
+    swing("thigh_l", 14 * k, "calf_l")
+    swing("calf_l", -18 * k, "foot_l")
+    swing("thigh_r", -8 * k, "calf_r")
     rot("pelvis", 35 * k, up)
     rot("spine_01", 8 * k, up)
     rot("spine_03", 12 * k, up)
     rot("head", 10 * k, up)
-    swing("thigh_l", 14 * k, "calf_l")
-    swing("calf_l", -18 * k, "foot_l")
-    swing("thigh_r", -8 * k, "calf_r")
 
 
 # -- the stage ----------------------------------------------------------------------------------------------------------
