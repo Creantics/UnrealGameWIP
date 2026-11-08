@@ -7,7 +7,8 @@ BIND.json:
     {"body": "mh_body.fbx", "garments": "md_out/garments.blend",
      "pieces": {"NAME": {"export": "SK_Third_UnderRobe", "drop": ["arm"], "side": "l", "smooth": 12,
                          "smooth_gap": 0.01, "smooth_full": 0.05, "rigid": "foot_l", "limit": 8,
-                         "legs": {"below": 0.92, "fade": 0.1, "blend": 0.04, "mid": 0.0}, "keep_below": 0.84}}}
+                         "legs": {"below": 0.92, "fade": 0.1, "blend": 0.04, "mid": 0.0, "k": 12, "yscale": 0.3,
+                                  "fold": 0.5, "hold": 1}, "keep_below": 0.84}}}
 
 Paths are read against the spec's folder. Each named piece is appended from the garments file and takes the weights of
 the nearest point on the LOD0 body's surface (Data Transfer, nearest face interpolated, as bind_r3 proved on Real3).
@@ -20,7 +21,13 @@ puts the whole piece on one bone (a boot shaft's stiff collar: no; a buckle, a h
 over both legs: below "below" (rest height, metres; faded in over "fade" metres downwards) each vertex takes the
 weights of the nearest body vertex on its own side of the midline x = "mid", blended across the midline over
 "blend" metres either side, so each half of the skirt follows its own leg through a stride instead of the nearest
-surface flipping between the legs at the centre. "keep_below" deletes the piece's vertices above that rest height
+surface flipping between the legs at the centre. With "k" above 1 a vertex averages its k nearest body vertices on
+that side (inverse distance), measured with the depth axis y scaled by "yscale", so two layers of a wrap lying over
+each other a centimetre or two apart take the same weights and move together instead of crossing. "fold" moves that
+share of the lower-leg weights (calf, foot, ball) up to the same side's thigh, so a long hem swings with the thigh
+instead of shearing round the bent knee. "hold" 1 keeps the split weights out of the "smooth" relaxing (faded with
+the split), since relaxing over each panel's own mesh would part two layers again at their edges; "yscale" 0 makes
+the split weights a function of x and z alone. "keep_below" deletes the piece's vertices above that rest height
 first (an under-layer variant cut where a closed outer layer always covers it; the full piece stays its own export).
 Then the weights are cleaned, limited to "limit" (8) bones a vertex and normalised.
 
@@ -109,10 +116,14 @@ def relax(W, a, b, deg, alpha, iters):
 
 
 def leg_split(o, W, gnames, body, lg):
-    """Skirt weights below lg["below"]: each vertex takes the nearest body vertex's weights on its own side of the
-    midline, blended across it; faded in from the nearest-surface weights W over lg["fade"] metres downwards."""
+    """Skirt weights below lg["below"]: each vertex takes the weights of the nearest body vertex (or the inverse-distance
+    mean of the lg["k"] nearest, depth scaled by lg["yscale"]) on its own side of the midline, blended across it, with
+    lg["fold"] of the lower-leg weights moved to the thigh; faded in from the nearest-surface weights W over
+    lg["fade"] metres downwards."""
     below, fade = float(lg.get("below", 0.92)), float(lg.get("fade", 0.1))
     blend, mid = float(lg.get("blend", 0.04)), float(lg.get("mid", 0.0))
+    k, fold = max(1, int(lg.get("k", 1))), float(lg.get("fold", 0.0))
+    S = np.array([1.0, float(lg.get("yscale", 1.0)), 1.0])
     BW = read_weights(body)
     bnames = [vg.name for vg in body.vertex_groups]
     col = {n: i for i, n in enumerate(gnames)}
@@ -132,24 +143,38 @@ def leg_split(o, W, gnames, body, lg):
     for side, sel in (("l", zone & (BP[:, 0] > mid)), ("r", zone & (BP[:, 0] < mid))):
         idx = np.nonzero(sel)[0]
         kd = kdtree.KDTree(len(idx))
-        for k, i in enumerate(idx):
-            kd.insert(BP[i], int(i))
+        for i in idx:
+            kd.insert(BP[i] * S, int(i))
         kd.balance()
         trees[side] = kd
     f = np.clip((below - P[:, 2]) / max(fade, 1e-6), 0, 1)
     f = f * f * (3 - 2 * f)
     t = np.clip((P[:, 0] - mid) / max(blend, 1e-6) * 0.5 + 0.5, 0, 1)  # 1 = the wearer's left (+x)
     t = t * t * (3 - 2 * t)
+    lower = {s: [col[g] for g in gnames if g.endswith("_" + s) and g.startswith(("calf", "foot", "ball"))]
+             for s in "lr"}
+
+    def near(side, p):
+        if k == 1:
+            return Wb[trees[side].find(p)[1]]
+        hits = trees[side].find_n(p, k)
+        d = np.array([h[2] for h in hits])
+        w = 1.0 / (d + 0.01) ** 2
+        return (w[:, None] * Wb[[h[1] for h in hits]]).sum(0) / w.sum()
+
     n = 0
     for vi in np.nonzero(f > 0)[0]:
-        wl = Wb[trees["l"].find(P[vi])[1]]
-        wr = Wb[trees["r"].find(P[vi])[1]]
-        legw = t[vi] * wl + (1 - t[vi]) * wr
+        legw = t[vi] * near("l", P[vi] * S) + (1 - t[vi]) * near("r", P[vi] * S)
+        for s in "lr":
+            if fold > 0 and lower[s] and "thigh_" + s in col:
+                moved = legw[lower[s]] * fold
+                legw[lower[s]] -= moved
+                legw[col["thigh_" + s]] += moved.sum()
         W[vi] = (1 - f[vi]) * W[vi] + f[vi] * legw
         n += 1
-    log("%s: leg-split weights on %d vertices below z %.2f (mid x %.3f, blend %.0f mm)"
-        % (o.name, n, below, mid, blend * 1000))
-    return W / np.maximum(W.sum(1, keepdims=True), 1e-12)
+    log("%s: leg-split weights on %d vertices below z %.2f (mid x %.3f, blend %.0f mm, k %d, fold %.2f)"
+        % (o.name, n, below, mid, blend * 1000, k, fold))
+    return W / np.maximum(W.sum(1, keepdims=True), 1e-12), f
 
 
 def copy_textures(gdir, name, export, out):
@@ -275,8 +300,9 @@ def main():
                 W[:] = 0
                 W[:, pel] = 1
             W = W / np.maximum(W.sum(1, keepdims=True), 1e-12)
+            legf = None
             if ps.get("legs"):
-                W = leg_split(o, W, gnames, lod0, ps["legs"])
+                W, legf = leg_split(o, W, gnames, lod0, ps["legs"])
             n_smooth = int(ps.get("smooth", 0))
             if n_smooth:
                 P = wverts(o)
@@ -284,6 +310,8 @@ def main():
                 g0, g1 = ps.get("smooth_gap", 0.01), ps.get("smooth_full", 0.05)
                 t = np.clip((dist - g0) / max(g1 - g0, 1e-6), 0, 1)
                 alpha = 0.5 * t * t * (3 - 2 * t)
+                if legf is not None and ps["legs"].get("hold"):
+                    alpha = alpha * (1 - legf)
                 W = relax(W, a, b, deg, alpha, n_smooth)
                 log("%s: weights relaxed %d times on %d free-hanging vertices (over %.0f mm off the body), %d partly"
                     % (name, n_smooth, int((t >= 1).sum()), g1 * 1000, int(((t > 0) & (t < 1)).sum())))
