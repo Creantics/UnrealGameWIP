@@ -27,6 +27,10 @@ heel stands apart, and pushed out wherever the foot below the sole top (toes res
 within "cover" of its edge. Groups are boot_<part>_l / _r (l = +x). Every strip is a grid with a rectangular UV
 island; the upper gets a smart UV projection. The body vertices left outside the upper are counted and printed
 (should be 0).
+A band's plane passes "y" (default 3) above the sole top at "at" of the foot's length and leans "tilt" degrees from
+upright, so its lower ends move towards the toe: a thin band (width ~0.3, "out" ~0.06) with a small tilt draws a
+toe-cap line, one with a large tilt (~65) low down at ~0.4 a heel-counter line rising round the heel (what dips below
+the sole top is dropped).
 "tongue" is a strip up the instep's centre line (sections parallel to the foot's long vertical plane), from "from" of
 the foot's length (from the heel) over the instep and up the shaft's front to the top, "out" proud of the upper;
 "laces" are "count" crossings (an X per gap) between two eyelet lines at "at" of the tongue's half width, each a flat
@@ -410,7 +414,7 @@ def build_leg(V, side, sp):
         tb = np.radians(b.get("tilt", 15))
         nb = d3 * np.cos(tb) + up * np.sin(tb)
         pc = leg.xz(np.array([smin + b["at"] * (smax - smin)]), np.array([0.0]))[0]
-        pc = np.array([pc[0], yb + 3, pc[1]])
+        pc = np.array([pc[0], yb + b.get("y", 3.0), pc[1]])
         hw, bo = b.get("width", 1.6) / 2, b.get("out", 0.35)
         rws = []
         for f, o_ in ((-1.0, 0.12), (-0.8, bo), (0, bo * 1.1), (0.8, bo), (1.0, 0.12)):
