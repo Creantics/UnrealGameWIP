@@ -816,11 +816,25 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		int32 OnBox = -1;  // the box the spawn stands on, or -1 for the ground
 		int32 Inside = -1; // a box (or with bInsideWall, a wall) the lead would stand inside at the spawn
 		bool bInsideWall = false;
+		ftcore::MassingFooting Footing; // how far the floor steps within the lead's reach of the spawn
 		double RuleX = 0.0, RuleY = 0.0; // the generator's spawn (spawnFor), plan frame
 		int32 SpawnBox = INDEX_NONE;     // the row's spawn_box: the spawn is a temporary placement outside it
 	};
 	TArray<FDistrictPlace> Places;
+	int32 FootingHeld = 0; // district spawns whose footing is within ftcore::kMassingFootingTolerance
+	FString FootingLine;   // the reach summary's count of them
 	FString WorldId;
+	// What the lead stands on and walks into: the boxes the player sees, not the hidden kinds or references.
+	std::vector<bool> Visible(Boxes.size(), false);
+	for (size_t I = 0; I < Boxes.size(); ++I)
+	{
+		Visible[I] = ftcore::massingVisible(ftcore::massingRole(Boxes[I]));
+	}
+	const auto FootingAt = [&](double X, double Y, double Floor, double Ceiling)
+	{
+		return ftcore::massingSpawnFooting(Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX), static_cast<size_t>(Field.SamplesY),
+			Field.Spacing, Field.OriginX, Field.OriginY, Boxes, Visible, X, Y, Floor, Ceiling, kLeadHeight);
+	};
 	if (!WorldText.IsEmpty())
 	{
 		TArray<uint8> WorldBytes;
@@ -846,11 +860,6 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: world %s has %d districts."), *WorldId, Count);
 			return 1;
-		}
-		std::vector<bool> Visible(Boxes.size(), false);
-		for (size_t I = 0; I < Boxes.size(); ++I)
-		{
-			Visible[I] = ftcore::massingVisible(ftcore::massingRole(Boxes[I]));
 		}
 		const std::vector<bool> EveryWall(Walls.size(), true);
 		ftcore::DistrictPin Pins[ftcore::WorldLayout::kMaxDistricts];
@@ -878,8 +887,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			const double Ground = ftcore::massingGroundAt(Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX),
 				static_cast<size_t>(Field.SamplesY), Field.Spacing, Field.OriginX, Field.OriginY, Place.SpawnX, Place.SpawnY);
 			int OnBox = -1;
-			Place.SpawnFloor = ftcore::massingFloorAt(Boxes, Visible, Place.SpawnX, Place.SpawnY, Ground,
-				FMath::Max(Place.Floor, Ground) + kSpawnStepUp, &OnBox);
+			const double Ceiling = FMath::Max(Place.Floor, Ground) + kSpawnStepUp;
+			Place.SpawnFloor = ftcore::massingFloorAt(Boxes, Visible, Place.SpawnX, Place.SpawnY, Ground, Ceiling, &OnBox);
 			Place.OnBox = OnBox;
 			Place.Inside = ftcore::massingBlockingAt(Boxes, Visible, Place.SpawnX, Place.SpawnY, Place.SpawnFloor, kLeadHeight);
 			if (Place.Inside < 0)
@@ -887,6 +896,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				Place.Inside = ftcore::massingBlockingAt(Walls, EveryWall, Place.SpawnX, Place.SpawnY, Place.SpawnFloor, kLeadHeight);
 				Place.bInsideWall = Place.Inside >= 0;
 			}
+			Place.Footing = FootingAt(Place.SpawnX, Place.SpawnY, Place.SpawnFloor, Ceiling);
 			const ftcore::MassingVec SpawnAt = ftcore::massingEnginePoint(Side, Place.SpawnX, Place.SpawnY, 0.0);
 			Pins[D].centre = {static_cast<float>(Centre.x), static_cast<float>(Centre.y)};
 			Pins[D].spawn = {static_cast<float>(SpawnAt.x), static_cast<float>(SpawnAt.y)};
@@ -908,8 +918,19 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		{
 			const FDistrictPlace& Place = Places[D];
 			const FString On = Place.OnBox >= 0 ? Utf8(Boxes[static_cast<size_t>(Place.OnBox)].id) : FString(TEXT("the ground"));
-			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: district %d: plaza (%.1f, %.1f) at %.1f m; spawn (%.1f, %.1f) on %s at %.1f m."),
-				D, Place.CentreX, Place.CentreY, Place.Floor, Place.SpawnX, Place.SpawnY, *On, Place.SpawnFloor);
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: district %d: plaza (%.1f, %.1f) at %.1f m; spawn (%.1f, %.1f) on %s at %.1f m, "
+				"footing %.2f m (%d of %d points skipped as walls)."), D, Place.CentreX, Place.CentreY, Place.Floor, Place.SpawnX, Place.SpawnY, *On,
+				Place.SpawnFloor, Place.Footing.step, Place.Footing.skipped, ftcore::kMassingFootingPoints);
+			if (ftcore::massingFootingHolds(Place.Footing))
+			{
+				++FootingHeld;
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: district %d's spawn footing steps %.2f m at (%.2f, %.2f), over %.2f m: the "
+					"lead slides off the spawn, and a path asked to it finds no navmesh under it; the goals table can name its spawn_x, spawn_y."),
+					D, Place.Footing.step, Place.Footing.x, Place.Footing.y, ftcore::kMassingFootingTolerance);
+			}
 			if (Place.Inside >= 0)
 			{
 				const ftcore::MassingBox& In = Place.bInsideWall ? Walls[static_cast<size_t>(Place.Inside)] : Boxes[static_cast<size_t>(Place.Inside)];
@@ -938,11 +959,40 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				}
 			}
 		}
+		int32 WorstAt = 0;
+		for (int32 D = 1; D < Count; ++D)
+		{
+			WorstAt = Places[D].Footing.step > Places[WorstAt].Footing.step ? D : WorstAt;
+		}
+		FootingLine = FString::Printf(TEXT("; spawn footing within %.2f m: %d of %d"), ftcore::kMassingFootingTolerance, FootingHeld, Count);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: spawn footing (%d points within %.1f m, tolerance %.2f m): %d of %d district "
+			"spawns hold; the most is district %d's, %.2f m."), ftcore::kMassingFootingPoints, ftcore::kMassingFootingRadius,
+			ftcore::kMassingFootingTolerance, FootingHeld, Count, WorstAt, Places[WorstAt].Footing.step);
 	}
 
 	const FString MapPath = FString::Printf(TEXT("/Game/Maps/%s"), *MapName);
 	const FString File = FPackageName::LongPackageNameToFilename(MapPath, FPackageName::GetMapPackageExtension());
 	const FVector EntryAt = Cm(ftcore::massingEnginePoint(Side, Entry[0], Entry[1], Entry[2]));
+	// The entry is the player start too: it should stand on its own floor, with a footing that holds.
+	{
+		const double Ground = ftcore::massingGroundAt(Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX),
+			static_cast<size_t>(Field.SamplesY), Field.Spacing, Field.OriginX, Field.OriginY, Entry[0], Entry[1]);
+		const double Ceiling = FMath::Max(Entry[2], Ground) + kSpawnStepUp;
+		const double Floor = ftcore::massingFloorAt(Boxes, Visible, Entry[0], Entry[1], Ground, Ceiling);
+		const ftcore::MassingFooting Footing = FootingAt(Entry[0], Entry[1], Floor, Ceiling);
+		const double Off = FMath::Abs(Entry[2] - Floor);
+		const FString Line = FString::Printf(TEXT("FTBuildMassingWorld: the entry (%.1f, %.1f, %.1f) stands on %.2f m, %.2f m from its z; footing "
+			"%.2f m at (%.2f, %.2f)"), Entry[0], Entry[1], Entry[2], Floor, Off, Footing.step, Footing.x, Footing.y);
+		if (ftcore::massingFootingHolds(Footing) && Off <= ftcore::kMassingFootingTolerance)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("%s."), *Line);
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("%s, over %.2f m: the player start drops or slides there, and the reach check starts off its floor."),
+				*Line, ftcore::kMassingFootingTolerance);
+		}
+	}
 
 	// With -Load: the saved map in an editor world of its own, with the navmesh saved with it, which is the one the game
 	// walks. The world is destroyed unsaved; the map's file isn't written. Only a map saved without navmesh tiles has
@@ -1046,11 +1096,11 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 					Place.SpawnFloor, SpawnTally);
 			}
 		}
-		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: reach (search budget %u nodes): %s; %s."), kReachSearchNodes,
-			*ReachLine(TEXT("goals"), GoalTally, Counted), *ReachLine(TEXT("district spawns"), SpawnTally, Places.Num()));
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: reach (search budget %u nodes): %s; %s%s."), kReachSearchNodes,
+			*ReachLine(TEXT("goals"), GoalTally, Counted), *ReachLine(TEXT("district spawns"), SpawnTally, Places.Num()), *FootingLine);
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Load: %s checked, not saved: goals reached %d of %d, district spawns reached %d of %d."),
 			*MapPath, GoalTally.Reached, Counted, SpawnTally.Reached, Places.Num());
-		return bStrict && (GoalTally.Reached < Counted || SpawnTally.Reached < Places.Num()) ? 1 : 0;
+		return bStrict && (GoalTally.Reached < Counted || SpawnTally.Reached < Places.Num() || FootingHeld < Places.Num()) ? 1 : 0;
 	}
 
 	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
@@ -1361,8 +1411,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			}
 			Reached = GoalTally.Reached;
 			SpawnsReached = SpawnTally.Reached;
-			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: reach (search budget %u nodes): %s; %s."), kReachSearchNodes,
-				*ReachLine(TEXT("goals"), GoalTally, Counted), *ReachLine(TEXT("district spawns"), SpawnTally, Places.Num()));
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: reach (search budget %u nodes): %s; %s%s."), kReachSearchNodes,
+				*ReachLine(TEXT("goals"), GoalTally, Counted), *ReachLine(TEXT("district spawns"), SpawnTally, Places.Num()), *FootingLine);
 		}
 	}
 
@@ -1415,7 +1465,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: dumped %d actors to %s."), DumpRows, *DumpFile);
 	}
-	return bStrict && bNav && (Reached < Counted || SpawnsReached < Places.Num()) ? 1 : 0;
+	return bStrict && bNav && (Reached < Counted || SpawnsReached < Places.Num() || FootingHeld < Places.Num()) ? 1 : 0;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld needs an editor build."));
 	return 1;

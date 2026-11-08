@@ -564,3 +564,86 @@ TEST_CASE("massing: the ground between samples, and the floor a player lands on"
     CHECK(massingBlockingAt(boxes, include, 30, 0, 1.0, 1.8) == 2);
     CHECK(massingBlockingAt(boxes, include, -20, 0, 1.0, 1.8) == -1); // left out
 }
+
+TEST_CASE("massing: a spawn's footing") {
+    // 21 columns by 5 rows from (0, 0), 1 m apart: the ground is 3 m high up to x = 4 and drops in one cell to 0 m
+    // from x = 5 on.
+    const auto v = [](double m) { return static_cast<std::uint16_t>(32768 + m * 128); };
+    std::vector<std::uint16_t> grid(21 * 5);
+    for (std::size_t r = 0; r < 5; ++r)
+        for (std::size_t c = 0; c < 21; ++c) grid[r * 21 + c] = v(c <= 4 ? 3.0 : 0.0);
+    const auto footing = [&](const std::vector<MassingBox>& boxes, const std::vector<bool>& include, double x,
+                             double y, double floor) {
+        return massingSpawnFooting(grid.data(), 21, 5, 1.0, 0.0, 0.0, boxes, include, x, y, floor, floor + 6.0, 1.8);
+    };
+    const std::vector<MassingBox> none;
+    const std::vector<bool> noneIncluded;
+
+    // On the drop's top sample: half a metre east is half way down it.
+    MassingFooting f = footing(none, noneIncluded, 4.0, 2.0, 3.0);
+    CHECK(near(f.step, 1.5));
+    CHECK(near(f.x, 4.5));
+    CHECK(near(f.y, 2.0));
+    CHECK(f.skipped == 0);
+    CHECK_FALSE(massingFootingHolds(f));
+    // Two metres past the drop the ground is flat.
+    f = footing(none, noneIncluded, 7.0, 2.0, 0.0);
+    CHECK(near(f.step, 0.0));
+    CHECK(near(f.x, 7.0));
+    CHECK(near(f.y, 2.0));
+    CHECK(massingFootingHolds(f));
+    // A floor that isn't the ground's steps at the spawn itself.
+    f = footing(none, noneIncluded, 7.0, 2.0, 1.0);
+    CHECK(near(f.step, 1.0));
+    CHECK(near(f.x, 7.0));
+    CHECK_FALSE(massingFootingHolds(f));
+    // Just inside the tolerance, and just over it.
+    CHECK(massingFootingHolds(footing(none, noneIncluded, 7.0, 2.0, kMassingFootingTolerance)));
+    CHECK_FALSE(massingFootingHolds(footing(none, noneIncluded, 7.0, 2.0, kMassingFootingTolerance + 0.01)));
+
+    // A 2 m square box on the flat with its top at 5 m: at its centre the footing holds; 0.3 m from its east
+    // edge, half a metre east is off the box and 5 m down.
+    std::vector<MassingBox> boxes = {flatBox(15, 2, 2, 2, 0, 0, 5)};
+    std::vector<bool> include = {true};
+    f = footing(boxes, include, 15.0, 2.0, 5.0);
+    CHECK(near(f.step, 0.0));
+    CHECK(f.skipped == 0);
+    CHECK(massingFootingHolds(f));
+    f = footing(boxes, include, 15.7, 2.0, 5.0);
+    CHECK(near(f.step, 5.0));
+    CHECK(near(f.x, 16.2));
+    CHECK(near(f.y, 2.0));
+    CHECK_FALSE(massingFootingHolds(f));
+    // Standing inside the box on the ground under it, every point is in the way: none is measured.
+    f = footing(boxes, include, 15.0, 2.0, 0.0);
+    CHECK(f.skipped == kMassingFootingPoints);
+    CHECK(near(f.step, 0.0));
+
+    // A box with its top at 4 m (under the ceiling) whose west face stands 0.2 m east of a ground spawn: the
+    // four points on it are a wall in the way, skipped, not a 4 m step. Left out, it isn't there at all.
+    boxes = {flatBox(12.2, 2, 2, 2, 0, 0, 4)};
+    f = footing(boxes, include, 11.0, 2.0, 0.0);
+    CHECK(f.skipped == 4);
+    CHECK(near(f.step, 0.0));
+    CHECK(massingFootingHolds(f));
+    f = footing(boxes, {false}, 11.0, 2.0, 0.0);
+    CHECK(f.skipped == 0);
+    CHECK(near(f.step, 0.0));
+
+    // No radius (zero, negative or not a number) reads the spawn alone: on the drop's top sample, nothing steps.
+    for (const double radius : {0.0, -1.0, std::nan("")}) {
+        f = massingSpawnFooting(grid.data(), 21, 5, 1.0, 0.0, 0.0, none, noneIncluded, 4.0, 2.0, 3.0, 9.0, 1.8, radius);
+        CHECK(near(f.step, 0.0));
+    }
+    // A wider radius reaches further down the drop.
+    f = massingSpawnFooting(grid.data(), 21, 5, 1.0, 0.0, 0.0, none, noneIncluded, 4.0, 2.0, 3.0, 9.0, 1.8, 1.0);
+    CHECK(near(f.step, 3.0));
+    CHECK(near(f.x, 5.0));
+
+    // An empty grid reads a flat ground at 0.
+    f = massingSpawnFooting(nullptr, 0, 0, 1.0, 0.0, 0.0, none, noneIncluded, 3.0, 3.0, 0.0, 6.0, 1.8);
+    CHECK(near(f.step, 0.0));
+    CHECK(massingFootingHolds(f));
+    f = massingSpawnFooting(nullptr, 0, 0, 1.0, 0.0, 0.0, none, noneIncluded, 3.0, 3.0, 2.0, 8.0, 1.8);
+    CHECK(near(f.step, 2.0));
+}

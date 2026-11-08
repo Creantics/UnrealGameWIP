@@ -506,4 +506,35 @@ int massingBlockingAt(const std::vector<MassingBox>& boxes, const std::vector<bo
     return -1;
 }
 
+MassingFooting massingSpawnFooting(const std::uint16_t* grid, std::size_t samplesX, std::size_t samplesY, double spacing,
+                                   double originX, double originY, const std::vector<MassingBox>& boxes,
+                                   const std::vector<bool>& include, double x, double y, double floor, double ceiling,
+                                   double height, double radius) {
+    MassingFooting out;
+    out.x = x;
+    out.y = y;
+    const double r = std::isfinite(radius) && radius > 0.0 ? radius : 0.0;
+    for (int i = 0; i < kMassingFootingPoints; ++i) {
+        double px = x, py = y;
+        if (i > 0) {
+            const double ring = i <= 8 ? r * 0.5 : r;
+            const double a = static_cast<double>((i - 1) % 8) * kPi / 4.0;
+            px = x + ring * std::cos(a);
+            py = y + ring * std::sin(a);
+        }
+        if (massingBlockingAt(boxes, include, px, py, floor, height) >= 0) {
+            ++out.skipped;
+            continue;
+        }
+        const double ground = massingGroundAt(grid, samplesX, samplesY, spacing, originX, originY, px, py);
+        const double step = std::fabs(massingFloorAt(boxes, include, px, py, ground, ceiling) - floor);
+        if (step > out.step) {
+            out.step = step;
+            out.x = px;
+            out.y = py;
+        }
+    }
+    return out;
+}
+
 } // namespace ftcore

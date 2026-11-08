@@ -25,7 +25,10 @@
 // deck or landing at most 6 m over the higher of the plaza's floor and the ground there. The build pins
 // the world's layout to them (ftcore::WorldLayout::pinDistricts, refused on a missing row or a place
 // outside the square), logs each district's spawn and what it stands on (warning when the lead would
-// stand inside a box or wall there), and places an AFTExploreDirector with them, so a story step, a
+// stand inside a box or wall there) and its footing (ftcore::massingSpawnFooting, warning when the floor
+// steps over the tolerance within the lead's reach, where the lead slides off and a path asked to the
+// spawn finds no navmesh), with a count of the footings that hold, and places an AFTExploreDirector with
+// them, so a story step, a
 // -WorldDistrict=<n> start and the -WorldAutoPlay tour play in the plan's own districts.
 //
 // The map (/Game/Maps/<Map>, World_Massing by default; overwritten):
@@ -39,7 +42,8 @@
 // - the shared photoreal look (FTSceneLook.h), and a player start at -Entry facing -Look;
 // - unless -NoNav, a navmesh over the square, and each goal (and with -World, each district's spawn)
 //   checked for a path from the entry; the map is saved either way and the counts reached are logged
-//   (with -Strict, a missing path fails). The check's path search has a budget of 32768 nodes (the engine's
+//   (with -Strict, a missing path or a spawn footing over the tolerance fails). The entry's own floor and
+//   footing are logged too. The check's path search has a budget of 32768 nodes (the engine's
 //   default is 2048); each target's line says whether its query came back full, partial or with none, and
 //   whether it hit the node limit, and a summary line counts them.
 // Without -World there is no director: the map is a free walk. Zones, hidden kinds, open options and

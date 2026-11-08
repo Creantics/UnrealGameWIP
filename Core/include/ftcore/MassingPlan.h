@@ -187,4 +187,34 @@ inline constexpr double kMassingStandClear = 0.05;
 FTCORE_API int massingBlockingAt(const std::vector<MassingBox>& boxes, const std::vector<bool>& include, double x,
                                  double y, double floor, double height);
 
+// Whether a spawn's floor holds a player set down on it: the largest step, in metres, between `floor` (what the player
+// stands on at the plan point, massingFloorAt's answer there) and the floor at kMassingFootingPoints sample points
+// around it: the point itself, then eight a half `radius` out and eight a whole `radius` out, east first and turning
+// counter-clockwise. Each point reads the ground (massingGroundAt) and the tops of the boxes `include` marks no higher
+// than `ceiling` (massingFloorAt). A point where such a box stands in the way of a player of `height` on `floor`
+// (massingBlockingAt) is a wall the player can't step into, not a floor to stand on, so it is skipped and counted: a
+// wall a quarter metre from a spawn is no fault of its footing, while the ground under that wall can lie well below.
+//
+// A step over kMassingFootingTolerance means the spawn sits on a steep bank's toe or a box's edge: the player slides off
+// it, and the navmesh, which leaves such a slope out, has nothing under the point, so a path asked to it finds none.
+// Spawns that hold in play show a few centimetres here and leave the player's feet within about a quarter metre of
+// their floor; the tolerance sits over that band. The radius is about the player's own and the reach a navmesh query
+// takes sideways by default: a spawn 0.7 m from its landing's edge holds in play, so a full metre would flag it.
+// A grid massingGroundAt reads as empty gives a flat ground at 0. No allocation.
+inline constexpr int kMassingFootingPoints = 17;
+inline constexpr double kMassingFootingRadius = 0.5;
+inline constexpr double kMassingFootingTolerance = 0.5;
+struct MassingFooting {
+    double step = 0.0;       // the largest |floor there - floor|, m (0 when every point is skipped: a spawn
+                             // inside a box is massingBlockingAt's to find)
+    double x = 0.0, y = 0.0; // the sample point it is at, plan frame (the spawn when there's no step)
+    int skipped = 0;         // sample points a box stands in the way at
+};
+FTCORE_API MassingFooting massingSpawnFooting(const std::uint16_t* grid, std::size_t samplesX, std::size_t samplesY,
+                                              double spacing, double originX, double originY,
+                                              const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
+                                              double x, double y, double floor, double ceiling, double height,
+                                              double radius = kMassingFootingRadius);
+inline bool massingFootingHolds(const MassingFooting& footing) { return footing.step <= kMassingFootingTolerance; }
+
 } // namespace ftcore
