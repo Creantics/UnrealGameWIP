@@ -12,7 +12,8 @@ SPEC.json (lengths in the body OBJ's units, centimetres for a cloth-tool avatar;
      "straps": [{"y": 10.5, ...}, {"y": 24, "tilt": 0, "buckle": true}, ...],   (instead of "strap", for a strapped shaft)
      "bands": [{"at": 0.58, "tilt": 15, "width": 1.6, "out": 0.35}, ...],
      "buckle": {"size": [2.6, 2.2], "bar": 0.4, "depth": 0.3},
-     "sole": {"out": 0.55, "arch": [0.3, 0.52], "arch_lift": 0.9, "cover": 0.4}, "toe_box": 1.4}
+     "sole": {"out": 0.55, "arch": [0.3, 0.52], "arch_lift": 0.9, "cover": 0.4}, "toe_box": 1.4,
+     "tongue": {"from": 0.62, "width": 3.4, "out": 0.3}, "laces": {"count": 5, "width": 0.45, "out": 0.22, "at": 0.7}}
 
 "top" is the shaft's upper edge, "ankle" the height below which the body counts as foot. Each leg is the body's
 vertices on its side of x = 0 below "top". The upper is the voxel union of a shaft (a superellipse ring per height,
@@ -26,6 +27,11 @@ heel stands apart, and pushed out wherever the foot below the sole top (toes res
 within "cover" of its edge. Groups are boot_<part>_l / _r (l = +x). Every strip is a grid with a rectangular UV
 island; the upper gets a smart UV projection. The body vertices left outside the upper are counted and printed
 (should be 0).
+"tongue" is a strip up the instep's centre line (sections parallel to the foot's long vertical plane), from "from" of
+the foot's length (from the heel) over the instep and up the shaft's front to the top, "out" proud of the upper;
+"laces" are "count" crossings (an X per gap) between two eyelet lines at "at" of the tongue's half width, each a flat
+cord "width" wide standing "out" proud of the tongue (groups boot_tongue_<side>, boot_lace_<side>). "straps": [] gives
+no strap.
 """
 import json
 import os
@@ -431,6 +437,57 @@ def build_leg(V, side, sp):
         o = bpy.data.objects.new("boot_band_" + tag, me)
         bpy.context.scene.collection.objects.link(o)
         parts["band"] = o
+    # Tongue: the front run of sections parallel to the foot's long vertical plane (at each height the section has a
+    # front and a back crossing; the front one is the bigger s), from "from" of the foot's length up to the top.
+    tg = sp.get("tongue")
+    if tg:
+        hw, to_ = tg.get("width", 3.4) / 2, tg.get("out", 0.3)
+        s_from = smin + tg.get("from", 0.62) * (smax - smin)
+        pc0 = leg.xz(np.array([0.0]), np.array([0.0]))[0]
+        pc0 = np.array([pc0[0], 0.0, pc0[1]])
+
+        def front_run(f, n=40):
+            pts, _ = slice_loop(surf, pc0 + e3 * f * hw, e3)
+            pts = pts[pts[:, 1] > yb + 0.8]
+            s_, _ = leg.st(pts)
+            front = np.zeros(len(pts), bool)
+            for i in range(len(pts)):
+                k = np.abs(pts[:, 1] - pts[i, 1]) < 0.3
+                front[i] = s_[i] > 0.5 * (s_[k].min() + s_[k].max())
+            pts = pts[front & (s_ <= s_from)]
+            pts = pts[np.argsort(pts[:, 1])]
+            return resample(pts, n, False)
+
+        trows = [offset_along_normals(tree, front_run(f), o_)
+                 for f, o_ in ((-1.0, 0.1), (-0.85, to_), (0.0, to_ * 1.15), (0.85, to_), (1.0, 0.1))]
+        parts["tongue"] = grid_object("boot_tongue_" + tag, trows, False)
+        lc = sp.get("laces")
+        if lc:
+            ttree = BVHTree.FromObject(parts["tongue"], bpy.context.evaluated_depsgraph_get())
+            Lr, Rr = front_run(-lc.get("at", 0.7)), front_run(lc.get("at", 0.7))
+            n = lc.get("count", 5)
+            idx = np.linspace(3, len(Lr) - 4, n + 1).round().astype(int)
+            lw, lo = lc.get("width", 0.45) / 2, lc.get("out", 0.22)
+            cords = []
+            for k in range(n):
+                for a, b, up_ in ((Lr[idx[k]], Rr[idx[k + 1]], 0.06), (Rr[idx[k]], Lr[idx[k + 1]], 0.0)):
+                    ch = a[None, :] + np.linspace(0, 1, 9)[:, None] * (b - a)[None, :]
+                    mid = offset_along_normals(ttree, ch, lo + up_)  # one cord of each X a little over the other
+                    t_ = (b - a) / np.linalg.norm(b - a)
+                    nrm = np.array([np.array(ttree.find_nearest(Vector(q))[1]) for q in mid])
+                    side = np.cross(t_, nrm)
+                    side /= np.linalg.norm(side, axis=1, keepdims=True)
+                    cords.append(grid_object("lace", [mid - side * lw - nrm * 0.08, mid, mid + side * lw - nrm * 0.08],
+                                             False))
+            bm3 = bmesh.new()
+            for ob in cords:
+                bm3.from_mesh(ob.data)
+                bpy.data.objects.remove(ob)
+            me3 = bpy.data.meshes.new("boot_lace_" + tag)
+            bm3.to_mesh(me3)
+            bm3.free()
+            parts["lace"] = bpy.data.objects.new("boot_lace_" + tag, me3)
+            bpy.context.scene.collection.objects.link(parts["lace"])
     # Sole: the upper's outline at the sole top, wider, down to the floor, lifted under the arch.
     so_ = sp.get("sole", {})
     pts, closed = slice_loop(surf, (0, yb + 0.25, 0), up)
@@ -505,6 +562,7 @@ def build_leg(V, side, sp):
 
 
 def write_obj(path, objs):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w") as f:
         f.write("# boot_build.py\n")
         vo, to = 1, 1
@@ -534,7 +592,7 @@ def main():
     objs = []
     for side in (1, -1):
         parts = build_leg(V, side, sp)
-        objs += [parts[k] for k in ("upper", "cuff", "band", "sole") if k in parts]
+        objs += [parts[k] for k in ("upper", "cuff", "band", "tongue", "lace", "sole") if k in parts]
         objs += [o for k, o in parts.items() if k.startswith(("strap", "buckle"))]
     for o in objs:
         print("boot_build: %s %d vertices, %d faces" % (o.name, len(o.data.vertices), len(o.data.polygons)))
