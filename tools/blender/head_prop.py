@@ -19,7 +19,7 @@ temple, lowered onto the ear from above at the scalp, first rests on it; the tip
 the run, and the last 25 mm of the run and the tip move sideways to lie "temple_gap" off the scalp (in or out; the run before
 stays straight), then clear of the ear. The lens polygons and any UCX_ hulls are removed (the lenses wait for a translucent master); the rest is
 decimated to at most "tris" triangles in one material. Options: tilt (deg, 4), lens_eye (mm, -2), pad_gap (1),
-front_gap (1.5), temple_gap (1.5), tip_angle (deg, 50), temple_start (mm behind the lenses' back where the temples
+front_gap (1.5), temple_gap (1.5), ear_lift (1.2), tip_angle (deg, 50), temple_start (mm behind the lenses' back where the temples
 start, 9), tris (11000), textures (folder holding *_BC.png, *_N.png (DirectX) and *_ORM.png; default the glasses FBX's
 folder), tint (sRGB "r,g,b": the non-metal frame parts take this colour, keeping "tint_var" (0.3) of the source's light
 and dark; the metal hinges keep theirs).
@@ -33,7 +33,11 @@ mm outward with its inner rim turned up to "lip" mm towards the face (never near
 cracked-porcelain set: a clean glaze, "cracks" long cracks run in from the rim (jagged, with short branches), a patchy
 fine net mostly near them and a faint mouth line ("mouth", 0..1). Options: wrap (68), widest (5), top (72),
 chin_back (6), relief (8), standoff (3.5), min_standoff (3.0), shell (3.0), lip (1.0), spacing (3.5 mm), tex (2048),
-seed (3), cracks (4), crack (0..1, how much of the fine net shows away from the cracks, 0.25), mouth (0.5),
+seed (3), cracks (4), crack (0..1, how much of the fine net shows away from the cracks, 0.25), crack_w and crack_len
+(multipliers on the long cracks' width and length, 1), mouth (0.5), envelope (1: a blank shell, each row and column
+of the field bridged to its least bulging curve over skin + min_standoff, smoothed "env_smooth" mm (7) over
+"env_iter" passes (25), its last "taper" mm (14) coming down to the skin + "rim_off" mm (2.5); 0: the skin smoothed by
+"relief" and set "standoff" out), bevel (0.9 mm, the shell's edge rounded; 0: flat rim faces),
 colour (sRGB "r,g,b", 0.86,0.84,0.80).
 
 Writes OUT_DIR/NAME.fbx (the prop on the body armature, bind_r3's proven export settings), NAME_BC.png, NAME_N.png
@@ -457,14 +461,29 @@ def run_glasses(head, gl_fbx, out, opt):
         push = cap
     P += fwd * push
     N_w = N_w + fwd * push
+    # a slanted contact (the lower rim beside the nose) gains less than the push: push again, at most twice more
+    for _ in range(2):
+        d_front, _ = signed_dist(head, P[fm & ~is_lens])
+        extra = min(front_gap - d_front.min(), cap - push)
+        if extra < 0.1 * MM:
+            break
+        P += fwd * extra
+        N_w = N_w + fwd * extra
+        push += extra
+    d_bridge = float(signed_dist(head, N_w[None])[0][0])
+    log("front: the nose-rest point is %.1f mm off the nose" % (d_bridge / MM))
     d_front, _ = signed_dist(head, P[fm & ~is_lens])
-    log("front: nose-rest %.1f mm above the eye centres, pushed forward %.1f mm, nearest the skin %.1f mm, tilt %.1f deg"
-        % (nose_h / MM, push / MM, d_front.min() / MM, math.degrees(tilt)))
+    jn = (P[fm & ~is_lens] - E)[int(np.argmin(d_front))]
+    log("front: nose-rest %.1f mm above the eye centres, pushed forward %.1f mm, nearest the skin %.1f mm (%.1f mm out,"
+        " %.1f up, %.1f forward of the eye centres), tilt %.1f deg"
+        % (nose_h / MM, push / MM, d_front.min() / MM, abs(jn @ left) / MM, (jn @ up) / MM, (jn @ fwd) / MM,
+           math.degrees(tilt)))
 
     # temples: each turns about its hinge and stretches so its bend lands where the temple, lowered from above at the
     # scalp, first rests on the ear; the tip turns down to "tip_angle" below the run; then the run's last 25 mm and the
     # tip move sideways to lie "temple_gap" off the scalp (in or out), then clear of the ear
     temple_gap = fopt(opt, "temple_gap", 1.5) * MM
+    ear_lift = fopt(opt, "ear_lift", 1.2) * MM  # the run's underside above the top of the ear (the bend's curve dips)
     tip_angle = math.radians(fopt(opt, "tip_angle", 50))
     F = head["F"]
     rep_t = {}
@@ -533,7 +552,7 @@ def run_glasses(head, gl_fbx, out, opt):
                         best = (hu, f, sl)
             if best is not None:
                 hu, f, sl = best
-                T = E + fwd * (f - 2 * MM) + up * (hu + 0.3 * MM) + out_dir * (sl + temple_gap + half_t)
+                T = E + fwd * (f - 2 * MM) + up * (hu + ear_lift) + out_dir * (sl + temple_gap + half_t)
                 tsrc = "rests on the ear %.1f mm above the eyes, %.1f mm behind them" % (hu / MM, -f / MM)
         if T is None:
             T = (head["earL"] if side == "L" else head["earR"]) + up * 15.5 * MM + out_dir * (half_t + temple_gap)
@@ -605,6 +624,10 @@ def run_glasses(head, gl_fbx, out, opt):
             V = V + fb[bins][:, None] * out_dir[None]
             moved += fb
         d, _ = signed_dist(head, V)
+        jn = int(np.argmin(d))
+        log("temple %s: nearest the head %.1f mm at %.1f mm along it (%.1f mm out, %.1f up, %.1f forward of the eye centres)"
+            % (side, d[jn] / MM, (dsrc[jn] - d0) / MM, abs((V[jn] - E) @ left) / MM, ((V[jn] - E) @ up) / MM,
+               ((V[jn] - E) @ fwd) / MM))
         P[m] = V
         tip_lat = float(((V[tipm] - E) @ out_dir).max())
         bend_err = np.linalg.norm(Tb - T)  # nonzero only when the stretch clamps
@@ -714,7 +737,7 @@ def voronoi_edge(X, Y, cell, rng):
     return (d2 - d1) * cell
 
 
-def crack_paths(res, side_mm, rim_mm, n, rng):
+def crack_paths(res, side_mm, rim_mm, n, rng, wmul=1.0, lmul=1.0):
     """n long cracks run in from the rim (points in texture mm, x along the columns, y along the rows): straight runs
     of 2.5-6 mm with sharp turns (about 20 deg) that keep pulling back to the crack's heading, 45-95 mm long, 0.45-0.6 mm
     wide and tapering, with short side branches. Returns the crack core, a 2 mm halo and a 6 mm 'near' field (each 0..1)
@@ -741,7 +764,7 @@ def crack_paths(res, side_mm, rim_mm, n, rng):
         p = rim_mm[k].astype(float)
         to_c = cen - p
         ang = math.atan2(to_c[1], to_c[0]) + rng.uniform(-0.5, 0.5)
-        walk(p, ang, rng.uniform(45, 95), rng.uniform(0.45, 0.60), 0)
+        walk(p, ang, rng.uniform(45, 95) * lmul, rng.uniform(0.45, 0.60) * wmul, 0)
     r = 12.0
     for p, q, w in segs:
         lo = np.floor((np.minimum(p, q) - r) * px).astype(int).clip(0, res - 1)
@@ -759,13 +782,13 @@ def crack_paths(res, side_mm, rim_mm, n, rng):
     return core, halo, near, len(segs)
 
 
-def porcelain_maps(res, side_mm, seed, crack, colour, rim_mm, n_cracks, mouth=None):
+def porcelain_maps(res, side_mm, seed, crack, colour, rim_mm, n_cracks, mouth=None, wmul=1.0, lmul=1.0):
     """Cracked porcelain: a glazed off-white with slow warm mottling, a few long cracks in from the rim and a patchy
     fine net, mostly near them, grime in the cracks. Returns BC (sRGB), normal (OpenGL, +Y up the rows) and ORM."""
     rng = np.random.default_rng(seed)
     x = (np.arange(res) + 0.5) / res * side_mm
     X, Y = np.meshgrid(x, x)
-    core, near_c, near6, nseg = crack_paths(res, side_mm, rim_mm, n_cracks, rng)
+    core, near_c, near6, nseg = crack_paths(res, side_mm, rim_mm, n_cracks, rng, wmul, lmul)
     log("mask: %d cracks from the rim, %d segments" % (n_cracks, nseg))
     fx = (fbm(X, Y, 5.0, rng, 3) - 0.5) * 2.0
     fy = (fbm(X, Y, 5.0, rng, 3) - 0.5) * 2.0
@@ -962,10 +985,67 @@ def run_mask(head, out, opt):
         sm = nconv(rsk, valid.astype(float), 6 * MM)
         valid &= ~(rsk < sm - 10 * MM)
     log("mask: %d x %d grid, %d cells on the skin" % (len(gu), len(gs), int(valid.sum())))
-    r_s = nconv(rsk, valid.astype(float), relief)
-    a_ = r_s + standoff
-    b_ = np.where(valid, rsk + min_off, a_ - 1.0)
-    rm = 0.5 * (a_ + b_ + np.sqrt((a_ - b_) ** 2 + (2 * MM) ** 2))  # a soft max: no crease where the skin rises
+    def concave_major(y):  # the least concave function over y's finite samples (bridges every hollow), nan kept outside
+        x = np.nonzero(np.isfinite(y))[0]
+        if len(x) < 3:
+            return y
+        hull = []
+        for i in x:
+            while len(hull) >= 2 and ((y[hull[-1]] - y[hull[-2]]) * (i - hull[-2])
+                                      <= (y[i] - y[hull[-2]]) * (hull[-1] - hull[-2])):
+                hull.pop()
+            hull.append(i)
+        o2 = y.copy()
+        o2[x[0]:x[-1] + 1] = np.interp(np.arange(x[0], x[-1] + 1), hull, y[hull])
+        return o2
+
+    if opt.get("envelope", "1") != "0":
+        # a blank shell: across each row and down each column the least bulging curve that clears the skin by
+        # min_standoff (no eye pits, lips or brow ridges: only what stands out most, the nose tip, brows, cheekbones and
+        # chin, holds it up), then a light membrane smoothing that never comes nearer than min_standoff
+        env_s = fopt(opt, "env_smooth", 7) * MM
+        fl = np.where(valid, rsk + min_off, -np.inf)
+        rm = np.where(valid, rsk + min_off, np.nan)
+        for _ in range(2):
+            rm = np.apply_along_axis(concave_major, 1, rm)
+            rm = np.apply_along_axis(concave_major, 0, rm)
+        fin = np.isfinite(rm)
+        rm = nconv(np.nan_to_num(rm), fin.astype(float), env_s)
+        ones = np.ones(S.shape)
+        for _ in range(int(opt.get("env_iter", 25))):
+            rm = np.maximum(nconv(rm, ones, env_s), fl)
+        # the rim: over its last "taper" mm the shell comes down to the lightly smoothed skin + rim_off
+        taper = fopt(opt, "taper", 14) * MM
+        rim_off = fopt(opt, "rim_off", 2.5) * MM
+        dense = []
+        for k in range(nb):
+            a0, b0 = ol[k], ol[(k + 1) % nb]
+            nn = max(int(np.linalg.norm(b0 - a0) / (0.5 * MM)), 1)
+            dense += [a0 + (b0 - a0) * t for t in np.arange(nn) / nn]
+        kd_o = KDTree(len(dense))
+        for i, q in enumerate(dense):
+            kd_o.insert(Vector((q[0], q[1], 0.0)), i)
+        kd_o.balance()
+        dist_o = np.array([kd_o.find(Vector((a0, b0, 0.0)))[2] for a0, b0 in zip(S.ravel(), U.ravel())]).reshape(S.shape)
+        wt = np.clip(dist_o / max(taper, 1e-9), 0, 1)
+        wt = wt * wt * (3 - 2 * wt)
+        rim_r = nconv(rsk, valid.astype(float), 5 * MM) + rim_off
+        stand = np.where(valid, rm - rsk, np.nan)
+        rm = rim_r + (rm - rim_r) * wt
+        j0 = int(np.argmin(np.abs(gs)))
+        mid = (gu >= bottom) & (gu <= top)
+        prof_m = rm[mid, j0]
+        sag = float(np.nanmax(concave_major(prof_m.copy()) - prof_m))
+        ins = (wt > 0.999) & valid
+        log("mask: envelope (rows and columns bridged, smoothed %.0f mm): off the skin inside the taper p50 %.1f p95 %.1f"
+            " max %.1f mm; rim tapers to %.1f mm over %.0f mm; the midline sags %.2f mm below its hull"
+            % (env_s / MM, np.nanpercentile(stand[ins], 50) / MM, np.nanpercentile(stand[ins], 95) / MM,
+               np.nanmax(stand[ins]) / MM, rim_off / MM, taper / MM, sag / MM))
+    else:
+        r_s = nconv(rsk, valid.astype(float), relief)
+        a_ = r_s + standoff
+        b_ = np.where(valid, rsk + min_off, a_ - 1.0)
+        rm = 0.5 * (a_ + b_ + np.sqrt((a_ - b_) ** 2 + (2 * MM) ** 2))  # a soft max: no crease where the skin rises
     if len(head["lash_vids"]):
         Lv = head["F"][head["lash_vids"]] - C0
         lu = Lv @ up
@@ -1064,11 +1144,23 @@ def run_mask(head, out, opt):
             log("mask: inner rim turned in %.1f..%.1f mm (median %.1f); the rim off the skin min %.2f p50 %.2f mm"
                 % (lip_mv.min() / MM, lip_mv.max() / MM, np.median(lip_mv) / MM, d_in.min() / MM, np.median(d_in) / MM))
         rim = set(inner.tolist()) | set(outer.tolist())
-        for p in me.polygons:  # the rim's quads flat-shaded so the edge reads as a cut shell
-            if len(p.vertices) == 4 and all(v in rim for v in p.vertices):
-                p.use_smooth = False
-                flat += 1
-        log("mask: %d rim faces flat" % flat)
+        if fopt(opt, "bevel", 0.9) <= 0:
+            for p in me.polygons:  # the rim's quads flat-shaded so the edge reads as a cut shell
+                if len(p.vertices) == 4 and all(v in rim for v in p.vertices):
+                    p.use_smooth = False
+                    flat += 1
+            log("mask: %d rim faces flat" % flat)
+    bev = fopt(opt, "bevel", 0.9) * MM
+    if bev > 0:  # the edge rounded over: a glazed rolled rim, not a cut plate
+        bv = o.modifiers.new("bevel", "BEVEL")
+        bv.width = bev
+        bv.segments = 3
+        bv.limit_method = "ANGLE"
+        bv.angle_limit = math.radians(50)
+        bpy.ops.object.modifier_apply(modifier=bv.name)
+        for p in me.polygons:
+            p.use_smooth = True
+        log("mask: rim bevelled %.1f mm, 3 segments" % (bev / MM))
     # porcelain set
     res = int(opt.get("tex", 2048))
     col = [float(x) for x in opt.get("colour", "0.86,0.84,0.80").split(",")]
@@ -1076,7 +1168,8 @@ def run_mask(head, out, opt):
     mouth = ((0 - c2[0]) / MM + side / MM / 2, (mouth_u - c2[1]) / MM + side / MM / 2, fopt(opt, "mouth_len", 22),
              fopt(opt, "mouth", 0.5))
     bc, n_gl, orm = porcelain_maps(res, side / MM, int(opt.get("seed", 3)), fopt(opt, "crack", 0.25), col, rim_mm,
-                                   int(opt.get("cracks", 4)), mouth)
+                                   int(opt.get("cracks", 4)), mouth, fopt(opt, "crack_w", 1.0),
+                                   fopt(opt, "crack_len", 1.0))
     n_dx = n_gl.copy()
     n_dx[..., 1] = 1.0 - n_dx[..., 1]
     im_bc = save_png(os.path.join(out, name + "_BC.png"), bc, True)
@@ -1088,7 +1181,7 @@ def run_mask(head, out, opt):
               "span_mm": [bottom / MM, top / MM], "mouth_mm": mouth_u / MM, "relief_mm": relief / MM,
               "sheet_off_skin_mm": {"min": float(d.min() / MM), "p5": float(np.percentile(d, 5) / MM),
                                     "p50": float(np.median(d) / MM), "p95": float(np.percentile(d, 95) / MM)},
-              "shell_mm": shell / MM, "lip_mm": float(np.median(lip_mv) / MM) if inner is not None else 0.0, "rim_faces_flat": flat,
+              "envelope": opt.get("envelope", "1") != "0", "shell_mm": shell / MM, "lip_mm": float(np.median(lip_mv) / MM) if inner is not None else 0.0, "rim_faces_flat": flat,
               "face_hide": "not needed" if d.min() >= 2.5 * MM else "CLIPS: hide the covered face region",
               "normal": "DirectX in _N.png", "texture_side_mm": side / MM}
     skin_and_export(head, o, name, out, report)
