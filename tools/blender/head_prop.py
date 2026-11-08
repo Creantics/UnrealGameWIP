@@ -109,25 +109,14 @@ def load_head(body_fbx, face_fbx):
     mi = np.empty(len(me.polygons), dtype=np.int64)
     me.polygons.foreach_get("material_index", mi)
     mats = [m.name if m else "" for m in me.materials]
-    counts = np.bincount(mi, minlength=len(mats))
-    skin = [i for i, n in enumerate(mats) if "skin" in n.lower()]
-    skin_slot = max(skin, key=lambda i: counts[i]) if skin else int(counts.argmax())
-    log("face %s: %d verts; sections %s; skin %s" % (face0.name, len(F),
-        ", ".join("%s %d" % (mats[i], counts[i]) for i in range(len(mats))), mats[skin_slot]))
     polys = [tuple(p.vertices) for p in me.polygons]
-    skin_polys = [polys[k] for k in np.nonzero(mi == skin_slot)[0]]
-    skin_bvh = BVHTree.FromPolygons(F.tolist(), skin_polys)
-    lash_slots = [i for i, n in enumerate(mats) if "lash" in n.lower()]
-    lash_polys = [polys[k] for k in np.nonzero(np.isin(mi, lash_slots))[0]] if lash_slots else []
-    lash_bvh = BVHTree.FromPolygons(F.tolist(), lash_polys) if lash_polys else None
-    lash_vids = np.unique(np.concatenate([np.array(p) for p in lash_polys])) if lash_polys else np.zeros(0, int)
 
     def bone_head(name):
         if farm is not None and name in farm.data.bones:
             return np.array(farm.matrix_world @ farm.data.bones[name].head_local)
         return None
 
-    def slot_centroid(key):
+    def slot_centroid(key):  # by slot name; only when the face has no eye bones
         sl = [i for i, n in enumerate(mats) if key.lower() in n.lower()]
         if not sl:
             return None
@@ -139,6 +128,17 @@ def load_head(body_fbx, face_fbx):
         eyeL, eyeR, src = slot_centroid("EyeL"), slot_centroid("EyeR"), "eye materials"
     if eyeL is None or eyeR is None:
         sys.exit("head_prop: no FACIAL_*_Eye bones and no EyeL/EyeR materials on the face")
+    roles = face_roles(face0, eyeL, eyeR)
+    counts = np.bincount(mi, minlength=len(mats))
+    log("face %s: %d verts; sections (slot name: role, faces) %s" % (face0.name, len(F), ", ".join(
+        "%s: %s %d" % (mats[i] if i < len(mats) else i, roles.get(i, "-"), counts[i]) for i in range(len(counts)))))
+    skin_slot = next(s for s, r in roles.items() if r == "skin")
+    skin_polys = [polys[k] for k in np.nonzero(mi == skin_slot)[0]]
+    skin_bvh = BVHTree.FromPolygons(F.tolist(), skin_polys)
+    lash_slots = [s for s, r in roles.items() if r == "lash"]
+    lash_polys = [polys[k] for k in np.nonzero(np.isin(mi, lash_slots))[0]] if lash_slots else []
+    lash_bvh = BVHTree.FromPolygons(F.tolist(), lash_polys) if lash_polys else None
+    lash_vids = np.unique(np.concatenate([np.array(p) for p in lash_polys])) if lash_polys else np.zeros(0, int)
     # the vertices each ear carries (their strongest weight is an ear bone)
     vg = {g.index: g.name for g in face0.vertex_groups}
     ears = {"L": [], "R": []}
@@ -170,6 +170,39 @@ def load_head(body_fbx, face_fbx):
     return {"arm": arm, "lod0": lod0, "farm": farm, "face0": face0, "F": F, "skin_bvh": skin_bvh, "sgn": sgn,
             "lash_bvh": lash_bvh, "lash_vids": lash_vids, "eyeL": eyeL, "eyeR": eyeR, "eye_mid": eye_mid,
             "fwd": fwd, "up": up, "left": left, "ears": ears, "earL": earL, "earR": earR}
+
+
+def face_roles(obj, eyeL, eyeR):
+    """Tells a MetaHuman face's sections apart by shape: the FBX's slot names can be off by one (a Real3 face lists the
+    teeth's name on the skin). The biggest section is the skin; a small one centred on an eye bone is an eye; one
+    across both eyes at eye height is the lashes when it has more vertices than faces (loose cards), else a
+    see-through cover (eye shell, tear film, a hide strip); one below the eyes is the mouth (teeth, tongue)."""
+    me = obj.data
+    mw = obj.matrix_world
+    P = np.array([tuple(mw @ v.co) for v in me.vertices])
+    mi = np.empty(len(me.polygons), dtype=np.int64)
+    me.polygons.foreach_get("material_index", mi)
+    n = max(len(me.materials), int(mi.max()) + 1 if len(mi) else 0)
+    counts = np.bincount(mi, minlength=n)
+    skin = int(counts.argmax())
+    roles = {skin: "skin"}
+    ez = (eyeL[2] + eyeR[2]) / 2
+    x0, x1 = sorted((eyeL[0], eyeR[0]))
+    for s in range(n):
+        if s == skin or counts[s] == 0:
+            continue
+        vids = np.unique(np.concatenate([np.array(me.polygons[k].vertices) for k in np.nonzero(mi == s)[0]]))
+        lo, hi = P[vids].min(0), P[vids].max(0)
+        c = (lo + hi) / 2
+        if (hi - lo).max() < 0.04 and min(np.linalg.norm(c - eyeL), np.linalg.norm(c - eyeR)) < 0.015:
+            roles[s] = "eye"
+        elif lo[0] < x0 and hi[0] > x1 and abs(c[2] - ez) < 0.02:
+            roles[s] = "lash" if len(vids) > counts[s] else "cover"
+        elif c[2] < ez - 0.03:
+            roles[s] = "mouth"
+        else:
+            roles[s] = "cover"
+    return roles
 
 
 def signed_dist(head, pts):

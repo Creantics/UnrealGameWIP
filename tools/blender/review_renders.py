@@ -8,8 +8,8 @@
 Every piece is imported with its own armature copy; the body armature is posed and every other armature (the face's,
 each piece's) follows it bone for bone (Copy Transforms on the bones they share; the facial bones ride the head), so
 the pieces deform as they would in the game. A piece finds its textures next to its FBX: NAME_BC.png, NAME_N_gl.png
-(else NAME_N.png, read as DirectX and flipped) and NAME_ORM.png. The face keeps its skin, eye, teeth and lash sections
-in plain colours and drops the hidden and the see-through ones (M_Hide*, EyeShell, LacrimalFluid).
+(else NAME_N.png, read as DirectX and flipped) and NAME_ORM.png. The face keeps its skin, eye, mouth and lash sections
+in plain colours and drops the hidden and the see-through ones, told apart by shape (face_roles), not by slot name.
 
 rest: front, side (the wearer's left), back and three-quarter (front left), the whole figure.
 walk: four frames of a stride (left contact, passing, right contact, passing), front three-quarter and side.
@@ -130,6 +130,39 @@ def textured(name, folder):
 
 
 # -- the lead -----------------------------------------------------------------------------------------------------------
+def face_roles(obj, eyeL, eyeR):
+    """Tells a MetaHuman face's sections apart by shape: the FBX's slot names can be off by one (a Real3 face lists the
+    teeth's name on the skin). The biggest section is the skin; a small one centred on an eye bone is an eye; one
+    across both eyes at eye height is the lashes when it has more vertices than faces (loose cards), else a
+    see-through cover (eye shell, tear film, a hide strip); one below the eyes is the mouth (teeth, tongue)."""
+    me = obj.data
+    mw = obj.matrix_world
+    P = np.array([tuple(mw @ v.co) for v in me.vertices])
+    mi = np.empty(len(me.polygons), dtype=np.int64)
+    me.polygons.foreach_get("material_index", mi)
+    n = max(len(me.materials), int(mi.max()) + 1 if len(mi) else 0)
+    counts = np.bincount(mi, minlength=n)
+    skin = int(counts.argmax())
+    roles = {skin: "skin"}
+    ez = (eyeL[2] + eyeR[2]) / 2
+    x0, x1 = sorted((eyeL[0], eyeR[0]))
+    for s in range(n):
+        if s == skin or counts[s] == 0:
+            continue
+        vids = np.unique(np.concatenate([np.array(me.polygons[k].vertices) for k in np.nonzero(mi == s)[0]]))
+        lo, hi = P[vids].min(0), P[vids].max(0)
+        c = (lo + hi) / 2
+        if (hi - lo).max() < 0.04 and min(np.linalg.norm(c - eyeL), np.linalg.norm(c - eyeR)) < 0.015:
+            roles[s] = "eye"
+        elif lo[0] < x0 and hi[0] > x1 and abs(c[2] - ez) < 0.02:
+            roles[s] = "lash" if len(vids) > counts[s] else "cover"
+        elif c[2] < ez - 0.03:
+            roles[s] = "mouth"
+        else:
+            roles[s] = "cover"
+    return roles
+
+
 skin_rgb = tuple(float(c) for c in opt.get("skin", "0.62,0.45,0.36").split(","))
 SKIN = plain("skin", skin_rgb, 0.45, 0.15)
 bo = imp(BODY)
@@ -146,16 +179,20 @@ face = max((o for o in fo if o.type == "MESH"), key=lambda o: len(o.data.vertice
 for o in fo:
     if o.type == "MESH" and o is not face:
         bpy.data.objects.remove(o, do_unlink=True)
-DROP = ("hide", "eyeshell", "lacrimal")
-cols = {"eye": ((0.80, 0.78, 0.74), 0.15), "teeth": ((0.85, 0.82, 0.74), 0.3), "lash": ((0.03, 0.025, 0.02), 0.6)}
+cols = {"eye": ((0.80, 0.78, 0.74), 0.15), "mouth": ((0.85, 0.82, 0.74), 0.3), "lash": ((0.03, 0.025, 0.02), 0.6)}
 fm = face.data
-drop_slots = [i for i, m in enumerate(fm.materials) if m and any(k in m.name.lower() for k in DROP)]
-for i, m in enumerate(fm.materials):
-    n = (m.name if m else "").lower()
-    if i in drop_slots:
-        continue
-    key = next((k for k in cols if k in n), None)
-    fm.materials[i] = plain("f_" + n, *cols[key]) if key else SKIN
+eyes = [np.array(farm.matrix_world @ farm.data.bones[b].head_local) if farm is not None and b in farm.data.bones
+        else None for b in ("FACIAL_L_Eye", "FACIAL_R_Eye")]
+if any(e is None for e in eyes):
+    sys.exit("review_renders: the face has no FACIAL_L_Eye / FACIAL_R_Eye bones")
+roles = face_roles(face, *eyes)
+log("face sections (slot name: role) " + ", ".join(
+    "%s: %s" % (fm.materials[i].name if i < len(fm.materials) and fm.materials[i] else i, r) for i, r in sorted(roles.items())))
+drop_slots = [i for i in range(len(fm.materials)) if roles.get(i, "cover") == "cover"]
+for i in range(len(fm.materials)):
+    r = roles.get(i, "cover")
+    if r != "cover":
+        fm.materials[i] = SKIN if r == "skin" else plain("f_%s_%d" % (r, i), *cols[r])
 if drop_slots:
     import bmesh
     bm = bmesh.new()
