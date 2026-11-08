@@ -22,7 +22,7 @@ between the long ones, that fraction long), "outline": [width, RGB]} paints a ra
 units. A group with no rule takes its own "color" or the piece's.
 
 A piece's "surface" adds the base layer stack a texture painter lays under fabric: {"weave": {"pitch" (thread spacing,
-mm; keep it at 4 texels or more), "slub"}, "ao", "cavity", "edge" (how much AO, creases and crests shade the albedo),
+mm; keep it at 4 texels or more), "slub", "kind": plain | twill | leather}, "ao", "cavity", "edge" (how much AO, creases and crests shade the albedo),
 "normal" (weave normal strength), "ao_distance" (m), "rough_weave", "rough_mottle", "samples", "stitch": {"hem",
 "topstitch", "stitch", "pitch" (mm)}}. "stitch" puts the seams (a pressed groove, the allowance and a topstitch) and
 the hems (a turned band, a rolled edge and its stitch line) into the height that drives the normal. It bakes ambient
@@ -117,14 +117,39 @@ def rule_colour(px, py, rule, base):
     return c
 
 
+def value_noise(u, v, seed=0.0):
+    """Smooth value noise 0..1 on the integer lattice (a hashed value per lattice point, eased in between)."""
+    i, j = np.floor(u), np.floor(v)
+    fu, fv = u - i, v - j
+    fu, fv = fu * fu * (3 - 2 * fu), fv * fv * (3 - 2 * fv)
+
+    def h(a, b):
+        x = np.sin(a * 12.9898 + b * 78.233 + seed * 37.719) * 43758.5453
+        return x - np.floor(x)
+    top = h(i, j) * (1 - fu) + h(i + 1, j) * fu
+    bot = h(i, j + 1) * (1 - fu) + h(i + 1, j + 1) * fu
+    return top * (1 - fv) + bot * fv
+
+
 def weave_height(xm, ym, wv):
-    """Plain-weave height 0..1 at tile coordinates in metres: warp threads run along v, weft along u, and they swap
-    over at every crossing. "pitch" is the thread spacing in millimetres, "slub" how uneven the threads are."""
+    """Cloth or leather height 0..1 at tile coordinates in metres. "kind": "plain" (default) is a plain weave: warp
+    threads run along v, weft along u, and they swap over at every crossing; "twill" floats the warp over two picks
+    and under one, stepped one thread a row, so the floats line up in diagonal wales (twill, denim, drill); "leather"
+    is a pebbled grain of rounded cells with long shallow creases across it, no threads. "pitch" is the thread
+    spacing (the grain cell for leather) in millimetres, "slub" how uneven the threads are."""
     p = wv.get("pitch", 2.5) / 1000.0
     u, v = xm / p, ym / p
+    kind = wv.get("kind", "plain")
+    if kind == "leather":
+        cells = value_noise(u, v, 1.0) * 0.65 + value_noise(u * 2.7, v * 2.7, 2.0) * 0.35
+        crease = np.abs(value_noise(u * 0.35, v * 0.35, 3.0) - 0.5) * 2.0
+        return np.clip(cells ** 0.8 * (0.75 + 0.25 * np.minimum(crease * 4.0, 1.0)), 0.0, 1.0)
     warp = np.abs(np.cos(np.pi * u)) ** 0.6 * (0.55 + 0.45 * np.abs(np.sin(np.pi * v)))
     weft = np.abs(np.cos(np.pi * v)) ** 0.6 * (0.55 + 0.45 * np.abs(np.sin(np.pi * u)))
-    over = (np.floor(u) + np.floor(v)) % 2 == 0
+    if kind == "twill":
+        over = (np.floor(u) - np.floor(v)) % 3 != 0
+    else:
+        over = (np.floor(u) + np.floor(v)) % 2 == 0
     hgt = np.where(over, np.maximum(warp, 0.6 * weft), np.maximum(weft, 0.6 * warp))
     slub = wv.get("slub", 0.25)
     if slub:  # threads vary in thickness along their length

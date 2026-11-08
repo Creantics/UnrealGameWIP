@@ -4,17 +4,20 @@ cloth tool exports one: an OBJ with one group per pattern piece (UVs in pattern 
     blender -b --factory-startup --python-exit-code 1 --python tools/blender/sew_cloth.py -- SPEC.json OUT_DIR
 
 SPEC.json (lengths in the pattern are millimetres, everything placed in the body's world space is metres):
-    {"collider": {"fbx": "mh_body.fbx", "face": "mh_face.fbx"} | {"cylinder": {"center": [x, y, z], "radius": r,
-                  "height": h}} | {"cone": {"center", "r_bottom", "r_top", "height"}},
+    {"collider": {"fbx": "mh_body.fbx", "face": "mh_face.fbx", "extra": ["under/garment.obj"]}
+                 | {"cylinder": {"center": [x, y, z], "radius": r, "height": h}}
+                 | {"cone": {"center", "r_bottom", "r_top", "height"}},
      "edge": 0.015,        target edge length of the cloth mesh (m)
-     "frames": 60,         solver frames; "settle" more frames with the sewing springs off (default 0)
+     "frames": 60,         solver frames; "settle" more frames with the sewing springs off (default 0; nothing
+                           holds the seams then, and on a body both 20-frame tries tore the garment apart: leave it 0)
      "fabric": {...},      defaults for every piece (see FABRIC below); a piece's own "fabric" overrides them
      "self_collision": false,
      "pieces": [{"name": "front", "outline": [[u, v], ...] (mm, counter-clockwise seen from outside, u right, v up),
                  "place": PLACE, "pin": [REGION, ...], "shrink": [[REGION, factor], ...], "fabric": {...}}],
      "seams": [{"a": [piece, i, j], "b": [piece, k, l], "flip": "auto" | true | false}]}
 
-A seam side [piece, i, j] is the outline from corner i to corner j going forward through the corners (wrapping). Both
+A seam side [piece, i, j] is the outline from corner i to corner j going forward through the corners (wrapping); a
+and b may be the same piece (a side seam of a panel folded round the body, the underarm seam of a sleeve tube). Both
 sides are cut into the same number of segments, so every sewing spring joins one vertex to one vertex and the seam
 closes fully when the springs pull it shut; ease (one side longer) is gathered evenly. "flip" pairs a's start with
 b's end; "auto" picks the pairing with the shorter springs once the pieces are placed.
@@ -24,9 +27,17 @@ PLACE wraps the flat piece round an axis before the solver starts, the way a clo
      "radius": r or "radius_at": [[v mm, r], ...] (a cone), "angle": deg (where "at" lands, positive towards the viewer's right seen from outside), "at": [u, v]
      (the pattern point placed on "center"'s height), "conform": "out" | "in" | null, "gap": m}
     {"type": "plane", "center": [...], "normal": [...] (the outside), "up": [...], "at": [u, v]}
-"conform" pushes each vertex off the body along the cylinder's radius so the piece starts outside it: "out" casts
-from the axis outwards (a torso piece: the first hit is the torso, not the arm hanging beside it), "in" from outside
-inwards (a skirt round both legs). The vertex lands "gap" (default 0.01 m) off the surface it hit, never inside it.
+    {"type": "ribbon", "path": [[x, y, z], ...], "width": [x, y, z] or one per path point, "at": [u, v], "s_at": m}
+     pattern u runs along the path by arc length (u = at[0] lands "s_at" metres along it; straight on past both
+     ends), v along the width direction (v = at[1] on the path). A panel that runs from the back hem over the
+     shoulder to the front hem without a shoulder seam, or a collar laid along a neckline. Seen from outside the
+     outline is still counter-clockwise: the outside is path direction x width. "conform" "in" casts back along that
+     normal from "reach" metres out (default 0.12), so only body within reach of the panel moves it.
+A collider's "extra" OBJs (a garment sewn before this one, as sew_cloth writes it) collide too, so an over layer drapes
+on the under layer instead of through it. "conform" pushes each vertex off the body along the cylinder's radius so the
+piece starts outside it: "out" casts from the axis outwards (a torso piece: the first hit is the torso, not the arm
+hanging beside it), "in" from outside inwards (a skirt round both legs; "reach", default 1.5 m, is how far out the cast
+starts). The vertex lands "gap" (default 0.01 m) off the surface it hit, never inside it.
 
 REGION picks pattern vertices: {"v_above": mm} | {"v_below": mm} | {"u_above": mm} | {"u_below": mm} |
 {"rect": [u0, v0, u1, v1]}; several keys in one region must all hold. "pin" holds the region where it was placed
@@ -158,7 +169,7 @@ def seg_dist(pts, poly):
 
 def build_piece(p, rngs, edge_mm):
     """Triangulates one flat piece: boundary from the planned ranges, an even triangular lattice inside.
-    Returns (uv points mm, triangles, boundary index list, {seam index: (side, boundary vertex ids in order)})."""
+    Returns (uv points mm, triangles, boundary index list, {(seam index, side): boundary vertex ids in order})."""
     outline = np.array(p["outline"], float)
     if sum((outline[:, 0] * np.roll(outline[:, 1], -1) - np.roll(outline[:, 0], -1) * outline[:, 1])) < 0:
         raise ValueError("%s: outline is clockwise; patterns are counter-clockwise seen from outside" % p["name"])
@@ -168,9 +179,9 @@ def build_piece(p, rngs, edge_mm):
         ids = list(range(len(bnd), len(bnd) + r["n"])) + [None]  # the range's last point is the next range's first
         bnd.extend(pts[:-1].tolist())
         if r["seam"] is not None:
-            seam_ids[r["seam"]] = (r["side"], ids)
+            seam_ids[(r["seam"], r["side"])] = ids
     nb = len(bnd)
-    for si, (side, ids) in seam_ids.items():  # close each seam range on the vertex that starts the next range
+    for ids in seam_ids.values():  # close each seam range on the vertex that starts the next range
         last = ids[-2] + 1
         ids[-1] = last % nb
     bnd = np.array(bnd)
@@ -198,7 +209,7 @@ def build_piece(p, rngs, edge_mm):
         for o in origs:
             remap[o] = new_i
     uv = np.array([[v.x, v.y] for v in verts])
-    seams = {si: (side, [remap[i] for i in ids]) for si, (side, ids) in seam_ids.items()}
+    seams = {key: [remap[i] for i in ids] for key, ids in seam_ids.items()}
     boundary = [remap[k] for k in range(nb)]
     tris = [f for f in faces if len(f) == 3]
     return uv, tris, boundary, seams
@@ -215,12 +226,30 @@ def place(uv_mm, pl):
     at = np.array(pl.get("at", [0, 0]), float)
     du = (uv_mm[:, 0] - at[0]) / 1000.0
     dv = (uv_mm[:, 1] - at[1]) / 1000.0
-    c = np.array(pl["center"], float)
+    c = np.array(pl.get("center", [0.0, 0.0, 0.0]), float)  # a ribbon has a path instead
     if pl["type"] == "plane":
         n, up = unit(pl["normal"]), unit(pl.get("up", [0, 0, 1]))
         up = unit(up - n * (up @ n))
         right = np.cross(up, n)
         return c[None] + du[:, None] * right[None] + dv[:, None] * up[None], None
+    if pl["type"] == "ribbon":
+        path = np.array(pl["path"], float)
+        seg = np.linalg.norm(np.diff(path, axis=0), axis=1)
+        s_cum = np.r_[0.0, np.cumsum(seg)]
+        wid = np.array(pl["width"], float)
+        if wid.ndim == 1:
+            wid = np.tile(wid, (len(path), 1))
+        su = float(pl.get("s_at", 0.0)) + du
+        k = np.clip(np.searchsorted(s_cum, su) - 1, 0, len(seg) - 1)
+        t = (su - s_cum[k]) / np.maximum(seg[k], 1e-9)  # past either end t runs on: the path is carried on straight
+        tc = np.clip(t, 0.0, 1.0)
+        w = wid[k] + tc[:, None] * (wid[k + 1] - wid[k])
+        w /= np.maximum(np.linalg.norm(w, axis=1), 1e-12)[:, None]
+        tang = (path[k + 1] - path[k]) / np.maximum(seg[k], 1e-9)[:, None]
+        nrm = np.cross(tang, w)
+        nrm /= np.maximum(np.linalg.norm(nrm, axis=1), 1e-12)[:, None]
+        co = path[k] + t[:, None] * (path[k + 1] - path[k]) + dv[:, None] * w
+        return co, (co.copy(), nrm)
     ax = unit(pl.get("axis", [0, 0, 1]))
     fr = unit(pl.get("front", [0, -1, 0]))
     fr = unit(fr - ax * (fr @ ax))
@@ -236,7 +265,7 @@ def place(uv_mm, pl):
     return axis_pt + r[:, None] * radial, (axis_pt, radial)
 
 
-def conform(co, frame, bvh, mode, gap):
+def conform(co, frame, bvh, mode, gap, reach=1.5):
     """Pushes vertices off the body along the cylinder's radius (see the module doc)."""
     axis_pt, radial = frame
     moved = 0
@@ -249,8 +278,8 @@ def conform(co, frame, bvh, mode, gap):
                 continue
             need = (hit[0] - o).dot(d) + gap
         else:
-            far = o + d * 1.5
-            hit = bvh.ray_cast(far, -d, 1.5)
+            far = o + d * reach
+            hit = bvh.ray_cast(far, -d, reach)
             if hit[0] is None:
                 continue
             need = (hit[0] - o).dot(d) + gap
@@ -307,6 +336,12 @@ def load_collider(spec, sdir):
     for o in meshes:  # the LODs below 0 only slow the collision down
         if o is not body and o not in extra:
             bpy.data.objects.remove(o, do_unlink=True)
+    for path in col.get("extra", []):  # garments sewn before this one (an under layer): OBJs in this world, metres, Z up
+        before = set(bpy.data.objects)
+        bpy.ops.wm.obj_import(filepath=os.path.join(sdir, path), forward_axis="Y", up_axis="Z")
+        got = [o for o in bpy.data.objects if o not in before and o.type == "MESH"]
+        extra += got
+        log("collider extra %s: %d objects, %d verts" % (path, len(got), sum(len(o.data.vertices) for o in got)))
     keep = [body] + extra
     # freeze the rest pose into plain meshes (the solver collides with the evaluated mesh anyway; plain is faster)
     dg = bpy.context.evaluated_depsgraph_get()
@@ -380,7 +415,8 @@ def main():
         uv, ptris, boundary, seams = build_piece(p, ranges[p["name"]], edge_mm)
         co, frame = place(uv, p["place"])
         if p["place"].get("conform") and frame is not None:
-            n = conform(co, frame, bvh, p["place"]["conform"], p["place"].get("gap", gap_default))
+            n = conform(co, frame, bvh, p["place"]["conform"], p["place"].get("gap", gap_default),
+                        p["place"].get("reach", 0.12 if p["place"]["type"] == "ribbon" else 1.5))
             log("%s: conform %s moved %d of %d vertices" % (p["name"], p["place"]["conform"], n, len(co)))
         base = len(allco)
         pin_m = np.zeros(len(uv), bool)
@@ -405,7 +441,7 @@ def main():
         pins.extend(pin_m.tolist())
         snaps.extend(snap_m.tolist())
         shrinks.extend(shr.tolist())
-        for si, (side, ids) in seams.items():
+        for (si, side), ids in seams.items():
             seam_sides.setdefault(si, {})[side] = [base + i for i in ids]
         log("%s: %d vertices, %d triangles, %d boundary, %d pinned, %d seam sides"
             % (p["name"], len(uv), len(ptris), len(boundary), int(pin_m.sum()), len(seams)))

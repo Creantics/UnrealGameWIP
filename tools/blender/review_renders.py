@@ -3,7 +3,7 @@
 
     blender -b --factory-startup --python-exit-code 1 --python tools/blender/review_renders.py -- \
         BODY.fbx FACE.fbx OUT_DIR PIECE.fbx [PIECE.fbx ...] [shots=rest,walk,turn,close] [close=hem,seam,neck,face,ears]
-        [res=900] [samples=96] [gpu=1] [skin=r,g,b] [prefix=set_b]
+        [res=900] [samples=96] [gpu=1] [skin=r,g,b] [prefix=set_b] [exposure=0]
 
 Every piece is imported with its own armature copy; the body armature is posed and every other armature (the face's,
 each piece's) follows it bone for bone (Copy Transforms on the bones they share; the facial bones ride the head), so
@@ -310,6 +310,7 @@ sc.cycles.samples = int(opt.get("samples", 96))
 sc.cycles.use_denoising = True
 sc.render.film_transparent = False
 sc.view_settings.view_transform = "AgX"
+sc.view_settings.exposure = float(opt.get("exposure", 0.0))  # stops; the stage's lights read dark cloth a stop light
 if opt.get("gpu", "0") == "1":
     try:
         cp = bpy.context.preferences.addons["cycles"].preferences
