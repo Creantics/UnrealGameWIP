@@ -8,7 +8,8 @@ BIND.json:
      "pieces": {"NAME": {"export": "SK_Third_UnderRobe", "drop": ["arm"], "side": "l", "smooth": 12,
                          "smooth_gap": 0.01, "smooth_full": 0.05, "rigid": "foot_l", "limit": 8,
                          "legs": {"below": 0.92, "fade": 0.1, "blend": 0.04, "mid": 0.0, "k": 12, "yscale": 0.3,
-                                  "fold": 0.5, "hold": 1}, "keep_below": 0.84}}}
+                                  "fold": 0.5, "hold": 1}, "keep_below": 0.84,
+                         "free_below": {"z": 0.5, "fade": 0.1, "bone": "pelvis"}}}}
 
 Paths are read against the spec's folder. Each named piece is appended from the garments file and takes the weights of
 the nearest point on the LOD0 body's surface (Data Transfer, nearest face interpolated, as bind_r3 proved on Real3).
@@ -29,6 +30,9 @@ instead of shearing round the bent knee. "hold" 1 keeps the split weights out of
 the split), since relaxing over each panel's own mesh would part two layers again at their edges; "yscale" 0 makes
 the split weights a function of x and z alone. "keep_below" deletes the piece's vertices above that rest height
 first (an under-layer variant cut where a closed outer layer always covers it; the full piece stays its own export).
+"free_below" puts everything under rest height "z" on one bone ("bone", default pelvis), faded in over "fade" metres
+above it, after the leg split and the relaxing: a loose hem below the knee that runtime cloth will move, so a posed
+review shows it hanging free from the hips instead of gathered round each shin by the per-leg weights.
 Then the weights are cleaned, limited to "limit" (8) bones a vertex and normalised.
 
 Each piece leaves as OUT_DIR/EXPORT.fbx (the piece on the body armature, bind_r3's export settings) with
@@ -297,6 +301,7 @@ def main():
                     o.vertex_groups.new(name="pelvis")
                     W = np.hstack([W, np.zeros((len(W), 1))])
                     pel = W.shape[1] - 1
+                    gnames.append("pelvis")
                 W[:] = 0
                 W[:, pel] = 1
             W = W / np.maximum(W.sum(1, keepdims=True), 1e-12)
@@ -315,6 +320,19 @@ def main():
                 W = relax(W, a, b, deg, alpha, n_smooth)
                 log("%s: weights relaxed %d times on %d free-hanging vertices (over %.0f mm off the body), %d partly"
                     % (name, n_smooth, int((t >= 1).sum()), g1 * 1000, int(((t > 0) & (t < 1)).sum())))
+            fb = ps.get("free_below")
+            if fb:
+                zf, ff, bone = float(fb.get("z", 0.5)), float(fb.get("fade", 0.1)), fb.get("bone", "pelvis")
+                if bone not in gnames:
+                    o.vertex_groups.new(name=bone)
+                    W = np.hstack([W, np.zeros((len(W), 1))])
+                    gnames.append(bone)
+                g = np.clip((zf + ff - wverts(o)[:, 2]) / max(ff, 1e-6), 0, 1)
+                g = g * g * (3 - 2 * g)
+                W = W * (1 - g)[:, None]
+                W[:, gnames.index(bone)] += g
+                log("%s: %d vertices on %s below z %.2f, %d fading over %.0f mm above"
+                    % (name, int((g >= 1).sum()), bone, zf, int(((g > 0) & (g < 1)).sum()), ff * 1000))
             W[W < 0.001] = 0
             write_weights(o, W)
             activate(o)

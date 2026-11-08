@@ -8,7 +8,8 @@
 # Each --limb is a group name, the start and end joints (body units and axes, e.g. wrist then elbow) and the stretch of
 # that segment to cover, as fractions (0 = start joint, 1 = end joint). The tube sits --gap off the body; each turn is
 # --strip wide and advances --pitch along the limb (pitch < strip, so turns overlap), and a turn's leading edge stands
-# --step proud of the one it covers.
+# --step proud of the one it covers. --cross adds a second pass wound the other way over the first (each point takes
+# the higher of the two), so the bands cross in diamonds the way a bandage wound up and back down does.
 import argparse
 import numpy as np
 from scipy.ndimage import uniform_filter1d
@@ -83,6 +84,8 @@ def main():
     ap.add_argument("--bin-sides", type=int, default=20, help="body sampling bins round the limb")
     ap.add_argument("--rows", type=int, default=6, help="rings per cm along the limb")
     ap.add_argument("--sides", type=int, default=72)
+    ap.add_argument("--cross", type=float, default=0.0,
+                    help="pitch of a second pass wound the other way (0: none)")
     ap.add_argument("--keep-axis", action="store_true",
                     help="use the given axis as is (a band round the torso: slice centroids there are lopsided and "
                          "would tilt it)")
@@ -111,6 +114,9 @@ def main():
         s = (T[:, None] * L + (A[None, :] + np.pi) / (2 * np.pi) * a.pitch) % a.pitch / a.pitch
         # sawtooth: each turn rises over the one before it, with its leading edge rounded off
         lift = a.step * np.minimum(s / 0.15, 1.0) ** 0.5 * (1.0 - 0.35 * s)
+        if a.cross > 0:
+            s2 = (T[:, None] * L + (np.pi - A[None, :]) / (2 * np.pi) * a.cross) % a.cross / a.cross
+            lift = np.maximum(lift, a.step * np.minimum(s2 / 0.15, 1.0) ** 0.5 * (1.0 - 0.35 * s2))
         rad = R + a.gap + lift
         pts = (p0 + np.outer(T * L, ax)[:, None, :]
                + rad[..., None] * (np.cos(A)[None, :, None] * u + np.sin(A)[None, :, None] * v))

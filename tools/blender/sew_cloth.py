@@ -27,12 +27,17 @@ PLACE wraps the flat piece round an axis before the solver starts, the way a clo
      "radius": r or "radius_at": [[v mm, r], ...] (a cone), "angle": deg (where "at" lands, positive towards the viewer's right seen from outside), "at": [u, v]
      (the pattern point placed on "center"'s height), "conform": "out" | "in" | null, "gap": m}
     {"type": "plane", "center": [...], "normal": [...] (the outside), "up": [...], "at": [u, v]}
-    {"type": "ribbon", "path": [[x, y, z], ...], "width": [x, y, z] or one per path point, "at": [u, v], "s_at": m}
+    {"type": "ribbon", "path": [[x, y, z], ...], "width": [x, y, z] or one per path point, "at": [u, v], "s_at": m,
+     "gather": f or one per path point, "u_at": [u mm, ...] one per path point}
      pattern u runs along the path by arc length (u = at[0] lands "s_at" metres along it; straight on past both
      ends), v along the width direction (v = at[1] on the path). A panel that runs from the back hem over the
      shoulder to the front hem without a shoulder seam, or a collar laid along a neckline. Seen from outside the
      outline is still counter-clockwise: the outside is path direction x width. "conform" "in" casts back along that
-     normal from "reach" metres out (default 0.12), so only body within reach of the panel moves it.
+     normal from "reach" metres out (default 0.12), so only body within reach of the panel moves it. "gather" (default
+     1) lays the width that much narrower than the pattern (0.6: 100 mm of cloth in 60 mm), so the solver, pushing
+     it back to its rest width, buckles it into folds along the path, the way a scarf bunches. "u_at" names the
+     pattern u that lands on each path point (instead of "at"/"s_at"): a stretch of pattern longer than the path
+     between two points is laid in gathered (a cowl's top edge round the neck), and past both ends u runs on 1:1.
 A collider's "extra" OBJs (a garment sewn before this one, as sew_cloth writes it) collide too, so an over layer drapes
 on the under layer instead of through it. "conform" pushes each vertex off the body along the cylinder's radius so the
 piece starts outside it: "out" casts from the axis outwards (a torso piece: the first hit is the torso, not the arm
@@ -239,16 +244,25 @@ def place(uv_mm, pl):
         wid = np.array(pl["width"], float)
         if wid.ndim == 1:
             wid = np.tile(wid, (len(path), 1))
-        su = float(pl.get("s_at", 0.0)) + du
+        if "u_at" in pl:
+            ua = np.array(pl["u_at"], float) / 1000.0
+            uu = uv_mm[:, 0] / 1000.0
+            su = np.interp(uu, ua, s_cum)
+            su = np.where(uu < ua[0], s_cum[0] + uu - ua[0], np.where(uu > ua[-1], s_cum[-1] + uu - ua[-1], su))
+        else:
+            su = float(pl.get("s_at", 0.0)) + du
         k = np.clip(np.searchsorted(s_cum, su) - 1, 0, len(seg) - 1)
         t = (su - s_cum[k]) / np.maximum(seg[k], 1e-9)  # past either end t runs on: the path is carried on straight
         tc = np.clip(t, 0.0, 1.0)
         w = wid[k] + tc[:, None] * (wid[k + 1] - wid[k])
         w /= np.maximum(np.linalg.norm(w, axis=1), 1e-12)[:, None]
+        g = np.array(pl.get("gather", 1.0), float)
+        if g.ndim == 1:
+            g = g[k] + tc * (g[k + 1] - g[k])
         tang = (path[k + 1] - path[k]) / np.maximum(seg[k], 1e-9)[:, None]
         nrm = np.cross(tang, w)
         nrm /= np.maximum(np.linalg.norm(nrm, axis=1), 1e-12)[:, None]
-        co = path[k] + t[:, None] * (path[k + 1] - path[k]) + dv[:, None] * w
+        co = path[k] + t[:, None] * (path[k + 1] - path[k]) + (dv * g)[:, None] * w
         return co, (co.copy(), nrm)
     ax = unit(pl.get("axis", [0, 0, 1]))
     fr = unit(pl.get("front", [0, -1, 0]))
