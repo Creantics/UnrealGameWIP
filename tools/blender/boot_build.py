@@ -472,9 +472,15 @@ def build_leg(V, side, sp):
             for k in range(n):
                 for a, b, up_ in ((Lr[idx[k]], Rr[idx[k + 1]], 0.06), (Rr[idx[k]], Lr[idx[k + 1]], 0.0)):
                     ch = a[None, :] + np.linspace(0, 1, 9)[:, None] * (b - a)[None, :]
-                    mid = offset_along_normals(ttree, ch, lo + up_)  # one cord of each X a little over the other
+                    # the tongue's normals face in on the mirrored side: orient each by the upper's outward normal
+                    hit = [ttree.find_nearest(Vector(q)) for q in ch]
+                    nrm = []
+                    for h_ in hit:
+                        nt, nu_ = np.array(h_[1]), np.array(tree.find_nearest(h_[0])[1])
+                        nrm.append(nt if nt @ nu_ >= 0 else -nt)
+                    nrm = np.array(nrm)
+                    mid = np.array([np.array(h_[0]) for h_ in hit]) + nrm * (lo + up_)  # one cord of each X over the other
                     t_ = (b - a) / np.linalg.norm(b - a)
-                    nrm = np.array([np.array(ttree.find_nearest(Vector(q))[1]) for q in mid])
                     side = np.cross(t_, nrm)
                     side /= np.linalg.norm(side, axis=1, keepdims=True)
                     cords.append(grid_object("lace", [mid - side * lw - nrm * 0.08, mid, mid + side * lw - nrm * 0.08],
