@@ -315,6 +315,11 @@ def summary(tag):
         print("  group %d: %d strands, roots x %.1f..%.1f y %.1f..%.1f z %.1f..%.1f, length p10/50/90 %.2f/%.2f/%.2f cm"
               % ((g, k.sum()) + tuple(np.r_[R[k].min(0), R[k].max(0)][[0, 3, 1, 4, 2, 5]])
                  + tuple(np.percentile(L[k], [10, 50, 90]))))
+        # how low the hair reaches, front (y > 4), side and back (y < -3): where a cut line really ended up
+        T = P[off[1:] - 1][k]
+        for name, sel in (("front", T[:, 1] > 4), ("side", np.abs(T[:, 1]) <= 4 - 1e-9), ("back", T[:, 1] < -3)):
+            if sel.any():
+                print("    tips %-5s z p1/p10/p50 %.1f/%.1f/%.1f" % ((name,) + tuple(np.percentile(T[sel, 2], [1, 10, 50]))))
 
 
 summary("in")
