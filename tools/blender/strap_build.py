@@ -23,6 +23,8 @@ is a rectangular frame (and a middle bar if "middle") standing on the strap's ce
 "near", its long side across the strap. Each strap's start is its hull point furthest towards the front (-Y).
 A strap with "reach" > 0 hulls only what lies within that distance of its points' centre (a cuff round one wrist,
 a thigh strap round one leg; set "skip_bones": [] so the limb is not left out).
+A strap with "x_range": [lo, hi] hulls only what lies between those world x, so a thigh strap goes round its own
+leg where the thighs touch (its inner side then runs along the crease).
 A strap with "over_straps": [names] also goes round those straps (built earlier in the list), so where the two cross
 it lies on top and the other runs under it.
 A pouch (a holster, a pocket on a strap) is a closed box hung on a strap at the strap point nearest "near": "size" is
@@ -111,6 +113,9 @@ for st in SP["straps"]:
     N, band = st.get("samples", 220), st.get("band", 0.006)
     reach = st.get("reach", 0.0)
     Ps = P[np.linalg.norm(P - c0, axis=1) < reach] if reach > 0 else P
+    if "x_range" in st:
+        lo, hi = st["x_range"]
+        Ps = Ps[(Ps[:, 0] >= lo) & (Ps[:, 0] <= hi)]
     built = {nm: V for nm, V, _, _ in objs}
     if st.get("over_straps"):
         Ps = np.vstack([Ps] + [built[nm] for nm in st["over_straps"]])
