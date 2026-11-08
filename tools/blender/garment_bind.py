@@ -6,7 +6,8 @@ armature and writes one FBX per piece for UE, headless.
 BIND.json:
     {"body": "mh_body.fbx", "garments": "md_out/garments.blend",
      "pieces": {"NAME": {"export": "SK_Third_UnderRobe", "drop": ["arm"], "side": "l", "smooth": 12,
-                         "smooth_gap": 0.01, "smooth_full": 0.05, "rigid": "foot_l", "limit": 8}}}
+                         "smooth_gap": 0.01, "smooth_full": 0.05, "rigid": "foot_l", "limit": 8,
+                         "legs": {"below": 0.92, "fade": 0.1, "blend": 0.04, "mid": 0.0}, "keep_below": 0.84}}}
 
 Paths are read against the spec's folder. Each named piece is appended from the garments file and takes the weights of
 the nearest point on the LOD0 body's surface (Data Transfer, nearest face interpolated, as bind_r3 proved on Real3).
@@ -15,8 +16,13 @@ foot, ball; head: neck, head); "side" l or r keeps no bone of the other side (a 
 under half its weight refills from its neighbours on the piece. "smooth" relaxes the weights over the piece's own mesh
 that many times, faded in from "smooth_gap" metres off the body to fully at "smooth_full", so cloth that hangs free (a
 skirt between the legs, a sleeve's drop) moves as one sheet while cloth on the skin keeps the skin's weights. "rigid"
-puts the whole piece on one bone (a boot shaft's stiff collar: no; a buckle, a holster: yes). Then the weights are
-cleaned, limited to "limit" (8) bones a vertex and normalised.
+puts the whole piece on one bone (a boot shaft's stiff collar: no; a buckle, a holster: yes). "legs" is for a skirt
+over both legs: below "below" (rest height, metres; faded in over "fade" metres downwards) each vertex takes the
+weights of the nearest body vertex on its own side of the midline x = "mid", blended across the midline over
+"blend" metres either side, so each half of the skirt follows its own leg through a stride instead of the nearest
+surface flipping between the legs at the centre. "keep_below" deletes the piece's vertices above that rest height
+first (an under-layer variant cut where a closed outer layer always covers it; the full piece stays its own export).
+Then the weights are cleaned, limited to "limit" (8) bones a vertex and normalised.
 
 Each piece leaves as OUT_DIR/EXPORT.fbx (the piece on the body armature, bind_r3's export settings) with
 EXPORT_BC.png (sRGB), EXPORT_N.png (DirectX, green flipped from md_garment's OpenGL map, for UE), EXPORT_N_gl.png
@@ -27,6 +33,7 @@ import json
 import os
 import sys
 
+import bmesh
 import bpy
 import numpy as np
 from mathutils import kdtree
@@ -101,6 +108,50 @@ def relax(W, a, b, deg, alpha, iters):
     return W
 
 
+def leg_split(o, W, gnames, body, lg):
+    """Skirt weights below lg["below"]: each vertex takes the nearest body vertex's weights on its own side of the
+    midline, blended across it; faded in from the nearest-surface weights W over lg["fade"] metres downwards."""
+    below, fade = float(lg.get("below", 0.92)), float(lg.get("fade", 0.1))
+    blend, mid = float(lg.get("blend", 0.04)), float(lg.get("mid", 0.0))
+    BW = read_weights(body)
+    bnames = [vg.name for vg in body.vertex_groups]
+    col = {n: i for i, n in enumerate(gnames)}
+    for n in bnames:  # the garment may lack a group the leg weights need
+        if n not in col:
+            o.vertex_groups.new(name=n)
+            col[n] = len(col)
+            W = np.hstack([W, np.zeros((len(W), 1))])
+            gnames.append(n)
+    Wb = np.zeros((len(BW), W.shape[1]))
+    for bi, n in enumerate(bnames):
+        Wb[:, col[n]] = BW[:, bi]
+    BP = wverts(body)
+    P = wverts(o)
+    zone = BP[:, 2] < below + 0.08
+    trees = {}
+    for side, sel in (("l", zone & (BP[:, 0] > mid)), ("r", zone & (BP[:, 0] < mid))):
+        idx = np.nonzero(sel)[0]
+        kd = kdtree.KDTree(len(idx))
+        for k, i in enumerate(idx):
+            kd.insert(BP[i], int(i))
+        kd.balance()
+        trees[side] = kd
+    f = np.clip((below - P[:, 2]) / max(fade, 1e-6), 0, 1)
+    f = f * f * (3 - 2 * f)
+    t = np.clip((P[:, 0] - mid) / max(blend, 1e-6) * 0.5 + 0.5, 0, 1)  # 1 = the wearer's left (+x)
+    t = t * t * (3 - 2 * t)
+    n = 0
+    for vi in np.nonzero(f > 0)[0]:
+        wl = Wb[trees["l"].find(P[vi])[1]]
+        wr = Wb[trees["r"].find(P[vi])[1]]
+        legw = t[vi] * wl + (1 - t[vi]) * wr
+        W[vi] = (1 - f[vi]) * W[vi] + f[vi] * legw
+        n += 1
+    log("%s: leg-split weights on %d vertices below z %.2f (mid x %.3f, blend %.0f mm)"
+        % (o.name, n, below, mid, blend * 1000))
+    return W / np.maximum(W.sum(1, keepdims=True), 1e-12)
+
+
 def copy_textures(gdir, name, export, out):
     src = {k: os.path.join(gdir, "%s_%s.png" % (name, k)) for k in ("albedo", "normal", "orm")}
     if not os.path.exists(src["albedo"]):
@@ -166,6 +217,16 @@ def main():
         o.vertex_groups.clear()
         activate(o)
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+        if ps.get("keep_below") is not None:
+            zc = float(ps["keep_below"])
+            bm = bmesh.new()
+            bm.from_mesh(o.data)
+            cut = [v for v in bm.verts if v.co.z > zc]
+            bmesh.ops.delete(bm, geom=cut, context="VERTS")
+            bm.to_mesh(o.data)
+            bm.free()
+            o.data.update()
+            log("%s: %d vertices above z %.3f cut (keep_below)" % (name, len(cut), zc))
         if ps.get("rigid"):
             bone = ps["rigid"]
             if bone not in arm.data.bones:
@@ -214,6 +275,8 @@ def main():
                 W[:] = 0
                 W[:, pel] = 1
             W = W / np.maximum(W.sum(1, keepdims=True), 1e-12)
+            if ps.get("legs"):
+                W = leg_split(o, W, gnames, lod0, ps["legs"])
             n_smooth = int(ps.get("smooth", 0))
             if n_smooth:
                 P = wverts(o)
