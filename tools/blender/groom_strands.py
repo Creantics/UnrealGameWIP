@@ -10,7 +10,8 @@ direction, Z up). Guide strands are dropped unless "guides" is true; Unreal buil
 strand is written into one group (Blender's curves carry no group attribute), so a two-group groom comes back as one.
 Without "out" the script only prints the summary (root bounds and lengths per group) for choosing regions. "head" is
 an .npz with "v", the groom head's vertices in the same frame, drawn in grey under the strands in the preview;
-"preview_k" is how many hits on a pixel make it fully dark (default 6; raise it for a dense scalp groom).
+"preview_k" is how many hits on a pixel make it fully dark (default 6; raise it for a dense scalp groom);
+"preview_back": true adds the back half seen from behind as a fourth column.
 "zones": {name: region} (the "where" keys below, tested on every point of the result) prints a ZONE line per region:
 the points inside from strands rooted outside it (and the lowest z among them), then those of strands rooted inside;
 a clearance check, such as no hair in front of a lens or over a glasses arm. Below it, the root bounds of the strands
@@ -573,19 +574,21 @@ for zname, zw in spec.get("zones", {}).items():
 if spec.get("preview"):
     # the front half from the front, the left half from the left and the right half from the right (face toward the
     # camera's side), the input on the top row and the result below, darker where strands pile up (Blender has no PIL:
-    # the PNG goes through a Blender image)
+    # the PNG goes through a Blender image); "preview_back": true adds a fourth column, the back half from behind
     import bpy
     lo, hi = P0.min(0), P0.max(0)
     span = max(hi - lo) + 4
     N = 600
     s = N / span
     cen = (lo + hi) / 2
-    img = np.ones((2 * N, 3 * N), np.float32)
+    ncol = 4 if spec.get("preview_back") else 3
+    img = np.ones((2 * N, ncol * N), np.float32)
 
     def views(Q):
         # (column, horizontal coordinate, which points) per panel
-        return ((0, Q[:, 0] - cen[0], Q[:, 1] > cen[1]), (1, Q[:, 1] - cen[1], Q[:, 0] > cen[0]),
-                (2, cen[1] - Q[:, 1], Q[:, 0] < cen[0]))
+        v = ((0, Q[:, 0] - cen[0], Q[:, 1] > cen[1]), (1, Q[:, 1] - cen[1], Q[:, 0] > cen[0]),
+             (2, cen[1] - Q[:, 1], Q[:, 0] < cen[0]))
+        return v + ((3, cen[0] - Q[:, 0], Q[:, 1] < cen[1]),) if ncol == 4 else v
 
     if spec.get("head"):
         Hv = np.load(spec["head"])["v"]
@@ -613,11 +616,12 @@ if spec.get("preview"):
 
     draw(P0, n0, 0)
     draw(P, st["n"], 1)
-    img[:, N - 1:N + 1] = img[:, 2 * N - 1:2 * N + 1] = 0.5
+    for col in range(1, ncol):
+        img[:, col * N - 1:col * N + 1] = 0.5
     img[N - 1:N + 1, :] = 0.5
-    rgba = np.ones((2 * N, 3 * N, 4), np.float32)
+    rgba = np.ones((2 * N, ncol * N, 4), np.float32)
     rgba[..., :3] = img[::-1, :, None]
-    im = bpy.data.images.new("preview", 3 * N, 2 * N, alpha=True)
+    im = bpy.data.images.new("preview", ncol * N, 2 * N, alpha=True)
     im.pixels.foreach_set(rgba.ravel())
     im.filepath_raw = spec["preview"]
     im.file_format = "PNG"
