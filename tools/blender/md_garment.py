@@ -39,7 +39,10 @@ roughness, metallic) wired into the material, so a glTF export carries all three
 files, or {"file", "objects": [names]}, that shade the AO bake (the body under the garment) and are not kept. After the
 bakes, a piece's "decimate" (face ratio) thins the mesh and its "thickness" (m) solidifies it with a closed rim, so
 hems and cut ends read as cloth with a turned edge. "thickness_offset" picks the side it grows to: 0 about the sheet,
-1 outward, -1 inward (an under layer grows in and an over layer out, so the gap between them is kept). Each piece is written to OUT_DIR/NAME_albedo.png and kept as object NAME in OUT_DIR/garments.blend, with one
+1 outward, -1 inward (an under layer grows in and an over layer out, so the gap between them is kept). A piece's
+"solid_groups" names groups that are closed solids already (a moulded holster, a part built with its own wall): they
+are baked and textured with the rest, get no seams or hems in the stitch relief (their UV charts are not sewn
+panels), and the thickness step leaves them as they are. Each piece is written to OUT_DIR/NAME_albedo.png and kept as object NAME in OUT_DIR/garments.blend, with one
 double-sided material using that texture; garment_bind.py (or shell_bind.py --keep-material) then skins it to the body.
 """
 import json
@@ -468,11 +471,35 @@ def stitch_relief(objs, groups, img, height, res, side, st, weld):
           % (n_seam, n_hem, px_mm, groove))
 
 
+def split_solid(o):
+    """Moves the faces of the "md_solid" vertex group (closed solids) off o into an object of their own, which the
+    thickness step skips; returns it, or None when the piece has none."""
+    vg = o.vertex_groups.get("md_solid")
+    if vg is None:
+        return None
+    sep = o.copy()
+    sep.data = o.data.copy()
+    o.users_collection[0].objects.link(sep)
+    for ob, keep_solid in ((o, False), (sep, True)):
+        bm = bmesh.new()
+        bm.from_mesh(ob.data)
+        dl = bm.verts.layers.deform.active
+        gone = [f for f in bm.faces if all(vg.index in v[dl] for v in f.verts) != keep_solid]
+        bmesh.ops.delete(bm, geom=gone, context="FACES")
+        bm.to_mesh(ob.data)
+        bm.free()
+    print("md_garment: %s: %d solid faces kept out of the thickness" % (o.name, len(sep.data.polygons)))
+    return sep
+
+
 def build_piece(name, ps, objs, weld, out):
     groups = [g for g in ps["groups"] if g in objs]
     missing = set(ps["groups"]) - set(groups)
     if missing:
         sys.exit("md_garment: %s: groups not in the OBJ: %s" % (name, ", ".join(sorted(missing))))
+    solid = set(ps.get("solid_groups", []))
+    if solid - set(groups):
+        sys.exit("md_garment: %s: solid_groups not in the piece: %s" % (name, ", ".join(sorted(solid - set(groups)))))
     base = ps.get("color", [0.8, 0.8, 0.8])
     rules = ps.get("rules", {})
     # Each group's UV box and its size on the body (texel density follows the real panel size).
@@ -561,7 +588,11 @@ def build_piece(name, ps, objs, weld, out):
                 img[y0p:y1p, x0p:x1p] = tile
                 print("md_garment: %s: %d patches" % (g, len(rule["patches"])))
     if surf and surf.get("stitch"):
-        stitch_relief(objs, groups, img, height, res, side, surf["stitch"], weld)
+        stitch_relief(objs, [g for g in groups if g not in solid], img, height, res, side, surf["stitch"], weld)
+    # Closed solids keep their own wall: tag their vertices so the thickness step can pass them by.
+    for g in sorted(solid):
+        vg = objs[g].vertex_groups.new(name="md_solid")
+        vg.add(range(len(objs[g].data.vertices)), 1.0, "REPLACE")
     # Join the groups into one object and weld the seams the cloth tool sewed.
     bpy.ops.object.select_all(action="DESELECT")
     for g in groups:
@@ -602,12 +633,21 @@ def build_piece(name, ps, objs, weld, out):
         dec.ratio = ps["decimate"]
         bpy.ops.object.modifier_apply(modifier=dec.name)
     if ps.get("thickness"):
+        sep = split_solid(o)
         sol = o.modifiers.new("thickness", "SOLIDIFY")
         sol.thickness, sol.offset = ps["thickness"], ps.get("thickness_offset", 0.0)
         # Plain offset: each vertex moves one thickness along its normal. Even offset scales that by the crease angle
         # and shoots a vertex a metre off where panels meet at a sharp seam (a crotch, a collar).
         sol.use_rim = True
         bpy.ops.object.modifier_apply(modifier=sol.name)
+        if sep is not None:
+            bpy.ops.object.select_all(action="DESELECT")
+            sep.select_set(True)
+            o.select_set(True)
+            bpy.context.view_layer.objects.active = o
+            bpy.ops.object.join()
+    if "md_solid" in o.vertex_groups:
+        o.vertex_groups.remove(o.vertex_groups["md_solid"])
     path = im.filepath_raw
     print("md_garment: %s groups %s, %d -> %d vertices, %d faces, atlas %.2f m -> %s"
           % (name, groups, n0, len(o.data.vertices), len(o.data.polygons), side, path))
