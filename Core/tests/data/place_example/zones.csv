@@ -1,0 +1,3 @@
+id,share,slope_max_deg,bench,buildable_m2,weights,axis_deg,target_per_km2
+a,1.0,20,1,30000,apartment_block:1;walkway_block:1;lane_house:2,0,400
+b,0.8,20,0,5000,apartment_block:1;lane_house:1,0,200

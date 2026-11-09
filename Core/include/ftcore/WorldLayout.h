@@ -21,6 +21,10 @@
 // waypoint of goals.json (x -12..30, y -26..26) lies inside the plaza, so a story field step plays
 // the same in any district as on the Explore map.
 //
+// A map built from a world's own plan rather than from the generator places its districts itself
+// (pinDistricts): each district's frame moves to the map's centre and spawn, and the rest of the
+// generated layout stays as it was, unbuilt on that map.
+//
 // worlds.json (ids and numbers only, no story text):
 //   { "version": 1,
 //     "worlds": [ { "id": "solhaven", "map": "World_Solhaven", "style": "solhaven", "kind": "town",
@@ -154,6 +158,14 @@ struct WorldProp {
     std::uint8_t kind = 0; // 0 a tree, 1 a rock
 };
 
+// A district a map places itself: its plaza's centre and, when the map names one, its spawn, both in
+// the world's frame (metres).
+struct DistrictPin {
+    Vec2 centre;
+    Vec2 spawn;
+    bool hasSpawn = false;
+};
+
 class WorldLayout {
 public:
     static constexpr std::size_t kMaxDistricts = 16;
@@ -188,9 +200,21 @@ public:
     // The spawn's yaw in radians (atan2 of forward).
     FTCORE_API float spawnYaw(std::size_t district) const;
 
+    // The generator's spawn for a plaza centre: kPlazaCentreX behind it, facing the world's centre
+    // (facing +x from the centre itself).
+    FTCORE_API static Vec2 spawnFor(Vec2 centre);
+    // Moves every district to a map's own place, pins[i] for district i: its centre, and its spawn
+    // (spawnFor(centre) unless the pin names one), facing from the spawn toward the centre. The roads,
+    // blocks, props, landmarks and the road graph that tour() walks stay as generated: a map that places
+    // its own districts builds none of them and walks between districts on its navmesh. False, with the
+    // layout unchanged, when count isn't districtCount(), a centre or spawn lies outside the square, or a
+    // named spawn is under 1 m from its centre. No allocation beyond the error text.
+    FTCORE_API bool pinDistricts(const DistrictPin* pins, std::size_t count, std::string* error = nullptr);
+
     // Distance from p to the nearest road's centre line (a large number with no roads).
     FTCORE_API float roadDistance(Vec2 p) const;
-    // The district whose ring contains p, or -1.
+    // The district whose ring contains p (the nearest centre where rings overlap, as a map's own
+    // districts may), or -1.
     FTCORE_API int districtAt(Vec2 p) const;
     // Whether roads a-b exist (either way round).
     FTCORE_API bool joined(std::size_t a, std::size_t b) const;

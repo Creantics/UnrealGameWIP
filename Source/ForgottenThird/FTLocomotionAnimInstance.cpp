@@ -332,6 +332,16 @@ ftcore::LocoClipInfo UFTLocomotionAnimInstance::MeasureAir(const UAnimSequence& 
 	return ftcore::measureAir(Frames.GetData(), Frames.Num(), Clip.GetPlayLength());
 }
 
+bool UFTLocomotionAnimInstance::SetActionClip(int32 Slot, UAnimSequence* Clip)
+{
+	if (Slot < 0 || Slot >= MaxActionClips)
+	{
+		return false;
+	}
+	ActionClips[Slot] = Clip;
+	return true;
+}
+
 void UFTLocomotionAnimInstance::SetClip(ftcore::LocoClip Which, UAnimSequence* Clip)
 {
 	if (Which == ftcore::LocoClip::Count)
@@ -1339,6 +1349,65 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 			Layers[NumLayers++] = {From, Instance->PrevTime, TravWeight * (1.f - Share), Instance->bPrevLoop};
 		}
 	}
+	// The host's action clips (a fight's strikes) over all of it by their summed weight; when full, the lightest
+	// layers make room. With nothing under them they take the whole body.
+	float ActWeight = 0.f;
+	int32 NumActs = 0;
+	for (int32 I = 0; I < Instance->NumActions; ++I)
+	{
+		if (Instance->ActionClips[Instance->Actions[I].Slot])
+		{
+			ActWeight += Instance->Actions[I].Weight;
+			++NumActs;
+		}
+	}
+	ActWeight = FMath::Min(ActWeight, 1.f);
+	if (NumActs > 0 && ActWeight > 0.f)
+	{
+		const float ActSum = ActWeight;
+		const int32 Room = MaxLayers - NumActs;
+		float Sum = 0.f;
+		for (int32 I = 0; I < NumLayers; ++I)
+		{
+			Sum += Layers[I].Weight;
+		}
+		while (NumLayers > Room)
+		{
+			int32 Lightest = 0;
+			for (int32 K = 1; K < NumLayers; ++K)
+			{
+				Lightest = Layers[K].Weight < Layers[Lightest].Weight ? K : Lightest;
+			}
+			Sum -= Layers[Lightest].Weight;
+			Layers[Lightest] = Layers[--NumLayers];
+		}
+		for (int32 I = 0; I < NumLayers; ++I)
+		{
+			Layers[I].Weight = Sum > 0.f ? Layers[I].Weight / Sum * (1.f - ActWeight) : 0.f;
+		}
+		// Nothing under them: the actions are the whole pose.
+		const float Scale = Sum > 0.f ? 1.f : 1.f / ActSum;
+		float Added = 0.f;
+		for (int32 I = 0; I < Instance->NumActions && NumLayers < MaxLayers; ++I)
+		{
+			const UFTLocomotionAnimInstance::FAction& A = Instance->Actions[I];
+			const UAnimSequence* Seq = Instance->ActionClips[A.Slot].Get();
+			if (!Seq)
+			{
+				continue;
+			}
+			const float W = FMath::Min(A.Weight, ActSum - Added);
+			Added += W;
+			if (W > 0.f)
+			{
+				Layers[NumLayers++] = {Seq, A.Time, W * Scale, false};
+			}
+		}
+		if (Sum <= 0.f)
+		{
+			ActWeight = 1.f;
+		}
+	}
 
 	// The air pose over the limbs.
 	const ftcore::LocoLimbs& Limbs = Loco.limbs();
@@ -1381,10 +1450,10 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 		SpineBend = HeadBend = FQuat::Identity;
 		ElbowHold = 0.f;
 	}
-	// A traversal clip has its own trunk, head, arms and legs: the bends and the air pose give way to it.
-	if (TravWeight > 0.f)
+	// A traversal clip or an action has its own trunk, head, arms and legs: the bends and the air pose give way to it.
+	if (TravWeight > 0.f || ActWeight > 0.f)
 	{
-		const float Keep = 1.f - TravWeight;
+		const float Keep = (1.f - TravWeight) * (1.f - ActWeight);
 		SpineBend = FQuat::Slerp(FQuat::Identity, SpineBend, Keep);
 		HeadBend = FQuat::Slerp(FQuat::Identity, HeadBend, Keep);
 		ElbowHold *= Keep;

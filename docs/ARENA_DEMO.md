@@ -314,7 +314,7 @@ An import replaces what is there, so rerunning it after a boss's model changes i
 log's "face bones" line is a warning for a boss, which has no human head).
 
 Pick the lead with `-ArenaLead=Devin`, `-ArenaLead=Duy` or `-ArenaLead=Third` (the name of a `PartyLooks` entry in the local
-`Config/UserGame.ini`, any case); each plays its own fighter kit (Devin the blade, Duy kicks and a gun, the Third spells).
+`Config/UserGame.ini`, any case); each plays its own fighter kit (Devin gauntlets, Duy guns, the Third magic).
 Without the flag the lead is the first look (Devin in the main checkout).
 
 ```
@@ -327,6 +327,31 @@ UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -
 kind in whatever zone `-ArenaStage` names (the sand ring by default). `-ArenaAutoPlay` has the autopilot play the lead.
 For a picture with no window: `-RenderOffScreen -ArenaShot=<path prefix> -ArenaShotDelay=8` in place of `-windowed`
 (needs a renderer, not `-NullRHI`).
+
+### The leads' weapons
+
+Each lead fights with its kit's weapon (`Source/ForgottenThird/FTLeadWeapons.h`): its light attacks play strike clips
+retargeted onto its body, Devin wears gauntlets, Duy holds a pistol, and each weapon has its effects. Nothing below is
+committed; a lead without it fights as before (one warning per missing piece). In order, from the checkout the game runs
+from:
+
+1. The props: `-run=FTImportProp -Source=<path>/Devin_Gauntlet_R.glb -Dest=/Game/Props/Weapons` (and
+   `Devin_Gauntlet_L.glb`, `Duy_Pistol.glb`), as for the slab halves above.
+2. Their sockets: `-run=FTWeaponSockets -Gauntlets=<gauntlet socket .json> -Pistol=<pistol socket .json>` puts the
+   gauntlets' four sockets on Devin's body, the pistol's grip and holster sockets on Duy's and the `muzzle` socket on the
+   pistol (`FTWeaponSocketsCommandlet.h` has the axes).
+3. The effects: `-run=FTBuildVfx -Only=<name>` for `muzzle_flash`, `gauntlet_spark`, `spell_bolt`, `spell_burst` and
+   `spell_ward` ([VFX_UE.md](VFX_UE.md)).
+4. The strike clips: the test human's `lead_jab`, `lead_cross`, `lead_kick_r`, `lead_counter` and `lead_finisher`
+   ([BEAT_ANIMS.md](BEAT_ANIMS.md)) retargeted onto each lead's body into its look's `ClipFolder`:
+   `-run=FTBuildRig -Mesh=<the look's body> -Dest=/Game/Characters/<Lead>/RigReal3/LeadRig
+   -RetargetFrom=/Game/Characters/TestHuman/Rig/IK_test_human.IK_test_human -Clips=<the five> -Names=<their names>
+   -Out=<the look's ClipFolder> -AlignPose`.
+
+On each of the lead's attacks the clip of its move plays over the locomotion, keyed so its impact lands as the attack
+goes active (a kick, shot or cast with no clip of its own is thrown as the punch on its side), and fades out after.
+`-ArenaShotStrikes=N` shoots the first N of them (`_s<k>_<clip>`; `-ArenaShotClose` from close by), `-ArenaNoWeaponProps`
+and `-ArenaNoWeaponFx` leave the props and the effects off for an OFF/ON pair.
 
 ## Launch
 
@@ -454,8 +479,13 @@ each frame and handed to the fight on its next step, so no press is lost between
 | `-ArenaShotDelay=S` | Seconds before the first screenshot (the fight waits for it). |
 | `-ArenaOverview` | With `-ArenaShot`, a first view `_0_overview` of the whole zone from a camera high over its south-west side (pulled in along the line if a building is in the way), HUD off, with the zone's walls (green), obstacles (red) and road mouths (yellow) drawn as debug lines for the picture only; then `_0b_edge`, the player 1.4 m from the wall on his left to show the edge cue. |
 | `-ArenaShotAt=S,S,...` | With `-ArenaShot`, an extra view `_t_<S>` at each of those fight times (after `_1_ring`; the six views and the quit are unchanged), so two runs of the same fight are shot at the same moments. |
+| `-ArenaShotStrikes=N` | With `-ArenaShot`, an extra view `_s<k>_<clip>` 0.04 s after each of the lead's first N attacks goes active (after `_1_ring`; `<clip>` is the strike clip it plays, `noclip` when none), with the weapon's effect just started. The frame is that moment exactly: the fight's clock is brought to it and held, the lead's effects are run to their age then and paused (Niagara keeps the world's clock, which runs on in the frames before the view), and the lead's own clock stops until the view is taken. Attacks that go by while another view holds the fight are skipped. |
+| `-ArenaShotClose` | With `-ArenaShotStrikes`, those views close and HUD off: a camera 1 m from the striking hand (the foot for a kick), square to the lead's side on that hand's side, the hand at the frame's centre, after a 0.6 s settle. With gauntlets the first strike adds `_s1_<clip>_arms`, both forearms from 1.4 m ahead of the lead on the striking side. Each view logs where the hand (and the pistol's muzzle) fall in the frame. |
+| `-ArenaNoWeaponProps` | The lead's weapon props (gauntlets, pistol) stay off; the fight runs the same. |
+| `-ArenaNoWeaponFx` | The lead's weapon effects (muzzle flash, gauntlet sparks, the Third's bolt, burst and ward) stay off; the fight runs the same (the OFF half of an OFF/ON capture). |
 | `-ArenaNoBossFx` | The stone bearer's effects (tells, impacts, chips, the weak point's glow) stay off and the fight runs the same (the OFF half of an OFF/ON capture). |
 | `-ArenaNoKiteFx` | The Kite-Mother's effects stay off and the fight runs the same (the OFF half of an OFF/ON capture). |
+| `-ArenaWorldView` | With `-ArenaShot` (and without `-ArenaOverview`), a first view `_0_world`: a low wide look across the zone at the scene round it, HUD off, nothing drawn; for judging the world's look (docs/PHOTOREAL_LOOK.md). |
 
 At the end of every fight the log gets one line, ids and counts only, never text, as the beat screen logs its own ([BEAT_SCREEN.md](BEAT_SCREEN.md), "Log lines"). Core formats it into a fixed buffer (`ftcore::arenaResultLine`):
 
@@ -474,8 +504,9 @@ warning and quits with exit code 2, so an unattended run never hangs.
 - The fight steps at a fixed 1/60 s (at most 8 steps a frame); the figures are drawn between the last
   two steps, so the speed of the frame never changes the fight.
 - The lead is `AFTArenaFighter` wearing a look from `PartyLooks` (body, face, outfit and grooms; idle, walk and run by speed
-  from the look's retargeted locomotion clips, `UFTLocomotionAnimInstance`), else the test human; there are no combat clips for
-  the look yet, so its swings, guard and roll stay the figure's own overlay (a blade on a pivot arm, a shield plate, a
+  from the look's retargeted locomotion clips, `UFTLocomotionAnimInstance`), else the test human. Its attacks play the
+  strike clips retargeted onto its body over that locomotion, and it carries its weapon (see "The leads' weapons"); without
+  the clips, and for its guard and roll, the figure keeps its own overlay (a blade on a pivot arm, a shield plate, a
   crouch and lean). Enemies are primitive figures in their kind's colour, or a skinned mesh (above). Swings, guards, rolls, staggers and falls are posed from the fight's output each frame.
 - The camera is a spring arm over the lead's shoulder, its length, height, shoulder offset and lock pitch from
   the zone's camera rig (6.4 m, 1.5 m, 1.2 m and -20 degrees, the same for every fight: a giant is found by locking

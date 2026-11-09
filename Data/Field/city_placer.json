@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "seed": 4242,
+  "setback_margin_m": 1.0,
+  "end_margin_m": 2.0,
+  "reject_step_m": 4.0,
+  "bench_max_slope_deg": 30.0,
+  "variety": {
+    "radius_m": 300.0,
+    "spacing_m": 100.0,
+    "max_share": 0.25,
+    "min_classes": 6,
+    "min_buildings": 20,
+    "max_slope_deg": 4.0,
+    "landmark_m": 500.0
+  },
+  "classes": [
+    {
+      "name": "apartment_block",
+      "front_growth_m": 1.2,
+      "rear_growth_m": 2.0,
+      "gap_m": 6.0,
+      "jitter_m": 4.0,
+      "bench": false,
+      "storey_m": 3.0,
+      "top_extra_m": 1.2,
+      "variants": [
+        { "name": "w12_d16", "width_m": 12.0, "depth_m": 16.0, "storeys": [4, 12] },
+        { "name": "w16_d24", "width_m": 16.0, "depth_m": 24.0, "storeys": [4, 12] },
+        { "name": "w20_d40", "width_m": 20.0, "depth_m": 40.0, "storeys": [4, 12] }
+      ]
+    },
+    {
+      "name": "walkway_block",
+      "front_growth_m": 2.0,
+      "rear_growth_m": 1.2,
+      "gap_m": 6.0,
+      "jitter_m": 4.0,
+      "bench": false,
+      "storey_m": 3.0,
+      "top_extra_m": 3.9,
+      "variants": [
+        { "name": "w27_d14", "width_m": 27.0, "depth_m": 14.0, "storeys": 9 }
+      ]
+    },
+    {
+      "name": "lane_house",
+      "front_growth_m": 0.9,
+      "rear_growth_m": 0.0,
+      "gap_m": 0.0,
+      "jitter_m": 0.0,
+      "bench": true,
+      "storey_m": 3.0,
+      "top_extra_m": 0.9,
+      "variants": [
+        { "name": "v1", "width_m": 5.0, "depth_m": 10.0, "storeys": 3 },
+        { "name": "v2", "width_m": 6.0, "depth_m": 12.0, "storeys": 3 },
+        { "name": "v3", "width_m": 7.0, "depth_m": 11.0, "storeys": 3 },
+        { "name": "v4", "width_m": 8.0, "depth_m": 14.0, "storeys": 3 },
+        { "name": "v5", "width_m": 6.0, "depth_m": 12.0, "storeys": 2, "rise_m": 1.0, "top_extra_m": 0.0 },
+        { "name": "v6", "width_m": 8.0, "depth_m": 12.0, "storeys": 2, "rise_m": 2.0, "top_extra_m": 0.0 }
+      ]
+    }
+  ]
+}

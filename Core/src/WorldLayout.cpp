@@ -292,10 +292,52 @@ float WorldLayout::roadDistance(Vec2 p) const {
     return best;
 }
 
+Vec2 WorldLayout::spawnFor(Vec2 centre) {
+    const float len = std::hypot(centre.x, centre.y);
+    const Vec2 forward = len > 1.f ? Vec2{-centre.x / len, -centre.y / len} : Vec2{1.f, 0.f};
+    return {centre.x - forward.x * kPlazaCentreX, centre.y - forward.y * kPlazaCentreX};
+}
+
+bool WorldLayout::pinDistricts(const DistrictPin* pins, std::size_t count, std::string* error) {
+    const auto fail = [error](std::string why) {
+        if (error) *error = std::move(why);
+        return false;
+    };
+    if (count != districtCount_ || (count > 0 && !pins))
+        return fail("pins for " + std::to_string(count) + " districts, the layout has " + std::to_string(districtCount_));
+    const float half = side_ * 0.5f;
+    const auto inside = [half](Vec2 p) { return std::fabs(p.x) <= half && std::fabs(p.y) <= half; };
+    for (std::size_t i = 0; i < count; ++i) {
+        const DistrictPin& p = pins[i];
+        if (!inside(p.centre)) return fail("district " + std::to_string(i) + "'s centre lies outside the square");
+        if (p.hasSpawn && !inside(p.spawn)) return fail("district " + std::to_string(i) + "'s spawn lies outside the square");
+        if (p.hasSpawn && worldDist(p.spawn, p.centre) < 1.f)
+            return fail("district " + std::to_string(i) + "'s spawn is under 1 m from its centre");
+    }
+    for (std::size_t i = 0; i < count; ++i) {
+        const DistrictPin& p = pins[i];
+        WorldDistrict& d = districts_[i];
+        d.centre = p.centre;
+        d.origin = p.hasSpawn ? p.spawn : spawnFor(p.centre);
+        const float dx = d.centre.x - d.origin.x;
+        const float dy = d.centre.y - d.origin.y;
+        const float len = std::hypot(dx, dy);
+        d.forward = len > 0.f ? Vec2{dx / len, dy / len} : Vec2{1.f, 0.f};
+    }
+    return true;
+}
+
 int WorldLayout::districtAt(Vec2 p) const {
-    for (std::size_t i = 0; i < districtCount_; ++i)
-        if (worldDist(p, districts_[i].centre) <= kDistrictRadius) return static_cast<int>(i);
-    return -1;
+    int best = -1;
+    float bestDist = 0.f;
+    for (std::size_t i = 0; i < districtCount_; ++i) {
+        const float dist = worldDist(p, districts_[i].centre);
+        if (dist <= kDistrictRadius && (best < 0 || dist < bestDist)) {
+            best = static_cast<int>(i);
+            bestDist = dist;
+        }
+    }
+    return best;
 }
 
 bool WorldLayout::joined(std::size_t a, std::size_t b) const {
@@ -464,10 +506,9 @@ bool generateWorldLayout(const WorldSpec& spec, WorldLayout& out, std::string* e
     // District frames: the spawn faces the world's centre, with the plaza's centre kPlazaCentreX ahead.
     for (std::size_t i = 0; i < count; ++i) {
         WorldDistrict& d = out.districts_[i];
+        d.origin = WorldLayout::spawnFor(d.centre);
         const float len = std::hypot(d.centre.x, d.centre.y);
         d.forward = len > 1.f ? Vec2{-d.centre.x / len, -d.centre.y / len} : Vec2{1.f, 0.f};
-        d.origin = {d.centre.x - d.forward.x * WorldLayout::kPlazaCentreX,
-                    d.centre.y - d.forward.y * WorldLayout::kPlazaCentreX};
     }
 
     // Landmarks: in the building ring, behind the spawn as near as the roads allow, so a walker sees it

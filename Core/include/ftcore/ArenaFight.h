@@ -176,6 +176,7 @@
 
 #include "ftcore/Api.h"
 #include "ftcore/Explore.h" // Vec2
+#include "ftcore/FightAnimator.h" // FightClip
 #include "ftcore/Load.h"
 #include "ftcore/ReadCards.h"
 
@@ -241,9 +242,16 @@ struct ArenaAttack {
     float total() const { return startup + active + recovery; }
 };
 
+// What a lead fights with (arena.json "weapon": "none", "gauntlets", "guns" or "magic"). The rules never read it:
+// the numbers of the kit are the weapon. The host picks its attack and hit clips and its props by it, and
+// arenaStrikePattern turns it into a FightAnimator strike pattern.
+enum class ArenaWeapon : std::uint8_t { None, Gauntlets, Guns, Magic };
+FTCORE_API const char* arenaWeaponName(ArenaWeapon w); // "none", "gauntlets", "guns", "magic". Literals.
+
 // The player's kit. arena.json has one per lead id and a "default"; each lead's own blocks are its guard and
 // parry numbers (guardArcCos, guardAbsorb, guardMoveScale, guardBreakTime, parryWindow, parryRearm).
 struct ArenaFighter {
+    ArenaWeapon weapon = ArenaWeapon::None; // a lead's kit inherits the default's like every other key
     int hp = 100;
     float stamina = 100.f;
     float staminaRegen = 45.f;  // per second, once staminaDelay has passed since the last spend
@@ -299,6 +307,25 @@ struct ArenaFighter {
     float readPoise = 5.f;      // poise a Read counter costs the attacker (upright only)
     float readWrongPoise = 10.f; // poise a misread gives the attacker back (up to its kind's poise)
 };
+
+// A shot from a gun reaches at least this far; a light, heavy or riposte shorter than that is a close-in move.
+inline constexpr float kArenaShotRange = 5.f;
+// The strike pattern of a lead's kit for a FightAnimator::setPattern, in chain order (one entry per light, so at most
+// kMaxLightChain): None and Gauntlets punch (StrikeLeft, StrikeRight, ...), Magic casts (Cast), Guns shoots
+// (WeaponRight) with every light that reaches kArenaShotRange and kicks (KickLeft, KickRight in turn) with the
+// rest. Writes up to `cap` entries to `out` and returns how many (no allocation).
+FTCORE_API std::size_t arenaStrikePattern(const ArenaFighter& kit, FightClip* out, std::size_t cap);
+// The clip of the kit's heavy: a gun's heavy that reaches kArenaShotRange is a shot (WeaponRight), a shorter one a
+// kick (KickRight); Magic casts, the rest punch (StrikeRight).
+FTCORE_API FightClip arenaHeavyStrike(const ArenaFighter& kit);
+// The kit's attack for the player's move id (an event's or ArenaPlayerOut::move: a light's chain index below
+// lightCount, kArenaHeavyMove, kArenaRiposteMove or kArenaReleaseMove); nullptr for any other id.
+FTCORE_API const ArenaAttack* arenaPlayerAttack(const ArenaFighter& kit, std::uint8_t move);
+// The clip that shows the player's move: a light its pattern strike (arenaStrikePattern), the heavy
+// arenaHeavyStrike's, a riposte Counter, a Release Finisher; Stance for any other id. A host plays it with
+// FightAnimator::playStrike (a riposte or Release with play) keyed to the attack's active part, startup after
+// AttackStarted.
+FTCORE_API FightClip arenaPlayerStrike(const ArenaFighter& kit, std::uint8_t move);
 
 // What an enemy move shows during its startup: the word on its Read card (append only; generic shapes,
 // the host shows each through its own ui string). arena.json spells it as arenaTellName gives it.

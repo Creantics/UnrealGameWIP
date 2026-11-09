@@ -1778,6 +1778,68 @@ int arenaWholeBeats(float seconds, float bpm) {
     return static_cast<int>(beats);
 }
 
+const char* arenaWeaponName(ArenaWeapon w) {
+    switch (w) {
+    case ArenaWeapon::None: return "none";
+    case ArenaWeapon::Gauntlets: return "gauntlets";
+    case ArenaWeapon::Guns: return "guns";
+    case ArenaWeapon::Magic: return "magic";
+    }
+    return "";
+}
+
+std::size_t arenaStrikePattern(const ArenaFighter& kit, FightClip* out, std::size_t cap) {
+    if (!out) return 0;
+    const std::size_t count = std::min<std::size_t>({static_cast<std::size_t>(kit.lightCount), kMaxLightChain, cap});
+    std::size_t punches = 0, kicks = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        FightClip c = FightClip::Cast;
+        if (kit.weapon == ArenaWeapon::Guns && kit.light[i].range >= kArenaShotRange) {
+            c = FightClip::WeaponRight;
+        } else if (kit.weapon == ArenaWeapon::Guns) {
+            c = (kicks++ % 2u == 0u) ? FightClip::KickLeft : FightClip::KickRight;
+        } else if (kit.weapon != ArenaWeapon::Magic) {
+            c = (punches++ % 2u == 0u) ? FightClip::StrikeLeft : FightClip::StrikeRight;
+        }
+        out[i] = c;
+    }
+    return count;
+}
+
+FightClip arenaHeavyStrike(const ArenaFighter& kit) {
+    switch (kit.weapon) {
+    case ArenaWeapon::Magic: return FightClip::Cast;
+    case ArenaWeapon::Guns: return kit.heavy.range >= kArenaShotRange ? FightClip::WeaponRight : FightClip::KickRight;
+    case ArenaWeapon::None:
+    case ArenaWeapon::Gauntlets: break;
+    }
+    return FightClip::StrikeRight;
+}
+
+const ArenaAttack* arenaPlayerAttack(const ArenaFighter& kit, std::uint8_t move) {
+    switch (move) {
+    case kArenaHeavyMove: return &kit.heavy;
+    case kArenaRiposteMove: return &kit.riposte;
+    case kArenaReleaseMove: return &kit.release;
+    default: break;
+    }
+    if (move < kit.lightCount && static_cast<std::size_t>(move) < kMaxLightChain) return &kit.light[move];
+    return nullptr;
+}
+
+FightClip arenaPlayerStrike(const ArenaFighter& kit, std::uint8_t move) {
+    switch (move) {
+    case kArenaHeavyMove: return arenaHeavyStrike(kit);
+    case kArenaRiposteMove: return FightClip::Counter;
+    case kArenaReleaseMove: return FightClip::Finisher;
+    default: break;
+    }
+    if (move >= kit.lightCount || static_cast<std::size_t>(move) >= kMaxLightChain) return FightClip::Stance;
+    FightClip p[kMaxLightChain];
+    const std::size_t n = arenaStrikePattern(kit, p, kMaxLightChain);
+    return static_cast<std::size_t>(move) < n ? p[move] : FightClip::Stance;
+}
+
 const char* arenaTellName(ArenaTell t) {
     switch (t) {
     case ArenaTell::Strike: return "strike";
@@ -2092,7 +2154,7 @@ void arenaParseAttackObject(JsonValue j, const std::string& path, ArenaAttack& a
 void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, ArenaStrings& errors,
                        ArenaStrings* warnings) {
     arenaUnknownKeys(j, path,
-                     {"id", "hp", "stamina", "staminaRegen", "staminaDelay", "poise", "poiseDelay", "hitstun",
+                     {"id", "weapon", "hp", "stamina", "staminaRegen", "staminaDelay", "poise", "poiseDelay", "hitstun",
                       "moveSpeed", "turnRate", "bodyRadius", "bufferTime", "light", "chainGap", "heavy", "riposte",
                       "dodgeTime", "dodgeDistance", "dodgeInvulnStart", "dodgeInvulnEnd", "dodgeStamina",
                       "dodgeCancel", "guardArcCos", "guardAbsorb", "guardMoveScale", "guardBreakTime", "parryWindow",
@@ -2101,6 +2163,15 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
                       "releasePoise", "pairWindow", "pairHits", "readPower", "readStackPower", "readPoise",
                       "readWrongPoise"},
                      false, warnings);
+    if (const JsonValue wj = j["weapon"]; !wj.isAbsent()) {
+        bool known = false;
+        for (const ArenaWeapon w : {ArenaWeapon::None, ArenaWeapon::Gauntlets, ArenaWeapon::Guns, ArenaWeapon::Magic}) {
+            if (!wj.isString() || wj.string() != arenaWeaponName(w)) continue;
+            f.weapon = w;
+            known = true;
+        }
+        if (!known) errors.push_back(path + ".weapon: expected one of none, gauntlets, guns, magic");
+    }
     arenaInt(j, "hp", f.hp, 1, 100000, path, errors);
     arenaNum(j, "stamina", f.stamina, 0, 100000, true, path, errors);
     arenaNum(j, "staminaRegen", f.staminaRegen, 0, 100000, false, path, errors);

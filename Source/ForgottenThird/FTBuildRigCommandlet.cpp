@@ -337,7 +337,7 @@ bool LogClip(const UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildRig: clip %s has no data model."), *Clip.GetPathName());
 		return false;
 	}
-	int32 Moving = 0, OffBind = 0;
+	int32 Moving = 0, OffBind = 0, Twists = 0, TwistsOff = 0;
 	TArray<FName> Tracks;
 	Model->GetBoneTrackNames(Tracks);
 	TArray<FTransform> Keys;
@@ -362,6 +362,28 @@ bool LogClip(const UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 		{
 			++OffBind;
 		}
+		// Twist bones carry no motion of their own: a clip with its twist baked holds them off the bind pose, an
+		// export or import that dropped the bake leaves them on it. Each gets its own line.
+		if (Bone != INDEX_NONE && Track.ToString().Contains(TEXT("twist")))
+		{
+			const FQuat Bind = Skeleton.GetRefBonePose()[Bone].GetRotation();
+			double OffLeast = TNumericLimits<double>::Max(), OffMost = 0.0, Turn = 0.0;
+			for (const FTransform& TwistKey : Keys)
+			{
+				const double Off = FMath::RadiansToDegrees(TwistKey.GetRotation().AngularDistance(Bind));
+				OffLeast = FMath::Min(OffLeast, Off);
+				OffMost = FMath::Max(OffMost, Off);
+				Turn = FMath::Max(Turn, FMath::RadiansToDegrees(TwistKey.GetRotation().AngularDistance(Keys[0].GetRotation())));
+			}
+			++Twists;
+			TwistsOff += OffMost > kMoveDegrees ? 1 : 0;
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig:   %s twist track %-22s %d keys, %.2f to %.2f degrees off the bind pose, turns %.2f%s"),
+				*Clip.GetName(), *Track.ToString(), Keys.Num(), OffLeast, OffMost, Turn, OffMost > kMoveDegrees ? TEXT("") : TEXT(" - AT BIND"));
+		}
+	}
+	if (Twists > 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: twist tracks in %s: %d, %d off the bind pose."), *Clip.GetName(), Twists, TwistsOff);
 	}
 
 	int32 CurvesChanging = 0;

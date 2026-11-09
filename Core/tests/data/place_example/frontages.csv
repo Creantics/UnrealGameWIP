@@ -1,0 +1,4 @@
+# A synthetic street plan for the placer's example job.
+id,zone,x0,y0,x1,y1,half_width,sides
+main,a,-98,0,98,0,5,both
+north_edge,b,-50,90,50,90,3,left

@@ -59,7 +59,7 @@ enum class FightClip : std::uint8_t {
     PhaseChange, // enemies: entering a new phase of the fight
     KickLeft,    // in a combatant's strike pattern, in place of a punch
     KickRight,
-    WeaponLeft,  // in a strike pattern: a held weapon's swing from each side
+    WeaponLeft,  // in a strike pattern: a held weapon's attack, a swing or a shot, from each side
     WeaponRight,
     Cast,        // in a strike pattern: a spell thrown from the hands
     Shot,        // party: the aimed shot firing, its key on the shot
@@ -111,6 +111,9 @@ public:
     // Plays `clip` from `now`, or so that its key frame plays at `keyAt` when keyAt >= 0 (see the top
     // of this file). Returns false, playing nothing, when the body has no such clip.
     FTCORE_API bool play(FightClip c, double now, double keyAt = -1.0);
+    // Plays strike `c` as play() does, else the punch on its side (a kick, swing or cast the body has
+    // no clip for), else StrikeLeft. Returns the clip it played; Stance when the body has none of them.
+    FTCORE_API FightClip playStrike(FightClip c, double now, double keyAt = -1.0);
 
     // Moves to `now` (non-decreasing) and recomputes the layers.
     FTCORE_API void update(double now);

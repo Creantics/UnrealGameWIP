@@ -1,0 +1,103 @@
+// The photoreal look's after-tonemap grade (Source/FTLook/Public/FTLookGrade.h). It mirrors ftcore::gradeSrgb
+// (Core/src/LookGrade.cpp) step for step, so the doctest tests there check this too: keep the two in step.
+//
+// Grade[0] = (global chroma scale, skin floor, skin hue, skin width)
+// Grade[1] = (keep-A hue, width, chroma, -)      the world's first kept hue
+// Grade[2] = (keep-B hue, width, chroma, -)      its second
+// Grade[3] = (accent hue, width, chroma, -)      the fight's accent, set at run time
+// Grade[4] = (shadow a, shadow b, highlight a, highlight b)   split-tone offsets in OKLab
+// Hues and widths are in radians; a width of 0 turns its window off.
+
+#include "/Engine/Public/Platform.ush"
+
+Texture2D InputTexture;
+SamplerState InputSampler;
+float4 Grade[5];
+
+static const float FTPi = 3.14159265358979;
+
+float3 FTSrgbToLinear(float3 C)
+{
+	const float3 Low = C / 12.92;
+	const float3 High = pow((C + 0.055) / 1.055, 2.4);
+	return lerp(High, Low, step(C, 0.04045));
+}
+
+float3 FTLinearToSrgb(float3 C)
+{
+	const float3 Low = C * 12.92;
+	const float3 High = 1.055 * pow(C, 1.0 / 2.4) - 0.055;
+	return lerp(High, Low, step(C, 0.0031308));
+}
+
+float3 FTCbrt(float3 X)
+{
+	return sign(X) * pow(abs(X), 1.0 / 3.0);
+}
+
+// Linear sRGB to OKLab and back (the published matrices).
+float3 FTLinearToOklab(float3 C)
+{
+	const float3 Lms = float3(
+		0.4122214708 * C.r + 0.5363325363 * C.g + 0.0514459929 * C.b,
+		0.2119034982 * C.r + 0.6806995451 * C.g + 0.1073969566 * C.b,
+		0.0883024619 * C.r + 0.2817188376 * C.g + 0.6299787005 * C.b);
+	const float3 R = FTCbrt(Lms);
+	return float3(
+		0.2104542553 * R.x + 0.7936177850 * R.y - 0.0040720468 * R.z,
+		1.9779984951 * R.x - 2.4285922050 * R.y + 0.4505937099 * R.z,
+		0.0259040371 * R.x + 0.7827717662 * R.y - 0.8086757660 * R.z);
+}
+
+float3 FTOklabToLinear(float3 Lab)
+{
+	const float3 R = float3(
+		Lab.x + 0.3963377774 * Lab.y + 0.2158037573 * Lab.z,
+		Lab.x - 0.1055613458 * Lab.y - 0.0638541728 * Lab.z,
+		Lab.x - 0.0894841775 * Lab.y - 1.2914855480 * Lab.z);
+	const float3 Lms = R * R * R;
+	return float3(
+		 4.0767416621 * Lms.x - 3.3077115913 * Lms.y + 0.2309699292 * Lms.z,
+		-1.2684380046 * Lms.x + 2.6097574011 * Lms.y - 0.3413193965 * Lms.z,
+		-0.0041960863 * Lms.x - 0.7034186147 * Lms.y + 1.7076147010 * Lms.z);
+}
+
+// A hue window: 1 at its centre, easing to 0 at Width either side; the hue difference wraps round the circle.
+float FTWindow(float Hue, float Centre, float Width)
+{
+	if (Width <= 0.0)
+	{
+		return 0.0;
+	}
+	float D = Hue - Centre;
+	D -= 2.0 * FTPi * floor((D + FTPi) / (2.0 * FTPi));
+	const float T = saturate(1.0 - abs(D) / Width);
+	return T * T * (3.0 - 2.0 * T);
+}
+
+void MainPS(
+	noperspective float4 UVAndScreenPos : TEXCOORD0,
+	float4 SvPosition : SV_POSITION,
+	out float4 OutColor : SV_Target0)
+{
+	const float4 Input = InputTexture.Sample(InputSampler, UVAndScreenPos.xy);
+	float3 Lab = FTLinearToOklab(FTSrgbToLinear(saturate(Input.rgb)));
+	const float L = Lab.x;
+	const float Chroma = length(Lab.yz);
+	const float Hue = atan2(Lab.z, Lab.y);
+	// Near-greys have no stable hue, so no window holds them.
+	const float Neutral = saturate(Chroma / 0.02);
+
+	float Scale = Grade[0].x;
+	Scale = lerp(Scale, Grade[1].z, FTWindow(Hue, Grade[1].x, Grade[1].y) * Neutral);
+	Scale = lerp(Scale, Grade[2].z, FTWindow(Hue, Grade[2].x, Grade[2].y) * Neutral);
+	Scale = lerp(Scale, Grade[3].z, FTWindow(Hue, Grade[3].x, Grade[3].y) * Neutral);
+	const float Skin = FTWindow(Hue, Grade[0].z, Grade[0].w) * Neutral * saturate((L - 0.25) / 0.1) * saturate((0.95 - L) / 0.1);
+	Scale = lerp(Scale, max(Scale, Grade[0].y), Skin);
+
+	const float Dark = (1.0 - L) * (1.0 - L);
+	const float Light = L * L;
+	Lab.yz = Lab.yz * Scale + Grade[4].xy * Dark + Grade[4].zw * Light;
+
+	OutColor = float4(saturate(FTLinearToSrgb(saturate(FTOklabToLinear(Lab)))), Input.a);
+}

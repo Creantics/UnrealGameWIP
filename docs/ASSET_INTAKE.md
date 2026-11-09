@@ -168,12 +168,13 @@ Checklist, texture-ready: [ ] no baked light, shadow or hatch (a fabric's ambien
 
 The world maps' ground, walls, roofs and rocks wear photographed surfaces, listed in `Data/Field/surfaces.json` and built by `-run=FTBuildSurfaces` (see `docs/SCENE_LOOK.md`). To add one:
 
-- CC0 only, from an https source. The loader refuses anything else. Record the source page's URL and the licence, not the author.
+- A photographed surface is CC0 only, from an https source. Record the source page's URL and the licence, not the author.
+- A surface made for this game has `"license": "project"` and no `source`: the loader refuses one that names a source, so no private path or page reaches the public file. Its maps are made outside the repo in the same three names, `tools/fetch_surfaces.py` skips it, and `-run=FTBuildSurfaces -Source=<that folder> -Only=<ids>` imports it. The loader refuses any other licence.
 - Three JPEG maps per surface, named `<id>_diff_<res>.jpg` (colour, sRGB), `<id>_nor_dx_<res>.jpg` (normal, **DirectX**: green points down the image, the opposite of the glTF rule above) and `<id>_arm_<res>.jpg` (ambient occlusion, roughness and metal in R, G and B). `tools/fetch_surfaces.py` fetches them in these names from the library the current surfaces come from.
 - `tileCm` is the real width one copy covers, read from the source page. Don't guess it: the projection holds that size on every shape, so a wrong value shows as bricks or tiles the wrong size.
 - `res` 1k for surfaces seen small (bark, rocks), 2k for the ground, walls and roofs; 4k is allowed but unused.
 - Some packed maps have an empty roughness channel (the gravel road's averages 0.001), which renders the surface as a mirror. `-run=FTBuildSurfaces` refuses such a surface until it has a `roughness` (0..1) in surfaces.json, a constant in place of the channel. Read the value off the source's separate roughness map. If that map has real texture, such as wet patches or worn stones, fetch the separate roughness and occlusion maps and pack them into a new arm map instead; no tool does that yet.
-- Add the surface to the role of each world kind that should wear it, rebuild the surfaces, then rebuild the maps.
+- Add the surface to the role of each world kind that should wear it, rebuild the surfaces, then rebuild the maps. A CC0 surface must be worn by some role (the tests check it), so nothing is fetched for nothing; a project surface may be in the file for kit meshes only.
 
 ### Props and static meshes
 

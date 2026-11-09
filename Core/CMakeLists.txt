@@ -51,6 +51,10 @@ add_library(ftcore STATIC
     src/FieldGoals.cpp
     src/WorldLayout.cpp
     src/Terrain.cpp
+    src/MassingPlan.cpp
+    src/WorldChecks.cpp
+    src/CityPlacer.cpp
+    src/OuterPlaces.cpp
     src/SurfaceTable.cpp
     src/HairCardSpec.cpp
     src/Overworld.cpp
@@ -87,6 +91,9 @@ add_library(ftcore STATIC
     src/StoryRunner.cpp
     src/StubScreen.cpp
     src/SceneLook.cpp
+    src/LookGrade.cpp
+    src/LookTable.cpp
+    src/SeaWaves.cpp
     src/StylePack.cpp
     src/StorySave.cpp
     src/TurnQueue.cpp
@@ -118,6 +125,16 @@ if(MSVC)
     target_compile_definitions(ftcore PRIVATE _HAS_EXCEPTIONS=0)
 else()
     target_compile_options(ftcore PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
+# ftcore_place: the city building placer's command-line tool (an offline build step, not the game).
+add_executable(ftcore_place tools/ftcore_place.cpp)
+target_link_libraries(ftcore_place PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_place PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_place PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_place PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
 if(FTCORE_BUILD_TESTS)
@@ -160,6 +177,10 @@ if(FTCORE_BUILD_TESTS)
         tests/test_field_goals.cpp
         tests/test_world_layout.cpp
         tests/test_terrain.cpp
+        tests/test_massing_plan.cpp
+        tests/test_world_checks.cpp
+        tests/test_city_placer.cpp
+        tests/test_outer_places.cpp
         tests/test_surface_table.cpp
         tests/test_hair_card_spec.cpp
         tests/test_overworld.cpp
@@ -192,6 +213,9 @@ if(FTCORE_BUILD_TESTS)
         tests/test_story_chain.cpp
         tests/test_story_import.cpp
         tests/test_scene_look.cpp
+        tests/test_look_grade.cpp
+        tests/test_look_table.cpp
+        tests/test_sea_waves.cpp
         tests/test_style.cpp
         tests/test_stub_screen.cpp
         tests/test_title.cpp
@@ -222,11 +246,19 @@ if(FTCORE_BUILD_TESTS)
     set(FTCORE_NEWENGINE_ASSETS "${CMAKE_CURRENT_SOURCE_DIR}/../../newengine/assets" CACHE PATH
         "newengine assets folder (story script, face presets, golden data) for the real-data tests")
     target_compile_definitions(ftcore_tests PRIVATE FTCORE_TEST_ASSET_DIR="${FTCORE_NEWENGINE_ASSETS}"
-        FTCORE_PROJECT_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Data")
+        FTCORE_PROJECT_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Data"
+        FTCORE_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
     if(MSVC)
         target_compile_options(ftcore_tests PRIVATE /EHsc)
     endif()
     add_test(NAME ftcore_tests COMMAND ftcore_tests)
+
+    # The placer's example job, end to end; its outputs stay in the build folder.
+    add_test(NAME place_example COMMAND ftcore_place
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/place_example/job.json
+        --placed ${CMAKE_CURRENT_BINARY_DIR}/place_example_placed.csv
+        --summary ${CMAKE_CURRENT_BINARY_DIR}/place_example_summary.txt)
+    set_tests_properties(place_example PROPERTIES PASS_REGULAR_EXPRESSION "PLACE OK")
 
     add_test(NAME unreal_wrappers COMMAND ${CMAKE_COMMAND}
         -DCORE_DIR=${CMAKE_CURRENT_SOURCE_DIR}

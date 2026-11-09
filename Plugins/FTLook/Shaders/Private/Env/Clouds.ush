@@ -1,0 +1,87 @@
+// The environment's clouds (M_Env_Clouds, built by FTBuildEnvMaterials: Source/ForgottenThird/FTBuildEnvMaterialsCommandlet.h),
+// a volume material for the volumetric cloud layer. The engine marches the layer and lights every sample (its phase and
+// multiple scattering are the material's output node); this gives a sample's extinction and glow. The weather (how much
+// cloud stands over a point) is procedural; the shape and the worn edges come from the engine's tiling noise volumes.
+// Positions are world space in centimetres, Z up; the wind's way is degrees like an actor's yaw (0 toward +X). The
+// material's custom nodes include this file, so it holds only functions.
+
+#pragma once
+
+#include "/Plugin/FTLook/Private/Env/Common.ush"
+
+float FTEnvRemap(float V, float Lo, float Hi)
+{
+	return saturate((V - Lo) / max(Hi - Lo, 1e-4));
+}
+
+// How far the clouds have drifted by Time, in km: downwind at WindMps times Drift (the wind blows harder aloft).
+float2 FTEnvCloudDrift(float Time, float WindDeg, float WindMps, float Drift)
+{
+	const float Way = WindDeg * FTEnvPi / 180.0;
+	return float2(cos(Way), sin(Way)) * (WindMps * Drift * Time * 0.001);
+}
+
+// How much cloud stands over a point, 0..1: two octaves of noise (12 km and 4 km cells) drifting with the wind, cut so
+// that Cover 0 leaves the sky clear and Cover 1 closes it, with a soft rim between.
+float FTEnvCloudWeather(float2 PosKm, float Cover)
+{
+	const float N = 0.65 * FTEnvNoise2(PosKm / 12.0, 11u) + 0.35 * FTEnvNoise2(PosKm / 4.0 + 5.3, 12u);
+	return saturate((N - 1.0 + 1.2 * saturate(Cover)) / 0.2);
+}
+
+// The share of a column's cloud at height H in the layer (0 bottom .. 1 top). Stratus (Type 0) is a sheet over the
+// lowest fifth; cumulus (Type 1) climbs the whole layer. A column with more weather stands taller, so the thickest
+// weather makes the towers. The base is a quick rise, so bases read flat and dark from below; the top rounds off.
+float FTEnvCloudProfile(float H, float Type, float Weather)
+{
+	const float Top = lerp(0.2, 1.0, saturate(Type)) * lerp(0.55, 1.0, Weather);
+	const float Base = smoothstep(0.0, 0.04, H);
+	const float Cap = smoothstep(0.0, 0.5 * Top, Top - H);
+	return Base * Cap;
+}
+
+// The cheap bound the engine marches by (the output node's conservative density): the weather times the profile, with
+// no noise. Every sample FTEnvCloudExtinction gives cloud has more than 0 here.
+float FTEnvCloudCover(float3 PosCm, float H, float Time, float Cover, float Type, float WindDeg, float WindMps, float Drift)
+{
+	const float2 PosKm = PosCm.xy * 1e-5 - FTEnvCloudDrift(Time, WindDeg, WindMps, Drift);
+	const float Weather = FTEnvCloudWeather(PosKm, Cover);
+	return Weather * FTEnvCloudProfile(H, Type, Weather);
+}
+
+// A sample's extinction per metre (Density inside a full cloud), and its glow: a city's light on the cloud bases.
+// - Shape: a 3 km tile of the engine's shape noise, carried with the weather, cut by it (thin weather keeps only the
+//   noise's peaks) and shaped by the profile.
+// - Wear: a 0.4 km tile of the erosion noise that drifts a fifth faster than the weather and rises half a metre a
+//   second, so the edges change shape as they go rather than slide; it eats the thin edges into wisps and leaves the
+//   cores whole.
+// - Glow: emission is luminance per metre, so a glow of Underglow times the extinction makes a thick cloud's base read
+//   about Underglow from below, whatever its density; it falls off over the first 250 m of the layer (AltitudeCm, the
+//   height in the layer) so the tops stay lit by the sky and the moon only.
+float3 FTEnvCloudExtinction(float3 PosCm, float H, float AltitudeCm, float Time,
+	float Cover, float Type, float Density, float WindDeg, float WindMps, float Drift, float Underglow, float UnderglowKelvin,
+	Texture3D Shape, SamplerState ShapeSampler, Texture3D Erosion, SamplerState ErosionSampler, out float3 Glow)
+{
+	Glow = 0.0;
+	const float2 DriftKm = FTEnvCloudDrift(Time, WindDeg, WindMps, Drift);
+	const float3 PosKm = PosCm * 1e-5;
+	const float Weather = FTEnvCloudWeather(PosKm.xy - DriftKm, Cover);
+	const float Profile = FTEnvCloudProfile(H, Type, Weather);
+	if (Weather * Profile <= 0.0)
+	{
+		return 0.0;
+	}
+	// Whole tiles of drift come off before the divide, so the texture coordinates keep their precision over a long run.
+	const float3 ShapeUvw = PosKm / 3.0 - float3(frac(DriftKm / 3.0), 0.0);
+	const float ShapeN = Shape.SampleLevel(ShapeSampler, ShapeUvw, 0.0).r;
+	const float Base = FTEnvRemap(ShapeN, 1.0 - Weather, 1.0) * Profile;
+	const float3 ErosionUvw = PosKm / 0.4 - float3(frac(1.2 * DriftKm / 0.4), frac(Time * 0.0005 / 0.4));
+	const float Wear = 0.35 * Erosion.SampleLevel(ErosionSampler, ErosionUvw, 0.0).r;
+	const float Cloud = FTEnvRemap(Base, Wear, 1.0);
+	const float Extinction = max(Density, 0.0) * Cloud;
+	if (Underglow > 0.0)
+	{
+		Glow = FTEnvBlackBody(UnderglowKelvin) * (Underglow * Extinction * exp(-max(AltitudeCm, 0.0) / 25000.0));
+	}
+	return Extinction.xxx;
+}

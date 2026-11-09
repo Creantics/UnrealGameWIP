@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "placer": "../../../../Data/Field/city_placer.json",
+  "height": "ground.u16",
+  "height_meta": "ground.json",
+  "max_roof": "roof.u16",
+  "no_build": "mask.u8",
+  "frontages": "frontages.csv",
+  "zones": "zones.csv",
+  "landmarks": "landmarks.csv",
+  "variety": { "zones": ["a"], "bounds": [-100.0, -100.0, 100.0, 100.0] }
+}

@@ -2,14 +2,15 @@
 
 Since 2026-10-28 every map has the same photoreal base. The stylized post-process packs
 ([STYLE_PACKS_UE.md](STYLE_PACKS_UE.md)) are off unless a map is built with `-Style=<spec>`. Each world
-gets its own look later as tuned values on the same base: light, air, camera finish and shaders, not a
-drawn style.
+gets its own look as tuned values on the same base: light, air, camera finish and shaders, not a
+drawn style. Since 2026-11-03 those values are applied when a map starts, with a grade after the tonemapper:
+[PHOTOREAL_LOOK.md](PHOTOREAL_LOOK.md).
 
 ## Pieces
 
 | Piece | File | Job |
 |---|---|---|
-| `ftcore::SceneLook` | `Core/include/ftcore/SceneLook.h`, `Core/src/SceneLook.cpp` | The look as 17 plain values: sun, sky light, fog, clouds, exposure, white balance and grade. `lerp` blends two looks, so a later world-to-world blend is one call. Tests: `Core/tests/test_scene_look.cpp`. |
+| `ftcore::SceneLook` | `Core/include/ftcore/SceneLook.h`, `Core/src/SceneLook.cpp` | The look as 84 plain values: sun, sky light, fog and its albedo, clouds, exposure, white balance, the camera finish and grade, ground wetness, water, practical lights, glow, the sky's stars and skyglow, the wind, the cloud layer's cover, height and light, and the sea's swell, chop and foam. `lerp` blends two looks, so a later world-to-world blend is one call. Tests: `Core/tests/test_scene_look.cpp`. |
 | `FTScene::SpawnLook` | `Source/ForgottenThird/FTSceneLook.{h,cpp}` | Spawns a look into a map: a movable sun (colour from its temperature), a real-time sky light, the sky atmosphere, exponential height fog (volumetric when the look has it), the engine's volumetric clouds, and an unbound post-process volume at priority 0 for the camera finish. |
 | `FTScene::LoadSurface` | same | Loads the surface master that the builders tint for their blocks and props. |
 | Surface master | `FTBuildWorldMaterialsCommandlet` | Writes `/Game/Rendering/M_WorldSurface`. See below. |
@@ -31,12 +32,24 @@ Substrate, and the extended auto-exposure range.
 | `fogDensity`, `fogFalloff` | 0.03, 0.2 | Height fog. |
 | `volumetricFog` | 1 | Volumetric fog extinction scale; 0 turns volumetric fog off. |
 | `fogForward` | 0.6 | Scattering distribution: light scattered forward, so the air glows towards the sun. |
-| `clouds` | 1 | The volumetric cloud layer: on at 0.5 or more. |
+| `clouds` | 1 | The volumetric cloud layer: on at 0.5 or more. Its look is the engine's own until `cloudCover` is above 0 (see `docs/PHOTOREAL_LOOK.md`). |
 | `exposureBias` | 1 | Auto-exposure bias, EV. |
 | `exposureMinEV100`, `exposureMaxEV100` | -10, 20 | The engine's extended-range defaults until the scenes are measured. |
 | `whiteBalanceKelvin` | 6500 | Neutral camera white balance. |
 | `saturation`, `contrast` | 1, 1 | Grade, neutral. |
 | `bloom`, `vignette`, `filmGrain` | 0.675, 0.4, 0 | Lens. |
+| `wetness` | 0 | How wet the ground and stone are: darker, porous albedo, smoother, puddles in hollows past 0.5. 0 adds none. |
+| `waterAbsorbR/G/B` | 0.45, 0.065, 0.025 | Single Layer Water absorption, per metre (the material converts to the engine's per centimetre). 0 to 50. |
+| `waterScatterR/G/B` | 0.02, 0.03, 0.04 | Water scattering, per metre. 0 to 50. |
+| `waterPhaseG`, `waterRoughness` | 0, 0.04 | The water's scattering phase (-0.9 to 0.9) and surface roughness. |
+| `waterWaveCm`, `waterWaveSpeed`, `waterWaveStrength` | 150, 1, 1 | The first normal layer's cell size in cm (the second is finer), the scale on the layers' pan speed (0 = frozen) and the normal strength (0 = a still mirror). |
+| `fogAlbedoR/G/B` | 1, 1, 1 | Volumetric fog albedo. |
+| `practicalKelvin`, `practicalCandela`, `practicalScatter` | 3200, 40, 1 | Lights tagged FTPractical in a map: colour temperature, intensity and volumetric scattering intensity (the engine's default 1). |
+| `sodiumKelvin` | 2000 | The colour of practical lights also tagged FTSodium, the sodium street lamps, in place of `practicalKelvin`. Solhaven's street lamps are high-pressure sodium at 2000 K, and its other practicals, interior lamps, 2700 K. |
+| `glowR/G/B`, `glowStrength` | 0.3, 0.55, 1, 0 | Emissive light sources: colour, and the emissive multiplier at the scenes' exposure scale (the sun is a few lux). 0 = dark. |
+
+Each of these is a field of `ftcore::SceneLook` (92 in all, `kSceneLookFieldCount`); the table above lists only the ones whose
+defaults the base look sets. The ranges are in `Core/include/ftcore/SceneLook.h`.
 
 ## The surface master
 
@@ -59,16 +72,21 @@ basic shape material.
 
 The world maps' ground, plazas, walls, roofs, landmarks, tree trunks and rocks wear photographed
 surfaces: colour, normal and ambient occlusion/roughness/metal maps of real ground, stone, plaster, tiles
-and bark. They are all CC0 and come from one library. `Data/Field/surfaces.json` lists:
+and bark. The photographed ones are CC0 and come from one library; Solhaven's own sets (board-formed
+concrete, paving slabs, bitumen roofing, soot-dark brick, steel and the rest, `solhaven_*`) were made for
+this game. `Data/Field/surfaces.json` lists:
 
 - each surface: its `id` (the library's own name), `tileCm` (the real width one copy of the photo
-  covers, from the source page), `res` (1k, 2k or 4k), the source URL and the licence. The loader
-  refuses any licence but CC0 and any source that isn't https. An optional `roughness` (0..1) stands in
+  covers, from the source page, or for a made set from the size of its bricks, slabs or boards), `res`
+  (1k, 2k or 4k), and its licence: CC0 with an https source URL, or `project` with no source at all. The
+  loader refuses any other licence, a CC0 source that isn't https, and a project surface that names a
+  source. An optional `roughness` (0..1) stands in
   for the packed map's roughness when the file's roughness channel is empty. The gravel road's is: without
   it the road rendered as a mirror.
 - per world kind (town, towers, ruins), the surface each role wears and an optional `tint`, a
-  multiplier on the photo's colour (0 to 2 per channel). Solhaven's walls are tinted warm this way, and its
-  grass greener, (0.5, 0.9, 0.35): the photo's grass is dry and showed as khaki from any distance. The towers'
+  multiplier on the photo's colour (0 to 2 per channel). The town's cobbles are tinted toward grey this way,
+  (0.82, 0.85, 0.92), its landmark stone grey, (0.78, 0.82, 1.0), and its rock a cool grey, (0.62, 0.78,
+  1.2): Solhaven is grey and wet, with nothing saturated. The towers'
   ground is tinted a touch cooler, (0.85, 0.9, 1.0), and their rock, the ruins' worn rock, grey, (0.45, 0.6,
   0.9). The towers first wore a dark rock photo, but even at the cap of 2 it stayed darker than the shadows
   beside it, and the mountains' steep faces read as holes from afar.
@@ -278,7 +296,8 @@ needs the material logs `/Game/Rendering/M_WorldSurface is missing; run FTBuildW
 when it hasn't been built.
 
 `fetch_surfaces.py` downloads the photos into `<dir>/<id>/`. It keeps a file that's already there with
-the right checksum, and refuses any source that isn't CC0. The photos aren't committed; the built
+the right checksum, skips the project surfaces, and refuses any other source that isn't CC0. The photos
+and the made sets' maps aren't committed; the built
 textures are, through LFS. `FTBuildSurfaces` checks that every file is there before it changes anything,
 replaces the master and every surface's assets, and saves nothing if the master doesn't compile.
 `-AllowCommandletRendering` without `-NullRHI` makes that compile check real. It ends with a line like
@@ -320,7 +339,8 @@ On a world map the director logs `World solhaven: field step in district 3 (phot
 ## Later
 
 - Measure each map's EV100 and narrow the exposure range to about ±1.5 EV round it.
-- One `SceneLook` per world, blended with `lerp` where the story crosses from one to another.
+- Blend two worlds' looks with `lerp` where the story crosses from one to another (each world has its own
+  `SceneLook` now: [PHOTOREAL_LOOK.md](PHOTOREAL_LOOK.md)).
 - Photographed surfaces for the towers' and ruins' buildings, plazas, roofs, landmarks and trees.
 - On the terrain: scattered grass, stones and decals that hide the repeats; a second ground surface per
   world, such as dirt or moss in patches; and a mask from the erosion that lays rock or scree along the

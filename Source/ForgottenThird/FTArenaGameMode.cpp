@@ -1,6 +1,7 @@
 #include "FTArenaGameMode.h"
 
 #include "Camera/CameraActor.h"
+#include "Camera/PlayerCameraManager.h"
 #include "DrawDebugHelpers.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
@@ -42,6 +43,19 @@ namespace
 constexpr float kArenaMinTell = 0.4f;
 // After a view is taken, the fight holds this long (wall seconds) so the frame it renders is that moment.
 constexpr double kArenaShotHold = 1.0;
+// -ArenaShotStrikes: how long after an attack goes active its view's frame is (fight seconds, on the clock the figures
+// are drawn by): the clip's impact keys to the active start, and the shortest effect (the muzzle flash's core, 0.06 s
+// each over 0.1 s) is still up. The fight's clock is brought to that mark exactly (within kArenaStrikeSlack) and held,
+// and the lead's effects are run to their age there and paused (FFTLeadWeapons::Freeze): Niagara keeps the world's
+// clock, which runs on while the fight holds and in the frames before the view.
+constexpr double kArenaStrikeShotLag = 0.04;
+constexpr double kArenaStrikeSlack = 1e-4;
+// -ArenaShotClose: the strike view's camera distance from the striking limb and the forearms view's from their middle
+// (cm), its field of view (degrees), and the settle after each cut (wall seconds, for the image's history and exposure).
+constexpr double kArenaCloseDistance = 100.0;
+constexpr double kArenaArmsDistance = 140.0;
+constexpr float kArenaCloseFov = 55.f;
+constexpr double kArenaCloseSettle = 0.6;
 // A -ArenaShot run gives up this long after the first view (wall seconds).
 constexpr double kArenaShotGiveUp = 200.0;
 
@@ -91,11 +105,18 @@ void AFTArenaGameMode::StartPlay()
 			}
 			ShotAt.Sort();
 		}
+		int32 Strikes = 0;
+		if (FParse::Value(Cmd, TEXT("ArenaShotStrikes="), Strikes))
+		{
+			ShotStrikes = FMath::Clamp(Strikes, 0, 32);
+		}
+		bShotClose = FParse::Param(Cmd, TEXT("ArenaShotClose"));
 	}
 	bIdle = FParse::Param(Cmd, TEXT("ArenaIdle"));
 	bAutoPlay = !bIdle && (FParse::Param(Cmd, TEXT("ArenaAutoPlay")) || !ShotPrefix.IsEmpty());
 	bQuitOnFinish = FParse::Param(Cmd, TEXT("ArenaQuitOnFinish"));
 	bOverview = FParse::Param(Cmd, TEXT("ArenaOverview"));
+	bWorldView = !bOverview && FParse::Param(Cmd, TEXT("ArenaWorldView"));
 	bHoldLoad = FParse::Param(Cmd, TEXT("ArenaHoldLoad"));
 	FParse::Value(Cmd, TEXT("ArenaParryHold="), ParryHold);
 	ParryHold = FMath::Clamp(ParryHold, 0.f, 10.f);
@@ -607,7 +628,15 @@ void AFTArenaGameMode::Tick(float DeltaSeconds)
 	{
 		Begin();
 	}
-	Runner->TickFight(DeltaSeconds, Shots(DeltaSeconds));
+	const bool bHold = Shots(DeltaSeconds);
+	// A strike view's frame due within this frame: the fight's clock stops on it.
+	float FightDelta = DeltaSeconds;
+	if (FightClockCap > 0.0)
+	{
+		FightDelta = FMath::Min(FightDelta, static_cast<float>(FightClockCap));
+		FightClockCap = 0.0;
+	}
+	Runner->TickFight(FightDelta, bHold);
 	if (bBossCam)
 	{
 		BossCam();
@@ -668,7 +697,11 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	{
 		return true;
 	}
-	if (bOverview && OverviewPhase < 3 && OverviewShot())
+	if (StrikePhase > 0)
+	{
+		return StrikeShot();
+	}
+	if ((bOverview || bWorldView) && OverviewPhase < 3 && OverviewShot())
 	{
 		return true;
 	}
@@ -683,6 +716,41 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 		TakeShot(*FString::Printf(TEXT("t_%05.2f"), ShotAt[NextShotAt]), false);
 		++NextShotAt;
 		return true;
+	}
+	// -ArenaShotStrikes's views: the player's attacks kArenaStrikeShotLag after each goes active (uncounted too). Attacks
+	// that went by while another view held the fight are skipped.
+	if (StrikeShots < ShotStrikes && ShotsTaken > 0)
+	{
+		FFTLeadWeapons& Weapons = Runner->GetLeadWeapons();
+		StrikesSeen = FMath::Min(StrikesSeen, Weapons.GetActiveCount()); // the fight begun again
+		if (Weapons.GetActiveCount() > StrikesSeen)
+		{
+			// The frame is on the clock the figures are drawn by; until it is reached, the fight's clock is kept from
+			// passing it (Tick), so it lands on the mark.
+			const double Due = Weapons.GetLastActiveTime() + kArenaStrikeShotLag;
+			const double Drawn = Runner->GetDrawnTime();
+			if (Drawn < Due - kArenaStrikeSlack)
+			{
+				FightClockCap = Due - Drawn;
+			}
+			else
+			{
+				StrikesSeen = Weapons.GetActiveCount();
+				++StrikeShots;
+				const TCHAR* Clip = Weapons.GetLastStrikeName();
+				StrikeName = FString::Printf(TEXT("s%d_%s"), StrikeShots, *Clip ? Clip : TEXT("noclip"));
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: view %s held at fight time %.3f, %.3f s after the attack went active."), *StrikeName,
+					Drawn, Drawn - Weapons.GetLastActiveTime());
+				Weapons.Freeze(Drawn);
+				StrikePhase = 1;
+				if (bShotClose && AimAtStrike())
+				{
+					ShotHoldUntil = ShotWall + kArenaCloseSettle;
+					return true;
+				}
+				return StrikeShot();
+			}
+		}
 	}
 	switch (ShotsTaken)
 	{
@@ -771,6 +839,157 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	return false;
 }
 
+bool AFTArenaGameMode::StrikeShot()
+{
+	FFTLeadWeapons& Weapons = Runner->GetLeadWeapons();
+	switch (StrikePhase)
+	{
+	case 1:
+	{
+		// The screenshot is taken on the next frame, still held: the camera stays until the hold after it has passed.
+		TakeShot(*StrikeName, false);
+		FName Bone;
+		FVector At;
+		bool bLeft = false;
+		if (Weapons.GetStrikeLimb(Bone, At, bLeft))
+		{
+			LogFramed(*StrikeName, *Bone.ToString(), At);
+		}
+		if (Weapons.GetMuzzle(At))
+		{
+			LogFramed(*StrikeName, TEXT("the pistol's muzzle"), At);
+		}
+		StrikePhase = bShotClose && StrikeCamera && Weapons.HasGauntlets() && StrikeShots == 1 ? 2 : 4;
+		return true;
+	}
+	case 2:
+	{
+		// Both forearms: from ahead of the lead on the striking side, a little above them.
+		const AFTArenaFighter* Lead = Runner->GetPlayerFigure();
+		FName Bone;
+		FVector Hand, Mid;
+		bool bLeft = false;
+		StrikePhase = 4;
+		if (Lead && Weapons.GetForearms(Mid) && Weapons.GetStrikeLimb(Bone, Hand, bLeft))
+		{
+			const FVector Ahead = Lead->GetActorForwardVector().GetSafeNormal2D();
+			const FVector Side = Lead->GetActorRightVector().GetSafeNormal2D() * (bLeft ? -1.0 : 1.0);
+			const FVector From = Mid + (Ahead + Side).GetSafeNormal() * kArenaArmsDistance + FVector(0.0, 0.0, 20.0);
+			if (AimStrikeCamera(From, Mid))
+			{
+				ShotHoldUntil = ShotWall + kArenaCloseSettle;
+				StrikePhase = 3;
+			}
+		}
+		return true;
+	}
+	case 3:
+	{
+		const FString Arms = StrikeName + TEXT("_arms");
+		TakeShot(*Arms, false);
+		FVector Mid;
+		if (Weapons.GetForearms(Mid))
+		{
+			LogFramed(*Arms, TEXT("the forearms' middle"), Mid);
+		}
+		StrikePhase = 4;
+		return true;
+	}
+	default:
+		// Back to the fight.
+		Weapons.Thaw();
+		if (StrikeCamera)
+		{
+			if (APlayerController* PC = GetPC())
+			{
+				PC->SetViewTarget(Runner->GetPlayerFigure());
+				if (AHUD* Hud = PC->GetHUD())
+				{
+					Hud->bShowHUD = true;
+				}
+			}
+			StrikeCamera->Destroy();
+			StrikeCamera = nullptr;
+		}
+		StrikePhase = 0;
+		return true;
+	}
+}
+
+bool AFTArenaGameMode::AimStrikeCamera(const FVector& From, const FVector& At)
+{
+	APlayerController* PC = GetPC();
+	if (!PC)
+	{
+		return false;
+	}
+	ACameraActor* Camera = Cast<ACameraActor>(StrikeCamera.Get());
+	if (Camera)
+	{
+		Camera->SetActorLocationAndRotation(From, (At - From).Rotation());
+	}
+	else
+	{
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		Camera = GetWorld()->SpawnActor<ACameraActor>(From, (At - From).Rotation(), Params);
+		if (!Camera)
+		{
+			return false;
+		}
+		Camera->GetCameraComponent()->SetFieldOfView(kArenaCloseFov);
+		StrikeCamera = Camera;
+	}
+	PC->SetViewTarget(Camera);
+	if (AHUD* Hud = PC->GetHUD())
+	{
+		Hud->bShowHUD = false;
+	}
+	return true;
+}
+
+bool AFTArenaGameMode::AimAtStrike()
+{
+	const AFTArenaFighter* Lead = Runner->GetPlayerFigure();
+	FName Bone;
+	FVector At;
+	bool bLeft = false;
+	if (!Lead || !Runner->GetLeadWeapons().GetStrikeLimb(Bone, At, bLeft))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: view %s: the lead has no body to frame; the view stays on the follow camera."), *StrikeName);
+		return false;
+	}
+	// Square to the lead's side, on the striking limb's side, level with it.
+	const FVector Side = Lead->GetActorRightVector().GetSafeNormal2D() * (bLeft ? -1.0 : 1.0);
+	if (!AimStrikeCamera(At + Side * kArenaCloseDistance, At))
+	{
+		return false;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: view %s: close camera on %s, %.0f cm off the lead's %s side."), *StrikeName, *Bone.ToString(),
+		kArenaCloseDistance, bLeft ? TEXT("left") : TEXT("right"));
+	return true;
+}
+
+void AFTArenaGameMode::LogFramed(const TCHAR* View, const TCHAR* What, const FVector& At) const
+{
+	const APlayerController* PC = GetPC();
+	FVector2D Screen;
+	int32 Width = 0, Height = 0;
+	if (!PC || !PC->PlayerCameraManager)
+	{
+		return;
+	}
+	PC->GetViewportSize(Width, Height);
+	if (Width <= 0 || Height <= 0 || !PC->ProjectWorldLocationToScreen(At, Screen))
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: view %s: %s is not in the frame."), View, What);
+		return;
+	}
+	const double Distance = FVector::Dist(PC->PlayerCameraManager->GetCameraLocation(), At) / 100.0;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: view %s: %s at (%.2f, %.2f) of the frame, %.2f m from the camera."), View, What,
+		Screen.X / static_cast<double>(Width), Screen.Y / static_cast<double>(Height), Distance);
+}
+
 bool AFTArenaGameMode::OverviewShot()
 {
 	APlayerController* PC = GetPC();
@@ -782,9 +1001,11 @@ bool AFTArenaGameMode::OverviewShot()
 	{
 		// High over the south-west of the zone, looking at its middle; if the scene is in the way (a building), the
 		// camera comes in along the line until it is clear.
+		// -ArenaWorldView's camera is low over the same side, a wide look across the zone at the scene round it.
 		const float Distance = FMath::Max(Fit.ring.radius * 2.6f, 30.f);
 		const FVector Target(Fit.zone.centre.x * 100.0, Fit.zone.centre.y * 100.0, ZoneZ + 200.0);
-		FVector From = Target + FVector(-0.55 * Distance, -0.55 * Distance, 0.75 * Distance) * 100.0;
+		FVector From = Target + (bWorldView ? FVector(-0.7 * Distance, -0.7 * Distance, 0.16 * Distance)
+			: FVector(-0.55 * Distance, -0.55 * Distance, 0.75 * Distance)) * 100.0;
 		FHitResult Block;
 		FCollisionQueryParams Query(SCENE_QUERY_STAT(ArenaOverview), false);
 		if (GetWorld()->SweepSingleByChannel(Block, Target, From, FQuat::Identity, ECC_Camera, FCollisionShape::MakeSphere(80.f), Query))
@@ -801,6 +1022,10 @@ bool AFTArenaGameMode::OverviewShot()
 		}
 		Camera->GetCameraComponent()->SetFieldOfView(70.f);
 		OverviewCamera = Camera;
+		const ftcore::ArenaZone& Z = Fit.zone;
+		const int32 Sides = bWorldView ? 0 : Z.shape == ftcore::ZoneShape::Circle ? 72 : static_cast<int32>(Z.vertCount);
+		const int32 Obstacles = bWorldView ? 0 : static_cast<int32>(Z.obstacleCount);
+		const int32 Mouths = bWorldView ? 0 : static_cast<int32>(Fit.mouthCount);
 		// The walls are invisible in play; for this picture they are drawn: green where the zone ends, red for an
 		// obstacle, yellow across a road the wall meets.
 		const float LineZ = static_cast<float>(ZoneZ) + 60.f;
@@ -808,8 +1033,6 @@ bool AFTArenaGameMode::OverviewShot()
 		{
 			DrawDebugLine(GetWorld(), FVector(A.x * 100.0, A.y * 100.0, LineZ), FVector(B.x * 100.0, B.y * 100.0, LineZ), Colour, false, 6.f, 0, Thick);
 		};
-		const ftcore::ArenaZone& Z = Fit.zone;
-		const int32 Sides = Z.shape == ftcore::ZoneShape::Circle ? 72 : static_cast<int32>(Z.vertCount);
 		for (int32 I = 0; I < Sides; ++I)
 		{
 			ftcore::Vec2 A, B;
@@ -826,7 +1049,7 @@ bool AFTArenaGameMode::OverviewShot()
 			}
 			Line(A, B, FColor(60, 255, 90), 25.f);
 		}
-		for (int32 O = 0; O < static_cast<int32>(Z.obstacleCount); ++O)
+		for (int32 O = 0; O < Obstacles; ++O)
 		{
 			const ftcore::ZoneObstacle& Piece = Z.obstacles[static_cast<size_t>(O)];
 			for (int32 K = 0; K < 8; ++K)
@@ -856,7 +1079,7 @@ bool AFTArenaGameMode::OverviewShot()
 				Line(A, B, FColor(255, 70, 60), 20.f);
 			}
 		}
-		for (int32 M = 0; M < static_cast<int32>(Fit.mouthCount); ++M)
+		for (int32 M = 0; M < Mouths; ++M)
 		{
 			const ftcore::ZoneMouth& Mouth = Fit.mouths[static_cast<size_t>(M)];
 			const ftcore::Vec2 Along{-Mouth.out.y * Mouth.width * 0.5f, Mouth.out.x * Mouth.width * 0.5f};
@@ -874,7 +1097,7 @@ bool AFTArenaGameMode::OverviewShot()
 	if (OverviewPhase == 1)
 	{
 		// The screenshot is taken on the next frame, so the camera stays until the hold after it has passed.
-		TakeShot(TEXT("0_overview"), false);
+		TakeShot(bWorldView ? TEXT("0_world") : TEXT("0_overview"), false);
 		OverviewPhase = 2;
 		return true;
 	}

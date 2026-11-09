@@ -280,6 +280,36 @@ TEST_CASE("fight animator: a strike pattern takes punches, kicks, swings and cas
     CHECK(a.patternStrike(1) == FightClip::KickRight);
 }
 
+TEST_CASE("fight animator: playStrike throws a missing kick, swing or cast as the punch on its side, else the left") {
+    // A body with two punches and a right kick, the way the leads' clip sets start.
+    FightAnimator a;
+    a.setClip(FightClip::Stance, {2.f, 0.f, true});
+    a.setClip(FightClip::StrikeLeft, {1.5f, 0.6f, false});
+    a.setClip(FightClip::StrikeRight, {1.5f, 0.7f, false});
+    a.setClip(FightClip::KickRight, {2.f, 0.8f, false});
+    CHECK(a.playStrike(FightClip::StrikeLeft, 0.0) == FightClip::StrikeLeft);
+    CHECK(a.playStrike(FightClip::KickRight, 0.0) == FightClip::KickRight);
+    CHECK(a.playStrike(FightClip::WeaponRight, 0.0) == FightClip::StrikeRight);
+    CHECK(a.playStrike(FightClip::Cast, 0.0) == FightClip::StrikeRight);
+    CHECK(a.playStrike(FightClip::KickLeft, 0.0) == FightClip::StrikeLeft);
+    CHECK(a.playStrike(FightClip::WeaponLeft, 0.0) == FightClip::StrikeLeft);
+    CHECK(a.actionCount() == 6);
+    CHECK(a.playStrike(FightClip::Stance, 0.0) == FightClip::Stance); // not a strike: nothing plays
+    CHECK(a.actionCount() == 6);
+
+    // Only a left punch: a right-side strike falls back to it.
+    FightAnimator b;
+    b.setClip(FightClip::StrikeLeft, {1.f, 0.4f, false});
+    CHECK(b.playStrike(FightClip::Cast, 0.0, 1.0) == FightClip::StrikeLeft);
+    CHECK(b.lastKeyTime() == doctest::Approx(1.0));
+
+    // No strike clip at all: nothing plays.
+    FightAnimator c;
+    c.setClip(FightClip::Stance, {2.f, 0.f, true});
+    CHECK(c.playStrike(FightClip::WeaponRight, 0.0) == FightClip::Stance);
+    CHECK(c.actionCount() == 0);
+}
+
 TEST_CASE("fight director: combo notes follow the striker's pattern, a missing kick thrown as the punch on its side") {
     DemoFight f;
     const FightClip pattern[] = {FightClip::KickLeft, FightClip::StrikeRight, FightClip::KickRight};
