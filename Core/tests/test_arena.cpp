@@ -518,18 +518,23 @@ TEST_CASE("arena data: each lead ships its own kit and its own blocks") {
         for (const std::string& f : t.fighterIds) found = found || f == id;
         CHECK_MESSAGE(found, "Error: no fighter kit for " << id);
     }
-    // Devin, the expert blade: a longer chain, a wider parry than anyone.
+    // Devin, the expert in gauntlets: a longer chain, a wider parry than anyone.
     CHECK(devin.lightCount > base.lightCount);
     CHECK(devin.parryWindow > base.parryWindow);
     CHECK(devin.parryWindow > duy.parryWindow);
     CHECK(devin.parryWindow > third.parryWindow);
-    // Duy: kicks that reach further and break poise, a gun for the heavy (long, narrow, one target, no lunge).
-    CHECK(duy.light[0].range > base.light[0].range);
-    CHECK(duy.light[0].poiseDamage > base.light[0].poiseDamage);
-    CHECK(duy.heavy.range >= 8.f);
-    CHECK(duy.heavy.arcCos >= 0.95f);
-    CHECK(duy.heavy.maxTargets == 1);
-    CHECK(duy.heavy.lunge == 0.f);
+    // Duy: a chain of pistol shots (long, narrow, one target, no lunge) and a kick for the heavy that reaches
+    // further than the default's light and breaks poise.
+    for (std::size_t i = 0; i < duy.lightCount; ++i) {
+        CHECK(duy.light[i].range >= 8.f);
+        CHECK(duy.light[i].arcCos >= 0.95f);
+        CHECK(duy.light[i].maxTargets == 1);
+        CHECK(duy.light[i].lunge == 0.f);
+    }
+    CHECK(duy.heavy.range > base.light[0].range);
+    CHECK(duy.heavy.range < kArenaShotRange);
+    CHECK(duy.heavy.lunge > 0.f);
+    CHECK(duy.heavy.poiseDamage >= base.heavy.poiseDamage);
     // The Third: spells at range with no lunge, a ward all round, and an even-handed parry.
     CHECK(third.light[0].range > base.light[0].range);
     CHECK(third.light[0].lunge == 0.f);
@@ -546,15 +551,15 @@ TEST_CASE("arena data: each lead ships its own kit and its own blocks") {
     CHECK(third.hp == base.hp);
 }
 
-TEST_CASE("arena attack: Duy's gun heavy connects far off, with the nearest body only, and not past its range") {
+TEST_CASE("arena attack: Duy's pistol shot connects far off, with the nearest body only, and not past its range") {
     const ArenaTable t = loadShipped();
     const ArenaFighter duy = t.fighter("duy");
-    {   // 8 m out, straight ahead, with another body behind it
+    {   // 8 m out, straight ahead, with another body behind it (one shot: the next is still winding up)
         Rig rig(duy, {dummyKind(), dummyKind()});
         rig.put(0, 8.f, 0.f);
         rig.put(1, 8.8f, 0.f);
-        rig.in.heavy = true;
-        rig.runFor(1.5f);
+        rig.in.light = true;
+        rig.runFor(0.45f);
         REQUIRE(rig.count(ArenaEventType::Hit) == 1);
         CHECK(rig.find(ArenaEventType::Hit)->event.target == 0);
         CHECK(rig.fight.enemyHp(1) == 100);
@@ -562,14 +567,14 @@ TEST_CASE("arena attack: Duy's gun heavy connects far off, with the nearest body
     {   // well past its range: nothing
         Rig rig(duy, {dummyKind()});
         rig.put(0, 12.f, 0.f);
-        rig.in.heavy = true;
+        rig.in.light = true;
         rig.runFor(1.5f);
         CHECK(rig.count(ArenaEventType::Hit) == 0);
     }
     {   // a body well off the line of the shot is missed, where a kick's wide arc would not care
         Rig rig(duy, {dummyKind()});
         rig.put(0, 6.f, 4.f);
-        rig.in.heavy = true;
+        rig.in.light = true;
         rig.runFor(1.5f);
         CHECK(rig.count(ArenaEventType::Hit) == 0);
     }
@@ -5257,4 +5262,163 @@ TEST_CASE("arena hooks: giveLoad inside the blow hook fills the gauge and overlo
     CHECK(rig.fight.stats().overloads == 1);
     CHECK(rig.fight.overloaded());
     CHECK(rig.out().player.overloaded);
+}
+
+TEST_CASE("arena table: the weapon key parses each value, inherits from the default and rejects an unknown one") {
+    ArenaTable t;
+    const std::string err = loadError(
+        R"({ "version": 1,
+             "fighters": [ { "id": "a", "weapon": "gauntlets" }, { "id": "b", "weapon": "guns" },
+                           { "id": "c", "weapon": "magic" }, { "id": "d" }, { "id": "e", "weapon": "none" },
+                           { "id": "default" } ],
+             "enemies": [ { "id": "dummy" } ],
+             "default": { "enemies": ["dummy"] } })",
+        &t);
+    CHECK(err.empty());
+    CHECK(t.fighter("a").weapon == ArenaWeapon::Gauntlets);
+    CHECK(t.fighter("b").weapon == ArenaWeapon::Guns);
+    CHECK(t.fighter("c").weapon == ArenaWeapon::Magic);
+    CHECK(t.fighter("d").weapon == ArenaWeapon::None); // missing: the default's, which has none
+    CHECK(t.fighter("e").weapon == ArenaWeapon::None);
+    CHECK(t.fighter("default").weapon == ArenaWeapon::None);
+
+    ArenaTable inherited;
+    CHECK(loadError(R"({ "version": 1,
+             "fighters": [ { "id": "lead", "hp": 80 }, { "id": "default", "weapon": "guns" } ],
+             "enemies": [ { "id": "dummy" } ], "default": { "enemies": ["dummy"] } })",
+                    &inherited)
+              .empty());
+    CHECK(inherited.fighter("lead").weapon == ArenaWeapon::Guns);
+
+    for (const char* bad : {R"("weapon": "sword")", R"("weapon": 3)", R"("weapon": "Guns")"}) {
+        const std::string e = loadError(std::string(R"({ "version": 1, "fighters": [ { "id": "default", )") + bad +
+                                        R"( } ], "enemies": [ { "id": "dummy" } ], "default": { "enemies": ["dummy"] } })");
+        CHECK_MESSAGE(e.find("fighters[0].weapon: expected one of none, gauntlets, guns, magic") != std::string::npos,
+                      "Error: " << bad << " gave: " << e);
+    }
+}
+
+TEST_CASE("arena data: the shipped weapons and the strike pattern each lead's kit gives") {
+    const ArenaTable t = loadShipped();
+    CHECK(t.fighter("default").weapon == ArenaWeapon::None);
+    CHECK(t.fighter("devin").weapon == ArenaWeapon::Gauntlets);
+    CHECK(t.fighter("duy").weapon == ArenaWeapon::Guns);
+    CHECK(t.fighter("third").weapon == ArenaWeapon::Magic);
+
+    FightClip p[kMaxLightChain];
+    // Devin punches, a side in turn, one per hit of his four-hit chain.
+    std::size_t n = arenaStrikePattern(t.fighter("devin"), p, kMaxLightChain);
+    REQUIRE(n == 4);
+    CHECK(p[0] == FightClip::StrikeLeft);
+    CHECK(p[1] == FightClip::StrikeRight);
+    CHECK(p[2] == FightClip::StrikeLeft);
+    CHECK(p[3] == FightClip::StrikeRight);
+    // Duy: shots on the right-hand weapon, kicks on the legs, in chain order.
+    const ArenaFighter& duy = t.fighter("duy");
+    n = arenaStrikePattern(duy, p, kMaxLightChain);
+    REQUIRE(n == duy.lightCount);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (duy.light[i].range >= kArenaShotRange) CHECK(p[i] == FightClip::WeaponRight);
+        else CHECK((p[i] == FightClip::KickLeft || p[i] == FightClip::KickRight));
+    }
+    CHECK(duy.lightCount == 3);
+    for (std::size_t i = 0; i < n; ++i) CHECK(p[i] == FightClip::WeaponRight); // the chain is all shots
+    CHECK(arenaHeavyStrike(duy) == FightClip::KickRight);                    // the heavy is a kick
+    CHECK(arenaHeavyStrike(t.fighter("devin")) == FightClip::StrikeRight);
+    CHECK(arenaHeavyStrike(t.fighter("third")) == FightClip::Cast);
+    {   // a gun's heavy that reaches is a shot
+        ArenaFighter gun = duy;
+        gun.heavy.range = 9.f;
+        CHECK(arenaHeavyStrike(gun) == FightClip::WeaponRight);
+    }
+    // The Third casts.
+    n = arenaStrikePattern(t.fighter("third"), p, kMaxLightChain);
+    REQUIRE(n == t.fighter("third").lightCount);
+    for (std::size_t i = 0; i < n; ++i) CHECK(p[i] == FightClip::Cast);
+    // Every pattern is one an animator takes; a short buffer cuts it.
+    for (const char* id : {"default", "devin", "duy", "third"}) {
+        n = arenaStrikePattern(t.fighter(id), p, kMaxLightChain);
+        FightAnimator a;
+        CHECK_MESSAGE(a.setPattern(p, n), "Error: " << id);
+    }
+    CHECK(arenaStrikePattern(duy, p, 2) == 2);
+    CHECK(arenaStrikePattern(duy, nullptr, 2) == 0);
+}
+
+TEST_CASE("arena data: each player move's attack and clip, and what the leads' punch-and-kick clip set plays for them") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter& devin = t.fighter("devin");
+    const ArenaFighter& duy = t.fighter("duy");
+    const ArenaFighter& third = t.fighter("third");
+
+    // The attack each move id names.
+    CHECK(arenaPlayerAttack(devin, 0) == &devin.light[0]);
+    CHECK(arenaPlayerAttack(devin, 3) == &devin.light[3]);
+    CHECK(arenaPlayerAttack(duy, kArenaHeavyMove) == &duy.heavy);
+    CHECK(arenaPlayerAttack(duy, kArenaRiposteMove) == &duy.riposte);
+    CHECK(arenaPlayerAttack(duy, kArenaReleaseMove) == &duy.release);
+    CHECK(arenaPlayerAttack(duy, duy.lightCount) == nullptr); // past the chain
+    CHECK(arenaPlayerAttack(duy, 7) == nullptr);
+    CHECK(arenaPlayerAttack(duy, kArenaNobody) == nullptr);
+
+    // The clip each move shows.
+    CHECK(arenaPlayerStrike(devin, 0) == FightClip::StrikeLeft);
+    CHECK(arenaPlayerStrike(devin, 1) == FightClip::StrikeRight);
+    CHECK(arenaPlayerStrike(devin, kArenaHeavyMove) == FightClip::StrikeRight);
+    CHECK(arenaPlayerStrike(duy, 0) == FightClip::WeaponRight);
+    CHECK(arenaPlayerStrike(duy, kArenaHeavyMove) == FightClip::KickRight);
+    CHECK(arenaPlayerStrike(third, 1) == FightClip::Cast);
+    CHECK(arenaPlayerStrike(third, kArenaRiposteMove) == FightClip::Counter);
+    CHECK(arenaPlayerStrike(third, kArenaReleaseMove) == FightClip::Finisher);
+    CHECK(arenaPlayerStrike(duy, duy.lightCount) == FightClip::Stance);
+    CHECK(arenaPlayerStrike(duy, 7) == FightClip::Stance);
+
+    // The leads have a jab, a cross, a right kick and a counter, no shot or cast clip yet: Devin punches a side in
+    // turn, Duy's shots and the Third's casts are the cross, Duy's heavy the kick.
+    auto leadClips = [](FightAnimator& a) {
+        a.setClip(FightClip::StrikeLeft, {1.5f, 0.567f, false});
+        a.setClip(FightClip::StrikeRight, {1.5f, 0.733f, false});
+        a.setClip(FightClip::KickRight, {2.f, 0.833f, false});
+        a.setClip(FightClip::Counter, {1.5f, 1.f, false});
+    };
+    FightAnimator a;
+    leadClips(a);
+    CHECK(a.playStrike(arenaPlayerStrike(devin, 0), 0.0, 0.3) == FightClip::StrikeLeft);
+    CHECK(a.playStrike(arenaPlayerStrike(devin, 1), 0.0, 0.3) == FightClip::StrikeRight);
+    CHECK(a.playStrike(arenaPlayerStrike(duy, 0), 0.0, 0.3) == FightClip::StrikeRight);
+    CHECK(a.playStrike(arenaPlayerStrike(duy, kArenaHeavyMove), 0.0, 0.3) == FightClip::KickRight);
+    CHECK(a.playStrike(arenaPlayerStrike(third, 0), 0.0, 0.3) == FightClip::StrikeRight);
+    CHECK(a.play(arenaPlayerStrike(third, kArenaRiposteMove), 0.0, 0.3));
+    CHECK_FALSE(a.play(arenaPlayerStrike(third, kArenaReleaseMove), 0.0, 0.3)); // no finisher clip: nothing
+    // Keyed to the active part: the impact lands on it however short the startup.
+    FightAnimator b;
+    leadClips(b);
+    const ArenaAttack* jab = arenaPlayerAttack(devin, 0);
+    REQUIRE(jab != nullptr);
+    b.playStrike(arenaPlayerStrike(devin, 0), 1.0, 1.0 + static_cast<double>(jab->startup));
+    CHECK(b.lastKeyTime() == doctest::Approx(1.0 + static_cast<double>(jab->startup)));
+}
+
+TEST_CASE("arena data: Duy's chain shoots from range, Devin's fists reach less than a blade did") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter& duy = t.fighter("duy");
+    std::size_t shots = 0;
+    for (std::size_t i = 0; i < duy.lightCount; ++i) {
+        if (duy.light[i].range < kArenaShotRange) continue;
+        ++shots;
+        CHECK(duy.light[i].arcCos >= 0.95f);
+        CHECK(duy.light[i].maxTargets == 1);
+        CHECK(duy.light[i].lunge == 0.f);
+    }
+    CHECK(shots == duy.lightCount); // all shots
+    CHECK(duy.light[duy.lightCount - 1].damage > duy.light[0].damage); // the last is a double-tap
+    CHECK(duy.heavy.range < kArenaShotRange); // the heavy is the kick
+    const ArenaFighter& devin = t.fighter("devin");
+    CHECK(devin.lightCount == 4);
+    for (std::size_t i = 0; i < devin.lightCount; ++i) {
+        CHECK(devin.light[i].range >= 2.0f);
+        CHECK(devin.light[i].range <= 2.1f);
+        CHECK(devin.light[i].poiseDamage > t.fighter("default").light[0].poiseDamage);
+    }
+    CHECK(devin.heavy.range == doctest::Approx(2.2f));
 }

@@ -143,6 +143,72 @@ TEST_CASE("vfx: the Unbending's effects load without warnings and keep their par
     }
 }
 
+TEST_CASE("vfx: the leads' weapon effects load without warnings and keep their particle budgets") {
+    struct Expect {
+        const char* file;
+        std::size_t emitters;
+        std::uint32_t budget; // the sum of the emitters' maxParticles
+        bool loops;
+    };
+    const Expect files[] = {{"spell_bolt", 5, 38, false},
+                            {"spell_burst", 5, 140, false},
+                            {"spell_ward", 3, 150, true},
+                            {"muzzle_flash", 4, 17, false},
+                            {"gauntlet_spark", 2, 34, false}};
+    for (const Expect& f : files) {
+        CAPTURE(f.file);
+        VfxEffect e;
+        std::vector<std::string> warnings;
+        REQUIRE(loadEffect(f.file, e, &warnings));
+        CHECK(e.name == f.file);
+        CHECK(e.emitters.size() == f.emitters);
+        CHECK_MESSAGE(warnings.empty(), (warnings.empty() ? std::string() : warnings.front()));
+        std::uint32_t total = 0;
+        for (const VfxEmitter& em : e.emitters) {
+            total += em.maxParticles;
+            CHECK(em.loop == f.loops);
+        }
+        CHECK(total <= f.budget);
+        VfxNiagaraPlan plan;
+        planVfxNiagara(e, plan);
+        CHECK(plan.emitters.size() == f.emitters);
+        for (const VfxNiagaraEmitter& p : plan.emitters) {
+            CHECK(p.lifetime.lo > 0.f);
+            CHECK(p.boundsMin.x < p.boundsMax.x);
+            CHECK(p.boundsMin.z < p.boundsMax.z);
+            CHECK_FALSE(p.startColor.empty());
+        }
+    }
+}
+
+TEST_CASE("vfx: the weapon effects keep their timing and reach") {
+    VfxEffect e;
+    REQUIRE(loadEffect("muzzle_flash", e));
+    CHECK(e.emitters[0].name == "flash");
+    CHECK(e.emitters[0].lifetime.hi <= doctest::Approx(0.06f)); // the flash itself is about 60 ms
+
+    // The bolt's head covers 3.2 m (speed x lifetime, no drag), and its streaks do not pass it.
+    REQUIRE(loadEffect("spell_bolt", e));
+    const int head = findVfxEmitter(e, "head");
+    REQUIRE(head >= 0);
+    const VfxEmitter& h = e.emitters[static_cast<std::size_t>(head)];
+    CHECK(h.speed.hi * h.lifetime.hi == doctest::Approx(3.2f));
+    const int streaks = findVfxEmitter(e, "streaks");
+    REQUIRE(streaks >= 0);
+    const VfxEmitter& s = e.emitters[static_cast<std::size_t>(streaks)];
+    CHECK(s.speed.hi * s.lifetime.hi <= doctest::Approx(3.2f));
+    CHECK(h.subEmitters.size() == 2);
+
+    // The burst's ring travels about 3 m before it fades: v/drag * (1 - exp(-drag t)).
+    REQUIRE(loadEffect("spell_burst", e));
+    const int ring = findVfxEmitter(e, "ring");
+    REQUIRE(ring >= 0);
+    const VfxEmitter& r = e.emitters[static_cast<std::size_t>(ring)];
+    const float reach = r.speed.hi / r.drag * (1.f - std::exp(-r.drag * r.lifetime.hi));
+    CHECK(reach > 2.5f);
+    CHECK(reach < 3.5f);
+}
+
 TEST_CASE("vfx: fireworks reads bursts, modules and sub-emitters") {
     VfxEffect e;
     REQUIRE(loadEffect("fireworks", e));

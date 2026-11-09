@@ -118,6 +118,16 @@ bool FightAnimator::play(FightClip c, double now, double keyAt) {
     return true;
 }
 
+FightClip FightAnimator::playStrike(FightClip c, double now, double keyAt) {
+    if (c == FightClip::Stance) return FightClip::Stance; // not a strike
+    if (play(c, now, keyAt)) return c;
+    const FightClip punch = punchFor(c);
+    if (punch != c && play(punch, now, keyAt)) return punch;
+    if (c != FightClip::StrikeLeft && punch != FightClip::StrikeLeft && play(FightClip::StrikeLeft, now, keyAt))
+        return FightClip::StrikeLeft;
+    return FightClip::Stance;
+}
+
 void FightAnimator::update(double now) {
     // Ended one-shots go.
     std::size_t kept = 0;
@@ -200,8 +210,7 @@ bool FightDirector::playOr(CombatantId id, FightClip clip, FightClip fallback, d
 bool FightDirector::playStrike(CombatantId id, std::size_t i, double now, double keyAt) {
     if (id >= animators_.size()) return false;
     FightAnimator& a = animators_[id];
-    const FightClip c = a.patternStrike(i);
-    return a.play(c, now, keyAt) || a.play(punchFor(c), now, keyAt) || a.play(FightClip::StrikeLeft, now, keyAt);
+    return a.playStrike(a.patternStrike(i), now, keyAt) != FightClip::Stance;
 }
 
 // No earlier than the key frame of what `id` has queued (a strike's impact, a reaction's contact).

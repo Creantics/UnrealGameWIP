@@ -292,6 +292,24 @@ public:
 	// while it falls.
 	static void MovementIntent(const UCharacterMovementComponent& Move, float& WantSpeed, float& StopDistance);
 
+	// Whole-body action clips over the locomotion (a fight's strikes): a host sets clips in slots once, then every
+	// frame clears the actions and adds the ones playing, each a slot, a time into its clip and a weight (summing to
+	// at most 1; the locomotion keeps the rest, and the bends and the air pose give way by the same share). At most
+	// MaxActions a frame (more are ignored); a slot without a clip adds nothing. Game thread.
+	static constexpr int32 MaxActionClips = 20;
+	static constexpr int32 MaxActions = 4;
+	// Sets (or with nullptr clears) the clip in Slot (0..MaxActionClips-1); false for a slot out of range.
+	bool SetActionClip(int32 Slot, UAnimSequence* Clip);
+	UAnimSequence* GetActionClip(int32 Slot) const { return Slot >= 0 && Slot < MaxActionClips ? ActionClips[Slot].Get() : nullptr; }
+	void ClearActions() { NumActions = 0; }
+	void AddAction(int32 Slot, float Time, float Weight)
+	{
+		if (NumActions < MaxActions && Slot >= 0 && Slot < MaxActionClips && Weight > 0.f)
+		{
+			Actions[NumActions++] = {Slot, Time, Weight};
+		}
+	}
+
 	ftcore::LocoTuning& Tuning() { return Loco.tuning(); }
 	const ftcore::Locomotion& GetLocomotion() const { return Loco; }
 
@@ -320,6 +338,17 @@ private:
 	static constexpr int32 NumTraversalClips = FirstCatchClip + NumCatchClips;
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> TraversalClips[NumTraversalClips];
+	// The action clips by slot (SetActionClip) and this frame's actions (AddAction).
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> ActionClips[MaxActionClips];
+	struct FAction
+	{
+		int32 Slot = 0;
+		float Time = 0.f;
+		float Weight = 0.f;
+	};
+	FAction Actions[MaxActions];
+	int32 NumActions = 0;
 	ftcore::TraversalSet Traversal;
 	ftcore::SlideSet Slide;
 	// The traversal playing (-1 none), its clip time, how long it has played, its weight over the locomotion and

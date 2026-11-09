@@ -351,6 +351,14 @@ FVector AFTArenaFighter::GetChest() const
 	return GetActorLocation() + FVector(0.0, 0.0, Height * 0.6);
 }
 
+void AFTArenaFighter::SetBladeShown(bool bShown)
+{
+	if (Blade)
+	{
+		Blade->SetVisibility(bShown);
+	}
+}
+
 bool AFTArenaFighter::GetSkinPoint(FName Name, FVector& Out) const
 {
 	if (SkinKind != ESkin::Creature || !Skin || !Skin->DoesSocketExist(Name))
@@ -528,8 +536,9 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 	}
 	else if (SkinKind == ESkin::Lead)
 	{
-		// The locomotion blends idle, walk and run from the ground speed (cm/s); the dodge, the guard and the swings are the
-		// figure's own overlay, there being no combat clips for the look yet. An unknown intent plays no starts or stops.
+		// The locomotion blends idle, walk and run from the ground speed (cm/s); the dodge and the guard are the figure's own
+		// overlay, and the swings too unless the lead's strike clips play over it (FTLeadWeapons.h). An unknown intent plays
+		// no starts or stops.
 		if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()))
 		{
 			Anim->SetGroundSpeed(Pose.bLying || Pose.bDodging ? 0.f : Pose.Speed * 100.f);
