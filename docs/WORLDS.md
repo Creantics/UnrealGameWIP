@@ -287,6 +287,14 @@ UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/<map> -game -RenderOffSc
 
 The eye and the point it looks at are in the plan frame, as in the tables. The lens is a focal length on a 36 mm-wide frame (35 mm sees about 54.4 degrees across). The view stays on the eye with the HUD hidden while every shader compiles and the delay passes; then the still is saved and the game quits, with 1 if it never arrives. The log gives the eye in both frames: `WorldEyeShot: eye (430.26, 387.35, 41.70) to (110.00, 500.00, 110.00) in the plan frame, 35.0 mm (54.4 degrees across), ...`. A `-NullRHI` run draws nothing.
 
+One character can stand in the same still, looping one clip in place (`FTPlaceSkeletalSubsystem.h`). Add to the run:
+
+```
+-PlaceSkin=<mesh object path> -PlaceAt=<x,y,z> [-PlaceAnim=<clip object path>] [-PlaceFace=<x,y,z>] [-PlaceSide=1000]
+```
+
+`-PlaceAt` is where the soles go and `-PlaceFace` the point it turns to (the eye, usually), both in the plan frame. For 8 seconds after begin play, a line from 2 m above to 5 m below `-PlaceAt` looks for the ground. If it finds nothing, the plan z stands. The log names the result: `PlaceSkeletal: ground found after ...` or `PlaceSkeletal: no ground ...`. A mesh or clip that doesn't load ends the run with 1, and so does a clip on another skeleton. There is no AI, no collision and no spawner: it is for looking at.
+
 ## Headless checks
 
 - Core: `Core/tests/test_world_layout.cpp` covers:
