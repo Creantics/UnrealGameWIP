@@ -457,9 +457,10 @@ bool anyGroundSample(const MassingBox& b, double spacing, Visit&& visit) {
 std::size_t massingGroundRaises(const std::uint16_t* grid, std::size_t samplesX, std::size_t samplesY, double spacing,
                                 double originX, double originY, const std::vector<MassingBox>& boxes,
                                 const std::vector<bool>& include, const std::vector<double>& nudges,
-                                std::vector<double>& out) {
+                                std::vector<double>& out, std::vector<std::vector<std::size_t>>* stuckGroups) {
     const std::size_t n = boxes.size();
     out.assign(n, 0.0);
+    if (stuckGroups) stuckGroups->clear();
     if (!grid || samplesX == 0 || samplesY == 0 || !(spacing > 0.0) || !std::isfinite(spacing)) return 0;
     std::vector<std::size_t> flat;
     std::vector<std::vector<std::size_t>> adj;
@@ -507,6 +508,7 @@ std::size_t massingGroundRaises(const std::uint16_t* grid, std::size_t samplesX,
         }
         if (steps == 0) {
             ++stuck;
+            if (stuckGroups) stuckGroups->push_back(members);
             continue;
         }
         for (const std::size_t i : members) out[i] = kMassingNudgeStep * static_cast<double>(steps);
@@ -676,9 +678,9 @@ bool importMassingStreets(std::string_view csv, std::vector<MassingStreet>& out,
     std::vector<Record> records;
     if (!splitCsv(csv, records, error)) return false;
 
-    enum Col { Id, Width, Pts, Kind, Count };
-    constexpr const char* kNames[Count] = {"id", "width_m", "pts", "kind"};
-    constexpr std::size_t kRequired = 3; // kind is optional
+    enum Col { Id, Width, Pts, Kind, Pavement, Count };
+    constexpr const char* kNames[Count] = {"id", "width_m", "pts", "kind", "pavement_m"};
+    constexpr std::size_t kRequired = 3; // kind and pavement_m are optional
     std::size_t col[Count] = {};
     std::size_t width = 0;
     bool haveHeader = false;
@@ -727,6 +729,10 @@ bool importMassingStreets(std::string_view csv, std::vector<MassingStreet>& out,
             if (!s.kind.empty() && !detail::validKind(s.kind))
                 return fail(error, r.line, s.id + ": kind must be a-z, A-Z, 0-9, '_' or '-'");
         }
+        if (col[Pavement] < r.fields.size() && !trim(r.fields[col[Pavement]]).empty()) {
+            if (!parseNumber(r.fields[col[Pavement]], s.pavement) || s.pavement < 0.0 || !(massingCarriageway(s) > 0.0))
+                return fail(error, r.line, s.id + ": pavement_m must be a number >= 0 under half width_m");
+        }
         out.push_back(std::move(s));
     }
     if (!haveHeader) return fail(error, 1, "no header row");
@@ -747,7 +753,7 @@ void massingRoadMask(const std::vector<MassingStreet>& streets, std::size_t size
     const double origin = -0.5 * sideM;
     const long n = static_cast<long>(size);
     for (const MassingStreet& s : streets) {
-        const double half = 0.5 * s.width;
+        const double half = 0.5 * massingCarriageway(s);
         const double reach = half + feather; // beyond this a pixel reads 0
         const std::size_t count = s.points.size();
         const std::size_t segments = count > 1 ? count - 1 : 1; // a lone point is a disc

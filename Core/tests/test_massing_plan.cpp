@@ -682,6 +682,35 @@ TEST_CASE("massing: ground meeting a side along a line, a turned box, and a top 
     CHECK(raise[0] == 0.0);
 }
 
+TEST_CASE("massing: the groups left on the ground are listed by their boxes") {
+    // Ground rising a height step a metre (as above): no raise clears a top lying across it.
+    const auto ramp = groundGrid(40, 12, [](std::size_t ix, std::size_t) { return 4.0 + (static_cast<double>(ix) - 5.0) / 128.0; });
+    const std::vector<MassingBox> boxes = {
+        flatBox(20, 2, 30, 1, 0, -3, 4),  // 0: stuck
+        flatBox(20, 6, 30, 1, 0, 3, 9),   // 1: well over the ground
+        flatBox(20, 9, 38, 1, 0, -3, 4),  // 2: stuck (nudged under 3, which shares its top), the ground below it at its west end
+        flatBox(20, 9, 2, 1, 0, 3, 4),    // 3
+    };
+    const std::vector<bool> include = {true, true, true, true};
+    std::vector<double> nudge, raise;
+    massingTopNudges(boxes, include, nudge);
+    std::vector<std::vector<std::size_t>> stuck = {{99}};
+    CHECK(massingGroundRaises(ramp.data(), 40, 12, 1.0, 0.0, 0.0, boxes, include, nudge, raise, &stuck) == 2);
+    REQUIRE(stuck.size() == 2);
+    CHECK(stuck[0] == std::vector<std::size_t>{0});
+    REQUIRE(stuck[1].size() == 2);
+    CHECK(stuck[1][0] == 2);
+    CHECK(stuck[1][1] == 3);
+
+    // A group that goes up isn't listed; the list is cleared each call, with no ground too.
+    const auto flat = groundGrid(40, 12, [](std::size_t, std::size_t) { return 4.0; });
+    CHECK(massingGroundRaises(flat.data(), 40, 12, 1.0, 0.0, 0.0, boxes, include, nudge, raise, &stuck) == 0);
+    CHECK(stuck.empty());
+    stuck = {{7}};
+    CHECK(massingGroundRaises(nullptr, 40, 12, 1.0, 0.0, 0.0, boxes, include, nudge, raise, &stuck) == 0);
+    CHECK(stuck.empty());
+}
+
 TEST_CASE("massing: the 1 m grid as a Landscape") {
     CHECK(massingLandscapeSide(1501, 1501, 126) == 1513);
     CHECK(massingLandscapeSide(127, 100, 126) == 127);
@@ -985,6 +1014,33 @@ TEST_CASE("massing streets: the table is read by id, width_m and pts") {
     CHECK(streets.empty()); // cleared first
 }
 
+TEST_CASE("massing streets: pavement_m sets the carriageway, kerb to kerb") {
+    std::vector<MassingStreet> streets;
+    std::string error;
+    REQUIRE(importMassingStreets("id,kind,width_m,pts,pavement_m\n"
+                                 "ST-1,lane,6,0:0;10:0,1.5\n"
+                                 "ST-2,street,18,0:0;10:0,\n"
+                                 "ST-3,street,8,0:0,0\n",
+                                 streets, &error));
+    REQUIRE(streets.size() == 3);
+    CHECK(near(streets[0].pavement, 1.5));
+    CHECK(near(massingCarriageway(streets[0]), 3.0));
+    CHECK(streets[1].pavement == 0.0); // empty: no pavements
+    CHECK(near(massingCarriageway(streets[1]), 18.0));
+    CHECK(near(massingCarriageway(streets[2]), 8.0));
+    // Without the column every street is carriageway.
+    REQUIRE(importMassingStreets("id,width_m,pts\nST-1,6,0:0\n", streets, &error));
+    CHECK(streets[0].pavement == 0.0);
+
+    CHECK_FALSE(importMassingStreets("id,width_m,pts,pavement_m\nST-1,6,0:0,3\n", streets, &error)); // nothing left
+    CHECK(error.find("pavement_m") != std::string::npos);
+    CHECK(error.find("line 2") != std::string::npos);
+    CHECK_FALSE(importMassingStreets("id,width_m,pts,pavement_m\nST-1,6,0:0,-1\n", streets, &error));
+    CHECK_FALSE(importMassingStreets("id,width_m,pts,pavement_m\nST-1,6,0:0,wide\n", streets, &error));
+    CHECK_FALSE(importMassingStreets("id,width_m,pts,pavement_m,pavement_m\nST-1,6,0:0,1,1\n", streets, &error));
+    CHECK(error.find("twice") != std::string::npos);
+}
+
 TEST_CASE("massing streets: points move to the engine frame") {
     std::vector<MassingStreet> streets;
     REQUIRE(importMassingStreets("id,width_m,pts\nST-1,6,100:200;-50:900\n", streets));
@@ -1054,6 +1110,26 @@ TEST_CASE("massing road mask: the width sets the edge, the max of streets wins, 
     CHECK(at(23, 19) == 0);
     // Nothing else is touched.
     CHECK(at(80, 80) == 0);
+}
+
+TEST_CASE("massing road mask: a street with pavements masks its carriageway only") {
+    constexpr std::size_t n = 100;
+    std::vector<std::uint8_t> mask(n * n);
+    MassingStreet lane;
+    lane.width = 10.0;
+    lane.pavement = 2.0; // a 6 m carriageway
+    lane.points = {{-60.0, 0.5, 0.0}, {60.0, 0.5, 0.0}}; // pixel row 50 centred on it
+    massingRoadMask({lane}, n, 100.0, kMassingRoadFeather, mask.data());
+    const auto at = [&](std::size_t ix, std::size_t iy) { return static_cast<int>(mask[iy * n + ix]); };
+    CHECK(at(50, 50) == 255);
+    CHECK(at(50, 53) == 128); // the kerb, 3 m off: as a 6 m street's edge
+    CHECK(at(50, 55) == 0);   // the street's own edge, 5 m off, reads as ground
+    CHECK(at(50, 47) == 128);
+
+    // The same street without pavements reads to its full width.
+    lane.pavement = 0.0;
+    massingRoadMask({lane}, n, 100.0, kMassingRoadFeather, mask.data());
+    CHECK(at(50, 55) == 128);
 }
 
 TEST_CASE("massing road mask: an empty table, a bad size or a bad feather leaves zeros") {

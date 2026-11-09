@@ -158,14 +158,17 @@ FTCORE_API void massingTopNudges(const std::vector<MassingBox>& boxes, const std
 // points, nor of the top (nudge and raise taken) of a box outside them whose footprint overlaps it; groups go in the
 // order of their first box. A group no such raise clears stays where it is. `out` gets one entry per box (0 for the
 // rest; all 0 with no ground: an empty grid or a spacing that isn't positive). Returns the number of groups left on
-// the ground. Allocates: build time only.
+// the ground; `stuck`, when given, is cleared and gets each such group's box indices (its first box first, then the
+// boxes it shares a top with in the order they were reached), one entry per group, in the order the groups go.
+// Allocates: build time only.
 inline constexpr double kMassingGroundInset = 0.05;
 inline constexpr std::size_t kMassingGroundSamples = 65;
 inline constexpr int kMassingGroundSteps = 5;
 FTCORE_API std::size_t massingGroundRaises(const std::uint16_t* grid, std::size_t samplesX, std::size_t samplesY,
                                            double spacing, double originX, double originY,
                                            const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
-                                           const std::vector<double>& nudges, std::vector<double>& out);
+                                           const std::vector<double>& nudges, std::vector<double>& out,
+                                           std::vector<std::vector<std::size_t>>* stuck = nullptr);
 
 // Whether two boxes' footprints overlap with positive area (touching edges don't).
 FTCORE_API bool massingFootprintsOverlap(const MassingBox& a, const MassingBox& b);
@@ -282,18 +285,23 @@ FTCORE_API MassingLookSurface massingLookSurface(const MassingBox& box);
 // The surface's id without its world's prefix: "pole_concrete", "paving_slab", ..., "soot_brick".
 FTCORE_API std::string_view massingLookSurfaceId(MassingLookSurface surface);
 
-// A street: its id, its width in metres, its polyline and its kind.
+// A street: its id, its width in metres, its polyline and its kind. A street with pavements has its carriageway
+// (massingCarriageway) down the middle of its width and a pavement `pavement` metres wide along each side of that.
 struct MassingStreet {
     std::string id;
     double width = 0.0;             // m, > 0
     std::vector<MassingVec> points; // z is left 0; at least one
     std::string kind{};             // empty when the table gives none
+    double pavement = 0.0;          // m, >= 0 and 2 pavement < width; 0: the carriageway is the whole width
 };
+// The width of a street's carriageway, kerb to kerb: its width less its two pavements.
+inline double massingCarriageway(const MassingStreet& s) { return s.width - 2.0 * s.pavement; }
 // Reads a street table (CSV, a header row naming the columns; comment rows as in importMassingBoxes). The columns read:
-//   id       unique; as a massing id
-//   width_m  the street's width in metres, > 0
-//   pts      "x:y[:z];x:y[:z];..." in the plan frame, metres (z is read and dropped)
-//   kind     optional: empty, or a-z, A-Z, 0-9, '_' or '-'
+//   id          unique; as a massing id
+//   width_m     the street's width in metres, > 0
+//   pts         "x:y[:z];x:y[:z];..." in the plan frame, metres (z is read and dropped)
+//   kind        optional: empty, or a-z, A-Z, 0-9, '_' or '-'
+//   pavement_m  optional: empty (0), or each pavement's width in metres, >= 0 and under half width_m
 // Any other column is skipped, never kept. `out` is cleared first. False, with a reason naming the line, on any error.
 // Allocates: build time only.
 FTCORE_API bool importMassingStreets(std::string_view csv, std::vector<MassingStreet>& out, std::string* error = nullptr);
@@ -303,9 +311,10 @@ FTCORE_API void massingStreetsToEngine(std::vector<MassingStreet>& streets, doub
 
 // The streets as a mask: size x size bytes, row iy then column ix, pixel (ix, iy) centred at (-sideM/2 + (ix + 0.5)
 // sideM/size, -sideM/2 + (iy + 0.5) sideM/size) in the streets' own frame (the engine's, after massingStreetsToEngine),
-// as ftcore::roadMask lays out its own. Each byte is the max over the streets of round(255 clamp(0.5 + (width/2 - d) /
-// (2 feather), 0, 1)), d the distance from the pixel's centre to the street's polyline: 255 inside by feather, about 128
-// at the edge, 0 from feather outside it. The outermost ring is 0, so a clamped read past the mask finds no street.
+// as ftcore::roadMask lays out its own. Each byte is the max over the streets of round(255 clamp(0.5 + (c/2 - d) /
+// (2 feather), 0, 1)), c the street's carriageway (massingCarriageway: its width when it has no pavements) and d the
+// distance from the pixel's centre to the street's polyline: 255 inside by feather, about 128 at the kerb, 0 from
+// feather outside it, so a street's pavements read as ground. The outermost ring is 0, so a clamped read past the mask finds no street.
 // Writes all size * size bytes; each segment touches only the pixels it reaches. No allocation.
 inline constexpr double kMassingRoadFeather = 2.0; // m: what the ground master decodes its road mask by
 FTCORE_API void massingRoadMask(const std::vector<MassingStreet>& streets, std::size_t size, double sideM, double feather,
