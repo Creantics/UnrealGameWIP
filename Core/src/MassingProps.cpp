@@ -57,13 +57,13 @@ struct Bounds {
     double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
 };
 
-// Whether (x, y) lies nearer than half its width to the centreline of a street other than `self`.
+// Whether (x, y) lies nearer than half its carriageway to the centreline of a street other than `self`.
 bool inOtherRoad(const std::vector<MassingStreet>& streets, const std::vector<Bounds>& bounds, std::size_t self, double x,
                  double y) {
     for (std::size_t j = 0; j < streets.size(); ++j) {
         if (j == self) continue;
         const MassingStreet& s = streets[j];
-        const double half = 0.5 * s.width;
+        const double half = 0.5 * massingCarriageway(s);
         const Bounds& b = bounds[j];
         if (x < b.x0 - half || x > b.x1 + half || y < b.y0 - half || y > b.y1 + half) continue;
         const std::size_t n = s.points.size();
@@ -124,6 +124,24 @@ bool rayToBox(const MassingBox& box, double ox, double oy, double dx, double dy,
     return true;
 }
 
+// Whether a box stands as a built face within `reach` of (x, y) at `floor` (massingBuiltFaceWithin), its bottom and
+// lowest top corner given.
+bool builtFace(const MassingBox& box, double bottom, double lowTop, double x, double y, double floor, double reach) {
+    if (box.sloped) return false;
+    if (lowTop < floor + kMassingPropWallHeight || bottom >= floor + kMassingPropBody) return false;
+    return massingFootprintGap(box, x, y) <= reach;
+}
+
+// The distance from (x, y) to a street's polyline (to a lone point, the distance to it).
+double polylineDistance(const MassingStreet& s, double x, double y) {
+    const std::size_t n = s.points.size();
+    if (n == 0) return std::numeric_limits<double>::infinity();
+    if (n == 1) return std::hypot(x - s.points[0].x, y - s.points[0].y);
+    double d = std::numeric_limits<double>::infinity();
+    for (std::size_t k = 0; k + 1 < n; ++k) d = std::min(d, segmentDistance(x, y, s.points[k], s.points[k + 1]));
+    return d;
+}
+
 // A spot along a street: the centreline point and the street's direction there.
 struct Spot {
     double x = 0.0, y = 0.0, dx = 0.0, dy = 0.0;
@@ -161,9 +179,9 @@ bool importMassingProps(std::string_view csv, std::vector<MassingPropRule>& out,
     std::vector<Record> records;
     if (!splitCsv(csv, records, error)) return false;
 
-    enum Col { Id, Asset, Spacing, Phase, Side, Inset, Reach, Clear, Turn, Dz, Cap, Kinds, Count };
-    constexpr const char* kNames[Count] = {"id",      "asset",   "spacing_m", "phase_m", "side", "inset_m",
-                                           "reach_m", "clear_m", "turn",      "dz",      "cap",  "kinds"};
+    enum Col { Id, Asset, Spacing, Phase, Side, Inset, Reach, Clear, Turn, Dz, Cap, Line, Kinds, Count };
+    constexpr const char* kNames[Count] = {"id",      "asset", "spacing_m", "phase_m", "side",   "inset_m", "reach_m",
+                                           "clear_m", "turn",  "dz",        "cap",     "line_m", "kinds"};
     constexpr std::size_t kRequired = 3; // id, asset, spacing_m
     std::size_t col[Count] = {};
     std::size_t width = 0;
@@ -217,6 +235,8 @@ bool importMassingProps(std::string_view csv, std::vector<MassingPropRule>& out,
         if (!optionalNumber(field(Cap), cap) || cap < 0.0 || cap != std::floor(cap) || cap > 1e9)
             return fail(error, r.line, rule.id + ": cap must be a whole number >= 0");
         rule.cap = static_cast<std::size_t>(cap);
+        if (!optionalNumber(field(Line), rule.line) || rule.line < 0.0)
+            return fail(error, r.line, rule.id + ": line_m must be a number >= 0");
         std::string_view kinds = trim(field(Kinds));
         while (!kinds.empty()) {
             const std::size_t semi = kinds.find(';');
@@ -234,11 +254,83 @@ bool importMassingProps(std::string_view csv, std::vector<MassingPropRule>& out,
     return true;
 }
 
+bool massingFeetOverlap(const MassingFoot& a, const MassingFoot& b, double gap) {
+    const double g = 0.5 * std::max(gap, 0.0);
+    const double ah[2] = {std::max(a.hx, 0.0) + g, std::max(a.hy, 0.0) + g};
+    const double bh[2] = {std::max(b.hx, 0.0) + g, std::max(b.hy, 0.0) + g};
+    const double dx = b.x - a.x, dy = b.y - a.y;
+    const double reach = std::hypot(ah[0], ah[1]) + std::hypot(bh[0], bh[1]);
+    if (dx * dx + dy * dy >= reach * reach) return false;
+    const double ta = a.rot * kPi / 180.0, tb = b.rot * kPi / 180.0;
+    const double ua[2][2] = {{std::cos(ta), std::sin(ta)}, {-std::sin(ta), std::cos(ta)}};
+    const double ub[2][2] = {{std::cos(tb), std::sin(tb)}, {-std::sin(tb), std::cos(tb)}};
+    const double* axes[4] = {ua[0], ua[1], ub[0], ub[1]};
+    for (const double* n : axes) {
+        const double d = std::fabs(dx * n[0] + dy * n[1]);
+        const double pa = ah[0] * std::fabs(ua[0][0] * n[0] + ua[0][1] * n[1]) +
+                          ah[1] * std::fabs(ua[1][0] * n[0] + ua[1][1] * n[1]);
+        const double pb = bh[0] * std::fabs(ub[0][0] * n[0] + ub[0][1] * n[1]) +
+                          bh[1] * std::fabs(ub[1][0] * n[0] + ub[1][1] * n[1]);
+        if (d >= pa + pb - kTiny) return false; // a separating axis: apart, or only touching
+    }
+    return true;
+}
+
+MassingFoot massingPropFoot(const MassingProp& prop, const MassingPropRule& rule) {
+    MassingFoot foot;
+    const double sizeX = std::max(rule.footX, 0.0), sizeY = std::max(rule.footY, 0.0);
+    foot.hx = 0.5 * sizeX;
+    foot.hy = 0.5 * sizeY;
+    foot.rot = prop.face - rule.turn;
+    foot.x = prop.x;
+    foot.y = prop.y;
+    if (prop.wall) {
+        const double t = rule.turn * kPi / 180.0;
+        const double out = 0.5 * (std::fabs(std::cos(t)) * sizeX + std::fabs(std::sin(t)) * sizeY) + rule.inset;
+        const double f = prop.face * kPi / 180.0;
+        foot.x += std::cos(f) * out;
+        foot.y += std::sin(f) * out;
+    }
+    return foot;
+}
+
+bool massingBuiltFaceWithin(const std::vector<MassingBox>& boxes, const std::vector<bool>& include, double x, double y,
+                            double floor, double reach) {
+    const std::size_t n = std::min(boxes.size(), include.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!include[i] || boxes[i].sloped) continue;
+        if (massingFootprintGap(boxes[i], x, y) > reach) continue;
+        double bottom = 0.0, lowTop = 0.0;
+        boxSpan(boxes[i], bottom, lowTop);
+        if (builtFace(boxes[i], bottom, lowTop, x, y, floor, reach)) return true;
+    }
+    return false;
+}
+
+double massingPropLineGap(const std::vector<MassingStreet>& streets, const std::vector<MassingBox>& boxes,
+                          const std::vector<bool>& include, double x, double y, double floor) {
+    double best = std::numeric_limits<double>::infinity();
+    for (const MassingStreet& s : streets) {
+        if (!(s.pavement > 0.0)) continue;
+        best = std::min(best, std::fabs(polylineDistance(s, x, y) - 0.5 * massingCarriageway(s)));
+    }
+    const std::size_t n = std::min(boxes.size(), include.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!include[i] || boxes[i].sloped) continue;
+        const double gap = massingFootprintGap(boxes[i], x, y);
+        if (gap >= best) continue;
+        double bottom = 0.0, lowTop = 0.0;
+        boxSpan(boxes[i], bottom, lowTop);
+        if (builtFace(boxes[i], bottom, lowTop, x, y, floor, gap)) best = gap;
+    }
+    return best;
+}
+
 void massingPlaceProps(const std::vector<MassingStreet>& streets, const std::vector<MassingPropRule>& rules,
                        const std::uint16_t* grid, std::size_t samplesX, std::size_t samplesY, double spacing,
                        double originX, double originY, const std::vector<MassingBox>& boxes,
                        const std::vector<bool>& include, double dryAbove, std::vector<MassingProp>& out,
-                       std::vector<MassingPropCounts>& counts) {
+                       std::vector<MassingPropCounts>& counts, const std::vector<MassingFoot>* taken) {
     out.clear();
     counts.assign(rules.size(), MassingPropCounts{});
 
@@ -293,6 +385,26 @@ void massingPlaceProps(const std::vector<MassingStreet>& streets, const std::vec
         }
         return false;
     };
+    // No built face within the rule's line of (x, y) at `floor`.
+    const auto openAt = [&](const MassingPropRule& rule, double x, double y, double floor) {
+        if (!(rule.line > 0.0)) return false;
+        for (std::size_t i = 0; i < nBoxes; ++i)
+            if (include[i] && builtFace(boxes[i], bottoms[i], lowTops[i], x, y, floor, rule.line)) return false;
+        return true;
+    };
+    // The feet placed so far by earlier rules, and passed so far by this one (those with area only).
+    std::vector<MassingFoot> placedFeet, passedFeet;
+    const auto hasArea = [](const MassingPropRule& rule) { return rule.footX > 0.0 && rule.footY > 0.0; };
+    const auto crowdedBy = [](const MassingFoot& foot, const std::vector<MassingFoot>& feet) {
+        for (const MassingFoot& other : feet)
+            if (other.hx > 0.0 && other.hy > 0.0 && massingFeetOverlap(foot, other, kMassingPropGap)) return true;
+        return false;
+    };
+    const auto crowdedAt = [&](const MassingPropRule& rule, const MassingProp& prop) {
+        if (!hasArea(rule)) return false;
+        const MassingFoot foot = massingPropFoot(prop, rule);
+        return (taken && crowdedBy(foot, *taken)) || crowdedBy(foot, placedFeet) || crowdedBy(foot, passedFeet);
+    };
 
     std::vector<Spot> spots;
     std::vector<MassingProp> passed;
@@ -300,6 +412,11 @@ void massingPlaceProps(const std::vector<MassingStreet>& streets, const std::vec
         const MassingPropRule& rule = rules[r];
         MassingPropCounts& count = counts[r];
         passed.clear();
+        passedFeet.clear();
+        const auto pass = [&](const MassingProp& prop) {
+            passed.push_back(prop);
+            if (hasArea(rule)) passedFeet.push_back(massingPropFoot(prop, rule));
+        };
         for (std::size_t j = 0; j < streets.size(); ++j) {
             const MassingStreet& street = streets[j];
             if (!rule.kinds.empty() && std::find(rule.kinds.begin(), rule.kinds.end(), street.kind) == rule.kinds.end())
@@ -345,14 +462,18 @@ void massingPlaceProps(const std::vector<MassingStreet>& streets, const std::vec
                         prop.z = floor + rule.dz;
                         prop.face = std::atan2(fy, fx) * 180.0 / kPi;
                         prop.wall = true;
-                        if (inOtherRoad(streets, bounds, j, hx + fx * rule.inset, hy + fy * rule.inset)) {
+                        if (openAt(rule, hx, hy, floor)) {
+                            ++count.open;
+                        } else if (inOtherRoad(streets, bounds, j, hx + fx * rule.inset, hy + fy * rule.inset)) {
                             ++count.inRoad;
                         } else if (steepAt(footX, footY, on)) {
                             ++count.steep;
                         } else if (floor <= dryAbove) {
                             ++count.wet;
+                        } else if (crowdedAt(rule, prop)) {
+                            ++count.crowded;
                         } else {
-                            passed.push_back(prop);
+                            pass(prop);
                         }
                     }
                     if (!found) ++count.noWall;
@@ -378,27 +499,32 @@ void massingPlaceProps(const std::vector<MassingStreet>& streets, const std::vec
                     const double x = p.x + nx * offset, y = p.y + ny * offset;
                     int on = -1;
                     const double floor = floorNear(x, y, centre, on);
+                    MassingProp prop;
+                    prop.rule = r;
+                    prop.street = j;
+                    prop.x = x;
+                    prop.y = y;
+                    prop.z = floor + rule.dz;
+                    prop.face = std::atan2(-ny, -nx) * 180.0 / kPi;
                     if (blockedAt(x, y, floor, rule.clear)) {
                         ++count.blocked;
+                    } else if (openAt(rule, x, y, floor)) {
+                        ++count.open;
                     } else if (inOtherRoad(streets, bounds, j, x, y)) {
                         ++count.inRoad;
                     } else if (steepAt(x, y, on)) {
                         ++count.steep;
                     } else if (floor <= dryAbove) {
                         ++count.wet;
+                    } else if (crowdedAt(rule, prop)) {
+                        ++count.crowded;
                     } else {
-                        MassingProp prop;
-                        prop.rule = r;
-                        prop.street = j;
-                        prop.x = x;
-                        prop.y = y;
-                        prop.z = floor + rule.dz;
-                        prop.face = std::atan2(-ny, -nx) * 180.0 / kPi;
-                        passed.push_back(prop);
+                        pass(prop);
                     }
                 }
             }
         }
+        const std::size_t first = out.size();
         if (rule.cap > 0 && passed.size() > rule.cap) {
             count.capped = passed.size() - rule.cap;
             for (std::size_t k = 0; k < rule.cap; ++k) out.push_back(passed[k * passed.size() / rule.cap]);
@@ -407,6 +533,8 @@ void massingPlaceProps(const std::vector<MassingStreet>& streets, const std::vec
             out.insert(out.end(), passed.begin(), passed.end());
             count.placed = passed.size();
         }
+        if (hasArea(rule))
+            for (std::size_t k = first; k < out.size(); ++k) placedFeet.push_back(massingPropFoot(out[k], rule));
     }
 }
 

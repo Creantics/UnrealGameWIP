@@ -38,6 +38,11 @@ struct MassingPropRule {
     double turn = 0.0;              // degrees (engine yaw) added after the prop is turned to face the street
     double dz = 0.0;                // m over the floor under it
     std::size_t cap = 0;            // the most it places, kept evenly spread over the spots that pass; 0 for no cap
+    double line = 0.0;              // m: when > 0, a spot with no built face this near it (massingBuiltFaceWithin)
+                                    // places nothing, so the prop stands along a frontage, never alone in the open
+    double footX = 0.0, footY = 0.0; // m: the mesh's plan size along its own X and Y, the room it takes
+                                     // (massingPropFoot); not in the table, the map's builder sets them from the mesh.
+                                     // With either 0 the prop takes no room and is never crowded.
 };
 
 // Reads a prop table (CSV, a header row naming the columns; comment rows as in importMassingBoxes). The columns:
@@ -50,6 +55,7 @@ struct MassingPropRule {
 //   inset_m, reach_m, clear_m  >= 0, default 0
 //   turn, dz   numbers, default 0
 //   cap        a whole number >= 0, default 0
+//   line_m     >= 0, default 0
 //   kinds      street kinds joined by ';' (each as a massing id but lower case allowed: a-z, A-Z, 0-9, '_' or '-')
 // Any other column is skipped. `out` is cleared first. False, with a reason naming the line, on any error.
 FTCORE_API bool importMassingProps(std::string_view csv, std::vector<MassingPropRule>& out, std::string* error = nullptr);
@@ -72,10 +78,44 @@ struct MassingPropCounts {
     std::size_t blocked = 0;     // a kerb spot within `clear` of a box standing over its floor
     std::size_t inRoad = 0;      // on another street's carriageway (a junction)
     std::size_t noWall = 0;      // Wall: no face, or one lower than kMassingPropWallHeight over the floor, within reach
+    std::size_t open = 0;        // no built face within the rule's line
     std::size_t steep = 0;       // ground stepping over kMassingPropMaxStep under it
     std::size_t wet = 0;         // its floor at or under `dryAbove`
+    std::size_t crowded = 0;     // its foot within kMassingPropGap of a foot already taken
     std::size_t capped = 0;      // passed, but dropped by the cap
 };
+
+// The room a placed thing takes on the plan: a rectangle centred on (x, y), hx and hy its half sizes along its own axes,
+// its own x axis at `rot` plan degrees (counter-clockwise from +x).
+struct MassingFoot {
+    double x = 0.0, y = 0.0;
+    double hx = 0.0, hy = 0.0;
+    double rot = 0.0;
+};
+// Feet keep at least this far apart (m).
+inline constexpr double kMassingPropGap = 0.1;
+// Whether two feet come nearer than `gap` (>= 0): each grown by gap / 2 along its own axes, they overlap with positive
+// area (the separating-axis test; touching doesn't count). A foot with no area (hx or hy 0) is still a line or a point.
+// No allocation.
+FTCORE_API bool massingFeetOverlap(const MassingFoot& a, const MassingFoot& b, double gap);
+// A placed prop's foot: the rule's footX by footY turned as massingPropPlacement turns the mesh (rot = face - turn: the
+// prop's facing less the rule's engine-yaw turn) and centred where it centres the mesh's bounds: on the prop's point, or
+// for a Wall prop set out along its facing by half its depth there plus the rule's inset. No allocation.
+FTCORE_API MassingFoot massingPropFoot(const MassingProp& prop, const MassingPropRule& rule);
+
+// Whether a box `include` marks shows a built face within `reach` m (>= 0) of the plan point (x, y) at a floor `floor`:
+// a box whose footprint lies within reach (massingFootprintGap), whose lowest top corner stands kMassingPropWallHeight
+// over the floor and whose bottom lies under floor + kMassingPropBody, so a wall a walker would pass, not a roof or a
+// bridge overhead. Sloped boxes never count. No allocation.
+FTCORE_API bool massingBuiltFaceWithin(const std::vector<MassingBox>& boxes, const std::vector<bool>& include, double x,
+                                       double y, double floor, double reach);
+// How far (m) the plan point (x, y), at a floor `floor`, lies from the nearest kerb or frontage line: a kerb line is
+// either edge of a street's carriageway where it has pavements (massingCarriageway, MassingStreet::pavement > 0), the
+// distance being |d - carriageway / 2| with d the distance to its polyline (a street of one point, a circle); a frontage
+// line is the footprint edge of a box massingBuiltFaceWithin would count (0 inside it). Infinity with neither. No
+// allocation.
+FTCORE_API double massingPropLineGap(const std::vector<MassingStreet>& streets, const std::vector<MassingBox>& boxes,
+                                     const std::vector<bool>& include, double x, double y, double floor);
 
 // A prop on the ground is steep when the ground steps more than kMassingPropMaxStep (m) between its spot and any of four
 // points kMassingPropFoot out along the plan's axes; one on a box, when the box is sloped.
@@ -106,16 +146,23 @@ inline constexpr double kMassingPropBody = 2.5;
 //   lowest top corner stands kMassingPropWallHeight over the floor at the face's foot (kMassingPropFoot out from it)
 //   takes the prop, at the face, facing straight out of it. Its foot is where its floor, steepness and wetness are read;
 //   it is in the road as a kerb prop is, at `inset` out from the face.
+// - In the road means nearer than half its carriageway (massingCarriageway) to the centreline of another street, so a
+//   prop may stand on another street's pavement.
+// - With a rule's line over 0 it is open when no built face stands within line of its point at its floor
+//   (massingBuiltFaceWithin).
 // - It is wet when its floor lies at or under dryAbove. z is the floor plus dz.
-// A spot fails on the first of blocked (or no wall), in the road, steep and wet, and counts there. The spots that pass,
-// when over `cap` (not 0), are thinned to `cap` of them evenly: the k-th kept is the floor(k * passed / cap)-th.
-// `out` and `counts` (one per rule) are cleared first. A grid massingGroundAt reads as empty gives a flat ground at 0.
-// Allocates: build time only.
+// - It is crowded when its foot (massingPropFoot) comes within kMassingPropGap of a foot in `taken` (when given), of a
+//   prop already placed by an earlier rule or of one this rule passed before it (massingFeetOverlap); a foot with no area
+//   is never crowded and crowds nothing.
+// A spot fails on the first of blocked (or no wall), open, in the road, steep, wet and crowded, and counts there. The
+// spots that pass, when over `cap` (not 0), are thinned to `cap` of them evenly: the k-th kept is the
+// floor(k * passed / cap)-th. `out` and `counts` (one per rule) are cleared first. A grid massingGroundAt reads as empty
+// gives a flat ground at 0. Allocates: build time only.
 FTCORE_API void massingPlaceProps(const std::vector<MassingStreet>& streets, const std::vector<MassingPropRule>& rules,
                                   const std::uint16_t* grid, std::size_t samplesX, std::size_t samplesY, double spacing,
                                   double originX, double originY, const std::vector<MassingBox>& boxes,
                                   const std::vector<bool>& include, double dryAbove, std::vector<MassingProp>& out,
-                                  std::vector<MassingPropCounts>& counts);
+                                  std::vector<MassingPropCounts>& counts, const std::vector<MassingFoot>* taken = nullptr);
 
 // Places a mesh for a prop, from its bounds in its own axes (m), in the engine frame of a square `side` metres across:
 // the mesh turned so its +X faces the prop's way, `turnDeg` more, its bounds' centre over the prop's point and its bottom

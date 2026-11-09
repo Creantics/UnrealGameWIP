@@ -409,3 +409,171 @@ TEST_CASE("massing props: a mesh is placed by its bounds, a wall prop's back on 
     CHECK_FALSE(massingPropPlacement(p, 1000.0, {1, 0, 0}, {0, 1, 1}, 0.0, 0.0, out));
     CHECK(near(out.at.x, before.at.x));
 }
+
+TEST_CASE("massing props: line_m keeps a prop to a frontage; with none near, the spot is open") {
+    std::vector<MassingPropRule> rules;
+    std::string error;
+    REQUIRE(importMassingProps("id,asset,spacing_m,line_m\nP-1,/Game/X.X,4,3.5\nP-2,/Game/X.X,4,\n", rules, &error));
+    CHECK(near(rules[0].line, 3.5));
+    CHECK(rules[1].line == 0.0);
+    CHECK_FALSE(importMassingProps("id,asset,spacing_m,line_m\nP-1,/Game/X.X,4,-1\n", rules, &error));
+    CHECK(error.find("line_m") != std::string::npos);
+
+    // Left kerb spots at x 0, 50 and 100 (y 5); a wall 1 m behind the one at x 50.
+    const std::vector<MassingStreet> streets = eastStreet();
+    std::vector<MassingBox> boxes = {flatBox(50, 8, 20, 4, 0, 10)};
+    MassingPropRule r = rule(MassingPropSide::Left, 50.0);
+    Run run = place(streets, {r}, boxes);
+    CHECK(run.props.size() == 3); // no line: every spot
+    r.line = 2.0;
+    run = place(streets, {r}, boxes);
+    REQUIRE(run.props.size() == 1);
+    CHECK(near(run.props[0].x, 50.0));
+    CHECK(run.counts[0].open == 2);
+    r.line = 0.5; // the wall is 1 m off
+    run = place(streets, {r}, boxes);
+    CHECK(run.props.empty());
+    CHECK(run.counts[0].open == 3);
+
+    // A low box (a planter) or one high overhead (a bridge) is no frontage.
+    r.line = 2.0;
+    boxes = {flatBox(50, 8, 20, 4, 0, 1.5)};
+    CHECK(place(streets, {r}, boxes).counts[0].open == 3);
+    boxes = {flatBox(50, 8, 20, 4, 3, 10)};
+    CHECK(place(streets, {r}, boxes).counts[0].open == 3);
+    boxes = {flatBox(50, 8, 20, 4, 0, 10)};
+    boxes[0].sloped = true;
+    CHECK(place(streets, {r}, boxes).counts[0].open == 3);
+
+    // The same test on its own.
+    const std::vector<bool> all = {true};
+    boxes = {flatBox(50, 8, 20, 4, 0, 10)};
+    CHECK(massingBuiltFaceWithin(boxes, all, 50, 5, 0.0, 1.0));
+    CHECK_FALSE(massingBuiltFaceWithin(boxes, all, 50, 5, 0.0, 0.9));
+    CHECK_FALSE(massingBuiltFaceWithin(boxes, all, 50, 5, 8.0, 1.0)); // the floor up at 8 m: under 2.5 m of wall left
+    CHECK_FALSE(massingBuiltFaceWithin(boxes, {false}, 50, 5, 0.0, 1.0));
+}
+
+TEST_CASE("massing props: feet come no nearer than the gap, turned or not") {
+    const MassingFoot a{0, 0, 1, 1, 0};
+    MassingFoot b{2, 0, 1, 1, 0};
+    CHECK_FALSE(massingFeetOverlap(a, b, 0.0)); // touching
+    CHECK(massingFeetOverlap(a, b, kMassingPropGap));
+    b.x = 2.1;
+    CHECK_FALSE(massingFeetOverlap(a, b, kMassingPropGap));
+    b.x = 1.5;
+    CHECK(massingFeetOverlap(a, b, 0.0));
+    CHECK(massingFeetOverlap(b, a, 0.0));
+    // A diamond: a square turned 45 degrees reaches sqrt(2) along x.
+    b = {2.3, 0, 1, 1, 45};
+    CHECK(massingFeetOverlap(a, b, 0.0));
+    b.x = 2.5;
+    CHECK_FALSE(massingFeetOverlap(a, b, 0.0));
+    // Diagonal neighbours whose bounding circles meet but whose sides don't.
+    b = {2.05, 1.5, 1, 1, 0};
+    CHECK_FALSE(massingFeetOverlap(a, b, 0.0));
+    // A long thin foot (a kerb) across a small one.
+    const MassingFoot kerb{0, 0, 6, 0.1, 90};
+    CHECK(massingFeetOverlap(kerb, MassingFoot{0.3, 5, 0.25, 0.25, 0}, 0.0));
+    CHECK_FALSE(massingFeetOverlap(kerb, MassingFoot{0.5, 5, 0.25, 0.25, 0}, 0.1));
+    // A foot of no area is a point.
+    CHECK(massingFeetOverlap(a, MassingFoot{0.5, 0.5, 0, 0, 0}, 0.0));
+}
+
+TEST_CASE("massing props: a prop's foot lies where its mesh is placed") {
+    MassingPropRule r = rule(MassingPropSide::Left, 10.0);
+    r.footX = 2.0;
+    r.footY = 1.0;
+    r.turn = 90.0;
+    MassingProp p;
+    p.x = 10;
+    p.y = 20;
+    p.face = 90; // facing north
+    MassingFoot f = massingPropFoot(p, r);
+    CHECK(near(f.x, 10.0));
+    CHECK(near(f.y, 20.0));
+    CHECK(near(f.hx, 1.0));
+    CHECK(near(f.hy, 0.5));
+    CHECK(near(f.rot, 0.0)); // engine yaw -90 + 90: the mesh's X along plan east
+
+    // A wall prop facing north, unturned: its depth (X) set out from the face with the inset.
+    r.turn = 0.0;
+    r.inset = 0.05;
+    r.footX = 1.0;
+    r.footY = 3.0;
+    p.wall = true;
+    f = massingPropFoot(p, r);
+    CHECK(near(f.x, 10.0));
+    CHECK(near(f.y, 20.55));
+    CHECK(near(f.rot, 90.0));
+    MassingKitPlace place;
+    REQUIRE(massingPropPlacement(p, 1000.0, {-0.5, -1.5, 0}, {0.5, 1.5, 2}, r.turn, r.inset, place));
+    const MassingVec centre = massingEnginePoint(1000.0, f.x, f.y, 0.0);
+    CHECK(near(place.at.x, centre.x));
+    CHECK(near(place.at.y, centre.y));
+    // The mesh's X runs along the facing: plan north, the foot's own x at 90 degrees.
+    CHECK(near(massingEngineYaw(f.rot), place.yaw));
+}
+
+TEST_CASE("massing props: a prop never stands on a foot already taken") {
+    const std::vector<MassingStreet> streets = eastStreet();
+    MassingPropRule a = rule(MassingPropSide::Left, 50.0);
+    a.footX = a.footY = 1.0;
+    MassingPropRule b = a;
+    b.id = "P-2";
+    Run run = place(streets, {a, b});
+    CHECK(run.counts[0].placed == 3);
+    CHECK(run.counts[1].placed == 0);
+    CHECK(run.counts[1].crowded == 3); // every spot on one of the first rule's
+    // A rule with no foot is never crowded and crowds nothing.
+    b.footX = 0.0;
+    run = place(streets, {a, b});
+    CHECK(run.counts[1].placed == 3);
+
+    // A foot given as taken.
+    const std::vector<MassingFoot> taken = {{50, 5.5, 0.5, 0.5, 0}};
+    const std::vector<bool> none;
+    massingPlaceProps(streets, {a}, nullptr, 0, 0, 1.0, 0.0, 0.0, {}, none, -1.0, run.props, run.counts, &taken);
+    CHECK(run.props.size() == 2);
+    CHECK(run.counts[0].crowded == 1);
+
+    // Its own spots crowd each other: 0.6 m apart with a 1 m foot, every other one stands.
+    a.spacing = 0.6;
+    run = place(streets, {a});
+    REQUIRE(run.props.size() >= 2);
+    CHECK(near(run.props[0].x, 0.0));
+    CHECK(near(run.props[1].x, 1.2));
+    CHECK(run.counts[0].placed + run.counts[0].crowded == run.counts[0].spots);
+}
+
+TEST_CASE("massing props: another street's pavement is not its road") {
+    // A cross street at x 50, 10 m wide; left kerb spots of the east street at x 3, 13, ..., 93 (y 5).
+    std::vector<MassingStreet> streets = eastStreet();
+    streets.push_back(street("S-2", "lane", 10.0, {{50, -40, 0}, {50, 40, 0}}));
+    MassingPropRule r = rule(MassingPropSide::Left, 10.0);
+    r.phase = 3.0;
+    r.kinds = {"street"};
+    Run run = place(streets, {r});
+    CHECK(run.counts[0].inRoad == 1); // x 53, 3 m off its centreline
+    streets[1].pavement = 3.0;        // a 4 m carriageway: x 53 stands on its pavement
+    run = place(streets, {r});
+    CHECK(run.counts[0].inRoad == 0);
+    CHECK(run.props.size() == 10);
+}
+
+TEST_CASE("massing props: the gap to the nearest kerb or frontage line") {
+    std::vector<MassingStreet> streets = eastStreet();
+    const std::vector<bool> all = {true};
+    std::vector<MassingBox> boxes = {flatBox(50, 12, 20, 4, 0, 10)}; // a wall face along y 10
+    // No pavements: only the frontage counts.
+    CHECK(near(massingPropLineGap(streets, boxes, all, 50, 5, 0.0), 5.0));
+    streets[0].pavement = 2.0; // kerbs along y 3 and -3
+    CHECK(near(massingPropLineGap(streets, boxes, all, 50, 4, 0.0), 1.0));
+    CHECK(near(massingPropLineGap(streets, boxes, all, 50, 0, 0.0), 3.0));
+    CHECK(near(massingPropLineGap(streets, boxes, all, 50, -5, 0.0), 2.0));
+    CHECK(near(massingPropLineGap(streets, boxes, all, 50, 9, 0.0), 1.0)); // the wall nearer than the kerb
+    // A wall standing lower than kMassingPropWallHeight over the floor is no frontage.
+    CHECK(near(massingPropLineGap(streets, boxes, all, 50, 9, 8.0), 6.0));
+    streets[0].pavement = 0.0;
+    CHECK(std::isinf(massingPropLineGap(streets, {}, {}, 50, 9, 0.0)));
+}
