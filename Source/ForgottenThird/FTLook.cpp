@@ -124,10 +124,6 @@ int32 FTLook::AddPieces(AActor& Owner, USkeletalMeshComponent& Body, const TArra
 	{
 		NoPiece.ParseIntoArray(NoPieceWords, TEXT("+"));
 	}
-	if (!FParse::Param(FCommandLine::Get(), TEXT("LocoCollar")))
-	{
-		NoPieceWords.Add(TEXT("collar"));
-	}
 	int32 Cloth = 0;
 	for (const FSoftObjectPath& Path : Paths)
 	{

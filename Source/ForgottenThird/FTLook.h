@@ -6,8 +6,8 @@
 // plugin they are skipped with one warning.
 //
 // Gate captures: -LocoNoPieces leaves every piece off, -LocoNoPiece=hair+collar those whose asset name holds any of
-// the words, to find which one breaks up as the body turns. The collar is left off unless -LocoCollar: it stands off
-// the shoulders as a flat plate behind the head once the body moves.
+// the words, to find which one breaks up as the body turns. Collar pieces draw by default (-LocoNoPiece=collar
+// leaves them off).
 
 #include "CoreMinimal.h"
 
