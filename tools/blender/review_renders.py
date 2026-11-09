@@ -372,7 +372,9 @@ floor_me = bpy.data.meshes.new("floor")
 floor_me.from_pydata([(-4, -4, 0), (4, -4, 0), (4, 4, 0), (-4, 4, 0)], [], [(0, 1, 2, 3)])
 floor = bpy.data.objects.new("floor", floor_me)
 sc.collection.objects.link(floor)
-floor_z = float(wverts(lod0)[:, 2].min())
+# the floor under the lowest mesh drawn at rest (a sole kept under the foot dips below the body's own lowest point)
+floor_z = float(min(wverts(o)[:, 2].min() for o in [lod0] + pieces))
+log("floor at z %.4f (body lowest %.4f)" % (floor_z, float(wverts(lod0)[:, 2].min())))
 floor.location.z = floor_z
 floor.data.materials.append(plain("floor", (0.30, 0.30, 0.31), 0.8))
 mid = (head("pelvis") + head("neck_01")) * 0.5

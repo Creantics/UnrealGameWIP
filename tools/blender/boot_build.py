@@ -39,6 +39,10 @@ the heel's back edge, over the last "bevel_len", default 0.08), "groove" {"y", "
 "depth" deep round the side wall "y" above the floor) and "lugs" {"pitch", "depth", "height", "gap_lift"} (an outsole
 band "height" tall whose lugs, one per "pitch" of outline, stand "depth" proud, the floor edge lifted "gap_lift"
 between them). It prints each sole row's UV v (0..1) so a texture spec can put a colour on the groove or outsole.
+The sole's bottom is the floor edge row and inner "rings" (fractions of the outline about its centre, default
+[0.75, 0.45, 0.2]) closed by a face; "under" (cm) keeps every bottom point that far below the lowest foot vertex
+within "under_r" (cm, default 1.5) of it in plan, so the lifts never leave the foot's underside showing through the
+bottom (rings then default to [0.8, 0.62, 0.45, 0.3, 0.17, 0.06]; the bottom may dip below the floor by about "under").
 "laces" are "count" crossings (an X per gap) between two eyelet lines at "at" of the tongue's half width, each a flat
 cord "width" wide standing "out" proud of the tongue (groups boot_tongue_<side>, boot_lace_<side>); "style": "bar"
 makes them "count" straight bars, each across between one pair of eyelets. A band with "tilt" over 45 (a heel counter)
@@ -582,8 +586,23 @@ def build_leg(V, side, sp):
         rows.append(flat + out * sw + yv(floor + lh))
     rows += [flat + out * (sw + ld * sq)[:, None] + yv(floor + 0.25),
              flat + out * (sw - 0.15 + ld * sq)[:, None] + yv(floor + gl * (1 - sq))]
-    for f in (0.75, 0.45, 0.2):
+    under = so_.get("under")  # cm the bottom stays under the foot (None: the floor as lifted, the foot may poke out)
+    rings = so_.get("rings", [0.75, 0.45, 0.2] if under is None else [0.8, 0.62, 0.45, 0.3, 0.17, 0.06])
+    for f in rings:
         rows.append(cen * np.array([1, 0, 1]) + (flat - cen * np.array([1, 0, 1])) * f + yv(floor))
+    if under is not None:
+        # The lifts (arch, toe spring, heel bevel, lug gaps) raise the floor above the foot's own underside, which then
+        # shows through the sole when the foot lifts: each bottom point (the floor edge row and the rings) is kept
+        # "under" below the lowest foot vertex within "under_r" of it (in plan), so the bottom follows the foot down.
+        foot = leg.P[leg.P[:, 1] < yb]
+        ur, low = so_.get("under_r", 1.5), 0.0
+        for r in range(len(rows) - len(rings) - 1, len(rows)):
+            d = np.linalg.norm(rows[r][:, None, [0, 2]] - foot[None, :, [0, 2]], axis=2)
+            fm = np.where(d < ur, foot[None, :, 1], np.inf).min(1) - under
+            low = max(low, float(np.max(rows[r][:, 1] - np.minimum(rows[r][:, 1], fm))))
+            rows[r][:, 1] = np.minimum(rows[r][:, 1], fm)
+        print("boot_build: %s: sole bottom kept %.2f under the foot (r %.2f), lowered at most %.2f, lowest %.2f"
+              % (tag, under, ur, low, float(min(rw[:, 1].min() for rw in rows))))
     lv = np.concatenate([[0], np.cumsum([np.linalg.norm(rows[r + 1] - rows[r], axis=1).mean() for r in range(len(rows) - 1)])])
     print("boot_build: %s: sole rows v %s" % (tag, " ".join("%.3f" % x for x in lv / lv[-1])))
     o = grid_object("boot_sole_" + tag, rows, True)
