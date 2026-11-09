@@ -21,6 +21,16 @@
 // tour walks between their spawns on the navmesh. With -WorldQuitOnDone a stuck leg is given up and the
 // tour goes on, ending in TOUR ENDED and exit code 1 instead of TOUR DONE.
 //
+// Such a map may carry tour stops (FTBuildMassingWorld -Tour=, TourStopIds and the rest): the tour walks them after
+// the district legs, in the table's order. A reach stop is walked to on the navmesh (a wider path search, a cap of
+// ftcore::tourLegCapSeconds); an edge stop is walked to the navmesh's nearest point to its target, then pushed
+// straight at it, and what stopped the lead is judged (ftcore::judgeEdge); a push stop is pushed straight at its
+// target, which must hold the lead off. -WorldTourKinds=<list> picks the kinds, -WorldTourStops=only skips the
+// district legs, and -WorldTourStills=<dir> saves a still at the end of each stop marked for one (not under
+// -NullRHI). On a map with a sea a leg whose lead's feet go under it is wet. A given-up leg, a bare hidden wall, an
+// unjudged edge, a push that got through or a wet leg ends the tour in TOUR ENDED. A map without stops tours as
+// before.
+//
 // On the overworld (bOverworld, FTBuildExploreWorld -World=overworld) the director lays out the
 // overworld (ftcore::OverworldLayout). A story field step whose carry has FromWorld set is a hop: the
 // player starts at that world's gate and walks to the next world's; Use there opens that world's map
@@ -40,12 +50,14 @@
 // arena fight in the lead's district (no story step).
 
 #include "CoreMinimal.h"
+#include "AI/Navigation/NavQueryFilter.h"
 #include "GameFramework/Actor.h"
 
 #include "ftcore/Explore.h"
 #include "ftcore/Guard.h"
 #include "ftcore/Overworld.h"
 #include "ftcore/PartyTrail.h"
+#include "ftcore/WorldChecks.h"
 #include "ftcore/WorldLayout.h"
 
 #include "FTStepHost.h"
@@ -220,6 +232,27 @@ private:
 	bool QueueDistrictSpawn(int32 District);
 	void BeginWorld();
 	void TickWorld(AFTExploreCharacter& Player, float DeltaSeconds);
+	// The tour's stops. BeginTourStops reads the switches and picks the stops the tour walks (TourStopOrder);
+	// TickTourStop plays a stop leg's phases (set down, settle, walk, push, still) and EndStopLeg ends it; NextTourLeg
+	// moves the tour on and EndWorldTour gives its end lines. Game is the tour's game time (s).
+	void BeginTourStops();
+	void TickTourStop(AFTExploreCharacter& Player, ftcore::Vec2 Pos, double Game, float DeltaSeconds);
+	void BeginStopPush(ftcore::Vec2 Pos, ftcore::Vec2 Target, double Feet, double Game);
+	void JudgeEdgeStop(const AFTExploreCharacter& Player, int32 Stop);
+	void EndStopLeg(int32 Stop, double Game);
+	void NextTourLeg(double Game);
+	void EndWorldTour(double Game);
+	// The given-up leg's located line: where the lead stopped and what the pilot's last navmesh query answered.
+	void LogLegStopped(const AFTExploreCharacter& Player, ftcore::Vec2 Pos) const;
+	void CountTourMiss();
+	// Sets the lead down at At (cm, Z its floor) facing Yaw (degrees) on the next tick, as QueueDistrictSpawn does.
+	void QueueStopSetDown(const FVector& At, float Yaw);
+	// The next leg is a stop that sets the lead down at its own start.
+	bool NextLegSetsDown() const;
+	int32 TourLegNumber() const { return TourLeg - TourFirstLeg + 1; }
+	// A ground point (engine metres) in the plan frame when the plan's square is known (TourFrame names the frame).
+	void TourPlanXY(ftcore::Vec2 Engine, float& X, float& Y) const;
+	const TCHAR* TourFrame() const;
 	void UpdateWorldLine(ftcore::Vec2 Pos);
 	void BeginOverworld();
 	void TickOverworld(AFTExploreCharacter& Player, float DeltaSeconds);
@@ -323,13 +356,60 @@ private:
 	int32 TourLeg = 0;
 	bool bTourQuitOnDone = false;                                 // -WorldQuitOnDone (or -ExploreQuitOnComplete), read when the tour starts
 	int32 TourMisses = 0;                                         // legs given up stuck (quitting runs only)
-	uint8 TourMissLegs[2 * ftcore::WorldLayout::kMaxDistricts] = {}; // their leg numbers, from 1
+	TArray<int32> TourMissLegs;                                   // their leg numbers, from 1 (reserved when the tour starts)
 	double TourStart = 0.0;
 	double TourGameStart = 0.0;
 	double TourTraceAt = 0.0; // tour game time of the next per-second trace line
 	int32 TourLegFor = -1;     // the leg TourLegStartAt is for
 	double TourLegStartAt = 0.0; // tour game time the leg started, for kTourLegCapSeconds
 	bool bTourLegCapped = false; // the cap fired on this leg (logged once)
+	// The tour's legs: [0, TourCount) walk the districts (Tour), [TourCount, TourEndLeg) the stops picked, by index into
+	// TourStopIds (TourStopOrder). The tour starts at TourFirstLeg (TourCount with -WorldTourStops=only) and numbers its
+	// legs from there, out of TourLegTotal.
+	TArray<int32> TourStopOrder;
+	int32 TourFirstLeg = 0;
+	int32 TourEndLeg = 0;
+	int32 TourLegTotal = 0;
+	int32 TourStopsPicked[ftcore::kTourStopKinds] = {};
+	int32 TourStillsPicked = 0;
+	// The stop leg in play: its phase (the .cpp's ETourStopPhase) and when it began (tour game time); the point the walk
+	// aims at (engine metres; the navmesh's nearest to an edge stop's target) and its floor (cm); the walk's cap (s);
+	// an edge leg whose walk gave up short, or found no navmesh near the target; the push's direction (held once the
+	// lead is at the target), its closest approach to the target (m) and the feet's start and lowest (cm); a stop whose
+	// given-up leg sets the lead down on its target for the next leg (-1 for none), and the yaw it faces there.
+	uint8 TourStopPhase = 0;
+	double TourPhaseAt = 0.0;
+	ftcore::Vec2 TourStopAim;
+	double TourStopAimFloor = 0.0;
+	double TourStopCap = 0.0;
+	bool bTourStopWalkShort = false;
+	bool bTourStopNoNav = false;
+	FVector2D TourPushDir = FVector2D(1.0, 0.0);
+	bool bTourPushLocked = false;
+	float TourPushClosest = 0.f;
+	double TourPushStartFeet = 0.0;
+	double TourPushLowFeet = 0.0;
+	int32 TourSetDownStop = -1;
+	float TourSetDownYaw = 0.f;
+	// The stops' counts: run by kind, reach stops reached, edge legs that met a cause, push legs held and got through;
+	// each edge's tally (W, S, N, E), its bare hidden walls and unjudged legs; the wet legs and the last leg found wet.
+	int32 TourStopsRun[ftcore::kTourStopKinds] = {};
+	int32 TourStopsReached = 0;
+	int32 TourEdgesMet = 0;
+	int32 TourBareWalls = 0;
+	int32 TourUnjudged = 0;
+	int32 TourPushHeld = 0;
+	int32 TourGotThrough = 0;
+	ftcore::EdgeTally TourEdges[4];
+	int32 TourWetLegs = 0;
+	int32 TourWetLeg = -1;
+	// -WorldTourStills=<dir> (full path; empty without it), the still being waited for, the file's stamp before it was
+	// asked, and the wait (real seconds).
+	FString TourStillsDir;
+	FString TourStillFile;
+	FDateTime TourStillOldStamp;
+	double TourStillUntil = 0.0;
+	double TourStillCheckAt = 0.0;
 	int32 WorldLineDistrict = -2;
 	FString WorldLine;
 
@@ -376,4 +456,8 @@ private:
 	bool bPilotPathLimit = false; // the last refresh's search ran out of nodes
 	FVector PilotPathGoal = FVector::ZeroVector; // the goal as asked (engine cm), its z the query's
 	FVector PilotPathEnd = FVector::ZeroVector; // that path's last point (engine cm), when it has one
+	// A tour stop's walk asks its path with a search budget of kTourSearchNodes (the engine's default is 2048): the
+	// filter, a copy of the navmesh's own, is made on the first such query.
+	bool bPilotWideSearch = false;
+	FSharedConstNavQueryFilter PilotWideFilter;
 };

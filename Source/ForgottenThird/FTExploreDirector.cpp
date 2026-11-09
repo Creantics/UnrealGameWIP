@@ -1,7 +1,14 @@
 #include "FTExploreDirector.h"
 
+#include "AI/Navigation/NavQueryFilter.h"
 #include "Camera/PlayerCameraManager.h"
+#include "CollisionQueryParams.h"
+#include "CollisionShape.h"
+#include "Components/PrimitiveComponent.h"
 #include "EngineUtils.h"
+#include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
+#include "Engine/HitResult.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
@@ -10,10 +17,12 @@
 #include "HAL/PlatformTime.h"
 #include "Kismet/GameplayStatics.h"
 #include "HAL/FileManager.h"
+#include "Misc/App.h"
 #include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "NavigationData.h"
 #include "NavigationPath.h"
 #include "NavigationSystem.h"
 #include "TimerManager.h"
@@ -62,6 +71,54 @@ constexpr float kFaceGrace = 0.15f;
 // tour's pilot targets get ids from here up, apart from the demo spots' and the field goal's.
 constexpr float kTourReach = 4.f;
 constexpr int32 kTourTargetBase = 300;
+// The tour's stop legs (TickTourStop): pilot targets from here up; the walk's path search budget (the engine's default
+// is 2048, the map builder's reach check uses this); how far round an edge stop's target the navmesh's nearest point
+// is looked for (cm), and how close the walk comes to it (m) before the push.
+constexpr int32 kTourStopTargetBase = 500;
+constexpr uint32 kTourSearchNodes = 32768;
+const FVector kEdgeNavExtent(2000.0, 2000.0, 1000.0);
+constexpr float kEdgeWalkReach = 1.f;
+// After a set-down the lead settles at least this long and until it stands on the ground, at most the second (s of
+// game time).
+constexpr double kStopSettleSeconds = 1.0;
+constexpr double kStopSettleMaxSeconds = 3.0;
+// An edge stop's push and a push stop's (s of game time); a push stop holds when the lead comes no closer than
+// kPushHeldMetres to its target. The push steers at the target until the lead is within kPushAimMetres of it, then
+// holds that way.
+constexpr double kEdgePushSeconds = 3.0;
+constexpr double kPushSeconds = 8.0;
+constexpr float kPushHeldMetres = 3.f;
+constexpr float kPushAimMetres = 0.25f;
+// An edge leg's judging (JudgeEdgeStop): the ground past a hidden wall is looked for this far past where the sweep met
+// it, and along the probe at this step (cm); each down-trace runs from 2 m over the feet to 100 m under them. A fall
+// of more than kStopFellCm on the push is noted.
+constexpr double kEdgeWallPastCm = 150.0;
+constexpr double kEdgeGroundStepCm = 50.0;
+constexpr double kEdgeGroundAboveCm = 200.0;
+constexpr double kEdgeGroundBelowCm = 10000.0;
+constexpr double kStopFellCm = 50.0;
+// A tour leg is wet when the lead's feet go this far under the sea's level (cm).
+constexpr double kTourWetBand = 5.0;
+// A still is looked for on disk this often, for this long (real seconds).
+constexpr double kStillCheckSeconds = 0.25;
+constexpr double kStillWaitSeconds = 5.0;
+enum class ETourStopPhase : uint8 { Begin, Settle, Walk, Push, Still };
+// An edge's letter to its tally (W, S, N, E), -1 for none.
+int32 EdgeIndex(uint8 Letter)
+{
+	switch (Letter)
+	{
+	case 'W': return 0;
+	case 'S': return 1;
+	case 'N': return 2;
+	case 'E': return 3;
+	default: return -1;
+	}
+}
+const TCHAR kEdgeLetters[4] = {TEXT('W'), TEXT('S'), TEXT('N'), TEXT('E')};
+// Out of the square across each edge, in the engine frame (plan north is engine -Y).
+constexpr double kEdgeOutX[4] = {-1.0, 0.0, 0.0, 1.0};
+constexpr double kEdgeOutY[4] = {0.0, 1.0, -1.0, 0.0};
 // The overworld's pilot targets (a hop's gates, the tour's gates) get ids from here up.
 constexpr int32 kOverTargetBase = 400;
 // A follower nearer the camera than this share of the lead's distance is hidden: it would loom over the lead.
@@ -1473,25 +1530,62 @@ const ftcore::Vec2* AFTExploreDirector::PilotWaypoint(const AFTExploreCharacter&
 			GoalFloor = DistrictFloors[GoalDistrict];
 		}
 		const FVector To(Goal.x * 100.0, Goal.y * 100.0, GoalFloor.IsSet() ? GoalFloor.GetValue() + Player.GetSimpleCollisionHalfHeight() : From.Z);
-		UNavigationPath* Path = Nav->FindPathToLocationSynchronously(World, From, To);
-		PilotPathGoal = To;
-		PilotPathState = !(Path && Path->IsValid()) ? 1 : Path->IsPartial() ? 2 : 3;
-		// Whether the search ran out of nodes (the engine's default budget); logged, not acted on.
-		bPilotPathLimit = Path && Path->GetPath().IsValid() && Path->GetPath()->DidSearchReachedLimit();
-		if (PilotPathState > 1 && Path->PathPoints.Num() > 0)
+		const ANavigationData* NavData = bPilotWideSearch ? Nav->GetDefaultNavDataInstance() : nullptr;
+		if (NavData)
 		{
-			PilotPathEnd = Path->PathPoints.Last();
-		}
-		if (Path && Path->IsValid())
-		{
-			for (const FVector& Point : Path->PathPoints)
+			// A tour stop's walk: the same query with a wider search budget, as the map builder's reach check asks.
+			if (!PilotWideFilter.IsValid() && NavData->GetDefaultQueryFilter().IsValid())
 			{
-				PilotPath.Add(ToGround(Point));
+				FSharedNavQueryFilter Wide = NavData->GetDefaultQueryFilter()->GetCopy();
+				Wide->SetMaxSearchNodes(kTourSearchNodes);
+				PilotWideFilter = Wide;
 			}
-			if (!bPilotPathLogged)
+			const FPathFindingResult Found =
+				Nav->FindPathSync(FPathFindingQuery(static_cast<const UObject*>(nullptr), *NavData, From, To, PilotWideFilter), EPathFindingMode::Regular);
+			const bool bFound = Found.IsSuccessful() && Found.Path.IsValid() && Found.Path->IsValid();
+			PilotPathGoal = To;
+			PilotPathState = !bFound ? 1 : Found.Path->IsPartial() ? 2 : 3;
+			bPilotPathLimit = Found.Path.IsValid() && Found.Path->DidSearchReachedLimit();
+			if (bFound)
 			{
-				bPilotPathLogged = true;
-				UE_LOG(LogForgottenThird, Display, TEXT("Explore: pilot follows a navmesh path (%d points)."), PilotPath.Num());
+				const TArray<FNavPathPoint>& Points = Found.Path->GetPathPoints();
+				if (Points.Num() > 0)
+				{
+					PilotPathEnd = Points.Last().Location;
+				}
+				for (const FNavPathPoint& Point : Points)
+				{
+					PilotPath.Add(ToGround(Point.Location));
+				}
+				if (!bPilotPathLogged)
+				{
+					bPilotPathLogged = true;
+					UE_LOG(LogForgottenThird, Display, TEXT("Explore: pilot follows a navmesh path (%d points)."), PilotPath.Num());
+				}
+			}
+		}
+		else
+		{
+			UNavigationPath* Path = Nav->FindPathToLocationSynchronously(World, From, To);
+			PilotPathGoal = To;
+			PilotPathState = !(Path && Path->IsValid()) ? 1 : Path->IsPartial() ? 2 : 3;
+			// Whether the search ran out of nodes (the engine's default budget); logged, not acted on.
+			bPilotPathLimit = Path && Path->GetPath().IsValid() && Path->GetPath()->DidSearchReachedLimit();
+			if (PilotPathState > 1 && Path->PathPoints.Num() > 0)
+			{
+				PilotPathEnd = Path->PathPoints.Last();
+			}
+			if (Path && Path->IsValid())
+			{
+				for (const FVector& Point : Path->PathPoints)
+				{
+					PilotPath.Add(ToGround(Point));
+				}
+				if (!bPilotPathLogged)
+				{
+					bPilotPathLogged = true;
+					UE_LOG(LogForgottenThird, Display, TEXT("Explore: pilot follows a navmesh path (%d points)."), PilotPath.Num());
+				}
 			}
 		}
 	}
@@ -1604,14 +1698,127 @@ void AFTExploreDirector::BeginWorld()
 	TourLegFor = -1;
 	TourMisses = 0;
 	bTourQuitOnDone = bQuitOnComplete || FParse::Param(FCommandLine::Get(), TEXT("WorldQuitOnDone"));
+	BeginTourStops();
 	TourStart = Now();
 	TourGameStart = GetWorld()->GetTimeSeconds();
 	if (IsAlphaFast())
 	{
 		UGameplayStatics::SetGlobalTimeDilation(this, 8.f);
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("World %s: tour of %d legs %s."), *WorldId, TourCount,
-		bDistrictsPinned ? TEXT("on the navmesh, spawn to spawn") : TEXT("over the roads"));
+	if (TourStopOrder.IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("World %s: tour of %d legs %s."), *WorldId, TourCount,
+			bDistrictsPinned ? TEXT("on the navmesh, spawn to spawn") : TEXT("over the roads"));
+		return;
+	}
+	const FString Districts = TourFirstLeg == 0 ? FString::Printf(TEXT("%d district legs spawn to spawn"), TourCount)
+												: FString(TEXT("the district legs skipped (-WorldTourStops=only)"));
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("World %s: tour of %d legs on the navmesh: %s, then %d of the map's %d stops (%d reach, %d edge, %d push; %d end in a still)."), *WorldId,
+		TourLegTotal, *Districts, TourStopOrder.Num(), TourStopIds.Num(), TourStopsPicked[0], TourStopsPicked[1], TourStopsPicked[2], TourStillsPicked);
+}
+
+void AFTExploreDirector::BeginTourStops()
+{
+	// Without stops (or on a map whose stops can't be walked) the tour is its district legs, as before.
+	TourFirstLeg = 0;
+	TourEndLeg = TourCount;
+	TourLegTotal = TourCount;
+	TourStopOrder.Reset();
+	TourMissLegs.Reset();
+	for (int32 k = 0; k < static_cast<int32>(ftcore::kTourStopKinds); ++k)
+	{
+		TourStopsPicked[k] = 0;
+		TourStopsRun[k] = 0;
+	}
+	TourStillsPicked = 0;
+	TourStopsReached = 0;
+	TourEdgesMet = 0;
+	TourBareWalls = 0;
+	TourUnjudged = 0;
+	TourPushHeld = 0;
+	TourGotThrough = 0;
+	for (ftcore::EdgeTally& Tally : TourEdges)
+	{
+		Tally = ftcore::EdgeTally();
+	}
+	TourSetDownStop = -1;
+	TourStopPhase = static_cast<uint8>(ETourStopPhase::Begin);
+	TourWetLegs = 0;
+	TourWetLeg = -1;
+	const TCHAR* const Line = FCommandLine::Get();
+	FString StopsMode;
+	const bool bStopsMode = FParse::Value(Line, TEXT("WorldTourStops="), StopsMode);
+	const bool bStopsOnly = bStopsMode && StopsMode.Equals(TEXT("only"), ESearchCase::IgnoreCase);
+	if (bStopsMode && !bStopsOnly)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("World %s: -WorldTourStops=%s isn't a mode (only); the district legs run."), *WorldId, *StopsMode);
+	}
+	uint8 Kinds = ftcore::kTourKindsAll;
+	FString KindList;
+	if (FParse::Value(Line, TEXT("WorldTourKinds="), KindList, false))
+	{
+		const FTCHARToUTF8 KindUtf8(*KindList);
+		if (!ftcore::parseTourKinds(std::string_view(KindUtf8.Get(), static_cast<size_t>(KindUtf8.Length())), Kinds))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("World %s: -WorldTourKinds=%s names a kind that isn't reach, edge or push; every kind runs."), *WorldId,
+				*KindList);
+			Kinds = ftcore::kTourKindsAll;
+		}
+	}
+	TourStillsDir.Reset();
+	if (FParse::Value(Line, TEXT("WorldTourStills="), TourStillsDir, false) && !TourStillsDir.IsEmpty())
+	{
+		TourStillsDir = FPaths::ConvertRelativePathToFull(TourStillsDir);
+		if (FApp::CanEverRender())
+		{
+			IFileManager::Get().MakeDirectory(*TourStillsDir, true);
+		}
+	}
+	const int32 Count = TourStopIds.Num();
+	const bool bLinedUp = TourStopKinds.Num() == Count && TourStopTargets.Num() == Count && TourStopHasStart.Num() == Count
+		&& TourStopStarts.Num() == Count && TourStopEdges.Num() == Count && TourStopStills.Num() == Count;
+	if (Count > 0 && !bDistrictsPinned)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("World %s: the map has %d tour stops, but its districts aren't placed by it; the tour walks the districts only."),
+			*WorldId, Count);
+	}
+	else if (Count > 0 && !bLinedUp)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("World %s: the map's %d tour stops don't line up (%d kinds, %d targets, %d starts, %d edges, %d stills); ")
+			TEXT("the tour walks the districts only."), *WorldId, Count, TourStopKinds.Num(), TourStopTargets.Num(), TourStopStarts.Num(),
+			TourStopEdges.Num(), TourStopStills.Num());
+	}
+	else if (Count > 0)
+	{
+		TourStopOrder.Reserve(Count);
+		for (int32 i = 0; i < Count; ++i)
+		{
+			const uint8 Kind = TourStopKinds[i];
+			if (Kind < ftcore::kTourStopKinds && ftcore::tourKindIn(Kinds, static_cast<ftcore::TourStopKind>(Kind)))
+			{
+				TourStopOrder.Add(i);
+				++TourStopsPicked[Kind];
+				TourStillsPicked += TourStopStills[i] ? 1 : 0;
+			}
+		}
+		if (TourStopOrder.IsEmpty())
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("World %s: -WorldTourKinds=%s picks none of the map's %d tour stops."), *WorldId, *KindList, Count);
+		}
+	}
+	if (bStopsOnly && TourStopOrder.IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("World %s: -WorldTourStops=only, but the tour has no stops to walk; the district legs run."), *WorldId);
+	}
+	else if (bStopsOnly)
+	{
+		TourFirstLeg = TourCount;
+	}
+	TourLeg = TourFirstLeg;
+	TourEndLeg = TourCount + TourStopOrder.Num();
+	TourLegTotal = TourEndLeg - TourFirstLeg;
+	TourMissLegs.Reserve(TourLegTotal);
 }
 
 void AFTExploreDirector::UpdateWorldLine(ftcore::Vec2 Pos)
@@ -1632,8 +1839,31 @@ void AFTExploreDirector::TickWorld(AFTExploreCharacter& Player, float DeltaSecon
 	TickFollowers(Player, DeltaSeconds);
 	const ftcore::Vec2 Pos = ToGround(Player.GetActorLocation());
 	UpdateWorldLine(Pos);
-	if (!bWorldTour || bWorldTourDone || TourLeg >= TourCount)
+	if (!bWorldTour || bWorldTourDone || TourLeg >= TourEndLeg)
 	{
+		return;
+	}
+	const double Game = GetWorld()->GetTimeSeconds() - TourGameStart;
+	// Dry: on a map with a sea, a leg whose lead's feet go under its level is wet (logged once a leg). A stop leg's first
+	// tick still sees the lead where the last leg left it, before its set-down.
+	const bool bStopBegins = TourLeg >= TourCount && TourStopPhase == static_cast<uint8>(ETourStopPhase::Begin);
+	if (bHasSeaLevel && TourWetLeg != TourLeg && !bStopBegins && !bWorldSpawnPending)
+	{
+		const double Feet = Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight();
+		if (Feet < SeaLevel - kTourWetBand)
+		{
+			TourWetLeg = TourLeg;
+			++TourWetLegs;
+			float PlanX = 0.f;
+			float PlanY = 0.f;
+			TourPlanXY(Pos, PlanX, PlanY);
+			UE_LOG(LogForgottenThird, Error, TEXT("World %s: WET on leg %d/%d at (%.1f, %.1f) m in the %s frame, feet z %.0f cm, under the sea's level %.0f cm."),
+				*WorldId, TourLegNumber(), TourLegTotal, PlanX, PlanY, TourFrame(), Feet, SeaLevel);
+		}
+	}
+	if (TourLeg >= TourCount)
+	{
+		TickTourStop(Player, Pos, Game, DeltaSeconds);
 		return;
 	}
 	const int32 District = Tour[TourLeg];
@@ -1643,7 +1873,6 @@ void AFTExploreDirector::TickWorld(AFTExploreCharacter& Player, float DeltaSecon
 	const ftcore::Vec2 Target = bDistrictsPinned ? Place.origin : Place.centre;
 	const int32 Spot = kTourTargetBase + TourLeg;
 	const float Dist = static_cast<float>(FVector2D(Target.x - Pos.x, Target.y - Pos.y).Size());
-	const double Game = GetWorld()->GetTimeSeconds() - TourGameStart;
 	if (TourLegFor != TourLeg)
 	{
 		TourLegFor = TourLeg;
@@ -1660,7 +1889,7 @@ void AFTExploreDirector::TickWorld(AFTExploreCharacter& Player, float DeltaSecon
 		UE_LOG(LogForgottenThird, Display,
 			TEXT("World %s: trace leg %d/%d (spot %d) at %.1f s game time: the lead at (%.1f, %.1f) m in the engine frame, feet at z %.0f cm, %.2f m/s; ")
 			TEXT("%.1f m from the goal, best %.1f m, %.1f s without a new best; path: %s%s, %.1f m left, best %.1f m; %.1f s slow; %.1f s on the leg."),
-			*WorldId, TourLeg + 1, TourCount, Spot, Game, Pos.x, Pos.y, Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight(),
+			*WorldId, TourLeg + 1, TourLegTotal, Spot, Game, Pos.x, Pos.y, Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight(),
 			Player.GetVelocity().Size2D() / 100.0, Dist, bAsked ? PilotBestDist : Dist, bAsked ? FMath::Max(PilotStuck, 0.f) : 0.f,
 			kPilotPathStates[bPathAsked ? FMath::Min<int32>(PilotPathState, 3) : 0], bPathAsked && bPilotPathLimit ? TEXT(" (out of nodes)") : TEXT(""),
 			bAsked ? PilotPathLeft : -1.f, bAsked ? PilotBestPath : -1.f, bAsked ? FMath::Max(PilotStall, 0.f) : 0.f, Game - TourLegStartAt);
@@ -1686,26 +1915,12 @@ void AFTExploreDirector::TickWorld(AFTExploreCharacter& Player, float DeltaSecon
 			return;
 		}
 		UE_LOG(LogForgottenThird, Error, TEXT("World %s: gave up on district %d (leg %d/%d), %.1f m short, at %.1f s game time."), *WorldId,
-			District, TourLeg + 1, TourCount, Dist, Game);
-		// Where it stopped and what the pilot's last navmesh query answered, so the stall can be placed without a rerun.
-		const FString PathEnd = PilotPathState > 1
-			? FString::Printf(TEXT(", ending %.1f m from the goal at z %.0f cm"),
-				  FVector2D::Distance(FVector2D(PilotPathEnd), FVector2D(PilotPathGoal)) / 100.0, PilotPathEnd.Z)
-			: FString();
-		UE_LOG(LogForgottenThird, Error,
-			TEXT("World %s: leg %d stopped with the lead at (%.1f, %.1f) m in the engine frame, feet at z %.0f cm; the goal asked at z %.0f cm; ")
-			TEXT("the last query found %s (%d points)%s%s."),
-			*WorldId, TourLeg + 1, Pos.x, Pos.y, Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight(), PilotPathGoal.Z,
-			kPilotPathStates[FMath::Min<int32>(PilotPathState, 3)], PilotPath.Num(), *PathEnd,
-			bPilotPathLimit ? TEXT("; its search ran out of nodes") : TEXT(""));
-		if (TourMisses < static_cast<int32>(UE_ARRAY_COUNT(TourMissLegs)))
-		{
-			TourMissLegs[TourMisses] = static_cast<uint8>(TourLeg + 1);
-		}
-		++TourMisses;
+			District, TourLeg + 1, TourLegTotal, Dist, Game);
+		LogLegStopped(Player, Pos);
+		CountTourMiss();
 		// The next leg starts on this leg's spawn, where the tour meant it to start, so one stall is given up once and not
-		// again on every leg after it. The leg still counts as given up.
-		if (TourLeg + 1 < TourCount && QueueDistrictSpawn(District))
+		// again on every leg after it. The leg still counts as given up. A stop leg with its own start sets the lead down there.
+		if (TourLeg + 1 < TourEndLeg && !NextLegSetsDown() && QueueDistrictSpawn(District))
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("World %s: leg %d given up; the lead is set down on district %d's spawn for leg %d."), *WorldId,
 				TourLeg + 1, District, TourLeg + 2);
@@ -1715,37 +1930,592 @@ void AFTExploreDirector::TickWorld(AFTExploreCharacter& Player, float DeltaSecon
 	{
 		// The reach is on the ground plan, so the feet say whether the lead stands on the spawn's own deck or terrace.
 		UE_LOG(LogForgottenThird, Display, TEXT("World %s: reached district %d (leg %d/%d) at %.1f s game time, feet at z %.0f cm (its spawn's %.0f cm)."),
-			*WorldId, District, TourLeg + 1, TourCount, Game, Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight(),
+			*WorldId, District, TourLeg + 1, TourLegTotal, Game, Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight(),
 			DistrictSpawns[District].Z);
 	}
 	else
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("World %s: reached district %d (leg %d/%d) at %.1f s game time."), *WorldId, District,
-			TourLeg + 1, TourCount, Game);
+			TourLeg + 1, TourLegTotal, Game);
 	}
-	if (++TourLeg < TourCount)
+	NextTourLeg(Game);
+}
+
+void AFTExploreDirector::TickTourStop(AFTExploreCharacter& Player, ftcore::Vec2 Pos, double Game, float DeltaSeconds)
+{
+	const int32 Stop = TourStopOrder[TourLeg - TourCount];
+	const ftcore::TourStopKind Kind = static_cast<ftcore::TourStopKind>(TourStopKinds[Stop]);
+	const FVector& TargetCm = TourStopTargets[Stop];
+	const ftcore::Vec2 Target = ToGround(TargetCm);
+	const float Dist = static_cast<float>(FVector2D(Target.x - Pos.x, Target.y - Pos.y).Size());
+	const float AimDist = static_cast<float>(FVector2D(TourStopAim.x - Pos.x, TourStopAim.y - Pos.y).Size());
+	const int32 Spot = kTourStopTargetBase + TourLeg;
+	const double Feet = Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight();
+	const ETourStopPhase Phase = static_cast<ETourStopPhase>(TourStopPhase);
+	if (TourLegFor != TourLeg)
+	{
+		TourLegFor = TourLeg;
+		TourLegStartAt = Game;
+		bTourLegCapped = false;
+	}
+	// Once a game second, as on a district leg: what the leg is doing, and on the walk what the pilot's stuck test sees.
+	if (Game >= TourTraceAt && Phase != ETourStopPhase::Begin && Phase != ETourStopPhase::Still)
+	{
+		TourTraceAt = FMath::FloorToDouble(Game) + 1.0;
+		const double Speed = Player.GetVelocity().Size2D() / 100.0;
+		if (Phase == ETourStopPhase::Walk)
+		{
+			const bool bAsked = PilotTarget == Spot;
+			const bool bPathAsked = bAsked && PilotPathTarget == Spot;
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("World %s: trace leg %d/%d (stop %s, walking) at %.1f s game time: the lead at (%.1f, %.1f) m in the engine frame, feet at z %.0f cm, ")
+				TEXT("%.2f m/s; %.1f m from the aim, best %.1f m, %.1f s without a new best; path: %s%s, %.1f m left, best %.1f m; %.1f s slow; ")
+				TEXT("%.1f s on the leg."),
+				*WorldId, TourLegNumber(), TourLegTotal, *TourStopIds[Stop], Game, Pos.x, Pos.y, Feet, Speed, AimDist, bAsked ? PilotBestDist : AimDist,
+				bAsked ? FMath::Max(PilotStuck, 0.f) : 0.f, kPilotPathStates[bPathAsked ? FMath::Min<int32>(PilotPathState, 3) : 0],
+				bPathAsked && bPilotPathLimit ? TEXT(" (out of nodes)") : TEXT(""), bAsked ? PilotPathLeft : -1.f, bAsked ? PilotBestPath : -1.f,
+				bAsked ? FMath::Max(PilotStall, 0.f) : 0.f, Game - TourLegStartAt);
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("World %s: trace leg %d/%d (stop %s, %s) at %.1f s game time: the lead at (%.1f, %.1f) m in the engine frame, feet at z %.0f cm, ")
+				TEXT("%.2f m/s; %.1f m from the target; %.1f s on the leg."),
+				*WorldId, TourLegNumber(), TourLegTotal, *TourStopIds[Stop], Phase == ETourStopPhase::Settle ? TEXT("settling") : TEXT("pushing"), Game,
+				Pos.x, Pos.y, Feet, Speed, Dist, Game - TourLegStartAt);
+		}
+	}
+	switch (Phase)
+	{
+	case ETourStopPhase::Begin:
+	{
+		// A stop with a start sets the lead down there, facing the target; one without walks on from where the last leg
+		// left it, once it stands on the ground.
+		++TourStopsRun[TourStopKinds[Stop]];
+		bTourStopWalkShort = false;
+		bTourStopNoNav = false;
+		bTourPushLocked = false;
+		TourSetDownStop = -1;
+		TourStopAim = Target;
+		TourStopAimFloor = TargetCm.Z;
+		TourStopPhase = static_cast<uint8>(ETourStopPhase::Settle);
+		TourPhaseAt = Game - kStopSettleSeconds;
+		if (TourStopHasStart[Stop])
+		{
+			const FVector& Start = TourStopStarts[Stop];
+			QueueStopSetDown(Start, static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(TargetCm.Y - Start.Y, TargetCm.X - Start.X))));
+			TourPhaseAt = Game;
+		}
+		return;
+	}
+	case ETourStopPhase::Settle:
+	{
+		const UCharacterMovementComponent* Move = Player.GetCharacterMovement();
+		const bool bOnGround = Move && Move->IsMovingOnGround();
+		const double Settled = Game - TourPhaseAt;
+		if (!(Settled >= kStopSettleSeconds && bOnGround) && Settled < kStopSettleMaxSeconds)
+		{
+			return;
+		}
+		if (Kind == ftcore::TourStopKind::Push)
+		{
+			BeginStopPush(Pos, Target, Feet, Game);
+			return;
+		}
+		if (Kind == ftcore::TourStopKind::Edge)
+		{
+			// An edge stop's walk aims at the navmesh's nearest point to the target; the push does the rest.
+			UWorld* World = GetWorld();
+			const UNavigationSystemV1* Nav = World ? FNavigationSystem::GetCurrent<UNavigationSystemV1>(World) : nullptr;
+			const ANavigationData* NavData = Nav ? Nav->GetDefaultNavDataInstance() : nullptr;
+			FNavLocation OnMesh;
+			if (!NavData || !Nav->ProjectPointToNavigation(TargetCm, OnMesh, kEdgeNavExtent, NavData))
+			{
+				bTourStopNoNav = true;
+				UE_LOG(LogForgottenThird, Warning, TEXT("World %s: edge stop %s (leg %d/%d): no navmesh within %.0f m of the target; the push starts where the lead stands."),
+					*WorldId, *TourStopIds[Stop], TourLegNumber(), TourLegTotal, kEdgeNavExtent.X / 100.0);
+				BeginStopPush(Pos, Target, Feet, Game);
+				return;
+			}
+			TourStopAim = ToGround(OnMesh.Location);
+			TourStopAimFloor = OnMesh.Location.Z;
+		}
+		TourStopCap = ftcore::tourLegCapSeconds(FVector2D(TourStopAim.x - Pos.x, TourStopAim.y - Pos.y).Size());
+		bPilotWideSearch = true;
+		TourStopPhase = static_cast<uint8>(ETourStopPhase::Walk);
+		TourPhaseAt = Game;
+		return;
+	}
+	case ETourStopPhase::Walk:
+	{
+		const bool bEdge = Kind == ftcore::TourStopKind::Edge;
+		if (AimDist <= (bEdge ? kEdgeWalkReach : kTourReach))
+		{
+			bPilotWideSearch = false;
+			if (bEdge)
+			{
+				BeginStopPush(Pos, Target, Feet, Game);
+				return;
+			}
+			++TourStopsReached;
+			UE_LOG(LogForgottenThird, Display, TEXT("World %s: reached stop %s (leg %d/%d) at %.1f s game time, %.1f s on the leg, feet at z %.0f cm (the stop's %.0f cm)."),
+				*WorldId, *TourStopIds[Stop], TourLegNumber(), TourLegTotal, Game, Game - TourLegStartAt, Feet, TargetCm.Z);
+			EndStopLeg(Stop, Game);
+			return;
+		}
+		PilotWalk(Player, Pos, TourStopAim, Spot, DeltaSeconds, true, TOptional<double>(TourStopAimFloor), true);
+		// No walk runs past its cap (ftcore::tourLegCapSeconds of the straight line it started on).
+		if (!bTourLegCapped && !bPilotGaveUp && PilotTarget == Spot && Game - TourPhaseAt > TourStopCap)
+		{
+			bTourLegCapped = true;
+			LogPilotStuck(AimDist, Spot, FString::Printf(TEXT("%.0f s on the walk, past its cap of %.0f s"), Game - TourPhaseAt, TourStopCap));
+			bPilotGaveUp = true;
+		}
+		// A reach stop given up without -WorldQuitOnDone stays put, as a district leg does; an edge stop's walk given up
+		// counts as given up, and the edge is judged from where the lead stands.
+		if (!bPilotGaveUp || PilotTarget != Spot || (!bEdge && !bTourQuitOnDone))
+		{
+			return;
+		}
+		UE_LOG(LogForgottenThird, Error, TEXT("World %s: gave up on stop %s (leg %d/%d), %.1f m short, at %.1f s game time."), *WorldId,
+			*TourStopIds[Stop], TourLegNumber(), TourLegTotal, AimDist, Game);
+		LogLegStopped(Player, Pos);
+		CountTourMiss();
+		bPilotWideSearch = false;
+		if (bEdge)
+		{
+			bTourStopWalkShort = true;
+			BeginStopPush(Pos, Target, Feet, Game);
+			return;
+		}
+		TourSetDownStop = Stop;
+		TourSetDownYaw = static_cast<float>(Player.GetActorRotation().Yaw);
+		EndStopLeg(Stop, Game);
+		return;
+	}
+	case ETourStopPhase::Push:
+	{
+		// Straight at the target, no navmesh; once the lead is at it, on the way it was going.
+		if (!bTourPushLocked)
+		{
+			const FVector2D ToTarget(Target.x - Pos.x, Target.y - Pos.y);
+			if (ToTarget.Size() > kPushAimMetres)
+			{
+				TourPushDir = ToTarget.GetSafeNormal();
+			}
+			else
+			{
+				bTourPushLocked = true;
+			}
+		}
+		Player.AddMovementInput(FVector(TourPushDir.X, TourPushDir.Y, 0.0), 1.f);
+		TourPushClosest = FMath::Min(TourPushClosest, Dist);
+		TourPushLowFeet = FMath::Min(TourPushLowFeet, Feet);
+		const bool bEdge = Kind == ftcore::TourStopKind::Edge;
+		if (Game - TourPhaseAt < (bEdge ? kEdgePushSeconds : kPushSeconds))
+		{
+			return;
+		}
+		if (bEdge)
+		{
+			JudgeEdgeStop(Player, Stop);
+			EndStopLeg(Stop, Game);
+			return;
+		}
+		float PlanX = 0.f;
+		float PlanY = 0.f;
+		TourPlanXY(Pos, PlanX, PlanY);
+		const FString Fell =
+			TourPushStartFeet - TourPushLowFeet > kStopFellCm ? FString::Printf(TEXT("; it fell %.1f m on the push"), (TourPushStartFeet - TourPushLowFeet) / 100.0) : FString();
+		if (TourPushClosest > kPushHeldMetres)
+		{
+			++TourPushHeld;
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("World %s: push stop %s (leg %d/%d): held, %.1f m from the target at the closest; the lead at (%.1f, %.1f) m in the %s frame, feet z %.2f m%s."),
+				*WorldId, *TourStopIds[Stop], TourLegNumber(), TourLegTotal, TourPushClosest, PlanX, PlanY, TourFrame(), Feet / 100.0, *Fell);
+		}
+		else
+		{
+			++TourGotThrough;
+			UE_LOG(LogForgottenThird, Error,
+				TEXT("World %s: push stop %s (leg %d/%d): GOT THROUGH, %.1f m from the target at the closest (held needs over %.1f m); the lead at (%.1f, %.1f) m ")
+				TEXT("in the %s frame, feet z %.2f m%s."),
+				*WorldId, *TourStopIds[Stop], TourLegNumber(), TourLegTotal, TourPushClosest, kPushHeldMetres, PlanX, PlanY, TourFrame(), Feet / 100.0, *Fell);
+		}
+		EndStopLeg(Stop, Game);
+		return;
+	}
+	case ETourStopPhase::Still:
+	{
+		// HighResShot writes the file a frame or more later: look for it a few times a second, a few seconds at most.
+		const double Real = Now();
+		if (Real < TourStillCheckAt)
+		{
+			return;
+		}
+		TourStillCheckAt = Real + kStillCheckSeconds;
+		const FDateTime Stamp = IFileManager::Get().GetTimeStamp(*TourStillFile);
+		if (Stamp != FDateTime::MinValue() && Stamp > TourStillOldStamp)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("World %s: still for stop %s saved: %s."), *WorldId, *TourStopIds[Stop], *TourStillFile);
+			NextTourLeg(Game);
+			return;
+		}
+		if (Real < TourStillUntil)
+		{
+			return;
+		}
+		UE_LOG(LogForgottenThird, Warning, TEXT("World %s: still for stop %s not on disk after %.0f s: %s."), *WorldId, *TourStopIds[Stop], kStillWaitSeconds,
+			*TourStillFile);
+		NextTourLeg(Game);
+		return;
+	}
+	}
+}
+
+void AFTExploreDirector::BeginStopPush(ftcore::Vec2 Pos, ftcore::Vec2 Target, double Feet, double Game)
+{
+	// Steer at the target; a lead already at it pushes on the way out of the square across the stop's edge.
+	const int32 Stop = TourStopOrder[TourLeg - TourCount];
+	const int32 Edge = EdgeIndex(TourStopEdges[Stop]);
+	const FVector2D ToTarget(Target.x - Pos.x, Target.y - Pos.y);
+	const double Away = ToTarget.Size();
+	bTourPushLocked = Away <= kPushAimMetres;
+	TourPushDir = !bTourPushLocked ? ToTarget.GetSafeNormal() : Edge >= 0 ? FVector2D(kEdgeOutX[Edge], kEdgeOutY[Edge]) : FVector2D(1.0, 0.0);
+	TourPushClosest = static_cast<float>(Away);
+	TourPushStartFeet = Feet;
+	TourPushLowFeet = Feet;
+	TourStopPhase = static_cast<uint8>(ETourStopPhase::Push);
+	TourPhaseAt = Game;
+}
+
+void AFTExploreDirector::JudgeEdgeStop(const AFTExploreCharacter& Player, int32 Stop)
+{
+	// What stopped the lead: a capsule a little narrower than the lead's, its bottom lifted by half a step so the floor's
+	// small rises don't count, swept kEdgeProbeMetres ahead on the pawn channel (what stops the lead), then the ground
+	// past a hidden wall, or along the probe when nothing (or only walkable ground) stood in the way. Once a leg.
+	UWorld* World = GetWorld();
+	const UCharacterMovementComponent* Move = Player.GetCharacterMovement();
+	const float Radius = Player.GetSimpleCollisionRadius();
+	const float Half = Player.GetSimpleCollisionHalfHeight();
+	const float StepUp = Move ? Move->MaxStepHeight : 45.f;
+	const FVector At = Player.GetActorLocation();
+	const double FeetCm = At.Z - Half;
+	const FVector Dir(TourPushDir.X, TourPushDir.Y, 0.0);
+	const float ProbeRadius = FMath::Max(Radius - 5.f, 5.f);
+	const float ProbeHalf = FMath::Max(Half - StepUp * 0.5f, ProbeRadius);
+	const FVector Centre = At + FVector(0.0, 0.0, Half - ProbeHalf);
+	const double ProbeCm = ftcore::kEdgeProbeMetres * 100.0;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(FTTourEdge), false, &Player);
+	for (const TObjectPtr<AFTPartyFollower>& Follower : Followers)
+	{
+		if (Follower)
+		{
+			Params.AddIgnoredActor(Follower.Get());
+		}
+	}
+	FHitResult Hit;
+	const bool bHit = World
+		&& World->SweepSingleByChannel(Hit, Centre, Centre + Dir * ProbeCm, FQuat::Identity, ECC_Pawn, FCollisionShape::MakeCapsule(ProbeRadius, ProbeHalf), Params);
+	ftcore::EdgeProbe Probe;
+	Probe.walkableNormalZ = Move ? Move->GetWalkableFloorZ() : 0.71;
+	Probe.feetZ = FeetCm / 100.0;
+	Probe.hasSea = bHasSeaLevel;
+	Probe.seaLevel = SeaLevel / 100.0;
+	const AActor* HitActor = bHit ? Hit.GetActor() : nullptr;
+	const UPrimitiveComponent* HitComponent = bHit ? Hit.GetComponent() : nullptr;
+	if (bHit)
+	{
+		// The Landscape's collision (a runtime build has no Landscape module here, so it is told by its class's name).
+		static const FName HiddenWallTag(TEXT("FTHiddenWall"));
+		static const FName LandscapeCollision(TEXT("LandscapeHeightfieldCollisionComponent"));
+		bool bLandscape = false;
+		for (const UClass* Class = HitComponent ? HitComponent->GetClass() : nullptr; Class && !bLandscape; Class = Class->GetSuperClass())
+		{
+			bLandscape = Class->GetFName() == LandscapeCollision;
+		}
+		Probe.hit = HitActor && HitActor->ActorHasTag(HiddenWallTag) ? ftcore::EdgeHit::HiddenWall
+			: bLandscape																? ftcore::EdgeHit::Landscape
+																						: ftcore::EdgeHit::Built;
+		Probe.hitNormalZ = Hit.ImpactNormal.Z;
+	}
+	// Down-traces on the visibility channel, which the hidden walls don't block.
+	const auto GroundAt = [World, FeetCm, &Params](const FVector& Point, double& Z)
+	{
+		FHitResult Down;
+		if (!World
+			|| !World->LineTraceSingleByChannel(Down, FVector(Point.X, Point.Y, FeetCm + kEdgeGroundAboveCm),
+				FVector(Point.X, Point.Y, FeetCm - kEdgeGroundBelowCm), ECC_Visibility, Params))
+		{
+			return false;
+		}
+		Z = Down.ImpactPoint.Z;
+		return true;
+	};
+	bool bGroundLooked = false;
+	if (Probe.hit == ftcore::EdgeHit::HiddenWall)
+	{
+		bGroundLooked = true;
+		Params.AddIgnoredActor(HitActor);
+		double Z = 0.0;
+		Probe.groundFound = GroundAt(Hit.ImpactPoint + Dir * kEdgeWallPastCm, Z);
+		Probe.groundZ = Z / 100.0;
+	}
+	else if (Probe.hit == ftcore::EdgeHit::None || (Probe.hit == ftcore::EdgeHit::Landscape && Probe.hitNormalZ >= Probe.walkableNormalZ))
+	{
+		bGroundLooked = true;
+		Probe.groundFound = true;
+		double Low = TNumericLimits<double>::Max();
+		for (double Along = Radius + 25.0; Along <= ProbeCm + 0.5; Along += kEdgeGroundStepCm)
+		{
+			double Z = 0.0;
+			if (!GroundAt(At + Dir * Along, Z))
+			{
+				Probe.groundFound = false;
+				break;
+			}
+			Low = FMath::Min(Low, Z);
+		}
+		Probe.groundZ = Probe.groundFound ? Low / 100.0 : 0.0;
+	}
+	const ftcore::EdgeCause Cause = ftcore::judgeEdge(Probe);
+	const bool bMet = ftcore::edgeCauseMet(Cause);
+	const uint8 Letter = TourStopEdges[Stop];
+	const int32 Edge = EdgeIndex(Letter);
+	if (Edge >= 0)
+	{
+		TourEdges[Edge].add(Cause);
+	}
+	TourEdgesMet += bMet ? 1 : 0;
+	TourBareWalls += Cause == ftcore::EdgeCause::BareHiddenWall ? 1 : 0;
+	TourUnjudged += Cause == ftcore::EdgeCause::Unjudged ? 1 : 0;
+
+	// One line for the leg (leg end: it may allocate).
+	float PlanX = 0.f;
+	float PlanY = 0.f;
+	TourPlanXY(ToGround(At), PlanX, PlanY);
+	const ftcore::Vec2 Target = ToGround(TourStopTargets[Stop]);
+	const double FromTarget = FVector2D(Target.x - At.X / 100.0, Target.y - At.Y / 100.0).Size();
+	const TCHAR* const WalkNote = bTourStopNoNav ? TEXT("; no navmesh near the target, so it pushed from where it stood")
+		: bTourStopWalkShort					 ? TEXT("; its walk gave up short of the navmesh's nearest point")
+												 : TEXT("");
+	FString Swept;
+	if (!bHit)
+	{
+		Swept = FString::Printf(TEXT("nothing within %.1f m"), ftcore::kEdgeProbeMetres);
+	}
+	else
+	{
+		const FString Label = HitActor ? HitActor->GetActorNameOrLabel() : HitComponent ? HitComponent->GetName() : FString(TEXT("something"));
+		const FString What = Probe.hit == ftcore::EdgeHit::HiddenWall ? FString(TEXT(" (a hidden wall)"))
+			: Probe.hit == ftcore::EdgeHit::Landscape
+			? FString::Printf(TEXT(" (the ground, its normal z %.2f, walkable from %.2f)"), Probe.hitNormalZ, Probe.walkableNormalZ)
+			: FString();
+		Swept = FString::Printf(TEXT("%s%s at %.1f m"), *Label, *What, Hit.Distance / 100.0);
+	}
+	const FString Ground = !bGroundLooked ? FString(TEXT("the ground past it not looked at"))
+		: !Probe.groundFound				? FString(TEXT("no ground found"))
+		: Probe.hasSea ? FString::Printf(TEXT("ground at z %.2f m (the sea's level %.2f m)"), Probe.groundZ, Probe.seaLevel)
+					   : FString::Printf(TEXT("ground at z %.2f m"), Probe.groundZ);
+	const FString Fell = TourPushStartFeet - TourPushLowFeet > kStopFellCm
+		? FString::Printf(TEXT("; it fell %.1f m on the push"), (TourPushStartFeet - TourPushLowFeet) / 100.0)
+		: FString();
+	const FString Line = FString::Printf(
+		TEXT("World %s: edge stop %s (leg %d/%d, edge %c): %s, %s; the lead at (%.1f, %.1f) m in the %s frame, feet z %.2f m, %.1f m from the target%s; ")
+		TEXT("the sweep hit %s; %s%s."),
+		*WorldId, *TourStopIds[Stop], TourLegNumber(), TourLegTotal, Letter ? static_cast<TCHAR>(Letter) : TEXT('?'), bMet ? TEXT("met") : TEXT("FAIL"),
+		*FT::ToFString(ftcore::edgeCauseName(Cause)), PlanX, PlanY, TourFrame(), Probe.feetZ, FromTarget, WalkNote, *Swept, *Ground, *Fell);
+	if (bMet)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("%s"), *Line);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("%s"), *Line);
+	}
+}
+
+void AFTExploreDirector::EndStopLeg(int32 Stop, double Game)
+{
+	// A stop marked for a still takes it here, where the leg ended, before the tour goes on.
+	bPilotWideSearch = false;
+	if (!TourStopStills[Stop])
+	{
+		NextTourLeg(Game);
+		return;
+	}
+	if (!FApp::CanEverRender())
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("World %s: still for stop %s skipped: no renderer (-NullRHI)."), *WorldId, *TourStopIds[Stop]);
+		NextTourLeg(Game);
+		return;
+	}
+	if (TourStillsDir.IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("World %s: still for stop %s skipped: no -WorldTourStills=<dir>."), *WorldId, *TourStopIds[Stop]);
+		NextTourLeg(Game);
+		return;
+	}
+	// The game viewport handles HighResShot; the engine's own Exec doesn't.
+	UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr;
+	if (!Viewport)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("World %s: still for stop %s skipped: no game viewport."), *WorldId, *TourStopIds[Stop]);
+		NextTourLeg(Game);
+		return;
+	}
+	TourStillFile = FPaths::Combine(TourStillsDir, TourStopIds[Stop] + TEXT(".png"));
+	TourStillOldStamp = IFileManager::Get().GetTimeStamp(*TourStillFile);
+	Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *TourStillFile), *GLog);
+	UE_LOG(LogForgottenThird, Display, TEXT("World %s: still for stop %s requested: %s."), *WorldId, *TourStopIds[Stop], *TourStillFile);
+	TourStopPhase = static_cast<uint8>(ETourStopPhase::Still);
+	const double Real = Now();
+	TourStillUntil = Real + kStillWaitSeconds;
+	TourStillCheckAt = Real + kStillCheckSeconds;
+}
+
+void AFTExploreDirector::LogLegStopped(const AFTExploreCharacter& Player, ftcore::Vec2 Pos) const
+{
+	// Where it stopped and what the pilot's last navmesh query answered, so the stall can be placed without a rerun.
+	const FString PathEnd = PilotPathState > 1
+		? FString::Printf(TEXT(", ending %.1f m from the goal at z %.0f cm"),
+			  FVector2D::Distance(FVector2D(PilotPathEnd), FVector2D(PilotPathGoal)) / 100.0, PilotPathEnd.Z)
+		: FString();
+	UE_LOG(LogForgottenThird, Error,
+		TEXT("World %s: leg %d stopped with the lead at (%.1f, %.1f) m in the engine frame, feet at z %.0f cm; the goal asked at z %.0f cm; ")
+		TEXT("the last query found %s (%d points)%s%s."),
+		*WorldId, TourLegNumber(), Pos.x, Pos.y, Player.GetActorLocation().Z - Player.GetSimpleCollisionHalfHeight(), PilotPathGoal.Z,
+		kPilotPathStates[FMath::Min<int32>(PilotPathState, 3)], PilotPath.Num(), *PathEnd,
+		bPilotPathLimit ? TEXT("; its search ran out of nodes") : TEXT(""));
+}
+
+void AFTExploreDirector::CountTourMiss()
+{
+	TourMissLegs.Add(TourLegNumber()); // reserved for every leg when the tour starts
+	++TourMisses;
+}
+
+bool AFTExploreDirector::NextLegSetsDown() const
+{
+	const int32 Next = TourLeg + 1;
+	if (Next < TourCount || Next >= TourEndLeg)
+	{
+		return false;
+	}
+	const int32 Stop = TourStopOrder[Next - TourCount];
+	return TourStopHasStart.IsValidIndex(Stop) && TourStopHasStart[Stop];
+}
+
+void AFTExploreDirector::QueueStopSetDown(const FVector& At, float Yaw)
+{
+	WorldSpawn = At;
+	bWorldSpawnOnFloor = true;
+	WorldSpawnRotation = FRotator(0.f, Yaw, 0.f);
+	bWorldSpawnPending = true;
+}
+
+void AFTExploreDirector::TourPlanXY(ftcore::Vec2 Engine, float& X, float& Y) const
+{
+	// The plan frame: x east from the square's west side, y north from its south side (FTBuildMassingWorld).
+	const bool bPlan = PlanSide > 0.f;
+	X = bPlan ? Engine.x + PlanSide * 0.5f : Engine.x;
+	Y = bPlan ? PlanSide * 0.5f - Engine.y : Engine.y;
+}
+
+const TCHAR* AFTExploreDirector::TourFrame() const
+{
+	return PlanSide > 0.f ? TEXT("plan") : TEXT("engine");
+}
+
+void AFTExploreDirector::NextTourLeg(double Game)
+{
+	bPilotWideSearch = false;
+	TourStopPhase = static_cast<uint8>(ETourStopPhase::Begin);
+	// A reach stop given up sets the lead down on its target for the next leg, as a district leg does on its spawn.
+	if (TourSetDownStop >= 0 && TourLeg + 1 < TourEndLeg && !NextLegSetsDown())
+	{
+		QueueStopSetDown(TourStopTargets[TourSetDownStop], TourSetDownYaw);
+		UE_LOG(LogForgottenThird, Display, TEXT("World %s: leg %d given up; the lead is set down on stop %s's target for leg %d."), *WorldId,
+			TourLegNumber(), *TourStopIds[TourSetDownStop], TourLegNumber() + 1);
+	}
+	TourSetDownStop = -1;
+	if (++TourLeg < TourEndLeg)
 	{
 		return;
 	}
+	EndWorldTour(Game);
+}
+
+void AFTExploreDirector::EndWorldTour(double Game)
+{
 	bWorldTourDone = true;
 	UGameplayStatics::SetGlobalTimeDilation(this, 1.f);
-	if (TourMisses == 0)
+	// Each edge's tally first, once, when the tour ends.
+	for (int32 e = 0; e < static_cast<int32>(UE_ARRAY_COUNT(TourEdges)); ++e)
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("World %s: TOUR DONE, all %d districts in %d legs, %.1f s game time (%.1f s real)."), *WorldId,
-			static_cast<int32>(Layout->districtCount()), TourCount, Game, Now() - TourStart);
+		const ftcore::EdgeTally& Tally = TourEdges[e];
+		if (Tally.legs == 0)
+		{
+			continue;
+		}
+		const FString Summary =
+			FString::Printf(TEXT("World %s: EDGE %c: %d of %d met a cause (cliff %d, water %d, drop %d, built wall %d); bare hidden wall %d; unjudged %d."),
+				*WorldId, kEdgeLetters[e], Tally.met(), Tally.legs, Tally.cliff, Tally.water, Tally.drop, Tally.built, Tally.bare, Tally.unjudged);
+		if (Tally.bare == 0 && Tally.unjudged == 0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("%s"), *Summary);
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("%s"), *Summary);
+		}
+	}
+	FString Legs; // once, when the tour ends
+	for (int32 i = 0; i < TourMissLegs.Num(); ++i)
+	{
+		Legs += FString::Printf(TEXT("%s%d"), i ? TEXT(", ") : TEXT(""), TourMissLegs[i]);
+	}
+	const double Real = Now() - TourStart;
+	if (TourStopOrder.IsEmpty() && TourWetLegs == 0)
+	{
+		// The district legs alone, as before.
+		if (TourMisses == 0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("World %s: TOUR DONE, all %d districts in %d legs, %.1f s game time (%.1f s real)."), *WorldId,
+				static_cast<int32>(Layout->districtCount()), TourCount, Game, Real);
+			if (bTourQuitOnDone)
+			{
+				FPlatformMisc::RequestExit(false, TEXT("WorldTour"));
+			}
+			return;
+		}
+		UE_LOG(LogForgottenThird, Error, TEXT("World %s: TOUR ENDED, %d of %d legs given up (legs %s), %.1f s game time (%.1f s real)."), *WorldId,
+			TourMisses, TourCount, *Legs, Game, Real);
+		if (bTourQuitOnDone)
+		{
+			FTRequestExit(1, TEXT("WorldTour"));
+		}
+		return;
+	}
+	const int32 Stops = TourStopsRun[0] + TourStopsRun[1] + TourStopsRun[2];
+	const FString Counts = FString::Printf(TEXT("%d legs: %d district legs, %d stops (reach %d, reached %d; edge %d, met a cause %d; push %d, held %d)"),
+		TourLegTotal, TourCount - TourFirstLeg, Stops, TourStopsRun[0], TourStopsReached, TourStopsRun[1], TourEdgesMet, TourStopsRun[2], TourPushHeld);
+	const int32 Fails = TourMisses + TourBareWalls + TourUnjudged + TourGotThrough + TourWetLegs;
+	if (Fails == 0)
+	{
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("World %s: TOUR DONE, %s; fails: gave up 0, bare hidden wall 0, unjudged 0, got through 0, wet 0; %.1f s game time (%.1f s real)."),
+			*WorldId, *Counts, Game, Real);
 		if (bTourQuitOnDone)
 		{
 			FPlatformMisc::RequestExit(false, TEXT("WorldTour"));
 		}
 		return;
 	}
-	FString Legs; // once, when the tour ends
-	for (int32 i = 0; i < FMath::Min(TourMisses, static_cast<int32>(UE_ARRAY_COUNT(TourMissLegs))); ++i)
-	{
-		Legs += FString::Printf(TEXT("%s%d"), i ? TEXT(", ") : TEXT(""), static_cast<int32>(TourMissLegs[i]));
-	}
-	UE_LOG(LogForgottenThird, Error, TEXT("World %s: TOUR ENDED, %d of %d legs given up (legs %s), %.1f s game time (%.1f s real)."), *WorldId,
-		TourMisses, TourCount, *Legs, Game, Now() - TourStart);
+	const FString GaveUp = TourMisses > 0 ? FString::Printf(TEXT("gave up %d (legs %s)"), TourMisses, *Legs) : FString(TEXT("gave up 0"));
+	UE_LOG(LogForgottenThird, Error,
+		TEXT("World %s: TOUR ENDED, %s; %d fails: %s, bare hidden wall %d, unjudged %d, got through %d, wet %d; %.1f s game time (%.1f s real)."),
+		*WorldId, *Counts, Fails, *GaveUp, TourBareWalls, TourUnjudged, TourGotThrough, TourWetLegs, Game, Real);
 	if (bTourQuitOnDone)
 	{
 		FTRequestExit(1, TEXT("WorldTour"));
