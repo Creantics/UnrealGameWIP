@@ -123,3 +123,28 @@ Fx->GetVfx()->Play();
 Set `System` directly if the asset has to be cooked: the demo map does this. Otherwise the cook can't
 see a system that is only loaded by name. `ReplayInterval` restarts a one-shot effect on a timer. The
 three effects in the demo loop, so the map leaves it at 0.
+
+## Weapon effects for the leads
+
+Five effects serve the leads' weapons. Each is a `Data/Vfx` json with its own `NS_<file>` system.
+None has been built in Unreal yet, so nobody has seen them in a viewport.
+
+| File | Game event |
+|---|---|
+| `spell_bolt` | The Third's light attack. A flare at the hands, streaking sparks along the line, and a bright head that reaches 3.2 m in 0.2 s and pops there. The effect points along +Y, so the game turns it to the aim. |
+| `spell_burst` | The Third's heavy attack and the Release. A flash, a soft wave and a ring of sparks that carry about 3 m out in every direction. |
+| `spell_ward` | The Third while he guards. A loop of motes around him, a faint glow and a ring of motes at his feet. It plays until the guard ends. |
+| `muzzle_flash` | Duy's pistol shot. A flash of about 60 ms, a jet, a few sparks and a wisp of smoke. |
+| `gauntlet_spark` | Devin's gauntlet hitting. A short spray of metal sparks and a small flash. |
+
+The Third's spells share one cold white-blue to violet colour, taken from `magic_ribbon`, the only
+magic effect that existed. The pistol and gauntlet effects are warm.
+
+Left out because the builder can't do it yet: a spell bolt that travels as a ribbon trail, a ward
+that is a true surface shell (the plan has only a sphere volume, so the ward's motes fill a thick
+shell), and per-particle sparks at the bolt's impact (the pop is placed at the expected end point).
+
+To build one later, when the Unreal slot is free, run the command from "Rebuilding" with
+`-run=FTBuildVfx -Only=<name>` in place of the plain `-run=FTBuildVfx`. The names are `spell_bolt`,
+`spell_burst`, `spell_ward`, `muzzle_flash` and `gauntlet_spark`. Add `-Verify` to list the saved
+system's modules and bindings.
