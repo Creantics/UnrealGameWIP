@@ -451,6 +451,149 @@ TEST_CASE("world checks: islands classed by district 0's spawn and the coverage 
     CHECK(s.pocketsOffMesh == 4);
 }
 
+namespace {
+
+MassingBox massingRow(const char* kind, MassingSource source, bool cover, double cx, double cy, double sx, double sy,
+                      double z0, double z1) {
+    MassingBox b;
+    b.id = "B";
+    b.kind = kind;
+    b.source = source;
+    b.cover = cover;
+    b.cx = cx;
+    b.cy = cy;
+    b.sx = sx;
+    b.sy = sy;
+    b.z0 = z0;
+    b.z1 = z1;
+    return b;
+}
+
+// A rectangle's corners, (x0, y0) to (x1, y1), counter-clockwise, each at its own height.
+void rect(std::vector<MassingVec>& corners, std::vector<NavPolyRef>& polys, double x0, double y0, double x1, double y1,
+          double z0, double z1, double z2, double z3) {
+    polys.push_back({static_cast<std::uint32_t>(corners.size()), 4});
+    corners.push_back({x0, y0, z0});
+    corners.push_back({x1, y0, z1});
+    corners.push_back({x1, y1, z2});
+    corners.push_back({x0, y1, z3});
+}
+
+} // namespace
+
+TEST_CASE("world checks: islands on built boxes' roofs and inside them") {
+    std::vector<MassingBox> boxes;
+    boxes.push_back(massingRow("kit", MassingSource::Plan, false, 50, 50, 20, 20, 0, 10));    // 0: a building
+    boxes.push_back(massingRow("slab", MassingSource::Plan, true, 50, 150, 20, 20, 0, 10));   // 1, 2: a building of two
+    boxes.push_back(massingRow("slab", MassingSource::Plan, true, 70, 150, 20, 20, 0, 8));
+    boxes.push_back(massingRow("kit", MassingSource::Plan, false, 200, 50, 20, 20, 0, 10));   // 3: a stair row reaches it
+    MassingBox ramp = massingRow("ramp", MassingSource::Invented, false, 220, 50, 20, 4, 0, 10); // 4: 10 m at x 210, 0 at 230
+    ramp.sloped = true;
+    ramp.slopeFrom = 10.0;
+    ramp.slopeTo = 0.0;
+    boxes.push_back(ramp);
+    boxes.push_back(massingRow("zone", MassingSource::Zone, true, 400, 50, 20, 20, 0, 10));   // 5: not built
+    boxes.push_back(massingRow("interior", MassingSource::Plan, true, 500, 50, 20, 20, 0, 10)); // 6: hidden, not built
+    boxes.push_back(massingRow("deck", MassingSource::Plan, true, 600, 50, 20, 20, 0, 2));    // 7: a walk surface
+    boxes.push_back(massingRow("wall", MassingSource::Wall, false, 700, 50, 20, 20, -5, 3));  // 8: an added wall
+
+    std::vector<MassingVec> corners;
+    std::vector<NavPolyRef> polys;
+    square(corners, polys, 42, 42, 16, 10.0);                         // 0: box 0's roof
+    square(corners, polys, 42, 42, 16, 0.1);                          // 1: the ground inside box 0
+    square(corners, polys, 70, 42, 16, 0.0);                          // 2: the ground beside it
+    square(corners, polys, 52, 42, 16, 10.0);                         // 3: over box 0's roof edge, partly outside it
+    rect(corners, polys, 45, 145, 75, 155, 10.0, 8.0, 8.0, 10.0);     // 4: across both roofs of boxes 1 and 2
+    rect(corners, polys, 193, 48, 209, 56, 10.0, 10.0, 10.0, 10.0);   // 5: box 3's roof, 1 m from the ramp's top
+    rect(corners, polys, 212, 49, 218, 51, 0.1, 0.1, 0.1, 0.1);       // 6: the ground under the ramp
+    rect(corners, polys, 212, 49, 218, 51, 9.0, 6.0, 6.0, 9.0);       // 7: on the ramp's top
+    square(corners, polys, 392, 42, 16, 10.0);                        // 8: in the zone
+    square(corners, polys, 492, 42, 16, 0.1);                         // 9: in the hidden interior
+    square(corners, polys, 592, 42, 16, 2.0);                         // 10: on the deck
+    square(corners, polys, 592, 42, 16, 0.5);                         // 11: under the deck
+    square(corners, polys, 692, 42, 16, 3.0);                         // 12: on the added wall's top
+    square(corners, polys, 42, 42, 16, 10.4);                         // 13: 0.4 m over box 0's roof
+    square(corners, polys, 2, 2, 30, 0.0);                            // 14: district 0's ground
+    polys.push_back({static_cast<std::uint32_t>(corners.size()), 0}); // 15: no corners
+    NavIslandSet set;
+    navIslands(corners, polys, {}, set);
+    REQUIRE(set.islands.size() == polys.size());
+
+    std::vector<NavIslandInBoxes> in;
+    navIslandsInBoxes(corners, polys, set, boxes, in);
+    REQUIRE(in.size() == set.islands.size());
+    const auto of = [&](std::size_t poly) { return in[set.islandOf[poly]]; };
+    CHECK(of(0).part == NavBoxPart::Roof);
+    CHECK(of(0).box == 0);
+    CHECK_FALSE(of(0).met);
+    CHECK(of(1).part == NavBoxPart::Interior);
+    CHECK(of(1).box == 0);
+    CHECK(of(2).part == NavBoxPart::None);
+    CHECK(of(2).box == -1);
+    CHECK(of(3).part == NavBoxPart::None);
+    CHECK(of(4).part == NavBoxPart::Roof);
+    CHECK(of(4).box == 1);
+    CHECK(of(5).part == NavBoxPart::Roof);
+    CHECK(of(5).met);
+    CHECK(of(6).part == NavBoxPart::Interior);
+    CHECK(of(6).box == 4);
+    CHECK(of(7).part == NavBoxPart::None);
+    CHECK(of(8).part == NavBoxPart::None);
+    CHECK(of(9).part == NavBoxPart::None);
+    CHECK(of(10).part == NavBoxPart::None);
+    CHECK(of(11).part == NavBoxPart::Interior);
+    CHECK(of(12).part == NavBoxPart::Roof);
+    CHECK(of(12).box == 8);
+    CHECK(of(13).part == NavBoxPart::Roof); // within the rise margin of the top
+    CHECK(of(13).box == 0);
+    CHECK(of(14).part == NavBoxPart::None);
+    CHECK(of(15).part == NavBoxPart::None);
+
+    // The classes: in-box islands over the size are Roof or Interior, a roof the ramp meets stays undeclared, and a
+    // pocket declares an island whatever it lies in.
+    const std::vector<CoveragePoint> points = {{"PK1", CoverageRole::Pocket, 600, 50, 2.0}};
+    const std::vector<std::int64_t> pointPolys = {10};
+    CoverageSummary s;
+    classifyNavIslands(set, 14, points, pointPolys, kNavIslandBig, s, &in);
+    CHECK(s.classes[set.islandOf[0]] == NavIslandClass::Roof);
+    CHECK(s.classes[set.islandOf[1]] == NavIslandClass::Interior);
+    CHECK(s.classes[set.islandOf[2]] == NavIslandClass::Undeclared);
+    CHECK(s.classes[set.islandOf[5]] == NavIslandClass::Undeclared);
+    CHECK(s.classes[set.islandOf[6]] == NavIslandClass::Small); // 12 m²
+    CHECK(s.classes[set.islandOf[10]] == NavIslandClass::Declared);
+    CHECK(s.classes[set.islandOf[14]] == NavIslandClass::Home);
+    // Roofs: polys 0, 4, 12, 13; interiors: 1, 11. Undeclared: 2, 3, 5, 8, 9.
+    CHECK(s.bigRoof == 4);
+    CHECK(s.bigInterior == 2);
+    CHECK(near(s.roofArea, 256.0 + 300.0 + 256.0 + 256.0));
+    CHECK(near(s.interiorArea, 512.0));
+    CHECK(s.roofsMet == 1);
+    CHECK(s.bigUndeclared == 5);
+    CHECK(s.bigDeclared == 1);
+    CHECK(s.big == 12);
+    REQUIRE(s.inBoxes.size() == 6);
+    CHECK(s.inBoxes[0] == set.islandOf[4]); // the largest first
+    for (std::size_t i = 1; i < s.inBoxes.size(); ++i) {
+        CHECK(set.islands[s.inBoxes[i - 1]].area >= set.islands[s.inBoxes[i]].area);
+    }
+
+    // Without the list, or with a short one, nothing lies in a box.
+    classifyNavIslands(set, 14, points, pointPolys, kNavIslandBig, s);
+    CHECK(s.bigRoof == 0);
+    CHECK(s.bigInterior == 0);
+    CHECK(s.bigUndeclared == 11);
+    const std::vector<NavIslandInBoxes> none;
+    classifyNavIslands(set, 14, points, pointPolys, kNavIslandBig, s, &none);
+    CHECK(s.bigUndeclared == 11);
+
+    // No boxes: nothing lies in one. No islands: an empty list.
+    navIslandsInBoxes(corners, polys, set, {}, in);
+    REQUIRE(in.size() == set.islands.size());
+    for (const NavIslandInBoxes& r : in) CHECK(r.part == NavBoxPart::None);
+    navIslandsInBoxes({}, {}, NavIslandSet{}, boxes, in);
+    CHECK(in.empty());
+}
+
 // ---- Read-back -------------------------------------------------------------------------------------------------
 
 TEST_CASE("world checks: the read-back window in the Landscape the build makes") {

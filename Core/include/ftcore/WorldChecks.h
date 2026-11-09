@@ -9,7 +9,8 @@
 //   if (!ftcore::importTourStops(csvText, stops, &error)) ...;         // allocates: build time only
 //   ftcore::navPolysAboveSea(verts, polys, 0.0, ftcore::kNavSeaMargin, keep, leftOut); // allocates: build time only
 //   ftcore::navIslands(verts, polys, links, islands);                  // allocates: build time only
-//   ftcore::classifyNavIslands(islands, homePoly, points, pointPolys, ftcore::kNavIslandBig, summary);
+//   ftcore::navIslandsInBoxes(verts, polys, islands, boxes, inBoxes); // allocates: build time only
+//   ftcore::classifyNavIslands(islands, homePoly, points, pointPolys, ftcore::kNavIslandBig, summary, &inBoxes);
 //   ftcore::readBackWindow(...); ftcore::compareHeightsExact(...);     // the heightmap, sample for sample
 //   ftcore::readBackSurfacePoints(...); ftcore::compareSurface(...);   // the collision surface between samples
 //
@@ -196,11 +197,53 @@ FTCORE_API void navPolysAboveSea(const std::vector<MassingVec>& corners, const s
 // An island over this many square metres that isn't district 0's must be declared by a pocket point.
 inline constexpr double kNavIslandBig = 50.0;
 
+// ---- Roofs and interiors of built boxes ------------------------------------------------------------------------
+//
+// Recast takes a built box's closed collider as hollow: the ground inside its footprint gets navmesh, and so does its
+// top. The plan's coverage leaves out building interiors (unless a row has one) and roofs no stair row reaches, so
+// those islands are no fault of the coverage. They are still counted and logged, apart from the undeclared ones.
+//
+// Every box the build builds (massingBuilt) is a solid. A corner lies in one when it is within kNavInBoxPlan of the
+// solid's footprint (massingFootprintGap) and within kNavInBoxRise of its z span there: z0 (a sloped row's bottom
+// read along u) up to its top there (a flat box's max(z1, z0 + kMassingMinHeight), a sloped row's top read along u,
+// clamped to the row). Recast insets the polys it makes on a top or inside walls by about the agent's radius, so the
+// plan margin is only the polys' own error, and a strip of ground beside a box doesn't lie in it. A corner within
+// kNavInBoxRise of a solid's top lies on that top. A walk surface's top is meant to be walked (a sloped row, or a
+// named deck, pier, bridge or quay: massingFinish Deck), so a corner on it lies in nothing; one deeper inside it does.
+//
+// An island lies in the built boxes when every corner of every poly of it lies in a solid; they may be different
+// solids (a building of several boxes). It is a roof when every corner lies on the top of a solid that isn't a walk
+// surface, and an interior otherwise. A roof that a walk surface's top meets is a stair row reaching it, so it stays
+// counted as any island is: some corner of it lies within kNavRoofMeet of a built walk surface's footprint and within
+// kNavRoofReach of that surface's top there. An interior stays left out whatever meets it: a ramp beside a wall
+// doesn't reach the ground inside it.
+inline constexpr double kNavInBoxPlan = 0.3;
+inline constexpr double kNavInBoxRise = 0.5;
+inline constexpr double kNavRoofMeet = 2.0;
+inline constexpr double kNavRoofReach = 0.5;
+
+enum class NavBoxPart : std::uint8_t { None, Roof, Interior };
+
+struct NavIslandInBoxes {
+    NavBoxPart part = NavBoxPart::None;
+    std::int64_t box = -1; // a solid that holds the island's first corner (an index into the boxes), -1 for None
+    bool met = false;      // a roof a walk surface's top meets
+};
+
+// One entry per island of `set`, whose polys index `polys` (and through them `corners`) as navIslands was given them.
+// A poly with no corners, or whose corners run past `corners`, lies in nothing, and so does its island. Allocates:
+// build time only.
+FTCORE_API void navIslandsInBoxes(const std::vector<MassingVec>& corners, const std::vector<NavPolyRef>& polys,
+                                  const NavIslandSet& set, const std::vector<MassingBox>& boxes,
+                                  std::vector<NavIslandInBoxes>& out);
+
 enum class NavIslandClass : std::uint8_t {
     Home,       // the island district 0's spawn projects into
     Declared,   // over the size, with a pocket point in it
     Undeclared, // over the size, with no pocket point
     Small,      // the size or under
+    Roof,       // over the size, no pocket point: a built box's roof no walk surface meets
+    Interior,   // over the size, no pocket point: the ground inside built boxes
 };
 
 struct CoverageSummary {
@@ -210,20 +253,27 @@ struct CoverageSummary {
     double homePercent = 0.0;            // of the whole walkable area
     std::size_t big = 0;                 // islands over the size besides district 0's
     std::size_t bigDeclared = 0, bigUndeclared = 0;
+    std::size_t bigRoof = 0, bigInterior = 0; // of the big islands with no pocket point, those in built boxes
+    double roofArea = 0.0, interiorArea = 0.0; // m², theirs
+    std::size_t roofsMet = 0;            // big roofs a walk surface meets: undeclared unless a pocket marks them
     std::size_t onPoints = 0, onHome = 0;
     std::size_t pockets = 0;             // pocket rows
     std::size_t pocketsMarking = 0;      // of them, those in an island over the size besides district 0's
     std::size_t pocketsOffMesh = 0;
     std::vector<std::size_t> onMissed;   // on-points (indices into the points) off district 0's island or the mesh
     std::vector<std::size_t> undeclared; // island indices, largest first
+    std::vector<std::size_t> inBoxes;    // the Roof and Interior islands, largest first
 };
 
 // Classifies `set`'s islands: `homePoly` is the poly district 0's spawn projects to and `pointPolys[i]` the one
-// points[i] projects to (-1: off the navmesh; a list shorter than the points leaves the rest off it). Allocates:
-// build time only.
+// points[i] projects to (-1: off the navmesh; a list shorter than the points leaves the rest off it). With `inBoxes`
+// (navIslandsInBoxes over the same set), a big island with no pocket point that lies in built boxes is a Roof or an
+// Interior rather than Undeclared, unless it is a roof a walk surface meets; a list shorter than the islands leaves
+// the rest in nothing. A pocket point declares an island whatever it lies in. Allocates: build time only.
 FTCORE_API void classifyNavIslands(const NavIslandSet& set, std::int64_t homePoly,
                                    const std::vector<CoveragePoint>& points,
-                                   const std::vector<std::int64_t>& pointPolys, double bigArea, CoverageSummary& out);
+                                   const std::vector<std::int64_t>& pointPolys, double bigArea, CoverageSummary& out,
+                                   const std::vector<NavIslandInBoxes>* inBoxes = nullptr);
 
 // ---- Read-back of the built Landscape --------------------------------------------------------------------------
 

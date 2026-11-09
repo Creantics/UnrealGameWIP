@@ -78,6 +78,8 @@ constexpr double kSpawnStepUp = 6.0;
 constexpr double kLeadHeight = 1.8;
 // The tag on the walls table's hidden blockers: the tour's edge legs tell a hidden wall from a built one by it.
 const FName kHiddenWallTag(TEXT("FTHiddenWall"));
+// -Coverage logs a line for each of this many of the largest islands it leaves out as roofs and interiors of built boxes.
+constexpr size_t kCoverageInBoxLines = 12;
 
 FVector Cm(const ftcore::MassingVec& V)
 {
@@ -704,10 +706,14 @@ bool LoadCoverage(const FString& File, std::vector<ftcore::CoveragePoint>& Point
 // island over ftcore::kNavIslandBig m² besides it must hold a pocket point, and each on-point must project into it
 // (ftcore::classifyNavIslands). With a sea (bSea: SeaLevel in m, SeaFrom saying where it came from), the polys under it
 // are left out first (ftcore::navPolysAboveSea): the sea plane has no collision, so the ground under it gets navmesh too.
-// A point on a poly left out is off the navmesh. Logs a summary line, then a line per undeclared island and per on-point
-// off district 0's island or the navmesh; returns how many of those there are. Allocates: build time only.
+// A point on a poly left out is off the navmesh. An island over the size on a built box's roof or inside built boxes
+// (Solids: the boxes and walls tables' rows; ftcore::navIslandsInBoxes) is no fault of the coverage, which leaves out
+// interiors and roofs no stair row reaches: it is counted apart, with a line for each of the largest. Logs a summary
+// line, then a line per undeclared island and per on-point off district 0's island or the navmesh; returns how many of
+// those there are. Allocates: build time only.
 int32 CheckCoverage(const UNavigationSystemV1& Nav, const ARecastNavMesh& NavMesh, double Side, const FVector& HomeAt,
-	const std::vector<ftcore::CoveragePoint>& Points, bool bSea, double SeaLevel, const TCHAR* SeaFrom)
+	const std::vector<ftcore::CoveragePoint>& Points, const std::vector<ftcore::MassingBox>& Solids, bool bSea, double SeaLevel,
+	const TCHAR* SeaFrom)
 {
 	const auto PlanOf = [Side](const FVector& At) { return ftcore::MassingVec{At.X / 100.0 + Side * 0.5, Side * 0.5 - At.Y / 100.0, At.Z / 100.0}; };
 	TArray<FNavTileRef> Tiles;
@@ -819,8 +825,10 @@ int32 CheckCoverage(const UNavigationSystemV1& Nav, const ARecastNavMesh& NavMes
 	{
 		PointPolys.push_back(PolyAt(Cm(ftcore::massingEnginePoint(Side, Point.x, Point.y, Point.z))));
 	}
+	std::vector<ftcore::NavIslandInBoxes> InBoxes;
+	ftcore::navIslandsInBoxes(Corners, Polys, Set, Solids, InBoxes);
 	ftcore::CoverageSummary Sum;
-	ftcore::classifyNavIslands(Set, HomePoly, Points, PointPolys, ftcore::kNavIslandBig, Sum);
+	ftcore::classifyNavIslands(Set, HomePoly, Points, PointPolys, ftcore::kNavIslandBig, Sum, &InBoxes);
 
 	const int32 Fails = static_cast<int32>(Sum.bigUndeclared + Sum.onMissed.size());
 	const FString Home = Sum.home < 0
@@ -831,11 +839,13 @@ int32 CheckCoverage(const UNavigationSystemV1& Nav, const ARecastNavMesh& NavMes
 			  static_cast<int32>(UnderSea.polys), UnderSea.area)
 		: FString();
 	const FString Line = FString::Printf(TEXT("FTBuildMassingWorld: coverage: %d navmesh polys in %d tiles%s, %d islands, %.0f m2 walkable; district "
-		"0's island %s; %d islands over %.0f m2 besides it: %d declared by a pocket, %d undeclared; on-points on district 0's island %d of %d; "
-		"pockets %d (%d in an island over the size, %d off the navmesh)."), static_cast<int32>(AllPolys.size()), Tiles.Num(), *SeaPart,
+		"0's island %s; %d islands over %.0f m2 besides it: %d declared by a pocket, %d in built boxes (left out: %d roofs, %.0f m2, and %d "
+		"interiors, %.0f m2), %d undeclared (%d of them roofs a walk surface meets); on-points on district 0's island %d of %d; pockets %d (%d "
+		"in an island over the size, %d off the navmesh)."), static_cast<int32>(AllPolys.size()), Tiles.Num(), *SeaPart,
 		static_cast<int32>(Set.islands.size()), Set.area, *Home, static_cast<int32>(Sum.big), ftcore::kNavIslandBig,
-		static_cast<int32>(Sum.bigDeclared), static_cast<int32>(Sum.bigUndeclared), static_cast<int32>(Sum.onHome),
-		static_cast<int32>(Sum.onPoints), static_cast<int32>(Sum.pockets), static_cast<int32>(Sum.pocketsMarking),
+		static_cast<int32>(Sum.bigDeclared), static_cast<int32>(Sum.inBoxes.size()), static_cast<int32>(Sum.bigRoof), Sum.roofArea,
+		static_cast<int32>(Sum.bigInterior), Sum.interiorArea, static_cast<int32>(Sum.bigUndeclared), static_cast<int32>(Sum.roofsMet),
+		static_cast<int32>(Sum.onHome), static_cast<int32>(Sum.onPoints), static_cast<int32>(Sum.pockets), static_cast<int32>(Sum.pocketsMarking),
 		static_cast<int32>(Sum.pocketsOffMesh));
 	if (Fails == 0)
 	{
@@ -845,11 +855,24 @@ int32 CheckCoverage(const UNavigationSystemV1& Nav, const ARecastNavMesh& NavMes
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("%s"), *Line);
 	}
+	// The largest islands in built boxes, for a look at what was left out.
+	for (size_t I = 0; I < Sum.inBoxes.size() && I < kCoverageInBoxLines; ++I)
+	{
+		const size_t K = Sum.inBoxes[I];
+		const ftcore::NavIsland& Island = Set.islands[K];
+		const std::int64_t Box = InBoxes[K].box;
+		const FString BoxId = Box >= 0 && static_cast<size_t>(Box) < Solids.size() ? Utf8(Solids[static_cast<size_t>(Box)].id) : FString(TEXT("?"));
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: coverage: left out, the %s of %s and the boxes beside it: island #%d, %.0f m2, "
+			"centroid (%.1f, %.1f), z %.1f to %.1f m, %d polys."), InBoxes[K].part == ftcore::NavBoxPart::Roof ? TEXT("roof") : TEXT("inside"), *BoxId,
+			static_cast<int32>(K) + 1, Island.area, Island.cx, Island.cy, Island.zMin, Island.zMax, static_cast<int32>(Island.polys));
+	}
 	for (const size_t K : Sum.undeclared)
 	{
 		const ftcore::NavIsland& Island = Set.islands[K];
+		const bool bMet = K < InBoxes.size() && InBoxes[K].met;
 		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: coverage: undeclared island #%d: %.0f m2, centroid (%.1f, %.1f), z %.1f to %.1f m, "
-			"%d polys."), static_cast<int32>(K) + 1, Island.area, Island.cx, Island.cy, Island.zMin, Island.zMax, static_cast<int32>(Island.polys));
+			"%d polys%s."), static_cast<int32>(K) + 1, Island.area, Island.cx, Island.cy, Island.zMin, Island.zMax, static_cast<int32>(Island.polys),
+			bMet ? TEXT("; a roof a walk surface meets") : TEXT(""));
 	}
 	for (const size_t I : Sum.onMissed)
 	{
@@ -870,8 +893,9 @@ int32 CheckCoverage(const UNavigationSystemV1& Nav, const ARecastNavMesh& NavMes
 // ftcore::kReadBackSurfacePoints fixed points between the samples, the collision surface's height
 // (ALandscapeProxy::GetHeightAtLocation) must match the field's two triangles a cell, cut as the collision cuts them
 // (north-west to south-east in the plan frame), within ftcore::kReadBackSurfaceTolerance. GetHeightAtLocation gives the
-// collision's height above the component unscaled by the Landscape's Z scale, so it is scaled here. Logs a line for each;
-// true when both hold. Allocates: build time only.
+// collision's height as a world Z (cm): the engine moves the collision's local height through the component's transform,
+// Z scale and all, so it is only turned into metres here. Logs a line for each; true when both hold. Allocates: build time
+// only.
 bool ReadBack(const ALandscape& Land, ULandscapeInfo& LandInfo, const FHeightField& Read, const ftcore::ReadBackWindow& Window, double Side)
 {
 	const size_t NX = Window.nx;
@@ -910,14 +934,12 @@ bool ReadBack(const ALandscape& Land, ULandscapeInfo& LandInfo, const FHeightFie
 	std::vector<ftcore::SurfacePoint> Points;
 	ftcore::readBackSurfacePoints(NX, NY, Read.Spacing, Read.OriginX, Read.OriginY, ftcore::kReadBackSurfacePoints, Points);
 	std::vector<double> Measured(Points.size(), std::numeric_limits<double>::quiet_NaN());
-	const double Base = Land.GetActorLocation().Z;
-	const double ZScale = Land.GetActorScale3D().Z * LANDSCAPE_ZSCALE;
 	for (size_t I = 0; I < Points.size(); ++I)
 	{
 		const TOptional<float> Height = Land.GetHeightAtLocation(Cm(ftcore::massingEnginePoint(Side, Points[I].x, Points[I].y, 0.0)));
 		if (Height.IsSet())
 		{
-			Measured[I] = (Base + (static_cast<double>(Height.GetValue()) - Base) * ZScale) / 100.0;
+			Measured[I] = static_cast<double>(Height.GetValue()) / 100.0;
 		}
 	}
 	ftcore::SurfaceCompare Cut, Other;
@@ -1017,6 +1039,14 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s is not a WALL row."), *WallsFile, *Utf8(Wall.id));
 			return 1;
 		}
+	}
+	// The coverage check's solids: the boxes and the walls, of which ftcore::navIslandsInBoxes takes the built ones.
+	std::vector<ftcore::MassingBox> Solids;
+	if (!CoverageFile.IsEmpty())
+	{
+		Solids.reserve(Boxes.size() + Walls.size());
+		Solids.insert(Solids.end(), Boxes.begin(), Boxes.end());
+		Solids.insert(Solids.end(), Walls.begin(), Walls.end());
 	}
 
 	// Each kit row's box and mesh must be there before anything is built.
@@ -1435,7 +1465,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		const int32 LoadCoverageFails = CoverageFile.IsEmpty()
 			? 0
 			: CheckCoverage(*Nav, *NavMesh, Side, Cm(ftcore::massingEnginePoint(Side, Places[0].SpawnX, Places[0].SpawnY, Places[0].SpawnFloor)),
-				  CoveragePoints, bSea || bSavedSea, LoadSeaLevel, LoadSeaFrom);
+				  CoveragePoints, Solids, bSea || bSavedSea, LoadSeaLevel, LoadSeaFrom);
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Load: %s checked, not saved: goals reached %d of %d, district spawns reached %d of %d."),
 			*MapPath, GoalTally.Reached, Counted, SpawnTally.Reached, Places.Num());
 		const bool bLoadShort =
@@ -1800,8 +1830,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			else
 			{
 				CoverageFails = CheckCoverage(*Nav, *Recast, Side,
-					Cm(ftcore::massingEnginePoint(Side, Places[0].SpawnX, Places[0].SpawnY, Places[0].SpawnFloor)), CoveragePoints, bSea, 0.0,
-					TEXT("-Sea"));
+					Cm(ftcore::massingEnginePoint(Side, Places[0].SpawnX, Places[0].SpawnY, Places[0].SpawnFloor)), CoveragePoints, Solids, bSea,
+					0.0, TEXT("-Sea"));
 			}
 		}
 	}

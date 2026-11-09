@@ -67,9 +67,11 @@
 //
 // -Coverage=<csv> (with -World) checks the navmesh's islands after the reach check, in a build and with -Load: the
 // navmesh's ground polys joined where they link (ftcore::navIslands), district 0's island the one its spawn projects to,
-// and each island over 50 m2 besides it declared by a pocket point in it (ftcore::classifyNavIslands). It logs a
-// summary line, a line per undeclared island and one per on-point off district 0's island or the navmesh; with -Strict,
-// either fails.
+// and each island over 50 m2 besides it declared by a pocket point in it (ftcore::classifyNavIslands). An island on a
+// built box's roof that no walk surface meets, or inside built boxes, is left out and counted apart (Recast takes a
+// closed box as hollow; ftcore::navIslandsInBoxes over the boxes and walls tables). It logs a summary line, a line for
+// each of the largest islands left out, a line per undeclared island and one per on-point off district 0's island or
+// the navmesh; with -Strict, an undeclared island or a missed on-point fails.
 //
 // -ReadBack=<json> (a build only; a height field at the built field's spacing, on its grid and inside it) reads the
 // Landscape back once it is made: every sample of that window from the heightmap, which must match exactly, and the

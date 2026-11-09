@@ -362,8 +362,215 @@ void navIslands(const std::vector<MassingVec>& corners, const std::vector<NavPol
     for (std::uint32_t& k : out.islandOf) k = rank[k];
 }
 
+namespace {
+
+constexpr double kPi = 3.14159265358979323846;
+
+// A box's bottom and top at a plan point: a flat box's z0 and max(z1, z0 + kMassingMinHeight); a sloped row's top read
+// along u (clamped to the row) and its bottom slopeThick under that, or z0 (massingCorners' reading, a zone's plate
+// aside: zones aren't built). c and s are the box's rotation's cosine and sine.
+void boxSpanAt(const MassingBox& b, double c, double s, double x, double y, double& bottom, double& top) {
+    if (!b.sloped) {
+        bottom = b.z0;
+        top = b.z0 + std::max(b.z1 - b.z0, kMassingMinHeight);
+        return;
+    }
+    const double u = (x - b.cx) * c + (y - b.cy) * s;
+    const double t = std::clamp(u / b.sx + 0.5, 0.0, 1.0);
+    top = b.slopeFrom + (b.slopeTo - b.slopeFrom) * t;
+    bottom = b.slopeThick > 0.0 ? top - b.slopeThick : b.z0;
+}
+
+// The boxes `which` names, listed under each plan cell their footprint's bounds (grown by `grow`) cover, so a point
+// finds the boxes near it without a pass over all of them. A box whose numbers aren't finite is left out.
+class BoxBuckets {
+public:
+    BoxBuckets(const std::vector<MassingBox>& boxes, const std::vector<std::uint32_t>& which, double grow) {
+        std::vector<std::uint32_t> kept;
+        std::vector<double> bounds; // x0, y0, x1, y1 per kept box
+        kept.reserve(which.size());
+        bounds.reserve(which.size() * 4);
+        double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
+        for (const std::uint32_t i : which) {
+            const MassingBox& b = boxes[i];
+            const double a = b.rot * kPi / 180.0;
+            const double c = std::fabs(std::cos(a)), s = std::fabs(std::sin(a));
+            const double hx = b.sx * 0.5 * c + b.sy * 0.5 * s + grow, hy = b.sx * 0.5 * s + b.sy * 0.5 * c + grow;
+            if (!std::isfinite(b.cx) || !std::isfinite(b.cy) || !std::isfinite(hx) || !std::isfinite(hy)) continue;
+            const double bx0 = b.cx - hx, by0 = b.cy - hy, bx1 = b.cx + hx, by1 = b.cy + hy;
+            const bool first = kept.empty();
+            x0 = first ? bx0 : std::min(x0, bx0);
+            y0 = first ? by0 : std::min(y0, by0);
+            x1 = first ? bx1 : std::max(x1, bx1);
+            y1 = first ? by1 : std::max(y1, by1);
+            kept.push_back(i);
+            bounds.insert(bounds.end(), {bx0, by0, bx1, by1});
+        }
+        if (kept.empty()) return;
+        x0_ = x0;
+        y0_ = y0;
+        cell_ = std::max(kCell, std::max(x1 - x0, y1 - y0) / static_cast<double>(kMaxSide));
+        nx_ = static_cast<std::size_t>((x1 - x0) / cell_) + 1;
+        ny_ = static_cast<std::size_t>((y1 - y0) / cell_) + 1;
+        start_.assign(nx_ * ny_ + 1, 0);
+        for (int pass = 0; pass < 2; ++pass) {
+            std::vector<std::uint32_t> next;
+            if (pass == 1) {
+                for (std::size_t c = 0; c < nx_ * ny_; ++c) start_[c + 1] += start_[c];
+                items_.resize(start_.back());
+                next.assign(start_.begin(), start_.end() - 1);
+            }
+            for (std::size_t k = 0; k < kept.size(); ++k) {
+                const double* bb = &bounds[k * 4];
+                const std::size_t cx0 = cellOf(bb[0], x0_, nx_), cx1 = cellOf(bb[2], x0_, nx_);
+                const std::size_t cy0 = cellOf(bb[1], y0_, ny_), cy1 = cellOf(bb[3], y0_, ny_);
+                for (std::size_t cy = cy0; cy <= cy1; ++cy) {
+                    for (std::size_t cx = cx0; cx <= cx1; ++cx) {
+                        const std::size_t c = cy * nx_ + cx;
+                        if (pass == 0) ++start_[c + 1];
+                        else items_[next[c]++] = kept[k];
+                    }
+                }
+            }
+        }
+    }
+
+    // The boxes listed under (x, y)'s cell: [begin, end), empty off the grid.
+    void at(double x, double y, const std::uint32_t*& begin, const std::uint32_t*& end) const {
+        begin = end = nullptr;
+        if (nx_ == 0 || !std::isfinite(x) || !std::isfinite(y)) return;
+        const double fx = (x - x0_) / cell_, fy = (y - y0_) / cell_;
+        if (fx < 0.0 || fy < 0.0 || fx >= static_cast<double>(nx_) || fy >= static_cast<double>(ny_)) return;
+        const std::size_t c = static_cast<std::size_t>(fy) * nx_ + static_cast<std::size_t>(fx);
+        begin = items_.data() + start_[c];
+        end = items_.data() + start_[c + 1];
+    }
+
+private:
+    static constexpr double kCell = 16.0;      // m
+    static constexpr std::size_t kMaxSide = 2048; // cells a side at most: a wider spread takes wider cells
+
+    std::size_t cellOf(double v, double origin, std::size_t n) const {
+        const double f = (v - origin) / cell_;
+        if (f <= 0.0) return 0;
+        const std::size_t c = static_cast<std::size_t>(f);
+        return c < n ? c : n - 1;
+    }
+
+    double x0_ = 0.0, y0_ = 0.0, cell_ = kCell;
+    std::size_t nx_ = 0, ny_ = 0;
+    std::vector<std::uint32_t> start_; // cell c's boxes are items_[start_[c], start_[c + 1])
+    std::vector<std::uint32_t> items_;
+};
+
+} // namespace
+
+void navIslandsInBoxes(const std::vector<MassingVec>& corners, const std::vector<NavPolyRef>& polys,
+                       const NavIslandSet& set, const std::vector<MassingBox>& boxes,
+                       std::vector<NavIslandInBoxes>& out) {
+    const std::size_t ni = set.islands.size();
+    out.assign(ni, NavIslandInBoxes{});
+    if (ni == 0) return;
+
+    std::vector<std::uint32_t> built, walks;
+    std::vector<bool> walk(boxes.size(), false);
+    std::vector<double> cosR(boxes.size(), 1.0), sinR(boxes.size(), 0.0);
+    for (std::size_t i = 0; i < boxes.size(); ++i) {
+        const MassingBox& b = boxes[i];
+        if (!massingBuilt(massingRole(b))) continue;
+        const double a = b.rot * kPi / 180.0;
+        cosR[i] = std::cos(a);
+        sinR[i] = std::sin(a);
+        built.push_back(static_cast<std::uint32_t>(i));
+        walk[i] = b.sloped || massingFinish(b) == MassingFinish::Deck;
+        if (walk[i]) walks.push_back(static_cast<std::uint32_t>(i));
+    }
+    const BoxBuckets solids(boxes, built, kNavInBoxPlan);
+    const BoxBuckets walkNear(boxes, walks, kNavRoofMeet);
+
+    // Each island's polys in index order: a counting sort by island.
+    const std::size_t np = std::min(polys.size(), set.islandOf.size());
+    std::vector<std::size_t> from(ni + 1, 0);
+    for (std::size_t p = 0; p < np; ++p) {
+        if (set.islandOf[p] < ni) ++from[set.islandOf[p] + 1];
+    }
+    for (std::size_t k = 0; k < ni; ++k) from[k + 1] += from[k];
+    std::vector<std::uint32_t> polysOf(from.back());
+    {
+        std::vector<std::size_t> next(from.begin(), from.end() - 1);
+        for (std::size_t p = 0; p < np; ++p) {
+            if (set.islandOf[p] < ni) polysOf[next[set.islandOf[p]]++] = static_cast<std::uint32_t>(p);
+        }
+    }
+    const auto cornersOf = [&](std::uint32_t p, const MassingVec*& at) -> std::uint32_t {
+        const NavPolyRef& ref = polys[p];
+        if (ref.count == 0 || static_cast<std::uint64_t>(ref.first) + ref.count > corners.size()) return 0;
+        at = corners.data() + ref.first;
+        return ref.count;
+    };
+
+    for (std::size_t k = 0; k < ni; ++k) {
+        bool inAll = from[k] < from[k + 1];
+        bool allOnTop = true;
+        std::int64_t firstBox = -1;
+        for (std::size_t j = from[k]; inAll && j < from[k + 1]; ++j) {
+            const MassingVec* at = nullptr;
+            const std::uint32_t count = cornersOf(polysOf[j], at);
+            if (count == 0) inAll = false;
+            for (std::uint32_t c = 0; inAll && c < count; ++c) {
+                const MassingVec& v = at[c];
+                const std::uint32_t* b0 = nullptr;
+                const std::uint32_t* b1 = nullptr;
+                solids.at(v.x, v.y, b0, b1);
+                std::int64_t holder = -1;
+                bool onTop = false;
+                for (const std::uint32_t* it = b0; it != b1 && !onTop; ++it) {
+                    const MassingBox& b = boxes[*it];
+                    if (massingFootprintGap(b, v.x, v.y) > kNavInBoxPlan) continue;
+                    double bottom = 0.0, top = 0.0;
+                    boxSpanAt(b, cosR[*it], sinR[*it], v.x, v.y, bottom, top);
+                    if (v.z < bottom - kNavInBoxRise || v.z > top + kNavInBoxRise) continue;
+                    const bool atTop = v.z >= top - kNavInBoxRise;
+                    if (atTop && walk[*it]) continue; // on a walk surface: meant to be walked
+                    if (holder < 0 || atTop) holder = static_cast<std::int64_t>(*it);
+                    onTop = atTop;
+                }
+                if (holder < 0) {
+                    inAll = false;
+                    break;
+                }
+                if (!onTop) allOnTop = false;
+                if (firstBox < 0) firstBox = holder;
+            }
+        }
+        if (!inAll || firstBox < 0) continue;
+        NavIslandInBoxes& r = out[k];
+        r.part = allOnTop ? NavBoxPart::Roof : NavBoxPart::Interior;
+        r.box = firstBox;
+        if (!allOnTop) continue;
+        for (std::size_t j = from[k]; !r.met && j < from[k + 1]; ++j) {
+            const MassingVec* at = nullptr;
+            const std::uint32_t count = cornersOf(polysOf[j], at);
+            for (std::uint32_t c = 0; !r.met && c < count; ++c) {
+                const MassingVec& v = at[c];
+                const std::uint32_t* b0 = nullptr;
+                const std::uint32_t* b1 = nullptr;
+                walkNear.at(v.x, v.y, b0, b1);
+                for (const std::uint32_t* it = b0; it != b1 && !r.met; ++it) {
+                    const MassingBox& b = boxes[*it];
+                    if (massingFootprintGap(b, v.x, v.y) > kNavRoofMeet) continue;
+                    double bottom = 0.0, top = 0.0;
+                    boxSpanAt(b, cosR[*it], sinR[*it], v.x, v.y, bottom, top);
+                    r.met = std::fabs(top - v.z) <= kNavRoofReach;
+                }
+            }
+        }
+    }
+}
+
 void classifyNavIslands(const NavIslandSet& set, std::int64_t homePoly, const std::vector<CoveragePoint>& points,
-                        const std::vector<std::int64_t>& pointPolys, double bigArea, CoverageSummary& out) {
+                        const std::vector<std::int64_t>& pointPolys, double bigArea, CoverageSummary& out,
+                        const std::vector<NavIslandInBoxes>* inBoxes) {
     out = CoverageSummary{};
     const std::size_t ni = set.islands.size();
     const auto islandAt = [&set, ni](std::int64_t poly) -> std::int64_t {
@@ -399,10 +606,25 @@ void classifyNavIslands(const NavIslandSet& set, std::int64_t homePoly, const st
             out.classes[k] = NavIslandClass::Home;
         } else if (big(sk)) {
             ++out.big;
+            const NavBoxPart part = inBoxes && k < inBoxes->size() ? (*inBoxes)[k].part : NavBoxPart::None;
+            const bool met = part == NavBoxPart::Roof && (*inBoxes)[k].met;
             if (marked[k]) {
                 out.classes[k] = NavIslandClass::Declared;
                 ++out.bigDeclared;
+            } else if (part != NavBoxPart::None && !met) {
+                const double area = set.islands[k].area;
+                if (part == NavBoxPart::Roof) {
+                    out.classes[k] = NavIslandClass::Roof;
+                    ++out.bigRoof;
+                    out.roofArea += area;
+                } else {
+                    out.classes[k] = NavIslandClass::Interior;
+                    ++out.bigInterior;
+                    out.interiorArea += area;
+                }
+                out.inBoxes.push_back(k);
             } else {
+                if (met) ++out.roofsMet;
                 out.classes[k] = NavIslandClass::Undeclared;
                 ++out.bigUndeclared;
                 out.undeclared.push_back(k);
