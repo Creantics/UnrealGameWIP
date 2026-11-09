@@ -166,6 +166,50 @@ TEST_CASE("world checks: a tour leg's cap scales with its straight distance, nev
     CHECK(near(tourLegCapSeconds(1400.0), 1400.0 * kTourLegSecondsPerMetre));
 }
 
+TEST_CASE("world checks: a full path caps a tour leg by its length; a partial one keeps the straight line") {
+    // No path or a partial one: the straight line's cap, whatever length came with it, and no note.
+    TourLegBudget b = tourLegBudget(600.0, 1620.0, false);
+    CHECK(near(b.capSeconds, 1200.0));
+    CHECK_FALSE(b.longDetour);
+    b = tourLegBudget(600.0, 0.0, false);
+    CHECK(near(b.capSeconds, 1200.0));
+    CHECK_FALSE(b.longDetour);
+
+    // A full path longer than the straight line: its own length, at the same seconds a metre.
+    b = tourLegBudget(180.0, 1620.0, true);
+    CHECK(near(b.capSeconds, 1620.0 * kTourLegSecondsPerMetre));
+    CHECK(b.longDetour); // 9 times the straight line
+    b = tourLegBudget(600.0, 900.0, true);
+    CHECK(near(b.capSeconds, 1800.0));
+    CHECK_FALSE(b.longDetour);
+
+    // Never below the straight cap, nor the floor.
+    b = tourLegBudget(600.0, 590.0, true);
+    CHECK(near(b.capSeconds, 1200.0));
+    b = tourLegBudget(20.0, 60.0, true);
+    CHECK(near(b.capSeconds, kTourLegCapFloorSeconds));
+    CHECK_FALSE(b.longDetour); // 3 times
+
+    // The note starts past five times the straight line, not at it.
+    CHECK_FALSE(tourLegBudget(100.0, 500.0, true).longDetour);
+    CHECK(tourLegBudget(100.0, 500.5, true).longDetour);
+    CHECK(near(tourLegBudget(100.0, 500.5, true).capSeconds, 1001.0));
+    // A zero straight line (the lead starts on the target) with any real path is a long way round.
+    CHECK(tourLegBudget(0.0, 3.0, true).longDetour);
+    CHECK_FALSE(tourLegBudget(0.0, 0.0, true).longDetour);
+
+    // A path length that isn't a number, or is negative, isn't a full path.
+    b = tourLegBudget(600.0, std::numeric_limits<double>::quiet_NaN(), true);
+    CHECK(near(b.capSeconds, 1200.0));
+    CHECK_FALSE(b.longDetour);
+    b = tourLegBudget(600.0, std::numeric_limits<double>::infinity(), true);
+    CHECK(near(b.capSeconds, 1200.0));
+    CHECK_FALSE(b.longDetour);
+    b = tourLegBudget(600.0, -1.0, true);
+    CHECK(near(b.capSeconds, 1200.0));
+    CHECK_FALSE(b.longDetour);
+}
+
 // ---- Edge verdicts ---------------------------------------------------------------------------------------------
 
 TEST_CASE("world checks: an edge leg's cause") {

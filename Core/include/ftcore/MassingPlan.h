@@ -107,6 +107,26 @@ inline double massingEngineYaw(double rotDeg) { return -rotDeg; }
 // kMassingZonePlate), and at z0 otherwise. topNudge applies to flat boxes only.
 FTCORE_API void massingCorners(const MassingBox& box, double topNudge, std::array<MassingVec, 8>& out);
 
+// A cover plate (a named cliff cover: kind cliff, cover True, built as a named piece) is an obstacle to the
+// navmesh. Its collision stays, but no navmesh lies on its top, inside its slab or on ground buried in it: the
+// build nulls the navmesh there in strips along u. Strip i of massingNullBandCount covers u from its share of sx,
+// the whole of sy, and z from the lower of the slab's bottoms at its two ends to the higher of its tops
+// (massingCorners), kMassingNullMargin past each; a strip's top rises at most kMassingNullRise across it, and a
+// flat box is one strip. Ground further under the slab (a street under a raised end) keeps its navmesh.
+// No allocation.
+inline constexpr double kMassingNullRise = 0.5;
+inline constexpr double kMassingNullMargin = 0.3;
+inline constexpr std::size_t kMassingNullMaxBands = 1024;
+struct MassingNullBand {
+    double u0 = 0.0, u1 = 0.0; // m along the box's u axis, from its centre
+    double w0 = 0.0, w1 = 0.0; // m along its w axis, from its centre
+    double z0 = 0.0, z1 = 0.0; // m above the datum
+};
+FTCORE_API bool massingNavObstacle(const MassingBox& box);
+FTCORE_API std::size_t massingNullBandCount(const MassingBox& box);
+// Strip `index` (clamped to the last) of massingNullBandCount(box).
+FTCORE_API MassingNullBand massingNullBand(const MassingBox& box, std::size_t index);
+
 // A box as a closed mesh in the engine frame (metres): its corners (massingCorners, moved by
 // massingEnginePoint) and six quads that face outward under Unreal's winding, where (b - a) x (c - a)
 // of a face's first three corners, taken right-handed in engine coordinates, points into the solid

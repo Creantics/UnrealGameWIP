@@ -42,6 +42,8 @@
 
 #include "FTExploreDirector.h"
 #include "FTExploreGameMode.h"
+#include "FTNavIslands.h"
+#include "FTPlateNavNull.h"
 #include "FTSceneLook.h"
 
 #include "ftcore/Json.h"
@@ -457,6 +459,44 @@ AStaticMeshActor* Block(UWorld* World, const FActorSpawnParameters& Spawn, UStat
 	return Prop;
 }
 
+// A cover plate (ftcore::massingNavObstacle) as a navmesh obstacle: a UFTPlateNavNull on the plate's actor holding
+// the box's null strips (ftcore::massingNullBand). It stands in the world frame on its own (absolute location, rotation
+// and scale), so the actor's transform, a sloped box's pivot or a flat box's scale, doesn't move it: at the box's
+// centre, the strips' middle height and the box's yaw, its X along the box's u and its Y along -w (the engine's Y runs
+// south). Registered at once, so the navmesh build that follows takes it. Returns how many strips it holds.
+int32 AddPlateNavNull(AStaticMeshActor& Built, const ftcore::MassingBox& Box, double Side)
+{
+	const size_t Count = ftcore::massingNullBandCount(Box);
+	double Low = TNumericLimits<double>::Max();
+	double High = TNumericLimits<double>::Lowest();
+	for (size_t I = 0; I < Count; ++I)
+	{
+		const ftcore::MassingNullBand Band = ftcore::massingNullBand(Box, I);
+		Low = FMath::Min(Low, Band.z0);
+		High = FMath::Max(High, Band.z1);
+	}
+	const double Mid = (Low + High) * 0.5;
+	UFTPlateNavNull* Null = NewObject<UFTPlateNavNull>(&Built, TEXT("PlateNavNull"));
+	Null->NullBoxes.Reserve(static_cast<int32>(Count));
+	FVector Extent = FVector::ZeroVector;
+	for (size_t I = 0; I < Count; ++I)
+	{
+		const ftcore::MassingNullBand Band = ftcore::massingNullBand(Box, I);
+		const FBox Strip(FVector(Band.u0, -Band.w1, Band.z0 - Mid) * 100.0, FVector(Band.u1, -Band.w0, Band.z1 - Mid) * 100.0);
+		Null->NullBoxes.Add(Strip);
+		Extent = Extent.ComponentMax(Strip.Min.GetAbs()).ComponentMax(Strip.Max.GetAbs());
+	}
+	Null->InitBoxExtent(Extent);
+	Null->SetupAttachment(Built.GetRootComponent());
+	Null->SetUsingAbsoluteLocation(true);
+	Null->SetUsingAbsoluteRotation(true);
+	Null->SetUsingAbsoluteScale(true);
+	Null->SetRelativeTransform(FTransform(FRotator(0.0, ftcore::massingEngineYaw(Box.rot), 0.0), Cm(ftcore::massingEnginePoint(Side, Box.cx, Box.cy, Mid))));
+	Built.AddInstanceComponent(Null);
+	Null->RegisterComponent();
+	return static_cast<int32>(Count);
+}
+
 // A sloped box's own mesh, its vertices relative to Pivot (cm), each face flat-shaded, with planar UVs in metres on
 // the world and collision from its triangles.
 UStaticMesh* SlopedMesh(UPackage* Package, const FString& Id, const ftcore::MassingMesh& Shape, const FVector& Pivot, UMaterialInterface* Material)
@@ -716,98 +756,13 @@ int32 CheckCoverage(const UNavigationSystemV1& Nav, const ARecastNavMesh& NavMes
 	const TCHAR* SeaFrom)
 {
 	const auto PlanOf = [Side](const FVector& At) { return ftcore::MassingVec{At.X / 100.0 + Side * 0.5, Side * 0.5 - At.Y / 100.0, At.Z / 100.0}; };
-	TArray<FNavTileRef> Tiles;
-	NavMesh.GetAllNavMeshTiles(Tiles);
-	std::vector<ftcore::MassingVec> Corners;
-	std::vector<ftcore::NavPolyRef> AllPolys;
-	TArray<NavNodeRef> AllRefs;
-	TMap<NavNodeRef, uint32> AllIndex;
-	TArray<FNavPoly> TilePolys;
-	TArray<FVector> Verts;
-	for (const FNavTileRef& Tile : Tiles)
-	{
-		TilePolys.Reset();
-		if (!NavMesh.GetPolysInTile(Tile, TilePolys))
-		{
-			continue;
-		}
-		for (const FNavPoly& Poly : TilePolys)
-		{
-			Verts.Reset();
-			if (!NavMesh.GetPolyVerts(Poly.Ref, Verts) || Verts.IsEmpty())
-			{
-				continue;
-			}
-			ftcore::NavPolyRef Ref;
-			Ref.first = static_cast<uint32>(Corners.size());
-			Ref.count = static_cast<uint32>(Verts.Num());
-			for (const FVector& V : Verts)
-			{
-				Corners.push_back(PlanOf(V));
-			}
-			AllIndex.Add(Poly.Ref, static_cast<uint32>(AllPolys.size()));
-			AllRefs.Add(Poly.Ref);
-			AllPolys.push_back(Ref);
-		}
-	}
-	// Without a sea, nothing is left out.
-	std::vector<std::uint32_t> Keep;
-	ftcore::SeaLeftOut UnderSea;
-	ftcore::navPolysAboveSea(Corners, AllPolys, bSea ? SeaLevel : ftcore::kNoSea, ftcore::kNavSeaMargin, Keep, UnderSea);
-	std::vector<ftcore::NavPolyRef> Polys;
-	Polys.reserve(Keep.size());
-	TArray<NavNodeRef> Refs;
-	Refs.Reserve(static_cast<int32>(Keep.size()));
-	TMap<NavNodeRef, uint32> IndexOf;
-	IndexOf.Reserve(static_cast<int32>(Keep.size()));
-	for (const std::uint32_t K : Keep)
-	{
-		IndexOf.Add(AllRefs[static_cast<int32>(K)], static_cast<uint32>(Polys.size()));
-		Refs.Add(AllRefs[static_cast<int32>(K)]);
-		Polys.push_back(AllPolys[K]);
-	}
-	std::vector<ftcore::NavLink> Links;
-	TArray<NavNodeRef> Near;
-	TArray<NavNodeRef> Through;
-	for (int32 I = 0; I < Refs.Num(); ++I)
-	{
-		Near.Reset();
-		if (!NavMesh.GetPolyNeighbors(Refs[I], Near))
-		{
-			continue;
-		}
-		for (const NavNodeRef N : Near)
-		{
-			ftcore::NavLink Link;
-			Link.a = static_cast<uint32>(I);
-			if (const uint32* J = IndexOf.Find(N))
-			{
-				Link.b = *J;
-				Links.push_back(Link);
-				continue;
-			}
-			// A ground poly left out under the sea joins nothing.
-			if (AllIndex.Contains(N))
-			{
-				continue;
-			}
-			// Not a ground poly: an off-mesh link, joined to the ground polys at its ends.
-			Through.Reset();
-			if (NavMesh.GetPolyNeighbors(N, Through))
-			{
-				for (const NavNodeRef M : Through)
-				{
-					if (const uint32* J = IndexOf.Find(M))
-					{
-						Link.b = *J;
-						Links.push_back(Link);
-					}
-				}
-			}
-		}
-	}
-	ftcore::NavIslandSet Set;
-	ftcore::navIslands(Corners, Polys, Links, Set);
+	FFTNavIslands Islands;
+	FTGatherNavIslands(NavMesh, PlanOf, bSea ? SeaLevel : ftcore::kNoSea, Islands);
+	const std::vector<ftcore::MassingVec>& Corners = Islands.Corners;
+	const std::vector<ftcore::NavPolyRef>& Polys = Islands.Polys;
+	const TMap<NavNodeRef, uint32>& IndexOf = Islands.IndexOf;
+	const ftcore::SeaLeftOut& UnderSea = Islands.UnderSea;
+	const ftcore::NavIslandSet& Set = Islands.Set;
 
 	const auto PolyAt = [&Nav, &NavMesh, &IndexOf](const FVector& At) -> std::int64_t {
 		FNavLocation On;
@@ -841,7 +796,7 @@ int32 CheckCoverage(const UNavigationSystemV1& Nav, const ARecastNavMesh& NavMes
 	const FString Line = FString::Printf(TEXT("FTBuildMassingWorld: coverage: %d navmesh polys in %d tiles%s, %d islands, %.0f m2 walkable; district "
 		"0's island %s; %d islands over %.0f m2 besides it: %d declared by a pocket, %d in built boxes (left out: %d roofs, %.0f m2, and %d "
 		"interiors, %.0f m2), %d undeclared (%d of them roofs a walk surface meets); on-points on district 0's island %d of %d; pockets %d (%d "
-		"in an island over the size, %d off the navmesh)."), static_cast<int32>(AllPolys.size()), Tiles.Num(), *SeaPart,
+		"in an island over the size, %d off the navmesh)."), Islands.Gathered, Islands.Tiles, *SeaPart,
 		static_cast<int32>(Set.islands.size()), Set.area, *Home, static_cast<int32>(Sum.big), ftcore::kNavIslandBig,
 		static_cast<int32>(Sum.bigDeclared), static_cast<int32>(Sum.inBoxes.size()), static_cast<int32>(Sum.bigRoof), Sum.roofArea,
 		static_cast<int32>(Sum.bigInterior), Sum.interiorArea, static_cast<int32>(Sum.bigUndeclared), static_cast<int32>(Sum.roofsMet),
@@ -1592,6 +1547,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		Replaced[static_cast<size_t>(Row.BoxAt)] = true;
 	}
 	int32 Named = 0, Kit = 0, Sloped = 0, Nudged = 0, Skipped = 0, BoxesLeft = 0;
+	int32 NavObstacles = 0, NullStrips = 0;
 	for (size_t I = 0; I < Boxes.size(); ++I)
 	{
 		const ftcore::MassingBox& Box = Boxes[I];
@@ -1625,6 +1581,11 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				Built->GetStaticMeshComponent()->SetCastShadow(false);
 				Built->SetActorHiddenInGame(true);
 			}
+			if (ftcore::massingNavObstacle(Box))
+			{
+				++NavObstacles;
+				NullStrips += AddPlateNavNull(*Built, Box, Side);
+			}
 			++Sloped;
 			continue;
 		}
@@ -1637,7 +1598,14 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			Built->GetStaticMeshComponent()->SetCastShadow(false);
 			Built->SetActorHiddenInGame(true);
 		}
+		if (ftcore::massingNavObstacle(Box))
+		{
+			++NavObstacles;
+			NullStrips += AddPlateNavNull(*Built, Box, Side);
+		}
 	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: cover plates: %d boxes are navmesh obstacles, %d null strips (each rising at most "
+		"%.2f m, %.2f m past the slab); they keep their collision."), NavObstacles, NullStrips, ftcore::kMassingNullRise, ftcore::kMassingNullMargin);
 
 	// The kit: each row's mesh in its box's stead. It collides with nothing, its box stopping the lead instead; a box the
 	// build doesn't make leaves its mesh without a collider, and says so.

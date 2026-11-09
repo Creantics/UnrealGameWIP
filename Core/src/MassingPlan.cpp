@@ -198,6 +198,39 @@ void massingCorners(const MassingBox& box, double topNudge, std::array<MassingVe
     }
 }
 
+bool massingNavObstacle(const MassingBox& box) {
+    return box.kind == "cliff" && box.cover && massingRole(box) == MassingRole::Named;
+}
+
+std::size_t massingNullBandCount(const MassingBox& box) {
+    if (!box.sloped) return 1;
+    const double strips = std::fabs(box.slopeTo - box.slopeFrom) / kMassingNullRise;
+    if (!(strips > 1.0)) return 1; // a NaN too
+    if (strips >= static_cast<double>(kMassingNullMaxBands)) return kMassingNullMaxBands;
+    return static_cast<std::size_t>(std::ceil(strips - 1e-9));
+}
+
+MassingNullBand massingNullBand(const MassingBox& box, std::size_t index) {
+    std::array<MassingVec, 8> corners;
+    massingCorners(box, 0.0, corners);
+    const std::size_t n = massingNullBandCount(box);
+    const std::size_t i = index < n ? index : n - 1;
+    const double t0 = static_cast<double>(i) / static_cast<double>(n);
+    const double t1 = static_cast<double>(i + 1) / static_cast<double>(n);
+    // The bottom and the top run straight along u: corners 0 and 1 are the bottom at -u and +u, 4 and 5 the top.
+    const auto along = [](double a, double b, double t) { return a + (b - a) * t; };
+    const double bottom0 = along(corners[0].z, corners[1].z, t0), bottom1 = along(corners[0].z, corners[1].z, t1);
+    const double top0 = along(corners[4].z, corners[5].z, t0), top1 = along(corners[4].z, corners[5].z, t1);
+    MassingNullBand out;
+    out.u0 = (t0 - 0.5) * box.sx;
+    out.u1 = (t1 - 0.5) * box.sx;
+    out.w0 = -0.5 * box.sy;
+    out.w1 = 0.5 * box.sy;
+    out.z0 = std::min(bottom0, bottom1) - kMassingNullMargin;
+    out.z1 = std::max(top0, top1) + kMassingNullMargin;
+    return out;
+}
+
 void massingMesh(const MassingBox& box, double side, double topNudge, MassingMesh& out) {
     std::array<MassingVec, 8> plan;
     massingCorners(box, topNudge, plan);

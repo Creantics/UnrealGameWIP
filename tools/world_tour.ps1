@@ -75,6 +75,8 @@ if ($stopLegs -gt 0 -or $wet -gt 0) {
     "stops: reached $reached, gave up $gaveUp; edge met a cause $edgeMet, FAIL $edgeFail (bare hidden wall $bare, unjudged $unjudged); " +
         "push held $held, got through $through; wet legs $wet"
     Select-String -Path $Log -Pattern 'World \S+: EDGE [WSNE]: ' | ForEach-Object { $_.Line -replace '^.*?(World \S+: EDGE)', '$1' }
+    # Notes for the plan's owner (a leg whose full path runs far past its straight line): shown, never a fail.
+    Select-String -Path $Log -Pattern 'World \S+: INFO ' | ForEach-Object { $_.Line -replace '^.*?(World \S+: INFO)', '$1' }
 }
 if ($stillSaved + $stillMissing + $stillSkipped -gt 0) { "stills: saved $stillSaved, missing $stillMissing, skipped $stillSkipped" }
 # With -Stills, a still asked for and not saved fails the run; without it, skipped stills are expected.

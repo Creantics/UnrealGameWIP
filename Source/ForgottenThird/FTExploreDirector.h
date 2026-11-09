@@ -60,6 +60,7 @@
 #include "ftcore/WorldChecks.h"
 #include "ftcore/WorldLayout.h"
 
+#include "FTNavIslands.h"
 #include "FTStepHost.h"
 
 #include "FTExploreDirector.generated.h"
@@ -253,6 +254,9 @@ private:
 	// A ground point (engine metres) in the plan frame when the plan's square is known (TourFrame names the frame).
 	void TourPlanXY(ftcore::Vec2 Engine, float& X, float& Y) const;
 	const TCHAR* TourFrame() const;
+	// Gathers TourIslands for the edge walks' aims, once per tour; true when this call gathered them (a scan of the whole
+	// navmesh, so the caller waits a tick and the hitch's long frame lands on the settle).
+	bool GatherTourIslands();
 	void UpdateWorldLine(ftcore::Vec2 Pos);
 	void BeginOverworld();
 	void TickOverworld(AFTExploreCharacter& Player, float DeltaSeconds);
@@ -373,15 +377,19 @@ private:
 	int32 TourStopsPicked[ftcore::kTourStopKinds] = {};
 	int32 TourStillsPicked = 0;
 	// The stop leg in play: its phase (the .cpp's ETourStopPhase) and when it began (tour game time); the point the walk
-	// aims at (engine metres; the navmesh's nearest to an edge stop's target) and its floor (cm); the walk's cap (s);
-	// an edge leg whose walk gave up short, or found no navmesh near the target; the push's direction (held once the
-	// lead is at the target), its closest approach to the target (m) and the feet's start and lowest (cm); a stop whose
-	// given-up leg sets the lead down on its target for the next leg (-1 for none), and the yaw it faces there.
+	// aims at (engine metres; for an edge stop the navmesh's nearest to its target on the lead's own island) and its
+	// floor (cm); the walk's cap (s), its straight line at the start (m) and whether a full path has re-set the cap
+	// (ftcore::tourLegBudget); an edge leg whose walk gave up short, or found no navmesh near the target; the push's
+	// direction (held once the lead is at the target), its closest approach to the target (m) and the feet's start and
+	// lowest (cm); a stop whose given-up leg sets the lead down on its target for the next leg (-1 for none), and the
+	// yaw it faces there.
 	uint8 TourStopPhase = 0;
 	double TourPhaseAt = 0.0;
 	ftcore::Vec2 TourStopAim;
 	double TourStopAimFloor = 0.0;
 	double TourStopCap = 0.0;
+	double TourStopStraight = 0.0;
+	bool bTourStopFullPath = false;
 	bool bTourStopWalkShort = false;
 	bool bTourStopNoNav = false;
 	FVector2D TourPushDir = FVector2D(1.0, 0.0);
@@ -391,6 +399,11 @@ private:
 	double TourPushLowFeet = 0.0;
 	int32 TourSetDownStop = -1;
 	float TourSetDownYaw = 0.f;
+	// The navmesh's islands (FTGatherNavIslands, corners in engine metres, the polys under the sea left out), gathered
+	// once per tour at its first edge stop, for the edge walk's aim; null before that or when the map has no Recast
+	// navmesh (tried once).
+	TUniquePtr<FFTNavIslands> TourIslands;
+	bool bTourIslandsTried = false;
 	// The stops' counts: run by kind, reach stops reached, edge legs that met a cause, push legs held and got through;
 	// each edge's tally (W, S, N, E), its bare hidden walls and unjudged legs; the wet legs and the last leg found wet.
 	int32 TourStopsRun[ftcore::kTourStopKinds] = {};
@@ -456,8 +469,9 @@ private:
 	bool bPilotPathLimit = false; // the last refresh's search ran out of nodes
 	FVector PilotPathGoal = FVector::ZeroVector; // the goal as asked (engine cm), its z the query's
 	FVector PilotPathEnd = FVector::ZeroVector; // that path's last point (engine cm), when it has one
-	// A tour stop's walk asks its path with a search budget of kTourSearchNodes (the engine's default is 2048): the
-	// filter, a copy of the navmesh's own, is made on the first such query.
+	// A tour stop's walk asks its path with a search budget of kTourSearchNodes (the engine's default is 2048; Detour's
+	// node index is 16 bits, so 65535 is the most it can take): the filter, a copy of the navmesh's own, is made on the
+	// first such query.
 	bool bPilotWideSearch = false;
 	FSharedConstNavQueryFilter PilotWideFilter;
 };

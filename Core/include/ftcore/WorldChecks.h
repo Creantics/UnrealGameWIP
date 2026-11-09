@@ -14,11 +14,13 @@
 //   ftcore::readBackWindow(...); ftcore::compareHeightsExact(...);     // the heightmap, sample for sample
 //   ftcore::readBackSurfacePoints(...); ftcore::compareSurface(...);   // the collision surface between samples
 //
-// The tour's own judging (judgeEdge, EdgeTally, tourLegCapSeconds) allocates nothing and is safe on a tick.
+// The tour's own judging (judgeEdge, EdgeTally, tourLegCapSeconds, tourLegBudget) allocates nothing and is safe
+// on a tick.
 
 #include "ftcore/Api.h"
 #include "ftcore/MassingPlan.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -72,6 +74,25 @@ inline constexpr double kTourLegCapFloorSeconds = 300.0;
 inline double tourLegCapSeconds(double straightMetres) {
     const double cap = straightMetres * kTourLegSecondsPerMetre;
     return cap > kTourLegCapFloorSeconds ? cap : kTourLegCapFloorSeconds;
+}
+
+// A leg's cap once its path query has been answered: a full (not partial) path caps the leg by that path's length
+// instead of the straight line, at the same seconds a metre and floor, still timed from the leg's start. The cap
+// never drops below the straight line's, so a path shorter than the straight line (a rounding of its ends) keeps
+// the straight cap. longDetour marks a full path over kTourDetourFactor times its straight line: a note for the
+// plan's owner, never a fail. A partial path, no path, or a path length that isn't a finite non-negative number
+// leaves the straight cap and no note. No allocation.
+inline constexpr double kTourDetourFactor = 5.0;
+struct TourLegBudget {
+    double capSeconds = kTourLegCapFloorSeconds;
+    bool longDetour = false;
+};
+inline TourLegBudget tourLegBudget(double straightMetres, double pathMetres, bool pathFull) {
+    const bool full = pathFull && std::isfinite(pathMetres) && pathMetres >= 0.0;
+    TourLegBudget out;
+    out.capSeconds = tourLegCapSeconds(full && pathMetres > straightMetres ? pathMetres : straightMetres);
+    out.longDetour = full && pathMetres > straightMetres * kTourDetourFactor;
+    return out;
 }
 
 // ---- Edge stops: what stopped the lead -------------------------------------------------------------------------

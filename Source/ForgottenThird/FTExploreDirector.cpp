@@ -22,6 +22,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "NavMesh/RecastNavMesh.h"
 #include "NavigationData.h"
 #include "NavigationPath.h"
 #include "NavigationSystem.h"
@@ -72,10 +73,13 @@ constexpr float kFaceGrace = 0.15f;
 constexpr float kTourReach = 4.f;
 constexpr int32 kTourTargetBase = 300;
 // The tour's stop legs (TickTourStop): pilot targets from here up; the walk's path search budget (the engine's default
-// is 2048, the map builder's reach check uses this); how far round an edge stop's target the navmesh's nearest point
+// is 2048; the map builder's reach check keeps 32768); how far round an edge stop's target the navmesh's nearest point
 // is looked for (cm), and how close the walk comes to it (m) before the push.
+// The budget is Detour's most: its node pool indexes nodes with a 16-bit dtNodeIndex whose all-ones value is
+// DT_NULL_IDX (DetourNode.h), and dtNodePool::getNode casts the node count to it unchecked, so a pool of more than
+// 65535 nodes wraps its indices on a long search instead of running out.
 constexpr int32 kTourStopTargetBase = 500;
-constexpr uint32 kTourSearchNodes = 32768;
+constexpr uint32 kTourSearchNodes = 65535;
 const FVector kEdgeNavExtent(2000.0, 2000.0, 1000.0);
 constexpr float kEdgeWalkReach = 1.f;
 // After a set-down the lead settles at least this long and until it stands on the ground, at most the second (s of
@@ -159,6 +163,57 @@ ftcore::Vec2 ToGround(const FVector& V)
 {
 	// Unreal centimetres to the demo's metres.
 	return {static_cast<float>(V.X / 100.0), static_cast<float>(V.Y / 100.0)};
+}
+
+// An edge stop's walk aim (TickTourStop): the point (cm) nearest Target among the polys of one island (Islands, corners
+// in engine metres) whose corners' box meets Target +- Extent (cm), as the navmesh's nearest-point query looks within
+// that box, but on the one island; false for none there. A scan of every gathered poly, once per edge stop; it
+// allocates nothing, and a poly whose box (with a metre's slack in z for the detail mesh) is no nearer than the best so
+// far isn't asked.
+bool NearestOnIsland(const FFTNavIslands& Islands, const ARecastNavMesh& Recast, uint32 Island, const FVector& Target, const FVector& Extent,
+	FVector& Out)
+{
+	const FVector Lo = (Target - Extent) / 100.0;
+	const FVector Hi = (Target + Extent) / 100.0;
+	const FVector TargetM = Target / 100.0;
+	const size_t Count = FMath::Min(Islands.Polys.size(), Islands.Set.islandOf.size());
+	double Best = TNumericLimits<double>::Max(); // squared cm
+	bool bFound = false;
+	for (size_t i = 0; i < Count && i < static_cast<size_t>(Islands.Refs.Num()); ++i)
+	{
+		const ftcore::NavPolyRef& Ref = Islands.Polys[i];
+		if (Islands.Set.islandOf[i] != Island || Ref.count == 0 || static_cast<size_t>(Ref.first) + Ref.count > Islands.Corners.size())
+		{
+			continue;
+		}
+		FBox Box(ForceInit);
+		for (uint32 k = 0; k < Ref.count; ++k)
+		{
+			const ftcore::MassingVec& C = Islands.Corners[Ref.first + k];
+			Box += FVector(C.x, C.y, C.z);
+		}
+		if (Box.Min.X > Hi.X || Box.Max.X < Lo.X || Box.Min.Y > Hi.Y || Box.Max.Y < Lo.Y || Box.Min.Z > Hi.Z || Box.Max.Z < Lo.Z)
+		{
+			continue;
+		}
+		if (Box.ExpandBy(FVector(0.0, 0.0, 1.0)).ComputeSquaredDistanceToPoint(TargetM) * 1e4 >= Best)
+		{
+			continue;
+		}
+		FVector On;
+		if (!Recast.GetClosestPointOnPoly(Islands.Refs[static_cast<int32>(i)], Target, On))
+		{
+			continue;
+		}
+		const double D = FVector::DistSquared(On, Target);
+		if (D < Best)
+		{
+			Best = D;
+			Out = On;
+			bFound = true;
+		}
+	}
+	return bFound;
 }
 
 // After a teleport the camera boom would ease its lag in from where the pawn stood before, sweeping the
@@ -1746,6 +1801,8 @@ void AFTExploreDirector::BeginTourStops()
 	TourStopPhase = static_cast<uint8>(ETourStopPhase::Begin);
 	TourWetLegs = 0;
 	TourWetLeg = -1;
+	TourIslands.Reset();
+	bTourIslandsTried = false;
 	const TCHAR* const Line = FCommandLine::Get();
 	FString StopsMode;
 	const bool bStopsMode = FParse::Value(Line, TEXT("WorldTourStops="), StopsMode);
@@ -1994,6 +2051,7 @@ void AFTExploreDirector::TickTourStop(AFTExploreCharacter& Player, ftcore::Vec2 
 		++TourStopsRun[TourStopKinds[Stop]];
 		bTourStopWalkShort = false;
 		bTourStopNoNav = false;
+		bTourStopFullPath = false;
 		bTourPushLocked = false;
 		TourSetDownStop = -1;
 		TourStopAim = Target;
@@ -2024,23 +2082,65 @@ void AFTExploreDirector::TickTourStop(AFTExploreCharacter& Player, ftcore::Vec2 
 		}
 		if (Kind == ftcore::TourStopKind::Edge)
 		{
-			// An edge stop's walk aims at the navmesh's nearest point to the target; the push does the rest.
+			// An edge stop's walk aims at the navmesh's nearest point to the target on the island the lead stands on, so
+			// it never aims at a roof or a shelf it can't walk to; the push does the rest. The islands are gathered at the
+			// tour's first edge stop, and that tick waits here.
+			if (GatherTourIslands())
+			{
+				return;
+			}
 			UWorld* World = GetWorld();
 			const UNavigationSystemV1* Nav = World ? FNavigationSystem::GetCurrent<UNavigationSystemV1>(World) : nullptr;
 			const ANavigationData* NavData = Nav ? Nav->GetDefaultNavDataInstance() : nullptr;
+			const ARecastNavMesh* Recast = Cast<const ARecastNavMesh>(NavData);
 			FNavLocation OnMesh;
-			if (!NavData || !Nav->ProjectPointToNavigation(TargetCm, OnMesh, kEdgeNavExtent, NavData))
+			int32 Island = -1;
+			bool bOnMesh = false;
+			if (Recast && TourIslands)
+			{
+				const FVector LeadFeet(Player.GetActorLocation().X, Player.GetActorLocation().Y, Feet);
+				FNavLocation OnLead;
+				const uint32* Index = Nav->ProjectPointToNavigation(LeadFeet, OnLead, INVALID_NAVEXTENT, Recast)
+					? TourIslands->IndexOf.Find(OnLead.NodeRef)
+					: nullptr;
+				if (Index && *Index < TourIslands->Set.islandOf.size())
+				{
+					Island = static_cast<int32>(TourIslands->Set.islandOf[*Index]);
+					bOnMesh = NearestOnIsland(*TourIslands, *Recast, static_cast<uint32>(Island), TargetCm, kEdgeNavExtent, OnMesh.Location);
+				}
+			}
+			// The lead on no gathered island (or none gathered): the navmesh's nearest point to the target, on any island.
+			if (Island < 0)
+			{
+				bOnMesh = NavData && Nav->ProjectPointToNavigation(TargetCm, OnMesh, kEdgeNavExtent, NavData);
+			}
+			const FString OnIsland = Island >= 0 ? FString::Printf(TEXT("on the lead's island #%d"), Island + 1)
+				: TourIslands	 ? FString(TEXT("on any island (the lead stands on none of the navmesh's islands)"))
+								 : FString(TEXT("on any island (no islands gathered)"));
+			if (!bOnMesh)
 			{
 				bTourStopNoNav = true;
-				UE_LOG(LogForgottenThird, Warning, TEXT("World %s: edge stop %s (leg %d/%d): no navmesh within %.0f m of the target; the push starts where the lead stands."),
-					*WorldId, *TourStopIds[Stop], TourLegNumber(), TourLegTotal, kEdgeNavExtent.X / 100.0);
+				UE_LOG(LogForgottenThird, Warning,
+					TEXT("World %s: edge stop %s (leg %d/%d): no navmesh within %.0f m of the target %s; the push starts where the lead stands."), *WorldId,
+					*TourStopIds[Stop], TourLegNumber(), TourLegTotal, kEdgeNavExtent.X / 100.0, *OnIsland);
 				BeginStopPush(Pos, Target, Feet, Game);
 				return;
 			}
 			TourStopAim = ToGround(OnMesh.Location);
 			TourStopAimFloor = OnMesh.Location.Z;
+			float AimX = 0.f;
+			float AimY = 0.f;
+			TourPlanXY(TourStopAim, AimX, AimY);
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("World %s: edge stop %s (leg %d/%d): the walk aims at (%.1f, %.1f) m in the %s frame, z %.0f cm, %s, %.1f m from the target ")
+				TEXT("(%.1f m across the ground)."),
+				*WorldId, *TourStopIds[Stop], TourLegNumber(), TourLegTotal, AimX, AimY, TourFrame(), OnMesh.Location.Z, *OnIsland,
+				FVector::Dist(OnMesh.Location, TargetCm) / 100.0, FVector2D(TourStopAim.x - Target.x, TourStopAim.y - Target.y).Size());
 		}
-		TourStopCap = ftcore::tourLegCapSeconds(FVector2D(TourStopAim.x - Pos.x, TourStopAim.y - Pos.y).Size());
+		// The cap starts from the straight line; the walk's first full path re-sets it (the Walk case).
+		TourStopStraight = FVector2D(TourStopAim.x - Pos.x, TourStopAim.y - Pos.y).Size();
+		TourStopCap = ftcore::tourLegCapSeconds(TourStopStraight);
+		bTourStopFullPath = false;
 		bPilotWideSearch = true;
 		TourStopPhase = static_cast<uint8>(ETourStopPhase::Walk);
 		TourPhaseAt = Game;
@@ -2064,7 +2164,26 @@ void AFTExploreDirector::TickTourStop(AFTExploreCharacter& Player, ftcore::Vec2 
 			return;
 		}
 		PilotWalk(Player, Pos, TourStopAim, Spot, DeltaSeconds, true, TOptional<double>(TourStopAimFloor), true);
-		// No walk runs past its cap (ftcore::tourLegCapSeconds of the straight line it started on).
+		// The walk's first full path re-sets its cap by that path's length (ftcore::tourLegBudget: never under the straight
+		// line's), still timed from the walk's start; a path over kTourDetourFactor times the straight line is noted once
+		// for the plan's owner, never a fail. A partial path or none keeps the straight line's cap.
+		if (!bTourStopFullPath && PilotTarget == Spot && PilotPathLeft >= 0.f)
+		{
+			bTourStopFullPath = true;
+			const ftcore::TourLegBudget Budget = ftcore::tourLegBudget(TourStopStraight, PilotPathLeft, true);
+			TourStopCap = Budget.capSeconds;
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("World %s: stop %s (leg %d/%d): a full path of %.1f m (the straight line %.1f m) at %.1f s on the walk; its cap is now %.0f s."), *WorldId,
+				*TourStopIds[Stop], TourLegNumber(), TourLegTotal, PilotPathLeft, TourStopStraight, Game - TourPhaseAt, TourStopCap);
+			if (Budget.longDetour)
+			{
+				UE_LOG(LogForgottenThird, Display,
+					TEXT("World %s: INFO stop %s (leg %d/%d): its full path, %.1f m, is %.1f times its straight line of %.1f m (over %.0f), for the plan's owner."),
+					*WorldId, *TourStopIds[Stop], TourLegNumber(), TourLegTotal, PilotPathLeft, PilotPathLeft / FMath::Max(TourStopStraight, 0.01),
+					TourStopStraight, ftcore::kTourDetourFactor);
+			}
+		}
+		// No walk runs past its cap (ftcore::tourLegBudget's, from the straight line it started on or its first full path).
 		if (!bTourLegCapped && !bPilotGaveUp && PilotTarget == Spot && Game - TourPhaseAt > TourStopCap)
 		{
 			bTourLegCapped = true;
@@ -2297,7 +2416,7 @@ void AFTExploreDirector::JudgeEdgeStop(const AFTExploreCharacter& Player, int32 
 	const ftcore::Vec2 Target = ToGround(TourStopTargets[Stop]);
 	const double FromTarget = FVector2D(Target.x - At.X / 100.0, Target.y - At.Y / 100.0).Size();
 	const TCHAR* const WalkNote = bTourStopNoNav ? TEXT("; no navmesh near the target, so it pushed from where it stood")
-		: bTourStopWalkShort					 ? TEXT("; its walk gave up short of the navmesh's nearest point")
+		: bTourStopWalkShort					 ? TEXT("; its walk gave up short of its aim")
 												 : TEXT("");
 	FString Swept;
 	if (!bHit)
@@ -2425,6 +2544,35 @@ void AFTExploreDirector::TourPlanXY(ftcore::Vec2 Engine, float& X, float& Y) con
 const TCHAR* AFTExploreDirector::TourFrame() const
 {
 	return PlanSide > 0.f ? TEXT("plan") : TEXT("engine");
+}
+
+bool AFTExploreDirector::GatherTourIslands()
+{
+	if (bTourIslandsTried)
+	{
+		return false;
+	}
+	bTourIslandsTried = true;
+	UWorld* World = GetWorld();
+	const UNavigationSystemV1* Nav = World ? FNavigationSystem::GetCurrent<UNavigationSystemV1>(World) : nullptr;
+	const ARecastNavMesh* Recast = Nav ? Cast<const ARecastNavMesh>(Nav->GetDefaultNavDataInstance()) : nullptr;
+	if (!Recast)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("World %s: no Recast navmesh to gather islands from; the edge walks aim at the navmesh's nearest point, on any island."),
+			*WorldId);
+		return false;
+	}
+	// As the map builder's coverage gathers them (FTGatherNavIslands), but in engine metres: the same polys, links and
+	// islands, numbered alike (largest first), with the polys under the sea left out.
+	const double Began = FPlatformTime::Seconds();
+	TourIslands = MakeUnique<FFTNavIslands>();
+	FTGatherNavIslands(*Recast, [](const FVector& V) { return ftcore::MassingVec{V.X / 100.0, V.Y / 100.0, V.Z / 100.0}; },
+		bHasSeaLevel ? SeaLevel / 100.0 : ftcore::kNoSea, *TourIslands);
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("World %s: the navmesh's islands for the edge walks: %d polys in %d tiles, %d of them left out under the sea, %d islands; gathered in %.1f s."),
+		*WorldId, TourIslands->Gathered, TourIslands->Tiles, static_cast<int32>(TourIslands->UnderSea.polys),
+		static_cast<int32>(TourIslands->Set.islands.size()), FPlatformTime::Seconds() - Began);
+	return true;
 }
 
 void AFTExploreDirector::NextTourLeg(double Game)

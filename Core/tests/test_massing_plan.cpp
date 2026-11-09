@@ -265,6 +265,96 @@ TEST_CASE("massing: a sloped box's top runs along u, its bottom by its kind") {
     CHECK(near(c[5].z, 16.0 + kMassingZonePlate));
 }
 
+TEST_CASE("massing: a named cliff cover is a navigation obstacle; nothing else is") {
+    MassingBox b = flatBox(0, 0, 10, 4, 0, 2, 9);
+    b.kind = "cliff";
+    b.source = MassingSource::Invented;
+    CHECK(massingNavObstacle(b));
+    b.source = MassingSource::Plan;
+    CHECK(massingNavObstacle(b));
+    b.cover = false; // kit
+    CHECK_FALSE(massingNavObstacle(b));
+    b.cover = true;
+    for (const MassingSource s : {MassingSource::Zone, MassingSource::Open, MassingSource::Proxy, MassingSource::Wall}) {
+        b.source = s;
+        CHECK_FALSE(massingNavObstacle(b));
+    }
+    b.source = MassingSource::Plan;
+    for (const char* kind : {"deck", "plate", "ramp", "slab", "interior"}) {
+        b.kind = kind;
+        CHECK_FALSE(massingNavObstacle(b));
+    }
+}
+
+TEST_CASE("massing: an obstacle's null strips tile its footprint, each rising at most the strip rise") {
+    // A flat box is one strip over its whole footprint, the margin past its bottom and top.
+    MassingBox f = flatBox(0, 0, 10, 4, 30, 2, 9);
+    REQUIRE(massingNullBandCount(f) == 1);
+    MassingNullBand n = massingNullBand(f, 0);
+    CHECK(near(n.u0, -5.0));
+    CHECK(near(n.u1, 5.0));
+    CHECK(near(n.w0, -2.0));
+    CHECK(near(n.w1, 2.0));
+    CHECK(near(n.z0, 2.0 - kMassingNullMargin));
+    CHECK(near(n.z1, 9.0 + kMassingNullMargin));
+
+    // A 2 m slab rising 3 m over 12 m: six strips of 2 m, each covering its own share of the slab.
+    MassingBox s = flatBox(0, 0, 12, 4, 0, 0, 0);
+    s.sloped = true;
+    s.slopeFrom = 10.0;
+    s.slopeTo = 13.0;
+    s.slopeThick = 2.0;
+    REQUIRE(massingNullBandCount(s) == 6);
+    double u = -6.0;
+    for (std::size_t i = 0; i < 6; ++i) {
+        n = massingNullBand(s, i);
+        CHECK(near(n.u0, u, 1e-12));
+        CHECK(near(n.u1, u + 2.0, 1e-12));
+        CHECK(near(n.w0, -2.0));
+        CHECK(near(n.w1, 2.0));
+        const double top0 = 10.0 + 0.5 * static_cast<double>(i), top1 = top0 + 0.5;
+        CHECK(near(n.z0, top0 - 2.0 - kMassingNullMargin, 1e-12));
+        CHECK(near(n.z1, top1 + kMassingNullMargin, 1e-12));
+        CHECK(n.z1 - n.z0 <= 2.0 + kMassingNullRise + 2.0 * kMassingNullMargin + 1e-12);
+        u = n.u1;
+    }
+    CHECK(near(u, 6.0));
+    // An index past the last is the last.
+    CHECK(near(massingNullBand(s, 99).u0, massingNullBand(s, 5).u0));
+
+    // Falling the other way: the same strips, the high end first.
+    s.slopeFrom = 13.0;
+    s.slopeTo = 10.0;
+    REQUIRE(massingNullBandCount(s) == 6);
+    n = massingNullBand(s, 0);
+    CHECK(near(n.z1, 13.0 + kMassingNullMargin));
+    CHECK(near(n.z0, 12.5 - 2.0 - kMassingNullMargin));
+
+    // A rise that isn't a whole number of strips rounds up; one within a strip is one strip.
+    s.slopeTo = 10.0 + 3.1;
+    s.slopeFrom = 10.0;
+    CHECK(massingNullBandCount(s) == 7);
+    s.slopeTo = 10.4;
+    CHECK(massingNullBandCount(s) == 1);
+    n = massingNullBand(s, 0);
+    CHECK(near(n.z0, 10.0 - 2.0 - kMassingNullMargin));
+    CHECK(near(n.z1, 10.4 + kMassingNullMargin));
+
+    // Without a thickness the slab reaches down to z0: each strip runs from z0.
+    s.slopeTo = 13.0;
+    s.slopeThick = -1.0;
+    s.z0 = 4.0;
+    n = massingNullBand(s, 3);
+    CHECK(near(n.z0, 4.0 - kMassingNullMargin));
+    CHECK(near(n.z1, 12.0 + kMassingNullMargin));
+
+    // A cliff steep enough to want more strips than the cap gets the cap; a NaN slope gets one.
+    s.slopeTo = 10.0 + kMassingNullRise * 5000.0;
+    CHECK(massingNullBandCount(s) == kMassingNullMaxBands);
+    s.slopeTo = std::nan("");
+    CHECK(massingNullBandCount(s) == 1);
+}
+
 TEST_CASE("massing: the engine frame reads true from above") {
     // The square's centre is the origin; north is -Y; east is +X.
     const MassingVec centre = massingEnginePoint(1000, 500, 500, 7);
