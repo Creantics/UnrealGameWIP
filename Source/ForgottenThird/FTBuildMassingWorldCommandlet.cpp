@@ -19,6 +19,8 @@
 #include "GameFramework/WorldSettings.h"
 #include "HAL/FileManager.h"
 #include "Landscape.h"
+#include "LandscapeDataAccess.h"
+#include "LandscapeEdit.h"
 #include "LandscapeInfo.h"
 #include "LandscapeProxy.h"
 #include "Materials/MaterialInstanceConstant.h"
@@ -44,9 +46,12 @@
 
 #include "ftcore/Json.h"
 #include "ftcore/MassingPlan.h"
+#include "ftcore/WorldChecks.h"
 #include "ftcore/WorldLayout.h"
 
 #include <array>
+#include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -71,6 +76,8 @@ const FRotator kMassingSun(-38, 35, 0);
 constexpr double kSpawnStepUp = 6.0;
 // The lead's height (m), for a spawn that would stand inside a box.
 constexpr double kLeadHeight = 1.8;
+// The tag on the walls table's hidden blockers: the tour's edge legs tell a hidden wall from a built one by it.
+const FName kHiddenWallTag(TEXT("FTHiddenWall"));
 
 FVector Cm(const ftcore::MassingVec& V)
 {
@@ -656,6 +663,256 @@ FSharedConstNavQueryFilter ReachFilter(const ANavigationData& NavData)
 	Filter->SetMaxSearchNodes(kReachSearchNodes);
 	return Filter;
 }
+
+// -Tour: the stops the director's tour walks after its districts (ftcore::importTourStops).
+bool LoadTour(const FString& File, std::vector<ftcore::TourStop>& Stops)
+{
+	TArray<uint8> Bytes;
+	if (!LoadBytes(File, Bytes))
+	{
+		return false;
+	}
+	std::string Error;
+	if (!ftcore::importTourStops(View(Bytes), Stops, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *File, *Utf8(Error));
+		return false;
+	}
+	return true;
+}
+
+// -Coverage: the points that declare the navmesh's islands (ftcore::importCoveragePoints).
+bool LoadCoverage(const FString& File, std::vector<ftcore::CoveragePoint>& Points)
+{
+	TArray<uint8> Bytes;
+	if (!LoadBytes(File, Bytes))
+	{
+		return false;
+	}
+	std::string Error;
+	if (!ftcore::importCoveragePoints(View(Bytes), Points, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *File, *Utf8(Error));
+		return false;
+	}
+	return true;
+}
+
+// -Coverage: the navmesh's islands against the coverage points. The islands are its ground polys (each tile's, with
+// their corners in the plan frame), joined where a poly's neighbours list another, or an off-mesh link whose own
+// neighbours do (ftcore::navIslands). District 0's island holds the poly its spawn (HomeAt, engine cm) projects to; an
+// island over ftcore::kNavIslandBig m² besides it must hold a pocket point, and each on-point must project into it
+// (ftcore::classifyNavIslands). Logs a summary line, then a line per undeclared island and per on-point off district
+// 0's island or the navmesh; returns how many of those there are. Allocates: build time only.
+int32 CheckCoverage(const UNavigationSystemV1& Nav, const ARecastNavMesh& NavMesh, double Side, const FVector& HomeAt,
+	const std::vector<ftcore::CoveragePoint>& Points)
+{
+	const auto PlanOf = [Side](const FVector& At) { return ftcore::MassingVec{At.X / 100.0 + Side * 0.5, Side * 0.5 - At.Y / 100.0, At.Z / 100.0}; };
+	TArray<FNavTileRef> Tiles;
+	NavMesh.GetAllNavMeshTiles(Tiles);
+	std::vector<ftcore::MassingVec> Corners;
+	std::vector<ftcore::NavPolyRef> Polys;
+	TArray<NavNodeRef> Refs;
+	TMap<NavNodeRef, uint32> IndexOf;
+	TArray<FNavPoly> TilePolys;
+	TArray<FVector> Verts;
+	for (const FNavTileRef& Tile : Tiles)
+	{
+		TilePolys.Reset();
+		if (!NavMesh.GetPolysInTile(Tile, TilePolys))
+		{
+			continue;
+		}
+		for (const FNavPoly& Poly : TilePolys)
+		{
+			Verts.Reset();
+			if (!NavMesh.GetPolyVerts(Poly.Ref, Verts) || Verts.IsEmpty())
+			{
+				continue;
+			}
+			ftcore::NavPolyRef Ref;
+			Ref.first = static_cast<uint32>(Corners.size());
+			Ref.count = static_cast<uint32>(Verts.Num());
+			for (const FVector& V : Verts)
+			{
+				Corners.push_back(PlanOf(V));
+			}
+			IndexOf.Add(Poly.Ref, static_cast<uint32>(Polys.size()));
+			Refs.Add(Poly.Ref);
+			Polys.push_back(Ref);
+		}
+	}
+	std::vector<ftcore::NavLink> Links;
+	TArray<NavNodeRef> Near;
+	TArray<NavNodeRef> Through;
+	for (int32 I = 0; I < Refs.Num(); ++I)
+	{
+		Near.Reset();
+		if (!NavMesh.GetPolyNeighbors(Refs[I], Near))
+		{
+			continue;
+		}
+		for (const NavNodeRef N : Near)
+		{
+			ftcore::NavLink Link;
+			Link.a = static_cast<uint32>(I);
+			if (const uint32* J = IndexOf.Find(N))
+			{
+				Link.b = *J;
+				Links.push_back(Link);
+				continue;
+			}
+			// Not a ground poly: an off-mesh link, joined to the ground polys at its ends.
+			Through.Reset();
+			if (NavMesh.GetPolyNeighbors(N, Through))
+			{
+				for (const NavNodeRef M : Through)
+				{
+					if (const uint32* J = IndexOf.Find(M))
+					{
+						Link.b = *J;
+						Links.push_back(Link);
+					}
+				}
+			}
+		}
+	}
+	ftcore::NavIslandSet Set;
+	ftcore::navIslands(Corners, Polys, Links, Set);
+
+	const auto PolyAt = [&Nav, &NavMesh, &IndexOf](const FVector& At) -> std::int64_t {
+		FNavLocation On;
+		if (!Nav.ProjectPointToNavigation(At, On, kNavProjectExtent, &NavMesh))
+		{
+			return -1;
+		}
+		const uint32* I = IndexOf.Find(On.NodeRef);
+		return I ? static_cast<std::int64_t>(*I) : -1;
+	};
+	const std::int64_t HomePoly = PolyAt(HomeAt);
+	std::vector<std::int64_t> PointPolys;
+	PointPolys.reserve(Points.size());
+	for (const ftcore::CoveragePoint& Point : Points)
+	{
+		PointPolys.push_back(PolyAt(Cm(ftcore::massingEnginePoint(Side, Point.x, Point.y, Point.z))));
+	}
+	ftcore::CoverageSummary Sum;
+	ftcore::classifyNavIslands(Set, HomePoly, Points, PointPolys, ftcore::kNavIslandBig, Sum);
+
+	const int32 Fails = static_cast<int32>(Sum.bigUndeclared + Sum.onMissed.size());
+	const FString Home = Sum.home < 0
+		? FString(TEXT("none (district 0's spawn is off the navmesh)"))
+		: FString::Printf(TEXT("#%d, %.0f m2 (%.1f%% of it)"), static_cast<int32>(Sum.home) + 1, Sum.homeArea, Sum.homePercent);
+	const FString Line = FString::Printf(TEXT("FTBuildMassingWorld: coverage: %d navmesh polys in %d tiles, %d islands, %.0f m2 walkable; district "
+		"0's island %s; %d islands over %.0f m2 besides it: %d declared by a pocket, %d undeclared; on-points on district 0's island %d of %d; "
+		"pockets %d (%d in an island over the size, %d off the navmesh)."), static_cast<int32>(Polys.size()), Tiles.Num(),
+		static_cast<int32>(Set.islands.size()), Set.area, *Home, static_cast<int32>(Sum.big), ftcore::kNavIslandBig,
+		static_cast<int32>(Sum.bigDeclared), static_cast<int32>(Sum.bigUndeclared), static_cast<int32>(Sum.onHome),
+		static_cast<int32>(Sum.onPoints), static_cast<int32>(Sum.pockets), static_cast<int32>(Sum.pocketsMarking),
+		static_cast<int32>(Sum.pocketsOffMesh));
+	if (Fails == 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("%s"), *Line);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("%s"), *Line);
+	}
+	for (const size_t K : Sum.undeclared)
+	{
+		const ftcore::NavIsland& Island = Set.islands[K];
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: coverage: undeclared island #%d: %.0f m2, centroid (%.1f, %.1f), z %.1f to %.1f m, "
+			"%d polys."), static_cast<int32>(K) + 1, Island.area, Island.cx, Island.cy, Island.zMin, Island.zMax, static_cast<int32>(Island.polys));
+	}
+	for (const size_t I : Sum.onMissed)
+	{
+		const ftcore::CoveragePoint& Point = Points[I];
+		const std::int64_t Poly = PointPolys[I];
+		const FString Where = Poly < 0
+			? FString(TEXT("off the navmesh"))
+			: FString::Printf(TEXT("on island #%d, not district 0's"), static_cast<int32>(Set.islandOf[static_cast<size_t>(Poly)]) + 1);
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: coverage: on-point %s (%.1f, %.1f, %+.1f) is %s."), *Utf8(Point.id), Point.x, Point.y,
+			Point.z, *Where);
+	}
+	return Fails;
+}
+
+// -ReadBack: the built Landscape read back against a height field at the built field's spacing (the field it was built
+// from, or a window of it; Window says where it lies, ftcore::readBackWindow). (1) Every sample of the window, read from
+// the Landscape's heightmap through its edit data interface, must match the field's exactly. (2) At
+// ftcore::kReadBackSurfacePoints fixed points between the samples, the collision surface's height
+// (ALandscapeProxy::GetHeightAtLocation) must match the field's two triangles a cell, cut as the collision cuts them
+// (north-west to south-east in the plan frame), within ftcore::kReadBackSurfaceTolerance. GetHeightAtLocation gives the
+// collision's height above the component unscaled by the Landscape's Z scale, so it is scaled here. Logs a line for each;
+// true when both hold. Allocates: build time only.
+bool ReadBack(const ALandscape& Land, ULandscapeInfo& LandInfo, const FHeightField& Read, const ftcore::ReadBackWindow& Window, double Side)
+{
+	const size_t NX = Window.nx;
+	const size_t NY = Window.ny;
+	int32 MinX = 0, MinY = 0, MaxX = 0, MaxY = 0;
+	LandInfo.GetLandscapeExtent(MinX, MinY, MaxX, MaxY);
+	const int32 X1 = MinX + static_cast<int32>(Window.x1);
+	const int32 Y1 = MinY + static_cast<int32>(Window.y1);
+	const int32 X2 = MinX + static_cast<int32>(Window.x2);
+	const int32 Y2 = MinY + static_cast<int32>(Window.y2);
+	TArray<uint16> Got;
+	Got.SetNumUninitialized(static_cast<int32>(NX * NY));
+	// A cell the read leaves unwritten keeps a value that can't match.
+	ftcore::readBackSentinel(Read.Grid.GetData(), NX, NY, Got.GetData());
+	{
+		// The final heightmap (no edit layer named), read without writing anything back.
+		FLandscapeEditDataInterface Edit(&LandInfo, FGuid(), false);
+		Edit.GetHeightDataFast(X1, Y1, X2, Y2, Got.GetData(), 0);
+	}
+	ftcore::HeightCompare Exact;
+	ftcore::compareHeightsExact(Read.Grid.GetData(), NX, NY, Read.Spacing, Read.OriginX, Read.OriginY, Got.GetData(), Exact);
+	const bool bExact = Exact.mismatched == 0 && Exact.compared == NX * NY;
+	const FString ExactLine = FString::Printf(TEXT("FTBuildMassingWorld: read-back: heightmap %d x %d samples from plan (%.1f, %.1f), Landscape "
+		"vertices (%d, %d) to (%d, %d): %d of %d match exactly, %d don't; the worst is %.4f m at (%.1f, %.1f)."), static_cast<int32>(NX),
+		static_cast<int32>(NY), Read.OriginX, Read.OriginY, X1, Y1, X2, Y2, static_cast<int32>(Exact.compared - Exact.mismatched),
+		static_cast<int32>(NX * NY), static_cast<int32>(Exact.mismatched), Exact.worst, Exact.worstX, Exact.worstY);
+	if (bExact)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("%s"), *ExactLine);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("%s"), *ExactLine);
+	}
+
+	std::vector<ftcore::SurfacePoint> Points;
+	ftcore::readBackSurfacePoints(NX, NY, Read.Spacing, Read.OriginX, Read.OriginY, ftcore::kReadBackSurfacePoints, Points);
+	std::vector<double> Measured(Points.size(), std::numeric_limits<double>::quiet_NaN());
+	const double Base = Land.GetActorLocation().Z;
+	const double ZScale = Land.GetActorScale3D().Z * LANDSCAPE_ZSCALE;
+	for (size_t I = 0; I < Points.size(); ++I)
+	{
+		const TOptional<float> Height = Land.GetHeightAtLocation(Cm(ftcore::massingEnginePoint(Side, Points[I].x, Points[I].y, 0.0)));
+		if (Height.IsSet())
+		{
+			Measured[I] = (Base + (static_cast<double>(Height.GetValue()) - Base) * ZScale) / 100.0;
+		}
+	}
+	ftcore::SurfaceCompare Cut, Other;
+	ftcore::compareSurface(Points, Measured, Read.Grid.GetData(), NX, NY, Read.Spacing, Read.OriginX, Read.OriginY,
+		ftcore::CellDiagonal::NorthWestSouthEast, ftcore::kReadBackSurfaceTolerance, Cut);
+	ftcore::compareSurface(Points, Measured, Read.Grid.GetData(), NX, NY, Read.Spacing, Read.OriginX, Read.OriginY,
+		ftcore::CellDiagonal::SouthWestNorthEast, ftcore::kReadBackSurfaceTolerance, Other);
+	const bool bSurface = Cut.over == 0 && Cut.compared == Points.size() && !Points.empty();
+	const FString SurfaceLine = FString::Printf(TEXT("FTBuildMassingWorld: read-back: surface at %d points between the samples, cut north-west to "
+		"south-east: %d within %.3f m, %d over (%d unread); the worst is %.4f m at (%.1f, %.1f). Cut south-west to north-east instead: %d over, "
+		"the worst %.4f m."), static_cast<int32>(Points.size()), static_cast<int32>(Cut.compared - Cut.over), ftcore::kReadBackSurfaceTolerance,
+		static_cast<int32>(Cut.over), static_cast<int32>(Cut.unread), Cut.worst, Cut.worstX, Cut.worstY, static_cast<int32>(Other.over), Other.worst);
+	if (bSurface)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("%s"), *SurfaceLine);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("%s"), *SurfaceLine);
+	}
+	return bExact && bSurface;
+}
 #endif
 } // namespace
 
@@ -671,6 +928,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
 	FString HeightFile, BoxesFile, WallsFile, GoalsFile, KitFile, DumpFile, EntryText, LookText, WorldText;
+	FString TourFile, CoverageFile, ReadBackFile;
 	FString MapName = TEXT("World_Massing");
 	FParse::Value(*Params, TEXT("Height="), HeightFile);
 	FParse::Value(*Params, TEXT("Boxes="), BoxesFile);
@@ -678,6 +936,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	FParse::Value(*Params, TEXT("Goals="), GoalsFile);
 	FParse::Value(*Params, TEXT("Kit="), KitFile);
 	FParse::Value(*Params, TEXT("Dump="), DumpFile);
+	FParse::Value(*Params, TEXT("Tour="), TourFile);
+	FParse::Value(*Params, TEXT("Coverage="), CoverageFile);
+	FParse::Value(*Params, TEXT("ReadBack="), ReadBackFile);
 	// The separator flag is off so "x,y,z" keeps its commas.
 	FParse::Value(*Params, TEXT("Entry="), EntryText, false);
 	FParse::Value(*Params, TEXT("Look="), LookText, false);
@@ -712,8 +973,13 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	std::vector<ftcore::MassingBox> Walls;
 	TArray<FGoal> Goals;
 	TArray<FKitRow> KitRows;
+	std::vector<ftcore::TourStop> TourStops;
+	std::vector<ftcore::CoveragePoint> CoveragePoints;
+	FHeightField ReadField;
 	if (!LoadHeightField(HeightFile, Field) || !LoadBoxes(BoxesFile, Boxes) || (!WallsFile.IsEmpty() && !LoadBoxes(WallsFile, Walls)) ||
-		(!GoalsFile.IsEmpty() && !LoadGoals(GoalsFile, Goals)) || (!KitFile.IsEmpty() && !LoadKit(KitFile, KitRows)))
+		(!GoalsFile.IsEmpty() && !LoadGoals(GoalsFile, Goals)) || (!KitFile.IsEmpty() && !LoadKit(KitFile, KitRows)) ||
+		(!TourFile.IsEmpty() && !LoadTour(TourFile, TourStops)) || (!CoverageFile.IsEmpty() && !LoadCoverage(CoverageFile, CoveragePoints)) ||
+		(!ReadBackFile.IsEmpty() && !bLoad && !LoadHeightField(ReadBackFile, ReadField)))
 	{
 		return 1;
 	}
@@ -970,6 +1236,29 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			ftcore::kMassingFootingTolerance, FootingHeld, Count, WorstAt, Places[WorstAt].Footing.step);
 	}
 
+	// -Tour and -Coverage work from the districts: the tour is the director's, and coverage starts from district 0's spawn.
+	if (Places.IsEmpty() && (!TourFile.IsEmpty() || !CoverageFile.IsEmpty()))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Tour and -Coverage need -World (the director, and district 0's spawn)."));
+		return 1;
+	}
+	if (!TourFile.IsEmpty())
+	{
+		int32 Kinds[ftcore::kTourStopKinds] = {};
+		int32 Stills = 0;
+		for (const ftcore::TourStop& Stop : TourStops)
+		{
+			++Kinds[static_cast<size_t>(Stop.kind)];
+			Stills += Stop.still ? 1 : 0;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: tour: %d stops after the districts: %d reach, %d edge, %d push; %d end in a still."),
+			static_cast<int32>(TourStops.size()), Kinds[0], Kinds[1], Kinds[2], Stills);
+	}
+	if (bLoad && !ReadBackFile.IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Load: -ReadBack is for a build; ignored."));
+	}
+
 	const FString MapPath = FString::Printf(TEXT("/Game/Maps/%s"), *MapName);
 	const FString File = FPackageName::LongPackageNameToFilename(MapPath, FPackageName::GetMapPackageExtension());
 	const FVector EntryAt = Cm(ftcore::massingEnginePoint(Side, Entry[0], Entry[1], Entry[2]));
@@ -1070,6 +1359,20 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 					"furthest is %.2f m from the plan's, so the check doesn't walk to the spawns the tour walks to."), Saved, Places.Num(), Worst);
 			}
 		}
+		// The tour's stops are the director's too, saved with the map; -Load doesn't change them.
+		if (!TourFile.IsEmpty())
+		{
+			const int32 SavedStops = Director ? Director->TourStopIds.Num() : 0;
+			if (SavedStops == static_cast<int32>(TourStops.size()))
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Load: the map's director has the table's %d tour stops."), SavedStops);
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: -Load: the map's director has %d tour stops, the table %d; build the map "
+					"again with -Tour for the tour to walk the table's."), SavedStops, static_cast<int32>(TourStops.size()));
+			}
+		}
 
 		FReachTally GoalTally, SpawnTally;
 		FNavLocation From;
@@ -1098,9 +1401,15 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: reach (search budget %u nodes): %s; %s%s."), kReachSearchNodes,
 			*ReachLine(TEXT("goals"), GoalTally, Counted), *ReachLine(TEXT("district spawns"), SpawnTally, Places.Num()), *FootingLine);
+		const int32 LoadCoverageFails = CoverageFile.IsEmpty()
+			? 0
+			: CheckCoverage(*Nav, *NavMesh, Side, Cm(ftcore::massingEnginePoint(Side, Places[0].SpawnX, Places[0].SpawnY, Places[0].SpawnFloor)),
+				  CoveragePoints);
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Load: %s checked, not saved: goals reached %d of %d, district spawns reached %d of %d."),
 			*MapPath, GoalTally.Reached, Counted, SpawnTally.Reached, Places.Num());
-		return bStrict && (GoalTally.Reached < Counted || SpawnTally.Reached < Places.Num() || FootingHeld < Places.Num()) ? 1 : 0;
+		const bool bLoadShort =
+			GoalTally.Reached < Counted || SpawnTally.Reached < Places.Num() || FootingHeld < Places.Num() || LoadCoverageFails > 0;
+		return bStrict && bLoadShort ? 1 : 0;
 	}
 
 	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
@@ -1155,6 +1464,20 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: the height field doesn't fit a %d-sample Landscape."), Samples);
 		World->DestroyWorld(false);
 		return 1;
+	}
+	// -ReadBack: where its field lies in the Landscape, before anything is built on it.
+	ftcore::ReadBackWindow ReadWindow;
+	if (!ReadBackFile.IsEmpty())
+	{
+		std::string Error;
+		if (!ftcore::readBackWindow(LandSide, static_cast<size_t>(Field.SamplesX), static_cast<size_t>(Field.SamplesY), Field.Spacing, Field.OriginX,
+				Field.OriginY, static_cast<size_t>(ReadField.SamplesX), static_cast<size_t>(ReadField.SamplesY), ReadField.Spacing, ReadField.OriginX,
+				ReadField.OriginY, ReadWindow, &Error))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -ReadBack: %s."), *Utf8(Error));
+			World->DestroyWorld(false);
+			return 1;
+		}
 	}
 	uint16 Lowest = 0xFFFF;
 	uint16 Highest = 0;
@@ -1308,6 +1631,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		Mesh->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 		Mesh->SetCastShadow(false);
 		Blocker->SetActorHiddenInGame(true);
+		Blocker->Tags.Add(kHiddenWallTag);
 		// The navmesh reaches the walls' outer faces (the footprint's bounding box), and no further.
 		const double Cos = FMath::Abs(FMath::Cos(FMath::DegreesToRadians(Wall.rot)));
 		const double Sin = FMath::Abs(FMath::Sin(FMath::DegreesToRadians(Wall.rot)));
@@ -1353,14 +1677,33 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			Director->DistrictCentres.Add(FVector2D(Centre.x * 100.0, Centre.y * 100.0));
 			Director->DistrictSpawns.Add(Cm(ftcore::massingEnginePoint(Side, Place.SpawnX, Place.SpawnY, Place.SpawnFloor)));
 		}
+		// The tour's stops, in the table's order, and what the tour judges them by: the sea's level and the plan's square.
+		for (const ftcore::TourStop& Stop : TourStops)
+		{
+			Director->TourStopIds.Add(Utf8(Stop.id));
+			Director->TourStopKinds.Add(static_cast<uint8>(Stop.kind));
+			Director->TourStopTargets.Add(Cm(ftcore::massingEnginePoint(Side, Stop.x, Stop.y, Stop.z)));
+			Director->TourStopHasStart.Add(Stop.hasStart);
+			Director->TourStopStarts.Add(
+				Stop.hasStart ? Cm(ftcore::massingEnginePoint(Side, Stop.startX, Stop.startY, Stop.startZ)) : FVector::ZeroVector);
+			Director->TourStopEdges.Add(static_cast<uint8>(Stop.edge));
+			Director->TourStopStills.Add(Stop.still);
+		}
+		Director->bHasSeaLevel = bSea;
+		Director->SeaLevel = 0.f; // the sea plane stands at the datum
+		Director->PlanSide = static_cast<float>(Side);
 		Director->SetActorLabel(TEXT("ExploreDirector"));
 	}
 
 	// Whatever is still building (the sloped meshes' collision, the ground's) finishes before the navmesh reads it.
 	FAssetCompilingManager::Get().FinishAllCompilation();
 
+	// -ReadBack: the Landscape as built, its heightmap and its collision, against the field.
+	const bool bReadBackHeld = ReadBackFile.IsEmpty() || ReadBack(*Land, *LandInfo, ReadField, ReadWindow, Side);
+
 	int32 Reached = 0;
 	int32 SpawnsReached = 0;
+	int32 CoverageFails = 0;
 	if (bNav && (Goals.Num() > 0 || Places.Num() > 0))
 	{
 		const double Low = ftcore::massingHeightFromValue(Lowest) - 10.0;
@@ -1414,6 +1757,25 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: reach (search budget %u nodes): %s; %s%s."), kReachSearchNodes,
 				*ReachLine(TEXT("goals"), GoalTally, Counted), *ReachLine(TEXT("district spawns"), SpawnTally, Places.Num()), *FootingLine);
 		}
+		// -Coverage: the navmesh's islands against the table, from district 0's spawn.
+		if (!CoverageFile.IsEmpty())
+		{
+			const ARecastNavMesh* Recast = Cast<ARecastNavMesh>(NavData);
+			if (!Recast)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: coverage: the navigation data isn't a navmesh."));
+				CoverageFails = 1;
+			}
+			else
+			{
+				CoverageFails = CheckCoverage(*Nav, *Recast, Side,
+					Cm(ftcore::massingEnginePoint(Side, Places[0].SpawnX, Places[0].SpawnY, Places[0].SpawnFloor)), CoveragePoints);
+			}
+		}
+	}
+	else if (!CoverageFile.IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: coverage: no navmesh (-NoNav), so not checked."));
 	}
 
 	int32 Actors = 0;
@@ -1465,7 +1827,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: dumped %d actors to %s."), DumpRows, *DumpFile);
 	}
-	return bStrict && bNav && (Reached < Counted || SpawnsReached < Places.Num() || FootingHeld < Places.Num()) ? 1 : 0;
+	const bool bShort = bNav && (Reached < Counted || SpawnsReached < Places.Num() || FootingHeld < Places.Num() || CoverageFails > 0);
+	return bStrict && (bShort || !bReadBackHeld) ? 1 : 0;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld needs an editor build."));
 	return 1;

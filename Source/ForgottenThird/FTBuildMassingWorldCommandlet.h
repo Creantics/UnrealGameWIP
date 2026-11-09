@@ -6,6 +6,7 @@
 //   UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildMassingWorld -Height=<json> -Boxes=<csv>
 //       [-Walls=<csv>] [-Goals=<csv>] -Entry=<x,y,z> [-Look=<x,y>] [-Sea=<x>] [-Side=1000] [-Map=<name>]
 //       [-World=<id>] [-Kit=<csv>] [-NoNav] [-Strict] [-Dump=<csv>] [-Load]
+//       [-Tour=<csv>] [-Coverage=<csv>] [-ReadBack=<json>]
 //       -NullRHI -unattended -nopause -nosplash
 //
 // -Height names a height field's json (samples_x, samples_y, spacing_m, origin_of_sample_0_0_m and the raw
@@ -55,6 +56,26 @@
 // as its hidden collider, labelled <id>-COL. A missing box or mesh fails the run before anything is built. A row on
 // a box the build doesn't make places its mesh without a collider and says so. The log gives each mesh's size and
 // scale, and the built boxes left.
+//
+// The walls table's blockers carry the actor tag FTHiddenWall, so the tour's edge legs can tell a hidden wall from a
+// built one. (WALL rows of -Boxes are not built, so they have no actor to tag.)
+//
+// -Tour=<csv> (with -World) gives the map's director the stops its -WorldAutoPlay tour walks after the districts:
+// reach, edge and push stops (ftcore::importTourStops; docs/WORLDS.md gives the columns), with the sea's level and the
+// plan's square for its judging. The build logs the count by kind. Under -Load the saved director's count is checked
+// against the table's.
+//
+// -Coverage=<csv> (with -World) checks the navmesh's islands after the reach check, in a build and with -Load: the
+// navmesh's ground polys joined where they link (ftcore::navIslands), district 0's island the one its spawn projects to,
+// and each island over 50 m2 besides it declared by a pocket point in it (ftcore::classifyNavIslands). It logs a
+// summary line, a line per undeclared island and one per on-point off district 0's island or the navmesh; with -Strict,
+// either fails.
+//
+// -ReadBack=<json> (a build only; a height field at the built field's spacing, on its grid and inside it) reads the
+// Landscape back once it is made: every sample of that window from the heightmap, which must match exactly, and the
+// collision surface at a fixed set of points between the samples (ftcore::readBackSurfacePoints), which must match the
+// field's two triangles a cell within 5 mm. Two lines give the counts, the worst error and where it is; with -Strict, a
+// mismatch fails.
 //
 // -Dump=<csv> also writes the saved map's actors to that file, read back from the actors after the save,
 // so it changes nothing in the map; docs/WORLDS.md gives the columns. A dump it can't write fails the run.

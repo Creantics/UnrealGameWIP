@@ -98,6 +98,36 @@ public:
 	TArray<FVector2D> DistrictCentres;
 	UPROPERTY(EditAnywhere, Category = "Explore")
 	TArray<FVector> DistrictSpawns;
+	// The stops a -WorldAutoPlay tour walks after the districts, in order (FTBuildMassingWorld -Tour=, the tour table of
+	// ftcore/WorldChecks.h), filled by the builder; empty on any other map, which tours as before. One entry each per
+	// stop: its id; its kind (ftcore::TourStopKind: reach, edge or push); its target (cm; Z is the floor to stand on for a
+	// reach stop, the ground at the edge point for an edge stop); whether it has a start, and the start (cm, Z its floor),
+	// where the lead is set down before the leg; its edge's letter ('W', 'S', 'N' or 'E', 0 off an edge stop); and
+	// whether its leg ends in a still (-WorldTourStills=).
+	UPROPERTY(EditAnywhere, Category = "Explore|Tour")
+	TArray<FString> TourStopIds;
+	UPROPERTY(EditAnywhere, Category = "Explore|Tour")
+	TArray<uint8> TourStopKinds;
+	UPROPERTY(EditAnywhere, Category = "Explore|Tour")
+	TArray<FVector> TourStopTargets;
+	UPROPERTY(EditAnywhere, Category = "Explore|Tour")
+	TArray<bool> TourStopHasStart;
+	UPROPERTY(EditAnywhere, Category = "Explore|Tour")
+	TArray<FVector> TourStopStarts;
+	UPROPERTY(EditAnywhere, Category = "Explore|Tour")
+	TArray<uint8> TourStopEdges;
+	UPROPERTY(EditAnywhere, Category = "Explore|Tour")
+	TArray<bool> TourStopStills;
+	// The sea's level (cm) on a map with a sea (FTBuildMassingWorld -Sea=): a tour leg whose lead's feet go under it is
+	// wet. Filled by the builder.
+	UPROPERTY(EditAnywhere, Category = "Explore|Tour")
+	bool bHasSeaLevel = false;
+	UPROPERTY(EditAnywhere, Category = "Explore|Tour")
+	float SeaLevel = 0.f;
+	// The plan's square (m, FTBuildMassingWorld -Side=), for the tour's lines in the plan frame; 0 when not known, and
+	// the lines give engine metres.
+	UPROPERTY(EditAnywhere, Category = "Explore|Tour")
+	float PlanSide = 0.f;
 
 	virtual void Tick(float DeltaSeconds) override;
 
