@@ -22,8 +22,9 @@ public class ForgottenThird : ModuleRules
 			// The demo-world, character-import and rig commandlets.
 			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry", "AssetTools", "IKRig", "IKRigEditor", "Slate", "SlateCore" });
 
-			// FTBuildExploreWorld imports each big world's ground as a Landscape.
-			PrivateDependencyModuleNames.Add("Landscape");
+			// FTBuildExploreWorld imports each big world's ground as a Landscape. FTBuildMassingWorld's read-back includes
+			// LandscapeEdit.h, which includes InstancedFoliageActor.h: Foliage is only a private dependency of Landscape.
+			PrivateDependencyModuleNames.AddRange(new string[] { "Landscape", "Foliage" });
 
 			// FTBuildMassingWorld builds a sloped massing box's own static mesh from a mesh description.
 			PrivateDependencyModuleNames.AddRange(new string[] { "MeshDescription", "StaticMeshDescription" });
