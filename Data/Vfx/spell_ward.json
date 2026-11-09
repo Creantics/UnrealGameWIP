@@ -1,0 +1,69 @@
+{
+  "name": "spell_ward",
+  "emitters": [
+    {
+      "name": "shell",
+      "rate": 60,
+      "duration": 1.0,
+      "loop": true,
+      "maxParticles": 96,
+      "lifetime": [0.8, 1.2],
+      "shape": "sphere",
+      "radius": 0.9,
+      "speed": [0.1, 0.25],
+      "startSize": [0.07, 0.13],
+      "sizeOverLife": [{"t": 0.0, "v": 0.0}, {"t": 0.2, "v": 1.0}, {"t": 1.0, "v": 0.2}],
+      "colorOverLife": [
+        {"t": 0.0, "color": [1.4, 1.6, 2.4, 0.0]},
+        {"t": 0.2, "color": [1.4, 1.6, 2.4, 1.0]},
+        {"t": 1.0, "color": [1.6, 0.6, 2.0, 0.0]}
+      ],
+      "blend": "additive",
+      "sprite": "soft",
+      "softness": 0.0
+    },
+    {
+      "name": "glow",
+      "rate": 3,
+      "duration": 1.0,
+      "loop": true,
+      "maxParticles": 6,
+      "lifetime": 1.2,
+      "shape": "point",
+      "startSize": 2.2,
+      "sizeOverLife": [{"t": 0.0, "v": 0.9}, {"t": 0.5, "v": 1.0}, {"t": 1.0, "v": 0.95}],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.8, 1.0, 1.8, 0.0]},
+        {"t": 0.4, "color": [0.8, 1.0, 1.8, 0.18]},
+        {"t": 1.0, "color": [1.0, 0.4, 1.6, 0.0]}
+      ],
+      "blend": "additive",
+      "sprite": "soft",
+      "softness": 0.0
+    },
+    {
+      "name": "base",
+      "rate": 24,
+      "duration": 1.0,
+      "loop": true,
+      "maxParticles": 48,
+      "lifetime": [0.9, 1.4],
+      "shape": "ring",
+      "radius": 1.0,
+      "innerRadius": 0.9,
+      "speed": 0.0,
+      "velocityMin": [0.0, 0.3, 0.0],
+      "velocityMax": [0.0, 0.7, 0.0],
+      "startSize": [0.08, 0.14],
+      "sizeOverLife": [{"t": 0.0, "v": 0.0}, {"t": 0.2, "v": 1.0}, {"t": 1.0, "v": 0.2}],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.8, 1.2, 2.2, 0.0]},
+        {"t": 0.2, "color": [0.8, 1.2, 2.2, 1.0]},
+        {"t": 1.0, "color": [1.2, 0.5, 2.0, 0.0]}
+      ],
+      "blend": "additive",
+      "sprite": "soft",
+      "softness": 0.0
+    }
+  ]
+}
