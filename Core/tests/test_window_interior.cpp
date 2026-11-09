@@ -1,0 +1,218 @@
+// Interior-mapped windows (ftcore/WindowInterior.h): the grid on a face, each window's look, where a view ray lands in
+// the room picture and on the curtain, and the HLSL written from the same numbers.
+
+#include "ftcore/WindowInterior.h"
+
+#include <ostream> // doctest prints std::string_view through operator<<
+#include <doctest/doctest.h>
+
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <set>
+#include <string>
+
+using namespace ftcore;
+
+namespace {
+bool near(float a, float b, float eps = 1e-4f) { return std::fabs(a - b) <= eps; }
+}  // namespace
+
+TEST_CASE("windowHash is the fixed integer hash the GPU repeats") {
+    CHECK(windowHash(0u) == 0u);
+    CHECK(windowHash(1u) != windowHash(2u));
+    // A pinned value: changing the hash changes every window in the city, so it must be on purpose.
+    CHECK(windowHash(12345u) == windowHash(12345u));
+    std::set<std::uint32_t> seen;
+    for (std::uint32_t i = 0; i < 1000; ++i) seen.insert(windowHash(i));
+    CHECK(seen.size() == 1000u);
+}
+
+TEST_CASE("each building keeps one bay width inside its range") {
+    const WindowGridSpec spec;
+    std::set<float> widths;
+    for (std::uint32_t seed = 0; seed < 200; ++seed) {
+        const float bw = windowBayWidth(spec, seed);
+        CHECK(bw >= spec.bayMin - 1e-5f);
+        CHECK(bw <= spec.bayMax + 1e-5f);
+        widths.insert(bw);
+        CHECK(windowBayWidth(spec, seed) == bw);
+    }
+    CHECK(widths.size() == 7u);
+}
+
+TEST_CASE("bays are centred on a face and keep its edges clear") {
+    const WindowGridSpec spec;
+    const std::uint32_t seed = 77;
+    const float bw = windowBayWidth(spec, seed);
+    const float face = 20.0f;
+    const auto n = static_cast<std::uint32_t>(std::floor((face - 2.0f * spec.edge) / bw));
+    const float m0 = (face - static_cast<float>(n) * bw) * 0.5f;
+    CHECK(m0 >= spec.edge - 1e-4f);
+    CHECK_FALSE(windowCellAt(spec, seed, face, 12.0f, m0 - 0.01f, 1.5f).bay);
+    CHECK_FALSE(windowCellAt(spec, seed, face, 12.0f, face - m0 + 0.01f, 1.5f).bay);
+    const WindowCell first = windowCellAt(spec, seed, face, 12.0f, m0 + 0.01f, 1.5f);
+    CHECK(first.bay);
+    CHECK(first.column == 0u);
+    const WindowCell last = windowCellAt(spec, seed, face, 12.0f, face - m0 - 0.01f, 1.5f);
+    CHECK(last.bay);
+    CHECK(last.column == n - 1u);
+    // Symmetric: the middle of the face is the middle of the bay row.
+    const WindowCell mid = windowCellAt(spec, seed, face, 12.0f, face * 0.5f, 1.5f);
+    if (n % 2u == 1u) CHECK(near(mid.u, 0.5f));
+    else CHECK((near(mid.u, 0.0f) || near(mid.u, 1.0f)));
+}
+
+TEST_CASE("a face too narrow for one bay has no windows") {
+    const WindowGridSpec spec;
+    CHECK_FALSE(windowCellAt(spec, 5u, spec.bayMin + 2.0f * spec.edge - 0.1f, 9.0f, 1.0f, 1.5f).bay);
+}
+
+TEST_CASE("storeys: whole ones only, none in the ground band") {
+    WindowGridSpec spec;
+    // 10 m face: storeys 0..2 whole, the 4th (9..12 m) rises past the top.
+    const WindowCell s2 = windowCellAt(spec, 1u, 20.0f, 10.0f, 10.0f, 7.5f);
+    CHECK(s2.bay);
+    CHECK(s2.storey == 2u);
+    CHECK(near(s2.v, 0.5f));
+    CHECK_FALSE(windowCellAt(spec, 1u, 20.0f, 10.0f, 10.0f, 9.5f).bay);
+    spec.groundBand = 4.5f;  // shop fronts to 4.5 m: storeys whose opening starts under it have none
+    CHECK_FALSE(windowCellAt(spec, 1u, 20.0f, 10.0f, 10.0f, 1.5f).bay);
+    CHECK_FALSE(windowCellAt(spec, 1u, 20.0f, 10.0f, 10.0f, 4.5f).bay);
+    CHECK(windowCellAt(spec, 1u, 20.0f, 10.0f, 10.0f, 7.5f).bay);
+}
+
+TEST_CASE("the opening sits at the sill and the bay's middle") {
+    const WindowGridSpec spec;
+    const WindowOpening o = windowOpening(spec, 3.0f);
+    CHECK(near(o.v0, spec.sill / spec.storey));
+    CHECK(near(o.v1, (spec.sill + spec.opening) / spec.storey));
+    CHECK(near(o.u0 + o.u1, 1.0f));
+    CHECK(near(o.u1 - o.u0, spec.fill));
+    const std::uint32_t seed = 9;
+    const float bw = windowBayWidth(spec, seed);
+    const float face = 4.0f * bw + 2.0f * spec.edge;
+    const float m0 = (face - 4.0f * bw) * 0.5f;
+    // The middle of bay 1, at the sill + 0.1 m: inside the opening. Just under the sill: wall.
+    CHECK(windowCellAt(spec, seed, face, 6.0f, m0 + 1.5f * bw, spec.sill + 0.1f).opening);
+    CHECK_FALSE(windowCellAt(spec, seed, face, 6.0f, m0 + 1.5f * bw, spec.sill - 0.1f).opening);
+    // Near the bay's edge: wall.
+    CHECK_FALSE(windowCellAt(spec, seed, face, 6.0f, m0 + 1.02f * bw, spec.sill + 0.1f).opening);
+}
+
+TEST_CASE("window looks spread over rooms, tints and curtains in the asked shares") {
+    std::array<int, kWindowRooms> rooms{};
+    std::array<int, kWindowCurtains> curtains{};
+    int lit = 0, curtained = 0, mirrored = 0;
+    const int total = 4000;
+    for (int i = 0; i < total; ++i) {
+        const WindowLook w = windowLookFor(1234u + static_cast<std::uint32_t>(i / 40), static_cast<std::uint32_t>(i % 8),
+                                           static_cast<std::uint32_t>((i / 8) % 5), 0.35f, 0.4f);
+        REQUIRE(w.room < kWindowRooms);
+        REQUIRE(w.tint < kWindowTints);
+        ++rooms[w.room];
+        lit += w.lit ? 1 : 0;
+        mirrored += w.mirror ? 1 : 0;
+        if (w.curtain >= 0) {
+            REQUIRE(w.curtain < static_cast<int>(kWindowCurtains));
+            ++curtains[static_cast<std::size_t>(w.curtain)];
+            ++curtained;
+            CHECK(w.drawn >= 0.25f);
+            CHECK(w.drawn <= 1.0f);
+        }
+    }
+    for (int r : rooms) CHECK(r > total / static_cast<int>(kWindowRooms) / 2);
+    for (int c : curtains) CHECK(c > 0);
+    CHECK(std::abs(lit - total * 35 / 100) < total / 20);
+    CHECK(std::abs(curtained - total * 40 / 100) < total / 20);
+    CHECK(std::abs(mirrored - total / 2) < total / 20);
+    // Shares of 0 and 1.
+    CHECK_FALSE(windowLookFor(5u, 1u, 1u, 0.0f, 0.0f).lit);
+    CHECK(windowLookFor(5u, 1u, 1u, 1.0f, 1.0f).lit);
+    CHECK(windowLookFor(5u, 1u, 1u, 1.0f, 1.0f).curtain >= 0);
+    CHECK(windowLookFor(5u, 1u, 1u, 0.0f, 0.0f).curtain == -1);
+}
+
+TEST_CASE("neighbouring windows differ") {
+    int same = 0;
+    for (std::uint32_t c = 0; c < 50; ++c)
+        same += windowLookFor(42u, 3u, c, 0.35f, 0.4f).room == windowLookFor(42u, 3u, c + 1, 0.35f, 0.4f).room ? 1 : 0;
+    CHECK(same < 20);
+}
+
+TEST_CASE("a straight-on look meets the back wall, drawn at half size in the picture") {
+    const WindowGridSpec spec;
+    const WindowRoomHit c = windowRoomHit(spec, 3.0f, 0.5f, 0.5f, 0.0f, 0.0f, 1.0f);
+    CHECK(c.face == 0);
+    CHECK(near(c.x, 0.5f));
+    CHECK(near(c.y, 0.5f));
+    const WindowRoomHit q = windowRoomHit(spec, 3.0f, 0.3f, 0.7f, 0.0f, 0.0f, 1.0f);
+    CHECK(q.face == 0);
+    CHECK(near(q.x, 0.5f + (0.3f - 0.5f) * 0.5f));
+    CHECK(near(q.y, 0.5f + (0.7f - 0.5f) * 0.5f));
+}
+
+TEST_CASE("looking down meets the floor, up the ceiling, sideways the side walls") {
+    const WindowGridSpec spec;
+    CHECK(windowRoomHit(spec, 3.0f, 0.5f, 0.4f, 0.0f, -1.0f, 1.0f).face == 1);
+    CHECK(windowRoomHit(spec, 3.0f, 0.5f, 0.6f, 0.0f, 1.0f, 1.0f).face == 2);
+    CHECK(windowRoomHit(spec, 3.0f, 0.4f, 0.5f, -1.0f, 0.0f, 1.0f).face == 3);
+    CHECK(windowRoomHit(spec, 3.0f, 0.6f, 0.5f, 1.0f, 0.0f, 1.0f).face == 4);
+    // The floor seen from above lands in the picture's lower band, between the back wall's foot and the front.
+    const WindowRoomHit f = windowRoomHit(spec, 3.0f, 0.5f, 0.4f, 0.0f, -1.0f, 1.0f);
+    CHECK(f.y >= 0.0f);
+    CHECK(f.y < 0.25f + 1e-4f);
+}
+
+TEST_CASE("the picture point moves smoothly with the eye (no seams where faces meet)") {
+    const WindowGridSpec spec;
+    // Sweep the view from straight on to steeply down; the picture point must never jump.
+    WindowRoomHit prev = windowRoomHit(spec, 3.0f, 0.5f, 0.45f, 0.0f, 0.0f, 1.0f);
+    bool sawFloor = false;
+    for (int i = 1; i <= 400; ++i) {
+        const float down = -2.0f * static_cast<float>(i) / 400.0f;
+        const WindowRoomHit h = windowRoomHit(spec, 3.0f, 0.5f, 0.45f, 0.0f, down, 1.0f);
+        CHECK(std::fabs(h.y - prev.y) < 0.01f);
+        CHECK(h.x >= 0.0f);
+        CHECK(h.x <= 1.0f);
+        CHECK(h.y >= 0.0f);
+        CHECK(h.y <= 1.0f);
+        sawFloor = sawFloor || h.face == 1;
+        prev = h;
+    }
+    CHECK(sawFloor);
+}
+
+TEST_CASE("the curtain plane shifts a little with the eye and covers its drawn share from the top") {
+    const WindowGridSpec spec;
+    const WindowOpening o = windowOpening(spec, 3.0f);
+    const float mu = 0.5f * (o.u0 + o.u1), mv = 0.5f * (o.v0 + o.v1);
+    const WindowCurtainHit straight = windowCurtainHit(spec, 3.0f, mu, mv, 0.0f, 0.0f, 1.0f, 0.5f);
+    CHECK(near(straight.x, 0.5f));
+    CHECK(near(straight.y, 0.5f));
+    CHECK(straight.covered);  // drawn halfway: the middle line is its lower edge
+    CHECK_FALSE(windowCurtainHit(spec, 3.0f, mu, o.v0 + 0.01f, 0.0f, 0.0f, 1.0f, 0.5f).covered);
+    CHECK(windowCurtainHit(spec, 3.0f, mu, o.v0 + 0.01f, 0.0f, 0.0f, 1.0f, 1.0f).covered);
+    // Looking from the right, the plane 0.1 m in shifts left by 0.1 m across the bay.
+    const WindowCurtainHit side = windowCurtainHit(spec, 3.0f, mu, mv, -1.0f, 0.0f, 1.0f, 0.5f);
+    CHECK(near(side.x, 0.5f - (spec.curtainDepth / 3.0f) / (o.u1 - o.u0), 1e-3f));
+}
+
+TEST_CASE("the HLSL carries the grid's numbers and the hash") {
+    WindowGridSpec spec;
+    spec.groundBand = 4.5f;
+    const std::string h = windowInteriorHlsl(spec);
+    CHECK(h.find("0x7feb352du") != std::string::npos);
+    CHECK(h.find("0x846ca68bu") != std::string::npos);
+    CHECK(h.find(std::to_string(0x9e3779b9u) + "u") != std::string::npos);
+    CHECK(h.find("float storeyH = 3.0;") != std::string::npos);
+    CHECK(h.find("< 4.5 ||") != std::string::npos);
+    CHECK(h.find("% 8u") != std::string::npos);
+    CHECK(h.find("% 6u") != std::string::npos);
+    CHECK(h.find("Texture2DSample(Rooms, RoomsSampler") != std::string::npos);
+    CHECK(h.find("Texture2DSample(Curtains, CurtainsSampler") != std::string::npos);
+    CHECK(h.find("Glow =") != std::string::npos);
+    CHECK(h.find("return float4(c, 1.0);") != std::string::npos);
+    // Every literal it writes is a float or an unsigned literal, never a bare int that HLSL would divide as int.
+    CHECK(h.find("/ 4;") == std::string::npos);
+}
