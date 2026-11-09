@@ -17,7 +17,11 @@ cheeks, the nose-rest point "pad_gap" mm off the nose; it moves forward while an
 lashes, is nearer than "front_gap". Each temple then turns about its hinge and stretches so its bend lands where the
 temple, lowered onto the ear from above at the scalp, first rests on it; the tip turns down "tip_angle" degrees from
 the run, and the last 25 mm of the run and the tip move sideways to lie "temple_gap" off the scalp (in or out; the run before
-stays straight), then clear of the ear. The lens polygons and any UCX_ hulls are removed (the lenses wait for a translucent master); the rest is
+stays straight), then clear of the ear. Nose pads (objects named Pad_*, their wire arms PadArm_*) take no part in the
+front's push: once the front is placed, each pad is turned (at most "pad_turn_max" deg, 25) to face the nose where a
+ray along its contact normal meets it and moved along that normal until it lies "pad_seat" mm (0.3) off the skin; its
+arm follows it rigidly at the pad end, stays put at the rim end and eases between. A pad that finds no nose, or moves
+more than "pad_travel_max" mm (6), stops the fit. The lens polygons and any UCX_ hulls are removed (the lenses wait for a translucent master); the rest is
 decimated to at most "tris" triangles in one material. Options: tilt (deg, 4), lens_eye (mm, -2), pad_gap (1),
 front_gap (1.5), temple_gap (1.5), ear_lift (1.2), tip_angle (deg, 50), temple_start (mm behind the lenses' back where the temples
 start, 9), tris (11000), textures (folder holding *_BC.png, *_N.png (DirectX) and *_ORM.png; default the glasses FBX's
@@ -341,6 +345,78 @@ def import_glasses(path):
     return g, names, origins
 
 
+def seat_pads(head, P, loc_g, is_pad, is_arm, opt):
+    """Seats each nose pad (in place in P, world): turned at most pad_turn_max towards the nose's normal where a ray
+    along the pad's contact normal meets it, then moved along that normal to lie pad_seat off the skin. The pad arm
+    blends from still at its rim end to rigid with the pad at its pad end. Exits when a pad finds no nose or moves more
+    than pad_travel_max."""
+    left, E, up, fwd = head["left"], head["eye_mid"], head["up"], head["fwd"]
+    seat = fopt(opt, "pad_seat", 0.3) * MM
+    turn_max = math.radians(fopt(opt, "pad_turn_max", 25))
+    travel_max = fopt(opt, "pad_travel_max", 6) * MM
+    rep = {}
+    for side, sg in (("L", 1.0), ("R", -1.0)):
+        pm = is_pad & (np.sign(loc_g[:, 0]) == sg)
+        if not pm.any():
+            continue
+        am = is_arm & (np.sign(loc_g[:, 0]) == sg)
+        V = P[pm].copy()
+        c0 = V.mean(0)
+        _, ev = np.linalg.eigh(np.cov((V - c0).T))
+        n_p = ev[:, 0] if ev[:, 0] @ (-sg * left) > 0 else -ev[:, 0]  # the contact face's normal, in onto the nose
+        loc, nrm, _, _ = head["skin_bvh"].ray_cast(Vector(c0 - n_p * 15 * MM), Vector(n_p), 0.04)
+        if loc is None:
+            sys.exit("head_prop: pad %s: no nose along its contact normal (a ray from 15 mm out missed)" % side)
+        n_s = unit(np.array(nrm) * head["sgn"])
+        want = -n_s
+        ang = math.acos(float(np.clip(n_p @ want, -1.0, 1.0)))
+        turn = min(ang, turn_max)
+        R = np.array(Matrix.Rotation(turn, 3, Vector(unit(np.cross(n_p, want))))) if ang > 1e-6 else np.eye(3)
+        n2 = R @ n_p
+        shift = np.zeros(3)
+        for _ in range(10):
+            d, _ = signed_dist(head, c0 + (V - c0) @ R.T + shift)
+            step = d.min() - seat
+            if abs(step) < 0.02 * MM:
+                break
+            shift = shift + n2 * step
+
+        def xf(X):
+            return c0 + (X - c0) @ R.T + shift
+        Vn = xf(V)
+        travel = float(np.linalg.norm(Vn - V, axis=1).max())
+        d_pad, _ = signed_dist(head, Vn)
+        P[pm] = Vn
+        arm_min = float("nan")
+        if am.any():
+            A = P[am].copy()
+            dc = np.linalg.norm(A - c0, axis=1)
+            far = A[dc >= np.percentile(dc, 90)].mean(0)
+            near = A[dc <= np.percentile(dc, 10)].mean(0)
+            ax = near - far
+            s = np.clip(((A - far) @ ax) / max(ax @ ax, 1e-12), 0.0, 1.0)
+            w = s * s * (3 - 2 * s)
+            P[am] = A + w[:, None] * (xf(A) - A)
+            arm_min = float(signed_dist(head, P[am])[0].min())
+        cp = Vn.mean(0) - E
+        rep[side] = {"gap_mm": float(d_pad.min() / MM), "travel_mm": travel / MM, "turn_deg": math.degrees(turn),
+                     "skin_angle_deg": math.degrees(ang), "along_normal_mm": float(shift @ n2 / MM),
+                     "centre_mm": [float(abs(cp @ left) / MM), float(cp @ up / MM), float(cp @ fwd / MM)],
+                     "arm_nearest_skin_mm": arm_min / MM,
+                     "nose_normal_out_up_fwd": [float(n_s @ (sg * left)), float(n_s @ up), float(n_s @ fwd)]}
+        log("pad %s: seated %.2f mm off the nose at %.1f mm out, %.1f up, %.1f forward of the eye centres; moved %.1f mm"
+            " (%.1f along its normal), turned %.1f of %.1f deg; its arm %.1f mm off the skin at the nearest"
+            % (side, d_pad.min() / MM, abs(cp @ left) / MM, cp @ up / MM, cp @ fwd / MM, travel / MM,
+               shift @ n2 / MM, math.degrees(turn), math.degrees(ang), arm_min / MM))
+        log("pad %s: the nose's normal there (out, up, forward) %s" % (side, np.round(rep[side]["nose_normal_out_up_fwd"], 3)))
+        if travel > travel_max:
+            sys.exit("head_prop: pad %s moved %.1f mm to reach the nose (at most %.1f): move it in the source"
+                     % (side, travel / MM, travel_max / MM))
+        if arm_min < 0.2 * MM:
+            log("WARNING: pad arm %s is %.1f mm off the skin" % (side, arm_min / MM))
+    return rep
+
+
 def run_glasses(head, gl_fbx, out, opt):
     name = opt.get("name", "SK_Glasses")
     g, src_names, origins = import_glasses(gl_fbx)
@@ -417,6 +493,13 @@ def run_glasses(head, gl_fbx, out, opt):
         temples[side] = m
         log("temple %s: %d verts (%s)" % (side, int(m.sum()), "named objects" if named else "depth rule"))
     is_temple = temples["L"] | temples["R"]
+    # nose pads and their wire arms (named objects): left out of the front's push, then seated on the nose
+    lname = [n.lower().replace("_", "") for n in src_names]
+    arm_ids = [i for i, n in enumerate(lname) if n.startswith("padarm")]
+    pad_ids = [i for i, n in enumerate(lname) if n.startswith("pad") and i not in arm_ids]
+    is_arm, is_pad = np.isin(src, arm_ids), np.isin(src, pad_ids)
+    if pad_ids:
+        log("nose pads: %d verts, pad arms %d verts (named objects)" % (int(is_pad.sum()), int(is_arm.sum())))
 
     # place the front
     fwd, up, left, E = head["fwd"], head["up"], head["left"], head["eye_mid"]
@@ -438,7 +521,7 @@ def run_glasses(head, gl_fbx, out, opt):
     P = N_w + (P - N_w) @ Rt.T
     # push forward until the front (and a lens over the lashes) clears
     front_gap = fopt(opt, "front_gap", 1.5) * MM
-    fm = ~is_temple
+    fm = ~is_temple & ~is_pad & ~is_arm
     d_front, _ = signed_dist(head, P[fm & ~is_lens])
     need = front_gap - d_front.min()
     lash_need = -1.0
@@ -455,6 +538,7 @@ def run_glasses(head, gl_fbx, out, opt):
             log("lash tips to the lens back: min %.1f mm over %d lash verts under a lens" % (min(gaps) / MM, len(gaps)))
         del lens_pts
     push = max(need, lash_need, 0.0)
+    log("front: the rims and bridge want %.1f mm forward, the lashes %.1f mm" % (need / MM, lash_need / MM))
     cap = 12 * MM
     if push > cap:
         log("WARNING: the front wanted %.1f mm forward; capped at %.1f" % (push / MM, cap / MM))
@@ -478,6 +562,11 @@ def run_glasses(head, gl_fbx, out, opt):
         " %.1f up, %.1f forward of the eye centres), tilt %.1f deg"
         % (nose_h / MM, push / MM, d_front.min() / MM, abs(jn @ left) / MM, (jn @ up) / MM, (jn @ fwd) / MM,
            math.degrees(tilt)))
+    rep_p = seat_pads(head, P, loc_g, is_pad, is_arm, opt) if pad_ids else {}
+    if rep_p:
+        log("front: the pads carry it (L %.1f mm, R %.1f mm off the nose); the rims and bridge are %.1f mm off the skin"
+            % (rep_p.get("L", {}).get("gap_mm", float("nan")), rep_p.get("R", {}).get("gap_mm", float("nan")),
+               d_front.min() / MM))
 
     # temples: each turns about its hinge and stretches so its bend lands where the temple, lowered from above at the
     # scalp, first rests on the ear; the tip turns down to "tip_angle" below the run; then the run's last 25 mm and the
@@ -693,6 +782,7 @@ def run_glasses(head, gl_fbx, out, opt):
         p.use_smooth = True
     report = {"mode": "glasses", "source": gl_fbx, "nose_rest_above_eyes_mm": nose_h / MM, "front_push_mm": push / MM,
               "front_nearest_skin_mm": float(d_front.min() / MM), "tilt_deg": math.degrees(tilt), "temples": rep_t,
+              "front_push_wanted_mm": {"rims_bridge": float(need / MM), "lashes": float(lash_need / MM)}, "pads": rep_p,
               "lenses": "removed: translucent lens pending a master", "normal": "DirectX in _N.png"}
     skin_and_export(head, g, name, out, report)
 
