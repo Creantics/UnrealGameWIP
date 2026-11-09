@@ -702,12 +702,12 @@ bool LoadCoverage(const FString& File, std::vector<ftcore::CoveragePoint>& Point
 // their corners in the plan frame), joined where a poly's neighbours list another, or an off-mesh link whose own
 // neighbours do (ftcore::navIslands). District 0's island holds the poly its spawn (HomeAt, engine cm) projects to; an
 // island over ftcore::kNavIslandBig m² besides it must hold a pocket point, and each on-point must project into it
-// (ftcore::classifyNavIslands). With -Sea (bSea), the polys under the sea are left out first (ftcore::navPolysAboveSea):
-// the sea plane has no collision, so the ground under it gets navmesh too. A point on a poly left out is off the navmesh.
-// Logs a summary line, then a line per undeclared island and per on-point off district 0's island or the navmesh;
-// returns how many of those there are. Allocates: build time only.
+// (ftcore::classifyNavIslands). With a sea (bSea: SeaLevel in m, SeaFrom saying where it came from), the polys under it
+// are left out first (ftcore::navPolysAboveSea): the sea plane has no collision, so the ground under it gets navmesh too.
+// A point on a poly left out is off the navmesh. Logs a summary line, then a line per undeclared island and per on-point
+// off district 0's island or the navmesh; returns how many of those there are. Allocates: build time only.
 int32 CheckCoverage(const UNavigationSystemV1& Nav, const ARecastNavMesh& NavMesh, double Side, const FVector& HomeAt,
-	const std::vector<ftcore::CoveragePoint>& Points, bool bSea)
+	const std::vector<ftcore::CoveragePoint>& Points, bool bSea, double SeaLevel, const TCHAR* SeaFrom)
 {
 	const auto PlanOf = [Side](const FVector& At) { return ftcore::MassingVec{At.X / 100.0 + Side * 0.5, Side * 0.5 - At.Y / 100.0, At.Z / 100.0}; };
 	TArray<FNavTileRef> Tiles;
@@ -744,10 +744,10 @@ int32 CheckCoverage(const UNavigationSystemV1& Nav, const ARecastNavMesh& NavMes
 			AllPolys.push_back(Ref);
 		}
 	}
-	// The sea plane stands at the datum; without -Sea, nothing is left out.
+	// Without a sea, nothing is left out.
 	std::vector<std::uint32_t> Keep;
 	ftcore::SeaLeftOut UnderSea;
-	ftcore::navPolysAboveSea(Corners, AllPolys, bSea ? 0.0 : ftcore::kNoSea, ftcore::kNavSeaMargin, Keep, UnderSea);
+	ftcore::navPolysAboveSea(Corners, AllPolys, bSea ? SeaLevel : ftcore::kNoSea, ftcore::kNavSeaMargin, Keep, UnderSea);
 	std::vector<ftcore::NavPolyRef> Polys;
 	Polys.reserve(Keep.size());
 	TArray<NavNodeRef> Refs;
@@ -827,7 +827,8 @@ int32 CheckCoverage(const UNavigationSystemV1& Nav, const ARecastNavMesh& NavMes
 		? FString(TEXT("none (district 0's spawn is off the navmesh)"))
 		: FString::Printf(TEXT("#%d, %.0f m2 (%.1f%% of it)"), static_cast<int32>(Sum.home) + 1, Sum.homeArea, Sum.homePercent);
 	const FString SeaPart = bSea
-		? FString::Printf(TEXT(" (under the sea: %d polys, %.0f m2, left out)"), static_cast<int32>(UnderSea.polys), UnderSea.area)
+		? FString::Printf(TEXT(" (under the sea at %.2f m, from %s: %d polys, %.0f m2, left out)"), SeaLevel, SeaFrom,
+			  static_cast<int32>(UnderSea.polys), UnderSea.area)
 		: FString();
 	const FString Line = FString::Printf(TEXT("FTBuildMassingWorld: coverage: %d navmesh polys in %d tiles%s, %d islands, %.0f m2 walkable; district "
 		"0's island %s; %d islands over %.0f m2 besides it: %d declared by a pocket, %d undeclared; on-points on district 0's island %d of %d; "
@@ -1427,10 +1428,14 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: reach (search budget %u nodes): %s; %s%s."), kReachSearchNodes,
 			*ReachLine(TEXT("goals"), GoalTally, Counted), *ReachLine(TEXT("district spawns"), SpawnTally, Places.Num()), *FootingLine);
+		// The sea for the coverage check: -Sea=<x> when given (the plane stands at the datum), else the saved director's.
+		const bool bSavedSea = !bSea && Director && Director->bHasSeaLevel;
+		const double LoadSeaLevel = bSea ? 0.0 : bSavedSea ? static_cast<double>(Director->SeaLevel) / 100.0 : ftcore::kNoSea;
+		const TCHAR* const LoadSeaFrom = bSea ? TEXT("-Sea") : TEXT("the saved director");
 		const int32 LoadCoverageFails = CoverageFile.IsEmpty()
 			? 0
 			: CheckCoverage(*Nav, *NavMesh, Side, Cm(ftcore::massingEnginePoint(Side, Places[0].SpawnX, Places[0].SpawnY, Places[0].SpawnFloor)),
-				  CoveragePoints, bSea);
+				  CoveragePoints, bSea || bSavedSea, LoadSeaLevel, LoadSeaFrom);
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Load: %s checked, not saved: goals reached %d of %d, district spawns reached %d of %d."),
 			*MapPath, GoalTally.Reached, Counted, SpawnTally.Reached, Places.Num());
 		const bool bLoadShort =
@@ -1795,7 +1800,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			else
 			{
 				CoverageFails = CheckCoverage(*Nav, *Recast, Side,
-					Cm(ftcore::massingEnginePoint(Side, Places[0].SpawnX, Places[0].SpawnY, Places[0].SpawnFloor)), CoveragePoints, bSea);
+					Cm(ftcore::massingEnginePoint(Side, Places[0].SpawnX, Places[0].SpawnY, Places[0].SpawnFloor)), CoveragePoints, bSea, 0.0,
+					TEXT("-Sea"));
 			}
 		}
 	}
