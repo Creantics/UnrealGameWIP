@@ -367,6 +367,7 @@ void UFTArenaRunner::End()
 		}
 		Skins[I] = FFTArenaSkin();
 	}
+	LeadWeapons.Reset(); // its components are the player's figure's
 	if (PlayerFigure)
 	{
 		PlayerFigure->Destroy();
@@ -463,6 +464,11 @@ void UFTArenaRunner::SpawnFigures(const FFTLeadLook* Lead)
 		PlayerFigure->Setup(true, Def.fighter.bodyRadius, kArenaPlayerColor, 0.f, Lead);
 		const ftcore::ZoneCamera& Rig = Fit.camera;
 		PlayerFigure->SetCameraRig(Rig.arm, Rig.pivot, Rig.side, Rig.up, Rig.fov);
+		// The kit's weapon on the lead's body: its strike clips, props and effects.
+		if (Lead)
+		{
+			LeadWeapons.Begin(PlayerFigure, *Lead, Def.fighter);
+		}
 	}
 	if (PC)
 	{
@@ -1270,8 +1276,10 @@ void UFTArenaRunner::StepFight()
 	{
 		FeedKindCrits(Out.events);
 	}
+	LeadWeapons.Feed(Out.events, static_cast<double>(Fight.time()));
 	HandleEvents(Out.events);
 	TrackParts(Out);
+	LeadWeapons.Track(Out.player, static_cast<double>(Fight.time()));
 	if (bBoss)
 	{
 		LogStoneBearerNotes();
@@ -1761,6 +1769,8 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		}
 		Pose.Tint = FMath::Lerp(Pose.Tint, FLinearColor(1.f, 0.2f, 0.15f), ArenaModePulse(Now, PlayerHitTime, kArenaHitTint));
 		PlayerFigure->ApplyPose(Pose);
+		// The strike clips at the fight time drawn (the bodies are drawn a step behind, Alpha of the way to the last).
+		LeadWeapons.Paint(FMath::Max(0.0, static_cast<double>(Fight.time()) - static_cast<double>(StepSeconds) * (1.0 - Alpha)));
 	}
 
 	for (int32 I = 0; I < static_cast<int32>(Fight.enemyCount()) && I < MaxEnemies; ++I)
@@ -1982,6 +1992,7 @@ void UFTArenaRunner::LogResult() const
 void UFTArenaRunner::Restart()
 {
 	Fight.restart();
+	LeadWeapons.Restart();
 	BeginStoneBearer();
 	// The boss is whole again (its carried piece too) unless the run asks for it split.
 	if (AFTArenaFighter* Boss = StoneBearerSlot >= 0 ? EnemyFigures[StoneBearerSlot].Get() : nullptr)

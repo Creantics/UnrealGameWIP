@@ -111,6 +111,9 @@ public:
     // Plays `clip` from `now`, or so that its key frame plays at `keyAt` when keyAt >= 0 (see the top
     // of this file). Returns false, playing nothing, when the body has no such clip.
     FTCORE_API bool play(FightClip c, double now, double keyAt = -1.0);
+    // Plays strike `c` as play() does, else the punch on its side (a kick, swing or cast the body has
+    // no clip for), else StrikeLeft. Returns the clip it played; Stance when the body has none of them.
+    FTCORE_API FightClip playStrike(FightClip c, double now, double keyAt = -1.0);
 
     // Moves to `now` (non-decreasing) and recomputes the layers.
     FTCORE_API void update(double now);

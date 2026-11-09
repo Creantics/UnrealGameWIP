@@ -76,6 +76,8 @@
 // picture only, and a second, <prefix>_0b_edge.png: the player 1.4 m from the wall, to show the edge cue.
 // -ArenaShotAt=<s>,<s>,... adds a view <prefix>_t_<s>.png at each of those fight times (uncounted: the six views and the
 // quit are unchanged), so two runs of the same fight (an OFF/ON pair) are shot at the same moments.
+// -ArenaShotStrikes=<n> adds a view <prefix>_s<k>_<clip>.png just after each of the player's first n attacks goes active
+// (the lead's strike clip at its impact, the weapon's effect just started; FTLeadWeapons.h), uncounted as well.
 //
 // The player's figure wears a lead's look from config (the explore character's PartyLooks, Config/UserGame.ini): the first
 // by default, -ArenaLead=<name> picks another; with none, or none that loads, the test human is worn (one warning).
@@ -203,4 +205,8 @@ private:
 	// -ArenaShotAt: extra views at these fight times (seconds, ascending), and the next one due.
 	TArray<double> ShotAt;
 	int32 NextShotAt = 0;
+	// -ArenaShotStrikes: how many of the player's attacks to view, the views taken and the attacks already seen.
+	int32 ShotStrikes = 0;
+	int32 StrikeShots = 0;
+	int32 StrikesSeen = 0;
 };

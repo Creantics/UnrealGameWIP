@@ -318,6 +318,14 @@ FTCORE_API std::size_t arenaStrikePattern(const ArenaFighter& kit, FightClip* ou
 // The clip of the kit's heavy: a gun's heavy that reaches kArenaShotRange is a shot (WeaponRight), a shorter one a
 // kick (KickRight); Magic casts, the rest punch (StrikeRight).
 FTCORE_API FightClip arenaHeavyStrike(const ArenaFighter& kit);
+// The kit's attack for the player's move id (an event's or ArenaPlayerOut::move: a light's chain index below
+// lightCount, kArenaHeavyMove, kArenaRiposteMove or kArenaReleaseMove); nullptr for any other id.
+FTCORE_API const ArenaAttack* arenaPlayerAttack(const ArenaFighter& kit, std::uint8_t move);
+// The clip that shows the player's move: a light its pattern strike (arenaStrikePattern), the heavy
+// arenaHeavyStrike's, a riposte Counter, a Release Finisher; Stance for any other id. A host plays it with
+// FightAnimator::playStrike (a riposte or Release with play) keyed to the attack's active part, startup after
+// AttackStarted.
+FTCORE_API FightClip arenaPlayerStrike(const ArenaFighter& kit, std::uint8_t move);
 
 // What an enemy move shows during its startup: the word on its Read card (append only; generic shapes,
 // the host shows each through its own ui string). arena.json spells it as arenaTellName gives it.

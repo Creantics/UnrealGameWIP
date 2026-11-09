@@ -5345,6 +5345,60 @@ TEST_CASE("arena data: the shipped weapons and the strike pattern each lead's ki
     CHECK(arenaStrikePattern(duy, nullptr, 2) == 0);
 }
 
+TEST_CASE("arena data: each player move's attack and clip, and what the leads' punch-and-kick clip set plays for them") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter& devin = t.fighter("devin");
+    const ArenaFighter& duy = t.fighter("duy");
+    const ArenaFighter& third = t.fighter("third");
+
+    // The attack each move id names.
+    CHECK(arenaPlayerAttack(devin, 0) == &devin.light[0]);
+    CHECK(arenaPlayerAttack(devin, 3) == &devin.light[3]);
+    CHECK(arenaPlayerAttack(duy, kArenaHeavyMove) == &duy.heavy);
+    CHECK(arenaPlayerAttack(duy, kArenaRiposteMove) == &duy.riposte);
+    CHECK(arenaPlayerAttack(duy, kArenaReleaseMove) == &duy.release);
+    CHECK(arenaPlayerAttack(duy, duy.lightCount) == nullptr); // past the chain
+    CHECK(arenaPlayerAttack(duy, 7) == nullptr);
+    CHECK(arenaPlayerAttack(duy, kArenaNobody) == nullptr);
+
+    // The clip each move shows.
+    CHECK(arenaPlayerStrike(devin, 0) == FightClip::StrikeLeft);
+    CHECK(arenaPlayerStrike(devin, 1) == FightClip::StrikeRight);
+    CHECK(arenaPlayerStrike(devin, kArenaHeavyMove) == FightClip::StrikeRight);
+    CHECK(arenaPlayerStrike(duy, 0) == FightClip::WeaponRight);
+    CHECK(arenaPlayerStrike(duy, kArenaHeavyMove) == FightClip::KickRight);
+    CHECK(arenaPlayerStrike(third, 1) == FightClip::Cast);
+    CHECK(arenaPlayerStrike(third, kArenaRiposteMove) == FightClip::Counter);
+    CHECK(arenaPlayerStrike(third, kArenaReleaseMove) == FightClip::Finisher);
+    CHECK(arenaPlayerStrike(duy, duy.lightCount) == FightClip::Stance);
+    CHECK(arenaPlayerStrike(duy, 7) == FightClip::Stance);
+
+    // The leads have a jab, a cross, a right kick and a counter, no shot or cast clip yet: Devin punches a side in
+    // turn, Duy's shots and the Third's casts are the cross, Duy's heavy the kick.
+    auto leadClips = [](FightAnimator& a) {
+        a.setClip(FightClip::StrikeLeft, {1.5f, 0.567f, false});
+        a.setClip(FightClip::StrikeRight, {1.5f, 0.733f, false});
+        a.setClip(FightClip::KickRight, {2.f, 0.833f, false});
+        a.setClip(FightClip::Counter, {1.5f, 1.f, false});
+    };
+    FightAnimator a;
+    leadClips(a);
+    CHECK(a.playStrike(arenaPlayerStrike(devin, 0), 0.0, 0.3) == FightClip::StrikeLeft);
+    CHECK(a.playStrike(arenaPlayerStrike(devin, 1), 0.0, 0.3) == FightClip::StrikeRight);
+    CHECK(a.playStrike(arenaPlayerStrike(duy, 0), 0.0, 0.3) == FightClip::StrikeRight);
+    CHECK(a.playStrike(arenaPlayerStrike(duy, kArenaHeavyMove), 0.0, 0.3) == FightClip::KickRight);
+    CHECK(a.playStrike(arenaPlayerStrike(third, 0), 0.0, 0.3) == FightClip::StrikeRight);
+    CHECK(a.play(arenaPlayerStrike(third, kArenaRiposteMove), 0.0, 0.3));
+    CHECK_FALSE(a.play(arenaPlayerStrike(third, kArenaReleaseMove), 0.0, 0.3)); // no finisher clip: nothing
+    // Keyed to the active part: the impact lands on it however short the startup.
+    FightAnimator b;
+    leadClips(b);
+    const ArenaAttack* jab = arenaPlayerAttack(devin, 0);
+    REQUIRE(jab != nullptr);
+    b.playStrike(arenaPlayerStrike(devin, 0), 1.0, 1.0 + static_cast<double>(jab->startup));
+    CHECK(b.lastKeyTime() == doctest::Approx(1.0 + static_cast<double>(jab->startup)));
+}
+
 TEST_CASE("arena data: Duy's chain shoots from range, Devin's fists reach less than a blade did") {
     const ArenaTable t = loadShipped();
     const ArenaFighter& duy = t.fighter("duy");

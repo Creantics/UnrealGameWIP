@@ -25,6 +25,7 @@
 #include "FTArenaBossVfx.h"
 #include "FTKiteHost.h"
 #include "FTKiteVfx.h"
+#include "FTLeadWeapons.h"
 #include "FTStoneBearerHost.h"
 
 #include <array>
@@ -202,6 +203,8 @@ public:
 	}
 	// The Kite-Mother's weak-point host while it fights here (null otherwise).
 	const FFTKiteHost* GetKite() const { return Kite.IsActive() ? &Kite : nullptr; }
+	// The lead's weapon: its strike clips, props and effects (FTLeadWeapons.h).
+	const FFTLeadWeapons& GetLeadWeapons() const { return LeadWeapons; }
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -478,4 +481,6 @@ private:
 	int32 KiteSlot = -1;
 	int32 KiteLogged = 0;
 	FFTKiteVfx KiteFx;
+	// The lead's weapon on the player's figure (begun as it is spawned, when it wears a look).
+	FFTLeadWeapons LeadWeapons;
 };

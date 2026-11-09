@@ -145,6 +145,10 @@ public:
 	USpringArmComponent* GetBoom() const { return Boom; }
 	// The skeletal mesh a skinned figure is drawn with (null for the shapes), for hanging effects off its bones.
 	USkeletalMeshComponent* GetSkin() const { return IsSkinned() ? Skin.Get() : nullptr; }
+	// The lead's body when the figure wears a look (null otherwise), for the lead's weapon (FTLeadWeapons.h).
+	USkeletalMeshComponent* GetLeadSkin() const { return WearsLook() ? Skin.Get() : nullptr; }
+	// Shows or hides the shapes' blade (a lead whose own clips strike hides it).
+	void SetBladeShown(bool bShown);
 
 private:
 	void SetTellVisible(bool bVisible);

@@ -1816,6 +1816,30 @@ FightClip arenaHeavyStrike(const ArenaFighter& kit) {
     return FightClip::StrikeRight;
 }
 
+const ArenaAttack* arenaPlayerAttack(const ArenaFighter& kit, std::uint8_t move) {
+    switch (move) {
+    case kArenaHeavyMove: return &kit.heavy;
+    case kArenaRiposteMove: return &kit.riposte;
+    case kArenaReleaseMove: return &kit.release;
+    default: break;
+    }
+    if (move < kit.lightCount && static_cast<std::size_t>(move) < kMaxLightChain) return &kit.light[move];
+    return nullptr;
+}
+
+FightClip arenaPlayerStrike(const ArenaFighter& kit, std::uint8_t move) {
+    switch (move) {
+    case kArenaHeavyMove: return arenaHeavyStrike(kit);
+    case kArenaRiposteMove: return FightClip::Counter;
+    case kArenaReleaseMove: return FightClip::Finisher;
+    default: break;
+    }
+    if (move >= kit.lightCount || static_cast<std::size_t>(move) >= kMaxLightChain) return FightClip::Stance;
+    FightClip p[kMaxLightChain];
+    const std::size_t n = arenaStrikePattern(kit, p, kMaxLightChain);
+    return static_cast<std::size_t>(move) < n ? p[move] : FightClip::Stance;
+}
+
 const char* arenaTellName(ArenaTell t) {
     switch (t) {
     case ArenaTell::Strike: return "strike";

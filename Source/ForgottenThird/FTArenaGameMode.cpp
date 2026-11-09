@@ -42,6 +42,9 @@ namespace
 constexpr float kArenaMinTell = 0.4f;
 // After a view is taken, the fight holds this long (wall seconds) so the frame it renders is that moment.
 constexpr double kArenaShotHold = 1.0;
+// -ArenaShotStrikes: how long after an attack goes active its view is taken (fight seconds): the clip's impact keys to
+// the active start, and the shortest effect (the muzzle flash's core, 0.06 s each over 0.1 s) is still up.
+constexpr double kArenaStrikeShotLag = 0.04;
 // A -ArenaShot run gives up this long after the first view (wall seconds).
 constexpr double kArenaShotGiveUp = 200.0;
 
@@ -90,6 +93,11 @@ void AFTArenaGameMode::StartPlay()
 				}
 			}
 			ShotAt.Sort();
+		}
+		int32 Strikes = 0;
+		if (FParse::Value(Cmd, TEXT("ArenaShotStrikes="), Strikes))
+		{
+			ShotStrikes = FMath::Clamp(Strikes, 0, 32);
 		}
 	}
 	bIdle = FParse::Param(Cmd, TEXT("ArenaIdle"));
@@ -683,6 +691,22 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 		TakeShot(*FString::Printf(TEXT("t_%05.2f"), ShotAt[NextShotAt]), false);
 		++NextShotAt;
 		return true;
+	}
+	// -ArenaShotStrikes's views: the player's attacks just after each goes active (uncounted too). Attacks that went by
+	// while another view held the fight are skipped.
+	if (StrikeShots < ShotStrikes && ShotsTaken > 0)
+	{
+		const FFTLeadWeapons& Weapons = Runner->GetLeadWeapons();
+		const double Now = static_cast<double>(Runner->GetFight().time());
+		StrikesSeen = FMath::Min(StrikesSeen, Weapons.GetActiveCount()); // the fight begun again
+		if (Weapons.GetActiveCount() > StrikesSeen && Now - Weapons.GetLastActiveTime() >= kArenaStrikeShotLag)
+		{
+			StrikesSeen = Weapons.GetActiveCount();
+			++StrikeShots;
+			const TCHAR* Clip = Weapons.GetLastStrikeName();
+			TakeShot(*FString::Printf(TEXT("s%d_%s"), StrikeShots, *Clip ? Clip : TEXT("noclip")), false);
+			return true;
+		}
 	}
 	switch (ShotsTaken)
 	{
