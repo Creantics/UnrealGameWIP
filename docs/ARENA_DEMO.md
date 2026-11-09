@@ -314,7 +314,7 @@ An import replaces what is there, so rerunning it after a boss's model changes i
 log's "face bones" line is a warning for a boss, which has no human head).
 
 Pick the lead with `-ArenaLead=Devin`, `-ArenaLead=Duy` or `-ArenaLead=Third` (the name of a `PartyLooks` entry in the local
-`Config/UserGame.ini`, any case); each plays its own fighter kit (Devin the blade, Duy kicks and a gun, the Third spells).
+`Config/UserGame.ini`, any case); each plays its own fighter kit (Devin gauntlets, Duy guns, the Third magic).
 Without the flag the lead is the first look (Devin in the main checkout).
 
 ```

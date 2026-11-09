@@ -24,15 +24,15 @@
       "readPower": 0.5, "readStackPower": 0.2, "readPoise": 5, "readWrongPoise": 10
     },
     {
-      "id": "devin",
+      "id": "devin", "weapon": "gauntlets",
       "hp": 150, "staminaRegen": 50, "poise": 30,
       "light": [
-        { "startup": 0.15, "damage": 14, "poiseDamage": 11, "range": 2.2, "stamina": 12 },
-        { "startup": 0.14, "damage": 14, "poiseDamage": 11, "range": 2.2, "stamina": 12 },
-        { "startup": 0.16, "active": 0.12, "recovery": 0.4, "damage": 16, "poiseDamage": 14, "range": 2.2, "stamina": 14 },
-        { "startup": 0.2, "active": 0.14, "recovery": 0.55, "range": 2.4, "arcCos": 0, "damage": 24, "poiseDamage": 26, "lunge": 0.7, "tracking": 8, "stamina": 18, "cancel": 0.5 }
+        { "startup": 0.15, "damage": 14, "poiseDamage": 15, "range": 2.0, "stamina": 12 },
+        { "startup": 0.14, "damage": 14, "poiseDamage": 15, "range": 2.0, "stamina": 12 },
+        { "startup": 0.16, "active": 0.12, "recovery": 0.4, "damage": 16, "poiseDamage": 18, "range": 2.1, "stamina": 14 },
+        { "startup": 0.2, "active": 0.14, "recovery": 0.55, "range": 2.1, "arcCos": 0, "damage": 24, "poiseDamage": 32, "lunge": 0.7, "tracking": 8, "stamina": 18, "cancel": 0.5 }
       ],
-      "heavy": { "startup": 0.5, "damage": 44, "poiseDamage": 50, "range": 2.5 },
+      "heavy": { "startup": 0.5, "damage": 44, "poiseDamage": 60, "range": 2.2 },
       "riposte": { "damage": 60, "range": 2.8 },
       "release": { "damage": 36 },
       "guardArcCos": 0, "guardAbsorb": 1, "guardMoveScale": 0.55, "guardBreakTime": 1.0,
@@ -40,11 +40,11 @@
       "dodgeStamina": 18
     },
     {
-      "id": "duy",
+      "id": "duy", "weapon": "guns",
       "hp": 135, "moveSpeed": 4.9, "moveAccel": 30,
       "light": [
-        { "startup": 0.2, "range": 2.5, "damage": 11, "poiseDamage": 14, "lunge": 0.6 },
-        { "startup": 0.18, "range": 2.5, "damage": 11, "poiseDamage": 14, "lunge": 0.6 },
+        { "startup": 0.2, "active": 0.06, "recovery": 0.3, "range": 9, "arcCos": 0.98, "damage": 12, "poiseDamage": 6, "lunge": 0, "tracking": 6, "stamina": 12, "cancel": 0.55, "maxTargets": 1 },
+        { "startup": 0.18, "active": 0.06, "recovery": 0.3, "range": 9, "arcCos": 0.98, "damage": 12, "poiseDamage": 6, "lunge": 0, "tracking": 6, "stamina": 12, "cancel": 0.55, "maxTargets": 1 },
         { "startup": 0.24, "range": 2.7, "arcCos": -0.2, "damage": 16, "poiseDamage": 26, "lunge": 0.5 }
       ],
       "heavy": { "startup": 0.3, "active": 0.06, "recovery": 0.45, "range": 9, "arcCos": 0.98, "damage": 30, "poiseDamage": 16, "lunge": 0, "tracking": 6, "armor": 0, "stamina": 22, "cancel": 0.6, "maxTargets": 1 },
@@ -53,7 +53,7 @@
       "parryWindow": 0.13, "parryRearm": 0.45
     },
     {
-      "id": "third",
+      "id": "third", "weapon": "magic",
       "light": [
         { "startup": 0.2, "range": 3.2, "arcCos": 0.6, "damage": 11, "poiseDamage": 9, "lunge": 0, "tracking": 10 },
         { "startup": 0.2, "range": 3.2, "arcCos": 0.6, "damage": 11, "poiseDamage": 9, "lunge": 0, "tracking": 10 },

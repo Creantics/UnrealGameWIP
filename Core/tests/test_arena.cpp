@@ -518,14 +518,15 @@ TEST_CASE("arena data: each lead ships its own kit and its own blocks") {
         for (const std::string& f : t.fighterIds) found = found || f == id;
         CHECK_MESSAGE(found, "Error: no fighter kit for " << id);
     }
-    // Devin, the expert blade: a longer chain, a wider parry than anyone.
+    // Devin, the expert in gauntlets: a longer chain, a wider parry than anyone.
     CHECK(devin.lightCount > base.lightCount);
     CHECK(devin.parryWindow > base.parryWindow);
     CHECK(devin.parryWindow > duy.parryWindow);
     CHECK(devin.parryWindow > third.parryWindow);
-    // Duy: kicks that reach further and break poise, a gun for the heavy (long, narrow, one target, no lunge).
-    CHECK(duy.light[0].range > base.light[0].range);
-    CHECK(duy.light[0].poiseDamage > base.light[0].poiseDamage);
+    // Duy: shots for the chain, a kick that reaches further and breaks poise to finish it, a gun for the heavy
+    // (long, narrow, one target, no lunge).
+    CHECK(duy.light[duy.lightCount - 1].range > base.light[0].range);
+    CHECK(duy.light[duy.lightCount - 1].poiseDamage > base.light[0].poiseDamage);
     CHECK(duy.heavy.range >= 8.f);
     CHECK(duy.heavy.arcCos >= 0.95f);
     CHECK(duy.heavy.maxTargets == 1);
@@ -5257,4 +5258,100 @@ TEST_CASE("arena hooks: giveLoad inside the blow hook fills the gauge and overlo
     CHECK(rig.fight.stats().overloads == 1);
     CHECK(rig.fight.overloaded());
     CHECK(rig.out().player.overloaded);
+}
+
+TEST_CASE("arena table: the weapon key parses each value, inherits from the default and rejects an unknown one") {
+    ArenaTable t;
+    const std::string err = loadError(
+        R"({ "version": 1,
+             "fighters": [ { "id": "a", "weapon": "gauntlets" }, { "id": "b", "weapon": "guns" },
+                           { "id": "c", "weapon": "magic" }, { "id": "d" }, { "id": "e", "weapon": "none" },
+                           { "id": "default" } ],
+             "enemies": [ { "id": "dummy" } ],
+             "default": { "enemies": ["dummy"] } })",
+        &t);
+    CHECK(err.empty());
+    CHECK(t.fighter("a").weapon == ArenaWeapon::Gauntlets);
+    CHECK(t.fighter("b").weapon == ArenaWeapon::Guns);
+    CHECK(t.fighter("c").weapon == ArenaWeapon::Magic);
+    CHECK(t.fighter("d").weapon == ArenaWeapon::None); // missing: the default's, which has none
+    CHECK(t.fighter("e").weapon == ArenaWeapon::None);
+    CHECK(t.fighter("default").weapon == ArenaWeapon::None);
+
+    ArenaTable inherited;
+    CHECK(loadError(R"({ "version": 1,
+             "fighters": [ { "id": "lead", "hp": 80 }, { "id": "default", "weapon": "guns" } ],
+             "enemies": [ { "id": "dummy" } ], "default": { "enemies": ["dummy"] } })",
+                    &inherited)
+              .empty());
+    CHECK(inherited.fighter("lead").weapon == ArenaWeapon::Guns);
+
+    for (const char* bad : {R"("weapon": "sword")", R"("weapon": 3)", R"("weapon": "Guns")"}) {
+        const std::string e = loadError(std::string(R"({ "version": 1, "fighters": [ { "id": "default", )") + bad +
+                                        R"( } ], "enemies": [ { "id": "dummy" } ], "default": { "enemies": ["dummy"] } })");
+        CHECK_MESSAGE(e.find("fighters[0].weapon: expected one of none, gauntlets, guns, magic") != std::string::npos,
+                      "Error: " << bad << " gave: " << e);
+    }
+}
+
+TEST_CASE("arena data: the shipped weapons and the strike pattern each lead's kit gives") {
+    const ArenaTable t = loadShipped();
+    CHECK(t.fighter("default").weapon == ArenaWeapon::None);
+    CHECK(t.fighter("devin").weapon == ArenaWeapon::Gauntlets);
+    CHECK(t.fighter("duy").weapon == ArenaWeapon::Guns);
+    CHECK(t.fighter("third").weapon == ArenaWeapon::Magic);
+
+    FightClip p[kMaxLightChain];
+    // Devin punches, a side in turn, one per hit of his four-hit chain.
+    std::size_t n = arenaStrikePattern(t.fighter("devin"), p, kMaxLightChain);
+    REQUIRE(n == 4);
+    CHECK(p[0] == FightClip::StrikeLeft);
+    CHECK(p[1] == FightClip::StrikeRight);
+    CHECK(p[2] == FightClip::StrikeLeft);
+    CHECK(p[3] == FightClip::StrikeRight);
+    // Duy: shots on the right-hand weapon, kicks on the legs, in chain order.
+    const ArenaFighter& duy = t.fighter("duy");
+    n = arenaStrikePattern(duy, p, kMaxLightChain);
+    REQUIRE(n == duy.lightCount);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (duy.light[i].range >= kArenaShotRange) CHECK(p[i] == FightClip::WeaponRight);
+        else CHECK((p[i] == FightClip::KickLeft || p[i] == FightClip::KickRight));
+    }
+    CHECK(p[0] == FightClip::WeaponRight);
+    CHECK(p[n - 1] == FightClip::KickLeft); // the finisher is a kick
+    // The Third casts.
+    n = arenaStrikePattern(t.fighter("third"), p, kMaxLightChain);
+    REQUIRE(n == t.fighter("third").lightCount);
+    for (std::size_t i = 0; i < n; ++i) CHECK(p[i] == FightClip::Cast);
+    // Every pattern is one an animator takes; a short buffer cuts it.
+    for (const char* id : {"default", "devin", "duy", "third"}) {
+        n = arenaStrikePattern(t.fighter(id), p, kMaxLightChain);
+        FightAnimator a;
+        CHECK_MESSAGE(a.setPattern(p, n), "Error: " << id);
+    }
+    CHECK(arenaStrikePattern(duy, p, 2) == 2);
+    CHECK(arenaStrikePattern(duy, nullptr, 2) == 0);
+}
+
+TEST_CASE("arena data: Duy's chain shoots from range, Devin's fists reach less than a blade did") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter& duy = t.fighter("duy");
+    std::size_t shots = 0;
+    for (std::size_t i = 0; i < duy.lightCount; ++i) {
+        if (duy.light[i].range < kArenaShotRange) continue;
+        ++shots;
+        CHECK(duy.light[i].arcCos >= 0.95f);
+        CHECK(duy.light[i].maxTargets == 1);
+        CHECK(duy.light[i].lunge == 0.f);
+    }
+    CHECK(shots * 2 > duy.lightCount); // mostly shots
+    CHECK(duy.light[duy.lightCount - 1].range < kArenaShotRange); // the kick finishes it
+    const ArenaFighter& devin = t.fighter("devin");
+    CHECK(devin.lightCount == 4);
+    for (std::size_t i = 0; i < devin.lightCount; ++i) {
+        CHECK(devin.light[i].range >= 2.0f);
+        CHECK(devin.light[i].range <= 2.1f);
+        CHECK(devin.light[i].poiseDamage > t.fighter("default").light[0].poiseDamage);
+    }
+    CHECK(devin.heavy.range == doctest::Approx(2.2f));
 }
