@@ -35,7 +35,9 @@ at the bottom; the inner face is pushed out until it clears everything under it 
 clears the pouches before it in the list (a holster stands off the hanger that carries it).
 A pouch with "profile": [[v, u_lo, u_hi, depth], ...] (v 0 at the top to 1 at the bottom, u_lo/u_hi the row's edges as
 fractions of the width from -0.5 to 0.5, +u towards out x down, depth a fraction of "depth") gets that silhouette
-instead of the taper: a holster wide at the top round the trigger guard that steps in to the barrel, say."""
+instead of the taper: a holster wide at the top round the trigger guard that steps in to the barrel, say.
+A pouch with "open": {"top": true, "back": v} has no rim on its top edge, nor on its back edge (u_lo) from the top
+down to v: a holster's mouth, with the back cut open where the grip of what it holds comes out."""
 import json
 import os
 import sys
@@ -251,10 +253,24 @@ for pc in SP.get("pouches", []):
     verts.extend(ring_out)
     uvs.extend(zip(arc, np.full(L, Hh + 0.02)))
     uvs.extend(zip(arc, np.full(L, Hh + 0.02 + dep)))
-    faces += [[o + k, o + L + k, o + L + k + 1, o + k + 1] for k in range(L - 1)]
+    # "open": {"top": true, "back": v} leaves the rim off the top edge and off the back edge (u_lo) down to v (a
+    # fraction of the height), so a holster has a mouth and the grip of what it holds comes out the back.
+    op = pc.get("open", {})
+    vrow = np.linspace(0.0, 1.0, nv)
+
+    def shut(k):
+        (j0, k0), (j1, k1) = B[k], B[k + 1]
+        if op.get("top") and j0 == 0 and j1 == 0:
+            return False
+        return not (k0 == 0 and k1 == 0 and max(vrow[j0], vrow[j1]) <= op.get("back", -1.0))
+
+    faces += [[o + k, o + L + k, o + L + k + 1, o + k + 1] for k in range(L - 1) if shut(k)]
     objs.append((pc["name"], np.array(verts), faces, uvs))
     Q = np.vstack([Q, np.array(verts)])
     print("strap_build: %s on %s at %s, pushed out up to %.3f m" % (pc["name"], pc["strap"], np.round(p, 3), s.max()))
+    print("strap_build: %s frame p %s out %s down %s side %s, inner face pushed p50 %.4f max %.4f m, %d rim faces open"
+          % (pc["name"], np.round(p, 5).tolist(), np.round(out, 5).tolist(), np.round(down, 5).tolist(),
+             np.round(side, 5).tolist(), float(np.median(s)), float(s.max()), (L - 1) - sum(map(shut, range(L - 1)))))
 
 lines, vb = ["# strap_build, metres, Z up, UVs in metres"], 1
 for name, V, F, UV in objs:
