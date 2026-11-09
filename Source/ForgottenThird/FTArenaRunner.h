@@ -203,8 +203,12 @@ public:
 	}
 	// The Kite-Mother's weak-point host while it fights here (null otherwise).
 	const FFTKiteHost* GetKite() const { return Kite.IsActive() ? &Kite : nullptr; }
-	// The lead's weapon: its strike clips, props and effects (FTLeadWeapons.h).
+	// The lead's weapon: its strike clips, props and effects (FTLeadWeapons.h); the mode's strike views freeze and thaw it.
 	const FFTLeadWeapons& GetLeadWeapons() const { return LeadWeapons; }
+	FFTLeadWeapons& GetLeadWeapons() { return LeadWeapons; }
+	// The fight time the figures were last drawn at: a step behind Fight.time(), Alpha of the way to it. It moves by
+	// exactly the delta TickFight is given while the fight runs.
+	double GetDrawnTime() const { return DrawnTime; }
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -418,6 +422,7 @@ private:
 
 	double Now = 0.0;
 	double Accumulator = 0.0;
+	double DrawnTime = 0.0;
 	double ActiveSince[ftcore::kMaxArenaEnemies];
 	double EnemyHitTime[ftcore::kMaxArenaEnemies];
 	uint8 LastPart[ftcore::kMaxArenaEnemies] = {};

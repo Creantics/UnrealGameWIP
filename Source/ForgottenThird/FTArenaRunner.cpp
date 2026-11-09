@@ -1698,6 +1698,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 	const ftcore::ArenaOutput& Out = Fight.output();
 	const ftcore::ArenaDef& D = Fight.def();
 	Alpha = FMath::Clamp(Alpha, 0.f, 1.f);
+	DrawnTime = FMath::Max(0.0, static_cast<double>(Fight.time()) - static_cast<double>(StepSeconds) * (1.0 - static_cast<double>(Alpha)));
 
 	if (PlayerFigure)
 	{
@@ -1770,7 +1771,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		Pose.Tint = FMath::Lerp(Pose.Tint, FLinearColor(1.f, 0.2f, 0.15f), ArenaModePulse(Now, PlayerHitTime, kArenaHitTint));
 		PlayerFigure->ApplyPose(Pose);
 		// The strike clips at the fight time drawn (the bodies are drawn a step behind, Alpha of the way to the last).
-		LeadWeapons.Paint(FMath::Max(0.0, static_cast<double>(Fight.time()) - static_cast<double>(StepSeconds) * (1.0 - Alpha)));
+		LeadWeapons.Paint(DrawnTime);
 	}
 
 	for (int32 I = 0; I < static_cast<int32>(Fight.enemyCount()) && I < MaxEnemies; ++I)

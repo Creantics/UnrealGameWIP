@@ -76,8 +76,14 @@
 // picture only, and a second, <prefix>_0b_edge.png: the player 1.4 m from the wall, to show the edge cue.
 // -ArenaShotAt=<s>,<s>,... adds a view <prefix>_t_<s>.png at each of those fight times (uncounted: the six views and the
 // quit are unchanged), so two runs of the same fight (an OFF/ON pair) are shot at the same moments.
-// -ArenaShotStrikes=<n> adds a view <prefix>_s<k>_<clip>.png just after each of the player's first n attacks goes active
-// (the lead's strike clip at its impact, the weapon's effect just started; FTLeadWeapons.h), uncounted as well.
+// -ArenaShotStrikes=<n> adds a view <prefix>_s<k>_<clip>.png 0.04 s after each of the player's first n attacks goes active
+// (the lead's strike clip at its impact, the weapon's effect just started; FTLeadWeapons.h), uncounted as well. The view's
+// frame is that moment exactly: the fight's clock is brought to it and held, the lead's effects are run to their age then
+// and paused, and the figure's own clock stops (FFTLeadWeapons::Freeze) until the view is taken.
+// -ArenaShotClose takes those views close, HUD off: a camera 1 m from the striking hand (the foot for a kick), square to
+// the lead's side on that hand's side, the hand at the frame's centre; for gauntlets, the first strike adds
+// <prefix>_s1_<clip>_arms.png, both forearms from 1.4 m ahead of the lead on the striking side. Each close view logs where
+// the hand (and the pistol's muzzle) fall in the frame.
 //
 // The player's figure wears a lead's look from config (the explore character's PartyLooks, Config/UserGame.ini): the first
 // by default, -ArenaLead=<name> picks another; with none, or none that loads, the test human is worn (one warning).
@@ -154,6 +160,15 @@ private:
 	// -ArenaOverview's second view, _0b_edge: the player moved to 1.4 m from the zone's wall on his left, to show the
 	// edge cue; then the fight is put back as it began.
 	bool EdgeShot();
+	// -ArenaShotStrikes's view once its frame is held (StrikePhase 1 to 4); true while the fight should hold still.
+	bool StrikeShot();
+	// -ArenaShotClose: the camera at From looking at At (spawned on first use), the view on it and the HUD off; false
+	// when it can't be placed.
+	bool AimStrikeCamera(const FVector& From, const FVector& At);
+	// The camera on the striking limb, 1 m off on its side; false when the lead has no body.
+	bool AimAtStrike();
+	// One log line: where At falls in the frame (0..1 across and down) and how far it is from the camera.
+	void LogFramed(const TCHAR* View, const TCHAR* What, const FVector& At) const;
 	// -ArenaBossCam: places the camera once the boss stands, then logs its yaw each time it has turned 10 degrees.
 	void BossCam();
 	APlayerController* GetPC() const;
@@ -209,4 +224,14 @@ private:
 	int32 ShotStrikes = 0;
 	int32 StrikeShots = 0;
 	int32 StrikesSeen = 0;
+	// The strike view under way: 0 none; 1 its frame held (and the close camera placed), to be taken; 2 the close camera
+	// to go to both forearms; 3 that view to be taken; 4 back to the fight. Its name (s<k>_<clip>).
+	int32 StrikePhase = 0;
+	FString StrikeName;
+	// -ArenaShotClose and its camera.
+	bool bShotClose = false;
+	UPROPERTY()
+	TObjectPtr<AActor> StrikeCamera;
+	// The fight clock's next advance at most (s; 0: no limit), so a strike view's frame falls on its mark.
+	double FightClockCap = 0.0;
 };

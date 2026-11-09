@@ -17,7 +17,9 @@
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "NiagaraComponent.h"
 #include "NiagaraSystem.h"
+#include "NiagaraSystemInstanceController.h"
 #include "Templates/UniquePtr.h"
 
 #include "ftcore/BeatChoreo.h"
@@ -336,7 +338,130 @@ void FFTLeadWeapons::Play(EEffect Effect, double T)
 	if (UFTVfxComponent* Vfx = Fx[Effect].Get())
 	{
 		Vfx->Play();
+		StartAt[Effect] = T;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: weapon fx %s at %.2f"), kEffectNames[Effect], T);
+	}
+}
+
+bool FFTLeadWeapons::GetStrikeLimb(FName& OutBone, FVector& OutAt, bool& bOutLeft) const
+{
+	const USkeletalMeshComponent* Body = Skin.Get();
+	if (!Body)
+	{
+		return false;
+	}
+	bOutLeft = StrikesLeft();
+	const bool bKick = Strike == FightClip::KickLeft || Strike == FightClip::KickRight;
+	OutBone = bKick ? (bOutLeft ? FName(TEXT("foot_l")) : FName(TEXT("foot_r"))) : (bOutLeft ? FName(TEXT("hand_l")) : FName(TEXT("hand_r")));
+	if (!Body->DoesSocketExist(OutBone))
+	{
+		return false;
+	}
+	OutAt = Body->GetSocketLocation(OutBone);
+	return true;
+}
+
+bool FFTLeadWeapons::GetForearms(FVector& OutMid) const
+{
+	const USkeletalMeshComponent* Body = Skin.Get();
+	if (!Body)
+	{
+		return false;
+	}
+	const TCHAR* const Bones[] = {TEXT("lowerarm_l"), TEXT("hand_l"), TEXT("lowerarm_r"), TEXT("hand_r")};
+	FVector Sum = FVector::ZeroVector;
+	for (const TCHAR* Bone : Bones)
+	{
+		const FName Name(Bone);
+		if (!Body->DoesSocketExist(Name))
+		{
+			return false;
+		}
+		Sum += Body->GetSocketLocation(Name);
+	}
+	OutMid = Sum / 4.0;
+	return true;
+}
+
+bool FFTLeadWeapons::GetMuzzle(FVector& OutAt) const
+{
+	const UStaticMeshComponent* Gun = Pistol.Get();
+	if (!Gun || !Gun->DoesSocketExist(FTWeaponProps::MuzzleSocket))
+	{
+		return false;
+	}
+	OutAt = Gun->GetSocketLocation(FTWeaponProps::MuzzleSocket);
+	return true;
+}
+
+void FFTLeadWeapons::Freeze(double T)
+{
+	AFTArenaFighter* Body = Figure.Get();
+	if (!Body || bFrozen)
+	{
+		return;
+	}
+	bFrozen = true;
+	FrozenDilation = Body->CustomTimeDilation;
+	Body->CustomTimeDilation = 0.f;
+	int32 Running = 0;
+	for (int32 E = 0; E < EffectCount; ++E)
+	{
+		bPaused[E] = false;
+		UFTVfxComponent* Vfx = Fx[E].Get();
+		UNiagaraComponent* Niagara = Vfx ? Vfx->GetNiagara() : nullptr;
+		// Only an effect still running: a finished one is not brought back.
+		if (!Niagara || !Niagara->IsActive())
+		{
+			continue;
+		}
+		const double Age = T - StartAt[E];
+		bool bRerun = false;
+		if (StartAt[E] >= 0.0 && Age > 0.0 && Age <= kFreezeRerun)
+		{
+			// From its start again, then on to its age at T (the order matters: a paused system doesn't advance).
+			Vfx->Play();
+			const int32 Ticks = FMath::Max(1, FMath::CeilToInt32(static_cast<float>(Age) / kFreezeTick));
+			Niagara->AdvanceSimulation(Ticks, static_cast<float>(Age) / static_cast<float>(Ticks));
+			bRerun = true;
+		}
+		Niagara->SetPaused(true);
+		bPaused[E] = true;
+		++Running;
+		const FNiagaraSystemInstanceControllerConstPtr Controller = Niagara->GetSystemInstanceController();
+		const float AgeNow = Controller.IsValid() ? static_cast<float>(Controller->GetAge()) : -1.f;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: view frame %.3f: weapon fx %s at age %.3f (%s), %s."), T, kEffectNames[E], AgeNow,
+			bRerun ? TEXT("run again from its start") : TEXT("as it was"), Niagara->IsPaused() ? TEXT("paused") : TEXT("NOT paused"));
+	}
+	if (Running == 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: view frame %.3f: no weapon fx running."), T);
+	}
+}
+
+void FFTLeadWeapons::Thaw()
+{
+	if (!bFrozen)
+	{
+		return;
+	}
+	bFrozen = false;
+	if (AFTArenaFighter* Body = Figure.Get())
+	{
+		Body->CustomTimeDilation = FrozenDilation;
+	}
+	for (int32 E = 0; E < EffectCount; ++E)
+	{
+		if (!bPaused[E])
+		{
+			continue;
+		}
+		bPaused[E] = false;
+		const UFTVfxComponent* Vfx = Fx[E].Get();
+		if (UNiagaraComponent* Niagara = Vfx ? Vfx->GetNiagara() : nullptr)
+		{
+			Niagara->SetPaused(false);
+		}
 	}
 }
 
@@ -542,6 +667,11 @@ void FFTLeadWeapons::Paint(double T)
 
 void FFTLeadWeapons::Restart()
 {
+	Thaw();
+	for (double& At : StartAt)
+	{
+		At = -1.0;
+	}
 	Animator.reset();
 	FadeSince = -1.0;
 	Strike = FightClip::Stance;
@@ -567,6 +697,11 @@ void FFTLeadWeapons::Restart()
 
 void FFTLeadWeapons::Reset()
 {
+	Thaw();
+	for (double& At : StartAt)
+	{
+		At = -1.0;
+	}
 	Figure.Reset();
 	Skin.Reset();
 	Anim.Reset();

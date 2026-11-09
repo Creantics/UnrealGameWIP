@@ -350,8 +350,8 @@ from:
 
 On each of the lead's attacks the clip of its move plays over the locomotion, keyed so its impact lands as the attack
 goes active (a kick, shot or cast with no clip of its own is thrown as the punch on its side), and fades out after.
-`-ArenaShotStrikes=N` shoots the first N of them (`_s<k>_<clip>`), `-ArenaNoWeaponProps` and `-ArenaNoWeaponFx` leave
-the props and the effects off for an OFF/ON pair.
+`-ArenaShotStrikes=N` shoots the first N of them (`_s<k>_<clip>`; `-ArenaShotClose` from close by), `-ArenaNoWeaponProps`
+and `-ArenaNoWeaponFx` leave the props and the effects off for an OFF/ON pair.
 
 ## Launch
 
@@ -479,7 +479,8 @@ each frame and handed to the fight on its next step, so no press is lost between
 | `-ArenaShotDelay=S` | Seconds before the first screenshot (the fight waits for it). |
 | `-ArenaOverview` | With `-ArenaShot`, a first view `_0_overview` of the whole zone from a camera high over its south-west side (pulled in along the line if a building is in the way), HUD off, with the zone's walls (green), obstacles (red) and road mouths (yellow) drawn as debug lines for the picture only; then `_0b_edge`, the player 1.4 m from the wall on his left to show the edge cue. |
 | `-ArenaShotAt=S,S,...` | With `-ArenaShot`, an extra view `_t_<S>` at each of those fight times (after `_1_ring`; the six views and the quit are unchanged), so two runs of the same fight are shot at the same moments. |
-| `-ArenaShotStrikes=N` | With `-ArenaShot`, an extra view `_s<k>_<clip>` 0.04 s after each of the lead's first N attacks goes active (after `_1_ring`; `<clip>` is the strike clip it plays, `noclip` when none), with the weapon's effect just started. Attacks that go by while another view holds the fight are skipped. |
+| `-ArenaShotStrikes=N` | With `-ArenaShot`, an extra view `_s<k>_<clip>` 0.04 s after each of the lead's first N attacks goes active (after `_1_ring`; `<clip>` is the strike clip it plays, `noclip` when none), with the weapon's effect just started. The frame is that moment exactly: the fight's clock is brought to it and held, the lead's effects are run to their age then and paused (Niagara keeps the world's clock, which runs on in the frames before the view), and the lead's own clock stops until the view is taken. Attacks that go by while another view holds the fight are skipped. |
+| `-ArenaShotClose` | With `-ArenaShotStrikes`, those views close and HUD off: a camera 1 m from the striking hand (the foot for a kick), square to the lead's side on that hand's side, the hand at the frame's centre, after a 0.6 s settle. With gauntlets the first strike adds `_s1_<clip>_arms`, both forearms from 1.4 m ahead of the lead on the striking side. Each view logs where the hand (and the pistol's muzzle) fall in the frame. |
 | `-ArenaNoWeaponProps` | The lead's weapon props (gauntlets, pistol) stay off; the fight runs the same. |
 | `-ArenaNoWeaponFx` | The lead's weapon effects (muzzle flash, gauntlet sparks, the Third's bolt, burst and ward) stay off; the fight runs the same (the OFF half of an OFF/ON capture). |
 | `-ArenaNoBossFx` | The stone bearer's effects (tells, impacts, chips, the weak point's glow) stay off and the fight runs the same (the OFF half of an OFF/ON capture). |

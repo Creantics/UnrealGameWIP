@@ -103,6 +103,26 @@ struct FFTLeadWeapons
 	double GetLastActiveTime() const { return LastActiveTime; }
 	const TCHAR* GetLastStrikeName() const;
 
+	// For -ArenaShotClose's views. The strike under way's limb (after the clip played: hand_l or hand_r, foot_l or
+	// foot_r for a kick), where it is now and whether it is the lead's left; the middle of both forearms (elbows and
+	// wrists); the pistol's muzzle. False when the body (or the pistol, or that bone or socket) isn't there.
+	bool GetStrikeLimb(FName& OutBone, FVector& OutAt, bool& bOutLeft) const;
+	bool GetForearms(FVector& OutMid) const;
+	bool GetMuzzle(FVector& OutAt) const;
+	bool HasGauntlets() const { return IsOn() && Kit.weapon == ftcore::ArenaWeapon::Gauntlets; }
+
+	// -ArenaShotStrikes: holds the lead at fight time T (the time the figures are drawn at) for a view, whatever the
+	// world's clock does while the fight is held. Each effect still running is started again and run to its age at T
+	// (T less its start, in kFreezeTick steps) and paused; one started more than kFreezeRerun before T is paused as it
+	// is. The figure's own clock stops (its CustomTimeDilation 0: the locomotion under the clips, cloth, hair), while the
+	// clips stay posed at T by Paint. One log line per effect: its age and whether it paused. Thaw lets everything go on;
+	// Restart and Reset thaw too. Nothing allocates.
+	static constexpr double kFreezeRerun = 1.0;
+	static constexpr float kFreezeTick = 1.f / 240.f;
+	void Freeze(double T);
+	void Thaw();
+	bool IsFrozen() const { return bFrozen; }
+
 private:
 	enum EEffect : int32
 	{
@@ -136,6 +156,12 @@ private:
 	TWeakObjectPtr<UStaticMeshComponent> Pistol;
 	bool bHolstered = false;
 	TWeakObjectPtr<UFTVfxComponent> Fx[EffectCount];
+	// When each effect last started (fight time; below 0: not since the fight began) and which Freeze paused.
+	static_assert(EffectCount == 6, "StartAt's initializer has one entry per effect");
+	double StartAt[EffectCount] = {-1.0, -1.0, -1.0, -1.0, -1.0, -1.0};
+	bool bPaused[EffectCount] = {};
+	bool bFrozen = false;
+	float FrozenDilation = 1.f;
 
 	// The strike playing (Stance: none), when the clips began fading (-1: not fading), the player's last state.
 	ftcore::FightClip Strike = ftcore::FightClip::Stance;
