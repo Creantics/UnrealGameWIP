@@ -7,6 +7,7 @@
 //       [-Walls=<csv>] [-Goals=<csv>] -Entry=<x,y,z> [-Look=<x,y>] [-Sea=<x>] [-Side=1000] [-Map=<name>]
 //       [-World=<id>] [-Kit=<csv>] [-NoNav] [-Strict] [-Dump=<csv>] [-Load]
 //       [-Tour=<csv>] [-Coverage=<csv>] [-ReadBack=<json>] [-Surfaces -Streets=<csv>]
+//       [-Props=<csv> [-PropStreets=<csv>]]
 //       -NullRHI -unattended -nopause -nosplash
 //
 // -Height names a height field's json (samples_x, samples_y, spacing_m, origin_of_sample_0_0_m and the raw
@@ -59,8 +60,17 @@
 // only hides its box (still a collider), for a box another row's mesh stands in for. The log gives each mesh's size
 // and scale, the boxes only hidden, and the built boxes left.
 //
+// -Props=<csv> sets street furniture along a streets table: -PropStreets=<csv>, or the -Streets table when it isn't
+// given (the run fails with neither). Each row of the prop table (ftcore::importMassingProps: id, asset, spacing_m and
+// the optional phase_m, side, inset_m, reach_m, clear_m, turn, dz, cap and kinds) sets its mesh along the streets of its
+// kinds, at the kerbs or against the built faces beside them, on the floor the lead walks there
+// (ftcore::massingPlaceProps over the built boxes, tops as built, and the height field), never on the sea's side of
+// 0.5 m. Each is labelled <rule id>-<n> and, like the kit, collides with nothing and leaves the navmesh alone. A
+// missing mesh fails the run before anything is built. The log gives each rule's mesh size, how many it placed of its
+// spots and why the others placed nothing, and the total.
+//
 // -Surfaces -Streets=<csv> dresses the map in Solhaven's photographed surfaces (the surfaces of /Game/Rendering/Surfaces/solhaven_*, the
-// ground master M_WorldGround and M_Look_Water), and without -Surfaces the build is exactly as without them (-Streets alone does nothing).
+// ground master M_WorldGround and M_Look_Water), and without -Surfaces the build is exactly as without them (-Streets alone does nothing but give -Props its streets).
 // Each built box wears the surface ftcore::massingLookSurface gives its src, kind, id prefix and row (the boxes table's row column, when it
 // has one): kerbs and the other added walls pole concrete; flights, ramps, landings and terraces paving slab; cliff cover plates, the
 // seawall, breakwater and quay board concrete; decks, piers, boats and bridges oak plank; cranes, masts, posts, barriers and gates

@@ -49,6 +49,7 @@
 
 #include "ftcore/Json.h"
 #include "ftcore/MassingPlan.h"
+#include "ftcore/MassingProps.h"
 #include "ftcore/WorldChecks.h"
 #include "ftcore/WorldLayout.h"
 
@@ -83,6 +84,8 @@ constexpr double kLeadHeight = 1.8;
 const FName kHiddenWallTag(TEXT("FTHiddenWall"));
 // -Coverage logs a line for each of this many of the largest islands it leaves out as roofs and interiors of built boxes.
 constexpr size_t kCoverageInBoxLines = 12;
+// -Props sets street furniture only on a floor over this (m): lower is the sea or its foreshore.
+constexpr double kPropDryAbove = 0.5;
 
 FVector Cm(const ftcore::MassingVec& V)
 {
@@ -120,6 +123,33 @@ bool LoadBoxes(const FString& File, std::vector<ftcore::MassingBox>& Boxes)
 	if (!ftcore::importMassingBoxes(View(Bytes), Boxes, &Error))
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *File, *Utf8(Error));
+		return false;
+	}
+	return true;
+}
+
+// -Props: the prop table (ftcore::importMassingProps) and the streets it stands along, left in the plan frame.
+bool LoadProps(const FString& PropsFile, const FString& StreetsFile, std::vector<ftcore::MassingPropRule>& Rules,
+	std::vector<ftcore::MassingStreet>& Streets)
+{
+	TArray<uint8> Bytes;
+	std::string Error;
+	if (!LoadBytes(PropsFile, Bytes))
+	{
+		return false;
+	}
+	if (!ftcore::importMassingProps(View(Bytes), Rules, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *PropsFile, *Utf8(Error));
+		return false;
+	}
+	if (!LoadBytes(StreetsFile, Bytes))
+	{
+		return false;
+	}
+	if (!ftcore::importMassingStreets(View(Bytes), Streets, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *StreetsFile, *Utf8(Error));
 		return false;
 	}
 	return true;
@@ -1168,6 +1198,14 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	const bool bSurfaces = FParse::Param(*Params, TEXT("Surfaces"));
 	FString StreetsFile;
 	FParse::Value(*Params, TEXT("Streets="), StreetsFile);
+	// -Props: street furniture along -PropStreets (or -Streets when it isn't given).
+	FString PropsFile, PropStreetsFile;
+	FParse::Value(*Params, TEXT("Props="), PropsFile);
+	FParse::Value(*Params, TEXT("PropStreets="), PropStreetsFile);
+	if (PropStreetsFile.IsEmpty())
+	{
+		PropStreetsFile = StreetsFile;
+	}
 
 	double Entry[3] = {0.0, 0.0, 0.0};
 	double Look[2] = {0.0, 0.0};
@@ -1247,6 +1285,33 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s names %s, which isn't a static mesh in the project."), *KitFile, *Row.Box,
 				*Row.Asset);
 			return 1;
+		}
+	}
+	// So must each prop rule's mesh, and its streets.
+	std::vector<ftcore::MassingPropRule> PropRules;
+	std::vector<ftcore::MassingStreet> PropStreets;
+	TArray<UStaticMesh*> PropMeshes;
+	if (!PropsFile.IsEmpty())
+	{
+		if (PropStreetsFile.IsEmpty())
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Props needs -PropStreets=<csv> or -Streets=<csv>."));
+			return 1;
+		}
+		if (!LoadProps(PropsFile, PropStreetsFile, PropRules, PropStreets))
+		{
+			return 1;
+		}
+		for (const ftcore::MassingPropRule& Rule : PropRules)
+		{
+			UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *Utf8(Rule.asset));
+			if (!Mesh)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s names %s, which isn't a static mesh in the project."), *PropsFile,
+					*Utf8(Rule.id), *Utf8(Rule.asset));
+				return 1;
+			}
+			PropMeshes.Add(Mesh);
 		}
 	}
 	FAssetCompilingManager::Get().FinishAllCompilation();
@@ -1897,6 +1962,60 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	for (const TPair<FString, int32>& Pair : KitPerAsset)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: kit %s stands in for %d boxes."), *Pair.Key, Pair.Value);
+	}
+
+	// The street furniture: each rule's mesh along its streets, on the floor the lead walks (the visible boxes and the
+	// ground). Like the kit it collides with nothing and leaves the navmesh alone.
+	if (!PropRules.empty())
+	{
+		// On the tops as built: nudged apart and up off the ground.
+		std::vector<ftcore::MassingBox> Built = Boxes;
+		for (size_t I = 0; I < Built.size(); ++I)
+		{
+			Built[I].z1 += Nudges[I];
+		}
+		std::vector<ftcore::MassingProp> Props;
+		std::vector<ftcore::MassingPropCounts> PropCounts;
+		ftcore::massingPlaceProps(PropStreets, PropRules, Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX),
+			static_cast<size_t>(Field.SamplesY), Field.Spacing, Field.OriginX, Field.OriginY, Built, Visible, kPropDryAbove, Props, PropCounts);
+		TArray<int32> PerRule;
+		PerRule.SetNumZeroed(static_cast<int32>(PropRules.size()));
+		for (const ftcore::MassingProp& Placed : Props)
+		{
+			const ftcore::MassingPropRule& Rule = PropRules[Placed.rule];
+			UStaticMesh* Mesh = PropMeshes[static_cast<int32>(Placed.rule)];
+			const FBox Bounds = Mesh->GetBoundingBox();
+			const ftcore::MassingVec MeshMin{Bounds.Min.X / 100.0, Bounds.Min.Y / 100.0, Bounds.Min.Z / 100.0};
+			const ftcore::MassingVec MeshMax{Bounds.Max.X / 100.0, Bounds.Max.Y / 100.0, Bounds.Max.Z / 100.0};
+			ftcore::MassingKitPlace Place;
+			if (!ftcore::massingPropPlacement(Placed, Side, MeshMin, MeshMax, Rule.turn, Rule.inset, Place))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: props %s: %s has inverted bounds."), *Utf8(Rule.id), *Utf8(Rule.asset));
+				World->DestroyWorld(false);
+				return 1;
+			}
+			const int32 N = ++PerRule[static_cast<int32>(Placed.rule)];
+			AStaticMeshActor* Prop = Block(World, Spawn, Mesh, nullptr, FString::Printf(TEXT("%s-%d"), *Utf8(Rule.id), N), Cm(Place.at),
+				FVector::OneVector, Place.yaw);
+			Prop->GetStaticMeshComponent()->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
+			Prop->GetStaticMeshComponent()->SetCanEverAffectNavigation(false);
+		}
+		int32 PropTotal = 0;
+		for (size_t R = 0; R < PropRules.size(); ++R)
+		{
+			const ftcore::MassingPropRule& Rule = PropRules[R];
+			const ftcore::MassingPropCounts& Count = PropCounts[R];
+			const FVector Size = PropMeshes[static_cast<int32>(R)]->GetBoundingBox().GetSize() / 100.0;
+			PropTotal += static_cast<int32>(Count.placed);
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("FTBuildMassingWorld: props %s: %s, %.2f x %.2f x %.2f m; %d placed of %d spots (blocked %d, in a road %d, no wall %d, steep %d, "
+					 "wet %d, over the cap %d)."),
+				*Utf8(Rule.id), *Utf8(Rule.asset), Size.X, Size.Y, Size.Z, static_cast<int32>(Count.placed), static_cast<int32>(Count.spots),
+				static_cast<int32>(Count.blocked), static_cast<int32>(Count.inRoad), static_cast<int32>(Count.noWall), static_cast<int32>(Count.steep),
+				static_cast<int32>(Count.wet), static_cast<int32>(Count.capped));
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: props: %d meshes by %d rules along %d streets of %s; none collides."), PropTotal,
+			static_cast<int32>(PropRules.size()), static_cast<int32>(PropStreets.size()), *FPaths::GetCleanFilename(PropStreetsFile));
 	}
 
 	// The hidden walls: they stop pawns but no traces on Visibility, and not the camera's arm.

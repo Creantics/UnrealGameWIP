@@ -282,16 +282,18 @@ FTCORE_API MassingLookSurface massingLookSurface(const MassingBox& box);
 // The surface's id without its world's prefix: "pole_concrete", "paving_slab", ..., "soot_brick".
 FTCORE_API std::string_view massingLookSurfaceId(MassingLookSurface surface);
 
-// A street: its id, its width in metres and its polyline.
+// A street: its id, its width in metres, its polyline and its kind.
 struct MassingStreet {
     std::string id;
     double width = 0.0;             // m, > 0
     std::vector<MassingVec> points; // z is left 0; at least one
+    std::string kind{};             // empty when the table gives none
 };
 // Reads a street table (CSV, a header row naming the columns; comment rows as in importMassingBoxes). The columns read:
 //   id       unique; as a massing id
 //   width_m  the street's width in metres, > 0
 //   pts      "x:y[:z];x:y[:z];..." in the plan frame, metres (z is read and dropped)
+//   kind     optional: empty, or a-z, A-Z, 0-9, '_' or '-'
 // Any other column is skipped, never kept. `out` is cleared first. False, with a reason naming the line, on any error.
 // Allocates: build time only.
 FTCORE_API bool importMassingStreets(std::string_view csv, std::vector<MassingStreet>& out, std::string* error = nullptr);

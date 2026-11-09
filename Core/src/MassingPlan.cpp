@@ -676,8 +676,9 @@ bool importMassingStreets(std::string_view csv, std::vector<MassingStreet>& out,
     std::vector<Record> records;
     if (!splitCsv(csv, records, error)) return false;
 
-    enum Col { Id, Width, Pts, Count };
-    constexpr const char* kNames[Count] = {"id", "width_m", "pts"};
+    enum Col { Id, Width, Pts, Kind, Count };
+    constexpr const char* kNames[Count] = {"id", "width_m", "pts", "kind"};
+    constexpr std::size_t kRequired = 3; // kind is optional
     std::size_t col[Count] = {};
     std::size_t width = 0;
     bool haveHeader = false;
@@ -693,7 +694,8 @@ bool importMassingStreets(std::string_view csv, std::vector<MassingStreet>& out,
                     if (col[c] != r.fields.size()) return fail(error, r.line, std::string("column ") + kNames[c] + " twice");
                     col[c] = f;
                 }
-                if (col[c] == r.fields.size()) return fail(error, r.line, std::string("no column ") + kNames[c]);
+                if (c < kRequired && col[c] == r.fields.size())
+                    return fail(error, r.line, std::string("no column ") + kNames[c]);
             }
             width = r.fields.size();
             haveHeader = true;
@@ -720,6 +722,11 @@ bool importMassingStreets(std::string_view csv, std::vector<MassingStreet>& out,
             if (pts.empty()) return fail(error, r.line, s.id + ": pts ends in ';'");
         }
         if (s.points.empty()) return fail(error, r.line, s.id + ": pts holds no point");
+        if (col[Kind] < r.fields.size()) {
+            s.kind = std::string(trim(r.fields[col[Kind]]));
+            if (!s.kind.empty() && !detail::validKind(s.kind))
+                return fail(error, r.line, s.id + ": kind must be a-z, A-Z, 0-9, '_' or '-'");
+        }
         out.push_back(std::move(s));
     }
     if (!haveHeader) return fail(error, 1, "no header row");

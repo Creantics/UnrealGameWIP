@@ -110,6 +110,15 @@ inline bool validId(std::string_view id) {
     return true;
 }
 
+// a-z, A-Z, 0-9, '_' or '-', at least one: a kind (a street's, say), which may be lower case.
+inline bool validKind(std::string_view kind) {
+    if (kind.empty()) return false;
+    for (const char c : kind)
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-'))
+            return false;
+    return true;
+}
+
 // A record whose first field, trimmed, starts with '#'.
 inline bool isComment(const Record& r) {
     const std::string_view first = trim(r.fields.front());

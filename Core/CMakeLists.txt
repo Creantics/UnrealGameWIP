@@ -52,6 +52,7 @@ add_library(ftcore STATIC
     src/WorldLayout.cpp
     src/Terrain.cpp
     src/MassingPlan.cpp
+    src/MassingProps.cpp
     src/WorldChecks.cpp
     src/CityPlacer.cpp
     src/OuterPlaces.cpp
@@ -178,6 +179,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_world_layout.cpp
         tests/test_terrain.cpp
         tests/test_massing_plan.cpp
+        tests/test_massing_props.cpp
         tests/test_world_checks.cpp
         tests/test_city_placer.cpp
         tests/test_outer_places.cpp
