@@ -11,6 +11,11 @@ strand is written into one group (Blender's curves carry no group attribute), so
 Without "out" the script only prints the summary (root bounds and lengths per group) for choosing regions. "head" is
 an .npz with "v", the groom head's vertices in the same frame, drawn in grey under the strands in the preview;
 "preview_k" is how many hits on a pixel make it fully dark (default 6; raise it for a dense scalp groom).
+"zones": {name: region} (the "where" keys below, tested on every point of the result) prints a ZONE line per region:
+the points inside from strands rooted outside it (and the lowest z among them), then those of strands rooted inside;
+a clearance check, such as no hair in front of a lens or over a glasses arm. Below it, the root bounds of the strands
+that enter from outside and (with "head") how far the hair inside stands off the skin. A zone's "off": [lo, hi] (cm,
+with "head") counts only the points standing that far off the skin along the head normal: hair over a glasses arm.
 
 Each op applies to the strands whose root lies in its "where" region, through a soft mask (1 inside, 0 outside):
   "x" / "absx" / "y" / "z": [lo, hi]   root coordinate (or |x|) between lo and hi; null leaves that side open
@@ -46,7 +51,10 @@ With no "where" an op applies to every strand. Ops run in order:
                                           same keys as "where"), at a random depth into the region's soft edge so the
                                           cut line is dithered; never shorter than "min" (default 0.2). A strand rooted
                                           inside is cut to "min" too, unless "rooted": "keep" leaves it whole (so a cut
-                                          over the ear doesn't shave the scalp under it)
+                                          over the ear doesn't shave the scalp under it). By default the tip is the
+                                          first point inside, up to a point spacing past the line; "exact": true puts
+                                          it on the line (bisected between that point and the one before), so a zone
+                                          inside the region's full-mask core is never reached from outside
   {"op": "delete"}                        remove each strand with probability = mask (a dithered edge)
   {"op": "thin", "keep": f}               keep a fraction f of the strands inside (probability 1 - (1 - f) * mask)
   {"op": "move", "d": [x, y, z], "power": p}
@@ -90,7 +98,9 @@ With no "where" an op applies to every strand. Ops run in order:
                                           the centre strand's point at the same arc fraction: the roots stay, the tips
                                           converge, and small gaps open between the locks. With "spike": cm (and
                                           "head") each centre strand is first lifted out along its root normal by a
-                                          random 0..spike cm times t^2, so the locks stand up as spikes
+                                          random 0..spike cm times t^2, so the locks stand up as spikes. With "trim": f
+                                          each lock is then cut to its own random fraction, 1 - f to 1, of its length,
+                                          so the locks end at different heights: a pointed fringe hem, a layered top
   {"op": "smooth", "amount": f, "iters": n}
                                           straighten the curl in each strand: n passes (default 4) moving every point a
                                           fraction f (default 0.5) toward the middle of its neighbours, the root fixed
@@ -369,7 +379,23 @@ for op in spec.get("ops", []):
         rooted = inside[off[:-1]].copy()
         inside[off[:-1]] = False  # a strand rooted inside the region keeps its minimum length
         first = np.full(len(st), np.inf)
-        np.minimum.at(first, sid[inside], c[inside])
+        if op.get("exact"):
+            # the tip on the dithered line itself: on the segment from the last point outside to the first inside,
+            # where the mask crosses the strand's threshold, found by bisection (not at the first point inside, up to a
+            # point spacing past the line); the tip keeps the last position found outside, so it never enters
+            fi = np.full(len(st), len(P))
+            np.minimum.at(fi, sid[inside], np.flatnonzero(inside))
+            k = np.flatnonzero(fi < len(P))
+            i1 = fi[k]
+            A, B = P[i1 - 1], P[i1]
+            lo, hi = np.zeros(len(k)), np.ones(len(k))
+            for _ in range(12):
+                mid = 0.5 * (lo + hi)
+                into = region(op["at"], A + (B - A) * mid[:, None]) > thr[k]
+                hi, lo = np.where(into, mid, hi), np.where(into, lo, mid)
+            first[k] = c[i1 - 1] + lo * (c[i1] - c[i1 - 1])
+        else:
+            np.minimum.at(first, sid[inside], c[inside])
         if op.get("rooted") == "keep":
             first[rooted] = np.inf
         cutlen = np.where(np.isfinite(first), np.maximum(first, op.get("min", 0.2)), L)
@@ -494,6 +520,10 @@ for op in spec.get("ops", []):
         G = P[i] + (P[i1] - P[i]) * u[:, None]
         a = op.get("amount", 0.5) * m[sid] * fr ** op.get("power", 1.5)
         P += (G - P) * a[:, None]
+        if op.get("trim"):  # each lock cut to its own random fraction of its length, 1 - trim .. 1: locks end at
+            ft = 1 - op["trim"] * rng.uniform(0, 1, inv.max() + 1)  # different heights, a pointed, layered hem
+            _, _, L2, _ = arcs()
+            resample(L2 * (1 + (ft[inv] - 1) * m))
         print("op clump  %d locks" % len(first))
     elif kind == "smooth":
         # pull each inner point toward the middle of its neighbours (the root stays put, the tip follows its neighbour's
@@ -513,6 +543,32 @@ for op in spec.get("ops", []):
         raise SystemExit("unknown op " + kind)
     print("op %-6s %d strands in the region (mask > .5)" % (kind, int((m > 0.5).sum())))
 summary("out")
+# "zones": {name: region} (the "where" keys, tested on every point): how much hair ends up where it must not be, such
+# as in front of a lens or over a glasses arm; points of strands rooted inside the zone are counted apart
+for zname, zw in spec.get("zones", {}).items():
+    sid = np.repeat(np.arange(len(st)), st["n"])
+    inside = region(zw, P) > 0.5
+    if "off" in zw and spec.get("head") and inside.any():  # only the points standing this far off the skin
+        k = np.flatnonzero(inside)
+        hv, hn = head_near(P[k])
+        h = ((P[k] - hv) * hn).sum(1)
+        lo, hi = zw["off"]
+        inside[k] = (h >= (-np.inf if lo is None else lo)) & (h <= (np.inf if hi is None else hi))
+    rooted = (region(zw) > 0.5)[sid]
+    out_in = inside & ~rooted
+    print("ZONE %-10s %6d points of %5d strands rooted outside (lowest z %s), %6d points of %5d strands rooted inside"
+          % (zname, out_in.sum(), len(np.unique(sid[out_in])), ("%.2f" % P[out_in, 2].min()) if out_in.any() else "-",
+             (inside & rooted).sum(), len(np.unique(sid[inside & rooted]))))
+    if out_in.any():  # where those strands come from
+        R0 = P[offsets(st["n"])[:-1]][np.unique(sid[out_in])]
+        print("     roots of those: |x| %.1f..%.1f y %.1f..%.1f z %.1f..%.1f" % (
+            np.abs(R0[:, 0]).min(), np.abs(R0[:, 0]).max(), R0[:, 1].min(), R0[:, 1].max(), R0[:, 2].min(),
+            R0[:, 2].max()))
+    if spec.get("head") and inside.any():  # how far off the skin the hair in the zone stands (along the head normal)
+        hv, hn = head_near(P[inside])
+        h = ((P[inside] - hv) * hn).sum(1)
+        print("     height off the head of the points inside: p50/p90/max %.2f/%.2f/%.2f cm" % (
+            *np.percentile(h, [50, 90]), h.max()))
 
 if spec.get("preview"):
     # the front half from the front, the left half from the left and the right half from the right (face toward the
