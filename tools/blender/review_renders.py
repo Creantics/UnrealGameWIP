@@ -4,7 +4,13 @@
     blender -b --factory-startup --python-exit-code 1 --python tools/blender/review_renders.py -- \
         BODY.fbx FACE.fbx OUT_DIR PIECE.fbx [PIECE.fbx ...] [shots=rest,walk,turn,close]
         [close=hem,seam,neck,face,ears,feet,wrists,chest] [res=900] [samples=96] [gpu=1] [skin=r,g,b]
-        [prefix=set_b] [exposure=0]
+        [prefix=set_b] [exposure=0] [hide=FACES.npy hide_faces=N] [colour=NAME:r,g,b[:rough][+NAME:...]]
+
+hide: the body LOD0 faces to delete before rendering (an .npy of face indices, e.g. the strip a body-hide variant
+removes in the game, so the renders show the body the game draws); hide_faces must equal the body's LOD0 face count,
+else the run stops (a different body or face order would strip the wrong faces). colour: a piece (its FBX name
+without .fbx) drawn in one plain colour, linear r,g,b as the game's material has it, roughness 0.8 unless given; it
+wins over the piece's _BC.png.
 
 Every piece is imported with its own armature copy; the body armature is posed and every other armature (the face's,
 each piece's) follows it bone for bone (Copy Transforms on the bones they share; the facial bones ride the head), so
@@ -174,6 +180,27 @@ lod0 = max((o for o in bo if o.type == "MESH"), key=lambda o: len(o.data.vertice
 for o in bo:
     if o.type == "MESH" and o is not lod0:
         bpy.data.objects.remove(o, do_unlink=True)
+if opt.get("hide"):
+    import bmesh
+    nf = len(lod0.data.polygons)
+    if opt.get("hide_faces") != str(nf):
+        sys.exit("review_renders: hide= needs hide_faces=%d (the body's LOD0 face count), got %s"
+                 % (nf, opt.get("hide_faces")))
+    gone = np.unique(np.load(opt["hide"]).astype(np.int64))
+    if len(gone) and (gone[0] < 0 or gone[-1] >= nf):
+        sys.exit("review_renders: hide= face index out of range 0..%d" % (nf - 1))
+    bm = bmesh.new()
+    bm.from_mesh(lod0.data)
+    bm.faces.ensure_lookup_table()
+    bmesh.ops.delete(bm, geom=[bm.faces[int(i)] for i in gone], context="FACES_ONLY")
+    bm.to_mesh(lod0.data)
+    bm.free()
+    log("hide: %d of %d body faces deleted (%s)" % (len(gone), nf, os.path.basename(opt["hide"])))
+COLOURS = {}
+for item in filter(None, opt.get("colour", "").split("+")):
+    nm_, _, val = item.partition(":")
+    parts = val.split(":")
+    COLOURS[nm_] = (tuple(float(c) for c in parts[0].split(",")), float(parts[1]) if len(parts) > 1 else 0.8)
 lod0.data.materials.clear()
 lod0.data.materials.append(SKIN)
 fo = imp(FACE)
@@ -212,7 +239,11 @@ for p in PIECES:
     a = next((o for o in new if o.type == "ARMATURE"), None)
     ms = [o for o in new if o.type == "MESH"]
     nm = os.path.splitext(os.path.basename(p))[0]
-    mat = textured(nm, os.path.dirname(p))
+    if nm in COLOURS:
+        mat = plain("C_" + nm, *COLOURS[nm])
+        log("material %s: plain %s, roughness %.2f" % (nm, COLOURS[nm][0], COLOURS[nm][1]))
+    else:
+        mat = textured(nm, os.path.dirname(p))
     for o in ms:
         if mat is not None:
             o.data.materials.clear()
