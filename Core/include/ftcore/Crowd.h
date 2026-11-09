@@ -261,7 +261,7 @@ public:
     std::uint32_t capacity() const { return static_cast<std::uint32_t>(agents_.size()); }
     const CrowdAgentView& agent(std::uint32_t i) const { return views_[i]; }
     std::uint32_t liveCount() const { return live_; }
-    std::uint32_t countIn(CrowdState s) const;
+    FTCORE_API std::uint32_t countIn(CrowdState s) const;
     const CrowdCounts& counts() const { return counts_; }
     float stepAlpha() const { return acc_ / tuning_.step; }
     double time() const { return time_; }

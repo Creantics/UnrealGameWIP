@@ -4,13 +4,16 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <chrono>
+#include <initializer_list>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 using namespace ftcore;
 
@@ -73,6 +76,28 @@ std::uint32_t edgeTo(const CrowdGraph& g, std::uint32_t n, std::uint32_t m) {
 void run(CrowdSim& sim, float seconds, Vec2 player = {0.f, 0.f}) {
     const int steps = static_cast<int>(std::lround(seconds * 15.f));
     for (int i = 0; i < steps; ++i) sim.tick(1.f / 15.f, player, {0.f, 0.f});
+}
+
+// The states a member went through, each change once, over `seconds`.
+std::vector<CrowdState> trace(CrowdSim& sim, std::uint32_t a, float seconds, Vec2 player = {0.f, 0.f}) {
+    std::vector<CrowdState> seen{sim.agent(a).state};
+    const int steps = static_cast<int>(std::lround(seconds * 15.f));
+    for (int i = 0; i < steps; ++i) {
+        sim.tick(1.f / 15.f, player, {0.f, 0.f});
+        if (sim.agent(a).state != seen.back()) seen.push_back(sim.agent(a).state);
+    }
+    return seen;
+}
+
+// Whether `want` appears in `seen` in order (not necessarily adjacent).
+bool inOrder(const std::vector<CrowdState>& seen, std::initializer_list<CrowdState> want) {
+    auto it = seen.begin();
+    for (const CrowdState w : want) {
+        it = std::find(it, seen.end(), w);
+        if (it == seen.end()) return false;
+        ++it;
+    }
+    return true;
 }
 
 std::string envText(const char* name) {
@@ -245,7 +270,7 @@ TEST_CASE("crowd reactions: notice, back away, flee to a safe distance, calm dow
     }
     SUBCASE("a middling fear: back away, facing the threat") {
         const Vec2 at{sim.agent(a).pos.x + 5.f, sim.agent(a).pos.y};
-        sim.pushEvent({CrowdEventKind::LoudNoise, at}); // 0.35 * 0.875 = 0.306: >= backFear (0.3), < fleeFear
+        sim.pushEvent({CrowdEventKind::LoudNoise, at, 1.f, 1.2f}); // 0.35 * 0.875 * 1.2 = 0.37: between backFear 0.3 and fleeFear 0.55
         run(sim, 1.5f);
         CHECK(sim.agent(a).state == CrowdState::BackAway);
         CHECK(sim.agent(a).anim == CrowdAnim::BackStep);
@@ -313,6 +338,262 @@ TEST_CASE("crowd flee path: picks the way away from the threat; cornered in a de
         run(sim, 60.f);
         CHECK(sim.agent(a).state != CrowdState::Cower);
     }
+}
+
+TEST_CASE("crowd transitions: idle, escalation, back-away recovery, flee again, replan") {
+    CrowdGraph g;
+    REQUIRE(g.build(gridStreets(9, 30.f), loose()));
+    CrowdTuning t = quiet();
+    SUBCASE("a walker idles at a junction and walks on") {
+        t.idleChance = 1.f;
+        t.idleMin = t.idleMax = 2.f;
+        CrowdSim sim;
+        REQUIRE(sim.init(g, t, 21));
+        sim.setPopulationFrozen(true);
+        const std::uint32_t a = sim.spawnAt(nodeAt(g, {0.f, 0.f}), 0, 0.5f);
+        const auto seen = trace(sim, a, 30.f); // 30 m at 1.3 m/s: past the next junction
+        CHECK(inOrder(seen, {CrowdState::Walk, CrowdState::Idle, CrowdState::Walk}));
+        CHECK(sim.counts().resumed == 0); // idling is not a reaction
+    }
+    SUBCASE("reactions") {
+        CrowdSim sim;
+        REQUIRE(sim.init(g, t, 11));
+        sim.setPopulationFrozen(true);
+        const std::uint32_t a = sim.spawnAt(nodeAt(g, {0.f, 0.f}), 0, 0.5f);
+        run(sim, 0.1f);
+        const Vec2 p = sim.agent(a).pos;
+        SUBCASE("notice, then back away, then flee as the fear builds") {
+            sim.pushEvent({CrowdEventKind::LoudNoise, {p.x + 20.f, p.y}}); // 0.175: notice
+            auto seen = trace(sim, a, 1.f);
+            sim.pushEvent({CrowdEventKind::LoudNoise, {p.x + 5.f, p.y}, 1.f, 0.6f}); // +0.18: about 0.35, back away
+            auto more = trace(sim, a, 1.f);
+            seen.insert(seen.end(), more.begin(), more.end());
+            sim.pushEvent({CrowdEventKind::Strike, {p.x + 5.f, p.y}}); // +0.375: past fleeFear
+            more = trace(sim, a, 1.5f);
+            seen.insert(seen.end(), more.begin(), more.end());
+            CHECK(inOrder(seen, {CrowdState::Notice, CrowdState::BackAway, CrowdState::Flee}));
+        }
+        SUBCASE("backing away calms into recover, then walk") {
+            sim.pushEvent({CrowdEventKind::LoudNoise, {p.x + 5.f, p.y}, 1.f, 1.2f});
+            const auto seen = trace(sim, a, 15.f);
+            CHECK(inOrder(seen, {CrowdState::BackAway, CrowdState::Recover, CrowdState::Walk}));
+            CHECK(sim.counts().backedAway == 1);
+            CHECK(sim.counts().fled == 0);
+        }
+        SUBCASE("a new fight while recovering sends it running again") {
+            sim.pushEvent({CrowdEventKind::FightStart, {p.x + 10.f, p.y + 3.f}});
+            std::vector<CrowdState> seen{sim.agent(a).state};
+            for (int i = 0; i < 15 * 40 && sim.agent(a).state != CrowdState::Recover; ++i) {
+                sim.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
+                if (sim.agent(a).state != seen.back()) seen.push_back(sim.agent(a).state);
+            }
+            REQUIRE(sim.agent(a).state == CrowdState::Recover);
+            const Vec2 q = sim.agent(a).pos;
+            sim.pushEvent({CrowdEventKind::FightStart, {q.x + 8.f, q.y}});
+            const auto more = trace(sim, a, 2.f);
+            seen.insert(seen.end(), more.begin(), more.end());
+            CHECK(inOrder(seen, {CrowdState::Flee, CrowdState::Recover, CrowdState::Flee}));
+            CHECK(sim.counts().fled == 2);
+        }
+        SUBCASE("a fleeing member replans when the threat moves") {
+            sim.pushEvent({CrowdEventKind::FightStart, {p.x + 10.f, p.y + 3.f}});
+            run(sim, 1.f);
+            REQUIRE(sim.agent(a).state == CrowdState::Flee);
+            const auto plans = sim.counts().plans;
+            const Vec2 q = sim.agent(a).pos;
+            sim.pushEvent({CrowdEventKind::FightStart, {q.x - 20.f, q.y - 20.f}}); // well over 15 m from the first threat
+            run(sim, 1.f);
+            CHECK(sim.counts().plans > plans);
+            CHECK(sim.counts().planFails == 0);
+        }
+    }
+}
+
+TEST_CASE("crowd cower: recovers when calm; flees on a retry once a way opens") {
+    CrowdGraph g;
+    REQUIRE(g.build({line({0.f, 0.f}, {20.f, 0.f}), line({20.f, 0.f}, {200.f, 0.f})}, loose()));
+    CrowdTuning t = quiet();
+    CrowdSim sim;
+    REQUIRE(sim.init(g, t, 5));
+    sim.setPopulationFrozen(true);
+    const std::uint32_t a = sim.spawnAt(nodeAt(g, {0.f, 0.f}), 0, 0.5f);
+    sim.pushEvent({CrowdEventKind::Gunshot, {18.f, 0.f}});
+    run(sim, 1.f);
+    REQUIRE(sim.agent(a).state == CrowdState::Cower);
+    SUBCASE("calm: cower, recover, walk") {
+        const auto seen = trace(sim, a, 90.f);
+        CHECK(inOrder(seen, {CrowdState::Cower, CrowdState::Recover, CrowdState::Walk}));
+        CHECK(sim.counts().resumed == 1);
+    }
+    SUBCASE("the threat moves to the far end: the retry plans and it flees") {
+        sim.pushEvent({CrowdEventKind::Gunshot, {195.f, 0.f}, 3.f, 1.f});
+        const auto seen = trace(sim, a, 4.f);
+        CHECK(inOrder(seen, {CrowdState::Cower, CrowdState::Flee}));
+    }
+}
+
+TEST_CASE("crowd flee path: a threat close to a junction leaves streets open; never past the threat; partial runs") {
+    SUBCASE("a threat 4 or 6 m off a junction, on each street") {
+        CrowdGraph g;
+        REQUIRE(g.build(gridStreets(9, 30.f), loose()));
+        const Vec2 offsets[] = {{4.f, 0.f}, {6.f, 0.f}, {0.f, 4.f}, {-6.f, 0.f}, {0.f, -4.f}};
+        for (const Vec2 off : offsets) {
+            CAPTURE(off.x);
+            CAPTURE(off.y);
+            CrowdSim sim;
+            REQUIRE(sim.init(g, quiet(), 13));
+            sim.setPopulationFrozen(true);
+            const std::uint32_t a = sim.spawnAt(nodeAt(g, {0.f, 0.f}), 0, 0.5f);
+            const Vec2 threat{sim.agent(a).pos.x + off.x, sim.agent(a).pos.y + off.y};
+            const float startD = dist(sim.agent(a).pos, threat);
+            sim.pushEvent({CrowdEventKind::FightStart, threat});
+            run(sim, 0.5f);
+            REQUIRE(sim.agent(a).state == CrowdState::Flee);
+            float closest = 1e9f;
+            for (int i = 0; i < 15 * 40 && sim.agent(a).state == CrowdState::Flee; ++i) {
+                sim.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
+                closest = std::min(closest, dist(sim.agent(a).pos, threat));
+            }
+            CHECK(sim.counts().planFails == 0);
+            CHECK(sim.counts().cowered == 0);
+            CHECK(closest >= startD - 1.5f); // never towards the fight (a lane change is allowed)
+            CHECK(dist(sim.agent(a).pos, threat) >= 50.f);
+        }
+    }
+    SUBCASE("a threat ahead on its own street: the run never passes within blockRadius of it") {
+        CrowdGraph g;
+        REQUIRE(g.build(gridStreets(9, 30.f), loose()));
+        CrowdTuning t = quiet();
+        CrowdSim sim;
+        REQUIRE(sim.init(g, t, 7));
+        sim.setPopulationFrozen(true);
+        const std::uint32_t n = nodeAt(g, {0.f, 0.f});
+        const std::uint32_t a = sim.spawnAt(n, edgeTo(g, n, nodeAt(g, {30.f, 0.f})), 0.5f);
+        const Vec2 threat{15.f, 0.f};
+        sim.pushEvent({CrowdEventKind::Gunshot, threat});
+        float closest = 1e9f;
+        for (int i = 0; i < 15 * 40; ++i) {
+            sim.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
+            if (sim.agent(a).state == CrowdState::Flee) closest = std::min(closest, dist(sim.agent(a).pos, threat));
+        }
+        CHECK(sim.counts().fled == 1);
+        CHECK(closest >= t.blockRadius);
+    }
+    SUBCASE("a street too short for the safe distance: a partial run to its end, then cower") {
+        CrowdGraph g;
+        CrowdStreet st = line({0.f, 0.f}, {50.f, 0.f});
+        st.points = {{0.f, 0.f}, {10.f, 0.f}, {20.f, 0.f}, {30.f, 0.f}, {40.f, 0.f}, {50.f, 0.f}};
+        REQUIRE(g.build({st}, loose()));
+        CrowdSim sim;
+        REQUIRE(sim.init(g, quiet(), 9));
+        sim.setPopulationFrozen(true);
+        const std::uint32_t n = nodeAt(g, {20.f, 0.f});
+        const std::uint32_t a = sim.spawnAt(n, edgeTo(g, n, nodeAt(g, {10.f, 0.f})), 0.5f);
+        sim.pushEvent({CrowdEventKind::Gunshot, {50.f, 0.f}});
+        const auto seen = trace(sim, a, 12.f);
+        CHECK(inOrder(seen, {CrowdState::Flee, CrowdState::Cower}));
+        CHECK(sim.agent(a).pos.x < 3.f);
+        CHECK(sim.counts().fled == 1);
+    }
+}
+
+TEST_CASE("crowd walkers keep to the pavement, round the player too, and never jump at corners") {
+    SUBCASE("a straight street, walkers both ways and a player walking up the pavement") {
+        CrowdGraph g;
+        CrowdStreet st = line({-150.f, 0.f}, {150.f, 0.f}, 8.f);
+        st.pavement = 2.f;
+        st.points.clear();
+        for (int i = 0; i <= 30; ++i) st.points.push_back(Vec2{-150.f + 10.f * static_cast<float>(i), 0.f});
+        REQUIRE(g.build({st}, loose()));
+        CrowdTuning t = quiet();
+        t.maxAgents = t.targetAgents = 120;
+        CrowdSim sim;
+        REQUIRE(sim.init(g, t, 31));
+        sim.setPopulationFrozen(true);
+        for (std::uint32_t n = 0; n < g.nodeCount(); ++n)
+            for (std::uint32_t k = 0; k < g.degree(n); ++k) sim.spawnAt(n, k, 0.5f);
+        REQUIRE(sim.liveCount() >= 50);
+        // lane 3 (half 4 - pavement/2), laneHalf 0.8 (pavement/2 - 0.2): the pavement band is |y| in [2.2, 3.8].
+        float inner = 1e9f, outer = 0.f;
+        for (int i = 0; i < 15 * 60; ++i) {
+            const Vec2 player{-60.f + 0.1f * static_cast<float>(i), 2.8f};
+            sim.tick(1.f / 15.f, player, {1.5f, 0.f});
+            for (std::uint32_t j = 0; j < sim.capacity(); ++j) {
+                const CrowdAgentView& v = sim.agent(j);
+                if (!v.live || v.state != CrowdState::Walk || std::fabs(v.pos.x) > 140.f) continue;
+                inner = std::min(inner, std::fabs(v.pos.y));
+                outer = std::max(outer, std::fabs(v.pos.y));
+            }
+        }
+        CHECK(inner >= 2.15f);
+        CHECK(outer <= 3.85f);
+    }
+    SUBCASE("a busy grid for two minutes: no walking step jumps") {
+        CrowdGraph g;
+        REQUIRE(g.build(gridStreets(15, 25.f), loose()));
+        CrowdTuning t;
+        CrowdSim sim;
+        REQUIRE(sim.init(g, t, 41));
+        const float most = (t.walkSpeed + t.walkSpeedJitter) * t.step + t.laneSpeed * t.step + 0.02f;
+        float worst = 0.f;
+        for (int i = 0; i < 15 * 120; ++i) {
+            sim.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
+            for (std::uint32_t j = 0; j < sim.capacity(); ++j) {
+                const CrowdAgentView& v = sim.agent(j);
+                if (v.live && v.state == CrowdState::Walk) worst = std::max(worst, dist(v.prevPos, v.pos));
+            }
+        }
+        CHECK(worst <= most);
+    }
+}
+
+TEST_CASE("crowd limits: a full pool refuses a spawn, a full event queue drops and counts, a bad dt is ignored") {
+    CrowdGraph g;
+    REQUIRE(g.build(gridStreets(5, 30.f), loose()));
+    CrowdTuning t = quiet();
+    t.maxAgents = t.targetAgents = 3;
+    t.maxDrawn = 2;
+    CrowdSim sim;
+    REQUIRE(sim.init(g, t, 1));
+    sim.setPopulationFrozen(true);
+    const std::uint32_t n = nodeAt(g, {0.f, 0.f});
+    CHECK(sim.spawnAt(n, 0, 0.5f) != UINT32_MAX);
+    CHECK(sim.spawnAt(n, 1, 0.5f) != UINT32_MAX);
+    CHECK(sim.spawnAt(n, 2, 0.5f) != UINT32_MAX);
+    CHECK(sim.spawnAt(n, 3, 0.5f) == UINT32_MAX);
+    CHECK(sim.liveCount() == 3);
+    for (std::uint32_t i = 0; i < kCrowdMaxEvents + 6; ++i) sim.pushEvent({CrowdEventKind::LoudNoise, {200.f, 200.f}});
+    CHECK(sim.counts().eventsDropped == 6);
+    sim.tick(std::nanf(""), {0.f, 0.f}, {0.f, 0.f});
+    sim.tick(-1.f, {0.f, 0.f}, {0.f, 0.f});
+    CHECK(sim.steps() == 0);
+    sim.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
+    CHECK(sim.steps() == 1);
+}
+
+TEST_CASE("crowd determinism under uneven frame slicing") {
+    CrowdGraph g;
+    REQUIRE(g.build(gridStreets(15, 25.f), loose()));
+    CrowdTuning t;
+    t.targetAgents = 120;
+    CrowdSim a, b;
+    REQUIRE(a.init(g, t, 77));
+    REQUIRE(b.init(g, t, 77));
+    // a: whole steps; b: frames of 7, 23, 41 and 61 ms. The fight is pushed at the same step count in both.
+    const float frames[] = {0.007f, 0.023f, 0.041f, 0.061f};
+    std::uint32_t f = 0;
+    bool pushed = false;
+    while (b.steps() < 600) {
+        if (!pushed && b.steps() == 150) b.pushEvent({CrowdEventKind::FightStart, {10.f, 10.f}}), pushed = true;
+        b.tick(frames[f++ % 4], {0.f, 0.f}, {0.f, 0.f});
+    }
+    for (int i = 0; i < 600; ++i) {
+        if (a.steps() == 150) a.pushEvent({CrowdEventKind::FightStart, {10.f, 10.f}});
+        a.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
+    }
+    REQUIRE(a.steps() == b.steps());
+    CHECK(a.digest() == b.digest());
+    CHECK(a.counts().fled > 0);
 }
 
 TEST_CASE("crowd panic spreads to a neighbour out of earshot, weaker than the spreader's") {

@@ -24,6 +24,8 @@ float angleDiff(float a, float b) {
     return d;
 }
 
+// How far off a new edge's line a member may stand as it turns onto it (m).
+constexpr float kCornerReach = 12.f;
 float yawTo(Vec2 from, Vec2 to) { return std::atan2(to.y - from.y, to.x - from.x) * kDeg; }
 
 // Distance from p to the segment ab.
@@ -120,7 +122,7 @@ void CrowdSim::pushEvent(const CrowdEvent& e) {
 
 void CrowdSim::tick(float dt, Vec2 player, Vec2 playerVelocity) {
     if (!graph_ || agents_.empty()) return;
-    acc_ += std::max(dt, 0.f);
+    if (std::isfinite(dt) && dt > 0.f) acc_ += dt;
     std::uint32_t n = 0;
     while (acc_ >= tuning_.step && n < tuning_.maxSteps) {
         step(player, playerVelocity);
@@ -164,7 +166,8 @@ float CrowdSim::scale(const Agent& a) const {
 
 Vec2 CrowdSim::basePoint(const Agent& a) const {
     const Vec2 f = graph_->node(a.from), t = graph_->node(a.to);
-    const float u = std::clamp(a.along / a.len, 0.f, 1.f);
+    // along may start a little below 0 after a corner (enter keeps the member where it stands).
+    const float u = std::min(a.along / a.len, 1.f);
     return {f.x + (t.x - f.x) * u, f.y + (t.y - f.y) * u};
 }
 
@@ -184,8 +187,8 @@ void CrowdSim::setState(Agent& a, CrowdState s) {
     a.stateTime = 0.f;
 }
 
-// Moves onto the edge from -> to (along 0), keeping the member where it stands sideways: the side of the new street
-// nearer to it, the lateral offset continuous.
+// Moves onto the edge from -> to, keeping the member where it stands: along and sideways are its own position in the
+// new edge's frame (along may be a little below 0 at a corner), the side of the new street the nearer one.
 void CrowdSim::enter(Agent& a, std::uint32_t from, std::uint32_t to) {
     const CrowdEdge* e = graph_->find(from, to);
     a.from = from;
@@ -198,8 +201,10 @@ void CrowdSim::enter(Agent& a, std::uint32_t from, std::uint32_t to) {
     const Vec2 dir{(t.x - f.x) / a.len, (t.y - f.y) / a.len};
     const Vec2 nrm{-dir.y, dir.x};
     const float lat = (a.pos.x - f.x) * nrm.x + (a.pos.y - f.y) * nrm.y;
-    const float reach = a.lane + a.laneHalf;
-    a.lat = std::clamp(lat, -reach, reach);
+    // Unclamped but for a sanity bound (the old street's half width at most, in practice): the lane smoothing brings
+    // the member onto its pavement from wherever it stands, so the turn never jumps.
+    a.along = std::clamp((a.pos.x - f.x) * dir.x + (a.pos.y - f.y) * dir.y, -kCornerReach, a.len);
+    a.lat = std::clamp(lat, -kCornerReach, kCornerReach);
     a.side = lat >= 0.f ? 1.f : -1.f;
     a.latTarget = a.side * a.lane + (rand01() * 2.f - 1.f) * a.laneHalf * 0.8f;
 }
@@ -256,7 +261,7 @@ std::uint32_t CrowdSim::spawnAt(std::uint32_t n, std::uint32_t k, float boldness
     a.gen = gen;
     a.state = CrowdState::Walk;
     a.boldness = std::clamp(boldness, 0.f, 1.f);
-    a.baseSpeed = std::max(0.3f, tuning_.walkSpeed + (rand01() * 2.f - 1.f) * tuning_.walkSpeedJitter);
+    a.baseSpeed = std::max(tuning_.walkSpeed * 0.25f, tuning_.walkSpeed + (rand01() * 2.f - 1.f) * tuning_.walkSpeedJitter);
     a.heading = rand01() * 360.f;
     a.pos = graph_->node(n);
     enter(a, n, graph_->edge(n, k).to);
@@ -409,15 +414,14 @@ bool CrowdSim::plan(Agent& a) {
     }
     std::size_t hn = 0;
     const float startD = dist(a.pos, a.threat);
-    // Never through the fight: no step whose line passes within blockRadius of the threat. A member already inside
-    // it may still take a first step that never brings it closer.
-    const float startLimit = std::min(tuning_.blockRadius, startD - 0.5f);
+    // Never through the fight: no step whose line passes within blockRadius of the threat. A step that starts inside
+    // it (the member, or a node near the threat) may still be taken if it never comes closer than where it starts.
     auto push = [&](std::uint32_t node, float cost, std::uint32_t prev) {
         if (sStamp_[node] == stamp_ && sCost_[node] <= cost) return;
         const Vec2 q = graph_->node(node);
-        if (prev == UINT32_MAX ? segDist(a.pos, q, a.threat) < startLimit
-                               : segDist(graph_->node(prev), q, a.threat) < tuning_.blockRadius)
-            return;
+        const Vec2 p0 = prev == UINT32_MAX ? a.pos : graph_->node(prev);
+        const float limit = std::min(tuning_.blockRadius, dist(p0, a.threat) - 0.5f);
+        if (segDist(p0, q, a.threat) < limit) return;
         if (hn >= heap_.size()) return;
         sStamp_[node] = stamp_;
         sCost_[node] = cost;
@@ -582,8 +586,9 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
             push += side >= 0.f ? -2.f : 2.f;
         }
         if (push != 0.f) {
-            const float lim = a.lane + a.laneHalf;
-            a.latTarget = std::clamp(a.latTarget + push * 0.25f, -lim, lim);
+            // Within its own pavement (the whole width on a street without one).
+            const float lo = a.lane > 0.f ? a.lane - a.laneHalf : -a.laneHalf, hi = a.lane + a.laneHalf;
+            a.latTarget = a.side * std::clamp(a.side * a.latTarget + push * 0.25f * a.side, lo, hi);
         }
         speed *= slow;
     }
@@ -621,7 +626,7 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
             }
         }
         enter(a, at, next);
-        a.along = a.state == CrowdState::Idle ? 0.f : over;
+        if (a.state != CrowdState::Idle) a.along += over;
         if (a.state == CrowdState::Idle) break;
     }
 
