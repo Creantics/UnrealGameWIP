@@ -40,9 +40,10 @@ struct MassingPropRule {
     std::size_t cap = 0;            // the most it places, kept evenly spread over the spots that pass; 0 for no cap
     double line = 0.0;              // m: when > 0, a spot with no built face this near it (massingBuiltFaceWithin)
                                     // places nothing, so the prop stands along a frontage, never alone in the open
-    double footX = 0.0, footY = 0.0; // m: the mesh's plan size along its own X and Y, the room it takes
-                                     // (massingPropFoot); not in the table, the map's builder sets them from the mesh.
-                                     // With either 0 the prop takes no room and is never crowded.
+    double footX = 0.0, footY = 0.0; // m: the room it takes on the plan along the mesh's own X and Y (massingPropFoot):
+                                     // the table's foot_x_m and foot_y_m, or with both 0 there the mesh's plan size,
+                                     // which the map's builder sets. With either 0 the prop takes no room and is never
+                                     // crowded.
 };
 
 // Reads a prop table (CSV, a header row naming the columns; comment rows as in importMassingBoxes). The columns:
@@ -56,7 +57,8 @@ struct MassingPropRule {
 //   turn, dz   numbers, default 0
 //   cap        a whole number >= 0, default 0
 //   line_m     >= 0, default 0
-//   kinds      street kinds joined by ';' (each as a massing id but lower case allowed: a-z, A-Z, 0-9, '_' or '-')
+//   foot_x_m, foot_y_m  >= 0, default 0: a foot smaller than the mesh's (a lamp's pole, not its arm)
+//   kinds     street kinds joined by ';' (each as a massing id but lower case allowed: a-z, A-Z, 0-9, '_' or '-')
 // Any other column is skipped. `out` is cleared first. False, with a reason naming the line, on any error.
 FTCORE_API bool importMassingProps(std::string_view csv, std::vector<MassingPropRule>& out, std::string* error = nullptr);
 
@@ -167,7 +169,8 @@ FTCORE_API void massingPlaceProps(const std::vector<MassingStreet>& streets, con
 // Places a mesh for a prop, from its bounds in its own axes (m), in the engine frame of a square `side` metres across:
 // the mesh turned so its +X faces the prop's way, `turnDeg` more, its bounds' centre over the prop's point and its bottom
 // on the prop's z. A Wall prop's bounds are set out from the face by their own depth along the facing, plus `inset`, so
-// their back meets the face. False, leaving `out` alone, on inverted bounds.
+// their back meets the face; a negative inset sinks their back that far into the wall (a shop front deeper than it
+// shows). False, leaving `out` alone, on inverted bounds.
 FTCORE_API bool massingPropPlacement(const MassingProp& prop, double side, const MassingVec& meshMin,
                                      const MassingVec& meshMax, double turnDeg, double inset, MassingKitPlace& out);
 

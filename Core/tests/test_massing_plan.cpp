@@ -911,6 +911,7 @@ TEST_CASE("massing look: each kind of built box wears its class") {
     // Kerbs and the other added walls.
     CHECK(cls(lookBox("V1-KB-0001", "V1-KERB", MassingSource::Invented, "wall", false)) == MassingLookSurface::PoleConcrete);
     CHECK(cls(lookBox("V1-KB-P0001", "V1-KERB", MassingSource::Invented, "wall", false)) == MassingLookSurface::PoleConcrete);
+    CHECK(cls(lookBox("CL-001-KL1", "CL-001", MassingSource::Invented, "kerb", false)) == MassingLookSurface::PoleConcrete);
     CHECK(cls(lookBox("V1-SCH-0001", "V1-SCH", MassingSource::Invented, "wall", true)) == MassingLookSurface::PoleConcrete);
     // Flights, toe stairs, ramps, landings and terraces.
     CHECK(cls(lookBox("V1-FL-ST-1", "V1-FL", MassingSource::Invented, "ramp", false)) == MassingLookSurface::PavingSlab);

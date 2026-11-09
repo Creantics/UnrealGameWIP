@@ -619,7 +619,7 @@ MassingLookSurface massingLookSurface(const MassingBox& box) {
     if (!massingVisible(massingRole(box))) return MassingLookSurface::BoardConcrete;
     const std::string& kind = box.kind;
     // Kerbs and the other added walls.
-    if (lookStartsWith(box.id, "V1-KB") || (box.source == MassingSource::Invented && kind == "wall"))
+    if (lookStartsWith(box.id, "V1-KB") || kind == "kerb" || (box.source == MassingSource::Invented && kind == "wall"))
         return MassingLookSurface::PoleConcrete;
     if (kind == "ramp" || kind == "landing" || kind == "terrace") return MassingLookSurface::PavingSlab;
     if (kind == "cliff" || kind == "seawall" || kind == "breakwater" || kind == "quay")

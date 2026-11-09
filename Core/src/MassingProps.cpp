@@ -179,9 +179,10 @@ bool importMassingProps(std::string_view csv, std::vector<MassingPropRule>& out,
     std::vector<Record> records;
     if (!splitCsv(csv, records, error)) return false;
 
-    enum Col { Id, Asset, Spacing, Phase, Side, Inset, Reach, Clear, Turn, Dz, Cap, Line, Kinds, Count };
-    constexpr const char* kNames[Count] = {"id",      "asset", "spacing_m", "phase_m", "side",   "inset_m", "reach_m",
-                                           "clear_m", "turn",  "dz",        "cap",     "line_m", "kinds"};
+    enum Col { Id, Asset, Spacing, Phase, Side, Inset, Reach, Clear, Turn, Dz, Cap, Line, FootX, FootY, Kinds, Count };
+    constexpr const char* kNames[Count] = {"id",      "asset",  "spacing_m", "phase_m",  "side",
+                                           "inset_m", "reach_m", "clear_m",  "turn",     "dz",
+                                           "cap",     "line_m", "foot_x_m",  "foot_y_m", "kinds"};
     constexpr std::size_t kRequired = 3; // id, asset, spacing_m
     std::size_t col[Count] = {};
     std::size_t width = 0;
@@ -237,6 +238,10 @@ bool importMassingProps(std::string_view csv, std::vector<MassingPropRule>& out,
         rule.cap = static_cast<std::size_t>(cap);
         if (!optionalNumber(field(Line), rule.line) || rule.line < 0.0)
             return fail(error, r.line, rule.id + ": line_m must be a number >= 0");
+        if (!optionalNumber(field(FootX), rule.footX) || rule.footX < 0.0)
+            return fail(error, r.line, rule.id + ": foot_x_m must be a number >= 0");
+        if (!optionalNumber(field(FootY), rule.footY) || rule.footY < 0.0)
+            return fail(error, r.line, rule.id + ": foot_y_m must be a number >= 0");
         std::string_view kinds = trim(field(Kinds));
         while (!kinds.empty()) {
             const std::size_t semi = kinds.find(';');

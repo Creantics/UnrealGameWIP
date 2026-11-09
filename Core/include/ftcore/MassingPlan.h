@@ -264,11 +264,12 @@ inline bool massingFootingHolds(const MassingFooting& footing) { return footing.
 
 // ---- The photographed look (-Surfaces): which surface a box wears, and the road mask from a street table ----
 
-// The class of photographed surface a built box wears. Kerbs and the other added walls are pole concrete; flights,
-// toe stairs, ramps, landings and terraces paving slab; cliff cover plates, the seawall, breakwater and quay board
-// concrete; decks, piers, boats and bridges oak plank; cranes, masts, posts, barriers and gates galvanised steel. Every
-// other built box is a building, wearing one of three finishes (soot brick, breeze block, aluminium cladding) chosen by a
-// stable hash of its row, so that the parts of one building share it. A box the build doesn't make is board concrete.
+// The class of photographed surface a built box wears. Kerbs (kind kerb, or a V1-KB id) and the other added walls are
+// pole concrete; flights, toe stairs, ramps, landings and terraces paving slab; cliff cover plates, the seawall,
+// breakwater and quay board concrete; decks, piers, boats and bridges oak plank; cranes, masts, posts, barriers and gates
+// galvanised steel. Every other built box is a building, wearing one of three finishes (soot brick, breeze block,
+// aluminium cladding) chosen by a stable hash of its row, so that the parts of one building share it. A box the build
+// doesn't make is board concrete.
 enum class MassingLookSurface : std::uint8_t {
     PoleConcrete,
     PavingSlab,

@@ -405,6 +405,11 @@ TEST_CASE("massing props: a mesh is placed by its bounds, a wall prop's back on 
     CHECK(near(out.at.x, 0.5));
     CHECK(near(out.at.y, 0.0));
 
+    // A negative inset sinks the back into the wall: 12 deep, 1 out, so 11 in.
+    REQUIRE(massingPropPlacement(p, 1000.0, {0, -1, 0}, {12, 1, 4}, 0.0, 1.0 - 12.0, out));
+    CHECK(near(out.at.x, 1.0 - 12.0)); // the bounds' centre 5 m into the wall (1 - 6), less their own centre 6
+    CHECK(near(out.at.y, 0.0));
+
     const MassingKitPlace before = out;
     CHECK_FALSE(massingPropPlacement(p, 1000.0, {1, 0, 0}, {0, 1, 1}, 0.0, 0.0, out));
     CHECK(near(out.at.x, before.at.x));
@@ -418,6 +423,15 @@ TEST_CASE("massing props: line_m keeps a prop to a frontage; with none near, the
     CHECK(rules[1].line == 0.0);
     CHECK_FALSE(importMassingProps("id,asset,spacing_m,line_m\nP-1,/Game/X.X,4,-1\n", rules, &error));
     CHECK(error.find("line_m") != std::string::npos);
+    // A foot may be given; left empty, the builder takes the mesh's.
+    REQUIRE(importMassingProps("id,asset,spacing_m,foot_x_m,foot_y_m\nP-1,/Game/X.X,4,0.6,0.5\nP-2,/Game/X.X,4,,\n",
+                               rules, &error));
+    CHECK(near(rules[0].footX, 0.6));
+    CHECK(near(rules[0].footY, 0.5));
+    CHECK(rules[1].footX == 0.0);
+    CHECK(rules[1].footY == 0.0);
+    CHECK_FALSE(importMassingProps("id,asset,spacing_m,foot_y_m\nP-1,/Game/X.X,4,-0.5\n", rules, &error));
+    CHECK(error.find("foot_y_m") != std::string::npos);
 
     // Left kerb spots at x 0, 50 and 100 (y 5); a wall 1 m behind the one at x 50.
     const std::vector<MassingStreet> streets = eastStreet();
