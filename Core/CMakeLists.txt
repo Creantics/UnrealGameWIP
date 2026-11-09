@@ -200,6 +200,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_mini.cpp
         tests/test_music_loop.cpp
         tests/test_party_trail.cpp
+        tests/test_party_shore.cpp
         tests/test_guard.cpp
         tests/test_path_follow.cpp
         tests/test_ui_text.cpp

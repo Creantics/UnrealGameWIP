@@ -4,6 +4,7 @@
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "Misc/CommandLine.h"
 
 #include "FTExploreCharacter.h"
@@ -11,6 +12,7 @@
 #include "FTMeshFacing.h"
 #include "ForgottenThird.h"
 
+#include "ftcore/PartyShore.h"
 #include "ftcore/PartyTrail.h"
 
 namespace
@@ -29,6 +31,14 @@ constexpr float kFacedWithin = 40.f;
 // As high as a walking body steps (cm, the character movement's MaxStepHeight): a floor further down is fallen to, and
 // a change of height past it in one frame (a pop) is logged.
 constexpr float kStepHeight = 45.f;
+// Kept out of the sea (SetSea): ground no higher than this over the sea level (cm) is the sea's; and with nowhere dry on
+// the way out from where the lead walked, it waits where it last had footing while that is within this of its spot (cm),
+// past it going on as before.
+constexpr double kShoreMargin = 10.0;
+constexpr double kShoreLeash = 600.0;
+// With no lead to take it from, ground no steeper than this (the up part of its normal: CharacterMovement's default
+// 44.765 degrees) is walkable.
+constexpr float kShoreWalkableZ = 0.71f;
 // The lead's vaults, climbs and catches (cm): the face ahead is looked at while one is ahead within the probes' reach
 // and the body goes its way at least this squarely (the cosine), and is the lead's when within kMarkSlack of it (along
 // its way); one is forgotten once the body is kMarkPassed past it or kMarkFar from it.
@@ -98,7 +108,8 @@ bool AFTPartyFollower::Setup(const FFTLeadLook& Look, const AActor* Lead)
 	return true;
 }
 
-void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float DeltaSeconds, float WantSpeed, float StopDistance)
+void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float DeltaSeconds, float WantSpeed, float StopDistance,
+	const FVector2D* PathPoint)
 {
 	// Before it moves: the pose and the placement are both last frame's. No foot is planted in the air, nor while a
 	// traversal carries the body.
@@ -143,6 +154,23 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 			Spot -= In * Over;
 			Stray = Spot - Ground;
 			StrayWay = In;
+			bHeldShort = true;
+		}
+	}
+	// On a map with a sea it stands on the land: a spot with no footing (out over the water, on ground at or under the sea
+	// level, or over a drop the look down doesn't reach) is given up for a point short of the sea on the way out from
+	// where the lead walked, so it walks the shore beside the lead (in a jump or a fall too). Not while a traversal
+	// carries it.
+	if (bShore && !bCarried)
+	{
+		const FVector2D Kept = KeepAshore(Spot, Was, LeadFeetZ, PathPoint);
+		if (!Kept.Equals(Spot, 0.01))
+		{
+			// Off its slot as when held short of a face: once its slot is on the land again it eases back onto it from
+			// here, rather than jumping there. The way it was going is out toward the sea, so the ease is not held up.
+			StrayWay = (Spot - Kept).GetSafeNormal();
+			Stray = Kept - Ground;
+			Spot = Kept;
 			bHeldShort = true;
 		}
 	}
@@ -565,6 +593,85 @@ void AFTPartyFollower::SetHeld(bool bHeld)
 		// Down on the ground below it, and the anim told it stands.
 		Place(FVector2D(At.X, At.Y), static_cast<float>(At.Z), 0.f);
 	}
+}
+
+void AFTPartyFollower::SetSea(float SeaLevel)
+{
+	bShore = !FParse::Param(FCommandLine::Get(), TEXT("LocoNoShore"));
+	ShoreLevel = SeaLevel;
+	// No steeper than the lead walks (Setup gave it the lead).
+	const ACharacter* Lead = LeadCharacter.Get();
+	const UCharacterMovementComponent* LeadMove = Lead ? Lead->GetCharacterMovement() : nullptr;
+	ShoreWalkableZ = LeadMove ? LeadMove->GetWalkableFloorZ() : kShoreWalkableZ;
+}
+
+FVector2D AFTPartyFollower::KeepAshore(const FVector2D& Spot, const FVector& Was, float LeadFeetZ, const FVector2D* PathPoint)
+{
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return Spot;
+	}
+	// The ground below a point, looked for as Place looks for it: from above the higher of its feet and the lead's to
+	// below the lower. Footing is ground found clear of the sea and no steeper than the lead walks (not the bank from a
+	// quay's edge down to the bed, beyond the hidden wall). A look begun inside something solid is the spot's own case
+	// at the spot (Place keeps its height there) and no footing on the way out (it stands short of that too).
+	const double Above = FMath::Max(static_cast<double>(LeadFeetZ), Was.Z) + 150.0;
+	const double Below = FMath::Min(static_cast<double>(LeadFeetZ), Was.Z) - 300.0;
+	auto Footing = [this, World, Above, Below](const FVector2D& At, bool bSolidIsFooting)
+	{
+		FHitResult Hit;
+		if (!World->LineTraceSingleByChannel(Hit, FVector(At.X, At.Y, Above), FVector(At.X, At.Y, Below), ECC_Visibility, TraceParams))
+		{
+			return false;
+		}
+		if (Hit.bStartPenetrating)
+		{
+			return bSolidIsFooting;
+		}
+		return ftcore::shoreFooting(true, Hit.ImpactPoint.Z, Hit.ImpactNormal.Z, ShoreLevel, kShoreMargin, ShoreWalkableZ);
+	};
+	if (Footing(Spot, true))
+	{
+		if (bShoreHeld)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: its spot is on the land again at (%.0f, %.0f)."), *LogName, Spot.X, Spot.Y);
+		}
+		bShoreHeld = false;
+		LastDry = Spot;
+		bHasLastDry = true;
+		return Spot;
+	}
+	// Out from where the lead walked at its place on the trail; with none given, from where it last had footing.
+	const FVector2D From = PathPoint ? *PathPoint : bHasLastDry ? LastDry : FVector2D(Was.X, Was.Y);
+	const ftcore::ShoreStand Stand = ftcore::standShortOfSea(ftcore::Vec2{static_cast<float>(From.X * 0.01), static_cast<float>(From.Y * 0.01)},
+		ftcore::Vec2{static_cast<float>(Spot.X * 0.01), static_cast<float>(Spot.Y * 0.01)},
+		[&Footing](ftcore::Vec2 P) { return Footing(FVector2D(P.x * 100.0, P.y * 100.0), false); });
+	FVector2D At = Spot;
+	const TCHAR* How = TEXT("stands short of it");
+	if (Stand.dry)
+	{
+		At = FVector2D(Stand.at.x * 100.0, Stand.at.y * 100.0);
+		LastDry = At;
+		bHasLastDry = true;
+	}
+	else if (bHasLastDry && FVector2D::Distance(LastDry, Spot) <= kShoreLeash)
+	{
+		// Nowhere dry on the way (the lead itself is off the land): it waits where it last stood on it.
+		At = LastDry;
+		How = TEXT("waits where it last had footing");
+	}
+	else
+	{
+		How = TEXT("has no footing near: it goes on as before");
+	}
+	if (!bShoreHeld)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: its spot at (%.0f, %.0f) has no footing (over the sea at %.0f cm, or a drop): it %s at (%.0f, %.0f)."),
+			*LogName, Spot.X, Spot.Y, ShoreLevel, How, At.X, At.Y);
+	}
+	bShoreHeld = true;
+	return At;
 }
 
 void AFTPartyFollower::ReplayTurn(float Delta)
