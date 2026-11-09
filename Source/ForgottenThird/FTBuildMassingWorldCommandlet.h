@@ -7,7 +7,7 @@
 //       [-Walls=<csv>] [-Goals=<csv>] -Entry=<x,y,z> [-Look=<x,y>] [-Sea=<x>] [-Side=1000] [-Map=<name>]
 //       [-World=<id>] [-Kit=<csv>] [-NoNav] [-Strict] [-Dump=<csv>] [-Load]
 //       [-Tour=<csv>] [-Coverage=<csv>] [-ReadBack=<json>] [-Surfaces -Streets=<csv>]
-//       [-Props=<csv> [-PropStreets=<csv>]]
+//       [-Props=<csv> [-PropStreets=<csv>] [-PropLine=<m>]] [-Frontage=<csv>] [-Kerbs] [-Quay [-QuayLamp=<id>]]
 //       -NullRHI -unattended -nopause -nosplash
 //
 // -Height names a height field's json (samples_x, samples_y, spacing_m, origin_of_sample_0_0_m and the raw
@@ -37,7 +37,8 @@
 // - the height field as a Landscape, a vertex per sample, padded to whole components;
 // - every built box (ftcore::massingBuilt) as a static mesh actor labelled with its id: a flat box is the
 //   engine's cube, scaled, with its top brought down where it would share one (massingTopNudges) and
-//   raised off the ground where it would lie on it (massingGroundRaises, each raised top logged); a
+//   raised off the ground where it would lie on it (massingGroundRaises, each raised top logged, and each group no
+//   raise clears logged with its boxes, its middle and whether -Sea's edge lies within 30 m of it); a
 //   sloped one gets its own mesh in the map's package (SM_Massing_<id>, collision from its triangles);
 //   each wears a flat tint by its finish (plain, wall or deck) until its kit or hero mesh replaces it;
 // - the walls table's rows as hidden walls that stop pawns, not the camera;
@@ -62,15 +63,38 @@
 //
 // -Props=<csv> sets street furniture along a streets table: -PropStreets=<csv>, or the -Streets table when it isn't
 // given (the run fails with neither). Each row of the prop table (ftcore::importMassingProps: id, asset, spacing_m and
-// the optional phase_m, side, inset_m, reach_m, clear_m, turn, dz, cap and kinds) sets its mesh along the streets of its
-// kinds, at the kerbs or against the built faces beside them, on the floor the lead walks there
-// (ftcore::massingPlaceProps over the built boxes, tops as built, and the height field), never on the sea's side of
-// 0.5 m. Each is labelled <rule id>-<n> and, like the kit, collides with nothing and leaves the navmesh alone. A
-// missing mesh fails the run before anything is built. The log gives each rule's mesh size, how many it placed of its
-// spots and why the others placed nothing, and the total.
+// the optional phase_m, side, inset_m, reach_m, clear_m, turn, dz, cap, line_m, foot_x_m, foot_y_m and kinds) sets its
+// mesh along the streets of its kinds, at the kerbs or against the built faces beside them, on the floor the lead walks
+// there (ftcore::massingPlaceProps over the built boxes, tops as built, and the height field), never on the sea's side
+// of 0.5 m, and out of the room the kerbs, the quay and the frontage took. A rule with no foot in the table takes its
+// mesh's plan size, so props never stand in one another. Each is labelled <rule id>-<n> and, like the kit, collides
+// with nothing and leaves the navmesh alone. A missing mesh fails the run before anything is built. The log gives each
+// rule's mesh size and foot, how many it placed of its spots and why the others placed nothing, and the total; a line
+// for each prop standing further than -PropLine=<m> (3 by default) from every kerb and frontage line
+// (ftcore::massingPropLineGap), and their count.
+//
+// -Kerbs sets kerbs along both edges of the carriageway of each street of -Streets (or -PropStreets) with pavements
+// (its pavement_m column; ftcore::massingKerbs): boxes 0.2 m across standing 0.15 m over the floor, open where another
+// carriageway crosses, inside a bend, where a box stands and on the sea's side, labelled <street>-KL<n> and -KR<n>. They
+// wear pole concrete under -Surfaces and collide as the boxes do, low enough to step over. One line logs them.
+//
+// -Quay sets a rail 1.1 m high on posts at most 2 m apart, and bollards about every 8 m, along the seaward edges of the
+// quay, pier, seawall and deck boxes (ftcore::massingQuay), labelled <deck>-QR<n>, -QP<n> and -QB<n>: galvanised steel
+// under -Surfaces, colliding as the boxes do. -QuayLamp=<id> names a -Props rule whose mesh stands about every 25 m,
+// 1.5 m in from the edge, labelled as that rule's props and colliding with nothing. One line logs them.
+//
+// -Frontage=<csv> sets pieces against the side faces of the buildings left as boxes (visible flat boxes no -Kit row names
+// whose surface is a building's; ftcore::massingFrontage), each face by the kind of the -PropStreets street it fronts
+// ("open" for none). The table is ftcore::importMassingFront's (id, asset, width_m, depth_m, height_m and the optional
+// out_m, gap_m, turn, dz, weight, run, cap and kinds); each rule's width, depth and height are its mesh's as it stands
+// (turned by turn), its out the table's at most that depth (the depth when the table sets it wholly out). A piece is
+// labelled <rule id>-<n> and collides with nothing. A missing mesh fails the run before anything is built. The log gives
+// each rule's size, a count line per rule (placed, faces, tries and why the others failed) and a totals line.
+// The dressing goes in that order, kerbs, quay, frontage, then the props, each keeping out of the room the ones before
+// took.
 //
 // -Surfaces -Streets=<csv> dresses the map in Solhaven's photographed surfaces (the surfaces of /Game/Rendering/Surfaces/solhaven_*, the
-// ground master M_WorldGround and M_Look_Water), and without -Surfaces the build is exactly as without them (-Streets alone does nothing but give -Props its streets).
+// ground master M_WorldGround and M_Look_Water), and without -Surfaces the build is exactly as without them (-Streets alone does nothing but give -Props, -Frontage and -Kerbs their streets).
 // Each built box wears the surface ftcore::massingLookSurface gives its src, kind, id prefix and row (the boxes table's row column, when it
 // has one): kerbs and the other added walls pole concrete; flights, ramps, landings and terraces paving slab; cliff cover plates, the
 // seawall, breakwater and quay board concrete; decks, piers, boats and bridges oak plank; cranes, masts, posts, barriers and gates
