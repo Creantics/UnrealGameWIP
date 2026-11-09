@@ -32,7 +32,10 @@ its width along the strap and its height down (world -Z, or "down": [x, y, z] su
 strap's outward direction), its top "drop" below the strap's centre line, its width narrowing to "taper" of the top
 at the bottom; the inner face is pushed out until it clears everything under it by "gap", and the outer face stands
 "depth" off the inner one with its rim pulled in by "round" so the box reads stitched rather than cut. A pouch also
-clears the pouches before it in the list (a holster stands off the hanger that carries it)."""
+clears the pouches before it in the list (a holster stands off the hanger that carries it).
+A pouch with "profile": [[v, u_lo, u_hi, depth], ...] (v 0 at the top to 1 at the bottom, u_lo/u_hi the row's edges as
+fractions of the width from -0.5 to 0.5, +u towards out x down, depth a fraction of "depth") gets that silhouette
+instead of the taper: a holster wide at the top round the trigger guard that steps in to the barrel, say."""
 import json
 import os
 import sys
@@ -199,9 +202,15 @@ for pc in SP.get("pouches", []):
     side = np.cross(out, down)
     (W, Hh), dep = pc.get("size", [0.07, 0.18]), pc.get("depth", 0.035)
     drop, taper, pg, rnd = pc.get("drop", 0.0), pc.get("taper", 0.75), pc.get("gap", 0.004), pc.get("round", 0.008)
-    nu, nv = 7, 13
+    prof = np.array(pc["profile"], float) if "profile" in pc else None
+    nu, nv = (9, 25) if prof is not None else (7, 13)
     U, Vv = np.meshgrid(np.linspace(-0.5, 0.5, nu), np.linspace(0.0, 1.0, nv))
-    um, vm = U * W * (1 - (1 - taper) * Vv), Vv * Hh
+    if prof is not None:  # a silhouette: each row runs from u_lo to u_hi (fractions of W), depth scaled per row
+        lo, hi = np.interp(Vv, prof[:, 0], prof[:, 1]), np.interp(Vv, prof[:, 0], prof[:, 2])
+        um, dfr = (lo + (U + 0.5) * (hi - lo)) * W, np.interp(Vv, prof[:, 0], prof[:, 3])
+    else:
+        um, dfr = U * W * (1 - (1 - taper) * Vv), np.ones_like(Vv)
+    vm = Vv * Hh
     inner = p + down * (drop + vm)[..., None] + side * um[..., None]
     # Push the inner face out until it clears what lies under it (within 1.5 cm across, less than 6 cm in front).
     need = np.zeros(nv * nu)
@@ -215,7 +224,7 @@ for pc in SP.get("pouches", []):
         pad = np.pad(s, 1, mode="edge")
         s = np.maximum(s, (pad[:-2, 1:-1] + pad[2:, 1:-1] + pad[1:-1, :-2] + pad[1:-1, 2:]) / 4)
     inner = inner + out * s[..., None]
-    outer = inner + out * dep
+    outer = inner + out * (dep * dfr)[..., None]
     outer[0] += down * rnd
     outer[-1] -= down * rnd
     outer[:, 0] += side * rnd

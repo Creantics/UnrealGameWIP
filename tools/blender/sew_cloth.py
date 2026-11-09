@@ -28,7 +28,13 @@ PLACE wraps the flat piece round an axis before the solver starts, the way a clo
      (the pattern point placed on "center"'s height), "conform": "out" | "in" | null, "gap": m,
      "v_at": [[v mm, along mm], ...] (optional: where each pattern v lands along the axis, straight on 1:1 past both
      ends; a stretch of pattern longer than its stretch of axis is laid in gathered, and the solver buckles it into
-     folds: a trouser leg stacking over its cuff)}
+     folds: a trouser leg stacking over its cuff),
+     "aspect_at": [[v mm, a], ...] (optional: an elliptic section of the same girth 2 pi r, its side half-axis a times
+     the front one; pattern u still runs round it by arc length, so a flat chest or the shoulders' width starts near
+     the body and "conform" stretches the piece less. The cloth's rest shape is the placed mesh, so a stretch the
+     conform makes stays in the cloth and shows as a stretched weave),
+     "offset_at": [[v mm, x, y, z], ...] (optional: the section's centre moved off the axis, world metres, per pattern
+     v: a torso whose chest sits further back than its belly; give every piece of one garment the same list)}
     {"type": "plane", "center": [...], "normal": [...] (the outside), "up": [...], "at": [u, v]}
     {"type": "ribbon", "path": [[x, y, z], ...], "width": [x, y, z] or one per path point, "at": [u, v], "s_at": m,
      "gather": f or one per path point, "u_at": [u mm, ...] one per path point}
@@ -52,7 +58,10 @@ surface it hit, never inside it.
 REGION picks pattern vertices: {"v_above": mm} | {"v_below": mm} | {"u_above": mm} | {"u_below": mm} |
 {"rect": [u0, v0, u1, v1]}; several keys in one region must all hold. "pin" holds the region where it was placed
 (goal stiffness 1); "snap": true on a pin region first moves it onto the body plus "gap", so a waistband or collar is
-held on the body instead of in the air. "shrink" pulls the region's fabric in by factor (0.1 = 10 %), an elastic band.
+held on the body instead of in the air. The plain snap goes to the nearest body point, which for a crew neck's front
+can be the chin; "snap": "radial" (a cylinder piece) casts from the axis outwards along the cylinder's radius instead
+and lands "gap" past the first surface it hits ("reach", default 0.5 m, caps the cast; a miss falls back to the
+nearest point), so the collar's front sits on the throat at the height the pattern put it. "shrink" pulls the region's fabric in by factor (0.1 = 10 %), an elastic band.
 
 FABRIC (Blender cloth values; the presets' numbers, tuned for a metre-scale scene): "mass" (kg per vertex), "tension",
 "compression", "shear", "bending", "air", "quality" (solver steps per frame), "distance" (collision distance to the
@@ -280,6 +289,19 @@ def place(uv_mm, pl):
         r = np.full(len(uv_mm), float(pl["radius"]))
     phi = math.radians(pl.get("angle", 0.0)) + du / r
     radial = np.cos(phi)[:, None] * fr[None] + np.sin(phi)[:, None] * side[None]
+    rvec = r[:, None] * radial
+    if "aspect_at" in pl:  # an elliptic section of the same girth: pattern u still runs round it by arc length
+        asp = np.array(pl["aspect_at"], float)
+        a = np.interp(uv_mm[:, 1], asp[:, 0], asp[:, 1])
+        th = np.linspace(0.0, 2 * math.pi, 1025)
+        speed = np.sqrt(np.sin(th)[None] ** 2 + (a[:, None] * np.cos(th)[None]) ** 2)  # (cos, a sin), front axis 1
+        cum = np.concatenate([np.zeros((len(a), 1)),
+                              np.cumsum(0.5 * (speed[:, 1:] + speed[:, :-1]) * (th[1] - th[0]), axis=1)], axis=1)
+        p_ax = 2 * math.pi * r / cum[:, -1]
+        s = np.mod(phi, 2 * math.pi) / (2 * math.pi) * cum[:, -1]
+        tv = np.array([np.interp(s[k], cum[k], th) for k in range(len(a))])
+        rvec = (p_ax * np.cos(tv))[:, None] * fr[None] + (p_ax * a * np.sin(tv))[:, None] * side[None]
+        radial = rvec / np.maximum(np.linalg.norm(rvec, axis=1), 1e-12)[:, None]
     if "v_at" in pl:  # pattern v -> distance along the axis (mm), so a stretch of the pattern is laid in gathered
         va = np.array(pl["v_at"], float)
 
@@ -288,7 +310,10 @@ def place(uv_mm, pl):
             return np.where(v < va[0, 0], va[0, 1] + v - va[0, 0], np.where(v > va[-1, 0], va[-1, 1] + v - va[-1, 0], s))
         dv = (along(uv_mm[:, 1]) - along(np.array([at[1]]))[0]) / 1000.0
     axis_pt = c[None] + dv[:, None] * ax[None]
-    return axis_pt + r[:, None] * radial, (axis_pt, radial)
+    if "offset_at" in pl:  # the section's centre moved off the axis per pattern v: [[v mm, x, y, z] (world m), ...]
+        oa = np.array(pl["offset_at"], float)
+        axis_pt = axis_pt + np.stack([np.interp(uv_mm[:, 1], oa[:, 0], oa[:, k]) for k in (1, 2, 3)], 1)
+    return axis_pt + rvec, (axis_pt, radial)
 
 
 def conform(co, frame, bvh, mode, gap, reach=1.5):
@@ -453,7 +478,14 @@ def main():
             if reg.get("snap"):
                 snap_m |= m
                 g = reg.get("gap", gap_default * 0.5)
+                radial = reg["snap"] == "radial" and frame is not None
                 for k in np.nonzero(m)[0]:
+                    if radial:  # the first surface out from the axis, as conform "out" finds it
+                        o, d = Vector(frame[0][k]), Vector(frame[1][k])
+                        hit = bvh.ray_cast(o, d, reg.get("reach", 0.5))
+                        if hit[0] is not None:
+                            co[k] = np.array(hit[0] + d * g)
+                            continue
                     loc, nrm, _, _ = bvh.find_nearest(Vector(co[k]))
                     if loc is not None:
                         co[k] = np.array(loc + nrm * g)

@@ -9,7 +9,7 @@ BIND.json:
                          "smooth_gap": 0.01, "smooth_full": 0.05, "rigid": "foot_l", "limit": 8,
                          "legs": {"below": 0.92, "fade": 0.1, "blend": 0.04, "mid": 0.0, "k": 12, "yscale": 0.3,
                                   "fold": 0.5, "hold": 1}, "keep_below": 0.84,
-                         "free_below": {"z": 0.5, "fade": 0.1, "bone": "pelvis"},
+                         "free_below": {"z": 0.5, "fade": 0.1, "bone": "pelvis"}, "weights_from": "outer.fbx",
                          "liner": {"mid": 0.0, "x": 0.02, "y": [-0.15, -0.05], "z": [0.56, 0.70], "offset": 0.0025}}}}
 
 Paths are read against the spec's folder. Each named piece is appended from the garments file and takes the weights of
@@ -34,6 +34,10 @@ first (an under-layer variant cut where a closed outer layer always covers it; t
 "free_below" puts everything under rest height "z" on one bone ("bone", default pelvis), faded in over "fade" metres
 above it, after the leg split and the relaxing: a loose hem below the knee that runtime cloth will move, so a posed
 review shows it hanging free from the hips instead of gathered round each shin by the per-leg weights.
+"weights_from" (a skinned FBX on the same skeleton, e.g. the outer garment over this one) makes that FBX's largest
+mesh, at its bind pose, the Data Transfer source instead of the body: an under-layer fitted a millimetre or two
+inside an outer one takes the outer one's weights and so deforms with it, instead of each layer taking the skin's
+weights from a different nearest point and crossing in a pose (a tee through a jacket at the armpit in a stride).
 Then the weights are cleaned, limited to "limit" (8) bones a vertex and normalised.
 "liner" then joins a gusset copied from the body into the piece: the LOD0 faces with every vertex inside the box (rest
 metres: |x - "mid"| up to "x", y and z between the given pairs), "offset" metres out along the body's normals, with
@@ -73,7 +77,35 @@ def _spec():
     d = os.path.dirname(path)
     for k in ("body", "garments"):
         spec[k] = os.path.join(d, spec[k])
+    for ps in spec["pieces"].values():
+        if ps.get("weights_from"):
+            ps["weights_from"] = os.path.join(d, ps["weights_from"])
     return spec, out
+
+
+def weight_source(path, cache):
+    """The largest mesh of a skinned FBX on the same skeleton, at its bind pose in world space, armature removed."""
+    if path in cache:
+        return cache[path]
+    before = set(bpy.data.objects)
+    bpy.ops.import_scene.fbx(filepath=path)
+    new = [o for o in bpy.data.objects if o not in before]
+    meshes = [o for o in new if o.type == "MESH"]
+    if not meshes:
+        sys.exit("garment_bind: no mesh in %s" % path)
+    src = max(meshes, key=lambda o: len(o.data.vertices))
+    mw = src.matrix_world.copy()
+    src.parent = None
+    src.matrix_world = mw
+    src.modifiers.clear()
+    for o in new:
+        if o is not src:
+            bpy.data.objects.remove(o, do_unlink=True)
+    activate(src)
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    src.hide_render = True
+    cache[path] = src
+    return src
 
 
 def activate(o):
@@ -294,6 +326,7 @@ def main():
     body_kd.balance()
     gdir = os.path.dirname(spec["garments"])
     report = {}
+    wsrc = {}
     for o in dst.objects:
         ps = spec["pieces"][o.name]
         name = o.name
@@ -321,8 +354,14 @@ def main():
             o.vertex_groups.new(name=bone).add(list(range(len(o.data.vertices))), 1.0, "REPLACE")
             orphans, n_smooth = 0, 0
         else:
+            src = lod0
+            if ps.get("weights_from"):
+                src = weight_source(ps["weights_from"], wsrc)
+                activate(o)
+                log("%s: weights from %s (%s, %d verts) instead of the body" % (name, ps["weights_from"], src.name,
+                                                                                 len(src.data.vertices)))
             m = o.modifiers.new("dt", "DATA_TRANSFER")
-            m.object = lod0
+            m.object = src
             m.use_vert_data = True
             m.data_types_verts = {"VGROUP_WEIGHTS"}
             m.vert_mapping = "POLYINTERP_NEAREST"
@@ -431,6 +470,8 @@ def main():
                sorted(tex)))
         if not 3000 <= tris <= 12000:
             log("NOTE: %s has %d triangles, outside 3k-12k" % (export, tris))
+    for src in wsrc.values():
+        bpy.data.objects.remove(src, do_unlink=True)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(out, "bound.blend"))
     json.dump(report, open(os.path.join(out, "bind_log.json"), "w"), indent=1)
 
