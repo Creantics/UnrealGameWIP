@@ -109,6 +109,19 @@ With no "where" an op applies to every strand. Ops run in order:
                                           random 0..spike cm times t^2, so the locks stand up as spikes. With "trim": f
                                           each lock is then cut to its own random fraction, 1 - f to 1, of its length,
                                           so the locks end at different heights: a pointed fringe hem, a layered top
+  {"op": "swing", "axis": [x, y, z], "angle": deg, "blend": f}
+                                          turn each strand about its root by angle * mask (right-hand rule about
+                                          axis): segment directions are rotated by an amount ramping from 0 at the
+                                          root to full at arc fraction f (default 0.2), and the strand is rebuilt from
+                                          the root, so lengths are kept and the root direction blends into the swing.
+                                          A sweep that doesn't coil the way bending the tips can
+  {"op": "aim", "dirs": [[x, y, z], ..], "blend": f, "spread": s}
+                                          re-aim each strand along a path of directions spaced evenly over its arc
+                                          (interpolated between): each segment turns from its own direction toward the
+                                          path's by mask * r(t), r ramping from 0 at the root to 1 at arc fraction f
+                                          (default 0.2), plus a random per-strand turn of size s; rebuilt from the root,
+                                          lengths kept. Restyles strands that run the wrong way (a fringe combed back
+                                          brought forward: lift off the hairline, then fall), where swing can't reach
   {"op": "smooth", "amount": f, "iters": n}
                                           straighten the curl in each strand: n passes (default 4) moving every point a
                                           fraction f (default 0.5) toward the middle of its neighbours, the root fixed
@@ -544,6 +557,51 @@ for op in spec.get("ops", []):
             _, _, L2, _ = arcs()
             resample(L2 * (1 + (ft[inv] - 1) * m))
         print("op clump  %d locks" % len(first))
+    elif kind == "swing":
+        # turn each strand about its root: every segment direction is rotated about "axis" by angle * mask * r(t),
+        # r ramping (smoothstep) from 0 at the root to 1 at arc fraction "blend", and the strand is rebuilt from the
+        # root, so lengths are kept and the root keeps leaving the scalp in its own direction (no kink at the root)
+        sid, c, L, off = arcs()
+        ax = np.asarray(op["axis"], float)
+        ax /= np.linalg.norm(ax)
+        f = np.clip(c / np.maximum(L[sid], 1e-9) / max(op.get("blend", 0.2), 1e-6), 0, 1)
+        a = np.radians(op["angle"]) * m[sid] * f * f * (3 - 2 * f)
+        seg = np.zeros_like(P)
+        seg[1:] = P[1:] - P[:-1]
+        seg[off[:-1]] = 0
+        ca, sa = np.cos(a)[:, None], np.sin(a)[:, None]
+        seg = seg * ca + np.cross(ax[None, :], seg) * sa + ax[None, :] * (seg @ ax)[:, None] * (1 - ca)
+        root = np.repeat(P[off[:-1]], st["n"], axis=0)
+        cs = np.cumsum(seg, axis=0)
+        P[:] = root + cs - np.repeat(cs[off[:-1]], st["n"], axis=0)
+    elif kind == "aim":
+        # re-aim each strand along a path of directions (evenly spaced over the arc, interpolated between): each segment
+        # turns from its own direction toward the path's direction at its arc fraction by mask * r(t), r ramping
+        # (smoothstep) from 0 at the root to 1 at "blend"; the strand is rebuilt from the root with its lengths kept
+        sid, c, L, off = arcs()
+        D = np.asarray(op["dirs"], float)
+        D /= np.linalg.norm(D, axis=1, keepdims=True)
+        t = np.clip(c / np.maximum(L[sid], 1e-9), 0, 1)
+        u = t * (len(D) - 1)
+        i0 = np.minimum(u.astype(int), len(D) - 1)
+        i1 = np.minimum(i0 + 1, len(D) - 1)
+        w = (u - i0)[:, None]
+        tgt = D[i0] * (1 - w) + D[i1] * w
+        if op.get("spread"):  # a random turn per strand so the strands don't fall in parallel
+            tgt = tgt + rng.normal(0, op["spread"], (len(L), 3))[sid]
+        tgt /= np.maximum(np.linalg.norm(tgt, axis=1, keepdims=True), 1e-9)
+        f = np.clip(t / max(op.get("blend", 0.2), 1e-6), 0, 1)
+        r = (m[sid] * f * f * (3 - 2 * f))[:, None]
+        seg = np.zeros_like(P)
+        seg[1:] = P[1:] - P[:-1]
+        seg[off[:-1]] = 0
+        ln = np.linalg.norm(seg, axis=1, keepdims=True)
+        dirn = seg / np.maximum(ln, 1e-9)
+        nd = dirn * (1 - r) + tgt * r
+        seg = nd / np.maximum(np.linalg.norm(nd, axis=1, keepdims=True), 1e-9) * ln
+        root = np.repeat(P[off[:-1]], st["n"], axis=0)
+        cs = np.cumsum(seg, axis=0)
+        P[:] = root + cs - np.repeat(cs[off[:-1]], st["n"], axis=0)
     elif kind == "smooth":
         # pull each inner point toward the middle of its neighbours (the root stays put, the tip follows its neighbour's
         # direction): calms curl and frizz without changing where the strand goes
