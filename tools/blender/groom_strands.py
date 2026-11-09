@@ -11,7 +11,8 @@ strand is written into one group (Blender's curves carry no group attribute), so
 Without "out" the script only prints the summary (root bounds and lengths per group) for choosing regions. "head" is
 an .npz with "v", the groom head's vertices in the same frame, drawn in grey under the strands in the preview;
 "preview_k" is how many hits on a pixel make it fully dark (default 6; raise it for a dense scalp groom);
-"preview_back": true adds the back half seen from behind as a fourth column.
+"preview_back": true adds the back half seen from behind as a fourth column. "dump": npz saves the finished strands
+("P" points in groom space, "n" points per strand, "W" widths), the same ones the abc and the preview get.
 "zones": {name: region} (the "where" keys below, tested on every point of the result) prints a ZONE line per region:
 the points inside from strands rooted outside it (and the lowest z among them), then those of strands rooted inside;
 a clearance check, such as no hair in front of a lens or over a glasses arm. Below it, the root bounds of the strands
@@ -66,7 +67,10 @@ With no "where" an op applies to every strand. Ops run in order:
   {"op": "lift", "clear": cm}             (needs "head") push each point that sits below the head surface back out
                                           along the nearest head vertex's normal, to at least "clear" (default 0.01)
                                           above the surface plus the root's own height (blended by the mask): a strand
-                                          moved or bent into the skin ends up lying on it instead
+                                          moved or bent into the skin ends up lying on it instead. With "whole": true
+                                          the strand rises as one: each point's push becomes the running maximum from
+                                          the root to that point, applied along the root's normal, so no single point
+                                          is pushed out past its neighbours
   {"op": "shell", "file": npz, "frac": f, "radius": cm, "smooth": cm, "kmin": a, "kmax": b}
                                           (needs "head") give the hair a target volume: "file" holds "v", a surface in
                                           groom space (the outside of a sculpted or scanned hairstyle). At each root the
@@ -85,7 +89,10 @@ With no "where" an op applies to every strand. Ops run in order:
                                           to the shell height under the point it has reached by the fraction "rise"
                                           of its length (default 0.35, smoothstep), never climbing faster than
                                           "climb" (default 0.9) cm per cm walked. Blended toward the old strand by the
-                                          mask. Follow it with "clump" for locks and "bend" for spikes
+                                          mask. Each point is set off the nearest head vertex's normal, so the strand
+                                          zigzags where that vertex changes (a 2 mm segment against mm-sized steps at
+                                          3 cm out): follow it straight away with "smooth" (amount 0.5, 8 iters), then
+                                          "clump" for locks and "bend" for spikes
   {"op": "width", "scale": s}             scale the point widths (s blended toward 1 by the mask)
   {"op": "wave", "amp": cm, "wavelength": cm, "power": p}
                                           a sine wave across each strand, random phase and direction per strand,
@@ -427,8 +434,19 @@ for op in spec.get("ops", []):
             rv, rn = head_near(P[off[:-1]])
             h0 = np.maximum(((P[off[:-1]] - rv) * rn).sum(1), 0)
             push = np.maximum(h0[sid[k]] + op.get("clear", 0.01) - h, 0) * m[sid[k]]
-            P[k] += push[:, None] * hn
-            print("op lift   %d points pushed out, max %.3f cm" % (int((push > 1e-4).sum()), push.max()))
+            if op.get("whole"):
+                # along the root normal it takes push / cos to clear the point's own surface; then a running maximum
+                # per strand (strands are contiguous and pushes stay under 1e4, so a per-strand offset keeps the
+                # accumulate from crossing strands)
+                need = np.zeros(len(P))
+                need[k] = push / np.maximum((hn * rn[sid[k]]).sum(1), 0.3)
+                big = 1e4 * np.arange(len(st), dtype=float)
+                need = np.maximum.accumulate(need + big[sid]) - big[sid]
+                P += need[:, None] * rn[sid]
+                print("op lift   whole strands: %d points moved, max %.3f cm" % (int((need > 1e-4).sum()), need.max()))
+            else:
+                P[k] += push[:, None] * hn
+                print("op lift   %d points pushed out, max %.3f cm" % (int((push > 1e-4).sum()), push.max()))
     elif kind == "shell":
         if not spec.get("head"):
             raise SystemExit("shell needs a head")
@@ -544,6 +562,9 @@ for op in spec.get("ops", []):
         raise SystemExit("unknown op " + kind)
     print("op %-6s %d strands in the region (mask > .5)" % (kind, int((m > 0.5).sum())))
 summary("out")
+if spec.get("dump"):  # the finished strands as the abc writes them (groom frame, cm): "P" points, "n" points per strand
+    np.savez_compressed(spec["dump"], P=P.astype(np.float32), n=st["n"].astype(np.int32), W=W.astype(np.float32))
+    print("DUMP", spec["dump"])
 # "zones": {name: region} (the "where" keys, tested on every point): how much hair ends up where it must not be, such
 # as in front of a lens or over a glasses arm; points of strands rooted inside the zone are counted apart
 for zname, zw in spec.get("zones", {}).items():
