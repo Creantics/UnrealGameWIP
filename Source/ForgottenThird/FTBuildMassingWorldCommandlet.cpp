@@ -702,18 +702,20 @@ bool LoadCoverage(const FString& File, std::vector<ftcore::CoveragePoint>& Point
 // their corners in the plan frame), joined where a poly's neighbours list another, or an off-mesh link whose own
 // neighbours do (ftcore::navIslands). District 0's island holds the poly its spawn (HomeAt, engine cm) projects to; an
 // island over ftcore::kNavIslandBig m² besides it must hold a pocket point, and each on-point must project into it
-// (ftcore::classifyNavIslands). Logs a summary line, then a line per undeclared island and per on-point off district
-// 0's island or the navmesh; returns how many of those there are. Allocates: build time only.
+// (ftcore::classifyNavIslands). With -Sea (bSea), the polys under the sea are left out first (ftcore::navPolysAboveSea):
+// the sea plane has no collision, so the ground under it gets navmesh too. A point on a poly left out is off the navmesh.
+// Logs a summary line, then a line per undeclared island and per on-point off district 0's island or the navmesh;
+// returns how many of those there are. Allocates: build time only.
 int32 CheckCoverage(const UNavigationSystemV1& Nav, const ARecastNavMesh& NavMesh, double Side, const FVector& HomeAt,
-	const std::vector<ftcore::CoveragePoint>& Points)
+	const std::vector<ftcore::CoveragePoint>& Points, bool bSea)
 {
 	const auto PlanOf = [Side](const FVector& At) { return ftcore::MassingVec{At.X / 100.0 + Side * 0.5, Side * 0.5 - At.Y / 100.0, At.Z / 100.0}; };
 	TArray<FNavTileRef> Tiles;
 	NavMesh.GetAllNavMeshTiles(Tiles);
 	std::vector<ftcore::MassingVec> Corners;
-	std::vector<ftcore::NavPolyRef> Polys;
-	TArray<NavNodeRef> Refs;
-	TMap<NavNodeRef, uint32> IndexOf;
+	std::vector<ftcore::NavPolyRef> AllPolys;
+	TArray<NavNodeRef> AllRefs;
+	TMap<NavNodeRef, uint32> AllIndex;
 	TArray<FNavPoly> TilePolys;
 	TArray<FVector> Verts;
 	for (const FNavTileRef& Tile : Tiles)
@@ -737,10 +739,26 @@ int32 CheckCoverage(const UNavigationSystemV1& Nav, const ARecastNavMesh& NavMes
 			{
 				Corners.push_back(PlanOf(V));
 			}
-			IndexOf.Add(Poly.Ref, static_cast<uint32>(Polys.size()));
-			Refs.Add(Poly.Ref);
-			Polys.push_back(Ref);
+			AllIndex.Add(Poly.Ref, static_cast<uint32>(AllPolys.size()));
+			AllRefs.Add(Poly.Ref);
+			AllPolys.push_back(Ref);
 		}
+	}
+	// The sea plane stands at the datum; without -Sea, nothing is left out.
+	std::vector<std::uint32_t> Keep;
+	ftcore::SeaLeftOut UnderSea;
+	ftcore::navPolysAboveSea(Corners, AllPolys, bSea ? 0.0 : ftcore::kNoSea, ftcore::kNavSeaMargin, Keep, UnderSea);
+	std::vector<ftcore::NavPolyRef> Polys;
+	Polys.reserve(Keep.size());
+	TArray<NavNodeRef> Refs;
+	Refs.Reserve(static_cast<int32>(Keep.size()));
+	TMap<NavNodeRef, uint32> IndexOf;
+	IndexOf.Reserve(static_cast<int32>(Keep.size()));
+	for (const std::uint32_t K : Keep)
+	{
+		IndexOf.Add(AllRefs[static_cast<int32>(K)], static_cast<uint32>(Polys.size()));
+		Refs.Add(AllRefs[static_cast<int32>(K)]);
+		Polys.push_back(AllPolys[K]);
 	}
 	std::vector<ftcore::NavLink> Links;
 	TArray<NavNodeRef> Near;
@@ -760,6 +778,11 @@ int32 CheckCoverage(const UNavigationSystemV1& Nav, const ARecastNavMesh& NavMes
 			{
 				Link.b = *J;
 				Links.push_back(Link);
+				continue;
+			}
+			// A ground poly left out under the sea joins nothing.
+			if (AllIndex.Contains(N))
+			{
 				continue;
 			}
 			// Not a ground poly: an off-mesh link, joined to the ground polys at its ends.
@@ -803,9 +826,12 @@ int32 CheckCoverage(const UNavigationSystemV1& Nav, const ARecastNavMesh& NavMes
 	const FString Home = Sum.home < 0
 		? FString(TEXT("none (district 0's spawn is off the navmesh)"))
 		: FString::Printf(TEXT("#%d, %.0f m2 (%.1f%% of it)"), static_cast<int32>(Sum.home) + 1, Sum.homeArea, Sum.homePercent);
-	const FString Line = FString::Printf(TEXT("FTBuildMassingWorld: coverage: %d navmesh polys in %d tiles, %d islands, %.0f m2 walkable; district "
+	const FString SeaPart = bSea
+		? FString::Printf(TEXT(" (under the sea: %d polys, %.0f m2, left out)"), static_cast<int32>(UnderSea.polys), UnderSea.area)
+		: FString();
+	const FString Line = FString::Printf(TEXT("FTBuildMassingWorld: coverage: %d navmesh polys in %d tiles%s, %d islands, %.0f m2 walkable; district "
 		"0's island %s; %d islands over %.0f m2 besides it: %d declared by a pocket, %d undeclared; on-points on district 0's island %d of %d; "
-		"pockets %d (%d in an island over the size, %d off the navmesh)."), static_cast<int32>(Polys.size()), Tiles.Num(),
+		"pockets %d (%d in an island over the size, %d off the navmesh)."), static_cast<int32>(AllPolys.size()), Tiles.Num(), *SeaPart,
 		static_cast<int32>(Set.islands.size()), Set.area, *Home, static_cast<int32>(Sum.big), ftcore::kNavIslandBig,
 		static_cast<int32>(Sum.bigDeclared), static_cast<int32>(Sum.bigUndeclared), static_cast<int32>(Sum.onHome),
 		static_cast<int32>(Sum.onPoints), static_cast<int32>(Sum.pockets), static_cast<int32>(Sum.pocketsMarking),
@@ -1404,7 +1430,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		const int32 LoadCoverageFails = CoverageFile.IsEmpty()
 			? 0
 			: CheckCoverage(*Nav, *NavMesh, Side, Cm(ftcore::massingEnginePoint(Side, Places[0].SpawnX, Places[0].SpawnY, Places[0].SpawnFloor)),
-				  CoveragePoints);
+				  CoveragePoints, bSea);
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Load: %s checked, not saved: goals reached %d of %d, district spawns reached %d of %d."),
 			*MapPath, GoalTally.Reached, Counted, SpawnTally.Reached, Places.Num());
 		const bool bLoadShort =
@@ -1769,7 +1795,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			else
 			{
 				CoverageFails = CheckCoverage(*Nav, *Recast, Side,
-					Cm(ftcore::massingEnginePoint(Side, Places[0].SpawnX, Places[0].SpawnY, Places[0].SpawnFloor)), CoveragePoints);
+					Cm(ftcore::massingEnginePoint(Side, Places[0].SpawnX, Places[0].SpawnY, Places[0].SpawnFloor)), CoveragePoints, bSea);
 			}
 		}
 	}

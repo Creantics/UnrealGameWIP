@@ -354,6 +354,50 @@ TEST_CASE("world checks: navmesh islands by their links, largest first") {
     CHECK(set.area == 0.0);
 }
 
+TEST_CASE("world checks: the navmesh under the sea is left out, the rest kept in order") {
+    std::vector<MassingVec> corners;
+    std::vector<NavPolyRef> polys;
+    // Poly 0: under the sea, its highest corner on the line itself (sea level 0 plus the 0.3 m margin), 2 m square.
+    polys.push_back({static_cast<std::uint32_t>(corners.size()), 4});
+    corners.push_back({600, 100, -2.0});
+    corners.push_back({602, 100, -1.5});
+    corners.push_back({602, 102, 0.3});
+    corners.push_back({600, 102, -0.4});
+    // Poly 1: across the waterline, one corner over the line. Poly 2: dry ground. Poly 3: just over the line.
+    polys.push_back({static_cast<std::uint32_t>(corners.size()), 3});
+    corners.push_back({590, 100, -1.0});
+    corners.push_back({595, 100, 0.5});
+    corners.push_back({590, 105, 2.0});
+    square(corners, polys, 100, 100, 10, 5.0);
+    square(corners, polys, 610, 100, 3, 0.31);
+    // Poly 4: a 4 m square wholly under the sea. Poly 5: corners past the array, kept as navIslands keeps it.
+    square(corners, polys, 620, 100, 4, -3.0);
+    polys.push_back({static_cast<std::uint32_t>(corners.size()) - 2, 4});
+
+    std::vector<std::uint32_t> keep = {99};
+    SeaLeftOut out;
+    out.polys = 7;
+    navPolysAboveSea(corners, polys, 0.0, kNavSeaMargin, keep, out);
+    CHECK(keep == std::vector<std::uint32_t>{1, 2, 3, 5});
+    CHECK(out.polys == 2);
+    CHECK(near(out.area, 4.0 + 16.0));
+
+    // A higher sea leaves the poly across the waterline out too; the dry ground stays.
+    navPolysAboveSea(corners, polys, 2.0, kNavSeaMargin, keep, out);
+    CHECK(keep == std::vector<std::uint32_t>{2, 5});
+    CHECK(out.polys == 4);
+
+    // No sea: nothing is left out, even the polys under the datum.
+    navPolysAboveSea(corners, polys, kNoSea, kNavSeaMargin, keep, out);
+    CHECK(keep == std::vector<std::uint32_t>{0, 1, 2, 3, 4, 5});
+    CHECK(out.polys == 0);
+    CHECK(out.area == 0.0);
+
+    navPolysAboveSea({}, {}, 0.0, kNavSeaMargin, keep, out);
+    CHECK(keep.empty());
+    CHECK(out.polys == 0);
+}
+
 TEST_CASE("world checks: islands classed by district 0's spawn and the coverage points") {
     std::vector<MassingVec> corners;
     std::vector<NavPolyRef> polys;

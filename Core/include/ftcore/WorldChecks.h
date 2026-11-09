@@ -7,6 +7,7 @@
 //
 //   std::vector<ftcore::TourStop> stops;
 //   if (!ftcore::importTourStops(csvText, stops, &error)) ...;         // allocates: build time only
+//   ftcore::navPolysAboveSea(verts, polys, 0.0, ftcore::kNavSeaMargin, keep, leftOut); // allocates: build time only
 //   ftcore::navIslands(verts, polys, links, islands);                  // allocates: build time only
 //   ftcore::classifyNavIslands(islands, homePoly, points, pointPolys, ftcore::kNavIslandBig, summary);
 //   ftcore::readBackWindow(...); ftcore::compareHeightsExact(...);     // the heightmap, sample for sample
@@ -19,6 +20,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -175,6 +177,21 @@ struct NavIslandSet {
 // only.
 FTCORE_API void navIslands(const std::vector<MassingVec>& corners, const std::vector<NavPolyRef>& polys,
                            const std::vector<NavLink>& links, NavIslandSet& out);
+
+// The navmesh under the sea, left out before the islands are counted: a map's sea plane has no collision, so the
+// ground under it gets navmesh too, which would count as one large island. A poly is left out when its highest
+// corner is at or under `seaLevel + margin` (m); kNavSeaMargin is the tables' dry margin. kNoSea as the sea's level
+// leaves nothing out. A poly with no corners, or whose corners run past `corners`, is kept. `keep` gets the indices
+// of the polys kept, in order, and `out` the count and plan area (m²) of those left out; both are cleared first.
+// Allocates: build time only.
+inline constexpr double kNavSeaMargin = 0.3;
+inline constexpr double kNoSea = std::numeric_limits<double>::lowest(); // finite, so fast-math builds compare it too
+struct SeaLeftOut {
+    std::size_t polys = 0;
+    double area = 0.0; // m², plan
+};
+FTCORE_API void navPolysAboveSea(const std::vector<MassingVec>& corners, const std::vector<NavPolyRef>& polys,
+                                 double seaLevel, double margin, std::vector<std::uint32_t>& keep, SeaLeftOut& out);
 
 // An island over this many square metres that isn't district 0's must be declared by a pocket point.
 inline constexpr double kNavIslandBig = 50.0;

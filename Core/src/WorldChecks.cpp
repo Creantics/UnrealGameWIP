@@ -254,6 +254,30 @@ void navPolyArea(const MassingVec* corners, std::size_t count, double& area, dou
     cy = y0 + sy / (3.0 * twice);
 }
 
+void navPolysAboveSea(const std::vector<MassingVec>& corners, const std::vector<NavPolyRef>& polys, double seaLevel,
+                      double margin, std::vector<std::uint32_t>& keep, SeaLeftOut& out) {
+    keep.clear();
+    keep.reserve(polys.size());
+    out = SeaLeftOut{};
+    const double line = seaLevel + margin;
+    for (std::size_t i = 0; i < polys.size(); ++i) {
+        const NavPolyRef& p = polys[i];
+        if (p.count > 0 && static_cast<std::uint64_t>(p.first) + p.count <= corners.size()) {
+            const MassingVec* const at = corners.data() + p.first;
+            double top = at[0].z;
+            for (std::uint32_t k = 1; k < p.count; ++k) top = std::max(top, at[k].z);
+            if (top <= line) {
+                double area = 0.0, cx = 0.0, cy = 0.0;
+                navPolyArea(at, p.count, area, cx, cy);
+                ++out.polys;
+                out.area += area;
+                continue;
+            }
+        }
+        keep.push_back(static_cast<std::uint32_t>(i));
+    }
+}
+
 void navIslands(const std::vector<MassingVec>& corners, const std::vector<NavPolyRef>& polys,
                 const std::vector<NavLink>& links, NavIslandSet& out) {
     out.islands.clear();
