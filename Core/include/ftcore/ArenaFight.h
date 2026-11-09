@@ -315,6 +315,9 @@ inline constexpr float kArenaShotRange = 5.f;
 // (WeaponRight) with every light that reaches kArenaShotRange and kicks (KickLeft, KickRight in turn) with the
 // rest. Writes up to `cap` entries to `out` and returns how many (no allocation).
 FTCORE_API std::size_t arenaStrikePattern(const ArenaFighter& kit, FightClip* out, std::size_t cap);
+// The clip of the kit's heavy: a gun's heavy that reaches kArenaShotRange is a shot (WeaponRight), a shorter one a
+// kick (KickRight); Magic casts, the rest punch (StrikeRight).
+FTCORE_API FightClip arenaHeavyStrike(const ArenaFighter& kit);
 
 // What an enemy move shows during its startup: the word on its Read card (append only; generic shapes,
 // the host shows each through its own ui string). arena.json spells it as arenaTellName gives it.

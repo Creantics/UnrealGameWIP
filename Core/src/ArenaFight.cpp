@@ -1806,6 +1806,16 @@ std::size_t arenaStrikePattern(const ArenaFighter& kit, FightClip* out, std::siz
     return count;
 }
 
+FightClip arenaHeavyStrike(const ArenaFighter& kit) {
+    switch (kit.weapon) {
+    case ArenaWeapon::Magic: return FightClip::Cast;
+    case ArenaWeapon::Guns: return kit.heavy.range >= kArenaShotRange ? FightClip::WeaponRight : FightClip::KickRight;
+    case ArenaWeapon::None:
+    case ArenaWeapon::Gauntlets: break;
+    }
+    return FightClip::StrikeRight;
+}
+
 const char* arenaTellName(ArenaTell t) {
     switch (t) {
     case ArenaTell::Strike: return "strike";
