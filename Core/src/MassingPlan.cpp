@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <charconv>
 #include <cmath>
+#include <cstddef>
 #include <unordered_set>
 
 namespace ftcore {
@@ -336,14 +337,17 @@ bool massingKitPlacement(const MassingBox& box, double side, const MassingVec& m
     return true;
 }
 
-void massingTopNudges(const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
-                      std::vector<double>& out) {
+namespace {
+
+// The flat boxes `include` marks, in order, and for each box the flat ones it shares a top with: stated tops within
+// kMassingSharedTop and footprints that overlap.
+void sharedTops(const std::vector<MassingBox>& boxes, const std::vector<bool>& include, std::vector<std::size_t>& flat,
+                std::vector<std::vector<std::size_t>>& adj) {
     const std::size_t n = boxes.size();
-    out.assign(n, 0.0);
-    std::vector<std::size_t> flat;
+    flat.clear();
     for (std::size_t i = 0; i < n; ++i)
         if (i < include.size() && include[i] && !boxes[i].sloped) flat.push_back(i);
-    std::vector<std::vector<std::size_t>> adj(n);
+    adj.assign(n, {});
     for (std::size_t p = 0; p < flat.size(); ++p)
         for (std::size_t q = p + 1; q < flat.size(); ++q) {
             const MassingBox& a = boxes[flat[p]];
@@ -353,6 +357,17 @@ void massingTopNudges(const std::vector<MassingBox>& boxes, const std::vector<bo
                 adj[flat[q]].push_back(flat[p]);
             }
         }
+}
+
+} // namespace
+
+void massingTopNudges(const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
+                      std::vector<double>& out) {
+    const std::size_t n = boxes.size();
+    out.assign(n, 0.0);
+    std::vector<std::size_t> flat;
+    std::vector<std::vector<std::size_t>> adj;
+    sharedTops(boxes, include, flat, adj);
     std::vector<std::size_t> order;
     for (const std::size_t i : flat)
         if (!adj[i].empty()) order.push_back(i);
@@ -409,6 +424,94 @@ double massingGroundAt(const std::uint16_t* grid, std::size_t samplesX, std::siz
     const double south = h(c0, r0) + (h(c1, r0) - h(c0, r0)) * tx;
     const double north = h(c0, r1) + (h(c1, r1) - h(c0, r1)) * tx;
     return south + (north - south) * ty;
+}
+
+namespace {
+
+// Hands `visit` each of a box's ground sample points (massingGroundRaises) as a plan point, stopping at the first it
+// returns true for; whether one did.
+template <class Visit>
+bool anyGroundSample(const MassingBox& b, double spacing, Visit&& visit) {
+    const double hu = std::max(b.sx * 0.5 - kMassingGroundInset, 0.0);
+    const double hw = std::max(b.sy * 0.5 - kMassingGroundInset, 0.0);
+    const auto count = [&](double half) {
+        const double steps = std::ceil(2.0 * half / spacing);
+        return static_cast<std::size_t>(std::clamp(steps, 0.0, static_cast<double>(kMassingGroundSamples - 1))) + 1;
+    };
+    const std::size_t nu = count(hu), nw = count(hw);
+    const double a = b.rot * kPi / 180.0;
+    const double c = std::cos(a), s = std::sin(a);
+    for (std::size_t i = 0; i < nu; ++i) {
+        const double u = nu == 1 ? 0.0 : -hu + 2.0 * hu * static_cast<double>(i) / static_cast<double>(nu - 1);
+        for (std::size_t j = 0; j < nw; ++j) {
+            const double w = nw == 1 ? 0.0 : -hw + 2.0 * hw * static_cast<double>(j) / static_cast<double>(nw - 1);
+            // solidAt's rotation, applied: (u, w) in the box's axes to the plan frame.
+            if (visit(b.cx + u * c - w * s, b.cy + u * s + w * c)) return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+std::size_t massingGroundRaises(const std::uint16_t* grid, std::size_t samplesX, std::size_t samplesY, double spacing,
+                                double originX, double originY, const std::vector<MassingBox>& boxes,
+                                const std::vector<bool>& include, const std::vector<double>& nudges,
+                                std::vector<double>& out) {
+    const std::size_t n = boxes.size();
+    out.assign(n, 0.0);
+    if (!grid || samplesX == 0 || samplesY == 0 || !(spacing > 0.0) || !std::isfinite(spacing)) return 0;
+    std::vector<std::size_t> flat;
+    std::vector<std::vector<std::size_t>> adj;
+    sharedTops(boxes, include, flat, adj);
+    const auto nudge = [&](std::size_t i) { return i < nudges.size() ? nudges[i] : 0.0; };
+    const auto onGround = [&](std::size_t i, double top) {
+        return anyGroundSample(boxes[i], spacing, [&](double x, double y) {
+            return std::fabs(top - massingGroundAt(grid, samplesX, samplesY, spacing, originX, originY, x, y)) <
+                   kMassingSharedTop;
+        });
+    };
+    // Each box's group: the index of its first box, -1 until it is reached.
+    std::vector<std::ptrdiff_t> group(n, -1);
+    std::vector<std::size_t> members;
+    std::size_t stuck = 0;
+    for (const std::size_t first : flat) {
+        if (group[first] >= 0) continue;
+        const std::ptrdiff_t id = static_cast<std::ptrdiff_t>(first);
+        members.assign(1, first);
+        group[first] = id;
+        for (std::size_t k = 0; k < members.size(); ++k)
+            for (const std::size_t j : adj[members[k]])
+                if (group[j] < 0) {
+                    group[j] = id;
+                    members.push_back(j);
+                }
+        bool lying = false;
+        for (const std::size_t i : members) lying = lying || onGround(i, boxes[i].z1 + nudge(i));
+        if (!lying) continue;
+        int steps = 0;
+        for (int k = 1; k <= kMassingGroundSteps && steps == 0; ++k) {
+            const double raise = kMassingNudgeStep * static_cast<double>(k);
+            bool clear = true;
+            for (std::size_t m = 0; m < members.size() && clear; ++m) {
+                const std::size_t i = members[m];
+                const double top = boxes[i].z1 + nudge(i) + raise;
+                clear = !onGround(i, top);
+                for (std::size_t q = 0; q < flat.size() && clear; ++q) {
+                    const std::size_t j = flat[q];
+                    clear = group[j] == id || std::fabs(top - (boxes[j].z1 + nudge(j) + out[j])) >= kMassingSharedTop ||
+                            !massingFootprintsOverlap(boxes[i], boxes[j]);
+                }
+            }
+            if (clear) steps = k;
+        }
+        if (steps == 0) {
+            ++stuck;
+            continue;
+        }
+        for (const std::size_t i : members) out[i] = kMassingNudgeStep * static_cast<double>(steps);
+    }
+    return stuck;
 }
 
 namespace {

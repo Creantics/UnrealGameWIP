@@ -513,6 +513,7 @@ struct FKitRow
 	FString Box;
 	FString Asset;
 	bool bFit = false;
+	bool bHide = false; // asset "none": the box is only hidden, another row's mesh standing in for it
 	double Turn = 0.0;
 	double Dz = 0.0;
 	int32 BoxAt = INDEX_NONE;
@@ -521,7 +522,8 @@ struct FKitRow
 
 // A CSV with the columns box (a massing id) and asset (a static mesh's object path) and optionally fit ("real", the
 // default, or "footprint"), turn and dz (ftcore::massingKitPlacement), in any order, others skipped; a row may leave
-// the optional fields empty; '#' lines are comments.
+// the optional fields empty; '#' lines are comments. The asset "none" places nothing and only hides the box, for a
+// box another row's mesh stands in for (masts on a crown's mesh).
 bool LoadKit(const FString& File, TArray<FKitRow>& Rows)
 {
 	FString Text;
@@ -569,6 +571,7 @@ bool LoadKit(const FString& File, TArray<FKitRow>& Rows)
 		const FString Turn = Fields.IsValidIndex(TurnCol) ? Fields[TurnCol] : FString();
 		const FString Dz = Fields.IsValidIndex(DzCol) ? Fields[DzCol] : FString();
 		Row.bFit = Fit == TEXT("footprint");
+		Row.bHide = Row.Asset == TEXT("none");
 		if (Row.Box.IsEmpty() || Row.Asset.IsEmpty() || !(Fit.IsEmpty() || Fit == TEXT("real") || Row.bFit) ||
 			!(Turn.IsEmpty() || LexTryParseString(Row.Turn, *Turn)) || !(Dz.IsEmpty() || LexTryParseString(Row.Dz, *Dz)))
 		{
@@ -1238,8 +1241,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s is not in the massing table."), *KitFile, *Row.Box);
 			return 1;
 		}
-		Row.Mesh = LoadObject<UStaticMesh>(nullptr, *Row.Asset);
-		if (!Row.Mesh)
+		Row.Mesh = Row.bHide ? nullptr : LoadObject<UStaticMesh>(nullptr, *Row.Asset);
+		if (!Row.Mesh && !Row.bHide)
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s names %s, which isn't a static mesh in the project."), *KitFile, *Row.Box,
 				*Row.Asset);
@@ -1763,6 +1766,25 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 	std::vector<double> Nudges;
 	ftcore::massingTopNudges(Boxes, Flat, Nudges);
+	// A top the ground was levelled to flickers against it as a shared top does: it goes up off the ground.
+	int32 Raised = 0;
+	std::vector<double> Raises;
+	{
+		const size_t Stuck = ftcore::massingGroundRaises(Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX),
+			static_cast<size_t>(Field.SamplesY), Field.Spacing, Field.OriginX, Field.OriginY, Boxes, Flat, Nudges, Raises);
+		for (size_t I = 0; I < Boxes.size(); ++I)
+		{
+			if (Raises[I] > 0.0)
+			{
+				Nudges[I] += Raises[I];
+				++Raised;
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: %s's top goes up %.2f m off the ground, to %.2f m."), *Utf8(Boxes[I].id),
+					Raises[I], Boxes[I].z1 + Nudges[I]);
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: %d tops go up off the ground; %d groups no raise of up to %.2f m clears stay on it."),
+			Raised, static_cast<int32>(Stuck), ftcore::kMassingNudgeStep * ftcore::kMassingGroundSteps);
+	}
 	std::vector<bool> Replaced(Boxes.size(), false);
 	for (const FKitRow& Row : KitRows)
 	{
@@ -1812,7 +1834,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			continue;
 		}
 		const double Height = FMath::Max(Box.z1 + Nudges[I] - Box.z0, ftcore::kMassingMinHeight);
-		Nudged += Nudges[I] < 0.0 ? 1 : 0;
+		Nudged += Nudges[I] != 0.0 || Raises[I] > 0.0 ? 1 : 0;
 		AStaticMeshActor* Built = Block(World, Spawn, Cube, Material, Id, Cm(ftcore::massingEnginePoint(Side, Box.cx, Box.cy, Box.z0 + Height * 0.5)),
 			FVector(Box.sx, Box.sy, Height), ftcore::massingEngineYaw(Box.rot));
 		if (Replaced[I])
@@ -1831,12 +1853,19 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 
 	// The kit: each row's mesh in its box's stead. It collides with nothing, its box stopping the lead instead; a box the
 	// build doesn't make leaves its mesh without a collider, and says so.
-	int32 KitPlaced = 0, KitNoCollider = 0;
+	int32 KitPlaced = 0, KitNoCollider = 0, KitHidden = 0;
 	TMap<int32, int32> KitOnBox;
 	TMap<FString, int32> KitPerAsset;
 	for (const FKitRow& Row : KitRows)
 	{
 		const ftcore::MassingBox& Box = Boxes[static_cast<size_t>(Row.BoxAt)];
+		if (Row.bHide)
+		{
+			++KitHidden;
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: kit %s: hidden, another row's mesh standing in for it (z %.1f to %.1f)."), *Row.Box,
+				Box.z0, Box.z1);
+			continue;
+		}
 		const FBox Bounds = Row.Mesh->GetBoundingBox();
 		const ftcore::MassingVec MeshMin{Bounds.Min.X / 100.0, Bounds.Min.Y / 100.0, Bounds.Min.Z / 100.0};
 		const ftcore::MassingVec MeshMax{Bounds.Max.X / 100.0, Bounds.Max.Y / 100.0, Bounds.Max.Z / 100.0};
@@ -2041,8 +2070,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 	if (!KitRows.IsEmpty())
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: kit: %d meshes placed on %d boxes, %d of the meshes with no collider; %d built boxes left as boxes."),
-			KitPlaced, KitOnBox.Num(), KitNoCollider, BoxesLeft);
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("FTBuildMassingWorld: kit: %d meshes placed on %d boxes, %d of the meshes with no collider; %d boxes only hidden; %d built boxes left as boxes."),
+			KitPlaced, KitOnBox.Num(), KitNoCollider, KitHidden, BoxesLeft);
 	}
 	const FString ApartLine = Apart.IsEmpty() ? FString() : FString::Printf(TEXT(" (listed apart, not counted: %s)"), *Apart);
 	const FString SpawnLine =
@@ -2051,9 +2081,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		? FString()
 		: FString::Printf(TEXT("; temporary placements: %d goals, %d spawns"), GoalPlacements, Places.IsEmpty() ? 0 : SpawnPlacements);
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("FTBuildMassingWorld: %d rows: %d named and %d kit built (%d sloped meshes, %d tops nudged), %d not built; %d hidden walls; "
-			 "ground %d x %d samples (%.1f to %.1f m); %d actors; goals reached %d of %d%s%s%s%s."),
-		static_cast<int32>(Boxes.size()), Named, Kit, Sloped, Nudged, Skipped, static_cast<int32>(Walls.size()), Samples, Samples,
+		TEXT("FTBuildMassingWorld: %d rows: %d named and %d kit built (%d sloped meshes, %d tops nudged, %d of them off the ground), %d not built; "
+			 "%d hidden walls; ground %d x %d samples (%.1f to %.1f m); %d actors; goals reached %d of %d%s%s%s%s."),
+		static_cast<int32>(Boxes.size()), Named, Kit, Sloped, Nudged, Raised, Skipped, static_cast<int32>(Walls.size()), Samples, Samples,
 		ftcore::massingHeightFromValue(Lowest), ftcore::massingHeightFromValue(Highest), Actors, Reached, Counted, *ApartLine, *SpawnLine,
 		*PlacedLine, bNav ? TEXT("") : TEXT(" (no navmesh)"));
 

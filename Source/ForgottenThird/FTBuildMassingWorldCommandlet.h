@@ -35,7 +35,8 @@
 // The map (/Game/Maps/<Map>, World_Massing by default; overwritten):
 // - the height field as a Landscape, a vertex per sample, padded to whole components;
 // - every built box (ftcore::massingBuilt) as a static mesh actor labelled with its id: a flat box is the
-//   engine's cube, scaled, with its top brought down where it would share one (massingTopNudges); a
+//   engine's cube, scaled, with its top brought down where it would share one (massingTopNudges) and
+//   raised off the ground where it would lie on it (massingGroundRaises, each raised top logged); a
 //   sloped one gets its own mesh in the map's package (SM_Massing_<id>, collision from its triangles);
 //   each wears a flat tint by its finish (plain, wall or deck) until its kit or hero mesh replaces it;
 // - the walls table's rows as hidden walls that stop pawns, not the camera;
@@ -54,8 +55,9 @@
 // massing id), asset (a static mesh's object path) and optionally fit (real, the default, or footprint), turn and
 // dz (ftcore::massingKitPlacement). The mesh is labelled with the box's id and collides with nothing; the box stays
 // as its hidden collider, labelled <id>-COL. A missing box or mesh fails the run before anything is built. A row on
-// a box the build doesn't make places its mesh without a collider and says so. The log gives each mesh's size and
-// scale, and the built boxes left.
+// a box the build doesn't make places its mesh without a collider and says so. The asset none places nothing and
+// only hides its box (still a collider), for a box another row's mesh stands in for. The log gives each mesh's size
+// and scale, the boxes only hidden, and the built boxes left.
 //
 // -Surfaces -Streets=<csv> dresses the map in Solhaven's photographed surfaces (the surfaces of /Game/Rendering/Surfaces/solhaven_*, the
 // ground master M_WorldGround and M_Look_Water), and without -Surfaces the build is exactly as without them (-Streets alone does nothing).

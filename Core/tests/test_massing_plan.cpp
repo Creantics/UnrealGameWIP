@@ -574,6 +574,114 @@ TEST_CASE("massing: shared tops step down, smallest first") {
     CHECK(nudge[6] == 0.0);
 }
 
+namespace {
+
+// A height field as Core stores it (massingHeightFromValue), `x` samples by `y`, 1 m apart from the plan origin.
+std::vector<std::uint16_t> groundGrid(std::size_t x, std::size_t y, double (*height)(std::size_t ix, std::size_t iy)) {
+    std::vector<std::uint16_t> g(x * y);
+    for (std::size_t iy = 0; iy < y; ++iy)
+        for (std::size_t ix = 0; ix < x; ++ix)
+            g[iy * x + ix] = static_cast<std::uint16_t>(std::lround(32768.0 + height(ix, iy) * 128.0));
+    return g;
+}
+
+std::size_t raisesOver(const std::vector<std::uint16_t>& g, std::size_t x, std::size_t y,
+                       const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
+                       const std::vector<double>& nudges, std::vector<double>& out) {
+    return massingGroundRaises(g.data(), x, y, 1.0, 0.0, 0.0, boxes, include, nudges, out);
+}
+
+} // namespace
+
+TEST_CASE("massing: a top the ground was levelled to goes up off it") {
+    // Flat ground at 4 m over 40 x 40 m.
+    const auto g = groundGrid(40, 40, [](std::size_t, std::size_t) { return 4.0; });
+    std::vector<MassingBox> boxes = {
+        flatBox(10, 20, 6, 30, 0, -3, 4),   // 0: a quay, its top on the ground
+        flatBox(30, 10, 4, 4, 0, 4, 5),     // 1: a box a metre over it
+        flatBox(30, 30, 4, 4, 0, -3, 4),    // 2: on the ground, but left out
+    };
+    MassingBox sloped = flatBox(30, 20, 4, 4, 0, -3, 4);
+    sloped.sloped = true;
+    sloped.slopeFrom = sloped.slopeTo = 4.0;
+    boxes.push_back(sloped); // 3: sloped, never raised
+    const std::vector<bool> include = {true, true, false, true};
+    std::vector<double> nudge, raise;
+    massingTopNudges(boxes, include, nudge);
+    CHECK(raisesOver(g, 40, 40, boxes, include, nudge, raise) == 0);
+    REQUIRE(raise.size() == boxes.size());
+    CHECK(near(raise[0], kMassingNudgeStep));
+    CHECK(raise[1] == 0.0);
+    CHECK(raise[2] == 0.0);
+    CHECK(raise[3] == 0.0);
+
+    // No ground: nothing goes up.
+    CHECK(massingGroundRaises(nullptr, 40, 40, 1.0, 0, 0, boxes, include, nudge, raise) == 0);
+    CHECK(raise[0] == 0.0);
+    CHECK(massingGroundRaises(g.data(), 40, 40, 0.0, 0, 0, boxes, include, nudge, raise) == 0);
+    CHECK(raise[0] == 0.0);
+}
+
+TEST_CASE("massing: boxes that share a top go up together, keeping their order") {
+    const auto g = groundGrid(40, 40, [](std::size_t, std::size_t) { return 4.0; });
+    const std::vector<MassingBox> boxes = {
+        flatBox(10, 20, 6, 30, 0, -3, 4), // 0: the quay
+        flatBox(10, 20, 2, 2, 0, 3, 4),   // 1: a landing on it, sharing its top
+    };
+    const std::vector<bool> include = {true, true};
+    std::vector<double> nudge, raise;
+    massingTopNudges(boxes, include, nudge);
+    REQUIRE(near(nudge[0], -kMassingNudgeStep)); // the quay sits under the landing
+    CHECK(raisesOver(g, 40, 40, boxes, include, nudge, raise) == 0);
+    // One step would bring the quay down onto the ground; two clear both.
+    CHECK(near(raise[0], 2 * kMassingNudgeStep));
+    CHECK(near(raise[1], 2 * kMassingNudgeStep));
+    CHECK(near((boxes[1].z1 + nudge[1] + raise[1]) - (boxes[0].z1 + nudge[0] + raise[0]), kMassingNudgeStep));
+    CHECK(near(boxes[0].z1 + nudge[0] + raise[0], 4.0 + kMassingNudgeStep));
+}
+
+TEST_CASE("massing: a raised top keeps clear of the boxes over it") {
+    const auto g = groundGrid(40, 40, [](std::size_t, std::size_t) { return 4.0; });
+    const std::vector<MassingBox> boxes = {
+        flatBox(10, 20, 6, 30, 0, -3, 4),                    // 0: the quay
+        flatBox(10, 20, 2, 2, 0, 3, 4 + kMassingNudgeStep),  // 1: a plate one step over it, not sharing its top
+    };
+    const std::vector<bool> include = {true, true};
+    std::vector<double> nudge, raise;
+    massingTopNudges(boxes, include, nudge);
+    REQUIRE(nudge[0] == 0.0);
+    CHECK(raisesOver(g, 40, 40, boxes, include, nudge, raise) == 0);
+    CHECK(near(raise[0], 2 * kMassingNudgeStep)); // one step would meet the plate's top
+    CHECK(raise[1] == 0.0);
+}
+
+TEST_CASE("massing: ground meeting a side along a line, a turned box, and a top no raise clears") {
+    // Ground at -3 south of y = 9 rising to 4 m at y = 10 and flat north of it.
+    const auto g = groundGrid(40, 20, [](std::size_t, std::size_t iy) { return iy >= 10 ? 4.0 : -3.0; });
+    std::vector<MassingBox> boxes = {
+        flatBox(5, 5, 10, 10, 0, -3, 4),  // 0: its north side on the line where the ground comes up to its top
+        flatBox(15, 8, 10, 2, 0, -3, 4),  // 1: y 7 to 9, wholly over the low ground
+        flatBox(30, 8, 10, 2, 90, -3, 4), // 2: the same turned a quarter: y 3 to 13, over the flat ground north
+    };
+    const std::vector<bool> include = {true, true, true};
+    std::vector<double> nudge, raise;
+    massingTopNudges(boxes, include, nudge);
+    REQUIRE(nudge[2] == 0.0);
+    CHECK(raisesOver(g, 40, 20, boxes, include, nudge, raise) == 0);
+    CHECK(raise[0] == 0.0);
+    CHECK(raise[1] == 0.0);
+    CHECK(near(raise[2], kMassingNudgeStep));
+
+    // Ground rising one height step (1/128 m) a metre through the top and well past every raise: some sample point
+    // always lies within kMassingSharedTop of it, so it stays and is counted.
+    const auto ramp = groundGrid(40, 3, [](std::size_t ix, std::size_t) { return 4.0 + (static_cast<double>(ix) - 5.0) / 128.0; });
+    const std::vector<MassingBox> one = {flatBox(20, 1, 30, 1, 0, -3, 4)};
+    const std::vector<bool> all = {true};
+    massingTopNudges(one, all, nudge);
+    CHECK(raisesOver(ramp, 40, 3, one, all, nudge, raise) == 1);
+    CHECK(raise[0] == 0.0);
+}
+
 TEST_CASE("massing: the 1 m grid as a Landscape") {
     CHECK(massingLandscapeSide(1501, 1501, 126) == 1513);
     CHECK(massingLandscapeSide(127, 100, 126) == 127);

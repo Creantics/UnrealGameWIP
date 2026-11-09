@@ -147,6 +147,26 @@ FTCORE_API void massingMesh(const MassingBox& box, double side, double topNudge,
 FTCORE_API void massingTopNudges(const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
                                  std::vector<double>& out);
 
+// The amount (>= 0) each flat box's top goes up, on top of its nudge, so that no top lies on the ground: a top the
+// ground was levelled to (a quay's) flickers against it as two boxes' shared tops do. Among the boxes `include` marks
+// (flat ones only), a box lies on the ground when its top (z1 + nudges[i], the nudges massingTopNudges gives, a missing
+// entry 0) is within kMassingSharedTop of the ground (massingGroundAt) at one of its sample points: a grid over its
+// footprint kMassingGroundInset inside its edges (ground meeting a side along a line shares no face with the top),
+// about `spacing` apart and at most kMassingGroundSamples a side. Such a box goes up together with the boxes it shares
+// a top with (massingTopNudges' conflicts, joined), so their order holds, by the fewest kMassingNudgeStep, up to
+// kMassingGroundSteps of them, that leaves none of their tops within kMassingSharedTop of the ground at its sample
+// points, nor of the top (nudge and raise taken) of a box outside them whose footprint overlaps it; groups go in the
+// order of their first box. A group no such raise clears stays where it is. `out` gets one entry per box (0 for the
+// rest; all 0 with no ground: an empty grid or a spacing that isn't positive). Returns the number of groups left on
+// the ground. Allocates: build time only.
+inline constexpr double kMassingGroundInset = 0.05;
+inline constexpr std::size_t kMassingGroundSamples = 65;
+inline constexpr int kMassingGroundSteps = 5;
+FTCORE_API std::size_t massingGroundRaises(const std::uint16_t* grid, std::size_t samplesX, std::size_t samplesY,
+                                           double spacing, double originX, double originY,
+                                           const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
+                                           const std::vector<double>& nudges, std::vector<double>& out);
+
 // Whether two boxes' footprints overlap with positive area (touching edges don't).
 FTCORE_API bool massingFootprintsOverlap(const MassingBox& a, const MassingBox& b);
 
