@@ -3,6 +3,7 @@
 #include "CsvRead.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <charconv>
 #include <cmath>
 #include <unordered_set>
@@ -123,12 +124,16 @@ bool importMassingBoxes(std::string_view csv, std::vector<MassingBox>& out, std:
     constexpr const char* kNames[Count] = {"id", "src", "kind", "cx", "cy", "sx", "sy", "rot", "z0", "z1", "cover", "slope"};
     std::size_t col[Count] = {};
     std::size_t width = 0;
+    std::size_t rowCol = 0; // the optional row column; width when absent
     bool haveHeader = false;
     std::unordered_set<std::string> ids;
 
     for (const Record& r : records) {
         if (isComment(r)) continue;
         if (!haveHeader) {
+            rowCol = r.fields.size();
+            for (std::size_t f = 0; f < r.fields.size(); ++f)
+                if (trim(r.fields[f]) == "row") rowCol = f;
             for (std::size_t c = 0; c < Count; ++c) {
                 col[c] = r.fields.size();
                 for (std::size_t f = 0; f < r.fields.size(); ++f) {
@@ -149,6 +154,7 @@ bool importMassingBoxes(std::string_view csv, std::vector<MassingBox>& out, std:
         b.id = std::string(trim(r.fields[col[Id]]));
         if (!validId(b.id)) return fail(error, r.line, "id must be A-Z, 0-9, '_' or '-'");
         if (!ids.insert(b.id).second) return fail(error, r.line, "id " + b.id + " twice");
+        if (rowCol < width) b.row = std::string(trim(r.fields[rowCol]));
         if (!parseSource(r.fields[col[Src]], b.source)) return fail(error, r.line, b.id + ": unknown src");
         b.kind = std::string(trim(r.fields[col[Kind]]));
         if (!validKind(b.kind)) return fail(error, r.line, b.id + ": kind must be a-z, 0-9 or '_'");
@@ -482,6 +488,187 @@ MassingFooting massingSpawnFooting(const std::uint16_t* grid, std::size_t sample
         }
     }
     return out;
+}
+
+// ---- The photographed look ----
+
+namespace {
+
+// FNV-1a over a row's text: stable across builds and platforms.
+std::uint32_t lookHash(std::string_view s) {
+    std::uint32_t h = 2166136261u;
+    for (const char c : s) {
+        h ^= static_cast<std::uint8_t>(c);
+        h *= 16777619u;
+    }
+    return h;
+}
+
+bool lookStartsWith(const std::string& s, std::string_view prefix) {
+    return s.size() >= prefix.size() && std::string_view(s).substr(0, prefix.size()) == prefix;
+}
+
+} // namespace
+
+MassingLookSurface massingLookSurface(const MassingBox& box) {
+    if (!massingVisible(massingRole(box))) return MassingLookSurface::BoardConcrete;
+    const std::string& kind = box.kind;
+    // Kerbs and the other added walls.
+    if (lookStartsWith(box.id, "V1-KB") || (box.source == MassingSource::Invented && kind == "wall"))
+        return MassingLookSurface::PoleConcrete;
+    if (kind == "ramp" || kind == "landing" || kind == "terrace") return MassingLookSurface::PavingSlab;
+    if (kind == "cliff" || kind == "seawall" || kind == "breakwater" || kind == "quay")
+        return MassingLookSurface::BoardConcrete;
+    if (kind == "deck" || kind == "pier" || kind == "boat" || kind == "bridge") return MassingLookSurface::OakPlank;
+    if (kind == "crane" || kind == "mast" || kind == "post" || kind == "barrier" || kind == "gate")
+        return MassingLookSurface::GalvSteel;
+    // A building: one of three finishes by its row; a table with no row column goes by the id up to its last '_'.
+    std::string_view key = box.row;
+    if (key.empty()) {
+        key = box.id;
+        const std::size_t cut = key.rfind('_');
+        if (cut != std::string_view::npos && cut > 0) key = key.substr(0, cut);
+    }
+    switch (lookHash(key) % 3u) {
+    case 0: return MassingLookSurface::BuildingA;
+    case 1: return MassingLookSurface::BuildingB;
+    default: return MassingLookSurface::BuildingC;
+    }
+}
+
+std::string_view massingLookSurfaceId(MassingLookSurface surface) {
+    switch (surface) {
+    case MassingLookSurface::PoleConcrete: return "pole_concrete";
+    case MassingLookSurface::PavingSlab: return "paving_slab";
+    case MassingLookSurface::BoardConcrete: return "board_concrete";
+    case MassingLookSurface::OakPlank: return "oak_plank";
+    case MassingLookSurface::GalvSteel: return "galv_steel";
+    case MassingLookSurface::BuildingA: return "soot_brick";
+    case MassingLookSurface::BuildingB: return "breeze_block";
+    case MassingLookSurface::BuildingC: return "alu_cladding";
+    }
+    return "board_concrete";
+}
+
+namespace {
+
+// "x:y[:z]" (z read and dropped).
+bool lookParsePoint(std::string_view s, MassingVec& out) {
+    s = trim(s);
+    const std::size_t c1 = s.find(':');
+    if (c1 == std::string_view::npos) return false;
+    const std::size_t c2 = s.find(':', c1 + 1);
+    double z = 0.0;
+    if (!parseNumber(s.substr(0, c1), out.x)) return false;
+    if (!parseNumber(s.substr(c1 + 1, c2 == std::string_view::npos ? c2 : c2 - c1 - 1), out.y)) return false;
+    if (c2 != std::string_view::npos && !parseNumber(s.substr(c2 + 1), z)) return false;
+    out.z = 0.0;
+    return true;
+}
+
+} // namespace
+
+bool importMassingStreets(std::string_view csv, std::vector<MassingStreet>& out, std::string* error) {
+    out.clear();
+    std::vector<Record> records;
+    if (!splitCsv(csv, records, error)) return false;
+
+    enum Col { Id, Width, Pts, Count };
+    constexpr const char* kNames[Count] = {"id", "width_m", "pts"};
+    std::size_t col[Count] = {};
+    std::size_t width = 0;
+    bool haveHeader = false;
+    std::unordered_set<std::string> ids;
+
+    for (const Record& r : records) {
+        if (isComment(r)) continue;
+        if (!haveHeader) {
+            for (std::size_t c = 0; c < Count; ++c) {
+                col[c] = r.fields.size();
+                for (std::size_t f = 0; f < r.fields.size(); ++f) {
+                    if (trim(r.fields[f]) != kNames[c]) continue;
+                    if (col[c] != r.fields.size()) return fail(error, r.line, std::string("column ") + kNames[c] + " twice");
+                    col[c] = f;
+                }
+                if (col[c] == r.fields.size()) return fail(error, r.line, std::string("no column ") + kNames[c]);
+            }
+            width = r.fields.size();
+            haveHeader = true;
+            continue;
+        }
+        if (r.fields.size() != width)
+            return fail(error, r.line,
+                        std::to_string(r.fields.size()) + " fields where the header has " + std::to_string(width));
+        MassingStreet s;
+        s.id = std::string(trim(r.fields[col[Id]]));
+        if (!validId(s.id)) return fail(error, r.line, "id must be A-Z, 0-9, '_' or '-'");
+        if (!ids.insert(s.id).second) return fail(error, r.line, "id " + s.id + " twice");
+        if (!parseNumber(r.fields[col[Width]], s.width) || s.width <= 0.0)
+            return fail(error, r.line, s.id + ": width_m must be a number > 0");
+        std::string_view pts = trim(r.fields[col[Pts]]);
+        while (!pts.empty()) {
+            const std::size_t semi = pts.find(';');
+            const std::string_view one = pts.substr(0, semi);
+            MassingVec p;
+            if (!lookParsePoint(one, p)) return fail(error, r.line, s.id + ": pts must be \"x:y[:z];...\"");
+            s.points.push_back(p);
+            if (semi == std::string_view::npos) break;
+            pts = trim(pts.substr(semi + 1));
+            if (pts.empty()) return fail(error, r.line, s.id + ": pts ends in ';'");
+        }
+        if (s.points.empty()) return fail(error, r.line, s.id + ": pts holds no point");
+        out.push_back(std::move(s));
+    }
+    if (!haveHeader) return fail(error, 1, "no header row");
+    return true;
+}
+
+void massingStreetsToEngine(std::vector<MassingStreet>& streets, double side) {
+    for (MassingStreet& s : streets)
+        for (MassingVec& p : s.points) p = massingEnginePoint(side, p.x, p.y, 0.0);
+}
+
+void massingRoadMask(const std::vector<MassingStreet>& streets, std::size_t size, double sideM, double feather,
+                     std::uint8_t* out) {
+    if (size == 0 || !out) return;
+    std::fill(out, out + size * size, std::uint8_t{0});
+    if (!(sideM > 0.0) || !(feather > 0.0) || size < 3) return;
+    const double px = sideM / static_cast<double>(size);
+    const double origin = -0.5 * sideM;
+    const long n = static_cast<long>(size);
+    for (const MassingStreet& s : streets) {
+        const double half = 0.5 * s.width;
+        const double reach = half + feather; // beyond this a pixel reads 0
+        const std::size_t count = s.points.size();
+        const std::size_t segments = count > 1 ? count - 1 : 1; // a lone point is a disc
+        for (std::size_t k = 0; k < segments; ++k) {
+            const MassingVec a = s.points[k];
+            const MassingVec b = s.points[count > 1 ? k + 1 : k];
+            const double minX = std::min(a.x, b.x) - reach, maxX = std::max(a.x, b.x) + reach;
+            const double minY = std::min(a.y, b.y) - reach, maxY = std::max(a.y, b.y) + reach;
+            // The pixels whose centres lie in the box, inside the mask's interior (its outermost ring stays 0).
+            const long x0 = std::max(1L, static_cast<long>(std::ceil((minX - origin) / px - 0.5)));
+            const long x1 = std::min(n - 2, static_cast<long>(std::floor((maxX - origin) / px - 0.5)));
+            const long y0 = std::max(1L, static_cast<long>(std::ceil((minY - origin) / px - 0.5)));
+            const long y1 = std::min(n - 2, static_cast<long>(std::floor((maxY - origin) / px - 0.5)));
+            const double dx = b.x - a.x, dy = b.y - a.y;
+            const double len2 = dx * dx + dy * dy;
+            for (long iy = y0; iy <= y1; ++iy) {
+                const double cy = origin + (static_cast<double>(iy) + 0.5) * px;
+                std::uint8_t* line = out + static_cast<std::size_t>(iy) * size;
+                for (long ix = x0; ix <= x1; ++ix) {
+                    const double cx = origin + (static_cast<double>(ix) + 0.5) * px;
+                    double t = len2 > 0.0 ? ((cx - a.x) * dx + (cy - a.y) * dy) / len2 : 0.0;
+                    t = std::clamp(t, 0.0, 1.0);
+                    const double ex = cx - (a.x + t * dx), ey = cy - (a.y + t * dy);
+                    const double d = std::sqrt(ex * ex + ey * ey);
+                    const double v = std::clamp(0.5 + (half - d) / (2.0 * feather), 0.0, 1.0);
+                    const auto byte = static_cast<std::uint8_t>(std::lround(255.0 * v));
+                    if (byte > line[ix]) line[ix] = byte;
+                }
+            }
+        }
+    }
 }
 
 } // namespace ftcore

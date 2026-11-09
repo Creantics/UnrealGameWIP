@@ -6,7 +6,7 @@
 //   UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildMassingWorld -Height=<json> -Boxes=<csv>
 //       [-Walls=<csv>] [-Goals=<csv>] -Entry=<x,y,z> [-Look=<x,y>] [-Sea=<x>] [-Side=1000] [-Map=<name>]
 //       [-World=<id>] [-Kit=<csv>] [-NoNav] [-Strict] [-Dump=<csv>] [-Load]
-//       [-Tour=<csv>] [-Coverage=<csv>] [-ReadBack=<json>]
+//       [-Tour=<csv>] [-Coverage=<csv>] [-ReadBack=<json>] [-Surfaces -Streets=<csv>]
 //       -NullRHI -unattended -nopause -nosplash
 //
 // -Height names a height field's json (samples_x, samples_y, spacing_m, origin_of_sample_0_0_m and the raw
@@ -56,6 +56,19 @@
 // as its hidden collider, labelled <id>-COL. A missing box or mesh fails the run before anything is built. A row on
 // a box the build doesn't make places its mesh without a collider and says so. The log gives each mesh's size and
 // scale, and the built boxes left.
+//
+// -Surfaces -Streets=<csv> dresses the map in Solhaven's photographed surfaces (the surfaces of /Game/Rendering/Surfaces/solhaven_*, the
+// ground master M_WorldGround and M_Look_Water), and without -Surfaces the build is exactly as without them (-Streets alone does nothing).
+// Each built box wears the surface ftcore::massingLookSurface gives its src, kind, id prefix and row (the boxes table's row column, when it
+// has one): kerbs and the other added walls pole concrete; flights, ramps, landings and terraces paving slab; cliff cover plates, the
+// seawall, breakwater and quay board concrete; decks, piers, boats and bridges oak plank; cranes, masts, posts, barriers and gates
+// galvanised steel; every other built box one of three building finishes (soot brick, breeze block, aluminium cladding) by a hash of its
+// row. The Landscape wears an instance of M_WorldGround: paving slab for the ground, board concrete for the rock (from 20 m over the
+// field's highest ground, so only steep faces turn to it) and bitumen for the carriageway (board concrete if bitumen isn't built); its road
+// mask is the streets table's (columns id, width_m and pts, "x:y[:z];..." in the plan frame; ftcore::importMassingStreets and
+// massingRoadMask), 8192 x 8192 pixels centred on the engine's origin and wide enough for the whole Landscape, with the streets moved to the
+// engine frame as the boxes are. The -Sea plane wears M_Look_Water. Everything is loaded and checked before anything is built; one log
+// line ("FTBuildMassingWorld: look: ...") gives the boxes by surface, the streets read, the mask and the sea's material. -Kit is not part of it.
 //
 // The walls table's blockers carry the actor tag FTHiddenWall, so the tour's edge legs can tell a hidden wall from a
 // built one. (WALL rows of -Boxes are not built, so they have no actor to tag.)

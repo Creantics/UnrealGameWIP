@@ -13,6 +13,7 @@
 #include "Engine/Polys.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
+#include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerStart.h"
@@ -178,6 +179,210 @@ bool LoadHeightField(const FString& JsonFile, FHeightField& Out)
 		Out.Grid[I] = static_cast<uint16>(Raw[2 * I] | (Raw[2 * I + 1] << 8)); // little-endian
 	}
 	return true;
+}
+
+// -Surfaces: the photographed look. What it needs is loaded, and the road mask worked out, before anything is built, so a
+// missing surface or a bad street table fails the run with nothing made. See docs/WORLDS.md.
+constexpr const TCHAR* kLookWorldPrefix = TEXT("solhaven_");
+// The ground master's three layers, each with the surface it wears here: the pavement for all flat ground off the
+// carriageway, the rock the steep faces turn to, and the carriageway, for which the set has no asphalt: bitumen (the
+// nearest), else board concrete.
+constexpr const TCHAR* kLookGroundId = TEXT("paving_slab");
+constexpr const TCHAR* kLookRockId = TEXT("board_concrete");
+constexpr const TCHAR* kLookRoadIds[] = {TEXT("bitumen_roof"), TEXT("board_concrete")};
+// The road mask's size, in pixels a side. 8192 over the field's ~3.5 km is about 0.43 m a pixel.
+constexpr int32 kLookMaskSize = 8192;
+// The mask reaches this far (m) past the field's furthest edge, so its outermost ring (always empty) is off the ground.
+constexpr double kLookMaskMargin = 8.0;
+// The rock starts this far (m) over the field's highest ground: only the steep faces turn to rock.
+constexpr double kLookRockClearance = 20.0;
+
+struct FLook
+{
+	UMaterialInterface* Box[ftcore::kMassingLookSurfaceCount] = {};
+	int32 BoxCount[ftcore::kMassingLookSurfaceCount] = {};
+	UMaterialInterface* GroundMaster = nullptr;
+	UMaterialInterface* Water = nullptr;
+	// The ground's layers in FTScene::GroundLayers' order: the surface's id, its tile size and its three maps.
+	FString LayerId[UE_ARRAY_COUNT(FTScene::GroundLayers)];
+	float LayerTileCm[UE_ARRAY_COUNT(FTScene::GroundLayers)] = {};
+	UTexture* LayerMap[UE_ARRAY_COUNT(FTScene::GroundLayers)][UE_ARRAY_COUNT(FTScene::SurfaceMaps)] = {};
+	TArray<uint8> Mask;
+	double MaskSideM = 0.0;
+	float RockAltitudeM = 0.f;
+	int32 StreetCount = 0;
+};
+
+UMaterialInterface* LoadLookMaterial(const FString& Package)
+{
+	UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, *(Package + TEXT(".") + FPackageName::GetShortName(Package)), nullptr,
+		LOAD_NoWarn | LOAD_Quiet);
+	if (!Material)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Surfaces: %s is missing."), *Package);
+	}
+	return Material;
+}
+
+// Loads surface Id's three maps into Maps. False, quietly, when one is missing.
+bool LoadLookMaps(const FString& Id, UTexture* (&Maps)[UE_ARRAY_COUNT(FTScene::SurfaceMaps)])
+{
+	for (int32 M = 0; M < UE_ARRAY_COUNT(FTScene::SurfaceMaps); ++M)
+	{
+		Maps[M] = FTScene::LoadSurfaceTexture(Id, FTScene::SurfaceMaps[M].Suffix);
+		if (!Maps[M])
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+bool PrepareLook(const FString& StreetsFile, const FHeightField& Field, double Side, FLook& Look)
+{
+	// The boxes' surfaces: the 15 photographed instances of the world surface master, Solhaven's.
+	for (size_t S = 0; S < ftcore::kMassingLookSurfaceCount; ++S)
+	{
+		const std::string Id(ftcore::massingLookSurfaceId(static_cast<ftcore::MassingLookSurface>(S)));
+		Look.Box[S] = LoadLookMaterial(FTScene::SurfaceInstancePackage(kLookWorldPrefix + Utf8(Id)));
+		if (!Look.Box[S])
+		{
+			return false;
+		}
+	}
+	Look.Water = LoadLookMaterial(FTScene::LookWaterMaterial);
+	Look.GroundMaster = LoadLookMaterial(FTScene::GroundMaterial);
+	if (!Look.Water || !Look.GroundMaster)
+	{
+		return false;
+	}
+
+	ftcore::SurfaceTable Table;
+	if (!FTScene::LoadSurfaceTable(Table))
+	{
+		return false;
+	}
+	const auto Layer = [&](int32 L, const TCHAR* const* Ids, int32 IdCount)
+	{
+		for (int32 I = 0; I < IdCount; ++I)
+		{
+			const FString Id = kLookWorldPrefix + FString(Ids[I]);
+			const int32 At = Table.find(std::string(TCHAR_TO_UTF8(*Id)));
+			if (At >= 0 && LoadLookMaps(Id, Look.LayerMap[L]))
+			{
+				Look.LayerId[L] = Id;
+				Look.LayerTileCm[L] = Table.surfaces[static_cast<size_t>(At)].tileCm;
+				return true;
+			}
+		}
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Surfaces: the ground's %s layer has no built surface (tried %s...); run FTBuildSurfaces."),
+			FTScene::GroundLayers[L].Name, *(kLookWorldPrefix + FString(Ids[0])));
+		return false;
+	};
+	static_assert(UE_ARRAY_COUNT(FTScene::GroundLayers) == 3, "the ground master's layers are ground, rock and road");
+	for (int32 L = 0; L < 3; ++L)
+	{
+		bool bOk = false;
+		switch (FTScene::GroundLayers[L].Role)
+		{
+		case ftcore::SurfaceRole::Ground:
+			bOk = Layer(L, &kLookGroundId, 1);
+			break;
+		case ftcore::SurfaceRole::Rock:
+			bOk = Layer(L, &kLookRockId, 1);
+			break;
+		default:
+			bOk = Layer(L, kLookRoadIds, UE_ARRAY_COUNT(kLookRoadIds));
+			break;
+		}
+		if (!bOk)
+		{
+			return false;
+		}
+	}
+
+	// The streets, in the engine frame, and the mask over the whole field. The master reads the mask as
+	// world XY / MaskSideCm + 0.5, so the mask is centred on the engine's origin, not on the field: it reaches
+	// the field's furthest edge from there, and a little past it.
+	TArray<uint8> Bytes;
+	if (!LoadBytes(StreetsFile, Bytes))
+	{
+		return false;
+	}
+	std::vector<ftcore::MassingStreet> Streets;
+	std::string Error;
+	if (!ftcore::importMassingStreets(View(Bytes), Streets, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *StreetsFile, *Utf8(Error));
+		return false;
+	}
+	ftcore::massingStreetsToEngine(Streets, Side);
+	Look.StreetCount = static_cast<int32>(Streets.size());
+
+	const size_t LandSide = ftcore::massingLandscapeSide(static_cast<size_t>(Field.SamplesX), static_cast<size_t>(Field.SamplesY),
+		static_cast<size_t>(kLandSubsections * kLandSubsectionQuads));
+	const ftcore::MassingVec Corner = ftcore::massingLandscapeCorner(Side, Field.OriginX, Field.OriginY, Field.Spacing, LandSide);
+	const double Extent = static_cast<double>(LandSide - 1) * Field.Spacing;
+	const double Half = FMath::Max(
+		FMath::Max(FMath::Abs(Corner.x), FMath::Abs(Corner.x + Extent)), FMath::Max(FMath::Abs(Corner.y), FMath::Abs(Corner.y + Extent)));
+	Look.MaskSideM = FMath::CeilToDouble(2.0 * (Half + kLookMaskMargin));
+	Look.Mask.SetNumZeroed(kLookMaskSize * kLookMaskSize);
+	ftcore::massingRoadMask(Streets, static_cast<size_t>(kLookMaskSize), Look.MaskSideM, ftcore::kMassingRoadFeather, Look.Mask.GetData());
+
+	uint16 Highest = 0;
+	for (const uint16 H : Field.Grid)
+	{
+		Highest = FMath::Max(Highest, H);
+	}
+	Look.RockAltitudeM = static_cast<float>(ftcore::massingHeightFromValue(Highest) + kLookRockClearance);
+	return true;
+}
+
+// The material a built box wears under -Surfaces, counted by class.
+UMaterialInterface* WearLook(FLook& Look, const ftcore::MassingBox& Box)
+{
+	const int32 Class = static_cast<int32>(ftcore::massingLookSurface(Box));
+	++Look.BoxCount[Class];
+	return Look.Box[Class];
+}
+
+// The Landscape's instance of the ground master, MI_Massing_Look_Ground, with the road mask T_Massing_RoadMask in Package.
+// ShapeMask and FlowMask stay at the master's defaults (a flat shape and no flow: nothing to say over this field).
+UMaterialInterface* LookGround(UPackage* Package, const FLook& Look)
+{
+	UTexture2D* RoadMask = FTScene::NewGroundMask(Package, TEXT("T_Massing_RoadMask"), kLookMaskSize, Look.Mask.GetData(), RF_Public);
+	UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, TEXT("MI_Massing_Look_Ground"), RF_Public);
+	Mic->SetParentEditorOnly(Look.GroundMaster);
+	for (int32 L = 0; L < UE_ARRAY_COUNT(FTScene::GroundLayers); ++L)
+	{
+		const FString Name = FTScene::GroundLayers[L].Name;
+		for (int32 M = 0; M < UE_ARRAY_COUNT(FTScene::SurfaceMaps); ++M)
+		{
+			Mic->SetTextureParameterValueEditorOnly(FMaterialParameterInfo(*(Name + FTScene::SurfaceMaps[M].Name)), Look.LayerMap[L][M]);
+		}
+		Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(*(Name + TEXT("Tint"))), FLinearColor(1.f, 1.f, 1.f));
+		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(*(Name + TEXT("TileCm"))), Look.LayerTileCm[L]);
+	}
+	Mic->SetTextureParameterValueEditorOnly(FMaterialParameterInfo(TEXT("RoadMask")), RoadMask);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("MaskSideCm")), static_cast<float>(Look.MaskSideM * 100.0));
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("RockAltitudeCm")), Look.RockAltitudeM * 100.f);
+	Mic->PostEditChange();
+	return Mic;
+}
+
+// One line for -Surfaces: the boxes by surface class, the streets and the mask, the ground's layers and the sea's material.
+void LogLook(const FLook& Look, bool bSea)
+{
+	FString Boxes;
+	for (size_t S = 0; S < ftcore::kMassingLookSurfaceCount; ++S)
+	{
+		Boxes += FString::Printf(TEXT("%s%s %d"), S > 0 ? TEXT(", ") : TEXT(""),
+			*Utf8(std::string(ftcore::massingLookSurfaceId(static_cast<ftcore::MassingLookSurface>(S)))), Look.BoxCount[S]);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: look: boxes by surface: %s; %d streets read; road mask %d x %d px over %.0f m "
+		"(%.3f m a pixel), centred on the engine origin; ground wears %s, rock %s, road %s, rock from %.1f m up; sea wears %s."),
+		*Boxes, Look.StreetCount, kLookMaskSize, kLookMaskSize, Look.MaskSideM, Look.MaskSideM / kLookMaskSize, *Look.LayerId[0], *Look.LayerId[1],
+		*Look.LayerId[2], Look.RockAltitudeM, bSea ? *Look.Water->GetPathName() : TEXT("no sea"));
 }
 
 struct FGoal
@@ -956,6 +1161,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	const bool bStrict = FParse::Param(*Params, TEXT("Strict"));
 	// The reach check on the saved map as it stands: nothing is built, rebuilt or saved.
 	const bool bLoad = FParse::Param(*Params, TEXT("Load"));
+	// -Surfaces: the photographed look (see PrepareLook); -Streets is its road table and means nothing without it.
+	const bool bSurfaces = FParse::Param(*Params, TEXT("Surfaces"));
+	FString StreetsFile;
+	FParse::Value(*Params, TEXT("Streets="), StreetsFile);
 
 	double Entry[3] = {0.0, 0.0, 0.0};
 	double Look[2] = {0.0, 0.0};
@@ -986,6 +1195,19 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		(!ReadBackFile.IsEmpty() && !bLoad && !LoadHeightField(ReadBackFile, ReadField)))
 	{
 		return 1;
+	}
+	FLook LookSet;
+	if (bSurfaces && !bLoad)
+	{
+		if (StreetsFile.IsEmpty())
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Surfaces needs -Streets=<csv> (the road mask's streets)."));
+			return 1;
+		}
+		if (!PrepareLook(StreetsFile, Field, Side, LookSet))
+		{
+			return 1;
+		}
 	}
 	for (const ftcore::MassingBox& Wall : Walls)
 	{
@@ -1504,7 +1726,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 	const ftcore::MassingVec Corner = ftcore::massingLandscapeCorner(Side, Field.OriginX, Field.OriginY, Field.Spacing, LandSide);
 	ALandscape* Land = World->SpawnActor<ALandscape>(Cm(Corner), FRotator::ZeroRotator, Spawn);
-	Land->LandscapeMaterial = GroundTint;
+	Land->LandscapeMaterial = bSurfaces ? LookGround(Package, LookSet) : GroundTint;
 	Land->SetActorRelativeScale3D(FVector(Field.Spacing * 100.0, Field.Spacing * 100.0, 100.0));
 	{
 		TMap<FGuid, TArray<uint16>> HeightLayers;
@@ -1560,7 +1782,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		(Role == ftcore::MassingRole::Named ? Named : Kit) += 1;
 		BoxesLeft += Replaced[I] ? 0 : 1;
-		UMaterialInterface* Material = Finish[static_cast<int32>(ftcore::massingFinish(Box))];
+		UMaterialInterface* Material = bSurfaces ? WearLook(LookSet, Box) : Finish[static_cast<int32>(ftcore::massingFinish(Box))];
 		// A box a finished mesh stands in for stays as its hidden collider: an imported mesh may bring no simple
 		// collision, and the lead would fall through it.
 		const FString Id = Replaced[I] ? Utf8(Box.id) + TEXT("-COL") : Utf8(Box.id);
@@ -1675,10 +1897,14 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// The sea at the datum, from its west edge out past the horizon. Nothing collides with it.
 	if (bSea)
 	{
-		AStaticMeshActor* Sea = Block(World, Spawn, Plane, SeaTint, TEXT("Sea"),
+		AStaticMeshActor* Sea = Block(World, Spawn, Plane, bSurfaces ? LookSet.Water : SeaTint, TEXT("Sea"),
 			Cm(ftcore::massingEnginePoint(Side, SeaWest + kSeaReach * 0.5, Side * 0.5, 0.0)), FVector(kSeaReach, 2.0 * kSeaReach, 1.0), 0.0);
 		Sea->GetStaticMeshComponent()->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 		Sea->GetStaticMeshComponent()->SetCanEverAffectNavigation(false);
+	}
+	if (bSurfaces)
+	{
+		LogLook(LookSet, bSea);
 	}
 
 	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, kMassingSun);

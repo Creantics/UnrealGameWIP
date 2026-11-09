@@ -23,6 +23,7 @@
 //   cover   True or False: True for a piece the plan names, False for the kit that fills between
 //   slope   empty, or "x A to B" with an optional ", T thick": the top runs straight from height A
 //           at u = -sx/2 to B at u = +sx/2. Only the u axis ("x") is allowed.
+// An optional column, row, names the plan row a piece belongs to; the parts of one building share it.
 // Any other column is skipped. A missing column, a malformed number, a duplicate id or a row with
 // the wrong number of fields is an error naming the line.
 //
@@ -46,6 +47,7 @@ enum class MassingSource : std::uint8_t { Plan, Invented, Zone, Open, Proxy, Wal
 
 struct MassingBox {
     std::string id;
+    std::string row;           // the plan row it belongs to (the optional "row" column; empty when absent)
     std::string kind;
     MassingSource source = MassingSource::Plan;
     bool cover = false;
@@ -236,5 +238,55 @@ FTCORE_API MassingFooting massingSpawnFooting(const std::uint16_t* grid, std::si
                                               double x, double y, double floor, double ceiling, double height,
                                               double radius = kMassingFootingRadius);
 inline bool massingFootingHolds(const MassingFooting& footing) { return footing.step <= kMassingFootingTolerance; }
+
+// ---- The photographed look (-Surfaces): which surface a box wears, and the road mask from a street table ----
+
+// The class of photographed surface a built box wears. Kerbs and the other added walls are pole concrete; flights,
+// toe stairs, ramps, landings and terraces paving slab; cliff cover plates, the seawall, breakwater and quay board
+// concrete; decks, piers, boats and bridges oak plank; cranes, masts, posts, barriers and gates galvanised steel. Every
+// other built box is a building, wearing one of three finishes (soot brick, breeze block, aluminium cladding) chosen by a
+// stable hash of its row, so that the parts of one building share it. A box the build doesn't make is board concrete.
+enum class MassingLookSurface : std::uint8_t {
+    PoleConcrete,
+    PavingSlab,
+    BoardConcrete,
+    OakPlank,
+    GalvSteel,
+    BuildingA, // soot brick
+    BuildingB, // breeze block
+    BuildingC, // aluminium cladding
+};
+inline constexpr std::size_t kMassingLookSurfaceCount = 8;
+// Decided from the box's src, kind, id prefix and row alone. No allocation.
+FTCORE_API MassingLookSurface massingLookSurface(const MassingBox& box);
+// The surface's id without its world's prefix: "pole_concrete", "paving_slab", ..., "soot_brick".
+FTCORE_API std::string_view massingLookSurfaceId(MassingLookSurface surface);
+
+// A street: its id, its width in metres and its polyline.
+struct MassingStreet {
+    std::string id;
+    double width = 0.0;             // m, > 0
+    std::vector<MassingVec> points; // z is left 0; at least one
+};
+// Reads a street table (CSV, a header row naming the columns; comment rows as in importMassingBoxes). The columns read:
+//   id       unique; as a massing id
+//   width_m  the street's width in metres, > 0
+//   pts      "x:y[:z];x:y[:z];..." in the plan frame, metres (z is read and dropped)
+// Any other column is skipped, never kept. `out` is cleared first. False, with a reason naming the line, on any error.
+// Allocates: build time only.
+FTCORE_API bool importMassingStreets(std::string_view csv, std::vector<MassingStreet>& out, std::string* error = nullptr);
+// Moves every street's points from the plan frame of a square `side` metres across to the engine frame
+// (massingEnginePoint).
+FTCORE_API void massingStreetsToEngine(std::vector<MassingStreet>& streets, double side);
+
+// The streets as a mask: size x size bytes, row iy then column ix, pixel (ix, iy) centred at (-sideM/2 + (ix + 0.5)
+// sideM/size, -sideM/2 + (iy + 0.5) sideM/size) in the streets' own frame (the engine's, after massingStreetsToEngine),
+// as ftcore::roadMask lays out its own. Each byte is the max over the streets of round(255 clamp(0.5 + (width/2 - d) /
+// (2 feather), 0, 1)), d the distance from the pixel's centre to the street's polyline: 255 inside by feather, about 128
+// at the edge, 0 from feather outside it. The outermost ring is 0, so a clamped read past the mask finds no street.
+// Writes all size * size bytes; each segment touches only the pixels it reaches. No allocation.
+inline constexpr double kMassingRoadFeather = 2.0; // m: what the ground master decodes its road mask by
+FTCORE_API void massingRoadMask(const std::vector<MassingStreet>& streets, std::size_t size, double sideM, double feather,
+                                std::uint8_t* out);
 
 } // namespace ftcore

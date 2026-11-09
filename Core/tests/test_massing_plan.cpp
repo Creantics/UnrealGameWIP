@@ -7,6 +7,7 @@
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -736,4 +737,226 @@ TEST_CASE("massing: a spawn's footing") {
     CHECK(massingFootingHolds(f));
     f = massingSpawnFooting(nullptr, 0, 0, 1.0, 0.0, 0.0, none, noneIncluded, 3.0, 3.0, 2.0, 8.0, 1.8);
     CHECK(near(f.step, 2.0));
+}
+
+// ---- The photographed look: a box's surface class, the street table and the road mask ----
+
+namespace {
+
+MassingBox lookBox(const std::string& id, const std::string& row, MassingSource src, const std::string& kind, bool cover) {
+    MassingBox b = flatBox(0, 0, 4, 4, 0, 0, 3);
+    b.id = id;
+    b.row = row;
+    b.source = src;
+    b.kind = kind;
+    b.cover = cover;
+    return b;
+}
+
+} // namespace
+
+TEST_CASE("massing: the row column is optional and kept when there") {
+    std::vector<MassingBox> boxes;
+    std::string error;
+    const std::string with = "id,row,src,kind,cx,cy,sx,sy,rot,z0,z1,cover,slope\nA-1,ROW-7,BLD,box,0,0,2,2,0,0,3,True,\n";
+    REQUIRE(importMassingBoxes(with, boxes, &error));
+    REQUIRE(boxes.size() == 1);
+    CHECK(boxes[0].row == "ROW-7");
+    const std::string without = "id,src,kind,cx,cy,sx,sy,rot,z0,z1,cover,slope\nA-1,BLD,box,0,0,2,2,0,0,3,True,\n";
+    REQUIRE(importMassingBoxes(without, boxes, &error));
+    REQUIRE(boxes.size() == 1);
+    CHECK(boxes[0].row.empty());
+    CHECK(boxes[0].id == "A-1");
+}
+
+TEST_CASE("massing look: each kind of built box wears its class") {
+    const auto cls = [](const MassingBox& b) { return massingLookSurface(b); };
+    // Kerbs and the other added walls.
+    CHECK(cls(lookBox("V1-KB-0001", "V1-KERB", MassingSource::Invented, "wall", false)) == MassingLookSurface::PoleConcrete);
+    CHECK(cls(lookBox("V1-KB-P0001", "V1-KERB", MassingSource::Invented, "wall", false)) == MassingLookSurface::PoleConcrete);
+    CHECK(cls(lookBox("V1-SCH-0001", "V1-SCH", MassingSource::Invented, "wall", true)) == MassingLookSurface::PoleConcrete);
+    // Flights, toe stairs, ramps, landings and terraces.
+    CHECK(cls(lookBox("V1-FL-ST-1", "V1-FL", MassingSource::Invented, "ramp", false)) == MassingLookSurface::PavingSlab);
+    CHECK(cls(lookBox("V1-FL-ST-2", "V1-FL", MassingSource::Invented, "landing", false)) == MassingLookSurface::PavingSlab);
+    CHECK(cls(lookBox("BLD-008_1", "BLD-008", MassingSource::Plan, "ramp", true)) == MassingLookSurface::PavingSlab);
+    CHECK(cls(lookBox("V1-NBD-1", "V1-NBD", MassingSource::Invented, "terrace", true)) == MassingLookSurface::PavingSlab);
+    // Cliff cover plates, the seawall, breakwater and quay.
+    CHECK(cls(lookBox("V1-CLF-0001", "V1-CLIFF", MassingSource::Invented, "cliff", true)) == MassingLookSurface::BoardConcrete);
+    CHECK(cls(lookBox("V1-ISH-1", "V1-ISH", MassingSource::Invented, "seawall", true)) == MassingLookSurface::BoardConcrete);
+    CHECK(cls(lookBox("V1-BRK-1", "V1-BRK", MassingSource::Invented, "breakwater", true)) == MassingLookSurface::BoardConcrete);
+    CHECK(cls(lookBox("BLD-050_1", "BLD-050", MassingSource::Plan, "quay", true)) == MassingLookSurface::BoardConcrete);
+    // Decks, piers, boats and bridges.
+    for (const char* kind : {"deck", "pier", "boat", "bridge"})
+        CHECK(cls(lookBox("BLD-060_1", "BLD-060", MassingSource::Plan, kind, true)) == MassingLookSurface::OakPlank);
+    CHECK(cls(lookBox("V1-MOLE-1", "V1-MOLE", MassingSource::Invented, "pier", true)) == MassingLookSurface::OakPlank);
+    // Cranes, masts, posts, barriers and gates.
+    for (const char* kind : {"crane", "mast", "post", "barrier", "gate"})
+        CHECK(cls(lookBox("BLD-070_1", "BLD-070", MassingSource::Plan, kind, true)) == MassingLookSurface::GalvSteel);
+    // A box the build doesn't make: a zone, an open option, a proxy, a hidden kind.
+    CHECK(cls(lookBox("Z1_1", "Z1", MassingSource::Zone, "zone", true)) == MassingLookSurface::BoardConcrete);
+    CHECK(cls(lookBox("OPEN-B1_1", "OPEN-B1", MassingSource::Open, "cliff", false)) == MassingLookSurface::BoardConcrete);
+    CHECK(cls(lookBox("PORT-INV_1", "PORT-INV", MassingSource::Proxy, "crane", false)) == MassingLookSurface::BoardConcrete);
+    CHECK(cls(lookBox("BLD-003_1", "BLD-003", MassingSource::Plan, "interior", true)) == MassingLookSurface::BoardConcrete);
+}
+
+TEST_CASE("massing look: a building's finish follows its row, one of three") {
+    const auto isBuilding = [](MassingLookSurface s) {
+        return s == MassingLookSurface::BuildingA || s == MassingLookSurface::BuildingB || s == MassingLookSurface::BuildingC;
+    };
+    int seen[3] = {};
+    for (int i = 1; i <= 60; ++i) {
+        const std::string row = "BLD-" + std::to_string(100 + i);
+        // Every part of the row, whatever its kind (a wall, a plate, a box), wears the same finish.
+        const MassingLookSurface first = massingLookSurface(lookBox(row + "_1", row, MassingSource::Plan, "box", true));
+        REQUIRE(isBuilding(first));
+        CHECK(massingLookSurface(lookBox(row + "_2", row, MassingSource::Plan, "wall", false)) == first);
+        CHECK(massingLookSurface(lookBox(row + "_3", row, MassingSource::Plan, "plate", true)) == first);
+        CHECK(massingLookSurface(lookBox(row + "_4", row, MassingSource::Plan, "kit", false)) == first);
+        ++seen[static_cast<int>(first) - static_cast<int>(MassingLookSurface::BuildingA)];
+    }
+    for (const int n : seen) CHECK(n >= 10); // all three are in use, none starved
+    // A table with no row column goes by the id up to its last '_': the parts still agree.
+    const MassingBox a = lookBox("BLD-205_1", "", MassingSource::Plan, "box", true);
+    const MassingBox b = lookBox("BLD-205_2", "", MassingSource::Plan, "wall", false);
+    CHECK(massingLookSurface(a) == massingLookSurface(b));
+    CHECK(massingLookSurface(a) == massingLookSurface(lookBox("X", "BLD-205", MassingSource::Plan, "box", true)));
+}
+
+TEST_CASE("massing look: the surface ids") {
+    CHECK(massingLookSurfaceId(MassingLookSurface::PoleConcrete) == "pole_concrete");
+    CHECK(massingLookSurfaceId(MassingLookSurface::PavingSlab) == "paving_slab");
+    CHECK(massingLookSurfaceId(MassingLookSurface::BoardConcrete) == "board_concrete");
+    CHECK(massingLookSurfaceId(MassingLookSurface::OakPlank) == "oak_plank");
+    CHECK(massingLookSurfaceId(MassingLookSurface::GalvSteel) == "galv_steel");
+    CHECK(massingLookSurfaceId(MassingLookSurface::BuildingA) == "soot_brick");
+    CHECK(massingLookSurfaceId(MassingLookSurface::BuildingB) == "breeze_block");
+    CHECK(massingLookSurfaceId(MassingLookSurface::BuildingC) == "alu_cladding");
+    CHECK(kMassingLookSurfaceCount == 8);
+}
+
+TEST_CASE("massing streets: the table is read by id, width_m and pts") {
+    const std::string header = "id,zone,district,kind,width_m,length_m,z_min,z_max,n_pts,pts,note\n";
+    std::vector<MassingStreet> streets;
+    std::string error;
+    // The note column is never kept, whatever it holds.
+    const std::string good = "# a comment\n" + header +
+                             "ST-1,1,4,street,18.0,100,4,4,2,10.0:20.0;30.0:20.0,\"a; note: with, commas\"\n"
+                             "ST-2,1,4,stair,6,50,4,9,3,0:0:4;5:0:5.5;5:10:7,-\n"
+                             "ST-3,1,4,lane,3.5,0,0,0,1,7.5:8.5,-\n";
+    REQUIRE(importMassingStreets(good, streets, &error));
+    REQUIRE(streets.size() == 3);
+    CHECK(streets[0].id == "ST-1");
+    CHECK(near(streets[0].width, 18.0));
+    REQUIRE(streets[0].points.size() == 2);
+    CHECK(near(streets[0].points[1].x, 30.0));
+    CHECK(near(streets[0].points[1].y, 20.0));
+    REQUIRE(streets[1].points.size() == 3);
+    CHECK(near(streets[1].points[2].x, 5.0));
+    CHECK(near(streets[1].points[2].y, 10.0));
+    CHECK(near(streets[1].points[2].z, 0.0)); // z is dropped
+    REQUIRE(streets[2].points.size() == 1);
+
+    CHECK_FALSE(importMassingStreets("id,width_m\nST-1,6\n", streets, &error));
+    CHECK(error.find("no column pts") != std::string::npos);
+    CHECK_FALSE(importMassingStreets("", streets, &error));
+    CHECK(error.find("no header") != std::string::npos);
+    CHECK_FALSE(importMassingStreets("id,width_m,pts\nST-1,0,1:1;2:2\n", streets, &error));
+    CHECK(error.find("line 2") != std::string::npos);
+    CHECK(error.find("width_m") != std::string::npos);
+    CHECK_FALSE(importMassingStreets("id,width_m,pts\nST-1,six,1:1;2:2\n", streets, &error));
+    CHECK_FALSE(importMassingStreets("id,width_m,pts\nST-1,6,1:1;2\n", streets, &error));
+    CHECK(error.find("pts") != std::string::npos);
+    CHECK_FALSE(importMassingStreets("id,width_m,pts\nST-1,6,1:1;2:x\n", streets, &error));
+    CHECK_FALSE(importMassingStreets("id,width_m,pts\nST-1,6,1:1;\n", streets, &error));
+    CHECK_FALSE(importMassingStreets("id,width_m,pts\nST-1,6,\n", streets, &error));
+    CHECK_FALSE(importMassingStreets("id,width_m,pts\nST-1,6,1:1;2:2\nST-1,6,3:3\n", streets, &error));
+    CHECK(error.find("twice") != std::string::npos);
+    CHECK_FALSE(importMassingStreets("id,width_m,pts\nst 1,6,1:1\n", streets, &error));
+    CHECK_FALSE(importMassingStreets("id,width_m,pts\nST-1,6\n", streets, &error));
+    CHECK(error.find("fields") != std::string::npos);
+    CHECK(streets.empty()); // cleared first
+}
+
+TEST_CASE("massing streets: points move to the engine frame") {
+    std::vector<MassingStreet> streets;
+    REQUIRE(importMassingStreets("id,width_m,pts\nST-1,6,100:200;-50:900\n", streets));
+    massingStreetsToEngine(streets, 1000.0);
+    REQUIRE(streets[0].points.size() == 2);
+    CHECK(near(streets[0].points[0].x, -400.0)); // x - side/2
+    CHECK(near(streets[0].points[0].y, 300.0));  // side/2 - y
+    CHECK(near(streets[0].points[1].x, -550.0));
+    CHECK(near(streets[0].points[1].y, -400.0));
+}
+
+TEST_CASE("massing road mask: a street reads 255 inside, 128 at its edge and 0 from the feather out") {
+    constexpr std::size_t n = 100;
+    std::vector<std::uint8_t> mask(n * n, 7);
+    MassingStreet s;
+    s.id = "S";
+    s.width = 6.0;
+    s.points = {{-60.0, 0.5, 0.0}, {60.0, 0.5, 0.0}}; // along x, past the mask's edges; pixel row 50 is centred at y = 0.5
+    massingRoadMask({s}, n, 100.0, kMassingRoadFeather, mask.data());
+    const auto at = [&](std::size_t ix, std::size_t iy) { return static_cast<int>(mask[iy * n + ix]); };
+    CHECK(at(50, 50) == 255); // on the centre line
+    CHECK(at(50, 51) == 255); // 1 m off
+    CHECK(at(50, 52) == 191); // 2 m: 0.5 + 1/4
+    CHECK(at(50, 53) == 128); // 3 m: the edge
+    CHECK(at(50, 54) == 64);  // 4 m
+    CHECK(at(50, 55) == 0);   // 5 m: the feather's end
+    CHECK(at(50, 45) == 0);
+    CHECK(at(50, 49) == 255);
+    CHECK(at(50, 47) == 128); // the other side's edge, 3 m
+    // The outermost ring stays empty even where the street runs through it; the rest of the row is full.
+    CHECK(at(0, 50) == 0);
+    CHECK(at(n - 1, 50) == 0);
+    CHECK(at(1, 50) == 255);
+    CHECK(at(n - 2, 50) == 255);
+    // Every byte was written.
+    CHECK(at(10, 10) == 0);
+    CHECK(at(0, 0) == 0);
+}
+
+TEST_CASE("massing road mask: the width sets the edge, the max of streets wins, a lone point is a disc") {
+    constexpr std::size_t n = 100;
+    std::vector<std::uint8_t> mask(n * n);
+    MassingStreet wide, narrow, dot;
+    wide.width = 12.0;
+    wide.points = {{-30.5, 0.5, 0.0}, {-10.5, 0.5, 0.0}}; // along x, on pixel row 50
+    narrow.width = 2.0;
+    narrow.points = {{-19.5, -40.0, 0.0}, {-19.5, 40.0, 0.0}}; // along y, on pixel column 30
+    dot.width = 4.0;
+    dot.points = {{-30.5, -30.5, 0.0}}; // pixel (19, 19)
+    massingRoadMask({wide, narrow, dot}, n, 100.0, kMassingRoadFeather, mask.data());
+    const auto at = [&](std::size_t ix, std::size_t iy) { return static_cast<int>(mask[iy * n + ix]); };
+    // Wide: its edge is 6 m off the centre line; past the segment's ends it rounds off.
+    CHECK(at(25, 56) == 128);
+    CHECK(at(25, 55) == 191);
+    CHECK(at(25, 58) == 0);
+    // Narrow: even on its centre line it reads 191 (0.5 + 1/4), 128 at its edge 1 m off and 0 from 3 m.
+    CHECK(at(30, 20) == 191);
+    CHECK(at(31, 20) == 128);
+    CHECK(at(32, 20) == 64);
+    CHECK(at(33, 20) == 0);
+    // Where they cross, the wide street's 255 is not lowered by the narrow one's 191.
+    CHECK(at(30, 50) == 255);
+    // The disc: 255 at its centre, 128 at its 2 m edge, 0 from 4 m.
+    CHECK(at(19, 19) == 255);
+    CHECK(at(21, 19) == 128);
+    CHECK(at(19, 21) == 128);
+    CHECK(at(23, 19) == 0);
+    // Nothing else is touched.
+    CHECK(at(80, 80) == 0);
+}
+
+TEST_CASE("massing road mask: an empty table, a bad size or a bad feather leaves zeros") {
+    std::vector<std::uint8_t> mask(16 * 16, 9);
+    massingRoadMask({}, 16, 16.0, kMassingRoadFeather, mask.data());
+    for (const std::uint8_t b : mask) CHECK(b == 0);
+    MassingStreet s;
+    s.width = 4.0;
+    s.points = {{0.0, 0.0, 0.0}};
+    std::fill(mask.begin(), mask.end(), std::uint8_t{9});
+    massingRoadMask({s}, 16, 16.0, 0.0, mask.data());
+    for (const std::uint8_t b : mask) CHECK(b == 0);
+    massingRoadMask({s}, 0, 16.0, kMassingRoadFeather, mask.data()); // no size: nothing written, nothing read
 }
