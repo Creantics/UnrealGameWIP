@@ -138,7 +138,7 @@ void AFTPartyVan::BeginPlay()
 	const FString Cmd = FCommandLine::Get();
 	bCourse = FParse::Param(*Cmd, TEXT("VanCourse"));
 	FString At3;
-	bMapRoute = !bCourse && FParse::Value(*Cmd, TEXT("PartyVanAt="), At3);
+	bMapRoute = !bCourse && FParse::Value(*Cmd, TEXT("PartyVanAt="), At3, false);
 	bScript = (bCourse || bMapRoute) && FParse::Param(*Cmd, TEXT("VanDrive"));
 	bMapRoute = bMapRoute && bScript;
 	float RouteM = 80.f;
@@ -154,6 +154,97 @@ void AFTPartyVan::BeginPlay()
 	StartHeading = State.heading;
 	PlaceOnGround(true);
 	SetActorLocationAndRotation(FVector(State.x, State.y, GroundZ + Clearance + BodyHalfZ), FRotator(0.0, GetActorRotation().Yaw, 0.0));
+
+	FString LoopText;
+	if (bMapRoute && FParse::Value(FCommandLine::Get(), TEXT("VanLoop="), LoopText, false))
+	{
+		TArray<FString> Pts;
+		LoopText.ParseIntoArray(Pts, TEXT(","));
+		const float C0 = FMath::Cos(StartHeading), S0 = FMath::Sin(StartHeading);
+		Loop[0] = FVector2D::ZeroVector;
+		int32 N = 1;
+		for (const FString& T : Pts)
+		{
+			FString A, B;
+			if (N > MaxLoop || !T.Split(TEXT(":"), &A, &B))
+			{
+				continue;
+			}
+			const FVector2D Rel(FCString::Atod(*A) - Start.X, FCString::Atod(*B) - Start.Y);
+			Loop[N++] = FVector2D(Rel.X * C0 + Rel.Y * S0, -Rel.X * S0 + Rel.Y * C0);
+		}
+		Loop[N++] = FVector2D::ZeroVector; // and back to the start
+		LoopCum[0] = 0.f;
+		for (int32 I = 1; I < N; ++I)
+		{
+			LoopCum[I] = LoopCum[I - 1] + static_cast<float>(FVector2D::Distance(Loop[I - 1], Loop[I]));
+		}
+		LoopN = N >= 3 ? N : 0;
+		if (LoopN > 0)
+		{
+			RouteLen = LoopCum[LoopN - 1];
+			UE_LOG(LogForgottenThird, Display, TEXT("FTPartyVan: loop of %d points, %.0f m."), LoopN - 2, RouteLen / 100.f);
+		}
+	}
+}
+
+FVector2D AFTPartyVan::RoutePoint(float S) const
+{
+	S = FMath::Clamp(S, 0.f, LoopCum[LoopN - 1]);
+	for (int32 I = 1; I < LoopN; ++I)
+	{
+		if (S <= LoopCum[I] || I == LoopN - 1)
+		{
+			const float Len = FMath::Max(LoopCum[I] - LoopCum[I - 1], 1.f);
+			return FMath::Lerp(Loop[I - 1], Loop[I], FMath::Clamp((S - LoopCum[I - 1]) / Len, 0.f, 1.f));
+		}
+	}
+	return Loop[0];
+}
+
+float AFTPartyVan::RouteDistance(const FVector2D& P, float Near) const
+{
+	// The nearest projection among the legs near the distance already driven (the loop meets itself at the start).
+	float Best = Near, BestD = 1e30f;
+	for (int32 I = 1; I < LoopN; ++I)
+	{
+		if (LoopCum[I] < Near - 2000.f || LoopCum[I - 1] > Near + 4000.f)
+		{
+			continue;
+		}
+		const FVector2D A = Loop[I - 1], D = Loop[I] - Loop[I - 1];
+		const float Len2 = FMath::Max(static_cast<float>(D.SizeSquared()), 1.f);
+		const float T = FMath::Clamp(static_cast<float>(FVector2D::DotProduct(P - A, D)) / Len2, 0.f, 1.f);
+		const float Dist = static_cast<float>(FVector2D::Distance(P, A + D * T));
+		if (Dist < BestD)
+		{
+			BestD = Dist;
+			Best = LoopCum[I - 1] + T * FMath::Sqrt(Len2);
+		}
+	}
+	return Best;
+}
+
+float AFTPartyVan::CornerSpeed(float Along) const
+{
+	// Down to 14 km/h for each turn of more than 30 degrees, braking at 4 m/s2 into it.
+	constexpr float Turn = 14.f * KmhToCms, Brake = 400.f;
+	float Want = 1e9f;
+	for (int32 I = 1; I < LoopN - 1; ++I)
+	{
+		const FVector2D In = (Loop[I] - Loop[I - 1]).GetSafeNormal(), Out = (Loop[I + 1] - Loop[I]).GetSafeNormal();
+		if (FVector2D::DotProduct(In, Out) > 0.866)
+		{
+			continue;
+		}
+		const float D = LoopCum[I] - Along;
+		if (D < -500.f || D > 3000.f)
+		{
+			continue;
+		}
+		Want = FMath::Min(Want, FMath::Sqrt(Turn * Turn + 2.f * Brake * FMath::Max(D - 150.f, 0.f)));
+	}
+	return Want;
 }
 
 void AFTPartyVan::LoadData()
@@ -571,12 +662,13 @@ void AFTPartyVan::TickScript(float DeltaSeconds)
 	const float C0 = FMath::Cos(StartHeading), S0 = FMath::Sin(StartHeading);
 	const FVector2D Rel(State.x - Start.X, State.y - Start.Y);
 	const FVector2D P(Rel.X * C0 + Rel.Y * S0, -Rel.X * S0 + Rel.Y * C0);
-	const float Along = CourseDistance(P, bMapRoute);
+	const float Along = LoopN > 0 ? RouteDistance(P, Travelled) : CourseDistance(P, bMapRoute);
 	Travelled = Along;
 	LimitKmh = bMapRoute ? 60.f : (Along > 10000.f ? 80.f : 60.f);
 	const float EndAlong = bMapRoute ? RouteLen : 19000.f;
 	const float Speed = State.forward;
-	const FVector2D Target = CoursePoint(Along + 600.f + 0.3f * FMath::Max(Speed, 0.f), bMapRoute);
+	const FVector2D Target = LoopN > 0 ? RoutePoint(Along + 350.f + 0.2f * FMath::Max(Speed, 0.f))
+		: CoursePoint(Along + 600.f + 0.3f * FMath::Max(Speed, 0.f), bMapRoute);
 	const float H = State.heading - StartHeading;
 	const float Alpha = FMath::FindDeltaAngleRadians(H, FMath::Atan2(static_cast<float>(Target.Y - P.Y), static_cast<float>(Target.X - P.X)));
 	const float Ld = FMath::Max(100.f, static_cast<float>(FVector2D::Distance(Target, P)));
@@ -588,6 +680,10 @@ void AFTPartyVan::TickScript(float DeltaSeconds)
 	{
 		// Town speed, easing down over the last 20 m to stop at the route's end.
 		Want = FMath::Min(40.f * KmhToCms, FMath::Sqrt(FMath::Max(0.f, 2.f * 500.f * (EndAlong - 300.f - Along))));
+		if (LoopN > 0)
+		{
+			Want = FMath::Min(Want, FMath::Min(35.f * KmhToCms, CornerSpeed(Along)));
+		}
 	}
 	else if (Along > 12000.f && Along < CornerX + 1500.f)
 	{
@@ -667,7 +763,7 @@ void AFTPartyVan::TickScript(float DeltaSeconds)
 		FPlatformMisc::RequestExitWithStatus(false, Fails == 0 ? 0 : 1, TEXT("Van"));
 	}
 	// A run that never finishes fails.
-	if (ScriptStage < 5 && ScriptTime > 90.f)
+	if (ScriptStage < 5 && ScriptTime > 90.f + RouteLen / 500.f)
 	{
 		++Fails;
 		UE_LOG(LogForgottenThird, Warning, TEXT("VANCHECK FAIL timed out at stage %d, %.1f m"), ScriptStage, Along / 100.f);
@@ -739,7 +835,7 @@ void AFTPartyVan::TickChecks()
 AFTPartyVan* AFTPartyVan::SpawnAt(UWorld* World)
 {
 	FString Value;
-	if (!World || !FParse::Value(FCommandLine::Get(), TEXT("PartyVanAt="), Value))
+	if (!World || !FParse::Value(FCommandLine::Get(), TEXT("PartyVanAt="), Value, false)) // commas are part of it
 	{
 		return nullptr;
 	}

@@ -148,6 +148,15 @@ private:
 	bool bCourse = false;
 	bool bMapRoute = false;    // -PartyVanAt with -VanDrive: a straight route from the spawn
 	float RouteLen = 8000.f;   // (cm)
+	// -VanLoop=X:Y,X:Y,...: a closed route through these engine points (cm) from the spawn and back to it, in the
+	// course frame (relative to the start, its heading along +X). LoopCum: the distance along to each point.
+	static constexpr int32 MaxLoop = 16;
+	FVector2D Loop[MaxLoop + 2];
+	float LoopCum[MaxLoop + 2] = {};
+	int32 LoopN = 0;
+	FVector2D RoutePoint(float S) const;
+	float RouteDistance(const FVector2D& P, float Near) const;
+	float CornerSpeed(float Along) const;
 	FString ShotPrefix;
 	float ScriptTime = 0.f;
 	int ScriptStage = 0;
