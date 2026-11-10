@@ -458,8 +458,123 @@ void UFTCrowdSubsystem::Shoot(APlayerController* PC, const FVector& PlayerAt)
 			return;
 		}
 		PickTestFight(PlayerAt);
-		const FVector Aim(TestFightPoint.X, TestFightPoint.Y, PlayerZ + 100.0);
-		const FVector Eyes[] = {Aim + FVector(-2500.0, -2500.0, 1400.0), Aim + FVector(2000.0, 3000.0, 2200.0)};
+		// The street under the fight point (it may sit well above or below the player's).
+		double FightZ = PlayerZ;
+		{
+			const FVector P(TestFightPoint.X, TestFightPoint.Y, PlayerZ);
+			FHitResult H;
+			if (World->LineTraceSingleByChannel(H, P + FVector(0.0, 0.0, 5000.0), P - FVector(0.0, 0.0, 5000.0), ECC_Visibility, TraceQuery))
+			{
+				FightZ = H.ImpactPoint.Z;
+			}
+		}
+		const FVector Fight(TestFightPoint.X, TestFightPoint.Y, FightZ);
+		// What both cameras must show: the fight point, the player's group and the nearest members to the fight.
+		TArray<FVector> Subjects;
+		Subjects.Add(Fight + FVector(0.0, 0.0, 100.0));
+		Subjects.Add(PlayerAt);
+		{
+			TArray<TPair<float, FVector>> Near;
+			for (uint32 i = 0; i < Sim.capacity(); ++i)
+			{
+				const ftcore::CrowdAgentView& V = Sim.agent(i);
+				const float D = static_cast<float>(FVector::Dist2D(FVector(V.pos.x * 100.0, V.pos.y * 100.0, 0.0), Fight) / 100.0);
+				if (!V.live || D > Tuning.reactRadius)
+				{
+					continue;
+				}
+				const int32 A = SlotActor.IsValidIndex(static_cast<int32>(i)) ? SlotActor[static_cast<int32>(i)] : INDEX_NONE;
+				const double Z = A != INDEX_NONE && PoolGrounded[A] ? PoolGround[A] : FightZ;
+				Near.Add({D, FVector(V.pos.x * 100.0, V.pos.y * 100.0, Z + 120.0)});
+			}
+			Near.Sort([](const TPair<float, FVector>& L, const TPair<float, FVector>& R) { return L.Key < R.Key; });
+			for (int32 n = 0; n < Near.Num() && n < 8; ++n)
+			{
+				Subjects.Add(Near[n].Value);
+			}
+		}
+		FVector Mid = FVector::ZeroVector;
+		for (const FVector& S : Subjects)
+		{
+			Mid += S;
+		}
+		Mid /= static_cast<double>(Subjects.Num());
+		const FVector Aim = FMath::Lerp(Subjects[0], Mid, 0.4);
+		const double TanX = FMath::Tan(FMath::DegreesToRadians(35.0)), TanY = TanX * 9.0 / 16.0;
+		// In sight: nothing static between the eye and the point (a hit within a metre of it is the thing itself).
+		auto Sees = [&](const FVector& Eye, const FVector& To) {
+			FHitResult H;
+			return !World->LineTraceSingleByChannel(H, Eye, To, ECC_Visibility, TraceQuery) || FVector::Dist(H.ImpactPoint, To) < 100.0;
+		};
+		auto InFrame = [&](const FVector& Eye, const FVector& To) {
+			const FVector L = (Aim - Eye).Rotation().Quaternion().UnrotateVector(To - Eye);
+			return L.X > 0.0 && FMath::Abs(L.Y) < L.X * TanX * 0.9 && FMath::Abs(L.Z) < L.X * TanY * 0.9;
+		};
+		// Candidate eyes round the fight point: every 30 degrees, 18-32 m out, 6-15 m up. Score: subjects seen and in
+		// frame; the fight point itself must be.
+		struct FEye
+		{
+			FVector At;
+			double Az = 0.0;
+			int32 Seen = -1;
+		};
+		TArray<FEye> Cands;
+		for (int32 Az = 0; Az < 360; Az += 30)
+		{
+			for (const double Dist : {2500.0, 1800.0, 3200.0})
+			{
+				for (const double Up : {1000.0, 600.0, 1500.0})
+				{
+					const double R = FMath::DegreesToRadians(static_cast<double>(Az));
+					FEye E;
+					E.At = Fight + FVector(FMath::Cos(R) * Dist, FMath::Sin(R) * Dist, Up);
+					E.Az = Az;
+					TArray<FOverlapResult> In;
+					if (World->OverlapMultiByObjectType(In, E.At, FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldStatic),
+							FCollisionShape::MakeSphere(30.f), TraceQuery) ||
+						!InFrame(E.At, Subjects[0]) || !Sees(E.At, Subjects[0]))
+					{
+						continue;
+					}
+					E.Seen = 0;
+					for (const FVector& S : Subjects)
+					{
+						E.Seen += InFrame(E.At, S) && Sees(E.At, S);
+					}
+					Cands.Add(E);
+				}
+			}
+		}
+		// Cands keeps the preferred distance and height first per azimuth, so a tie goes to them.
+		int32 A = INDEX_NONE, B = INDEX_NONE;
+		for (int32 c = 0; c < Cands.Num(); ++c)
+		{
+			if (A == INDEX_NONE || Cands[c].Seen > Cands[A].Seen)
+			{
+				A = c;
+			}
+		}
+		for (int32 c = 0; A != INDEX_NONE && c < Cands.Num(); ++c)
+		{
+			const double Apart = FMath::Abs(FMath::FindDeltaAngleDegrees(Cands[c].Az, Cands[A].Az));
+			if (Apart >= 90.0 && (B == INDEX_NONE || Cands[c].Seen > Cands[B].Seen))
+			{
+				B = c;
+			}
+		}
+		const FVector Fallback[] = {Aim + FVector(-2500.0, -2500.0, 1400.0), Aim + FVector(2000.0, 3000.0, 2200.0)};
+		const FVector Eyes[] = {A != INDEX_NONE ? Cands[A].At : Fallback[0], B != INDEX_NONE ? Cands[B].At : Fallback[1]};
+		for (int32 c = 0; c < 2; ++c)
+		{
+			const int32 Pick = c == 0 ? A : B;
+			const FVector L = (Aim - Eyes[c]).Rotation().Quaternion().UnrotateVector(Fight - Eyes[c]);
+			const double Px = L.X > 0.0 ? 800.0 * (1.0 + L.Y / (L.X * TanX)) : -1.0;
+			const double Py = L.X > 0.0 ? 450.0 * (1.0 - L.Z / (L.X * TanY)) : -1.0;
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("Crowd: cam%c at %s (%s): fight point at pixel (%.0f, %.0f) of 1600x900; %d of %d subjects (fight point, player, nearest %d members) seen."),
+				c == 0 ? TEXT('A') : TEXT('B'), *Eyes[c].ToString(), Pick != INDEX_NONE ? TEXT("picked") : TEXT("no clear view, fallback"), Px, Py,
+				Pick != INDEX_NONE ? Cands[Pick].Seen : -1, Subjects.Num(), Subjects.Num() - 2);
+		}
 		for (const FVector& From : Eyes)
 		{
 			FActorSpawnParameters Spawn;
@@ -796,9 +911,12 @@ void UFTCrowdSubsystem::Draw()
 
 void UFTCrowdSubsystem::CheckFootprint(int32 Actor, const FVector& Feet)
 {
-	// Inside a building (anything static round the hips) or stood on a roof (ground well above the player's).
+	// Inside a building (anything static round the hips) or stood on a roof: more ground under where it stands, over
+	// half a metre down (the street itself, not the player's height, is the measure: the streets climb).
 	UWorld* World = GetWorld();
-	const bool bRoof = PoolGrounded[Actor] && Feet.Z > PlayerZ + 250.0;
+	FHitResult Below;
+	const bool bRoof = PoolGrounded[Actor] && World->LineTraceSingleByChannel(Below, Feet - FVector(0.0, 0.0, 50.0),
+		Feet - FVector(0.0, 0.0, 5000.0), ECC_Visibility, TraceQuery);
 	TArray<FOverlapResult> Hits;
 	const bool bInside = World->OverlapMultiByObjectType(Hits, Feet + FVector(0.0, 0.0, 100.0), FQuat::Identity,
 		FCollisionObjectQueryParams(ECC_WorldStatic), FCollisionShape::MakeSphere(20.f), TraceQuery);

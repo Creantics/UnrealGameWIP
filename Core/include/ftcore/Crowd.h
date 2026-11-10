@@ -373,6 +373,7 @@ private:
     void free(std::uint32_t i);
     void unspawn(std::uint32_t i);
     void brace(Agent& a);
+    void unCorner(Agent& a);
     bool crowded(std::uint32_t self, Vec2 p, float r) const;
     float scale(const Agent& a) const;
     Vec2 basePoint(const Agent& a) const;

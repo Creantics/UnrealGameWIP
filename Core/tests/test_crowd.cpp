@@ -1034,3 +1034,83 @@ TEST_CASE("crowd on a real street table (opt-in)") {
                 static_cast<unsigned long long>(c.planFails), sim.liveCount(), sim.countIn(CrowdState::Walk));
     CHECK(c.fled > 0);
 }
+
+TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
+    // The render gate: a stratified sample of street nodes (the node nearest each cell centre of a grid over the map,
+    // FT_CROWD_SWEEP nodes at least, default 48), each a fight point with the player on a node about 30 m west of it,
+    // x 6 seeds; 20 s calm, then the first second. Runs where nobody is inside the radius are skipped.
+    const std::string path = envText("FT_CROWD_STREETS");
+    const std::string want = envText("FT_CROWD_SWEEP");
+    if (path.empty() || want.empty()) return;
+    const std::string sideText = envText("FT_CROWD_SIDE");
+    const double side = sideText.empty() ? 1000.0 : std::atof(sideText.c_str());
+    std::vector<CrowdStreet> streets;
+    std::string err;
+    REQUIRE_MESSAGE(importCrowdStreets(readFile(path), side, streets, &err), err);
+    CrowdTuning t;
+    REQUIRE(importCrowdTuning(readFile(std::string(FTCORE_PROJECT_DATA_DIR) + "/Crowd/crowd.json"), t, &err));
+    CrowdGraph g;
+    REQUIRE_MESSAGE(g.build(streets, t.graph, &err), err);
+    const std::uint32_t minNodes = static_cast<std::uint32_t>(std::max(1, std::atoi(want.c_str())));
+    // What-if levers for the report (not the shipped tuning): FT_CROWD_REACT_CLOSE (s), FT_CROWD_RUN_MUL (x run speed).
+    if (!envText("FT_CROWD_REACT_CLOSE").empty()) t.reactCloseMax = std::strtof(envText("FT_CROWD_REACT_CLOSE").c_str(), nullptr);
+    if (!envText("FT_CROWD_RUN_MUL").empty()) t.runSpeed *= std::strtof(envText("FT_CROWD_RUN_MUL").c_str(), nullptr);
+    const Vec2 lo = g.boundsMin(), hi = g.boundsMax();
+    std::vector<std::uint32_t> nodes;
+    for (int k = 4; nodes.size() < minNodes && k < 64; ++k) {
+        nodes.clear();
+        const float cw = (hi.x - lo.x) / static_cast<float>(k), ch = (hi.y - lo.y) / static_cast<float>(k);
+        for (int cy = 0; cy < k; ++cy)
+            for (int cx = 0; cx < k; ++cx) {
+                const Vec2 c{lo.x + (static_cast<float>(cx) + 0.5f) * cw, lo.y + (static_cast<float>(cy) + 0.5f) * ch};
+                std::uint32_t best = UINT32_MAX;
+                float bd = 1e30f;
+                for (std::uint32_t n = 0; n < g.nodeCount(); ++n) {
+                    const Vec2 q = g.node(n);
+                    if (!g.spawnable(n) || std::fabs(q.x - c.x) > cw * 0.5f || std::fabs(q.y - c.y) > ch * 0.5f) continue;
+                    if (dist(q, c) < bd) { bd = dist(q, c); best = n; }
+                }
+                if (best != UINT32_MAX) nodes.push_back(best);
+            }
+    }
+    std::uint32_t runs = 0, skipped = 0, cornered = 0, towardRuns = 0, toward = 0, passStrict = 0, passTol = 0, nodesUsed = 0;
+    float worst = 1e30f;
+    Vec2 worstAt{};
+    std::uint32_t worstSeed = 0;
+    for (const std::uint32_t n : nodes) {
+        const Vec2 fight = g.node(n);
+        const std::uint32_t pn = g.nearest({fight.x - 30.f, fight.y}, 50.f);
+        const Vec2 player = pn == UINT32_MAX ? fight : g.node(pn);
+        bool used = false;
+        for (std::uint32_t seed = 1; seed <= 6; ++seed) {
+            CrowdSim sim;
+            REQUIRE(sim.init(g, t, seed));
+            run(sim, 20.f, player);
+            CrowdReactionProbe probe;
+            probe.begin(sim, fight, t.reactRadius);
+            if (probe.count() == 0) { ++skipped; continue; }
+            used = true;
+            sim.pushEvent({CrowdEventKind::FightStart, fight});
+            run(sim, 1.f, player);
+            const CrowdReactionResult rs = probe.evaluate(sim, 1.5f), rt = probe.evaluate(sim, 1.49f);
+            ++runs;
+            passStrict += rs.ok();
+            passTol += rt.ok();
+            cornered += rs.cornered;
+            toward += rs.toward;
+            towardRuns += rs.toward > 0;
+            if (rs.worstGain < worst) { worst = rs.worstGain; worstAt = fight; worstSeed = seed; }
+            if (!rt.ok())
+                std::printf("crowd sweep: FAILED at %.1f,%.1f seed %u: inside %u away %u cornered %u turned %u toward %u worst gain %.4f m\n",
+                            static_cast<double>(fight.x), static_cast<double>(fight.y), seed, rt.inside, rt.away, rt.cornered, rt.turned,
+                            rt.toward, static_cast<double>(rt.worstGain));
+        }
+        nodesUsed += used;
+    }
+    std::printf("crowd sweep: %zu nodes sampled, %u with members inside, %u runs (%u skipped empty): %u pass strict, %u pass with the 1 cm tolerance; "
+                "%u cornered members; %u members moved towards the fight (in %u runs); worst gain %.4f m at %.1f,%.1f seed %u\n",
+                nodes.size(), nodesUsed, runs, skipped, passStrict, passTol, cornered, toward, towardRuns, static_cast<double>(worst == 1e30f ? 0.f : worst),
+                static_cast<double>(worstAt.x), static_cast<double>(worstAt.y), worstSeed);
+    CHECK(toward == 0u);
+    CHECK(passTol == runs);
+}
