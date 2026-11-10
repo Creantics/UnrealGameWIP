@@ -210,6 +210,8 @@ private:
 	// Wall then holds) and down onto what is there (Floor, no blocking hit when nothing is); with no floor in reach it
 	// is left at the height it started from.
 	void MoveOverFloor(const FVector& To, FHitResult& Wall, FHitResult& Floor);
+	// Where the soles are: the capsule's bottom less the floor hover, the frame traversals and slides are planned in.
+	FVector FeetLocation() const;
 	void SpawnTraversalCourse();
 	void AddPortraitLights();
 	void StepPortraitShots();
@@ -255,6 +257,8 @@ private:
 	int32 ShotIndex = 0;
 	bool bShotAimed = false;
 	FTimerHandle ShotTimer;
+	// -ExplorePortraitShotEvery=<s>: the step between aiming and shooting (a shot every two steps).
+	float ShotEvery = 2.5f;
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
 	FFTFootSlideProbe SlideProbe;
@@ -296,6 +300,16 @@ private:
 	FTransform TravFrame;
 	float TravClock = 0.f;
 	float TravSlowest = 0.f;
+	// For the hand-back check: the soles' height over the floor through a roll, a slide or a clip's tail (min and max,
+	// cm), and the capsule's height as it handed back, logged with what CharacterMovement makes of it a frame on.
+	float SoleGapMin = 0.f;
+	float SoleGapMax = 0.f;
+	double HandBackZ = 0.0;
+	double HandBackMeshZ = 0.0;
+	bool bHandBackPending = false;
+	void ResetSoleGap();
+	void NoteSoleGap();
+	void LogSoleGap(const TCHAR* What) const;
 	// The vaults, climbs and catches begun, and the last one's mark (GetLastTraversal).
 	uint32 TraversalsBegun = 0;
 	FFTTraversalMark LastTraversal;
