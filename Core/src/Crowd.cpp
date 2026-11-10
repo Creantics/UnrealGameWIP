@@ -26,6 +26,8 @@ float angleDiff(float a, float b) {
 
 // How far off a new edge's line a member may stand as it turns onto it (m).
 constexpr float kCornerReach = 12.f;
+// m: how far inside the safe distance a recovering member may stand before it runs again.
+constexpr float kSafeSlack = 6.f;
 float yawTo(Vec2 from, Vec2 to) { return std::atan2(to.y - from.y, to.x - from.x) * kDeg; }
 
 // Distance from p to the segment ab.
@@ -176,7 +178,11 @@ void CrowdSim::setState(Agent& a, CrowdState s) {
     switch (s) {
     case CrowdState::Notice: ++counts_.noticed; break;
     case CrowdState::BackAway: ++counts_.backedAway; break;
-    case CrowdState::Flee: ++counts_.fled; break;
+    case CrowdState::Flee:
+        ++counts_.fled;
+        if (a.fleeEntries++ == 0) ++counts_.fleers;
+        counts_.maxFleeEntries = std::max<std::uint32_t>(counts_.maxFleeEntries, a.fleeEntries);
+        break;
     case CrowdState::Cower: ++counts_.cowered; break;
     case CrowdState::Walk:
         if (a.state != CrowdState::Idle && a.state != CrowdState::Free) ++counts_.resumed;
@@ -408,6 +414,8 @@ void CrowdSim::deliver(Agent& a) {
 // if that gains 10 m; otherwise false (cornered).
 bool CrowdSim::plan(Agent& a) {
     ++counts_.plans;
+    if (a.plans < UINT16_MAX) ++a.plans;
+    counts_.maxPlans = std::max<std::uint32_t>(counts_.maxPlans, a.plans);
     if (++stamp_ == 0) {
         std::fill(sStamp_.begin(), sStamp_.end(), 0);
         stamp_ = 1;
@@ -532,15 +540,22 @@ void CrowdSim::decide(std::uint32_t i) {
         a.retryLeft -= tuning_.step;
         if (f >= flee && a.retryLeft <= 0.f && plansLeft_ > 0) {
             --plansLeft_;
-            a.retryLeft = tuning_.cowerRetry;
-            if (plan(a)) setState(a, CrowdState::Flee);
+            if (plan(a)) {
+                a.cowerFails = 0;
+                setState(a, CrowdState::Flee);
+            } else {
+                // Still cornered: back off (x2, x3, x4) so a cowering member doesn't search the streets every retry.
+                if (a.cowerFails < 3) ++a.cowerFails;
+                a.retryLeft = tuning_.cowerRetry * static_cast<float>(1 + a.cowerFails);
+            }
         } else if (f < tuning_.calmFear && a.stateTime >= tuning_.calmTime) {
             setState(a, CrowdState::Recover);
         }
         break;
     case CrowdState::Recover:
         // Already at the safe distance from this threat: stay put rather than plan a run to where it stands.
-        if (f >= flee && dist(a.pos, a.threat) < tuning_.safeDist) startFlee(a);
+        // The run ends at a node, the member a pavement's width off it: the slack keeps that from reading as inside.
+        if (f >= flee && dist(a.pos, a.threat) < tuning_.safeDist - kSafeSlack) startFlee(a);
         else if (a.stateTime >= tuning_.recoverTime && f < std::max(tuning_.calmFear, notice)) setState(a, CrowdState::Walk);
         break;
     case CrowdState::Free: break;

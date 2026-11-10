@@ -38,6 +38,9 @@ constexpr double kGroundFirstSpan = 20000.0;
 constexpr int32 kOcclusionTracesPerFrame = 32;
 // A quiet spell this long (s) between arena events makes the next attack a fight start again.
 constexpr double kFightQuiet = 10.0;
+// Run checks: one member may run, stop and run again a few times in a long fight, not every step.
+constexpr uint32 kMaxFleeEntries = 3;
+constexpr uint32 kMaxPlansOne = 12;
 // The scripted fight: how far from the player, how long, how often a strike lands.
 constexpr double kTestFightDistance = 15.0;
 constexpr double kTestFightLength = 10.0;
@@ -284,6 +287,11 @@ void UFTCrowdSubsystem::FeedArena(const ftcore::ArenaEvents& Events)
 			{
 				RaiseEvent(ftcore::CrowdEventKind::FightStart, At);
 			}
+			else
+			{
+				bFightEvent = false; // the fight is already on: not passed on, not counted
+				LastArenaEvent = RunTime;
+			}
 			break;
 		case ftcore::ArenaEventType::Hit:
 		case ftcore::ArenaEventType::CounterStagger:
@@ -428,25 +436,44 @@ void UFTCrowdSubsystem::Tick(float DeltaTime)
 	{
 		LogCounts(TEXT("final"));
 		const ftcore::CrowdCounts& C = Sim.counts();
-		bool bOk = true;
+		// Shared checks: nobody flip-flops between running and stopping, and the street is calm again at the end.
+		const uint32 Live = Sim.liveCount();
+		const uint32 Upset = Live - Sim.countIn(ftcore::CrowdState::Walk) - Sim.countIn(ftcore::CrowdState::Idle);
+		const bool bCalm = Upset * 20 <= Live;
+		const bool bSteady = C.maxFleeEntries <= kMaxFleeEntries && C.maxPlans <= kMaxPlansOne;
+		const bool bFull = Live + Live / 10 >= Tuning.targetAgents;
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: %u live of %u target (%s); %u still upset (%s); %llu fleers, most flee entries by one %u, most plans by one %u (%s)."),
+			Live, Tuning.targetAgents, bFull ? TEXT("full") : TEXT("SHORT"), Upset, bCalm ? TEXT("calm") : TEXT("NOT CALM"), C.fleers,
+			C.maxFleeEntries, C.maxPlans, bSteady ? TEXT("steady") : TEXT("FLIP-FLOP"));
+		bool bOk = bCalm && bSteady && bFull;
+		const bool bStimulus = bTestFightStarted || ArenaFed > 0;
+		if (!bStimulus)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: no stimulus this run (no -CrowdTestFight, no arena fight event): FAILED."));
+			bOk = false;
+		}
 		if (bTestFightStarted)
 		{
 			const uint64 Perceived = C.perceived - AtTestFight.perceived;
 			const uint64 Fled = C.fled - AtTestFight.fled;
 			const uint64 Resumed = C.resumed - AtTestFight.resumed;
-			bOk = Fled > 0 && Resumed > 0;
+			const uint64 Spread = C.spread - AtTestFight.spread;
+			const bool bReacted = Perceived > 0 && Fled > 0 && Resumed > 0 && Spread > 0;
+			bOk = bOk && bReacted;
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: since the test fight: perceived %llu, fled %llu, cowered %llu, resumed %llu, spread %llu: %s."),
-				Perceived, Fled, C.cowered - AtTestFight.cowered, Resumed, C.spread - AtTestFight.spread,
-				bOk ? TEXT("ok") : TEXT("FAILED (nobody fled or nobody resumed)"));
+				Perceived, Fled, C.cowered - AtTestFight.cowered, Resumed, Spread,
+				bReacted ? TEXT("ok") : TEXT("FAILED (nobody perceived, fled, resumed or spread panic)"));
 		}
 		if (ArenaSeen > 0)
 		{
 			const uint64 Perceived = C.perceived - AtArena.perceived;
-			bOk = bOk && ArenaFed > 0 && Perceived > 0;
+			const bool bReacted = ArenaFed > 0 && Perceived > 0 && C.resumed > AtArena.resumed;
+			bOk = bOk && bReacted;
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: from the arena: %d events, %d fed as fight events; since the first: perceived %llu, noticed %llu, backed %llu, fled %llu, cowered %llu, resumed %llu: %s."),
 				ArenaSeen, ArenaFed, Perceived, C.noticed - AtArena.noticed, C.backedAway - AtArena.backedAway, C.fled - AtArena.fled,
-				C.cowered - AtArena.cowered, C.resumed - AtArena.resumed, bOk ? TEXT("ok") : TEXT("FAILED (no fight event fed or nobody perceived one)"));
+				C.cowered - AtArena.cowered, C.resumed - AtArena.resumed, bReacted ? TEXT("ok") : TEXT("FAILED (no fight event fed, or nobody perceived one or resumed)"));
 		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: verdict %s."), bOk ? TEXT("ok") : TEXT("FAILED"));
 		bRunning = false;
 		FTRequestExit(bOk ? 0 : 1, TEXT("Crowd"));
 	}

@@ -314,6 +314,33 @@ TEST_CASE("crowd reactions: notice, back away, flee to a safe distance, calm dow
     }
 }
 
+TEST_CASE("crowd recover: wherever a run ends near the safe distance, a loud fight there never starts a second run") {
+    CrowdGraph g;
+    REQUIRE(g.build(gridStreets(9, 30.f), loose()));
+    const CrowdTuning t = quiet();
+    for (const float ox : {6.f, 10.f, 18.f, 25.f}) {
+        for (const float oy : {-4.f, 0.f, 3.f, 8.f, 14.f}) {
+            CAPTURE(ox);
+            CAPTURE(oy);
+            CrowdSim sim;
+            REQUIRE(sim.init(g, t, 11));
+            sim.setPopulationFrozen(true);
+            const std::uint32_t a = sim.spawnAt(nodeAt(g, {0.f, 0.f}), 0, 0.5f);
+            REQUIRE(a != UINT32_MAX);
+            run(sim, 0.1f);
+            const Vec2 fight{sim.agent(a).pos.x + ox, sim.agent(a).pos.y + oy};
+            sim.pushEvent({CrowdEventKind::FightStart, fight});
+            for (int k = 0; k < 40; ++k) { // a long, loud fight: fear stays above flee at the safe distance
+                sim.pushEvent({CrowdEventKind::Strike, fight, 4.f, 4.f});
+                run(sim, 0.5f);
+            }
+            CHECK(sim.counts().fleers == 1);
+            CHECK(sim.counts().maxFleeEntries == 1);
+            CHECK(sim.counts().maxPlans <= 4);
+        }
+    }
+}
+
 TEST_CASE("crowd flee path: picks the way away from the threat; cornered in a dead end, cowers") {
     SUBCASE("on a long street the run goes away from the threat") {
         CrowdGraph g;
@@ -440,7 +467,7 @@ TEST_CASE("crowd cower: recovers when calm; flees on a retry once a way opens") 
     }
     SUBCASE("the threat moves to the far end: the retry plans and it flees") {
         sim.pushEvent({CrowdEventKind::Gunshot, {195.f, 0.f}, 3.f, 1.f});
-        const auto seen = trace(sim, a, 4.f);
+        const auto seen = trace(sim, a, 8.f); // a retry that fails before the shot is heard waits 4 s (the backoff)
         CHECK(inOrder(seen, {CrowdState::Cower, CrowdState::Flee}));
     }
 }

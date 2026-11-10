@@ -239,6 +239,9 @@ struct CrowdCounts {
     std::uint64_t plans = 0, planFails = 0;
     std::uint64_t eventsDropped = 0;
     std::uint64_t occlusionQueries = 0;
+    std::uint64_t fleers = 0;            // members that fled at least once
+    std::uint32_t maxFleeEntries = 0;    // the most times one member entered Flee
+    std::uint32_t maxPlans = 0;          // the most flee plans one member asked for
 };
 
 // Host occlusion: true when something solid stands between `from` and `to` (engine frame, metres).
@@ -298,6 +301,8 @@ private:
         std::uint8_t pathLen = 0, pathPos = 0;
         bool pathPartial = false;
         Vec2 planFrom;
+        std::uint16_t fleeEntries = 0, plans = 0;
+        std::uint8_t cowerFails = 0; // failed retries in a row: each waits longer
     };
 
     void step(Vec2 player, Vec2 playerVel);
