@@ -55,7 +55,15 @@ add_library(ftcore STATIC
     src/CrowdTuning.cpp
     src/Terrain.cpp
     src/MassingPlan.cpp
+    src/MassingProps.cpp
+    src/MassingDress.cpp
+    src/MassingLayout.cpp
+    src/WindowInterior.cpp
+    src/WindowFacade.cpp
+    src/WorldClock.cpp
     src/WorldChecks.cpp
+    src/Roads.cpp
+    src/RoadGraph.cpp
     src/CityPlacer.cpp
     src/OuterPlaces.cpp
     src/SurfaceTable.cpp
@@ -143,6 +151,26 @@ else()
     target_compile_options(ftcore_place PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
+# ftcore_layout: the lane layout's command-line tool for the private box tables (an offline build step, not the game).
+add_executable(ftcore_layout tools/ftcore_layout.cpp)
+target_link_libraries(ftcore_layout PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_layout PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_layout PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_layout PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
+# ftcore_roadgraph: the road graph's command-line tool for the private street and road tables (an offline build step).
+add_executable(ftcore_roadgraph tools/ftcore_roadgraph.cpp)
+target_link_libraries(ftcore_roadgraph PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_roadgraph PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_roadgraph PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_roadgraph PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
 if(FTCORE_BUILD_TESTS)
     include(FetchContent)
     # CMake 4 rejects cmake_minimum_required(< 3.5), which doctest 2.4.11 still declares.
@@ -184,7 +212,16 @@ if(FTCORE_BUILD_TESTS)
         tests/test_world_layout.cpp
         tests/test_terrain.cpp
         tests/test_massing_plan.cpp
+        tests/test_massing_props.cpp
+        tests/test_massing_dress.cpp
+        tests/test_massing_layout.cpp
+        tests/test_window_interior.cpp
+        tests/test_window_facade.cpp
+        tests/test_world_clock.cpp
         tests/test_world_checks.cpp
+        tests/test_roads.cpp
+        tests/test_road_graph.cpp
+        tests/test_road_net.cpp
         tests/test_city_placer.cpp
         tests/test_outer_places.cpp
         tests/test_surface_table.cpp
@@ -208,6 +245,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_mini.cpp
         tests/test_music_loop.cpp
         tests/test_party_trail.cpp
+        tests/test_party_shore.cpp
         tests/test_crowd.cpp
         tests/test_guard.cpp
         tests/test_path_follow.cpp

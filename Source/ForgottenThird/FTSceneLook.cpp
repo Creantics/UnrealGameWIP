@@ -143,6 +143,7 @@ int32 FTScene::ApplyLook(UWorld* World, const ftcore::SceneLook& Look, const ftc
 	FT_LOOK_POST(filmWhiteClip, FilmWhiteClip, Look.filmWhiteClip)
 	FT_LOOK_POST(localHighlightContrast, LocalExposureHighlightContrastScale, Look.localHighlightContrast)
 	FT_LOOK_POST(localShadowContrast, LocalExposureShadowContrastScale, Look.localShadowContrast)
+	FT_LOOK_POST(lumenSkylightLeaking, LumenSkylightLeaking, Look.lumenSkylightLeaking)
 	FT_LOOK_POST(bloom, BloomIntensity, Look.bloom)
 	FT_LOOK_POST(vignette, VignetteIntensity, Look.vignette)
 	FT_LOOK_POST(fringe, SceneFringeIntensity, Look.fringe)
@@ -340,6 +341,11 @@ UMaterialInterface* FTScene::LoadSurface()
 FString FTScene::SurfaceInstancePackage(const FString& Id)
 {
 	return FString::Printf(TEXT("%s/%s/MI_Surface_%s"), SurfaceFolder, *Id, *Id);
+}
+
+FString FTScene::WindowInstancePackage(const FString& Id)
+{
+	return FString::Printf(TEXT("%s/MIW_%s"), WindowFolder, *Id);
 }
 
 FString FTScene::SurfaceTexturePackage(const FString& Id, const TCHAR* Suffix)

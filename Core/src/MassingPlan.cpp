@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <charconv>
 #include <cmath>
+#include <cstddef>
 #include <unordered_set>
 
 namespace ftcore {
@@ -197,11 +198,29 @@ void massingCorners(const MassingBox& box, double topNudge, std::array<MassingVe
                 else if (box.slopeThick > 0.0) z = zt - box.slopeThick;
                 else z = box.z0;
             } else {
-                z = top ? flatTop : box.z0;
+                z = (top ? flatTop : box.z0) + box.riseU * u + box.riseW * w;
             }
             out[static_cast<std::size_t>(top * 4 + k)] = {box.cx + u * c - w * s, box.cy + u * s + w * c, z};
         }
     }
+}
+
+MassingCubePose massingCubePose(const MassingBox& box, double height) {
+    MassingCubePose pose;
+    pose.yaw = massingEngineYaw(box.rot);
+    // Unreal's rotator: local X's image is (cP cY, cP sY, sP) and local Z's (-(cR sP cY + sR sY), cY sR - cR sP sY,
+    // cR cP), so the top's normal at yaw 0 gives dz/dx = tan(P) and dz/dy = -tan(R) / cos(P); the engine's y runs
+    // along -w.
+    const double pitch = std::atan(box.riseU);
+    const double roll = std::atan(box.riseW * std::cos(pitch));
+    pose.pitch = pitch * 180.0 / kPi;
+    pose.roll = roll * 180.0 / kPi;
+    pose.scale = {box.sx / std::cos(pitch), box.sy / std::cos(roll), height};
+    // The top's middle stands height / 2 along local Z from the centre, off the plumb line by its tilt: lift the cube so
+    // that point lies on the plane.
+    const double cp = std::cos(pitch), sp = std::sin(pitch), cr = std::cos(roll), sr = std::sin(roll);
+    pose.lift = 0.5 * height * (1.0 - cr * cp - box.riseU * cr * sp - box.riseW * sr);
+    return pose;
 }
 
 bool massingNavObstacle(const MassingBox& box) {
@@ -336,14 +355,17 @@ bool massingKitPlacement(const MassingBox& box, double side, const MassingVec& m
     return true;
 }
 
-void massingTopNudges(const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
-                      std::vector<double>& out) {
+namespace {
+
+// The flat boxes `include` marks, in order, and for each box the flat ones it shares a top with: stated tops within
+// kMassingSharedTop and footprints that overlap.
+void sharedTops(const std::vector<MassingBox>& boxes, const std::vector<bool>& include, std::vector<std::size_t>& flat,
+                std::vector<std::vector<std::size_t>>& adj) {
     const std::size_t n = boxes.size();
-    out.assign(n, 0.0);
-    std::vector<std::size_t> flat;
+    flat.clear();
     for (std::size_t i = 0; i < n; ++i)
         if (i < include.size() && include[i] && !boxes[i].sloped) flat.push_back(i);
-    std::vector<std::vector<std::size_t>> adj(n);
+    adj.assign(n, {});
     for (std::size_t p = 0; p < flat.size(); ++p)
         for (std::size_t q = p + 1; q < flat.size(); ++q) {
             const MassingBox& a = boxes[flat[p]];
@@ -353,6 +375,17 @@ void massingTopNudges(const std::vector<MassingBox>& boxes, const std::vector<bo
                 adj[flat[q]].push_back(flat[p]);
             }
         }
+}
+
+} // namespace
+
+void massingTopNudges(const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
+                      std::vector<double>& out) {
+    const std::size_t n = boxes.size();
+    out.assign(n, 0.0);
+    std::vector<std::size_t> flat;
+    std::vector<std::vector<std::size_t>> adj;
+    sharedTops(boxes, include, flat, adj);
     std::vector<std::size_t> order;
     for (const std::size_t i : flat)
         if (!adj[i].empty()) order.push_back(i);
@@ -409,6 +442,96 @@ double massingGroundAt(const std::uint16_t* grid, std::size_t samplesX, std::siz
     const double south = h(c0, r0) + (h(c1, r0) - h(c0, r0)) * tx;
     const double north = h(c0, r1) + (h(c1, r1) - h(c0, r1)) * tx;
     return south + (north - south) * ty;
+}
+
+namespace {
+
+// Hands `visit` each of a box's ground sample points (massingGroundRaises) as a plan point, stopping at the first it
+// returns true for; whether one did.
+template <class Visit>
+bool anyGroundSample(const MassingBox& b, double spacing, Visit&& visit) {
+    const double hu = std::max(b.sx * 0.5 - kMassingGroundInset, 0.0);
+    const double hw = std::max(b.sy * 0.5 - kMassingGroundInset, 0.0);
+    const auto count = [&](double half) {
+        const double steps = std::ceil(2.0 * half / spacing);
+        return static_cast<std::size_t>(std::clamp(steps, 0.0, static_cast<double>(kMassingGroundSamples - 1))) + 1;
+    };
+    const std::size_t nu = count(hu), nw = count(hw);
+    const double a = b.rot * kPi / 180.0;
+    const double c = std::cos(a), s = std::sin(a);
+    for (std::size_t i = 0; i < nu; ++i) {
+        const double u = nu == 1 ? 0.0 : -hu + 2.0 * hu * static_cast<double>(i) / static_cast<double>(nu - 1);
+        for (std::size_t j = 0; j < nw; ++j) {
+            const double w = nw == 1 ? 0.0 : -hw + 2.0 * hw * static_cast<double>(j) / static_cast<double>(nw - 1);
+            // solidAt's rotation, applied: (u, w) in the box's axes to the plan frame.
+            if (visit(b.cx + u * c - w * s, b.cy + u * s + w * c)) return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+std::size_t massingGroundRaises(const std::uint16_t* grid, std::size_t samplesX, std::size_t samplesY, double spacing,
+                                double originX, double originY, const std::vector<MassingBox>& boxes,
+                                const std::vector<bool>& include, const std::vector<double>& nudges,
+                                std::vector<double>& out, std::vector<std::vector<std::size_t>>* stuckGroups) {
+    const std::size_t n = boxes.size();
+    out.assign(n, 0.0);
+    if (stuckGroups) stuckGroups->clear();
+    if (!grid || samplesX == 0 || samplesY == 0 || !(spacing > 0.0) || !std::isfinite(spacing)) return 0;
+    std::vector<std::size_t> flat;
+    std::vector<std::vector<std::size_t>> adj;
+    sharedTops(boxes, include, flat, adj);
+    const auto nudge = [&](std::size_t i) { return i < nudges.size() ? nudges[i] : 0.0; };
+    const auto onGround = [&](std::size_t i, double top) {
+        return anyGroundSample(boxes[i], spacing, [&](double x, double y) {
+            return std::fabs(top - massingGroundAt(grid, samplesX, samplesY, spacing, originX, originY, x, y)) <
+                   kMassingSharedTop;
+        });
+    };
+    // Each box's group: the index of its first box, -1 until it is reached.
+    std::vector<std::ptrdiff_t> group(n, -1);
+    std::vector<std::size_t> members;
+    std::size_t stuck = 0;
+    for (const std::size_t first : flat) {
+        if (group[first] >= 0) continue;
+        const std::ptrdiff_t id = static_cast<std::ptrdiff_t>(first);
+        members.assign(1, first);
+        group[first] = id;
+        for (std::size_t k = 0; k < members.size(); ++k)
+            for (const std::size_t j : adj[members[k]])
+                if (group[j] < 0) {
+                    group[j] = id;
+                    members.push_back(j);
+                }
+        bool lying = false;
+        for (const std::size_t i : members) lying = lying || onGround(i, boxes[i].z1 + nudge(i));
+        if (!lying) continue;
+        int steps = 0;
+        for (int k = 1; k <= kMassingGroundSteps && steps == 0; ++k) {
+            const double raise = kMassingNudgeStep * static_cast<double>(k);
+            bool clear = true;
+            for (std::size_t m = 0; m < members.size() && clear; ++m) {
+                const std::size_t i = members[m];
+                const double top = boxes[i].z1 + nudge(i) + raise;
+                clear = !onGround(i, top);
+                for (std::size_t q = 0; q < flat.size() && clear; ++q) {
+                    const std::size_t j = flat[q];
+                    clear = group[j] == id || std::fabs(top - (boxes[j].z1 + nudge(j) + out[j])) >= kMassingSharedTop ||
+                            !massingFootprintsOverlap(boxes[i], boxes[j]);
+                }
+            }
+            if (clear) steps = k;
+        }
+        if (steps == 0) {
+            ++stuck;
+            if (stuckGroups) stuckGroups->push_back(members);
+            continue;
+        }
+        for (const std::size_t i : members) out[i] = kMassingNudgeStep * static_cast<double>(steps);
+    }
+    return stuck;
 }
 
 namespace {
@@ -514,26 +637,41 @@ MassingLookSurface massingLookSurface(const MassingBox& box) {
     if (!massingVisible(massingRole(box))) return MassingLookSurface::BoardConcrete;
     const std::string& kind = box.kind;
     // Kerbs and the other added walls.
-    if (lookStartsWith(box.id, "V1-KB") || (box.source == MassingSource::Invented && kind == "wall"))
+    if (lookStartsWith(box.id, "V1-KB") || kind == "kerb" || (box.source == MassingSource::Invented && kind == "wall"))
         return MassingLookSurface::PoleConcrete;
-    if (kind == "ramp" || kind == "landing" || kind == "terrace") return MassingLookSurface::PavingSlab;
-    if (kind == "cliff" || kind == "seawall" || kind == "breakwater" || kind == "quay")
+    if (kind == "ramp" || kind == "landing") return MassingLookSurface::PavingSlab;
+    // A lane's flush dressing (massingLaneDress): a pale gutter and give-way bars, steel drain covers, concrete patches.
+    if (kind == "gutter" || kind == "marking") return MassingLookSurface::PoleConcrete;
+    if (kind == "drain") return MassingLookSurface::GalvSteel;
+    if (kind == "patch") return MassingLookSurface::BoardConcrete;
+    if (kind == "terrace" || kind == "cliff" || kind == "seawall" || kind == "breakwater" || kind == "quay")
         return MassingLookSurface::BoardConcrete;
-    if (kind == "deck" || kind == "pier" || kind == "boat" || kind == "bridge") return MassingLookSurface::OakPlank;
-    if (kind == "crane" || kind == "mast" || kind == "post" || kind == "barrier" || kind == "gate")
+    if (kind == "deck" || kind == "pier" || kind == "bridge") return MassingLookSurface::OakPlank;
+    if (kind == "crane" || kind == "boat" || kind == "mast" || kind == "post" || kind == "barrier" || kind == "gate" ||
+        kind == "tank" || kind == "unit" || kind == "aerial" || kind == "stand" || kind == "shed" || kind == "frame")
         return MassingLookSurface::GalvSteel;
-    // A building: one of three finishes by its row; a table with no row column goes by the id up to its last '_'.
+    // A building: a finish by its row (a table with no row column goes by the id up to its last '_'); a kit box, one
+    // house of a terrace row, by its own id.
     std::string_view key = box.row;
+    if (kind == "kit") key = box.id;
     if (key.empty()) {
         key = box.id;
         const std::size_t cut = key.rfind('_');
         if (cut != std::string_view::npos && cut > 0) key = key.substr(0, cut);
     }
-    switch (lookHash(key) % 3u) {
-    case 0: return MassingLookSurface::BuildingA;
-    case 1: return MassingLookSurface::BuildingB;
-    default: return MassingLookSurface::BuildingC;
-    }
+    // Weights out of 20: render 6, tile 5, board concrete 4, brick 3, breeze block 1, cladding 1. FNV's low bits mix
+    // poorly on ids that differ in their last digit, so the pick reads the high half.
+    const std::uint32_t pick = (lookHash(key) >> 16) % 20u;
+    if (pick < 6u) return MassingLookSurface::BuildingRender;
+    if (pick < 11u) return MassingLookSurface::BuildingTile;
+    if (pick < 15u) return MassingLookSurface::BuildingBoard;
+    if (pick < 18u) return MassingLookSurface::BuildingA;
+    if (pick < 19u) return MassingLookSurface::BuildingB;
+    return MassingLookSurface::BuildingC;
+}
+
+bool massingLookIsBuilding(MassingLookSurface surface) {
+    return surface >= MassingLookSurface::BuildingA && surface <= MassingLookSurface::BuildingBoard;
 }
 
 std::string_view massingLookSurfaceId(MassingLookSurface surface) {
@@ -546,6 +684,9 @@ std::string_view massingLookSurfaceId(MassingLookSurface surface) {
     case MassingLookSurface::BuildingA: return "soot_brick";
     case MassingLookSurface::BuildingB: return "breeze_block";
     case MassingLookSurface::BuildingC: return "alu_cladding";
+    case MassingLookSurface::BuildingRender: return "pole_concrete";
+    case MassingLookSurface::BuildingTile: return "ceramic_tile";
+    case MassingLookSurface::BuildingBoard: return "board_concrete";
     }
     return "board_concrete";
 }
@@ -573,8 +714,9 @@ bool importMassingStreets(std::string_view csv, std::vector<MassingStreet>& out,
     std::vector<Record> records;
     if (!splitCsv(csv, records, error)) return false;
 
-    enum Col { Id, Width, Pts, Count };
-    constexpr const char* kNames[Count] = {"id", "width_m", "pts"};
+    enum Col { Id, Width, Pts, Kind, Pavement, Count };
+    constexpr const char* kNames[Count] = {"id", "width_m", "pts", "kind", "pavement_m"};
+    constexpr std::size_t kRequired = 3; // kind and pavement_m are optional
     std::size_t col[Count] = {};
     std::size_t width = 0;
     bool haveHeader = false;
@@ -590,7 +732,8 @@ bool importMassingStreets(std::string_view csv, std::vector<MassingStreet>& out,
                     if (col[c] != r.fields.size()) return fail(error, r.line, std::string("column ") + kNames[c] + " twice");
                     col[c] = f;
                 }
-                if (col[c] == r.fields.size()) return fail(error, r.line, std::string("no column ") + kNames[c]);
+                if (c < kRequired && col[c] == r.fields.size())
+                    return fail(error, r.line, std::string("no column ") + kNames[c]);
             }
             width = r.fields.size();
             haveHeader = true;
@@ -617,6 +760,15 @@ bool importMassingStreets(std::string_view csv, std::vector<MassingStreet>& out,
             if (pts.empty()) return fail(error, r.line, s.id + ": pts ends in ';'");
         }
         if (s.points.empty()) return fail(error, r.line, s.id + ": pts holds no point");
+        if (col[Kind] < r.fields.size()) {
+            s.kind = std::string(trim(r.fields[col[Kind]]));
+            if (!s.kind.empty() && !detail::validKind(s.kind))
+                return fail(error, r.line, s.id + ": kind must be a-z, A-Z, 0-9, '_' or '-'");
+        }
+        if (col[Pavement] < r.fields.size() && !trim(r.fields[col[Pavement]]).empty()) {
+            if (!parseNumber(r.fields[col[Pavement]], s.pavement) || s.pavement < 0.0 || !(massingCarriageway(s) > 0.0))
+                return fail(error, r.line, s.id + ": pavement_m must be a number >= 0 under half width_m");
+        }
         out.push_back(std::move(s));
     }
     if (!haveHeader) return fail(error, 1, "no header row");
@@ -628,6 +780,26 @@ void massingStreetsToEngine(std::vector<MassingStreet>& streets, double side) {
         for (MassingVec& p : s.points) p = massingEnginePoint(side, p.x, p.y, 0.0);
 }
 
+std::size_t massingStreetSections(std::vector<MassingStreet>& streets, const MassingStreetSections& sections,
+                                  std::size_t* paved) {
+    std::size_t given = 0;
+    const bool share = sections.pavementShare > 0.0 && sections.pavementShare < 0.5;
+    for (MassingStreet& s : streets) {
+        if (share && s.pavement == 0.0 && s.width >= sections.kerbFrom && s.width <= sections.kerbTo &&
+            !(sections.sharedUpTo > 0.0 && s.width <= sections.sharedUpTo)) {
+            s.pavement = sections.pavementShare * s.width;
+            ++given;
+        }
+    }
+    if (paved) *paved = given;
+    if (!(sections.sharedUpTo > 0.0)) return 0;
+    const std::size_t before = streets.size();
+    const double upTo = sections.sharedUpTo;
+    streets.erase(std::remove_if(streets.begin(), streets.end(), [upTo](const MassingStreet& s) { return s.width <= upTo; }),
+                  streets.end());
+    return before - streets.size();
+}
+
 void massingRoadMask(const std::vector<MassingStreet>& streets, std::size_t size, double sideM, double feather,
                      std::uint8_t* out) {
     if (size == 0 || !out) return;
@@ -637,7 +809,7 @@ void massingRoadMask(const std::vector<MassingStreet>& streets, std::size_t size
     const double origin = -0.5 * sideM;
     const long n = static_cast<long>(size);
     for (const MassingStreet& s : streets) {
-        const double half = 0.5 * s.width;
+        const double half = 0.5 * massingCarriageway(s);
         const double reach = half + feather; // beyond this a pixel reads 0
         const std::size_t count = s.points.size();
         const std::size_t segments = count > 1 ? count - 1 : 1; // a lone point is a disc

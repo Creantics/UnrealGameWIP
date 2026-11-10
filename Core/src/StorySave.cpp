@@ -3,6 +3,7 @@
 #include "ftcore/Json.h"
 #include "ftcore/StoryRunner.h"
 
+#include <charconv>
 #include <cstdio>
 
 namespace ftcore {
@@ -126,7 +127,16 @@ std::string encodeStorySave(const StorySave& save) {
         appendQuoted(out, std::string(stack.id.view()));
         out += ",\"count\":" + std::to_string(stack.count) + '}';
     }
-    out += "]}}";
+    out += "]}";
+    if (save.hasClock) {
+        const WorldClock c = worldClockSanitized(save.clock);
+        char buf[40];
+        const auto h = std::to_chars(buf, buf + sizeof buf, c.hours); // the shortest text that reads back exactly
+        out += ",\"clock\":{\"hours\":" + std::string(buf, h.ptr) + ",\"paused\":" + (c.paused ? "true" : "false");
+        const auto m = std::to_chars(buf, buf + sizeof buf, c.dayMinutes);
+        out += ",\"dayMinutes\":" + std::string(buf, m.ptr) + ",\"day\":" + std::to_string(c.day) + '}';
+    }
+    out += '}';
     return out;
 }
 
@@ -186,6 +196,23 @@ bool decodeStorySave(std::string_view text, StorySave& out, std::string* error) 
                 if (!isHexDigit(c)) return fail(error, at + ".bits is not hexadecimal");
             result.seen.push_back({std::string(id.string()), std::string(bits.string())});
         }
+    }
+    // Optional (a save from before the clock has none, and the clock then keeps its own time).
+    const JsonValue clock = root["clock"];
+    if (!clock.isAbsent()) {
+        if (!clock.isObject()) return fail(error, "save: \"clock\" is not an object");
+        const JsonValue hours = clock["hours"], paused = clock["paused"], minutes = clock["dayMinutes"], day = clock["day"];
+        if (!hours.isNumber() || !paused.isBool() || !minutes.isNumber())
+            return fail(error, "save: clock.hours, .paused or .dayMinutes is missing or the wrong type");
+        if (!day.isInteger() || day.integer() < 0 || day.integer() > 0xFFFFFFFFll)
+            return fail(error, "save: clock.day is missing or not an integer in range");
+        WorldClock c;
+        c.hours = hours.number();
+        c.paused = paused.boolean();
+        c.dayMinutes = static_cast<float>(minutes.number());
+        c.day = static_cast<std::uint32_t>(day.integer());
+        result.clock = worldClockSanitized(c);
+        result.hasClock = true;
     }
     const JsonValue party = root["party"];
     if (!party.isAbsent()) {

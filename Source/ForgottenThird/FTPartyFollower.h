@@ -51,8 +51,15 @@ public:
 	// follower sets off and stops when the lead does, so the lead's intent (SetIntent) drives its
 	// starts and stops; -1 plays none. Carried by a traversal it goes where its clip goes instead, and is
 	// eased back onto `Ground` once let go. In the air at a ledge the lead caught, it stops short of the face till it
-	// catches it or comes down clear of it.
-	void Place(const FVector2D& Ground, float LeadFeetZ, float DeltaSeconds, float WantSpeed = -1.f, float StopDistance = -1.f);
+	// catches it or comes down clear of it. On a map with a sea (SetSea), where its spot has no footing it stands short of
+	// the sea instead, on the way out from `PathPoint` (cm: where the lead walked, at its place on the trail) or, with
+	// none, from where it last had footing (ftcore::standShortOfSea).
+	void Place(const FVector2D& Ground, float LeadFeetZ, float DeltaSeconds, float WantSpeed = -1.f, float StopDistance = -1.f,
+		const FVector2D* PathPoint = nullptr);
+	// The map's sea level (cm, world Z): from here on the follower never stands on or over the water, nor on ground at or
+	// under the sea level, nor on ground too steep for the lead to walk, nor where the look down meets nothing
+	// (-LocoNoShore: it does, as before). Call after Setup.
+	void SetSea(float SeaLevel);
 	// Plays a running turn by `Delta` degrees from here, as the lead did at this spot on its trail
 	// (ftcore::PartyTrail::turnsReached). Call before Place.
 	void ReplayTurn(float Delta);
@@ -86,6 +93,9 @@ private:
 	// For the log, once a frame: from when it comes off its slot (let go by a traversal, or held short of a face) till
 	// it is back on it, how long that takes, its fastest and its hardest change of speed (WasGoing: last frame's Going).
 	void TrackCatchUp(bool bCarried, bool bLetGo, const FVector2D& WasGoing, float DeltaSeconds);
+	// On a map with a sea: Spot if it has footing, else where to stand short of the sea (Place). Was is where the body
+	// stood last frame; LeadFeetZ and Was bound the look down as Place's does.
+	FVector2D KeepAshore(const FVector2D& Spot, const FVector& Was, float LeadFeetZ, const FVector2D* PathPoint);
 
 	// The body hangs off a plain root, so its facing turn survives Place setting the actor's rotation.
 	UPROPERTY(VisibleAnywhere, Category = "Follower")
@@ -115,6 +125,14 @@ private:
 	bool bFacing = false;     // asked to turn on the spot to FaceYaw
 	float FaceYaw = 0.f;
 	bool bThroughSolid = false; // its slot was inside something solid when last placed (for the log)
+	// SetSea: the sea level (cm) it keeps out of; where it last stood with footing; and whether it is held short of the
+	// sea now (for the log).
+	bool bShore = false;
+	float ShoreLevel = 0.f;
+	float ShoreWalkableZ = 0.71f; // the steepest ground it stands on (the up part of its normal), as the lead walks
+	FVector2D LastDry = FVector2D::ZeroVector;
+	bool bHasLastDry = false;
+	bool bShoreHeld = false;
 	FFTFootSlideProbe SlideProbe;
 	// -LocoNoFollowerTraversal.
 	bool bNoTraversal = false;

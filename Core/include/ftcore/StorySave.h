@@ -16,6 +16,7 @@
 #include "ftcore/Api.h"
 #include "ftcore/Progression.h"
 #include "ftcore/StoryDatabase.h"
+#include "ftcore/WorldClock.h"
 
 #include <cstdint>
 #include <string>
@@ -46,6 +47,8 @@ struct StorySave {
     std::vector<SavedStoryFlag> flags; // only flags that differ from their default
     std::vector<SavedSeenScene> seen;  // only scenes with a seen beat (format 2; empty for a format 1 save)
     PartyProgress party;               // xp, gold and items; the owner fills it (capture and apply leave it alone)
+    WorldClock clock;                  // time of day; the owner fills it (capture and apply leave it alone)
+    bool hasClock = false;             // the save holds a clock (false for a save from before the clock)
 };
 
 struct StoryLoadReport {
