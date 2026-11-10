@@ -446,8 +446,11 @@ void UFTCrowdSubsystem::ScriptFight(const FVector& PlayerAt)
 	}
 	if (!bTestFightStarted)
 	{
+		// Picked again at the start; the same spot keeps the ground height the cameras were aimed by (r5: the
+		// player's height put the point 95 px off the centre fifth in both fight stills).
+		const FVector Before = TestFightPoint;
 		PickTestFight(PlayerAt);
-		TestFightPoint.Z = PlayerZ;
+		TestFightPoint.Z = FVector::Dist2D(Before, TestFightPoint) < 1.0 ? Before.Z : PlayerZ;
 		AtTestFight = Sim.counts();
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: test fight starts at engine (%.0f, %.0f) cm, %.1f m from the player, at t=%.1f s; %u live, %u walking."),
 			TestFightPoint.X, TestFightPoint.Y, FVector::Dist2D(TestFightPoint, PlayerAt) / 100.0, RunTime,
