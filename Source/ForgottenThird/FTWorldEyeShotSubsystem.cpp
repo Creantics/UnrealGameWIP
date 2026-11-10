@@ -3,12 +3,15 @@
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
 #include "Components/LightComponent.h"
+#include "Components/LocalLightComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "DynamicRHI.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/PostProcessVolume.h"
 #include "Engine/SkyLight.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
 #include "EngineUtils.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
@@ -210,27 +213,118 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 {
 	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyeNight")))
 	{
-		float SunShare = 0.01f, SkyShare = 0.05f, Ev = -2.f;
+		// The moon's share of the map's sun, the sky fill's share of the map's sky light (net), the exposure, the lamps' and
+		// shop lights' candelas and the lamps' reach in metres.
+		float SunShare = 0.03f, SkyFill = 0.1f, Ev = -2.f, LampCd = 25.f, LampRadius = 18.f, ShopCd = 15.f, Glow = -1.f;
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightSun="), SunShare);
-		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightSky="), SkyShare);
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightSky="), SkyFill);
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightEV="), Ev);
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightLamp="), LampCd);
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightLampRadius="), LampRadius);
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightShop="), ShopCd);
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightGlow="), Glow);
+		SunShare = FMath::Max(SunShare, 1e-4f);
 		const FString Path = FTScene::WindowCollection;
 		UMaterialParameterCollection* Collection =
 			LoadObject<UMaterialParameterCollection>(nullptr, *(Path + TEXT(".") + FPackageName::GetShortName(Path)), nullptr, LOAD_NoWarn | LOAD_Quiet);
 		UMaterialParameterCollectionInstance* Windows = Collection ? World.GetParameterCollectionInstance(Collection) : nullptr;
 		const bool bNight = Windows && Windows->SetScalarParameterValue(TEXT("Night"), 1.f);
+		const bool bGlow = Glow >= 0.f && Windows && Windows->SetScalarParameterValue(TEXT("NightGlow"), Glow);
 		int32 Suns = 0, Skies = 0, Volumes = 0;
 		for (TActorIterator<ADirectionalLight> It(&World); It; ++It)
 		{
 			ULightComponent* Light = It->GetLightComponent();
 			Light->SetIntensity(Light->Intensity * SunShare);
+			Light->SetLightColor(FLinearColor(0.65f, 0.75f, 1.f), false);
 			++Suns;
 		}
+		// A real-time capture of the atmosphere already dims (and tints) with the sun, so it is lifted back by the moon's
+		// share to land at SkyFill of the map's: the blue fill the street keeps where no lamp reaches.
 		for (TActorIterator<ASkyLight> It(&World); It; ++It)
 		{
 			USkyLightComponent* Light = It->GetLightComponent();
-			Light->SetIntensity(Light->Intensity * SkyShare);
+			Light->SetIntensity(Light->Intensity * (Light->bRealTimeCapture ? SkyFill / SunShare : SkyFill));
+			Light->SetLightColor(FLinearColor(0.8f, 0.85f, 1.f));
 			++Skies;
+		}
+		// The street lamps and shop spill lights the massing build placed, off until now (on the actor's tag or the
+		// light's own), and the lamps' heads. The build's lamps are bright enough for a street at a city night's exposure;
+		// at this one they would burn out, so they take LampCd.
+		int32 Lamps = 0, Shops = 0, Heads = 0, Lenses = 0;
+		TArray<FVector> LampAt;
+		const FString LampPath = FTScene::NightLampMaterial;
+		UMaterialInterface* LampMaterial = LoadObject<UMaterialInterface>(nullptr,
+			*(LampPath + TEXT(".") + FPackageName::GetShortName(LampPath)), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		for (TActorIterator<AActor> It(&World); It; ++It)
+		{
+			const bool bLampActor = It->ActorHasTag(FTScene::NightLampTag);
+			const bool bShopActor = It->ActorHasTag(FTScene::NightShopTag);
+			const bool bHeadActor = It->ActorHasTag(FTScene::NightLampHeadTag);
+			TInlineComponentArray<UActorComponent*> Components(*It);
+			for (UActorComponent* Component : Components)
+			{
+				ULightComponent* Light = Cast<ULightComponent>(Component);
+				const bool bLamp = Light && (bLampActor || Component->ComponentHasTag(FTScene::NightLampTag));
+				const bool bShop = Light && !bLamp && (bShopActor || Component->ComponentHasTag(FTScene::NightShopTag));
+				if (bLamp || bShop)
+				{
+					Light->SetMobility(EComponentMobility::Movable);
+					Light->SetVisibility(true);
+					Light->SetHiddenInGame(false);
+					Light->SetCastShadows(false);
+					if (ULocalLightComponent* Local = Cast<ULocalLightComponent>(Light))
+					{
+						Local->SetIntensityUnits(ELightUnits::Candelas);
+						Local->SetAttenuationRadius((bLamp ? LampRadius : LampRadius * 0.5f) * 100.f);
+					}
+					Light->SetIntensity(bLamp ? LampCd : ShopCd);
+					Light->SetLightColor(FLinearColor::White);
+					Light->SetUseTemperature(true);
+					Light->SetTemperature(bLamp ? 2100.f : 3500.f);
+					if (bLamp)
+					{
+						LampAt.Add(Light->GetComponentLocation());
+						++Lamps;
+					}
+					else
+					{
+						++Shops;
+					}
+				}
+				UStaticMeshComponent* Mesh = Cast<UStaticMeshComponent>(Component);
+				if (Mesh && LampMaterial && (bHeadActor || Mesh->ComponentHasTag(FTScene::NightLampHeadTag)))
+				{
+					for (int32 Slot = 0; Slot < Mesh->GetNumMaterials(); ++Slot)
+					{
+						Mesh->SetMaterial(Slot, LampMaterial);
+					}
+					++Heads;
+				}
+			}
+		}
+		// A map whose lamps carry no head of their own gets a stand-in: a glowing lens, 30 cm across and 2 cm thick, hung
+		// just under each lamp's light (which sits just under the lens), clear of the head's mesh.
+		UStaticMesh* Disc = (Heads == 0 && LampMaterial && LampAt.Num() > 0)
+			? LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"), nullptr, LOAD_NoWarn | LOAD_Quiet)
+			: nullptr;
+		for (int32 L = 0; Disc && L < LampAt.Num(); ++L)
+		{
+			const FVector At = LampAt[L];
+			FActorSpawnParameters Spawn;
+			Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			AStaticMeshActor* Lens = World.SpawnActor<AStaticMeshActor>(At - FVector(0.0, 0.0, 2.0), FRotator::ZeroRotator, Spawn);
+			if (!Lens)
+			{
+				continue;
+			}
+			UStaticMeshComponent* Mesh = Lens->GetStaticMeshComponent();
+			Mesh->SetMobility(EComponentMobility::Movable);
+			Mesh->SetStaticMesh(Disc);
+			Mesh->SetMaterial(0, LampMaterial);
+			Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Mesh->SetCastShadow(false);
+			Lens->SetActorScale3D(FVector(0.3, 0.3, 0.02));
+			++Lenses;
 		}
 		for (TActorIterator<APostProcessVolume> It(&World); It; ++It)
 		{
@@ -240,9 +334,11 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 			It->Settings.AutoExposureMaxBrightness = Ev;
 			++Volumes;
 		}
-		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: night: windows' Night %s; %d suns at %.3f and %d sky lights at %.3f of the map's; "
-			"exposure locked at EV %.1f in %d volumes."), bNight ? TEXT("1") : TEXT("unset (no window collection)"), Suns, SunShare, Skies, SkyShare,
-			Ev, Volumes);
+		const FString GlowText = bGlow ? FString::SanitizeFloat(Glow) : FString(TEXT("as built"));
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: night: windows' Night %s, NightGlow %s; %d moons at %.3f of the map's sun and %d sky "
+			"lights at %.3f fill; %d street lamps at %.0f cd (%.0f m), %d shop lights at %.0f cd, %d lamp heads and %d stand-in lenses%s; exposure locked at EV %.1f in %d volumes."),
+			bNight ? TEXT("1") : TEXT("unset (no window collection)"), *GlowText, Suns, SunShare, Skies,
+			SkyFill, Lamps, LampCd, LampRadius, Shops, ShopCd, Heads, Lenses, LampMaterial ? TEXT("") : TEXT(" (no lamp material)"), Ev, Volumes);
 	}
 	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyePlainWalls")))
 	{

@@ -32,17 +32,19 @@ FTCORE_API MassingFoot massingBoxFoot(const MassingBox& box);
 // ---- Kerbs ----
 
 inline constexpr double kMassingKerbWidth = 0.2;     // m across
-inline constexpr double kMassingKerbHeight = 0.15;   // m its top stands over the highest floor along it
-inline constexpr double kMassingKerbSink = 0.2;      // m its bottom lies under the lowest
+inline constexpr double kMassingKerbHeight = 0.15;   // m its top stands over its line
+inline constexpr double kMassingKerbSink = 0.2;      // m its bottom lies under its line
 inline constexpr double kMassingKerbStep = 0.5;      // m between the points a kerb is read at, at most
 inline constexpr double kMassingKerbLongest = 12.0;  // m: the longest piece
-inline constexpr double kMassingKerbRise = 0.08;     // m: the most the floors under one piece may spread
+inline constexpr double kMassingKerbFit = 0.03;      // m: the most a floor under a piece may stray from its line
+inline constexpr double kMassingKerbGrade = 0.3;     // m per m: the steepest piece (a steeper line is a step)
 inline constexpr double kMassingKerbShortest = 1.0;  // m: a shorter piece is left out
 
 // What massingKerbs built and left out, in metres of kerb line.
 struct MassingKerbCounts {
     std::size_t streets = 0;   // streets with pavements and length
     std::size_t pieces = 0;
+    std::size_t runs = 0;      // unbroken lines: pieces joined end to end at one height count once
     double built = 0.0;
     double crossing = 0.0;     // left out where a carriageway crosses, or inside a bend
     double boxed = 0.0;        // left out where a box stands
@@ -63,11 +65,18 @@ struct MassingKerbCounts {
 // - boxed: within kMassingKerbWidth / 2 of the footprint of a box `include` marks that stands over its floor (its
 //   highest top corner over floor + kMassingStandClear, its bottom under floor + kMassingPropBody);
 // - wet: its floor at or under dryAbove.
-// The points kept are joined into pieces along the segment, a piece ending before it would pass kMassingKerbLongest or
-// its floors would spread more than kMassingKerbRise; a piece shorter than kMassingKerbShortest is left out. A piece is a
-// flat box over its points' shares, kMassingKerbWidth across, from kMassingKerbSink under its lowest floor to
-// kMassingKerbHeight over its highest, at the segment's rotation, id "<street>-KL<n>" left of the street's direction or
-// "<street>-KR<n>" right of it, n counting from 1 along each side in segment order. A kerb is low enough to step over.
+// The points kept in a row are split evenly into parts no longer than kMassingKerbLongest, and each part into pieces
+// along the segment. The kerb's line passes, at the boundary between two points' shares, through their floors' mean;
+// where a run starts (and at a row's end) through the end point's floor carried on half a step towards its neighbour's
+// (unless that is steeper than kMassingKerbGrade). A piece starts where the last ended, at that boundary's height, and
+// takes the next point while the straight line to the next boundary stays within kMassingKerbFit of each of its points'
+// floors and no steeper than kMassingKerbGrade, so the kerb's top runs on without a step. A piece that cannot take even
+// one point so starts a run instead; a point that fits no line (a step under it) is left out, as is a piece shorter
+// than kMassingKerbShortest, and either breaks the run (counts.runs counts the runs). A piece is a box over its points'
+// shares at the segment's rotation (its yaw follows the segment), kMassingKerbWidth across, tilted along u to its
+// line's grade (riseU), from kMassingKerbSink under its line to kMassingKerbHeight over it (z0, z1 at its middle), id
+// "<street>-KL<n>" left of the street's direction or "<street>-KR<n>" right of it, n counting from 1 along each side in
+// segment order. A kerb is low enough to step over.
 // `out` and `counts` are cleared first. Allocates: build time only.
 FTCORE_API void massingKerbs(const std::vector<MassingStreet>& streets, const MassingGround& ground,
                              const std::vector<MassingBox>& boxes, const std::vector<bool>& include, double dryAbove,
@@ -181,8 +190,10 @@ inline constexpr double kMassingFrontBack = 0.5;    // m a sunk piece keeps from
 inline constexpr double kMassingFrontLift = 0.3;    // m a host's bottom may stand over a piece's foot
 inline constexpr double kMassingFrontPadReach = 1.2; // m a ground piece's paving pad runs on past its front
 inline constexpr double kMassingFrontPadStep = 0.25; // m a pad's reach is cut by while its front is on a carriageway
-inline constexpr double kMassingFrontPadTop = 0.03;  // m a pad's top stands over the piece's floor
-inline constexpr double kMassingFrontPadSink = 0.3;  // m a pad reaches under the piece's floor
+inline constexpr double kMassingFrontPadTop = 0.03;  // m a pad's top stands over the floor under it
+inline constexpr double kMassingFrontPadSink = 0.3;  // m a pad reaches under the floor under it
+inline constexpr double kMassingFrontPadGrid = 0.45; // its floor is read this share of its size either side of its middle
+inline constexpr double kMassingFrontPadFit = 0.05;  // m: a floor further off the pad's plane leaves the pad out
 
 // What one frontage rule placed, and why the places it was tried at took nothing from it.
 struct MassingFrontCounts {
@@ -204,6 +215,7 @@ struct MassingFrontTotals {
     std::size_t dressed = 0;        // faces with at least one piece on the ground layer
     std::size_t streetFaces = 0;    // faces whose middle fronts a street
     std::size_t streetDressed = 0;  // of those, dressed
+    std::size_t padsUneven = 0;     // paving pads left out: the floor under them fits no plane (kMassingFrontPadFit)
 };
 
 // The room the part of a placed frontage piece outside its face takes on the plan: `out` deep from the face (x, y)
@@ -246,8 +258,12 @@ FTCORE_API MassingFoot massingFrontFoot(const MassingProp& prop, const MassingFr
 // flat box of source Invented, cover False, kind landing (paving slab, massingLookSurface), row and id "<host>-FP<n>" (n
 // counting from 1 per host, in the order the pieces are kept), at the piece's facing, its width plus its gap along the
 // face about the piece's middle, from the face out to its reach (out + kMassingFrontPadReach, cut by kMassingFrontPadStep,
-// to no less than out, while its front's corners or middle are in the road as above), from kMassingFrontPadSink under the
-// piece's floor to kMassingFrontPadTop over it. When `outFronting` is given it takes a byte per face of every box, at
+// to no less than out, while its front's corners or middle are in the road as above), laid flush on the floor under it:
+// the floor is read (from tops no higher than kMassingPropMaxStep over the higher of the ground and the piece's floor) at
+// a 3 x 3 grid kMassingFrontPadGrid of its size either side of its middle along u (out of the face) and w (along it), a
+// plane is fitted by least squares, and the pad tilts to it (riseU, riseW) from kMassingFrontPadSink under it to
+// kMassingFrontPadTop over it (z0, z1 at its middle); a pad with a floor more than kMassingFrontPadFit off its plane (a
+// step under it) is left out and counted in totals.padsUneven. When `outFronting` is given it takes a byte per face of every box, at
 // box * 4 + face (faces 0..3 the box's +u, +w, -u and -w sides), 1 where the face's middle fronts a street (a host's face
 // whose kind there isn't "open"), else 0. `out`, `counts` (one per rule), `totals` and the two optional outputs are
 // cleared first. Allocates: build time only.
@@ -276,6 +292,18 @@ inline constexpr double kMassingRoofUnitShort = 0.36;
 inline constexpr double kMassingRoofUnitHeight = 0.65;
 inline constexpr double kMassingRoofMastSide = 0.05; // m: an aerial's mast and its cross bar
 inline constexpr double kMassingRoofBarLong = 1.2;   // m: an aerial's cross bar
+// A court: a terrace whose top is the ground (an academy step, a yard), dressed with rails, racks and standards.
+inline constexpr double kMassingCourtRackArea = 150.0;     // m^2 of court for each steel rack
+inline constexpr std::size_t kMassingCourtRacks = 40;      // racks on one court, at most
+inline constexpr double kMassingCourtRackLong = 1.4;       // m: a rack's bar, its two posts at the ends
+inline constexpr double kMassingCourtRackDeep = 0.6;       // m: the foot a rack keeps across its bar
+inline constexpr double kMassingCourtRackHigh = 2.3;       // m: the bar's top over the court
+inline constexpr double kMassingCourtRackPost = 0.08;      // m: a rack post's side, and its bar's
+inline constexpr double kMassingCourtStandardArea = 600.0; // m^2 of court for each lamp standard
+inline constexpr std::size_t kMassingCourtStandards = 12;  // standards on one court, at most
+inline constexpr double kMassingCourtStandardHigh = 8.0;   // m: a standard's pole over the court
+inline constexpr double kMassingCourtStandardSide = 0.18;  // m: the pole's side
+inline constexpr double kMassingCourtArmLong = 1.2;        // m: the arm out from the pole's top
 
 // What massingRoofs built.
 struct MassingRoofCounts {
@@ -283,6 +311,8 @@ struct MassingRoofCounts {
     double railed = 0.0;      // m of rail
     std::size_t posts = 0, tanks = 0, units = 0, aerials = 0;
     std::size_t bare = 0;     // hosts left bare: sloped, too small or too low
+    std::size_t courts = 0;   // court tops that took a rail, a rack or a standard (not in roofs)
+    std::size_t racks = 0, standards = 0;
 };
 
 // Rails and clutter on the flat tops of the boxes `hosts` marks (of those `include` marks, the boxes read as neighbours).
@@ -307,9 +337,36 @@ struct MassingRoofCounts {
 // ("<host>-RX<n>", kind aerial, kMassingRoofBarLong long) 0.3 m under its top. Every piece is a flat box of source
 // Invented, cover False, row the host's id; galvanised steel dresses them (massingLookSurface). `out` and `counts` are
 // cleared first. Allocates: build time only.
+//
+// A host `courts` marks (null: none) is a court, its top the ground: it is not left bare for standing under
+// kMassingRoofHigh over the ground, takes the rails above, and, in place of tanks, units and an aerial, steel racks and
+// lamp standards set the same way: one rack for each kMassingCourtRackArea of its top (kMassingCourtRacks at most), two
+// posts ("<host>-CP<n>", kind post, kMassingCourtRackPost square) under a bar ("<host>-CB<n>", kind barrier,
+// kMassingCourtRackLong long, its top kMassingCourtRackHigh over the court), along either side by the hash; and one
+// standard for each kMassingCourtStandardArea (kMassingCourtStandards at most), a pole ("<host>-CS<n>", kind mast,
+// kMassingCourtStandardSide square, kMassingCourtStandardHigh high) and an arm at its top ("<host>-CA<n>", kind barrier,
+// kMassingCourtArmLong long). A dressed court counts in courts, not roofs.
 FTCORE_API void massingRoofs(const MassingGround& ground, const std::vector<MassingBox>& boxes,
                              const std::vector<bool>& include, const std::vector<bool>& hosts,
-                             std::vector<MassingBox>& out, MassingRoofCounts& counts);
+                             std::vector<MassingBox>& out, MassingRoofCounts& counts,
+                             const std::vector<bool>* courts = nullptr);
+
+// ---- Stand-ins ----
+//
+// The frame of flat boxes a crane or boat box (the plan's placeholders, until their kit meshes come) is built as, in
+// place of one solid. A crane (kind crane): four legs kMassingCraneLeg square at its footprint's corners up to its portal
+// (0.4 of its height); beams round the portal's top; a machine house on them (0.6 by 0.8 of the footprint, 0.14 of the
+// height); two masts from the house to the box's top at 0.3 of its width either side, a cross-head joining their tops;
+// a boom (kMassingCraneBoom deep) along +u, its top at 0.62 of the height, from sx behind the middle to 2.5 sx past the
+// +u side; and two ties (tilted boxes, 0.5 m deep) from the cross-head down to the boom's ends. A boat (kind boat), its
+// long side along u or w: a hull narrower below (0.7 of the beam, 0.85 of the length, to 0.45 of the height) under the
+// full deck, and a cabin on the deck (0.7 of the beam; a quarter of the length, 0.6 past 20 m; 2 m + a tenth of the
+// length high) a tenth of the length in from its -long end. Pieces "<box>-S<n>", the box's kind (so they dress as it
+// does), source Invented, cover False, row the box's id, appended to `out`. False, `out` untouched, for another kind, a
+// sloped box or an empty one. Allocates: build time only.
+inline constexpr double kMassingCraneLeg = 1.0;  // m: a crane leg's side, its portal beams' and masts'
+inline constexpr double kMassingCraneBoom = 1.6; // m: the boom's depth and width
+FTCORE_API bool massingStandIn(const MassingBox& box, std::vector<MassingBox>& out);
 
 // ---- Windows ----
 //
@@ -328,5 +385,23 @@ inline constexpr double kMassingWindowProbe = 0.5;
 // box * 4), or is null for none. No allocation.
 FTCORE_API MassingWindowData massingWindowData(const MassingBox& box, const MassingGround& ground,
                                                const std::uint8_t* fronting);
+
+// ---- Shop lights ----
+//
+// Where a windowed box's shopfronts spill light onto the street at night: along each face whose street bit `data`
+// sets, n = ceil(length / spacing) lights (one for a spacing that isn't positive), the k-th at (k + 0.5) / n of the
+// face's length, kMassingShopLightOut out of it and kMassingShopLightUp over its street floor (z0 + data.base[f]),
+// facing out of it. A face whose shop storey doesn't fit (the light over the box's top) takes none; a sloped box takes
+// none. Appended to `out`; the count appended is returned. Allocates: build time only.
+inline constexpr double kMassingShopLightOut = 0.4;      // m out of the face
+inline constexpr double kMassingShopLightUp = 2.4;       // m over the street floor: under a shopfront's top and fascia
+inline constexpr double kMassingShopLightSpacing = 8.0;  // m along the face between two lights, at most
+struct MassingShopLight {
+    double x = 0.0, y = 0.0, z = 0.0;  // plan frame, m
+    double face = 0.0;                 // plan degrees, counter-clockwise from +x: out of the face
+    int faceIndex = 0;                 // 0..3 in boxFace order
+};
+FTCORE_API std::size_t massingShopLights(const MassingBox& box, const MassingWindowData& data, double spacing,
+                                         std::vector<MassingShopLight>& out);
 
 } // namespace ftcore

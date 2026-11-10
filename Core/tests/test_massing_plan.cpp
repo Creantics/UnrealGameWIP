@@ -377,6 +377,61 @@ TEST_CASE("massing: the engine frame reads true from above") {
     CHECK(near((p1.y + p2.y) / 2, 10.0 * std::sin(yaw), 1e-9));
 }
 
+TEST_CASE("massing: a tilted box's cube lays its top on the box's plane, its yaw on the box's rotation") {
+    // Unreal's rotator as its matrix (FRotationTranslationMatrix): the rows are the images of local X, Y and Z.
+    const double toRad = 3.14159265358979323846 / 180.0;
+    struct Case {
+        double rot, riseU, riseW;
+    };
+    for (const Case k : {Case{0.0, 0.0, 0.0}, Case{30.0, 0.1, 0.0}, Case{-120.0, 0.05, -0.08}, Case{75.0, -0.2, 0.15},
+                         Case{200.0, 0.0, 0.12}}) {
+        MassingBox b = flatBox(10, -4, 6, 2, k.rot, 1.0, 1.35);
+        b.riseU = k.riseU;
+        b.riseW = k.riseW;
+        const double h = b.z1 - b.z0;
+        const MassingCubePose pose = massingCubePose(b, h);
+        CHECK(near(pose.yaw, massingEngineYaw(k.rot)));
+        if (k.riseU == 0.0 && k.riseW == 0.0) {
+            CHECK(pose.pitch == 0.0);
+            CHECK(pose.roll == 0.0);
+            CHECK(pose.lift == 0.0);
+            CHECK(near(pose.scale.x, 6.0));
+            CHECK(near(pose.scale.y, 2.0));
+        }
+        CHECK(near(pose.scale.z, h));
+        const double sp = std::sin(pose.pitch * toRad), cp = std::cos(pose.pitch * toRad);
+        const double sy = std::sin(pose.yaw * toRad), cy = std::cos(pose.yaw * toRad);
+        const double sr = std::sin(pose.roll * toRad), cr = std::cos(pose.roll * toRad);
+        const double mx[3] = {cp * cy, cp * sy, sp};
+        const double my[3] = {sr * sp * cy - cr * sy, sr * sp * sy + cr * cy, -sr * cp};
+        const double mz[3] = {-(cr * sp * cy + sr * sy), cy * sr - cr * sp * sy, cr * cp};
+        const MassingVec centre = massingEnginePoint(0.0, b.cx, b.cy, b.z0 + 0.5 * h + pose.lift);
+        const double c = std::cos(k.rot * toRad), s = std::sin(k.rot * toRad);
+        for (int corner = 0; corner < 4; ++corner) {
+            const double lx = (corner & 1 ? 0.5 : -0.5) * pose.scale.x, ly = (corner & 2 ? 0.5 : -0.5) * pose.scale.y,
+                         lz = 0.5 * pose.scale.z;
+            double e[3];
+            for (int a = 0; a < 3; ++a) e[a] = lx * mx[a] + ly * my[a] + lz * mz[a];
+            // Back to the plan (the engine's y runs south), then to the box's u and w about its centre.
+            const double dx = e[0], dy = -e[1];
+            const double u = dx * c + dy * s, w = -dx * s + dy * c;
+            // Local X runs along u and local Y along -w, the cube's plan keeping the box's size.
+            CHECK(near(u, (corner & 1 ? 3.0 : -3.0), 0.1));
+            CHECK(near(w, (corner & 2 ? -1.0 : 1.0), 0.1));
+            // The top corner lies on the plane through the top's middle rising riseU along u and riseW along w.
+            CHECK(near(centre.z + e[2], b.z1 + k.riseU * u + k.riseW * w, 1e-9));
+        }
+    }
+    // The corners read the same plane.
+    MassingBox t = flatBox(0, 0, 4, 2, 0, 0.0, 0.5);
+    t.riseU = 0.1;
+    t.riseW = -0.05;
+    std::array<MassingVec, 8> c;
+    massingCorners(t, 0.0, c);
+    CHECK(near(c[6].z, 0.5 + 0.1 * 2.0 - 0.05 * 1.0)); // (+u, +w) top
+    CHECK(near(c[0].z, 0.0 - 0.1 * 2.0 + 0.05 * 1.0)); // (-u, -w) bottom
+}
+
 TEST_CASE("massing: meshes wind the way the engine's own cube does") {
     // Unreal's generated cube (UStaticMeshDescription::CreateCube): corners and its +Z and +X faces.
     const MassingVec cube[8] = {{1, -1, 1}, {1, 1, 1}, {-1, 1, 1}, {-1, -1, 1}, {-1, 1, -1}, {-1, -1, -1}, {1, -1, -1}, {1, 1, -1}};
@@ -913,22 +968,23 @@ TEST_CASE("massing look: each kind of built box wears its class") {
     CHECK(cls(lookBox("V1-KB-P0001", "V1-KERB", MassingSource::Invented, "wall", false)) == MassingLookSurface::PoleConcrete);
     CHECK(cls(lookBox("CL-001-KL1", "CL-001", MassingSource::Invented, "kerb", false)) == MassingLookSurface::PoleConcrete);
     CHECK(cls(lookBox("V1-SCH-0001", "V1-SCH", MassingSource::Invented, "wall", true)) == MassingLookSurface::PoleConcrete);
-    // Flights, toe stairs, ramps, landings and terraces.
+    // Flights, toe stairs, ramps and landings.
     CHECK(cls(lookBox("V1-FL-ST-1", "V1-FL", MassingSource::Invented, "ramp", false)) == MassingLookSurface::PavingSlab);
     CHECK(cls(lookBox("V1-FL-ST-2", "V1-FL", MassingSource::Invented, "landing", false)) == MassingLookSurface::PavingSlab);
     CHECK(cls(lookBox("BLD-008_1", "BLD-008", MassingSource::Plan, "ramp", true)) == MassingLookSurface::PavingSlab);
-    CHECK(cls(lookBox("V1-NBD-1", "V1-NBD", MassingSource::Invented, "terrace", true)) == MassingLookSurface::PavingSlab);
-    // Cliff cover plates, the seawall, breakwater and quay.
+    // Terraces (cast courts), cliff cover plates, the seawall, breakwater and quay.
+    CHECK(cls(lookBox("V1-NBD-1", "V1-NBD", MassingSource::Invented, "terrace", true)) == MassingLookSurface::BoardConcrete);
+    CHECK(cls(lookBox("BLD-020_1", "BLD-020", MassingSource::Plan, "terrace", true)) == MassingLookSurface::BoardConcrete);
     CHECK(cls(lookBox("V1-CLF-0001", "V1-CLIFF", MassingSource::Invented, "cliff", true)) == MassingLookSurface::BoardConcrete);
     CHECK(cls(lookBox("V1-ISH-1", "V1-ISH", MassingSource::Invented, "seawall", true)) == MassingLookSurface::BoardConcrete);
     CHECK(cls(lookBox("V1-BRK-1", "V1-BRK", MassingSource::Invented, "breakwater", true)) == MassingLookSurface::BoardConcrete);
     CHECK(cls(lookBox("BLD-050_1", "BLD-050", MassingSource::Plan, "quay", true)) == MassingLookSurface::BoardConcrete);
-    // Decks, piers, boats and bridges.
-    for (const char* kind : {"deck", "pier", "boat", "bridge"})
+    // Decks, piers and bridges.
+    for (const char* kind : {"deck", "pier", "bridge"})
         CHECK(cls(lookBox("BLD-060_1", "BLD-060", MassingSource::Plan, kind, true)) == MassingLookSurface::OakPlank);
     CHECK(cls(lookBox("V1-MOLE-1", "V1-MOLE", MassingSource::Invented, "pier", true)) == MassingLookSurface::OakPlank);
-    // Cranes, masts, posts, barriers and gates.
-    for (const char* kind : {"crane", "mast", "post", "barrier", "gate"})
+    // Cranes, boats (steel hulls), masts, posts, barriers and gates.
+    for (const char* kind : {"crane", "boat", "mast", "post", "barrier", "gate"})
         CHECK(cls(lookBox("BLD-070_1", "BLD-070", MassingSource::Plan, kind, true)) == MassingLookSurface::GalvSteel);
     // A box the build doesn't make: a zone, an open option, a proxy, a hidden kind.
     CHECK(cls(lookBox("Z1_1", "Z1", MassingSource::Zone, "zone", true)) == MassingLookSurface::BoardConcrete);
@@ -1060,6 +1116,52 @@ TEST_CASE("massing streets: pavement_m sets the carriageway, kerb to kerb") {
     CHECK_FALSE(importMassingStreets("id,width_m,pts,pavement_m\nST-1,6,0:0,wide\n", streets, &error));
     CHECK_FALSE(importMassingStreets("id,width_m,pts,pavement_m,pavement_m\nST-1,6,0:0,1,1\n", streets, &error));
     CHECK(error.find("twice") != std::string::npos);
+}
+
+TEST_CASE("massing streets: sections drop the shared surfaces and pave the kerbed band") {
+    std::vector<MassingStreet> streets;
+    REQUIRE(importMassingStreets("id,kind,width_m,pts,pavement_m\n"
+                                 "CL-1,core_lane,6,0:0;10:0,1.5\n"
+                                 "LN-1,lane,4,0:0;0:10,\n"
+                                 "LS-1,link_street,8,0:0;5:5,\n"
+                                 "ST-1,street,10,0:0;20:0,\n"
+                                 "ST-2,street,14,0:0;20:0,4\n"
+                                 "RD-1,road,18,0:0;0:20,\n"
+                                 "EX-1,expressway,24,0:0;30:0,\n",
+                                 streets));
+    REQUIRE(streets.size() == 7);
+    // Nothing asked: nothing changes.
+    std::vector<MassingStreet> same = streets;
+    std::size_t paved = 99;
+    CHECK(massingStreetSections(same, MassingStreetSections{}, &paved) == 0);
+    CHECK(paved == 0);
+    REQUIRE(same.size() == 7);
+    CHECK(near(same[0].pavement, 1.5));
+    CHECK(same[3].pavement == 0.0);
+
+    MassingStreetSections sections;
+    sections.sharedUpTo = 6.0;
+    sections.kerbFrom = 10.0;
+    sections.kerbTo = 18.0;
+    sections.pavementShare = 0.2;
+    CHECK(massingStreetSections(streets, sections, &paved) == 2); // the core lane and the lane, 6 m and under
+    CHECK(paved == 2);                                             // the 10 and 18 m streets; the 14 m keeps its own
+    REQUIRE(streets.size() == 5);
+    CHECK(streets[0].id == "LS-1");
+    CHECK(streets[0].pavement == 0.0); // 8 m: under the band, no kerb
+    CHECK(streets[1].id == "ST-1");
+    CHECK(near(streets[1].pavement, 2.0));
+    CHECK(near(massingCarriageway(streets[1]), 6.0));
+    CHECK(near(streets[2].pavement, 4.0)); // the table's own pavements stay
+    CHECK(near(streets[3].pavement, 3.6));
+    CHECK(streets[4].pavement == 0.0); // 24 m: over the band
+    // A bad share leaves the pavements alone but still drops the shared surfaces.
+    REQUIRE(importMassingStreets("id,width_m,pts\nCL-1,6,0:0\nST-1,10,0:0\n", streets));
+    sections.pavementShare = 0.5;
+    CHECK(massingStreetSections(streets, sections, &paved) == 1);
+    CHECK(paved == 0);
+    REQUIRE(streets.size() == 1);
+    CHECK(streets[0].pavement == 0.0);
 }
 
 TEST_CASE("massing streets: points move to the engine frame") {

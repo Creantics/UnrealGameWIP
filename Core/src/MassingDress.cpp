@@ -375,6 +375,24 @@ MassingFoot massingBoxFoot(const MassingBox& box) {
 
 // ---- Kerbs ----
 
+namespace {
+
+// Whether the straight line from zs at the start of point q0's share to ze at the end of point (q1 - 1)'s (the points
+// step apart, each in the middle of its share) is no steeper than kMassingKerbGrade and passes within kMassingKerbFit of
+// each point's floor. No allocation.
+bool kerbChordFits(const double* floors, std::size_t q0, std::size_t q1, double step, double zs, double ze) {
+    const double grade = (ze - zs) / (static_cast<double>(q1 - q0) * step);
+    if (!(std::fabs(grade) <= kMassingKerbGrade)) return false;
+    for (std::size_t i = q0; i < q1; ++i) {
+        const double t = (static_cast<double>(i - q0) + 0.5) * step;
+        if (!(std::fabs(floors[i] - (zs + grade * t)) <= kMassingKerbFit)) return false;
+    }
+    return true;
+}
+
+} // namespace
+
+
 void massingKerbs(const std::vector<MassingStreet>& streets, const MassingGround& ground,
                   const std::vector<MassingBox>& boxes, const std::vector<bool>& include, double dryAbove,
                   std::vector<MassingBox>& out, MassingKerbCounts& counts) {
@@ -447,7 +465,7 @@ void massingKerbs(const std::vector<MassingStreet>& streets, const MassingGround
                     else if (f <= dryAbove) counts.wet += step;
                     else keep[i] = 1;
                 }
-                // Runs of kept points, split evenly under the longest piece, then where the floors spread.
+                // Rows of kept points, split evenly under the longest piece, then into pieces whose lines fit.
                 std::size_t i = 0;
                 while (i < m) {
                     if (!keep[i]) {
@@ -460,26 +478,43 @@ void massingKerbs(const std::vector<MassingStreet>& streets, const MassingGround
                     const std::size_t count = r1 - r0;
                     const std::size_t parts = std::max<std::size_t>(
                         1, static_cast<std::size_t>(std::ceil(static_cast<double>(count) * step / kMassingKerbLongest - 1e-9)));
+                    // The line's height at the boundary b between points b - 1 and b: their floors' mean. At the
+                    // row's ends, and where a run starts, the end point's floor carried on half a step along the grade
+                    // to its neighbour, when that is no steeper than kMassingKerbGrade (else the floor as it is).
+                    const auto outer = [&](std::size_t end, std::size_t next) {
+                        const double d = floors[end] - floors[next];
+                        return std::fabs(d) <= kMassingKerbGrade * step ? floors[end] + 0.5 * d : floors[end];
+                    };
+                    const auto edge = [&](std::size_t b) { // b in (r0, r1]
+                        if (b < r1) return 0.5 * (floors[b - 1] + floors[b]);
+                        return count < 2 ? floors[r1 - 1] : outer(r1 - 1, r1 - 2);
+                    };
+                    bool joined = false; // the next piece starts at its boundary's height, where the last one ended
                     for (std::size_t p = 0; p < parts; ++p) {
                         const std::size_t p0 = r0 + count * p / parts, p1 = r0 + count * (p + 1) / parts;
                         std::size_t q = p0;
                         while (q < p1) {
                             const std::size_t q0 = q;
-                            double lo = floors[q], hi = floors[q];
-                            ++q;
-                            while (q < p1) {
-                                const double nlo = std::min(lo, floors[q]), nhi = std::max(hi, floors[q]);
-                                if (nhi - nlo > kMassingKerbRise) break;
-                                lo = nlo;
-                                hi = nhi;
-                                ++q;
+                            const bool follows = joined;
+                            joined = false;
+                            const double zs = follows ? edge(q0) : (q0 + 1 < r1 ? outer(q0, q0 + 1) : floors[q0]);
+                            std::size_t e = q0;
+                            for (std::size_t t = q0 + 1; t <= p1 && kerbChordFits(floors.data(), q0, t, step, zs, edge(t)); ++t) e = t;
+                            if (e == q0 && follows) continue; // cannot follow on: start a run here
+                            if (e == q0) {
+                                counts.shortPieces += step; // not even its own point fits: a step under it
+                                q = q0 + 1;
+                                continue;
                             }
-                            const double pieceLen = static_cast<double>(q - q0) * step;
+                            q = e;
+                            const double pieceLen = static_cast<double>(e - q0) * step;
                             if (pieceLen < kMassingKerbShortest - 1e-9) {
                                 counts.shortPieces += pieceLen;
                                 continue;
                             }
-                            const double mid = 0.5 * static_cast<double>(q0 + q) * step;
+                            if (!follows) ++counts.runs;
+                            const double ze = edge(e);
+                            const double mid = 0.5 * static_cast<double>(q0 + e) * step;
                             MassingBox box;
                             box.id = s.id + (side == 0 ? "-KL" : "-KR") + std::to_string(++numbers[side]);
                             box.row = s.id;
@@ -491,11 +526,13 @@ void massingKerbs(const std::vector<MassingStreet>& streets, const MassingGround
                             box.sx = pieceLen;
                             box.sy = w;
                             box.rot = degrees(dy, dx);
-                            box.z0 = lo - kMassingKerbSink;
-                            box.z1 = hi + kMassingKerbHeight;
+                            box.riseU = (ze - zs) / pieceLen;
+                            box.z0 = 0.5 * (zs + ze) - kMassingKerbSink;
+                            box.z1 = 0.5 * (zs + ze) + kMassingKerbHeight;
                             out.push_back(std::move(box));
                             ++counts.pieces;
                             counts.built += pieceLen;
+                            joined = true;
                         }
                     }
                 }
@@ -1058,25 +1095,50 @@ void massingFrontage(const std::vector<MassingFrontRule>& rules, const std::vect
         while (reach - kMassingFrontPadStep >= rule.out - 1e-9 && front(reach)) reach -= kMassingFrontPadStep;
         reach = std::max(reach, rule.out);
         const double floor = p.z - rule.dz;
+        const double cx = p.x + nx * 0.5 * reach, cy = p.y + ny * 0.5 * reach;
+        // The plane through the floors at a 3 x 3 grid over the pad (u out of the face, w along it): with the grid
+        // even about the middle, least squares gives the mean and each axis's grade on its own.
+        const double du = kMassingFrontPadGrid * reach, dw = kMassingFrontPadGrid * 2.0 * half;
+        double zs[9];
+        double sum = 0.0, su = 0.0, sw = 0.0;
+        for (int g = 0; g < 9; ++g) {
+            const double u = (g % 3 - 1) * du, v = (g / 3 - 1) * dw;
+            zs[g] = scene.floorNear(cx + nx * u + tx * v, cy + ny * u + ty * v, floor);
+            sum += zs[g];
+            su += zs[g] * u;
+            sw += zs[g] * v;
+        }
+        const double mean = sum / 9.0;
+        const double riseU = du > kTiny ? su / (6.0 * du * du) : 0.0, riseW = dw > kTiny ? sw / (6.0 * dw * dw) : 0.0;
+        double off = 0.0;
+        for (int g = 0; g < 9; ++g)
+            off = std::max(off, std::fabs(zs[g] - (mean + riseU * (g % 3 - 1) * du + riseW * (g / 3 - 1) * dw)));
+        if (!(off <= kMassingFrontPadFit)) {
+            ++totals.padsUneven;
+            continue;
+        }
         MassingBox pad;
         pad.id = boxes[h].id + "-FP" + std::to_string(++padsOf[h]);
         pad.row = boxes[h].id;
         pad.kind = "landing";
         pad.source = MassingSource::Invented;
         pad.cover = false;
-        pad.cx = p.x + nx * 0.5 * reach;
-        pad.cy = p.y + ny * 0.5 * reach;
+        pad.cx = cx;
+        pad.cy = cy;
         pad.sx = reach;
         pad.sy = 2.0 * half;
         pad.rot = p.face;
-        pad.z0 = floor - kMassingFrontPadSink;
-        pad.z1 = floor + kMassingFrontPadTop;
+        pad.riseU = riseU;
+        pad.riseW = riseW;
+        pad.z0 = mean - kMassingFrontPadSink;
+        pad.z1 = mean + kMassingFrontPadTop;
         outPads->push_back(pad);
     }
 }
 
 void massingRoofs(const MassingGround& ground, const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
-                  const std::vector<bool>& hosts, std::vector<MassingBox>& out, MassingRoofCounts& counts) {
+                  const std::vector<bool>& hosts, std::vector<MassingBox>& out, MassingRoofCounts& counts,
+                  const std::vector<bool>* courts) {
     out.clear();
     counts = MassingRoofCounts{};
     Scene scene(ground, boxes, include, nullptr);
@@ -1086,14 +1148,16 @@ void massingRoofs(const MassingGround& ground, const std::vector<MassingBox>& bo
         if (!hosts[h]) continue;
         const MassingBox& b = boxes[h];
         const Solid host = makeSolid(b);
+        const bool court = courts != nullptr && h < courts->size() && (*courts)[h];
         if (b.sloped || !host.valid || host.highTop - host.lowTop > 1e-6 || b.sx < kMassingRoofSide ||
             b.sy < kMassingRoofSide || b.sx * b.sy < kMassingRoofArea ||
-            host.highTop - scene.groundAt(b.cx, b.cy) < kMassingRoofHigh) {
+            (!court && host.highTop - scene.groundAt(b.cx, b.cy) < kMassingRoofHigh)) {
             ++counts.bare;
             continue;
         }
         const double top = host.highTop;
         std::size_t nRail = 0, nPost = 0, nTank = 0, nUnit = 0, nMast = 0, nBar = 0;
+        std::size_t nRackPost = 0, nRackBar = 0, nPole = 0, nArm = 0;
         const std::size_t before = out.size();
         const auto add = [&](const char* tag, std::size_t& n, const char* kind, double x, double y, double sx, double sy,
                              double rot, double z0, double z1) {
@@ -1204,11 +1268,45 @@ void massingRoofs(const MassingGround& ground, const std::vector<MassingBox>& bo
                 return false;
             };
             const double area = b.sx * b.sy;
-            const double roll = hashUnit(hashNumber(seed, 1));
-            const std::size_t tanks = area >= 60.0 ? (roll < 0.5 ? 2 : 1) : (roll < 0.5 ? 1 : 0);
-            const std::size_t units = std::min<std::size_t>(6, 1 + static_cast<std::size_t>(area / 40.0));
-            const bool aerial = hashUnit(hashNumber(seed, 2)) < 0.6;
             double x = 0.0, y = 0.0;
+            if (court) {
+                // The racks, each along u or w by the hash, a post at either end of its bar.
+                const std::size_t racks =
+                    std::min(kMassingCourtRacks, static_cast<std::size_t>(area / kMassingCourtRackArea));
+                const double end = 0.5 * (kMassingCourtRackLong - kMassingCourtRackPost);
+                for (std::size_t k = 0; k < racks; ++k) {
+                    const bool across = hashUnit(hashNumber(seed, 500 + k)) < 0.5;
+                    const double hx = 0.5 * (across ? kMassingCourtRackDeep : kMassingCourtRackLong);
+                    const double hy = 0.5 * (across ? kMassingCourtRackLong : kMassingCourtRackDeep);
+                    if (!place(600 + k, hx, hy, x, y)) continue;
+                    const double ax = across ? -sn : c, ay = across ? c : sn;
+                    for (const double e : {-end, end})
+                        add("-CP", nRackPost, "post", x + ax * e, y + ay * e, kMassingCourtRackPost, kMassingCourtRackPost,
+                            b.rot, top - 0.05, top + kMassingCourtRackHigh - kMassingCourtRackPost);
+                    add("-CB", nRackBar, "barrier", x, y, kMassingCourtRackLong, kMassingCourtRackPost,
+                        b.rot + (across ? 90.0 : 0.0), top + kMassingCourtRackHigh - kMassingCourtRackPost,
+                        top + kMassingCourtRackHigh);
+                    ++counts.racks;
+                }
+                // The lamp standards, each arm along u or w by the hash.
+                const std::size_t standards =
+                    std::min(kMassingCourtStandards, static_cast<std::size_t>(area / kMassingCourtStandardArea));
+                for (std::size_t k = 0; k < standards; ++k) {
+                    if (!place(700 + k, kMassingCourtArmLong, kMassingCourtArmLong, x, y)) continue;
+                    const bool across = hashUnit(hashNumber(seed, 800 + k)) < 0.5;
+                    const double ax = across ? -sn : c, ay = across ? c : sn;
+                    add("-CS", nPole, "mast", x, y, kMassingCourtStandardSide, kMassingCourtStandardSide, b.rot,
+                        top - 0.05, top + kMassingCourtStandardHigh);
+                    add("-CA", nArm, "barrier", x + ax * 0.5 * kMassingCourtArmLong, y + ay * 0.5 * kMassingCourtArmLong,
+                        kMassingCourtArmLong, 0.12, b.rot + (across ? 90.0 : 0.0),
+                        top + kMassingCourtStandardHigh - 0.12, top + kMassingCourtStandardHigh);
+                    ++counts.standards;
+                }
+            }
+            const double roll = hashUnit(hashNumber(seed, 1));
+            const std::size_t tanks = court ? 0 : area >= 60.0 ? (roll < 0.5 ? 2 : 1) : (roll < 0.5 ? 1 : 0);
+            const std::size_t units = court ? 0 : std::min<std::size_t>(6, 1 + static_cast<std::size_t>(area / 40.0));
+            const bool aerial = !court && hashUnit(hashNumber(seed, 2)) < 0.6;
             for (std::size_t k = 0; k < tanks; ++k)
                 if (place(100 + k, 0.5 * kMassingRoofTankSide, 0.5 * kMassingRoofTankSide, x, y)) {
                     add("-RT", nTank, "tank", x, y, kMassingRoofTankSide, kMassingRoofTankSide, b.rot, top - 0.05,
@@ -1233,8 +1331,71 @@ void massingRoofs(const MassingGround& ground, const std::vector<MassingBox>& bo
                 ++counts.aerials;
             }
         }
-        if (out.size() > before) ++counts.roofs;
+        if (out.size() > before) ++(court ? counts.courts : counts.roofs);
     }
+}
+
+bool massingStandIn(const MassingBox& box, std::vector<MassingBox>& out) {
+    const bool crane = box.kind == "crane", boat = box.kind == "boat";
+    if ((!crane && !boat) || box.sloped || !(box.z1 > box.z0) || !(box.sx > 0.0) || !(box.sy > 0.0)) return false;
+    const double a = box.rot * kPi / 180.0, c = std::cos(a), sn = std::sin(a);
+    std::size_t n = 0;
+    // A piece at (u, w) in the box's frame, lu along u by lw along w, z0 to z1 at its middle, rising riseU along u.
+    const auto piece = [&](double u, double w, double lu, double lw, double z0, double z1, double riseU) {
+        MassingBox p;
+        p.id = box.id + "-S" + std::to_string(++n);
+        p.row = box.id;
+        p.kind = box.kind;
+        p.source = MassingSource::Invented;
+        p.cover = false;
+        p.cx = box.cx + u * c - w * sn;
+        p.cy = box.cy + u * sn + w * c;
+        p.sx = lu;
+        p.sy = lw;
+        p.rot = box.rot;
+        p.z0 = z0;
+        p.z1 = z1;
+        p.riseU = riseU;
+        out.push_back(std::move(p));
+    };
+    const double h = box.z1 - box.z0, hu = 0.5 * box.sx, hw = 0.5 * box.sy;
+    if (crane) {
+        const double leg = kMassingCraneLeg, portal = box.z0 + 0.4 * h, house = portal + 0.14 * h;
+        for (const double su : {-1.0, 1.0})
+            for (const double sw : {-1.0, 1.0})
+                piece(su * (hu - 0.5 * leg), sw * (hw - 0.5 * leg), leg, leg, box.z0, portal - leg, 0.0);
+        for (const double sw : {-1.0, 1.0}) piece(0.0, sw * (hw - 0.5 * leg), box.sx, leg, portal - leg, portal, 0.0);
+        for (const double su : {-1.0, 1.0})
+            piece(su * (hu - 0.5 * leg), 0.0, leg, box.sy - 2.0 * leg, portal - leg, portal, 0.0);
+        piece(0.0, 0.0, 0.6 * box.sx, 0.8 * box.sy, portal, house, 0.0);
+        const double mast = 0.3 * box.sy;
+        for (const double sw : {-1.0, 1.0}) piece(0.0, sw * mast, leg, leg, house, box.z1 - leg, 0.0);
+        piece(0.0, 0.0, leg, 2.0 * mast + leg, box.z1 - leg, box.z1, 0.0);
+        const double boomTop = box.z0 + 0.62 * h, back = -box.sx, front = hu + 2.5 * box.sx;
+        piece(0.5 * (back + front), 0.0, front - back, kMassingCraneBoom, boomTop - kMassingCraneBoom, boomTop, 0.0);
+        // The ties: from the cross-head's top (u 0) to the boom's top at its ends, their middles on that line.
+        const double head = box.z1, tie = 0.25;
+        piece(0.5 * back, 0.0, -back, 0.5, 0.5 * (head + boomTop) - tie, 0.5 * (head + boomTop) + tie,
+              (head - boomTop) / -back);
+        piece(0.5 * front, 0.0, front, 0.5, 0.5 * (head + boomTop) - tie, 0.5 * (head + boomTop) + tie,
+              (boomTop - head) / front);
+        return true;
+    }
+    // A boat: the pieces along its long side.
+    const bool alongU = box.sx >= box.sy;
+    const double length = alongU ? box.sx : box.sy, beam = alongU ? box.sy : box.sx;
+    const auto hull = [&](double along, double lLong, double lBeam, double z0, double z1) {
+        if (alongU)
+            piece(along, 0.0, lLong, lBeam, z0, z1, 0.0);
+        else
+            piece(0.0, along, lBeam, lLong, z0, z1, 0.0);
+    };
+    const double waist = box.z0 + 0.45 * h;
+    hull(0.0, 0.85 * length, 0.7 * beam, box.z0, waist);
+    hull(0.0, length, beam, waist, box.z1);
+    const double cabin = (length > 20.0 ? 0.6 : 0.25) * length;
+    hull(-0.5 * length + 0.1 * length + 0.5 * cabin, cabin, 0.7 * beam, box.z1, box.z1 + 2.0 + 0.1 * length);
+    return true;
 }
 
 MassingWindowData massingWindowData(const MassingBox& box, const MassingGround& ground, const std::uint8_t* fronting) {
@@ -1250,6 +1411,33 @@ MassingWindowData massingWindowData(const MassingBox& box, const MassingGround& 
         d.base[f] = std::clamp(g - box.z0, 0.0, height);
     }
     return d;
+}
+
+std::size_t massingShopLights(const MassingBox& box, const MassingWindowData& data, double spacing,
+                              std::vector<MassingShopLight>& out) {
+    if (box.sloped) return 0;
+    std::size_t added = 0;
+    for (int f = 0; f < 4; ++f) {
+        if (((data.streetBits >> f) & 1u) == 0) continue;
+        const double z = box.z0 + data.base[f] + kMassingShopLightUp;
+        if (z > box.z1) continue;
+        const Face face = boxFace(box, f);
+        if (face.length <= 0.0) continue;
+        const int n = spacing > 0.0 ? std::max(1, static_cast<int>(std::ceil(face.length / spacing - 1e-9))) : 1;
+        const double ox = face.x0 + face.nx * kMassingShopLightOut, oy = face.y0 + face.ny * kMassingShopLightOut;
+        for (int k = 0; k < n; ++k) {
+            const double along = (k + 0.5) / n * face.length;
+            MassingShopLight light;
+            light.x = ox + face.tx * along;
+            light.y = oy + face.ty * along;
+            light.z = z;
+            light.face = degrees(face.ny, face.nx);
+            light.faceIndex = f;
+            out.push_back(light);
+            ++added;
+        }
+    }
+    return added;
 }
 
 } // namespace ftcore

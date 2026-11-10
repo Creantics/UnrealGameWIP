@@ -198,11 +198,29 @@ void massingCorners(const MassingBox& box, double topNudge, std::array<MassingVe
                 else if (box.slopeThick > 0.0) z = zt - box.slopeThick;
                 else z = box.z0;
             } else {
-                z = top ? flatTop : box.z0;
+                z = (top ? flatTop : box.z0) + box.riseU * u + box.riseW * w;
             }
             out[static_cast<std::size_t>(top * 4 + k)] = {box.cx + u * c - w * s, box.cy + u * s + w * c, z};
         }
     }
+}
+
+MassingCubePose massingCubePose(const MassingBox& box, double height) {
+    MassingCubePose pose;
+    pose.yaw = massingEngineYaw(box.rot);
+    // Unreal's rotator: local X's image is (cP cY, cP sY, sP) and local Z's (-(cR sP cY + sR sY), cY sR - cR sP sY,
+    // cR cP), so the top's normal at yaw 0 gives dz/dx = tan(P) and dz/dy = -tan(R) / cos(P); the engine's y runs
+    // along -w.
+    const double pitch = std::atan(box.riseU);
+    const double roll = std::atan(box.riseW * std::cos(pitch));
+    pose.pitch = pitch * 180.0 / kPi;
+    pose.roll = roll * 180.0 / kPi;
+    pose.scale = {box.sx / std::cos(pitch), box.sy / std::cos(roll), height};
+    // The top's middle stands height / 2 along local Z from the centre, off the plumb line by its tilt: lift the cube so
+    // that point lies on the plane.
+    const double cp = std::cos(pitch), sp = std::sin(pitch), cr = std::cos(roll), sr = std::sin(roll);
+    pose.lift = 0.5 * height * (1.0 - cr * cp - box.riseU * cr * sp - box.riseW * sr);
+    return pose;
 }
 
 bool massingNavObstacle(const MassingBox& box) {
@@ -621,11 +639,11 @@ MassingLookSurface massingLookSurface(const MassingBox& box) {
     // Kerbs and the other added walls.
     if (lookStartsWith(box.id, "V1-KB") || kind == "kerb" || (box.source == MassingSource::Invented && kind == "wall"))
         return MassingLookSurface::PoleConcrete;
-    if (kind == "ramp" || kind == "landing" || kind == "terrace") return MassingLookSurface::PavingSlab;
-    if (kind == "cliff" || kind == "seawall" || kind == "breakwater" || kind == "quay")
+    if (kind == "ramp" || kind == "landing") return MassingLookSurface::PavingSlab;
+    if (kind == "terrace" || kind == "cliff" || kind == "seawall" || kind == "breakwater" || kind == "quay")
         return MassingLookSurface::BoardConcrete;
-    if (kind == "deck" || kind == "pier" || kind == "boat" || kind == "bridge") return MassingLookSurface::OakPlank;
-    if (kind == "crane" || kind == "mast" || kind == "post" || kind == "barrier" || kind == "gate" ||
+    if (kind == "deck" || kind == "pier" || kind == "bridge") return MassingLookSurface::OakPlank;
+    if (kind == "crane" || kind == "boat" || kind == "mast" || kind == "post" || kind == "barrier" || kind == "gate" ||
         kind == "tank" || kind == "unit" || kind == "aerial")
         return MassingLookSurface::GalvSteel;
     // A building: a finish by its row (a table with no row column goes by the id up to its last '_'); a kit box, one
@@ -756,6 +774,26 @@ bool importMassingStreets(std::string_view csv, std::vector<MassingStreet>& out,
 void massingStreetsToEngine(std::vector<MassingStreet>& streets, double side) {
     for (MassingStreet& s : streets)
         for (MassingVec& p : s.points) p = massingEnginePoint(side, p.x, p.y, 0.0);
+}
+
+std::size_t massingStreetSections(std::vector<MassingStreet>& streets, const MassingStreetSections& sections,
+                                  std::size_t* paved) {
+    std::size_t given = 0;
+    const bool share = sections.pavementShare > 0.0 && sections.pavementShare < 0.5;
+    for (MassingStreet& s : streets) {
+        if (share && s.pavement == 0.0 && s.width >= sections.kerbFrom && s.width <= sections.kerbTo &&
+            !(sections.sharedUpTo > 0.0 && s.width <= sections.sharedUpTo)) {
+            s.pavement = sections.pavementShare * s.width;
+            ++given;
+        }
+    }
+    if (paved) *paved = given;
+    if (!(sections.sharedUpTo > 0.0)) return 0;
+    const std::size_t before = streets.size();
+    const double upTo = sections.sharedUpTo;
+    streets.erase(std::remove_if(streets.begin(), streets.end(), [upTo](const MassingStreet& s) { return s.width <= upTo; }),
+                  streets.end());
+    return before - streets.size();
 }
 
 void massingRoadMask(const std::vector<MassingStreet>& streets, std::size_t size, double sideM, double feather,

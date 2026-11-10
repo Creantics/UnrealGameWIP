@@ -61,6 +61,7 @@ namespace ftcore {
     X(filmWhiteClip, 0.04f, 0.f, 1.f)                                                                          \
     X(localHighlightContrast, 0.8f, 0.f, 1.f)                                                                  \
     X(localShadowContrast, 0.8f, 0.f, 1.f)                                                                     \
+    X(lumenSkylightLeaking, 0.f, 0.f, 1.f) /* Lumen sky light leaking: lifts deep shade evenly (engine default 0) */ \
     X(fringe, 0.f, 0.f, 5.f)      /* chromatic aberration intensity */                                         \
     /* The grade after the tonemap (LookGrade.h), in OKLab. A window whose width is 0 is off. */               \
     X(gradeChroma, 1.f, 0.f, 2.f)  /* global chroma scale; 1 = unchanged */                                    \

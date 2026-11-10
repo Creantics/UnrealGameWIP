@@ -7,6 +7,8 @@
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -259,7 +261,7 @@ TEST_CASE("massing kerbs: a box standing on the line cuts it, one overhead doesn
     CHECK(near(shortEnd.boxes[0].sx, 1.0));
 }
 
-TEST_CASE("massing kerbs: none on wet ground, and pieces split where the ground climbs") {
+TEST_CASE("massing kerbs: none on wet ground; a grade tilts one piece to it") {
     // Ground 2 m under the water west of x = 9, 1 m up from x = 10.
     const Ground wet = makeGround(41, 21, -5.0, -10.0, [](double x, double) { return x <= 9.0 ? -2.0 : 1.0; });
     const Kerbs k = kerbs({lane("S-1", 30)}, {}, wet.view(), 0.5);
@@ -271,15 +273,72 @@ TEST_CASE("massing kerbs: none on wet ground, and pieces split where the ground 
         CHECK(near(b.z1, 1.0 + kMassingKerbHeight));
     }
 
-    // Ground climbing 1/32 m per m: no piece spreads more than kMassingKerbRise.
+    CHECK(k.counts.runs == 2);
+    for (const MassingBox& b : k.boxes) CHECK(b.riseU == 0.0);
+
+    // Ground climbing 1/32 m per m: one piece a side, tilted to the grade, its line on the ground at its middle.
     const Ground slope = makeGround(41, 21, -5.0, -10.0, [](double x, double) { return x / 32.0; });
     const Kerbs s = kerbs({lane("S-1", 12)}, {}, slope.view());
-    REQUIRE(s.boxes.size() == 8);
+    REQUIRE(s.boxes.size() == 2);
+    CHECK(s.counts.runs == 2);
     for (const MassingBox& b : s.boxes) {
-        CHECK(near(b.sx, 3.0));
-        CHECK(b.z1 - b.z0 - kMassingKerbSink - kMassingKerbHeight <= kMassingKerbRise + 1e-9);
+        CHECK(near(b.sx, 12.0));
+        CHECK(near(b.riseU, 1.0 / 32.0));
+        CHECK(b.riseW == 0.0);
+        CHECK(near(b.z0, 6.0 / 32.0 - kMassingKerbSink));
+        CHECK(near(b.z1, 6.0 / 32.0 + kMassingKerbHeight));
     }
     CHECK(near(s.counts.built, 24.0));
+}
+
+TEST_CASE("massing kerbs: a diagonal street's pieces take its yaw and follow its grade, joined without a step") {
+    // A street 30 degrees north of east, 40 m long, over ground curving up: 0.003 x^2 + 0.03 y (grades 0.015 to 0.2
+    // along it), so one line no longer fits a 10 m part and pieces join end to end.
+    const double toRad = 3.14159265358979323846 / 180.0;
+    const double c = std::cos(30.0 * toRad), sn = std::sin(30.0 * toRad);
+    const auto h = [](double x, double y) { return 0.003 * x * x + 0.03 * y; };
+    const Ground curve = makeGround(71, 61, -15.0, -15.0, h);
+    const Kerbs k = kerbs({street("D-1", "core_lane", 9.0, 1.5, {{0, 0, 0}, {40.0 * c, 40.0 * sn, 0}})}, {}, curve.view());
+    CHECK(k.counts.runs == 2);
+    CHECK(k.boxes.size() > 8);
+    CHECK(near(k.counts.built, 80.0));
+    const MassingBox* last = nullptr;
+    for (const MassingBox& b : k.boxes) {
+        // Each piece's yaw follows the segment (Unreal's yaw is the rotation's negative).
+        CHECK(near(b.rot, 30.0));
+        CHECK(near(massingCubePose(b, b.z1 - b.z0).yaw, -30.0));
+        CHECK(std::fabs(b.riseU) <= kMassingKerbGrade);
+        CHECK(b.riseU > 0.0);
+        // Its top runs kMassingKerbHeight over the ground along its length.
+        for (const double f : {-0.5, -0.25, 0.0, 0.25, 0.5}) {
+            const double u = f * b.sx;
+            const double top = b.z1 + b.riseU * u;
+            CHECK(std::fabs(top - kMassingKerbHeight - h(b.cx + c * u, b.cy + sn * u)) <= kMassingKerbFit + 0.015);
+        }
+        // A piece on the same side as the last starts where it ended, at its height.
+        if (last && last->id.compare(0, 6, b.id.substr(0, 6)) == 0) {
+            const double endX = last->cx + c * 0.5 * last->sx, endY = last->cy + sn * 0.5 * last->sx;
+            const double startX = b.cx - c * 0.5 * b.sx, startY = b.cy - sn * 0.5 * b.sx;
+            CHECK(near(endX, startX));
+            CHECK(near(endY, startY));
+            CHECK(near(last->z1 + last->riseU * 0.5 * last->sx, b.z1 - b.riseU * 0.5 * b.sx));
+        }
+        last = &b;
+    }
+}
+
+TEST_CASE("massing kerbs: a step in the floor breaks the run; no piece climbs it") {
+    // Ground 0.8 m up east of x = 11, rising between x 10 and 11: steeper than kMassingKerbGrade. Each side keeps
+    // x 0..9.5 low and 11..20 high; the points at 9.75, 10.25 and 10.75 fit no line.
+    const Ground step = makeGround(41, 21, -5.0, -10.0, [](double x, double) { return x >= 11.0 ? 0.8 : 0.0; });
+    const Kerbs k = kerbs({lane("S-1", 20)}, {}, step.view());
+    CHECK(k.counts.runs == 4);
+    CHECK(k.boxes.size() == 4);
+    CHECK(near(k.counts.shortPieces, 3.0));
+    for (const MassingBox& b : k.boxes) {
+        CHECK(std::fabs(b.riseU) <= kMassingKerbGrade);
+        CHECK((near(b.z1, kMassingKerbHeight) || near(b.z1, 0.8 + kMassingKerbHeight, 0.01)));
+    }
 }
 
 TEST_CASE("massing quay: which boxes are decks") {
@@ -653,6 +712,8 @@ TEST_CASE("massing frontage: ground pieces stand on paving pads cut short of the
         CHECK(near(p.cy, 5.0 + 0.5 * p.sx));
         CHECK(near(p.z1, kMassingFrontPadTop));
         CHECK(near(p.z0, -kMassingFrontPadSink));
+        CHECK(near(p.riseU, 0.0));
+        CHECK(near(p.riseW, 0.0));
     }
     // Only the +w face (index 1) fronts the street.
     REQUIRE(fronting.size() == 4);
@@ -673,6 +734,46 @@ TEST_CASE("massing frontage: ground pieces stand on paving pads cut short of the
                     over.totals, &pads, nullptr);
     CHECK(over.props.size() > 0);
     CHECK(pads.empty());
+}
+
+TEST_CASE("massing frontage: paving pads lie flush on sloping ground; one over a step is left out") {
+    const std::vector<MassingFrontRule> shop = {front("SHOP", 6.0, {"street"})};
+    const std::vector<bool> include(1, true), hosts(1, true);
+    // Ground rising 0.06 m per m east and 0.04 m per m north; the host sunk 2 m so every place keeps its wall.
+    const auto h = [](double x, double y) { return 0.06 * x + 0.04 * y; };
+    const Ground tilt = makeGround(81, 41, -40.0, -10.0, h);
+    std::vector<MassingBox> pads;
+    Front f;
+    massingFrontage(shop, northStreet(), tilt.view(), {host(-2.0)}, include, hosts, -1.0, nullptr, f.props, f.counts,
+                    f.totals, &pads, nullptr);
+    REQUIRE(f.props.size() > 0);
+    REQUIRE(pads.size() == f.props.size());
+    CHECK(f.totals.padsUneven == 0);
+    double worst = 0.0, levelWorst = 0.0;
+    for (const MassingBox& p : pads) {
+        // The pad's u runs north (out of the face), its w west (along it).
+        CHECK(near(p.riseU, 0.04, 0.005));
+        CHECK(near(p.riseW, -0.06, 0.005));
+        std::array<MassingVec, 8> c;
+        massingCorners(p, 0.0, c);
+        for (std::size_t k = 4; k < 8; ++k) {
+            const double ground = h(c[k].x, c[k].y) + kMassingFrontPadTop;
+            worst = std::max(worst, std::fabs(c[k].z - ground));
+            levelWorst = std::max(levelWorst, std::fabs(p.z1 - ground));
+        }
+    }
+    // Every top corner within 2 cm of the ground under it (a level pad would be over 0.15 m off at its ends).
+    CHECK(worst <= 0.02);
+    CHECK(levelWorst >= 0.15);
+
+    // A 0.5 m step through the pads (north of y = 7, between their back and front): left out, counted.
+    const Ground step = makeGround(81, 41, -40.0, -10.0, [](double, double y) { return y >= 7.0 ? 0.5 : 0.0; });
+    Front s;
+    massingFrontage(shop, northStreet(), step.view(), {host(-2.0)}, include, hosts, -1.0, nullptr, s.props, s.counts,
+                    s.totals, &pads, nullptr);
+    REQUIRE(s.props.size() > 0);
+    CHECK(pads.empty());
+    CHECK(s.totals.padsUneven == s.props.size());
 }
 
 namespace {
@@ -765,6 +866,142 @@ TEST_CASE("massing roofs: small, low or sloped tops are left bare") {
     CHECK(roofs({sloped}).boxes.empty());
 }
 
+TEST_CASE("massing roofs: a court at the ground takes rails where it drops away, racks and standards, no roof clutter") {
+    // A 40 x 20 m court, its top at the ground; the ground falls 10 m beyond its +u and +w edges.
+    const auto h = [](double x, double y) { return (x > 20.5 || y > 10.5) ? 0.0 : 10.0; };
+    const Ground step = makeGround(61, 41, -30.0, -20.0, h);
+    const MassingBox court = flatBox("C-1", 0, 0, 40, 20, 4, 10);
+    // As a plain roof host it stands under kMassingRoofHigh over the ground: bare.
+    const Roofs plain = roofs({court}, step.view());
+    CHECK(plain.counts.bare == 1);
+    CHECK(plain.boxes.empty());
+
+    const auto courtRoofs = [&](const std::vector<MassingBox>& boxes) {
+        Roofs r;
+        const std::vector<bool> include(boxes.size(), true);
+        std::vector<bool> hosts(boxes.size(), false), courts(boxes.size(), false);
+        hosts[0] = courts[0] = true;
+        massingRoofs(step.view(), boxes, include, hosts, r.boxes, r.counts, &courts);
+        return r;
+    };
+    const Roofs c = courtRoofs({court});
+    CHECK(c.counts.bare == 0);
+    CHECK(c.counts.roofs == 0);
+    CHECK(c.counts.courts == 1);
+    // Rails on the two drop edges only, each 0.15 m short of its ends: 19.7 + 39.7 m.
+    CHECK(near(c.counts.railed, 19.7 + 39.7, 1e-6));
+    CHECK(c.counts.tanks == 0);
+    CHECK(c.counts.units == 0);
+    CHECK(c.counts.aerials == 0);
+    CHECK(ofKind(c, "tank") == 0);
+    CHECK(ofKind(c, "unit") == 0);
+    CHECK(ofKind(c, "aerial") == 0);
+    // 800 m^2: five racks and one standard.
+    CHECK(c.counts.racks == 5);
+    CHECK(c.counts.standards == 1);
+    CHECK(ofKind(c, "post") == c.counts.posts + 2 * c.counts.racks);
+    CHECK(ofKind(c, "barrier") == 2 + c.counts.racks + c.counts.standards);
+    CHECK(ofKind(c, "mast") == c.counts.standards);
+    for (const MassingBox& b : c.boxes) {
+        CHECK(massingLookSurface(b) == MassingLookSurface::GalvSteel);
+        CHECK(b.z0 >= 10.0 - 0.06);
+        if (b.id.find("-CB") != std::string::npos) CHECK(near(b.z1, 10.0 + kMassingCourtRackHigh));
+        if (b.id.find("-CS") != std::string::npos) CHECK(near(b.z1, 10.0 + kMassingCourtStandardHigh));
+        if (b.id.find("-CP") != std::string::npos || b.id.find("-CB") != std::string::npos) {
+            CHECK(std::fabs(b.cx) <= 20.0 - kMassingRoofEdgeIn + 1e-6);
+            CHECK(std::fabs(b.cy) <= 10.0 - kMassingRoofEdgeIn + 1e-6);
+        }
+    }
+    // A retaining wall flush with the court along its +u edge shares that edge: no rail doubles it.
+    const Roofs w = courtRoofs({court, flatBox("W-1", 20, 0, 1, 20, 0, 10)});
+    CHECK(near(w.counts.railed, 39.7, 1e-6));
+    CHECK(w.counts.racks == 5);
+}
+
+TEST_CASE("massing stand-ins: a crane box is built as an open frame with its boom out past its +u side") {
+    MassingBox crane = flatBox("BLD-057_2", 950, 420, 12, 10, -1, 44);
+    crane.kind = "crane";
+    std::vector<MassingBox> out = {flatBox("KEEP", 0, 0, 1, 1, 0, 1)};
+    REQUIRE(massingStandIn(crane, out));
+    REQUIRE(out.size() == 1 + 15);
+    CHECK(out[0].id == "KEEP");
+    const double toRad = 3.14159265358979323846 / 180.0;
+    double top = -1e9, reach = -1e9;
+    for (std::size_t k = 1; k < out.size(); ++k) {
+        const MassingBox& p = out[k];
+        CHECK(p.id == "BLD-057_2-S" + std::to_string(k));
+        CHECK(p.kind == "crane");
+        CHECK(p.row == "BLD-057_2");
+        CHECK(p.source == MassingSource::Invented);
+        CHECK_FALSE(p.cover);
+        CHECK(massingLookSurface(p) == MassingLookSurface::GalvSteel);
+        CHECK(p.z0 >= -1.0 - 1e-9);
+        top = std::max(top, p.z1);
+        reach = std::max(reach, p.cx + 0.5 * p.sx);
+        // Every piece but the boom and its ties stays inside the footprint.
+        if (p.sx < 13.0 && p.riseU == 0.0) {
+            CHECK(std::fabs(p.cx - 950.0) + 0.5 * p.sx <= 6.0 + 1e-9);
+            CHECK(std::fabs(p.cy - 420.0) + 0.5 * p.sy <= 5.0 + 1e-9);
+        }
+        // A tie's line runs from the cross-head's top (u 0) to the boom's top at its end.
+        if (p.riseU != 0.0) {
+            const double mid = 0.5 * (p.z0 + p.z1);
+            const double atHead = mid + p.riseU * (950.0 - p.cx);
+            CHECK(near(atHead, 44.0));
+            const double far = p.cx + (p.cx > 950.0 ? 0.5 : -0.5) * p.sx;
+            CHECK(near(mid + p.riseU * (far - p.cx), -1.0 + 0.62 * 45.0));
+        }
+    }
+    CHECK(near(top, 44.0));
+    CHECK(near(reach, 950.0 + 6.0 + 30.0)); // the boom 2.5 sx out past the +u side
+    // The middle under the portal is open: no piece holds (950, 420) below the portal's beams.
+    for (std::size_t k = 1; k < out.size(); ++k) {
+        const MassingBox& p = out[k];
+        const bool holds = std::fabs(p.cx - 950.0) <= 0.5 * p.sx && std::fabs(p.cy - 420.0) <= 0.5 * p.sy;
+        if (holds) CHECK(p.z0 >= -1.0 + 0.4 * 45.0 - kMassingCraneLeg - 1e-9);
+    }
+    // Turned a quarter, the boom runs north.
+    crane.rot = 90.0;
+    std::vector<MassingBox> turned;
+    REQUIRE(massingStandIn(crane, turned));
+    double north = -1e9;
+    for (const MassingBox& p : turned) {
+        const double a = p.rot * toRad;
+        north = std::max(north, p.cy + std::fabs(std::sin(a)) * 0.5 * p.sx + std::fabs(std::cos(a)) * 0.5 * p.sy);
+    }
+    CHECK(near(north, 420.0 + 36.0));
+}
+
+TEST_CASE("massing stand-ins: a boat box is a hull, narrower below, with a cabin on its deck") {
+    MassingBox boat = flatBox("BLD-060_2", 950, 450, 3.5, 11, 4, 6);
+    boat.kind = "boat";
+    std::vector<MassingBox> out;
+    REQUIRE(massingStandIn(boat, out));
+    REQUIRE(out.size() == 3);
+    // The long side is w: the lower hull 0.85 of 11 m by 0.7 of 3.5 m, to 0.45 of the height.
+    CHECK(near(out[0].sy, 0.85 * 11.0));
+    CHECK(near(out[0].sx, 0.7 * 3.5));
+    CHECK(near(out[0].z0, 4.0));
+    CHECK(near(out[0].z1, 4.9));
+    CHECK(near(out[1].sx, 3.5));
+    CHECK(near(out[1].sy, 11.0));
+    CHECK(near(out[1].z1, 6.0));
+    // The cabin on the deck toward the -w end, inside the hull.
+    CHECK(near(out[2].z0, 6.0));
+    CHECK(near(out[2].z1, 6.0 + 2.0 + 1.1));
+    CHECK(out[2].cy < 450.0);
+    CHECK(out[2].cy - 0.5 * out[2].sy >= 450.0 - 5.5 - 1e-9);
+    for (const MassingBox& p : out) CHECK(massingLookSurface(p) == MassingLookSurface::GalvSteel);
+    // Any other kind, or a sloped box: nothing.
+    MassingBox other = boat;
+    other.kind = "deck";
+    CHECK_FALSE(massingStandIn(other, out));
+    MassingBox sloped = boat;
+    sloped.sloped = true;
+    CHECK_FALSE(massingStandIn(sloped, out));
+    CHECK(out.size() == 3);
+}
+
 TEST_CASE("massing frontage: a rule's scale reads from its column") {
     std::vector<MassingFrontRule> rules;
     std::string error;
@@ -798,4 +1035,54 @@ TEST_CASE("massing windows: a box's seed, street faces and street floors") {
     CHECK(near(high.base[0], 0.0));
     const MassingWindowData sunk = massingWindowData(flatBox("W-4", 20, 20, 10, 8, -20, -15), slope.view(), nullptr);
     CHECK(near(sunk.base[2], 5.0));
+}
+
+TEST_CASE("massing shop lights: along each street face, out of it, over its street floor") {
+    MassingBox box = flatBox("S-1", 10, 20, 6, 14, 5, 15);
+    MassingWindowData data;
+    data.streetBits = 0b0101;  // +u and -u: 14 m long, so two lights each at a spacing of 8
+    data.base[0] = 1.0;
+    data.base[2] = 0.0;
+    std::vector<MassingShopLight> lights;
+    REQUIRE(massingShopLights(box, data, kMassingShopLightSpacing, lights) == 4);
+    REQUIRE(lights.size() == 4);
+    for (int k = 0; k < 2; ++k) {
+        const MassingShopLight& east = lights[static_cast<std::size_t>(k)];
+        CHECK(east.faceIndex == 0);
+        CHECK(near(east.x, 13.0 + kMassingShopLightOut));
+        CHECK(near(east.z, 5.0 + 1.0 + kMassingShopLightUp));
+        CHECK(near(east.face, 0.0));
+        const MassingShopLight& west = lights[static_cast<std::size_t>(k + 2)];
+        CHECK(west.faceIndex == 2);
+        CHECK(near(west.x, 7.0 - kMassingShopLightOut));
+        CHECK(near(west.z, 5.0 + kMassingShopLightUp));
+        CHECK(near(std::fabs(west.face), 180.0));
+    }
+    // A quarter and three quarters along: y 16.5 and 23.5, either way round.
+    CHECK(near(std::min(lights[0].y, lights[1].y), 16.5));
+    CHECK(near(std::max(lights[0].y, lights[1].y), 23.5));
+    CHECK(near(std::min(lights[2].y, lights[3].y), 16.5));
+    // Appends; no spacing gives one light per face, at its middle.
+    REQUIRE(massingShopLights(box, data, 0.0, lights) == 2);
+    CHECK(lights.size() == 6);
+    CHECK(near(lights[4].y, 20.0));
+    // Turned a quarter: +u faces north.
+    box.rot = 90.0;
+    lights.clear();
+    data.streetBits = 0b0001;
+    REQUIRE(massingShopLights(box, data, 0.0, lights) == 1);
+    CHECK(near(lights[0].x, 10.0));
+    CHECK(near(lights[0].y, 23.0 + kMassingShopLightOut));
+    CHECK(near(lights[0].face, 90.0));
+    // No street face, a storey too low for the shop band, a sloped box: none.
+    lights.clear();
+    data.streetBits = 0;
+    CHECK(massingShopLights(box, data, 8.0, lights) == 0);
+    data.streetBits = 0b1111;
+    data.base[0] = data.base[1] = data.base[2] = data.base[3] = 9.0;
+    CHECK(massingShopLights(box, data, 8.0, lights) == 0);
+    data.base[0] = data.base[1] = data.base[2] = data.base[3] = 0.0;
+    box.sloped = true;
+    CHECK(massingShopLights(box, data, 8.0, lights) == 0);
+    CHECK(lights.empty());
 }

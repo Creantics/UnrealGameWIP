@@ -4,13 +4,19 @@
 //
 //   UnrealEditor-Cmd ForgottenThird.uproject /Game/Maps/<map> -game -RenderOffScreen -unattended -nosound
 //       -WorldEyeShot=<file.png> -WorldEye=<x,y,z> -WorldEyeAt=<x,y,z> [-WorldEyeLens=35] [-WorldEyeSide=1000]
-//       [-WorldEyeSize=2560x1440] [-WorldEyeDelay=8] [-WorldEyeNight [-WorldEyeNightSun=0.01] [-WorldEyeNightSky=0.05]
-//       [-WorldEyeNightEV=-2]] [-WorldEyeGpuMs=<frames>] [-WorldEyePlainWalls]
+//       [-WorldEyeSize=2560x1440] [-WorldEyeDelay=8] [-WorldEyeNight [-WorldEyeNightSun=0.03] [-WorldEyeNightSky=0.1]
+//       [-WorldEyeNightEV=-2] [-WorldEyeNightLamp=25] [-WorldEyeNightLampRadius=18] [-WorldEyeNightShop=15]
+//       [-WorldEyeNightGlow=1]] [-WorldEyeGpuMs=<frames>] [-WorldEyePlainWalls]
 //
-// -WorldEyeNight sets the windows' Night to 1 (FTScene::WindowCollection), turns the sun and sky light down to those
-// shares of what the map has, and locks the exposure at -WorldEyeNightEV (EV100). -WorldEyeGpuMs logs the GPU's frame
-// time, averaged over that many frames once the view has settled, before the still. -WorldEyePlainWalls puts each
-// window instance's surface instance (MIW_<id> to MI_Surface_<id>) back on the meshes, for a like-for-like timing.
+// -WorldEyeNight sets the windows' Night to 1 (FTScene::WindowCollection) and their NightGlow to -WorldEyeNightGlow when
+// given, turns the sun into a cool moon at -WorldEyeNightSun of the map's, leaves a blue sky fill of -WorldEyeNightSky of
+// the map's (net: a real-time capture already dims with the sun, so it isn't dimmed twice), switches on the street lamps
+// (FTScene::NightLampTag, -WorldEyeNightLamp candelas, warm, reaching -WorldEyeNightLampRadius metres) and the shop
+// spill lights (FTScene::NightShopTag, -WorldEyeNightShop candelas), puts FTScene::NightLampMaterial on the lamp heads
+// (FTScene::NightLampHeadTag; while a map has none, a small glowing lens stands in over each lamp's light) and locks the
+// exposure at -WorldEyeNightEV (EV100). -WorldEyeGpuMs logs the GPU's frame time, averaged over that many frames once
+// the view has settled, before the still. -WorldEyePlainWalls puts each window instance's surface instance (MIW_<id> to
+// MI_Surface_<id>) back on the meshes, for a like-for-like timing.
 //
 // The eye and the point it looks at are in the plan frame of a square -WorldEyeSide metres across, the frame the
 // massing tables use (ftcore::massingEnginePoint), z in metres. -WorldEyeLens is the focal length in millimetres on a

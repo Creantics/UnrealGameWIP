@@ -45,6 +45,18 @@ inline constexpr int32 WindowDataSeed = 0;
 inline constexpr int32 WindowDataStreet = 1;
 inline constexpr int32 WindowDataBase = 2;
 inline constexpr int32 WindowDataCount = 6;
+// The street lamps' heads, built by FTBuildSurfaces -Windows beside the windows: a pale shade by day, glowing by the window
+// collection's Night.
+inline constexpr const TCHAR* NightLampMaterial = TEXT("/Game/Rendering/Windows/M_NightLamp");
+// The tag of a street lamp's light, off by default: the world eye's night (-WorldEyeNight) switches it on at its lamp
+// intensity and colour.
+inline constexpr const TCHAR* NightLampTag = TEXT("FTNightLamp");
+// The tag of a street lamp's head (on the actor or on the mesh component): the world eye's night puts NightLampMaterial
+// on it.
+inline constexpr const TCHAR* NightLampHeadTag = TEXT("FTNightLampHead");
+// The tag of a shopfront's spill light, off by default: the world eye's night switches it on, weaker and whiter than a
+// street lamp.
+inline constexpr const TCHAR* NightShopTag = TEXT("FTNightShop");
 
 // The big worlds' ground master, built by FTBuildGround: the ground, rock and road surfaces blended by slope and a
 // road mask.
