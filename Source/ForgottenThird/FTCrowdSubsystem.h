@@ -29,6 +29,7 @@
 
 #include "FTCrowdSubsystem.generated.h"
 
+class ACameraActor;
 class ASkeletalMeshActor;
 class UAnimSequence;
 class USkeletalMesh;
@@ -62,6 +63,7 @@ private:
 	void Draw();
 	void PlayFor(int32 Slot, ftcore::CrowdAnim Anim, float Speed);
 	void ScriptFight();
+	void Shoot(APlayerController* PC, const FVector& PlayerAt);
 	void LogCounts(const TCHAR* Label) const;
 	static bool Occluded(void* Context, ftcore::Vec2 From, ftcore::Vec2 To);
 
@@ -81,6 +83,19 @@ private:
 	TObjectPtr<UAnimSequence> CowerClip;
 	UPROPERTY()
 	TArray<TObjectPtr<ASkeletalMeshActor>> Pool;
+	// -CrowdShots=<dir>: two fixed cameras round the test fight and the stills they take.
+	UPROPERTY()
+	TArray<TObjectPtr<ACameraActor>> ShotCams;
+	struct FCrowdShot
+	{
+		double At = 0.0; // s from the test fight's start
+		int32 Cam = 0;
+		FString Name;
+	};
+	TArray<FCrowdShot> Shots;
+	FString ShotDir;
+	int32 ShotIndex = 0;
+	int32 ShotTicks = -1; // ticks since the view moved to the shot's camera; -1 = idle
 
 	// Per pool actor: the agent id it stands for (0 = free), the clip it plays and at what rate, its ground height (cm).
 	TArray<uint32> PoolAgent;

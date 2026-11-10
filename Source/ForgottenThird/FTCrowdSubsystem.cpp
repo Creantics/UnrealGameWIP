@@ -2,6 +2,11 @@
 
 #include "Animation/AnimSequence.h"
 #include "Animation/SkeletalMeshActor.h"
+#include "Camera/CameraActor.h"
+#include "Camera/CameraComponent.h"
+#include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
+#include "GameFramework/HUD.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/HitResult.h"
 #include "Engine/SkeletalMesh.h"
@@ -170,6 +175,24 @@ void UFTCrowdSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		TestFightAt = TestAt;
 	}
 	FParse::Value(Cmd, TEXT("CrowdQuitAfter="), QuitAfter);
+	if (FParse::Value(Cmd, TEXT("CrowdShots="), ShotDir) && !ShotDir.IsEmpty() && TestFightAt >= 0.0)
+	{
+		// Calm, 1 s into the fight, mid-flee (a short run of frames from the low camera), 30 s after.
+		const double Times[] = {-2.0, 1.0, 4.0, 30.0};
+		const TCHAR* Labels[] = {TEXT("calm"), TEXT("fight1s"), TEXT("flee"), TEXT("after30s")};
+		for (int32 T = 0; T < 4; ++T)
+		{
+			for (int32 Cam = 0; Cam < 2; ++Cam)
+			{
+				const int32 Frames = (T == 2 && Cam == 0) ? 4 : 1;
+				for (int32 F = 0; F < Frames; ++F)
+				{
+					Shots.Add({Times[T] + F * 0.25, Cam, FString::Printf(TEXT("%s/crowd_%d_%s_cam%c%s.png"), *ShotDir, T, Labels[T], TEXT('A') + Cam,
+						Frames > 1 ? *FString::Printf(TEXT("_f%d"), F) : TEXT(""))});
+				}
+			}
+		}
+	}
 	bRunning = true;
 }
 
@@ -374,6 +397,67 @@ void UFTCrowdSubsystem::ScriptFight()
 	}
 }
 
+void UFTCrowdSubsystem::Shoot(APlayerController* PC, const FVector& PlayerAt)
+{
+	if (!PC || ShotIndex >= Shots.Num() || TestFightAt < 0.0)
+	{
+		return;
+	}
+	UWorld* World = GetWorld();
+	if (ShotCams.Num() == 0)
+	{
+		// Aimed where the test fight will be (15 m east of the player), placed before it starts so every still matches.
+		const FVector Aim = PlayerAt + FVector(kTestFightDistance * 100.0, 0.0, 0.0);
+		const FVector Eyes[] = {Aim + FVector(-2500.0, -2500.0, 1400.0), Aim + FVector(2000.0, 3000.0, 2200.0)};
+		for (const FVector& From : Eyes)
+		{
+			FActorSpawnParameters Spawn;
+			Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			ACameraActor* Cam = World->SpawnActor<ACameraActor>(From, (Aim - From).Rotation(), Spawn);
+			if (!Cam)
+			{
+				Shots.Reset();
+				return;
+			}
+			Cam->GetCameraComponent()->SetFieldOfView(70.f);
+			Cam->GetCameraComponent()->SetConstraintAspectRatio(false);
+			ShotCams.Add(Cam);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: shots: cameras at %s and %s, aimed at %s; %d stills to %s."), *Eyes[0].ToString(),
+			*Eyes[1].ToString(), *Aim.ToString(), Shots.Num(), *ShotDir);
+	}
+	if (AHUD* Hud = PC->GetHUD())
+	{
+		Hud->bShowHUD = false;
+	}
+	const FCrowdShot& S = Shots[ShotIndex];
+	if (ShotTicks < 0)
+	{
+		if (RunTime < TestFightAt + S.At - 0.1)
+		{
+			return;
+		}
+		PC->SetViewTarget(ShotCams[S.Cam]);
+		ShotTicks = 0;
+		return;
+	}
+	// The view moves first; the still is taken a couple of frames later so it shows the new camera.
+	if (PC->GetViewTarget() != ShotCams[S.Cam])
+	{
+		PC->SetViewTarget(ShotCams[S.Cam]);
+	}
+	if (++ShotTicks == 2)
+	{
+		if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
+		{
+			Viewport->Exec(World, *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *S.Name), *GLog);
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: shot %s at %.2f s from the fight's start."), *S.Name, RunTime - TestFightAt);
+		}
+		++ShotIndex;
+		ShotTicks = -1;
+	}
+}
+
 void UFTCrowdSubsystem::LogCounts(const TCHAR* Label) const
 {
 	const ftcore::CrowdCounts& C = Sim.counts();
@@ -426,6 +510,7 @@ void UFTCrowdSubsystem::Tick(float DeltaTime)
 	OcclusionTraces = 0;
 	Sim.tick(DeltaTime, ToSim(PlayerAt), ToSim(PlayerVel));
 	Draw();
+	Shoot(World->GetFirstPlayerController(), PlayerAt);
 
 	if (RunTime >= NextLog)
 	{
