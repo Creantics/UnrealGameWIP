@@ -12,7 +12,9 @@ namespace ftcore {
 
 namespace {
 
-constexpr std::uint8_t kFlagSecret = 1, kFlagStreet = 2;
+constexpr std::uint8_t kFlagSecret = 1, kFlagStreet = 2, kFlagKnown = kFlagSecret | kFlagStreet;
+
+std::uint32_t satAdd(std::uint32_t a, std::uint32_t b) { return a > 0xFFFFFFFFu - b ? 0xFFFFFFFFu : a + b; }
 
 std::int32_t clampi(std::int32_t v, std::int32_t lo, std::int32_t hi) { return v < lo ? lo : (v > hi ? hi : v); }
 std::int32_t axisLo(int a) { return a == kAxisF ? 0 : -100; }
@@ -82,15 +84,26 @@ void updateStances(NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n) {
     }
 }
 
-// Rk's k: how often this NPC learned the same type within the window before now.
+// Rk's k: how many times this NPC learned the same type within the window before now.
 std::int32_t repeatCount(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n, std::uint16_t type) {
     const NpcState& s = w.npcs[n];
     std::int32_t k = 0;
-    for (std::uint32_t i = 0; i < s.memCount; ++i) {
-        const NpcMemoryEntry& e = s.mem[i];
-        if (e.type == type && w.now - std::min(w.now, e.ts) < static_cast<std::uint32_t>(t.tuning.rkWindowMin)) k += e.count;
-    }
+    for (std::uint32_t i = 0; i < s.recentCount; ++i)
+        if (s.recentType[i] == type && w.now - std::min(w.now, s.recentMinute[i]) < static_cast<std::uint32_t>(t.tuning.rkWindowMin)) ++k;
     return k;
+}
+
+void noteLearn(NpcState& s, std::uint16_t type, std::uint32_t minute) {
+    s.recentType[s.recentHead] = type;
+    s.recentMinute[s.recentHead] = minute;
+    s.recentHead = static_cast<std::uint8_t>((s.recentHead + 1u) % kRecentMax);
+    if (s.recentCount < kRecentMax) ++s.recentCount;
+}
+
+void setSeen(NpcState& s, std::uint32_t seq, bool on) {
+    const std::uint32_t slot = seq % kDeedRing, bit = 1u << (slot % 32u);
+    std::uint32_t& word = s.seen[slot / 32u];
+    word = on ? (word | bit) : (word & ~bit);
 }
 
 std::array<std::int32_t, 3> appraise(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n, const NpcDeed& d,
@@ -138,7 +151,13 @@ void evictOne(NpcState& s, const NpcTables& t, std::uint32_t now) {
             bestS = S;
         }
     }
-    if (victim < 0) victim = 0;  // all pinned cannot happen (pins cap below the store), but stay safe
+    if (victim < 0) {  // every entry pinned (pins cap below the store, so only a forged state): drop the weakest, oldest
+        for (std::uint32_t i = 0; i < s.memCount; ++i) {
+            const NpcMemoryEntry& e = s.mem[i];
+            const NpcMemoryEntry* b = victim < 0 ? nullptr : &s.mem[static_cast<std::size_t>(victim)];
+            if (!b || e.s0 < b->s0 || (e.s0 == b->s0 && (e.ts < b->ts || (e.ts == b->ts && e.seq < b->seq)))) victim = static_cast<int>(i);
+        }
+    }
     const NpcMemoryEntry& gone = s.mem[static_cast<std::size_t>(victim)];
     const std::uint32_t mask = typeMask(t, gone.type);
     for (std::uint32_t b = 0; b < kNpcTagMax; ++b) {
@@ -170,6 +189,8 @@ void pin(NpcState& s, NpcMemoryEntry& e, std::uint32_t now) {
 }
 
 bool knows(const NpcState& s, std::uint32_t seq) {
+    const std::uint32_t slot = seq % kDeedRing;
+    if (s.seen[slot / 32u] & (1u << (slot % 32u))) return true;
     for (std::uint32_t i = 0; i < s.memCount; ++i)
         if (s.mem[i].seq == seq) return true;
     return false;
@@ -181,9 +202,12 @@ bool learn(NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n, const NpcDeed
     if (!validNpc(w, n) || n >= t.npcs.size() || d.type >= t.deeds.size()) return false;
     NpcState& s = w.npcs[n];
     if (s.dead || knows(s, d.seq)) return false;
+    updateStances(w, t, n);  // store any stance change decay made since the last write
     const NpcTuning& tu = t.tuning;
     const NpcDeedType& dt = t.deeds[d.type];
     const auto dp = appraise(w, t, n, d, how, kOverride);
+    noteLearn(s, d.type, w.now);
+    setSeen(s, d.seq, true);
 
     std::array<std::int16_t, 3> next{};
     for (int a = 0; a < 3; ++a)
@@ -264,7 +288,7 @@ void queueRumours(NpcMemoryWorld& w, const NpcTables& t, std::uint16_t from, con
         }
         NpcRumour& r = w.rumours[w.rumourCount++];
         r.seq = d.seq;
-        r.due = w.now + delay;
+        r.due = satAdd(w.now, delay);
         r.target = to;
         r.hops = static_cast<std::uint8_t>(fromHops + 1);
         r.lead = close >= t.tuning.leadCloseness ? lead : kNoLead;
@@ -272,9 +296,11 @@ void queueRumours(NpcMemoryWorld& w, const NpcTables& t, std::uint16_t from, con
     }
 }
 
-std::uint32_t recordDeed(NpcMemoryWorld& w, const NpcTables& t, NpcDeed d, bool checkExpectations);
+std::uint32_t recordDeed(NpcMemoryWorld& w, const NpcTables& t, NpcDeed d, bool checkExpectations, bool fromExp, bool quiet);
 
-void emitExpDeed(NpcMemoryWorld& w, const NpcTables& t, std::uint32_t expIdx, std::uint16_t type, std::uint8_t lead) {
+// An expectation's outcome reaches the NPC it was made to (even when the deed that settled it was
+// secret), never the street; `quiet` keeps it from spreading further until it is revealed.
+void emitExpDeed(NpcMemoryWorld& w, const NpcTables& t, std::uint32_t expIdx, std::uint16_t type, std::uint8_t lead, bool quiet) {
     if (type == kNoType || type >= t.deeds.size()) return;
     NpcDeed d;
     d.type = type;
@@ -282,10 +308,10 @@ void emitExpDeed(NpcMemoryWorld& w, const NpcTables& t, std::uint32_t expIdx, st
     d.lead = lead;
     d.place = static_cast<std::uint16_t>(0xFFFFu - expIdx);
     d.district = 0;
-    recordDeed(w, t, d, false);
+    recordDeed(w, t, d, false, true, quiet);
 }
 
-std::uint32_t recordDeed(NpcMemoryWorld& w, const NpcTables& t, NpcDeed d, bool checkExpectations) {
+std::uint32_t recordDeed(NpcMemoryWorld& w, const NpcTables& t, NpcDeed d, bool checkExpectations, bool fromExp, bool quiet) {
     if (d.type >= t.deeds.size()) return 0;
     if (d.minute == 0) d.minute = w.now;
     d.seq = w.nextSeq++;
@@ -294,28 +320,35 @@ std::uint32_t recordDeed(NpcMemoryWorld& w, const NpcTables& t, NpcDeed d, bool 
     for (std::uint16_t x : d.witnesses)
         if (x != kNoNpc && validNpc(w, x)) ++witnesses;
     const bool secret = dt.secret && witnesses == 0;
-    d.flags = static_cast<std::uint8_t>((secret ? kFlagSecret : 0) | (!secret && witnesses == 0 ? kFlagStreet : 0));
-    w.ring[d.seq % kDeedRing] = d;
+    const bool hold = secret || quiet;
+    d.flags = static_cast<std::uint8_t>((hold ? kFlagSecret : 0) | (!hold && !fromExp && witnesses == 0 ? kFlagStreet : 0));
+    const std::uint32_t slot = d.seq % kDeedRing;
+    if (const std::uint32_t old = w.ring[slot].seq)  // the old deed is gone
+        for (std::uint16_t n = 0; n < w.npcCount; ++n) setSeen(w.npcs[n], old, false);
+    w.ring[slot] = d;
 
-    if (!secret) {
-        if (d.victim != kNoNpc && learn(w, t, d.victim, d, NpcLearn::Victim, d.lead, 100, 0))
-            queueRumours(w, t, d.victim, d, 0, d.lead);
-        for (std::uint16_t x : d.witnesses)
-            if (x != kNoNpc && learn(w, t, x, d, NpcLearn::Witness, d.lead, 100, 0)) queueRumours(w, t, x, d, 0, d.lead);
-    }
+    // Everyone told first hand learns before anyone spreads, so no rumour races a direct learner.
+    std::array<std::uint16_t, 1 + kDeedWitnessMax> learners{};
+    std::uint32_t count = 0;
+    if (d.victim != kNoNpc && (!secret || fromExp) && learn(w, t, d.victim, d, NpcLearn::Victim, d.lead, 100, 0))
+        learners[count++] = d.victim;
+    for (std::uint16_t x : d.witnesses)
+        if (x != kNoNpc && learn(w, t, x, d, NpcLearn::Witness, d.lead, 100, 0)) learners[count++] = x;
+    if (!hold)
+        for (std::uint32_t i = 0; i < count; ++i) queueRumours(w, t, learners[i], d, 0, d.lead);
 
     if (checkExpectations) {
         for (std::uint32_t i = 0; i < t.expectations.size() && i < kExpMax; ++i) {
             const NpcExpDef& e = t.expectations[i];
             NpcExpState& st = w.exp[i];
             if (st != NpcExpState::Pending && st != NpcExpState::Reminding) continue;
-            if (d.minute > e.due + e.windowMin) continue;
+            if (std::uint64_t{d.minute} > std::uint64_t{e.due} + e.windowMin) continue;
             if (d.type == e.keptBy) {
                 st = NpcExpState::Kept;
-                emitExpDeed(w, t, i, e.deedKept, d.lead);
+                emitExpDeed(w, t, i, e.deedKept, d.lead, secret);
             } else if (d.type == e.brokenBy) {
                 st = NpcExpState::Broken;
-                emitExpDeed(w, t, i, e.deedBroken, d.lead);
+                emitExpDeed(w, t, i, e.deedBroken, d.lead, secret);
             }
         }
     }
@@ -324,7 +357,7 @@ std::uint32_t recordDeed(NpcMemoryWorld& w, const NpcTables& t, NpcDeed d, bool 
 
 const NpcMemoryEntry* recallAt(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n, int type, int tag,
                                std::int32_t* sOut) {
-    if (!validNpc(w, n)) return nullptr;
+    if (!validNpc(w, n) || tag >= static_cast<int>(kNpcTagMax)) return nullptr;
     const NpcState& s = w.npcs[n];
     const std::uint32_t at = readTime(w, n);
     const NpcMemoryEntry* best = nullptr;
@@ -345,6 +378,7 @@ const NpcMemoryEntry* recallAt(const NpcMemoryWorld& w, const NpcTables& t, std:
 
 // Latest deedMinute among memories of a type or tag; -1 when none.
 std::int64_t latestOf(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n, int type, int tag) {
+    if (!validNpc(w, n) || tag >= static_cast<int>(kNpcTagMax)) return -1;
     const NpcState& s = w.npcs[n];
     std::int64_t best = -1;
     for (std::uint32_t i = 0; i < s.memCount; ++i) {
@@ -400,7 +434,7 @@ void npcInit(NpcMemoryWorld& w, const NpcTables& t) {
 
 void npcAdvance(NpcMemoryWorld& w, std::uint32_t minute) { w.now = std::max(w.now, minute); }
 
-std::uint32_t npcRecordDeed(NpcMemoryWorld& w, const NpcTables& t, NpcDeed deed) { return recordDeed(w, t, deed, true); }
+std::uint32_t npcRecordDeed(NpcMemoryWorld& w, const NpcTables& t, NpcDeed deed) { return recordDeed(w, t, deed, true, false, false); }
 
 void npcCheckpoint(NpcMemoryWorld& w, const NpcTables& t, std::uint32_t now, std::uint16_t crowdPermille) {
     npcAdvance(w, now);
@@ -424,17 +458,21 @@ void npcCheckpoint(NpcMemoryWorld& w, const NpcTables& t, std::uint32_t now, std
     for (std::uint32_t i = keep; i < w.rumourCount; ++i) w.rumours[i] = NpcRumour{};
     w.rumourCount = static_cast<std::uint16_t>(keep);
 
-    // Street hearsay: unwitnessed deeds reach their district when the crowd is thick enough.
+    // Street hearsay: unwitnessed deeds reach their district when the crowd is thick enough; a thin
+    // crowd only delays them (they retry here until their ring slot is reused).
     for (NpcDeed& slot : w.ring) {
         if (!(slot.flags & kFlagStreet) || slot.seq == 0 || slot.type >= t.deeds.size()) continue;
-        if (slot.minute + static_cast<std::uint32_t>(tu.streetDelayMin) > w.now) continue;
+        if (std::uint64_t{slot.minute} + static_cast<std::uint64_t>(tu.streetDelayMin) > w.now) continue;
+        if (t.deeds[slot.type].magnitude * static_cast<std::int32_t>(crowdPermille) < tu.streetThreshold) continue;
         slot.flags = static_cast<std::uint8_t>(slot.flags & ~kFlagStreet);
         const NpcDeed deed = slot;
-        if (t.deeds[deed.type].magnitude * static_cast<std::int32_t>(crowdPermille) < tu.streetThreshold) continue;
+        std::array<std::uint16_t, kNpcMax> learners{};
+        std::uint32_t count = 0;
         for (std::uint16_t n = 0; n < w.npcCount; ++n) {
-            if (n == deed.victim || t.npcs[n].district != deed.district) continue;
-            if (learn(w, t, n, deed, NpcLearn::Hop1, kNoLead, 0, 0)) queueRumours(w, t, n, deed, 1, kNoLead);
+            if (n == deed.victim || n >= t.npcs.size() || t.npcs[n].district != deed.district) continue;
+            if (learn(w, t, n, deed, NpcLearn::Hop1, kNoLead, 0, 0)) learners[count++] = n;
         }
+        for (std::uint32_t i = 0; i < count; ++i) queueRumours(w, t, learners[i], deed, 1, kNoLead);
     }
 
     // Expectations: a skip past the window goes straight to Missed (the reminder never plays).
@@ -442,10 +480,10 @@ void npcCheckpoint(NpcMemoryWorld& w, const NpcTables& t, std::uint32_t now, std
         const NpcExpDef& e = t.expectations[i];
         NpcExpState& st = w.exp[i];
         if (st != NpcExpState::Pending && st != NpcExpState::Reminding) continue;
-        if (w.now > e.due + e.windowMin) {
+        if (std::uint64_t{w.now} > std::uint64_t{e.due} + e.windowMin) {
             st = NpcExpState::Missed;
-            emitExpDeed(w, t, i, e.deedMissed, kNoLead);
-        } else if (st == NpcExpState::Pending && w.now + e.remindLeadMin >= e.due) {
+            emitExpDeed(w, t, i, e.deedMissed, kNoLead, false);
+        } else if (st == NpcExpState::Pending && std::uint64_t{w.now} + e.remindLeadMin >= e.due) {
             st = NpcExpState::Reminding;
         }
     }
@@ -458,7 +496,10 @@ bool npcReveal(NpcMemoryWorld& w, const NpcTables& t, std::uint32_t seq, std::ui
     const NpcDeed* d = npcDeedAt(w, seq);
     if (!d) return false;
     const NpcDeed deed = *d;
-    if (!learn(w, t, npc, deed, NpcLearn::Witness, deed.lead, 100, t.tuning.kReveal)) return false;
+    // The NPC is told now; one who already knew (the party to a quiet promise) may now pass it on.
+    if (!learn(w, t, npc, deed, NpcLearn::Witness, deed.lead, 100, t.tuning.kReveal) &&
+        !(validNpc(w, npc) && !w.npcs[npc].dead && knows(w.npcs[npc], seq)))
+        return false;
     queueRumours(w, t, npc, deed, 0, deed.lead);
     return true;
 }
@@ -523,8 +564,13 @@ NpcConsequence npcConsequence(const NpcMemoryWorld& w, const NpcTables& t, std::
     return i < t.consequences.size() ? t.consequences[i] : NpcConsequence{};
 }
 
-std::int32_t npcSalience(const NpcMemoryWorld& w, const NpcTables& t, const NpcMemoryEntry& e) {
-    return salienceAt(t.tuning, e, w.now);
+std::int32_t npcSalience(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc, const NpcMemoryEntry& e) {
+    return salienceAt(t.tuning, e, validNpc(w, npc) ? readTime(w, npc) : w.now);
+}
+
+bool npcRemembers(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc, int type, int tag) {
+    std::int32_t S = -1;
+    return recallAt(w, t, npc, type, tag, &S) != nullptr && S >= t.tuning.recallBar;
 }
 
 const NpcMemoryEntry* npcFindMemory(const NpcMemoryWorld& w, std::uint16_t npc, std::uint32_t seq) {
@@ -571,7 +617,7 @@ NpcLinePick npcPickLine(NpcMemoryWorld& w, const NpcTables& t, const NpcLineTabl
             case NpcCondKind::None: break;
             case NpcCondKind::Mem: {
                 std::int32_t S = -1;
-                ok = recallAt(w, t, npc, c.type, c.tag, &S) != nullptr && S >= c.value;
+                ok = recallAt(w, t, npc, c.type, c.tag, &S) != nullptr && S >= (c.value < 0 ? t.tuning.recallBar : c.value);
                 if (ok) sal = std::max(sal, S);
                 break;
             }
@@ -620,7 +666,7 @@ NpcLinePick npcPickLine(NpcMemoryWorld& w, const NpcTables& t, const NpcLineTabl
             best.score = score;
         }
     }
-    if (best.line >= 0) w.lastSaid[static_cast<std::size_t>(best.line)] = w.now + 1u;
+    if (best.line >= 0) w.lastSaid[static_cast<std::size_t>(best.line)] = satAdd(w.now, 1u);
     return best;
 }
 
@@ -702,7 +748,7 @@ bool toClock(std::string_view s, std::int64_t& minutes) {
         return false;
     }
     minutes = h * 60 + m;
-    return h >= 0 && m >= 0 && m < 60;
+    return h >= 0 && h < 24 && m >= 0 && m < 60;
 }
 
 struct Sheet {
@@ -843,6 +889,7 @@ bool importNpcTables(const NpcTableSources& src, NpcTables& out, std::string* er
         for (std::size_t i = 0; i < s.rows.size(); ++i) {
             const Row& r = s.rows[i];
             NpcDeedType d;
+            if (t.deeds.size() >= kDeedTypeMax) return s.fail(i + 1, "more than 128 deed types");
             d.id = std::string(s.get(r, "deed_id"));
             for (std::string_view tag : splitOn(s.get(r, "tags"), ';')) {
                 const int b = t.tagIndex(tag);
@@ -898,6 +945,7 @@ bool importNpcTables(const NpcTableSources& src, NpcTables& out, std::string* er
         if (!s.open(src.ties, {"from_id", "to_id", "kind", "tie", "closeness", "delay_min"})) return false;
         for (std::size_t i = 0; i < s.rows.size(); ++i) {
             const Row& r = s.rows[i];
+            if (t.ties.size() >= kNpcTieMax) return s.fail(i + 1, "more than 512 ties");
             NpcTie e;
             const int from = t.npcIndex(s.get(r, "from_id"));
             if (from < 0) return s.fail(i + 1, "unknown from_id");
@@ -982,10 +1030,10 @@ bool importNpcTables(const NpcTableSources& src, NpcTables& out, std::string* er
             const auto c1 = due.find(':');
             if (c1 != std::string_view::npos) {
                 std::int64_t day = 0, clock = 0;
-                if (!toInt(due.substr(0, c1), day) || !toClock(due.substr(c1 + 1), clock) || day < 0)
+                if (!toInt(due.substr(0, c1), day) || !toClock(due.substr(c1 + 1), clock) || day < 0 || day > kNpcDayMax)
                     return s.fail(i + 1, "due must be day:HH:MM or a minute");
                 v = day * 1440 + clock;
-            } else if (!toInt(due, v) || v < 0) {
+            } else if (!toInt(due, v) || v < 0 || v > kNpcDayMax * 1440) {
                 return s.fail(i + 1, "due must be day:HH:MM or a minute");
             }
             e.due = static_cast<std::uint32_t>(v);
@@ -1005,10 +1053,11 @@ bool importNpcTables(const NpcTableSources& src, NpcTables& out, std::string* er
         if (!s.open(src.schedule, {"event_id", "day", "hour", "foreshadow_lead_min"})) return false;
         for (std::size_t i = 0; i < s.rows.size(); ++i) {
             const Row& r = s.rows[i];
+            if (t.events.size() >= kEventMax) return s.fail(i + 1, "more than 64 events");
             NpcEventDef e;
             e.id = std::string(s.get(r, "event_id"));
             std::int64_t day = 0, clock = 0, lead = 0;
-            if (!s.num(i, r, "day", 0, 100000, day) || !toClock(s.get(r, "hour"), clock) ||
+            if (!s.num(i, r, "day", 0, kNpcDayMax, day) || !toClock(s.get(r, "hour"), clock) ||
                 !s.num(i, r, "foreshadow_lead_min", 0, 14 * 1440, lead))
                 return s.fail(i + 1, "bad day, hour or foreshadow_lead_min");
             e.minute = static_cast<std::uint32_t>(day * 1440 + clock);
@@ -1038,8 +1087,12 @@ bool parseCond(const NpcTables& t, std::string_view s, NpcCond& c) {
     std::int64_t v = 0;
     if (s.substr(0, 4) == "mem:") {
         const auto ge = s.find(">=");
-        if (ge == std::string_view::npos || !toInt(s.substr(ge + 2), v)) return false;
         c.kind = NpcCondKind::Mem;
+        if (ge == std::string_view::npos) {
+            c.value = -1;  // the tuning's recall bar
+            return memRef(s.substr(4), c);
+        }
+        if (!toInt(s.substr(ge + 2), v) || v < 0 || v > 1000) return false;
         c.value = static_cast<std::int32_t>(v);
         return memRef(s.substr(4, ge - 4), c);
     }
@@ -1173,6 +1226,13 @@ NpcMemorySave npcCaptureSave(const NpcMemoryWorld& w, const NpcTables& t, const 
         }
         for (std::size_t b = 0; b < kNpcTagMax && b < t.tags.size(); ++b)
             if (st.aggregates[b].count) o.aggregates.emplace_back(t.tags[b], st.aggregates[b]);
+        for (std::uint32_t slot = 0; slot < kDeedRing; ++slot)
+            if ((st.seen[slot / 32u] & (1u << (slot % 32u))) && w.ring[slot].seq) o.seen.push_back(w.ring[slot].seq);
+        std::sort(o.seen.begin(), o.seen.end());
+        for (std::uint32_t i = 0; i < st.recentCount; ++i) {
+            const std::uint32_t k = (st.recentHead + kRecentMax - st.recentCount + i) % kRecentMax;
+            o.recent.emplace_back(typeId(st.recentType[k]), st.recentMinute[k]);
+        }
         s.npcs.push_back(std::move(o));
     }
     for (const NpcDeed& d : w.ring) {
@@ -1278,6 +1338,14 @@ NpcMemoryLoadReport npcApplySave(NpcMemoryWorld& w, const NpcTables& t, const Np
             }
             st.aggregates[static_cast<std::size_t>(b)] = ag.second;
         }
+        for (const auto& rc : o.recent) {
+            const int ty = t.deedIndex(rc.first);
+            if (ty < 0) {
+                unknown("deed", rc.first);
+                continue;
+            }
+            noteLearn(st, static_cast<std::uint16_t>(ty), std::min(rc.second, s.now));
+        }
     }
     for (const NpcMemorySaveDeed& o : s.deeds) {
         const int ty = t.deedIndex(o.type);
@@ -1296,7 +1364,9 @@ NpcMemoryLoadReport npcApplySave(NpcMemoryWorld& w, const NpcTables& t, const Np
         d.place = o.place;
         d.district = o.district;
         d.lead = o.lead < kLeadCount ? o.lead : kNoLead;
-        d.flags = o.flags;
+        d.minute = std::min(d.minute, s.now);
+        d.flags = static_cast<std::uint8_t>(o.flags & kFlagKnown);
+        if (d.flags != o.flags || d.minute != o.minute) ++rep.clamped;
         if (!o.victim.empty()) {
             const int v = t.npcIndex(o.victim);
             if (v < 0) unknown("npc", o.victim);
@@ -1312,6 +1382,12 @@ NpcMemoryLoadReport npcApplySave(NpcMemoryWorld& w, const NpcTables& t, const Np
             if (k < kDeedWitnessMax) d.witnesses[k++] = static_cast<std::uint16_t>(v);
         }
         w.ring[d.seq % kDeedRing] = d;
+    }
+    for (const NpcMemorySaveNpc& o : s.npcs) {  // seen bits only for deeds the ring still holds
+        const int n = t.npcIndex(o.id);
+        if (n < 0 || n >= w.npcCount) continue;
+        for (std::uint32_t seq : o.seen)
+            if (npcDeedAt(w, seq)) setSeen(w.npcs[static_cast<std::size_t>(n)], seq, true);
     }
     for (const NpcMemorySaveRumour& o : s.rumours) {
         const int v = t.npcIndex(o.target);
@@ -1345,7 +1421,7 @@ NpcMemoryLoadReport npcApplySave(NpcMemoryWorld& w, const NpcTables& t, const Np
             unknown("line", e.first);
             continue;
         }
-        if (static_cast<std::uint32_t>(i) < kSaidMax) w.lastSaid[static_cast<std::size_t>(i)] = std::min(e.second, s.now + 1u);
+        if (static_cast<std::uint32_t>(i) < kSaidMax) w.lastSaid[static_cast<std::size_t>(i)] = std::min(e.second, satAdd(s.now, 1u));
     }
     return rep;
 }

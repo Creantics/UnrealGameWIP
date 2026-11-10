@@ -7,6 +7,13 @@
 // nothing runs per frame; record, checkpoint, stance and line pick allocate nothing.
 // Tables and lines are loaded once (the parsers allocate); the public repo carries only the
 // schemas and role-id test data, the real profiles and line tables are private data.
+//
+// Secrets: a secret deed with no witness is learned by nobody and never spreads until npcReveal.
+// A promise kept or broken by a secret deed is still known to the NPC it was made to (the
+// expectation's deed reaches that NPC), but it does not spread from them until it is revealed.
+// Expectation deeds never spread through the street crowd, only by hearsay.
+// Street hearsay: an unwitnessed deed waits for a checkpoint with a thick enough crowd; a thin
+// crowd only delays it, until its ring slot is reused.
 
 #include "ftcore/Api.h"
 
@@ -21,7 +28,8 @@ namespace ftcore {
 
 constexpr std::uint32_t kNpcMax = 64, kMemPerNpc = 16, kPinnedMax = 6, kNpcTagMax = 32, kDeedRing = 256,
                         kRumourQueue = 128, kExpMax = 64, kLeadCount = 3, kCondMax = 6, kSaidMax = 2048,
-                        kDeedWitnessMax = 8, kNpcTieMax = 512, kDeedTypeMax = 128, kEventMax = 64;
+                        kDeedWitnessMax = 8, kNpcTieMax = 512, kDeedTypeMax = 128, kEventMax = 64,
+                        kRecentMax = 32, kNpcDayMax = 100000;
 constexpr std::uint16_t kNoNpc = 0xFFFF;  // crowd victim (tie 0) or "none"
 constexpr std::uint8_t kNoLead = 0xFF;    // the party, no single lead
 constexpr std::uint16_t kNoType = 0xFFFF;
@@ -161,6 +169,14 @@ struct NpcState {
     std::array<NpcMemoryEntry, kMemPerNpc> mem{};
     std::uint8_t memCount = 0;
     std::array<NpcTagAggregate, kNpcTagMax> aggregates{};
+    // Deeds still in the ring that this NPC has learned (bit = seq % kDeedRing, cleared when the
+    // slot is reused), so reinforcement or eviction never lets a late rumour be learned twice.
+    std::array<std::uint32_t, kDeedRing / 32> seen{};
+    // Recent learn events (type, minute) for the F1 repeat count; k saturates at 3 with the
+    // default tuning, so 32 events cover any plausible 3-day window.
+    std::array<std::uint16_t, kRecentMax> recentType{};
+    std::array<std::uint32_t, kRecentMax> recentMinute{};
+    std::uint8_t recentHead = 0, recentCount = 0;
 };
 
 struct NpcRumour {
@@ -189,8 +205,11 @@ struct NpcMemoryWorld {
 FTCORE_API void npcInit(NpcMemoryWorld& w, const NpcTables& t);
 // now = max(now, minute): the clock never goes back, even when a cutscene sets the hour back.
 FTCORE_API void npcAdvance(NpcMemoryWorld& w, std::uint32_t minute);
+// Game minute of a day and hour; negative or NaN hours count as 0, the result saturates.
 inline std::uint32_t npcMinute(std::uint32_t day, double hours) {
-    return day * 1440u + static_cast<std::uint32_t>(hours * 60.0);
+    const double h = hours > 0.0 ? hours : 0.0;  // NaN fails the compare
+    const double m = static_cast<double>(day) * 1440.0 + h * 60.0;
+    return m >= 4294967295.0 ? 0xFFFFFFFFu : static_cast<std::uint32_t>(m);
 }
 
 // Records a deed at w.now (deed.minute is set to now when 0). The victim and witnesses learn it,
@@ -211,7 +230,10 @@ FTCORE_API NpcStance npcStance(const NpcMemoryWorld& w, const NpcTables& t, std:
 // The F4 rule alone: the next stance from the current one and E.
 FTCORE_API NpcStance npcStanceStep(NpcStance current, std::int32_t T, std::int32_t F, std::int32_t R, std::int32_t stayGap = 10);
 FTCORE_API NpcConsequence npcConsequence(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc, std::uint8_t lead);
-FTCORE_API std::int32_t npcSalience(const NpcMemoryWorld& w, const NpcTables& t, const NpcMemoryEntry& e);
+// S(now) of one of the NPC's memories (frozen at death like the axes).
+FTCORE_API std::int32_t npcSalience(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc, const NpcMemoryEntry& e);
+// The NPC still remembers a deed type (or tag): its strongest memory is at the recall bar or above.
+FTCORE_API bool npcRemembers(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc, int type, int tag);
 // The NPC's memory of a deed seq, or nullptr.
 FTCORE_API const NpcMemoryEntry* npcFindMemory(const NpcMemoryWorld& w, std::uint16_t npc, std::uint32_t seq);
 // The strongest memory of a deed type (or of any deed carrying tag bit when tag >= 0), or nullptr.
@@ -262,7 +284,8 @@ struct NpcTableSources {
 };
 FTCORE_API bool importNpcTables(const NpcTableSources& src, NpcTables& out, std::string* error = nullptr);
 // npc_lines.csv: line_id,npc_id,kind,lead,priority,cooldown_min,once,cond. Clauses in cond are
-// separated by ';' (quote the field when a clause holds a comma).
+// separated by ';' (quote the field when a clause holds a comma). `mem:deed=X` with no `>=S`
+// uses the tuning's recall bar.
 FTCORE_API bool importNpcLines(std::string_view csv, const NpcTables& t, NpcLineTable& out, std::string* error = nullptr);
 
 // ---- Save (string ids, never indices) ----
@@ -285,6 +308,8 @@ struct NpcMemorySaveNpc {
     std::uint32_t deadAt = 0;
     std::vector<NpcMemorySaveEntry> mem;
     std::vector<std::pair<std::string, NpcTagAggregate>> aggregates;
+    std::vector<std::uint32_t> seen;                                // deed seqs, ascending
+    std::vector<std::pair<std::string, std::uint32_t>> recent;      // deed type, minute; oldest first
 };
 struct NpcMemorySaveDeed {
     std::uint32_t seq = 0, minute = 0;

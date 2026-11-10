@@ -1,4 +1,4 @@
-// NPC memory and disposition (S-376): the spec's 28 checks plus a no-heap check on the hot paths.
+// NPC memory and disposition: the spec's 28 checks, review regressions and a no-heap check on the hot paths.
 // Test data uses mechanical ids only (tag_a, deed_a, npc_a, line_00).
 #include "ftcore/NpcMemory.h"
 
@@ -6,6 +6,7 @@
 
 #include <doctest/doctest.h>
 
+#include <cmath>
 #include <memory>
 #include <string>
 
@@ -75,6 +76,12 @@ line_03,npc_b,remind,any,3,0,0,exp:exp_1=reminding
 line_04,npc_a,talk,any,4,0,0,"stance>=warm;not_since:tag=tag_a,deed=deed_c"
 line_05,npc_a,talk,0,2,0,0,since_deed:deed_a>=60;dead:npc_d
 line_06,npc_a,bark,any,1,0,0,event:event_1<=120
+line_07,npc_y,greet,any,1,0,0,mem:deed=deed_h
+)";
+
+// A promise broken by a secret deed.
+constexpr const char* kSecretExp = R"(exp_id,npc_id,kind,due,window_min,remind_lead_min,kept_by,broken_by,deed_kept,deed_broken,deed_missed
+exp_1,npc_b,promise,1:19:00,120,60,deed_meet,deed_s,deed_k,deed_p,deed_p
 )";
 
 struct Fx {
@@ -82,8 +89,8 @@ struct Fx {
     NpcLineTable lines;
     std::unique_ptr<NpcMemoryWorld> w = std::make_unique<NpcMemoryWorld>();
 
-    Fx() {
-        NpcTableSources src{kTags, kDeeds, kNpcs, kTies, kConsequences, kExpectations, kSchedule, kTuning};
+    explicit Fx(const char* exps = kExpectations) {
+        NpcTableSources src{kTags, kDeeds, kNpcs, kTies, kConsequences, exps, kSchedule, kTuning};
         std::string err;
         const bool ok = importNpcTables(src, t, &err);
         INFO(err);
@@ -131,7 +138,10 @@ std::string dump(const NpcMemoryWorld& w, const NpcTables& t, const NpcLineTable
                  std::to_string(e.count) + "," + std::to_string(e.lead) + "," + std::to_string(e.pinned) + ";";
         o += "]{";
         for (const auto& ag : n.aggregates) o += ag.first + "=" + std::to_string(ag.second.count) + "@" + std::to_string(ag.second.lastMinute) + ";";
-        o += "}";
+        o += "}<";
+        for (auto x : n.seen) o += std::to_string(x) + ",";
+        for (const auto& r : n.recent) o += r.first + "@" + std::to_string(r.second) + ",";
+        o += ">";
     }
     o += "|";
     for (const auto& d : s.deeds) {
@@ -266,13 +276,13 @@ TEST_CASE("npc memory: salience_decay_example") {
     const std::uint32_t seq = f.record("deed_a", {"npc_a"});
     const NpcMemoryEntry* e = npcFindMemory(*f.w, f.npc("npc_a"), seq);
     REQUIRE(e != nullptr);
-    CHECK(npcSalience(*f.w, f.t, *e) == 500);
+    CHECK(npcSalience(*f.w, f.t, f.npc("npc_a"), *e) == 500);
     f.at(1000 + 100 * 60);
-    CHECK(npcSalience(*f.w, f.t, *e) == 200);  // still remembered at 100 game hours
-    CHECK(npcSalience(*f.w, f.t, *e) >= f.t.tuning.recallBar);
+    CHECK(npcSalience(*f.w, f.t, f.npc("npc_a"), *e) == 200);  // still remembered at 100 game hours
+    CHECK(npcSalience(*f.w, f.t, f.npc("npc_a"), *e) >= f.t.tuning.recallBar);
     f.at(1000 + 101 * 60);
-    CHECK(npcSalience(*f.w, f.t, *e) == 197);
-    CHECK(npcSalience(*f.w, f.t, *e) < f.t.tuning.recallBar);
+    CHECK(npcSalience(*f.w, f.t, f.npc("npc_a"), *e) == 197);
+    CHECK(npcSalience(*f.w, f.t, f.npc("npc_a"), *e) < f.t.tuning.recallBar);
 }
 
 TEST_CASE("npc memory: reinforcement_caps") {
@@ -304,7 +314,7 @@ TEST_CASE("npc memory: pinned_never_fades") {
     CHECK(e->pinned);
     const std::int32_t s0 = e->s0;
     f.at(1000 + 365 * 1440);
-    CHECK(npcSalience(*f.w, f.t, *e) == s0);
+    CHECK(npcSalience(*f.w, f.t, f.npc("npc_b"), *e) == s0);
     // A seventh pin unpins the oldest, which then starts to fade from now.
     for (std::uint16_t p = 2; p <= 7; ++p) {
         f.record("deed_p", {}, "npc_b", kNoLead, p);
@@ -441,8 +451,20 @@ TEST_CASE("npc memory: hearsay_night_crowd_gate") {
         const std::uint32_t seq = f.record("deed_a", {}, nullptr, kNoLead, 1, 2);
         f.at(1030, 1000);  // before the street delay
         CHECK(npcFindMemory(*f.w, f.npc("npc_c"), seq) == nullptr);
-        f.at(1060, 500);  // a thin night crowd: 1000 < 1500, the deed goes unheard
+        f.at(1060, 500);  // a thin night crowd: 1000 < 1500, the deed waits
         CHECK(npcFindMemory(*f.w, f.npc("npc_c"), seq) == nullptr);
+        f.at(1200, 600);
+        CHECK(npcFindMemory(*f.w, f.npc("npc_c"), seq) == nullptr);
+        f.at(1500, 1000);  // the day crowd passes it on
+        CHECK(npcFindMemory(*f.w, f.npc("npc_c"), seq) != nullptr);
+        CHECK(npcFindMemory(*f.w, f.npc("npc_d"), seq) != nullptr);
+    }
+    {
+        Fx f;  // still waiting when its ring slot is reused: lost
+        f.at(1000);
+        const std::uint32_t seq = f.record("deed_a", {}, nullptr, kNoLead, 1, 2);
+        f.at(1060, 500);
+        for (std::uint32_t i = 0; i < kDeedRing; ++i) f.record("deed_z", {"npc_x"});
         f.at(1500, 1000);
         CHECK(npcFindMemory(*f.w, f.npc("npc_c"), seq) == nullptr);
     }
@@ -476,7 +498,7 @@ TEST_CASE("npc memory: late_learn_uses_learn_time") {
     REQUIRE(b != nullptr);
     CHECK(b->deedMinute == 1000);
     CHECK(b->learned == 1600);
-    CHECK(npcSalience(*f.w, f.t, *b) == b->s0);  // salience starts at the learn time
+    CHECK(npcSalience(*f.w, f.t, f.npc("npc_b"), *b) == b->s0);  // salience starts at the learn time
     // since_deed counts from the deed: line_05 needs 60 minutes since deed_a and npc_d dead.
     npcSetDead(*f.w, f.npc("npc_d"));
     CHECK(f.pick("npc_a", NpcLineKind::Talk, 0) == f.line("line_05"));
@@ -498,7 +520,7 @@ TEST_CASE("npc memory: ring_wrap_seq_mismatch") {
 TEST_CASE("npc memory: dead_npc_frozen") {
     Fx f;
     f.at(1000);
-    const std::uint16_t a = f.npc("npc_a"), b = f.npc("npc_b");
+    const std::uint16_t a = f.npc("npc_a");
     f.record("deed_a", {"npc_a"});
     npcSetDead(*f.w, a);
     f.at(1000 + 10 * 1440);
@@ -506,11 +528,10 @@ TEST_CASE("npc memory: dead_npc_frozen") {
     CHECK(f.ax("npc_a", kAxisF) == 6);
     const std::uint32_t later = f.record("deed_a", {"npc_a"}, nullptr, kNoLead, 5);
     CHECK(npcFindMemory(*f.w, a, later) == nullptr);
-    CHECK(npcRecall(*f.w, f.t, a, f.deed("deed_a"), -1) != nullptr);  // the store is kept
+    const NpcMemoryEntry* kept = npcRecall(*f.w, f.t, a, f.deed("deed_a"), -1);  // the store is kept
+    REQUIRE(kept != nullptr);
+    CHECK(npcSalience(*f.w, f.t, a, *kept) == kept->s0);  // salience frozen at death too
     // A dead NPC neither receives nor passes on.
-    npcSetDead(*f.w, b);
-    const std::uint32_t seen = f.record("deed_a", {"npc_x"}, nullptr, kNoLead, 6);
-    (void)seen;
     Fx g;
     g.at(1000);
     npcSetDead(*g.w, g.npc("npc_b"));
@@ -656,7 +677,7 @@ TEST_CASE("npc memory: save_unknown_id_reported") {
 TEST_CASE("npc memory: record, checkpoint and line pick allocate nothing") {
     Fx f;
     f.at(1000);
-    const bool counting = ftcore_test::allocHookInstalled();
+    REQUIRE(ftcore_test::allocHookInstalled());
     const auto before = ftcore_test::allocStats().count;
     for (std::uint32_t i = 0; i < 300; ++i) {
         f.record(i % 2 ? "deed_a" : "deed_c", {"npc_a", "npc_y"}, i % 3 ? nullptr : "npc_b", static_cast<std::uint8_t>(i % 3),
@@ -665,5 +686,279 @@ TEST_CASE("npc memory: record, checkpoint and line pick allocate nothing") {
         f.pick("npc_a", NpcLineKind::Greet);
         f.pick("npc_b", NpcLineKind::Remind);
     }
-    if (counting) CHECK(ftcore_test::allocStats().count == before);
+    CHECK(ftcore_test::allocStats().count == before);
+}
+
+TEST_CASE("npc memory: direct learners before rumours") {
+    Fx f;
+    f.at(1000);
+    const std::uint16_t a = f.npc("npc_a"), b = f.npc("npc_b");
+    const std::uint32_t seq = f.record("deed_a", {"npc_b", "npc_a"});
+    for (std::uint32_t i = 0; i < f.w->rumourCount; ++i) {
+        CHECK(f.w->rumours[i].target != a);
+        CHECK(f.w->rumours[i].target != b);
+    }
+    f.at(2000);
+    CHECK(npcFindMemory(*f.w, a, seq)->count == 1);
+}
+
+TEST_CASE("npc memory: double_learn_after_reinforcement") {
+    Fx f;
+    f.at(1000);
+    const std::uint16_t b = f.npc("npc_b");
+    const std::uint32_t seq = f.record("deed_a", {"npc_a"});  // a rumour to npc_b is queued
+    REQUIRE(f.w->rumourCount == 1);
+    REQUIRE(npcReveal(*f.w, f.t, seq, b));  // npc_b hears it first another way
+    f.record("deed_a", {"npc_b"});          // same type and place: reinforces, the entry now holds the new seq
+    const NpcMemoryEntry* e = npcRecall(*f.w, f.t, b, f.deed("deed_a"), -1);
+    REQUIRE(e != nullptr);
+    REQUIRE(e->seq != seq);
+    const std::int32_t T = f.ax("npc_b", kAxisT);
+    f.at(1060);  // the old rumour arrives
+    CHECK(e->count == 2);
+    CHECK(f.ax("npc_b", kAxisT) == T);
+    // Eviction does not reopen it either.
+    for (std::uint16_t p = 2; p <= 20; ++p) f.record("deed_z", {"npc_b"}, nullptr, kNoLead, p);
+    CHECK(npcFindMemory(*f.w, b, seq) == nullptr);
+    CHECK(npcReveal(*f.w, f.t, seq, f.npc("npc_x")));  // others can still learn it
+    const std::uint32_t before = f.w->npcs[b].memCount;
+    NpcRumour r;
+    r.seq = seq;
+    r.due = f.w->now;
+    r.target = b;
+    r.hops = 1;
+    r.closeness = 80;
+    f.w->rumours[f.w->rumourCount++] = r;
+    f.at(f.w->now + 1);
+    CHECK(npcFindMemory(*f.w, b, seq) == nullptr);
+    CHECK(f.w->npcs[b].memCount == before);
+}
+
+TEST_CASE("npc memory: store_full_of_pins") {
+    Fx f;
+    f.at(1000);
+    const std::uint16_t b = f.npc("npc_b");
+    std::uint32_t pins[6] = {};
+    for (std::uint16_t p = 1; p <= 6; ++p) pins[p - 1] = f.record("deed_p", {}, "npc_b", kNoLead, p);
+    for (std::uint16_t p = 10; p <= 40; ++p) f.record("deed_z", {}, "npc_b", kNoLead, p);
+    CHECK(f.w->npcs[b].memCount == kMemPerNpc);
+    for (std::uint32_t seq : pins) CHECK(npcFindMemory(*f.w, b, seq) != nullptr);  // pins are never evicted
+    // A forged store with every entry pinned still takes a new memory: the weakest, oldest goes.
+    NpcState& st = f.w->npcs[b];
+    for (std::uint32_t i = 0; i < st.memCount; ++i) st.mem[i].pinned = true;
+    st.mem[3].s0 = 60;
+    const std::uint32_t weakSeq = st.mem[3].seq;
+    const std::uint32_t fresh = f.record("deed_z", {}, "npc_b", kNoLead, 99);
+    CHECK(st.memCount == kMemPerNpc);
+    CHECK(npcFindMemory(*f.w, b, fresh) != nullptr);
+    CHECK(npcFindMemory(*f.w, b, weakSeq) == nullptr);
+}
+
+TEST_CASE("npc memory: kept_at_due_plus_window") {
+    const std::uint32_t due = npcMinute(1, 19.0);
+    Fx f;
+    f.at(due - 60);
+    f.at(due + 120);
+    REQUIRE(f.w->exp[0] == NpcExpState::Reminding);
+    f.record("deed_meet", {});  // the last minute of the window still counts
+    CHECK(f.w->exp[0] == NpcExpState::Kept);
+    f.at(due + 500);
+    CHECK(f.w->exp[0] == NpcExpState::Kept);
+}
+
+TEST_CASE("npc memory: repeat_count_window_edge") {
+    {
+        Fx f;
+        f.at(1000);
+        const std::uint16_t r = f.npc("npc_r");
+        NpcDeed d;
+        d.type = f.deed("deed_a");
+        f.record("deed_a", {"npc_r"});
+        f.at(1000 + 4320 - 1);
+        CHECK(npcAppraise(*f.w, f.t, r, d, NpcLearn::Witness)[0] == -7);  // k 1
+        f.at(1000 + 4320);
+        CHECK(npcAppraise(*f.w, f.t, r, d, NpcLearn::Witness)[0] == -10);  // k 0
+    }
+    {
+        // Only learn events inside the window count, not the lifetime count of a reinforced entry.
+        Fx f;
+        const std::uint16_t r = f.npc("npc_r");
+        NpcDeed d;
+        d.type = f.deed("deed_a");
+        for (std::uint32_t m : {1000u, 3000u, 5000u}) {
+            f.at(m);
+            f.record("deed_a", {"npc_r"});
+        }
+        REQUIRE(npcRecall(*f.w, f.t, r, d.type, -1)->count == 3);
+        f.at(1000 + 4320 + 1);
+        CHECK(npcAppraise(*f.w, f.t, r, d, NpcLearn::Witness)[0] == -5);  // k 2
+    }
+}
+
+TEST_CASE("npc memory: expectation_deeds_hearsay_only") {
+    const std::uint32_t due = npcMinute(1, 19.0);
+    Fx f;
+    f.at(due - 30);
+    f.record("deed_b", {});
+    REQUIRE(f.w->exp[0] == NpcExpState::Broken);
+    const NpcMemoryEntry* e = npcRecall(*f.w, f.t, f.npc("npc_b"), f.deed("deed_p"), -1);
+    REQUIRE(e != nullptr);
+    const NpcDeed* d = npcDeedAt(*f.w, e->seq);
+    REQUIRE(d != nullptr);
+    CHECK((d->flags & 2u) == 0u);  // never queued for the street
+    f.at(due + 60);
+    CHECK(npcFindMemory(*f.w, f.npc("npc_a"), e->seq) != nullptr);  // hearsay through the tie
+}
+
+TEST_CASE("npc memory: secret_broken_promise_reaches_party_only") {
+    const std::uint32_t due = npcMinute(1, 19.0);
+    Fx f(kSecretExp);
+    f.at(due - 30);
+    const std::uint32_t seq = f.record("deed_s", {}, "npc_a");  // secret, unwitnessed
+    REQUIRE(f.w->exp[0] == NpcExpState::Broken);
+    CHECK(npcFindMemory(*f.w, f.npc("npc_a"), seq) == nullptr);
+    const NpcMemoryEntry* e = npcRecall(*f.w, f.t, f.npc("npc_b"), f.deed("deed_p"), -1);
+    REQUIRE(e != nullptr);  // the party it was made to knows
+    const std::uint32_t broken = e->seq;
+    CHECK(f.w->rumourCount == 0);
+    f.at(due + 600);
+    CHECK(npcFindMemory(*f.w, f.npc("npc_a"), broken) == nullptr);  // and it goes no further
+    REQUIRE(npcReveal(*f.w, f.t, broken, f.npc("npc_b")));      // until revealed
+    f.at(due + 660);
+    CHECK(npcFindMemory(*f.w, f.npc("npc_a"), broken) != nullptr);
+    CHECK(npcRecall(*f.w, f.t, f.npc("npc_b"), f.deed("deed_p"), -1)->count == 1);
+}
+
+TEST_CASE("npc memory: recall_bar_and_guards") {
+    Fx f;
+    f.at(1000);
+    const std::uint16_t y = f.npc("npc_y");
+    f.record("deed_h", {"npc_y"});
+    CHECK(npcRemembers(*f.w, f.t, y, f.deed("deed_h"), -1));
+    CHECK(f.pick("npc_y", NpcLineKind::Greet) == f.line("line_07"));  // mem:deed=X uses the recall bar
+    f.at(1000 + 201 * 60);  // 800 falls below 200 after 200 game hours
+    CHECK_FALSE(npcRemembers(*f.w, f.t, y, f.deed("deed_h"), -1));
+    CHECK(f.pick("npc_y", NpcLineKind::Greet) < 0);
+    CHECK(npcRecall(*f.w, f.t, y, -1, 32) == nullptr);
+    CHECK(npcRecall(*f.w, f.t, y, -1, 1000) == nullptr);
+    CHECK(npcMinute(1, -5.0) == 1440u);
+    CHECK(npcMinute(1, std::nan("")) == 1440u);
+    CHECK(npcMinute(0xFFFFFFFFu, 3.0) == 0xFFFFFFFFu);
+    CHECK(npcMinute(2, 1.5) == 2u * 1440u + 90u);
+}
+
+TEST_CASE("npc memory: time_skips_near_uint32_limit") {
+    constexpr std::uint32_t kEnd = 0xFFFFFFFFu;
+    Fx f;
+    f.at(kEnd - 10);
+    CHECK(f.w->exp[0] == NpcExpState::Missed);  // due + window does not wrap
+    const std::uint32_t street = f.record("deed_a", {}, nullptr, kNoLead, 1, 2);
+    const std::uint32_t seq = f.record("deed_a", {"npc_a"}, nullptr, kNoLead, 2);
+    REQUIRE(f.w->rumourCount > 0);
+    for (std::uint32_t i = 0; i < f.w->rumourCount; ++i) CHECK(f.w->rumours[i].due == kEnd);  // saturates, never in the past
+    f.at(kEnd - 1, 1000);
+    CHECK(npcFindMemory(*f.w, f.npc("npc_c"), street) == nullptr);  // the street delay does not wrap
+    CHECK(npcFindMemory(*f.w, f.npc("npc_b"), seq) == nullptr);
+    f.at(kEnd, 1000);
+    CHECK(npcFindMemory(*f.w, f.npc("npc_b"), seq) != nullptr);
+    CHECK(f.pick("npc_a", NpcLineKind::Greet) == f.line("line_01"));
+    CHECK(f.w->lastSaid[static_cast<std::size_t>(f.line("line_01"))] == kEnd);
+    CHECK(f.pick("npc_a", NpcLineKind::Greet) == f.line("line_00"));  // once still holds
+    f.at(kEnd);
+    CHECK(f.w->now == kEnd);
+}
+
+TEST_CASE("npc memory: tuning_clamps_and_table_caps") {
+    {
+        NpcTables t;
+        NpcTableSources src{kTags, kDeeds, kNpcs, kTies, "", "", "",
+                            R"({"kVictim": 999, "rkFloor": 0, "recallBar": 5000, "decayF": -3, "stayGap": 1, "spreadThreshold": 9999})"};
+        std::string err;
+        REQUIRE(importNpcTables(src, t, &err));
+        CHECK(t.tuning.kVictim == 200);
+        CHECK(t.tuning.rkFloor == 10);
+        CHECK(t.tuning.recallBar == 400);
+        CHECK(t.tuning.decayPerDay[1] == 0);
+        CHECK(t.tuning.stayGap == 5);
+        CHECK(t.tuning.spreadThreshold == 250);
+        NpcTableSources bad{kTags, kDeeds, kNpcs, kTies, "", "", "", "[1, 2]"};
+        CHECK_FALSE(importNpcTables(bad, t, &err));
+    }
+    auto fails = [](NpcTableSources src) {
+        NpcTables t;
+        std::string err;
+        return !importNpcTables(src, t, &err) && !err.empty();
+    };
+    std::string deeds = "deed_id,tags,magnitude,polarity,secret,pin,attributable\n";
+    for (int i = 0; i <= 128; ++i) deeds += "deed_" + std::to_string(i) + ",,1,0,0,0,0\n";
+    CHECK(fails({kTags, deeds, "", "", "", "", "", ""}));
+    std::string ties = "from_id,to_id,kind,tie,closeness,delay_min\n";
+    for (int i = 0; i <= 512; ++i) ties += "npc_a,npc_b,npc,0,10,60\n";
+    CHECK(fails({kTags, kDeeds, kNpcs, ties, "", "", "", ""}));
+    std::string events = "event_id,day,hour,foreshadow_lead_min\n";
+    for (int i = 0; i <= 64; ++i) events += "event_" + std::to_string(i) + ",1,08:00,0\n";
+    CHECK(fails({kTags, kDeeds, kNpcs, kTies, "", "", events, ""}));
+    CHECK(fails({kTags, kDeeds, kNpcs, kTies, "", "", "event_id,day,hour,foreshadow_lead_min\nevent_1,1,24:00,0\n", ""}));
+    const char* expHead = "exp_id,npc_id,kind,due,window_min,remind_lead_min,kept_by,broken_by,deed_kept,deed_broken,deed_missed\n";
+    CHECK(fails({kTags, kDeeds, kNpcs, kTies, "", std::string(expHead) + "e,npc_a,promise,100001:08:00,60,0,-,-,-,-,-\n", "", ""}));
+    CHECK(fails({kTags, kDeeds, kNpcs, kTies, "", std::string(expHead) + "e,npc_a,promise,1:25:00,60,0,-,-,-,-,-\n", "", ""}));
+    CHECK(fails({kTags, kDeeds, kNpcs, kTies, "", std::string(expHead) + "e,npc_a,promise,999999999999,60,0,-,-,-,-,-\n", "", ""}));
+    CHECK_FALSE(fails({kTags, kDeeds, kNpcs, kTies, "", std::string(expHead) + "e,npc_a,promise,100000:23:59,60,0,-,-,-,-,-\n", "", ""}));
+}
+
+TEST_CASE("npc memory: malformed_and_truncated_saves") {
+    Fx f;
+    f.at(1000);
+    f.record("deed_a", {"npc_a"});
+    f.at(1100);
+    {
+        // Truncated: only the header survived.
+        NpcMemorySave cut;
+        cut.now = 1100;
+        cut.nextSeq = 0;
+        Fx g;
+        const NpcMemoryLoadReport rep = npcApplySave(*g.w, g.t, g.lines, cut);
+        CHECK(rep.formatOk);
+        CHECK(rep.unknownIds.empty());
+        CHECK(g.w->nextSeq == 1u);
+        CHECK(g.ax("npc_a", kAxisT) == 20);
+        CHECK(g.record("deed_a", {"npc_a"}) == 1u);  // and it runs on
+    }
+    {
+        NpcMemorySave save = npcCaptureSave(*f.w, f.t, f.lines);
+        REQUIRE(save.npcs[0].id == "npc_a");
+        REQUIRE(!save.deeds.empty());
+        save.deeds[0].flags = 0xFF;                                         // unknown flag bits
+        save.deeds.push_back(save.deeds[0]);
+        save.deeds.back().seq = save.nextSeq + 5;                           // a seq from the future
+        save.rumours.push_back({1u, 1200u, "npc_c", 9, kNoLead, 100});      // hops out of range
+        for (int i = 0; i < 20; ++i) save.npcs[0].mem.push_back(save.npcs[0].mem[0]);  // over the store
+        save.npcs[0].recent.emplace_back("deed_gone", 5u);
+        save.npcs[0].seen.push_back(200u);                                  // no such deed in the ring
+        Fx g;
+        const NpcMemoryLoadReport rep = npcApplySave(*g.w, g.t, g.lines, save);
+        CHECK(rep.formatOk);
+        CHECK(rep.clamped == 4);
+        CHECK(rep.unknownIds.size() == 1);
+        CHECK(g.w->npcs[g.npc("npc_a")].memCount == kMemPerNpc);
+        REQUIRE(npcDeedAt(*g.w, 1) != nullptr);
+        CHECK(npcDeedAt(*g.w, 1)->flags <= 3u);
+        CHECK(npcDeedAt(*g.w, save.nextSeq + 5) == nullptr);
+        CHECK(g.w->rumours[g.w->rumourCount - 1u].hops == 2);
+        g.at(2000);
+        g.record("deed_a", {"npc_a"}, nullptr, kNoLead, 7);
+        g.pick("npc_a", NpcLineKind::Greet);
+        // A save with gaps in the ring: recording into a gap must not clear what was learned in slot 0.
+        Fx h;
+        for (std::uint32_t i = 0; i < kDeedRing - 1u; ++i) h.record("deed_z", {"npc_x"});
+        REQUIRE(h.record("deed_a", {"npc_a"}) == kDeedRing);  // lands in slot 0
+        NpcMemorySave gappy = npcCaptureSave(*h.w, h.t, h.lines);
+        gappy.deeds.erase(gappy.deeds.begin(), gappy.deeds.end() - 1);
+        Fx k;
+        npcApplySave(*k.w, k.t, k.lines, gappy);
+        const std::uint16_t ka = k.npc("npc_a");
+        REQUIRE((k.w->npcs[ka].seen[0] & 1u) != 0u);
+        k.record("deed_z", {"npc_x"});
+        CHECK((k.w->npcs[ka].seen[0] & 1u) != 0u);
+    }
 }
