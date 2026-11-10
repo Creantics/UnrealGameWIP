@@ -4,6 +4,8 @@
 #include <ostream>
 #include <doctest/doctest.h>
 
+#include <cmath>
+#include <limits>
 #include <string>
 
 using namespace ftcore;
@@ -312,4 +314,241 @@ TEST_CASE("field strike: the hit point is the near side of the body") {
     CHECK(p.y == doctest::Approx(3.6f));
     const Vec2 inside = fieldHitPoint(Vec2{3.1f, 4.f}, Vec2{3.f, 4.f}, 0.5f);
     CHECK(inside.x == doctest::Approx(3.f));
+}
+
+namespace {
+
+// A light chain of three and a short heavy, all round, 3 m reach.
+ArenaFighter roundKit() {
+    ArenaFighter kit;
+    for (ArenaAttack& a : kit.light) {
+        a.range = 3.f;
+        a.arcCos = -1.f;
+    }
+    kit.lightCount = 3;
+    kit.heavy.range = 3.f;
+    kit.heavy.arcCos = -1.f;
+    kit.heavy.startup = 0.05f;
+    kit.heavy.active = 0.05f;
+    kit.heavy.recovery = 0.1f;
+    return kit;
+}
+
+// Ticks dt once and counts the hits, keeping the last hit's target index.
+int tickHits(FieldStrike& s, float dt, const FieldTarget* t, std::size_t n, std::uint8_t* last = nullptr) {
+    int hits = 0;
+    for (const ArenaEvent& e : s.tick(dt, false, false, Vec2{}, Vec2{1.f, 0.f}, t, n).events)
+        if (e.type == ArenaEventType::Hit) {
+            ++hits;
+            if (last) *last = e.target;
+        }
+    return hits;
+}
+
+constexpr float kChest = kFieldChestHeight;
+
+} // namespace
+
+TEST_CASE("field strike: an attack press during each traversal state is rejected and not kept") {
+    const ArenaFighter kit = roundKit();
+    const FieldTarget dummy{Vec2{1.f, 0.f}, 0.4f, true};
+    for (FieldBody body : {FieldBody::Traversing, FieldBody::Sliding, FieldBody::Rolling, FieldBody::Hanging}) {
+        CAPTURE(static_cast<int>(body));
+        FieldStrike s;
+        s.begin(kit);
+        s.setBody(body);
+        CHECK_FALSE(s.canAttack());
+        Run r;
+        press(s, false, r, &dummy, 1);
+        press(s, true, r, &dummy, 1);
+        idle(s, 0.05f, r, &dummy, 1);
+        CHECK(r.started == 0);
+        CHECK_FALSE(s.attacking());
+        CHECK(s.output().player.action == ArenaAction::Idle);
+        // Free again within the buffer time: the dropped press does not come back.
+        s.setBody(FieldBody::Free);
+        idle(s, kit.bufferTime + 0.5f, r, &dummy, 1);
+        CHECK(r.started == 0);
+        CHECK(r.hits == 0);
+    }
+}
+
+TEST_CASE("field strike: a traversal starting mid-attack cancels it, with no hit after") {
+    const ArenaFighter kit = roundKit();
+    const FieldTarget dummy{Vec2{1.f, 0.f}, 0.4f, true};
+    FieldStrike s;
+    s.begin(kit);
+    Run r;
+    press(s, false, r, &dummy, 1);
+    idle(s, kit.light[0].startup * 0.5f, r, &dummy, 1);
+    REQUIRE(s.attacking());
+    s.setBody(FieldBody::Traversing);
+    idle(s, kDt, r, &dummy, 1);
+    CHECK_FALSE(s.attacking());
+    CHECK(s.output().player.action == ArenaAction::Idle);
+    s.setBody(FieldBody::Free);
+    idle(s, 1.f, r, &dummy, 1);
+    CHECK(r.started == 1);
+    CHECK(r.hits == 0);
+    // The cut ended the chain: the next light is the first.
+    press(s, false, r, &dummy, 1);
+    CHECK(r.lastMove == 0);
+}
+
+TEST_CASE("field strike: a long frame that passes over the active part still hits") {
+    const ArenaFighter kit = roundKit();
+    const FieldTarget dummy{Vec2{1.f, 0.f}, 0.4f, true};
+    FieldStrike s;
+    s.begin(kit);
+    Run r;
+    press(s, false, r, &dummy, 1);
+    // One frame from early startup past the end of the whole attack.
+    CHECK(tickHits(s, 2.f, &dummy, 1) == 1);
+    CHECK_FALSE(s.attacking());
+    CHECK(s.hits() == 1);
+}
+
+TEST_CASE("field strike: a target with non-finite numbers is skipped") {
+    const ArenaFighter kit = roundKit();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    const FieldTarget t[4] = {{Vec2{nan, 0.f}, 0.4f, true}, {Vec2{0.5f, 0.f}, nan, true},
+                              {Vec2{0.6f, 0.f}, 0.4f, true, inf}, {Vec2{1.f, 0.f}, 0.4f, true}};
+    FieldStrike s;
+    s.begin(kit);
+    Run r;
+    press(s, false, r, t, 4);
+    CHECK(s.aim().aimed);
+    CHECK(s.aim().target == 3);
+    CHECK(std::isfinite(s.aim().at.x));
+    CHECK(std::isfinite(s.aim().height));
+    std::uint8_t last = 0xFF;
+    int hits = 0;
+    for (float x = 0.f; x < 1.f; x += kDt) hits += tickHits(s, kDt, t, 4, &last);
+    CHECK(hits == 1);
+    CHECK(last == 3);
+}
+
+TEST_CASE("field strike: hits are keyed by the target id, so the list may change order mid-attack") {
+    ArenaFighter kit = roundKit();
+    kit.light[0].active = 0.3f;
+    FieldStrike s;
+    s.begin(kit);
+    const FieldTarget t[2] = {{Vec2{1.f, 0.f}, 0.4f, true, kChest, 7}, {Vec2{10.f, 0.f}, 0.4f, true, kChest, 9}};
+    Run r;
+    press(s, false, r, t, 2);
+    int hits = 0;
+    std::uint8_t last = 0xFF;
+    while (hits == 0 && s.attacking()) hits += tickHits(s, kDt, t, 2, &last);
+    REQUIRE(hits == 1);
+    CHECK(last == 0);
+    // Still active: the list comes back the other way round, the second target now in reach.
+    const FieldTarget swapped[2] = {{Vec2{0.f, 1.5f}, 0.4f, true, kChest, 9}, t[0]};
+    hits += tickHits(s, kDt, swapped, 2, &last);
+    CHECK(hits == 2);
+    CHECK(last == 0); // the id-9 target, now first in the list; id 7 is not hit twice
+    for (float x = 0.f; x < 1.f; x += kDt) hits += tickHits(s, kDt, swapped, 2);
+    CHECK(hits == 2);
+}
+
+TEST_CASE("field strike: a heavy ends the light chain") {
+    const ArenaFighter kit = roundKit();
+    FieldStrike s;
+    s.begin(kit);
+    Run r;
+    const ArenaAttack& l = kit.light[0];
+    const ArenaAttack& h = kit.heavy;
+    REQUIRE(h.total() < kit.chainGap);
+    press(s, false, r, nullptr, 0);
+    CHECK(r.lastMove == 0);
+    idle(s, l.startup + l.active + l.recovery * l.cancel + 0.02f, r, nullptr, 0);
+    press(s, true, r, nullptr, 0);
+    CHECK(r.lastMove == kArenaHeavyMove);
+    // The heavy is short: the next light comes well inside chainGap of the last light.
+    idle(s, h.startup + h.active + h.recovery * h.cancel + 0.02f, r, nullptr, 0);
+    press(s, false, r, nullptr, 0);
+    CHECK(r.started == 3);
+    CHECK(r.lastMove == 0);
+}
+
+TEST_CASE("field strike: of more than eight targets the nearest eight count") {
+    const ArenaFighter kit = roundKit();
+    FieldTarget t[12];
+    // The first four in the list are the farthest (still in reach).
+    for (int i = 0; i < 12; ++i) {
+        const float d = i < 4 ? 2.8f : 1.f + 0.05f * static_cast<float>(i);
+        const float ang = 0.5f * static_cast<float>(i);
+        t[i] = FieldTarget{Vec2{d * std::cos(ang), d * std::sin(ang)}, 0.1f, true};
+    }
+    FieldStrike s;
+    s.begin(kit);
+    Run r;
+    press(s, false, r, t, 12);
+    CHECK(s.aim().target == 4); // the nearest
+    bool hit[12] = {};
+    int hits = 0;
+    for (float x = 0.f; x < 1.f; x += kDt)
+        for (const ArenaEvent& e : s.tick(kDt, false, false, Vec2{}, Vec2{1.f, 0.f}, t, 12).events)
+            if (e.type == ArenaEventType::Hit) {
+                ++hits;
+                REQUIRE(e.target < 12);
+                hit[e.target] = true;
+            }
+    CHECK(hits == 8);
+    for (int i = 0; i < 4; ++i) CHECK_FALSE(hit[i]);
+    for (int i = 4; i < 12; ++i) CHECK(hit[i]);
+}
+
+TEST_CASE("field strike: empty or null target lists, and a target leaving mid-attack") {
+    const ArenaFighter kit = roundKit();
+    const FieldTarget dummy{Vec2{1.f, 0.f}, 0.4f, true};
+    SUBCASE("null with a count") {
+        FieldStrike s;
+        s.begin(kit);
+        Run r;
+        press(s, false, r, nullptr, 5);
+        idle(s, 1.f, r, nullptr, 5);
+        CHECK(r.started == 1);
+        CHECK(r.hits == 0);
+        CHECK_FALSE(s.aim().aimed);
+    }
+    SUBCASE("empty") {
+        FieldStrike s;
+        s.begin(kit);
+        Run r;
+        press(s, false, r, &dummy, 0);
+        idle(s, 1.f, r, &dummy, 0);
+        CHECK(r.started == 1);
+        CHECK(r.hits == 0);
+        CHECK_FALSE(s.aim().aimed);
+    }
+    SUBCASE("leaves during startup") {
+        FieldStrike s;
+        s.begin(kit);
+        Run r;
+        const FieldTarget two[2] = {{Vec2{2.f, 0.f}, 0.4f, true, kChest, 1}, {Vec2{1.f, 0.f}, 0.4f, true, kChest, 2}};
+        press(s, false, r, two, 2);
+        CHECK(s.aim().id == 2);
+        // The aimed one is gone from the list; the other is still in reach and is turned to.
+        std::uint8_t last = 0xFF;
+        int hits = 0;
+        for (float x = 0.f; x < 1.f; x += kDt) hits += tickHits(s, kDt, two, 1, &last);
+        CHECK(hits == 1);
+        CHECK(last == 0);
+    }
+    SUBCASE("leaves during active") {
+        ArenaFighter k = kit;
+        k.light[0].active = 0.3f;
+        FieldStrike s;
+        s.begin(k);
+        Run r;
+        const FieldTarget two[2] = {{Vec2{1.f, 0.f}, 0.4f, true, kChest, 1}, {Vec2{20.f, 0.f}, 0.4f, true, kChest, 2}};
+        press(s, false, r, two, 2);
+        int hits = 0;
+        while (hits == 0 && s.attacking()) hits += tickHits(s, kDt, two, 2);
+        REQUIRE(hits == 1);
+        for (float x = 0.f; x < 1.f; x += kDt) hits += tickHits(s, kDt, nullptr, 0);
+        CHECK(hits == 1);
+        CHECK_FALSE(s.attacking());
+    }
 }

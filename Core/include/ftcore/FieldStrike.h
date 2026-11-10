@@ -10,6 +10,9 @@
 // side of its body toward the lead, at its chest height. With none, the aim is straight ahead at the attack's range and
 // the lead's own chest height. The host turns the body and points the arm, shot and effects at aim().
 //
+// The body's own moves come first: while it vaults, climbs, hangs, rolls or slides (setBody) no attack starts, presses
+// are dropped rather than kept, and an attack under way is cut off as the move begins.
+//
 // Its output is the arena's player output and events (AttackStarted, Hit), so the host's weapon wrapper (clips, props,
 // effects) is fed exactly as in a fight. Positions in metres on the ground plane. Fixed capacity: nothing allocates.
 
@@ -26,20 +29,28 @@ inline constexpr std::size_t kMaxFieldTargets = 8;
 // The chest height (m above the ground) an aim takes when the host gives none.
 inline constexpr float kFieldChestHeight = 1.3f;
 
-// Something an attack can hit: its centre and body radius (m), and the height of its chest above the ground (m), where
-// blows are aimed. A target that is not alive is skipped.
+// Something an attack can hit: its centre and body radius (m), the height of its chest above the ground (m), where
+// blows are aimed, and a stable id the host keeps for it while it exists (each target hit once per attack is keyed by
+// it, so the list may change order or shrink mid-attack; 0: keyed by its place in the list). A target that is not
+// alive, or whose numbers are not finite, is skipped. Of a longer list only the nearest kMaxFieldTargets count; only the
+// first 255 entries are looked at.
 struct FieldTarget {
     Vec2 at;
     float radius = 0.4f;
     bool alive = true;
     float chest = kFieldChestHeight;
+    std::uint32_t id = 0;
 };
 
+// What the body is doing besides fighting. Anything but Free blocks attacks (see setBody).
+enum class FieldBody : std::uint8_t { Free, Traversing, Sliding, Rolling, Hanging };
+
 // Where the attack under way is aimed: the hit point on the ground plane and its height (m), and the target's index in
-// the host's list (aimed false: none in reach, the point straight ahead).
+// the host's list this frame and its id (aimed false: none in reach, the point straight ahead).
 struct FieldAim {
     bool aimed = false;
     std::uint8_t target = 0xFF;
+    std::uint32_t id = 0;
     Vec2 at;
     float height = kFieldChestHeight;
 };
@@ -53,9 +64,16 @@ public:
     // start yet is kept for the kit's bufferTime and starts as soon as it can (from the cancel share of the
     // recovery on, as in the arena). The light chain goes on when the next light starts during the recovery or
     // within chainGap after it, and wraps after lightCount. Hits are tested on each frame that ends in the active
-    // part: each target once per attack, at most maxTargets of them (0: all), nearest first.
+    // part, and on a frame that passes over it whole (a long frame): each target once per attack, at most maxTargets of
+    // them (0: all), nearest first. Hit events carry the target's index in this frame's list.
     const ArenaOutput& tick(float dt, bool light, bool heavy, Vec2 pos, Vec2 facing, const FieldTarget* targets,
                             std::size_t targetCount);
+
+    // What the body does now (set before tick). While it is not Free, presses are dropped, the buffer is cleared and an
+    // attack under way stops at once (the output goes Idle).
+    void setBody(FieldBody body) { body_ = body; }
+    FieldBody body() const { return body_; }
+    bool canAttack() const { return body_ == FieldBody::Free; }
 
     const ArenaOutput& output() const { return out_; }
     // The aim of the attack under way (or the last one); straight ahead when none has started.
@@ -70,8 +88,13 @@ public:
 
 private:
     bool start(std::uint8_t move, Vec2 facing);
+    void cancel();
+    // The usable targets nearest first (at most kMaxFieldTargets), into near_ / nearCount_.
+    void gather(Vec2 pos, const FieldTarget* targets, std::size_t count);
     // Picks the target and turns facing_ at it (or aims straight ahead).
-    void takeAim(Vec2 pos, const FieldTarget* targets, std::size_t n);
+    void takeAim(Vec2 pos, const FieldTarget* targets);
+    // Connects with the gathered targets in reach not yet hit by this attack.
+    void strikeHits(Vec2 pos, const FieldTarget* targets);
     void push(ArenaEventType type, std::uint8_t target, int amount, Vec2 at);
 
     ArenaFighter kit_{};
@@ -83,13 +106,17 @@ private:
     float lastLightEnd_ = -1e9f; // when the last light ended (time), for chainGap
     std::uint8_t lastLight_ = 0;
     bool lastWasLight_ = false;
+    bool chainLive_ = false; // a light chain is going (a heavy or a cut ends it)
+    FieldBody body_ = FieldBody::Free;
     std::uint8_t buffered_ = 0xFF; // the buffered move, 0xFF: none
     float bufferedAt_ = 0.f;
     Vec2 facing_{1.f, 0.f};
     FieldAim aim_{};
     float chest_ = kFieldChestHeight;
-    bool hit_[kMaxFieldTargets] = {};
+    std::uint32_t hitKeys_[kMaxFieldTargets] = {}; // the keys hit by this attack
     std::uint8_t hitCount_ = 0;
+    std::uint8_t near_[kMaxFieldTargets] = {};
+    std::uint8_t nearCount_ = 0;
     int hits_ = 0;
     int damage_ = 0;
 };

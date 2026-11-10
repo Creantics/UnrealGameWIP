@@ -3,7 +3,8 @@
 // A target dummy for the field (the explore run): a post the lead's weapon can hit (ftcore::FieldStrike, fed by
 // AFTExploreCharacter). It never fights back. Place one in a map, or start the explore run with -ExploreDummy to have
 // one stood 3 m in front of the lead. Each hit logs "Field: dummy hit for <n> (<total> taken)" and makes the post
-// jolt; it never falls.
+// jolt; it never falls. Each one in play is listed in All() (filled as it begins play, emptied as it ends), so the lead
+// reads them without searching the world; it ticks only while it jolts.
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
@@ -28,12 +29,21 @@ public:
 
 	virtual void Tick(float DeltaSeconds) override;
 
+	// The dummies in play in every world (check GetWorld()); entries may be stale.
+	static const TArray<TWeakObjectPtr<AFTFieldDummy>>& All() { return Registry; }
+
 	// One blow of Amount hp.
 	void TakeHit(int32 Amount);
 	int32 GetHits() const { return Hits; }
 	int32 GetDamageTaken() const { return DamageTaken; }
 
+protected:
+	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
+
 private:
+	static TArray<TWeakObjectPtr<AFTFieldDummy>> Registry;
+
 	UPROPERTY(VisibleAnywhere, Category = "Components")
 	TObjectPtr<UStaticMeshComponent> Post;
 

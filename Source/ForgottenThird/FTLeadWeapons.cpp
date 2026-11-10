@@ -62,6 +62,31 @@ constexpr float kAimInShare = 0.7f;
 constexpr float kAimOutShare = 0.6f;
 // The aim is checked this long after the attack goes active (the arm posed with it at full weight).
 constexpr double kAimCheckLag = 0.05;
+// The arm aims at full weight up to this angle off the body's facing and not at all past the second (cosines).
+constexpr float kAimFrontCos = 0.7071f; // 45 degrees
+constexpr float kAimSideCos = 0.f;      // 90 degrees
+
+// The aim check runs on capture runs only (it reads bones and logs).
+bool AimChecks()
+{
+	static const bool bOn = FCString::Strifind(FCommandLine::Get(), TEXT("ArenaShot=")) != nullptr
+		|| FCString::Strifind(FCommandLine::Get(), TEXT("ExploreWeaponShot=")) != nullptr;
+	return bOn;
+}
+
+// The arm bones by side (0 left, 1 right), named once.
+struct FArmBones
+{
+	FName Shoulder;
+	FName Hand;
+	FName Knuckle;
+};
+const FArmBones& ArmBones(int32 Side)
+{
+	static const FArmBones Bones[2] = {{FName(TEXT("upperarm_l")), FName(TEXT("hand_l")), FName(TEXT("middle_01_l"))},
+		{FName(TEXT("upperarm_r")), FName(TEXT("hand_r")), FName(TEXT("middle_01_r"))}};
+	return Bones[Side == 0 ? 0 : 1];
+}
 // A view of a strike's impact, this long after it.
 constexpr double kViewLag = 0.03;
 } // namespace
@@ -366,7 +391,8 @@ bool FFTLeadWeapons::GetStrikeLimb(FName& OutBone, FVector& OutAt, bool& bOutLef
 	}
 	bOutLeft = StrikesLeft();
 	const bool bKick = Strike == FightClip::KickLeft || Strike == FightClip::KickRight;
-	OutBone = bKick ? (bOutLeft ? FName(TEXT("foot_l")) : FName(TEXT("foot_r"))) : (bOutLeft ? FName(TEXT("hand_l")) : FName(TEXT("hand_r")));
+	static const FName Feet[2] = {FName(TEXT("foot_l")), FName(TEXT("foot_r"))};
+	OutBone = bKick ? Feet[bOutLeft ? 0 : 1] : ArmBones(bOutLeft ? 0 : 1).Hand;
 	if (!Body->DoesSocketExist(OutBone))
 	{
 		return false;
@@ -641,7 +667,7 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 	{
 		++ActiveCount;
 		LastActiveTime = T;
-		AimCheckDue = T + kAimCheckLag;
+		AimCheckDue = AimChecks() ? T + kAimCheckLag : -1.0;
 		AimCheckPoint = AimPoint;
 		USkeletalMeshComponent* Body = Skin.Get();
 		// A shot or a cast flies from the muzzle or the hand to the hit point; its impact plays as it arrives.
@@ -800,6 +826,18 @@ void FFTLeadWeapons::PushArmAim(const ftcore::ArenaPlayerOut& P)
 			W = 1.f - FMath::SmoothStep(0.f, 1.f, (Time - S - A) / Out);
 		}
 	}
+	// Only at a point in front of the body: a target behind waits for the body to turn.
+	if (W > 0.f)
+	{
+		const AActor* Owner = Body->GetOwner();
+		const FVector Ahead = (Owner ? Owner->GetActorForwardVector() : Body->GetForwardVector()).GetSafeNormal2D();
+		const FVector To = (AimPoint - Body->GetComponentLocation()).GetSafeNormal2D();
+		if (!Ahead.IsNearlyZero() && !To.IsNearlyZero())
+		{
+			const float Cos = static_cast<float>(FVector::DotProduct(Ahead, To));
+			W *= FMath::SmoothStep(kAimSideCos, kAimFrontCos, Cos);
+		}
+	}
 	if (W <= 0.f || Side < 0)
 	{
 		if (AimSide >= 0)
@@ -809,8 +847,8 @@ void FFTLeadWeapons::PushArmAim(const ftcore::ArenaPlayerOut& P)
 		}
 		return;
 	}
-	const FName HandBone = Side == 0 ? FName(TEXT("hand_l")) : FName(TEXT("hand_r"));
-	const FName Knuckle = Side == 0 ? FName(TEXT("middle_01_l")) : FName(TEXT("middle_01_r"));
+	const FName HandBone = ArmBones(Side).Hand;
+	const FName Knuckle = ArmBones(Side).Knuckle;
 	if (!Body->DoesSocketExist(HandBone))
 	{
 		return;
@@ -848,10 +886,9 @@ void FFTLeadWeapons::LogAim()
 		UE_LOG(LogForgottenThird, Display, TEXT("%s: aim %s none (no arm aimed)"), Prefix(), GetLastStrikeName());
 		return;
 	}
-	const TCHAR* L = AimSide == 0 ? TEXT("_l") : TEXT("_r");
-	const FName Shoulder(FString(TEXT("upperarm")) + L);
-	const FName Hand(FString(TEXT("hand")) + L);
-	const FName Knuckle(FString(TEXT("middle_01")) + L);
+	const FName Shoulder = ArmBones(AimSide).Shoulder;
+	const FName Hand = ArmBones(AimSide).Hand;
+	const FName Knuckle = ArmBones(AimSide).Knuckle;
 	FVector From;
 	FVector Dir;
 	const TCHAR* What = TEXT("");

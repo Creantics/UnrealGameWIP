@@ -377,6 +377,10 @@ private:
 	int32 AttackPresses = 0;
 	bool bDummyPending = false;
 	float DummyDistance = 300.f; // cm
+	// The body's chest bone for an aim with no target (found once per body; INDEX_NONE: none), and whether the body
+	// was busy with a move of its own (vault, climb, hang, roll, slide) last frame.
+	int32 ChestBone = INDEX_NONE;
+	bool bWeaponBodyBusy = false;
 	// -ExploreWeaponShot's prefix, shots left and taken, the settle time, the active attacks seen, the wait to quit.
 	FString WeaponShotPrefix;
 	int32 WeaponShotsLeft = 3;

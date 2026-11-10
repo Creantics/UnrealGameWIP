@@ -38,37 +38,93 @@ Vec2 fieldHitPoint(Vec2 from, Vec2 at, float radius) {
     return Vec2{at.x + dx / dist * radius, at.y + dy / dist * radius};
 }
 
-void FieldStrike::takeAim(Vec2 pos, const FieldTarget* targets, std::size_t n) {
+namespace {
+std::uint32_t fieldKey(const FieldTarget& t, std::size_t index) {
+    return t.id != 0 ? t.id : (0x80000000u | static_cast<std::uint32_t>(index));
+}
+
+bool usable(const FieldTarget& t) {
+    return t.alive && std::isfinite(t.at.x) && std::isfinite(t.at.y) && std::isfinite(t.radius) && t.radius >= 0.f
+        && std::isfinite(t.chest);
+}
+} // namespace
+
+void FieldStrike::gather(Vec2 pos, const FieldTarget* targets, std::size_t count) {
+    nearCount_ = 0;
+    if (!targets) return;
+    const std::size_t n = count < 255 ? count : 255;
+    float dist[kMaxFieldTargets] = {};
+    for (std::size_t i = 0; i < n; ++i) {
+        const FieldTarget& t = targets[i];
+        if (!usable(t)) continue;
+        const float dx = t.at.x - pos.x;
+        const float dy = t.at.y - pos.y;
+        const float d = dx * dx + dy * dy;
+        // Insert in distance order; past capacity the farthest falls off.
+        std::size_t k = nearCount_;
+        if (k == kMaxFieldTargets) {
+            if (!(d < dist[k - 1])) continue;
+            --k;
+        } else {
+            ++nearCount_;
+        }
+        while (k > 0 && d < dist[k - 1]) {
+            dist[k] = dist[k - 1];
+            near_[k] = near_[k - 1];
+            --k;
+        }
+        dist[k] = d;
+        near_[k] = static_cast<std::uint8_t>(i);
+    }
+}
+
+void FieldStrike::takeAim(Vec2 pos, const FieldTarget* targets) {
     aim_.aimed = false;
     aim_.target = 0xFF;
-    std::size_t best = n;
-    float bestD = 0.f;
-    if (attack_ && targets) {
-        for (std::size_t i = 0; i < n; ++i) {
-            const FieldTarget& t = targets[i];
-            if (!t.alive) continue;
-            const float dx = t.at.x - pos.x;
-            const float dy = t.at.y - pos.y;
-            const float d = std::sqrt(dx * dx + dy * dy);
-            if (d > attack_->range + t.radius) continue;
-            if (best == n || d < bestD) {
-                best = i;
-                bestD = d;
-            }
-        }
-    }
-    if (best == n) {
-        const float range = attack_ ? attack_->range : 1.f;
-        aim_.at = Vec2{pos.x + facing_.x * range, pos.y + facing_.y * range};
-        aim_.height = chest_;
+    aim_.id = 0;
+    for (std::uint8_t k = 0; attack_ && k < nearCount_; ++k) {
+        const FieldTarget& t = targets[near_[k]];
+        const float dx = t.at.x - pos.x;
+        const float dy = t.at.y - pos.y;
+        const float d = std::sqrt(dx * dx + dy * dy);
+        if (d > attack_->range + t.radius) continue;
+        if (d > 1e-4f) facing_ = unit(Vec2{dx, dy});
+        aim_.aimed = true;
+        aim_.target = near_[k];
+        aim_.id = t.id;
+        aim_.at = fieldHitPoint(pos, t.at, t.radius);
+        aim_.height = t.chest;
         return;
     }
-    const FieldTarget& t = targets[best];
-    if (bestD > 1e-4f) facing_ = unit(Vec2{t.at.x - pos.x, t.at.y - pos.y});
-    aim_.aimed = true;
-    aim_.target = static_cast<std::uint8_t>(best);
-    aim_.at = fieldHitPoint(pos, t.at, t.radius);
-    aim_.height = t.chest;
+    const float range = attack_ ? attack_->range : 1.f;
+    aim_.at = Vec2{pos.x + facing_.x * range, pos.y + facing_.y * range};
+    aim_.height = chest_;
+}
+
+void FieldStrike::strikeHits(Vec2 pos, const FieldTarget* targets) {
+    // nearCount_ > 0 only with a list; near_ is nearest first.
+    for (std::uint8_t k = 0; k < nearCount_; ++k) {
+        if (attack_->maxTargets > 0 && hitCount_ >= attack_->maxTargets) return;
+        if (hitCount_ >= kMaxFieldTargets) return;
+        const std::size_t i = near_[k];
+        const FieldTarget& t = targets[i];
+        const std::uint32_t key = fieldKey(t, i);
+        bool done = false;
+        for (std::uint8_t h = 0; h < hitCount_; ++h) done = done || hitKeys_[h] == key;
+        if (done || !fieldStrikeReaches(*attack_, pos, facing_, t.at, t.radius)) continue;
+        hitKeys_[hitCount_++] = key;
+        ++hits_;
+        damage_ += attack_->damage;
+        push(ArenaEventType::Hit, static_cast<std::uint8_t>(i), attack_->damage, t.at);
+    }
+}
+
+void FieldStrike::cancel() {
+    if (attack_ && lastWasLight_) lastLightEnd_ = time_;
+    attack_ = nullptr;
+    chainLive_ = false;
+    hitCount_ = 0;
+    actionTime_ = 0.f;
 }
 
 void FieldStrike::begin(const ArenaFighter& kit) {
@@ -81,12 +137,14 @@ void FieldStrike::begin(const ArenaFighter& kit) {
     lastLightEnd_ = -1e9f;
     lastLight_ = 0;
     lastWasLight_ = false;
+    chainLive_ = false;
+    body_ = FieldBody::Free;
     buffered_ = kNoMove;
     bufferedAt_ = 0.f;
     facing_ = Vec2{1.f, 0.f};
     aim_ = FieldAim{};
-    for (bool& h : hit_) h = false;
     hitCount_ = 0;
+    nearCount_ = 0;
     hits_ = 0;
     damage_ = 0;
 }
@@ -106,8 +164,10 @@ void FieldStrike::push(ArenaEventType type, std::uint8_t target, int amount, Vec
 bool FieldStrike::start(std::uint8_t move, Vec2 facing) {
     std::uint8_t m = move;
     if (m != kArenaHeavyMove) {
-        // The chain: the next light during the last light's recovery or within chainGap after it.
-        const bool chained = (attack_ != nullptr && lastWasLight_) || (time_ - lastLightEnd_ <= kit_.chainGap);
+        // The chain: the next light during the last light's recovery or within chainGap after it. A heavy (or a cut)
+        // in between ends it: the next light opens a new chain.
+        const bool chained = chainLive_
+            && ((attack_ != nullptr && lastWasLight_) || (time_ - lastLightEnd_ <= kit_.chainGap));
         const std::uint8_t count = kit_.lightCount == 0 ? 1 : kit_.lightCount;
         m = chained ? static_cast<std::uint8_t>((lastLight_ + 1) % count) : 0;
     }
@@ -119,8 +179,8 @@ bool FieldStrike::start(std::uint8_t move, Vec2 facing) {
     actionTime_ = 0.f;
     facing_ = unit(facing);
     lastWasLight_ = m != kArenaHeavyMove;
+    chainLive_ = lastWasLight_;
     if (lastWasLight_) lastLight_ = m;
-    for (bool& h : hit_) h = false;
     hitCount_ = 0;
     push(ArenaEventType::AttackStarted, kArenaNobody, 0, Vec2{});
     return true;
@@ -129,35 +189,57 @@ bool FieldStrike::start(std::uint8_t move, Vec2 facing) {
 const ArenaOutput& FieldStrike::tick(float dt, bool light, bool heavy, Vec2 pos, Vec2 facing,
                                      const FieldTarget* targets, std::size_t targetCount) {
     out_.events.count = 0;
-    if (!(dt > 0.f)) dt = 0.f;
+    if (!(dt > 0.f) || !std::isfinite(dt)) dt = 0.f;
     time_ += dt;
+    ArenaPlayerOut& p = out_.player;
+    p.velocity = Vec2{};
 
+    // The body is busy with a move of its own: no attack, nothing kept for later.
+    if (body_ != FieldBody::Free) {
+        buffered_ = kNoMove;
+        if (attack_) cancel();
+        nearCount_ = 0;
+        p.action = ArenaAction::Idle;
+        p.part = ArenaPart::None;
+        p.actionTime = 0.f;
+        p.facing = unit(facing);
+        return out_;
+    }
+
+    gather(pos, targets, targetCount);
     if (heavy || light) {
         buffered_ = heavy ? kArenaHeavyMove : 0;
         bufferedAt_ = time_;
     }
     if (buffered_ != kNoMove && time_ - bufferedAt_ > kit_.bufferTime) buffered_ = kNoMove;
 
-    // The attack under way runs on.
+    // The attack under way runs on. A frame that reaches into its active part, or passes over it whole, tests hits.
     if (attack_) {
+        const float from = actionTime_;
         actionTime_ += dt;
+        const float on = attack_->startup;
+        const float off = attack_->startup + attack_->active;
+        if (actionTime_ >= on && from < off && attack_->active > 0.f) strikeHits(pos, targets);
         if (actionTime_ >= attack_->total()) {
             if (lastWasLight_) lastLightEnd_ = time_;
             attack_ = nullptr;
         }
     }
     // A press starts once the attack is free or past the cancel share of its recovery.
+    bool started = false;
     if (buffered_ != kNoMove) {
         const bool canStart = !attack_
             || actionTime_ >= attack_->startup + attack_->active + attack_->recovery * attack_->cancel;
-        if (canStart && start(buffered_, facing)) buffered_ = kNoMove;
+        if (canStart && start(buffered_, facing)) {
+            buffered_ = kNoMove;
+            started = true;
+        }
     }
-    const std::size_t n = targets ? (targetCount < kMaxFieldTargets ? targetCount : kMaxFieldTargets) : 0;
     // Aimed as it starts and through its startup (the target may move); held from active on.
-    if (attack_ && actionTime_ < attack_->startup + 1e-6f) takeAim(pos, targets, n);
+    if (attack_ && actionTime_ < attack_->startup + 1e-6f) takeAim(pos, targets);
+    // An attack with no startup is active on the frame it starts.
+    if (started && attack_->startup <= 0.f && attack_->active > 0.f) strikeHits(pos, targets);
 
-    ArenaPlayerOut& p = out_.player;
-    p.velocity = Vec2{};
     if (attack_) {
         p.action = move_ == kArenaHeavyMove ? ArenaAction::Heavy : ArenaAction::Light;
         p.move = move_;
@@ -175,32 +257,6 @@ const ArenaOutput& FieldStrike::tick(float dt, bool light, bool heavy, Vec2 pos,
         p.part = ArenaPart::None;
         p.actionTime = 0.f;
         p.facing = unit(facing);
-    }
-
-    // Active: connect with the targets in reach, nearest first, each once.
-    if (attack_ && p.part == ArenaPart::Active && targets) {
-        for (;;) {
-            if (attack_->maxTargets > 0 && hitCount_ >= attack_->maxTargets) break;
-            std::size_t best = n;
-            float bestD = 0.f;
-            for (std::size_t i = 0; i < n; ++i) {
-                const FieldTarget& t = targets[i];
-                if (!t.alive || hit_[i] || !fieldStrikeReaches(*attack_, pos, facing_, t.at, t.radius)) continue;
-                const float dx = t.at.x - pos.x;
-                const float dy = t.at.y - pos.y;
-                const float d = dx * dx + dy * dy;
-                if (best == n || d < bestD) {
-                    best = i;
-                    bestD = d;
-                }
-            }
-            if (best == n) break;
-            hit_[best] = true;
-            ++hitCount_;
-            ++hits_;
-            damage_ += attack_->damage;
-            push(ArenaEventType::Hit, static_cast<std::uint8_t>(best), attack_->damage, targets[best].at);
-        }
     }
     return out_;
 }

@@ -35,12 +35,16 @@
 //   - gauntlet_spark at the hit point on the lead's hit;
 //   - spell_ward at the feet while a magic lead guards.
 // Each start logs one line, "<Arena|Field>: weapon fx <effect> at <fight time>". Run checks, one line each:
-// "<Arena|Field>: aim <clip> <deg> deg (<what>)" once the attack has been active a moment (the angle between the
+// "<Arena|Field>: aim <clip> <deg> deg (<what>)" once the attack has been active a moment, only on capture runs
+// (-ArenaShot= or -ExploreWeaponShot=) (the angle between the
 // fist's, barrel's or casting hand's direction and its direction to the hit point), and "<Arena|Field>: impact <effect>
 // <cm> cm from the hit point" as the impact plays. -ArenaNoWeaponFx leaves the effects off and -ArenaNoWeaponProps the
 // props (OFF halves of OFF/ON captures).
 //
-// Nothing here allocates after Begin.
+// An arm is aimed only at a point in front of the body: its weight fades from full at 45 degrees off the body's facing
+// to none at 90, so a target behind waits until the body has turned to it.
+//
+// Nothing here allocates after Begin (bone names are made once; the aim check runs on capture runs only).
 
 #include "CoreMinimal.h"
 

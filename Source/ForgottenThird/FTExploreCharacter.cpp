@@ -412,6 +412,19 @@ void AFTExploreCharacter::BeginWeapon(const FFTLeadLook& Look)
 	Weapons.Begin(this, GetMesh(), Look, Kit);
 	Strike.begin(Kit);
 	bPressLight = bPressHeavy = false;
+	bWeaponBodyBusy = false;
+	ChestBone = INDEX_NONE;
+	if (const USkeletalMeshComponent* Body = GetMesh())
+	{
+		for (const TCHAR* Bone : {TEXT("spine_05"), TEXT("spine_04"), TEXT("spine_03")})
+		{
+			ChestBone = Body->GetBoneIndex(FName(Bone));
+			if (ChestBone != INDEX_NONE)
+			{
+				break;
+			}
+		}
+	}
 	// -ExploreDummy's post stands where the first light attack reaches it (80% of its range, 1.2 to 3 m).
 	const ftcore::ArenaAttack* First = ftcore::arenaPlayerAttack(Kit, 0);
 	DummyDistance = FMath::Clamp((First ? First->range : 3.f) * 80.f, 120.f, 300.f);
@@ -456,27 +469,60 @@ void AFTExploreCharacter::TickWeapon(float DeltaSeconds)
 		// Every fourth press a heavy.
 		(++AttackPresses % 4 == 0 ? bPressHeavy : bPressLight) = true;
 	}
-	// The dummies in the world, in metres on the floor plane, their chests above the lead's feet.
+	// The body's own moves come first: while it vaults, climbs, hangs, rolls or slides, presses are dropped and an attack
+	// under way is cut (its clips, arm aim and effects with it); nothing turns or paints the body for the weapon.
+	ftcore::FieldBody Body = ftcore::FieldBody::Free;
+	if (LedgeNow.phase != ftcore::LedgePhase::None)
+	{
+		Body = ftcore::FieldBody::Hanging;
+	}
+	else if (bTraversing)
+	{
+		Body = ftcore::FieldBody::Traversing;
+	}
+	else if (SlideNow.sliding())
+	{
+		Body = ftcore::FieldBody::Sliding;
+	}
+	else if (DodgeNow.active())
+	{
+		Body = ftcore::FieldBody::Rolling;
+	}
+	const bool bBusy = Body != ftcore::FieldBody::Free;
+	if (bBusy && !bWeaponBodyBusy)
+	{
+		Weapons.Restart();
+	}
+	bWeaponBodyBusy = bBusy;
+	Strike.setBody(Body);
+	if (bBusy)
+	{
+		bPressLight = bPressHeavy = false;
+		AttackTimer = 0.f;
+	}
+	// The dummies in play, in metres on the floor plane, their chests above the lead's feet.
 	const FVector Pos = GetActorLocation();
 	const double FeetZ = Pos.Z - GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
 	ftcore::FieldTarget Targets[ftcore::kMaxFieldTargets];
 	AFTFieldDummy* Dummies[ftcore::kMaxFieldTargets] = {};
 	std::size_t Count = 0;
-	for (TActorIterator<AFTFieldDummy> It(GetWorld()); It && Count < ftcore::kMaxFieldTargets; ++It)
+	const UWorld* World = GetWorld();
+	for (const TWeakObjectPtr<AFTFieldDummy>& Weak : AFTFieldDummy::All())
 	{
-		const FVector At = It->GetActorLocation();
-		Targets[Count] = ftcore::FieldTarget{ftcore::Vec2{float(At.X / 100.0), float(At.Y / 100.0)}, It->Radius / 100.f, true,
-			float((It->GetChest().Z - FeetZ) / 100.0)};
-		Dummies[Count++] = *It;
-	}
-	// With nobody in reach the lead aims at its own chest height.
-	for (const TCHAR* Bone : {TEXT("spine_05"), TEXT("spine_04"), TEXT("spine_03")})
-	{
-		if (GetMesh()->DoesSocketExist(Bone))
+		AFTFieldDummy* Dummy = Weak.Get();
+		if (!Dummy || Dummy->GetWorld() != World || Count >= ftcore::kMaxFieldTargets)
 		{
-			Strike.setChestHeight(float((GetMesh()->GetSocketLocation(Bone).Z - FeetZ) / 100.0));
-			break;
+			continue;
 		}
+		const FVector At = Dummy->GetActorLocation();
+		Targets[Count] = ftcore::FieldTarget{ftcore::Vec2{float(At.X / 100.0), float(At.Y / 100.0)}, Dummy->Radius / 100.f, true,
+			float((Dummy->GetChest().Z - FeetZ) / 100.0), Dummy->GetUniqueID()};
+		Dummies[Count++] = Dummy;
+	}
+	// With nobody in reach the lead aims at its own chest height, read as a press comes in.
+	if ((bPressLight || bPressHeavy) && ChestBone != INDEX_NONE)
+	{
+		Strike.setChestHeight(float((GetMesh()->GetBoneTransform(ChestBone).GetLocation().Z - FeetZ) / 100.0));
 	}
 	const FVector Face = GetActorForwardVector().GetSafeNormal2D();
 	const ftcore::ArenaOutput& Out = Strike.tick(DeltaSeconds, bPressLight, bPressHeavy,
@@ -488,6 +534,11 @@ void AFTExploreCharacter::TickWeapon(float DeltaSeconds)
 		{
 			Dummies[Event.target]->TakeHit(Event.amount);
 		}
+	}
+	if (bBusy)
+	{
+		TickWeaponShots();
+		return;
 	}
 	// While it attacks, the lead turns to Core's facing (to the target it aims at) and aims at the hit point.
 	if (Strike.attacking())
