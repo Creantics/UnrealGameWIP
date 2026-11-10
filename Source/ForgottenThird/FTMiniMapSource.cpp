@@ -12,7 +12,8 @@
 
 namespace FTMiniMapSourceDetail
 {
-// The revision in a table's name: the number after its last "_r" (sol_strip_boxes_r10.csv is 10), 0 when none.
+// The revision in a table's name, times 100: the number after its last "_r", plus a letter right after it as a
+// sub-revision (sol_strip_boxes_r10.csv is 1000, _r10w.csv 1023, so r10w wins over r10); 0 when none.
 int32 Revision(const FString& Name)
 {
 	int32 Best = 0;
@@ -25,7 +26,8 @@ int32 Revision(const FString& Name)
 		}
 		if (I > At + 2)
 		{
-			Best = N;
+			const int32 Sub = I < Name.Len() && FChar::IsLower(Name[I]) ? 1 + (Name[I] - TEXT('a')) : 0;
+			Best = N * 100 + Sub;
 		}
 	}
 	return Best;
@@ -47,7 +49,7 @@ bool FindOne(const FString& Dir, const TCHAR* Ext, const TCHAR* Part, const TCHA
 			continue;
 		}
 		const int32 Rev = Revision(Name);
-		if (Rev > MaxRev)
+		if (Rev / 100 > MaxRev)
 		{
 			continue;
 		}
@@ -64,7 +66,7 @@ bool FindOne(const FString& Dir, const TCHAR* Ext, const TCHAR* Part, const TCHA
 	}
 	if (bTie)
 	{
-		Error = FString::Printf(TEXT("more than one %s%s table at revision %d in %s"), Part, Ext, Top, *Dir);
+		Error = FString::Printf(TEXT("more than one %s%s table at revision %d.%d in %s"), Part, Ext, Top / 100, Top % 100, *Dir);
 		return false;
 	}
 	return true;
