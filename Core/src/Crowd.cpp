@@ -251,7 +251,8 @@ void CrowdSim::enter(Agent& a, std::uint32_t from, std::uint32_t to) {
     // the member onto its pavement from wherever it stands, so the turn never jumps.
     a.along = std::clamp((a.pos.x - f.x) * dir.x + (a.pos.y - f.y) * dir.y, -kCornerReach, a.len);
     a.lat = std::clamp(lat, -kCornerReach, kCornerReach);
-    a.side = lat >= 0.f ? 1.f : -1.f;
+    a.sideLock = e ? e->side : 0;
+    a.side = a.sideLock != 0 ? static_cast<float>(a.sideLock) : (lat >= 0.f ? 1.f : -1.f);
     a.latTarget = a.side * a.lane + (rand01() * 2.f - 1.f) * a.laneHalf * 0.8f;
 }
 
@@ -307,6 +308,7 @@ void CrowdSim::reverse(Agent& a) {
     a.lat = -a.lat;
     a.latTarget = -a.latTarget;
     a.side = -a.side;
+    a.sideLock = static_cast<std::int8_t>(-a.sideLock);
 }
 
 std::uint32_t CrowdSim::awayFromThreat(const Agent& a) const {
@@ -1012,7 +1014,7 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
         // runs, so it opens the distance at once instead of running along the threat's flank.
         const Vec2 f = graph_->node(a.from), t = graph_->node(a.to);
         const float tl = ((a.threat.x - f.x) * -(t.y - f.y) + (a.threat.y - f.y) * (t.x - f.x)) / a.len;
-        if (std::fabs(tl) > kVeerOffset) {
+        if (std::fabs(tl) > kVeerOffset && a.sideLock == 0) { // one pavement: no far one to veer to
             // A spot of its own across the outer half of the far band (by slot), so runners that stop over there
             // don't stand in a file.
             const float u = static_cast<float>((i * 2654435761u >> 16) & 255u) / 255.f;

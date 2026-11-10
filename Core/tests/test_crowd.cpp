@@ -144,6 +144,41 @@ TEST_CASE("crowd streets: kind and pavement read, points moved to the engine fra
     CHECK_FALSE(importCrowdStreets("id,kind,width_m,pts,pavement_m\nST-1,street,4,0:0;1:0,3\n", 100.0, s, &err));
 }
 
+TEST_CASE("crowd streets: a one-sided pavement and the alley kind") {
+    // Plan (0,0) -> (100,0) runs east; its left (L) is the plan's north, the engine's -Y.
+    const char* csv = "id,kind,width_m,pts,pavement_m,pavement_side\n"
+                      "ST-1,lane,4,0:0;100:0,1,L\n"
+                      "ST-2,lane,4,0:10;100:10,1,R\n"
+                      "ST-3,street,10,0:20;100:20,2,\n"
+                      "AL-1,alley,3,50:0;50:20,0,\n";
+    std::vector<CrowdStreet> s;
+    std::string err;
+    REQUIRE_MESSAGE(importCrowdStreets(csv, 100.0, s, &err), err);
+    REQUIRE(s.size() == 4);
+    CHECK(s[0].pavementSide == -1);
+    CHECK(s[1].pavementSide == 1);
+    CHECK(s[2].pavementSide == 0);
+    CHECK_FALSE(importCrowdStreets("id,kind,width_m,pts,pavement_m,pavement_side\nST-1,lane,4,0:0;1:0,1,X\n", 100.0, s, &err));
+    CHECK_FALSE(importCrowdStreets("id,kind,width_m,pts,pavement_m,pavement_side\nST-1,lane,4,0:0;1:0,0,L\n", 100.0, s, &err));
+
+    REQUIRE_MESSAGE(importCrowdStreets(csv, 100.0, s, &err), err);
+    CrowdGraph g;
+    REQUIRE(g.build(s, loose()));
+    // ST-1 west -> east in the engine: its pavement is on -Y, the left normal's negative; the reverse sees it as +.
+    const std::uint32_t w = nodeAt(g, {-50.f, 50.f}), mid = nodeAt(g, {0.f, 50.f});
+    REQUIRE(w != UINT32_MAX);
+    REQUIRE(mid != UINT32_MAX);
+    const CrowdEdge* fwd = g.find(w, mid);
+    const CrowdEdge* back = g.find(mid, w);
+    REQUIRE(fwd);
+    REQUIRE(back);
+    CHECK(fwd->side == -1);
+    CHECK(back->side == 1);
+    CHECK(fwd->lane > 0.f);
+    // The alley is walked: its north end (plan 50,20) is a node joined to the street there.
+    CHECK(nodeAt(g, {0.f, 30.f}) != UINT32_MAX);
+}
+
 TEST_CASE("crowd graph: shared points, a T-junction and a crossing all join; unwalked kinds and islands drop out") {
     std::vector<CrowdStreet> s;
     s.push_back(line({0.f, 0.f}, {100.f, 0.f}));             // main
@@ -633,6 +668,35 @@ TEST_CASE("crowd walkers keep to the pavement, round the player too, and never j
         }
         CHECK(inner >= 2.15f);
         CHECK(outer <= 3.85f);
+    }
+    SUBCASE("a one-sided pavement: walkers both ways and a player keep to that side only") {
+        CrowdGraph g;
+        CrowdStreet st = line({-150.f, 0.f}, {150.f, 0.f}, 8.f);
+        st.pavement = 2.f;
+        st.pavementSide = 1;
+        st.points.clear();
+        for (int i = 0; i <= 30; ++i) st.points.push_back(Vec2{-150.f + 10.f * static_cast<float>(i), 0.f});
+        REQUIRE(g.build({st}, loose()));
+        CrowdTuning t = quiet();
+        t.maxAgents = t.targetAgents = 120;
+        CrowdSim sim;
+        REQUIRE(sim.init(g, t, 37));
+        sim.setPopulationFrozen(true);
+        for (std::uint32_t n = 0; n < g.nodeCount(); ++n)
+            for (std::uint32_t k = 0; k < g.degree(n); ++k) sim.spawnAt(n, k, 0.5f);
+        REQUIRE(sim.liveCount() >= 50);
+        float lowest = 1e9f;
+        for (int i = 0; i < 15 * 60; ++i) {
+            const Vec2 player{-60.f + 0.1f * static_cast<float>(i), 2.8f};
+            sim.tick(1.f / 15.f, player, {1.5f, 0.f});
+            if (i < 15 * 5) continue; // settled onto the one band first
+            for (std::uint32_t j = 0; j < sim.capacity(); ++j) {
+                const CrowdAgentView& v = sim.agent(j);
+                if (!v.live || v.state != CrowdState::Walk || std::fabs(v.pos.x) > 140.f) continue;
+                lowest = std::min(lowest, v.pos.y);
+            }
+        }
+        CHECK(lowest >= 2.f); // the kerb (half 4 - pavement 2): both ways share one band, so pushes reach its edge
     }
     SUBCASE("a busy grid for two minutes: no walking step jumps") {
         CrowdGraph g;

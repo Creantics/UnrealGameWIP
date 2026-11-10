@@ -43,11 +43,16 @@ struct CrowdStreet {
     std::string kind;          // the table's kind column ("street", "stair", ...); empty without the column
     float width = 0.f;         // m
     float pavement = 0.f;      // m, each side; 0 when the table gives none
+    // Which side has the pavement: 0 both; +1 or -1 that side only, along the left normal (-dir.y, dir.x) of the
+    // engine-frame polyline's travel from its first point (the table's L is -1 here: the engine frame flips Y).
+    std::int8_t pavementSide = 0;
     std::vector<Vec2> points;  // engine frame, metres
 };
 
-// Reads a street table (as importMassingStreets: id, width_m, pts, plus the optional kind and pavement_m columns) and
-// moves its points to the engine frame of a square `side` metres across. `out` is cleared first. Allocates.
+// Reads a street table (as importMassingStreets: id, width_m, pts, plus the optional kind, pavement_m and pavement_side
+// columns) and moves its points to the engine frame of a square `side` metres across. pavement_side is L or R (looking
+// along the polyline from its first point, on the plan as drawn: X right, Y up) for a pavement on that side only, blank
+// for both; it needs a pavement_m above 0. `out` is cleared first. Allocates.
 FTCORE_API bool importCrowdStreets(std::string_view csv, double side, std::vector<CrowdStreet>& out,
                                    std::string* error = nullptr);
 
@@ -71,7 +76,7 @@ struct CrowdGraphTuning {
     float wallInset = 0.8f;            // m kept clear of a street's outer edge (the frontage, building faces) always
     std::uint32_t minComponent = 12;   // nodes: smaller islands are never spawned on
     std::vector<std::string> walkKinds = {"street", "lane", "core_lane", "road", "terrace", "stair", "link_stair",
-                                          "link_street", "link_road", "coast_road"};
+                                          "link_street", "link_road", "coast_road", "alley"};
     // A street with no kind (no kind column) is always walked.
 };
 
@@ -81,6 +86,7 @@ struct CrowdEdge {
     float lane = 0.f;     // m from the centre line to the walking lane's middle (the pavement's), each side
     float laneHalf = 0.f; // m: how far either way of the lane a walker may stray
     float half = 0.f;     // m: the street's half width (its outer edge: the frontage, building faces)
+    std::int8_t side = 0; // 0: the lane on both sides; +-1: on that side of this direction's left normal only
 };
 
 class CrowdGraph {
@@ -408,6 +414,7 @@ private:
         std::uint32_t from = 0, to = 0; // on the edge from -> to
         float along = 0.f, len = 1.f;
         float lane = 0.f, laneHalf = 0.f, side = 1.f; // side: +-1 along the edge's left normal
+        std::int8_t sideLock = 0;                      // the edge's one pavement side (0: either); side never leaves it
         float lat = 0.f, latTarget = 0.f;
         Vec2 pos, prev;
         float odo = 0.f;

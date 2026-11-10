@@ -25,7 +25,7 @@ bool importCrowdStreets(std::string_view csv, double side, std::vector<CrowdStre
     // The optional kind and pavement_m columns, row for row with importMassingStreets (same comment and header rules).
     std::vector<Record> records;
     if (!splitCsv(csv, records, error)) return false;
-    std::size_t kindCol = SIZE_MAX, paveCol = SIZE_MAX;
+    std::size_t kindCol = SIZE_MAX, paveCol = SIZE_MAX, sideCol = SIZE_MAX;
     bool haveHeader = false;
     std::size_t row = 0;
     out.resize(geo.size());
@@ -36,6 +36,7 @@ bool importCrowdStreets(std::string_view csv, double side, std::vector<CrowdStre
                 const std::string_view name = trim(r.fields[f]);
                 if (name == "kind") kindCol = f;
                 if (name == "pavement_m") paveCol = f;
+                if (name == "pavement_side") sideCol = f;
             }
             haveHeader = true;
             continue;
@@ -55,6 +56,14 @@ bool importCrowdStreets(std::string_view csv, double side, std::vector<CrowdStre
                 if (!parseNumber(v, d) || d < 0.0 || d * 2.0 > g.width)
                     return detail::fail(error, r.line, g.id + ": pavement_m must be a number >= 0, at most half the width");
                 s.pavement = static_cast<float>(d);
+            }
+        }
+        if (sideCol < r.fields.size()) {
+            const std::string_view v = trim(r.fields[sideCol]);
+            if (!v.empty()) {
+                if (v != "L" && v != "R") return detail::fail(error, r.line, g.id + ": pavement_side must be L, R or blank");
+                if (s.pavement <= 0.f) return detail::fail(error, r.line, g.id + ": pavement_side needs a pavement_m above 0");
+                s.pavementSide = v == "L" ? -1 : 1; // the engine frame flips Y, so the plan's left is the right here
             }
         }
     }
@@ -130,6 +139,7 @@ float dist(Vec2 a, Vec2 b) { return std::hypot(b.x - a.x, b.y - a.y); }
 struct BuildEdge {
     std::uint32_t a = 0, b = 0;
     float lane = 0.f, laneHalf = 0.f, half = 0.f; // half: the street's half width
+    std::int8_t side = 0;                         // a -> b's one pavement side (CrowdEdge::side)
     bool dead = false;
 };
 
@@ -231,6 +241,7 @@ bool CrowdGraph::build(const std::vector<CrowdStreet>& streets, const CrowdGraph
             const float inner = std::max(0.f, std::min(proto.half - s.pavement + 0.2f, outer - 0.2f));
             proto.lane = (inner + outer) * 0.5f;
             proto.laneHalf = (outer - inner) * 0.5f;
+            proto.side = s.pavementSide;
         } else {
             proto.lane = 0.f;
             proto.laneHalf = std::max(0.f, proto.half - std::max(tuning.edgeMargin, tuning.wallInset));
@@ -361,13 +372,14 @@ bool CrowdGraph::build(const std::vector<CrowdStreet>& streets, const CrowdGraph
     struct Dir {
         std::uint32_t from, to;
         float lane, laneHalf, half;
+        std::int8_t side;
     };
     std::vector<Dir> dirs;
     dirs.reserve(edges.size() * 2);
     for (const BuildEdge& e : edges) {
         if (e.dead || e.a == e.b) continue;
-        dirs.push_back({e.a, e.b, e.lane, e.laneHalf, e.half});
-        dirs.push_back({e.b, e.a, e.lane, e.laneHalf, e.half});
+        dirs.push_back({e.a, e.b, e.lane, e.laneHalf, e.half, e.side});
+        dirs.push_back({e.b, e.a, e.lane, e.laneHalf, e.half, static_cast<std::int8_t>(-e.side)});
     }
     std::sort(dirs.begin(), dirs.end(), [](const Dir& l, const Dir& r) { return l.from != r.from ? l.from < r.from : l.to < r.to; });
     dirs.erase(std::unique(dirs.begin(), dirs.end(), [](const Dir& l, const Dir& r) { return l.from == r.from && l.to == r.to; }),
@@ -379,7 +391,7 @@ bool CrowdGraph::build(const std::vector<CrowdStreet>& streets, const CrowdGraph
     edges_.resize(dirs.size());
     for (std::size_t i = 0; i < dirs.size(); ++i) {
         const Dir& d = dirs[i];
-        edges_[i] = {d.to, std::max(0.01f, dist(pos_[d.from], pos_[d.to])), d.lane, d.laneHalf, d.half};
+        edges_[i] = {d.to, std::max(0.01f, dist(pos_[d.from], pos_[d.to])), d.lane, d.laneHalf, d.half, d.side};
     }
 
     // Components: islands smaller than minComponent are never spawned on.
