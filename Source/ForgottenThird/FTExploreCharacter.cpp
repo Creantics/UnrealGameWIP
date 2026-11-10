@@ -436,12 +436,12 @@ void AFTExploreCharacter::BeginWeapon(const FFTLeadLook& Look)
 
 void AFTExploreCharacter::HandleLight()
 {
-	bPressLight = true;
+	bPressLight = !Van.IsValid(); // the van's inputs never reach the weapon
 }
 
 void AFTExploreCharacter::HandleHeavy()
 {
-	bPressHeavy = true;
+	bPressHeavy = !Van.IsValid();
 }
 
 void AFTExploreCharacter::SpawnFieldDummy()
@@ -475,7 +475,11 @@ void AFTExploreCharacter::TickWeapon(float DeltaSeconds)
 	// (while its pose fades back into locomotion), presses are dropped and an attack under way is cut (its clips, arm aim
 	// and effects with it); nothing turns or paints the body for the weapon. Falling alone allows attacks.
 	ftcore::FieldBody Body = ftcore::FieldBody::Free;
-	if (LedgeNow.phase != ftcore::LedgePhase::None)
+	if (Van.IsValid())
+	{
+		Body = ftcore::FieldBody::Seated; // boarding, seated or getting out: no weapon
+	}
+	else if (LedgeNow.phase != ftcore::LedgePhase::None)
 	{
 		Body = ftcore::FieldBody::Hanging;
 	}
@@ -1530,6 +1534,8 @@ void AFTExploreCharacter::ResetHeldInput()
 	SlideJumpAsked = 0.f;
 	LedgeJumpAsked = LedgeDropAsked = 0.f;
 	bJumpHeld = false;
+	bPressLight = bPressHeavy = false; // the attack buffer too
+	AttackTimer = 0.f;
 	UnCrouch();
 }
 
