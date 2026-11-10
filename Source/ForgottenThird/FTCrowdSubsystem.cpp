@@ -113,6 +113,40 @@ void UFTCrowdSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		Fail(TEXT("bad streets:"), FString(UTF8_TO_TCHAR(Error.c_str())));
 		return;
 	}
+	// -CrowdShift=auto (test aid for maps with no city, such as the arena): move the streets so the street node nearest
+	// the world origin sits on it. -CrowdShift=X,Y moves them by that many metres.
+	FString Shift;
+	if (FParse::Value(Cmd, TEXT("CrowdShift="), Shift) && !Shift.IsEmpty())
+	{
+		ftcore::Vec2 By{0.f, 0.f};
+		FString SX, SY;
+		if (Shift == TEXT("auto"))
+		{
+			const uint32 N = Graph.nearest(ftcore::Vec2{0.f, 0.f}, 1.0e5f);
+			if (N != UINT32_MAX)
+			{
+				By = ftcore::Vec2{-Graph.node(N).x, -Graph.node(N).y};
+			}
+		}
+		else if (Shift.Split(TEXT(","), &SX, &SY))
+		{
+			By = ftcore::Vec2{FCString::Atof(*SX), FCString::Atof(*SY)};
+		}
+		for (ftcore::CrowdStreet& S : Streets)
+		{
+			for (ftcore::Vec2& Q : S.points)
+			{
+				Q.x += By.x;
+				Q.y += By.y;
+			}
+		}
+		if (!Graph.build(Streets, Tuning.graph, &Error))
+		{
+			Fail(TEXT("bad streets after the shift:"), FString(UTF8_TO_TCHAR(Error.c_str())));
+			return;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: streets shifted by (%.1f, %.1f) m."), By.x, By.y);
+	}
 	if (!Sim.init(Graph, Tuning, Seed))
 	{
 		Fail(TEXT("no spawnable street in"), StreetsPath);
@@ -269,8 +303,25 @@ void UFTCrowdSubsystem::FeedArena(const ftcore::ArenaEvents& Events)
 			bFightEvent = false;
 			break;
 		}
+		++ArenaSeen;
 		if (bFightEvent)
 		{
+			if (ArenaFed == 0)
+			{
+				AtArena = Sim.counts();
+				float Nearest = 1e9f;
+				const ftcore::Vec2 Q = ToSim(At);
+				for (uint32 I = 0; I < Sim.capacity(); ++I)
+				{
+					if (Sim.agent(I).state != ftcore::CrowdState::Free)
+					{
+						Nearest = FMath::Min(Nearest, FMath::Sqrt(FMath::Square(Sim.agent(I).pos.x - Q.x) + FMath::Square(Sim.agent(I).pos.y - Q.y)));
+					}
+				}
+				UE_LOG(LogForgottenThird, Display, TEXT("Crowd: first arena fight event (type %d) at engine (%.0f, %.0f) cm, t=%.1f s; nearest member %.1f m, %u live."),
+					static_cast<int32>(E.type), At.X, At.Y, RunTime, Nearest, Sim.liveCount());
+			}
+			++ArenaFed;
 			LastArenaEvent = RunTime;
 		}
 	}
@@ -387,6 +438,14 @@ void UFTCrowdSubsystem::Tick(float DeltaTime)
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: since the test fight: perceived %llu, fled %llu, cowered %llu, resumed %llu, spread %llu: %s."),
 				Perceived, Fled, C.cowered - AtTestFight.cowered, Resumed, C.spread - AtTestFight.spread,
 				bOk ? TEXT("ok") : TEXT("FAILED (nobody fled or nobody resumed)"));
+		}
+		if (ArenaSeen > 0)
+		{
+			const uint64 Perceived = C.perceived - AtArena.perceived;
+			bOk = bOk && ArenaFed > 0 && Perceived > 0;
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: from the arena: %d events, %d fed as fight events; since the first: perceived %llu, noticed %llu, backed %llu, fled %llu, cowered %llu, resumed %llu: %s."),
+				ArenaSeen, ArenaFed, Perceived, C.noticed - AtArena.noticed, C.backedAway - AtArena.backedAway, C.fled - AtArena.fled,
+				C.cowered - AtArena.cowered, C.resumed - AtArena.resumed, bOk ? TEXT("ok") : TEXT("FAILED (no fight event fed or nobody perceived one)"));
 		}
 		bRunning = false;
 		FTRequestExit(bOk ? 0 : 1, TEXT("Crowd"));

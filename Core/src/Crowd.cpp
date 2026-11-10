@@ -539,7 +539,8 @@ void CrowdSim::decide(std::uint32_t i) {
         }
         break;
     case CrowdState::Recover:
-        if (f >= flee) startFlee(a);
+        // Already at the safe distance from this threat: stay put rather than plan a run to where it stands.
+        if (f >= flee && dist(a.pos, a.threat) < tuning_.safeDist) startFlee(a);
         else if (a.stateTime >= tuning_.recoverTime && f < std::max(tuning_.calmFear, notice)) setState(a, CrowdState::Walk);
         break;
     case CrowdState::Free: break;

@@ -107,5 +107,8 @@ private:
 	bool bTestFightStarted = false;
 	bool bTestDeathRaised = false;
 	ftcore::CrowdCounts AtTestFight;
+	ftcore::CrowdCounts AtArena;
+	int32 ArenaFed = 0;   // fight events passed on from the arena
+	int32 ArenaSeen = 0;  // arena events of any kind
 	bool bRunning = false;
 };

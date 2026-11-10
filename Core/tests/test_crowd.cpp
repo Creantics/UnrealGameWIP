@@ -299,6 +299,19 @@ TEST_CASE("crowd reactions: notice, back away, flee to a safe distance, calm dow
         CHECK(sim.agent(a).state != CrowdState::Flee);
         CHECK(sim.counts().resumed >= 1);
     }
+    SUBCASE("safe but still afraid: no flip between recover and flee") {
+        const Vec2 fight{sim.agent(a).pos.x + 10.f, sim.agent(a).pos.y + 3.f};
+        sim.pushEvent({CrowdEventKind::FightStart, fight});
+        for (int i = 0; i < 15 * 40 && sim.agent(a).state != CrowdState::Recover; ++i) sim.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
+        REQUIRE(sim.agent(a).state == CrowdState::Recover);
+        for (int k = 0; k < 20; ++k) { // loud enough to keep fear above flee at the safe distance
+            sim.pushEvent({CrowdEventKind::Strike, fight, 4.f, 4.f});
+            run(sim, 0.5f);
+        }
+        CHECK(sim.agent(a).fear >= t.fleeFear);
+        CHECK(sim.counts().fled == 1);
+        CHECK(sim.agent(a).state != CrowdState::Flee);
+    }
 }
 
 TEST_CASE("crowd flee path: picks the way away from the threat; cornered in a dead end, cowers") {
