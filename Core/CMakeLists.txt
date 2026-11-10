@@ -75,6 +75,7 @@ add_library(ftcore STATIC
     src/MoveTuning.cpp
     src/DodgeRoll.cpp
     src/VehicleDrive.cpp
+    src/VehicleRules.cpp
     src/LedgeHang.cpp
     src/Locomotion.cpp
     src/Mini.cpp
@@ -200,6 +201,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_move_tuning.cpp
     tests/test_dodge_roll.cpp
     tests/test_vehicle_drive.cpp
+    tests/test_vehicle_rules.cpp
     tests/test_ledge_hang.cpp
         tests/test_locomotion.cpp
         tests/test_mini.cpp
