@@ -50,6 +50,9 @@ add_library(ftcore STATIC
     src/Explore.cpp
     src/FieldGoals.cpp
     src/WorldLayout.cpp
+    src/Crowd.cpp
+    src/CrowdGraph.cpp
+    src/CrowdTuning.cpp
     src/Terrain.cpp
     src/MassingPlan.cpp
     src/WorldChecks.cpp
@@ -200,6 +203,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_mini.cpp
         tests/test_music_loop.cpp
         tests/test_party_trail.cpp
+        tests/test_crowd.cpp
         tests/test_guard.cpp
         tests/test_path_follow.cpp
         tests/test_ui_text.cpp

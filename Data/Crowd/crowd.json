@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "population": {"maxAgents": 512, "targetAgents": 300, "maxDrawn": 48, "spawnMin": 40, "spawnMax": 150,
+                 "despawnDist": 180, "fillMin": 8, "spawnPerStep": 8},
+  "move": {"walkSpeed": 1.3, "walkSpeedJitter": 0.25, "runSpeed": 4.2, "backSpeed": 0.7, "turnRate": 360,
+           "laneSpeed": 0.8, "idleChance": 0.15, "idleMin": 2, "idleMax": 7, "headingKeep": 0.8,
+           "headingChange": 0.05, "avoidRadius": 0.9, "avoidPlayer": 1.6},
+  "perceive": {"fov": 140, "feelRadius": 3, "reactBase": 0.2, "reactPerMetre": 0.01, "reactJitter": 0.35,
+               "occludedHearing": 0.4, "occlusionBudget": 24},
+  "events": {
+    "fight_start":   {"radius": 60, "intensity": 1.2,  "sightOnly": false},
+    "strike":        {"radius": 30, "intensity": 0.45, "sightOnly": false},
+    "gunshot":       {"radius": 100, "intensity": 1.4, "sightOnly": false},
+    "magic_burst":   {"radius": 50, "intensity": 0.8,  "sightOnly": false},
+    "death":         {"radius": 30, "intensity": 0.9,  "sightOnly": true},
+    "loud_noise":    {"radius": 40, "intensity": 0.35, "sightOnly": false},
+    "player_sprint": {"radius": 4,  "intensity": 0.25, "sightOnly": true}
+  },
+  "react": {"noticeFear": 0.12, "backFear": 0.3, "fleeFear": 0.55, "fearMax": 1.5, "fearDecay": 0.06,
+            "cowerDecay": 0.03, "calmFear": 0.08, "noticeTime": 1.5, "backTime": 2.0, "calmTime": 4,
+            "recoverTime": 2.5, "threatMemory": 20, "timidScale": 0.6, "boldScale": 1.6},
+  "flee": {"safeDist": 60, "threatPenaltyRadius": 25, "threatPenalty": 12, "blockRadius": 8, "searchLimit": 4000,
+           "plansPerStep": 32, "cowerRetry": 2},
+  "spread": {"radius": 6, "gain": 0.6, "interval": 0.5},
+  "step": {"rate": 15, "maxSteps": 4},
+  "graph": {"snap": 1.5, "junctionReach": 1.0, "edgeMargin": 0.6, "minComponent": 12,
+            "walkKinds": ["street", "lane", "core_lane", "road", "terrace", "stair", "link_stair", "link_street",
+                          "link_road", "coast_road"]}
+}

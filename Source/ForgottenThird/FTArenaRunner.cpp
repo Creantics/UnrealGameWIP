@@ -1,5 +1,7 @@
 #include "FTArenaRunner.h"
 
+#include "FTCrowdSubsystem.h"
+
 #include "Animation/AnimSequence.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
@@ -1299,6 +1301,11 @@ void UFTArenaRunner::StepFight()
 
 void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 {
+	// The street crowd hears the fight (nothing when the map has no crowd).
+	if (UFTCrowdSubsystem* Crowd = UFTCrowdSubsystem::Get(GetWorld()))
+	{
+		Crowd->FeedArena(Events);
+	}
 	for (const ftcore::ArenaEvent& E : Events)
 	{
 		switch (E.type)
