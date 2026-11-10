@@ -55,6 +55,7 @@ struct CrowdGraphTuning {
     float snap = 1.5f;                 // m: points closer than this are one node
     float junctionReach = 1.0f;        // m past the other street's half width an end may stop and still join it
     float edgeMargin = 0.6f;           // m kept clear of a street's edge when it has no pavement
+    float wallInset = 0.8f;            // m kept clear of a street's outer edge (the frontage, building faces) always
     std::uint32_t minComponent = 12;   // nodes: smaller islands are never spawned on
     std::vector<std::string> walkKinds = {"street", "lane", "core_lane", "road", "terrace", "stair", "link_stair",
                                           "link_street", "link_road", "coast_road"};
@@ -164,6 +165,10 @@ struct CrowdTuning {
     float reactPerMetre = 0.01f;     // s per m
     float reactJitter = 0.35f;       // s, up to
     float occludedHearing = 0.4f;    // intensity kept through an occluder (sight is lost)
+    // Close: within this of a fight-class event (fight start, strike, gunshot, magic burst, death) a member feels it
+    // whatever the occlusion or facing, takes it within reactCloseMax, and runs whatever its boldness.
+    float reactRadius = 22.f;        // m
+    float reactCloseMax = 0.3f;      // s
     std::uint32_t occlusionBudget = 24; // host occlusion queries per step
     std::array<CrowdEventRule, static_cast<std::size_t>(CrowdEventKind::Count)> events = {{
         {60.f, 1.2f, false},  // fight_start
@@ -192,6 +197,7 @@ struct CrowdTuning {
     float boldScale = 1.6f;          // ... at boldness 1
     // flee
     float safeDist = 60.f;           // m from the threat a flee ends at
+    float resumeHeading = 0.5f;      // chance a calmed member walks on the way it was going before (else a new way)
     float threatPenaltyRadius = 25.f;
     float threatPenalty = 12.f;      // cost multiplier for nodes at the threat, falling to 1 at the radius
     float blockRadius = 8.f;         // m: a flee never passes a node this close to the threat (cornered: cower)
@@ -242,6 +248,32 @@ struct CrowdCounts {
     std::uint64_t fleers = 0;            // members that fled at least once
     std::uint32_t maxFleeEntries = 0;    // the most times one member entered Flee
     std::uint32_t maxPlans = 0;          // the most flee plans one member asked for
+    std::uint64_t stuck = 0;             // times a running member stood still (moved < 0.1 m) for a whole second
+};
+
+// A run check: which members stood within `radius` of a point when a fight started there, and how they moved by
+// a later time (the host evaluates it 1 s in). Fixed size, no allocation.
+inline constexpr std::size_t kCrowdProbeMax = 256;
+struct CrowdReactionResult {
+    std::uint32_t inside = 0;   // live members within the radius at the start (still live now)
+    std::uint32_t away = 0;     // ... whose distance from the point grew by at least minGain
+    std::uint32_t turned = 0;   // ... facing within 90 degrees of straight away from the point
+    std::uint32_t toward = 0;   // ... closer to the point than at the start
+    float worstGain = 0.f;      // m: the least growth in distance among them (negative: came closer)
+    bool ok() const { return inside > 0 && away == inside && turned == inside && toward == 0; }
+};
+class CrowdSim;
+class CrowdReactionProbe {
+public:
+    FTCORE_API void begin(const CrowdSim& sim, Vec2 at, float radius);
+    FTCORE_API CrowdReactionResult evaluate(const CrowdSim& sim, float minGain) const;
+    std::uint32_t count() const { return n_; }
+
+private:
+    Vec2 at_{};
+    std::array<std::uint32_t, kCrowdProbeMax> id_{};
+    std::array<float, kCrowdProbeMax> d0_{};
+    std::uint32_t n_ = 0;
 };
 
 // Host occlusion: true when something solid stands between `from` and `to` (engine frame, metres).
@@ -273,9 +305,12 @@ public:
     FTCORE_API std::uint64_t digest() const;
 
     // Tests and tools: places a member at node `n` walking towards its neighbour `k`; its slot, or UINT32_MAX.
-    FTCORE_API std::uint32_t spawnAt(std::uint32_t n, std::uint32_t k, float boldness);
+    // `along`: m along that edge (clamped to it).
+    FTCORE_API std::uint32_t spawnAt(std::uint32_t n, std::uint32_t k, float boldness, float along = 0.f);
     // Tests: stops automatic spawning and despawning.
     void setPopulationFrozen(bool frozen) { frozen_ = frozen; }
+    // Live members closer than `d` m to another (pairs counted once). O(n) on the neighbour grid; no allocation.
+    FTCORE_API std::uint32_t closePairs(float d) const;
 
 private:
     struct Agent {
@@ -304,6 +339,13 @@ private:
         std::uint16_t fleeEntries = 0, plans = 0;
         std::uint8_t cowerFails = 0; // failed retries in a row: each waits longer
         float safeExtra = 0.f;       // m past the safe distance this member runs: fleers stop in different places
+        bool pendClose = false;      // the pending stimulus is a close fight-class one (reactRadius)
+        float stopAlong = -1.f;      // >= 0: a run that reached its goal stops this far along its last edge
+        float idleAlong = -1.f;      // >= 0: a calm walk stops to idle this far along the edge
+        float walkHeading = 0.f;     // deg: the calm heading before the last scare
+        Vec2 stuckRef;               // where a running member stood when its stuck clock last restarted
+        float stuckTime = 0.f;
+        bool hold = false;           // backing off or running with nowhere farther to go: stands until the next plan
     };
 
     void step(Vec2 player, Vec2 playerVel);
@@ -326,6 +368,8 @@ private:
     std::uint32_t chooseNext(Agent& a);
     void setState(Agent& a, CrowdState s);
     void free(std::uint32_t i);
+    void unspawn(std::uint32_t i);
+    bool crowded(std::uint32_t self, Vec2 p, float r) const;
     float scale(const Agent& a) const;
     Vec2 basePoint(const Agent& a) const;
     float rand01();
@@ -350,6 +394,9 @@ private:
     std::vector<std::uint64_t> heap_; // cost bits << 32 | node
     std::uint32_t stamp_ = 0;
     std::uint32_t plansLeft_ = 0, occlusionLeft_ = 0;
+    // this step's spawn spots (spawns aren't in the neighbour grid until the next step)
+    std::array<Vec2, 128> born_{};
+    std::uint32_t bornCount_ = 0;
     // drawn pick scratch
     std::vector<std::uint64_t> order_;
     CrowdOcclusionFn occlude_ = nullptr;

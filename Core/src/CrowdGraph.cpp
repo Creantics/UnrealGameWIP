@@ -79,6 +79,8 @@ struct Split {
 
 std::int64_t cellKey(std::int64_t x, std::int64_t y) { return (x << 32) ^ (y & 0xffffffffLL); }
 
+constexpr float kSameSpot = 0.05f; // m: crossings or feet this close are one node
+
 class NodeMaker {
 public:
     NodeMaker(std::vector<Vec2>& pos, float snap) : pos_(pos), snap_(std::max(snap, 0.01f)) {}
@@ -102,8 +104,18 @@ public:
         cells_[cellKey(cx, cy)].push_back(n);
         return n;
     }
-    // A node exactly here, never merged (crossings and junction feet).
+    // A node exactly here (crossings and junction feet): not snapped to street points, but two feet or crossings on
+    // the same spot share one node, so the streets meeting there stay joined.
     std::uint32_t fresh(Vec2 p) {
+        const std::int64_t cx = static_cast<std::int64_t>(std::floor(p.x / snap_));
+        const std::int64_t cy = static_cast<std::int64_t>(std::floor(p.y / snap_));
+        for (std::int64_t dy = -1; dy <= 1; ++dy)
+            for (std::int64_t dx = -1; dx <= 1; ++dx) {
+                const auto it = cells_.find(cellKey(cx + dx, cy + dy));
+                if (it == cells_.end()) continue;
+                for (const std::uint32_t n : it->second)
+                    if (dist(pos_[n], p) < kSameSpot) return n;
+            }
         pos_.push_back(p);
         const auto n = static_cast<std::uint32_t>(pos_.size() - 1);
         cells_[cellKey(static_cast<std::int64_t>(std::floor(p.x / snap_)), static_cast<std::int64_t>(std::floor(p.y / snap_)))]
@@ -146,12 +158,20 @@ bool CrowdGraph::build(const std::vector<CrowdStreet>& streets, const CrowdGraph
             continue;
         BuildEdge proto;
         proto.half = s.width * 0.5f;
-        if (s.pavement > 0.f) {
-            proto.lane = proto.half - s.pavement * 0.5f;
-            proto.laneHalf = std::max(0.1f, s.pavement * 0.5f - 0.2f);
+        // The walking band stays wallInset off the street's outer edge (the frontage), whatever the pavement: on a
+        // narrow pavement it reaches over the kerb rather than up to the wall; on a street too narrow for both, the
+        // centre line.
+        const float outer = proto.half - tuning.wallInset;
+        if (outer <= 0.f) {
+            proto.lane = 0.f;
+            proto.laneHalf = 0.f;
+        } else if (s.pavement > 0.f) {
+            const float inner = std::max(0.f, std::min(proto.half - s.pavement + 0.2f, outer - 0.2f));
+            proto.lane = (inner + outer) * 0.5f;
+            proto.laneHalf = (outer - inner) * 0.5f;
         } else {
             proto.lane = 0.f;
-            proto.laneHalf = std::max(0.f, proto.half - tuning.edgeMargin);
+            proto.laneHalf = std::max(0.f, proto.half - std::max(tuning.edgeMargin, tuning.wallInset));
         }
         std::uint32_t prev = UINT32_MAX;
         for (const Vec2& p : s.points) {

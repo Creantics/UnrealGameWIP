@@ -61,6 +61,7 @@ CrowdTuning quiet() {
     t.idleChance = 0.f;
     t.walkSpeedJitter = 0.f;
     t.headingChange = 0.f;
+    t.reactRadius = 0.f; // the close-range rule has its own tests
     return t;
 }
 
@@ -172,7 +173,20 @@ TEST_CASE("crowd graph: shared points, a T-junction and a crossing all join; unw
     const CrowdEdge* e = g.find(nodeAt(g, {0.f, 0.f}), tFoot);
     REQUIRE(e);
     CHECK(e->lane == 0.f);
-    CHECK(e->laneHalf == doctest::Approx(3.f - t.edgeMargin));
+    CHECK(e->laneHalf == doctest::Approx(3.f - std::max(t.edgeMargin, t.wallInset)));
+}
+
+TEST_CASE("crowd graph: two streets ending on the same spot of a third share one junction node") {
+    std::vector<CrowdStreet> s;
+    s.push_back(line({0.f, 0.f}, {40.f, 0.f}));
+    s.push_back(line({20.f, 30.f}, {20.f, 2.5f}));   // from the north, stops short of the centre line
+    s.push_back(line({20.f, -30.f}, {20.f, -2.5f})); // from the south, the same foot
+    CrowdGraph g;
+    REQUIRE(g.build(s, loose()));
+    const std::uint32_t foot = nodeAt(g, {20.f, 0.f});
+    REQUIRE(foot != UINT32_MAX);
+    CHECK(g.degree(foot) == 4);
+    CHECK(g.nodeCount() == 7);
 }
 
 TEST_CASE("crowd tuning: the shipped file loads; unknown or inconsistent members are refused") {
@@ -824,6 +838,77 @@ TEST_CASE("crowd tick allocates nothing and meets its budget at the target count
 
 // Opt-in: FT_CROWD_STREETS=<streets csv> (FT_CROWD_SIDE, default 1000) builds the graph from a real street table
 // (kept outside the repo) and runs a minute with a fight in the middle. Skipped without it.
+TEST_CASE("crowd r3: wall inset, first-second reaction, no clumps, no stuck runners") {
+    CrowdGraph g;
+    CrowdGraphTuning gt = loose();
+    REQUIRE(g.build(gridStreets(9, 30.f), gt)); // 8 m wide, 2 m pavements: building fronts 4 m off the centre line
+    // Every lane stays wallInset clear of the building fronts.
+    for (std::uint32_t n = 0; n < g.nodeCount(); ++n)
+        for (std::uint32_t k = 0; k < g.degree(n); ++k) {
+            const CrowdEdge& e = g.edge(n, k);
+            CHECK(e.lane + e.laneHalf <= 4.f - gt.wallInset + 1e-4f);
+        }
+    CrowdTuning t;
+    t.targetAgents = t.maxAgents = 120;
+    t.despawnDist = 400.f;
+    CrowdSim sim;
+    REQUIRE(sim.init(g, t, 33));
+    // Off a building front: no farther than 4 m - wallInset from the nearest street centre line (grid lines 30 m apart).
+    auto offFronts = [&](Vec2 p) {
+        const float dx = std::fabs(p.x - 30.f * std::round(p.x / 30.f)), dy = std::fabs(p.y - 30.f * std::round(p.y / 30.f));
+        return std::min(dx, dy) <= 4.f - gt.wallInset + 0.05f;
+    };
+    std::uint32_t inFront = 0;
+    auto sweep = [&] {
+        for (std::uint32_t i = 0; i < sim.capacity(); ++i)
+            if (sim.agent(i).live && !offFronts(sim.agent(i).pos)) ++inFront;
+    };
+    // Calm fill: right after the spawn and while walking, nobody stands inside anybody.
+    sim.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
+    CHECK(sim.closePairs(0.45f) == 0);
+    std::uint32_t calmPairs = 0;
+    for (int s = 0; s < 20; ++s) {
+        run(sim, 0.5f);
+        calmPairs += sim.closePairs(0.45f);
+        sweep();
+    }
+    CHECK(calmPairs == 0);
+    // A fight next to the busiest spot: within reactRadius, everyone has turned away and gained 1.5 m by t = 1 s.
+    Vec2 fight{0.f, 0.f};
+    std::uint32_t best = 0;
+    for (std::uint32_t i = 0; i < sim.capacity(); ++i) {
+        if (!sim.agent(i).live) continue;
+        std::uint32_t near = 0;
+        for (std::uint32_t j = 0; j < sim.capacity(); ++j) near += sim.agent(j).live && dist(sim.agent(i).pos, sim.agent(j).pos) < 12.f;
+        if (near > best) best = near, fight = sim.agent(i).pos;
+    }
+    CrowdReactionProbe probe;
+    probe.begin(sim, fight, t.reactRadius);
+    REQUIRE(probe.count() >= 5);
+    sim.pushEvent({CrowdEventKind::FightStart, fight});
+    run(sim, 1.f);
+    const CrowdReactionResult r = probe.evaluate(sim, 1.5f);
+    CAPTURE(r.inside);
+    CAPTURE(r.away);
+    CAPTURE(r.turned);
+    CAPTURE(r.toward);
+    CAPTURE(r.worstGain);
+    CHECK(r.ok());
+    // The run and after: nobody stuck, no members standing in a run pose, nobody in a building front.
+    std::uint32_t runStill = 0;
+    for (int s = 0; s < 120; ++s) {
+        run(sim, 0.25f);
+        sweep();
+        for (std::uint32_t i = 0; i < sim.capacity(); ++i) {
+            const CrowdAgentView& v = sim.agent(i);
+            if (v.live && v.anim == CrowdAnim::Run && v.speed <= 0.05f) ++runStill;
+        }
+    }
+    CHECK(runStill == 0);
+    CHECK(sim.counts().stuck == 0);
+    CHECK(inFront == 0);
+}
+
 TEST_CASE("crowd on a real street table (opt-in)") {
     const std::string path = envText("FT_CROWD_STREETS");
     if (path.empty()) return;
@@ -844,16 +929,53 @@ TEST_CASE("crowd on a real street table (opt-in)") {
     const Vec2 mid{(g.boundsMin().x + g.boundsMax().x) * 0.5f, (g.boundsMin().y + g.boundsMax().y) * 0.5f};
     std::uint32_t start = g.nearest(mid, 200.f);
     REQUIRE(start != UINT32_MAX);
-    const Vec2 player = g.node(start);
+    Vec2 player = g.node(start);
+    // The fight: FT_CROWD_AT="x,y" (m, engine frame), with the player on the nearest node; else the player's node.
+    Vec2 fight = player;
+    const std::string at = envText("FT_CROWD_AT");
+    if (!at.empty()) {
+        fight.x = std::strtof(at.c_str(), nullptr);
+        const auto comma = at.find(',');
+        if (comma != std::string::npos) fight.y = std::strtof(at.c_str() + comma + 1, nullptr);
+        const std::uint32_t pn = g.nearest(fight, 50.f);
+        if (pn != UINT32_MAX) player = g.node(pn);
+    }
+    // Pairs closer than a body: both standing / one standing / both moving.
+    auto pairKinds = [](const CrowdSim& s, std::uint32_t out[3]) {
+        out[0] = out[1] = out[2] = 0;
+        for (std::uint32_t i = 0; i < s.capacity(); ++i)
+            for (std::uint32_t j = i + 1; j < s.capacity(); ++j) {
+                const CrowdAgentView &p = s.agent(i), &q = s.agent(j);
+                if (!p.live || !q.live || dist(p.pos, q.pos) >= 0.45f) continue;
+                ++out[(p.speed > 0.f) + (q.speed > 0.f)];
+            }
+    };
+    const std::string seedText = envText("FT_CROWD_SEED");
     CrowdSim sim;
-    REQUIRE(sim.init(g, t, 1));
+    REQUIRE(sim.init(g, t, seedText.empty() ? 1u : static_cast<std::uint32_t>(std::atoi(seedText.c_str()))));
     run(sim, 20.f, player);
     const std::uint32_t before = sim.liveCount();
-    sim.pushEvent({CrowdEventKind::FightStart, player});
-    for (int i = 0; i < 20; ++i) {
-        sim.pushEvent({CrowdEventKind::Strike, player});
-        run(sim, 0.5f, player);
+    std::uint32_t calm[3];
+    pairKinds(sim, calm);
+    CrowdReactionProbe probe;
+    probe.begin(sim, fight, t.reactRadius);
+    sim.pushEvent({CrowdEventKind::FightStart, fight});
+    run(sim, 1.f, player);
+    const CrowdReactionResult r = probe.evaluate(sim, 1.5f);
+    std::printf("crowd real: calm close pairs standing %u mixed %u walking %u; first second: inside %u away %u turned %u toward %u worst gain %.2f m: %s\n",
+                calm[0], calm[1], calm[2], r.inside, r.away, r.turned, r.toward, static_cast<double>(r.worstGain), r.ok() ? "ok" : "FAILED");
+    std::uint32_t runStill = 0, pairs[3] = {0, 0, 0};
+    for (int i = 0; i < 38; ++i) {
+        if (i % 2 == 0) sim.pushEvent({CrowdEventKind::Strike, fight});
+        run(sim, 0.25f, player);
+        std::uint32_t k3[3];
+        pairKinds(sim, k3);
+        for (int k = 0; k < 3; ++k) pairs[k] += k3[k];
+        for (std::uint32_t k = 0; k < sim.capacity(); ++k)
+            runStill += sim.agent(k).live && sim.agent(k).anim == CrowdAnim::Run && sim.agent(k).speed <= 0.05f;
     }
+    std::printf("crowd real: during the fight close-pair samples standing %u mixed %u moving %u, run pose at zero speed %u, stuck %llu\n", pairs[0], pairs[1], pairs[2], runStill,
+                static_cast<unsigned long long>(sim.counts().stuck));
     const std::uint32_t fleeing = sim.countIn(CrowdState::Flee), cowering = sim.countIn(CrowdState::Cower);
     run(sim, 60.f, player);
     const CrowdCounts& c = sim.counts();
