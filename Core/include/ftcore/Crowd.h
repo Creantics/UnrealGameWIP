@@ -303,6 +303,7 @@ private:
         Vec2 planFrom;
         std::uint16_t fleeEntries = 0, plans = 0;
         std::uint8_t cowerFails = 0; // failed retries in a row: each waits longer
+        float safeExtra = 0.f;       // m past the safe distance this member runs: fleers stop in different places
     };
 
     void step(Vec2 player, Vec2 playerVel);

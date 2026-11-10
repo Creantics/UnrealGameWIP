@@ -28,6 +28,10 @@ float angleDiff(float a, float b) {
 constexpr float kCornerReach = 12.f;
 // m: how far inside the safe distance a recovering member may stand before it runs again.
 constexpr float kSafeSlack = 6.f;
+// m: the most a member runs past the safe distance (its own share, drawn at spawn).
+constexpr float kSafeSpread = 15.f;
+// m/s: how fast members standing too close step apart.
+constexpr float kStandApart = 0.8f;
 float yawTo(Vec2 from, Vec2 to) { return std::atan2(to.y - from.y, to.x - from.x) * kDeg; }
 
 // Distance from p to the segment ab.
@@ -278,6 +282,7 @@ std::uint32_t CrowdSim::spawnAt(std::uint32_t n, std::uint32_t k, float boldness
     a.pos = {a.pos.x + nrm.x * a.lat, a.pos.y + nrm.y * a.lat};
     a.prev = a.pos;
     a.spreadLeft = rand01() * tuning_.spreadInterval;
+    a.safeExtra = rand01() * kSafeSpread;
     ++live_;
     ++counts_.spawned;
     writeView(i);
@@ -454,7 +459,7 @@ bool CrowdSim::plan(Agent& a) {
         std::memcpy(&c, &cb, sizeof c);
         if (c > sCost_[v]) continue;
         const float dv = dist(graph_->node(v), a.threat);
-        if (dv >= tuning_.safeDist) {
+        if (dv >= tuning_.safeDist + a.safeExtra) {
             goal = v;
             break;
         }
@@ -556,7 +561,11 @@ void CrowdSim::decide(std::uint32_t i) {
         // Already at the safe distance from this threat: stay put rather than plan a run to where it stands.
         // The run ends at a node, the member a pavement's width off it: the slack keeps that from reading as inside.
         if (f >= flee && dist(a.pos, a.threat) < tuning_.safeDist - kSafeSlack) startFlee(a);
-        else if (a.stateTime >= tuning_.recoverTime && f < std::max(tuning_.calmFear, notice)) setState(a, CrowdState::Walk);
+        else if (a.stateTime >= tuning_.recoverTime && f < std::max(tuning_.calmFear, notice)) {
+            // Walk on somewhere new rather than drift back the way it ran.
+            a.heading = rand01() * 360.f;
+            setState(a, CrowdState::Walk);
+        }
         break;
     case CrowdState::Free: break;
     }
@@ -607,6 +616,35 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
             a.latTarget = a.side * std::clamp(a.side * a.latTarget + push * 0.25f * a.side, lo, hi);
         }
         speed *= slow;
+    } else if (a.state != CrowdState::Free) {
+        // Standing (noticing, recovering, cowering, idling): members closer than avoidRadius step apart, along the
+        // street and across the pavement band, so a crowd that stops in one place doesn't stand inside itself.
+        const Vec2 f = graph_->node(a.from), t = graph_->node(a.to);
+        const Vec2 dir{(t.x - f.x) / a.len, (t.y - f.y) / a.len};
+        const Vec2 nrm{-dir.y, dir.x};
+        float alongPush = 0.f, latPush = 0.f;
+        const float r = tuning_.avoidRadius;
+        forEachNear(a.pos, r, [&](std::uint32_t j) {
+            if (j == i) return;
+            Vec2 d{a.pos.x - agents_[j].pos.x, a.pos.y - agents_[j].pos.y};
+            float d2 = d.x * d.x + d.y * d.y;
+            if (d2 >= r * r) return;
+            if (d2 < 1e-6f) { // exactly on top: split by slot order
+                d = j < i ? dir : Vec2{-dir.x, -dir.y};
+                d2 = 1.f;
+            }
+            const float w = (r - std::sqrt(d2)) / r;
+            const float inv = 1.f / std::sqrt(d2);
+            alongPush += (d.x * dir.x + d.y * dir.y) * inv * w;
+            latPush += (d.x * nrm.x + d.y * nrm.y) * inv * w;
+        });
+        if (alongPush != 0.f || latPush != 0.f) {
+            const float n = std::max(1.f, std::hypot(alongPush, latPush));
+            a.along = std::clamp(a.along + alongPush / n * kStandApart * tuning_.step, 0.f, std::max(0.f, a.len - 0.01f));
+            const float lo = a.lane > 0.f ? a.lane - a.laneHalf : -a.laneHalf, hi = a.lane + a.laneHalf;
+            a.latTarget = a.side * std::clamp(a.side * (a.lat + latPush / n * kStandApart), lo, hi);
+            latRate = std::max(latRate, kStandApart);
+        }
     }
 
     a.along += speed * tuning_.step;

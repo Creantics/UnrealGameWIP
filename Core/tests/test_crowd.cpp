@@ -341,6 +341,53 @@ TEST_CASE("crowd recover: wherever a run ends near the safe distance, a loud fig
     }
 }
 
+TEST_CASE("crowd flee: a crowd that runs from one fight doesn't end up standing inside itself, then walks on") {
+    CrowdGraph g;
+    REQUIRE(g.build(gridStreets(9, 30.f), loose()));
+    CrowdTuning t = quiet();
+    t.reactJitter = 0.25f;
+    CrowdSim sim;
+    REQUIRE(sim.init(g, t, 21));
+    sim.setPopulationFrozen(true);
+    // 40 members on the streets round the middle junction, all running from the same fight.
+    std::vector<std::uint32_t> ids;
+    for (const Vec2 at : {Vec2{0.f, 0.f}, Vec2{30.f, 0.f}, Vec2{0.f, 30.f}, Vec2{-30.f, 0.f}, Vec2{0.f, -30.f}}) {
+        const std::uint32_t n = nodeAt(g, at);
+        for (std::uint32_t k = 0; k < 8; ++k) {
+            const std::uint32_t a = sim.spawnAt(n, k % g.degree(n), 0.5f);
+            REQUIRE(a != UINT32_MAX);
+            ids.push_back(a);
+        }
+    }
+    run(sim, 0.5f);
+    sim.pushEvent({CrowdEventKind::FightStart, {5.f, 5.f}});
+    constexpr float kBody = 0.45f; // m: two members closer than this stand inside each other
+    float closest = 1e9f;
+    int closeSamples = 0;
+    for (int s = 0; s < 120; ++s) { // 60 s, sampled every half second
+        run(sim, 0.5f);
+        if (s < 8) continue; // the first seconds: still on the move
+        for (std::size_t x = 0; x < ids.size(); ++x) {
+            const CrowdAgentView& p = sim.agent(ids[x]);
+            if (!p.live || p.speed > 0.f) continue;
+            for (std::size_t y = x + 1; y < ids.size(); ++y) {
+                const CrowdAgentView& q = sim.agent(ids[y]);
+                if (!q.live || q.speed > 0.f) continue;
+                const float d = std::hypot(p.pos.x - q.pos.x, p.pos.y - q.pos.y);
+                closest = std::min(closest, d);
+                if (d < kBody) ++closeSamples;
+            }
+        }
+    }
+    CHECK(sim.counts().fleers >= 20);
+    CAPTURE(closest);
+    CHECK(closeSamples == 0);
+    // Calm again: the runners walk on rather than stand where they stopped.
+    int walking = 0;
+    for (const std::uint32_t a : ids) walking += sim.agent(a).state == CrowdState::Walk && sim.agent(a).speed > 0.f;
+    CHECK(walking * 4 >= static_cast<int>(ids.size()) * 3);
+}
+
 TEST_CASE("crowd flee path: picks the way away from the threat; cornered in a dead end, cowers") {
     SUBCASE("on a long street the run goes away from the threat") {
         CrowdGraph g;
@@ -723,9 +770,9 @@ TEST_CASE("crowd determinism: same seed and events, same crowd, whatever the fra
     REQUIRE(c.init(g, t, 100));
     for (int i = 0; i < 300; ++i) {
         if (i == 100) {
-            a.pushEvent({CrowdEventKind::FightStart, {10.f, 10.f}});
-            b.pushEvent({CrowdEventKind::FightStart, {10.f, 10.f}});
-            c.pushEvent({CrowdEventKind::FightStart, {10.f, 10.f}});
+            a.pushEvent({CrowdEventKind::FightStart, {10.f, 10.f}, 3.f, 1.5f}); // reaches the spawn ring
+            b.pushEvent({CrowdEventKind::FightStart, {10.f, 10.f}, 3.f, 1.5f}); // reaches the spawn ring
+            c.pushEvent({CrowdEventKind::FightStart, {10.f, 10.f}, 3.f, 1.5f}); // reaches the spawn ring
         }
         a.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
         b.tick(1.f / 30.f, {0.f, 0.f}, {0.f, 0.f});

@@ -5,7 +5,7 @@
   "move": {"walkSpeed": 1.3, "walkSpeedJitter": 0.25, "runSpeed": 4.2, "backSpeed": 0.7, "turnRate": 360,
            "laneSpeed": 0.8, "idleChance": 0.15, "idleMin": 2, "idleMax": 7, "headingKeep": 0.8,
            "headingChange": 0.05, "avoidRadius": 0.9, "avoidPlayer": 1.6},
-  "perceive": {"fov": 140, "feelRadius": 3, "reactBase": 0.2, "reactPerMetre": 0.01, "reactJitter": 0.35,
+  "perceive": {"fov": 140, "feelRadius": 3, "reactBase": 0.1, "reactPerMetre": 0.01, "reactJitter": 0.25,
                "occludedHearing": 0.4, "occlusionBudget": 24},
   "events": {
     "fight_start":   {"radius": 60, "intensity": 1.2,  "sightOnly": false},
