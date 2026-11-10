@@ -60,6 +60,7 @@ add_library(ftcore STATIC
     src/MassingLayout.cpp
     src/WindowInterior.cpp
     src/WindowFacade.cpp
+    src/ShopFront.cpp
     src/WorldClock.cpp
     src/WorldChecks.cpp
     src/Roads.cpp
@@ -171,6 +172,16 @@ else()
     target_compile_options(ftcore_roadgraph PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
+# ftcore_frontcount: counts what a frontage table places on a map's boxes (an offline budget estimate).
+add_executable(ftcore_frontcount tools/ftcore_frontcount.cpp)
+target_link_libraries(ftcore_frontcount PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_frontcount PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_frontcount PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_frontcount PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
 if(FTCORE_BUILD_TESTS)
     include(FetchContent)
     # CMake 4 rejects cmake_minimum_required(< 3.5), which doctest 2.4.11 still declares.
@@ -217,6 +228,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_massing_layout.cpp
         tests/test_window_interior.cpp
         tests/test_window_facade.cpp
+        tests/test_shop_front.cpp
         tests/test_world_clock.cpp
         tests/test_world_checks.cpp
         tests/test_roads.cpp

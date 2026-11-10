@@ -1,5 +1,7 @@
 #include "ftcore/WindowFacade.h"
 
+#include "ftcore/ShopFront.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -12,19 +14,48 @@ constexpr std::uint32_t kJitterSalt = 0x3c6ef372u;
 constexpr std::uint32_t kKindSalt = 0xa54ff53au;
 constexpr std::uint32_t kKindPickSalt = 0x510e527fu;
 constexpr std::uint32_t kBandSalt = 0x9b05688cu;
-constexpr std::uint32_t kFasciaSalt = 0x1f83d9abu;
 constexpr std::uint32_t kWallTintSalt = 0x5be0cd19u;
+constexpr std::uint32_t kStyleSalt = 0x6a09e667u;
+constexpr std::uint32_t kParapetSalt = 0xbb67ae85u;
 constexpr float kLeast = 0.3f;  // as WindowInterior's least window width
 constexpr float kNever = 1e30f;
+constexpr float kLoggiaFloor = 0.05f;  // m: a loggia's opening starts this far over the storey line (the slab's edge)
 
 // Apartment, walkway, shophouse, office; Legacy is WindowGridSpec's own numbers.
 constexpr WindowTypeSpec kTypes[kWindowTypes] = {
-    {3.0f, 2.5f, 1.35f, 0.85f, 1.45f, 0.25f, 0.0f, false, false},
-    {2.9f, 2.6f, 1.5f, 0.9f, 1.35f, 0.25f, 0.10f, false, false},
-    {2.8f, 3.2f, 2.4f, 0.95f, 1.0f, 0.2f, 0.08f, false, true},
-    {3.2f, 2.2f, 0.9f, 0.5f, 1.9f, 0.3f, 0.14f, false, false},
-    {3.6f, 1.8f, 1.72f, 0.8f, 1.9f, 0.04f, 0.06f, true, true},
+    {3.0f, 2.5f, 1.35f, 0.85f, 1.45f, 0.25f, 0.0f, false, false, 0.06f},
+    {2.9f, 2.6f, 1.5f, 0.9f, 1.35f, 0.25f, 0.20f, false, false, 0.09f},
+    {2.8f, 3.2f, 2.4f, 0.95f, 1.0f, 0.2f, 0.15f, false, true, 0.09f},
+    {3.2f, 2.2f, 0.9f, 0.5f, 1.9f, 0.3f, 0.24f, false, false, 0.09f},
+    {3.6f, 1.8f, 1.72f, 0.8f, 1.9f, 0.04f, 0.12f, true, true, 0.08f},
 };
+
+// Style weights per type (plain, mullion, grille, loggia, small), out of kWindowStyleWeightTotal.
+constexpr std::uint32_t kStyleWeights[kWindowTypes][kWindowStyles] = {
+    {16, 0, 0, 0, 0}, {4, 5, 4, 2, 1}, {6, 4, 4, 0, 2}, {3, 4, 4, 3, 2}, {7, 6, 0, 0, 3},
+};
+constexpr std::uint32_t weightRow(std::uint32_t t) {
+    std::uint32_t c = 0;
+    for (std::uint32_t k = 0; k < kWindowStyles; ++k) c += kStyleWeights[t][k];
+    return c;
+}
+static_assert(weightRow(0) == kWindowStyleWeightTotal && weightRow(1) == kWindowStyleWeightTotal &&
+              weightRow(2) == kWindowStyleWeightTotal && weightRow(3) == kWindowStyleWeightTotal &&
+              weightRow(4) == kWindowStyleWeightTotal);
+// The cumulative weights a column's hash (mod the total) is counted against: its style is how many of the first four
+// it reaches.
+constexpr std::uint32_t styleEdge(std::uint32_t t, std::uint32_t i) {
+    std::uint32_t c = 0;
+    for (std::uint32_t k = 0; k <= i; ++k) c += kStyleWeights[t][k];
+    return c;
+}
+std::uint32_t styleRoll(std::uint32_t seed, std::uint32_t column) {
+    return windowHash(windowHash(seed ^ kStyleSalt) + windowHash(column)) % kWindowStyleWeightTotal;
+}
+std::uint32_t typeIndex(WindowType type) {
+    const std::uint32_t t = static_cast<std::uint32_t>(type);
+    return t < kWindowTypes ? t : 0u;
+}
 
 constexpr WindowTint kWallTints[kWindowWallTintCount] = {
     {1.0f, 1.0f, 1.0f, 0.0f, false},     // as photographed
@@ -54,11 +85,6 @@ struct Rgb {
 };
 constexpr Rgb kBand[kWindowBandColorCount] = {{0.30f, 0.30f, 0.29f}, {0.26f, 0.15f, 0.09f}, {0.09f, 0.18f, 0.13f},
                                               {0.10f, 0.10f, 0.11f}, {0.52f, 0.47f, 0.39f}, {0.42f, 0.20f, 0.12f}};
-constexpr Rgb kFascia[kWindowFasciaColorCount] = {{0.03f, 0.05f, 0.12f}, {0.35f, 0.03f, 0.03f}, {0.02f, 0.02f, 0.02f},
-                                                  {0.75f, 0.75f, 0.72f}, {0.03f, 0.20f, 0.08f}, {0.60f, 0.22f, 0.03f},
-                                                  {0.02f, 0.22f, 0.24f}, {0.55f, 0.40f, 0.05f}};
-constexpr Rgb kCloth[kWindowClothColorCount] = {
-    {0.04f, 0.06f, 0.20f}, {0.35f, 0.04f, 0.03f}, {0.15f, 0.08f, 0.04f}, {0.06f, 0.06f, 0.06f}};
 
 float toSide(float x, float d) {
     if (d > 0.0f) return (1.0f - x) / d;
@@ -111,6 +137,56 @@ float windowWidthFor(const WindowFacadeSpec& spec, WindowType type, std::uint32_
     if (t.ribbon) return std::max(t.bay - 2.0f * t.pier, kLeast);
     const float jit = 1.0f - spec.widthJitter + 2.0f * spec.widthJitter * share(windowHash(seed ^ kJitterSalt));
     return std::max(t.width * jit, kLeast);
+}
+
+std::uint32_t windowStyleWeight(WindowType type, WindowStyle style) {
+    const std::uint32_t s = static_cast<std::uint32_t>(style);
+    return s < kWindowStyles ? kStyleWeights[typeIndex(type)][s] : 0u;
+}
+
+WindowStyle windowColumnStyle(WindowType type, std::uint32_t seed, std::uint32_t column) {
+    const std::uint32_t t = typeIndex(type), r = styleRoll(seed, column);
+    std::uint32_t s = 0;
+    for (std::uint32_t i = 0; i + 1 < kWindowStyles; ++i) s += r >= styleEdge(t, i) ? 1u : 0u;
+    return static_cast<WindowStyle>(s);
+}
+
+WindowStyle windowStyleFor(WindowType type, std::uint32_t seed, std::uint32_t column, std::uint32_t storey, bool shop) {
+    if (shop) return WindowStyle::Plain;
+    const WindowStyle s = windowColumnStyle(type, seed, column);
+    if (s == WindowStyle::Loggia && (storey < 1u || type == WindowType::Office)) return WindowStyle::Plain;
+    return s;
+}
+
+WindowOpening windowStyleOpening(const WindowFacadeSpec& spec, WindowType type, WindowStyle style, float bayWidth,
+                                 float storeyHeight, float windowWidth) {
+    WindowOpening o;
+    if (!(bayWidth > 0.0f) || !(storeyHeight > 0.0f)) return o;
+    const WindowGridSpec g = windowGridFor(spec, type);
+    const bool ribbon = windowTypeSpec(type).ribbon && type != WindowType::Legacy;
+    const bool loggia = style == WindowStyle::Loggia, smallWin = style == WindowStyle::Small && !ribbon;
+    const float full = bayWidth - 2.0f * g.pier;
+    float hw = ((ribbon || loggia) ? full : std::min(std::max(windowWidth, kLeast), full)) / (2.0f * bayWidth);
+    if (smallWin) hw = std::min(hw, spec.smallWidth / (2.0f * bayWidth));
+    o.u0 = 0.5f - hw;
+    o.u1 = 0.5f + hw;
+    o.v1 = (g.sill + g.opening) / storeyHeight;
+    o.v0 = (loggia ? kLoggiaFloor : g.sill) / storeyHeight;
+    if (smallWin) o.v0 = std::max(o.v0, o.v1 - spec.smallHeight / storeyHeight);
+    return o;
+}
+
+float windowStyleReveal(const WindowFacadeSpec& spec, WindowType type, WindowStyle style) {
+    if (type == WindowType::Legacy) return 0.0f;
+    return style == WindowStyle::Loggia ? spec.loggiaDepth : windowTypeSpec(type).reveal;
+}
+
+float windowLitShare(const WindowFacadeSpec& spec, WindowType type, float litShare, float upperLit,
+                     std::uint32_t storey, std::uint32_t storeys) {
+    if (type == WindowType::Legacy) return litShare;
+    const float f = std::clamp((static_cast<float>(storey) - 1.0f) / std::max(static_cast<float>(storeys) - 2.0f, 1.0f),
+                               0.0f, 1.0f);
+    return std::min(litShare * (1.0f + upperLit * f), spec.litMax);
 }
 
 WindowRay windowFacadeRay(const WindowFacadeSpec& spec, const WindowOpening& o, float bayWidth, float storeyHeight,
@@ -255,6 +331,7 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     rows[0].sill = s.sill;
     rows[0].opening = s.opening;
     rows[0].pier = s.pier;
+    rows[0].frame = s.frame;
     h += array("float", "kSt", rows, [](const WindowTypeSpec& r) { return num(r.storey); });
     h += array("float", "kBay", rows, [](const WindowTypeSpec& r) { return num(r.bay); });
     h += array("float", "kW", rows, [](const WindowTypeSpec& r) { return num(r.width); });
@@ -264,6 +341,11 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     h += array("float", "kRev", rows, [](const WindowTypeSpec& r) { return num(r.reveal); });
     h += array("float", "kRib", rows, [](const WindowTypeSpec& r) { return num(r.ribbon ? 1.0f : 0.0f); });
     h += array("float", "kPl", rows, [](const WindowTypeSpec& r) { return num(r.plinth ? 1.0f : 0.0f); });
+    h += array("float", "kFr", rows, [](const WindowTypeSpec& r) { return num(r.frame); });
+    std::uint32_t edges[kWindowTypes * (kWindowStyles - 1)];
+    for (std::uint32_t t = 0; t < kWindowTypes; ++t)
+        for (std::uint32_t i = 0; i + 1 < kWindowStyles; ++i) edges[t * (kWindowStyles - 1) + i] = styleEdge(t, i);
+    h += array("uint", "kStyE", edges, [](std::uint32_t e) { return unum(e); });
     h += "float pSt = kSt[ty];\n";
     h += "float pBay = kBay[ty];\n";
     h += "float pSill = kSill[ty];\n";
@@ -296,15 +378,29 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     h += "uint col = (uint)colF;\n";
     h += "uint st = (uint)stF;\n";
     h += "float u = (a - colF * bw) / bw;\n";
-    h += "float hw = shop ? " + num(s.shopFill * 0.5f) + " : (ribbon ? bw - 2.0 * pPier : min(ww, bw - 2.0 * pPier)) / (2.0 * bw);\n";
+    // The column's style (windowStyleFor) and the opening it cuts (windowStyleOpening).
+    h += "uint sr = W.H(W.H(seed ^ " + unum(kStyleSalt) + ") + W.H(col)) % " + unum(kWindowStyleWeightTotal) + ";\n";
+    h += "uint sty = 0u;\n";
+    for (std::uint32_t i = 0; i + 1 < kWindowStyles; ++i)
+        h += "sty += sr >= kStyE[ty * " + unum(kWindowStyles - 1) + " + " + unum(i) + "] ? 1u : 0u;\n";
+    h += "sty = shop || (sty == 3u && (st < 1u || ty == 4u)) ? 0u : sty;\n";
+    h += "bool loggia = sty == 3u;\n";
+    h += "bool smallWin = sty == 4u && !ribbon;\n";
+    h += "bool frostLow = sty == 4u && ribbon;\n";
+    h += "float hw = shop ? " + num(s.shopFill * 0.5f) +
+         " : ((ribbon || loggia) ? bw - 2.0 * pPier : min(ww, bw - 2.0 * pPier)) / (2.0 * bw);\n";
+    h += "hw = smallWin ? min(hw, " + num(spec.smallWidth * 0.5f) + " / bw) : hw;\n";
     h += "float u0 = 0.5 - hw;\n";
     h += "float u1 = 0.5 + hw;\n";
-    h += "float v0 = (shop ? " + num(s.shopSill) + " : pSill) / sh;\n";
+    // The shop front's kind, door and sill (ShopFront.h).
+    h += shopFrontPreHlsl(ShopFrontSpec{});
+    h += "float v0 = (shop ? shopSill : (loggia ? " + num(kLoggiaFloor) + " : pSill)) / sh;\n";
     h += "float v1 = (shop ? shopTop : pSill + pOpen) / sh;\n";
+    h += "v0 = smallWin ? max(v0, v1 - " + num(spec.smallHeight) + " / sh) : v0;\n";
     h += "bool inOpen = inBay && u >= u0 && u <= u1 && v >= v0 && v <= v1;\n";
     // The reveal (windowReveal): the glass a reveal deep, the jambs, bottom and head between.
     h += "float dzv = max(ViewT.z, 1e-4);\n";
-    h += "float rev = shop ? " + num(spec.shopReveal) + " : kRev[ty];\n";
+    h += "float rev = shop ? " + num(spec.shopReveal) + " : (loggia ? " + num(spec.loggiaDepth) + " : kRev[ty]);\n";
     h += "float sxm = clamp(ViewT.x / dzv * rev, -(u1 - u0) * bw, (u1 - u0) * bw);\n";
     h += "float sym = clamp(ViewT.y / dzv * rev, -(v1 - v0) * sh, (v1 - v0) * sh);\n";
     h += "float gu = u + sxm / bw;\n";
@@ -313,77 +409,34 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     h += "float fyr = sym > 0.0 ? (v1 - v) * sh / sym : (sym < 0.0 ? (v0 - v) * sh / sym : 1e30);\n";
     h += "bool outG = gu < u0 || gu > u1 || gv < v0 || gv > v1;\n";
     h += "float revPart = fxr <= fyr ? (sxm > 0.0 ? 6.0 : 5.0) : (sym < 0.0 ? 7.0 : 8.0);\n";
-    h += "float fu = " + num(s.frame) + " / bw;\n";
-    h += "float fv = " + num(s.frame) + " / sh;\n";
+    h += "float fr = kFr[ty];\n";
+    h += "float fu = fr / bw;\n";
+    h += "float fv = fr / sh;\n";
     h += "bool glassG = inOpen && !outG && gu >= u0 + fu && gu <= u1 - fu && gv >= v0 + fv && gv <= v1 - fv;\n";
-    h += "bool lip = !shop && inBay && rev > 0.0 && v < v0 && v >= v0 - " + num(spec.lipHeight) + " / sh && u >= u0 - " +
-         num(spec.lipOut) + " / bw && u <= u1 + " + num(spec.lipOut) + " / bw;\n";
-    h += "float part = inOpen ? (outG ? revPart : (glassG ? 1.0 : 2.0)) : (lip ? 9.0 : (course ? 15.0 : (fascia ? 4.0 "
-         ": (band ? 3.0 : 0.0))));\n";
-    // The shop's kind (windowShopKind) and its front, at the glass plane.
-    h += "uint kind = W.KRaw(seed, col);\n";
-    h += "uint kL = W.KRaw(seed, col - 1u);\n";
-    h += "uint kR = W.KRaw(seed, col + 1u);\n";
-    h += "bool oddC = (col & 1u) != 0u;\n";
-    for (int i = 0; i < 2; ++i) h += "kind = (oddC && (kind == kL || kind == kR)) ? (kind + 1u) % " + kinds + " : kind;\n";
-    h += "uint kh = W.H(seed ^ W.H(col + " + unum(kKindPickSalt) + "));\n";
-    h += "float sw = max((u1 - u0) * bw, 0.1);\n";
-    h += "float sH = max((v1 - v0) * sh, 0.1);\n";
-    h += "float lx = (gu - u0) * bw;\n";
-    h += "float ly = (gv - v0) * sh;\n";
-    h += "float su = lx / sw;\n";
-    h += "float3 own = float3(0.0, 0.0, 0.0);\n";
-    h += "float sp = 0.0;\n";
-    // 0 glazed: a door on the right with its head, and a transom.
-    h += "bool doorG = (abs(lx - 0.66 * sw) < 0.04 || abs(lx - 0.9 * sw) < 0.04) && ly < 2.1;\n";
-    h += "doorG = doorG || (su > 0.66 && su < 0.9 && abs(ly - 2.1) < 0.04) || abs(ly - (sH - 0.35)) < 0.03;\n";
-    h += "sp = kind == 0u && doorG ? 2.0 : sp;\n";
-    // 1 cafe: a timber riser.
-    h += "bool riser = kind == 1u && ly < 0.55;\n";
-    h += "sp = riser ? 10.0 : sp;\n";
-    h += "own = riser ? float3(0.22, 0.12, 0.06) : own;\n";
-    // 2 shutter: down a share of the way, ribbed, a darker bottom rail.
-    h += "float shut = sH * (1.0 - (0.35 + 0.65 * float(kh & 0xFFFFu) / 65536.0));\n";
-    h += "bool shutter = kind == 2u && ly > shut;\n";
-    h += "float rib = frac(ly / 0.08) < 0.5 ? 0.82 : 1.0;\n";
-    h += "sp = shutter ? 10.0 : sp;\n";
-    h += "own = shutter ? (ly < shut + 0.05 ? float3(0.2, 0.2, 0.21) : float3(0.42, 0.42, 0.43) * rib) : own;\n";
-    // 3 eatery: four cloth panels over the top of the opening.
-    h += "float pw = sw / 4.0;\n";
-    h += "bool noren = kind == 3u && ly > sH * 0.62 && frac(lx / pw) * pw > 0.03;\n";
-    h += array("float3", "kCloth", kCloth, [](const Rgb& c) { return rgb(c.r, c.g, c.b); });
-    h += "sp = noren ? 11.0 : sp;\n";
-    h += "own = noren ? kCloth[(kh >> 16) % " + unum(kWindowClothColorCount) + "] : own;\n";
-    // 4 clinic: frosted lower glass, a door in the middle.
-    h += "bool frost = kind == 4u && ly < 1.3;\n";
-    h += "bool doorC = kind == 4u && (((abs(su - 0.38) * sw < 0.04 || abs(su - 0.62) * sw < 0.04) && ly < 2.1) || (su > "
-         "0.38 && su < 0.62 && abs(ly - 2.1) < 0.04));\n";
-    h += "sp = frost ? 13.0 : sp;\n";
-    h += "own = frost ? float3(0.72, 0.75, 0.75) : own;\n";
-    h += "sp = doorC ? 2.0 : sp;\n";
-    // 5 laundromat: white machine fronts with round doors.
-    h += "bool mach = kind == 5u && ly < 1.15;\n";
-    h += "float pcx = (floor(lx / 0.7) + 0.5) * 0.7;\n";
-    h += "float pd = length(float2(lx - pcx, ly - 0.6));\n";
-    h += "sp = mach ? (pd < 0.2 ? 14.0 : (pd < 0.25 ? 2.0 : 13.0)) : sp;\n";
-    h += "own = mach ? (pd < 0.2 ? float3(0.04, 0.05, 0.06) : float3(0.82, 0.82, 0.8)) : own;\n";
-    h += "bool shopGlass = shop && part == 1.0;\n";
-    h += "part = shopGlass && sp > 0.0 ? sp : part;\n";
-    // The fascia: a board per bay in its own colour, a pale sign panel in its middle; a cafe's is a striped awning.
-    h += array("float3", "kFascia", kFascia, [](const Rgb& c) { return rgb(c.r, c.g, c.b); });
-    h += "float3 fc = inBay ? kFascia[W.H((seed ^ " + unum(kFasciaSalt) + ") + col) % " +
-         unum(kWindowFasciaColorCount) + "] : float3(0.06, 0.065, 0.07);\n";
-    h += "bool panel = fascia && inBay && u > 0.15 && u < 0.85 && Up > shopTop + 0.06 && Up < shopTop + " +
-         num(s.fascia - 0.06f) + ";\n";
-    h += "bool awning = fascia && inBay && kind == 1u;\n";
-    h += "float3 fasciaRgb = awning ? (frac(a / 0.3) < 0.5 ? fc : float3(0.8, 0.76, 0.66)) : (panel ? lerp(fc, "
-         "float3(0.92, 0.9, 0.85), 0.75) : fc);\n";
-    h += "part = awning ? 16.0 : part;\n";
-    // An eatery's lantern hangs at the fascia's foot on the bay's left.
-    h += "float lxL = (u * bw - (u0 * bw + 0.35)) / 0.17;\n";
-    h += "float lyL = (Up - shopTop) / 0.26;\n";
-    h += "bool lantern = shop && inBay && kind == 3u && lxL * lxL + lyL * lyL < 1.0;\n";
-    h += "part = lantern ? 12.0 : part;\n";
+    // A mullion (where a loggia's doors meet too) and a transom.
+    h += "bool mull = !shop && (sty == 1u || loggia) && abs(gu - 0.5) * bw < 0.5 * fr;\n";
+    h += "mull = mull || (sty == 1u && abs(gv - (v1 - 0.3 * (v1 - v0))) * sh < 0.5 * fr);\n";
+    h += "glassG = glassG && !mull;\n";
+    h += "bool inLip = inBay && u >= u0 - " + num(spec.lipOut) + " / bw && u <= u1 + " + num(spec.lipOut) + " / bw;\n";
+    h += "bool lip = !shop && !loggia && inLip && rev > 0.0 && v < v0 && v >= v0 - " + num(spec.lipHeight) + " / sh;\n";
+    h += "bool sillSh = !shop && !loggia && inLip && rev > 0.0 && v < v0 - " + num(spec.lipHeight) +
+         " / sh && v >= v0 - " + num(spec.lipHeight + spec.sillShadow) + " / sh;\n";
+    h += "float part = inOpen ? (outG ? revPart : (glassG ? 1.0 : 2.0)) : (lip ? 9.0 : (sillSh ? 20.0 : (course ? 15.0 : "
+         "(fascia ? 4.0 : (band ? 3.0 : 0.0)))));\n";
+    // A grille's bars at the wall's face over the opening; a loggia's rail (or, one building in four, a parapet with a
+    // concrete cap) at the face over its floor; a small window's glass frosted, a ribbon's lower part.
+    h += "bool grille = sty == 2u && inLip && v >= v0 && v <= v1 && (frac((u - u0) * bw / " + num(spec.grillePitch) +
+         ") < 0.25 || frac((v - v0) * sh / " + num(2.0f * spec.grillePitch) + ") < 0.12);\n";
+    h += "part = grille ? 17.0 : part;\n";
+    h += "float ry0 = (v - v0) * sh;\n";
+    h += "bool railZ = loggia && inOpen && ry0 < " + num(spec.railHeight) + ";\n";
+    h += "bool railTop = ry0 > " + num(spec.railHeight - 0.06f) + ";\n";
+    h += "bool parapet = (W.H(seed ^ " + unum(kParapetSalt) + ") & 3u) == 0u;\n";
+    h += "bool bal = frac(u * bw / " + num(spec.baluster) + ") < 0.3;\n";
+    h += "part = railZ ? (parapet ? (railTop ? 9.0 : 0.0) : (railTop || bal ? 18.0 : part)) : part;\n";
+    h += "part = part == 1.0 && !shop && (smallWin || (frostLow && gv < v0 + 0.4 * (v1 - v0))) ? 13.0 : part;\n";
+    // The shop's front at the glass plane, its fascia, sign and lantern (ShopFront.h).
+    h += shopFrontHlsl(ShopFrontSpec{}, s.fascia);
     // The band: one colour a building, with tile courses; the string course and the lip, concrete.
     h += array("float3", "kBand", kBand, [](const Rgb& c) { return rgb(c.r, c.g, c.b); });
     h += "float3 bandRgb = kBand[W.H(seed ^ " + unum(kBandSalt) + ") % " + unum(kWindowBandColorCount) + "] * (frac(Up / " +
@@ -398,12 +451,14 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     h += "bool odd = ((st + col) & 1u) != 0u;\n";
     for (std::uint32_t i = 0; i < kWindowAvoidSteps; ++i)
         h += "room = (odd && (room == nU || room == nD || room == nL || room == nR)) ? W.Next(room, shop) : room;\n";
-    h += "uint pick = kind == 0u ? ((W.H(seed ^ W.H(col + " + unum(kKindPickSalt) + ")) & 1u) != 0u ? 3u : 0u) : (kind "
-         "== 1u || kind == 3u ? 1u : (kind == 4u ? 2u : (kind == 5u ? 3u : 0u)));\n";
+    h += "uint pick = shopPick;\n";
     h += "room = shop ? " + rooms + " + pick : room;\n";
     h += "bool mirror = (W.H(hh ^ " + unum(0x02e5be93u) + ") & 1u) != 0u;\n";
     h += "uint tint = W.H(hh ^ " + unum(0x967a889bu) + ") % " + unum(kWindowTints) + ";\n";
-    h += "bool lit = float(W.H(hh ^ " + unum(0x5bd1e995u) + ") & 0xFFFFu) / 65536.0 < (shop ? ShopLit : LitShare);\n";
+    // Upper storeys lit more often (windowLitShare).
+    h += "float litP = shop ? ShopLit : (ty == 0u ? LitShare : min(LitShare * (1.0 + UpperLit * saturate((stF - 1.0) / "
+         "max(nst - 2.0, 1.0))), " + num(spec.litMax) + "));\n";
+    h += "bool lit = float(W.H(hh ^ " + unum(0x5bd1e995u) + ") & 0xFFFFu) / 65536.0 < litP;\n";
     h += "bool hasCurtain = !shop && float(W.H(hh ^ " + unum(0x1b873593u) + ") & 0xFFFFu) / 65536.0 < CurtainShare;\n";
     h += "uint curtain = W.H(hh ^ " + unum(0xcc9e2d51u) + ") % " + unum(kWindowCurtains) + ";\n";
     h += "uint dh = W.H(hh ^ " + unum(0x85ebca6bu) + ");\n";
@@ -423,6 +478,7 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     h += "float px = 0.5 + (gu + t * rx - 0.5) * sc;\n";
     h += "float py = 0.5 + (gv + t * ry - 0.5) * sc;\n";
     h += "px = mirror ? 1.0 - px : px;\n";
+    h += "px = shop ? shopShift + px * shopZoom : px;\n";
     h += "px = clamp(px, 0.002, 0.998);\n";
     h += "py = clamp(py, 0.002, 0.998);\n";
     h += "float2 ruv = float2((float(room % " + unum(kWindowAtlasCols) + ") + px) / " + num(kWindowAtlasCols) +
@@ -442,14 +498,20 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     h += "float3 tints[" + std::to_string(kWindowTints) +
          "] = { float3(1.0, 0.78, 0.52), float3(1.0, 0.92, 0.80), float3(0.82, 0.90, 1.0), float3(1.0, 0.66, 0.42) };\n";
     h += "float on = (glass && lit) ? Night : 0.0;\n";
-    h += "float3 day = seen * (shop ? ShopDay : RoomDay) * (1.0 - Night);\n";
+    // By day the glass darkens toward its head, in the reveal's shade.
+    h += "float hs = (ty > 0u && !shop) ? lerp(0.45, 1.0, saturate((v1 - gv) * sh / " + num(spec.headShadow) +
+         ")) : 1.0;\n";
+    h += "float3 day = seen * hs * (shop ? ShopDay : RoomDay) * (1.0 - Night);\n";
     h += "float3 night = on * (seen + cc.rgb * ca * CurtainGlow) * tints[tint] * (shop ? ShopGlow : GlowScale);\n";
     // A lit shop's sign panel glows a little at night; a lantern glows by day and much more by night.
-    h += "float3 signGlow = (panel && lit && part == 4.0) ? lerp(fc, float3(1.0, 0.95, 0.85), 0.75) * Night * ShopGlow "
-         "* 0.6 : float3(0.0, 0.0, 0.0);\n";
+    h += "float3 signGlow = (lit && part == 4.0) ? signLight * Night * ShopGlow : float3(0.0, 0.0, 0.0);\n";
     h += "float3 lanternGlow = float3(0.9, 0.25, 0.08) * (0.4 + 6.0 * Night);\n";
-    h += "Emit = glass ? day + night : (part == 12.0 ? lanternGlow : signGlow);\n";
-    h += "float3 rgbOut = glass ? seen : (part == 3.0 ? bandRgb : (part == 4.0 || part == 16.0 ? fasciaRgb : (part == "
+    h += "float3 frostGlow = (!shop && part == 13.0 && lit) ? float3(0.9, 0.85, 0.72) * Night * GlowScale * 0.8 : "
+         "float3(0.0, 0.0, 0.0);\n";
+    h += "Emit = glass ? day + night : (part == 12.0 ? lanternGlow : (part == 13.0 && !shop ? frostGlow : signGlow));\n";
+    h += "own = (!shop && part == 13.0) ? float3(0.7, 0.73, 0.73) : own;\n";
+    h += "own = part == 17.0 ? float3(0.05, 0.05, 0.055) : (part == 18.0 ? float3(0.14, 0.14, 0.15) : own);\n";
+    h += "float3 rgbOut = glass ? seen * hs : (part == 3.0 ? bandRgb : (part == 4.0 || part == 16.0 ? fasciaRgb : (part == "
          "12.0 ? float3(0.75, 0.12, 0.06) : (part == 9.0 || part == 15.0 ? float3(0.62, 0.6, 0.56) : own))));\n";
     h += "return float4(rgbOut, part);\n";
     return h;
@@ -468,26 +530,30 @@ std::string windowFacadeComposeHlsl() {
     h += "uint ti = (uint)clamp(floor(Tint + 0.5), 0.0, " + num(static_cast<float>(kWindowWallTintCount - 1)) + ");\n";
     h += "uint ri = (uint)clamp(floor(RoofFin + 0.5), 0.0, " + num(static_cast<float>(kWindowRoofFinishCount - 1)) +
          ");\n";
-    h += "float3 wall = lerp(WallAlbedo, kTint[ti] * grain, kTintS[ti]);\n";
-    h += "float3 roof = lerp(WallAlbedo, kRoof[ri] * grain, kRoofS[ri]);\n";
+    // Capped, so a pale tint times a bright grain never glares under the night lights.
+    const std::string cap = num(WindowFacadeSpec{}.wallMax);
+    h += "float3 wall = min(lerp(WallAlbedo, kTint[ti] * grain, kTintS[ti]), " + cap + ");\n";
+    h += "float3 roof = min(lerp(WallAlbedo, kRoof[ri] * grain, kRoofS[ri]), " + cap + ");\n";
     h += "bool top = Top > 0.5;\n";
     h += "bool Glass = p == 1.0;\n";
     h += "bool Frame = p == 2.0;\n";
     h += "bool Band = p == 3.0;\n";
     h += "bool Fascia = p == 4.0;\n";
     h += "bool Reveal = p >= 5.0 && p <= 8.0;\n";
-    h += "bool Own = p >= 9.0;\n";
+    h += "bool Shade = p == 20.0;\n";
+    h += "bool Metal = p == 17.0 || p == 18.0;\n";
+    h += "bool Own = p >= 9.0 && !Shade;\n";
     h += "bool Flat = Glass || Frame || Fascia || Own;\n";
     h += "float3 rn = p == 5.0 ? T : (p == 6.0 ? -T : (p == 7.0 ? Nz : -Nz));\n";
     h += "NormalOut = Reveal ? normalize(rn) : (Flat ? normalize(VertexNormal) : WallNormal);\n";
-    h += "RoughOut = Glass ? GlassRough : (Frame ? FrameRough : (Fascia ? FasciaRough : (p == 13.0 || p == 14.0 ? 0.2 : "
+    h += "RoughOut = Glass ? GlassRough : (Frame || Metal ? FrameRough : (Fascia ? FasciaRough : (p == 13.0 || p == 14.0 ? 0.2 : "
          "(p == 10.0 ? 0.45 : (Own ? 0.8 : WallRough)))));\n";
-    h += "MetalOut = Glass ? 0.0 : (Frame ? FrameMetal : (p == 10.0 ? 0.5 : (Fascia || Own ? 0.0 : WallMetal)));\n";
-    h += "AOOut = Reveal ? 0.6 * WallAO : (Flat ? 1.0 : WallAO);\n";
+    h += "MetalOut = Glass ? 0.0 : (Frame || Metal ? FrameMetal : (p == 10.0 ? 0.5 : (Fascia || Own ? 0.0 : WallMetal)));\n";
+    h += "AOOut = Reveal ? 0.6 * WallAO : (Flat ? 1.0 : (Shade ? 0.7 * WallAO : WallAO));\n";
     h += "EmissiveOut = Emit;\n";
     h += "float3 GlassAlbedo = Win.rgb * GlassBase + Curtain.rgb * Curtain.a * CurtainAlbedo;\n";
     h += "return top ? roof : (Glass ? GlassAlbedo : (Frame ? FrameColor.rgb : (Band ? Win.rgb * grain : (Reveal ? wall "
-         "* 0.8 : (Fascia || Own ? Win.rgb : wall)))));\n";
+         "* 0.8 : (Fascia || Own ? Win.rgb : (Shade ? wall * 0.5 : wall))))));\n";
     return h;
 }
 

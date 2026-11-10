@@ -126,4 +126,42 @@ FTCORE_API std::size_t massingLanePave(std::vector<MassingStreet>& streets, doub
 FTCORE_API std::size_t massingDropLanePads(std::vector<MassingBox>& pads, const std::vector<MassingStreet>& streets, double upTo,
                                            double reach);
 
+// ---- Yards on the open plains ----
+
+// Fills the large empty flat ground in an area (a paved plain between blocks, a road side with nothing along it) with
+// fenced yards, each with a shed or warehouse.
+struct MassingYards {
+    MassingRect area;                   // only ground inside it is filled
+    double cell = 2.0;                  // m: the grid the room is read on
+    double streetBack = 1.0;            // m a yard's fence keeps off a street's edge and off each `taken` foot
+    double boxGap = 6.0;                // m a yard keeps off every standing box (so only open plains fill, never a gap)
+    double gap = 4.0;                   // m between two yards (a way through)
+    double groundMin = 0.5;             // m: no yard on ground lower than this ...
+    double waterKeep = 12.0;            // m: ... nor within this of it (a quay's edge, the sea)
+    double maxRise = 1.5;               // m: the ground under a yard rises no more than this
+    double fenceHigh = 1.8, fenceThick = 0.25, fencePiece = 40.0; // m; a fence side is laid in pieces up to fencePiece
+    double gateWide = 5.0;              // m: the gate's gap, in the side nearest a street
+    double storey = 3.5;                // m: a shed's storey
+    std::vector<MassingRect> keepClear; // nothing goes into these (an entry, a goal, a square)
+    std::string prefix = "YD";          // ids "<prefix>-<n>" (the shed) and "<prefix>-<n>-F<k>" (its fence pieces)
+};
+
+struct MassingYardCounts {
+    std::size_t yards = 0, sheds = 0, fences = 0;
+    double area = 0.0; // m2 of yards
+};
+
+// Reads the room in the area on a `cell` grid: a cell is taken by a standing box (any role but a zone or a hidden one,
+// grown by boxGap), a sloped zone, a street's strip (its width plus streetBack), a `taken` foot (grown by streetBack), a
+// keep-clear rect, or ground under groundMin within waterKeep. A flat zone's top counts as the ground over it. Then
+// lots are tried west to east, south to north, largest first (36x28, 28x22, 22x18, 16x14 m, either way round): a lot
+// with every cell free, its ground within maxRise, and `gap` clear of the yards before it, becomes a yard: a shed (kind
+// "kit", source Invented, 1-3 storeys by its id's hash) across the half away from the nearest street, and a fence
+// (kind "wall", fenceHigh over the highest ground under each piece, its bottom 0.1 m under the lowest) round the lot
+// with a gateWide gap in the side nearest a street. Each box's terr_min/terr_max are left 0 (the table's own columns
+// are the caller's). Appends to `boxes` (the rest unchanged).
+FTCORE_API MassingYardCounts massingYardFill(std::vector<MassingBox>& boxes, const std::vector<MassingStreet>& streets,
+                                             const std::vector<MassingFoot>& taken, const MassingGround& ground,
+                                             const MassingYards& opts);
+
 } // namespace ftcore

@@ -6,6 +6,7 @@
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <set>
@@ -64,7 +65,7 @@ TEST_CASE("types: each cuts its own grid and window; Legacy keeps r4") {
         storeys.insert(g.storey);
         bays.insert(g.bay);
         CHECK(s.reveal >= 0.05f);
-        CHECK(s.reveal <= 0.15f);
+        CHECK(s.reveal <= 0.3f);
         const float w = windowWidthFor(spec, ty, 1234u, 1.35f);
         widths.insert(w);
         // The window always fits its bay, so a face of 20 m cuts bays.
@@ -175,4 +176,127 @@ TEST_CASE("HLSL: the r5 nodes carry the inputs, outputs and numbers the master w
         CHECK(comp.find(name) != std::string::npos);
     // Deterministic.
     CHECK(win == windowFacadeHlsl(spec));
+}
+
+TEST_CASE("styles: three or more per family, the same up a column, loggias only where they belong") {
+    const WindowFacadeSpec spec;
+    for (std::uint32_t s = 0; s < kWindowStyles; ++s)
+        CHECK(windowStyleWeight(WindowType::Legacy, static_cast<WindowStyle>(s)) == (s == 0u ? 16u : 0u));
+    for (std::uint32_t t = 1; t < kWindowTypes; ++t) {
+        const WindowType ty = static_cast<WindowType>(t);
+        std::uint32_t total = 0, styles = 0;
+        for (std::uint32_t s = 0; s < kWindowStyles; ++s) {
+            total += windowStyleWeight(ty, static_cast<WindowStyle>(s));
+            styles += windowStyleWeight(ty, static_cast<WindowStyle>(s)) > 0u ? 1u : 0u;
+        }
+        CHECK(total == kWindowStyleWeightTotal);
+        CHECK(styles >= 3u);
+        // Over many buildings and columns every weighted style shows, and a building mixes styles.
+        std::set<int> seen;
+        std::uint32_t mixed = 0;
+        for (std::uint32_t seed = 1; seed < 200; ++seed) {
+            std::set<int> own;
+            for (std::uint32_t c = 0; c < 8; ++c) {
+                const WindowStyle cs = windowColumnStyle(ty, seed * 7919u, c);
+                seen.insert(static_cast<int>(cs));
+                own.insert(static_cast<int>(cs));
+                CHECK(windowStyleWeight(ty, cs) > 0u);
+                // A column keeps its style up every storey (but a loggia's ground storey and a shop).
+                for (std::uint32_t st = 1; st < 6; ++st)
+                    CHECK(windowStyleFor(ty, seed * 7919u, c, st, false) ==
+                          (cs == WindowStyle::Loggia && ty == WindowType::Office ? WindowStyle::Plain : cs));
+                CHECK(windowStyleFor(ty, seed * 7919u, c, 0u, true) == WindowStyle::Plain);
+                CHECK(windowStyleFor(ty, seed * 7919u, c, 0u, false) != WindowStyle::Loggia);
+            }
+            mixed += own.size() >= 2u ? 1u : 0u;
+        }
+        CHECK(seen.size() == styles);
+        CHECK(mixed > 150u);
+    }
+    // Apartments and shophouses have balconies; offices never.
+    CHECK(windowStyleWeight(WindowType::Apartment, WindowStyle::Loggia) > 0u);
+    CHECK(windowStyleWeight(WindowType::Shophouse, WindowStyle::Loggia) > 0u);
+    CHECK(windowStyleWeight(WindowType::Office, WindowStyle::Loggia) == 0u);
+}
+
+TEST_CASE("styles: openings and depths") {
+    const WindowFacadeSpec spec;
+    const float bw = 2.6f, sh = 2.9f, ww = 1.5f;
+    const WindowOpening plain = windowStyleOpening(spec, WindowType::Apartment, WindowStyle::Plain, bw, sh, ww);
+    const WindowOpening ref = windowOpening(windowGridFor(spec, WindowType::Apartment), false, bw, sh, ww);
+    CHECK(plain.u0 == doctest::Approx(ref.u0));
+    CHECK(plain.v0 == doctest::Approx(ref.v0));
+    CHECK(plain.v1 == doctest::Approx(ref.v1));
+    // A loggia runs from the floor to the head, wider than the window; a small window sits at the head.
+    const WindowOpening log = windowStyleOpening(spec, WindowType::Apartment, WindowStyle::Loggia, bw, sh, ww);
+    CHECK(log.v0 * sh < 0.1f);
+    CHECK(log.v1 == doctest::Approx(plain.v1));
+    CHECK(log.u1 - log.u0 > plain.u1 - plain.u0);
+    const WindowOpening sm = windowStyleOpening(spec, WindowType::Apartment, WindowStyle::Small, bw, sh, ww);
+    CHECK((sm.u1 - sm.u0) * bw == doctest::Approx(spec.smallWidth));
+    CHECK((sm.v1 - sm.v0) * sh == doctest::Approx(spec.smallHeight));
+    CHECK(sm.v1 == doctest::Approx(plain.v1));
+    // A ribbon's small style keeps the ribbon.
+    const WindowOpening rib = windowStyleOpening(spec, WindowType::Office, WindowStyle::Small, 1.8f, 3.6f, 1.72f);
+    const WindowOpening ribP = windowStyleOpening(spec, WindowType::Office, WindowStyle::Plain, 1.8f, 3.6f, 1.72f);
+    CHECK(rib.u0 == doctest::Approx(ribP.u0));
+    CHECK(rib.v0 == doctest::Approx(ribP.v0));
+    // Depths: real reveals, a loggia a metre deep, Legacy flat.
+    for (std::uint32_t t = 1; t < kWindowTypes; ++t) {
+        const WindowType ty = static_cast<WindowType>(t);
+        CHECK(windowStyleReveal(spec, ty, WindowStyle::Plain) >= 0.12f);
+        CHECK(windowStyleReveal(spec, ty, WindowStyle::Loggia) >= 1.0f);
+        CHECK(windowTypeSpec(ty).frame > spec.base.frame);
+    }
+    CHECK(windowStyleReveal(spec, WindowType::Legacy, WindowStyle::Plain) == 0.0f);
+    // The loggia's rail is lower than its opening; the sill lip is deeper than r5's.
+    CHECK(spec.railHeight < (log.v1 - log.v0) * sh);
+    CHECK(spec.lipHeight > 0.06f);
+    CHECK(spec.lipOut > 0.05f);
+}
+
+TEST_CASE("lit share: rises up the building, capped, Legacy flat") {
+    const WindowFacadeSpec spec;
+    const float base = 0.35f;
+    float last = 0.0f;
+    for (std::uint32_t st = 0; st < 12; ++st) {
+        const float l = windowLitShare(spec, WindowType::Apartment, base, spec.upperLit, st, 12u);
+        CHECK(l >= last);
+        CHECK(l <= spec.litMax);
+        last = l;
+    }
+    CHECK(windowLitShare(spec, WindowType::Apartment, base, spec.upperLit, 1u, 12u) == doctest::Approx(base));
+    CHECK(last == doctest::Approx(std::min(base * (1.0f + spec.upperLit), spec.litMax)));
+    CHECK(last > base * 1.5f);
+    CHECK(windowLitShare(spec, WindowType::Apartment, 0.8f, 2.0f, 11u, 12u) == doctest::Approx(spec.litMax));
+    CHECK(windowLitShare(spec, WindowType::Legacy, base, spec.upperLit, 11u, 12u) == base);
+    // Two storeys or one: no rise.
+    CHECK(windowLitShare(spec, WindowType::Shophouse, base, spec.upperLit, 1u, 2u) == doctest::Approx(base));
+}
+
+TEST_CASE("HLSL: r6 styles, lit rise, sill shadow and the wall cap are wired") {
+    const WindowFacadeSpec spec;
+    const std::string win = windowFacadeHlsl(spec);
+    for (const char* name : {"kStyE", "kFr", "UpperLit", "loggia", "grille", "railZ", "sillSh", "frostGlow", "litP",
+                             "hs = "})
+        CHECK(win.find(name) != std::string::npos);
+    const std::string comp = windowFacadeComposeHlsl();
+    for (const char* name : {"Shade", "Metal", "min(lerp(WallAlbedo"}) CHECK(comp.find(name) != std::string::npos);
+}
+
+TEST_CASE("HLSL: the shop front fragments are spliced once, r5's kind block is gone") {
+    const std::string win = windowFacadeHlsl(WindowFacadeSpec{});
+    const auto count = [&](const char* what) {
+        std::size_t n = 0;
+        for (std::size_t at = win.find(what); at != std::string::npos; at = win.find(what, at + 1)) ++n;
+        return n;
+    };
+    for (const char* decl : {"uint kind =", "uint kh =", "float3 own =", "float sp =", "float3 fc =", "bool panel =",
+                             "bool lantern =", "float3 signLight =", "float shopSill =", "struct FTShop"})
+        CHECK_MESSAGE(count(decl) == 1u, decl);
+    for (const char* gone : {"uint kL", "bool oddC", "bool awning", "float sH ="}) CHECK_MESSAGE(count(gone) == 0u, gone);
+    CHECK(count("uint pick = shopPick;") == 1u);
+    CHECK(count("px = shop ? shopShift + px * shopZoom : px;") == 1u);
+    CHECK(count("!shop && (smallWin") == 1u);
+    CHECK(win.find("struct FTShop") < win.find("float v0 = (shop ? shopSill"));
 }

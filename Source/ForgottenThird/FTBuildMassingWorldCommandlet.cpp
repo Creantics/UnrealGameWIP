@@ -1,5 +1,6 @@
 #include "FTBuildMassingWorldCommandlet.h"
 #include "FTBuildRoads.h"
+#include "FTRoofDress.h"
 
 #include "ForgottenThird.h"
 
@@ -789,10 +790,12 @@ constexpr float kNightLampSource = 8.f;     // cm: the lens' radius, for soft hi
 constexpr float kNightShopCandela = 150.f;
 constexpr float kNightShopKelvin = 3500.f;
 constexpr float kNightShopReach = 900.f;  // cm
-constexpr float kNightShopOuter = 80.f;   // degrees: the most a spot's cone takes
-constexpr float kNightShopInner = 50.f;
+// Round 6: the cone's top edge (pitch + outer) stays at the horizontal, so the spill lights the street and the walls
+// across it only up to its own height (r5's 80 degrees about -35 reached 45 degrees up and glared on upper walls).
+constexpr float kNightShopOuter = 55.f;   // degrees: the most a spot's cone takes
+constexpr float kNightShopInner = 35.f;
 constexpr float kNightShopSource = 40.f;  // cm: a shop window's glow, soft
-constexpr double kNightShopPitch = -35.0; // degrees under the horizontal
+constexpr double kNightShopPitch = -55.0; // degrees under the horizontal
 
 // A lamp's head: the engine's cylinder as a flat lens, wearing FTScene::NightLampMaterial (null when FTBuildSurfaces
 // -Windows hasn't built it; the night look puts it on by the tag). The TQ-04 mesh has one material, so the glow goes on
@@ -1433,6 +1436,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// -RoofLayouts: with -Roofs, one of ftcore::MassingRoofLayout's seven layouts a roof (huts, sheds, laundry, unit farms).
 	const bool bFacadeR5 = FParse::Param(*Params, TEXT("FacadeR5"));
 	const bool bRoofLayouts = FParse::Param(*Params, TEXT("RoofLayouts"));
+	// Round 6 (FTRoofDress.h): -RoofScatter, -RoofHut=<mesh>, -RoofHutTurn=<deg>.
+	const FTRoofDress::FOptions RoofDressOptions = FTRoofDress::ParseOptions(*Params);
 	double PropLine = 3.0;
 	FParse::Value(*Params, TEXT("PropLine="), PropLine);
 	// -LanePave=<m> and -HillRock=<m>: see kLookLaneRoadIds. Both need -Surfaces.
@@ -2795,11 +2800,18 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		ftcore::MassingRoofCounts RoofCounts;
 		ftcore::MassingRoofStyle RoofStyle;
 		RoofStyle.layouts = bRoofLayouts;
+		FTRoofDress::ApplyStyle(RoofDressOptions, RoofStyle);
 		ftcore::massingRoofs(Ground, Built, Visible, RoofHosts, RoofPieces, RoofCounts, &Courts, &RoofStyle);
+		FTRoofDress::FHuts RoofHuts;
+		RoofHuts.Begin(RoofDressOptions);
 		for (const ftcore::MassingBox& Piece : RoofPieces)
 		{
-			Lay(Piece);
+			if (!RoofHuts.Take(Piece, Side))
+			{
+				Lay(Piece);
+			}
 		}
+		RoofHuts.Finish(World, Spawn);
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roofs: %d boxes on %d tops (%d left bare): %.0f m of rail on %d posts, %d tanks, "
 			"%d air-conditioning units, %d aerials."), static_cast<int32>(RoofPieces.size()), static_cast<int32>(RoofCounts.roofs),
 			static_cast<int32>(RoofCounts.bare), RoofCounts.railed, static_cast<int32>(RoofCounts.posts), static_cast<int32>(RoofCounts.tanks),

@@ -407,3 +407,48 @@ TEST_CASE("massingBuildTo puts no infill on ground under groundMin") {
         CHECK(b.cx - ex >= 10.0 - 0.6); // the ground is read every metre or so
     }
 }
+
+TEST_CASE("massingYardFill fills the open ground with fenced yards, off the boxes, the streets and the keep-clear") {
+    // A 10 m street east-west at y 60, a block in the south-west corner, a keep-clear square in the south-east.
+    std::vector<MassingStreet> streets{lane("ST-1", 10.0, 0.0, 60.0, 200.0, 60.0)};
+    std::vector<MassingBox> boxes{house("B1", 0.0, 0.0, 40.0, 40.0)};
+    MassingYards opts;
+    opts.area = {0.0, 0.0, 200.0, 120.0};
+    opts.groundMin = -1.0;
+    opts.keepClear.push_back({150.0, 0.0, 200.0, 50.0});
+    const MassingGround flat{};
+    const MassingYardCounts c = massingYardFill(boxes, streets, {}, flat, opts);
+    REQUIRE(c.yards >= 4);
+    CHECK(c.sheds == c.yards);
+    CHECK(boxes.size() == 1 + c.sheds + c.fences);
+    std::size_t gates = 0;
+    for (std::size_t i = 1; i < boxes.size(); ++i) {
+        const MassingBox& b = boxes[i];
+        INFO(b.id);
+        CHECK(b.source == MassingSource::Invented);
+        CHECK((b.kind == "kit" || b.kind == "wall"));
+        CHECK(b.cx - 0.5 * b.sx >= -1e-9);
+        CHECK(b.cx + 0.5 * b.sx <= 200.0 + 1e-9);
+        CHECK(b.cy + 0.5 * b.sy <= 120.0 + 1e-9);
+        // Off the street (its strip plus a metre), the block (plus 6 m) and the keep-clear square.
+        CHECK((b.cy - 0.5 * b.sy >= 66.0 - 1e-6 || b.cy + 0.5 * b.sy <= 54.0 + 1e-6));
+        CHECK_FALSE((b.cx - 0.5 * b.sx < 46.0 && b.cy - 0.5 * b.sy < 46.0));
+        CHECK_FALSE((b.cx + 0.5 * b.sx > 150.0 && b.cy - 0.5 * b.sy < 50.0));
+        if (b.kind == "wall") CHECK(b.z1 - b.z0 == doctest::Approx(1.9));
+        if (b.kind == "kit") CHECK(b.z1 - b.z0 >= 7.0 - 1e-9);
+        // No two of the new boxes overlap.
+        for (std::size_t k = i + 1; k < boxes.size(); ++k) {
+            const MassingBox& o = boxes[k];
+            const bool apart = std::fabs(b.cx - o.cx) >= 0.5 * (b.sx + o.sx) - 1e-6 ||
+                               std::fabs(b.cy - o.cy) >= 0.5 * (b.sy + o.sy) - 1e-6;
+            CHECK(apart);
+        }
+        if (b.id.size() > 8 && b.id.find("-F") != std::string::npos) ++gates;
+    }
+    CHECK(gates == c.fences);
+    // Ground under groundMin (flat 0 here) takes none.
+    std::vector<MassingBox> none;
+    MassingYards wet = opts;
+    wet.groundMin = 0.5;
+    CHECK(massingYardFill(none, streets, {}, flat, wet).yards == 0);
+}

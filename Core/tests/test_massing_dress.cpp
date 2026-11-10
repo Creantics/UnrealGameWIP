@@ -11,6 +11,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -1212,4 +1213,96 @@ TEST_CASE("massingFacadeData: type by height and footprint, all types and tints 
     }
     for (std::uint32_t t = 1; t < kWindowTypes; ++t) CHECK(types[t] > 0);
     CHECK(pastelOnTextured == 0);
+}
+
+TEST_CASE("massing roofs: scatter off leaves the r5 layouts; on, it adds no pieces overall") {
+    const MassingRoofStyle r5{true}, r5off{true, false}, r6{true, true};
+    std::size_t piecesR5 = 0, piecesR6 = 0, emptyR5 = 0, emptyR6 = 0;
+    for (int n = 0; n < 200; ++n) {
+        MassingBox b = flatBox("BLD-" + std::to_string(300 + n) + "_1", 0, 0, 14.0 + (n % 3) * 3.0, 10.0 + (n % 2) * 3.0,
+                               0.0, 12.0);
+        b.rot = 10.0 * (n % 5);
+        const Roofs a = styledRoofs({b}, &r5), o = styledRoofs({b}, &r5off), s = styledRoofs({b}, &r6);
+        REQUIRE(a.boxes.size() == o.boxes.size());
+        for (std::size_t k = 0; k < a.boxes.size(); ++k) {
+            CHECK(a.boxes[k].id == o.boxes[k].id);
+            CHECK(a.boxes[k].cx == o.boxes[k].cx);
+            CHECK(a.boxes[k].rot == o.boxes[k].rot);
+            CHECK(a.boxes[k].sx == o.boxes[k].sx);
+        }
+        piecesR5 += a.boxes.size();
+        piecesR6 += s.boxes.size();
+        emptyR5 += massingRoofLayout(b.id) == MassingRoofLayout::Empty ? 1u : 0u;
+        emptyR6 += massingRoofLayout(b.id, true) == MassingRoofLayout::Empty ? 1u : 0u;
+    }
+    CHECK(piecesR6 <= piecesR5);
+    CHECK(emptyR6 > emptyR5);
+}
+
+TEST_CASE("massing roofs: scatter varies tank sizes and turns, keeps pieces inside the inset and apart") {
+    const MassingRoofStyle r6{true, true};
+    std::set<int> sides, heights;
+    std::size_t turned = 0, square = 0, offCorner = 0, huts = 0;
+    for (int n = 0; n < 160; ++n) {
+        MassingBox b = flatBox("BLD-" + std::to_string(700 + n) + "_2", 0, 0, 15.0 + (n % 4) * 2.0, 11.0 + (n % 3) * 2.0,
+                               0.0, 14.0);
+        b.rot = 20.0 * (n % 3);
+        const Roofs r = styledRoofs({b}, &r6);
+        const double c = std::cos(b.rot * 3.14159265358979 / 180.0), s = std::sin(b.rot * 3.14159265358979 / 180.0);
+        std::vector<MassingFoot> feet;
+        for (const MassingBox& p : r.boxes) {
+            if (p.id.find("-RR") != std::string::npos || p.id.find("-RP") != std::string::npos) continue;
+            if (p.kind == "tank") {
+                CHECK(p.sx >= kMassingRoofTankSideMin - 1e-9);
+                CHECK(p.sx <= kMassingRoofTankSideMax + 1e-9);
+                CHECK(p.z1 - p.z0 - 0.05 >= kMassingRoofTankHeightMin - 1e-9);
+                CHECK(p.z1 - p.z0 - 0.05 <= kMassingRoofTankHeightMax + 1e-9);
+                sides.insert(static_cast<int>(p.sx * 20.0));
+                heights.insert(static_cast<int>((p.z1 - p.z0) * 10.0));
+            }
+            double d = std::fmod(p.rot - b.rot + 720.0, 90.0);
+            d = std::min(d, 90.0 - d);
+            if (p.kind != "aerial") CHECK(d <= kMassingRoofYaw + 1e-9);
+            if (p.kind == "tank" || p.kind == "unit" || p.kind == "stand" || p.kind == "shed")
+                (d > 0.5 ? turned : square) += 1;
+            // Every corner inside the inset, in the host's frame.
+            const MassingFoot f = massingBoxFoot(p);
+            const double pr = f.rot * 3.14159265358979 / 180.0, pc = std::cos(pr), ps = std::sin(pr);
+            for (const double du : {-f.hx, f.hx})
+                for (const double dw : {-f.hy, f.hy}) {
+                    const double x = f.x + du * pc - dw * ps - b.cx, y = f.y + du * ps + dw * pc - b.cy;
+                    CHECK(std::fabs(x * c + y * s) <= 0.5 * b.sx - kMassingRoofEdgeIn + 1e-6);
+                    CHECK(std::fabs(-x * s + y * c) <= 0.5 * b.sy - kMassingRoofEdgeIn + 1e-6);
+                }
+            if (p.kind == "hut") {
+                ++huts;
+                // Its short side is u, and its -u side (the door) faces the roof's middle.
+                CHECK(p.sx <= p.sy);
+                CHECK(massingRoofHutTurn(p) == 0.0);
+                const double hr = p.rot * 3.14159265358979 / 180.0;
+                CHECK(std::cos(hr) * (b.cx - p.cx) + std::sin(hr) * (b.cy - p.cy) <= 1e-6);
+                const double u = (p.cx - b.cx) * c + (p.cy - b.cy) * s, w = -(p.cx - b.cx) * s + (p.cy - b.cy) * c;
+                const double iu = 0.5 * b.sx - kMassingRoofEdgeIn, iw = 0.5 * b.sy - kMassingRoofEdgeIn;
+                const double hu = std::fabs(std::cos(hr - b.rot * 3.14159265358979 / 180.0)) > 0.5 ? 0.5 * p.sx : 0.5 * p.sy;
+                const double hw = std::fabs(std::cos(hr - b.rot * 3.14159265358979 / 180.0)) > 0.5 ? 0.5 * p.sy : 0.5 * p.sx;
+                const bool corner = near(std::fabs(u) + hu, iu, 1e-6) && near(std::fabs(w) + hw, iw, 1e-6);
+                offCorner += corner ? 0u : 1u;
+            }
+            if (p.z0 > b.z1) continue;
+            if (p.kind == "post" || p.kind == "aerial") continue;
+            for (const MassingFoot& o : feet) CHECK_FALSE(massingFeetOverlap(f, o, kMassingRoofClutterGap - 1e-6));
+            feet.push_back(f);
+        }
+    }
+    CHECK(sides.size() >= 6u);
+    CHECK(heights.size() >= 6u);
+    CHECK(turned > square);
+    REQUIRE(huts > 10u);
+    CHECK(offCorner * 3 > huts);
+    // An r5 hut, 4 m along u: the mesh turns a quarter.
+    MassingBox h = flatBox("H-RH1", 0, 0, kMassingRoofHutLong, kMassingRoofHutShort, 0, 2.5);
+    CHECK(massingRoofHutTurn(h) == 90.0);
+    h.sx = kMassingRoofHutShort;
+    h.sy = kMassingRoofHutLong;
+    CHECK(massingRoofHutTurn(h) == 0.0);
 }

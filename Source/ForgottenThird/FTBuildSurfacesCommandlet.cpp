@@ -718,6 +718,9 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	if (bR5)
 	{
 		AddInput(Win, TEXT("Type"), Data[FTScene::WindowDataType]);
+		// Upper storeys light more often at night (ftcore::windowLitShare): the top storey at LitShare * (1 + UpperLit).
+		UMaterialExpressionScalarParameter* UpperLit = AddWindowScalar(Material, TEXT("UpperLit"), ftcore::WindowFacadeSpec{}.upperLit, 2500);
+		AddInput(Win, TEXT("UpperLit"), UpperLit);
 	}
 	AddOutput(Win, TEXT("Curtain"), CMOT_Float4);
 	AddOutput(Win, TEXT("Emit"), CMOT_Float3);

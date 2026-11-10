@@ -40,6 +40,7 @@ struct WindowTypeSpec {
     float reveal = 0.0f;   // how deep the glass sits in the wall
     bool ribbon = false;   // the window fills its bay but for the mullion
     bool plinth = false;   // every face's ground storey is a band
+    float frame = 0.06f;   // the window frame's width (Legacy: the base spec's)
 };
 FTCORE_API WindowTypeSpec windowTypeSpec(WindowType type);
 
@@ -50,10 +51,46 @@ struct WindowFacadeSpec {
     float plinthFrom = 15.0f;     // m: a face this high (or more) over its street floor has a ground floor band
     float course = 0.2f;          // m: the string course along the top of a band
     float tileCourse = 0.25f;     // m between a band's tile courses
-    float lipHeight = 0.06f;      // m: a window's sill lip, under its opening
-    float lipOut = 0.05f;         // m the lip runs past the opening each side
+    float lipHeight = 0.09f;      // m: a window's sill lip, under its opening
+    float lipOut = 0.08f;         // m the lip runs past the opening each side
+    float sillShadow = 0.14f;     // m: the lip's shadow on the wall under it (a darker strip)
     float shopReveal = 0.08f;     // m: a shopfront's glass in from the wall
+    float headShadow = 0.4f;      // m: by day the glass darkens toward its head over this height (the reveal's shade)
+    float loggiaDepth = 1.1f;     // m: a recessed balcony's glass in from the wall
+    float railHeight = 1.0f;      // m: its rail or parapet over its floor
+    float baluster = 0.11f;       // m between its balusters
+    float smallWidth = 0.6f, smallHeight = 0.6f;  // m: a small frosted window, at the head of the type's opening
+    float grillePitch = 0.15f;    // m between a security grille's uprights (its rails twice that)
+    float upperLit = 1.0f;        // the top storey's lit share is LitShare * (1 + upperLit), the first storey's LitShare
+    float litMax = 0.9f;          // the most any storey's lit share reaches
+    float wallMax = 0.75f;        // the brightest a tinted wall's or roof's albedo gets (no glare under night lights)
 };
+
+// Window styles: each column of a building (the same up every storey) takes one, by a weight per type. Plain: the
+// type's window; Mullion: with a mullion and a transom; Grille: behind a steel security grille at the wall's face;
+// Loggia: a recessed balcony, the bay's width from floor to head, loggiaDepth deep, a rail or parapet at the face and
+// glazed doors at the back (never on the ground storey, a shop or an office); Small: a small high frosted window (on a
+// ribbon, the opening keeps its size and frosts its lower part).
+enum class WindowStyle : std::uint8_t { Plain = 0, Mullion = 1, Grille = 2, Loggia = 3, Small = 4 };
+inline constexpr std::uint32_t kWindowStyles = 5;
+inline constexpr std::uint32_t kWindowStyleWeightTotal = 16;
+// A type's weight for a style (out of kWindowStyleWeightTotal; Legacy: all Plain). No allocation.
+FTCORE_API std::uint32_t windowStyleWeight(WindowType type, WindowStyle style);
+// The style a column takes (its hash alone, by the weights), and the one a cell shows: Loggia falls back to Plain on
+// storey 0, a shop or an office. No allocation.
+FTCORE_API WindowStyle windowColumnStyle(WindowType type, std::uint32_t seed, std::uint32_t column);
+FTCORE_API WindowStyle windowStyleFor(WindowType type, std::uint32_t seed, std::uint32_t column, std::uint32_t storey,
+                                      bool shop);
+// The opening a style cuts in a (non-shop) cell, from the type's (as windowOpening with windowGridFor's spec). No
+// allocation.
+FTCORE_API WindowOpening windowStyleOpening(const WindowFacadeSpec& spec, WindowType type, WindowStyle style,
+                                            float bayWidth, float storeyHeight, float windowWidth);
+// How deep a style's glass sits: the type's reveal, a loggia's loggiaDepth. No allocation.
+FTCORE_API float windowStyleReveal(const WindowFacadeSpec& spec, WindowType type, WindowStyle style);
+// The share of a storey's windows lit at night: litShare on storeys 0 and 1, rising to litShare * (1 + upperLit) on
+// the top storey, at most litMax (Legacy: litShare everywhere). No allocation.
+FTCORE_API float windowLitShare(const WindowFacadeSpec& spec, WindowType type, float litShare, float upperLit,
+                                std::uint32_t storey, std::uint32_t storeys);
 
 // The grid spec a type cuts (the base with the type's storey, bay, pier, sill, opening and width). No allocation.
 FTCORE_API WindowGridSpec windowGridFor(const WindowFacadeSpec& spec, WindowType type);
@@ -83,6 +120,9 @@ enum class WindowFacadePart : std::uint8_t {
     Porthole = 14,  // a laundromat's machine door
     Course = 15,    // the string course along the top of a band
     Awning = 16,    // a cafe's striped awning, over its fascia
+    Grille = 17,    // a security grille's bars, at the wall's face
+    Rail = 18,      // a loggia's rail and balusters, at the wall's face
+    SillShadow = 20,  // the wall in the lip's shadow
 };
 
 // Through an opening u0..u1 x v0..v1 of a cell (bayWidth x storeyHeight metres) whose glass sits `reveal` metres in: the

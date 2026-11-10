@@ -2,6 +2,7 @@
 
 #include "ForgottenThird.h"
 
+#include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/StaticMesh.h"
@@ -67,6 +68,79 @@ struct FRoadPainter
 	const FFTRoadsHost& Host;
 	UStaticMesh* Cylinder = nullptr;
 	UMaterialInterface* Tints[static_cast<int32>(ftcore::RoadTint::Count)] = {};
+	// The instanced solids (a network's poles, wires and signs): one actor, one HISM per mesh, tint and collision,
+	// their transforms gathered by Lay and added at once by Flush.
+	AActor* Holder = nullptr;
+	TMap<uint32, UHierarchicalInstancedStaticMeshComponent*> Isms;
+	TMap<uint32, TArray<FTransform>> Pending;
+	int32 Instances = 0;
+
+	UHierarchicalInstancedStaticMeshComponent* Ism(uint32 Key, UStaticMesh* Mesh, ftcore::RoadTint Which, bool bCollide, bool bFlat)
+	{
+		if (UHierarchicalInstancedStaticMeshComponent** Found = Isms.Find(Key))
+		{
+			return *Found;
+		}
+		if (!Holder)
+		{
+			Holder = Host.World->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, *Host.Spawn);
+			if (!Holder)
+			{
+				return nullptr;
+			}
+			USceneComponent* Root = NewObject<USceneComponent>(Holder, TEXT("Root"));
+			Root->CreationMethod = EComponentCreationMethod::Instance;
+			Root->SetMobility(EComponentMobility::Static);
+			Holder->SetRootComponent(Root);
+			Holder->AddInstanceComponent(Root);
+			Root->RegisterComponent();
+			Holder->SetActorLabel(TEXT("Road_Instances"));
+			Holder->Tags.Add(TEXT("FTRoad"));
+		}
+		const FName Name(*FString::Printf(TEXT("RoadIsm_%s_%s%s"), UTF8_TO_TCHAR(ftcore::roadTintName(Which)),
+			Mesh == Cylinder ? TEXT("Cyl") : TEXT("Cube"), bCollide ? TEXT("_Collide") : TEXT("")));
+		UHierarchicalInstancedStaticMeshComponent* Comp = NewObject<UHierarchicalInstancedStaticMeshComponent>(Holder, Name);
+		Comp->CreationMethod = EComponentCreationMethod::Instance;
+		Comp->SetMobility(EComponentMobility::Static);
+		Comp->SetStaticMesh(Mesh);
+		if (UMaterialInterface* Material = Tint(Which))
+		{
+			Comp->SetMaterial(0, Material);
+		}
+		if (bCollide)
+		{
+			Comp->SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
+		}
+		else
+		{
+			Comp->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
+			Comp->SetCanEverAffectNavigation(false);
+		}
+		if (bFlat)
+		{
+			Comp->SetCastShadow(false);
+		}
+		Comp->SetupAttachment(Holder->GetRootComponent());
+		Holder->AddInstanceComponent(Comp);
+		Comp->RegisterComponent();
+		Isms.Add(Key, Comp);
+		return Comp;
+	}
+
+	// Adds the gathered instances (call once, after the last Lay).
+	void Flush()
+	{
+		for (TPair<uint32, TArray<FTransform>>& It : Pending)
+		{
+			UHierarchicalInstancedStaticMeshComponent** Comp = Isms.Find(It.Key);
+			if (Comp && *Comp && It.Value.Num() > 0)
+			{
+				(*Comp)->AddInstances(It.Value, false, true);
+				Instances += It.Value.Num();
+			}
+		}
+		Pending.Reset();
+	}
 
 	UMaterialInterface* Tint(ftcore::RoadTint Which)
 	{
@@ -108,6 +182,47 @@ struct FRoadPainter
 	{
 		const ftcore::MassingBox& Box = Solid.box;
 		const double Height = FMath::Max(Box.z1 - Box.z0, ftcore::kMassingMinHeight);
+		const bool bFlat = Solid.tint == ftcore::RoadTint::LineWhite || Solid.tint == ftcore::RoadTint::LineYellow ||
+			Solid.tint == ftcore::RoadTint::LensRed || Solid.tint == ftcore::RoadTint::LensAmber || Solid.tint == ftcore::RoadTint::LensGreen ||
+			Solid.tint == ftcore::RoadTint::Wire;
+		if (Solid.instanced)
+		{
+			const bool bCyl = Solid.shape == ftcore::RoadShape::Cylinder && Cylinder;
+			FVector Location, Scale;
+			FRotator Rotation;
+			if (bCyl)
+			{
+				const ftcore::MassingVec At = ftcore::massingEnginePoint(Host.Side, Box.cx, Box.cy, Box.z0 + Height * 0.5);
+				Location = FVector(At.x, At.y, At.z) * 100.0;
+				Scale = FVector(Box.sx, Box.sy, Height);
+				Rotation = FRotator(0.0, ftcore::massingEngineYaw(Box.rot), 0.0);
+				if (Solid.axis == ftcore::RoadAxis::AlongU)
+				{
+					Scale = FVector(Height, Box.sy, Box.sx);
+					Rotation.Pitch = 90.0;
+				}
+				else if (Solid.axis == ftcore::RoadAxis::AlongW)
+				{
+					Scale = FVector(Box.sx, Height, Box.sy);
+					Rotation.Roll = 90.0;
+				}
+			}
+			else
+			{
+				const ftcore::MassingCubePose Pose = ftcore::massingCubePose(Box, Height);
+				const ftcore::MassingVec At = ftcore::massingEnginePoint(Host.Side, Box.cx, Box.cy, Box.z0 + Height * 0.5 + Pose.lift);
+				Location = FVector(At.x, At.y, At.z) * 100.0;
+				Scale = FVector(Pose.scale.x, Pose.scale.y, Pose.scale.z);
+				Rotation = FRotator(Pose.pitch, Pose.yaw, Pose.roll);
+			}
+			const uint32 Key = (bCyl ? 1u : 0u) | (Solid.collide ? 2u : 0u) | (static_cast<uint32>(Solid.tint) << 2);
+			if (!Ism(Key, bCyl ? Cylinder : Host.Cube, Solid.tint, Solid.collide, bFlat))
+			{
+				return false;
+			}
+			Pending.FindOrAdd(Key).Add(FTransform(Rotation, Location, Scale));
+			return true;
+		}
 		AStaticMeshActor* Actor = nullptr;
 		if (Solid.shape == ftcore::RoadShape::Cylinder && Cylinder)
 		{
@@ -144,9 +259,6 @@ struct FRoadPainter
 			Mesh->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 			Mesh->SetCanEverAffectNavigation(false);
 		}
-		const bool bFlat = Solid.tint == ftcore::RoadTint::LineWhite || Solid.tint == ftcore::RoadTint::LineYellow ||
-			Solid.tint == ftcore::RoadTint::LensRed || Solid.tint == ftcore::RoadTint::LensAmber || Solid.tint == ftcore::RoadTint::LensGreen ||
-			Solid.tint == ftcore::RoadTint::Wire;
 		if (bFlat)
 		{
 			Mesh->SetCastShadow(false);
@@ -422,6 +534,7 @@ bool Lay(FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::
 				return false;
 			}
 		}
+		Paint.Flush();
 		int32 Lamps = 0;
 		for (size_t L = 0; L < Build.lamps.size(); ++L)
 		{
@@ -461,6 +574,8 @@ bool Lay(FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::
 							  : TEXT("no vehicles (no -Vehicles)"));
 	}
 	Host.RoadsTo = Host.Taken ? Host.Taken->size() : 0;
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roads: %d solids laid as instances (poles, wires, signs) in %d components on one actor."),
+		Paint.Instances, Paint.Isms.Num());
 	return true;
 }
 
