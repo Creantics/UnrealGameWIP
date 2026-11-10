@@ -24,25 +24,26 @@ namespace ftcore {
 
 struct NightLook {
     float moonShare = 0.10f;       // the directional light at full night, as a share of its day intensity
-    float skyFill = 0.65f;         // the sky light at full night, as a share of its day intensity (net of the moon)
+    float skyFill = 0.32f;         // the sky light at full night, as a share of its day intensity (net of the moon)
     float fogKeep = 0.08f;         // the height fog's own inscattering colour kept at full night
-    float exposureEV100 = -1.5f;   // the night exposure's centre, from NightAmount kExposureLockAt on ...
-    float exposureRangeEV = 1.25f; // ... and its half-width: auto exposure moves within centre +- this (0 = locked)
+    float exposureEV100 = -1.2f;   // the night exposure's centre, from NightAmount kExposureLockAt on ...
+    float exposureRangeEV = 1.0f;  // ... and its half-width: auto exposure moves within centre +- this (0 = locked)
     float whiteKelvin = 5000.f;    // the camera's white balance at full night (blended from the day's by NightAmount)
     float dayWetShare = 0.58f;     // the look's ground wetness by full day, as a share of its own (full at night):
                                    // Solhaven's 0.6 is about 0.35 by day
-    float lampCandela = 18.f;      // warm-white street lamps
+    float lampCandela = 24.f;      // warm-white street lamps
     float lampReachM = 30.f;       // attenuation radius: the inverse-square window is about 0.9 at 15 m, not 0.5
-    float lampKelvin = 2700.f;
+    float lampKelvin = 2400.f;     // orange street glow (2200-2700 K reads as the avenues' warm line)
     float lampOuterDeg = 80.f;     // the pooled lamps' cone half-angles (the engine's widest is 80) and lens radius
     float lampInnerDeg = 55.f;     // (cm; larger stretches the lamp's highlight on wet ground into a streak)
     float lampSourceCm = 20.f;
-    float shopCandela = 12.f;      // LED shop spill, cooler than the lamps beside them
+    float shopCandela = 15.f;      // LED shop spill, cooler than the lamps beside them
     float shopReachM = 9.f;
     float shopKelvin = 4000.f;
-    std::array<float, 3> glow{0.026f, 0.019f, 0.013f};   // fog inscattering added at full night (linear luminance)
-    std::array<float, 3> moonTint{0.55f, 0.68f, 1.f};
-    std::array<float, 3> skyTint{0.60f, 0.72f, 1.f};
+    std::array<float, 3> glow{0.030f, 0.019f, 0.010f};   // fog inscattering added at full night (linear luminance)
+    // The ambient is teal-blue, not plain blue (green well over red), so the warm lamps and the cool fill part clearly.
+    std::array<float, 3> moonTint{0.50f, 0.74f, 1.f};
+    std::array<float, 3> skyTint{0.34f, 0.58f, 0.64f};
     float capRadiusM = 15.f;       // lights within this of each other share their light
     float capShare = 0.2f;         // each neighbour within capRadiusM takes this much off (1 / (1 + capShare n))
     float capFloor = 0.4f;         // no light falls under this share of its candela
@@ -80,5 +81,45 @@ FTCORE_API float nightLampScale(const NightLook& look, std::size_t neighbours);
 // Neighbours are counted up to kNightCapCount. Allocates (a LightPicker and its scratch), so load time only.
 inline constexpr std::size_t kNightCapCount = 32;
 FTCORE_API void nightLampScales(const NightLook& look, const float* xy, std::size_t count, float unitsPerMetre, float* out);
+
+// The dusk: a low sun's saturated sky (a magenta-purple dome, a warm pink sun, a sky fill held low so the city stands
+// as a silhouette against it, and a lens flare off the sun). duskAmount is a bell over the sun's elevation: 0 above
+// startDeg, 1 at peakDeg, 0 again below endDeg; a morning sun takes morningShare of it. duskFrame turns an amount into
+// the blends a world applies to the lights it had by day, before the night's (nightFrame) go over them, so as the night
+// rises it wins. The clock and a still at a dusk hour read the same two functions. No allocation.
+struct DuskLook {
+    float startDeg = 14.f;    // the sun's elevation (degrees) dusk starts from ...
+    float peakDeg = 2.f;      // ... is fullest at ...
+    float endDeg = -7.f;      // ... and is gone by
+    float morningShare = 0.4f;
+    std::array<float, 3> sunTint{1.f, 0.56f, 0.44f};     // the sun's colour times this at full dusk (pink-orange)
+    std::array<float, 3> skyGlow{1.25f, 0.70f, 1.18f};   // the atmosphere's sky luminance factor at full dusk (magenta-purple)
+    std::array<float, 3> fillTint{0.95f, 0.66f, 0.92f};  // the sky light's colour times this
+    float fillScale = 0.55f;  // the sky light's intensity times this: faces in shade go dark, the skyline a silhouette
+    std::array<float, 3> fogTint{1.f, 0.62f, 0.86f};     // the height fog's inscattering times this
+    float flare = 1.6f;       // lens flare intensity at full dusk (blended from the volume's own; the engine default is 1)
+    float flareThreshold = 2.5f; // the flare threshold at full dusk (the engine default 8 hides a low sun's flare)
+    float bloomAdd = 0.35f;   // added to the volume's bloom at full dusk
+};
+
+struct DuskFrame {
+    float amount = 0.f;
+    std::array<float, 3> sunMul{1.f, 1.f, 1.f};    // multiply the light's day colour by these
+    std::array<float, 3> skyGlow{1.f, 1.f, 1.f};   // the atmosphere's sky luminance factor (times its own)
+    std::array<float, 3> fillMul{1.f, 1.f, 1.f};
+    float fillScale = 1.f;
+    std::array<float, 3> fogMul{1.f, 1.f, 1.f};
+    float flareMix = 0.f;      // blend the volume's lens flare toward flare / flareThreshold by this
+    float flare = 0.f;
+    float flareThreshold = 8.f;
+    float bloomAdd = 0.f;
+};
+
+// 0..1 for a sun this many degrees up, in the evening or (scaled by morningShare) the morning. No allocation.
+FTCORE_API float duskAmount(const DuskLook& look, float sunElevationDeg, bool evening);
+// The blends at an amount (clamped 0..1). No allocation.
+FTCORE_API DuskFrame duskFrame(const DuskLook& look, float amount);
+// The hour of the evening the sun stands at peakDeg, for a still or a -TimeOfDay at full dusk. No allocation.
+FTCORE_API double duskPeakHour(const DuskLook& look, float latitudeDeg);
 
 } // namespace ftcore

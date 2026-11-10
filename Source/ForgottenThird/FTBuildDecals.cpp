@@ -13,6 +13,8 @@
 #include "Materials/MaterialExpressionLocalPosition.h"
 #include "Materials/MaterialExpressionPerInstanceCustomData.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionWorldPosition.h"
+#include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "MaterialShared.h"
 #include "Misc/CommandLine.h"
@@ -30,7 +32,8 @@ namespace FTDecalBuild
 constexpr double kPoseDepth = 0.02;
 // The instance custom data's parameter names, for the custom primitive data a fallback actor carries (same slots).
 const TCHAR* const kDataNames[ftcore::kRoadDecalData] = {TEXT("DecalKind"), TEXT("DecalSeed"), TEXT("DecalSizeU"), TEXT("DecalSizeW")};
-const TCHAR* const kKindNames[ftcore::kRoadDecalKinds] = {TEXT("cracks"), TEXT("stains"), TEXT("manholes"), TEXT("patches"), TEXT("kerb grime")};
+const TCHAR* const kKindNames[ftcore::kRoadDecalKinds] = {TEXT("cracks"), TEXT("stains"), TEXT("manholes"), TEXT("patches"),
+	TEXT("kerb grime"), TEXT("oil drips"), TEXT("tactile strips"), TEXT("drain grates")};
 
 template <typename T>
 T* AddNode(UMaterial* Material, int32 X, int32 Y)
@@ -120,6 +123,7 @@ UMaterial* BuildMaterial(UPackage* Package)
 		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: -RoadDecals: %s or its Wetness is missing; the decals stay dry."), *LookPath);
 	}
 	UMaterialExpressionLocalPosition* LocalPos = AddNode<UMaterialExpressionLocalPosition>(Material, -900, 600);
+	UMaterialExpressionWorldPosition* WorldPos = AddNode<UMaterialExpressionWorldPosition>(Material, -900, 700);
 
 	UMaterialExpressionCustom* Custom = AddNode<UMaterialExpressionCustom>(Material, -400, 200);
 	Custom->Description = TEXT("FTRoadDecal");
@@ -132,6 +136,7 @@ UMaterial* BuildMaterial(UPackage* Package)
 	AddCustomInput(Custom, TEXT("SizeU"), Data[2]);
 	AddCustomInput(Custom, TEXT("SizeW"), Data[3]);
 	AddCustomInput(Custom, TEXT("Wetness"), Wetness);
+	AddCustomInput(Custom, TEXT("WorldPos"), WorldPos);
 	// Output 0 is the colour, then these in order.
 	AddCustomOutput(Custom, TEXT("RoughOut"), CMOT_Float1);
 	AddCustomOutput(Custom, TEXT("MaskOut"), CMOT_Float1);
@@ -144,6 +149,31 @@ UMaterial* BuildMaterial(UPackage* Package)
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
 	return Material;
+}
+
+// Stamps the surface master's "Street" scalar (its street layer: asphalt, pavement, kerb, marking) on the road tints'
+// instances the roads made in Package (MI_Road_<tint>), so they texture without -RoadDecals too.
+int32 StampStreetKinds(UPackage* Package)
+{
+	int32 Stamped = 0;
+	for (int32 T = 0; T < static_cast<int32>(ftcore::RoadTint::Count); ++T)
+	{
+		const ftcore::RoadTint Which = static_cast<ftcore::RoadTint>(T);
+		const int Kind = ftcore::roadStreetKind(Which);
+		if (Kind <= 0)
+		{
+			continue;
+		}
+		UMaterialInstanceConstant* Mic = FindObject<UMaterialInstanceConstant>(Package,
+			*FString::Printf(TEXT("MI_Road_%s"), UTF8_TO_TCHAR(ftcore::roadTintName(Which))));
+		if (Mic)
+		{
+			Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Street")), static_cast<float>(Kind));
+			Mic->PostEditChange();
+			++Stamped;
+		}
+	}
+	return Stamped;
 }
 
 bool Wanted(double& Density)
@@ -162,6 +192,10 @@ void FTBuildDecals::Lay(UPackage* Package, FFTCellInstancer& Cells, const std::v
 	const std::vector<ftcore::RoadBuild>& Builds, double Side)
 {
 	using namespace FTDecalBuild;
+	if (Package)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: road tints given a street layer: %d."), StampStreetKinds(Package));
+	}
 	double Density = 1.0;
 	if (!Wanted(Density) || Builds.empty())
 	{
@@ -183,7 +217,7 @@ void FTBuildDecals::Lay(UPackage* Package, FFTCellInstancer& Cells, const std::v
 		{
 			continue; // a network street's stand-in: the network is all in Builds[0]
 		}
-		ftcore::roadDecals(Builds[R].solids.data(), Builds[R].solids.size(), Spec, Decals, Counts);
+		ftcore::roadDecals(Builds[R], Spec, Decals, Counts);
 	}
 	if (Decals.empty())
 	{
@@ -212,12 +246,14 @@ void FTBuildDecals::Lay(UPackage* Package, FFTCellInstancer& Cells, const std::v
 	}
 	const double Area = Counts.asphaltM2 + Counts.pavementM2;
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -RoadDecals=%.2f: %d decals on %d slabs (%.0f m2 carriageway, %.0f m2 pavement, "
-		"%.2f per 100 m2): %d %s, %d %s, %d %s, %d %s, %d %s; %d left out at the cap of %d."),
+		"%.2f per 100 m2): %d %s, %d %s, %d %s, %d %s, %d %s, %d %s, %d %s, %d %s; %d left out at the cap of %d."),
 		Density, static_cast<int32>(Decals.size()), static_cast<int32>(Counts.slabs), Counts.asphaltM2, Counts.pavementM2,
 		Area > 0.0 ? 100.0 * static_cast<double>(Decals.size()) / Area : 0.0,
 		static_cast<int32>(Counts.perKind[0]), kKindNames[0], static_cast<int32>(Counts.perKind[1]), kKindNames[1],
 		static_cast<int32>(Counts.perKind[2]), kKindNames[2], static_cast<int32>(Counts.perKind[3]), kKindNames[3],
-		static_cast<int32>(Counts.perKind[4]), kKindNames[4], static_cast<int32>(Counts.capped), static_cast<int32>(Spec.maxDecals));
+		static_cast<int32>(Counts.perKind[4]), kKindNames[4], static_cast<int32>(Counts.perKind[5]), kKindNames[5],
+		static_cast<int32>(Counts.perKind[6]), kKindNames[6], static_cast<int32>(Counts.perKind[7]), kKindNames[7],
+		static_cast<int32>(Counts.capped), static_cast<int32>(Spec.maxDecals));
 }
 
 #else

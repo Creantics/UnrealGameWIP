@@ -198,6 +198,15 @@ WindowCurtainHit windowCurtainHit(const WindowGridSpec& spec, float bayWidth, fl
     return c;
 }
 
+std::string windowTintTableHlsl() {
+    std::string h = "float3 tints[" + std::to_string(kWindowTints) + "] = { ";
+    for (std::uint32_t i = 0; i < kWindowTints; ++i) {
+        const auto& t = kWindowTintRgb[i];
+        h += "float3(" + num(t[0]) + ", " + num(t[1]) + ", " + num(t[2]) + ")" + (i + 1 < kWindowTints ? ", " : " };\n");
+    }
+    return h;
+}
+
 std::string windowInteriorHlsl(const WindowGridSpec& s) {
     const std::string rooms = unum(kWindowRooms), shops = unum(kWindowShops);
     std::string h;
@@ -296,8 +305,7 @@ std::string windowInteriorHlsl(const WindowGridSpec& s) {
     h += "float3 seen = c * (1.0 - ca);\n";
     // The opening's own light: the room's by day, fading with Night; by night a lit room's in its tint, and its
     // curtain's, weaker. A curtain is never lit on its own.
-    h += "float3 tints[" + std::to_string(kWindowTints) +
-         "] = { float3(1.0, 0.78, 0.52), float3(1.0, 0.92, 0.80), float3(0.82, 0.90, 1.0), float3(1.0, 0.66, 0.42) };\n";
+    h += windowTintTableHlsl();
     h += "float on = (inGlass && lit) ? Night : 0.0;\n";
     h += "float3 day = seen * (shop ? ShopDay : RoomDay) * (1.0 - Night);\n";
     h += "float3 night = on * (seen + cc.rgb * ca * CurtainGlow) * tints[tint] * (shop ? ShopGlow : GlowScale);\n";

@@ -297,7 +297,7 @@ void buildSide(Ctx& x, const Frame& fr, double sigma, double hc, double w2, doub
             // Tactile paving at the ramp's foot.
             x.add(x.box(fr, s0 + 0.3, s1 - 0.3, lo(hc + 0.15, hc + 0.75), hi(hc + 0.15, hc + 0.75),
                         g + (0.45) * rise + kMarkLift, kMarkDeep, 0.0, sigma * rise, "tactile"),
-                  RoadTint::LineYellow, false);
+                  RoadTint::Tactile, false);
             x.add(x.box(fr, s0, s1, lo(rk, w2), hi(rk, w2), pv, kRoadSlabDepth, 0.0, 0.0, "pavement"),
                   RoadTint::Pavement, true);
             break;
@@ -460,6 +460,9 @@ RoadColor roadTint(RoadTint tint) {
     case RoadTint::CarCream: return {0.70f, 0.64f, 0.50f, 0.3f};
     case RoadTint::TaxiYellow: return {0.75f, 0.52f, 0.05f, 0.3f};
     case RoadTint::BusGreen: return {0.10f, 0.35f, 0.22f, 0.3f};
+    case RoadTint::Tactile: return {0.75f, 0.55f, 0.08f, 0.6f};
+    case RoadTint::SharedLane: return {0.36f, 0.355f, 0.34f, 0.8f};
+    case RoadTint::Water: return {0.02f, 0.05f, 0.05f, 0.03f};
     case RoadTint::Count: break;
     }
     return {0.5f, 0.5f, 0.5f, -1.f};
@@ -471,9 +474,24 @@ const char* roadTintName(RoadTint tint) {
                                         "LensAmber", "LensGreen",    "SignRed",   "SignBlue",  "SignWhite",
                                         "Glass",     "Wood",         "BarrierRed", "Wire",     "Tyre",
                                         "CarWhite",  "CarSilver",    "CarBlack",  "CarRed",    "CarBlue",
-                                        "CarGreen",  "CarCream",     "TaxiYellow", "BusGreen"};
+                                        "CarGreen",  "CarCream",     "TaxiYellow", "BusGreen",  "Tactile",
+                                        "SharedLane", "Water"};
     const auto i = static_cast<std::size_t>(tint);
     return i < sizeof names / sizeof names[0] ? names[i] : "Unknown";
+}
+
+int roadTintStreet(RoadTint tint) {
+    switch (tint) {
+    case RoadTint::Asphalt:
+    case RoadTint::AsphaltPatch: return 1;
+    case RoadTint::Pavement: return 2;
+    case RoadTint::Kerb: return 3;
+    case RoadTint::LineWhite:
+    case RoadTint::LineYellow: return 4;
+    case RoadTint::SharedLane: return 5;
+    case RoadTint::Tactile: return kRoadStreetTactile;
+    default: return 0;
+    }
 }
 
 const char* roadVehicleName(RoadVehicleKind kind) {
@@ -1753,6 +1771,7 @@ struct NetNode {
     std::vector<NetArm> arms;
     std::vector<NetCorner> corners;
     bool signal = false;
+    bool scramble = false; // all-walk phase W and diagonal zebras
     std::string id;
 };
 
@@ -1794,6 +1813,98 @@ MassingBox netRing(Ctx& x, RoadPoint c, double a, double step, double r0, double
     return x.at(netAdd(c, netMul(u, rm)), angleOf(u), radial, chord, top - depth, top, kind);
 }
 
+// A scramble's diagonal zebras: walk points kRoadZebraWide/2 + 0.3 m off each inner corner's kerb arc and near each
+// arm's end of a straight or outer kerb's fill; pairs from different gaps 25-65 degrees to every arm, the shortest
+// first, each point used once, two at most; bars kRoadZebraBar along the walk and kRoadZebraWide across it in 1 m
+// pieces, each flat on the highest of this node's fill (its solids from solid0) under it; a piece off the fill (over a
+// kerb) is left out.
+void netScramble(Ctx& x, const NetNode& nd, std::size_t solid0) {
+    struct Walk {
+        RoadPoint p;
+        std::size_t gap;
+    };
+    std::vector<Walk> walks;
+    const std::size_t k = nd.arms.size();
+    const double half = kRoadZebraWide * 0.5;
+    for (std::size_t gi = 0; gi < k; ++gi) {
+        const NetArm& ai = nd.arms[gi];
+        const NetArm& aj = nd.arms[(gi + 1) % k];
+        const NetCorner* cn = nullptr;
+        for (const NetCorner& c : nd.corners)
+            if (c.i == gi && !c.outer) cn = &c;
+        if (cn != nullptr) {
+            const RoadPoint toward = netUnit(netSub(nd.p, cn->c));
+            walks.push_back({netAdd(cn->c, netMul(toward, kRoadCornerRadius + 0.3 + half)), gi});
+        } else {
+            const double si = std::max(ai.sc - half - 0.3, 1.0), sj = std::max(aj.sc - half - 0.3, 1.0);
+            walks.push_back({netAdd(nd.p, netAdd(netMul(ai.d, si), netMul(netLeft(ai.d), ai.hc - 0.3))), gi});
+            walks.push_back({netAdd(nd.p, netSub(netMul(aj.d, sj), netMul(netLeft(aj.d), aj.hc - 0.3))), gi});
+        }
+    }
+    struct Pair {
+        std::size_t a = 0, b = 0;
+        double len = 0.0;
+    };
+    std::vector<Pair> pairs;
+    const double cMax = std::cos(kPi * 25.0 / 180.0), cMin = std::cos(kPi * 65.0 / 180.0);
+    for (std::size_t a = 0; a < walks.size(); ++a)
+        for (std::size_t b = a + 1; b < walks.size(); ++b) {
+            if (walks[a].gap == walks[b].gap) continue;
+            const RoadPoint d = netSub(walks[b].p, walks[a].p);
+            const double len = netLen(d);
+            if (len < 4.0) continue;
+            bool ok = true;
+            for (const NetArm& arm : nd.arms) {
+                const double c = std::fabs(netDot(netMul(d, 1.0 / len), arm.d));
+                if (c > cMax || c < cMin) ok = false;
+            }
+            if (ok) pairs.push_back({a, b, len});
+        }
+    std::sort(pairs.begin(), pairs.end(), [](const Pair& l, const Pair& r) { return l.len < r.len; });
+    std::vector<char> used(walks.size(), 0);
+    int made = 0;
+    for (const Pair& pr : pairs) {
+        if (made >= 2) break;
+        if (used[pr.a] || used[pr.b]) continue;
+        used[pr.a] = used[pr.b] = 1;
+        ++made;
+        const RoadPoint p0 = walks[pr.a].p, p1 = walks[pr.b].p;
+        const Frame f = frameOf(p0.x, p0.y, p1.x, p1.y);
+        const int across = static_cast<int>(std::ceil(kRoadZebraWide - 1e-9));
+        const double pw = kRoadZebraWide / across;
+        for (double s = 0.3; s + kRoadZebraBar <= pr.len - 0.3 + 1e-9; s += 2.0 * kRoadZebraBar) {
+            for (int c = 0; c < across; ++c) {
+                const double t0 = -half + c * pw, t1 = t0 + pw;
+                double top = -1e9;
+                const RoadPoint probe[5] = {f.at(s, t0), f.at(s, t1), f.at(s + kRoadZebraBar, t0),
+                                            f.at(s + kRoadZebraBar, t1), f.at(s + kRoadZebraBar * 0.5, (t0 + t1) * 0.5)};
+                bool onFill = true; // a piece any of whose probes misses the fill (over a kerb) is left out
+                for (const RoadPoint& q : probe) {
+                    bool hit = false;
+                    for (std::size_t i = solid0; i < x.out.solids.size(); ++i) {
+                        const RoadSolid& sl = x.out.solids[i];
+                        if (!slabSolid(sl) || !slabHas(sl, q.x, q.y)) continue;
+                        top = std::max(top, topAt(sl.box, q.x, q.y));
+                        hit = true;
+                    }
+                    onFill = onFill && hit;
+                }
+                if (!onFill) continue;
+                x.add(x.box(f, s, s + kRoadZebraBar, t0, t1, top + kMarkLift, kMarkDeep, 0.0, 0.0, "mark"),
+                      RoadTint::LineWhite, false);
+                ++x.out.counts.markings;
+            }
+        }
+        RoadQuad q;
+        q.id = nd.id + "-ZD" + std::to_string(made);
+        q.junction = nd.id;
+        q.pts = {f.at(0.0, -half), f.at(pr.len, -half), f.at(pr.len, half), f.at(0.0, half)};
+        x.out.crossings.push_back(q);
+        x.out.keepOut.push_back(footOf(x.box(f, 0.0, pr.len, -half, half, 0, 0, 0, 0, "foot")));
+        ++x.out.counts.zebras;
+    }
+}
+
 } // namespace
 
 bool roadNetTable(std::string_view csv) {
@@ -1813,9 +1924,11 @@ bool roadNetTable(std::string_view csv) {
     return false;
 }
 
-bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::string* error) {
+bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::string* error,
+                   std::vector<RoadCanal>* canals) {
     using namespace detail;
     out.clear();
+    if (canals) canals->clear();
     std::vector<Record> recs;
     if (!splitCsv(csv, recs, error)) return false;
     std::vector<std::string> head;
@@ -1844,6 +1957,46 @@ bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::s
         r.kind = std::string(col("kind"));
         if (!validId(r.id)) return fail(error, rec.line, "a street needs an id (A-Z, 0-9, '_', '-')");
         if (!validKind(r.kind)) return fail(error, rec.line, r.id + ": a street needs a kind");
+        if (r.kind == "canal") {
+            RoadCanal c;
+            c.id = r.id;
+            const std::string_view ps = col("pts");
+            const std::size_t semi = ps.find(';');
+            auto corner = [&](std::string_view item, double& x, double& y) {
+                item = trim(item);
+                const std::size_t k = item.find(':');
+                return k != std::string_view::npos && parseNumber(item.substr(0, k), x) &&
+                       parseNumber(item.substr(k + 1), y);
+            };
+            if (semi == std::string_view::npos || !corner(ps.substr(0, semi), c.x0, c.y0) ||
+                !corner(ps.substr(semi + 1), c.x1, c.y1))
+                return fail(error, rec.line, r.id + ": a canal's pts are its two corners \"x0:y0;x1:y1\"");
+            const std::string_view cs = col("canal");
+            if (!cs.empty()) {
+                double v[3] = {c.floorZ, c.waterZ, c.bridgeAt};
+                std::size_t a = 0, k = 0;
+                bool ok = true;
+                while (ok && a <= cs.size()) {
+                    std::size_t q = cs.find(':', a);
+                    if (q == std::string_view::npos) q = cs.size();
+                    ok = k < 3 && parseNumber(trim(cs.substr(a, q - a)), v[k]);
+                    ++k;
+                    a = q + 1;
+                }
+                if (!ok || k < 2) return fail(error, rec.line, r.id + ": canal is \"floor_z:water_z[:bridge_at]\"");
+                c.floorZ = v[0];
+                c.waterZ = v[1];
+                c.bridgeAt = v[2];
+            }
+            if (std::fabs(c.x1 - c.x0) < 1.0 || std::fabs(c.y1 - c.y0) < 1.0 || c.waterZ <= c.floorZ)
+                return fail(error, rec.line, r.id + ": a canal needs a rectangle and its water over its floor");
+            if (canals) {
+                for (const RoadCanal& o : *canals)
+                    if (o.id == c.id) return fail(error, rec.line, r.id + ": the id is used twice");
+                canals->push_back(std::move(c));
+            }
+            continue;
+        }
         if (!num("width_m", r.width, true) || !num("pavement_m", r.pavement, true) || !num("speed_kmh", r.speedKmh, false))
             return fail(error, rec.line, r.id + ": a number column is missing or not a number");
         if (!col("deck_z").empty()) {
@@ -1903,6 +2056,23 @@ bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::s
             p = q + 1;
         }
         if (r.pts.size() < 2) return fail(error, rec.line, r.id + ": a street needs two points or more");
+        {
+            const std::string_view sc = col("scramble");
+            std::size_t a = 0;
+            while (a < sc.size()) {
+                std::size_t q = sc.find(';', a);
+                if (q == std::string_view::npos) q = sc.size();
+                const std::string_view item = trim(sc.substr(a, q - a));
+                a = q + 1;
+                if (item.empty()) continue;
+                const std::size_t c1 = item.find(':');
+                RoadPoint pt;
+                if (c1 == std::string_view::npos || !parseNumber(item.substr(0, c1), pt.x) ||
+                    !parseNumber(item.substr(c1 + 1), pt.y))
+                    return fail(error, rec.line, r.id + ": scramble must be \"x:y;x:y;...\"");
+                r.scramble.push_back(pt);
+            }
+        }
         for (std::size_t i = 1; i < r.pts.size(); ++i)
             if (netLen(netSub(r.pts[i], r.pts[i - 1])) < 1.0)
                 return fail(error, rec.line, r.id + ": two of its points are less than 1 m apart");
@@ -2077,6 +2247,9 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
             std::snprintf(buf, sizeof buf, "JN-%04d", ++jcount);
             nd.id = buf;
         }
+        for (const std::size_t s : net.streetsAt[n])
+            for (const RoadPoint& q : streets[s].scramble)
+                if (netLen(netSub(q, nd.p)) <= kRoadGraphSnap) nd.scramble = true;
     }
     for (std::size_t e = 0; e < net.edges.size(); ++e) {
         const RoadNetTopo::Edge& ed = net.edges[e];
@@ -2110,6 +2283,8 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
         }
         nd.signal = k >= 3;
         if (nd.signal) ++rep.junctions;
+        nd.scramble = nd.scramble && nd.signal;
+        if (nd.scramble) ++rep.scrambles;
         bool bend = false;
         for (std::size_t i = 0; i < k; ++i) {
             const std::size_t j = (i + 1) % k;
@@ -2157,6 +2332,7 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
         std::snprintf(buf, sizeof buf, "NODE-%04zu", n + 1);
         spec.id = nd.id.empty() ? std::string(buf) : nd.id;
         Ctx x(spec, out);
+        const std::size_t solid0 = out.solids.size();
         const double g = nd.z + kRoadSurfaceLift, pv = g + kRoadKerbRise;
         double hcMin = 1e9, scMax = 0.0;
         for (const NetArm& a : nd.arms) {
@@ -2293,6 +2469,7 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                 }
             }
         }
+        if (nd.scramble) netScramble(x, nd, solid0);
         if (nd.signal) {
             RoadJunction rj;
             rj.id = nd.id;
@@ -2634,7 +2811,8 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                 poleS = l1 + away * 0.5;
                 const double ps = nearS + away * 0.6;
                 for (const double sd : {1.0, -1.0})
-                    pedSignal(x, f.at(ps, sd * (hc + kRoadSignalPoleBack)), f.dir(0.0, -sd), pz(ps), nd.id, other);
+                    pedSignal(x, f.at(ps, sd * (hc + kRoadSignalPoleBack)), f.dir(0.0, -sd), pz(ps), nd.id,
+                              nd.scramble ? 'W' : other);
             }
             // The vehicle signal on the inbound kerb, its arm over the inbound half, facing the traffic coming in.
             const RoadPoint p = f.at(poleS, ti * (hc + kRoadSignalPoleBack));
@@ -2753,6 +2931,311 @@ MassingVec roadCubeCentre(const MassingBox& box, double height) {
     const double du = h * std::cos(roll) * std::sin(pitch), dw = h * std::sin(roll);
     const double r = box.rot * kPi / 180.0, c = std::cos(r), s = std::sin(r);
     return {box.cx + du * c - dw * s, box.cy + du * s + dw * c, box.z0 + height - h * std::cos(roll) * std::cos(pitch)};
+}
+
+namespace {
+// A canal bank's top at plan point p just behind it: the road pavement's there, else the ground.
+double canalBankTop(const RoadBuild& build, const MassingGround& ground, RoadPoint p) {
+    double top = -1e9;
+    for (const RoadSolid& s : build.solids) {
+        if (s.box.kind != "pavement" || !slabHas(s, p.x, p.y)) continue;
+        top = std::max(top, topAt(s.box, p.x, p.y));
+    }
+    if (top > -1e8) return top;
+    if (ground.grid == nullptr) return 0.0;
+    return massingGroundAt(ground.grid, ground.samplesX, ground.samplesY, ground.spacing, ground.originX, ground.originY,
+                           p.x, p.y);
+}
+} // namespace
+
+std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, RoadBuild& build) {
+    const double x0 = std::min(canal.x0, canal.x1), x1 = std::max(canal.x0, canal.x1);
+    const double y0 = std::min(canal.y0, canal.y1), y1 = std::max(canal.y0, canal.y1);
+    const double t = canal.wall;
+    if (t <= 0.0 || x1 - x0 < 2.0 * t + 1.0 || y1 - y0 < 2.0 * t + 1.0) return 0;
+    const bool alongY = (y1 - y0) >= (x1 - x0);
+    const std::size_t before = build.solids.size();
+    std::size_t n = 0;
+    char buf[64];
+    auto put = [&](const char* part, const char* kind, double cx, double cy, double sx, double sy, double z0, double z1,
+                   RoadTint tint, bool collide) {
+        MassingBox b;
+        std::snprintf(buf, sizeof buf, "%s-%s-%03zu", canal.id.c_str(), part, ++n);
+        b.id = buf;
+        b.row = canal.id;
+        b.kind = kind;
+        b.source = MassingSource::Invented;
+        b.cx = cx;
+        b.cy = cy;
+        b.sx = sx;
+        b.sy = sy;
+        b.rot = 0.0;
+        b.z0 = z0;
+        b.z1 = z1;
+        RoadSolid s;
+        s.box = std::move(b);
+        s.tint = tint;
+        s.collide = collide;
+        build.solids.push_back(std::move(s));
+        ++build.counts.solids;
+        if (collide) ++build.counts.collide;
+    };
+    const double base = canal.floorZ - 0.3;
+    // A wall piece (ua..ub along the banks, wa..wb across) and its coping, its top the bank's.
+    auto wallPiece = [&](double pa, double pb, double wa, double wb, double top) {
+        const double cu = 0.5 * (pa + pb), cw = 0.5 * (wa + wb), lu = pb - pa, lw = wb - wa;
+        const double cx = alongY ? cw : cu, cy = alongY ? cu : cw, sx = alongY ? lw : lu, sy = alongY ? lu : lw;
+        put("WALL", "canal_wall", cx, cy, sx, sy, base, top - canal.coping, RoadTint::PoleConcrete, true);
+        put("COPE", "canal_coping", cx, cy, sx, sy, top - canal.coping, top, RoadTint::Kerb, true);
+    };
+    const double ua = alongY ? y0 : x0, ub = alongY ? y1 : x1, lo = alongY ? x0 : y0, hi = alongY ? x1 : y1;
+    auto behind = [&](bool high, double u) {
+        const double w = high ? hi + 0.3 : lo - 0.3;
+        return canalBankTop(build, ground, alongY ? RoadPoint{w, u} : RoadPoint{u, w});
+    };
+    // The banks, in equal pieces of 10 m at most between the end walls.
+    const double sa = ua + t, sb = ub - t;
+    const std::size_t pieces = std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil((sb - sa) / 10.0 - 1e-9)));
+    const double step = (sb - sa) / static_cast<double>(pieces);
+    for (int side = 0; side < 2; ++side) {
+        const bool high = side == 1;
+        for (std::size_t i = 0; i < pieces; ++i) {
+            const double a = sa + step * static_cast<double>(i), b = a + step;
+            wallPiece(a, b, high ? hi - t : lo, high ? hi : lo + t, behind(high, 0.5 * (a + b)));
+        }
+    }
+    // The ends, across the whole width, as high as the higher bank there.
+    for (int end = 0; end < 2; ++end) {
+        const double u = end == 0 ? ua + 0.5 * t : ub - 0.5 * t;
+        wallPiece(u - 0.5 * t, u + 0.5 * t, lo, hi, std::max(behind(false, u), behind(true, u)));
+    }
+    // The floor and the water between the walls.
+    const double cx = 0.5 * (x0 + x1), cy = 0.5 * (y0 + y1), sx = x1 - x0 - 2.0 * t, sy = y1 - y0 - 2.0 * t;
+    put("FLOOR", "canal_floor", cx, cy, sx, sy, base, canal.floorZ, RoadTint::PoleConcrete, true);
+    put("WATER", "canal_water", cx, cy, sx, sy, canal.waterZ - 0.05, canal.waterZ, RoadTint::Water, false);
+    return build.solids.size() - before;
+}
+
+void roadQuayPoints(const RoadCanal& canal, const RoadBuild& build, const MassingGround& ground,
+                    std::vector<RoadQuayPoint>& out, RoadQuayCounts* counts) {
+    out.clear();
+    RoadQuayCounts cnt;
+    // u along the banks (the long side), w across; the low bank at w = lo, the high one at w = hi.
+    const bool alongY = (canal.y1 - canal.y0) >= (canal.x1 - canal.x0);
+    const double ua = alongY ? std::min(canal.y0, canal.y1) : std::min(canal.x0, canal.x1);
+    const double ub = alongY ? std::max(canal.y0, canal.y1) : std::max(canal.x0, canal.x1);
+    const double lo = alongY ? std::min(canal.x0, canal.x1) : std::min(canal.y0, canal.y1);
+    const double hi = alongY ? std::max(canal.x0, canal.x1) : std::max(canal.y0, canal.y1);
+    const double rotU = alongY ? 90.0 : 0.0, rotW = alongY ? 0.0 : 90.0;
+    auto plan = [&](double u, double w) { return alongY ? RoadPoint{w, u} : RoadPoint{u, w}; };
+    const double wl = lo + canal.bank, wh = hi - canal.bank; // the water's edges
+    if (ub - ua < 4.0 || wh - wl < 1.0) {
+        if (counts) *counts = cnt;
+        return;
+    }
+    // A bank's top: the road pavement's just behind it, else the ground.
+    auto bankTop = [&](bool high, double u) {
+        return canalBankTop(build, ground, plan(u, high ? hi + 0.3 : lo - 0.3));
+    };
+    // The clearance from a point to the road's furniture feet (by their larger half).
+    auto clearOf = [&](RoadPoint p) {
+        double c = 1e9;
+        for (const MassingFoot& f : build.furniture)
+            c = std::min(c, std::hypot(p.x - f.x, p.y - f.y) - std::max(f.hx, f.hy));
+        return c;
+    };
+    auto push = [&](const char* kind, const std::string& id, const std::string& group, RoadPoint p, double z0, double z1,
+                    double rot, double len, double wid, double slope) {
+        RoadQuayPoint q;
+        q.kind = kind;
+        q.id = id;
+        q.group = group;
+        q.deck = canal.id;
+        q.x = p.x;
+        q.y = p.y;
+        q.z0 = z0;
+        q.z1 = z1;
+        q.rot = rot;
+        q.length = len;
+        q.width = wid;
+        q.slope = slope;
+        out.push_back(std::move(q));
+    };
+    char buf[64];
+    auto idOf = [&](const char* what, std::size_t n) {
+        std::snprintf(buf, sizeof buf, "%s-%s-%04zu", canal.id.c_str(), what, n);
+        return std::string(buf);
+    };
+
+    // The footbridge's line, moved off the furniture at its landings.
+    const double half = kQuayBridgeWide * 0.5;
+    double bu = 0.0;
+    bool bridge = false;
+    if (canal.bridgeAt > 0.0) {
+        for (int k = 0; k <= 20 && !bridge; ++k) {
+            const double cu = canal.bridgeAt + ((k & 1) ? 1.0 : -1.0) * ((k + 1) / 2);
+            if (cu - half < ua + 1.0 || cu + half > ub - 1.0) continue;
+            bool ok = true;
+            for (const double w : {lo - 1.0, lo + canal.bank * 0.5, hi - canal.bank * 0.5, hi + 1.0})
+                for (const double du : {-half, 0.0, half}) ok = ok && clearOf(plan(cu + du, w)) >= 0.5;
+            if (ok) {
+                bu = cu;
+                bridge = true;
+            }
+        }
+        if (!bridge && canal.bridgeAt - half >= ua + 1.0 && canal.bridgeAt + half <= ub - 1.0) {
+            bu = canal.bridgeAt;
+            bridge = true;
+        }
+    }
+    const double gap0 = bu - half, gap1 = bu + half;
+
+    // Masts on each bank, the high bank staggered by half; each on the rail line, nudged off the furniture.
+    std::vector<double> masts[2];
+    for (int side = 0; side < 2; ++side) {
+        const bool high = side == 1;
+        const double wr = high ? wh + kQuayRailIn : wl - kQuayRailIn;
+        for (double s = ua + canal.mastGap * (high ? 1.0 : 0.5); s < ub - 2.0; s += canal.mastGap) {
+            double at = s;
+            bool found = false;
+            for (int k = 0; k <= 12 && !found; ++k) {
+                const double cu = s + ((k & 1) ? 1.0 : -1.0) * ((k + 1) / 2);
+                if (cu < ua + 1.0 || cu > ub - 1.0) continue;
+                if (bridge && cu > gap0 - 2.0 && cu < gap1 + 2.0) continue;
+                if (clearOf(plan(cu, wr)) >= kQuayMastClear) {
+                    at = cu;
+                    found = true;
+                }
+            }
+            if (!found) continue;
+            if (at != s) ++cnt.mastsMoved;
+            masts[side].push_back(at);
+            const double z = bankTop(high, at);
+            push("lamp_mast", idOf("LM", ++cnt.masts), "QR-" + canal.id + (high ? "-E" : "-W"), plan(at, wr), z,
+                 z + kQuayMastHigh, high ? rotW : rotW + 180.0, kQuayMastPlate, kQuayMastPlate, 0.0);
+        }
+    }
+
+    // The rails: each bank's line broken round the bridge and the masts, runs of equal spans and a closing post.
+    std::size_t runs = 0;
+    for (int side = 0; side < 2; ++side) {
+        const bool high = side == 1;
+        const double wr = high ? wh + kQuayRailIn : wl - kQuayRailIn;
+        std::vector<std::pair<double, double>> cuts;
+        if (bridge) cuts.emplace_back(gap0, gap1);
+        for (const double m : masts[side]) cuts.emplace_back(m - kQuayMastPlate * 0.5, m + kQuayMastPlate * 0.5);
+        std::sort(cuts.begin(), cuts.end());
+        double a = ua;
+        cuts.emplace_back(ub, ub);
+        for (const std::pair<double, double>& c : cuts) {
+            const double b = c.first;
+            if (b - a >= 0.3) {
+                const std::string group = "QR-" + canal.id + (high ? "-E-" : "-W-") + std::to_string(++runs);
+                const int n = static_cast<int>(std::ceil((b - a) / kQuaySpanMax - 1e-9));
+                const double len = (b - a) / n;
+                for (int i = 0; i < n; ++i) {
+                    const double um = a + len * (i + 0.5);
+                    const double z = bankTop(high, um);
+                    push("railing_span", idOf("RS", ++cnt.spans), group, plan(um, wr), z, z + kQuayRailHigh, rotU, len,
+                         0.06, 0.0);
+                }
+                const double z = bankTop(high, b);
+                push("bridge_pier", idOf("RP", ++cnt.posts), group, plan(b, wr), z, z + kQuayRailHigh, rotU, kQuayPost,
+                     kQuayPost, 0.0);
+                cnt.railed += b - a;
+            }
+            a = std::max(a, c.second);
+        }
+    }
+
+    // The footbridge: landings on the copings, a ramp up from each water edge, a level middle, rails both sides.
+    if (bridge) {
+        cnt.bridgeAt = bu;
+        const std::string fb = "FB-01";
+        const double tl = bankTop(false, bu), th = bankTop(true, bu);
+        const double zt = std::max(tl, th) + kQuayBridgeRise;
+        const double span = wh - wl;
+        const double mid = std::min(kQuayBridgeDeck, span);
+        const double rl = (span - mid) * 0.5;
+        std::size_t nb = 0;
+        auto bid = [&](const char* what) {
+            std::snprintf(buf, sizeof buf, "%s-%s%zu", fb.c_str(), what, ++nb);
+            return std::string(buf);
+        };
+        auto addB = [&](const char* kind, double w, double z0, double z1, double rot, double len, double wid,
+                        double slope) {
+            push(kind, bid(kind[7] == 'l' ? "L" : kind[7] == 's' ? "S" : kind[7] == 'd' ? "D" : "P"), fb, plan(bu, w),
+                 z0, z1, rot, len, wid, slope);
+            out.back().deck = fb;
+            ++cnt.bridge;
+        };
+        addB("bridge_landing", lo + canal.bank * 0.5, tl - kQuaySlab, tl, rotW, canal.bank, kQuayBridgeWide, 0.0);
+        addB("bridge_landing", hi - canal.bank * 0.5, th - kQuaySlab, th, rotW, canal.bank, kQuayBridgeWide, 0.0);
+        const double sl = rl > 0.05 ? (zt - tl) / rl : 0.0, sh = rl > 0.05 ? (zt - th) / rl : 0.0;
+        if (rl > 0.05) {
+            const double zl = (tl + zt) * 0.5, zh = (th + zt) * 0.5;
+            addB("bridge_stair", wl + rl * 0.5, zl - kQuaySlab, zl, rotW, rl, kQuayBridgeWide, sl);
+            addB("bridge_stair", wh - rl * 0.5, zh - kQuaySlab, zh, rotW + 180.0, rl, kQuayBridgeWide, sh);
+        }
+        addB("bridge_deck", (wl + wh) * 0.5, zt - kQuaySlab, zt, rotW, mid, kQuayBridgeWide, 0.0);
+        // Rails along both sides, all running +w (the low bank to the high), so each side is one run: up, level,
+        // down, and a closing post at the high bank's water edge.
+        for (const double side : {-1.0, 1.0}) {
+            const double uo = bu + side * (half - 0.03);
+            auto plan2 = [&](double w) { return alongY ? RoadPoint{w, uo} : RoadPoint{uo, w}; };
+            const std::string group = fb + (side < 0.0 ? "-R1" : "-R2");
+            // A piece of the run from w0 to w1, its foot z0 at w0 and rising `slope` per m, as equal spans.
+            auto seg = [&](double w0, double w1, double z0, double slope) {
+                const int n = static_cast<int>(std::ceil((w1 - w0) / kQuaySpanMax - 1e-9));
+                const double len = (w1 - w0) / n;
+                for (int i = 0; i < n; ++i) {
+                    const double z = z0 + slope * len * (i + 0.5);
+                    push("railing_span", idOf("RS", ++cnt.spans), group, plan2(w0 + len * (i + 0.5)), z,
+                         z + kQuayRailHigh, rotW, len, 0.06, slope);
+                    out.back().deck = fb;
+                }
+            };
+            if (rl > 0.05) {
+                seg(wl, wl + rl, tl, sl);
+                seg(wl + rl, wh - rl, zt, 0.0);
+                seg(wh - rl, wh, zt, -sh);
+            } else {
+                seg(wl, wh, zt, 0.0);
+            }
+            out.back().deck = fb;
+            push("bridge_pier", idOf("RP", ++cnt.posts), group, plan2(wh), th, th + kQuayRailHigh, rotW, kQuayPost,
+                 kQuayPost, 0.0);
+            out.back().deck = fb;
+            cnt.railed += span;
+        }
+    }
+
+    // Road surfaces reaching into the water: the canal's site is wrong.
+    for (const MassingFoot& f : build.band) {
+        bool in = false;
+        const double c = std::cos(f.rot * kPi / 180.0), s = std::sin(f.rot * kPi / 180.0);
+        for (const double fu : {-0.95, 0.0, 0.95})
+            for (const double fw : {-0.95, 0.0, 0.95}) {
+                const RoadPoint p{f.x + fu * f.hx * c - fw * f.hy * s, f.y + fu * f.hx * s + fw * f.hy * c};
+                const double pu = alongY ? p.y : p.x, pw = alongY ? p.x : p.y;
+                in = in || (pu > ua + 0.05 && pu < ub - 0.05 && pw > wl + 0.05 && pw < wh - 0.05);
+            }
+        if (in) ++cnt.roadInWater;
+    }
+    if (counts) *counts = cnt;
+}
+
+std::string roadQuayCsv(const std::vector<RoadQuayPoint>& points) {
+    std::string s = "# canal edge points (roadQuayPoints): plan metres, +y north; rot plan degrees (u); slope rise per m "
+                    "along +u\n";
+    s += "kind,id,group,x,y,z0,z1,rot,length_m,width_m,slope,deck\n";
+    char buf[256];
+    for (const RoadQuayPoint& p : points) {
+        std::snprintf(buf, sizeof buf, ",%.3f,%.3f,%.3f,%.3f,%.2f,%.3f,%.3f,%.4f,", p.x, p.y, p.z0, p.z1, p.rot, p.length,
+                      p.width, p.slope);
+        s += p.kind + "," + p.id + "," + p.group + buf + p.deck + "\n";
+    }
+    return s;
 }
 
 } // namespace ftcore

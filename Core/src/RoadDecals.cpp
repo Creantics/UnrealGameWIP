@@ -1,7 +1,11 @@
 #include "ftcore/RoadDecals.h"
 
+#include "ftcore/SurfaceWeather.h"
+
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <string>
 
 namespace ftcore {
 
@@ -60,7 +64,32 @@ struct Slab {
     const MassingBox* box = nullptr;
     double c = 1.0, s = 0.0; // its u axis
     double hu = 0.0, hw = 0.0; // half extents, inset
+    bool pavement = false;
 };
+
+Slab makeSlab(const MassingBox& b) {
+    Slab slab;
+    slab.box = &b;
+    const double r = b.rot * kPi / 180.0;
+    slab.c = std::cos(r);
+    slab.s = std::sin(r);
+    slab.hu = 0.5 * b.sx - kInset;
+    slab.hw = 0.5 * b.sy - kInset;
+    slab.pavement = b.kind == "pavement";
+    return slab;
+}
+
+// Whether a plan point lies on the slab's inset top.
+bool onSlab(const Slab& slab, double x, double y) {
+    const double dx = x - slab.box->cx, dy = y - slab.box->cy;
+    return std::fabs(dx * slab.c + dy * slab.s) <= slab.hu && std::fabs(-dx * slab.s + dy * slab.c) <= slab.hw;
+}
+
+double wrapDegrees(double d) {
+    d = std::fmod(d + 180.0, 360.0);
+    if (d < 0.0) d += 360.0;
+    return d - 180.0;
+}
 
 struct Emit {
     const RoadDecalSpec* spec = nullptr;
@@ -82,8 +111,9 @@ struct Emit {
         if (std::min(sx, sy) < kSmallest && k != RoadDecalKind::Crack) return;
         if (sx < kSmallest) return;
         // Keep the centre where the shrunk footprint fits.
-        du = std::clamp(du, -(slab.hu - eu * fit), slab.hu - eu * fit);
-        dw = std::clamp(dw, -(slab.hw - ew * fit), slab.hw - ew * fit);
+        const double roomU = std::max(0.0, slab.hu - eu * fit), roomW = std::max(0.0, slab.hw - ew * fit);
+        du = std::clamp(du, -roomU, roomU);
+        dw = std::clamp(dw, -roomW, roomW);
         if (out->size() >= spec->maxDecals) {
             ++counts->capped;
             return;
@@ -100,8 +130,15 @@ struct Emit {
         d.riseW = -b.riseU * st + b.riseW * ct;
         d.top = b.z1 + b.riseU * du + b.riseW * dw + kindLift(k) + 0.0002 * static_cast<double>(seed);
         d.seed = seed;
+        d.pavement = slab.pavement;
         out->push_back(d);
         ++counts->perKind[static_cast<std::size_t>(k)];
+    }
+
+    // The same, centred at the plan point (x, y) and turned to plan rot degrees.
+    void placeAt(const Slab& slab, RoadDecalKind k, double x, double y, double sx, double sy, double rot, float seed) {
+        const double dx = x - slab.box->cx, dy = y - slab.box->cy;
+        place(slab, k, dx * slab.c + dy * slab.s, -dx * slab.s + dy * slab.c, sx, sy, wrapDegrees(rot - slab.box->rot), seed);
     }
 };
 
@@ -110,7 +147,7 @@ struct Emit {
 bool roadDecalSlab(const RoadSolid& solid) {
     if (solid.shape != RoadShape::Cube) return false;
     const std::string& k = solid.box.kind;
-    return k == "asphalt" || k == "fill" || k == "pavement";
+    return k == "asphalt" || k == "fill" || k == "bay" || k == "pavement";
 }
 
 void roadDecals(const RoadSolid* solids, std::size_t count, const RoadDecalSpec& spec, std::vector<RoadDecal>& out,
@@ -124,16 +161,10 @@ void roadDecals(const RoadSolid* solids, std::size_t count, const RoadDecalSpec&
         const MassingBox& b = solid.box;
         if (!(b.sx >= kSlabLeast) || !(b.sy >= kSlabLeast)) continue;
         ++counts.slabs;
-        const bool pavement = b.kind == "pavement";
+        const Slab slab = makeSlab(b);
+        const bool pavement = slab.pavement;
         const double area = b.sx * b.sy;
         (pavement ? counts.pavementM2 : counts.asphaltM2) += area;
-        Slab slab;
-        slab.box = &b;
-        const double r = b.rot * kPi / 180.0;
-        slab.c = std::cos(r);
-        slab.s = std::sin(r);
-        slab.hu = 0.5 * b.sx - kInset;
-        slab.hw = 0.5 * b.sy - kInset;
         Draws draw{slabSeed(spec.seed, b)};
         const auto anywhere = [&](double& du, double& dw) {
             du = draw.between(-slab.hu, slab.hu);
@@ -159,6 +190,14 @@ void roadDecals(const RoadSolid* solids, std::size_t count, const RoadDecalSpec&
                        static_cast<float>(draw.next()));
         }
         if (pavement) continue;
+        // A bay: a cluster of oil drips where an engine stands, and no patches or gutter.
+        if (b.kind == "bay") {
+            if (draw.next() < std::min(1.0, spec.bayOil * dens)) {
+                emit.place(slab, RoadDecalKind::Oil, draw.between(-0.25, 0.25) * slab.hu, draw.between(-0.2, 0.2) * slab.hw,
+                           draw.between(1.1, 1.6), draw.between(0.7, 1.0), draw.between(-10.0, 10.0), static_cast<float>(draw.next()));
+            }
+            continue;
+        }
         // Patches: square to the road, a little askew.
         const std::size_t patches = draw.count(dens * area / 100.0 * spec.patchAsphalt);
         for (std::size_t n = 0; n < patches; ++n) {
@@ -186,8 +225,76 @@ void roadDecals(const RoadSolid* solids, std::size_t count, const RoadDecalSpec&
             const double at = -0.5 * b.sx + (static_cast<double>(n) + 0.5) * kRoadGrimeRun;
             emit.place(slab, RoadDecalKind::KerbGrime, at, centreW, len, wide, gutter > 0.0 ? 0.0 : 180.0, static_cast<float>(draw.next()));
         }
+        // Drain grates against the kerb, every drainFromM to drainToM.
+        if (spec.drainFromM > 0.0) {
+            const double grateDeep = std::min(0.4, slab.hw);
+            const double grateW = gutter * (slab.hw - 0.5 * grateDeep);
+            for (double at = -slab.hu + draw.between(0.3, 1.0) * spec.drainFromM; at < slab.hu;
+                 at += draw.between(spec.drainFromM, std::max(spec.drainFromM, spec.drainToM))) {
+                emit.place(slab, RoadDecalKind::Drain, at, grateW, 0.6, grateDeep, gutter > 0.0 ? 0.0 : 180.0,
+                           static_cast<float>(draw.next()));
+            }
+        }
     }
 }
+
+void roadDecals(const RoadBuild& build, const RoadDecalSpec& spec, std::vector<RoadDecal>& out, RoadDecalCounts& counts) {
+    roadDecals(build.solids.data(), build.solids.size(), spec, out, counts);
+    if (!(spec.density > 0.0)) return;
+    Emit emit{&spec, &out, &counts};
+    // The decal slab of the given ground (pavement or not) under a plan point.
+    const auto slabAt = [&](double x, double y, bool pavement, Slab& found) {
+        for (const RoadSolid& solid : build.solids) {
+            if (!roadDecalSlab(solid) || (solid.box.kind == "pavement") != pavement) continue;
+            if (!(solid.box.sx >= kSlabLeast) || !(solid.box.sy >= kSlabLeast)) continue;
+            const Slab slab = makeSlab(solid.box);
+            if (onSlab(slab, x, y)) {
+                found = slab;
+                return true;
+            }
+        }
+        return false;
+    };
+    // Oil before the stop lines, where the first car waits: on one side or the other (the line doesn't say which).
+    for (const RoadSolid& solid : build.solids) {
+        const MassingBox& m = solid.box;
+        if (solid.shape != RoadShape::Cube || m.kind != "mark" || std::fabs(m.sx - kRoadStopLine) > 0.05 || m.sy < 1.5) continue;
+        Draws draw{slabSeed(spec.seed ^ 0x0175a0f5u, m)};
+        if (draw.next() >= std::min(1.0, spec.stopOil * spec.density)) continue;
+        const double r = m.rot * kPi / 180.0, c = std::cos(r), sn = std::sin(r);
+        const double back = (draw.next() < 0.5 ? -1.0 : 1.0) * (0.5 * m.sx + draw.between(1.5, 4.0));
+        const double across = draw.between(-0.25, 0.25) * m.sy;
+        const double x = m.cx + back * c - across * sn, y = m.cy + back * sn + across * c;
+        Slab slab;
+        if (slabAt(x, y, false, slab)) {
+            emit.placeAt(slab, RoadDecalKind::Oil, x, y, draw.between(1.0, 1.5), draw.between(0.7, 1.0), m.rot + draw.between(-10.0, 10.0),
+                         static_cast<float>(draw.next()));
+        }
+    }
+    if (!spec.tactile) return;
+    // Tactile strips: on the pavement past each end of each crossing, as wide as the crossing.
+    for (const RoadQuad& q : build.crossings) {
+        const double qx = 0.25 * (q.pts[0].x + q.pts[1].x + q.pts[2].x + q.pts[3].x);
+        const double qy = 0.25 * (q.pts[0].y + q.pts[1].y + q.pts[2].y + q.pts[3].y);
+        for (int end = 0; end < 2; ++end) {
+            const RoadPoint& a = q.pts[end == 0 ? 0 : 2];
+            const RoadPoint& b = q.pts[end == 0 ? 1 : 3];
+            const double mx = 0.5 * (a.x + b.x), my = 0.5 * (a.y + b.y);
+            const double ox = mx - qx, oy = my - qy, on = std::hypot(ox, oy);
+            const double along = std::hypot(b.x - a.x, b.y - a.y);
+            if (!(on > 1e-6) || !(along > 0.5)) continue;
+            const double reach = kRoadKerbWide + 0.55;
+            const double x = mx + ox / on * reach, y = my + oy / on * reach;
+            Slab slab;
+            if (slabAt(x, y, true, slab)) {
+                const double rot = std::atan2(b.y - a.y, b.x - a.x) * 180.0 / kPi;
+                emit.placeAt(slab, RoadDecalKind::Tactile, x, y, std::min(along, 4.0), 0.8, rot, 0.5f);
+            }
+        }
+    }
+}
+
+int roadStreetKind(RoadTint tint) { return roadTintStreet(tint); }
 
 MassingBox roadDecalBox(const RoadDecal& decal, double height) {
     MassingBox b;
@@ -206,7 +313,7 @@ MassingBox roadDecalBox(const RoadDecal& decal, double height) {
 }
 
 void roadDecalData(const RoadDecal& decal, float out[kRoadDecalData]) {
-    out[0] = static_cast<float>(static_cast<int>(decal.kind));
+    out[0] = static_cast<float>(static_cast<int>(decal.kind) + (decal.pavement ? 8 : 0));
     out[1] = decal.seed;
     out[2] = static_cast<float>(decal.sx);
     out[3] = static_cast<float>(decal.sy);
@@ -214,9 +321,12 @@ void roadDecalData(const RoadDecal& decal, float out[kRoadDecalData]) {
 
 // M: metres from the plate's centre along its u and w (LocalPos is the 1 m plate's, in cm; its local y is -w). Every
 // pattern is noise and distance from M, so nothing samples a texture. The return value is the colour, RoughOut the
-// roughness and MaskOut the opacity mask (clipped at 0.5). Wetness darkens and smooths them.
+// roughness and MaskOut the opacity mask (clipped at 0.5). The soft kinds converge on the ground's own colour and
+// roughness over their outer band (Blend), so the clip lands where the decal already matches the ground. Wetness then
+// darkens and smooths as the surface master does at the same place (surfaceWetHlsl).
 const char* roadDecalHlsl() {
-    return R"HLSL(
+    static const std::string full = [] {
+        std::string h = R"HLSL(
 struct FTRoadDecalNoise
 {
 	float H(float2 p) { p = frac(p * float2(0.1031, 0.1030)); p += dot(p, p.yx + 33.33); return frac((p.x + p.y) * p.x); }
@@ -235,12 +345,19 @@ float2 M = float2(LocalPos.x, -LocalPos.y) / 100.0 * Size;
 float2 E = 0.5 * Size - abs(M);
 float Edge = min(E.x, E.y);
 float2 O = float2(Seed * 91.7, Seed * 53.3) + 3.0;
-int K = (int)round(Kind);
+int KindAll = (int)round(Kind);
+bool Paved = KindAll >= 8;
+int Kd = Paved ? KindAll - 8 : KindAll;
+float3 Under = Paved ? float3(0.32, 0.31, 0.29) : float3(0.045, 0.045, 0.05);
+float UnderR = Paved ? 0.8 : 0.85;
 float Grain = D.N(M * 23.0 + O);
-float3 C = float3(0.03, 0.03, 0.03);
+float3 C = Under;
 float Mask = 0.0;
-float R = 0.85;
-if (K == 0)
+float R = UnderR;
+float Blend = 1.0;
+float GutIn = 0.0;
+float FromKerb = 0.5 * Size.y - M.y + 0.05;
+if (Kd == 0)
 {
 	// A sealed crack: a wandering tar line along u, 1.5 to 4 cm wide, a branch off it, tapering to its ends.
 	float Y = M.y - (D.F(float2(M.x * 0.9, 0.0) + O) - 0.5) * Size.y * 0.8;
@@ -255,18 +372,20 @@ if (K == 0)
 	C = float3(0.022, 0.021, 0.02) * (0.85 + 0.3 * Grain);
 	R = 0.6;
 }
-else if (K == 1)
+else if (Kd == 1)
 {
 	// A stain: a ragged blob, oil (dark, glossy) or, for a third of them, dried dirt and spills (dull and brown-grey).
 	float2 Q = M / (0.5 * Size);
 	float Rad = length(Q) + (D.F(M * 1.7 + O) - 0.5) * 0.9;
-	Mask = 0.5 + (0.72 - Rad) * 4.0;
+	float In = (0.72 - Rad) * 0.5 * min(Size.x, Size.y);
+	Mask = 0.5 + In * 40.0;
+	Blend = smoothstep(0.0, 0.12, In);
 	float Inner = D.F(M * 4.0 + O + 11.0);
 	bool Oil = D.H(O + 7.7) < 0.66;
 	C = Oil ? float3(0.018, 0.018, 0.02) * (0.7 + 0.6 * Inner) : float3(0.07, 0.062, 0.05) * (0.8 + 0.4 * Inner);
 	R = Oil ? lerp(0.25, 0.5, Inner) : 0.95;
 }
-else if (K == 2)
+else if (Kd == 2)
 {
 	// A cover: iron, round or (a quarter) square, a rim, a grid of raised studs worn bright in the middle.
 	float Half = 0.5 * min(Size.x, Size.y);
@@ -282,35 +401,99 @@ else if (K == 2)
 	C *= lerp(float3(1.0, 1.0, 1.0), float3(1.15, 0.85, 0.65), 0.35 * D.F(M * 6.0 + O));
 	R = lerp(0.7, 0.35, saturate(Stud * Wear + Rim * 0.6));
 }
-else if (K == 3)
+else if (Kd == 3)
 {
-	// A patch: a square of newer (darker) or older (paler) asphalt with a ragged, sealed edge.
-	float Rag = Edge + (D.F(M * 3.0 + O) - 0.5) * 0.12;
-	Mask = 0.5 + (Rag - 0.03) * 40.0;
+	// A patch of newer (a little darker) or older (a little paler) asphalt, within about 15% of the road's, in one of
+	// four shapes: a rectangle, a rectangle with a corner cut out, a rounded blob or a trench strip along u. Its edge is
+	// ragged at two scales and fades into the road, with a broken tar seal along part of it.
+	float Pick = D.H(O + 6.1);
+	float Dd = Edge;
+	if (Pick >= 0.35 && Pick < 0.6)
+	{
+		float2 Sg = sign(float2(D.H(O + 2.2), D.H(O + 3.3)) - 0.5 + 1e-3);
+		float2 Notch = (float2(D.H(O + 8.3), D.H(O + 9.1)) * 0.3 + 0.05) * Size * Sg;
+		Dd = min(Edge, max(Sg.x * (Notch.x - M.x), Sg.y * (Notch.y - M.y)));
+	}
+	else if (Pick >= 0.6 && Pick < 0.8)
+	{
+		Dd = 0.5 * min(Size.x, Size.y) * (1.0 - length(M / (0.5 * Size)));
+	}
+	else if (Pick >= 0.8)
+	{
+		Dd = min(E.x, min(0.25, 0.5 * Size.y) - abs(M.y));
+	}
+	float In = Dd + (D.F(M * 1.1 + O) - 0.5) * 0.16 + (D.N(M * 7.0 + O) - 0.5) * 0.03 - 0.02;
+	Mask = 0.5 + In * 60.0;
+	Blend = smoothstep(0.0, 0.15, In);
 	bool Newer = D.H(O + 4.4) < 0.6;
-	float3 Body = Newer ? float3(0.038, 0.038, 0.04) : float3(0.1, 0.098, 0.093);
-	C = Body * (0.8 + 0.4 * Grain) * (0.9 + 0.2 * D.F(M * 1.3 + O));
-	float Seam = 1.0 - smoothstep(0.03, 0.06, Rag);
-	C = lerp(C, float3(0.02, 0.02, 0.02), Seam);
-	R = lerp(Newer ? 0.75 : 0.9, 0.55, Seam);
+	float3 Body = Newer ? float3(0.038, 0.038, 0.041) : float3(0.052, 0.051, 0.054);
+	C = Body * (0.9 + 0.2 * Grain) * (0.94 + 0.12 * D.F(M * 1.3 + O));
+	float Seal = (1.0 - smoothstep(0.0, 0.035, In)) * step(0.55, D.N(M * 1.8 + O + 4.0)) * smoothstep(0.005, 0.02, In);
+	C *= 1.0 - 0.3 * Seal;
+	R = lerp(Newer ? 0.78 : 0.9, 0.6, Seal);
 }
-else
+else if (Kd == 4)
 {
 	// Kerb grime: dark silt and leaf-stain, thickest against the kerb (+w), ragged towards the road, fading at its ends.
 	float Off = saturate((0.5 * Size.y - M.y) / Size.y);
 	float Streak = D.F(float2(M.x * 1.4, M.y * 6.0) + O);
 	float Amount = (1.0 - Off) * 1.25 + (Streak - 0.5) * 0.8;
 	Amount *= smoothstep(0.0, 0.6, E.x + (D.N(float2(M.x * 0.8, 1.0) + O) - 0.5) * 0.8);
-	Mask = 0.5 + (Amount - 0.55) * 6.0;
-	C = lerp(float3(0.05, 0.045, 0.036), float3(0.028, 0.026, 0.022), saturate(1.0 - Off * 1.4)) * (0.85 + 0.3 * Grain);
+	float In = (Amount - 0.55) / 2.8;
+	Mask = 0.5 + In * 17.0;
+	Blend = smoothstep(0.0, 0.15, In);
+	C = lerp(float3(0.034, 0.031, 0.026), float3(0.02, 0.019, 0.016), saturate(1.0 - Off * 1.4)) * (0.85 + 0.3 * Grain);
 	R = 0.92;
+	GutIn = 1.0 - smoothstep(0.0, GUTTER_M, FromKerb);
 }
-float Wet = saturate(Wetness);
-C *= 1.0 - 0.4 * Wet;
-RoughOut = saturate(lerp(R, min(R, 0.12), Wet));
-MaskOut = saturate(Mask);
-return C;
+else if (Kd == 5)
+{
+	// Oil drips: a few overlapping dark spots where an engine stood, glossy.
+	float In = -1.0;
+	for (int Sp = 0; Sp < 5; ++Sp)
+	{
+		float2 At = (float2(D.H(O + Sp * 1.3), D.H(O + Sp * 2.7)) - 0.5) * Size * 0.6;
+		float Rad = 0.05 + 0.14 * D.H(O + Sp * 3.9);
+		In = max(In, Rad - length(M - At) + (D.N(M * 9.0 + O + Sp) - 0.5) * 0.04);
+	}
+	Mask = 0.5 + In * 40.0;
+	Blend = smoothstep(0.0, 0.08, In);
+	C = float3(0.016, 0.016, 0.018) * (0.8 + 0.4 * Grain);
+	R = 0.3;
+}
+else if (Kd == 6)
+{
+	// A tactile strip: yellow paving with rows of domes, worn on their tops.
+	Mask = 0.5 + (Edge - 0.01) * 200.0;
+	float2 Dm = frac(M / 0.06) - 0.5;
+	float Dome = 1.0 - smoothstep(0.2, 0.32, length(Dm));
+	C = float3(0.58, 0.43, 0.05) * (0.9 + 0.15 * Grain) * (0.85 + 0.15 * Dome) * (0.9 + 0.1 * D.F(M * 2.0 + O));
+	R = lerp(0.7, 0.5, Dome);
+}
+else
+{
+	// A drain grate: an iron frame, slots across it, silt in the slots.
+	Mask = 0.5 + (Edge - 0.005) * 200.0;
+	float Frame = 1.0 - smoothstep(0.035, 0.045, Edge);
+	float Slot = (1.0 - Frame) * step(0.45, frac(M.x / 0.04));
+	C = lerp(float3(0.05, 0.048, 0.046) * (0.8 + 0.3 * Grain), float3(0.006, 0.006, 0.006), Slot);
+	R = lerp(0.55, 0.9, Slot);
+	GutIn = 1.0 - smoothstep(0.0, GUTTER_M, FromKerb);
+}
+C = lerp(Under, C, Blend);
+R = lerp(UnderR, R, Blend);
+float WetIn = saturate(Wetness);
 )HLSL";
+        const SurfaceWeatherSpec spec{};
+        const std::string key = "GUTTER_M";
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "%.6f", static_cast<double>(spec.gutterM));
+        for (std::size_t at = h.find(key); at != std::string::npos; at = h.find(key, at)) h.replace(at, key.size(), buf);
+        h += surfaceWetHlsl(spec);
+        h += "RoughOut = saturate(R);\nMaskOut = saturate(Mask);\nreturn C;\n";
+        return h;
+    }();
+    return full.c_str();
 }
 
 } // namespace ftcore

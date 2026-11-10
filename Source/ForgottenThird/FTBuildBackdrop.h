@@ -5,13 +5,14 @@
 //
 //   -HillLook  the ground's instance breaks the hill's slopes up: a shape mask made from the height field
 //              (ftcore::heightShapeMask) puts rock on its ridges and pales its crests, with more macro variation and hue
-//              drift, a cooler rock and a less sandy ground.
-//   -HillDress scrub on the hill as low irregular clumps (ftcore::backdropClump, never cones), thickest on its
-//              crests, and a pylon line along its ridge (ftcore::hillDress),
-//              kept off every box.
+//              drift and a cooler rock; the hill is planted green (ftcore::hillPlantMask), the low ground keeps its grey.
+//   -HillDress planting on the hill as irregular green clumps (ftcore::backdropClump, never cones), canopies thickest
+//              on its crests, and a pylon line along its ridge (ftcore::hillDress), kept off every box.
+//   -AviationLamps red obstruction lamps on the tallest roofs and far blocks (ftcore::aviationLamps), instanced
+//              emissive heads lit at night (needs FTBuildSurfaces -Windows' lamp head master).
 //   -Skyline   far blocks past the field's south and north edges on a dark plate each (ftcore::skylineBand), so a
 //              view out of the strip ends on a city, not the sky.
-//   -Haze[=<density>] a second height-fog layer low over the sea and the ground (default 0.05), so the horizon fades
+//   -Haze[=<density>] a second height-fog layer low over the sea and the ground (default 0.02), so the horizon fades
 //              into haze instead of banding, and the night's city glow (FTNightLook.h) reads near it.
 //   -RockFaces the ground's faces among the built boxes (cliffs and terraces, ftcore::backdropRockFace) wear the ground's
 //              rock (the ground master's Rock maps and tint, ftcore::RockFaceLook) instead of their plain concrete, so the
@@ -40,7 +41,8 @@ FORGOTTENTHIRD_API UMaterialInterface* HillGround(UPackage* Package, UMaterialIn
 // Package. Null for any other box, without the switch, or when Ground holds no rock maps: the box keeps Wear.
 FORGOTTENTHIRD_API UMaterialInterface* RockFace(UPackage* Package, UMaterialInterface* Wear, const ftcore::MassingBox& Box, UMaterialInterface* Ground);
 
-// -HillDress and -Skyline: their instances into Cells (before its Flush). Base is the build's surface material.
+// -HillDress, -Skyline and -AviationLamps: their instances into Cells (before its Flush). Base is the build's surface
+// material.
 FORGOTTENTHIRD_API void Dress(UPackage* Package, FFTCellInstancer& Cells, UMaterialInterface* Base, const ftcore::HeightField& Field,
 	double Side, const std::vector<ftcore::MassingBox>& Boxes);
 

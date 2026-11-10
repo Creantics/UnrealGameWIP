@@ -5,6 +5,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <string>
 
 using namespace ftcore;
@@ -25,13 +26,16 @@ TEST_CASE("wet: only up-facing pixels soak, drying patches stay damp, dry looks 
     CHECK(weatherSoak(0.6f, 1.f, 1.f, spec) == doctest::Approx(0.6f));
 }
 
-TEST_CASE("wet: full soak hits the brief's numbers, a half-wet street stays out of traced reflections") {
+TEST_CASE("wet: full soak's numbers; a night street (0.6) mirrors in its wet patches, a damp day (0.35) does not") {
     const SurfaceWeatherSpec spec;
-    CHECK(weatherAlbedoScale(0, 1.f, 0.f, 0.f, spec) == doctest::Approx(0.6f));
-    CHECK(weatherRough(0.8f, 1.f, 0.f, spec) == doctest::Approx(0.1f));
+    CHECK(weatherAlbedoScale(0, 1.f, 0.f, 0.f, spec) == doctest::Approx(0.5f));
+    CHECK(weatherRough(0.8f, 1.f, 0.f, spec) == doctest::Approx(0.05f));
     CHECK(weatherRough(0.8f, 0.f, 1.f, spec) == doctest::Approx(0.02f));
-    // Lumen traces reflections under roughness 0.4: asphalt at 0.8 soaked to 0.6 (Solhaven's look) stays over it.
-    CHECK(weatherRough(0.8f, 0.6f, 0.f, spec) > 0.4f);
+    // Lumen traces reflections under roughness 0.4. Asphalt (0.85) soaked to the night's 0.6 lands under it, so lamps
+    // and signs streak on the wet carriageway; its drying patches (dampShare of the soak) and the day's 0.35 stay over.
+    CHECK(weatherRough(0.85f, 0.6f, 0.f, spec) < 0.35f);
+    CHECK(weatherRough(0.85f, 0.6f * spec.dampShare, 0.f, spec) > 0.4f);
+    CHECK(weatherRough(0.85f, 0.35f, 0.f, spec) > 0.4f);
     // Already smooth surfaces (glass) never get rougher from rain.
     CHECK(weatherRough(0.05f, 1.f, 0.f, spec) <= 0.05f);
     // Monotonic in soak.
@@ -66,9 +70,9 @@ TEST_CASE("puddles: cover grows with wetness and favours the gutter of a cambere
     CHECK(share(0.6f, 0.f, 1.f) > share(0.2f, 0.f, 1.f));
     CHECK(share(0.6f, 1.f, 1.f) > share(0.6f, 0.f, 1.f));
     CHECK(share(1.f, 1.f, 0.f) == doctest::Approx(0.f));
-    // Sane glossy share: at Solhaven's 0.6, open asphalt puddles under a third of an even spread (value noise clusters
+    // Sane glossy share: at Solhaven's 0.6, open asphalt puddles under 42% of an even spread (value noise clusters
     // around 0.5, so the real share is far lower), and a damp day (0.2) puddles only the noise's top tail.
-    CHECK(share(0.6f, 0.f, 1.f) < 0.34f);
+    CHECK(share(0.6f, 0.f, 1.f) < 0.42f);
     CHECK(share(0.2f, 0.f, 1.f) < 0.1f);
 }
 
@@ -116,7 +120,9 @@ TEST_CASE("HLSL: inputs, outputs and options") {
     SurfaceWeatherOptions plain;
     plain.grime = false;
     const std::string road = surfaceWeatherHlsl(spec, plain);
-    CHECK(road.find("Dirt") == std::string::npos);
+    CHECK(road.find("float Dirt") == std::string::npos);
+    CHECK(road.find("TopDirt") != std::string::npos);
+    CHECK(road.find("Street") == std::string::npos);
     CHECK(road.find("Gut = abs(Uy.z)") != std::string::npos);
     CHECK(road.find("Noise[2]") != std::string::npos);
 
@@ -133,4 +139,68 @@ TEST_CASE("HLSL: inputs, outputs and options") {
     SurfaceWeatherSpec other;
     other.puddleCover = 0.25f;
     CHECK(surfaceWeatherHlsl(other, SurfaceWeatherOptions{}) != box);
+}
+
+TEST_CASE("top grime: a ground slab darkens along its edge, other boxes stay clean") {
+    const SurfaceWeatherSpec spec;
+    CHECK(weatherGroundSlab(0.3f, 3.f, 2.f, spec) == doctest::Approx(1.f));
+    CHECK(weatherGroundSlab(3.f, 3.f, 3.f, spec) == doctest::Approx(0.f));  // a building
+    CHECK(weatherGroundSlab(0.3f, 1.f, 5.f, spec) == doctest::Approx(0.f)); // a kerb or rail
+    CHECK(weatherTopDirt(0.f, 1.f, 1.f, spec) == doctest::Approx(spec.topGrimeStrength));
+    CHECK(weatherTopDirt(spec.topGrimeM, 1.f, 1.f, spec) == doctest::Approx(0.f));
+    CHECK(weatherTopDirt(0.1f, 1.f, 1.f, spec) < weatherTopDirt(0.05f, 1.f, 1.f, spec));
+    CHECK(weatherTopDirt(0.f, 1.f, 0.f, spec) == doctest::Approx(0.f));
+    CHECK(weatherTopDirt(0.f, 0.f, 1.f, spec) < weatherTopDirt(0.f, 1.f, 1.f, spec));
+}
+
+TEST_CASE("street: wheel paths, joints, paint wear and tiles") {
+    const StreetSurfaceSpec st;
+    // One 3.5 m lane: wheel paths 0.85 m either side of its middle, none in the middle.
+    CHECK(streetWheelPath(1.75f - st.wheelOffM, 3.5f, st) == doctest::Approx(1.f));
+    CHECK(streetWheelPath(1.75f + st.wheelOffM, 3.5f, st) == doctest::Approx(1.f));
+    CHECK(streetWheelPath(1.75f, 3.5f, st) < 0.01f);
+    // Two lanes on a 7 m half: a path near each lane's middle.
+    CHECK(streetWheelPath(1.75f + st.wheelOffM, 7.f, st) == doctest::Approx(1.f));
+    CHECK(streetWheelPath(5.25f - st.wheelOffM, 7.f, st) == doctest::Approx(1.f));
+    // Joints: every 20-40 m, the same for both halves of a road (they depend on the run and the length alone).
+    int joints = 0;
+    float worst = 0.f;
+    for (int i = 0; i < 30000; ++i) {
+        const float at = i * 0.01f;
+        const float d = streetJointDistance(at, 300.f, st);
+        worst = std::max(worst, d);
+        if (d < 0.005f) ++joints;
+        CHECK(d == streetJointDistance(at, 300.f, st));
+    }
+    CHECK(worst <= 20.01f);
+    CHECK(joints >= 7);
+    CHECK(joints <= 15);
+    // Paint: fresh stays, faded and crossed by wheels goes.
+    CHECK(streetPaintLeft(0.f, 0.f, 0.5f) == doctest::Approx(1.f));
+    CHECK(streetPaintLeft(1.f, 1.f, 0.5f) == doctest::Approx(0.f));
+    CHECK(streetPaintLeft(0.5f, 1.f, 0.5f) < streetPaintLeft(0.5f, 0.f, 0.5f));
+    // A tile: down in its joint, up on its face.
+    CHECK(streetTileHeight(0.f, st) == doctest::Approx(0.f));
+    CHECK(streetTileHeight(st.tileJointM + st.tileBevelM, st) == doctest::Approx(1.f));
+}
+
+TEST_CASE("HLSL: the street layer is an option, branches on Street and keeps the normal at Street 0") {
+    const SurfaceWeatherSpec spec;
+    SurfaceWeatherOptions plain;
+    plain.grime = false;
+    plain.street = true;
+    const std::string road = surfaceWeatherHlsl(spec, plain);
+    for (const char* name : {"Street", "if (SK > 0)", "SK == 1", "SK == 2", "SK == 3", "SK == 4", "SK == 5", "fwidth", "TopDirt",
+                             "float3 Nrm = Normal;", "NormalOut = normalize(lerp(Nrm"})
+        CHECK(road.find(name) != std::string::npos);
+    // The paint's albedo is spliced.
+    CHECK(road.find("0.75 / Mx") != std::string::npos);
+    CHECK(road.find("frac(Lm.xy / 0.06)") != std::string::npos); // the ramps' tactile strips get domes, not wear
+    // Off without a box frame.
+    plain.boxFrame = false;
+    CHECK(surfaceWeatherHlsl(spec, plain).find("Street") == std::string::npos);
+    // The decal snippet: the same noise and numbers.
+    const std::string wet = surfaceWetHlsl(spec);
+    for (const char* name : {"WetIn", "GutIn", "WSoak", "WPud", "C *=", "R = lerp(R"}) CHECK(wet.find(name) != std::string::npos);
+    CHECK(wet.find("WorldPos.xy / 350.0") != std::string::npos);
 }

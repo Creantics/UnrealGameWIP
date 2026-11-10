@@ -129,19 +129,24 @@ void AddWeatherInput(UMaterialExpressionCustom* Custom, FName Name, UMaterialExp
 
 // -Weather: ftcore::surfaceWeatherHlsl's node (wet up-facing ground, puddles favouring a cambered box's low edge; no
 // dirt, since this master also dresses sign plates, poles and markings) over the surface node's albedo (output 0) and
-// roughness (output 1), reading the look collection's Wetness; "Weather" (group Weather, 1) scales it per instance. The
-// master's normal stays the mesh's (the node's normal output is left unconnected); its AO is the node's.
+// roughness (output 1), reading the look collection's Wetness; "Weather" (group Weather, 1) scales it per instance.
+// "Street" (group Weather, 0; the road tints set it, StreetKind) turns on the node's street layer: aggregate, wheel paths,
+// joints, tiles, kerb stones, worn paint. The node's normal (world space) is the master's: the mesh's vertex normal
+// wherever Street is 0 and the ground is dry, so everything else looks as before. Its AO is the node's.
 void AddWeather(UMaterial* Material, UMaterialExpressionCustom* Surface, UMaterialExpressionWorldPosition* WorldPos,
 	UMaterialParameterCollection* Look)
 {
 	ftcore::SurfaceWeatherOptions Options;
 	Options.grime = false;
+	Options.street = true;
 	UMaterialExpressionCollectionParameter* Wetness = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, 600);
 	Wetness->Collection = Look;
 	Wetness->ParameterName = TEXT("Wetness");
 	Wetness->ParameterId = Look->GetParameterId(TEXT("Wetness"));
 	UMaterialExpressionScalarParameter* Amount = AddScalar(Material, TEXT("Weather"), 1.f, 700);
 	Amount->Group = TEXT("Weather");
+	UMaterialExpressionScalarParameter* Street = AddScalar(Material, TEXT("Street"), 0.f, 1400);
+	Street->Group = TEXT("Weather");
 	UMaterialExpressionVertexNormalWS* VertexNormal = AddExpression<UMaterialExpressionVertexNormalWS>(Material, -900, 800);
 	UMaterialExpressionConstant* Occlusion = AddExpression<UMaterialExpressionConstant>(Material, -900, 900);
 	Occlusion->R = 1.f;
@@ -164,6 +169,7 @@ void AddWeather(UMaterial* Material, UMaterialExpressionCustom* Surface, UMateri
 	AddWeatherInput(Weather, TEXT("AxisX"), AddWeatherAxis(Material, FLinearColor(1.f, 0.f, 0.f), 1100), 0);
 	AddWeatherInput(Weather, TEXT("AxisY"), AddWeatherAxis(Material, FLinearColor(0.f, 1.f, 0.f), 1200), 0);
 	AddWeatherInput(Weather, TEXT("AxisZ"), AddWeatherAxis(Material, FLinearColor(0.f, 0.f, 1.f), 1300), 0);
+	AddWeatherInput(Weather, TEXT("Street"), Street, 0);
 	const TCHAR* const Outputs[] = {TEXT("NormalOut"), TEXT("RoughOut"), TEXT("AOOut")};
 	const ECustomMaterialOutputType Types[] = {CMOT_Float3, CMOT_Float1, CMOT_Float1};
 	for (int32 O = 0; O < 3; ++O)
@@ -177,6 +183,8 @@ void AddWeather(UMaterial* Material, UMaterialExpressionCustom* Surface, UMateri
 	// Output 0 is the albedo, then NormalOut, RoughOut and AOOut.
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
 	Inputs->BaseColor.Connect(0, Weather);
+	Material->bTangentSpaceNormal = false;
+	Inputs->Normal.Connect(1, Weather);
 	Inputs->Roughness.Connect(2, Weather);
 	Inputs->AmbientOcclusion.Connect(3, Weather);
 }

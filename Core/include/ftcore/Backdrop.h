@@ -40,10 +40,10 @@ struct HillDressSpec {
     float ringM = 40.f;        // the crest test: the ground stands over the mean of 8 points this far round it ...
     float crestRiseM = 3.f;    // ... by this much
     float maxSlope = 1.1f;     // rise over run past which the ground stays bare rock
-    float crestTree = 0.55f;   // chance of a tree on a crest cell, scrub takes crestScrub more
-    float crestScrub = 0.3f;
-    float slopeTree = 0.04f;   // elsewhere on the hill
-    float slopeScrub = 0.14f;
+    float crestTree = 0.7f;    // chance of a tree on a crest cell, scrub takes crestScrub more
+    float crestScrub = 0.25f;
+    float slopeTree = 0.1f;    // elsewhere on the hill: planted, never bare
+    float slopeScrub = 0.22f;
     float clearM = 6.f;        // kept this far from every box's footprint
     float pylonStepM = 150.f;  // the pylon line: one a step along the hill's run (plan y), at the highest ground
     std::size_t maxPoints = 9000;
@@ -103,19 +103,53 @@ struct RockFaceLook {
 // least minSlope; 0 for an empty field or box. No allocation.
 FTCORE_API double heightSteepShare(const HeightField& field, double x0, double y0, double x1, double y1, double step, double minSlope);
 
-// The hill's scrub as low irregular clumps (never cones): a dressing point (Tree on crests, Scrub elsewhere) as a few
-// flattened lumps (a unit sphere each), each sunk a third into the ground, with its own offset, size, yaw and one of
-// kBackdropScrubTints tints. Crest points get bigger, denser clumps. Pylons get none. Repeatable from the point.
+// The hill's planting (never cones): a Tree point (on crests, and a few on the slopes) is a trunk (a unit cube, trunk set)
+// under a crown of three rounded lumps (unit spheres) that overlap into one irregular canopy; a Scrub point is two
+// rounded bush mounds sunk a fifth into the ground. Each lump has its own offset, size, yaw and one of
+// kBackdropScrubTints tints. Pylons get none. Repeatable from the point.
 struct BackdropLump {
     float dx = 0.f, dy = 0.f, dz = 0.f; // its centre from the point's foot, plan metres (dz up)
-    float sx = 1.f, sy = 1.f, sz = 1.f; // its size, metres (sz the height, always well under sx and sy)
+    float sx = 1.f, sy = 1.f, sz = 1.f; // its size, metres (sz the height; crowns up to 5 m deep, bushes up to 1.8 m)
+    bool trunk = false;                 // a trunk: a cube in the bark tint, not a sphere
     float yaw = 0.f;                    // degrees
     std::uint8_t tint = 0;              // 0 .. kBackdropScrubTints - 1
 };
-constexpr std::size_t kBackdropClumpMax = 3;
+constexpr std::size_t kBackdropClumpMax = 4;
 constexpr std::size_t kBackdropScrubTints = 3;
 
 // Writes the point's lumps into out (room for kBackdropClumpMax) and returns how many. No allocation.
 FTCORE_API std::size_t backdropClump(const BackdropPoint& p, BackdropLump* out);
+
+// The planted share of the ground: a mask the ground master tints by (255 low ground, the wards' paving and yards,
+// which keep the ground's own colour; 0 the hill, which takes the green), over the same square, size and row order as
+// heightShapeMask. Ground under minHeightM is 255, ground over minHeightM + rampM is 0, a smooth ramp between; and
+// by slope (rise over run, 2 m either side): planted up to steepFrom, bare from steepTo (the master's rock takes the
+// steep faces), a smooth ramp between. No allocation.
+FTCORE_API void hillPlantMask(const HeightField& field, double centreX, double centreY, double sideM, std::size_t size, bool northUp,
+                              float minHeightM, float rampM, float steepFrom, float steepTo, std::uint8_t* out);
+
+// Red obstruction lamps on the tallest roofs: data for one instanced emissive head each (no light actors).
+struct AviationSpec {
+    float minHeightM = 30.f;  // a box this tall over its foot (z1 - z0) carries lamps
+    float minSpacingM = 40.f; // no two lamps of different roofs nearer than this, tallest roofs first
+    float insetM = 1.2f;      // a lamp stands this far in from the roof's corner
+    float longRoofM = 24.f;   // a roof this long gets a second lamp at the far corner
+    float headM = 0.5f;       // the lamp's foot stands this far over the roof
+    std::size_t maxLamps = 40;
+    // The far skyline band's blocks (BackdropBox, top at h) carry one lamp each from this height, up to maxSkyline.
+    float skylineMinH = 70.f;
+    std::size_t maxSkyline = 24;
+};
+
+struct AviationLamp {
+    float x = 0.f, y = 0.f, z = 0.f; // plan metres, z the lamp's foot over the datum
+    float heightM = 0.f;             // the roof's height over its foot, for logging
+};
+
+// Lamps on built boxes of kind kit, tower, mast or crane at least minHeightM tall (a mast or crane, or any roof
+// narrower than 2 insetM, gets one at its centre), then on far skyline blocks; tallest first, spaced, capped.
+// Repeatable. Allocates its result (build time only).
+FTCORE_API std::vector<AviationLamp> aviationLamps(const AviationSpec& spec, const MassingBox* boxes, std::size_t boxCount,
+                                                   const BackdropBox* skyline, std::size_t skylineCount);
 
 } // namespace ftcore

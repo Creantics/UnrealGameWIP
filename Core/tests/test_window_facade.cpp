@@ -166,7 +166,7 @@ TEST_CASE("HLSL: the r5 nodes carry the inputs, outputs and numbers the master w
         CHECK(face.find(name) != std::string::npos);
     const std::string win = windowFacadeHlsl(spec);
     for (const char* name : {"Type", "Seed", "Street", "WinW", "FaceH", "FaceW", "Up", "Along", "ViewT", "Night",
-                             "LitShare", "ShopLit", "CurtainShare", "Curtain =", "Emit =", "kRev", "kBand", "kFascia",
+                             "LitShare", "ShopLit", "SignGlow", "CurtainShare", "Curtain =", "Emit =", "kRev", "kBand", "kFascia",
                              "rxMax", "return float4"})
         CHECK(win.find(name) != std::string::npos);
     // No float literal lost its point (an HLSL int would truncate).
@@ -299,4 +299,28 @@ TEST_CASE("HLSL: the shop front fragments are spliced once, r5's kind block is g
     CHECK(count("px = shop ? shopShift + px * shopZoom : px;") == 1u);
     CHECK(count("!shop && (smallWin") == 1u);
     CHECK(win.find("struct FTShop") < win.find("float v0 = (shop ? shopSill"));
+}
+
+TEST_CASE("night windows: mixed warm and cool whites, more lit, signs brighter than shop glass") {
+    int coolOrNeutral = 0, warm = 0;
+    for (const auto& t : kWindowTintRgb) {
+        for (float c : t) {
+            CHECK(c > 0.4f);
+            CHECK(c <= 1.f);
+        }
+        if (t[2] >= t[0] - 0.12f) ++coolOrNeutral; else ++warm;
+    }
+    CHECK(coolOrNeutral * 5 >= static_cast<int>(kWindowTints) * 2);  // at least two in five
+    CHECK(warm >= 2);
+    const std::string table = windowTintTableHlsl();
+    CHECK(table.find("float3 tints[" + std::to_string(kWindowTints) + "]") != std::string::npos);
+    std::size_t n = 0;
+    for (std::size_t at = table.find("float3("); at != std::string::npos; at = table.find("float3(", at + 1)) ++n;
+    CHECK(n == kWindowTints);
+    CHECK(windowFacadeHlsl(WindowFacadeSpec{}).find(table) != std::string::npos);
+    CHECK(windowInteriorHlsl(WindowGridSpec{}).find(table) != std::string::npos);
+    const WindowFacadeSpec spec;
+    CHECK(spec.litShare > 0.35f);
+    CHECK(spec.litShare < spec.litMax);
+    CHECK(spec.signGlow >= 1.f);
 }

@@ -67,13 +67,14 @@ TEST_CASE("road decals: slabs only, every kind, each inside its slab and just ov
     RoadDecalCounts counts;
     RoadDecalSpec spec;
     spec.density = 3.0; // a short road: enough of each to test
-    roadDecals(b.solids.data(), b.solids.size(), spec, out, counts);
+    roadDecals(b, spec, out, counts); // the build's: stop-line oil too (tactile is opt-in)
     REQUIRE(!out.empty());
     CHECK(counts.total() == out.size());
     CHECK(counts.slabs > 0);
     CHECK(counts.asphaltM2 > 1000.0);
     CHECK(counts.pavementM2 > 300.0);
     for (std::size_t k = 0; k < kRoadDecalKinds; ++k) {
+        if (k == static_cast<std::size_t>(RoadDecalKind::Tactile)) continue; // off by default: the builder lays them
         CHECK_MESSAGE(counts.perKind[k] > 0, "kind ", k);
     }
     std::size_t outside = 0;
@@ -87,12 +88,17 @@ TEST_CASE("road decals: slabs only, every kind, each inside its slab and just ov
             ++outside;
             continue;
         }
-        // Its top over its slab's top there by 1.5 to 4.5 mm (each kind its own lift, under the markings' 6 mm).
+        // Its top over its slab's top there by 1.5 to 5.8 mm (each kind its own lift, under the markings' 6 mm).
         double u = 0.0, w = 0.0;
         toLocal(s->box, d.cx, d.cy, u, w);
         const double slabTop = s->box.z1 + s->box.riseU * u + s->box.riseW * w;
         CHECK(d.top - slabTop >= 0.0014);
-        CHECK(d.top - slabTop <= 0.0046);
+        CHECK(d.top - slabTop <= 0.0058);
+        // It knows its ground (the material blends its edge to it); tactile strips on the pavement, the rest of the new
+        // kinds on the carriageway.
+        CHECK(d.pavement == (s->box.kind == "pavement"));
+        if (d.kind == RoadDecalKind::Tactile) CHECK(d.pavement);
+        if (d.kind == RoadDecalKind::Oil || d.kind == RoadDecalKind::Drain) CHECK(!d.pavement);
         // Manholes and grime only on the crowned halves; patches never on the pavement.
         if (d.kind == RoadDecalKind::Patch || d.kind == RoadDecalKind::Manhole || d.kind == RoadDecalKind::KerbGrime) {
             CHECK(s->box.kind != "pavement");
@@ -188,15 +194,50 @@ TEST_CASE("road decals: the box and data the engine lays them by") {
     float data[kRoadDecalData] = {};
     roadDecalData(d, data);
     CHECK(data[0] == doctest::Approx(2.0));
+    d.pavement = true;
+    roadDecalData(d, data);
+    CHECK(data[0] == doctest::Approx(10.0)); // kind plus 8 on a pavement
+    d.pavement = false;
     CHECK(data[1] == doctest::Approx(0.25));
     CHECK(data[2] == doctest::Approx(0.7));
     CHECK(data[3] == doctest::Approx(0.7));
 
     const char* code = roadDecalHlsl();
     REQUIRE(code != nullptr);
-    for (const char* name : {"LocalPos", "Kind", "Seed", "SizeU", "SizeW", "Wetness", "RoughOut", "MaskOut", "return C;"}) {
+    for (const char* name : {"LocalPos", "Kind", "Seed", "SizeU", "SizeW", "Wetness", "WorldPos", "RoughOut", "MaskOut",
+                             "return C;", "C = lerp(Under, C, Blend);", "WSoak", "Kd == 6"}) {
         CHECK_MESSAGE(std::strstr(code, name) != nullptr, name);
     }
+    // Spliced once: the gutter width is a number, and the same pointer comes back.
+    CHECK(std::strstr(code, "GUTTER_M") == nullptr);
+    CHECK(roadDecalHlsl() == code);
+}
+
+TEST_CASE("road decals: bays get oil, gutters get drains, street kinds by tint") {
+    const RoadBuild b = theBuild();
+    std::vector<RoadDecal> plain, full;
+    RoadDecalCounts cp, cf;
+    RoadDecalSpec spec;
+    roadDecals(b.solids.data(), b.solids.size(), spec, plain, cp);
+    roadDecals(b, spec, full, cf);
+    CHECK(!RoadDecalSpec{}.tactile); // off by default: the builder lays tactile strips at the ramps
+    const auto n = [](const RoadDecalCounts& c, RoadDecalKind k) { return c.perKind[static_cast<std::size_t>(k)]; };
+    CHECK(n(cp, RoadDecalKind::Drain) > 4); // two gutters of a 240 m road, one each 30-45 m
+    CHECK(n(cp, RoadDecalKind::Tactile) == 0);
+    CHECK(n(cf, RoadDecalKind::Tactile) == 0); // the builder lays tactile solids at the ramps; the decal is opt-in
+    CHECK(n(cf, RoadDecalKind::Oil) >= n(cp, RoadDecalKind::Oil));
+    CHECK(full.size() >= plain.size());
+    for (const RoadDecal& d : full) {
+        if (d.kind == RoadDecalKind::Drain) CHECK(d.riseW < 0.0); // turned so its +w is the gutter, as kerb grime
+    }
+
+    CHECK(roadStreetKind(RoadTint::Asphalt) == 1);
+    CHECK(roadStreetKind(RoadTint::AsphaltPatch) == 1);
+    CHECK(roadStreetKind(RoadTint::Pavement) == 2);
+    CHECK(roadStreetKind(RoadTint::Kerb) == 3);
+    CHECK(roadStreetKind(RoadTint::LineWhite) == 4);
+    CHECK(roadStreetKind(RoadTint::LineYellow) == 4);
+    CHECK(roadStreetKind(RoadTint::Steel) == 0);
 }
 
 TEST_CASE("backdrop: rock faces and the steep share") {
@@ -245,20 +286,35 @@ TEST_CASE("backdrop: scrub clumps are low, lumpy, varied and repeatable") {
         p.scale = 0.6f + 0.016f * static_cast<float>(i);
         p.kind = i % 2 ? BackdropKind::Tree : BackdropKind::Scrub;
         const std::size_t n = backdropClump(p, a);
-        CHECK(n == (i % 2 ? 3u : 2u));
+        const bool tree = i % 2;
+        CHECK(n == (tree ? 4u : 2u));
         CHECK(backdropClump(p, b) == n);
         for (std::size_t k = 0; k < n; ++k) {
             CHECK(a[k].sx == b[k].sx);
             CHECK(a[k].yaw == b[k].yaw);
-            CHECK(a[k].sz < 0.5f * a[k].sx);  // flattened, never a cone or a ball
-            CHECK(a[k].sz < 0.8f * a[k].sy);
-            CHECK(a[k].sz < 2.f);
-            CHECK(a[k].dz < 0.5f * a[k].sz); // sunk into the ground
-            CHECK(a[k].dz > 0.f);
+            CHECK(a[k].trunk == (tree && k == 0));  // a tree's first part is its trunk, nothing else is
             CHECK(a[k].tint < kBackdropScrubTints);
+            CHECK(a[k].dz > 0.f);
+            if (a[k].trunk) {
+                CHECK(a[k].sz >= 3.f * p.scale - 1e-4f);  // a trunk tall enough to read under the crown
+                CHECK(a[k].sx < 0.25f * a[k].sz);         // and slim
+                CHECK(a[k].dz < 0.5f * a[k].sz);          // its foot sunk into the ground
+                continue;
+            }
             tints[a[k].tint] = true;
+            CHECK(a[k].sz <= (tree ? 5.f : 1.8f));  // crowns to 5 m deep, bushes to 1.8 m
+            CHECK(a[k].sz >= 0.45f * a[k].sx);      // rounded, never flat discs
+            CHECK(a[k].sz <= a[k].sx);              // nor spires
+            if (tree) {
+                CHECK(a[k].dz - 0.5f * a[k].sz < a[0].sz);  // the crown sits on the trunk's top, overlapping it
+                CHECK(a[k].dz > 0.6f * a[0].sz);
+                if (k == 1) CHECK(a[k].sx >= 3.5f * p.scale - 1e-4f);  // crowns read as trees
+            } else {
+                CHECK(a[k].dz < 0.5f * a[k].sz);  // bushes sunk into the ground
+            }
         }
-        CHECK(a[1].dx * a[1].dx + a[1].dy * a[1].dy > 0.f); // lumps spread, not stacked
+        const std::size_t far = tree ? 2 : 1;
+        CHECK(a[far].dx * a[far].dx + a[far].dy * a[far].dy > 0.f); // lumps spread, not stacked
     }
     for (bool t : tints) {
         CHECK(t);

@@ -237,30 +237,192 @@ std::size_t backdropClump(const BackdropPoint& p, BackdropLump* out) {
     if (!out || p.kind == BackdropKind::Pylon) {
         return 0;
     }
-    const bool crest = p.kind == BackdropKind::Tree;
+    const bool tree = p.kind == BackdropKind::Tree;
     // Seeded by the point's plan position (decimetres).
     const std::uint32_t qx = static_cast<std::uint32_t>(static_cast<std::int32_t>(std::lround(p.x * 10.f)));
     const std::uint32_t qy = static_cast<std::uint32_t>(static_cast<std::int32_t>(std::lround(p.y * 10.f)));
-    const std::size_t n = crest ? 3 : 2;
     const float scale = std::clamp(p.scale, 0.4f, 2.f);
     const std::uint8_t baseTint = static_cast<std::uint8_t>(unit(0xc1u, qx, qy, 0u) * static_cast<float>(kBackdropScrubTints));
-    for (std::size_t k = 0; k < n; ++k) {
-        const std::uint32_t kk = static_cast<std::uint32_t>(k) + 1u;
+    auto tintOf = [&](float r) { return static_cast<std::uint8_t>((baseTint + (r < 0.3f ? 1u : 0u)) % kBackdropScrubTints); };
+    if (!tree) {
+        // Two rounded bush mounds, a fifth under the ground.
+        for (std::size_t k = 0; k < 2; ++k) {
+            const std::uint32_t kk = static_cast<std::uint32_t>(k) + 1u;
+            auto u = [&](std::uint32_t salt) { return unit(0xc1u + salt, qx, qy, kk); };
+            const float wide = std::min((1.8f + 1.6f * u(1)) * scale * (k == 0 ? 1.f : 0.6f + 0.3f * u(2)), 3.6f);
+            BackdropLump& l = out[k];
+            l = BackdropLump{};
+            l.sx = wide;
+            l.sy = wide * (0.7f + 0.3f * u(3));
+            l.sz = std::min(wide * (0.5f + 0.2f * u(4)), 1.8f);
+            l.yaw = 360.f * u(5);
+            const double a = 2.0 * kPi * static_cast<double>(u(6));
+            const float r = k == 0 ? 0.f : (0.3f + 0.2f * u(7)) * out[0].sx;
+            l.dx = static_cast<float>(r * std::cos(a));
+            l.dy = static_cast<float>(r * std::sin(a));
+            l.dz = 0.3f * l.sz; // a fifth of it under the ground
+            l.tint = tintOf(u(8));
+        }
+        return 2;
+    }
+    // A trunk, sunk 0.3 m, then three crown lumps overlapping its top into one canopy.
+    auto t = [&](std::uint32_t salt) { return unit(0xd7u + salt, qx, qy, 0u); };
+    BackdropLump& trunk = out[0];
+    trunk = BackdropLump{};
+    trunk.trunk = true;
+    trunk.sx = trunk.sy = (0.3f + 0.15f * t(1)) * scale;
+    trunk.sz = (3.0f + 2.5f * t(2)) * scale;
+    trunk.dz = 0.5f * trunk.sz - 0.3f;
+    trunk.yaw = 360.f * t(3);
+    trunk.tint = 0;
+    const float top = trunk.sz - 0.3f;
+    for (std::size_t k = 1; k < 4; ++k) {
+        const std::uint32_t kk = static_cast<std::uint32_t>(k);
         auto u = [&](std::uint32_t salt) { return unit(0xc1u + salt, qx, qy, kk); };
-        const float wide = (crest ? 2.6f + 1.6f * u(1) : 1.4f + 1.2f * u(1)) * scale * (k == 0 ? 1.f : 0.6f + 0.3f * u(2));
+        const float wide = (3.5f + 3.0f * u(1)) * scale * (k == 1 ? 1.f : 0.6f + 0.3f * u(2));
         BackdropLump& l = out[k];
+        l = BackdropLump{};
         l.sx = wide;
-        l.sy = wide * (0.6f + 0.35f * u(3));
-        l.sz = std::min(wide * (crest ? 0.25f + 0.15f * u(4) : 0.3f + 0.15f * u(4)), 1.6f); // low: never over 1.6 m
+        l.sy = wide * (0.75f + 0.25f * u(3));
+        l.sz = std::min(wide * (0.7f + 0.2f * u(4)), 5.f);
         l.yaw = 360.f * u(5);
         const double a = 2.0 * kPi * static_cast<double>(u(6));
-        const float r = k == 0 ? 0.f : (0.3f + 0.2f * u(7)) * out[0].sx;
+        const float r = k == 1 ? 0.f : (0.25f + 0.15f * u(7)) * out[1].sx;
         l.dx = static_cast<float>(r * std::cos(a));
         l.dy = static_cast<float>(r * std::sin(a));
-        l.dz = 0.5f * l.sz - 0.33f * l.sz; // a third of it under the ground
-        l.tint = static_cast<std::uint8_t>((baseTint + (u(8) < 0.3f ? 1u : 0u)) % kBackdropScrubTints);
+        l.dz = top + (k == 1 ? 0.35f : 0.15f + 0.15f * u(9)) * l.sz;
+        l.tint = tintOf(u(8));
     }
-    return n;
+    return 4;
+}
+
+void hillPlantMask(const HeightField& field, double centreX, double centreY, double sideM, std::size_t size, bool northUp,
+                   float minHeightM, float rampM, float steepFrom, float steepTo, std::uint8_t* out) {
+    if (!out || size == 0) {
+        return;
+    }
+    const double ramp = std::max(static_cast<double>(rampM), 0.1);
+    const double s0 = static_cast<double>(steepFrom);
+    const double sRamp = std::max(static_cast<double>(steepTo) - s0, 0.01);
+    for (std::size_t iy = 0; iy < size; ++iy) {
+        const double v = (static_cast<double>(iy) + 0.5) / static_cast<double>(size) - 0.5;
+        const double y = northUp ? centreY - v * sideM : centreY + v * sideM;
+        for (std::size_t ix = 0; ix < size; ++ix) {
+            const double x = centreX + ((static_cast<double>(ix) + 0.5) / static_cast<double>(size) - 0.5) * sideM;
+            double hill = 0.0;
+            if (field.grid && field.samplesX > 0 && field.samplesY > 0) {
+                const double t = std::clamp((field.at(x, y) - static_cast<double>(minHeightM)) / ramp, 0.0, 1.0);
+                hill = t * t * (3.0 - 2.0 * t);
+                if (hill > 0.0) {
+                    const double gx = (field.at(x + 2.0, y) - field.at(x - 2.0, y)) / 4.0;
+                    const double gy = (field.at(x, y + 2.0) - field.at(x, y - 2.0)) / 4.0;
+                    const double st = std::clamp((std::sqrt(gx * gx + gy * gy) - s0) / sRamp, 0.0, 1.0);
+                    hill *= 1.0 - st * st * (3.0 - 2.0 * st);
+                }
+            }
+            out[iy * size + ix] = static_cast<std::uint8_t>(std::lround(255.0 * (1.0 - hill)));
+        }
+    }
+}
+
+namespace {
+
+struct AviationRoof {
+    double cx, cy, sx, sy, rot, top, h;
+    bool point;
+};
+
+bool aviationClear(const std::vector<AviationLamp>& lamps, std::size_t count, double x, double y, double minD2) {
+    for (std::size_t i = 0; i < count; ++i) {
+        const double dx = static_cast<double>(lamps[i].x) - x, dy = static_cast<double>(lamps[i].y) - y;
+        if (dx * dx + dy * dy < minD2) {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+std::vector<AviationLamp> aviationLamps(const AviationSpec& spec, const MassingBox* boxes, std::size_t boxCount, const BackdropBox* skyline,
+                                        std::size_t skylineCount) {
+    std::vector<AviationRoof> roofs;
+    for (std::size_t b = 0; b < boxCount && boxes; ++b) {
+        const MassingBox& box = boxes[b];
+        const double h = box.z1 - box.z0;
+        if (h < static_cast<double>(spec.minHeightM)) {
+            continue;
+        }
+        const bool slim = box.kind == "mast" || box.kind == "crane";
+        if (!slim && box.kind != "kit" && box.kind != "tower") {
+            continue;
+        }
+        roofs.push_back({box.cx, box.cy, box.sx, box.sy, box.rot, box.z1, h, slim});
+    }
+    // Tallest first; ties by plan position, so the order never depends on the table's.
+    std::sort(roofs.begin(), roofs.end(), [](const AviationRoof& a, const AviationRoof& c) {
+        if (a.h != c.h) return a.h > c.h;
+        if (a.cx != c.cx) return a.cx < c.cx;
+        return a.cy < c.cy;
+    });
+    std::vector<AviationLamp> out;
+    const double minD2 = static_cast<double>(spec.minSpacingM) * static_cast<double>(spec.minSpacingM);
+    const double inset = std::max(static_cast<double>(spec.insetM), 0.0);
+    const double head = static_cast<double>(spec.headM);
+    auto put = [&](double x, double y, double z, double h) {
+        out.push_back({static_cast<float>(x), static_cast<float>(y), static_cast<float>(z), static_cast<float>(h)});
+    };
+    for (const AviationRoof& r : roofs) {
+        if (out.size() >= spec.maxLamps) {
+            break;
+        }
+        const double z = r.top + head;
+        if (r.point || r.sx < 2.0 * inset + 0.5 || r.sy < 2.0 * inset + 0.5) {
+            if (aviationClear(out, out.size(), r.cx, r.cy, minD2)) {
+                put(r.cx, r.cy, z, r.h);
+            }
+            continue;
+        }
+        const double c = std::cos(r.rot * kPi / 180.0), s = std::sin(r.rot * kPi / 180.0);
+        const double hu = 0.5 * r.sx - inset, hw = 0.5 * r.sy - inset;
+        // One corner, then (a long roof) the opposite one; the pair share a roof, so the second is spaced from the
+        // other roofs' lamps only.
+        const std::size_t before = out.size();
+        const double ax = r.cx + c * hu - s * hw, ay = r.cy + s * hu + c * hw;
+        if (!aviationClear(out, before, ax, ay, minD2)) {
+            continue;
+        }
+        put(ax, ay, z, r.h);
+        if (std::max(r.sx, r.sy) >= static_cast<double>(spec.longRoofM) && out.size() < spec.maxLamps) {
+            const double bx = r.cx - c * hu + s * hw, by = r.cy - s * hu - c * hw;
+            if (aviationClear(out, before, bx, by, minD2)) {
+                put(bx, by, z, r.h);
+            }
+        }
+    }
+    // The far band: its tallest blocks, one lamp each at the roof's centre.
+    std::vector<std::size_t> tall;
+    for (std::size_t i = 0; i < skylineCount && skyline; ++i) {
+        if (skyline[i].h >= spec.skylineMinH) {
+            tall.push_back(i);
+        }
+    }
+    std::sort(tall.begin(), tall.end(), [&](std::size_t a, std::size_t b) {
+        if (skyline[a].h != skyline[b].h) return skyline[a].h > skyline[b].h;
+        return a < b;
+    });
+    std::size_t far = 0;
+    for (std::size_t i : tall) {
+        if (far >= spec.maxSkyline) {
+            break;
+        }
+        const BackdropBox& k = skyline[i];
+        if (aviationClear(out, out.size(), k.cx, k.cy, minD2)) {
+            put(k.cx, k.cy, static_cast<double>(k.h) + head, k.h);
+            ++far;
+        }
+    }
+    return out;
 }
 
 } // namespace ftcore

@@ -79,6 +79,8 @@ struct FRoadPainter
 			{
 				Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Roughness")), C.roughness);
 			}
+			// The master's street layer (0 none, 1 asphalt, 2 pavement, 3 kerb, 4 marking, 5 shared lane, 6 tactile).
+			Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Street")), static_cast<float>(ftcore::roadTintStreet(Which)));
 			Mic->PostEditChange();
 			Slot = Mic;
 		}
@@ -95,9 +97,12 @@ struct FRoadPainter
 		const double Height = FMath::Max(Box.z1 - Box.z0, ftcore::kMassingMinHeight);
 		const ftcore::RoadTint Which = Solid.tint;
 		const bool bFlat = Which == ftcore::RoadTint::LineWhite || Which == ftcore::RoadTint::LineYellow || Which == ftcore::RoadTint::LensRed ||
-			Which == ftcore::RoadTint::LensAmber || Which == ftcore::RoadTint::LensGreen || Which == ftcore::RoadTint::Wire;
+			Which == ftcore::RoadTint::LensAmber || Which == ftcore::RoadTint::LensGreen || Which == ftcore::RoadTint::Wire ||
+			Which == ftcore::RoadTint::Tactile || Which == ftcore::RoadTint::Water;
+		// A canal's walls and floor are walked on and drawn at any distance, as the road's ground is.
+		const bool bCanal = Box.kind.rfind("canal_", 0) == 0;
 		const bool bGround = Which == ftcore::RoadTint::Asphalt || Which == ftcore::RoadTint::AsphaltPatch || Which == ftcore::RoadTint::Pavement ||
-			Which == ftcore::RoadTint::Kerb;
+			Which == ftcore::RoadTint::Kerb || Which == ftcore::RoadTint::SharedLane || (bCanal && Solid.collide);
 		const bool bCyl = Solid.shape == ftcore::RoadShape::Cylinder && Cylinder;
 		FVector Location, Scale;
 		FRotator Rotation;
@@ -130,7 +135,8 @@ struct FRoadPainter
 		}
 		const bool bVehicle = Solid.tag.rfind("FTVehicle_", 0) == 0;
 		FFTCellOptions Options;
-		const bool bMarking = Which == ftcore::RoadTint::LineWhite || Which == ftcore::RoadTint::LineYellow;
+		const bool bMarking = Which == ftcore::RoadTint::LineWhite || Which == ftcore::RoadTint::LineYellow || Which == ftcore::RoadTint::Tactile ||
+			Which == ftcore::RoadTint::Water;
 		Options.Cull = bVehicle ? EFTCellCull::Car : ((bGround || bMarking) ? EFTCellCull::None : EFTCellCull::Prop);
 		Options.bCastShadow = !bFlat;
 		Options.Tag = Solid.tag.empty() ? FName(TEXT("FTRoad")) : FName(RoadsUtf8(Solid.tag));
@@ -277,7 +283,8 @@ bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::
 	if (ftcore::roadNetTable(Text))
 	{
 		std::vector<ftcore::RoadNetStreet> Net;
-		if (!ftcore::importRoadNet(Text, Net, &Error))
+		std::vector<ftcore::RoadCanal> Canals;
+		if (!ftcore::importRoadNet(Text, Net, &Error, &Canals))
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *Options.RoadsFile, *RoadsUtf8(Error));
 			return false;
@@ -290,6 +297,13 @@ bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::
 		Builds.resize(Net.size());
 		ftcore::RoadNetReport Report;
 		ftcore::roadNetBuild(Net, Ground, Builds[0], &Report);
+		for (const ftcore::RoadCanal& Canal : Canals)
+		{
+			// The channel's walls, copings, floor and water (canal rows; the quay's rails and masts are -QuayPoints').
+			const size_t Added = ftcore::roadCanalBuild(Canal, Ground, Builds[0]);
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: canal %s: %d solids, floor %.2f m, water %.2f m."),
+				*RoadsUtf8(Canal.id), static_cast<int32>(Added), Canal.floorZ, Canal.waterZ);
+		}
 		for (const ftcore::RoadNetStreet& Street : Net)
 		{
 			ftcore::RoadSpec Stub; // DropRoadStreets' id, nothing else; its build stays empty
@@ -390,6 +404,12 @@ bool Lay(FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::
 		return false;
 	}
 	FRoadPainter Paint{Host};
+	// Every tint's instance exists in the package (MI_Road_<tint>, Street set), worn here or not: the ground and decal
+	// builders look them up by name (MI_Road_SharedLane for the lanes).
+	for (int32 T = 0; T < static_cast<int32>(ftcore::RoadTint::Count); ++T)
+	{
+		Paint.Tint(static_cast<ftcore::RoadTint>(T));
+	}
 	Paint.Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
 	if (!Paint.Cylinder)
 	{

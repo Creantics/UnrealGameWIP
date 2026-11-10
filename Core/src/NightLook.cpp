@@ -1,6 +1,7 @@
 #include "ftcore/NightLook.h"
 
 #include "ftcore/LightPicker.h"
+#include "ftcore/WorldClock.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -58,6 +59,55 @@ void nightLampScales(const NightLook& look, const float* xy, std::size_t count, 
         const std::size_t found = picker.pick(xy[i * 2], xy[i * 2 + 1], radius, hits.size(), hits.data());
         out[i] = nightLampScale(look, found > 0 ? found - 1 : 0);
     }
+}
+
+namespace {
+float smooth01(float x) {
+    const float t = std::clamp(x, 0.f, 1.f);
+    return t * t * (3.f - 2.f * t);
+}
+std::array<float, 3> mix3(const std::array<float, 3>& to, float t) {
+    return {lerp(1.f, to[0], t), lerp(1.f, to[1], t), lerp(1.f, to[2], t)};
+}
+} // namespace
+
+float duskAmount(const DuskLook& look, float sunElevationDeg, bool evening) {
+    const float hi = look.startDeg, peak = look.peakDeg, lo = look.endDeg;
+    if (!(hi > peak && peak > lo)) return 0.f;
+    float a = 0.f;
+    if (sunElevationDeg >= peak) a = smooth01((hi - sunElevationDeg) / (hi - peak));
+    else a = smooth01((sunElevationDeg - lo) / (peak - lo));
+    return evening ? a : a * std::clamp(look.morningShare, 0.f, 1.f);
+}
+
+DuskFrame duskFrame(const DuskLook& look, float amount) {
+    DuskFrame f;
+    const float a = std::clamp(amount, 0.f, 1.f);
+    f.amount = a;
+    f.sunMul = mix3(look.sunTint, a);
+    f.skyGlow = mix3(look.skyGlow, a);
+    f.fillMul = mix3(look.fillTint, a);
+    f.fillScale = lerp(1.f, std::max(look.fillScale, 0.f), a);
+    f.fogMul = mix3(look.fogTint, a);
+    f.flareMix = a;
+    f.flare = std::max(look.flare, 0.f);
+    f.flareThreshold = std::max(look.flareThreshold, 0.1f);
+    f.bloomAdd = std::max(look.bloomAdd, 0.f) * a;
+    return f;
+}
+
+double duskPeakHour(const DuskLook& look, float latitudeDeg) {
+    WorldClockSpec spec;
+    spec.latitudeDeg = latitudeDeg;
+    // The sun sinks through the afternoon: bisect 12:00..24:00 for the elevation crossing peakDeg.
+    double a = 12.0, b = 24.0;
+    if (sunElevationDeg(spec, a) < look.peakDeg) return a;
+    if (sunElevationDeg(spec, b) > look.peakDeg) return b;
+    for (int i = 0; i < 40; ++i) {
+        const double m = 0.5 * (a + b);
+        if (sunElevationDeg(spec, m) > look.peakDeg) a = m; else b = m;
+    }
+    return 0.5 * (a + b);
 }
 
 } // namespace ftcore

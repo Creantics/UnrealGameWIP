@@ -1,6 +1,7 @@
 #include "FTBuildMassingWorldCommandlet.h"
 #include "FTBuildRoads.h"
 #include "FTBuildBackdrop.h"
+#include "FTBuildStandIns.h"
 #include "FTBuildDecals.h"
 #include "FTCellInstancer.h"
 #include "FTNightLightData.h"
@@ -2876,6 +2877,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, kMassingSun);
 	FTBackdrop::Haze(World);
 	FTBackdrop::Dress(Package, Cells, Base, Hill, Side, Boxes);
+	if (!FTStandIns::Place(Package, Cells, Base, Hill, Side))
+	{
+		return 1;
+	}
 
 	double EntryYaw = 0.0;
 	if (bLook)

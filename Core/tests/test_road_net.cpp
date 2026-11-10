@@ -473,3 +473,271 @@ TEST_CASE("road net: a square junction corner's pavement carries on into the blo
     }
     CHECK(found == 2);
 }
+
+TEST_CASE("road net: a scramble gets an all-walk phase and two diagonal zebras laid on its fill") {
+    const char* const csv = "id,kind,width_m,pts,pavement_m,speed_kmh,one_way,deck_z,parking,scramble\n"
+                            "ST-H,street,14,0:0;200:0,2.8,40,0,,0,100.5:0.5\n"
+                            "ST-V,street,14,100:0;100:150,2.8,40,0,,0,\n";
+    const std::vector<RoadNetStreet> s = net(csv);
+    REQUIRE(s[0].scramble.size() == 1);
+    RoadBuild b;
+    RoadNetReport rep;
+    roadNetBuild(s, MassingGround{}, b, &rep);
+    CHECK(rep.junctions == 1);
+    CHECK(rep.scrambles == 1);
+    CHECK(b.crossings.size() == 5);
+    int diag = 0;
+    for (const RoadQuad& q : b.crossings) {
+        if (q.id.find("-ZD") == std::string::npos) continue;
+        ++diag;
+        CHECK(q.junction == "JN-0001");
+        const double dx = q.pts[1].x - q.pts[0].x, dy = q.pts[1].y - q.pts[0].y;
+        const double a = std::atan2(std::fabs(dy), std::fabs(dx)) * 180.0 / 3.14159265358979;
+        CHECK(a >= 25.0);
+        CHECK(a <= 65.0);
+        // Its walk line's ends inside the carriageway, near the centre.
+        for (const RoadPoint& p : {RoadPoint{(q.pts[0].x + q.pts[3].x) * 0.5, (q.pts[0].y + q.pts[3].y) * 0.5},
+                                   RoadPoint{(q.pts[1].x + q.pts[2].x) * 0.5, (q.pts[1].y + q.pts[2].y) * 0.5}}) {
+            CHECK(p.y > -4.2);
+            CHECK(std::hypot(p.x - 100.0, p.y) < 20.0);
+        }
+    }
+    CHECK(diag == 2);
+    // Every pedestrian head on the all-walk phase; vehicle phases unchanged.
+    int walk = 0, other = 0, vehicle = 0;
+    for (const RoadSolid& sd : b.solids) {
+        if (sd.tag.rfind("FTPedSignal_JN-0001_", 0) == 0 && sd.tag.find("_red") != std::string::npos)
+            (sd.tag.rfind("FTPedSignal_JN-0001_W_", 0) == 0 ? walk : other)++;
+        if (sd.tag.rfind("FTSignal_JN-0001_", 0) == 0 && sd.tag.find("_red") != std::string::npos) ++vehicle;
+    }
+    CHECK(walk == 6);
+    CHECK(other == 0);
+    CHECK(vehicle == 3);
+    // The diagonal bars sit on the fill: none under its top, none more than 3 cm over it.
+    std::vector<const RoadSolid*> fill;
+    for (const RoadSolid& sd : b.solids)
+        if (sd.box.row == "JN-0001" && sd.box.kind == "fill") fill.push_back(&sd);
+    int bars = 0;
+    for (const RoadSolid& sd : b.solids) {
+        if (sd.box.row != "JN-0001" || sd.box.kind != "mark") continue;
+        ++bars;
+        CHECK_FALSE(sd.collide);
+        CHECK(sd.box.z1 > 0.0);
+        CHECK(sd.box.z1 < kRoadSurfaceLift + kRoadCrossfall * 4.2 + 0.05);
+        // Never over a kerb: south of the main road's north kerb only between the corners, never inside a corner's kerb.
+        CHECK(sd.box.cy > -4.2);
+        CHECK(std::hypot(sd.box.cx - 110.2, sd.box.cy - 10.2) > kRoadCornerRadius);
+        CHECK(std::hypot(sd.box.cx - 89.8, sd.box.cy - 10.2) > kRoadCornerRadius);
+    }
+    CHECK(bars >= 40);
+
+    RoadGraph g;
+    roadGraphFromNet(s, b, g);
+    REQUIRE(g.junctions.size() == 1);
+    CHECK(g.junctions[0].phases.find(";W:all-walk") != std::string::npos);
+    CHECK(g.crossings.size() == 5);
+
+    // Without the column: no all-walk phase, no diagonals.
+    const std::vector<RoadNetStreet> plain = net(kTee);
+    RoadBuild pb;
+    roadNetBuild(plain, MassingGround{}, pb);
+    RoadGraph pg;
+    roadGraphFromNet(plain, pb, pg);
+    REQUIRE(pg.junctions.size() == 1);
+    CHECK(pg.junctions[0].phases.find("W:") == std::string::npos);
+    CHECK(pb.crossings.size() == 3);
+
+    std::vector<RoadNetStreet> bad;
+    CHECK_FALSE(importRoadNet("id,kind,width_m,pts,pavement_m,scramble\nST-H,street,14,0:0;200:0,2.8,100\n", bad));
+}
+
+TEST_CASE("road net: a canal between two roads gets railing spans, closing posts, masts and a footbridge") {
+    const char* const csv = "id,kind,width_m,pts,pavement_m\n"
+                            "ST-W,street,14,0:0;0:200,2.8\n"
+                            "ST-E,street,14,30:0;30:200,2.8\n";
+    const std::vector<RoadNetStreet> s = net(csv);
+    RoadBuild b;
+    roadNetBuild(s, MassingGround{}, b);
+    RoadCanal canal;
+    canal.id = "CN-T";
+    canal.x0 = 7.0;
+    canal.x1 = 23.0;
+    canal.y0 = 20.0;
+    canal.y1 = 180.0;
+    canal.bridgeAt = 100.0;
+    std::vector<RoadQuayPoint> pts;
+    RoadQuayCounts c;
+    roadQuayPoints(canal, b, MassingGround{}, pts, &c);
+    CHECK(c.roadInWater == 0);
+    CHECK(c.bridgeAt > 89.0);
+    CHECK(c.bridgeAt < 111.0);
+    double pave = 0.0;
+    for (const RoadSolid& sd : b.solids)
+        if (sd.box.kind == "pavement") pave = std::max(pave, sd.box.z1);
+    int spans = 0, posts = 0, masts = 0, deck = 0, ramps = 0, landings = 0;
+    std::vector<double> mastW, mastE;
+    for (const RoadQuayPoint& p : pts) {
+        CHECK(p.x >= 7.0 - 1e-6);
+        CHECK(p.x <= 23.0 + 1e-6);
+        CHECK(p.y >= 20.0 - 1e-6);
+        CHECK(p.y <= 180.0 + 1e-6);
+        if (p.kind == "railing_span") {
+            ++spans;
+            CHECK(p.length <= kQuaySpanMax + 1e-9);
+            CHECK(p.length > 0.25);
+            CHECK(p.z1 - p.z0 == doctest::Approx(kQuayRailHigh));
+            if (p.group.rfind("QR-", 0) == 0) {
+                CHECK((std::fabs(p.x - 7.25) < 1e-6 || std::fabs(p.x - 22.75) < 1e-6));
+                CHECK(p.z0 == doctest::Approx(pave).epsilon(0.01));
+                // Off the bridge's gap.
+                CHECK(std::fabs(p.y - c.bridgeAt) >= kQuayBridgeWide * 0.5 + p.length * 0.5 - 1e-6);
+            }
+        } else if (p.kind == "bridge_pier") {
+            ++posts;
+            CHECK(p.length == doctest::Approx(kQuayPost));
+        } else if (p.kind == "lamp_mast") {
+            ++masts;
+            (p.x < 15.0 ? mastW : mastE).push_back(p.y);
+            CHECK(p.z1 - p.z0 == doctest::Approx(kQuayMastHigh));
+            for (const MassingFoot& f : b.furniture)
+                CHECK(std::hypot(p.x - f.x, p.y - f.y) - std::max(f.hx, f.hy) >= kQuayMastClear - 1e-9);
+        } else if (p.kind == "bridge_deck") {
+            ++deck;
+            CHECK(p.z1 == doctest::Approx(pave + kQuayBridgeRise).epsilon(0.01));
+            CHECK(p.length == doctest::Approx(kQuayBridgeDeck));
+        } else if (p.kind == "bridge_stair") {
+            ++ramps;
+            CHECK(p.slope > 0.0);
+            CHECK(p.slope <= 0.6);
+        } else if (p.kind == "bridge_landing") {
+            ++landings;
+        }
+    }
+    CHECK(deck == 1);
+    CHECK(ramps == 2);
+    CHECK(landings == 2);
+    CHECK(spans == static_cast<int>(c.spans));
+    CHECK(masts == static_cast<int>(c.masts));
+    // A closing post per run: each bank's runs (one more than its breaks: the bridge and its masts) and the bridge's two.
+    CHECK(posts == static_cast<int>(c.posts));
+    CHECK(posts == static_cast<int>(mastW.size() + mastE.size()) + 2 + 2 + 2);
+    CHECK(mastW.size() >= 5);
+    CHECK(mastE.size() >= 5);
+    for (const std::vector<double>* m : {&mastW, &mastE})
+        for (std::size_t i = 1; i < m->size(); ++i) {
+            const double gap = (*m)[i] - (*m)[i - 1];
+            if (std::fabs(gap - 25.0) > 6.0 * 2.0 + 1e-9) CHECK(((*m)[i] > c.bridgeAt && (*m)[i - 1] < c.bridgeAt));
+        }
+    const std::string table = roadQuayCsv(pts);
+    CHECK(table.find("kind,id,group,x,y,z0,z1,rot,length_m,width_m,slope,deck\n") != std::string::npos);
+    std::size_t rows = 0;
+    for (const char ch : table) rows += ch == '\n';
+    CHECK(rows == pts.size() + 2);
+
+    // A canal laid over a road's pavement is reported.
+    RoadCanal bad = canal;
+    bad.x0 = 3.0;
+    roadQuayPoints(bad, b, MassingGround{}, pts, &c);
+    CHECK(c.roadInWater > 0);
+}
+
+TEST_CASE("road net: a canal row builds its channel: walls, copings at the bank top, floor and water") {
+    const char* const csv = "id,kind,width_m,pts,pavement_m,canal\n"
+                            "ST-W,street,14,0:0;0:200,2.8,\n"
+                            "ST-E,street,14,30:0;30:200,2.8,\n"
+                            "CN-T,canal,,7:20;23:180,,1.5:2.5:100\n";
+    std::vector<RoadNetStreet> s;
+    std::vector<RoadCanal> canals;
+    REQUIRE(importRoadNet(csv, s, nullptr, &canals));
+    CHECK(s.size() == 2); // the canal row is no street
+    REQUIRE(canals.size() == 1);
+    const RoadCanal& c = canals[0];
+    CHECK(c.id == "CN-T");
+    CHECK(c.x0 == doctest::Approx(7.0));
+    CHECK(c.y1 == doctest::Approx(180.0));
+    CHECK(c.floorZ == doctest::Approx(1.5));
+    CHECK(c.waterZ == doctest::Approx(2.5));
+    CHECK(c.bridgeAt == doctest::Approx(100.0));
+    // Without the canals list the row is skipped; a bad canal column or water under the floor fails.
+    std::vector<RoadNetStreet> s2;
+    REQUIRE(importRoadNet(csv, s2));
+    CHECK(s2.size() == 2);
+    std::vector<RoadCanal> cx;
+    CHECK_FALSE(importRoadNet("id,kind,pts,canal\nCN-X,canal,0:0;10:50,3:2\n", s2, nullptr, &cx));
+    CHECK_FALSE(importRoadNet("id,kind,pts,canal\nCN-X,canal,0:0;10:50,a:2\n", s2, nullptr, &cx));
+    CHECK_FALSE(importRoadNet("id,kind,pts\nCN-X,canal,0:0\n", s2, nullptr, &cx));
+
+    RoadBuild b;
+    roadNetBuild(s, MassingGround{}, b);
+    const std::size_t before = b.solids.size(), collide0 = b.counts.collide;
+    const std::size_t added = roadCanalBuild(c, MassingGround{}, b);
+    // 16 bank pieces a side (158 m in 10 m pieces) and two ends, each a wall and a coping; the floor and the water.
+    CHECK(added == (2 * 16 + 2) * 2 + 2);
+    CHECK(b.solids.size() == before + added);
+    CHECK(b.counts.collide == collide0 + added - 1);
+    double bankTop = 0.0;
+    for (const RoadSolid& r : b.solids)
+        if (r.box.kind == "pavement" && std::fabs(r.box.cx - (7.0 - 0.3)) < 2.0 && r.box.cy > 50.0 && r.box.cy < 150.0) {
+            bankTop = r.box.z1;
+            break;
+        }
+    for (std::size_t i = before; i < b.solids.size(); ++i) {
+        const RoadSolid& r = b.solids[i];
+        const MassingBox& x = r.box;
+        CHECK(x.id.rfind("CN-T-", 0) == 0);
+        CHECK(x.cx - 0.5 * x.sx >= 7.0 - 1e-9);
+        CHECK(x.cx + 0.5 * x.sx <= 23.0 + 1e-9);
+        CHECK(x.cy - 0.5 * x.sy >= 20.0 - 1e-9);
+        CHECK(x.cy + 0.5 * x.sy <= 180.0 + 1e-9);
+        if (x.kind == "canal_water") {
+            CHECK(r.tint == RoadTint::Water);
+            CHECK_FALSE(r.collide);
+            CHECK(x.z1 == doctest::Approx(2.5));
+            CHECK(x.sx == doctest::Approx(16.0 - 2.0 * c.wall));
+        } else if (x.kind == "canal_floor") {
+            CHECK(x.z1 == doctest::Approx(1.5));
+            CHECK(r.collide);
+        } else if (x.kind == "canal_coping") {
+            CHECK(r.tint == RoadTint::Kerb);
+            CHECK(x.z1 - x.z0 == doctest::Approx(c.coping));
+            if (x.cx < 10.0 && x.sy < 11.0) CHECK(x.z1 == doctest::Approx(bankTop)); // the west bank: the pavement's top
+        } else {
+            CHECK(x.kind == "canal_wall");
+            CHECK(x.z0 == doctest::Approx(1.2));
+        }
+    }
+    // Too small a rectangle: nothing.
+    RoadCanal tiny = c;
+    tiny.x1 = tiny.x0 + 2.5;
+    CHECK(roadCanalBuild(tiny, MassingGround{}, b) == 0);
+}
+
+TEST_CASE("road net: tints carry the surface master's street kind; the ramps' tactile strips wear Tactile") {
+    CHECK(roadTintStreet(RoadTint::Asphalt) == 1);
+    CHECK(roadTintStreet(RoadTint::AsphaltPatch) == 1);
+    CHECK(roadTintStreet(RoadTint::Pavement) == 2);
+    CHECK(roadTintStreet(RoadTint::Kerb) == 3);
+    CHECK(roadTintStreet(RoadTint::LineWhite) == 4);
+    CHECK(roadTintStreet(RoadTint::LineYellow) == 4);
+    CHECK(roadTintStreet(RoadTint::SharedLane) == 5);
+    CHECK(roadTintStreet(RoadTint::Tactile) == kRoadStreetTactile);
+    CHECK(roadTintStreet(RoadTint::Water) == 0);
+    CHECK(roadTintStreet(RoadTint::Steel) == 0);
+    CHECK(std::string(roadTintName(RoadTint::Tactile)) == "Tactile");
+    CHECK(std::string(roadTintName(RoadTint::SharedLane)) == "SharedLane");
+    CHECK(std::string(roadTintName(RoadTint::Water)) == "Water");
+    for (int t = 0; t < static_cast<int>(RoadTint::Count); ++t)
+        CHECK(std::string(roadTintName(static_cast<RoadTint>(t))) != "Unknown");
+    CHECK(roadTint(RoadTint::Water).roughness < 0.1f);
+
+    const std::vector<RoadNetStreet> s = net(kTee);
+    RoadBuild b;
+    roadNetBuild(s, MassingGround{}, b);
+    std::size_t tactile = 0;
+    for (const RoadSolid& r : b.solids) {
+        if (r.box.kind != "tactile") continue;
+        ++tactile;
+        CHECK(r.tint == RoadTint::Tactile);
+    }
+    CHECK(tactile > 0);
+}

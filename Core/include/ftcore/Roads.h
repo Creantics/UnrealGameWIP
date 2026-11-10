@@ -143,6 +143,9 @@ enum class RoadTint : std::uint8_t {
     CarCream,
     TaxiYellow,
     BusGreen,
+    Tactile,    // the ramps' tactile paving (yellow, domed)
+    SharedLane, // a shared lane's concrete (pedestrians and slow vehicles on one level)
+    Water,      // a canal's water (a stand-in plane)
     Count
 };
 struct RoadColor {
@@ -150,6 +153,10 @@ struct RoadColor {
 };
 FTCORE_API RoadColor roadTint(RoadTint tint);
 FTCORE_API const char* roadTintName(RoadTint tint);
+// The world surface master's "Street" value for a tint (its street layer): asphalt and patches 1, pavement 2, kerb 3,
+// lines 4, shared lane 5, tactile kRoadStreetTactile; the rest 0 (none).
+inline constexpr int kRoadStreetTactile = 6;
+FTCORE_API int roadTintStreet(RoadTint tint);
 
 enum class RoadVehicleKind : std::uint8_t { Kei, Sedan, Taxi, Van, KeiTruck, Bus, Scooter, Bicycle, Count };
 FTCORE_API const char* roadVehicleName(RoadVehicleKind kind); // "kei", "sedan", ..., the tag's suffix
@@ -352,10 +359,14 @@ struct RoadNetStreet {
     double mouthBack = 0.0;      // m: a mouth's dropped kerb runs this far behind the pavement
     double mouthZ = 0.0;         // m: the lane's surface at the mouth's back; 0: the pavement's
     bool poleLeft = false, poleRight = false; // utility poles and wires along that side (left: of its points' way)
+    std::vector<RoadPoint> scramble; // its junctions run as scrambles: an all-walk phase W and diagonal zebras (a point
+                                     // within kRoadGraphSnap of the junction's centre names it)
 };
 // Whether a roads table is a network table: its header names pts but no ground_z (the ground is the world's).
 FTCORE_API bool roadNetTable(std::string_view csv);
-// Reads a network table (CSV, a header row; '#' comment rows). Columns:
+// Reads a network table (CSV, a header row; '#' comment rows). A row of kind canal is a canal (RoadCanal), not a
+// street: pts its two plan corners "x0:y0;x1:y1", optional column canal "floor_z:water_z[:bridge_at]"; it goes to
+// `canals` (skipped when that is null). Columns:
 //   id, kind      as importRoads
 //   width_m       wall to wall
 //   pts           "x:y;x:y;...", at least two points, plan frame
@@ -367,8 +378,11 @@ FTCORE_API bool roadNetTable(std::string_view csv);
 //   mouths        optional: "lane@at@width@L|R;..." as importRoads, with no stub
 //   mouth_back_m, mouth_z  optional, as importRoads
 //   poles         optional: L, R or LR, utility poles with wires along that side (left of the way its points run)
+//   scramble      optional: "x:y;..." the junctions on it that run as scrambles (roadNetBuild)
 // `out` is cleared first. False, with the reason naming the line, on any error.
-FTCORE_API bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::string* error = nullptr);
+struct RoadCanal;
+FTCORE_API bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::string* error = nullptr,
+                              std::vector<RoadCanal>* canals = nullptr);
 // As a massing street (z 0), for the road graph.
 FTCORE_API MassingStreet roadNetStreet(const RoadNetStreet& street);
 
@@ -381,6 +395,7 @@ struct RoadNetReport {
     std::size_t piers = 0;
     std::size_t pruned = 0;  // kerb and pavement pieces left out: a lane across them or a carriageway under them
     std::size_t aprons = 0;  // near-square junction corners whose pavement carries on into the block's corner
+    std::size_t scrambles = 0; // signalised junctions run as scrambles
     double maxGrade = 0.0;   // along any piece
     std::string maxGradeAt;  // the steepest piece: "<edge> (x, y)"
     double maxStep = 0.0;    // m: the largest step where an arm's crowned carriageway meets a junction's fill (crowned too: 0)
@@ -400,9 +415,76 @@ struct RoadNetReport {
 // ground and a rail along each back edge. Lane mouths as roadBuild's. Slabs deepen where the ground falls away (to 3 m).
 // A near-square corner (kRoadApronSquare) carries its pavement kRoadCornerApron on into the block's corner where the
 // ground lets the slab sit (report: aprons).
+// A scramble (a signalised junction a street's `scramble` names): its pedestrian signals on phase W (all-walk) and up
+// to two diagonal zebras (ids <junction>-ZD<n>, kRoadZebraWide wide) between its corners and straight kerbs across the
+// fill, each 25-65 degrees to every arm, laid flat over the fill in pieces; kerbs as any junction's.
 // Last, the kerb and pavement pieces roadKerbFaces would find across its own lanes or in its own carriageway (two
 // junctions close together) are left out (report: pruned).
 FTCORE_API void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround& ground, RoadBuild& out,
                              RoadNetReport* report = nullptr);
+
+// ---- Canal edge: railing, mast and footbridge points (placed by the stand-in builder, not modelled here) ----
+
+inline constexpr double kQuayRailHigh = 1.1;   // m: a railing span's top over its foot
+inline constexpr double kQuaySpanMax = 2.0;    // m: a railing span's length, at most
+inline constexpr double kQuayRailIn = 0.15;    // m: the rail's line back from the water's edge
+inline constexpr double kQuayPost = 0.08;      // m: a run's closing post (a bridge_pier row) side
+inline constexpr double kQuayMastHigh = 8.0;   // m
+inline constexpr double kQuayMastPlate = 0.3;  // m: a mast's base plate side; the rail breaks round it
+inline constexpr double kQuayMastClear = 1.0;  // m a mast keeps from the road's furniture feet
+inline constexpr double kQuayBridgeWide = 2.4; // m: the footbridge's walking width
+inline constexpr double kQuayBridgeRise = 0.45; // m: its middle deck over the higher bank
+inline constexpr double kQuayBridgeDeck = 2.2;  // m: its level middle's length
+inline constexpr double kQuaySlab = 0.35;       // m: a deck's, landing's or ramp's thickness
+
+// A canal between two roads: an axis-aligned plan rectangle (bank back to bank), the banks along its long side, each a
+// coping `bank` wide before the water.
+struct RoadCanal {
+    std::string id = "CN-01";
+    double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
+    double bank = 0.4;       // m: each bank's coping, inside the rectangle
+    double bridgeAt = 0.0;   // plan coordinate along the long side of the footbridge's centre line; <= 0: none
+    double mastGap = 25.0;   // m between masts along each bank, about (the two banks staggered by half)
+    double floorZ = 1.5;     // m: the channel's floor top
+    double waterZ = 2.5;     // m: the water's surface
+    double wall = 1.0;       // m: each quay wall's thickness, from the rectangle's edge in (sides and ends)
+    double coping = 0.25;    // m: the coping slab on each wall's top
+};
+// One row of the point table (kinds railing_span, lamp_mast, bridge_deck, bridge_landing, bridge_stair, bridge_pier).
+struct RoadQuayPoint {
+    std::string kind, id, group, deck;
+    double x = 0.0, y = 0.0, z0 = 0.0, z1 = 0.0;
+    double rot = 0.0;    // plan degrees, the long axis u
+    double length = 0.0, width = 0.0;
+    double slope = 0.0;  // rise per m along +u
+};
+struct RoadQuayCounts {
+    std::size_t spans = 0, posts = 0, masts = 0, bridge = 0;
+    std::size_t mastsMoved = 0;  // masts nudged along the bank off the road's furniture
+    std::size_t roadInWater = 0; // road band feet (carriageway, kerb, pavement) reaching into the water
+    double railed = 0.0;         // m of railing
+    double bridgeAt = 0.0;       // where the footbridge went (moved off the furniture), 0: none
+};
+// The canal's points: each bank's top is the road pavement's top just behind it in `build` (else the ground); a rail
+// line kQuayRailIn back from each water edge, broken round the footbridge and each mast, cut into runs of equal spans of
+// kQuaySpanMax at most (rot along the run, z0 the bank top, z1 = z0 + kQuayRailHigh) and a closing post (a bridge_pier
+// row kQuayPost square, rail high) at each run's +u end; a lamp mast every mastGap on each bank, the second staggered
+// by half, each nudged up to 6 m along the bank to keep kQuayMastClear off `build.furniture` (its head facing the
+// road behind it); the footbridge FB-01 across at bridgeAt (moved up to 10 m to clear the furniture by 0.5 m): a
+// landing on each coping, a ramp up kQuayBridgeRise from each water edge (bridge_stair, rot uphill) and a level deck
+// kQuayBridgeDeck long, railed along both sides. Ids <canal>-<kind>-<n>; groups QR-<canal>-W|E-<n> and FB-01; deck is
+// the canal's id. `out` is cleared first. Allocates: build time only.
+FTCORE_API void roadQuayPoints(const RoadCanal& canal, const RoadBuild& build, const MassingGround& ground,
+                               std::vector<RoadQuayPoint>& out, RoadQuayCounts* counts = nullptr);
+// The channel as road solids, appended to `build` (ids <canal>-<part>-<n>, kinds canal_*): a quay wall along each side
+// and across each end, `wall` thick from the rectangle's edge in, from 0.3 m under the floor up to the bank top less
+// `coping`, in pieces of 10 m at most along the banks (each bank's top as roadQuayPoints reads it); a coping slab
+// (Kerb, walked on) over each wall piece up to the bank top; the floor (PoleConcrete, walked on) between the walls,
+// 0.3 m deep up to floorZ; the water (Water, no collision) a 5 cm plate up to waterZ between the walls. The ground stays
+// as it is: under ground higher than waterZ the channel is buried until the height field is cut. Returns the solids
+// added (0 for a rectangle under 4 x (2 wall + 1) m).
+FTCORE_API std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, RoadBuild& build);
+// The point table as CSV: '#' comment rows, then kind,id,group,x,y,z0,z1,rot,length_m,width_m,slope,deck.
+FTCORE_API std::string roadQuayCsv(const std::vector<RoadQuayPoint>& points);
 
 } // namespace ftcore

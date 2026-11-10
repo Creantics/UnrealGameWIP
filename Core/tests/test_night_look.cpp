@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 #include "ftcore/Backdrop.h"
 #include "ftcore/NightLook.h"
+#include "ftcore/WorldClock.h"
 #include "AllocCounter.h"
 
 #include <cmath>
@@ -206,4 +207,160 @@ TEST_CASE("heightShapeMask: ridge over 128, flat at 128, rows north first; no al
     // An empty field reads even everywhere.
     heightShapeMask(HeightField{}, 0.0, 0.0, 10.0, 16, false, 8.f, 0.5f, mask.data());
     CHECK(mask[0] == 128);
+}
+
+TEST_CASE("night look: teal ambient, orange lamps, warm glow") {
+    const NightLook look;
+    // Teal-blue: green well over red in both fills, blue on top or near it.
+    CHECK(look.skyTint[1] > look.skyTint[0] + 0.2f);
+    CHECK(look.moonTint[1] > look.moonTint[0] + 0.15f);
+    CHECK(look.lampKelvin >= 2200.f);
+    CHECK(look.lampKelvin <= 2700.f);
+    CHECK(look.glow[0] > look.glow[1]);
+    CHECK(look.glow[1] > look.glow[2]);
+    // The fill is a dim, muted teal (not one saturated blue): half the old share, no channel over 0.7, a narrow spread,
+    // so the warm lamps and shop spill carry the streets.
+    CHECK(look.skyFill <= 0.35f);
+    CHECK(look.skyTint[2] <= 0.7f);
+    CHECK(look.skyTint[2] - look.skyTint[0] < 0.35f);
+    CHECK(look.lampCandela > look.shopCandela);
+}
+
+TEST_CASE("duskAmount: a bell over the sun's elevation, fullest at the peak, weaker in the morning") {
+    const DuskLook look;
+    CHECK(duskAmount(look, 30.f, true) == doctest::Approx(0.f));
+    CHECK(duskAmount(look, look.startDeg, true) == doctest::Approx(0.f));
+    CHECK(duskAmount(look, look.peakDeg, true) == doctest::Approx(1.f));
+    CHECK(duskAmount(look, look.endDeg, true) == doctest::Approx(0.f));
+    CHECK(duskAmount(look, -20.f, true) == doctest::Approx(0.f));
+    CHECK(duskAmount(look, 8.f, true) > 0.f);
+    CHECK(duskAmount(look, 8.f, true) < 1.f);
+    CHECK(duskAmount(look, look.peakDeg, false) == doctest::Approx(look.morningShare));
+    float last = 0.f;
+    for (float e = look.startDeg; e >= look.peakDeg; e -= 0.5f) {
+        const float a = duskAmount(look, e, true);
+        CHECK(a >= last - 1e-6f);
+        last = a;
+    }
+    DuskLook broken;
+    broken.peakDeg = broken.startDeg + 1.f;
+    CHECK(duskAmount(broken, 2.f, true) == doctest::Approx(0.f));
+}
+
+TEST_CASE("duskFrame: neutral at zero, the spec at one, magenta sky, dim fill; no allocation") {
+    const DuskLook look;
+    const auto before = ftcore_test::allocStats().count;
+    const DuskFrame none = duskFrame(look, 0.f);
+    const DuskFrame full = duskFrame(look, 2.f);
+    const auto after = ftcore_test::allocStats().count;
+    for (int i = 0; i < 3; ++i) {
+        CHECK(none.sunMul[i] == doctest::Approx(1.f));
+        CHECK(none.skyGlow[i] == doctest::Approx(1.f));
+        CHECK(none.fogMul[i] == doctest::Approx(1.f));
+        CHECK(full.sunMul[i] == doctest::Approx(look.sunTint[i]));
+        CHECK(full.skyGlow[i] == doctest::Approx(look.skyGlow[i]));
+    }
+    CHECK(none.fillScale == doctest::Approx(1.f));
+    CHECK(none.bloomAdd == doctest::Approx(0.f));
+    CHECK(none.flareMix == doctest::Approx(0.f));
+    CHECK(full.amount == doctest::Approx(1.f));
+    CHECK(full.fillScale == doctest::Approx(look.fillScale));
+    CHECK(full.fillScale < 0.7f);  // the skyline reads as a silhouette
+    // Magenta-purple sky: red and blue over green.
+    CHECK(full.skyGlow[0] > full.skyGlow[1] + 0.3f);
+    CHECK(full.skyGlow[2] > full.skyGlow[1] + 0.3f);
+    // Warm low sun.
+    CHECK(full.sunMul[0] > full.sunMul[1]);
+    CHECK(full.sunMul[1] > full.sunMul[2] - 0.2f);
+    CHECK(full.flare > 0.f);
+    if (ftcore_test::allocHookInstalled()) CHECK(after == before);
+}
+
+TEST_CASE("duskPeakHour: an evening hour where the sun stands at the peak, before full night") {
+    const DuskLook look;
+    const WorldClockSpec spec;
+    const double h = duskPeakHour(look, spec.latitudeDeg);
+    CHECK(h > 16.5);
+    CHECK(h < 19.5);
+    CHECK(sunElevationDeg(spec, h) == doctest::Approx(look.peakDeg).epsilon(0.02));
+    CHECK(nightAmount(spec, h) < 0.5f);
+}
+
+TEST_CASE("hillPlantMask: the hill 0 (planted), low ground 255, a ramp between; no allocation") {
+    const std::vector<std::uint16_t> g = ridgeGrid(201);
+    HeightField f{g.data(), 201, 201, 1.0, 0.0, 0.0};
+    std::uint8_t m[200 * 200];
+    const auto before = ftcore_test::allocStats().count;
+    hillPlantMask(f, 100.0, 100.0, 200.0, 200, true, 14.f, 8.f, 9.f, 10.f, m);  // no slope cut
+    const auto after = ftcore_test::allocStats().count;
+    CHECK(m[100 * 200 + 100] == 0);    // ridge top
+    CHECK(m[100 * 200 + 10] == 255);   // flat ground west
+    CHECK(m[100 * 200 + 190] == 255);  // flat ground east
+    // Monotonic from the ridge out to the flat.
+    for (std::size_t ix = 101; ix < 199; ++ix) CHECK(m[100 * 200 + ix + 1] >= m[100 * 200 + ix]);
+    bool ramp = false;
+    for (std::size_t ix = 100; ix < 200; ++ix) ramp = ramp || (m[100 * 200 + ix] > 0 && m[100 * 200 + ix] < 255);
+    CHECK(ramp);
+    std::uint8_t e[16];
+    hillPlantMask(HeightField{}, 0.0, 0.0, 10.0, 4, true, 14.f, 8.f, 0.55f, 0.75f, e);
+    CHECK(e[5] == 255);  // no field: nothing is hill
+    hillPlantMask(f, 0.0, 0.0, 1.0, 0, true, 14.f, 8.f, 0.55f, 0.75f, nullptr);  // no crash
+    if (ftcore_test::allocHookInstalled()) CHECK(after == before);
+    // By slope: the ridge's flanks rise 1.5 in 1, so they stay bare (rock); its level top stays planted.
+    hillPlantMask(f, 100.0, 100.0, 200.0, 200, true, 14.f, 8.f, 0.55f, 0.75f, m);
+    CHECK(m[100 * 200 + 100] == 0);
+    CHECK(m[100 * 200 + 120] == 255);
+    CHECK(m[100 * 200 + 80] == 255);
+}
+
+namespace {
+MassingBox tallBox(const char* kind, double cx, double cy, double sx, double sy, double h) {
+    MassingBox b;
+    b.kind = kind;
+    b.cx = cx;
+    b.cy = cy;
+    b.sx = sx;
+    b.sy = sy;
+    b.z0 = 5.0;
+    b.z1 = 5.0 + h;
+    return b;
+}
+} // namespace
+
+TEST_CASE("aviationLamps: tallest roofs first, none on low or ground boxes, spaced, capped, repeatable") {
+    std::vector<MassingBox> boxes;
+    boxes.push_back(tallBox("kit", 0.0, 0.0, 30.0, 16.0, 36.0));     // long roof: two corners
+    boxes.push_back(tallBox("kit", 10.0, 5.0, 12.0, 12.0, 33.0));    // too near the first
+    boxes.push_back(tallBox("kit", 200.0, 0.0, 12.0, 12.0, 31.0));   // one corner
+    boxes.push_back(tallBox("kit", 400.0, 0.0, 12.0, 12.0, 20.0));   // too low
+    boxes.push_back(tallBox("cliff", 600.0, 0.0, 24.0, 24.0, 60.0)); // ground, not a roof
+    boxes.push_back(tallBox("mast", 800.0, 0.0, 1.0, 1.0, 55.0));    // a mast: one at its top centre
+    std::vector<BackdropBox> sky(3);
+    sky[0] = {2000.f, 0.f, 30.f, 30.f, 0.f, 100.f};
+    sky[1] = {2010.f, 0.f, 30.f, 30.f, 0.f, 90.f};  // too near sky[0]
+    sky[2] = {2500.f, 0.f, 30.f, 30.f, 0.f, 50.f};  // too low
+    const AviationSpec spec;
+    const auto a = aviationLamps(spec, boxes.data(), boxes.size(), sky.data(), sky.size());
+    const auto b = aviationLamps(spec, boxes.data(), boxes.size(), sky.data(), sky.size());
+    REQUIRE(a.size() == b.size());
+    REQUIRE(a.size() == 5);
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        CHECK(a[i].x == b[i].x);
+        CHECK(a[i].heightM >= spec.minHeightM);
+    }
+    CHECK(a[0].heightM == doctest::Approx(55.f));  // the mast is tallest
+    CHECK(a[0].x == doctest::Approx(800.f));
+    CHECK(a[0].z == doctest::Approx(5.f + 55.f + spec.headM));
+    CHECK(a[1].heightM == doctest::Approx(36.f));
+    CHECK(a[2].heightM == doctest::Approx(36.f));
+    CHECK(std::abs(a[1].x) == doctest::Approx(15.f - spec.insetM));
+    CHECK(a[1].x == doctest::Approx(-a[2].x));
+    CHECK(a[3].x == doctest::Approx(206.f - spec.insetM));
+    CHECK(a[4].x == doctest::Approx(2000.f));
+    CHECK(a[4].z == doctest::Approx(100.f + spec.headM));
+    AviationSpec few = spec;
+    few.maxLamps = 2;
+    few.maxSkyline = 0;
+    CHECK(aviationLamps(few, boxes.data(), boxes.size(), sky.data(), sky.size()).size() == 2);
+    CHECK(aviationLamps(spec, nullptr, 0, nullptr, 0).empty());
 }

@@ -225,7 +225,13 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 	// (-TimeOfDay) keeps its own.
 	const UFTWorldClockSubsystem* DayClock = World.GetSubsystem<UFTWorldClockSubsystem>();
 	float SunHour = static_cast<float>(ftcore::kWorldClockStartHours);
-	const bool bSunHour = FParse::Value(FCommandLine::Get(), TEXT("WorldEyeSunHour="), SunHour);
+	bool bSunHour = FParse::Value(FCommandLine::Get(), TEXT("WorldEyeSunHour="), SunHour);
+	// -WorldEyeDusk: the evening hour the sun stands at the dusk's peak (FTNightLook.h).
+	if (!bSunHour && FParse::Param(FCommandLine::Get(), TEXT("WorldEyeDusk")))
+	{
+		SunHour = static_cast<float>(ftcore::duskPeakHour(FTNight::Dusk(), ftcore::WorldClockSpec{}.latitudeDeg));
+		bSunHour = true;
+	}
 	const FTCHARToUTF8 MapName(*World.GetMapName());
 	const bool bSolhaven =
 		ftcore::lookWorldForMap(std::string_view(MapName.Get(), static_cast<size_t>(MapName.Length()))) == "solhaven";
@@ -244,6 +250,12 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: day sun at %.2f h (pitch %.1f, yaw %.1f) on %d directional lights."),
 			SunHour, SunAt.Pitch, SunAt.Yaw, Turned);
+		// A low sun's hour takes the clock's dusk and dimming night too (sky, lens, fill, fog, windows).
+		const FTNight::FSkyFrame Sky = FTNight::FrameAt(ftcore::WorldClockSpec{}, SunHour);
+		if (bSunHour && (Sky.Dusk.amount > 0.f || Sky.NightAmount > 0.f))
+		{
+			FTNight::ApplyStill(World, Sky);
+		}
 	}
 	// The ground's wetness on a Solhaven map, as the running clock sets it: the look's own times the night frame's share
 	// (damp by day, full at night).

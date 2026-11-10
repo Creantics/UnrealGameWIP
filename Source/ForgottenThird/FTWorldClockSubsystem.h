@@ -11,6 +11,7 @@
 // lights fall to the night fill and take its cool tint, the height fog keeps a share of its own colour and takes the
 // city's warm glow, the post-process volumes' white balance moves toward the night's, and from half night their auto
 // exposure is held to the night's range (centre +- range); all by the one
+// (and as the sun goes low, the dusk's magenta sky, warm sun, dim fill and lens flare under it: FTNight::FrameAt)
 // night spec the world eye's night still reads too (FTNightLook.h: ftcore::NightLook and its -Night* switches), blended
 // in by NightAmount (ftcore::nightFrame). The windows' Night (FTScene::WindowCollection) takes NightAmount. The street lamps and
 // shop lights the massing build placed (FTScene::NightLampTag, NightShopTag) switch on as NightAmount passes 0.5, each
@@ -28,6 +29,7 @@
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Tickable.h"
+#include "FTNightLook.h"
 
 #include "ftcore/WorldClock.h"
 
@@ -157,4 +159,6 @@ private:
 	float WetShare = 1.f;
 	// Written again once the look subsystem has settled, so its own full-value write doesn't stand.
 	bool bWetPending = true;
+	// The dusk's sky and lens (FTNightLook.h), written as the sun goes low.
+	FTNight::FDuskScene DuskScene;
 };

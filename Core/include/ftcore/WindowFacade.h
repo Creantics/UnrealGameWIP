@@ -61,7 +61,9 @@ struct WindowFacadeSpec {
     float baluster = 0.11f;       // m between its balusters
     float smallWidth = 0.6f, smallHeight = 0.6f;  // m: a small frosted window, at the head of the type's opening
     float grillePitch = 0.15f;    // m between a security grille's uprights (its rails twice that)
+    float litShare = 0.45f;       // the master's LitShare: the share of rooms lit at night on storeys 0 and 1
     float upperLit = 1.0f;        // the top storey's lit share is LitShare * (1 + upperLit), the first storey's LitShare
+    float signGlow = 1.6f;        // the master's SignGlow: a lit shop sign's light at night (times the collection's NightGlow)
     float litMax = 0.9f;          // the most any storey's lit share reaches
     float wallMax = 0.75f;        // the brightest a tinted wall's or roof's albedo gets (no glare under night lights)
 };

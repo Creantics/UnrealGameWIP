@@ -454,7 +454,15 @@ void roadGraphFromNet(const std::vector<RoadNetStreet>& streets, const RoadBuild
     // The junctions and their phases; the zebras are the build's.
     RoadGraph jg;
     roadGraphJunctions(ms, kRoadGraphSnap, 0.0, jg);
-    for (RoadGraphJunction& j : jg.junctions) out.junctions.push_back(std::move(j));
+    for (RoadGraphJunction& j : jg.junctions) {
+        // A scramble (as roadNetBuild finds it): an all-walk phase after the vehicle phases.
+        bool scramble = false;
+        for (const RoadNetStreet& s : streets)
+            for (const RoadPoint& q : s.scramble)
+                scramble = scramble || std::hypot(q.x - j.at.x, q.y - j.at.y) <= kRoadGraphSnap;
+        if (scramble && !j.phases.empty()) j.phases += ";W:all-walk";
+        out.junctions.push_back(std::move(j));
+    }
     for (const RoadQuad& q : build.crossings) {
         RoadGraphCrossing c;
         c.id = q.id;

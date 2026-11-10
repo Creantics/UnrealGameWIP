@@ -354,6 +354,29 @@ void FFTCellInstancer::Flush()
 		Group.Made = Group.Transforms.Num();
 		Totals.Instances += Count;
 	}
+	// The census per cell: every instance and component made so far, one line a cell, west to east, then north to south.
+	{
+		TMap<FIntPoint, FIntPoint> PerCell; // X instances, Y components
+		for (const FGroup& Group : Groups)
+		{
+			if (!Group.Component)
+			{
+				continue;
+			}
+			FIntPoint& Count = PerCell.FindOrAdd(Group.Key.Cell, FIntPoint::ZeroValue);
+			Count.X += Group.Made;
+			Count.Y += 1;
+		}
+		TArray<FIntPoint> CellIds;
+		PerCell.GetKeys(CellIds);
+		CellIds.Sort([](const FIntPoint& A, const FIntPoint& B) { return A.X != B.X ? A.X < B.X : A.Y < B.Y; });
+		for (const FIntPoint& Cell : CellIds)
+		{
+			const FIntPoint& Count = PerCell[Cell];
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: instancer: Cell_%d_%d: %d instances, %d components."), Cell.X, Cell.Y, Count.X,
+				Count.Y);
+		}
+	}
 	int32 Saved = 0;
 	for (UPackage* Package : UsageSaves)
 	{

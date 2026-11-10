@@ -760,7 +760,7 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	// The windows' numbers (Group "Window"): the shares lit, curtained and shop-lit; a building finish's window width; a
 	// room's and a shop's own light by day and by night (the night ones times the collection's NightGlow); how opaque a
 	// curtain is, how much of the room's light it passes at night and how much it shows as cloth by day.
-	UMaterialExpressionScalarParameter* LitShare = AddWindowScalar(Material, TEXT("LitShare"), 0.35f, 1900);
+	UMaterialExpressionScalarParameter* LitShare = AddWindowScalar(Material, TEXT("LitShare"), ftcore::WindowFacadeSpec{}.litShare, 1900);
 	UMaterialExpressionScalarParameter* CurtainShare = AddWindowScalar(Material, TEXT("CurtainShare"), 0.35f, 2000);
 	UMaterialExpressionScalarParameter* ShopLit = AddWindowScalar(Material, TEXT("ShopLit"), 0.8f, 2100);
 	UMaterialExpressionScalarParameter* WindowWidth = AddWindowScalar(Material, TEXT("WindowWidth"), ftcore::WindowGridSpec{}.windowWidth, 2150);
@@ -821,6 +821,12 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 		// Upper storeys light more often at night (ftcore::windowLitShare): the top storey at LitShare * (1 + UpperLit).
 		UMaterialExpressionScalarParameter* UpperLit = AddWindowScalar(Material, TEXT("UpperLit"), ftcore::WindowFacadeSpec{}.upperLit, 2500);
 		AddInput(Win, TEXT("UpperLit"), UpperLit);
+		// A lit shop's sign panel at night (ftcore::WindowFacadeSpec::signGlow), times the collection's NightGlow.
+		UMaterialExpressionScalarParameter* SignGlow = AddWindowScalar(Material, TEXT("SignGlow"), ftcore::WindowFacadeSpec{}.signGlow, 2560);
+		UMaterialExpressionMultiply* SignNightGlow = AddExpression<UMaterialExpressionMultiply>(Material, -600, 2560);
+		SignNightGlow->A.Connect(0, SignGlow);
+		SignNightGlow->B.Connect(0, NightGlow);
+		AddInput(Win, TEXT("SignGlow"), SignNightGlow);
 	}
 	AddOutput(Win, TEXT("Curtain"), CMOT_Float4);
 	AddOutput(Win, TEXT("Emit"), CMOT_Float3);

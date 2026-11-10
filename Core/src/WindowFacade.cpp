@@ -495,16 +495,16 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     h += "float ca = covered ? cc.a * CurtainAlpha : 0.0;\n";
     h += "Curtain = float4(cc.rgb, ca);\n";
     h += "float3 seen = c * (1.0 - ca);\n";
-    h += "float3 tints[" + std::to_string(kWindowTints) +
-         "] = { float3(1.0, 0.78, 0.52), float3(1.0, 0.92, 0.80), float3(0.82, 0.90, 1.0), float3(1.0, 0.66, 0.42) };\n";
+    h += windowTintTableHlsl();
     h += "float on = (glass && lit) ? Night : 0.0;\n";
     // By day the glass darkens toward its head, in the reveal's shade.
     h += "float hs = (ty > 0u && !shop) ? lerp(0.45, 1.0, saturate((v1 - gv) * sh / " + num(spec.headShadow) +
          ")) : 1.0;\n";
     h += "float3 day = seen * hs * (shop ? ShopDay : RoomDay) * (1.0 - Night);\n";
     h += "float3 night = on * (seen + cc.rgb * ca * CurtainGlow) * tints[tint] * (shop ? ShopGlow : GlowScale);\n";
-    // A lit shop's sign panel glows a little at night; a lantern glows by day and much more by night.
-    h += "float3 signGlow = (lit && part == 4.0) ? signLight * Night * ShopGlow : float3(0.0, 0.0, 0.0);\n";
+    // A lit shop's sign panel glows at night (SignGlow, strong enough to show in a wet road); a lantern glows by day
+    // and much more by night.
+    h += "float3 signGlow = (lit && part == 4.0) ? signLight * Night * SignGlow : float3(0.0, 0.0, 0.0);\n";
     h += "float3 lanternGlow = float3(0.9, 0.25, 0.08) * (0.4 + 6.0 * Night);\n";
     h += "float3 frostGlow = (!shop && part == 13.0 && lit) ? float3(0.9, 0.85, 0.72) * Night * GlowScale * 0.8 : "
          "float3(0.0, 0.0, 0.0);\n";

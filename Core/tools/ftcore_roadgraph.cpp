@@ -5,6 +5,10 @@
 //   ftcore_roadgraph --streets <csv> --roads <csv> --area <x0,y0,x1,y1> [--boxes <csv>] [--min-width <m>] [--out <csv>]
 //   ftcore_roadgraph --net <csv> [--r16 <file> --samples <n> --origin <x,y> [--spacing <m>]] [--boxes <csv>] [--out <csv>] [--list-all 1]
 //                    [--dump <x0,y0,x1,y1>] (every solid centred in that area, one line each)
+//                    [--canal <x0,y0,x1,y1> [--bridge <at>] --quay-out <csv>] (a canal's railing, mast and footbridge
+//                    points, roadQuayPoints, written as roadQuayCsv; --bridge: the footbridge's centre along the banks;
+//                    without --canal, --quay-out takes the table's first canal row; every canal row's channel solids,
+//                    roadCanalBuild, are built and counted)
 //   ftcore_roadgraph --check 1 (--net <csv> [--r16 ...] | --roads <csv>) [--boxes <csv>] [--graph <csv>] [--list-all 1]
 //   ftcore_roadgraph --yards 1 --boxes <csv> --area <x0,y0,x1,y1> --out <csv> [--net <csv>] [--streets <csv>]
 //                    [--r16 ...] [--goals <csv>] [--clear <x0,y0,x1,y1>]... [--drop-ids <a;b>] [--drop-kinds <k1;k2>]
@@ -347,23 +351,32 @@ int runYards(const YardArgs& a) {
 }
 
 int runNet(const std::string& netPath, const std::string& r16Path, double samples, const double origin[2], double spacing,
-           const std::string& boxesPath, const std::string& outPath, bool listAll, const double* dump) {
+           const std::string& boxesPath, const std::string& outPath, bool listAll, const double* dump,
+           const RoadCanal* canal, const std::string& quayOut) {
     std::string text, err;
     std::vector<RoadNetStreet> streets;
     if (!readFile(netPath, text)) return die("can't read " + netPath);
-    if (!importRoadNet(text, streets, &err)) return die(netPath + ": " + err);
+    std::vector<RoadCanal> canals;
+    if (!importRoadNet(text, streets, &err, &canals)) return die(netPath + ": " + err);
     std::vector<std::uint16_t> grid;
     MassingGround ground;
     if (!loadGround(r16Path, samples, origin, spacing, grid, ground, err)) return die(err);
     RoadBuild b;
     RoadNetReport rep;
     roadNetBuild(streets, ground, b, &rep);
+    // The table's canal rows: their channel solids; the first gives the quay points unless --canal does.
+    if (!canal && !quayOut.empty() && !canals.empty()) canal = &canals.front();
+    if (!canal && !quayOut.empty()) return die("--quay-out needs --canal or a canal row in the table");
+    for (const RoadCanal& c : canals)
+        std::printf("canal %s: %zu solids (floor %.2f, water %.2f)\n", c.id.c_str(), roadCanalBuild(c, ground, b),
+                    c.floorZ, c.waterZ);
     std::printf("net: streets %zu, nodes %zu, edges %zu, junctions %zu, bends %zu, ends %zu, pieces %zu, piers %zu\n",
                 streets.size(), rep.nodes, rep.edges, rep.junctions, rep.bends, rep.ends, rep.pieces, rep.piers);
     std::printf("net: steep %zu (max grade %.1f%%), pokes %zu, floats %zu, tight %zu, max step %.3f m, pruned %zu\n",
                 rep.steep, rep.maxGrade * 100.0, rep.pokes, rep.floats, rep.tight, rep.maxStep, rep.pruned);
     std::printf("net: the ground at most %.2f m over a road's top; %zu pokes over 0.3 m\n", rep.maxPoke, rep.pokesOver);
     std::printf("net: the steepest piece %s\n", rep.maxGradeAt.c_str());
+    std::printf("net: scrambles %zu\n", rep.scrambles);
     for (const std::string& n : rep.notes) std::printf("  note: %s\n", n.c_str());
     if (dump)
         for (const RoadSolid& sd : b.solids) {
@@ -423,6 +436,21 @@ int runNet(const std::string& netPath, const std::string& r16Path, double sample
     std::printf("graph: lanes %zu, junctions %zu (signalled %zu), crossings %zu, bays %zu\n", g.lanes.size(),
                 g.junctions.size(), signalled, g.crossings.size(), g.bays.size());
     if (!outPath.empty() && !writeGraph(outPath, g)) return die("can't write " + outPath);
+    if (canal) {
+        std::vector<RoadQuayPoint> qp;
+        RoadQuayCounts qc;
+        roadQuayPoints(*canal, b, ground, qp, &qc);
+        std::printf("quay %s: spans %zu, closing posts %zu, masts %zu (%zu moved), bridge pieces %zu at %.1f, railed %.0f m, "
+                    "road feet in the water %zu, rows %zu\n",
+                    canal->id.c_str(), qc.spans, qc.posts, qc.masts, qc.mastsMoved, qc.bridge, qc.bridgeAt, qc.railed,
+                    qc.roadInWater, qp.size());
+        if (qc.roadInWater > 0) return die("the canal reaches over the road's band");
+        const std::string csv = roadQuayCsv(qp);
+        std::FILE* f = std::fopen(quayOut.c_str(), "wb");
+        if (!f) return die("can't write " + quayOut);
+        std::fwrite(csv.data(), 1, csv.size(), f);
+        std::fclose(f);
+    }
     std::printf("ROADGRAPH OK\n");
     return 0;
 }
@@ -441,6 +469,9 @@ int main(int argc, char** argv) {
     bool listAll = false;
     bool yards = false;
     YardArgs ya;
+    RoadCanal canal;
+    bool haveCanal = false;
+    std::string quayOut;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string k = argv[i], v = argv[i + 1];
         if (k == "--yards") yards = v == "1";
@@ -469,6 +500,10 @@ int main(int argc, char** argv) {
             if (std::sscanf(v.c_str(), "%lf,%lf", &origin[0], &origin[1]) != 2) return die("bad --origin");
         }
         else if (k == "--dump") haveDump = std::sscanf(v.c_str(), "%lf,%lf,%lf,%lf", &dump[0], &dump[1], &dump[2], &dump[3]) == 4;
+        else if (k == "--canal")
+            haveCanal = std::sscanf(v.c_str(), "%lf,%lf,%lf,%lf", &canal.x0, &canal.y0, &canal.x1, &canal.y1) == 4;
+        else if (k == "--bridge") canal.bridgeAt = std::atof(v.c_str());
+        else if (k == "--quay-out") quayOut = v;
         else if (k == "--area") haveArea = std::sscanf(v.c_str(), "%lf,%lf,%lf,%lf", &area[0], &area[1], &area[2], &area[3]) == 4;
         else return die("unknown option " + k);
     }
@@ -490,8 +525,10 @@ int main(int argc, char** argv) {
         if (netPath.empty() && roadsPath.empty()) return die("--check needs --net or --roads");
         return runCheck(netPath, roadsPath, r16Path, samples, origin, spacing, boxesPath, graphPath, listAll);
     }
+    if (haveCanal && (netPath.empty() || quayOut.empty())) return die("--canal needs --net and --quay-out");
+    if (!quayOut.empty() && netPath.empty()) return die("--quay-out needs --net");
     if (!netPath.empty()) return runNet(netPath, r16Path, samples, origin, spacing, boxesPath, outPath, listAll,
-                                         haveDump ? dump : nullptr);
+                                         haveDump ? dump : nullptr, haveCanal ? &canal : nullptr, quayOut);
     if (streetsPath.empty() || roadsPath.empty() || !haveArea) return die("--streets, --roads and --area are needed");
     std::string text, err;
     std::vector<MassingStreet> all;

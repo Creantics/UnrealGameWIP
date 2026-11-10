@@ -176,32 +176,35 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 	AppliedHours = Clock.hours;
 	Night = ftcore::nightAmount(Spec, Clock.hours);
 	const FRotator Rotation = FTClock::SunRotation(Spec, Clock.hours);
-	const ftcore::NightLook& Look = FTNight::Look();
-	const ftcore::NightFrame Frame = ftcore::nightFrame(Look, Night);
+	const FTNight::FSkyFrame Sky = FTNight::FrameAt(Spec, Clock.hours);
+	const ftcore::NightFrame& Frame = Sky.Night;
 	for (const FLit& S : Suns)
 	{
 		if (ULightComponent* Light = S.Light.Get())
 		{
 			Light->SetWorldRotation(Rotation);
 			Light->SetIntensity(S.Intensity * Frame.sunScale);
-			Light->SetLightColor(FMath::Lerp(S.Color, FTNight::Color(Look.moonTint), Frame.tintMix), false);
+			Light->SetLightColor(FTNight::SunColor(S.Color, Sky), false);
 		}
 	}
 	for (const FSky& S : Skies)
 	{
 		if (USkyLightComponent* Light = S.Light.Get())
 		{
-			Light->SetIntensity(S.Intensity * (S.bRealTime ? Frame.skyScaleRealTime : Frame.skyScale));
-			Light->SetLightColor(FMath::Lerp(S.Color, FTNight::Color(Look.skyTint), Frame.tintMix));
+			Light->SetIntensity(S.Intensity * FTNight::SkyScale(Sky, S.bRealTime));
+			Light->SetLightColor(FTNight::SkyColor(S.Color, Sky));
 		}
 	}
-	const FLinearColor Glow(Frame.fogGlow[0], Frame.fogGlow[1], Frame.fogGlow[2]);
 	for (const FFog& F : Fogs)
 	{
 		if (UExponentialHeightFogComponent* Fog = F.Fog.Get())
 		{
-			Fog->SetFogInscatteringColor(F.Color * Frame.fogKeep + Glow);
+			Fog->SetFogInscatteringColor(FTNight::FogColor(F.Color, Sky));
 		}
+	}
+	if (UWorld* World = GetWorld())
+	{
+		DuskScene.Apply(*World, Sky.Dusk, false);
 	}
 	// The night's exposure range from half night on (as the night still's), the volumes' own settings back by day;
 	// written only when that changes.
@@ -286,6 +289,10 @@ void UFTWorldClockSubsystem::Tick(float DeltaTime)
 		{
 			bWetPending = false;
 			WriteWetness();
+			if (UWorld* DuskWorld = GetWorld())
+			{
+				DuskScene.Settled(*DuskWorld, FTNight::FrameAt(Spec, Clock.hours).Dusk);
+			}
 		}
 	}
 	ftcore::worldClockTick(Clock, DeltaTime);
