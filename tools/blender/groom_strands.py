@@ -32,18 +32,20 @@ Each op applies to the strands whose root lies in its "where" region, through a 
   "xprofile": [[x, f], ..]   the mask times a piecewise-linear factor over the root's x (held flat past the ends): a
              parting moved over with "move" + "snap", full at the old parting and easing out to either side
   "soft": cm   each limit fades to nothing over this width at its edge (default 0.5)
-  "group": id  only the strands of this group
+  "group": id  only the strands of this group (in "where" only, not in a cut's "at": that region is tested on
+               arbitrary points, so give the cut a "where": {"group": id} instead)
   "on": "tip"  test the strand's tip instead of its root
 With no "where" an op applies to every strand. Ops run in order:
   {"op": "mirror"}                        x -> -x for every strand (the parting moves to the other side)
   {"op": "mirror", "keep": "+x"}          make the groom symmetric: drop the strands rooted on the other side and
                                           replace them with the kept side's strands mirrored (a thinner brow evened up)
-  {"op": "dup", "frac": f, "d": [x, y, z], "jitter": cm}
+  {"op": "dup", "frac": f, "d": [x, y, z], "jitter": cm[, "group": id]}
                                           copy each strand inside with probability frac * mask (frac up to 1; repeat
                                           the op for more), moved by d plus a random sideways jitter up to this size;
                                           with "head" the copy's root is put back on the head surface (projected onto
                                           the tangent plane at the nearest head vertex) and the strand moves with it.
                                           Fills a bare patch from the hair beside it, or thickens a sparse region
+                                          (a "group" id tags the copies, so later ops can reshape only them)
   {"op": "length", "scale": s}            cut or extend each strand to s times its arc length, s blended toward 1 by
                                           the mask; an extension carries on along the tip direction
   {"op": "length", "max": cm}             cut each strand to at most this arc length (blended the same way)
@@ -381,6 +383,8 @@ for op in spec.get("ops", []):
             shift = onto_head(P[off[:-1]][k], shift)
         P = np.concatenate([P, P[idx] + np.repeat(shift, st["n"][k], axis=0)])
         W, st = np.concatenate([W, W[idx]]), np.concatenate([st, st[k]])
+        if "group" in op and len(k):   # tag the copies, so later ops can reshape them alone ("where": {"group": id})
+            st["g"][len(st) - len(k):] = op["group"]
         print("op dup    %d strands copied" % len(k))
         continue
     m = region(op.get("where"))
