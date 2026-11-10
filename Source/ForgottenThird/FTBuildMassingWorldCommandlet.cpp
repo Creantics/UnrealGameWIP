@@ -1,4 +1,5 @@
 #include "FTBuildMassingWorldCommandlet.h"
+#include "FTBuildRoads.h"
 
 #include "ForgottenThird.h"
 
@@ -51,6 +52,7 @@
 
 #include "ftcore/Json.h"
 #include "ftcore/MassingDress.h"
+#include "ftcore/MassingLayout.h"
 #include "ftcore/MassingPlan.h"
 #include "ftcore/MassingProps.h"
 #include "ftcore/WorldChecks.h"
@@ -252,6 +254,14 @@ constexpr const TCHAR* kLookWorldPrefix = TEXT("solhaven_");
 constexpr const TCHAR* kLookGroundId = TEXT("paving_slab");
 constexpr const TCHAR* kLookRockId = TEXT("board_concrete");
 constexpr const TCHAR* kLookRoadIds[] = {TEXT("bitumen_roof"), TEXT("board_concrete")};
+// -LanePave=<m> (R5-LAYOUT): the carriageway and the lanes no wider wear worn asphalt (the shared clean_asphalt, no world
+// prefix), each lane widened kLookLanePaveMargin each side in the road mask (ftcore::massingLanePave) so its feathered
+// edge falls under the walls on the build-to line; the paving pads on those lanes are dropped (ftcore::massingDropLanePads).
+// -HillRock=<m>: the ground turns to worn rock from that height up (the hills behind the town), not paving.
+constexpr const TCHAR* kLookLaneRoadIds[] = {TEXT("clean_asphalt"), TEXT("bitumen_roof"), TEXT("board_concrete")};
+constexpr const TCHAR* kLookHillRockIds[] = {TEXT("worn_rock_natural_01"), TEXT("board_concrete")};
+constexpr double kLookLanePaveMargin = 0.5;
+constexpr double kLookLanePadReach = 0.5;
 // The road mask's size, in pixels a side. 8192 over the field's ~3.5 km is about 0.43 m a pixel.
 constexpr int32 kLookMaskSize = 8192;
 // The mask reaches this far (m) past the field's furthest edge, so its outermost ring (always empty) is off the ground.
@@ -273,6 +283,8 @@ struct FLook
 	double MaskSideM = 0.0;
 	float RockAltitudeM = 0.f;
 	int32 StreetCount = 0;
+	double LanePaveUpTo = 0.0; // -LanePave
+	double HillRockM = 0.0;    // -HillRock
 };
 
 UMaterialInterface* LoadLookMaterial(const FString& Package)
@@ -326,9 +338,10 @@ bool PrepareLook(const FString& StreetsFile, const ftcore::MassingStreetSections
 	}
 	const auto Layer = [&](int32 L, const TCHAR* const* Ids, int32 IdCount)
 	{
-		for (int32 I = 0; I < IdCount; ++I)
+		for (int32 I = 0; I < IdCount * 2; ++I)
 		{
-			const FString Id = kLookWorldPrefix + FString(Ids[I]);
+			// The world's own surface first, then a shared one of the same id (clean_asphalt has no world prefix).
+			const FString Id = (I % 2 == 0 ? FString(kLookWorldPrefix) : FString()) + FString(Ids[I / 2]);
 			const int32 At = Table.find(std::string(TCHAR_TO_UTF8(*Id)));
 			if (At >= 0 && LoadLookMaps(Id, Look.LayerMap[L]))
 			{
@@ -351,10 +364,11 @@ bool PrepareLook(const FString& StreetsFile, const ftcore::MassingStreetSections
 			bOk = Layer(L, &kLookGroundId, 1);
 			break;
 		case ftcore::SurfaceRole::Rock:
-			bOk = Layer(L, &kLookRockId, 1);
+			bOk = Look.HillRockM > 0.0 ? Layer(L, kLookHillRockIds, UE_ARRAY_COUNT(kLookHillRockIds)) : Layer(L, &kLookRockId, 1);
 			break;
 		default:
-			bOk = Layer(L, kLookRoadIds, UE_ARRAY_COUNT(kLookRoadIds));
+			bOk = Look.LanePaveUpTo > 0.0 ? Layer(L, kLookLaneRoadIds, UE_ARRAY_COUNT(kLookLaneRoadIds))
+										  : Layer(L, kLookRoadIds, UE_ARRAY_COUNT(kLookRoadIds));
 			break;
 		}
 		if (!bOk)
@@ -380,7 +394,16 @@ bool PrepareLook(const FString& StreetsFile, const ftcore::MassingStreetSections
 	}
 	// -SharedUpTo leaves the shared surfaces out of the mask, so the ground's paving runs across them.
 	size_t Paved = 0;
-	const size_t Shared = ftcore::massingStreetSections(Streets, Sections, &Paved);
+	ftcore::MassingStreetSections MaskSections = Sections;
+	if (Look.LanePaveUpTo > 0.0)
+	{
+		// -LanePave: the lanes stay in the mask, widened, so the road layer runs wall to wall across them.
+		const size_t Lanes = ftcore::massingLanePave(Streets, Look.LanePaveUpTo, kLookLanePaveMargin);
+		MaskSections.sharedUpTo = 0.0;
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -LanePave: %d lanes (%.1f m wide and under) paved wall to wall in the road "
+			"mask, %.1f m past each wall line."), static_cast<int32>(Lanes), Look.LanePaveUpTo, kLookLanePaveMargin);
+	}
+	const size_t Shared = ftcore::massingStreetSections(Streets, MaskSections, &Paved);
 	if (Shared > 0 || Paved > 0)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: road mask: %d shared surfaces (%.1f m wide and under) left to the paving, %d streets "
@@ -405,6 +428,10 @@ bool PrepareLook(const FString& StreetsFile, const ftcore::MassingStreetSections
 		Highest = FMath::Max(Highest, H);
 	}
 	Look.RockAltitudeM = static_cast<float>(ftcore::massingHeightFromValue(Highest) + kLookRockClearance);
+	if (Look.HillRockM > 0.0)
+	{
+		Look.RockAltitudeM = static_cast<float>(Look.HillRockM);
+	}
 	return true;
 }
 
@@ -1304,6 +1331,29 @@ bool ReadBack(const ALandscape& Land, ULandscapeInfo& LandInfo, const FHeightFie
 	return bExact && bSurface;
 }
 #endif
+// Round 5 (-FacadeR5): a windowed box's type, wall tint and roof finish (ftcore::massingFacadeData) in custom primitive
+// data 6..8, which the r5 window master (FTBuildSurfaces -Windows -FacadeR5) reads; the r4 master ignores them.
+void SetFacadeR5Data(UStaticMeshComponent* Mesh, const ftcore::MassingBox& Box, const ftcore::MassingWindowData& Data,
+	int32 (&Types)[ftcore::kWindowTypes])
+{
+	const ftcore::MassingFacadeData Facade = ftcore::massingFacadeData(Box, Data);
+	Mesh->SetDefaultCustomPrimitiveDataFloat(FTScene::WindowDataType, static_cast<float>(Facade.type));
+	Mesh->SetDefaultCustomPrimitiveDataFloat(FTScene::WindowDataTint, static_cast<float>(Facade.wallTint));
+	Mesh->SetDefaultCustomPrimitiveDataFloat(FTScene::WindowDataRoof, static_cast<float>(Facade.roofFinish));
+	++Types[static_cast<int32>(Facade.type)];
+}
+
+// Round 5 (-RoofLayouts): how many roofs took each layout and what they carry.
+void LogRoofLayouts(const ftcore::MassingRoofCounts& Counts)
+{
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roof layouts (empty, tanks, unit farm, stair head, laundry, shed and masts, "
+		"dense): %d, %d, %d, %d, %d, %d, %d; %d stair-head huts (the BK-HUT kit swap's places), %d sheds, %d laundry frames, %d tank stands."),
+		static_cast<int32>(Counts.layouts[0]), static_cast<int32>(Counts.layouts[1]), static_cast<int32>(Counts.layouts[2]),
+		static_cast<int32>(Counts.layouts[3]), static_cast<int32>(Counts.layouts[4]), static_cast<int32>(Counts.layouts[5]),
+		static_cast<int32>(Counts.layouts[6]), static_cast<int32>(Counts.huts), static_cast<int32>(Counts.sheds),
+		static_cast<int32>(Counts.frames), static_cast<int32>(Counts.stands));
+}
+
 } // namespace
 
 UFTBuildMassingWorldCommandlet::UFTBuildMassingWorldCommandlet()
@@ -1371,11 +1421,23 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// FTScene::NightLampTag, with a lens on the head tagged FTScene::NightLampHeadTag; and with -Windows a hidden spill
 	// light out of each shopfront, tagged FTScene::NightShopTag. The night look shows them.
 	const bool bNightLamps = FParse::Param(*Params, TEXT("NightLamps"));
+	// Round 5 roads (FTBuildRoads.h): -Roads=<csv>, -Vehicles, -RoadDoors=<csv>, -LaneLamps=x0,y0,x1,y1, -RoadSeed=<n>.
+	const FTBuildRoads::FOptions RoadOptions = FTBuildRoads::ParseOptions(*Params);
+	std::vector<ftcore::RoadSpec> RoadSpecs;
+	std::vector<ftcore::RoadBuild> RoadBuilds;
 	// -Windows: the building boxes wear the window master's instances (FTBuildSurfaces -Windows), each box's seed, street
 	// faces and street floors in its custom primitive data. Needs -Surfaces.
 	const bool bWindows = FParse::Param(*Params, TEXT("Windows"));
+	// Round 5. -FacadeR5: with -Windows, each box's window type, wall tint and roof finish for the r5 master (SetFacadeR5Data).
+	// -RoofLayouts: with -Roofs, one of ftcore::MassingRoofLayout's seven layouts a roof (huts, sheds, laundry, unit farms).
+	const bool bFacadeR5 = FParse::Param(*Params, TEXT("FacadeR5"));
+	const bool bRoofLayouts = FParse::Param(*Params, TEXT("RoofLayouts"));
 	double PropLine = 3.0;
 	FParse::Value(*Params, TEXT("PropLine="), PropLine);
+	// -LanePave=<m> and -HillRock=<m>: see kLookLaneRoadIds. Both need -Surfaces.
+	double LanePaveUpTo = 0.0, HillRockM = 0.0;
+	FParse::Value(*Params, TEXT("LanePave="), LanePaveUpTo);
+	FParse::Value(*Params, TEXT("HillRock="), HillRockM);
 	const FString KerbStreetsFile = StreetsFile.IsEmpty() ? PropStreetsFile : StreetsFile;
 	// Street sections (ftcore::massingStreetSections) on the road mask's and the kerbs' streets; -PropStreets keeps its
 	// own. -SharedUpTo=<m>: a street no wider is a shared surface, paved wall to wall with no kerb (a kerbed street's kerb
@@ -1428,7 +1490,13 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	{
 		return 1;
 	}
+	if (!FTBuildRoads::Prepare(RoadOptions, Boxes, RoadSpecs, RoadBuilds))
+	{
+		return 1;
+	}
 	FLook LookSet;
+	LookSet.LanePaveUpTo = LanePaveUpTo;
+	LookSet.HillRockM = HillRockM;
 	if (bSurfaces && !bLoad)
 	{
 		if (StreetsFile.IsEmpty())
@@ -1576,6 +1644,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		{
 			return 1;
 		}
+		// -Roads lays its own kerbs: its rows leave the kerbs' streets.
+		FTBuildRoads::DropRoadStreets(RoadSpecs, KerbStreets);
 		size_t Paved = 0;
 		const size_t Shared = ftcore::massingStreetSections(KerbStreets, Sections, &Paved);
 		if (Shared > 0 || Paved > 0)
@@ -2429,6 +2499,25 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			KerbCounts.crossing, KerbCounts.boxed, KerbCounts.wet, KerbCounts.shortPieces, ftcore::kMassingKerbShortest);
 	}
 
+	// -Roads: the carriageways, their furniture and lamps (TQ-04, as the props), and with -Vehicles the parked cars.
+	FFTRoadsHost RoadHost;
+	RoadHost.World = World;
+	RoadHost.Spawn = &Spawn;
+	RoadHost.Package = Package;
+	RoadHost.Base = Base;
+	RoadHost.Cube = Cube;
+	RoadHost.Side = Side;
+	RoadHost.Taken = &Taken;
+	RoadHost.PlaceLamp = [&](UStaticMesh* Mesh, const ftcore::MassingProp& Lamp, const FString& Label)
+	{
+		return PlaceMesh(Mesh, Lamp, 0.0, 0.7, Label);
+	};
+	if (!FTBuildRoads::Lay(RoadHost, RoadOptions, RoadSpecs, RoadBuilds))
+	{
+		World->DestroyWorld(false);
+		return 1;
+	}
+
 	// The quays: a rail, posts and bollards along each deck's seaward edges, and -QuayLamp's lamps, set with the props.
 	std::vector<ftcore::MassingProp> QuayLamps;
 	if (bQuay)
@@ -2475,6 +2564,11 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		std::vector<ftcore::MassingBox> Pads;
 		ftcore::massingFrontage(FrontRules, PropStreets, Ground, Built, Visible, Hosts, kPropDryAbove, &Taken, Pieces, FrontCounts, FrontTotals,
 			&Pads, &FrontFaces);
+		const size_t LanePads = ftcore::massingDropLanePads(Pads, PropStreets, LanePaveUpTo, kLookLanePadReach);
+		if (LanePads > 0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -LanePave: %d paving pads on the lanes left out."), static_cast<int32>(LanePads));
+		}
 		for (const ftcore::MassingBox& Pad : Pads)
 		{
 			Lay(Pad);
@@ -2575,6 +2669,12 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: props: %d stand over %.1f m from every kerb and frontage line."), FarFromLine,
 			PropLine);
 	}
+	// -LaneLamps and the two-wheelers, after the props so they keep off them.
+	if (!FTBuildRoads::Finish(RoadHost, RoadOptions, RoadSpecs, RoadBuilds, KerbStreetsFile, Ground))
+	{
+		World->DestroyWorld(false);
+		return 1;
+	}
 	if (bNightLamps)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: night lamps: %d lights under the %s lamps' heads (%d placed, %d on kit boxes): "
@@ -2595,6 +2695,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	if (bWindows)
 	{
 		int32 Windows = 0, StreetFaces = 0;
+		int32 FacadeTypes[ftcore::kWindowTypes] = {};
 		for (size_t I = 0; I < Boxes.size(); ++I)
 		{
 			if (!Windowed[I])
@@ -2610,6 +2711,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			{
 				Mesh->SetDefaultCustomPrimitiveDataFloat(FTScene::WindowDataBase + F, static_cast<float>(Data.base[F]));
 				StreetFaces += (Data.streetBits >> F) & 1u;
+			}
+			if (bFacadeR5)
+			{
+				SetFacadeR5Data(Mesh, Built[I], Data, FacadeTypes);
 			}
 			++Windows;
 			if (bNightLamps)
@@ -2629,6 +2734,11 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: windows: %d building boxes, %d faces fronting a street (shops at street level)%s; "
 			"none on %d sloped boxes or the %d boxes kit meshes stand in for."), Windows, StreetFaces,
 			FrontFaces.empty() ? TEXT(" (no -Frontage, so no street faces)") : TEXT(""), WindowSloped, WindowReplaced);
+		if (bFacadeR5)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: r5 facades: %d apartment, %d walkway, %d shophouse, %d office."),
+				FacadeTypes[1], FacadeTypes[2], FacadeTypes[3], FacadeTypes[4]);
+		}
 		if (bNightLamps)
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: night shops: %d spill lights on %d shopfront faces (one per %.0f m of face at "
@@ -2657,7 +2767,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		std::vector<ftcore::MassingBox> RoofPieces;
 		ftcore::MassingRoofCounts RoofCounts;
-		ftcore::massingRoofs(Ground, Built, Visible, RoofHosts, RoofPieces, RoofCounts, &Courts);
+		ftcore::MassingRoofStyle RoofStyle;
+		RoofStyle.layouts = bRoofLayouts;
+		ftcore::massingRoofs(Ground, Built, Visible, RoofHosts, RoofPieces, RoofCounts, &Courts, &RoofStyle);
 		for (const ftcore::MassingBox& Piece : RoofPieces)
 		{
 			Lay(Piece);
@@ -2668,6 +2780,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			static_cast<int32>(RoofCounts.units), static_cast<int32>(RoofCounts.aerials));
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roofs: %d terrace courts dressed with %d racks and %d lamp standards (rails above)."),
 			static_cast<int32>(RoofCounts.courts), static_cast<int32>(RoofCounts.racks), static_cast<int32>(RoofCounts.standards));
+		if (bRoofLayouts)
+		{
+			LogRoofLayouts(RoofCounts);
+		}
 	}
 
 	// The hidden walls: they stop pawns but no traces on Visibility, and not the camera's arm.

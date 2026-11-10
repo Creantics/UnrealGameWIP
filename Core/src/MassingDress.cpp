@@ -1138,9 +1138,10 @@ void massingFrontage(const std::vector<MassingFrontRule>& rules, const std::vect
 
 void massingRoofs(const MassingGround& ground, const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
                   const std::vector<bool>& hosts, std::vector<MassingBox>& out, MassingRoofCounts& counts,
-                  const std::vector<bool>* courts) {
+                  const std::vector<bool>* courts, const MassingRoofStyle* style) {
     out.clear();
     counts = MassingRoofCounts{};
+    const bool layouts = style != nullptr && style->layouts;
     Scene scene(ground, boxes, include, nullptr);
     std::vector<MassingFoot> clutter;
     std::vector<std::array<double, 2>> posts;
@@ -1158,6 +1159,7 @@ void massingRoofs(const MassingGround& ground, const std::vector<MassingBox>& bo
         const double top = host.highTop;
         std::size_t nRail = 0, nPost = 0, nTank = 0, nUnit = 0, nMast = 0, nBar = 0;
         std::size_t nRackPost = 0, nRackBar = 0, nPole = 0, nArm = 0;
+        std::size_t nHut = 0, nShed = 0, nStand = 0, nFrame = 0;
         const std::size_t before = out.size();
         const auto add = [&](const char* tag, std::size_t& n, const char* kind, double x, double y, double sx, double sy,
                              double rot, double z0, double z1) {
@@ -1245,25 +1247,28 @@ void massingRoofs(const MassingGround& ground, const std::vector<MassingBox>& bo
             clutter.clear();
             const std::uint64_t seed = hashText(kFnvBasis, b.id);
             const double a = b.rot * kPi / 180.0, c = std::cos(a), sn = std::sin(a);
+            // Whether a foot of half sides hx, hy at (u, w) in the host's frame is free; held when it is.
+            const auto takeAt = [&](double u, double w, double hx, double hy, double& x, double& y) {
+                x = b.cx + u * c - w * sn;
+                y = b.cy + u * sn + w * c;
+                const MassingFoot foot{x, y, hx, hy, b.rot};
+                bool clash = false;
+                for (const MassingFoot& o : clutter) clash = clash || massingFeetOverlap(foot, o, kMassingRoofClutterGap);
+                if (clash || covered(x, y)) return false;
+                for (const double du : {-hx, hx})
+                    for (const double dw : {-hy, hy})
+                        clash = clash || covered(x + du * c - dw * sn, y + du * sn + dw * c);
+                if (clash) return false;
+                clutter.push_back(foot);
+                return true;
+            };
             const auto place = [&](std::uint64_t key, double hx, double hy, double& x, double& y) {
                 if (hx > ix || hy > iy) return false;
                 for (std::uint64_t t = 0; t < 8; ++t) {
                     const std::uint64_t k = hashNumber(hashNumber(seed, key), t);
                     const double u = (2.0 * hashUnit(k) - 1.0) * (ix - hx);
                     const double w = (2.0 * hashUnit(hashNumber(k, 7)) - 1.0) * (iy - hy);
-                    x = b.cx + u * c - w * sn;
-                    y = b.cy + u * sn + w * c;
-                    const MassingFoot foot{x, y, hx, hy, b.rot};
-                    bool clash = false;
-                    for (const MassingFoot& o : clutter)
-                        clash = clash || massingFeetOverlap(foot, o, kMassingRoofClutterGap);
-                    if (clash || covered(x, y)) continue;
-                    for (const double du : {-hx, hx})
-                        for (const double dw : {-hy, hy})
-                            clash = clash || covered(x + du * c - dw * sn, y + du * sn + dw * c);
-                    if (clash) continue;
-                    clutter.push_back(foot);
-                    return true;
+                    if (takeAt(u, w, hx, hy, x, y)) return true;
                 }
                 return false;
             };
@@ -1303,6 +1308,152 @@ void massingRoofs(const MassingGround& ground, const std::vector<MassingBox>& bo
                     ++counts.standards;
                 }
             }
+            if (layouts && !court) {
+                const MassingRoofLayout layout = massingRoofLayout(b.id);
+                ++counts.layouts[static_cast<std::size_t>(layout)];
+                const auto tankAt = [&](double tx, double ty, double z) {
+                    add("-RT", nTank, "tank", tx, ty, kMassingRoofTankSide, kMassingRoofTankSide, b.rot, z - 0.05,
+                        z + kMassingRoofTankHeight);
+                    ++counts.tanks;
+                };
+                const auto standTank = [&](std::uint64_t key) {
+                    if (!place(key, 0.5 * kMassingRoofTankSide, 0.5 * kMassingRoofTankSide, x, y)) return;
+                    add("-RS", nStand, "stand", x, y, kMassingRoofStandSide, kMassingRoofStandSide, b.rot, top - 0.05,
+                        top + kMassingRoofStandHeight);
+                    ++counts.stands;
+                    tankAt(x, y, top + kMassingRoofStandHeight);
+                };
+                const auto unit = [&](std::uint64_t key) {
+                    const bool across = hashUnit(hashNumber(seed, 300 + key)) < 0.5;
+                    const double hx = 0.5 * (across ? kMassingRoofUnitShort : kMassingRoofUnitLong);
+                    const double hy = 0.5 * (across ? kMassingRoofUnitLong : kMassingRoofUnitShort);
+                    if (!place(200 + key, hx, hy, x, y)) return;
+                    add("-RU", nUnit, "unit", x, y, 2.0 * hx, 2.0 * hy, b.rot, top - 0.05, top + kMassingRoofUnitHeight);
+                    ++counts.units;
+                };
+                const auto aerial = [&](std::uint64_t key) {
+                    if (!place(400 + key, 0.5 * kMassingRoofBarLong, 0.5 * kMassingRoofBarLong, x, y)) return;
+                    const double tall = 2.4 + 1.6 * hashUnit(hashNumber(seed, 3 + key));
+                    add("-RM", nMast, "aerial", x, y, kMassingRoofMastSide, kMassingRoofMastSide, b.rot, top - 0.05,
+                        top + tall);
+                    add("-RX", nBar, "aerial", x, y, kMassingRoofBarLong, kMassingRoofMastSide,
+                        b.rot + 45.0 + 90.0 * static_cast<double>(key & 1u), top + tall - 0.3 - kMassingRoofMastSide,
+                        top + tall - 0.3);
+                    ++counts.aerials;
+                };
+                // A stair-head hut, its long side along u or w by the hash, at the first free inset corner (the hash
+                // picks the order), else at a hashed spot; a tank on its roof.
+                const auto hut = [&]() {
+                    const bool across = hashUnit(hashNumber(seed, 900)) < 0.5;
+                    double hx = 0.5 * (across ? kMassingRoofHutShort : kMassingRoofHutLong);
+                    double hy = 0.5 * (across ? kMassingRoofHutLong : kMassingRoofHutShort);
+                    if (hx > ix || hy > iy) std::swap(hx, hy);
+                    if (hx > ix || hy > iy) return;
+                    const std::size_t first = static_cast<std::size_t>(hashUnit(hashNumber(seed, 901)) * 4.0) & 3u;
+                    bool held = false;
+                    for (std::size_t k = 0; k < 4 && !held; ++k) {
+                        const std::size_t q = (first + k) & 3u;
+                        held = takeAt((q & 1u) ? ix - hx : hx - ix, (q & 2u) ? iy - hy : hy - iy, hx, hy, x, y);
+                    }
+                    if (!held && !place(902, hx, hy, x, y)) return;
+                    add("-RH", nHut, "hut", x, y, 2.0 * hx, 2.0 * hy, b.rot, top - 0.05, top + kMassingRoofHutHeight);
+                    // The hut wears its host's finish: its row is the one the host's finish goes by.
+                    if (!b.row.empty()) {
+                        out.back().row = b.row;
+                    } else {
+                        const std::size_t cut = b.id.rfind('_');
+                        out.back().row = cut != std::string::npos && cut > 0 ? b.id.substr(0, cut) : b.id;
+                    }
+                    ++counts.huts;
+                    tankAt(x, y, top + kMassingRoofHutHeight);
+                };
+                const double roll = hashUnit(hashNumber(seed, 1));
+                switch (layout) {
+                case MassingRoofLayout::Empty: break;
+                case MassingRoofLayout::Tanks: {
+                    const std::size_t n = area >= 80.0 ? (roll < 0.5 ? 3 : 2) : 2;
+                    for (std::size_t k = 0; k < n; ++k) standTank(100 + k);
+                    break;
+                }
+                case MassingRoofLayout::UnitFarm: {
+                    // A row along one long inset edge (which by the hash), each unit's long side across the row.
+                    const bool alongU = b.sx >= b.sy;
+                    const double hl = 0.5 * kMassingRoofUnitShort, hd = 0.5 * kMassingRoofUnitLong;
+                    const double span = alongU ? ix : iy, side = alongU ? iy : ix;
+                    if (side >= hd && span >= hl) {
+                        const double edge = (roll < 0.5 ? -1.0 : 1.0) * (side - hd);
+                        const std::size_t n = std::min<std::size_t>(
+                            8, static_cast<std::size_t>((2.0 * span - 2.0 * hl) / kMassingRoofUnitPitch) + 1);
+                        const double s0 = -0.5 * kMassingRoofUnitPitch * static_cast<double>(n - 1);
+                        for (std::size_t k = 0; k < n; ++k) {
+                            const double s = s0 + kMassingRoofUnitPitch * static_cast<double>(k);
+                            const double u = alongU ? s : edge, w = alongU ? edge : s;
+                            const double hx = alongU ? hl : hd, hy = alongU ? hd : hl;
+                            if (!takeAt(u, w, hx, hy, x, y)) continue;
+                            add("-RU", nUnit, "unit", x, y, 2.0 * hx, 2.0 * hy, b.rot, top - 0.05,
+                                top + kMassingRoofUnitHeight);
+                            ++counts.units;
+                        }
+                    }
+                    if (place(100, 0.5 * kMassingRoofTankSide, 0.5 * kMassingRoofTankSide, x, y)) tankAt(x, y, top);
+                    break;
+                }
+                case MassingRoofLayout::StairHead:
+                    hut();
+                    for (std::uint64_t k = 0; k < (roll < 0.5 ? 1u : 2u); ++k) unit(k);
+                    break;
+                case MassingRoofLayout::Laundry: {
+                    const std::size_t n = area >= 90.0 ? (roll < 0.5 ? 3 : 2) : 2;
+                    for (std::size_t k = 0; k < n; ++k) {
+                        const bool across = hashUnit(hashNumber(seed, 950 + k)) < 0.5;
+                        const double hx = 0.5 * (across ? kMassingRoofFrameWide : kMassingRoofFrameLong);
+                        const double hy = 0.5 * (across ? kMassingRoofFrameLong : kMassingRoofFrameWide);
+                        if (!place(960 + k, hx, hy, x, y)) continue;
+                        // Lines along a; the posts at its ends carry T bars along b.
+                        const double ax = across ? -sn : c, ay = across ? c : sn;
+                        const double bx = across ? c : -sn, by = across ? sn : c;
+                        const double end = 0.5 * kMassingRoofFrameLong - kMassingRoofFrameSide;
+                        const double rotA = b.rot + (across ? 90.0 : 0.0), rotB = rotA + 90.0;
+                        const double zt = top + kMassingRoofFrameHeight;
+                        const double fx = x, fy = y;
+                        for (const double e : {-end, end}) {
+                            add("-RF", nFrame, "post", fx + ax * e, fy + ay * e, kMassingRoofFrameSide,
+                                kMassingRoofFrameSide, b.rot, top - 0.05, zt - kMassingRoofFrameSide);
+                            add("-RF", nFrame, "frame", fx + ax * e, fy + ay * e, kMassingRoofFrameWide,
+                                kMassingRoofFrameSide, rotB, zt - kMassingRoofFrameSide, zt);
+                        }
+                        const double off = 0.5 * kMassingRoofFrameWide - kMassingRoofFrameSide;
+                        for (const double o : {-off, off})
+                            add("-RF", nFrame, "frame", fx + bx * o, fy + by * o, kMassingRoofFrameLong,
+                                0.5 * kMassingRoofFrameSide, rotA, zt - 0.06, zt - 0.06 + 0.5 * kMassingRoofFrameSide);
+                        ++counts.frames;
+                    }
+                    aerial(0);
+                    break;
+                }
+                case MassingRoofLayout::ShedMasts: {
+                    const bool across = roll < 0.5;
+                    const double hx = 0.5 * (across ? kMassingRoofShedShort : kMassingRoofShedLong);
+                    const double hy = 0.5 * (across ? kMassingRoofShedLong : kMassingRoofShedShort);
+                    if (place(970, hx, hy, x, y)) {
+                        add("-RD", nShed, "shed", x, y, 2.0 * hx, 2.0 * hy, b.rot, top - 0.05,
+                            top + kMassingRoofShedHeight);
+                        ++counts.sheds;
+                    }
+                    aerial(0);
+                    aerial(1);
+                    break;
+                }
+                case MassingRoofLayout::Dense: {
+                    hut();
+                    standTank(100);
+                    const std::size_t n = std::min<std::size_t>(6, 1 + static_cast<std::size_t>(area / 40.0));
+                    for (std::uint64_t k = 0; k < n; ++k) unit(k);
+                    aerial(0);
+                    break;
+                }
+                }
+            } else {
             const double roll = hashUnit(hashNumber(seed, 1));
             const std::size_t tanks = court ? 0 : area >= 60.0 ? (roll < 0.5 ? 2 : 1) : (roll < 0.5 ? 1 : 0);
             const std::size_t units = court ? 0 : std::min<std::size_t>(6, 1 + static_cast<std::size_t>(area / 40.0));
@@ -1330,9 +1481,24 @@ void massingRoofs(const MassingGround& ground, const std::vector<MassingBox>& bo
                     top + tall - 0.3 - kMassingRoofMastSide, top + tall - 0.3);
                 ++counts.aerials;
             }
+            }
         }
         if (out.size() > before) ++(court ? counts.courts : counts.roofs);
     }
+}
+
+MassingRoofLayout massingRoofLayout(std::string_view hostId) {
+    // Weights out of 20: Empty 3, Tanks 3, UnitFarm 3, StairHead 4, Laundry 3, ShedMasts 2, Dense 2.
+    static constexpr int kTop[kMassingRoofLayouts] = {3, 6, 9, 13, 16, 18, 20};
+    const int pick = static_cast<int>(hashUnit(hashNumber(hashText(kFnvBasis, hostId), 7001)) * 20.0);
+    for (int k = 0; k < kMassingRoofLayouts; ++k)
+        if (pick < kTop[k]) return static_cast<MassingRoofLayout>(k);
+    return MassingRoofLayout::Dense;
+}
+
+int massingRoofFinish(std::string_view hostId) {
+    const int f = static_cast<int>(hashUnit(hashNumber(hashText(kFnvBasis, hostId), 7002)) * kMassingRoofFinishes);
+    return std::min(f, kMassingRoofFinishes - 1);
 }
 
 bool massingStandIn(const MassingBox& box, std::vector<MassingBox>& out) {
@@ -1411,6 +1577,34 @@ MassingWindowData massingWindowData(const MassingBox& box, const MassingGround& 
         d.base[f] = std::clamp(g - box.z0, 0.0, height);
     }
     return d;
+}
+
+MassingFacadeData massingFacadeData(const MassingBox& box, const MassingWindowData& data) {
+    MassingFacadeData f;
+    const std::uint64_t h = hashText(kFnvBasis, box.id);
+    const double pick = hashUnit(hashNumber(h, 7003));
+    double street = 0.0;
+    int faces = 0;
+    for (int k = 0; k < 4; ++k)
+        if ((data.streetBits & (1u << k)) != 0u) {
+            street += data.base[k];
+            ++faces;
+        }
+    if (faces == 0) street = std::min(std::min(data.base[0], data.base[1]), std::min(data.base[2], data.base[3]));
+    else street /= faces;
+    const double high = box.z1 - box.z0 - street;
+    if (high >= kMassingFacadeTall) f.type = pick < 0.5 ? WindowType::Office : WindowType::Walkway;
+    else if (high >= kMassingFacadeMid)
+        f.type = pick < 0.5 ? WindowType::Apartment : (pick < 0.8 ? WindowType::Walkway : WindowType::Office);
+    else if (data.streetBits != 0u && std::min(box.sx, box.sy) <= kMassingFacadeNarrow)
+        f.type = pick < 0.7 ? WindowType::Shophouse : WindowType::Apartment;
+    else f.type = pick < 0.7 ? WindowType::Apartment : WindowType::Shophouse;
+    const MassingLookSurface s = massingLookSurface(box);
+    const bool plain = s == MassingLookSurface::BuildingRender || s == MassingLookSurface::BuildingBoard ||
+                       s == MassingLookSurface::BuildingB;
+    f.wallTint = windowWallTintFor(data.seed, plain);
+    f.roofFinish = static_cast<std::uint32_t>(massingRoofFinish(box.id));
+    return f;
 }
 
 std::size_t massingShopLights(const MassingBox& box, const MassingWindowData& data, double spacing,

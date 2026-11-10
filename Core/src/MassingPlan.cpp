@@ -640,11 +640,15 @@ MassingLookSurface massingLookSurface(const MassingBox& box) {
     if (lookStartsWith(box.id, "V1-KB") || kind == "kerb" || (box.source == MassingSource::Invented && kind == "wall"))
         return MassingLookSurface::PoleConcrete;
     if (kind == "ramp" || kind == "landing") return MassingLookSurface::PavingSlab;
+    // A lane's flush dressing (massingLaneDress): a pale gutter and give-way bars, steel drain covers, concrete patches.
+    if (kind == "gutter" || kind == "marking") return MassingLookSurface::PoleConcrete;
+    if (kind == "drain") return MassingLookSurface::GalvSteel;
+    if (kind == "patch") return MassingLookSurface::BoardConcrete;
     if (kind == "terrace" || kind == "cliff" || kind == "seawall" || kind == "breakwater" || kind == "quay")
         return MassingLookSurface::BoardConcrete;
     if (kind == "deck" || kind == "pier" || kind == "bridge") return MassingLookSurface::OakPlank;
     if (kind == "crane" || kind == "boat" || kind == "mast" || kind == "post" || kind == "barrier" || kind == "gate" ||
-        kind == "tank" || kind == "unit" || kind == "aerial")
+        kind == "tank" || kind == "unit" || kind == "aerial" || kind == "stand" || kind == "shed" || kind == "frame")
         return MassingLookSurface::GalvSteel;
     // A building: a finish by its row (a table with no row column goes by the id up to its last '_'); a kit box, one
     // house of a terrace row, by its own id.

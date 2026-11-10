@@ -1,0 +1,293 @@
+#pragma once
+
+// Drivable roads for a massing map: a straight road with a crowned carriageway, kerbs, pavements, dropped-kerb lane
+// mouths, a signalised crossroads with a stub arm and rounded corners, zebra crossings, stop and lane lines, parking
+// bays, a bus stop, a guard rail, utility poles and wires, signs, street lamps and parked vehicles. Plain C++20; plan
+// frame, metres (MassingPlan.h). Everything comes out as solids (a MassingBox, a shape and a palette tint) the map's
+// builder makes with the engine's cube and cylinder, and lamps as props (MassingProp) it places as it places a prop
+// table's. Left-hand traffic: a vehicle keeps to the left of its way. Allocates: build time only.
+
+#include "ftcore/Api.h"
+#include "ftcore/MassingDress.h"
+#include "ftcore/MassingPlan.h"
+#include "ftcore/MassingProps.h"
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace ftcore {
+
+// Road section standards (VAST_CITY_PLAN.md section 17).
+inline constexpr double kRoadLaneWidth = 3.5;       // m: one traffic lane (3.0 to 3.5)
+inline constexpr double kRoadKerbRise = 0.15;       // m: kerb face over the gutter, mountable at low speed
+inline constexpr double kRoadKerbWide = 0.15;       // m: the kerb stone's top
+inline constexpr double kRoadCrossfall = 0.02;      // the carriageway falls this much per m from its crown to each kerb
+inline constexpr double kRoadSurfaceLift = 0.03;    // m: the gutter over the road's ground (no z-fighting)
+inline constexpr double kRoadSlabDepth = 0.3;       // m: every surface slab's depth under its top
+inline constexpr double kRoadMaxGrade = 0.08;       // the steepest grade along a road
+inline constexpr double kRoadKerbClear = 0.5;       // m: nothing stands nearer the kerb face than this
+inline constexpr double kRoadCornerRadius = 6.0;    // m: a road-to-road corner's kerb radius, at least
+inline constexpr double kRoadMouthFlare = 3.0;      // m: a lane mouth's dropped kerb runs this far past each lane edge
+inline constexpr double kRoadLine = 0.15;           // m: centre, edge and bay lines
+inline constexpr double kRoadCentreDash = 5.0;      // m: centre line dash and gap
+inline constexpr double kRoadStopLine = 0.45;       // m: a stop line's width
+inline constexpr double kRoadStopBack = 2.0;        // m: a stop line stands this far before its zebra
+inline constexpr double kRoadZebraBar = 0.45;       // m: a zebra bar and the gap after it
+inline constexpr double kRoadZebraWide = 4.0;       // m: a zebra's width along the road it crosses
+inline constexpr double kRoadZebraOff = 2.0;        // m: a zebra stands this far past the corner's tangent
+inline constexpr double kRoadRampDeep = 1.5;        // m: a zebra's dropped-kerb ramp into the pavement
+inline constexpr double kRoadBayLong = 6.0;         // m: a parking bay
+inline constexpr double kRoadBayDeep = 2.0;         // m: a bay's depth into the pavement
+inline constexpr double kRoadBayKeepJunction = 5.0; // m: no bay this near a junction, a zebra or a stop line
+inline constexpr double kRoadBayKeepBus = 10.0;     // m: no bay this near a bus stop's pole either way
+inline constexpr double kRoadBayKeepEnd = 10.0;     // m: no bay this near a road's end
+inline constexpr double kRoadLampSpacing = 25.0;    // m: road lamps each side, staggered
+inline constexpr double kRoadLampBack = 1.0;        // m: a road lamp's spot behind the kerb face
+inline constexpr double kRoadPoleSpacing = 30.0;    // m: utility poles
+inline constexpr double kRoadSignalPoleBack = 0.8;  // m: a signal pole behind the kerb face
+
+// A lane meeting a road's side.
+struct RoadMouth {
+    std::string lane;  // the lane's id, a massing id
+    double at = 0.0;   // m along the road from its first point to the lane's centre line
+    double width = 0.0; // m: the lane's width
+    bool left = true;  // on the road's left, looking from its first point to its second
+    double stub = 0.0; // m: > 0, a signalised crossroads, its stub arm this long on the other side
+};
+
+struct RoadBusStop {
+    double at = 0.0; // m along the road: the pole
+    bool left = false;
+};
+
+// A road: a straight carriageway between pavements.
+struct RoadSpec {
+    std::string id, kind;
+    double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0; // plan frame, its centre line's ends
+    double width = 0.0;                            // m, wall to wall: carriageway + 2 pavements
+    double pavement = 0.0;                         // m each side
+    double lane = kRoadLaneWidth;                  // m: each traffic lane
+    double speedKmh = 40.0;
+    bool oneWay = false;                           // one way, first point to second
+    double ground = 0.0;                           // m: the ground it lies on (level along its length)
+    double mouthBack = 0.0;                        // m: lanes end this far behind the pavement's back edge
+    double mouthZ = 0.0;                           // m: the lanes' surface there
+    bool parkLeft = false, parkRight = false;      // bays on that side
+    bool railLeft = false, railRight = false;      // a guard rail along that side's back edge
+    bool poleLeft = false, poleRight = false;      // utility poles along that side
+    bool closedEnds = false;                       // a barrier and a no-entry sign across each end
+    std::vector<RoadMouth> mouths;
+    std::vector<RoadBusStop> busStops;
+};
+
+// Reads a road table (CSV, a header row naming the columns; '#' comment rows). Columns:
+//   id          a massing id
+//   kind        a-z, A-Z, 0-9, '_' or '-'
+//   width_m     wall to wall, > 2 pavement_m
+//   pts         "x:y;x:y", plan frame: the centre line's two ends
+//   pavement_m  each side, >= 0
+//   lane_m      optional (3.5): each lane, 3.0 to 3.5
+//   speed_kmh   optional (40)
+//   one_way     optional: 1/true for one way, first point to second
+//   ground_z    the road's ground, m
+//   mouth_back_m, mouth_z  optional: where the lanes meeting it end behind the pavement, and their surface's height
+//   mouths      optional: "lane@at@width@L|R[@stub]" joined by ';' (at along the road from its first point)
+//   bus_stops   optional: "at@L|R" joined by ';'
+//   parking, rail, poles  optional: "", "L", "R" or "LR": the sides with bays, a guard rail, utility poles
+//   ends        optional: "closed" or "open"
+// The carriageway (width - 2 pavement) must hold the lanes: two (one each way) or one (one way). `out` is cleared
+// first. False with the reason, naming the line, on any error.
+FTCORE_API bool importRoads(std::string_view csv, std::vector<RoadSpec>& out, std::string* error = nullptr);
+
+enum class RoadShape : std::uint8_t { Cube, Cylinder };
+// A cylinder's axis: up, along the box's u (its rot) or along its w.
+enum class RoadAxis : std::uint8_t { Up, AlongU, AlongW };
+
+// The palette the solids wear (roadTint gives the colour).
+enum class RoadTint : std::uint8_t {
+    Asphalt,
+    AsphaltPatch,
+    Pavement,
+    Kerb,
+    LineWhite,
+    LineYellow,
+    Steel,
+    PoleConcrete,
+    SignalBody,
+    LensRed,
+    LensAmber,
+    LensGreen,
+    SignRed,
+    SignBlue,
+    SignWhite,
+    Glass,
+    Wood,
+    BarrierRed,
+    Wire,
+    Tyre,
+    CarWhite,
+    CarSilver,
+    CarBlack,
+    CarRed,
+    CarBlue,
+    CarGreen,
+    CarCream,
+    TaxiYellow,
+    BusGreen,
+    Count
+};
+struct RoadColor {
+    float r = 0.f, g = 0.f, b = 0.f, roughness = -1.f; // linear; roughness < 0: the master's
+};
+FTCORE_API RoadColor roadTint(RoadTint tint);
+FTCORE_API const char* roadTintName(RoadTint tint);
+
+enum class RoadVehicleKind : std::uint8_t { Kei, Sedan, Taxi, Van, KeiTruck, Bus, Scooter, Bicycle, Count };
+FTCORE_API const char* roadVehicleName(RoadVehicleKind kind); // "kei", "sedan", ..., the tag's suffix
+// Length, width and height, m.
+FTCORE_API MassingVec roadVehicleSize(RoadVehicleKind kind);
+
+// One piece: a box in the plan frame (its id the actor's label, its kind what it is), the engine shape that stands in
+// for it, its tint, whether it collides, and a tag ("" none): FTVehicle_<kind> on every part of a vehicle, FTSignal on a
+// signal's lenses, FTRoadSign on a sign's face.
+struct RoadSolid {
+    MassingBox box;
+    RoadShape shape = RoadShape::Cube;
+    RoadAxis axis = RoadAxis::Up;
+    RoadTint tint = RoadTint::Asphalt;
+    bool collide = false;
+    std::string tag;
+};
+
+struct RoadPoint {
+    double x = 0.0, y = 0.0;
+};
+// A quad in the plan frame, counter-clockwise.
+struct RoadQuad {
+    std::string id;
+    std::array<RoadPoint, 4> pts{};
+};
+
+// A parking bay: its quad and its side, a vehicle fits inside it with nothing over its edge into the carriageway.
+struct RoadBay {
+    std::string id;
+    MassingFoot foot; // the bay's rectangle
+    double at = 0.0;  // m along its road
+    double z = 0.0;   // m: its surface
+    double heading = 0.0; // plan degrees: the way its lane runs (left-hand traffic)
+    bool left = false;
+};
+
+// A signalised junction: its phases (A: the road's own traffic; B: the arms crossing it), its box and its crossings.
+struct RoadJunction {
+    std::string id;
+    double x = 0.0, y = 0.0; // the centre
+    std::string road, lane;  // the road and the lane meeting it
+    MassingFoot box;         // the carriageway inside the corners
+};
+
+struct RoadVehicle {
+    std::string id;
+    RoadVehicleKind kind = RoadVehicleKind::Sedan;
+    double x = 0.0, y = 0.0, z = 0.0; // plan frame: the centre of its foot on the ground
+    double rot = 0.0;                 // plan degrees: the way its nose points
+    RoadTint body = RoadTint::CarWhite;
+    std::string where;                // its bay's id, or the street it stands along
+};
+// Its foot on the plan (length along rot).
+FTCORE_API MassingFoot roadVehicleFoot(const RoadVehicle& v);
+// Its stand-in: a body, a cabin (glass for a two-wheeler's nothing), wheels as cylinders along w, all tagged
+// FTVehicle_<kind>, no collision on the wheels. Appends to `out`.
+FTCORE_API void roadVehicleSolids(const RoadVehicle& v, std::vector<RoadSolid>& out);
+
+struct RoadCounts {
+    std::size_t solids = 0, collide = 0, markings = 0, zebras = 0, bays = 0, lamps = 0, signals = 0, signs = 0,
+                poles = 0, mouths = 0, junctions = 0;
+};
+
+// Everything a road builds.
+struct RoadBuild {
+    std::vector<RoadSolid> solids;
+    std::vector<MassingProp> lamps;      // a TQ-04 street lamp each (face: towards the road's centre line)
+    std::vector<RoadBay> bays;
+    std::vector<RoadQuad> crossings;     // the zebras
+    std::vector<RoadJunction> junctions;
+    std::vector<MassingFoot> carriageway; // the carriageway's rectangles: the main one, a stub's, its corners'
+    std::vector<MassingFoot> keepOut;    // where nothing parks: the junction boxes, crossings, stop lines and bus stops
+    std::vector<MassingFoot> furniture;  // poles, signs, the shelter, the rail: the props keep off them
+    std::vector<MassingFoot> band;       // wall to wall: the road's, a stub's, a mouth's dropped kerb
+    RoadCounts counts;
+};
+
+// Builds a road (appends to `out`). Its surfaces: the carriageway as two slabs falling kRoadCrossfall from the crown to
+// the gutters (the ground plus kRoadSurfaceLift), kerbs kRoadKerbRise high, level pavements, each lane mouth a dropped
+// kerb sloping from the lane's surface to the gutter, kRoadMouthFlare past each lane edge; each crossroads a stub arm on
+// the other side with kRoadCornerRadius kerbs, zebras on the road's two arms and across the stub, stop lines, a signal
+// pole at each far-left corner and pedestrian signals at each zebra's ends. Bays (kRoadBayLong by kRoadBayDeep, cut
+// into the pavement) fill each parking side's runs clear of the junctions, crossings, mouths, bus stops and ends.
+FTCORE_API void roadBuild(const RoadSpec& road, RoadBuild& out);
+
+// Whether a foot comes nearer than `clear` to a carriageway rectangle (massingFeetOverlap with gap `clear`).
+FTCORE_API bool roadInCarriageway(const RoadBuild& build, const MassingFoot& foot, double clear);
+// Whether a vehicle's foot lies wholly inside the bay (every corner within its rectangle).
+FTCORE_API bool roadFitsBay(const RoadBay& bay, const MassingFoot& vehicle);
+
+// A door of a doors table (sol_lookv1_doors_*.csv: rows of kind "door", "x:y:z;x:y:z" from inside out, width_m wide):
+// its foot grown by `clear` all round. Rows of other kinds are skipped. False, with the reason, on a bad row.
+FTCORE_API bool importRoadDoors(std::string_view csv, double clear, std::vector<MassingFoot>& out,
+                                std::string* error = nullptr);
+
+struct RoadParkCounts {
+    std::size_t bays = 0, parked = 0, empty = 0, blocked = 0;
+};
+// Parks vehicles in the bays (appends to `out`): one in about four bays left empty by a hash of `seed` and the bay; the
+// kind and body colour by hash (kei, sedan, taxi, van, kei truck); each centred in its bay along the road. A vehicle
+// that would leave its bay, enter the carriageway or a keep-out, or come near a door or a foot in `taken` is not parked
+// (counted blocked).
+FTCORE_API RoadParkCounts roadParkVehicles(const RoadBuild& build, const std::vector<MassingFoot>& doors,
+                                           const std::vector<MassingFoot>* taken, std::uint32_t seed,
+                                           std::vector<RoadVehicle>& out);
+
+// Two-wheelers (scooters and bicycles) parked along the lanes (streets no wider than `laneUpTo` with two points, inside
+// [x0, x1] by [y0, y1]): every `spacing` m along each side, by hash one spot in three, parallel to the lane
+// `edgeIn` m in from its edge, and in groups of two to three along the road's back of pavement on the side with mouths.
+// A spot near a door, a foot in `taken`, a vehicle placed before it or a road's carriageway or keep-out is skipped.
+struct RoadTwoWheelOptions {
+    double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
+    double laneUpTo = 6.0;
+    double spacing = 9.0;
+    double edgeIn = 0.6;
+    std::uint32_t seed = 0;
+};
+FTCORE_API std::size_t roadTwoWheelers(const std::vector<MassingStreet>& lanes, const RoadTwoWheelOptions& opts,
+                                       const RoadBuild* road, const RoadSpec* spec, const MassingGround& ground,
+                                       const std::vector<MassingFoot>& doors, const std::vector<MassingFoot>* taken,
+                                       std::vector<RoadVehicle>& out);
+
+// Lamps along the lanes so their pools overlap (the night fix): spots every `spacing` m along each side of each lane
+// in the box, staggered by half, `edgeIn` m in from the lane's edge, facing its centre line; a spot within `keep` m of
+// a lamp in `existing` (plan x, y) or of one placed before it, or whose foot (footX by footY) comes near a door or a
+// foot in `taken`, is skipped. Each lamp stands on the ground. Appends to `out`; returns how many.
+struct RoadLaneLampOptions {
+    double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
+    double laneUpTo = 6.0;
+    double spacing = 12.0;
+    double edgeIn = 0.9;
+    double keep = 7.0;
+    double footX = 0.6, footY = 0.48;
+};
+FTCORE_API std::size_t roadLaneLamps(const std::vector<MassingStreet>& lanes, const RoadLaneLampOptions& opts,
+                                     const MassingGround& ground, const std::vector<RoadPoint>& existing,
+                                     const std::vector<MassingFoot>& doors, const std::vector<MassingFoot>* taken,
+                                     std::vector<MassingProp>& out);
+
+// The rows of `boxes` a road clears: decks and piers whose footprints overlap its band (or a stub's, or a corner's)
+// widened by `margin`. Returns their indices; the builder hides them (they stay in the table, which is positional).
+FTCORE_API std::vector<std::size_t> roadClearedBoxes(const RoadBuild& build, const std::vector<MassingBox>& boxes,
+                                                     double margin);
+
+} // namespace ftcore

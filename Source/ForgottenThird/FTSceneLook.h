@@ -45,6 +45,12 @@ inline constexpr int32 WindowDataSeed = 0;
 inline constexpr int32 WindowDataStreet = 1;
 inline constexpr int32 WindowDataBase = 2;
 inline constexpr int32 WindowDataCount = 6;
+// Round 5 (FTBuildSurfaces -Windows -FacadeR5, FTBuildMassingWorld -FacadeR5): the r5 master reads three more, the
+// box's window type, wall tint and roof finish (ftcore::MassingFacadeData). The r4 master reads only the first six.
+inline constexpr int32 WindowDataType = 6;
+inline constexpr int32 WindowDataTint = 7;
+inline constexpr int32 WindowDataRoof = 8;
+inline constexpr int32 WindowDataCountR5 = 9;
 // The street lamps' heads, built by FTBuildSurfaces -Windows beside the windows: a pale shade by day, glowing by the window
 // collection's Night.
 inline constexpr const TCHAR* NightLampMaterial = TEXT("/Game/Rendering/Windows/M_NightLamp");

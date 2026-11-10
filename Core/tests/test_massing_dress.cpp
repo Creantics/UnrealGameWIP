@@ -1086,3 +1086,130 @@ TEST_CASE("massing shop lights: along each street face, out of it, over its stre
     CHECK(massingShopLights(box, data, 8.0, lights) == 0);
     CHECK(lights.empty());
 }
+
+namespace {
+Roofs styledRoofs(const std::vector<MassingBox>& boxes, const MassingRoofStyle* style) {
+    Roofs r;
+    const std::vector<bool> include(boxes.size(), true);
+    std::vector<bool> hosts(boxes.size(), false);
+    if (!hosts.empty()) hosts[0] = true;
+    massingRoofs({}, boxes, include, hosts, r.boxes, r.counts, nullptr, style);
+    return r;
+}
+} // namespace
+
+TEST_CASE("massing roofs: the layouts off leave the r4 clutter as it was") {
+    const MassingRoofStyle off{};
+    for (const char* id : {"H-1", "BLD-030_1", "BLD-051_2"}) {
+        MassingBox b = host();
+        b.id = id;
+        const Roofs a = styledRoofs({b}, nullptr), c = styledRoofs({b}, &off);
+        REQUIRE(a.boxes.size() == c.boxes.size());
+        for (std::size_t k = 0; k < a.boxes.size(); ++k) {
+            CHECK(a.boxes[k].id == c.boxes[k].id);
+            CHECK(a.boxes[k].cx == c.boxes[k].cx);
+            CHECK(a.boxes[k].cy == c.boxes[k].cy);
+            CHECK(a.boxes[k].z1 == c.boxes[k].z1);
+        }
+        CHECK(c.counts.huts == 0);
+    }
+}
+
+TEST_CASE("massing roofs: layouts by the hash give distinct roofs, some empty, all inside the inset") {
+    const MassingRoofStyle on{true};
+    std::vector<std::vector<std::string>> kinds;
+    std::array<std::size_t, kMassingRoofLayouts> seen{};
+    std::array<std::size_t, kMassingRoofFinishes> finishes{};
+    std::size_t empty = 0, clutterPieces = 0, huts = 0;
+    const int hosts = 48;
+    for (int n = 0; n < hosts; ++n) {
+        MassingBox b = flatBox("BLD-" + std::to_string(100 + n) + "_1", 0, 0, 14.0 + (n % 3) * 3.0, 9.0 + (n % 2) * 3.0,
+                               0.0, 12.0);
+        b.rot = 15.0 * (n % 4);
+        const Roofs r = styledRoofs({b}, &on);
+        CHECK(r.counts.roofs == 1);
+        ++seen[static_cast<std::size_t>(massingRoofLayout(b.id))];
+        ++finishes[static_cast<std::size_t>(massingRoofFinish(b.id))];
+        std::vector<std::string> mine;
+        std::vector<MassingFoot> feet;
+        const double c = std::cos(b.rot * 3.14159265358979 / 180.0), s = std::sin(b.rot * 3.14159265358979 / 180.0);
+        for (const MassingBox& p : r.boxes) {
+            if (p.id.find("-RR") != std::string::npos || p.id.find("-RP") != std::string::npos) continue; // rails
+            mine.push_back(p.kind);
+            ++clutterPieces;
+            CHECK(massingLookSurface(p) ==
+                  (p.kind == "hut" ? massingLookSurface(b) : MassingLookSurface::GalvSteel));
+            // Inside the inset, in the host's frame.
+            const MassingFoot f = massingBoxFoot(p);
+            const double u = (f.x - b.cx) * c + (f.y - b.cy) * s, w = -(f.x - b.cx) * s + (f.y - b.cy) * c;
+            const bool square = near(p.rot, b.rot, 1e-9);
+            const double ru = square ? f.hx : 0.0, rw = square ? f.hy : 0.0; // turned pieces: their middle
+            CHECK(std::fabs(u) + ru <= 0.5 * b.sx - kMassingRoofEdgeIn + 1e-6);
+            CHECK(std::fabs(w) + rw <= 0.5 * b.sy - kMassingRoofEdgeIn + 1e-6);
+            // Pieces standing on the roof (not on a hut or stand) keep apart.
+            if (p.z0 > b.z1) continue;
+            if (p.kind == "post" || p.kind == "aerial") continue;
+            for (const MassingFoot& o : feet) CHECK_FALSE(massingFeetOverlap(f, o, kMassingRoofClutterGap - 1e-6));
+            feet.push_back(f);
+        }
+        huts += r.counts.huts;
+        std::sort(mine.begin(), mine.end());
+        if (mine.empty()) ++empty;
+        if (std::find(kinds.begin(), kinds.end(), mine) == kinds.end()) kinds.push_back(mine);
+    }
+    for (const std::size_t k : seen) CHECK(k > 0);
+    for (const std::size_t k : finishes) CHECK(k > 0);
+    CHECK(empty > 0);
+    CHECK(huts > 0);
+    CHECK(kinds.size() >= 6);
+    CHECK(static_cast<double>(clutterPieces) / hosts <= 8.0);
+}
+
+TEST_CASE("massing roofs: a hut keeps to a corner and carries a tank") {
+    const MassingRoofStyle on{true};
+    for (int n = 0; n < 200; ++n) {
+        MassingBox b = flatBox("H-" + std::to_string(n), 0, 0, 16, 12, 0, 10);
+        if (massingRoofLayout(b.id) != MassingRoofLayout::StairHead) continue;
+        const Roofs r = styledRoofs({b}, &on);
+        REQUIRE(r.counts.huts == 1);
+        const MassingBox* hut = nullptr;
+        for (const MassingBox& p : r.boxes)
+            if (p.kind == "hut") hut = &p;
+        REQUIRE(hut != nullptr);
+        CHECK(near(hut->z1 - b.z1, kMassingRoofHutHeight, 1e-9));
+        // A corner: both its sides on the inset line.
+        CHECK(near(std::fabs(hut->cx) + 0.5 * hut->sx, 0.5 * b.sx - kMassingRoofEdgeIn, 1e-6));
+        CHECK(near(std::fabs(hut->cy) + 0.5 * hut->sy, 0.5 * b.sy - kMassingRoofEdgeIn, 1e-6));
+        bool tankOn = false;
+        for (const MassingBox& p : r.boxes)
+            tankOn = tankOn || (p.kind == "tank" && near(p.cx, hut->cx, 1e-9) && near(p.z0, hut->z1 - 0.05, 1e-9));
+        CHECK(tankOn);
+        return;
+    }
+    FAIL("no StairHead host among 200 ids");
+}
+
+TEST_CASE("massingFacadeData: type by height and footprint, all types and tints seen, roof finish as the roof's") {
+    std::array<int, kWindowTypes> types{};
+    int pastelOnTextured = 0;
+    for (int i = 0; i < 200; ++i) {
+        const std::string id = "BLD-" + std::to_string(i);
+        for (const double h : {8.0, 15.0, 26.0}) {
+            MassingBox box = flatBox(id.c_str(), 0, 0, 8, 14, 0, h);
+            MassingWindowData d;
+            d.seed = static_cast<std::uint32_t>(i * 7919);
+            d.streetBits = (i & 1) ? 1u : 0u;
+            const MassingFacadeData f = massingFacadeData(box, d);
+            ++types[static_cast<std::size_t>(f.type)];
+            CHECK(f.type != WindowType::Legacy);
+            if (h >= kMassingFacadeTall) CHECK((f.type == WindowType::Office || f.type == WindowType::Walkway));
+            if (h < kMassingFacadeMid) CHECK((f.type == WindowType::Apartment || f.type == WindowType::Shophouse));
+            CHECK(f.roofFinish == static_cast<std::uint32_t>(massingRoofFinish(box.id)));
+            CHECK(f.wallTint < kWindowWallTintCount);
+            if (massingLookSurface(box) == MassingLookSurface::BuildingA && windowWallTint(f.wallTint).pastel)
+                ++pastelOnTextured;
+        }
+    }
+    for (std::uint32_t t = 1; t < kWindowTypes; ++t) CHECK(types[t] > 0);
+    CHECK(pastelOnTextured == 0);
+}

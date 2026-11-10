@@ -9,8 +9,10 @@
 #include "ftcore/Api.h"
 #include "ftcore/MassingPlan.h"
 #include "ftcore/MassingProps.h"
+#include "ftcore/WindowFacade.h"
 #include "ftcore/WindowInterior.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -313,7 +315,48 @@ struct MassingRoofCounts {
     std::size_t bare = 0;     // hosts left bare: sloped, too small or too low
     std::size_t courts = 0;   // court tops that took a rail, a rack or a standard (not in roofs)
     std::size_t racks = 0, standards = 0;
+    // With MassingRoofStyle::layouts only.
+    std::size_t huts = 0, sheds = 0, frames = 0, stands = 0;
+    std::array<std::size_t, 7> layouts{}; // roof hosts (not courts, not bare) per MassingRoofLayout
 };
+
+// ---- Roof layouts (round 5, behind MassingRoofStyle::layouts) ----
+//
+// Each roof host takes one of seven clutter layouts by a stable hash of its id (weights out of 20 in brackets): Empty (3,
+// rails only); Tanks (3, two or three tanks, each on a steel stand); UnitFarm (3, a row of air-conditioning units along
+// one edge and a tank); StairHead (4, a stair-head hut at a corner, a tank on its roof and one or two units); Laundry (3,
+// two or three drying frames and an aerial); ShedMasts (2, a steel shed and two aerials); Dense (2, a hut, a tank on it,
+// a tank on a stand, the r4 units and an aerial). The hut ("<host>-RH<n>", kind hut, kMassingRoofHutLong by
+// kMassingRoofHutShort by kMassingRoofHutHeight, the kit's BK-HUT size so its mesh swaps in by kind) tries the four
+// inset corners first.
+enum class MassingRoofLayout : int { Empty = 0, Tanks, UnitFarm, StairHead, Laundry, ShedMasts, Dense };
+inline constexpr int kMassingRoofLayouts = 7;
+// The roof's own finish, read by the window master's top face (round 5): light concrete, dark tar, green paint, red-oxide
+// paint, weathered grey, pale blue-grey.
+inline constexpr int kMassingRoofFinishes = 6;
+inline constexpr double kMassingRoofHutLong = 4.0;    // m: stair-head hut (BK-HUT 4.0 x 3.0 x 2.5)
+inline constexpr double kMassingRoofHutShort = 3.0;
+inline constexpr double kMassingRoofHutHeight = 2.5;
+inline constexpr double kMassingRoofStandSide = 1.1;  // m: a tank stand's square
+inline constexpr double kMassingRoofStandHeight = 0.6;
+inline constexpr double kMassingRoofShedLong = 2.4;   // m: a steel shed
+inline constexpr double kMassingRoofShedShort = 1.8;
+inline constexpr double kMassingRoofShedHeight = 2.1;
+inline constexpr double kMassingRoofFrameLong = 2.6;  // m: a drying frame's lines
+inline constexpr double kMassingRoofFrameWide = 0.9;  // m: its T bars across
+inline constexpr double kMassingRoofFrameHeight = 1.8;
+inline constexpr double kMassingRoofFrameSide = 0.05; // m: its posts and bars
+inline constexpr double kMassingRoofUnitPitch = 1.2;  // m between units of a farm row
+
+// A stair-head hut's row is its host's look key (the host's row, or its id cut at the last '_'), so it wears the host's
+// finish; its kind is "hut" and its id "<host>-RH<n>", where the BK-HUT kit piece may replace it.
+struct MassingRoofStyle {
+    bool layouts = false; // false: the r4 clutter, byte for byte
+};
+
+// The layout and the roof finish (0 .. kMassingRoofFinishes - 1) a roof host's id picks.
+FTCORE_API MassingRoofLayout massingRoofLayout(std::string_view hostId);
+FTCORE_API int massingRoofFinish(std::string_view hostId);
 
 // Rails and clutter on the flat tops of the boxes `hosts` marks (of those `include` marks, the boxes read as neighbours).
 // A host is left bare when it is sloped, either side is under kMassingRoofSide, its top under kMassingRoofArea or its top
@@ -349,7 +392,7 @@ struct MassingRoofCounts {
 FTCORE_API void massingRoofs(const MassingGround& ground, const std::vector<MassingBox>& boxes,
                              const std::vector<bool>& include, const std::vector<bool>& hosts,
                              std::vector<MassingBox>& out, MassingRoofCounts& counts,
-                             const std::vector<bool>* courts = nullptr);
+                             const std::vector<bool>* courts = nullptr, const MassingRoofStyle* style = nullptr);
 
 // ---- Stand-ins ----
 //
@@ -385,6 +428,26 @@ inline constexpr double kMassingWindowProbe = 0.5;
 // box * 4), or is null for none. No allocation.
 FTCORE_API MassingWindowData massingWindowData(const MassingBox& box, const MassingGround& ground,
                                                const std::uint8_t* fronting);
+
+// ---- Facades (round 5) ----
+//
+// A windowed box's r5 facade (WindowFacade.h): its window type by height over its street and its footprint, its wall
+// tint and its roof finish, all from the id's hash.
+//   20 m or more:                       office or walkway block, half and half
+//   12 m or more:                       apartment 50, walkway 30, office 20
+//   under 12, fronting a street, narrow (shorter side 10 m or less): shophouse 70, apartment 30
+//   else:                               apartment 70, shophouse 30
+// The tint: any of the ten on a plain finish (render, board concrete, breeze block), else a neutral one. The roof finish
+// is massingRoofFinish of the id (as the roof clutter's). No allocation.
+struct MassingFacadeData {
+    WindowType type = WindowType::Legacy;
+    std::uint32_t wallTint = 0;    // windowWallTint index
+    std::uint32_t roofFinish = 0;  // windowRoofFinish index
+};
+inline constexpr double kMassingFacadeTall = 20.0;
+inline constexpr double kMassingFacadeMid = 12.0;
+inline constexpr double kMassingFacadeNarrow = 10.0;
+FTCORE_API MassingFacadeData massingFacadeData(const MassingBox& box, const MassingWindowData& data);
 
 // ---- Shop lights ----
 //

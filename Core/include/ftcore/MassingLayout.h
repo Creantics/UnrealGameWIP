@@ -1,0 +1,117 @@
+#pragma once
+
+// A massing's lanes laid out as streets: buildings brought to a build-to line along each narrow lane, the gaps between
+// them filled with infill buildings, and the lane's surface dressed flush with the ground (a centre gutter, drain covers,
+// patches and give-way bars at its mouths). Plain C++20; plan frame, metres (MassingPlan.h). Every function here runs at
+// build time only and may allocate.
+//
+//   ftcore::MassingBuildTo opts;  opts.area = {690, 260, 940, 720};  opts.keepClear.push_back({878, 410, 892, 650});
+//   ftcore::MassingBuildToCounts counts = ftcore::massingBuildTo(boxes, streets, ground, opts);
+//   ftcore::massingLaneDress(streets, ground, dressOpts, boxes);
+//
+// A lane is a street no wider than laneUpTo whose segment runs along x or along y (to within 0.01 m). Other streets are
+// left as they are, but no box is ever moved into one.
+
+#include "ftcore/Api.h"
+#include "ftcore/MassingDress.h"
+#include "ftcore/MassingPlan.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace ftcore {
+
+struct MassingRect {
+    double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0; // plan frame, x0 <= x1, y0 <= y1
+};
+
+// The lanes' build-to line and infill.
+struct MassingBuildTo {
+    MassingRect area;               // only lanes (clipped) and boxes inside it are touched
+    double laneUpTo = 6.0;          // m: a street no wider is a lane
+    double reach = 12.0;            // m: a building face up to this far behind a lane's edge is pulled out to it
+    double minGap = 4.0;            // m: a gap along a lane's frontage at least this long is filled
+    double lotMax = 8.0;            // m: an infill lot's frontage, at most
+    double depthMin = 4.0;          // m: a lot shallower than this is left empty
+    double depthMax = 12.0;         // m
+    double storey = 3.0;            // m
+    double sink = 0.1;              // m a moved or added building reaches under the lowest ground beneath it
+    std::vector<MassingRect> keepClear; // nothing is moved or added into these (a road corridor, a square)
+};
+
+struct MassingBuildToCounts {
+    std::size_t lanes = 0;   // lane segments inside the area
+    std::size_t pulled = 0;  // faces pulled out to a build-to line
+    std::size_t blocked = 0; // faces in reach left where they were (a box or a street between, or the pull would enter
+                             // a street or a keep-clear rect)
+    std::size_t trimmed = 0; // boxes cut back out of a lane
+    std::size_t infill = 0;  // infill buildings added
+};
+
+// Brings `boxes` to the lanes' build-to lines, then fills each frontage's gaps. A building here is a visible box
+// (massingVisible) wearing a building finish (massingLookIsBuilding), level (not sloped, no tilt) and turned by a
+// multiple of 90 degrees. For each lane segment in the area and each of its sides, its line lies width/2 from the
+// centre line. A building whose near face is no more than `reach` behind the line, whose span along the lane overlaps
+// the segment by a metre or more, and with nothing between (no visible box, no street, no keep-clear rect) has that
+// face moved out to the line; its far face stays, and its bottom drops to the lowest ground under its new footprint
+// less `sink`. A building reaching into a lane is cut back to the lane's line. Then each frontage (a lane side, along
+// the segment) is walked: a stretch at least minGap long with no building, street or keep-clear rect just behind the
+// line is split into lots of at most lotMax and each lot gets a building of kind "kit", source Invented, id
+// "<lane id>-IN<n>", as deep as the first obstacle behind it allows (depthMin..depthMax), 2 or 3 storeys (now and then
+// 4) by its id's hash over the highest ground under it. Boxes are only changed or appended, never erased; the appended
+// ones come last in `boxes`.
+FTCORE_API MassingBuildToCounts massingBuildTo(std::vector<MassingBox>& boxes, const std::vector<MassingStreet>& streets,
+                                               const MassingGround& ground, const MassingBuildTo& opts);
+
+// The distance along the normal between the two building lines of a lane, sampled every `step` m along each of its
+// segments inside the area, ignoring sample points where one side has no building within `reach` (a mouth, a crossing):
+// min and max over the samples that see both sides, and how many samples see both. For the report on the built lanes.
+struct MassingLaneWidth {
+    double minWall = 0.0, maxWall = 0.0; // m, wall to wall; 0, 0 when no sample sees both sides
+    std::size_t samples = 0, bothSides = 0;
+};
+FTCORE_API MassingLaneWidth massingLaneWidth(const MassingStreet& lane, const std::vector<MassingBox>& boxes,
+                                             const MassingRect& area, double reach, double step);
+
+// The lanes' surface. Every piece is a thin level box of a dressing kind ("gutter", "drain", "patch", "marking":
+// massingLookSurface gives each its finish), turned 0 (u along x), its top kTop over the ground at its middle and its
+// bottom kSink under the lowest ground beneath it; where the ground runs along x, the top follows it (slope "x A to B",
+// with a thickness), so the piece lies flush. A piece whose ground strays from that plane by more than `fit` (a step
+// under it) is left out. Ids are "<lane id>-G<n>" (gutter), "-D<n>" (drain), "-P<n>" (patch), "-M<n>" (marking).
+struct MassingLaneDress {
+    MassingRect area;
+    double laneUpTo = 6.0;
+    double gutterWidth = 0.3;   // m, along the centre line
+    double gutterRun = 8.0;     // m: the gutter is cut into runs at most this long
+    double endGap = 1.0;        // m left bare at each end of a segment and around each keep-clear rect
+    double drainEvery = 16.0;   // m between drain covers on the gutter
+    double drainSize = 0.6;     // m square
+    double patchEvery = 45.0;   // m: one patch per this much lane, on average (hash placed)
+    double markWidth = 0.3;     // m: a give-way bar across a lane's mouth, this deep
+    double fit = 0.02;          // m
+    std::vector<MassingRect> keepClear;
+};
+inline constexpr double kMassingLaneDressTop = 0.01;  // m over the ground
+inline constexpr double kMassingLaneDressSink = 0.08; // m under it
+struct MassingLaneDressCounts {
+    std::size_t gutters = 0, drains = 0, patches = 0, marks = 0, uneven = 0;
+};
+// Appends the pieces to `out` (kept). The mouth bars go across each segment end that meets a street wider than
+// laneUpTo (the lane gives way to the road). No piece enters a keep-clear rect.
+FTCORE_API MassingLaneDressCounts massingLaneDress(const std::vector<MassingStreet>& streets, const MassingGround& ground,
+                                                   const MassingLaneDress& opts, std::vector<MassingBox>& out);
+
+// -LanePave: the road mask's lanes. Each street no wider than upTo (> 0) is widened by `margin` each side and loses its
+// pavements, so the ground's road layer runs wall to wall across it and its feathered edge falls under the walls on the
+// build-to line. Returns how many it widened. No allocation.
+FTCORE_API std::size_t massingLanePave(std::vector<MassingStreet>& streets, double upTo, double margin);
+
+// -LanePave: drops the paving pads (massingFrontage's outPads) standing on a lane: a pad whose centre is within a lane's
+// width/2 + reach of its centre line, for streets no wider than upTo. The piece above stays at its lowest floor
+// (massingFrontage), so nothing floats. Returns how many it dropped. No allocation (erases in place).
+FTCORE_API std::size_t massingDropLanePads(std::vector<MassingBox>& pads, const std::vector<MassingStreet>& streets, double upTo,
+                                           double reach);
+
+} // namespace ftcore

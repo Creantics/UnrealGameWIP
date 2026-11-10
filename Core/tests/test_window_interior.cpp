@@ -513,3 +513,20 @@ TEST_CASE("the HLSL carries the grid's numbers, the salts and the hash") {
     CHECK(h.find("/ 4;") == std::string::npos);
     CHECK(h.find("/ 6;") == std::string::npos);
 }
+
+namespace {
+std::uint64_t fnv64(const std::string& s) {
+    std::uint64_t h = 14695981039346656037ull;
+    for (const char c : s) {
+        h ^= static_cast<std::uint8_t>(c);
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+}  // namespace
+
+TEST_CASE("r4 reproducible: the default spec writes the r4 HLSL byte for byte") {
+    const std::string h = windowInteriorHlsl(WindowGridSpec{});
+    CHECK(h.size() == 4592u);
+    CHECK(fnv64(h) == 778640904970305523ull);
+}

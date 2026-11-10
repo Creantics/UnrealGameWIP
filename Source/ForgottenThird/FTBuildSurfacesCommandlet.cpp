@@ -35,6 +35,7 @@
 
 #include "ftcore/MassingPlan.h"
 #include "ftcore/SurfaceTable.h"
+#include "ftcore/WindowFacade.h"
 #include "ftcore/WindowInterior.h"
 #endif
 
@@ -512,8 +513,8 @@ float3 GlassAlbedo = Win.rgb * GlassBase + Curtain.rgb * Curtain.a * CurtainAlbe
 return Glass ? GlassAlbedo : (Frame ? FrameColor.rgb : (Fascia ? FasciaColor.rgb : (Band ? WallAlbedo * BandShade : WallAlbedo)));)HLSL");
 
 // The box data the window master reads, in custom primitive data order (FTScene::WindowData*).
-const TCHAR* const kWindowDataNames[FTScene::WindowDataCount] = {TEXT("Seed"), TEXT("StreetBits"), TEXT("Base0"), TEXT("Base1"),
-	TEXT("Base2"), TEXT("Base3")};
+const TCHAR* const kWindowDataNames[FTScene::WindowDataCountR5] = {TEXT("Seed"), TEXT("StreetBits"), TEXT("Base0"), TEXT("Base1"),
+	TEXT("Base2"), TEXT("Base3"), TEXT("Type"), TEXT("WallTint"), TEXT("RoofFinish")};
 constexpr const TCHAR* kWindowNight = TEXT("Night");
 // The collection's night glow: a multiplier on the windows' GlowScale and ShopGlow, 1 unless a look or the world eye
 // (-WorldEyeNightGlow) sets it.
@@ -588,15 +589,38 @@ UMaterialParameterCollection* BuildWindowCollection()
 	return Collection;
 }
 
+// Round 5: the face node's three more outputs (6 TOut, 7 NzOut, 8 TopOut), after r4's.
+void AddR5FaceOutputs(UMaterialExpressionCustom* Face)
+{
+	AddOutput(Face, TEXT("TOut"), CMOT_Float3);
+	AddOutput(Face, TEXT("NzOut"), CMOT_Float3);
+	AddOutput(Face, TEXT("TopOut"), CMOT_Float1);
+}
+
+// Round 5: the compose node's inputs beyond r4's: the face's along and up axes, its top flag, the wall tint and the roof
+// finish.
+void AddR5ComposeInputs(UMaterialExpressionCustom* Compose, UMaterialExpressionCustom* Face, UMaterialExpression* Tint,
+	UMaterialExpression* RoofFinish)
+{
+	AddInputFrom(Compose, TEXT("T"), Face, 6);
+	AddInputFrom(Compose, TEXT("Nz"), Face, 7);
+	AddInputFrom(Compose, TEXT("Top"), Face, 8);
+	AddInput(Compose, TEXT("Tint"), Tint);
+	AddInput(Compose, TEXT("RoofFin"), RoofFinish);
+}
+
 // The window master: the photographed surface (its parameters as M_WorldSurfaceTex's, so an instance copies a surface's
-// values across) with WindowInterior's openings cut into its walls.
-UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Rooms, UTexture* Curtains, UMaterialParameterCollection* Collection)
+// values across) with WindowInterior's openings cut into its walls. bR5 (-FacadeR5): WindowFacade's nodes instead, which
+// read three more box values (type, wall tint, roof finish) and add the reveals, bands, shop kinds, tints and roof colour.
+UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Rooms, UTexture* Curtains, UMaterialParameterCollection* Collection,
+	bool bR5)
 {
 	UMaterial* Material = NewMaster(FTScene::WindowMaterial);
 	const FSurfaceNode Wall = AddSurfaceNode(Material, Defaults);
 
-	UMaterialExpressionScalarParameter* Data[FTScene::WindowDataCount] = {};
-	for (int32 D = 0; D < FTScene::WindowDataCount; ++D)
+	const int32 DataCount = bR5 ? FTScene::WindowDataCountR5 : FTScene::WindowDataCount;
+	UMaterialExpressionScalarParameter* Data[FTScene::WindowDataCountR5] = {};
+	for (int32 D = 0; D < DataCount; ++D)
 	{
 		Data[D] = AddWindowScalar(Material, kWindowDataNames[D], 0.f, 1100 + D * 100);
 		Data[D]->bUseCustomPrimitiveData = true;
@@ -608,7 +632,7 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	UMaterialExpressionCustom* Face = AddExpression<UMaterialExpressionCustom>(Material, -600, 1300);
 	Face->Description = TEXT("FTWindowFace");
 	Face->OutputType = CMOT_Float1;
-	Face->Code = kWindowFaceCode;
+	Face->Code = bR5 ? FT::ToFString(ftcore::windowFacadeFaceHlsl()) : FString(kWindowFaceCode);
 	Face->Inputs.Reset();
 	AddInput(Face, TEXT("LocalPos"), LocalPos);
 	AddInput(Face, TEXT("AxisX"), Wall.Axis[0]);
@@ -627,6 +651,10 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	AddOutput(Face, TEXT("FaceHOut"), CMOT_Float1);
 	AddOutput(Face, TEXT("FaceWOut"), CMOT_Float1);
 	AddOutput(Face, TEXT("ViewOut"), CMOT_Float3);
+	if (bR5)
+	{
+		AddR5FaceOutputs(Face);
+	}
 	Face->RebuildOutputs();
 
 	// The windows' numbers (Group "Window"): the shares lit, curtained and shop-lit; a building finish's window width; a
@@ -665,7 +693,7 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	UMaterialExpressionCustom* Win = AddExpression<UMaterialExpressionCustom>(Material, -300, 1600);
 	Win->Description = TEXT("FTWindowInterior");
 	Win->OutputType = CMOT_Float4;
-	Win->Code = FT::ToFString(ftcore::windowInteriorHlsl(ftcore::WindowGridSpec{}));
+	Win->Code = FT::ToFString(bR5 ? ftcore::windowFacadeHlsl(ftcore::WindowFacadeSpec{}) : ftcore::windowInteriorHlsl(ftcore::WindowGridSpec{}));
 	Win->Inputs.Reset();
 	AddInputFrom(Win, TEXT("Along"), Face, 0);
 	AddInputFrom(Win, TEXT("Up"), Face, 2);
@@ -687,6 +715,10 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	AddInput(Win, TEXT("CurtainGlow"), CurtainGlow);
 	AddInput(Win, TEXT("Rooms"), RoomsTex);
 	AddInput(Win, TEXT("Curtains"), CurtainsTex);
+	if (bR5)
+	{
+		AddInput(Win, TEXT("Type"), Data[FTScene::WindowDataType]);
+	}
 	AddOutput(Win, TEXT("Curtain"), CMOT_Float4);
 	AddOutput(Win, TEXT("Emit"), CMOT_Float3);
 	Win->RebuildOutputs();
@@ -714,7 +746,7 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	UMaterialExpressionCustom* Compose = AddExpression<UMaterialExpressionCustom>(Material, 0, 0);
 	Compose->Description = TEXT("FTWindowCompose");
 	Compose->OutputType = CMOT_Float3;
-	Compose->Code = kWindowComposeCode;
+	Compose->Code = bR5 ? FT::ToFString(ftcore::windowFacadeComposeHlsl()) : FString(kWindowComposeCode);
 	Compose->Inputs.Reset();
 	AddInputFrom(Compose, TEXT("Win"), Win, 0);
 	AddInputFrom(Compose, TEXT("Curtain"), Win, 1);
@@ -734,6 +766,10 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	AddInput(Compose, TEXT("BandShade"), BandShade);
 	AddInput(Compose, TEXT("FasciaColor"), FasciaColor);
 	AddInput(Compose, TEXT("FasciaRough"), FasciaRough);
+	if (bR5)
+	{
+		AddR5ComposeInputs(Compose, Face, Data[FTScene::WindowDataTint], Data[FTScene::WindowDataRoof]);
+	}
 	AddOutput(Compose, TEXT("NormalOut"), CMOT_Float3);
 	AddOutput(Compose, TEXT("RoughOut"), CMOT_Float1);
 	AddOutput(Compose, TEXT("MetalOut"), CMOT_Float1);
@@ -823,10 +859,11 @@ UMaterial* BuildNightLamp(UMaterialParameterCollection* Collection)
 	return Material;
 }
 
-// -Windows -Atlas=<dir> [-Prefix=<world>_]: the window atlases from <dir>/rooms_atlas.png and curtains_atlas.png, the
+// -Windows -Atlas=<dir> [-Prefix=<world>_] [-FacadeR5]: the window atlases from <dir>/rooms_atlas.png and curtains_atlas.png, the
 // collection, the master, an instance per building surface of the world (FTScene::WindowInstancePackage(prefix + id)),
 // each copying that surface's instance with one of kWindowWidths, and the street lamps' heads (FTScene::NightLampMaterial).
-// Only those packages are replaced.
+// Only those packages are replaced. -FacadeR5 writes the round 5 master (ftcore/WindowFacade.h) at the same path; without
+// it the master is r4's, byte for byte.
 int32 BuildWindows(const FString& Params)
 {
 	FString Atlas;
@@ -906,7 +943,8 @@ int32 BuildWindows(const FString& Params)
 		return 1;
 	}
 	UMaterialParameterCollection* Collection = BuildWindowCollection();
-	UMaterial* Master = BuildWindowMaster(MakeArrayView(Defaults), Rooms, Curtains, Collection);
+	const bool bR5 = FParse::Param(*Params, TEXT("FacadeR5"));
+	UMaterial* Master = BuildWindowMaster(MakeArrayView(Defaults), Rooms, Curtains, Collection, bR5);
 	UMaterial* Lamp = BuildNightLamp(Collection);
 	// The finishes take the widths in turn, so neighbouring finishes differ and every width is used.
 	TArray<UMaterialInstanceConstant*> Instances;
