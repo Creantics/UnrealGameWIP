@@ -1,7 +1,8 @@
 #pragma once
 
 // Stand-in meshes for the strip's new kinds of piece, as compositions of the engine's basic shapes (a cube, a sphere and a
-// cylinder, each 1 unit a side and centred), until kit meshes replace them: street and park trees, park shrubs, quay
+// cylinder, each 1 unit a side and centred) and the build's own tree canopies (standInCanopyMesh: a trunk cylinder plus
+// one canopy a tree), until kit meshes replace them: street and park trees, park shrubs, quay
 // railing spans, lamp masts, footbridges (whole, or as their deck, landing, stair and pier pieces), pitched house roofs
 // (a simpler one for back houses no street sees), glass towers and the landmark tower. The build instances each part per 250 m cell (FTBuildStandIns.h).
 //
@@ -42,7 +43,8 @@ enum class StandInKind : std::uint8_t {
 constexpr std::size_t kStandInKinds = static_cast<std::size_t>(StandInKind::Count);
 FTCORE_API const char* standInKindName(StandInKind kind);
 
-enum class StandInShape : std::uint8_t { Cube, Sphere, Cylinder, Count };
+// Canopy: a tree's crown and its forking limbs as one mesh (standInCanopyMesh), in the unit box around its fork.
+enum class StandInShape : std::uint8_t { Cube, Sphere, Cylinder, Canopy, Count };
 
 enum class StandInPaint : std::uint8_t {
     Bark,
@@ -60,7 +62,8 @@ enum class StandInPaint : std::uint8_t {
     RoofSlate,
     RoofGlazed,
     Shell,   // the landmark's pale skin
-    Lantern, // the landmark's warm lantern
+    Lantern,  // the landmark's warm lantern
+    LeafWarm, // a yellow-olive leaf, the fourth of the leaf greens
     Count
 };
 constexpr std::size_t kStandInPaints = static_cast<std::size_t>(StandInPaint::Count);
@@ -96,8 +99,28 @@ struct StandInPart {
     float dx = 0.f, dy = 0.f, dz = 0.f;
     float sx = 1.f, sy = 1.f, sz = 1.f;
     float yaw = 0.f, roll = 0.f, pitch = 0.f;
+    std::uint8_t variant = 0; // a Canopy's mesh (0 .. kStandInCanopyVariants - 1)
 };
 constexpr std::size_t kStandInPartsMax = 16;
+
+// The tree canopies: a crown of small, offset, lumpy clumps with gaps between them, and the limbs that fork up into
+// them from the trunk's top. Variant 0 is the street tree's (5 clumps, one fork), 1 and 2 the park tree's (7 clumps,
+// two forks).
+constexpr std::size_t kStandInCanopyVariants = 3;
+
+// A canopy mesh in the unit box: z from -0.5 (the fork, where the trunk ends, at x = y = 0) to 0.5 (the crown's top);
+// x and y in [-0.5, 0.5] around the fork, reaching 0.5 in size on each axis on at least one side. Flat-shaded: one
+// outward normal per triangle. Slot 0 the leaves, 1 the limbs' bark. Build time only (it allocates).
+struct StandInCanopyMesh {
+    std::vector<float> positions;         // x, y, z per vertex
+    std::vector<std::uint32_t> triangles; // three vertex indices per triangle
+    std::vector<float> normals;           // x, y, z per triangle, outward
+    std::vector<std::uint8_t> slots;      // per triangle: 0 leaves, 1 bark
+};
+// Fills out (cleared first); false for a variant out of range.
+FTCORE_API bool standInCanopyMesh(std::size_t variant, StandInCanopyMesh& out);
+// The share of a canopy's height under its crown (its bare limbs, from the fork up to its lowest leaf); 0 out of range.
+FTCORE_API double standInCanopyForkShare(std::size_t variant);
 
 // Writes the point's parts into out (room for kStandInPartsMax) and returns how many; 0 for a null out. Seeded by the
 // point's position and kind (FNV-1a), so repeatable. No allocation.

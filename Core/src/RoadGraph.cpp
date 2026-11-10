@@ -310,6 +310,21 @@ void roadGraphStreetLanes(const MassingStreet& street, double speedKmh, bool one
     }
 }
 
+void roadGraphFootLanes(const MassingStreet& street, double speedKmh, RoadGraph& out) {
+    if (roadFootClass(street) != RoadFootClass::Vehicle) return;
+    const RoadFootSection sc = roadFootSection(street);
+    if (!(sc.cwHi > sc.cwLo)) return;
+    MassingStreet c = street;
+    c.width = sc.cwHi - sc.cwLo;
+    c.pavement = 0.0;
+    const std::size_t first = out.lanes.size();
+    roadGraphStreetLanes(c, speedKmh, street.width <= kFootLaneUpTo + 1e-9, 0.0, out);
+    const double mid = (sc.cwLo + sc.cwHi) * 0.5; // the carriageway's centre, left of the street's
+    if (std::fabs(mid) > 1e-9)
+        for (std::size_t i = first; i < out.lanes.size(); ++i)
+            out.lanes[i].pts = offsetLine(out.lanes[i].pts, out.lanes[i].dir > 0 ? mid : -mid);
+}
+
 void roadGraphJunctions(const std::vector<MassingStreet>& streets, double snap, double pavementShare, RoadGraph& out) {
     const Net net = buildNet(streets, snap);
     int count = 0;

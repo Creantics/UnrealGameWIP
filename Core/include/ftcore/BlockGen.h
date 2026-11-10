@@ -47,8 +47,11 @@ struct BlockRng {
     double range(double lo, double hi) { return lo + (hi - lo) * unit(); }
 };
 
-// Street classes (sec. 3): a kerbed road 10-14 m, a shared lane 4-6 m (a market lane is one), an alley 2-3 m.
+// Street classes (sec. 3, the 11-10 ruling): a road 10-14 m with kerbed pavements of 2-3 m; a lane 4-6 m, a ~3 m
+// carriageway and kerbed footways of 1-1.5 m (a market lane is one; no kerbless shared lanes); an alley kBlockAlleyMax
+// m or narrower, pedestrians only, bollards or a step at each mouth.
 enum class BlockClass : std::uint8_t { Road, Lane, Market, Alley };
+inline constexpr double kBlockAlleyMax = 3.0; // m: an alley is this wide or narrower
 FTCORE_API std::string_view blockClassName(BlockClass c);
 
 struct BlockRect {
@@ -80,6 +83,7 @@ struct BlockPlanBand {
     std::string low, high, start, end;
     std::uint32_t block = 0;
     int rows = 0;
+    std::string district; // empty: the band's own id
 };
 
 enum class BlockFeatureKind : std::uint8_t { Park, Forecourt, Plaza, Precinct, Hall, Podium, Court, Gate };
@@ -94,6 +98,7 @@ struct BlockPlanFeature {
     BlockFeatureKind kind = BlockFeatureKind::Park;
     BlockRect r;
     double value = 0.0, top = 0.0, width = 0.0;
+    std::string district; // empty: the feature's own id
 };
 
 // The placed landmark: base side and height (m).
@@ -113,7 +118,7 @@ struct BlockPlan {
 // Reads a plan table (CSV, '#' comments, a header row; columns found by name):
 //   type   street | band | feature | landmark | drop
 //   id, kind, class (road | lane | market | alley), x0, y0, x1, y1, width, pavement, low, high, start, end, block,
-//   value, top, rows, emit (0 / 1, streets; default 1)
+//   value, top, rows, emit (0 / 1, streets; default 1), district (bands and features; optional)
 // A street's kind is its streets-table kind; a band's kind is x or y (its rows' axis); a feature's kind its
 // BlockFeatureKind name; a landmark's x0, y0 its site, width its base and value its height. False with a line-numbered
 // error on a bad row.
@@ -124,6 +129,7 @@ struct BlockBox {
     std::string id, row, kind, note;
     double cx = 0.0, cy = 0.0, sx = 0.0, sy = 0.0;
     double z0 = 0.0, z1 = 0.0, ground = 0.0, terrMin = 0.0, terrMax = 0.0, sink = 0.0;
+    std::string district;  // the district of its band or feature (also in note as district=<id>)
     bool building = false; // a lot, a podium or a hall (not a wall, paving or gate piece)
     BlockRect rect() const { return {cx - sx * 0.5, cy - sy * 0.5, cx + sx * 0.5, cy + sy * 0.5}; }
 };
@@ -138,7 +144,7 @@ struct BlockDoor {
 };
 
 struct BlockTree {
-    std::string id, kind, host; // kind street | park | forecourt | precinct | plaza
+    std::string id, kind, host; // kind street | park (parks, plazas, podium roofs: z the roof) | forecourt | precinct
     double x = 0.0, y = 0.0, z = 0.0, height = 0.0, canopy = 0.0;
 };
 
@@ -152,6 +158,7 @@ struct BlockHouse {
 struct BlockTower {
     std::string id, kind, note; // glass | landmark
     double cx = 0.0, cy = 0.0, z0 = 0.0, sx = 0.0, sy = 0.0, height = 0.0;
+    double rot = 0.0; // degrees in the plan's frame (generated towers 0; read ones turned into the frame)
     int floors = 0;
 };
 
@@ -164,12 +171,35 @@ struct BlockGround {
         zones = std::move(z);
         zoneOn.assign(zones.size(), true);
     }
+    // A local frame (a plan drawn along a turned street grid): at() takes local x, y and samples the world point
+    // (ox, oy) + R(deg) (x, y). The field and the zones stay in world terms.
+    double frameX = 0.0, frameY = 0.0, frameCos = 1.0, frameSin = 0.0;
+    void setFrame(double ox, double oy, double deg);
+    void toWorld(double x, double y, double& wx, double& wy) const {
+        wx = frameX + frameCos * x - frameSin * y;
+        wy = frameY + frameSin * x + frameCos * y;
+    }
+    void toLocal(double wx, double wy, double& x, double& y) const {
+        const double dx = wx - frameX, dy = wy - frameY;
+        x = frameCos * dx + frameSin * dy;
+        y = -frameSin * dx + frameCos * dy;
+    }
     double at(double x, double y) const;
+};
+
+// A district's cues, so wards read apart: a colour (#RRGGBB), a sign style and a paving, from fixed palettes in the
+// order districts first appear in the plan, or slot k for a plan district written "name@k" (k 0..5). lots: its
+// generated lots.
+struct BlockDistrict {
+    std::string id, colour, sign, paving;
+    std::size_t lots = 0;
 };
 
 struct BlockGenStats {
     std::size_t lots = 0, shopLots = 0, houseLots = 0, merged = 0, slabs = 0, walkups = 0, yards = 0, enterable = 0;
     std::size_t corners = 0, pitched = 0, hiddenHouses = 0, alleys = 0;
+    std::size_t alleysCut = 0; // alley ends run on to a street
+    std::size_t roofTrees = 0, stalls = 0, marks = 0; // r10 dressing: podium roof gardens, market stalls, gate roofs and paths
     std::vector<std::string> notes;
 };
 
@@ -180,6 +210,7 @@ struct BlockGenResult {
     std::vector<BlockHouse> houses;
     std::vector<BlockTower> towers;
     std::vector<BlockPlanStreet> streets; // the plan's emitted streets plus the bands' mid-block alleys
+    std::vector<BlockDistrict> districts;
     BlockGenStats stats;
 };
 
@@ -188,13 +219,15 @@ inline constexpr double kBlockHouseMin = 4.5, kBlockHouseMax = 9.0;
 inline constexpr double kBlockShopMin = 6.0, kBlockShopMax = 12.0;
 inline constexpr double kBlockCorner = 1.3;
 inline constexpr double kBlockRowMin = 10.0, kBlockRowMax = 16.0, kBlockRowAim = 13.0;
-inline constexpr double kBlockAlley = 2.5;
+inline constexpr double kBlockAlley = 3.0;       // a mid-block alley (the class cap: readable from above)
+inline constexpr double kBlockAlleyReach = 20.0; // m an alley end runs on to reach a street
+inline constexpr double kBlockApronMax = 18.0;   // m: a bare podium roof run over this gets a roof garden
 inline constexpr double kBlockFloor = 3.0, kBlockShopFloor = 3.9;
 inline constexpr double kBlockCell = 250.0;
 inline constexpr int kBlockSlabsPerCell = 2;
 
-// How many rows a band of depth d between two streets takes (2..6) so each row is 10-16 m deep with floor((n-1)/2)
-// alleys of kBlockAlley between back-to-back pairs, the row depth nearest 13 m; 0 if none fits. *rowDepth gets it.
+// How many rows a band of depth d between two streets takes (2..6) so each row is 10-16 m deep with n-1 alleys of
+// kBlockAlley, one between every pair of rows, the row depth nearest 13 m; 0 if none fits. *rowDepth gets it.
 FTCORE_API int blockRowCount(double depth, double* rowDepth = nullptr);
 
 // Splits a frontage of length len into lot widths for a class (houses 4.5-9, shops 6-12; the lots at a corner end
@@ -219,6 +252,48 @@ FTCORE_API void blockGenerate(const BlockPlan& plan, const BlockGround& ground, 
 // kept street (streets: the output street table).
 FTCORE_API bool blockSweepKeep(const MassingBox& b, const BlockRect& rect, const std::vector<MassingStreet>& streets,
                                const std::vector<BlockBox>& generated);
+
+// ---- Route tables (the route rules' generated side; BlockCheck.h measures them) ----
+
+inline constexpr double kBlockMainWidth = 10.0;   // a main street: kerbed (pavement > 0) and this wide or wider
+inline constexpr double kBlockMainStraight = 150.0; // m of straight run a main street holds
+inline constexpr double kBlockTurnDeg = 5.0;       // a bend under this keeps a run straight
+
+// Street roles: main (a road: kerbed, 10 m or wider), lane (not kind alley, over kBlockAlleyMax m), alley (the rest).
+enum class BlockRole : std::uint8_t { Main, Lane, Alley };
+FTCORE_API BlockRole blockStreetRole(const MassingStreet& s);
+FTCORE_API std::string_view blockRoleName(BlockRole r);
+// A street's longest straight run (consecutive segments turning under kBlockTurnDeg), m.
+FTCORE_API double blockStraightRun(const MassingStreet& s);
+// Whether a street has a point (2 m samples) within g m of rect.
+FTCORE_API bool blockStreetNearRect(const MassingStreet& s, const BlockRect& r, double g);
+
+// A street's dressing flags, so main streets read different: trees every tree_every m (0 none), lamps every lamp_every
+// m of a lamp kind (mast | lantern_string | wall | none), shop signs per 100 m of frontage, an awning flag and what
+// stands at its mouths (junction | dropped_kerb | bollards: an alley is pedestrians only). Role: road | market | lane |
+// alley (main: a road).
+struct BlockStreetFlag {
+    std::string id, kind, role, lampKind, mouth;
+    bool main = false, awning = false;
+    double width = 0.0, length = 0.0, straight = 0.0, treeEvery = 0.0, lampEvery = 0.0, signsPer100 = 0.0;
+};
+// A street name plate at a junction (kind kBlockPlateKind): on a building's corner (mount wall) or on a pole on the
+// pavement corner (mount pole); rot faces along street a (deg, from +x toward +y); z the ground at its foot.
+inline constexpr const char* kBlockPlateKind = "name_plate";
+struct BlockPlate {
+    std::string id, a, b, mount;
+    double x = 0.0, y = 0.0, z = 0.0, rot = 0.0;
+};
+// The flags of every street with a point within 20 m of rect, and a plate at every junction inside rect between two of
+// them within 20 m of rect, its corner within rect (1 m grace) (alley with alley left out). Buildings: boxes of kind kit, box or slab at least 2.5 m tall. Appends.
+FTCORE_API void blockRouteTables(const std::vector<MassingStreet>& streets, const std::vector<MassingBox>& boxes,
+                                 const BlockRect& rect, const BlockGround& ground, std::vector<BlockStreetFlag>& flags,
+                                 std::vector<BlockPlate>& plates);
+// A name plate for each named place (park, plaza, precinct) of the plan: on a pole 1 m in from the middle of its side
+// nearest a street (of `streets`), street_a the feature's id, street_b its kind, rot along that side. Appends.
+FTCORE_API void blockPlacePlates(const std::vector<BlockPlanFeature>& features, const std::vector<MassingStreet>& streets,
+                                 const BlockGround& ground, std::vector<BlockPlate>& plates);
+
 
 // The footprint's axis-aligned bounds.
 FTCORE_API BlockRect blockFootprint(const MassingBox& b);

@@ -277,6 +277,192 @@ std::uint32_t windowWallTintFor(std::uint32_t seed, bool plainFinish) {
     return kNeutralTints[h % (sizeof kNeutralTints / sizeof kNeutralTints[0])];
 }
 
+// ---- Round 10 ----
+
+namespace {
+constexpr std::uint32_t kCoverSalt = 0x9e3779b9u;
+constexpr std::uint32_t kLitSaltR10 = 0x5bd1e995u;  // as WindowInterior's lit salt (the HLSL's)
+constexpr std::uint32_t kInteriorSalt = 0x7f4a7c15u;
+constexpr double kPiD = 3.14159265358979323846;
+constexpr WindowTint kShopColours[kWindowShopColourCount] = {
+    {0.62f, 0.60f, 0.55f, 1.0f, false},  // shell: pale wall
+    {0.30f, 0.28f, 0.25f, 1.0f, false},  // floor: worn tile
+    {0.55f, 0.55f, 0.56f, 1.0f, false},  // grey steel shelving
+    {0.42f, 0.28f, 0.16f, 1.0f, false},  // timber
+    {0.70f, 0.22f, 0.14f, 1.0f, false},  // red packets
+    {0.20f, 0.42f, 0.60f, 1.0f, false},  // blue packets
+    {0.78f, 0.66f, 0.30f, 1.0f, false},  // yellow packets
+    {0.25f, 0.50f, 0.30f, 1.0f, false},  // green packets
+};
+}  // namespace
+
+WindowCover windowCoverFor(const WindowFacadeSpec& spec, std::uint32_t seed, std::uint32_t storey,
+                           std::uint32_t column, bool shop, float roomShare, float frostShare) {
+    (void)spec;
+    if (shop) return WindowCover::Room;
+    const std::uint32_t h = windowHash(windowCellHash(seed, storey, column) ^ kCoverSalt);
+    if (share(h) < roomShare) return WindowCover::Room;
+    return share(h >> 16) < frostShare ? WindowCover::Frosted : WindowCover::Screen;
+}
+
+WindowRoomHit windowParallaxRoomHit(float depth, float bayWidth, float storeyHeight, float gu, float gv, float dAlong,
+                                    float dUp, float dIn, float parallax) {
+    const float din = std::max(dIn, 1e-4f);
+    const float rx = parallax * dAlong / din * depth / std::max(bayWidth, 1e-3f);
+    const float ry = parallax * dUp / din * depth / std::max(storeyHeight, 1e-3f);
+    const float tx = toSide(gu, rx), ty = toSide(gv, ry);
+    const float t = std::min(1.0f, std::min(tx, ty));
+    WindowRoomHit r;
+    if (1.0f <= tx && 1.0f <= ty) r.face = 0;
+    else if (ty < tx) r.face = ry < 0.0f ? 1 : 2;
+    else r.face = rx < 0.0f ? 3 : 4;
+    const float s = 1.0f / (1.0f + t);
+    r.x = 0.5f + (gu + t * rx - 0.5f) * s;
+    r.y = 0.5f + (gv + t * ry - 0.5f) * s;
+    return r;
+}
+
+bool windowShopLit(std::uint32_t seed, std::uint32_t column, float shopLit) {
+    return share(windowHash(windowCellHash(seed, 0u, column) ^ kLitSaltR10)) < shopLit;
+}
+
+const WindowTint& windowShopColour(std::uint32_t index) {
+    return kShopColours[index < kWindowShopColourCount ? index : 0u];
+}
+
+std::size_t windowShopInterior(const WindowFacadeSpec& spec, WindowType type, std::uint32_t seed, float faceWidth,
+                               float faceHeight, float boxDepth, float shopLit, WindowShopPiece* out,
+                               std::size_t capacity) {
+    const WindowGridSpec g = windowGridFor(spec, type);
+    const float ww = windowWidthFor(spec, type, seed, spec.base.windowWidth);
+    const WindowFaceGrid grid = windowFaceGrid(g, faceWidth, faceHeight, ww);
+    if (grid.storeys == 0u || grid.bays == 0u || out == nullptr) return 0;
+    const float sh = std::max(grid.storeyHeight, 0.5f), bw = grid.bayWidth;
+    const float top = std::min(spec.base.shopTop, sh - spec.base.fascia);
+    const float depth = std::min(spec.shopDepth, spec.shopDepthShare * boxDepth);
+    if (!(top > 1.0f) || !(depth > 0.5f)) return 0;
+    constexpr float kSkin = 0.05f;   // m: a shell panel's thickness
+    constexpr float kInset = 0.03f;  // m: the shell's front edge behind the wall's face (no fight with the wall)
+    std::size_t n = 0;
+    const auto put = [&](float a0, float a1, float i0, float i1, float z0, float z1, WindowShopPart part,
+                         std::uint32_t colour, std::uint32_t column, bool lit) {
+        if (n >= capacity) return;
+        WindowShopPiece& p = out[n++];
+        p.along0 = a0;
+        p.along1 = a1;
+        p.in0 = i0;
+        p.in1 = i1;
+        p.up0 = z0;
+        p.up1 = z1;
+        p.part = part;
+        p.colour = colour;
+        p.column = column;
+        p.lit = lit;
+    };
+    const ShopFrontSpec fs{};
+    for (std::uint32_t c = 0; c < grid.bays; ++c) {
+        const float a0 = spec.base.edge + static_cast<float>(c) * bw, a1 = a0 + bw;
+        const bool lit = windowShopLit(seed, c, shopLit);
+        const std::uint32_t h = windowHash(windowCellHash(seed, 0u, c) ^ kInteriorSalt);
+        // The shell: back, floor, ceiling and the wall on the bay's left (and right on the last bay).
+        put(a0, a1, depth, depth + kSkin, -kSkin, top + kSkin, WindowShopPart::Shell, 0u, c, lit);
+        put(a0, a1, kInset, depth, -kSkin, 0.02f, WindowShopPart::Shell, 1u, c, lit);
+        put(a0, a1, kInset, depth, top, top + kSkin, WindowShopPart::Shell, 0u, c, lit);
+        put(a0 - kSkin * 0.5f, a0 + kSkin * 0.5f, kInset, depth, 0.0f, top, WindowShopPart::Shell, 0u, c, lit);
+        if (c + 1u == grid.bays)
+            put(a1 - kSkin * 0.5f, a1 + kSkin * 0.5f, kInset, depth, 0.0f, top, WindowShopPart::Shell, 0u, c, lit);
+        const ShopFrontKind kind = shopFrontBay(fs, seed, c).kind;
+        const float m0 = a0 + 0.15f, m1 = a1 - 0.15f;
+        const bool shelves = kind == ShopFrontKind::Glazed || kind == ShopFrontKind::Shutter || kind == ShopFrontKind::Stall;
+        if (shelves) {
+            // A shelf unit along the back: three boards, each with a run of goods on it.
+            const std::uint32_t frame = (h & 1u) != 0u ? 2u : 3u;
+            const float s0 = depth - 0.4f, s1 = depth - 0.02f;
+            for (std::uint32_t b = 0; b < 3u; ++b) {
+                const float z = 0.45f + 0.5f * static_cast<float>(b);
+                if (z + 0.3f > top) break;
+                put(m0, m1, s0, s1, z, z + 0.03f, WindowShopPart::Shelf, frame, c, lit);
+                const std::uint32_t goods = 4u + ((h >> (4u + 2u * b)) & 3u);
+                put(m0 + 0.05f, m1 - 0.05f, s0 + 0.05f, s1 - 0.05f, z + 0.03f, z + 0.28f, WindowShopPart::Goods, goods, c, lit);
+            }
+        }
+        if (kind == ShopFrontKind::Cafe || kind == ShopFrontKind::Eatery) {
+            // A counter along the back and a table by the glass.
+            put(m0, m1, depth - 0.6f, depth - 0.02f, 0.0f, 0.95f, WindowShopPart::Counter, 3u, c, lit);
+            const float mid = 0.5f * (a0 + a1) + ((h & 2u) != 0u ? 0.3f : -0.3f) * bw * 0.5f;
+            put(mid - 0.35f, mid + 0.35f, 0.3f, 0.9f, 0.0f, 0.75f, WindowShopPart::Table, 3u, c, lit);
+        } else if (kind == ShopFrontKind::Clinic) {
+            // A bench along the back wall and a desk to one side.
+            put(m0, m1, depth - 0.45f, depth - 0.02f, 0.0f, 0.45f, WindowShopPart::Counter, 2u, c, lit);
+            const bool left = (h & 2u) != 0u;
+            put(left ? m0 : m1 - 0.9f, left ? m0 + 0.9f : m1, 0.3f, 0.8f, 0.0f, 0.75f, WindowShopPart::Table, 0u, c, lit);
+        } else {
+            // A counter on one side, front to back.
+            const bool left = (h & 2u) != 0u;
+            const float cw = std::min(0.55f, 0.25f * bw);
+            put(left ? m0 : m1 - cw, left ? m0 + cw : m1, 0.25f, std::max(depth - 0.5f, 0.6f), 0.0f, 0.95f,
+                WindowShopPart::Counter, (h & 4u) != 0u ? 3u : 2u, c, lit);
+        }
+    }
+    return n;
+}
+
+std::uint8_t windowKerbBits(const MassingBox& box, std::uint8_t streetBits, const std::vector<MassingStreet>& streets,
+                            double sharedUpTo, double reach) {
+    std::uint8_t bits = 0;
+    const double a = box.rot * kPiD / 180.0;
+    const double ux = std::cos(a), uy = std::sin(a);
+    for (int f = 0; f < 4; ++f) {
+        if (((streetBits >> f) & 1u) == 0u) continue;
+        const double nx = f == 0 ? ux : (f == 1 ? -uy : (f == 2 ? -ux : uy));
+        const double ny = f == 0 ? uy : (f == 1 ? ux : (f == 2 ? -uy : -ux));
+        const double depth = (f == 0 || f == 2) ? box.sx : box.sy;
+        const double px = box.cx + nx * (0.5 * depth + 0.5), py = box.cy + ny * (0.5 * depth + 0.5);
+        double best = 1e30, bestWidth = 0.0;
+        for (const MassingStreet& s : streets) {
+            for (std::size_t k = 0; k < s.points.size(); ++k) {
+                const MassingVec& p0 = s.points[k];
+                const MassingVec& p1 = s.points[k + 1 < s.points.size() ? k + 1 : k];
+                const double dx = p1.x - p0.x, dy = p1.y - p0.y, len2 = dx * dx + dy * dy;
+                const double t = len2 > 0.0 ? std::clamp(((px - p0.x) * dx + (py - p0.y) * dy) / len2, 0.0, 1.0) : 0.0;
+                const double ex = p0.x + t * dx - px, ey = p0.y + t * dy - py;
+                const double d = std::sqrt(ex * ex + ey * ey) - 0.5 * s.width;
+                if (d < best) {
+                    best = d;
+                    bestWidth = s.width;
+                }
+            }
+        }
+        if (best <= reach && bestWidth > sharedUpTo) bits = static_cast<std::uint8_t>(bits | (1u << f));
+    }
+    return bits;
+}
+
+MassingBox windowShopPieceBox(const MassingBox& box, int face, double streetFloor, const WindowShopPiece& p) {
+    const double a = box.rot * kPiD / 180.0;
+    const double ux = std::cos(a), uy = std::sin(a);
+    const int f = face & 3;
+    const double nx = f == 0 ? ux : (f == 1 ? -uy : (f == 2 ? -ux : uy));
+    const double ny = f == 0 ? uy : (f == 1 ? ux : (f == 2 ? -uy : -ux));
+    const double tx = -ny, ty = nx;  // the plan's way along the face (the master's Along runs against it)
+    const double depth = (f == 0 || f == 2) ? box.sx : box.sy;
+    const double length = (f == 0 || f == 2) ? box.sy : box.sx;
+    // The face's end where the master's Along starts: the plan's far end.
+    const double ex = box.cx + nx * 0.5 * depth + tx * 0.5 * length;
+    const double ey = box.cy + ny * 0.5 * depth + ty * 0.5 * length;
+    const double along = 0.5 * (static_cast<double>(p.along0) + p.along1);
+    const double in = 0.5 * (static_cast<double>(p.in0) + p.in1);
+    MassingBox b;
+    b.cx = ex - tx * along - nx * in;
+    b.cy = ey - ty * along - ny * in;
+    b.sx = static_cast<double>(p.in1) - p.in0;
+    b.sy = static_cast<double>(p.along1) - p.along0;
+    b.rot = std::atan2(ny, nx) * 180.0 / kPiD;
+    b.z0 = streetFloor + p.up0;
+    b.z1 = streetFloor + p.up1;
+    return b;
+}
+
 std::string windowFacadeFaceHlsl() {
     return R"HLSL(float Sx = length(AxisX);
 float Sy = length(AxisY);
@@ -296,6 +482,7 @@ float Across = F == 0 ? L.y : (F == 1 ? L.x : (F == 2 ? -L.y : -L.x));
 float Width = (F == 0 || F == 2) ? Sy : Sx;
 float Base = F == 0 ? Base0 : (F == 1 ? Base1 : (F == 2 ? Base2 : Base3));
 StreetOut = fmod(floor(floor(StreetBits + 0.5) / exp2((float)F)), 2.0);
+KerbOut = fmod(floor(floor(StreetBits + 0.5) / exp2((float)(F + 4))), 2.0);
 UpOut = L.z + 0.5 * Sz - Base;
 FaceHOut = abs(nz) < 0.5 ? Sz - Base : 0.0;
 FaceWOut = Width;
@@ -465,12 +652,18 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     h += "float dr = float(dh & 0xFFFFu) / 65536.0;\n";
     h += "float drawn = float((dh >> 16) & 0xFFFFu) / 65536.0 < " + num(s.curtainFull) + " ? 1.0 : " + num(s.drawMin) +
          " + " + num(s.drawSpan) + " * dr * dr;\n";
-    // The eased ray with the side clamp (windowFacadeRay) and the room (windowFacadeRoomHit), from the glass point.
-    h += "float rxMax = min(" + num(s.viewMaxX) + ", min(u0, 1.0 - u1) + " + num(spec.sideShare) + " * (u1 - u0));\n";
-    h += "float rx = clamp(ViewT.x / dzv * (" + num(s.roomDepth) + " / bw) * " + num(s.viewSquashX) +
-         ", -rxMax, rxMax);\n";
-    h += "float ry = clamp(ViewT.y / dzv * (" + num(s.roomDepth) + " / sh) * " + num(s.viewSquashY) + ", " +
-         num(-s.viewMaxY) + ", " + num(s.viewMaxY) + ") + (" + num(s.viewBiasY) + ");\n";
+    // Round 10 (windowCoverFor): a room in RoomShare of the non-shop windows; the rest a curtain or blind drawn all the
+    // way (cover 1) or frosted glass (cover 2), with no room.
+    h += "uint cvh = W.H(hh ^ " + unum(kCoverSalt) + ");\n";
+    h += "uint cover = shop ? 0u : (float(cvh & 0xFFFFu) / 65536.0 < RoomShare ? 0u : (float((cvh >> 16) & 0xFFFFu) / "
+         "65536.0 < FrostShare ? 2u : 1u));\n";
+    h += "hasCurtain = cover == 1u || (cover == 0u && hasCurtain);\n";
+    h += "drawn = cover == 1u ? 1.0 : drawn;\n";
+    // The room: a box fixed in the wall's frame, the true view ray (windowParallaxRoomHit) times the collection's
+    // Parallax; a shop's picture flat at its back wall (no ray), a lit backdrop.
+    h += "float par = shop ? 0.0 : saturate(Parallax);\n";
+    h += "float rx = par * ViewT.x / dzv * (" + num(spec.roomDepth) + " / bw);\n";
+    h += "float ry = par * ViewT.y / dzv * (" + num(spec.roomDepth) + " / sh);\n";
     h += "float tx = rx > 0.0 ? (1.0 - gu) / rx : (rx < 0.0 ? -gu / rx : 1e30);\n";
     h += "float ty2 = ry > 0.0 ? (1.0 - gv) / ry : (ry < 0.0 ? -gv / ry : 1e30);\n";
     h += "float t = min(1.0, min(tx, ty2));\n";
@@ -484,7 +677,7 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     h += "float2 ruv = float2((float(room % " + unum(kWindowAtlasCols) + ") + px) / " + num(kWindowAtlasCols) +
          ", (float(room / " + unum(kWindowAtlasCols) + ") + 1.0 - py) / " + num(kWindowAtlasRows) + ");\n";
     h += "float3 c = Texture2DSample(Rooms, RoomsSampler, ruv).rgb;\n";
-    h += "float tc = " + num(s.curtainDepth / s.roomDepth) + ";\n";
+    h += "float tc = " + num(s.curtainDepth / spec.roomDepth) + ";\n";
     h += "float cx = saturate((gu + tc * rx - u0) / max(u1 - u0, 1e-4));\n";
     h += "float cy = saturate((gv + tc * ry - v0) / max(v1 - v0, 1e-4));\n";
     h += "float2 cuv = float2((float(curtain) + clamp(cx, 0.002, 0.998)) / " + num(kWindowCurtains) +
@@ -492,22 +685,28 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     h += "float4 cc = Texture2DSample(Curtains, CurtainsSampler, cuv);\n";
     h += "bool glass = part == 1.0;\n";
     h += "bool covered = glass && hasCurtain && cy >= 1.0 - drawn;\n";
-    h += "float ca = covered ? cc.a * CurtainAlpha : 0.0;\n";
+    h += "float ca = covered ? (cover == 1u ? 1.0 : cc.a * CurtainAlpha) : 0.0;\n";
     h += "Curtain = float4(cc.rgb, ca);\n";
-    h += "float3 seen = c * (1.0 - ca);\n";
+    h += "float3 seen = cover == 1u ? float3(0.0, 0.0, 0.0) : c * (1.0 - ca);\n";
+    // Frosted cover: the frosted part (13) on the glass.
+    h += "part = (glass && cover == 2u) ? 13.0 : part;\n";
+    h += "glass = part == 1.0;\n";
+    // A kerbed street face's shop glass is cut (the opacity mask) for its modelled interior.
+    h += "Hole = (shop && Kerb > 0.5 && glass && nb >= 1.0) ? 1.0 : 0.0;\n";
     h += windowTintTableHlsl();
     h += "float on = (glass && lit) ? Night : 0.0;\n";
     // By day the glass darkens toward its head, in the reveal's shade.
     h += "float hs = (ty > 0u && !shop) ? lerp(0.45, 1.0, saturate((v1 - gv) * sh / " + num(spec.headShadow) +
          ")) : 1.0;\n";
     h += "float3 day = seen * hs * (shop ? ShopDay : RoomDay) * (1.0 - Night);\n";
-    h += "float3 night = on * (seen + cc.rgb * ca * CurtainGlow) * tints[tint] * (shop ? ShopGlow : GlowScale);\n";
+    h += "float3 night = on * (seen + cc.rgb * ca * (cover == 1u ? ScreenGlow : CurtainGlow)) * tints[tint] * (shop ? "
+         "ShopGlow : GlowScale);\n";
     // A lit shop's sign panel glows at night (SignGlow, strong enough to show in a wet road); a lantern glows by day
     // and much more by night.
     h += "float3 signGlow = (lit && part == 4.0) ? signLight * Night * SignGlow : float3(0.0, 0.0, 0.0);\n";
     h += "float3 lanternGlow = float3(0.9, 0.25, 0.08) * (0.4 + 6.0 * Night);\n";
-    h += "float3 frostGlow = (!shop && part == 13.0 && lit) ? float3(0.9, 0.85, 0.72) * Night * GlowScale * 0.8 : "
-         "float3(0.0, 0.0, 0.0);\n";
+    h += "float3 frostGlow = (!shop && part == 13.0 && lit) ? (cover == 2u ? tints[tint] * " + num(spec.frostGlow) +
+         " : float3(0.9, 0.85, 0.72) * 0.8) * Night * GlowScale : float3(0.0, 0.0, 0.0);\n";
     h += "Emit = glass ? day + night : (part == 12.0 ? lanternGlow : (part == 13.0 && !shop ? frostGlow : signGlow));\n";
     h += "own = (!shop && part == 13.0) ? float3(0.7, 0.73, 0.73) : own;\n";
     h += "own = part == 17.0 ? float3(0.05, 0.05, 0.055) : (part == 18.0 ? float3(0.14, 0.14, 0.15) : own);\n";

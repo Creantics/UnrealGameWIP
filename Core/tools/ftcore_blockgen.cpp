@@ -3,12 +3,21 @@
 //
 //   ftcore_blockgen --plan P --boxes B --streets S --prop-streets PS --doors D --frontage F --r16 H --samples N
 //                   --origin X,Y --spacing M --rect X0,Y0,X1,Y1 --out-dir O --report R [--tag T] [--check-only 1]
+//                   [--routes 1 [--towers TW] [--sea X] [--roads RD]] [--frame OX,OY,DEG]
 //
 // Writes into O: sol_strip_boxes_<T>.csv (B less the slice's swept rows plus the generated rows), sol_strip_streets_<T>.csv
 // and sol_strip_prop_streets_<T>.csv (the plan's streets and the mid-block alleys in place of the slice's), sol_strip_doors_<T>.csv,
 // sol_strip_frontage_<T>.csv (F as is), sol_<T>_trees.csv, sol_<T>_houses.csv, sol_<T>_towers.csv and sol_<T>_removed.txt.
 // Then checks the new box table and writes the check's report to R. --check-only 1 checks B with the streets S as they
 // are. Exit 0 on BLOCKCHECK OK, 1 on a failed check, 2 on an error.
+// --routes 1 adds the route rules (main streets, lanes, walk, sight): sight targets are the landmark (at three quarters
+// of its height; from the generated towers, or TW's landmark rows with --check-only) and, with --sea, the water due east
+// of x X; the glass towers block sight. RD: more streets (a road table) for the route rules only. With an out dir it also
+// writes sol_<T>_street_flags.csv and sol_<T>_nameplates.csv, and when generating sol_<T>_districts.csv.
+// --frame OX,OY,DEG: the plan and --rect are in a local frame turned DEG counter-clockwise about the world point OX,OY
+// (a ward on a turned street grid). Every input table stays in world terms; the tool turns them into the frame for the
+// generator and the check, and turns what it writes back (boxes, houses and towers get rot DEG). The report's points
+// are local. --sea can't be used with a frame. TW's rows join the sight targets when generating too.
 
 #if defined(_MSC_VER) && !defined(_CRT_SECURE_NO_WARNINGS)
 #define _CRT_SECURE_NO_WARNINGS
@@ -140,7 +149,7 @@ std::string streetLine(const BlockPlanStreet& s, double pavement) {
            num(s.y1, 1) + "," + (pavement > 0.0 ? num(pavement, 2) : std::string(s.pavement > 0.0 ? num(s.pavement, 2) : "0"));
 }
 
-std::string boxLine(const std::vector<std::string>& head, const BlockBox& b) {
+std::string boxLine(const std::vector<std::string>& head, const BlockBox& b, double rot) {
     std::string l;
     for (std::size_t i = 0; i < head.size(); ++i) {
         const std::string& h = head[i];
@@ -153,7 +162,7 @@ std::string boxLine(const std::vector<std::string>& head, const BlockBox& b) {
         else if (h == "cy") v = num(b.cy, 4);
         else if (h == "sx") v = num(b.sx, 4);
         else if (h == "sy") v = num(b.sy, 4);
-        else if (h == "rot") v = "0.0000";
+        else if (h == "rot") v = num(rot, 4);
         else if (h == "z0") v = num(b.z0, 4);
         else if (h == "z1") v = num(b.z1, 4);
         else if (h == "ground") v = num(b.ground, 4);
@@ -183,7 +192,10 @@ MassingStreet toStreet(const BlockPlanStreet& s) {
 int main(int argc, char** argv) {
     std::string planPath, boxesPath, streetsPath, propPath, doorsPath, frontPath, r16Path, outDir, reportPath, tag = "r9";
     double samples = 0.0, origin[2] = {0.0, 0.0}, spacing = 1.0, rectV[4] = {0, 0, 0, 0};
-    bool checkOnly = false, haveRect = false;
+    bool checkOnly = false, haveRect = false, routes = false, sea = false;
+    std::string towersPath, roadsPath;
+    double seaX = 0.0, frameV[3] = {0.0, 0.0, 0.0};
+    bool haveFrame = false;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string k = argv[i], v = argv[i + 1];
         if (k == "--plan") planPath = v;
@@ -204,13 +216,24 @@ int main(int argc, char** argv) {
         else if (k == "--report") reportPath = v;
         else if (k == "--tag") tag = v;
         else if (k == "--check-only") checkOnly = v == "1";
+        else if (k == "--routes") routes = v == "1";
+        else if (k == "--towers") towersPath = v;
+        else if (k == "--roads") roadsPath = v;
+        else if (k == "--sea") sea = true, seaX = std::atof(v.c_str());
+        else if (k == "--frame") {
+            if (!parsePair(v, frameV, 3)) return die("--frame is OX,OY,DEG");
+            haveFrame = true;
+        }
         else return die("unknown switch " + k);
     }
     if (planPath.empty() || boxesPath.empty() || streetsPath.empty() || !haveRect || reportPath.empty())
         return die("needs --plan, --boxes, --streets, --rect and --report");
     if (!checkOnly && (outDir.empty() || propPath.empty() || doorsPath.empty() || frontPath.empty()))
         return die("generating needs --out-dir, --prop-streets, --doors and --frontage");
+    if (haveFrame && sea) return die("--sea can't be used with --frame");
     const BlockRect rect{rectV[0], rectV[1], rectV[2], rectV[3]};
+    const double frameDeg = haveFrame ? frameV[2] : 0.0;
+    const std::string rotCol = haveFrame ? num(frameDeg, 4) : std::string("0"); // houses and towers
 
     std::string err, text;
     if (!readFile(planPath, text)) return die("can't read " + planPath);
@@ -231,6 +254,27 @@ int main(int argc, char** argv) {
             if (b.source == MassingSource::Zone) zones.push_back(b);
         ground.setZones(zones);
     }
+    if (haveFrame) ground.setFrame(frameV[0], frameV[1], frameV[2]);
+    // world to the plan's frame and back (identity without --frame)
+    auto pointIn = [&](double& x, double& y) {
+        double lx = 0.0, ly = 0.0;
+        ground.toLocal(x, y, lx, ly);
+        x = lx, y = ly;
+    };
+    auto pointOut = [&](double& x, double& y) {
+        double wx = 0.0, wy = 0.0;
+        ground.toWorld(x, y, wx, wy);
+        x = wx, y = wy;
+    };
+    auto boxIn = [&](MassingBox& b) {
+        pointIn(b.cx, b.cy);
+        b.rot -= frameDeg;
+    };
+    auto streetsIn = [&](std::vector<MassingStreet>& v) {
+        for (MassingStreet& s : v)
+            for (MassingVec& q : s.points) pointIn(q.x, q.y);
+    };
+    for (MassingBox& b : base) boxIn(b); // for the sweep (the zones above stay in world terms for the ground)
 
     std::string streetsText;
     if (!readFile(streetsPath, streetsText)) return die("can't read " + streetsPath);
@@ -243,9 +287,13 @@ int main(int argc, char** argv) {
 
     std::string finalBoxes = boxesText, finalStreets = streetsText;
     std::string summary;
+    std::vector<BlockTower> towerList;
+    std::vector<BlockDistrict> districtList;
     if (!checkOnly) {
         BlockGenResult gen;
         blockGenerate(plan, ground, gen);
+        towerList = gen.towers;
+        districtList = gen.districts;
 
         // streets: the base table less the plan's ids and drops, plus the plan's and the alleys
         std::set<std::string> replaced(plan.drops.begin(), plan.drops.end());
@@ -272,7 +320,9 @@ int main(int argc, char** argv) {
                 }
                 out += l + "\n";
             }
-            for (const BlockPlanStreet& s : gen.streets) {
+            for (BlockPlanStreet s : gen.streets) {
+                pointOut(s.x0, s.y0);
+                pointOut(s.x1, s.y1);
                 const double pav = prop && s.width <= 6.0 ? std::max(0.0, (s.width - 2.5) * 0.5) : 0.0;
                 out += streetLine(s, pav) + "\n";
             }
@@ -285,6 +335,7 @@ int main(int argc, char** argv) {
         const std::string finalProp = streetTable(propText, true);
         std::vector<MassingStreet> outStreets;
         if (!importMassingStreets(finalStreets, outStreets, &err)) return die("the new street table: " + err);
+        streetsIn(outStreets);
 
         // boxes: the base rows the sweep keeps, verbatim, then the generated ones
         std::vector<std::string> head;
@@ -301,7 +352,8 @@ int main(int argc, char** argv) {
                 header = true;
                 head = splitPlain(l);
                 out += "# " + tag + ": the slice x " + num(rect.x0, 0) + ".." + num(rect.x1, 0) + ", y " + num(rect.y0, 0) + ".." +
-                       num(rect.y1, 0) + " swept and regenerated by ftcore_blockgen (rows noted R9; removed ids in sol_" + tag +
+                       num(rect.y1, 0) + (haveFrame ? " (local frame " + num(frameV[2], 1) + " deg about " + num(frameV[0], 1) + "," + num(frameV[1], 1) + ")" : std::string()) +
+                       " swept and regenerated by ftcore_blockgen (rows noted R9; removed ids in sol_" + tag +
                        "_removed.txt).\n";
                 out += l + "\n";
                 continue;
@@ -315,7 +367,9 @@ int main(int argc, char** argv) {
         if (k != base.size()) return die("the box table's lines and rows disagree");
         std::size_t buildings = 0, walls = 0, landings = 0, gates = 0;
         for (const BlockBox& b : gen.boxes) {
-            out += boxLine(head, b) + "\n";
+            BlockBox w = b;
+            pointOut(w.cx, w.cy);
+            out += boxLine(head, w, frameDeg) + "\n";
             if (b.building) ++buildings;
             else if (b.kind == "wall") ++walls;
             else if (b.kind == "landing") ++landings;
@@ -347,14 +401,18 @@ int main(int argc, char** argv) {
             }
             doorsOut += l + "\n";
         }
-        for (const BlockDoor& d : gen.doors) {
+        for (BlockDoor d : gen.doors) {
+            pointOut(d.ox, d.oy);
+            pointOut(d.ix, d.iy);
+            const BlockRect lr = d.room;
+            double cx[4] = {lr.x0, lr.x0, lr.x1, lr.x1}, cy[4] = {lr.y0, lr.y1, lr.y1, lr.y0};
+            for (int c = 0; c < 4; ++c) pointOut(cx[c], cy[c]);
             const std::string z = num(d.z, 2);
             doorsOut += "DOOR-" + d.boxId + ",door,1.6," + num(d.ox, 2) + ":" + num(d.oy, 2) + ":" + z + ";" + num(d.ix, 2) + ":" +
                         num(d.iy, 2) + ":" + z + ",\n";
-            const BlockRect& r = d.room;
-            doorsOut += "ROOM-" + d.boxId + "," + d.roomKind + ",0," + num(r.x0, 2) + ":" + num(r.y0, 2) + ":" + z + ";" + num(r.x0, 2) +
-                        ":" + num(r.y1, 2) + ":" + z + ";" + num(r.x1, 2) + ":" + num(r.y1, 2) + ":" + z + ";" + num(r.x1, 2) + ":" +
-                        num(r.y0, 2) + ":" + z + ",\n";
+            doorsOut += "ROOM-" + d.boxId + "," + d.roomKind + ",0," + num(cx[0], 2) + ":" + num(cy[0], 2) + ":" + z + ";" +
+                        num(cx[1], 2) + ":" + num(cy[1], 2) + ":" + z + ";" + num(cx[2], 2) + ":" + num(cy[2], 2) + ":" + z + ";" +
+                        num(cx[3], 2) + ":" + num(cy[3], 2) + ":" + z + ",\n";
         }
 
         std::string frontText;
@@ -363,17 +421,25 @@ int main(int argc, char** argv) {
 
         const std::string priv = "# PRIVATE. Never committed or uploaded. ftcore_blockgen " + tag + " output.\n";
         std::string trees = priv + "id,kind,x,y,z,height_m,canopy_m,host\n";
-        for (const BlockTree& t : gen.trees)
+        for (BlockTree t : gen.trees) {
+            pointOut(t.x, t.y);
             trees += t.id + "," + t.kind + "," + num(t.x, 2) + "," + num(t.y, 2) + "," + num(t.z, 2) + "," + num(t.height, 1) + "," +
                      num(t.canopy, 1) + "," + t.host + "\n";
+        }
         std::string houses = priv + "id,box_id,cx,cy,sx,sy,rot,eave_z,pitch_deg,ridge,hidden\n";
-        for (const BlockHouse& h : gen.houses)
-            houses += h.id + "," + h.boxId + "," + num(h.cx, 3) + "," + num(h.cy, 3) + "," + num(h.sx, 3) + "," + num(h.sy, 3) + ",0," +
-                      num(h.eave, 3) + "," + num(h.pitch, 1) + "," + std::string(1, h.ridge) + "," + (h.hidden ? "1" : "0") + "\n";
+        for (BlockHouse h : gen.houses) {
+            pointOut(h.cx, h.cy);
+            houses += h.id + "," + h.boxId + "," + num(h.cx, 3) + "," + num(h.cy, 3) + "," + num(h.sx, 3) + "," + num(h.sy, 3) + "," +
+                      rotCol + "," + num(h.eave, 3) + "," + num(h.pitch, 1) + "," + std::string(1, h.ridge) + "," +
+                      (h.hidden ? "1" : "0") + "\n";
+        }
         std::string towers = priv + "id,kind,cx,cy,z0,sx,sy,rot,floors,height_m,note\n";
-        for (const BlockTower& t : gen.towers)
+        for (BlockTower t : gen.towers) {
+            pointOut(t.cx, t.cy);
             towers += t.id + "," + t.kind + "," + num(t.cx, 2) + "," + num(t.cy, 2) + "," + num(t.z0, 2) + "," + num(t.sx, 1) + "," +
-                      num(t.sy, 1) + ",0," + std::to_string(t.floors) + "," + num(t.height, 1) + "," + t.note + "\n";
+                      num(t.sy, 1) + "," + rotCol + "," + std::to_string(t.floors) + "," + num(t.height, 1) + "," + t.note +
+                      "\n";
+        }
         std::string rem = "# PRIVATE. " + tag + " slice rows swept by ftcore_blockgen, one id a line.\n";
         for (const std::string& id : removed) rem += id + "\n";
 
@@ -392,19 +458,23 @@ int main(int argc, char** argv) {
         summary += "lots " + std::to_string(st.lots) + " (shop " + std::to_string(st.shopLots) + ", house " + std::to_string(st.houseLots) +
                    ", corner " + std::to_string(st.corners) + "), merged " + std::to_string(st.merged) + " (slabs " + std::to_string(st.slabs) +
                    ", walk-ups " + std::to_string(st.walkups) + "), yards " + std::to_string(st.yards) + ", enterable " +
-                   std::to_string(st.enterable) + ", alleys " + std::to_string(st.alleys) + "\n";
+                   std::to_string(st.enterable) + ", alleys " + std::to_string(st.alleys) + " (" + std::to_string(st.alleysCut) + " ends run on)\n";
         summary += "doors dropped " + std::to_string(doorsDropped) + ", added " + std::to_string(gen.doors.size()) + "; trees " +
                    std::to_string(gen.trees.size()) + ", houses " + std::to_string(gen.houses.size()) + " (hidden " +
                    std::to_string(st.hiddenHouses) + "), towers " + std::to_string(gen.towers.size()) + "\n";
+        summary += "dressing: roof-garden trees " + std::to_string(st.roofTrees) + ", market stalls " + std::to_string(st.stalls) +
+                   ", gate roofs and paths " + std::to_string(st.marks) + "\n";
         for (const std::string& n : st.notes) summary += "note: " + n + "\n";
     }
 
     // the check
     std::vector<MassingBox> checked;
     if (!importMassingBoxes(finalBoxes, checked, &err)) return die("the new box table: " + err);
+    for (MassingBox& b : checked) boxIn(b);
     BlockCheckInput in;
     in.boxes = &checked;
     if (!importMassingStreets(finalStreets, in.streets, &err)) return die("the street table: " + err);
+    streetsIn(in.streets);
     // read-only plan streets the table lacks (a loop road kept in another table)
     for (const BlockPlanStreet& s : plan.streets) {
         if (s.emit) continue;
@@ -415,10 +485,111 @@ int main(int argc, char** argv) {
     in.exempt = exempt;
     in.rect = rect;
     in.ground = &ground;
+    if (routes) {
+        in.routes = true;
+        if (!roadsPath.empty()) {
+            std::string roadsText;
+            std::vector<MassingStreet> roads;
+            if (!readFile(roadsPath, roadsText)) return die("can't read " + roadsPath);
+            if (!importMassingStreets(roadsText, roads, &err)) return die(roadsPath + ": " + err);
+            streetsIn(roads);
+            for (MassingStreet& r : roads) {
+                bool have = false;
+                for (const MassingStreet& m : in.streets) have = have || m.id == r.id;
+                if (!have) in.streets.push_back(std::move(r));
+            }
+        }
+        for (const BlockPlanFeature& f : plan.features)
+            if (f.kind == BlockFeatureKind::Park || f.kind == BlockFeatureKind::Precinct || f.kind == BlockFeatureKind::Gate ||
+                f.kind == BlockFeatureKind::Plaza || f.kind == BlockFeatureKind::Forecourt)
+                in.reasons.push_back(f.r);
+        if (!towersPath.empty()) {
+            std::string tw;
+            if (!readFile(towersPath, tw)) return die("can't read " + towersPath);
+            std::vector<std::string> head;
+            for (const std::string& l : lines(tw)) {
+                if (isCommentLine(l) || blank(l)) continue;
+                const std::vector<std::string> f = splitPlain(l);
+                if (head.empty()) {
+                    head = f;
+                    continue;
+                }
+                auto col = [&](const char* name) -> std::string {
+                    for (std::size_t i = 0; i < head.size(); ++i)
+                        if (head[i] == name) return i < f.size() ? f[i] : std::string();
+                    return {};
+                };
+                BlockTower tr;
+                tr.id = col("id");
+                tr.kind = col("kind");
+                tr.cx = std::atof(col("cx").c_str());
+                tr.cy = std::atof(col("cy").c_str());
+                pointIn(tr.cx, tr.cy);
+                tr.z0 = std::atof(col("z0").c_str());
+                tr.sx = std::atof(col("sx").c_str());
+                tr.sy = std::atof(col("sy").c_str());
+                tr.height = std::atof(col("height_m").c_str());
+                tr.rot = std::atof(col("rot").c_str()) - frameDeg;
+                towerList.push_back(tr);
+            }
+        }
+        for (const BlockTower& tr : towerList) {
+            if (tr.kind == "landmark") {
+                in.sights.push_back({tr.id, tr.cx, tr.cy, tr.z0 + 0.75 * tr.height});
+            } else {
+                MassingBox o;
+                o.id = tr.id;
+                o.kind = "slab";
+                o.cx = tr.cx, o.cy = tr.cy, o.sx = tr.sx, o.sy = tr.sy, o.rot = tr.rot;
+                o.z0 = tr.z0, o.z1 = tr.z0 + tr.height;
+                in.occluders.push_back(o);
+            }
+        }
+        in.sea = sea;
+        in.seaX = seaX;
+    }
     BlockCheckReport rep;
     const bool ok = blockCheck(in, rep);
+    if (routes && !outDir.empty()) {
+        std::vector<BlockStreetFlag> flags;
+        std::vector<BlockPlate> plates;
+        blockRouteTables(in.streets, checked, rect, ground, flags, plates);
+        blockPlacePlates(plan.features, in.streets, ground, plates); // the named places too (park, plaza, precinct)
+        const std::string priv = "# PRIVATE. Never committed or uploaded. ftcore_blockgen " + tag + " output.\n";
+        std::string ft = priv + "id,kind,role,main,width_m,length_m,straight_m,tree_every_m,lamp_every_m,lamp_kind,signs_per_100m,awning,mouth\n";
+        for (const BlockStreetFlag& f : flags)
+            ft += f.id + "," + f.kind + "," + f.role + "," + (f.main ? "1" : "0") + "," + num(f.width, 1) + "," + num(f.length, 1) + "," +
+                  num(f.straight, 1) + "," + num(f.treeEvery, 0) + "," + num(f.lampEvery, 0) + "," + f.lampKind + "," +
+                  num(f.signsPer100, 0) + "," + (f.awning ? "1" : "0") + "," + f.mouth + "\n";
+        std::string pt = priv + "kind,id,x,y,z,rot,street_a,street_b,mount,height_m\n";
+        std::size_t wallPlates = 0;
+        for (BlockPlate q : plates) {
+            pointOut(q.x, q.y);
+            q.rot += frameDeg;
+            pt += std::string(kBlockPlateKind) + "," + q.id + "," + num(q.x, 2) + "," + num(q.y, 2) + "," + num(q.z, 2) + "," +
+                  num(q.rot, 1) + "," + q.a + "," + q.b + "," + q.mount + ",3.0\n";
+            if (q.mount == "wall") ++wallPlates;
+        }
+        const std::string o = outDir + "/";
+        if (!writeFile(o + "sol_" + tag + "_street_flags.csv", ft) || !writeFile(o + "sol_" + tag + "_nameplates.csv", pt))
+            return die("can't write into " + outDir);
+        std::size_t mains = 0;
+        for (const BlockStreetFlag& f : flags) mains += f.main ? 1 : 0;
+        summary += "route tables: " + std::to_string(flags.size()) + " street flags (" + std::to_string(mains) + " main), " +
+                   std::to_string(plates.size()) + " name plates (" + std::to_string(wallPlates) + " on walls)\n";
+        if (!districtList.empty()) {
+            std::string dt = priv + "id,colour,sign_style,paving,lots\n";
+            for (const BlockDistrict& d : districtList)
+                dt += d.id + "," + d.colour + "," + d.sign + "," + d.paving + "," + std::to_string(d.lots) + "\n";
+            if (!writeFile(o + "sol_" + tag + "_districts.csv", dt)) return die("can't write into " + outDir);
+            summary += "districts " + std::to_string(districtList.size()) + "\n";
+        }
+    }
+    const std::string frameNote = haveFrame ? " (local frame: " + num(frameV[2], 1) + " deg about " + num(frameV[0], 1) + "," +
+                                                  num(frameV[1], 1) + "; points below are local)"
+                                            : std::string();
     const std::string report = "# ftcore_blockgen check, slice x " + num(rect.x0, 0) + ".." + num(rect.x1, 0) + ", y " + num(rect.y0, 0) +
-                               ".." + num(rect.y1, 0) + "\n" + summary + blockCheckText(rep);
+                               ".." + num(rect.y1, 0) + frameNote + "\n" + summary + blockCheckText(rep);
     if (!writeFile(reportPath, report)) return die("can't write " + reportPath);
     std::fputs(report.c_str(), stdout);
     return ok ? 0 : 1;

@@ -10,6 +10,7 @@
 //                    without --canal, --quay-out takes the table's first canal row; every canal row's channel solids,
 //                    roadCanalBuild, are built and counted)
 //   ftcore_roadgraph --check 1 (--net <csv> [--r16 ...] | --roads <csv>) [--boxes <csv>] [--graph <csv>] [--list-all 1]
+//                    [--streets <csv> [--footway-skip <k1;k2>]]
 //   ftcore_roadgraph --yards 1 --boxes <csv> --area <x0,y0,x1,y1> --out <csv> [--net <csv>] [--streets <csv>]
 //                    [--r16 ...] [--goals <csv>] [--clear <x0,y0,x1,y1>]... [--drop-ids <a;b>] [--drop-kinds <k1;k2>]
 //                    [--drop-clash 1]
@@ -20,7 +21,11 @@
 // The third form builds the roads (a network table, or each road of a roads table) and prints the clashes a vehicle
 // meets: box rows standing in a carriageway (roadBoxClashes, after the decks and piers the roads clear) and kerb or
 // pavement faces across a lane of the graph or lying in a carriageway (roadKerbFaces), one line each, then the counts.
-// Any clash: the last line is ROADCHECK FAIL and it exits 1; none: ROADCHECK OK.
+// Any clash: the last line is ROADCHECK FAIL and it exits 1; none: ROADCHECK OK. With --streets it also builds the
+// footways (roadFootways: the table's vehicle streets kerbed, its alleys paved, the roads' own rows skipped, kinds in
+// --footway-skip left out) and rejects a vehicle street with no kerbed footway, an alley mouth with no bollard or step
+// (roadFootRejects); a footway kerb across a lane of the streets' own one-lane graph or in a lane's carriageway and
+// the roads' kerbs across those lanes (a mouth the road table lacks) are printed as notes (roadKerbFaces), not rejects.
 //
 // The second form builds a road network table (importRoadNet, roadNetBuild) on the ground (an r16 as ftcore_layout's;
 // none: flat at 0) and prints its report and notes, its loop, its counts, the box rows it clears (decks and piers) and
@@ -126,9 +131,78 @@ void checkBuild(const char* what, const RoadBuild& b, const std::vector<MassingB
     faces += f.size();
 }
 
+// The footway check (see the header): prints counts, rejects and faces; returns how many reject.
+std::size_t checkFootways(const std::string& streetsPath, const std::vector<std::string>& skipKinds,
+                          const std::vector<std::string>& roadIds, const RoadBuild& roads, const MassingGround& ground,
+                          bool listAll, std::string& err) {
+    std::string text;
+    std::vector<MassingStreet> all, streets;
+    if (!readFile(streetsPath, text)) {
+        err = "can't read " + streetsPath;
+        return 0;
+    }
+    if (!importMassingStreets(text, all, &err)) {
+        err = streetsPath + ": " + err;
+        return 0;
+    }
+    std::size_t exempt = 0;
+    for (MassingStreet& s : all) {
+        bool skip = false;
+        for (const std::string& k : skipKinds) skip = skip || s.kind == k;
+        if (skip)
+            ++exempt;
+        else
+            streets.push_back(std::move(s));
+    }
+    RoadBuild bands;
+    bands.band = roads.band;
+    RoadBuild fb;
+    RoadFootReport rep;
+    roadFootways(streets, roadIds, ground, &bands, fb, &rep);
+    std::size_t kerbs = 0, foot = 0, gutters = 0;
+    for (const RoadSolid& s : fb.solids) {
+        if (s.box.kind == "kerb") ++kerbs;
+        if (s.box.kind == "footway") ++foot;
+        if (s.box.kind == "gutter") ++gutters;
+    }
+    std::printf("footways: %zu vehicle streets, %zu pedestrian ways, %zu skipped (%zu more by --footway-skip); %zu pieces "
+                "(kerb %.0f m, footway %.0f m2), %zu ramps, %zu tactiles, %zu drains, %zu paving, %zu bollards at %zu "
+                "alley mouths, %zu mouths; %zu buried, %zu floating; %zu solids (%zu kerb, %zu footway, %zu gutter)\n",
+                rep.vehicle, rep.pedestrian, rep.skipped, exempt, rep.pieces, rep.kerbM, rep.footM2, rep.ramps,
+                rep.tactiles, rep.drains, rep.paving, rep.bollards, rep.alleyMouths.size(), rep.mouths, rep.buried,
+                rep.floating, fb.solids.size(), kerbs, foot, gutters);
+    std::size_t bad = 0, shown = 0;
+    for (const std::string& r : roadFootRejects(rep, fb)) {
+        if (++shown <= 60 || listAll) std::printf("  reject: %s\n", r.c_str());
+        ++bad;
+    }
+    // The streets' own lanes: one each way on a road, one on a lane, along its carriageway.
+    RoadGraph lanes;
+    for (const MassingStreet& s : streets) {
+        bool road = false;
+        for (const std::string& id : roadIds) road = road || id == s.id;
+        if (!road) roadGraphFootLanes(s, 30.0, lanes);
+    }
+    fb.carriageway = fb.laneWays;
+    const std::vector<RoadFace> f = roadKerbFaces(fb, &lanes);
+    shown = 0;
+    for (const RoadFace& r : f)
+        if (++shown <= 60 || listAll)
+            std::printf("  note: footway face: %s at (%.2f, %.2f): %s\n", r.piece.c_str(), r.x, r.y, r.fault.c_str());
+    const std::vector<RoadFace> notes = roadKerbFaces(roads, &lanes);
+    shown = 0;
+    for (const RoadFace& r : notes)
+        if (++shown <= 30 || listAll)
+            std::printf("  note: road kerb across a street lane: %s at (%.2f, %.2f): %s\n", r.piece.c_str(), r.x, r.y,
+                        r.fault.c_str());
+    std::printf("footways: rejects %zu; notes: footway faces %zu (street lanes %zu), road kerbs across street lanes %zu\n",
+                bad, f.size(), lanes.lanes.size(), notes.size());
+    return bad; // faces are notes: bend laps on slopes and a few oblique crossings
+}
+
 int runCheck(const std::string& netPath, const std::string& roadsPath, const std::string& r16Path, double samples,
              const double origin[2], double spacing, const std::string& boxesPath, const std::string& graphPath,
-             bool listAll) {
+             bool listAll, const std::string& streetsPath, const std::vector<std::string>& footSkip) {
     std::string text, err;
     std::vector<MassingBox> boxes;
     if (!boxesPath.empty()) {
@@ -143,14 +217,16 @@ int runCheck(const std::string& netPath, const std::string& roadsPath, const std
     }
     const RoadGraph* g = graphPath.empty() ? nullptr : &graph;
     std::size_t boxClashes = 0, faces = 0;
+    std::vector<std::uint16_t> grid;
+    MassingGround ground;
+    if (!loadGround(r16Path, samples, origin, spacing, grid, ground, err)) return die(err);
+    std::vector<std::string> roadIds;
+    RoadBuild allRoads; // every road's solids and band, for the footways
     if (!netPath.empty()) {
         std::vector<RoadNetStreet> streets;
         text.clear();
         if (!readFile(netPath, text)) return die("can't read " + netPath);
         if (!importRoadNet(text, streets, &err)) return die(netPath + ": " + err);
-        std::vector<std::uint16_t> grid;
-        MassingGround ground;
-        if (!loadGround(r16Path, samples, origin, spacing, grid, ground, err)) return die(err);
         RoadBuild b;
         RoadNetReport rep;
         roadNetBuild(streets, ground, b, &rep);
@@ -159,6 +235,8 @@ int runCheck(const std::string& netPath, const std::string& roadsPath, const std
         for (const std::string& n : rep.notes)
             if (listAll && n.rfind("pruned", 0) == 0) std::printf("  note: %s\n", n.c_str());
         checkBuild("net", b, boxes, g, listAll, boxClashes, faces);
+        for (const RoadNetStreet& s : streets) roadIds.push_back(s.id);
+        allRoads = std::move(b);
     } else {
         std::vector<RoadSpec> roads;
         text.clear();
@@ -168,7 +246,16 @@ int runCheck(const std::string& netPath, const std::string& roadsPath, const std
             RoadBuild b;
             roadBuild(r, b);
             checkBuild(r.id.c_str(), b, boxes, g, listAll, boxClashes, faces);
+            roadIds.push_back(r.id);
+            allRoads.band.insert(allRoads.band.end(), b.band.begin(), b.band.end());
+            allRoads.solids.insert(allRoads.solids.end(), b.solids.begin(), b.solids.end());
+            allRoads.carriageway.insert(allRoads.carriageway.end(), b.carriageway.begin(), b.carriageway.end());
         }
+    }
+    if (!streetsPath.empty()) {
+        const std::size_t bad = checkFootways(streetsPath, footSkip, roadIds, allRoads, ground, listAll, err);
+        if (!err.empty()) return die(err);
+        faces += bad;
     }
     std::printf("check: box rows left in a carriageway %zu, kerb and pavement faces %zu (graph lanes %zu)\n", boxClashes,
                 faces, graph.lanes.size());
@@ -472,6 +559,7 @@ int main(int argc, char** argv) {
     RoadCanal canal;
     bool haveCanal = false;
     std::string quayOut;
+    std::vector<std::string> footSkip;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string k = argv[i], v = argv[i + 1];
         if (k == "--yards") yards = v == "1";
@@ -485,6 +573,7 @@ int main(int argc, char** argv) {
             ya.clear.push_back(r);
         }
         else if (k == "--streets") streetsPath = v;
+        else if (k == "--footway-skip") footSkip = splitList(v);
         else if (k == "--roads") roadsPath = v;
         else if (k == "--boxes") boxesPath = v;
         else if (k == "--out") outPath = v;
@@ -523,7 +612,8 @@ int main(int argc, char** argv) {
     }
     if (check) {
         if (netPath.empty() && roadsPath.empty()) return die("--check needs --net or --roads");
-        return runCheck(netPath, roadsPath, r16Path, samples, origin, spacing, boxesPath, graphPath, listAll);
+        return runCheck(netPath, roadsPath, r16Path, samples, origin, spacing, boxesPath, graphPath, listAll,
+                        streetsPath, footSkip);
     }
     if (haveCanal && (netPath.empty() || quayOut.empty())) return die("--canal needs --net and --quay-out");
     if (!quayOut.empty() && netPath.empty()) return die("--quay-out needs --net");
@@ -555,7 +645,10 @@ int main(int argc, char** argv) {
         double speed = 40.0;
         if (s.kind == "expressway") speed = 60.0;
         else if (s.kind == "coast_road" || s.kind == "link_road" || s.kind == "causeway") speed = 50.0;
-        roadGraphStreetLanes(s, speed, false, 0.2, g);
+        if (s.width <= kFootLaneUpTo + 1e-9)
+            roadGraphFootLanes(s, 30.0, g); // a kerbed lane: one way along its 3 m carriageway
+        else
+            roadGraphStreetLanes(s, speed, false, 0.2, g);
     }
     roadGraphJunctions(net, kRoadGraphSnap, 0.2, g);
     const RoadLoop loop = roadGraphLoop(net, kRoadGraphSnap);

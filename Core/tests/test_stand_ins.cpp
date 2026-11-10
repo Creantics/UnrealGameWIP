@@ -50,10 +50,10 @@ TEST_CASE("stand-ins: every kind has parts, within the cap, repeatable") {
     CHECK(standInParts(at(StandInKind::StreetTree, 0, 0), nullptr) == 0);
 }
 
-TEST_CASE("stand-ins: the per-frame budget: trees 3-4, railing 3, mast 2, back house 1") {
+TEST_CASE("stand-ins: the per-frame budget: trees 2, railing 3, mast 2, back house 1") {
     StandInPart parts[kStandInPartsMax];
-    CHECK(standInParts(at(StandInKind::StreetTree, 1, 2), parts) == 3);
-    CHECK(standInParts(at(StandInKind::ParkTree, 1, 2), parts) == 4);
+    CHECK(standInParts(at(StandInKind::StreetTree, 1, 2), parts) == 2);
+    CHECK(standInParts(at(StandInKind::ParkTree, 1, 2), parts) == 2);
     CHECK(standInParts(at(StandInKind::Shrub, 1, 2), parts) == 2);
     CHECK(standInParts(at(StandInKind::Railing, 1, 2), parts) == 3);
     CHECK(standInParts(at(StandInKind::LampMast, 1, 2), parts) == 2);
@@ -68,14 +68,153 @@ TEST_CASE("stand-ins: a street tree's crown stands on a clear trunk; positions d
     CHECK(parts[0].shape == StandInShape::Cylinder);
     CHECK(parts[0].collide == StandInCollide::Solid);
     CHECK(parts[0].dz == doctest::Approx(0.5 * parts[0].sz));
-    const double crownBottom = parts[1].dz - 0.5 * parts[1].sz;
+    // The canopy: its foot (the fork) on the trunk's top, its leaves from its fork share up.
+    REQUIRE(parts[1].shape == StandInShape::Canopy);
+    CHECK(parts[1].collide == StandInCollide::None);
+    CHECK(parts[1].variant == 0);
+    const double fork = parts[1].dz - 0.5 * parts[1].sz;
+    CHECK(fork >= 1.5 - 1e-4);
+    CHECK(parts[0].sz > fork);
+    CHECK(parts[0].sz < fork + 0.3);
+    const double crownBottom = fork + standInCanopyForkShare(0) * parts[1].sz;
     CHECK(crownBottom > 2.5);
-    CHECK(parts[1].sx >= 4.5f * 0.99f);
-    CHECK(parts[1].sx <= 6.3f * 1.01f);
+    CHECK(parts[1].sx >= 4.5f * 0.88f * 0.99f);
+    CHECK(parts[1].sx <= 6.3f * 1.12f * 1.01f);
     CHECK(topOf(parts[1]) < 12.0);
     StandInPart other[kStandInPartsMax];
     standInParts(at(StandInKind::StreetTree, 709, 410), other);
-    CHECK((other[1].sx != parts[1].sx || other[2].dx != parts[2].dx));
+    CHECK((other[1].sx != parts[1].sx || other[1].yaw != parts[1].yaw));
+}
+
+TEST_CASE("stand-ins: trees vary per instance: four leaf greens, both park canopies, turned and sized by seed") {
+    bool paint[kStandInPaints] = {};
+    bool variant[kStandInCanopyVariants] = {};
+    double minW = 1e9, maxW = 0.0, minYaw = 1e9, maxYaw = -1e9;
+    StandInPart parts[kStandInPartsMax];
+    for (int i = 0; i < 200; ++i) {
+        StandInPoint p = at(i % 2 ? StandInKind::ParkTree : StandInKind::StreetTree, 700 + 3.7 * i, 400 + 1.3 * i);
+        p.canopy = 6.0;
+        REQUIRE(standInParts(p, parts) == 2);
+        paint[static_cast<std::size_t>(parts[1].paint)] = true;
+        variant[parts[1].variant] = true;
+        CHECK(parts[1].variant == (i % 2 ? parts[1].variant : 0));
+        CHECK(parts[1].variant < kStandInCanopyVariants);
+        minW = std::min(minW, static_cast<double>(parts[1].sx));
+        maxW = std::max(maxW, static_cast<double>(parts[1].sx));
+        minYaw = std::min(minYaw, static_cast<double>(parts[1].yaw));
+        maxYaw = std::max(maxYaw, static_cast<double>(parts[1].yaw));
+    }
+    for (StandInPaint leaf : {StandInPaint::Leaf, StandInPaint::LeafLight, StandInPaint::LeafDark, StandInPaint::LeafWarm})
+        CHECK(paint[static_cast<std::size_t>(leaf)]);
+    CHECK(variant[0]);
+    CHECK(variant[1]);
+    CHECK(variant[2]);
+    CHECK(maxW - minW > 6.0 * 0.15);
+    CHECK(maxYaw - minYaw > 270.0);
+}
+
+namespace {
+
+// The share of a side view's crown box (along axis 0 = x or 1 = y, against z, from the crown's foot up) the leaves
+// cover, and the cells inside the silhouette left open (leaves on both sides along their row): sky seen through.
+struct SideView {
+    int covered = 0, holes = 0, cells = 0;
+};
+SideView sideView(const StandInCanopyMesh& m, int axis, double z0) {
+    constexpr int kN = 32;
+    bool grid[kN][kN] = {};
+    for (std::size_t t = 0; t < m.slots.size(); ++t) {
+        if (m.slots[t] != 0) continue;
+        double u[3], v[3];
+        for (int k = 0; k < 3; ++k) {
+            const std::uint32_t i = m.triangles[3 * t + static_cast<std::size_t>(k)];
+            u[k] = m.positions[3 * i + static_cast<std::size_t>(axis)];
+            v[k] = m.positions[3 * i + 2];
+        }
+        const double area = (u[1] - u[0]) * (v[2] - v[0]) - (u[2] - u[0]) * (v[1] - v[0]);
+        if (std::abs(area) < 1e-12) continue;
+        for (int row = 0; row < kN; ++row) {
+            for (int col = 0; col < kN; ++col) {
+                const double pu = -0.5 + (col + 0.5) / kN;
+                const double pv = z0 + (0.5 - z0) * (row + 0.5) / kN;
+                const double a = ((u[1] - pu) * (v[2] - pv) - (u[2] - pu) * (v[1] - pv)) / area;
+                const double b = ((u[2] - pu) * (v[0] - pv) - (u[0] - pu) * (v[2] - pv)) / area;
+                if (a >= 0 && b >= 0 && a + b <= 1) grid[row][col] = true;
+            }
+        }
+    }
+    SideView s;
+    s.cells = kN * kN;
+    for (int row = 0; row < kN; ++row) {
+        int first = kN, last = -1;
+        for (int col = 0; col < kN; ++col) {
+            if (grid[row][col]) {
+                ++s.covered;
+                first = std::min(first, col);
+                last = std::max(last, col);
+            }
+        }
+        for (int col = first + 1; col < last; ++col) s.holes += grid[row][col] ? 0 : 1;
+    }
+    return s;
+}
+
+} // namespace
+
+TEST_CASE("stand-ins: canopy meshes: the unit box round the fork, broken crowns with sky through, forking limbs") {
+    for (std::size_t v = 0; v < kStandInCanopyVariants; ++v) {
+        CAPTURE(v);
+        StandInCanopyMesh m;
+        REQUIRE(standInCanopyMesh(v, m));
+        const std::size_t tris = m.triangles.size() / 3;
+        REQUIRE(m.slots.size() == tris);
+        REQUIRE(m.normals.size() == 3 * tris);
+        double lo[3] = {1, 1, 1}, hi[3] = {-1, -1, -1}, leafLow = 1.0;
+        for (std::size_t i = 0; i < m.positions.size(); i += 3)
+            for (int k = 0; k < 3; ++k) {
+                lo[k] = std::min(lo[k], static_cast<double>(m.positions[i + static_cast<std::size_t>(k)]));
+                hi[k] = std::max(hi[k], static_cast<double>(m.positions[i + static_cast<std::size_t>(k)]));
+            }
+        CHECK(std::max(-lo[0], hi[0]) == doctest::Approx(0.5));
+        CHECK(std::max(-lo[1], hi[1]) == doctest::Approx(0.5));
+        CHECK(lo[2] == doctest::Approx(-0.5));
+        CHECK(hi[2] == doctest::Approx(0.5));
+        std::size_t leaves = 0, bark = 0;
+        for (std::size_t t = 0; t < tris; ++t) {
+            // Each normal is the triangle's own (wound counter-clockwise from outside) and unit.
+            const float* a = &m.positions[3 * m.triangles[3 * t]];
+            const float* b = &m.positions[3 * m.triangles[3 * t + 1]];
+            const float* c = &m.positions[3 * m.triangles[3 * t + 2]];
+            const double n[3] = {(b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
+                                 (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
+                                 (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])};
+            const float* nn = &m.normals[3 * t];
+            CHECK(nn[0] * n[0] + nn[1] * n[1] + nn[2] * n[2] > 0.0);
+            CHECK(nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2] == doctest::Approx(1.0).epsilon(1e-4));
+            if (m.slots[t] == 0) {
+                ++leaves;
+                for (const float* p : {a, b, c}) leafLow = std::min(leafLow, static_cast<double>(p[2]));
+            } else {
+                ++bark;
+            }
+        }
+        // Small clumps, not one sphere: 5 (street) or 7 (park) of 80 triangles; limbs 3 (one fork) or 5 (two).
+        CHECK(leaves == (v == 0 ? 5u : 7u) * 80u);
+        CHECK(bark == (v == 0 ? 3u : 5u) * 10u);
+        // The fork share tree() uses is the mesh's.
+        CHECK(standInCanopyForkShare(v) == doctest::Approx(leafLow + 0.5).epsilon(1e-5));
+        CHECK(standInCanopyForkShare(v) > 0.2);
+        CHECK(standInCanopyForkShare(v) < 0.5);
+        for (int axis = 0; axis < 2; ++axis) {
+            CAPTURE(axis);
+            const SideView s = sideView(m, axis, leafLow);
+            CHECK(s.covered < 0.8 * s.cells); // a broken outline, not a filled ellipse
+            CHECK(s.holes >= 8);              // sky through the crown
+        }
+    }
+    StandInCanopyMesh none;
+    CHECK_FALSE(standInCanopyMesh(kStandInCanopyVariants, none));
+    CHECK(standInCanopyForkShare(kStandInCanopyVariants) == 0.0);
 }
 
 TEST_CASE("stand-ins: a house roof's halves meet at the ridge, pitched 25-35 degrees, overhanging the eaves") {
@@ -265,7 +404,8 @@ TEST_CASE("stand-ins: round 9's tables: trees, houses, towers (G) and the quay p
     CHECK(pts[2].kind == StandInKind::ParkTree);
     StandInPart parts[kStandInPartsMax];
     const std::size_t n = standInParts(pts[0], parts);
-    CHECK(parts[1].sx == doctest::Approx(6.0));
+    CHECK(parts[1].sx >= 6.0 * 0.88 - 1e-4); // the table's canopy, +-12% by seed
+    CHECK(parts[1].sx <= 6.0 * 1.12 + 1e-4);
     CHECK(topOf(parts[1]) == doctest::Approx(9.0)); // the given height is the crown's top
     double peak = 0.0;
     for (std::size_t k = 0; k < n; ++k) peak = std::max(peak, topOf(parts[k]));

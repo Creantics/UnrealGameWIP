@@ -221,7 +221,14 @@ std::string_view blockFeatureName(BlockFeatureKind k) {
     return "park";
 }
 
-double BlockGround::at(double x, double y) const {
+void BlockGround::setFrame(double ox, double oy, double deg) {
+    const double r = deg * 3.14159265358979323846 / 180.0;
+    frameX = ox, frameY = oy, frameCos = std::cos(r), frameSin = std::sin(r);
+}
+
+double BlockGround::at(double lx, double ly) const {
+    double x = 0.0, y = 0.0;
+    toWorld(lx, ly, x, y);
     double z = field.grid ? massingGroundAt(field.grid, field.samplesX, field.samplesY, field.spacing, field.originX,
                                             field.originY, x, y)
                           : 0.0;
@@ -285,6 +292,7 @@ bool importBlockPlan(std::string_view csv, BlockPlan& out, std::string* error) {
             b.end = std::string(col("end"));
             b.block = static_cast<std::uint32_t>(block);
             b.rows = static_cast<int>(rows);
+            b.district = std::string(col("district"));
             if (b.id.empty() || b.r.w() <= 0.0 || b.r.h() <= 0.0 || (b.low.empty() && b.high.empty()))
                 return fail(error, rec.line, "a band needs an id, a rect and a street on one side");
             out.bands.push_back(std::move(b));
@@ -296,6 +304,7 @@ bool importBlockPlan(std::string_view csv, BlockPlan& out, std::string* error) {
             f.value = value;
             f.top = top;
             f.width = width;
+            f.district = std::string(col("district"));
             if (f.id.empty() || f.r.w() <= 0.0 || f.r.h() <= 0.0) return fail(error, rec.line, "a feature needs an id and a rect");
             out.features.push_back(std::move(f));
         } else if (type == "landmark") {
@@ -322,7 +331,7 @@ int blockRowCount(double depth, double* rowDepth) {
     int best = 0;
     double bestD = 0.0;
     for (int n = 2; n <= 6; ++n) {
-        const int a = (n - 1) / 2;
+        const int a = n - 1;
         const double d = (depth - kBlockAlley * a) / n;
         if (d < kBlockRowMin - 1e-9 || d > kBlockRowMax + 1e-9) continue;
         if (best == 0 || std::fabs(d - kBlockRowAim) < std::fabs(bestD - kBlockRowAim)) {
@@ -513,28 +522,30 @@ void blockGenerate(const BlockPlan& plan, const BlockGround& ground, BlockGenRes
     for (const BlockPlanStreet& s : plan.streets)
         if (s.emit) out.streets.push_back(s);
 
-    for (const BlockPlanBand& band : plan.bands) {
+    // pass 1: every band's rows, and an alley between each pair of rows (back to back or not)
+    std::vector<std::vector<Row>> bandRows(plan.bands.size());
+    const std::size_t alleyFirst = out.streets.size();
+    for (std::size_t bi = 0; bi < plan.bands.size(); ++bi) {
+        const BlockPlanBand& band = plan.bands[bi];
         const bool ax = band.alongX;
         const double u0 = ax ? band.r.x0 : band.r.y0, u1 = ax ? band.r.x1 : band.r.y1;
         const double w0 = ax ? band.r.y0 : band.r.x0, w1 = ax ? band.r.y1 : band.r.x1;
         const double depth = w1 - w0;
         const BlockPlanStreet* lowS = findStreet(plan, band.low);
         const BlockPlanStreet* highS = findStreet(plan, band.high);
-        const std::string& seedStreet = !band.low.empty() ? band.low : band.high;
-        const std::uint32_t seed = blockSeed(seedStreet, band.block);
-
-        std::vector<Row> rows;
+        std::vector<Row>& rows = bandRows[bi];
         if (lowS && highS) {
             double d = 0.0;
             int n = band.rows > 0 ? band.rows : blockRowCount(depth, &d);
-            if (band.rows > 0) d = (depth - kBlockAlley * ((n - 1) / 2)) / n;
+            double alleyW = kBlockAlley;
+            if (band.rows > 0) d = (depth - kBlockAlley * (n - 1)) / n;
             if (n == 0) {
                 n = 2;
+                alleyW = 0.0;
                 d = depth * 0.5;
-                st.notes.push_back(band.id + ": no row count fits " + fmt("%.2f", depth) + " m; two rows");
+                st.notes.push_back(band.id + ": no row count fits " + fmt("%.2f", depth) + " m; two rows back to back");
             }
             double pos = w0;
-            int alley = 0;
             for (int i = 0; i < n; ++i) {
                 Row r;
                 r.w0 = pos;
@@ -548,31 +559,26 @@ void blockGenerate(const BlockPlan& plan, const BlockGround& ground, BlockGenRes
                     r.face = +1;
                     r.faceId = highS->id;
                     r.cls = highS->cls;
-                } else if (i % 2 == 1) {
-                    r.face = +1; // faces the alley above it
-                    r.faceId = band.id + "-A" + std::to_string(alley + 1);
-                    r.cls = BlockClass::Alley;
-                    r.internal = true;
                 } else {
-                    r.face = -1; // faces the alley below it
-                    r.faceId = band.id + "-A" + std::to_string(alley);
+                    // alley k runs between rows k-1 and k: an odd row faces the one above it, an even one the one below
+                    r.face = i % 2 == 1 ? +1 : -1;
+                    r.faceId = band.id + "-A" + std::to_string(i % 2 == 1 ? i + 1 : i);
                     r.cls = BlockClass::Alley;
                     r.internal = true;
                 }
                 rows.push_back(r);
-                if (i % 2 == 1 && i < n - 1) {
-                    ++alley;
+                if (i < n - 1 && alleyW > 0.0) {
                     BlockPlanStreet a;
-                    a.id = band.id + "-A" + std::to_string(alley);
+                    a.id = band.id + "-A" + std::to_string(i + 1);
                     a.kind = "alley";
                     a.cls = BlockClass::Alley;
-                    a.width = kBlockAlley;
-                    const double wc = pos + kBlockAlley * 0.5;
+                    a.width = alleyW;
+                    const double wc = pos + alleyW * 0.5;
                     if (ax) a.x0 = u0, a.x1 = u1, a.y0 = a.y1 = wc;
                     else a.y0 = u0, a.y1 = u1, a.x0 = a.x1 = wc;
                     out.streets.push_back(a);
                     ++st.alleys;
-                    pos += kBlockAlley;
+                    pos += alleyW;
                 }
             }
         } else if (lowS || highS) {
@@ -588,7 +594,64 @@ void blockGenerate(const BlockPlan& plan, const BlockGround& ground, BlockGenRes
         } else {
             st.notes.push_back(band.id + ": neither edge street is in the plan; left empty");
         }
+    }
 
+    // cut the alleys clear through: an end touching no street runs on along its axis to the nearest street within
+    // kBlockAlleyReach m (through the next band's rows), unless a feature stands in the way
+    std::vector<BlockRect> alleyCuts;
+    for (std::size_t k = alleyFirst; k < out.streets.size(); ++k) {
+        BlockPlanStreet& a = out.streets[k];
+        const bool alongX = a.y0 == a.y1;
+        auto touches = [&](double x, double y) {
+            for (std::size_t si = 0; si < plan.streets.size(); ++si)
+                if (streetCuts[si].contains(x, y)) return true;
+            for (std::size_t j = alleyFirst; j < out.streets.size(); ++j)
+                if (j != k && streetRect(out.streets[j]).contains(x, y)) return true;
+            return false;
+        };
+        auto blocked = [&](double x, double y) {
+            for (const BlockRect& c : cuts)
+                if (c.contains(x, y)) return true;
+            return false;
+        };
+        for (int end = 0; end < 2; ++end) {
+            double& e = alongX ? (end == 0 ? a.x0 : a.x1) : (end == 0 ? a.y0 : a.y1);
+            const double other = alongX ? a.y0 : a.x0;
+            const double dir = (end == 0) == ((alongX ? a.x0 : a.y0) <= (alongX ? a.x1 : a.y1)) ? -1.0 : 1.0;
+            auto at = [&](double s, double& x, double& y) {
+                x = alongX ? e + dir * s : other;
+                y = alongX ? other : e + dir * s;
+            };
+            double x = 0.0, y = 0.0;
+            at(0.5, x, y);
+            if (touches(x, y)) continue;
+            double reach = -1.0;
+            for (double s = 0.5; s <= kBlockAlleyReach; s += 0.25) {
+                at(s, x, y);
+                if (blocked(x, y)) break;
+                if (touches(x, y)) {
+                    reach = s - 0.25;
+                    break;
+                }
+            }
+            if (reach < 0.0) {
+                st.notes.push_back(a.id + ": an alley end reaches no street within " + fmt("%.0f", kBlockAlleyReach) + " m");
+                continue;
+            }
+            e += dir * reach;
+            ++st.alleysCut;
+        }
+        alleyCuts.push_back(streetRect(a));
+    }
+
+    // pass 2: the lots
+    for (std::size_t bi = 0; bi < plan.bands.size(); ++bi) {
+        const BlockPlanBand& band = plan.bands[bi];
+        const bool ax = band.alongX;
+        const double u0 = ax ? band.r.x0 : band.r.y0, u1 = ax ? band.r.x1 : band.r.y1;
+        const std::string& seedStreet = !band.low.empty() ? band.low : band.high;
+        const std::uint32_t seed = blockSeed(seedStreet, band.block);
+        const std::vector<Row>& rows = bandRows[bi];
         for (std::size_t ri = 0; ri < rows.size(); ++ri) {
             const Row& row = rows[ri];
             BlockRng rng(seed ^ static_cast<std::uint32_t>((ri + 1) * 0x9E3779B9u));
@@ -626,6 +689,8 @@ void blockGenerate(const BlockPlan& plan, const BlockGround& ground, BlockGenRes
                 if (s.id == row.faceId) continue;
                 cutBy(streetCuts[si], true);
             }
+            for (std::size_t k = 0; k < alleyCuts.size(); ++k)
+                if (out.streets[alleyFirst + k].id != row.faceId) cutBy(alleyCuts[k], true);
             const bool shop = row.cls != BlockClass::Alley;
             const std::size_t rowFirst = lots.size();
             for (std::size_t k = 0; k < free.size(); ++k) {
@@ -1036,7 +1101,7 @@ void blockGenerate(const BlockPlan& plan, const BlockGround& ground, BlockGenRes
                     keep.push_back({l.x - l.base * 0.5 - 3.0, l.y - l.base * 0.5 - 3.0, l.x + l.base * 0.5 + 3.0, l.y + l.base * 0.5 + 3.0});
                 for (double x = r.x0 + 2.5; x <= r.x1 - 2.5; x += 8.0)
                     for (const double y : {r.y0 + 2.5, r.y1 - 2.5})
-                        if (!inAny(keep, x, y)) add("plaza", f.id, x, y, 8.0, 6.0);
+                        if (!inAny(keep, x, y)) add("park", f.id, x, y, 8.0, 6.0); // a plaza's: park trees
             } else if (f.kind == BlockFeatureKind::Precinct) {
                 std::vector<BlockRect> keep;
                 for (const BlockPlanFeature& g : plan.features) {
@@ -1070,6 +1135,117 @@ void blockGenerate(const BlockPlan& plan, const BlockGround& ground, BlockGenRes
         }
     }
 
+    // r10 dressing, so the features read from above: roof gardens on bare podiums, market stalls, the precinct gate's
+    // roof and path in, the park's cross paths
+    {
+        int n = 0, m = 0;
+        auto flat = [&](const std::string& id, const std::string& row, const char* kind, const BlockRect& r, double lift,
+                        const char* note) {
+            BlockBox b = makeBox(id, row, kind, r);
+            standBox(ground, b, lift, 0.2);
+            b.note = note;
+            out.boxes.push_back(b);
+            ++st.marks;
+        };
+        // podium roofs: park trees in planters where no tower stands and the bare run is over kBlockApronMax m
+        for (const BlockPlanFeature& f : plan.features) {
+            if (f.kind != BlockFeatureKind::Podium) continue;
+            const BlockBox* pod = nullptr;
+            for (const BlockBox& b : out.boxes)
+                if (b.id == "R9-F-" + f.id) pod = &b;
+            if (!pod) continue;
+            const BlockRect r = pod->rect();
+            const double tw = f.width;
+            const double run = tw > 0.0 ? std::max(r.w() - tw, r.h() - tw) * 0.5 : std::max(r.w(), r.h());
+            if (run <= kBlockApronMax) continue;
+            const BlockRect keep{pod->cx - tw * 0.5 - 2.0, pod->cy - tw * 0.5 - 2.0, pod->cx + tw * 0.5 + 2.0, pod->cy + tw * 0.5 + 2.0};
+            const double z = pod->z1;
+            const std::string host = pod->id;
+            std::size_t planted = 0;
+            for (double x = r.x0 + 3.5; x <= r.x1 - 3.0; x += 7.0)
+                for (double y = r.y0 + 3.5; y <= r.y1 - 3.0; y += 7.0) {
+                    if (tw > 0.0 && keep.contains(x, y)) continue;
+                    BlockTree tr;
+                    tr.id = "R10-TR-" + std::to_string(++n);
+                    tr.kind = "park";
+                    tr.host = host;
+                    tr.x = x, tr.y = y, tr.z = z, tr.height = 5.0, tr.canopy = 4.5;
+                    out.trees.push_back(tr);
+                    ++planted;
+                }
+            st.roofTrees += planted;
+            st.notes.push_back(f.id + ": a roof garden of " + std::to_string(planted) + " trees on a " + fmt("%.0f", run) +
+                               " m bare roof");
+        }
+        // market stalls along a market lane's footways, every 5 m, clear of crossings and doors
+        for (const BlockPlanStreet& s : out.streets) {
+            if (s.cls != BlockClass::Market) continue;
+            const bool ax = s.y0 == s.y1;
+            const double a0 = ax ? std::min(s.x0, s.x1) : std::min(s.y0, s.y1), a1 = ax ? std::max(s.x0, s.x1) : std::max(s.y0, s.y1);
+            const double c = ax ? s.y0 : s.x0;
+            const double foot = s.pavement > 0.0 ? s.pavement : 1.5;
+            const double off = s.width * 0.5 - foot * 0.5; // the footway's middle
+            const double deep = std::min(1.2, foot - 0.2), len = 2.4;
+            for (int side = -1; side <= 1; side += 2)
+                for (double a = a0 + 4.0; a + len <= a1 - 2.0; a += 5.0) {
+                    const double mid = a + len * 0.5, w = c + side * off;
+                    const double mx = ax ? mid : w, my = ax ? w : mid;
+                    bool clear = true;
+                    for (const BlockPlanStreet& o : out.streets)
+                        if (&o != &s && streetRect(o).overlaps({mx - 3.0, my - 3.0, mx + 3.0, my + 3.0})) clear = false;
+                    for (const BlockPlanStreet& o : plan.streets)
+                        if (o.id != s.id && streetRect(o).overlaps({mx - 3.0, my - 3.0, mx + 3.0, my + 3.0})) clear = false;
+                    for (const BlockDoor& d : out.doors)
+                        if (std::hypot(d.ox - mx, d.oy - my) < 2.5) clear = false;
+                    if (!clear) continue;
+                    const BlockRect r = ax ? BlockRect{a, w - deep * 0.5, a + len, w + deep * 0.5}
+                                           : BlockRect{w - deep * 0.5, a, w + deep * 0.5, a + len};
+                    flat("R10-MS-" + std::to_string(++m), s.id, "stand", r, 2.4, "R10 market stall market=1");
+                    ++st.stalls;
+                    --st.marks;
+                }
+        }
+        // the precinct gates: a plank roof over the gate and a pale path in to the hall
+        for (const BlockPlanFeature& g : plan.features) {
+            if (g.kind != BlockFeatureKind::Gate) continue;
+            const BlockPlanFeature* pr = nullptr;
+            for (const BlockPlanFeature& f : plan.features)
+                if (f.kind == BlockFeatureKind::Precinct && g.r.overlaps({f.r.x0 - 1, f.r.y0 - 1, f.r.x1 + 1, f.r.y1 + 1})) pr = &f;
+            if (!pr) continue;
+            const bool longY = g.r.h() >= g.r.w();
+            const BlockRect roof = longY ? BlockRect{(g.r.x0 + g.r.x1) * 0.5 - 1.6, g.r.y0 - 1.0, (g.r.x0 + g.r.x1) * 0.5 + 1.6, g.r.y1 + 1.0}
+                                         : BlockRect{g.r.x0 - 1.0, (g.r.y0 + g.r.y1) * 0.5 - 1.6, g.r.x1 + 1.0, (g.r.y0 + g.r.y1) * 0.5 + 1.6};
+            BlockBox rb = makeBox("R10-GR-" + g.id, g.id, "deck", roof);
+            sampleGround(ground, rb);
+            rb.z0 = rb.ground + 6.1;
+            rb.z1 = rb.ground + 6.5;
+            rb.note = "R10 gate roof precinct_gate=1";
+            out.boxes.push_back(rb);
+            ++st.marks;
+            // the path: from the gate to the nearest hall's face (or the precinct's far side)
+            const BlockRect& R = pr->r;
+            double far = longY ? ((g.r.x0 + g.r.x1) * 0.5 > (R.x0 + R.x1) * 0.5 ? R.x0 + 0.3 : R.x1 - 0.3)
+                               : ((g.r.y0 + g.r.y1) * 0.5 > (R.y0 + R.y1) * 0.5 ? R.y0 + 0.3 : R.y1 - 0.3);
+            for (const BlockPlanFeature& h : plan.features)
+                if (h.kind == BlockFeatureKind::Hall && h.r.overlaps(R)) {
+                    if (longY) far = (g.r.x0 > h.r.x1) ? h.r.x1 : h.r.x0;
+                    else far = (g.r.y0 > h.r.y1) ? h.r.y1 : h.r.y0;
+                }
+            const BlockRect path = longY ? BlockRect{std::min(far, g.r.x0), g.r.y0 + 1.0, std::max(far, g.r.x1), g.r.y1 - 1.0}
+                                         : BlockRect{g.r.x0 + 1.0, std::min(far, g.r.y0), g.r.x1 - 1.0, std::max(far, g.r.y1)};
+            flat("R10-GP-" + g.id, pr->id, "marking", path, 0.2, "R10 precinct path precinct_gate=1");
+        }
+        // parks: two pale cross paths
+        for (const BlockPlanFeature& f : plan.features) {
+            if (f.kind != BlockFeatureKind::Park) continue;
+            const BlockRect& r = f.r;
+            const double cx = (r.x0 + r.x1) * 0.5, cy = (r.y0 + r.y1) * 0.5;
+            flat("R10-PP-" + f.id + "-X", f.id, "marking", {r.x0, cy - 0.75, r.x1, cy + 0.75}, 0.2, "R10 park path park=1");
+            flat("R10-PP-" + f.id + "-Y", f.id, "marking", {cx - 0.75, r.y0, cx + 0.75, cy - 0.75}, 0.2, "R10 park path park=1");
+            flat("R10-PP-" + f.id + "-Z", f.id, "marking", {cx - 0.75, cy + 0.75, cx + 0.75, r.y1}, 0.2, "R10 park path park=1");
+        }
+    }
+
     // the landmark
     for (const BlockPlanLandmark& l : plan.landmarks) {
         BlockTower t;
@@ -1081,6 +1257,272 @@ void blockGenerate(const BlockPlan& plan, const BlockGround& ground, BlockGenRes
         t.height = l.height;
         t.note = "placed";
         out.towers.push_back(t);
+    }
+
+    // districts: each box takes its band's or feature's district (default: that row's own id)
+    static constexpr const char* kColours[] = {"#B8473A", "#2F6E73", "#C99A2E", "#5B4B8A", "#3E7D3A", "#8A8F98"};
+    static constexpr const char* kSigns[] = {"vertical_blade", "fascia_band", "lantern_row", "painted_wall", "neon_box", "hanging_board"};
+    static constexpr const char* kPaving[] = {"granite_sett", "brick_herringbone", "concrete_slab", "basalt_cobble", "terracotta_tile", "asphalt_patch"};
+    // a district value "name@k" (k 0..5) takes palette slot k, so a second run's wards don't repeat the first's cues
+    auto slotOf = [](const std::string& v, std::string& id) -> int {
+        const std::size_t at = v.rfind('@');
+        id = v;
+        if (at == std::string::npos || at + 2 != v.size() || v[at + 1] < '0' || v[at + 1] > '5') return -1;
+        id = v.substr(0, at);
+        return v[at + 1] - '0';
+    };
+    auto districtOf = [&](const std::string& row) -> std::string {
+        std::string v, id;
+        for (const BlockPlanBand& b : plan.bands)
+            if (b.id == row) v = b.district.empty() ? b.id : b.district;
+        for (const BlockPlanFeature& f : plan.features)
+            if (v.empty() && f.id == row) v = f.district.empty() ? f.id : f.district;
+        if (v.empty()) return {};
+        slotOf(v, id);
+        return id;
+    };
+    auto addDistrict = [&](const std::string& value) {
+        std::string id;
+        const int slot = slotOf(value, id);
+        for (const BlockDistrict& d : out.districts)
+            if (d.id == id) return;
+        const std::size_t n = slot >= 0 ? static_cast<std::size_t>(slot) : out.districts.size() % 6;
+        out.districts.push_back({id, kColours[n], kSigns[n], kPaving[n], 0});
+    };
+    for (const BlockPlanBand& b : plan.bands) addDistrict(b.district.empty() ? b.id : b.district);
+    for (const BlockPlanFeature& f : plan.features) addDistrict(f.district.empty() ? f.id : f.district);
+    for (BlockBox& b : out.boxes) {
+        b.district = districtOf(b.row);
+        if (b.district.empty()) continue;
+        b.note += (b.note.empty() ? "district=" : " district=") + b.district;
+        if (b.building && b.kind == "kit")
+            for (BlockDistrict& d : out.districts)
+                if (d.id == b.district) ++d.lots;
+    }
+    if (out.districts.size() > 6) st.notes.push_back("over 6 districts: the cue palettes repeat");
+    // road-class plan streets too short to read as a main street
+    for (const BlockPlanStreet& s : plan.streets) {
+        const double len = std::hypot(s.x1 - s.x0, s.y1 - s.y0);
+        if (s.cls == BlockClass::Road && len < kBlockMainStraight)
+            st.notes.push_back(s.id + ": a road only " + fmt("%.0f", len) + " m long (a main street runs " +
+                               fmt("%.0f", kBlockMainStraight) + " m straight)");
+    }
+}
+
+// ---- route tables ----
+
+BlockRole blockStreetRole(const MassingStreet& s) {
+    if (s.pavement > 0.0 && s.width >= kBlockMainWidth - 1e-9) return BlockRole::Main;
+    if (s.kind != "alley" && s.width > kBlockAlleyMax + 1e-9) return BlockRole::Lane;
+    return BlockRole::Alley;
+}
+
+std::string_view blockRoleName(BlockRole r) {
+    switch (r) {
+    case BlockRole::Main: return "road"; // the class names: road | lane | alley
+    case BlockRole::Lane: return "lane";
+    case BlockRole::Alley: return "alley";
+    }
+    return "alley";
+}
+
+double blockStraightRun(const MassingStreet& s) {
+    double best = 0.0, run = 0.0, px = 0.0, py = 0.0;
+    bool have = false;
+    const double cosTurn = std::cos(kBlockTurnDeg * 3.14159265358979323846 / 180.0);
+    for (std::size_t i = 1; i < s.points.size(); ++i) {
+        const double dx = s.points[i].x - s.points[i - 1].x, dy = s.points[i].y - s.points[i - 1].y;
+        const double l = std::hypot(dx, dy);
+        if (l < 1e-9) continue;
+        const double ux = dx / l, uy = dy / l;
+        if (have && ux * px + uy * py >= cosTurn) run += l;
+        else run = l;
+        px = ux, py = uy, have = true;
+        best = std::max(best, run);
+    }
+    return best;
+}
+
+namespace {
+
+double polyLength(const MassingStreet& s) {
+    double l = 0.0;
+    for (std::size_t i = 1; i < s.points.size(); ++i)
+        l += std::hypot(s.points[i].x - s.points[i - 1].x, s.points[i].y - s.points[i - 1].y);
+    return l;
+}
+
+bool marketKind(const std::string& k) { return k.find("market") != std::string::npos; }
+
+} // namespace
+
+bool blockStreetNearRect(const MassingStreet& s, const BlockRect& r, double g) {
+    const BlockRect w{r.x0 - g, r.y0 - g, r.x1 + g, r.y1 + g};
+    if (s.points.size() == 1) return w.contains(s.points[0].x, s.points[0].y);
+    for (std::size_t i = 1; i < s.points.size(); ++i) {
+        const double ax = s.points[i - 1].x, ay = s.points[i - 1].y, bx = s.points[i].x, by = s.points[i].y;
+        const int n = std::max(1, static_cast<int>(std::ceil(std::hypot(bx - ax, by - ay) / 2.0)));
+        for (int k = 0; k <= n; ++k) {
+            const double f = static_cast<double>(k) / n;
+            if (w.contains(ax + f * (bx - ax), ay + f * (by - ay))) return true;
+        }
+    }
+    return false;
+}
+
+void blockRouteTables(const std::vector<MassingStreet>& streets, const std::vector<MassingBox>& boxes,
+                      const BlockRect& rect, const BlockGround& ground, std::vector<BlockStreetFlag>& flags,
+                      std::vector<BlockPlate>& plates) {
+    std::vector<const MassingStreet*> mine;
+    for (const MassingStreet& s : streets)
+        if (!s.points.empty() && blockStreetNearRect(s, rect, 20.0)) mine.push_back(&s);
+    for (const MassingStreet* s : mine) {
+        BlockStreetFlag f;
+        f.id = s->id;
+        f.kind = s->kind;
+        const BlockRole r = blockStreetRole(*s);
+        f.main = r == BlockRole::Main;
+        f.role = f.main ? "road" : (r == BlockRole::Lane ? (marketKind(s->kind) ? "market" : "lane") : "alley");
+        f.width = s->width;
+        f.length = polyLength(*s);
+        f.straight = blockStraightRun(*s);
+        if (f.main) {
+            f.treeEvery = 10.0, f.lampEvery = 25.0, f.lampKind = "mast", f.signsPer100 = 30.0, f.awning = true;
+            f.mouth = "junction";
+        } else if (f.role == "market") {
+            f.lampEvery = 12.0, f.lampKind = "lantern_string", f.signsPer100 = 40.0, f.awning = true;
+            f.mouth = "dropped_kerb";
+        } else if (f.role == "lane") {
+            f.lampEvery = 30.0, f.lampKind = "wall", f.signsPer100 = 10.0;
+            f.mouth = "dropped_kerb";
+        } else {
+            f.lampKind = "none", f.signsPer100 = 2.0;
+            f.mouth = "bollards";
+        }
+        flags.push_back(f);
+    }
+    // buildings that may carry a wall plate
+    std::vector<const MassingBox*> bld;
+    const BlockRect wide{rect.x0 - 30.0, rect.y0 - 30.0, rect.x1 + 30.0, rect.y1 + 30.0};
+    for (const MassingBox& b : boxes) {
+        if ((b.kind != "kit" && b.kind != "box" && b.kind != "slab") || b.z1 - b.z0 < 2.5) continue;
+        if (blockFootprint(b).overlaps(wide, 0.0)) bld.push_back(&b);
+    }
+    auto onBuilding = [&](double x, double y) {
+        for (const MassingBox* b : bld) {
+            const double rr = b->rot * 3.14159265358979323846 / 180.0;
+            const double c = std::cos(rr), sn = std::sin(rr), dx = x - b->cx, dy = y - b->cy;
+            if (std::fabs(dx * c + dy * sn) <= b->sx * 0.5 + 0.3 && std::fabs(-dx * sn + dy * c) <= b->sy * 0.5 + 0.3)
+                return true;
+        }
+        return false;
+    };
+    auto onAnyStreet = [&](double x, double y) {
+        for (const MassingStreet* s : mine)
+            if (blockOnStreet(*s, x, y)) return true;
+        return false;
+    };
+    std::size_t n = 0;
+    const std::size_t firstPlate = plates.size();
+    const BlockRect near20{rect.x0 - 20.0, rect.y0 - 20.0, rect.x1 + 20.0, rect.y1 + 20.0};
+    const BlockRect near1{rect.x0 - 1.0, rect.y0 - 1.0, rect.x1 + 1.0, rect.y1 + 1.0};
+    for (std::size_t i = 0; i < mine.size(); ++i)
+        for (std::size_t j = i + 1; j < mine.size(); ++j) {
+            const MassingStreet* a = mine[i];
+            const MassingStreet* b = mine[j];
+            const BlockRole ra = blockStreetRole(*a), rb = blockStreetRole(*b);
+            if (ra == BlockRole::Alley && rb == BlockRole::Alley) continue;
+            if (static_cast<int>(ra) < static_cast<int>(rb)) std::swap(a, b); // a: the minor street
+            for (std::size_t si = 1; si < a->points.size(); ++si)
+                for (std::size_t sj = 1; sj < b->points.size(); ++sj) {
+                    const double ax = a->points[si - 1].x, ay = a->points[si - 1].y;
+                    const double adx = a->points[si].x - ax, ady = a->points[si].y - ay;
+                    const double bx = b->points[sj - 1].x, by = b->points[sj - 1].y;
+                    const double bdx = b->points[sj].x - bx, bdy = b->points[sj].y - by;
+                    const double la = std::hypot(adx, ady), lb = std::hypot(bdx, bdy);
+                    const double den = adx * bdy - ady * bdx;
+                    if (la < 1e-9 || lb < 1e-9 || std::fabs(den) < 1e-9 * la * lb) continue;
+                    const double ta = ((bx - ax) * bdy - (by - ay) * bdx) / den;
+                    const double tb = ((bx - ax) * ady - (by - ay) * adx) / den;
+                    // a lane mouth stops short of the main street's centreline: reach over its half width
+                    const double ga = (b->width * 0.5 + 2.0) / la, gb = (a->width * 0.5 + 2.0) / lb;
+                    if (ta < -ga || ta > 1.0 + ga || tb < -gb || tb > 1.0 + gb) continue;
+                    const double jx = ax + ta * adx, jy = ay + ta * ady;
+                    if (!near20.contains(jx, jy)) continue; // a mouth on a street just outside the slice
+                    bool dup = false;
+                    for (std::size_t k = firstPlate; k < plates.size(); ++k)
+                        if (plates[k].a == a->id && plates[k].b == b->id &&
+                            std::hypot(plates[k].x - jx, plates[k].y - jy) < a->width + b->width + 6.0)
+                            dup = true;
+                    if (dup) continue;
+                    const double uax = adx / la, uay = ady / la, ubx = bdx / lb, uby = bdy / lb;
+                    const double oa = b->width * 0.5 + 0.15, ob = a->width * 0.5 + 0.15;
+                    double bestX = 0.0, bestY = 0.0;
+                    int bestScore = -1;
+                    for (int sa = -1; sa <= 1; sa += 2)
+                        for (int sb = -1; sb <= 1; sb += 2) {
+                            const double cx = jx + sa * uax * oa + sb * ubx * ob;
+                            const double cy = jy + sa * uay * oa + sb * uby * ob;
+                            if (!near1.contains(cx, cy)) continue;
+                            // a corner the minor street really reaches (its centreline runs past it)
+                            const double along = (cx - ax) * uax + (cy - ay) * uay;
+                            const bool real = along >= -1.0 && along <= la + 1.0;
+                            const int score = (onBuilding(cx, cy) ? 4 : (onAnyStreet(cx, cy) ? 0 : 2)) + (real ? 1 : 0);
+                            if (score > bestScore) bestScore = score, bestX = cx, bestY = cy;
+                        }
+                    if (bestScore < 0) continue;
+                    bool taken = false; // one plate per corner (a link meeting a road where a lane does)
+                    for (std::size_t k = firstPlate; k < plates.size(); ++k)
+                        if (std::hypot(plates[k].x - bestX, plates[k].y - bestY) < 2.0) taken = true;
+                    if (taken) continue;
+                    BlockPlate p;
+                    p.id = "R10-NP-" + std::to_string(++n);
+                    p.a = a->id;
+                    p.b = b->id;
+                    p.x = bestX, p.y = bestY;
+                    p.z = ground.at(p.x, p.y);
+                    p.mount = bestScore >= 4 ? "wall" : "pole";
+                    p.rot = std::atan2(uay, uax) * 180.0 / 3.14159265358979323846;
+                    plates.push_back(p);
+                }
+        }
+}
+
+void blockPlacePlates(const std::vector<BlockPlanFeature>& features, const std::vector<MassingStreet>& streets,
+                      const BlockGround& ground, std::vector<BlockPlate>& plates) {
+    auto segDist = [](double px, double py, double ax, double ay, double bx, double by) {
+        const double dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+        double t = l2 > 0.0 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0.0;
+        t = std::clamp(t, 0.0, 1.0);
+        return std::hypot(px - ax - t * dx, py - ay - t * dy);
+    };
+    int n = 0;
+    for (const BlockPlanFeature& f : features) {
+        if (f.kind != BlockFeatureKind::Park && f.kind != BlockFeatureKind::Plaza && f.kind != BlockFeatureKind::Precinct) continue;
+        const BlockRect& r = f.r;
+        const double cx = (r.x0 + r.x1) * 0.5, cy = (r.y0 + r.y1) * 0.5;
+        // the side midpoints, each 1 m in, and the way along the side
+        const double sx[4] = {cx, cx, r.x0 + 1.0, r.x1 - 1.0}, sy[4] = {r.y0 + 1.0, r.y1 - 1.0, cy, cy};
+        const double ex[4] = {cx, cx, r.x0, r.x1}, ey[4] = {r.y0, r.y1, cy, cy};
+        int best = -1;
+        double bestD = 0.0;
+        for (int k = 0; k < 4; ++k) {
+            double d = 1e18;
+            for (const MassingStreet& s : streets)
+                for (std::size_t i = 1; i < s.points.size(); ++i)
+                    d = std::min(d, segDist(ex[k], ey[k], s.points[i - 1].x, s.points[i - 1].y, s.points[i].x, s.points[i].y) -
+                                        s.width * 0.5);
+            if (best < 0 || d < bestD) best = k, bestD = d;
+        }
+        BlockPlate p;
+        p.id = "R10-PL-" + std::to_string(++n);
+        p.a = f.id;
+        p.b = std::string(blockFeatureName(f.kind));
+        p.mount = "pole";
+        p.x = sx[best], p.y = sy[best];
+        p.z = ground.at(p.x, p.y);
+        p.rot = best < 2 ? 0.0 : 90.0;
+        plates.push_back(p);
     }
 }
 

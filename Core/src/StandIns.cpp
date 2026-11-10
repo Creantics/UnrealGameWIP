@@ -5,6 +5,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstring>
+#include <array>
 #include <utility>
 
 namespace ftcore {
@@ -71,13 +72,21 @@ struct Emit {
     }
 };
 
+// The four leaf greens, by a seeded share: mid, fresh light, deep blue-green and yellow-olive.
 StandInPaint leafOf(float u) {
-    return u < 0.45f ? StandInPaint::Leaf : (u < 0.75f ? StandInPaint::LeafDark : StandInPaint::LeafLight);
+    return u < 0.3f ? StandInPaint::Leaf : (u < 0.55f ? StandInPaint::LeafLight : (u < 0.8f ? StandInPaint::LeafDark : StandInPaint::LeafWarm));
 }
 
+// The canopies' fork shares, as standInCanopyMesh builds them (a test holds the two together).
+constexpr double kCanopyForkShare[kStandInCanopyVariants] = {0.3145186, 0.3343122, 0.3640813};
+
+// A tree: a clear trunk (it collides) up to the fork, and one canopy mesh over it, the fork at the canopy's foot. Its
+// crown width and depth vary by seed around the table's (+-12%), the canopy turns by seed, a park tree takes one of two
+// canopies. Two instances whatever the kind.
 void tree(Emit& e, const Seed& r, bool park) {
     const double k = std::clamp(static_cast<double>(e.p.scale), 0.6, 1.6);
-    const double crownW = e.p.canopy > 0.0 ? e.p.canopy : (park ? 7.0 + 3.0 * r.u(1) : 4.5 + 1.8 * r.u(1)) * k;
+    const double jitter = 0.88 + 0.24 * r.u(7);
+    const double crownW = (e.p.canopy > 0.0 ? e.p.canopy : (park ? 7.0 + 3.0 * r.u(1) : 4.5 + 1.8 * r.u(1)) * k) * jitter;
     double crownH = crownW * (0.72 + 0.16 * r.u(2));
     double clear = (park ? 2.6 + 1.0 * r.u(3) : 2.8 + 0.8 * r.u(3)) * k; // the trunk's clear height under the crown
     if (e.p.h > 0.0) {
@@ -85,21 +94,17 @@ void tree(Emit& e, const Seed& r, bool park) {
         crownH = std::min(crownH, 0.6 * e.p.h);
         clear = std::max(e.p.h - crownH, 1.8);
     }
-    const double crownZ = clear + crownH * 0.5;
-    const double trunk = clear + crownH * 0.35;
-    const double girth = (park ? 0.45 : 0.3) * k;
+    const std::size_t variant = park ? (r.u(8) < 0.5f ? 1u : 2u) : 0u;
+    const double share = kCanopyForkShare[variant];
+    const double top = clear + crownH;
+    // The fork under the crown by the canopy's own share, but never below 1.5 m (or 60% of the clear height).
+    const double fork = std::max(clear - share * crownH / (1.0 - share), std::min(1.5, 0.6 * clear));
+    const double girth = (park ? 0.42 : 0.3) * k;
+    const double trunk = fork + 0.15; // into the limbs' foot
     e.add(StandInShape::Cylinder, StandInPaint::Bark, StandInCollide::Solid, 0, 0, trunk * 0.5, girth, girth, trunk);
-    const StandInPaint leaf = leafOf(r.u(4));
-    e.add(StandInShape::Sphere, leaf, StandInCollide::None, 0, 0, crownZ, crownW, crownW * (0.85 + 0.1 * r.u(5)), crownH, 360.0 * r.u(6));
-    const std::size_t extra = park ? 2 : 1;
-    for (std::size_t i = 0; i < extra; ++i) {
-        const std::uint32_t salt = 10u + 10u * static_cast<std::uint32_t>(i);
-        const double a = 2.0 * kPi * r.u(salt);
-        const double off = crownW * (0.25 + 0.12 * r.u(salt + 1));
-        const double w = crownW * (0.55 + 0.15 * r.u(salt + 2));
-        e.add(StandInShape::Sphere, i == 0 ? leaf : leafOf(r.u(salt + 3)), StandInCollide::None, off * std::cos(a), off * std::sin(a),
-              crownZ + crownH * (0.05 + 0.15 * r.u(salt + 4)), w, w * 0.9, w * 0.75, 360.0 * r.u(salt + 5));
-    }
+    e.add(StandInShape::Canopy, leafOf(r.u(4)), StandInCollide::None, 0, 0, 0.5 * (fork + top), crownW, crownW * (0.85 + 0.15 * r.u(5)),
+          top - fork, 360.0 * r.u(6));
+    e.out[e.n - 1].variant = static_cast<std::uint8_t>(variant);
 }
 
 void shrub(Emit& e, const Seed& r) {
@@ -505,5 +510,241 @@ bool importStandIns(std::string_view csv, StandInKind defaultKind, std::vector<S
     if (!haveHeader) return fail(error, lineNo, "no header row");
     return true;
 }
+
+} // namespace ftcore
+
+// ---- The tree canopies -------------------------------------------------------------------------------------------
+
+namespace ftcore {
+
+namespace {
+
+// In the raw frame: the fork at the origin, the crown about a unit wide, z up.
+struct Clump {
+    double x = 0.0, y = 0.0, z = 0.0, r = 0.0;
+};
+struct Limb {
+    double a[3] = {}, b[3] = {};
+    double ra = 0.0, rb = 0.0;
+};
+struct CanopyLayout {
+    Clump clumps[8];
+    std::size_t clumpCount = 0;
+    Limb limbs[6];
+    std::size_t limbCount = 0;
+};
+
+// A clump's limb end: inside it, pulled towards the trunk's axis and down.
+void limbEnd(const Clump& c, double* out) {
+    out[0] = 0.75 * c.x;
+    out[1] = 0.75 * c.y;
+    out[2] = c.z - 0.3 * c.r;
+}
+
+// Street (0): four clumps in a ring with gaps between them and one over the axis; a single fork into three limbs.
+// Park (1, 2): six smaller ring clumps and one on top; two forks (one limb splits again half way).
+CanopyLayout canopyLayout(std::size_t variant) {
+    CanopyLayout l;
+    Seed r;
+    r.base = fnv(r.base, 0x7ee5u + static_cast<std::uint32_t>(variant));
+    const bool park = variant > 0;
+    const std::size_t ring = park ? 6 : 4;
+    const double step = 2.0 * kPi / static_cast<double>(ring);
+    const double a0 = 2.0 * kPi * r.u(1);
+    for (std::size_t i = 0; i < ring; ++i) {
+        const std::uint32_t s = 10u + 10u * static_cast<std::uint32_t>(i);
+        const double a = a0 + step * (static_cast<double>(i) + 0.4 * (r.u(s) - 0.5));
+        const double d = (park ? 0.34 : 0.3) + 0.08 * r.u(s + 1);
+        Clump& c = l.clumps[l.clumpCount++];
+        c.r = (park ? 0.13 : 0.15) + (park ? 0.05 : 0.06) * r.u(s + 2);
+        c.x = d * std::cos(a);
+        c.y = d * std::sin(a);
+        c.z = 0.42 + 0.2 * r.u(s + 3) + (i % 2 == 1 ? 0.09 : -0.03);
+    }
+    {
+        const double a = 2.0 * kPi * r.u(90);
+        Clump& c = l.clumps[l.clumpCount++];
+        c.r = park ? 0.19 : 0.2;
+        c.x = 0.08 * std::cos(a);
+        c.y = 0.08 * std::sin(a);
+        c.z = 0.78 + 0.06 * r.u(91);
+    }
+    const Clump top = l.clumps[l.clumpCount - 1];
+    const double base = 0.024, tip = 0.011;
+    const auto limb = [&l](const double* a, const double* b, double ra, double rb) {
+        Limb& m = l.limbs[l.limbCount++];
+        for (int k = 0; k < 3; ++k) {
+            m.a[k] = a[k];
+            m.b[k] = b[k];
+        }
+        m.ra = ra;
+        m.rb = rb;
+    };
+    const double fork[3] = {0.0, 0.0, 0.0};
+    double end[3];
+    limbEnd(l.clumps[0], end);
+    limb(fork, end, base, tip);
+    limbEnd(top, end);
+    limb(fork, end, base * 0.85, tip);
+    if (!park) {
+        limbEnd(l.clumps[2], end);
+        limb(fork, end, base, tip);
+    } else {
+        // The second fork: a limb towards clumps 2 and 4, splitting a little under the crown.
+        double e2[3], e4[3];
+        limbEnd(l.clumps[2], e2);
+        limbEnd(l.clumps[4], e4);
+        const double split[3] = {0.3 * (e2[0] + e4[0]), 0.3 * (e2[1] + e4[1]), 0.24};
+        limb(fork, split, base, 0.017);
+        limb(split, e2, 0.016, tip);
+        limb(split, e4, 0.016, tip);
+    }
+    return l;
+}
+
+// A unit icosphere subdivided once: 42 vertices, 80 triangles.
+void icosphere(std::vector<double>& v, std::vector<std::uint32_t>& f) {
+    const double t = (1.0 + std::sqrt(5.0)) / 2.0;
+    const double base[12][3] = {{-1, t, 0}, {1, t, 0}, {-1, -t, 0}, {1, -t, 0}, {0, -1, t}, {0, 1, t},
+                                {0, -1, -t}, {0, 1, -t}, {t, 0, -1}, {t, 0, 1}, {-t, 0, -1}, {-t, 0, 1}};
+    const std::uint32_t faces[20][3] = {{0, 11, 5}, {0, 5, 1},  {0, 1, 7},   {0, 7, 10}, {0, 10, 11}, {1, 5, 9}, {5, 11, 4},
+                                        {11, 10, 2}, {10, 7, 6}, {7, 1, 8},  {3, 9, 4},  {3, 4, 2},   {3, 2, 6}, {3, 6, 8},
+                                        {3, 8, 9},  {4, 9, 5},  {2, 4, 11}, {6, 2, 10}, {8, 6, 7},   {9, 8, 1}};
+    v.clear();
+    f.clear();
+    const auto push = [&v](double x, double y, double z) {
+        const double n = std::sqrt(x * x + y * y + z * z);
+        v.push_back(x / n);
+        v.push_back(y / n);
+        v.push_back(z / n);
+        return static_cast<std::uint32_t>(v.size() / 3 - 1);
+    };
+    for (const auto& p : base) push(p[0], p[1], p[2]);
+    std::vector<std::pair<std::uint64_t, std::uint32_t>> mids;
+    const auto mid = [&](std::uint32_t a, std::uint32_t b) {
+        const std::uint64_t key = (static_cast<std::uint64_t>(std::min(a, b)) << 32) | std::max(a, b);
+        for (const auto& m : mids)
+            if (m.first == key) return m.second;
+        const std::uint32_t i = push(v[3 * a] + v[3 * b], v[3 * a + 1] + v[3 * b + 1], v[3 * a + 2] + v[3 * b + 2]);
+        mids.emplace_back(key, i);
+        return i;
+    };
+    for (const auto& tri : faces) {
+        const std::uint32_t ab = mid(tri[0], tri[1]), bc = mid(tri[1], tri[2]), ca = mid(tri[2], tri[0]);
+        const std::uint32_t quads[4][3] = {{tri[0], ab, ca}, {tri[1], bc, ab}, {tri[2], ca, bc}, {ab, bc, ca}};
+        for (const auto& q : quads) f.insert(f.end(), {q[0], q[1], q[2]});
+    }
+}
+
+} // namespace
+
+bool standInCanopyMesh(std::size_t variant, StandInCanopyMesh& out) {
+    out.positions.clear();
+    out.triangles.clear();
+    out.normals.clear();
+    out.slots.clear();
+    if (variant >= kStandInCanopyVariants) return false;
+    const CanopyLayout l = canopyLayout(variant);
+    Seed r;
+    r.base = fnv(r.base, 0x10b5u + static_cast<std::uint32_t>(variant));
+
+    // Raw vertices, and per triangle the point its normal turns away from.
+    std::vector<double> pos;
+    std::vector<double> centres; // per triangle (x, y, z): its clump's centre, or its limb's axis point at its height
+    std::vector<std::uint32_t> tris;
+    std::vector<std::uint8_t> slots;
+    std::vector<double> sv;
+    std::vector<std::uint32_t> sf;
+    icosphere(sv, sf);
+    for (std::size_t c = 0; c < l.clumpCount; ++c) {
+        const Clump& k = l.clumps[c];
+        const std::uint32_t first = static_cast<std::uint32_t>(pos.size() / 3);
+        for (std::size_t i = 0; i < sv.size() / 3; ++i) {
+            // Lumpy (+-18% on the radius), flattened a little.
+            const double lump = 1.0 + 0.36 * (r.u(static_cast<std::uint32_t>(1000 * c + i)) - 0.5);
+            pos.push_back(k.x + k.r * lump * sv[3 * i]);
+            pos.push_back(k.y + k.r * lump * sv[3 * i + 1]);
+            pos.push_back(k.z + 0.8 * k.r * lump * sv[3 * i + 2]);
+        }
+        for (std::size_t t = 0; t < sf.size(); t += 3) {
+            tris.insert(tris.end(), {first + sf[t], first + sf[t + 1], first + sf[t + 2]});
+            centres.insert(centres.end(), {k.x, k.y, k.z});
+            slots.push_back(0);
+        }
+    }
+    // The limbs: five-sided tapered prisms with level ends, open (their ends are inside the trunk or the leaves).
+    constexpr int kSides = 5;
+    for (std::size_t m = 0; m < l.limbCount; ++m) {
+        const Limb& b = l.limbs[m];
+        const std::uint32_t first = static_cast<std::uint32_t>(pos.size() / 3);
+        for (int end = 0; end < 2; ++end) {
+            const double* p = end == 0 ? b.a : b.b;
+            const double rad = end == 0 ? b.ra : b.rb;
+            for (int s = 0; s < kSides; ++s) {
+                const double a = 2.0 * kPi * (s + 0.5 * end) / kSides;
+                pos.insert(pos.end(), {p[0] + rad * std::cos(a), p[1] + rad * std::sin(a), p[2]});
+            }
+        }
+        for (int s = 0; s < kSides; ++s) {
+            const std::uint32_t a0 = first + static_cast<std::uint32_t>(s), a1 = first + static_cast<std::uint32_t>((s + 1) % kSides);
+            const std::uint32_t b0 = a0 + kSides, b1 = a1 + kSides;
+            const std::array<std::uint32_t, 3> quad[2] = {{a0, a1, b0}, {a1, b1, b0}};
+            for (const auto& t : quad) {
+                tris.insert(tris.end(), {t[0], t[1], t[2]});
+                // The axis point at the triangle's centroid's height.
+                double cz = 0.0;
+                for (std::uint32_t v : t) cz += pos[3 * v + 2] / 3.0;
+                const double dz = b.b[2] - b.a[2];
+                const double s01 = std::clamp(dz != 0.0 ? (cz - b.a[2]) / dz : 0.5, 0.0, 1.0);
+                centres.insert(centres.end(), {b.a[0] + s01 * (b.b[0] - b.a[0]), b.a[1] + s01 * (b.b[1] - b.a[1]), cz});
+                slots.push_back(1);
+            }
+        }
+    }
+
+    // Into the unit box around the fork.
+    double halfX = 0.0, halfY = 0.0, topZ = 0.0;
+    for (std::size_t i = 0; i < pos.size(); i += 3) {
+        halfX = std::max(halfX, std::abs(pos[i]));
+        halfY = std::max(halfY, std::abs(pos[i + 1]));
+        topZ = std::max(topZ, pos[i + 2]);
+    }
+    const double kx = 0.5 / halfX, ky = 0.5 / halfY, kz = 1.0 / topZ;
+    const auto unit = [kx, ky, kz](double* p) {
+        p[0] *= kx;
+        p[1] *= ky;
+        p[2] = p[2] * kz - 0.5;
+    };
+    for (std::size_t i = 0; i < pos.size(); i += 3) unit(&pos[i]);
+    for (std::size_t i = 0; i < centres.size(); i += 3) unit(&centres[i]);
+
+    out.positions.reserve(pos.size());
+    for (double p : pos) out.positions.push_back(static_cast<float>(p));
+    out.slots = slots;
+    out.triangles.reserve(tris.size());
+    out.normals.reserve(tris.size());
+    for (std::size_t t = 0; t < tris.size(); t += 3) {
+        const double* a = &pos[3 * tris[t]];
+        const double* b = &pos[3 * tris[t + 1]];
+        const double* c = &pos[3 * tris[t + 2]];
+        const double u[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const double v[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+        const double n[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+        const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        const double* o = &centres[t];
+        const double away[3] = {(a[0] + b[0] + c[0]) / 3.0 - o[0], (a[1] + b[1] + c[1]) / 3.0 - o[1], (a[2] + b[2] + c[2]) / 3.0 - o[2]};
+        const bool flip = n[0] * away[0] + n[1] * away[1] + n[2] * away[2] < 0.0;
+        // Counter-clockwise seen from outside in this right-handed frame (the normal is the cross product); the engine
+        // side winds each triangle as it needs from the normal.
+        out.triangles.push_back(tris[t]);
+        out.triangles.push_back(flip ? tris[t + 2] : tris[t + 1]);
+        out.triangles.push_back(flip ? tris[t + 1] : tris[t + 2]);
+        const double sign = (flip ? -1.0 : 1.0) / (len > 0.0 ? len : 1.0);
+        for (int k = 0; k < 3; ++k) out.normals.push_back(static_cast<float>(n[k] * sign));
+    }
+    return true;
+}
+
+double standInCanopyForkShare(std::size_t variant) { return variant < kStandInCanopyVariants ? kCanopyForkShare[variant] : 0.0; }
 
 } // namespace ftcore

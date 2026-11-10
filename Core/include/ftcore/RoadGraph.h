@@ -62,6 +62,9 @@ FTCORE_API bool importRoadGraph(std::string_view csv, RoadGraph& out, std::strin
 // the left of each way (left-hand traffic), mitred at bends. One way: all lanes along its points. Appends.
 FTCORE_API void roadGraphStreetLanes(const MassingStreet& street, double speedKmh, bool oneWay, double pavementShare,
                                      RoadGraph& out);
+// A kerbed street's lanes (roadFootClass Vehicle): along its carriageway as roadFootSection lays it (a 4 m lane's off
+// centre), one way up to 6 m wide (a lane's 3 m), two ways wider. Nothing for a stair or a pedestrian way. Appends.
+FTCORE_API void roadGraphFootLanes(const MassingStreet& street, double speedKmh, RoadGraph& out);
 // The junctions of a street net: points within `snap` of each other, an end within `snap` of another street, and
 // crossing segments. Each with at least three arms gets two phases by bearing (the first street's axis A, the rest B)
 // and a zebra across each arm, kRoadZebraOff past the widest crossing street's kerb. Appends.

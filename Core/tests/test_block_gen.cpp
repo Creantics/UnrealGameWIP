@@ -51,12 +51,12 @@ TEST_CASE("blockFnv1a and blockSeed are 32-bit FNV-1a, pinned") {
 
 TEST_CASE("blockRowCount packs 10-16 m rows with alleys between back-to-back pairs") {
     double d = 0.0;
-    CHECK(blockRowCount(58.0 - 2.5 * 0.0, &d) == 4); // 4 rows, 1 alley
-    CHECK(d == doctest::Approx(13.875));
+    CHECK(blockRowCount(58.0, &d) == 4); // 4 rows, 3 alleys
+    CHECK(d == doctest::Approx((58.0 - 3 * kBlockAlley) / 4));
     CHECK(blockRowCount(45.5, &d) == 3);
-    CHECK(d == doctest::Approx(14.3333).epsilon(1e-3));
-    CHECK(blockRowCount(26.0, &d) == 2);
-    CHECK(d == doctest::Approx(13.0));
+    CHECK(d == doctest::Approx((45.5 - 2 * kBlockAlley) / 3));
+    CHECK(blockRowCount(26.0, &d) == 2); // back to back across one alley
+    CHECK(d == doctest::Approx((26.0 - kBlockAlley) / 2));
     CHECK(blockRowCount(15.0, &d) == 0);
 }
 
@@ -129,16 +129,25 @@ TEST_CASE("blockGenerate: back-to-back rows, an alley, frontage on both lanes, a
         CHECK(a.boxes[i].sx == b.boxes[i].sx);
         CHECK(a.boxes[i].z1 == b.boxes[i].z1);
     }
-    // 46 m deep: three rows of 14.5 m and one 2.5 m alley
-    CHECK(a.stats.alleys == 1);
-    bool alley = false;
+    // 46 m deep: three rows and an alley between each pair (the back-to-back pair too), cut clear through the road
+    // row to RD's edge at x 130; their west ends reach no street
+    const double row = (46.0 - 2 * kBlockAlley) / 3;
+    CHECK(a.stats.alleys == 2);
+    CHECK(a.stats.alleysCut == 2);
+    std::vector<BlockRect> alleys;
     for (const BlockPlanStreet& s : a.streets)
-        if (s.id == "SB-A1") {
-            alley = true;
+        if (s.id == "SB-A1" || s.id == "SB-A2") {
             CHECK(s.kind == "alley");
-            CHECK(s.y0 == doctest::Approx(14.5 * 2 + 1.25));
+            CHECK(s.width == doctest::Approx(kBlockAlley));
+            CHECK(s.y0 == doctest::Approx(s.id == "SB-A1" ? row + kBlockAlley * 0.5 : 2 * row + kBlockAlley * 1.5));
+            CHECK(s.x0 == doctest::Approx(0.0));
+            CHECK(s.x1 == doctest::Approx(130.0).epsilon(0.002));
+            alleys.push_back({s.x0, s.y0 - s.width * 0.5, s.x1, s.y0 + s.width * 0.5});
         }
-    CHECK(alley);
+    REQUIRE(alleys.size() == 2);
+    for (const BlockBox& x : a.boxes)
+        if (x.building)
+            for (const BlockRect& r : alleys) CHECK_FALSE(x.rect().overlaps(r, 0.01));
     // every lot stands inside its band, none overlaps another or the park
     std::vector<BlockRect> lots;
     for (const BlockBox& x : a.boxes)
@@ -186,7 +195,7 @@ TEST_CASE("blockGenerate pins one small layout") {
     REQUIRE(first != nullptr);
     CHECK(first->rect().x0 == doctest::Approx(0.0));
     CHECK(first->rect().y0 == doctest::Approx(0.0));
-    CHECK(first->sy == doctest::Approx(14.5));
+    CHECK(first->sy == doctest::Approx((46.0 - 2 * kBlockAlley) / 3));
     CHECK(first->sx >= kBlockShopMin * 0.8);
     CHECK(first->sx <= kBlockShopMax * kBlockCorner * 1.35);
 }
@@ -225,4 +234,189 @@ TEST_CASE("blockSweepKeep keeps zones, walls, kerbs and gutters on kept streets"
     CHECK_FALSE(blockSweepKeep(o, rect, streets, gen));
     o.cx = 180;
     CHECK(blockSweepKeep(o, rect, streets, gen));
+}
+
+TEST_CASE("blockGenerate: districts by band or feature, cue palettes, short-road notes") {
+    std::string csv = std::string(kPlan);
+    csv.replace(csv.find(",block,value\n"), 13, ",block,value,district\n");
+    csv.replace(csv.find("LN-S,LN-N,,,0,\n"), 15, "LN-S,LN-N,,,0,,D1\n");
+    const BlockGenResult a = generate(csv.c_str());
+    // SB in D1; RW and PK default to their own ids
+    REQUIRE(a.districts.size() == 3);
+    CHECK(a.districts[0].id == "D1");
+    CHECK(a.districts[1].id == "RW");
+    CHECK(a.districts[2].id == "PK");
+    CHECK(a.districts[0].colour != a.districts[1].colour);
+    CHECK(a.districts[0].sign != a.districts[1].sign);
+    CHECK(a.districts[0].paving != a.districts[1].paving);
+    std::size_t lots = 0;
+    for (const BlockDistrict& d : a.districts) lots += d.lots;
+    CHECK(lots == a.stats.lots);
+    for (const BlockBox& x : a.boxes) {
+        if (x.row == "SB") CHECK(x.district == "D1");
+        if (!x.district.empty()) CHECK(x.note.find("district=" + x.district) != std::string::npos);
+    }
+    // the 70 m road is noted as too short for a main street
+    bool noted = false;
+    for (const std::string& n : a.stats.notes) noted = noted || n.rfind("RD: a road only 70 m", 0) == 0;
+    CHECK(noted);
+    // "name@k" takes palette slot k and drops the suffix
+    std::string csv2 = csv;
+    csv2.replace(csv2.find(",,D1\n"), 5, ",,D1@4\n");
+    const BlockGenResult b = generate(csv2.c_str());
+    REQUIRE(b.districts.size() == 3);
+    CHECK(b.districts[0].id == "D1");
+    CHECK(b.districts[0].colour == "#3E7D3A");
+    CHECK(b.districts[1].colour == a.districts[1].colour);
+    for (const BlockBox& x : b.boxes)
+        if (x.row == "SB") CHECK(x.district == "D1");
+}
+
+TEST_CASE("BlockGround: a local frame samples the turned world point") {
+    BlockGround g;
+    MassingBox z;
+    z.id = "Z";
+    z.kind = "zone";
+    z.source = MassingSource::Zone;
+    z.cx = 100.0, z.cy = 50.0, z.sx = 4.0, z.sy = 4.0, z.z0 = 0.0, z.z1 = 7.0;
+    g.setZones({z});
+    CHECK(g.at(100.0, 50.0) == doctest::Approx(7.0));
+    g.setFrame(100.0, 40.0, 90.0); // local +x runs north from (100, 40)
+    double wx = 0.0, wy = 0.0, lx = 0.0, ly = 0.0;
+    g.toWorld(10.0, 0.0, wx, wy);
+    CHECK(wx == doctest::Approx(100.0));
+    CHECK(wy == doctest::Approx(50.0));
+    g.toLocal(wx, wy, lx, ly);
+    CHECK(lx == doctest::Approx(10.0));
+    CHECK(ly == doctest::Approx(0.0).epsilon(1e-9));
+    CHECK(g.at(10.0, 0.0) == doctest::Approx(7.0));
+    CHECK(g.at(100.0, 50.0) != doctest::Approx(7.0));
+}
+
+namespace {
+MassingStreet routeStreet(const char* id, const char* kind, double w, double pav, double x0, double y0, double x1, double y1) {
+    MassingStreet s;
+    s.id = id;
+    s.kind = kind;
+    s.width = w;
+    s.pavement = pav;
+    s.points = {MassingVec{x0, y0, 0}, MassingVec{x1, y1, 0}};
+    return s;
+}
+} // namespace
+
+TEST_CASE("blockStreetRole, blockStraightRun and blockRouteTables") {
+    MassingStreet bent = routeStreet("B", "road", 14, 3.5, 0, 0, 100, 0);
+    bent.points.push_back(MassingVec{200, 3, 0});  // under 5 degrees: still straight
+    bent.points.push_back(MassingVec{260, 60, 0}); // 45 degrees: a new run
+    CHECK(blockStreetRole(bent) == BlockRole::Main);
+    CHECK(blockStraightRun(bent) == doctest::Approx(100.0 + std::hypot(100.0, 3.0)));
+    CHECK(blockStreetRole(routeStreet("L", "core_lane", 6, 0, 0, 0, 1, 0)) == BlockRole::Lane);
+    CHECK(blockStreetRole(routeStreet("A", "alley", 2.5, 0, 0, 0, 1, 0)) == BlockRole::Alley);
+    CHECK(blockStreetRole(routeStreet("N", "core_lane", 3, 0, 0, 0, 1, 0)) == BlockRole::Alley); // 3 m or narrower
+    CHECK(blockRoleName(BlockRole::Main) == "road");
+    CHECK(blockStreetRole(routeStreet("U", "road", 8, 1, 0, 0, 1, 0)) == BlockRole::Lane); // too narrow for a main
+
+    // two mains at y 0 and y 100, a lane from one to the other (mouths stopping at the kerbs), a market lane
+    std::vector<MassingStreet> s = {routeStreet("M1", "road", 14, 3.5, -50, 0, 250, 0),
+                                    routeStreet("M2", "road", 14, 3.5, -50, 100, 250, 100),
+                                    routeStreet("LN", "core_lane", 6, 0, 50, 7, 50, 93),
+                                    routeStreet("MK", "market_arcade", 5, 0, 150, 7, 150, 93)};
+    std::vector<MassingBox> boxes;
+    MassingBox b; // a corner building east of the lane, north of M1
+    b.id = "K", b.kind = "kit", b.cx = 60, b.cy = 17, b.sx = 14, b.sy = 20, b.z0 = 0, b.z1 = 12;
+    boxes.push_back(b);
+    std::vector<BlockStreetFlag> flags;
+    std::vector<BlockPlate> plates;
+    blockRouteTables(s, boxes, {0, 0, 200, 100}, BlockGround{}, flags, plates);
+    REQUIRE(flags.size() == 4);
+    CHECK(flags[0].main);
+    CHECK(flags[0].treeEvery == doctest::Approx(10.0));
+    CHECK(flags[0].lampKind == "mast");
+    CHECK(flags[0].role == "road");
+    CHECK(flags[0].mouth == "junction");
+    CHECK(flags[2].role == "lane");
+    CHECK(flags[2].mouth == "dropped_kerb");
+    CHECK(flags[3].role == "market");
+    CHECK(flags[3].lampEvery < flags[2].lampEvery);
+    CHECK(flags[0].signsPer100 > flags[2].signsPer100);
+    // four junctions (each lane's two mouths), the minor street first; the lane's south-east corner sits on K
+    REQUIRE(plates.size() == 4);
+    bool wall = false;
+    for (const BlockPlate& p : plates) {
+        CHECK((p.a == "LN" || p.a == "MK"));
+        CHECK((p.b == "M1" || p.b == "M2"));
+        if (p.a == "LN" && p.b == "M1") {
+            CHECK(p.x == doctest::Approx(50 + 3.15));
+            CHECK(p.y == doctest::Approx(7.15));
+            CHECK(p.mount == "wall");
+            wall = true;
+        }
+    }
+    CHECK(wall);
+}
+
+TEST_CASE("blockGenerate r10 dressing: roof garden, market stalls, gate roof and path, park paths, place plates") {
+    const char* plan = "type,id,kind,class,x0,y0,x1,y1,width,pavement,low,high,start,end,block,value,top\n"
+                       "street,LN-S,core_lane,lane,0,-3,130,-3,6,1.5,,,,,,,\n"
+                       "street,MK,market_arcade,market,0,49,130,49,6,1.5,,,,,,,\n"
+                       "feature,PD,podium,,0,0,40,40,0,,,,,,,2,\n"
+                       "feature,TW,podium,,45,0,85,40,32,,,,,,,2,\n"
+                       "feature,PR,precinct,,90,0,130,40,,,,,,,,,\n"
+                       "feature,HL,hall,,95,10,110,30,,,,,,,,2,\n"
+                       "feature,GT,gate,,129,17,130,23,,,,,,,,,\n"
+                       "feature,PK,park,,90,41,105,46,,,,,,,,,\n";
+    const BlockGenResult a = generate(plan);
+    // the towerless podium's 40 m roof is planted, on its roof; the tower's 4 m aprons are not
+    std::size_t roof = 0;
+    for (const BlockTree& t : a.trees)
+        if (t.host == "R9-F-PD") {
+            ++roof;
+            CHECK(t.kind == "park");
+            CHECK(t.z > 5.0);
+        }
+    CHECK(roof == a.stats.roofTrees);
+    CHECK(roof >= 25);
+    for (const BlockTree& t : a.trees) CHECK(t.host != "R9-F-TW");
+    // stalls on both of the market's footways (y 47.5..48.7 and 49.3..50.5), none on the lane
+    std::size_t stalls = 0, gateRoof = 0, gatePath = 0, parkPath = 0;
+    for (const BlockBox& b : a.boxes) {
+        if (b.kind == "stand") {
+            ++stalls;
+            CHECK(b.row == "MK");
+            CHECK(std::fabs(std::fabs(b.cy - 49.0) - 2.25) < 1e-6);
+            CHECK(b.z1 - b.ground == doctest::Approx(2.4));
+        }
+        if (b.id == "R10-GR-GT") {
+            ++gateRoof;
+            CHECK(b.kind == "deck");
+        }
+        if (b.id == "R10-GP-GT") {
+            ++gatePath;
+            CHECK(b.kind == "marking");
+            CHECK(b.rect().x0 == doctest::Approx(110.0)); // from the hall's east face to the gate
+            CHECK(b.rect().x1 == doctest::Approx(130.0));
+        }
+        if (b.note.find("park=1") != std::string::npos) ++parkPath;
+    }
+    CHECK(stalls == a.stats.stalls);
+    CHECK(stalls >= 30);
+    CHECK(gateRoof == 1);
+    CHECK(gatePath == 1);
+    CHECK(parkPath == 3);
+    // a pole plate for the park and the precinct, on the side nearest a street
+    BlockPlan p;
+    REQUIRE(importBlockPlan(plan, p));
+    std::vector<MassingStreet> streets(1);
+    streets[0].id = "MK";
+    streets[0].width = 6.0;
+    streets[0].points = {MassingVec{0, 49, 0}, MassingVec{130, 49, 0}};
+    std::vector<BlockPlate> plates;
+    blockPlacePlates(p.features, streets, BlockGround{}, plates);
+    REQUIRE(plates.size() == 2);
+    CHECK(plates[0].a == "PR");
+    CHECK(plates[0].b == "precinct");
+    CHECK(plates[1].a == "PK");
+    CHECK(plates[1].y == doctest::Approx(45.0)); // the park's north side, 1 m in
+    CHECK(plates[1].mount == "pole");
 }

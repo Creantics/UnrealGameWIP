@@ -461,8 +461,10 @@ RoadColor roadTint(RoadTint tint) {
     case RoadTint::TaxiYellow: return {0.75f, 0.52f, 0.05f, 0.3f};
     case RoadTint::BusGreen: return {0.10f, 0.35f, 0.22f, 0.3f};
     case RoadTint::Tactile: return {0.75f, 0.55f, 0.08f, 0.6f};
-    case RoadTint::SharedLane: return {0.36f, 0.355f, 0.34f, 0.8f};
+    case RoadTint::Footway: return {0.30f, 0.29f, 0.27f, 0.8f};
     case RoadTint::Water: return {0.02f, 0.05f, 0.05f, 0.03f};
+    case RoadTint::Gutter: return {0.025f, 0.025f, 0.027f, 0.3f};
+    case RoadTint::Drain: return {0.12f, 0.12f, 0.13f, 0.45f};
     case RoadTint::Count: break;
     }
     return {0.5f, 0.5f, 0.5f, -1.f};
@@ -475,7 +477,7 @@ const char* roadTintName(RoadTint tint) {
                                         "Glass",     "Wood",         "BarrierRed", "Wire",     "Tyre",
                                         "CarWhite",  "CarSilver",    "CarBlack",  "CarRed",    "CarBlue",
                                         "CarGreen",  "CarCream",     "TaxiYellow", "BusGreen",  "Tactile",
-                                        "SharedLane", "Water"};
+                                        "Footway",   "Water",        "Gutter",    "Drain"};
     const auto i = static_cast<std::size_t>(tint);
     return i < sizeof names / sizeof names[0] ? names[i] : "Unknown";
 }
@@ -488,7 +490,7 @@ int roadTintStreet(RoadTint tint) {
     case RoadTint::Kerb: return 3;
     case RoadTint::LineWhite:
     case RoadTint::LineYellow: return 4;
-    case RoadTint::SharedLane: return 5;
+    case RoadTint::Footway: return 5;
     case RoadTint::Tactile: return kRoadStreetTactile;
     default: return 0;
     }
@@ -1362,9 +1364,19 @@ std::size_t roadTwoWheelers(const std::vector<MassingStreet>& lanes, const RoadT
                     v.x = p.x;
                     v.y = p.y;
                     v.z = groundAt(p.x, p.y);
+                    double top = 0.0;
+                    if (opts.footways && roadFootwayTop(*opts.footways, p.x, p.y, top)) v.z = top;
                     v.rot = f.rot + (((h >> 20) & 1U) ? 180.0 : 0.0);
                     v.body = bodies[(h >> 24) % 5];
                     v.where = st.id;
+                    if (opts.footways) {
+                        // Off the lanes' carriageways (a 4 m lane's kerbless side is carriageway).
+                        bool onWay = false;
+                        const MassingFoot vf = roadVehicleFoot(v);
+                        for (const MassingFoot& lw : opts.footways->laneWays)
+                            if (!onWay && massingFeetOverlap(vf, lw, 0.0)) onWay = true;
+                        if (onWay) continue;
+                    }
                     if (!vehicleFree(roadVehicleFoot(v), road, doors, taken, out, first)) continue;
                     out.push_back(std::move(v));
                 }
@@ -1412,6 +1424,8 @@ std::size_t roadLaneLamps(const std::vector<MassingStreet>& lanes, const RoadLan
     const std::size_t first = out.size();
     for (const MassingStreet& st : lanes) {
         if (st.width > opts.laneUpTo + 1e-9 || st.points.size() < 2) continue;
+        // A kerbed or paved street's lamps stand on its footways; a stair's on the ground as before.
+        const bool onFoot = opts.footways && roadFootClass(st) != RoadFootClass::None;
         for (std::size_t seg = 0; seg + 1 < st.points.size(); ++seg) {
             const MassingVec a = st.points[seg], b = st.points[seg + 1];
             const double l = std::hypot(b.x - a.x, b.y - a.y);
@@ -1440,6 +1454,21 @@ std::size_t roadLaneLamps(const std::vector<MassingStreet>& lanes, const RoadLan
                     ft.hy = opts.footY * 0.5;
                     ft.rot = lamp.face;
                     bool hit = false;
+                    if (onFoot) {
+                        // Wholly on a footway: its centre and corners, standing on the highest top there.
+                        double best = -1e30;
+                        for (int c = 0; c < 5 && !hit; ++c) {
+                            const double cu = c == 0 ? 0.0 : ((c & 1) ? ft.hx : -ft.hx);
+                            const double cw = c == 0 ? 0.0 : ((c & 2) ? ft.hy : -ft.hy);
+                            const double ca = std::cos(lamp.face * kPi / 180.0), sa = std::sin(lamp.face * kPi / 180.0);
+                            double top = 0.0;
+                            if (!roadFootwayTop(*opts.footways, p.x + cu * ca - cw * sa, p.y + cu * sa + cw * ca, top))
+                                hit = true;
+                            else
+                                best = std::max(best, top);
+                        }
+                        if (!hit) lamp.z = best;
+                    }
                     for (const MassingFoot& d : doors)
                         if (massingFeetOverlap(ft, d, 0.0)) hit = true;
                     if (taken)
@@ -3236,6 +3265,641 @@ std::string roadQuayCsv(const std::vector<RoadQuayPoint>& points) {
         s += p.kind + "," + p.id + "," + p.group + buf + p.deck + "\n";
     }
     return s;
+}
+
+// ---- Footways: kerbed lanes and paved alleys ----
+
+RoadFootClass roadFootClass(const MassingStreet& street) {
+    const std::string& k = street.kind;
+    if (k == "stair" || k == "link_stair") return RoadFootClass::None;
+    if (k == "alley" || k == "market_arcade") return RoadFootClass::Pedestrian;
+    if (street.width <= kFootAlleyUpTo + 1e-9) return RoadFootClass::Pedestrian;
+    return RoadFootClass::Vehicle;
+}
+
+RoadFootSection roadFootSection(const MassingStreet& street) {
+    RoadFootSection s;
+    const double w = street.width, h = w * 0.5;
+    if (w < kFootLaneCarriage + kFootLaneMin - 1e-9) return s;
+    if (w <= kFootLaneUpTo + 1e-9) {
+        const double rest = w - kFootLaneCarriage;
+        // The table's own footway width (its pavement column) when it leaves the carriageway its 3 m.
+        if (street.pavement >= kFootLaneMin - 1e-9 && w - 2.0 * street.pavement >= kFootLaneCarriage - 1e-9) {
+            s.footLeft = s.footRight = street.pavement;
+            s.cwLo = -h + street.pavement;
+            s.cwHi = h - street.pavement;
+            return s;
+        }
+        if (rest * 0.5 >= kFootLaneMin - 1e-9) {
+            const double each = std::min(kFootLaneMax, rest * 0.5);
+            s.footLeft = each;
+            s.footRight = each;
+            const double cw = w - 2.0 * each;
+            s.cwLo = -cw * 0.5;
+            s.cwHi = cw * 0.5;
+        } else {
+            s.footLeft = std::min(kFootLaneMax, rest);
+            s.cwHi = h - s.footLeft;
+            s.cwLo = -h;
+        }
+        return s;
+    }
+    const double each = street.pavement > 0.0 ? street.pavement : std::clamp(0.2 * w, kFootRoadMin, kFootRoadMax);
+    s.footLeft = each;
+    s.footRight = each;
+    s.cwLo = -h + each;
+    s.cwHi = h - each;
+    return s;
+}
+
+namespace {
+
+constexpr double kFootCell = 16.0;      // m: the neighbour grid's cell
+constexpr double kFootReachEnd = 2.0;   // m: a street's carriageway reaches this far past a free end (its mouth)
+constexpr double kFootPaveLift = 0.05;  // m: an alley's paving over the ground
+constexpr double kFootUnder = 0.1;      // m: a piece reaches this far under its lowest ground
+constexpr double kFootSkin = 0.006;     // m: a drain or tactile strip's top over its surface
+constexpr double kFootBollardIn = 0.4;  // m: an alley's bollards inside the other street's wall line
+constexpr double kFootMitreMax = 2.0;   // the tan(half turn) a bend's mitre takes at most
+constexpr std::size_t kFootNet = static_cast<std::size_t>(-1);
+
+struct FootSeg {
+    MassingFoot whole, cw;
+    MassingFoot side; // whole, less an end inside another street: where it stops the other's footways
+    std::size_t street = 0; // streets index; kFootNet: the network's band
+    std::size_t seg = 0;    // its segment (first point's index) along the street
+    Frame f;
+    double len = 0.0, lo = 0.0, hi = 0.0, e0 = 0.0, e1 = 0.0;
+    bool first = false, last = false;
+};
+
+struct FootGrid {
+    double x0 = 0.0, y0 = 0.0;
+    std::size_t nx = 0, ny = 0;
+    std::vector<std::vector<std::size_t>> cells;
+    void init(double ax, double ay, double bx, double by) {
+        x0 = ax;
+        y0 = ay;
+        nx = static_cast<std::size_t>(std::max(1.0, std::ceil((bx - ax) / kFootCell)));
+        ny = static_cast<std::size_t>(std::max(1.0, std::ceil((by - ay) / kFootCell)));
+        cells.assign(nx * ny, {});
+    }
+    std::size_t ix(double x) const {
+        return static_cast<std::size_t>(std::clamp(std::floor((x - x0) / kFootCell), 0.0, static_cast<double>(nx - 1)));
+    }
+    std::size_t iy(double y) const {
+        return static_cast<std::size_t>(std::clamp(std::floor((y - y0) / kFootCell), 0.0, static_cast<double>(ny - 1)));
+    }
+    void add(const MassingFoot& f, std::size_t item) {
+        const double r = std::hypot(f.hx, f.hy);
+        for (std::size_t j = iy(f.y - r); j <= iy(f.y + r); ++j)
+            for (std::size_t i = ix(f.x - r); i <= ix(f.x + r); ++i) cells[j * nx + i].push_back(item);
+    }
+    const std::vector<std::size_t>& at(double x, double y) const { return cells[iy(y) * nx + ix(x)]; }
+};
+
+bool footHas(const MassingFoot& f, double x, double y, double grow) {
+    double u = 0.0, w = 0.0;
+    localOf(f, x, y, u, w);
+    return std::fabs(u) <= f.hx + grow && std::fabs(w) <= f.hy + grow;
+}
+
+// A rectangle over s0..s1 by t0..t1 of a frame.
+MassingFoot frameFoot(const Frame& f, double s0, double s1, double t0, double t1) {
+    MassingFoot r;
+    const RoadPoint c = f.at((s0 + s1) * 0.5, (t0 + t1) * 0.5);
+    r.x = c.x;
+    r.y = c.y;
+    r.hx = std::fabs(s1 - s0) * 0.5;
+    r.hy = std::fabs(t1 - t0) * 0.5;
+    r.rot = f.rot;
+    return r;
+}
+
+// A box over s0..s1 by t0..t1, its top zA at s0 and zB at s1, its bottom reaching `bottom` at its lowest.
+MassingBox footBox(const Frame& f, double s0, double s1, double t0, double t1, double zA, double zB, double bottom,
+                   const std::string& id, const std::string& row, const char* kind) {
+    MassingBox b;
+    b.id = id;
+    b.row = row;
+    b.kind = kind;
+    b.source = MassingSource::Invented;
+    const RoadPoint c = f.at((s0 + s1) * 0.5, (t0 + t1) * 0.5);
+    b.cx = c.x;
+    b.cy = c.y;
+    b.sx = std::max(0.01, s1 - s0);
+    b.sy = std::max(0.01, std::fabs(t1 - t0));
+    b.rot = f.rot;
+    b.riseU = (zB - zA) / b.sx;
+    b.z1 = (zA + zB) * 0.5;
+    b.z0 = std::min(b.z1 - 0.03, bottom + std::fabs(b.riseU) * b.sx * 0.5);
+    return b;
+}
+
+// Why a footway sample is left out.
+enum class FootGap : std::uint8_t { None, Mouth, Other, Net, Sea };
+
+struct FootBuilder {
+    const MassingGround& ground;
+    RoadBuild& out;
+    std::vector<FootSeg> segs;
+    FootGrid grid;
+    int n = 0;
+
+    FootBuilder(const MassingGround& g, RoadBuild& o) : ground(g), out(o) {}
+
+    double groundAt(double x, double y) const {
+        return massingGroundAt(ground.grid, ground.samplesX, ground.samplesY, ground.spacing, ground.originX,
+                               ground.originY, x, y);
+    }
+    std::string id(const std::string& row, const char* part) {
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "-%s-%d", part, ++n);
+        return row + buf;
+    }
+    void put(const MassingBox& b, RoadTint tint, bool collide, bool walked, RoadShape shape = RoadShape::Cube) {
+        RoadSolid s;
+        s.box = b;
+        s.tint = tint;
+        s.collide = collide;
+        s.shape = shape;
+        s.instanced = true;
+        out.solids.push_back(std::move(s));
+        ++out.counts.solids;
+        if (collide) ++out.counts.collide;
+        if (walked) out.footways.push_back(b);
+    }
+    // What a plan point near street `self`'s segment `seg` lies in (an alley ignores the others' carriageways: it meets
+    // them at a step). The street's own segments other than this one and its neighbours count as another street's,
+    // without a mouth (a hairpin's inner footways): their carriageway stops it, and of two overlapping footways the
+    // later segment's gives way.
+    FootGap gapAt(std::size_t self, std::size_t seg, double x, double y, bool alley) const {
+        FootGap g = FootGap::None;
+        for (const std::size_t k : grid.at(x, y)) {
+            const FootSeg& sg = segs[k];
+            if (sg.street == self) {
+                if (sg.seg + 1 >= seg && sg.seg <= seg + 1) continue;
+                if (footHas(sg.cw, x, y, 0.0) || (sg.seg < seg && footHas(sg.side, x, y, 0.0))) g = FootGap::Other;
+                continue;
+            }
+            if (sg.street == kFootNet) {
+                if (footHas(sg.whole, x, y, 0.0)) return FootGap::Net;
+                continue;
+            }
+            if (!alley && footHas(sg.cw, x, y, 0.0)) return FootGap::Mouth;
+            if (footHas(sg.side, x, y, 0.0)) g = FootGap::Other;
+        }
+        if (g == FootGap::None && groundAt(x, y) <= kFootDryAbove) g = FootGap::Sea;
+        return g;
+    }
+};
+
+// The mitre of a polyline's joint i (0 < i < size - 1): tan(half the turn), left turns positive, clamped.
+double mitreAt(const std::vector<MassingVec>& p, std::size_t i) {
+    const double a0 = std::atan2(p[i].y - p[i - 1].y, p[i].x - p[i - 1].x);
+    const double a1 = std::atan2(p[i + 1].y - p[i].y, p[i + 1].x - p[i].x);
+    double d = a1 - a0;
+    while (d > kPi) d -= 2.0 * kPi;
+    while (d < -kPi) d += 2.0 * kPi;
+    return std::clamp(std::tan(d * 0.5), -kFootMitreMax, kFootMitreMax);
+}
+// How far a box over t0..t1 runs past a joint of mitre m (at its end; the next segment's start takes m too) so its
+// outer corner laps the other's: the most of -t m over its two edges (negative: cut back on the inside of the bend).
+double mitreReach(double m, double t0, double t1) { return std::max(-t0 * m, -t1 * m); }
+
+// Linear ground along a sampled line.
+double sampledAt(const std::vector<double>& zs, int steps, double ds, double s) {
+    const double q = std::clamp(s / ds, 0.0, static_cast<double>(steps));
+    const int lo = std::min(steps - 1, static_cast<int>(std::floor(q)));
+    const double fr = q - lo;
+    return zs[static_cast<std::size_t>(lo)] * (1.0 - fr) + zs[static_cast<std::size_t>(lo + 1)] * fr;
+}
+
+} // namespace
+
+void roadFootways(const std::vector<MassingStreet>& streets, const std::vector<std::string>& skipIds,
+                  const MassingGround& ground, const RoadBuild* net, RoadBuild& out, RoadFootReport* report) {
+    RoadFootReport local;
+    RoadFootReport& rep = report ? *report : local;
+    FootBuilder fb(ground, out);
+
+    // Classes, sections and the neighbour grid over every vehicle street's segments and the network's bands.
+    std::vector<RoadFootClass> cls(streets.size(), RoadFootClass::None);
+    std::vector<RoadFootSection> sec(streets.size());
+    double bx0 = 1e30, by0 = 1e30, bx1 = -1e30, by1 = -1e30;
+    auto grow = [&](const MassingFoot& f) {
+        const double r = std::hypot(f.hx, f.hy);
+        bx0 = std::min(bx0, f.x - r);
+        by0 = std::min(by0, f.y - r);
+        bx1 = std::max(bx1, f.x + r);
+        by1 = std::max(by1, f.y + r);
+    };
+    for (std::size_t i = 0; i < streets.size(); ++i) {
+        const MassingStreet& st = streets[i];
+        if (st.points.size() < 2 || std::find(skipIds.begin(), skipIds.end(), st.id) != skipIds.end()) {
+            ++rep.skipped;
+            continue;
+        }
+        cls[i] = roadFootClass(st);
+        if (cls[i] == RoadFootClass::None) {
+            ++rep.skipped;
+            continue;
+        }
+        for (const MassingVec& p : st.points) {
+            MassingFoot pf;
+            pf.x = p.x;
+            pf.y = p.y;
+            pf.hx = pf.hy = st.width;
+            grow(pf);
+        }
+        if (cls[i] == RoadFootClass::Pedestrian) {
+            ++rep.pedestrian;
+            continue;
+        }
+        ++rep.vehicle;
+        sec[i] = roadFootSection(st);
+        const RoadFootSection& sc = sec[i];
+        const double h = st.width * 0.5;
+        const bool cwOk = sc.cwHi > sc.cwLo;
+        for (std::size_t k = 0; k + 1 < st.points.size(); ++k) {
+            const MassingVec a = st.points[k], b = st.points[k + 1];
+            const double l = std::hypot(b.x - a.x, b.y - a.y);
+            if (l < 1e-6) continue;
+            const Frame f = frameOf(a.x, a.y, b.x, b.y);
+            FootSeg sg;
+            sg.street = i;
+            sg.seg = k;
+            sg.whole = frameFoot(f, 0.0, l, -h, h);
+            sg.side = sg.whole;
+            sg.f = f;
+            sg.len = l;
+            sg.lo = cwOk ? sc.cwLo : -h;
+            sg.hi = cwOk ? sc.cwHi : h;
+            sg.first = k == 0;
+            sg.last = k + 2 == st.points.size();
+            // A joint: half the carriageway on past it (the bend's wedge); an end: decided once every street is in.
+            const double half = (sg.hi - sg.lo) * 0.5;
+            sg.e0 = sg.first ? 0.0 : half;
+            sg.e1 = sg.last ? 0.0 : half;
+            sg.cw = frameFoot(f, -sg.e0, l + sg.e1, sg.lo, sg.hi);
+            if (cwOk) out.laneWays.push_back(frameFoot(f, 0.0, l, sc.cwLo, sc.cwHi));
+            grow(sg.cw);
+            fb.segs.push_back(sg);
+        }
+    }
+    if (net)
+        for (const MassingFoot& b : net->band) {
+            FootSeg sg;
+            sg.street = kFootNet;
+            sg.whole = b;
+            sg.side = b;
+            sg.cw = b;
+            fb.segs.push_back(sg);
+        }
+    if (bx0 > bx1) return; // nothing to build
+    fb.grid.init(bx0, by0, bx1, by1);
+    for (std::size_t k = 0; k < fb.segs.size(); ++k) fb.grid.add(fb.segs[k].whole, k);
+    // A street's free end (not inside another vehicle street or the network's band) carries its carriageway on
+    // kFootReachEnd, through the kerb line of a street it stops short of; an end inside another street needs none (its
+    // carriageway already crosses the near footway) and must not reach the far one. Such an end's stretch inside the
+    // other street is left out of its `side`, so the other's footway runs on to its carriageway (the corner).
+    for (std::size_t k = 0; k < fb.segs.size(); ++k) {
+        FootSeg& sg = fb.segs[k];
+        if (sg.street == kFootNet) continue;
+        auto inOther = [&](double s) {
+            const RoadPoint p = sg.f.at(s, 0.0);
+            for (const std::size_t o : fb.grid.at(p.x, p.y))
+                if (fb.segs[o].street != sg.street && footHas(fb.segs[o].whole, p.x, p.y, 0.0)) return true;
+            return false;
+        };
+        double cut[2] = {0.0, 0.0};
+        for (int end = 0; end < 2; ++end) {
+            if (end == 0 ? !sg.first : !sg.last) continue;
+            if (!inOther(end == 0 ? 0.0 : sg.len)) {
+                (end == 0 ? sg.e0 : sg.e1) = kFootReachEnd;
+                continue;
+            }
+            double c = 0.0;
+            while (c < sg.len && inOther(end == 0 ? c : sg.len - c)) c += 0.25;
+            cut[end] = std::min(c, sg.len);
+        }
+        const double h = sg.whole.hy;
+        sg.side = frameFoot(sg.f, cut[0], sg.len - cut[1], -h, h);
+        if (cut[0] + cut[1] >= sg.len) sg.side.hx = sg.side.hy = -1.0; // wholly inside: stops nothing
+        sg.cw = frameFoot(sg.f, -sg.e0, sg.len + sg.e1, sg.lo, sg.hi);
+        fb.grid.add(sg.cw, k);
+    }
+    for (std::vector<std::size_t>& c : fb.grid.cells) {
+        std::sort(c.begin(), c.end());
+        c.erase(std::unique(c.begin(), c.end()), c.end());
+    }
+
+    const double lift = kRoadSurfaceLift + kRoadKerbRise;
+    std::vector<double> zs;
+    std::vector<FootGap> gs;
+    for (std::size_t i = 0; i < streets.size(); ++i) {
+        const MassingStreet& st = streets[i];
+        const double h = st.width * 0.5;
+        if (cls[i] == RoadFootClass::Vehicle) {
+            const RoadFootSection& sc = sec[i];
+            RoadFootStreet fs;
+            fs.id = st.id;
+            fs.wantLeft = sc.footLeft > 0.0;
+            fs.wantRight = sc.footRight > 0.0;
+            double kept[2] = {0.0, 0.0};
+            for (std::size_t k = 0; k + 1 < st.points.size(); ++k) {
+                const MassingVec a = st.points[k], b = st.points[k + 1];
+                const double l = std::hypot(b.x - a.x, b.y - a.y);
+                if (l < 1e-6) continue;
+                const Frame f = frameOf(a.x, a.y, b.x, b.y);
+                const double m0 = k > 0 ? mitreAt(st.points, k) : 0.0;
+                const double m1 = k + 2 < st.points.size() ? mitreAt(st.points, k + 1) : 0.0;
+                const int steps = std::max(1, static_cast<int>(std::ceil(l / kFootStep)));
+                const double ds = l / steps;
+                for (int side = 0; side < 2; ++side) {
+                    const double fw = side == 0 ? sc.footLeft : sc.footRight;
+                    if (fw <= 0.0) continue;
+                    const double sgn = side == 0 ? 1.0 : -1.0;
+                    const double tKerb = side == 0 ? sc.cwHi : sc.cwLo; // the kerb face
+                    const double tStone = tKerb + sgn * kRoadKerbWide;  // the stone's back
+                    const double tWall = sgn * h;
+                    const double tMid = (tStone + tWall) * 0.5;
+                    const double tGut = tKerb - sgn * kFootGutter;
+                    const double tLo = std::min(tKerb, tWall), tHi = std::max(tKerb, tWall);
+                    const double sLo = std::min(tKerb, tStone), sHi = std::max(tKerb, tStone);
+                    const double wLo = std::min(tStone, tWall), wHi = std::max(tStone, tWall);
+                    const double gLo = std::min(tKerb, tGut), gHi = std::max(tKerb, tGut);
+                    zs.clear();
+                    gs.clear();
+                    for (int j = 0; j <= steps; ++j) {
+                        const RoadPoint pk = f.at(j * ds, tKerb), pm = f.at(j * ds, tMid);
+                        FootGap g = fb.gapAt(i, k, pk.x, pk.y, false);
+                        if (g == FootGap::None) g = fb.gapAt(i, k, pm.x, pm.y, false);
+                        zs.push_back(fb.groundAt(pk.x, pk.y));
+                        gs.push_back(g);
+                    }
+                    for (int j = 0; j < steps; ++j)
+                        if (gs[j] == FootGap::None && gs[j + 1] == FootGap::None) kept[side] += ds;
+                    auto zAt = [&](double s) { return sampledAt(zs, steps, ds, s); };
+                    auto lowest = [&](double a0, double a1) {
+                        double lo = 1e30;
+                        const double step = std::max(0.25, (a1 - a0) / 8.0);
+                        for (double s = a0; s <= a1 + 1e-9; s += step) {
+                            const RoadPoint pk = f.at(s, tKerb), pw = f.at(s, tWall);
+                            lo = std::min({lo, fb.groundAt(pk.x, pk.y), fb.groundAt(pw.x, pw.y)});
+                        }
+                        return lo;
+                    };
+                    int j = 0;
+                    while (j <= steps) {
+                        if (gs[j] != FootGap::None) {
+                            ++j;
+                            continue;
+                        }
+                        int e = j;
+                        while (e < steps && gs[e + 1] == FootGap::None) ++e;
+                        // The run: half a step on into a gap; a mitre at a joint; the street's own ends as they are.
+                        const bool openA = j > 0, openB = e < steps;
+                        const double s0 = j * ds - (openA ? ds * 0.5 : 0.0);
+                        const double s1 = e * ds + (openB ? ds * 0.5 : 0.0);
+                        const bool mouthA = openA && gs[j - 1] == FootGap::Mouth;
+                        const bool mouthB = openB && gs[e + 1] == FootGap::Mouth;
+                        const double reachA = !openA && k > 0 ? mitreReach(m0, tLo, tHi) : 0.0;
+                        const double reachB = !openB && k + 2 < st.points.size() ? mitreReach(m1, tLo, tHi) : 0.0;
+                        j = e + 1;
+                        if (s1 - s0 + reachA + reachB < kFootShortest) continue;
+                        const bool rampA = mouthA && s1 - s0 >= kFootRamp + kFootShortest;
+                        const bool rampB = mouthB && s1 - s0 >= (rampA ? 2.0 : 1.0) * kFootRamp + kFootShortest;
+                        const double p0 = s0 + (rampA ? kFootRamp : 0.0), p1 = s1 - (rampB ? kFootRamp : 0.0);
+                        auto piece = [&](double a0, double a1, double ra, double rb) {
+                            const double za = zAt(a0), zb = zAt(a1);
+                            const double grade = (zb - za) / std::max(1e-6, a1 - a0);
+                            const double lo = lowest(a0, a1);
+                            if (std::min(za, zb) - lo > 0.5) ++rep.floating;
+                            const RoadPoint pw = f.at((a0 + a1) * 0.5, tWall);
+                            if (fb.groundAt(pw.x, pw.y) >= (za + zb) * 0.5 + lift + 0.05) ++rep.buried;
+                            const double e0 = a0 - ra, e1 = a1 + rb;
+                            const double k0 = za + lift - grade * ra, k1 = zb + lift + grade * rb;
+                            const double bottom = lo - kFootUnder;
+                            fb.put(footBox(f, e0, e1, sLo, sHi, k0, k1, bottom, fb.id(st.id, "kerb"), st.id, "kerb"),
+                                   RoadTint::Kerb, true, true);
+                            fb.put(footBox(f, e0, e1, wLo, wHi, k0, k1, bottom, fb.id(st.id, "fw"), st.id, "footway"),
+                                   RoadTint::Footway, true, true);
+                            const double g0 = k0 - kRoadKerbRise, g1 = k1 - kRoadKerbRise;
+                            fb.put(footBox(f, e0, e1, gLo, gHi, g0, g1, std::min(g0, g1) - 0.05, fb.id(st.id, "gut"),
+                                           st.id, "gutter"),
+                                   RoadTint::Gutter, false, false);
+                            ++rep.pieces;
+                            rep.kerbM += e1 - e0;
+                            rep.footM2 += (e1 - e0) * (tHi - tLo);
+                            fs.kerbed[side] += e1 - e0;
+                        };
+                        // Pieces over p0..p1, each the longest whose samples keep within kFootFit of its line.
+                        for (double a0 = p0; a0 < p1 - 1e-6;) {
+                            double a1 = std::min(p1, a0 + kFootLongest);
+                            for (;;) {
+                                const double za = zAt(a0), zb = zAt(a1);
+                                bool fits = true;
+                                for (double s = a0 + ds * 0.5; s < a1 - 1e-6 && fits; s += ds * 0.5)
+                                    if (std::fabs(zAt(s) - (za + (zb - za) * (s - a0) / (a1 - a0))) > kFootFit)
+                                        fits = false;
+                                if (fits || a1 - a0 <= ds + 1e-6) break;
+                                a1 = std::max(a0 + ds, a1 - ds);
+                            }
+                            if (p1 - a1 < kFootShortest * 0.5) a1 = p1;
+                            piece(a0, a1, a0 <= s0 + 1e-9 ? reachA : 0.0, a1 >= s1 - 1e-9 ? reachB : 0.0);
+                            a0 = a1;
+                        }
+                        // Drop kerbs: a ramp the footway's width from the kerb's top down to the gutter at the
+                        // mouth, a tactile strip over its last kFootTactile.
+                        for (int r = 0; r < 2; ++r) {
+                            if (r == 0 ? !rampA : !rampB) continue;
+                            const double a0 = r == 0 ? s0 : p1, a1 = r == 0 ? p0 : s1;
+                            const double zTop = zAt(r == 0 ? a1 : a0) + lift;
+                            const double zFoot = zAt(r == 0 ? a0 : a1) + kRoadSurfaceLift + 0.01;
+                            const double za = r == 0 ? zFoot : zTop, zb = r == 0 ? zTop : zFoot;
+                            fb.put(footBox(f, a0, a1, tLo, tHi, za, zb, lowest(a0, a1) - kFootUnder, fb.id(st.id, "ramp"),
+                                           st.id, "footway"),
+                                   RoadTint::Footway, true, true);
+                            ++rep.ramps;
+                            const double c0 = r == 0 ? a0 : a1 - kFootTactile, c1 = r == 0 ? a0 + kFootTactile : a1;
+                            const double slope = (zb - za) / (a1 - a0);
+                            const double ta = za + slope * (c0 - a0) + kFootSkin, tb = za + slope * (c1 - a0) + kFootSkin;
+                            fb.put(footBox(f, c0, c1, wLo, wHi, ta, tb, std::min(ta, tb) - 0.02, fb.id(st.id, "tac"),
+                                           st.id, "tactile"),
+                                   RoadTint::Tactile, false, false);
+                            ++rep.tactiles;
+                            rep.kerbM += a1 - a0;
+                            fs.kerbed[side] += a1 - a0;
+                        }
+                        if (mouthA) ++rep.mouths;
+                        // Drains in the run's gutter, every kFootDrainEvery.
+                        for (double s = (std::floor(s0 / kFootDrainEvery) + 0.5) * kFootDrainEvery; s < s1 - 1.0;
+                             s += kFootDrainEvery) {
+                            if (s < s0 + 1.0) continue;
+                            const double z = zAt(s) + kRoadSurfaceLift + kFootSkin;
+                            fb.put(footBox(f, s - 0.3, s + 0.3, gLo, gHi, z, z, z - 0.03, fb.id(st.id, "drain"), st.id,
+                                           "drain"),
+                                   RoadTint::Drain, false, false);
+                            ++rep.drains;
+                        }
+                    }
+                }
+            }
+            fs.length = std::max(fs.wantLeft ? kept[0] : 0.0, fs.wantRight ? kept[1] : 0.0);
+            rep.streets.push_back(std::move(fs));
+        } else if (cls[i] == RoadFootClass::Pedestrian) {
+            for (std::size_t k = 0; k + 1 < st.points.size(); ++k) {
+                const MassingVec a = st.points[k], b = st.points[k + 1];
+                const double l = std::hypot(b.x - a.x, b.y - a.y);
+                if (l < 1e-6) continue;
+                const Frame f = frameOf(a.x, a.y, b.x, b.y);
+                const double m0 = k > 0 ? mitreAt(st.points, k) : 0.0;
+                const double m1 = k + 2 < st.points.size() ? mitreAt(st.points, k + 1) : 0.0;
+                const int steps = std::max(1, static_cast<int>(std::ceil(l / kFootStep)));
+                const double ds = l / steps;
+                zs.clear();
+                gs.clear();
+                for (int j = 0; j <= steps; ++j) {
+                    const RoadPoint p = f.at(j * ds, 0.0);
+                    zs.push_back(fb.groundAt(p.x, p.y));
+                    gs.push_back(fb.gapAt(i, kFootNet, p.x, p.y, true));
+                }
+                auto zAt = [&](double s) { return sampledAt(zs, steps, ds, s); };
+                int j = 0;
+                while (j <= steps) {
+                    if (gs[j] != FootGap::None) {
+                        ++j;
+                        continue;
+                    }
+                    int e = j;
+                    while (e < steps && gs[e + 1] == FootGap::None) ++e;
+                    const double s0 = j * ds - (j > 0 ? ds * 0.5 : 0.0);
+                    const double s1 = e * ds + (e < steps ? ds * 0.5 : 0.0);
+                    const double ra = j == 0 && k > 0 ? mitreReach(m0, -h, h) : 0.0;
+                    const double rb = e == steps && k + 2 < st.points.size() ? mitreReach(m1, -h, h) : 0.0;
+                    j = e + 1;
+                    if (s1 - s0 < kFootShortest) continue;
+                    for (double a0 = s0; a0 < s1 - 1e-6;) {
+                        double a1 = std::min(s1, a0 + kFootLongest);
+                        if (s1 - a1 < kFootShortest * 0.5) a1 = s1;
+                        double lo = 1e30;
+                        for (double s = a0; s <= a1 + 1e-9; s += 0.5)
+                            for (const double t : {-h, 0.0, h}) {
+                                const RoadPoint p = f.at(s, t);
+                                lo = std::min(lo, fb.groundAt(p.x, p.y));
+                            }
+                        const double e0 = a0 - (a0 <= s0 + 1e-9 ? ra : 0.0), e1 = a1 + (a1 >= s1 - 1e-9 ? rb : 0.0);
+                        const double za = zAt(a0) + kFootPaveLift, zb = zAt(a1) + kFootPaveLift;
+                        const double slope = (zb - za) / std::max(1e-6, a1 - a0);
+                        fb.put(footBox(f, e0, e1, -h, h, za - slope * (a0 - e0), zb + slope * (e1 - a1), lo - kFootUnder,
+                                       fb.id(st.id, "pave"), st.id, "paving"),
+                               RoadTint::Footway, true, true);
+                        ++rep.paving;
+                        rep.footM2 += (e1 - e0) * st.width;
+                        a0 = a1;
+                    }
+                }
+            }
+            // Mouths: an end lying in a vehicle street or the network's band gets a row of bollards across the alley.
+            for (int end = 0; end < 2; ++end) {
+                const MassingVec pe = end == 0 ? st.points.front() : st.points.back();
+                const MassingVec pn = end == 0 ? st.points[1] : st.points[st.points.size() - 2];
+                const FootSeg* other = nullptr;
+                for (const std::size_t k : fb.grid.at(pe.x, pe.y)) {
+                    const FootSeg& sg = fb.segs[k];
+                    if (sg.street == i) continue;
+                    if (footHas(sg.whole, pe.x, pe.y, 0.5)) {
+                        other = &sg;
+                        break;
+                    }
+                }
+                if (!other) continue;
+                const double l = std::hypot(pn.x - pe.x, pn.y - pe.y);
+                if (l < 1e-6) continue;
+                const Frame f = frameOf(pe.x, pe.y, pn.x, pn.y); // s: in from the mouth
+                double sOut = 0.0;
+                for (double s = 0.0; s <= l; s += 0.1) {
+                    sOut = s;
+                    const RoadPoint p = f.at(s, 0.0);
+                    bool inside = false;
+                    for (const std::size_t k : fb.grid.at(p.x, p.y))
+                        if (fb.segs[k].street != i && footHas(fb.segs[k].whole, p.x, p.y, 0.0)) inside = true;
+                    if (!inside) break;
+                }
+                const double sb = std::min(l, sOut + kFootBollardIn);
+                const std::size_t count = std::max<std::size_t>(
+                    1, static_cast<std::size_t>(std::ceil(st.width / kFootBollardGap - 1e-9)) - 1);
+                RoadAlleyMouth mo;
+                mo.alley = st.id;
+                mo.street = other->street == kFootNet ? std::string("road") : streets[other->street].id;
+                mo.at = {pe.x, pe.y};
+                for (std::size_t c = 0; c < count; ++c) {
+                    const double t = -h + st.width * static_cast<double>(c + 1) / static_cast<double>(count + 1);
+                    const RoadPoint p = f.at(sb, t);
+                    const double z = fb.groundAt(p.x, p.y) + kFootPaveLift;
+                    MassingBox bx;
+                    bx.id = fb.id(st.id, "bollard");
+                    bx.row = st.id;
+                    bx.kind = "bollard";
+                    bx.source = MassingSource::Invented;
+                    bx.cx = p.x;
+                    bx.cy = p.y;
+                    bx.sx = kFootBollardDia;
+                    bx.sy = kFootBollardDia;
+                    bx.rot = f.rot;
+                    bx.z0 = z - 0.1;
+                    bx.z1 = z + kFootBollardHigh;
+                    fb.put(bx, RoadTint::Steel, true, false, RoadShape::Cylinder);
+                    out.furniture.push_back(massingBoxFoot(bx));
+                    ++rep.bollards;
+                    ++mo.bollards;
+                }
+                rep.alleyMouths.push_back(std::move(mo));
+            }
+        }
+    }
+}
+
+bool roadFootwayTop(const RoadBuild& build, double x, double y, double& top) {
+    bool any = false;
+    for (const MassingBox& b : build.footways) {
+        const double r = (b.sx + b.sy) * 0.5;
+        if (std::fabs(b.cx - x) > r || std::fabs(b.cy - y) > r) continue;
+        if (!footHas(massingBoxFoot(b), x, y, 0.0)) continue;
+        const double t = topAt(b, x, y);
+        if (!any || t > top) top = t;
+        any = true;
+    }
+    return any;
+}
+
+std::vector<std::string> roadFootRejects(const RoadFootReport& report, const RoadBuild& build, double share) {
+    std::vector<std::string> out;
+    char buf[192];
+    for (const RoadFootStreet& s : report.streets) {
+        if (!s.wantLeft && !s.wantRight) {
+            out.push_back("no kerbed footway: " + s.id + " (too narrow for a carriageway and a footway)");
+            continue;
+        }
+        if (s.length < 3.0) continue; // wholly inside other streets' bands: their footways serve it
+        const double need = share * s.length;
+        if ((s.wantLeft && s.kerbed[0] >= need) || (s.wantRight && s.kerbed[1] >= need)) continue;
+        std::snprintf(buf, sizeof buf, "no kerbed footway: %s (kerb %.1f m left, %.1f m right of %.1f m)", s.id.c_str(),
+                      s.kerbed[0], s.kerbed[1], s.length);
+        out.push_back(buf);
+    }
+    for (const RoadAlleyMouth& m : report.alleyMouths) {
+        if (m.bollards > 0) continue;
+        bool step = false;
+        for (const MassingBox& b : build.footways)
+            if (b.kind == "footway" && footHas(massingBoxFoot(b), m.at.x, m.at.y, 1.5)) step = true;
+        if (step) continue;
+        std::snprintf(buf, sizeof buf, "open alley mouth: %s at %.1f,%.1f (into %s)", m.alley.c_str(), m.at.x, m.at.y,
+                      m.street.c_str());
+        out.push_back(buf);
+    }
+    return out;
 }
 
 } // namespace ftcore

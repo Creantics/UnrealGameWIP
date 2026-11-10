@@ -52,6 +52,8 @@ public:
 
 private:
 	void PushGrade();
+	// A day world-eye still (FTDayShade::StillAmount): the day's shadow floor over the look just written.
+	void ApplyStillDayShade();
 
 	TSharedPtr<FFTLookGradeExtension, ESPMode::ThreadSafe> Grade;
 	FString WorldId;

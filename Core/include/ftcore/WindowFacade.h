@@ -21,10 +21,13 @@
 // GPU's. No allocation except the HLSL writers (build time only).
 
 #include "ftcore/Api.h"
+#include "ftcore/MassingPlan.h"
 #include "ftcore/WindowInterior.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace ftcore {
 
@@ -66,7 +69,74 @@ struct WindowFacadeSpec {
     float signGlow = 1.6f;        // the master's SignGlow: a lit shop sign's light at night (times the collection's NightGlow)
     float litMax = 0.9f;          // the most any storey's lit share reaches
     float wallMax = 0.75f;        // the brightest a tinted wall's or roof's albedo gets (no glare under night lights)
+    // Round 10 (motion sickness): a room is a box fixed in the wall's own frame, seen by the true view ray (no squash,
+    // clamp or tilt), roomDepth deep; only roomShare of the non-shop windows show one. The rest are covered: frostShare
+    // of them frosted glass, the others a curtain or blind drawn all the way (opaque, no room behind), lit at night in
+    // the window's tint (screenGlow of the cloth's colour, frostGlow of the tint). Shops show their picture flat (a
+    // lit backdrop at the back wall, no parallax), or on a kerbed street with shop holes, the modelled interior.
+    float roomDepth = 1.5f;        // m
+    float roomShare = 1.0f / 6.0f; // the master's RoomShare
+    float frostShare = 0.3f;       // the master's FrostShare
+    float screenGlow = 0.8f;       // the master's ScreenGlow
+    float frostGlow = 0.8f;        // a lit frosted window: the tint times this, times GlowScale
+    float shopDepth = 1.5f;        // m: a modelled shop interior's depth (at most shopDepthShare of the box's depth)
+    float shopDepthShare = 0.4f;
 };
+
+// ---- Round 10: rooms fixed in the wall, covered windows, shop interiors ----
+
+// What a non-shop window shows: a room (true parallax), a curtain or blind drawn all the way, or frosted glass. Shops
+// are always Room (their own front and picture). From a salted hash of the cell (as the HLSL's), so a room never
+// changes with the view. No allocation.
+enum class WindowCover : std::uint8_t { Room = 0, Screen = 1, Frosted = 2 };
+FTCORE_API WindowCover windowCoverFor(const WindowFacadeSpec& spec, std::uint32_t seed, std::uint32_t storey,
+                                      std::uint32_t column, bool shop, float roomShare, float frostShare);
+
+// The room a view ray meets through a glass point (gu, gv) of a cell (bayWidth x storeyHeight m): a box the cell's
+// size, `depth` metres deep, fixed in the wall's frame; the ray is the true one (dAlong, dUp across and up the wall,
+// dIn > 0 into it) times `parallax` (the master's Parallax switch: 1 true parallax, 0 a flat picture). A point of the
+// room maps to one picture point whatever the eye's place. No allocation.
+FTCORE_API WindowRoomHit windowParallaxRoomHit(float depth, float bayWidth, float storeyHeight, float gu, float gv,
+                                               float dAlong, float dUp, float dIn, float parallax);
+
+// Whether a shop bay is lit at night (the master's lit hash for storey 0 at ShopLit). No allocation.
+FTCORE_API bool windowShopLit(std::uint32_t seed, std::uint32_t column, float shopLit);
+
+// A modelled shop interior's piece behind a kerbed street face's shop glass (FTBuildShopInteriors lays them as
+// instances): a box in the face's frame, metres. along: from the face's left end as the master counts it (the facade's
+// Along); in: into the wall from its face; up: over the face's street floor.
+enum class WindowShopPart : std::uint8_t { Shell = 0, Shelf = 1, Goods = 2, Counter = 3, Table = 4 };
+struct WindowShopPiece {
+    float along0 = 0.0f, along1 = 0.0f, in0 = 0.0f, in1 = 0.0f, up0 = 0.0f, up1 = 0.0f;
+    WindowShopPart part = WindowShopPart::Shell;
+    std::uint32_t colour = 0;  // windowShopColour index
+    std::uint32_t column = 0;
+    bool lit = false;          // the bay is lit at night (windowShopLit)
+};
+inline constexpr std::uint32_t kWindowShopPiecesPerBay = 14;
+inline constexpr std::uint32_t kWindowShopColourCount = 8;
+struct WindowTint;
+// Linear albedo of a piece's colour (0: the shell's pale wall, 1: the floor's, 2..: shelving, counters and goods).
+FTCORE_API const WindowTint& windowShopColour(std::uint32_t index);
+// The pieces behind every shop bay of a face faceWidth wide and faceHeight high over its street floor, on a box
+// boxDepth deep across the face, of type `type` and seed `seed`: a shell (back, floor, ceiling and the walls between the
+// bays) shopDepth deep (at most shopDepthShare of boxDepth) and, by the bay's shop kind (ShopFront.h), shelves with
+// goods, a counter or a table. Written to out (at most capacity; kWindowShopPiecesPerBay a bay is enough); the count
+// written is returned. None when the face cuts no shop storey or bay. No allocation.
+FTCORE_API std::size_t windowShopInterior(const WindowFacadeSpec& spec, WindowType type, std::uint32_t seed,
+                                          float faceWidth, float faceHeight, float boxDepth, float shopLit,
+                                          WindowShopPiece* out, std::size_t capacity);
+
+// The faces (bit f, boxFace order as MassingWindowData: 0 +u, 1 +w, 2 -u, 3 -w) of `box` whose street bit is set in
+// streetBits and whose street is kerbed: the street whose centreline passes nearest the face's middle (within its half
+// width plus reach) is wider than sharedUpTo (a narrower one is a shared surface with no kerb). The massing build ORs
+// these, shifted by 4, into StreetBits. No allocation.
+FTCORE_API std::uint8_t windowKerbBits(const MassingBox& box, std::uint8_t streetBits,
+                                       const std::vector<MassingStreet>& streets, double sharedUpTo, double reach);
+inline constexpr double kWindowKerbReach = 4.0;  // m past a street's half width a face's middle may stand
+// A shop piece as a plan-frame box (as the massing boxes: centre, size, rot with u out of the face, z) on face `face` of
+// `box`, whose street floor is streetFloor m above the datum. No allocation.
+FTCORE_API MassingBox windowShopPieceBox(const MassingBox& box, int face, double streetFloor, const WindowShopPiece& p);
 
 // Window styles: each column of a building (the same up every storey) takes one, by a weight per type. Plain: the
 // type's window; Mullion: with a mullion and a transom; Grille: behind a steel security grille at the wall's face;
@@ -100,6 +170,7 @@ FTCORE_API WindowGridSpec windowGridFor(const WindowFacadeSpec& spec, WindowType
 // type's width jittered by the seed. No allocation.
 FTCORE_API float windowWidthFor(const WindowFacadeSpec& spec, WindowType type, std::uint32_t seed, float materialWidth);
 
+// r5..r9's eased ray, no longer in the master (r10 uses windowParallaxRoomHit); kept for the comparison test.
 // The view ray with the side clamp: |x| at most min(viewMaxX, min(u0, 1 - u1) + sideShare * (u1 - u0)), so a ray from
 // inside the glass meets a side wall only on the last sideShare of it. No allocation.
 FTCORE_API WindowRay windowFacadeRay(const WindowFacadeSpec& spec, const WindowOpening& o, float bayWidth,
@@ -169,9 +240,11 @@ inline constexpr std::uint32_t kWindowClothColorCount = 4;
 FTCORE_API std::uint32_t windowWallTintFor(std::uint32_t seed, bool plainFinish);
 
 // The r5 window master's Custom node bodies. windowFacadeFaceHlsl: the face (as r4's, plus outputs TOut and NzOut, the
-// face's along and up axes in world space, and TopOut, 1 on the top face). windowFacadeHlsl: WindowInterior's inputs
-// plus Type (the WindowType as a float); returns float4 (rgb: the room seen, or a part's own albedo for Band, Fascia
-// and parts 10 on; a: the part) and writes Curtain and Emit (the glass's light, a lantern's and a lit sign's).
+// face's along and up axes in world space, TopOut, 1 on the top face, and KerbOut, bit 4 + face of StreetBits: the face
+// fronts a kerbed street). windowFacadeHlsl: WindowInterior's inputs plus Type (the WindowType as a float), UpperLit,
+// SignGlow, Kerb, Parallax (the collection's switch), RoomShare, FrostShare and ScreenGlow; returns float4 (rgb: the room
+// seen, or a part's own albedo for Band, Fascia and parts 10 on; a: the part) and writes Curtain, Emit (the glass's
+// light, a lantern's and a lit sign's) and Hole (1 on a kerbed street face's shop glass: the opacity mask's cut).
 // windowFacadeComposeHlsl: r4's compose plus inputs T, Nz, Top, Tint and RoofFin; it tints the wall, shades the reveal
 // with its own normals and colours the roof. Allocates: build time only.
 FTCORE_API std::string windowFacadeFaceHlsl();

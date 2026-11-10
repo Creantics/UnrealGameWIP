@@ -2,6 +2,9 @@
 #include "FTBuildRoads.h"
 #include "FTBuildBackdrop.h"
 #include "FTBuildStandIns.h"
+#include "FTBuildPlinths.h"
+#include "FTBuildShopInteriors.h"
+#include "FTKitGlass.h"
 #include "FTBuildDecals.h"
 #include "FTCellInstancer.h"
 #include "FTNightLightData.h"
@@ -2472,7 +2475,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// to an actor: like the kit it collides with nothing and leaves the navmesh alone, drawn to the props' distance; a
 	// lamp takes its -NightLamps light point. False, with the reason logged, on inverted bounds.
 	const auto PlaceMesh = [&](UStaticMesh* Mesh, const ftcore::MassingProp& Placed, double Turn, double Inset, const FString& Label,
-		double Scale = 1.0)
+		double Scale = 1.0, TArrayView<UMaterialInterface* const> Materials = {})
 	{
 		const FBox Bounds(Mesh->GetBoundingBox().Min * Scale, Mesh->GetBoundingBox().Max * Scale);
 		const ftcore::MassingVec MeshMin{Bounds.Min.X / 100.0, Bounds.Min.Y / 100.0, Bounds.Min.Z / 100.0};
@@ -2487,7 +2490,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		FFTCellOptions PieceOpts;
 		PieceOpts.Cull = EFTCellCull::Prop;
 		PieceOpts.Label = Label;
-		Cells.Add(Mesh, {}, PieceXf, {}, EFTCellKind::NoCollide, PieceOpts);
+		Cells.Add(Mesh, Materials, PieceXf, {}, EFTCellKind::NoCollide, PieceOpts);
 		if (Mesh->GetPathName().Contains(kNightLampMesh))
 		{
 			LampsAt.Add(PieceXf.GetLocation());
@@ -2622,12 +2625,13 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			"left out over a step."), static_cast<int32>(Pads.size()), static_cast<int32>(FrontTotals.padsUneven));
 		TArray<int32> PerFront;
 		PerFront.SetNumZeroed(static_cast<int32>(FrontRules.size()));
+		FTKitGlass::FOverrides KitGlass(Package, Params); // -KitGlassFrontage: kit modules on M_KitGlass
 		for (const ftcore::MassingProp& Piece : Pieces)
 		{
 			const ftcore::MassingFrontRule& Rule = FrontRules[Piece.rule];
 			const int32 N = ++PerFront[static_cast<int32>(Piece.rule)];
 			if (!PlaceMesh(FrontMeshes[static_cast<int32>(Piece.rule)], Piece, Rule.turn, Rule.out - Rule.depth,
-					FString::Printf(TEXT("%s-%d"), *Utf8(Rule.id), N), Rule.scale))
+					FString::Printf(TEXT("%s-%d"), *Utf8(Rule.id), N), Rule.scale, KitGlass.For(FrontMeshes[static_cast<int32>(Piece.rule)])))
 			{
 				World->DestroyWorld(false);
 				return 1;
@@ -2637,6 +2641,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				Taken.push_back(ftcore::massingFrontFoot(Piece, Rule));
 			}
 		}
+		KitGlass.Log();
 		for (size_t R = 0; R < FrontRules.size(); ++R)
 		{
 			const ftcore::MassingFrontCounts& Count = FrontCounts[R];
@@ -2740,6 +2745,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	{
 		int32 Windows = 0, StreetFaces = 0;
 		int32 FacadeTypes[ftcore::kWindowTypes] = {};
+		FTShopInteriors::FPlacer ShopRooms(Package, Params); // -ShopHoles: kerb bits and shop interiors
 		for (size_t I = 0; I < Boxes.size(); ++I)
 		{
 			if (!Windowed[I].IsValid())
@@ -2760,6 +2766,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			{
 				SetFacadeR5Data(Cells, Piece, Built[I], Data, FacadeTypes);
 			}
+			ShopRooms.Place(Cells, Piece, Built[I], Data, PropStreets, Sections.sharedUpTo, Side);
 			++Windows;
 			if (bNightLamps)
 			{
@@ -2778,6 +2785,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: windows: %d building boxes, %d faces fronting a street (shops at street level)%s; "
 			"none on %d sloped boxes or the %d boxes kit meshes stand in for."), Windows, StreetFaces,
 			FrontFaces.empty() ? TEXT(" (no -Frontage, so no street faces)") : TEXT(""), WindowSloped, WindowReplaced);
+		ShopRooms.Log();
 		if (bFacadeR5)
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: r5 facades: %d apartment, %d walkway, %d shophouse, %d office."),
@@ -2880,6 +2888,15 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	if (!FTStandIns::Place(Package, Cells, Base, Hill, Side))
 	{
 		return 1;
+	}
+	std::vector<ftcore::MassingBox> Plinths;
+	if (!FTPlinths::Plan(Ground, Built, Visible, Entry[0], Entry[1], Plinths))
+	{
+		return 1;
+	}
+	for (const ftcore::MassingBox& Plinth : Plinths)
+	{
+		LayCube(Plinth, EFTCellKind::Walk, EFTCellCull::None);
 	}
 
 	double EntryYaw = 0.0;

@@ -25,12 +25,22 @@
 // The plan frame's north is the engine's -Y, east +X (the massing tables' frame, ftcore::massingEnginePoint).
 //
 // Story and cutscene code set, pause and resume it; the save holds it (UFTStorySaveGame).
+//
+// The day's shadow floor (FTDayShade, ftcore::DayShade): by full day the sky light is scaled up and the unbound priority-0
+// post-process volume's local exposure shadow contrast, Lumen diffuse colour boost and film toe move toward the day's,
+// so shaded lanes read at about a third of the sunlit value. Blended by ftcore::dayShadeAmount (0 at full night and full
+// dusk, which keep exactly what they had). Only in a world with a look (UFTLookSubsystem). Switches (read once):
+//   -NoDayShade  off;  -DayShadeSky=<scale>  -DayShadeContrast=<0..1>  -DayShadeBoost=<1..4>  -DayShadeToe=<0..1>
+// and r.FT.DayShade 0/1 at run time. A day world-eye still with no running clock gets the full day's (or
+// -WorldEyeSunHour's) shade from the look subsystem once the look is written (FTDayShade::StillAmount).
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Tickable.h"
 #include "FTNightLook.h"
 
+#include "ftcore/DayShade.h"
+#include "ftcore/SceneLook.h"
 #include "ftcore/WorldClock.h"
 
 #include "FTWorldClockSubsystem.generated.h"
@@ -51,6 +61,24 @@ inline FRotator StartSunRotation()
 	return SunRotation(ftcore::WorldClockSpec{}, ftcore::kWorldClockStartHours);
 }
 } // namespace FTClock
+
+namespace FTDayShade
+{
+// The day's values: ftcore::DayShadeLook's defaults with the -DayShade* switches over them.
+FORGOTTENTHIRD_API const ftcore::DayShadeLook& Look();
+// False with -NoDayShade or r.FT.DayShade 0.
+FORGOTTENTHIRD_API bool Enabled();
+// What the world look writes (the night keeps it).
+FORGOTTENTHIRD_API ftcore::DayShadeBase BaseFor(const ftcore::SceneLook& WorldLook);
+// The day amount at a sky frame (0 when off).
+FORGOTTENTHIRD_API float AmountAt(const FTNight::FSkyFrame& Sky);
+// Writes the frame's shadow contrast, diffuse colour boost and film toe into World's unbound priority-0 post-process
+// volume (the look's). False when there is none.
+FORGOTTENTHIRD_API bool WritePost(UWorld& World, const ftcore::DayShadeFrame& Frame);
+// A world-eye day still with no running clock (-WorldEyeShot without -TimeOfDay, -WorldEyeNight or -WorldEyeDusk): the
+// day amount at the start hour or -WorldEyeSunHour. Negative when this run is no such still or the hour is not full day.
+FORGOTTENTHIRD_API float StillAmount();
+} // namespace FTDayShade
 
 UCLASS()
 class FORGOTTENTHIRD_API UFTWorldClockSubsystem : public UTickableWorldSubsystem
@@ -161,4 +189,6 @@ private:
 	bool bWetPending = true;
 	// The dusk's sky and lens (FTNightLook.h), written as the sun goes low.
 	FTNight::FDuskScene DuskScene;
+	// The day's shadow floor last written to the post-process volume (-1: write on the next step).
+	float AppliedDayShade = -1.f;
 };

@@ -719,12 +719,12 @@ TEST_CASE("road net: tints carry the surface master's street kind; the ramps' ta
     CHECK(roadTintStreet(RoadTint::Kerb) == 3);
     CHECK(roadTintStreet(RoadTint::LineWhite) == 4);
     CHECK(roadTintStreet(RoadTint::LineYellow) == 4);
-    CHECK(roadTintStreet(RoadTint::SharedLane) == 5);
+    CHECK(roadTintStreet(RoadTint::Footway) == 5);
     CHECK(roadTintStreet(RoadTint::Tactile) == kRoadStreetTactile);
     CHECK(roadTintStreet(RoadTint::Water) == 0);
     CHECK(roadTintStreet(RoadTint::Steel) == 0);
     CHECK(std::string(roadTintName(RoadTint::Tactile)) == "Tactile");
-    CHECK(std::string(roadTintName(RoadTint::SharedLane)) == "SharedLane");
+    CHECK(std::string(roadTintName(RoadTint::Footway)) == "Footway");
     CHECK(std::string(roadTintName(RoadTint::Water)) == "Water");
     for (int t = 0; t < static_cast<int>(RoadTint::Count); ++t)
         CHECK(std::string(roadTintName(static_cast<RoadTint>(t))) != "Unknown");
@@ -740,4 +740,210 @@ TEST_CASE("road net: tints carry the surface master's street kind; the ramps' ta
         CHECK(r.tint == RoadTint::Tactile);
     }
     CHECK(tactile > 0);
+}
+
+// ---- Footways (roadFootways): kerbed lanes, paved alleys ----
+
+namespace {
+
+MassingStreet footStreet(const char* id, const char* kind, double width, std::vector<MassingVec> pts) {
+    MassingStreet s;
+    s.id = id;
+    s.kind = kind;
+    s.width = width;
+    s.points = std::move(pts);
+    return s;
+}
+
+// Flat ground at 4 m, 1 m samples over x -10..90, y -50..60.
+struct FlatFour {
+    std::vector<std::uint16_t> grid;
+    MassingGround ground;
+    FlatFour() : grid(101 * 111, static_cast<std::uint16_t>(32768 + 4 * 128)) {
+        ground.grid = grid.data();
+        ground.samplesX = 101;
+        ground.samplesY = 111;
+        ground.spacing = 1.0;
+        ground.originX = -10.0;
+        ground.originY = -50.0;
+    }
+};
+
+} // namespace
+
+TEST_CASE("footways: classes and sections per width") {
+    CHECK(roadFootClass(footStreet("a", "stair", 4.0, {})) == RoadFootClass::None);
+    CHECK(roadFootClass(footStreet("a", "link_stair", 6.0, {})) == RoadFootClass::None);
+    CHECK(roadFootClass(footStreet("a", "alley", 3.0, {})) == RoadFootClass::Pedestrian);
+    CHECK(roadFootClass(footStreet("a", "market_arcade", 6.0, {})) == RoadFootClass::Pedestrian);
+    CHECK(roadFootClass(footStreet("a", "terrace", 3.0, {})) == RoadFootClass::Pedestrian);
+    CHECK(roadFootClass(footStreet("a", "terrace", 6.0, {})) == RoadFootClass::Vehicle);
+    CHECK(roadFootClass(footStreet("a", "lane", 4.0, {})) == RoadFootClass::Vehicle);
+
+    RoadFootSection s = roadFootSection(footStreet("a", "lane", 6.0, {}));
+    CHECK(s.footLeft == doctest::Approx(1.5));
+    CHECK(s.footRight == doctest::Approx(1.5));
+    CHECK(s.cwHi - s.cwLo == doctest::Approx(3.0));
+    s = roadFootSection(footStreet("a", "lane", 5.0, {}));
+    CHECK(s.footLeft == doctest::Approx(1.0));
+    CHECK(s.footRight == doctest::Approx(1.0));
+    CHECK(s.cwHi - s.cwLo == doctest::Approx(3.0));
+    s = roadFootSection(footStreet("a", "lane", 4.0, {}));
+    CHECK(s.footLeft == doctest::Approx(1.0));
+    CHECK(s.footRight == 0.0);
+    CHECK(s.cwLo == doctest::Approx(-2.0));
+    CHECK(s.cwHi == doctest::Approx(1.0));
+    s = roadFootSection(footStreet("a", "link_road", 10.0, {}));
+    CHECK(s.footLeft == doctest::Approx(2.0));
+    CHECK(s.cwHi - s.cwLo == doctest::Approx(6.0));
+    s = roadFootSection(footStreet("a", "causeway", 14.0, {}));
+    CHECK(s.footLeft == doctest::Approx(2.8));
+    MassingStreet paved = footStreet("a", "road", 12.0, {});
+    paved.pavement = 2.5;
+    CHECK(roadFootSection(paved).footRight == doctest::Approx(2.5));
+    s = roadFootSection(footStreet("a", "lane", 3.5, {}));
+    CHECK(s.footLeft == 0.0);
+    CHECK(s.footRight == 0.0);
+    // A lane's own footway column, when it leaves the 3 m carriageway; a 10 m street's too.
+    MassingStreet ward = footStreet("a", "lane", 6.0, {});
+    ward.pavement = 1.5;
+    s = roadFootSection(ward);
+    CHECK(s.footLeft == doctest::Approx(1.5));
+    CHECK(s.cwHi - s.cwLo == doctest::Approx(3.0));
+    ward.pavement = 2.0; // would leave 2 m: the class's own widths
+    CHECK(roadFootSection(ward).footLeft == doctest::Approx(1.5));
+    MassingStreet seam = footStreet("a", "street", 10.0, {});
+    seam.pavement = 2.0;
+    CHECK(roadFootClass(seam) == RoadFootClass::Vehicle);
+    CHECK(roadFootSection(seam).cwHi - roadFootSection(seam).cwLo == doctest::Approx(6.0));
+}
+
+TEST_CASE("footways: a kerbed street's lanes follow its carriageway, one way up to 6 m") {
+    RoadGraph g;
+    roadGraphFootLanes(footStreet("L6", "lane", 6.0, {{0, 0, 0}, {40, 0, 0}}), 30.0, g);
+    REQUIRE(g.lanes.size() == 1);
+    CHECK(g.lanes[0].oneWay);
+    CHECK(g.lanes[0].width == doctest::Approx(3.0));
+    CHECK(g.lanes[0].pts[0].y == doctest::Approx(0.0));
+    g = RoadGraph{};
+    roadGraphFootLanes(footStreet("L4", "lane", 4.0, {{0, 0, 0}, {40, 0, 0}}), 30.0, g);
+    REQUIRE(g.lanes.size() == 1);
+    CHECK(g.lanes[0].pts[0].y == doctest::Approx(-0.5)); // the carriageway -2..1: the footway on the left
+    g = RoadGraph{};
+    roadGraphFootLanes(footStreet("R10", "street", 10.0, {{0, 0, 0}, {40, 0, 0}}), 30.0, g);
+    CHECK(g.lanes.size() == 2);
+    CHECK_FALSE(g.lanes[0].oneWay);
+    g = RoadGraph{};
+    roadGraphFootLanes(footStreet("S", "stair", 6.0, {{0, 0, 0}, {40, 0, 0}}), 30.0, g);
+    roadGraphFootLanes(footStreet("A", "alley", 3.0, {{0, 0, 0}, {40, 0, 0}}), 30.0, g);
+    CHECK(g.lanes.empty());
+}
+
+TEST_CASE("footways: kerbed lanes with drop kerbs at a mouth, an alley with bollards, and the rejects") {
+    const FlatFour flat;
+    std::vector<MassingStreet> st;
+    st.push_back(footStreet("LN-A", "lane", 6.0, {{0, 0, 0}, {60, 0, 0}}));
+    st.push_back(footStreet("LN-B", "lane", 6.0, {{30, 0, 0}, {30, 40, 0}}));
+    st.push_back(footStreet("AL-1", "alley", 3.0, {{45, -3, 0}, {45, -30, 0}}));
+    st.push_back(footStreet("SS-1", "stair", 4.0, {{70, 10, 0}, {80, 10, 0}}));
+
+    RoadBuild b;
+    RoadFootReport rep;
+    roadFootways(st, {}, flat.ground, nullptr, b, &rep);
+    CHECK(rep.vehicle == 2);
+    CHECK(rep.pedestrian == 1);
+    CHECK(rep.skipped == 1);
+    CHECK(b.laneWays.size() == 2);
+    // LN-A's north footway breaks for LN-B's carriageway: a drop kerb each side, a tactile strip on each.
+    CHECK(rep.ramps == 2);
+    CHECK(rep.tactiles == 2);
+    CHECK(rep.mouths == 1);
+    CHECK(rep.drains > 0);
+    CHECK(rep.buried == 0);
+    CHECK(rep.floating == 0);
+    REQUIRE(rep.streets.size() == 2);
+    CHECK(rep.streets[0].kerbed[1] == doctest::Approx(60.0).epsilon(0.02)); // the south side: unbroken
+    CHECK(rep.streets[0].kerbed[0] < 58.0);
+    // The footway's top: the gutter plus the kerb's rise, both sides of each lane; the carriageway is not a footway.
+    double top = 0.0;
+    REQUIRE(roadFootwayTop(b, 10.0, -2.2, top));
+    CHECK(top == doctest::Approx(4.0 + kRoadSurfaceLift + kRoadKerbRise));
+    REQUIRE(roadFootwayTop(b, 10.0, 2.2, top));
+    CHECK(top == doctest::Approx(4.0 + kRoadSurfaceLift + kRoadKerbRise));
+    CHECK_FALSE(roadFootwayTop(b, 10.0, 0.0, top));
+    CHECK_FALSE(roadFootwayTop(b, 30.0, 2.2, top)); // LN-B's mouth
+    REQUIRE(roadFootwayTop(b, 31.8, 10.0, top));    // LN-B's own footway
+    // The alley: paved wall to wall, two bollards across its mouth on LN-A, no kerb.
+    REQUIRE(roadFootwayTop(b, 45.0, -15.0, top));
+    CHECK(top == doctest::Approx(4.05));
+    CHECK(rep.paving > 0);
+    CHECK(rep.bollards == 2);
+    REQUIRE(rep.alleyMouths.size() == 1);
+    CHECK(rep.alleyMouths[0].street == "LN-A");
+    CHECK(b.furniture.size() == 2);
+    std::size_t gutters = 0, kerbs = 0;
+    for (const RoadSolid& s : b.solids) {
+        CHECK(s.instanced);
+        if (s.box.kind == "gutter") {
+            ++gutters;
+            CHECK(s.tint == RoadTint::Gutter);
+            CHECK(s.box.z1 == doctest::Approx(4.0 + kRoadSurfaceLift));
+        }
+        if (s.box.kind == "kerb") {
+            ++kerbs;
+            CHECK(s.box.sy == doctest::Approx(kRoadKerbWide));
+            CHECK(s.box.sx <= kFootLongest + 2.0);
+        }
+        CHECK(s.box.kind != "asphalt"); // nothing for the decals or the clash passes
+    }
+    CHECK(gutters == kerbs);
+    CHECK(roadFootRejects(rep, b).empty());
+
+    // Skipping LN-B (a network row): no mouth on LN-A.
+    RoadBuild b2;
+    RoadFootReport rep2;
+    roadFootways(st, {"LN-B"}, flat.ground, nullptr, b2, &rep2);
+    CHECK(rep2.ramps == 0);
+    CHECK(rep2.skipped == 2);
+
+    // A vehicle street too narrow for a footway, and a mouth left open, are rejected.
+    st.push_back(footStreet("LN-N", "lane", 3.5, {{0, 30, 0}, {20, 30, 0}}));
+    RoadBuild b3;
+    RoadFootReport rep3;
+    roadFootways(st, {}, flat.ground, nullptr, b3, &rep3);
+    rep3.alleyMouths[0].bollards = 0;
+    const std::vector<std::string> rj = roadFootRejects(rep3, b3);
+    REQUIRE(rj.size() == 1); // the mouth still has LN-A's footway within reach: a step
+    CHECK(rj[0].find("LN-N") != std::string::npos);
+    b3.footways.clear();
+    CHECK(roadFootRejects(rep3, b3).size() == 2);
+
+    // Over the sea (ground under kFootDryAbove): nothing, and nothing to reject.
+    RoadBuild b4;
+    RoadFootReport rep4;
+    roadFootways({st[0]}, {}, MassingGround{}, nullptr, b4, &rep4);
+    CHECK(rep4.pieces == 0);
+    CHECK(roadFootRejects(rep4, b4).empty());
+}
+
+TEST_CASE("footways: a bend laps its outer corner and the network's band stops a lane") {
+    const FlatFour flat;
+    std::vector<MassingStreet> st;
+    st.push_back(footStreet("LN-L", "lane", 6.0, {{0, 0, 0}, {30, 0, 0}, {30, 30, 0}}));
+    RoadBuild net;
+    MassingFoot band;
+    band.x = 30.0;
+    band.y = 40.0;
+    band.hx = 20.0;
+    band.hy = 7.0;
+    net.band.push_back(band);
+    RoadBuild b;
+    RoadFootReport rep;
+    roadFootways(st, {}, flat.ground, &net, b, &rep);
+    double top = 0.0;
+    // The bend's outer (south-east) corner is covered; nothing inside the band.
+    CHECK(roadFootwayTop(b, 32.2, -2.2, top));
+    CHECK_FALSE(roadFootwayTop(b, 31.8, 34.0, top));
+    CHECK(roadFootwayTop(b, 31.8, 30.0 - 4.0, top));
+    CHECK(rep.ramps == 0);
 }

@@ -1,9 +1,13 @@
 #include "FTLookSubsystem.h"
 
+#include "Components/SkyLightComponent.h"
+#include "Engine/SkyLight.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "FTLookGrade.h"
 #include "FTSceneLook.h"
 #include "FTText.h"
+#include "FTWorldClockSubsystem.h"
 #include "ForgottenThird.h"
 #include "HAL/FileManager.h"
 #include "HAL/IConsoleManager.h"
@@ -205,6 +209,7 @@ void UFTLookSubsystem::Tick(float DeltaTime)
 		if (Written >= 0)
 		{
 			Applied = Wanted;
+			ApplyStillDayShade();
 			UE_LOG(LogForgottenThird, Display, TEXT("Look: %s (%d settings written; grade %s; %s)."),
 				WorldId.IsEmpty() ? TEXT("shared look") : *WorldId, Written, Grade.IsValid() && Grade->IsGrading() ? TEXT("on") : TEXT("off"),
 				bParametersPending ? TEXT("material parameters waiting")
@@ -233,6 +238,31 @@ void UFTLookSubsystem::Tick(float DeltaTime)
 		}
 		bParametersPending = false;
 	}
+}
+
+void UFTLookSubsystem::ApplyStillDayShade()
+{
+	// A running clock writes the day's shadow floor itself; this is for a day world-eye still, which runs none.
+	UWorld* World = GetWorld();
+	const float Amount = WorldId.IsEmpty() ? -1.f : FTDayShade::StillAmount();
+	if (!World || Amount < 0.f)
+	{
+		return;
+	}
+	const ftcore::DayShadeFrame Shade = ftcore::dayShadeFrame(FTDayShade::Look(), FTDayShade::BaseFor(Wanted), Amount);
+	// The look's own sky light (the one ApplyLook writes), scaled.
+	for (TActorIterator<ASkyLight> It(World); It; ++It)
+	{
+		if (USkyLightComponent* SkyLight = It->GetLightComponent())
+		{
+			SkyLight->SetIntensity(Wanted.skyLight * Shade.skyScale);
+			break;
+		}
+	}
+	const bool bPost = FTDayShade::WritePost(*World, Shade);
+	UE_LOG(LogForgottenThird, Display, TEXT("Look: day shade %.2f for the still (sky light %.2f, shadow contrast %.2f, diffuse boost %.2f, toe %.2f%s)."),
+		Amount, Wanted.skyLight * Shade.skyScale, Shade.shadowContrast, Shade.diffuseBoost, Shade.filmToe,
+		bPost ? TEXT("") : TEXT("; no look volume"));
 }
 
 TStatId UFTLookSubsystem::GetStatId() const

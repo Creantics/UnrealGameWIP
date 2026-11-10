@@ -106,3 +106,126 @@ TEST_CASE("blockCheck rejects a kerbed side without frontage and paving over the
     blockCheck(h.in, r4);
     CHECK(r4.paving == 0);
 }
+
+namespace {
+// Mains at y 0 and y 100 (14 m, kerbed, 300 m straight), a short-cut lane between them, built strips along both mains.
+struct Routes {
+    std::vector<MassingBox> boxes;
+    BlockCheckInput in;
+    Routes() {
+        in.routes = true;
+        in.rect = {0, 0, 200, 100};
+        in.streets = {street("M1", "road", 14, 3.0, -50, 0, 250, 0), street("M2", "road", 14, 3.0, -50, 100, 250, 100),
+                      street("LN", "core_lane", 6, 1.5, 50, 7, 50, 93)};
+        in.boxes = &boxes;
+    }
+    BlockCheckReport run() {
+        BlockCheckReport r;
+        blockCheck(in, r);
+        return r;
+    }
+};
+} // namespace
+
+TEST_CASE("blockCheck route rules: a short-cut lane passes, chains and dead ends fail") {
+    Routes f;
+    BlockCheckReport r = f.run();
+    CHECK(r.mains == 2);
+    CHECK(r.lanes == 1);
+    CHECK(r.mainShort + r.chain + r.deadEnd + r.walk + r.sight + r.section == 0);
+    CHECK(r.maxWalk == doctest::Approx(49.0).epsilon(0.05)); // the lane's middle: 42 m to its mouth, 7 m to the centreline
+    CHECK(blockCheckText(r).find("routes: mains 2") != std::string::npos);
+
+    // a dead-end lane off M1, then the same with a park at its end
+    f.in.streets.push_back(street("DE", "core_lane", 6, 0, 120, 7, 120, 40));
+    r = f.run();
+    CHECK(r.deadEnd == 1);
+    f.in.reasons.push_back({110, 40, 130, 60});
+    r = f.run();
+    CHECK(r.deadEnd == 0);
+    // a lane ending on another lane: a chain; a lane crossing the lane: a chain
+    f.in.streets.push_back(street("CH", "core_lane", 6, 0, 53, 50, 100, 50));
+    f.in.streets.push_back(street("X", "core_lane", 6, 0, 20, 70, 80, 70));
+    r = f.run();
+    CHECK(r.chain >= 2);
+    CHECK_FALSE(r.ok());
+}
+
+TEST_CASE("blockCheck route rules: walk over 80 m, a bent main street, the landmark's sight line") {
+    Routes f;
+    // a long main stretch of lane far from any main: an alley 150 m north of M2, joined only at its west end by a lane
+    f.in.rect = {0, 0, 200, 260};
+    f.in.streets.push_back(street("L2", "core_lane", 6, 0, 50, 107, 50, 250));
+    f.in.streets.push_back(street("AL", "alley", 2.5, 0, 50, 250, 190, 250));
+    BlockCheckReport r = f.run();
+    CHECK(r.walk >= 1);
+    CHECK(r.maxWalk > 200.0);
+
+    Routes g;
+    MassingStreet bent = street("M1", "road", 14, 3.5, 0, 0, 100, 0);
+    bent.points.push_back(MassingVec{150, 50, 0});
+    g.in.streets[0] = bent;
+    r = g.run();
+    CHECK(r.mainShort == 1);
+
+    // a landmark north of M2: seen over low roofs, hidden behind a tall wall of buildings
+    Routes h;
+    h.in.sights.push_back({"LM", 100, 300, 200});
+    for (int i = 0; i < 10; ++i) h.boxes.push_back(box("LOW", -60 + 32.0 * i, 110, -30 + 32.0 * i, 130, 0, 9));
+    r = h.run();
+    CHECK(r.sight == 0);
+    CHECK(r.sightRays >= 2);
+    h.boxes.clear();
+    for (int i = 0; i < 12; ++i) h.boxes.push_back(box("HI", -80 + 30.0 * i, 110, -50 + 30.0 * i, 130, 0, 400));
+    for (int i = 0; i < 12; ++i) h.boxes.push_back(box("HS", -80 + 30.0 * i, -30, -50 + 30.0 * i, -10, 0, 400));
+    r = h.run();
+    CHECK(r.sight == 2);
+    // the sight rule is skipped without targets; the route rules are off by default
+    h.in.sights.clear();
+    r = h.run();
+    CHECK(r.sight == 0);
+    h.in.routes = false;
+    r = h.run();
+    CHECK_FALSE(r.routes);
+}
+
+TEST_CASE("blockCheck route rules: street sections by class (no kerbless lanes)") {
+    Routes f;
+    f.in.streets.push_back(street("SH", "core_lane", 6, 0, 150, 7, 150, 93));  // a kerbless shared lane
+    f.in.streets.push_back(street("WL", "core_lane", 8, 1.5, 100, 7, 100, 93)); // a lane too wide
+    f.in.streets.push_back(street("AW", "alley", 4, 0, 20, 7, 20, 93));        // an alley over 3 m
+    f.in.streets.push_back(street("AK", "alley", 3, 0.5, 180, 7, 180, 93));    // an alley with a kerb
+    f.in.streets[0].pavement = 3.5;                                            // a road's pavement over 3 m
+    BlockCheckReport r = f.run();
+    CHECK(r.section == 5);
+    std::size_t kerbless = 0;
+    for (const BlockCheckIssue& i : r.issues) kerbless += i.rule == "section_kerbless" && i.id == "SH" ? 1 : 0;
+    CHECK(kerbless == 1);
+    CHECK_FALSE(r.ok());
+    CHECK(blockCheckText(r).find("section 5") != std::string::npos);
+}
+
+TEST_CASE("blockCheck paving counts open paving beyond the footway edges") {
+    Routes f;
+    f.in.routes = false;
+    f.in.rect = {40, 20, 60, 80};
+    // facades 7 m and 4 m off LN's centre line: 11 m across a 6 m lane, 5 m open (at the limit)
+    f.boxes.push_back(box("W", 33, 10, 43, 90));
+    f.boxes.push_back(box("E", 54, 10, 64, 90));
+    BlockCheckReport r = f.run();
+    CHECK(r.paving == 0);
+    CHECK(r.maxPaveLane == doctest::Approx(kBlockOpenLane).epsilon(0.02));
+    f.boxes[1] = box("E", 55, 10, 65, 90); // 6 m open
+    r = f.run();
+    CHECK(r.paving > 0);
+    // a 2 m yard wall on the east side's front closes it again; a 1.2 m one does not
+    MassingBox w = box("YW", 54, 10, 54.3, 90);
+    w.kind = "wall";
+    w.z1 = w.z0 + 2.0;
+    f.boxes.push_back(w);
+    r = f.run();
+    CHECK(r.paving == 0);
+    f.boxes.back().z1 = f.boxes.back().z0 + 1.2;
+    r = f.run();
+    CHECK(r.paving > 0);
+}

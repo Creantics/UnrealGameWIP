@@ -144,8 +144,10 @@ enum class RoadTint : std::uint8_t {
     TaxiYellow,
     BusGreen,
     Tactile,    // the ramps' tactile paving (yellow, domed)
-    SharedLane, // a shared lane's concrete (pedestrians and slow vehicles on one level)
+    Footway,    // a lane's raised footway and an alley's paving (light concrete pavers; Street 5)
     Water,      // a canal's water (a stand-in plane)
+    Gutter,     // the dark gutter strip at a lane kerb's foot
+    Drain,      // a gutter's drain grate
     Count
 };
 struct RoadColor {
@@ -154,7 +156,7 @@ struct RoadColor {
 FTCORE_API RoadColor roadTint(RoadTint tint);
 FTCORE_API const char* roadTintName(RoadTint tint);
 // The world surface master's "Street" value for a tint (its street layer): asphalt and patches 1, pavement 2, kerb 3,
-// lines 4, shared lane 5, tactile kRoadStreetTactile; the rest 0 (none).
+// lines 4, footway 5, tactile kRoadStreetTactile; the rest 0 (none).
 inline constexpr int kRoadStreetTactile = 6;
 FTCORE_API int roadTintStreet(RoadTint tint);
 
@@ -235,6 +237,11 @@ struct RoadBuild {
     std::vector<MassingFoot> keepOut;    // where nothing parks: the junction boxes, crossings, stop lines and bus stops
     std::vector<MassingFoot> furniture;  // poles, signs, the shelter, the rail: the props keep off them
     std::vector<MassingFoot> band;       // wall to wall: the road's, a stub's, a mouth's dropped kerb
+    // roadFootways: the walked tops it laid (footway slabs, drop-kerb ramps, alley paving; riseU set) and the lanes'
+    // carriageways (a rectangle per segment). Neither joins band or carriageway, so the props, the clash and clearing
+    // passes and the decals don't see them.
+    std::vector<MassingBox> footways;
+    std::vector<MassingFoot> laneWays;
     RoadCounts counts;
 };
 
@@ -283,6 +290,9 @@ struct RoadTwoWheelOptions {
     double spacing = 9.0;
     double edgeIn = 0.6;
     std::uint32_t seed = 0;
+    // roadFootways' build: a spot on a footway stands on its top (roadFootwayTop), not the ground; a spot on a lane's
+    // carriageway (its laneWays) is skipped.
+    const RoadBuild* footways = nullptr;
 };
 FTCORE_API std::size_t roadTwoWheelers(const std::vector<MassingStreet>& lanes, const RoadTwoWheelOptions& opts,
                                        const RoadBuild* road, const RoadSpec* spec, const MassingGround& ground,
@@ -300,6 +310,10 @@ struct RoadLaneLampOptions {
     double edgeIn = 0.9;
     double keep = 7.0;
     double footX = 0.6, footY = 0.48;
+    // roadFootways' build: on a kerbed or paved street (roadFootClass not None) a spot must stand wholly on a footway
+    // (its foot's corners and centre, roadFootwayTop) and stands on the highest top there; spots off the footways (a
+    // carriageway, a lane's kerbless side) are skipped. A stair's lamps stand on the ground as before.
+    const RoadBuild* footways = nullptr;
 };
 FTCORE_API std::size_t roadLaneLamps(const std::vector<MassingStreet>& lanes, const RoadLaneLampOptions& opts,
                                      const MassingGround& ground, const std::vector<RoadPoint>& existing,
@@ -486,5 +500,96 @@ FTCORE_API void roadQuayPoints(const RoadCanal& canal, const RoadBuild& build, c
 FTCORE_API std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, RoadBuild& build);
 // The point table as CSV: '#' comment rows, then kind,id,group,x,y,z0,z1,rot,length_m,width_m,slope,deck.
 FTCORE_API std::string roadQuayCsv(const std::vector<RoadQuayPoint>& points);
+
+// ---- Footways: a raised, kerbed pavement on every street a vehicle uses outside the road network ----
+
+inline constexpr double kFootLaneCarriage = 3.0;  // m: a lane's one-way carriageway (lanes 4 to 6 m)
+inline constexpr double kFootLaneMin = 1.0;       // m: a lane footway, kerb stone included, at least
+inline constexpr double kFootLaneMax = 1.5;       // m: ... at most
+inline constexpr double kFootRoadMin = 2.0;       // m: a street of 7 m or more: each footway, at least
+inline constexpr double kFootRoadMax = 3.0;       // m: ... at most (0.2 of the width between)
+inline constexpr double kFootAlleyUpTo = 3.0;     // m: a street no wider is an alley: pedestrians only
+inline constexpr double kFootGutter = 0.3;        // m: the dark gutter strip at the kerb's foot, in the carriageway
+inline constexpr double kFootDrainEvery = 12.0;   // m: a drain grate in the gutter
+inline constexpr double kFootRamp = 1.2;          // m: a drop kerb's ramp each side of a mouth
+inline constexpr double kFootTactile = 0.6;       // m: the tactile strip at a ramp's foot
+inline constexpr double kFootLaneUpTo = 6.0;      // m: a vehicle street this wide or narrower is a one-way lane
+inline constexpr double kFootStep = 1.0;          // m: the footway's line is read at most this far apart
+inline constexpr double kFootFit = 0.03;          // m: a piece's top keeps this near its samples' tops
+inline constexpr double kFootLongest = 12.0;      // m: the longest piece
+inline constexpr double kFootShortest = 0.6;      // m: a shorter run is left out
+inline constexpr double kFootDryAbove = 0.5;      // m: no footway where the ground is this low or lower (the sea)
+inline constexpr double kFootBollardDia = 0.15;   // m
+inline constexpr double kFootBollardHigh = 0.9;   // m
+inline constexpr double kFootBollardGap = 1.3;    // m: the widest gap between an alley mouth's bollards (and walls)
+
+// What a streets-table row is to the footways: a vehicle street (kerbed footways), a pedestrian way (an alley or a
+// market arcade: paved, bollards at its mouths) or neither (stairs; no row).
+enum class RoadFootClass : std::uint8_t { None, Vehicle, Pedestrian };
+// Vehicle: width over kFootAlleyUpTo and kind not stair, link_stair, alley or market_arcade. Pedestrian: kind alley or
+// market_arcade, or any other non-stair row kFootAlleyUpTo wide or less. None: stair and link_stair.
+FTCORE_API RoadFootClass roadFootClass(const MassingStreet& street);
+
+// A vehicle street's section across its polyline (t: to its left, looking along its points).
+struct RoadFootSection {
+    double cwLo = 0.0, cwHi = 0.0;     // the carriageway, kerb face to kerb face
+    double footLeft = 0.0;              // m: the left footway, kerb stone included (0 none)
+    double footRight = 0.0;             // m: the right one
+};
+// Lanes (width up to 6 m): a kFootLaneCarriage carriageway and the rest as footways of kFootLaneMin to kFootLaneMax:
+// both sides when each gets kFootLaneMin, else one side (the left), the carriageway beside it. Wider streets: footways
+// of 0.2 of the width clamped to kFootRoadMin..kFootRoadMax both sides, or the street's own pavement_m when it has one.
+// So 6 m: 1.5 + 3.0 + 1.5; 5 m: 1.0 + 3.0 + 1.0; 4 m: 1.0 (left) + 3.0; 8 m: 2.0 + 4.0 + 2.0; 10 m: 2.0 + 6.0 + 2.0;
+// 14 m: 2.8 + 8.4 + 2.8. A street too narrow for that (under kFootLaneCarriage + kFootLaneMin) gets none.
+FTCORE_API RoadFootSection roadFootSection(const MassingStreet& street);
+
+// One alley mouth: an alley end meeting a vehicle street or a road's band.
+struct RoadAlleyMouth {
+    std::string alley, street; // street: the vehicle street's id, or "road" for the road network's band
+    RoadPoint at;              // the alley's end
+    std::size_t bollards = 0;
+};
+struct RoadFootStreet {
+    std::string id;
+    double length = 0.0;
+    double kerbed[2] = {0.0, 0.0}; // m of kerb laid along the left [0] and right [1] side
+    bool wantLeft = false, wantRight = false;
+};
+struct RoadFootReport {
+    std::size_t vehicle = 0, pedestrian = 0, skipped = 0; // skipped: no-class rows and the road network's own rows
+    std::size_t pieces = 0;      // footway pieces (each with a kerb and a gutter)
+    std::size_t ramps = 0, tactiles = 0, drains = 0, bollards = 0, paving = 0;
+    std::size_t mouths = 0;      // gaps where another vehicle street's carriageway meets one (drop kerbs both sides)
+    std::size_t buried = 0;      // footway pieces whose wall-side ground stands over their top by 5 cm or more
+    std::size_t floating = 0;    // pieces deepened by more than 0.5 m over falling ground
+    double kerbM = 0.0, footM2 = 0.0;
+    std::vector<RoadFootStreet> streets;  // one per vehicle street, in table order
+    std::vector<RoadAlleyMouth> alleyMouths;
+};
+// Builds the footways (appends to `out`: solids, footways, laneWays, furniture for the bollards). `streets` is the
+// massing streets table; rows named in `skipIds` (the road network's own streets) are skipped; `net` (or null) is the
+// road network's build, whose bands the footways stop short of. Each vehicle street, segment by segment: on each side
+// with a footway (roadFootSection), a kerb stone kRoadKerbRise over the gutter (kinds kerb), the footway slab level
+// with the kerb's top back to the wall line (kind footway, tint Footway), a gutter strip kFootGutter wide in the
+// carriageway kRoadSurfaceLift over the ground (kind gutter, tint Gutter) with a drain grate every kFootDrainEvery,
+// all following the ground read along the kerb line every kFootStep in pieces fitted within kFootFit (kFootLongest at
+// most), outer corners of bends lapped, inner ones cut back. A sample is left out within another vehicle street's
+// carriageway (a mouth: the last kFootRamp of footway each side becomes a drop-kerb ramp down to the gutter, with a
+// kFootTactile tactile strip at its foot), where this street ends inside another's band, inside the network's bands,
+// and over the sea (ground at or under kFootDryAbove). Each pedestrian way: a paving slab wall to wall, 5 cm over the
+// ground; at each end meeting a vehicle street or the network's band, a row of bollards across it (gaps no wider than
+// kFootBollardGap) 0.4 m inside the other's wall line. The vehicle street's footway runs on across an alley mouth, so
+// the alley meets it at a kerb-high step. Allocates: build time only.
+FTCORE_API void roadFootways(const std::vector<MassingStreet>& streets, const std::vector<std::string>& skipIds,
+                             const MassingGround& ground, const RoadBuild* net, RoadBuild& out,
+                             RoadFootReport* report = nullptr);
+// The top of the highest footway piece (build.footways) whose footprint holds the plan point; false when none does.
+FTCORE_API bool roadFootwayTop(const RoadBuild& build, double x, double y, double& top);
+
+// The footway check's rejects, one line each: a vehicle street that wants a footway on a side (RoadFootStreet) and has
+// kerb along less than `share` of its length on every such side ("no kerbed footway"), and an alley mouth with no
+// bollard and no footway piece within 1.5 m of its end ("open alley mouth").
+FTCORE_API std::vector<std::string> roadFootRejects(const RoadFootReport& report, const RoadBuild& build,
+                                                    double share = 0.4);
 
 } // namespace ftcore

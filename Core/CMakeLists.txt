@@ -64,10 +64,13 @@ add_library(ftcore STATIC
     src/FrameStats.cpp
     src/LightPicker.cpp
     src/NightLook.cpp
+    src/DayShade.cpp
     src/Backdrop.cpp
     src/StandIns.cpp
     src/BlockGen.cpp
     src/BlockCheck.cpp
+    src/TerrainPocket.cpp
+    src/ParkedCarLook.cpp
     src/RoadDecals.cpp
     src/ShopFront.cpp
     src/WorldClock.cpp
@@ -191,6 +194,16 @@ else()
     target_compile_options(ftcore_blockgen PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
+# ftcore_pocketcheck: finds stuck pockets on a box table and its height field, before and after the plinths (offline).
+add_executable(ftcore_pocketcheck tools/ftcore_pocketcheck.cpp)
+target_link_libraries(ftcore_pocketcheck PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_pocketcheck PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_pocketcheck PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_pocketcheck PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
 # ftcore_frontcount: counts what a frontage table places on a map's boxes (an offline budget estimate).
 add_executable(ftcore_frontcount tools/ftcore_frontcount.cpp)
 target_link_libraries(ftcore_frontcount PRIVATE ftcore ftcore_warnings)
@@ -251,6 +264,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_frame_stats.cpp
         tests/test_light_picker.cpp
         tests/test_night_look.cpp
+        tests/test_day_shade.cpp
         tests/test_shop_front.cpp
         tests/test_world_clock.cpp
         tests/test_world_checks.cpp
@@ -259,6 +273,8 @@ if(FTCORE_BUILD_TESTS)
         tests/test_stand_ins.cpp
         tests/test_block_gen.cpp
         tests/test_block_check.cpp
+        tests/test_terrain_pocket.cpp
+        tests/test_parked_car_look.cpp
         tests/test_road_graph.cpp
         tests/test_road_net.cpp
         tests/test_city_placer.cpp

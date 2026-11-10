@@ -1,4 +1,5 @@
 #include "FTBuildRoads.h"
+#include "FTBuildKeiCars.h"
 #include "FTCellInstancer.h"
 
 #include "ForgottenThird.h"
@@ -7,6 +8,7 @@
 #include "Engine/World.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "UObject/Package.h"
@@ -64,6 +66,7 @@ struct FRoadPainter
 	UStaticMesh* Cylinder = nullptr;
 	UMaterialInterface* Tints[static_cast<int32>(ftcore::RoadTint::Count)] = {};
 	int32 Laid = 0; // solids and vehicles given to the instancer
+	FTBuildKeiCars::FSet* KeiCars = nullptr; // -KeiCars (FTBuildKeiCars.h); null lays the stand-ins
 
 	UMaterialInterface* Tint(ftcore::RoadTint Which)
 	{
@@ -79,7 +82,7 @@ struct FRoadPainter
 			{
 				Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Roughness")), C.roughness);
 			}
-			// The master's street layer (0 none, 1 asphalt, 2 pavement, 3 kerb, 4 marking, 5 shared lane, 6 tactile).
+			// The master's street layer (0 none, 1 asphalt, 2 pavement, 3 kerb, 4 marking, 5 footway, 6 tactile).
 			Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Street")), static_cast<float>(ftcore::roadTintStreet(Which)));
 			Mic->PostEditChange();
 			Slot = Mic;
@@ -98,11 +101,12 @@ struct FRoadPainter
 		const ftcore::RoadTint Which = Solid.tint;
 		const bool bFlat = Which == ftcore::RoadTint::LineWhite || Which == ftcore::RoadTint::LineYellow || Which == ftcore::RoadTint::LensRed ||
 			Which == ftcore::RoadTint::LensAmber || Which == ftcore::RoadTint::LensGreen || Which == ftcore::RoadTint::Wire ||
-			Which == ftcore::RoadTint::Tactile || Which == ftcore::RoadTint::Water;
+			Which == ftcore::RoadTint::Tactile || Which == ftcore::RoadTint::Water || Which == ftcore::RoadTint::Gutter ||
+			Which == ftcore::RoadTint::Drain;
 		// A canal's walls and floor are walked on and drawn at any distance, as the road's ground is.
 		const bool bCanal = Box.kind.rfind("canal_", 0) == 0;
 		const bool bGround = Which == ftcore::RoadTint::Asphalt || Which == ftcore::RoadTint::AsphaltPatch || Which == ftcore::RoadTint::Pavement ||
-			Which == ftcore::RoadTint::Kerb || Which == ftcore::RoadTint::SharedLane || (bCanal && Solid.collide);
+			Which == ftcore::RoadTint::Kerb || Which == ftcore::RoadTint::Footway || Which == ftcore::RoadTint::Gutter || (bCanal && Solid.collide);
 		const bool bCyl = Solid.shape == ftcore::RoadShape::Cylinder && Cylinder;
 		FVector Location, Scale;
 		FRotator Rotation;
@@ -136,7 +140,7 @@ struct FRoadPainter
 		const bool bVehicle = Solid.tag.rfind("FTVehicle_", 0) == 0;
 		FFTCellOptions Options;
 		const bool bMarking = Which == ftcore::RoadTint::LineWhite || Which == ftcore::RoadTint::LineYellow || Which == ftcore::RoadTint::Tactile ||
-			Which == ftcore::RoadTint::Water;
+			Which == ftcore::RoadTint::Water || Which == ftcore::RoadTint::Drain;
 		Options.Cull = bVehicle ? EFTCellCull::Car : ((bGround || bMarking) ? EFTCellCull::None : EFTCellCull::Prop);
 		Options.bCastShadow = !bFlat;
 		Options.Tag = Solid.tag.empty() ? FName(TEXT("FTRoad")) : FName(RoadsUtf8(Solid.tag));
@@ -155,6 +159,12 @@ struct FRoadPainter
 	// stand-in solids.
 	bool Vehicle(const ftcore::RoadVehicle& V, UStaticMesh* Scooter, std::vector<ftcore::RoadSolid>& Scratch)
 	{
+		bool bKeiOk = true;
+		if (KeiCars && FTBuildKeiCars::Place(*KeiCars, *Host.Cells, Host.Side, V, bKeiOk))
+		{
+			Laid += bKeiOk ? 1 : 0;
+			return bKeiOk;
+		}
 		const FName Tag(*FString::Printf(TEXT("FTVehicle_%s"), UTF8_TO_TCHAR(ftcore::roadVehicleName(V.kind))));
 		if (V.kind == ftcore::RoadVehicleKind::Scooter && Scooter)
 		{
@@ -231,6 +241,21 @@ FOptions ParseOptions(const TCHAR* Params)
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -LaneLamps=%s isn't x0,y0,x1,y1; no lane lamps."), *Box);
 		}
 	}
+	Options.bFootways = FParse::Param(Params, TEXT("Footways"));
+	// "Streets=" also sits inside "-PropStreets=", so the dash is part of the match; -PropStreets= without -Streets=.
+	if (!FParse::Value(Params, TEXT("-Streets="), Options.StreetsFile))
+	{
+		FParse::Value(Params, TEXT("PropStreets="), Options.StreetsFile);
+	}
+	FString Skip;
+	if (FParse::Value(Params, TEXT("FootwaySkip="), Skip, false)) // false: the commas are part of the value
+	{
+		Skip.ParseIntoArray(Options.FootwaySkip, TEXT(","));
+		for (FString& Kind : Options.FootwaySkip)
+		{
+			Kind.TrimStartAndEndInline();
+		}
+	}
 	uint32 Seed = Options.Seed;
 	if (FParse::Value(Params, TEXT("RoadSeed="), Seed))
 	{
@@ -262,6 +287,80 @@ static bool HideRoadClashes(const ftcore::RoadBuild& Build, std::vector<ftcore::
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: roads %s: %d box rows still in the carriageway."), *What,
 			static_cast<int32>(Left));
 		return false;
+	}
+	return true;
+}
+
+// -Footways: the streets table's vehicle streets kerbed and its alleys paved (ftcore::roadFootways), into Builds[0],
+// clear of every road's band; the roads' own rows are skipped. The check's rejects are logged as warnings.
+static bool AddFootways(const FOptions& Options, const ftcore::MassingGround& Ground, const std::vector<ftcore::RoadSpec>& Roads,
+	std::vector<ftcore::RoadBuild>& Builds)
+{
+	if (!Options.bFootways)
+	{
+		return true;
+	}
+	if (Builds.empty())
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: -Footways needs a -Roads table to lay into; no footways."));
+		return true;
+	}
+	std::vector<ftcore::MassingStreet> Streets;
+	{
+		std::string Text, Error;
+		if (!RoadsReadText(Options.StreetsFile, Text))
+		{
+			return false;
+		}
+		if (!ftcore::importMassingStreets(Text, Streets, &Error))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *Options.StreetsFile, *RoadsUtf8(Error));
+			return false;
+		}
+	}
+	int32 Exempt = 0;
+	if (Options.FootwaySkip.Num() > 0)
+	{
+		size_t Keep = 0;
+		for (size_t I = 0; I < Streets.size(); ++I)
+		{
+			if (Options.FootwaySkip.Contains(RoadsUtf8(Streets[I].kind)))
+			{
+				++Exempt;
+				continue;
+			}
+			if (Keep != I)
+			{
+				Streets[Keep] = std::move(Streets[I]);
+			}
+			++Keep;
+		}
+		Streets.resize(Keep);
+	}
+	std::vector<std::string> Skip;
+	ftcore::RoadBuild Bands; // every road's band: the footways stop short of them
+	for (size_t R = 0; R < Roads.size(); ++R)
+	{
+		Skip.push_back(Roads[R].id);
+		if (R < Builds.size())
+		{
+			Bands.band.insert(Bands.band.end(), Builds[R].band.begin(), Builds[R].band.end());
+		}
+	}
+	ftcore::RoadFootReport Report;
+	const size_t SolidsBefore = Builds[0].solids.size();
+	ftcore::roadFootways(Streets, Skip, Ground, &Bands, Builds[0], &Report);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Footways %s: %d vehicle streets, %d pedestrian ways, %d skipped (%d more by "
+		"-FootwaySkip); %d footway pieces (kerb %.0f m, footway %.0f m2), %d ramps, %d tactiles, %d drains, %d paving slabs, %d bollards at %d "
+		"alley mouths; %d buried, %d floating; %d solids."),
+		*Options.StreetsFile, static_cast<int32>(Report.vehicle), static_cast<int32>(Report.pedestrian), static_cast<int32>(Report.skipped),
+		Exempt, static_cast<int32>(Report.pieces), Report.kerbM, Report.footM2, static_cast<int32>(Report.ramps),
+		static_cast<int32>(Report.tactiles), static_cast<int32>(Report.drains), static_cast<int32>(Report.paving), static_cast<int32>(Report.bollards),
+		static_cast<int32>(Report.alleyMouths.size()), static_cast<int32>(Report.buried), static_cast<int32>(Report.floating),
+		static_cast<int32>(Builds[0].solids.size() - SolidsBefore));
+	for (const std::string& Reject : ftcore::roadFootRejects(Report, Builds[0]))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: -Footways: %s"), *RoadsUtf8(Reject));
 	}
 	return true;
 }
@@ -333,7 +432,7 @@ bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: road network: %d corner aprons (pavement on into the block's corner)."),
 			static_cast<int32>(Report.aprons));
-		return HideRoadClashes(Builds[0], Boxes, TEXT("network"));
+		return HideRoadClashes(Builds[0], Boxes, TEXT("network")) && AddFootways(Options, Ground, Roads, Builds);
 	}
 	if (!ftcore::importRoads(Text, Roads, &Error))
 	{
@@ -358,7 +457,7 @@ bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::
 			return false;
 		}
 	}
-	return true;
+	return AddFootways(Options, Ground, Roads, Builds);
 }
 
 size_t DropRoadStreets(const std::vector<ftcore::RoadSpec>& Roads, std::vector<ftcore::MassingStreet>& Streets)
@@ -404,8 +503,10 @@ bool Lay(FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::
 		return false;
 	}
 	FRoadPainter Paint{Host};
+	FTBuildKeiCars::FSet KeiCars = FTBuildKeiCars::Load(FCommandLine::Get(), Options.Seed);
+	Paint.KeiCars = &KeiCars;
 	// Every tint's instance exists in the package (MI_Road_<tint>, Street set), worn here or not: the ground and decal
-	// builders look them up by name (MI_Road_SharedLane for the lanes).
+	// builders look them up by name (MI_Road_Footway for the lanes' footways).
 	for (int32 T = 0; T < static_cast<int32>(ftcore::RoadTint::Count); ++T)
 	{
 		Paint.Tint(static_cast<ftcore::RoadTint>(T));
@@ -479,6 +580,7 @@ bool Lay(FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::
 							  : TEXT("no vehicles (no -Vehicles)"));
 	}
 	Host.RoadsTo = Host.Taken ? Host.Taken->size() : 0;
+	FTBuildKeiCars::LogSummary(KeiCars);
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roads: %d solids and vehicles laid as instances of their cells."), Paint.Laid);
 	return true;
 }
@@ -528,6 +630,11 @@ bool Finish(const FFTRoadsHost& Host, const FOptions& Options, const std::vector
 			}
 		}
 		ftcore::RoadLaneLampOptions Opts;
+		if (Options.bFootways && !Builds.empty())
+		{
+			Opts.footways = &Builds[0]; // on the footways only, the foot inside the narrowest (1 m)
+			Opts.edgeIn = 0.55;
+		}
 		Opts.x0 = Options.LaneBox[0];
 		Opts.y0 = Options.LaneBox[1];
 		Opts.x1 = Options.LaneBox[2];
@@ -591,6 +698,10 @@ bool Finish(const FFTRoadsHost& Host, const FOptions& Options, const std::vector
 				Opts.y1 = FMath::Max(Road.y0, Road.y1) + kRoadTwoWheelReach;
 			}
 			Opts.seed = Options.Seed + 101u * static_cast<uint32>(R + 1);
+			if (Options.bFootways)
+			{
+				Opts.footways = &Builds[0]; // on a footway's top, off the lanes' carriageways
+			}
 			// The lanes once (with the first road), then each further road's back of pavement alone.
 			ftcore::roadTwoWheelers(R == 0 ? Lanes : None, Opts, &Builds[R], bNet ? nullptr : &Road, Ground, Doors, &Room, Bikes);
 		}

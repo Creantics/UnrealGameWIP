@@ -18,6 +18,9 @@ constexpr float kTopNoiseFloor = 0.55f;
 constexpr float kTopOcclusion = 0.3f;
 constexpr float kFineFrom = 0.004f;  // m a pixel covers: fine detail full under this, gone over kFineTo
 constexpr float kFineTo = 0.015f;
+constexpr float kMidFrom = 0.02f;   // the same for the middle detail (5-50 cm features: blotches, chips, joints)
+constexpr float kMidTo = 0.1f;
+constexpr float kPaveAlbedo = 0.72f;  // a pavement tile's albedo against its tint (the tint stays for the other users)
 
 float saturate(float x) { return std::clamp(x, 0.f, 1.f); }
 float lerp(float a, float b, float t) { return a + (b - a) * t; }
@@ -86,8 +89,10 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\tfloat2 SlopeW = float2(0.0, 0.0);\n";  // height gradient, world x and y, per m
     h += "\tfloat2 SlopeB = float2(0.0, 0.0);\n";  // the same in the box's own x and y
     h += "\tfloat FaceW = TopF;\n";
-    // Asphalt and lanes: the tone layer and the aggregate.
-    h += "\tif (SK == 1 || SK == 5)\n\t{\n";
+    h += "\tfloat Mid = 1.0 - smoothstep(" + num(kMidFrom) + ", " + num(kMidTo) + ", Foot);\n";
+    // Asphalt: the tone layer, aggregate with light chips, ravelled blotches, wheel paths (on a flat slab across its
+    // short side too), oil down a lane's centre, joints, sealed cracks and open hairlines.
+    h += "\tif (SK == 1)\n\t{\n";
     h += "\t\tfloat Macro = SNz.F(Pw / " + num(st.macroScaleM) + " + 7.3);\n";
     h += "\t\tTone *= 1.0 + " + num(st.macroTone) + " * (2.0 * Macro - 1.0);\n";
     h += "\t\tRoughMul *= 1.0 - 0.06 * (2.0 * Macro - 1.0);\n";
@@ -96,18 +101,28 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\t\tfloat Ax = SNz.N(Ag + float2(0.35, 0.0));\n";
     h += "\t\tfloat Ay = SNz.N(Ag + float2(0.0, 0.35));\n";
     h += "\t\tSlopeW += float2(Ax - A0, Ay - A0) / 0.35 * " + num(st.aggregateSlope) + " * Fine;\n";
-    h += "\t\tTone *= 1.0 + (SK == 5 ? 0.3 : 0.1) * (A0 - 0.5) * Fine;\n";
-    h += "\t}\n";
-    // Asphalt: lanes, wheel paths, worn centre and edges, damp gutter, joints and sealed cracks.
-    h += "\tif (SK == 1)\n\t{\n";
+    // Exposed stone chips: light flecks where the binder wore off (rougher), fading to their mean further out.
+    h += "\t\tfloat Chip = smoothstep(0.62, 0.8, 0.6 * A0 + 0.4 * SNz.N(Pw / " + num(st.aggregateM * 0.45f) + " + 5.0));\n";
+    h += "\t\tTone *= 1.0 + 0.3 * (A0 - 0.5) * Fine + lerp(0.25, 1.4 * Chip, Fine) * 0.5;\n";
+    h += "\t\tRoughMul *= 1.0 + 0.1 * Chip * Fine;\n";
+    // Ravelled blotches and old patches, 0.3-2 m: what is left of the grain beyond a few metres.
+    h += "\t\tfloat Blot = SNz.N(Pw / 0.6 + 11.0);\n";
+    h += "\t\tTone *= 1.0 + 0.22 * (Blot - 0.5) * Mid;\n";
+    h += "\t\tfloat Fix = smoothstep(0.7, 0.72, SNz.N(Pw / 5.0 + 61.0));\n";
+    h += "\t\tTone *= lerp(1.0, 0.72, Fix);\n";
+    h += "\t\tRoughMul *= lerp(1.0, 0.92, Fix);\n";
+    // Wheel paths: a cambered half from its gutter, a long flat slab across its short side (none on a squarish fill).
+    h += "\t\tfloat Wd = Tilted ? Sy : (max(Sx, Sy) > 2.0 * min(Sx, Sy) ? min(Sx, Sy) : 0.0);\n";
+    h += "\t\tfloat Across = Tilted ? GutD : (Sx >= Sy ? Lm.y : Lm.x) + 0.5 * Wd;\n";
+    h += "\t\tfloat Lanes = max(1.0, round(Wd / " + num(st.laneM) + "));\n";
+    h += "\t\tfloat Lw = Wd / Lanes;\n";
+    h += "\t\tfloat Q = (frac(Across / max(Lw, 0.01)) - 0.5) * Lw;\n";
+    h += "\t\tfloat Wheel = Lw > 2.0 ? exp(-pow((abs(Q) - " + num(st.wheelOffM) + ") / " + num(st.wheelWideM) + ", 2.0)) : 0.0;\n";
+    h += "\t\tfloat Centre = Lw > 2.0 ? exp(-pow(Q / 0.35, 2.0)) : 0.0;\n";
+    h += "\t\tfloat Oil = Centre * smoothstep(0.5, 0.8, SNz.N(Pw * 0.9 + 23.0));\n";
+    h += "\t\tTone *= (1.0 - " + num(st.wheelDarken) + " * 1.6 * Wheel) * (1.0 + " + num(st.wornCentre) + " * Centre) * (1.0 - 0.3 * Oil);\n";
+    h += "\t\tRoughMul *= (1.0 - " + num(st.wheelPolish) + " * Wheel) * (1.0 - 0.3 * Oil);\n";
     h += "\t\tif (Tilted)\n\t\t{\n";
-    h += "\t\t\tfloat Lanes = max(1.0, round(Sy / " + num(st.laneM) + "));\n";
-    h += "\t\t\tfloat Lw = Sy / Lanes;\n";
-    h += "\t\t\tfloat Q = (frac(GutD / Lw) - 0.5) * Lw;\n";
-    h += "\t\t\tfloat Wheel = exp(-pow((abs(Q) - " + num(st.wheelOffM) + ") / " + num(st.wheelWideM) + ", 2.0));\n";
-    h += "\t\t\tfloat Centre = exp(-pow(Q / 0.35, 2.0));\n";
-    h += "\t\t\tTone *= (1.0 - " + num(st.wheelDarken) + " * Wheel) * (1.0 + " + num(st.wornCentre) + " * Centre);\n";
-    h += "\t\t\tRoughMul *= 1.0 - " + num(st.wheelPolish) + " * Wheel;\n";
     h += "\t\t\tfloat EdgeBand = smoothstep(0.3, 0.45, GutD) * (1.0 - smoothstep(0.8, 1.0, GutD)) + (1.0 - smoothstep(0.0, 0.4, Sy - GutD));\n";
     h += "\t\t\tTone *= 1.0 + " + num(st.wornEdge) + " * EdgeBand;\n";
     h += "\t\t\tRoughMul *= 1.0 - " + num(st.gutterDampPolish) + " * (1.0 - smoothstep(" + num(st.gutterDampM * 0.6f) + ", " +
@@ -124,25 +139,46 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\t\t}\n";
     h += "\t\tfloat JW = " + num(0.5f * st.jointWideM) + ";\n";
     h += "\t\tfloat Joint = (1.0 - smoothstep(JW, JW + Foot, JD)) * saturate(2.0 * JW / (2.0 * JW + Foot));\n";
+    // Sealed cracks (tar, wide enough to hold from 20 m) and open hairlines (dark, near only).
     h += "\t\tfloat CrackV = SNz.N(Pw / " + num(st.crackScaleM) + " + 41.0);\n";
-    h += "\t\tfloat CrackGate = smoothstep(0.6, 0.72, SNz.N(Pw / " + num(st.crackScaleM * 3.f) + " + 3.1));\n";
+    h += "\t\tfloat CrackGate = smoothstep(0.5, 0.62, SNz.N(Pw / " + num(st.crackScaleM * 3.f) + " + 3.1));\n";
     h += "\t\tfloat CrackF = Foot / " + num(st.crackScaleM) + ";\n";
-    h += "\t\tfloat Crack = (1.0 - smoothstep(0.004, 0.004 + CrackF, abs(CrackV - 0.5))) * saturate(0.008 / (0.008 + CrackF)) * CrackGate;\n";
+    h += "\t\tfloat Crack = (1.0 - smoothstep(0.006, 0.006 + CrackF, abs(CrackV - 0.5))) * saturate(0.012 / (0.012 + CrackF)) * CrackGate;\n";
+    h += "\t\tfloat HairV = SNz.N(Pw / 0.9 + 77.0);\n";
+    h += "\t\tfloat HairF = Foot / 0.9;\n";
+    h += "\t\tfloat Hair = (1.0 - smoothstep(0.004, 0.004 + HairF, abs(HairV - 0.5))) * saturate(0.008 / (0.008 + HairF)) *\n";
+    h += "\t\t\tsmoothstep(0.55, 0.7, SNz.N(Pw / 7.0 + 9.0));\n";
     h += "\t\tfloat Seal = max(Joint, Crack);\n";
-    h += "\t\tTone *= lerp(1.0, " + num(st.sealDarken) + ", Seal);\n";
-    h += "\t\tRoughMul *= lerp(1.0, 0.75, Seal);\n";
+    h += "\t\tTone *= lerp(1.0, " + num(st.sealDarken) + ", Seal) * (1.0 - 0.6 * Hair);\n";
+    h += "\t\tRoughMul *= lerp(1.0, 0.75, Seal) * (1.0 + 0.2 * Hair);\n";
     h += "\t}\n";
-    // Lanes: old concrete panels with sealed joints and darker patches.
+    // Footways: grey concrete pavers in running bond along the run, sanded joints, per-paver tone, grime and gum, and
+    // pavers that soak unevenly (the wet gloss breaks up paver by paver).
     h += "\telse if (SK == 5)\n\t{\n";
-    h += "\t\tfloat2 PanelF = frac((Lm.xy + 0.5 * float2(Sx, Sy)) / " + num(st.laneSlabM) + ") - 0.5;\n";
-    h += "\t\tfloat PD = min(0.5 - abs(PanelF.x), 0.5 - abs(PanelF.y)) * " + num(st.laneSlabM) + ";\n";
-    h += "\t\tfloat PJ = (1.0 - smoothstep(0.008, 0.008 + Foot, PD)) * saturate(0.016 / (0.016 + Foot));\n";
-    h += "\t\tfloat Patch = smoothstep(0.64, 0.68, SNz.F(Pw / 4.0 + 21.0));\n";
-    h += "\t\tAlb = lerp(Alb, float3(0.06, 0.06, 0.065), Patch);\n";
-    h += "\t\tTone *= lerp(1.0, 0.55, PJ);\n";
-    h += "\t\tRoughMul *= lerp(1.0, 0.9, Patch);\n";
+    h += "\t\tbool LongX = Sx >= Sy;\n";
+    h += "\t\tfloat2 PL = LongX ? Lm.xy + 0.5 * float2(Sx, Sy) : float2(Lm.y + 0.5 * Sy, Lm.x + 0.5 * Sx);\n";
+    h += "\t\tfloat2 PP = PL / float2(0.2, 0.1);\n";
+    h += "\t\tPP.x += 0.5 * fmod(floor(PP.y), 2.0);\n";
+    h += "\t\tfloat2 PId = floor(PP);\n";
+    h += "\t\tfloat2 PF = frac(PP) - 0.5;\n";
+    h += "\t\tfloat2 PDd = (0.5 - abs(PF)) * float2(0.2, 0.1);\n";
+    h += "\t\tbool PNearX = PDd.x < PDd.y;\n";
+    h += "\t\tfloat PD = min(PDd.x, PDd.y);\n";
+    h += "\t\tfloat Pt = saturate((PD - 0.003) / 0.006);\n";
+    h += "\t\tfloat PH = Pt * Pt * (3.0 - 2.0 * Pt);\n";
+    h += "\t\tfloat2 PSl = (PNearX ? float2(-sign(PF.x), 0.0) : float2(0.0, -sign(PF.y))) * 6.0 * Pt * (1.0 - Pt) / 0.006 * 0.003 * Fine;\n";
+    h += "\t\tSlopeB += LongX ? PSl : PSl.yx;\n";
+    h += "\t\tfloat Ph = frac(sin(dot(PId + float2(round(Sx * 7.0), round(Sy * 13.0)), float2(12.9898, 78.233))) * 43758.5453);\n";
+    h += "\t\tfloat PJ = lerp(0.2, 1.0 - PH, Mid);\n";  // joint share: 1 in a joint, its mean further out
+    h += "\t\tTone *= lerp(1.0, 0.5, PJ) * (1.0 + 0.12 * (2.0 * Ph - 1.0) * Mid);\n";
+    h += "\t\tTone *= 1.0 + 0.14 * (SNz.N(Pw / 0.006 + 3.0) - 0.5) * Fine;\n";
+    h += "\t\tfloat PStain = smoothstep(0.55, 0.8, SNz.F(Pw / 1.8 + 13.0));\n";
+    h += "\t\tfloat Gum = smoothstep(0.9, 0.93, SNz.N(Pw / 0.04 + 91.0)) * Fine;\n";
+    h += "\t\tTone *= (1.0 - 0.3 * PStain) * (1.0 - 0.5 * Gum);\n";
+    h += "\t\tRoughMul *= lerp(1.0, 1.15, PJ) * (1.0 + 0.08 * Ph);\n";
+    h += "\t\tSoak *= lerp(lerp(0.45, 1.0, Ph), 1.0, PJ);\n";
     h += "\t}\n";
-    // Pavements: tiles with sunk joints, per-tile tone and stained patches.
+    // Pavements: tiles with sunk, grimy joints, a lower albedo, per-tile tone and porosity, stains and grit.
     h += "\telse if (SK == 2)\n\t{\n";
     h += "\t\tfloat2 T = (Lm.xy + 0.5 * float2(Sx, Sy)) / " + num(st.tileM) + ";\n";
     h += "\t\tfloat2 Id = floor(T);\n";
@@ -154,12 +190,16 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\t\tfloat Ht = Tt * Tt * (3.0 - 2.0 * Tt);\n";
     h += "\t\tfloat Dh = 6.0 * Tt * (1.0 - Tt) / " + num(st.tileBevelM) + ";\n";
     h += "\t\tSlopeB += (NearX ? float2(-sign(TF.x), 0.0) : float2(0.0, -sign(TF.y))) * Dh * " + num(st.tileDepthM) + " * Fine;\n";
-    h += "\t\tTone *= lerp(1.0, lerp(0.55, 1.0, Ht), Fine);\n";
+    h += "\t\tfloat TJ = lerp(0.12, 1.0 - Ht, Mid);\n";  // joint share, its mean further out
+    h += "\t\tTone *= " + num(kPaveAlbedo) + " * lerp(1.0, 0.45, TJ);\n";
     h += "\t\tfloat Th = frac(sin(dot(Id + float2(round(Sx * 7.0), round(Sy * 13.0)), float2(12.9898, 78.233))) * 43758.5453);\n";
-    h += "\t\tTone *= 1.0 + " + num(st.tileTone) + " * (2.0 * Th - 1.0) * (1.0 - smoothstep(0.02, 0.06, Foot));\n";
-    h += "\t\tfloat Stain = smoothstep(0.6, 0.78, SNz.F(Pw / 2.5 + 13.0));\n";
-    h += "\t\tTone *= 1.0 - 0.2 * Stain;\n";
-    h += "\t\tRoughMul *= 1.0 - 0.1 * Stain;\n";
+    h += "\t\tTone *= 1.0 + " + num(st.tileTone) + " * 1.5 * (2.0 * Th - 1.0) * Mid;\n";
+    h += "\t\tTone *= 1.0 + 0.16 * (SNz.N(Pw / 0.006 + 8.0) - 0.5) * Fine;\n";
+    h += "\t\tfloat Stain = smoothstep(0.5, 0.78, SNz.F(Pw / 2.5 + 13.0));\n";
+    h += "\t\tfloat Gum = smoothstep(0.9, 0.93, SNz.N(Pw / 0.04 + 57.0)) * Fine;\n";
+    h += "\t\tTone *= (1.0 - 0.3 * Stain) * (1.0 - 0.5 * Gum);\n";
+    h += "\t\tRoughMul *= lerp(1.0, 1.2, TJ) * (1.0 + 0.1 * Th) * (1.0 - 0.1 * Stain);\n";
+    h += "\t\tSoak *= lerp(lerp(0.4, 1.0, Th), 1.0, TJ);\n";
     h += "\t}\n";
     // Kerbs: stones along the run, jointed on top and sides.
     h += "\telse if (SK == 3)\n\t{\n";
