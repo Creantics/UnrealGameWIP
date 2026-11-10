@@ -578,6 +578,13 @@ void AFTPartyVan::MoveBody(float DeltaSeconds)
 			State.yawRate = 0.f;
 		}
 		const FVector Local = GetActorTransform().InverseTransformPosition(Hit.ImpactPoint);
+		if (bScript && TraceAge > 0.5f)
+		{
+			TraceAge = 0.f;
+			UE_LOG(LogForgottenThird, Display, TEXT("VANTRACE blocked at (%.0f, %.0f, %.0f) by %s normal (%.2f, %.2f, %.2f) local (%.0f, %.0f, %.0f) ground %.0f lift %.0f"),
+				At.X, At.Y, At.Z, Hit.GetComponent() ? *Hit.GetComponent()->GetReadableName() : TEXT("?"), Hit.ImpactNormal.X, Hit.ImpactNormal.Y,
+				Hit.ImpactNormal.Z, Local.X, Local.Y, Local.Z, GroundZ, Lift);
+		}
 		ftcore::addImpact(Rules.wear, Wear, Into, static_cast<float>(Local.X), static_cast<float>(Local.Y));
 	}
 	Tilt->SetRelativeLocation(FVector(0.0, 0.0, -(Clearance + BodyHalfZ + Lift)));
@@ -606,6 +613,7 @@ void AFTPartyVan::Tick(float DeltaSeconds)
 	DeltaSeconds = FMath::Min(DeltaSeconds, 0.1f);
 	if (bCourse || bMapRoute)
 	{
+		TraceAge += DeltaSeconds;
 		TickScript(DeltaSeconds);
 	}
 	TickSeats(DeltaSeconds);

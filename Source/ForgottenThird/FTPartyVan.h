@@ -148,6 +148,7 @@ private:
 	bool bCourse = false;
 	bool bMapRoute = false;    // -PartyVanAt with -VanDrive: a straight route from the spawn
 	float RouteLen = 8000.f;   // (cm)
+	float TraceAge = 0.f;      // scripted runs: seconds since the last VANTRACE line
 	// -VanLoop=X:Y,X:Y,...: a closed route through these engine points (cm) from the spawn and back to it, in the
 	// course frame (relative to the start, its heading along +X). LoopCum: the distance along to each point.
 	static constexpr int32 MaxLoop = 16;
