@@ -350,12 +350,34 @@ inline constexpr double kMassingRoofUnitPitch = 1.2;  // m between units of a fa
 
 // A stair-head hut's row is its host's look key (the host's row, or its id cut at the last '_'), so it wears the host's
 // finish; its kind is "hut" and its id "<host>-RH<n>", where the BK-HUT kit piece may replace it.
+//
+// scatter (round 6, with layouts only; off: the r5 layouts, byte for byte) breaks the even look: every tank takes its own
+// size (massingRoofTankSize) and its stand scales with it; tanks, stands, units (not a farm row's) and sheds turn up to
+// kMassingRoofYaw off the host's square; the first kMassingRoofClusterTries spots a piece tries gather round a spot of the
+// host's own (kMassingRoofClusterSpread of the inset each way), so clutter clusters; a hut slides to a hashed spot along
+// an inset edge on all but kMassingRoofHutCornerShare of hosts before it tries the corners, and its box turns so its -u
+// side (a long side, the door's) faces the roof's middle (sx its short side); the layouts take Empty 5, Tanks 3,
+// UnitFarm 3, StairHead 4, Laundry 2, ShedMasts 2, Dense 1 out of 20. No more pieces than without it.
 struct MassingRoofStyle {
     bool layouts = false; // false: the r4 clutter, byte for byte
+    bool scatter = false; // round 6
 };
+inline constexpr double kMassingRoofTankSideMin = 1.0, kMassingRoofTankSideMax = 1.6;     // m, scatter
+inline constexpr double kMassingRoofTankHeightMin = 1.2, kMassingRoofTankHeightMax = 2.2; // m, scatter
+inline constexpr double kMassingRoofYaw = 8.0;               // degrees, at most
+inline constexpr std::uint64_t kMassingRoofClusterTries = 5; // of the eight
+inline constexpr double kMassingRoofClusterSpread = 0.45;
+inline constexpr double kMassingRoofHutCornerShare = 0.35;
 
-// The layout and the roof finish (0 .. kMassingRoofFinishes - 1) a roof host's id picks.
-FTCORE_API MassingRoofLayout massingRoofLayout(std::string_view hostId);
+// The layout and the roof finish (0 .. kMassingRoofFinishes - 1) a roof host's id picks (scatter: its weights).
+FTCORE_API MassingRoofLayout massingRoofLayout(std::string_view hostId, bool scatter = false);
+// A scattered tank's side and height (kMassingRoofTankSideMin..Max, kMassingRoofTankHeightMin..Max) from its host's
+// seed and its number on the host. No allocation.
+FTCORE_API void massingRoofTankSize(std::uint64_t hostSeed, std::size_t tank, double& side, double& height);
+// The turn (degrees, for massingKitPlacement) that lays the BK-HUT mesh (its short side along its X, its door on its
+// -X face) in a hut box: 0 when the box's u is its short side (a scattered hut's always is, door to the roof's middle),
+// else 90. No allocation.
+FTCORE_API double massingRoofHutTurn(const MassingBox& hut);
 FTCORE_API int massingRoofFinish(std::string_view hostId);
 
 // Rails and clutter on the flat tops of the boxes `hosts` marks (of those `include` marks, the boxes read as neighbours).

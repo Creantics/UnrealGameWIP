@@ -5,6 +5,12 @@
 //   ftcore_roadgraph --streets <csv> --roads <csv> --area <x0,y0,x1,y1> [--boxes <csv>] [--min-width <m>] [--out <csv>]
 //   ftcore_roadgraph --net <csv> [--r16 <file> --samples <n> --origin <x,y> [--spacing <m>]] [--boxes <csv>] [--out <csv>] [--list-all 1]
 //   ftcore_roadgraph --check 1 (--net <csv> [--r16 ...] | --roads <csv>) [--boxes <csv>] [--graph <csv>] [--list-all 1]
+//   ftcore_roadgraph --yards 1 --boxes <csv> --area <x0,y0,x1,y1> --out <csv> [--net <csv>] [--streets <csv>]
+//                    [--r16 ...] [--goals <csv>] [--clear <x0,y0,x1,y1>]... [--drop-ids <a;b>] [--drop-kinds <k1;k2>]
+//                    [--drop-clash 1]
+//
+// The fourth form writes a new box table: the rows of --boxes less those dropped, plus fenced yards with a shed each on
+// the open plains of the area (massingYardFill); see runYards. Its last line is YARDS OK.
 //
 // The third form builds the roads (a network table, or each road of a roads table) and prints the clashes a vehicle
 // meets: box rows standing in a carriageway (roadBoxClashes, after the decks and piers the roads clear) and kerb or
@@ -24,6 +30,7 @@
 #endif
 
 #include "ftcore/MassingDress.h"
+#include "ftcore/MassingLayout.h"
 #include "ftcore/MassingPlan.h"
 #include "ftcore/MassingProps.h"
 #include "ftcore/RoadGraph.h"
@@ -163,6 +170,180 @@ int runCheck(const std::string& netPath, const std::string& roadsPath, const std
     return boxClashes + faces == 0 ? 0 : 1;
 }
 
+// The yards form: a new box table from --boxes, less the rows dropped (--drop-ids, --drop-kinds, and with
+// --drop-clash 1 the rows standing in the network's carriageways), plus yards on the open plains of the area
+// (massingYardFill: keeping off the boxes left, the lanes of --streets, the network's bands and furniture, the
+// --clear rects and 15 m round each goal and spawn of --goals). Rows kept are copied as they are.
+struct YardArgs {
+    std::string boxesPath, netPath, streetsPath, goalsPath, outPath, r16Path;
+    double samples = 0.0, origin[2] = {0.0, 0.0}, spacing = 1.0;
+    MassingRect area;
+    std::vector<MassingRect> clear;
+    std::vector<std::string> dropIds, dropKinds;
+    bool dropClash = false;
+};
+
+std::vector<std::string> splitList(const std::string& s) {
+    std::vector<std::string> out;
+    std::size_t p = 0;
+    while (p <= s.size()) {
+        std::size_t q = s.find(';', p);
+        if (q == std::string::npos) q = s.size();
+        if (q > p) out.push_back(s.substr(p, q - p));
+        p = q + 1;
+    }
+    return out;
+}
+
+bool listed(const std::vector<std::string>& v, const std::string& s) {
+    for (const std::string& x : v)
+        if (x == s) return true;
+    return false;
+}
+
+int runYards(const YardArgs& a) {
+    std::string text, err;
+    if (!readFile(a.boxesPath, text)) return die("can't read " + a.boxesPath);
+    std::vector<MassingBox> boxes;
+    if (!importMassingBoxes(text, boxes, &err)) return die(a.boxesPath + ": " + err);
+    const std::string boxText = text;
+    std::vector<std::uint16_t> grid;
+    MassingGround ground;
+    if (!loadGround(a.r16Path, a.samples, a.origin, a.spacing, grid, ground, err)) return die(err);
+    RoadBuild b;
+    if (!a.netPath.empty()) {
+        std::vector<RoadNetStreet> net;
+        text.clear();
+        if (!readFile(a.netPath, text)) return die("can't read " + a.netPath);
+        if (!importRoadNet(text, net, &err)) return die(a.netPath + ": " + err);
+        roadNetBuild(net, ground, b);
+    }
+    std::vector<MassingStreet> lanes;
+    if (!a.streetsPath.empty()) {
+        text.clear();
+        if (!readFile(a.streetsPath, text)) return die("can't read " + a.streetsPath);
+        if (!importMassingStreets(text, lanes, &err)) return die(a.streetsPath + ": " + err);
+    }
+    MassingYards opts;
+    opts.area = a.area;
+    opts.keepClear = a.clear;
+    if (!a.goalsPath.empty()) {
+        text.clear();
+        if (!readFile(a.goalsPath, text)) return die("can't read " + a.goalsPath);
+        std::vector<std::string> head;
+        std::size_t p = 0;
+        while (p < text.size()) {
+            std::size_t q = text.find('\n', p);
+            if (q == std::string::npos) q = text.size();
+            std::string line = text.substr(p, q - p);
+            p = q + 1;
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty() || line[0] == '#' || line[0] == '"') continue;
+            std::vector<std::string> f;
+            std::size_t s0 = 0;
+            while (s0 <= line.size()) {
+                std::size_t s1 = line.find(',', s0);
+                if (s1 == std::string::npos) s1 = line.size();
+                f.push_back(line.substr(s0, s1 - s0));
+                s0 = s1 + 1;
+            }
+            if (head.empty()) {
+                head = f;
+                continue;
+            }
+            auto num = [&](const char* name, double& v) {
+                for (std::size_t i = 0; i < head.size() && i < f.size(); ++i)
+                    if (head[i] == name && !f[i].empty()) {
+                        v = std::atof(f[i].c_str());
+                        return true;
+                    }
+                return false;
+            };
+            double x = 0.0, y = 0.0;
+            if (num("x", x) && num("y", y)) opts.keepClear.push_back({x - 15.0, y - 15.0, x + 15.0, y + 15.0});
+            if (num("spawn_x", x) && num("spawn_y", y)) opts.keepClear.push_back({x - 15.0, y - 15.0, x + 15.0, y + 15.0});
+        }
+    }
+    // The rows dropped.
+    std::vector<bool> drop(boxes.size(), false);
+    std::size_t byId = 0, byKind = 0, byClash = 0;
+    for (std::size_t i = 0; i < boxes.size(); ++i) {
+        if (listed(a.dropIds, boxes[i].id)) {
+            drop[i] = true;
+            ++byId;
+        } else if (listed(a.dropKinds, boxes[i].kind)) {
+            drop[i] = true;
+            ++byKind;
+        }
+    }
+    if (a.dropClash) {
+        std::vector<MassingBox> kept = boxes;
+        for (const std::size_t i : roadClearedBoxes(b, kept, 0.0)) kept[i].kind = "underpass";
+        for (const std::size_t i : roadBoxClashes(b, kept))
+            if (!drop[i]) {
+                drop[i] = true;
+                ++byClash;
+            }
+    }
+    std::vector<MassingBox> left;
+    std::vector<std::string> gone;
+    for (std::size_t i = 0; i < boxes.size(); ++i) {
+        if (drop[i])
+            gone.push_back(boxes[i].id);
+        else
+            left.push_back(boxes[i]);
+    }
+    const std::size_t before = left.size();
+    std::vector<MassingFoot> taken = b.band;
+    taken.insert(taken.end(), b.furniture.begin(), b.furniture.end());
+    const MassingYardCounts n = massingYardFill(left, lanes, taken, ground, opts);
+    // The table: the kept rows as they are, then the yards.
+    const char* const kHead = "id,row,src,name,kind,cx,cy,sx,sy,rot,z0,z1,ground,terr_min,terr_max,sink_m,cover,note,slope";
+    std::string out;
+    bool headSeen = false;
+    std::size_t p = 0;
+    while (p < boxText.size()) {
+        std::size_t q = boxText.find('\n', p);
+        if (q == std::string::npos) q = boxText.size();
+        std::string line = boxText.substr(p, q - p);
+        p = q + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#' || line[0] == '"') {
+            out += line + "\n";
+            continue;
+        }
+        if (!headSeen) {
+            if (line != kHead) return die("the box table's header is not " + std::string(kHead));
+            headSeen = true;
+            out += "# r6: rows dropped and yards added by ftcore_roadgraph --yards (note R6-YARD).\n" + line + "\n";
+            continue;
+        }
+        const std::string id = line.substr(0, line.find(','));
+        if (listed(gone, id)) continue;
+        out += line + "\n";
+    }
+    char buf[512];
+    for (std::size_t i = before; i < left.size(); ++i) {
+        const MassingBox& x = left[i];
+        const double g = x.z0 + 0.1;
+        std::snprintf(buf, sizeof buf, "%s,%s,INV,,%s,%.3f,%.3f,%.3f,%.3f,0.0,%.3f,%.3f,%.3f,%.3f,%.3f,0.1,False,R6-YARD,\n",
+                      x.id.c_str(), x.row.c_str(), x.kind.c_str(), x.cx, x.cy, x.sx, x.sy, x.z0, x.z1, g, g, g);
+        out += buf;
+    }
+    std::FILE* f = std::fopen(a.outPath.c_str(), "wb");
+    if (!f) return die("can't write " + a.outPath);
+    std::fwrite(out.data(), 1, out.size(), f);
+    std::fclose(f);
+    std::printf("yards: dropped %zu rows (%zu by id, %zu by kind, %zu in a carriageway):", gone.size(), byId, byKind,
+                byClash);
+    for (std::size_t i = 0; i < gone.size() && i < 80; ++i) std::printf(" %s", gone[i].c_str());
+    std::printf("%s\n", gone.size() > 80 ? " ..." : "");
+    std::printf("yards: %zu yards (%.0f m2), %zu sheds, %zu fence pieces: %zu rows added; %zu rows out\n", n.yards, n.area,
+                n.sheds, n.fences, left.size() - before, left.size());
+    std::printf("YARDS OK\n");
+    return 0;
+}
+
 int runNet(const std::string& netPath, const std::string& r16Path, double samples, const double origin[2], double spacing,
            const std::string& boxesPath, const std::string& outPath, bool listAll) {
     std::string text, err;
@@ -183,9 +364,13 @@ int runNet(const std::string& netPath, const std::string& r16Path, double sample
     std::printf("net: the steepest piece %s\n", rep.maxGradeAt.c_str());
     for (const std::string& n : rep.notes) std::printf("  note: %s\n", n.c_str());
     const RoadCounts& c = b.counts;
-    std::printf("build: solids %zu (collide %zu), markings %zu, zebras %zu, bays %zu, lamps %zu, signals %zu, "
-                "junctions %zu\n",
-                c.solids, c.collide, c.markings, c.zebras, c.bays, c.lamps, c.signals, c.junctions);
+    std::size_t inst = 0;
+    for (const RoadSolid& sd : b.solids)
+        if (sd.instanced) ++inst;
+    std::printf("build: solids %zu (collide %zu, instanced %zu, actors %zu), markings %zu, zebras %zu, bays %zu, "
+                "lamps %zu, signals %zu, signs %zu, poles %zu, junctions %zu\n",
+                c.solids, c.collide, inst, c.solids - inst, c.markings, c.zebras, c.bays, c.lamps, c.signals, c.signs,
+                c.poles, c.junctions);
     std::vector<MassingStreet> ms;
     double total = 0.0;
     for (const RoadNetStreet& s : streets) {
@@ -242,9 +427,21 @@ int main(int argc, char** argv) {
     bool haveArea = false;
     double minWidth = 10.0;
     bool listAll = false;
+    bool yards = false;
+    YardArgs ya;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string k = argv[i], v = argv[i + 1];
-        if (k == "--streets") streetsPath = v;
+        if (k == "--yards") yards = v == "1";
+        else if (k == "--goals") ya.goalsPath = v;
+        else if (k == "--drop-ids") ya.dropIds = splitList(v);
+        else if (k == "--drop-kinds") ya.dropKinds = splitList(v);
+        else if (k == "--drop-clash") ya.dropClash = v == "1";
+        else if (k == "--clear") {
+            MassingRect r;
+            if (std::sscanf(v.c_str(), "%lf,%lf,%lf,%lf", &r.x0, &r.y0, &r.x1, &r.y1) != 4) return die("bad --clear");
+            ya.clear.push_back(r);
+        }
+        else if (k == "--streets") streetsPath = v;
         else if (k == "--roads") roadsPath = v;
         else if (k == "--boxes") boxesPath = v;
         else if (k == "--out") outPath = v;
@@ -261,6 +458,20 @@ int main(int argc, char** argv) {
         }
         else if (k == "--area") haveArea = std::sscanf(v.c_str(), "%lf,%lf,%lf,%lf", &area[0], &area[1], &area[2], &area[3]) == 4;
         else return die("unknown option " + k);
+    }
+    if (yards) {
+        if (boxesPath.empty() || outPath.empty() || !haveArea) return die("--yards needs --boxes, --area and --out");
+        ya.boxesPath = boxesPath;
+        ya.netPath = netPath;
+        ya.streetsPath = streetsPath;
+        ya.outPath = outPath;
+        ya.r16Path = r16Path;
+        ya.samples = samples;
+        ya.origin[0] = origin[0];
+        ya.origin[1] = origin[1];
+        ya.spacing = spacing;
+        ya.area = {area[0], area[1], area[2], area[3]};
+        return runYards(ya);
     }
     if (check) {
         if (netPath.empty() && roadsPath.empty()) return die("--check needs --net or --roads");

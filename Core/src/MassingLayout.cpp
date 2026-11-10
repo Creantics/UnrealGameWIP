@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -921,6 +922,236 @@ std::size_t massingDropLanePads(std::vector<MassingBox>& pads, const std::vector
     const auto end = std::remove_if(pads.begin(), pads.end(), onLane);
     const std::size_t n = static_cast<std::size_t>(pads.end() - end);
     pads.erase(end, pads.end());
+    return n;
+}
+
+namespace {
+
+std::uint32_t yardHash(const std::string& s) {
+    std::uint32_t h = 2166136261u;
+    for (const char ch : s) h = (h ^ static_cast<std::uint8_t>(ch)) * 16777619u;
+    return h;
+}
+
+} // namespace
+
+MassingYardCounts massingYardFill(std::vector<MassingBox>& boxes, const std::vector<MassingStreet>& streets,
+                                  const std::vector<MassingFoot>& taken, const MassingGround& ground,
+                                  const MassingYards& opts) {
+    MassingYardCounts n;
+    const double c = opts.cell >= 0.5 ? opts.cell : 2.0;
+    const Rect A = toRect(opts.area);
+    const int W = static_cast<int>(std::ceil((A.x1 - A.x0) / c)), H = static_cast<int>(std::ceil((A.y1 - A.y0) / c));
+    if (W <= 0 || H <= 0) return n;
+    const std::size_t cells = static_cast<std::size_t>(W) * static_cast<std::size_t>(H);
+    std::vector<std::uint8_t> busy(cells, 0), street(cells, 0);
+    std::vector<double> top(cells, -std::numeric_limits<double>::infinity()); // a flat zone's top over a cell
+    auto at = [&](int i, int j) {
+        return static_cast<std::size_t>(j) * static_cast<std::size_t>(W) + static_cast<std::size_t>(i);
+    };
+    auto cx = [&](int i) { return A.x0 + (i + 0.5) * c; };
+    auto cy = [&](int j) { return A.y0 + (j + 0.5) * c; };
+    // Calls f(i, j) for each cell whose centre lies in a turned rect (half sizes hx, hy).
+    auto eachIn = [&](double x, double y, double hx, double hy, double rot, auto&& f) {
+        const double t = rot * kPi / 180.0, ct = std::cos(t), st = std::sin(t);
+        const double ex = std::fabs(ct) * hx + std::fabs(st) * hy, ey = std::fabs(st) * hx + std::fabs(ct) * hy;
+        const int i0 = std::max(0, static_cast<int>(std::floor((x - ex - A.x0) / c)));
+        const int i1 = std::min(W - 1, static_cast<int>(std::floor((x + ex - A.x0) / c)));
+        const int j0 = std::max(0, static_cast<int>(std::floor((y - ey - A.y0) / c)));
+        const int j1 = std::min(H - 1, static_cast<int>(std::floor((y + ey - A.y0) / c)));
+        for (int j = j0; j <= j1; ++j)
+            for (int i = i0; i <= i1; ++i) {
+                const double dx = cx(i) - x, dy = cy(j) - y;
+                if (std::fabs(dx * ct + dy * st) <= hx && std::fabs(-dx * st + dy * ct) <= hy) f(i, j);
+            }
+    };
+    for (const MassingBox& b : boxes) {
+        const MassingRole role = massingRole(b);
+        if (role == MassingRole::Hidden) continue;
+        if (role == MassingRole::Zone) {
+            const bool slope = b.sloped || b.kind.find("slope") != std::string::npos;
+            eachIn(b.cx, b.cy, b.sx * 0.5, b.sy * 0.5, b.rot, [&](int i, int j) {
+                if (slope)
+                    busy[at(i, j)] = 1;
+                else
+                    top[at(i, j)] = std::max(top[at(i, j)], b.z1);
+            });
+            continue;
+        }
+        eachIn(b.cx, b.cy, b.sx * 0.5 + opts.boxGap, b.sy * 0.5 + opts.boxGap, b.rot,
+               [&](int i, int j) { busy[at(i, j)] = 1; });
+    }
+    for (const MassingFoot& f : taken)
+        eachIn(f.x, f.y, f.hx + opts.streetBack, f.hy + opts.streetBack, f.rot,
+               [&](int i, int j) { busy[at(i, j)] = street[at(i, j)] = 1; });
+    for (const MassingStreet& s : streets) {
+        const double r = s.width * 0.5 + opts.streetBack;
+        for (std::size_t k = 1; k < s.points.size(); ++k) {
+            const MassingVec& p = s.points[k - 1];
+            const MassingVec& q = s.points[k];
+            const double dx = q.x - p.x, dy = q.y - p.y, l2 = std::max(1e-9, dx * dx + dy * dy);
+            const int i0 = std::max(0, static_cast<int>(std::floor((std::min(p.x, q.x) - r - A.x0) / c)));
+            const int i1 = std::min(W - 1, static_cast<int>(std::floor((std::max(p.x, q.x) + r - A.x0) / c)));
+            const int j0 = std::max(0, static_cast<int>(std::floor((std::min(p.y, q.y) - r - A.y0) / c)));
+            const int j1 = std::min(H - 1, static_cast<int>(std::floor((std::max(p.y, q.y) + r - A.y0) / c)));
+            for (int j = j0; j <= j1; ++j)
+                for (int i = i0; i <= i1; ++i) {
+                    const double u = std::clamp(((cx(i) - p.x) * dx + (cy(j) - p.y) * dy) / l2, 0.0, 1.0);
+                    if (std::hypot(cx(i) - p.x - u * dx, cy(j) - p.y - u * dy) <= r)
+                        busy[at(i, j)] = street[at(i, j)] = 1;
+                }
+        }
+    }
+    for (const MassingRect& k : opts.keepClear)
+        eachIn((k.x0 + k.x1) * 0.5, (k.y0 + k.y1) * 0.5, (k.x1 - k.x0) * 0.5, (k.y1 - k.y0) * 0.5, 0.0,
+               [&](int i, int j) { busy[at(i, j)] = 1; });
+    // The ground per cell, and the low ground with waterKeep round its edge.
+    std::vector<double> gr(cells);
+    for (int j = 0; j < H; ++j)
+        for (int i = 0; i < W; ++i) gr[at(i, j)] = std::max(groundAt(ground, cx(i), cy(j)), top[at(i, j)]);
+    auto gAt = [&](double x, double y) {
+        const int i = std::clamp(static_cast<int>(std::floor((x - A.x0) / c)), 0, W - 1);
+        const int j = std::clamp(static_cast<int>(std::floor((y - A.y0) / c)), 0, H - 1);
+        return std::max(groundAt(ground, x, y), top[at(i, j)]);
+    };
+    {
+        const int rk = static_cast<int>(std::ceil(opts.waterKeep / c));
+        std::vector<std::uint8_t> low(cells, 0);
+        for (std::size_t k = 0; k < cells; ++k) low[k] = gr[k] < opts.groundMin ? 1 : 0;
+        for (int j = 0; j < H; ++j)
+            for (int i = 0; i < W; ++i) {
+                if (!low[at(i, j)]) continue;
+                busy[at(i, j)] = 1;
+                const bool edge = (i > 0 && !low[at(i - 1, j)]) || (i + 1 < W && !low[at(i + 1, j)]) ||
+                                  (j > 0 && !low[at(i, j - 1)]) || (j + 1 < H && !low[at(i, j + 1)]);
+                if (!edge) continue;
+                for (int b = std::max(0, j - rk); b <= std::min(H - 1, j + rk); ++b)
+                    for (int a = std::max(0, i - rk); a <= std::min(W - 1, i + rk); ++a)
+                        if ((a - i) * (a - i) + (b - j) * (b - j) <= rk * rk) busy[at(a, b)] = 1;
+            }
+    }
+    // A summed-area table of the taken cells.
+    const std::size_t sw = static_cast<std::size_t>(W) + 1;
+    std::vector<std::uint32_t> sat(sw * (static_cast<std::size_t>(H) + 1), 0);
+    auto S = [&](int i, int j) -> std::uint32_t& {
+        return sat[static_cast<std::size_t>(j) * sw + static_cast<std::size_t>(i)];
+    };
+    for (int j = 0; j < H; ++j)
+        for (int i = 0; i < W; ++i) S(i + 1, j + 1) = busy[at(i, j)] + S(i, j + 1) + S(i + 1, j) - S(i, j);
+    auto takenIn = [&](int i, int j, int ni, int nj) {
+        return S(i + ni, j + nj) - S(i, j + nj) - S(i + ni, j) + S(i, j);
+    };
+
+    const double sizes[][2] = {{36, 28}, {28, 36}, {28, 22}, {22, 28}, {22, 18}, {18, 22}, {16, 14}, {14, 16}};
+    std::vector<Rect> yards;
+    for (int j = 0; j < H; ++j)
+        for (int i = 0; i < W; ++i) {
+            if (busy[at(i, j)]) continue;
+            for (const auto& sz : sizes) {
+                const int ni = static_cast<int>(std::ceil(sz[0] / c)), nj = static_cast<int>(std::ceil(sz[1] / c));
+                if (i + ni > W || j + nj > H || takenIn(i, j, ni, nj) != 0) continue;
+                const Rect R{A.x0 + i * c, A.y0 + j * c, A.x0 + (i + ni) * c, A.y0 + (j + nj) * c};
+                bool near = false;
+                for (const Rect& y : yards)
+                    if (overlaps({R.x0 - opts.gap, R.y0 - opts.gap, R.x1 + opts.gap, R.y1 + opts.gap}, y, 0.0)) near = true;
+                if (near) continue;
+                double lo = std::numeric_limits<double>::infinity(), hi = -lo;
+                for (int b = j; b < j + nj; ++b)
+                    for (int a = i; a < i + ni; ++a) {
+                        lo = std::min(lo, gr[at(a, b)]);
+                        hi = std::max(hi, gr[at(a, b)]);
+                    }
+                if (hi - lo > opts.maxRise) continue;
+                yards.push_back(R);
+                ++n.yards;
+                n.area += (R.x1 - R.x0) * (R.y1 - R.y0);
+                char buf[48];
+                std::snprintf(buf, sizeof buf, "%s-%04zu", opts.prefix.c_str(), n.yards);
+                const std::string id = buf;
+                const std::uint32_t h = yardHash(id);
+                // The gate's side: the one with a street nearest outside it (0 south, 1 east, 2 north, 3 west).
+                int gate = static_cast<int>(h % 4u), best = 1 << 30;
+                const int mi = i + ni / 2, mj = j + nj / 2;
+                for (int side = 0; side < 4; ++side) {
+                    for (int k = 1; k <= 12; ++k) {
+                        const int a = side == 1 ? i + ni - 1 + k : side == 3 ? i - k : mi;
+                        const int b = side == 2 ? j + nj - 1 + k : side == 0 ? j - k : mj;
+                        if (a < 0 || b < 0 || a >= W || b >= H) break;
+                        if (street[at(a, b)]) {
+                            if (k < best) {
+                                best = k;
+                                gate = side;
+                            }
+                            break;
+                        }
+                    }
+                }
+                auto addBox = [&](const std::string& bid, const char* kind, double x0, double y0, double x1, double y1,
+                                  double over) {
+                    double l = std::numeric_limits<double>::infinity(), u = -l;
+                    const double stepY = std::max(0.5, (y1 - y0) / 4.0), stepX = std::max(0.5, (x1 - x0) / 4.0);
+                    for (double y = y0; y <= y1 + 1e-9; y += stepY)
+                        for (double x = x0; x <= x1 + 1e-9; x += stepX) {
+                            const double g = gAt(x, y);
+                            l = std::min(l, g);
+                            u = std::max(u, g);
+                        }
+                    MassingBox b;
+                    b.id = bid;
+                    b.row = id;
+                    b.kind = kind;
+                    b.source = MassingSource::Invented;
+                    b.cx = (x0 + x1) * 0.5;
+                    b.cy = (y0 + y1) * 0.5;
+                    b.sx = x1 - x0;
+                    b.sy = y1 - y0;
+                    b.z0 = l - 0.1;
+                    b.z1 = u + over;
+                    boxes.push_back(std::move(b));
+                };
+                // The shed across the half away from the gate, 1.5 m in from the fence.
+                const double frac = 0.45 + 0.05 * static_cast<double>((h >> 4) % 4u);
+                const double in = 1.5, storeys = 2.0 + static_cast<double>((h >> 8) % 2u);
+                Rect sh{R.x0 + in, R.y0 + in, R.x1 - in, R.y1 - in};
+                if (gate == 0) sh.y0 = R.y1 - (R.y1 - R.y0) * frac;
+                if (gate == 2) sh.y1 = R.y0 + (R.y1 - R.y0) * frac;
+                if (gate == 1) sh.x1 = R.x0 + (R.x1 - R.x0) * frac;
+                if (gate == 3) sh.x0 = R.x1 - (R.x1 - R.x0) * frac;
+                addBox(id, "kit", sh.x0, sh.y0, sh.x1, sh.y1, storeys * opts.storey);
+                ++n.sheds;
+                // The fence: the south and north sides whole, east and west between them; the gate in the middle.
+                int piece = 0;
+                const double t = opts.fenceThick;
+                for (int side = 0; side < 4; ++side) {
+                    const bool alongX = side == 0 || side == 2;
+                    const double s0 = alongX ? R.x0 : R.y0 + t, s1 = alongX ? R.x1 : R.y1 - t;
+                    const double line = side == 0 ? R.y0 : side == 2 ? R.y1 - t : side == 3 ? R.x0 : R.x1 - t;
+                    std::pair<double, double> runs[2] = {{s0, s1}, {s1, s1}};
+                    if (side == gate) {
+                        const double m = (s0 + s1) * 0.5;
+                        runs[0] = {s0, m - opts.gateWide * 0.5};
+                        runs[1] = {m + opts.gateWide * 0.5, s1};
+                    }
+                    for (const auto& run : runs) {
+                        const double r0 = run.first, r1 = run.second;
+                        if (r1 - r0 < 0.5) continue;
+                        const int pieces = std::max(1, static_cast<int>(std::ceil((r1 - r0) / opts.fencePiece)));
+                        const double step = (r1 - r0) / pieces;
+                        for (int k = 0; k < pieces; ++k) {
+                            const double a0 = r0 + k * step, a1 = a0 + step;
+                            std::snprintf(buf, sizeof buf, "-F%d", ++piece);
+                            if (alongX)
+                                addBox(id + buf, "wall", a0, line, a1, line + t, opts.fenceHigh);
+                            else
+                                addBox(id + buf, "wall", line, a0, line + t, a1, opts.fenceHigh);
+                            ++n.fences;
+                        }
+                    }
+                }
+                i += ni - 1;
+                break;
+            }
+        }
     return n;
 }
 

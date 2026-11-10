@@ -1,5 +1,8 @@
 #include "FTBuildMassingWorldCommandlet.h"
 #include "FTBuildRoads.h"
+#include "FTCellInstancer.h"
+#include "FTNightLightData.h"
+#include "FTRoofDress.h"
 
 #include "ForgottenThird.h"
 
@@ -8,12 +11,11 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Builders/CubeBuilder.h"
 #include "Components/BrushComponent.h"
-#include "Components/SpotLightComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "EditorWorldUtils.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/Polys.h"
-#include "Engine/SpotLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/Texture2D.h"
@@ -766,119 +768,86 @@ AStaticMeshActor* Block(UWorld* World, const FActorSpawnParameters& Spawn, UStat
 	return Prop;
 }
 
-// -NightLamps: a sodium light under the head of every placed mesh whose path names kNightLampMesh (the TQ-04 street
+// -NightLamps: a light point under the head of every placed mesh whose path names kNightLampMesh (the TQ-04 street
 // lamp: its arm out along +X from the pole at about 0.2 of its bounds, the cobra head over 0.5 to 1.0 of X, the lens'
-// bottom at 0.94 of Z), and a lens for its head. The light hangs at kNightLampHeadX, Y and Z of the mesh's bounds, just
-// under the lens.
+// bottom at 0.94 of Z), and a lens for its head. The point is at kNightLampHeadX, Y and Z of the mesh's bounds, just
+// under the lens. No light actor is built: the points, the shopfronts' spill points and the light values
+// (FTNightLight::) go in the map's one AFTNightLights (FTNightLightData.h), and at run time a small pool of spots
+// moves to the points nearest the camera at night.
 constexpr const TCHAR* kNightLampMesh = TEXT("TQ-04");
 constexpr double kNightLampHeadX = 0.75, kNightLampHeadY = 0.5, kNightLampHeadZ = 0.93;
 constexpr double kNightLampLensZ = 0.94;      // the lens' bottom, a share of the bounds' Z: the disc hangs from it
 constexpr double kNightLampLensLong = 0.45;   // m along the arm
 constexpr double kNightLampLensWide = 0.28;   // m across it
 constexpr double kNightLampLensThick = 0.02;  // m
-constexpr float kNightLampCandela = 400.f;  // under a head about 3.3 m up: some 35 lux at its foot
-constexpr float kNightLampKelvin = 2100.f;  // high-pressure sodium
-constexpr float kNightLampReach = 1800.f;   // cm: the attenuation radius
-constexpr float kNightLampOuter = 70.f;     // degrees: the cone's half-angles, a wide pool off a low head
-constexpr float kNightLampInner = 35.f;
-constexpr float kNightLampSource = 8.f;     // cm: the lens' radius, for soft highlights
-// The night look (FTWorldEyeShotSubsystem's -WorldEyeNight) shows the lights tagged FTScene::NightLampTag and
-// FTScene::NightShopTag, at its own intensities, and puts FTScene::NightLampMaterial on the heads tagged
-// FTScene::NightLampHeadTag. The lights are built hidden.
-// A shopfront's spill (ftcore::massingShopLights): a wide spot out of the face and down, warmer-white than the lamps.
-constexpr float kNightShopCandela = 150.f;
-constexpr float kNightShopKelvin = 3500.f;
-constexpr float kNightShopReach = 900.f;  // cm
-constexpr float kNightShopOuter = 80.f;   // degrees: the most a spot's cone takes
-constexpr float kNightShopInner = 50.f;
-constexpr float kNightShopSource = 40.f;  // cm: a shop window's glow, soft
-constexpr double kNightShopPitch = -35.0; // degrees under the horizontal
 
-// A lamp's head: the engine's cylinder as a flat lens, wearing FTScene::NightLampMaterial (null when FTBuildSurfaces
-// -Windows hasn't built it; the night look puts it on by the tag). The TQ-04 mesh has one material, so the glow goes on
-// the lens and not on the whole post.
+// The night lights being built: the holder, and the lamps' heads, the engine's cylinder as flat lenses wearing
+// FTScene::NightLampMaterial (null when FTBuildSurfaces -Windows hasn't built it; the night look puts it on by the
+// holder's FTScene::NightLampHeadTag). The TQ-04 mesh has one material, so the glow goes on the lens and not on the
+// whole post. The lenses are gathered and added at once (FinishNightLamps).
 struct FNightLampParts
 {
+	AFTNightLights* Lights = nullptr;
 	UStaticMesh* Lens = nullptr;
 	UMaterialInterface* Glow = nullptr;
+	TArray<FTransform> Heads;
 };
 
-// The light under a lamp mesh's head (see kNightLampMesh): a spot aimed straight down, unshadowed, movable, hidden,
-// labelled "<lamp>-Light"; and the lens over it, labelled "<lamp>-Head", long along the arm, its top at the lens'
-// bottom, colliding with nothing and casting no shadow.
-ASpotLight* NightLamp(UWorld* World, const FActorSpawnParameters& Spawn, const AStaticMeshActor* Prop, const FNightLampParts& Parts)
+// A lamp mesh placed at Placed (see kNightLampMesh): its light point, straight under the head, goes in the data, and
+// its lens (long along the arm, its top at the lens' bottom) in the heads to add.
+void NightLamp(FNightLampParts& Parts, const UStaticMesh& Mesh, const FTransform& Placed)
 {
-	const FBox Bounds = Prop->GetStaticMeshComponent()->GetStaticMesh()->GetBoundingBox();
-	const FVector Head = Prop->GetActorTransform().TransformPosition(
-		Bounds.Min + Bounds.GetSize() * FVector(kNightLampHeadX, kNightLampHeadY, kNightLampHeadZ));
-	ASpotLight* Lamp = World->SpawnActor<ASpotLight>(Head, FRotator(-90.0, 0.0, 0.0), Spawn);
-	USpotLightComponent* Light = Lamp->SpotLightComponent;
-	Light->SetMobility(EComponentMobility::Movable);
-	Light->SetIntensityUnits(ELightUnits::Candelas);
-	Light->SetIntensity(kNightLampCandela);
-	Light->SetUseTemperature(true);
-	Light->SetTemperature(kNightLampKelvin);
-	Light->SetAttenuationRadius(kNightLampReach);
-	Light->SetOuterConeAngle(kNightLampOuter);
-	Light->SetInnerConeAngle(kNightLampInner);
-	Light->SetSourceRadius(kNightLampSource);
-	Light->SetCastShadows(false);
-	Light->SetVisibility(false);
-	Lamp->Tags.Add(FTScene::NightLampTag);
-	Lamp->SetActorLabel(Prop->GetActorLabel() + TEXT("-Light"));
+	if (!Parts.Lights)
+	{
+		return;
+	}
+	const FBox Bounds = Mesh.GetBoundingBox();
+	const FVector Head = Placed.TransformPosition(Bounds.Min + Bounds.GetSize() * FVector(kNightLampHeadX, kNightLampHeadY, kNightLampHeadZ));
+	Parts.Lights->Data->LampAt.Add(FVector3f(Head));
 	if (Parts.Lens)
 	{
-		const FVector Scale = Prop->GetActorScale3D();
-		const FVector LensAt = Prop->GetActorTransform().TransformPosition(
-			Bounds.Min + Bounds.GetSize() * FVector(kNightLampHeadX, kNightLampHeadY, kNightLampLensZ)) -
+		const FVector Scale = Placed.GetScale3D();
+		const FVector LensAt = Placed.TransformPosition(Bounds.Min + Bounds.GetSize() * FVector(kNightLampHeadX, kNightLampHeadY, kNightLampLensZ)) -
 			FVector(0.0, 0.0, kNightLampLensThick * 50.0 * Scale.Z);
-		AStaticMeshActor* LensActor = World->SpawnActor<AStaticMeshActor>(LensAt, FRotator(0.0, Prop->GetActorRotation().Yaw, 0.0), Spawn);
-		UStaticMeshComponent* Mesh = LensActor->GetStaticMeshComponent();
-		Mesh->SetStaticMesh(Parts.Lens);
-		if (Parts.Glow)
-		{
-			Mesh->SetMaterial(0, Parts.Glow);
-		}
-		Mesh->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
-		Mesh->SetCanEverAffectNavigation(false);
-		Mesh->SetCastShadow(false);
-		LensActor->SetActorScale3D(FVector(kNightLampLensLong, kNightLampLensWide, kNightLampLensThick) * Scale);
-		LensActor->Tags.Add(FTScene::NightLampHeadTag);
-		LensActor->SetActorLabel(Prop->GetActorLabel() + TEXT("-Head"));
+		Parts.Heads.Add(FTransform(FRotator(0.0, Placed.Rotator().Yaw, 0.0), LensAt,
+			FVector(kNightLampLensLong, kNightLampLensWide, kNightLampLensThick) * Scale));
 	}
-	return Lamp;
 }
 
-// A shopfront's spill light (ftcore::massingShopLights, plan frame): a spot facing out of its face, pitched down,
-// unshadowed, movable, hidden, tagged FTScene::NightShopTag.
-ASpotLight* NightShop(UWorld* World, const FActorSpawnParameters& Spawn, double Side, const ftcore::MassingShopLight& At,
-	const FString& Label)
+// Adds the gathered lenses to the holder's LampHeads (no collision, no shadow, no navigation). Returns how many.
+int32 FinishNightLamps(FNightLampParts& Parts)
 {
-	ASpotLight* Shop = World->SpawnActor<ASpotLight>(Cm(ftcore::massingEnginePoint(Side, At.x, At.y, At.z)),
-		FRotator(kNightShopPitch, ftcore::massingEngineYaw(At.face), 0.0), Spawn);
-	USpotLightComponent* Light = Shop->SpotLightComponent;
-	Light->SetMobility(EComponentMobility::Movable);
-	Light->SetIntensityUnits(ELightUnits::Candelas);
-	Light->SetIntensity(kNightShopCandela);
-	Light->SetUseTemperature(true);
-	Light->SetTemperature(kNightShopKelvin);
-	Light->SetAttenuationRadius(kNightShopReach);
-	Light->SetOuterConeAngle(kNightShopOuter);
-	Light->SetInnerConeAngle(kNightShopInner);
-	Light->SetSourceRadius(kNightShopSource);
-	Light->SetCastShadows(false);
-	Light->SetVisibility(false);
-	Shop->Tags.Add(FTScene::NightShopTag);
-	Shop->SetActorLabel(Label);
-	return Shop;
+	if (!Parts.Lights || !Parts.Lens || Parts.Heads.Num() == 0)
+	{
+		return 0;
+	}
+	UInstancedStaticMeshComponent* LampHeads = Parts.Lights->LampHeads;
+	LampHeads->SetStaticMesh(Parts.Lens);
+	if (Parts.Glow)
+	{
+		LampHeads->SetMaterial(0, Parts.Glow);
+	}
+	LampHeads->AddInstances(Parts.Heads, false, true);
+	const int32 Added = Parts.Heads.Num();
+	Parts.Heads.Reset();
+	return Added;
 }
 
-// A cover plate (ftcore::massingNavObstacle) as a navmesh obstacle: a UFTPlateNavNull on the plate's actor holding
-// the box's null strips (ftcore::massingNullBand). It stands in the world frame on its own (absolute location, rotation
-// and scale), so the actor's transform, a sloped box's pivot or a flat box's scale, doesn't move it: at the box's
+// A shopfront's spill point (ftcore::massingShopLights, plan frame) in the data: a spot there faces out of its face,
+// pitched FTNightLight::ShopPitch.
+void NightShop(UFTNightLightData& Data, double Side, const ftcore::MassingShopLight& At)
+{
+	Data.ShopAt.Add(FVector3f(Cm(ftcore::massingEnginePoint(Side, At.x, At.y, At.z))));
+	Data.ShopYaw.Add(static_cast<float>(ftcore::massingEngineYaw(At.face)));
+}
+
+// A cover plate (ftcore::massingNavObstacle) as a navmesh obstacle: a UFTPlateNavNull on the plate's actor (a sloped
+// box's own, or the holder of the cell a flat box is an instance of) holding the box's null strips
+// (ftcore::massingNullBand). It stands in the world frame on its own (absolute location, rotation and scale), so the
+// actor's transform doesn't move it: at the box's
 // centre, the strips' middle height and the box's yaw, its X along the box's u and its Y along -w (the engine's Y runs
 // south). Registered at once, so the navmesh build that follows takes it. Returns how many strips it holds.
-int32 AddPlateNavNull(AStaticMeshActor& Built, const ftcore::MassingBox& Box, double Side)
+int32 AddPlateNavNull(AActor& Built, const ftcore::MassingBox& Box, double Side)
 {
 	const size_t Count = ftcore::massingNullBandCount(Box);
 	double Low = TNumericLimits<double>::Max();
@@ -890,7 +859,7 @@ int32 AddPlateNavNull(AStaticMeshActor& Built, const ftcore::MassingBox& Box, do
 		High = FMath::Max(High, Band.z1);
 	}
 	const double Mid = (Low + High) * 0.5;
-	UFTPlateNavNull* Null = NewObject<UFTPlateNavNull>(&Built, TEXT("PlateNavNull"));
+	UFTPlateNavNull* Null = NewObject<UFTPlateNavNull>(&Built, NAME_None); // a cell's holder carries many
 	Null->NullBoxes.Reserve(static_cast<int32>(Count));
 	FVector Extent = FVector::ZeroVector;
 	for (size_t I = 0; I < Count; ++I)
@@ -1332,15 +1301,15 @@ bool ReadBack(const ALandscape& Land, ULandscapeInfo& LandInfo, const FHeightFie
 	return bExact && bSurface;
 }
 #endif
-// Round 5 (-FacadeR5): a windowed box's type, wall tint and roof finish (ftcore::massingFacadeData) in custom primitive
-// data 6..8, which the r5 window master (FTBuildSurfaces -Windows -FacadeR5) reads; the r4 master ignores them.
-void SetFacadeR5Data(UStaticMeshComponent* Mesh, const ftcore::MassingBox& Box, const ftcore::MassingWindowData& Data,
+// Round 5 (-FacadeR5): a windowed box's type, wall tint and roof finish (ftcore::massingFacadeData) in its instance's
+// custom data 6..8, which the r5 window master (FTBuildSurfaces -Windows -FacadeR5) reads; the r4 master ignores them.
+void SetFacadeR5Data(FFTCellInstancer& Cells, const FFTCellHandle& Piece, const ftcore::MassingBox& Box, const ftcore::MassingWindowData& Data,
 	int32 (&Types)[ftcore::kWindowTypes])
 {
 	const ftcore::MassingFacadeData Facade = ftcore::massingFacadeData(Box, Data);
-	Mesh->SetDefaultCustomPrimitiveDataFloat(FTScene::WindowDataType, static_cast<float>(Facade.type));
-	Mesh->SetDefaultCustomPrimitiveDataFloat(FTScene::WindowDataTint, static_cast<float>(Facade.wallTint));
-	Mesh->SetDefaultCustomPrimitiveDataFloat(FTScene::WindowDataRoof, static_cast<float>(Facade.roofFinish));
+	Cells.SetCustomData(Piece, FTScene::WindowDataType, static_cast<float>(Facade.type));
+	Cells.SetCustomData(Piece, FTScene::WindowDataTint, static_cast<float>(Facade.wallTint));
+	Cells.SetCustomData(Piece, FTScene::WindowDataRoof, static_cast<float>(Facade.roofFinish));
 	++Types[static_cast<int32>(Facade.type)];
 }
 
@@ -1418,9 +1387,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// -StandIns: a crane or boat box (a placeholder no kit mesh replaces yet) is built as a frame of steel boxes, legs,
 	// boom and ties or a hull and cabin (ftcore::massingStandIn), in place of one solid.
 	const bool bStandIns = FParse::Param(*Params, TEXT("StandIns"));
-	// -NightLamps: a hidden sodium spot under the head of every TQ-04 lamp placed (kit, props, quay), tagged
-	// FTScene::NightLampTag, with a lens on the head tagged FTScene::NightLampHeadTag; and with -Windows a hidden spill
-	// light out of each shopfront, tagged FTScene::NightShopTag. The night look shows them.
+	// -NightLamps: a light point under the head of every TQ-04 lamp placed (kit, props, quay) and a lens instance on the
+	// head (tagged FTScene::NightLampHeadTag); and with -Windows a spill point out of each shopfront: data in the map's
+	// AFTNightLights, which the runtime's lamp pool lights at night.
 	const bool bNightLamps = FParse::Param(*Params, TEXT("NightLamps"));
 	// Round 5 roads (FTBuildRoads.h): -Roads=<csv>, -Vehicles, -RoadDoors=<csv>, -LaneLamps=x0,y0,x1,y1, -RoadSeed=<n>.
 	const FTBuildRoads::FOptions RoadOptions = FTBuildRoads::ParseOptions(*Params);
@@ -1433,6 +1402,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// -RoofLayouts: with -Roofs, one of ftcore::MassingRoofLayout's seven layouts a roof (huts, sheds, laundry, unit farms).
 	const bool bFacadeR5 = FParse::Param(*Params, TEXT("FacadeR5"));
 	const bool bRoofLayouts = FParse::Param(*Params, TEXT("RoofLayouts"));
+	// Round 6 (FTRoofDress.h): -RoofScatter, -RoofHut=<mesh>, -RoofHutTurn=<deg>.
+	const FTRoofDress::FOptions RoofDressOptions = FTRoofDress::ParseOptions(*Params);
 	double PropLine = 3.0;
 	FParse::Value(*Params, TEXT("PropLine="), PropLine);
 	// -LanePave=<m> and -HillRock=<m>: see kLookLaneRoadIds. Both need -Surfaces.
@@ -2271,8 +2242,12 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 	int32 Named = 0, Kit = 0, Sloped = 0, Nudged = 0, Skipped = 0, BoxesLeft = 0;
 	int32 NavObstacles = 0, NullStrips = 0;
-	// The boxes wearing windows, by box: their data is set once the frontage has said which faces front a street.
-	std::vector<AStaticMeshActor*> Windowed(Boxes.size(), nullptr);
+	// Every flat box, piece of dressing, placed mesh and road solid below is an instance of its 250 m cell
+	// (FTCellInstancer.h), made at once before the navmesh; sloped boxes, the hidden walls and the sea stay actors.
+	FFTCellInstancer Cells(World, Spawn);
+	// The boxes wearing windows, by box (their instances): their data is set once the frontage has said which faces
+	// front a street.
+	std::vector<FFTCellHandle> Windowed(Boxes.size());
 	// -StandIns: the frames built in place of the crane and boat boxes, laid with the dressing below.
 	std::vector<ftcore::MassingBox> StandIns;
 	int32 StandInBoxes = 0;
@@ -2333,18 +2308,24 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		const double Height = FMath::Max(Box.z1 + Nudges[I] - Box.z0, ftcore::kMassingMinHeight);
 		Nudged += Nudges[I] != 0.0 || Raises[I] > 0.0 ? 1 : 0;
-		AStaticMeshActor* Built = Block(World, Spawn, Cube, Material, Id, Cm(ftcore::massingEnginePoint(Side, Box.cx, Box.cy, Box.z0 + Height * 0.5)),
-			FVector(Box.sx, Box.sy, Height), ftcore::massingEngineYaw(Box.rot));
-		Windowed[I] = WindowMaterial && Material == WindowMaterial ? Built : nullptr;
-		if (Replaced[I])
+		// A box a kit mesh stands in for is a hidden collider casting no shadow (EFTCellKind::Hidden).
+		const FVector BoxMid = Cm(ftcore::massingEnginePoint(Side, Box.cx, Box.cy, Box.z0 + Height * 0.5));
+		FFTCellOptions CellOpts;
+		CellOpts.Label = Id;
+		UMaterialInterface* const BoxMats[1] = {Material};
+		const FFTCellHandle BoxHandle = Cells.Add(Cube, BoxMats, FTransform(FRotator(0.0, ftcore::massingEngineYaw(Box.rot), 0.0), BoxMid,
+			FVector(Box.sx, Box.sy, Height)), {}, Replaced[I] ? EFTCellKind::Hidden : EFTCellKind::Solid, CellOpts);
+		if (WindowMaterial && Material == WindowMaterial)
 		{
-			Built->GetStaticMeshComponent()->SetCastShadow(false);
-			Built->SetActorHiddenInGame(true);
+			Windowed[I] = BoxHandle;
 		}
 		if (ftcore::massingNavObstacle(Box))
 		{
 			++NavObstacles;
-			NullStrips += AddPlateNavNull(*Built, Box, Side);
+			if (AActor* Holder = Cells.CellAt(BoxMid))
+			{
+				NullStrips += AddPlateNavNull(*Holder, Box, Side);
+			}
 		}
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: cover plates: %d boxes are navmesh obstacles, %d null strips (each rising at most "
@@ -2356,8 +2337,18 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// -NightLamps: the lights under the lamps' heads and their lenses, on kit boxes and as placed pieces.
 	int32 NightLampsKit = 0, NightLampsPlaced = 0;
 	FNightLampParts LampParts;
+	// Every TQ-04 lamp placed (world cm), which -LaneLamps keeps clear of.
+	TArray<FVector> LampsAt;
 	if (bNightLamps)
 	{
+		LampParts.Lights = World->SpawnActor<AFTNightLights>(FVector::ZeroVector, FRotator::ZeroRotator, Spawn);
+		if (!LampParts.Lights)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -NightLamps: couldn't spawn the night lights."));
+			World->DestroyWorld(false);
+			return 1;
+		}
+		LampParts.Lights->SetActorLabel(TEXT("NightLights"));
 		LampParts.Lens = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
 		const FString GlowPath = FTScene::NightLampMaterial;
 		LampParts.Glow = LoadObject<UMaterialInterface>(nullptr, *(GlowPath + TEXT(".") + FPackageName::GetShortName(GlowPath)), nullptr,
@@ -2389,13 +2380,18 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		// A second mesh on one box takes a suffix, as an actor's label is its id.
 		const int32 OnBox = ++KitOnBox.FindOrAdd(Row.BoxAt);
 		const FString Label = OnBox == 1 ? Row.Box : FString::Printf(TEXT("%s-%d"), *Row.Box, OnBox);
-		AStaticMeshActor* Prop = Block(World, Spawn, Row.Mesh, nullptr, Label, Cm(Place.at), FVector(Place.scale.x, Place.scale.y, Place.scale.z), Place.yaw);
-		Prop->GetStaticMeshComponent()->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
-		Prop->GetStaticMeshComponent()->SetCanEverAffectNavigation(false);
-		if (bNightLamps && Row.Mesh->GetPathName().Contains(kNightLampMesh))
+		const FTransform KitXf(FRotator(0.0, Place.yaw, 0.0), Cm(Place.at), FVector(Place.scale.x, Place.scale.y, Place.scale.z));
+		FFTCellOptions KitOpts;
+		KitOpts.Label = Label;
+		Cells.Add(Row.Mesh, {}, KitXf, {}, EFTCellKind::NoCollide, KitOpts);
+		if (Row.Mesh->GetPathName().Contains(kNightLampMesh))
 		{
-			NightLamp(World, Spawn, Prop, LampParts);
-			++NightLampsKit;
+			LampsAt.Add(KitXf.GetLocation());
+			if (bNightLamps)
+			{
+				NightLamp(LampParts, *Row.Mesh, KitXf);
+				++NightLampsKit;
+			}
 		}
 		const bool bCollider = ftcore::massingVisible(ftcore::massingRole(Box));
 		KitNoCollider += bCollider ? 0 : 1;
@@ -2427,30 +2423,36 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// A box of dressing as the engine's cube, wearing its surface and colliding as the boxes do, tilted to its grade when it
 	// has one (a kerb along a sloping street, a pad on sloping ground: ftcore::massingCubePose). It stays out of the boxes
 	// table.
-	const auto LayCube = [&](const ftcore::MassingBox& Box)
+	// An instance of its cell: Kind says how it collides (Walk for what is walked on), Cull how far it is drawn.
+	const auto LayCube = [&](const ftcore::MassingBox& Box, EFTCellKind Kind, EFTCellCull Cull)
 	{
-		UMaterialInterface* Material = bSurfaces ? WearLook(LookSet, Box) : Finish[static_cast<int32>(ftcore::massingFinish(Box))];
+		UMaterialInterface* const CubeMats[1] = {bSurfaces ? WearLook(LookSet, Box) : Finish[static_cast<int32>(ftcore::massingFinish(Box))]};
 		const double Height = FMath::Max(Box.z1 - Box.z0, ftcore::kMassingMinHeight);
 		const ftcore::MassingCubePose Pose = ftcore::massingCubePose(Box, Height);
-		Block(World, Spawn, Cube, Material, Utf8(Box.id), Cm(ftcore::massingEnginePoint(Side, Box.cx, Box.cy, Box.z0 + Height * 0.5 + Pose.lift)),
-			FVector(Pose.scale.x, Pose.scale.y, Pose.scale.z), Pose.yaw, Pose.pitch, Pose.roll);
+		FFTCellOptions CubeOpts;
+		CubeOpts.Cull = Cull;
+		CubeOpts.Label = Utf8(Box.id);
+		Cells.Add(Cube, CubeMats,
+			FTransform(FRotator(Pose.pitch, Pose.yaw, Pose.roll), Cm(ftcore::massingEnginePoint(Side, Box.cx, Box.cy, Box.z0 + Height * 0.5 + Pose.lift)),
+				FVector(Pose.scale.x, Pose.scale.y, Pose.scale.z)),
+			{}, Kind, CubeOpts);
 	};
 	// A dressing box that takes room from the props: a kerb, or a quay's rail, post or bollard.
-	const auto Dress = [&](const ftcore::MassingBox& Box)
+	const auto Dress = [&](const ftcore::MassingBox& Box, EFTCellKind Kind, EFTCellCull Cull)
 	{
-		LayCube(Box);
+		LayCube(Box, Kind, Cull);
 		Taken.push_back(ftcore::massingBoxFoot(Box));
 	};
 	// A box of dressing that takes no room from the props: a frontage piece's paving pad, a roof's rail or clutter.
-	const auto Lay = [&](const ftcore::MassingBox& Box)
+	const auto Lay = [&](const ftcore::MassingBox& Box, EFTCellKind Kind, EFTCellCull Cull)
 	{
-		LayCube(Box);
+		LayCube(Box, Kind, Cull);
 	};
 	if (bStandIns)
 	{
 		for (const ftcore::MassingBox& Piece : StandIns)
 		{
-			LayCube(Piece);
+			LayCube(Piece, EFTCellKind::Solid, EFTCellCull::None);
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: stand-ins: %d crane and boat boxes built as %d frame pieces in place of solids."),
 			StandInBoxes, static_cast<int32>(StandIns.size()));
@@ -2458,9 +2460,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// Per box face (box * 4 + face), whether its middle fronts a street: the frontage reads it; the windows' shop fronts
 	// follow it.
 	std::vector<uint8_t> FrontFaces;
-	// A placed piece's mesh (a street prop, a quay's lamp or a frontage piece), labelled <rule id>-<n>: like the kit it
-	// collides with nothing and leaves the navmesh alone; a lamp takes its -NightLamps light. False, with the reason
-	// logged, on inverted bounds.
+	// A placed piece's mesh (a street prop, a quay's lamp or a frontage piece), labelled <rule id>-<n> if it falls back
+	// to an actor: like the kit it collides with nothing and leaves the navmesh alone, drawn to the props' distance; a
+	// lamp takes its -NightLamps light point. False, with the reason logged, on inverted bounds.
 	const auto PlaceMesh = [&](UStaticMesh* Mesh, const ftcore::MassingProp& Placed, double Turn, double Inset, const FString& Label,
 		double Scale = 1.0)
 	{
@@ -2473,13 +2475,19 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s has inverted bounds."), *Label, *Mesh->GetPathName());
 			return false;
 		}
-		AStaticMeshActor* Prop = Block(World, Spawn, Mesh, nullptr, Label, Cm(Place.at), FVector(Scale), Place.yaw);
-		Prop->GetStaticMeshComponent()->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
-		Prop->GetStaticMeshComponent()->SetCanEverAffectNavigation(false);
-		if (bNightLamps && Mesh->GetPathName().Contains(kNightLampMesh))
+		const FTransform PieceXf(FRotator(0.0, Place.yaw, 0.0), Cm(Place.at), FVector(Scale));
+		FFTCellOptions PieceOpts;
+		PieceOpts.Cull = EFTCellCull::Prop;
+		PieceOpts.Label = Label;
+		Cells.Add(Mesh, {}, PieceXf, {}, EFTCellKind::NoCollide, PieceOpts);
+		if (Mesh->GetPathName().Contains(kNightLampMesh))
 		{
-			NightLamp(World, Spawn, Prop, LampParts);
-			++NightLampsPlaced;
+			LampsAt.Add(PieceXf.GetLocation());
+			if (bNightLamps)
+			{
+				NightLamp(LampParts, *Mesh, PieceXf);
+				++NightLampsPlaced;
+			}
 		}
 		return true;
 	};
@@ -2510,7 +2518,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		{
 			if (!KerbGone[I])
 			{
-				Dress(Kerbs[I]);
+				Dress(Kerbs[I], EFTCellKind::Walk, EFTCellCull::None);
 			}
 		}
 		if (KerbsInRoads > 0)
@@ -2534,6 +2542,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	RoadHost.Cube = Cube;
 	RoadHost.Side = Side;
 	RoadHost.Taken = &Taken;
+	RoadHost.Cells = &Cells;
+	RoadHost.LampsAt = &LampsAt;
 	RoadHost.PlaceLamp = [&](UStaticMesh* Mesh, const ftcore::MassingProp& Lamp, const FString& Label)
 	{
 		return PlaceMesh(Mesh, Lamp, 0.0, 0.7, Label);
@@ -2560,7 +2570,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		for (const ftcore::MassingBox& Piece : Furniture)
 		{
-			Dress(Piece);
+			Dress(Piece, EFTCellKind::Solid, EFTCellCull::Dressing);
 		}
 		for (const ftcore::MassingProp& Lamp : QuayLamps)
 		{
@@ -2597,7 +2607,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		for (const ftcore::MassingBox& Pad : Pads)
 		{
-			Lay(Pad);
+			Lay(Pad, EFTCellKind::Walk, EFTCellCull::None);
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage: %d paving pads under the ground pieces, laid to the ground's grade; %d "
 			"left out over a step."), static_cast<int32>(Pads.size()), static_cast<int32>(FrontTotals.padsUneven));
@@ -2703,19 +2713,18 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 	if (bNightLamps)
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: night lamps: %d lights under the %s lamps' heads (%d placed, %d on kit boxes): "
-			"spots aimed down, %.0f cd, %.0f K, reach %.0f m, unshadowed, hidden until the night look shows the actors tagged %s; %s."),
-			NightLampsPlaced + NightLampsKit, kNightLampMesh, NightLampsPlaced, NightLampsKit, kNightLampCandela, kNightLampKelvin,
-			kNightLampReach / 100.f, FTScene::NightLampTag,
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: night lamps: %d light points under the %s lamps' heads (%d placed, %d on kit "
+			"boxes) in the night lights' data, no light actors: spots aimed down at run time, %.0f cd, %.0f K, reach %.0f m; %s."),
+			NightLampsPlaced + NightLampsKit, kNightLampMesh, NightLampsPlaced, NightLampsKit, FTNightLight::LampCandela, FTNightLight::LampKelvin,
+			FTNightLight::LampReach / 100.f,
 			!LampParts.Lens ? TEXT("no lenses (the engine's cylinder didn't load)")
-				: *FString::Printf(TEXT("a %.2f x %.2f m lens under each head tagged %s%s"), kNightLampLensLong, kNightLampLensWide,
+				: *FString::Printf(TEXT("a %.2f x %.2f m lens instance under each head, tagged %s%s"), kNightLampLensLong, kNightLampLensWide,
 					FTScene::NightLampHeadTag, LampParts.Glow ? TEXT(", wearing the lamp material") : TEXT(" (no lamp material built: the night look puts it on)")));
 	}
 
 	// The windows' data: each windowed box's seed, the faces the frontage found fronting a street (their ground storey is
 	// shops) and each face's street floor over the box's bottom.
-	// -NightLamps with -Windows: a hidden spill light out of each shopfront (ftcore::massingShopLights), tagged
-	// FTScene::NightShopTag.
+	// -NightLamps with -Windows: a spill point out of each shopfront (ftcore::massingShopLights) in the night lights' data.
 	int32 ShopLights = 0, ShopFaces = 0;
 	std::vector<ftcore::MassingShopLight> ShopAt;
 	if (bWindows)
@@ -2724,23 +2733,23 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		int32 FacadeTypes[ftcore::kWindowTypes] = {};
 		for (size_t I = 0; I < Boxes.size(); ++I)
 		{
-			if (!Windowed[I])
+			if (!Windowed[I].IsValid())
 			{
 				continue;
 			}
 			const ftcore::MassingWindowData Data =
 				ftcore::massingWindowData(Built[I], Ground, FrontFaces.size() >= (I + 1) * 4 ? &FrontFaces[I * 4] : nullptr);
-			UStaticMeshComponent* Mesh = Windowed[I]->GetStaticMeshComponent();
-			Mesh->SetDefaultCustomPrimitiveDataFloat(FTScene::WindowDataSeed, static_cast<float>(Data.seed));
-			Mesh->SetDefaultCustomPrimitiveDataFloat(FTScene::WindowDataStreet, static_cast<float>(Data.streetBits));
+			const FFTCellHandle& Piece = Windowed[I];
+			Cells.SetCustomData(Piece, FTScene::WindowDataSeed, static_cast<float>(Data.seed));
+			Cells.SetCustomData(Piece, FTScene::WindowDataStreet, static_cast<float>(Data.streetBits));
 			for (int32 F = 0; F < 4; ++F)
 			{
-				Mesh->SetDefaultCustomPrimitiveDataFloat(FTScene::WindowDataBase + F, static_cast<float>(Data.base[F]));
+				Cells.SetCustomData(Piece, FTScene::WindowDataBase + F, static_cast<float>(Data.base[F]));
 				StreetFaces += (Data.streetBits >> F) & 1u;
 			}
 			if (bFacadeR5)
 			{
-				SetFacadeR5Data(Mesh, Built[I], Data, FacadeTypes);
+				SetFacadeR5Data(Cells, Piece, Built[I], Data, FacadeTypes);
 			}
 			++Windows;
 			if (bNightLamps)
@@ -2750,7 +2759,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				int32 LastFace = -1;
 				for (size_t L = 0; L < ShopAt.size(); ++L)
 				{
-					NightShop(World, Spawn, Side, ShopAt[L], FString::Printf(TEXT("%s-Shop%d"), *Utf8(Boxes[I].id), static_cast<int32>(L) + 1));
+					NightShop(*LampParts.Lights->Data, Side, ShopAt[L]);
 					ShopFaces += ShopAt[L].faceIndex != LastFace ? 1 : 0;
 					LastFace = ShopAt[L].faceIndex;
 				}
@@ -2767,11 +2776,11 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		if (bNightLamps)
 		{
-			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: night shops: %d spill lights on %d shopfront faces (one per %.0f m of face at "
-				"most, %.1f m out, %.1f m over the street): spots %.0f degrees down, %.0f cd, %.0f K, reach %.0f m, unshadowed, hidden until the "
-				"night look shows the actors tagged %s%s."), ShopLights, ShopFaces, ftcore::kMassingShopLightSpacing, ftcore::kMassingShopLightOut,
-				ftcore::kMassingShopLightUp, -kNightShopPitch, kNightShopCandela, kNightShopKelvin, kNightShopReach / 100.f, FTScene::NightShopTag,
-				FrontFaces.empty() ? TEXT("; none without -Frontage") : TEXT(""));
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: night shops: %d spill points on %d shopfront faces (one per %.0f m of face at "
+				"most, %.1f m out, %.1f m over the street) in the night lights' data, no light actors: spots %.0f degrees down at run time, %.0f cd, "
+				"%.0f K, reach %.0f m%s."), ShopLights, ShopFaces, ftcore::kMassingShopLightSpacing, ftcore::kMassingShopLightOut,
+				ftcore::kMassingShopLightUp, -FTNightLight::ShopPitch, FTNightLight::ShopCandela, FTNightLight::ShopKelvin,
+				FTNightLight::ShopReach / 100.f, FrontFaces.empty() ? TEXT("; none without -Frontage") : TEXT(""));
 		}
 	}
 	else if (bNightLamps)
@@ -2795,11 +2804,18 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		ftcore::MassingRoofCounts RoofCounts;
 		ftcore::MassingRoofStyle RoofStyle;
 		RoofStyle.layouts = bRoofLayouts;
+		FTRoofDress::ApplyStyle(RoofDressOptions, RoofStyle);
 		ftcore::massingRoofs(Ground, Built, Visible, RoofHosts, RoofPieces, RoofCounts, &Courts, &RoofStyle);
+		FTRoofDress::FHuts RoofHuts;
+		RoofHuts.Begin(RoofDressOptions);
 		for (const ftcore::MassingBox& Piece : RoofPieces)
 		{
-			Lay(Piece);
+			if (!RoofHuts.Take(Piece, Side))
+			{
+				Lay(Piece, EFTCellKind::Solid, EFTCellCull::Dressing);
+			}
 		}
+		RoofHuts.Finish(Cells);
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roofs: %d boxes on %d tops (%d left bare): %.0f m of rail on %d posts, %d tanks, "
 			"%d air-conditioning units, %d aerials."), static_cast<int32>(RoofPieces.size()), static_cast<int32>(RoofCounts.roofs),
 			static_cast<int32>(RoofCounts.bare), RoofCounts.railed, static_cast<int32>(RoofCounts.posts), static_cast<int32>(RoofCounts.tanks),
@@ -2892,6 +2908,16 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		Director->SetActorLabel(TEXT("ExploreDirector"));
 	}
 
+	// The cells' instances, every component made at once (their collision is what the navmesh reads next), and the
+	// lamps' lenses.
+	Cells.Flush();
+	const int32 LampLenses = FinishNightLamps(LampParts);
+	if (bNightLamps)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: night lights: %d lamp points, %d shop points, %d lens instances."),
+			LampParts.Lights->Data->LampAt.Num(), LampParts.Lights->Data->ShopAt.Num(), LampLenses);
+	}
+
 	// Whatever is still building (the sloped meshes' collision, the ground's) finishes before the navmesh reads it.
 	FAssetCompilingManager::Get().FinishAllCompilation();
 
@@ -2980,6 +3006,16 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	for (TActorIterator<AActor> It(World); It; ++It)
 	{
 		++Actors;
+	}
+	{
+		const FFTCellInstancer::FStats& CellStats = Cells.Stats();
+		const auto PerKind = [&CellStats](EFTCellKind Kind) { return CellStats.PerKind[static_cast<int32>(Kind)]; };
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: Instancer: %d cells, %d components, %d instances (solid %d, walk %d, dressing %d); "
+			"actors %d"), CellStats.Cells, CellStats.Components, CellStats.Instances, PerKind(EFTCellKind::Solid) + PerKind(EFTCellKind::Hidden),
+			PerKind(EFTCellKind::Walk), PerKind(EFTCellKind::NoCollide), Actors);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: Instancer: of the solid, %d hidden colliders under kit meshes; %d pieces fell back to "
+			"actors (their materials don't draw instanced); %d sloped boxes stay actors."), PerKind(EFTCellKind::Hidden), CellStats.FallbackActors,
+			Sloped);
 	}
 	if (!KitRows.IsEmpty())
 	{

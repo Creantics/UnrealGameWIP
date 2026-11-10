@@ -1,13 +1,10 @@
 #include "FTBuildRoads.h"
+#include "FTCellInstancer.h"
 
 #include "ForgottenThird.h"
 
-#include "Components/StaticMeshComponent.h"
-#include "Engine/CollisionProfile.h"
 #include "Engine/StaticMesh.h"
-#include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
-#include "EngineUtils.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/FileHelper.h"
@@ -21,7 +18,6 @@ namespace
 {
 constexpr const TCHAR* kRoadLampMesh = TEXT("/Game/Props/TQ-04/sodium_lamp_TQ-04_import/StaticMeshes/sodium_lamp_TQ-04_import.sodium_lamp_TQ-04_import");
 constexpr const TCHAR* kRoadScooterMesh = TEXT("/Game/Props/TQ-16/scooter_downpipe_TQ-16_e4_import/StaticMeshes/SM_TQ16_scooter.SM_TQ16_scooter");
-constexpr const TCHAR* kRoadLampTag = TEXT("TQ-04");
 constexpr double kRoadDoorClear = 1.0; // m: vehicles keep this far off a door's foot
 constexpr double kRoadTwoWheelReach = 40.0; // m: with no -LaneLamps box, two-wheelers go this far round each road
 
@@ -67,6 +63,7 @@ struct FRoadPainter
 	const FFTRoadsHost& Host;
 	UStaticMesh* Cylinder = nullptr;
 	UMaterialInterface* Tints[static_cast<int32>(ftcore::RoadTint::Count)] = {};
+	int32 Laid = 0; // solids and vehicles given to the instancer
 
 	UMaterialInterface* Tint(ftcore::RoadTint Which)
 	{
@@ -88,33 +85,28 @@ struct FRoadPainter
 		return Slot;
 	}
 
-	AStaticMeshActor* Spawn(UStaticMesh* Mesh, UMaterialInterface* Material, const FString& Label, const FVector& Location, const FVector& Scale,
-		const FRotator& Rotation) const
-	{
-		AStaticMeshActor* Actor = Host.World->SpawnActor<AStaticMeshActor>(Location, Rotation, *Host.Spawn);
-		Actor->GetStaticMeshComponent()->SetStaticMesh(Mesh);
-		if (Material)
-		{
-			Actor->GetStaticMeshComponent()->SetMaterial(0, Material);
-		}
-		Actor->SetActorScale3D(Scale);
-		Actor->SetActorLabel(Label);
-		return Actor;
-	}
-
 	// A solid as the engine's centred cube (posed as the builder poses its dressing) or 1 m cylinder (its axis up,
-	// along the box's u or along its w).
+	// along the box's u or along its w), an instance of its cell. The carriageway, its patches, pavements and kerbs are
+	// walked on; markings are drawn at any distance, vehicles to the cars' distance, the rest to the props'. The
+	// component carries the solid's tag (FTVehicle_<kind>, FTRoadSign_<what>, ...) or FTRoad.
 	bool Lay(const ftcore::RoadSolid& Solid)
 	{
 		const ftcore::MassingBox& Box = Solid.box;
 		const double Height = FMath::Max(Box.z1 - Box.z0, ftcore::kMassingMinHeight);
-		AStaticMeshActor* Actor = nullptr;
-		if (Solid.shape == ftcore::RoadShape::Cylinder && Cylinder)
+		const ftcore::RoadTint Which = Solid.tint;
+		const bool bFlat = Which == ftcore::RoadTint::LineWhite || Which == ftcore::RoadTint::LineYellow || Which == ftcore::RoadTint::LensRed ||
+			Which == ftcore::RoadTint::LensAmber || Which == ftcore::RoadTint::LensGreen || Which == ftcore::RoadTint::Wire;
+		const bool bGround = Which == ftcore::RoadTint::Asphalt || Which == ftcore::RoadTint::AsphaltPatch || Which == ftcore::RoadTint::Pavement ||
+			Which == ftcore::RoadTint::Kerb;
+		const bool bCyl = Solid.shape == ftcore::RoadShape::Cylinder && Cylinder;
+		FVector Location, Scale;
+		FRotator Rotation;
+		if (bCyl)
 		{
 			const ftcore::MassingVec At = ftcore::massingEnginePoint(Host.Side, Box.cx, Box.cy, Box.z0 + Height * 0.5);
-			const double Yaw = ftcore::massingEngineYaw(Box.rot);
-			FVector Scale(Box.sx, Box.sy, Height);
-			FRotator Rotation(0.0, Yaw, 0.0);
+			Location = FVector(At.x, At.y, At.z) * 100.0;
+			Scale = FVector(Box.sx, Box.sy, Height);
+			Rotation = FRotator(0.0, ftcore::massingEngineYaw(Box.rot), 0.0);
 			if (Solid.axis == ftcore::RoadAxis::AlongU)
 			{
 				Scale = FVector(Height, Box.sy, Box.sx); // pitched over: its axis along u, its local x up
@@ -125,37 +117,29 @@ struct FRoadPainter
 				Scale = FVector(Box.sx, Height, Box.sy); // rolled over: its axis along w, its local y up
 				Rotation.Roll = 90.0;
 			}
-			Actor = Spawn(Cylinder, Tint(Solid.tint), RoadsUtf8(Box.id), FVector(At.x, At.y, At.z) * 100.0, Scale, Rotation);
 		}
 		else
 		{
 			const ftcore::MassingCubePose Pose = ftcore::massingCubePose(Box, Height);
 			const ftcore::MassingVec At = ftcore::massingEnginePoint(Host.Side, Box.cx, Box.cy, Box.z0 + Height * 0.5 + Pose.lift);
-			Actor = Spawn(Host.Cube, Tint(Solid.tint), RoadsUtf8(Box.id), FVector(At.x, At.y, At.z) * 100.0,
-				FVector(Pose.scale.x, Pose.scale.y, Pose.scale.z), FRotator(Pose.pitch, Pose.yaw, Pose.roll));
+			Location = FVector(At.x, At.y, At.z) * 100.0;
+			Scale = FVector(Pose.scale.x, Pose.scale.y, Pose.scale.z);
+			Rotation = FRotator(Pose.pitch, Pose.yaw, Pose.roll);
 		}
-		if (!Actor)
+		const bool bVehicle = Solid.tag.rfind("FTVehicle_", 0) == 0;
+		FFTCellOptions Options;
+		const bool bMarking = Which == ftcore::RoadTint::LineWhite || Which == ftcore::RoadTint::LineYellow;
+		Options.Cull = bVehicle ? EFTCellCull::Car : ((bGround || bMarking) ? EFTCellCull::None : EFTCellCull::Prop);
+		Options.bCastShadow = !bFlat;
+		Options.Tag = Solid.tag.empty() ? FName(TEXT("FTRoad")) : FName(RoadsUtf8(Solid.tag));
+		Options.Label = RoadsUtf8(Box.id);
+		const EFTCellKind Kind = !Solid.collide ? EFTCellKind::NoCollide : (bGround ? EFTCellKind::Walk : EFTCellKind::Solid);
+		UMaterialInterface* const Materials[1] = {Tint(Which)};
+		if (!Host.Cells->Add(bCyl ? Cylinder : Host.Cube, Materials, FTransform(Rotation, Location, Scale), {}, Kind, Options).IsValid())
 		{
 			return false;
 		}
-		UStaticMeshComponent* Mesh = Actor->GetStaticMeshComponent();
-		if (!Solid.collide)
-		{
-			Mesh->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
-			Mesh->SetCanEverAffectNavigation(false);
-		}
-		const bool bFlat = Solid.tint == ftcore::RoadTint::LineWhite || Solid.tint == ftcore::RoadTint::LineYellow ||
-			Solid.tint == ftcore::RoadTint::LensRed || Solid.tint == ftcore::RoadTint::LensAmber || Solid.tint == ftcore::RoadTint::LensGreen ||
-			Solid.tint == ftcore::RoadTint::Wire;
-		if (bFlat)
-		{
-			Mesh->SetCastShadow(false);
-		}
-		Actor->Tags.Add(TEXT("FTRoad"));
-		if (!Solid.tag.empty())
-		{
-			Actor->Tags.Add(FName(RoadsUtf8(Solid.tag)));
-		}
+		++Laid;
 		return true;
 	}
 
@@ -177,11 +161,16 @@ struct FRoadPainter
 				const ftcore::MassingVec At = ftcore::massingEnginePoint(Host.Side, V.x, V.y, V.z);
 				const FVector Location = FVector(At.x * 100.0, At.y * 100.0, At.z * 100.0 - Bounds.Min.Z * Scale) -
 					FRotator(0.0, Yaw, 0.0).RotateVector(Centre);
-				AStaticMeshActor* Actor = Spawn(Scooter, nullptr, RoadsUtf8(V.id), Location, FVector(Scale), FRotator(0.0, Yaw, 0.0));
-				Actor->GetStaticMeshComponent()->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
-				Actor->GetStaticMeshComponent()->SetCanEverAffectNavigation(false);
-				Actor->Tags.Add(TEXT("FTRoad"));
-				Actor->Tags.Add(Tag);
+				FFTCellOptions Options;
+				Options.Cull = EFTCellCull::Car;
+				Options.Tag = Tag;
+				Options.Label = RoadsUtf8(V.id);
+				if (!Host.Cells->Add(Scooter, {}, FTransform(FRotator(0.0, Yaw, 0.0), Location, FVector(Scale)), {}, EFTCellKind::NoCollide, Options)
+						 .IsValid())
+				{
+					return false;
+				}
+				++Laid;
 				return true;
 			}
 		}
@@ -391,6 +380,11 @@ bool Lay(FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::
 	{
 		return true;
 	}
+	if (!Host.Cells)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: roads: no instancer."));
+		return false;
+	}
 	FRoadPainter Paint{Host};
 	Paint.Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
 	if (!Paint.Cylinder)
@@ -461,6 +455,7 @@ bool Lay(FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::
 							  : TEXT("no vehicles (no -Vehicles)"));
 	}
 	Host.RoadsTo = Host.Taken ? Host.Taken->size() : 0;
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roads: %d solids and vehicles laid as instances of their cells."), Paint.Laid);
 	return true;
 }
 
@@ -470,6 +465,11 @@ bool Finish(const FFTRoadsHost& Host, const FOptions& Options, const std::vector
 	if (!Options.bLaneLamps && !(Options.bVehicles && !Roads.empty()))
 	{
 		return true;
+	}
+	if (!Host.Cells)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: roads: no instancer."));
+		return false;
 	}
 	std::vector<ftcore::MassingStreet> Lanes;
 	{
@@ -495,12 +495,11 @@ bool Finish(const FFTRoadsHost& Host, const FOptions& Options, const std::vector
 	{
 		UStaticMesh* Lamp = LoadObject<UStaticMesh>(nullptr, kRoadLampMesh);
 		std::vector<ftcore::RoadPoint> Existing;
-		for (TActorIterator<AStaticMeshActor> It(Host.World); It; ++It)
+		if (Host.LampsAt)
 		{
-			const UStaticMesh* Mesh = It->GetStaticMeshComponent()->GetStaticMesh();
-			if (Mesh && Mesh->GetPathName().Contains(kRoadLampTag))
+			for (const FVector& Lit : *Host.LampsAt)
 			{
-				const FVector At = It->GetActorLocation() / 100.0;
+				const FVector At = Lit / 100.0;
 				Existing.push_back(ftcore::RoadPoint{At.X + Host.Side * 0.5, Host.Side * 0.5 - At.Y});
 			}
 		}

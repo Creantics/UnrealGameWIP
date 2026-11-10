@@ -8,6 +8,7 @@
 #include "Engine/SkyLight.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "FTNightLightData.h"
 #include "FTSceneLook.h"
 #include "FTText.h"
 #include "ForgottenThird.h"
@@ -115,6 +116,13 @@ void UFTWorldClockSubsystem::Gather(UWorld& World)
 		{
 			Fogs.Add({Fog, Fog->FogInscatteringLuminance});
 		}
+	}
+	// A map whose lights are data (AFTNightLights) leaves them to FTLampPoolSubsystem's pool; only older maps' tagged
+	// light actors are gathered here.
+	const TActorIterator<AFTNightLights> Pooled(&World);
+	if (Pooled)
+	{
+		return;
 	}
 	for (TActorIterator<AActor> It(&World); It; ++It)
 	{

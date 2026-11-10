@@ -319,3 +319,43 @@ TEST_CASE("road net: parked vehicles keep out of junction boxes and crossings; t
     CHECK(back.bays.size() == g.bays.size());
     CHECK(back.crossings.size() == g.crossings.size());
 }
+
+TEST_CASE("road net: poles and signs on the network, laid as instances, off the carriageway") {
+    // A street with poles on its left, a T, and a lane mouth on the right: speed signs past the junction, a stop sign
+    // at the mouth, the centre line broken across it.
+    const std::vector<RoadNetStreet> s = net(
+        "id,kind,width_m,pts,pavement_m,mouths,poles\n"
+        "RD-P,road,16,0:0;0:300,3.5,LN-1@220@6@R,L\n"
+        "ST-E,street,14,0:100;80:100,2.8,,\n");
+    REQUIRE(s[0].poleLeft);
+    REQUIRE_FALSE(s[0].poleRight);
+    RoadBuild b;
+    roadNetBuild(s, MassingGround{}, b);
+    CHECK(b.counts.poles >= 6);
+    CHECK(b.counts.signs >= 3);
+    int poles = 0, wires = 0, stops = 0;
+    for (const RoadSolid& sd : b.solids) {
+        if (sd.box.kind == "utilitypole") {
+            ++poles;
+            CHECK(sd.instanced);
+            CHECK(sd.box.cx < -6.0); // the street's left, running north: the west side
+        }
+        if (sd.box.kind == "wire") ++wires;
+        if (sd.tag == "FTRoadSign_stop") ++stops;
+        if (sd.box.kind == "sign" || sd.box.kind == "signpost" || sd.box.kind == "crossarm" || sd.box.kind == "wire")
+            CHECK(sd.instanced);
+        if (sd.box.kind == "kerb" || sd.box.kind == "pavement") CHECK_FALSE(sd.instanced);
+    }
+    CHECK(poles == static_cast<int>(b.counts.poles));
+    CHECK(wires >= 3 * (poles - 2));
+    CHECK(stops == 1);
+    for (const MassingFoot& f : b.furniture) CHECK_FALSE(roadInCarriageway(b, f, kRoadKerbClear));
+    // No centre dash across the mouth (y 220 +- 3 m and its flares).
+    for (const RoadSolid& sd : b.solids)
+        if (sd.tint == RoadTint::LineWhite && std::fabs(sd.box.cx) < 0.2 && sd.box.sx < 4.0) {
+            INFO(sd.box.cy);
+            CHECK(std::fabs(sd.box.cy - 220.0) > 3.0);
+        }
+    std::vector<RoadNetStreet> out;
+    CHECK_FALSE(importRoadNet("id,kind,width_m,pts,pavement_m,poles\nA,road,14,0:0;0:50,3.5,Q\n", out));
+}

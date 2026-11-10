@@ -14,7 +14,8 @@
 // (FTScene::NightLampTag, -WorldEyeNightLamp candelas, warm, reaching -WorldEyeNightLampRadius metres) and the shop
 // spill lights (FTScene::NightShopTag, -WorldEyeNightShop candelas), puts FTScene::NightLampMaterial on the lamp heads
 // (FTScene::NightLampHeadTag; while a map has none, a small glowing lens stands in over each lamp's light) and locks the
-// exposure at -WorldEyeNightEV (EV100). -WorldEyeGpuMs logs the GPU's frame time, averaged over that many frames once
+// exposure at -WorldEyeNightEV (EV100). On a map whose lights are data (AFTNightLights) the lamp pool lights the lamps
+// and shops nearest the eye instead (UFTLampPoolSubsystem::ForceNight, at the same candelas and reach). -WorldEyeGpuMs logs the GPU's frame time, averaged over that many frames once
 // the view has settled, before the still. -WorldEyePlainWalls puts each window instance's surface instance (MIW_<id> to
 // MI_Surface_<id>) back on the meshes, for a like-for-like timing.
 //

@@ -5,6 +5,7 @@
 #include "Components/LightComponent.h"
 #include "Components/LocalLightComponent.h"
 #include "Components/SkyLightComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "DynamicRHI.h"
 #include "Engine/DirectionalLight.h"
@@ -16,6 +17,8 @@
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
+#include "FTLampPoolSubsystem.h"
+#include "FTNightLightData.h"
 #include "FTSceneLook.h"
 #include "ForgottenThird.h"
 #include "GameFramework/HUD.h"
@@ -255,7 +258,27 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		const FString LampPath = FTScene::NightLampMaterial;
 		UMaterialInterface* LampMaterial = LoadObject<UMaterialInterface>(nullptr,
 			*(LampPath + TEXT(".") + FPackageName::GetShortName(LampPath)), nullptr, LOAD_NoWarn | LOAD_Quiet);
-		for (TActorIterator<AActor> It(&World); It; ++It)
+		// A map whose lights are data (AFTNightLights) lights the nearest of them from the lamp pool, forced to night at
+		// the same values, instead of the tagged light actors; its lens instances already wear the lamp material.
+		UFTLampPoolSubsystem* Pool = World.GetSubsystem<UFTLampPoolSubsystem>();
+		const bool bPooled = Pool && Pool->ForceNight(LampCd, LampRadius * 100.f, ShopCd, LampRadius * 50.f);
+		if (bPooled)
+		{
+			Lamps = Pool->GetLampCount();
+			Shops = Pool->GetShopCount();
+			for (TActorIterator<AFTNightLights> It(&World); It; ++It)
+			{
+				UInstancedStaticMeshComponent* Mesh = It->LampHeads;
+				if (Mesh && LampMaterial && Mesh->GetInstanceCount() > 0)
+				{
+					Mesh->SetMaterial(0, LampMaterial);
+					Heads += Mesh->GetInstanceCount();
+				}
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: night from the lamp pool: %d+%d lights over %d lamps and %d shops."),
+				Pool->GetLampPoolSize(), Pool->GetShopPoolSize(), Lamps, Shops);
+		}
+		for (TActorIterator<AActor> It(&World); !bPooled && It; ++It)
 		{
 			const bool bLampActor = It->ActorHasTag(FTScene::NightLampTag);
 			const bool bShopActor = It->ActorHasTag(FTScene::NightShopTag);
@@ -304,7 +327,7 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		}
 		// A map whose lamps carry no head of their own gets a stand-in: a glowing lens, 30 cm across and 2 cm thick, hung
 		// just under each lamp's light (which sits just under the lens), clear of the head's mesh.
-		UStaticMesh* Disc = (Heads == 0 && LampMaterial && LampAt.Num() > 0)
+		UStaticMesh* Disc = (!bPooled && Heads == 0 && LampMaterial && LampAt.Num() > 0)
 			? LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"), nullptr, LOAD_NoWarn | LOAD_Quiet)
 			: nullptr;
 		for (int32 L = 0; Disc && L < LampAt.Num(); ++L)

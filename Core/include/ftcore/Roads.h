@@ -163,6 +163,7 @@ struct RoadSolid {
     RoadTint tint = RoadTint::Asphalt;
     bool collide = false;
     std::string tag;
+    bool instanced = false; // one of many alike (a network's poles, wires and signs): laid as an instance, not an actor
 };
 
 struct RoadPoint {
@@ -341,6 +342,7 @@ struct RoadNetStreet {
     std::vector<RoadMouth> mouths; // lanes meeting its sides (at: m along its points; no stubs)
     double mouthBack = 0.0;      // m: a mouth's dropped kerb runs this far behind the pavement
     double mouthZ = 0.0;         // m: the lane's surface at the mouth's back; 0: the pavement's
+    bool poleLeft = false, poleRight = false; // utility poles and wires along that side (left: of its points' way)
 };
 // Whether a roads table is a network table: its header names pts but no ground_z (the ground is the world's).
 FTCORE_API bool roadNetTable(std::string_view csv);
@@ -355,6 +357,7 @@ FTCORE_API bool roadNetTable(std::string_view csv);
 //   parking       optional: 1/true for bays along both sides; empty or 0 none
 //   mouths        optional: "lane@at@width@L|R;..." as importRoads, with no stub
 //   mouth_back_m, mouth_z  optional, as importRoads
+//   poles         optional: L, R or LR, utility poles with wires along that side (left of the way its points run)
 // `out` is cleared first. False, with the reason naming the line, on any error.
 FTCORE_API bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::string* error = nullptr);
 // As a massing street (z 0), for the road graph.

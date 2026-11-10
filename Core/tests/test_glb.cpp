@@ -195,6 +195,11 @@ TEST_CASE("asset rules by pack and role") {
     const AssetRules prop = propRules(AssetPack::Lattice);
     CHECK_FALSE(prop.requireSkin);
     CHECK(prop.emissiveRule);
+    CHECK(prop.maxTextureSize == 1024);
+    const AssetRules kit = kitRules(AssetPack::Solhaven);
+    CHECK(kit.maxTextureSize == 2048);
+    CHECK_FALSE(kit.requireSkin);
+    CHECK_FALSE(kit.emissiveRule);
 
     CHECK(isGlowMaterialName("M_EyeGlow"));
     CHECK(isGlowMaterialName("skill_trim"));

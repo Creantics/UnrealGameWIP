@@ -80,6 +80,7 @@ struct Ctx {
     double len = 0.0, hc = 0.0, w2 = 0.0, gutter = 0.0, crown = 0.0, pave = 0.0;
     double deep = 0.0; // m added to every slab's depth (a network piece over falling ground)
     int n = 0;
+    bool inst = false; // what is added now is laid as instances (a network's poles, wires and signs)
 
     Ctx(const RoadSpec& road, RoadBuild& build) : r(road), out(build) {}
 
@@ -119,6 +120,7 @@ struct Ctx {
         s.shape = shape;
         s.axis = axis;
         s.tag = tag;
+        s.instanced = inst;
         out.solids.push_back(std::move(s));
         ++out.counts.solids;
         if (collide) ++out.counts.collide;
@@ -807,6 +809,10 @@ void roadBuild(const RoadSpec& road, RoadBuild& out) {
             gone.push_back({j.zs0 - kRoadStopBack - kRoadStopLine - 0.5, j.zn1 + kRoadStopBack + kRoadStopLine + 0.5});
             solid.push_back({j.zs0 - 30.0, j.zn1 + 30.0});
         }
+        // Broken across each lane mouth, either side.
+        for (const std::vector<SideSpan>* side : {&spansL, &spansR})
+            for (const SideSpan& sp : *side)
+                if (sp.type == Span::Mouth) gone.push_back({sp.s0, sp.s1});
         double s = 2.0;
         while (s < len - 2.0) {
             bool skip = false, sol = false;
@@ -1837,6 +1843,13 @@ bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::s
         }
         r.oneWay = flag("one_way");
         r.park = flag("parking");
+        {
+            const std::string_view ps = col("poles");
+            if (ps != "" && ps != "L" && ps != "R" && ps != "LR" && ps != "RL")
+                return fail(error, rec.line, r.id + ": poles is L, R or LR");
+            r.poleLeft = ps.find('L') != std::string_view::npos;
+            r.poleRight = ps.find('R') != std::string_view::npos;
+        }
         if (!num("mouth_back_m", r.mouthBack, false) || !num("mouth_z", r.mouthZ, false))
             return fail(error, rec.line, r.id + ": mouth_back_m or mouth_z is not a number");
         {
@@ -1904,6 +1917,112 @@ MassingStreet roadNetStreet(const RoadNetStreet& s) {
     for (const RoadPoint& p : s.pts) m.points.push_back({p.x, p.y, 0.0});
     return m;
 }
+
+namespace {
+
+// A network edge's utility poles (on its street's pole sides, wired pole to pole) and its signs: a speed limit past
+// each junction on the way's left, no entry at a one-way street's exit, a stop sign at each lane mouth. All of it is
+// laid as instances. `fwd`: the edge runs the way its street's points do. `pz(s)`: the pavement's top at s.
+template <class PaveZ>
+void netPolesAndSigns(Ctx& x, const Frame& f, const RoadNetStreet& st, bool fwd, double L, double sA, double sB,
+                      bool juncA, bool juncB, const std::vector<SideSpan>& spansL, const std::vector<SideSpan>& spansR,
+                      const std::vector<std::pair<double, bool>>& mouthSigns, const PaveZ& pz) {
+    RoadBuild& out = x.out;
+    const double hc = x.hc, w2 = x.w2;
+    x.inst = true;
+    auto clear = [&](RoadPoint p, double half) {
+        MassingFoot ft;
+        ft.x = p.x;
+        ft.y = p.y;
+        ft.hx = ft.hy = half;
+        for (const MassingFoot& o : out.furniture) {
+            if (std::fabs(o.x - p.x) > 4.0 || std::fabs(o.y - p.y) > 4.0) continue;
+            if (massingFeetOverlap(ft, o, kMassingPropGap)) return false;
+        }
+        return true;
+    };
+    auto backOf = [&](const std::vector<SideSpan>& spans, double s, double back) {
+        return spanAt(spans, s) == Span::Bay ? hc + kRoadBayDeep + back : hc + back;
+    };
+    // Utility poles at the back of the pavement, a crossarm each, three wires to the next.
+    for (int side = 0; side < 2 && !st.deck; ++side) {
+        const bool want = (side == 0) == fwd ? st.poleLeft : st.poleRight;
+        if (!want) continue;
+        const double sg = side == 0 ? 1.0 : -1.0;
+        const std::vector<SideSpan>& spans = side == 0 ? spansL : spansR;
+        const double tp = w2 - 0.6;
+        if (tp - 0.3 < hc + 0.5) continue; // too narrow a pavement
+        RoadPoint prev{};
+        double prevS = -1e9, prevZ = 0.0;
+        for (double s = kRoadPoleSpacing * 0.5; s < L - 3.0; s += kRoadPoleSpacing) {
+            for (const double nudge : {0.0, 1.5, -1.5, 3.0, -3.0, 4.5, -4.5}) {
+                const double sp = s + nudge;
+                if (sp < 3.0 || sp > L - 3.0 || !spotFree(spans, sp, 1.0)) continue;
+                if (spanAt(spans, sp) == Span::Bay && hc + kRoadBayDeep + 0.3 > tp - 0.15) continue;
+                const RoadPoint p = f.at(sp, sg * tp);
+                if (!clear(p, 0.2)) continue;
+                const double z = pz(sp);
+                x.post(p, 0.3, z, kPoleHigh, RoadTint::PoleConcrete, "utilitypole");
+                x.add(x.at(p, f.rot + 90.0, 1.6, 0.1, z + kPoleHigh - 0.75, z + kPoleHigh - 0.65, "crossarm"),
+                      RoadTint::Steel, false);
+                ++out.counts.poles;
+                if (sp - prevS < 2.5 * kRoadPoleSpacing) {
+                    const double l = std::hypot(p.x - prev.x, p.y - prev.y);
+                    const double za = prevZ + kPoleHigh - 0.97, zb = z + kPoleHigh - 0.97; // with a little sag
+                    for (const double off : {-0.6, 0.0, 0.6}) {
+                        const RoadPoint o = f.dir(0.0, off);
+                        const RoadPoint mid{(prev.x + p.x) * 0.5 + o.x, (prev.y + p.y) * 0.5 + o.y};
+                        const double zm = (za + zb) * 0.5;
+                        MassingBox w = x.at(mid, f.rot, l, 0.025, zm, zm + 0.025, "wire");
+                        w.riseU = (zb - za) / std::max(1e-6, l);
+                        x.add(w, RoadTint::Wire, false);
+                    }
+                }
+                prev = p;
+                prevS = sp;
+                prevZ = z;
+                break;
+            }
+        }
+    }
+    // A sign on a side past s (searching away from the junction by `dir`), facing `face`.
+    auto signNear = [&](double s, double dir, bool plusT, RoadPoint face, const char* what, RoadTint tint, bool disc) {
+        const std::vector<SideSpan>& spans = plusT ? spansL : spansR;
+        for (const double step : {0.0, 2.0, 4.0, 6.0, 8.0}) {
+            const double ss = s + dir * step;
+            if (ss < 3.0 || ss > L - 3.0 || !spotFree(spans, ss, 1.0)) continue;
+            const double back = backOf(spans, ss, 1.0);
+            if (back > w2 - 0.3) continue;
+            const RoadPoint p = f.at(ss, plusT ? back : -back);
+            if (!clear(p, 0.2)) continue;
+            x.sign(p, face, pz(ss), what, tint, disc);
+            return;
+        }
+    };
+    const bool runs = !st.oneWay || fwd, against = !st.oneWay || !fwd; // traffic along +s, along -s
+    if (sB - sA > 20.0) {
+        // Left-hand traffic: the way along +s keeps to +t; its signs face -s.
+        if (juncA && runs) signNear(sA + 6.0, 1.0, true, f.dir(-1.0, 0.0), "speed", RoadTint::SignWhite, true);
+        if (juncB && against) signNear(sB - 6.0, -1.0, false, f.dir(1.0, 0.0), "speed", RoadTint::SignWhite, true);
+        // A one-way street's exit, on the left of traffic turning in the wrong way, facing it.
+        if (st.oneWay && fwd && juncB)
+            signNear(sB - 4.0, -1.0, false, f.dir(1.0, 0.0), "no_entry", RoadTint::SignRed, true);
+        if (st.oneWay && !fwd && juncA)
+            signNear(sA + 4.0, 1.0, true, f.dir(-1.0, 0.0), "no_entry", RoadTint::SignRed, true);
+    }
+    // Stop signs at the lane mouths, on the lane traffic's left, facing it.
+    for (const auto& [ms, plusT] : mouthSigns) {
+        const std::vector<SideSpan>& spans = plusT ? spansL : spansR;
+        const double back = backOf(spans, ms, 1.2);
+        if (back > w2 - 0.3) continue;
+        const RoadPoint p = f.at(ms, plusT ? back : -back);
+        if (!clear(p, 0.2)) continue;
+        x.sign(p, f.dir(0.0, plusT ? 1.0 : -1.0), pz(ms), "stop", RoadTint::SignRed, false);
+    }
+    x.inst = false;
+}
+
+} // namespace
 
 void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround& ground, RoadBuild& out,
                   RoadNetReport* report) {
@@ -2204,7 +2323,9 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
             if (B.trimL > 0.0) fixR.push_back({std::max(0.0, L - B.trimL), L, Span::Corner});
         }
         // The street's mouths on this edge: where along it its ends lie, and which way it runs.
-        if (!st.mouths.empty()) {
+        bool fwd = true;
+        std::vector<std::pair<double, bool>> mouthSigns; // a stop sign's s and side (true: +t) at each lane mouth
+        if (!st.mouths.empty() || st.poleLeft != st.poleRight) {
             auto along = [&](RoadPoint q) {
                 double best = 1e18, at = 0.0, run = 0.0;
                 for (std::size_t i = 1; i < st.pts.size(); ++i) {
@@ -2221,12 +2342,15 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                 return at;
             };
             const double ta = along(na.p), tb = along(nb.p);
-            const bool fwd = tb >= ta;
+            fwd = tb >= ta;
             for (const RoadMouth& m : st.mouths) {
                 const double s = fwd ? m.at - ta : ta - m.at;
                 const double s0 = s - m.width * 0.5 - kRoadMouthFlare, s1 = s + m.width * 0.5 + kRoadMouthFlare;
                 if (s1 <= 0.0 || s0 >= L) continue;
                 ((m.left == fwd) ? fixL : fixR).push_back({std::max(0.0, s0), std::min(L, s1), Span::Mouth});
+                // On the lane traffic's left as it comes out: past the mouth's +s end on the +t side, else its -s end.
+                const double ss = (m.left == fwd) ? s1 + 0.6 : s0 - 0.6;
+                if (ss > 3.0 && ss < L - 3.0) mouthSigns.push_back({ss, m.left == fwd});
             }
         }
         for (std::vector<SideSpan>* side : {&fixL, &fixR}) {
@@ -2414,8 +2538,17 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
         const double stopRun = kRoadStopBack + kRoadStopLine + 1.0;
         if (!st.oneWay) {
             const double c0 = zA ? zA1 + stopRun : sA + 2.0, c1 = zB ? zB0 - stopRun : sB - 2.0;
-            for (double s = c0; s < c1 - 1.0; s += 2.0 * kRoadCentreDash)
-                markAlong(s, std::min(s + kRoadCentreDash, c1), -kRoadLine * 0.5, kRoadLine * 0.5);
+            // Broken across each lane mouth, either side.
+            auto atMouth = [&](double a, double b) {
+                for (const std::vector<SideSpan>* side : {&spansL, &spansR})
+                    for (const SideSpan& sp : *side)
+                        if (sp.type == Span::Mouth && a < sp.s1 && b > sp.s0) return true;
+                return false;
+            };
+            for (double s = c0; s < c1 - 1.0; s += 2.0 * kRoadCentreDash) {
+                const double de = std::min(s + kRoadCentreDash, c1);
+                if (!atMouth(s, de)) markAlong(s, de, -kRoadLine * 0.5, kRoadLine * 0.5);
+            }
         }
         // Zebras, stop lines and signals at each signalised end.
         auto pz = [&](double s) { return zAt(s) + kRoadSurfaceLift + kRoadKerbRise; };
@@ -2491,6 +2624,8 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                 }
             }
         }
+        netPolesAndSigns(x, f, st, fwd, L, sA, sB, na.arms.size() >= 3, nb.arms.size() >= 3, spansL, spansR,
+                         mouthSigns, pz);
         // A deck's piers, two abreast, down into the ground.
         if (st.deck) {
             for (double s = sA + kNetPierSpacing * 0.5; s < sB - 5.0; s += kNetPierSpacing) {
