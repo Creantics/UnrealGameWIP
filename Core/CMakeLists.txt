@@ -55,6 +55,7 @@ add_library(ftcore STATIC
     src/MassingProps.cpp
     src/MassingDress.cpp
     src/WindowInterior.cpp
+    src/WorldClock.cpp
     src/WorldChecks.cpp
     src/CityPlacer.cpp
     src/OuterPlaces.cpp
@@ -184,6 +185,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_massing_props.cpp
         tests/test_massing_dress.cpp
         tests/test_window_interior.cpp
+        tests/test_world_clock.cpp
         tests/test_world_checks.cpp
         tests/test_city_placer.cpp
         tests/test_outer_places.cpp
