@@ -158,6 +158,10 @@ public:
 	// The capsule (cm), which the followers probe ahead with too.
 	static constexpr float CapsuleRadius = 34.f;
 	static constexpr float CapsuleHalfHeight = 88.f;
+	// CharacterMovement keeps a walking capsule hovering this far over the floor (cm, its CurrentFloor.FloorDist, held
+	// between 1.9 and 2.4; measured 2.15 at rest, 2.04-2.15 walking): the mesh hangs this much lower than the capsule's
+	// bottom, so the soles meet the floor.
+	static constexpr float FloorHover = 2.15f;
 	// For a scene that turns input off and on again: a held Run's release that came while input was off never arrived,
 	// so the body goes back to its default gait, a held jump is let go and a roll press still kept is dropped. Crouch is
 	// a toggle, not held; standing up from it is this call's choice, so a scene starts and ends with the lead on its feet.
@@ -271,6 +275,7 @@ private:
 	float PulseRest = 2.f;  // -LocoRest=<s>
 	float LookRest = 0.f; // seconds since the last look input
 	float FaceBy = 0.f;   // -LocoFace=<deg>
+	bool bPortraitWalk = false;   // -ExplorePortraitWalk
 	TWeakObjectPtr<AActor> Watched; // WatchFrom: the body the camera frames and recentres behind
 	bool bFacing = false;
 	// -LocoSideView: each turn of the framed body is watched from its side, the camera held where the turn began.

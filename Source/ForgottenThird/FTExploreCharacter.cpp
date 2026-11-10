@@ -113,8 +113,8 @@ AFTExploreCharacter::AFTExploreCharacter()
 	Camera->SetFieldOfView(70.f);
 
 	static ConstructorHelpers::FObjectFinder<USkeletalMesh> Devin(TEXT("/Game/Characters/Devin/devin/SkeletalMeshes/devin.devin"));
-	// The mesh's origin is at its feet; the capsule's is at its middle.
-	GetMesh()->SetRelativeLocation(FVector(0.0, 0.0, -88.0));
+	// The mesh's origin is at its feet; the capsule's is at its middle, and the capsule hovers over the floor.
+	GetMesh()->SetRelativeLocation(FVector(0.0, 0.0, -(CapsuleHalfHeight + FloorHover)));
 	GetMesh()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	if (Devin.Object)
 	{
@@ -207,6 +207,8 @@ void AFTExploreCharacter::BeginPlay()
 		Boom->TargetArmLength = Arm;
 		Boom->SocketOffset = FVector(0.0, 0.0, Height);
 		Camera->SetRelativeRotation(FRotator(Pitch, 0.0, 0.0));
+		// -ExplorePortraitWalk: the body walks a slow circle (about 3 m across) so shots catch it mid-stride.
+		bPortraitWalk = FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitWalk"));
 		if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitLights")))
 		{
 			AddPortraitLights();
@@ -274,7 +276,9 @@ void AFTExploreCharacter::StepPortraitShots()
 	{
 		Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot 1400x1100 filename=\"%s\""), *File), *GLog);
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: portrait shot %s."), *File);
+	const FFindFloorResult& Floor = GetCharacterMovement()->CurrentFloor;
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: portrait shot %s (floor dist %.3f cm, walkable %d, speed %.0f)."),
+		*File, Floor.FloorDist, Floor.IsWalkableFloor() ? 1 : 0, GetVelocity().Size2D());
 	bShotAimed = false;
 	++ShotIndex;
 }
@@ -1251,6 +1255,11 @@ FVector2D AFTExploreCharacter::GetFacing2D() const
 void AFTExploreCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (bPortraitWalk)
+	{
+		const double Turn = GetWorld()->GetTimeSeconds() * (2.0 * UE_DOUBLE_PI / 8.0);
+		AddMovementInput(FVector(FMath::Cos(Turn), FMath::Sin(Turn), 0.0), 0.5f);
+	}
 	const UFTLocomotionAnimInstance* LocoAnim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
 	// -LocoVaultWall (or -LocoCatch) builds the course once the body has settled where the map puts it, then runs along
 	// it, traversing what it can (or jumping at each wall from about a metre out, the jump held through the flight).
