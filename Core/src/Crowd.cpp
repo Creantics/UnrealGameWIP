@@ -36,6 +36,8 @@ constexpr float kFleeOpen = 1.f;
 constexpr float kSafeSlack = 6.f;
 // m: the most a member runs past the safe distance (its own share, drawn at spawn).
 constexpr float kSafeSpread = 15.f;
+// S-286: how far short of a dead end's end node the first row of cornered members stands (m).
+constexpr float kBraceEnd = 0.3f;
 // m/s: how fast members standing too close step apart.
 constexpr float kStandApart = 0.8f;
 float yawTo(Vec2 from, Vec2 to) { return std::atan2(to.y - from.y, to.x - from.x) * kDeg; }
@@ -198,6 +200,7 @@ void CrowdSim::setState(Agent& a, CrowdState s) {
     if (s != CrowdState::Flee) a.stopAlong = -1.f;
     a.hold = false;
     a.brace = false;
+    a.braceSlot = -1;
     switch (s) {
     case CrowdState::Notice: ++counts_.noticed; break;
     case CrowdState::BackAway: ++counts_.backedAway; break;
@@ -238,10 +241,11 @@ void CrowdSim::enter(Agent& a, std::uint32_t from, std::uint32_t to) {
     a.latTarget = a.side * a.lane + (rand01() * 2.f - 1.f) * a.laneHalf * 0.8f;
 }
 
-void CrowdSim::unCorner(Agent& a) {
+bool CrowdSim::unCorner(Agent& a) {
     // Still rounding the corner before `from` (along < 0): it is on the street it came by. Put it back on that
-    // street, heading for `from`, so turning round doesn't mirror it across the node.
-    if (a.along >= 0.f) return;
+    // street, heading for `from`, so turning round doesn't mirror it across the node. False (and left where it is) when
+    // no other street at `from` runs its way.
+    if (a.along >= 0.f) return true;
     const Vec2 F = graph_->node(a.from);
     const Vec2 off{a.pos.x - F.x, a.pos.y - F.y};
     std::uint32_t best = UINT32_MAX;
@@ -253,18 +257,37 @@ void CrowdSim::unCorner(Agent& a) {
         const float d = ((w.x - F.x) * off.x + (w.y - F.y) * off.y) / std::max(e.length, 0.01f);
         if (d > bestDot) bestDot = d, best = e.to;
     }
-    if (best == UINT32_MAX) {
-        a.along = 0.f;
-        return;
-    }
+    if (best == UINT32_MAX) return false; // S-286: never snapped onto the node (a 4 m jump, towards a fight there)
     const float latTarget = a.latTarget;
     enter(a, best, a.from);
     a.latTarget = a.side * std::fabs(latTarget);
     a.along = std::max(a.along, 0.f);
+    return true;
 }
 
 void CrowdSim::reverse(Agent& a) {
-    unCorner(a);
+    if (!unCorner(a)) {
+        // Behind `from` with no street there running its way: out along another street at `from` (the one most its
+        // way), heading off from `to`, kept exactly where it stands; at a dead end, onto the node as before.
+        const Vec2 F = graph_->node(a.from);
+        const Vec2 off{a.pos.x - F.x, a.pos.y - F.y};
+        std::uint32_t best = UINT32_MAX;
+        float bestDot = -1e30f;
+        for (std::uint32_t k = 0; k < graph_->degree(a.from); ++k) {
+            const CrowdEdge& e = graph_->edge(a.from, k);
+            if (e.to == a.to) continue;
+            const Vec2 w = graph_->node(e.to);
+            const float d = ((w.x - F.x) * off.x + (w.y - F.y) * off.y) / std::max(e.length, 0.01f);
+            if (d > bestDot) bestDot = d, best = e.to;
+        }
+        if (best != UINT32_MAX) {
+            const float latTarget = a.latTarget;
+            enter(a, a.from, best);
+            a.latTarget = a.side * std::fabs(latTarget);
+            return;
+        }
+        a.along = 0.f;
+    }
     std::swap(a.from, a.to);
     a.along = std::max(0.f, a.len - a.along);
     a.lat = -a.lat;
@@ -555,7 +578,7 @@ bool CrowdSim::plan(Agent& a) {
         const float run = (T.x - F.x) * off.x + (T.y - F.y) * off.y; // > 0: towards `to` opens it
         const bool fromAway = run < 0.f && dist(F, a.threat) > startD;
         const bool toAway = run > 0.f && dist(T, a.threat) > startD;
-        if (fromAway || !toAway) push(a.from, a.along * weight(a.from), UINT32_MAX);
+        if (fromAway || !toAway) push(a.from, std::max(a.along, 0.f) * weight(a.from), UINT32_MAX);
         if (toAway || !fromAway) push(a.to, (a.len - a.along) * weight(a.to), UINT32_MAX);
         goal = far = UINT32_MAX;
         settled = 0;
@@ -625,6 +648,30 @@ void CrowdSim::brace(Agent& a) {
     setState(a, CrowdState::Cower);
     a.brace = true;
     a.retryLeft = tuning_.cowerRetry;
+}
+
+// S-286: cornered members at the end of a dead end take spots of their own: a row across the width at the end (side
+// walls included), then rows further back, each a minGap (or avoidRadius) apart; nobody stacks on the end node.
+int CrowdSim::freeBraceSlot(std::uint32_t i) const {
+    const Agent& a = agents_[i];
+    std::uint64_t used = 0;
+    for (std::uint32_t j = 0; j < agents_.size(); ++j) {
+        const Agent& b = agents_[j];
+        if (j != i && b.brace && b.braceSlot >= 0 && b.braceSlot < 64 && b.from == a.from && b.to == a.to) used |= 1ull << b.braceSlot;
+    }
+    for (int k = 0; k < 64; ++k)
+        if (((used >> k) & 1ull) == 0) return k;
+    return 63;
+}
+
+void CrowdSim::braceSlotAt(const Agent& a, float& along, float& lat) const {
+    const CrowdEdge* e = graph_->find(a.from, a.to);
+    const float w = std::max(0.f, (e ? e->half : a.lane + a.laneHalf) - tuning_.graph.wallInset);
+    const float sp = std::max(tuning_.minGap, tuning_.avoidRadius);
+    const int cols = 1 + static_cast<int>(2.f * w / sp);
+    const int row = a.braceSlot / cols, col = a.braceSlot % cols;
+    lat = -w + (2.f * w - static_cast<float>(cols - 1) * sp) * 0.5f + static_cast<float>(col) * sp;
+    along = std::max(0.f, a.len - kBraceEnd - static_cast<float>(row) * sp);
 }
 
 void CrowdSim::decide(std::uint32_t i) {
@@ -736,6 +783,14 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
     }
 
     const float bandLo = a.lane > 0.f ? a.lane - a.laneHalf : -a.laneHalf, bandHi = a.lane + a.laneHalf;
+    // S-286: running to the end of a dead end (its far node the last away from the threat): a spot of its own there.
+    float slotAlong = -1.f, slotLat = 0.f;
+    if (a.state == CrowdState::Cower && a.brace) {
+        const bool end = dist2(graph_->node(awayFromThreat(a)), a.threat) < dist2(graph_->node(a.to), a.threat);
+        if (!end) a.braceSlot = -1;
+        else if (a.braceSlot < 0) a.braceSlot = freeBraceSlot(i);
+        if (a.braceSlot >= 0) braceSlotAt(a, slotAlong, slotLat);
+    }
     if (speed > 0.f && (a.state == CrowdState::Flee || a.brace)) {
         // Running from a threat off to one side of this street: veer across to the far pavement's outer edge as it
         // runs, so it opens the distance at once instead of running along the threat's flank.
@@ -816,14 +871,34 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
         }
     }
 
+    if (slotAlong >= 0.f) {
+        // Across to its spot as it runs, and stands there once it reaches its row.
+        a.latTarget = slotLat;
+        latRate = std::max(latRate, std::max(speed, tuning_.laneSpeed));
+    }
     a.along += speed * tuning_.step;
     // A run that reached its goal goes on a little way down the next street and stops there; a calm walk that
     // means to idle stops partway along: either way, not on the node where the others stop too.
     bool stopped = false;
-    if (a.state == CrowdState::Flee && a.stopAlong >= 0.f && a.along >= a.stopAlong) {
+    if (slotAlong >= 0.f && a.along >= slotAlong) {
+        if (a.along - speed * tuning_.step <= slotAlong) a.along = slotAlong; // reached its row this step
+        a.hold = true;
+        stopped = true;
+    } else if (a.state == CrowdState::Flee && a.stopAlong >= 0.f && a.along >= a.stopAlong) {
         a.along = a.stopAlong;
         setState(a, CrowdState::Recover);
         stopped = true;
+    } else if (a.state == CrowdState::Flee && speed > 0.f && a.stateTime >= kFleeOpen && a.along >= 0.f && a.along < a.len) {
+        // S-286: far enough already, partway along a long street: it stops here rather than run on to the node at
+        // its end (a 100 m street took runners a block past the safe distance, too far to walk back in half a minute).
+        const Vec2 f0 = graph_->node(a.from), t0 = graph_->node(a.to);
+        const Vec2 b0 = basePoint(a);
+        const Vec2 at{b0.x - (t0.y - f0.y) / a.len * a.lat, b0.y + (t0.x - f0.x) / a.len * a.lat};
+        if (dist(at, a.threat) >= tuning_.safeDist + a.safeExtra) {
+            setState(a, CrowdState::Recover);
+            a.pathLen = a.pathPos = 0;
+            stopped = true;
+        }
     } else if (a.state == CrowdState::Walk && a.idleAlong >= 0.f && a.along >= a.idleAlong) {
         a.along = a.idleAlong;
         setState(a, CrowdState::Idle);
@@ -878,7 +953,7 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
 
     // Sideways inside the lane, then the world position.
     float dl = a.latTarget - a.lat;
-    if (startled || ((a.state == CrowdState::Flee || a.brace) && a.stateTime < kFleeOpen && speed > 0.f)) {
+    if (startled || ((a.state == CrowdState::Flee || a.brace) && a.stateTime < kFleeOpen && (speed > 0.f || slotAlong >= 0.f))) {
         // About to react, or just started to run: never sideways towards the threat (back onto the band only once it
         // is clear).
         const Vec2 f0 = graph_->node(a.from), t0 = graph_->node(a.to);
@@ -1208,6 +1283,7 @@ void CrowdSim::separate() {
         if (!any) break;
     }
 }
+
 
 float CrowdSim::minPairDistance(float within) const {
     float best2 = within * within;

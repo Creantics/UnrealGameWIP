@@ -368,6 +368,7 @@ private:
         bool stuckTurned = false;    // blocked a second: already turned back or stopped
         bool hold = false;           // backing off or running with nowhere farther to go: stands until the next plan
         bool brace = false;          // cornered (no plan): runs to the far end of its dead end, then cowers there
+        int braceSlot = -1;          // >= 0: its own spot at that end (rows back from the end, across the width)
     };
 
     void step(Vec2 player, Vec2 playerVel);
@@ -392,7 +393,9 @@ private:
     void free(std::uint32_t i);
     void unspawn(std::uint32_t i);
     void brace(Agent& a);
-    void unCorner(Agent& a);
+    int freeBraceSlot(std::uint32_t i) const;
+    void braceSlotAt(const Agent& a, float& along, float& lat) const;
+    bool unCorner(Agent& a);
     bool crowded(std::uint32_t self, Vec2 p, float r) const;
     void separate();
     void nudge(Agent& a, Vec2 by);
