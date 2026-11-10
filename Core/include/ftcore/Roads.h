@@ -236,6 +236,12 @@ struct RoadBuild {
 // into the pavement) fill each parking side's runs clear of the junctions, crossings, mouths, bus stops and ends.
 FTCORE_API void roadBuild(const RoadSpec& road, RoadBuild& out);
 
+// Where a tilted road cube's centre goes (plan x, y and z, m) so its top face is centred over the box's (cx, cy) on its
+// plane: massingCubePose turns the cube, and its top's middle then stands off the plumb line by half its height times
+// the tilt, which opens a slit between a crowned carriageway's two halves and a seam between pieces of unequal depth.
+// A level box: (cx, cy, z0 + height / 2).
+FTCORE_API MassingVec roadCubeCentre(const MassingBox& box, double height);
+
 // Whether a foot comes nearer than `clear` to a carriageway rectangle (massingFeetOverlap with gap `clear`).
 FTCORE_API bool roadInCarriageway(const RoadBuild& build, const MassingFoot& foot, double clear);
 // Whether a vehicle's foot lies wholly inside the bay (every corner within its rectangle).
@@ -373,7 +379,7 @@ struct RoadNetReport {
     std::size_t pruned = 0;  // kerb and pavement pieces left out: a lane across them or a carriageway under them
     double maxGrade = 0.0;   // along any piece
     std::string maxGradeAt;  // the steepest piece: "<edge> (x, y)"
-    double maxStep = 0.0;    // m: the largest step where an arm's crowned carriageway meets a junction's level fill
+    double maxStep = 0.0;    // m: the largest step where an arm's crowned carriageway meets a junction's fill (crowned too: 0)
     double maxPoke = 0.0;    // m: the most the ground stands over a road's top
     std::size_t pokesOver = 0; // pokes of more than 0.3 m (noted; the rest are a crown's skin, counted only)
     std::vector<std::string> notes; // one line each: steep pieces, pokes, floats and tight arms (the first few of each)

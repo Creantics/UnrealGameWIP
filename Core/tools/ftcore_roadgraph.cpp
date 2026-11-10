@@ -4,6 +4,7 @@
 //
 //   ftcore_roadgraph --streets <csv> --roads <csv> --area <x0,y0,x1,y1> [--boxes <csv>] [--min-width <m>] [--out <csv>]
 //   ftcore_roadgraph --net <csv> [--r16 <file> --samples <n> --origin <x,y> [--spacing <m>]] [--boxes <csv>] [--out <csv>] [--list-all 1]
+//                    [--dump <x0,y0,x1,y1>] (every solid centred in that area, one line each)
 //   ftcore_roadgraph --check 1 (--net <csv> [--r16 ...] | --roads <csv>) [--boxes <csv>] [--graph <csv>] [--list-all 1]
 //   ftcore_roadgraph --yards 1 --boxes <csv> --area <x0,y0,x1,y1> --out <csv> [--net <csv>] [--streets <csv>]
 //                    [--r16 ...] [--goals <csv>] [--clear <x0,y0,x1,y1>]... [--drop-ids <a;b>] [--drop-kinds <k1;k2>]
@@ -345,7 +346,7 @@ int runYards(const YardArgs& a) {
 }
 
 int runNet(const std::string& netPath, const std::string& r16Path, double samples, const double origin[2], double spacing,
-           const std::string& boxesPath, const std::string& outPath, bool listAll) {
+           const std::string& boxesPath, const std::string& outPath, bool listAll, const double* dump) {
     std::string text, err;
     std::vector<RoadNetStreet> streets;
     if (!readFile(netPath, text)) return die("can't read " + netPath);
@@ -363,6 +364,14 @@ int runNet(const std::string& netPath, const std::string& r16Path, double sample
     std::printf("net: the ground at most %.2f m over a road's top; %zu pokes over 0.3 m\n", rep.maxPoke, rep.pokesOver);
     std::printf("net: the steepest piece %s\n", rep.maxGradeAt.c_str());
     for (const std::string& n : rep.notes) std::printf("  note: %s\n", n.c_str());
+    if (dump)
+        for (const RoadSolid& sd : b.solids) {
+            const MassingBox& x = sd.box;
+            if (x.cx < dump[0] || x.cx > dump[2] || x.cy < dump[1] || x.cy > dump[3]) continue;
+            std::printf("  solid %s %s %d (%.2f, %.2f) %.2fx%.2f rot %.1f z %.3f..%.3f rise %.4f,%.4f\n", x.id.c_str(),
+                        sd.tag.c_str(), static_cast<int>(sd.shape), x.cx, x.cy, x.sx, x.sy, x.rot, x.z0, x.z1, x.riseU,
+                        x.riseW);
+        }
     const RoadCounts& c = b.counts;
     std::size_t inst = 0;
     for (const RoadSolid& sd : b.solids)
@@ -425,6 +434,8 @@ int main(int argc, char** argv) {
     double samples = 0.0, origin[2] = {0.0, 0.0}, spacing = 1.0;
     double area[4] = {0, 0, 0, 0};
     bool haveArea = false;
+    double dump[4] = {0, 0, 0, 0};
+    bool haveDump = false;
     double minWidth = 10.0;
     bool listAll = false;
     bool yards = false;
@@ -456,6 +467,7 @@ int main(int argc, char** argv) {
         else if (k == "--origin") {
             if (std::sscanf(v.c_str(), "%lf,%lf", &origin[0], &origin[1]) != 2) return die("bad --origin");
         }
+        else if (k == "--dump") haveDump = std::sscanf(v.c_str(), "%lf,%lf,%lf,%lf", &dump[0], &dump[1], &dump[2], &dump[3]) == 4;
         else if (k == "--area") haveArea = std::sscanf(v.c_str(), "%lf,%lf,%lf,%lf", &area[0], &area[1], &area[2], &area[3]) == 4;
         else return die("unknown option " + k);
     }
@@ -477,7 +489,8 @@ int main(int argc, char** argv) {
         if (netPath.empty() && roadsPath.empty()) return die("--check needs --net or --roads");
         return runCheck(netPath, roadsPath, r16Path, samples, origin, spacing, boxesPath, graphPath, listAll);
     }
-    if (!netPath.empty()) return runNet(netPath, r16Path, samples, origin, spacing, boxesPath, outPath, listAll);
+    if (!netPath.empty()) return runNet(netPath, r16Path, samples, origin, spacing, boxesPath, outPath, listAll,
+                                         haveDump ? dump : nullptr);
     if (streetsPath.empty() || roadsPath.empty() || !haveArea) return die("--streets, --roads and --area are needed");
     std::string text, err;
     std::vector<MassingStreet> all;

@@ -121,7 +121,9 @@ struct FRoadPainter
 		else
 		{
 			const ftcore::MassingCubePose Pose = ftcore::massingCubePose(Box, Height);
-			const ftcore::MassingVec At = ftcore::massingEnginePoint(Host.Side, Box.cx, Box.cy, Box.z0 + Height * 0.5 + Pose.lift);
+			// The top face centred over the box on its plane (a crown's halves and pieces of unequal depth meet).
+			const ftcore::MassingVec Mid = ftcore::roadCubeCentre(Box, Height);
+			const ftcore::MassingVec At = ftcore::massingEnginePoint(Host.Side, Mid.x, Mid.y, Mid.z);
 			Location = FVector(At.x, At.y, At.z) * 100.0;
 			Scale = FVector(Pose.scale.x, Pose.scale.y, Pose.scale.z);
 			Rotation = FRotator(Pose.pitch, Pose.yaw, Pose.roll);

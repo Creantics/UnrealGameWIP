@@ -1017,6 +1017,66 @@ TEST_CASE("massing frontage: a rule's scale reads from its column") {
     CHECK_FALSE(importMassingFront(zero, rules, &error));
 }
 
+TEST_CASE("massing frontage: stack and within read from their columns") {
+    std::vector<MassingFrontRule> rules;
+    std::string error;
+    const std::string good = "id,asset,width_m,depth_m,height_m,stack,within\n"
+                             "A,/Game/A.A,4,0.3,3,4,-10:-5.5:20:30\n"
+                             "B,/Game/B.B,4,0.3,3,,\n";
+    REQUIRE(importMassingFront(good, rules, &error));
+    CHECK(rules[0].stack == 4);
+    CHECK(rules[0].bounded);
+    CHECK(near(rules[0].within[0], -10.0));
+    CHECK(near(rules[0].within[1], -5.5));
+    CHECK(near(rules[0].within[2], 20.0));
+    CHECK(near(rules[0].within[3], 30.0));
+    CHECK(rules[1].stack == 1);
+    CHECK_FALSE(rules[1].bounded);
+    for (const char* bad : {"A,/Game/A.A,4,0.3,3,0,\n", "A,/Game/A.A,4,0.3,3,1.5,\n", "A,/Game/A.A,4,0.3,3,,1:2:3\n",
+                            "A,/Game/A.A,4,0.3,3,,1:2:3:4:5\n", "A,/Game/A.A,4,0.3,3,,5:0:1:4\n",
+                            "A,/Game/A.A,4,0.3,3,,0:0:x:4\n"})
+        CHECK_FALSE(importMassingFront(std::string("id,asset,width_m,depth_m,height_m,stack,within\n") + bad, rules,
+                                       &error));
+}
+
+TEST_CASE("massing frontage: within keeps a rule to its plan box; a stack climbs while the host holds it") {
+    // The host's north face runs x -10..10 at y 5; the box takes only its east half.
+    MassingFrontRule bay = front("BAY", 4.0, {});
+    bay.depth = bay.out = 0.3;
+    bay.height = 3.0;
+    bay.gap = 0.0;
+    bay.bounded = true;
+    bay.within[0] = 0.0;
+    bay.within[1] = 0.0;
+    bay.within[2] = 30.0;
+    bay.within[3] = 30.0;
+    const Front east = frontage({bay}, northStreet(), {host()});
+    REQUIRE(east.counts[0].placed > 0);
+    for (const MassingProp& p : east.props) {
+        CHECK(p.x > -1.0 - 1e-9);
+        CHECK(p.y > -1e-9);
+    }
+    CHECK(east.counts[0].stacked == 0);
+
+    // Stacked to 4 on an 8 m host: two copies over each piece (3..6, 5..8 would need 9), none past its top.
+    MassingFrontRule up = bay;
+    up.bounded = false;
+    up.stack = 4;
+    const Front tall = frontage({up}, northStreet(), {host()});
+    // The bounded rule placed fewer than the open one.
+    MassingFrontRule open = bay;
+    open.bounded = false;
+    const Front all = frontage({open}, northStreet(), {host()});
+    CHECK(all.counts[0].placed > east.counts[0].placed);
+    CHECK(tall.counts[0].placed == all.counts[0].placed);
+    CHECK(tall.counts[0].stacked == tall.counts[0].placed);
+    CHECK(tall.props.size() == 2 * tall.counts[0].placed);
+    for (const MassingProp& p : tall.props) {
+        CHECK(p.z + up.height <= 8.0 + 1e-9);
+        CHECK((near(p.z, 0.0) || near(p.z, 3.0)));
+    }
+}
+
 TEST_CASE("massing windows: a box's seed, street faces and street floors") {
     const Ground slope = makeGround(41, 41, 0.0, 0.0, [](double x, double) { return 0.25 * x; });
     const MassingBox box = flatBox("W-1", 20, 20, 10, 8, 0, 12);

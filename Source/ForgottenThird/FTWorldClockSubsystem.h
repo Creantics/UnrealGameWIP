@@ -7,10 +7,11 @@
 // -NoDayClock turns it off. A world-eye still (-WorldEyeShot) without -TimeOfDay leaves the map alone, so the world
 // eye's own -WorldEyeNight look stands.
 //
-// From the clock: the map's directional lights follow the sun (and, once it is down, a cool moon opposite it at
-// -NightMoon of their intensity, default 0.03), the sky lights fall to -NightSky of theirs (0.1; a real-time capture is
-// lifted by the moon's share, since it already dims with the sun), the height fog's inscattering darkens to -NightFog
-// of its colour (0.08), and the windows' Night (FTScene::WindowCollection) takes NightAmount. The street lamps and
+// From the clock: the map's directional lights follow the sun (and, once it is down, a cool moon opposite it), the sky
+// lights fall to the night fill and take its cool tint, the height fog keeps a share of its own colour and takes the
+// city's warm glow, and from half night the post-process volumes' exposure is locked at the night EV; all by the one
+// night spec the world eye's night still reads too (FTNightLook.h: ftcore::NightLook and its -Night* switches), blended
+// in by NightAmount (ftcore::nightFrame). The windows' Night (FTScene::WindowCollection) takes NightAmount. The street lamps and
 // shop lights the massing build placed (FTScene::NightLampTag, NightShopTag) switch on as NightAmount passes 0.5, each
 // at its own hashed point between 0.4 and 0.6 so a street doesn't light in one frame. The lights are touched only when
 // the clock has moved a step (1/240 h) or a lamp crosses its point; nothing allocates per tick.
@@ -29,6 +30,7 @@
 
 #include "FTWorldClockSubsystem.generated.h"
 
+class APostProcessVolume;
 class UExponentialHeightFogComponent;
 class UMaterialParameterCollectionInstance;
 class ULightComponent;
@@ -94,7 +96,14 @@ private:
 	{
 		TWeakObjectPtr<USkyLightComponent> Light;
 		float Intensity = 0.f;
+		FLinearColor Color = FLinearColor::White;
 		bool bRealTime = false;
+	};
+	struct FExposure
+	{
+		TWeakObjectPtr<APostProcessVolume> Volume;
+		bool bMin = false, bMax = false;
+		float Min = 0.f, Max = 0.f;
 	};
 	struct FFog
 	{
@@ -116,11 +125,12 @@ private:
 	bool bActive = false;
 	double AppliedHours = -1.0;
 	float Night = 0.f;
-	float MoonShare = 0.03f, SkyShare = 0.1f, FogShare = 0.08f;
+	bool bExposureLocked = false;
 
 	TArray<FLit> Suns;
 	TArray<FSky> Skies;
 	TArray<FFog> Fogs;
+	TArray<FExposure> Exposures;
 	TArray<FLamp> Lamps;
 	TWeakObjectPtr<UMaterialParameterCollectionInstance> Windows;
 };

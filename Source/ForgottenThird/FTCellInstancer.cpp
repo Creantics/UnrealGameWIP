@@ -11,6 +11,7 @@
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
@@ -126,10 +127,24 @@ bool FFTCellInstancer::AllowInstanced(UMaterialInterface* Material)
 	{
 		return false;
 	}
-	Base->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
-	Base->PostEditChange();
-	Base->MarkPackageDirty();
-	UsageSaves.Add(Base->GetOutermost());
+	if (!Base->GetUsageByFlag(MATUSAGE_InstancedStaticMeshes))
+	{
+		Base->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
+		Base->PostEditChange();
+		Base->MarkPackageDirty();
+		UsageSaves.Add(Base->GetOutermost());
+	}
+	// A material instance keeps a copy of its base's usage flags, refreshed only on load; refresh the chain from the
+	// instance nearest the base outward so this run sees the new usage (the instances themselves need no save).
+	TArray<UMaterialInstance*, TInlineAllocator<4>> Chain;
+	for (UMaterialInstance* Inst = Cast<UMaterialInstance>(Material); Inst; Inst = Cast<UMaterialInstance>(Inst->Parent))
+	{
+		Chain.Add(Inst);
+	}
+	for (int32 I = Chain.Num() - 1; I >= 0; --I)
+	{
+		Chain[I]->UpdateOverridableBaseProperties();
+	}
 	return Material->GetUsageByFlag(MATUSAGE_InstancedStaticMeshes);
 }
 

@@ -1,5 +1,6 @@
 #include "FTBuildMassingWorldCommandlet.h"
 #include "FTBuildRoads.h"
+#include "FTBuildBackdrop.h"
 #include "FTCellInstancer.h"
 #include "FTNightLightData.h"
 #include "FTRoofDress.h"
@@ -2146,7 +2147,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 	const ftcore::MassingVec Corner = ftcore::massingLandscapeCorner(Side, Field.OriginX, Field.OriginY, Field.Spacing, LandSide);
 	ALandscape* Land = World->SpawnActor<ALandscape>(Cm(Corner), FRotator::ZeroRotator, Spawn);
-	Land->LandscapeMaterial = bSurfaces ? LookGround(Package, LookSet) : GroundTint;
+	const ftcore::HeightField Hill{Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX), static_cast<size_t>(Field.SamplesY), Field.Spacing,
+		Field.OriginX, Field.OriginY};
+	Land->LandscapeMaterial = bSurfaces ? FTBackdrop::HillGround(Package, LookGround(Package, LookSet), Hill, Side) : GroundTint;
 	Land->SetActorRelativeScale3D(FVector(Field.Spacing * 100.0, Field.Spacing * 100.0, 100.0));
 	{
 		TMap<FGuid, TArray<uint16>> HeightLayers;
@@ -2866,6 +2869,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 
 	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, kMassingSun);
+	FTBackdrop::Haze(World);
+	FTBackdrop::Dress(Package, Cells, Base, Hill, Side, Boxes);
 
 	double EntryYaw = 0.0;
 	if (bLook)

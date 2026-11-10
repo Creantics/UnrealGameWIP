@@ -114,6 +114,71 @@ TEST_CASE("road net: a T is signalised, its corners kerbed at 6 m, its ids the r
     CHECK(ped == 6);
 }
 
+TEST_CASE("road net: a junction's surface has no holes round its corners and no step where an arm meets its fill") {
+    RoadBuild b;
+    roadNetBuild(net(kTee), MassingGround{}, b, nullptr);
+    // The top of the road's surface (asphalt, kerb, pavement) over a 36 m square round the node, every 0.2 m.
+    constexpr int n = 180;
+    constexpr double res = 0.2, x0 = 82.0, y0 = -18.0;
+    std::vector<double> top(n * n, -1e9);
+    std::vector<char> tar(n * n, 0);
+    for (const RoadSolid& sd : b.solids) {
+        const MassingBox& x = sd.box;
+        if (!sd.collide || (sd.tint != RoadTint::Asphalt && sd.tint != RoadTint::Kerb && sd.tint != RoadTint::Pavement))
+            continue;
+        const double ra = x.rot * 3.14159265358979323846 / 180.0, c = std::cos(ra), sn = std::sin(ra);
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < n; ++i) {
+                const double dx = x0 + (i + 0.5) * res - x.cx, dy = y0 + (j + 0.5) * res - x.cy;
+                double z = x.z1;
+                if (sd.shape == RoadShape::Cylinder) {
+                    if (dx * dx + dy * dy > x.sx * x.sx * 0.25) continue;
+                } else {
+                    const double u = dx * c + dy * sn, w = -dx * sn + dy * c;
+                    if (std::fabs(u) > x.sx * 0.5 || std::fabs(w) > x.sy * 0.5) continue;
+                    z += x.riseU * u + x.riseW * w;
+                }
+                const std::size_t k = static_cast<std::size_t>(j * n + i);
+                if (z > top[k]) {
+                    top[k] = z;
+                    tar[k] = sd.tint == RoadTint::Asphalt ? 1 : 0;
+                }
+            }
+    }
+    // No hole: every uncovered cell is joined to the square's edge (the blocks behind the pavements).
+    std::vector<char> seen(n * n, 0);
+    std::vector<int> todo;
+    for (int i = 0; i < n; ++i)
+        for (const int k : {i, (n - 1) * n + i, i * n, i * n + n - 1})
+            if (top[static_cast<std::size_t>(k)] < -1e8 && !seen[static_cast<std::size_t>(k)]) {
+                seen[static_cast<std::size_t>(k)] = 1;
+                todo.push_back(k);
+            }
+    while (!todo.empty()) {
+        const int k = todo.back();
+        todo.pop_back();
+        const int i = k % n, j = k / n;
+        for (const int m : {i > 0 ? k - 1 : -1, i + 1 < n ? k + 1 : -1, j > 0 ? k - n : -1, j + 1 < n ? k + n : -1})
+            if (m >= 0 && top[static_cast<std::size_t>(m)] < -1e8 && !seen[static_cast<std::size_t>(m)]) {
+                seen[static_cast<std::size_t>(m)] = 1;
+                todo.push_back(m);
+            }
+    }
+    int holes = 0;
+    for (std::size_t k = 0; k < top.size(); ++k)
+        if (top[k] < -1e8 && !seen[k]) ++holes;
+    CHECK(holes == 0);
+    // No step on the asphalt: neighbouring cells differ by no more than the crossfall over a cell (and a little).
+    double step = 0.0;
+    for (int j = 0; j + 1 < n; ++j)
+        for (int i = 0; i + 1 < n; ++i) {
+            const std::size_t k = static_cast<std::size_t>(j * n + i);
+            for (const std::size_t m : {k + 1, k + static_cast<std::size_t>(n)})
+                if (tar[k] && tar[m]) step = std::max(step, std::fabs(top[k] - top[m]));
+        }
+    CHECK(step < 0.006);
+}
+
 TEST_CASE("road net: nothing solid stands in the carriageway; furniture keeps off the kerb; bays stay off it") {
     const std::vector<RoadNetStreet> s = net(
         "id,kind,width_m,pts,pavement_m,parking\n"
@@ -140,8 +205,8 @@ TEST_CASE("road net: nothing solid stands in the carriageway; furniture keeps of
         CHECK(bay.street == "ST-H");
         CHECK_FALSE(roadInCarriageway(b, shrunk(bay.foot, 0.02), 0.0));
     }
-    // The step where a crowned arm meets the level fill.
-    CHECK(rep.maxStep <= kRoadCrossfall * 0.5 * 5.4 + 1e-9);
+    // The fill carries the arms' crown: no step where an arm meets it.
+    CHECK(rep.maxStep == 0.0);
 }
 
 TEST_CASE("road net: pieces follow the ground and report what is too steep; decks stand on piers") {
@@ -358,4 +423,32 @@ TEST_CASE("road net: poles and signs on the network, laid as instances, off the 
         }
     std::vector<RoadNetStreet> out;
     CHECK_FALSE(importRoadNet("id,kind,width_m,pts,pavement_m,poles\nA,road,14,0:0;0:50,3.5,Q\n", out));
+}
+
+TEST_CASE("road net: a tilted cube's top is centred over its box, so a crown's two halves meet") {
+    MassingBox x;
+    x.cx = 10.0;
+    x.cy = -4.0;
+    x.sx = 20.0;
+    x.sy = 3.5;
+    x.rot = 30.0;
+    x.z0 = 1.0;
+    x.z1 = 4.3;
+    const MassingVec level = roadCubeCentre(x, 3.3);
+    CHECK(level.x == doctest::Approx(10.0));
+    CHECK(level.y == doctest::Approx(-4.0));
+    CHECK(level.z == doctest::Approx(2.65));
+    x.riseU = 0.08;
+    x.riseW = -kRoadCrossfall;
+    const MassingCubePose pose = massingCubePose(x, 3.3);
+    const double p = pose.pitch * 3.14159265358979323846 / 180.0, r = pose.roll * 3.14159265358979323846 / 180.0;
+    const double a = x.rot * 3.14159265358979323846 / 180.0;
+    // Local Z in (u, w, z), then the top's middle half the height along it from the centre.
+    const double zu = -std::cos(r) * std::sin(p), zw = -std::sin(r), zz = std::cos(r) * std::cos(p);
+    const MassingVec c = roadCubeCentre(x, 3.3);
+    CHECK(c.x + 1.65 * (zu * std::cos(a) - zw * std::sin(a)) == doctest::Approx(10.0).epsilon(1e-9));
+    CHECK(c.y + 1.65 * (zu * std::sin(a) + zw * std::cos(a)) == doctest::Approx(-4.0).epsilon(1e-9));
+    CHECK(c.z + 1.65 * zz == doctest::Approx(4.3).epsilon(1e-9));
+    // Off the plumb line by more than a centimetre: the slit it closes.
+    CHECK(std::hypot(c.x - 10.0, c.y + 4.0) > 0.01);
 }

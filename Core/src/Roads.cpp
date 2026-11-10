@@ -451,8 +451,8 @@ RoadColor roadTint(RoadTint tint) {
     case RoadTint::BarrierRed: return {0.60f, 0.06f, 0.04f, 0.6f};
     case RoadTint::Wire: return {0.03f, 0.03f, 0.03f, 0.6f};
     case RoadTint::Tyre: return {0.02f, 0.02f, 0.02f, 0.9f};
-    case RoadTint::CarWhite: return {0.78f, 0.78f, 0.76f, 0.25f};
-    case RoadTint::CarSilver: return {0.48f, 0.49f, 0.50f, 0.25f};
+    case RoadTint::CarWhite: return {0.60f, 0.60f, 0.58f, 0.3f};
+    case RoadTint::CarSilver: return {0.24f, 0.25f, 0.26f, 0.3f};
     case RoadTint::CarBlack: return {0.03f, 0.03f, 0.035f, 0.2f};
     case RoadTint::CarRed: return {0.45f, 0.04f, 0.04f, 0.25f};
     case RoadTint::CarBlue: return {0.06f, 0.12f, 0.30f, 0.25f};
@@ -589,8 +589,12 @@ void roadVehicleSolids(const RoadVehicle& v, std::vector<RoadSolid>& out) {
     default: break;
     }
     put(0.0, 0.0, L, W, bottom, belt, v.body, true, RoadShape::Cube, RoadAxis::Up);
+    // A dark sill and bumper band round the body's foot.
+    put(0.0, 0.0, L + 0.04, W + 0.02, bottom, bottom + 0.14, RoadTint::CarBlack, false, RoadShape::Cube, RoadAxis::Up);
     const double cu = (cabFront + cabBack) * 0.5, cl = cabFront - cabBack;
-    put(cu, 0.0, cl, W - 0.12, belt, H - 0.07, RoadTint::Glass, true, RoadShape::Cube, RoadAxis::Up);
+    // The cabin: body pillars with a glass band round them, under a body roof.
+    put(cu, 0.0, cl, W - 0.16, belt, H - 0.07, v.body, true, RoadShape::Cube, RoadAxis::Up);
+    put(cu, 0.0, cl + 0.02, W - 0.12, belt + 0.06, H - 0.13, RoadTint::Glass, false, RoadShape::Cube, RoadAxis::Up);
     put(cu, 0.0, cl - 0.06, W - 0.16, H - 0.07, H, v.body, false, RoadShape::Cube, RoadAxis::Up);
     if (v.kind == RoadVehicleKind::KeiTruck) // the bed's gates
         put((-L * 0.5 + cabBack) * 0.5, 0.0, cabBack + L * 0.5, W, belt, belt + 0.3, v.body, false, RoadShape::Cube,
@@ -598,9 +602,13 @@ void roadVehicleSolids(const RoadVehicle& v, std::vector<RoadSolid>& out) {
     if (v.kind == RoadVehicleKind::Taxi)
         put(cu, 0.0, 0.35, 0.14, H, H + 0.16, RoadTint::SignWhite, false, RoadShape::Cube, RoadAxis::Up);
     const double wu = L * 0.5 - wd * (v.kind == RoadVehicleKind::Bus ? 1.6 : 0.85);
+    // Wheels just proud of the body's sides, each with a steel disc on its outer face.
     for (const double u : {-wu, wu})
-        for (const double w : {-(W * 0.5 - 0.12), W * 0.5 - 0.12})
-            put(u, w, wd, 0.2, 0.0, wd, RoadTint::Tyre, false, RoadShape::Cylinder, RoadAxis::AlongW);
+        for (const double side : {-1.0, 1.0}) {
+            put(u, side * (W * 0.5 - 0.08), wd, 0.2, 0.0, wd, RoadTint::Tyre, false, RoadShape::Cylinder, RoadAxis::AlongW);
+            put(u, side * (W * 0.5 + 0.025), wd * 0.6, 0.012, wd * 0.2, wd * 0.8, RoadTint::Steel, false,
+                RoadShape::Cylinder, RoadAxis::AlongW);
+        }
 }
 
 bool importRoads(std::string_view csv, std::vector<RoadSpec>& out, std::string* error) {
@@ -1235,8 +1243,9 @@ RoadParkCounts roadParkVehicles(const RoadBuild& build, const std::vector<Massin
                                               RoadVehicleKind::Sedan, RoadVehicleKind::Sedan,   RoadVehicleKind::Sedan,
                                               RoadVehicleKind::Taxi,  RoadVehicleKind::Van,     RoadVehicleKind::Van,
                                               RoadVehicleKind::KeiTruck};
-    static const RoadTint bodies[7] = {RoadTint::CarWhite, RoadTint::CarSilver, RoadTint::CarBlack, RoadTint::CarWhite,
-                                       RoadTint::CarBlue,  RoadTint::CarRed,    RoadTint::CarCream};
+    // Stand-in bodies: dark neutrals, a rare pale one.
+    static const RoadTint bodies[7] = {RoadTint::CarSilver, RoadTint::CarBlack, RoadTint::CarSilver, RoadTint::CarBlack,
+                                       RoadTint::CarBlue,   RoadTint::CarGreen, RoadTint::CarWhite};
     for (const RoadBay& bay : build.bays) {
         ++counts.bays;
         const std::uint32_t h = hashText(seed, bay.id);
@@ -1247,8 +1256,8 @@ RoadParkCounts roadParkVehicles(const RoadBuild& build, const std::vector<Massin
         RoadVehicle v;
         v.id = bay.id + "-car";
         v.kind = kinds[(h >> 4) % 10];
-        v.body = v.kind == RoadVehicleKind::Taxi ? RoadTint::TaxiYellow : bodies[(h >> 12) % 7];
-        if (v.kind == RoadVehicleKind::KeiTruck) v.body = RoadTint::CarWhite;
+        v.body = v.kind == RoadVehicleKind::Taxi ? RoadTint::CarBlack : bodies[(h >> 12) % 7];
+        if (v.kind == RoadVehicleKind::KeiTruck) v.body = RoadTint::CarSilver;
         v.x = bay.foot.x;
         v.y = bay.foot.y;
         v.z = bay.z;
@@ -1304,8 +1313,8 @@ std::size_t roadTwoWheelers(const std::vector<MassingStreet>& lanes, const RoadT
                             const RoadSpec* spec, const MassingGround& ground, const std::vector<MassingFoot>& doors,
                             const std::vector<MassingFoot>* taken, std::vector<RoadVehicle>& out) {
     const std::size_t first = out.size();
-    static const RoadTint bodies[5] = {RoadTint::CarWhite, RoadTint::CarBlack, RoadTint::CarRed, RoadTint::CarBlue,
-                                       RoadTint::CarSilver};
+    static const RoadTint bodies[5] = {RoadTint::CarSilver, RoadTint::CarBlack, RoadTint::CarRed, RoadTint::CarBlue,
+                                       RoadTint::CarBlack};
     auto groundAt = [&](double px, double py) {
         return massingGroundAt(ground.grid, ground.samplesX, ground.samplesY, ground.spacing, ground.originX, ground.originY,
                                px, py);
@@ -2149,19 +2158,22 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
         spec.id = nd.id.empty() ? std::string(buf) : nd.id;
         Ctx x(spec, out);
         const double g = nd.z + kRoadSurfaceLift, pv = g + kRoadKerbRise;
-        double hcMax = 0.0, hcMin = 1e9, scMax = 0.0;
+        double hcMin = 1e9, scMax = 0.0;
         for (const NetArm& a : nd.arms) {
-            hcMax = std::max(hcMax, a.hc);
             hcMin = std::min(hcMin, a.hc);
             scMax = std::max(scMax, a.sc);
         }
-        const double zf = g + kRoadCrossfall * hcMax * 0.5;
-        for (const NetArm& a : nd.arms)
-            rep.maxStep = std::max(rep.maxStep, std::max(zf - g, g + kRoadCrossfall * a.hc - zf));
+        // Each arm's fill carries its carriageway's crown (two halves falling to the gutters), so the two meet without a
+        // step; where arms overlap the higher top shows, and the disc and the corners' fill lie at the gutter under them.
+        const double zf = g;
         for (const NetArm& a : nd.arms) {
             if (a.sc <= 0.01) continue;
             const Frame fa = frameOf(nd.p.x, nd.p.y, nd.p.x + a.d.x, nd.p.y + a.d.y);
-            x.add(x.box(fa, 0.0, a.sc, -a.hc, a.hc, zf, kRoadSlabDepth, 0.0, 0.0, "fill"), RoadTint::Asphalt, true);
+            const double mid = g + kRoadCrossfall * a.hc * 0.5;
+            x.add(x.box(fa, 0.0, a.sc, 0.0, a.hc, mid, kRoadSlabDepth, 0.0, -kRoadCrossfall, "fill"), RoadTint::Asphalt,
+                  true);
+            x.add(x.box(fa, 0.0, a.sc, -a.hc, 0.0, mid, kRoadSlabDepth, 0.0, kRoadCrossfall, "fill"), RoadTint::Asphalt,
+                  true);
             const MassingFoot ft = footOf(x.box(fa, 0.0, a.sc, -a.hc, a.hc, 0, 0, 0, 0, "foot"));
             out.carriageway.push_back(ft);
             out.band.push_back(ft);
@@ -2205,6 +2217,14 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                 // The kerb and the pavement round the corner.
                 const int steps = std::max(2, static_cast<int>(std::ceil(std::fabs(sweep) / (kPi / 9.0))));
                 const double step = sweep / steps;
+                // Between the kerb arc, the arms' fill and the chord's fill lie two curved slivers of road: a ring of
+                // fill from under the kerb out to the tangents at the arc's ends and middle covers them.
+                const double reach = R / std::cos(std::min(std::fabs(sweep) * 0.25, kPi * 0.375)) + 0.05;
+                for (int s = 0; s < steps; ++s) {
+                    const double a = a0 + step * s;
+                    x.add(netRing(x, c.c, a, step, R - kRoadKerbWide, reach, zf, kRoadSlabDepth, "fill"), RoadTint::Asphalt,
+                          true);
+                }
                 for (int s = 0; s < steps; ++s) {
                     const double a = a0 + step * s;
                     x.add(netRing(x, c.c, a, step, R - kRoadKerbWide, R, pv, kRoadSlabDepth + 0.15, "kerb"), RoadTint::Kerb,
@@ -2233,7 +2253,12 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                     const double a = a0 + step * s;
                     const double k = steps > 1 ? static_cast<double>(s) / (steps - 1) : 0.5;
                     const double hc = ai.hc + (aj.hc - ai.hc) * k, w2 = ai.w2 + (aj.w2 - ai.w2) * k;
-                    const MassingBox fb = netRing(x, nd.p, a, step, 0.0, hc, zf, kRoadSlabDepth, "fill");
+                    // Crowned like the arms: the crown at the node, falling to the gutter at the kerb.
+                    MassingBox fb = netRing(x, nd.p, a, step, 0.0, hc, g, kRoadSlabDepth, "fill");
+                    const double rm = hc * 0.5; // its middle, from the node
+                    fb.z1 = g + kRoadCrossfall * (hc - rm);
+                    fb.z0 = fb.z1 - kRoadSlabDepth;
+                    fb.riseU = -kRoadCrossfall;
                     x.add(fb, RoadTint::Asphalt, true);
                     x.add(netRing(x, nd.p, a, step, hc, hc + kRoadKerbWide, pv, kRoadSlabDepth + 0.15, "kerb"),
                           RoadTint::Kerb, true);
@@ -2693,6 +2718,16 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
         out.solids.resize(w);
     }
     if (report) *report = std::move(rep);
+}
+
+MassingVec roadCubeCentre(const MassingBox& box, double height) {
+    // massingCubePose's turn: local Z's image is (-cR sP, -sR, cR cP) in (u, w, z).
+    const double pitch = std::atan(box.riseU);
+    const double roll = std::atan(box.riseW * std::cos(pitch));
+    const double h = 0.5 * height;
+    const double du = h * std::cos(roll) * std::sin(pitch), dw = h * std::sin(roll);
+    const double r = box.rot * kPi / 180.0, c = std::cos(r), s = std::sin(r);
+    return {box.cx + du * c - dw * s, box.cy + du * s + dw * c, box.z0 + height - h * std::cos(roll) * std::cos(pitch)};
 }
 
 } // namespace ftcore

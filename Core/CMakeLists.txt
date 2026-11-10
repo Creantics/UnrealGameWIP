@@ -62,6 +62,8 @@ add_library(ftcore STATIC
     src/WindowFacade.cpp
     src/FrameStats.cpp
     src/LightPicker.cpp
+    src/NightLook.cpp
+    src/Backdrop.cpp
     src/ShopFront.cpp
     src/WorldClock.cpp
     src/WorldChecks.cpp
@@ -232,6 +234,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_window_facade.cpp
         tests/test_frame_stats.cpp
         tests/test_light_picker.cpp
+        tests/test_night_look.cpp
         tests/test_shop_front.cpp
         tests/test_world_clock.cpp
         tests/test_world_checks.cpp

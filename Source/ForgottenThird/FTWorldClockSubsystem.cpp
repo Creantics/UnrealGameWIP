@@ -5,10 +5,12 @@
 #include "Components/SkyLightComponent.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/ExponentialHeightFog.h"
+#include "Engine/PostProcessVolume.h"
 #include "Engine/SkyLight.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "FTNightLightData.h"
+#include "FTNightLook.h"
 #include "FTSceneLook.h"
 #include "FTText.h"
 #include "ForgottenThird.h"
@@ -30,7 +32,6 @@ namespace
 {
 // The clock's step between light updates: 15 game seconds (half a real second on the 48-minute day).
 constexpr double kStepHours = 1.0 / 240.0;
-const FLinearColor MoonColor(0.65f, 0.75f, 1.f);
 } // namespace
 
 bool UFTWorldClockSubsystem::ShouldCreateSubsystem(UObject* Outer) const
@@ -77,11 +78,6 @@ void UFTWorldClockSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		ftcore::worldClockPause(Clock);
 		bFixedByCommandLine = true;
 	}
-	FParse::Value(Cmd, TEXT("NightMoon="), MoonShare);
-	FParse::Value(Cmd, TEXT("NightSky="), SkyShare);
-	FParse::Value(Cmd, TEXT("NightFog="), FogShare);
-	MoonShare = FMath::Max(MoonShare, 1e-4f);
-
 	Gather(InWorld);
 	bActive = true;
 	Apply(true);
@@ -107,7 +103,7 @@ void UFTWorldClockSubsystem::Gather(UWorld& World)
 	{
 		if (USkyLightComponent* Light = It->GetLightComponent())
 		{
-			Skies.Add({Light, Light->Intensity, Light->bRealTimeCapture});
+			Skies.Add({Light, Light->Intensity, Light->GetLightColor(), Light->bRealTimeCapture});
 		}
 	}
 	for (TActorIterator<AExponentialHeightFog> It(&World); It; ++It)
@@ -116,6 +112,12 @@ void UFTWorldClockSubsystem::Gather(UWorld& World)
 		{
 			Fogs.Add({Fog, Fog->FogInscatteringLuminance});
 		}
+	}
+	for (TActorIterator<APostProcessVolume> It(&World); It; ++It)
+	{
+		const FPostProcessSettings& S = It->Settings;
+		Exposures.Add({*It, S.bOverride_AutoExposureMinBrightness != 0, S.bOverride_AutoExposureMaxBrightness != 0, S.AutoExposureMinBrightness,
+			S.AutoExposureMaxBrightness});
 	}
 	// A map whose lights are data (AFTNightLights) leaves them to FTLampPoolSubsystem's pool; only older maps' tagged
 	// light actors are gathered here.
@@ -158,29 +160,48 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 		Toward = -Toward;
 	}
 	const FRotator Rotation = (-Toward).Rotation();
-	const float Day = 1.f - Night;
+	const ftcore::NightLook& Look = FTNight::Look();
+	const ftcore::NightFrame Frame = ftcore::nightFrame(Look, Night);
 	for (const FLit& S : Suns)
 	{
 		if (ULightComponent* Light = S.Light.Get())
 		{
 			Light->SetWorldRotation(Rotation);
-			Light->SetIntensity(S.Intensity * (Day + Night * MoonShare));
-			Light->SetLightColor(FMath::Lerp(S.Color, MoonColor, Night), false);
+			Light->SetIntensity(S.Intensity * Frame.sunScale);
+			Light->SetLightColor(FMath::Lerp(S.Color, FTNight::Color(Look.moonTint), Frame.tintMix), false);
 		}
 	}
 	for (const FSky& S : Skies)
 	{
 		if (USkyLightComponent* Light = S.Light.Get())
 		{
-			const float NightFactor = S.bRealTime ? SkyShare / MoonShare : SkyShare;
-			Light->SetIntensity(S.Intensity * FMath::Lerp(1.f, NightFactor, Night));
+			Light->SetIntensity(S.Intensity * (S.bRealTime ? Frame.skyScaleRealTime : Frame.skyScale));
+			Light->SetLightColor(FMath::Lerp(S.Color, FTNight::Color(Look.skyTint), Frame.tintMix));
 		}
 	}
+	const FLinearColor Glow(Frame.fogGlow[0], Frame.fogGlow[1], Frame.fogGlow[2]);
 	for (const FFog& F : Fogs)
 	{
 		if (UExponentialHeightFogComponent* Fog = F.Fog.Get())
 		{
-			Fog->SetFogInscatteringColor(F.Color * FMath::Lerp(1.f, FogShare, Night));
+			Fog->SetFogInscatteringColor(F.Color * Frame.fogKeep + Glow);
+		}
+	}
+	// The night's exposure, locked from half night on (as the night still's), the volumes' own settings back by day;
+	// written only when the lock changes.
+	if (Frame.lockExposure != bExposureLocked || bForce)
+	{
+		bExposureLocked = Frame.lockExposure;
+		for (const FExposure& E : Exposures)
+		{
+			if (APostProcessVolume* Volume = E.Volume.Get())
+			{
+				FPostProcessSettings& S = Volume->Settings;
+				S.bOverride_AutoExposureMinBrightness = bExposureLocked || E.bMin;
+				S.bOverride_AutoExposureMaxBrightness = bExposureLocked || E.bMax;
+				S.AutoExposureMinBrightness = bExposureLocked ? Frame.exposureEV100 : E.Min;
+				S.AutoExposureMaxBrightness = bExposureLocked ? Frame.exposureEV100 : E.Max;
+			}
 		}
 	}
 	if (UMaterialParameterCollectionInstance* WindowParams = Windows.Get())

@@ -165,6 +165,10 @@ struct MassingFrontRule {
     std::size_t run = 1;            // pieces it sets in a row once picked, >= 1
     std::size_t cap = 0;            // the most it places; 0 for no cap
     double scale = 1.0;             // > 0: the map's builder sets the mesh this much larger (and takes its size so)
+    std::size_t stack = 1;          // >= 1: each piece placed repeats up its face, `height` apart, to this many in all,
+                                    // while the host's lowest top corner stays over the copy's top
+    bool bounded = false;           // true: the rule takes only places whose face point (as for the kind) lies in
+    double within[4] = {0.0, 0.0, 0.0, 0.0}; // x0, y0, x1, y1 (plan m, x0 < x1, y0 < y1)
 };
 
 // Reads a frontage table (CSV, a header row naming the columns; comment rows as in importMassingBoxes). The columns:
@@ -179,6 +183,8 @@ struct MassingFrontRule {
 //   run, cap    whole numbers, run >= 1 (default 1), cap >= 0 (default 0)
 //   scale       > 0, default 1
 //   kinds       street kinds (or "open") joined by ';', each a-z, A-Z, 0-9, '_' or '-'
+//   stack       a whole number >= 1, default 1
+//   within      x0:y0:x1:y1, plan m with x0 < x1 and y0 < y1; empty for anywhere
 // Any other column is skipped. `out` is cleared first. False, with a reason naming the line, on any error.
 FTCORE_API bool importMassingFront(std::string_view csv, std::vector<MassingFrontRule>& out,
                                    std::string* error = nullptr);
@@ -210,6 +216,7 @@ struct MassingFrontCounts {
     std::size_t wet = 0;
     std::size_t crowded = 0;
     std::size_t capped = 0;   // placed, but dropped by the cap
+    std::size_t stacked = 0;  // copies set over its placed pieces by its stack (not in placed)
 };
 struct MassingFrontTotals {
     std::size_t hosts = 0;

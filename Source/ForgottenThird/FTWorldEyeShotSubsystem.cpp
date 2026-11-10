@@ -5,10 +5,12 @@
 #include "Components/LightComponent.h"
 #include "Components/LocalLightComponent.h"
 #include "Components/SkyLightComponent.h"
+#include "Components/ExponentialHeightFogComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "DynamicRHI.h"
 #include "Engine/DirectionalLight.h"
+#include "Engine/ExponentialHeightFog.h"
 #include "Engine/PostProcessVolume.h"
 #include "Engine/SkyLight.h"
 #include "Engine/StaticMesh.h"
@@ -19,6 +21,7 @@
 #include "Engine/World.h"
 #include "FTLampPoolSubsystem.h"
 #include "FTNightLightData.h"
+#include "FTNightLook.h"
 #include "FTSceneLook.h"
 #include "ForgottenThird.h"
 #include "GameFramework/HUD.h"
@@ -216,15 +219,21 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 {
 	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyeNight")))
 	{
-		// The moon's share of the map's sun, the sky fill's share of the map's sky light (net), the exposure, the lamps' and
-		// shop lights' candelas and the lamps' reach in metres.
-		float SunShare = 0.03f, SkyFill = 0.1f, Ev = -2.f, LampCd = 25.f, LampRadius = 18.f, ShopCd = 15.f, Glow = -1.f;
+		// The night spec the running clock reaches at full night (FTNightLook.h), so a still and a played night match: the
+		// moon's share of the map's sun, the sky fill's share of the map's sky light (net), the exposure, the lamps' and
+		// shop lights' candelas and reach in metres, the fog's kept colour and the city's glow. The -WorldEyeNight*
+		// switches below override it for a still alone.
+		const ftcore::NightLook& Spec = FTNight::Look();
+		const ftcore::NightFrame Frame = ftcore::nightFrame(Spec, 1.f);
+		float SunShare = Spec.moonShare, SkyFill = Spec.skyFill, Ev = Spec.exposureEV100, LampCd = Spec.lampCandela,
+			  LampRadius = Spec.lampReachM, ShopCd = Spec.shopCandela, ShopRadius = Spec.shopReachM, Glow = -1.f;
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightSun="), SunShare);
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightSky="), SkyFill);
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightEV="), Ev);
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightLamp="), LampCd);
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightLampRadius="), LampRadius);
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightShop="), ShopCd);
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightShopRadius="), ShopRadius);
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightGlow="), Glow);
 		SunShare = FMath::Max(SunShare, 1e-4f);
 		const FString Path = FTScene::WindowCollection;
@@ -238,7 +247,7 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		{
 			ULightComponent* Light = It->GetLightComponent();
 			Light->SetIntensity(Light->Intensity * SunShare);
-			Light->SetLightColor(FLinearColor(0.65f, 0.75f, 1.f), false);
+			Light->SetLightColor(FTNight::Color(Spec.moonTint), false);
 			++Suns;
 		}
 		// A real-time capture of the atmosphere already dims (and tints) with the sun, so it is lifted back by the moon's
@@ -247,8 +256,19 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		{
 			USkyLightComponent* Light = It->GetLightComponent();
 			Light->SetIntensity(Light->Intensity * (Light->bRealTimeCapture ? SkyFill / SunShare : SkyFill));
-			Light->SetLightColor(FLinearColor(0.8f, 0.85f, 1.f));
+			Light->SetLightColor(FTNight::Color(Spec.skyTint));
 			++Skies;
+		}
+		// The height fog keeps its share of its own colour and takes the city's warm glow, as the clock's full night.
+		int32 Fogs = 0;
+		const FLinearColor FogGlow(Frame.fogGlow[0], Frame.fogGlow[1], Frame.fogGlow[2]);
+		for (TActorIterator<AExponentialHeightFog> It(&World); It; ++It)
+		{
+			if (UExponentialHeightFogComponent* Fog = It->GetComponent())
+			{
+				Fog->SetFogInscatteringColor(Fog->FogInscatteringLuminance * Frame.fogKeep + FogGlow);
+				++Fogs;
+			}
 		}
 		// The street lamps and shop spill lights the massing build placed, off until now (on the actor's tag or the
 		// light's own), and the lamps' heads. The build's lamps are bright enough for a street at a city night's exposure;
@@ -261,7 +281,7 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		// A map whose lights are data (AFTNightLights) lights the nearest of them from the lamp pool, forced to night at
 		// the same values, instead of the tagged light actors; its lens instances already wear the lamp material.
 		UFTLampPoolSubsystem* Pool = World.GetSubsystem<UFTLampPoolSubsystem>();
-		const bool bPooled = Pool && Pool->ForceNight(LampCd, LampRadius * 100.f, ShopCd, LampRadius * 50.f);
+		const bool bPooled = Pool && Pool->ForceNight(LampCd, LampRadius * 100.f, ShopCd, ShopRadius * 100.f);
 		if (bPooled)
 		{
 			Lamps = Pool->GetLampCount();
@@ -298,12 +318,12 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 					if (ULocalLightComponent* Local = Cast<ULocalLightComponent>(Light))
 					{
 						Local->SetIntensityUnits(ELightUnits::Candelas);
-						Local->SetAttenuationRadius((bLamp ? LampRadius : LampRadius * 0.5f) * 100.f);
+						Local->SetAttenuationRadius((bLamp ? LampRadius : ShopRadius) * 100.f);
 					}
 					Light->SetIntensity(bLamp ? LampCd : ShopCd);
 					Light->SetLightColor(FLinearColor::White);
 					Light->SetUseTemperature(true);
-					Light->SetTemperature(bLamp ? 2100.f : 3500.f);
+					Light->SetTemperature(bLamp ? Spec.lampKelvin : Spec.shopKelvin);
 					if (bLamp)
 					{
 						LampAt.Add(Light->GetComponentLocation());
@@ -359,9 +379,9 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		}
 		const FString GlowText = bGlow ? FString::SanitizeFloat(Glow) : FString(TEXT("as built"));
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: night: windows' Night %s, NightGlow %s; %d moons at %.3f of the map's sun and %d sky "
-			"lights at %.3f fill; %d street lamps at %.0f cd (%.0f m), %d shop lights at %.0f cd, %d lamp heads and %d stand-in lenses%s; exposure locked at EV %.1f in %d volumes."),
+			"lights at %.3f fill; %d fogs with the city glow; %d street lamps at %.0f cd (%.0f m), %d shop lights at %.0f cd, %d lamp heads and %d stand-in lenses%s; exposure locked at EV %.1f in %d volumes."),
 			bNight ? TEXT("1") : TEXT("unset (no window collection)"), *GlowText, Suns, SunShare, Skies,
-			SkyFill, Lamps, LampCd, LampRadius, Shops, ShopCd, Heads, Lenses, LampMaterial ? TEXT("") : TEXT(" (no lamp material)"), Ev, Volumes);
+			SkyFill, Fogs, Lamps, LampCd, LampRadius, Shops, ShopCd, Heads, Lenses, LampMaterial ? TEXT("") : TEXT(" (no lamp material)"), Ev, Volumes);
 	}
 	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyePlainWalls")))
 	{

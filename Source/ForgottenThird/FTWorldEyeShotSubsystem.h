@@ -4,11 +4,13 @@
 //
 //   UnrealEditor-Cmd ForgottenThird.uproject /Game/Maps/<map> -game -RenderOffScreen -unattended -nosound
 //       -WorldEyeShot=<file.png> -WorldEye=<x,y,z> -WorldEyeAt=<x,y,z> [-WorldEyeLens=35] [-WorldEyeSide=1000]
-//       [-WorldEyeSize=2560x1440] [-WorldEyeDelay=8] [-WorldEyeNight [-WorldEyeNightSun=0.03] [-WorldEyeNightSky=0.1]
-//       [-WorldEyeNightEV=-2] [-WorldEyeNightLamp=25] [-WorldEyeNightLampRadius=18] [-WorldEyeNightShop=15]
-//       [-WorldEyeNightGlow=1]] [-WorldEyeGpuMs=<frames>] [-WorldEyePlainWalls]
+//       [-WorldEyeSize=2560x1440] [-WorldEyeDelay=8] [-WorldEyeNight [-WorldEyeNightSun=<share>] [-WorldEyeNightSky=<share>]
+//       [-WorldEyeNightEV=<ev>] [-WorldEyeNightLamp=<cd>] [-WorldEyeNightLampRadius=<m>] [-WorldEyeNightShop=<cd>]
+//       [-WorldEyeNightShopRadius=<m>] [-WorldEyeNightGlow=1]] [-WorldEyeGpuMs=<frames>] [-WorldEyePlainWalls]
 //
-// -WorldEyeNight sets the windows' Night to 1 (FTScene::WindowCollection) and their NightGlow to -WorldEyeNightGlow when
+// -WorldEyeNight takes its values from the night spec the running clock reaches at full night (FTNightLook.h and its
+// -Night* switches), so a still matches a played night; the -WorldEyeNight* values override them for the still alone,
+// and it also gives the height fog the spec's kept colour and city glow. -WorldEyeNight sets the windows' Night to 1 (FTScene::WindowCollection) and their NightGlow to -WorldEyeNightGlow when
 // given, turns the sun into a cool moon at -WorldEyeNightSun of the map's, leaves a blue sky fill of -WorldEyeNightSky of
 // the map's (net: a real-time capture already dims with the sun, so it isn't dimmed twice), switches on the street lamps
 // (FTScene::NightLampTag, -WorldEyeNightLamp candelas, warm, reaching -WorldEyeNightLampRadius metres) and the shop
