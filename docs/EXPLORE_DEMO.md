@@ -57,7 +57,13 @@ the new lead's weapon on. `-ExploreDummy` stands a dummy ahead once the lead is 
 attack's reach (at most 3 m; `-ExploreDummyAt=<cm>` sets the distance);
 `-ExploreAttackEvery=<s>` presses light every s seconds (every fourth press a heavy), and
 `-ExploreWeaponShot=<prefix>` (with `-ExploreWeaponShots=<n>`, `-ExploreWeaponShotDelay=<s>`) saves a shot as
-each attack goes active, then quits; with `-ExplorePortrait -ExplorePortraitYaw=90` they are side-on.
+each attack lands (every second one a shot's or cast's mid-flight instead), then quits; with `-ExplorePortrait
+-ExplorePortraitYaw=90` they are side-on, with `-ExplorePortraitYaw=0 -ExplorePortraitArm=300` from behind at 3 m.
+Aiming: during an attack's startup `ftcore::FieldStrike` turns the lead to the nearest dummy in reach (any side) and
+gives the hit point, the near side of the dummy's body at its chest (60 cm below its top); with none, straight ahead
+at the lead's chest. The lead turns to it, the striking arm is aimed at it (two-bone IK, then the hand or barrel turned
+onto it), the tracer or bolt flies to it and the impact effect plays on it. Each attack logs `Field: aim <clip> <deg>
+deg` (arm or barrel against the direction to the hit point) and `Field: impact <effect> <cm> cm from the hit point`.
 Each hit logs `Field: dummy hit for <n>`. There is nothing to fight in the field yet but dummies.
 
 The keys are an Enhanced Input context made at runtime (`AFTExploreCharacter`), priority 2, above

@@ -131,11 +131,14 @@ None has been built in Unreal yet, so nobody has seen them in a viewport.
 
 | File | Game event |
 |---|---|
-| `spell_bolt` | The Third's light attack. A flare at the hands, streaking sparks along the line, and a bright head that reaches 3.2 m in 0.2 s and pops there. The effect points along +Y, so the game turns it to the aim. |
+| `spell_bolt` | The Third's attacks. A flare at the hands, streaking sparks along the line, and a bright head that reaches 3.2 m in 0.2 s at speed scale 1. The effect points along +Y, so the game turns it to the hit point and sets `SpeedScale` to distance / 3.2 m, so the head dies on the hit point. It has no pop of its own: `spell_impact` plays there. |
+| `spell_impact` | Where the Third's bolt reaches the hit point. A pop and a spray of sparks. |
 | `spell_burst` | The Third's heavy attack and the Release. A flash, a soft wave and a ring of sparks that carry about 3 m out in every direction. |
 | `spell_ward` | The Third while he guards. A loop of motes around him, a faint glow and a ring of motes at his feet. It plays until the guard ends. |
-| `muzzle_flash` | Duy's pistol shot. A flash of about 60 ms, a jet, a few sparks and a wisp of smoke. |
-| `gauntlet_spark` | Devin's gauntlet hitting. A short spray of metal sparks and a small flash. |
+| `muzzle_flash` | Duy's pistol shot. A flash of about 60 ms (kept small so the pistol shows through it), a jet, a few sparks and a wisp of smoke. |
+| `gun_tracer` | Duy's shot in flight. One stretched warm head that covers 3 m in 0.1 s at speed scale 1; the game points it at the hit point and scales it the same way as `spell_bolt`. |
+| `gun_impact` | Where Duy's shot lands. A flash, sparks and a puff of dust. |
+| `gauntlet_spark` | Devin's gauntlet hitting, played on the hit point. A short spray of metal sparks and a small flash. |
 
 The Third's spells share one cold white-blue to violet colour, taken from `magic_ribbon`, the only
 magic effect that existed. The pistol and gauntlet effects are warm.
@@ -146,5 +149,6 @@ shell), and per-particle sparks at the bolt's impact (the pop is placed at the e
 
 To build one later, when the Unreal slot is free, run the command from "Rebuilding" with
 `-run=FTBuildVfx -Only=<name>` in place of the plain `-run=FTBuildVfx`. The names are `spell_bolt`,
-`spell_burst`, `spell_ward`, `muzzle_flash` and `gauntlet_spark`. Add `-Verify` to list the saved
+`spell_burst`, `spell_ward`, `muzzle_flash`, `gauntlet_spark`, `gun_tracer`, `gun_impact` and `spell_impact`
+(`spell_burst` is no longer played by the leads). Add `-Verify` to list the saved
 system's modules and bindings.
