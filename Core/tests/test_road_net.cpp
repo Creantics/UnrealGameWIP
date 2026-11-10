@@ -210,3 +210,112 @@ TEST_CASE("road net: lane mouths drop the kerb on their side, across edges") {
     std::vector<RoadNetStreet> out;
     CHECK_FALSE(importRoadNet("id,kind,width_m,pts,pavement_m,mouths\nA,road,14,0:0;0:50,3.5,LN@5@6@Q\n", out));
 }
+
+TEST_CASE("road net: kerbs and pavements are cut at every mouth; no faces, no steps") {
+    // A T, a cross with bends, and lane mouths: no kerb or pavement over 3 cm across a lane, in a carriageway or
+    // stepping against its neighbour.
+    const char* nets[] = {kTee,
+                          "id,kind,width_m,pts,pavement_m,parking\n"
+                          "ST-H,street,18,0:0;240:0,3.6,1\n"
+                          "ST-V,street,14,120:-150;120:150,2.8,0\n"
+                          "ST-B,street,14,0:0;-60:60;-60:200,2.8,0\n"};
+    for (const char* csv : nets) {
+        const std::vector<RoadNetStreet> s = net(csv);
+        RoadBuild b;
+        RoadNetReport rep;
+        roadNetBuild(s, MassingGround{}, b, &rep);
+        RoadGraph g;
+        roadGraphFromNet(s, b, g);
+        REQUIRE_FALSE(g.lanes.empty());
+        for (const RoadFace& f : roadKerbFaces(b, &g)) {
+            INFO(f.piece << " at " << f.x << ", " << f.y << ": " << f.fault);
+            CHECK(false);
+        }
+    }
+
+    // Lane mouths (6 m): a dropped kerb flush with the gutter (0 to 2 cm), and the lane's centre line crosses no kerb.
+    const std::vector<RoadNetStreet> s = net("id,kind,width_m,pts,pavement_m,mouths,mouth_back_m,mouth_z\n"
+                                             "RD-X,road,14,0:0;0:200,3.5,LN-1@50@6@L;LN-2@150@6@L,1.5,0\n");
+    RoadBuild b;
+    roadNetBuild(s, MassingGround{}, b);
+    RoadGraph g;
+    roadGraphFromNet(s, b, g);
+    for (const double y : {50.0, 150.0}) {
+        RoadGraphLane lane;
+        lane.id = "LN-TEST";
+        lane.width = 6.0;
+        lane.pts = {{-20.0, y}, {-3.0, y}};
+        g.lanes.push_back(lane);
+    }
+    for (const RoadFace& f : roadKerbFaces(b, &g)) {
+        INFO(f.piece << " at " << f.x << ", " << f.y << ": " << f.fault);
+        CHECK(false);
+    }
+
+    // A kerb laid across the road is caught, named with the point where the lane crosses it.
+    RoadSolid bad = b.solids.front();
+    for (const RoadSolid& sd : b.solids)
+        if (sd.box.kind == "kerb") bad = sd;
+    bad.box.id = "TEST-kerb";
+    bad.box.cx = 0.0;
+    bad.box.cy = 100.0;
+    bad.box.sx = 14.0;
+    bad.box.sy = 0.3;
+    bad.box.rot = 0.0;
+    bad.box.riseU = bad.box.riseW = 0.0;
+    b.solids.push_back(bad);
+    bool named = false;
+    for (const RoadFace& f : roadKerbFaces(b, &g))
+        if (f.piece == "TEST-kerb" && std::fabs(f.y - 100.0) < 0.2 && std::fabs(f.x) < 3.5) named = true;
+    CHECK(named);
+    // The commandlet's -Kerbs pieces are tested the same way.
+    std::vector<MassingBox> kerbs(2, bad.box);
+    kerbs[1].cx = -30.0; // off the road
+    const std::vector<std::size_t> in = roadKerbsInCarriageway(b, &g, kerbs);
+    REQUIRE(in.size() == 1);
+    CHECK(in[0] == 0);
+}
+
+TEST_CASE("road net: a bend's outer ring keeps the kerb line without a jog") {
+    // Two widths meeting at a bend: the ring goes from one's kerb line to the other's, no face and no step.
+    const std::vector<RoadNetStreet> s = net("id,kind,width_m,pts,pavement_m\n"
+                                             "ST-A,street,18,0:0;100:0,3.6\n"
+                                             "ST-B,street,14,100:0;160:80,2.8\n");
+    RoadBuild b;
+    RoadNetReport rep;
+    roadNetBuild(s, MassingGround{}, b, &rep);
+    CHECK(rep.bends >= 1);
+    RoadGraph g;
+    roadGraphFromNet(s, b, g);
+    for (const RoadFace& f : roadKerbFaces(b, &g)) {
+        INFO(f.piece << " at " << f.x << ", " << f.y << ": " << f.fault);
+        CHECK(false);
+    }
+}
+
+TEST_CASE("road net: parked vehicles keep out of junction boxes and crossings; the graph reads back") {
+    const std::vector<RoadNetStreet> s = net("id,kind,width_m,pts,pavement_m,parking\n"
+                                             "ST-H,street,18,0:0;240:0,3.6,1\n"
+                                             "ST-V,street,14,120:-150;120:150,2.8,0\n");
+    RoadBuild b;
+    roadNetBuild(s, MassingGround{}, b);
+    std::vector<RoadVehicle> cars;
+    const RoadParkCounts c = roadParkVehicles(b, {}, nullptr, 11U, cars);
+    INFO("bays " << b.bays.size() << " parked " << c.parked << " empty " << c.empty << " blocked " << c.blocked);
+    REQUIRE_FALSE(cars.empty());
+    for (const RoadVehicle& v : cars) {
+        const MassingFoot f = shrunk(roadVehicleFoot(v), 0.01);
+        for (const MassingFoot& k : b.keepOut) CHECK_FALSE(massingFeetOverlap(f, k, 0.0));
+        for (const RoadJunction& j : b.junctions) CHECK_FALSE(massingFeetOverlap(f, j.box, 0.0));
+    }
+    // The written graph (its bays' ids are lower case) reads back as it was.
+    RoadGraph g;
+    roadGraphFromNet(s, b, g);
+    REQUIRE_FALSE(g.bays.empty());
+    RoadGraph back;
+    std::string err;
+    REQUIRE_MESSAGE(importRoadGraph(roadGraphWrite(g), back, &err), err);
+    CHECK(back.lanes.size() == g.lanes.size());
+    CHECK(back.bays.size() == g.bays.size());
+    CHECK(back.crossings.size() == g.crossings.size());
+}

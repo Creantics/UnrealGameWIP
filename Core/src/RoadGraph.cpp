@@ -219,7 +219,8 @@ bool importRoadGraph(std::string_view csv, RoadGraph& out, std::string* error) {
         auto f = [&](std::size_t i) { return trim(rec.fields[i]); };
         const std::string_view type = f(0);
         const std::string id(f(1));
-        if (!validId(id)) return fail(error, rec.line, "a row needs an id");
+        // Any case: the build's bay and zebra ids carry lower-case kinds ("ST-1-E1-bay-3").
+        if (!validKind(id)) return fail(error, rec.line, "a row needs an id");
         std::vector<RoadPoint> pts;
         if (!readPts(f(7), pts)) return fail(error, rec.line, id + ": pts must be \"x:y;...\"");
         auto dirOf = [&](int& d) {

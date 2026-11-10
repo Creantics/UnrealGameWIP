@@ -242,6 +242,33 @@ FOptions ParseOptions(const TCHAR* Params)
 	return Options;
 }
 
+// Box rows (pads, slabs, plinths, footbridges under 4.8 m) standing in a road's carriageway: hidden like the rows the
+// road clears, logged by id; an Error (and false) when any still clash after that.
+static bool HideRoadClashes(const ftcore::RoadBuild& Build, std::vector<ftcore::MassingBox>& Boxes, const FString& What)
+{
+	const std::vector<size_t> Clash = ftcore::roadBoxClashes(Build, Boxes);
+	if (Clash.empty())
+	{
+		return true;
+	}
+	FString Ids;
+	for (const size_t I : Clash)
+	{
+		Boxes[I].kind = "underpass";
+		Ids += TEXT(" ") + RoadsUtf8(Boxes[I].id);
+	}
+	UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: roads %s: hides %d box rows in the carriageway:%s."), *What,
+		static_cast<int32>(Clash.size()), *Ids);
+	const size_t Left = ftcore::roadBoxClashes(Build, Boxes).size();
+	if (Left > 0)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: roads %s: %d box rows still in the carriageway."), *What,
+			static_cast<int32>(Left));
+		return false;
+	}
+	return true;
+}
+
 bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::vector<ftcore::MassingBox>& Boxes,
 	std::vector<ftcore::RoadSpec>& Roads, std::vector<ftcore::RoadBuild>& Builds)
 {
@@ -294,7 +321,12 @@ bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: road network: %s"), *RoadsUtf8(Note));
 		}
-		return true;
+		if (Report.pruned > 0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: road network: %d kerb and pavement pieces pruned at mouths."),
+				static_cast<int32>(Report.pruned));
+		}
+		return HideRoadClashes(Builds[0], Boxes, TEXT("network"));
 	}
 	if (!ftcore::importRoads(Text, Roads, &Error))
 	{
@@ -314,6 +346,10 @@ bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roads %s: hides %d deck and pier rows under it:%s."), *RoadsUtf8(Roads[R].id),
 			static_cast<int32>(Gone.size()), *Ids);
+		if (!HideRoadClashes(Builds[R], Boxes, RoadsUtf8(Roads[R].id)))
+		{
+			return false;
+		}
 	}
 	return true;
 }

@@ -913,15 +913,25 @@ void roadBuild(const RoadSpec& road, RoadBuild& out) {
         out.furniture.push_back(footOf(x.box(sf, sl2 - 0.2, sl2 - 0.08, -sw2, sw2, 0, 0, 0, 0, "foot")));
         x.sign(sf.at(sl2 - 1.6, stubHalf + 0.8), sf.dir(-1.0, 0.0), x.pave, "no_entry", RoadTint::SignRed, true);
 
-        // The corners: an asphalt square, the pavement as a pie, the kerb on the arc; a signal pole and a lamp on each.
+        // The corners: asphalt over the square between the kerb lines and the arc's centre where it lies in the road's
+        // or the stub's band (the rest is the lot behind), the pavement from the kerb on the arc back to where it leaves
+        // both bands, the kerb on the arc; a signal pole and a lamp on each.
         RoadPoint cornerPole[2];
         for (int qi = 0; qi < 2; ++qi) {
             const double q = qi == 0 ? -1.0 : 1.0;
             const double cs = m.at + q * J, ct = ss * (hc + R);
             const double a0s = std::min(m.at + q * stubHalf, cs), a1s = std::max(m.at + q * stubHalf, cs);
-            x.add(x.box(f, a0s, a1s, std::min(ss * hc, ct), std::max(ss * hc, ct), x.gutter, kRoadSlabDepth, 0, 0, "asphalt"),
+            const double sb = m.at + q * sw2; // the stub band's edge on this corner's side
+            const double b0s = std::min(m.at + q * stubHalf, sb), b1s = std::max(m.at + q * stubHalf, sb);
+            // Across the road's band (to its back edge w2), then along the stub's band (out to the arc's centre).
+            x.add(x.box(f, a0s, a1s, std::min(ss * hc, ss * w2), std::max(ss * hc, ss * w2), x.gutter, kRoadSlabDepth, 0, 0,
+                        "asphalt"),
                   RoadTint::Asphalt, true);
-            out.band.push_back(footOf(x.box(f, a0s, a1s, std::min(ss * hc, ct), std::max(ss * hc, ct), 0, 0, 0, 0, "foot")));
+            x.add(x.box(f, b0s, b1s, std::min(ss * w2, ct), std::max(ss * w2, ct), x.gutter, kRoadSlabDepth, 0, 0, "asphalt"),
+                  RoadTint::Asphalt, true);
+            out.band.push_back(footOf(x.box(f, a0s, a1s, std::min(ss * hc, ss * w2), std::max(ss * hc, ss * w2), 0, 0, 0, 0,
+                                            "foot")));
+            out.band.push_back(footOf(x.box(f, b0s, b1s, std::min(ss * w2, ct), std::max(ss * w2, ct), 0, 0, 0, 0, "foot")));
             const double thA = std::atan2(-ss, 0.0), thB = std::atan2(0.0, -q);
             double d = thB - thA;
             while (d > kPi) d -= 2.0 * kPi;
@@ -933,8 +943,14 @@ void roadBuild(const RoadSpec& road, RoadBuild& out) {
                 const RoadPoint u = f.dir(std::cos(tm), std::sin(tm));
                 const double chord = 2.0 * R * std::sin(std::fabs(step) * 0.5);
                 const double rin = R - kRoadKerbWide;
-                MassingBox pie = x.at({C.x + u.x * rin * 0.5, C.y + u.y * rin * 0.5}, angleOf(u), rin, chord + 0.04,
-                                      x.pave - kRoadSlabDepth, x.pave, "pavement");
+                // Where the ray from the centre enters the road's band (towards the road) or the stub's (towards it).
+                const double toRoad = -ss * (u.x * -f.dy + u.y * f.dx), toStub = -q * (u.x * f.dx + u.y * f.dy);
+                double rb = rin - 0.05;
+                if (toRoad > 1e-6) rb = std::min(rb, (hc + R - w2) / toRoad);
+                if (toStub > 1e-6) rb = std::min(rb, (J - sw2) / toStub);
+                rb = std::max(0.0, rb);
+                MassingBox pie = x.at({C.x + u.x * (rb + rin) * 0.5, C.y + u.y * (rb + rin) * 0.5}, angleOf(u), rin - rb,
+                                      chord * rin / R + 0.04, x.pave - kRoadSlabDepth, x.pave, "pavement");
                 x.add(pie, RoadTint::Pavement, true);
                 const double rk = (R - kRoadKerbWide * 0.5) * std::cos(std::fabs(step) * 0.5);
                 MassingBox kb = x.at({C.x + u.x * rk, C.y + u.y * rk}, angleOf(u) + 90.0, chord + 0.03, kRoadKerbWide,
@@ -1421,6 +1437,255 @@ std::vector<std::size_t> roadClearedBoxes(const RoadBuild& build, const std::vec
     return out;
 }
 
+// ---- Clashes: boxes and kerbs in the carriageway ----
+
+namespace {
+
+constexpr double kFaceDeep = 0.15;  // m: a kerb lying further than this (a kerb stone's width) into a slab is in the way
+constexpr double kFaceLevels = 2.0; // m: a slab and a kerb further apart than this are on different levels (a deck)
+
+// A point in a foot's own axes.
+void localOf(const MassingFoot& f, double x, double y, double& u, double& w) {
+    const double c = std::cos(rad(f.rot)), s = std::sin(rad(f.rot));
+    const double dx = x - f.x, dy = y - f.y;
+    u = dx * c + dy * s;
+    w = -dx * s + dy * c;
+}
+RoadPoint planOf(const MassingFoot& f, double u, double w) {
+    const double c = std::cos(rad(f.rot)), s = std::sin(rad(f.rot));
+    return {f.x + u * c - w * s, f.y + u * s + w * c};
+}
+// A box's top over a plan point (its tilt from the centre; a sloped table row by its slope).
+double topAt(const MassingBox& b, double x, double y) {
+    double u = 0.0, w = 0.0;
+    localOf(massingBoxFoot(b), x, y, u, w);
+    if (b.sloped && b.sx > 0.0) return b.slopeFrom + (b.slopeTo - b.slopeFrom) * (u / b.sx + 0.5);
+    return b.z1 + b.riseU * u + b.riseW * w;
+}
+double topMax(const MassingBox& b) {
+    if (b.sloped) return std::max({b.z1, b.slopeFrom, b.slopeTo});
+    return b.z1 + std::fabs(b.riseU) * b.sx * 0.5 + std::fabs(b.riseW) * b.sy * 0.5;
+}
+double topMin(const MassingBox& b) {
+    if (b.sloped) return std::min({b.z1, b.slopeFrom, b.slopeTo});
+    return b.z1 - std::fabs(b.riseU) * b.sx * 0.5 - std::fabs(b.riseW) * b.sy * 0.5;
+}
+double bottomMin(const MassingBox& b) {
+    return b.z0 - std::fabs(b.riseU) * b.sx * 0.5 - std::fabs(b.riseW) * b.sy * 0.5;
+}
+bool slabSolid(const RoadSolid& s) { return s.collide && (s.box.kind == "asphalt" || s.box.kind == "fill"); }
+bool faceSolid(const RoadSolid& s) { return s.box.kind == "kerb" || s.box.kind == "pavement"; }
+double reach(const MassingFoot& f) { return std::hypot(f.hx, f.hy); }
+// Whether a plan point lies in a slab's footprint (a cylinder's by its circle).
+bool slabHas(const RoadSolid& s, double x, double y) {
+    const MassingFoot f = massingBoxFoot(s.box);
+    if (s.shape == RoadShape::Cylinder) return std::hypot(x - f.x, y - f.y) < std::min(f.hx, f.hy);
+    double u = 0.0, w = 0.0;
+    localOf(f, x, y, u, w);
+    return std::fabs(u) < f.hx && std::fabs(w) < f.hy;
+}
+// The part of segment a-b inside the foot (Liang-Barsky in its axes): false when it misses.
+bool clipSegment(const MassingFoot& f, RoadPoint a, RoadPoint b, double& t0, double& t1) {
+    double ua = 0.0, wa = 0.0, ub = 0.0, wb = 0.0;
+    localOf(f, a.x, a.y, ua, wa);
+    localOf(f, b.x, b.y, ub, wb);
+    const double du = ub - ua, dw = wb - wa;
+    t0 = 0.0;
+    t1 = 1.0;
+    const double p[4] = {-du, du, -dw, dw};
+    const double q[4] = {ua + f.hx, f.hx - ua, wa + f.hy, f.hy - wa};
+    for (int i = 0; i < 4; ++i) {
+        if (std::fabs(p[i]) < 1e-12) {
+            if (q[i] <= 0.0) return false;
+            continue;
+        }
+        const double r = q[i] / p[i];
+        if (p[i] < 0.0)
+            t0 = std::max(t0, r);
+        else
+            t1 = std::min(t1, r);
+        if (t0 >= t1) return false;
+    }
+    return t1 - t0 > 1e-9;
+}
+// The nearest point of a foot to a plan point.
+RoadPoint nearestIn(const MassingFoot& f, double x, double y) {
+    double u = 0.0, w = 0.0;
+    localOf(f, x, y, u, w);
+    return planOf(f, std::clamp(u, -f.hx, f.hx), std::clamp(w, -f.hy, f.hy));
+}
+
+// The faults of one kerb or pavement box: lane centre lines crossing it, and the first carriageway rectangle it lies in.
+template <typename Emit>
+void boxFaces(const MassingBox& piece, const std::vector<const RoadSolid*>& slabs,
+              const std::vector<MassingFoot>& carriageway, const RoadGraph* graph, Emit&& emit) {
+    const MassingFoot pf = massingBoxFoot(piece);
+    const double pr = reach(pf);
+    if (graph) {
+        for (const RoadGraphLane& lane : graph->lanes) {
+            bool hit = false;
+            for (std::size_t i = 0; i + 1 < lane.pts.size() && !hit; ++i) {
+                const RoadPoint a = lane.pts[i], b = lane.pts[i + 1];
+                const double lx = b.x - a.x, ly = b.y - a.y, l2 = lx * lx + ly * ly;
+                const double tt = l2 > 0.0 ? std::clamp(((pf.x - a.x) * lx + (pf.y - a.y) * ly) / l2, 0.0, 1.0) : 0.0;
+                if (std::hypot(a.x + lx * tt - pf.x, a.y + ly * tt - pf.y) > pr) continue;
+                double t0 = 0.0, t1 = 0.0;
+                if (!clipSegment(pf, a, b, t0, t1)) continue;
+                const double tm = (t0 + t1) * 0.5;
+                const double mx = a.x + lx * tm, my = a.y + ly * tm;
+                const double top = topAt(piece, mx, my);
+                bool flush = false, apart = false;
+                for (const RoadSolid* sl : slabs) {
+                    if (!slabHas(*sl, mx, my)) continue;
+                    const double d = std::fabs(topAt(sl->box, mx, my) - top);
+                    if (d <= kRoadFaceMax) flush = true;
+                    if (d > kFaceLevels) apart = true;
+                }
+                if (flush || apart) continue;
+                hit = true;
+                emit(mx, my, "lane " + lane.id);
+            }
+        }
+    }
+    // The carriageway rectangles it lies in, on its level (a slab under the spot within kFaceLevels, or none there).
+    MassingFoot inner = pf;
+    inner.hx = std::max(0.0, inner.hx - kFaceDeep * 0.5);
+    inner.hy = std::max(0.0, inner.hy - kFaceDeep * 0.5);
+    for (std::size_t c = 0; c < carriageway.size(); ++c) {
+        const MassingFoot& cf = carriageway[c];
+        if (std::hypot(cf.x - pf.x, cf.y - pf.y) > pr + reach(cf)) continue;
+        MassingFoot ci = cf;
+        ci.hx = std::max(0.0, ci.hx - kFaceDeep * 0.5);
+        ci.hy = std::max(0.0, ci.hy - kFaceDeep * 0.5);
+        if (!massingFeetOverlap(inner, ci, 0.0)) continue;
+        // The spot: the piece's centre held inside the rectangle, then inside the piece.
+        const RoadPoint q = nearestIn(cf, pf.x, pf.y);
+        const RoadPoint at = nearestIn(pf, q.x, q.y);
+        const double top = topAt(piece, at.x, at.y);
+        bool level = false, other = false;
+        for (const RoadSolid* sl : slabs) {
+            if (!slabHas(*sl, at.x, at.y)) continue;
+            if (std::fabs(topAt(sl->box, at.x, at.y) - top) <= kFaceLevels)
+                level = true;
+            else
+                other = true;
+        }
+        if (other && !level) continue;
+        char buf[24];
+        std::snprintf(buf, sizeof buf, "carriageway %zu", c + 1);
+        emit(at.x, at.y, std::string(buf));
+        break;
+    }
+}
+
+// Steps: two kerb or pavement pieces (solids indices) overlapping by more than kFaceDeep whose tops differ by more
+// than kRoadFaceMax (but by no more than kFaceLevels) where they overlap; emit(a, b, point). Sorted by x for a sweep.
+template <typename Emit>
+void faceSteps(const RoadBuild& build, std::vector<std::size_t> pieces, Emit&& emit) {
+    std::sort(pieces.begin(), pieces.end(),
+              [&](std::size_t a, std::size_t b) { return build.solids[a].box.cx < build.solids[b].box.cx; });
+    double longest = 0.0;
+    for (const std::size_t i : pieces) longest = std::max(longest, reach(massingBoxFoot(build.solids[i].box)));
+    for (std::size_t ia = 0; ia < pieces.size(); ++ia) {
+        const MassingBox& a = build.solids[pieces[ia]].box;
+        MassingFoot fa = massingBoxFoot(a);
+        const double ra = reach(fa);
+        fa.hx = std::max(0.0, fa.hx - kFaceDeep * 0.5);
+        fa.hy = std::max(0.0, fa.hy - kFaceDeep * 0.5);
+        for (std::size_t ib = ia + 1; ib < pieces.size(); ++ib) {
+            const MassingBox& b = build.solids[pieces[ib]].box;
+            if (b.cx - a.cx > ra + longest) break;
+            MassingFoot fb = massingBoxFoot(b);
+            if (std::hypot(fb.x - fa.x, fb.y - fa.y) > ra + reach(fb)) continue;
+            fb.hx = std::max(0.0, fb.hx - kFaceDeep * 0.5);
+            fb.hy = std::max(0.0, fb.hy - kFaceDeep * 0.5);
+            if (!massingFeetOverlap(fa, fb, 0.0)) continue;
+            const RoadPoint q = nearestIn(fb, fa.x, fa.y);
+            const RoadPoint at = nearestIn(fa, q.x, q.y);
+            const double d = std::fabs(topAt(a, at.x, at.y) - topAt(b, at.x, at.y));
+            if (d <= kRoadFaceMax || d > kFaceLevels) continue;
+            emit(pieces[ia], pieces[ib], at);
+        }
+    }
+}
+
+std::vector<const RoadSolid*> slabsOf(const RoadBuild& build) {
+    std::vector<const RoadSolid*> out;
+    for (const RoadSolid& s : build.solids)
+        if (slabSolid(s)) out.push_back(&s);
+    return out;
+}
+
+} // namespace
+
+std::vector<std::size_t> roadBoxClashes(const RoadBuild& build, const std::vector<MassingBox>& boxes) {
+    const std::vector<const RoadSolid*> slabs = slabsOf(build);
+    std::vector<std::size_t> out;
+    for (std::size_t i = 0; i < boxes.size(); ++i) {
+        const MassingBox& b = boxes[i];
+        if (!massingBuilt(massingRole(b))) continue;
+        MassingFoot bf = massingBoxFoot(b);
+        bf.hx = std::max(0.0, bf.hx - 0.01);
+        bf.hy = std::max(0.0, bf.hy - 0.01);
+        const double br = reach(bf), top = topMax(b), bottom = std::min(b.z0, bottomMin(b));
+        for (const RoadSolid* sl : slabs) {
+            const MassingFoot sf = massingBoxFoot(sl->box);
+            if (std::hypot(sf.x - bf.x, sf.y - bf.y) > br + reach(sf)) continue;
+            if (top <= topMin(sl->box) + kRoadFaceMax) continue;
+            if (bottom >= topMax(sl->box) + kRoadBridgeClear) continue;
+            if (sl->shape == RoadShape::Cylinder) {
+                const RoadPoint q = nearestIn(bf, sf.x, sf.y);
+                if (std::hypot(q.x - sf.x, q.y - sf.y) >= std::min(sf.hx, sf.hy)) continue;
+            } else if (!massingFeetOverlap(bf, sf, 0.0)) {
+                continue;
+            }
+            out.push_back(i);
+            break;
+        }
+    }
+    return out;
+}
+
+std::vector<RoadFace> roadKerbFaces(const RoadBuild& build, const RoadGraph* graph) {
+    const std::vector<const RoadSolid*> slabs = slabsOf(build);
+    std::vector<RoadFace> out;
+    std::vector<std::size_t> pieces;
+    for (std::size_t i = 0; i < build.solids.size(); ++i) {
+        const RoadSolid& s = build.solids[i];
+        if (!faceSolid(s)) continue;
+        pieces.push_back(i);
+        boxFaces(s.box, slabs, build.carriageway, graph, [&](double fx, double fy, std::string fault) {
+            RoadFace f;
+            f.piece = s.box.id;
+            f.x = fx;
+            f.y = fy;
+            f.fault = std::move(fault);
+            out.push_back(std::move(f));
+        });
+    }
+    faceSteps(build, pieces, [&](std::size_t ia, std::size_t ib, RoadPoint at) {
+        RoadFace f;
+        f.piece = build.solids[ia].box.id;
+        f.x = at.x;
+        f.y = at.y;
+        f.fault = "step " + build.solids[ib].box.id;
+        out.push_back(std::move(f));
+    });
+    return out;
+}
+
+std::vector<std::size_t> roadKerbsInCarriageway(const RoadBuild& build, const RoadGraph* graph,
+                                                const std::vector<MassingBox>& kerbs) {
+    const std::vector<const RoadSolid*> slabs = slabsOf(build);
+    std::vector<std::size_t> out;
+    for (std::size_t i = 0; i < kerbs.size(); ++i) {
+        bool hit = false;
+        boxFaces(kerbs[i], slabs, build.carriageway, graph, [&](double, double, const std::string&) { hit = true; });
+        if (hit) out.push_back(i);
+    }
+    return out;
+}
+
 // ---- Road networks ----
 
 namespace {
@@ -1643,6 +1908,7 @@ MassingStreet roadNetStreet(const RoadNetStreet& s) {
 void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround& ground, RoadBuild& out,
                   RoadNetReport* report) {
     RoadNetReport rep;
+    const std::size_t solids0 = out.solids.size();
     auto groundAt = [&](RoadPoint p) {
         return massingGroundAt(ground.grid, ground.samplesX, ground.samplesY, ground.spacing, ground.originX,
                                ground.originY, p.x, p.y);
@@ -1781,8 +2047,8 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
             out.carriageway.push_back(ft);
             out.band.push_back(ft);
         }
-        // A disc over the node (a bend's as wide as its wider arm, out to its outer ring).
-        const double disc = nd.arms.size() == 2 ? hcMax : hcMin;
+        // A disc over the node as wide as its narrowest arm (a bend's outer ring brings its own fill out to its kerb).
+        const double disc = hcMin;
         x.add(x.at(nd.p, 0.0, 2.0 * disc, 2.0 * disc, zf - kRoadSlabDepth, zf, "fill"), RoadTint::Asphalt, true,
               RoadShape::Cylinder);
         for (const NetCorner& c : nd.corners) {
@@ -1836,15 +2102,20 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                     out.band.push_back(footOf(pb));
                 }
             } else {
-                // The outside of a bend: a ring of kerb and pavement round the node.
+                // The outside of a bend: a ring of kerb and pavement round the node, its kerb line going from arm i's
+                // (at the start of the sweep) to arm j's (at its end) so neither arm's kerb jogs where it meets the ring,
+                // and the level fill out to it.
                 const double a0 = std::atan2(ni.y, ni.x);
                 double sweep = std::atan2(-nj.y, -nj.x) - a0;
                 while (sweep < 0.0) sweep += 2.0 * kPi;
                 const int steps = std::max(1, static_cast<int>(std::ceil(sweep / (kPi / 9.0))));
                 const double step = sweep / steps;
-                const double hc = std::max(ai.hc, aj.hc), w2 = std::max(ai.w2, aj.w2);
                 for (int s = 0; s < steps; ++s) {
                     const double a = a0 + step * s;
+                    const double k = steps > 1 ? static_cast<double>(s) / (steps - 1) : 0.5;
+                    const double hc = ai.hc + (aj.hc - ai.hc) * k, w2 = ai.w2 + (aj.w2 - ai.w2) * k;
+                    const MassingBox fb = netRing(x, nd.p, a, step, 0.0, hc, zf, kRoadSlabDepth, "fill");
+                    x.add(fb, RoadTint::Asphalt, true);
                     x.add(netRing(x, nd.p, a, step, hc, hc + kRoadKerbWide, pv, kRoadSlabDepth + 0.15, "kerb"),
                           RoadTint::Kerb, true);
                     const MassingBox pb = netRing(x, nd.p, a, step, hc + kRoadKerbWide, w2, pv, kRoadSlabDepth, "pavement");
@@ -2234,6 +2505,57 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                 }
             }
         }
+    }
+    // Kerb and pavement pieces in the way: crossed by a lane of the net where no slab lies flush with them, or lying in
+    // a carriageway rectangle on their level (junctions near each other, a corner of one in the other's arm). They go:
+    // the carriageway or the other junction's fill is there.
+    {
+        RoadGraph lanes;
+        for (std::size_t i = 0; i < streets.size(); ++i)
+            roadGraphStreetLanes(ms[i], streets[i].speedKmh, streets[i].oneWay, 0.0, lanes);
+        const std::vector<const RoadSolid*> slabs = slabsOf(out);
+        std::vector<char> drop(out.solids.size(), 0);
+        for (std::size_t i = solids0; i < out.solids.size(); ++i) {
+            const RoadSolid& sd = out.solids[i];
+            if (!faceSolid(sd)) continue;
+            boxFaces(sd.box, slabs, out.carriageway, &lanes, [&](double fx, double fy, const std::string& why) {
+                if (drop[i]) return;
+                drop[i] = 1;
+                ++rep.pruned;
+                std::snprintf(note, sizeof note, "pruned %s at (%.1f, %.1f): %s", sd.box.id.c_str(), fx, fy, why.c_str());
+                netNote(rep, rep.pruned, note);
+            });
+        }
+        // Steps between the pieces left (an edge's tilted pavement into a junction's level one): the smaller piece goes,
+        // a junction's before an edge's, so the longer run stays at one height.
+        std::vector<std::size_t> kept;
+        for (std::size_t i = solids0; i < out.solids.size(); ++i)
+            if (!drop[i] && faceSolid(out.solids[i])) kept.push_back(i);
+        faceSteps(out, kept, [&](std::size_t a, std::size_t b, RoadPoint at) {
+            if (drop[a] || drop[b]) return;
+            const MassingBox& ba = out.solids[a].box;
+            const MassingBox& bb = out.solids[b].box;
+            const bool ja = ba.id.rfind("JN-", 0) == 0 || ba.id.rfind("NODE-", 0) == 0;
+            const bool jb = bb.id.rfind("JN-", 0) == 0 || bb.id.rfind("NODE-", 0) == 0;
+            std::size_t g = ba.sx * ba.sy <= bb.sx * bb.sy ? a : b;
+            if (ja != jb) g = ja ? a : b;
+            drop[g] = 1;
+            ++rep.pruned;
+            std::snprintf(note, sizeof note, "pruned %s at (%.1f, %.1f): step %s", out.solids[g].box.id.c_str(), at.x,
+                          at.y, out.solids[g == a ? b : a].box.id.c_str());
+            netNote(rep, rep.pruned, note);
+        });
+        std::size_t w = solids0;
+        for (std::size_t i = solids0; i < out.solids.size(); ++i) {
+            if (drop[i]) {
+                --out.counts.solids;
+                if (out.solids[i].collide) --out.counts.collide;
+                continue;
+            }
+            if (w != i) out.solids[w] = std::move(out.solids[i]);
+            ++w;
+        }
+        out.solids.resize(w);
     }
     if (report) *report = std::move(rep);
 }

@@ -4,6 +4,12 @@
 //
 //   ftcore_roadgraph --streets <csv> --roads <csv> --area <x0,y0,x1,y1> [--boxes <csv>] [--min-width <m>] [--out <csv>]
 //   ftcore_roadgraph --net <csv> [--r16 <file> --samples <n> --origin <x,y> [--spacing <m>]] [--boxes <csv>] [--out <csv>] [--list-all 1]
+//   ftcore_roadgraph --check 1 (--net <csv> [--r16 ...] | --roads <csv>) [--boxes <csv>] [--graph <csv>] [--list-all 1]
+//
+// The third form builds the roads (a network table, or each road of a roads table) and prints the clashes a vehicle
+// meets: box rows standing in a carriageway (roadBoxClashes, after the decks and piers the roads clear) and kerb or
+// pavement faces across a lane of the graph or lying in a carriageway (roadKerbFaces), one line each, then the counts.
+// Any clash: the last line is ROADCHECK FAIL and it exits 1; none: ROADCHECK OK.
 //
 // The second form builds a road network table (importRoadNet, roadNetBuild) on the ground (an r16 as ftcore_layout's;
 // none: flat at 0) and prints its report and notes, its loop, its counts, the box rows it clears (decks and piers) and
@@ -60,6 +66,103 @@ bool writeGraph(const std::string& outPath, const RoadGraph& g) {
     return true;
 }
 
+bool loadGround(const std::string& r16Path, double samples, const double origin[2], double spacing,
+                std::vector<std::uint16_t>& grid, MassingGround& ground, std::string& err) {
+    if (r16Path.empty()) return true;
+    std::string text;
+    if (!readFile(r16Path, text)) {
+        err = "can't read " + r16Path;
+        return false;
+    }
+    const std::size_t n = static_cast<std::size_t>(samples);
+    if (n < 2 || text.size() != n * n * 2) {
+        err = "the r16 is not samples x samples u16";
+        return false;
+    }
+    grid.resize(n * n);
+    for (std::size_t k = 0; k < n * n; ++k)
+        grid[k] = static_cast<std::uint16_t>(static_cast<std::uint8_t>(text[2 * k]) |
+                                             (static_cast<std::uint8_t>(text[2 * k + 1]) << 8));
+    ground = MassingGround{grid.data(), n, n, spacing, origin[0], origin[1]};
+    return true;
+}
+
+// One build's clashes: prints them (the first 60 of each kind unless listAll) and adds to the counts.
+void checkBuild(const char* what, const RoadBuild& b, const std::vector<MassingBox>& boxes, const RoadGraph* graph,
+                bool listAll, std::size_t& boxClashes, std::size_t& faces) {
+    std::vector<MassingBox> kept = boxes;
+    for (const std::size_t i : roadClearedBoxes(b, kept, 0.0)) kept[i].kind = "underpass";
+    const std::vector<std::size_t> clash = roadBoxClashes(b, kept);
+    std::size_t shown = 0;
+    for (const std::size_t i : clash) {
+        const MassingBox& x = kept[i];
+        if (++shown <= 60 || listAll)
+            std::printf("  box in carriageway (%s): %s (%s) at (%.2f, %.2f) %.1fx%.1f z %.2f..%.2f\n", what, x.id.c_str(),
+                        x.kind.c_str(), x.cx, x.cy, x.sx, x.sy, x.z0, x.z1);
+    }
+    const std::vector<RoadFace> f = roadKerbFaces(b, graph);
+    shown = 0;
+    for (const RoadFace& r : f)
+        if (++shown <= 60 || listAll)
+            std::printf("  face (%s): %s at (%.2f, %.2f): %s\n", what, r.piece.c_str(), r.x, r.y, r.fault.c_str());
+    // The builder hides the clashing rows (FTBuildRoads::Prepare); any still clashing after that fail the check.
+    for (const std::size_t i : clash) kept[i].kind = "underpass";
+    const std::size_t left = roadBoxClashes(b, kept).size();
+    std::printf("%s: box rows in a carriageway %zu (hidden by the builder, %zu left), kerb faces %zu\n", what,
+                clash.size(), left, f.size());
+    boxClashes += left;
+    faces += f.size();
+}
+
+int runCheck(const std::string& netPath, const std::string& roadsPath, const std::string& r16Path, double samples,
+             const double origin[2], double spacing, const std::string& boxesPath, const std::string& graphPath,
+             bool listAll) {
+    std::string text, err;
+    std::vector<MassingBox> boxes;
+    if (!boxesPath.empty()) {
+        if (!readFile(boxesPath, text)) return die("can't read " + boxesPath);
+        if (!importMassingBoxes(text, boxes, &err)) return die(boxesPath + ": " + err);
+    }
+    RoadGraph graph;
+    if (!graphPath.empty()) {
+        text.clear();
+        if (!readFile(graphPath, text)) return die("can't read " + graphPath);
+        if (!importRoadGraph(text, graph, &err)) return die(graphPath + ": " + err);
+    }
+    const RoadGraph* g = graphPath.empty() ? nullptr : &graph;
+    std::size_t boxClashes = 0, faces = 0;
+    if (!netPath.empty()) {
+        std::vector<RoadNetStreet> streets;
+        text.clear();
+        if (!readFile(netPath, text)) return die("can't read " + netPath);
+        if (!importRoadNet(text, streets, &err)) return die(netPath + ": " + err);
+        std::vector<std::uint16_t> grid;
+        MassingGround ground;
+        if (!loadGround(r16Path, samples, origin, spacing, grid, ground, err)) return die(err);
+        RoadBuild b;
+        RoadNetReport rep;
+        roadNetBuild(streets, ground, b, &rep);
+        std::printf("net: %zu kerb and pavement pieces pruned in the build\n", rep.pruned);
+        for (const std::string& n : rep.notes)
+            if (listAll && n.rfind("pruned", 0) == 0) std::printf("  note: %s\n", n.c_str());
+        checkBuild("net", b, boxes, g, listAll, boxClashes, faces);
+    } else {
+        std::vector<RoadSpec> roads;
+        text.clear();
+        if (!readFile(roadsPath, text)) return die("can't read " + roadsPath);
+        if (!importRoads(text, roads, &err)) return die(roadsPath + ": " + err);
+        for (const RoadSpec& r : roads) {
+            RoadBuild b;
+            roadBuild(r, b);
+            checkBuild(r.id.c_str(), b, boxes, g, listAll, boxClashes, faces);
+        }
+    }
+    std::printf("check: box rows left in a carriageway %zu, kerb and pavement faces %zu (graph lanes %zu)\n", boxClashes,
+                faces, graph.lanes.size());
+    std::printf(boxClashes + faces == 0 ? "ROADCHECK OK\n" : "ROADCHECK FAIL\n");
+    return boxClashes + faces == 0 ? 0 : 1;
+}
+
 int runNet(const std::string& netPath, const std::string& r16Path, double samples, const double origin[2], double spacing,
            const std::string& boxesPath, const std::string& outPath, bool listAll) {
     std::string text, err;
@@ -68,24 +171,14 @@ int runNet(const std::string& netPath, const std::string& r16Path, double sample
     if (!importRoadNet(text, streets, &err)) return die(netPath + ": " + err);
     std::vector<std::uint16_t> grid;
     MassingGround ground;
-    if (!r16Path.empty()) {
-        text.clear();
-        if (!readFile(r16Path, text)) return die("can't read " + r16Path);
-        const std::size_t n = static_cast<std::size_t>(samples);
-        if (n < 2 || text.size() != n * n * 2) return die("the r16 is not samples x samples u16");
-        grid.resize(n * n);
-        for (std::size_t k = 0; k < n * n; ++k)
-            grid[k] = static_cast<std::uint16_t>(static_cast<std::uint8_t>(text[2 * k]) |
-                                                 (static_cast<std::uint8_t>(text[2 * k + 1]) << 8));
-        ground = MassingGround{grid.data(), n, n, spacing, origin[0], origin[1]};
-    }
+    if (!loadGround(r16Path, samples, origin, spacing, grid, ground, err)) return die(err);
     RoadBuild b;
     RoadNetReport rep;
     roadNetBuild(streets, ground, b, &rep);
     std::printf("net: streets %zu, nodes %zu, edges %zu, junctions %zu, bends %zu, ends %zu, pieces %zu, piers %zu\n",
                 streets.size(), rep.nodes, rep.edges, rep.junctions, rep.bends, rep.ends, rep.pieces, rep.piers);
-    std::printf("net: steep %zu (max grade %.1f%%), pokes %zu, floats %zu, tight %zu, max step %.3f m\n", rep.steep,
-                rep.maxGrade * 100.0, rep.pokes, rep.floats, rep.tight, rep.maxStep);
+    std::printf("net: steep %zu (max grade %.1f%%), pokes %zu, floats %zu, tight %zu, max step %.3f m, pruned %zu\n",
+                rep.steep, rep.maxGrade * 100.0, rep.pokes, rep.floats, rep.tight, rep.maxStep, rep.pruned);
     std::printf("net: the ground at most %.2f m over a road's top; %zu pokes over 0.3 m\n", rep.maxPoke, rep.pokesOver);
     std::printf("net: the steepest piece %s\n", rep.maxGradeAt.c_str());
     for (const std::string& n : rep.notes) std::printf("  note: %s\n", n.c_str());
@@ -142,7 +235,8 @@ int runNet(const std::string& netPath, const std::string& r16Path, double sample
 } // namespace
 
 int main(int argc, char** argv) {
-    std::string streetsPath, roadsPath, boxesPath, outPath, netPath, r16Path;
+    std::string streetsPath, roadsPath, boxesPath, outPath, netPath, r16Path, graphPath;
+    bool check = false;
     double samples = 0.0, origin[2] = {0.0, 0.0}, spacing = 1.0;
     double area[4] = {0, 0, 0, 0};
     bool haveArea = false;
@@ -157,6 +251,8 @@ int main(int argc, char** argv) {
         else if (k == "--min-width") minWidth = std::atof(v.c_str());
         else if (k == "--net") netPath = v;
         else if (k == "--list-all") listAll = v == "1";
+        else if (k == "--check") check = v == "1";
+        else if (k == "--graph") graphPath = v;
         else if (k == "--r16") r16Path = v;
         else if (k == "--samples") samples = std::atof(v.c_str());
         else if (k == "--spacing") spacing = std::atof(v.c_str());
@@ -165,6 +261,10 @@ int main(int argc, char** argv) {
         }
         else if (k == "--area") haveArea = std::sscanf(v.c_str(), "%lf,%lf,%lf,%lf", &area[0], &area[1], &area[2], &area[3]) == 4;
         else return die("unknown option " + k);
+    }
+    if (check) {
+        if (netPath.empty() && roadsPath.empty()) return die("--check needs --net or --roads");
+        return runCheck(netPath, roadsPath, r16Path, samples, origin, spacing, boxesPath, graphPath, listAll);
     }
     if (!netPath.empty()) return runNet(netPath, r16Path, samples, origin, spacing, boxesPath, outPath, listAll);
     if (streetsPath.empty() || roadsPath.empty() || !haveArea) return die("--streets, --roads and --area are needed");

@@ -55,6 +55,7 @@
 #include "ftcore/MassingLayout.h"
 #include "ftcore/MassingPlan.h"
 #include "ftcore/MassingProps.h"
+#include "ftcore/RoadGraph.h"
 #include "ftcore/WorldChecks.h"
 #include "ftcore/WorldLayout.h"
 
@@ -2489,9 +2490,33 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		std::vector<ftcore::MassingBox> Kerbs;
 		ftcore::MassingKerbCounts KerbCounts;
 		ftcore::massingKerbs(KerbStreets, Ground, Built, Visible, kPropDryAbove, Kerbs, KerbCounts);
-		for (const ftcore::MassingBox& Kerb : Kerbs)
+		// None across a -Roads carriageway or a lane of its graph (a mouth): those pieces go.
+		std::vector<char> KerbGone(Kerbs.size(), 0);
+		int32 KerbsInRoads = 0;
+		for (size_t R = 0; R < RoadBuilds.size(); ++R)
 		{
-			Dress(Kerb);
+			ftcore::RoadGraph Lanes;
+			if (R < RoadSpecs.size() && RoadSpecs[R].kind != "net")
+			{
+				ftcore::roadGraphFromRoad(RoadSpecs[R], RoadBuilds[R], Lanes);
+			}
+			for (const size_t I : ftcore::roadKerbsInCarriageway(RoadBuilds[R], Lanes.lanes.empty() ? nullptr : &Lanes, Kerbs))
+			{
+				KerbsInRoads += KerbGone[I] ? 0 : 1;
+				KerbGone[I] = 1;
+			}
+		}
+		for (size_t I = 0; I < Kerbs.size(); ++I)
+		{
+			if (!KerbGone[I])
+			{
+				Dress(Kerbs[I]);
+			}
+		}
+		if (KerbsInRoads > 0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: kerbs: %d pieces left out in a -Roads carriageway or across its lanes."),
+				KerbsInRoads);
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: kerbs: %d pieces in %d unbroken runs, %.0f m along %d streets with pavements of "
 			"%s; left out %.0f m at crossings and bends, %.0f m where a box stands, %.0f m on the sea's side and %.0f m in pieces under %.1f m."),

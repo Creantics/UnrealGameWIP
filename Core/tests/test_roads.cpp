@@ -1,6 +1,7 @@
 // Drivable roads (ftcore/Roads.h): the road table, the build's clearances, bays and parking, doors, lane lamps,
 // two-wheelers and cleared boxes. Made-up tables only.
 
+#include "ftcore/RoadGraph.h"
 #include "ftcore/Roads.h"
 
 #include <ostream>
@@ -311,4 +312,68 @@ TEST_CASE("roads: cleared boxes are the decks and piers over the band") {
     REQUIRE(gone.size() == 2);
     CHECK(gone[0] == 0);
     CHECK(gone[1] == 3);
+}
+
+TEST_CASE("roads: box rows in the carriageway clash unless hidden or a footbridge 4.8 m clear") {
+    const RoadSpec r = theRoad();
+    RoadBuild b;
+    roadBuild(r, b);
+    std::vector<MassingBox> boxes(5);
+    boxes[0].id = "SLAB-LOW"; // a footbridge slab 3 m over the road
+    boxes[0].kind = "lowrise";
+    boxes[0].cx = 885.0;
+    boxes[0].cy = 450.0;
+    boxes[0].sx = 30.0;
+    boxes[0].sy = 3.0;
+    boxes[0].z0 = 7.0;
+    boxes[0].z1 = 7.4;
+    boxes[1] = boxes[0];
+    boxes[1].id = "SLAB-HIGH"; // its underside 5 m over the road
+    boxes[1].z0 = 9.2;
+    boxes[1].z1 = 9.6;
+    boxes[2] = boxes[0];
+    boxes[2].id = "SLAB-HIDDEN";
+    boxes[2].kind = "underpass";
+    boxes[3] = boxes[0];
+    boxes[3].id = "PAD"; // a pad on the road
+    boxes[3].z0 = 3.0;
+    boxes[3].z1 = 4.4;
+    boxes[4] = boxes[3];
+    boxes[4].id = "LOT"; // the same pad in the lot behind
+    boxes[4].cx = 930.0;
+    const std::vector<std::size_t> clash = roadBoxClashes(b, boxes);
+    REQUIRE(clash.size() == 2);
+    CHECK(clash[0] == 0);
+    CHECK(clash[1] == 3);
+}
+
+TEST_CASE("roads: the junction and the lane mouths leave no kerb or pavement face, no step") {
+    const RoadSpec r = theRoad();
+    RoadBuild b;
+    roadBuild(r, b);
+    RoadGraph g;
+    roadGraphFromRoad(r, b, g);
+    REQUIRE_FALSE(g.lanes.empty());
+    // The lanes (6 m) meeting the road: centre lines out to the road's kerb line, through the dropped kerbs.
+    for (const RoadMouth& m : r.mouths) {
+        RoadGraphLane lane;
+        lane.id = m.lane;
+        lane.width = m.width;
+        lane.pts = {{885.0 - 30.0, 410.0 + m.at}, {885.0 - 3.6, 410.0 + m.at}};
+        g.lanes.push_back(lane);
+    }
+    for (const RoadFace& f : roadKerbFaces(b, &g)) {
+        INFO(f.piece << " at " << f.x << ", " << f.y << ": " << f.fault);
+        CHECK(false);
+    }
+    // Nothing parked in the junction box or on its crossings.
+    std::vector<RoadVehicle> cars;
+    roadParkVehicles(b, {}, nullptr, 7U, cars);
+    for (const RoadVehicle& v : cars) {
+        MassingFoot f = roadVehicleFoot(v);
+        f.hx -= 0.01;
+        f.hy -= 0.01;
+        for (const MassingFoot& k : b.keepOut) CHECK_FALSE(massingFeetOverlap(f, k, 0.0));
+        for (const RoadJunction& j : b.junctions) CHECK_FALSE(massingFeetOverlap(f, j.box, 0.0));
+    }
 }

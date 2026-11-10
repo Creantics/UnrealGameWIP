@@ -21,6 +21,8 @@
 
 namespace ftcore {
 
+struct RoadGraph; // ftcore/RoadGraph.h
+
 // Road section standards (VAST_CITY_PLAN.md section 17).
 inline constexpr double kRoadLaneWidth = 3.5;       // m: one traffic lane (3.0 to 3.5)
 inline constexpr double kRoadKerbRise = 0.15;       // m: kerb face over the gutter, mountable at low speed
@@ -292,6 +294,37 @@ FTCORE_API std::size_t roadLaneLamps(const std::vector<MassingStreet>& lanes, co
 FTCORE_API std::vector<std::size_t> roadClearedBoxes(const RoadBuild& build, const std::vector<MassingBox>& boxes,
                                                      double margin);
 
+// A box row a footbridge may keep over a road: its underside this far over the carriageway's top, at least.
+inline constexpr double kRoadBridgeClear = 4.8;
+// The highest face a vehicle drives over without a wall: a kerb or pavement face this much over the lane is a fault.
+inline constexpr double kRoadFaceMax = 0.03;
+// The rows of `boxes` that stand in a carriageway: built rows (massingBuilt) whose footprints overlap the footprint of
+// a carriageway slab (a collider of kind asphalt or fill) and that stand over the slab's top by more than kRoadFaceMax
+// with an underside lower than kRoadBridgeClear over it. Zone, hidden, open and proxy rows never clash, so after the
+// builder hides the clashing rows (kind "underpass") the same call returns none. Indices in table order.
+FTCORE_API std::vector<std::size_t> roadBoxClashes(const RoadBuild& build, const std::vector<MassingBox>& boxes);
+
+// A fault where a kerb or pavement meets the carriageway: the piece's id, a plan point and what it is.
+struct RoadFace {
+    std::string piece;
+    double x = 0.0, y = 0.0;
+    std::string fault; // "lane <id>", "carriageway <n>" (1-based in build.carriageway) or "step <other piece>"
+};
+// The kerb and pavement pieces (kinds kerb and pavement) a vehicle meets as a face over kRoadFaceMax:
+//   - lane: a lane centre line of `graph` crosses its footprint (the point: the middle of the crossing), unless a
+//     carriageway slab (a collider of kind asphalt or fill) under that point stands within kRoadFaceMax of the piece's
+//     top (flush) or more than 2 m from it (the lane passes over or under it: a deck);
+//   - carriageway: it lies more than 15 cm (a kerb stone) into a carriageway rectangle (build.carriageway) on its level
+//     (no slab under the point, or one within 2 m of the piece's top);
+//   - step: it overlaps another kerb or pavement piece by more than 15 cm with their tops more than kRoadFaceMax (and
+//     less than 2 m) apart there.
+// One row per piece and fault. Junction mouths and lane mouths cut the kerbs and pavements, so a built road has none.
+FTCORE_API std::vector<RoadFace> roadKerbFaces(const RoadBuild& build, const RoadGraph* graph);
+// The boxes of `kerbs` (massingKerbs' pieces of the other streets) with a lane or carriageway fault against `build`:
+// -Kerbs leaves them out where those streets cross a road. Indices, in order.
+FTCORE_API std::vector<std::size_t> roadKerbsInCarriageway(const RoadBuild& build, const RoadGraph* graph,
+                                                           const std::vector<MassingBox>& kerbs);
+
 // ---- Road networks ----
 
 // A street of a road network: a polyline centre line, kerbed and marked like a road, meeting the others at junctions.
@@ -334,6 +367,7 @@ struct RoadNetReport {
     std::size_t floats = 0;  // samples where the ground lies more than 3 m under a road's slab (not a deck)
     std::size_t tight = 0;   // junction arms too short for their zebra and stop line (signals only)
     std::size_t piers = 0;
+    std::size_t pruned = 0;  // kerb and pavement pieces left out: a lane across them or a carriageway under them
     double maxGrade = 0.0;   // along any piece
     std::string maxGradeAt;  // the steepest piece: "<edge> (x, y)"
     double maxStep = 0.0;    // m: the largest step where an arm's crowned carriageway meets a junction's level fill
@@ -351,6 +385,8 @@ struct RoadNetReport {
 // roadGraphJunctions) and B; ids JN-0001... numbered as roadGraphJunctions numbers them. Bays on parking streets clear
 // of the corners and zebras; lamps every kRoadLampSpacing each side, staggered; a deck's piers every 30 m down to the
 // ground and a rail along each back edge. Lane mouths as roadBuild's. Slabs deepen where the ground falls away (to 3 m).
+// Last, the kerb and pavement pieces roadKerbFaces would find across its own lanes or in its own carriageway (two
+// junctions close together) are left out (report: pruned).
 FTCORE_API void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround& ground, RoadBuild& out,
                              RoadNetReport* report = nullptr);
 
