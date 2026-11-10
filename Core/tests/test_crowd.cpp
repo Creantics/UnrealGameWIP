@@ -1052,6 +1052,10 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
     REQUIRE(importCrowdTuning(readFile(std::string(FTCORE_PROJECT_DATA_DIR) + "/Crowd/crowd.json"), t, &err));
     CrowdGraph g;
     REQUIRE_MESSAGE(g.build(streets, t.graph, &err), err);
+    // S-275: FT_CROWD_DOORS, a door table in the streets' frame, puts its doors on the streets for every run.
+    std::vector<CrowdDoor> doors;
+    bool doorsSaid = false;
+    if (!envText("FT_CROWD_DOORS").empty()) REQUIRE_MESSAGE(importCrowdDoors(readFile(envText("FT_CROWD_DOORS")), side, doors, &err), err);
     const std::uint32_t minNodes = static_cast<std::uint32_t>(std::max(1, std::atoi(want.c_str())));
     // What-if levers for the report (not the shipped tuning): FT_CROWD_REACT_CLOSE (s), FT_CROWD_RUN_MUL (x run speed).
     if (!envText("FT_CROWD_REACT_CLOSE").empty()) t.reactCloseMax = std::strtof(envText("FT_CROWD_REACT_CLOSE").c_str(), nullptr);
@@ -1095,6 +1099,13 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
         for (std::uint32_t seed = 1; seed <= 6; ++seed) {
             CrowdSim sim;
             REQUIRE(sim.init(g, t, seed));
+            if (!doors.empty()) {
+                const std::uint32_t on = sim.setDoors(doors);
+                if (seed == 1 && !doorsSaid) {
+                    std::printf("crowd sweep: %u of %zu doors on the streets\n", on, doors.size());
+                    doorsSaid = true;
+                }
+            }
             // S-271: the least gap between two members and between a member and the frontage, every step of the run
             // (calm included), and the walkers near the fight at its start and 30 s later.
             float runPair = 1e30f, runWall = 1e30f;

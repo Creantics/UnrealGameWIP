@@ -51,6 +51,19 @@ struct CrowdStreet {
 FTCORE_API bool importCrowdStreets(std::string_view csv, double side, std::vector<CrowdStreet>& out,
                                    std::string* error = nullptr);
 
+// A door of an enterable building (S-275): where it stands on the frontage and the middle of the room behind it.
+struct CrowdDoor {
+    std::string id;  // the table's id without its DOOR- prefix
+    Vec2 at;         // engine frame, metres: the door's middle
+    Vec2 inside;     // the room's middle (the door itself when the table has no room row for it)
+};
+
+// Reads a door table (id, kind, width_m, pts, pavement_m; DOOR-<id> rows of kind door with the door's two ends as
+// pts x:y:z, ROOM-<id> rows with the room's outline) and moves the points to the engine frame of a square `side` metres
+// across, as importCrowdStreets does. `out` is cleared first; false (with the line) on a malformed row or no doors.
+// Allocates (load time).
+FTCORE_API bool importCrowdDoors(std::string_view csv, double side, std::vector<CrowdDoor>& out, std::string* error = nullptr);
+
 struct CrowdGraphTuning {
     float snap = 1.5f;                 // m: points closer than this are one node
     float junctionReach = 1.0f;        // m past the other street's half width an end may stop and still join it
@@ -160,6 +173,15 @@ struct CrowdTuning {
     float avoidRadius = 0.9f;        // m between members
     float avoidPlayer = 1.6f;        // m kept from the player
     float minGap = 0.65f;            // m: two members never stand closer (pushed apart every step, S-271)
+    // doors (S-275): calm walkers go in and come out again; a runner takes a door ahead of it, away from the threat
+    float doorAttach = 12.f;         // m: a door this close to a street's centre line opens onto it
+    float doorEnterChance = 0.08f;   // a calm walker passing a door goes in
+    float doorEnterOver = 0.6f;      // ... while more are out on the streets than the density asks for
+    float doorDwellMin = 20.f;       // s inside (calm visit), at least
+    float doorDwellMax = 90.f;       // s, at most
+    float doorFleeAhead = 8.f;       // m: a runner takes a door at most this far ahead along its street
+    float doorFleeMin = 10.f;        // m: only a door at least this far from the threat
+    std::uint32_t doorFleeCap = 6;   // runners one door takes in
     // perception
     float fov = 140.f;               // deg, for sight-only events
     float feelRadius = 3.f;          // m: sight-only events this close are felt whatever the facing
@@ -225,7 +247,7 @@ FTCORE_API bool importCrowdTuning(std::string_view json, CrowdTuning& out, std::
 
 // ---- The simulation ----
 
-enum class CrowdState : std::uint8_t { Free, Walk, Idle, Notice, BackAway, Flee, Cower, Recover };
+enum class CrowdState : std::uint8_t { Free, Walk, Idle, Notice, BackAway, Flee, Cower, Recover, Indoors }; // append only
 enum class CrowdAnim : std::uint8_t { Idle, Walk, Run, BackStep, Cower, Look };
 FTCORE_API std::string_view crowdStateName(CrowdState s);
 
@@ -234,6 +256,7 @@ struct CrowdAgentView {
     bool live = false;
     bool drawn = false;
     bool cornered = false;  // cowering at the far end of a dead end with no way out past the threat, facing away
+    bool indoors = false;   // inside a building (state Indoors, past its door): not drawn, pos is the door
     CrowdState state = CrowdState::Free;
     CrowdAnim anim = CrowdAnim::Idle;
     Vec2 pos, prevPos;      // this step's and the last step's (lerp by stepAlpha())
@@ -256,6 +279,7 @@ struct CrowdCounts {
     std::uint32_t maxFleeEntries = 0;    // the most times one member entered Flee
     std::uint32_t maxPlans = 0;          // the most flee plans one member asked for
     std::uint64_t stuck = 0;             // times a moving member stood still (< 0.1 m): a runner 1 s, anyone else 2 s
+    std::uint64_t wentIn = 0, cameOut = 0, fledIn = 0; // through doors (fledIn: runners that took a door)
 };
 
 // A run check: which members stood within `radius` of a point when a fight started there, and how they moved by
@@ -331,6 +355,19 @@ public:
     // Draw the members nearest this point instead of the player (a test watching a spot away from the player).
     void setDrawFocus(bool on, Vec2 at) { focusOn_ = on; focus_ = at; }
 
+    // S-275 doors. Attaches each door to the nearest street within tuning.doorAttach of it (doors farther off are
+    // left out) and returns how many it attached. Call after init; init forgets them. Allocates (load time).
+    FTCORE_API std::uint32_t setDoors(const std::vector<CrowdDoor>& doors);
+    std::uint32_t doorCount() const { return static_cast<std::uint32_t>(doors_.size()); }
+    // S-283: the share of the daytime crowd out on the streets (0..1; the host reads it from the day's CrowdDensity
+    // curve). The streets fill to targetAgents x density: above it walkers passing a door go in and those inside stay;
+    // below it those inside come out sooner and new members arrive at the edges as before.
+    void setDensity(float d) { density_ = d > 1.f ? 1.f : d < 0.f ? 0.f : d; }
+    float density() const { return density_; }
+    // Members inside a building. They count in liveCount() (they hold a pool slot) but not towards the streets' target,
+    // and are left out of the neighbour grid, the gap checks and the drawn pick.
+    std::uint32_t indoorCount() const { return indoors_; }
+
 private:
     struct Agent {
         std::uint16_t gen = 0;
@@ -369,6 +406,18 @@ private:
         bool hold = false;           // backing off or running with nowhere farther to go: stands until the next plan
         bool brace = false;          // cornered (no plan): runs to the far end of its dead end, then cowers there
         int braceSlot = -1;          // >= 0: its own spot at that end (rows back from the end, across the width)
+        std::int32_t door = -1;      // Indoors: the door it uses
+        std::uint8_t doorPhase = 0;  // Indoors: 1 walking in to the door, 2 inside, 3 coming out to its pavement
+        bool doorFled = false;       // went in running from a threat
+        float doorLeft = 0.f;        // s left inside
+        Vec2 doorTo;                 // phase 3: the pavement spot it walks out to
+        std::int32_t doorSeen = -1;  // the last door it walked past (one chance per door)
+    };
+    struct DoorSlot {
+        Vec2 at, inside;
+        std::uint32_t u = 0, v = 0;  // the street edge it opens onto
+        float along = 0.f;           // m from u
+        std::uint32_t fleeIn = 0;    // runners inside now
     };
 
     void step(Vec2 player, Vec2 playerVel);
@@ -396,6 +445,15 @@ private:
     int freeBraceSlot(std::uint32_t i) const;
     void braceSlotAt(const Agent& a, float& along, float& lat) const;
     bool unCorner(Agent& a);
+    float doorAlong(const DoorSlot& d, const Agent& a) const;
+    bool tryDoor(std::uint32_t i, bool fleeing);
+    void goIn(Agent& a, std::uint32_t door, bool fled);
+    void doorStep(Agent& a);
+    std::uint32_t streetTarget() const;
+    // Two members both at doors (going in or coming out) pass each other in the doorway: no gap kept or measured.
+    bool bothAtDoors(std::uint32_t i, std::uint32_t j) const {
+        return agents_[i].state == CrowdState::Indoors && agents_[j].state == CrowdState::Indoors;
+    }
     bool crowded(std::uint32_t self, Vec2 p, float r) const;
     void separate();
     void nudge(Agent& a, Vec2 by);
@@ -433,6 +491,10 @@ private:
     std::vector<std::uint64_t> order_;
     bool focusOn_ = false;
     Vec2 focus_{};
+    std::vector<DoorSlot> doors_;
+    std::vector<std::uint32_t> doorFirst_, doorList_; // doors by street node (each door under both its edge's nodes)
+    float density_ = 1.f;
+    std::uint32_t indoors_ = 0;
     CrowdOcclusionFn occlude_ = nullptr;
     void* occludeCtx_ = nullptr;
     CrowdCounts counts_;

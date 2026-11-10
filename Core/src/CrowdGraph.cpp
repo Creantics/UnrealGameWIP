@@ -61,6 +61,68 @@ bool importCrowdStreets(std::string_view csv, double side, std::vector<CrowdStre
     return true;
 }
 
+bool importCrowdDoors(std::string_view csv, double side, std::vector<CrowdDoor>& out, std::string* error) {
+    out.clear();
+    std::vector<Record> records;
+    if (!splitCsv(csv, records, error)) return false;
+    std::size_t idCol = SIZE_MAX, ptsCol = SIZE_MAX;
+    bool haveHeader = false;
+    struct Room {
+        std::string id;
+        Vec2 middle;
+    };
+    std::vector<Room> rooms;
+    for (const Record& r : records) {
+        if (isComment(r)) continue;
+        if (!haveHeader) {
+            for (std::size_t f = 0; f < r.fields.size(); ++f) {
+                const std::string_view name = trim(r.fields[f]);
+                if (name == "id") idCol = f;
+                if (name == "pts") ptsCol = f;
+            }
+            if (idCol == SIZE_MAX || ptsCol == SIZE_MAX) return detail::fail(error, r.line, "the door table needs id and pts columns");
+            haveHeader = true;
+            continue;
+        }
+        if (idCol >= r.fields.size()) continue;
+        const std::string_view id = trim(r.fields[idCol]);
+        const bool isDoor = id.substr(0, 5) == "DOOR-", isRoom = id.substr(0, 5) == "ROOM-";
+        if (!isDoor && !isRoom) continue;
+        const std::string_view pts = ptsCol < r.fields.size() ? trim(r.fields[ptsCol]) : std::string_view{};
+        double sx = 0.0, sy = 0.0;
+        int n = 0;
+        bool bad = false;
+        for (std::size_t at = 0; at <= pts.size() && !pts.empty();) {
+            std::size_t end = pts.find(';', at);
+            if (end == std::string_view::npos) end = pts.size();
+            const std::string_view p = trim(pts.substr(at, end - at));
+            const std::size_t c1 = p.find(':');
+            double x = 0.0, y = 0.0;
+            if (c1 == std::string_view::npos || !parseNumber(p.substr(0, c1), x)) bad = true;
+            else {
+                const std::string_view rest = p.substr(c1 + 1);
+                if (!parseNumber(rest.substr(0, rest.find(':')), y)) bad = true;
+            }
+            if (bad) break;
+            sx += x;
+            sy += y;
+            ++n;
+            at = end + 1;
+        }
+        if (bad || n == 0 || (isDoor && n != 2))
+            return detail::fail(error, r.line, std::string(id) + ": pts must be x:y:z points separated by ; (a door: its two ends)");
+        const MassingVec m = side > 0.0 ? massingEnginePoint(side, sx / n, sy / n, 0.0) : MassingVec{sx / n, sy / n, 0.0};
+        const Vec2 p{static_cast<float>(m.x), static_cast<float>(m.y)};
+        if (isDoor) out.push_back(CrowdDoor{std::string(id.substr(5)), p, p});
+        else rooms.push_back(Room{std::string(id.substr(5)), p});
+    }
+    for (CrowdDoor& d : out)
+        for (const Room& r : rooms)
+            if (r.id == d.id) d.inside = r.middle;
+    if (out.empty()) return detail::fail(error, 0, "the door table has no DOOR- rows");
+    return true;
+}
+
 namespace {
 
 float dist(Vec2 a, Vec2 b) { return std::hypot(b.x - a.x, b.y - a.y); }
