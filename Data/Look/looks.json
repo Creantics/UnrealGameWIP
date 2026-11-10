@@ -21,6 +21,7 @@
       "filmToe": 0.62,
       "filmBlackClip": 0.01,
       "localShadowContrast": 1.0,
+      "lumenSkylightLeaking": 0.12,
       "fringe": 0.15,
       "gradeChroma": 0.82,
       "skinFloor": 0.9,

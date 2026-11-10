@@ -377,6 +377,61 @@ TEST_CASE("massing: the engine frame reads true from above") {
     CHECK(near((p1.y + p2.y) / 2, 10.0 * std::sin(yaw), 1e-9));
 }
 
+TEST_CASE("massing: a tilted box's cube lays its top on the box's plane, its yaw on the box's rotation") {
+    // Unreal's rotator as its matrix (FRotationTranslationMatrix): the rows are the images of local X, Y and Z.
+    const double toRad = 3.14159265358979323846 / 180.0;
+    struct Case {
+        double rot, riseU, riseW;
+    };
+    for (const Case k : {Case{0.0, 0.0, 0.0}, Case{30.0, 0.1, 0.0}, Case{-120.0, 0.05, -0.08}, Case{75.0, -0.2, 0.15},
+                         Case{200.0, 0.0, 0.12}}) {
+        MassingBox b = flatBox(10, -4, 6, 2, k.rot, 1.0, 1.35);
+        b.riseU = k.riseU;
+        b.riseW = k.riseW;
+        const double h = b.z1 - b.z0;
+        const MassingCubePose pose = massingCubePose(b, h);
+        CHECK(near(pose.yaw, massingEngineYaw(k.rot)));
+        if (k.riseU == 0.0 && k.riseW == 0.0) {
+            CHECK(pose.pitch == 0.0);
+            CHECK(pose.roll == 0.0);
+            CHECK(pose.lift == 0.0);
+            CHECK(near(pose.scale.x, 6.0));
+            CHECK(near(pose.scale.y, 2.0));
+        }
+        CHECK(near(pose.scale.z, h));
+        const double sp = std::sin(pose.pitch * toRad), cp = std::cos(pose.pitch * toRad);
+        const double sy = std::sin(pose.yaw * toRad), cy = std::cos(pose.yaw * toRad);
+        const double sr = std::sin(pose.roll * toRad), cr = std::cos(pose.roll * toRad);
+        const double mx[3] = {cp * cy, cp * sy, sp};
+        const double my[3] = {sr * sp * cy - cr * sy, sr * sp * sy + cr * cy, -sr * cp};
+        const double mz[3] = {-(cr * sp * cy + sr * sy), cy * sr - cr * sp * sy, cr * cp};
+        const MassingVec centre = massingEnginePoint(0.0, b.cx, b.cy, b.z0 + 0.5 * h + pose.lift);
+        const double c = std::cos(k.rot * toRad), s = std::sin(k.rot * toRad);
+        for (int corner = 0; corner < 4; ++corner) {
+            const double lx = (corner & 1 ? 0.5 : -0.5) * pose.scale.x, ly = (corner & 2 ? 0.5 : -0.5) * pose.scale.y,
+                         lz = 0.5 * pose.scale.z;
+            double e[3];
+            for (int a = 0; a < 3; ++a) e[a] = lx * mx[a] + ly * my[a] + lz * mz[a];
+            // Back to the plan (the engine's y runs south), then to the box's u and w about its centre.
+            const double dx = e[0], dy = -e[1];
+            const double u = dx * c + dy * s, w = -dx * s + dy * c;
+            // Local X runs along u and local Y along -w, the cube's plan keeping the box's size.
+            CHECK(near(u, (corner & 1 ? 3.0 : -3.0), 0.1));
+            CHECK(near(w, (corner & 2 ? -1.0 : 1.0), 0.1));
+            // The top corner lies on the plane through the top's middle rising riseU along u and riseW along w.
+            CHECK(near(centre.z + e[2], b.z1 + k.riseU * u + k.riseW * w, 1e-9));
+        }
+    }
+    // The corners read the same plane.
+    MassingBox t = flatBox(0, 0, 4, 2, 0, 0.0, 0.5);
+    t.riseU = 0.1;
+    t.riseW = -0.05;
+    std::array<MassingVec, 8> c;
+    massingCorners(t, 0.0, c);
+    CHECK(near(c[6].z, 0.5 + 0.1 * 2.0 - 0.05 * 1.0)); // (+u, +w) top
+    CHECK(near(c[0].z, 0.0 - 0.1 * 2.0 + 0.05 * 1.0)); // (-u, -w) bottom
+}
+
 TEST_CASE("massing: meshes wind the way the engine's own cube does") {
     // Unreal's generated cube (UStaticMeshDescription::CreateCube): corners and its +Z and +X faces.
     const MassingVec cube[8] = {{1, -1, 1}, {1, 1, 1}, {-1, 1, 1}, {-1, -1, 1}, {-1, 1, -1}, {-1, -1, -1}, {1, -1, -1}, {1, 1, -1}};
@@ -572,6 +627,143 @@ TEST_CASE("massing: shared tops step down, smallest first") {
     CHECK(nudge[4] == 0.0);
     CHECK(nudge[5] == 0.0);
     CHECK(nudge[6] == 0.0);
+}
+
+namespace {
+
+// A height field as Core stores it (massingHeightFromValue), `x` samples by `y`, 1 m apart from the plan origin.
+std::vector<std::uint16_t> groundGrid(std::size_t x, std::size_t y, double (*height)(std::size_t ix, std::size_t iy)) {
+    std::vector<std::uint16_t> g(x * y);
+    for (std::size_t iy = 0; iy < y; ++iy)
+        for (std::size_t ix = 0; ix < x; ++ix)
+            g[iy * x + ix] = static_cast<std::uint16_t>(std::lround(32768.0 + height(ix, iy) * 128.0));
+    return g;
+}
+
+std::size_t raisesOver(const std::vector<std::uint16_t>& g, std::size_t x, std::size_t y,
+                       const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
+                       const std::vector<double>& nudges, std::vector<double>& out) {
+    return massingGroundRaises(g.data(), x, y, 1.0, 0.0, 0.0, boxes, include, nudges, out);
+}
+
+} // namespace
+
+TEST_CASE("massing: a top the ground was levelled to goes up off it") {
+    // Flat ground at 4 m over 40 x 40 m.
+    const auto g = groundGrid(40, 40, [](std::size_t, std::size_t) { return 4.0; });
+    std::vector<MassingBox> boxes = {
+        flatBox(10, 20, 6, 30, 0, -3, 4),   // 0: a quay, its top on the ground
+        flatBox(30, 10, 4, 4, 0, 4, 5),     // 1: a box a metre over it
+        flatBox(30, 30, 4, 4, 0, -3, 4),    // 2: on the ground, but left out
+    };
+    MassingBox sloped = flatBox(30, 20, 4, 4, 0, -3, 4);
+    sloped.sloped = true;
+    sloped.slopeFrom = sloped.slopeTo = 4.0;
+    boxes.push_back(sloped); // 3: sloped, never raised
+    const std::vector<bool> include = {true, true, false, true};
+    std::vector<double> nudge, raise;
+    massingTopNudges(boxes, include, nudge);
+    CHECK(raisesOver(g, 40, 40, boxes, include, nudge, raise) == 0);
+    REQUIRE(raise.size() == boxes.size());
+    CHECK(near(raise[0], kMassingNudgeStep));
+    CHECK(raise[1] == 0.0);
+    CHECK(raise[2] == 0.0);
+    CHECK(raise[3] == 0.0);
+
+    // No ground: nothing goes up.
+    CHECK(massingGroundRaises(nullptr, 40, 40, 1.0, 0, 0, boxes, include, nudge, raise) == 0);
+    CHECK(raise[0] == 0.0);
+    CHECK(massingGroundRaises(g.data(), 40, 40, 0.0, 0, 0, boxes, include, nudge, raise) == 0);
+    CHECK(raise[0] == 0.0);
+}
+
+TEST_CASE("massing: boxes that share a top go up together, keeping their order") {
+    const auto g = groundGrid(40, 40, [](std::size_t, std::size_t) { return 4.0; });
+    const std::vector<MassingBox> boxes = {
+        flatBox(10, 20, 6, 30, 0, -3, 4), // 0: the quay
+        flatBox(10, 20, 2, 2, 0, 3, 4),   // 1: a landing on it, sharing its top
+    };
+    const std::vector<bool> include = {true, true};
+    std::vector<double> nudge, raise;
+    massingTopNudges(boxes, include, nudge);
+    REQUIRE(near(nudge[0], -kMassingNudgeStep)); // the quay sits under the landing
+    CHECK(raisesOver(g, 40, 40, boxes, include, nudge, raise) == 0);
+    // One step would bring the quay down onto the ground; two clear both.
+    CHECK(near(raise[0], 2 * kMassingNudgeStep));
+    CHECK(near(raise[1], 2 * kMassingNudgeStep));
+    CHECK(near((boxes[1].z1 + nudge[1] + raise[1]) - (boxes[0].z1 + nudge[0] + raise[0]), kMassingNudgeStep));
+    CHECK(near(boxes[0].z1 + nudge[0] + raise[0], 4.0 + kMassingNudgeStep));
+}
+
+TEST_CASE("massing: a raised top keeps clear of the boxes over it") {
+    const auto g = groundGrid(40, 40, [](std::size_t, std::size_t) { return 4.0; });
+    const std::vector<MassingBox> boxes = {
+        flatBox(10, 20, 6, 30, 0, -3, 4),                    // 0: the quay
+        flatBox(10, 20, 2, 2, 0, 3, 4 + kMassingNudgeStep),  // 1: a plate one step over it, not sharing its top
+    };
+    const std::vector<bool> include = {true, true};
+    std::vector<double> nudge, raise;
+    massingTopNudges(boxes, include, nudge);
+    REQUIRE(nudge[0] == 0.0);
+    CHECK(raisesOver(g, 40, 40, boxes, include, nudge, raise) == 0);
+    CHECK(near(raise[0], 2 * kMassingNudgeStep)); // one step would meet the plate's top
+    CHECK(raise[1] == 0.0);
+}
+
+TEST_CASE("massing: ground meeting a side along a line, a turned box, and a top no raise clears") {
+    // Ground at -3 south of y = 9 rising to 4 m at y = 10 and flat north of it.
+    const auto g = groundGrid(40, 20, [](std::size_t, std::size_t iy) { return iy >= 10 ? 4.0 : -3.0; });
+    std::vector<MassingBox> boxes = {
+        flatBox(5, 5, 10, 10, 0, -3, 4),  // 0: its north side on the line where the ground comes up to its top
+        flatBox(15, 8, 10, 2, 0, -3, 4),  // 1: y 7 to 9, wholly over the low ground
+        flatBox(30, 8, 10, 2, 90, -3, 4), // 2: the same turned a quarter: y 3 to 13, over the flat ground north
+    };
+    const std::vector<bool> include = {true, true, true};
+    std::vector<double> nudge, raise;
+    massingTopNudges(boxes, include, nudge);
+    REQUIRE(nudge[2] == 0.0);
+    CHECK(raisesOver(g, 40, 20, boxes, include, nudge, raise) == 0);
+    CHECK(raise[0] == 0.0);
+    CHECK(raise[1] == 0.0);
+    CHECK(near(raise[2], kMassingNudgeStep));
+
+    // Ground rising one height step (1/128 m) a metre through the top and well past every raise: some sample point
+    // always lies within kMassingSharedTop of it, so it stays and is counted.
+    const auto ramp = groundGrid(40, 3, [](std::size_t ix, std::size_t) { return 4.0 + (static_cast<double>(ix) - 5.0) / 128.0; });
+    const std::vector<MassingBox> one = {flatBox(20, 1, 30, 1, 0, -3, 4)};
+    const std::vector<bool> all = {true};
+    massingTopNudges(one, all, nudge);
+    CHECK(raisesOver(ramp, 40, 3, one, all, nudge, raise) == 1);
+    CHECK(raise[0] == 0.0);
+}
+
+TEST_CASE("massing: the groups left on the ground are listed by their boxes") {
+    // Ground rising a height step a metre (as above): no raise clears a top lying across it.
+    const auto ramp = groundGrid(40, 12, [](std::size_t ix, std::size_t) { return 4.0 + (static_cast<double>(ix) - 5.0) / 128.0; });
+    const std::vector<MassingBox> boxes = {
+        flatBox(20, 2, 30, 1, 0, -3, 4),  // 0: stuck
+        flatBox(20, 6, 30, 1, 0, 3, 9),   // 1: well over the ground
+        flatBox(20, 9, 38, 1, 0, -3, 4),  // 2: stuck (nudged under 3, which shares its top), the ground below it at its west end
+        flatBox(20, 9, 2, 1, 0, 3, 4),    // 3
+    };
+    const std::vector<bool> include = {true, true, true, true};
+    std::vector<double> nudge, raise;
+    massingTopNudges(boxes, include, nudge);
+    std::vector<std::vector<std::size_t>> stuck = {{99}};
+    CHECK(massingGroundRaises(ramp.data(), 40, 12, 1.0, 0.0, 0.0, boxes, include, nudge, raise, &stuck) == 2);
+    REQUIRE(stuck.size() == 2);
+    CHECK(stuck[0] == std::vector<std::size_t>{0});
+    REQUIRE(stuck[1].size() == 2);
+    CHECK(stuck[1][0] == 2);
+    CHECK(stuck[1][1] == 3);
+
+    // A group that goes up isn't listed; the list is cleared each call, with no ground too.
+    const auto flat = groundGrid(40, 12, [](std::size_t, std::size_t) { return 4.0; });
+    CHECK(massingGroundRaises(flat.data(), 40, 12, 1.0, 0.0, 0.0, boxes, include, nudge, raise, &stuck) == 0);
+    CHECK(stuck.empty());
+    stuck = {{7}};
+    CHECK(massingGroundRaises(nullptr, 40, 12, 1.0, 0.0, 0.0, boxes, include, nudge, raise, &stuck) == 0);
+    CHECK(stuck.empty());
 }
 
 TEST_CASE("massing: the 1 m grid as a Landscape") {
@@ -774,23 +966,25 @@ TEST_CASE("massing look: each kind of built box wears its class") {
     // Kerbs and the other added walls.
     CHECK(cls(lookBox("V1-KB-0001", "V1-KERB", MassingSource::Invented, "wall", false)) == MassingLookSurface::PoleConcrete);
     CHECK(cls(lookBox("V1-KB-P0001", "V1-KERB", MassingSource::Invented, "wall", false)) == MassingLookSurface::PoleConcrete);
+    CHECK(cls(lookBox("CL-001-KL1", "CL-001", MassingSource::Invented, "kerb", false)) == MassingLookSurface::PoleConcrete);
     CHECK(cls(lookBox("V1-SCH-0001", "V1-SCH", MassingSource::Invented, "wall", true)) == MassingLookSurface::PoleConcrete);
-    // Flights, toe stairs, ramps, landings and terraces.
+    // Flights, toe stairs, ramps and landings.
     CHECK(cls(lookBox("V1-FL-ST-1", "V1-FL", MassingSource::Invented, "ramp", false)) == MassingLookSurface::PavingSlab);
     CHECK(cls(lookBox("V1-FL-ST-2", "V1-FL", MassingSource::Invented, "landing", false)) == MassingLookSurface::PavingSlab);
     CHECK(cls(lookBox("BLD-008_1", "BLD-008", MassingSource::Plan, "ramp", true)) == MassingLookSurface::PavingSlab);
-    CHECK(cls(lookBox("V1-NBD-1", "V1-NBD", MassingSource::Invented, "terrace", true)) == MassingLookSurface::PavingSlab);
-    // Cliff cover plates, the seawall, breakwater and quay.
+    // Terraces (cast courts), cliff cover plates, the seawall, breakwater and quay.
+    CHECK(cls(lookBox("V1-NBD-1", "V1-NBD", MassingSource::Invented, "terrace", true)) == MassingLookSurface::BoardConcrete);
+    CHECK(cls(lookBox("BLD-020_1", "BLD-020", MassingSource::Plan, "terrace", true)) == MassingLookSurface::BoardConcrete);
     CHECK(cls(lookBox("V1-CLF-0001", "V1-CLIFF", MassingSource::Invented, "cliff", true)) == MassingLookSurface::BoardConcrete);
     CHECK(cls(lookBox("V1-ISH-1", "V1-ISH", MassingSource::Invented, "seawall", true)) == MassingLookSurface::BoardConcrete);
     CHECK(cls(lookBox("V1-BRK-1", "V1-BRK", MassingSource::Invented, "breakwater", true)) == MassingLookSurface::BoardConcrete);
     CHECK(cls(lookBox("BLD-050_1", "BLD-050", MassingSource::Plan, "quay", true)) == MassingLookSurface::BoardConcrete);
-    // Decks, piers, boats and bridges.
-    for (const char* kind : {"deck", "pier", "boat", "bridge"})
+    // Decks, piers and bridges.
+    for (const char* kind : {"deck", "pier", "bridge"})
         CHECK(cls(lookBox("BLD-060_1", "BLD-060", MassingSource::Plan, kind, true)) == MassingLookSurface::OakPlank);
     CHECK(cls(lookBox("V1-MOLE-1", "V1-MOLE", MassingSource::Invented, "pier", true)) == MassingLookSurface::OakPlank);
-    // Cranes, masts, posts, barriers and gates.
-    for (const char* kind : {"crane", "mast", "post", "barrier", "gate"})
+    // Cranes, boats (steel hulls), masts, posts, barriers and gates.
+    for (const char* kind : {"crane", "boat", "mast", "post", "barrier", "gate"})
         CHECK(cls(lookBox("BLD-070_1", "BLD-070", MassingSource::Plan, kind, true)) == MassingLookSurface::GalvSteel);
     // A box the build doesn't make: a zone, an open option, a proxy, a hidden kind.
     CHECK(cls(lookBox("Z1_1", "Z1", MassingSource::Zone, "zone", true)) == MassingLookSurface::BoardConcrete);
@@ -799,27 +993,44 @@ TEST_CASE("massing look: each kind of built box wears its class") {
     CHECK(cls(lookBox("BLD-003_1", "BLD-003", MassingSource::Plan, "interior", true)) == MassingLookSurface::BoardConcrete);
 }
 
-TEST_CASE("massing look: a building's finish follows its row, one of three") {
-    const auto isBuilding = [](MassingLookSurface s) {
-        return s == MassingLookSurface::BuildingA || s == MassingLookSurface::BuildingB || s == MassingLookSurface::BuildingC;
-    };
-    int seen[3] = {};
-    for (int i = 1; i <= 60; ++i) {
+TEST_CASE("massing look: a building's finish follows its row; a terrace house's its own id") {
+    int seen[6] = {};
+    for (int i = 1; i <= 300; ++i) {
         const std::string row = "BLD-" + std::to_string(100 + i);
-        // Every part of the row, whatever its kind (a wall, a plate, a box), wears the same finish.
+        // Every part of the row but a kit house (a wall, a plate, a box) wears the same finish.
         const MassingLookSurface first = massingLookSurface(lookBox(row + "_1", row, MassingSource::Plan, "box", true));
-        REQUIRE(isBuilding(first));
+        REQUIRE(massingLookIsBuilding(first));
         CHECK(massingLookSurface(lookBox(row + "_2", row, MassingSource::Plan, "wall", false)) == first);
         CHECK(massingLookSurface(lookBox(row + "_3", row, MassingSource::Plan, "plate", true)) == first);
-        CHECK(massingLookSurface(lookBox(row + "_4", row, MassingSource::Plan, "kit", false)) == first);
         ++seen[static_cast<int>(first) - static_cast<int>(MassingLookSurface::BuildingA)];
     }
-    for (const int n : seen) CHECK(n >= 10); // all three are in use, none starved
+    // Render, tile and board concrete lead; brick next; breeze block and cladding are rare but present.
+    const int brick = seen[0], breeze = seen[1], clad = seen[2], render = seen[3], tile = seen[4], board = seen[5];
+    CHECK(render > brick);
+    CHECK(tile > brick);
+    CHECK(board > breeze);
+    CHECK(breeze > 0);
+    CHECK(clad > 0);
+    CHECK(breeze < 40);
+    CHECK(clad < 40);
+    // A terrace row of kit houses varies house by house: no finish takes more than half of 300 houses.
+    int houses[6] = {};
+    for (int i = 1; i <= 300; ++i) {
+        const MassingLookSurface h =
+            massingLookSurface(lookBox("BLD-032_" + std::to_string(i), "BLD-032", MassingSource::Plan, "kit", false));
+        REQUIRE(massingLookIsBuilding(h));
+        ++houses[static_cast<int>(h) - static_cast<int>(MassingLookSurface::BuildingA)];
+    }
+    for (const int n : houses) CHECK(n < 150);
+    CHECK(houses[3] > 30); // render
+    CHECK(houses[4] > 30); // tile
     // A table with no row column goes by the id up to its last '_': the parts still agree.
     const MassingBox a = lookBox("BLD-205_1", "", MassingSource::Plan, "box", true);
     const MassingBox b = lookBox("BLD-205_2", "", MassingSource::Plan, "wall", false);
     CHECK(massingLookSurface(a) == massingLookSurface(b));
     CHECK(massingLookSurface(a) == massingLookSurface(lookBox("X", "BLD-205", MassingSource::Plan, "box", true)));
+    CHECK_FALSE(massingLookIsBuilding(MassingLookSurface::PoleConcrete));
+    CHECK_FALSE(massingLookIsBuilding(MassingLookSurface::GalvSteel));
 }
 
 TEST_CASE("massing look: the surface ids") {
@@ -831,7 +1042,10 @@ TEST_CASE("massing look: the surface ids") {
     CHECK(massingLookSurfaceId(MassingLookSurface::BuildingA) == "soot_brick");
     CHECK(massingLookSurfaceId(MassingLookSurface::BuildingB) == "breeze_block");
     CHECK(massingLookSurfaceId(MassingLookSurface::BuildingC) == "alu_cladding");
-    CHECK(kMassingLookSurfaceCount == 8);
+    CHECK(massingLookSurfaceId(MassingLookSurface::BuildingRender) == "pole_concrete");
+    CHECK(massingLookSurfaceId(MassingLookSurface::BuildingTile) == "ceramic_tile");
+    CHECK(massingLookSurfaceId(MassingLookSurface::BuildingBoard) == "board_concrete");
+    CHECK(kMassingLookSurfaceCount == 11);
 }
 
 TEST_CASE("massing streets: the table is read by id, width_m and pts") {
@@ -875,6 +1089,79 @@ TEST_CASE("massing streets: the table is read by id, width_m and pts") {
     CHECK_FALSE(importMassingStreets("id,width_m,pts\nST-1,6\n", streets, &error));
     CHECK(error.find("fields") != std::string::npos);
     CHECK(streets.empty()); // cleared first
+}
+
+TEST_CASE("massing streets: pavement_m sets the carriageway, kerb to kerb") {
+    std::vector<MassingStreet> streets;
+    std::string error;
+    REQUIRE(importMassingStreets("id,kind,width_m,pts,pavement_m\n"
+                                 "ST-1,lane,6,0:0;10:0,1.5\n"
+                                 "ST-2,street,18,0:0;10:0,\n"
+                                 "ST-3,street,8,0:0,0\n",
+                                 streets, &error));
+    REQUIRE(streets.size() == 3);
+    CHECK(near(streets[0].pavement, 1.5));
+    CHECK(near(massingCarriageway(streets[0]), 3.0));
+    CHECK(streets[1].pavement == 0.0); // empty: no pavements
+    CHECK(near(massingCarriageway(streets[1]), 18.0));
+    CHECK(near(massingCarriageway(streets[2]), 8.0));
+    // Without the column every street is carriageway.
+    REQUIRE(importMassingStreets("id,width_m,pts\nST-1,6,0:0\n", streets, &error));
+    CHECK(streets[0].pavement == 0.0);
+
+    CHECK_FALSE(importMassingStreets("id,width_m,pts,pavement_m\nST-1,6,0:0,3\n", streets, &error)); // nothing left
+    CHECK(error.find("pavement_m") != std::string::npos);
+    CHECK(error.find("line 2") != std::string::npos);
+    CHECK_FALSE(importMassingStreets("id,width_m,pts,pavement_m\nST-1,6,0:0,-1\n", streets, &error));
+    CHECK_FALSE(importMassingStreets("id,width_m,pts,pavement_m\nST-1,6,0:0,wide\n", streets, &error));
+    CHECK_FALSE(importMassingStreets("id,width_m,pts,pavement_m,pavement_m\nST-1,6,0:0,1,1\n", streets, &error));
+    CHECK(error.find("twice") != std::string::npos);
+}
+
+TEST_CASE("massing streets: sections drop the shared surfaces and pave the kerbed band") {
+    std::vector<MassingStreet> streets;
+    REQUIRE(importMassingStreets("id,kind,width_m,pts,pavement_m\n"
+                                 "CL-1,core_lane,6,0:0;10:0,1.5\n"
+                                 "LN-1,lane,4,0:0;0:10,\n"
+                                 "LS-1,link_street,8,0:0;5:5,\n"
+                                 "ST-1,street,10,0:0;20:0,\n"
+                                 "ST-2,street,14,0:0;20:0,4\n"
+                                 "RD-1,road,18,0:0;0:20,\n"
+                                 "EX-1,expressway,24,0:0;30:0,\n",
+                                 streets));
+    REQUIRE(streets.size() == 7);
+    // Nothing asked: nothing changes.
+    std::vector<MassingStreet> same = streets;
+    std::size_t paved = 99;
+    CHECK(massingStreetSections(same, MassingStreetSections{}, &paved) == 0);
+    CHECK(paved == 0);
+    REQUIRE(same.size() == 7);
+    CHECK(near(same[0].pavement, 1.5));
+    CHECK(same[3].pavement == 0.0);
+
+    MassingStreetSections sections;
+    sections.sharedUpTo = 6.0;
+    sections.kerbFrom = 10.0;
+    sections.kerbTo = 18.0;
+    sections.pavementShare = 0.2;
+    CHECK(massingStreetSections(streets, sections, &paved) == 2); // the core lane and the lane, 6 m and under
+    CHECK(paved == 2);                                             // the 10 and 18 m streets; the 14 m keeps its own
+    REQUIRE(streets.size() == 5);
+    CHECK(streets[0].id == "LS-1");
+    CHECK(streets[0].pavement == 0.0); // 8 m: under the band, no kerb
+    CHECK(streets[1].id == "ST-1");
+    CHECK(near(streets[1].pavement, 2.0));
+    CHECK(near(massingCarriageway(streets[1]), 6.0));
+    CHECK(near(streets[2].pavement, 4.0)); // the table's own pavements stay
+    CHECK(near(streets[3].pavement, 3.6));
+    CHECK(streets[4].pavement == 0.0); // 24 m: over the band
+    // A bad share leaves the pavements alone but still drops the shared surfaces.
+    REQUIRE(importMassingStreets("id,width_m,pts\nCL-1,6,0:0\nST-1,10,0:0\n", streets));
+    sections.pavementShare = 0.5;
+    CHECK(massingStreetSections(streets, sections, &paved) == 1);
+    CHECK(paved == 0);
+    REQUIRE(streets.size() == 1);
+    CHECK(streets[0].pavement == 0.0);
 }
 
 TEST_CASE("massing streets: points move to the engine frame") {
@@ -946,6 +1233,26 @@ TEST_CASE("massing road mask: the width sets the edge, the max of streets wins, 
     CHECK(at(23, 19) == 0);
     // Nothing else is touched.
     CHECK(at(80, 80) == 0);
+}
+
+TEST_CASE("massing road mask: a street with pavements masks its carriageway only") {
+    constexpr std::size_t n = 100;
+    std::vector<std::uint8_t> mask(n * n);
+    MassingStreet lane;
+    lane.width = 10.0;
+    lane.pavement = 2.0; // a 6 m carriageway
+    lane.points = {{-60.0, 0.5, 0.0}, {60.0, 0.5, 0.0}}; // pixel row 50 centred on it
+    massingRoadMask({lane}, n, 100.0, kMassingRoadFeather, mask.data());
+    const auto at = [&](std::size_t ix, std::size_t iy) { return static_cast<int>(mask[iy * n + ix]); };
+    CHECK(at(50, 50) == 255);
+    CHECK(at(50, 53) == 128); // the kerb, 3 m off: as a 6 m street's edge
+    CHECK(at(50, 55) == 0);   // the street's own edge, 5 m off, reads as ground
+    CHECK(at(50, 47) == 128);
+
+    // The same street without pavements reads to its full width.
+    lane.pavement = 0.0;
+    massingRoadMask({lane}, n, 100.0, kMassingRoadFeather, mask.data());
+    CHECK(at(50, 55) == 128);
 }
 
 TEST_CASE("massing road mask: an empty table, a bad size or a bad feather leaves zeros") {

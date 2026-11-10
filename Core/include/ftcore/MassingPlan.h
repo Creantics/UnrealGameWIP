@@ -59,6 +59,9 @@ struct MassingBox {
     double slopeFrom = 0.0;    // top at u = -sx/2
     double slopeTo = 0.0;      // top at u = +sx/2
     double slopeThick = -1.0;  // < 0: none given
+    // A flat dressing box laid on a grade (a kerb, a paving pad; the table never sets these): its top and bottom rise
+    // riseU m per m of the plan along u and riseW along w, z0 and z1 standing at its centre. 0, 0: level.
+    double riseU = 0.0, riseW = 0.0;
 };
 
 // What the build does with a box, in the order it decides (the passed massing render's order):
@@ -102,11 +105,25 @@ inline MassingVec massingEnginePoint(double side, double x, double y, double z) 
 // A plan rotation (counter-clockwise from east) as an engine yaw.
 inline double massingEngineYaw(double rotDeg) { return -rotDeg; }
 
+// How the engine's centred cube (1 m a side at scale 1) stands in for a flat box `height` m tall, its centre at the
+// box's centre z0 + height / 2 + lift: Unreal's rotator (pitch, yaw, roll, degrees) and the cube's scale. A level box
+// keeps yaw massingEngineYaw(rot), scale (sx, sy, height) and lift 0. A tilted one (riseU, riseW) pitches by
+// atan(riseU) and rolls by atan(riseW cos(pitch)), so its top lies on the plane rising riseU along u and riseW along w
+// through z0 + height over the box's centre (lift puts it there), and its scale grows to sx / cos(pitch) and
+// sy / cos(roll), so its plan stays about sx by sy. No allocation.
+struct MassingCubePose {
+    double pitch = 0.0, yaw = 0.0, roll = 0.0;
+    MassingVec scale;
+    double lift = 0.0; // m
+};
+FTCORE_API MassingCubePose massingCubePose(const MassingBox& box, double height);
+
 // The box's eight corners in the plan frame: the bottom four, then the top four, each ring in the
 // order (-u, -w), (+u, -w), (+u, +w), (-u, +w). A flat box spans z0 to z0 + max(z1 + topNudge - z0,
 // kMassingMinHeight). A sloped box's top runs from slopeFrom to slopeTo along u; its bottom lies
 // slopeThick under the top when that is given, 1 m under it for a zone (whose top is raised by
-// kMassingZonePlate), and at z0 otherwise. topNudge applies to flat boxes only.
+// kMassingZonePlate), and at z0 otherwise. topNudge applies to flat boxes only. A tilted flat box's (riseU, riseW)
+// corners rise riseU * u + riseW * w from those heights, u and w their offsets from its centre.
 FTCORE_API void massingCorners(const MassingBox& box, double topNudge, std::array<MassingVec, 8>& out);
 
 // A cover plate (a named cliff cover: kind cliff, cover True, built as a named piece) is an obstacle to the
@@ -146,6 +163,29 @@ FTCORE_API void massingMesh(const MassingBox& box, double side, double topNudge,
 // its stated top. `out` gets one entry per box (0 for the rest). Allocates: build time only.
 FTCORE_API void massingTopNudges(const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
                                  std::vector<double>& out);
+
+// The amount (>= 0) each flat box's top goes up, on top of its nudge, so that no top lies on the ground: a top the
+// ground was levelled to (a quay's) flickers against it as two boxes' shared tops do. Among the boxes `include` marks
+// (flat ones only), a box lies on the ground when its top (z1 + nudges[i], the nudges massingTopNudges gives, a missing
+// entry 0) is within kMassingSharedTop of the ground (massingGroundAt) at one of its sample points: a grid over its
+// footprint kMassingGroundInset inside its edges (ground meeting a side along a line shares no face with the top),
+// about `spacing` apart and at most kMassingGroundSamples a side. Such a box goes up together with the boxes it shares
+// a top with (massingTopNudges' conflicts, joined), so their order holds, by the fewest kMassingNudgeStep, up to
+// kMassingGroundSteps of them, that leaves none of their tops within kMassingSharedTop of the ground at its sample
+// points, nor of the top (nudge and raise taken) of a box outside them whose footprint overlaps it; groups go in the
+// order of their first box. A group no such raise clears stays where it is. `out` gets one entry per box (0 for the
+// rest; all 0 with no ground: an empty grid or a spacing that isn't positive). Returns the number of groups left on
+// the ground; `stuck`, when given, is cleared and gets each such group's box indices (its first box first, then the
+// boxes it shares a top with in the order they were reached), one entry per group, in the order the groups go.
+// Allocates: build time only.
+inline constexpr double kMassingGroundInset = 0.05;
+inline constexpr std::size_t kMassingGroundSamples = 65;
+inline constexpr int kMassingGroundSteps = 5;
+FTCORE_API std::size_t massingGroundRaises(const std::uint16_t* grid, std::size_t samplesX, std::size_t samplesY,
+                                           double spacing, double originX, double originY,
+                                           const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
+                                           const std::vector<double>& nudges, std::vector<double>& out,
+                                           std::vector<std::vector<std::size_t>>* stuck = nullptr);
 
 // Whether two boxes' footprints overlap with positive area (touching edges don't).
 FTCORE_API bool massingFootprintsOverlap(const MassingBox& a, const MassingBox& b);
@@ -241,11 +281,14 @@ inline bool massingFootingHolds(const MassingFooting& footing) { return footing.
 
 // ---- The photographed look (-Surfaces): which surface a box wears, and the road mask from a street table ----
 
-// The class of photographed surface a built box wears. Kerbs and the other added walls are pole concrete; flights,
-// toe stairs, ramps, landings and terraces paving slab; cliff cover plates, the seawall, breakwater and quay board
-// concrete; decks, piers, boats and bridges oak plank; cranes, masts, posts, barriers and gates galvanised steel. Every
-// other built box is a building, wearing one of three finishes (soot brick, breeze block, aluminium cladding) chosen by a
-// stable hash of its row, so that the parts of one building share it. A box the build doesn't make is board concrete.
+// The class of photographed surface a built box wears. Kerbs (kind kerb, or a V1-KB id) and the other added walls are
+// pole concrete; flights, toe stairs, ramps and landings paving slab; terraces (cast courts), cliff cover plates, the
+// seawall, breakwater and quay board concrete; decks, piers and bridges oak plank; cranes, boats (steel hulls), masts,
+// posts, barriers, gates and the roofs' tanks, units and aerials galvanised steel. Every other built box is a building, wearing one of six wall finishes chosen by a stable, weighted
+// hash: render (the pole concrete's smooth face) the most, then ceramic tile, board-formed concrete and soot brick, with
+// breeze block and aluminium cladding rare. The parts of one building share it (the hash is of its row), except a kit
+// box, which is one house of a terrace row and gets its own (the hash is of its id), so a lane of houses varies house by
+// house. A box the build doesn't make is board concrete.
 enum class MassingLookSurface : std::uint8_t {
     PoleConcrete,
     PavingSlab,
@@ -255,23 +298,35 @@ enum class MassingLookSurface : std::uint8_t {
     BuildingA, // soot brick
     BuildingB, // breeze block
     BuildingC, // aluminium cladding
+    BuildingRender, // render: the pole concrete
+    BuildingTile, // ceramic tile
+    BuildingBoard, // board-formed concrete
 };
-inline constexpr std::size_t kMassingLookSurfaceCount = 8;
+inline constexpr std::size_t kMassingLookSurfaceCount = 11;
 // Decided from the box's src, kind, id prefix and row alone. No allocation.
 FTCORE_API MassingLookSurface massingLookSurface(const MassingBox& box);
+// The surface is one of the building finishes (BuildingA .. BuildingBoard). No allocation.
+FTCORE_API bool massingLookIsBuilding(MassingLookSurface surface);
 // The surface's id without its world's prefix: "pole_concrete", "paving_slab", ..., "soot_brick".
 FTCORE_API std::string_view massingLookSurfaceId(MassingLookSurface surface);
 
-// A street: its id, its width in metres and its polyline.
+// A street: its id, its width in metres, its polyline and its kind. A street with pavements has its carriageway
+// (massingCarriageway) down the middle of its width and a pavement `pavement` metres wide along each side of that.
 struct MassingStreet {
     std::string id;
     double width = 0.0;             // m, > 0
     std::vector<MassingVec> points; // z is left 0; at least one
+    std::string kind{};             // empty when the table gives none
+    double pavement = 0.0;          // m, >= 0 and 2 pavement < width; 0: the carriageway is the whole width
 };
+// The width of a street's carriageway, kerb to kerb: its width less its two pavements.
+inline double massingCarriageway(const MassingStreet& s) { return s.width - 2.0 * s.pavement; }
 // Reads a street table (CSV, a header row naming the columns; comment rows as in importMassingBoxes). The columns read:
-//   id       unique; as a massing id
-//   width_m  the street's width in metres, > 0
-//   pts      "x:y[:z];x:y[:z];..." in the plan frame, metres (z is read and dropped)
+//   id          unique; as a massing id
+//   width_m     the street's width in metres, > 0
+//   pts         "x:y[:z];x:y[:z];..." in the plan frame, metres (z is read and dropped)
+//   kind        optional: empty, or a-z, A-Z, 0-9, '_' or '-'
+//   pavement_m  optional: empty (0), or each pavement's width in metres, >= 0 and under half width_m
 // Any other column is skipped, never kept. `out` is cleared first. False, with a reason naming the line, on any error.
 // Allocates: build time only.
 FTCORE_API bool importMassingStreets(std::string_view csv, std::vector<MassingStreet>& out, std::string* error = nullptr);
@@ -279,11 +334,28 @@ FTCORE_API bool importMassingStreets(std::string_view csv, std::vector<MassingSt
 // (massingEnginePoint).
 FTCORE_API void massingStreetsToEngine(std::vector<MassingStreet>& streets, double side);
 
+// Street sections by width. A street no wider than sharedUpTo (> 0) is a shared surface, paved wall to wall with no
+// kerb. A street kerbFrom to kerbTo wide (inclusive) with no pavements takes pavementShare (over 0, under 0.5) of its
+// width as each pavement, so the kerbs line its carriageway; a zero (or bad) share leaves every street's pavements.
+struct MassingStreetSections {
+    double sharedUpTo = 0.0;    // m; 0: no shared surfaces
+    double kerbFrom = 0.0;      // m
+    double kerbTo = 0.0;        // m
+    double pavementShare = 0.0; // of the width, each side
+};
+// Applies `sections` to a street table in place: drops the shared surfaces (so they leave the road mask, the ground's
+// paving running across them, and the kerbs, a kerbed street's kerb running on past their mouths) and sets the kerbed
+// band's pavements. Returns how many streets it dropped; `paved` (if given) counts the streets given pavements. No
+// allocation (erases in place).
+FTCORE_API std::size_t massingStreetSections(std::vector<MassingStreet>& streets, const MassingStreetSections& sections,
+                                             std::size_t* paved = nullptr);
+
 // The streets as a mask: size x size bytes, row iy then column ix, pixel (ix, iy) centred at (-sideM/2 + (ix + 0.5)
 // sideM/size, -sideM/2 + (iy + 0.5) sideM/size) in the streets' own frame (the engine's, after massingStreetsToEngine),
-// as ftcore::roadMask lays out its own. Each byte is the max over the streets of round(255 clamp(0.5 + (width/2 - d) /
-// (2 feather), 0, 1)), d the distance from the pixel's centre to the street's polyline: 255 inside by feather, about 128
-// at the edge, 0 from feather outside it. The outermost ring is 0, so a clamped read past the mask finds no street.
+// as ftcore::roadMask lays out its own. Each byte is the max over the streets of round(255 clamp(0.5 + (c/2 - d) /
+// (2 feather), 0, 1)), c the street's carriageway (massingCarriageway: its width when it has no pavements) and d the
+// distance from the pixel's centre to the street's polyline: 255 inside by feather, about 128 at the kerb, 0 from
+// feather outside it, so a street's pavements read as ground. The outermost ring is 0, so a clamped read past the mask finds no street.
 // Writes all size * size bytes; each segment touches only the pixels it reaches. No allocation.
 inline constexpr double kMassingRoadFeather = 2.0; // m: what the ground master decodes its road mask by
 FTCORE_API void massingRoadMask(const std::vector<MassingStreet>& streets, std::size_t size, double sideM, double feather,

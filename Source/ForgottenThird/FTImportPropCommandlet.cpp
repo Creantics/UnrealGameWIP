@@ -47,7 +47,8 @@ int32 UFTImportPropCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTImportProp: props come in as .glb (docs/ASSET_INTAKE.md)."));
 		return 1;
 	}
-	const ftcore::AssetRules Rules = ftcore::propRules(ftcore::assetPackFromName(TCHAR_TO_UTF8(*Pack)));
+	const ftcore::AssetPack PackKind = ftcore::assetPackFromName(TCHAR_TO_UTF8(*Pack));
+	const ftcore::AssetRules Rules = FParse::Param(*Params, TEXT("Kit")) ? ftcore::kitRules(PackKind) : ftcore::propRules(PackKind);
 	if (!FT::CheckGlbFile(TEXT("FTImportProp"), Source, Rules))
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTImportProp: %s breaks the asset rules (docs/ASSET_INTAKE.md); nothing imported."), *Source);

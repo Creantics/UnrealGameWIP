@@ -145,6 +145,21 @@ FTCORE_API void addDistance(const WearTuning& t, WearState& s, float cm);
 FTCORE_API int wearStage(const WearState& s, WearZone z);
 FTCORE_API int dirtStage(const WearState& s);
 
+// Lamps. Headlights and tail lamps come on in the night band with a driver in the seat, so a van parked empty at
+// night stands dark; brake lamps light under brake input past kBrakeLampInput or, with a driver in the seat, while
+// the handbrake holds.
+inline constexpr float kBrakeLampInput = 0.1f;
+// The night band switches on at kNightOn and off at kNightOff of the clock's night amount, so dusk doesn't flicker.
+inline constexpr float kNightOn = 0.55f;
+inline constexpr float kNightOff = 0.45f;
+struct LampState {
+    bool head = false;
+    bool tail = false;
+    bool brake = false;
+};
+FTCORE_API bool nightBand(float nightAmount, bool wasNight);
+FTCORE_API LampState lampState(bool night, float brake, bool handbrake, bool driverSeated);
+
 // Repair. The garage index at (x, y), or -1; what a full repair costs; the repair itself with `money` to spend.
 FTCORE_API int garageAt(const RepairTuning& t, float x, float y);
 FTCORE_API int repairQuote(const RepairTuning& t, const WearState& s);

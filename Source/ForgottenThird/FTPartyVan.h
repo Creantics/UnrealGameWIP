@@ -34,6 +34,8 @@ class ACharacter;
 class AFTExploreCharacter;
 class UBoxComponent;
 class UCameraComponent;
+class UMaterialInstanceDynamic;
+class USpotLightComponent;
 class USpringArmComponent;
 class UStaticMeshComponent;
 
@@ -101,6 +103,9 @@ private:
 	void TickScript(float DeltaSeconds);
 	void TickChecks();
 	void Shot(const TCHAR* Name, float CamYaw, float CamPitch, float Arm);
+	void SetupLook(bool bBodyAsset);
+	void TickLamps(float DeltaSeconds);
+	void ShowWear();
 	bool SideClear(float Sign) const;
 	void FinishExit();
 
@@ -116,6 +121,20 @@ private:
 	TObjectPtr<USpringArmComponent> Boom;
 	UPROPERTY(VisibleAnywhere, Category = "Components")
 	TObjectPtr<UCameraComponent> Camera;
+	UPROPERTY(VisibleAnywhere, Category = "Components")
+	TObjectPtr<UStaticMeshComponent> Lens[4]; // head lamps L, R, tail lamps L, R
+	UPROPERTY(VisibleAnywhere, Category = "Components")
+	TObjectPtr<USpotLightComponent> HeadBeam[2];
+	UPROPERTY(VisibleAnywhere, Category = "Components")
+	TObjectPtr<USpotLightComponent> TailGlow; // aimed back and down from under the bumper: a ground pool, not the body
+	UPROPERTY(VisibleAnywhere, Category = "Components")
+	TObjectPtr<UStaticMeshComponent> Glass; // the cab door panes (the body mesh has open holes there)
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> BodyLook; // M_VanBody on the body's painted slot: glass and wear
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> LensLook[2]; // head, tail (each pair shares one)
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> GlassLook; // M_VanLamp, dark and unlit, on the panes
 
 	ftcore::VehicleDrive Drive;
 	ftcore::VehicleState State;
@@ -137,6 +156,14 @@ private:
 	float WheelGrade[4] = {0.f, 0.f, 0.f, 0.f}; // the front wheels' last ground slope (rise per cm), for kerb edges
 	float Lift = 0.f;          // the body box raised to the highest wheel's ground (cm)
 	TWeakObjectPtr<AActor> LastPedChar; // the last one reacted to (once per approach)
+	// Lamps: night from the clock every LookEvery s, the lamp state each frame, applied only when it changes.
+	float LookAge = 0.f;
+	bool bNight = false;
+	bool bLampsSet = false;
+	ftcore::LampState Lamps;
+	float LampBrake = 0.f; // this frame's brake input and handbrake, after the seats' hold
+	bool bLampHandbrake = false;
+	int32 WearShown[5] = {-1, -1, -1, -1, -1}; // the stages on the body's instance: front, rear, left, right, dirt
 	TArray<TWeakObjectPtr<AActor>> PedCache; // characters and followers on foot, refreshed every PedRefresh s (reserved once)
 	float PedCacheAge = 1e9f;
 	int32 LastPedSlot = -1;
