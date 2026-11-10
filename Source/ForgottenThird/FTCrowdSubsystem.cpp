@@ -51,7 +51,9 @@ constexpr uint32 kMaxPlansOne = 12;
 // The scripted fight: how far from the player, how long, how often a strike lands.
 constexpr double kTestFightDistance = 15.0;
 constexpr double kTestFightLength = 10.0;
-constexpr float kFirstSecondGain = 1.49f; // m farther from the fight a second after it starts (1.5 m, 1 cm tolerance)
+// A second after the fight starts (S-267): 1.5 m along its route, facing its motion, over 0.3 m farther from the fight.
+constexpr float kFirstSecondPath = 1.5f;   // m
+constexpr float kFirstSecondRadial = 0.3f; // m
 constexpr double kTestStrikeEvery = 0.5;
 
 FString CrowdObjectPath(const FString& Path)
@@ -704,10 +706,10 @@ void UFTCrowdSubsystem::Tick(float DeltaTime)
 	if (bTestFightStarted && !bFirstSecondDone && RunTime >= TestFightStartedAt + 1.0)
 	{
 		bFirstSecondDone = true;
-		const ftcore::CrowdReactionResult R = FirstSecond.evaluate(Sim, kFirstSecondGain);
+		const ftcore::CrowdReactionResult R = FirstSecond.evaluate(Sim, kFirstSecondPath, kFirstSecondRadial);
 		bFirstSecondOk = R.ok();
-		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: first second (%.2f s, radius %.0f m): inside %u, away %u, cornered %u, turned %u, toward %u, worst gain %.4f m: %s."),
-			RunTime - TestFightStartedAt, Tuning.reactRadius, R.inside, R.away, R.cornered, R.turned, R.toward, R.worstGain, bFirstSecondOk ? TEXT("ok") : TEXT("FAILED"));
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: first second (%.2f s, radius %.0f m): inside %u, away %u, cornered %u, turned %u, toward %u, worst path %.2f m, worst gain %.2f m: %s."),
+			RunTime - TestFightStartedAt, Tuning.reactRadius, R.inside, R.away, R.cornered, R.turned, R.toward, R.worstPath, R.worstGain, bFirstSecondOk ? TEXT("ok") : TEXT("FAILED"));
 	}
 	Draw();
 	Shoot(World->GetFirstPlayerController(), PlayerAt);

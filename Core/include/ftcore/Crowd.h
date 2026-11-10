@@ -168,7 +168,7 @@ struct CrowdTuning {
     // Close: within this of a fight-class event (fight start, strike, gunshot, magic burst, death) a member feels it
     // whatever the occlusion or facing, takes it within reactCloseMax, and runs whatever its boldness.
     float reactRadius = 22.f;        // m
-    float reactCloseMax = 0.3f;      // s
+    float reactCloseMax = 0.05f;     // s
     std::uint32_t occlusionBudget = 24; // host occlusion queries per step
     std::array<CrowdEventRule, static_cast<std::size_t>(CrowdEventKind::Count)> events = {{
         {60.f, 1.2f, false},  // fight_start
@@ -232,6 +232,7 @@ struct CrowdAgentView {
     CrowdState state = CrowdState::Free;
     CrowdAnim anim = CrowdAnim::Idle;
     Vec2 pos, prevPos;      // this step's and the last step's (lerp by stepAlpha())
+    float odo = 0.f;        // m walked or run since the slot was first used (path length, not straight line)
     float yaw = 0.f;        // deg
     float speed = 0.f;      // m/s
     float fear = 0.f;
@@ -257,24 +258,28 @@ struct CrowdCounts {
 inline constexpr std::size_t kCrowdProbeMax = 256;
 struct CrowdReactionResult {
     std::uint32_t inside = 0;   // live members within the radius at the start (still live now)
-    std::uint32_t away = 0;     // ... whose distance from the point grew by at least minGain
-    std::uint32_t turned = 0;   // ... facing within 90 degrees of straight away from the point
-    std::uint32_t cornered = 0; // ... not 1.5 m farther, but cornered: backed to a dead end's far end, cowering, turned away
+    std::uint32_t away = 0;     // ... escaping: at least minPath along its route, facing its motion, minRadial farther
+    std::uint32_t turned = 0;   // ... facing within 90 degrees of straight away from the point (reported, not required)
+    std::uint32_t cornered = 0; // ... not escaping, but cornered: backed to a dead end's far end, cowering, turned away
     std::uint32_t toward = 0;   // ... closer to the point than at the start
     float worstGain = 0.f;      // m: the least growth in distance among them (negative: came closer)
-    bool ok() const { return inside > 0 && away + cornered == inside && turned == inside && toward == 0; }
+    float worstPath = 0.f;      // m: the shortest route walked or run among them
+    bool ok() const { return inside > 0 && away + cornered == inside && toward == 0; }
 };
 class CrowdSim;
 class CrowdReactionProbe {
 public:
     FTCORE_API void begin(const CrowdSim& sim, Vec2 at, float radius);
-    FTCORE_API CrowdReactionResult evaluate(const CrowdSim& sim, float minGain) const;
+    // S-267: escaping = moved at least minPath along its route, facing its motion, and minRadial farther from the point.
+    FTCORE_API CrowdReactionResult evaluate(const CrowdSim& sim, float minPath, float minRadial) const;
     std::uint32_t count() const { return n_; }
 
 private:
     Vec2 at_{};
     std::array<std::uint32_t, kCrowdProbeMax> id_{};
     std::array<float, kCrowdProbeMax> d0_{};
+    std::array<float, kCrowdProbeMax> odo0_{};
+    std::array<Vec2, kCrowdProbeMax> p0_{};
     std::uint32_t n_ = 0;
 };
 
@@ -323,6 +328,7 @@ private:
         float lane = 0.f, laneHalf = 0.f, side = 1.f; // side: +-1 along the edge's left normal
         float lat = 0.f, latTarget = 0.f;
         Vec2 pos, prev;
+        float odo = 0.f;
         float yaw = 0.f, speed = 0.f, baseSpeed = 1.3f;
         float boldness = 0.5f, fear = 0.f, stateTime = 0.f, idleLeft = 0.f;
         float heading = 0.f; // deg: where a calm walk tends

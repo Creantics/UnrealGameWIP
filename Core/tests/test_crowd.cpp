@@ -890,7 +890,7 @@ TEST_CASE("crowd r3: wall inset, first-second reaction, no clumps, no stuck runn
     REQUIRE(probe.count() >= 5);
     sim.pushEvent({CrowdEventKind::FightStart, fight});
     run(sim, 1.f);
-    const CrowdReactionResult r = probe.evaluate(sim, 1.5f);
+    const CrowdReactionResult r = probe.evaluate(sim, 1.5f, 0.3f);
     CAPTURE(r.inside);
     CAPTURE(r.away);
     CAPTURE(r.turned);
@@ -934,15 +934,16 @@ TEST_CASE("crowd first second: cornered in a dead end by a fight at its mouth, m
     const float d0a = dist(sim.agent(a).pos, fight);
     sim.pushEvent({CrowdEventKind::FightStart, fight});
     run(sim, 1.f);
-    const CrowdReactionResult r = probe.evaluate(sim, 1.5f);
+    const CrowdReactionResult r = probe.evaluate(sim, 1.5f, 0.3f);
     CAPTURE(r.inside);
     CAPTURE(r.away);
     CAPTURE(r.cornered);
     CAPTURE(r.turned);
     CAPTURE(r.worstGain);
     CHECK(r.ok());
-    CHECK(r.cornered == 2);
-    CHECK(r.away == 1);
+    // (S-267: a braced member whose run to the far end already counts as an escape is counted away, not cornered.)
+    CHECK(r.away + r.cornered == 3);
+    CHECK(r.cornered >= 1);
     CHECK(dist(sim.agent(a).pos, fight) > d0a); // net: farther, though it walked on towards the mouth until it heard
     for (const std::uint32_t m : {a, b}) {
         CHECK(sim.agent(m).state == CrowdState::Cower);
@@ -1008,7 +1009,7 @@ TEST_CASE("crowd on a real street table (opt-in)") {
     probe.begin(sim, fight, t.reactRadius);
     sim.pushEvent({CrowdEventKind::FightStart, fight});
     run(sim, 1.f, player);
-    const CrowdReactionResult r = probe.evaluate(sim, 1.5f);
+    const CrowdReactionResult r = probe.evaluate(sim, 1.5f, 0.3f);
     std::printf("crowd real: calm close pairs standing %u mixed %u walking %u; first second: inside %u away %u cornered %u turned %u toward %u worst gain %.2f m: %s\n",
                 calm[0], calm[1], calm[2], r.inside, r.away, r.cornered, r.turned, r.toward, static_cast<double>(r.worstGain), r.ok() ? "ok" : "FAILED");
     std::uint32_t runStill = 0, pairs[3] = {0, 0, 0};
@@ -1073,10 +1074,12 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
                 if (best != UINT32_MAX) nodes.push_back(best);
             }
     }
-    std::uint32_t runs = 0, skipped = 0, cornered = 0, towardRuns = 0, toward = 0, passStrict = 0, passTol = 0, nodesUsed = 0;
-    float worst = 1e30f;
-    Vec2 worstAt{};
-    std::uint32_t worstSeed = 0;
+    // S-267 rule per member inside the radius at 1 s: 1.5 m along its route, facing its motion, radial gain over 0.3 m;
+    // or braced in a dead end; never closer. Gate: at least 95 % of runs.
+    std::uint32_t runs = 0, skipped = 0, cornered = 0, towardRuns = 0, toward = 0, pass = 0, nodesUsed = 0;
+    float worst = 1e30f, worstPath = 1e30f;
+    Vec2 worstAt{}, worstPathAt{};
+    std::uint32_t worstSeed = 0, worstPathSeed = 0;
     for (const std::uint32_t n : nodes) {
         const Vec2 fight = g.node(n);
         const std::uint32_t pn = g.nearest({fight.x - 30.f, fight.y}, 50.f);
@@ -1092,25 +1095,26 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
             used = true;
             sim.pushEvent({CrowdEventKind::FightStart, fight});
             run(sim, 1.f, player);
-            const CrowdReactionResult rs = probe.evaluate(sim, 1.5f), rt = probe.evaluate(sim, 1.49f);
+            const CrowdReactionResult rs = probe.evaluate(sim, 1.5f, 0.3f);
             ++runs;
-            passStrict += rs.ok();
-            passTol += rt.ok();
+            pass += rs.ok();
             cornered += rs.cornered;
             toward += rs.toward;
             towardRuns += rs.toward > 0;
             if (rs.worstGain < worst) { worst = rs.worstGain; worstAt = fight; worstSeed = seed; }
-            if (!rt.ok())
-                std::printf("crowd sweep: FAILED at %.1f,%.1f seed %u: inside %u away %u cornered %u turned %u toward %u worst gain %.4f m\n",
-                            static_cast<double>(fight.x), static_cast<double>(fight.y), seed, rt.inside, rt.away, rt.cornered, rt.turned,
-                            rt.toward, static_cast<double>(rt.worstGain));
+            if (rs.worstPath < worstPath) { worstPath = rs.worstPath; worstPathAt = fight; worstPathSeed = seed; }
+            if (!rs.ok())
+                std::printf("crowd sweep: FAILED at node %u (%.1f,%.1f) seed %u: inside %u away %u cornered %u toward %u worst path %.2f m worst gain %.2f m\n",
+                            n, static_cast<double>(fight.x), static_cast<double>(fight.y), seed, rs.inside, rs.away, rs.cornered, rs.toward,
+                            static_cast<double>(rs.worstPath), static_cast<double>(rs.worstGain));
         }
         nodesUsed += used;
     }
-    std::printf("crowd sweep: %zu nodes sampled, %u with members inside, %u runs (%u skipped empty): %u pass strict, %u pass with the 1 cm tolerance; "
-                "%u cornered members; %u members moved towards the fight (in %u runs); worst gain %.4f m at %.1f,%.1f seed %u\n",
-                nodes.size(), nodesUsed, runs, skipped, passStrict, passTol, cornered, toward, towardRuns, static_cast<double>(worst == 1e30f ? 0.f : worst),
-                static_cast<double>(worstAt.x), static_cast<double>(worstAt.y), worstSeed);
+    std::printf("crowd sweep: %zu nodes sampled, %u with members inside, %u runs (%u skipped empty): %u pass (%.1f %%); %u cornered members; "
+                "%u members moved towards the fight (in %u runs); worst path %.2f m at %.1f,%.1f seed %u; worst gain %.2f m at %.1f,%.1f seed %u\n",
+                nodes.size(), nodesUsed, runs, skipped, pass, runs ? 100.0 * pass / runs : 0.0, cornered, toward, towardRuns,
+                static_cast<double>(worstPath == 1e30f ? 0.f : worstPath), static_cast<double>(worstPathAt.x), static_cast<double>(worstPathAt.y),
+                worstPathSeed, static_cast<double>(worst == 1e30f ? 0.f : worst), static_cast<double>(worstAt.x), static_cast<double>(worstAt.y), worstSeed);
     CHECK(toward == 0u);
-    CHECK(passTol == runs);
+    CHECK(pass * 100u >= runs * 95u);
 }

@@ -947,6 +947,7 @@ void CrowdSim::writeView(std::uint32_t i) {
     v.cornered = a.state == CrowdState::Cower && a.brace && a.hold;
     v.pos = a.pos;
     v.prevPos = a.prev;
+    v.odo = a.odo;
     v.yaw = a.yaw;
     v.speed = a.speed;
     v.fear = a.fear;
@@ -987,7 +988,10 @@ void CrowdSim::step(Vec2 player, Vec2 playerVel) {
     }
     pickDrawn(player);
     for (std::uint32_t i = 0; i < agents_.size(); ++i)
-        if (agents_[i].state != CrowdState::Free) writeView(i);
+        if (agents_[i].state != CrowdState::Free) {
+            agents_[i].odo += dist(agents_[i].pos, agents_[i].prev);
+            writeView(i);
+        }
 }
 
 std::uint32_t CrowdSim::closePairs(float d) const {
@@ -1011,25 +1015,30 @@ void CrowdReactionProbe::begin(const CrowdSim& sim, Vec2 at, float radius) {
         if (d > radius) continue;
         id_[n_] = v.id;
         d0_[n_] = d;
+        odo0_[n_] = v.odo;
+        p0_[n_] = v.pos;
         ++n_;
     }
 }
 
-CrowdReactionResult CrowdReactionProbe::evaluate(const CrowdSim& sim, float minGain) const {
+CrowdReactionResult CrowdReactionProbe::evaluate(const CrowdSim& sim, float minPath, float minRadial) const {
     CrowdReactionResult r;
-    r.worstGain = 1e30f;
+    r.worstGain = r.worstPath = 1e30f;
     for (std::uint32_t k = 0; k < n_; ++k) {
         const CrowdAgentView& v = sim.agent(id_[k] & 0xffffu);
         if (!v.live || v.id != id_[k]) continue;
         ++r.inside;
         const float gain = dist(v.pos, at_) - d0_[k];
+        const float path = v.odo - odo0_[k];
         r.worstGain = std::min(r.worstGain, gain);
-        if (gain >= minGain) ++r.away;
+        r.worstPath = std::min(r.worstPath, path);
+        const bool facing = dist(v.pos, p0_[k]) > 0.01f && std::fabs(angleDiff(v.yaw, yawTo(p0_[k], v.pos))) <= 90.f;
+        if (path >= minPath && facing && gain > minRadial) ++r.away;
         else if (v.cornered && gain >= 0.f) ++r.cornered;
         if (gain < 0.f) ++r.toward;
         if (std::fabs(angleDiff(v.yaw, yawTo(at_, v.pos))) <= 90.f) ++r.turned;
     }
-    if (r.inside == 0) r.worstGain = 0.f;
+    if (r.inside == 0) r.worstGain = r.worstPath = 0.f;
     return r;
 }
 
