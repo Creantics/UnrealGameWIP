@@ -83,6 +83,7 @@
 #include "FTExploreCharacter.generated.h"
 
 class AFTExploreDirector;
+class UAnimSequence;
 class UCameraComponent;
 class UInputAction;
 class UInputMappingContext;
@@ -215,6 +216,7 @@ private:
 	void SpawnTraversalCourse();
 	void AddPortraitLights();
 	void StepPortraitShots();
+	void HoldFaceAt(float Time);
 
 	AFTExploreDirector* GetDirector();
 
@@ -259,6 +261,11 @@ private:
 	FTimerHandle ShotTimer;
 	// -ExplorePortraitShotEvery=<s>: the step between aiming and shooting (a shot every two steps).
 	float ShotEvery = 2.5f;
+	// -ExplorePortraitFaceClip=<anim> with -ExplorePortraitFaceTimes=<s,s,..>: each shot holds the face piece on that
+	// clip at its time (one shot per time, yaws repeat), to check expressions in the game.
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> FaceClip;
+	TArray<float> FaceTimes;
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
 	FFTFootSlideProbe SlideProbe;

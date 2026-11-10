@@ -231,6 +231,35 @@ void AFTExploreCharacter::BeginPlay()
 			{
 				ShotYaws.Add(Yaw);
 			}
+			FString ClipPath;
+			FString TimeList;
+			if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitFaceClip="), ClipPath)
+				&& FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitFaceTimes="), TimeList, false))
+			{
+				FaceClip = LoadObject<UAnimSequence>(nullptr, *ClipPath);
+				TArray<FString> Parts;
+				TimeList.ParseIntoArray(Parts, TEXT(","));
+				for (const FString& Part : Parts)
+				{
+					FaceTimes.Add(FCString::Atof(*Part));
+				}
+				if (!FaceClip || FaceTimes.IsEmpty())
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: face clip %s not loaded or no times; face shots off."), *ClipPath);
+					FaceClip = nullptr;
+					FaceTimes.Reset();
+				}
+				else
+				{
+					// One shot per time; the yaw list repeats round them.
+					const TArray<float> Yaws = ShotYaws;
+					ShotYaws.Reset();
+					for (int32 Index = 0; Index < FaceTimes.Num(); ++Index)
+					{
+						ShotYaws.Add(Yaws[Index % Yaws.Num()]);
+					}
+				}
+			}
 			// Settle time first (streaming, shaders, exposure), then a step every few seconds: aim, then shoot.
 			float Delay = 8.f;
 			FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitShotDelay="), Delay);
@@ -268,10 +297,16 @@ void AFTExploreCharacter::StepPortraitShots()
 		{
 			Hud->bShowHUD = false;
 		}
+		if (FaceClip)
+		{
+			HoldFaceAt(FaceTimes[ShotIndex]);
+		}
 		bShotAimed = true;
 		return;
 	}
-	const FString File = FString::Printf(TEXT("%s_%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw));
+	const FString File = FaceClip
+		? FString::Printf(TEXT("%s_%d_f%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
+		: FString::Printf(TEXT("%s_%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw));
 	// A high-res shot renders its own view at a fixed size, so a window the desktop resizes can't upset the copy.
 	// The game viewport handles HighResShot; the engine's own Exec doesn't.
 	if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
@@ -283,6 +318,28 @@ void AFTExploreCharacter::StepPortraitShots()
 		*File, Floor.FloorDist, Floor.IsWalkableFloor() ? 1 : 0, GetVelocity().Size2D());
 	bShotAimed = false;
 	++ShotIndex;
+}
+
+void AFTExploreCharacter::HoldFaceAt(float Time)
+{
+	// A leader-posed piece copies the body's bones and never runs its own animation, so the MetaHuman face rig
+	// (its post-process blueprint) would stay neutral. The face piece leaves the leader pose and holds the clip.
+	for (USkeletalMeshComponent* Piece : Pieces)
+	{
+		const USkeletalMesh* PieceMesh = Piece ? Piece->GetSkeletalMeshAsset() : nullptr;
+		if (!PieceMesh || !PieceMesh->GetName().Contains(TEXT("FaceMesh")))
+		{
+			continue;
+		}
+		Piece->SetLeaderPoseComponent(nullptr);
+		Piece->PlayAnimation(FaceClip, false);
+		Piece->SetPosition(FMath::Clamp(Time, 0.f, FaceClip->GetPlayLength()), false);
+		Piece->Stop();
+		UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: face %s held on %s at %.2f s."), *PieceMesh->GetName(),
+			*FaceClip->GetName(), Time);
+		return;
+	}
+	UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no FaceMesh piece to hold the face clip on."));
 }
 
 void AFTExploreCharacter::AddPortraitLights()
