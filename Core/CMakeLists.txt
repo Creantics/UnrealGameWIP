@@ -60,6 +60,7 @@ add_library(ftcore STATIC
     src/MassingLayout.cpp
     src/WindowInterior.cpp
     src/WindowFacade.cpp
+    src/FrameStats.cpp
     src/ShopFront.cpp
     src/WorldClock.cpp
     src/WorldChecks.cpp
@@ -228,6 +229,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_massing_layout.cpp
         tests/test_window_interior.cpp
         tests/test_window_facade.cpp
+        tests/test_frame_stats.cpp
         tests/test_shop_front.cpp
         tests/test_world_clock.cpp
         tests/test_world_checks.cpp
