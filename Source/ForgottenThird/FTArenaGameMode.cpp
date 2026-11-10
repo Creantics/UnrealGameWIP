@@ -50,7 +50,10 @@ constexpr double kArenaShotHold = 1.0;
 constexpr double kArenaStrikeSlack = 1e-4;
 // -ArenaShotClose: the strike view's camera distance from the striking limb and the forearms view's from their middle
 // (cm), its field of view (degrees), and the settle after each cut (wall seconds, for the image's history and exposure).
-constexpr double kArenaCloseDistance = 100.0;
+constexpr double kArenaCloseDistance = 65.0;
+// The fist's front view (from ahead of it, off to its side and a little above) and the pistol's views, cm.
+constexpr double kArenaFrontDistance = 55.0;
+constexpr double kArenaGunDistance = 60.0;
 constexpr double kArenaArmsDistance = 140.0;
 constexpr float kArenaCloseFov = 55.f;
 constexpr double kArenaCloseSettle = 0.6;
@@ -699,6 +702,10 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	{
 		return StrikeShot();
 	}
+	if (bShotClose && ShotsTaken > 0 && GunPhase < 7 && GunShot())
+	{
+		return true;
+	}
 	if ((bOverview || bWorldView) && OverviewPhase < 3 && OverviewShot())
 	{
 		return true;
@@ -858,7 +865,42 @@ bool AFTArenaGameMode::StrikeShot()
 		{
 			LogFramed(*StrikeName, TEXT("the pistol's muzzle"), At);
 		}
-		StrikePhase = bShotClose && StrikeCamera && Weapons.HasGauntlets() && StrikeShots == 1 ? 2 : 4;
+		StrikePhase = bShotClose && StrikeCamera ? 5 : 4;
+		return true;
+	}
+	case 5:
+	{
+		// In front of the striking limb, off to its side and a little above, looking back at it.
+		const AFTArenaFighter* Lead = Runner->GetPlayerFigure();
+		FName Bone;
+		FVector At;
+		bool bLeft = false;
+		StrikePhase = Weapons.HasGauntlets() && StrikeShots == 1 ? 2 : 4;
+		if (Lead && Weapons.GetStrikeLimb(Bone, At, bLeft))
+		{
+			const FVector Ahead = Lead->GetActorForwardVector().GetSafeNormal2D();
+			const FVector Side = Lead->GetActorRightVector().GetSafeNormal2D() * (bLeft ? -1.0 : 1.0);
+			const FVector From = At + (Ahead * 0.7 + Side * 0.55 + FVector(0.0, 0.0, 0.25)).GetSafeNormal() * kArenaFrontDistance;
+			if (AimStrikeCamera(From, At))
+			{
+				ShotHoldUntil = ShotWall + kArenaCloseSettle;
+				StrikePhase = 6;
+			}
+		}
+		return true;
+	}
+	case 6:
+	{
+		const FString Front = StrikeName + TEXT("_front");
+		TakeShot(*Front, false);
+		FName Bone;
+		FVector At;
+		bool bLeft = false;
+		if (Weapons.GetStrikeLimb(Bone, At, bLeft))
+		{
+			LogFramed(*Front, *Bone.ToString(), At);
+		}
+		StrikePhase = Weapons.HasGauntlets() && StrikeShots == 1 ? 2 : 4;
 		return true;
 	}
 	case 2:
@@ -897,20 +939,78 @@ bool AFTArenaGameMode::StrikeShot()
 	default:
 		// Back to the fight.
 		Weapons.Thaw();
-		if (StrikeCamera)
-		{
-			if (APlayerController* PC = GetPC())
-			{
-				PC->SetViewTarget(Runner->GetPlayerFigure());
-				if (AHUD* Hud = PC->GetHUD())
-				{
-					Hud->bShowHUD = true;
-				}
-			}
-			StrikeCamera->Destroy();
-			StrikeCamera = nullptr;
-		}
+		EndCloseCamera();
 		StrikePhase = 0;
+		return true;
+	}
+}
+
+void AFTArenaGameMode::EndCloseCamera()
+{
+	if (!StrikeCamera)
+	{
+		return;
+	}
+	if (APlayerController* PC = GetPC())
+	{
+		PC->SetViewTarget(Runner->GetPlayerFigure());
+		if (AHUD* Hud = PC->GetHUD())
+		{
+			Hud->bShowHUD = true;
+		}
+	}
+	StrikeCamera->Destroy();
+	StrikeCamera = nullptr;
+}
+
+bool AFTArenaGameMode::GunShot()
+{
+	FFTLeadWeapons& Weapons = Runner->GetLeadWeapons();
+	const AFTArenaFighter* Lead = Runner->GetPlayerFigure();
+	FVector At;
+	if (!Lead || !Weapons.GetMuzzle(At))
+	{
+		GunPhase = 7;
+		return false;
+	}
+	switch (GunPhase)
+	{
+	case 0:
+	case 3:
+		// Into the holster, then back in the hand; the camera goes on the next frame, with the pistol where it now is.
+		Weapons.SetHolstered(GunPhase == 0);
+		++GunPhase;
+		return true;
+	case 1:
+	case 4:
+	{
+		// Off the lead's right side and a little ahead and above, on the pistol.
+		const FVector Dir = Lead->GetActorRightVector().GetSafeNormal2D() * 0.85 + Lead->GetActorForwardVector().GetSafeNormal2D() * 0.45
+			+ FVector(0.0, 0.0, 0.2);
+		if (AimStrikeCamera(At + Dir.GetSafeNormal() * kArenaGunDistance, At))
+		{
+			ShotHoldUntil = ShotWall + kArenaCloseSettle;
+			++GunPhase;
+		}
+		else
+		{
+			Weapons.SetHolstered(false);
+			GunPhase = 7;
+		}
+		return true;
+	}
+	case 2:
+	case 5:
+	{
+		const TCHAR* Name = GunPhase == 2 ? TEXT("1_holstered") : TEXT("1_drawn");
+		TakeShot(Name, false);
+		LogFramed(Name, TEXT("the pistol's muzzle"), At);
+		++GunPhase;
+		return true;
+	}
+	default:
+		EndCloseCamera();
+		GunPhase = 7;
 		return true;
 	}
 }

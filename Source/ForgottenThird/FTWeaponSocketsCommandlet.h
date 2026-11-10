@@ -5,7 +5,7 @@
 //
 //   UnrealEditor-Cmd ForgottenThird.uproject -run=FTWeaponSockets -Pistol=<pistol socket .json>
 //       [-Duy=<look> | -DuyBody=<mesh>]
-//       [-PistolMesh=<static mesh>] [-DryRun] -NullRHI -unattended -nopause -nosplash
+//       [-PistolMesh=<static mesh>] [-PistolLods=<lod1 mesh>,<lod2 mesh>] [-DryRun] -NullRHI -unattended -nopause -nosplash
 //
 // Run it after FTImportProp has brought the pistol into /Game/Props/Weapons (FTLeadWeapons.h names the mesh, the
 // sockets and their bones). The gauntlets are skinned pieces on the body's skeleton and need no socket. It writes:
@@ -15,6 +15,8 @@
 //     +X along the barrel.
 // A socket of the same name is replaced; the skeleton's own sockets are left alone. -DryRun works everything out and logs
 // it without saving. Each socket logs one line, "FTWeaponSockets: <asset> <socket> on <bone>: ...", with its checks.
+// -PistolLods: LOD1 and LOD2 (screen 0.4, 0.15) from the meshes named, reduced in Blender and imported with FTImportProp
+// (their description copied in, no reduction at build time); each LOD logs its triangles.
 // Returns 1 when a file, mesh, bone or file entry is missing, or a save fails.
 //
 // The socket files are measured in Blender (right-handed, Z up). Their axes, and the ones used here:

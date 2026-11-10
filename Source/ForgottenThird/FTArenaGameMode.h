@@ -82,10 +82,12 @@
 // (the lead's strike clip at its impact, the weapon's effect just started; FTLeadWeapons.h), uncounted as well. The view's
 // frame is that moment exactly: the fight's clock is brought to it and held, the lead's effects are run to their age then
 // and paused, and the figure's own clock stops (FFTLeadWeapons::Freeze) until the view is taken.
-// -ArenaShotClose takes those views close, HUD off: a camera 1 m from the striking hand (the foot for a kick), square to
-// the lead's side on that hand's side, the hand at the frame's centre; for gauntlets, the first strike adds
-// <prefix>_s1_<clip>_arms.png, both forearms from 1.4 m ahead of the lead on the striking side. Each close view logs where
-// the hand (and the pistol's muzzle) fall in the frame.
+// -ArenaShotClose takes those views close, HUD off: a camera 65 cm from the striking hand (the foot for a kick), square to
+// the lead's side on that hand's side, the hand at the frame's centre, then <prefix>_s<k>_<clip>_front.png from 55 cm
+// ahead of it, off to its side and above; for gauntlets, the first strike adds <prefix>_s1_<clip>_arms.png, both forearms
+// from 1.4 m ahead of the lead on the striking side. A lead with a pistol also gets <prefix>_1_holstered.png and
+// <prefix>_1_drawn.png after the ring view, 60 cm off its right side (the pistol put in its holster for the first). Each
+// close view logs where the hand (and the pistol's muzzle) fall in the frame.
 //
 // The player's figure wears a lead's look from config (the explore character's PartyLooks, Config/UserGame.ini): the first
 // by default, -ArenaLead=<name> picks another; with none, or none that loads, the test human is worn (one warning).
@@ -162,8 +164,13 @@ private:
 	// -ArenaOverview's second view, _0b_edge: the player moved to 1.4 m from the zone's wall on his left, to show the
 	// edge cue; then the fight is put back as it began.
 	bool EdgeShot();
-	// -ArenaShotStrikes's view once its frame is held (StrikePhase 1 to 4); true while the fight should hold still.
+	// -ArenaShotStrikes's view once its frame is held (StrikePhase 1 to 6); true while the fight should hold still.
 	bool StrikeShot();
+	// -ArenaShotClose, a lead with a pistol: once the ring view is in, the pistol put in its holster for a close view
+	// (1_holstered) and drawn again for another (1_drawn), the fight held; true while it holds.
+	bool GunShot();
+	// The close camera's views over: the view back on the lead, the HUD on, the camera gone.
+	void EndCloseCamera();
 	// -ArenaShotClose: the camera at From looking at At (spawned on first use), the view on it and the HUD off; false
 	// when it can't be placed.
 	bool AimStrikeCamera(const FVector& From, const FVector& At);
@@ -227,9 +234,12 @@ private:
 	int32 ShotStrikes = 0;
 	int32 StrikeShots = 0;
 	int32 StrikesSeen = 0;
-	// The strike view under way: 0 none; 1 its frame held (and the close camera placed), to be taken; 2 the close camera
-	// to go to both forearms; 3 that view to be taken; 4 back to the fight. Its name (s<k>_<clip>).
+	// The strike view under way: 0 none; 1 its frame held (and the close camera placed), to be taken; 5 (-ArenaShotClose)
+	// the camera to go in front of the striking limb; 6 that view (<name>_front) to be taken; 2 the close camera to go to
+	// both forearms; 3 that view to be taken; 4 back to the fight. Its name (s<k>_<clip>).
 	int32 StrikePhase = 0;
+	// -ArenaShotClose with a pistol: its holstered and drawn views after the ring view (GunShot's step, 7 done).
+	int32 GunPhase = 0;
 	FString StrikeName;
 	// -ArenaShotClose and its camera.
 	bool bShotClose = false;

@@ -13,6 +13,8 @@
 #include "FTLook.h"
 #include "FTText.h"
 #include "HAL/FileManager.h"
+#include "MeshDescription.h"
+#include "StaticMeshResources.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
@@ -300,6 +302,49 @@ FString FullPath(const FString& File)
 {
 	return FPaths::IsRelative(File) ? FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / File) : File;
 }
+// LOD1.. of the pistol from the static meshes in List (comma separated asset paths, made in Blender and imported with
+// FTImportProp): each one's mesh description becomes the next LOD, its one section on the pistol's material 0.
+int32 PutPistolLods(UStaticMesh& Pistol, const FString& List)
+{
+	static constexpr float Screen[] = {1.f, 0.4f, 0.15f, 0.06f};
+	TArray<FString> Paths;
+	List.ParseIntoArray(Paths, TEXT(","));
+	if (Paths.Num() < 1 || Paths.Num() > 3)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTWeaponSockets: -PistolLods takes 1 to 3 mesh paths, got %d."), Paths.Num());
+		return 1;
+	}
+	Pistol.SetNumSourceModels(Paths.Num() + 1);
+	Pistol.SetAutoComputeLODScreenSize(false);
+	Pistol.GetSourceModel(0).ScreenSize.Default = Screen[0];
+	for (int32 I = 0; I < Paths.Num(); ++I)
+	{
+		const UStaticMesh* Lod = LoadObject<UStaticMesh>(nullptr, *Paths[I]);
+		const FMeshDescription* From = Lod ? Lod->GetMeshDescription(0) : nullptr;
+		if (!From)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTWeaponSockets: no LOD mesh %s."), *Paths[I]);
+			return 1;
+		}
+		const int32 Index = I + 1;
+		FStaticMeshSourceModel& Model = Pistol.GetSourceModel(Index);
+		Model.ReductionSettings = FMeshReductionSettings();
+		Model.BuildSettings = Pistol.GetSourceModel(0).BuildSettings;
+		Model.ScreenSize.Default = Screen[Index];
+		Pistol.CreateMeshDescription(Index, FMeshDescription(*From));
+		Pistol.CommitMeshDescription(Index);
+		Pistol.GetSectionInfoMap().Set(Index, 0, FMeshSectionInfo(0));
+	}
+	Pistol.Build(false);
+	Pistol.PostEditChange();
+	const FStaticMeshRenderData* Render = Pistol.GetRenderData();
+	for (int32 I = 0; Render && I < Render->LODResources.Num(); ++I)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTWeaponSockets: %s LOD%d %d tris, screen %.2f."), *Pistol.GetName(), I,
+			Render->LODResources[I].GetNumTriangles(), Screen[FMath::Min(I, 3)]);
+	}
+	return Render && Render->LODResources.Num() == Paths.Num() + 1 ? 0 : 1;
+}
 } // namespace FTWeaponSocketsImpl
 #endif
 
@@ -348,6 +393,11 @@ int32 UFTWeaponSocketsCommandlet::Main(const FString& Params)
 			Problems += WS::PutMuzzleSocket(*Pistol, Doc.root(), BarrelYaw);
 			Problems += WS::PutPistolSocket(*Body, Doc.root(), TEXT("grip_hand_r"), FTWeaponProps::PistolGrip, BarrelYaw);
 			Problems += WS::PutPistolSocket(*Body, Doc.root(), TEXT("holster_rest_thigh_r"), FTWeaponProps::PistolHolster, BarrelYaw);
+			FString Lods;
+			if (FParse::Value(*Params, TEXT("PistolLods="), Lods, false))
+			{
+				Problems += WS::PutPistolLods(*Pistol, Lods);
+			}
 			ToSave.AddUnique(Pistol);
 			ToSave.AddUnique(Body);
 		}

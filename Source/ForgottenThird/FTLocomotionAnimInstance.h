@@ -103,6 +103,8 @@ struct FFTLocomotionAnimProxy : public FAnimInstanceProxy
 	// The air pose's bones: clavicle to hand on each side, then thigh to foot on each side.
 	static constexpr int32 NumArmBones = 8;
 	static constexpr int32 NumLimbs = 14;
+	// The fist's bones on each hand: index, middle, ring and pinky _01.._03, then thumb_01.._03.
+	static constexpr int32 NumFingerBones = 15;
 
 	virtual void PreUpdate(UAnimInstance* InAnimInstance, float DeltaSeconds) override;
 	virtual bool Evaluate(FPoseContext& Output) override;
@@ -135,6 +137,13 @@ private:
 	FVector AimTarget = FVector::ZeroVector;
 	FVector AimAxis = FVector::ForwardVector;
 	float AimReach = 0.f;
+	// The hands' fist curl (SetHandCurl; below 0 the clip's own fingers), and per finger bone the curl's axis in its
+	// parent's space and its ref-pose rotation (bound with the bones; bFingers when a hand has them all).
+	float Curl[2] = {-1.f, -1.f};
+	FBoneReference Finger[2][NumFingerBones];
+	FVector FingerAxis[2][NumFingerBones];
+	FQuat FingerRef[2][NumFingerBones];
+	bool bFingers[2] = {false, false};
 
 	FBoneReference Spine[NumSpine];
 	FBoneReference Neck[NumNeck];
@@ -275,6 +284,14 @@ public:
 		PushedAimAxis = Axis;
 		PushedAimReach = Reach;
 	}
+	// The hands closed into fists by Left and Right (0..1; 1 a full fist, 0.5 half closed, below 0 the clip's own
+	// fingers): each finger bone at its ref pose turned toward the palm (the thumb's side) by its share of the fist
+	// (index to pinky 75-80, 90, 50 degrees from the knuckle out; thumb 25, 35, 45), after the clips and the air pose.
+	void SetHandCurl(float Left, float Right)
+	{
+		PushedCurl[0] = Left;
+		PushedCurl[1] = Right;
+	}
 	// A non-character owner crouches while bCrouch holds (a character's own crouch is read from it).
 	void SetCrouch(bool bCrouch) { bPushedCrouch = bCrouch; }
 	// A roll asked for and still kept (Locomotion's roll input): touching down with it, a moving body rolls out of
@@ -413,6 +430,7 @@ private:
 	float PushedAimWeight = 0.f;
 	FVector PushedAimAxis = FVector::ForwardVector;
 	float PushedAimReach = 0.f;
+	float PushedCurl[2] = {-1.f, -1.f};
 	bool bPushedFace = false;
 	bool bPushedAir = false;
 	bool bPushedCrouch = false;

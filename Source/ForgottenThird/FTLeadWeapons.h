@@ -17,7 +17,8 @@
 // Props:
 //   - gauntlets: six skinned pieces per FTWeaponProps::GauntletPieces (glove, wrist strap and bracer for each hand), fitted
 //     to the gauntlet lead's body at rest and skinned to its skeleton, so they ride it by leader pose (FTLook::AddPieces)
-//     and the fingers bend with the hand; they are on whenever the kit's weapon is gauntlets;
+//     and the fingers bend with the hand; they are on whenever the kit's weapon is gauntlets, both hands half closed in
+//     guard and the striking one closing into a full fist through its punch (SetHandCurl);
 //   - guns: the pistol (FTImportProp into /Game/Props/Weapons; sockets by -run=FTWeaponSockets, see
 //     FTWeaponSocketsCommandlet.h) in ft_pistol_grip_r (on hand_r), moved to ft_pistol_holster_r (on thigh_r) once the
 //     fight is over.
@@ -149,6 +150,8 @@ struct FFTLeadWeapons
 	bool GetForearms(FVector& OutMid) const;
 	bool GetMuzzle(FVector& OutAt) const;
 	bool HasGauntlets() const { return IsOn() && Kit.weapon == ftcore::ArenaWeapon::Gauntlets; }
+	// The pistol into its holster (true) or back in the hand, as a fight's end puts it; for the close views.
+	void SetHolstered(bool bPut) { Holster(bPut); }
 
 	// -ArenaShotStrikes: holds the lead at fight time T (the time the figures are drawn at) for a view, whatever the
 	// world's clock does while the fight is held. Each effect still running is started again and run to its age at T

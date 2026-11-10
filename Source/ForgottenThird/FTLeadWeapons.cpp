@@ -58,6 +58,8 @@ FRotator ConeTo(const FVector& Dir)
 	return FRotationMatrix::MakeFromZ(Dir.GetSafeNormal(UE_SMALL_NUMBER, FVector::ForwardVector)).Rotator();
 }
 
+// The gauntlet hands' fist curl in guard (UFTLocomotionAnimInstance::SetHandCurl); a punch closes its hand fully.
+constexpr float kGuardCurl = 0.5f;
 // The arm aim comes in over the startup's last share and goes out over this share of the recovery.
 constexpr float kAimInShare = 0.7f;
 constexpr float kAimOutShare = 0.6f;
@@ -545,6 +547,7 @@ void FFTLeadWeapons::End()
 	if (UFTLocomotionAnimInstance* Instance = Anim.Get())
 	{
 		Instance->ClearActions();
+		Instance->SetHandCurl(-1.f, -1.f);
 		if (AimSide >= 0)
 		{
 			Instance->SetArmAim(AimSide, AimPoint, 0.f, FVector::ForwardVector, 0.f);
@@ -852,6 +855,13 @@ void FFTLeadWeapons::PushArmAim(const ftcore::ArenaPlayerOut& P)
 			const float Out = FMath::Max(R * kAimOutShare, 1e-3f);
 			W = 1.f - FMath::SmoothStep(0.f, 1.f, (Time - S - A) / Out);
 		}
+	}
+	// Gauntlets: both hands half closed in guard, the striking one closing into a full fist as the arm comes in.
+	if (Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
+	{
+		float Curl[2] = {kGuardCurl, kGuardCurl};
+		Curl[Side == 0 ? 0 : 1] += (1.f - kGuardCurl) * W;
+		Instance->SetHandCurl(Curl[0], Curl[1]);
 	}
 	// Only at a point in front of the body: a target behind waits for the body to turn.
 	if (W > 0.f)

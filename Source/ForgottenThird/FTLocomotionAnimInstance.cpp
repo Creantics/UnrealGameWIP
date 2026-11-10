@@ -28,6 +28,14 @@ const TCHAR* const LimbNames[FFTLocomotionAnimProxy::NumLimbs] = {
 	TEXT("clavicle_l"), TEXT("upperarm_l"), TEXT("lowerarm_l"), TEXT("hand_l"),
 	TEXT("clavicle_r"), TEXT("upperarm_r"), TEXT("lowerarm_r"), TEXT("hand_r"),
 	TEXT("thigh_l"), TEXT("calf_l"), TEXT("foot_l"), TEXT("thigh_r"), TEXT("calf_r"), TEXT("foot_r")};
+// The fist's bones (without the side suffix) and each one's turn in a full fist, degrees.
+const TCHAR* const FingerNames[FFTLocomotionAnimProxy::NumFingerBones] = {
+	TEXT("index_01"), TEXT("index_02"), TEXT("index_03"), TEXT("middle_01"), TEXT("middle_02"), TEXT("middle_03"),
+	TEXT("ring_01"), TEXT("ring_02"), TEXT("ring_03"), TEXT("pinky_01"), TEXT("pinky_02"), TEXT("pinky_03"),
+	TEXT("thumb_01"), TEXT("thumb_02"), TEXT("thumb_03")};
+constexpr float FistDegrees[FFTLocomotionAnimProxy::NumFingerBones] = {75.f, 90.f, 50.f, 75.f, 90.f, 50.f, 77.f, 90.f, 50.f,
+	80.f, 90.f, 50.f, 25.f, 35.f, 45.f};
+constexpr int32 FirstThumbBone = 12;
 
 // A turn clip's side ("L" or "R"), angle and, for a running turn, foot.
 struct FTurnParts
@@ -1449,6 +1457,8 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 	AimSide = Instance->PushedAimSide == 0 ? 0 : 1;
 	AimAxis = Instance->PushedAimAxis.GetSafeNormal();
 	AimReach = Instance->PushedAimReach;
+	Curl[0] = FMath::Min(Instance->PushedCurl[0], 1.f);
+	Curl[1] = FMath::Min(Instance->PushedCurl[1], 1.f);
 	if (const USkeletalMeshComponent* Skel = Instance->GetSkelMeshComponent(); Skel && AimWeight > 0.f && !AimAxis.IsZero())
 	{
 		AimTarget = Skel->GetComponentTransform().InverseTransformPosition(Instance->PushedAimTarget);
@@ -1543,6 +1553,72 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 			Limb[I].BoneName = LimbNames[I];
 			Limb[I].Initialize(Container);
 		}
+		// The fists: the palm's inward side is the thumb's (thumb_02 off the plane of the hand and the knuckles); a
+		// finger turns about (its direction x inward), which carries it toward the palm, the thumb about (its own
+		// direction x inward). Each bone's axis is kept in its parent's ref space, where the turns of the bones
+		// above it (about the same axis) leave it unchanged.
+		auto RefCS = [&Output, &Container](FCompactPoseBoneIndex I)
+		{
+			FTransform T = FTransform::Identity;
+			while (I.IsValid())
+			{
+				T = T * Output.Pose.GetRefPose(I);
+				I = Container.GetParentBoneIndex(I);
+			}
+			return T;
+		};
+		auto Find = [&Container](const FString& Name, FCompactPoseBoneIndex& Out)
+		{
+			FBoneReference R;
+			R.BoneName = FName(*Name);
+			R.Initialize(Container);
+			Out = R.IsValidToEvaluate(Container) ? R.GetCompactPoseIndex(Container) : FCompactPoseBoneIndex(INDEX_NONE);
+			return Out.IsValid();
+		};
+		for (int32 Side = 0; Side < 2; ++Side)
+		{
+			const TCHAR* Suffix = Side == 0 ? TEXT("_l") : TEXT("_r");
+			bFingers[Side] = false;
+			FCompactPoseBoneIndex HandI(INDEX_NONE), MiddleI(INDEX_NONE), IndexI(INDEX_NONE), PinkyI(INDEX_NONE), ThumbI(INDEX_NONE),
+				Thumb2I(INDEX_NONE);
+			if (!Find(FString(TEXT("hand")) + Suffix, HandI) || !Find(FString(TEXT("middle_01")) + Suffix, MiddleI)
+				|| !Find(FString(TEXT("index_01")) + Suffix, IndexI) || !Find(FString(TEXT("pinky_01")) + Suffix, PinkyI)
+				|| !Find(FString(TEXT("thumb_01")) + Suffix, ThumbI) || !Find(FString(TEXT("thumb_02")) + Suffix, Thumb2I))
+			{
+				continue;
+			}
+			const FVector Hand = RefCS(HandI).GetTranslation();
+			const FVector Along = (RefCS(MiddleI).GetTranslation() - Hand).GetSafeNormal();
+			FVector Across = RefCS(IndexI).GetTranslation() - RefCS(PinkyI).GetTranslation();
+			Across = (Across - Along * FVector::DotProduct(Across, Along)).GetSafeNormal();
+			const FVector Thumb2 = RefCS(Thumb2I).GetTranslation();
+			FVector In = Thumb2 - Hand;
+			In = In - Along * FVector::DotProduct(In, Along) - Across * FVector::DotProduct(In, Across);
+			const FVector FingerTurn = FVector::CrossProduct(Along, In.GetSafeNormal()).GetSafeNormal();
+			const FVector ThumbTurn = FVector::CrossProduct((Thumb2 - RefCS(ThumbI).GetTranslation()).GetSafeNormal(),
+				In.GetSafeNormal()).GetSafeNormal();
+			if (FingerTurn.IsZero() || ThumbTurn.IsZero())
+			{
+				continue;
+			}
+			int32 Found = 0;
+			for (int32 B = 0; B < NumFingerBones; ++B)
+			{
+				FBoneReference& R = Finger[Side][B];
+				R.BoneName = FName(FString(FingerNames[B]) + Suffix);
+				R.Initialize(Container);
+				if (!R.IsValidToEvaluate(Container))
+				{
+					continue;
+				}
+				const FCompactPoseBoneIndex I = R.GetCompactPoseIndex(Container);
+				const FVector Axis = B >= FirstThumbBone ? ThumbTurn : FingerTurn;
+				FingerAxis[Side][B] = RefCS(Container.GetParentBoneIndex(I)).GetRotation().Inverse().RotateVector(Axis);
+				FingerRef[Side][B] = Output.Pose.GetRefPose(I).GetRotation();
+				++Found;
+			}
+			bFingers[Side] = Found == NumFingerBones;
+		}
 		BoundSerial = Container.GetSerialNumber();
 		bBound = true;
 	}
@@ -1566,6 +1642,20 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 			}
 			const FCompactPoseBoneIndex Index = Limb[I].GetCompactPoseIndex(Container);
 			Output.Pose[Index].SetRotation(FQuat::Slerp(Output.Pose[Index].GetRotation(), Pose[Index].GetRotation(), W).GetNormalized());
+		}
+	}
+	// The fists, in the bones' local space: each finger bone at its ref pose turned toward the palm by its share.
+	for (int32 Side = 0; Side < 2; ++Side)
+	{
+		if (Curl[Side] < 0.f || !bFingers[Side])
+		{
+			continue;
+		}
+		for (int32 B = 0; B < NumFingerBones; ++B)
+		{
+			const FCompactPoseBoneIndex I = Finger[Side][B].GetCompactPoseIndex(Container);
+			const FQuat Turn(FingerAxis[Side][B], FMath::DegreesToRadians(FistDegrees[B] * Curl[Side]));
+			Output.Pose[I].SetRotation((Turn * FingerRef[Side][B]).GetNormalized());
 		}
 	}
 	// Each chain's bones turn by an equal share of its bend about their own origins, in component
