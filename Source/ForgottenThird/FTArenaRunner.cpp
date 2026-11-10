@@ -1820,7 +1820,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 			Pose.bAttacking = true;
 			Pose.Part = static_cast<uint8>(P.part);
 			Pose.PartFraction = ArenaPartFraction(*Attack, P.part, P.actionTime);
-			// S-290: the lead turns to its aim target while it attacks (the first half of the startup), holds it
+			// The lead turns to its aim target while it attacks (the first half of the startup), holds it
 			// through the active part and turns back to Core's facing over the recovery.
 			if (bLeadAimDir)
 			{
