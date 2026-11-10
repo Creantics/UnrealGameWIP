@@ -40,10 +40,31 @@ spots say which objective they wait for.
 | Use (talk, pick up, open) | E or Enter | X |
 | Switch lead (with a party in config) | Tab | RB |
 | Show or hide the followers | P | LB |
+| Weapon, light attack (chain) | Left mouse or J | Right trigger |
+| Weapon, heavy attack | Right mouse or K | Y |
 | Pause menu | Esc | Start |
 
 The slide, landing roll, dodge roll and ledge grab, and their tunables, are in
 [MOVEMENT.md](MOVEMENT.md).
+
+The weapon is the lead's arena kit (`Data/Battle/arena.json`, the fighter named after the lead worn,
+lower case; else the default): Devin's gauntlets, Duy's pistol, the Third's casts, with the arena's
+props, strike clips and effects (`FFTLeadWeapons`, see [ARENA_DEMO.md](ARENA_DEMO.md)).
+`ftcore::FieldStrike` runs the attacks outside a fight: a press is buffered, the light chain goes on
+when pressed in time, the facing is held for the attack, and while it is active it hits each
+`AFTFieldDummy` in reach once (the kit's arc, or a lane for a shot), nearest first. Switching lead puts
+the new lead's weapon on. `-ExploreDummy` stands a dummy ahead once the lead is on the floor, within the first light
+attack's reach (at most 3 m; `-ExploreDummyAt=<cm>` sets the distance);
+`-ExploreAttackEvery=<s>` presses light every s seconds (every fourth press a heavy), and
+`-ExploreWeaponShot=<prefix>` (with `-ExploreWeaponShots=<n>`, `-ExploreWeaponShotDelay=<s>`) saves a shot as
+each attack lands (every second one a shot's or cast's mid-flight instead), then quits; with `-ExplorePortrait
+-ExplorePortraitYaw=90` they are side-on, with `-ExplorePortraitYaw=0 -ExplorePortraitArm=300` from behind at 3 m.
+Aiming: during an attack's startup `ftcore::FieldStrike` turns the lead to the nearest dummy in reach (any side) and
+gives the hit point, the near side of the dummy's body at its chest (60 cm below its top); with none, straight ahead
+at the lead's chest. The lead turns to it, the striking arm is aimed at it (two-bone IK, then the hand or barrel turned
+onto it), the tracer or bolt flies to it and the impact effect plays on it. Each attack logs `Field: aim <clip> <deg>
+deg` (arm or barrel against the direction to the hit point) and `Field: impact <effect> <cm> cm from the hit point`.
+Each hit logs `Field: dummy hit for <n>`. There is nothing to fight in the field yet but dummies.
 
 The keys are an Enhanced Input context made at runtime (`AFTExploreCharacter`), priority 2, above
 the story context. The pause menu (see [GAME_FRAME.md](GAME_FRAME.md), "Pause") is the player

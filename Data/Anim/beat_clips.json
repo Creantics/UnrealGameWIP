@@ -37,6 +37,18 @@
    "loop": false
   },
   {
+   "id": "lead_fire",
+   "length_s": 1.0,
+   "impact_s": 0.325,
+   "loop": false
+  },
+  {
+   "id": "lead_cast",
+   "length_s": 1.208,
+   "impact_s": 0.408,
+   "loop": false
+  },
+  {
    "id": "lead_finisher",
    "asset": "/Game/Combat/BeatAnims/Lead/lead_finisher",
    "length_s": 2.0,

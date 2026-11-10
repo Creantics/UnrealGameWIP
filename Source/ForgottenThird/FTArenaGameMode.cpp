@@ -43,12 +43,10 @@ namespace
 constexpr float kArenaMinTell = 0.4f;
 // After a view is taken, the fight holds this long (wall seconds) so the frame it renders is that moment.
 constexpr double kArenaShotHold = 1.0;
-// -ArenaShotStrikes: how long after an attack goes active its view's frame is (fight seconds, on the clock the figures
-// are drawn by): the clip's impact keys to the active start, and the shortest effect (the muzzle flash's core, 0.06 s
-// each over 0.1 s) is still up. The fight's clock is brought to that mark exactly (within kArenaStrikeSlack) and held,
+// -ArenaShotStrikes: an attack's view frame is FFTLeadWeapons::GetViewTime (fight seconds, on the clock the figures
+// are drawn by). The fight's clock is brought to that mark exactly (within kArenaStrikeSlack) and held,
 // and the lead's effects are run to their age there and paused (FFTLeadWeapons::Freeze): Niagara keeps the world's
 // clock, which runs on while the fight holds and in the frames before the view.
-constexpr double kArenaStrikeShotLag = 0.04;
 constexpr double kArenaStrikeSlack = 1e-4;
 // -ArenaShotClose: the strike view's camera distance from the striking limb and the forearms view's from their middle
 // (cm), its field of view (degrees), and the settle after each cut (wall seconds, for the image's history and exposure).
@@ -717,8 +715,9 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 		++NextShotAt;
 		return true;
 	}
-	// -ArenaShotStrikes's views: the player's attacks kArenaStrikeShotLag after each goes active (uncounted too). Attacks
-	// that went by while another view held the fight are skipped.
+	// -ArenaShotStrikes's views: the player's attacks at their impact (a strike's just after it lands, a shot's or cast's
+	// as it reaches the hit point) and, every second one, a shot's or cast's mid-flight (FFTLeadWeapons::GetViewTime;
+	// uncounted too). Attacks that went by while another view held the fight are skipped.
 	if (StrikeShots < ShotStrikes && ShotsTaken > 0)
 	{
 		FFTLeadWeapons& Weapons = Runner->GetLeadWeapons();
@@ -727,7 +726,7 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 		{
 			// The frame is on the clock the figures are drawn by; until it is reached, the fight's clock is kept from
 			// passing it (Tick), so it lands on the mark.
-			const double Due = Weapons.GetLastActiveTime() + kArenaStrikeShotLag;
+			const double Due = Weapons.GetViewTime(StrikeShots % 2 == 0);
 			const double Drawn = Runner->GetDrawnTime();
 			if (Drawn < Due - kArenaStrikeSlack)
 			{

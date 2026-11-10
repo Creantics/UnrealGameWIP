@@ -238,7 +238,19 @@ TEST_CASE("arena table: Data/Battle/arena.json loads without warnings") {
     CHECK(t.fighters.size() == t.fighterIds.size());
     CHECK(t.enemies.size() == t.enemyIds.size());
     CHECK(t.enemies.size() >= 2);
-    CHECK(t.enemies.size() <= 10); // the wave's three, a human-sized duelist, the sized placeholders (hulk, titan), the three skinned bosses and the ranged spitter
+    CHECK(t.enemies.size() <= 11); // the wave's three, a human-sized duelist, the sized placeholders (hulk, titan), the three skinned bosses, the ranged spitter and the target dummy
+    {
+        // The target dummy (-ArenaLineup=dummy): passive, rooted, all but unkillable.
+        std::size_t d = 0;
+        while (d < t.enemyIds.size() && t.enemyIds[d] != "dummy") ++d;
+        REQUIRE(d < t.enemyIds.size());
+        const ArenaEnemyKind& dummy = t.enemies[d];
+        CHECK(dummy.passive);
+        CHECK(dummy.walkSpeed == 0.f);
+        CHECK(dummy.runSpeed == 0.f);
+        CHECK(dummy.strafeSpeed == 0.f);
+        CHECK(dummy.hp >= 10000);
+    }
     CHECK(t.fallback.enemyCount == 1);
     CHECK(t.entries.empty());
     // The default fight's slot says which table kind it holds.
@@ -970,6 +982,21 @@ TEST_CASE("arena attack: a long frame that spans a short active part still hits"
     foe.tick(0.5f);
     CHECK(foe.count(ArenaEventType::Hit) == 1);
     CHECK(foe.fight.hp() == 80);
+}
+
+TEST_CASE("arena passive: a passive kind never asks for a token, so it never attacks, and still takes blows") {
+    ArenaEnemyKind k = hitterKind(swing(0.4f, 0.02f, 0.4f, 2.f, 20));
+    k.passive = true;
+    Rig rig(ruleFighter(), {k});
+    rig.put(0, 1.5f, 0.f);
+    rig.run(600); // 10 s in reach
+    CHECK(rig.fight.hp() == ruleFighter().hp);
+    CHECK(rig.out().enemies[0].brain != ArenaBrain::Attack);
+    const int before = rig.fight.enemyHp(0);
+    rig.in.light = true;
+    rig.run(40);
+    CHECK(rig.count(ArenaEventType::Hit) >= 1);
+    CHECK(rig.fight.enemyHp(0) < before);
 }
 
 TEST_CASE("arena attack: maxTargets caps how many distinct targets one attack connects with, the nearest first") {
@@ -3598,7 +3625,7 @@ TEST_CASE("arena Read: every shipped enemy names a different tell for each move,
     };
     for (std::size_t e = 0; e < table.enemies.size(); ++e) {
         CHECK_MESSAGE(distinct(table.enemies[e]), table.enemyIds[e]);
-        CHECK(table.enemies[e].moveCount >= 2); // so a lone one is dealt at least two cards
+        if (!table.enemies[e].passive) CHECK(table.enemies[e].moveCount >= 2); // so a lone one is dealt at least two cards (the passive dummy never attacks)
     }
     CHECK(distinct(defaultArenaDef().enemies[0]));
 }
@@ -3738,6 +3765,7 @@ TEST_CASE("arena balance: three enemies, one attacking at a time") {
 TEST_CASE("arena balance: the shipped enemies each lose to the autopilot alone") {
     const ArenaTable table = loadShipped();
     for (std::size_t e = 0; e < table.enemyIds.size(); ++e) {
+        if (table.enemies[e].passive) continue; // the target dummy never attacks, so doing nothing cannot lose to it
         ArenaDef def;
         def.fighter = table.fighter("default");
         def.enemyCount = 1;
@@ -3758,6 +3786,7 @@ TEST_CASE("arena balance: every lead's kit plays the default's fights") {
         checkBalance(id + ": three kinds, attackers 1", shippedFight(table, {"brute", "skirmisher", "breaker"}, 1, id.c_str()));
         checkBalance(id + ": a brute and a spitter, attackers 2", shippedFight(table, {"brute", "spitter"}, 2, id.c_str()));
         for (std::size_t e = 0; e < table.enemyIds.size(); ++e) {
+            if (table.enemies[e].passive) continue;
             ArenaDef def;
             def.fighter = table.fighters[f];
             def.enemyCount = 1;
@@ -5372,6 +5401,17 @@ TEST_CASE("arena data: each player move's attack and clip, and what the leads' p
     CHECK(arenaPlayerStrike(third, kArenaReleaseMove) == FightClip::Finisher);
     CHECK(arenaPlayerStrike(duy, duy.lightCount) == FightClip::Stance);
     CHECK(arenaPlayerStrike(duy, 7) == FightClip::Stance);
+
+    // Each move's clip has a lead clip id: Duy's shot is lead_fire, the Third's cast lead_cast.
+    CHECK(std::string(arenaLeadClipId(arenaPlayerStrike(devin, 0))) == "lead_jab");
+    CHECK(std::string(arenaLeadClipId(arenaPlayerStrike(devin, 1))) == "lead_cross");
+    CHECK(std::string(arenaLeadClipId(arenaPlayerStrike(duy, 0))) == "lead_fire");
+    CHECK(std::string(arenaLeadClipId(arenaPlayerStrike(duy, kArenaHeavyMove))) == "lead_kick_r");
+    CHECK(std::string(arenaLeadClipId(arenaPlayerStrike(third, 0))) == "lead_cast");
+    CHECK(std::string(arenaLeadClipId(FightClip::Counter)) == "lead_counter");
+    CHECK(std::string(arenaLeadClipId(FightClip::Finisher)) == "lead_finisher");
+    CHECK(arenaLeadClipId(FightClip::Stance) == nullptr);
+    CHECK(arenaLeadClipId(FightClip::KickLeft) == nullptr);
 
     // The leads have a jab, a cross, a right kick and a counter, no shot or cast clip yet: Devin punches a side in
     // turn, Duy's shots and the Third's casts are the cross, Duy's heavy the kick.
