@@ -1354,10 +1354,17 @@ void AFTExploreCharacter::HandleInteractRelease()
 	}
 }
 
+bool AFTExploreCharacter::CanBoardVan() const
+{
+	// Not from a ledge, a vault, a slide or the air.
+	return !Van.IsValid() && !bTraversing && LedgeNow.phase != ftcore::LedgePhase::Hanging && !SlideNow.sliding()
+		&& GetCharacterMovement()->IsMovingOnGround();
+}
+
 void AFTExploreCharacter::BoardVan(AFTPartyVan* InVan)
 {
+	ResetHeldInput(); // before Van is set, or the run and jump resets are routed to the van and lost
 	Van = InVan;
-	ResetHeldInput();
 	GetCharacterMovement()->StopMovementImmediately();
 	GetCharacterMovement()->DisableMovement();
 	SetActorEnableCollision(false);
@@ -1377,6 +1384,7 @@ void AFTExploreCharacter::BoardVan(AFTPartyVan* InVan)
 void AFTExploreCharacter::LeaveVan(const FVector& At, double Yaw)
 {
 	Van.Reset();
+	ResetHeldInput(); // out at a walk, whatever was held inside
 	DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
 	SetActorLocationAndRotation(At, FRotator(0.0, Yaw, 0.0), false, nullptr, ETeleportType::TeleportPhysics);
 	SetActorHiddenInGame(false);

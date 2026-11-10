@@ -160,10 +160,13 @@ FTCORE_API void tickSeats(const SeatTuning& t, PartySeats& p, float dt, float ve
                           bool driverSideClear, bool passengerSideClear);
 FTCORE_API void holdForSeats(const PartySeats& p, VehicleInput& in);
 
-// Pedestrians. (ahead, side): the nearest pedestrian from the vehicle's front, in its frame (cm; ahead negative: none).
+// Pedestrians. (ahead, side): the nearest pedestrian from the vehicle's front, in its frame (cm; kNobodyAhead: none).
+// Bad numbers fail safe: ahead not a number caps at nearCap, ahead negative is at the bumper, side not a number is in
+// the path.
 // pedestrianCap: the speed limit they set (cm/s; 0: none). combinedLimit: the lower of two limits, 0 meaning none
 // (0 never wipes a real limit). applySpeedLimits: sets in.limit, in.limitDecel and in.clamp from the road's limit and
 // the pedestrian. pedestrianReact: what the pedestrian does with the vehicle at `speed`.
+inline constexpr float kNobodyAhead = 1e30f;
 FTCORE_API float pedestrianCap(const PedestrianTuning& t, float ahead, float side);
 FTCORE_API float combinedLimit(float a, float b);
 FTCORE_API void applySpeedLimits(const PedestrianTuning& t, VehicleInput& in, float roadLimit, float ahead, float side);

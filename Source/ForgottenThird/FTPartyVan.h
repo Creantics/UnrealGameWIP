@@ -30,6 +30,7 @@
 
 #include "FTPartyVan.generated.h"
 
+class ACharacter;
 class AFTExploreCharacter;
 class UBoxComponent;
 class UCameraComponent;
@@ -89,7 +90,12 @@ public:
 
 private:
 	void LoadData();
-	void PlaceOnGround(bool bFirst);
+	void PlaceOnGround(bool bFirst, float Moved = 0.f);
+	// The nearest pedestrian ahead (a character on foot or a crowd agent), in the van's frame from its front bumper
+	// (cm). Ahead is ftcore::kNobodyAhead when there is none.
+	void SensePedestrian(float& Ahead, float& Side, ACharacter*& Who, int32& CrowdSlot) const;
+	void ReactPedestrian(float Ahead, float Side, ACharacter* Who, int32 CrowdSlot);
+	void ClearHeldInput();
 	void MoveBody(float DeltaSeconds);
 	void TickSeats(float DeltaSeconds);
 	void TickScript(float DeltaSeconds);
@@ -128,6 +134,10 @@ private:
 	float GroundZ = 0.f;       // under the pivot (cm)
 	float WheelGround[4] = {0.f, 0.f, 0.f, 0.f};
 	bool WheelHit[4] = {false, false, false, false};
+	float WheelGrade[4] = {0.f, 0.f, 0.f, 0.f}; // the front wheels' last ground slope (rise per cm), for kerb edges
+	float Lift = 0.f;          // the body box raised to the highest wheel's ground (cm)
+	TWeakObjectPtr<ACharacter> LastPedChar; // the last one reacted to (once per approach)
+	int32 LastPedSlot = -1;
 	ftcore::SeatPhase LastPhase = ftcore::SeatPhase::OnFoot;
 	float BodyHalfZ = 87.f;
 

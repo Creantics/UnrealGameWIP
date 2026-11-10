@@ -176,11 +176,15 @@ void holdForSeats(const PartySeats& p, VehicleInput& in) {
 }
 
 float pedestrianCap(const PedestrianTuning& t, float ahead, float side) {
-    if (!finite(ahead) || !finite(side) || ahead < 0.f) return 0.f;
+    if (ahead >= kNobodyAhead) return 0.f;
+    // Anything else fails safe: a distance that is not a number is someone close, a side that is not one is in the path.
+    if (!finite(ahead)) return t.nearCap;
+    ahead = std::max(ahead, 0.f);
+    const bool inPath = !finite(side) || std::abs(side) < t.halfWidth + t.clearance;
     const float a = std::max(t.brakeDecel, 1.f);
     const float past = std::max(ahead - t.nearDistance - t.brakeMargin, 0.f);
     float cap = std::sqrt(t.nearCap * t.nearCap + 2.f * a * past); // down to nearCap a margin before nearDistance
-    if (std::abs(side) < t.halfWidth + t.clearance) {
+    if (inPath) {
         // In the path: stop short of them. Never 0, which would read as no limit.
         cap = std::min(cap, std::max(std::sqrt(2.f * a * std::max(ahead - t.stopGap, 0.f)), 1.f));
     }
@@ -199,7 +203,7 @@ void applySpeedLimits(const PedestrianTuning& t, VehicleInput& in, float roadLim
     const float cap = pedestrianCap(t, ahead, side);
     in.limit = combinedLimit(roadLimit, cap);
     in.limitDecel = cap > 0.f && in.limit >= cap ? t.brakeDecel : 0.f;
-    in.clamp = cap > 0.f && ahead <= t.nearDistance ? t.nearCap : 0.f; // the hard clamp in the last metres
+    in.clamp = cap > 0.f && !(ahead > t.nearDistance) ? t.nearCap : 0.f; // the hard clamp in the last metres
 }
 
 PedOutcome pedestrianReact(const PedestrianTuning& t, float speed, float ahead, float side) {

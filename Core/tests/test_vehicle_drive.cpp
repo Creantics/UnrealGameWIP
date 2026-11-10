@@ -182,6 +182,26 @@ TEST_CASE("vehicle: the handbrake lets the tail slide and turns the car harder")
     CHECK(slide.speed() < grip.speed()); // and scrubs speed
 }
 
+TEST_CASE("vehicle: the hard clamp holds the ground speed, a handbrake slide included") {
+    VehicleState s;
+    const VehicleDrive car = atCap(s);
+    VehicleInput hb;
+    hb.steer = 1.f;
+    hb.handbrake = true;
+    run(car, s, hb, 0.4f); // sliding sideways
+    REQUIRE(std::abs(s.side) > 100.f);
+    VehicleInput in = hb;
+    in.clamp = 694.f; // 25 km/h
+    for (int i = 0; i < 60; ++i) {
+        car.step(s, in, kFrame);
+        CHECK(s.speed() <= 694.f + 1e-2f);
+    }
+    // A huge heading is brought into range in one step.
+    s.heading = 1.0e9f;
+    car.step(s, VehicleInput{}, kFrame);
+    CHECK(std::abs(s.heading) <= 3.1416f);
+}
+
 TEST_CASE("vehicle: the same inputs give the same path, however the frames are cut") {
     VehicleDrive car;
     VehicleState a = car.parked(100.f, -50.f, 0.3f);

@@ -143,6 +143,7 @@ public:
 
 	// The party van (AFTPartyVan): boarding hides the lead and the party and hands the van this pawn's input and the
 	// view; leaving puts the lead down at `At`, facing `Yaw`, as the party was.
+	bool CanBoardVan() const;
 	void BoardVan(AFTPartyVan* InVan);
 	void LeaveVan(const FVector& At, double Yaw);
 	// For locomotion captures: the camera frames the body under Root (its feet) as it frames this one.

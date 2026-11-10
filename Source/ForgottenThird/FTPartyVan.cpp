@@ -8,11 +8,13 @@
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "GameFramework/Character.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 
+#include "FTCrowdSubsystem.h"
 #include "FTExploreCharacter.h"
 #include "FTPartyFollower.h"
 #include "ForgottenThird.h"
@@ -177,7 +179,7 @@ void AFTPartyVan::LoadData()
 
 bool AFTPartyVan::TryEnter(AFTExploreCharacter* Lead)
 {
-	if (!Lead || Driver.IsValid())
+	if (!Lead || Driver.IsValid() || !Lead->CanBoardVan())
 	{
 		return false;
 	}
@@ -198,6 +200,7 @@ bool AFTPartyVan::TryEnter(AFTExploreCharacter* Lead)
 		return false;
 	}
 	Driver = Lead;
+	ClearHeldInput();
 	Lead->BoardVan(this);
 	LastPhase = Seats.phase;
 	UE_LOG(LogForgottenThird, Display, TEXT("FTPartyVan: boarding (%d aboard in %.2f s)."), Seats.count, Seats.length);
@@ -222,7 +225,10 @@ void AFTPartyVan::TickSeats(float DeltaSeconds)
 		return;
 	}
 	const float DriverSign = bRightHandDrive ? 1.f : -1.f;
-	ftcore::tickSeats(Rules.seats, Seats, DeltaSeconds, State.speed(), bExitHeld, SideClear(DriverSign), SideClear(-DriverSign));
+	// The doors' sides are only looked at while the way out is held.
+	const bool bDriverClear = !bExitHeld || SideClear(DriverSign);
+	const bool bPassengerClear = !bExitHeld || SideClear(-DriverSign);
+	ftcore::tickSeats(Rules.seats, Seats, DeltaSeconds, State.speed(), bExitHeld, bDriverClear, bPassengerClear);
 	if (Seats.phase == ftcore::SeatPhase::Exiting && LastPhase != ftcore::SeatPhase::Exiting)
 	{
 		ExitSign = Seats.side == ftcore::ExitSide::Passenger ? -DriverSign : DriverSign;
@@ -238,7 +244,7 @@ void AFTPartyVan::FinishExit()
 {
 	AFTExploreCharacter* Lead = Driver.Get();
 	Driver.Reset();
-	bExitHeld = false;
+	ClearHeldInput(); // a handbrake or stick held through the exit goes to the foot path on release
 	if (!Lead)
 	{
 		return;
@@ -248,7 +254,103 @@ void AFTPartyVan::FinishExit()
 	UE_LOG(LogForgottenThird, Display, TEXT("FTPartyVan: out on the %s side."), ExitSign > 0.f ? TEXT("right") : TEXT("left"));
 }
 
-void AFTPartyVan::PlaceOnGround(bool bFirst)
+void AFTPartyVan::ClearHeldInput()
+{
+	DriveAxis = FVector2D::ZeroVector;
+	bAxisFresh = false;
+	bHandbrake = false;
+	bExitHeld = false;
+}
+
+void AFTPartyVan::SensePedestrian(float& Ahead, float& Side, ACharacter*& Who, int32& CrowdSlot) const
+{
+	Ahead = ftcore::kNobodyAhead;
+	Side = 0.f;
+	Who = nullptr;
+	CrowdSlot = -1;
+	// Looked for out to the braking distance from the top speed, and across the pavements on both sides.
+	constexpr float Range = 4000.f, Across = 450.f;
+	const FTransform& T = GetActorTransform();
+	const float Front = static_cast<float>(BodyBox.X) * 0.5f;
+	const float Behind = -Rules.pedestrian.clearance;
+	auto Consider = [&](const FVector& P) -> bool
+	{
+		const FVector L = T.InverseTransformPosition(P);
+		const float A = static_cast<float>(L.X) - Front;
+		const float S = static_cast<float>(L.Y);
+		if (A < Behind || A > Range || FMath::Abs(S) > Across || FMath::Abs(L.Z) > 400.0 || A >= Ahead)
+		{
+			return false;
+		}
+		Ahead = A;
+		Side = S;
+		return true;
+	};
+	const AFTExploreCharacter* Lead = Driver.Get();
+	for (TActorIterator<ACharacter> It(GetWorld()); It; ++It)
+	{
+		ACharacter* C = *It;
+		if (C != Lead && !C->IsHidden() && C->GetActorEnableCollision() && Consider(C->GetActorLocation()))
+		{
+			Who = C;
+		}
+	}
+	if (const UFTCrowdSubsystem* Crowd = UFTCrowdSubsystem::Get(GetWorld()))
+	{
+		const ftcore::CrowdSim& Sim = Crowd->GetSim();
+		const float Z = static_cast<float>(GetActorLocation().Z);
+		for (uint32 I = 0; I < Sim.capacity(); ++I)
+		{
+			const ftcore::CrowdAgentView& V = Sim.agent(I);
+			if (V.live && Consider(FVector(V.pos.x * 100.0, V.pos.y * 100.0, Z)))
+			{
+				Who = nullptr;
+				CrowdSlot = static_cast<int32>(I);
+			}
+		}
+	}
+}
+
+void AFTPartyVan::ReactPedestrian(float Ahead, float Side, ACharacter* Who, int32 CrowdSlot)
+{
+	if (Ahead >= ftcore::kNobodyAhead || Ahead > Rules.pedestrian.nearDistance)
+	{
+		LastPedChar.Reset(); // nobody close: the next approach reacts afresh
+		LastPedSlot = -1;
+		return;
+	}
+	if ((Who && LastPedChar.Get() == Who) || (CrowdSlot >= 0 && CrowdSlot == LastPedSlot))
+	{
+		return; // once per approach
+	}
+	const ftcore::PedOutcome O = ftcore::pedestrianReact(Rules.pedestrian, State.speed(), Ahead, Side);
+	if (O.react == ftcore::PedReact::None)
+	{
+		return;
+	}
+	LastPedChar = Who;
+	LastPedSlot = CrowdSlot;
+	const FVector Right = GetActorRightVector();
+	const FVector At = GetActorTransform().TransformPosition(FVector(BodyBox.X * 0.5 + Ahead, Side, 0.0));
+	if (Who)
+	{
+		// A character steps aside, or is pushed down the way the van is going (its own fall and get-up are its own).
+		const FVector Push = O.react == ftcore::PedReact::Dodge
+			? Right * (O.sidestep > 0.f ? 1.0 : -1.0) * Rules.pedestrian.sidestepSpeed
+			: GetActorForwardVector() * O.contact + FVector(0.0, 0.0, O.react == ftcore::PedReact::KnockDown ? 250.0 : 80.0);
+		Who->LaunchCharacter(Push, true, false);
+	}
+	else if (UFTCrowdSubsystem* Crowd = UFTCrowdSubsystem::Get(GetWorld()))
+	{
+		// The crowd scatters from a van passing close, and a knock-down frightens it like a fall.
+		Crowd->RaiseEvent(O.react == ftcore::PedReact::Dodge ? ftcore::CrowdEventKind::PlayerSprint : ftcore::CrowdEventKind::LoudNoise, At);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("VANPED %s %.0f cm ahead, %.0f to the side, at %.1f km/h (contact %.1f)."),
+		O.react == ftcore::PedReact::Dodge ? TEXT("dodge") : O.react == ftcore::PedReact::Stumble ? TEXT("stumble") : TEXT("knock-down"),
+		Ahead, Side, State.speed() / KmhToCms, O.contact / KmhToCms);
+}
+
+void AFTPartyVan::PlaceOnGround(bool bFirst, float Moved)
 {
 	const float C = FMath::Cos(State.heading), S = FMath::Sin(State.heading);
 	static const float XS[4] = {1.f, 1.f, -1.f, -1.f};
@@ -268,14 +370,24 @@ void AFTPartyVan::PlaceOnGround(bool bFirst)
 		if (GetWorld()->LineTraceSingleByChannel(Hit, FVector(P.X, P.Y, From), FVector(P.X, P.Y, To), ECC_Visibility, Params))
 		{
 			const float Z = static_cast<float>(Hit.ImpactPoint.Z);
-			// A rise under a front wheel going forward is a kerb edge (Core slows the van for it).
-			if (!bFirst && I < 2 && WheelHit[I] && State.forward > 0.f)
+			// A step under a front wheel going forward is a kerb edge (Core slows the van for it). A slope rises with the
+			// distance travelled, so only the rise beyond the wheel's last grade counts, whatever the frame rate.
+			if (bFirst)
+			{
+				WheelGrade[I] = 0.f;
+			}
+			else if (I < 2 && WheelHit[I] && State.forward > 0.f && Moved > 0.5f)
 			{
 				const float Rise = Z - WheelGround[I];
-				if (Rise > 2.f && Rise <= Drive.tuning().kerbMax + 1.f)
+				const float Step = Rise - WheelGrade[I] * Moved;
+				if (Step > FMath::Max(3.f, 0.06f * Moved) && Step <= Drive.tuning().kerbMax + 1.f)
 				{
-					Drive.mountKerb(State, Rise);
+					Drive.mountKerb(State, Step);
 					bKerbTouched = true;
+				}
+				else
+				{
+					WheelGrade[I] = FMath::Clamp(Rise / Moved, -0.5f, 0.5f);
 				}
 			}
 			WheelGround[I] = Z;
@@ -305,24 +417,56 @@ void AFTPartyVan::MoveBody(float DeltaSeconds)
 	}
 	In.handbrake = bHandbrake || !bCanDrive;
 	ftcore::holdForSeats(Seats, In);
-	// No pedestrian sensing yet: none ahead (-1), so the road's limit stands alone.
-	ftcore::applySpeedLimits(Rules.pedestrian, In, LimitKmh * KmhToCms, -1.f, 0.f);
+	// The nearest pedestrian ahead brakes the van down to the zone's cap; they react to it when it is close.
+	float PedAhead = ftcore::kNobodyAhead, PedSide = 0.f;
+	ACharacter* PedChar = nullptr;
+	int32 PedSlot = -1;
+	SensePedestrian(PedAhead, PedSide, PedChar, PedSlot);
+	ftcore::applySpeedLimits(Rules.pedestrian, In, LimitKmh * KmhToCms, PedAhead, PedSide);
 	Drive.step(State, In, DeltaSeconds);
 	ftcore::addDistance(Rules.wear, Wear, State.speed() * DeltaSeconds);
+	ReactPedestrian(PedAhead, PedSide, PedChar, PedSlot);
 
-	PlaceOnGround(false);
+	PlaceOnGround(false, State.speed() * DeltaSeconds);
+	// The flat box rides on the highest wheel's ground, so a slope or a crest under it does not snag it.
+	const float Highest = FMath::Max(FMath::Max(WheelGround[0], WheelGround[1]), FMath::Max(WheelGround[2], WheelGround[3]));
+	Lift = FMath::Max(Highest - GroundZ, 0.f);
+	const FVector Want(State.x, State.y, GroundZ + Lift + Clearance + BodyHalfZ);
+	const FRotator WantRot(0.0, FMath::RadiansToDegrees(State.heading), 0.0);
 	FHitResult Hit;
-	SetActorLocationAndRotation(FVector(State.x, State.y, GroundZ + Clearance + BodyHalfZ),
-		FRotator(0.0, FMath::RadiansToDegrees(State.heading), 0.0), true, &Hit);
-	if (Hit.bBlockingHit && FMath::Abs(Hit.ImpactNormal.Z) < 0.7)
+	SetActorLocationAndRotation(Want, WantRot, true, &Hit);
+	if (Hit.bBlockingHit && Hit.ImpactNormal.Z >= 0.7)
 	{
+		// Ground it can drive on (a ramp's lip, a terrace edge): step the body up over it and try once more.
+		const FVector Up(0.0, 0.0, Drive.tuning().kerbMax + 10.f);
+		SetActorLocation(GetActorLocation() + Up, true);
+		SetActorLocationAndRotation(Want + Up, WantRot, true, &Hit);
+	}
+	if (Hit.bBlockingHit)
+	{
+		// Stopped short: the model goes where the body is (it never runs on ahead of it).
 		const FVector At = GetActorLocation();
 		State.x = static_cast<float>(At.X);
 		State.y = static_cast<float>(At.Y);
-		const float Into = Drive.collide(State, static_cast<float>(Hit.ImpactNormal.X), static_cast<float>(Hit.ImpactNormal.Y));
+		State.heading = FMath::DegreesToRadians(static_cast<float>(GetActorRotation().Yaw));
+		const FVector2D N(Hit.ImpactNormal.X, Hit.ImpactNormal.Y);
+		float Into = 0.f;
+		if (N.Size() > 0.2)
+		{
+			Into = Drive.collide(State, static_cast<float>(N.X), static_cast<float>(N.Y));
+		}
+		else
+		{
+			// Straight above or below (an overhang, a ledge it cannot step): it stops.
+			Into = State.speed();
+			State.forward = 0.f;
+			State.side = 0.f;
+			State.yawRate = 0.f;
+		}
 		const FVector Local = GetActorTransform().InverseTransformPosition(Hit.ImpactPoint);
 		ftcore::addImpact(Rules.wear, Wear, Into, static_cast<float>(Local.X), static_cast<float>(Local.Y));
 	}
+	Tilt->SetRelativeLocation(FVector(0.0, 0.0, -(Clearance + BodyHalfZ + Lift)));
 
 	// The body tilts with the ground under the wheels; the wheels sit on their own ground, spin and steer.
 	const float Pitch = FMath::RadiansToDegrees(FMath::Atan2((WheelGround[0] + WheelGround[1] - WheelGround[2] - WheelGround[3]) * 0.5f, 2.f * HalfWheelbase));
@@ -330,7 +474,7 @@ void AFTPartyVan::MoveBody(float DeltaSeconds)
 	Tilt->SetRelativeRotation(FRotator(Pitch, 0.0, Roll));
 	Spin = FMath::Fmod(Spin + FMath::RadiansToDegrees(State.forward / WheelRadius) * DeltaSeconds, 360.f);
 	const float Steer = FMath::RadiansToDegrees(State.steer);
-	const float BoxZ = GroundZ + Clearance + BodyHalfZ;
+	const float BoxZ = static_cast<float>(GetActorLocation().Z);
 	static const float XS[4] = {1.f, 1.f, -1.f, -1.f};
 	static const float YS[4] = {-1.f, 1.f, -1.f, 1.f};
 	for (int I = 0; I < 4; ++I)

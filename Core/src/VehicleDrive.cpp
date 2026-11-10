@@ -29,6 +29,8 @@ float slowBy(float v, float dv) {
 
 // An angle in (-pi, pi].
 float wrapAngle(float a) {
+    if (!std::isfinite(a)) return 0.f;
+    if (std::abs(a) > 64.f) a = std::remainder(a, 2.f * kPi); // a huge heading: one step, not a long loop
     while (a > kPi) a -= 2.f * kPi;
     while (a <= -kPi) a += 2.f * kPi;
     return a;
@@ -188,6 +190,14 @@ void VehicleDrive::substep(VehicleState& s, const VehicleInput& raw, float h) co
     s.forward = f;
     // The tyres pull the sideways speed back to nothing; the handbrake lets most of it slide.
     s.side = approach(sd, 0.f, t.gripLat * (in.handbrake ? t.handbrakeGrip : 1.f) * h);
+    // The hard clamp holds the ground speed, so a slide into the zone is held to it too.
+    if (in.clamp > 0.f) {
+        const float sp = std::sqrt(s.forward * s.forward + s.side * s.side);
+        if (sp > in.clamp) {
+            s.forward *= in.clamp / sp;
+            s.side *= in.clamp / sp;
+        }
+    }
 
     s.x += s.velX() * h;
     s.y += s.velY() * h;

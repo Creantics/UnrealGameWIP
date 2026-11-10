@@ -196,8 +196,13 @@ TEST_CASE("vehicle pedestrians: they step aside with time, else are met slowed, 
 TEST_CASE("vehicle pedestrians: the cap is a braking curve, so a van at 80 km/h is down to 25 before them") {
     const PedestrianTuning t;
     CHECK(pedestrianCap(t, 500.f, 300.f) == doctest::Approx(t.nearCap));
-    CHECK(pedestrianCap(t, -1.f, 0.f) == 0.f);
-    CHECK(pedestrianCap(t, NAN, 0.f) == 0.f);
+    CHECK(pedestrianCap(t, kNobodyAhead, 0.f) == 0.f);
+    CHECK(pedestrianCap(t, INFINITY, 0.f) == 0.f);
+    // Bad numbers fail safe: a cap still applies.
+    CHECK(pedestrianCap(t, NAN, 300.f) == doctest::Approx(t.nearCap));
+    CHECK(pedestrianCap(t, -1.f, 0.f) == doctest::Approx(1.f));       // at the bumper, in the path: stop
+    CHECK(pedestrianCap(t, -1.f, 300.f) == doctest::Approx(t.nearCap)); // at the bumper line, to the side
+    CHECK(pedestrianCap(t, 200.f, NAN) == pedestrianCap(t, 200.f, 0.f)); // side unknown: in the path
     // Past nearDistance it rises as the distance a firm brake needs to come down to nearCap.
     const float far = pedestrianCap(t, t.nearDistance + t.brakeMargin + 2000.f, 300.f);
     CHECK(far == doctest::Approx(std::sqrt(t.nearCap * t.nearCap + 2.f * t.brakeDecel * 2000.f)));
@@ -278,7 +283,10 @@ TEST_CASE("vehicle limits: the lowest real one wins; 0 means none and never wipe
     CHECK(in.clamp == 0.f);
     applySpeedLimits(t, in, 0.f, 400.f, 300.f);
     CHECK(in.clamp == t.nearCap);
-    applySpeedLimits(t, in, 1667.f, -1.f, 0.f); // nobody ahead
+    applySpeedLimits(t, in, 1667.f, NAN, 0.f); // a bad distance: capped and clamped
+    CHECK(in.limit == doctest::Approx(t.nearCap));
+    CHECK(in.clamp == t.nearCap);
+    applySpeedLimits(t, in, 1667.f, kNobodyAhead, 0.f); // nobody ahead
     CHECK(in.limit == 1667.f);
     CHECK(in.limitDecel == 0.f);
     CHECK(in.clamp == 0.f);
