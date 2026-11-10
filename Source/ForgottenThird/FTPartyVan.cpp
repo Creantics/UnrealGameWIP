@@ -2,7 +2,6 @@
 
 #include "Camera/CameraComponent.h"
 #include "Components/BoxComponent.h"
-#include "Components/PointLightComponent.h"
 #include "Components/SpotLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/GameViewportClient.h"
@@ -35,7 +34,13 @@ const FVector LensAt[4] = {FVector(174.0, -51.0, 77.0), FVector(174.0, 51.0, 77.
 const FVector LensSize[4] = {FVector(4.0, 25.0, 14.0), FVector(4.0, 25.0, 14.0), FVector(4.0, 10.0, 28.0), FVector(4.0, 10.0, 28.0)};
 constexpr float HeadGlow = 25.f, TailGlowOn = 4.f, BrakeGlow = 12.f;
 constexpr float HeadCandela = 1500.f, HeadReach = 3000.f; // a low beam's spread; street lamps are 400 cd
-constexpr float TailCandela = 2.f, BrakeCandela = 6.f, TailReach = 300.f; // kept low: the glow sits close behind the body
+// The tail light is a spot under the rear bumper aimed back and down, so it lights a small pool on the road behind
+// and never the van's own rear.
+constexpr float TailCandela = 3.f, BrakeCandela = 8.f, TailReach = 250.f;
+const FVector TailGlowAt(-175.0, 0.0, 40.0);
+const FRotator TailGlowAim(-60.0, 180.0, 0.0);
+const FLinearColor GlassColor(0.015f, 0.018f, 0.022f);
+const TCHAR* const GlassMeshPath = TEXT("/Game/Vehicles/PartyVanGlass/SM_PartyVanGlass.SM_PartyVanGlass");
 constexpr float LookEvery = 0.5f;
 const TCHAR* const BodyLookPath = TEXT("/Game/Vehicles/PartyVan/M_VanBody.M_VanBody");
 const TCHAR* const LensLookPath = TEXT("/Game/Vehicles/PartyVan/M_VanLamp.M_VanLamp");
@@ -140,15 +145,24 @@ AFTPartyVan::AFTPartyVan()
 		HeadBeam[I]->SetInnerConeAngle(14.f);
 		HeadBeam[I]->SetLightColor(FLinearColor(1.f, 0.93f, 0.82f));
 		HeadBeam[I]->SetVisibility(false);
+		HeadBeam[I]->SetMobility(EComponentMobility::Movable);
 	}
-	TailGlow = CreateDefaultSubobject<UPointLightComponent>(TEXT("TailGlow"));
+	TailGlow = CreateDefaultSubobject<USpotLightComponent>(TEXT("TailGlow"));
 	TailGlow->SetupAttachment(Tilt);
 	TailGlow->SetCastShadows(false);
 	TailGlow->SetIntensityUnits(ELightUnits::Candelas);
 	TailGlow->SetIntensity(TailCandela);
 	TailGlow->SetAttenuationRadius(TailReach);
 	TailGlow->SetLightColor(FLinearColor(1.f, 0.05f, 0.02f));
+	TailGlow->SetOuterConeAngle(50.f);
+	TailGlow->SetInnerConeAngle(20.f);
 	TailGlow->SetVisibility(false);
+	TailGlow->SetMobility(EComponentMobility::Movable);
+	Glass = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Glass"));
+	Glass->SetupAttachment(Tilt);
+	Glass->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Glass->SetCastShadow(false);
+	Glass->SetVisibility(false);
 }
 
 void AFTPartyVan::SetupLook(bool bBodyAsset)
@@ -198,7 +212,22 @@ void AFTPartyVan::SetupLook(bool bBodyAsset)
 	{
 		HeadBeam[I]->SetRelativeLocationAndRotation(LensAt[I] + FVector(8.0, 0.0, 0.0), FRotator(-4.0, 0.0, 0.0));
 	}
-	TailGlow->SetRelativeLocation(FVector(-240.0, 0.0, 60.0));
+	TailGlow->SetRelativeLocationAndRotation(TailGlowAt, TailGlowAim);
+	// The cab door panes, dark glass in the body's mesh frame; left out without the mesh or the lamp material.
+	UStaticMesh* Panes = bBodyAsset ? LoadObject<UStaticMesh>(nullptr, GlassMeshPath) : nullptr;
+	if (Panes && LensMaster)
+	{
+		GlassLook = UMaterialInstanceDynamic::Create(LensMaster, this);
+		GlassLook->SetVectorParameterValue(TEXT("Color"), GlassColor);
+		GlassLook->SetScalarParameterValue(TEXT("Glow"), 0.f);
+		Glass->SetStaticMesh(Panes);
+		Glass->SetRelativeTransform(Body->GetRelativeTransform());
+		for (int32 Slot = 0; Slot < Glass->GetNumMaterials(); ++Slot)
+		{
+			Glass->SetMaterial(Slot, GlassLook);
+		}
+	}
+	Glass->SetVisibility(Panes && GlassLook);
 
 	// -VanWear=front,rear,left,right,dirt (0 to 4 each) starts the van that worn, for a look at the wear.
 	FString WearText;
@@ -249,10 +278,12 @@ void AFTPartyVan::TickLamps(float DeltaSeconds)
 	{
 		LookAge = 0.f;
 		const UFTWorldClockSubsystem* Clock = GetWorld()->GetSubsystem<UFTWorldClockSubsystem>();
-		bNight = Clock && Clock->IsRunning() && Clock->GetNightAmount() > 0.5f;
+		bNight = Clock && Clock->IsRunning() && ftcore::nightBand(Clock->GetNightAmount(), bNight);
 		ShowWear();
 	}
-	const ftcore::LampState L = ftcore::lampState(bNight, LampBrake, bLampHandbrake, Seats.phase != ftcore::SeatPhase::OnFoot);
+	// A driver in the seat: settled, or still in it while getting out (Entering is still on foot for the lamps).
+	const bool bDriver = Seats.phase == ftcore::SeatPhase::Seated || Seats.phase == ftcore::SeatPhase::Exiting;
+	const ftcore::LampState L = ftcore::lampState(bNight, LampBrake, bLampHandbrake, bDriver);
 	if (bLampsSet && L.head == Lamps.head && L.tail == Lamps.tail && L.brake == Lamps.brake)
 	{
 		return;
@@ -937,7 +968,12 @@ void AFTPartyVan::TickScript(float DeltaSeconds)
 	if (ScriptStage == 4 && Seats.phase == ftcore::SeatPhase::OnFoot)
 	{
 		ScriptStage = 5;
-		EndAt = ScriptTime + 1.f;
+		EndAt = ScriptTime + 1.5f;
+		// Parked with nobody aboard: from low behind and to the side, every lamp dark (at night too).
+		if (!ShotPrefix.IsEmpty() && bMapRoute)
+		{
+			Shot(TEXT("parked"), 35.f, -6.f, 800.f);
+		}
 	}
 	if (ScriptStage == 5 && ScriptTime > EndAt)
 	{

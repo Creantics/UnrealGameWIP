@@ -35,7 +35,6 @@ class AFTExploreCharacter;
 class UBoxComponent;
 class UCameraComponent;
 class UMaterialInstanceDynamic;
-class UPointLightComponent;
 class USpotLightComponent;
 class USpringArmComponent;
 class UStaticMeshComponent;
@@ -127,11 +126,15 @@ private:
 	UPROPERTY(VisibleAnywhere, Category = "Components")
 	TObjectPtr<USpotLightComponent> HeadBeam[2];
 	UPROPERTY(VisibleAnywhere, Category = "Components")
-	TObjectPtr<UPointLightComponent> TailGlow;
+	TObjectPtr<USpotLightComponent> TailGlow; // aimed back and down from under the bumper: a ground pool, not the body
+	UPROPERTY(VisibleAnywhere, Category = "Components")
+	TObjectPtr<UStaticMeshComponent> Glass; // the cab door panes (the body mesh has open holes there)
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> BodyLook; // M_VanBody on the body's painted slot: glass and wear
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> LensLook[2]; // head, tail (each pair shares one)
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> GlassLook; // M_VanLamp, dark and unlit, on the panes
 
 	ftcore::VehicleDrive Drive;
 	ftcore::VehicleState State;

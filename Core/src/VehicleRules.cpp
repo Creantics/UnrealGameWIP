@@ -53,11 +53,16 @@ int wearStage(const WearState& s, WearZone z) { return stageOf(s.zone[static_cas
 
 int dirtStage(const WearState& s) { return stageOf(s.dirt); }
 
+bool nightBand(float nightAmount, bool wasNight) {
+    if (!(nightAmount == nightAmount)) return wasNight; // NaN keeps the band as it was
+    return wasNight ? nightAmount > kNightOff : nightAmount >= kNightOn;
+}
+
 LampState lampState(bool night, float brake, bool handbrake, bool driverSeated) {
     LampState l;
-    l.head = night;
-    l.tail = night;
-    l.brake = brake > 0.1f || (handbrake && driverSeated);
+    l.head = night && driverSeated;
+    l.tail = night && driverSeated;
+    l.brake = brake > kBrakeLampInput || (handbrake && driverSeated);
     return l;
 }
 
