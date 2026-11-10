@@ -4,6 +4,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "GameFramework/Actor.h"
+#include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/CommandLine.h"
 #include "UObject/UnrealType.h"
@@ -233,11 +234,25 @@ int32 FTLook::SwapMaterials(USkeletalMeshComponent& Body, const TArray<TObjectPt
 			continue;
 		}
 		int32 Slots = 0;
-		auto SwapOn = [From, To, &Slots](USkeletalMeshComponent* Component)
+		// A slot shows From when its material is From or an instance made from it (a runtime or per-LOD copy).
+		auto Shows = [From](const UMaterialInterface* Material)
+		{
+			for (int32 Depth = 0; Material && Depth < 8; ++Depth)
+			{
+				if (Material == From || Material->GetPathName() == From->GetPathName())
+				{
+					return true;
+				}
+				const UMaterialInstance* Instance = Cast<UMaterialInstance>(Material);
+				Material = Instance ? Instance->Parent.Get() : nullptr;
+			}
+			return false;
+		};
+		auto SwapOn = [&Shows, To, &Slots](USkeletalMeshComponent* Component)
 		{
 			for (int32 I = 0; Component && I < Component->GetNumMaterials(); ++I)
 			{
-				if (Component->GetMaterial(I) == From)
+				if (Shows(Component->GetMaterial(I)))
 				{
 					Component->SetMaterial(I, To);
 					++Slots;
@@ -251,7 +266,24 @@ int32 FTLook::SwapMaterials(USkeletalMeshComponent& Body, const TArray<TObjectPt
 		}
 		if (Slots == 0)
 		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("%s: material swap: no slot shows %s."), Who, *From->GetName());
+			UE_LOG(LogForgottenThird, Warning, TEXT("%s: material swap: no slot shows %s."), Who, *From->GetPathName());
+			// What the slots do show, once per component that has slots, so the swap's From can be put right.
+			auto List = [Who](const USkeletalMeshComponent* Component)
+			{
+				FString Names;
+				for (int32 I = 0; Component && I < Component->GetNumMaterials(); ++I)
+				{
+					const UMaterialInterface* Material = Component->GetMaterial(I);
+					Names += FString::Printf(TEXT(" [%d]%s"), I, Material ? *Material->GetPathName() : TEXT("none"));
+				}
+				UE_LOG(LogForgottenThird, Warning, TEXT("%s:   %s slots:%s"), Who,
+					Component && Component->GetSkeletalMeshAsset() ? *Component->GetSkeletalMeshAsset()->GetName() : TEXT("none"), *Names);
+			};
+			List(&Body);
+			for (const USkeletalMeshComponent* Piece : Pieces)
+			{
+				List(Piece);
+			}
 		}
 		else
 		{
