@@ -21,6 +21,7 @@
 #include "NiagaraSystem.h"
 #include "NiagaraSystemInstanceController.h"
 #include "Templates/UniquePtr.h"
+#include "UObject/SoftObjectPath.h"
 
 #include "ftcore/BeatChoreo.h"
 
@@ -249,10 +250,20 @@ void FFTLeadWeapons::AttachProps()
 	}
 	if (Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
 	{
-		for (int32 I = 0; I < FTWeaponProps::NumGauntletPieces; ++I)
+		// Skinned to the body's skeleton, posed by it.
+		TArray<FSoftObjectPath> Paths;
+		for (const TCHAR* Name : FTWeaponProps::GauntletPieces)
 		{
-			Gauntlet[I] = AttachProp(FTWeaponProps::GauntletPieces[I]);
+			Paths.Emplace(FString::Printf(TEXT("%s/%s.%s"), FTWeaponProps::GauntletFolder, Name, Name));
 		}
+		TArray<TObjectPtr<USkeletalMeshComponent>> Added;
+		FTLook::AddPieces(*Figure.Get(), *Skin.Get(), Paths, Added, Prefix());
+		for (int32 I = 0; I < Added.Num() && I < FTWeaponProps::NumGauntletPieces; ++I)
+		{
+			Gauntlet[I] = Added[I];
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: lead weapon: %d of %d gauntlet pieces on %s."), Prefix(), Added.Num(),
+			FTWeaponProps::NumGauntletPieces, *Skin->GetSkeletalMeshAsset()->GetName());
 	}
 	else
 	{
@@ -543,7 +554,7 @@ void FFTLeadWeapons::End()
 			Instance->SetActionClip(static_cast<int32>(StrikeClip), nullptr);
 		}
 	}
-	for (TWeakObjectPtr<UStaticMeshComponent>& Piece : Gauntlet)
+	for (TWeakObjectPtr<USkeletalMeshComponent>& Piece : Gauntlet)
 	{
 		if (Piece.IsValid())
 		{
@@ -727,6 +738,22 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 		ImpactDue = -1.0;
 		if (UFTVfxComponent* Vfx = Fx[Impact].Get())
 		{
+			// The fist's spark at its knuckles (a kick's at the foot), where it lands.
+			if (Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
+			{
+				FName Limb;
+				bool bLeft = false;
+				const FName Knuckle = ArmBones(StrikesLeft() ? 0 : 1).Knuckle;
+				const USkeletalMeshComponent* Body = Skin.Get();
+				if (Body && Strike != FightClip::KickLeft && Strike != FightClip::KickRight && Body->DoesSocketExist(Knuckle))
+				{
+					ImpactAt = Body->GetSocketLocation(Knuckle);
+				}
+				else
+				{
+					GetStrikeLimb(Limb, ImpactAt, bLeft);
+				}
+			}
 			Vfx->SetWorldLocationAndRotation(ImpactAt, FRotator::ZeroRotator);
 			Play(Impact, T);
 			LastImpactTime = T;
@@ -1009,7 +1036,7 @@ void FFTLeadWeapons::Reset()
 	Skin.Reset();
 	Anim.Reset();
 	bClips = false;
-	for (TWeakObjectPtr<UStaticMeshComponent>& Piece : Gauntlet)
+	for (TWeakObjectPtr<USkeletalMeshComponent>& Piece : Gauntlet)
 	{
 		Piece.Reset();
 	}

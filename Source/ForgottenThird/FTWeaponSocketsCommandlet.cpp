@@ -29,8 +29,6 @@ namespace FTWeaponSocketsImpl
 // Past these a check is a warning (cm, degrees).
 constexpr double kCheckCm = 1.0;
 constexpr double kCheckDeg = 5.0;
-// A gauntlet side is turned only when the turn fits the forearm this much better (degrees).
-constexpr double kTurnGainDeg = 20.0;
 
 bool ReadJsonFile(const FString& File, ftcore::JsonDocument& Doc)
 {
@@ -89,25 +87,6 @@ FQuat Yaw(double Degrees)
 double DegreesApart(const FQuat& A, const FQuat& B)
 {
 	return FMath::RadiansToDegrees(A.AngularDistance(B));
-}
-
-double DegreesBetween(const FVector& A, const FVector& B)
-{
-	const FVector U = A.GetSafeNormal();
-	const FVector V = B.GetSafeNormal();
-	if (U.IsNearlyZero() || V.IsNearlyZero())
-	{
-		return 180.0;
-	}
-	return FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(FVector::DotProduct(U, V), -1.0, 1.0)));
-}
-
-// The corner of a mesh's bounds farthest out along each axis: where a piece reaches to from its origin.
-FVector FarCorner(const FBox& Box)
-{
-	return FVector(FMath::Abs(Box.Max.X) >= FMath::Abs(Box.Min.X) ? Box.Max.X : Box.Min.X,
-		FMath::Abs(Box.Max.Y) >= FMath::Abs(Box.Min.Y) ? Box.Max.Y : Box.Min.Y,
-		FMath::Abs(Box.Max.Z) >= FMath::Abs(Box.Min.Z) ? Box.Max.Z : Box.Min.Z);
 }
 
 FString Describe(const FTransform& T)
@@ -224,99 +203,6 @@ bool EntryFor(const ftcore::JsonValue& Root, const TCHAR* Key, const TCHAR* Bone
 	return true;
 }
 
-// The quarter turn (0, 90, 180 or -90 degrees about Z) that lays a side's vambrace along that side's forearm, logged.
-double GauntletTurn(const USkeletalMesh& Body, const FTWeaponProps::FPiece& Vambrace, const TCHAR* Hand)
-{
-	const UStaticMesh* Mesh = FTWeaponProps::FindMesh(Vambrace);
-	FTransform Elbow, Wrist;
-	if (!Mesh || !RestOf(Body, Vambrace.Bone, Elbow) || !RestOf(Body, Hand, Wrist))
-	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("FTWeaponSockets: no %s mesh to check its frame against the forearm (import it first); no turn."),
-			Vambrace.Mesh);
-		return 0.0;
-	}
-	const FVector Forearm = Wrist.GetTranslation() - Elbow.GetTranslation();
-	const FVector Far = FarCorner(Mesh->GetBoundingBox());
-	const double Turns[4] = {0.0, 90.0, 180.0, -90.0};
-	double Apart[4];
-	int32 Best = 0;
-	for (int32 I = 0; I < 4; ++I)
-	{
-		Apart[I] = DegreesBetween(Yaw(Turns[I]).RotateVector(Far), Forearm);
-		if (Apart[I] < Apart[Best])
-		{
-			Best = I;
-		}
-	}
-	const bool bTurn = Best != 0 && Apart[0] - Apart[Best] > kTurnGainDeg;
-	UE_LOG(LogForgottenThird, Display,
-		TEXT("FTWeaponSockets: %s reaches (%.1f, %.1f, %.1f) cm, the forearm (%.1f, %.1f, %.1f): %.1f deg apart as imported (%.1f / %.1f / %.1f turned 90 / 180 / -90)."),
-		Vambrace.Mesh, Far.X, Far.Y, Far.Z, Forearm.X, Forearm.Y, Forearm.Z, Apart[0], Apart[1], Apart[2], Apart[3]);
-	if (bTurn)
-	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("FTWeaponSockets: %s lies along the forearm only turned %.0f deg about Z; that side's pieces get the turn first."),
-			Vambrace.Mesh, Turns[Best]);
-		return Turns[Best];
-	}
-	if (Apart[0] > 30.0)
-	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("FTWeaponSockets: %s is %.1f deg off the forearm and no quarter turn fits better; check the frame."),
-			Vambrace.Mesh, Apart[0]);
-	}
-	return 0.0;
-}
-
-// The four gauntlet sockets on Body. Returns the problems found (missing entries or bones).
-int32 PutGauntletSockets(USkeletalMesh& Body, const ftcore::JsonValue& Root)
-{
-	int32 Problems = 0;
-	// Each side's turn, from its vambrace (pieces 0 and 2 in FTLeadWeapons.h's list; 1 and 3 their hand plates).
-	const double SideTurn[2] = {GauntletTurn(Body, FTWeaponProps::GauntletPieces[0], TEXT("hand_r")),
-		GauntletTurn(Body, FTWeaponProps::GauntletPieces[2], TEXT("hand_l"))};
-	for (int32 I = 0; I < FTWeaponProps::NumGauntletPieces; ++I)
-	{
-		const FTWeaponProps::FPiece& Piece = FTWeaponProps::GauntletPieces[I];
-		ftcore::JsonValue Entry;
-		FTransform Rest;
-		if (!EntryFor(Root, Piece.Mesh, Piece.Bone, Entry) || !RestOf(Body, Piece.Bone, Rest))
-		{
-			++Problems;
-			continue;
-		}
-		FVector Offset = FVector::ZeroVector;
-		ReadVec3(Entry["loc_cm"], Offset);
-		const FQuat Undo = Rest.GetRotation().Inverse();
-		const FTransform Socket = FTransform(Yaw(SideTurn[I / 2])) * FTransform(Undo, Offset);
-		FString Checks;
-		FQuat FileQuat;
-		if (ReadQuatXyzw(Entry["quat_xyzw"], FileQuat))
-		{
-			const double Deg = DegreesApart(Undo, FileQuat);
-			Checks += FString::Printf(TEXT("; the file's quat %.2f deg apart"), Deg);
-			if (Deg > kCheckDeg)
-			{
-				UE_LOG(LogForgottenThird, Warning, TEXT("FTWeaponSockets: %s: the file's rotation is %.1f deg from this body's rest; the body's is used."),
-					Piece.Socket, Deg);
-			}
-		}
-		FVector FileHead;
-		if (ReadVec3(Entry["comp_loc_cm"], FileHead))
-		{
-			const double Cm = FVector::Dist(Rest.GetTranslation(), TurnedToF().RotateVector(FileHead));
-			Checks += FString::Printf(TEXT("; the bone's rest %.2f cm from the file's"), Cm);
-			if (Cm > kCheckCm)
-			{
-				UE_LOG(LogForgottenThird, Warning, TEXT("FTWeaponSockets: %s: %s rests %.1f cm from where the file measured it; the piece was fitted to another rest."),
-					Piece.Socket, Piece.Bone, Cm);
-			}
-		}
-		PutBodySocket(Body, Piece.Socket, Piece.Bone, Socket);
-		UE_LOG(LogForgottenThird, Display, TEXT("FTWeaponSockets: %s %s on %s: %s%s."), *Body.GetName(), Piece.Socket, Piece.Bone,
-			*Describe(Socket), *Checks);
-	}
-	return Problems;
-}
-
 // The pistol's barrel direction as a yaw (0, 90, 180 or -90 degrees) from its bounds, logged.
 double PistolYaw(const UStaticMesh& Pistol)
 {
@@ -429,32 +315,16 @@ int32 UFTWeaponSocketsCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
 	namespace WS = FTWeaponSocketsImpl;
-	FString GauntletFile, PistolFile;
-	FParse::Value(*Params, TEXT("Gauntlets="), GauntletFile);
+	FString PistolFile;
 	FParse::Value(*Params, TEXT("Pistol="), PistolFile);
-	if (GauntletFile.IsEmpty() && PistolFile.IsEmpty())
+	if (PistolFile.IsEmpty())
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTWeaponSockets: pass -Gauntlets=<socket .json> and/or -Pistol=<socket .json>."));
+		UE_LOG(LogForgottenThird, Error, TEXT("FTWeaponSockets: pass -Pistol=<socket .json> (the gauntlets are skinned pieces and need no sockets)."));
 		return 1;
 	}
 	const bool bDryRun = FParse::Param(*Params, TEXT("DryRun"));
 	int32 Problems = 0;
 	TArray<UObject*> ToSave;
-
-	if (!GauntletFile.IsEmpty())
-	{
-		ftcore::JsonDocument Doc;
-		USkeletalMesh* Body = WS::LoadLeadBody(Params, TEXT("Devin="), TEXT("DevinBody="), TEXT("Devin"));
-		if (!Body || !WS::ReadJsonFile(WS::FullPath(GauntletFile), Doc))
-		{
-			++Problems;
-		}
-		else
-		{
-			Problems += WS::PutGauntletSockets(*Body, Doc.root());
-			ToSave.AddUnique(Body);
-		}
-	}
 
 	if (!PistolFile.IsEmpty())
 	{

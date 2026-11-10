@@ -335,11 +335,13 @@ retargeted onto its body, Devin wears gauntlets, Duy holds a pistol, and each we
 committed; a lead without it fights as before (one warning per missing piece). In order, from the checkout the game runs
 from:
 
-1. The props: `-run=FTImportProp -Source=<path>/Devin_Gauntlet_R.glb -Dest=/Game/Props/Weapons` (and
-   `Devin_Gauntlet_L.glb`, `Duy_Pistol.glb`), as for the slab halves above.
-2. Their sockets: `-run=FTWeaponSockets -Gauntlets=<gauntlet socket .json> -Pistol=<pistol socket .json>` puts the
-   gauntlets' four sockets on Devin's body, the pistol's grip and holster sockets on Duy's and the `muzzle` socket on the
-   pistol (`FTWeaponSocketsCommandlet.h` has the axes).
+1. The props: the pistol with `-run=FTImportProp -Source=<path>/Duy_Pistol.glb -Dest=/Game/Props/Weapons`, as for the
+   slab halves above (then LOD1 and LOD2 made on the mesh in the editor's import settings). The gauntlets are six
+   skeletal meshes skinned to Devin's body (glove, wrist strap and bracer per hand, `FTWeaponProps::GauntletPieces`),
+   imported as FBX onto that body's skeleton into `/Game/Props/Weapons/Devin_Gauntlet` under those names; they ride the
+   body by leader pose, so they need no sockets.
+2. The pistol's sockets: `-run=FTWeaponSockets -Pistol=<pistol socket .json>` puts the grip and holster sockets on
+   Duy's body and the `muzzle` socket on the pistol (`FTWeaponSocketsCommandlet.h` has the axes).
 3. The effects: `-run=FTBuildVfx -Only=<name>` for `muzzle_flash`, `gauntlet_spark`, `spell_bolt`, `spell_ward`,
    `gun_tracer`, `gun_impact` and `spell_impact` ([VFX_UE.md](VFX_UE.md)).
 4. The strike clips: the test human's `lead_jab`, `lead_cross`, `lead_kick_r`, `lead_counter` and `lead_finisher`
