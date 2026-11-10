@@ -29,6 +29,22 @@ inline constexpr const TCHAR* SurfaceMaterial = TEXT("/Game/Rendering/M_WorldSur
 // The photographed surfaces' master and the folder of their textures and instances, built by FTBuildSurfaces.
 inline constexpr const TCHAR* SurfaceTexMaterial = TEXT("/Game/Rendering/M_WorldSurfaceTex");
 inline constexpr const TCHAR* SurfaceFolder = TEXT("/Game/Rendering/Surfaces");
+// The interior-mapped windows, built by FTBuildSurfaces -Windows: the room and curtain atlases, the window master (the
+// photographed master's surface with WindowInterior's openings over it), a parameter collection whose Night (0 day .. 1
+// night) the master reads, and one instance per building surface, MIW_<surface id>. The atlases are private art, so the
+// folder stays out of the repo.
+inline constexpr const TCHAR* WindowFolder = TEXT("/Game/Rendering/Windows");
+inline constexpr const TCHAR* WindowMaterial = TEXT("/Game/Rendering/Windows/M_WorldSurfaceWin");
+inline constexpr const TCHAR* WindowCollection = TEXT("/Game/Rendering/Windows/MPC_Windows");
+inline constexpr const TCHAR* WindowRoomsTexture = TEXT("/Game/Rendering/Windows/T_Window_Rooms");
+inline constexpr const TCHAR* WindowCurtainsTexture = TEXT("/Game/Rendering/Windows/T_Window_Curtains");
+// A building box's custom primitive data, which the window master reads: its seed (a whole number under 2^24), its
+// street faces (bit f: face f of ftcore's boxFace order fronts a street) and each face's street floor over its bottom
+// in metres (ftcore::MassingWindowData).
+inline constexpr int32 WindowDataSeed = 0;
+inline constexpr int32 WindowDataStreet = 1;
+inline constexpr int32 WindowDataBase = 2;
+inline constexpr int32 WindowDataCount = 6;
 
 // The big worlds' ground master, built by FTBuildGround: the ground, rock and road surfaces blended by slope and a
 // road mask.
@@ -152,6 +168,8 @@ FORGOTTENTHIRD_API FString SurfaceInstancePackage(const FString& Id);
 FORGOTTENTHIRD_API FString SurfaceTexturePackage(const FString& Id, const TCHAR* Suffix);
 // That texture, or null, quietly, when it hasn't been built.
 FORGOTTENTHIRD_API UTexture* LoadSurfaceTexture(const FString& Id, const TCHAR* Suffix);
+// The package of surface Id's window instance: WindowFolder/MIW_<Id>.
+FORGOTTENTHIRD_API FString WindowInstancePackage(const FString& Id);
 
 #if WITH_EDITOR
 // A new mask for the ground master's "RoadMask", "ShapeMask" or "FlowMask" in Outer: Size x Size bytes, row by row

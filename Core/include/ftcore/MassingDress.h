@@ -9,6 +9,7 @@
 #include "ftcore/Api.h"
 #include "ftcore/MassingPlan.h"
 #include "ftcore/MassingProps.h"
+#include "ftcore/WindowInterior.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -309,5 +310,23 @@ struct MassingRoofCounts {
 FTCORE_API void massingRoofs(const MassingGround& ground, const std::vector<MassingBox>& boxes,
                              const std::vector<bool>& include, const std::vector<bool>& hosts,
                              std::vector<MassingBox>& out, MassingRoofCounts& counts);
+
+// ---- Windows ----
+//
+// What a building box's interior-mapped windows (WindowInterior.h) need beyond its shape: its seed, which faces front a
+// street (their ground storey is shops), and how far over the box's bottom each face's street floor lies, so the grid's
+// first storey starts at the street and not under it where a box sinks into a slope. Faces in boxFace order: 0 +u,
+// 1 +w, 2 -u, 3 -w.
+struct MassingWindowData {
+    std::uint32_t seed = 0;       // windowSeed of the id's hash
+    std::uint8_t streetBits = 0;  // bit f set: face f fronts a street
+    double base[4] = {};          // m over z0: the ground kMassingWindowProbe outside the face's middle, 0 when the
+                                  // ground lies under z0 (a box standing on another), at most the box's height
+};
+inline constexpr double kMassingWindowProbe = 0.5;
+// The window data for `box`. `fronting` holds the box's four fronting bytes (massingFrontage's outFronting from
+// box * 4), or is null for none. No allocation.
+FTCORE_API MassingWindowData massingWindowData(const MassingBox& box, const MassingGround& ground,
+                                               const std::uint8_t* fronting);
 
 } // namespace ftcore

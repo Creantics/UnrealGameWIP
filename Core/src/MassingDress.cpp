@@ -1237,4 +1237,19 @@ void massingRoofs(const MassingGround& ground, const std::vector<MassingBox>& bo
     }
 }
 
+MassingWindowData massingWindowData(const MassingBox& box, const MassingGround& ground, const std::uint8_t* fronting) {
+    MassingWindowData d;
+    d.seed = windowSeed(static_cast<std::uint32_t>(hashUnit(hashText(kFnvBasis, box.id)) * 4294967296.0));
+    const double height = std::max(box.z1 - box.z0, 0.0);
+    for (int f = 0; f < 4; ++f) {
+        if (fronting && fronting[f] != 0) d.streetBits = static_cast<std::uint8_t>(d.streetBits | (1u << f));
+        const Face face = boxFace(box, f);
+        const double out = 0.5 * face.depth + kMassingWindowProbe;
+        const double g = massingGroundAt(ground.grid, ground.samplesX, ground.samplesY, ground.spacing, ground.originX,
+                                         ground.originY, box.cx + face.nx * out, box.cy + face.ny * out);
+        d.base[f] = std::clamp(g - box.z0, 0.0, height);
+    }
+    return d;
+}
+
 } // namespace ftcore

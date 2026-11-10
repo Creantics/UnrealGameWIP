@@ -4,7 +4,13 @@
 //
 //   UnrealEditor-Cmd ForgottenThird.uproject /Game/Maps/<map> -game -RenderOffScreen -unattended -nosound
 //       -WorldEyeShot=<file.png> -WorldEye=<x,y,z> -WorldEyeAt=<x,y,z> [-WorldEyeLens=35] [-WorldEyeSide=1000]
-//       [-WorldEyeSize=2560x1440] [-WorldEyeDelay=8]
+//       [-WorldEyeSize=2560x1440] [-WorldEyeDelay=8] [-WorldEyeNight [-WorldEyeNightSun=0.01] [-WorldEyeNightSky=0.05]
+//       [-WorldEyeNightEV=-2]] [-WorldEyeGpuMs=<frames>] [-WorldEyePlainWalls]
+//
+// -WorldEyeNight sets the windows' Night to 1 (FTScene::WindowCollection), turns the sun and sky light down to those
+// shares of what the map has, and locks the exposure at -WorldEyeNightEV (EV100). -WorldEyeGpuMs logs the GPU's frame
+// time, averaged over that many frames once the view has settled, before the still. -WorldEyePlainWalls puts each
+// window instance's surface instance (MIW_<id> to MI_Surface_<id>) back on the meshes, for a like-for-like timing.
 //
 // The eye and the point it looks at are in the plan frame of a square -WorldEyeSide metres across, the frame the
 // massing tables use (ftcore::massingEnginePoint), z in metres. -WorldEyeLens is the focal length in millimetres on a
@@ -34,6 +40,8 @@ public:
 
 private:
 	void Finish(int32 Code);
+	// The night and plain-walls switches, once every actor has begun play.
+	void ApplyLook(UWorld& World);
 
 	UPROPERTY()
 	TObjectPtr<ACameraActor> Eye;
@@ -43,6 +51,12 @@ private:
 	float Delay = 8.f;
 	float Waited = 0.f;
 	int32 PendingTicks = 0;
+	int32 GpuFrames = 0;
+	int32 GpuSampled = 0;
+	double GpuSumMs = 0.0;
+	double GpuMinMs = 0.0;
+	double GpuMaxMs = 0.0;
+	bool bLookApplied = false;
 	bool bActive = false;
 	bool bShot = false;
 };

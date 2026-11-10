@@ -1247,6 +1247,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	const bool bKerbs = FParse::Param(*Params, TEXT("Kerbs"));
 	const bool bQuay = FParse::Param(*Params, TEXT("Quay"));
 	const bool bRoofs = FParse::Param(*Params, TEXT("Roofs"));
+	// -Windows: the building boxes wear the window master's instances (FTBuildSurfaces -Windows), each box's seed, street
+	// faces and street floors in its custom primitive data. Needs -Surfaces.
+	const bool bWindows = FParse::Param(*Params, TEXT("Windows"));
 	double PropLine = 3.0;
 	FParse::Value(*Params, TEXT("PropLine="), PropLine);
 	const FString KerbStreetsFile = StreetsFile.IsEmpty() ? PropStreetsFile : StreetsFile;
@@ -1292,6 +1295,29 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		if (!PrepareLook(StreetsFile, Field, Side, LookSet))
 		{
 			return 1;
+		}
+	}
+	// The window instances by look surface, null for a surface that isn't a building's.
+	UMaterialInterface* WindowLook[ftcore::kMassingLookSurfaceCount] = {};
+	if (bWindows && !bLoad)
+	{
+		if (!bSurfaces)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Windows needs -Surfaces."));
+			return 1;
+		}
+		for (size_t S = 0; S < ftcore::kMassingLookSurfaceCount; ++S)
+		{
+			const ftcore::MassingLookSurface Surface = static_cast<ftcore::MassingLookSurface>(S);
+			if (ftcore::massingLookIsBuilding(Surface))
+			{
+				WindowLook[S] = LoadLookMaterial(FTScene::WindowInstancePackage(kLookWorldPrefix + Utf8(std::string(ftcore::massingLookSurfaceId(Surface)))));
+				if (!WindowLook[S])
+				{
+					UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Windows: run FTBuildSurfaces -Windows first."));
+					return 1;
+				}
+			}
 		}
 	}
 	for (const ftcore::MassingBox& Wall : Walls)
@@ -2021,6 +2047,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 	int32 Named = 0, Kit = 0, Sloped = 0, Nudged = 0, Skipped = 0, BoxesLeft = 0;
 	int32 NavObstacles = 0, NullStrips = 0;
+	// The boxes wearing windows, by box: their data is set once the frontage has said which faces front a street.
+	std::vector<AStaticMeshActor*> Windowed(Boxes.size(), nullptr);
+	int32 WindowSloped = 0, WindowReplaced = 0;
 	for (size_t I = 0; I < Boxes.size(); ++I)
 	{
 		const ftcore::MassingBox& Box = Boxes[I];
@@ -2034,6 +2063,14 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		(Role == ftcore::MassingRole::Named ? Named : Kit) += 1;
 		BoxesLeft += Replaced[I] ? 0 : 1;
 		UMaterialInterface* Material = bSurfaces ? WearLook(LookSet, Box) : Finish[static_cast<int32>(ftcore::massingFinish(Box))];
+		UMaterialInterface* const WindowMaterial = bWindows ? WindowLook[static_cast<int32>(ftcore::massingLookSurface(Box))] : nullptr;
+		if (WindowMaterial)
+		{
+			// A kit mesh's box is hidden, and a sloped box's faces aren't the cube's.
+			WindowReplaced += Replaced[I] ? 1 : 0;
+			WindowSloped += !Replaced[I] && Box.sloped ? 1 : 0;
+			Material = !Replaced[I] && !Box.sloped ? WindowMaterial : Material;
+		}
 		// A box a finished mesh stands in for stays as its hidden collider: an imported mesh may bring no simple
 		// collision, and the lead would fall through it.
 		const FString Id = Replaced[I] ? Utf8(Box.id) + TEXT("-COL") : Utf8(Box.id);
@@ -2066,6 +2103,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		Nudged += Nudges[I] != 0.0 || Raises[I] > 0.0 ? 1 : 0;
 		AStaticMeshActor* Built = Block(World, Spawn, Cube, Material, Id, Cm(ftcore::massingEnginePoint(Side, Box.cx, Box.cy, Box.z0 + Height * 0.5)),
 			FVector(Box.sx, Box.sy, Height), ftcore::massingEngineYaw(Box.rot));
+		Windowed[I] = WindowMaterial && Material == WindowMaterial ? Built : nullptr;
 		if (Replaced[I])
 		{
 			Built->GetStaticMeshComponent()->SetCastShadow(false);
@@ -2340,6 +2378,34 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			static_cast<int32>(QuayLamps.size()));
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: props: %d stand over %.1f m from every kerb and frontage line."), FarFromLine,
 			PropLine);
+	}
+
+	// The windows' data: each windowed box's seed, the faces the frontage found fronting a street (their ground storey is
+	// shops) and each face's street floor over the box's bottom.
+	if (bWindows)
+	{
+		int32 Windows = 0, StreetFaces = 0;
+		for (size_t I = 0; I < Boxes.size(); ++I)
+		{
+			if (!Windowed[I])
+			{
+				continue;
+			}
+			const ftcore::MassingWindowData Data =
+				ftcore::massingWindowData(Built[I], Ground, FrontFaces.size() >= (I + 1) * 4 ? &FrontFaces[I * 4] : nullptr);
+			UStaticMeshComponent* Mesh = Windowed[I]->GetStaticMeshComponent();
+			Mesh->SetDefaultCustomPrimitiveDataFloat(FTScene::WindowDataSeed, static_cast<float>(Data.seed));
+			Mesh->SetDefaultCustomPrimitiveDataFloat(FTScene::WindowDataStreet, static_cast<float>(Data.streetBits));
+			for (int32 F = 0; F < 4; ++F)
+			{
+				Mesh->SetDefaultCustomPrimitiveDataFloat(FTScene::WindowDataBase + F, static_cast<float>(Data.base[F]));
+				StreetFaces += (Data.streetBits >> F) & 1u;
+			}
+			++Windows;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: windows: %d building boxes, %d faces fronting a street (shops at street level)%s; "
+			"none on %d sloped boxes or the %d boxes kit meshes stand in for."), Windows, StreetFaces,
+			FrontFaces.empty() ? TEXT(" (no -Frontage, so no street faces)") : TEXT(""), WindowSloped, WindowReplaced);
 	}
 
 	// The roofs: rails along the edges that drop away, tanks, air-conditioning units and aerials on the flat tops of the

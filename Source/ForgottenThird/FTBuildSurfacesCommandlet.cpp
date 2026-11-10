@@ -12,8 +12,11 @@
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialExpressionCameraVectorWS.h"
+#include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionLocalPosition.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
 #include "Materials/MaterialExpressionTransform.h"
@@ -21,6 +24,7 @@
 #include "Materials/MaterialExpressionVertexNormalWS.h"
 #include "Materials/MaterialExpressionWorldPosition.h"
 #include "Materials/MaterialInstanceConstant.h"
+#include "Materials/MaterialParameterCollection.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
@@ -28,7 +32,9 @@
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 
+#include "ftcore/MassingPlan.h"
 #include "ftcore/SurfaceTable.h"
+#include "ftcore/WindowInterior.h"
 #endif
 
 #if WITH_EDITOR
@@ -277,17 +283,31 @@ bool RoughnessMean(const FString& File, double& Mean)
 	return true;
 }
 
-// The master, with the first surface's textures as its defaults.
-UMaterial* BuildMaster(TArrayView<UTexture* const> Defaults)
+// What the surface node reads that a window master reads too.
+struct FSurfaceNode
 {
-	UPackage* Package = CreatePackage(FTScene::SurfaceTexMaterial);
+	UMaterialExpressionCustom* Custom = nullptr;
+	UMaterialExpressionVertexNormalWS* VertexNormal = nullptr;
+	UMaterialExpressionTransform* Axis[3] = {};
+};
+
+// A new master at Path that draws as the world's boxes do: instanced, its normal in world space.
+UMaterial* NewMaster(const TCHAR* Path)
+{
+	UPackage* Package = CreatePackage(Path);
 	UMaterial* Material = NewObject<UMaterial>(Package, FName(FPackageName::GetShortName(Package->GetName())),
 		RF_Public | RF_Standalone | RF_Transactional);
 	// The world maps draw their roads, buildings and trees as instanced static meshes.
 	Material->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
 	// The code bends the normal in world space.
 	Material->bTangentSpaceNormal = false;
+	return Material;
+}
 
+// The photographed surface's parameters and its Custom node (kSurfaceCode), the textures' defaults Defaults. Output 0 is
+// the code's return value (the albedo), then NormalOut, RoughOut, MetalOut and AOOut.
+FSurfaceNode AddSurfaceNode(UMaterial* Material, TArrayView<UTexture* const> Defaults)
+{
 	UMaterialExpressionVectorParameter* Color = AddExpression<UMaterialExpressionVectorParameter>(Material, -900, -800);
 	Color->ParameterName = TEXT("Color");
 	Color->DefaultValue = FLinearColor(1.f, 1.f, 1.f);
@@ -341,6 +361,20 @@ UMaterial* BuildMaster(TArrayView<UTexture* const> Defaults)
 	AddOutput(Custom, TEXT("MetalOut"), CMOT_Float1);
 	AddOutput(Custom, TEXT("AOOut"), CMOT_Float1);
 	Custom->RebuildOutputs();
+	FSurfaceNode Node;
+	Node.Custom = Custom;
+	Node.VertexNormal = VertexNormal;
+	Node.Axis[0] = AxisX;
+	Node.Axis[1] = AxisY;
+	Node.Axis[2] = AxisZ;
+	return Node;
+}
+
+// The master, with the first surface's textures as its defaults.
+UMaterial* BuildMaster(TArrayView<UTexture* const> Defaults)
+{
+	UMaterial* Material = NewMaster(FTScene::SurfaceTexMaterial);
+	UMaterialExpressionCustom* Custom = AddSurfaceNode(Material, Defaults).Custom;
 
 	// Output 0 is the code's return value (the albedo), then its additional outputs in order.
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
@@ -427,6 +461,377 @@ bool SaveAsset(UObject* Asset, int64& Bytes)
 	Bytes += IFileManager::Get().FileSize(*File);
 	return true;
 }
+
+// ---- The windows (-Windows) ----
+
+// The face a box's pixel lies on, in ftcore's boxFace order (0 +X, 1 -Y, 2 -X, 3 +Y of the engine's cube, which is 100 cm a
+// side and centred, so an instance axis's length is the box's size along it in metres), and where on that face: Along
+// across it from its left end and Up from its street floor (Base<f>), in metres, the face's width and height over the
+// street floor, its street flag (bit f of StreetBits) and the view ray in its frame (across, up, into the wall). A top or
+// bottom pixel gets no height, so no openings.
+const TCHAR* const kWindowFaceCode = TEXT(R"HLSL(float Sx = length(AxisX);
+float Sy = length(AxisY);
+float Sz = length(AxisZ);
+float3 Nx = AxisX / max(Sx, 1e-6);
+float3 Ny = AxisY / max(Sy, 1e-6);
+float3 Nz = AxisZ / max(Sz, 1e-6);
+float3 L = LocalPos / 100.0 * float3(Sx, Sy, Sz);
+float3 N = normalize(VertexNormal);
+float nx = dot(N, Nx);
+float ny = dot(N, Ny);
+float nz = dot(N, Nz);
+int F = abs(nx) >= abs(ny) ? (nx > 0.0 ? 0 : 2) : (ny < 0.0 ? 1 : 3);
+float3 Out = F == 0 ? Nx : (F == 1 ? -Ny : (F == 2 ? -Nx : Ny));
+float3 T = F == 0 ? Ny : (F == 1 ? Nx : (F == 2 ? -Ny : -Nx));
+float Across = F == 0 ? L.y : (F == 1 ? L.x : (F == 2 ? -L.y : -L.x));
+float Width = (F == 0 || F == 2) ? Sy : Sx;
+float Base = F == 0 ? Base0 : (F == 1 ? Base1 : (F == 2 ? Base2 : Base3));
+StreetOut = fmod(floor(floor(StreetBits + 0.5) / exp2((float)F)), 2.0);
+UpOut = L.z + 0.5 * Sz - Base;
+FaceHOut = abs(nz) < 0.5 ? Sz - Base : 0.0;
+FaceWOut = Width;
+float3 V = -CameraVector;
+ViewOut = float3(dot(V, T), dot(V, Nz), -dot(V, Out));
+return Across + 0.5 * Width;)HLSL");
+
+// The wall, or an opening over it: glass shows the room (a share of it as albedo under the light, a share as its own
+// light, plus the night glow), the frame its own finish.
+const TCHAR* const kWindowComposeCode = TEXT(R"HLSL(bool Glass = Win.a > 0.5 && Win.a < 1.5;
+bool Frame = Win.a > 1.5;
+NormalOut = (Glass || Frame) ? normalize(VertexNormal) : WallNormal;
+RoughOut = Glass ? GlassRough : (Frame ? FrameRough : WallRough);
+MetalOut = Glass ? 0.0 : (Frame ? FrameMetal : WallMetal);
+AOOut = (Glass || Frame) ? 1.0 : WallAO;
+EmissiveOut = Glass ? Win.rgb * RoomDay + Glow : float3(0.0, 0.0, 0.0);
+return Glass ? Win.rgb * GlassBase : (Frame ? FrameColor.rgb : WallAlbedo);)HLSL");
+
+// The box data the window master reads, in custom primitive data order (FTScene::WindowData*).
+const TCHAR* const kWindowDataNames[FTScene::WindowDataCount] = {TEXT("Seed"), TEXT("StreetBits"), TEXT("Base0"), TEXT("Base1"),
+	TEXT("Base2"), TEXT("Base3")};
+constexpr const TCHAR* kWindowNight = TEXT("Night");
+
+void AddInputFrom(UMaterialExpressionCustom* Custom, FName Name, UMaterialExpression* From, int32 Output)
+{
+	FCustomInput& In = Custom->Inputs.AddDefaulted_GetRef();
+	In.InputName = Name;
+	In.Input.Connect(Output, From);
+}
+
+UMaterialExpressionScalarParameter* AddWindowScalar(UMaterial* Material, FName Name, float Value, int32 Y)
+{
+	UMaterialExpressionScalarParameter* P = AddScalar(Material, Name, Value, Y);
+	P->Group = TEXT("Window");
+	return P;
+}
+
+// Imports a PNG into a new sRGB texture at Path, stretched to SizeX x SizeY (powers of two, so it mips; the material
+// reads the atlas in fractions of its size, so the stretch changes nothing it reads). bAlpha keeps the alpha channel.
+UTexture2D* ImportPng(const FString& File, const FString& Path, int32 SizeX, int32 SizeY, bool bAlpha)
+{
+	TArray<uint8> Bytes;
+	FImage Image;
+	if (!FFileHelper::LoadFileToArray(Bytes, *File) || !FImageUtils::DecompressImage(Bytes.GetData(), Bytes.Num(), Image))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces: couldn't read %s as an image."), *File);
+		return nullptr;
+	}
+	FImage Sized;
+	Image.ResizeTo(Sized, SizeX, SizeY, ERawImageFormat::BGRA8, EGammaSpace::sRGB);
+	UPackage* Package = CreatePackage(*Path);
+	UTexture2D* Texture =
+		NewObject<UTexture2D>(Package, *FPackageName::GetShortName(Path), RF_Public | RF_Standalone | RF_Transactional);
+	Texture->PreEditChange(nullptr);
+	Texture->Source.Init(SizeX, SizeY, 1, 1, TSF_BGRA8, Sized.RawData.GetData());
+	Texture->SRGB = true;
+	Texture->CompressionSettings = TC_Default;
+	Texture->CompressionNoAlpha = !bAlpha;
+	Texture->LODGroup = TEXTUREGROUP_World;
+	// The rooms are read by a hash of the opening, not the mesh's UVs, which the streamer judges a texture's need by.
+	Texture->NeverStream = true;
+	Texture->VirtualTextureStreaming = false;
+	Texture->PostEditChange();
+	FAssetRegistryModule::AssetCreated(Texture);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildSurfaces: %s: %d x %d, stretched to %d x %d."), *FPaths::GetCleanFilename(File),
+		Image.SizeX, Image.SizeY, SizeX, SizeY);
+	return Texture;
+}
+
+// The windows' collection: Night, 0 by day to 1 by night. Its id comes from its name, so a rebuild changes no id.
+UMaterialParameterCollection* BuildWindowCollection()
+{
+	UPackage* Package = CreatePackage(FTScene::WindowCollection);
+	UMaterialParameterCollection* Collection = NewObject<UMaterialParameterCollection>(Package,
+		FName(FPackageName::GetShortName(Package->GetName())), RF_Public | RF_Standalone | RF_Transactional);
+	FCollectionScalarParameter& Night = Collection->ScalarParameters.AddDefaulted_GetRef();
+	Night.ParameterName = kWindowNight;
+	Night.DefaultValue = 0.f;
+	Night.Id = FGuid::NewDeterministicGuid(FString(TEXT("FTWindows.")) + kWindowNight);
+	Collection->PostEditChange();
+	FAssetRegistryModule::AssetCreated(Collection);
+	return Collection;
+}
+
+// The window master: the photographed surface (its parameters as M_WorldSurfaceTex's, so an instance copies a surface's
+// values across) with WindowInterior's openings cut into its walls.
+UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Rooms, UTexture* Curtains, UMaterialParameterCollection* Collection)
+{
+	UMaterial* Material = NewMaster(FTScene::WindowMaterial);
+	const FSurfaceNode Wall = AddSurfaceNode(Material, Defaults);
+
+	UMaterialExpressionScalarParameter* Data[FTScene::WindowDataCount] = {};
+	for (int32 D = 0; D < FTScene::WindowDataCount; ++D)
+	{
+		Data[D] = AddWindowScalar(Material, kWindowDataNames[D], 0.f, 1100 + D * 100);
+		Data[D]->bUseCustomPrimitiveData = true;
+		Data[D]->PrimitiveDataIndex = static_cast<uint8>(D);
+	}
+	UMaterialExpressionLocalPosition* LocalPos = AddExpression<UMaterialExpressionLocalPosition>(Material, -900, 1700);
+	UMaterialExpressionCameraVectorWS* Camera = AddExpression<UMaterialExpressionCameraVectorWS>(Material, -900, 1800);
+
+	UMaterialExpressionCustom* Face = AddExpression<UMaterialExpressionCustom>(Material, -600, 1300);
+	Face->Description = TEXT("FTWindowFace");
+	Face->OutputType = CMOT_Float1;
+	Face->Code = kWindowFaceCode;
+	Face->Inputs.Reset();
+	AddInput(Face, TEXT("LocalPos"), LocalPos);
+	AddInput(Face, TEXT("AxisX"), Wall.Axis[0]);
+	AddInput(Face, TEXT("AxisY"), Wall.Axis[1]);
+	AddInput(Face, TEXT("AxisZ"), Wall.Axis[2]);
+	AddInput(Face, TEXT("VertexNormal"), Wall.VertexNormal);
+	AddInput(Face, TEXT("CameraVector"), Camera);
+	AddInput(Face, TEXT("StreetBits"), Data[FTScene::WindowDataStreet]);
+	for (int32 F = 0; F < 4; ++F)
+	{
+		AddInput(Face, *FString::Printf(TEXT("Base%d"), F), Data[FTScene::WindowDataBase + F]);
+	}
+	// Output 0 is Along, then these in order.
+	AddOutput(Face, TEXT("StreetOut"), CMOT_Float1);
+	AddOutput(Face, TEXT("UpOut"), CMOT_Float1);
+	AddOutput(Face, TEXT("FaceHOut"), CMOT_Float1);
+	AddOutput(Face, TEXT("FaceWOut"), CMOT_Float1);
+	AddOutput(Face, TEXT("ViewOut"), CMOT_Float3);
+	Face->RebuildOutputs();
+
+	UMaterialExpressionScalarParameter* LitShare = AddWindowScalar(Material, TEXT("LitShare"), 0.35f, 1900);
+	UMaterialExpressionScalarParameter* CurtainShare = AddWindowScalar(Material, TEXT("CurtainShare"), 0.5f, 2000);
+	UMaterialExpressionScalarParameter* ShopLit = AddWindowScalar(Material, TEXT("ShopLit"), 0.8f, 2100);
+	UMaterialExpressionScalarParameter* GlowScale = AddWindowScalar(Material, TEXT("GlowScale"), 1.f, 2200);
+	UMaterialExpressionCollectionParameter* Night = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, 2300);
+	Night->Collection = Collection;
+	Night->ParameterName = kWindowNight;
+	Night->ParameterId = Collection->GetParameterId(kWindowNight);
+	UMaterialExpressionTextureObjectParameter* RoomsTex = AddTexture(Material, TEXT("Rooms"), Rooms, SAMPLERTYPE_Color, 2400);
+	UMaterialExpressionTextureObjectParameter* CurtainsTex = AddTexture(Material, TEXT("Curtains"), Curtains, SAMPLERTYPE_Color, 2550);
+	RoomsTex->Group = TEXT("Window");
+	CurtainsTex->Group = TEXT("Window");
+
+	UMaterialExpressionCustom* Win = AddExpression<UMaterialExpressionCustom>(Material, -300, 1600);
+	Win->Description = TEXT("FTWindowInterior");
+	Win->OutputType = CMOT_Float4;
+	Win->Code = FT::ToFString(ftcore::windowInteriorHlsl(ftcore::WindowGridSpec{}));
+	Win->Inputs.Reset();
+	AddInputFrom(Win, TEXT("Along"), Face, 0);
+	AddInputFrom(Win, TEXT("Up"), Face, 2);
+	AddInputFrom(Win, TEXT("FaceW"), Face, 4);
+	AddInputFrom(Win, TEXT("FaceH"), Face, 3);
+	AddInput(Win, TEXT("Seed"), Data[FTScene::WindowDataSeed]);
+	AddInputFrom(Win, TEXT("Street"), Face, 1);
+	AddInputFrom(Win, TEXT("ViewT"), Face, 5);
+	AddInput(Win, TEXT("LitShare"), LitShare);
+	AddInput(Win, TEXT("CurtainShare"), CurtainShare);
+	AddInput(Win, TEXT("ShopLit"), ShopLit);
+	AddInput(Win, TEXT("Night"), Night);
+	AddInput(Win, TEXT("GlowScale"), GlowScale);
+	AddInput(Win, TEXT("Rooms"), RoomsTex);
+	AddInput(Win, TEXT("Curtains"), CurtainsTex);
+	AddOutput(Win, TEXT("Glow"), CMOT_Float3);
+	Win->RebuildOutputs();
+
+	UMaterialExpressionScalarParameter* GlassBase = AddWindowScalar(Material, TEXT("GlassBase"), 0.35f, 2700);
+	UMaterialExpressionScalarParameter* GlassRough = AddWindowScalar(Material, TEXT("GlassRough"), 0.08f, 2800);
+	UMaterialExpressionScalarParameter* RoomDay = AddWindowScalar(Material, TEXT("RoomDay"), 0.4f, 2900);
+	UMaterialExpressionVectorParameter* FrameColor = AddExpression<UMaterialExpressionVectorParameter>(Material, -900, 3000);
+	FrameColor->ParameterName = TEXT("FrameColor");
+	FrameColor->DefaultValue = FLinearColor(0.12f, 0.12f, 0.13f);
+	FrameColor->Group = TEXT("Window");
+	FrameColor->UpdateParameterGuid(true, false);
+	UMaterialExpressionScalarParameter* FrameRough = AddWindowScalar(Material, TEXT("FrameRough"), 0.4f, 3100);
+	UMaterialExpressionScalarParameter* FrameMetal = AddWindowScalar(Material, TEXT("FrameMetal"), 0.6f, 3200);
+
+	UMaterialExpressionCustom* Compose = AddExpression<UMaterialExpressionCustom>(Material, 0, 0);
+	Compose->Description = TEXT("FTWindowCompose");
+	Compose->OutputType = CMOT_Float3;
+	Compose->Code = kWindowComposeCode;
+	Compose->Inputs.Reset();
+	AddInputFrom(Compose, TEXT("Win"), Win, 0);
+	AddInputFrom(Compose, TEXT("Glow"), Win, 1);
+	AddInputFrom(Compose, TEXT("WallAlbedo"), Wall.Custom, 0);
+	AddInputFrom(Compose, TEXT("WallNormal"), Wall.Custom, 1);
+	AddInputFrom(Compose, TEXT("WallRough"), Wall.Custom, 2);
+	AddInputFrom(Compose, TEXT("WallMetal"), Wall.Custom, 3);
+	AddInputFrom(Compose, TEXT("WallAO"), Wall.Custom, 4);
+	AddInput(Compose, TEXT("VertexNormal"), Wall.VertexNormal);
+	AddInput(Compose, TEXT("GlassBase"), GlassBase);
+	AddInput(Compose, TEXT("GlassRough"), GlassRough);
+	AddInput(Compose, TEXT("RoomDay"), RoomDay);
+	AddInput(Compose, TEXT("FrameColor"), FrameColor);
+	AddInput(Compose, TEXT("FrameRough"), FrameRough);
+	AddInput(Compose, TEXT("FrameMetal"), FrameMetal);
+	AddOutput(Compose, TEXT("NormalOut"), CMOT_Float3);
+	AddOutput(Compose, TEXT("RoughOut"), CMOT_Float1);
+	AddOutput(Compose, TEXT("MetalOut"), CMOT_Float1);
+	AddOutput(Compose, TEXT("AOOut"), CMOT_Float1);
+	AddOutput(Compose, TEXT("EmissiveOut"), CMOT_Float3);
+	Compose->RebuildOutputs();
+
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	Inputs->BaseColor.Connect(0, Compose);
+	Inputs->Normal.Connect(1, Compose);
+	Inputs->Roughness.Connect(2, Compose);
+	Inputs->Metallic.Connect(3, Compose);
+	Inputs->AmbientOcclusion.Connect(4, Compose);
+	Inputs->EmissiveColor.Connect(5, Compose);
+
+	Material->PreEditChange(nullptr);
+	Material->PostEditChange();
+	return Material;
+}
+
+// An instance of the window master with the values Source (a surface's instance of M_WorldSurfaceTex) sets.
+UMaterialInstanceConstant* BuildWindowInstance(const FString& Path, UMaterial* Master, const UMaterialInstanceConstant* Source)
+{
+	UPackage* Package = CreatePackage(*Path);
+	UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, *FPackageName::GetShortName(Path),
+		RF_Public | RF_Standalone | RF_Transactional);
+	Mic->SetParentEditorOnly(Master);
+	for (const FTextureParameterValue& V : Source->TextureParameterValues)
+	{
+		Mic->SetTextureParameterValueEditorOnly(V.ParameterInfo, V.ParameterValue);
+	}
+	for (const FScalarParameterValue& V : Source->ScalarParameterValues)
+	{
+		Mic->SetScalarParameterValueEditorOnly(V.ParameterInfo, V.ParameterValue);
+	}
+	for (const FVectorParameterValue& V : Source->VectorParameterValues)
+	{
+		Mic->SetVectorParameterValueEditorOnly(V.ParameterInfo, V.ParameterValue);
+	}
+	Mic->PostEditChange();
+	FAssetRegistryModule::AssetCreated(Mic);
+	return Mic;
+}
+
+// -Windows -Atlas=<dir> [-Prefix=<world>_]: the window atlases from <dir>/rooms_atlas.png and curtains_atlas.png, the
+// collection, the master and an instance per building surface of the world (FTScene::WindowInstancePackage(prefix + id)),
+// each copying that surface's instance. Only the windows' packages are replaced.
+int32 BuildWindows(const FString& Params)
+{
+	FString Atlas;
+	if (!FParse::Value(*Params, TEXT("Atlas="), Atlas, false) || Atlas.IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces -Windows: pass -Atlas=<dir>, the folder with rooms_atlas.png and curtains_atlas.png."));
+		return 1;
+	}
+	FString Prefix = TEXT("solhaven_");
+	FParse::Value(*Params, TEXT("Prefix="), Prefix, false);
+	const FString RoomsFile = Atlas / TEXT("rooms_atlas.png");
+	const FString CurtainsFile = Atlas / TEXT("curtains_atlas.png");
+	for (const FString& File : {RoomsFile, CurtainsFile})
+	{
+		if (!IFileManager::Get().FileExists(*File))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces -Windows: %s is missing."), *File);
+			return 1;
+		}
+	}
+
+	// The building surfaces (two finishes may share one), each with its surface's instance.
+	TArray<FString> Ids;
+	for (size_t S = 0; S < ftcore::kMassingLookSurfaceCount; ++S)
+	{
+		const ftcore::MassingLookSurface Surface = static_cast<ftcore::MassingLookSurface>(S);
+		if (ftcore::massingLookIsBuilding(Surface))
+		{
+			Ids.AddUnique(Prefix + FT::ToFString(ftcore::massingLookSurfaceId(Surface)));
+		}
+	}
+	TArray<UMaterialInstanceConstant*> Sources;
+	for (const FString& Id : Ids)
+	{
+		const FString Path = FTScene::SurfaceInstancePackage(Id);
+		UMaterialInstanceConstant* Source = LoadObject<UMaterialInstanceConstant>(nullptr, *(Path + TEXT(".") + FPackageName::GetShortName(Path)));
+		if (!Source)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces -Windows: %s is missing; build the surfaces first."), *Path);
+			return 1;
+		}
+		Sources.Add(Source);
+	}
+	UTexture* Defaults[kMapCount] = {};
+	const FName MapNames[kMapCount] = {TEXT("AlbedoTex"), TEXT("NormalTex"), TEXT("ArmTex")};
+	for (int32 M = 0; M < kMapCount; ++M)
+	{
+		if (!Sources[0]->GetTextureParameterValue(FMaterialParameterInfo(MapNames[M]), Defaults[M]) || !Defaults[M])
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces -Windows: %s has no %s."), *Ids[0], *MapNames[M].ToString());
+			return 1;
+		}
+	}
+
+	// Start from nothing: replace the windows' files up front, before anything loads the old assets.
+	TArray<FString> Packages = {FTScene::WindowMaterial, FTScene::WindowCollection, FTScene::WindowRoomsTexture, FTScene::WindowCurtainsTexture};
+	for (const FString& Id : Ids)
+	{
+		Packages.Add(FTScene::WindowInstancePackage(Id));
+	}
+	for (const FString& Package : Packages)
+	{
+		const FString File = PackageFile(Package);
+		if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces -Windows: couldn't replace %s."), *File);
+			return 1;
+		}
+		IFileManager::Get().MakeDirectory(*FPaths::GetPath(File), true);
+	}
+
+	UTexture2D* Rooms = ImportPng(RoomsFile, FTScene::WindowRoomsTexture, 4096, 4096, false);
+	UTexture2D* Curtains = ImportPng(CurtainsFile, FTScene::WindowCurtainsTexture, 4096, 512, true);
+	if (!Rooms || !Curtains)
+	{
+		return 1;
+	}
+	UMaterialParameterCollection* Collection = BuildWindowCollection();
+	UMaterial* Master = BuildWindowMaster(MakeArrayView(Defaults), Rooms, Curtains, Collection);
+	TArray<UMaterialInstanceConstant*> Instances;
+	for (int32 I = 0; I < Ids.Num(); ++I)
+	{
+		Instances.Add(BuildWindowInstance(FTScene::WindowInstancePackage(Ids[I]), Master, Sources[I]));
+	}
+
+	FAssetCompilingManager::Get().FinishAllCompilation();
+	if (FT::CompileErrors(TEXT("FTBuildSurfaces -Windows"), Master) > 0)
+	{
+		return 1;
+	}
+	FAssetRegistryModule::AssetCreated(Master);
+	int64 Bytes = 0;
+	bool bSaved = SaveAsset(Rooms, Bytes);
+	bSaved = SaveAsset(Curtains, Bytes) && bSaved;
+	bSaved = SaveAsset(Collection, Bytes) && bSaved;
+	bSaved = SaveAsset(Master, Bytes) && bSaved;
+	for (UMaterialInstanceConstant* Instance : Instances)
+	{
+		bSaved = SaveAsset(Instance, Bytes) && bSaved;
+	}
+	if (!bSaved)
+	{
+		return 1;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildSurfaces -Windows: saved the atlases, %s, %s and %d instances (%s) in %.1f MB."),
+		FTScene::WindowCollection, FTScene::WindowMaterial, Instances.Num(), *FString::Join(Ids, TEXT(", ")), Bytes / (1024.0 * 1024.0));
+	return 0;
+}
 } // namespace FTSurfaceBuild
 #endif
 
@@ -441,6 +846,10 @@ UFTBuildSurfacesCommandlet::UFTBuildSurfacesCommandlet()
 int32 UFTBuildSurfacesCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
+	if (FParse::Param(*Params, TEXT("Windows")))
+	{
+		return FTSurfaceBuild::BuildWindows(Params);
+	}
 	FString Dir;
 	if (!FParse::Value(*Params, TEXT("Source="), Dir, false) || Dir.IsEmpty())
 	{

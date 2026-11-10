@@ -342,6 +342,11 @@ FString FTScene::SurfaceInstancePackage(const FString& Id)
 	return FString::Printf(TEXT("%s/%s/MI_Surface_%s"), SurfaceFolder, *Id, *Id);
 }
 
+FString FTScene::WindowInstancePackage(const FString& Id)
+{
+	return FString::Printf(TEXT("%s/MIW_%s"), WindowFolder, *Id);
+}
+
 FString FTScene::SurfaceTexturePackage(const FString& Id, const TCHAR* Suffix)
 {
 	return FString::Printf(TEXT("%s/%s/T_%s_%s"), SurfaceFolder, *Id, *Id, Suffix);

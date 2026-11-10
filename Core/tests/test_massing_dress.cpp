@@ -778,3 +778,24 @@ TEST_CASE("massing frontage: a rule's scale reads from its column") {
                              "A,/Game/A.A,2,1,5,0\n";
     CHECK_FALSE(importMassingFront(zero, rules, &error));
 }
+
+TEST_CASE("massing windows: a box's seed, street faces and street floors") {
+    const Ground slope = makeGround(41, 41, 0.0, 0.0, [](double x, double) { return 0.25 * x; });
+    const MassingBox box = flatBox("W-1", 20, 20, 10, 8, 0, 12);
+    const std::uint8_t fronting[4] = {0, 1, 0, 1};
+    const MassingWindowData d = massingWindowData(box, slope.view(), fronting);
+    CHECK(d.streetBits == 0b1010);
+    CHECK(near(d.base[0], 0.25 * 25.5));  // +u: the probe 0.5 m east of the face
+    CHECK(near(d.base[1], 5.0));
+    CHECK(near(d.base[2], 0.25 * 14.5));
+    CHECK(near(d.base[3], 5.0));
+    CHECK(d.seed <= kWindowSeedMask);
+    CHECK(d.seed == massingWindowData(box, slope.view(), nullptr).seed);
+    CHECK(d.seed != massingWindowData(flatBox("W-2", 20, 20, 10, 8, 0, 12), slope.view(), nullptr).seed);
+    CHECK(massingWindowData(box, slope.view(), nullptr).streetBits == 0);
+    // Standing on another box: the ground lies under the bottom. Sunk deep: at most the box's height.
+    const MassingWindowData high = massingWindowData(flatBox("W-3", 20, 20, 10, 8, 20, 30), slope.view(), nullptr);
+    CHECK(near(high.base[0], 0.0));
+    const MassingWindowData sunk = massingWindowData(flatBox("W-4", 20, 20, 10, 8, -20, -15), slope.view(), nullptr);
+    CHECK(near(sunk.base[2], 5.0));
+}

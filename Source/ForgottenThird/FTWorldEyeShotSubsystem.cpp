@@ -2,14 +2,27 @@
 
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
+#include "Components/LightComponent.h"
+#include "Components/SkyLightComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "DynamicRHI.h"
+#include "Engine/DirectionalLight.h"
+#include "Engine/PostProcessVolume.h"
+#include "Engine/SkyLight.h"
+#include "EngineUtils.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
+#include "FTSceneLook.h"
 #include "ForgottenThird.h"
 #include "GameFramework/HUD.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/FileManager.h"
+#include "Materials/MaterialInstance.h"
+#include "Materials/MaterialParameterCollection.h"
+#include "Materials/MaterialParameterCollectionInstance.h"
 #include "Misc/CommandLine.h"
+#include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 #include "ShaderCompiler.h"
 
@@ -65,6 +78,7 @@ void UFTWorldEyeShotSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	FParse::Value(FCommandLine::Get(), TEXT("WorldEyeSide="), Side);
 	FParse::Value(FCommandLine::Get(), TEXT("WorldEyeLens="), Lens);
 	FParse::Value(FCommandLine::Get(), TEXT("WorldEyeDelay="), Delay);
+	FParse::Value(FCommandLine::Get(), TEXT("WorldEyeGpuMs="), GpuFrames);
 	if (!FParse::Value(FCommandLine::Get(), TEXT("WorldEyeSize="), Size) || Size.IsEmpty())
 	{
 		Size = TEXT("2560x1440");
@@ -144,10 +158,35 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 		Waited = 0.f;
 		return;
 	}
+	if (!bLookApplied)
+	{
+		ApplyLook(*World);
+		bLookApplied = true;
+		Waited = 0.f;
+		return;
+	}
 	Waited += DeltaTime;
 	if (Waited < Delay || !Player)
 	{
 		return;
+	}
+	// The GPU's frame time over the settled view; the first frame's sample is a frame behind, so it is skipped.
+	if (GpuSampled < GpuFrames + 1)
+	{
+		const double Ms = FPlatformTime::ToMilliseconds64(RHIGetGPUFrameCycles(0));
+		if (GpuSampled > 0)
+		{
+			GpuSumMs += Ms;
+			GpuMinMs = GpuSampled == 1 ? Ms : FMath::Min(GpuMinMs, Ms);
+			GpuMaxMs = GpuSampled == 1 ? Ms : FMath::Max(GpuMaxMs, Ms);
+		}
+		if (++GpuSampled <= GpuFrames)
+		{
+			return;
+		}
+		const FIntPoint ViewSize = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport->GetSizeXY() : FIntPoint::ZeroValue;
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: GPU %.3f ms a frame on average over %d frames (%.3f to %.3f) at %d x %d."),
+			GpuSumMs / GpuFrames, GpuFrames, GpuMinMs, GpuMaxMs, ViewSize.X, ViewSize.Y);
 	}
 	// The game viewport handles HighResShot; the engine's own Exec doesn't.
 	UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr;
@@ -165,6 +204,79 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 TStatId UFTWorldEyeShotSubsystem::GetStatId() const
 {
 	RETURN_QUICK_DECLARE_CYCLE_STAT(UFTWorldEyeShotSubsystem, STATGROUP_Tickables);
+}
+
+void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
+{
+	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyeNight")))
+	{
+		float SunShare = 0.01f, SkyShare = 0.05f, Ev = -2.f;
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightSun="), SunShare);
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightSky="), SkyShare);
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightEV="), Ev);
+		const FString Path = FTScene::WindowCollection;
+		UMaterialParameterCollection* Collection =
+			LoadObject<UMaterialParameterCollection>(nullptr, *(Path + TEXT(".") + FPackageName::GetShortName(Path)), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		UMaterialParameterCollectionInstance* Windows = Collection ? World.GetParameterCollectionInstance(Collection) : nullptr;
+		const bool bNight = Windows && Windows->SetScalarParameterValue(TEXT("Night"), 1.f);
+		int32 Suns = 0, Skies = 0, Volumes = 0;
+		for (TActorIterator<ADirectionalLight> It(&World); It; ++It)
+		{
+			ULightComponent* Light = It->GetLightComponent();
+			Light->SetIntensity(Light->Intensity * SunShare);
+			++Suns;
+		}
+		for (TActorIterator<ASkyLight> It(&World); It; ++It)
+		{
+			USkyLightComponent* Light = It->GetLightComponent();
+			Light->SetIntensity(Light->Intensity * SkyShare);
+			++Skies;
+		}
+		for (TActorIterator<APostProcessVolume> It(&World); It; ++It)
+		{
+			It->Settings.bOverride_AutoExposureMinBrightness = true;
+			It->Settings.AutoExposureMinBrightness = Ev;
+			It->Settings.bOverride_AutoExposureMaxBrightness = true;
+			It->Settings.AutoExposureMaxBrightness = Ev;
+			++Volumes;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: night: windows' Night %s; %d suns at %.3f and %d sky lights at %.3f of the map's; "
+			"exposure locked at EV %.1f in %d volumes."), bNight ? TEXT("1") : TEXT("unset (no window collection)"), Suns, SunShare, Skies, SkyShare,
+			Ev, Volumes);
+	}
+	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyePlainWalls")))
+	{
+		TMap<UMaterialInterface*, UMaterialInterface*> Plain;
+		int32 Swapped = 0;
+		for (TObjectIterator<UStaticMeshComponent> It; It; ++It)
+		{
+			if (It->GetWorld() != &World)
+			{
+				continue;
+			}
+			for (int32 Slot = 0; Slot < It->GetNumMaterials(); ++Slot)
+			{
+				UMaterialInterface* Material = It->GetMaterial(Slot);
+				const FString Name = Material ? Material->GetName() : FString();
+				if (!Name.StartsWith(TEXT("MIW_")))
+				{
+					continue;
+				}
+				UMaterialInterface*& To = Plain.FindOrAdd(Material);
+				if (!To)
+				{
+					const FString Path = FTScene::SurfaceInstancePackage(Name.RightChop(4));
+					To = LoadObject<UMaterialInterface>(nullptr, *(Path + TEXT(".") + FPackageName::GetShortName(Path)), nullptr, LOAD_NoWarn | LOAD_Quiet);
+				}
+				if (To)
+				{
+					It->SetMaterial(Slot, To);
+					++Swapped;
+				}
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: plain walls: %d slots of %d window instances back on their surfaces."), Swapped, Plain.Num());
+	}
 }
 
 void UFTWorldEyeShotSubsystem::Finish(int32 Code)
