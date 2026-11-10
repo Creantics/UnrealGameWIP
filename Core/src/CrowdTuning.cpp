@@ -79,7 +79,7 @@ bool importCrowdTuning(std::string_view json, CrowdTuning& out, std::string* err
 
     s = rd.section(root, "move");
     rd.only(s, "move", {"walkSpeed", "walkSpeedJitter", "runSpeed", "backSpeed", "turnRate", "laneSpeed", "idleChance", "idleMin",
-                        "idleMax", "headingKeep", "headingChange", "avoidRadius", "avoidPlayer"});
+                        "idleMax", "headingKeep", "headingChange", "avoidRadius", "avoidPlayer", "minGap"});
     rd.number(s, "move", "walkSpeed", t.walkSpeed, 0.1, 5.0);
     rd.number(s, "move", "walkSpeedJitter", t.walkSpeedJitter, 0.0, 2.0);
     rd.number(s, "move", "runSpeed", t.runSpeed, 0.1, 12.0);
@@ -93,6 +93,7 @@ bool importCrowdTuning(std::string_view json, CrowdTuning& out, std::string* err
     rd.number(s, "move", "headingChange", t.headingChange, 0.0, 1.0);
     rd.number(s, "move", "avoidRadius", t.avoidRadius, 0.0, 10.0);
     rd.number(s, "move", "avoidPlayer", t.avoidPlayer, 0.0, 20.0);
+    rd.number(s, "move", "minGap", t.minGap, 0.0, 5.0);
     if (rd.ok && t.idleMin > t.idleMax) rd.fail("move", "idleMin", "above idleMax");
 
     s = rd.section(root, "perceive");
@@ -136,7 +137,7 @@ bool importCrowdTuning(std::string_view json, CrowdTuning& out, std::string* err
 
     s = rd.section(root, "react");
     rd.only(s, "react", {"noticeFear", "backFear", "fleeFear", "fearMax", "fearDecay", "cowerDecay", "calmFear", "noticeTime", "backTime",
-                         "calmTime", "recoverTime", "threatMemory", "timidScale", "boldScale"});
+                         "calmTime", "recoverTime", "threatMemory", "quietAfter", "quietDecay", "returnChance", "timidScale", "boldScale"});
     rd.number(s, "react", "noticeFear", t.noticeFear, 0.0, 10.0);
     rd.number(s, "react", "backFear", t.backFear, 0.0, 10.0);
     rd.number(s, "react", "fleeFear", t.fleeFear, 0.0, 10.0);
@@ -149,6 +150,9 @@ bool importCrowdTuning(std::string_view json, CrowdTuning& out, std::string* err
     rd.number(s, "react", "calmTime", t.calmTime, 0.0, 600.0);
     rd.number(s, "react", "recoverTime", t.recoverTime, 0.0, 600.0);
     rd.number(s, "react", "threatMemory", t.threatMemory, 0.0, 3600.0);
+    rd.number(s, "react", "quietAfter", t.quietAfter, 0.0, 600.0);
+    rd.number(s, "react", "quietDecay", t.quietDecay, 0.0, 10.0);
+    rd.number(s, "react", "returnChance", t.returnChance, 0.0, 1.0);
     rd.number(s, "react", "timidScale", t.timidScale, 0.01, 10.0);
     rd.number(s, "react", "boldScale", t.boldScale, 0.01, 10.0);
     if (rd.ok && !(t.noticeFear < t.backFear && t.backFear < t.fleeFear)) rd.fail("react", "backFear", "needs noticeFear < backFear < fleeFear");

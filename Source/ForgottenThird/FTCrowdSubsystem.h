@@ -68,7 +68,17 @@ private:
 	void ScriptFight(const FVector& PlayerAt);
 	void PickTestFight(const FVector& PlayerAt);
 	void CheckFootprint(int32 Actor, const FVector& Feet);
-	int32 CountInView(int32 Cam, TArray<uint32>* Ids) const;
+	struct FViewCount
+	{
+		int32 N = 0;          // drawn members in frame and in sight (a line from the eye to the chest)
+		int32 Calm = 0;       // of them walking or standing about
+		float MinGap = 1e9f;  // m, least distance between two of them
+		double NearestPx = 0; // the nearest one's height in the still, px of 900
+	};
+	FViewCount CountInView(int32 Cam, TArray<uint32>* Ids) const;
+	bool Clear(const FVector& Eye, const FVector& To) const;
+	void BuildMassing();
+	void LogGroundAt();
 	void Shoot(APlayerController* PC, const FVector& PlayerAt);
 	void LogCounts(const TCHAR* Label) const;
 	static bool Occluded(void* Context, ftcore::Vec2 From, ftcore::Vec2 To);
@@ -104,6 +114,20 @@ private:
 	int32 ShotIndex = 0;
 	int32 ShotTicks = -1; // ticks since the view moved to the shot's camera; -1 = idle
 	TArray<uint32> CalmInView[2]; // agent ids each camera saw in its calm still
+	int32 CalmCount[2] = {-1, -1};  // calm members each camera saw in its calm still
+	bool bCamsOk = true;            // both cameras framed the fight as asked, and the crowd came back into view
+	bool bRefillOk = true;
+	float RunMinPair = 1e9f;        // m, every frame
+	float RunMinWall = 1e9f;        // m, every frame
+	struct FMassBox
+	{
+		FVector2D C, Ax, Half; // centre, unit x axis, half sizes (cm)
+		double ZMin = 0.0, ZMax = 0.0;
+	};
+	TArray<FMassBox> MassBoxes;
+	TMap<FIntPoint, TArray<int32>> MassGrid; // 10 m cells: boxes reaching within a metre of the cell
+	double MinMassClear = 1e9;              // cm, least distance from a drawn member's feet to a massing box
+	bool bGroundLogged = false;
 
 	// Per pool actor: the agent id it stands for (0 = free), the clip it plays and at what rate, its ground height (cm).
 	TArray<uint32> PoolAgent;

@@ -1079,6 +1079,13 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
     std::uint32_t runs = 0, skipped = 0, cornered = 0, towardRuns = 0, toward = 0, pass = 0, nodesUsed = 0;
     float worst = 1e30f, worstPath = 1e30f;
     Vec2 worstAt{}, worstPathAt{};
+    // S-271 gates: two members at least kPairGate apart and every member kWallGate inside the frontage, in every
+    // state, every step; at +30 s the walkers within kArea of the fight at least half the members there at its start.
+    constexpr float kPairGate = 0.6f, kWallGate = 0.8f, kArea = 20.f;
+    constexpr float kWallTol = 0.01f; // float noise on a member held exactly at the inset
+    std::uint32_t pairFail = 0, wallFail = 0, backFail = 0, stuck = 0, worstPairSeed = 0, worstWallSeed = 0;
+    float worstPair = 1e30f, worstWall = 1e30f;
+    Vec2 worstPairAt{}, worstWallAt{};
     std::uint32_t worstSeed = 0, worstPathSeed = 0;
     for (const std::uint32_t n : nodes) {
         const Vec2 fight = g.node(n);
@@ -1088,14 +1095,53 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
         for (std::uint32_t seed = 1; seed <= 6; ++seed) {
             CrowdSim sim;
             REQUIRE(sim.init(g, t, seed));
-            run(sim, 20.f, player);
+            // S-271: the least gap between two members and between a member and the frontage, every step of the run
+            // (calm included), and the walkers near the fight at its start and 30 s later.
+            float runPair = 1e30f, runWall = 1e30f;
+            auto go = [&](float seconds) {
+                const int steps = static_cast<int>(std::lround(seconds * 15.f));
+                for (int k = 0; k < steps; ++k) {
+                    sim.tick(1.f / 15.f, player, {0.f, 0.f});
+                    runPair = std::min(runPair, sim.minPairDistance(2.f));
+                    for (std::uint32_t m = 0; m < sim.capacity(); ++m)
+                        if (sim.agent(m).live) runWall = std::min(runWall, sim.wallClearance(m));
+                }
+            };
+            auto near = [&](bool walking) {
+                std::uint32_t c = 0;
+                for (std::uint32_t m = 0; m < sim.capacity(); ++m) {
+                    const CrowdAgentView& v = sim.agent(m);
+                    c += v.live && dist(v.pos, fight) <= kArea && (!walking || v.state == CrowdState::Walk);
+                }
+                return c;
+            };
+            go(20.f);
             CrowdReactionProbe probe;
             probe.begin(sim, fight, t.reactRadius);
             if (probe.count() == 0) { ++skipped; continue; }
             used = true;
+            const std::uint32_t calmNear = near(false);
             sim.pushEvent({CrowdEventKind::FightStart, fight});
-            run(sim, 1.f, player);
+            go(1.f);
             const CrowdReactionResult rs = probe.evaluate(sim, 1.5f, 0.3f);
+            // The test fight's strikes every half second for 10 s, a death at its end, then on to 30 s.
+            for (int h = 3; h <= 60; ++h) {
+                if (h <= 20) sim.pushEvent({CrowdEventKind::Strike, fight});
+                if (h == 20) sim.pushEvent({CrowdEventKind::Death, fight});
+                go(0.5f);
+            }
+            const std::uint32_t backNear = near(true);
+            const bool back = backNear * 2u >= calmNear;
+            backFail += !back;
+            stuck += static_cast<std::uint32_t>(sim.counts().stuck);
+            pairFail += runPair < kPairGate;
+            wallFail += runWall < kWallGate - kWallTol;
+            if (runPair < worstPair) { worstPair = runPair; worstPairAt = fight; worstPairSeed = seed; }
+            if (runWall < worstWall) { worstWall = runWall; worstWallAt = fight; worstWallSeed = seed; }
+            if (!back || runPair < kPairGate || runWall < kWallGate - kWallTol)
+                std::printf("crowd sweep: GAPS at node %u (%.1f,%.1f) seed %u: pair %.2f m, wall %.2f m, walkers within %.0f m %u at +30 s of %u at the start\n",
+                            n, static_cast<double>(fight.x), static_cast<double>(fight.y), seed, static_cast<double>(runPair),
+                            static_cast<double>(runWall), static_cast<double>(kArea), backNear, calmNear);
             ++runs;
             pass += rs.ok();
             cornered += rs.cornered;
@@ -1115,6 +1161,15 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
                 nodes.size(), nodesUsed, runs, skipped, pass, runs ? 100.0 * pass / runs : 0.0, cornered, toward, towardRuns,
                 static_cast<double>(worstPath == 1e30f ? 0.f : worstPath), static_cast<double>(worstPathAt.x), static_cast<double>(worstPathAt.y),
                 worstPathSeed, static_cast<double>(worst == 1e30f ? 0.f : worst), static_cast<double>(worstAt.x), static_cast<double>(worstAt.y), worstSeed);
+    std::printf("crowd sweep: gaps: worst pair %.2f m at %.1f,%.1f seed %u (%u runs under %.1f m); worst wall %.2f m at %.1f,%.1f seed %u "
+                "(%u runs under %.1f m); %u runs short of half the walkers back at +30 s; stuck %u\n",
+                static_cast<double>(worstPair), static_cast<double>(worstPairAt.x), static_cast<double>(worstPairAt.y), worstPairSeed, pairFail,
+                static_cast<double>(kPairGate), static_cast<double>(worstWall), static_cast<double>(worstWallAt.x), static_cast<double>(worstWallAt.y),
+                worstWallSeed, wallFail, static_cast<double>(kWallGate), backFail, stuck);
     CHECK(toward == 0u);
     CHECK(pass * 100u >= runs * 95u);
+    CHECK(pairFail == 0u);
+    CHECK(wallFail == 0u);
+    CHECK(backFail * 100u <= runs * 5u);
+    CHECK(stuck == 0u);
 }

@@ -298,14 +298,14 @@ bool CrowdGraph::build(const std::vector<CrowdStreet>& streets, const CrowdGraph
     // CSR, both directions, duplicates dropped.
     struct Dir {
         std::uint32_t from, to;
-        float lane, laneHalf;
+        float lane, laneHalf, half;
     };
     std::vector<Dir> dirs;
     dirs.reserve(edges.size() * 2);
     for (const BuildEdge& e : edges) {
         if (e.dead || e.a == e.b) continue;
-        dirs.push_back({e.a, e.b, e.lane, e.laneHalf});
-        dirs.push_back({e.b, e.a, e.lane, e.laneHalf});
+        dirs.push_back({e.a, e.b, e.lane, e.laneHalf, e.half});
+        dirs.push_back({e.b, e.a, e.lane, e.laneHalf, e.half});
     }
     std::sort(dirs.begin(), dirs.end(), [](const Dir& l, const Dir& r) { return l.from != r.from ? l.from < r.from : l.to < r.to; });
     dirs.erase(std::unique(dirs.begin(), dirs.end(), [](const Dir& l, const Dir& r) { return l.from == r.from && l.to == r.to; }),
@@ -317,7 +317,7 @@ bool CrowdGraph::build(const std::vector<CrowdStreet>& streets, const CrowdGraph
     edges_.resize(dirs.size());
     for (std::size_t i = 0; i < dirs.size(); ++i) {
         const Dir& d = dirs[i];
-        edges_[i] = {d.to, std::max(0.01f, dist(pos_[d.from], pos_[d.to])), d.lane, d.laneHalf};
+        edges_[i] = {d.to, std::max(0.01f, dist(pos_[d.from], pos_[d.to])), d.lane, d.laneHalf, d.half};
     }
 
     // Components: islands smaller than minComponent are never spawned on.

@@ -639,7 +639,16 @@ void CrowdSim::decide(std::uint32_t i) {
         if (f >= flee) startFlee(a);
         else if (f >= back) setState(a, CrowdState::BackAway);
         else if (f >= notice) setState(a, CrowdState::Notice);
-        else if (a.state == CrowdState::Idle && (a.idleLeft -= tuning_.step) <= 0.f) setState(a, CrowdState::Walk);
+        else if (time_ - a.threatAt < tuning_.threatMemory && time_ - a.threatAt > tuning_.quietAfter) {
+            // It has gone quiet: one look back. Most walk back the way they came, through where it was (the street
+            // refills); the rest walk on and stop steering clear of it.
+            if (rand01() < tuning_.returnChance) {
+                if (a.state == CrowdState::Idle) setState(a, CrowdState::Walk);
+                a.heading = yawTo(a.pos, a.threat);
+                if (dist2(graph_->node(a.to), a.threat) > dist2(graph_->node(a.from), a.threat)) reverse(a);
+            }
+            a.threatAt = time_ - tuning_.threatMemory;
+        } else if (a.state == CrowdState::Idle && (a.idleLeft -= tuning_.step) <= 0.f) setState(a, CrowdState::Walk);
         break;
     case CrowdState::Notice:
         if (f >= flee) startFlee(a);
@@ -677,9 +686,19 @@ void CrowdSim::decide(std::uint32_t i) {
         // The run ends at a node, the member a pavement's width off it: the slack keeps that from reading as inside.
         if (f >= flee && dist(a.pos, a.threat) < tuning_.safeDist - kSafeSlack) startFlee(a);
         else if (a.stateTime >= tuning_.recoverTime && f < std::max(tuning_.calmFear, notice)) {
-            // Walk on: about half carry on the way they were going (the street refills), the rest somewhere new.
-            a.heading = rand01() < tuning_.resumeHeading ? a.walkHeading : rand01() * 360.f;
+            // Walk on. Once the threat has gone quiet, some walk back the way they ran, through where it was (the street
+            // refills); of the rest about half carry on the way they were going, the others somewhere new.
+            const float r = rand01();
+            const bool quiet = time_ - a.threatAt > tuning_.quietAfter;
+            const bool goBack = quiet && r < tuning_.returnChance;
+            const float rest = quiet ? (r - tuning_.returnChance) / std::max(1e-3f, 1.f - tuning_.returnChance) : r;
+            a.heading = goBack ? yawTo(a.pos, a.threat) : rest < tuning_.resumeHeading ? a.walkHeading : rand01() * 360.f;
             setState(a, CrowdState::Walk);
+            if (goBack) {
+                // Turned round on its street towards it, and no longer steering clear of it at the next corner.
+                if (dist2(graph_->node(a.to), a.threat) > dist2(graph_->node(a.from), a.threat)) reverse(a);
+                a.threatAt = std::min(a.threatAt, time_ - tuning_.threatMemory);
+            }
         }
         break;
     case CrowdState::Free: break;
@@ -875,13 +894,31 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
     a.pos = {base.x - dir.y * a.lat, base.y + dir.x * a.lat};
     a.speed = a.state == CrowdState::Recover || a.state == CrowdState::Idle ? 0.f : speed;
 
-    // A running member that hasn't got anywhere for a whole second (a run check counts it).
-    if (a.state == CrowdState::Flee && !a.hold) {
+    // A moving member that hasn't got anywhere (a run check counts it): a runner in a whole second, anyone else
+    // walking or backing off in two.
+    const bool moving = (a.state == CrowdState::Flee || a.state == CrowdState::Walk || a.state == CrowdState::BackAway ||
+                         (a.state == CrowdState::Cower && a.brace)) && !a.hold && !startled && speed > 0.f;
+    if (moving) {
         a.stuckTime += tuning_.step;
         if (dist2(a.pos, a.stuckRef) > 0.01f) {
             a.stuckRef = a.pos;
             a.stuckTime = 0.f;
-        } else if (a.stuckTime >= 1.f) {
+            a.stuckTurned = false;
+        } else if (a.state == CrowdState::Flee && a.stuckTime >= 0.5f) {
+            // Someone stands in its way at the end of its run: it stops behind them and asks for a new plan.
+            a.hold = true;
+            a.needPlan = true;
+        } else if (a.state != CrowdState::Flee && a.stuckTime >= 1.f && !a.stuckTurned) {
+            // Blocked (someone stood in its way at the pavement's edge): a walker turns back, a member backing off or
+            // bracing stops where it is.
+            a.stuckTurned = true;
+            if (a.state == CrowdState::Walk) reverse(a);
+            else a.hold = true;
+        } else if (a.state == CrowdState::Walk && a.stuckTurned && a.stuckTime >= 0.5f) {
+            // Boxed in both ways: it stands and waits for the way to clear.
+            setState(a, CrowdState::Idle);
+            a.idleLeft = tuning_.idleMin + rand01() * (tuning_.idleMax - tuning_.idleMin);
+        } else if (a.stuckTime >= (a.state == CrowdState::Flee ? 1.f : 2.f)) {
             ++counts_.stuck;
             a.stuckTime = 0.f;
         }
@@ -927,6 +964,7 @@ void CrowdSim::spread(std::uint32_t i) {
 }
 
 void CrowdSim::pickDrawn(Vec2 player) {
+    if (focusOn_) player = focus_;
     std::uint32_t m = 0;
     for (std::uint32_t i = 0; i < agents_.size(); ++i) {
         views_[i].drawn = false;
@@ -980,12 +1018,15 @@ void CrowdSim::step(Vec2 player, Vec2 playerVel) {
         Agent& a = agents_[i];
         if (a.state == CrowdState::Free) continue;
         if (a.pend && time_ >= a.pendAt) deliver(a);
-        const float decay = a.state == CrowdState::Cower ? tuning_.cowerDecay : tuning_.fearDecay;
+        float decay = a.state == CrowdState::Cower ? tuning_.cowerDecay : tuning_.fearDecay;
+        // A quiet spell since the last stimulus: fear falls fast, so the street settles and refills.
+        if (time_ - a.threatAt > tuning_.quietAfter) decay = std::max(decay, tuning_.quietDecay);
         a.fear = std::max(0.f, a.fear - decay * tuning_.step);
         decide(i);
         move(i, player, playerVel);
         spread(i);
     }
+    separate();
     pickDrawn(player);
     for (std::uint32_t i = 0; i < agents_.size(); ++i)
         if (agents_[i].state != CrowdState::Free) {
@@ -1003,6 +1044,195 @@ std::uint32_t CrowdSim::closePairs(float d) const {
         });
     }
     return n;
+}
+
+// How far p stands inside the streets round a's edge (its own and those at both its nodes): the distance to the
+// nearest outer edge. fixTo (optional): the nearest point wallInset inside the best of them.
+float CrowdSim::clearance(const Agent& a, Vec2 p, Vec2* fixTo) const {
+    float best = -1e30f;
+    for (const std::uint32_t n : {a.from, a.to})
+        for (std::uint32_t k = 0; k < graph_->degree(n); ++k) {
+            const CrowdEdge& e = graph_->edge(n, k);
+            const Vec2 s = graph_->node(n), q = graph_->node(e.to);
+            const Vec2 d{q.x - s.x, q.y - s.y};
+            const float l2 = std::max(d.x * d.x + d.y * d.y, 1e-6f);
+            const float t = std::clamp(((p.x - s.x) * d.x + (p.y - s.y) * d.y) / l2, 0.f, 1.f);
+            const Vec2 c{s.x + d.x * t, s.y + d.y * t};
+            const float off = dist(p, c);
+            const float cl = e.half - off;
+            if (cl <= best) continue;
+            best = cl;
+            if (fixTo) {
+                const float keep = std::max(0.f, e.half - tuning_.graph.wallInset);
+                *fixTo = off > keep && off > 1e-6f ? Vec2{c.x + (p.x - c.x) * keep / off, c.y + (p.y - c.y) * keep / off} : p;
+            }
+        }
+    return best;
+}
+
+// Moves a member to p, kept wallInset inside the streets: its along and sideways set from p in its edge's frame.
+void CrowdSim::place(Agent& a, Vec2 p) {
+    Vec2 q = p;
+    if (clearance(a, p, &q) >= tuning_.graph.wallInset - 1e-3f) q = p;
+    const Vec2 f = graph_->node(a.from), t = graph_->node(a.to);
+    const Vec2 dir{(t.x - f.x) / a.len, (t.y - f.y) / a.len};
+    a.along = std::clamp((q.x - f.x) * dir.x + (q.y - f.y) * dir.y, std::min(a.along, 0.f), a.len);
+    a.lat = std::clamp((q.x - f.x) * -dir.y + (q.y - f.y) * dir.x, -kCornerReach, kCornerReach);
+    const Vec2 base = basePoint(a);
+    a.pos = {base.x - dir.y * a.lat, base.y + dir.x * a.lat};
+    if (clearance(a, a.pos, nullptr) >= tuning_.graph.wallInset - 1e-3f) return;
+    // Its own street's frame can't reach that point (it stands on a node): in across its own street until clear.
+    float lo = 0.f, hi = 1.f;
+    const float lat0 = a.lat;
+    for (int k = 0; k < 10; ++k) {
+        const float mid = 0.5f * (lo + hi);
+        const Vec2 at{base.x - dir.y * lat0 * mid, base.y + dir.x * lat0 * mid};
+        if (clearance(a, at, nullptr) >= tuning_.graph.wallInset - 1e-3f) lo = mid;
+        else hi = mid;
+    }
+    a.lat = lat0 * lo;
+    a.latTarget = a.lat;
+    a.pos = {base.x - dir.y * a.lat, base.y + dir.x * a.lat};
+}
+
+// The part of a push a member takes: one reacting to a threat is never pushed towards it.
+Vec2 CrowdSim::pushable(const Agent& a, Vec2 by) const {
+    const bool wary = a.pend || (a.state != CrowdState::Walk && a.state != CrowdState::Idle);
+    if (!wary) return by;
+    const Vec2 th = a.pend ? a.pendFrom : a.threat;
+    const float l = dist(a.pos, th);
+    if (l <= 1e-4f) return by;
+    const Vec2 u{(th.x - a.pos.x) / l, (th.y - a.pos.y) / l};
+    const float c = by.x * u.x + by.y * u.y;
+    return c > 0.f ? Vec2{by.x - u.x * c, by.y - u.y * c} : by;
+}
+
+// A push from a neighbour (unused: kept for the header).
+void CrowdSim::nudge(Agent& a, Vec2 by) {
+    const bool wary = a.pend || (a.state != CrowdState::Walk && a.state != CrowdState::Idle);
+    if (wary) {
+        const Vec2 th = a.pend ? a.pendFrom : a.threat;
+        const float l = dist(a.pos, th);
+        if (l > 1e-4f) {
+            const Vec2 u{(th.x - a.pos.x) / l, (th.y - a.pos.y) / l};
+            const float c = by.x * u.x + by.y * u.y;
+            if (c > 0.f) by = {by.x - u.x * c, by.y - u.y * c};
+        }
+    }
+    place(a, {a.pos.x + by.x, a.pos.y + by.y});
+}
+
+// S-271: no two members closer than minGap, and nobody nearer the frontage than wallInset, after every step.
+void CrowdSim::separate() {
+    const float g = tuning_.minGap;
+    for (Agent& a : agents_)
+        if (a.state != CrowdState::Free && clearance(a, a.pos, nullptr) < tuning_.graph.wallInset - 1e-3f) place(a, a.pos);
+    for (int it = 0; it < 24 && g > 0.f; ++it) {
+        bool any = false;
+        for (std::uint32_t i = 0; i < agents_.size(); ++i) {
+            if (agents_[i].state == CrowdState::Free) continue;
+            // The grid is from the step's start: look a run step farther.
+            forEachNear(agents_[i].pos, g + 1.f, [&](std::uint32_t j) {
+                if (j == i || agents_[j].state == CrowdState::Free) return;
+                Agent& a = agents_[i];
+                Agent& b = agents_[j];
+                Vec2 d{a.pos.x - b.pos.x, a.pos.y - b.pos.y};
+                float l = std::sqrt(d.x * d.x + d.y * d.y);
+                if (l >= g) return;
+                any = true;
+                if (l < 1e-4f) { // on top of each other: apart across the street, by slot order
+                    const Vec2 f = graph_->node(a.from), t = graph_->node(a.to);
+                    d = {-(t.y - f.y) / a.len, (t.x - f.x) / a.len};
+                    if (i < j) d = {-d.x, -d.y};
+                } else {
+                    d = {d.x / l, d.y / l};
+                }
+                const float push = (g - l) * 0.5f + 1e-3f;
+                const Vec2 wa{d.x * push, d.y * push};
+                const Vec2 pa = pushable(a, wa);
+                const Vec2 wb{-d.x * push - (wa.x - pa.x), -d.y * push - (wa.y - pa.y)};
+                const Vec2 pb = pushable(b, wb);
+                const Vec2 ra = pushable(a, {pa.x - (wb.x - pb.x), pa.y - (wb.y - pb.y)});
+                place(a, {a.pos.x + ra.x, a.pos.y + ra.y});
+                place(b, {b.pos.x + pb.x, b.pos.y + pb.y});
+                const float l2 = dist(a.pos, b.pos);
+                if (l2 >= g - 1e-3f) return;
+                // Still too close (one stands at a dead end, the other may not step towards its threat): side by side
+                // instead, whichever way round leaves them farther apart.
+                const Vec2 n{-d.y, d.x};
+                const float side = (g - l2) * 0.5f + 1e-3f;
+                Agent best[2] = {a, b};
+                float bestL = l2;
+                for (int sgn = -1; sgn <= 1; sgn += 2) {
+                    Agent ta = a, tb = b;
+                    const float k = side * static_cast<float>(sgn);
+                    const Vec2 sa = pushable(ta, {n.x * k, n.y * k}), sb = pushable(tb, {-n.x * k, -n.y * k});
+                    place(ta, {ta.pos.x + sa.x, ta.pos.y + sa.y});
+                    place(tb, {tb.pos.x + sb.x, tb.pos.y + sb.y});
+                    const float lt = dist(ta.pos, tb.pos);
+                    if (lt > bestL) { bestL = lt; best[0] = ta; best[1] = tb; }
+                }
+                a = best[0];
+                b = best[1];
+                if (bestL >= g - 1e-3f) return;
+                // Last resort: apart, threat or not (two people never stand inside each other): straight apart or side by
+                // side (straight apart may run into the end of a street), whichever leaves them farther apart. Not in the
+                // first second of a reaction: nobody steps towards what they just heard.
+                auto fresh = [&](const Agent& m) { return m.pend || (m.state != CrowdState::Walk && m.state != CrowdState::Idle && m.stateTime < 1.f); };
+                if (fresh(a) || fresh(b)) return;
+                const float rest = (g - bestL) * 0.5f + 1e-3f;
+                Vec2 e{a.pos.x - b.pos.x, a.pos.y - b.pos.y};
+                const float le = std::sqrt(e.x * e.x + e.y * e.y);
+                e = le > 1e-4f ? Vec2{e.x / le, e.y / le} : d;
+                const Vec2 ways[3] = {e, {-e.y, e.x}, {e.y, -e.x}};
+                const Agent a0 = a, b0 = b;
+                for (const Vec2& w : ways) {
+                    Agent ta = a0, tb = b0;
+                    place(ta, {ta.pos.x + w.x * rest, ta.pos.y + w.y * rest});
+                    place(tb, {tb.pos.x - w.x * rest, tb.pos.y - w.y * rest});
+                    float lt = dist(ta.pos, tb.pos);
+                    if (lt < g - 1e-3f) {
+                        // One stands at the end of its street: the other takes the rest.
+                        const float more = g - lt + 1e-3f;
+                        Agent ua = ta, ub = tb;
+                        place(ua, {ua.pos.x + w.x * more, ua.pos.y + w.y * more});
+                        place(ub, {ub.pos.x - w.x * more, ub.pos.y - w.y * more});
+                        const float la = dist(ua.pos, tb.pos), lb = dist(ta.pos, ub.pos);
+                        if (la >= lb && la > lt) { ta = ua; lt = la; }
+                        else if (lb > lt) { tb = ub; lt = lb; }
+                    }
+                    if (lt > bestL) { bestL = lt; a = ta; b = tb; }
+                }
+            });
+        }
+        if (!any) break;
+    }
+}
+
+float CrowdSim::minPairDistance(float within) const {
+    float best2 = within * within;
+    for (std::uint32_t i = 0; i < agents_.size(); ++i) {
+        if (agents_[i].state == CrowdState::Free) continue;
+        forEachNear(agents_[i].pos, within, [&](std::uint32_t j) {
+            if (j > i && agents_[j].state != CrowdState::Free) best2 = std::min(best2, dist2(agents_[i].pos, agents_[j].pos));
+        });
+    }
+    return std::sqrt(best2);
+}
+
+float CrowdSim::wallClearance(std::uint32_t i) const {
+    const Agent& a = agents_[i];
+    float best = -1e30f;
+    auto segment = [&](std::uint32_t u, const CrowdEdge& e) {
+        const Vec2 p = graph_->node(u), q = graph_->node(e.to);
+        const Vec2 d{q.x - p.x, q.y - p.y};
+        const float l2 = std::max(d.x * d.x + d.y * d.y, 1e-6f);
+        const float t = std::clamp(((a.pos.x - p.x) * d.x + (a.pos.y - p.y) * d.y) / l2, 0.f, 1.f);
+        best = std::max(best, e.half - dist(a.pos, {p.x + d.x * t, p.y + d.y * t}));
+    };
+    for (const std::uint32_t n : {a.from, a.to})
+        for (std::uint32_t k = 0; k < graph_->degree(n); ++k) segment(n, graph_->edge(n, k));
+    return best;
 }
 
 void CrowdReactionProbe::begin(const CrowdSim& sim, Vec2 at, float radius) {

@@ -67,6 +67,7 @@ struct CrowdEdge {
     float length = 0.f;
     float lane = 0.f;     // m from the centre line to the walking lane's middle (the pavement's), each side
     float laneHalf = 0.f; // m: how far either way of the lane a walker may stray
+    float half = 0.f;     // m: the street's half width (its outer edge: the frontage, building faces)
 };
 
 class CrowdGraph {
@@ -158,6 +159,7 @@ struct CrowdTuning {
     float headingChange = 0.05f;     // chance per node of a new heading
     float avoidRadius = 0.9f;        // m between members
     float avoidPlayer = 1.6f;        // m kept from the player
+    float minGap = 0.65f;            // m: two members never stand closer (pushed apart every step, S-271)
     // perception
     float fov = 140.f;               // deg, for sight-only events
     float feelRadius = 3.f;          // m: sight-only events this close are felt whatever the facing
@@ -193,6 +195,9 @@ struct CrowdTuning {
     float calmTime = 4.f;            // s calm before resuming (after a flee or cower)
     float recoverTime = 2.5f;        // s looking around before walking on
     float threatMemory = 20.f;       // s a calm walk keeps away from the last threat
+    float quietAfter = 3.f;          // s after the last stimulus: fear falls at quietDecay from then on
+    float quietDecay = 0.3f;         // per s
+    float returnChance = 0.6f;       // chance a calmed member walks back the way it ran (the street refills)
     float timidScale = 0.6f;         // threshold multiplier at boldness 0
     float boldScale = 1.6f;          // ... at boldness 1
     // flee
@@ -250,7 +255,7 @@ struct CrowdCounts {
     std::uint64_t fleers = 0;            // members that fled at least once
     std::uint32_t maxFleeEntries = 0;    // the most times one member entered Flee
     std::uint32_t maxPlans = 0;          // the most flee plans one member asked for
-    std::uint64_t stuck = 0;             // times a running member stood still (moved < 0.1 m) for a whole second
+    std::uint64_t stuck = 0;             // times a moving member stood still (< 0.1 m): a runner 1 s, anyone else 2 s
 };
 
 // A run check: which members stood within `radius` of a point when a fight started there, and how they moved by
@@ -318,6 +323,13 @@ public:
     void setPopulationFrozen(bool frozen) { frozen_ = frozen; }
     // Live members closer than `d` m to another (pairs counted once). O(n) on the neighbour grid; no allocation.
     FTCORE_API std::uint32_t closePairs(float d) const;
+    // S-271 run checks. The least distance between two live members (`within` when none is closer). No allocation.
+    FTCORE_API float minPairDistance(float within) const;
+    // How far member i stands inside the street (the street rectangles round its edge and the edges at its nodes):
+    // the distance to the nearest outer edge, the frontage. Negative: past it.
+    FTCORE_API float wallClearance(std::uint32_t i) const;
+    // Draw the members nearest this point instead of the player (a test watching a spot away from the player).
+    void setDrawFocus(bool on, Vec2 at) { focusOn_ = on; focus_ = at; }
 
 private:
     struct Agent {
@@ -353,6 +365,7 @@ private:
         float walkHeading = 0.f;     // deg: the calm heading before the last scare
         Vec2 stuckRef;               // where a running member stood when its stuck clock last restarted
         float stuckTime = 0.f;
+        bool stuckTurned = false;    // blocked a second: already turned back or stopped
         bool hold = false;           // backing off or running with nowhere farther to go: stands until the next plan
         bool brace = false;          // cornered (no plan): runs to the far end of its dead end, then cowers there
     };
@@ -381,6 +394,11 @@ private:
     void brace(Agent& a);
     void unCorner(Agent& a);
     bool crowded(std::uint32_t self, Vec2 p, float r) const;
+    void separate();
+    void nudge(Agent& a, Vec2 by);
+    Vec2 pushable(const Agent& a, Vec2 by) const;
+    void place(Agent& a, Vec2 p);
+    float clearance(const Agent& a, Vec2 p, Vec2* fixTo) const;
     float scale(const Agent& a) const;
     Vec2 basePoint(const Agent& a) const;
     float rand01();
@@ -410,6 +428,8 @@ private:
     std::uint32_t bornCount_ = 0;
     // drawn pick scratch
     std::vector<std::uint64_t> order_;
+    bool focusOn_ = false;
+    Vec2 focus_{};
     CrowdOcclusionFn occlude_ = nullptr;
     void* occludeCtx_ = nullptr;
     CrowdCounts counts_;

@@ -11,6 +11,12 @@
 #include "Engine/HitResult.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
+#include "Components/InstancedStaticMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "EngineUtils.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/World.h"
 #include "WorldCollision.h"
 #include "FTMeshFacing.h"
@@ -55,6 +61,22 @@ constexpr double kTestFightLength = 10.0;
 constexpr float kFirstSecondPath = 1.5f;   // m
 constexpr float kFirstSecondRadial = 0.3f; // m
 constexpr double kTestStrikeEvery = 0.5;
+// S-271 gates: two members at least this far apart and this far inside the frontage (m), every frame.
+constexpr float kGapPair = 0.6f;
+constexpr float kGapWall = 0.8f;
+// The stills' cameras: this far back from the fight point and this high (cm); a member is this tall (cm) and the nearest
+// in sight must stand at least this many px high in a 1600x900 still.
+constexpr double kCamBack[] = {1350.0, 1200.0, 1500.0};
+constexpr double kCamUp = 600.0;
+constexpr double kPersonHeight = 175.0;
+constexpr double kMinPersonPx = 60.0;
+// Massing boxes the footprint check uses: at least this tall and wide, at most this long (cm); the grid's cell.
+constexpr double kMassMinHeight = 250.0;
+constexpr double kMassMinSide = 200.0;
+constexpr double kMassMaxSide = 30000.0;
+constexpr double kMassCell = 1000.0;
+// Where the ground under the streets is logged (engine cm), unless -CrowdGroundAt=X,Y says elsewhere.
+constexpr double kGroundAtX = 0.0, kGroundAtY = 31050.0;
 
 FString CrowdObjectPath(const FString& Path)
 {
@@ -174,6 +196,7 @@ void UFTCrowdSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	LoadArt();
 	SlotActor.Init(INDEX_NONE, static_cast<int32>(Sim.capacity()));
 	FootSeen.Init(false, static_cast<int32>(Sim.capacity()));
+	BuildMassing();
 
 	double TestAt = 20.0;
 	if (FParse::Param(Cmd, TEXT("CrowdTestFight")) || FParse::Value(Cmd, TEXT("CrowdTestFight="), TestAt))
@@ -471,49 +494,36 @@ void UFTCrowdSubsystem::Shoot(APlayerController* PC, const FVector& PlayerAt)
 			}
 		}
 		const FVector Fight(TestFightPoint.X, TestFightPoint.Y, FightZ);
-		// What both cameras must show: the fight point, the player's group and the nearest members to the fight.
-		TArray<FVector> Subjects;
-		Subjects.Add(Fight + FVector(0.0, 0.0, 100.0));
-		Subjects.Add(PlayerAt);
+		TestFightPoint.Z = FightZ;
+		const FVector Aim = Fight + FVector(0.0, 0.0, 100.0);
+		// A red disc on the street at the fight point, so a reader of the stills knows where it is.
+		if (UStaticMesh* Disc = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder")))
 		{
-			TArray<TPair<float, FVector>> Near;
-			for (uint32 i = 0; i < Sim.capacity(); ++i)
+			FActorSpawnParameters Spawn;
+			Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			if (AStaticMeshActor* Mark = World->SpawnActor<AStaticMeshActor>(Fight + FVector(0.0, 0.0, 2.0), FRotator::ZeroRotator, Spawn))
 			{
-				const ftcore::CrowdAgentView& V = Sim.agent(i);
-				const float D = static_cast<float>(FVector::Dist2D(FVector(V.pos.x * 100.0, V.pos.y * 100.0, 0.0), Fight) / 100.0);
-				if (!V.live || D > Tuning.reactRadius)
+				Mark->SetActorEnableCollision(false);
+				UStaticMeshComponent* M = Mark->GetStaticMeshComponent();
+				M->SetMobility(EComponentMobility::Movable);
+				M->SetStaticMesh(Disc);
+				M->SetWorldScale3D(FVector(1.2, 1.2, 0.02));
+				if (UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial")))
 				{
-					continue;
+					UMaterialInstanceDynamic* Red = UMaterialInstanceDynamic::Create(Base, Mark);
+					Red->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.8f, 0.02f, 0.02f));
+					M->SetMaterial(0, Red);
 				}
-				const int32 A = SlotActor.IsValidIndex(static_cast<int32>(i)) ? SlotActor[static_cast<int32>(i)] : INDEX_NONE;
-				const double Z = A != INDEX_NONE && PoolGrounded[A] ? PoolGround[A] : FightZ;
-				Near.Add({D, FVector(V.pos.x * 100.0, V.pos.y * 100.0, Z + 120.0)});
-			}
-			Near.Sort([](const TPair<float, FVector>& L, const TPair<float, FVector>& R) { return L.Key < R.Key; });
-			for (int32 n = 0; n < Near.Num() && n < 8; ++n)
-			{
-				Subjects.Add(Near[n].Value);
+				TraceQuery.AddIgnoredActor(Mark);
 			}
 		}
-		FVector Mid = FVector::ZeroVector;
-		for (const FVector& S : Subjects)
-		{
-			Mid += S;
-		}
-		Mid /= static_cast<double>(Subjects.Num());
-		const FVector Aim = FMath::Lerp(Subjects[0], Mid, 0.4);
 		const double TanX = FMath::Tan(FMath::DegreesToRadians(35.0)), TanY = TanX * 9.0 / 16.0;
-		// In sight: nothing static between the eye and the point (a hit within a metre of it is the thing itself).
-		auto Sees = [&](const FVector& Eye, const FVector& To) {
-			FHitResult H;
-			return !World->LineTraceSingleByChannel(H, Eye, To, ECC_Visibility, TraceQuery) || FVector::Dist(H.ImpactPoint, To) < 100.0;
-		};
 		auto InFrame = [&](const FVector& Eye, const FVector& To) {
 			const FVector L = (Aim - Eye).Rotation().Quaternion().UnrotateVector(To - Eye);
-			return L.X > 0.0 && FMath::Abs(L.Y) < L.X * TanX * 0.9 && FMath::Abs(L.Z) < L.X * TanY * 0.9;
+			return L.X > 0.0 && FMath::Abs(L.Y) < L.X * TanX * 0.95 && FMath::Abs(L.Z) < L.X * TanY * 0.95;
 		};
-		// Candidate eyes round the fight point: every 30 degrees, 18-32 m out, 6-15 m up. Score: subjects seen and in
-		// frame; the fight point itself must be.
+		// Candidate eyes round the fight point: every 15 degrees, 12-15 m back, 6 m up, the fight point in plain sight.
+		// Score: drawn members within 20 m of it in frame and in sight.
 		struct FEye
 		{
 			FVector At;
@@ -521,33 +531,35 @@ void UFTCrowdSubsystem::Shoot(APlayerController* PC, const FVector& PlayerAt)
 			int32 Seen = -1;
 		};
 		TArray<FEye> Cands;
-		for (int32 Az = 0; Az < 360; Az += 30)
+		for (int32 Az = 0; Az < 360; Az += 15)
 		{
-			for (const double Dist : {2500.0, 1800.0, 3200.0})
+			for (const double Back : kCamBack)
 			{
-				for (const double Up : {1000.0, 600.0, 1500.0})
+				const double R = FMath::DegreesToRadians(static_cast<double>(Az));
+				FEye E;
+				E.At = Fight + FVector(FMath::Cos(R) * Back, FMath::Sin(R) * Back, kCamUp);
+				E.Az = Az;
+				TArray<FOverlapResult> In;
+				if (World->OverlapMultiByObjectType(In, E.At, FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldStatic),
+						FCollisionShape::MakeSphere(30.f), TraceQuery) ||
+					!Clear(E.At, Aim) || !Clear(E.At, Fight + FVector(0.0, 0.0, 20.0)))
 				{
-					const double R = FMath::DegreesToRadians(static_cast<double>(Az));
-					FEye E;
-					E.At = Fight + FVector(FMath::Cos(R) * Dist, FMath::Sin(R) * Dist, Up);
-					E.Az = Az;
-					TArray<FOverlapResult> In;
-					if (World->OverlapMultiByObjectType(In, E.At, FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldStatic),
-							FCollisionShape::MakeSphere(30.f), TraceQuery) ||
-						!InFrame(E.At, Subjects[0]) || !Sees(E.At, Subjects[0]))
+					continue;
+				}
+				E.Seen = 0;
+				for (int32 k = 0; k < Pool.Num(); ++k)
+				{
+					if (PoolAgent[k] == 0 || !PoolGrounded[k])
 					{
 						continue;
 					}
-					E.Seen = 0;
-					for (const FVector& S : Subjects)
-					{
-						E.Seen += InFrame(E.At, S) && Sees(E.At, S);
-					}
-					Cands.Add(E);
+					const FVector Chest = Pool[k]->GetActorLocation() + FVector(0.0, 0.0, 120.0);
+					E.Seen += FVector::Dist2D(Chest, Fight) <= 2000.0 && InFrame(E.At, Chest) && Clear(E.At, Chest);
 				}
+				Cands.Add(E);
+				break; // the nearest clear distance for this azimuth
 			}
 		}
-		// Cands keeps the preferred distance and height first per azimuth, so a tie goes to them.
 		int32 A = INDEX_NONE, B = INDEX_NONE;
 		for (int32 c = 0; c < Cands.Num(); ++c)
 		{
@@ -564,18 +576,19 @@ void UFTCrowdSubsystem::Shoot(APlayerController* PC, const FVector& PlayerAt)
 				B = c;
 			}
 		}
-		const FVector Fallback[] = {Aim + FVector(-2500.0, -2500.0, 1400.0), Aim + FVector(2000.0, 3000.0, 2200.0)};
+		if (A == INDEX_NONE || B == INDEX_NONE)
+		{
+			bCamsOk = false;
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: cameras: FAILED, %d clear eyes 12-15 m back and 6 m up round the fight point (two 90 degrees apart needed); fallback views."), Cands.Num());
+		}
+		const FVector Fallback[] = {Fight + FVector(-1350.0, 0.0, kCamUp), Fight + FVector(0.0, 1350.0, kCamUp)};
 		const FVector Eyes[] = {A != INDEX_NONE ? Cands[A].At : Fallback[0], B != INDEX_NONE ? Cands[B].At : Fallback[1]};
 		for (int32 c = 0; c < 2; ++c)
 		{
 			const int32 Pick = c == 0 ? A : B;
-			const FVector L = (Aim - Eyes[c]).Rotation().Quaternion().UnrotateVector(Fight - Eyes[c]);
-			const double Px = L.X > 0.0 ? 800.0 * (1.0 + L.Y / (L.X * TanX)) : -1.0;
-			const double Py = L.X > 0.0 ? 450.0 * (1.0 - L.Z / (L.X * TanY)) : -1.0;
-			UE_LOG(LogForgottenThird, Display,
-				TEXT("Crowd: cam%c at %s (%s): fight point at pixel (%.0f, %.0f) of 1600x900; %d of %d subjects (fight point, player, nearest %d members) seen."),
-				c == 0 ? TEXT('A') : TEXT('B'), *Eyes[c].ToString(), Pick != INDEX_NONE ? TEXT("picked") : TEXT("no clear view, fallback"), Px, Py,
-				Pick != INDEX_NONE ? Cands[Pick].Seen : -1, Subjects.Num(), Subjects.Num() - 2);
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: cam%c at %s, %.1f m from the fight point, azimuth %.0f: %d drawn members within 20 m in frame and in sight."),
+				c == 0 ? TEXT('A') : TEXT('B'), *Eyes[c].ToString(), FVector::Dist(Eyes[c], Aim) / 100.0, Pick != INDEX_NONE ? Cands[Pick].Az : -1.0,
+				Pick != INDEX_NONE ? Cands[Pick].Seen : -1);
 		}
 		for (const FVector& From : Eyes)
 		{
@@ -591,7 +604,7 @@ void UFTCrowdSubsystem::Shoot(APlayerController* PC, const FVector& PlayerAt)
 			Cam->GetCameraComponent()->SetConstraintAspectRatio(false);
 			ShotCams.Add(Cam);
 		}
-		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: shots: cameras at %s and %s, aimed at %s; %d stills to %s."), *Eyes[0].ToString(),
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: shots: cameras at %s and %s, aimed at %s (1 m over the fight point); %d stills to %s."), *Eyes[0].ToString(),
 			*Eyes[1].ToString(), *Aim.ToString(), Shots.Num(), *ShotDir);
 	}
 	if (AHUD* Hud = PC->GetHUD())
@@ -621,16 +634,42 @@ void UFTCrowdSubsystem::Shoot(APlayerController* PC, const FVector& PlayerAt)
 			Viewport->Exec(World, *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *S.Name), *GLog);
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: shot %s at %.2f s from the fight's start."), *S.Name, RunTime - TestFightAt);
 		}
+		// The framing: the fight point in the centre fifth and in sight, the nearest member in sight tall enough to read.
+		if (S.Phase <= 1)
+		{
+			const ACameraActor* Cam = ShotCams[S.Cam];
+			const FVector Eye = Cam->GetActorLocation();
+			const FVector L = Cam->GetActorQuat().UnrotateVector(TestFightPoint - Eye);
+			const double TanX = FMath::Tan(FMath::DegreesToRadians(35.0)), TanY = TanX * 9.0 / 16.0;
+			const double Px = L.X > 0.0 ? 800.0 * (1.0 + L.Y / (L.X * TanX)) : -1.0;
+			const double Py = L.X > 0.0 ? 450.0 * (1.0 - L.Z / (L.X * TanY)) : -1.0;
+			const bool bCentre = FMath::Abs(Px - 800.0) <= 160.0 && FMath::Abs(Py - 450.0) <= 90.0;
+			const bool bSeen = Clear(Eye, TestFightPoint + FVector(0.0, 0.0, 20.0));
+			const FViewCount V = CountInView(S.Cam, nullptr);
+			const bool bTall = V.NearestPx >= kMinPersonPx;
+			bCamsOk = bCamsOk && bCentre && bSeen && bTall;
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %s: fight point at pixel (%.0f, %.0f) of 1600x900 (centre fifth %s), %s; nearest member in sight %.0f px tall (%s, gate %.0f)."),
+				*FPaths::GetCleanFilename(S.Name), Px, Py, bCentre ? TEXT("ok") : TEXT("FAILED"), bSeen ? TEXT("in sight") : TEXT("OCCLUDED"), V.NearestPx,
+				bTall ? TEXT("ok") : TEXT("FAILED"), kMinPersonPx);
+		}
 		// Members in view at the calm still and 30 s later: the same ones, gone elsewhere, or gone?
 		if (S.Phase == 0)
 		{
-			const int32 N = CountInView(S.Cam, &CalmInView[S.Cam]);
-			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: in view cam%c calm: %d."), TEXT('A') + S.Cam, N);
+			const FViewCount V = CountInView(S.Cam, &CalmInView[S.Cam]);
+			CalmCount[S.Cam] = V.Calm;
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: in view cam%c calm: %d in sight, %d walking or standing about, least gap %.2f m."), TEXT('A') + S.Cam,
+				V.N, V.Calm, V.MinGap >= 1e8f ? -1.f : V.MinGap);
 		}
 		else if (S.Phase == 3)
 		{
 			TArray<uint32> Now;
-			const int32 N = CountInView(S.Cam, &Now);
+			const FViewCount VC = CountInView(S.Cam, &Now);
+			const int32 N = VC.N;
+			// Back at +30 s: at least half the calm count walking or standing about, none inside another.
+			const bool bBack = CalmCount[S.Cam] > 0 && VC.Calm * 2 >= CalmCount[S.Cam] && VC.MinGap >= kGapPair;
+			bRefillOk = bRefillOk && bBack;
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: refill cam%c: %d walking or standing about at +30 s of %d calm, least gap %.2f m: %s."), TEXT('A') + S.Cam,
+				VC.Calm, CalmCount[S.Cam], VC.MinGap >= 1e8f ? -1.f : VC.MinGap, bBack ? TEXT("ok") : TEXT("FAILED"));
 			int32 Still = 0, Elsewhere = 0, Gone = 0;
 			for (const uint32 Id : CalmInView[S.Cam])
 			{
@@ -699,10 +738,32 @@ void UFTCrowdSubsystem::Tick(float DeltaTime)
 			PlayerZ = PlayerAt.Z;
 		}
 	}
+	if (TestFightAt >= 0.0 && RunTime >= TestFightAt - 8.0)
+	{
+		// The drawn members are the ones round the fight (they are what the stills show), not round the player.
+		PickTestFight(PlayerAt);
+		Sim.setDrawFocus(true, ToSim(TestFightPoint));
+	}
 	ScriptFight(PlayerAt);
+	if (!bGroundLogged && RunTime >= 1.0)
+	{
+		bGroundLogged = true;
+		LogGroundAt();
+	}
 
 	OcclusionTraces = 0;
 	Sim.tick(DeltaTime, ToSim(PlayerAt), ToSim(PlayerVel));
+	if (QuitAfter > 0.0)
+	{
+		RunMinPair = FMath::Min(RunMinPair, Sim.minPairDistance(2.f));
+		for (uint32 i = 0; i < Sim.capacity(); ++i)
+		{
+			if (Sim.agent(i).live)
+			{
+				RunMinWall = FMath::Min(RunMinWall, Sim.wallClearance(i));
+			}
+		}
+	}
 	if (bTestFightStarted && !bFirstSecondDone && RunTime >= TestFightStartedAt + 1.0)
 	{
 		bFirstSecondDone = true;
@@ -734,9 +795,21 @@ void UFTCrowdSubsystem::Tick(float DeltaTime)
 			C.maxFleeEntries, C.maxPlans, bSteady ? TEXT("steady") : TEXT("FLIP-FLOP"));
 		const bool bUnstuck = C.stuck == 0;
 		const bool bOutside = FootFrames == 0;
-		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: runners stuck a whole second %llu (%s); drawn members inside a building or on a roof %llu member-frames, %d members (%s)."),
-			C.stuck, bUnstuck ? TEXT("ok") : TEXT("FAILED"), FootFrames, FootMembers, bOutside ? TEXT("ok") : TEXT("FAILED"));
-		bool bOk = bCalm && bSteady && bFull && bUnstuck && bOutside;
+		const bool bClearOfMass = MinMassClear >= kGapWall * 100.0;
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: members stuck (no progress for 2 s walking or backing off, 1 s running) %llu (%s); drawn members inside a massing box or on a roof %llu member-frames, %d members (%s); least distance from a drawn member to a massing box %.2f m (%s, gate %.1f m; %d boxes)."),
+			C.stuck, bUnstuck ? TEXT("ok") : TEXT("FAILED"), FootFrames, FootMembers, bOutside ? TEXT("ok") : TEXT("FAILED"),
+			MinMassClear >= 1e8 ? -1.0 : MinMassClear / 100.0, bClearOfMass ? TEXT("ok") : TEXT("FAILED"), kGapWall, MassBoxes.Num());
+		const bool bPairs = RunMinPair >= kGapPair;
+		const bool bWalls = RunMinWall >= kGapWall - 0.01f;
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: least distance between two members %.2f m (%s, gate %.1f m), least wall clearance %.2f m (%s, gate %.1f m), every frame, every state."),
+			RunMinPair, bPairs ? TEXT("ok") : TEXT("FAILED"), kGapPair, RunMinWall, bWalls ? TEXT("ok") : TEXT("FAILED"), kGapWall);
+		const bool bStills = Shots.Num() == 0 || ShotIndex >= Shots.Num();
+		if (Shots.Num() > 0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: stills %d of %d (%s); cameras on the fight %s; the crowd back in view at +30 s %s."), ShotIndex, Shots.Num(),
+				bStills ? TEXT("ok") : TEXT("FAILED"), bCamsOk ? TEXT("ok") : TEXT("FAILED"), bRefillOk ? TEXT("ok") : TEXT("FAILED"));
+		}
+		bool bOk = bCalm && bSteady && bFull && bUnstuck && bOutside && bClearOfMass && bPairs && bWalls && bStills && bCamsOk && bRefillOk;
 		const bool bStimulus = bTestFightStarted || ArenaFed > 0;
 		if (!bStimulus)
 		{
@@ -870,7 +943,15 @@ void UFTCrowdSubsystem::Draw()
 		SlotActor[static_cast<int32>(i)] = FreeCursor;
 		PoolGrounded[FreeCursor] = false;
 		PoolGround[FreeCursor] = PlayerZ;
-		Pool[FreeCursor]->SetActorHiddenInGame(false);
+		// Grounded now, shown only once it is (never a frame at the player's height, inside a hill or in mid-air).
+		const FVector At(V.pos.x * 100.0, V.pos.y * 100.0, PlayerZ);
+		FHitResult Hit;
+		if (World->LineTraceSingleByChannel(Hit, At + FVector(0.0, 0.0, kGroundFirstSpan), At - FVector(0.0, 0.0, kGroundFirstSpan), ECC_Visibility, TraceQuery))
+		{
+			PoolGround[FreeCursor] = Hit.ImpactPoint.Z;
+			PoolGrounded[FreeCursor] = true;
+		}
+		Pool[FreeCursor]->SetActorHiddenInGame(!PoolGrounded[FreeCursor]);
 	}
 	// Ground: a few lines a frame, round robin; an actor that has never found the ground looks over a long span first.
 	for (int32 n = 0; n < kGroundTracesPerFrame && n < Pool.Num(); ++n)
@@ -889,13 +970,17 @@ void UFTCrowdSubsystem::Draw()
 		if (World->LineTraceSingleByChannel(Hit, At + FVector(0.0, 0.0, Up), At - FVector(0.0, 0.0, Down), ECC_Visibility, TraceQuery))
 		{
 			PoolGround[k] = Hit.ImpactPoint.Z;
-			PoolGrounded[k] = true;
+			if (!PoolGrounded[k])
+			{
+				PoolGrounded[k] = true;
+				Pool[k]->SetActorHiddenInGame(false);
+			}
 		}
 	}
 	const float Alpha = FMath::Clamp(Sim.stepAlpha(), 0.f, 1.f);
 	for (int32 k = 0; k < Pool.Num(); ++k)
 	{
-		if (PoolAgent[k] == 0)
+		if (PoolAgent[k] == 0 || !PoolGrounded[k])
 		{
 			continue;
 		}
@@ -913,16 +998,35 @@ void UFTCrowdSubsystem::Draw()
 
 void UFTCrowdSubsystem::CheckFootprint(int32 Actor, const FVector& Feet)
 {
-	// Inside a building (anything static round the hips) or stood on a roof: more ground under where it stands, over
-	// half a metre down (the street itself, not the player's height, is the measure: the streets climb).
+	// Inside a building's massing box (its bounds, not its collision), or stood on a roof: more ground under where it
+	// stands, over half a metre down. Also the least distance to a box, round the feet's height.
 	UWorld* World = GetWorld();
 	FHitResult Below;
 	const bool bRoof = PoolGrounded[Actor] && World->LineTraceSingleByChannel(Below, Feet - FVector(0.0, 0.0, 50.0),
 		Feet - FVector(0.0, 0.0, 5000.0), ECC_Visibility, TraceQuery);
-	TArray<FOverlapResult> Hits;
-	const bool bInside = World->OverlapMultiByObjectType(Hits, Feet + FVector(0.0, 0.0, 100.0), FQuat::Identity,
-		FCollisionObjectQueryParams(ECC_WorldStatic), FCollisionShape::MakeSphere(20.f), TraceQuery);
-	if (!bInside && !bRoof)
+	int32 InBox = INDEX_NONE;
+	const FIntPoint Cell(FMath::FloorToInt32(Feet.X / kMassCell), FMath::FloorToInt32(Feet.Y / kMassCell));
+	if (const TArray<int32>* Near = MassGrid.Find(Cell))
+	{
+		for (const int32 b : *Near)
+		{
+			const FMassBox& M = MassBoxes[b];
+			if (Feet.Z <= M.ZMin - 50.0 || Feet.Z >= M.ZMax - 30.0)
+			{
+				continue;
+			}
+			const FVector2D D(Feet.X - M.C.X, Feet.Y - M.C.Y);
+			const double Lx = FMath::Abs(D.X * M.Ax.X + D.Y * M.Ax.Y) - M.Half.X;
+			const double Ly = FMath::Abs(-D.X * M.Ax.Y + D.Y * M.Ax.X) - M.Half.Y;
+			const double Out = Lx > 0.0 || Ly > 0.0 ? FMath::Sqrt(FMath::Square(FMath::Max(Lx, 0.0)) + FMath::Square(FMath::Max(Ly, 0.0))) : FMath::Max(Lx, Ly);
+			MinMassClear = FMath::Min(MinMassClear, Out);
+			if (Out < 0.0 && InBox == INDEX_NONE)
+			{
+				InBox = b;
+			}
+		}
+	}
+	if (InBox == INDEX_NONE && !bRoof)
 	{
 		return;
 	}
@@ -936,40 +1040,184 @@ void UFTCrowdSubsystem::CheckFootprint(int32 Actor, const FVector& Feet)
 	if (FootLogged < 8)
 	{
 		++FootLogged;
-		const AActor* By = bInside && Hits.Num() > 0 ? Hits[0].GetActor() : nullptr;
-		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: member %d %s at engine (%.0f, %.0f, %.0f) cm, t=%.1f s%s%s."), Slot,
-			bInside ? TEXT("inside") : TEXT("on a roof"), Feet.X, Feet.Y, Feet.Z, RunTime, By ? TEXT(", by ") : TEXT(""),
-			By ? *By->GetName() : TEXT(""));
+		const ftcore::CrowdAgentView& V = Sim.agent(static_cast<uint32>(Slot));
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: member %d (%s) %s at engine (%.0f, %.0f, %.0f) cm, t=%.1f s%s."), Slot, *FString(static_cast<int32>(ftcore::crowdStateName(V.state).size()), ftcore::crowdStateName(V.state).data()),
+			InBox != INDEX_NONE ? TEXT("inside a massing box") : TEXT("on a roof"), Feet.X, Feet.Y, Feet.Z, RunTime,
+			InBox != INDEX_NONE ? *FString::Printf(TEXT(", box centre (%.0f, %.0f) half (%.0f, %.0f)"), MassBoxes[InBox].C.X, MassBoxes[InBox].C.Y,
+				MassBoxes[InBox].Half.X, MassBoxes[InBox].Half.Y) : TEXT(""));
 	}
 }
 
-int32 UFTCrowdSubsystem::CountInView(int32 Cam, TArray<uint32>* Ids) const
+void UFTCrowdSubsystem::BuildMassing()
 {
-	// Live members whose chest is inside the camera's frustum (70 degrees across, 16:9).
+	// The buildings' massing boxes: every static mesh (and instance) tall and wide enough to be one, by its bounds.
+	UWorld* World = GetWorld();
+	auto Add = [this](const FBox& Local, const FTransform& X)
+	{
+		const FVector Scale = X.GetScale3D().GetAbs();
+		const FVector Half = Local.GetExtent() * Scale;
+		if (Half.Z * 2.0 < kMassMinHeight || FMath::Min(Half.X, Half.Y) * 2.0 < kMassMinSide || FMath::Max(Half.X, Half.Y) * 2.0 > kMassMaxSide)
+		{
+			return;
+		}
+		const FVector C = X.TransformPosition(Local.GetCenter());
+		FVector2D Ax(X.GetUnitAxis(EAxis::X).X, X.GetUnitAxis(EAxis::X).Y);
+		if (!Ax.Normalize())
+		{
+			Ax = FVector2D(1.0, 0.0);
+		}
+		FMassBox M;
+		M.C = FVector2D(C.X, C.Y);
+		M.Ax = Ax;
+		M.Half = FVector2D(Half.X, Half.Y);
+		M.ZMin = C.Z - Half.Z;
+		M.ZMax = C.Z + Half.Z;
+		const int32 b = MassBoxes.Add(M);
+		const double R = FMath::Abs(Ax.X) * Half.X + FMath::Abs(Ax.Y) * Half.Y + 100.0;
+		const double Ry = FMath::Abs(Ax.Y) * Half.X + FMath::Abs(Ax.X) * Half.Y + 100.0;
+		for (int32 cx = FMath::FloorToInt32((C.X - R) / kMassCell); cx <= FMath::FloorToInt32((C.X + R) / kMassCell); ++cx)
+		{
+			for (int32 cy = FMath::FloorToInt32((C.Y - Ry) / kMassCell); cy <= FMath::FloorToInt32((C.Y + Ry) / kMassCell); ++cy)
+			{
+				MassGrid.FindOrAdd(FIntPoint(cx, cy)).Add(b);
+			}
+		}
+	};
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		const AActor* Actor = *It;
+		if (!Actor || Actor->GetClass()->GetName().Contains(TEXT("Landscape")) || Pool.Contains(Cast<ASkeletalMeshActor>(Actor)))
+		{
+			continue;
+		}
+		TInlineComponentArray<UStaticMeshComponent*> Comps(Actor);
+		for (const UStaticMeshComponent* C : Comps)
+		{
+			const UStaticMesh* Mesh = C ? C->GetStaticMesh() : nullptr;
+			if (!Mesh || C->GetClass()->GetName().Contains(TEXT("Foliage")) || !C->IsCollisionEnabled())
+			{
+				continue;
+			}
+			const FBox Local = Mesh->GetBoundingBox();
+			if (const UInstancedStaticMeshComponent* I = Cast<UInstancedStaticMeshComponent>(C))
+			{
+				for (int32 n = 0; n < I->GetInstanceCount(); ++n)
+				{
+					FTransform X;
+					if (I->GetInstanceTransform(n, X, true))
+					{
+						Add(Local, X);
+					}
+				}
+			}
+			else
+			{
+				Add(Local, C->GetComponentTransform());
+			}
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %d massing boxes for the footprint check (at least %.1f m tall and %.1f m wide), %d grid cells."), MassBoxes.Num(),
+		kMassMinHeight / 100.0, kMassMinSide / 100.0, MassGrid.Num());
+}
+
+void UFTCrowdSubsystem::LogGroundAt()
+{
+	// Every surface under one point, top down: the terrain against the street there. Members stand on the first one.
+	double X = kGroundAtX, Y = kGroundAtY;
+	FString At;
+	if (FParse::Value(FCommandLine::Get(), TEXT("CrowdGroundAt="), At))
+	{
+		FString L, R;
+		if (At.Split(TEXT(","), &L, &R))
+		{
+			X = FCString::Atod(*L);
+			Y = FCString::Atod(*R);
+		}
+	}
+	UWorld* World = GetWorld();
+	FCollisionQueryParams Q(TraceQuery);
+	FVector From(X, Y, PlayerZ + 20000.0);
+	const FVector To(X, Y, PlayerZ - 20000.0);
+	double Terrain = -1e9, Street = -1e9, First = -1e9;
+	for (int32 n = 0; n < 8; ++n)
+	{
+		FHitResult H;
+		if (!World->LineTraceSingleByChannel(H, From, To, ECC_Visibility, Q))
+		{
+			break;
+		}
+		const AActor* By = H.GetActor();
+		const bool bLand = By && By->GetClass()->GetName().Contains(TEXT("Landscape"));
+		if (n == 0)
+		{
+			First = H.ImpactPoint.Z;
+		}
+		if (bLand && Terrain < -1e8)
+		{
+			Terrain = H.ImpactPoint.Z;
+		}
+		else if (!bLand && Street < -1e8)
+		{
+			Street = H.ImpactPoint.Z;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: ground at (%.0f, %.0f) cm: hit %d at z %.1f cm, %s (%s)."), X, Y, n, H.ImpactPoint.Z,
+			By ? *By->GetName() : TEXT("?"), By ? *By->GetClass()->GetName() : TEXT("?"));
+		if (By)
+		{
+			Q.AddIgnoredActor(By);
+		}
+		From = H.ImpactPoint + FVector(0.0, 0.0, 1.0);
+	}
+	const bool bBoth = Terrain > -1e8 && Street > -1e8;
+	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: ground at (%.0f, %.0f) cm: terrain z %.1f, street z %.1f, terrain over street %.1f cm (%s); members stand on the first surface, z %.1f."),
+		X, Y, Terrain, Street, bBoth ? Terrain - Street : 0.0, !bBoth ? TEXT("one surface only") : Terrain - Street > 10.0 ? TEXT("OVER 10 cm: world-build to fix the ground") : TEXT("ok"), First);
+}
+
+bool UFTCrowdSubsystem::Clear(const FVector& Eye, const FVector& To) const
+{
+	// Nothing static between the eye and the point (a hit within half a metre of it is the thing itself).
+	FHitResult H;
+	return !GetWorld()->LineTraceSingleByChannel(H, Eye, To, ECC_Visibility, TraceQuery) || FVector::Dist(H.ImpactPoint, To) < 50.0;
+}
+
+UFTCrowdSubsystem::FViewCount UFTCrowdSubsystem::CountInView(int32 Cam, TArray<uint32>* Ids) const
+{
+	// Drawn members on the ground whose chest is inside the camera's frustum (70 degrees across, 16:9) and in sight.
 	const ACameraActor* C = ShotCams[Cam];
 	const FVector Eye = C->GetActorLocation();
 	const FQuat Q = C->GetActorQuat();
 	const double TanX = FMath::Tan(FMath::DegreesToRadians(35.0)), TanY = TanX * 9.0 / 16.0;
-	int32 N = 0;
-	for (uint32 i = 0; i < Sim.capacity(); ++i)
+	const double Focal = 800.0 / TanX;
+	FViewCount R;
+	TArray<FVector2D, TInlineAllocator<64>> At;
+	for (int32 k = 0; k < Pool.Num(); ++k)
 	{
-		const ftcore::CrowdAgentView& V = Sim.agent(i);
-		if (!V.live)
+		if (PoolAgent[k] == 0 || !PoolGrounded[k])
 		{
 			continue;
 		}
-		const FVector L = Q.UnrotateVector(FVector(V.pos.x * 100.0, V.pos.y * 100.0, PlayerZ + 120.0) - Eye);
-		if (L.X <= 0.0 || FMath::Abs(L.Y) > L.X * TanX || FMath::Abs(L.Z) > L.X * TanY)
+		const ftcore::CrowdAgentView& V = Sim.agent((PoolAgent[k] - 1) & 0xffffu);
+		const FVector Feet = Pool[k]->GetActorLocation();
+		const FVector Chest = Feet + FVector(0.0, 0.0, 120.0);
+		const FVector L = Q.UnrotateVector(Chest - Eye);
+		if (L.X <= 0.0 || FMath::Abs(L.Y) > L.X * TanX || FMath::Abs(L.Z) > L.X * TanY || !Clear(Eye, Chest))
 		{
 			continue;
 		}
-		++N;
+		++R.N;
+		R.Calm += V.state == ftcore::CrowdState::Walk || V.state == ftcore::CrowdState::Idle ? 1 : 0;
+		R.NearestPx = FMath::Max(R.NearestPx, kPersonHeight * Focal / L.X);
+		for (const FVector2D& O : At)
+		{
+			R.MinGap = FMath::Min(R.MinGap, static_cast<float>(FVector2D::Distance(O, FVector2D(Feet.X, Feet.Y)) / 100.0));
+		}
+		At.Add(FVector2D(Feet.X, Feet.Y));
 		if (Ids)
 		{
 			Ids->Add(V.id);
 		}
 	}
-	return N;
+	return R;
 }
 
 TStatId UFTCrowdSubsystem::GetStatId() const
