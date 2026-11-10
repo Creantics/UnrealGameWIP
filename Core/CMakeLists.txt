@@ -74,6 +74,8 @@ add_library(ftcore STATIC
     src/Slide.cpp
     src/MoveTuning.cpp
     src/DodgeRoll.cpp
+    src/VehicleDrive.cpp
+    src/VehicleRules.cpp
     src/LedgeHang.cpp
     src/Locomotion.cpp
     src/Mini.cpp
@@ -106,6 +108,7 @@ add_library(ftcore STATIC
     src/Inventory.cpp
     src/Shop.cpp
     src/ArenaFight.cpp
+    src/FieldStrike.cpp
     src/ArenaZone.cpp
     src/ArrowLane.cpp
     src/StickFlick.cpp
@@ -198,6 +201,8 @@ if(FTCORE_BUILD_TESTS)
         tests/test_slide.cpp
         tests/test_move_tuning.cpp
     tests/test_dodge_roll.cpp
+    tests/test_vehicle_drive.cpp
+    tests/test_vehicle_rules.cpp
     tests/test_ledge_hang.cpp
         tests/test_locomotion.cpp
         tests/test_mini.cpp
@@ -232,6 +237,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_shop.cpp
         tests/test_pause.cpp
         tests/test_arena.cpp
+        tests/test_field_strike.cpp
         tests/test_arena_zone.cpp
         tests/test_arrow_lane.cpp
         tests/test_stick_flick.cpp

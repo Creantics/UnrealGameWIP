@@ -69,12 +69,20 @@
 // -ExplorePortrait puts the camera in front of the face and keeps it there, for checking a look;
 // -ExplorePortraitYaw= (180 front, 90 side, 0 back), -ExplorePortraitArm=, -ExplorePortraitHeight= and
 // -ExplorePortraitPitch= move it, e.g. Arm=330 Height=0 Pitch=0 frames the whole body.
+//
+// The lead's weapon (FTLeadWeapons.h, as in the arena): left mouse, J or pad RT throws the kit's light attack (its chain),
+// right mouse, K or pad Y its heavy; ftcore::FieldStrike runs the attack from Data/Battle/arena.json's kit for the lead
+// worn (its name, lower case; else the default) and hits any AFTFieldDummy in reach. The props, clips and effects are
+// the arena's. -ExploreDummy stands a dummy ahead, within the first light attack's reach (at most 3 m; -ExploreDummyAt=<cm> sets it); -ExploreAttackEvery=<s> presses light every s seconds (every
+// fourth press a heavy), for captures.
 
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "InputActionValue.h"
 
+#include "FTLeadWeapons.h"
 #include "FTLocomotionAnimInstance.h"
+#include "ftcore/FieldStrike.h"
 #include "ftcore/DodgeRoll.h"
 #include "ftcore/LedgeHang.h"
 #include "FTLook.h"
@@ -83,6 +91,7 @@
 #include "FTExploreCharacter.generated.h"
 
 class AFTExploreDirector;
+class AFTPartyVan;
 class UCameraComponent;
 class UInputAction;
 class UInputMappingContext;
@@ -134,11 +143,18 @@ public:
 	float CrouchSpeed = 150.f;
 
 	virtual void Tick(float DeltaSeconds) override;
+	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 	virtual void AddMovementInput(FVector WorldDirection, float ScaleValue = 1.f, bool bForce = false) override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
 	// Ground-plane facing, for the interact prompt's cone.
 	FVector2D GetFacing2D() const;
+
+	// The party van (AFTPartyVan): boarding hides the lead and the party and hands the van this pawn's input and the
+	// view; leaving puts the lead down at `At`, facing `Yaw`, as the party was.
+	bool CanBoardVan() const;
+	void BoardVan(AFTPartyVan* InVan);
+	void LeaveVan(const FVector& At, double Yaw);
 	// For locomotion captures: the camera frames the body under Root (its feet) as it frames this one.
 	void WatchFrom(USceneComponent* Root);
 
@@ -158,6 +174,10 @@ public:
 	// The capsule (cm), which the followers probe ahead with too.
 	static constexpr float CapsuleRadius = 34.f;
 	static constexpr float CapsuleHalfHeight = 88.f;
+	// CharacterMovement keeps a walking capsule hovering this far over the floor (cm, its CurrentFloor.FloorDist, held
+	// between 1.9 and 2.4; measured 2.15 at rest, 2.04-2.15 walking): the mesh hangs this much lower than the capsule's
+	// bottom, so the soles meet the floor.
+	static constexpr float FloorHover = 2.15f;
 	// For a scene that turns input off and on again: a held Run's release that came while input was off never arrived,
 	// so the body goes back to its default gait, a held jump is let go and a roll press still kept is dropped. Crouch is
 	// a toggle, not held; standing up from it is this call's choice, so a scene starts and ends with the lead on its feet.
@@ -180,8 +200,16 @@ private:
 	void HandleRoll();
 	void HandleCrouch();
 	void HandleInteract();
+	void HandleInteractRelease();
 	void HandleSwitchLead();
 	void HandleToggleParty();
+	void HandleLight();
+	void HandleHeavy();
+	// The worn look's weapon: its kit from Data/Battle/arena.json and the props, clips and effects on the body.
+	void BeginWeapon(const FFTLeadLook& Look);
+	void TickWeapon(float DeltaSeconds);
+	void TickWeaponShots();
+	void SpawnFieldDummy();
 	// Puts on a look, replacing the body, clips, pieces and grooms worn (FTLook).
 	void WearLook(const FFTLeadLook& Look);
 	// Gives the body's locomotion its loaded clips (and those found beside them) and the crouch its speed.
@@ -206,6 +234,8 @@ private:
 	// Wall then holds) and down onto what is there (Floor, no blocking hit when nothing is); with no floor in reach it
 	// is left at the height it started from.
 	void MoveOverFloor(const FVector& To, FHitResult& Wall, FHitResult& Floor);
+	// Where the soles are: the capsule's bottom less the floor hover, the frame traversals and slides are planned in.
+	FVector FeetLocation() const;
 	void SpawnTraversalCourse();
 	void AddPortraitLights();
 	void StepPortraitShots();
@@ -237,6 +267,10 @@ private:
 	TObjectPtr<UInputAction> SwitchLeadAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> PartyAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> LightAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> HeavyAction;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
@@ -251,8 +285,12 @@ private:
 	int32 ShotIndex = 0;
 	bool bShotAimed = false;
 	FTimerHandle ShotTimer;
+	// -ExplorePortraitShotEvery=<s>: the step between aiming and shooting (a shot every two steps).
+	float ShotEvery = 2.5f;
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
+	TWeakObjectPtr<AFTPartyVan> Van;
+	bool bPartyHiddenBeforeVan = false;
 	FFTFootSlideProbe SlideProbe;
 	float JumpEvery = 0.f; // -LocoJump=<s>
 	float JumpTimer = 0.f;
@@ -271,6 +309,7 @@ private:
 	float PulseRest = 2.f;  // -LocoRest=<s>
 	float LookRest = 0.f; // seconds since the last look input
 	float FaceBy = 0.f;   // -LocoFace=<deg>
+	bool bPortraitWalk = false;   // -ExplorePortraitWalk
 	TWeakObjectPtr<AActor> Watched; // WatchFrom: the body the camera frames and recentres behind
 	bool bFacing = false;
 	// -LocoSideView: each turn of the framed body is watched from its side, the camera held where the turn began.
@@ -291,6 +330,16 @@ private:
 	FTransform TravFrame;
 	float TravClock = 0.f;
 	float TravSlowest = 0.f;
+	// For the hand-back check: the soles' height over the floor through a roll, a slide or a clip's tail (min and max,
+	// cm), and the capsule's height as it handed back, logged with what CharacterMovement makes of it a frame on.
+	float SoleGapMin = 0.f;
+	float SoleGapMax = 0.f;
+	double HandBackZ = 0.0;
+	double HandBackMeshZ = 0.0;
+	bool bHandBackPending = false;
+	void ResetSoleGap();
+	void NoteSoleGap();
+	void LogSoleGap(const TCHAR* What) const;
 	// The vaults, climbs and catches begun, and the last one's mark (GetLastTraversal).
 	uint32 TraversalsBegun = 0;
 	FFTTraversalMark LastTraversal;
@@ -323,4 +372,31 @@ private:
 	float SideHold = 0.f;
 	int32 LeadIndex = -1;
 	bool bPartyHidden = false;
+
+	// The weapon: Data/Battle/arena.json (loaded once), the kit worn, its attack rules and its props, clips and effects;
+	// the presses since the last tick, and -ExploreAttackEvery's timer.
+	ftcore::ArenaTable WeaponTable;
+	bool bWeaponTableTried = false;
+	bool bWeaponTable = false;
+	ftcore::FieldStrike Strike;
+	FFTLeadWeapons Weapons;
+	bool bPressLight = false;
+	bool bPressHeavy = false;
+	float AttackEvery = 0.f;
+	float AttackTimer = 0.f;
+	int32 AttackPresses = 0;
+	bool bDummyPending = false;
+	float DummyDistance = 300.f; // cm
+	// The body's chest bone for an aim with no target (found once per body; INDEX_NONE: none), and whether the body
+	// was busy with a move of its own (vault, climb, hang, roll, slide) last frame.
+	int32 ChestBone = INDEX_NONE;
+	bool bWeaponBodyBusy = false;
+	// -ExploreWeaponShot's prefix, shots left and taken, the settle time, the active attacks seen, the wait to quit.
+	FString WeaponShotPrefix;
+	int32 WeaponShotsLeft = 3;
+	int32 WeaponShotIndex = 0;
+	float WeaponShotDelay = 12.f;
+	int32 WeaponShotSeen = 0;
+	double WeaponShotDue = -1.0; // Strike time of the next shot; below 0: none
+	float WeaponQuitIn = 0.f;
 };

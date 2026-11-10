@@ -10,7 +10,14 @@ direction, Z up). Guide strands are dropped unless "guides" is true; Unreal buil
 strand is written into one group (Blender's curves carry no group attribute), so a two-group groom comes back as one.
 Without "out" the script only prints the summary (root bounds and lengths per group) for choosing regions. "head" is
 an .npz with "v", the groom head's vertices in the same frame, drawn in grey under the strands in the preview;
-"preview_k" is how many hits on a pixel make it fully dark (default 6; raise it for a dense scalp groom).
+"preview_k" is how many hits on a pixel make it fully dark (default 6; raise it for a dense scalp groom);
+"preview_back": true adds the back half seen from behind as a fourth column. "dump": npz saves the finished strands
+("P" points in groom space, "n" points per strand, "W" widths), the same ones the abc and the preview get.
+"zones": {name: region} (the "where" keys below, tested on every point of the result) prints a ZONE line per region:
+the points inside from strands rooted outside it (and the lowest z among them), then those of strands rooted inside;
+a clearance check, such as no hair in front of a lens or over a glasses arm. Below it, the root bounds of the strands
+that enter from outside and (with "head") how far the hair inside stands off the skin. A zone's "off": [lo, hi] (cm,
+with "head") counts only the points standing that far off the skin along the head normal: hair over a glasses arm.
 
 Each op applies to the strands whose root lies in its "where" region, through a soft mask (1 inside, 0 outside):
   "x" / "absx" / "y" / "z": [lo, hi]   root coordinate (or |x|) between lo and hi; null leaves that side open
@@ -25,18 +32,20 @@ Each op applies to the strands whose root lies in its "where" region, through a 
   "xprofile": [[x, f], ..]   the mask times a piecewise-linear factor over the root's x (held flat past the ends): a
              parting moved over with "move" + "snap", full at the old parting and easing out to either side
   "soft": cm   each limit fades to nothing over this width at its edge (default 0.5)
-  "group": id  only the strands of this group
+  "group": id  only the strands of this group (in "where" only, not in a cut's "at": that region is tested on
+               arbitrary points, so give the cut a "where": {"group": id} instead)
   "on": "tip"  test the strand's tip instead of its root
 With no "where" an op applies to every strand. Ops run in order:
   {"op": "mirror"}                        x -> -x for every strand (the parting moves to the other side)
   {"op": "mirror", "keep": "+x"}          make the groom symmetric: drop the strands rooted on the other side and
                                           replace them with the kept side's strands mirrored (a thinner brow evened up)
-  {"op": "dup", "frac": f, "d": [x, y, z], "jitter": cm}
+  {"op": "dup", "frac": f, "d": [x, y, z], "jitter": cm[, "group": id]}
                                           copy each strand inside with probability frac * mask (frac up to 1; repeat
                                           the op for more), moved by d plus a random sideways jitter up to this size;
                                           with "head" the copy's root is put back on the head surface (projected onto
                                           the tangent plane at the nearest head vertex) and the strand moves with it.
                                           Fills a bare patch from the hair beside it, or thickens a sparse region
+                                          (a "group" id tags the copies, so later ops can reshape only them)
   {"op": "length", "scale": s}            cut or extend each strand to s times its arc length, s blended toward 1 by
                                           the mask; an extension carries on along the tip direction
   {"op": "length", "max": cm}             cut each strand to at most this arc length (blended the same way)
@@ -46,7 +55,10 @@ With no "where" an op applies to every strand. Ops run in order:
                                           same keys as "where"), at a random depth into the region's soft edge so the
                                           cut line is dithered; never shorter than "min" (default 0.2). A strand rooted
                                           inside is cut to "min" too, unless "rooted": "keep" leaves it whole (so a cut
-                                          over the ear doesn't shave the scalp under it)
+                                          over the ear doesn't shave the scalp under it). By default the tip is the
+                                          first point inside, up to a point spacing past the line; "exact": true puts
+                                          it on the line (bisected between that point and the one before), so a zone
+                                          inside the region's full-mask core is never reached from outside
   {"op": "delete"}                        remove each strand with probability = mask (a dithered edge)
   {"op": "thin", "keep": f}               keep a fraction f of the strands inside (probability 1 - (1 - f) * mask)
   {"op": "move", "d": [x, y, z], "power": p}
@@ -57,7 +69,10 @@ With no "where" an op applies to every strand. Ops run in order:
   {"op": "lift", "clear": cm}             (needs "head") push each point that sits below the head surface back out
                                           along the nearest head vertex's normal, to at least "clear" (default 0.01)
                                           above the surface plus the root's own height (blended by the mask): a strand
-                                          moved or bent into the skin ends up lying on it instead
+                                          moved or bent into the skin ends up lying on it instead. With "whole": true
+                                          the strand rises as one: each point's push becomes the running maximum from
+                                          the root to that point, applied along the root's normal, so no single point
+                                          is pushed out past its neighbours
   {"op": "shell", "file": npz, "frac": f, "radius": cm, "smooth": cm, "kmin": a, "kmax": b}
                                           (needs "head") give the hair a target volume: "file" holds "v", a surface in
                                           groom space (the outside of a sculpted or scanned hairstyle). At each root the
@@ -76,7 +91,10 @@ With no "where" an op applies to every strand. Ops run in order:
                                           to the shell height under the point it has reached by the fraction "rise"
                                           of its length (default 0.35, smoothstep), never climbing faster than
                                           "climb" (default 0.9) cm per cm walked. Blended toward the old strand by the
-                                          mask. Follow it with "clump" for locks and "bend" for spikes
+                                          mask. Each point is set off the nearest head vertex's normal, so the strand
+                                          zigzags where that vertex changes (a 2 mm segment against mm-sized steps at
+                                          3 cm out): follow it straight away with "smooth" (amount 0.5, 8 iters), then
+                                          "clump" for locks and "bend" for spikes
   {"op": "width", "scale": s}             scale the point widths (s blended toward 1 by the mask)
   {"op": "wave", "amp": cm, "wavelength": cm, "power": p}
                                           a sine wave across each strand, random phase and direction per strand,
@@ -90,7 +108,39 @@ With no "where" an op applies to every strand. Ops run in order:
                                           the centre strand's point at the same arc fraction: the roots stay, the tips
                                           converge, and small gaps open between the locks. With "spike": cm (and
                                           "head") each centre strand is first lifted out along its root normal by a
-                                          random 0..spike cm times t^2, so the locks stand up as spikes
+                                          random 0..spike cm times t^2, so the locks stand up as spikes. "centre":
+                                          "masked" draws each centre from the region's own strands where its cell
+                                          has any (else group copies gather onto a flat strand outside the region
+                                          and never spike). With "trim": f
+                                          each lock is then cut to its own random fraction, 1 - f to 1, of its length,
+                                          so the locks end at different heights: a pointed fringe hem, a layered top
+  {"op": "swing", "axis": [x, y, z], "angle": deg, "blend": f}
+                                          turn each strand about its root by angle * mask (right-hand rule about
+                                          axis): segment directions are rotated by an amount ramping from 0 at the
+                                          root to full at arc fraction f (default 0.2), and the strand is rebuilt from
+                                          the root, so lengths are kept and the root direction blends into the swing.
+                                          A sweep that doesn't coil the way bending the tips can
+  {"op": "aim", "dirs": [[x, y, z], ..], "blend": f, "spread": s}
+                                          re-aim each strand along a path of directions spaced evenly over its arc
+                                          (interpolated between): each segment turns from its own direction toward the
+                                          path's by mask * r(t), r ramping from 0 at the root to 1 at arc fraction f
+                                          (default 0.2), plus a random per-strand turn of size s; rebuilt from the root,
+                                          lengths kept. Restyles strands that run the wrong way (a fringe combed back
+                                          brought forward: lift off the hairline, then fall), where swing can't reach
+  {"op": "tufts", "count": n, "spacing": cm, "strands": s, "width": cm, "length": [lo, hi], "rise": deg,
+   "maxdev": deg, "up": f, "droop": f, "flick": f, "hang": bool, "taper": p, "short": f[, "group": id]}
+                                          new locks built from scratch: n seeds among the region's roots, at least
+                                          spacing cm apart; each lock's guide leaves the scalp along the local flow
+                                          (the seed strand's first third) turned rise deg out along the normal (the
+                                          angle off the flow capped at maxdev: no rays), plus up * world up; past half
+                                          its length it droops (droop, with "hang" raised until the tip is below the
+                                          lock's highest point) and flicks out at the tip. s strands per lock, roots
+                                          in a width-cm disk, converge on the guide as (1 - t)^taper, inner strands
+                                          ending short (short..1 of the length): a pointed bundle with gaps between.
+                                          "follow": [lo, hi] instead: the lock runs along its seed strand to an arc
+                                          fraction in lo..hi, leaves the mass there rise deg (cap maxdev, default 35)
+                                          off the local surface, and from bend_from (0.25) of its free length on bends
+                                          back toward the head (back) and down (droop): a soft lock, not a ray
   {"op": "smooth", "amount": f, "iters": n}
                                           straighten the curl in each strand: n passes (default 4) moving every point a
                                           fraction f (default 0.5) toward the middle of its neighbours, the root fixed
@@ -315,6 +365,11 @@ def summary(tag):
         print("  group %d: %d strands, roots x %.1f..%.1f y %.1f..%.1f z %.1f..%.1f, length p10/50/90 %.2f/%.2f/%.2f cm"
               % ((g, k.sum()) + tuple(np.r_[R[k].min(0), R[k].max(0)][[0, 3, 1, 4, 2, 5]])
                  + tuple(np.percentile(L[k], [10, 50, 90]))))
+        # how low the hair reaches, front (y > 4), side and back (y < -3): where a cut line really ended up
+        T = P[off[1:] - 1][k]
+        for name, sel in (("front", T[:, 1] > 4), ("side", np.abs(T[:, 1]) <= 4 - 1e-9), ("back", T[:, 1] < -3)):
+            if sel.any():
+                print("    tips %-5s z p1/p10/p50 %.1f/%.1f/%.1f" % ((name,) + tuple(np.percentile(T[sel, 2], [1, 10, 50]))))
 
 
 summary("in")
@@ -345,7 +400,106 @@ for op in spec.get("ops", []):
             shift = onto_head(P[off[:-1]][k], shift)
         P = np.concatenate([P, P[idx] + np.repeat(shift, st["n"][k], axis=0)])
         W, st = np.concatenate([W, W[idx]]), np.concatenate([st, st[k]])
+        if "group" in op and len(k):   # tag the copies, so later ops can reshape them alone ("where": {"group": id})
+            st["g"][len(st) - len(k):] = op["group"]
         print("op dup    %d strands copied" % len(k))
+        continue
+    if kind == "tufts":
+        # new locks built from scratch: seeds are existing roots in the region, at least "spacing" cm apart
+        m = region(op.get("where"))
+        off = offsets(st["n"])
+        R0 = P[off[:-1]]
+        cand = rng.permutation(np.flatnonzero(m > 0.5))
+        seeds = []
+        for i in cand:
+            if all(np.linalg.norm(R0[i] - R0[j]) >= op.get("spacing", 3.0) for j in seeds):
+                seeds.append(i)
+                if len(seeds) == op["count"]:
+                    break
+        seeds = np.asarray(seeds, int)
+        hv, hn = head_near(R0[seeds])
+        tK, tS = op.get("points", 16), op.get("strands", 60)
+        tt = np.linspace(0.0, 1.0, tK)
+        tup = np.array([0.0, 0.0, 1.0])
+        newP, newW, rows, hung = [], [], [], 0
+        tlo, thi = op.get("length", [5.0, 8.0])
+        for li, i in enumerate(seeds):
+            tn0 = hn[li]
+            tq = P[off[i]:off[i + 1]]
+            tf = tq[min(len(tq) - 1, max(1, len(tq) // 3))] - tq[0]   # the local flow: the seed strand's first third
+            tf -= tn0 * (tf @ tn0)
+            tf /= max(np.linalg.norm(tf), 1e-9)
+            rise = np.radians(min(op.get("rise", 40.0), op.get("maxdev", 55.0)))
+            d0 = tf * np.cos(rise) + tn0 * np.sin(rise) + tup * op.get("up", 0.0)
+            d0 /= np.linalg.norm(d0)
+            # the angle off the local flow is capped (no rays straight out along the normal)
+            cap = np.radians(op.get("maxdev", 55.0))
+            if np.arccos(np.clip(d0 @ tf, -1, 1)) > cap:
+                side = d0 - tf * (d0 @ tf)
+                d0 = tf * np.cos(cap) + side / max(np.linalg.norm(side), 1e-9) * np.sin(cap)
+            tL = rng.uniform(tlo, thi)
+            tg = op.get("droop", 1.0)
+            if op.get("follow"):
+                # the lock runs along its seed strand's own path out to an arc fraction, leaves the mass there at most
+                # rise deg off the local surface, then curves back toward the head (back) and down (droop)
+                tsl = np.linalg.norm(np.diff(tq, axis=0), axis=1)
+                tcum = np.concatenate([[0.0], np.cumsum(tsl)])
+                ta0 = rng.uniform(*op["follow"]) * tcum[-1]
+                tkB = op.get("base_points", 10)
+                tsB = np.linspace(0.0, ta0, tkB)
+                tB = np.stack([np.interp(tsB, tcum, tq[:, c]) for c in range(3)], 1)
+                tE = tB[-1]
+                tnb = head_near(tE[None, :])[1][0]
+                tb = tB[-1] - tB[-2]
+                tb -= tnb * (tb @ tnb)
+                tb /= max(np.linalg.norm(tb), 1e-9)
+                rise = np.radians(min(op.get("rise", 25.0), op.get("maxdev", 35.0)))
+                d0 = tb * np.cos(rise) + tnb * np.sin(rise)
+                f0 = op.get("bend_from", 0.25)
+                fall = np.clip((tt - f0) / (1 - f0), 0, 1) ** op.get("bend_power", 1.5)
+                tD = (d0[None, :] - tnb[None, :] * (op.get("back", 1.0) * fall)[:, None]
+                      - tup[None, :] * (tg * fall)[:, None])
+                tD /= np.linalg.norm(tD, axis=1, keepdims=True)
+                tF = tE + np.vstack([[0, 0, 0], np.cumsum(tD[:-1] * (tL / (tK - 1)), axis=0)])
+                tG = np.vstack([tB[:-1], tF])
+            else:
+                for _ in range(8):   # side locks must hang: tip below the lock's highest point
+                    fall = np.clip((tt - 0.5) / 0.5, 0, 1) ** 2
+                    flick = np.clip((tt - 0.85) / 0.15, 0, 1) * op.get("flick", 0.4)
+                    tD = d0[None, :] - tup[None, :] * (tg * fall)[:, None] + tn0[None, :] * flick[:, None]
+                    tD /= np.linalg.norm(tD, axis=1, keepdims=True)
+                    tG = R0[i] + np.vstack([[0, 0, 0], np.cumsum(tD[:-1] * (tL / (tK - 1)), axis=0)])
+                    if not op.get("hang") or tG[-1, 2] < tG[:, 2].max() - op.get("hang_drop", 0.5):
+                        break
+                    tg *= 1.5
+                hung += bool(op.get("hang"))
+            tgl = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(tG, axis=0), axis=1))])
+            tu = tgl / max(tgl[-1], 1e-9)   # the guide's arc fraction
+            # the lock's strands: roots in ta disk on the scalp, converging on the guide toward ta pointed tip
+            ta = rng.normal(size=(tS, 3))
+            ta -= tn0 * (ta @ tn0)[:, None]
+            ta /= np.maximum(np.linalg.norm(ta, axis=1, keepdims=True), 1e-9)
+            to = ta * (op.get("width", 1.2) / 2 * np.sqrt(rng.uniform(0, 1, tS)))[:, None]
+            to = onto_head(np.repeat(R0[i][None, :], tS, 0), to)
+            frac = rng.uniform(op.get("short", 0.8), 1.0, tS)   # inner strands end short of the tip: a taper
+            tnG = len(tG)
+            Wi = np.interp(np.linspace(0, 1, tnG), np.linspace(0, 1, len(tq)), W[off[i]:off[i + 1]])
+            for k in range(tS):
+                tk = tu * frac[k]
+                Gk = np.stack([np.interp(tk, tu, tG[:, c]) for c in range(3)], 1)
+                newP.append(Gk + to[k][None, :] * ((1 - tk) ** op.get("taper", 1.0))[:, None])
+                newW.append(Wi)
+            row = st[i].copy()
+            row["n"] = tnG
+            rows += [row] * tS
+        if rows:
+            P = np.concatenate([P] + newP)
+            W = np.concatenate([W] + newW)
+            new = np.array(rows, dtype=st.dtype)
+            if "group" in op:
+                new["g"] = op["group"]
+            st = np.concatenate([st, new])
+        print("op tufts  %d locks of %d strands" % (len(seeds), tS))
         continue
     m = region(op.get("where"))
     if kind == "length":
@@ -364,7 +518,23 @@ for op in spec.get("ops", []):
         rooted = inside[off[:-1]].copy()
         inside[off[:-1]] = False  # a strand rooted inside the region keeps its minimum length
         first = np.full(len(st), np.inf)
-        np.minimum.at(first, sid[inside], c[inside])
+        if op.get("exact"):
+            # the tip on the dithered line itself: on the segment from the last point outside to the first inside,
+            # where the mask crosses the strand's threshold, found by bisection (not at the first point inside, up to a
+            # point spacing past the line); the tip keeps the last position found outside, so it never enters
+            fi = np.full(len(st), len(P))
+            np.minimum.at(fi, sid[inside], np.flatnonzero(inside))
+            k = np.flatnonzero(fi < len(P))
+            i1 = fi[k]
+            A, B = P[i1 - 1], P[i1]
+            lo, hi = np.zeros(len(k)), np.ones(len(k))
+            for _ in range(12):
+                mid = 0.5 * (lo + hi)
+                into = region(op["at"], A + (B - A) * mid[:, None]) > thr[k]
+                hi, lo = np.where(into, mid, hi), np.where(into, lo, mid)
+            first[k] = c[i1 - 1] + lo * (c[i1] - c[i1 - 1])
+        else:
+            np.minimum.at(first, sid[inside], c[inside])
         if op.get("rooted") == "keep":
             first[rooted] = np.inf
         cutlen = np.where(np.isfinite(first), np.maximum(first, op.get("min", 0.2)), L)
@@ -395,8 +565,19 @@ for op in spec.get("ops", []):
             rv, rn = head_near(P[off[:-1]])
             h0 = np.maximum(((P[off[:-1]] - rv) * rn).sum(1), 0)
             push = np.maximum(h0[sid[k]] + op.get("clear", 0.01) - h, 0) * m[sid[k]]
-            P[k] += push[:, None] * hn
-            print("op lift   %d points pushed out, max %.3f cm" % (int((push > 1e-4).sum()), push.max()))
+            if op.get("whole"):
+                # along the root normal it takes push / cos to clear the point's own surface; then a running maximum
+                # per strand (strands are contiguous and pushes stay under 1e4, so a per-strand offset keeps the
+                # accumulate from crossing strands)
+                need = np.zeros(len(P))
+                need[k] = push / np.maximum((hn * rn[sid[k]]).sum(1), 0.3)
+                big = 1e4 * np.arange(len(st), dtype=float)
+                need = np.maximum.accumulate(need + big[sid]) - big[sid]
+                P += need[:, None] * rn[sid]
+                print("op lift   whole strands: %d points moved, max %.3f cm" % (int((need > 1e-4).sum()), need.max()))
+            else:
+                P[k] += push[:, None] * hn
+                print("op lift   %d points pushed out, max %.3f cm" % (int((push > 1e-4).sum()), push.max()))
     elif kind == "shell":
         if not spec.get("head"):
             raise SystemExit("shell needs a head")
@@ -471,6 +652,8 @@ for op in spec.get("ops", []):
         cell = np.floor((R - R.min(0) + rng.uniform(0, op["size"], 3)) / op["size"]).astype(np.int64)
         _, inv = np.unique(cell[:, 0] * 1000003 + cell[:, 1] * 1009 + cell[:, 2], return_inverse=True)
         perm = rng.permutation(len(st))
+        if op.get("centre") == "masked":  # lock centres drawn from the region's strands where a cell has any
+            perm = perm[np.argsort(m[perm] <= 0.5, kind="stable")]
         _, first = np.unique(inv[perm], return_index=True)
         cen = perm[first][inv]  # each strand's lock centre, a random member of its cell
         fr = np.minimum(c / np.maximum(L[sid], 1e-9), 1.0)
@@ -489,7 +672,56 @@ for op in spec.get("ops", []):
         G = P[i] + (P[i1] - P[i]) * u[:, None]
         a = op.get("amount", 0.5) * m[sid] * fr ** op.get("power", 1.5)
         P += (G - P) * a[:, None]
+        if op.get("trim"):  # each lock cut to its own random fraction of its length, 1 - trim .. 1: locks end at
+            ft = 1 - op["trim"] * rng.uniform(0, 1, inv.max() + 1)  # different heights, a pointed, layered hem
+            _, _, L2, _ = arcs()
+            resample(L2 * (1 + (ft[inv] - 1) * m))
         print("op clump  %d locks" % len(first))
+    elif kind == "swing":
+        # turn each strand about its root: every segment direction is rotated about "axis" by angle * mask * r(t),
+        # r ramping (smoothstep) from 0 at the root to 1 at arc fraction "blend", and the strand is rebuilt from the
+        # root, so lengths are kept and the root keeps leaving the scalp in its own direction (no kink at the root)
+        sid, c, L, off = arcs()
+        ax = np.asarray(op["axis"], float)
+        ax /= np.linalg.norm(ax)
+        f = np.clip(c / np.maximum(L[sid], 1e-9) / max(op.get("blend", 0.2), 1e-6), 0, 1)
+        a = np.radians(op["angle"]) * m[sid] * f * f * (3 - 2 * f)
+        seg = np.zeros_like(P)
+        seg[1:] = P[1:] - P[:-1]
+        seg[off[:-1]] = 0
+        ca, sa = np.cos(a)[:, None], np.sin(a)[:, None]
+        seg = seg * ca + np.cross(ax[None, :], seg) * sa + ax[None, :] * (seg @ ax)[:, None] * (1 - ca)
+        root = np.repeat(P[off[:-1]], st["n"], axis=0)
+        cs = np.cumsum(seg, axis=0)
+        P[:] = root + cs - np.repeat(cs[off[:-1]], st["n"], axis=0)
+    elif kind == "aim":
+        # re-aim each strand along a path of directions (evenly spaced over the arc, interpolated between): each segment
+        # turns from its own direction toward the path's direction at its arc fraction by mask * r(t), r ramping
+        # (smoothstep) from 0 at the root to 1 at "blend"; the strand is rebuilt from the root with its lengths kept
+        sid, c, L, off = arcs()
+        D = np.asarray(op["dirs"], float)
+        D /= np.linalg.norm(D, axis=1, keepdims=True)
+        t = np.clip(c / np.maximum(L[sid], 1e-9), 0, 1)
+        u = t * (len(D) - 1)
+        i0 = np.minimum(u.astype(int), len(D) - 1)
+        i1 = np.minimum(i0 + 1, len(D) - 1)
+        w = (u - i0)[:, None]
+        tgt = D[i0] * (1 - w) + D[i1] * w
+        if op.get("spread"):  # a random turn per strand so the strands don't fall in parallel
+            tgt = tgt + rng.normal(0, op["spread"], (len(L), 3))[sid]
+        tgt /= np.maximum(np.linalg.norm(tgt, axis=1, keepdims=True), 1e-9)
+        f = np.clip(t / max(op.get("blend", 0.2), 1e-6), 0, 1)
+        r = (m[sid] * f * f * (3 - 2 * f))[:, None]
+        seg = np.zeros_like(P)
+        seg[1:] = P[1:] - P[:-1]
+        seg[off[:-1]] = 0
+        ln = np.linalg.norm(seg, axis=1, keepdims=True)
+        dirn = seg / np.maximum(ln, 1e-9)
+        nd = dirn * (1 - r) + tgt * r
+        seg = nd / np.maximum(np.linalg.norm(nd, axis=1, keepdims=True), 1e-9) * ln
+        root = np.repeat(P[off[:-1]], st["n"], axis=0)
+        cs = np.cumsum(seg, axis=0)
+        P[:] = root + cs - np.repeat(cs[off[:-1]], st["n"], axis=0)
     elif kind == "smooth":
         # pull each inner point toward the middle of its neighbours (the root stays put, the tip follows its neighbour's
         # direction): calms curl and frizz without changing where the strand goes
@@ -508,23 +740,55 @@ for op in spec.get("ops", []):
         raise SystemExit("unknown op " + kind)
     print("op %-6s %d strands in the region (mask > .5)" % (kind, int((m > 0.5).sum())))
 summary("out")
+if spec.get("dump"):  # the finished strands as the abc writes them (groom frame, cm): "P" points, "n" points per strand
+    np.savez_compressed(spec["dump"], P=P.astype(np.float32), n=st["n"].astype(np.int32), W=W.astype(np.float32),
+                        g=st["g"].astype(np.int32))
+    print("DUMP", spec["dump"])
+# "zones": {name: region} (the "where" keys, tested on every point): how much hair ends up where it must not be, such
+# as in front of a lens or over a glasses arm; points of strands rooted inside the zone are counted apart
+for zname, zw in spec.get("zones", {}).items():
+    sid = np.repeat(np.arange(len(st)), st["n"])
+    inside = region(zw, P) > 0.5
+    if "off" in zw and spec.get("head") and inside.any():  # only the points standing this far off the skin
+        k = np.flatnonzero(inside)
+        hv, hn = head_near(P[k])
+        h = ((P[k] - hv) * hn).sum(1)
+        lo, hi = zw["off"]
+        inside[k] = (h >= (-np.inf if lo is None else lo)) & (h <= (np.inf if hi is None else hi))
+    rooted = (region(zw) > 0.5)[sid]
+    out_in = inside & ~rooted
+    print("ZONE %-10s %6d points of %5d strands rooted outside (lowest z %s), %6d points of %5d strands rooted inside"
+          % (zname, out_in.sum(), len(np.unique(sid[out_in])), ("%.2f" % P[out_in, 2].min()) if out_in.any() else "-",
+             (inside & rooted).sum(), len(np.unique(sid[inside & rooted]))))
+    if out_in.any():  # where those strands come from
+        R0 = P[offsets(st["n"])[:-1]][np.unique(sid[out_in])]
+        print("     roots of those: |x| %.1f..%.1f y %.1f..%.1f z %.1f..%.1f" % (
+            np.abs(R0[:, 0]).min(), np.abs(R0[:, 0]).max(), R0[:, 1].min(), R0[:, 1].max(), R0[:, 2].min(),
+            R0[:, 2].max()))
+    if spec.get("head") and inside.any():  # how far off the skin the hair in the zone stands (along the head normal)
+        hv, hn = head_near(P[inside])
+        h = ((P[inside] - hv) * hn).sum(1)
+        print("     height off the head of the points inside: p50/p90/max %.2f/%.2f/%.2f cm" % (
+            *np.percentile(h, [50, 90]), h.max()))
 
 if spec.get("preview"):
     # the front half from the front, the left half from the left and the right half from the right (face toward the
     # camera's side), the input on the top row and the result below, darker where strands pile up (Blender has no PIL:
-    # the PNG goes through a Blender image)
+    # the PNG goes through a Blender image); "preview_back": true adds a fourth column, the back half from behind
     import bpy
     lo, hi = P0.min(0), P0.max(0)
     span = max(hi - lo) + 4
     N = 600
     s = N / span
     cen = (lo + hi) / 2
-    img = np.ones((2 * N, 3 * N), np.float32)
+    ncol = 4 if spec.get("preview_back") else 3
+    img = np.ones((2 * N, ncol * N), np.float32)
 
     def views(Q):
         # (column, horizontal coordinate, which points) per panel
-        return ((0, Q[:, 0] - cen[0], Q[:, 1] > cen[1]), (1, Q[:, 1] - cen[1], Q[:, 0] > cen[0]),
-                (2, cen[1] - Q[:, 1], Q[:, 0] < cen[0]))
+        v = ((0, Q[:, 0] - cen[0], Q[:, 1] > cen[1]), (1, Q[:, 1] - cen[1], Q[:, 0] > cen[0]),
+             (2, cen[1] - Q[:, 1], Q[:, 0] < cen[0]))
+        return v + ((3, cen[0] - Q[:, 0], Q[:, 1] < cen[1]),) if ncol == 4 else v
 
     if spec.get("head"):
         Hv = np.load(spec["head"])["v"]
@@ -552,11 +816,12 @@ if spec.get("preview"):
 
     draw(P0, n0, 0)
     draw(P, st["n"], 1)
-    img[:, N - 1:N + 1] = img[:, 2 * N - 1:2 * N + 1] = 0.5
+    for col in range(1, ncol):
+        img[:, col * N - 1:col * N + 1] = 0.5
     img[N - 1:N + 1, :] = 0.5
-    rgba = np.ones((2 * N, 3 * N, 4), np.float32)
+    rgba = np.ones((2 * N, ncol * N, 4), np.float32)
     rgba[..., :3] = img[::-1, :, None]
-    im = bpy.data.images.new("preview", 3 * N, 2 * N, alpha=True)
+    im = bpy.data.images.new("preview", ncol * N, 2 * N, alpha=True)
     im.pixels.foreach_set(rgba.ravel())
     im.filepath_raw = spec["preview"]
     im.file_format = "PNG"

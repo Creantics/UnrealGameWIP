@@ -16,21 +16,34 @@ is in world space (an OBJ in centimetres, Y up, -Z forward by default). Groups n
 dropped. Colours are sRGB. A group's "box" is its pattern bounding box in millimetres (x0, y0, x1, y1); the group's UV
 bounding box is mapped onto it, so a rule reads pattern coordinates. Without a box the rule coordinates are 0..1 of the
 UV box. A strip paints where |x| lies between x0(y) and x1(y), each linear in y between the listed "y" stations
-(mirrored about x = 0; "mirror": false paints only the listed side). A "crest" {"center": [x, y], "r", "rays", "color",
+(mirrored about x = 0; "mirror": false paints only the listed side); with a "surface", a strip's "rib" {"pitch" (rule
+units), "depth" (weave heights, default 1), "sharp"} adds knit ribs in the height there, wales running along y. A "crest" {"center": [x, y], "r", "rays", "color",
 "sharp" (ray exponent: above 1 pointed), "disc" (radius fraction), "base" (where the rays start), "alt" (shorter rays
 between the long ones, that fraction long), "outline": [width, RGB]} paints a rayed sun over the strips, in the rule's
-units. A group with no rule takes its own "color" or the piece's.
+units. A rule's "patches" lay patch pockets on the group: {"rect": [x0, y0, x1, y1] (rule units, mirrored about x = 0
+like a strip unless "mirror": false), "color" (optional; else the strips show through), "flap" (mm: a flap across the
+top, its lower edge a fold line with its own stitch), "stitch_in" (mm, default 4: the topstitch line inside the
+edge)}. With a "surface" the patch stands proud of the panel in the height (normal) with a shadow line round it and
+a dashed topstitch in the stitch thread; without one only its colour is painted. Patches assume the rule units are
+millimetres (a "box"). A group with no rule takes its own "color" or the piece's. A rule's "weave"
+replaces the piece's surface weave on that group ("kind": "smooth" for moulded rubber or metal, no grain), and its
+"roughness" and "metallic" replace the piece's there (a buckle or a metal cuff on a webbing or leather piece).
 
 A piece's "surface" adds the base layer stack a texture painter lays under fabric: {"weave": {"pitch" (thread spacing,
-mm; keep it at 4 texels or more), "slub"}, "ao", "cavity", "edge" (how much AO, creases and crests shade the albedo),
-"normal" (weave normal strength), "ao_distance" (m), "rough_weave", "rough_mottle", "samples"}. It bakes ambient
+mm; keep it at 4 texels or more), "slub", "kind": plain | twill | leather | smooth}, "ao", "cavity", "edge" (how much AO, creases and crests shade the albedo),
+"normal" (weave normal strength), "ao_distance" (m), "rough_weave", "rough_mottle", "samples", "stitch": {"hem",
+"topstitch", "stitch", "pitch" (mm)}}. "stitch" puts the seams (a pressed groove, the allowance and a topstitch) and
+the hems (a turned band, a rolled edge and its stitch line) into the height that drives the normal. It bakes ambient
 occlusion and curvature in Cycles, folds them into the albedo, and writes NAME_normal.png and NAME_orm.png (occlusion,
 roughness, metallic) wired into the material, so a glTF export carries all three. "occluders" (top level) lists glTF
 files, or {"file", "objects": [names]}, that shade the AO bake (the body under the garment) and are not kept. After the
 bakes, a piece's "decimate" (face ratio) thins the mesh and its "thickness" (m) solidifies it with a closed rim, so
 hems and cut ends read as cloth with a turned edge. "thickness_offset" picks the side it grows to: 0 about the sheet,
-1 outward, -1 inward (an under layer grows in and an over layer out, so the gap between them is kept). Each piece is written to OUT_DIR/NAME_albedo.png and kept as object NAME in OUT_DIR/garments.blend, with one
-double-sided material using that texture; shell_bind.py --keep-material then skins it to the body.
+1 outward, -1 inward (an under layer grows in and an over layer out, so the gap between them is kept). A piece's
+"solid_groups" names groups that are closed solids already (a moulded holster, a part built with its own wall): they
+are baked and textured with the rest, get no seams or hems in the stitch relief (their UV charts are not sewn
+panels), and the thickness step leaves them as they are. Each piece is written to OUT_DIR/NAME_albedo.png and kept as object NAME in OUT_DIR/garments.blend, with one
+double-sided material using that texture; garment_bind.py (or shell_bind.py --keep-material) then skins it to the body.
 """
 import json
 import os
@@ -112,17 +125,83 @@ def rule_colour(px, py, rule, base):
             c[rr - ol[0] < np.maximum.reduce([sun(aa), sun(aa + da), sun(aa - da)])] = ol[1]
             inside &= np.abs(rr - cr["r"] * disc) > ol[0] / 2
         c[inside] = cr["color"]
+    for pt in rule.get("patches", []):  # the patch cloth's colour; patch_relief adds its edges
+        if pt.get("color") is not None:
+            x0, y0, x1, y1 = pt["rect"]
+            ax = np.abs(px) if pt.get("mirror", True) else px
+            c[(ax >= x0) & (ax <= x1) & (py >= y0) & (py <= y1)] = pt["color"]
     return c
 
 
+def patch_relief(px, py, rule, st):
+    """Height, shade and thread weight per texel (px, py in pattern mm) for a rule's "patches": the patch a layer
+    proud of the panel, a shadow line just outside its edge, a dashed topstitch "stitch_in" mm inside it, and with a
+    "flap" a fold line across the top with the flap standing a little prouder and its own stitch."""
+    rel, dark, thr = np.zeros(px.shape), np.zeros(px.shape), np.zeros(px.shape)
+    dash, pitch = st.get("stitch", 3.0), st.get("pitch", 4.0)
+    gauss = lambda x, w: np.exp(-(x / w) ** 2)
+    for pt in rule.get("patches", []):
+        x0, y0, x1, y1 = pt["rect"]
+        ax = np.abs(px) if pt.get("mirror", True) else px
+        dx, dy = np.minimum(ax - x0, x1 - ax), np.minimum(py - y0, y1 - py)
+        din = np.minimum(dx, dy)  # mm inside the patch's edge (negative outside)
+        along = np.where(dx < dy, py, ax)  # the edge's own coordinate, so the dashes run along each edge
+        on_dash = (along % pitch) < dash
+        near = din > -6.0
+        rel += near * 0.3 * np.clip(din / 0.8, 0, 1)
+        dark += near * 0.45 * gauss(np.minimum(din, 0) - 0.4, 1.2) * (din < 1.0)
+        si = pt.get("stitch_in", 4.0)
+        ts = gauss(din - si, 0.45) * on_dash * (din > 0)
+        rel += 0.4 * ts
+        thr += ts
+        f = pt.get("flap")
+        if f:  # the flap: proud over the top f mm, its fold edge shading the patch under it
+            fy = y1 - f
+            inside_x = dx > 0
+            dfl = py - fy  # mm above the fold
+            rel += inside_x * 0.18 * np.clip(dfl / 0.8, 0, 1) * (py <= y1)
+            dark += inside_x * 0.5 * gauss(np.minimum(dfl, 0) - 0.4, 1.4) * (dfl < 1.0) * (din > -1.0)
+            fs = gauss(dfl - si, 0.45) * ((ax % pitch) < dash) * inside_x * (py <= y1)
+            rel += 0.4 * fs
+            thr += fs
+    return rel, np.clip(dark, 0, 1), np.clip(thr, 0, 1)
+
+
+def value_noise(u, v, seed=0.0):
+    """Smooth value noise 0..1 on the integer lattice (a hashed value per lattice point, eased in between)."""
+    i, j = np.floor(u), np.floor(v)
+    fu, fv = u - i, v - j
+    fu, fv = fu * fu * (3 - 2 * fu), fv * fv * (3 - 2 * fv)
+
+    def h(a, b):
+        x = np.sin(a * 12.9898 + b * 78.233 + seed * 37.719) * 43758.5453
+        return x - np.floor(x)
+    top = h(i, j) * (1 - fu) + h(i + 1, j) * fu
+    bot = h(i, j + 1) * (1 - fu) + h(i + 1, j + 1) * fu
+    return top * (1 - fv) + bot * fv
+
+
 def weave_height(xm, ym, wv):
-    """Plain-weave height 0..1 at tile coordinates in metres: warp threads run along v, weft along u, and they swap
-    over at every crossing. "pitch" is the thread spacing in millimetres, "slub" how uneven the threads are."""
+    """Cloth or leather height 0..1 at tile coordinates in metres. "kind": "plain" (default) is a plain weave: warp
+    threads run along v, weft along u, and they swap over at every crossing; "twill" floats the warp over two picks
+    and under one, stepped one thread a row, so the floats line up in diagonal wales (twill, denim, drill); "leather"
+    is a pebbled grain of rounded cells with long shallow creases across it, no threads. "pitch" is the thread
+    spacing (the grain cell for leather) in millimetres, "slub" how uneven the threads are."""
     p = wv.get("pitch", 2.5) / 1000.0
     u, v = xm / p, ym / p
+    kind = wv.get("kind", "plain")
+    if kind == "smooth":  # moulded rubber or metal: no grain, only a faint broad mottle
+        return 0.5 + 0.12 * (value_noise(u * 0.15, v * 0.15, 4.0) - 0.5)
+    if kind == "leather":
+        cells = value_noise(u, v, 1.0) * 0.65 + value_noise(u * 2.7, v * 2.7, 2.0) * 0.35
+        crease = np.abs(value_noise(u * 0.35, v * 0.35, 3.0) - 0.5) * 2.0
+        return np.clip(cells ** 0.8 * (0.75 + 0.25 * np.minimum(crease * 4.0, 1.0)), 0.0, 1.0)
     warp = np.abs(np.cos(np.pi * u)) ** 0.6 * (0.55 + 0.45 * np.abs(np.sin(np.pi * v)))
     weft = np.abs(np.cos(np.pi * v)) ** 0.6 * (0.55 + 0.45 * np.abs(np.sin(np.pi * u)))
-    over = (np.floor(u) + np.floor(v)) % 2 == 0
+    if kind == "twill":
+        over = (np.floor(u) - np.floor(v)) % 3 != 0
+    else:
+        over = (np.floor(u) + np.floor(v)) % 2 == 0
     hgt = np.where(over, np.maximum(warp, 0.6 * weft), np.maximum(weft, 0.6 * warp))
     slub = wv.get("slub", 0.25)
     if slub:  # threads vary in thickness along their length
@@ -213,7 +292,7 @@ def blur(a, r):
     return a
 
 
-def base_stack(o, name, ps, img, height, out):
+def base_stack(o, name, ps, img, height, out, rbase=None, metal=None):
     """The base layer stack a texture painter puts under every fabric: baked ambient occlusion multiplied in, curvature
     as cavity (creases darker, crests a touch lighter), a weave normal map and roughness that varies with the weave and
     the creases. Writes NAME_normal.png and NAME_orm.png (glTF packing: occlusion R, roughness G, metallic B) beside
@@ -256,9 +335,10 @@ def base_stack(o, name, ps, img, height, out):
     # Roughness: rougher in the thread gaps and creases, with slow mottling so a big panel doesn't read as one sheet.
     mott = blur(np.random.default_rng(7).standard_normal((res, res)), max(res // 64, 2))
     mott /= max(np.abs(mott).max(), 1e-6)
-    rough = (ps.get("roughness", 0.8) + sf.get("rough_weave", 0.08) * (1 - height) + 0.06 * np.maximum(-curv, 0)
+    r0 = ps.get("roughness", 0.8) if rbase is None else rbase
+    rough = (r0 + sf.get("rough_weave", 0.08) * (1 - height) + 0.06 * np.maximum(-curv, 0)
              + sf.get("rough_mottle", 0.05) * mott)
-    orm = np.dstack([1 - 0.5 * (1 - ao), np.clip(rough, 0.05, 1), np.zeros_like(rough)])
+    orm = np.dstack([1 - 0.5 * (1 - ao), np.clip(rough, 0.05, 1), np.zeros_like(rough) if metal is None else metal])
     im_alb = save_image(name + "_albedo", np.clip(alb, 0, 1), out)
     im_nrm = save_image(name + "_normal", nrm * 0.5 + 0.5, out, colour=False)
     im_orm = save_image(name + "_orm", orm, out, colour=False)
@@ -287,11 +367,139 @@ def base_stack(o, name, ps, img, height, out):
           % (name, sf.get("weave", {}).get("pitch", 2.5), rough.min(), rough.max(), shade.min(), shade.max()))
 
 
+def stitch_relief(objs, groups, img, height, res, side, st, weld):
+    """Seams and hems drawn into the height (so the normal map) and the albedo, from the pieces' own outlines in
+    atlas space. A boundary edge whose two ends meet another piece's boundary (within the weld) is a seam: a pressed
+    groove on the line with the seam allowance raised beside it, and a topstitch "topstitch" mm in. Any other
+    boundary edge is a hem: a turned band "hem" mm wide standing proud, a rolled edge, and a stitch line near the
+    band's inner edge. Stitches are dashes "stitch" mm long at "pitch" mm. Widths never go below 1.5 texels."""
+    from mathutils import kdtree
+    px_mm = res / (side * 1000.0)  # texels per millimetre
+    hem_mm, top_mm = st.get("hem", 12.0), st.get("topstitch", 6.0)
+    dash, pitch = st.get("stitch", 3.0), st.get("pitch", 4.0)
+    groove = max(st.get("groove", 0.8), 1.5 / px_mm)
+    thread_rgb = st.get("thread")
+    bnd = []  # (group, vert index, co)
+    edges = []  # (group, a uv, b uv, inward uv dir, va, vb)
+    for g in groups:
+        bm = bmesh.new()
+        bm.from_mesh(objs[g].data)
+        uvl = bm.loops.layers.uv.active
+        for e in bm.edges:
+            if not e.is_boundary or not e.link_loops:
+                continue
+            lp = e.link_loops[0]
+            a, b = np.array(lp[uvl].uv), np.array(lp.link_loop_next[uvl].uv)
+            fc = np.mean([np.array(l[uvl].uv) for l in lp.face.loops], axis=0)
+            d = b - a
+            nrm = np.array([-d[1], d[0]])
+            if nrm @ (fc - a) < 0:
+                nrm = -nrm
+            nrm /= max(np.linalg.norm(nrm), 1e-12)
+            edges.append((g, a, b, nrm, lp.vert.index, lp.link_loop_next.vert.index))
+        for v in bm.verts:
+            if v.is_boundary:
+                bnd.append((g, v.index, v.co.copy()))
+        bm.free()
+    kd = kdtree.KDTree(len(bnd))
+    for k, (_, _, co) in enumerate(bnd):
+        kd.insert(co, k)
+    kd.balance()
+    where = {(g, i): co for g, i, co in bnd}
+
+    def sewn(g, i):
+        co = where[(g, i)]
+        return any(bnd[k][:2] != (g, i) for _, k, _ in kd.find_range(co, weld * 1.5))
+    dmin = np.full((res, res), np.inf)
+    s_al = np.zeros((res, res))
+    kind = np.zeros((res, res), np.int8)  # 1 seam, 2 hem
+    band = (max(hem_mm, top_mm) + 3.0) * px_mm
+    n_seam = n_hem = 0
+    for g, a, b, nrm, va, vb in edges:
+        is_seam = sewn(g, va) and sewn(g, vb)
+        n_seam += is_seam
+        n_hem += not is_seam
+        A, B = a * res, b * res
+        lo = np.floor(np.minimum(A, B) - band).astype(int)
+        hi = np.ceil(np.maximum(A, B) + band).astype(int)
+        x0, y0 = max(lo[0], 0), max(lo[1], 0)
+        x1, y1 = min(hi[0], res), min(hi[1], res)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        xs, ys = np.meshgrid(np.arange(x0, x1) + 0.5, np.arange(y0, y1) + 0.5)
+        ab = B - A
+        L = max(np.linalg.norm(ab), 1e-9)
+        t = ((xs - A[0]) * ab[0] + (ys - A[1]) * ab[1]) / (L * L)
+        d = ((xs - A[0]) * nrm[0] + (ys - A[1]) * nrm[1])  # texels, positive inside the piece
+        ok = (t >= -0.02) & (t <= 1.02) & (d >= -1.0) & (d <= band)
+        cur = dmin[y0:y1, x0:x1]
+        better = ok & (d < cur)
+        cur[better] = d[better]
+        # texels along the edge's own line, so the dashes run on unbroken across the many short edges of one hem
+        s_al[y0:y1, x0:x1][better] = (t * L + (A @ ab) / L)[better]
+        kind[y0:y1, x0:x1][better] = 1 if is_seam else 2
+    d_mm = np.where(np.isfinite(dmin), dmin / px_mm, np.inf)
+    s_mm = s_al / px_mm
+    on_dash = (s_mm % pitch) < dash
+    gauss = lambda x, w: np.exp(-(x / w) ** 2)
+    relief = np.zeros((res, res))
+    dark = np.zeros((res, res))
+    thread = np.zeros((res, res))
+    seam, hem = kind == 1, kind == 2
+    dm = np.where(np.isfinite(d_mm), d_mm, 1e9)
+    # seam: the pressed line, the allowance under the fabric beside it, a topstitch
+    relief += seam * (-0.7 * gauss(dm, groove * 1.2) + 0.25 * np.clip((dm - groove) / 2.0, 0, 1)
+                      * np.clip((top_mm + 3 - dm) / 2.0, 0, 1))
+    dark += seam * 0.35 * gauss(dm, groove * 1.5)
+    ts = gauss(dm - top_mm, groove * 0.6) * on_dash
+    relief += seam * (0.45 * ts - 0.3 * gauss(dm - top_mm, groove) * ~on_dash)
+    thread += seam * ts
+    # hem: the turned band, its rolled edge, the stitch near the band's inner edge
+    band_up = np.clip(dm / 1.5, 0, 1) * np.clip((hem_mm - dm) / 1.5, 0, 1)
+    relief += hem * (0.35 * band_up - 0.4 * gauss(dm, groove))
+    hs = gauss(dm - (hem_mm - 3.0), groove * 0.6) * on_dash
+    relief += hem * (0.45 * hs - 0.3 * gauss(dm - (hem_mm - 3.0), groove) * ~on_dash)
+    thread += hem * hs
+    dark += hem * 0.2 * gauss(dm - hem_mm, groove * 1.5)
+    height += relief * st.get("depth", 1.0)
+    shade = 1 - st.get("darken", 0.25) * np.clip(dark, 0, 1)
+    img *= shade[..., None]
+    if thread_rgb is not None:
+        tw = np.clip(thread, 0, 1)[..., None] * 0.85
+        img[:] = img * (1 - tw) + np.array(thread_rgb)[None, None] * tw
+    print("md_garment: stitch relief: %d seam edges, %d hem edges, %.2f texels/mm, groove %.2f mm"
+          % (n_seam, n_hem, px_mm, groove))
+
+
+def split_solid(o):
+    """Moves the faces of the "md_solid" vertex group (closed solids) off o into an object of their own, which the
+    thickness step skips; returns it, or None when the piece has none."""
+    vg = o.vertex_groups.get("md_solid")
+    if vg is None:
+        return None
+    sep = o.copy()
+    sep.data = o.data.copy()
+    o.users_collection[0].objects.link(sep)
+    for ob, keep_solid in ((o, False), (sep, True)):
+        bm = bmesh.new()
+        bm.from_mesh(ob.data)
+        dl = bm.verts.layers.deform.active
+        gone = [f for f in bm.faces if all(vg.index in v[dl] for v in f.verts) != keep_solid]
+        bmesh.ops.delete(bm, geom=gone, context="FACES")
+        bm.to_mesh(ob.data)
+        bm.free()
+    print("md_garment: %s: %d solid faces kept out of the thickness" % (o.name, len(sep.data.polygons)))
+    return sep
+
+
 def build_piece(name, ps, objs, weld, out):
     groups = [g for g in ps["groups"] if g in objs]
     missing = set(ps["groups"]) - set(groups)
     if missing:
         sys.exit("md_garment: %s: groups not in the OBJ: %s" % (name, ", ".join(sorted(missing))))
+    solid = set(ps.get("solid_groups", []))
+    if solid - set(groups):
+        sys.exit("md_garment: %s: solid_groups not in the piece: %s" % (name, ", ".join(sorted(solid - set(groups)))))
     base = ps.get("color", [0.8, 0.8, 0.8])
     rules = ps.get("rules", {})
     # Each group's UV box and its size on the body (texel density follows the real panel size).
@@ -323,6 +531,8 @@ def build_piece(name, ps, objs, weld, out):
     img[:] = base
     surf = ps.get("surface")
     height = np.zeros((res, res)) if surf else None
+    rbase = np.full((res, res), float(ps.get("roughness", 0.8))) if surf else None  # per-group roughness, metallic
+    metal = np.zeros((res, res)) if surf else None
     for i, (ox, oy) in zip(info, pos):
         g, (w, h) = i["g"], i["size"]
         me = objs[g].data
@@ -349,8 +559,40 @@ def build_piece(name, ps, objs, weld, out):
         lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4).mean(axis=(1, 3))
         img[y0p:y1p, x0p:x1p] = np.where(lin <= 0.0031308, lin * 12.92, 1.055 * lin ** (1 / 2.4) - 0.055)
         if surf:  # weave height from the tile's real size, so the threads keep one pitch on every panel
-            hgt = weave_height(tu * w, tv * h, surf.get("weave", {}))
-            height[y0p:y1p, x0p:x1p] = hgt.reshape(hgt.shape[0] // ss, ss, hgt.shape[1] // ss, ss).mean(axis=(1, 3))
+            hgt = weave_height(tu * w, tv * h, rule.get("weave", surf.get("weave", {})))
+            if "roughness" in rule:
+                rbase[y0p:y1p, x0p:x1p] = rule["roughness"]
+            if "metallic" in rule:
+                metal[y0p:y1p, x0p:x1p] = rule["metallic"]
+            down = lambda a: a.reshape(a.shape[0] // ss, ss, a.shape[1] // ss, ss).mean(axis=(1, 3))
+            height[y0p:y1p, x0p:x1p] = down(hgt)
+            ribs = [s_ for s_ in rule.get("strips", []) if s_.get("rib")]
+            if ribs:  # knit ribs (a cuff or hem band): wales along y, one per "pitch" across x
+                rh = np.zeros_like(px)
+                for s_ in ribs:
+                    ax = np.abs(px) if s_.get("mirror", True) else px
+                    m = (ax >= np.interp(py, s_["y"], s_["x0"])) & (ax <= np.interp(py, s_["y"], s_["x1"]))
+                    rb = s_["rib"]
+                    wale = (0.5 * (1 + np.cos(2 * np.pi * px / rb.get("pitch", 3.0)))) ** rb.get("sharp", 1.0)
+                    rh = np.where(m, rb.get("depth", 1.0) * wale, rh)
+                height[y0p:y1p, x0p:x1p] += down(rh)
+                print("md_garment: %s: %d ribbed strips" % (g, len(ribs)))
+            if rule.get("patches"):
+                st = surf.get("stitch", {})
+                rel, dk, th = (down(a) for a in patch_relief(px, py, rule, st))
+                height[y0p:y1p, x0p:x1p] += rel * st.get("depth", 1.0)
+                tile = img[y0p:y1p, x0p:x1p] * (1 - st.get("darken", 0.25) * 1.4 * dk)[..., None]
+                if st.get("thread") is not None:
+                    tw = th[..., None] * 0.85
+                    tile = tile * (1 - tw) + np.array(st["thread"])[None, None] * tw
+                img[y0p:y1p, x0p:x1p] = tile
+                print("md_garment: %s: %d patches" % (g, len(rule["patches"])))
+    if surf and surf.get("stitch"):
+        stitch_relief(objs, [g for g in groups if g not in solid], img, height, res, side, surf["stitch"], weld)
+    # Closed solids keep their own wall: tag their vertices so the thickness step can pass them by.
+    for g in sorted(solid):
+        vg = objs[g].vertex_groups.new(name="md_solid")
+        vg.add(range(len(objs[g].data.vertices)), 1.0, "REPLACE")
     # Join the groups into one object and weld the seams the cloth tool sewed.
     bpy.ops.object.select_all(action="DESELECT")
     for g in groups:
@@ -383,7 +625,7 @@ def build_piece(name, ps, objs, weld, out):
     o.data.materials.clear()
     o.data.materials.append(mat)
     if surf:
-        base_stack(o, name, ps, img, height, out)
+        base_stack(o, name, ps, img, height, out, rbase, metal)
     # Game geometry after the bakes, which want the single sheet: fewer faces, then the cloth's thickness, so a hem
     # or a tail end shows a turned edge instead of a paper-thin card.
     if ps.get("decimate"):
@@ -391,12 +633,21 @@ def build_piece(name, ps, objs, weld, out):
         dec.ratio = ps["decimate"]
         bpy.ops.object.modifier_apply(modifier=dec.name)
     if ps.get("thickness"):
+        sep = split_solid(o)
         sol = o.modifiers.new("thickness", "SOLIDIFY")
         sol.thickness, sol.offset = ps["thickness"], ps.get("thickness_offset", 0.0)
         # Plain offset: each vertex moves one thickness along its normal. Even offset scales that by the crease angle
         # and shoots a vertex a metre off where panels meet at a sharp seam (a crotch, a collar).
         sol.use_rim = True
         bpy.ops.object.modifier_apply(modifier=sol.name)
+        if sep is not None:
+            bpy.ops.object.select_all(action="DESELECT")
+            sep.select_set(True)
+            o.select_set(True)
+            bpy.context.view_layer.objects.active = o
+            bpy.ops.object.join()
+    if "md_solid" in o.vertex_groups:
+        o.vertex_groups.remove(o.vertex_groups["md_solid"])
     path = im.filepath_raw
     print("md_garment: %s groups %s, %d -> %d vertices, %d faces, atlas %.2f m -> %s"
           % (name, groups, n0, len(o.data.vertices), len(o.data.polygons), side, path))
