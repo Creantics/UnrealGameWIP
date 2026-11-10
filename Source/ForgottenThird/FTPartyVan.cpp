@@ -30,8 +30,12 @@ constexpr float LegTwo = 5000.f;
 constexpr float KerbFrom = 5000.f, KerbTo = 9000.f, KerbInner = 150.f, KerbWidth = 30.f, KerbHeight = 12.f;
 
 // The point `S` cm along the course's centre line (the kerb stretch shifted toward the kerb).
-FVector2D CoursePoint(float S)
+FVector2D CoursePoint(float S, bool bStraight)
 {
+	if (bStraight)
+	{
+		return FVector2D(S, 0.f);
+	}
 	if (S <= CornerX)
 	{
 		const float Shift = (S > KerbFrom - 1000.f && S < KerbTo) ? 110.f : 0.f;
@@ -41,8 +45,12 @@ FVector2D CoursePoint(float S)
 }
 
 // How far along the course the point P lies (the nearer leg's projection).
-float CourseDistance(const FVector2D& P)
+float CourseDistance(const FVector2D& P, bool bStraight)
 {
+	if (bStraight)
+	{
+		return FMath::Max(0.f, static_cast<float>(P.X));
+	}
 	const float A = FMath::Clamp(P.X, 0.f, CornerX);
 	const float DA = FVector2D::Distance(P, FVector2D(A, 0.f));
 	const float B = FMath::Clamp(-P.Y, 0.f, LegTwo);
@@ -126,7 +134,15 @@ void AFTPartyVan::BeginPlay()
 
 	const FString Cmd = FCommandLine::Get();
 	bCourse = FParse::Param(*Cmd, TEXT("VanCourse"));
-	bScript = bCourse && FParse::Param(*Cmd, TEXT("VanDrive"));
+	FString At3;
+	bMapRoute = !bCourse && FParse::Value(*Cmd, TEXT("PartyVanAt="), At3);
+	bScript = (bCourse || bMapRoute) && FParse::Param(*Cmd, TEXT("VanDrive"));
+	bMapRoute = bMapRoute && bScript;
+	float RouteM = 80.f;
+	if (FParse::Value(*Cmd, TEXT("VanRoute="), RouteM))
+	{
+		RouteLen = FMath::Clamp(RouteM, 10.f, 2000.f) * 100.f;
+	}
 	FParse::Value(*Cmd, TEXT("VanShots="), ShotPrefix);
 
 	const FVector At = GetActorLocation();
@@ -330,7 +346,7 @@ void AFTPartyVan::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	DeltaSeconds = FMath::Min(DeltaSeconds, 0.1f);
-	if (bCourse)
+	if (bCourse || bMapRoute)
 	{
 		TickScript(DeltaSeconds);
 	}
@@ -388,11 +404,12 @@ void AFTPartyVan::TickScript(float DeltaSeconds)
 	const float C0 = FMath::Cos(StartHeading), S0 = FMath::Sin(StartHeading);
 	const FVector2D Rel(State.x - Start.X, State.y - Start.Y);
 	const FVector2D P(Rel.X * C0 + Rel.Y * S0, -Rel.X * S0 + Rel.Y * C0);
-	const float Along = CourseDistance(P);
+	const float Along = CourseDistance(P, bMapRoute);
 	Travelled = Along;
-	LimitKmh = Along > 10000.f ? 80.f : 60.f;
+	LimitKmh = bMapRoute ? 60.f : (Along > 10000.f ? 80.f : 60.f);
+	const float EndAlong = bMapRoute ? RouteLen : 19000.f;
 	const float Speed = State.forward;
-	const FVector2D Target = CoursePoint(Along + 600.f + 0.3f * FMath::Max(Speed, 0.f));
+	const FVector2D Target = CoursePoint(Along + 600.f + 0.3f * FMath::Max(Speed, 0.f), bMapRoute);
 	const float H = State.heading - StartHeading;
 	const float Alpha = FMath::FindDeltaAngleRadians(H, FMath::Atan2(static_cast<float>(Target.Y - P.Y), static_cast<float>(Target.X - P.X)));
 	const float Ld = FMath::Max(100.f, static_cast<float>(FVector2D::Distance(Target, P)));
@@ -400,7 +417,12 @@ void AFTPartyVan::TickScript(float DeltaSeconds)
 	const float Steer = FMath::Clamp(Delta / FMath::DegreesToRadians(Drive.tuning().maxSteer), -1.f, 1.f);
 
 	float Want = LimitKmh * KmhToCms; // flat out to the limit
-	if (Along > 12000.f && Along < CornerX + 1500.f)
+	if (bMapRoute)
+	{
+		// Town speed, easing down over the last 20 m to stop at the route's end.
+		Want = FMath::Min(40.f * KmhToCms, FMath::Sqrt(FMath::Max(0.f, 2.f * 500.f * (EndAlong - 300.f - Along))));
+	}
+	else if (Along > 12000.f && Along < CornerX + 1500.f)
 	{
 		Want = 25.f * KmhToCms; // slow for the corner
 	}
@@ -408,7 +430,7 @@ void AFTPartyVan::TickScript(float DeltaSeconds)
 	{
 		Want = 40.f * KmhToCms;
 	}
-	if (Along > 19000.f)
+	if (Along > EndAlong - 300.f)
 	{
 		Want = 0.f;
 	}
@@ -422,7 +444,13 @@ void AFTPartyVan::TickScript(float DeltaSeconds)
 	Peak = FMath::Max(Peak, Speed);
 
 	// Views: the kerb side-on, behind on the straight at speed, top-down in the turn.
-	if (!ShotPrefix.IsEmpty())
+	if (!ShotPrefix.IsEmpty() && bMapRoute)
+	{
+		if (Shots == 0 && Along > EndAlong * 0.35f) { Shot(TEXT("side"), -90.f, -5.f, 700.f); }
+		else if (Shots == 1 && Along > EndAlong * 0.55f) { Shot(TEXT("behind"), 0.f, -10.f, 750.f); }
+		else if (Shots == 2 && Along > EndAlong * 0.75f) { Shot(TEXT("top"), 0.f, -89.f, 2500.f); }
+	}
+	else if (!ShotPrefix.IsEmpty())
 	{
 		if (Shots == 0 && Along > KerbFrom + 1200.f) { Shot(TEXT("side"), -90.f, -5.f, 700.f); }
 		else if (Shots == 1 && Along > 11000.f) { Shot(TEXT("behind"), 0.f, -10.f, 750.f); }
@@ -447,7 +475,7 @@ void AFTPartyVan::TickScript(float DeltaSeconds)
 	}
 
 	// Stopped at the end: out, then the verdict.
-	if (ScriptStage == 3 && Along > 19000.f && State.speed() < 5.f)
+	if (ScriptStage == 3 && Along > EndAlong - 300.f && State.speed() < 5.f)
 	{
 		bExitHeld = true;
 		ScriptStage = 4;
@@ -459,7 +487,7 @@ void AFTPartyVan::TickScript(float DeltaSeconds)
 	}
 	if (ScriptStage == 5 && ScriptTime > EndAt)
 	{
-		if (!bKerbTouched)
+		if (!bKerbTouched && !bMapRoute)
 		{
 			++Fails;
 			UE_LOG(LogForgottenThird, Warning, TEXT("VANCHECK FAIL the kerb was never touched"));
@@ -541,6 +569,41 @@ void AFTPartyVan::TickChecks()
 	}
 }
 
+AFTPartyVan* AFTPartyVan::SpawnAt(UWorld* World)
+{
+	FString Value;
+	if (!World || !FParse::Value(FCommandLine::Get(), TEXT("PartyVanAt="), Value))
+	{
+		return nullptr;
+	}
+	for (TActorIterator<AFTPartyVan> It(World); It; ++It)
+	{
+		return nullptr; // one van
+	}
+	TArray<FString> Parts;
+	Value.ParseIntoArray(Parts, TEXT(","));
+	if (Parts.Num() < 2)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTPartyVan: -PartyVanAt=%s wants X,Y[,Yaw] in cm and degrees."), *Value);
+		return nullptr;
+	}
+	const double X = FCString::Atod(*Parts[0]);
+	const double Y = FCString::Atod(*Parts[1]);
+	const double Yaw = Parts.Num() > 2 ? FCString::Atod(*Parts[2]) : 0.0;
+	// The ground under it: the highest blocking surface below 100 m up.
+	double Z = 0.0;
+	FHitResult Hit;
+	if (World->LineTraceSingleByChannel(Hit, FVector(X, Y, 10000.0), FVector(X, Y, -10000.0), ECC_Visibility))
+	{
+		Z = Hit.ImpactPoint.Z;
+	}
+	FActorSpawnParameters P;
+	P.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AFTPartyVan* Van = World->SpawnActor<AFTPartyVan>(FVector(X, Y, Z + 150.0), FRotator(0.0, Yaw, 0.0), P);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTPartyVan: spawned at (%.0f, %.0f, %.0f) yaw %.0f"), X, Y, Z, Yaw);
+	return Van;
+}
+
 AFTPartyVan* AFTPartyVan::SpawnCourse(UWorld* World)
 {
 	if (!World)
@@ -567,7 +630,7 @@ AFTPartyVan* AFTPartyVan::SpawnCourse(UWorld* World)
 	// A post every 25 m, left of the line.
 	for (float S = 0.f; S <= CornerX + LegTwo + 1.f; S += 2500.f)
 	{
-		const FVector2D P = CoursePoint(S);
+		const FVector2D P = CoursePoint(S, false);
 		const FVector2D Side = S <= CornerX ? FVector2D(0.0, -600.0) : FVector2D(600.0, 0.0);
 		Slab(O + FVector(P.X + Side.X, P.Y + Side.Y, 75.0), FVector(20.0, 20.0, 150.0));
 	}

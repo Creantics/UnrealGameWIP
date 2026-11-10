@@ -17,6 +17,10 @@
 // fixed script (in, the kerb touch, the turn, stop, out), logs VANCHECK lines (the speed limit held,
 // no overlap after a move, each wheel on the ground within 2 cm), takes -VanShots=<prefix> views
 // side-on, behind and top-down, and quits with 0 on a pass. The limit is 60 km/h, 80 past 100 m.
+//
+// -PartyVanAt=X,Y,Yaw (cm, degrees) spawns the van in any map at that point, set on the ground (SpawnAt, called
+// from the lead's BeginPlay). With -VanDrive it drives a straight route of -VanRoute=<m> (default 80) from there
+// at up to 40 km/h on the same script and checks, without the kerb.
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
@@ -80,6 +84,8 @@ public:
 
 	// Lays the -VanCourse course and spawns a van at its start. Returns the van.
 	static AFTPartyVan* SpawnCourse(UWorld* World);
+	// -PartyVanAt: spawns the van there unless one is already in the world. Returns it, or null.
+	static AFTPartyVan* SpawnAt(UWorld* World);
 
 private:
 	void LoadData();
@@ -128,6 +134,8 @@ private:
 	// -VanDrive
 	bool bScript = false;
 	bool bCourse = false;
+	bool bMapRoute = false;    // -PartyVanAt with -VanDrive: a straight route from the spawn
+	float RouteLen = 8000.f;   // (cm)
 	FString ShotPrefix;
 	float ScriptTime = 0.f;
 	int ScriptStage = 0;

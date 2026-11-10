@@ -126,6 +126,7 @@ AFTExploreCharacter::AFTExploreCharacter()
 void AFTExploreCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	AFTPartyVan::SpawnAt(GetWorld()); // -PartyVanAt only; one van however many leads begin
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 	Dodge.setTuning(UFTLocomotionAnimInstance::GetMoveTuning().dodge);
 	Ledge.setTuning(UFTLocomotionAnimInstance::GetMoveTuning().ledge);
