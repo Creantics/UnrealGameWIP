@@ -469,8 +469,9 @@ void AFTExploreCharacter::TickWeapon(float DeltaSeconds)
 		// Every fourth press a heavy.
 		(++AttackPresses % 4 == 0 ? bPressHeavy : bPressLight) = true;
 	}
-	// The body's own moves come first: while it vaults, climbs, hangs, rolls or slides, presses are dropped and an attack
-	// under way is cut (its clips, arm aim and effects with it); nothing turns or paints the body for the weapon.
+	// The body's own moves come first: while it vaults, climbs, hangs, rolls or slides, and through the hand-back after
+	// (while its pose fades back into locomotion), presses are dropped and an attack under way is cut (its clips, arm aim
+	// and effects with it); nothing turns or paints the body for the weapon. Falling alone allows attacks.
 	ftcore::FieldBody Body = ftcore::FieldBody::Free;
 	if (LedgeNow.phase != ftcore::LedgePhase::None)
 	{
@@ -488,13 +489,17 @@ void AFTExploreCharacter::TickWeapon(float DeltaSeconds)
 	{
 		Body = ftcore::FieldBody::Rolling;
 	}
-	const bool bBusy = Body != ftcore::FieldBody::Free;
+	else if (GetCharacterMovement()->IsFalling())
+	{
+		Body = ftcore::FieldBody::Falling;
+	}
+	Strike.setBody(Body);
+	const bool bBusy = !Strike.canAttack();
 	if (bBusy && !bWeaponBodyBusy)
 	{
 		Weapons.Restart();
 	}
 	bWeaponBodyBusy = bBusy;
-	Strike.setBody(Body);
 	if (bBusy)
 	{
 		bPressLight = bPressHeavy = false;

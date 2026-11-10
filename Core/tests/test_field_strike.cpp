@@ -552,3 +552,88 @@ TEST_CASE("field strike: empty or null target lists, and a target leaving mid-at
         CHECK_FALSE(s.attacking());
     }
 }
+
+TEST_CASE("field strike: attacks stay blocked through the hand-back after a move ends") {
+    const ArenaFighter kit = roundKit();
+    const FieldTarget dummy{Vec2{1.f, 0.f}, 0.4f, true};
+    for (FieldBody body : {FieldBody::Traversing, FieldBody::Sliding, FieldBody::Rolling, FieldBody::Hanging}) {
+        CAPTURE(static_cast<int>(body));
+        FieldStrike s;
+        s.begin(kit);
+        s.setBody(body);
+        Run r;
+        idle(s, 0.2f, r, &dummy, 1);
+        s.setBody(FieldBody::Free);
+        // The hand-back frame and the frames after: still held, presses dropped.
+        CHECK_FALSE(s.canAttack());
+        float held = 0.f;
+        while (!s.canAttack() && held < 1.f) {
+            press(s, false, r, &dummy, 1);
+            held += kDt;
+        }
+        CHECK(held >= kFieldHandBack - 1e-4f);
+        CHECK(held < kFieldHandBack + 2.f * kDt);
+        CHECK(r.started == 0);
+        CHECK_FALSE(s.attacking());
+        // Nothing pressed in the hand-back comes back after it.
+        idle(s, kit.bufferTime + 0.1f, r, &dummy, 1);
+        CHECK(r.started == 0);
+        // Then a press starts at once.
+        press(s, false, r, &dummy, 1);
+        CHECK(r.started == 1);
+    }
+}
+
+TEST_CASE("field strike: a press buffered before the body goes busy is cleared") {
+    const ArenaFighter kit = roundKit();
+    const FieldTarget dummy{Vec2{1.f, 0.f}, 0.4f, true};
+    FieldStrike s;
+    s.begin(kit);
+    s.setHandBack(0.f);
+    Run r;
+    press(s, false, r, &dummy, 1);
+    REQUIRE(r.started == 1);
+    // A second light pressed in the startup is buffered (it can't start before the recovery's cancel share).
+    press(s, false, r, &dummy, 1);
+    REQUIRE(r.started == 1);
+    REQUIRE(s.attacking());
+    s.setBody(FieldBody::Rolling);
+    idle(s, kDt, r, &dummy, 1);
+    s.setBody(FieldBody::Free);
+    CHECK(s.canAttack());
+    idle(s, kit.bufferTime + 0.5f, r, &dummy, 1);
+    CHECK(r.started == 1);
+    CHECK_FALSE(s.attacking());
+}
+
+TEST_CASE("field strike: falling allows attacks unless a move or its hand-back is under way") {
+    const ArenaFighter kit = roundKit();
+    const FieldTarget dummy{Vec2{1.f, 0.f}, 0.4f, true};
+    {
+        FieldStrike s;
+        s.begin(kit);
+        s.setBody(FieldBody::Falling);
+        CHECK(s.canAttack());
+        Run r;
+        press(s, false, r, &dummy, 1);
+        CHECK(r.started == 1);
+        idle(s, 1.f, r, &dummy, 1);
+        CHECK(r.hits == 1);
+    }
+    {
+        // A traversal that ends in the air: falling, but the hand-back holds.
+        FieldStrike s;
+        s.begin(kit);
+        s.setBody(FieldBody::Traversing);
+        Run r;
+        idle(s, 0.1f, r, &dummy, 1);
+        s.setBody(FieldBody::Falling);
+        CHECK_FALSE(s.canAttack());
+        press(s, false, r, &dummy, 1);
+        CHECK(r.started == 0);
+        idle(s, kFieldHandBack + kDt, r, &dummy, 1);
+        CHECK(s.canAttack());
+        press(s, false, r, &dummy, 1);
+        CHECK(r.started == 1);
+    }
+}

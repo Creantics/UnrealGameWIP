@@ -11,7 +11,9 @@
 // the lead's own chest height. The host turns the body and points the arm, shot and effects at aim().
 //
 // The body's own moves come first: while it vaults, climbs, hangs, rolls or slides (setBody) no attack starts, presses
-// are dropped rather than kept, and an attack under way is cut off as the move begins.
+// are dropped rather than kept, and an attack under way is cut off as the move begins. The hold lasts on for the
+// hand-back (setHandBack, default kFieldHandBack) after the move ends, while the move's pose fades back into
+// locomotion. Falling is no move of its own: attacks run while falling, unless a move or its hand-back is under way.
 //
 // Its output is the arena's player output and events (AttackStarted, Hit), so the host's weapon wrapper (clips, props,
 // effects) is fed exactly as in a fight. Positions in metres on the ground plane. Fixed capacity: nothing allocates.
@@ -42,8 +44,14 @@ struct FieldTarget {
     std::uint32_t id = 0;
 };
 
-// What the body is doing besides fighting. Anything but Free blocks attacks (see setBody).
-enum class FieldBody : std::uint8_t { Free, Traversing, Sliding, Rolling, Hanging };
+// How long attacks stay blocked after a move of the body's own ends (s): the time its pose takes to fade back.
+inline constexpr float kFieldHandBack = 0.25f;
+
+// What the body is doing besides fighting. Free and Falling allow attacks; the rest block them (see setBody).
+enum class FieldBody : std::uint8_t { Free, Traversing, Sliding, Rolling, Hanging, Falling };
+
+// Whether `body` is a move of the body's own that blocks attacks.
+inline constexpr bool fieldBodyBusy(FieldBody body) { return body != FieldBody::Free && body != FieldBody::Falling; }
 
 // Where the attack under way is aimed: the hit point on the ground plane and its height (m), and the target's index in
 // the host's list this frame and its id (aimed false: none in reach, the point straight ahead).
@@ -69,11 +77,18 @@ public:
     const ArenaOutput& tick(float dt, bool light, bool heavy, Vec2 pos, Vec2 facing, const FieldTarget* targets,
                             std::size_t targetCount);
 
-    // What the body does now (set before tick). While it is not Free, presses are dropped, the buffer is cleared and an
-    // attack under way stops at once (the output goes Idle).
-    void setBody(FieldBody body) { body_ = body; }
+    // What the body does now (set before tick). While it is busy (fieldBodyBusy) and for the hand-back after, presses
+    // are dropped, the buffer is cleared and an attack under way stops at once (the output goes Idle). The hand-back
+    // runs on the ticks after the move ends; the tick on which it runs out is still held.
+    void setBody(FieldBody body) {
+        body_ = body;
+        if (fieldBodyBusy(body)) handBackLeft_ = handBack_;
+    }
     FieldBody body() const { return body_; }
-    bool canAttack() const { return body_ == FieldBody::Free; }
+    // Whether an attack may start on the next tick (the body free or falling, no hand-back left).
+    bool canAttack() const { return !fieldBodyBusy(body_) && handBackLeft_ <= 0.f; }
+    // The hand-back time (s, at least 0). Default kFieldHandBack.
+    void setHandBack(float seconds) { handBack_ = seconds > 0.f ? seconds : 0.f; }
 
     const ArenaOutput& output() const { return out_; }
     // The aim of the attack under way (or the last one); straight ahead when none has started.
@@ -108,6 +123,8 @@ private:
     bool lastWasLight_ = false;
     bool chainLive_ = false; // a light chain is going (a heavy or a cut ends it)
     FieldBody body_ = FieldBody::Free;
+    float handBack_ = kFieldHandBack;
+    float handBackLeft_ = 0.f; // hand-back still to run
     std::uint8_t buffered_ = 0xFF; // the buffered move, 0xFF: none
     float bufferedAt_ = 0.f;
     Vec2 facing_{1.f, 0.f};

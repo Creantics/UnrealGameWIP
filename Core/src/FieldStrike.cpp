@@ -139,6 +139,7 @@ void FieldStrike::begin(const ArenaFighter& kit) {
     lastWasLight_ = false;
     chainLive_ = false;
     body_ = FieldBody::Free;
+    handBackLeft_ = 0.f;
     buffered_ = kNoMove;
     bufferedAt_ = 0.f;
     facing_ = Vec2{1.f, 0.f};
@@ -194,8 +195,13 @@ const ArenaOutput& FieldStrike::tick(float dt, bool light, bool heavy, Vec2 pos,
     ArenaPlayerOut& p = out_.player;
     p.velocity = Vec2{};
 
-    // The body is busy with a move of its own: no attack, nothing kept for later.
-    if (body_ != FieldBody::Free) {
+    // The body is busy with a move of its own, or handing back from one: no attack, nothing kept for later.
+    bool held = fieldBodyBusy(body_);
+    if (!held && handBackLeft_ > 0.f) {
+        handBackLeft_ -= dt;
+        held = true;
+    }
+    if (held) {
         buffered_ = kNoMove;
         if (attack_) cancel();
         nearCount_ = 0;
