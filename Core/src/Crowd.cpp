@@ -191,6 +191,7 @@ void CrowdSim::setState(Agent& a, CrowdState s) {
     if (s != CrowdState::Walk) a.idleAlong = -1.f;
     if (s != CrowdState::Flee) a.stopAlong = -1.f;
     a.hold = false;
+    a.brace = false;
     switch (s) {
     case CrowdState::Notice: ++counts_.noticed; break;
     case CrowdState::BackAway: ++counts_.backedAway; break;
@@ -473,9 +474,6 @@ void CrowdSim::deliver(Agent& a) {
 // Dijkstra from the member's edge to the nearest node at least safeDist from the threat, nodes near the threat
 // costing more; the first kCrowdPathMax nodes kept. With no such node within the search, the farthest node it settled,
 // if that gains 10 m; otherwise false (cornered).
-// m: a member this close to the fight, with no way out that keeps clear of it, runs past it rather than cower.
-constexpr float kBreakOut = 3.f;
-
 bool CrowdSim::plan(Agent& a) {
     ++counts_.plans;
     if (a.plans < UINT16_MAX) ++a.plans;
@@ -485,9 +483,7 @@ bool CrowdSim::plan(Agent& a) {
     std::uint32_t goal = UINT32_MAX, far = UINT32_MAX, settled = 0;
     const Vec2 base = basePoint(a);
     const Vec2 laneOff{a.pos.x - base.x, a.pos.y - base.y};
-    for (int pass = 0; pass < 2; ++pass) {
-        const bool breakOut = pass == 1;
-        if (breakOut && (goal != UINT32_MAX || far != UINT32_MAX || startD >= kBreakOut)) break;
+    {
         hn = 0;
         if (++stamp_ == 0) {
             std::fill(sStamp_.begin(), sStamp_.end(), 0);
@@ -501,12 +497,8 @@ bool CrowdSim::plan(Agent& a) {
             const Vec2 n0 = graph_->node(node);
             const Vec2 q = prev == UINT32_MAX ? Vec2{n0.x + laneOff.x, n0.y + laneOff.y} : n0;
             const Vec2 p0 = prev == UINT32_MAX ? a.pos : graph_->node(prev);
-            const float d0 = dist(p0, a.threat);
-            // Never closer than 0.5 m short of where the member started, however many steps; a member standing in
-            // the fight with no other way out (second pass) may break past it.
-            const float limit = breakOut ? (d0 < kBreakOut ? 0.f : std::min(tuning_.blockRadius, d0 - 0.5f))
-                                         : std::min(tuning_.blockRadius, startD - 0.5f);
-            if (segDist(p0, q, a.threat) < limit) return;
+            // Never closer than 0.5 m short of where the member started, however many steps.
+            if (segDist(p0, q, a.threat) < std::min(tuning_.blockRadius, startD - 0.5f)) return;
             if (hn >= heap_.size()) return;
             sStamp_[node] = stamp_;
             sCost_[node] = cost;
@@ -585,11 +577,16 @@ void CrowdSim::startFlee(Agent& a) {
     a.needPlan = true;
     if (plansLeft_ > 0) {
         --plansLeft_;
-        if (!plan(a)) {
-            setState(a, CrowdState::Cower);
-            a.retryLeft = tuning_.cowerRetry;
-        }
+        if (!plan(a)) brace(a);
     }
+}
+
+void CrowdSim::brace(Agent& a) {
+    // Cornered: no way out that keeps clear of the threat. Turn away, run to the far end of the dead end and cower
+    // there (never past the threat).
+    setState(a, CrowdState::Cower);
+    a.brace = true;
+    a.retryLeft = tuning_.cowerRetry;
 }
 
 void CrowdSim::decide(std::uint32_t i) {
@@ -618,10 +615,7 @@ void CrowdSim::decide(std::uint32_t i) {
     case CrowdState::Flee:
         if (a.needPlan && plansLeft_ > 0) {
             --plansLeft_;
-            if (!plan(a)) {
-                setState(a, CrowdState::Cower);
-                a.retryLeft = tuning_.cowerRetry;
-            }
+            if (!plan(a)) brace(a);
         }
         break;
     case CrowdState::Cower:
@@ -665,12 +659,21 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
         speed = tuning_.runSpeed * (a.baseSpeed / std::max(tuning_.walkSpeed, 0.1f));
         latRate *= 2.f;
         break;
+    case CrowdState::Cower:
+        if (a.brace) speed = tuning_.runSpeed * (a.baseSpeed / std::max(tuning_.walkSpeed, 0.1f));
+        break;
     default: break;
     }
     if (a.hold) speed = 0.f;
     // Moving away from the threat: keep the far end ahead while backing off or running before a plan.
-    const bool away = a.state == CrowdState::BackAway || (a.state == CrowdState::Flee && a.pathLen == 0 && a.stopAlong < 0.f);
-    if (away && speed > 0.f && dist2(graph_->node(a.to), a.threat) < dist2(graph_->node(a.from), a.threat)) reverse(a);
+    const bool away = a.state == CrowdState::BackAway || (a.state == CrowdState::Flee && a.pathLen == 0 && a.stopAlong < 0.f) ||
+                      (a.state == CrowdState::Cower && a.brace);
+    if (away && speed > 0.f) {
+        // A cornered member runs the way that opens the distance at once (never round the threat to a farther end).
+        const Vec2 f0 = graph_->node(a.from), t0 = graph_->node(a.to);
+        const float run = (t0.x - f0.x) * (a.pos.x - a.threat.x) + (t0.y - f0.y) * (a.pos.y - a.threat.y);
+        if (a.brace ? run < 0.f : dist2(t0, a.threat) < dist2(f0, a.threat)) reverse(a);
+    }
 
     const float bandLo = a.lane > 0.f ? a.lane - a.laneHalf : -a.laneHalf, bandHi = a.lane + a.laneHalf;
     if (speed > 0.f) {
@@ -824,6 +827,7 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
     // Facing: the way it moves; towards the threat while noticing or backing off; held otherwise.
     float want = a.yaw;
     if (a.state == CrowdState::Notice || a.state == CrowdState::BackAway) want = yawTo(a.pos, a.threat);
+    else if (a.state == CrowdState::Cower && a.brace && a.speed <= 0.f) want = yawTo(a.threat, a.pos); // back to it
     else if (a.speed > 0.f) want = std::atan2(dir.y, dir.x) * kDeg;
     const float turn = tuning_.turnRate * tuning_.step;
     a.yaw += std::clamp(angleDiff(a.yaw, want), -turn, turn);
@@ -874,6 +878,7 @@ void CrowdSim::writeView(std::uint32_t i) {
     v.id = i | (static_cast<std::uint32_t>(a.gen) << 16);
     v.live = a.state != CrowdState::Free;
     v.state = a.state;
+    v.cornered = a.state == CrowdState::Cower && a.brace && a.hold;
     v.pos = a.pos;
     v.prevPos = a.prev;
     v.yaw = a.yaw;
@@ -886,7 +891,7 @@ void CrowdSim::writeView(std::uint32_t i) {
     case CrowdState::Recover: v.anim = CrowdAnim::Look; break;
     case CrowdState::BackAway: v.anim = a.speed > 0.05f ? CrowdAnim::BackStep : CrowdAnim::Look; break;
     case CrowdState::Flee: v.anim = a.speed > 0.05f ? CrowdAnim::Run : CrowdAnim::Look; break;
-    case CrowdState::Cower: v.anim = CrowdAnim::Cower; break;
+    case CrowdState::Cower: v.anim = a.speed > 0.05f ? CrowdAnim::Run : CrowdAnim::Cower; break;
     default: v.anim = CrowdAnim::Idle; break;
     }
 }
@@ -954,6 +959,7 @@ CrowdReactionResult CrowdReactionProbe::evaluate(const CrowdSim& sim, float minG
         const float gain = dist(v.pos, at_) - d0_[k];
         r.worstGain = std::min(r.worstGain, gain);
         if (gain >= minGain) ++r.away;
+        else if (v.cornered && gain >= 0.f) ++r.cornered;
         if (gain < 0.f) ++r.toward;
         if (std::fabs(angleDiff(v.yaw, yawTo(at_, v.pos))) <= 90.f) ++r.turned;
     }

@@ -528,8 +528,11 @@ TEST_CASE("crowd cower: recovers when calm; flees on a retry once a way opens") 
     }
     SUBCASE("the threat moves to the far end: the retry plans and it flees") {
         sim.pushEvent({CrowdEventKind::Gunshot, {195.f, 0.f}, 3.f, 1.f});
-        const auto seen = trace(sim, a, 8.f); // a retry that fails before the shot is heard waits 4 s (the backoff)
-        CHECK(inOrder(seen, {CrowdState::Cower, CrowdState::Flee}));
+        const std::uint64_t fled = sim.counts().fled;
+        trace(sim, a, 8.f); // a retry that fails before the shot is heard waits 4 s (the backoff)
+        // Braced at the dead end, already past the safe distance from the new threat: the run ends where it starts.
+        CHECK(sim.counts().fled == fled + 1);
+        CHECK(sim.agent(a).state != CrowdState::Cower);
     }
 }
 
@@ -909,6 +912,50 @@ TEST_CASE("crowd r3: wall inset, first-second reaction, no clumps, no stuck runn
     CHECK(inFront == 0);
 }
 
+TEST_CASE("crowd first second: cornered in a dead end by a fight at its mouth, members brace at the far end") {
+    // A 6 m stub off a cross street; the fight at its mouth. No way out keeps clear of it, so the two in the stub turn
+    // away, run to its far end and cower there (never past the fight); the one on the cross street runs.
+    CrowdGraph g;
+    REQUIRE(g.build({line({0.f, 0.f}, {6.f, 0.f}), line({6.f, -100.f}, {6.f, 0.f}), line({6.f, 0.f}, {6.f, 100.f})}, loose()));
+    CrowdTuning t = quiet();
+    t.reactRadius = 22.f;
+    CrowdSim sim;
+    REQUIRE(sim.init(g, t, 7));
+    sim.setPopulationFrozen(true);
+    const std::uint32_t end = nodeAt(g, {0.f, 0.f}), mouth = nodeAt(g, {6.f, 0.f});
+    const std::uint32_t a = sim.spawnAt(end, 0, 0.5f, 1.f);
+    const std::uint32_t b = sim.spawnAt(end, 0, 0.5f, 0.2f);
+    const std::uint32_t c = sim.spawnAt(mouth, edgeTo(g, mouth, nodeAt(g, {6.f, 100.f})), 0.5f, 12.f);
+    run(sim, 0.2f);
+    const Vec2 fight{5.f, 0.f};
+    CrowdReactionProbe probe;
+    probe.begin(sim, fight, t.reactRadius);
+    REQUIRE(probe.count() == 3);
+    const float d0a = dist(sim.agent(a).pos, fight);
+    sim.pushEvent({CrowdEventKind::FightStart, fight});
+    run(sim, 1.f);
+    const CrowdReactionResult r = probe.evaluate(sim, 1.5f);
+    CAPTURE(r.inside);
+    CAPTURE(r.away);
+    CAPTURE(r.cornered);
+    CAPTURE(r.turned);
+    CAPTURE(r.worstGain);
+    CHECK(r.ok());
+    CHECK(r.cornered == 2);
+    CHECK(r.away == 1);
+    CHECK(dist(sim.agent(a).pos, fight) > d0a); // net: farther, though it walked on towards the mouth until it heard
+    for (const std::uint32_t m : {a, b}) {
+        CHECK(sim.agent(m).state == CrowdState::Cower);
+        CHECK(sim.agent(m).cornered);
+        CHECK(sim.agent(m).anim == CrowdAnim::Cower);
+        CHECK(sim.agent(m).pos.x < 0.5f);
+    }
+    CHECK(sim.agent(c).state == CrowdState::Flee);
+    // Still a cower, not a stand: when the fight is over and fear fades it walks on.
+    run(sim, 90.f);
+    CHECK(sim.agent(a).state != CrowdState::Cower);
+}
+
 TEST_CASE("crowd on a real street table (opt-in)") {
     const std::string path = envText("FT_CROWD_STREETS");
     if (path.empty()) return;
@@ -962,8 +1009,8 @@ TEST_CASE("crowd on a real street table (opt-in)") {
     sim.pushEvent({CrowdEventKind::FightStart, fight});
     run(sim, 1.f, player);
     const CrowdReactionResult r = probe.evaluate(sim, 1.5f);
-    std::printf("crowd real: calm close pairs standing %u mixed %u walking %u; first second: inside %u away %u turned %u toward %u worst gain %.2f m: %s\n",
-                calm[0], calm[1], calm[2], r.inside, r.away, r.turned, r.toward, static_cast<double>(r.worstGain), r.ok() ? "ok" : "FAILED");
+    std::printf("crowd real: calm close pairs standing %u mixed %u walking %u; first second: inside %u away %u cornered %u turned %u toward %u worst gain %.2f m: %s\n",
+                calm[0], calm[1], calm[2], r.inside, r.away, r.cornered, r.turned, r.toward, static_cast<double>(r.worstGain), r.ok() ? "ok" : "FAILED");
     std::uint32_t runStill = 0, pairs[3] = {0, 0, 0};
     for (int i = 0; i < 38; ++i) {
         if (i % 2 == 0) sim.pushEvent({CrowdEventKind::Strike, fight});

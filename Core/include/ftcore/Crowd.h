@@ -228,6 +228,7 @@ struct CrowdAgentView {
     std::uint32_t id = 0;   // slot | generation << 16: changes when the slot is reused
     bool live = false;
     bool drawn = false;
+    bool cornered = false;  // cowering at the far end of a dead end with no way out past the threat, facing away
     CrowdState state = CrowdState::Free;
     CrowdAnim anim = CrowdAnim::Idle;
     Vec2 pos, prevPos;      // this step's and the last step's (lerp by stepAlpha())
@@ -258,9 +259,10 @@ struct CrowdReactionResult {
     std::uint32_t inside = 0;   // live members within the radius at the start (still live now)
     std::uint32_t away = 0;     // ... whose distance from the point grew by at least minGain
     std::uint32_t turned = 0;   // ... facing within 90 degrees of straight away from the point
+    std::uint32_t cornered = 0; // ... not 1.5 m farther, but cornered: backed to a dead end's far end, cowering, turned away
     std::uint32_t toward = 0;   // ... closer to the point than at the start
     float worstGain = 0.f;      // m: the least growth in distance among them (negative: came closer)
-    bool ok() const { return inside > 0 && away == inside && turned == inside && toward == 0; }
+    bool ok() const { return inside > 0 && away + cornered == inside && turned == inside && toward == 0; }
 };
 class CrowdSim;
 class CrowdReactionProbe {
@@ -346,6 +348,7 @@ private:
         Vec2 stuckRef;               // where a running member stood when its stuck clock last restarted
         float stuckTime = 0.f;
         bool hold = false;           // backing off or running with nowhere farther to go: stands until the next plan
+        bool brace = false;          // cornered (no plan): runs to the far end of its dead end, then cowers there
     };
 
     void step(Vec2 player, Vec2 playerVel);
@@ -369,6 +372,7 @@ private:
     void setState(Agent& a, CrowdState s);
     void free(std::uint32_t i);
     void unspawn(std::uint32_t i);
+    void brace(Agent& a);
     bool crowded(std::uint32_t self, Vec2 p, float r) const;
     float scale(const Agent& a) const;
     Vec2 basePoint(const Agent& a) const;
