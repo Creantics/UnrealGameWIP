@@ -720,6 +720,8 @@ void AFTPartyVan::TickScript(float DeltaSeconds)
 		if (Shots == 0 && Along > EndAlong * 0.35f) { Shot(TEXT("side"), -90.f, -5.f, 700.f); }
 		else if (Shots == 1 && Along > EndAlong * 0.55f) { Shot(TEXT("behind"), 0.f, -10.f, 750.f); }
 		else if (Shots == 2 && Along > EndAlong * 0.75f) { Shot(TEXT("top"), 0.f, -89.f, 2500.f); }
+		// A loop adds its last-but-one corner from above and behind, the van just into its turn.
+		else if (Shots == 3 && LoopN > 3 && Along > LoopCum[LoopN - 3] + 300.f) { Shot(TEXT("junction"), 30.f, -35.f, 1400.f); }
 	}
 	else if (!ShotPrefix.IsEmpty())
 	{
