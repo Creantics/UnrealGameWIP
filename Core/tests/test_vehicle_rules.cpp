@@ -377,6 +377,21 @@ TEST_CASE("vehicle rules: the shipped provisional file loads, and bad rows are r
     CHECK(keep.repair.garageCount == 0); // unchanged on failure
 }
 
+TEST_CASE("lamps: head and tail at night, brake under brake input or a held handbrake") {
+    const LampState day = lampState(false, 0.f, false, true);
+    CHECK_FALSE(day.head);
+    CHECK_FALSE(day.tail);
+    CHECK_FALSE(day.brake);
+    const LampState night = lampState(true, 0.f, false, true);
+    CHECK(night.head);
+    CHECK(night.tail);
+    CHECK_FALSE(night.brake);
+    CHECK_FALSE(lampState(true, 0.1f, false, true).brake);
+    CHECK(lampState(false, 0.5f, false, false).brake);
+    CHECK(lampState(false, 0.f, true, true).brake);
+    CHECK_FALSE(lampState(false, 0.f, true, false).brake);
+}
+
 TEST_CASE("vehicle rules allocate nothing at run time") {
     const VehicleRules r;
     const bool hooked = ftcore_test::allocHookInstalled();

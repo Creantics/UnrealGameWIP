@@ -53,6 +53,14 @@ int wearStage(const WearState& s, WearZone z) { return stageOf(s.zone[static_cas
 
 int dirtStage(const WearState& s) { return stageOf(s.dirt); }
 
+LampState lampState(bool night, float brake, bool handbrake, bool driverSeated) {
+    LampState l;
+    l.head = night;
+    l.tail = night;
+    l.brake = brake > 0.1f || (handbrake && driverSeated);
+    return l;
+}
+
 // Repair.
 
 int garageAt(const RepairTuning& t, float x, float y) {

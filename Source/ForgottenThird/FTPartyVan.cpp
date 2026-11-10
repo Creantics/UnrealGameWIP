@@ -2,6 +2,8 @@
 
 #include "Camera/CameraComponent.h"
 #include "Components/BoxComponent.h"
+#include "Components/PointLightComponent.h"
+#include "Components/SpotLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/StaticMesh.h"
@@ -11,12 +13,14 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Kismet/GameplayStatics.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 
 #include "FTCrowdSubsystem.h"
 #include "FTExploreCharacter.h"
 #include "FTPartyFollower.h"
+#include "FTWorldClockSubsystem.h"
 #include "ForgottenThird.h"
 
 #include <string>
@@ -24,6 +28,17 @@
 namespace
 {
 constexpr float KmhToCms = 100000.f / 3600.f;
+
+// The lamps on the body, in its mesh frame (cm, from the side and rear renders): head lamps 25 by 14 at the front
+// corners, tail lamps 10 wide and 28 tall at the back. Glow is the lens's emissive scale when lit.
+const FVector LensAt[4] = {FVector(174.0, -51.0, 77.0), FVector(174.0, 51.0, 77.0), FVector(-153.0, -66.0, 83.0), FVector(-153.0, 66.0, 83.0)};
+const FVector LensSize[4] = {FVector(4.0, 25.0, 14.0), FVector(4.0, 25.0, 14.0), FVector(4.0, 10.0, 28.0), FVector(4.0, 10.0, 28.0)};
+constexpr float HeadGlow = 40.f, TailGlowOn = 10.f, BrakeGlow = 60.f;
+constexpr float HeadCandela = 1500.f, HeadReach = 3000.f; // a low beam's spread; street lamps are 400 cd
+constexpr float TailCandela = 20.f, BrakeCandela = 60.f, TailReach = 350.f;
+constexpr float LookEvery = 0.5f;
+const TCHAR* const BodyLookPath = TEXT("/Game/Vehicles/PartyVan/M_VanBody.M_VanBody");
+const TCHAR* const LensLookPath = TEXT("/Game/Vehicles/PartyVan/M_VanLamp.M_VanLamp");
 
 // -VanCourse, in the course's frame (cm): the straight along +X, the left turn at 150 m, then along -Y.
 const FVector CourseOrigin(0.0, 300000.0, 20000.0);
@@ -101,6 +116,163 @@ AFTPartyVan::AFTPartyVan()
 	Boom->bDoCollisionTest = true;
 	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
 	Camera->SetupAttachment(Boom, USpringArmComponent::SocketName);
+
+	static const TCHAR* LensNames[4] = {TEXT("HeadLensL"), TEXT("HeadLensR"), TEXT("TailLensL"), TEXT("TailLensR")};
+	for (int I = 0; I < 4; ++I)
+	{
+		Lens[I] = CreateDefaultSubobject<UStaticMeshComponent>(LensNames[I]);
+		Lens[I]->SetupAttachment(Tilt);
+		Lens[I]->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Lens[I]->SetCastShadow(false);
+	}
+	// Unshadowed lights, hidden by day: two beams ahead and a red glow behind. Their reach is short and they stay off
+	// until the clock's night band, so the pooled street lights' budget holds.
+	static const TCHAR* BeamNames[2] = {TEXT("HeadBeamL"), TEXT("HeadBeamR")};
+	for (int I = 0; I < 2; ++I)
+	{
+		HeadBeam[I] = CreateDefaultSubobject<USpotLightComponent>(BeamNames[I]);
+		HeadBeam[I]->SetupAttachment(Tilt);
+		HeadBeam[I]->SetCastShadows(false);
+		HeadBeam[I]->SetIntensityUnits(ELightUnits::Candelas);
+		HeadBeam[I]->SetIntensity(HeadCandela);
+		HeadBeam[I]->SetAttenuationRadius(HeadReach);
+		HeadBeam[I]->SetOuterConeAngle(32.f);
+		HeadBeam[I]->SetInnerConeAngle(14.f);
+		HeadBeam[I]->SetLightColor(FLinearColor(1.f, 0.93f, 0.82f));
+		HeadBeam[I]->SetVisibility(false);
+	}
+	TailGlow = CreateDefaultSubobject<UPointLightComponent>(TEXT("TailGlow"));
+	TailGlow->SetupAttachment(Tilt);
+	TailGlow->SetCastShadows(false);
+	TailGlow->SetIntensityUnits(ELightUnits::Candelas);
+	TailGlow->SetIntensity(TailCandela);
+	TailGlow->SetAttenuationRadius(TailReach);
+	TailGlow->SetLightColor(FLinearColor(1.f, 0.05f, 0.02f));
+	TailGlow->SetVisibility(false);
+}
+
+void AFTPartyVan::SetupLook(bool bBodyAsset)
+{
+	// The body's painted slot takes M_VanBody (glass and wear); the arch liners keep theirs. Without the material, or
+	// on the stand-in box, the body stays as it was.
+	UMaterialInterface* BodyMaster = bBodyAsset ? LoadObject<UMaterialInterface>(nullptr, BodyLookPath) : nullptr;
+	if (BodyMaster)
+	{
+		for (int32 Slot = 0; Slot < Body->GetNumMaterials(); ++Slot)
+		{
+			const UMaterialInterface* Was = Body->GetMaterial(Slot);
+			if (Was && !Was->GetName().Contains(TEXT("ArchLiner")))
+			{
+				if (!BodyLook)
+				{
+					BodyLook = UMaterialInstanceDynamic::Create(BodyMaster, this);
+				}
+				Body->SetMaterial(Slot, BodyLook);
+			}
+		}
+	}
+	UMaterialInterface* LensMaster = bBodyAsset ? LoadObject<UMaterialInterface>(nullptr, LensLookPath) : nullptr;
+	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	if (LensMaster)
+	{
+		const FLinearColor Colors[2] = {FLinearColor(1.f, 0.95f, 0.85f), FLinearColor(0.75f, 0.02f, 0.01f)};
+		for (int I = 0; I < 2; ++I)
+		{
+			LensLook[I] = UMaterialInstanceDynamic::Create(LensMaster, this);
+			LensLook[I]->SetVectorParameterValue(TEXT("Color"), Colors[I]);
+			LensLook[I]->SetScalarParameterValue(TEXT("Glow"), 0.f);
+		}
+	}
+	for (int I = 0; I < 4; ++I)
+	{
+		Lens[I]->SetStaticMesh(Cube);
+		Lens[I]->SetRelativeLocation(LensAt[I]);
+		Lens[I]->SetRelativeScale3D(LensSize[I] / 100.0);
+		if (LensLook[I / 2])
+		{
+			Lens[I]->SetMaterial(0, LensLook[I / 2]);
+		}
+		Lens[I]->SetVisibility(LensLook[I / 2] != nullptr);
+	}
+	for (int I = 0; I < 2; ++I)
+	{
+		HeadBeam[I]->SetRelativeLocationAndRotation(LensAt[I] + FVector(8.0, 0.0, 0.0), FRotator(-4.0, 0.0, 0.0));
+	}
+	TailGlow->SetRelativeLocation(FVector(-175.0, 0.0, 83.0));
+
+	// -VanWear=front,rear,left,right,dirt (0 to 4 each) starts the van that worn, for a look at the wear.
+	FString WearText;
+	if (FParse::Value(FCommandLine::Get(), TEXT("VanWear="), WearText, false))
+	{
+		TArray<FString> Parts;
+		WearText.ParseIntoArray(Parts, TEXT(","));
+		for (int32 I = 0; I < FMath::Min(Parts.Num(), 5); ++I)
+		{
+			const float V = FMath::Clamp(FCString::Atof(*Parts[I]), 0.f, 4.f);
+			if (I < ftcore::kWearZones)
+			{
+				Wear.zone[I] = V;
+			}
+			else
+			{
+				Wear.dirt = V;
+			}
+		}
+	}
+	ShowWear();
+	LookAge = LookEvery; // the first tick reads the clock
+}
+
+void AFTPartyVan::ShowWear()
+{
+	if (!BodyLook)
+	{
+		return;
+	}
+	static const FName Names[5] = {TEXT("WearFront"), TEXT("WearRear"), TEXT("WearLeft"), TEXT("WearRight"), TEXT("Dirt")};
+	const int32 Now[5] = {ftcore::wearStage(Wear, ftcore::WearZone::Front), ftcore::wearStage(Wear, ftcore::WearZone::Rear),
+		ftcore::wearStage(Wear, ftcore::WearZone::Left), ftcore::wearStage(Wear, ftcore::WearZone::Right), ftcore::dirtStage(Wear)};
+	for (int I = 0; I < 5; ++I)
+	{
+		if (Now[I] != WearShown[I])
+		{
+			WearShown[I] = Now[I];
+			BodyLook->SetScalarParameterValue(Names[I], static_cast<float>(Now[I]) / static_cast<float>(ftcore::kWearMaxStage));
+		}
+	}
+}
+
+void AFTPartyVan::TickLamps(float DeltaSeconds)
+{
+	LookAge += DeltaSeconds;
+	if (LookAge >= LookEvery)
+	{
+		LookAge = 0.f;
+		const UFTWorldClockSubsystem* Clock = GetWorld()->GetSubsystem<UFTWorldClockSubsystem>();
+		bNight = Clock && Clock->IsRunning() && Clock->GetNightAmount() > 0.5f;
+		ShowWear();
+	}
+	const ftcore::LampState L = ftcore::lampState(bNight, LampBrake, bLampHandbrake, Seats.phase != ftcore::SeatPhase::OnFoot);
+	if (bLampsSet && L.head == Lamps.head && L.tail == Lamps.tail && L.brake == Lamps.brake)
+	{
+		return;
+	}
+	bLampsSet = true;
+	Lamps = L;
+	for (int I = 0; I < 2; ++I)
+	{
+		HeadBeam[I]->SetVisibility(L.head);
+	}
+	TailGlow->SetVisibility(L.tail || L.brake);
+	TailGlow->SetIntensity(L.brake ? BrakeCandela : TailCandela);
+	if (LensLook[0])
+	{
+		LensLook[0]->SetScalarParameterValue(TEXT("Glow"), L.head ? HeadGlow : 0.f);
+	}
+	if (LensLook[1])
+	{
+		LensLook[1]->SetScalarParameterValue(TEXT("Glow"), L.brake ? BrakeGlow : (L.tail ? TailGlowOn : 0.f));
+	}
 }
 
 void AFTPartyVan::BeginPlay()
@@ -124,6 +296,7 @@ void AFTPartyVan::BeginPlay()
 		Body->SetRelativeLocation(FVector(0.0, 0.0, Clearance + BodyHalfZ));
 		UE_LOG(LogForgottenThird, Display, TEXT("FTPartyVan: no %s yet, a box stands in."), *BodyMesh.ToString());
 	}
+	SetupLook(BodyAsset != nullptr);
 	const bool bWheelAsset = WheelMesh.TryLoad() != nullptr;
 	UStaticMesh* WheelAsset = LoadMesh(WheelMesh, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 	for (int I = 0; I < 4; ++I)
@@ -524,6 +697,8 @@ void AFTPartyVan::MoveBody(float DeltaSeconds)
 	}
 	In.handbrake = bHandbrake || !bCanDrive;
 	ftcore::holdForSeats(Seats, In);
+	LampBrake = In.brake;
+	bLampHandbrake = In.handbrake;
 	// The nearest pedestrian ahead brakes the van down to the zone's cap; they react to it when it is close.
 	float PedAhead = ftcore::kNobodyAhead, PedSide = 0.f;
 	AActor* PedChar = nullptr;
@@ -618,6 +793,7 @@ void AFTPartyVan::Tick(float DeltaSeconds)
 	}
 	TickSeats(DeltaSeconds);
 	MoveBody(DeltaSeconds);
+	TickLamps(DeltaSeconds);
 	if (bScript)
 	{
 		TickChecks();
@@ -752,6 +928,11 @@ void AFTPartyVan::TickScript(float DeltaSeconds)
 	{
 		bExitHeld = true;
 		ScriptStage = 4;
+		// From low behind while the lead gets out: the handbrake holds, so the brake lamps are lit.
+		if (!ShotPrefix.IsEmpty() && bMapRoute)
+		{
+			Shot(TEXT("stop"), 0.f, -4.f, 650.f);
+		}
 	}
 	if (ScriptStage == 4 && Seats.phase == ftcore::SeatPhase::OnFoot)
 	{
