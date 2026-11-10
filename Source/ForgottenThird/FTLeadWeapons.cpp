@@ -34,19 +34,9 @@ namespace
 {
 using ftcore::FightClip;
 
-// The strike clips: what each plays as, and its id in Data/Anim/beat_clips.json and its asset's name in the clip folder.
-struct FStrikeClip
-{
-	FightClip Clip;
-	const char* Id;
-};
-constexpr FStrikeClip kStrikeClips[] = {
-	{FightClip::StrikeLeft, "lead_jab"},
-	{FightClip::StrikeRight, "lead_cross"},
-	{FightClip::KickRight, "lead_kick_r"},
-	{FightClip::Counter, "lead_counter"},
-	{FightClip::Finisher, "lead_finisher"},
-};
+// The strike clips a lead may have; each one's id in Data/Anim/beat_clips.json and asset name is ftcore::arenaLeadClipId's.
+constexpr FightClip kStrikeClips[] = {FightClip::StrikeLeft, FightClip::StrikeRight, FightClip::KickRight,
+	FightClip::Counter, FightClip::Finisher, FightClip::WeaponRight, FightClip::Cast};
 constexpr const TCHAR* kBeatClipsFile = TEXT("Data/Anim/beat_clips.json");
 // A clip with no impact in the table meets its beat this far through.
 constexpr float kDefaultKeyShare = 0.4f;
@@ -168,9 +158,10 @@ void FFTLeadWeapons::LoadClips(const FFTLeadLook& Look)
 		: FString::Printf(TEXT("/Game/Characters/%s/Rig/Retargeted"), *Look.Name);
 	int32 Loaded = 0;
 	FString Missing;
-	for (const FStrikeClip& Entry : kStrikeClips)
+	for (const FightClip StrikeClip : kStrikeClips)
 	{
-		const FString Name = FT::ToFString(Entry.Id);
+		const char* const Id = ftcore::arenaLeadClipId(StrikeClip);
+		const FString Name = FT::ToFString(Id);
 		const FString Package = Folder / Name;
 		UAnimSequence* Clip = !Folder.IsEmpty() && FPackageName::DoesPackageExist(Package)
 			? LoadObject<UAnimSequence>(nullptr, *(Package + TEXT(".") + Name), nullptr, LOAD_NoWarn | LOAD_Quiet)
@@ -181,14 +172,14 @@ void FFTLeadWeapons::LoadClips(const FFTLeadLook& Look)
 			continue;
 		}
 		const float Length = Clip->GetPlayLength();
-		const int Index = Table->find(Entry.Id);
+		const int Index = Table->find(Id);
 		const float Impact = Index >= 0 ? static_cast<float>((*Table)[static_cast<std::size_t>(Index)].impact) : 0.f;
 		const float Key = Impact > 0.f && Impact < Length ? Impact : Length * kDefaultKeyShare;
-		Animator.setClip(Entry.Clip, {Length, Key, false});
-		Instance->SetActionClip(static_cast<int32>(Entry.Clip), Clip);
+		Animator.setClip(StrikeClip, {Length, Key, false});
+		Instance->SetActionClip(static_cast<int32>(StrikeClip), Clip);
 		++Loaded;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: lead weapon: %s plays %s (%.2f s, impact %.2f s)."),
-			*FT::ToFString(ftcore::fightClipName(Entry.Clip)), *Name, Length, Key);
+			*FT::ToFString(ftcore::fightClipName(StrikeClip)), *Name, Length, Key);
 	}
 	bClips = Loaded > 0;
 	if (!Missing.IsEmpty())
@@ -735,6 +726,8 @@ const TCHAR* FFTLeadWeapons::GetLastStrikeName() const
 	case FightClip::KickRight: return TEXT("lead_kick_r");
 	case FightClip::Counter: return TEXT("lead_counter");
 	case FightClip::Finisher: return TEXT("lead_finisher");
+	case FightClip::WeaponRight: return TEXT("lead_fire");
+	case FightClip::Cast: return TEXT("lead_cast");
 	default: break;
 	}
 	return TEXT("strike");

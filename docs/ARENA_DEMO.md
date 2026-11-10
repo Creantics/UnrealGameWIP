@@ -346,7 +346,12 @@ from:
    ([BEAT_ANIMS.md](BEAT_ANIMS.md)) retargeted onto each lead's body into its look's `ClipFolder`:
    `-run=FTBuildRig -Mesh=<the look's body> -Dest=/Game/Characters/<Lead>/RigReal3/LeadRig
    -RetargetFrom=/Game/Characters/TestHuman/Rig/IK_test_human.IK_test_human -Clips=<the five> -Names=<their names>
-   -Out=<the look's ClipFolder> -AlignPose`.
+   -Out=<the look's ClipFolder> -AlignPose`. Duy's shot plays `lead_fire` (one-hand aimed pistol, recoil) and the
+   Third's cast `lead_cast` (palm push); both are hand-keyed outside the repo and listed in `beat_clips.json` without an
+   asset, so they are first retargeted onto the test human locally, then onto the leads with the other five.
+
+To try a weapon without being hit back, fight the target dummy: `-ArenaLineup=dummy` is a passive enemy kind (it never
+takes an attack token, stands where it spawns and has 100000 hp).
 
 On each of the lead's attacks the clip of its move plays over the locomotion, keyed so its impact lands as the attack
 goes active (a kick, shot or cast with no clip of its own is thrown as the punch on its side), and fades out after.

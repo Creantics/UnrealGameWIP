@@ -326,6 +326,10 @@ FTCORE_API const ArenaAttack* arenaPlayerAttack(const ArenaFighter& kit, std::ui
 // FightAnimator::playStrike (a riposte or Release with play) keyed to the attack's active part, startup after
 // AttackStarted.
 FTCORE_API FightClip arenaPlayerStrike(const ArenaFighter& kit, std::uint8_t move);
+// The leads' strike clips: the id each FightClip a lead plays has in Data/Anim/beat_clips.json and in the look's clip
+// folder ("lead_jab", "lead_cross", "lead_kick_r", "lead_counter", "lead_finisher", "lead_fire" for the shot,
+// "lead_cast" for the spell); nullptr for a clip no lead has. A literal: valid forever.
+FTCORE_API const char* arenaLeadClipId(FightClip clip);
 
 // What an enemy move shows during its startup: the word on its Read card (append only; generic shapes,
 // the host shows each through its own ui string). arena.json spells it as arenaTellName gives it.
@@ -385,6 +389,8 @@ struct ArenaEnemyKind {
     float accel = 0.f;        // m/s^2: how fast its velocity moves toward the one it wants, both ways; 0: instant.
                               // Approach and Strafe only
     float bpm = 0.f;          // the beat its startups are whole numbers of, when the file's own doesn't fit it; 0: the file's
+    bool passive = false;     // never asks for an attack token: a target dummy (arena.json's `dummy`); with its
+                              // speeds at 0 it stands where it spawned and only takes blows
     ArenaEnemyLook look;      // the host's skinned figure for it, if any
 };
 

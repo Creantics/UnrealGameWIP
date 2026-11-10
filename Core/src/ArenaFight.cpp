@@ -1098,7 +1098,8 @@ struct ArenaFightImpl {
                 ++held;
                 continue;
             }
-            asking[i] = foe.brain == ArenaBrain::Strafe && t0 - foe.stringEnd >= def.enemies[i].attackDelay;
+            asking[i] = !def.enemies[i].passive && foe.brain == ArenaBrain::Strafe
+                        && t0 - foe.stringEnd >= def.enemies[i].attackDelay;
             foe.asked = asking[i] ? foe.asked + dt : 0.f;
         }
         while (held < def.attackers) {
@@ -1840,6 +1841,19 @@ FightClip arenaPlayerStrike(const ArenaFighter& kit, std::uint8_t move) {
     return static_cast<std::size_t>(move) < n ? p[move] : FightClip::Stance;
 }
 
+const char* arenaLeadClipId(FightClip clip) {
+    switch (clip) {
+    case FightClip::StrikeLeft: return "lead_jab";
+    case FightClip::StrikeRight: return "lead_cross";
+    case FightClip::KickRight: return "lead_kick_r";
+    case FightClip::Counter: return "lead_counter";
+    case FightClip::Finisher: return "lead_finisher";
+    case FightClip::WeaponRight: return "lead_fire";
+    case FightClip::Cast: return "lead_cast";
+    default: return nullptr;
+    }
+}
+
 const char* arenaTellName(ArenaTell t) {
     switch (t) {
     case ArenaTell::Strike: return "strike";
@@ -2268,9 +2282,10 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     arenaUnknownKeys(j, path,
                      {"id", "hp", "poise", "poiseDelay", "staggerTime", "openTime", "downTime", "walkSpeed", "runSpeed",
                       "strafeSpeed", "turnRate", "preferredRange", "runRange", "attackDelay", "bodyRadius", "height", "moves",
-                      "accel", "bpm", "look"},
+                      "accel", "bpm", "look", "passive"},
                      false, warnings);
     arenaInt(j, "hp", k.hp, 1, 100000, path, errors);
+    arenaBool(j, "passive", k.passive, path, errors);
     arenaNum(j, "poise", k.poise, 0, 100000, true, path, errors);
     arenaNum(j, "poiseDelay", k.poiseDelay, 0, 10, false, path, errors);
     arenaNum(j, "staggerTime", k.staggerTime, 0, 10, false, path, errors);
