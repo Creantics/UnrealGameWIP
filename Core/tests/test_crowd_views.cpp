@@ -97,3 +97,41 @@ TEST_CASE("crowd views: nobody spawns, despawns, or is drawn or undrawn in front
     sim.setViews(nullptr, 0);
     CHECK_FALSE(sim.inView({0.f, 0.f}));
 }
+
+TEST_CASE("crowd views: a steady view never draws a member in sight; a cut (a new camera) shows a new picture") {
+    CrowdGraph g;
+    REQUIRE(g.build(grid(16, 20.f), loose()));
+    CrowdTuning t;
+    t.targetAgents = 220;
+    t.maxDrawn = 8; // fewer drawn than in sight: the pick must not swap members in front of the camera
+    CrowdSim sim;
+    REQUIRE(sim.init(g, t, 5));
+    sim.setDrawFocus(true, {0.f, 0.f});
+    const CrowdViewCone east{{0.f, 0.f}, 0.f, 35.f, 40.f}, north{{0.f, 0.f}, 90.f, 35.f, 40.f};
+    auto drawnIn = [&](const CrowdViewCone& c) {
+        std::uint32_t n = 0;
+        for (std::uint32_t i = 0; i < sim.capacity(); ++i) {
+            const CrowdAgentView& v = sim.agent(i);
+            if (!v.live || !v.drawn || std::hypot(v.pos.x - c.eye.x, v.pos.y - c.eye.y) > c.range) continue;
+            float off = std::fabs(std::atan2(v.pos.y - c.eye.y, v.pos.x - c.eye.x) * 57.29578f - c.yaw);
+            if (off > 180.f) off = 360.f - off;
+            n += off <= c.halfFov;
+        }
+        return n;
+    };
+    for (int s = 0; s < 15 * 30; ++s) {
+        sim.setViews(&east, 1);
+        tick(sim, {0.f, 0.f});
+    }
+    CHECK(sim.counts().popsInView == 0);
+    // The camera cuts to the north: members there may be drawn at once (nothing was seen there a step before).
+    sim.setViews(&north, 1);
+    tick(sim, {0.f, 0.f});
+    CHECK(drawnIn(north) > 0);
+    CHECK(sim.counts().popsInView == 0);
+    for (int s = 0; s < 15 * 30; ++s) {
+        sim.setViews(&north, 1);
+        tick(sim, {0.f, 0.f});
+    }
+    CHECK(sim.counts().popsInView == 0);
+}

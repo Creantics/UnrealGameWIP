@@ -1059,6 +1059,8 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
     bool doorsSaid = false;
     std::uint64_t slowRunAll = 0; // S-332: run poses below walking speed, every step of every run
     std::uint32_t groupFail = 0, groupMax = 0; // S-332: runs with more than 3 stopped members within 3 m
+    std::uint64_t popAll = 0, popAppear = 0, popLive = 0; // S-366: changes in a camera's view (FT_CROWD_VIEWS)
+    std::uint32_t popRuns = 0;
     if (!envText("FT_CROWD_DOORS").empty()) REQUIRE_MESSAGE(importCrowdDoors(readFile(envText("FT_CROWD_DOORS")), side, doors, &err), err);
     const std::uint32_t minNodes = static_cast<std::uint32_t>(std::max(1, std::atoi(want.c_str())));
     // What-if levers for the report (not the shipped tuning): FT_CROWD_REACT_CLOSE (s), FT_CROWD_RUN_MUL (x run speed).
@@ -1112,13 +1114,23 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
             }
             // S-271: the least gap between two members and between a member and the frontage, every step of the run
             // (calm included), and the walkers near the fight at its start and 30 s later.
+            // S-366: FT_CROWD_VIEWS=1 runs it as the render does: the party at the fight, the draw picked round it, and the
+            // stills' cameras (two 35 degree views about 13 m out, one all round from above) fed every step.
+            const bool views = !envText("FT_CROWD_VIEWS").empty();
+            const Vec2 standAt = views ? fight : player;
+            if (views) {
+                const Vec2 ea{fight.x - 3.5f, fight.y - 13.f}, eb{fight.x + 9.5f, fight.y + 9.5f};
+                const CrowdViewCone cams[3] = {{ea, std::atan2(fight.y - ea.y, fight.x - ea.x) * 57.29578f, 35.f, 40.f}, {eb, std::atan2(fight.y - eb.y, fight.x - eb.x) * 57.29578f, 35.f, 40.f}, {fight, 0.f, 180.f, 33.7f}};
+                sim.setViews(cams, 3);
+                sim.setDrawFocus(true, fight);
+            }
             float runPair = 1e30f, runWall = 1e30f;
             std::uint32_t groupWorst = 0; // S-332: the largest knot of members standing within 3 m, every 8th step
             int stepAll = 0;
             auto go = [&](float seconds) {
                 const int steps = static_cast<int>(std::lround(seconds * 15.f));
                 for (int k = 0; k < steps; ++k) {
-                    sim.tick(1.f / 15.f, player, {0.f, 0.f});
+                    sim.tick(1.f / 15.f, standAt, {0.f, 0.f});
                     runPair = std::min(runPair, sim.minPairDistance(2.f));
                     slowRunAll += sim.runPoseSlow();
                     if (++stepAll % 8 == 0) groupWorst = std::max(groupWorst, sim.largestStoppedGroup(3.f));
@@ -1156,6 +1168,10 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
             pairFail += runPair < kPairGate;
             groupFail += groupWorst > 3u;
             groupMax = std::max(groupMax, groupWorst);
+            popAll += sim.counts().popsInView;
+            popAppear += sim.counts().popsAppear;
+            popLive += sim.counts().popsLive;
+            popRuns += sim.counts().popsInView > 0;
             wallFail += runWall < kWallGate - kWallTol;
             if (runPair < worstPair) { worstPair = runPair; worstPairAt = fight; worstPairSeed = seed; }
             if (runWall < worstWall) { worstWall = runWall; worstWallAt = fight; worstWallSeed = seed; }
@@ -1189,7 +1205,11 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
                 worstWallSeed, wallFail, static_cast<double>(kWallGate), backFail, stuck);
     std::printf("crowd sweep: S-332: run poses below walking speed %llu; largest stopped group within 3 m %u (%u runs over 3)\n",
                 static_cast<unsigned long long>(slowRunAll), groupMax, groupFail);
+    std::printf("crowd sweep: S-366: changes in a camera's view %llu in %u runs (%llu drawn, %llu undrawn; %llu spawned or despawned)\n",
+                static_cast<unsigned long long>(popAll), popRuns, static_cast<unsigned long long>(popAppear),
+                static_cast<unsigned long long>(popAll - popAppear), static_cast<unsigned long long>(popLive));
     CHECK(slowRunAll == 0u);
+    CHECK(popAll == 0u); // S-366: with FT_CROWD_VIEWS; without views nothing is counted
     CHECK(groupFail * 100u <= runs * 5u);
     CHECK(toward == 0u);
     CHECK(pass * 100u >= runs * 95u);

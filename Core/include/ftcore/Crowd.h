@@ -299,6 +299,7 @@ struct CrowdCounts {
     std::uint64_t stuck = 0;             // times a moving member stood still (< 0.1 m): a runner 1 s, anyone else 2 s
     std::uint64_t wentIn = 0, cameOut = 0, fledIn = 0; // through doors (fledIn: runners that took a door)
     std::uint64_t popsInView = 0;  // S-332: a member drawn or undrawn (spawned, despawned) inside a view's range
+    std::uint64_t popsAppear = 0, popsLive = 0; // S-366: of them, drawn (vs undrawn); spawned or despawned (vs draw pick)
     std::uint64_t watched = 0, walkedOn = 0; // S-332: runners at the safe distance that stopped to look back / walked on
 };
 
@@ -384,8 +385,12 @@ public:
     // below it those inside come out sooner and new members arrive at the edges as before.
     // S-332: up to kMaxViews cameras (capture and player); n 0 clears them (then the drawn pick is by distance only).
     static constexpr std::uint32_t kMaxViews = 6;
+    // S-366: a view that jumps (a new camera, a cut: its eye over 3 m or its yaw over 15 degrees from the last call) shows
+    // a new picture for one step: members may be drawn in it then. In a steady view a member is never drawn or undrawn.
     FTCORE_API void setViews(const CrowdViewCone* views, std::uint32_t n);
     FTCORE_API bool inView(Vec2 p, float extraDeg = 0.f, float extraRange = 0.f) const;
+    // S-366: in a view that did not just cut.
+    FTCORE_API bool inSteadyView(Vec2 p, float extraDeg = 0.f, float extraRange = 0.f) const;
     // S-332: the most stopped members within r of one member (itself included); members behind doors left out.
     FTCORE_API std::uint32_t largestStoppedGroup(float r) const;
     // S-332: live members drawn in a run pose while moving slower than walking speed (gate 0).
@@ -481,6 +486,8 @@ private:
     std::uint32_t streetTarget() const;
     void arrive(Agent& a);
     bool roomToWatch(const Agent& a) const;
+    // S-366: other members standing (not moving, not behind a door) within r of a.
+    std::uint32_t standersNear(const Agent& a, float r) const;
     void settle(Agent& a);
     // Two members both at doors (going in or coming out) pass each other in the doorway: no gap kept or measured.
     bool bothAtDoors(std::uint32_t i, std::uint32_t j) const {
@@ -502,6 +509,7 @@ private:
     std::vector<Agent> agents_;
     CrowdViewCone viewCones_[kMaxViews];
     std::uint32_t viewCount_ = 0;
+    std::uint32_t cutMask_ = 0; // S-366: views that jumped since the last step
     std::vector<std::uint8_t> wasDrawn_;
     std::vector<CrowdAgentView> views_;
     std::vector<std::uint32_t> freeList_;

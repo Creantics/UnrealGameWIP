@@ -38,8 +38,12 @@ constexpr float kSafeSlack = 6.f;
 constexpr float kSafeSpread = 15.f;
 // S-286: how far short of a dead end's end node the first row of cornered members stands (m).
 constexpr float kBraceEnd = 0.3f;
+constexpr float kKnotRadius = 3.f; // S-366: the stopped-group gate's radius
 // m/s: how fast members standing too close step apart.
 constexpr float kStandApart = 0.8f;
+// S-366: the margin round a view's frame within which a drawn member stays drawn (half a body at the edge).
+constexpr float kViewEdgeDeg = 8.f, kViewEdgeRange = 4.f;
+
 float yawTo(Vec2 from, Vec2 to) { return std::atan2(to.y - from.y, to.x - from.x) * kDeg; }
 
 // Distance from p to the segment ab.
@@ -682,9 +686,17 @@ int CrowdSim::freeBraceSlot(std::uint32_t i) const {
         const Agent& b = agents_[j];
         if (j != i && b.brace && b.braceSlot >= 0 && b.braceSlot < 64 && b.from == a.from && b.to == a.to) used |= 1ull << b.braceSlot;
     }
-    for (int k = 0; k < 64; ++k)
+    // S-366: only the spots that fit in the dead end (rows braceRow apart back from its end); the rest are left
+    // without one (-2) and, past the safe distance, give up the dead end (decide).
+    const CrowdEdge* e = graph_->find(a.from, a.to);
+    const float w = std::max(0.f, (e ? e->half : a.lane + a.laneHalf) - tuning_.graph.wallInset);
+    const float sp = std::max({tuning_.minGap, tuning_.avoidRadius, tuning_.braceSpace});
+    const int cols = 1 + static_cast<int>(2.f * w / sp);
+    const int rows = 1 + static_cast<int>(std::max(0.f, a.len - kBraceEnd) / std::max(sp, tuning_.braceRow));
+    const int fit = std::min(64, cols * rows);
+    for (int k = 0; k < fit; ++k)
         if (((used >> k) & 1ull) == 0) return k;
-    return 63;
+    return -2;
 }
 
 void CrowdSim::braceSlotAt(const Agent& a, float& along, float& lat) const {
@@ -725,12 +737,13 @@ void CrowdSim::decide(std::uint32_t i) {
                 if (dist2(graph_->node(a.to), a.threat) > dist2(graph_->node(a.from), a.threat)) reverse(a);
             }
             a.threatAt = time_ - tuning_.threatMemory;
-        } else if (a.state == CrowdState::Idle && (a.idleLeft -= tuning_.step) <= 0.f) setState(a, CrowdState::Walk);
+        } else if (a.state == CrowdState::Idle && ((a.idleLeft -= tuning_.step) <= 0.f || standersNear(a, kKnotRadius) >= 2u))
+            setState(a, CrowdState::Walk); // S-366: or two others stand round it already (a knot): it walks on
         break;
     case CrowdState::Notice:
         if (f >= flee) startFlee(a);
         else if (f >= back) setState(a, CrowdState::BackAway);
-        else if (a.stateTime >= tuning_.noticeTime && f < notice) setState(a, CrowdState::Walk);
+        else if ((a.stateTime >= tuning_.noticeTime && f < notice) || standersNear(a, kKnotRadius) >= 2u) setState(a, CrowdState::Walk);
         break;
     case CrowdState::BackAway:
         if (f >= flee) startFlee(a);
@@ -744,6 +757,10 @@ void CrowdSim::decide(std::uint32_t i) {
         break;
     case CrowdState::Cower:
         a.retryLeft -= tuning_.step;
+        if (a.brace && dist(a.pos, a.threat) >= tuning_.safeDist && (a.braceSlot == -2 || (a.hold && standersNear(a, kKnotRadius) >= 2u))) {
+            settle(a); // S-366: no spot of its own (the dead end full, or boxed in short of it by others) and far enough already
+            break;
+        }
         if (f >= flee && a.retryLeft <= 0.f && plansLeft_ > 0) {
             --plansLeft_;
             if (plan(a)) {
@@ -759,6 +776,13 @@ void CrowdSim::decide(std::uint32_t i) {
         }
         break;
     case CrowdState::Recover:
+        if (standersNear(a, kKnotRadius) >= 2u && !(f >= flee && dist(a.pos, a.threat) < tuning_.safeDist - kSafeSlack)) {
+            // S-366: two others stand round it already: it walks on, away from the threat.
+            setState(a, CrowdState::Walk);
+            a.walkedOn = true;
+            a.heading = a.walkHeading = yawTo(a.threat, a.pos);
+            break;
+        }
         // Already at the safe distance from this threat: stay put rather than plan a run to where it stands.
         // The run ends at a node, the member a pavement's width off it: the slack keeps that from reading as inside.
         if (f >= flee && dist(a.pos, a.threat) < tuning_.safeDist - kSafeSlack) startFlee(a);
@@ -980,7 +1004,7 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
     if (a.state == CrowdState::Cower && a.brace) {
         const bool end = dist2(graph_->node(awayFromThreat(a)), a.threat) < dist2(graph_->node(a.to), a.threat);
         if (!end) a.braceSlot = -1;
-        else if (a.braceSlot < 0) a.braceSlot = freeBraceSlot(i);
+        else if (a.braceSlot < 0) a.braceSlot = freeBraceSlot(i); // -2: the dead end is full
         if (a.braceSlot >= 0) braceSlotAt(a, slotAlong, slotLat);
     }
     if (speed > 0.f && (a.state == CrowdState::Flee || a.brace)) {
@@ -1240,8 +1264,31 @@ void CrowdSim::spread(std::uint32_t i) {
 }
 
 void CrowdSim::setViews(const CrowdViewCone* views, std::uint32_t n) {
+    const std::uint32_t was = viewCount_;
     viewCount_ = views ? std::min(n, kMaxViews) : 0;
-    for (std::uint32_t k = 0; k < viewCount_; ++k) viewCones_[k] = views[k];
+    for (std::uint32_t k = 0; k < viewCount_; ++k) {
+        const CrowdViewCone& o = viewCones_[k];
+        const CrowdViewCone& c = views[k];
+        float turn = std::fmod(std::fabs(c.yaw - o.yaw), 360.f);
+        if (turn > 180.f) turn = 360.f - turn;
+        if (k >= was || dist(o.eye, c.eye) > 3.f || turn > 15.f || std::fabs(o.halfFov - c.halfFov) > 2.f || std::fabs(o.range - c.range) > 2.f)
+            cutMask_ |= 1u << k;
+        viewCones_[k] = c;
+    }
+}
+
+bool CrowdSim::inSteadyView(Vec2 p, float extraDeg, float extraRange) const {
+    for (std::uint32_t k = 0; k < viewCount_; ++k) {
+        if (cutMask_ & (1u << k)) continue;
+        const CrowdViewCone& c = viewCones_[k];
+        const float d = dist(c.eye, p);
+        if (d > c.range + extraRange) continue;
+        if (c.halfFov + extraDeg >= 180.f || d < 1.f) return true;
+        float off = std::fmod(std::fabs(yawTo(c.eye, p) - c.yaw), 360.f);
+        if (off > 180.f) off = 360.f - off;
+        if (off <= c.halfFov + extraDeg) return true;
+    }
+    return false;
 }
 
 bool CrowdSim::inView(Vec2 p, float extraDeg, float extraRange) const {
@@ -1297,6 +1344,17 @@ void CrowdSim::settle(Agent& a) {
     a.heading = a.walkHeading = yawTo(a.threat, a.pos);
 }
 
+std::uint32_t CrowdSim::standersNear(const Agent& a, float r) const {
+    const std::uint32_t self = static_cast<std::uint32_t>(&a - agents_.data());
+    std::uint32_t n = 0;
+    forEachNear(a.pos, r, [&](std::uint32_t j) {
+        const Agent& b = agents_[j];
+        if (j == self || b.state == CrowdState::Free || hiddenMember(b.state, b.doorPhase)) return;
+        if (b.speed <= 0.05f && dist2(a.pos, b.pos) < r * r) ++n;
+    });
+    return n;
+}
+
 bool CrowdSim::roomToWatch(const Agent& a) const {
     const std::uint32_t self = static_cast<std::uint32_t>(&a - agents_.data());
     const float room = std::max(tuning_.watchRoom, tuning_.watchSpace);
@@ -1338,8 +1396,13 @@ void CrowdSim::pickDrawn(Vec2 player) {
         if (agents_[i].state == CrowdState::Free || (agents_[i].state == CrowdState::Indoors && agents_[i].doorPhase == 2)) continue;
         float key = dist2(agents_[i].pos, player);
         if (viewCount_ > 0) {
-            // S-332: drawn and in sight: kept; within a widened view: next; the rest by distance from the focus.
-            const float tier = wasDrawn_[i] && inView(agents_[i].pos) ? 0.f : inView(agents_[i].pos, 15.f, 10.f) ? 1.f : 2.f;
+            // S-332/S-366: drawn and in sight: kept, then drawn within a margin round the frame (half a body at its edge);
+            // within a widened view: next; the rest by distance from the focus. Not drawn and in a steady view: stays
+            // undrawn while it is in sight (it would pop in).
+            const Vec2 p = agents_[i].pos;
+            if (!wasDrawn_[i] && inSteadyView(p, kViewEdgeDeg, kViewEdgeRange)) continue;
+            const float tier = wasDrawn_[i] && inView(p) ? 0.f : wasDrawn_[i] && inView(p, kViewEdgeDeg, kViewEdgeRange) ? 1.f
+                             : inView(p, 15.f, 10.f) ? 2.f : 3.f;
             key = tier * 1e9f + std::min(key, 9e8f);
         }
         order_[m++] = (static_cast<std::uint64_t>(floatBits(key)) << 32) | i;
@@ -1423,8 +1486,13 @@ void CrowdSim::step(Vec2 player, Vec2 playerVel) {
     if (viewCount_ > 0)
         for (std::uint32_t i = 0; i < agents_.size(); ++i) {
             const bool now = views_[i].live && views_[i].drawn;
-            if (now != (wasDrawn_[i] != 0) && (inView(agents_[i].pos) || inView(agents_[i].prev))) ++counts_.popsInView;
+            if (now != (wasDrawn_[i] != 0) && (inSteadyView(agents_[i].pos) || inSteadyView(agents_[i].prev))) {
+                ++counts_.popsInView;
+                counts_.popsAppear += now;
+                counts_.popsLive += !views_[i].live || views_[i].odo <= 0.f;
+            }
         }
+    cutMask_ = 0;
 }
 
 std::uint32_t CrowdSim::closePairs(float d) const {
