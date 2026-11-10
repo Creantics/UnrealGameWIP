@@ -101,7 +101,7 @@ TEST_CASE("field strike: every lead's light hits a dummy in front, once per atta
     }
 }
 
-TEST_CASE("field strike: nothing is hit behind, out of reach or dead") {
+TEST_CASE("field strike: a target behind in reach is turned to; nothing out of reach or dead is hit") {
     const ArenaTable table = shipped();
     const ArenaFighter kit = table.fighter("devin");
     FieldStrike s;
@@ -115,7 +115,17 @@ TEST_CASE("field strike: nothing is hit behind, out of reach or dead") {
     press(s, false, r, targets, 3);
     idle(s, 2.f, r, targets, 3);
     CHECK(r.started == 1);
-    CHECK(r.hits == 0);
+    CHECK(r.hits == 1);
+    CHECK(s.aim().target == 0);
+    CHECK(s.aim().at.x == doctest::Approx(-0.6f));
+    // With only the far and the dead one, nothing.
+    FieldStrike s2;
+    s2.begin(kit);
+    Run r2;
+    press(s2, false, r2, targets + 1, 2);
+    idle(s2, 2.f, r2, targets + 1, 2);
+    CHECK(r2.started == 1);
+    CHECK(r2.hits == 0);
 }
 
 TEST_CASE("field strike: Duy's shot reaches down its lane, the Third's cast hits at range") {
@@ -227,4 +237,79 @@ TEST_CASE("field strike: the lane test and the arc test") {
     CHECK(fieldStrikeReaches(arc, Vec2{}, Vec2{1.f, 0.f}, Vec2{1.f, 1.f}, 0.4f));
     CHECK_FALSE(fieldStrikeReaches(arc, Vec2{}, Vec2{1.f, 0.f}, Vec2{0.f, 1.5f}, 0.4f));
     CHECK(fieldStrikeReaches(arc, Vec2{}, Vec2{1.f, 0.f}, Vec2{0.f, 0.f}, 0.4f));
+}
+
+TEST_CASE("field strike: an attack turns to the nearest target in reach and aims at its near side, chest high") {
+    ArenaFighter kit;
+    kit.light[0].range = 2.f;
+    kit.light[0].arcCos = 0.7f;
+    kit.lightCount = 1;
+    FieldStrike s;
+    s.begin(kit);
+    // One off to the side within reach, one nearer but out of reach (behind a wall of range), one dead and nearest.
+    FieldTarget t[3] = {{Vec2{0.f, 1.5f}, 0.4f, true, 1.1f}, {Vec2{-5.f, 0.f}, 0.4f, true, 1.2f},
+                        {Vec2{0.5f, 0.f}, 0.4f, false, 1.2f}};
+    Run r;
+    press(s, false, r, t, 3);
+    REQUIRE(r.started == 1);
+    const FieldAim& a = s.aim();
+    CHECK(a.aimed);
+    CHECK(a.target == 0);
+    CHECK(a.at.x == doctest::Approx(0.f));
+    CHECK(a.at.y == doctest::Approx(1.1f));
+    CHECK(a.height == doctest::Approx(1.1f));
+    CHECK(s.output().player.facing.x == doctest::Approx(0.f).epsilon(1e-4));
+    CHECK(s.output().player.facing.y == doctest::Approx(1.f));
+    // Facing +x as the host reported, the side target still takes the blow: the attack turned at it.
+    idle(s, 2.f, r, t, 3);
+    CHECK(r.hits == 1);
+}
+
+TEST_CASE("field strike: no target in reach aims straight ahead at the lead's chest") {
+    ArenaFighter kit;
+    kit.light[0].range = 1.5f;
+    kit.lightCount = 1;
+    FieldStrike s;
+    s.begin(kit);
+    s.setChestHeight(1.4f);
+    const FieldTarget far{Vec2{4.f, 0.f}, 0.4f, true, 1.2f};
+    Run r;
+    press(s, false, r, &far, 1, Vec2{1.f, 1.f}, Vec2{0.f, -2.f});
+    REQUIRE(r.started == 1);
+    CHECK_FALSE(s.aim().aimed);
+    CHECK(s.aim().at.x == doctest::Approx(1.f));
+    CHECK(s.aim().at.y == doctest::Approx(-0.5f));
+    CHECK(s.aim().height == doctest::Approx(1.4f));
+}
+
+TEST_CASE("field strike: the aim follows a target moving during startup and holds once active") {
+    ArenaFighter kit;
+    kit.light[0].startup = 0.3f;
+    kit.light[0].active = 0.1f;
+    kit.light[0].range = 3.f;
+    kit.lightCount = 1;
+    FieldStrike s;
+    s.begin(kit);
+    FieldTarget t{Vec2{2.f, 0.f}, 0.4f, true, 1.2f};
+    Run r;
+    press(s, false, r, &t, 1);
+    CHECK(s.aim().at.x == doctest::Approx(1.6f));
+    t.at = Vec2{2.f, 1.f};
+    s.tick(kDt, false, false, Vec2{}, Vec2{1.f, 0.f}, &t, 1);
+    const Vec2 moved = s.aim().at;
+    CHECK(moved.y > 0.1f);
+    while (s.output().player.part != ArenaPart::Active) s.tick(kDt, false, false, Vec2{}, Vec2{1.f, 0.f}, &t, 1);
+    const Vec2 held = s.aim().at;
+    t.at = Vec2{-2.f, 0.f};
+    s.tick(kDt, false, false, Vec2{}, Vec2{1.f, 0.f}, &t, 1);
+    CHECK(s.aim().at.x == doctest::Approx(held.x));
+    CHECK(s.aim().at.y == doctest::Approx(held.y));
+}
+
+TEST_CASE("field strike: the hit point is the near side of the body") {
+    const Vec2 p = fieldHitPoint(Vec2{0.f, 0.f}, Vec2{3.f, 4.f}, 0.5f);
+    CHECK(p.x == doctest::Approx(2.7f));
+    CHECK(p.y == doctest::Approx(3.6f));
+    const Vec2 inside = fieldHitPoint(Vec2{3.1f, 4.f}, Vec2{3.f, 4.f}, 0.5f);
+    CHECK(inside.x == doctest::Approx(3.f));
 }

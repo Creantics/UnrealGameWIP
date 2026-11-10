@@ -62,6 +62,8 @@ constexpr float kCourseJumpTo = 120.f;
 // hands back.
 constexpr float kRollBuffer = 0.2f;
 constexpr float kRollTurnTime = 0.05f;
+// An attack turns the lead to the target it aims at this fast (s, exponential).
+constexpr float kAttackTurnTime = 0.04f;
 constexpr float kRollTurnHold = 1.f;
 // A wall a slide meets this squarely or more (the cosine between its way and into the wall) stops it; one met at more
 // of a glance turns it along the wall.
@@ -452,17 +454,28 @@ void AFTExploreCharacter::TickWeapon(float DeltaSeconds)
 		// Every fourth press a heavy.
 		(++AttackPresses % 4 == 0 ? bPressHeavy : bPressLight) = true;
 	}
-	// The dummies in the world, in metres on the floor plane.
+	// The dummies in the world, in metres on the floor plane, their chests above the lead's feet.
+	const FVector Pos = GetActorLocation();
+	const double FeetZ = Pos.Z - GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
 	ftcore::FieldTarget Targets[ftcore::kMaxFieldTargets];
 	AFTFieldDummy* Dummies[ftcore::kMaxFieldTargets] = {};
 	std::size_t Count = 0;
 	for (TActorIterator<AFTFieldDummy> It(GetWorld()); It && Count < ftcore::kMaxFieldTargets; ++It)
 	{
 		const FVector At = It->GetActorLocation();
-		Targets[Count] = ftcore::FieldTarget{ftcore::Vec2{float(At.X / 100.0), float(At.Y / 100.0)}, It->Radius / 100.f, true};
+		Targets[Count] = ftcore::FieldTarget{ftcore::Vec2{float(At.X / 100.0), float(At.Y / 100.0)}, It->Radius / 100.f, true,
+			float((It->GetChest().Z - FeetZ) / 100.0)};
 		Dummies[Count++] = *It;
 	}
-	const FVector Pos = GetActorLocation();
+	// With nobody in reach the lead aims at its own chest height.
+	for (const TCHAR* Bone : {TEXT("spine_05"), TEXT("spine_04"), TEXT("spine_03")})
+	{
+		if (GetMesh()->DoesSocketExist(Bone))
+		{
+			Strike.setChestHeight(float((GetMesh()->GetSocketLocation(Bone).Z - FeetZ) / 100.0));
+			break;
+		}
+	}
 	const FVector Face = GetActorForwardVector().GetSafeNormal2D();
 	const ftcore::ArenaOutput& Out = Strike.tick(DeltaSeconds, bPressLight, bPressHeavy,
 		ftcore::Vec2{float(Pos.X / 100.0), float(Pos.Y / 100.0)}, ftcore::Vec2{float(Face.X), float(Face.Y)}, Targets, Count);
@@ -474,6 +487,15 @@ void AFTExploreCharacter::TickWeapon(float DeltaSeconds)
 			Dummies[Event.target]->TakeHit(Event.amount);
 		}
 	}
+	// While it attacks, the lead turns to Core's facing (to the target it aims at) and aims at the hit point.
+	if (Strike.attacking())
+	{
+		const float Want = FMath::RadiansToDegrees(FMath::Atan2(Out.player.facing.y, Out.player.facing.x));
+		const float Gap = FMath::FindDeltaAngleDegrees(static_cast<float>(GetActorRotation().Yaw), Want);
+		AddActorWorldRotation(FRotator(0.0, Gap * (1.f - FMath::Exp(-DeltaSeconds / kAttackTurnTime)), 0.0));
+	}
+	const ftcore::FieldAim& Aim = Strike.aim();
+	Weapons.SetAim(FVector(Aim.at.x * 100.0, Aim.at.y * 100.0, FeetZ + Aim.height * 100.0), Aim.aimed);
 	const double T = Strike.time();
 	Weapons.Feed(Out.events, T);
 	Weapons.Track(Out.player, T);
@@ -500,10 +522,16 @@ void AFTExploreCharacter::TickWeaponShots()
 		}
 		return;
 	}
-	if (!bNew || GetWorld()->GetTimeSeconds() < WeaponShotDelay)
+	// Each new attack is filmed at its impact, or (every second one) a shot's or cast's mid-flight.
+	if (bNew && GetWorld()->GetTimeSeconds() >= WeaponShotDelay)
+	{
+		WeaponShotDue = Weapons.GetViewTime(WeaponShotIndex % 2 == 0);
+	}
+	if (WeaponShotDue < 0.0 || Strike.time() + 1e-6 < WeaponShotDue)
 	{
 		return;
 	}
+	WeaponShotDue = -1.0;
 	const APlayerController* Player = Cast<APlayerController>(GetController());
 	if (AHUD* Hud = Player ? Player->GetHUD() : nullptr)
 	{
@@ -1496,7 +1524,8 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	}
 	// A vault or a climb holds the facing it began with; a roll or a slide turns to its way, a catch square into the face
 	// (TickTraversal, TickSlide).
-	const UFTLocomotionAnimInstance* Steered = bTraversing ? nullptr : LocoAnim;
+	// An attack's turn is TickWeapon's.
+	const UFTLocomotionAnimInstance* Steered = bTraversing || Strike.attacking() ? nullptr : LocoAnim;
 	if (const UFTLocomotionAnimInstance* Anim = Steered)
 	{
 		// The step holds over a pose with no time passed, so a frame with none (the actor's time dilated to 0)

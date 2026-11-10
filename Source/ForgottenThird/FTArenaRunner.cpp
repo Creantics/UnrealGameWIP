@@ -30,6 +30,7 @@
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 
+#include "ftcore/FieldStrike.h"
 #include "ftcore/Json.h"
 
 #include <cmath>
@@ -1281,6 +1282,47 @@ void UFTArenaRunner::StepFight()
 	LeadWeapons.Feed(Out.events, static_cast<double>(Fight.time()));
 	HandleEvents(Out.events);
 	TrackParts(Out);
+	// The lead's aim: the locked enemy, else the nearest one standing, on the near side of its body at its chest; with
+	// nobody, a metre ahead at the lead's chest.
+	{
+		const FVector LeadChest = PlayerFigure ? PlayerFigure->GetChest() : ToWorld(Bodies.player) + FVector(0.0, 0.0, 130.0);
+		int32 Target = -1;
+		const std::uint8_t Lock = Fight.lock();
+		const int32 Count = FMath::Min(static_cast<int32>(Fight.def().enemyCount), static_cast<int32>(MaxEnemies));
+		if (Lock != ftcore::kArenaNobody && Lock < Count && Fight.enemyHp(Lock) > 0)
+		{
+			Target = Lock;
+		}
+		float Best = TNumericLimits<float>::Max();
+		for (int32 I = 0; Target < 0 && I < Count; ++I)
+		{
+			if (Fight.enemyHp(static_cast<std::size_t>(I)) <= 0)
+			{
+				continue;
+			}
+			const ftcore::Vec2 D{Bodies.enemies[I].x - Bodies.player.x, Bodies.enemies[I].y - Bodies.player.y};
+			Best = FMath::Min(Best, D.x * D.x + D.y * D.y);
+		}
+		for (int32 I = 0; Target < 0 && Best < TNumericLimits<float>::Max() && I < Count; ++I)
+		{
+			const ftcore::Vec2 D{Bodies.enemies[I].x - Bodies.player.x, Bodies.enemies[I].y - Bodies.player.y};
+			if (Fight.enemyHp(static_cast<std::size_t>(I)) > 0 && D.x * D.x + D.y * D.y <= Best)
+			{
+				Target = I;
+			}
+		}
+		if (Target >= 0)
+		{
+			const ftcore::Vec2 Hit = ftcore::fieldHitPoint(Bodies.player, Bodies.enemies[Target], Fight.def().enemies[Target].bodyRadius);
+			const AFTArenaFighter* Enemy = EnemyFigures[Target].Get();
+			const FVector At = ToWorld(Hit);
+			LeadWeapons.SetAim(FVector(At.X, At.Y, Enemy ? Enemy->GetChest().Z : LeadChest.Z), true);
+		}
+		else
+		{
+			LeadWeapons.SetAim(LeadChest + FVector(Out.player.facing.x, Out.player.facing.y, 0.0) * 100.0, false);
+		}
+	}
 	LeadWeapons.Track(Out.player, static_cast<double>(Fight.time()));
 	if (bBoss)
 	{

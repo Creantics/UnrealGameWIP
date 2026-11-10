@@ -369,5 +369,6 @@ private:
 	int32 WeaponShotIndex = 0;
 	float WeaponShotDelay = 12.f;
 	int32 WeaponShotSeen = 0;
+	double WeaponShotDue = -1.0; // Strike time of the next shot; below 0: none
 	float WeaponQuitIn = 0.f;
 };

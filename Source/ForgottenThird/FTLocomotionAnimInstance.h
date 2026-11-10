@@ -129,6 +129,12 @@ private:
 	float ElbowHold = 0.f;
 	float ElbowBend = 90.f;
 	FVector ElbowForward = FVector::ForwardVector;
+	// The arm aim (SetArmAim), its target in component space.
+	float AimWeight = 0.f;
+	int32 AimSide = 1;
+	FVector AimTarget = FVector::ZeroVector;
+	FVector AimAxis = FVector::ForwardVector;
+	float AimReach = 0.f;
 
 	FBoneReference Spine[NumSpine];
 	FBoneReference Neck[NumNeck];
@@ -256,6 +262,18 @@ public:
 	{
 		bPushedAir = bAir;
 		PushedVerticalSpeed = VerticalSpeed;
+	}
+	// The arm aim, for a strike, shot or cast: by Weight (0..1, 0 off), the arm on Side (0 left, 1 right) is turned
+	// by two-bone IK (upper arm, forearm, hand) so its wrist lies on the line from the shoulder to Target (world, cm),
+	// Reach cm short of it, the arm no straighter than nearly straight, and the hand then turns so its local Axis
+	// (the knuckles' or the barrel's way, in the hand bone's space) points at Target. On top of everything else.
+	void SetArmAim(int32 Side, const FVector& Target, float Weight, const FVector& Axis, float Reach)
+	{
+		PushedAimSide = Side;
+		PushedAimTarget = Target;
+		PushedAimWeight = Weight;
+		PushedAimAxis = Axis;
+		PushedAimReach = Reach;
 	}
 	// A non-character owner crouches while bCrouch holds (a character's own crouch is read from it).
 	void SetCrouch(bool bCrouch) { bPushedCrouch = bCrouch; }
@@ -390,6 +408,11 @@ private:
 	float PhaseBefore = 0.f;
 	float StrideBefore = 0.f;
 	float PushedFaceYaw = 0.f;
+	int32 PushedAimSide = 1;
+	FVector PushedAimTarget = FVector::ZeroVector;
+	float PushedAimWeight = 0.f;
+	FVector PushedAimAxis = FVector::ForwardVector;
+	float PushedAimReach = 0.f;
 	bool bPushedFace = false;
 	bool bPushedAir = false;
 	bool bPushedCrouch = false;

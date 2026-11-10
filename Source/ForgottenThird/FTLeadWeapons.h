@@ -20,14 +20,25 @@
 //   - guns: the pistol in ft_pistol_grip_r (on hand_r), moved to ft_pistol_holster_r (on thigh_r) once the fight is over.
 // A missing mesh or socket leaves that piece off, with one warning.
 //
+// Aim (SetAim, each step before Track): the hit point the host gives (the target's chest on the near side of its body,
+// ftcore::fieldHitPoint; straight ahead at chest height with no target). While a strike, shot or cast runs, the arm
+// that throws it is turned at the hit point (UFTLocomotionAnimInstance::SetArmAim: in over the startup, held through
+// the active part, out over the recovery): the knuckles of the punching fist, the pistol's barrel, the casting hand's
+// fingers. Kicks are not aimed.
+//
 // Effects (FTBuildVfx from Data/Vfx; docs/VFX_UE.md):
-//   - muzzle_flash on the pistol's `muzzle` socket as a gun strike goes active;
-//   - gauntlet_spark at the striking hand's knuckles (middle_01_l/r, else hand_l/r) on each of the lead's hits;
-//   - spell_bolt from the casting hand along the lead's facing as a magic light attack goes active;
-//   - spell_burst at the chest as a magic heavy or Release goes active;
+//   - muzzle_flash on the pistol's `muzzle` socket as a shot goes active;
+//   - gun_tracer from the muzzle to the hit point as a shot goes active (its speed scaled so its head ends on the hit
+//     point at its lifetime, kTracerTime), then gun_impact at the hit point;
+//   - spell_bolt from the casting hand to the hit point as any magic attack goes active (the same way, kBoltTime), then
+//     spell_impact at the hit point;
+//   - gauntlet_spark at the hit point on the lead's hit;
 //   - spell_ward at the feet while a magic lead guards.
-// Each start logs one line, "Arena: weapon fx <effect> at <fight time>". -ArenaNoWeaponFx leaves the effects off and
-// -ArenaNoWeaponProps the props (OFF halves of OFF/ON captures).
+// Each start logs one line, "<Arena|Field>: weapon fx <effect> at <fight time>". Run checks, one line each:
+// "<Arena|Field>: aim <clip> <deg> deg (<what>)" once the attack has been active a moment (the angle between the
+// fist's, barrel's or casting hand's direction and its direction to the hit point), and "<Arena|Field>: impact <effect>
+// <cm> cm from the hit point" as the impact plays. -ArenaNoWeaponFx leaves the effects off and -ArenaNoWeaponProps the
+// props (OFF halves of OFF/ON captures).
 //
 // Nothing here allocates after Begin.
 
@@ -89,6 +100,12 @@ struct FFTLeadWeapons
 	void Begin(AActor* Owner, USkeletalMeshComponent* Body, const FFTLeadLook& Look, const ftcore::ArenaFighter& Kit);
 	// Removes the props and effects it made from the body and forgets it (a look swapped on a body that stays).
 	void End();
+	// Where the attacks are aimed this step (world, cm), and whether at a target (else straight ahead).
+	void SetAim(const FVector& HitPoint, bool bAtTarget)
+	{
+		AimPoint = HitPoint;
+		bAimed = bAtTarget;
+	}
 	// One step's events (after the step; T the fight's time).
 	void Feed(const ftcore::ArenaEvents& Events, double T);
 	// The player's state after the step: the effects that start as an attack goes active, the guard's ward, the clips'
@@ -107,6 +124,15 @@ struct FFTLeadWeapons
 	int32 GetActiveCount() const { return ActiveCount; }
 	double GetLastActiveTime() const { return LastActiveTime; }
 	const TCHAR* GetLastStrikeName() const;
+	// The fight time to view the last strike at: its impact (bImpact; the hit or the shot's or cast's arrival) or, for a
+	// shot or cast, half way along its flight. Each a moment after, for the effect to show.
+	double GetViewTime(bool bImpact) const;
+	// A shot's and a cast's flight from the hand to the hit point (s): gun_tracer's and spell_bolt's head lifetime, and
+	// the distance their heads cover at speed scale 1 (cm).
+	static constexpr double kTracerTime = 0.1;
+	static constexpr double kTracerReach = 300.0;
+	static constexpr double kBoltTime = 0.2;
+	static constexpr double kBoltReach = 320.0;
 
 	// For -ArenaShotClose's views. The strike under way's limb (after the clip played: hand_l or hand_r, foot_l or
 	// foot_r for a kick), where it is now and whether it is the lead's left; the middle of both forearms (elbows and
@@ -132,10 +158,8 @@ private:
 	enum EEffect : int32
 	{
 		Muzzle,
-		SparkLeft,
-		SparkRight,
-		Bolt,
-		Burst,
+		Travel, // the tracer or the bolt
+		Impact,
 		Ward,
 		EffectCount,
 	};
@@ -151,6 +175,11 @@ private:
 	bool StrikesLeft() const;
 	// The body's chest (the arena figure's own, else the spine's top bone, else above the actor).
 	FVector Chest() const;
+	// The arm aim onto the anim instance for this state (weight 0 when nothing is aimed).
+	void PushArmAim(const ftcore::ArenaPlayerOut& P);
+	// The run check: the aimed direction's angle to the hit point, logged once per attack.
+	void LogAim();
+	const TCHAR* Prefix() const;
 
 	TWeakObjectPtr<AActor> Figure;
 	TWeakObjectPtr<AFTArenaFighter> ArenaFigure;
@@ -164,9 +193,10 @@ private:
 	TWeakObjectPtr<UStaticMeshComponent> Pistol;
 	bool bHolstered = false;
 	TWeakObjectPtr<UFTVfxComponent> Fx[EffectCount];
+	const TCHAR* FxName[EffectCount] = {};
 	// When each effect last started (fight time; below 0: not since the fight began) and which Freeze paused.
-	static_assert(EffectCount == 6, "StartAt's initializer has one entry per effect");
-	double StartAt[EffectCount] = {-1.0, -1.0, -1.0, -1.0, -1.0, -1.0};
+	static_assert(EffectCount == 4, "StartAt's initializer has one entry per effect");
+	double StartAt[EffectCount] = {-1.0, -1.0, -1.0, -1.0};
 	bool bPaused[EffectCount] = {};
 	bool bFrozen = false;
 	float FrozenDilation = 1.f;
@@ -181,4 +211,15 @@ private:
 	bool bWarding = false;
 	int32 ActiveCount = 0;
 	double LastActiveTime = -1e9;
+
+	// The aim (SetAim), the arm it turns (0 left, 1 right; -1 none), the impact due at ImpactAt (fight time; below 0:
+	// none) and when the last strike's aim is checked (below 0: done).
+	FVector AimPoint = FVector::ZeroVector;
+	bool bAimed = false;
+	int32 AimSide = -1;
+	double ImpactDue = -1.0;
+	FVector ImpactAt = FVector::ZeroVector;
+	double LastImpactTime = -1e9;
+	double AimCheckDue = -1.0;
+	FVector AimCheckPoint = FVector::ZeroVector;
 };

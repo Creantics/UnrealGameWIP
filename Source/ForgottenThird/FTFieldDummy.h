@@ -23,6 +23,8 @@ public:
 	// The body's radius the strikes test against (cm).
 	UPROPERTY(EditAnywhere, Category = "Dummy")
 	float Radius = 40.f;
+	// Its chest: 60 cm below the top of the 180 cm post (the hit point's height).
+	FVector GetChest() const { return GetActorLocation() + FVector(0.0, 0.0, 30.0); }
 
 	virtual void Tick(float DeltaSeconds) override;
 

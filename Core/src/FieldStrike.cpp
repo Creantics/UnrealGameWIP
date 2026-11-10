@@ -30,6 +30,47 @@ bool fieldStrikeReaches(const ArenaAttack& attack, Vec2 from, Vec2 facing, Vec2 
     return (dx * f.x + dy * f.y) / dist >= attack.arcCos;
 }
 
+Vec2 fieldHitPoint(Vec2 from, Vec2 at, float radius) {
+    const float dx = from.x - at.x;
+    const float dy = from.y - at.y;
+    const float dist = std::sqrt(dx * dx + dy * dy);
+    if (!(dist > radius) || !(dist > 1e-6f)) return at;
+    return Vec2{at.x + dx / dist * radius, at.y + dy / dist * radius};
+}
+
+void FieldStrike::takeAim(Vec2 pos, const FieldTarget* targets, std::size_t n) {
+    aim_.aimed = false;
+    aim_.target = 0xFF;
+    std::size_t best = n;
+    float bestD = 0.f;
+    if (attack_ && targets) {
+        for (std::size_t i = 0; i < n; ++i) {
+            const FieldTarget& t = targets[i];
+            if (!t.alive) continue;
+            const float dx = t.at.x - pos.x;
+            const float dy = t.at.y - pos.y;
+            const float d = std::sqrt(dx * dx + dy * dy);
+            if (d > attack_->range + t.radius) continue;
+            if (best == n || d < bestD) {
+                best = i;
+                bestD = d;
+            }
+        }
+    }
+    if (best == n) {
+        const float range = attack_ ? attack_->range : 1.f;
+        aim_.at = Vec2{pos.x + facing_.x * range, pos.y + facing_.y * range};
+        aim_.height = chest_;
+        return;
+    }
+    const FieldTarget& t = targets[best];
+    if (bestD > 1e-4f) facing_ = unit(Vec2{t.at.x - pos.x, t.at.y - pos.y});
+    aim_.aimed = true;
+    aim_.target = static_cast<std::uint8_t>(best);
+    aim_.at = fieldHitPoint(pos, t.at, t.radius);
+    aim_.height = t.chest;
+}
+
 void FieldStrike::begin(const ArenaFighter& kit) {
     kit_ = kit;
     out_ = ArenaOutput{};
@@ -43,6 +84,7 @@ void FieldStrike::begin(const ArenaFighter& kit) {
     buffered_ = kNoMove;
     bufferedAt_ = 0.f;
     facing_ = Vec2{1.f, 0.f};
+    aim_ = FieldAim{};
     for (bool& h : hit_) h = false;
     hitCount_ = 0;
     hits_ = 0;
@@ -110,6 +152,9 @@ const ArenaOutput& FieldStrike::tick(float dt, bool light, bool heavy, Vec2 pos,
             || actionTime_ >= attack_->startup + attack_->active + attack_->recovery * attack_->cancel;
         if (canStart && start(buffered_, facing)) buffered_ = kNoMove;
     }
+    const std::size_t n = targets ? (targetCount < kMaxFieldTargets ? targetCount : kMaxFieldTargets) : 0;
+    // Aimed as it starts and through its startup (the target may move); held from active on.
+    if (attack_ && actionTime_ < attack_->startup + 1e-6f) takeAim(pos, targets, n);
 
     ArenaPlayerOut& p = out_.player;
     p.velocity = Vec2{};
@@ -134,7 +179,6 @@ const ArenaOutput& FieldStrike::tick(float dt, bool light, bool heavy, Vec2 pos,
 
     // Active: connect with the targets in reach, nearest first, each once.
     if (attack_ && p.part == ArenaPart::Active && targets) {
-        const std::size_t n = targetCount < kMaxFieldTargets ? targetCount : kMaxFieldTargets;
         for (;;) {
             if (attack_->maxTargets > 0 && hitCount_ >= attack_->maxTargets) break;
             std::size_t best = n;

@@ -8,7 +8,7 @@
       "maxParticles": 2,
       "lifetime": 0.06,
       "shape": "point",
-      "startSize": 0.45,
+      "startSize": 0.12,
       "sizeOverLife": [{"t": 0.0, "v": 0.6}, {"t": 0.3, "v": 1.0}, {"t": 1.0, "v": 0.7}],
       "colorOverLife": [
         {"t": 0.0, "color": [5.0, 4.2, 2.6, 1.0]},
