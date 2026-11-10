@@ -127,6 +127,16 @@ With no "where" an op applies to every strand. Ops run in order:
                                           (default 0.2), plus a random per-strand turn of size s; rebuilt from the root,
                                           lengths kept. Restyles strands that run the wrong way (a fringe combed back
                                           brought forward: lift off the hairline, then fall), where swing can't reach
+  {"op": "tufts", "count": n, "spacing": cm, "strands": s, "width": cm, "length": [lo, hi], "rise": deg,
+   "maxdev": deg, "up": f, "droop": f, "flick": f, "hang": bool, "taper": p, "short": f[, "group": id]}
+                                          new locks built from scratch: n seeds among the region's roots, at least
+                                          spacing cm apart; each lock's guide leaves the scalp along the local flow
+                                          (the seed strand's first third) turned rise deg out along the normal (the
+                                          angle off the flow capped at maxdev: no rays), plus up * world up; past half
+                                          its length it droops (droop, with "hang" raised until the tip is below the
+                                          lock's highest point) and flicks out at the tip. s strands per lock, roots
+                                          in a width-cm disk, converge on the guide as (1 - t)^taper, inner strands
+                                          ending short (short..1 of the length): a pointed bundle with gaps between
   {"op": "smooth", "amount": f, "iters": n}
                                           straighten the curl in each strand: n passes (default 4) moving every point a
                                           fraction f (default 0.5) toward the middle of its neighbours, the root fixed
@@ -389,6 +399,76 @@ for op in spec.get("ops", []):
         if "group" in op and len(k):   # tag the copies, so later ops can reshape them alone ("where": {"group": id})
             st["g"][len(st) - len(k):] = op["group"]
         print("op dup    %d strands copied" % len(k))
+        continue
+    if kind == "tufts":
+        # new locks built from scratch: seeds are existing roots in the region, at least "spacing" cm apart
+        m = region(op.get("where"))
+        off = offsets(st["n"])
+        R0 = P[off[:-1]]
+        cand = rng.permutation(np.flatnonzero(m > 0.5))
+        seeds = []
+        for i in cand:
+            if all(np.linalg.norm(R0[i] - R0[j]) >= op.get("spacing", 3.0) for j in seeds):
+                seeds.append(i)
+                if len(seeds) == op["count"]:
+                    break
+        seeds = np.asarray(seeds, int)
+        hv, hn = head_near(R0[seeds])
+        tK, tS = op.get("points", 16), op.get("strands", 60)
+        tt = np.linspace(0.0, 1.0, tK)
+        tup = np.array([0.0, 0.0, 1.0])
+        newP, newW, rows, hung = [], [], [], 0
+        tlo, thi = op.get("length", [5.0, 8.0])
+        for li, i in enumerate(seeds):
+            tn0 = hn[li]
+            tq = P[off[i]:off[i + 1]]
+            tf = tq[min(len(tq) - 1, max(1, len(tq) // 3))] - tq[0]   # the local flow: the seed strand's first third
+            tf -= tn0 * (tf @ tn0)
+            tf /= max(np.linalg.norm(tf), 1e-9)
+            rise = np.radians(min(op.get("rise", 40.0), op.get("maxdev", 55.0)))
+            d0 = tf * np.cos(rise) + tn0 * np.sin(rise) + tup * op.get("up", 0.0)
+            d0 /= np.linalg.norm(d0)
+            # the angle off the local flow is capped (no rays straight out along the normal)
+            cap = np.radians(op.get("maxdev", 55.0))
+            if np.arccos(np.clip(d0 @ tf, -1, 1)) > cap:
+                side = d0 - tf * (d0 @ tf)
+                d0 = tf * np.cos(cap) + side / max(np.linalg.norm(side), 1e-9) * np.sin(cap)
+            tL = rng.uniform(tlo, thi)
+            tg = op.get("droop", 1.0)
+            for _ in range(8):   # side locks must hang: tip below the lock's highest point
+                fall = np.clip((tt - 0.5) / 0.5, 0, 1) ** 2
+                flick = np.clip((tt - 0.85) / 0.15, 0, 1) * op.get("flick", 0.4)
+                tD = d0[None, :] - tup[None, :] * (tg * fall)[:, None] + tn0[None, :] * flick[:, None]
+                tD /= np.linalg.norm(tD, axis=1, keepdims=True)
+                tG = R0[i] + np.vstack([[0, 0, 0], np.cumsum(tD[:-1] * (tL / (tK - 1)), axis=0)])
+                if not op.get("hang") or tG[-1, 2] < tG[:, 2].max() - op.get("hang_drop", 0.5):
+                    break
+                tg *= 1.5
+            hung += bool(op.get("hang"))
+            # the lock's strands: roots in ta disk on the scalp, converging on the guide toward ta pointed tip
+            ta = rng.normal(size=(tS, 3))
+            ta -= tn0 * (ta @ tn0)[:, None]
+            ta /= np.maximum(np.linalg.norm(ta, axis=1, keepdims=True), 1e-9)
+            to = ta * (op.get("width", 1.2) / 2 * np.sqrt(rng.uniform(0, 1, tS)))[:, None]
+            to = onto_head(np.repeat(R0[i][None, :], tS, 0), to)
+            frac = rng.uniform(op.get("short", 0.8), 1.0, tS)   # inner strands end short of the tip: a taper
+            Wi = np.interp(np.linspace(0, 1, tK), np.linspace(0, 1, len(tq)), W[off[i]:off[i + 1]])
+            for k in range(tS):
+                tk = tt * frac[k]
+                Gk = np.stack([np.interp(tk, tt, tG[:, c]) for c in range(3)], 1)
+                newP.append(Gk + to[k][None, :] * ((1 - tk) ** op.get("taper", 1.0))[:, None])
+                newW.append(Wi)
+            row = st[i].copy()
+            row["n"] = tK
+            rows += [row] * tS
+        if rows:
+            P = np.concatenate([P] + newP)
+            W = np.concatenate([W] + newW)
+            new = np.array(rows, dtype=st.dtype)
+            if "group" in op:
+                new["g"] = op["group"]
+            st = np.concatenate([st, new])
+        print("op tufts  %d locks of %d strands" % (len(seeds), tS))
         continue
     m = region(op.get("where"))
     if kind == "length":
