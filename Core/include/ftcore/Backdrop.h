@@ -83,4 +83,39 @@ FTCORE_API std::vector<BackdropBox> skylineBand(const SkylineSpec& spec);
 FTCORE_API void heightShapeMask(const HeightField& field, double centreX, double centreY, double sideM, std::size_t size, bool northUp,
                                 float ringM, float fullPerMetre, std::uint8_t* out);
 
+
+// The ground's faces among the built boxes: a cliff or terrace box stands for the ground itself, so under -HillLook it
+// wears the ground's rock (the ground master's Rock maps) instead of its plain concrete.
+FTCORE_API bool backdropRockFace(const MassingBox& box);
+
+// How a rock face wears the rock: the surface master's parameters, so a face of tens of metres shows no repeat.
+struct RockFaceLook {
+    float tileCm = 450.f;          // one tile of the rock photo
+    float variation = 0.16f;       // fine mottle
+    float variationScale = 300.f;  // cm
+    float macroVariation = 0.32f;  // broad light and dark patches
+    float macroScale = 3200.f;     // cm
+    float normalStrength = 1.25f;
+    float shade = 0.9f;            // the rock's tint times this: faces stand in their own shade more than open ground
+};
+
+// The share of the field's samples inside plan [x0, x1] x [y0, y1] (every step m) whose slope (rise over run) is at
+// least minSlope; 0 for an empty field or box. No allocation.
+FTCORE_API double heightSteepShare(const HeightField& field, double x0, double y0, double x1, double y1, double step, double minSlope);
+
+// The hill's scrub as low irregular clumps (never cones): a dressing point (Tree on crests, Scrub elsewhere) as a few
+// flattened lumps (a unit sphere each), each sunk a third into the ground, with its own offset, size, yaw and one of
+// kBackdropScrubTints tints. Crest points get bigger, denser clumps. Pylons get none. Repeatable from the point.
+struct BackdropLump {
+    float dx = 0.f, dy = 0.f, dz = 0.f; // its centre from the point's foot, plan metres (dz up)
+    float sx = 1.f, sy = 1.f, sz = 1.f; // its size, metres (sz the height, always well under sx and sy)
+    float yaw = 0.f;                    // degrees
+    std::uint8_t tint = 0;              // 0 .. kBackdropScrubTints - 1
+};
+constexpr std::size_t kBackdropClumpMax = 3;
+constexpr std::size_t kBackdropScrubTints = 3;
+
+// Writes the point's lumps into out (room for kBackdropClumpMax) and returns how many. No allocation.
+FTCORE_API std::size_t backdropClump(const BackdropPoint& p, BackdropLump* out);
+
 } // namespace ftcore

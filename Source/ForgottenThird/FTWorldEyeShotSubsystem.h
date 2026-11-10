@@ -5,9 +5,13 @@
 //   UnrealEditor-Cmd ForgottenThird.uproject /Game/Maps/<map> -game -RenderOffScreen -unattended -nosound
 //       -WorldEyeShot=<file.png> -WorldEye=<x,y,z> -WorldEyeAt=<x,y,z> [-WorldEyeLens=35] [-WorldEyeSide=1000]
 //       [-WorldEyeSize=2560x1440] [-WorldEyeDelay=8] [-WorldEyeNight [-WorldEyeNightSun=<share>] [-WorldEyeNightSky=<share>]
-//       [-WorldEyeNightEV=<ev>] [-WorldEyeNightLamp=<cd>] [-WorldEyeNightLampRadius=<m>] [-WorldEyeNightShop=<cd>]
+//       [-WorldEyeNightEV=<ev>] [-WorldEyeNightEVRange=<ev>] [-WorldEyeNightLamp=<cd>] [-WorldEyeNightLampRadius=<m>] [-WorldEyeNightShop=<cd>]
 //       [-WorldEyeNightShopRadius=<m>] [-WorldEyeNightGlow=1]] [-WorldEyeGpuMs=<frames>] [-WorldEyePlainWalls]
+//       [-WorldEyeSunHour=<hours>]
 //
+// A day still of a Solhaven map turns the directional lights to the clock's sun at its start hour
+// (ftcore::kWorldClockStartHours), or at -WorldEyeSunHour on any map, unless a running clock (-TimeOfDay) lights it; a
+// night still's moon stands where the clock puts it at midnight (or at -WorldEyeSunHour).
 // -WorldEyeNight takes its values from the night spec the running clock reaches at full night (FTNightLook.h and its
 // -Night* switches), so a still matches a played night; the -WorldEyeNight* values override them for the still alone,
 // and it also gives the height fog the spec's kept colour and city glow. -WorldEyeNight sets the windows' Night to 1 (FTScene::WindowCollection) and their NightGlow to -WorldEyeNightGlow when
@@ -15,8 +19,8 @@
 // the map's (net: a real-time capture already dims with the sun, so it isn't dimmed twice), switches on the street lamps
 // (FTScene::NightLampTag, -WorldEyeNightLamp candelas, warm, reaching -WorldEyeNightLampRadius metres) and the shop
 // spill lights (FTScene::NightShopTag, -WorldEyeNightShop candelas), puts FTScene::NightLampMaterial on the lamp heads
-// (FTScene::NightLampHeadTag; while a map has none, a small glowing lens stands in over each lamp's light) and locks the
-// exposure at -WorldEyeNightEV (EV100). On a map whose lights are data (AFTNightLights) the lamp pool lights the lamps
+// (FTScene::NightLampHeadTag; while a map has none, a small glowing lens stands in over each lamp's light), holds the
+// auto exposure to -WorldEyeNightEV +- -WorldEyeNightEVRange (EV100) and sets the night's white balance. On a map whose lights are data (AFTNightLights) the lamp pool lights the lamps
 // and shops nearest the eye instead (UFTLampPoolSubsystem::ForceNight, at the same candelas and reach). -WorldEyeGpuMs logs the GPU's frame time, averaged over that many frames once
 // the view has settled, before the still. -WorldEyePlainWalls puts each window instance's surface instance (MIW_<id> to
 // MI_Surface_<id>) back on the meshes, for a like-for-like timing.

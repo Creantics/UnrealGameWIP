@@ -452,3 +452,24 @@ TEST_CASE("road net: a tilted cube's top is centred over its box, so a crown's t
     // Off the plumb line by more than a centimetre: the slit it closes.
     CHECK(std::hypot(c.x - 10.0, c.y + 4.0) > 0.01);
 }
+
+TEST_CASE("road net: a square junction corner's pavement carries on into the block's corner as an apron") {
+    RoadBuild b;
+    RoadNetReport rep;
+    roadNetBuild(net(kTee), MassingGround{}, b, &rep);
+    // The T's two corners (north of ST-H, either side of ST-V): back lines at y 7 and x 100 -/+ 7.
+    CHECK(rep.aprons == 2);
+    int found = 0;
+    for (const RoadSolid& sd : b.solids) {
+        const MassingBox& x = sd.box;
+        if (x.kind != "pavement" || std::fabs(x.sx - (kRoadCornerApron + kRoadApronLap)) > 1e-6) continue;
+        CHECK(std::fabs(x.sy - (kRoadCornerApron + kRoadApronLap)) < 1e-6);
+        const double mid = 7.0 + (kRoadCornerApron - kRoadApronLap) * 0.5; // back line 7 (14 m wide, pavements in it)
+        CHECK(std::fabs(x.cy - mid) < 1e-6);
+        CHECK(std::fabs(std::fabs(x.cx - 100.0) - mid) < 1e-6);
+        CHECK(std::fabs(x.z1 - (kRoadSurfaceLift + kRoadKerbRise)) < 1e-9);
+        CHECK(sd.tint == RoadTint::Pavement);
+        ++found;
+    }
+    CHECK(found == 2);
+}

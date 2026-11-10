@@ -94,7 +94,66 @@ UMaterialInterface* FTBackdrop::HillGround(UPackage* Package, UMaterialInterface
 	Mic->PostEditChange();
 	UE_LOG(LogForgottenThird, Display, TEXT("Backdrop: -HillLook: shape mask %d px over %.0f m, %.1f%% ridge and %.1f%% hollow pixels."), kMaskSize,
 		kMaskSideM, 100.0 * Ridge / Bytes.Num(), 100.0 * Hollow / Bytes.Num());
+	// The share of the field the ground master's slope alone turns to rock (from a slope of about 0.75, 37 degrees).
+	const double FieldX1 = Field.originX + Field.spacing * static_cast<double>(Field.samplesX - 1);
+	const double FieldY1 = Field.originY + Field.spacing * static_cast<double>(Field.samplesY - 1);
+	UE_LOG(LogForgottenThird, Display, TEXT("Backdrop: -HillLook: %.1f%% of the field is steep enough for the ground's rock."),
+		100.0 * ftcore::heightSteepShare(Field, Field.originX, Field.originY, FieldX1, FieldY1, 4.0, 0.75));
 	return Ground;
+}
+
+UMaterialInterface* FTBackdrop::RockFace(UPackage* Package, UMaterialInterface* Wear, const ftcore::MassingBox& Box, UMaterialInterface* Ground)
+{
+	if (!Package || !Wear || !Ground || !ftcore::backdropRockFace(Box) || !(Wants(TEXT("RockFaces")) || Wants(TEXT("HillLook"))))
+	{
+		return nullptr;
+	}
+	// One instance per surface instance, made on the first box that wears it.
+	static TMap<const UMaterialInterface*, TWeakObjectPtr<UMaterialInstanceConstant>> Made;
+	if (const TWeakObjectPtr<UMaterialInstanceConstant>* Found = Made.Find(Wear))
+	{
+		if (Found->IsValid() && Found->Get()->GetOuter() == Package)
+		{
+			return Found->Get();
+		}
+	}
+	UTexture* Maps[3] = {};
+	const TCHAR* const From[3] = {TEXT("RockAlbedo"), TEXT("RockNormal"), TEXT("RockArm")};
+	const TCHAR* const To[3] = {TEXT("AlbedoTex"), TEXT("NormalTex"), TEXT("ArmTex")};
+	for (int32 M = 0; M < 3; ++M)
+	{
+		if (!Ground->GetTextureParameterValue(FHashedMaterialParameterInfo(From[M]), Maps[M]) || !Maps[M])
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Backdrop: -RockFaces: %s holds no %s; the rock faces keep their surface."), *Ground->GetName(), From[M]);
+			return nullptr;
+		}
+	}
+	const ftcore::RockFaceLook Look;
+	FLinearColor Tint(0.78f, 0.78f, 0.76f);
+	Ground->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("RockTint")), Tint);
+	float Tile = 0.f, Rough = -1.f;
+	Ground->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("RockTileCm")), Tile);
+	Ground->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("RockRoughness")), Rough);
+	UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package,
+		MakeUniqueObjectName(Package, UMaterialInstanceConstant::StaticClass(), FName(TEXT("MI_Backdrop_RockFace"))), RF_Public);
+	Mic->SetParentEditorOnly(Wear);
+	for (int32 M = 0; M < 3; ++M)
+	{
+		Mic->SetTextureParameterValueEditorOnly(FMaterialParameterInfo(To[M]), Maps[M]);
+	}
+	Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Color")), Tint * Look.shade);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("TileCm")), FMath::Max(Tile, Look.tileCm));
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("RoughnessOverride")), Rough);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("NormalStrength")), Look.normalStrength);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Variation")), Look.variation);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("VariationScale")), Look.variationScale);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("MacroVariation")), Look.macroVariation);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("MacroScale")), Look.macroScale);
+	Mic->PostEditChange();
+	Made.Add(Wear, Mic);
+	UE_LOG(LogForgottenThird, Display, TEXT("Backdrop: -RockFaces: %s wears %s's rock (%s) over %s, %.0f cm a tile."), *Mic->GetName(),
+		*Ground->GetName(), *Maps[0]->GetName(), *Wear->GetName(), FMath::Max(Tile, Look.tileCm));
+	return Mic;
 }
 
 void FTBackdrop::Dress(UPackage* Package, FFTCellInstancer& Cells, UMaterialInterface* Base, const ftcore::HeightField& Field, double Side,
@@ -103,8 +162,8 @@ void FTBackdrop::Dress(UPackage* Package, FFTCellInstancer& Cells, UMaterialInte
 	const bool bDress = Wants(TEXT("HillDress"));
 	const bool bSkyline = Wants(TEXT("Skyline"));
 	UStaticMesh* Cube = Shape(TEXT("/Engine/BasicShapes/Cube.Cube"));
-	UStaticMesh* Cone = Shape(TEXT("/Engine/BasicShapes/Cone.Cone"));
-	if ((!bDress && !bSkyline) || !Base || !Cube || !Cone || !Field.grid)
+	UStaticMesh* Lump = Shape(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+	if ((!bDress && !bSkyline) || !Base || !Cube || !Lump || !Field.grid)
 	{
 		return;
 	}
@@ -116,14 +175,18 @@ void FTBackdrop::Dress(UPackage* Package, FFTCellInstancer& Cells, UMaterialInte
 
 	if (bDress)
 	{
-		UMaterialInterface* Leaf = Paint(Package, Base, TEXT("MI_Backdrop_Tree"), FLinearColor(0.045f, 0.07f, 0.04f), 0.9f);
-		UMaterialInterface* Scrub = Paint(Package, Base, TEXT("MI_Backdrop_Scrub"), FLinearColor(0.16f, 0.15f, 0.09f), 0.95f);
+		// Scrub tints: dark olive, dry khaki, grey-green (ftcore::kBackdropScrubTints).
+		UMaterialInterface* const Scrub[ftcore::kBackdropScrubTints] = {
+			Paint(Package, Base, TEXT("MI_Backdrop_Scrub"), FLinearColor(0.055f, 0.07f, 0.04f), 0.92f),
+			Paint(Package, Base, TEXT("MI_Backdrop_ScrubDry"), FLinearColor(0.15f, 0.135f, 0.08f), 0.95f),
+			Paint(Package, Base, TEXT("MI_Backdrop_ScrubGrey"), FLinearColor(0.09f, 0.10f, 0.08f), 0.93f)};
 		UMaterialInterface* Steel = Paint(Package, Base, TEXT("MI_Backdrop_Pylon"), FLinearColor(0.30f, 0.31f, 0.32f), 0.6f);
 		ftcore::HillDressSpec Spec;
 		Spec.cellM = 12.f;
 		Spec.maxPoints = 12000;
 		const std::vector<ftcore::BackdropPoint> Points = ftcore::hillDress(Field, Spec, X0, Y0, X1, Y1, Boxes.data(), Boxes.size());
-		int32 Trees = 0, Shrubs = 0, Pylons = 0;
+		int32 Clumps = 0, Lumps = 0, Pylons = 0;
+		ftcore::BackdropLump Parts[ftcore::kBackdropClumpMax];
 		const FFTCellOptions Options = Far(TEXT("Backdrop"));
 		for (const ftcore::BackdropPoint& P : Points)
 		{
@@ -138,23 +201,23 @@ void FTBackdrop::Dress(UPackage* Package, FFTCellInstancer& Cells, UMaterialInte
 				Cells.Add(Cube, M, FTransform(Yaw, Foot + FVector(0, 0, 2350), FVector(0.5, 9.0, 0.5)), NoData, EFTCellKind::NoCollide, Options);
 				++Pylons;
 			}
-			else if (P.kind == ftcore::BackdropKind::Tree)
-			{
-				const double H = 7.0 * P.scale, W = 3.6 * P.scale;
-				UMaterialInterface* const M[] = {Leaf};
-				Cells.Add(Cone, M, FTransform(Yaw, Foot + FVector(0, 0, H * 50.0 - 30.0), FVector(W, W, H)), NoData, EFTCellKind::NoCollide, Options);
-				++Trees;
-			}
 			else
 			{
-				const double H = 1.4 * P.scale, W = 3.0 * P.scale;
-				UMaterialInterface* const M[] = {Scrub};
-				Cells.Add(Cone, M, FTransform(Yaw, Foot + FVector(0, 0, H * 50.0 - 20.0), FVector(W, W * 0.8, H)), NoData, EFTCellKind::NoCollide, Options);
-				++Shrubs;
+				// Low irregular clumps (flattened lumps sunk into the ground), never cones.
+				const std::size_t N = ftcore::backdropClump(P, Parts);
+				for (std::size_t K = 0; K < N; ++K)
+				{
+					const ftcore::BackdropLump& L = Parts[K];
+					const FVector At = EngineCm(Side, P.x + L.dx, P.y + L.dy, P.z) + FVector(0, 0, L.dz * 100.0);
+					UMaterialInterface* const M[] = {Scrub[L.tint]};
+					Cells.Add(Lump, M, FTransform(FRotator(0.0, L.yaw, 0.0), At, FVector(L.sx, L.sy, L.sz)), NoData, EFTCellKind::NoCollide, Options);
+				}
+				Lumps += static_cast<int32>(N);
+				Clumps += N ? 1 : 0;
 			}
 		}
-		UE_LOG(LogForgottenThird, Display, TEXT("Backdrop: -HillDress: %d trees, %d scrub, %d pylons (%d instances), kept off %d boxes."), Trees, Shrubs,
-			Pylons, Trees + Shrubs + 3 * Pylons, static_cast<int32>(Boxes.size()));
+		UE_LOG(LogForgottenThird, Display, TEXT("Backdrop: -HillDress: %d scrub clumps (%d lumps), %d pylons (%d instances), kept off %d boxes."), Clumps,
+			Lumps, Pylons, Lumps + 3 * Pylons, static_cast<int32>(Boxes.size()));
 	}
 
 	if (bSkyline)

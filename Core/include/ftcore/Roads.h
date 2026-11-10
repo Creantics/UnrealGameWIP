@@ -33,6 +33,9 @@ inline constexpr double kRoadSlabDepth = 0.3;       // m: every surface slab's d
 inline constexpr double kRoadMaxGrade = 0.08;       // the steepest grade along a road
 inline constexpr double kRoadKerbClear = 0.5;       // m: nothing stands nearer the kerb face than this
 inline constexpr double kRoadCornerRadius = 6.0;    // m: a road-to-road corner's kerb radius, at least
+inline constexpr double kRoadCornerApron = 6.0;     // m: a junction corner's apron, the pavement on into the block's corner
+inline constexpr double kRoadApronLap = 0.4;        // m: how far an apron reaches back under the pavements
+inline constexpr double kRoadApronSquare = 0.26;    // |cos| of the angle between the arms under which a corner gets one
 inline constexpr double kRoadMouthFlare = 3.0;      // m: a lane mouth's dropped kerb runs this far past each lane edge
 inline constexpr double kRoadLine = 0.15;           // m: centre, edge and bay lines
 inline constexpr double kRoadCentreDash = 5.0;      // m: centre line dash and gap
@@ -377,6 +380,7 @@ struct RoadNetReport {
     std::size_t tight = 0;   // junction arms too short for their zebra and stop line (signals only)
     std::size_t piers = 0;
     std::size_t pruned = 0;  // kerb and pavement pieces left out: a lane across them or a carriageway under them
+    std::size_t aprons = 0;  // near-square junction corners whose pavement carries on into the block's corner
     double maxGrade = 0.0;   // along any piece
     std::string maxGradeAt;  // the steepest piece: "<edge> (x, y)"
     double maxStep = 0.0;    // m: the largest step where an arm's crowned carriageway meets a junction's fill (crowned too: 0)
@@ -394,6 +398,8 @@ struct RoadNetReport {
 // roadGraphJunctions) and B; ids JN-0001... numbered as roadGraphJunctions numbers them. Bays on parking streets clear
 // of the corners and zebras; lamps every kRoadLampSpacing each side, staggered; a deck's piers every 30 m down to the
 // ground and a rail along each back edge. Lane mouths as roadBuild's. Slabs deepen where the ground falls away (to 3 m).
+// A near-square corner (kRoadApronSquare) carries its pavement kRoadCornerApron on into the block's corner where the
+// ground lets the slab sit (report: aprons).
 // Last, the kerb and pavement pieces roadKerbFaces would find across its own lanes or in its own carriageway (two
 // junctions close together) are left out (report: pruned).
 FTCORE_API void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround& ground, RoadBuild& out,

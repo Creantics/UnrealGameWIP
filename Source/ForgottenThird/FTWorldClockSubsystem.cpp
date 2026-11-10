@@ -10,6 +10,7 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "FTNightLightData.h"
+#include "FTLookSubsystem.h"
 #include "FTNightLook.h"
 #include "FTSceneLook.h"
 #include "FTText.h"
@@ -32,7 +33,21 @@ namespace
 {
 // The clock's step between light updates: 15 game seconds (half a real second on the 48-minute day).
 constexpr double kStepHours = 1.0 / 240.0;
+// The white balance is rewritten when the night's share of it moves by this much.
+constexpr float kWhiteStep = 0.01f;
 } // namespace
+
+FRotator FTClock::SunRotation(const ftcore::WorldClockSpec& Spec, double Hours)
+{
+	const ftcore::SunDirection Sun = ftcore::sunDirection(Spec, Hours);
+	// Towards the sun in engine axes (east +X, north -Y); the moon stands opposite once the sun is down.
+	FVector Toward(Sun.east, -Sun.north, Sun.up);
+	if (Sun.up < 0.f)
+	{
+		Toward = -Toward;
+	}
+	return (-Toward).Rotation();
+}
 
 bool UFTWorldClockSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
@@ -72,6 +87,10 @@ void UFTWorldClockSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	{
 		ftcore::worldClockSetDayMinutes(Clock, Minutes);
 	}
+	if (!bFixed && !bClockGiven)
+	{
+		ftcore::worldClockSet(Clock, ftcore::kWorldClockStartHours);
+	}
 	if (bFixed)
 	{
 		ftcore::worldClockSet(Clock, Fixed);
@@ -91,6 +110,10 @@ void UFTWorldClockSubsystem::Gather(UWorld& World)
 	UMaterialParameterCollection* Collection = LoadObject<UMaterialParameterCollection>(
 		nullptr, *(Path + TEXT(".") + FPackageName::GetShortName(Path)), nullptr, LOAD_NoWarn | LOAD_Quiet);
 	Windows = Collection ? World.GetParameterCollectionInstance(Collection) : nullptr;
+	const FString LookPath = FTScene::LookCollection;
+	UMaterialParameterCollection* LookCollection = LoadObject<UMaterialParameterCollection>(
+		nullptr, *(LookPath + TEXT(".") + FPackageName::GetShortName(LookPath)), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	LookParams = LookCollection ? World.GetParameterCollectionInstance(LookCollection) : nullptr;
 	for (TActorIterator<ADirectionalLight> It(&World); It; ++It)
 	{
 		if (ULightComponent* Light = It->GetLightComponent())
@@ -117,7 +140,7 @@ void UFTWorldClockSubsystem::Gather(UWorld& World)
 	{
 		const FPostProcessSettings& S = It->Settings;
 		Exposures.Add({*It, S.bOverride_AutoExposureMinBrightness != 0, S.bOverride_AutoExposureMaxBrightness != 0, S.AutoExposureMinBrightness,
-			S.AutoExposureMaxBrightness});
+			S.AutoExposureMaxBrightness, S.bOverride_WhiteTemp != 0, S.WhiteTemp});
 	}
 	// A map whose lights are data (AFTNightLights) leaves them to FTLampPoolSubsystem's pool; only older maps' tagged
 	// light actors are gathered here.
@@ -152,14 +175,7 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 	}
 	AppliedHours = Clock.hours;
 	Night = ftcore::nightAmount(Spec, Clock.hours);
-	const ftcore::SunDirection Sun = ftcore::sunDirection(Spec, Clock.hours);
-	// Towards the sun in engine axes (east +X, north -Y); the moon stands opposite once the sun is down.
-	FVector Toward(Sun.east, -Sun.north, Sun.up);
-	if (Sun.up < 0.f)
-	{
-		Toward = -Toward;
-	}
-	const FRotator Rotation = (-Toward).Rotation();
+	const FRotator Rotation = FTClock::SunRotation(Spec, Clock.hours);
 	const ftcore::NightLook& Look = FTNight::Look();
 	const ftcore::NightFrame Frame = ftcore::nightFrame(Look, Night);
 	for (const FLit& S : Suns)
@@ -187,8 +203,8 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 			Fog->SetFogInscatteringColor(F.Color * Frame.fogKeep + Glow);
 		}
 	}
-	// The night's exposure, locked from half night on (as the night still's), the volumes' own settings back by day;
-	// written only when the lock changes.
+	// The night's exposure range from half night on (as the night still's), the volumes' own settings back by day;
+	// written only when that changes.
 	if (Frame.lockExposure != bExposureLocked || bForce)
 	{
 		bExposureLocked = Frame.lockExposure;
@@ -199,8 +215,30 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 				FPostProcessSettings& S = Volume->Settings;
 				S.bOverride_AutoExposureMinBrightness = bExposureLocked || E.bMin;
 				S.bOverride_AutoExposureMaxBrightness = bExposureLocked || E.bMax;
-				S.AutoExposureMinBrightness = bExposureLocked ? Frame.exposureEV100 : E.Min;
-				S.AutoExposureMaxBrightness = bExposureLocked ? Frame.exposureEV100 : E.Max;
+				S.AutoExposureMinBrightness = bExposureLocked ? Frame.exposureMinEV100 : E.Min;
+				S.AutoExposureMaxBrightness = bExposureLocked ? Frame.exposureMaxEV100 : E.Max;
+			}
+		}
+	}
+	// The white balance toward the night's by NightAmount (the volume's own by day); written when it has moved a step,
+	// never by full day, so the world look's own white balance stands. The day's is read again as dusk starts, after
+	// the look has written it.
+	if (FMath::Abs(Frame.whiteMix - AppliedWhiteMix) >= kWhiteStep || (Frame.whiteMix == 0.f && AppliedWhiteMix != 0.f))
+	{
+		const bool bDusk = AppliedWhiteMix == 0.f;
+		AppliedWhiteMix = Frame.whiteMix;
+		for (FExposure& E : Exposures)
+		{
+			if (APostProcessVolume* Volume = E.Volume.Get())
+			{
+				FPostProcessSettings& S = Volume->Settings;
+				if (bDusk)
+				{
+					E.bWhite = S.bOverride_WhiteTemp != 0;
+					E.White = S.WhiteTemp;
+				}
+				S.bOverride_WhiteTemp = E.bWhite || Frame.whiteMix > 0.f;
+				S.WhiteTemp = FMath::Lerp(E.bWhite ? E.White : 6500.f, Frame.whiteKelvin, Frame.whiteMix);
 			}
 		}
 	}
@@ -208,6 +246,8 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 	{
 		WindowParams->SetScalarParameterValue(TEXT("Night"), Night);
 	}
+	WetShare = Frame.wetShare;
+	WriteWetness();
 	for (FLamp& L : Lamps)
 	{
 		const bool bOn = Night >= L.OnAt;
@@ -224,9 +264,30 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 	}
 }
 
+void UFTWorldClockSubsystem::WriteWetness()
+{
+	UMaterialParameterCollectionInstance* Params = LookParams.Get();
+	const UWorld* World = GetWorld();
+	const UFTLookSubsystem* Look = World ? World->GetSubsystem<UFTLookSubsystem>() : nullptr;
+	if (Params && Look)
+	{
+		Params->SetScalarParameterValue(TEXT("Wetness"), Look->GetLook().wetness * WetShare);
+	}
+}
+
 void UFTWorldClockSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+	if (bWetPending)
+	{
+		const UWorld* World = GetWorld();
+		const UFTLookSubsystem* Look = World ? World->GetSubsystem<UFTLookSubsystem>() : nullptr;
+		if (!Look || Look->IsSettled())
+		{
+			bWetPending = false;
+			WriteWetness();
+		}
+	}
 	ftcore::worldClockTick(Clock, DeltaTime);
 	Apply(false);
 }
@@ -238,6 +299,7 @@ TStatId UFTWorldClockSubsystem::GetStatId() const
 
 void UFTWorldClockSubsystem::SetTimeOfDay(float Hours)
 {
+	bClockGiven = true;
 	ftcore::worldClockSet(Clock, Hours);
 	if (bActive)
 	{
@@ -247,6 +309,7 @@ void UFTWorldClockSubsystem::SetTimeOfDay(float Hours)
 
 void UFTWorldClockSubsystem::AdvanceTo(float Hours)
 {
+	bClockGiven = true;
 	ftcore::worldClockAdvanceTo(Clock, Hours);
 	if (bActive)
 	{
@@ -282,6 +345,7 @@ float UFTWorldClockSubsystem::GetDanger() const
 void UFTWorldClockSubsystem::SetClock(const ftcore::WorldClock& InClock)
 {
 	Clock = ftcore::worldClockSanitized(InClock);
+	bClockGiven = true;
 	if (bActive)
 	{
 		Apply(true);

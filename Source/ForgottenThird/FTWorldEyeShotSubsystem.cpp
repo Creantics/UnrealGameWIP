@@ -20,9 +20,11 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "FTLampPoolSubsystem.h"
+#include "FTLookSubsystem.h"
 #include "FTNightLightData.h"
 #include "FTNightLook.h"
 #include "FTSceneLook.h"
+#include "FTWorldClockSubsystem.h"
 #include "ForgottenThird.h"
 #include "GameFramework/HUD.h"
 #include "GameFramework/PlayerController.h"
@@ -35,6 +37,7 @@
 #include "Misc/Parse.h"
 #include "ShaderCompiler.h"
 
+#include "ftcore/LookTable.h"
 #include "ftcore/MassingPlan.h"
 
 namespace
@@ -217,6 +220,45 @@ TStatId UFTWorldEyeShotSubsystem::GetStatId() const
 
 void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 {
+	// A day still of a Solhaven map (or any map given -WorldEyeSunHour) takes the clock's sun at its start hour (or at
+	// -WorldEyeSunHour), the one a played day starts with, whatever sun the map was built with; a running clock
+	// (-TimeOfDay) keeps its own.
+	const UFTWorldClockSubsystem* DayClock = World.GetSubsystem<UFTWorldClockSubsystem>();
+	float SunHour = static_cast<float>(ftcore::kWorldClockStartHours);
+	const bool bSunHour = FParse::Value(FCommandLine::Get(), TEXT("WorldEyeSunHour="), SunHour);
+	const FTCHARToUTF8 MapName(*World.GetMapName());
+	const bool bSolhaven =
+		ftcore::lookWorldForMap(std::string_view(MapName.Get(), static_cast<size_t>(MapName.Length()))) == "solhaven";
+	if (!FParse::Param(FCommandLine::Get(), TEXT("WorldEyeNight")) && (bSolhaven || bSunHour) && !(DayClock && DayClock->IsRunning()))
+	{
+		const FRotator SunAt = FTClock::SunRotation(ftcore::WorldClockSpec{}, SunHour);
+		int32 Turned = 0;
+		for (TActorIterator<ADirectionalLight> It(&World); It; ++It)
+		{
+			if (ULightComponent* Light = It->GetLightComponent())
+			{
+				Light->SetMobility(EComponentMobility::Movable);
+				Light->SetWorldRotation(SunAt);
+				++Turned;
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: day sun at %.2f h (pitch %.1f, yaw %.1f) on %d directional lights."),
+			SunHour, SunAt.Pitch, SunAt.Yaw, Turned);
+	}
+	// The ground's wetness on a Solhaven map, as the running clock sets it: the look's own times the night frame's share
+	// (damp by day, full at night).
+	if (bSolhaven)
+	{
+		const bool bWetNight = FParse::Param(FCommandLine::Get(), TEXT("WorldEyeNight"));
+		const UFTLookSubsystem* Look = World.GetSubsystem<UFTLookSubsystem>();
+		const FString LookPath = FTScene::LookCollection;
+		UMaterialParameterCollection* LookCollection = LoadObject<UMaterialParameterCollection>(
+			nullptr, *(LookPath + TEXT(".") + FPackageName::GetShortName(LookPath)), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		UMaterialParameterCollectionInstance* LookParams = LookCollection ? World.GetParameterCollectionInstance(LookCollection) : nullptr;
+		const float Wet = Look ? Look->GetLook().wetness * ftcore::nightFrame(FTNight::Look(), bWetNight ? 1.f : 0.f).wetShare : 0.f;
+		const bool bWet = Look && LookParams && LookParams->SetScalarParameterValue(TEXT("Wetness"), Wet);
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: wetness %.3f %s."), Wet, bWet ? TEXT("written") : TEXT("not written (no look or MPC_Look)"));
+	}
 	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyeNight")))
 	{
 		// The night spec the running clock reaches at full night (FTNightLook.h), so a still and a played night match: the
@@ -230,6 +272,9 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightSun="), SunShare);
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightSky="), SkyFill);
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightEV="), Ev);
+		float EvRange = Spec.exposureRangeEV;
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightEVRange="), EvRange);
+		EvRange = FMath::Max(EvRange, 0.f);
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightLamp="), LampCd);
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightLampRadius="), LampRadius);
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeNightShop="), ShopCd);
@@ -246,6 +291,13 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		for (TActorIterator<ADirectionalLight> It(&World); It; ++It)
 		{
 			ULightComponent* Light = It->GetLightComponent();
+			// On a Solhaven map the moon stands where the clock puts it at midnight (or -WorldEyeSunHour), not at the
+			// built sun's angle.
+			if (bSolhaven || bSunHour)
+			{
+				Light->SetMobility(EComponentMobility::Movable);
+				Light->SetWorldRotation(FTClock::SunRotation(ftcore::WorldClockSpec{}, bSunHour ? SunHour : 0.f));
+			}
 			Light->SetIntensity(Light->Intensity * SunShare);
 			Light->SetLightColor(FTNight::Color(Spec.moonTint), false);
 			++Suns;
@@ -371,17 +423,21 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		}
 		for (TActorIterator<APostProcessVolume> It(&World); It; ++It)
 		{
+			// The night's exposure range round Ev (as the clock's from half night) and its white balance.
 			It->Settings.bOverride_AutoExposureMinBrightness = true;
-			It->Settings.AutoExposureMinBrightness = Ev;
+			It->Settings.AutoExposureMinBrightness = Ev - EvRange;
 			It->Settings.bOverride_AutoExposureMaxBrightness = true;
-			It->Settings.AutoExposureMaxBrightness = Ev;
+			It->Settings.AutoExposureMaxBrightness = Ev + EvRange;
+			It->Settings.bOverride_WhiteTemp = true;
+			It->Settings.WhiteTemp = Frame.whiteKelvin;
 			++Volumes;
 		}
 		const FString GlowText = bGlow ? FString::SanitizeFloat(Glow) : FString(TEXT("as built"));
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: night: windows' Night %s, NightGlow %s; %d moons at %.3f of the map's sun and %d sky "
-			"lights at %.3f fill; %d fogs with the city glow; %d street lamps at %.0f cd (%.0f m), %d shop lights at %.0f cd, %d lamp heads and %d stand-in lenses%s; exposure locked at EV %.1f in %d volumes."),
+			"lights at %.3f fill; %d fogs with the city glow; %d street lamps at %.0f cd (%.0f m), %d shop lights at %.0f cd, %d lamp heads and %d stand-in lenses%s; exposure EV %.1f +- %.2f, white %.0f K in %d volumes."),
 			bNight ? TEXT("1") : TEXT("unset (no window collection)"), *GlowText, Suns, SunShare, Skies,
-			SkyFill, Fogs, Lamps, LampCd, LampRadius, Shops, ShopCd, Heads, Lenses, LampMaterial ? TEXT("") : TEXT(" (no lamp material)"), Ev, Volumes);
+			SkyFill, Fogs, Lamps, LampCd, LampRadius, Shops, ShopCd, Heads, Lenses, LampMaterial ? TEXT("") : TEXT(" (no lamp material)"), Ev, EvRange,
+			Frame.whiteKelvin, Volumes);
 	}
 	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyePlainWalls")))
 	{

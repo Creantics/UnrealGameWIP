@@ -60,10 +60,12 @@ add_library(ftcore STATIC
     src/MassingLayout.cpp
     src/WindowInterior.cpp
     src/WindowFacade.cpp
+    src/SurfaceWeather.cpp
     src/FrameStats.cpp
     src/LightPicker.cpp
     src/NightLook.cpp
     src/Backdrop.cpp
+    src/RoadDecals.cpp
     src/ShopFront.cpp
     src/WorldClock.cpp
     src/WorldChecks.cpp
@@ -232,6 +234,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_massing_layout.cpp
         tests/test_window_interior.cpp
         tests/test_window_facade.cpp
+        tests/test_surface_weather.cpp
         tests/test_frame_stats.cpp
         tests/test_light_picker.cpp
         tests/test_night_look.cpp
@@ -239,6 +242,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_world_clock.cpp
         tests/test_world_checks.cpp
         tests/test_roads.cpp
+        tests/test_road_decals.cpp
         tests/test_road_graph.cpp
         tests/test_road_net.cpp
         tests/test_city_placer.cpp

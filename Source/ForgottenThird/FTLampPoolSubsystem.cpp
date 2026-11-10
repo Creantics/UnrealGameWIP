@@ -101,9 +101,11 @@ void UFTLampPoolSubsystem::ApplyValues(USpotLightComponent& Light, bool bLamp) c
 	Light.SetUseTemperature(true);
 	Light.SetTemperature(bLamp ? Look.lampKelvin : Look.shopKelvin);
 	Light.SetAttenuationRadius(Reach);
-	Light.SetOuterConeAngle(bLamp ? D.LampOuter : D.ShopOuter);
-	Light.SetInnerConeAngle(bLamp ? D.LampInner : D.ShopInner);
-	Light.SetSourceRadius(bLamp ? D.LampSource : D.ShopSource);
+	// The lamps' cone and lens from the night spec (wider than the built data's), the shops' from the data.
+	Light.SetOuterConeAngle(bLamp ? FMath::Min(Look.lampOuterDeg, 80.f) : D.ShopOuter);
+	Light.SetInnerConeAngle(bLamp ? FMath::Min(Look.lampInnerDeg, Look.lampOuterDeg) : D.ShopInner);
+	Light.SetSourceRadius(bLamp ? Look.lampSourceCm : D.ShopSource);
+	Light.SetSpecularScale(1.f);
 	Light.SetCastShadows(false);
 }
 

@@ -9,7 +9,8 @@
 //
 // From the clock: the map's directional lights follow the sun (and, once it is down, a cool moon opposite it), the sky
 // lights fall to the night fill and take its cool tint, the height fog keeps a share of its own colour and takes the
-// city's warm glow, and from half night the post-process volumes' exposure is locked at the night EV; all by the one
+// city's warm glow, the post-process volumes' white balance moves toward the night's, and from half night their auto
+// exposure is held to the night's range (centre +- range); all by the one
 // night spec the world eye's night still reads too (FTNightLook.h: ftcore::NightLook and its -Night* switches), blended
 // in by NightAmount (ftcore::nightFrame). The windows' Night (FTScene::WindowCollection) takes NightAmount. The street lamps and
 // shop lights the massing build placed (FTScene::NightLampTag, NightShopTag) switch on as NightAmount passes 0.5, each
@@ -17,6 +18,8 @@
 // the clock has moved a step (1/240 h) or a lamp crosses its point; nothing allocates per tick.
 // On a map whose lights are data (AFTNightLights) there are no tagged lamps to switch: FTLampPoolSubsystem reads
 // NightAmount and moves its pool of lights instead.
+// A fresh clock (none fixed, set or loaded) starts at ftcore::kWorldClockStartHours, a low morning sun; the map builders
+// bake that same sun (FTClock::StartSunRotation) and the world eye's day stills use it too.
 //
 // The plan frame's north is the engine's -Y, east +X (the massing tables' frame, ftcore::massingEnginePoint).
 //
@@ -35,6 +38,17 @@ class UExponentialHeightFogComponent;
 class UMaterialParameterCollectionInstance;
 class ULightComponent;
 class USkyLightComponent;
+
+namespace FTClock
+{
+// The map's directional light rotation for the sun (or, once it is down, the moon opposite it) at Hours.
+FORGOTTENTHIRD_API FRotator SunRotation(const ftcore::WorldClockSpec& Spec, double Hours);
+// The start hour's sun with the city's spec: what the builders bake and the day stills use.
+inline FRotator StartSunRotation()
+{
+	return SunRotation(ftcore::WorldClockSpec{}, ftcore::kWorldClockStartHours);
+}
+} // namespace FTClock
 
 UCLASS()
 class FORGOTTENTHIRD_API UFTWorldClockSubsystem : public UTickableWorldSubsystem
@@ -85,6 +99,8 @@ public:
 private:
 	void Gather(UWorld& World);
 	void Apply(bool bForce);
+	// MPC_Look Wetness: the world look's wetness times the night frame's wetShare.
+	void WriteWetness();
 
 	struct FLit
 	{
@@ -104,6 +120,8 @@ private:
 		TWeakObjectPtr<APostProcessVolume> Volume;
 		bool bMin = false, bMax = false;
 		float Min = 0.f, Max = 0.f;
+		bool bWhite = false;
+		float White = 6500.f;
 	};
 	struct FFog
 	{
@@ -126,6 +144,8 @@ private:
 	double AppliedHours = -1.0;
 	float Night = 0.f;
 	bool bExposureLocked = false;
+	float AppliedWhiteMix = 0.f;
+	bool bClockGiven = false;
 
 	TArray<FLit> Suns;
 	TArray<FSky> Skies;
@@ -133,4 +153,8 @@ private:
 	TArray<FExposure> Exposures;
 	TArray<FLamp> Lamps;
 	TWeakObjectPtr<UMaterialParameterCollectionInstance> Windows;
+	TWeakObjectPtr<UMaterialParameterCollectionInstance> LookParams;
+	float WetShare = 1.f;
+	// Written again once the look subsystem has settled, so its own full-value write doesn't stand.
+	bool bWetPending = true;
 };

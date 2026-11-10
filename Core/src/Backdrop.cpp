@@ -213,4 +213,54 @@ void heightShapeMask(const HeightField& field, double centreX, double centreY, d
     }
 }
 
+
+bool backdropRockFace(const MassingBox& box) {
+    return box.kind == "cliff" || box.kind == "terrace";
+}
+
+double heightSteepShare(const HeightField& field, double x0, double y0, double x1, double y1, double step, double minSlope) {
+    if (!field.grid || field.samplesX == 0 || field.samplesY == 0 || !(x1 > x0) || !(y1 > y0) || !(step > 0.0)) {
+        return 0.0;
+    }
+    const double d = std::max(field.spacing, 0.5);
+    std::size_t all = 0, steep = 0;
+    for (double y = y0; y <= y1; y += step) {
+        for (double x = x0; x <= x1; x += step) {
+            ++all;
+            steep += slopeAt(field, x, y, d) >= minSlope ? 1u : 0u;
+        }
+    }
+    return all ? static_cast<double>(steep) / static_cast<double>(all) : 0.0;
+}
+
+std::size_t backdropClump(const BackdropPoint& p, BackdropLump* out) {
+    if (!out || p.kind == BackdropKind::Pylon) {
+        return 0;
+    }
+    const bool crest = p.kind == BackdropKind::Tree;
+    // Seeded by the point's plan position (decimetres).
+    const std::uint32_t qx = static_cast<std::uint32_t>(static_cast<std::int32_t>(std::lround(p.x * 10.f)));
+    const std::uint32_t qy = static_cast<std::uint32_t>(static_cast<std::int32_t>(std::lround(p.y * 10.f)));
+    const std::size_t n = crest ? 3 : 2;
+    const float scale = std::clamp(p.scale, 0.4f, 2.f);
+    const std::uint8_t baseTint = static_cast<std::uint8_t>(unit(0xc1u, qx, qy, 0u) * static_cast<float>(kBackdropScrubTints));
+    for (std::size_t k = 0; k < n; ++k) {
+        const std::uint32_t kk = static_cast<std::uint32_t>(k) + 1u;
+        auto u = [&](std::uint32_t salt) { return unit(0xc1u + salt, qx, qy, kk); };
+        const float wide = (crest ? 2.6f + 1.6f * u(1) : 1.4f + 1.2f * u(1)) * scale * (k == 0 ? 1.f : 0.6f + 0.3f * u(2));
+        BackdropLump& l = out[k];
+        l.sx = wide;
+        l.sy = wide * (0.6f + 0.35f * u(3));
+        l.sz = std::min(wide * (crest ? 0.25f + 0.15f * u(4) : 0.3f + 0.15f * u(4)), 1.6f); // low: never over 1.6 m
+        l.yaw = 360.f * u(5);
+        const double a = 2.0 * kPi * static_cast<double>(u(6));
+        const float r = k == 0 ? 0.f : (0.3f + 0.2f * u(7)) * out[0].sx;
+        l.dx = static_cast<float>(r * std::cos(a));
+        l.dy = static_cast<float>(r * std::sin(a));
+        l.dz = 0.5f * l.sz - 0.33f * l.sz; // a third of it under the ground
+        l.tint = static_cast<std::uint8_t>((baseTint + (u(8) < 0.3f ? 1u : 0u)) % kBackdropScrubTints);
+    }
+    return n;
+}
+
 } // namespace ftcore

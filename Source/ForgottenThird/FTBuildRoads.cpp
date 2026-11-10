@@ -317,6 +317,8 @@ bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::
 			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: road network: %d kerb and pavement pieces pruned at mouths."),
 				static_cast<int32>(Report.pruned));
 		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: road network: %d corner aprons (pavement on into the block's corner)."),
+			static_cast<int32>(Report.aprons));
 		return HideRoadClashes(Builds[0], Boxes, TEXT("network"));
 	}
 	if (!ftcore::importRoads(Text, Roads, &Error))

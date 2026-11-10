@@ -28,6 +28,12 @@ NightFrame nightFrame(const NightLook& look, float night) {
     }
     f.lockExposure = n >= kExposureLockAt;
     f.exposureEV100 = look.exposureEV100;
+    const float range = std::max(look.exposureRangeEV, 0.f);
+    f.exposureMinEV100 = look.exposureEV100 - range;
+    f.exposureMaxEV100 = look.exposureEV100 + range;
+    f.whiteMix = n;
+    f.wetShare = lerp(std::clamp(look.dayWetShare, 0.f, 1.f), 1.f, n);
+    f.whiteKelvin = std::clamp(look.whiteKelvin, 1500.f, 15000.f);
     return f;
 }
 

@@ -36,6 +36,7 @@
 
 #include "ftcore/MassingPlan.h"
 #include "ftcore/SurfaceTable.h"
+#include "ftcore/SurfaceWeather.h"
 #include "ftcore/WindowFacade.h"
 #include "ftcore/WindowInterior.h"
 #endif
@@ -292,6 +293,7 @@ struct FSurfaceNode
 	UMaterialExpressionCustom* Custom = nullptr;
 	UMaterialExpressionVertexNormalWS* VertexNormal = nullptr;
 	UMaterialExpressionTransform* Axis[3] = {};
+	UMaterialExpressionWorldPosition* WorldPos = nullptr;
 };
 
 // A new master at Path that draws as the world's boxes do: instanced, its normal in world space.
@@ -370,14 +372,78 @@ FSurfaceNode AddSurfaceNode(UMaterial* Material, TArrayView<UTexture* const> Def
 	Node.Axis[0] = AxisX;
 	Node.Axis[1] = AxisY;
 	Node.Axis[2] = AxisZ;
+	Node.WorldPos = WorldPos;
 	return Node;
 }
 
-// The master, with the first surface's textures as its defaults.
-UMaterial* BuildMaster(TArrayView<UTexture* const> Defaults)
+void AddInputFrom(UMaterialExpressionCustom* Custom, FName Name, UMaterialExpression* From, int32 Output);
+
+// -Weather: the look's collection (FTScene::LookCollection), whose Wetness the weather node reads. Null, with the
+// reason logged, when it is missing; Who names the build in the log.
+UMaterialParameterCollection* LoadLookCollection(const TCHAR* Who)
+{
+	const FString Path = FString(FTScene::LookCollection) + TEXT(".") + FPackageName::GetShortName(FTScene::LookCollection);
+	UMaterialParameterCollection* Look = LoadObject<UMaterialParameterCollection>(nullptr, *Path);
+	if (!Look)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("%s -Weather: %s is missing; build it first with FTBuildLookMaterials."), Who,
+			FTScene::LookCollection);
+	}
+	return Look;
+}
+
+// The weather node (ftcore::surfaceWeatherHlsl: wet up-facing ground, puddles favouring a cambered box's low edge,
+// contact grime and edge darkening) over the shading From gives: its output 0 the albedo, then NormalOut, RoughOut and
+// AOOut at the given outputs. Above (an output of AboveFrom) is the pixel's height over the street floor in metres, or
+// null to measure from the box's bottom. The node returns the albedo; NormalOut, RoughOut and AOOut follow, outputs 1-3.
+// "Weather" (group Weather, 1) scales it per instance; 0 leaves the surface dry and clean.
+UMaterialExpressionCustom* AddWeatherNode(UMaterial* Material, const FSurfaceNode& Wall, UMaterialExpression* From, int32 NormalOutput,
+	int32 RoughOutput, int32 AOOutput, UMaterialParameterCollection* Look, UMaterialExpression* AboveFrom, int32 AboveOutput)
+{
+	ftcore::SurfaceWeatherOptions Options;
+	Options.aboveInput = AboveFrom != nullptr;
+	UMaterialExpressionCollectionParameter* Wetness = AddExpression<UMaterialExpressionCollectionParameter>(Material, -300, -1000);
+	Wetness->Collection = Look;
+	Wetness->ParameterName = TEXT("Wetness");
+	Wetness->ParameterId = Look->GetParameterId(TEXT("Wetness"));
+	UMaterialExpressionScalarParameter* Amount = AddScalar(Material, TEXT("Weather"), 1.f, -1100);
+	Amount->Group = TEXT("Weather");
+	UMaterialExpressionLocalPosition* LocalPos = AddExpression<UMaterialExpressionLocalPosition>(Material, -300, -1200);
+
+	UMaterialExpressionCustom* Weather = AddExpression<UMaterialExpressionCustom>(Material, 300, 0);
+	Weather->Description = TEXT("FTSurfaceWeather");
+	Weather->OutputType = CMOT_Float3;
+	Weather->Code = FT::ToFString(ftcore::surfaceWeatherHlsl(ftcore::SurfaceWeatherSpec{}, Options));
+	Weather->Inputs.Reset();
+	AddInputFrom(Weather, TEXT("Albedo"), From, 0);
+	AddInputFrom(Weather, TEXT("Normal"), From, NormalOutput);
+	AddInputFrom(Weather, TEXT("Rough"), From, RoughOutput);
+	AddInputFrom(Weather, TEXT("AO"), From, AOOutput);
+	AddInput(Weather, TEXT("WorldPos"), Wall.WorldPos);
+	AddInput(Weather, TEXT("VertexNormal"), Wall.VertexNormal);
+	AddInput(Weather, TEXT("Wetness"), Wetness);
+	AddInput(Weather, TEXT("Amount"), Amount);
+	AddInput(Weather, TEXT("LocalPos"), LocalPos);
+	AddInput(Weather, TEXT("AxisX"), Wall.Axis[0]);
+	AddInput(Weather, TEXT("AxisY"), Wall.Axis[1]);
+	AddInput(Weather, TEXT("AxisZ"), Wall.Axis[2]);
+	if (AboveFrom)
+	{
+		AddInputFrom(Weather, TEXT("Above"), AboveFrom, AboveOutput);
+	}
+	AddOutput(Weather, TEXT("NormalOut"), CMOT_Float3);
+	AddOutput(Weather, TEXT("RoughOut"), CMOT_Float1);
+	AddOutput(Weather, TEXT("AOOut"), CMOT_Float1);
+	Weather->RebuildOutputs();
+	return Weather;
+}
+
+// The master, with the first surface's textures as its defaults. Look (-Weather): the weather node over the surface.
+UMaterial* BuildMaster(TArrayView<UTexture* const> Defaults, UMaterialParameterCollection* Look)
 {
 	UMaterial* Material = NewMaster(FTScene::SurfaceTexMaterial);
-	UMaterialExpressionCustom* Custom = AddSurfaceNode(Material, Defaults).Custom;
+	const FSurfaceNode Surface = AddSurfaceNode(Material, Defaults);
+	UMaterialExpressionCustom* Custom = Surface.Custom;
 
 	// Output 0 is the code's return value (the albedo), then its additional outputs in order.
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
@@ -386,6 +452,14 @@ UMaterial* BuildMaster(TArrayView<UTexture* const> Defaults)
 	Inputs->Roughness.Connect(2, Custom);
 	Inputs->Metallic.Connect(3, Custom);
 	Inputs->AmbientOcclusion.Connect(4, Custom);
+	if (Look)
+	{
+		UMaterialExpressionCustom* Weather = AddWeatherNode(Material, Surface, Custom, 1, 2, 4, Look, nullptr, 0);
+		Inputs->BaseColor.Connect(0, Weather);
+		Inputs->Normal.Connect(1, Weather);
+		Inputs->Roughness.Connect(2, Weather);
+		Inputs->AmbientOcclusion.Connect(3, Weather);
+	}
 
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
@@ -616,8 +690,9 @@ void AddR5ComposeInputs(UMaterialExpressionCustom* Compose, UMaterialExpressionC
 // The box values come from each instance's custom data (the massing build lays the boxes as instances), falling back to
 // the custom primitive data a plain mesh component carries (same slots, FTScene::WindowData*). bPrimitiveData
 // (-WindowPrimitiveData): the earlier graph, custom primitive data only.
+// Look (-Weather): the weather node over the composed wall, its grime measured from each face's street floor.
 UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Rooms, UTexture* Curtains, UMaterialParameterCollection* Collection,
-	bool bR5, bool bPrimitiveData)
+	bool bR5, bool bPrimitiveData, UMaterialParameterCollection* Look)
 {
 	UMaterial* Material = NewMaster(FTScene::WindowMaterial);
 	const FSurfaceNode Wall = AddSurfaceNode(Material, Defaults);
@@ -812,6 +887,15 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	Inputs->Metallic.Connect(3, Compose);
 	Inputs->AmbientOcclusion.Connect(4, Compose);
 	Inputs->EmissiveColor.Connect(5, Compose);
+	if (Look)
+	{
+		// The face's output 2 is UpOut, metres over the face's street floor.
+		UMaterialExpressionCustom* Weather = AddWeatherNode(Material, Wall, Compose, 1, 2, 4, Look, Face, 2);
+		Inputs->BaseColor.Connect(0, Weather);
+		Inputs->Normal.Connect(1, Weather);
+		Inputs->Roughness.Connect(2, Weather);
+		Inputs->AmbientOcclusion.Connect(3, Weather);
+	}
 
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
@@ -946,6 +1030,17 @@ int32 BuildWindows(const FString& Params)
 		}
 	}
 
+	// -Weather: the master reads the look's Wetness; its collection is found before anything is replaced.
+	UMaterialParameterCollection* Look = nullptr;
+	if (FParse::Param(*Params, TEXT("Weather")))
+	{
+		Look = LoadLookCollection(TEXT("FTBuildSurfaces -Windows"));
+		if (!Look)
+		{
+			return 1;
+		}
+	}
+
 	// Start from nothing: replace the windows' files up front, before anything loads the old assets.
 	TArray<FString> Packages = {FTScene::WindowMaterial, FTScene::WindowCollection, FTScene::WindowRoomsTexture, FTScene::WindowCurtainsTexture,
 		FTScene::NightLampMaterial};
@@ -974,7 +1069,7 @@ int32 BuildWindows(const FString& Params)
 	const bool bR5 = FParse::Param(*Params, TEXT("FacadeR5"));
 	// -WindowPrimitiveData: the master reads custom primitive data only (the graph before the boxes became instances).
 	const bool bPrimitiveData = FParse::Param(*Params, TEXT("WindowPrimitiveData"));
-	UMaterial* Master = BuildWindowMaster(MakeArrayView(Defaults), Rooms, Curtains, Collection, bR5, bPrimitiveData);
+	UMaterial* Master = BuildWindowMaster(MakeArrayView(Defaults), Rooms, Curtains, Collection, bR5, bPrimitiveData, Look);
 	UMaterial* Lamp = BuildNightLamp(Collection);
 	// The finishes take the widths in turn, so neighbouring finishes differ and every width is used.
 	TArray<UMaterialInstanceConstant*> Instances;
@@ -1012,6 +1107,61 @@ int32 BuildWindows(const FString& Params)
 		Bytes / (1024.0 * 1024.0));
 	return 0;
 }
+
+// -Master [-Weather]: M_WorldSurfaceTex alone, rebuilt in place from the textures already built for the table's first
+// surface (its defaults). The surfaces' textures and instances stay as they are: an instance finds its parameters in the
+// new master by name.
+int32 BuildMasterOnly(const FString& Params)
+{
+	ftcore::SurfaceTable Table;
+	if (!FTScene::LoadSurfaceTable(Table) || Table.surfaces.empty())
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces -Master: Data/Field/surfaces.json is missing or empty."));
+		return 1;
+	}
+	UMaterialParameterCollection* Look = nullptr;
+	if (FParse::Param(*Params, TEXT("Weather")))
+	{
+		Look = LoadLookCollection(TEXT("FTBuildSurfaces -Master"));
+		if (!Look)
+		{
+			return 1;
+		}
+	}
+	const FString FirstId = FT::ToFString(Table.surfaces[0].id);
+	UTexture* Defaults[kMapCount] = {};
+	for (int32 M = 0; M < kMapCount; ++M)
+	{
+		const FString Path = TexturePackage(FirstId, kMaps[M]);
+		Defaults[M] = LoadObject<UTexture>(nullptr, *(Path + TEXT(".") + FPackageName::GetShortName(Path)));
+		if (!Defaults[M])
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces -Master: %s is missing; build the surfaces first."), *Path);
+			return 1;
+		}
+	}
+	const FString File = PackageFile(FTScene::SurfaceTexMaterial);
+	if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces -Master: couldn't replace %s."), *File);
+		return 1;
+	}
+	UMaterial* Master = BuildMaster(MakeArrayView(Defaults), Look);
+	FAssetCompilingManager::Get().FinishAllCompilation();
+	if (FT::CompileErrors(TEXT("FTBuildSurfaces -Master"), Master) > 0)
+	{
+		return 1;
+	}
+	FAssetRegistryModule::AssetCreated(Master);
+	int64 Bytes = 0;
+	if (!SaveAsset(Master, Bytes))
+	{
+		return 1;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildSurfaces -Master: saved %s%s (%d expressions)."), FTScene::SurfaceTexMaterial,
+		Look ? TEXT(" with the weather node") : TEXT(""), Master->GetExpressionCollection().Expressions.Num());
+	return 0;
+}
 } // namespace FTSurfaceBuild
 #endif
 
@@ -1029,6 +1179,10 @@ int32 UFTBuildSurfacesCommandlet::Main(const FString& Params)
 	if (FParse::Param(*Params, TEXT("Windows")))
 	{
 		return FTSurfaceBuild::BuildWindows(Params);
+	}
+	if (FParse::Param(*Params, TEXT("Master")))
+	{
+		return FTSurfaceBuild::BuildMasterOnly(Params);
 	}
 	FString Dir;
 	if (!FParse::Value(*Params, TEXT("Source="), Dir, false) || Dir.IsEmpty())
@@ -1144,6 +1298,17 @@ int32 UFTBuildSurfacesCommandlet::Main(const FString& Params)
 		return 1;
 	}
 
+	// -Weather (a full build only; -Only keeps the master's graph): the weather node over the surface.
+	UMaterialParameterCollection* Look = nullptr;
+	if (!bOnly && FParse::Param(*Params, TEXT("Weather")))
+	{
+		Look = FTSurfaceBuild::LoadLookCollection(TEXT("FTBuildSurfaces"));
+		if (!Look)
+		{
+			return 1;
+		}
+	}
+
 	// Start from nothing: replace the files up front, before anything loads the old assets.
 	TArray<FString> Packages;
 	if (!bOnly)
@@ -1190,7 +1355,7 @@ int32 UFTBuildSurfacesCommandlet::Main(const FString& Params)
 	bool bMasterChanged = true;
 	if (!bOnly)
 	{
-		Master = FTSurfaceBuild::BuildMaster(MakeArrayView(Textures.GetData(), FTSurfaceBuild::kMapCount));
+		Master = FTSurfaceBuild::BuildMaster(MakeArrayView(Textures.GetData(), FTSurfaceBuild::kMapCount), Look);
 	}
 	else
 	{

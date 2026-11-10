@@ -66,9 +66,13 @@ SunDirection sunDirection(const WorldClockSpec& spec, double hours) {
     // up = cos(phi) cos(H), east = -sin(H), north = -sin(phi) cos(H).
     const double h = (wrapHours(hours) - 12.0) * 15.0 * kDeg;
     const double phi = static_cast<double>(spec.latitudeDeg) * kDeg;
+    const double east = -std::sin(h), north = -std::sin(phi) * std::cos(h);
+    // Turned clockwise seen from above by the offset: azimuth (from north towards east) grows by it.
+    const double off = static_cast<double>(spec.azimuthOffsetDeg) * kDeg;
+    const double c = std::cos(off), s = std::sin(off);
     SunDirection d;
-    d.east = static_cast<float>(-std::sin(h));
-    d.north = static_cast<float>(-std::sin(phi) * std::cos(h));
+    d.east = static_cast<float>(east * c + north * s);
+    d.north = static_cast<float>(north * c - east * s);
     d.up = static_cast<float>(std::cos(phi) * std::cos(h));
     return d;
 }

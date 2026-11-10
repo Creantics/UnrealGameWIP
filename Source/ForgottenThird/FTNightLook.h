@@ -6,8 +6,11 @@
 //   -NightSky=<share>   the sky light's fill at full night (net of the moon for a real-time capture)
 //   -NightFog=<share>   the height fog's own inscattering colour kept
 //   -NightGlow=<scale>  the city glow added to the fog's inscattering (1 = the spec's warm glow, 0 = none)
-//   -NightEV=<ev100>    the exposure locked from half night on
+//   -NightEV=<ev100>    the night exposure's centre, from half night on
+//   -NightEVRange=<ev>  its half-width: auto exposure moves within centre +- this (0 locks it at the centre)
+//   -NightWhiteK=<kelvin> the camera's white balance at full night
 //   -NightLamp=<cd> -NightLampReach=<m> -NightLampK=<kelvin>   the street lamps' pool lights
+//   -NightLampCone=<deg> -NightLampInner=<deg> -NightLampSource=<cm>   their cone half-angles and lens radius
 //   -NightShop=<cd> -NightShopReach=<m> -NightShopK=<kelvin>   the shop spill lights
 //   -NightCap=<share> -NightCapFloor=<share> -NightCapRadius=<m>  the crowding cap (0 share turns it off)
 

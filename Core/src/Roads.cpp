@@ -2240,6 +2240,31 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                     x.add(pb, RoadTint::Pavement, true);
                     out.band.push_back(footOf(pb));
                 }
+                // The apron: the pavement carried on into the block's corner behind the two back lines, so a bare lot
+                // corner doesn't read as a cut-out in the pavement. Near-square corners only, on ground the slab
+                // neither floats over nor sinks under; the largest of kRoadCornerApron, then half of it, that fits.
+                const double sq = netDot(ai.d, aj.d), det = netCross(ni, nj);
+                if (std::fabs(sq) < kRoadApronSquare && std::fabs(det) > 1e-6) {
+                    const double bi = ai.hc + ai.pav, bj = -(aj.hc + aj.pav);
+                    const RoadPoint back = netAdd(nd.p, {(bi * nj.y - bj * ni.y) / det, (ni.x * bj - nj.x * bi) / det});
+                    const double su = netDot(netMul(nj, -1.0), ai.d) < 0.0 ? -1.0 : 1.0;
+                    for (const double side : {kRoadCornerApron, kRoadCornerApron * 0.5}) {
+                        // It reaches kRoadApronLap back under the pavements, closing the gaps the ring leaves at them.
+                        const double off = (side - kRoadApronLap) * 0.5, wide = side + kRoadApronLap;
+                        const RoadPoint mid = netAdd(back, netAdd(netMul(ai.d, su * off), netMul(ni, off)));
+                        bool fits = true;
+                        for (int k = 0; k < 9 && fits; ++k) {
+                            const double gu = ((k % 3) - 1) * wide * 0.5, gw = ((k / 3) - 1) * wide * 0.5;
+                            const double gz = groundAt(netAdd(mid, netAdd(netMul(ai.d, gu), netMul(ni, gw))));
+                            fits = gz <= pv - 0.02 && gz >= pv - kRoadSlabDepth + 0.02;
+                        }
+                        if (!fits) continue;
+                        x.add(x.at(mid, angleOf(ai.d), wide, wide, pv - kRoadSlabDepth, pv, "pavement"),
+                              RoadTint::Pavement, true);
+                        ++rep.aprons;
+                        break;
+                    }
+                }
             } else {
                 // The outside of a bend: a ring of kerb and pavement round the node, its kerb line going from arm i's
                 // (at the start of the sweep) to arm j's (at its end) so neither arm's kerb jogs where it meets the ring,

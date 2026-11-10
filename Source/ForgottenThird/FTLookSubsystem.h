@@ -41,6 +41,9 @@ public:
 	bool SetWorldLook(const FString& World);
 	// The world whose look is on, or empty when it's the shared look.
 	const FString& GetWorldLook() const { return WorldId; }
+	// The look wanted on the scene, and whether it (and its material parameters) has been written or given up on.
+	const ftcore::SceneLook& GetLook() const { return Wanted; }
+	bool IsSettled() const { return !bWaiting; }
 
 	// The fight's accent: the grade keeps the chroma of hues within WidthDegrees of HueDegrees (OKLab hue) at Chroma
 	// times their own. ClearFightAccent turns it off.

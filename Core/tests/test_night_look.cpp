@@ -17,6 +17,32 @@ TEST_CASE("nightFrame: day leaves the lights as they are") {
     CHECK(f.fogKeep == doctest::Approx(1.f));
     CHECK(f.fogGlow[0] == 0.f);
     CHECK_FALSE(f.lockExposure);
+    CHECK(f.whiteMix == 0.f);
+    CHECK(f.wetShare == doctest::Approx(NightLook{}.dayWetShare));
+}
+
+TEST_CASE("nightFrame: the ground is damp by day and fully wet at night") {
+    const NightLook look;
+    CHECK(0.6f * nightFrame(look, 0.f).wetShare == doctest::Approx(0.35f).epsilon(0.02));
+    CHECK(nightFrame(look, 1.f).wetShare == doctest::Approx(1.f));
+    CHECK(nightFrame(look, 7.f).wetShare == doctest::Approx(1.f));
+    float last = 0.f;
+    for (int i = 0; i <= 10; ++i) {
+        const float w = nightFrame(look, static_cast<float>(i) / 10.f).wetShare;
+        CHECK(w >= last);
+        last = w;
+    }
+    NightLook odd;
+    odd.dayWetShare = 3.f;  // clamped: never wetter by day than the look
+    CHECK(nightFrame(odd, 0.f).wetShare == doctest::Approx(1.f));
+}
+
+TEST_CASE("nightFrame: a zero or negative range locks the exposure at the centre") {
+    NightLook look;
+    look.exposureRangeEV = -2.f;
+    const NightFrame f = nightFrame(look, 1.f);
+    CHECK(f.exposureMinEV100 == doctest::Approx(look.exposureEV100));
+    CHECK(f.exposureMaxEV100 == doctest::Approx(look.exposureEV100));
 }
 
 TEST_CASE("nightFrame: full night is the spec, the same for the clock and a still") {
@@ -30,6 +56,20 @@ TEST_CASE("nightFrame: full night is the spec, the same for the clock and a stil
     CHECK(clock.fogGlow[0] == doctest::Approx(look.glow[0]));
     CHECK(clock.lockExposure);
     CHECK(clock.exposureEV100 == doctest::Approx(look.exposureEV100));
+    // A range round the centre, not one locked EV; the white balance at the night's own.
+    CHECK(clock.exposureMinEV100 == doctest::Approx(look.exposureEV100 - look.exposureRangeEV));
+    CHECK(clock.exposureMaxEV100 == doctest::Approx(look.exposureEV100 + look.exposureRangeEV));
+    CHECK(clock.exposureMinEV100 < clock.exposureMaxEV100);
+    CHECK(clock.whiteMix == doctest::Approx(1.f));
+    CHECK(clock.whiteKelvin == doctest::Approx(look.whiteKelvin));
+    CHECK(still.exposureMinEV100 == clock.exposureMinEV100);
+    // LED shops cooler than the lamps; the moon and sky fill cool.
+    CHECK(look.shopKelvin > look.lampKelvin);
+    CHECK(look.moonTint[2] > look.moonTint[0]);
+    // Wide, soft lamp pools within the engine's spot cone limit.
+    CHECK(look.lampOuterDeg <= 80.f);
+    CHECK(look.lampInnerDeg < look.lampOuterDeg);
+    CHECK(look.lampSourceCm > 0.f);
     CHECK(still.sunScale == clock.sunScale);
     CHECK(still.skyScaleRealTime == clock.skyScaleRealTime);
     CHECK(still.fogGlow == clock.fogGlow);

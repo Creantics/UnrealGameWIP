@@ -150,7 +150,8 @@ int runCheck(const std::string& netPath, const std::string& roadsPath, const std
         RoadBuild b;
         RoadNetReport rep;
         roadNetBuild(streets, ground, b, &rep);
-        std::printf("net: %zu kerb and pavement pieces pruned in the build\n", rep.pruned);
+        std::printf("net: %zu kerb and pavement pieces pruned in the build, %zu corner aprons\n", rep.pruned,
+                    rep.aprons);
         for (const std::string& n : rep.notes)
             if (listAll && n.rfind("pruned", 0) == 0) std::printf("  note: %s\n", n.c_str());
         checkBuild("net", b, boxes, g, listAll, boxClashes, faces);

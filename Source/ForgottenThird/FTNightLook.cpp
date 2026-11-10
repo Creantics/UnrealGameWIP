@@ -13,9 +13,14 @@ ftcore::NightLook Read()
 	FParse::Value(Cmd, TEXT("NightSky="), L.skyFill);
 	FParse::Value(Cmd, TEXT("NightFog="), L.fogKeep);
 	FParse::Value(Cmd, TEXT("NightEV="), L.exposureEV100);
+	FParse::Value(Cmd, TEXT("NightEVRange="), L.exposureRangeEV);
+	FParse::Value(Cmd, TEXT("NightWhiteK="), L.whiteKelvin);
 	FParse::Value(Cmd, TEXT("NightLamp="), L.lampCandela);
 	FParse::Value(Cmd, TEXT("NightLampReach="), L.lampReachM);
 	FParse::Value(Cmd, TEXT("NightLampK="), L.lampKelvin);
+	FParse::Value(Cmd, TEXT("NightLampCone="), L.lampOuterDeg);
+	FParse::Value(Cmd, TEXT("NightLampInner="), L.lampInnerDeg);
+	FParse::Value(Cmd, TEXT("NightLampSource="), L.lampSourceCm);
 	FParse::Value(Cmd, TEXT("NightShop="), L.shopCandela);
 	FParse::Value(Cmd, TEXT("NightShopReach="), L.shopReachM);
 	FParse::Value(Cmd, TEXT("NightShopK="), L.shopKelvin);

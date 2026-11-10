@@ -1,6 +1,7 @@
 #include "FTBuildMassingWorldCommandlet.h"
 #include "FTBuildRoads.h"
 #include "FTBuildBackdrop.h"
+#include "FTBuildDecals.h"
 #include "FTCellInstancer.h"
 #include "FTNightLightData.h"
 #include "FTRoofDress.h"
@@ -52,6 +53,7 @@
 #include "FTNavIslands.h"
 #include "FTPlateNavNull.h"
 #include "FTSceneLook.h"
+#include "FTWorldClockSubsystem.h"
 
 #include "ftcore/Json.h"
 #include "ftcore/MassingDress.h"
@@ -82,8 +84,8 @@ constexpr double kSeaReach = 20000.0;
 const FVector kNavProjectExtent(300.0, 300.0, 600.0);
 // The material slot of a sloped box's mesh.
 const FName kMassingSlot(TEXT("Massing"));
-// The sun's angle, as in the big worlds.
-const FRotator kMassingSun(-38, 35, 0);
+// The sun's angle: the world clock's at its start hour, so a built map, a day still and a fresh played day share it.
+const FRotator kMassingSun = FTClock::StartSunRotation();
 // With -World: a district's spawn stands on the highest deck or landing at most this far (m) over the higher of its
 // plaza's floor and the ground there, so a raised landing counts and a roof over the spawn doesn't.
 constexpr double kSpawnStepUp = 6.0;
@@ -2268,6 +2270,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		(Role == ftcore::MassingRole::Named ? Named : Kit) += 1;
 		BoxesLeft += Replaced[I] ? 0 : 1;
 		UMaterialInterface* Material = bSurfaces ? WearLook(LookSet, Box) : Finish[static_cast<int32>(ftcore::massingFinish(Box))];
+		UMaterialInterface* const Rock = bSurfaces ? FTBackdrop::RockFace(Package, Material, Box, Land->LandscapeMaterial) : nullptr;
 		UMaterialInterface* const WindowMaterial = bWindows ? WindowLook[static_cast<int32>(ftcore::massingLookSurface(Box))] : nullptr;
 		if (WindowMaterial)
 		{
@@ -2276,6 +2279,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			WindowSloped += !Replaced[I] && Box.sloped ? 1 : 0;
 			Material = !Replaced[I] && !Box.sloped ? WindowMaterial : Material;
 		}
+		Material = Rock ? Rock : Material;
 		// A box a finished mesh stands in for stays as its hidden collider: an imported mesh may bring no simple
 		// collision, and the lead would fall through it.
 		const FString Id = Replaced[I] ? Utf8(Box.id) + TEXT("-COL") : Utf8(Box.id);
@@ -2556,6 +2560,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		World->DestroyWorld(false);
 		return 1;
 	}
+	FTBuildDecals::Lay(Package, Cells, RoadSpecs, RoadBuilds, Side);
 
 	// The quays: a rail, posts and bollards along each deck's seaward edges, and -QuayLamp's lamps, set with the props.
 	std::vector<ftcore::MassingProp> QuayLamps;
