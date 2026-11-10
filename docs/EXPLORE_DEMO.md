@@ -40,8 +40,9 @@ spots say which objective they wait for.
 | Use (talk, pick up, open) | E or Enter | X |
 | Switch lead (with a party in config) | Tab | RB |
 | Show or hide the followers | P | LB |
-| Weapon, light attack (chain) | Left mouse or J | Right trigger |
-| Weapon, heavy attack | Right mouse or K | Y |
+| Weapon, light attack (chain) | Left mouse (tap) or J | Right trigger |
+| Weapon, heavy attack | Left mouse held 0.25 s, or K | Y |
+| Aim (hold): camera over the shoulder, reticle; the pistol fires and the bolt flies at it, the gauntlets lunge toward it | Right mouse | |
 | Pause menu | Esc | Start |
 
 The slide, landing roll, dodge roll and ledge grab, and their tunables, are in
@@ -65,6 +66,18 @@ at the lead's chest. The lead turns to it, the striking arm is aimed at it (two-
 onto it), the tracer or bolt flies to it and the impact effect plays on it. Each attack logs `Field: aim <clip> <deg>
 deg` (arm or barrel against the direction to the hit point) and `Field: impact <effect> <cm> cm from the hit point`.
 Each hit logs `Field: dummy hit for <n>`. There is nothing to fight in the field yet but dummies.
+
+Attacks on the move (`ftcore::attackMove`, `Data/Battle/attack_move.json`, per weapon kind): a light keeps the legs
+walking at about 60% pace and steers the strike at a capped turn rate; the clip plays on the upper body only
+(`spine_01` up, `attackUpperShare` by speed), on the whole body when standing. A heavy walks, then roots for its
+commit (about 0.3 s) up to the hit frame, still steering until then. `-ExploreWalk` walks the lead in a slow circle
+(for moving-attack captures, with `-LocoCamYaw=90` for a side view).
+
+Unstick (`ftcore::FieldUnstick`, `Data/Movement/unstick.json`): on a slope steeper than 45 degrees the lead slides
+down it and can still jump. With no walkable ground and under 0.5 m of movement for 1.5 s, or falling for over 4 s,
+the lead steps back to a recent safe point behind a short fade (`Field: the lead was stuck off walkable ground`).
+`-ExploreWedge` drops the lead into a steep V trench to test it; `-ExploreWedgeShot=<prefix>` films it in the trench
+and after the step back, then quits.
 
 The keys are an Enhanced Input context made at runtime (`AFTExploreCharacter`), priority 2, above
 the story context. The pause menu (see [GAME_FRAME.md](GAME_FRAME.md), "Pause") is the player

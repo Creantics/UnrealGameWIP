@@ -1362,6 +1362,8 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 	// layers make room. With nothing under them they take the whole body.
 	float ActWeight = 0.f;
 	int32 NumActs = 0;
+	NumLoco = NumLayers;
+	UpperShare = 0.f;
 	for (int32 I = 0; I < Instance->NumActions; ++I)
 	{
 		if (Instance->ActionClips[Instance->Actions[I].Slot])
@@ -1394,6 +1396,8 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 		{
 			Layers[I].Weight = Sum > 0.f ? Layers[I].Weight / Sum * (1.f - ActWeight) : 0.f;
 		}
+		NumLoco = Sum > 0.f ? NumLayers : 0;
+		UpperShare = NumLoco > 0 ? Instance->ActionUpper : 0.f;
 		// Nothing under them: the actions are the whole pose.
 		const float Scale = Sum > 0.f ? 1.f : 1.f / ActSum;
 		float Added = 0.f;
@@ -1482,7 +1486,8 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 		HeadBend = FQuat::Slerp(FQuat::Identity, HeadBend, Keep);
 		ElbowHold *= Keep;
 		LimbWeight[0] *= Keep;
-		LimbWeight[1] *= Keep;
+		// Under an upper-body strike the legs keep their locomotion, the air pose with it.
+		LimbWeight[1] *= (1.f - TravWeight) * (1.f - ActWeight * (1.f - UpperShare));
 	}
 }
 
@@ -1521,6 +1526,39 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 		FAnimationPoseData Out(Output);
 		FAnimationRuntime::BlendPosesTogether(MakeArrayView(Poses, NumLayers), MakeArrayView(Curves, NumLayers),
 			MakeArrayView(Attributes, NumLayers), MakeArrayView(Weights, NumLayers), Out);
+		// An upper-body strike: the bones off the mask (the pelvis, the legs) go back toward the locomotion's layers
+		// alone, so the legs keep walking under it.
+		if (UpperShare > 0.f && NumLoco > 0 && NumLoco < NumLayers && UpperMask.Num() == Output.Pose.GetNumBones())
+		{
+			float LocoSum = 0.f;
+			for (int32 I = 0; I < NumLoco; ++I)
+			{
+				LocoSum += Weights[I];
+			}
+			if (LocoSum > 0.f)
+			{
+				float LocoWeights[MaxLayers];
+				for (int32 I = 0; I < NumLoco; ++I)
+				{
+					LocoWeights[I] = Weights[I] / LocoSum;
+				}
+				FCompactPose LocoPose;
+				LocoPose.SetBoneContainer(&Container);
+				FBlendedCurve LocoCurve;
+				LocoCurve.InitFrom(Output.Curve);
+				UE::Anim::FStackAttributeContainer LocoAttributes;
+				FAnimationPoseData LocoData(LocoPose, LocoCurve, LocoAttributes);
+				FAnimationRuntime::BlendPosesTogether(MakeArrayView(Poses, NumLoco), MakeArrayView(Curves, NumLoco),
+					MakeArrayView(Attributes, NumLoco), MakeArrayView(LocoWeights, NumLoco), LocoData);
+				for (const FCompactPoseBoneIndex B : Output.Pose.ForEachBoneIndex())
+				{
+					if (B.GetInt() > 0 && !UpperMask[B.GetInt()])
+					{
+						Output.Pose[B].BlendWith(LocoPose[B], UpperShare);
+					}
+				}
+			}
+		}
 	}
 
 	const FBoneContainer& Container = Output.Pose.GetBoneContainer();
@@ -1618,6 +1656,17 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 				++Found;
 			}
 			bFingers[Side] = Found == NumFingerBones;
+		}
+		// The upper body: spine_01 and every bone under it (compact bones come parents first).
+		UpperMask.Init(false, Output.Pose.GetNumBones());
+		if (Spine[0].IsValidToEvaluate(Container))
+		{
+			const int32 Spine01 = Spine[0].GetCompactPoseIndex(Container).GetInt();
+			for (const FCompactPoseBoneIndex B : Output.Pose.ForEachBoneIndex())
+			{
+				const FCompactPoseBoneIndex Parent = Container.GetParentBoneIndex(B);
+				UpperMask[B.GetInt()] = B.GetInt() == Spine01 || (Parent.IsValid() && UpperMask[Parent.GetInt()]);
+			}
 		}
 		BoundSerial = Container.GetSerialNumber();
 		bBound = true;

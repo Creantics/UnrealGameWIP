@@ -28,7 +28,7 @@
     "arena.autoplay": "AUTOPLAY",
     "arena.idle": "IDLE (no input)",
     "arena.stats": "{0} s    {1} hits    {2} parries    {3} ripostes    {4} evades    {5} blocks    {6} hits taken",
-    "arena.hint": "WASD move  J light  K heavy  I guard (tap: parry)  L / Space dodge  H heal  R release  F partner  1 2 3 read  Tab lock  Q / E switch  U intercept",
+    "arena.hint": "WASD move  LMB/J light  hold LMB/K heavy  RMB aim  I/Ctrl guard  L/Space dodge  H heal  R release  F partner  1 2 3 read  Tab lock  Q/E switch  U intercept",
     "arena.boss.weight": "WEIGHT",
     "arena.boss.invulnerable": "INVULNERABLE",
     "arena.boss.weak_point": "WEAK POINT OPEN",
@@ -143,7 +143,7 @@
     "cutscene.skip": "Space / Enter / pad A: skip",
 
     "explore.objectives": "OBJECTIVES",
-    "explore.hint": "WASD / left stick: move    Mouse / right stick: look    Shift: run    Space: jump    E / pad X: use    Tab / RB: switch lead    P / LB: party on/off",
+    "explore.hint": "WASD/stick: move  Mouse: look  Shift: run  Space: jump  LMB/J: light (hold: heavy)  RMB: aim  E/pad X: use  Tab/RB: lead  P/LB: party",
     "explore.complete": "Demo complete",
     "explore.world": "WORLD",
     "explore.overworld": "OVERWORLD",

@@ -17,6 +17,8 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 
+#include "ftcore/AimStance.h"
+#include "ftcore/AttackMove.h"
 #include "ftcore/ArenaFight.h"
 #include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
@@ -205,6 +207,8 @@ public:
 	const FFTKiteHost* GetKite() const { return Kite.IsActive() ? &Kite : nullptr; }
 	// The lead's weapon: its strike clips, props and effects (FTLeadWeapons.h); the mode's strike views freeze and thaw it.
 	const FFTLeadWeapons& GetLeadWeapons() const { return LeadWeapons; }
+	// The aim stance (right mouse held): its blend 0..1, for the HUD's reticle.
+	float GetAimAlpha() const { return ArenaAim.alpha(); }
 	FFTLeadWeapons& GetLeadWeapons() { return LeadWeapons; }
 	// The fight time the figures were last drawn at: a step behind Fight.time(), Alpha of the way to it. It moves by
 	// exactly the delta TickFight is given while the fight runs.
@@ -292,6 +296,9 @@ private:
 	void TrackParts(const ftcore::ArenaOutput& Out);
 	void PlaceFigures(float Alpha);
 	void SteerCamera(float DeltaSeconds);
+	// The aim stance this frame (right mouse held) and its reticle point; the camera pulled in by it.
+	void TickAim(float DeltaSeconds);
+	void ApplyAimCamera();
 	void Finish();
 	// The one result line per fight (VICTORY, DEFEAT, or TIMEOUT as a warning while it still runs).
 	void LogResult() const;
@@ -417,6 +424,16 @@ private:
 	int8 PressRead = -1;
 	bool bGuardHeld = false;
 	bool bInterceptHeld = false;
+	// The aim (right mouse held) and the attack button's tap and hold (left mouse; ftcore::AimStance, Data/Battle/aim.json,
+	// loaded once), the reticle point (world, cm) and whether the camera was last left pulled in.
+	ftcore::AimStance ArenaAim;
+	// Attacking on the move (Data/Battle/attack_move.json, loaded with aim.json).
+	ftcore::AttackMoveRules AttackMoveTable;
+	ftcore::PressHold AttackHold;
+	bool bAimRulesTried = false;
+	bool bAimHeld = false;
+	bool bAimCamera = false;
+	FVector ReticlePoint = FVector::ZeroVector;
 	ftcore::Vec2 Stick;
 	bool bStickFlicked = false;
 

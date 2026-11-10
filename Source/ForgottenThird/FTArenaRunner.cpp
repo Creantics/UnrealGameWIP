@@ -304,6 +304,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 		Now += DeltaSeconds;
 	}
 	PollInput(DeltaSeconds);
+	TickAim(DeltaSeconds);
 
 	if (!Fight.over() && !bHold)
 	{
@@ -316,6 +317,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	}
 	PlaceFigures(Fight.over() ? 1.f : static_cast<float>(Accumulator / StepSeconds));
 	SteerCamera(DeltaSeconds);
+	ApplyAimCamera();
 
 	if (Fight.over())
 	{
@@ -1073,6 +1075,8 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	{
 		bGuardHeld = false;
 		bInterceptHeld = false;
+		bAimHeld = false;
+		AttackHold.reset();
 		Stick = ftcore::Vec2();
 		return;
 	}
@@ -1082,8 +1086,13 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	const int32 DodgeB = static_cast<int32>(ftcore::ActionButton::Dodge);
 	const int32 HeavyB = static_cast<int32>(ftcore::ActionButton::Jump);
 
-	bPressLight |= ArenaAnyJustPressed(*PC, Key(AttackB, 0), Key(AttackB, 1), EKeys::LeftMouseButton, EKeys::Gamepad_RightShoulder);
+	bPressLight |= ArenaAnyJustPressed(*PC, Key(AttackB, 0), Key(AttackB, 1), EKeys::Gamepad_RightShoulder);
 	bPressHeavy |= ArenaAnyJustPressed(*PC, Key(HeavyB, 0), Key(HeavyB, 1), EKeys::Gamepad_RightTrigger);
+	// Left mouse: a tap is the light, held ftcore::AimRules::heavyHold the heavy. Right mouse held aims.
+	const ftcore::PressHold::Out Press = AttackHold.tick(DeltaSeconds, PC->IsInputKeyDown(EKeys::LeftMouseButton), ArenaAim.rules().heavyHold);
+	bPressLight |= Press.light;
+	bPressHeavy |= Press.heavy;
+	bAimHeld = PC->IsInputKeyDown(EKeys::RightMouseButton);
 	bPressDodge |= ArenaAnyJustPressed(*PC, Key(DodgeB, 0), Key(DodgeB, 1), EKeys::SpaceBar);
 	// The partner's Read: 1 / 2 / 3, or on a pad the d-pad's left, up and right while the cards are up, picked or
 	// not, until the move goes active (they switch the target and heal at any other time; the d-pad's down stays
@@ -1105,7 +1114,7 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	bPressLock |= ArenaAnyJustPressed(*PC, EKeys::Tab, EKeys::MiddleMouseButton, EKeys::Gamepad_RightThumbstick);
 	bPressRelease |= ArenaAnyJustPressed(*PC, EKeys::R, EKeys::Gamepad_LeftTrigger);
 	bPressPair |= ArenaAnyJustPressed(*PC, EKeys::F, EKeys::Gamepad_DPad_Down);
-	bGuardHeld = PC->IsInputKeyDown(Key(GuardB, 0)) || PC->IsInputKeyDown(Key(GuardB, 1)) || PC->IsInputKeyDown(EKeys::RightMouseButton)
+	bGuardHeld = PC->IsInputKeyDown(Key(GuardB, 0)) || PC->IsInputKeyDown(Key(GuardB, 1)) || PC->IsInputKeyDown(EKeys::LeftControl)
 		|| PC->IsInputKeyDown(EKeys::Gamepad_LeftShoulder);
 	// A called-blow boss's Intercept (its Guard is the guard above): U, the mouse's thumb button or the left stick's
 	// click, held.
@@ -1184,6 +1193,24 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 	In.release = bPressRelease;
 	In.pair = bPressPair;
 	In.read = PressRead;
+	// Aimed: the lead faces the camera's way and strafes (ArenaFight's aim input).
+	In.aim = ArenaAim.aiming();
+	In.aimDir = In.view;
+	In.aimTurn = ArenaAim.rules().turnRate;
+	In.aimSpeed = ArenaAim.speedScale();
+	// Attacking on the move: a light or a heavy under way (as the last step left it) walks and turns by its rules; a
+	// riposte or a release stays rooted.
+	const ftcore::ArenaPlayerOut& Last = Fight.output().player;
+	if (Last.action == ftcore::ArenaAction::Light || Last.action == ftcore::ArenaAction::Heavy)
+	{
+		if (const ftcore::ArenaAttack* Attack = ftcore::arenaPlayerAttack(Def.fighter, Last.move))
+		{
+			const ftcore::AttackMoveOut Move = ftcore::attackMove(AttackMoveTable, ftcore::aimKindOf(Def.fighter),
+				Last.action == ftcore::ArenaAction::Heavy, *Attack, Last.actionTime);
+			In.attackSpeed = Move.rooted ? 0.f : Move.speedScale;
+			In.attackTurn = Move.turnRate;
+		}
+	}
 	// Each press goes to one step.
 	bPressLight = bPressHeavy = bPressDodge = bPressHeal = bPressLock = bPressRelease = bPressPair = false;
 	PressSwitch = 0;
@@ -1330,6 +1357,14 @@ void UFTArenaRunner::StepFight()
 			bLeadAimDir = false;
 			LeadWeapons.SetAim(LeadChest + FVector(Out.player.facing.x, Out.player.facing.y, 0.0) * 100.0, false);
 		}
+		// Aimed with nothing locked: the shot, the bolt and the raised arm go at the reticle point.
+		if (ArenaAim.alpha() > 0.f && Lock == ftcore::kArenaNobody)
+		{
+			LeadWeapons.SetAim(ReticlePoint, true);
+		}
+		LeadWeapons.SetAimHold(ArenaAim.alpha());
+		LeadWeapons.SetActionUpper(ftcore::attackUpperShare(AttackMoveTable,
+			FMath::Sqrt(Out.player.velocity.x * Out.player.velocity.x + Out.player.velocity.y * Out.player.velocity.y)));
 	}
 	LeadWeapons.Track(Out.player, static_cast<double>(Fight.time()));
 	if (bBoss)
@@ -1927,6 +1962,60 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 	{
 		BossVfx.MoveGlow(BossFlashPoint());
 	}
+}
+
+void UFTArenaRunner::TickAim(float DeltaSeconds)
+{
+	if (!bAimRulesTried)
+	{
+		bAimRulesTried = true;
+		ftcore::AimRules Rules;
+		TArray<uint8> Bytes;
+		std::string Error;
+		const FString File = FPaths::ProjectDir() / TEXT("Data/Battle/aim.json");
+		if (!(FFileHelper::LoadFileToArray(Bytes, *File) && ftcore::importAimRules(FT::BytesAsText(Bytes), Rules, &Error)))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Battle/aim.json; the aim uses its built-in rules.\n%s"), *FT::ToFString(Error));
+			Rules = ftcore::AimRules();
+		}
+		ArenaAim.setRules(Rules);
+		ftcore::AttackMoveRules Moves;
+		const FString MoveFile = FPaths::ProjectDir() / TEXT("Data/Battle/attack_move.json");
+		Bytes.Reset();
+		if (!(FFileHelper::LoadFileToArray(Bytes, *MoveFile) && ftcore::importAttackMoveRules(FT::BytesAsText(Bytes), Moves, &Error)))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Battle/attack_move.json; attacks use built-in move rules: %s"), *FT::ToFString(Error));
+			Moves = ftcore::AttackMoveRules();
+		}
+		AttackMoveTable = Moves;
+	}
+	ArenaAim.tick(DeltaSeconds, bAimHeld && !bAutoPlay && !bIdle && !Fight.over(), ftcore::FieldBody::Free);
+	// The reticle: the camera's line to the first thing it meets within reticleRange, the lead's figure not counted.
+	const APlayerController* PC = GetPC();
+	if (ArenaAim.alpha() > 0.f && PC && PC->PlayerCameraManager)
+	{
+		const FVector From = PC->PlayerCameraManager->GetCameraLocation();
+		const FVector To = From + PC->PlayerCameraManager->GetCameraRotation().Vector() * (double(ArenaAim.rules().reticleRange) * 100.0);
+		const FCollisionQueryParams Params(SCENE_QUERY_STAT(FTArenaAimReticle), false, PlayerFigure.Get());
+		FHitResult Hit;
+		ReticlePoint = GetWorld()->LineTraceSingleByChannel(Hit, From, To, ECC_Visibility, Params) ? FVector(Hit.ImpactPoint) : To;
+	}
+}
+
+void UFTArenaRunner::ApplyAimCamera()
+{
+	AFTArenaFighter* Figure = PlayerFigure.Get();
+	const float A = ArenaAim.alpha();
+	if (!Figure || (A <= 0.f && !bAimCamera))
+	{
+		return;
+	}
+	bAimCamera = A > 0.f;
+	// The fight's camera pulled in over the right shoulder by the aim stance.
+	const ftcore::ZoneCamera& Rig = Fit.camera;
+	const ftcore::AimRules& Rules = ArenaAim.rules();
+	Figure->SetCameraRig(ArenaAim.blend(Rig.arm, Rig.arm * Rules.armScale), Rig.pivot, ArenaAim.blend(Rig.side, Rules.shoulderRight / 100.f),
+		Rig.up, ArenaAim.blend(Rig.fov, Rules.fov));
 }
 
 void UFTArenaRunner::SteerCamera(float DeltaSeconds)

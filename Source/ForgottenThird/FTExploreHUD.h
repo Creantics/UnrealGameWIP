@@ -30,6 +30,8 @@ private:
 	void DrawFieldObjective(const AFTExploreDirector& D);
 	void DrawWorld(const AFTExploreDirector& D);
 	void DrawMessages(const AFTExploreDirector& D);
+	// The centre reticle while the lead aims (right mouse held), faded in with the aim stance.
+	void DrawAimReticle();
 
 	void DrawStr(const FString& S, const FLinearColor& Color, float X, float Y, UFont* Font, float Scale = 1.f);
 	void DrawStrCentered(const FString& S, const FLinearColor& Color, float X, float Y, UFont* Font, float Scale = 1.f);

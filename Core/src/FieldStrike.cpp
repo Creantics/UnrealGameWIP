@@ -1,5 +1,7 @@
 #include "ftcore/FieldStrike.h"
 
+#include "ftcore/AttackMove.h"
+
 #include <cmath>
 
 namespace ftcore {
@@ -82,6 +84,30 @@ void FieldStrike::takeAim(Vec2 pos, const FieldTarget* targets) {
     aim_.aimed = false;
     aim_.target = 0xFF;
     aim_.id = 0;
+    if (reticleOn_) {
+        const float dx = reticleAt_.x - pos.x;
+        const float dy = reticleAt_.y - pos.y;
+        const float d = std::sqrt(dx * dx + dy * dy);
+        if (d > 1e-4f) facing_ = unit(Vec2{dx, dy});
+        aim_.aimed = true;
+        aim_.at = reticleAt_;
+        aim_.height = reticleHeight_;
+        for (std::uint8_t k = 0; k < nearCount_; ++k) {
+            const FieldTarget& t = targets[near_[k]];
+            const float ox = t.at.x - reticleAt_.x;
+            const float oy = t.at.y - reticleAt_.y;
+            if (std::sqrt(ox * ox + oy * oy) > t.radius + kFieldReticleSlack) continue;
+            aim_.target = near_[k];
+            aim_.id = t.id;
+            break;
+        }
+        const float reach = attack_ ? attack_->range * lungeStop_ : 0.f;
+        const float room = d - reach;
+        const float want = attack_ ? attack_->lunge * lungeScale_ : 0.f;
+        lunge_ = room > 0.f ? (want < room ? want : room) : 0.f;
+        return;
+    }
+    lunge_ = 0.f;
     for (std::uint8_t k = 0; attack_ && k < nearCount_; ++k) {
         const FieldTarget& t = targets[near_[k]];
         const float dx = t.at.x - pos.x;
@@ -144,6 +170,7 @@ void FieldStrike::begin(const ArenaFighter& kit) {
     bufferedAt_ = 0.f;
     facing_ = Vec2{1.f, 0.f};
     aim_ = FieldAim{};
+    lunge_ = 0.f;
     hitCount_ = 0;
     nearCount_ = 0;
     hits_ = 0;
@@ -219,6 +246,11 @@ const ArenaOutput& FieldStrike::tick(float dt, bool light, bool heavy, Vec2 pos,
     }
     if (buffered_ != kNoMove && time_ - bufferedAt_ > kit_.bufferTime) buffered_ = kNoMove;
 
+    // On the move with nothing to face: the attack under way turns with the body, capped, before its hit test.
+    if (attack_ && steerRate_ > 0.f && !aim_.aimed && !reticleOn_ && dt > 0.f) {
+        facing_ = turnCapped(facing_, steerWant_, steerRate_ * dt);
+        aim_.at = Vec2{pos.x + facing_.x * attack_->range, pos.y + facing_.y * attack_->range};
+    }
     // The attack under way runs on. A frame that reaches into its active part, or passes over it whole, tests hits.
     if (attack_) {
         const float from = actionTime_;
@@ -251,6 +283,16 @@ const ArenaOutput& FieldStrike::tick(float dt, bool light, bool heavy, Vec2 pos,
         p.move = move_;
         p.actionTime = actionTime_;
         p.facing = facing_;
+        // The aimed lunge, spread over startup and active.
+        const float span = attack_->startup + attack_->active;
+        if (lunge_ > 0.f && span > 1e-4f && dt > 0.f) {
+            const float before = actionTime_ - dt;
+            const float lo = before > 0.f ? before : 0.f;
+            const float hi = actionTime_ < span ? actionTime_ : span;
+            const float moving = hi > lo ? hi - lo : 0.f;
+            const float speed = lunge_ / span * moving / dt;
+            p.velocity = Vec2{facing_.x * speed, facing_.y * speed};
+        }
         if (actionTime_ < attack_->startup) {
             p.part = ArenaPart::Startup;
         } else if (actionTime_ < attack_->startup + attack_->active) {

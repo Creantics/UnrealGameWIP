@@ -856,6 +856,15 @@ void FFTLeadWeapons::PushArmAim(const ftcore::ArenaPlayerOut& P)
 			W = 1.f - FMath::SmoothStep(0.f, 1.f, (Time - S - A) / Out);
 		}
 	}
+	// Held aim: the pistol arm (the right) or the casting hand stays raised at the aim point between attacks.
+	if (AimHold > 0.f && !bKick && Kit.weapon != ftcore::ArenaWeapon::Gauntlets && Kit.weapon != ftcore::ArenaWeapon::None)
+	{
+		if (Side < 0)
+		{
+			Side = 1;
+		}
+		W = FMath::Max(W, AimHold);
+	}
 	// Gauntlets: both hands half closed in guard, the striking one closing into a full fist as the arm comes in.
 	if (Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
 	{
@@ -973,6 +982,7 @@ void FFTLeadWeapons::Paint(double T)
 		return;
 	}
 	Instance->ClearActions();
+	Instance->SetActionUpper(ActionUpper);
 	float Fade = 1.f;
 	if (FadeSince >= 0.0)
 	{
@@ -1067,6 +1077,7 @@ void FFTLeadWeapons::Reset()
 	LastImpactTime = -1e9;
 	AimSide = -1;
 	bAimed = false;
+	AimHold = 0.f;
 }
 
 const TCHAR* FFTLeadWeapons::GetLastStrikeName() const

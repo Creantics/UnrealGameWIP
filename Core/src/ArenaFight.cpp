@@ -151,6 +151,13 @@ struct ArenaFightImpl {
     const std::size_t n;
     float dt = 0.f;
     float t0 = 0.f; // the tick's start, in fight time
+    // The aim this tick (ArenaInput::aim): the way the camera aims, the turn rate toward it and the move scale.
+    bool aimOn = false;
+    Vec2 aimWay{1.f, 0.f};
+    float aimTurn = 0.f;
+    float aimSpeed = 1.f;
+    float attackSpeed = 0.f; // ArenaInput::attackSpeed / attackTurn this tick
+    float attackTurn = 0.f;
     float t1 = 0.f; // ... and its end
 
     explicit ArenaFightImpl(ArenaFight& f)
@@ -462,6 +469,10 @@ struct ArenaFightImpl {
 
     // An attack starts facing the lock target, or the stick when it is pushed.
     void faceAtStart(const ArenaInput& in) {
+        if (aimOn) { // aimed: the attack goes where the camera aims, lock or not
+            pl.facing = aimWay;
+            return;
+        }
         if (pl.lock != kArenaNobody) {
             pl.facing = arenaUnit(arenaSub(foes[pl.lock].pos, pl.pos), pl.facing);
             return;
@@ -690,6 +701,12 @@ struct ArenaFightImpl {
     }
 
     void stepPlayer(const ArenaInput& in) {
+        aimOn = in.aim;
+        aimWay = arenaUnit(in.aimDir, pl.facing);
+        aimTurn = std::isfinite(in.aimTurn) ? in.aimTurn : 0.f;
+        aimSpeed = std::isfinite(in.aimSpeed) ? std::clamp(in.aimSpeed, 0.f, 1.f) : 1.f;
+        attackSpeed = std::isfinite(in.attackSpeed) ? std::clamp(in.attackSpeed, 0.f, 1.f) : 0.f;
+        attackTurn = std::isfinite(in.attackTurn) ? std::max(in.attackTurn, 0.f) : 0.f;
         regenerate();
         handleLock(in);
         if (in.pair && pl.hp > 0) { // the partner's press: it pairs with a parry just before, or waits for one
@@ -735,7 +752,8 @@ struct ArenaFightImpl {
 
     // Outside attacks the player faces the lock target, else turns toward the stick at turnRate.
     void faceFree(Vec2 stick, bool pushed) {
-        if (pl.lock != kArenaNobody) pl.facing = arenaUnit(arenaSub(foes[pl.lock].pos, pl.pos), pl.facing);
+        if (aimOn) pl.facing = arenaTurn(pl.facing, aimWay, (aimTurn > 0.f ? aimTurn : fi.turnRate) * dt);
+        else if (pl.lock != kArenaNobody) pl.facing = arenaUnit(arenaSub(foes[pl.lock].pos, pl.pos), pl.facing);
         else if (pushed) pl.facing = arenaTurn(pl.facing, arenaUnit(stick, pl.facing), fi.turnRate * dt);
     }
 
@@ -757,7 +775,7 @@ struct ArenaFightImpl {
         case ArenaAction::Idle:
         case ArenaAction::Move:
             faceFree(stick, pushed);
-            vel = ramped(arenaScaled(stick, fi.moveSpeed));
+            vel = ramped(arenaScaled(stick, fi.moveSpeed * aimSpeed));
             pl.action = pushed ? ArenaAction::Move : ArenaAction::Idle;
             break;
         case ArenaAction::Guard:
@@ -812,12 +830,16 @@ struct ArenaFightImpl {
 
     Vec2 advanceAttack(Vec2 stick, bool pushed, float a0, float a1) {
         const ArenaAttack& a = *attackOf(pl, fi);
-        // During startup the attacker may still turn (at `tracking` rad/s) toward its target; after it, never.
-        if (a0 < a.startup) {
+        // During startup the attacker may still turn (at `tracking` rad/s) toward its target; after it, only on the
+        // move (attackTurn).
+        if (a0 < a.startup || attackTurn > 0.f) {
             Vec2 want = pl.facing;
             bool have = false;
             if (pl.action == ArenaAction::Riposte && pl.target < n) {
                 want = arenaUnit(arenaSub(foes[pl.target].pos, pl.pos), pl.facing);
+                have = true;
+            } else if (aimOn) {
+                want = aimWay;
                 have = true;
             } else if (pl.lock != kArenaNobody) {
                 want = arenaUnit(arenaSub(foes[pl.lock].pos, pl.pos), pl.facing);
@@ -826,7 +848,8 @@ struct ArenaFightImpl {
                 want = arenaUnit(stick, pl.facing);
                 have = true;
             }
-            if (have) pl.facing = arenaTurn(pl.facing, want, a.tracking * (std::min(a1, a.startup) - a0));
+            const float tracked = a0 < a.startup ? a.tracking * (std::min(a1, a.startup) - a0) : 0.f;
+            if (have) pl.facing = arenaTurn(pl.facing, want, std::max(tracked, attackTurn * dt));
         }
         pl.invulnerable = pl.action == ArenaAction::Riposte || pl.action == ArenaAction::Release;
         // Only the active part connects; a tick whose interval overlaps it tests, so a long frame can't skip it.
@@ -837,6 +860,15 @@ struct ArenaFightImpl {
         if (span > kArenaEps && a.lunge != 0.f) {
             const float moving = std::max(0.f, std::min(a1, span) - a0);
             vel = arenaScaled(pl.facing, a.lunge / span * moving / dt);
+        }
+        // Walking on through the attack (attackSpeed of the pace, ramped like a walk), on top of the lunge.
+        // The walk ramps on its own (from the pace the attack began at), so the lunge doesn't feed it.
+        if (a0 <= 0.f) pl.attackWalk = pl.velocity;
+        if (attackSpeed > 0.f) {
+            const Vec2 want = arenaScaled(stick, fi.moveSpeed * aimSpeed * attackSpeed);
+            const float rate = arenaLength(want) > arenaLength(pl.attackWalk) ? fi.moveAccel : fi.moveBrake;
+            pl.attackWalk = arenaRamp(pl.attackWalk, want, rate, dt);
+            vel = Vec2{vel.x + pl.attackWalk.x, vel.y + pl.attackWalk.y};
         }
         pl.actionTime = a1;
         if (a1 >= a.total()) {

@@ -119,6 +119,12 @@ private:
 	};
 	FLayer Layers[MaxLayers];
 	int32 NumLayers = 0;
+	// The layers before the actions (the locomotion's), and the actions' upper-body share (SetActionUpper): the bones
+	// off UpperMask (the pelvis, the legs) blend back to those layers alone by it. UpperMask is per compact bone, made
+	// with the bones.
+	int32 NumLoco = 0;
+	float UpperShare = 0.f;
+	TArray<bool> UpperMask;
 	// The spine's bend this frame, in component space: one rotation shared over the spine bones.
 	FQuat SpineBend = FQuat::Identity;
 	// The head's on top of it (Locomotion's headPitch, headRoll, headYaw), shared over the neck bones.
@@ -337,6 +343,9 @@ public:
 	bool SetActionClip(int32 Slot, UAnimSequence* Clip);
 	UAnimSequence* GetActionClip(int32 Slot) const { return Slot >= 0 && Slot < MaxActionClips ? ActionClips[Slot].Get() : nullptr; }
 	void ClearActions() { NumActions = 0; }
+	// The share (0..1) of the actions that plays on the upper body only (ftcore::attackUpperShare): spine_01 and the
+	// bones under it take the action, the pelvis and the legs keep the locomotion by that share (0: the whole body).
+	void SetActionUpper(float Share) { ActionUpper = FMath::Clamp(Share, 0.f, 1.f); }
 	void AddAction(int32 Slot, float Time, float Weight)
 	{
 		if (NumActions < MaxActions && Slot >= 0 && Slot < MaxActionClips && Weight > 0.f)
@@ -384,6 +393,7 @@ private:
 	};
 	FAction Actions[MaxActions];
 	int32 NumActions = 0;
+	float ActionUpper = 0.f;
 	ftcore::TraversalSet Traversal;
 	ftcore::SlideSet Slide;
 	// The traversal playing (-1 none), its clip time, how long it has played, its weight over the locomotion and

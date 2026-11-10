@@ -471,6 +471,19 @@ struct ArenaInput {
     bool release = false;       // the Release (open above kArenaReleaseOpenLoad)
     bool pair = false;          // the partner's press: a second lead's input, paired with a parry within pairWindow
     std::int8_t read = -1;      // the partner's Read: the index of the card picked, or -1
+    // The aim (AimStance, right mouse held): while on, the player turns toward aimDir (the camera's aim on the ground,
+    // unit) at aimTurn rad/s (0: the kit's turnRate) instead of the stick or the lock, attacks start and track toward
+    // it, and walking is scaled by aimSpeed (0..1).
+    bool aim = false;
+    Vec2 aimDir{1.f, 0.f};
+    float aimTurn = 0.f;
+    float aimSpeed = 1.f;
+    // Attacking on the move (AttackMove, the host's attackMove for the attack under way): walking during an attack at
+    // attackSpeed (0..1) of the pace, and turning at up to attackTurn rad/s all through it toward the aim, the lock or
+    // the stick (during startup the attack's own tracking if faster). Both 0: the attack roots and holds its facing
+    // after startup.
+    float attackSpeed = 0.f;
+    float attackTurn = 0.f;
 };
 
 // Where the bodies stand, as the host moved them (enemies beyond enemyCount() are ignored).
@@ -789,6 +802,7 @@ private:
         bool chainLive = false;             // the last action was a light: the chain may go on
         std::uint8_t chainNext = 0;         // the light a chained press starts
         float lightEnd = 0.f;               // fight time that light ended
+        Vec2 attackWalk{};                  // the walking part of the velocity during an attack (the lunge apart)
         bool guardHeld = false;             // last tick's guard flag
         float lastGuardPress = -1.0e9f;     // fight time of the last guard press (every press counts)
         float parryLeft = 0.f;              // seconds left in the parry window

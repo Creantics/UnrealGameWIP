@@ -115,6 +115,11 @@ struct FFTLeadWeapons
 		AimPoint = HitPoint;
 		bAimed = bAtTarget;
 	}
+	// The aim stance's weight (0..1, ftcore::AimStance::alpha): the pistol arm and the casting hand are raised at the aim
+	// point by it between attacks (the gauntlets keep their guard; kicks are not aimed).
+	void SetAimHold(float Weight) { AimHold = FMath::Clamp(Weight, 0.f, 1.f); }
+	// The share of the strike clips played on the upper body only (ftcore::attackUpperShare), for Paint.
+	void SetActionUpper(float Share) { ActionUpper = Share; }
 	// One step's events (after the step; T the fight's time).
 	void Feed(const ftcore::ArenaEvents& Events, double T);
 	// The player's state after the step: the effects that start as an attack goes active, the guard's ward, the clips'
@@ -227,6 +232,8 @@ private:
 	// none) and when the last strike's aim is checked (below 0: done).
 	FVector AimPoint = FVector::ZeroVector;
 	bool bAimed = false;
+	float AimHold = 0.f;
+	float ActionUpper = 0.f;
 	int32 AimSide = -1;
 	double ImpactDue = -1.0;
 	FVector ImpactAt = FVector::ZeroVector;

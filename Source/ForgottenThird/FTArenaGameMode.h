@@ -33,9 +33,10 @@
 // face buttons), each with a second home:
 //   move           W A S D / left stick (turned by the camera)
 //   look           mouse / right stick (when nothing is locked)
-//   light attack   J / left mouse / pad X / pad RB   (a riposte at an open enemy in reach)
-//   heavy attack   K / pad A / pad RT
-//   guard (hold)   I / right mouse / pad Y / pad LB  (a fresh press opens the parry window)
+//   light attack   J / left mouse (a tap) / pad X / pad RB   (a riposte at an open enemy in reach)
+//   heavy attack   K / left mouse held (ftcore::AimRules::heavyHold) / pad A / pad RT
+//   aim (hold)     right mouse (ftcore::AimStance: the camera over the shoulder, a reticle, the lead faces the aim and strafes)
+//   guard (hold)   I / Left Ctrl / pad Y / pad LB  (a fresh press opens the parry window)
 //   dodge          L / Space / pad B
 //   heal           H / pad d-pad up (not while Read cards are up)
 //   lock on / off  Tab / middle mouse / pad right stick press

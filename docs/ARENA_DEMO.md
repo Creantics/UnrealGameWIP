@@ -415,14 +415,18 @@ enemy instead, pass its id: `-ArenaLineup=brute` (a single brute falls before th
 |---|---|---|
 | Move (camera-relative) | W A S D | Left stick |
 | Look (when not locked) | Mouse | Right stick |
-| Light attack (a chain of hits; on an open enemy, a riposte) | J or left mouse | X or RB |
-| Heavy attack | K | A or RT |
-| Guard (hold); parry (tap just before a hit) | I or right mouse | Y or LB |
+| Light attack (a chain of hits; on an open enemy, a riposte) | J or left mouse (tap) | X or RB |
+| Heavy attack | K or left mouse held 0.25 s | A or RT |
+| Aim (hold): camera over the shoulder, reticle, face the aim, strafe | Right mouse | |
+| Guard (hold); parry (tap just before a hit) | I or Left Ctrl | Y or LB |
 | Roll (backstep with no direction) | L or Space | B |
 | Heal (uses a charge) | H | D-pad up (not while Read cards are up) |
 | Release (above a third of the Load) | R | LT |
 | Partner (the second lead's press, paired with a parry) | F | D-pad down |
 | Intercept a called blow (stone_bearer; hold) | U or mouse thumb button | L3 |
+
+The player's light attacks don't root the lead: it keeps walking at the move table's pace (`Data/Battle/attack_move.json`)
+and turns at a capped rate (`ArenaInput::attackSpeed`, `attackTurn`); heavies root only for their commit.
 | Read (the second lead's pick, while the cards are up) | 1 / 2 / 3 | D-pad left / up / right |
 | Lock on / off | Tab or middle mouse | R3 |
 | Switch lock target | Q / E | D-pad left / right (not while Read cards are up), or flick the right stick |
