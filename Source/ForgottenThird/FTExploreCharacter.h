@@ -287,6 +287,9 @@ private:
 	float LookRest = 0.f; // seconds since the last look input
 	float FaceBy = 0.f;   // -LocoFace=<deg>
 	bool bPortraitWalk = false;   // -ExplorePortraitWalk
+	float PortraitMoveScale = 0.5f; // -ExplorePortraitMoveScale=<0..1> (1 runs)
+	bool bPortraitJump = false;   // -ExplorePortraitJump
+	double PortraitJumpAt = -10.0;
 	TWeakObjectPtr<AActor> Watched; // WatchFrom: the body the camera frames and recentres behind
 	bool bFacing = false;
 	// -LocoSideView: each turn of the framed body is watched from its side, the camera held where the turn began.

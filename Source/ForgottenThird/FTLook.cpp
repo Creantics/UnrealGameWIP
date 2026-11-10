@@ -106,6 +106,18 @@ FFTLoadedLook FTLook::LoadLook(const FFTLeadLook& Look, const TCHAR* Who)
 		Loaded.Clips[I] = Clip;
 		Missing += Clip == nullptr;
 	}
+	{
+		// One line per look at setup: each base state and the clip it plays (the clip set shows the body alias at work).
+		static const TCHAR* const States[UFTLocomotionAnimInstance::NumBaseClips] = {
+			TEXT("idle"), TEXT("walk"), TEXT("run"), TEXT("sprint"), TEXT("jump"), TEXT("fall"), TEXT("land"), TEXT("runjump"), TEXT("runland")};
+		FString List;
+		for (int32 I = 0; I < UFTLocomotionAnimInstance::NumBaseClips; ++I)
+		{
+			List += FString::Printf(TEXT("%s%s=%s"), I ? TEXT(", ") : TEXT(""), States[I], Loaded.Clips[I] ? *Loaded.Clips[I]->GetName() : TEXT("(none)"));
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: base clips for %s (clip set %s): %s"), Who, *Body.GetName(),
+			*UFTLocomotionAnimInstance::ClipSetBody(Body), *List);
+	}
 	if (Missing > 0)
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("%s: %d of the %d base clips weren't found for %s (retargeted ones in %s)."), Who,

@@ -209,6 +209,15 @@ void AFTExploreCharacter::BeginPlay()
 		Camera->SetRelativeRotation(FRotator(Pitch, 0.0, 0.0));
 		// -ExplorePortraitWalk: the body walks a slow circle (about 5.7 m across) so shots catch it mid-stride.
 		bPortraitWalk = FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitWalk"));
+		// -ExplorePortraitMoveScale=<0..1>: the circle's input scale (0.5 walks, 1 runs); it implies the walk circle.
+		// -ExplorePortraitJump: on the circle, the body jumps every 1.5 s, so shots catch the jump clips.
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitMoveScale="), PortraitMoveScale))
+		{
+			PortraitMoveScale = FMath::Clamp(PortraitMoveScale, 0.f, 1.f);
+			bPortraitWalk = true;
+		}
+		bPortraitJump = FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitJump"));
+		bPortraitWalk = bPortraitWalk || bPortraitJump;
 		if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitLights")))
 		{
 			AddPortraitLights();
@@ -1376,7 +1385,17 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	if (bPortraitWalk)
 	{
 		const double Turn = GetWorld()->GetTimeSeconds() * (2.0 * UE_DOUBLE_PI / 8.0);
-		AddMovementInput(FVector(FMath::Cos(Turn), FMath::Sin(Turn), 0.0), 0.5f);
+		AddMovementInput(FVector(FMath::Cos(Turn), FMath::Sin(Turn), 0.0), PortraitMoveScale);
+		const double Now = GetWorld()->GetTimeSeconds();
+		if (bPortraitJump && Now - PortraitJumpAt > 1.5 && GetCharacterMovement()->IsMovingOnGround())
+		{
+			PortraitJumpAt = Now;
+			Jump();
+		}
+		else if (bPortraitJump && Now - PortraitJumpAt > 0.3)
+		{
+			StopJumping();
+		}
 	}
 	const UFTLocomotionAnimInstance* LocoAnim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
 	// -LocoVaultWall (or -LocoCatch) builds the course once the body has settled where the map puts it, then runs along
