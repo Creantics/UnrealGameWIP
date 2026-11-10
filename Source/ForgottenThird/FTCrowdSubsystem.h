@@ -17,7 +17,10 @@
 // load leaves the sim running undrawn (the log still counts). -CrowdTestFight scripts a fight 15 m from the player at
 // <seconds> (default 20): a fight start, then a strike every half second for 10 s and a death at the end; with or
 // without it, the counts are logged every 10 s ("Crowd: t=...") and -CrowdQuitAfter ends the game with the final line
-// ("Crowd: final ...", exit 0, or 1 when the scripted fight made nobody flee or nobody resume).
+// ("Crowd: final ...", exit 0, or 1 when the scripted fight made nobody flee or nobody resume). The test fight stands on
+// the street node within 40 m of a point 15 m east of the player with the most civilians round it. Run checks folded
+// into the verdict: the first second (everyone within the reaction radius turned away and 1.5 m farther at +1 s, none
+// closer), no running member stuck, and no drawn member inside a building or on a roof, any frame.
 
 #include "CoreMinimal.h"
 #include "CollisionQueryParams.h"
@@ -62,7 +65,10 @@ private:
 	void LoadArt();
 	void Draw();
 	void PlayFor(int32 Slot, ftcore::CrowdAnim Anim, float Speed);
-	void ScriptFight();
+	void ScriptFight(const FVector& PlayerAt);
+	void PickTestFight(const FVector& PlayerAt);
+	void CheckFootprint(int32 Actor, const FVector& Feet);
+	int32 CountInView(int32 Cam, TArray<uint32>* Ids) const;
 	void Shoot(APlayerController* PC, const FVector& PlayerAt);
 	void LogCounts(const TCHAR* Label) const;
 	static bool Occluded(void* Context, ftcore::Vec2 From, ftcore::Vec2 To);
@@ -90,12 +96,14 @@ private:
 	{
 		double At = 0.0; // s from the test fight's start
 		int32 Cam = 0;
+		int32 Phase = 0; // 0 calm, 1 fight + 1 s, 2 flee, 3 + 30 s
 		FString Name;
 	};
 	TArray<FCrowdShot> Shots;
 	FString ShotDir;
 	int32 ShotIndex = 0;
 	int32 ShotTicks = -1; // ticks since the view moved to the shot's camera; -1 = idle
+	TArray<uint32> CalmInView[2]; // agent ids each camera saw in its calm still
 
 	// Per pool actor: the agent id it stands for (0 = free), the clip it plays and at what rate, its ground height (cm).
 	TArray<uint32> PoolAgent;
@@ -120,6 +128,17 @@ private:
 	FVector TestFightPoint = FVector::ZeroVector;
 	int32 TestStrikes = 0;
 	bool bTestFightStarted = false;
+	bool bTestFightPicked = false;
+	double TestFightStartedAt = -1.0;
+	// The first second: who stood within the reaction radius when the fight started, checked 1 s later.
+	ftcore::CrowdReactionProbe FirstSecond;
+	bool bFirstSecondDone = false;
+	bool bFirstSecondOk = true;
+	// Footprint check (runs with -CrowdQuitAfter): drawn members inside a building or on a roof.
+	uint64 FootFrames = 0;   // member-frames
+	int32 FootMembers = 0;   // distinct members
+	TBitArray<> FootSeen;    // per sim slot
+	int32 FootLogged = 0;
 	bool bTestDeathRaised = false;
 	ftcore::CrowdCounts AtTestFight;
 	ftcore::CrowdCounts AtArena;

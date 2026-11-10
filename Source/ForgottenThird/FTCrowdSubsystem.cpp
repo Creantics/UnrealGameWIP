@@ -9,8 +9,10 @@
 #include "GameFramework/HUD.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/HitResult.h"
+#include "Engine/OverlapResult.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
+#include "WorldCollision.h"
 #include "FTMeshFacing.h"
 #include "ForgottenThird.h"
 #include "GameFramework/Pawn.h"
@@ -49,6 +51,7 @@ constexpr uint32 kMaxPlansOne = 12;
 // The scripted fight: how far from the player, how long, how often a strike lands.
 constexpr double kTestFightDistance = 15.0;
 constexpr double kTestFightLength = 10.0;
+constexpr float kFirstSecondGain = 1.5f; // m farther from the fight a second after it starts
 constexpr double kTestStrikeEvery = 0.5;
 
 FString CrowdObjectPath(const FString& Path)
@@ -168,6 +171,7 @@ void UFTCrowdSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 
 	LoadArt();
 	SlotActor.Init(INDEX_NONE, static_cast<int32>(Sim.capacity()));
+	FootSeen.Init(false, static_cast<int32>(Sim.capacity()));
 
 	double TestAt = 20.0;
 	if (FParse::Param(Cmd, TEXT("CrowdTestFight")) || FParse::Value(Cmd, TEXT("CrowdTestFight="), TestAt))
@@ -187,7 +191,7 @@ void UFTCrowdSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 				const int32 Frames = (T == 2 && Cam == 0) ? 4 : 1;
 				for (int32 F = 0; F < Frames; ++F)
 				{
-					Shots.Add({Times[T] + F * 0.25, Cam, FString::Printf(TEXT("%s/crowd_%d_%s_cam%c%s.png"), *ShotDir, T, Labels[T], TEXT('A') + Cam,
+					Shots.Add({Times[T] + F * 0.25, Cam, T, FString::Printf(TEXT("%s/crowd_%d_%s_cam%c%s.png"), *ShotDir, T, Labels[T], TEXT('A') + Cam,
 						Frames > 1 ? *FString::Printf(TEXT("_f%d"), F) : TEXT(""))});
 				}
 			}
@@ -358,7 +362,52 @@ void UFTCrowdSubsystem::FeedArena(const ftcore::ArenaEvents& Events)
 	}
 }
 
-void UFTCrowdSubsystem::ScriptFight()
+void UFTCrowdSubsystem::PickTestFight(const FVector& PlayerAt)
+{
+	if (bTestFightPicked)
+	{
+		return;
+	}
+	bTestFightPicked = true;
+	// The street node within 40 m of a point 15 m east of the player with the most live members within 12 m (ties: the
+	// one nearer that point), so the stills show people close to the fight; else the node nearest the player.
+	const ftcore::Vec2 P = ToSim(PlayerAt);
+	const ftcore::Vec2 C{P.x + static_cast<float>(kTestFightDistance), P.y};
+	uint32 Best = UINT32_MAX;
+	int32 BestN = -1;
+	float BestD = 0.f;
+	for (uint32 n = 0; n < Graph.nodeCount(); ++n)
+	{
+		const ftcore::Vec2 Q = Graph.node(n);
+		const float D = FMath::Sqrt((Q.x - C.x) * (Q.x - C.x) + (Q.y - C.y) * (Q.y - C.y));
+		if (D > 40.f)
+		{
+			continue;
+		}
+		int32 Near = 0;
+		for (uint32 i = 0; i < Sim.capacity(); ++i)
+		{
+			const ftcore::CrowdAgentView& V = Sim.agent(i);
+			Near += V.live && (V.pos.x - Q.x) * (V.pos.x - Q.x) + (V.pos.y - Q.y) * (V.pos.y - Q.y) <= 144.f ? 1 : 0;
+		}
+		if (Near > BestN || (Near == BestN && D < BestD))
+		{
+			Best = n;
+			BestN = Near;
+			BestD = D;
+		}
+	}
+	if (Best == UINT32_MAX)
+	{
+		Best = Graph.nearest(P, 200.f);
+	}
+	const ftcore::Vec2 F = Best == UINT32_MAX ? C : Graph.node(Best);
+	TestFightPoint = FVector(F.x * 100.0, F.y * 100.0, PlayerZ);
+	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: test fight point engine (%.0f, %.0f) cm, %.1f m from the player, %d live members within 12 m at t=%.1f s."),
+		TestFightPoint.X, TestFightPoint.Y, FVector::Dist2D(TestFightPoint, PlayerAt) / 100.0, FMath::Max(BestN, 0), RunTime);
+}
+
+void UFTCrowdSubsystem::ScriptFight(const FVector& PlayerAt)
 {
 	if (TestFightAt < 0.0 || RunTime < TestFightAt)
 	{
@@ -366,19 +415,15 @@ void UFTCrowdSubsystem::ScriptFight()
 	}
 	if (!bTestFightStarted)
 	{
-		// The node nearest a point 15 m east of the player (else the player's own nearest), so the fight is on a street.
-		const ftcore::Vec2 P = ToSim(FVector(TestFightPoint.X, TestFightPoint.Y, 0.0));
-		uint32 N = Graph.nearest(ftcore::Vec2{P.x + static_cast<float>(kTestFightDistance), P.y}, 40.f);
-		if (N == UINT32_MAX)
-		{
-			N = Graph.nearest(P, 200.f);
-		}
-		const ftcore::Vec2 F = N == UINT32_MAX ? ftcore::Vec2{P.x + static_cast<float>(kTestFightDistance), P.y} : Graph.node(N);
-		TestFightPoint = FVector(F.x * 100.0, F.y * 100.0, PlayerZ);
+		PickTestFight(PlayerAt);
+		TestFightPoint.Z = PlayerZ;
 		AtTestFight = Sim.counts();
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: test fight starts at engine (%.0f, %.0f) cm, %.1f m from the player, at t=%.1f s; %u live, %u walking."),
-			TestFightPoint.X, TestFightPoint.Y, FVector::Dist2D(TestFightPoint, FVector(P.x * 100.0, P.y * 100.0, 0.0)) / 100.0, RunTime,
+			TestFightPoint.X, TestFightPoint.Y, FVector::Dist2D(TestFightPoint, PlayerAt) / 100.0, RunTime,
 			Sim.liveCount(), Sim.countIn(ftcore::CrowdState::Walk));
+		// The first second: everyone within the reaction radius now, checked one second later.
+		FirstSecond.begin(Sim, ToSim(TestFightPoint), Tuning.reactRadius);
+		TestFightStartedAt = RunTime;
 		RaiseEvent(ftcore::CrowdEventKind::FightStart, TestFightPoint);
 		bTestFightStarted = true;
 		TestStrikes = 0;
@@ -406,8 +451,14 @@ void UFTCrowdSubsystem::Shoot(APlayerController* PC, const FVector& PlayerAt)
 	UWorld* World = GetWorld();
 	if (ShotCams.Num() == 0)
 	{
-		// Aimed where the test fight will be (15 m east of the player), placed before it starts so every still matches.
-		const FVector Aim = PlayerAt + FVector(kTestFightDistance * 100.0, 0.0, 0.0);
+		// Aimed at the test fight's point, picked just before the calm still so the members near it are the ones there
+		// at the fight's start; placed before the fight so every still matches.
+		if (RunTime < TestFightAt - 2.5)
+		{
+			return;
+		}
+		PickTestFight(PlayerAt);
+		const FVector Aim(TestFightPoint.X, TestFightPoint.Y, PlayerZ + 100.0);
 		const FVector Eyes[] = {Aim + FVector(-2500.0, -2500.0, 1400.0), Aim + FVector(2000.0, 3000.0, 2200.0)};
 		for (const FVector& From : Eyes)
 		{
@@ -452,6 +503,36 @@ void UFTCrowdSubsystem::Shoot(APlayerController* PC, const FVector& PlayerAt)
 		{
 			Viewport->Exec(World, *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *S.Name), *GLog);
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: shot %s at %.2f s from the fight's start."), *S.Name, RunTime - TestFightAt);
+		}
+		// Members in view at the calm still and 30 s later: the same ones, gone elsewhere, or gone?
+		if (S.Phase == 0)
+		{
+			const int32 N = CountInView(S.Cam, &CalmInView[S.Cam]);
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: in view cam%c calm: %d."), TEXT('A') + S.Cam, N);
+		}
+		else if (S.Phase == 3)
+		{
+			TArray<uint32> Now;
+			const int32 N = CountInView(S.Cam, &Now);
+			int32 Still = 0, Elsewhere = 0, Gone = 0;
+			for (const uint32 Id : CalmInView[S.Cam])
+			{
+				const ftcore::CrowdAgentView& V = Sim.agent(Id & 0xffffu);
+				if (!V.live || V.id != Id)
+				{
+					++Gone;
+				}
+				else if (Now.Contains(Id))
+				{
+					++Still;
+				}
+				else
+				{
+					++Elsewhere;
+				}
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: in view cam%c +30 s: %d (calm %d); of the calm ones %d still in view, %d live elsewhere, %d despawned; %d new in view."),
+				TEXT('A') + S.Cam, N, CalmInView[S.Cam].Num(), Still, Elsewhere, Gone, N - Still);
 		}
 		++ShotIndex;
 		ShotTicks = -1;
@@ -501,14 +582,18 @@ void UFTCrowdSubsystem::Tick(float DeltaTime)
 			PlayerZ = PlayerAt.Z;
 		}
 	}
-	if (TestFightAt >= 0.0 && !bTestFightStarted)
-	{
-		TestFightPoint = PlayerAt;
-	}
-	ScriptFight();
+	ScriptFight(PlayerAt);
 
 	OcclusionTraces = 0;
 	Sim.tick(DeltaTime, ToSim(PlayerAt), ToSim(PlayerVel));
+	if (bTestFightStarted && !bFirstSecondDone && RunTime >= TestFightStartedAt + 1.0)
+	{
+		bFirstSecondDone = true;
+		const ftcore::CrowdReactionResult R = FirstSecond.evaluate(Sim, kFirstSecondGain);
+		bFirstSecondOk = R.ok();
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: first second (%.2f s, radius %.0f m): inside %u, away %u, turned %u, toward %u, worst gain %.2f m: %s."),
+			RunTime - TestFightStartedAt, Tuning.reactRadius, R.inside, R.away, R.turned, R.toward, R.worstGain, bFirstSecondOk ? TEXT("ok") : TEXT("FAILED"));
+	}
 	Draw();
 	Shoot(World->GetFirstPlayerController(), PlayerAt);
 
@@ -530,7 +615,11 @@ void UFTCrowdSubsystem::Tick(float DeltaTime)
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: %u live of %u target (%s); %u still upset (%s); %llu fleers, most flee entries by one %u, most plans by one %u (%s)."),
 			Live, Tuning.targetAgents, bFull ? TEXT("full") : TEXT("SHORT"), Upset, bCalm ? TEXT("calm") : TEXT("NOT CALM"), C.fleers,
 			C.maxFleeEntries, C.maxPlans, bSteady ? TEXT("steady") : TEXT("FLIP-FLOP"));
-		bool bOk = bCalm && bSteady && bFull;
+		const bool bUnstuck = C.stuck == 0;
+		const bool bOutside = FootFrames == 0;
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: runners stuck a whole second %llu (%s); drawn members inside a building or on a roof %llu member-frames, %d members (%s)."),
+			C.stuck, bUnstuck ? TEXT("ok") : TEXT("FAILED"), FootFrames, FootMembers, bOutside ? TEXT("ok") : TEXT("FAILED"));
+		bool bOk = bCalm && bSteady && bFull && bUnstuck && bOutside;
 		const bool bStimulus = bTestFightStarted || ArenaFed > 0;
 		if (!bStimulus)
 		{
@@ -544,7 +633,7 @@ void UFTCrowdSubsystem::Tick(float DeltaTime)
 			const uint64 Resumed = C.resumed - AtTestFight.resumed;
 			const uint64 Spread = C.spread - AtTestFight.spread;
 			const bool bReacted = Perceived > 0 && Fled > 0 && Resumed > 0 && Spread > 0;
-			bOk = bOk && bReacted;
+			bOk = bOk && bReacted && bFirstSecondDone && bFirstSecondOk;
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: since the test fight: perceived %llu, fled %llu, cowered %llu, resumed %llu, spread %llu: %s."),
 				Perceived, Fled, C.cowered - AtTestFight.cowered, Resumed, Spread,
 				bReacted ? TEXT("ok") : TEXT("FAILED (nobody perceived, fled, resumed or spread panic)"));
@@ -698,7 +787,69 @@ void UFTCrowdSubsystem::Draw()
 		const double Y = FMath::Lerp(V.prevPos.y, V.pos.y, Alpha) * 100.0;
 		Pool[k]->SetActorLocationAndRotation(FVector(X, Y, PoolGround[k]), FRotator(0.0, V.yaw + MeshYaw, 0.0));
 		PlayFor(k, V.anim, V.speed);
+		if (QuitAfter > 0.0)
+		{
+			CheckFootprint(k, FVector(X, Y, PoolGround[k]));
+		}
 	}
+}
+
+void UFTCrowdSubsystem::CheckFootprint(int32 Actor, const FVector& Feet)
+{
+	// Inside a building (anything static round the hips) or stood on a roof (ground well above the player's).
+	UWorld* World = GetWorld();
+	const bool bRoof = PoolGrounded[Actor] && Feet.Z > PlayerZ + 250.0;
+	TArray<FOverlapResult> Hits;
+	const bool bInside = World->OverlapMultiByObjectType(Hits, Feet + FVector(0.0, 0.0, 100.0), FQuat::Identity,
+		FCollisionObjectQueryParams(ECC_WorldStatic), FCollisionShape::MakeSphere(20.f), TraceQuery);
+	if (!bInside && !bRoof)
+	{
+		return;
+	}
+	++FootFrames;
+	const int32 Slot = static_cast<int32>((PoolAgent[Actor] - 1) & 0xffffu);
+	if (!FootSeen[Slot])
+	{
+		FootSeen[Slot] = true;
+		++FootMembers;
+	}
+	if (FootLogged < 8)
+	{
+		++FootLogged;
+		const AActor* By = bInside && Hits.Num() > 0 ? Hits[0].GetActor() : nullptr;
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: member %d %s at engine (%.0f, %.0f, %.0f) cm, t=%.1f s%s%s."), Slot,
+			bInside ? TEXT("inside") : TEXT("on a roof"), Feet.X, Feet.Y, Feet.Z, RunTime, By ? TEXT(", by ") : TEXT(""),
+			By ? *By->GetName() : TEXT(""));
+	}
+}
+
+int32 UFTCrowdSubsystem::CountInView(int32 Cam, TArray<uint32>* Ids) const
+{
+	// Live members whose chest is inside the camera's frustum (70 degrees across, 16:9).
+	const ACameraActor* C = ShotCams[Cam];
+	const FVector Eye = C->GetActorLocation();
+	const FQuat Q = C->GetActorQuat();
+	const double TanX = FMath::Tan(FMath::DegreesToRadians(35.0)), TanY = TanX * 9.0 / 16.0;
+	int32 N = 0;
+	for (uint32 i = 0; i < Sim.capacity(); ++i)
+	{
+		const ftcore::CrowdAgentView& V = Sim.agent(i);
+		if (!V.live)
+		{
+			continue;
+		}
+		const FVector L = Q.UnrotateVector(FVector(V.pos.x * 100.0, V.pos.y * 100.0, PlayerZ + 120.0) - Eye);
+		if (L.X <= 0.0 || FMath::Abs(L.Y) > L.X * TanX || FMath::Abs(L.Z) > L.X * TanY)
+		{
+			continue;
+		}
+		++N;
+		if (Ids)
+		{
+			Ids->Add(V.id);
+		}
+	}
+	return N;
 }
 
 TStatId UFTCrowdSubsystem::GetStatId() const
