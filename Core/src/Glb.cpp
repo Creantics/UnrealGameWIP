@@ -251,6 +251,12 @@ AssetRules propRules(AssetPack pack) {
     return r;
 }
 
+AssetRules kitRules(AssetPack pack) {
+    AssetRules r = propRules(pack);
+    r.maxTextureSize = 2048;
+    return r;
+}
+
 bool isGlowMaterialName(std::string_view name) {
     return containsNoCase(name, "glow") || containsNoCase(name, "eye") || containsNoCase(name, "skill") ||
            containsNoCase(name, "rule");
