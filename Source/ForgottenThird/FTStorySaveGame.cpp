@@ -46,6 +46,10 @@ bool UFTStorySaveGame::CaptureFrom(const UFTStorySubsystem* Story)
 	if (const UFTWorldClockSubsystem* Clock = ClockOf(Story))
 	{
 		Save.clock = Clock->GetClock();
+		if (Clock->IsFixedByCommandLine())
+		{
+			Save.clock.paused = false; // the capture switch's pause is not part of the game
+		}
 		Save.hasClock = true;
 	}
 	SaveJson = FT::ToFString(ftcore::encodeStorySave(Save));
@@ -90,7 +94,12 @@ bool UFTStorySaveGame::ApplyTo(UFTStorySubsystem* Story, FString& OutError, TArr
 	Story->SetParty(Save.party);               // a save from before progression: xp and gold 0
 	if (UFTWorldClockSubsystem* Clock = ClockOf(Story); Clock && Save.hasClock)
 	{
-		Clock->SetClock(Save.clock); // a save from before the clock: the world keeps its own time
+		ftcore::WorldClock Loaded = Save.clock;
+		if (Clock->IsFixedByCommandLine())
+		{
+			Loaded.paused = true; // a capture run's fixed clock stays fixed
+		}
+		Clock->SetClock(Loaded); // a save from before the clock: the world keeps its own time
 	}
 	return true;
 }

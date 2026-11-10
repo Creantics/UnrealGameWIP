@@ -74,6 +74,7 @@ void UFTWorldClockSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	{
 		ftcore::worldClockSet(Clock, Fixed);
 		ftcore::worldClockPause(Clock);
+		bFixedByCommandLine = true;
 	}
 	FParse::Value(Cmd, TEXT("NightMoon="), MoonShare);
 	FParse::Value(Cmd, TEXT("NightSky="), SkyShare);

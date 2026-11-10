@@ -63,6 +63,8 @@ public:
 	int32 GetDay() const { return static_cast<int32>(FMath::Min<uint32>(Clock.day, MAX_int32)); }
 	UFUNCTION(BlueprintPure, Category = "FT|Time")
 	bool IsClockPaused() const { return Clock.paused; }
+	// True when -TimeOfDay= fixed the clock for a capture: that pause is not saved, and a load keeps it.
+	bool IsFixedByCommandLine() const { return bFixedByCommandLine; }
 	UFUNCTION(BlueprintPure, Category = "FT|Time")
 	float GetNightAmount() const { return Night; }
 	// The time curves (Data/time_curves.csv): the share of the daytime crowd out now, and how dangerous the streets are.
@@ -108,6 +110,7 @@ private:
 	ftcore::WorldClockSpec Spec;
 	ftcore::TimeCurves Curves;
 	bool bCurves = false;
+	bool bFixedByCommandLine = false;
 	bool bActive = false;
 	double AppliedHours = -1.0;
 	float Night = 0.f;

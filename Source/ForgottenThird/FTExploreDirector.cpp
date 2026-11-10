@@ -723,14 +723,14 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 		{
 			Follower->SetActorHiddenInGame(Player.IsPartyHidden());
 		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: no mesh for follower %s."), *Look->Name);
+		}
 		// On a map with a sea it keeps out of it: no follower stands on or over the water (AFTPartyFollower::Place).
 		if (bHasSeaLevel)
 		{
 			Follower->SetSea(SeaLevel);
-		}
-		else
-		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: no mesh for follower %s."), *Look->Name);
 		}
 		Followers.Add(Follower);
 	}

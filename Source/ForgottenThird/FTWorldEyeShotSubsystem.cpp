@@ -174,7 +174,7 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 		return;
 	}
 	// The GPU's frame time over the settled view; the first frame's sample is a frame behind, so it is skipped.
-	if (GpuSampled < GpuFrames + 1)
+	if (GpuFrames > 0 && GpuSampled < GpuFrames + 1)
 	{
 		const double Ms = FPlatformTime::ToMilliseconds64(RHIGetGPUFrameCycles(0));
 		if (GpuSampled > 0)
