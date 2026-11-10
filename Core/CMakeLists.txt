@@ -215,6 +215,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_world_checks.cpp
         tests/test_roads.cpp
         tests/test_road_graph.cpp
+        tests/test_road_net.cpp
         tests/test_city_placer.cpp
         tests/test_outer_places.cpp
         tests/test_surface_table.cpp

@@ -70,6 +70,25 @@ FTCORE_API void roadGraphJunctions(const std::vector<MassingStreet>& streets, do
 // A built road's lanes, its junctions (phases A: the road, B: the lane and the stub), its zebras and its bays. Appends.
 FTCORE_API void roadGraphFromRoad(const RoadSpec& road, const RoadBuild& build, RoadGraph& out);
 
+// The street net as nodes and straight edges (each edge along its street's points), split at every junction as
+// roadGraphJunctions splits it: points within `snap` of each other, an end within `snap` of another street, and crossing
+// segments. streetsAt: per node, the streets through it.
+struct RoadNetTopo {
+    struct Edge {
+        std::size_t a = 0, b = 0;
+        double len = 0.0;
+        std::size_t street = 0;
+    };
+    std::vector<RoadPoint> nodes;
+    std::vector<Edge> edges;
+    std::vector<std::vector<std::size_t>> streetsAt;
+};
+FTCORE_API RoadNetTopo roadGraphNet(const std::vector<MassingStreet>& streets, double snap);
+
+// A road network's lanes (roadGraphStreetLanes at each street's speed and way), its junctions and phases
+// (roadGraphJunctions, which numbers them as roadNetBuild does), and the build's zebras and bays. Appends.
+FTCORE_API void roadGraphFromNet(const std::vector<RoadNetStreet>& streets, const RoadBuild& build, RoadGraph& out);
+
 // The drivable loop of a street net: the net split at every junction, its bridges dropped, the largest remaining
 // piece by length, and that piece's outer boundary.
 struct RoadLoop {

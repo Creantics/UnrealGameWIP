@@ -55,9 +55,10 @@ struct FOptions
 FOptions ParseOptions(const TCHAR* Params);
 
 // Reads and builds the roads (Core only) and hides the rows of Boxes they clear (kind set to "underpass"). False,
-// logged, on a bad table.
-bool Prepare(const FOptions& Options, std::vector<ftcore::MassingBox>& Boxes, std::vector<ftcore::RoadSpec>& Roads,
-	std::vector<ftcore::RoadBuild>& Builds);
+// logged, on a bad table. A road network table (ftcore::roadNetTable) is built whole on Ground into Builds[0]; Roads
+// then holds one stand-in per network street (kind "net", its id only, an empty build each) for DropRoadStreets.
+bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::vector<ftcore::MassingBox>& Boxes,
+	std::vector<ftcore::RoadSpec>& Roads, std::vector<ftcore::RoadBuild>& Builds);
 
 // Takes the roads' own rows (same id) out of a streets table, so -Kerbs doesn't kerb them twice. Returns how many.
 size_t DropRoadStreets(const std::vector<ftcore::RoadSpec>& Roads, std::vector<ftcore::MassingStreet>& Streets);

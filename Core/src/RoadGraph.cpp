@@ -435,6 +435,50 @@ void roadGraphFromRoad(const RoadSpec& road, const RoadBuild& build, RoadGraph& 
     }
 }
 
+RoadNetTopo roadGraphNet(const std::vector<MassingStreet>& streets, double snap) {
+    const Net net = buildNet(streets, snap);
+    RoadNetTopo t;
+    t.nodes = net.nodes;
+    t.streetsAt = net.streetsAt;
+    for (const Net::Edge& e : net.edges) t.edges.push_back({e.a, e.b, e.len, e.street});
+    return t;
+}
+
+void roadGraphFromNet(const std::vector<RoadNetStreet>& streets, const RoadBuild& build, RoadGraph& out) {
+    std::vector<MassingStreet> ms;
+    for (const RoadNetStreet& s : streets) {
+        ms.push_back(roadNetStreet(s));
+        roadGraphStreetLanes(ms.back(), s.speedKmh, s.oneWay, 0.0, out);
+    }
+    // The junctions and their phases; the zebras are the build's.
+    RoadGraph jg;
+    roadGraphJunctions(ms, kRoadGraphSnap, 0.0, jg);
+    for (RoadGraphJunction& j : jg.junctions) out.junctions.push_back(std::move(j));
+    for (const RoadQuad& q : build.crossings) {
+        RoadGraphCrossing c;
+        c.id = q.id;
+        c.street = q.street;
+        c.junction = q.junction;
+        c.pts = q.pts;
+        out.crossings.push_back(c);
+    }
+    for (const RoadBay& bay : build.bays) {
+        RoadGraphBay b;
+        b.id = bay.id;
+        b.street = bay.street;
+        b.dir = bay.left ? 1 : -1;
+        b.width = bay.foot.hy * 2.0;
+        const double r = bay.foot.rot * kPi / 180.0;
+        const RoadPoint u{std::cos(r), std::sin(r)}, w{-std::sin(r), std::cos(r)};
+        const double hx = bay.foot.hx, hy = bay.foot.hy;
+        b.pts = {RoadPoint{bay.foot.x - u.x * hx - w.x * hy, bay.foot.y - u.y * hx - w.y * hy},
+                 RoadPoint{bay.foot.x + u.x * hx - w.x * hy, bay.foot.y + u.y * hx - w.y * hy},
+                 RoadPoint{bay.foot.x + u.x * hx + w.x * hy, bay.foot.y + u.y * hx + w.y * hy},
+                 RoadPoint{bay.foot.x - u.x * hx + w.x * hy, bay.foot.y - u.y * hx + w.y * hy}};
+        out.bays.push_back(b);
+    }
+}
+
 RoadLoop roadGraphLoop(const std::vector<MassingStreet>& streets, double snap) {
     RoadLoop loop;
     const Net net = buildNet(streets, snap);

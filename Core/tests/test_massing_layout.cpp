@@ -266,3 +266,144 @@ TEST_CASE("massingLanePave widens the lanes in the road mask and massingDropLane
     CHECK(pads[0].id == "B-FP1");
     CHECK(pads[1].id == "C-FP1");
 }
+
+TEST_CASE("massingBuildTo and massingLaneDress take only the lane kinds asked for; other narrow streets stay obstacles") {
+    // A lane at y 50 and a 4 m stair at y 20, both from x 0 to 60; a house 5 m behind each.
+    std::vector<MassingStreet> streets{lane("CL-7", 6.0, 0.0, 50.0, 60.0, 50.0), lane("SR-1", 4.0, 0.0, 20.0, 60.0, 20.0)};
+    streets[1].kind = "stair";
+    std::vector<MassingBox> boxes{house("A", 10.0, 58.0, 20.0, 68.0), house("B", 10.0, 27.0, 20.0, 37.0)};
+    MassingBuildTo opts;
+    opts.area = {0.0, 0.0, 60.0, 100.0};
+    opts.kinds = {"core_lane", "lane"};
+    const MassingGround flat{};
+    const MassingBuildToCounts c = massingBuildTo(boxes, streets, flat, opts);
+    CHECK(c.lanes == 1);
+    CHECK(boundsOf(boxes[0]).y0 == doctest::Approx(53.0)); // pulled to the lane
+    CHECK(boundsOf(boxes[1]).y0 == doctest::Approx(27.0)); // the stair's house stays
+    for (std::size_t i = 2; i < boxes.size(); ++i) {
+        CHECK(boxes[i].id.rfind("CL-7-", 0) == 0);
+        CHECK_FALSE(overlap(boundsOf(boxes[i]), {0.0, 18.0, 60.0, 22.0})); // nothing on the stair
+    }
+    MassingLaneDress d;
+    d.area = opts.area;
+    d.kinds = opts.kinds;
+    std::vector<MassingBox> out;
+    massingLaneDress(streets, flat, d, out);
+    CHECK_FALSE(out.empty());
+    for (const MassingBox& b : out) CHECK(b.id.rfind("CL-7-", 0) == 0);
+}
+
+namespace {
+
+// Separating axes for two turned footprints; true when they overlap by more than 1 cm.
+bool turnedOverlap(const MassingBox& a, const MassingBox& b) {
+    const double ta = a.rot * 3.14159265358979323846 / 180.0, tb = b.rot * 3.14159265358979323846 / 180.0;
+    const double au[2] = {std::cos(ta), std::sin(ta)}, bu[2] = {std::cos(tb), std::sin(tb)};
+    const double axes[4][2] = {{au[0], au[1]}, {-au[1], au[0]}, {bu[0], bu[1]}, {-bu[1], bu[0]}};
+    for (const auto& ax : axes) {
+        const double ra = 0.5 * a.sx * std::fabs(au[0] * ax[0] + au[1] * ax[1]) + 0.5 * a.sy * std::fabs(-au[1] * ax[0] + au[0] * ax[1]);
+        const double rb = 0.5 * b.sx * std::fabs(bu[0] * ax[0] + bu[1] * ax[1]) + 0.5 * b.sy * std::fabs(-bu[1] * ax[0] + bu[0] * ax[1]);
+        if (std::fabs((b.cx - a.cx) * ax[0] + (b.cy - a.cy) * ax[1]) >= ra + rb - 0.01) return false;
+    }
+    return true;
+}
+
+} // namespace
+
+TEST_CASE("massingBuildTo with oblique fills a lane at an angle with turned infill, clear of streets and keep-clear rects") {
+    // A 6 m lane at 45 degrees from (0, 0) to (70, 70), a 10 m street across it at y 35, a keep-clear rect beside it.
+    std::vector<MassingStreet> streets{lane("TR-1", 6.0, 0.0, 0.0, 70.0, 70.0), lane("ST-9", 10.0, -20.0, 35.0, 100.0, 35.0)};
+    streets[1].kind = "street";
+    MassingBuildTo opts;
+    opts.area = {-20.0, -20.0, 100.0, 100.0};
+    opts.kinds = {"core_lane"};
+    opts.keepClear.push_back({25.0, 15.0, 35.0, 25.0});
+    const MassingGround flat{};
+
+    std::vector<MassingBox> plain;
+    const MassingBuildToCounts c0 = massingBuildTo(plain, streets, flat, opts);
+    CHECK(c0.infill == 0); // without oblique a lane at an angle gets nothing
+    CHECK(plain.empty());
+
+    opts.oblique = true;
+    std::vector<MassingBox> boxes;
+    const MassingBuildToCounts c = massingBuildTo(boxes, streets, flat, opts);
+    CHECK(c.oblique > 0);
+    CHECK(c.oblique == c.infill);
+    REQUIRE(boxes.size() == c.oblique);
+    MassingBox keep;
+    keep.cx = 30.0;
+    keep.cy = 20.0;
+    keep.sx = 10.0;
+    keep.sy = 10.0;
+    bool bothSides[2] = {false, false};
+    for (std::size_t i = 0; i < boxes.size(); ++i) {
+        const MassingBox& b = boxes[i];
+        CHECK(b.id.rfind("TR-1-IN", 0) == 0);
+        CHECK(validId(b.id));
+        CHECK(b.rot == doctest::Approx(45.0));
+        CHECK(b.sx >= opts.minGap - 1e-9);
+        CHECK(b.sy >= opts.depthMin - 1e-9);
+        // The near face on the lane's line: the centre 3 m plus half the depth off the centre line.
+        const double off = (b.cy - b.cx) / std::sqrt(2.0);
+        CHECK(std::fabs(off) == doctest::Approx(3.0 + 0.5 * b.sy).epsilon(1e-6));
+        bothSides[off > 0.0 ? 0 : 1] = true;
+        // Clear of the street across (y 30..40) and the keep-clear rect.
+        const double ex = 0.5 * (b.sx + b.sy) / std::sqrt(2.0); // the y half extent of a 45-degree footprint
+        CHECK((b.cy + ex <= 30.0 + 0.03 || b.cy - ex >= 40.0 - 0.03));
+        CHECK_FALSE(turnedOverlap(b, keep));
+        for (std::size_t j = i + 1; j < boxes.size(); ++j) CHECK_FALSE(turnedOverlap(b, boxes[j]));
+    }
+    CHECK(bothSides[0]);
+    CHECK(bothSides[1]);
+}
+
+TEST_CASE("massingBuildTo with oblique keeps a turned lot's ground within obliqueRise") {
+    // The 45-degree lane on a ground rising 0.08 m a metre to the east: a 1 m rise allows 12.5 m of east-west extent.
+    std::vector<MassingStreet> streets{lane("TR-2", 6.0, 0.0, 0.0, 70.0, 70.0)};
+    MassingBuildTo opts;
+    opts.area = {-10.0, -10.0, 180.0, 180.0};
+    opts.oblique = true;
+    opts.obliqueRise = 1.0;
+    const Slope slope;
+    std::vector<MassingBox> boxes;
+    const MassingBuildToCounts c = massingBuildTo(boxes, streets, slope.ground, opts);
+    CHECK(c.oblique > 0);
+    for (const MassingBox& b : boxes) {
+        const double ex = (b.sx + b.sy) / std::sqrt(2.0); // the east-west extent of a 45-degree footprint
+        CHECK(0.08 * ex <= 1.0 + 0.02);
+    }
+}
+
+TEST_CASE("massingBuildTo numbers new infill after the lane's infill already there") {
+    std::vector<MassingStreet> streets{lane("CL-8", 6.0, 0.0, 50.0, 60.0, 50.0)};
+    std::vector<MassingBox> boxes{house("CL-8-IN3", 50.0, 53.0, 58.0, 63.0)};
+    MassingBuildTo opts;
+    opts.area = {0.0, 0.0, 60.0, 100.0};
+    const MassingGround flat{};
+    const MassingBuildToCounts c = massingBuildTo(boxes, streets, flat, opts);
+    REQUIRE(c.infill > 0);
+    for (std::size_t i = 1; i < boxes.size(); ++i) {
+        CHECK(boxes[i].id != "CL-8-IN1");
+        CHECK(boxes[i].id.rfind("CL-8-IN", 0) == 0);
+        CHECK(std::stoi(boxes[i].id.substr(7)) > 3);
+    }
+}
+
+TEST_CASE("massingBuildTo puts no infill on ground under groundMin") {
+    // The slope is 4 m at x = 0 and 0.08 m higher a metre east: ground under 4.8 m lies west of x = 10.
+    std::vector<MassingStreet> streets{lane("TR-3", 6.0, 0.0, 0.0, 70.0, 70.0), lane("CL-9", 6.0, 0.0, 120.0, 100.0, 120.0)};
+    MassingBuildTo opts;
+    opts.area = {-10.0, -10.0, 180.0, 180.0};
+    opts.oblique = true;
+    opts.groundMin = 4.8;
+    const Slope slope;
+    std::vector<MassingBox> boxes;
+    const MassingBuildToCounts c = massingBuildTo(boxes, streets, slope.ground, opts);
+    CHECK(c.oblique > 0);
+    CHECK(c.infill > c.oblique);
+    for (const MassingBox& b : boxes) {
+        const double ex = std::fabs(b.rot) < 1e-9 ? 0.5 * b.sx : 0.5 * (b.sx + b.sy) / std::sqrt(2.0);
+        CHECK(b.cx - ex >= 10.0 - 0.6); // the ground is read every metre or so
+    }
+}

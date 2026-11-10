@@ -31,6 +31,7 @@ struct MassingRect {
 struct MassingBuildTo {
     MassingRect area;               // only lanes (clipped) and boxes inside it are touched
     double laneUpTo = 6.0;          // m: a street no wider is a lane
+    std::vector<std::string> kinds; // and, when not empty, of one of these kinds (stairs stay out); other streets stay obstacles
     double reach = 12.0;            // m: a building face up to this far behind a lane's edge is pulled out to it
     double minGap = 4.0;            // m: a gap along a lane's frontage at least this long is filled
     double lotMax = 8.0;            // m: an infill lot's frontage, at most
@@ -39,6 +40,9 @@ struct MassingBuildTo {
     double storey = 3.0;            // m
     double sink = 0.1;              // m a moved or added building reaches under the lowest ground beneath it
     std::vector<MassingRect> keepClear; // nothing is moved or added into these (a road corridor, a square)
+    bool oblique = false; // also fill the frontages of lane segments at any angle (infill only, turned to the segment)
+    double groundMin = -1.0e300; // m: no infill on ground lower than this anywhere under it (the sea floor, a quay's water)
+    double obliqueRise = 5.0; // m: an oblique lot is only as deep as keeps the ground under it within this (no cliff lots)
 };
 
 struct MassingBuildToCounts {
@@ -48,6 +52,7 @@ struct MassingBuildToCounts {
                              // a street or a keep-clear rect)
     std::size_t trimmed = 0; // boxes cut back out of a lane
     std::size_t infill = 0;  // infill buildings added
+    std::size_t oblique = 0; // of them, along segments at an angle (MassingBuildTo::oblique)
 };
 
 // Brings `boxes` to the lanes' build-to lines, then fills each frontage's gaps. A building here is a visible box
@@ -62,6 +67,12 @@ struct MassingBuildToCounts {
 // "<lane id>-IN<n>", as deep as the first obstacle behind it allows (depthMin..depthMax), 2 or 3 storeys (now and then
 // 4) by its id's hash over the highest ground under it. Boxes are only changed or appended, never erased; the appended
 // ones come last in `boxes`.
+// With `oblique`, the lane segments at an angle (terraces on the hills) get infill too, after the rest: each side is
+// probed every metre just behind its line (a 1 m cell, turned with the segment) against every visible standing box
+// (turned or not), every street's strip (its distance from the segment under half its width, the lane's own bends
+// included) and the keep-clear rects; stretches at least minGap long become lots as above, each a box turned to the
+// segment (rot = its heading), its near face on the line, as deep as is free and keeps the ground under it within
+// obliqueRise (depthMin..depthMax). Nothing is moved.
 FTCORE_API MassingBuildToCounts massingBuildTo(std::vector<MassingBox>& boxes, const std::vector<MassingStreet>& streets,
                                                const MassingGround& ground, const MassingBuildTo& opts);
 
@@ -83,6 +94,7 @@ FTCORE_API MassingLaneWidth massingLaneWidth(const MassingStreet& lane, const st
 struct MassingLaneDress {
     MassingRect area;
     double laneUpTo = 6.0;
+    std::vector<std::string> kinds; // as MassingBuildTo::kinds
     double gutterWidth = 0.3;   // m, along the centre line
     double gutterRun = 8.0;     // m: the gutter is cut into runs at most this long
     double endGap = 1.0;        // m left bare at each end of a segment and around each keep-clear rect

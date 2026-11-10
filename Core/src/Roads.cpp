@@ -1,4 +1,5 @@
 #include "ftcore/Roads.h"
+#include "ftcore/RoadGraph.h"
 
 #include "CsvRead.h"
 
@@ -44,6 +45,7 @@ std::uint32_t hashText(std::uint32_t seed, const std::string& s) {
 // A road's own axes: s along it from its first point, t to its left.
 struct Frame {
     double ox = 0.0, oy = 0.0, dx = 1.0, dy = 0.0, rot = 0.0;
+    double grade = 0.0; // a network piece's rise per m along s: its boxes' tops rise with it from s = 0
     RoadPoint at(double s, double t) const { return {ox + s * dx - t * dy, oy + s * dy + t * dx}; }
     // A plan direction from one in (s, t).
     RoadPoint dir(double ds, double dt) const { return {ds * dx - dt * dy, ds * dy + dt * dx}; }
@@ -76,6 +78,7 @@ struct Ctx {
     RoadBuild& out;
     Frame f;
     double len = 0.0, hc = 0.0, w2 = 0.0, gutter = 0.0, crown = 0.0, pave = 0.0;
+    double deep = 0.0; // m added to every slab's depth (a network piece over falling ground)
     int n = 0;
 
     Ctx(const RoadSpec& road, RoadBuild& build) : r(road), out(build) {}
@@ -99,9 +102,11 @@ struct Ctx {
         b.sx = std::fabs(s1 - s0);
         b.sy = std::fabs(t1 - t0);
         b.rot = fr.rot;
+        top += fr.grade * (s0 + s1) * 0.5;
+        if (depth >= kRoadSlabDepth - 1e-9) depth += deep;
         b.z1 = top;
         b.z0 = top - depth;
-        b.riseU = riseU;
+        b.riseU = riseU + fr.grade;
         b.riseW = riseW;
         return b;
     }
@@ -1414,6 +1419,823 @@ std::vector<std::size_t> roadClearedBoxes(const RoadBuild& build, const std::vec
             }
     }
     return out;
+}
+
+// ---- Road networks ----
+
+namespace {
+
+constexpr double kNetPierSpacing = 30.0; // m
+constexpr double kNetPierDia = 1.4;      // m
+constexpr double kNetDeckDeep = 1.2;     // m: a deck's beam under its slabs
+constexpr double kNetMaxDeep = 3.0;      // m: the deepest a slab grows over falling ground
+constexpr double kNetSample = 5.0;       // m: the ground's samples along an edge
+constexpr double kNetProfileTol = 0.1;   // m: a piece's line keeps this near the ground's samples
+constexpr double kNetBandLift = 0.5;     // m: the most a cross-slope lifts the road over the ground at its crown
+constexpr std::size_t kNetNotes = 12;    // notes kept of each kind
+
+RoadPoint netSub(RoadPoint a, RoadPoint b) { return {a.x - b.x, a.y - b.y}; }
+RoadPoint netAdd(RoadPoint a, RoadPoint b) { return {a.x + b.x, a.y + b.y}; }
+RoadPoint netMul(RoadPoint a, double k) { return {a.x * k, a.y * k}; }
+double netDot(RoadPoint a, RoadPoint b) { return a.x * b.x + a.y * b.y; }
+double netCross(RoadPoint a, RoadPoint b) { return a.x * b.y - a.y * b.x; }
+double netLen(RoadPoint a) { return std::hypot(a.x, a.y); }
+RoadPoint netUnit(RoadPoint a) {
+    const double l = netLen(a);
+    return l > 0.0 ? RoadPoint{a.x / l, a.y / l} : RoadPoint{1.0, 0.0};
+}
+RoadPoint netLeft(RoadPoint d) { return {-d.y, d.x}; }
+RoadPoint netDir(double a) { return {std::cos(a), std::sin(a)}; }
+double netWrap(double a) {
+    while (a > kPi) a -= 2.0 * kPi;
+    while (a <= -kPi) a += 2.0 * kPi;
+    return a;
+}
+
+// An edge leaving a node.
+struct NetArm {
+    std::size_t edge = 0;
+    bool atA = true;       // the edge's a end is this node
+    RoadPoint d{1.0, 0.0}; // out along the edge
+    double ang = 0.0, hc = 0.0, w2 = 0.0, pav = 0.0;
+    double trimL = 0.0, trimR = 0.0; // the arm's left and right kerbs start this far out
+    double sc = 0.0;                 // its crowned carriageway starts here; the junction's fill covers it nearer
+    char phase = 'A';
+};
+struct NetCorner {
+    std::size_t i = 0, j = 0; // arms: the corner lies on i's left and j's right
+    bool outer = false;       // the outside of a bend: a ring round the node
+    RoadPoint c{}, t1{}, t2{};
+};
+struct NetNode {
+    RoadPoint p{};
+    double z = 0.0;
+    std::vector<NetArm> arms;
+    std::vector<NetCorner> corners;
+    bool signal = false;
+    std::string id;
+};
+
+void netNote(RoadNetReport& rep, std::size_t count, const char* line) {
+    if (count <= kNetNotes) rep.notes.emplace_back(line);
+}
+
+// Douglas-Peucker over (s, z): marks the points the simplified line keeps.
+void netSimplify(const std::vector<std::pair<double, double>>& p, std::size_t i0, std::size_t i1, double tol,
+                 std::vector<char>& keep) {
+    if (i1 <= i0 + 1) return;
+    const double ds = p[i1].first - p[i0].first;
+    double worst = 0.0;
+    std::size_t at = i0;
+    for (std::size_t k = i0 + 1; k < i1; ++k) {
+        const double zl = ds > 0.0 ? p[i0].second + (p[i1].second - p[i0].second) * (p[k].first - p[i0].first) / ds
+                                   : p[i0].second;
+        const double e = std::fabs(p[k].second - zl);
+        if (e > worst) {
+            worst = e;
+            at = k;
+        }
+    }
+    if (worst > tol) {
+        keep[at] = 1;
+        netSimplify(p, i0, at, tol, keep);
+        netSimplify(p, at, i1, tol, keep);
+    }
+}
+
+// A ring piece round a centre: radius r0 to r1 over the angles a..a+step (radians), its top `top`, `depth` deep.
+MassingBox netRing(Ctx& x, RoadPoint c, double a, double step, double r0, double r1, double top, double depth,
+                   const char* kind) {
+    const RoadPoint u = netDir(a + step * 0.5);
+    const double cs = std::cos(std::fabs(step) * 0.5);
+    const double rm = (r0 * cs + r1) * 0.5;
+    const double radial = r1 - r0 * cs;
+    const double chord = 2.0 * r1 * std::sin(std::fabs(step) * 0.5) + 0.04;
+    return x.at(netAdd(c, netMul(u, rm)), angleOf(u), radial, chord, top - depth, top, kind);
+}
+
+} // namespace
+
+bool roadNetTable(std::string_view csv) {
+    using namespace detail;
+    std::vector<Record> recs;
+    if (!splitCsv(csv, recs, nullptr)) return false;
+    for (const Record& rec : recs) {
+        if (isComment(rec)) continue;
+        bool pts = false, ground = false;
+        for (const std::string& h : rec.fields) {
+            const std::string_view t = trim(h);
+            pts = pts || t == "pts";
+            ground = ground || t == "ground_z";
+        }
+        return pts && !ground;
+    }
+    return false;
+}
+
+bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::string* error) {
+    using namespace detail;
+    out.clear();
+    std::vector<Record> recs;
+    if (!splitCsv(csv, recs, error)) return false;
+    std::vector<std::string> head;
+    for (const Record& rec : recs) {
+        if (isComment(rec)) continue;
+        if (head.empty()) {
+            for (const std::string& h : rec.fields) head.emplace_back(trim(h));
+            continue;
+        }
+        auto col = [&](const char* name) -> std::string_view {
+            for (std::size_t i = 0; i < head.size() && i < rec.fields.size(); ++i)
+                if (head[i] == name) return trim(rec.fields[i]);
+            return {};
+        };
+        auto num = [&](const char* name, double& v, bool need) {
+            const std::string_view s = col(name);
+            if (s.empty()) return !need;
+            return parseNumber(s, v);
+        };
+        auto flag = [&](const char* name) {
+            const std::string_view s = col(name);
+            return s == "1" || s == "true" || s == "True";
+        };
+        RoadNetStreet r;
+        r.id = std::string(col("id"));
+        r.kind = std::string(col("kind"));
+        if (!validId(r.id)) return fail(error, rec.line, "a street needs an id (A-Z, 0-9, '_', '-')");
+        if (!validKind(r.kind)) return fail(error, rec.line, r.id + ": a street needs a kind");
+        if (!num("width_m", r.width, true) || !num("pavement_m", r.pavement, true) || !num("speed_kmh", r.speedKmh, false))
+            return fail(error, rec.line, r.id + ": a number column is missing or not a number");
+        if (!col("deck_z").empty()) {
+            if (!parseNumber(col("deck_z"), r.deckZ)) return fail(error, rec.line, r.id + ": deck_z is not a number");
+            r.deck = true;
+        }
+        r.oneWay = flag("one_way");
+        r.park = flag("parking");
+        if (!num("mouth_back_m", r.mouthBack, false) || !num("mouth_z", r.mouthZ, false))
+            return fail(error, rec.line, r.id + ": mouth_back_m or mouth_z is not a number");
+        {
+            const std::string_view ms = col("mouths");
+            std::size_t p0 = 0;
+            while (p0 < ms.size()) {
+                std::size_t q = ms.find(';', p0);
+                if (q == std::string_view::npos) q = ms.size();
+                std::vector<std::string_view> f;
+                std::size_t a = p0;
+                while (a <= q) {
+                    std::size_t b = ms.find('@', a);
+                    if (b == std::string_view::npos || b > q) b = q;
+                    f.push_back(trim(ms.substr(a, b - a)));
+                    a = b + 1;
+                }
+                RoadMouth m;
+                if (f.size() != 4 || !validId(f[0]) || !parseNumber(f[1], m.at) || !parseNumber(f[2], m.width) ||
+                    (f[3] != "L" && f[3] != "R") || m.width <= 0.0)
+                    return fail(error, rec.line, r.id + ": a mouth is \"lane@at@width@L|R\"");
+                m.lane = std::string(f[0]);
+                m.left = f[3] == "L";
+                r.mouths.push_back(std::move(m));
+                p0 = q + 1;
+            }
+        }
+        const std::string_view pts = col("pts");
+        std::size_t p = 0;
+        while (p < pts.size()) {
+            std::size_t q = pts.find(';', p);
+            if (q == std::string_view::npos) q = pts.size();
+            const std::string_view item = pts.substr(p, q - p);
+            const std::size_t c1 = item.find(':');
+            if (c1 == std::string_view::npos) return fail(error, rec.line, r.id + ": pts must be \"x:y;x:y;...\"");
+            const std::size_t c2 = item.find(':', c1 + 1);
+            RoadPoint pt;
+            const std::string_view ys =
+                c2 == std::string_view::npos ? item.substr(c1 + 1) : item.substr(c1 + 1, c2 - c1 - 1);
+            if (!parseNumber(item.substr(0, c1), pt.x) || !parseNumber(ys, pt.y))
+                return fail(error, rec.line, r.id + ": pts must be \"x:y;x:y;...\"");
+            r.pts.push_back(pt);
+            p = q + 1;
+        }
+        if (r.pts.size() < 2) return fail(error, rec.line, r.id + ": a street needs two points or more");
+        for (std::size_t i = 1; i < r.pts.size(); ++i)
+            if (netLen(netSub(r.pts[i], r.pts[i - 1])) < 1.0)
+                return fail(error, rec.line, r.id + ": two of its points are less than 1 m apart");
+        const double carriage = r.width - 2.0 * r.pavement;
+        if (r.pavement <= 0.0 || carriage < (r.oneWay ? 1.0 : 2.0) * 3.0 - 1e-6)
+            return fail(error, rec.line, r.id + ": it needs pavements and a carriageway holding its lanes (3.0 m each)");
+        for (const RoadNetStreet& o : out)
+            if (o.id == r.id) return fail(error, rec.line, r.id + ": the id is used twice");
+        out.push_back(std::move(r));
+    }
+    if (head.empty()) return fail(error, 1, "the table has no header row");
+    return true;
+}
+
+MassingStreet roadNetStreet(const RoadNetStreet& s) {
+    MassingStreet m;
+    m.id = s.id;
+    m.kind = s.kind;
+    m.width = s.width;
+    m.pavement = s.pavement;
+    for (const RoadPoint& p : s.pts) m.points.push_back({p.x, p.y, 0.0});
+    return m;
+}
+
+void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround& ground, RoadBuild& out,
+                  RoadNetReport* report) {
+    RoadNetReport rep;
+    auto groundAt = [&](RoadPoint p) {
+        return massingGroundAt(ground.grid, ground.samplesX, ground.samplesY, ground.spacing, ground.originX,
+                               ground.originY, p.x, p.y);
+    };
+    std::vector<MassingStreet> ms;
+    ms.reserve(streets.size());
+    for (const RoadNetStreet& s : streets) ms.push_back(roadNetStreet(s));
+    const RoadNetTopo net = roadGraphNet(ms, kRoadGraphSnap);
+    rep.edges = net.edges.size();
+    char note[192];
+
+    // Nodes and their arms.
+    std::vector<NetNode> nodes(net.nodes.size());
+    int jcount = 0;
+    for (std::size_t n = 0; n < nodes.size(); ++n) {
+        NetNode& nd = nodes[n];
+        nd.p = net.nodes[n];
+        bool deck = false;
+        for (const std::size_t s : net.streetsAt[n])
+            if (streets[s].deck) {
+                nd.z = deck ? std::max(nd.z, streets[s].deckZ) : streets[s].deckZ;
+                deck = true;
+            }
+        if (!deck) {
+            // The ground's highest over the node's band, so a level fill on a cross-slope stays on top of it.
+            double rn = 0.0;
+            for (const std::size_t s : net.streetsAt[n]) rn = std::max(rn, streets[s].width * 0.5 - 0.3);
+            const double g0 = groundAt(nd.p);
+            nd.z = g0;
+            for (int i = 0; i < 8; ++i) {
+                const double a = kPi * 0.25 * i;
+                nd.z = std::max(nd.z, groundAt({nd.p.x + rn * std::cos(a), nd.p.y + rn * std::sin(a)}) - kRoadKerbRise);
+            }
+            nd.z = std::min(nd.z, g0 + kNetBandLift); // a cliff beside it is reported as pokes, not climbed
+        }
+        if (net.streetsAt[n].size() >= 2) {
+            char buf[24];
+            std::snprintf(buf, sizeof buf, "JN-%04d", ++jcount);
+            nd.id = buf;
+        }
+    }
+    for (std::size_t e = 0; e < net.edges.size(); ++e) {
+        const RoadNetTopo::Edge& ed = net.edges[e];
+        const RoadNetStreet& st = streets[ed.street];
+        for (int end = 0; end < 2; ++end) {
+            NetArm arm;
+            arm.edge = e;
+            arm.atA = end == 0;
+            const std::size_t here = end == 0 ? ed.a : ed.b, there = end == 0 ? ed.b : ed.a;
+            arm.d = netUnit(netSub(nodes[there].p, nodes[here].p));
+            arm.ang = std::atan2(arm.d.y, arm.d.x);
+            arm.hc = (st.width - 2.0 * st.pavement) * 0.5;
+            arm.w2 = st.width * 0.5;
+            arm.pav = st.pavement;
+            nodes[here].arms.push_back(arm);
+        }
+    }
+    const double R = kRoadCornerRadius;
+    for (NetNode& nd : nodes) {
+        std::vector<NetArm>& arms = nd.arms;
+        if (arms.empty()) continue;
+        ++rep.nodes;
+        // Phases by the first arm's axis (the first edge at the node, as roadGraphJunctions takes it).
+        const RoadPoint axis = arms.front().d;
+        for (NetArm& a : arms) a.phase = std::fabs(netDot(a.d, axis)) >= std::cos(kPi / 4.0) ? 'A' : 'B';
+        std::sort(arms.begin(), arms.end(), [](const NetArm& a, const NetArm& b) { return a.ang < b.ang; });
+        const std::size_t k = arms.size();
+        if (k == 1) {
+            ++rep.ends;
+            continue;
+        }
+        nd.signal = k >= 3;
+        if (nd.signal) ++rep.junctions;
+        bool bend = false;
+        for (std::size_t i = 0; i < k; ++i) {
+            const std::size_t j = (i + 1) % k;
+            NetArm& ai = arms[i];
+            NetArm& aj = arms[j];
+            double th = aj.ang - ai.ang;
+            while (th <= 1e-9) th += 2.0 * kPi;
+            const RoadPoint ni = netLeft(ai.d), nj = netLeft(aj.d);
+            if (th < kPi - 1e-3) {
+                // The kerb circle tangent to i's left kerb and j's right kerb.
+                const RoadPoint rhs = netAdd(netMul(nj, -(aj.hc + R)), netMul(ni, -(ai.hc + R)));
+                const double det = -netCross(ai.d, aj.d);
+                if (std::fabs(det) < 1e-9) continue;
+                const double s1 = netCross(rhs, netMul(aj.d, -1.0)) / det;
+                const double s2 = netCross(ai.d, rhs) / det;
+                ai.trimL = std::max(ai.trimL, s1);
+                aj.trimR = std::max(aj.trimR, s2);
+                NetCorner c;
+                c.i = i;
+                c.j = j;
+                c.c = netAdd(nd.p, netAdd(netMul(ai.d, s1), netMul(ni, ai.hc + R)));
+                c.t1 = netAdd(nd.p, netAdd(netMul(ai.d, s1), netMul(ni, ai.hc)));
+                c.t2 = netAdd(nd.p, netSub(netMul(aj.d, s2), netMul(nj, aj.hc)));
+                nd.corners.push_back(c);
+            } else if (th > kPi + 1e-3) {
+                NetCorner c;
+                c.i = i;
+                c.j = j;
+                c.outer = true;
+                c.c = nd.p;
+                nd.corners.push_back(c);
+                bend = true;
+            }
+        }
+        if (k == 2 && bend) ++rep.bends;
+        for (NetArm& a : arms) a.sc = std::max(a.trimL, a.trimR);
+    }
+
+    // Each node of two arms or more: the level fill, its corners, a junction's record.
+    for (std::size_t n = 0; n < nodes.size(); ++n) {
+        const NetNode& nd = nodes[n];
+        if (nd.arms.size() < 2) continue;
+        RoadSpec spec;
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "NODE-%04zu", n + 1);
+        spec.id = nd.id.empty() ? std::string(buf) : nd.id;
+        Ctx x(spec, out);
+        const double g = nd.z + kRoadSurfaceLift, pv = g + kRoadKerbRise;
+        double hcMax = 0.0, hcMin = 1e9, scMax = 0.0;
+        for (const NetArm& a : nd.arms) {
+            hcMax = std::max(hcMax, a.hc);
+            hcMin = std::min(hcMin, a.hc);
+            scMax = std::max(scMax, a.sc);
+        }
+        const double zf = g + kRoadCrossfall * hcMax * 0.5;
+        for (const NetArm& a : nd.arms)
+            rep.maxStep = std::max(rep.maxStep, std::max(zf - g, g + kRoadCrossfall * a.hc - zf));
+        for (const NetArm& a : nd.arms) {
+            if (a.sc <= 0.01) continue;
+            const Frame fa = frameOf(nd.p.x, nd.p.y, nd.p.x + a.d.x, nd.p.y + a.d.y);
+            x.add(x.box(fa, 0.0, a.sc, -a.hc, a.hc, zf, kRoadSlabDepth, 0.0, 0.0, "fill"), RoadTint::Asphalt, true);
+            const MassingFoot ft = footOf(x.box(fa, 0.0, a.sc, -a.hc, a.hc, 0, 0, 0, 0, "foot"));
+            out.carriageway.push_back(ft);
+            out.band.push_back(ft);
+        }
+        // A disc over the node (a bend's as wide as its wider arm, out to its outer ring).
+        const double disc = nd.arms.size() == 2 ? hcMax : hcMin;
+        x.add(x.at(nd.p, 0.0, 2.0 * disc, 2.0 * disc, zf - kRoadSlabDepth, zf, "fill"), RoadTint::Asphalt, true,
+              RoadShape::Cylinder);
+        for (const NetCorner& c : nd.corners) {
+            const NetArm& ai = nd.arms[c.i];
+            const NetArm& aj = nd.arms[c.j];
+            const RoadPoint ni = netLeft(ai.d), nj = netLeft(aj.d);
+            if (!c.outer) {
+                const double a0 = std::atan2(-ni.y, -ni.x);
+                const double sweep = netWrap(std::atan2(nj.y, nj.x) - a0);
+                // The fill out to the line through the kerb arc's nearest point to the node (parallel to its chord).
+                const RoadPoint ch = netSub(c.t2, c.t1);
+                const double lc = netLen(ch);
+                if (lc > 0.05) {
+                    const RoadPoint ux = netUnit(ch);
+                    RoadPoint pp = netLeft(ux);
+                    const RoadPoint v = netSub(nd.p, c.t1);
+                    double wd = netDot(v, pp);
+                    if (wd < 0.0) {
+                        pp = netMul(pp, -1.0);
+                        wd = -wd;
+                    }
+                    const double sag = R * (1.0 - std::cos(std::fabs(sweep) * 0.5));
+                    wd -= sag;
+                    const double pn = netDot(v, ux);
+                    const double u0 = std::min(0.0, pn), u1 = std::max(lc, pn);
+                    const RoadPoint mid =
+                        netAdd(c.t1, netAdd(netMul(ux, (u0 + u1) * 0.5), netMul(pp, sag + wd * 0.5)));
+                    if (wd > 0.05) {
+                        const MassingBox fb = x.at(mid, angleOf(ux), u1 - u0, wd, zf - kRoadSlabDepth, zf, "fill");
+                        x.add(fb, RoadTint::Asphalt, true);
+                        out.carriageway.push_back(footOf(fb));
+                        out.band.push_back(footOf(fb));
+                    }
+                }
+                // The kerb and the pavement round the corner.
+                const int steps = std::max(2, static_cast<int>(std::ceil(std::fabs(sweep) / (kPi / 9.0))));
+                const double step = sweep / steps;
+                for (int s = 0; s < steps; ++s) {
+                    const double a = a0 + step * s;
+                    x.add(netRing(x, c.c, a, step, R - kRoadKerbWide, R, pv, kRoadSlabDepth + 0.15, "kerb"), RoadTint::Kerb,
+                          true);
+                    // The pavement from the kerb back to where the ray from the centre leaves the two streets' bands.
+                    const RoadPoint u = netDir(a + step * 0.5);
+                    const double ui = -netDot(ni, u), uj = netDot(nj, u);
+                    double rb = R - kRoadKerbWide - 0.05;
+                    if (ui > 1e-6) rb = std::min(rb, (R - ai.pav) / ui);
+                    if (uj > 1e-6) rb = std::min(rb, (R - aj.pav) / uj);
+                    const MassingBox pb =
+                        netRing(x, c.c, a, step, std::max(0.0, rb), R - kRoadKerbWide, pv, kRoadSlabDepth, "pavement");
+                    x.add(pb, RoadTint::Pavement, true);
+                    out.band.push_back(footOf(pb));
+                }
+            } else {
+                // The outside of a bend: a ring of kerb and pavement round the node.
+                const double a0 = std::atan2(ni.y, ni.x);
+                double sweep = std::atan2(-nj.y, -nj.x) - a0;
+                while (sweep < 0.0) sweep += 2.0 * kPi;
+                const int steps = std::max(1, static_cast<int>(std::ceil(sweep / (kPi / 9.0))));
+                const double step = sweep / steps;
+                const double hc = std::max(ai.hc, aj.hc), w2 = std::max(ai.w2, aj.w2);
+                for (int s = 0; s < steps; ++s) {
+                    const double a = a0 + step * s;
+                    x.add(netRing(x, nd.p, a, step, hc, hc + kRoadKerbWide, pv, kRoadSlabDepth + 0.15, "kerb"),
+                          RoadTint::Kerb, true);
+                    const MassingBox pb = netRing(x, nd.p, a, step, hc + kRoadKerbWide, w2, pv, kRoadSlabDepth, "pavement");
+                    x.add(pb, RoadTint::Pavement, true);
+                    out.band.push_back(footOf(pb));
+                }
+            }
+        }
+        if (nd.signal) {
+            RoadJunction rj;
+            rj.id = nd.id;
+            rj.x = nd.p.x;
+            rj.y = nd.p.y;
+            const std::vector<std::size_t>& at = net.streetsAt[n];
+            rj.road = streets[at[0]].id;
+            rj.lane = at.size() > 1 ? streets[at[1]].id : std::string();
+            rj.box.x = nd.p.x;
+            rj.box.y = nd.p.y;
+            rj.box.hx = rj.box.hy = scMax;
+            out.keepOut.push_back(rj.box);
+            out.junctions.push_back(rj);
+            ++out.counts.junctions;
+        }
+    }
+
+    // The edges.
+    std::vector<int> edgeCount(streets.size(), 0);
+    for (std::size_t e = 0; e < net.edges.size(); ++e) {
+        const RoadNetTopo::Edge& ed = net.edges[e];
+        const RoadNetStreet& st = streets[ed.street];
+        const NetNode& na = nodes[ed.a];
+        const NetNode& nb = nodes[ed.b];
+        const NetArm* pa = nullptr;
+        const NetArm* pb = nullptr;
+        for (const NetArm& a : na.arms)
+            if (a.edge == e && a.atA) pa = &a;
+        for (const NetArm& a : nb.arms)
+            if (a.edge == e && !a.atA) pb = &a;
+        if (!pa || !pb) continue;
+        const NetArm& A = *pa;
+        const NetArm& B = *pb;
+        RoadSpec spec;
+        {
+            char buf[16];
+            std::snprintf(buf, sizeof buf, "-E%d", ++edgeCount[ed.street]);
+            spec.id = st.id + buf;
+        }
+        spec.mouthBack = st.mouthBack;
+        spec.mouthZ = st.mouthZ;
+        Ctx x(spec, out);
+        const Frame f = frameOf(na.p.x, na.p.y, nb.p.x, nb.p.y);
+        const double L = netLen(netSub(nb.p, na.p));
+        const double hc = A.hc, w2 = A.w2;
+        x.hc = hc;
+        x.w2 = w2;
+        x.len = L;
+        double scA = na.arms.size() >= 2 ? A.sc : 0.0, scB = nb.arms.size() >= 2 ? B.sc : 0.0;
+        if (scA + scB > L - 0.5) {
+            const double k = std::max(0.0, L - 0.5) / std::max(1e-6, scA + scB);
+            scA *= k;
+            scB *= k;
+            ++rep.tight;
+            std::snprintf(note, sizeof note, "%s: its junctions' corners overlap (%.0f m)", spec.id.c_str(), L);
+            netNote(rep, rep.tight, note);
+        }
+        const double sA = scA, sB = L - scB;
+        // Zebras where there is room for them.
+        const double zebraRun = kRoadZebraOff + kRoadZebraWide + kRoadStopBack + kRoadStopLine + 1.0;
+        bool zA = na.signal, zB = nb.signal;
+        if ((zA && zB && sB - sA < 2.0 * zebraRun) || ((zA || zB) && sB - sA < zebraRun)) {
+            zA = zB = false;
+            ++rep.tight;
+            std::snprintf(note, sizeof note, "%s: too short for its zebras (%.0f m)", spec.id.c_str(), L);
+            netNote(rep, rep.tight, note);
+        }
+        const double zA0 = sA + kRoadZebraOff, zA1 = zA0 + kRoadZebraWide;
+        const double zB1 = sB - kRoadZebraOff, zB0 = zB1 - kRoadZebraWide;
+        std::vector<SideSpan> fixL, fixR;
+        // The edge's left: A's left and B's right; its right: A's right and B's left.
+        if (na.arms.size() >= 2) {
+            if (A.trimL > 0.0) fixL.push_back({0.0, std::min(A.trimL, L), Span::Corner});
+            if (A.trimR > 0.0) fixR.push_back({0.0, std::min(A.trimR, L), Span::Corner});
+        }
+        if (nb.arms.size() >= 2) {
+            if (B.trimR > 0.0) fixL.push_back({std::max(0.0, L - B.trimR), L, Span::Corner});
+            if (B.trimL > 0.0) fixR.push_back({std::max(0.0, L - B.trimL), L, Span::Corner});
+        }
+        // The street's mouths on this edge: where along it its ends lie, and which way it runs.
+        if (!st.mouths.empty()) {
+            auto along = [&](RoadPoint q) {
+                double best = 1e18, at = 0.0, run = 0.0;
+                for (std::size_t i = 1; i < st.pts.size(); ++i) {
+                    const RoadPoint d = netSub(st.pts[i], st.pts[i - 1]);
+                    const double l = netLen(d);
+                    const double u = std::clamp(netDot(netSub(q, st.pts[i - 1]), d) / std::max(1e-9, l * l), 0.0, 1.0);
+                    const double dist = netLen(netSub(q, netAdd(st.pts[i - 1], netMul(d, u))));
+                    if (dist < best) {
+                        best = dist;
+                        at = run + u * l;
+                    }
+                    run += l;
+                }
+                return at;
+            };
+            const double ta = along(na.p), tb = along(nb.p);
+            const bool fwd = tb >= ta;
+            for (const RoadMouth& m : st.mouths) {
+                const double s = fwd ? m.at - ta : ta - m.at;
+                const double s0 = s - m.width * 0.5 - kRoadMouthFlare, s1 = s + m.width * 0.5 + kRoadMouthFlare;
+                if (s1 <= 0.0 || s0 >= L) continue;
+                ((m.left == fwd) ? fixL : fixR).push_back({std::max(0.0, s0), std::min(L, s1), Span::Mouth});
+            }
+        }
+        for (std::vector<SideSpan>* side : {&fixL, &fixR}) {
+            if (zA) side->push_back({zA0, zA1, Span::Ramp});
+            if (zB) side->push_back({zB0, zB1, Span::Ramp});
+        }
+        const bool park = st.park && !st.deck && st.pavement >= kRoadBayDeep + 1.0;
+        const std::vector<SideSpan> spansL = fillSpans(fixL, L, park, {});
+        const std::vector<SideSpan> spansR = fillSpans(fixR, L, park, {});
+
+        // The profile: level over each junction's fill, then the ground's samples simplified (a deck: straight).
+        // A sample is the highest of the ground under the crown and under each pavement (less the kerb), lifted by
+        // half the tolerance, so neither a cross-slope nor the simplified line lets the ground through the top.
+        auto bandAt = [&](double s) {
+            const double g0 = groundAt(f.at(s, 0.0));
+            double z = g0;
+            for (const double tt : {-w2 + 0.3, w2 - 0.3}) z = std::max(z, groundAt(f.at(s, tt)) - kRoadKerbRise);
+            return std::min(z, g0 + kNetBandLift) + kNetProfileTol * 0.5;
+        };
+        std::vector<std::pair<double, double>> prof;
+        prof.push_back({sA, na.z});
+        if (!st.deck) {
+            const int ns = static_cast<int>(std::floor((sB - sA) / kNetSample));
+            for (int i = 1; i < ns; ++i) {
+                const double s = sA + (sB - sA) * i / ns;
+                prof.push_back({s, bandAt(s)});
+            }
+        }
+        prof.push_back({sB, nb.z});
+        std::vector<char> keep(prof.size(), 0);
+        keep.front() = keep.back() = 1;
+        netSimplify(prof, 0, prof.size() - 1, kNetProfileTol, keep);
+        std::vector<std::pair<double, double>> knots;
+        knots.push_back({0.0, na.z});
+        for (std::size_t i = 0; i < prof.size(); ++i)
+            if (keep[i]) knots.push_back(prof[i]);
+        knots.push_back({L, nb.z});
+        // No knot inside a bay: it moves to the bay's nearer end.
+        for (std::size_t i = 2; i + 2 < knots.size(); ++i)
+            for (const std::vector<SideSpan>* sp : {&spansL, &spansR})
+                for (const SideSpan& b : *sp)
+                    if (b.type == Span::Bay && knots[i].first > b.s0 && knots[i].first < b.s1) {
+                        knots[i].first = knots[i].first - b.s0 < b.s1 - knots[i].first ? b.s0 : b.s1;
+                        knots[i].second = bandAt(knots[i].first);
+                    }
+        std::sort(knots.begin(), knots.end());
+        std::vector<std::pair<double, double>> kn;
+        for (std::size_t i = 0; i < knots.size(); ++i) {
+            if (kn.empty() || knots[i].first > kn.back().first + 0.5)
+                kn.push_back(knots[i]);
+            else if (i + 1 == knots.size())
+                kn.back() = knots[i];
+        }
+        auto zAt = [&](double s) {
+            if (s <= kn.front().first) return kn.front().second;
+            for (std::size_t i = 1; i < kn.size(); ++i)
+                if (s <= kn[i].first) {
+                    const double t = (s - kn[i - 1].first) / std::max(1e-9, kn[i].first - kn[i - 1].first);
+                    return kn[i - 1].second + (kn[i].second - kn[i - 1].second) * t;
+                }
+            return kn.back().second;
+        };
+        // The pieces.
+        struct Piece {
+            double p0 = 0.0, p1 = 0.0, z0 = 0.0, deep = 0.0;
+            Frame fr;
+        };
+        std::vector<Piece> pieces;
+        for (std::size_t i = 1; i < kn.size(); ++i) {
+            Piece pc;
+            pc.p0 = kn[i - 1].first;
+            pc.p1 = kn[i].first;
+            if (pc.p1 - pc.p0 < 1e-6) continue;
+            pc.z0 = kn[i - 1].second;
+            const RoadPoint q0 = f.at(pc.p0, 0.0), q1 = f.at(pc.p1, 0.0);
+            pc.fr = frameOf(q0.x, q0.y, q1.x, q1.y);
+            pc.fr.grade = (kn[i].second - pc.z0) / (pc.p1 - pc.p0);
+            if (std::fabs(pc.fr.grade) > kRoadMaxGrade + 1e-9) {
+                ++rep.steep;
+                std::snprintf(note, sizeof note, "%s: %.1f%% over %.0f m at (%.0f, %.0f)", spec.id.c_str(),
+                              pc.fr.grade * 100.0, pc.p1 - pc.p0, q0.x, q0.y);
+                netNote(rep, rep.steep, note);
+            }
+            if (std::fabs(pc.fr.grade) > rep.maxGrade) {
+                rep.maxGrade = std::fabs(pc.fr.grade);
+                std::snprintf(note, sizeof note, "%s (%.0f, %.0f)", spec.id.c_str(), q0.x, q0.y);
+                rep.maxGradeAt = note;
+            }
+            // The ground under it: slabs deepen over a fall; ground over the road's top is a poke.
+            const double ds = std::max(1.0, std::min(kNetSample, (pc.p1 - pc.p0) * 0.5));
+            for (double s = pc.p0; s <= pc.p1 + 1e-9; s += ds) {
+                const double gz = zAt(s) + kRoadSurfaceLift;
+                for (const double t : {0.0, -w2 + 0.3, w2 - 0.3}) {
+                    const RoadPoint q = f.at(s, t);
+                    const double gr = groundAt(q);
+                    const double top = std::fabs(t) < hc ? gz + kRoadCrossfall * (hc - std::fabs(t)) : gz + kRoadKerbRise;
+                    if (gr > top + 0.05) {
+                        ++rep.pokes;
+                        rep.maxPoke = std::max(rep.maxPoke, gr - top);
+                        if (gr - top > 0.3) {
+                            ++rep.pokesOver;
+                            std::snprintf(note, sizeof note, "%s: the ground %.2f m over its top at (%.0f, %.0f)",
+                                          spec.id.c_str(), gr - top, q.x, q.y);
+                            netNote(rep, rep.pokesOver, note);
+                        }
+                    }
+                    if (st.deck) continue;
+                    const double fall = gz - kRoadSlabDepth - gr;
+                    if (fall > kNetMaxDeep) {
+                        ++rep.floats;
+                        std::snprintf(note, sizeof note, "%s: %.1f m over the ground at (%.0f, %.0f)", spec.id.c_str(),
+                                      fall, q.x, q.y);
+                        netNote(rep, rep.floats, note);
+                    }
+                    pc.deep = std::max(pc.deep, std::min(kNetMaxDeep, fall));
+                }
+            }
+            pieces.push_back(pc);
+        }
+        rep.pieces += pieces.size();
+        auto use = [&](const Piece& pc) {
+            x.gutter = pc.z0 + kRoadSurfaceLift;
+            x.crown = x.gutter + kRoadCrossfall * hc;
+            x.pave = x.gutter + kRoadKerbRise;
+            x.deep = pc.deep;
+            x.f = pc.fr;
+        };
+        // A marking from s0 to s1 (edge frame), across t0..t1, split over the pieces.
+        auto markAlong = [&](double s0, double s1, double t0, double t1) {
+            for (const Piece& pc : pieces) {
+                const double a = std::max(s0, pc.p0), b = std::min(s1, pc.p1);
+                if (b - a < 1e-3) continue;
+                use(pc);
+                x.mark(pc.fr, a - pc.p0, b - pc.p0, t0, t1, RoadTint::LineWhite);
+            }
+        };
+        for (const Piece& pc : pieces) {
+            use(pc);
+            const double lp = pc.p1 - pc.p0;
+            const double c0 = std::max(pc.p0, sA) - pc.p0, c1 = std::min(pc.p1, sB) - pc.p0;
+            if (c1 - c0 > 1e-3) {
+                const double mid = x.crown - kRoadCrossfall * hc * 0.5;
+                x.add(x.box(pc.fr, c0, c1, 0.0, hc, mid, kRoadSlabDepth, 0.0, -kRoadCrossfall, "asphalt"),
+                      RoadTint::Asphalt, true);
+                x.add(x.box(pc.fr, c0, c1, -hc, 0.0, mid, kRoadSlabDepth, 0.0, kRoadCrossfall, "asphalt"),
+                      RoadTint::Asphalt, true);
+                out.carriageway.push_back(footOf(x.box(pc.fr, c0, c1, -hc, hc, 0, 0, 0, 0, "foot")));
+            }
+            out.band.push_back(footOf(x.box(pc.fr, 0.0, lp, -w2, w2, 0, 0, 0, 0, "foot")));
+            for (int side = 0; side < 2; ++side) {
+                std::vector<SideSpan> clip;
+                for (const SideSpan& sp : side == 0 ? spansL : spansR) {
+                    const double a = std::max(sp.s0, pc.p0), b = std::min(sp.s1, pc.p1);
+                    if (b - a > 1e-6) clip.push_back({a - pc.p0, b - pc.p0, sp.type});
+                }
+                buildSide(x, pc.fr, side == 0 ? 1.0 : -1.0, hc, w2, lp, clip, false, st.deck);
+            }
+            if (st.deck) {
+                // The deck's beam under its slabs.
+                x.deep = 0.0;
+                x.add(x.box(pc.fr, 0.0, lp, -w2, w2, x.gutter - kRoadSlabDepth, kNetDeckDeep, 0.0, 0.0, "deck"),
+                      RoadTint::PoleConcrete, true);
+            }
+        }
+        // Bays.
+        for (int side = 0; side < 2; ++side) {
+            const double sg = side == 0 ? 1.0 : -1.0;
+            for (const SideSpan& sp : side == 0 ? spansL : spansR) {
+                if (sp.type != Span::Bay) continue;
+                RoadBay bay;
+                bay.id = x.id("bay");
+                bay.foot = footOf(x.box(f, sp.s0, sp.s1, std::min(sg * hc, sg * (hc + kRoadBayDeep)),
+                                        std::max(sg * hc, sg * (hc + kRoadBayDeep)), 0.0, 0.0, 0.0, 0.0, "foot"));
+                bay.at = (sp.s0 + sp.s1) * 0.5;
+                bay.z = zAt(bay.at) + kRoadSurfaceLift;
+                // Left-hand traffic: the left side's lane runs along s, the right side's against it.
+                bay.heading = sg > 0.0 ? f.rot : f.rot + 180.0;
+                bay.left = sg > 0.0;
+                bay.street = st.id;
+                out.bays.push_back(bay);
+                ++out.counts.bays;
+            }
+        }
+        // The centre line, dashed, stop line to stop line.
+        const double stopRun = kRoadStopBack + kRoadStopLine + 1.0;
+        if (!st.oneWay) {
+            const double c0 = zA ? zA1 + stopRun : sA + 2.0, c1 = zB ? zB0 - stopRun : sB - 2.0;
+            for (double s = c0; s < c1 - 1.0; s += 2.0 * kRoadCentreDash)
+                markAlong(s, std::min(s + kRoadCentreDash, c1), -kRoadLine * 0.5, kRoadLine * 0.5);
+        }
+        // Zebras, stop lines and signals at each signalised end.
+        auto pz = [&](double s) { return zAt(s) + kRoadSurfaceLift + kRoadKerbRise; };
+        for (int end = 0; end < 2; ++end) {
+            const NetNode& nd = end == 0 ? na : nb;
+            if (!nd.signal) continue;
+            const NetArm& arm = end == 0 ? A : B;
+            const bool on = end == 0 ? zA : zB;
+            const double z0 = end == 0 ? zA0 : zB0, z1 = end == 0 ? zA1 : zB1;
+            // Inbound traffic keeps left: towards a it is the -t half, towards b the +t half.
+            const double ti = end == 0 ? -1.0 : 1.0;
+            const double away = end == 0 ? 1.0 : -1.0; // along s, away from the junction
+            const char other = arm.phase == 'A' ? 'B' : 'A';
+            double poleS = end == 0 ? sA + 1.0 : sB - 1.0;
+            if (on) {
+                for (double t = 0.225; t + kRoadZebraBar <= hc - 0.1 + 1e-9; t += 2.0 * kRoadZebraBar) {
+                    markAlong(z0, z1, t, t + kRoadZebraBar);
+                    markAlong(z0, z1, -t - kRoadZebraBar, -t);
+                }
+                RoadQuad q;
+                q.id = nd.id + "-Z-" + spec.id;
+                q.street = st.id;
+                q.junction = nd.id;
+                q.pts = {f.at(z0, -hc), f.at(z1, -hc), f.at(z1, hc), f.at(z0, hc)};
+                out.crossings.push_back(q);
+                out.keepOut.push_back(footOf(x.box(f, z0, z1, -hc, hc, 0, 0, 0, 0, "foot")));
+                ++out.counts.zebras;
+                const double nearS = end == 0 ? z1 : z0;
+                const double l0 = nearS + away * kRoadStopBack, l1 = l0 + away * kRoadStopLine;
+                markAlong(std::min(l0, l1), std::max(l0, l1), std::min(0.0, ti * hc), std::max(0.0, ti * hc));
+                out.keepOut.push_back(footOf(x.box(f, std::min(nearS, l1), std::max(nearS, l1), std::min(0.0, ti * hc),
+                                                   std::max(0.0, ti * hc), 0, 0, 0, 0, "foot")));
+                poleS = l1 + away * 0.5;
+                const double ps = nearS + away * 0.6;
+                for (const double sd : {1.0, -1.0})
+                    pedSignal(x, f.at(ps, sd * (hc + kRoadSignalPoleBack)), f.dir(0.0, -sd), pz(ps), nd.id, other);
+            }
+            // The vehicle signal on the inbound kerb, its arm over the inbound half, facing the traffic coming in.
+            const RoadPoint p = f.at(poleS, ti * (hc + kRoadSignalPoleBack));
+            vehicleSignal(x, p, f.at(poleS, ti * hc * 0.5), f.dir(away, 0.0), pz(poleS), nd.id, arm.phase);
+        }
+        // Lamps each side, staggered, on free spots clear of the furniture.
+        const std::size_t furn0 = out.furniture.size();
+        for (int side = 0; side < 2; ++side) {
+            const double sg = side == 0 ? 1.0 : -1.0;
+            const std::vector<SideSpan>& spans = side == 0 ? spansL : spansR;
+            for (double s = side == 0 ? kRoadLampSpacing * 0.5 : kRoadLampSpacing; s < L - 3.0; s += kRoadLampSpacing) {
+                for (const double nudge : {0.0, 2.0, -2.0, 4.0, -4.0, 6.0, -6.0}) {
+                    const double sl = s + nudge;
+                    if (sl < 3.0 || sl > L - 3.0 || !spotFree(spans, sl, 1.5)) continue;
+                    const double back =
+                        spanAt(spans, sl) == Span::Bay ? hc + kRoadBayDeep + kRoadLampBack : hc + kRoadLampBack;
+                    if (back > w2 - 0.3) continue;
+                    const RoadPoint lpt = f.at(sl, sg * back);
+                    MassingFoot ft;
+                    ft.x = lpt.x;
+                    ft.y = lpt.y;
+                    ft.hx = 0.3;
+                    ft.hy = 0.24;
+                    ft.rot = angleOf(f.dir(0.0, -sg));
+                    bool hit = false;
+                    for (std::size_t i = 0; i < furn0 && !hit; ++i) hit = massingFeetOverlap(ft, out.furniture[i], 0.5);
+                    if (hit) continue;
+                    MassingProp lamp;
+                    lamp.x = lpt.x;
+                    lamp.y = lpt.y;
+                    lamp.z = pz(sl);
+                    lamp.face = ft.rot;
+                    out.lamps.push_back(lamp);
+                    ++out.counts.lamps;
+                    out.furniture.push_back(ft);
+                    break;
+                }
+            }
+        }
+        // A deck's piers, two abreast, down into the ground.
+        if (st.deck) {
+            for (double s = sA + kNetPierSpacing * 0.5; s < sB - 5.0; s += kNetPierSpacing) {
+                const double bottom = zAt(s) + kRoadSurfaceLift - kRoadSlabDepth - kNetDeckDeep;
+                for (const double t : {-hc * 0.5, hc * 0.5}) {
+                    const RoadPoint q = f.at(s, t);
+                    const double gr = groundAt(q);
+                    if (gr > bottom - 0.5) continue;
+                    x.add(x.at(q, 0.0, kNetPierDia, kNetPierDia, gr - 1.0, bottom, "pier"), RoadTint::PoleConcrete, true,
+                          RoadShape::Cylinder);
+                    ++rep.piers;
+                }
+            }
+        }
+    }
+    if (report) *report = std::move(rep);
 }
 
 } // namespace ftcore

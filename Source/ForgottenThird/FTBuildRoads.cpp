@@ -226,7 +226,7 @@ FOptions ParseOptions(const TCHAR* Params)
 	FParse::Value(Params, TEXT("RoadDoors="), Options.DoorsFile);
 	Options.bVehicles = FParse::Param(Params, TEXT("Vehicles"));
 	FString Box;
-	if (FParse::Value(Params, TEXT("LaneLamps="), Box))
+	if (FParse::Value(Params, TEXT("LaneLamps="), Box, false)) // false: the commas are part of the value
 	{
 		Options.bLaneLamps = RoadsParseBox(Box, Options.LaneBox);
 		if (!Options.bLaneLamps)
@@ -242,8 +242,8 @@ FOptions ParseOptions(const TCHAR* Params)
 	return Options;
 }
 
-bool Prepare(const FOptions& Options, std::vector<ftcore::MassingBox>& Boxes, std::vector<ftcore::RoadSpec>& Roads,
-	std::vector<ftcore::RoadBuild>& Builds)
+bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::vector<ftcore::MassingBox>& Boxes,
+	std::vector<ftcore::RoadSpec>& Roads, std::vector<ftcore::RoadBuild>& Builds)
 {
 	Roads.clear();
 	Builds.clear();
@@ -255,6 +255,46 @@ bool Prepare(const FOptions& Options, std::vector<ftcore::MassingBox>& Boxes, st
 	if (!RoadsReadText(Options.RoadsFile, Text))
 	{
 		return false;
+	}
+	if (ftcore::roadNetTable(Text))
+	{
+		std::vector<ftcore::RoadNetStreet> Net;
+		if (!ftcore::importRoadNet(Text, Net, &Error))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *Options.RoadsFile, *RoadsUtf8(Error));
+			return false;
+		}
+		if (Net.empty())
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: %s: a road network table with no rows; no roads."), *Options.RoadsFile);
+			return true;
+		}
+		Builds.resize(Net.size());
+		ftcore::RoadNetReport Report;
+		ftcore::roadNetBuild(Net, Ground, Builds[0], &Report);
+		for (const ftcore::RoadNetStreet& Street : Net)
+		{
+			ftcore::RoadSpec Stub; // DropRoadStreets' id, nothing else; its build stays empty
+			Stub.id = Street.id;
+			Stub.kind = "net";
+			Roads.push_back(std::move(Stub));
+		}
+		const std::vector<size_t> Gone = ftcore::roadClearedBoxes(Builds[0], Boxes, 0.0);
+		for (const size_t I : Gone)
+		{
+			Boxes[I].kind = "underpass";
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: road network %s: %d streets, %d junctions, %d bends, %d ends, %d pieces, "
+			"%d piers; %d steep (max %.1f%%), %d pokes (%d over 0.3 m, max %.2f m), %d floats, %d tight; hides %d rows."),
+			*Options.RoadsFile, static_cast<int32>(Net.size()), static_cast<int32>(Report.junctions), static_cast<int32>(Report.bends),
+			static_cast<int32>(Report.ends), static_cast<int32>(Report.pieces), static_cast<int32>(Report.piers), static_cast<int32>(Report.steep),
+			Report.maxGrade * 100.0, static_cast<int32>(Report.pokes), static_cast<int32>(Report.pokesOver), Report.maxPoke,
+			static_cast<int32>(Report.floats), static_cast<int32>(Report.tight), static_cast<int32>(Gone.size()));
+		for (const std::string& Note : Report.notes)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: road network: %s"), *RoadsUtf8(Note));
+		}
+		return true;
 	}
 	if (!ftcore::importRoads(Text, Roads, &Error))
 	{
@@ -335,6 +375,10 @@ bool Lay(FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::
 	{
 		const ftcore::RoadSpec& Road = Roads[R];
 		const ftcore::RoadBuild& Build = Builds[R];
+		if (Road.kind == "net" && R > 0)
+		{
+			continue; // a network street's stand-in: the network is all in Builds[0]
+		}
 		for (const ftcore::RoadSolid& Solid : Build.solids)
 		{
 			if (!Paint.Lay(Solid))
@@ -373,7 +417,7 @@ bool Lay(FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::
 		const ftcore::RoadCounts& C = Build.counts;
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roads %s: %d solids (%d collide), %d markings, %d zebras, %d bays, %d of %d lamps "
 			"(TQ-04), %d signals, %d signs, %d poles, %d lane mouths, %d junctions; %s."),
-			*RoadsUtf8(Road.id), static_cast<int32>(C.solids), static_cast<int32>(C.collide), static_cast<int32>(C.markings), static_cast<int32>(C.zebras),
+			Road.kind == "net" ? TEXT("network") : *RoadsUtf8(Road.id), static_cast<int32>(C.solids), static_cast<int32>(C.collide), static_cast<int32>(C.markings), static_cast<int32>(C.zebras),
 			static_cast<int32>(C.bays), Lamps, static_cast<int32>(Build.lamps.size()), static_cast<int32>(C.signals), static_cast<int32>(C.signs),
 			static_cast<int32>(C.poles), static_cast<int32>(C.mouths), static_cast<int32>(C.junctions),
 			Options.bVehicles ? *FString::Printf(TEXT("%d cars parked in %d bays (%d left empty, %d blocked)"), Parked, static_cast<int32>(Park.bays),
@@ -463,6 +507,11 @@ bool Finish(const FFTRoadsHost& Host, const FOptions& Options, const std::vector
 		for (size_t R = 0; R < Roads.size(); ++R)
 		{
 			const ftcore::RoadSpec& Road = Roads[R];
+			const bool bNet = Road.kind == "net";
+			if (bNet && R > 0)
+			{
+				break; // a network: the lanes and its carriageways once, with Builds[0]
+			}
 			ftcore::RoadTwoWheelOptions Opts;
 			if (Options.bLaneLamps)
 			{
@@ -470,6 +519,10 @@ bool Finish(const FFTRoadsHost& Host, const FOptions& Options, const std::vector
 				Opts.y0 = Options.LaneBox[1];
 				Opts.x1 = Options.LaneBox[2];
 				Opts.y1 = Options.LaneBox[3];
+			}
+			else if (bNet)
+			{
+				continue; // no box to work in: a network needs -LaneLamps' box for its lanes' two-wheelers
 			}
 			else
 			{
@@ -480,7 +533,7 @@ bool Finish(const FFTRoadsHost& Host, const FOptions& Options, const std::vector
 			}
 			Opts.seed = Options.Seed + 101u * static_cast<uint32>(R + 1);
 			// The lanes once (with the first road), then each further road's back of pavement alone.
-			ftcore::roadTwoWheelers(R == 0 ? Lanes : None, Opts, &Builds[R], &Road, Ground, Doors, &Room, Bikes);
+			ftcore::roadTwoWheelers(R == 0 ? Lanes : None, Opts, &Builds[R], bNet ? nullptr : &Road, Ground, Doors, &Room, Bikes);
 		}
 		std::vector<ftcore::RoadSolid> Scratch;
 		int32 Scooters = 0, Bicycles = 0;

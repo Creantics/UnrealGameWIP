@@ -170,6 +170,7 @@ struct RoadPoint {
 struct RoadQuad {
     std::string id;
     std::array<RoadPoint, 4> pts{};
+    std::string street, junction; // a network's zebra: the street it crosses and the junction it serves ("" none)
 };
 
 // A parking bay: its quad and its side, a vehicle fits inside it with nothing over its edge into the carriageway.
@@ -180,6 +181,7 @@ struct RoadBay {
     double z = 0.0;   // m: its surface
     double heading = 0.0; // plan degrees: the way its lane runs (left-hand traffic)
     bool left = false;
+    std::string street; // a network's bay: its street ("" a road's)
 };
 
 // A signalised junction: its phases (A: the road's own traffic; B: the arms crossing it), its box and its crossings.
@@ -289,5 +291,67 @@ FTCORE_API std::size_t roadLaneLamps(const std::vector<MassingStreet>& lanes, co
 // widened by `margin`. Returns their indices; the builder hides them (they stay in the table, which is positional).
 FTCORE_API std::vector<std::size_t> roadClearedBoxes(const RoadBuild& build, const std::vector<MassingBox>& boxes,
                                                      double margin);
+
+// ---- Road networks ----
+
+// A street of a road network: a polyline centre line, kerbed and marked like a road, meeting the others at junctions.
+struct RoadNetStreet {
+    std::string id, kind;
+    std::vector<RoadPoint> pts;  // plan frame, at least two
+    double width = 0.0;          // m, wall to wall
+    double pavement = 0.0;       // m each side, > 0
+    double speedKmh = 40.0;
+    bool oneWay = false;
+    bool deck = false;           // a bridge deck, level at deckZ, on piers, with rails along both backs
+    double deckZ = 0.0;          // m: a deck's ground (its gutter stands kRoadSurfaceLift over it)
+    bool park = false;           // bays along both sides where they fit (never on a deck)
+    std::vector<RoadMouth> mouths; // lanes meeting its sides (at: m along its points; no stubs)
+    double mouthBack = 0.0;      // m: a mouth's dropped kerb runs this far behind the pavement
+    double mouthZ = 0.0;         // m: the lane's surface at the mouth's back; 0: the pavement's
+};
+// Whether a roads table is a network table: its header names pts but no ground_z (the ground is the world's).
+FTCORE_API bool roadNetTable(std::string_view csv);
+// Reads a network table (CSV, a header row; '#' comment rows). Columns:
+//   id, kind      as importRoads
+//   width_m       wall to wall
+//   pts           "x:y;x:y;...", at least two points, plan frame
+//   pavement_m    each side, > 0; the carriageway (width - 2 pavement) holds two 3.0 m lanes (one if one way)
+//   speed_kmh     optional (40)
+//   one_way       optional: 1/true, along its points
+//   deck_z        optional: a bridge deck at that ground height
+//   parking       optional: 1/true for bays along both sides; empty or 0 none
+//   mouths        optional: "lane@at@width@L|R;..." as importRoads, with no stub
+//   mouth_back_m, mouth_z  optional, as importRoads
+// `out` is cleared first. False, with the reason naming the line, on any error.
+FTCORE_API bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::string* error = nullptr);
+// As a massing street (z 0), for the road graph.
+FTCORE_API MassingStreet roadNetStreet(const RoadNetStreet& street);
+
+struct RoadNetReport {
+    std::size_t nodes = 0, edges = 0, junctions = 0, bends = 0, ends = 0, pieces = 0;
+    std::size_t steep = 0;   // pieces steeper than kRoadMaxGrade
+    std::size_t pokes = 0;   // samples where the ground stands over the road's top (5 cm or more)
+    std::size_t floats = 0;  // samples where the ground lies more than 3 m under a road's slab (not a deck)
+    std::size_t tight = 0;   // junction arms too short for their zebra and stop line (signals only)
+    std::size_t piers = 0;
+    double maxGrade = 0.0;   // along any piece
+    std::string maxGradeAt;  // the steepest piece: "<edge> (x, y)"
+    double maxStep = 0.0;    // m: the largest step where an arm's crowned carriageway meets a junction's level fill
+    double maxPoke = 0.0;    // m: the most the ground stands over a road's top
+    std::size_t pokesOver = 0; // pokes of more than 0.3 m (noted; the rest are a crown's skin, counted only)
+    std::vector<std::string> notes; // one line each: steep pieces, pokes, floats and tight arms (the first few of each)
+};
+// Builds a road network (appends to `out`). The streets are split at their junctions (roadGraphNet, kRoadGraphSnap).
+// Each edge: a crowned carriageway falling kRoadCrossfall to the gutters, kerbs kRoadKerbRise high and level pavements,
+// following the ground (massingGroundAt; a deck its deckZ) in straight pieces, level across each junction; edge and
+// dashed centre lines. Each junction: a level asphalt fill, kerbs rounded to kRoadCornerRadius between neighbouring arms
+// (a ring of kerb and pavement round the outside of a bend). Each junction of three or more arms: a zebra across each
+// arm kRoadZebraOff past its corners, dropped-kerb ramps, a stop line before it on the inbound half, a vehicle signal on
+// the inbound kerb and pedestrian signals at both ends of each zebra, phases A (the first arm's axis, as
+// roadGraphJunctions) and B; ids JN-0001... numbered as roadGraphJunctions numbers them. Bays on parking streets clear
+// of the corners and zebras; lamps every kRoadLampSpacing each side, staggered; a deck's piers every 30 m down to the
+// ground and a rail along each back edge. Lane mouths as roadBuild's. Slabs deepen where the ground falls away (to 3 m).
+FTCORE_API void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround& ground, RoadBuild& out,
+                             RoadNetReport* report = nullptr);
 
 } // namespace ftcore

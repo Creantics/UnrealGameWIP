@@ -1490,7 +1490,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	{
 		return 1;
 	}
-	if (!FTBuildRoads::Prepare(RoadOptions, Boxes, RoadSpecs, RoadBuilds))
+	if (!FTBuildRoads::Prepare(RoadOptions, ftcore::MassingGround{Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX),
+			static_cast<size_t>(Field.SamplesY), Field.Spacing, Field.OriginX, Field.OriginY}, Boxes, RoadSpecs, RoadBuilds))
 	{
 		return 1;
 	}

@@ -3,7 +3,7 @@
 // build tool for the private tables (the caller merges the rows into its copy of the box table); C stdio only.
 //
 //   ftcore_layout --boxes <csv> --streets <csv> --r16 <file> --samples <n> --origin <x,y> [--spacing <m>]
-//                 --area <x0,y0,x1,y1> [--clear <x0,y0,x1,y1>]... [--lane-up-to <m>] [--out <csv>] [--no-dress]
+//                 --area <x0,y0,x1,y1> [--clear <x0,y0,x1,y1>]... [--lane-up-to <m>] [--ground-min <m>] [--lane-kinds <k1;k2>] [--out <csv>] [--no-dress] [--oblique]
 //
 // The r16 is the world's ground: n x n little-endian u16 samples, rows from the south, h = (v - 32768) / 128, sample
 // (0, 0) at origin. The out CSV has the box table's columns id,row,src,kind,cx,cy,sx,sy,rot,z0,z1,cover,slope and an
@@ -16,6 +16,7 @@
 
 #include "ftcore/MassingLayout.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -89,14 +90,17 @@ bool same(const MassingBox& a, const MassingBox& b) {
 
 int main(int argc, char** argv) {
     std::string boxesPath, streetsPath, r16Path, outPath;
-    double samples = 0.0, origin[2] = {0.0, 0.0}, spacing = 1.0, area[4] = {0.0, 0.0, 0.0, 0.0}, upTo = 6.0;
-    bool haveArea = false, dress = true;
+    double samples = 0.0, origin[2] = {0.0, 0.0}, spacing = 1.0, area[4] = {0.0, 0.0, 0.0, 0.0}, upTo = 6.0, groundMin = -1.0e300;
+    bool haveArea = false, dress = true, oblique = false;
     std::vector<MassingRect> clear;
+    std::vector<std::string> kinds;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         const bool more = i + 1 < argc;
         if (a == "--no-dress") {
             dress = false;
+        } else if (a == "--oblique") {
+            oblique = true;
         } else if (!more) {
             return fail("'" + a + "' needs a value");
         } else if (a == "--boxes") {
@@ -111,8 +115,18 @@ int main(int argc, char** argv) {
             if (!parseNumbers(argv[++i], &samples, 1)) return fail("bad --samples");
         } else if (a == "--spacing") {
             if (!parseNumbers(argv[++i], &spacing, 1)) return fail("bad --spacing");
+        } else if (a == "--ground-min") {
+            if (!parseNumbers(argv[++i], &groundMin, 1)) return fail("bad --ground-min");
         } else if (a == "--lane-up-to") {
             if (!parseNumbers(argv[++i], &upTo, 1)) return fail("bad --lane-up-to");
+        } else if (a == "--lane-kinds") {
+            const std::string list = argv[++i];
+            std::size_t from = 0;
+            while (from <= list.size()) {
+                const std::size_t to = std::min(list.find(';', from), list.size());
+                if (to > from) kinds.push_back(list.substr(from, to - from));
+                from = to + 1;
+            }
         } else if (a == "--origin") {
             if (!parseNumbers(argv[++i], origin, 2)) return fail("bad --origin");
         } else if (a == "--area") {
@@ -151,9 +165,13 @@ int main(int argc, char** argv) {
     opts.area = {area[0], area[1], area[2], area[3]};
     opts.laneUpTo = upTo;
     opts.keepClear = clear;
+    opts.kinds = kinds;
+    opts.oblique = oblique;
+    opts.groundMin = groundMin;
     const MassingBuildToCounts c = massingBuildTo(boxes, streets, ground, opts);
-    std::printf("build-to: %zu lane segments, %zu faces pulled, %zu left (something between), %zu cut out of a lane, %zu infill\n",
-                c.lanes, c.pulled, c.blocked, c.trimmed, c.infill);
+    std::printf("build-to: %zu lane segments, %zu faces pulled, %zu left (something between), %zu cut out of a lane, %zu infill "
+                "(%zu along segments at an angle)\n",
+                c.lanes, c.pulled, c.blocked, c.trimmed, c.infill, c.oblique);
 
     std::vector<MassingBox> dressing;
     if (dress) {
@@ -161,6 +179,7 @@ int main(int argc, char** argv) {
         d.area = opts.area;
         d.laneUpTo = upTo;
         d.keepClear = clear;
+        d.kinds = kinds;
         const MassingLaneDressCounts dc = massingLaneDress(streets, ground, d, dressing);
         std::printf("dressing: %zu gutter runs, %zu drains, %zu patches, %zu mouth bars, %zu left out over a step\n", dc.gutters,
                     dc.drains, dc.patches, dc.marks, dc.uneven);
@@ -168,6 +187,7 @@ int main(int argc, char** argv) {
 
     for (const MassingStreet& s : streets) {
         if (!(s.width <= upTo)) continue;
+        if (!kinds.empty() && std::find(kinds.begin(), kinds.end(), s.kind) == kinds.end()) continue;
         const MassingLaneWidth w = massingLaneWidth(s, boxes, opts.area, 12.0, 1.0);
         if (w.samples == 0) continue;
         std::printf("lane %s %.1f m: wall to wall %.2f..%.2f m over %zu of %zu samples\n", s.id.c_str(), s.width, w.minWall,

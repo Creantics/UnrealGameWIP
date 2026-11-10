@@ -114,11 +114,19 @@ Rect make(bool alongX, double along0, double along1, double perp0, double perp1)
     return alongX ? Rect{along0, perp0, along1, perp1} : Rect{perp0, along0, perp1, along1};
 }
 
-std::vector<Seg> laneSegments(const std::vector<MassingStreet>& streets, const Rect& area, double upTo) {
+bool laneKind(const MassingStreet& st, const std::vector<std::string>& kinds) {
+    if (kinds.empty()) return true;
+    for (const std::string& k : kinds)
+        if (st.kind == k) return true;
+    return false;
+}
+
+std::vector<Seg> laneSegments(const std::vector<MassingStreet>& streets, const Rect& area, double upTo,
+                              const std::vector<std::string>& kinds) {
     std::vector<Seg> out;
     for (std::size_t s = 0; s < streets.size(); ++s) {
         const MassingStreet& st = streets[s];
-        if (!(st.width <= upTo)) continue;
+        if (!(st.width <= upTo) || !laneKind(st, kinds)) continue;
         for (std::size_t i = 0; i + 1 < st.points.size(); ++i) {
             const MassingVec& p = st.points[i];
             const MassingVec& q = st.points[i + 1];
@@ -239,6 +247,113 @@ struct Scene {
     }
 };
 
+
+// A footprint turned by any angle: centre, unit along (u) and its half sizes along u and across (v).
+struct Obb {
+    double cx = 0.0, cy = 0.0, ux = 1.0, uy = 0.0, hu = 0.0, hv = 0.0;
+};
+
+Obb obbOf(const MassingBox& b) {
+    const double t = b.rot * kPi / 180.0;
+    return {b.cx, b.cy, std::cos(t), std::sin(t), 0.5 * b.sx, 0.5 * b.sy};
+}
+
+Obb obbOf(const Rect& r) { return {0.5 * (r.x0 + r.x1), 0.5 * (r.y0 + r.y1), 1.0, 0.0, 0.5 * (r.x1 - r.x0), 0.5 * (r.y1 - r.y0)}; }
+
+Rect boundsOf(const Obb& o) {
+    const double hx = std::fabs(o.ux) * o.hu + std::fabs(o.uy) * o.hv, hy = std::fabs(o.uy) * o.hu + std::fabs(o.ux) * o.hv;
+    return {o.cx - hx, o.cy - hy, o.cx + hx, o.cy + hy};
+}
+
+// Separating axes: the two overlap by more than `tol` on every axis.
+bool obbOverlap(const Obb& a, const Obb& b, double tol) {
+    const double dx = b.cx - a.cx, dy = b.cy - a.cy;
+    const double axes[4][2] = {{a.ux, a.uy}, {-a.uy, a.ux}, {b.ux, b.uy}, {-b.uy, b.ux}};
+    for (const auto& ax : axes) {
+        const double ra = a.hu * std::fabs(a.ux * ax[0] + a.uy * ax[1]) + a.hv * std::fabs(-a.uy * ax[0] + a.ux * ax[1]);
+        const double rb = b.hu * std::fabs(b.ux * ax[0] + b.uy * ax[1]) + b.hv * std::fabs(-b.uy * ax[0] + b.ux * ax[1]);
+        if (std::fabs(dx * ax[0] + dy * ax[1]) >= ra + rb - tol) return false;
+    }
+    return true;
+}
+
+double pointRectDistance(double u, double v, double hu, double hv) {
+    const double eu = std::max(0.0, std::fabs(u) - hu), ev = std::max(0.0, std::fabs(v) - hv);
+    return std::sqrt(eu * eu + ev * ev);
+}
+
+double pointSegmentDistance(double x, double y, double ax, double ay, double bx, double by) {
+    const double vx = bx - ax, vy = by - ay, l2 = vx * vx + vy * vy;
+    const double t = l2 > 0.0 ? std::clamp(((x - ax) * vx + (y - ay) * vy) / l2, 0.0, 1.0) : 0.0;
+    return std::hypot(x - ax - t * vx, y - ay - t * vy);
+}
+
+// The distance between a segment and a turned footprint (0 when they cross).
+double segmentObbDistance(const MassingVec& p, const MassingVec& q, const Obb& o) {
+    const auto local = [&](double x, double y, double& u, double& v) {
+        const double dx = x - o.cx, dy = y - o.cy;
+        u = dx * o.ux + dy * o.uy;
+        v = -dx * o.uy + dy * o.ux;
+    };
+    double pu = 0.0, pv = 0.0, qu = 0.0, qv = 0.0;
+    local(p.x, p.y, pu, pv);
+    local(q.x, q.y, qu, qv);
+    // Clip the segment to the rect (Liang-Barsky): any part left inside means they cross.
+    double t0 = 0.0, t1 = 1.0;
+    bool crosses = true;
+    const double d[2] = {qu - pu, qv - pv}, s[2] = {pu, pv}, h[2] = {o.hu, o.hv};
+    for (int k = 0; k < 2; ++k) {
+        if (std::fabs(d[k]) < 1e-12) {
+            if (std::fabs(s[k]) > h[k]) crosses = false;
+            continue;
+        }
+        double a = (-h[k] - s[k]) / d[k], b = (h[k] - s[k]) / d[k];
+        if (a > b) std::swap(a, b);
+        t0 = std::max(t0, a);
+        t1 = std::min(t1, b);
+    }
+    if (crosses && t0 <= t1) return 0.0;
+    double best = std::min(pointRectDistance(pu, pv, o.hu, o.hv), pointRectDistance(qu, qv, o.hu, o.hv));
+    for (const double cu : {-o.hu, o.hu})
+        for (const double cv : {-o.hv, o.hv}) best = std::min(best, pointSegmentDistance(cu, cv, pu, pv, qu, qv));
+    return best;
+}
+
+// Indices by 16 m cell, for the oblique pass's lookups.
+struct CellIndex {
+    static constexpr double kCell = 16.0;
+    std::vector<std::pair<std::int64_t, std::size_t>> items; // (cell key, index), sorted on demand
+    bool sorted = true;
+    static std::int64_t key(int cx, int cy) {
+        return static_cast<std::int64_t>((static_cast<std::uint64_t>(static_cast<std::uint32_t>(cx)) << 32) |
+                                         static_cast<std::uint32_t>(cy));
+    }
+    static int cell(double v) { return static_cast<int>(std::floor(v / kCell)); }
+    void add(const Rect& r, std::size_t i) {
+        for (int cx = cell(r.x0); cx <= cell(r.x1); ++cx)
+            for (int cy = cell(r.y0); cy <= cell(r.y1); ++cy) items.emplace_back(key(cx, cy), i);
+        sorted = false;
+    }
+    // Calls f(i) once for each index filed under a cell `r` touches, until f returns true.
+    template <class F> void visit(const Rect& r, std::vector<std::size_t>& seen, F&& f) {
+        if (!sorted) {
+            std::sort(items.begin(), items.end());
+            sorted = true;
+        }
+        seen.clear();
+        for (int cx = cell(r.x0); cx <= cell(r.x1); ++cx)
+            for (int cy = cell(r.y0); cy <= cell(r.y1); ++cy) {
+                const std::int64_t k = key(cx, cy);
+                auto it = std::lower_bound(items.begin(), items.end(), std::pair<std::int64_t, std::size_t>{k, 0});
+                for (; it != items.end() && it->first == k; ++it) seen.push_back(it->second);
+            }
+        std::sort(seen.begin(), seen.end());
+        seen.erase(std::unique(seen.begin(), seen.end()), seen.end());
+        for (const std::size_t i : seen)
+            if (f(i)) return;
+    }
+};
+
 bool inside(const Rect& area, double x, double y) { return x >= area.x0 && x <= area.x1 && y >= area.y0 && y <= area.y1; }
 
 } // namespace
@@ -247,7 +362,7 @@ MassingBuildToCounts massingBuildTo(std::vector<MassingBox>& boxes, const std::v
                                     const MassingGround& ground, const MassingBuildTo& opts) {
     MassingBuildToCounts counts;
     const Rect area = toRect(opts.area);
-    const std::vector<Seg> segs = laneSegments(streets, area, opts.laneUpTo);
+    const std::vector<Seg> segs = laneSegments(streets, area, opts.laneUpTo, opts.kinds);
     counts.lanes = segs.size();
     Scene scene(boxes, ground);
     scene.build();
@@ -309,6 +424,28 @@ MassingBuildToCounts massingBuildTo(std::vector<MassingBox>& boxes, const std::v
     // Fill the gaps along each frontage.
     std::vector<std::pair<double, double>> cover;
     std::vector<std::size_t> perStreet(streets.size(), 0);
+    // Go on from the highest "<street>-IN<n>" already there (an earlier pass's infill), so ids stay unique.
+    {
+        std::vector<std::pair<std::string, std::size_t>> byId;
+        byId.reserve(streets.size());
+        for (std::size_t s = 0; s < streets.size(); ++s) byId.emplace_back(streets[s].id, s);
+        std::sort(byId.begin(), byId.end());
+        for (const MassingBox& b : boxes) {
+            const std::size_t at = b.id.rfind("-IN");
+            if (at == std::string::npos || at + 3 >= b.id.size()) continue;
+            std::size_t n = 0;
+            bool digits = true;
+            for (std::size_t k = at + 3; k < b.id.size() && digits; ++k) {
+                const char c = b.id[k];
+                digits = c >= '0' && c <= '9';
+                n = n * 10 + static_cast<std::size_t>(c - '0');
+            }
+            if (!digits) continue;
+            const std::string street = b.id.substr(0, at);
+            auto it = std::lower_bound(byId.begin(), byId.end(), std::pair<std::string, std::size_t>{street, 0});
+            for (; it != byId.end() && it->first == street; ++it) perStreet[it->second] = std::max(perStreet[it->second], n);
+        }
+    }
     for (const Seg& seg : segs) {
         const bool x = seg.alongX;
         for (const int side : {1, -1}) {
@@ -366,12 +503,138 @@ MassingBuildToCounts massingBuildTo(std::vector<MassingBox>& boxes, const std::v
                     setBounds(b, r);
                     double lo = 0.0, hi = 0.0;
                     groundSpan(ground, r, lo, hi);
+                    if (lo < opts.groundMin) continue;
                     const std::uint32_t pick = (hashOf(b.id) >> 8) % 10u;
                     const int storeys = pick < 5u ? 2 : (pick < 9u ? 3 : 4);
                     b.z0 = lo - opts.sink;
                     b.z1 = hi + storeys * opts.storey + 0.5;
                     scene.add(b);
                     ++counts.infill;
+                }
+            }
+        }
+    }
+
+    // The frontages of the segments at an angle.
+    if (opts.oblique) {
+        CellIndex boxIndex, stripIndex;
+        for (std::size_t i = 0; i < boxes.size(); ++i)
+            if (scene.solid[i] || scene.building[i]) boxIndex.add(scene.bounds[i], i);
+        struct Piece {
+            MassingVec p, q;
+            double half = 0.0;
+        };
+        std::vector<Piece> pieces;
+        for (const MassingStreet& st : streets)
+            for (std::size_t i = 0; i + 1 < st.points.size(); ++i) {
+                const MassingVec& p = st.points[i];
+                const MassingVec& q = st.points[i + 1];
+                const double h = 0.5 * st.width;
+                stripIndex.add({std::min(p.x, q.x) - h, std::min(p.y, q.y) - h, std::max(p.x, q.x) + h, std::max(p.y, q.y) + h},
+                               pieces.size());
+                pieces.push_back({p, q, h});
+            }
+        std::vector<std::size_t> seen;
+        // The lowest and highest ground under a turned footprint, read every metre or so (edges included).
+        const auto spanOf = [&](const Obb& o, double& lo, double& hi) {
+            const int nu = std::max(1, static_cast<int>(std::ceil(2.0 * o.hu))), nv = std::max(1, static_cast<int>(std::ceil(2.0 * o.hv)));
+            lo = std::numeric_limits<double>::infinity();
+            hi = -lo;
+            for (int a = 0; a <= nu; ++a)
+                for (int c = 0; c <= nv; ++c) {
+                    const double fu = o.hu * (2.0 * a / nu - 1.0), fv = o.hv * (2.0 * c / nv - 1.0);
+                    const double g = groundAt(ground, o.cx + o.ux * fu - o.uy * fv, o.cy + o.uy * fu + o.ux * fv);
+                    lo = std::min(lo, g);
+                    hi = std::max(hi, g);
+                }
+        };
+        const auto isFree = [&](const Obb& o) {
+            const Rect r = boundsOf(o);
+            bool hit = false;
+            boxIndex.visit(r, seen, [&](std::size_t i) { return hit = obbOverlap(o, obbOf(boxes[i]), kEdgeTol); });
+            if (hit) return false;
+            stripIndex.visit(r, seen, [&](std::size_t i) {
+                const Piece& pc = pieces[i];
+                return hit = segmentObbDistance(pc.p, pc.q, o) < pc.half - kEdgeTol;
+            });
+            if (hit) return false;
+            for (const Rect& c : scene.clear)
+                if (obbOverlap(o, obbOf(c), kEdgeTol)) return false;
+            return true;
+        };
+        for (std::size_t s = 0; s < streets.size(); ++s) {
+            const MassingStreet& st = streets[s];
+            if (!(st.width <= opts.laneUpTo) || !laneKind(st, opts.kinds)) continue;
+            const double h = 0.5 * st.width;
+            for (std::size_t i = 0; i + 1 < st.points.size(); ++i) {
+                const MassingVec& p = st.points[i];
+                const MassingVec& q = st.points[i + 1];
+                if (std::fabs(p.x - q.x) <= kAxisTol || std::fabs(p.y - q.y) <= kAxisTol) continue; // done above
+                const double len = std::hypot(q.x - p.x, q.y - p.y);
+                if (len < opts.minGap) continue;
+                const double ux = (q.x - p.x) / len, uy = (q.y - p.y) / len;
+                const double heading = std::atan2(uy, ux) * 180.0 / kPi;
+                for (const int side : {1, -1}) {
+                    const double nx = -uy * side, ny = ux * side; // away from the centre line
+                    // A cell along a..b, d deep behind the line.
+                    const auto cellAt = [&](double a, double b, double d) {
+                        const double sm = 0.5 * (a + b), off = h + 0.5 * d;
+                        return Obb{p.x + ux * sm + nx * off, p.y + uy * sm + ny * off, ux, uy, 0.5 * (b - a), 0.5 * d};
+                    };
+                    const int steps = static_cast<int>(std::floor(len));
+                    int run = -1;
+                    for (int k = 0; k <= steps; ++k) {
+                        bool ok = false;
+                        if (k < steps) {
+                            const Obb probe = cellAt(k + 0.05, k + 0.95, kProbe);
+                            ok = inside(area, probe.cx, probe.cy) && isFree(probe);
+                        }
+                        if (ok) {
+                            if (run < 0) run = k;
+                            continue;
+                        }
+                        if (run < 0) continue;
+                        const double g0 = run, g1 = k;
+                        run = -1;
+                        if (g1 - g0 < opts.minGap) continue;
+                        const int lots = std::max(1, static_cast<int>(std::ceil((g1 - g0) / opts.lotMax - 1e-9)));
+                        const double w = (g1 - g0) / lots;
+                        for (int l = 0; l < lots; ++l) {
+                            const double l0 = g0 + w * l, l1 = g0 + w * (l + 1);
+                            double depth = 0.0;
+                            for (double d = 1.0; d <= opts.depthMax + 1e-9; d += 1.0) {
+                                const Obb c = cellAt(l0 + 0.05, l1 - 0.05, d);
+                                if (!inside(area, c.cx, c.cy) || !isFree(c)) break;
+                                double glo = 0.0, ghi = 0.0;
+                                spanOf(c, glo, ghi);
+                                if (ghi - glo > opts.obliqueRise || glo < opts.groundMin) break;
+                                depth = d;
+                            }
+                            if (depth < opts.depthMin) continue;
+                            const Obb o = cellAt(l0, l1, depth);
+                            MassingBox b;
+                            b.id = st.id + "-IN" + std::to_string(++perStreet[s]);
+                            b.row = b.id;
+                            b.kind = "kit";
+                            b.source = MassingSource::Invented;
+                            b.cover = false;
+                            b.cx = o.cx;
+                            b.cy = o.cy;
+                            b.sx = l1 - l0;
+                            b.sy = depth;
+                            b.rot = heading;
+                            double lo = 0.0, hi = 0.0;
+                            spanOf(o, lo, hi);
+                            const std::uint32_t pick = (hashOf(b.id) >> 8) % 10u;
+                            const int storeys = pick < 5u ? 2 : (pick < 9u ? 3 : 4);
+                            b.z0 = lo - opts.sink;
+                            b.z1 = hi + storeys * opts.storey + 0.5;
+                            scene.add(b);
+                            boxIndex.add(scene.bounds.back(), boxes.size() - 1);
+                            ++counts.infill;
+                            ++counts.oblique;
+                        }
+                    }
                 }
             }
         }
@@ -383,7 +646,7 @@ MassingLaneWidth massingLaneWidth(const MassingStreet& lane, const std::vector<M
                                   double reach, double step) {
     MassingLaneWidth out;
     std::vector<MassingStreet> one{lane};
-    const std::vector<Seg> segs = laneSegments(one, toRect(area), std::numeric_limits<double>::infinity());
+    const std::vector<Seg> segs = laneSegments(one, toRect(area), std::numeric_limits<double>::infinity(), {});
     std::vector<Rect> walls;
     for (const MassingBox& b : boxes) {
         if (!massingVisible(massingRole(b)) || !massingLookIsBuilding(massingLookSurface(b)) || b.kind == "wall") continue;
@@ -500,7 +763,7 @@ MassingLaneDressCounts massingLaneDress(const std::vector<MassingStreet>& street
                                         const MassingLaneDress& opts, std::vector<MassingBox>& out) {
     MassingLaneDressCounts counts;
     const Rect area = toRect(opts.area);
-    const std::vector<Seg> segs = laneSegments(streets, area, opts.laneUpTo);
+    const std::vector<Seg> segs = laneSegments(streets, area, opts.laneUpTo, opts.kinds);
     const std::vector<Strip> strips = streetStrips(streets);
     std::vector<std::size_t> n(streets.size() * 4, 0);
     const auto next = [&](std::size_t street, int k, const char* tag) {
