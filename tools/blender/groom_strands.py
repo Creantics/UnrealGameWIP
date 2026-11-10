@@ -108,7 +108,10 @@ With no "where" an op applies to every strand. Ops run in order:
                                           the centre strand's point at the same arc fraction: the roots stay, the tips
                                           converge, and small gaps open between the locks. With "spike": cm (and
                                           "head") each centre strand is first lifted out along its root normal by a
-                                          random 0..spike cm times t^2, so the locks stand up as spikes. With "trim": f
+                                          random 0..spike cm times t^2, so the locks stand up as spikes. "centre":
+                                          "masked" draws each centre from the region's own strands where its cell
+                                          has any (else group copies gather onto a flat strand outside the region
+                                          and never spike). With "trim": f
                                           each lock is then cut to its own random fraction, 1 - f to 1, of its length,
                                           so the locks end at different heights: a pointed fringe hem, a layered top
   {"op": "swing", "axis": [x, y, z], "angle": deg, "blend": f}
@@ -538,6 +541,8 @@ for op in spec.get("ops", []):
         cell = np.floor((R - R.min(0) + rng.uniform(0, op["size"], 3)) / op["size"]).astype(np.int64)
         _, inv = np.unique(cell[:, 0] * 1000003 + cell[:, 1] * 1009 + cell[:, 2], return_inverse=True)
         perm = rng.permutation(len(st))
+        if op.get("centre") == "masked":  # lock centres drawn from the region's strands where a cell has any
+            perm = perm[np.argsort(m[perm] <= 0.5, kind="stable")]
         _, first = np.unique(inv[perm], return_index=True)
         cen = perm[first][inv]  # each strand's lock centre, a random member of its cell
         fr = np.minimum(c / np.maximum(L[sid], 1e-9), 1.0)
