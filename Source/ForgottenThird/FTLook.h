@@ -60,6 +60,12 @@ struct FFTLeadLook
 	FString Name;
 	UPROPERTY(EditAnywhere, Category = "Look")
 	FSoftObjectPath BodyMeshPath;
+	// Shirt-off: BodyMeshPath may be cut away under the covering garments (a BodyHide copy). While a piece named by
+	// a cover word is left off, the look wears FullBodyMeshPath, the uncut body, so no hole shows (modular outfits).
+	UPROPERTY(EditAnywhere, Category = "Look")
+	FSoftObjectPath FullBodyMeshPath;
+	UPROPERTY(EditAnywhere, Category = "Look")
+	TArray<FString> CoverWords;
 	UPROPERTY(EditAnywhere, Category = "Look")
 	FSoftObjectPath IdleClipPath;
 	UPROPERTY(EditAnywhere, Category = "Look")
@@ -89,6 +95,9 @@ namespace FTLook
 {
 // Loads a look's body and clips (FFTLeadLook). A set path that doesn't load is warned about, naming `Who`.
 FORGOTTENTHIRD_API FFTLoadedLook LoadLook(const FFTLeadLook& Look, const TCHAR* Who);
+
+// True when the piece is left off by the command line (-LocoNoPieces, or -LocoNoPiece=a+b naming it).
+FORGOTTENTHIRD_API bool PieceLeftOff(const FSoftObjectPath& Piece);
 
 // Adds a component per piece mesh, attached to the body and posed by it (leader pose). Missing meshes are skipped
 // with a warning that names `Who`. Returns how many of the added pieces have cloth.

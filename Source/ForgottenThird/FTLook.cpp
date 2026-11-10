@@ -10,6 +10,8 @@
 #include "UObject/UnrealType.h"
 
 #include "ForgottenThird.h"
+#include "FTText.h"
+#include "ftcore/LookBody.h"
 
 namespace
 {
@@ -67,10 +69,74 @@ T* LoadOrOwn(const FSoftObjectPath& Path, const FString& Name, const TCHAR* Suff
 }
 }
 
+namespace
+{
+struct FPieceFilter
+{
+	bool bNoPieces = false;
+	std::vector<std::string> Words;
+};
+
+const FPieceFilter& PieceFilter()
+{
+	static const FPieceFilter Filter = []
+	{
+		FPieceFilter F;
+		F.bNoPieces = FParse::Param(FCommandLine::Get(), TEXT("LocoNoPieces"));
+		FString NoPiece;
+		if (FParse::Value(FCommandLine::Get(), TEXT("LocoNoPiece="), NoPiece))
+		{
+			TArray<FString> Words;
+			NoPiece.ParseIntoArray(Words, TEXT("+"));
+			for (const FString& Word : Words)
+			{
+				F.Words.push_back(FT::ToUtf8(Word));
+			}
+		}
+		return F;
+	}();
+	return Filter;
+}
+
+// The body path to wear: the full body while some covering garment is left off.
+FSoftObjectPath WornBodyPath(const FFTLeadLook& Look, const TCHAR* Who)
+{
+	if (Look.FullBodyMeshPath.IsNull() || Look.CoverWords.IsEmpty())
+	{
+		return Look.BodyMeshPath;
+	}
+	std::vector<std::string> Cover;
+	for (const FString& Word : Look.CoverWords)
+	{
+		Cover.push_back(FT::ToUtf8(Word));
+	}
+	std::vector<std::string> Worn;
+	for (const FSoftObjectPath& Piece : Look.PiecePaths)
+	{
+		if (!FTLook::PieceLeftOff(Piece))
+		{
+			Worn.push_back(FT::ToUtf8(Piece.GetAssetName()));
+		}
+	}
+	if (!ftcore::look::NeedsFullBody(Cover, Worn))
+	{
+		return Look.BodyMeshPath;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: a covering piece is off; wearing the full body %s."), Who, *Look.FullBodyMeshPath.ToString());
+	return Look.FullBodyMeshPath;
+}
+}
+
+bool FTLook::PieceLeftOff(const FSoftObjectPath& Piece)
+{
+	const FPieceFilter& Filter = PieceFilter();
+	return ftcore::look::PieceLeftOff(FT::ToUtf8(Piece.GetAssetName()), Filter.bNoPieces, Filter.Words);
+}
+
 FFTLoadedLook FTLook::LoadLook(const FFTLeadLook& Look, const TCHAR* Who)
 {
 	FFTLoadedLook Loaded;
-	Loaded.Body = LoadOrOwn<USkeletalMesh>(Look.BodyMeshPath, Look.Name, TEXT(""), Who);
+	Loaded.Body = LoadOrOwn<USkeletalMesh>(WornBodyPath(Look, Who), Look.Name, TEXT(""), Who);
 	Loaded.ClipFolder = !Look.ClipFolder.IsEmpty() || Look.Name.IsEmpty() ? Look.ClipFolder
 		: FString::Printf(TEXT("/Game/Characters/%s/Rig/Retargeted"), *Look.Name);
 	if (!Loaded.Body)
@@ -131,18 +197,11 @@ FFTLoadedLook FTLook::LoadLook(const FFTLeadLook& Look, const TCHAR* Who)
 int32 FTLook::AddPieces(AActor& Owner, USkeletalMeshComponent& Body, const TArray<FSoftObjectPath>& Paths,
 	TArray<TObjectPtr<USkeletalMeshComponent>>& OutPieces, const TCHAR* Who)
 {
-	const bool bNoPieces = FParse::Param(FCommandLine::Get(), TEXT("LocoNoPieces"));
-	FString NoPiece;
-	TArray<FString> NoPieceWords;
-	if (FParse::Value(FCommandLine::Get(), TEXT("LocoNoPiece="), NoPiece))
-	{
-		NoPiece.ParseIntoArray(NoPieceWords, TEXT("+"));
-	}
 	int32 Cloth = 0;
 	for (const FSoftObjectPath& Path : Paths)
 	{
 		const FString Name = Path.GetAssetName();
-		if (bNoPieces || NoPieceWords.ContainsByPredicate([&Name](const FString& Word) { return Name.Contains(Word); }))
+		if (PieceLeftOff(Path))
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("%s: piece %s left off."), Who, *Name);
 			continue;
