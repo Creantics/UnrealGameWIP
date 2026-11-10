@@ -408,6 +408,9 @@ void AFTExploreCharacter::BeginWeapon(const FFTLeadLook& Look)
 	Weapons.Begin(this, GetMesh(), Look, Kit);
 	Strike.begin(Kit);
 	bPressLight = bPressHeavy = false;
+	// -ExploreDummy's post stands where the first light attack reaches it (80% of its range, 1.2 to 3 m).
+	const ftcore::ArenaAttack* First = ftcore::arenaPlayerAttack(Kit, 0);
+	DummyDistance = FMath::Clamp((First ? First->range : 3.f) * 80.f, 120.f, 300.f);
 	UE_LOG(LogForgottenThird, Display, TEXT("Field: weapon for %s (%d light attacks, heavy %.2f s), %s."), *Look.Name, Kit.lightCount,
 		Kit.heavy.total(), Weapons.IsOn() ? TEXT("props and clips on") : TEXT("no body to wear them"));
 }
@@ -427,7 +430,9 @@ void AFTExploreCharacter::SpawnFieldDummy()
 	const float HalfHeight = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
 	const FVector Forward = GetActorForwardVector().GetSafeNormal2D();
 	// The post is 180 cm tall, centred on its root: its base on the lead's floor.
-	const FVector At = GetActorLocation() + Forward * 300.0 + FVector(0.0, 0.0, 90.0 - HalfHeight);
+	float Distance = DummyDistance;
+	FParse::Value(FCommandLine::Get(), TEXT("ExploreDummyAt="), Distance);
+	const FVector At = GetActorLocation() + Forward * double(Distance) + FVector(0.0, 0.0, 90.0 - HalfHeight);
 	FActorSpawnParameters Params;
 	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	const AFTFieldDummy* Dummy = GetWorld()->SpawnActor<AFTFieldDummy>(At, FRotator::ZeroRotator, Params);

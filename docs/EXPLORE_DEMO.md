@@ -53,7 +53,8 @@ props, strike clips and effects (`FFTLeadWeapons`, see [ARENA_DEMO.md](ARENA_DEM
 `ftcore::FieldStrike` runs the attacks outside a fight: a press is buffered, the light chain goes on
 when pressed in time, the facing is held for the attack, and while it is active it hits each
 `AFTFieldDummy` in reach once (the kit's arc, or a lane for a shot), nearest first. Switching lead puts
-the new lead's weapon on. `-ExploreDummy` stands a dummy 3 m ahead once the lead is on the floor;
+the new lead's weapon on. `-ExploreDummy` stands a dummy ahead once the lead is on the floor, within the first light
+attack's reach (at most 3 m; `-ExploreDummyAt=<cm>` sets the distance);
 `-ExploreAttackEvery=<s>` presses light every s seconds (every fourth press a heavy), and
 `-ExploreWeaponShot=<prefix>` (with `-ExploreWeaponShots=<n>`, `-ExploreWeaponShotDelay=<s>`) saves a shot as
 each attack goes active, then quits; with `-ExplorePortrait -ExplorePortraitYaw=90` they are side-on.

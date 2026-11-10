@@ -73,7 +73,7 @@
 // The lead's weapon (FTLeadWeapons.h, as in the arena): left mouse, J or pad RT throws the kit's light attack (its chain),
 // right mouse, K or pad Y its heavy; ftcore::FieldStrike runs the attack from Data/Battle/arena.json's kit for the lead
 // worn (its name, lower case; else the default) and hits any AFTFieldDummy in reach. The props, clips and effects are
-// the arena's. -ExploreDummy stands a dummy 3 m ahead; -ExploreAttackEvery=<s> presses light every s seconds (every
+// the arena's. -ExploreDummy stands a dummy ahead, within the first light attack's reach (at most 3 m; -ExploreDummyAt=<cm> sets it); -ExploreAttackEvery=<s> presses light every s seconds (every
 // fourth press a heavy), for captures.
 
 #include "CoreMinimal.h"
@@ -362,6 +362,7 @@ private:
 	float AttackTimer = 0.f;
 	int32 AttackPresses = 0;
 	bool bDummyPending = false;
+	float DummyDistance = 300.f; // cm
 	// -ExploreWeaponShot's prefix, shots left and taken, the settle time, the active attacks seen, the wait to quit.
 	FString WeaponShotPrefix;
 	int32 WeaponShotsLeft = 3;
