@@ -2,6 +2,7 @@
 
 #include "FTExploreCharacter.h"
 #include "FTExploreHUD.h"
+#include "FTPartyVan.h"
 
 AFTExploreGameMode::AFTExploreGameMode()
 {
@@ -14,4 +15,8 @@ void AFTExploreGameMode::StartPlay()
 {
 	// Skips AFTGameMode::StartPlay on purpose, as AFTBattleGameMode does: no story here.
 	AGameModeBase::StartPlay();
+	if (FParse::Param(FCommandLine::Get(), TEXT("VanCourse")))
+	{
+		AFTPartyVan::SpawnCourse(GetWorld());
+	}
 }

@@ -8,7 +8,14 @@
 # Each --limb is a group name, the start and end joints (body units and axes, e.g. wrist then elbow) and the stretch of
 # that segment to cover, as fractions (0 = start joint, 1 = end joint). The tube sits --gap off the body; each turn is
 # --strip wide and advances --pitch along the limb (pitch < strip, so turns overlap), and a turn's leading edge stands
-# --step proud of the one it covers.
+# --step proud of the one it covers. --cross adds a second pass wound the other way over the first (each point takes
+# the higher of the two), so the bands cross in diamonds the way a bandage wound up and back down does.
+#
+# --ribbon builds the bandage from real strips instead of a lifted tube, so the turns keep their edges after a mesh is
+# thinned: an anchor turn round the start, then a spiral whose turns each lie over the upper part of the one before (the
+# covered part dips under the next turn's edge, which stands a lip proud), its last third of a turn narrowing to a torn
+# end, and, with --cross, a narrower pass (--cross-width) wound the other way over the top. --strip is the strip width,
+# --step the height of one layer; UVs are one island per turn, at true size.
 import argparse
 import numpy as np
 from scipy.ndimage import uniform_filter1d
@@ -69,6 +76,77 @@ def surface_radius(body, a, b, t0, t1, nt, na, reach):
     return R, ax, u, v, L
 
 
+def radius_at(Rc, t0, t1, L, s, a):
+    """Bilinear body radius at axial distance s from the start joint and angle a, from surface_radius's grid."""
+    ct, ca = Rc.shape
+    fi = np.clip((s / L - t0) / (t1 - t0) * (ct - 1), 0, ct - 1 - 1e-6)
+    fj = np.mod(a + np.pi, 2 * np.pi) / (2 * np.pi) * ca - 0.5
+    i0, j0 = np.floor(fi).astype(int), np.floor(fj).astype(int)
+    wi, wj = fi - i0, fj - j0
+    i1 = np.minimum(i0 + 1, ct - 1)
+    r0 = Rc[i0, j0 % ca] * (1 - wj) + Rc[i0, (j0 + 1) % ca] * wj
+    r1 = Rc[i1, j0 % ca] * (1 - wj) + Rc[i1, (j0 + 1) % ca] * wj
+    return r0 * (1 - wi) + r1 * wi
+
+
+def ribbon(p0, ax, u, v, L, Rc, t0, t1, a, out, base, tbase):
+    """One limb's bandage as strips (see --ribbon). Appends v/vt/f lines to out; returns the next indices."""
+    s0, s1 = t0 * L, t1 * L
+    strip, pitch = a.strip, a.pitch
+    n_sp = max(1.0, (s1 - s0 - strip) / pitch)
+    # rows across the strip (distance from its lower edge) and each row's lift in layers: the lower edge stands a lip
+    # proud, the part the next turn covers dips under that turn's edge
+    rows = np.clip(np.array([0.0, 0.07 * pitch, 0.18 * pitch, 0.5 * pitch, pitch - 0.3, pitch + 0.1, pitch + 0.45,
+                             strip]), 0, strip)
+    prof = np.array([1.05, 1.25, 1.1, 1.0, 0.95, 0.62, 0.45, 0.45])
+    phi = np.linspace(0, 2 * np.pi * (1 + n_sp), int(a.per_turn * (1 + n_sp)) + 1)
+    turn = phi / (2 * np.pi)
+    s_low = s0 + np.maximum(0.0, turn - 1.0) * pitch
+    shift = np.interp(turn, [0.0, 0.8, 1.0], [-0.5, -0.5, 0.0])        # the anchor turn lies one layer down
+    wscale = 1.0 - 0.55 * np.clip((turn - (1 + n_sp - 0.35)) / 0.35, 0, 1)
+
+    def emit(ang, sl, wrow, lift, island):
+        nonlocal base, tbase
+        n, nr = wrow.shape
+        S = sl[:, None] + wrow
+        A = np.repeat(ang[:, None], nr, 1)
+        R = radius_at(Rc, t0, t1, L, S, A) + a.gap + lift * a.step
+        P = p0 + S[..., None] * ax + R[..., None] * (np.cos(A)[..., None] * u + np.sin(A)[..., None] * v)
+        out.extend("v %.5f %.5f %.5f" % tuple(q) for q in P.reshape(-1, 3))
+        rm = float(R.mean())
+        flip = ang[-1] < ang[0]          # wound the other way: keep the faces facing out
+        vt = {}
+        for i in range(n - 1):
+            k = int(island[i])
+            ua = (abs(ang[i] - ang[0]) - 2 * np.pi * k) * rm
+            ub = ua + abs(ang[i + 1] - ang[i]) * rm
+            for j in range(nr - 1):
+                q = [(i, j, ua), (i + 1, j, ub), (i + 1, j + 1, ub), (i, j + 1, ua)]
+                if flip:
+                    q.reverse()
+                c = []
+                for ii, jj, uu in q:
+                    if (ii, jj, k) not in vt:
+                        vt[(ii, jj, k)] = tbase + len(vt)
+                        out.append("vt %.5f %.5f" % (uu, wrow[ii, jj]))
+                    c.append("%d/%d" % (base + ii * nr + jj, vt[(ii, jj, k)]))
+                out.append("f " + " ".join(c))
+        base += n * nr
+        tbase += len(vt)
+
+    emit(phi, s_low, rows[None, :] * wscale[:, None], prof[None, :] + shift[:, None], np.floor(turn - 1e-9).clip(0))
+    if a.cross > 0:
+        wc = a.cross_width
+        n_c = max(1.0, (s1 - s0 - wc - 0.6) / a.cross)
+        ph = np.linspace(0, 2 * np.pi * n_c, int(a.per_turn * n_c) + 1)
+        tc = ph / (2 * np.pi)
+        ends = np.minimum(np.clip(tc / 0.25, 0, 1), np.clip((n_c - tc) / 0.25, 0, 1))   # tucked, narrowing ends
+        cw = (0.5 + 0.5 * ends)[:, None] * (np.array([0.0, 0.5, 1.0]) * wc)[None, :]
+        cl = (1.75 + 0.35 * ends)[:, None] + np.array([0.0, 0.15, 0.0])[None, :]
+        emit(-ph, s0 + 0.3 + tc * a.cross, cw, cl, np.floor(tc - 1e-9).clip(0))
+    return base, tbase
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("body"); ap.add_argument("out")
@@ -83,18 +161,33 @@ def main():
     ap.add_argument("--bin-sides", type=int, default=20, help="body sampling bins round the limb")
     ap.add_argument("--rows", type=int, default=6, help="rings per cm along the limb")
     ap.add_argument("--sides", type=int, default=72)
+    ap.add_argument("--cross", type=float, default=0.0,
+                    help="pitch of a second pass wound the other way (0: none)")
+    ap.add_argument("--ribbon", action="store_true", help="build the bandage from real strips (see the header)")
+    ap.add_argument("--per-turn", type=int, default=28, help="--ribbon: samples per turn")
+    ap.add_argument("--cross-width", type=float, default=2.4, help="--ribbon: the cross pass's strip width")
+    ap.add_argument("--keep-axis", action="store_true",
+                    help="use the given axis as is (a band round the torso: slice centroids there are lopsided and "
+                         "would tilt it)")
     a = ap.parse_args()
 
     body = np.array([l.split()[1:4] for l in open(a.body) if l.startswith("v ")], float)
     out, base, tbase = ["# wrap_build"], 1, 1
     for name, *nums in a.limb:
         p0, p1, (t0, t1) = np.array(nums[:3], float), np.array(nums[3:6], float), map(float, nums[6:])
-        p0, p1 = recentre(body, p0, p1, t0, t1, a.reach * 1.6)
+        if not a.keep_axis:
+            p0, p1 = recentre(body, p0, p1, t0, t1, a.reach * 1.6)
         length = np.linalg.norm(p1 - p0) * (t1 - t0)
         nt, na = max(8, int(length * a.rows)), a.sides
         # sample the body on a coarse grid (bins wider than its vertex spacing), then upsample to the tube's rings
         ct, ca = max(4, int(length / a.bin)), a.bin_sides
         Rc, ax, u, v, L = surface_radius(body, p0, p1, t0, t1, ct, ca, a.reach)
+        if a.ribbon:
+            out.append("g " + name)
+            n0 = len(out)
+            base, tbase = ribbon(p0, ax, u, v, L, Rc, t0, t1, a, out, base, tbase)
+            print("wrap_build: %s %.1f long, ribbon, %d faces" % (name, length, sum(1 for x in out[n0:] if x[0] == "f")))
+            continue
         fi = np.linspace(0, ct - 1, nt)
         fj = (np.arange(na) + 0.5) / na * ca - 0.5
         i0 = np.clip(np.floor(fi).astype(int), 0, ct - 2)
@@ -107,6 +200,9 @@ def main():
         s = (T[:, None] * L + (A[None, :] + np.pi) / (2 * np.pi) * a.pitch) % a.pitch / a.pitch
         # sawtooth: each turn rises over the one before it, with its leading edge rounded off
         lift = a.step * np.minimum(s / 0.15, 1.0) ** 0.5 * (1.0 - 0.35 * s)
+        if a.cross > 0:
+            s2 = (T[:, None] * L + (np.pi - A[None, :]) / (2 * np.pi) * a.cross) % a.cross / a.cross
+            lift = np.maximum(lift, a.step * np.minimum(s2 / 0.15, 1.0) ** 0.5 * (1.0 - 0.35 * s2))
         rad = R + a.gap + lift
         pts = (p0 + np.outer(T * L, ax)[:, None, :]
                + rad[..., None] * (np.cos(A)[None, :, None] * u + np.sin(A)[None, :, None] * v))

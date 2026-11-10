@@ -12,18 +12,41 @@ SPEC.json (lengths in the body OBJ's units, centimetres for a cloth-tool avatar;
      "straps": [{"y": 10.5, ...}, {"y": 24, "tilt": 0, "buckle": true}, ...],   (instead of "strap", for a strapped shaft)
      "bands": [{"at": 0.58, "tilt": 15, "width": 1.6, "out": 0.35}, ...],
      "buckle": {"size": [2.6, 2.2], "bar": 0.4, "depth": 0.3},
-     "sole": {"out": 0.55, "arch": [0.3, 0.52], "arch_lift": 0.9}}
+     "sole": {"out": 0.55, "arch": [0.3, 0.52], "arch_lift": 0.9, "cover": 0.4}, "toe_box": 1.4,
+     "tongue": {"from": 0.62, "width": 3.4, "out": 0.3}, "laces": {"count": 5, "width": 0.45, "out": 0.22, "at": 0.7}}
 
 "top" is the shaft's upper edge, "ankle" the height below which the body counts as foot. Each leg is the body's
 vertices on its side of x = 0 below "top". The upper is the voxel union of a shaft (a superellipse ring per height,
 fitted to the leg's slice plus "margin") and a last (a flat-bottomed arch per station along the foot's long axis,
-rounded at the toe and heel), smoothed, cut level at "top" and "sole_top" and given "wall" thickness inwards. The
-cuff, straps and bands are strips lofted over the upper's surface along plane sections, "out" proud of it; a buckle
-sits on each strap (unless its "buckle" is false) at its outer side, the extra straps grouped boot_strap2_l and so
-on; the sole is the upper's outline at "sole_top", "out" wider, down to the
-floor, lifted by "arch_lift" between the "arch" fractions of the foot's length (from the heel), so the heel stands
-apart. Groups are boot_<part>_l / _r (l = +x). Every strip is a grid with a rectangular UV island; the upper gets a
-smart UV projection. The body vertices left outside the upper are counted and printed (should be 0).
+rounded at the toe and heel, its nose at least "toe_box" above the sole top), smoothed, cut level at "top" and
+"sole_top" and given "wall" thickness inwards. The cuff, straps and bands are strips lofted over the upper's surface
+along plane sections, "out" proud of it; a buckle sits on each strap (unless its "buckle" is false) at its outer
+side, the extra straps grouped boot_strap2_l and so on; the sole is the upper's outline at "sole_top", "out" wider,
+down to the floor, lifted by "arch_lift" between the "arch" fractions of the foot's length (from the heel), so the
+heel stands apart, and pushed out wherever the foot below the sole top (toes rest lower than a sole is thick) comes
+within "cover" of its edge. Groups are boot_<part>_l / _r (l = +x). Every strip is a grid with a rectangular UV
+island; the upper gets a smart UV projection. The body vertices left outside the upper are counted and printed
+(should be 0).
+A band's plane passes "y" (default 3) above the sole top at "at" of the foot's length and leans "tilt" degrees from
+upright, so its lower ends move towards the toe: a thin band (width ~0.3, "out" ~0.06) with a small tilt draws a
+toe-cap line, one with a large tilt (~65) low down at ~0.4 a heel-counter line rising round the heel (what dips below
+the sole top is dropped).
+"tongue" is a strip up the instep's centre line (sections parallel to the foot's long vertical plane), from "from" of
+the foot's length (from the heel) over the instep and up the shaft's front to the top, "out" proud of the upper;
+A trainer's sole takes more keys: "points" (outline points, default 128; lugs want ~320), "toe_spring" (cm the floor
+rises towards the toe tip, eased in from "spring_from" of the length, default 0.75) and "heel_bevel" (cm it rises at
+the heel's back edge, over the last "bevel_len", default 0.08), "groove" {"y", "depth", "width"} (a parting line
+"depth" deep round the side wall "y" above the floor) and "lugs" {"pitch", "depth", "height", "gap_lift"} (an outsole
+band "height" tall whose lugs, one per "pitch" of outline, stand "depth" proud, the floor edge lifted "gap_lift"
+between them). It prints each sole row's UV v (0..1) so a texture spec can put a colour on the groove or outsole.
+The sole's bottom is the floor edge row and inner "rings" (fractions of the outline about its centre, default
+[0.75, 0.45, 0.2]) closed by a face; "under" (cm) keeps every bottom point that far below the lowest foot vertex
+within "under_r" (cm, default 1.5) of it in plan, so the lifts never leave the foot's underside showing through the
+bottom (rings then default to [0.8, 0.62, 0.45, 0.3, 0.17, 0.06]; the bottom may dip below the floor by about "under").
+"laces" are "count" crossings (an X per gap) between two eyelet lines at "at" of the tongue's half width, each a flat
+cord "width" wide standing "out" proud of the tongue (groups boot_tongue_<side>, boot_lace_<side>); "style": "bar"
+makes them "count" straight bars, each across between one pair of eyelets. A band with "tilt" over 45 (a heel counter)
+orders its section points round the heel rather than by height. "straps": [] gives no strap.
 """
 import json
 import os
@@ -188,6 +211,9 @@ class Leg:
         for a in (l0, l1, yt):  # the stations past the body's ends take the nearest measured one
             a[:] = np.interp(sts, sts[ok], a[ok])
         l0, l1, yt = smooth1d(l0) - m, smooth1d(l1) + m, smooth1d(yt) + m
+        # toes rest lower than a sole is thick: without a floor on its height the last's nose thins to a sliver the
+        # remesh drops, and the toe tips end up outside the boot
+        yt = np.maximum(yt, sp["sole_top"] + sp.get("toe_box", 0.0))
         lc, hw = (l0 + l1) / 2, (l1 - l0) / 2
         yb = sp["sole_top"]
         rt, rh = sp.get("toe_round", 7.0), sp.get("heel_round", 4.0)
@@ -278,6 +304,15 @@ def orient_loop(pts, axis, start_dir):
     if np.dot(area, axis) < 0:
         pts = pts[::-1]
     return np.roll(pts, -int(np.argmax(pts @ start_dir)), 0)
+
+
+def inside_poly(pts, poly):
+    """Which 2D points lie inside the closed polygon (even-odd rule)."""
+    x, y = pts[:, 0][:, None], pts[:, 1][:, None]
+    x0, y0 = poly[:, 0][None], poly[:, 1][None]
+    x1, y1 = np.roll(poly[:, 0], -1)[None], np.roll(poly[:, 1], -1)[None]
+    cross = ((y0 > y) != (y1 > y)) & (x < x0 + (y - y0) * (x1 - x0) / np.where(y1 == y0, 1e-12, y1 - y0))
+    return cross.sum(1) % 2 == 1
 
 
 def offset_along_normals(tree, pts, d):
@@ -390,14 +425,19 @@ def build_leg(V, side, sp):
         tb = np.radians(b.get("tilt", 15))
         nb = d3 * np.cos(tb) + up * np.sin(tb)
         pc = leg.xz(np.array([smin + b["at"] * (smax - smin)]), np.array([0.0]))[0]
-        pc = np.array([pc[0], yb + 3, pc[1]])
+        pc = np.array([pc[0], yb + b.get("y", 3.0), pc[1]])
         hw, bo = b.get("width", 1.6) / 2, b.get("out", 0.35)
         rws = []
         for f, o_ in ((-1.0, 0.12), (-0.8, bo), (0, bo * 1.1), (0.8, bo), (1.0, 0.12)):
             pts, _ = slice_loop(surf, pc + nb * f * hw, nb)
             pts = pts[pts[:, 1] > yb + 0.8]
             lat = (pts[:, [0, 2]] - leg.c) @ leg.e
-            pts = pts[np.argsort(np.arctan2(pts[:, 1] - yb, lat))]  # from the outer side over the top to the inner
+            if b.get("tilt", 15) > 45:  # a heel counter lies almost flat round the heel: from the outer side round
+                s_b, _ = leg.st(pts)    # the back to the inner (by height the order zigzags: a smeared strip)
+                s_c = smin + b["at"] * (smax - smin) + 3.0
+                pts = pts[np.argsort(np.arctan2(s_c - s_b, lat))]
+            else:
+                pts = pts[np.argsort(np.arctan2(pts[:, 1] - yb, lat))]  # from the outer side over the top to the inner
             rws.append(offset_along_normals(tree, resample(pts, 48, False), o_))
         bands.append(rws)
     if bands:
@@ -417,30 +457,154 @@ def build_leg(V, side, sp):
         o = bpy.data.objects.new("boot_band_" + tag, me)
         bpy.context.scene.collection.objects.link(o)
         parts["band"] = o
+    # Tongue: the front run of sections parallel to the foot's long vertical plane (at each height the section has a
+    # front and a back crossing; the front one is the bigger s), from "from" of the foot's length up to the top.
+    tg = sp.get("tongue")
+    if tg:
+        hw, to_ = tg.get("width", 3.4) / 2, tg.get("out", 0.3)
+        s_from = smin + tg.get("from", 0.62) * (smax - smin)
+        pc0 = leg.xz(np.array([0.0]), np.array([0.0]))[0]
+        pc0 = np.array([pc0[0], 0.0, pc0[1]])
+
+        def front_run(f, n=40):
+            pts, _ = slice_loop(surf, pc0 + e3 * f * hw, e3)
+            pts = pts[pts[:, 1] > yb + 0.8]
+            s_, _ = leg.st(pts)
+            front = np.zeros(len(pts), bool)
+            for i in range(len(pts)):
+                k = np.abs(pts[:, 1] - pts[i, 1]) < 0.3
+                front[i] = s_[i] > 0.5 * (s_[k].min() + s_[k].max())
+            pts = pts[front & (s_ <= s_from)]
+            pts = pts[np.argsort(pts[:, 1])]
+            return resample(pts, n, False)
+
+        trows = [offset_along_normals(tree, front_run(f), o_)
+                 for f, o_ in ((-1.0, 0.1), (-0.85, to_), (0.0, to_ * 1.15), (0.85, to_), (1.0, 0.1))]
+        parts["tongue"] = grid_object("boot_tongue_" + tag, trows, False)
+        lc = sp.get("laces")
+        if lc:
+            ttree = BVHTree.FromObject(parts["tongue"], bpy.context.evaluated_depsgraph_get())
+            Lr, Rr = front_run(-lc.get("at", 0.7)), front_run(lc.get("at", 0.7))
+            n = lc.get("count", 5)
+            lw, lo = lc.get("width", 0.45) / 2, lc.get("out", 0.22)
+            if lc.get("style", "x") == "bar":  # straight across between each eyelet pair: reads as laces, not stitching
+                idx = np.linspace(3, len(Lr) - 4, n).round().astype(int)
+                pairs = [(Lr[i], Rr[i], 0.0) for i in idx]
+            else:
+                idx = np.linspace(3, len(Lr) - 4, n + 1).round().astype(int)
+                pairs = [p_ for k in range(n) for p_ in ((Lr[idx[k]], Rr[idx[k + 1]], 0.06),
+                                                         (Rr[idx[k]], Lr[idx[k + 1]], 0.0))]
+            cords = []
+            for a, b, up_ in pairs:
+                ch = a[None, :] + np.linspace(0, 1, 9)[:, None] * (b - a)[None, :]
+                # the tongue's normals face in on the mirrored side: orient each by the upper's outward normal
+                hit = [ttree.find_nearest(Vector(q)) for q in ch]
+                nrm = []
+                for h_ in hit:
+                    nt, nu_ = np.array(h_[1]), np.array(tree.find_nearest(h_[0])[1])
+                    nrm.append(nt if nt @ nu_ >= 0 else -nt)
+                nrm = np.array(nrm)
+                mid = np.array([np.array(h_[0]) for h_ in hit]) + nrm * (lo + up_)  # one cord of each X over the other
+                t_ = (b - a) / np.linalg.norm(b - a)
+                side = np.cross(t_, nrm)
+                side /= np.linalg.norm(side, axis=1, keepdims=True)
+                cords.append(grid_object("lace", [mid - side * lw - nrm * 0.08, mid, mid + side * lw - nrm * 0.08],
+                                         False))
+            bm3 = bmesh.new()
+            for ob in cords:
+                bm3.from_mesh(ob.data)
+                bpy.data.objects.remove(ob)
+            me3 = bpy.data.meshes.new("boot_lace_" + tag)
+            bm3.to_mesh(me3)
+            bm3.free()
+            parts["lace"] = bpy.data.objects.new("boot_lace_" + tag, me3)
+            bpy.context.scene.collection.objects.link(parts["lace"])
     # Sole: the upper's outline at the sole top, wider, down to the floor, lifted under the arch.
     so_ = sp.get("sole", {})
     pts, closed = slice_loop(surf, (0, yb + 0.25, 0), up)
-    loop = orient_loop(resample(pts, 128, True), up, d3)
+    NP = int(so_.get("points", 128))  # outline points (lugs want ~320)
+    loop = orient_loop(resample(pts, NP, True), up, d3)
     loop[:, 1] = yb
-    nxt, prv = np.roll(loop, -1, 0), np.roll(loop, 1, 0)
-    tan = nxt - prv
-    out = np.cross(tan, up)
-    out /= np.linalg.norm(out, axis=1, keepdims=True)
+    # The foot below the sole top stays inside the sole: the outline is pushed out from its centre wherever the
+    # footprint (body vertices below the sole top) plus "cover" reaches past it.
+    fp = leg.P[leg.P[:, 1] < yb + 0.25][:, [0, 2]]
+    loop0 = loop.copy()  # the upper's own outline: the sole's top starts inside it, so a pushed-out rim shows no gap
+    print("boot_build: %s: %d of %d footprint vertices outside the upper at the sole top"
+          % (tag, int((~inside_poly(fp, loop[:, [0, 2]])).sum()), len(fp)))
+    c2 = loop[:, [0, 2]].mean(0)
+    la = np.arctan2(loop[:, 2] - c2[1], loop[:, 0] - c2[0])
+    lr = np.linalg.norm(loop[:, [0, 2]] - c2, axis=1)
+    fa = np.arctan2(fp[:, 1] - c2[1], fp[:, 0] - c2[0])
+    fr = np.linalg.norm(fp - c2, axis=1) + so_.get("cover", 0.4)
+    scale = np.ones(len(loop))
+    for i in range(len(loop)):
+        k = np.abs((fa - la[i] + np.pi) % (2 * np.pi) - np.pi) < 3 * np.pi / 128
+        if k.any():
+            scale[i] = max(1.0, fr[k].max() / lr[i])
+    w1, w2 = max(1, round(3 * NP / 128)), max(1, round(4 * NP / 128))
+    scale = np.max([np.roll(scale, j) for j in range(-w1, w1 + 1)], 0)  # widen, then ease the steps out
+    scale = np.mean([np.roll(scale, j) for j in range(-w2, w2 + 1)], 0)
+    loop[:, [0, 2]] = c2 + (loop[:, [0, 2]] - c2) * scale[:, None]
+    print("boot_build: %s: sole outline pushed out at %d of %d points (most %.2f); %d footprint vertices outside it"
+          % (tag, int((scale > 1.001).sum()), len(loop), float(((scale - 1) * lr).max()),
+             int((~inside_poly(fp, loop[:, [0, 2]])).sum())))
+    def outward(lp):
+        o_ = np.cross(np.roll(lp, -1, 0) - np.roll(lp, 1, 0), up)
+        o_ /= np.linalg.norm(o_, axis=1, keepdims=True)
+        return -o_ if np.mean(np.sum(o_ * (lp - lp.mean(0)), 1)) < 0 else o_
+    out, out0 = outward(loop), outward(loop0)
     cen = loop.mean(0)
-    if np.mean(np.sum(out * (loop - cen), 1)) < 0:
-        out = -out
     s_loop = ((loop[:, [0, 2]] - leg.c) @ leg.d - smin) / (smax - smin)
     a0, a1 = so_.get("arch", [0.3, 0.52])
     ramp = 0.05
     lift = np.clip(np.minimum((s_loop - a0) / ramp, (a1 - s_loop) / ramp), 0, 1)
     lift = so_.get("arch_lift", 0.9) * (0.5 - 0.5 * np.cos(np.pi * lift))
     sw = so_.get("out", 0.55)
+    # toe spring and heel bevel: the floor rises towards the toe tip (eased in from "spring_from" of the length) and
+    # towards the heel's back edge (over the last "bevel_len"), so the sole rocks instead of lying a flat slab
+    sf, bl = so_.get("spring_from", 0.75), so_.get("bevel_len", 0.08)
+    floor = lift + so_.get("toe_spring", 0.0) * np.clip((s_loop - sf) / (1 - sf), 0, 1) ** 2 \
+        + so_.get("heel_bevel", 0.0) * np.clip((bl - s_loop) / bl, 0, 1) ** 2
+    lg = so_.get("lugs")  # {"pitch": cm along the outline, "depth": cm proud, "height": cm, "gap_lift": cm}
+    if lg:
+        seg = np.linalg.norm(np.roll(loop, -1, 0) - loop, axis=1)
+        cum = np.concatenate([[0.0], np.cumsum(seg)[:-1]])
+        n_l = max(4, round((cum[-1] + seg[-1]) / lg.get("pitch", 2.0)))
+        sq = 0.5 + 0.5 * np.tanh(3.0 * np.sin(2 * np.pi * n_l * cum / (cum[-1] + seg[-1])))  # 1 on a lug, 0 between
+        ld, lh, gl = lg.get("depth", 0.25), lg.get("height", 0.6), lg.get("gap_lift", 0.25)
+    else:
+        sq, ld, lh, gl = np.zeros(len(loop)), 0.0, 0.25, 0.0
     yv = lambda y: np.stack([np.zeros(len(loop)), y, np.zeros(len(loop))], 1)
-    rows = [loop - out * 0.4, loop + out * (sw - 0.1), loop + out * sw + yv(np.full(len(loop), -0.25)),
-            loop * np.array([1, 0, 1]) + out * sw + yv(lift + 0.25), loop * np.array([1, 0, 1]) + out * (sw - 0.15) + yv(lift)]
     flat = loop * np.array([1, 0, 1])
-    for f in (0.75, 0.45, 0.2):
-        rows.append(cen * np.array([1, 0, 1]) + (flat - cen * np.array([1, 0, 1])) * f + yv(lift))
+    rows = [loop0 - out0 * 0.4, loop + out * (sw - 0.1), loop + out * sw + yv(np.full(len(loop), -0.25))]
+    gr = so_.get("groove")  # {"y": cm above the floor, "depth": cm in, "width": cm}: the midsole/outsole parting line
+    if gr:
+        gy, gd, gw = gr.get("y", 1.0), gr.get("depth", 0.2), gr.get("width", 0.3)
+        rows += [flat + out * sw + yv(floor + gy + gw / 2), flat + out * (sw - gd) + yv(floor + gy),
+                 flat + out * sw + yv(floor + gy - gw / 2)]
+    if lg:  # the outsole band: lugs stand "depth" proud below "height"; between them the floor edge is lifted
+        rows.append(flat + out * sw + yv(floor + lh))
+    rows += [flat + out * (sw + ld * sq)[:, None] + yv(floor + 0.25),
+             flat + out * (sw - 0.15 + ld * sq)[:, None] + yv(floor + gl * (1 - sq))]
+    under = so_.get("under")  # cm the bottom stays under the foot (None: the floor as lifted, the foot may poke out)
+    rings = so_.get("rings", [0.75, 0.45, 0.2] if under is None else [0.8, 0.62, 0.45, 0.3, 0.17, 0.06])
+    for f in rings:
+        rows.append(cen * np.array([1, 0, 1]) + (flat - cen * np.array([1, 0, 1])) * f + yv(floor))
+    if under is not None:
+        # The lifts (arch, toe spring, heel bevel, lug gaps) raise the floor above the foot's own underside, which then
+        # shows through the sole when the foot lifts: each bottom point (the floor edge row and the rings) is kept
+        # "under" below the lowest foot vertex within "under_r" of it (in plan), so the bottom follows the foot down.
+        foot = leg.P[leg.P[:, 1] < yb]
+        ur, low = so_.get("under_r", 1.5), 0.0
+        for r in range(len(rows) - len(rings) - 1, len(rows)):
+            d = np.linalg.norm(rows[r][:, None, [0, 2]] - foot[None, :, [0, 2]], axis=2)
+            fm = np.where(d < ur, foot[None, :, 1], np.inf).min(1) - under
+            low = max(low, float(np.max(rows[r][:, 1] - np.minimum(rows[r][:, 1], fm))))
+            rows[r][:, 1] = np.minimum(rows[r][:, 1], fm)
+        print("boot_build: %s: sole bottom kept %.2f under the foot (r %.2f), lowered at most %.2f, lowest %.2f"
+              % (tag, under, ur, low, float(min(rw[:, 1].min() for rw in rows))))
+    lv = np.concatenate([[0], np.cumsum([np.linalg.norm(rows[r + 1] - rows[r], axis=1).mean() for r in range(len(rows) - 1)])])
+    print("boot_build: %s: sole rows v %s" % (tag, " ".join("%.3f" % x for x in lv / lv[-1])))
     o = grid_object("boot_sole_" + tag, rows, True)
     bm2 = bm_of(o)
     edge = [v for v in bm2.verts if v.index >= (len(rows) - 1) * (len(loop) + 1)]
@@ -470,6 +634,7 @@ def build_leg(V, side, sp):
 
 
 def write_obj(path, objs):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w") as f:
         f.write("# boot_build.py\n")
         vo, to = 1, 1
@@ -499,7 +664,7 @@ def main():
     objs = []
     for side in (1, -1):
         parts = build_leg(V, side, sp)
-        objs += [parts[k] for k in ("upper", "cuff", "band", "sole") if k in parts]
+        objs += [parts[k] for k in ("upper", "cuff", "band", "tongue", "lace", "sole") if k in parts]
         objs += [o for k, o in parts.items() if k.startswith(("strap", "buckle"))]
     for o in objs:
         print("boot_build: %s %d vertices, %d faces" % (o.name, len(o.data.vertices), len(o.data.polygons)))

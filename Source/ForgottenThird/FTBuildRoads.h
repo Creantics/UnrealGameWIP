@@ -1,6 +1,6 @@
 #pragma once
 
-// FTBuildMassingWorld's roads (S-297): wraps ftcore/Roads.h. -Roads=<csv> builds each road of the table (asphalt,
+// FTBuildMassingWorld's roads: wraps ftcore/Roads.h. -Roads=<csv> builds each road of the table (asphalt,
 // kerbs, pavements, markings, the junction and its signals, signs, the rail, poles and wires, the bus stop) from the
 // engine's cube and cylinder in flat tints, its street lamps as TQ-04 props (so -NightLamps lights them), and hides the
 // deck and pier rows over it. -Vehicles parks stand-in cars in its bays and puts scooters and bicycles along it and in

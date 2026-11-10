@@ -8,7 +8,7 @@
       "maxParticles": 2,
       "lifetime": 0.14,
       "shape": "point",
-      "startSize": 0.55,
+      "startSize": 0.3,
       "sizeOverLife": [{"t": 0.0, "v": 0.4}, {"t": 0.3, "v": 1.0}, {"t": 1.0, "v": 0.7}],
       "colorOverLife": [
         {"t": 0.0, "color": [3.0, 3.4, 5.0, 1.0]},
@@ -60,47 +60,6 @@
       ],
       "blend": "additive",
       "sprite": "soft",
-      "softness": 0.0,
-      "subEmitters": [
-        {"emitter": "pop", "on": "death", "count": 1},
-        {"emitter": "pop_sparks", "on": "death", "count": 10}
-      ]
-    },
-    {
-      "name": "pop",
-      "maxParticles": 2,
-      "lifetime": 0.18,
-      "shape": "point",
-      "startSize": 1.1,
-      "sizeOverLife": [{"t": 0.0, "v": 0.4}, {"t": 0.3, "v": 1.0}, {"t": 1.0, "v": 1.3}],
-      "colorOverLife": [
-        {"t": 0.0, "color": [3.6, 3.8, 5.4, 1.0]},
-        {"t": 0.4, "color": [1.8, 1.4, 3.0, 0.7]},
-        {"t": 1.0, "color": [1.6, 0.6, 2.0, 0.0]}
-      ],
-      "blend": "additive",
-      "sprite": "soft",
-      "softness": 0.0
-    },
-    {
-      "name": "pop_sparks",
-      "maxParticles": 12,
-      "lifetime": [0.2, 0.4],
-      "shape": "sphere",
-      "radius": 0.06,
-      "speed": [2.0, 5.0],
-      "drag": 2.5,
-      "startSize": [0.04, 0.08],
-      "sizeOverLife": [{"t": 0.0, "v": 1.0}, {"t": 1.0, "v": 0.1}],
-      "colorOverLife": [
-        {"t": 0.0, "color": [2.6, 3.0, 4.6, 1.0]},
-        {"t": 0.5, "color": [1.4, 1.0, 2.4, 0.8]},
-        {"t": 1.0, "color": [1.6, 0.6, 2.0, 0.0]}
-      ],
-      "blend": "additive",
-      "sprite": "spark",
-      "stretch": 0.04,
-      "stretchMax": 5.0,
       "softness": 0.0
     }
   ]

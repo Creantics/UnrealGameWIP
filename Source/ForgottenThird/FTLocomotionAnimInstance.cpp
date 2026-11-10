@@ -5,6 +5,7 @@
 #include "Animation/Skeleton.h"
 #include "AnimationRuntime.h"
 #include "BonePose.h"
+#include "TwoBoneIK.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "GameFramework/Character.h"
@@ -1443,6 +1444,19 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 	// The head keeps level against the pitch and the lean, and looks into a turn ahead of the chest.
 	HeadBend = FQuat(FVector::UpVector, FMath::DegreesToRadians(Loco.headYaw()))
 		* FQuat(Right, FMath::DegreesToRadians(Loco.headPitch())) * FQuat(F, FMath::DegreesToRadians(-Loco.headRoll()));
+	// The arm aim, its target into component space.
+	AimWeight = FMath::Clamp(Instance->PushedAimWeight, 0.f, 1.f);
+	AimSide = Instance->PushedAimSide == 0 ? 0 : 1;
+	AimAxis = Instance->PushedAimAxis.GetSafeNormal();
+	AimReach = Instance->PushedAimReach;
+	if (const USkeletalMeshComponent* Skel = Instance->GetSkelMeshComponent(); Skel && AimWeight > 0.f && !AimAxis.IsZero())
+	{
+		AimTarget = Skel->GetComponentTransform().InverseTransformPosition(Instance->PushedAimTarget);
+	}
+	else
+	{
+		AimWeight = 0.f;
+	}
 	// -LocoNoBend leaves the clips' own trunk, head and elbows, for measuring what the bend adds.
 	static const bool bNoBend = FParse::Param(FCommandLine::Get(), TEXT("LocoNoBend"));
 	if (bNoBend)
@@ -1570,7 +1584,8 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 	const bool bSpine = SpineValid > 0 && !SpineBend.Equals(FQuat::Identity, 1e-5);
 	const bool bNeck = NeckValid > 0 && !HeadBend.Equals(FQuat::Identity, 1e-5);
 	const bool bElbows = ElbowHold > 0.002f && ElbowBend > 0.f;
-	if (!bSpine && !bNeck && !bElbows)
+	const bool bAim = AimWeight > 0.001f;
+	if (!bSpine && !bNeck && !bElbows && !bAim)
 	{
 		return true;
 	}
@@ -1636,6 +1651,57 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 		FTransform T = LowerCS;
 		T.SetRotation((FQuat(Axis, FMath::DegreesToRadians((ElbowBend - BentBy) * ElbowHold)) * T.GetRotation()).GetNormalized());
 		CS.SetComponentSpaceTransform(LowerIndex, T);
+	}
+	// The arm aim: the wrist onto the shoulder's line to the target by two-bone IK (bending in the elbow's own plane),
+	// then the hand's axis at the target; blended in by AimWeight.
+	if (bAim)
+	{
+		const FBoneReference& Upper = Limb[AimSide * 4 + 1];
+		const FBoneReference& Lower = Limb[AimSide * 4 + 2];
+		const FBoneReference& Hand = Limb[AimSide * 4 + 3];
+		if (Upper.IsValidToEvaluate(Container) && Lower.IsValidToEvaluate(Container) && Hand.IsValidToEvaluate(Container))
+		{
+			const FCompactPoseBoneIndex UI = Upper.GetCompactPoseIndex(Container);
+			const FCompactPoseBoneIndex LI = Lower.GetCompactPoseIndex(Container);
+			const FCompactPoseBoneIndex HI = Hand.GetCompactPoseIndex(Container);
+			const FTransform U0 = CS.GetComponentSpaceTransform(UI);
+			const FTransform L0 = CS.GetComponentSpaceTransform(LI);
+			const FTransform H0 = CS.GetComponentSpaceTransform(HI);
+			const FVector Shoulder = U0.GetTranslation();
+			const FVector Elbow = L0.GetTranslation();
+			const FVector Wrist = H0.GetTranslation();
+			const double ArmLength = FVector::Dist(Shoulder, Elbow) + FVector::Dist(Elbow, Wrist);
+			const FVector ToTarget = AimTarget - Shoulder;
+			const double Dist = ToTarget.Size();
+			if (ArmLength > 1.0 && Dist > 1.0)
+			{
+				const FVector Dir = ToTarget / Dist;
+				const double WristDist = FMath::Clamp(Dist - static_cast<double>(AimReach), 0.3 * ArmLength, 0.97 * ArmLength);
+				const FVector Effector = Shoulder + Dir * WristDist;
+				// The elbow keeps bending the way it bends now (down when the arm is straight).
+				const FVector Mid = Shoulder + (Wrist - Shoulder) * 0.5;
+				FVector Out = Elbow - Mid;
+				Out = Out.SizeSquared() > 1.0 ? Out.GetSafeNormal() : FVector(0.0, 0.0, -1.0);
+				const FVector Pole = Elbow + Out * 30.0;
+				FTransform U = U0;
+				FTransform L = L0;
+				FTransform H = H0;
+				AnimationCore::SolveTwoBoneIK(U, L, H, Pole, Effector, false, 1.0, 1.0);
+				// The hand's axis at the target.
+				const FVector Now = H.GetRotation().RotateVector(AimAxis);
+				const FVector Want = (AimTarget - H.GetTranslation()).GetSafeNormal();
+				if (!Want.IsZero())
+				{
+					H.SetRotation((FQuat::FindBetweenNormals(Now, Want) * H.GetRotation()).GetNormalized());
+				}
+				FTransform Blended[3];
+				Blended[0].Blend(U0, U, AimWeight);
+				Blended[1].Blend(L0, L, AimWeight);
+				Blended[2].Blend(H0, H, AimWeight);
+				const FBoneTransform Set[3] = {{UI, Blended[0]}, {LI, Blended[1]}, {HI, Blended[2]}};
+				CS.SafeSetCSBoneTransforms(MakeArrayView(Set, 3));
+			}
+		}
 	}
 	FCSPose<FCompactPose>::ConvertComponentPosesToLocalPoses(MoveTemp(CS), Output.Pose);
 	return true;

@@ -1,0 +1,26 @@
+{
+  "name": "gun_tracer",
+  "emitters": [
+    {
+      "name": "head",
+      "bursts": [{"time": 0.0, "count": 1}],
+      "duration": 0.1,
+      "maxParticles": 2,
+      "lifetime": 0.1,
+      "shape": "cone",
+      "radius": 0.0,
+      "coneAngle": 0.2,
+      "speed": 30.0,
+      "startSize": 0.035,
+      "colorOverLife": [
+        {"t": 0.0, "color": [5.0, 4.0, 2.2, 1.0]},
+        {"t": 1.0, "color": [3.6, 2.2, 0.8, 0.9]}
+      ],
+      "blend": "additive",
+      "sprite": "spark",
+      "stretch": 0.02,
+      "stretchMax": 20.0,
+      "softness": 0.0
+    }
+  ]
+}

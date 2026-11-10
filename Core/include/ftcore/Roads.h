@@ -23,7 +23,7 @@ namespace ftcore {
 
 struct RoadGraph; // ftcore/RoadGraph.h
 
-// Road section standards (VAST_CITY_PLAN.md section 17).
+// Road section standards.
 inline constexpr double kRoadLaneWidth = 3.5;       // m: one traffic lane (3.0 to 3.5)
 inline constexpr double kRoadKerbRise = 0.15;       // m: kerb face over the gutter, mountable at low speed
 inline constexpr double kRoadKerbWide = 0.15;       // m: the kerb stone's top
