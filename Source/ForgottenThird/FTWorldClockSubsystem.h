@@ -14,6 +14,8 @@
 // shop lights the massing build placed (FTScene::NightLampTag, NightShopTag) switch on as NightAmount passes 0.5, each
 // at its own hashed point between 0.4 and 0.6 so a street doesn't light in one frame. The lights are touched only when
 // the clock has moved a step (1/240 h) or a lamp crosses its point; nothing allocates per tick.
+// On a map whose lights are data (AFTNightLights) there are no tagged lamps to switch: FTLampPoolSubsystem reads
+// NightAmount and moves its pool of lights instead.
 //
 // The plan frame's north is the engine's -Y, east +X (the massing tables' frame, ftcore::massingEnginePoint).
 //

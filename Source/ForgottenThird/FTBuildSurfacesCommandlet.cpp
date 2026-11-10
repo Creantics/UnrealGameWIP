@@ -18,6 +18,7 @@
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionLocalPosition.h"
 #include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionPerInstanceCustomData.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
 #include "Materials/MaterialExpressionTransform.h"
@@ -612,19 +613,43 @@ void AddR5ComposeInputs(UMaterialExpressionCustom* Compose, UMaterialExpressionC
 // The window master: the photographed surface (its parameters as M_WorldSurfaceTex's, so an instance copies a surface's
 // values across) with WindowInterior's openings cut into its walls. bR5 (-FacadeR5): WindowFacade's nodes instead, which
 // read three more box values (type, wall tint, roof finish) and add the reveals, bands, shop kinds, tints and roof colour.
+// The box values come from each instance's custom data (the massing build lays the boxes as instances), falling back to
+// the custom primitive data a plain mesh component carries (same slots, FTScene::WindowData*). bPrimitiveData
+// (-WindowPrimitiveData): the earlier graph, custom primitive data only.
 UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Rooms, UTexture* Curtains, UMaterialParameterCollection* Collection,
-	bool bR5)
+	bool bR5, bool bPrimitiveData)
 {
 	UMaterial* Material = NewMaster(FTScene::WindowMaterial);
 	const FSurfaceNode Wall = AddSurfaceNode(Material, Defaults);
 
 	const int32 DataCount = bR5 ? FTScene::WindowDataCountR5 : FTScene::WindowDataCount;
-	UMaterialExpressionScalarParameter* Data[FTScene::WindowDataCountR5] = {};
+	UMaterialExpression* Data[FTScene::WindowDataCountR5] = {};
+	// The per-instance node's class isn't exported from the engine's module, so it is found by name.
+	UClass* const PerInstanceClass =
+		bPrimitiveData ? nullptr : FindObject<UClass>(FTopLevelAssetPath(TEXT("/Script/Engine"), TEXT("MaterialExpressionPerInstanceCustomData")));
+	if (!bPrimitiveData && !PerInstanceClass)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildSurfaces: no per-instance custom data node class; the window master reads custom primitive data only."));
+	}
 	for (int32 D = 0; D < DataCount; ++D)
 	{
-		Data[D] = AddWindowScalar(Material, kWindowDataNames[D], 0.f, 1100 + D * 100);
-		Data[D]->bUseCustomPrimitiveData = true;
-		Data[D]->PrimitiveDataIndex = static_cast<uint8>(D);
+		UMaterialExpressionScalarParameter* Param = AddWindowScalar(Material, kWindowDataNames[D], 0.f, 1100 + D * 100);
+		Param->bUseCustomPrimitiveData = true;
+		Param->PrimitiveDataIndex = static_cast<uint8>(D);
+		Data[D] = Param;
+		if (PerInstanceClass)
+		{
+			UMaterialExpressionPerInstanceCustomData* PerInstance = static_cast<UMaterialExpressionPerInstanceCustomData*>(
+				NewObject<UMaterialExpression>(Material, PerInstanceClass, NAME_None, RF_Transactional));
+			Material->GetExpressionCollection().AddExpression(PerInstance);
+			PerInstance->Material = Material;
+			PerInstance->MaterialExpressionEditorX = -1100;
+			PerInstance->MaterialExpressionEditorY = 1100 + D * 100;
+			PerInstance->UpdateMaterialExpressionGuid(true, false);
+			PerInstance->DataIndex = static_cast<uint32>(D);
+			PerInstance->DefaultValue.Connect(0, Param);
+			Data[D] = PerInstance;
+		}
 	}
 	UMaterialExpressionLocalPosition* LocalPos = AddExpression<UMaterialExpressionLocalPosition>(Material, -900, 1700);
 	UMaterialExpressionCameraVectorWS* Camera = AddExpression<UMaterialExpressionCameraVectorWS>(Material, -900, 1800);
@@ -947,7 +972,9 @@ int32 BuildWindows(const FString& Params)
 	}
 	UMaterialParameterCollection* Collection = BuildWindowCollection();
 	const bool bR5 = FParse::Param(*Params, TEXT("FacadeR5"));
-	UMaterial* Master = BuildWindowMaster(MakeArrayView(Defaults), Rooms, Curtains, Collection, bR5);
+	// -WindowPrimitiveData: the master reads custom primitive data only (the graph before the boxes became instances).
+	const bool bPrimitiveData = FParse::Param(*Params, TEXT("WindowPrimitiveData"));
+	UMaterial* Master = BuildWindowMaster(MakeArrayView(Defaults), Rooms, Curtains, Collection, bR5, bPrimitiveData);
 	UMaterial* Lamp = BuildNightLamp(Collection);
 	// The finishes take the widths in turn, so neighbouring finishes differ and every width is used.
 	TArray<UMaterialInstanceConstant*> Instances;

@@ -2,11 +2,9 @@
 
 #include "ForgottenThird.h"
 
-#include "Components/HierarchicalInstancedStaticMeshComponent.h"
-#include "Engine/CollisionProfile.h"
+#include "FTCellInstancer.h"
+
 #include "Engine/StaticMesh.h"
-#include "Engine/World.h"
-#include "GameFramework/Actor.h"
 #include "Misc/Parse.h"
 
 namespace FTRoofDress
@@ -61,35 +59,22 @@ bool FHuts::Take(const ftcore::MassingBox& Piece, double Side)
 	return true;
 }
 
-int32 FHuts::Finish(UWorld* World, const FActorSpawnParameters& Spawn)
+int32 FHuts::Finish(FFTCellInstancer& Cells)
 {
 	if (!Mesh || Pending.Num() == 0)
 	{
 		return 0;
 	}
-	AActor* Holder = World->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, Spawn);
-	if (!Holder)
+	FFTCellOptions Options;
+	Options.Label = TEXT("Roof_Hut");
+	int32 Added = 0;
+	for (const FTransform& Hut : Pending)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -RoofHut: couldn't spawn the huts' holder."));
-		return 0;
+		if (Cells.Add(Mesh, {}, Hut, {}, EFTCellKind::Solid, Options).IsValid())
+		{
+			++Added;
+		}
 	}
-	USceneComponent* Root = NewObject<USceneComponent>(Holder, TEXT("Root"));
-	Root->CreationMethod = EComponentCreationMethod::Instance;
-	Root->SetMobility(EComponentMobility::Static);
-	Holder->SetRootComponent(Root);
-	Holder->AddInstanceComponent(Root);
-	Root->RegisterComponent();
-	Holder->SetActorLabel(TEXT("Roof_Huts"));
-	UHierarchicalInstancedStaticMeshComponent* Comp = NewObject<UHierarchicalInstancedStaticMeshComponent>(Holder, TEXT("RoofHutIsm"));
-	Comp->CreationMethod = EComponentCreationMethod::Instance;
-	Comp->SetMobility(EComponentMobility::Static);
-	Comp->SetStaticMesh(Mesh);
-	Comp->SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
-	Comp->SetupAttachment(Holder->GetRootComponent());
-	Holder->AddInstanceComponent(Comp);
-	Comp->RegisterComponent();
-	Comp->AddInstances(Pending, false, true);
-	const int32 Added = Pending.Num();
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roofs: %d stair-head huts as instances of %s."), Added, *Mesh->GetPathName());
 	Pending.Reset();
 	return Added;

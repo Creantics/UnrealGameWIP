@@ -3,8 +3,8 @@
 // FTBuildMassingWorld's roof dressing, round 6. -RoofScatter (with -Roofs -RoofLayouts) sets
 // ftcore::MassingRoofStyle::scatter: tanks of their own sizes, clutter turned a little off the roof's square and
 // clustered, huts along the edges as well as in the corners, more empty roofs. -RoofHut=<static mesh object path> lays
-// that mesh (the BK-HUT kit piece) in every stair-head hut box (kind "hut") as one instance of a single HISM, in place
-// of the hut's cube; -RoofHutTurn=<degrees> turns every hut that much more (180 when the mesh's door is on its +X face,
+// that mesh (the BK-HUT kit piece) in every stair-head hut box (kind "hut") as an instance of its cell (FTCellInstancer.h),
+// in place of the hut's cube; -RoofHutTurn=<degrees> turns every hut that much more (180 when the mesh's door is on its +X face,
 // not its -X). Without these switches nothing here changes the build.
 
 #include "CoreMinimal.h"
@@ -12,10 +12,8 @@
 #include "ftcore/MassingDress.h"
 #include "ftcore/MassingPlan.h"
 
-class AActor;
+class FFTCellInstancer;
 class UStaticMesh;
-class UWorld;
-struct FActorSpawnParameters;
 
 namespace FTRoofDress
 {
@@ -40,8 +38,8 @@ public:
 	// True when Piece is a hut whose mesh instance this will lay (the caller then lays no cube for it). Side: the
 	// world's side (m), as ftcore::massingKitPlacement takes it.
 	bool Take(const ftcore::MassingBox& Piece, double Side);
-	// Spawns the holder and its HISM with every taken hut. Returns the instances added.
-	int32 Finish(UWorld* World, const FActorSpawnParameters& Spawn);
+	// Adds every taken hut to Cells (solid, drawn at any distance). Returns the huts added.
+	int32 Finish(FFTCellInstancer& Cells);
 
 private:
 	UStaticMesh* Mesh = nullptr;

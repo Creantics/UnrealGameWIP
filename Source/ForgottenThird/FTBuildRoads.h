@@ -17,6 +17,7 @@
 
 #include <vector>
 
+class FFTCellInstancer;
 class UMaterialInterface;
 class UPackage;
 class UStaticMesh;
@@ -33,6 +34,10 @@ struct FFTRoadsHost
 	UStaticMesh* Cube = nullptr;
 	double Side = 0.0;
 	std::vector<ftcore::MassingFoot>* Taken = nullptr; // the props' room: the roads add theirs
+	// Every solid and vehicle goes in here as an instance of its cell (FTCellInstancer.h).
+	FFTCellInstancer* Cells = nullptr;
+	// Every TQ-04 lamp placed so far (world cm), which -LaneLamps keeps clear of.
+	const TArray<FVector>* LampsAt = nullptr;
 	// Lay sets them: Taken[RoadsFrom, RoadsTo) are the roads' bands and furniture, which the two-wheelers along a road's
 	// back of pavement stand inside (they keep off the rest).
 	size_t RoadsFrom = 0, RoadsTo = 0;
@@ -68,7 +73,7 @@ bool Lay(FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::
 	const std::vector<ftcore::RoadBuild>& Builds);
 
 // After the props: with -LaneLamps, lamps along the lanes of StreetsFile in its box (clear of every TQ-04 lamp already
-// in the world); with -Vehicles, scooters and bicycles along those lanes and the roads. False on failure.
+// placed, Host.LampsAt); with -Vehicles, scooters and bicycles along those lanes and the roads. False on failure.
 bool Finish(const FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::RoadSpec>& Roads,
 	const std::vector<ftcore::RoadBuild>& Builds, const FString& StreetsFile, const ftcore::MassingGround& Ground);
 } // namespace FTBuildRoads
