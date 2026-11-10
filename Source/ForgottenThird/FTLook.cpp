@@ -4,6 +4,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "GameFramework/Actor.h"
+#include "Materials/MaterialInterface.h"
 #include "Misc/CommandLine.h"
 #include "UObject/UnrealType.h"
 
@@ -215,4 +216,48 @@ int32 FTLook::AddGrooms(AActor& Owner, USkeletalMeshComponent& Body, const TArra
 		++Added;
 	}
 	return Added;
+}
+
+int32 FTLook::SwapMaterials(USkeletalMeshComponent& Body, const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces,
+	const TArray<FFTMaterialSwap>& Swaps, const TCHAR* Who)
+{
+	int32 Total = 0;
+	for (const FFTMaterialSwap& Swap : Swaps)
+	{
+		const UMaterialInterface* From = Cast<UMaterialInterface>(Swap.From.TryLoad());
+		UMaterialInterface* To = Cast<UMaterialInterface>(Swap.To.TryLoad());
+		if (!From || !To)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("%s: material swap %s -> %s skipped; %s doesn't load."), Who, *Swap.From.ToString(),
+				*Swap.To.ToString(), From ? *Swap.To.ToString() : *Swap.From.ToString());
+			continue;
+		}
+		int32 Slots = 0;
+		auto SwapOn = [From, To, &Slots](USkeletalMeshComponent* Component)
+		{
+			for (int32 I = 0; Component && I < Component->GetNumMaterials(); ++I)
+			{
+				if (Component->GetMaterial(I) == From)
+				{
+					Component->SetMaterial(I, To);
+					++Slots;
+				}
+			}
+		};
+		SwapOn(&Body);
+		for (USkeletalMeshComponent* Piece : Pieces)
+		{
+			SwapOn(Piece);
+		}
+		if (Slots == 0)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("%s: material swap: no slot shows %s."), Who, *From->GetName());
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: material swap: %s -> %s in %d slots."), Who, *From->GetName(), *To->GetName(), Slots);
+		}
+		Total += Slots;
+	}
+	return Total;
 }

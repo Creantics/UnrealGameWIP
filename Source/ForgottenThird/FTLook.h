@@ -34,6 +34,19 @@ struct FFTGroomLook
 	FSoftObjectPath Binding;
 };
 
+// A material worn in place of another on the body and the pieces: every slot showing From shows To instead (a
+// MetaHuman face's FaceHide skin, masked under the garments, so the mesh and its DNA stay as built).
+USTRUCT()
+struct FFTMaterialSwap
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Look")
+	FSoftObjectPath From;
+	UPROPERTY(EditAnywhere, Category = "Look")
+	FSoftObjectPath To;
+};
+
 // One party member's look. An empty body path (or one that doesn't load) uses the member's own body under
 // /Game/Characters/<Name>/<name>/SkeletalMeshes/, as the Tripo leads were imported. Each locomotion clip is the
 // look's own (the idle and walk paths), else the one retargeted onto the body in ClipFolder, else (the idle and
@@ -59,6 +72,8 @@ struct FFTLeadLook
 	TArray<FSoftObjectPath> PiecePaths;
 	UPROPERTY(EditAnywhere, Category = "Look")
 	TArray<FFTGroomLook> Grooms;
+	UPROPERTY(EditAnywhere, Category = "Look")
+	TArray<FFTMaterialSwap> MaterialSwaps;
 };
 
 // A look's body and its base locomotion clips (UFTLocomotionAnimInstance::SetBaseClips' order), loaded; null where
@@ -84,4 +99,9 @@ FORGOTTENTHIRD_API int32 AddPieces(AActor& Owner, USkeletalMeshComponent& Body, 
 // when no piece is). Returns how many were added.
 FORGOTTENTHIRD_API int32 AddGrooms(AActor& Owner, USkeletalMeshComponent& Body, const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces,
 	const TArray<FFTGroomLook>& Grooms, TArray<TObjectPtr<USceneComponent>>& OutGrooms, const TCHAR* Who);
+
+// Puts each swap's To in every slot of the body and the pieces that shows its From. A swap that doesn't load or whose
+// From no slot shows is warned about, naming `Who`. Returns how many slots changed.
+FORGOTTENTHIRD_API int32 SwapMaterials(USkeletalMeshComponent& Body, const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces,
+	const TArray<FFTMaterialSwap>& Swaps, const TCHAR* Who);
 }

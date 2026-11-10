@@ -280,6 +280,7 @@ bool AFTArenaFighter::WearLook(const FFTLeadLook& Look)
 	Skin->SetAnimInstanceClass(UFTLocomotionAnimInstance::StaticClass());
 	const int32 Cloth = FTLook::AddPieces(*this, *Skin, Look.PiecePaths, Pieces, TEXT("FTArenaFighter"));
 	FTLook::AddGrooms(*this, *Skin, Pieces, Look.Grooms, Grooms, TEXT("FTArenaFighter"));
+	FTLook::SwapMaterials(*Skin, Pieces, Look.MaterialSwaps, TEXT("FTArenaFighter"));
 	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()))
 	{
 		Anim->SetBaseClips(Loaded.Clips, false);

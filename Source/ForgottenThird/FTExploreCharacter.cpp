@@ -426,6 +426,7 @@ void AFTExploreCharacter::WearLook(const FFTLeadLook& Look)
 	}
 	const int32 Cloth = FTLook::AddPieces(*this, *BodyComponent, Look.PiecePaths, Pieces, TEXT("FTExploreCharacter"));
 	FTLook::AddGrooms(*this, *BodyComponent, Pieces, Look.Grooms, GroomComponents, TEXT("FTExploreCharacter"));
+	FTLook::SwapMaterials(*BodyComponent, Pieces, Look.MaterialSwaps, TEXT("FTExploreCharacter"));
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: %s: body %s facing %.0f, %d pieces (%d with cloth), %d grooms, clips from %s."),
 		*Look.Name, Body ? *Body->GetName() : TEXT("none"), BodyComponent->GetRelativeRotation().Yaw, Pieces.Num(), Cloth,
 		GroomComponents.Num(), *Loaded.ClipFolder);
