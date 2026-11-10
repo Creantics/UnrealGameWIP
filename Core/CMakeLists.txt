@@ -51,6 +51,7 @@ add_library(ftcore STATIC
     src/FieldGoals.cpp
     src/WorldLayout.cpp
     src/Crowd.cpp
+    src/NpcMemory.cpp
     src/CrowdGraph.cpp
     src/CrowdTuning.cpp
     src/Terrain.cpp
@@ -265,6 +266,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_crowd.cpp
         tests/test_crowd_doors.cpp
         tests/test_crowd_views.cpp
+        tests/test_npc_memory.cpp
         tests/test_guard.cpp
         tests/test_path_follow.cpp
         tests/test_ui_text.cpp
