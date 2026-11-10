@@ -1316,10 +1316,18 @@ void UFTArenaRunner::StepFight()
 			const ftcore::Vec2 Hit = ftcore::fieldHitPoint(Bodies.player, Bodies.enemies[Target], Fight.def().enemies[Target].bodyRadius);
 			const AFTArenaFighter* Enemy = EnemyFigures[Target].Get();
 			const FVector At = ToWorld(Hit);
+			const ftcore::Vec2 To{Bodies.enemies[Target].x - Bodies.player.x, Bodies.enemies[Target].y - Bodies.player.y};
+			const float Len = FMath::Sqrt(To.x * To.x + To.y * To.y);
+			bLeadAimDir = Len > 1e-3f;
+			if (bLeadAimDir)
+			{
+				LeadAimDir = ftcore::Vec2{To.x / Len, To.y / Len};
+			}
 			LeadWeapons.SetAim(FVector(At.X, At.Y, Enemy ? Enemy->GetChest().Z : LeadChest.Z), true);
 		}
 		else
 		{
+			bLeadAimDir = false;
 			LeadWeapons.SetAim(LeadChest + FVector(Out.player.facing.x, Out.player.facing.y, 0.0) * 100.0, false);
 		}
 	}
@@ -1812,6 +1820,20 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 			Pose.bAttacking = true;
 			Pose.Part = static_cast<uint8>(P.part);
 			Pose.PartFraction = ArenaPartFraction(*Attack, P.part, P.actionTime);
+			// S-290: the lead turns to its aim target while it attacks (the first half of the startup), holds it
+			// through the active part and turns back to Core's facing over the recovery.
+			if (bLeadAimDir)
+			{
+				const float S = FMath::Max(Attack->startup, 1e-3f);
+				const float T = P.actionTime;
+				float W = FMath::SmoothStep(0.f, 1.f, T / (0.5f * S));
+				if (T > S + Attack->active)
+				{
+					W = 1.f - FMath::SmoothStep(0.f, 1.f, (T - S - Attack->active) / FMath::Max(Attack->recovery, 1e-3f));
+				}
+				const float Delta = FMath::FindDeltaAngleDegrees(Pose.Yaw, ArenaYaw(LeadAimDir));
+				Pose.Yaw += W * Delta;
+			}
 		}
 		if (P.invulnerable)
 		{

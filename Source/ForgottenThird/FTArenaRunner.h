@@ -488,4 +488,8 @@ private:
 	FFTKiteVfx KiteFx;
 	// The lead's weapon on the player's figure (begun as it is spawned, when it wears a look).
 	FFTLeadWeapons LeadWeapons;
+	// The direction from the lead to its aim target (S-290), set each step with the aim; the figure turns to it while
+	// it attacks.
+	ftcore::Vec2 LeadAimDir{1.f, 0.f};
+	bool bLeadAimDir = false;
 };
