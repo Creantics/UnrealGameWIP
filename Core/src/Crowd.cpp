@@ -102,6 +102,8 @@ bool CrowdSim::init(const CrowdGraph& graph, const CrowdTuning& tuning, std::uin
     tuning_.targetAgents = std::min(tuning_.targetAgents, tuning_.maxAgents);
     rng_ = detail::mixSeed(seed);
     agents_.assign(tuning_.maxAgents, Agent{});
+    wasDrawn_.assign(agents_.size(), 0);
+    viewCount_ = 0;
     views_.assign(tuning_.maxAgents, CrowdAgentView{});
     freeList_.resize(tuning_.maxAgents);
     for (std::uint32_t i = 0; i < tuning_.maxAgents; ++i) freeList_[i] = tuning_.maxAgents - 1 - i;
@@ -385,7 +387,7 @@ void CrowdSim::free(std::uint32_t i) {
 void CrowdSim::despawnFar(Vec2 player) {
     const float d2 = tuning_.despawnDist * tuning_.despawnDist;
     for (std::uint32_t i = 0; i < agents_.size(); ++i)
-        if (agents_[i].state != CrowdState::Free && dist2(agents_[i].pos, player) > d2) free(i);
+        if (agents_[i].state != CrowdState::Free && dist2(agents_[i].pos, player) > d2 && !(viewCount_ > 0 && inView(agents_[i].pos))) free(i);
 }
 
 void CrowdSim::unspawn(std::uint32_t i) {
@@ -422,13 +424,14 @@ void CrowdSim::spawnSome(Vec2 player) {
         if (n == UINT32_MAX || !graph_->spawnable(n)) continue;
         const float d = dist(graph_->node(n), player);
         if (d < rMin || d > rMax) continue;
+        if (viewCount_ > 0 && inView(graph_->node(n), 10.f, 5.f)) continue; // S-332: never appears in sight
         const std::uint32_t deg = graph_->degree(n);
         const auto k = std::min(deg - 1, static_cast<std::uint32_t>(rand01() * static_cast<float>(deg)));
         const CrowdEdge& e = graph_->edge(n, k);
         // Somewhere along the street, not on the node: spawns that share a node would stand inside each other.
         const std::uint32_t i = spawnAt(n, k, rand01(), rand01() * e.length);
         if (i == UINT32_MAX) continue;
-        if (crowded(i, agents_[i].pos, tuning_.avoidRadius * 1.5f)) {
+        if (crowded(i, agents_[i].pos, tuning_.avoidRadius * 1.5f) || (viewCount_ > 0 && inView(agents_[i].pos, 10.f, 5.f))) {
             unspawn(i);
             continue;
         }
@@ -652,6 +655,7 @@ bool CrowdSim::plan(Agent& a) {
 }
 
 void CrowdSim::startFlee(Agent& a) {
+    a.walkedOn = false;
     setState(a, CrowdState::Flee);
     a.pathLen = a.pathPos = 0;
     a.needPlan = true;
@@ -686,11 +690,13 @@ int CrowdSim::freeBraceSlot(std::uint32_t i) const {
 void CrowdSim::braceSlotAt(const Agent& a, float& along, float& lat) const {
     const CrowdEdge* e = graph_->find(a.from, a.to);
     const float w = std::max(0.f, (e ? e->half : a.lane + a.laneHalf) - tuning_.graph.wallInset);
-    const float sp = std::max(tuning_.minGap, tuning_.avoidRadius);
+    // S-332: staggered spots braceSpace across and braceRow along, so the cornered never stand in a row at one wall.
+    const float sp = std::max({tuning_.minGap, tuning_.avoidRadius, tuning_.braceSpace});
     const int cols = 1 + static_cast<int>(2.f * w / sp);
     const int row = a.braceSlot / cols, col = a.braceSlot % cols;
-    lat = -w + (2.f * w - static_cast<float>(cols - 1) * sp) * 0.5f + static_cast<float>(col) * sp;
-    along = std::max(0.f, a.len - kBraceEnd - static_cast<float>(row) * sp);
+    const float shift = (row % 2 == 1 && cols > 1) ? sp * 0.5f : 0.f;
+    lat = std::min(w, -w + (2.f * w - static_cast<float>(cols - 1) * sp) * 0.5f + static_cast<float>(col) * sp + shift);
+    along = std::max(0.f, a.len - kBraceEnd - static_cast<float>(row) * std::max(sp, tuning_.braceRow));
 }
 
 void CrowdSim::decide(std::uint32_t i) {
@@ -702,10 +708,15 @@ void CrowdSim::decide(std::uint32_t i) {
     switch (a.state) {
     case CrowdState::Walk:
     case CrowdState::Idle:
-        if (f >= flee) startFlee(a);
+        if (f >= notice && a.walkedOn && dist(a.pos, a.threat) >= tuning_.safeDist - kSafeSlack) {
+            if (a.state == CrowdState::Idle) setState(a, CrowdState::Walk); // S-332: it ran already; it walks on
+        } else if (f >= flee) startFlee(a);
         else if (f >= back) setState(a, CrowdState::BackAway);
-        else if (f >= notice) setState(a, CrowdState::Notice);
-        else if (time_ - a.threatAt < tuning_.threatMemory && time_ - a.threatAt > tuning_.quietAfter) {
+        else if (f >= notice) {
+            // S-332: only where there is room to stand; the rest look as they walk on (never a knot of watchers).
+            if (roomToWatch(a)) setState(a, CrowdState::Notice);
+            else if (a.state == CrowdState::Idle) setState(a, CrowdState::Walk);
+        } else if (time_ - a.threatAt < tuning_.threatMemory && time_ - a.threatAt > tuning_.quietAfter) {
             // It has gone quiet: one look back. Most walk back the way they came, through where it was (the street
             // refills); the rest walk on and stop steering clear of it.
             if (rand01() < tuning_.returnChance) {
@@ -723,7 +734,7 @@ void CrowdSim::decide(std::uint32_t i) {
         break;
     case CrowdState::BackAway:
         if (f >= flee) startFlee(a);
-        else if (a.stateTime >= tuning_.backTime && f < notice) setState(a, CrowdState::Recover);
+        else if (a.stateTime >= tuning_.backTime && f < notice) settle(a);
         break;
     case CrowdState::Flee:
         if (a.needPlan && plansLeft_ > 0) {
@@ -744,7 +755,7 @@ void CrowdSim::decide(std::uint32_t i) {
                 a.retryLeft = tuning_.cowerRetry * static_cast<float>(1 + a.cowerFails);
             }
         } else if (f < tuning_.calmFear && a.stateTime >= tuning_.calmTime) {
-            setState(a, CrowdState::Recover);
+            settle(a);
         }
         break;
     case CrowdState::Recover:
@@ -1067,8 +1078,8 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
         stopped = true;
     } else if (a.state == CrowdState::Flee && a.stopAlong >= 0.f && a.along >= a.stopAlong) {
         a.along = a.stopAlong;
-        setState(a, CrowdState::Recover);
-        stopped = true;
+        arrive(a);
+        stopped = a.state != CrowdState::Walk;
     } else if (a.state == CrowdState::Flee && speed > 0.f && a.stateTime >= kFleeOpen && a.along >= 0.f && a.along < a.len) {
         // S-286: far enough already, partway along a long street: it stops here rather than run on to the node at
         // its end (a 100 m street took runners a block past the safe distance, too far to walk back in half a minute).
@@ -1076,10 +1087,12 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
         const Vec2 b0 = basePoint(a);
         const Vec2 at{b0.x - (t0.y - f0.y) / a.len * a.lat, b0.y + (t0.x - f0.x) / a.len * a.lat};
         if (dist(at, a.threat) >= tuning_.safeDist + a.safeExtra) {
-            setState(a, CrowdState::Recover);
             a.pathLen = a.pathPos = 0;
-            stopped = true;
+            arrive(a);
+            stopped = a.state != CrowdState::Walk;
         }
+    } else if (a.state == CrowdState::Walk && a.idleAlong >= 0.f && a.along >= a.idleAlong && !roomToWatch(a)) {
+        a.idleAlong = -1.f; // S-332: no room to stand here; it walks on
     } else if (a.state == CrowdState::Walk && a.idleAlong >= 0.f && a.along >= a.idleAlong) {
         a.along = a.idleAlong;
         setState(a, CrowdState::Idle);
@@ -1114,7 +1127,7 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
             // Nowhere farther from the threat from here: stand at the node (a run asks for a plan, which may lead
             // back past it), rather than turn back and forth on the spot.
             a.along = a.len;
-            if (settle) setState(a, CrowdState::Recover);
+            if (settle) arrive(a);
             else {
                 a.hold = true;
                 if (a.state == CrowdState::Flee) a.needPlan = true;
@@ -1127,7 +1140,7 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
         a.along += over;
         if (settle && a.along >= a.stopAlong) {
             a.along = a.stopAlong;
-            setState(a, CrowdState::Recover);
+            arrive(a);
             break;
         }
     }
@@ -1171,9 +1184,16 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
             if (a.state == CrowdState::Walk) reverse(a);
             else a.hold = true;
         } else if (a.state == CrowdState::Walk && a.stuckTurned && a.stuckTime >= 0.5f) {
-            // Boxed in both ways: it stands and waits for the way to clear.
-            setState(a, CrowdState::Idle);
+            // Boxed in both ways: it stands and waits for the way to clear, or (S-332: no knots of standers) where
+            // others stand already, turns and tries the other way again.
+            if (!roomToWatch(a)) {
+                reverse(a);
+                a.stuckTurned = false;
+                a.stuckTime = 0.f;
+            } else {
+                setState(a, CrowdState::Idle);
             a.idleLeft = tuning_.idleMin + rand01() * (tuning_.idleMax - tuning_.idleMin);
+            }
         } else if (a.stuckTime >= (a.state == CrowdState::Flee ? 1.f : 2.f)) {
             ++counts_.stuck;
             a.stuckTime = 0.f;
@@ -1219,13 +1239,110 @@ void CrowdSim::spread(std::uint32_t i) {
     });
 }
 
+void CrowdSim::setViews(const CrowdViewCone* views, std::uint32_t n) {
+    viewCount_ = views ? std::min(n, kMaxViews) : 0;
+    for (std::uint32_t k = 0; k < viewCount_; ++k) viewCones_[k] = views[k];
+}
+
+bool CrowdSim::inView(Vec2 p, float extraDeg, float extraRange) const {
+    for (std::uint32_t k = 0; k < viewCount_; ++k) {
+        const CrowdViewCone& c = viewCones_[k];
+        const float d = dist(c.eye, p);
+        if (d > c.range + extraRange) continue;
+        if (c.halfFov + extraDeg >= 180.f || d < 1.f) return true;
+        float off = std::fmod(std::fabs(yawTo(c.eye, p) - c.yaw), 360.f);
+        if (off > 180.f) off = 360.f - off;
+        if (off <= c.halfFov + extraDeg) return true;
+    }
+    return false;
+}
+
+static bool stoppedMember(const CrowdAgentView& v) {
+    return v.live && !v.indoors && v.speed <= 0.05f;
+}
+
+std::uint32_t CrowdSim::largestStoppedGroup(float r) const {
+    std::uint32_t best = 0;
+    for (std::uint32_t i = 0; i < agents_.size(); ++i) {
+        if (!stoppedMember(views_[i])) continue;
+        std::uint32_t n = 1;
+        forEachNear(agents_[i].pos, r, [&](std::uint32_t j) {
+            if (j != i && stoppedMember(views_[j]) && dist2(agents_[i].pos, agents_[j].pos) < r * r) ++n;
+        });
+        best = std::max(best, n);
+    }
+    return best;
+}
+
+std::uint32_t CrowdSim::runPoseSlow() const {
+    std::uint32_t n = 0;
+    for (std::uint32_t i = 0; i < agents_.size(); ++i) {
+        const CrowdAgentView& v = views_[i];
+        if (v.live && v.anim == CrowdAnim::Run && dist(v.pos, v.prevPos) / std::max(tuning_.step, 1e-4f) < 0.9f * tuning_.walkSpeed) ++n;
+    }
+    return n;
+}
+
+// S-332: a runner at the safe distance. A few stop and look back where there is room (spaced, never a row); the
+// rest walk on, away along their street and out of the area.
+// Backing off or cowering is over: it looks back where there is room to stand, else walks on away from the threat.
+void CrowdSim::settle(Agent& a) {
+    if (roomToWatch(a)) {
+        setState(a, CrowdState::Recover);
+        return;
+    }
+    setState(a, CrowdState::Walk);
+    a.hold = false;
+    a.walkedOn = true;
+    a.heading = a.walkHeading = yawTo(a.threat, a.pos);
+}
+
+bool CrowdSim::roomToWatch(const Agent& a) const {
+    const std::uint32_t self = static_cast<std::uint32_t>(&a - agents_.data());
+    const float room = std::max(tuning_.watchRoom, tuning_.watchSpace);
+    std::uint32_t near = 0;
+    bool tooClose = false;
+    forEachNear(a.pos, room, [&](std::uint32_t j) {
+        const Agent& b = agents_[j];
+        if (j == self || b.state == CrowdState::Free || b.state == CrowdState::Indoors) return;
+        const bool still = b.state == CrowdState::Recover || b.state == CrowdState::Idle || b.state == CrowdState::Cower ||
+                           b.state == CrowdState::Notice || b.hold;
+        if (!still) return;
+        const float d2 = dist2(a.pos, b.pos);
+        if (d2 < tuning_.watchSpace * tuning_.watchSpace) tooClose = true;
+        if (d2 < room * room) ++near;
+    });
+    return !tooClose && near < tuning_.watchCap;
+}
+
+void CrowdSim::arrive(Agent& a) {
+    if (rand01() < tuning_.watchChance && roomToWatch(a)) {
+        setState(a, CrowdState::Recover);
+        a.walkedOn = false;
+        ++counts_.watched;
+        return;
+    }
+    // Walks on, the way it ran (its street already leads away), steering clear of the threat at the next corners.
+    setState(a, CrowdState::Walk);
+    a.hold = false;
+    a.walkedOn = true;
+    a.heading = a.walkHeading = yawTo(a.threat, a.pos);
+    ++counts_.walkedOn;
+}
+
 void CrowdSim::pickDrawn(Vec2 player) {
     if (focusOn_) player = focus_;
     std::uint32_t m = 0;
     for (std::uint32_t i = 0; i < agents_.size(); ++i) {
         views_[i].drawn = false;
         if (agents_[i].state == CrowdState::Free || (agents_[i].state == CrowdState::Indoors && agents_[i].doorPhase == 2)) continue;
-        order_[m++] = (static_cast<std::uint64_t>(floatBits(dist2(agents_[i].pos, player))) << 32) | i;
+        float key = dist2(agents_[i].pos, player);
+        if (viewCount_ > 0) {
+            // S-332: drawn and in sight: kept; within a widened view: next; the rest by distance from the focus.
+            const float tier = wasDrawn_[i] && inView(agents_[i].pos) ? 0.f : inView(agents_[i].pos, 15.f, 10.f) ? 1.f : 2.f;
+            key = tier * 1e9f + std::min(key, 9e8f);
+        }
+        order_[m++] = (static_cast<std::uint64_t>(floatBits(key)) << 32) | i;
     }
     const std::uint32_t k = std::min(m, tuning_.maxDrawn);
     if (k < m) std::nth_element(order_.begin(), order_.begin() + k, order_.begin() + m);
@@ -1247,15 +1364,19 @@ void CrowdSim::writeView(std::uint32_t i) {
     v.speed = a.speed;
     v.fear = a.fear;
     v.boldness = a.boldness;
+    // S-332: the pose follows the distance actually covered this step: no run pose below walking speed, ever.
+    const float moved = dist(a.pos, a.prev) / std::max(tuning_.step, 1e-4f);
+    const bool runs = a.speed > 0.05f && moved >= 0.9f * tuning_.walkSpeed;
+    const CrowdAnim slow = moved > 0.2f ? CrowdAnim::Walk : CrowdAnim::Look;
     switch (a.state) {
     case CrowdState::Walk: v.anim = a.speed > 0.05f ? CrowdAnim::Walk : CrowdAnim::Idle; break;
     case CrowdState::Notice:
     case CrowdState::Recover: v.anim = CrowdAnim::Look; break;
     case CrowdState::BackAway: v.anim = a.speed > 0.05f ? CrowdAnim::BackStep : CrowdAnim::Look; break;
-    case CrowdState::Flee: v.anim = a.speed > 0.05f ? CrowdAnim::Run : CrowdAnim::Look; break;
-    case CrowdState::Cower: v.anim = a.speed > 0.05f ? CrowdAnim::Run : CrowdAnim::Cower; break;
+    case CrowdState::Flee: v.anim = runs ? CrowdAnim::Run : slow; break;
+    case CrowdState::Cower: v.anim = runs ? CrowdAnim::Run : a.speed > 0.05f ? slow : CrowdAnim::Cower; break;
     case CrowdState::Indoors:
-        v.anim = a.speed > 0.05f ? (a.doorFled && a.doorPhase == 1 ? CrowdAnim::Run : CrowdAnim::Walk) : CrowdAnim::Idle;
+        v.anim = a.speed > 0.05f ? (a.doorFled && a.doorPhase == 1 && runs ? CrowdAnim::Run : CrowdAnim::Walk) : CrowdAnim::Idle;
         break;
     default: v.anim = CrowdAnim::Idle; break;
     }
@@ -1268,6 +1389,7 @@ void CrowdSim::step(Vec2 player, Vec2 playerVel) {
     occlusionLeft_ = tuning_.occlusionBudget;
     for (Agent& a : agents_)
         if (a.state != CrowdState::Free) a.prev = a.pos;
+    for (std::uint32_t i = 0; i < agents_.size(); ++i) wasDrawn_[i] = views_[i].live && views_[i].drawn ? 1 : 0;
     if (!frozen_) {
         despawnFar(player);
         spawnSome(player);
@@ -1296,6 +1418,12 @@ void CrowdSim::step(Vec2 player, Vec2 playerVel) {
         if (agents_[i].state != CrowdState::Free) {
             agents_[i].odo += dist(agents_[i].pos, agents_[i].prev);
             writeView(i);
+        }
+    // S-332: drawn or undrawn (spawned, despawned) inside a view's range reads as a pop.
+    if (viewCount_ > 0)
+        for (std::uint32_t i = 0; i < agents_.size(); ++i) {
+            const bool now = views_[i].live && views_[i].drawn;
+            if (now != (wasDrawn_[i] != 0) && (inView(agents_[i].pos) || inView(agents_[i].prev))) ++counts_.popsInView;
         }
 }
 

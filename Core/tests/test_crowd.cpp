@@ -264,6 +264,7 @@ TEST_CASE("crowd reactions: notice, back away, flee to a safe distance, calm dow
     CrowdGraph g;
     REQUIRE(g.build(gridStreets(9, 30.f), loose()));
     CrowdTuning t = quiet();
+    t.watchChance = 1.f; // S-332: this one stops to look back
     CrowdSim sim;
     REQUIRE(sim.init(g, t, 11));
     sim.setPopulationFrozen(true);
@@ -445,6 +446,7 @@ TEST_CASE("crowd transitions: idle, escalation, back-away recovery, flee again, 
     CrowdGraph g;
     REQUIRE(g.build(gridStreets(9, 30.f), loose()));
     CrowdTuning t = quiet();
+    t.watchChance = 1.f; // S-332: this one stops to look back
     SUBCASE("a walker idles at a junction and walks on") {
         t.idleChance = 1.f;
         t.idleMin = t.idleMax = 2.f;
@@ -1055,6 +1057,8 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
     // S-275: FT_CROWD_DOORS, a door table in the streets' frame, puts its doors on the streets for every run.
     std::vector<CrowdDoor> doors;
     bool doorsSaid = false;
+    std::uint64_t slowRunAll = 0; // S-332: run poses below walking speed, every step of every run
+    std::uint32_t groupFail = 0, groupMax = 0; // S-332: runs with more than 3 stopped members within 3 m
     if (!envText("FT_CROWD_DOORS").empty()) REQUIRE_MESSAGE(importCrowdDoors(readFile(envText("FT_CROWD_DOORS")), side, doors, &err), err);
     const std::uint32_t minNodes = static_cast<std::uint32_t>(std::max(1, std::atoi(want.c_str())));
     // What-if levers for the report (not the shipped tuning): FT_CROWD_REACT_CLOSE (s), FT_CROWD_RUN_MUL (x run speed).
@@ -1109,11 +1113,15 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
             // S-271: the least gap between two members and between a member and the frontage, every step of the run
             // (calm included), and the walkers near the fight at its start and 30 s later.
             float runPair = 1e30f, runWall = 1e30f;
+            std::uint32_t groupWorst = 0; // S-332: the largest knot of members standing within 3 m, every 8th step
+            int stepAll = 0;
             auto go = [&](float seconds) {
                 const int steps = static_cast<int>(std::lround(seconds * 15.f));
                 for (int k = 0; k < steps; ++k) {
                     sim.tick(1.f / 15.f, player, {0.f, 0.f});
                     runPair = std::min(runPair, sim.minPairDistance(2.f));
+                    slowRunAll += sim.runPoseSlow();
+                    if (++stepAll % 8 == 0) groupWorst = std::max(groupWorst, sim.largestStoppedGroup(3.f));
                     for (std::uint32_t m = 0; m < sim.capacity(); ++m)
                         if (sim.agent(m).live) runWall = std::min(runWall, sim.wallClearance(m));
                 }
@@ -1146,6 +1154,8 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
             backFail += !back;
             stuck += static_cast<std::uint32_t>(sim.counts().stuck);
             pairFail += runPair < kPairGate;
+            groupFail += groupWorst > 3u;
+            groupMax = std::max(groupMax, groupWorst);
             wallFail += runWall < kWallGate - kWallTol;
             if (runPair < worstPair) { worstPair = runPair; worstPairAt = fight; worstPairSeed = seed; }
             if (runWall < worstWall) { worstWall = runWall; worstWallAt = fight; worstWallSeed = seed; }
@@ -1177,6 +1187,10 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
                 static_cast<double>(worstPair), static_cast<double>(worstPairAt.x), static_cast<double>(worstPairAt.y), worstPairSeed, pairFail,
                 static_cast<double>(kPairGate), static_cast<double>(worstWall), static_cast<double>(worstWallAt.x), static_cast<double>(worstWallAt.y),
                 worstWallSeed, wallFail, static_cast<double>(kWallGate), backFail, stuck);
+    std::printf("crowd sweep: S-332: run poses below walking speed %llu; largest stopped group within 3 m %u (%u runs over 3)\n",
+                static_cast<unsigned long long>(slowRunAll), groupMax, groupFail);
+    CHECK(slowRunAll == 0u);
+    CHECK(groupFail * 100u <= runs * 5u);
     CHECK(toward == 0u);
     CHECK(pass * 100u >= runs * 95u);
     CHECK(pairFail == 0u);

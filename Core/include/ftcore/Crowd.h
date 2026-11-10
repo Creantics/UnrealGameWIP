@@ -181,7 +181,16 @@ struct CrowdTuning {
     float doorDwellMax = 90.f;       // s, at most
     float doorFleeAhead = 8.f;       // m: a runner takes a door at most this far ahead along its street
     float doorFleeMin = 10.f;        // m: only a door at least this far from the threat
-    std::uint32_t doorFleeCap = 6;   // runners one door takes in
+    std::uint32_t doorFleeCap = 6;
+    // S-332: at the safe distance most runners walk on, away along their street and out of the area; a few stop and
+    // look back, each with room of its own (none within watchSpace, at most watchCap within watchRoom).
+    float watchChance = 0.3f;
+    float watchSpace = 1.6f;         // m
+    float watchRoom = 4.f;           // m
+    std::uint32_t watchCap = 2;
+    // Cornered members at a dead end's end: spots this far apart across and along (staggered), not a row.
+    float braceSpace = 3.1f;         // m
+    float braceRow = 3.2f;           // m   // runners one door takes in
     // perception
     float fov = 140.f;               // deg, for sight-only events
     float feelRadius = 3.f;          // m: sight-only events this close are felt whatever the facing
@@ -267,6 +276,15 @@ struct CrowdAgentView {
     float boldness = 0.5f;
 };
 
+// S-332: a camera the crowd must not pop in front of: from eye, yaw (deg), halfFov (deg; 180 or more: all round),
+// out to range (m). Inside it nobody spawns, despawns, or is drawn or undrawn.
+struct CrowdViewCone {
+    Vec2 eye{0.f, 0.f};
+    float yaw = 0.f;
+    float halfFov = 35.f;
+    float range = 40.f;
+};
+
 struct CrowdCounts {
     std::uint64_t spawned = 0, despawned = 0;
     std::uint64_t perceived = 0; // stimuli taken in (after their delay)
@@ -280,6 +298,8 @@ struct CrowdCounts {
     std::uint32_t maxPlans = 0;          // the most flee plans one member asked for
     std::uint64_t stuck = 0;             // times a moving member stood still (< 0.1 m): a runner 1 s, anyone else 2 s
     std::uint64_t wentIn = 0, cameOut = 0, fledIn = 0; // through doors (fledIn: runners that took a door)
+    std::uint64_t popsInView = 0;  // S-332: a member drawn or undrawn (spawned, despawned) inside a view's range
+    std::uint64_t watched = 0, walkedOn = 0; // S-332: runners at the safe distance that stopped to look back / walked on
 };
 
 // A run check: which members stood within `radius` of a point when a fight started there, and how they moved by
@@ -362,6 +382,14 @@ public:
     // S-283: the share of the daytime crowd out on the streets (0..1; the host reads it from the day's CrowdDensity
     // curve). The streets fill to targetAgents x density: above it walkers passing a door go in and those inside stay;
     // below it those inside come out sooner and new members arrive at the edges as before.
+    // S-332: up to kMaxViews cameras (capture and player); n 0 clears them (then the drawn pick is by distance only).
+    static constexpr std::uint32_t kMaxViews = 6;
+    FTCORE_API void setViews(const CrowdViewCone* views, std::uint32_t n);
+    FTCORE_API bool inView(Vec2 p, float extraDeg = 0.f, float extraRange = 0.f) const;
+    // S-332: the most stopped members within r of one member (itself included); members behind doors left out.
+    FTCORE_API std::uint32_t largestStoppedGroup(float r) const;
+    // S-332: live members drawn in a run pose while moving slower than walking speed (gate 0).
+    FTCORE_API std::uint32_t runPoseSlow() const;
     void setDensity(float d) { density_ = d > 1.f ? 1.f : d < 0.f ? 0.f : d; }
     float density() const { return density_; }
     // Members inside a building. They count in liveCount() (they hold a pool slot) but not towards the streets' target,
@@ -407,6 +435,7 @@ private:
         bool brace = false;          // cornered (no plan): runs to the far end of its dead end, then cowers there
         int braceSlot = -1;          // >= 0: its own spot at that end (rows back from the end, across the width)
         std::int32_t door = -1;      // Indoors: the door it uses
+        bool walkedOn = false;       // S-332: ran to the safe distance and walked on
         std::uint8_t doorPhase = 0;  // Indoors: 1 walking in to the door, 2 inside, 3 coming out to its pavement
         bool doorFled = false;       // went in running from a threat
         float doorLeft = 0.f;        // s left inside
@@ -450,6 +479,9 @@ private:
     void goIn(Agent& a, std::uint32_t door, bool fled);
     void doorStep(Agent& a);
     std::uint32_t streetTarget() const;
+    void arrive(Agent& a);
+    bool roomToWatch(const Agent& a) const;
+    void settle(Agent& a);
     // Two members both at doors (going in or coming out) pass each other in the doorway: no gap kept or measured.
     bool bothAtDoors(std::uint32_t i, std::uint32_t j) const {
         return agents_[i].state == CrowdState::Indoors && agents_[j].state == CrowdState::Indoors;
@@ -468,6 +500,9 @@ private:
     CrowdTuning tuning_;
     std::uint32_t rng_ = 1;
     std::vector<Agent> agents_;
+    CrowdViewCone viewCones_[kMaxViews];
+    std::uint32_t viewCount_ = 0;
+    std::vector<std::uint8_t> wasDrawn_;
     std::vector<CrowdAgentView> views_;
     std::vector<std::uint32_t> freeList_;
     std::uint32_t freeCount_ = 0, live_ = 0;
