@@ -1356,8 +1356,8 @@ void AFTExploreCharacter::HandleInteractRelease()
 
 bool AFTExploreCharacter::CanBoardVan() const
 {
-	// Not from a ledge, a vault, a slide or the air.
-	return !Van.IsValid() && !bTraversing && LedgeNow.phase != ftcore::LedgePhase::Hanging && !SlideNow.sliding()
+	// Not from a ledge (hanging, climbing or dropping), a vault, a slide or the air.
+	return !Van.IsValid() && !bTraversing && LedgeNow.phase == ftcore::LedgePhase::None && !SlideNow.sliding()
 		&& GetCharacterMovement()->IsMovingOnGround();
 }
 

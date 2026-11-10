@@ -93,8 +93,8 @@ private:
 	void PlaceOnGround(bool bFirst, float Moved = 0.f);
 	// The nearest pedestrian ahead (a character on foot or a crowd agent), in the van's frame from its front bumper
 	// (cm). Ahead is ftcore::kNobodyAhead when there is none.
-	void SensePedestrian(float& Ahead, float& Side, ACharacter*& Who, int32& CrowdSlot) const;
-	void ReactPedestrian(float Ahead, float Side, ACharacter* Who, int32 CrowdSlot);
+	void SensePedestrian(float& Ahead, float& Side, AActor*& Who, int32& CrowdSlot);
+	void ReactPedestrian(float Ahead, float Side, AActor* Who, int32 CrowdSlot);
 	void ClearHeldInput();
 	void MoveBody(float DeltaSeconds);
 	void TickSeats(float DeltaSeconds);
@@ -136,7 +136,9 @@ private:
 	bool WheelHit[4] = {false, false, false, false};
 	float WheelGrade[4] = {0.f, 0.f, 0.f, 0.f}; // the front wheels' last ground slope (rise per cm), for kerb edges
 	float Lift = 0.f;          // the body box raised to the highest wheel's ground (cm)
-	TWeakObjectPtr<ACharacter> LastPedChar; // the last one reacted to (once per approach)
+	TWeakObjectPtr<AActor> LastPedChar; // the last one reacted to (once per approach)
+	TArray<TWeakObjectPtr<AActor>> PedCache; // characters and followers on foot, refreshed every PedRefresh s (reserved once)
+	float PedCacheAge = 1e9f;
 	int32 LastPedSlot = -1;
 	ftcore::SeatPhase LastPhase = ftcore::SeatPhase::OnFoot;
 	float BodyHalfZ = 87.f;

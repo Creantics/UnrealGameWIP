@@ -106,6 +106,7 @@ AFTPartyVan::AFTPartyVan()
 void AFTPartyVan::BeginPlay()
 {
 	Super::BeginPlay();
+	PedCache.Reserve(64);
 	LoadData();
 	BodyHalfZ = (BodyBox.Z - Clearance) * 0.5f;
 	Box->SetBoxExtent(FVector(BodyBox.X * 0.5f, BodyBox.Y * 0.5f, BodyHalfZ));
@@ -262,7 +263,7 @@ void AFTPartyVan::ClearHeldInput()
 	bExitHeld = false;
 }
 
-void AFTPartyVan::SensePedestrian(float& Ahead, float& Side, ACharacter*& Who, int32& CrowdSlot) const
+void AFTPartyVan::SensePedestrian(float& Ahead, float& Side, AActor*& Who, int32& CrowdSlot)
 {
 	Ahead = ftcore::kNobodyAhead;
 	Side = 0.f;
@@ -286,13 +287,28 @@ void AFTPartyVan::SensePedestrian(float& Ahead, float& Side, ACharacter*& Who, i
 		Side = S;
 		return true;
 	};
-	const AFTExploreCharacter* Lead = Driver.Get();
-	for (TActorIterator<ACharacter> It(GetWorld()); It; ++It)
+	// The world's walkers are gathered a few times a second into the reserved list, not iterated every frame.
+	constexpr float PedRefresh = 0.25f;
+	if (PedCacheAge >= PedRefresh)
 	{
-		ACharacter* C = *It;
-		if (C != Lead && !C->IsHidden() && C->GetActorEnableCollision() && Consider(C->GetActorLocation()))
+		PedCacheAge = 0.f;
+		PedCache.Reset();
+		for (TActorIterator<ACharacter> It(GetWorld()); It && PedCache.Num() < 64; ++It)
 		{
-			Who = C;
+			PedCache.Add(*It);
+		}
+		for (TActorIterator<AFTPartyFollower> It(GetWorld()); It && PedCache.Num() < 64; ++It)
+		{
+			PedCache.Add(*It);
+		}
+	}
+	const AFTExploreCharacter* Lead = Driver.Get();
+	for (const TWeakObjectPtr<AActor>& W : PedCache)
+	{
+		AActor* A = W.Get();
+		if (A && A != Lead && !A->IsHidden() && A->GetActorEnableCollision() && Consider(A->GetActorLocation()))
+		{
+			Who = A;
 		}
 	}
 	if (const UFTCrowdSubsystem* Crowd = UFTCrowdSubsystem::Get(GetWorld()))
@@ -311,7 +327,7 @@ void AFTPartyVan::SensePedestrian(float& Ahead, float& Side, ACharacter*& Who, i
 	}
 }
 
-void AFTPartyVan::ReactPedestrian(float Ahead, float Side, ACharacter* Who, int32 CrowdSlot)
+void AFTPartyVan::ReactPedestrian(float Ahead, float Side, AActor* Who, int32 CrowdSlot)
 {
 	if (Ahead >= ftcore::kNobodyAhead || Ahead > Rules.pedestrian.nearDistance)
 	{
@@ -332,15 +348,15 @@ void AFTPartyVan::ReactPedestrian(float Ahead, float Side, ACharacter* Who, int3
 	LastPedSlot = CrowdSlot;
 	const FVector Right = GetActorRightVector();
 	const FVector At = GetActorTransform().TransformPosition(FVector(BodyBox.X * 0.5 + Ahead, Side, 0.0));
-	if (Who)
+	if (ACharacter* Walker = Cast<ACharacter>(Who))
 	{
 		// A character steps aside, or is pushed down the way the van is going (its own fall and get-up are its own).
 		const FVector Push = O.react == ftcore::PedReact::Dodge
 			? Right * (O.sidestep > 0.f ? 1.0 : -1.0) * Rules.pedestrian.sidestepSpeed
 			: GetActorForwardVector() * O.contact + FVector(0.0, 0.0, O.react == ftcore::PedReact::KnockDown ? 250.0 : 80.0);
-		Who->LaunchCharacter(Push, true, false);
+		Walker->LaunchCharacter(Push, true, false);
 	}
-	else if (UFTCrowdSubsystem* Crowd = UFTCrowdSubsystem::Get(GetWorld()))
+	else if (UFTCrowdSubsystem* Crowd = Who ? nullptr : UFTCrowdSubsystem::Get(GetWorld()))
 	{
 		// The crowd scatters from a van passing close, and a knock-down frightens it like a fall.
 		Crowd->RaiseEvent(O.react == ftcore::PedReact::Dodge ? ftcore::CrowdEventKind::PlayerSprint : ftcore::CrowdEventKind::LoudNoise, At);
@@ -419,8 +435,9 @@ void AFTPartyVan::MoveBody(float DeltaSeconds)
 	ftcore::holdForSeats(Seats, In);
 	// The nearest pedestrian ahead brakes the van down to the zone's cap; they react to it when it is close.
 	float PedAhead = ftcore::kNobodyAhead, PedSide = 0.f;
-	ACharacter* PedChar = nullptr;
+	AActor* PedChar = nullptr;
 	int32 PedSlot = -1;
+	PedCacheAge += DeltaSeconds;
 	SensePedestrian(PedAhead, PedSide, PedChar, PedSlot);
 	ftcore::applySpeedLimits(Rules.pedestrian, In, LimitKmh * KmhToCms, PedAhead, PedSide);
 	Drive.step(State, In, DeltaSeconds);
@@ -441,6 +458,12 @@ void AFTPartyVan::MoveBody(float DeltaSeconds)
 		const FVector Up(0.0, 0.0, Drive.tuning().kerbMax + 10.f);
 		SetActorLocation(GetActorLocation() + Up, true);
 		SetActorLocationAndRotation(Want + Up, WantRot, true, &Hit);
+		if (!Hit.bBlockingHit)
+		{
+			// Over it: back down onto the wheels' height, so body and wheels do not hover on the lip.
+			const FVector At = GetActorLocation();
+			SetActorLocation(FVector(At.X, At.Y, Want.Z), true);
+		}
 	}
 	if (Hit.bBlockingHit)
 	{
