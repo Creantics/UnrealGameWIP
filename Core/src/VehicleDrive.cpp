@@ -3,6 +3,7 @@
 #include "ftcore/Json.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <initializer_list>
 
@@ -33,6 +34,31 @@ float wrapAngle(float a) {
     return a;
 }
 
+float finiteOr(float v, float d) { return std::isfinite(v) ? v : d; }
+
+// Input as the model can use it: anything not finite reads as nothing.
+VehicleInput cleaned(const VehicleInput& in) {
+    VehicleInput c = in;
+    c.throttle = finiteOr(in.throttle, 0.f);
+    c.brake = finiteOr(in.brake, 0.f);
+    c.steer = finiteOr(in.steer, 0.f);
+    c.limit = std::max(finiteOr(in.limit, 0.f), 0.f);
+    c.limitDecel = std::max(finiteOr(in.limitDecel, 0.f), 0.f);
+    c.clamp = std::max(finiteOr(in.clamp, 0.f), 0.f);
+    if (!std::isfinite(in.guide.dirX) || !std::isfinite(in.guide.dirY) || !std::isfinite(in.guide.offset)) c.guide.present = false;
+    return c;
+}
+
+// A state the model can step: the motion values that are not finite are reset (the position is left as it is).
+void heal(VehicleState& s) {
+    s.forward = finiteOr(s.forward, 0.f);
+    s.side = finiteOr(s.side, 0.f);
+    s.steer = finiteOr(s.steer, 0.f);
+    s.heading = finiteOr(s.heading, 0.f);
+    s.yawRate = finiteOr(s.yawRate, 0.f);
+    s.carry = finiteOr(s.carry, 0.f);
+}
+
 } // namespace
 
 VehicleState VehicleDrive::parked(float x, float y, float heading) const {
@@ -50,12 +76,13 @@ float VehicleDrive::topSpeed(const VehicleState& s, const VehicleInput& in) cons
 
 void VehicleDrive::step(VehicleState& s, const VehicleInput& in, float dt) const {
     const float h = tuning_.substep > 0.f ? tuning_.substep : 1.f / 120.f;
-    s.carry = std::min(s.carry + std::max(dt, 0.f), h * static_cast<float>(kMaxSubsteps));
+    heal(s);
+    s.carry = std::min(s.carry + std::max(finiteOr(dt, 0.f), 0.f), h * static_cast<float>(kMaxSubsteps));
     // The guide's offset moves with the vehicle between substeps (the line taken as straight over a frame).
-    VehicleInput cur = in;
-    const float glen = std::sqrt(in.guide.dirX * in.guide.dirX + in.guide.dirY * in.guide.dirY);
-    const float px = glen > 0.f ? -in.guide.dirY / glen : 0.f;
-    const float py = glen > 0.f ? in.guide.dirX / glen : 0.f;
+    VehicleInput cur = cleaned(in);
+    const float glen = std::sqrt(cur.guide.dirX * cur.guide.dirX + cur.guide.dirY * cur.guide.dirY);
+    const float px = glen > 0.f ? -cur.guide.dirY / glen : 0.f;
+    const float py = glen > 0.f ? cur.guide.dirX / glen : 0.f;
     for (int n = 0; n < kMaxSubsteps && s.carry >= h - 1e-6f; ++n) {
         const float x = s.x;
         const float y = s.y;
@@ -65,7 +92,10 @@ void VehicleDrive::step(VehicleState& s, const VehicleInput& in, float dt) const
     }
 }
 
-void VehicleDrive::substep(VehicleState& s, const VehicleInput& in, float h) const {
+void VehicleDrive::substep(VehicleState& s, const VehicleInput& raw, float h) const {
+    if (!(h > 0.f) || !std::isfinite(h)) return;
+    heal(s);
+    const VehicleInput in = cleaned(raw);
     const VehicleTuning& t = tuning_;
     const float throttle = std::clamp(in.throttle, 0.f, 1.f);
     const float brake = std::clamp(in.brake, 0.f, 1.f);
@@ -102,26 +132,32 @@ void VehicleDrive::substep(VehicleState& s, const VehicleInput& in, float h) con
     // Along the heading: drive, brake, reverse, the governor and drag.
     if (v > t.restSpeed) {
         if (v > top) {
-            v = std::max(v - t.governorDecel * h, top);
+            const bool limitBinds = in.limit > 0.f && top >= in.limit && in.limitDecel > 0.f;
+            v = std::max(v - (limitBinds ? in.limitDecel : t.governorDecel) * h, top);
         } else {
             const float taper = std::clamp((top - v) / (0.1f * top), 0.f, 1.f); // the engine fades in the last tenth
             v = std::min(v + throttle * t.engineAccel * taper * h, top);
         }
         v = slowBy(v, brake * t.brakeDecel * h);
     } else if (v < -t.restSpeed) {
-        const float taper = std::clamp((t.reverseSpeed + v) / (0.1f * t.reverseSpeed), 0.f, 1.f);
-        v = std::max(v - brake * t.reverseAccel * taper * h, -t.reverseSpeed);
+        if (v < -t.reverseSpeed) {
+            v = std::min(v + t.governorDecel * h, -t.reverseSpeed); // pushed back faster: reined in, not snapped
+        } else {
+            const float taper = std::clamp((t.reverseSpeed + v) / (0.1f * t.reverseSpeed), 0.f, 1.f);
+            v = std::max(v - brake * t.reverseAccel * taper * h, -t.reverseSpeed);
+        }
         v = slowBy(v, throttle * t.brakeDecel * h);
     } else if (throttle > 0.f && throttle >= brake) {
-        v += throttle * t.engineAccel * h;
+        v = top >= t.restSpeed ? std::min(v + throttle * t.engineAccel * h, std::max(top, v)) : 0.f; // held: limited to a stop
     } else if (brake > 0.f) {
-        v -= brake * t.reverseAccel * h;
+        v = std::max(v - brake * t.reverseAccel * h, std::min(-t.reverseSpeed, v));
     }
     if (in.handbrake) v = slowBy(v, t.handbrakeDecel * h);
     if (throttle <= 0.f && brake <= 0.f) {
         v = slowBy(v, (t.rollDrag + t.airDrag * v * v) * h);
         if (std::abs(v) < t.restSpeed) v = 0.f;
     }
+    if (in.clamp > 0.f) v = std::clamp(v, -in.clamp, in.clamp);
     s.forward = v;
 
     if (s.latched) {
@@ -159,7 +195,8 @@ void VehicleDrive::substep(VehicleState& s, const VehicleInput& in, float h) con
 
 float VehicleDrive::collide(VehicleState& s, float nx, float ny) const {
     const float len = std::sqrt(nx * nx + ny * ny);
-    if (len <= 0.f) return 0.f;
+    if (!(len > 0.f) || !std::isfinite(len)) return 0.f;
+    heal(s);
     nx /= len;
     ny /= len;
     float vx = s.velX();
@@ -184,6 +221,7 @@ float VehicleDrive::collide(VehicleState& s, float nx, float ny) const {
 }
 
 bool VehicleDrive::mountKerb(VehicleState& s, float height) const {
+    if (!std::isfinite(height)) return false;
     if (height <= 0.f) return true;
     if (height > tuning_.kerbMax) return false;
     const float sp = s.speed();

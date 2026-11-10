@@ -16,7 +16,9 @@
 //   is all but stopped, backs it up to reverseSpeed. Throttle while rolling backward brakes first. Released, the
 //   car coasts down on rolling and air drag and settles at rest below restSpeed.
 // - Top speed is the car's speedCap, lowered by input.limit when the host passes a road's limit (a shared lane's
-//   10 km/h); above the limit the car is reined back at governorDecel.
+//   10 km/h); above the limit the car is reined back at governorDecel, or at input.limitDecel when given (a
+//   pedestrian ahead), and input.clamp is a hard ceiling. Input that is not finite reads as none, and a state
+//   whose motion is not finite is reset rather than frozen.
 // - The yaw rate follows the bicycle model (speed * tan(steer) / wheelbase), held under gripLat so a fast tight turn
 //   understeers. Coasting (no throttle) adds rolling and air drag. Sideways speed is pulled back to zero by the tyres' grip each substep; the handbrake drops the
 //   grip to handbrakeGrip, boosts the yaw by handbrakeYaw and slows the car at handbrakeDecel, so the tail slides.
@@ -83,6 +85,8 @@ struct VehicleInput {
     float steer = 0.f;    // -1 (left) to 1 (right)
     bool handbrake = false;
     float limit = 0.f;    // the road's speed limit (cm/s); 0: none but the car's own
+    float limitDecel = 0.f; // above `limit`, slow at this (cm/s^2); 0: the governor's own rate
+    float clamp = 0.f;    // a hard ceiling on the speed, either way (cm/s); 0: none
     VehicleGuide guide;   // the nearest guide surface
     bool detach = false;  // let go of the guide (and don't latch while held)
 };

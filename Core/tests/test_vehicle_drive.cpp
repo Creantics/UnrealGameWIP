@@ -243,7 +243,8 @@ TEST_CASE("vehicle: the shipped micro-van loads, and bad tunables are refused") 
     REQUIRE(importVehicleTuning(text, t, &err));
     CHECK(t.speedCap == doctest::Approx(80.f * kKmh));
     CHECK(t.reverseSpeed == doctest::Approx(18.f * kKmh));
-    CHECK(t.wheelbase == doctest::Approx(190.f));
+    CHECK(t.wheelbase == doctest::Approx(206.f)); // measured off the prepped model
+    CHECK(t.wheelbase / std::tan(t.maxSteer * 3.14159265f / 180.f) == doctest::Approx(380.f).epsilon(0.03)); // 7.6 m circle
     CHECK(t.guideSpeedCap == 0.f);
 
     VehicleTuning keep;
@@ -347,4 +348,72 @@ TEST_CASE("vehicle: a guide surface latches a vehicle that has one, lines it up 
     VehicleState c = car.parked(0.f, 0.f, 0.f);
     ride(car, c, throttle(), 1.f);
     CHECK_FALSE(c.latched);
+}
+
+TEST_CASE("vehicle: backing up steers the nose the other way, and a shove past reverse speed is reined in, not snapped") {
+    VehicleDrive car;
+    const float rev = car.tuning().reverseSpeed;
+    VehicleState s = car.parked(0.f, 0.f, 0.f);
+    VehicleInput in = braking();
+    in.steer = 1.f;
+    run(car, s, in, 3.f);
+    CHECK(s.forward < -100.f);
+    CHECK(s.heading < -0.05f); // right lock backing up swings the nose left
+    CHECK(s.x < 0.f);
+    CHECK(s.y > 0.f);          // the tail goes toward the lock's side
+
+    VehicleState shoved = car.parked(0.f, 0.f, 0.f);
+    shoved.forward = -(rev + 300.f);
+    car.step(shoved, VehicleInput{}, kFrame);
+    CHECK(shoved.forward < -rev - 250.f); // only a frame's governor off it
+    run(car, shoved, VehicleInput{}, 0.2f);
+    CHECK(shoved.forward < -rev);
+}
+
+TEST_CASE("vehicle: the guide lets go when the line drifts away or ends") {
+    const VehicleDrive bike = railBike();
+    VehicleState s = bike.parked(0.f, 0.f, 0.f);
+    ride(bike, s, throttle(), 1.f);
+    REQUIRE(s.latched);
+    VehicleInput in = throttle();
+    in.guide.present = true;
+    in.guide.offset = 2.5f * bike.tuning().latchDistance; // the line bends away
+    bike.step(s, in, kFrame);
+    CHECK_FALSE(s.latched);
+
+    ride(bike, s, throttle(), 1.f);
+    REQUIRE(s.latched);
+    bike.step(s, throttle(), kFrame); // no guide in reach: the rail has ended
+    CHECK_FALSE(s.latched);
+}
+
+TEST_CASE("vehicle: numbers that are not finite never freeze or poison the car") {
+    VehicleDrive car;
+    VehicleState s = car.parked(0.f, 0.f, 0.f);
+    car.step(s, throttle(), NAN);
+    car.step(s, throttle(), INFINITY);
+    CHECK(std::isfinite(s.carry));
+    run(car, s, throttle(), 1.f);
+    CHECK(s.x > 100.f); // still drives after a bad frame
+
+    VehicleInput bad = throttle();
+    bad.steer = NAN;
+    bad.limit = NAN;
+    bad.brake = INFINITY;
+    bad.guide.present = true;
+    bad.guide.offset = NAN;
+    run(car, s, bad, 0.5f);
+    CHECK(std::isfinite(s.x));
+    CHECK(std::isfinite(s.heading));
+    CHECK(std::isfinite(s.forward));
+
+    s.forward = NAN;
+    s.steer = NAN;
+    run(car, s, throttle(), 0.5f);
+    CHECK(std::isfinite(s.forward));
+    CHECK(s.forward > 0.f);
+
+    CHECK(car.collide(s, NAN, 1.f) == 0.f);
+    CHECK_FALSE(car.mountKerb(s, NAN));
+    CHECK(std::isfinite(s.forward));
 }

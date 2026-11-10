@@ -2,7 +2,7 @@
 
 // The party vehicle's rules around the drive (VehicleDrive): cosmetic wear, the repair garages, getting the party in
 // and out, and what a pedestrian in its way does. Tunables from Data/Vehicles/vehicle_rules.json (importVehicleRules);
-// the numbers there are provisional (S-304).
+// the numbers there are provisional.
 //
 // Wear (VehicleWear) is cosmetic only: nothing in VehicleDrive reads it, so handling never changes and the vehicle never
 // fails. Each of four zones (front, rear, left, right) gathers wear from impacts above minImpact (one stage per
@@ -11,23 +11,28 @@
 //
 // Repair (RepairService): garages are data rows. In one, a repair costs pricePerStage per zone stage and advances the
 // clock by minutes. Short of money it repairs what it can afford, one stage at a time off the worst zone; the dirt is
-// washed off free on any visit.
+// washed off free on any visit. Wear under one stage is polished out only by a repair that fixed something.
 //
 // Seats (PartySeats): the party's own vehicle only. Entering needs the lead within enterReach of it and it all but
 // stopped; the lead takes the driver's seat, the followers walk to theirs (those farther than boardFar are placed in
 // when the doors shut), and the drive starts when the lead is seated and the near followers are in, waiting at most
 // boardWait for them. Exit is held for exitHold with the vehicle slower than exitMaxSpeed; the party steps out on the
-// driver's side, the other side when that is blocked, or stays in when both are.
+// driver's side, the other side when that is blocked, or stays in when both are. While anyone is getting in or out
+// holdForSeats() keeps the vehicle stopped.
 //
-// Pedestrians (pedestrianReact): within nearDistance of a pedestrian ahead the host passes pedestrianCap() as the
-// vehicle's speed limit (25 km/h). A pedestrian inside the cone ahead steps aside when there is time to (reaction plus
-// the sidestep clear of the body), and is knocked down otherwise: a stumble below stumbleBelow, else a fall and
-// downTime on the ground. Never lethal; the host stops the vehicle as for a wall.
+// Pedestrians: applySpeedLimits() folds the nearest pedestrian ahead into the drive's input each frame. The cap
+// (pedestrianCap) is a braking curve: the speed from which brakeDecel brings the vehicle down to nearCap (25 km/h) by
+// brakeMargin before nearDistance, so the slow-down starts farther out the faster it goes; inside nearDistance the speed is clamped hard
+// at nearCap. A pedestrian in the vehicle's path (within halfWidth + clearance of its centre line) also brings it to a
+// stop stopGap short of them. pedestrianReact() is what one does: steps aside when there is time to (reaction plus the
+// sidestep clear of the body), else is met at the speed left after braking, never above nearCap: below stumbleBelow a
+// stumble, at or above it a fall and downTime on the ground. Never lethal.
 //
 // Positions and distances in cm (garage rows in metres in the file), speeds in cm/s, time in seconds. Nothing
 // allocates after the import.
 
 #include "ftcore/Api.h"
+#include "ftcore/VehicleDrive.h"
 
 #include <cstdint>
 #include <string>
@@ -112,6 +117,9 @@ struct PedestrianTuning {
     float stumbleBelow = 278.f;  // a contact slower than this is a stumble, not a fall (cm/s; 10 km/h)
     float stumbleTime = 0.8f;    // (s)
     float downTime = 2.5f;       // on the ground after a fall, before the get-up (s)
+    float brakeDecel = 1100.f;   // the brake for a pedestrian, firmer than the drive's governor (cm/s^2)
+    float stopGap = 100.f;       // stops this short of a pedestrian in its path (cm)
+    float brakeMargin = 150.f;   // the slow-down to nearCap ends this far before nearDistance (cm)
 };
 
 enum class PedReact : std::uint8_t { None, Dodge, Stumble, KnockDown };
@@ -120,6 +128,7 @@ struct PedOutcome {
     PedReact react = PedReact::None;
     float sidestep = 0.f; // Dodge: cm to the side, + toward the vehicle's right (+y of its heading)
     float down = 0.f;     // Stumble or KnockDown: seconds before they are back on their feet
+    float contact = 0.f;  // Stumble or KnockDown: the speed they are met at (cm/s, at most nearCap)
 };
 
 struct VehicleRules {
@@ -141,17 +150,23 @@ FTCORE_API int garageAt(const RepairTuning& t, float x, float y);
 FTCORE_API int repairQuote(const RepairTuning& t, const WearState& s);
 FTCORE_API RepairResult repair(const RepairTuning& t, WearState& s, int money);
 
-// Seats. tryEnter: `leadDistance` from the vehicle, its speed, whether it is the party's own, and each follower's
+// Seats. holdForSeats: while getting in or out, the input becomes a stop (no throttle, brake or steer; handbrake on).
+// tryEnter: `leadDistance` from the vehicle, its speed, whether it is the party's own, and each follower's
 // distance to it (`followers` of them, at most 2). tick: moves the phases on; `exitPressed` is the exit input held,
 // with which side is clear. False when a move isn't allowed (nothing changes).
 FTCORE_API bool tryEnter(const SeatTuning& t, PartySeats& p, float leadDistance, float vehicleSpeed, bool partyVehicle,
                          const float* followerDistance, int followers);
 FTCORE_API void tickSeats(const SeatTuning& t, PartySeats& p, float dt, float vehicleSpeed, bool exitPressed,
                           bool driverSideClear, bool passengerSideClear);
+FTCORE_API void holdForSeats(const PartySeats& p, VehicleInput& in);
 
-// Pedestrians. The cap to pass as the vehicle's limit (0: none) given the nearest pedestrian ahead on its path (cm;
-// negative: none); what one at (ahead, side) cm from the vehicle's front, in its frame, does with it at `speed`.
-FTCORE_API float pedestrianCap(const PedestrianTuning& t, float nearestAhead);
+// Pedestrians. (ahead, side): the nearest pedestrian from the vehicle's front, in its frame (cm; ahead negative: none).
+// pedestrianCap: the speed limit they set (cm/s; 0: none). combinedLimit: the lower of two limits, 0 meaning none
+// (0 never wipes a real limit). applySpeedLimits: sets in.limit, in.limitDecel and in.clamp from the road's limit and
+// the pedestrian. pedestrianReact: what the pedestrian does with the vehicle at `speed`.
+FTCORE_API float pedestrianCap(const PedestrianTuning& t, float ahead, float side);
+FTCORE_API float combinedLimit(float a, float b);
+FTCORE_API void applySpeedLimits(const PedestrianTuning& t, VehicleInput& in, float roadLimit, float ahead, float side);
 FTCORE_API PedOutcome pedestrianReact(const PedestrianTuning& t, float speed, float ahead, float side);
 
 // Reads {"version": 1, "wear": {...}, "repair": {..., "garages": [{"id", "x", "y", "radius"} in metres]},

@@ -13,7 +13,18 @@ namespace {
 constexpr float kDeg = 3.14159265358979f / 180.f;
 constexpr float kKmh = 100000.f / 3600.f;
 
-int stageOf(float v) { return static_cast<int>(std::floor(std::clamp(v, 0.f, static_cast<float>(kWearMaxStage)))); }
+int stageOf(float v) {
+    if (std::isnan(v)) return 0;
+    return static_cast<int>(std::floor(std::clamp(v, 0.f, static_cast<float>(kWearMaxStage))));
+}
+
+bool finite(float v) { return std::isfinite(v); }
+
+// Wear that turned out not finite reads as clean.
+void heal(WearState& s) {
+    for (float& z : s.zone) z = finite(z) ? z : 0.f;
+    s.dirt = finite(s.dirt) ? s.dirt : 0.f;
+}
 
 } // namespace
 
@@ -25,13 +36,16 @@ WearZone wearZoneAt(float lx, float ly) {
 }
 
 void addImpact(const WearTuning& t, WearState& s, float speed, float lx, float ly) {
+    if (!finite(speed) || !finite(lx) || !finite(ly)) return;
     if (speed <= t.minImpact || t.impactPerStage <= 0.f) return;
+    heal(s);
     float& z = s.zone[static_cast<int>(wearZoneAt(lx, ly))];
     z = std::min(z + (speed - t.minImpact) / t.impactPerStage, static_cast<float>(kWearMaxStage));
 }
 
 void addDistance(const WearTuning& t, WearState& s, float cm) {
-    if (cm <= 0.f) return;
+    if (!finite(cm) || cm <= 0.f) return;
+    heal(s);
     s.dirt = std::min(s.dirt + cm / 100000.f * t.dirtPerKm, static_cast<float>(kWearMaxStage));
 }
 
@@ -59,6 +73,7 @@ int repairQuote(const RepairTuning& t, const WearState& s) {
 
 RepairResult repair(const RepairTuning& t, WearState& s, int money) {
     RepairResult r;
+    heal(s);
     for (;;) {
         int worst = -1;
         for (int i = 0; i < kWearZones; ++i) {
@@ -71,7 +86,7 @@ RepairResult repair(const RepairTuning& t, WearState& s, int money) {
     }
     bool anyLeft = false;
     for (const float z : s.zone) anyLeft = anyLeft || stageOf(z) > 0;
-    if (!anyLeft) {
+    if (!anyLeft && r.stagesFixed > 0) {
         for (float& z : s.zone) z = 0.f; // the last scuffs polished out with a full repair
     }
     if (s.dirt > 0.f) {
@@ -87,6 +102,7 @@ RepairResult repair(const RepairTuning& t, WearState& s, int money) {
 bool tryEnter(const SeatTuning& t, PartySeats& p, float leadDistance, float vehicleSpeed, bool partyVehicle,
               const float* followerDistance, int followers) {
     if (p.phase != SeatPhase::OnFoot || !partyVehicle) return false;
+    if (!finite(leadDistance) || !finite(vehicleSpeed)) return false;
     if (leadDistance > t.enterReach || std::abs(vehicleSpeed) > t.enterMaxSpeed) return false;
     if (followers < 0 || followers > kMaxParty - 1 || (followers > 0 && followerDistance == nullptr)) return false;
     PartySeats n;
@@ -95,7 +111,7 @@ bool tryEnter(const SeatTuning& t, PartySeats& p, float leadDistance, float vehi
     n.boardAt[0] = t.enterTime;
     float last = t.enterTime;
     for (int i = 0; i < followers; ++i) {
-        const float d = std::max(followerDistance[i], 0.f);
+        const float d = finite(followerDistance[i]) ? std::max(followerDistance[i], 0.f) : t.boardFar + 1.f;
         if (d > t.boardFar) {
             n.boardAt[1 + i] = -1.f; // placed in when the doors shut
         } else {
@@ -110,7 +126,8 @@ bool tryEnter(const SeatTuning& t, PartySeats& p, float leadDistance, float vehi
 
 void tickSeats(const SeatTuning& t, PartySeats& p, float dt, float vehicleSpeed, bool exitPressed, bool driverSideClear,
                bool passengerSideClear) {
-    dt = std::max(dt, 0.f);
+    dt = finite(dt) ? std::max(dt, 0.f) : 0.f;
+    vehicleSpeed = finite(vehicleSpeed) ? vehicleSpeed : 0.f;
     switch (p.phase) {
     case SeatPhase::OnFoot:
         return;
@@ -150,28 +167,80 @@ void tickSeats(const SeatTuning& t, PartySeats& p, float dt, float vehicleSpeed,
 
 // Pedestrians.
 
-float pedestrianCap(const PedestrianTuning& t, float nearestAhead) {
-    return nearestAhead >= 0.f && nearestAhead <= t.nearDistance ? t.nearCap : 0.f;
+void holdForSeats(const PartySeats& p, VehicleInput& in) {
+    if (p.phase != SeatPhase::Entering && p.phase != SeatPhase::Exiting) return;
+    in.throttle = 0.f;
+    in.brake = 0.f; // a brake at rest would back it up
+    in.steer = 0.f;
+    in.handbrake = true;
+}
+
+float pedestrianCap(const PedestrianTuning& t, float ahead, float side) {
+    if (!finite(ahead) || !finite(side) || ahead < 0.f) return 0.f;
+    const float a = std::max(t.brakeDecel, 1.f);
+    const float past = std::max(ahead - t.nearDistance - t.brakeMargin, 0.f);
+    float cap = std::sqrt(t.nearCap * t.nearCap + 2.f * a * past); // down to nearCap a margin before nearDistance
+    if (std::abs(side) < t.halfWidth + t.clearance) {
+        // In the path: stop short of them. Never 0, which would read as no limit.
+        cap = std::min(cap, std::max(std::sqrt(2.f * a * std::max(ahead - t.stopGap, 0.f)), 1.f));
+    }
+    return cap;
+}
+
+float combinedLimit(float a, float b) {
+    a = finite(a) && a > 0.f ? a : 0.f;
+    b = finite(b) && b > 0.f ? b : 0.f;
+    if (a <= 0.f) return b;
+    if (b <= 0.f) return a;
+    return std::min(a, b);
+}
+
+void applySpeedLimits(const PedestrianTuning& t, VehicleInput& in, float roadLimit, float ahead, float side) {
+    const float cap = pedestrianCap(t, ahead, side);
+    in.limit = combinedLimit(roadLimit, cap);
+    in.limitDecel = cap > 0.f && in.limit >= cap ? t.brakeDecel : 0.f;
+    in.clamp = cap > 0.f && ahead <= t.nearDistance ? t.nearCap : 0.f; // the hard clamp in the last metres
 }
 
 PedOutcome pedestrianReact(const PedestrianTuning& t, float speed, float ahead, float side) {
     PedOutcome o;
-    speed = std::abs(speed);
-    if (speed < 1.f || ahead <= 0.f) return o;
-    if (std::atan2(std::abs(side), ahead) > t.coneAngle * kDeg) return o;
+    if (!finite(speed) || !finite(ahead) || !finite(side)) return o;
     const float need = t.halfWidth + t.clearance - std::abs(side);
-    if (need <= 0.f) return o; // already clear of the body
-    const float reach = ahead / speed;
+    if (need <= 0.f) return o; // clear of the body
+    if (ahead < -t.clearance) return o; // beside the body already: only the front meets anyone
+    ahead = std::max(ahead, 0.f);       // at the bumper (its corners included): met now
+    // Inside the body's width they are in its path wherever they stand; in the clearance band only within the cone.
+    const float out = std::abs(side) - t.halfWidth;
+    if (out > 0.f && std::atan2(out, std::max(ahead, 1.f)) > t.coneAngle * kDeg) return o;
+    float v = std::abs(speed);
+    if (v < 1.f) return o;
+    // Braking all the way: down to nearDistance, where the hard clamp holds it to nearCap, then on to them.
+    const float a = std::max(t.brakeDecel, 1.f);
+    float time = 0.f;
+    float d = ahead;
+    if (d > t.nearDistance) {
+        const float v2 = v * v - 2.f * a * (d - t.nearDistance);
+        const float v1 = v2 > 0.f ? std::sqrt(v2) : 0.f;
+        time = (v - v1) / a;
+        v = v1;
+        d = t.nearDistance;
+    }
+    v = std::min(v, t.nearCap);
+    const float left2 = v * v - 2.f * a * d; // speed squared when the front reaches them
+    const float meet = left2 > 0.f && v > 0.f ? std::sqrt(left2) : 0.f;
+    const float reach = meet > 0.f ? time + (v - meet) / a : 1e9f; // stops short: all the time they need
     const float dodge = t.reaction + need / std::max(t.sidestepSpeed, 1.f);
     if (reach >= dodge) {
         o.react = PedReact::Dodge;
         o.sidestep = side < 0.f ? -need : need;
-    } else if (speed < t.stumbleBelow) {
+    } else if (meet < t.stumbleBelow) {
         o.react = PedReact::Stumble;
         o.down = t.stumbleTime;
+        o.contact = meet;
     } else {
         o.react = PedReact::KnockDown;
         o.down = t.downTime;
+        o.contact = meet;
     }
     return o;
 }
@@ -286,7 +355,7 @@ bool importVehicleRules(std::string_view json, VehicleRules& out, std::string* e
 
     const JsonValue pd = rd.section(root, "pedestrian");
     rd.only(pd, "pedestrian", {"nearDistance", "nearCapKmh", "coneAngle", "reaction", "sidestepSpeed", "halfWidth",
-                               "clearance", "stumbleBelowKmh", "stumbleTime", "downTime"});
+                               "clearance", "stumbleBelowKmh", "stumbleTime", "downTime", "brakeDecel", "stopGap", "brakeMargin"});
     rd.number(pd, "pedestrian", "nearDistance", r.pedestrian.nearDistance, 0.0, 10000.0);
     rd.number(pd, "pedestrian", "nearCapKmh", r.pedestrian.nearCap, 1.0, 60.0, kKmh);
     rd.number(pd, "pedestrian", "coneAngle", r.pedestrian.coneAngle, 0.0, 90.0);
@@ -297,6 +366,9 @@ bool importVehicleRules(std::string_view json, VehicleRules& out, std::string* e
     rd.number(pd, "pedestrian", "stumbleBelowKmh", r.pedestrian.stumbleBelow, 0.0, 60.0, kKmh);
     rd.number(pd, "pedestrian", "stumbleTime", r.pedestrian.stumbleTime, 0.0, 10.0);
     rd.number(pd, "pedestrian", "downTime", r.pedestrian.downTime, 0.0, 30.0);
+    rd.number(pd, "pedestrian", "brakeDecel", r.pedestrian.brakeDecel, 100.0, 5000.0);
+    rd.number(pd, "pedestrian", "stopGap", r.pedestrian.stopGap, 0.0, 1000.0);
+    rd.number(pd, "pedestrian", "brakeMargin", r.pedestrian.brakeMargin, 0.0, 1000.0);
     if (rd.ok && r.pedestrian.stumbleBelow > r.pedestrian.nearCap) rd.fail("pedestrian", "stumbleBelowKmh", "above nearCapKmh");
 
     if (!rd.ok) return false;
