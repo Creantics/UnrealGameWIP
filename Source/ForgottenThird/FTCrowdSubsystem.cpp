@@ -204,6 +204,12 @@ void UFTCrowdSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		TestFightAt = TestAt;
 	}
 	FParse::Value(Cmd, TEXT("CrowdQuitAfter="), QuitAfter);
+	FString MoveTo, MX, MY;
+	if (FParse::Value(Cmd, TEXT("CrowdPlayerAt="), MoveTo) && MoveTo.Split(TEXT(","), &MX, &MY))
+	{
+		bPlayerMove = true;
+		PlayerMoveTo = FVector2D(FCString::Atod(*MX) * 100.0, FCString::Atod(*MY) * 100.0);
+	}
 	if (FParse::Value(Cmd, TEXT("CrowdShots="), ShotDir) && !ShotDir.IsEmpty() && TestFightAt >= 0.0)
 	{
 		// Calm, 1 s into the fight, mid-flee (a short run of frames from the low camera), 30 s after.
@@ -726,6 +732,20 @@ void UFTCrowdSubsystem::Tick(float DeltaTime)
 	FVector PlayerAt = FVector::ZeroVector, PlayerVel = FVector::ZeroVector;
 	if (APlayerController* PC = World->GetFirstPlayerController())
 	{
+		if (bPlayerMove && PC->GetPawn())
+		{
+			// Once: onto the ground at -CrowdPlayerAt, before the sim sees the player.
+			bPlayerMove = false;
+			APawn* Mover = PC->GetPawn();
+			const FVector Top(PlayerMoveTo.X, PlayerMoveTo.Y, 100000.0);
+			FHitResult Hit;
+			FCollisionQueryParams Q(SCENE_QUERY_STAT(CrowdPlayerAt), false, Mover);
+			const bool bHit = World->LineTraceSingleByChannel(Hit, Top, Top - FVector(0.0, 0.0, 200000.0), ECC_Visibility, Q);
+			const double Z = (bHit ? Hit.ImpactPoint.Z : 0.0) + Mover->GetSimpleCollisionHalfHeight() + 5.0;
+			Mover->SetActorLocation(FVector(PlayerMoveTo.X, PlayerMoveTo.Y, Z), false, nullptr, ETeleportType::TeleportPhysics);
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: player moved to engine (%.0f, %.0f, %.0f) cm (%s)."), PlayerMoveTo.X, PlayerMoveTo.Y, Z,
+				bHit ? TEXT("on the ground") : TEXT("no ground found, FAILED"));
+		}
 		if (const APawn* Pawn = PC->GetPawn())
 		{
 			PlayerAt = Pawn->GetActorLocation();

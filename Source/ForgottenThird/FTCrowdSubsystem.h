@@ -9,7 +9,9 @@
 //   UnrealEditor-Cmd ForgottenThird.uproject /Game/Maps/<map> -game ... -CrowdStreets=<streets csv> [-CrowdSide=1000]
 //       [-CrowdTuning=<json>]  (default Data/Crowd/crowd.json)
 //       [-CrowdSkin=<mesh>] [-CrowdWalk=<clip>] [-CrowdRun=<clip>] [-CrowdIdle=<clip>] [-CrowdCower=<clip>]
-//       [-CrowdSeed=<n>] [-CrowdTestFight[=<seconds>]] [-CrowdQuitAfter=<seconds>]
+//       [-CrowdSeed=<n>] [-CrowdTestFight[=<seconds>]] [-CrowdQuitAfter=<seconds>] [-CrowdPlayerAt=<x>,<y>]
+//   -CrowdPlayerAt moves the player there (metres, on the ground) on the first tick, so a test runs where the map's
+//   start isn't (the playable core).
 //
 // The streets table is the massing one (id, kind, width_m, pts, pavement_m; plan frame, a square -CrowdSide metres across)
 // and the sim's frame is the engine's in metres, the same as the arena's (FTArenaRunner::ToWorld is P * 100). Without
@@ -148,6 +150,8 @@ private:
 	double LastArenaEvent = -1e9;
 	double TestFightAt = -1.0;
 	double QuitAfter = -1.0;
+	bool bPlayerMove = false;
+	FVector2D PlayerMoveTo = FVector2D::ZeroVector;
 	double NextLog = 10.0;
 	FVector TestFightPoint = FVector::ZeroVector;
 	int32 TestStrikes = 0;
