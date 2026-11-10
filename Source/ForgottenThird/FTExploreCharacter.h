@@ -91,6 +91,7 @@
 #include "FTExploreCharacter.generated.h"
 
 class AFTExploreDirector;
+class AFTPartyVan;
 class UCameraComponent;
 class UInputAction;
 class UInputMappingContext;
@@ -148,6 +149,12 @@ public:
 
 	// Ground-plane facing, for the interact prompt's cone.
 	FVector2D GetFacing2D() const;
+
+	// The party van (AFTPartyVan): boarding hides the lead and the party and hands the van this pawn's input and the
+	// view; leaving puts the lead down at `At`, facing `Yaw`, as the party was.
+	bool CanBoardVan() const;
+	void BoardVan(AFTPartyVan* InVan);
+	void LeaveVan(const FVector& At, double Yaw);
 	// For locomotion captures: the camera frames the body under Root (its feet) as it frames this one.
 	void WatchFrom(USceneComponent* Root);
 
@@ -193,6 +200,7 @@ private:
 	void HandleRoll();
 	void HandleCrouch();
 	void HandleInteract();
+	void HandleInteractRelease();
 	void HandleSwitchLead();
 	void HandleToggleParty();
 	void HandleLight();
@@ -281,6 +289,8 @@ private:
 	float ShotEvery = 2.5f;
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
+	TWeakObjectPtr<AFTPartyVan> Van;
+	bool bPartyHiddenBeforeVan = false;
 	FFTFootSlideProbe SlideProbe;
 	float JumpEvery = 0.f; // -LocoJump=<s>
 	float JumpTimer = 0.f;

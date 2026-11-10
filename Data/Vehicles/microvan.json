@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "name": "party micro-van (Solhaven)",
+  "drive": {
+    "wheelbase": 206, "maxSteer": 29, "steerRate": 140, "returnRate": 240, "steerFadeSpeed": 1600,
+    "engineAccel": 330, "brakeDecel": 900, "reverseAccel": 260, "reverseKmh": 18, "speedCapKmh": 80,
+    "governorDecel": 500, "rollDrag": 45, "airDrag": 0.00014, "restSpeed": 15,
+    "gripLat": 900, "handbrakeGrip": 0.4, "handbrakeYaw": 1.5, "handbrakeDecel": 450,
+    "restitution": 0.15, "scrape": 0.6, "kerbMax": 16, "kerbLoss": 4, "substep": 0.008333333,
+    "guideSpeedCap": 0
+  }
+}

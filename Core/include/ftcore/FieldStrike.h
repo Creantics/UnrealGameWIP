@@ -48,7 +48,7 @@ struct FieldTarget {
 inline constexpr float kFieldHandBack = 0.25f;
 
 // What the body is doing besides fighting. Free and Falling allow attacks; the rest block them (see setBody).
-enum class FieldBody : std::uint8_t { Free, Traversing, Sliding, Rolling, Hanging, Falling };
+enum class FieldBody : std::uint8_t { Free, Traversing, Sliding, Rolling, Hanging, Falling, Seated }; // Seated: in a vehicle or boarding it
 
 // Whether `body` is a move of the body's own that blocks attacks.
 inline constexpr bool fieldBodyBusy(FieldBody body) { return body != FieldBody::Free && body != FieldBody::Falling; }

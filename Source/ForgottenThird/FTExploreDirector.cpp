@@ -727,6 +727,11 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: no mesh for follower %s."), *Look->Name);
 		}
+		// On a map with a sea it keeps out of it: no follower stands on or over the water (AFTPartyFollower::Place).
+		if (bHasSeaLevel)
+		{
+			Follower->SetSea(SeaLevel);
+		}
 		Followers.Add(Follower);
 	}
 	PlaceFollowers(Player, 0.f);
@@ -952,8 +957,12 @@ void AFTExploreDirector::PlaceFollowers(AFTExploreCharacter& Player, float Delta
 				Follower->FaceTo(LeadFacedYaw);
 			}
 			const ftcore::Vec2 At = Slot.position();
+			// Where the lead walked at its place on the trail: a slot out over the water is held short of the sea on the
+			// way out from there.
+			const ftcore::Vec2 Path = Trail.pointBehind(Arc);
+			const FVector2D PathCm(Path.x * 100.0, Path.y * 100.0);
 			Follower->Place(FVector2D(At.x * 100.0, At.y * 100.0), FeetZ, DeltaSeconds, Slot.wantSpeed() * 100.f,
-				StopDistance < 0.f ? -1.f : StopDistance * 100.f);
+				StopDistance < 0.f ? -1.f : StopDistance * 100.f, &PathCm);
 			const bool bInLens = Camera && !(bWatchFollower && I == 0)
 				&& FVector::Dist2D(Camera->GetCameraLocation(), Follower->GetActorLocation())
 					< kFollowerCameraShare * FVector::Dist2D(Camera->GetCameraLocation(), Player.GetActorLocation());
@@ -1741,6 +1750,29 @@ void AFTExploreDirector::BeginWorld()
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("World %s: -WorldDistrict=%d names no district; the lead starts on the PlayerStart."), *WorldId,
 				StartDistrict);
+		}
+	}
+	// -WorldStartAt=<x>,<y>,<z>,<yaw>: outside a story step the lead is set down there instead, facing yaw (degrees, world),
+	// its party behind it: for a still of one spot. x and y are plan metres on a map in the plan frame (engine metres
+	// otherwise), z the floor there (m).
+	FString StartAt;
+	if (!bStoryStep && FParse::Value(FCommandLine::Get(), TEXT("WorldStartAt="), StartAt, false))
+	{
+		TArray<FString> Parts;
+		StartAt.ParseIntoArray(Parts, TEXT(","));
+		if (Parts.Num() == 4)
+		{
+			const double X = FCString::Atod(*Parts[0]);
+			const double Y = FCString::Atod(*Parts[1]);
+			const bool bPlan = PlanSide > 0.f;
+			const FVector At((bPlan ? X - PlanSide * 0.5 : X) * 100.0, (bPlan ? PlanSide * 0.5 - Y : Y) * 100.0, FCString::Atod(*Parts[2]) * 100.0);
+			QueueStopSetDown(At, FCString::Atof(*Parts[3]));
+			UE_LOG(LogForgottenThird, Display, TEXT("World %s: -WorldStartAt: the lead starts at (%.0f, %.0f, %.0f) cm, facing %.0f."), *WorldId, At.X, At.Y,
+				At.Z, FCString::Atof(*Parts[3]));
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("World %s: -WorldStartAt=%s isn't x,y,z,yaw; the lead starts where it would."), *WorldId, *StartAt);
 		}
 	}
 	bWorldTour = !bStoryStep && FParse::Param(FCommandLine::Get(), TEXT("WorldAutoPlay"));

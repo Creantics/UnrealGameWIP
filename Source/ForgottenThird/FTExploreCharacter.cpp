@@ -1,4 +1,5 @@
 #include "FTExploreCharacter.h"
+#include "FTPartyVan.h"
 
 #include "Animation/AnimSequence.h"
 #include "Camera/CameraComponent.h"
@@ -132,6 +133,7 @@ AFTExploreCharacter::AFTExploreCharacter()
 void AFTExploreCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	AFTPartyVan::SpawnAt(GetWorld()); // -PartyVanAt only; one van however many leads begin
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 	Dodge.setTuning(UFTLocomotionAnimInstance::GetMoveTuning().dodge);
 	Ledge.setTuning(UFTLocomotionAnimInstance::GetMoveTuning().ledge);
@@ -434,12 +436,12 @@ void AFTExploreCharacter::BeginWeapon(const FFTLeadLook& Look)
 
 void AFTExploreCharacter::HandleLight()
 {
-	bPressLight = true;
+	bPressLight = !Van.IsValid(); // the van's inputs never reach the weapon
 }
 
 void AFTExploreCharacter::HandleHeavy()
 {
-	bPressHeavy = true;
+	bPressHeavy = !Van.IsValid();
 }
 
 void AFTExploreCharacter::SpawnFieldDummy()
@@ -473,7 +475,11 @@ void AFTExploreCharacter::TickWeapon(float DeltaSeconds)
 	// (while its pose fades back into locomotion), presses are dropped and an attack under way is cut (its clips, arm aim
 	// and effects with it); nothing turns or paints the body for the weapon. Falling alone allows attacks.
 	ftcore::FieldBody Body = ftcore::FieldBody::Free;
-	if (LedgeNow.phase != ftcore::LedgePhase::None)
+	if (Van.IsValid())
+	{
+		Body = ftcore::FieldBody::Seated; // boarding, seated or getting out: no weapon
+	}
+	else if (LedgeNow.phase != ftcore::LedgePhase::None)
 	{
 		Body = ftcore::FieldBody::Hanging;
 	}
@@ -729,6 +735,7 @@ void AFTExploreCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 	Input->BindAction(RunAction, ETriggerEvent::Completed, this, &AFTExploreCharacter::HandleRunStop);
 	Input->BindAction(CrouchAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleCrouch);
 	Input->BindAction(InteractAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleInteract);
+	Input->BindAction(InteractAction, ETriggerEvent::Completed, this, &AFTExploreCharacter::HandleInteractRelease);
 	Input->BindAction(SwitchLeadAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleSwitchLead);
 	Input->BindAction(PartyAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleToggleParty);
 	Input->BindAction(LightAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleLight);
@@ -737,6 +744,11 @@ void AFTExploreCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 
 void AFTExploreCharacter::HandleMove(const FInputActionValue& Value)
 {
+	if (AFTPartyVan* V = Van.Get())
+	{
+		V->SetDriveAxis(Value.Get<FVector2D>());
+		return;
+	}
 	const FVector2D Axis = Value.Get<FVector2D>();
 	if (!Controller)
 	{
@@ -749,6 +761,11 @@ void AFTExploreCharacter::HandleMove(const FInputActionValue& Value)
 
 void AFTExploreCharacter::HandleLook(const FInputActionValue& Value)
 {
+	if (AFTPartyVan* V = Van.Get())
+	{
+		V->AddLook(Value.Get<FVector2D>());
+		return;
+	}
 	const FVector2D Axis = Value.Get<FVector2D>();
 	if (bNoLook)
 	{
@@ -764,6 +781,10 @@ void AFTExploreCharacter::HandleLook(const FInputActionValue& Value)
 
 void AFTExploreCharacter::HandleRunStart()
 {
+	if (Van.IsValid())
+	{
+		return;
+	}
 	// Sprinting stands the body up.
 	UnCrouch();
 	GetCharacterMovement()->MaxWalkSpeed = RunSpeed;
@@ -771,6 +792,11 @@ void AFTExploreCharacter::HandleRunStart()
 
 void AFTExploreCharacter::HandleJump()
 {
+	if (AFTPartyVan* V = Van.Get())
+	{
+		V->SetHandbrake(true);
+		return;
+	}
 	// Crouched, jump stands the body up; standing in front of a low wall or a ledge, it goes over or up; otherwise it jumps.
 	// Held in the air, it catches a ledge within reach (Tick).
 	bJumpHeld = true;
@@ -804,12 +830,21 @@ void AFTExploreCharacter::HandleJump()
 
 void AFTExploreCharacter::HandleJumpRelease()
 {
+	if (AFTPartyVan* V = Van.Get())
+	{
+		V->SetHandbrake(false);
+		return;
+	}
 	bJumpHeld = false;
 	StopJumping();
 }
 
 void AFTExploreCharacter::HandleRoll()
 {
+	if (Van.IsValid())
+	{
+		return;
+	}
 	// A press the body can't act on yet (in the air, mid-traversal) is kept for a moment: Tick tries it again. One in
 	// the air is kept for the landing's press window, and the touchdown it lasts to rolls out of the landing.
 	const bool bAir = GetCharacterMovement()->IsFalling();
@@ -1457,6 +1492,10 @@ void AFTExploreCharacter::SpawnTraversalCourse()
 
 void AFTExploreCharacter::HandleCrouch()
 {
+	if (Van.IsValid())
+	{
+		return;
+	}
 	// Hanging from a ledge, crouch lets go (Tick, through ftcore::LedgeHang).
 	if (LedgeNow.phase == ftcore::LedgePhase::Hanging)
 	{
@@ -1480,6 +1519,10 @@ void AFTExploreCharacter::HandleCrouch()
 
 void AFTExploreCharacter::HandleRunStop()
 {
+	if (Van.IsValid())
+	{
+		return;
+	}
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 }
 
@@ -1491,11 +1534,26 @@ void AFTExploreCharacter::ResetHeldInput()
 	SlideJumpAsked = 0.f;
 	LedgeJumpAsked = LedgeDropAsked = 0.f;
 	bJumpHeld = false;
+	bPressLight = bPressHeavy = false; // the attack buffer too
+	AttackTimer = 0.f;
 	UnCrouch();
 }
 
 void AFTExploreCharacter::HandleInteract()
 {
+	// In the van, interact held is the way out; on foot near the party van, it is the way in.
+	if (AFTPartyVan* V = Van.Get())
+	{
+		V->SetExitHeld(true);
+		return;
+	}
+	for (TActorIterator<AFTPartyVan> It(GetWorld()); It; ++It)
+	{
+		if (It->TryEnter(this))
+		{
+			return;
+		}
+	}
 	if (AFTExploreDirector* D = GetDirector())
 	{
 		D->Interact();
@@ -1504,6 +1562,10 @@ void AFTExploreCharacter::HandleInteract()
 
 void AFTExploreCharacter::HandleSwitchLead()
 {
+	if (Van.IsValid())
+	{
+		return;
+	}
 	if (PartyLooks.Num() < 2)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: no lead to switch to (PartyLooks has %d)."), PartyLooks.Num());
@@ -1530,6 +1592,10 @@ void AFTExploreCharacter::HandleSwitchLead()
 
 void AFTExploreCharacter::HandleToggleParty()
 {
+	if (Van.IsValid())
+	{
+		return;
+	}
 	bPartyHidden = !bPartyHidden;
 	if (UFTGameInstance* GI = GetGameInstance<UFTGameInstance>())
 	{
@@ -1539,6 +1605,61 @@ void AFTExploreCharacter::HandleToggleParty()
 	if (AFTExploreDirector* D = GetDirector())
 	{
 		D->SetPartyHidden(bPartyHidden);
+	}
+}
+
+void AFTExploreCharacter::HandleInteractRelease()
+{
+	if (AFTPartyVan* V = Van.Get())
+	{
+		V->SetExitHeld(false);
+	}
+}
+
+bool AFTExploreCharacter::CanBoardVan() const
+{
+	// Not from a ledge (hanging, climbing or dropping), a vault, a slide or the air.
+	return !Van.IsValid() && !bTraversing && LedgeNow.phase == ftcore::LedgePhase::None && !SlideNow.sliding()
+		&& GetCharacterMovement()->IsMovingOnGround();
+}
+
+void AFTExploreCharacter::BoardVan(AFTPartyVan* InVan)
+{
+	ResetHeldInput(); // before Van is set, or the run and jump resets are routed to the van and lost
+	Van = InVan;
+	GetCharacterMovement()->StopMovementImmediately();
+	GetCharacterMovement()->DisableMovement();
+	SetActorEnableCollision(false);
+	SetActorHiddenInGame(true);
+	AttachToActor(InVan, FAttachmentTransformRules::KeepWorldTransform);
+	bPartyHiddenBeforeVan = bPartyHidden;
+	if (AFTExploreDirector* D = GetDirector())
+	{
+		D->SetPartyHidden(true);
+	}
+	if (APlayerController* PC = Cast<APlayerController>(Controller))
+	{
+		PC->SetViewTargetWithBlend(InVan, 0.6f);
+	}
+}
+
+void AFTExploreCharacter::LeaveVan(const FVector& At, double Yaw)
+{
+	Van.Reset();
+	ResetHeldInput(); // out at a walk, whatever was held inside
+	DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+	SetActorLocationAndRotation(At, FRotator(0.0, Yaw, 0.0), false, nullptr, ETeleportType::TeleportPhysics);
+	SetActorHiddenInGame(false);
+	SetActorEnableCollision(true);
+	GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+	if (AFTExploreDirector* D = GetDirector())
+	{
+		D->SetPartyHidden(bPartyHiddenBeforeVan);
+	}
+	if (APlayerController* PC = Cast<APlayerController>(Controller))
+	{
+		PC->SetControlRotation(FRotator(-10.0, Yaw, 0.0));
+		PC->SetViewTargetWithBlend(this, 0.6f);
 	}
 }
 

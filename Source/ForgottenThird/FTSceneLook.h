@@ -29,6 +29,40 @@ inline constexpr const TCHAR* SurfaceMaterial = TEXT("/Game/Rendering/M_WorldSur
 // The photographed surfaces' master and the folder of their textures and instances, built by FTBuildSurfaces.
 inline constexpr const TCHAR* SurfaceTexMaterial = TEXT("/Game/Rendering/M_WorldSurfaceTex");
 inline constexpr const TCHAR* SurfaceFolder = TEXT("/Game/Rendering/Surfaces");
+// The interior-mapped windows, built by FTBuildSurfaces -Windows: the room and curtain atlases, the window master (the
+// photographed master's surface with WindowInterior's openings over it), a parameter collection whose Night (0 day .. 1
+// night) the master reads, and one instance per building surface, MIW_<surface id>. The atlases are private art, so the
+// folder stays out of the repo.
+inline constexpr const TCHAR* WindowFolder = TEXT("/Game/Rendering/Windows");
+inline constexpr const TCHAR* WindowMaterial = TEXT("/Game/Rendering/Windows/M_WorldSurfaceWin");
+inline constexpr const TCHAR* WindowCollection = TEXT("/Game/Rendering/Windows/MPC_Windows");
+inline constexpr const TCHAR* WindowRoomsTexture = TEXT("/Game/Rendering/Windows/T_Window_Rooms");
+inline constexpr const TCHAR* WindowCurtainsTexture = TEXT("/Game/Rendering/Windows/T_Window_Curtains");
+// A building box's custom primitive data, which the window master reads: its seed (a whole number under 2^24), its
+// street faces (bit f: face f of ftcore's boxFace order fronts a street) and each face's street floor over its bottom
+// in metres (ftcore::MassingWindowData).
+inline constexpr int32 WindowDataSeed = 0;
+inline constexpr int32 WindowDataStreet = 1;
+inline constexpr int32 WindowDataBase = 2;
+inline constexpr int32 WindowDataCount = 6;
+// Round 5 (FTBuildSurfaces -Windows -FacadeR5, FTBuildMassingWorld -FacadeR5): the r5 master reads three more, the
+// box's window type, wall tint and roof finish (ftcore::MassingFacadeData). The r4 master reads only the first six.
+inline constexpr int32 WindowDataType = 6;
+inline constexpr int32 WindowDataTint = 7;
+inline constexpr int32 WindowDataRoof = 8;
+inline constexpr int32 WindowDataCountR5 = 9;
+// The street lamps' heads, built by FTBuildSurfaces -Windows beside the windows: a pale shade by day, glowing by the window
+// collection's Night.
+inline constexpr const TCHAR* NightLampMaterial = TEXT("/Game/Rendering/Windows/M_NightLamp");
+// The tag of a street lamp's light, off by default: the world eye's night (-WorldEyeNight) switches it on at its lamp
+// intensity and colour.
+inline constexpr const TCHAR* NightLampTag = TEXT("FTNightLamp");
+// The tag of a street lamp's head (on the actor or on the mesh component): the world eye's night puts NightLampMaterial
+// on it.
+inline constexpr const TCHAR* NightLampHeadTag = TEXT("FTNightLampHead");
+// The tag of a shopfront's spill light, off by default: the world eye's night switches it on, weaker and whiter than a
+// street lamp.
+inline constexpr const TCHAR* NightShopTag = TEXT("FTNightShop");
 
 // The big worlds' ground master, built by FTBuildGround: the ground, rock and road surfaces blended by slope and a
 // road mask.
@@ -152,6 +186,8 @@ FORGOTTENTHIRD_API FString SurfaceInstancePackage(const FString& Id);
 FORGOTTENTHIRD_API FString SurfaceTexturePackage(const FString& Id, const TCHAR* Suffix);
 // That texture, or null, quietly, when it hasn't been built.
 FORGOTTENTHIRD_API UTexture* LoadSurfaceTexture(const FString& Id, const TCHAR* Suffix);
+// The package of surface Id's window instance: WindowFolder/MIW_<Id>.
+FORGOTTENTHIRD_API FString WindowInstancePackage(const FString& Id);
 
 #if WITH_EDITOR
 // A new mask for the ground master's "RoadMask", "ShapeMask" or "FlowMask" in Outer: Size x Size bytes, row by row
