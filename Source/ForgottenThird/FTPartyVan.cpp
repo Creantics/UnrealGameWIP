@@ -409,7 +409,7 @@ void AFTPartyVan::SensePedestrian(float& Ahead, float& Side, AActor*& Who, int32
 		for (uint32 I = 0; I < Sim.capacity(); ++I)
 		{
 			const ftcore::CrowdAgentView& V = Sim.agent(I);
-			if (V.live && Consider(FVector(V.pos.x * 100.0, V.pos.y * 100.0, Z)))
+			if (V.live && !V.indoors && Consider(FVector(V.pos.x * 100.0, V.pos.y * 100.0, Z)))
 			{
 				Who = nullptr;
 				CrowdSlot = static_cast<int32>(I);
