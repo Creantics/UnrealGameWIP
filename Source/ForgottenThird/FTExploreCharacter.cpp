@@ -224,7 +224,7 @@ void AFTExploreCharacter::BeginPlay()
 		Boom->TargetArmLength = Arm;
 		Boom->SocketOffset = FVector(0.0, 0.0, Height);
 		Camera->SetRelativeRotation(FRotator(Pitch, 0.0, 0.0));
-		// -ExplorePortraitWalk: the body walks a slow circle (about 3 m across) so shots catch it mid-stride.
+		// -ExplorePortraitWalk: the body walks a slow circle (about 5.7 m across) so shots catch it mid-stride.
 		bPortraitWalk = FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitWalk"));
 		if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitLights")))
 		{
@@ -251,7 +251,9 @@ void AFTExploreCharacter::BeginPlay()
 			// Settle time first (streaming, shaders, exposure), then a step every few seconds: aim, then shoot.
 			float Delay = 8.f;
 			FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitShotDelay="), Delay);
-			GetWorldTimerManager().SetTimer(ShotTimer, this, &AFTExploreCharacter::StepPortraitShots, 2.5f, true, Delay);
+			FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitShotEvery="), ShotEvery);
+			ShotEvery = FMath::Max(ShotEvery, 0.1f);
+			GetWorldTimerManager().SetTimer(ShotTimer, this, &AFTExploreCharacter::StepPortraitShots, ShotEvery, true, Delay);
 		}
 	}
 }
@@ -765,7 +767,7 @@ bool AFTExploreCharacter::ProbeObstacle(const ftcore::TraversalSet& Set, bool bA
 	const UCapsuleComponent* Capsule = GetCapsuleComponent();
 	const float Half = Capsule->GetScaledCapsuleHalfHeight();
 	const FCollisionQueryParams Query(SCENE_QUERY_STAT(FTTraversal), false, this);
-	return World && FTTraversalProbe::Probe(*World, Query, GetActorLocation() - FVector(0.0, 0.0, Half), GetActorForwardVector().GetSafeNormal2D(),
+	return World && FTTraversalProbe::Probe(*World, Query, FeetLocation(), GetActorForwardVector().GetSafeNormal2D(),
 		Capsule->GetScaledCapsuleRadius(), Half, Set.tuning(), bAir, Out, In);
 }
 
@@ -800,7 +802,7 @@ bool AFTExploreCharacter::TryTraverse(bool bLog)
 	TravPlan = Plan;
 	TravTime = Plan.start;
 	TravFrame = FTransform(FRotator(0.0, GetActorRotation().Yaw, 0.0),
-		GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+		FeetLocation());
 	// Marked for the followers, to go the same way where they meet it.
 	LastTraversal.Face = TravFrame.GetLocation() + In * Obstacle.distance;
 	LastTraversal.Way = In;
@@ -864,7 +866,7 @@ bool AFTExploreCharacter::TryCatch(bool bLog)
 	TravPlan = Plan;
 	TravTime = Plan.start;
 	TravFrame = FTransform(FRotator(0.0, In.Rotation().Yaw, 0.0),
-		GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+		FeetLocation());
 	// Marked for the followers, to catch the same ledge where they meet it in the air.
 	LastTraversal.Face = TravFrame.GetLocation() + In * Obstacle.distance;
 	LastTraversal.Way = In;
@@ -966,7 +968,7 @@ bool AFTExploreCharacter::TryRoll(bool bLanding, bool bLog)
 	TravPlan = Plan;
 	TravTime = Plan.start;
 	TravFrame = FTransform(FRotator(0.0, Heading, 0.0),
-		GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+		FeetLocation());
 	Move->SetMovementMode(MOVE_Custom);
 	Anim->SetTraversal(Plan.clip, TravTime);
 	RollTurnLeft = RollTurn != 0.f ? kRollTurnHold : 0.f;
@@ -1007,6 +1009,7 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 	{
 		TravClock = 0.f;
 		TravSlowest = TNumericLimits<float>::Max();
+		ResetSoleGap();
 	}
 	// A hang holds the catch clip at its catch; anything else plays on.
 	TravTime = bHanging ? TravTime : Set.advance(TravPlan, TravTime, DeltaSeconds);
@@ -1032,7 +1035,8 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 		return TravFrame.TransformPosition(FVector(R.x, -R.y, R.z));
 	};
 	FVector Feet = FeetAt(T);
-	const FVector HalfUp(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+	// The capsule rides the floor hover above the planned feet, as CharacterMovement holds it, so the mesh stays on them.
+	const FVector HalfUp(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + FloorHover);
 	bool bBlocked = false;
 	bool bFalls = false;
 	if (bRoll)
@@ -1044,16 +1048,17 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 		bBlocked = Wall.bBlockingHit && !Move->IsWalkable(Wall);
 		bFalls = !Floor.bBlockingHit || !Move->IsWalkable(Floor);
 		Feet = GetActorLocation() - HalfUp;
+		NoteSoleGap();
 	}
-	// Past the landing the clip's tail (a run on, a stand-up) is swept, a little above the floor so the floor
-	// never stops it: a wall ahead ends it there.
+	// Past the landing the clip's tail (a run on, a stand-up) is swept; the floor hover keeps the capsule clear of the
+	// floor, so only a wall ahead stops it, and ends it there.
 	else if (T > Clip.land)
 	{
-		const FVector Lift(0.0, 0.0, 2.0);
 		FHitResult Hit;
-		SetActorLocation(Feet + HalfUp + Lift, true, &Hit);
+		SetActorLocation(Feet + HalfUp, true, &Hit);
 		bBlocked = Hit.bBlockingHit && Hit.ImpactNormal.Z < 0.7;
-		Feet = GetActorLocation() - HalfUp - Lift;
+		Feet = GetActorLocation() - HalfUp;
+		NoteSoleGap();
 	}
 	else
 	{
@@ -1102,6 +1107,10 @@ void AFTExploreCharacter::TickTraversal(float DeltaSeconds)
 		Anim->LetGoTraversal(Rate, bRoll);
 		Move->Velocity.Z = 0.0;
 		Move->SetMovementMode(bFalls ? MOVE_Falling : MOVE_Walking);
+		LogSoleGap(TEXT("Traversal"));
+		HandBackZ = GetActorLocation().Z;
+		HandBackMeshZ = GetMesh()->GetComponentLocation().Z;
+		bHandBackPending = !bFalls;
 		const float Speed = static_cast<float>(Move->Velocity.Size2D());
 		UE_LOG(LogForgottenThird, Display, TEXT("Traversal: done at %.2f of %.2f s (%s) after %.2f s, %.0f cm/s (%.0f at the slowest), %.0f cm from the start, %+.0f cm up."),
 			T, Length, bBlocked ? TEXT("blocked") : bFalls ? TEXT("off an edge") : T >= Length ? TEXT("clip end") : T < Set.exitTime(TravPlan) ? TEXT("turn") : TEXT("exit"),
@@ -1125,6 +1134,44 @@ void AFTExploreCharacter::MoveOverFloor(const FVector& To, FHitResult& Wall, FHi
 	{
 		SetActorLocation(Across - Lifted);
 	}
+	else
+	{
+		// Off the floor by the hover CharacterMovement keeps, so the soles meet it and nothing pops at the hand-back.
+		SetActorLocation(GetActorLocation() + FVector(0.0, 0.0, FloorHover), true);
+	}
+}
+
+FVector AFTExploreCharacter::FeetLocation() const
+{
+	return GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + FloorHover);
+}
+
+void AFTExploreCharacter::ResetSoleGap()
+{
+	SoleGapMin = TNumericLimits<float>::Max();
+	SoleGapMax = TNumericLimits<float>::Lowest();
+}
+
+void AFTExploreCharacter::NoteSoleGap()
+{
+	const UWorld* World = GetWorld();
+	const FVector Feet = FeetLocation();
+	const FCollisionQueryParams Query(SCENE_QUERY_STAT(FTSoleGap), false, this);
+	FHitResult Hit;
+	if (World && World->LineTraceSingleByChannel(Hit, GetActorLocation(), Feet - FVector(0.0, 0.0, 50.0), ECC_Visibility, Query))
+	{
+		const float Gap = static_cast<float>(Feet.Z - Hit.ImpactPoint.Z);
+		SoleGapMin = FMath::Min(SoleGapMin, Gap);
+		SoleGapMax = FMath::Max(SoleGapMax, Gap);
+	}
+}
+
+void AFTExploreCharacter::LogSoleGap(const TCHAR* What) const
+{
+	if (SoleGapMin <= SoleGapMax)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: soles %+.2f to %+.2f cm over the floor on its grounded frames."), What, SoleGapMin, SoleGapMax);
+	}
 }
 
 bool AFTExploreCharacter::TrySlide()
@@ -1146,11 +1193,12 @@ bool AFTExploreCharacter::TrySlide()
 	bTraversing = true;
 	SlideNow = Start;
 	SlideTime = 0.f;
+	ResetSoleGap();
 	SlideHeading = static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(GetVelocity().Y, GetVelocity().X)));
 	SlideFloor = Move->CurrentFloor.IsWalkableFloor() ? Move->CurrentFloor.HitResult.ImpactNormal : FVector::UpVector;
 	bSlideBlocked = false;
 	TravFrame = FTransform(FRotator(0.0, SlideHeading, 0.0),
-		GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+		FeetLocation());
 	// Nothing moves the capsule but TickSlide. The crouch is on (letting it go gets the body up), but the custom mode
 	// keeps the capsule standing.
 	Move->SetMovementMode(MOVE_Custom);
@@ -1197,7 +1245,7 @@ void AFTExploreCharacter::TickSlide(float DeltaSeconds)
 	const ftcore::SlidePhase Was = SlideNow.phase;
 	Set.step(SlideNow, In, DeltaSeconds);
 	SlideTime += DeltaSeconds;
-	const FVector Feet = GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+	const FVector Feet = FeetLocation();
 	if (SlideNow.jumped)
 	{
 		// Cancelled into a jump: the body stands, lets the slide's clip go and takes off along the way it slid at the
@@ -1248,6 +1296,7 @@ void AFTExploreCharacter::TickSlide(float DeltaSeconds)
 	if (!bFalls)
 	{
 		SlideFloor = Floor.ImpactNormal;
+		NoteSoleGap();
 	}
 	if (Wall.bBlockingHit && !Move->IsWalkable(Wall))
 	{
@@ -1279,7 +1328,7 @@ void AFTExploreCharacter::TickSlide(float DeltaSeconds)
 		{
 			UnCrouch();
 		}
-		const FVector Ended = GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+		const FVector Ended = FeetLocation();
 		UE_LOG(LogForgottenThird, Display, TEXT("Slide: done (%s) at %.2f s, %s at %.2f s, %.0f cm/s, %.0f cm from the start, %+.0f cm up."),
 			bFalls ? TEXT("off an edge") : bStopped ? TEXT("blocked") : TEXT("up"), SlideTime, SlideOutNames[static_cast<int32>(SlideNow.out)],
 			SlideNow.clipTime, Move->Velocity.Size2D(), FVector::Dist2D(Ended, TravFrame.GetLocation()), Ended.Z - TravFrame.GetLocation().Z);
@@ -1288,6 +1337,10 @@ void AFTExploreCharacter::TickSlide(float DeltaSeconds)
 		SlideNow = ftcore::SlideState();
 		Anim->SetTraversal(-1, 0.f);
 		Move->SetMovementMode(bFalls ? MOVE_Falling : MOVE_Walking);
+		LogSoleGap(TEXT("Slide"));
+		HandBackZ = GetActorLocation().Z;
+		HandBackMeshZ = GetMesh()->GetComponentLocation().Z;
+		bHandBackPending = !bFalls;
 		return;
 	}
 	Anim->SetTraversal(UFTLocomotionAnimInstance::FirstSlideClip + SlideNow.clip, SlideNow.clipTime, SlideNow.loop, false);
@@ -1455,6 +1508,14 @@ FVector2D AFTExploreCharacter::GetFacing2D() const
 void AFTExploreCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	// A frame after a traversal or slide hands back: how far CharacterMovement moved the capsule (a pop if not ~0).
+	if (bHandBackPending)
+	{
+		bHandBackPending = false;
+		const FFindFloorResult& Floor = GetCharacterMovement()->CurrentFloor;
+		UE_LOG(LogForgottenThird, Display, TEXT("Hand-back: on CharacterMovement's first frame the mesh moved %+.2f cm, the capsule %+.2f (crouched %d; floor dist %.2f cm, walkable %d)."),
+			GetMesh()->GetComponentLocation().Z - HandBackMeshZ, GetActorLocation().Z - HandBackZ, bIsCrouched ? 1 : 0, Floor.FloorDist, Floor.IsWalkableFloor() ? 1 : 0);
+	}
 	if (bPortraitWalk)
 	{
 		const double Turn = GetWorld()->GetTimeSeconds() * (2.0 * UE_DOUBLE_PI / 8.0);
