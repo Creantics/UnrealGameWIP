@@ -625,20 +625,31 @@ MassingLookSurface massingLookSurface(const MassingBox& box) {
     if (kind == "cliff" || kind == "seawall" || kind == "breakwater" || kind == "quay")
         return MassingLookSurface::BoardConcrete;
     if (kind == "deck" || kind == "pier" || kind == "boat" || kind == "bridge") return MassingLookSurface::OakPlank;
-    if (kind == "crane" || kind == "mast" || kind == "post" || kind == "barrier" || kind == "gate")
+    if (kind == "crane" || kind == "mast" || kind == "post" || kind == "barrier" || kind == "gate" ||
+        kind == "tank" || kind == "unit" || kind == "aerial")
         return MassingLookSurface::GalvSteel;
-    // A building: one of three finishes by its row; a table with no row column goes by the id up to its last '_'.
+    // A building: a finish by its row (a table with no row column goes by the id up to its last '_'); a kit box, one
+    // house of a terrace row, by its own id.
     std::string_view key = box.row;
+    if (kind == "kit") key = box.id;
     if (key.empty()) {
         key = box.id;
         const std::size_t cut = key.rfind('_');
         if (cut != std::string_view::npos && cut > 0) key = key.substr(0, cut);
     }
-    switch (lookHash(key) % 3u) {
-    case 0: return MassingLookSurface::BuildingA;
-    case 1: return MassingLookSurface::BuildingB;
-    default: return MassingLookSurface::BuildingC;
-    }
+    // Weights out of 20: render 6, tile 5, board concrete 4, brick 3, breeze block 1, cladding 1. FNV's low bits mix
+    // poorly on ids that differ in their last digit, so the pick reads the high half.
+    const std::uint32_t pick = (lookHash(key) >> 16) % 20u;
+    if (pick < 6u) return MassingLookSurface::BuildingRender;
+    if (pick < 11u) return MassingLookSurface::BuildingTile;
+    if (pick < 15u) return MassingLookSurface::BuildingBoard;
+    if (pick < 18u) return MassingLookSurface::BuildingA;
+    if (pick < 19u) return MassingLookSurface::BuildingB;
+    return MassingLookSurface::BuildingC;
+}
+
+bool massingLookIsBuilding(MassingLookSurface surface) {
+    return surface >= MassingLookSurface::BuildingA && surface <= MassingLookSurface::BuildingBoard;
 }
 
 std::string_view massingLookSurfaceId(MassingLookSurface surface) {
@@ -651,6 +662,9 @@ std::string_view massingLookSurfaceId(MassingLookSurface surface) {
     case MassingLookSurface::BuildingA: return "soot_brick";
     case MassingLookSurface::BuildingB: return "breeze_block";
     case MassingLookSurface::BuildingC: return "alu_cladding";
+    case MassingLookSurface::BuildingRender: return "pole_concrete";
+    case MassingLookSurface::BuildingTile: return "ceramic_tile";
+    case MassingLookSurface::BuildingBoard: return "board_concrete";
     }
     return "board_concrete";
 }

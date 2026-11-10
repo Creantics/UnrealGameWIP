@@ -44,6 +44,8 @@ struct MassingPropRule {
                                      // the table's foot_x_m and foot_y_m, or with both 0 there the mesh's plan size,
                                      // which the map's builder sets. With either 0 the prop takes no room and is never
                                      // crowded.
+    double keep = 0.0;              // m its foot keeps from the feet of the street props placed before it and its own
+                                    // rule's, when more than kMassingPropGap: a lamp kept off a pole
 };
 
 // Reads a prop table (CSV, a header row naming the columns; comment rows as in importMassingBoxes). The columns:
@@ -58,6 +60,7 @@ struct MassingPropRule {
 //   cap        a whole number >= 0, default 0
 //   line_m     >= 0, default 0
 //   foot_x_m, foot_y_m  >= 0, default 0: a foot smaller than the mesh's (a lamp's pole, not its arm)
+//   keep_m    >= 0, default 0: the gap its foot keeps from the street props' feet (MassingPropRule::keep)
 //   kinds     street kinds joined by ';' (each as a massing id but lower case allowed: a-z, A-Z, 0-9, '_' or '-')
 // Any other column is skipped. `out` is cleared first. False, with a reason naming the line, on any error.
 FTCORE_API bool importMassingProps(std::string_view csv, std::vector<MassingPropRule>& out, std::string* error = nullptr);

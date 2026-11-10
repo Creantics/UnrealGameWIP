@@ -152,6 +152,7 @@ struct MassingFrontRule {
     double weight = 1.0;            // its share of the pick among the rules that may take a place, > 0
     std::size_t run = 1;            // pieces it sets in a row once picked, >= 1
     std::size_t cap = 0;            // the most it places; 0 for no cap
+    double scale = 1.0;             // > 0: the map's builder sets the mesh this much larger (and takes its size so)
 };
 
 // Reads a frontage table (CSV, a header row naming the columns; comment rows as in importMassingBoxes). The columns:
@@ -164,6 +165,7 @@ struct MassingFrontRule {
 //   turn, dz    numbers, default 0
 //   weight      > 0, default 1
 //   run, cap    whole numbers, run >= 1 (default 1), cap >= 0 (default 0)
+//   scale       > 0, default 1
 //   kinds       street kinds (or "open") joined by ';', each a-z, A-Z, 0-9, '_' or '-'
 // Any other column is skipped. `out` is cleared first. False, with a reason naming the line, on any error.
 FTCORE_API bool importMassingFront(std::string_view csv, std::vector<MassingFrontRule>& out,
@@ -176,6 +178,10 @@ inline constexpr double kMassingFrontStep = 1.0;    // m the walk along a face m
 inline constexpr double kMassingFrontSpread = 0.5;  // m: floors along a piece spreading more are steep
 inline constexpr double kMassingFrontBack = 0.5;    // m a sunk piece keeps from the box's far face
 inline constexpr double kMassingFrontLift = 0.3;    // m a host's bottom may stand over a piece's foot
+inline constexpr double kMassingFrontPadReach = 1.2; // m a ground piece's paving pad runs on past its front
+inline constexpr double kMassingFrontPadStep = 0.25; // m a pad's reach is cut by while its front is on a carriageway
+inline constexpr double kMassingFrontPadTop = 0.03;  // m a pad's top stands over the piece's floor
+inline constexpr double kMassingFrontPadSink = 0.3;  // m a pad reaches under the piece's floor
 
 // What one frontage rule placed, and why the places it was tried at took nothing from it.
 struct MassingFrontCounts {
@@ -233,12 +239,75 @@ FTCORE_API MassingFoot massingFrontFoot(const MassingProp& prop, const MassingFr
 //
 // A rule whose pieces pass its cap (not 0) takes a place, on a second walk of every face, only when a stable hash of the
 // place and its id falls under cap / its count on the first, so the others fill in; any still over are thinned to the cap
-// evenly (the k-th kept is the floor(k * n / cap)-th) and counted as capped. `out`, `counts` (one per rule) and `totals`
-// are cleared first. Allocates: build time only.
+// evenly (the k-th kept is the floor(k * n / cap)-th) and counted as capped.
+//
+// When `outPads` is given, each ground-layer piece kept stands on a paving pad, so a street's walk reaches the piece: a
+// flat box of source Invented, cover False, kind landing (paving slab, massingLookSurface), row and id "<host>-FP<n>" (n
+// counting from 1 per host, in the order the pieces are kept), at the piece's facing, its width plus its gap along the
+// face about the piece's middle, from the face out to its reach (out + kMassingFrontPadReach, cut by kMassingFrontPadStep,
+// to no less than out, while its front's corners or middle are in the road as above), from kMassingFrontPadSink under the
+// piece's floor to kMassingFrontPadTop over it. When `outFronting` is given it takes a byte per face of every box, at
+// box * 4 + face (faces 0..3 the box's +u, +w, -u and -w sides), 1 where the face's middle fronts a street (a host's face
+// whose kind there isn't "open"), else 0. `out`, `counts` (one per rule), `totals` and the two optional outputs are
+// cleared first. Allocates: build time only.
 FTCORE_API void massingFrontage(const std::vector<MassingFrontRule>& rules, const std::vector<MassingStreet>& streets,
                                 const MassingGround& ground, const std::vector<MassingBox>& boxes,
                                 const std::vector<bool>& include, const std::vector<bool>& hosts, double dryAbove,
                                 const std::vector<MassingFoot>* taken, std::vector<MassingProp>& out,
-                                std::vector<MassingFrontCounts>& counts, MassingFrontTotals& totals);
+                                std::vector<MassingFrontCounts>& counts, MassingFrontTotals& totals,
+                                std::vector<MassingBox>* outPads = nullptr,
+                                std::vector<std::uint8_t>* outFronting = nullptr);
+
+// ---- Roof dressing ----
+
+inline constexpr double kMassingRoofSide = 3.0;      // m: a top narrower than this either way is left bare
+inline constexpr double kMassingRoofArea = 16.0;     // m^2: a smaller top is left bare
+inline constexpr double kMassingRoofHigh = 2.5;      // m: a top lower over the ground at its middle is left bare
+inline constexpr double kMassingRoofProbe = 0.3;     // m out of (and in from) an edge its neighbours are looked for
+inline constexpr double kMassingRoofShared = 0.5;    // m: a neighbour's top over the roof's less this shares the edge
+inline constexpr double kMassingRoofPostGap = 3.0;   // m between a roof rail's posts, at most
+inline constexpr double kMassingRoofEdgeIn = 1.0;    // m the roof's clutter keeps from its edges
+inline constexpr double kMassingRoofClutterGap = 0.4; // m between two pieces of clutter, at least
+inline constexpr double kMassingRoofTankSide = 1.3;  // m
+inline constexpr double kMassingRoofTankHeight = 1.8;
+inline constexpr double kMassingRoofUnitLong = 0.9;  // m: an air-conditioning unit's long side
+inline constexpr double kMassingRoofUnitShort = 0.36;
+inline constexpr double kMassingRoofUnitHeight = 0.65;
+inline constexpr double kMassingRoofMastSide = 0.05; // m: an aerial's mast and its cross bar
+inline constexpr double kMassingRoofBarLong = 1.2;   // m: an aerial's cross bar
+
+// What massingRoofs built.
+struct MassingRoofCounts {
+    std::size_t roofs = 0;    // tops that took a rail or clutter
+    double railed = 0.0;      // m of rail
+    std::size_t posts = 0, tanks = 0, units = 0, aerials = 0;
+    std::size_t bare = 0;     // hosts left bare: sloped, too small or too low
+};
+
+// Rails and clutter on the flat tops of the boxes `hosts` marks (of those `include` marks, the boxes read as neighbours).
+// A host is left bare when it is sloped, either side is under kMassingRoofSide, its top under kMassingRoofArea or its top
+// under kMassingRoofHigh over the ground at its middle. Each of its four edges is read at points at most kMassingQuayStep
+// apart from kMassingQuayEnd to kMassingQuayEnd short of its far end; a point is shared when, kMassingRoofProbe out of
+// the edge, the ground or the top of another box holding the probe (its bottom under the roof) lies over the roof's top
+// less kMassingRoofShared (the roof runs on or meets a wall), and covered when a box other than the host holding the
+// point kMassingRoofProbe in stands on the roof (its highest top corner over the top + kMassingStandClear, its bottom
+// under the top + kMassingRailTop). Free points join into runs; a run of kMassingQuayShortest or more takes a rail
+// ("<host>-RR<n>", kind barrier, kMassingRailBar square, on the line kMassingRailIn in, its top kMassingRailTop over the
+// roof) and posts ("<host>-RP<n>", kind post, kMassingRailPost square, from 0.05 m under the roof into the rail) at both
+// ends and evenly between, at most kMassingRoofPostGap apart (one where two runs' ends coincide).
+//
+// Clutter stands in the top kept kMassingRoofEdgeIn in from its edges, each piece at the first of eight spots a stable
+// hash of the host's id picks there whose foot keeps kMassingRoofClutterGap from the pieces set before it and whose
+// middle and corners no box covers: water tanks ("<host>-RT<n>", kind tank, kMassingRoofTankSide square,
+// kMassingRoofTankHeight high), one for a top of 60 m^2 or more and a second by the hash, else one by the hash;
+// air-conditioning units ("<host>-RU<n>", kind unit, kMassingRoofUnitLong by kMassingRoofUnitShort by
+// kMassingRoofUnitHeight, along either side by the hash), 1 + floor(area / 40) of them, 6 at most; and by the hash an
+// aerial: a mast ("<host>-RM<n>", kind aerial, kMassingRoofMastSide square, 2.4 to 3.4 m by the hash) and a cross bar
+// ("<host>-RX<n>", kind aerial, kMassingRoofBarLong long) 0.3 m under its top. Every piece is a flat box of source
+// Invented, cover False, row the host's id; galvanised steel dresses them (massingLookSurface). `out` and `counts` are
+// cleared first. Allocates: build time only.
+FTCORE_API void massingRoofs(const MassingGround& ground, const std::vector<MassingBox>& boxes,
+                             const std::vector<bool>& include, const std::vector<bool>& hosts,
+                             std::vector<MassingBox>& out, MassingRoofCounts& counts);
 
 } // namespace ftcore

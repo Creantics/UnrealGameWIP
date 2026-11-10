@@ -937,27 +937,44 @@ TEST_CASE("massing look: each kind of built box wears its class") {
     CHECK(cls(lookBox("BLD-003_1", "BLD-003", MassingSource::Plan, "interior", true)) == MassingLookSurface::BoardConcrete);
 }
 
-TEST_CASE("massing look: a building's finish follows its row, one of three") {
-    const auto isBuilding = [](MassingLookSurface s) {
-        return s == MassingLookSurface::BuildingA || s == MassingLookSurface::BuildingB || s == MassingLookSurface::BuildingC;
-    };
-    int seen[3] = {};
-    for (int i = 1; i <= 60; ++i) {
+TEST_CASE("massing look: a building's finish follows its row; a terrace house's its own id") {
+    int seen[6] = {};
+    for (int i = 1; i <= 300; ++i) {
         const std::string row = "BLD-" + std::to_string(100 + i);
-        // Every part of the row, whatever its kind (a wall, a plate, a box), wears the same finish.
+        // Every part of the row but a kit house (a wall, a plate, a box) wears the same finish.
         const MassingLookSurface first = massingLookSurface(lookBox(row + "_1", row, MassingSource::Plan, "box", true));
-        REQUIRE(isBuilding(first));
+        REQUIRE(massingLookIsBuilding(first));
         CHECK(massingLookSurface(lookBox(row + "_2", row, MassingSource::Plan, "wall", false)) == first);
         CHECK(massingLookSurface(lookBox(row + "_3", row, MassingSource::Plan, "plate", true)) == first);
-        CHECK(massingLookSurface(lookBox(row + "_4", row, MassingSource::Plan, "kit", false)) == first);
         ++seen[static_cast<int>(first) - static_cast<int>(MassingLookSurface::BuildingA)];
     }
-    for (const int n : seen) CHECK(n >= 10); // all three are in use, none starved
+    // Render, tile and board concrete lead; brick next; breeze block and cladding are rare but present.
+    const int brick = seen[0], breeze = seen[1], clad = seen[2], render = seen[3], tile = seen[4], board = seen[5];
+    CHECK(render > brick);
+    CHECK(tile > brick);
+    CHECK(board > breeze);
+    CHECK(breeze > 0);
+    CHECK(clad > 0);
+    CHECK(breeze < 40);
+    CHECK(clad < 40);
+    // A terrace row of kit houses varies house by house: no finish takes more than half of 300 houses.
+    int houses[6] = {};
+    for (int i = 1; i <= 300; ++i) {
+        const MassingLookSurface h =
+            massingLookSurface(lookBox("BLD-032_" + std::to_string(i), "BLD-032", MassingSource::Plan, "kit", false));
+        REQUIRE(massingLookIsBuilding(h));
+        ++houses[static_cast<int>(h) - static_cast<int>(MassingLookSurface::BuildingA)];
+    }
+    for (const int n : houses) CHECK(n < 150);
+    CHECK(houses[3] > 30); // render
+    CHECK(houses[4] > 30); // tile
     // A table with no row column goes by the id up to its last '_': the parts still agree.
     const MassingBox a = lookBox("BLD-205_1", "", MassingSource::Plan, "box", true);
     const MassingBox b = lookBox("BLD-205_2", "", MassingSource::Plan, "wall", false);
     CHECK(massingLookSurface(a) == massingLookSurface(b));
     CHECK(massingLookSurface(a) == massingLookSurface(lookBox("X", "BLD-205", MassingSource::Plan, "box", true)));
+    CHECK_FALSE(massingLookIsBuilding(MassingLookSurface::PoleConcrete));
+    CHECK_FALSE(massingLookIsBuilding(MassingLookSurface::GalvSteel));
 }
 
 TEST_CASE("massing look: the surface ids") {
@@ -969,7 +986,10 @@ TEST_CASE("massing look: the surface ids") {
     CHECK(massingLookSurfaceId(MassingLookSurface::BuildingA) == "soot_brick");
     CHECK(massingLookSurfaceId(MassingLookSurface::BuildingB) == "breeze_block");
     CHECK(massingLookSurfaceId(MassingLookSurface::BuildingC) == "alu_cladding");
-    CHECK(kMassingLookSurfaceCount == 8);
+    CHECK(massingLookSurfaceId(MassingLookSurface::BuildingRender) == "pole_concrete");
+    CHECK(massingLookSurfaceId(MassingLookSurface::BuildingTile) == "ceramic_tile");
+    CHECK(massingLookSurfaceId(MassingLookSurface::BuildingBoard) == "board_concrete");
+    CHECK(kMassingLookSurfaceCount == 11);
 }
 
 TEST_CASE("massing streets: the table is read by id, width_m and pts") {

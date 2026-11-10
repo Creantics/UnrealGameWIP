@@ -179,10 +179,10 @@ bool importMassingProps(std::string_view csv, std::vector<MassingPropRule>& out,
     std::vector<Record> records;
     if (!splitCsv(csv, records, error)) return false;
 
-    enum Col { Id, Asset, Spacing, Phase, Side, Inset, Reach, Clear, Turn, Dz, Cap, Line, FootX, FootY, Kinds, Count };
+    enum Col { Id, Asset, Spacing, Phase, Side, Inset, Reach, Clear, Turn, Dz, Cap, Line, FootX, FootY, Keep, Kinds, Count };
     constexpr const char* kNames[Count] = {"id",      "asset",  "spacing_m", "phase_m",  "side",
                                            "inset_m", "reach_m", "clear_m",  "turn",     "dz",
-                                           "cap",     "line_m", "foot_x_m",  "foot_y_m", "kinds"};
+                                           "cap",     "line_m", "foot_x_m",  "foot_y_m", "keep_m",  "kinds"};
     constexpr std::size_t kRequired = 3; // id, asset, spacing_m
     std::size_t col[Count] = {};
     std::size_t width = 0;
@@ -242,6 +242,8 @@ bool importMassingProps(std::string_view csv, std::vector<MassingPropRule>& out,
             return fail(error, r.line, rule.id + ": foot_x_m must be a number >= 0");
         if (!optionalNumber(field(FootY), rule.footY) || rule.footY < 0.0)
             return fail(error, r.line, rule.id + ": foot_y_m must be a number >= 0");
+        if (!optionalNumber(field(Keep), rule.keep) || rule.keep < 0.0)
+            return fail(error, r.line, rule.id + ": keep_m must be a number >= 0");
         std::string_view kinds = trim(field(Kinds));
         while (!kinds.empty()) {
             const std::size_t semi = kinds.find(';');
@@ -400,15 +402,17 @@ void massingPlaceProps(const std::vector<MassingStreet>& streets, const std::vec
     // The feet placed so far by earlier rules, and passed so far by this one (those with area only).
     std::vector<MassingFoot> placedFeet, passedFeet;
     const auto hasArea = [](const MassingPropRule& rule) { return rule.footX > 0.0 && rule.footY > 0.0; };
-    const auto crowdedBy = [](const MassingFoot& foot, const std::vector<MassingFoot>& feet) {
+    const auto crowdedBy = [](const MassingFoot& foot, const std::vector<MassingFoot>& feet, double gap) {
         for (const MassingFoot& other : feet)
-            if (other.hx > 0.0 && other.hy > 0.0 && massingFeetOverlap(foot, other, kMassingPropGap)) return true;
+            if (other.hx > 0.0 && other.hy > 0.0 && massingFeetOverlap(foot, other, gap)) return true;
         return false;
     };
     const auto crowdedAt = [&](const MassingPropRule& rule, const MassingProp& prop) {
         if (!hasArea(rule)) return false;
         const MassingFoot foot = massingPropFoot(prop, rule);
-        return (taken && crowdedBy(foot, *taken)) || crowdedBy(foot, placedFeet) || crowdedBy(foot, passedFeet);
+        const double keep = std::max(kMassingPropGap, rule.keep);
+        return (taken && crowdedBy(foot, *taken, kMassingPropGap)) || crowdedBy(foot, placedFeet, keep) ||
+               crowdedBy(foot, passedFeet, keep);
     };
 
     std::vector<Spot> spots;

@@ -560,6 +560,31 @@ TEST_CASE("massing props: a prop never stands on a foot already taken") {
     CHECK(run.counts[0].placed + run.counts[0].crowded == run.counts[0].spots);
 }
 
+TEST_CASE("massing props: keep_m holds a prop off the street props before it") {
+    const std::vector<MassingStreet> streets = eastStreet();
+    MassingPropRule pole = rule(MassingPropSide::Left, 50.0);
+    pole.footX = pole.footY = 1.0;
+    MassingPropRule lamp = pole;
+    lamp.id = "P-2";
+    lamp.phase = 2.0; // 2 m on from each pole (two spots on the street): 1 m clear of it
+    Run run = place(streets, {pole, lamp});
+    CHECK(run.counts[1].placed == 2);
+    lamp.keep = 3.0; // now 1 m clear is too near
+    run = place(streets, {pole, lamp});
+    CHECK(run.counts[1].placed == 0);
+    CHECK(run.counts[1].crowded == 2);
+    lamp.keep = 0.9;
+    run = place(streets, {pole, lamp});
+    CHECK(run.counts[1].placed == 2);
+
+    std::vector<MassingPropRule> rules;
+    std::string error;
+    REQUIRE(importMassingProps("id,asset,spacing_m,keep_m\nL-1,/Game/L.L,20,4\nL-2,/Game/L.L,20,\n", rules, &error));
+    CHECK(rules[0].keep == 4.0);
+    CHECK(rules[1].keep == 0.0);
+    CHECK_FALSE(importMassingProps("id,asset,spacing_m,keep_m\nL-1,/Game/L.L,20,-1\n", rules, &error));
+}
+
 TEST_CASE("massing props: another street's pavement is not its road") {
     // A cross street at x 50, 10 m wide; left kerb spots of the east street at x 3, 13, ..., 93 (y 5).
     std::vector<MassingStreet> streets = eastStreet();

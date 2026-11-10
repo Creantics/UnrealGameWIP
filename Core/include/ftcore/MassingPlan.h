@@ -266,10 +266,12 @@ inline bool massingFootingHolds(const MassingFooting& footing) { return footing.
 
 // The class of photographed surface a built box wears. Kerbs (kind kerb, or a V1-KB id) and the other added walls are
 // pole concrete; flights, toe stairs, ramps, landings and terraces paving slab; cliff cover plates, the seawall,
-// breakwater and quay board concrete; decks, piers, boats and bridges oak plank; cranes, masts, posts, barriers and gates
-// galvanised steel. Every other built box is a building, wearing one of three finishes (soot brick, breeze block,
-// aluminium cladding) chosen by a stable hash of its row, so that the parts of one building share it. A box the build
-// doesn't make is board concrete.
+// breakwater and quay board concrete; decks, piers, boats and bridges oak plank; cranes, masts, posts, barriers, gates and
+// the roofs' tanks, units and aerials galvanised steel. Every other built box is a building, wearing one of six wall finishes chosen by a stable, weighted
+// hash: render (the pole concrete's smooth face) the most, then ceramic tile, board-formed concrete and soot brick, with
+// breeze block and aluminium cladding rare. The parts of one building share it (the hash is of its row), except a kit
+// box, which is one house of a terrace row and gets its own (the hash is of its id), so a lane of houses varies house by
+// house. A box the build doesn't make is board concrete.
 enum class MassingLookSurface : std::uint8_t {
     PoleConcrete,
     PavingSlab,
@@ -279,10 +281,15 @@ enum class MassingLookSurface : std::uint8_t {
     BuildingA, // soot brick
     BuildingB, // breeze block
     BuildingC, // aluminium cladding
+    BuildingRender, // render: the pole concrete
+    BuildingTile, // ceramic tile
+    BuildingBoard, // board-formed concrete
 };
-inline constexpr std::size_t kMassingLookSurfaceCount = 8;
+inline constexpr std::size_t kMassingLookSurfaceCount = 11;
 // Decided from the box's src, kind, id prefix and row alone. No allocation.
 FTCORE_API MassingLookSurface massingLookSurface(const MassingBox& box);
+// The surface is one of the building finishes (BuildingA .. BuildingBoard). No allocation.
+FTCORE_API bool massingLookIsBuilding(MassingLookSurface surface);
 // The surface's id without its world's prefix: "pole_concrete", "paving_slab", ..., "soot_brick".
 FTCORE_API std::string_view massingLookSurfaceId(MassingLookSurface surface);
 

@@ -663,9 +663,10 @@ bool importMassingFront(std::string_view csv, std::vector<MassingFrontRule>& out
     std::vector<Record> records;
     if (!splitCsv(csv, records, error)) return false;
 
-    enum Col { Id, Asset, Width, Depth, Height, Out, Gap, Turn, Dz, Weight, Run, Cap, Kinds, Count };
+    enum Col { Id, Asset, Width, Depth, Height, Out, Gap, Turn, Dz, Weight, Run, Cap, Scale, Kinds, Count };
     constexpr const char* kNames[Count] = {"id",    "asset", "width_m", "depth_m", "height_m", "out_m", "gap_m",
-                                           "turn",  "dz",    "weight",  "run",     "cap",      "kinds"};
+                                           "turn",  "dz",    "weight",  "run",     "cap",      "scale",
+                                           "kinds"};
     constexpr std::size_t kRequired = 5; // id, asset, width_m, depth_m, height_m
     std::size_t col[Count] = {};
     std::size_t width = 0;
@@ -720,6 +721,8 @@ bool importMassingFront(std::string_view csv, std::vector<MassingFrontRule>& out
             return fail(error, r.line, rule.id + ": run must be a whole number >= 1");
         if (!optionalWhole(field(Cap), 0.0, rule.cap))
             return fail(error, r.line, rule.id + ": cap must be a whole number >= 0");
+        if (!optionalNumber(field(Scale), rule.scale) || !(rule.scale > 0.0))
+            return fail(error, r.line, rule.id + ": scale must be a number > 0");
         std::string_view kinds = trim(field(Kinds));
         while (!kinds.empty()) {
             const std::size_t semi = kinds.find(';');
@@ -753,10 +756,13 @@ void massingFrontage(const std::vector<MassingFrontRule>& rules, const std::vect
                      const MassingGround& ground, const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
                      const std::vector<bool>& hosts, double dryAbove, const std::vector<MassingFoot>* taken,
                      std::vector<MassingProp>& out, std::vector<MassingFrontCounts>& counts,
-                     MassingFrontTotals& totals) {
+                     MassingFrontTotals& totals, std::vector<MassingBox>* outPads,
+                     std::vector<std::uint8_t>* outFronting) {
     out.clear();
     counts.assign(rules.size(), MassingFrontCounts{});
     totals = MassingFrontTotals{};
+    if (outPads) outPads->clear();
+    if (outFronting) outFronting->clear();
     if (rules.empty()) return;
     Scene scene(ground, boxes, include, &streets);
     Aabb extent = scene.extent;
@@ -1030,6 +1036,204 @@ void massingFrontage(const std::vector<MassingFrontRule>& rules, const std::vect
         if (!dressed[k]) continue;
         ++totals.dressed;
         if (fronting[k]) ++totals.streetDressed;
+    }
+    if (outFronting) *outFronting = fronting;
+
+    // The ground pieces' paving pads.
+    if (!outPads) return;
+    std::vector<std::size_t> padsOf(boxes.size(), 0);
+    for (std::size_t k = 0; k < out.size(); ++k) {
+        const MassingProp& p = out[k];
+        const MassingFrontRule& rule = rules[p.rule];
+        if (rule.dz >= kMassingPropBody) continue;
+        const std::size_t h = faceOf[k] / 4;
+        const double a = p.face * kPi / 180.0;
+        const double nx = std::cos(a), ny = std::sin(a), tx = -ny, ty = nx;
+        const double half = 0.5 * (rule.width + rule.gap);
+        const auto front = [&](double reach) {
+            const double fx = p.x + nx * reach, fy = p.y + ny * reach;
+            return inRoad(fx, fy) || inRoad(fx + tx * half, fy + ty * half) || inRoad(fx - tx * half, fy - ty * half);
+        };
+        double reach = rule.out + kMassingFrontPadReach;
+        while (reach - kMassingFrontPadStep >= rule.out - 1e-9 && front(reach)) reach -= kMassingFrontPadStep;
+        reach = std::max(reach, rule.out);
+        const double floor = p.z - rule.dz;
+        MassingBox pad;
+        pad.id = boxes[h].id + "-FP" + std::to_string(++padsOf[h]);
+        pad.row = boxes[h].id;
+        pad.kind = "landing";
+        pad.source = MassingSource::Invented;
+        pad.cover = false;
+        pad.cx = p.x + nx * 0.5 * reach;
+        pad.cy = p.y + ny * 0.5 * reach;
+        pad.sx = reach;
+        pad.sy = 2.0 * half;
+        pad.rot = p.face;
+        pad.z0 = floor - kMassingFrontPadSink;
+        pad.z1 = floor + kMassingFrontPadTop;
+        outPads->push_back(pad);
+    }
+}
+
+void massingRoofs(const MassingGround& ground, const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
+                  const std::vector<bool>& hosts, std::vector<MassingBox>& out, MassingRoofCounts& counts) {
+    out.clear();
+    counts = MassingRoofCounts{};
+    Scene scene(ground, boxes, include, nullptr);
+    std::vector<MassingFoot> clutter;
+    std::vector<std::array<double, 2>> posts;
+    for (std::size_t h = 0; h < boxes.size() && h < hosts.size(); ++h) {
+        if (!hosts[h]) continue;
+        const MassingBox& b = boxes[h];
+        const Solid host = makeSolid(b);
+        if (b.sloped || !host.valid || host.highTop - host.lowTop > 1e-6 || b.sx < kMassingRoofSide ||
+            b.sy < kMassingRoofSide || b.sx * b.sy < kMassingRoofArea ||
+            host.highTop - scene.groundAt(b.cx, b.cy) < kMassingRoofHigh) {
+            ++counts.bare;
+            continue;
+        }
+        const double top = host.highTop;
+        std::size_t nRail = 0, nPost = 0, nTank = 0, nUnit = 0, nMast = 0, nBar = 0;
+        const std::size_t before = out.size();
+        const auto add = [&](const char* tag, std::size_t& n, const char* kind, double x, double y, double sx, double sy,
+                             double rot, double z0, double z1) {
+            MassingBox o;
+            o.id = b.id + tag + std::to_string(++n);
+            o.row = b.id;
+            o.kind = kind;
+            o.source = MassingSource::Invented;
+            o.cover = false;
+            o.cx = x;
+            o.cy = y;
+            o.sx = sx;
+            o.sy = sy;
+            o.rot = rot;
+            o.z0 = z0;
+            o.z1 = z1;
+            out.push_back(o);
+        };
+        const auto covered = [&](double x, double y) {
+            return scene.standsAt(x, y, top + kMassingStandClear, top + kMassingRailTop, h);
+        };
+        const auto shared = [&](double x, double y) {
+            if (scene.groundAt(x, y) > top - kMassingRoofShared) return true;
+            return scene.boxGrid.any(pointAabb(x, y, 0.0), [&](std::uint32_t i) {
+                double bottom = 0.0, t = 0.0;
+                if (i == h || !solidHolds(scene.solids[i], x, y, bottom, t)) return false;
+                return t > top - kMassingRoofShared && bottom < top;
+            });
+        };
+
+        // The rails along the edges that drop away.
+        posts.clear();
+        for (int fi = 0; fi < 4; ++fi) {
+            const Face f = boxFace(b, fi);
+            const double lo = kMassingQuayEnd, hi = f.length - kMassingQuayEnd;
+            if (hi - lo < kMassingQuayShortest) continue;
+            const std::size_t steps =
+                std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil((hi - lo) / kMassingQuayStep - 1e-9)));
+            const double step = (hi - lo) / static_cast<double>(steps);
+            const double rot = degrees(f.ty, f.tx);
+            const auto at = [&](double s, double outward, double& x, double& y) {
+                x = f.x0 + f.tx * s + f.nx * outward;
+                y = f.y0 + f.ty * s + f.ny * outward;
+            };
+            const auto run = [&](double s0, double s1) {
+                if (s1 - s0 < kMassingQuayShortest - 1e-9) return;
+                double x = 0.0, y = 0.0;
+                at(0.5 * (s0 + s1), -kMassingRailIn, x, y);
+                add("-RR", nRail, "barrier", x, y, s1 - s0, kMassingRailBar, rot, top + kMassingRailTop - kMassingRailBar,
+                    top + kMassingRailTop);
+                counts.railed += s1 - s0;
+                const std::size_t gaps =
+                    std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil((s1 - s0) / kMassingRoofPostGap - 1e-9)));
+                for (std::size_t k = 0; k <= gaps; ++k) {
+                    at(s0 + (s1 - s0) * static_cast<double>(k) / static_cast<double>(gaps), -kMassingRailIn, x, y);
+                    bool twin = false;
+                    for (const auto& q : posts) twin = twin || std::hypot(q[0] - x, q[1] - y) < 0.05;
+                    if (twin) continue;
+                    posts.push_back({x, y});
+                    add("-RP", nPost, "post", x, y, kMassingRailPost, kMassingRailPost, rot, top - 0.05,
+                        top + kMassingRailTop - 0.5 * kMassingRailBar);
+                    ++counts.posts;
+                }
+            };
+            double start = -1.0, last = lo;
+            for (std::size_t k = 0; k <= steps; ++k) {
+                const double s = lo + step * static_cast<double>(k);
+                double ox = 0.0, oy = 0.0, ix = 0.0, iy = 0.0;
+                at(s, kMassingRoofProbe, ox, oy);
+                at(s, -kMassingRoofProbe, ix, iy);
+                const bool free = !shared(ox, oy) && !covered(ix, iy);
+                if (free && start < 0.0) start = s;
+                if (!free && start >= 0.0) {
+                    run(start, last);
+                    start = -1.0;
+                }
+                if (free) last = s;
+            }
+            if (start >= 0.0) run(start, last);
+        }
+
+        // The clutter.
+        const double ix = 0.5 * b.sx - kMassingRoofEdgeIn, iy = 0.5 * b.sy - kMassingRoofEdgeIn;
+        if (ix > 0.0 && iy > 0.0) {
+            clutter.clear();
+            const std::uint64_t seed = hashText(kFnvBasis, b.id);
+            const double a = b.rot * kPi / 180.0, c = std::cos(a), sn = std::sin(a);
+            const auto place = [&](std::uint64_t key, double hx, double hy, double& x, double& y) {
+                if (hx > ix || hy > iy) return false;
+                for (std::uint64_t t = 0; t < 8; ++t) {
+                    const std::uint64_t k = hashNumber(hashNumber(seed, key), t);
+                    const double u = (2.0 * hashUnit(k) - 1.0) * (ix - hx);
+                    const double w = (2.0 * hashUnit(hashNumber(k, 7)) - 1.0) * (iy - hy);
+                    x = b.cx + u * c - w * sn;
+                    y = b.cy + u * sn + w * c;
+                    const MassingFoot foot{x, y, hx, hy, b.rot};
+                    bool clash = false;
+                    for (const MassingFoot& o : clutter)
+                        clash = clash || massingFeetOverlap(foot, o, kMassingRoofClutterGap);
+                    if (clash || covered(x, y)) continue;
+                    for (const double du : {-hx, hx})
+                        for (const double dw : {-hy, hy})
+                            clash = clash || covered(x + du * c - dw * sn, y + du * sn + dw * c);
+                    if (clash) continue;
+                    clutter.push_back(foot);
+                    return true;
+                }
+                return false;
+            };
+            const double area = b.sx * b.sy;
+            const double roll = hashUnit(hashNumber(seed, 1));
+            const std::size_t tanks = area >= 60.0 ? (roll < 0.5 ? 2 : 1) : (roll < 0.5 ? 1 : 0);
+            const std::size_t units = std::min<std::size_t>(6, 1 + static_cast<std::size_t>(area / 40.0));
+            const bool aerial = hashUnit(hashNumber(seed, 2)) < 0.6;
+            double x = 0.0, y = 0.0;
+            for (std::size_t k = 0; k < tanks; ++k)
+                if (place(100 + k, 0.5 * kMassingRoofTankSide, 0.5 * kMassingRoofTankSide, x, y)) {
+                    add("-RT", nTank, "tank", x, y, kMassingRoofTankSide, kMassingRoofTankSide, b.rot, top - 0.05,
+                        top + kMassingRoofTankHeight);
+                    ++counts.tanks;
+                }
+            for (std::size_t k = 0; k < units; ++k) {
+                const bool across = hashUnit(hashNumber(seed, 300 + k)) < 0.5;
+                const double hx = 0.5 * (across ? kMassingRoofUnitShort : kMassingRoofUnitLong);
+                const double hy = 0.5 * (across ? kMassingRoofUnitLong : kMassingRoofUnitShort);
+                if (place(200 + k, hx, hy, x, y)) {
+                    add("-RU", nUnit, "unit", x, y, 2.0 * hx, 2.0 * hy, b.rot, top - 0.05, top + kMassingRoofUnitHeight);
+                    ++counts.units;
+                }
+            }
+            if (aerial && place(400, 0.5 * kMassingRoofBarLong, 0.5 * kMassingRoofBarLong, x, y)) {
+                const double tall = 2.4 + hashUnit(hashNumber(seed, 3));
+                add("-RM", nMast, "aerial", x, y, kMassingRoofMastSide, kMassingRoofMastSide, b.rot, top - 0.05,
+                    top + tall);
+                add("-RX", nBar, "aerial", x, y, kMassingRoofBarLong, kMassingRoofMastSide, b.rot + 45.0,
+                    top + tall - 0.3 - kMassingRoofMastSide, top + tall - 0.3);
+                ++counts.aerials;
+            }
+        }
+        if (out.size() > before) ++counts.roofs;
     }
 }
 

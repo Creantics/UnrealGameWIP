@@ -622,3 +622,159 @@ TEST_CASE("massing frontage: runs keep a picked rule going; a cap thins evenly")
     REQUIRE(again.props.size() == capped.props.size());
     for (std::size_t k = 0; k < capped.props.size(); ++k) CHECK(near(again.props[k].x, capped.props[k].x));
 }
+
+TEST_CASE("massing frontage: ground pieces stand on paving pads cut short of the carriageway") {
+    const std::vector<MassingFrontRule> shop = {front("SHOP", 6.0, {"street"})};
+    const std::vector<bool> include(1, true), hosts(1, true);
+    const auto run = [&](double streetY, std::vector<MassingBox>& pads, std::vector<std::uint8_t>& fronting) {
+        Front f;
+        massingFrontage(shop, northStreet(streetY), {}, {host()}, include, hosts, -1.0, nullptr, f.props, f.counts,
+                        f.totals, &pads, &fronting);
+        return f;
+    };
+    std::vector<MassingBox> pads;
+    std::vector<std::uint8_t> fronting;
+    // A carriageway reaching y 9..15: the pads run the whole reach, 1 + 1.2 m out of the face at y 5.
+    const Front far = run(12.0, pads, fronting);
+    REQUIRE(far.props.size() > 0);
+    REQUIRE(pads.size() == far.props.size());
+    for (std::size_t k = 0; k < pads.size(); ++k) {
+        const MassingBox& p = pads[k];
+        CHECK(p.id == "H-1-FP" + std::to_string(k + 1));
+        CHECK(p.row == "H-1");
+        CHECK(p.kind == "landing");
+        CHECK(p.source == MassingSource::Invented);
+        CHECK_FALSE(p.cover);
+        CHECK(massingLookSurface(p) == MassingLookSurface::PavingSlab);
+        CHECK(near(p.sx, 1.0 + kMassingFrontPadReach));
+        CHECK(near(p.sy, 6.0 + 0.3));
+        CHECK(near(p.rot, 90.0));
+        CHECK(near(p.cx, far.props[k].x));
+        CHECK(near(p.cy, 5.0 + 0.5 * p.sx));
+        CHECK(near(p.z1, kMassingFrontPadTop));
+        CHECK(near(p.z0, -kMassingFrontPadSink));
+    }
+    // Only the +w face (index 1) fronts the street.
+    REQUIRE(fronting.size() == 4);
+    CHECK(fronting[0] == 0);
+    CHECK(fronting[1] == 1);
+    CHECK(fronting[2] == 0);
+    CHECK(fronting[3] == 0);
+    // A carriageway reaching y 7..13: the pads are cut to 1.95 m, their fronts at y 6.95.
+    const Front close = run(10.0, pads, fronting);
+    REQUIRE(close.props.size() > 0);
+    REQUIRE(pads.size() == close.props.size());
+    for (const MassingBox& p : pads) CHECK(near(p.sx, 1.95));
+    // Overhead pieces take no pad.
+    MassingFrontRule sign = front("SIGN", 2.0, {"street"});
+    sign.dz = kMassingPropBody;
+    Front over;
+    massingFrontage({sign}, northStreet(), {}, {host()}, include, hosts, -1.0, nullptr, over.props, over.counts,
+                    over.totals, &pads, nullptr);
+    CHECK(over.props.size() > 0);
+    CHECK(pads.empty());
+}
+
+namespace {
+struct Roofs {
+    std::vector<MassingBox> boxes;
+    MassingRoofCounts counts;
+};
+// The first box is the host; every box is included.
+Roofs roofs(const std::vector<MassingBox>& boxes, const MassingGround& ground = {}) {
+    Roofs r;
+    const std::vector<bool> include(boxes.size(), true);
+    std::vector<bool> hosts(boxes.size(), false);
+    if (!hosts.empty()) hosts[0] = true;
+    massingRoofs(ground, boxes, include, hosts, r.boxes, r.counts);
+    return r;
+}
+std::size_t ofKind(const Roofs& r, const std::string& kind) {
+    std::size_t n = 0;
+    for (const MassingBox& b : r.boxes) n += b.kind == kind ? 1 : 0;
+    return n;
+}
+} // namespace
+
+TEST_CASE("massing roofs: rails on the edges that drop away, clutter on the top") {
+    const Roofs r = roofs({host()});
+    CHECK(r.counts.roofs == 1);
+    CHECK(r.counts.bare == 0);
+    // Four edges, each from 0.15 m to 0.15 m short of its end: 2 x 9.7 + 2 x 19.7 m.
+    CHECK(near(r.counts.railed, 58.8, 1e-6));
+    CHECK(ofKind(r, "barrier") == 4);
+    CHECK(r.counts.posts == 2 * 5 + 2 * 8 - 4); // the corners' end posts coincide
+    CHECK(ofKind(r, "post") == r.counts.posts);
+    CHECK(r.counts.tanks >= 1);
+    CHECK(r.counts.units == 6);
+    CHECK(ofKind(r, "tank") == r.counts.tanks);
+    CHECK(ofKind(r, "unit") == r.counts.units);
+    CHECK(ofKind(r, "aerial") == 2 * r.counts.aerials);
+    std::vector<MassingFoot> clutter;
+    for (const MassingBox& b : r.boxes) {
+        CHECK(b.row == "H-1");
+        CHECK(b.source == MassingSource::Invented);
+        CHECK(massingLookSurface(b) == MassingLookSurface::GalvSteel);
+        CHECK(b.z1 > 8.0);
+        CHECK(b.z0 >= 8.0 - 0.06);
+        if (b.kind == "tank" || b.kind == "unit") {
+            const MassingFoot f = massingBoxFoot(b);
+            CHECK(std::fabs(f.x) + f.hx <= 10.0 - kMassingRoofEdgeIn + 1e-6);
+            CHECK(std::fabs(f.y) + f.hy <= 5.0 - kMassingRoofEdgeIn + 1e-6);
+            for (const MassingFoot& o : clutter) CHECK_FALSE(massingFeetOverlap(f, o, kMassingRoofClutterGap - 1e-6));
+            clutter.push_back(f);
+        }
+    }
+    // Stable.
+    const Roofs again = roofs({host()});
+    REQUIRE(again.boxes.size() == r.boxes.size());
+    for (std::size_t k = 0; k < r.boxes.size(); ++k) {
+        CHECK(again.boxes[k].id == r.boxes[k].id);
+        CHECK(near(again.boxes[k].cx, r.boxes[k].cx));
+    }
+}
+
+TEST_CASE("massing roofs: a neighbour or the ground at the top shares the edge; boxes on the top keep clutter off") {
+    // A neighbour as high along the +u edge: no rail there.
+    const Roofs n = roofs({host(), flatBox("N-1", 15, 0, 10, 10, 0, 8)});
+    CHECK(near(n.counts.railed, 58.8 - 9.7, 1e-6));
+    // A lower neighbour leaves the rail.
+    const Roofs low = roofs({host(), flatBox("N-1", 15, 0, 10, 10, 0, 6)});
+    CHECK(near(low.counts.railed, 58.8, 1e-6));
+    // The ground at the top beyond the +w edge.
+    const Ground hill = makeGround(41, 41, -20.0, -20.0, [](double, double y) { return y >= 5.0 ? 8.0 : 0.0; });
+    const Roofs g = roofs({host()}, hill.view());
+    CHECK(near(g.counts.railed, 58.8 - 19.7, 1e-6));
+    // A box standing on the top keeps the clutter off its footprint.
+    const MassingBox tower = flatBox("T-1", 0, 0, 6, 6, 8, 14);
+    const Roofs t = roofs({host(), tower});
+    for (const MassingBox& b : t.boxes)
+        if (b.kind == "tank" || b.kind == "unit" || b.kind == "aerial")
+            CHECK_FALSE(massingFeetOverlap(massingBoxFoot(b), massingBoxFoot(tower), 0.0));
+}
+
+TEST_CASE("massing roofs: small, low or sloped tops are left bare") {
+    CHECK(roofs({host(0.0, 2.0)}).counts.bare == 1);
+    CHECK(roofs({host(0.0, 2.0)}).boxes.empty());
+    CHECK(roofs({flatBox("S-1", 0, 0, 2.5, 10, 0, 8)}).boxes.empty());
+    CHECK(roofs({flatBox("S-1", 0, 0, 3.5, 4, 0, 8)}).boxes.empty());
+    MassingBox sloped = host();
+    sloped.sloped = true;
+    sloped.slopeFrom = 6.0;
+    sloped.slopeTo = 8.0;
+    CHECK(roofs({sloped}).boxes.empty());
+}
+
+TEST_CASE("massing frontage: a rule's scale reads from its column") {
+    std::vector<MassingFrontRule> rules;
+    std::string error;
+    const std::string good = "id,asset,width_m,depth_m,height_m,scale\n"
+                             "A,/Game/A.A,2,1,5,0.6\n"
+                             "B,/Game/B.B,2,1,5,\n";
+    REQUIRE(importMassingFront(good, rules, &error));
+    CHECK(near(rules[0].scale, 0.6));
+    CHECK(near(rules[1].scale, 1.0));
+    const std::string zero = "id,asset,width_m,depth_m,height_m,scale\n"
+                             "A,/Game/A.A,2,1,5,0\n";
+    CHECK_FALSE(importMassingFront(zero, rules, &error));
+}
