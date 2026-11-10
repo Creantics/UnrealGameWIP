@@ -40,7 +40,7 @@ constexpr float TailCandela = 3.f, BrakeCandela = 8.f, TailReach = 250.f;
 const FVector TailGlowAt(-175.0, 0.0, 40.0);
 const FRotator TailGlowAim(-60.0, 180.0, 0.0);
 const FLinearColor GlassColor(0.015f, 0.018f, 0.022f);
-const TCHAR* const GlassMeshPath = TEXT("/Game/Vehicles/PartyVanGlass/SM_PartyVanGlass.SM_PartyVanGlass");
+const TCHAR* const GlassMeshPath = TEXT("/Game/Vehicles/PartyVanGlass/SM_PartyVanGlass/StaticMeshes/SM_PartyVanGlass.SM_PartyVanGlass");
 constexpr float LookEvery = 0.5f;
 const TCHAR* const BodyLookPath = TEXT("/Game/Vehicles/PartyVan/M_VanBody.M_VanBody");
 const TCHAR* const LensLookPath = TEXT("/Game/Vehicles/PartyVan/M_VanLamp.M_VanLamp");

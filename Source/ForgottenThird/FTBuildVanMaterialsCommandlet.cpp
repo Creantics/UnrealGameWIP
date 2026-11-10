@@ -273,7 +273,7 @@ int32 UFTBuildVanMaterialsCommandlet::Main(const FString& Params)
 	// Start from nothing: replace the files up front, before anything loads the old assets.
 	for (const TCHAR* Package : Packages)
 	{
-		const FString File = PackageFile(Package);
+		const FString File = FTVanMaterialsBuild::PackageFile(Package);
 		if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVanMaterials: couldn't replace %s."), *File);
