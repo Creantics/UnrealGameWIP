@@ -241,7 +241,7 @@ bool learn(NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n, const NpcDeed
 }
 
 // Queues rumours from an NPC that just learned a deed at `fromHops` (0 first hand, 1 hop1).
-void spread(NpcMemoryWorld& w, const NpcTables& t, std::uint16_t from, const NpcDeed& d, std::uint8_t fromHops, std::uint8_t lead) {
+void queueRumours(NpcMemoryWorld& w, const NpcTables& t, std::uint16_t from, const NpcDeed& d, std::uint8_t fromHops, std::uint8_t lead) {
     if (fromHops >= 2 || !validNpc(w, from) || w.npcs[from].dead || d.type >= t.deeds.size()) return;
     const std::int32_t m = t.deeds[d.type].magnitude;
     for (const NpcTie& tie : t.ties) {
@@ -299,9 +299,9 @@ std::uint32_t recordDeed(NpcMemoryWorld& w, const NpcTables& t, NpcDeed d, bool 
 
     if (!secret) {
         if (d.victim != kNoNpc && learn(w, t, d.victim, d, NpcLearn::Victim, d.lead, 100, 0))
-            spread(w, t, d.victim, d, 0, d.lead);
+            queueRumours(w, t, d.victim, d, 0, d.lead);
         for (std::uint16_t x : d.witnesses)
-            if (x != kNoNpc && learn(w, t, x, d, NpcLearn::Witness, d.lead, 100, 0)) spread(w, t, x, d, 0, d.lead);
+            if (x != kNoNpc && learn(w, t, x, d, NpcLearn::Witness, d.lead, 100, 0)) queueRumours(w, t, x, d, 0, d.lead);
     }
 
     if (checkExpectations) {
@@ -416,7 +416,7 @@ void npcCheckpoint(NpcMemoryWorld& w, const NpcTables& t, std::uint32_t now, std
         if (!d || !validNpc(w, r.target)) continue;
         const NpcDeed deed = *d;
         const NpcLearn how = r.hops == 1 ? NpcLearn::Hop1 : NpcLearn::Hop2;
-        if (learn(w, t, r.target, deed, how, r.lead, r.closeness, 0)) spread(w, t, r.target, deed, r.hops, r.lead);
+        if (learn(w, t, r.target, deed, how, r.lead, r.closeness, 0)) queueRumours(w, t, r.target, deed, r.hops, r.lead);
     }
     std::uint32_t keep = 0;
     for (std::uint32_t i = 0; i < w.rumourCount; ++i)
@@ -433,7 +433,7 @@ void npcCheckpoint(NpcMemoryWorld& w, const NpcTables& t, std::uint32_t now, std
         if (t.deeds[deed.type].magnitude * static_cast<std::int32_t>(crowdPermille) < tu.streetThreshold) continue;
         for (std::uint16_t n = 0; n < w.npcCount; ++n) {
             if (n == deed.victim || t.npcs[n].district != deed.district) continue;
-            if (learn(w, t, n, deed, NpcLearn::Hop1, kNoLead, 0, 0)) spread(w, t, n, deed, 1, kNoLead);
+            if (learn(w, t, n, deed, NpcLearn::Hop1, kNoLead, 0, 0)) queueRumours(w, t, n, deed, 1, kNoLead);
         }
     }
 
@@ -459,7 +459,7 @@ bool npcReveal(NpcMemoryWorld& w, const NpcTables& t, std::uint32_t seq, std::ui
     if (!d) return false;
     const NpcDeed deed = *d;
     if (!learn(w, t, npc, deed, NpcLearn::Witness, deed.lead, 100, t.tuning.kReveal)) return false;
-    spread(w, t, npc, deed, 0, deed.lead);
+    queueRumours(w, t, npc, deed, 0, deed.lead);
     return true;
 }
 
@@ -630,7 +630,7 @@ namespace {
 
 using Row = std::vector<std::string>;
 
-bool splitCsv(std::string_view text, std::vector<Row>& rows) {
+bool npcCsvSplit(std::string_view text, std::vector<Row>& rows) {
     rows.clear();
     Row row;
     std::string cell;
@@ -714,7 +714,7 @@ struct Sheet {
     Sheet(const char* n, std::string* e) : name(n), error(e) {}
 
     bool open(std::string_view text, std::initializer_list<const char*> need) {
-        if (!splitCsv(text, rows)) return fail(0, "unclosed quote");
+        if (!npcCsvSplit(text, rows)) return fail(0, "unclosed quote");
         if (rows.empty()) return fail(0, "no header");
         header = rows.front();
         rows.erase(rows.begin());
