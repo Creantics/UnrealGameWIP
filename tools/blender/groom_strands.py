@@ -136,7 +136,11 @@ With no "where" an op applies to every strand. Ops run in order:
                                           its length it droops (droop, with "hang" raised until the tip is below the
                                           lock's highest point) and flicks out at the tip. s strands per lock, roots
                                           in a width-cm disk, converge on the guide as (1 - t)^taper, inner strands
-                                          ending short (short..1 of the length): a pointed bundle with gaps between
+                                          ending short (short..1 of the length): a pointed bundle with gaps between.
+                                          "follow": [lo, hi] instead: the lock runs along its seed strand to an arc
+                                          fraction in lo..hi, leaves the mass there rise deg (cap maxdev, default 35)
+                                          off the local surface, and from bend_from (0.25) of its free length on bends
+                                          back toward the head (back) and down (droop): a soft lock, not a ray
   {"op": "smooth", "amount": f, "iters": n}
                                           straighten the curl in each strand: n passes (default 4) moving every point a
                                           fraction f (default 0.5) toward the middle of its neighbours, the root fixed
@@ -435,16 +439,42 @@ for op in spec.get("ops", []):
                 d0 = tf * np.cos(cap) + side / max(np.linalg.norm(side), 1e-9) * np.sin(cap)
             tL = rng.uniform(tlo, thi)
             tg = op.get("droop", 1.0)
-            for _ in range(8):   # side locks must hang: tip below the lock's highest point
-                fall = np.clip((tt - 0.5) / 0.5, 0, 1) ** 2
-                flick = np.clip((tt - 0.85) / 0.15, 0, 1) * op.get("flick", 0.4)
-                tD = d0[None, :] - tup[None, :] * (tg * fall)[:, None] + tn0[None, :] * flick[:, None]
+            if op.get("follow"):
+                # the lock runs along its seed strand's own path out to an arc fraction, leaves the mass there at most
+                # rise deg off the local surface, then curves back toward the head (back) and down (droop)
+                tsl = np.linalg.norm(np.diff(tq, axis=0), axis=1)
+                tcum = np.concatenate([[0.0], np.cumsum(tsl)])
+                ta0 = rng.uniform(*op["follow"]) * tcum[-1]
+                tkB = op.get("base_points", 10)
+                tsB = np.linspace(0.0, ta0, tkB)
+                tB = np.stack([np.interp(tsB, tcum, tq[:, c]) for c in range(3)], 1)
+                tE = tB[-1]
+                tnb = head_near(tE[None, :])[1][0]
+                tb = tB[-1] - tB[-2]
+                tb -= tnb * (tb @ tnb)
+                tb /= max(np.linalg.norm(tb), 1e-9)
+                rise = np.radians(min(op.get("rise", 25.0), op.get("maxdev", 35.0)))
+                d0 = tb * np.cos(rise) + tnb * np.sin(rise)
+                f0 = op.get("bend_from", 0.25)
+                fall = np.clip((tt - f0) / (1 - f0), 0, 1) ** op.get("bend_power", 1.5)
+                tD = (d0[None, :] - tnb[None, :] * (op.get("back", 1.0) * fall)[:, None]
+                      - tup[None, :] * (tg * fall)[:, None])
                 tD /= np.linalg.norm(tD, axis=1, keepdims=True)
-                tG = R0[i] + np.vstack([[0, 0, 0], np.cumsum(tD[:-1] * (tL / (tK - 1)), axis=0)])
-                if not op.get("hang") or tG[-1, 2] < tG[:, 2].max() - op.get("hang_drop", 0.5):
-                    break
-                tg *= 1.5
-            hung += bool(op.get("hang"))
+                tF = tE + np.vstack([[0, 0, 0], np.cumsum(tD[:-1] * (tL / (tK - 1)), axis=0)])
+                tG = np.vstack([tB[:-1], tF])
+            else:
+                for _ in range(8):   # side locks must hang: tip below the lock's highest point
+                    fall = np.clip((tt - 0.5) / 0.5, 0, 1) ** 2
+                    flick = np.clip((tt - 0.85) / 0.15, 0, 1) * op.get("flick", 0.4)
+                    tD = d0[None, :] - tup[None, :] * (tg * fall)[:, None] + tn0[None, :] * flick[:, None]
+                    tD /= np.linalg.norm(tD, axis=1, keepdims=True)
+                    tG = R0[i] + np.vstack([[0, 0, 0], np.cumsum(tD[:-1] * (tL / (tK - 1)), axis=0)])
+                    if not op.get("hang") or tG[-1, 2] < tG[:, 2].max() - op.get("hang_drop", 0.5):
+                        break
+                    tg *= 1.5
+                hung += bool(op.get("hang"))
+            tgl = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(tG, axis=0), axis=1))])
+            tu = tgl / max(tgl[-1], 1e-9)   # the guide's arc fraction
             # the lock's strands: roots in ta disk on the scalp, converging on the guide toward ta pointed tip
             ta = rng.normal(size=(tS, 3))
             ta -= tn0 * (ta @ tn0)[:, None]
@@ -452,14 +482,15 @@ for op in spec.get("ops", []):
             to = ta * (op.get("width", 1.2) / 2 * np.sqrt(rng.uniform(0, 1, tS)))[:, None]
             to = onto_head(np.repeat(R0[i][None, :], tS, 0), to)
             frac = rng.uniform(op.get("short", 0.8), 1.0, tS)   # inner strands end short of the tip: a taper
-            Wi = np.interp(np.linspace(0, 1, tK), np.linspace(0, 1, len(tq)), W[off[i]:off[i + 1]])
+            tnG = len(tG)
+            Wi = np.interp(np.linspace(0, 1, tnG), np.linspace(0, 1, len(tq)), W[off[i]:off[i + 1]])
             for k in range(tS):
-                tk = tt * frac[k]
-                Gk = np.stack([np.interp(tk, tt, tG[:, c]) for c in range(3)], 1)
+                tk = tu * frac[k]
+                Gk = np.stack([np.interp(tk, tu, tG[:, c]) for c in range(3)], 1)
                 newP.append(Gk + to[k][None, :] * ((1 - tk) ** op.get("taper", 1.0))[:, None])
                 newW.append(Wi)
             row = st[i].copy()
-            row["n"] = tK
+            row["n"] = tnG
             rows += [row] * tS
         if rows:
             P = np.concatenate([P] + newP)
@@ -710,7 +741,8 @@ for op in spec.get("ops", []):
     print("op %-6s %d strands in the region (mask > .5)" % (kind, int((m > 0.5).sum())))
 summary("out")
 if spec.get("dump"):  # the finished strands as the abc writes them (groom frame, cm): "P" points, "n" points per strand
-    np.savez_compressed(spec["dump"], P=P.astype(np.float32), n=st["n"].astype(np.int32), W=W.astype(np.float32))
+    np.savez_compressed(spec["dump"], P=P.astype(np.float32), n=st["n"].astype(np.int32), W=W.astype(np.float32),
+                        g=st["g"].astype(np.int32))
     print("DUMP", spec["dump"])
 # "zones": {name: region} (the "where" keys, tested on every point): how much hair ends up where it must not be, such
 # as in front of a lens or over a glasses arm; points of strands rooted inside the zone are counted apart
