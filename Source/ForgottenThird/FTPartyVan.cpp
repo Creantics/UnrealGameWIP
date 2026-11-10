@@ -33,9 +33,9 @@ constexpr float KmhToCms = 100000.f / 3600.f;
 // corners, tail lamps 10 wide and 28 tall at the back. Glow is the lens's emissive scale when lit.
 const FVector LensAt[4] = {FVector(174.0, -51.0, 77.0), FVector(174.0, 51.0, 77.0), FVector(-153.0, -66.0, 83.0), FVector(-153.0, 66.0, 83.0)};
 const FVector LensSize[4] = {FVector(4.0, 25.0, 14.0), FVector(4.0, 25.0, 14.0), FVector(4.0, 10.0, 28.0), FVector(4.0, 10.0, 28.0)};
-constexpr float HeadGlow = 40.f, TailGlowOn = 10.f, BrakeGlow = 60.f;
+constexpr float HeadGlow = 25.f, TailGlowOn = 4.f, BrakeGlow = 12.f;
 constexpr float HeadCandela = 1500.f, HeadReach = 3000.f; // a low beam's spread; street lamps are 400 cd
-constexpr float TailCandela = 20.f, BrakeCandela = 60.f, TailReach = 350.f;
+constexpr float TailCandela = 2.f, BrakeCandela = 6.f, TailReach = 300.f; // kept low: the glow sits close behind the body
 constexpr float LookEvery = 0.5f;
 const TCHAR* const BodyLookPath = TEXT("/Game/Vehicles/PartyVan/M_VanBody.M_VanBody");
 const TCHAR* const LensLookPath = TEXT("/Game/Vehicles/PartyVan/M_VanLamp.M_VanLamp");
@@ -198,7 +198,7 @@ void AFTPartyVan::SetupLook(bool bBodyAsset)
 	{
 		HeadBeam[I]->SetRelativeLocationAndRotation(LensAt[I] + FVector(8.0, 0.0, 0.0), FRotator(-4.0, 0.0, 0.0));
 	}
-	TailGlow->SetRelativeLocation(FVector(-175.0, 0.0, 83.0));
+	TailGlow->SetRelativeLocation(FVector(-240.0, 0.0, 60.0));
 
 	// -VanWear=front,rear,left,right,dirt (0 to 4 each) starts the van that worn, for a look at the wear.
 	FString WearText;
