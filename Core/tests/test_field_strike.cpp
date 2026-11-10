@@ -1,0 +1,230 @@
+#include "ftcore/ArenaFight.h"
+#include "ftcore/FieldStrike.h"
+#include "TestAssets.h"
+#include <ostream>
+#include <doctest/doctest.h>
+
+#include <string>
+
+using namespace ftcore;
+
+namespace {
+
+constexpr float kDt = 1.f / 60.f;
+
+ArenaTable shipped() {
+    std::string text;
+    if (!ftcore_test::readProjectData("Battle/arena.json", text)) FAIL("Data/Battle/arena.json not found");
+    ArenaTable t;
+    std::string err;
+    REQUIRE_MESSAGE(importArenaTable(text, t, &err), err);
+    return t;
+}
+
+struct Run {
+    int started = 0;
+    int hits = 0;
+    int damage = 0;
+    std::uint8_t lastMove = 0xFF;
+    bool sawActive = false;
+};
+
+// Ticks `seconds` with nothing pressed, collecting the events.
+void idle(FieldStrike& s, float seconds, Run& r, const FieldTarget* t, std::size_t n, Vec2 pos = {}, Vec2 face = {1.f, 0.f}) {
+    for (float x = 0.f; x < seconds; x += kDt) {
+        const ArenaOutput& o = s.tick(kDt, false, false, pos, face, t, n);
+        if (o.player.part == ArenaPart::Active) r.sawActive = true;
+        for (const ArenaEvent& e : o.events) {
+            CHECK(e.source == kArenaPlayer);
+            if (e.type == ArenaEventType::AttackStarted) {
+                ++r.started;
+                r.lastMove = e.move;
+            }
+            if (e.type == ArenaEventType::Hit) {
+                ++r.hits;
+                r.damage += e.amount;
+            }
+        }
+    }
+}
+
+void press(FieldStrike& s, bool heavy, Run& r, const FieldTarget* t, std::size_t n, Vec2 pos = {}, Vec2 face = {1.f, 0.f}) {
+    const ArenaOutput& o = s.tick(kDt, !heavy, heavy, pos, face, t, n);
+    for (const ArenaEvent& e : o.events) {
+        if (e.type == ArenaEventType::AttackStarted) {
+            ++r.started;
+            r.lastMove = e.move;
+        }
+        if (e.type == ArenaEventType::Hit) {
+            ++r.hits;
+            r.damage += e.amount;
+        }
+    }
+}
+
+} // namespace
+
+TEST_CASE("field strike: every lead's light hits a dummy in front, once per attack, with the kit's damage") {
+    const ArenaTable table = shipped();
+    for (const char* lead : {"devin", "duy", "third"}) {
+        CAPTURE(lead);
+        const ArenaFighter kit = table.fighter(lead);
+        FieldStrike s;
+        s.begin(kit);
+        const ArenaAttack* first = arenaPlayerAttack(kit, 0);
+        REQUIRE(first != nullptr);
+        // Just inside reach, straight ahead.
+        const FieldTarget dummy{Vec2{first->range * 0.8f, 0.f}, 0.4f, true};
+        Run r;
+        press(s, false, r, &dummy, 1);
+        CHECK(r.started == 1);
+        CHECK(r.lastMove == 0);
+        CHECK(s.attacking());
+        CHECK(s.output().player.action == ArenaAction::Light);
+        idle(s, first->total() + 0.1f, r, &dummy, 1);
+        CHECK(r.sawActive);
+        CHECK(r.hits == 1);
+        CHECK(r.damage == first->damage);
+        CHECK_FALSE(s.attacking());
+        CHECK(s.output().player.action == ArenaAction::Idle);
+        CHECK(s.hits() == 1);
+        // The heavy too.
+        Run h;
+        press(s, true, h, &dummy, 1);
+        CHECK(h.lastMove == kArenaHeavyMove);
+        CHECK(s.output().player.action == ArenaAction::Heavy);
+        idle(s, kit.heavy.total() + 0.1f, h, &dummy, 1);
+        if (fieldStrikeReaches(kit.heavy, Vec2{}, Vec2{1.f, 0.f}, dummy.at, dummy.radius)) {
+            CHECK(h.hits == 1);
+            CHECK(h.damage == kit.heavy.damage);
+        }
+    }
+}
+
+TEST_CASE("field strike: nothing is hit behind, out of reach or dead") {
+    const ArenaTable table = shipped();
+    const ArenaFighter kit = table.fighter("devin");
+    FieldStrike s;
+    s.begin(kit);
+    const FieldTarget targets[3] = {
+        {Vec2{-1.f, 0.f}, 0.4f, true},  // behind
+        {Vec2{40.f, 0.f}, 0.4f, true},  // far
+        {Vec2{1.f, 0.f}, 0.4f, false},  // in front, gone
+    };
+    Run r;
+    press(s, false, r, targets, 3);
+    idle(s, 2.f, r, targets, 3);
+    CHECK(r.started == 1);
+    CHECK(r.hits == 0);
+}
+
+TEST_CASE("field strike: Duy's shot reaches down its lane, the Third's cast hits at range") {
+    const ArenaTable table = shipped();
+    const ArenaFighter duy = table.fighter("duy");
+    const ArenaAttack* shot = arenaPlayerAttack(duy, 0);
+    REQUIRE(shot != nullptr);
+    CHECK(shot->range > 5.f);
+    FieldStrike s;
+    s.begin(duy);
+    const FieldTarget far{Vec2{shot->range - 1.f, 0.f}, 0.4f, true};
+    Run r;
+    press(s, false, r, &far, 1);
+    idle(s, shot->total() + 0.1f, r, &far, 1);
+    CHECK(r.hits == 1);
+    CHECK(arenaPlayerStrike(duy, 0) == FightClip::WeaponRight);
+
+    const ArenaFighter third = table.fighter("third");
+    const ArenaAttack* cast = arenaPlayerAttack(third, 0);
+    REQUIRE(cast != nullptr);
+    FieldStrike m;
+    m.begin(third);
+    const FieldTarget mid{Vec2{cast->range, 0.f}, 0.4f, true};
+    Run c;
+    press(m, false, c, &mid, 1);
+    idle(m, cast->total() + 0.1f, c, &mid, 1);
+    CHECK(c.hits == 1);
+    CHECK(arenaPlayerStrike(third, 0) == FightClip::Cast);
+}
+
+TEST_CASE("field strike: the light chain goes on when pressed in time, wraps, and starts over after a pause") {
+    const ArenaTable table = shipped();
+    const ArenaFighter kit = table.fighter("devin");
+    REQUIRE(kit.lightCount >= 2);
+    FieldStrike s;
+    s.begin(kit);
+    Run r;
+    std::uint8_t moves[8] = {};
+    int n = 0;
+    for (int i = 0; i < kit.lightCount + 1; ++i) {
+        press(s, false, r, nullptr, 0);
+        moves[n++] = r.lastMove;
+        const ArenaAttack* a = arenaPlayerAttack(kit, r.lastMove);
+        REQUIRE(a != nullptr);
+        // Into the recovery's cancel point, then the next press.
+        idle(s, a->startup + a->active + a->recovery * a->cancel + 0.02f, r, nullptr, 0);
+    }
+    for (int i = 0; i < kit.lightCount; ++i) CHECK(moves[i] == i);
+    CHECK(moves[kit.lightCount] == 0); // wrapped
+    idle(s, 3.f, r, nullptr, 0);
+    press(s, false, r, nullptr, 0);
+    CHECK(r.lastMove == 0); // after a pause: the first again
+}
+
+TEST_CASE("field strike: a press during the attack is buffered, not lost, and the facing is held") {
+    const ArenaTable table = shipped();
+    const ArenaFighter kit = table.fighter("devin");
+    FieldStrike s;
+    s.begin(kit);
+    Run r;
+    press(s, false, r, nullptr, 0, Vec2{}, Vec2{0.f, 1.f});
+    const ArenaAttack* a = arenaPlayerAttack(kit, 0);
+    REQUIRE(a != nullptr);
+    // Turning mid-attack doesn't turn the strike.
+    idle(s, a->startup * 0.5f, r, nullptr, 0, Vec2{}, Vec2{1.f, 0.f});
+    CHECK(s.output().player.facing.y == doctest::Approx(1.f));
+    // Pressed just before the cancel point: it starts once it can.
+    const float toCancel = a->startup + a->active + a->recovery * a->cancel - s.output().player.actionTime;
+    const float early = toCancel - kit.bufferTime * 0.5f;
+    if (early > 0.f) idle(s, early, r, nullptr, 0);
+    press(s, false, r, nullptr, 0);
+    idle(s, kit.bufferTime, r, nullptr, 0);
+    CHECK(r.started == 2);
+}
+
+TEST_CASE("field strike: maxTargets limits a strike to the nearest ones") {
+    ArenaFighter kit;
+    kit.light[0].range = 3.f;
+    kit.light[0].arcCos = -1.f;
+    kit.light[0].maxTargets = 1;
+    kit.lightCount = 1;
+    FieldStrike s;
+    s.begin(kit);
+    const FieldTarget t[2] = {{Vec2{2.f, 0.f}, 0.4f, true}, {Vec2{1.f, 0.f}, 0.4f, true}};
+    Run r;
+    press(s, false, r, t, 2);
+    std::uint8_t hitTarget = 0xFF;
+    for (float x = 0.f; x < 2.f; x += kDt) {
+        for (const ArenaEvent& e : s.tick(kDt, false, false, Vec2{}, Vec2{1.f, 0.f}, t, 2).events)
+            if (e.type == ArenaEventType::Hit) {
+                ++r.hits;
+                hitTarget = e.target;
+            }
+    }
+    CHECK(r.hits == 1);
+    CHECK(hitTarget == 1);
+}
+
+TEST_CASE("field strike: the lane test and the arc test") {
+    ArenaAttack lane;
+    lane.range = 10.f;
+    lane.width = 0.4f;
+    CHECK(fieldStrikeReaches(lane, Vec2{}, Vec2{1.f, 0.f}, Vec2{9.f, 0.3f}, 0.4f));
+    CHECK_FALSE(fieldStrikeReaches(lane, Vec2{}, Vec2{1.f, 0.f}, Vec2{9.f, 1.f}, 0.4f));
+    CHECK_FALSE(fieldStrikeReaches(lane, Vec2{}, Vec2{1.f, 0.f}, Vec2{-1.f, 0.f}, 0.4f));
+    ArenaAttack arc;
+    arc.range = 2.f;
+    arc.arcCos = 0.5f;
+    CHECK(fieldStrikeReaches(arc, Vec2{}, Vec2{1.f, 0.f}, Vec2{1.f, 1.f}, 0.4f));
+    CHECK_FALSE(fieldStrikeReaches(arc, Vec2{}, Vec2{1.f, 0.f}, Vec2{0.f, 1.5f}, 0.4f));
+    CHECK(fieldStrikeReaches(arc, Vec2{}, Vec2{1.f, 0.f}, Vec2{0.f, 0.f}, 0.4f));
+}

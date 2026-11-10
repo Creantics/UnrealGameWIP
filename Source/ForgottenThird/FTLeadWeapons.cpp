@@ -94,14 +94,31 @@ void FFTLeadWeapons::Begin(AFTArenaFighter* InFigure, const FFTLeadLook& Look, c
 	{
 		return;
 	}
+	Begin(static_cast<AActor*>(InFigure), InFigure->GetLeadSkin(), Look, InKit);
+	if (IsOn())
+	{
+		ArenaFigure = InFigure;
+		if (bClips)
+		{
+			// The body strikes: the shapes' blade goes.
+			InFigure->SetBladeShown(false);
+		}
+	}
+}
+
+void FFTLeadWeapons::Begin(AActor* Owner, USkeletalMeshComponent* Body, const FFTLeadLook& Look, const ftcore::ArenaFighter& InKit)
+{
+	if (!Owner || (Figure.Get() == Owner && Skin.Get() == Body))
+	{
+		return;
+	}
 	Reset();
-	USkeletalMeshComponent* Body = InFigure->GetLeadSkin();
 	if (!Body || !Body->GetSkeletalMeshAsset())
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: lead weapon: the player's figure wears no look; no strike clips, props or weapon effects."));
 		return;
 	}
-	Figure = InFigure;
+	Figure = Owner;
 	Skin = Body;
 	Anim = Cast<UFTLocomotionAnimInstance>(Body->GetAnimInstance());
 	Kit = InKit;
@@ -186,11 +203,6 @@ void FFTLeadWeapons::LoadClips(const FFTLeadLook& Look)
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: lead weapon: no %s for %s in %s (retarget them with FTBuildRig -Names=..., docs/ARENA_DEMO.md)%s."),
 			*Missing, *Body->GetName(), *Folder, bClips ? TEXT("; the strikes without one are thrown as the punch on their side") : TEXT("; the attacks play no clips"));
-	}
-	// The body strikes: the shapes' blade goes.
-	if (bClips)
-	{
-		Figure->SetBladeShown(false);
 	}
 }
 
@@ -387,7 +399,7 @@ bool FFTLeadWeapons::GetMuzzle(FVector& OutAt) const
 
 void FFTLeadWeapons::Freeze(double T)
 {
-	AFTArenaFighter* Body = Figure.Get();
+	AActor* Body = Figure.Get();
 	if (!Body || bFrozen)
 	{
 		return;
@@ -437,7 +449,7 @@ void FFTLeadWeapons::Thaw()
 		return;
 	}
 	bFrozen = false;
-	if (AFTArenaFighter* Body = Figure.Get())
+	if (AActor* Body = Figure.Get())
 	{
 		Body->CustomTimeDilation = FrozenDilation;
 	}
@@ -459,6 +471,56 @@ void FFTLeadWeapons::Thaw()
 bool FFTLeadWeapons::StrikesLeft() const
 {
 	return IsLeft(Strike);
+}
+
+FVector FFTLeadWeapons::Chest() const
+{
+	if (const AFTArenaFighter* Arena = ArenaFigure.Get())
+	{
+		return Arena->GetChest();
+	}
+	const USkeletalMeshComponent* Body = Skin.Get();
+	for (const TCHAR* Bone : {TEXT("spine_05"), TEXT("spine_04"), TEXT("spine_03")})
+	{
+		if (Body && Body->DoesSocketExist(Bone))
+		{
+			return Body->GetSocketLocation(Bone);
+		}
+	}
+	const AActor* Owner = Figure.Get();
+	return Owner ? Owner->GetActorLocation() + FVector(0.0, 0.0, 40.0) : FVector::ZeroVector;
+}
+
+void FFTLeadWeapons::End()
+{
+	Thaw();
+	if (UFTLocomotionAnimInstance* Instance = Anim.Get())
+	{
+		Instance->ClearActions();
+		for (const FightClip StrikeClip : kStrikeClips)
+		{
+			Instance->SetActionClip(static_cast<int32>(StrikeClip), nullptr);
+		}
+	}
+	for (TWeakObjectPtr<UStaticMeshComponent>& Piece : Gauntlet)
+	{
+		if (Piece.IsValid())
+		{
+			Piece->DestroyComponent();
+		}
+	}
+	if (Pistol.IsValid())
+	{
+		Pistol->DestroyComponent();
+	}
+	for (TWeakObjectPtr<UFTVfxComponent>& Vfx : Fx)
+	{
+		if (Vfx.IsValid())
+		{
+			Vfx->DestroyComponent();
+		}
+	}
+	Reset();
 }
 
 void FFTLeadWeapons::Holster(bool bHolster)
@@ -581,7 +643,7 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 			{
 				if (UFTVfxComponent* Vfx = Fx[Burst].Get())
 				{
-					Vfx->SetWorldLocation(Figure->GetChest());
+					Vfx->SetWorldLocation(Chest());
 				}
 				Play(Burst, T);
 			}
@@ -591,7 +653,7 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 				{
 					const FName Hand = StrikesLeft() ? TEXT("hand_l") : TEXT("hand_r");
 					const FVector From = Body && Body->DoesSocketExist(Hand) ? Body->GetSocketLocation(Hand)
-						: Figure->GetChest();
+						: Chest();
 					Vfx->SetWorldLocationAndRotation(From, ConeTo(Facing));
 				}
 				Play(Bolt, T);
@@ -694,6 +756,7 @@ void FFTLeadWeapons::Reset()
 		At = -1.0;
 	}
 	Figure.Reset();
+	ArenaFigure.Reset();
 	Skin.Reset();
 	Anim.Reset();
 	bClips = false;

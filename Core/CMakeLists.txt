@@ -106,6 +106,7 @@ add_library(ftcore STATIC
     src/Inventory.cpp
     src/Shop.cpp
     src/ArenaFight.cpp
+    src/FieldStrike.cpp
     src/ArenaZone.cpp
     src/ArrowLane.cpp
     src/StickFlick.cpp
@@ -231,6 +232,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_shop.cpp
         tests/test_pause.cpp
         tests/test_arena.cpp
+    tests/test_field_strike.cpp
         tests/test_arena_zone.cpp
         tests/test_arrow_lane.cpp
         tests/test_stick_flick.cpp

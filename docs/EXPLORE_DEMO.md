@@ -40,10 +40,24 @@ spots say which objective they wait for.
 | Use (talk, pick up, open) | E or Enter | X |
 | Switch lead (with a party in config) | Tab | RB |
 | Show or hide the followers | P | LB |
+| Weapon, light attack (chain) | Left mouse or J | Right trigger |
+| Weapon, heavy attack | Right mouse or K | Y |
 | Pause menu | Esc | Start |
 
 The slide, landing roll, dodge roll and ledge grab, and their tunables, are in
 [MOVEMENT.md](MOVEMENT.md).
+
+The weapon is the lead's arena kit (`Data/Battle/arena.json`, the fighter named after the lead worn,
+lower case; else the default): Devin's gauntlets, Duy's pistol, the Third's casts, with the arena's
+props, strike clips and effects (`FFTLeadWeapons`, see [ARENA_DEMO.md](ARENA_DEMO.md)).
+`ftcore::FieldStrike` runs the attacks outside a fight: a press is buffered, the light chain goes on
+when pressed in time, the facing is held for the attack, and while it is active it hits each
+`AFTFieldDummy` in reach once (the kit's arc, or a lane for a shot), nearest first. Switching lead puts
+the new lead's weapon on. `-ExploreDummy` stands a dummy 3 m ahead once the lead is on the floor;
+`-ExploreAttackEvery=<s>` presses light every s seconds (every fourth press a heavy), and
+`-ExploreWeaponShot=<prefix>` (with `-ExploreWeaponShots=<n>`, `-ExploreWeaponShotDelay=<s>`) saves a shot as
+each attack goes active, then quits; with `-ExplorePortrait -ExplorePortraitYaw=90` they are side-on.
+Each hit logs `Field: dummy hit for <n>`. There is nothing to fight in the field yet but dummies.
 
 The keys are an Enhanced Input context made at runtime (`AFTExploreCharacter`), priority 2, above
 the story context. The pause menu (see [GAME_FRAME.md](GAME_FRAME.md), "Pause") is the player

@@ -69,12 +69,20 @@
 // -ExplorePortrait puts the camera in front of the face and keeps it there, for checking a look;
 // -ExplorePortraitYaw= (180 front, 90 side, 0 back), -ExplorePortraitArm=, -ExplorePortraitHeight= and
 // -ExplorePortraitPitch= move it, e.g. Arm=330 Height=0 Pitch=0 frames the whole body.
+//
+// The lead's weapon (FTLeadWeapons.h, as in the arena): left mouse, J or pad RT throws the kit's light attack (its chain),
+// right mouse, K or pad Y its heavy; ftcore::FieldStrike runs the attack from Data/Battle/arena.json's kit for the lead
+// worn (its name, lower case; else the default) and hits any AFTFieldDummy in reach. The props, clips and effects are
+// the arena's. -ExploreDummy stands a dummy 3 m ahead; -ExploreAttackEvery=<s> presses light every s seconds (every
+// fourth press a heavy), for captures.
 
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "InputActionValue.h"
 
+#include "FTLeadWeapons.h"
 #include "FTLocomotionAnimInstance.h"
+#include "ftcore/FieldStrike.h"
 #include "ftcore/DodgeRoll.h"
 #include "ftcore/LedgeHang.h"
 #include "FTLook.h"
@@ -134,6 +142,7 @@ public:
 	float CrouchSpeed = 150.f;
 
 	virtual void Tick(float DeltaSeconds) override;
+	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 	virtual void AddMovementInput(FVector WorldDirection, float ScaleValue = 1.f, bool bForce = false) override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
@@ -186,6 +195,13 @@ private:
 	void HandleInteract();
 	void HandleSwitchLead();
 	void HandleToggleParty();
+	void HandleLight();
+	void HandleHeavy();
+	// The worn look's weapon: its kit from Data/Battle/arena.json and the props, clips and effects on the body.
+	void BeginWeapon(const FFTLeadLook& Look);
+	void TickWeapon(float DeltaSeconds);
+	void TickWeaponShots();
+	void SpawnFieldDummy();
 	// Puts on a look, replacing the body, clips, pieces and grooms worn (FTLook).
 	void WearLook(const FFTLeadLook& Look);
 	// Gives the body's locomotion its loaded clips (and those found beside them) and the crouch its speed.
@@ -241,6 +257,10 @@ private:
 	TObjectPtr<UInputAction> SwitchLeadAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> PartyAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> LightAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> HeavyAction;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
@@ -328,4 +348,25 @@ private:
 	float SideHold = 0.f;
 	int32 LeadIndex = -1;
 	bool bPartyHidden = false;
+
+	// The weapon: Data/Battle/arena.json (loaded once), the kit worn, its attack rules and its props, clips and effects;
+	// the presses since the last tick, and -ExploreAttackEvery's timer.
+	ftcore::ArenaTable WeaponTable;
+	bool bWeaponTableTried = false;
+	bool bWeaponTable = false;
+	ftcore::FieldStrike Strike;
+	FFTLeadWeapons Weapons;
+	bool bPressLight = false;
+	bool bPressHeavy = false;
+	float AttackEvery = 0.f;
+	float AttackTimer = 0.f;
+	int32 AttackPresses = 0;
+	bool bDummyPending = false;
+	// -ExploreWeaponShot's prefix, shots left and taken, the settle time, the active attacks seen, the wait to quit.
+	FString WeaponShotPrefix;
+	int32 WeaponShotsLeft = 3;
+	int32 WeaponShotIndex = 0;
+	float WeaponShotDelay = 12.f;
+	int32 WeaponShotSeen = 0;
+	float WeaponQuitIn = 0.f;
 };

@@ -24,12 +24,17 @@
 #include "InputAction.h"
 #include "InputMappingContext.h"
 #include "InputModifiers.h"
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "UObject/ConstructorHelpers.h"
 
 #include "FTExploreDirector.h"
+#include "FTFieldDummy.h"
 #include "FTGameInstance.h"
 #include "FTMeshFacing.h"
 #include "ForgottenThird.h"
+#include "FTText.h"
 
 #include "ftcore/BattleDemo.h"
 
@@ -170,6 +175,16 @@ void AFTExploreCharacter::BeginPlay()
 		GetCharacterMovement()->MaxWalkSpeed = RunSpeed;
 	}
 	FParse::Value(FCommandLine::Get(), TEXT("LocoJump="), JumpEvery);
+	// -ExploreDummy stands a field dummy ahead once the lead is on the floor; -ExploreAttackEvery=<s> presses light.
+	bDummyPending = FParse::Param(FCommandLine::Get(), TEXT("ExploreDummy"));
+	FParse::Value(FCommandLine::Get(), TEXT("ExploreAttackEvery="), AttackEvery);
+	// -ExploreWeaponShot=<path prefix>: once -ExploreWeaponShotDelay=<s> (default 12) has passed, a 1600x900 shot (HUD
+	// hidden) as each attack goes active, <prefix>_<n>_<clip>.png, -ExploreWeaponShots=<n> of them (default 3), then quit.
+	if (FParse::Value(FCommandLine::Get(), TEXT("ExploreWeaponShot="), WeaponShotPrefix) && !WeaponShotPrefix.IsEmpty())
+	{
+		FParse::Value(FCommandLine::Get(), TEXT("ExploreWeaponShots="), WeaponShotsLeft);
+		FParse::Value(FCommandLine::Get(), TEXT("ExploreWeaponShotDelay="), WeaponShotDelay);
+	}
 	// -LocoCrouch holds a crouch; -LocoCrouchEvery=<s> gets down or up every s seconds (sprinting, as with -LocoRun,
 	// down is a slide).
 	if (FParse::Param(FCommandLine::Get(), TEXT("LocoCrouch")))
@@ -366,6 +381,146 @@ void AFTExploreCharacter::WearLook(const FFTLeadLook& Look)
 	{
 		SetupLocomotion(Loaded);
 	}
+	BeginWeapon(Look);
+}
+
+void AFTExploreCharacter::BeginWeapon(const FFTLeadLook& Look)
+{
+	if (!bWeaponTableTried)
+	{
+		bWeaponTableTried = true;
+		TArray<uint8> Bytes;
+		const FString File = FPaths::ProjectDir() / TEXT("Data/Battle/arena.json");
+		std::string Error;
+		std::vector<std::string> Warnings;
+		bWeaponTable = IFileManager::Get().FileExists(*File) && FFileHelper::LoadFileToArray(Bytes, *File)
+			&& ftcore::importArenaTable(FT::BytesAsText(Bytes), WeaponTable, &Error, &Warnings);
+		if (!bWeaponTable)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Field: no usable Data/Battle/arena.json; the lead fights with the built-in kit.\n%s"),
+				*FT::ToFString(Error));
+			WeaponTable = ftcore::ArenaTable();
+		}
+	}
+	const ftcore::ArenaFighter& Kit = WeaponTable.fighter(FT::ToUtf8(Look.Name.ToLower()));
+	// The body and its anim instance may be new: the props, effects and clips go on again.
+	Weapons.End();
+	Weapons.Begin(this, GetMesh(), Look, Kit);
+	Strike.begin(Kit);
+	bPressLight = bPressHeavy = false;
+	UE_LOG(LogForgottenThird, Display, TEXT("Field: weapon for %s (%d light attacks, heavy %.2f s), %s."), *Look.Name, Kit.lightCount,
+		Kit.heavy.total(), Weapons.IsOn() ? TEXT("props and clips on") : TEXT("no body to wear them"));
+}
+
+void AFTExploreCharacter::HandleLight()
+{
+	bPressLight = true;
+}
+
+void AFTExploreCharacter::HandleHeavy()
+{
+	bPressHeavy = true;
+}
+
+void AFTExploreCharacter::SpawnFieldDummy()
+{
+	const float HalfHeight = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	const FVector Forward = GetActorForwardVector().GetSafeNormal2D();
+	// The post is 180 cm tall, centred on its root: its base on the lead's floor.
+	const FVector At = GetActorLocation() + Forward * 300.0 + FVector(0.0, 0.0, 90.0 - HalfHeight);
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	const AFTFieldDummy* Dummy = GetWorld()->SpawnActor<AFTFieldDummy>(At, FRotator::ZeroRotator, Params);
+	UE_LOG(LogForgottenThird, Display, TEXT("Field: dummy %s at %s."), Dummy ? TEXT("stood") : TEXT("not spawned"), *At.ToCompactString());
+}
+
+void AFTExploreCharacter::TickWeapon(float DeltaSeconds)
+{
+	if (bDummyPending && GetWorld()->GetTimeSeconds() > 1.0 && GetCharacterMovement()->IsMovingOnGround())
+	{
+		bDummyPending = false;
+		SpawnFieldDummy();
+	}
+	if (AttackEvery > 0.f && (AttackTimer += DeltaSeconds) >= AttackEvery)
+	{
+		AttackTimer = 0.f;
+		// Every fourth press a heavy.
+		(++AttackPresses % 4 == 0 ? bPressHeavy : bPressLight) = true;
+	}
+	// The dummies in the world, in metres on the floor plane.
+	ftcore::FieldTarget Targets[ftcore::kMaxFieldTargets];
+	AFTFieldDummy* Dummies[ftcore::kMaxFieldTargets] = {};
+	std::size_t Count = 0;
+	for (TActorIterator<AFTFieldDummy> It(GetWorld()); It && Count < ftcore::kMaxFieldTargets; ++It)
+	{
+		const FVector At = It->GetActorLocation();
+		Targets[Count] = ftcore::FieldTarget{ftcore::Vec2{float(At.X / 100.0), float(At.Y / 100.0)}, It->Radius / 100.f, true};
+		Dummies[Count++] = *It;
+	}
+	const FVector Pos = GetActorLocation();
+	const FVector Face = GetActorForwardVector().GetSafeNormal2D();
+	const ftcore::ArenaOutput& Out = Strike.tick(DeltaSeconds, bPressLight, bPressHeavy,
+		ftcore::Vec2{float(Pos.X / 100.0), float(Pos.Y / 100.0)}, ftcore::Vec2{float(Face.X), float(Face.Y)}, Targets, Count);
+	bPressLight = bPressHeavy = false;
+	for (const ftcore::ArenaEvent& Event : Out.events)
+	{
+		if (Event.type == ftcore::ArenaEventType::Hit && Event.target < Count && Dummies[Event.target])
+		{
+			Dummies[Event.target]->TakeHit(Event.amount);
+		}
+	}
+	const double T = Strike.time();
+	Weapons.Feed(Out.events, T);
+	Weapons.Track(Out.player, T);
+	Weapons.Paint(T);
+	TickWeaponShots();
+}
+
+void AFTExploreCharacter::TickWeaponShots()
+{
+	if (WeaponShotPrefix.IsEmpty())
+	{
+		return;
+	}
+	const int32 Active = Weapons.GetActiveCount();
+	const bool bNew = Active > WeaponShotSeen;
+	WeaponShotSeen = Active;
+	if (WeaponShotsLeft <= 0)
+	{
+		if ((WeaponQuitIn -= GetWorld()->GetDeltaSeconds()) <= 0.f)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Field: weapon shots taken; quitting."));
+			WeaponShotPrefix.Reset();
+			FPlatformMisc::RequestExit(false, TEXT("ExploreWeaponShot"));
+		}
+		return;
+	}
+	if (!bNew || GetWorld()->GetTimeSeconds() < WeaponShotDelay)
+	{
+		return;
+	}
+	const APlayerController* Player = Cast<APlayerController>(GetController());
+	if (AHUD* Hud = Player ? Player->GetHUD() : nullptr)
+	{
+		Hud->bShowHUD = false;
+	}
+	++WeaponShotIndex;
+	const FString File = FString::Printf(TEXT("%s_%d_%s.png"), *WeaponShotPrefix, WeaponShotIndex, Weapons.GetLastStrikeName());
+	if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
+	{
+		Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *File), *GLog);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Field: weapon shot %s at %.2f s."), *File, Strike.time());
+	if (--WeaponShotsLeft <= 0)
+	{
+		WeaponQuitIn = 2.f; // the last shot is written before the exit
+	}
+}
+
+void AFTExploreCharacter::EndPlay(const EEndPlayReason::Type Reason)
+{
+	Weapons.Reset();
+	Super::EndPlay(Reason);
 }
 
 void AFTExploreCharacter::CreateInputObjects()
@@ -433,6 +588,16 @@ void AFTExploreCharacter::CreateInputObjects()
 	PartyAction = MakeAction(TEXT("IA_ExploreParty"), false);
 	Context->MapKey(PartyAction, EKeys::P);
 	Context->MapKey(PartyAction, EKeys::Gamepad_LeftShoulder);
+
+	LightAction = MakeAction(TEXT("IA_ExploreLight"), false);
+	Context->MapKey(LightAction, EKeys::LeftMouseButton);
+	Context->MapKey(LightAction, EKeys::J);
+	Context->MapKey(LightAction, EKeys::Gamepad_RightTrigger);
+
+	HeavyAction = MakeAction(TEXT("IA_ExploreHeavy"), false);
+	Context->MapKey(HeavyAction, EKeys::RightMouseButton);
+	Context->MapKey(HeavyAction, EKeys::K);
+	Context->MapKey(HeavyAction, EKeys::Gamepad_FaceButton_Top);
 }
 
 UInputAction* AFTExploreCharacter::MakeAction(const TCHAR* Name, bool bAxis2D)
@@ -475,6 +640,8 @@ void AFTExploreCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 	Input->BindAction(InteractAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleInteract);
 	Input->BindAction(SwitchLeadAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleSwitchLead);
 	Input->BindAction(PartyAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleToggleParty);
+	Input->BindAction(LightAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleLight);
+	Input->BindAction(HeavyAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleHeavy);
 }
 
 void AFTExploreCharacter::HandleMove(const FInputActionValue& Value)
@@ -1449,6 +1616,7 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	{
 		RollTurnLeft = FMath::Max(RollTurnLeft - DeltaSeconds, 0.f);
 	}
+	TickWeapon(DeltaSeconds);
 }
 
 void AFTExploreCharacter::AddMovementInput(FVector WorldDirection, float ScaleValue, bool bForce)

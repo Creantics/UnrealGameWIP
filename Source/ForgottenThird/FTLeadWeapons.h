@@ -84,6 +84,11 @@ struct FFTLeadWeapons
 	// Sets the lead up on Figure (the player's, after its Setup): Kit is the fighter kit it plays. Nothing when the
 	// figure wears no look. Again on the same figure: nothing.
 	void Begin(AFTArenaFighter* Figure, const FFTLeadLook& Look, const ftcore::ArenaFighter& Kit);
+	// The same on any actor wearing a lead's body (the explore character, fed by ftcore::FieldStrike): Body is its
+	// skinned body, which the props and effects attach to and the clips play on. Again on the same body: nothing.
+	void Begin(AActor* Owner, USkeletalMeshComponent* Body, const FFTLeadLook& Look, const ftcore::ArenaFighter& Kit);
+	// Removes the props and effects it made from the body and forgets it (a look swapped on a body that stays).
+	void End();
 	// One step's events (after the step; T the fight's time).
 	void Feed(const ftcore::ArenaEvents& Events, double T);
 	// The player's state after the step: the effects that start as an attack goes active, the guard's ward, the clips'
@@ -144,8 +149,11 @@ private:
 	void Holster(bool bHolstered);
 	// The strike under way is thrown from the left side.
 	bool StrikesLeft() const;
+	// The body's chest (the arena figure's own, else the spine's top bone, else above the actor).
+	FVector Chest() const;
 
-	TWeakObjectPtr<AFTArenaFighter> Figure;
+	TWeakObjectPtr<AActor> Figure;
+	TWeakObjectPtr<AFTArenaFighter> ArenaFigure;
 	TWeakObjectPtr<USkeletalMeshComponent> Skin;
 	TWeakObjectPtr<UFTLocomotionAnimInstance> Anim;
 	ftcore::ArenaFighter Kit;
