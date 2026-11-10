@@ -83,6 +83,13 @@ private:
 	void LogGroundAt();
 	void Shoot(APlayerController* PC, const FVector& PlayerAt);
 	void LogCounts(const TCHAR* Label) const;
+	// S-332: the cameras the crowd must not pop in front of (the player's view and the stills' cameras), every frame.
+	void FeedViews(APlayerController* PC);
+	// S-332: the party stands at the test fight point for the stills.
+	void MovePartyToFight(APlayerController* PC);
+	// S-332: true distances behind the stills: members overlapping on screen (camA/camB), and pairs seen from above (camC).
+	void LogScreenPairs(int32 Cam, const FString& Name) const;
+	void LogTopPairs(const FString& Name) const;
 	static bool Occluded(void* Context, ftcore::Vec2 From, ftcore::Vec2 To);
 
 	ftcore::CrowdTuning Tuning;
@@ -101,7 +108,8 @@ private:
 	TObjectPtr<UAnimSequence> CowerClip;
 	UPROPERTY()
 	TArray<TObjectPtr<ASkeletalMeshActor>> Pool;
-	// -CrowdShots=<dir>: two fixed cameras round the test fight and the stills they take.
+	// -CrowdShots=<dir>: two fixed cameras round the test fight, one orthographic straight down over it (S-332), and the
+	// stills they take.
 	UPROPERTY()
 	TArray<TObjectPtr<ACameraActor>> ShotCams;
 	struct FCrowdShot
@@ -121,6 +129,11 @@ private:
 	bool bRefillOk = true;
 	float RunMinPair = 1e9f;        // m, every frame
 	float RunMinWall = 1e9f;        // m, every frame
+	// S-332 run checks: member-frames in the run pose below walking speed, the largest knot standing within 3 m.
+	uint64 SlowRunFrames = 0;
+	uint32 WorstGroup = 0;
+	uint32 GroupTick = 0;
+	bool bPartyMoved = false;
 	struct FMassBox
 	{
 		FVector2D C, Ax, Half; // centre, unit x axis, half sizes (cm)

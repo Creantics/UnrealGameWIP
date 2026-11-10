@@ -4,6 +4,8 @@
 #include "Animation/SkeletalMeshActor.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
+#include "Camera/PlayerCameraManager.h"
+#include "FTPartyFollower.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "GameFramework/HUD.h"
@@ -70,6 +72,12 @@ constexpr double kCamBack[] = {1350.0, 1200.0, 1500.0};
 constexpr double kCamUp = 600.0;
 constexpr double kPersonHeight = 175.0;
 constexpr double kMinPersonPx = 60.0;
+// S-332: camC, orthographic straight down: this high over the fight point, this wide across the 1600 px (cm).
+constexpr double kTopUp = 15000.0;
+constexpr double kTopWidth = 5000.0;
+// S-332: nobody pops in or out within this far of a camera in its view (m); the stopped-knot gate (members within 3 m).
+constexpr float kViewRange = 40.f;
+constexpr uint32 kGroupGate = 3;
 // Massing boxes the footprint check uses: at least this tall and wide, at most this long (cm); the grid's cell.
 constexpr double kMassMinHeight = 250.0;
 constexpr double kMassMinSide = 200.0;
@@ -217,9 +225,10 @@ void UFTCrowdSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		const TCHAR* Labels[] = {TEXT("calm"), TEXT("fight1s"), TEXT("flee"), TEXT("after30s")};
 		for (int32 T = 0; T < 4; ++T)
 		{
-			for (int32 Cam = 0; Cam < 2; ++Cam)
+			// camC (S-332), straight down over the fight, at every moment camA takes.
+			for (int32 Cam = 0; Cam < 3; ++Cam)
 			{
-				const int32 Frames = (T == 2 && Cam == 0) ? 4 : 1;
+				const int32 Frames = (T == 2 && Cam != 1) ? 4 : 1;
 				for (int32 F = 0; F < Frames; ++F)
 				{
 					Shots.Add({Times[T] + F * 0.25, Cam, T, FString::Printf(TEXT("%s/crowd_%d_%s_cam%c%s.png"), *ShotDir, T, Labels[T], TEXT('A') + Cam,
@@ -227,6 +236,8 @@ void UFTCrowdSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 				}
 			}
 		}
+		// In time order, so each moment's stills from the three cameras are taken together.
+		Shots.StableSort([](const FCrowdShot& A, const FCrowdShot& B) { return A.At < B.At; });
 	}
 	bRunning = true;
 }
@@ -613,8 +624,24 @@ void UFTCrowdSubsystem::Shoot(APlayerController* PC, const FVector& PlayerAt)
 			Cam->GetCameraComponent()->SetConstraintAspectRatio(false);
 			ShotCams.Add(Cam);
 		}
-		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: shots: cameras at %s and %s, aimed at %s (1 m over the fight point); %d stills to %s."), *Eyes[0].ToString(),
-			*Eyes[1].ToString(), *Aim.ToString(), Shots.Num(), *ShotDir);
+		{
+			// camC: orthographic, straight down over the fight point; the still's right is engine +Y, its top engine +X.
+			FActorSpawnParameters Spawn;
+			Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			ACameraActor* Top = World->SpawnActor<ACameraActor>(Fight + FVector(0.0, 0.0, kTopUp), FRotator(-90.0, 0.0, 0.0), Spawn);
+			if (!Top)
+			{
+				Shots.Reset();
+				return;
+			}
+			UCameraComponent* C = Top->GetCameraComponent();
+			C->SetProjectionMode(ECameraProjectionMode::Orthographic);
+			C->SetOrthoWidth(static_cast<float>(kTopWidth));
+			C->SetConstraintAspectRatio(false);
+			ShotCams.Add(Top);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: shots: cameras at %s and %s, aimed at %s (1 m over the fight point); camC orthographic %.0f m across, straight down, still right = engine +Y, still up = engine +X, %.1f px per m; %d stills to %s."),
+			*Eyes[0].ToString(), *Eyes[1].ToString(), *Aim.ToString(), kTopWidth / 100.0, 1600.0 / (kTopWidth / 100.0), Shots.Num(), *ShotDir);
 	}
 	if (AHUD* Hud = PC->GetHUD())
 	{
@@ -643,6 +670,14 @@ void UFTCrowdSubsystem::Shoot(APlayerController* PC, const FVector& PlayerAt)
 			Viewport->Exec(World, *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *S.Name), *GLog);
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: shot %s at %.2f s from the fight's start."), *S.Name, RunTime - TestFightAt);
 		}
+		if (S.Cam == 2)
+		{
+			LogTopPairs(S.Name);
+			++ShotIndex;
+			ShotTicks = -1;
+			return;
+		}
+		LogScreenPairs(S.Cam, S.Name);
 		// The framing: the fight point in the centre fifth and in sight, the nearest member in sight tall enough to read.
 		if (S.Phase <= 1)
 		{
@@ -766,8 +801,18 @@ void UFTCrowdSubsystem::Tick(float DeltaTime)
 		// The drawn members are the ones round the fight (they are what the stills show), not round the player.
 		PickTestFight(PlayerAt);
 		Sim.setDrawFocus(true, ToSim(TestFightPoint));
+		if (!bPartyMoved && !ShotDir.IsEmpty())
+		{
+			MovePartyToFight(World->GetFirstPlayerController());
+			if (const APawn* Pawn = World->GetFirstPlayerController() ? World->GetFirstPlayerController()->GetPawn() : nullptr)
+			{
+				PlayerAt = Pawn->GetActorLocation();
+				PlayerZ = PlayerAt.Z - Pawn->GetSimpleCollisionHalfHeight();
+			}
+		}
 	}
 	ScriptFight(PlayerAt);
+	FeedViews(World->GetFirstPlayerController());
 	if (!bGroundLogged && RunTime >= 1.0)
 	{
 		bGroundLogged = true;
@@ -779,6 +824,12 @@ void UFTCrowdSubsystem::Tick(float DeltaTime)
 	if (QuitAfter > 0.0)
 	{
 		RunMinPair = FMath::Min(RunMinPair, Sim.minPairDistance(2.f));
+		SlowRunFrames += Sim.runPoseSlow();
+		// Every 8th frame once the streets have filled (the first members stand still on their first step).
+		if (RunTime >= 2.0 && ++GroupTick % 8 == 0)
+		{
+			WorstGroup = FMath::Max(WorstGroup, Sim.largestStoppedGroup(3.f));
+		}
 		for (uint32 i = 0; i < Sim.capacity(); ++i)
 		{
 			if (Sim.agent(i).live)
@@ -826,13 +877,22 @@ void UFTCrowdSubsystem::Tick(float DeltaTime)
 		const bool bWalls = RunMinWall >= kGapWall - 0.01f;
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: least distance between two members %.2f m (%s, gate %.1f m), least wall clearance %.2f m (%s, gate %.1f m), every frame, every state."),
 			RunMinPair, bPairs ? TEXT("ok") : TEXT("FAILED"), kGapPair, RunMinWall, bWalls ? TEXT("ok") : TEXT("FAILED"), kGapWall);
+		// S-332: no run pose below walking speed, no knot of more than three standing within 3 m, nobody popping in or out
+		// in a camera's view within 40 m.
+		const bool bNoSlowRun = SlowRunFrames == 0;
+		const bool bNoKnot = WorstGroup <= kGroupGate;
+		const bool bNoPops = C.popsInView == 0;
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: run pose below walking speed %llu member-frames (%s, gate 0); largest group standing within 3 m %u (%s, gate %u); spawned, despawned, drawn or undrawn in a camera's view within %.0f m %llu (%s, gate 0)."),
+			SlowRunFrames, bNoSlowRun ? TEXT("ok") : TEXT("FAILED"), WorstGroup, bNoKnot ? TEXT("ok") : TEXT("FAILED"), kGroupGate, kViewRange,
+			static_cast<unsigned long long>(C.popsInView), bNoPops ? TEXT("ok") : TEXT("FAILED"));
 		const bool bStills = Shots.Num() == 0 || ShotIndex >= Shots.Num();
 		if (Shots.Num() > 0)
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: stills %d of %d (%s); cameras on the fight %s; the crowd back in view at +30 s %s."), ShotIndex, Shots.Num(),
 				bStills ? TEXT("ok") : TEXT("FAILED"), bCamsOk ? TEXT("ok") : TEXT("FAILED"), bRefillOk ? TEXT("ok") : TEXT("FAILED"));
 		}
-		bool bOk = bCalm && bSteady && bFull && bUnstuck && bOutside && bClearOfMass && bPairs && bWalls && bStills && bCamsOk && bRefillOk;
+		bool bOk = bCalm && bSteady && bFull && bUnstuck && bOutside && bClearOfMass && bPairs && bWalls && bStills && bCamsOk && bRefillOk &&
+			bNoSlowRun && bNoKnot && bNoPops;
 		const bool bStimulus = bTestFightStarted || ArenaFed > 0;
 		if (!bStimulus)
 		{
@@ -1241,6 +1301,174 @@ UFTCrowdSubsystem::FViewCount UFTCrowdSubsystem::CountInView(int32 Cam, TArray<u
 		}
 	}
 	return R;
+}
+
+void UFTCrowdSubsystem::FeedViews(APlayerController* PC)
+{
+	ftcore::CrowdViewCone Cones[ftcore::CrowdSim::kMaxViews];
+	uint32 N = 0;
+	auto Add = [&](const FVector& Eye, double Yaw, double HalfFov, double Range) {
+		if (N < ftcore::CrowdSim::kMaxViews)
+		{
+			Cones[N++] = ftcore::CrowdViewCone{ToSim(Eye), static_cast<float>(Yaw), static_cast<float>(HalfFov), static_cast<float>(Range)};
+		}
+	};
+	if (PC && PC->PlayerCameraManager)
+	{
+		// The player's view (during the stills, the still's camera; the stills' cameras are added below as well).
+		Add(PC->PlayerCameraManager->GetCameraLocation(), PC->PlayerCameraManager->GetCameraRotation().Yaw, PC->PlayerCameraManager->GetFOVAngle() * 0.5,
+			kViewRange);
+	}
+	for (int32 c = 0; c < ShotCams.Num() && c < 2; ++c)
+	{
+		if (ShotCams[c])
+		{
+			Add(ShotCams[c]->GetActorLocation(), ShotCams[c]->GetActorRotation().Yaw, 35.0, kViewRange);
+		}
+	}
+	if (ShotCams.Num() > 2 && ShotCams[2])
+	{
+		// camC sees all round its frame from straight above: half its diagonal (m), and a margin.
+		const double Half = 0.5 * FMath::Sqrt(1.0 + (9.0 / 16.0) * (9.0 / 16.0)) * kTopWidth / 100.0 + 5.0;
+		Add(ShotCams[2]->GetActorLocation(), 0.0, 180.0, Half);
+	}
+	Sim.setViews(Cones, N);
+}
+
+void UFTCrowdSubsystem::MovePartyToFight(APlayerController* PC)
+{
+	bPartyMoved = true;
+	UWorld* World = GetWorld();
+	APawn* Lead = PC ? PC->GetPawn() : nullptr;
+	if (!World || !Lead)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: party to the fight point: no player pawn, FAILED."));
+		return;
+	}
+	auto Ground = [&](const FVector2D& At, const AActor* Self) {
+		const FVector Top(At.X, At.Y, TestFightPoint.Z + 3000.0);
+		FHitResult Hit;
+		FCollisionQueryParams Q(SCENE_QUERY_STAT(CrowdParty), false, Self);
+		return World->LineTraceSingleByChannel(Hit, Top, Top - FVector(0.0, 0.0, 6000.0), ECC_Visibility, Q) ? Hit.ImpactPoint.Z : TestFightPoint.Z;
+	};
+	// The lead on the fight point, the others a step behind on either side, all facing east (towards the fight's
+	// usual camera side is not known yet; the stills are taken from round it).
+	const FVector2D F(TestFightPoint.X, TestFightPoint.Y);
+	Lead->SetActorLocationAndRotation(FVector(F.X, F.Y, Ground(F, Lead) + Lead->GetSimpleCollisionHalfHeight() + 5.0), FRotator::ZeroRotator, false, nullptr,
+		ETeleportType::TeleportPhysics);
+	TraceQuery.AddIgnoredActor(Lead);
+	const FVector2D Offsets[] = {{-120.0, 110.0}, {-120.0, -110.0}, {-240.0, 0.0}};
+	int32 Moved = 0;
+	for (TActorIterator<AFTPartyFollower> It(World); It; ++It)
+	{
+		const FVector2D At = F + Offsets[FMath::Min(Moved, 2)];
+		It->SetActorLocationAndRotation(FVector(At.X, At.Y, Ground(At, *It) + It->GetSimpleCollisionHalfHeight() + 2.0), FRotator::ZeroRotator, false, nullptr,
+			ETeleportType::TeleportPhysics);
+		TraceQuery.AddIgnoredActor(*It);
+		++Moved;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: party to the fight point engine (%.0f, %.0f) cm: the lead and %d others, at t=%.1f s."), F.X, F.Y, Moved, RunTime);
+}
+
+void UFTCrowdSubsystem::LogScreenPairs(int32 Cam, const FString& Name) const
+{
+	// Every two drawn members in sight whose figures overlap in the still (half a metre wide, feet to head), with the
+	// true distance between them on the ground.
+	const ACameraActor* C = ShotCams[Cam];
+	const FVector Eye = C->GetActorLocation();
+	const FQuat Q = C->GetActorQuat();
+	const double TanX = FMath::Tan(FMath::DegreesToRadians(35.0)), TanY = TanX * 9.0 / 16.0;
+	struct FFig
+	{
+		FVector2D Feet;
+		double X0, X1, Y0, Y1;
+		uint8 State;
+	};
+	TArray<FFig, TInlineAllocator<64>> Figs;
+	for (int32 k = 0; k < Pool.Num(); ++k)
+	{
+		if (PoolAgent[k] == 0 || !PoolGrounded[k])
+		{
+			continue;
+		}
+		const FVector Feet = Pool[k]->GetActorLocation();
+		const FVector Lf = Q.UnrotateVector(Feet - Eye), Lh = Q.UnrotateVector(Feet + FVector(0.0, 0.0, kPersonHeight) - Eye);
+		if (Lf.X <= 0.0 || Lh.X <= 0.0 || !Clear(Eye, Feet + FVector(0.0, 0.0, 120.0)))
+		{
+			continue;
+		}
+		const double Px = 800.0 * (1.0 + Lf.Y / (Lf.X * TanX));
+		const double HalfW = 800.0 * 25.0 / (Lf.X * TanX);
+		const double Yf = 450.0 * (1.0 - Lf.Z / (Lf.X * TanY)), Yh = 450.0 * (1.0 - Lh.Z / (Lh.X * TanY));
+		if (Px + HalfW < 0.0 || Px - HalfW > 1600.0 || Yf < 0.0 || Yh > 900.0)
+		{
+			continue;
+		}
+		const ftcore::CrowdAgentView& V = Sim.agent((PoolAgent[k] - 1) & 0xffffu);
+		Figs.Add({FVector2D(Feet.X, Feet.Y), Px - HalfW, Px + HalfW, Yh, Yf, static_cast<uint8>(V.state)});
+	}
+	int32 Overlaps = 0;
+	float Least = 1e9f;
+	for (int32 i = 0; i < Figs.Num(); ++i)
+	{
+		for (int32 j = i + 1; j < Figs.Num(); ++j)
+		{
+			const FFig& A = Figs[i];
+			const FFig& B = Figs[j];
+			if (A.X1 < B.X0 || B.X1 < A.X0 || A.Y1 < B.Y0 || B.Y1 < A.Y0)
+			{
+				continue;
+			}
+			++Overlaps;
+			const float D = static_cast<float>(FVector2D::Distance(A.Feet, B.Feet) / 100.0);
+			Least = FMath::Min(Least, D);
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %s: on screen together at (%.0f-%.0f, %.0f-%.0f) px: true distance %.2f m (%s, %s)."),
+				*FPaths::GetCleanFilename(Name), FMath::Min(A.X0, B.X0), FMath::Max(A.X1, B.X1), FMath::Min(A.Y0, B.Y0), FMath::Max(A.Y1, B.Y1), D,
+				*FString(UTF8_TO_TCHAR(std::string(ftcore::crowdStateName(static_cast<ftcore::CrowdState>(A.State))).c_str())),
+				*FString(UTF8_TO_TCHAR(std::string(ftcore::crowdStateName(static_cast<ftcore::CrowdState>(B.State))).c_str())));
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %s: %d members in frame and in sight, %d pairs overlapping on screen, least true distance among them %.2f m."),
+		*FPaths::GetCleanFilename(Name), Figs.Num(), Overlaps, Least >= 1e8f ? -1.f : Least);
+}
+
+void UFTCrowdSubsystem::LogTopPairs(const FString& Name) const
+{
+	// From straight above: the true spacing of the drawn members in camC's frame, and every pair closer than 1 m.
+	const double PxPerCm = 1600.0 / kTopWidth;
+	TArray<FVector2D, TInlineAllocator<64>> In;
+	for (int32 k = 0; k < Pool.Num(); ++k)
+	{
+		if (PoolAgent[k] == 0 || !PoolGrounded[k])
+		{
+			continue;
+		}
+		const FVector P = Pool[k]->GetActorLocation();
+		const double Px = 800.0 + (P.Y - TestFightPoint.Y) * PxPerCm, Py = 450.0 - (P.X - TestFightPoint.X) * PxPerCm;
+		if (Px >= 0.0 && Px <= 1600.0 && Py >= 0.0 && Py <= 900.0)
+		{
+			In.Add(FVector2D(P.X, P.Y));
+		}
+	}
+	float Least = 1e9f;
+	int32 Close = 0;
+	for (int32 i = 0; i < In.Num(); ++i)
+	{
+		for (int32 j = i + 1; j < In.Num(); ++j)
+		{
+			const float D = static_cast<float>(FVector2D::Distance(In[i], In[j]) / 100.0);
+			Least = FMath::Min(Least, D);
+			if (D < 1.f)
+			{
+				++Close;
+				UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %s: pair at (%.0f, %.0f) and (%.0f, %.0f) px: %.2f m apart."), *FPaths::GetCleanFilename(Name),
+					800.0 + (In[i].Y - TestFightPoint.Y) * PxPerCm, 450.0 - (In[i].X - TestFightPoint.X) * PxPerCm, 800.0 + (In[j].Y - TestFightPoint.Y) * PxPerCm,
+					450.0 - (In[j].X - TestFightPoint.X) * PxPerCm, D);
+			}
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %s: %d drawn members in the frame from above, least distance between two %.2f m, %d pairs under 1 m (gate %.1f m)."),
+		*FPaths::GetCleanFilename(Name), In.Num(), Least >= 1e8f ? -1.f : Least, Close, kGapPair);
 }
 
 TStatId UFTCrowdSubsystem::GetStatId() const
