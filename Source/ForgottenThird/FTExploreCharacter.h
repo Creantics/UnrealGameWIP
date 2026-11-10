@@ -203,6 +203,7 @@ private:
 	void HandleInteractRelease();
 	void HandleSwitchLead();
 	void HandleToggleParty();
+	void HandleToggleMap();
 	void HandleLight();
 	void HandleHeavy();
 	// The worn look's weapon: its kit from Data/Battle/arena.json and the props, clips and effects on the body.
@@ -267,6 +268,8 @@ private:
 	TObjectPtr<UInputAction> SwitchLeadAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> PartyAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> MapAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> LightAction;
 	UPROPERTY(Transient)
