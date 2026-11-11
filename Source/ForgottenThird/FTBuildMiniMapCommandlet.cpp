@@ -54,17 +54,21 @@ int32 UFTBuildMiniMapCommandlet::Main(const FString& Params)
 	}
 	FTMiniMapSource::FOptions Options;
 	Options.Side = Director->PlanSide;
-	if (!FTMiniMapSource::ParseOptions(*Params, TEXT(""), Options) || Options.Side <= 0.0)
+	if (!FTMiniMapSource::ParseOptions(*Params, TEXT(""), Options))
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMiniMap: needs -Tables=<dir> -Area=x0,y0,x1,y1 (and -Side= when the level has no plan side)."));
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMiniMap: needs -Roads=<csv> and/or -Streets=<csv> (the world build's tables)."));
 		return 1;
 	}
 	ftcore::MiniMapModel Model;
-	FString Error;
-	if (!FTMiniMapSource::Build(Options, Model, Error))
+	FString Error, Skipped;
+	if (!FTMiniMapSource::Build(Options, Model, Error, &Skipped))
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMiniMap: %s"), *Error);
 		return 1;
+	}
+	if (!Skipped.IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMiniMap: kinds left off the map: %s"), *Skipped);
 	}
 	std::vector<std::uint8_t> Blob;
 	ftcore::saveMiniMap(Model, Blob);
@@ -82,7 +86,8 @@ int32 UFTBuildMiniMapCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMiniMap: couldn't save %s."), *File);
 		return 1;
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMiniMap: %s roads=%d buildings=%d doors=%d blob=%d bytes, saved %s."), *MapPath,
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMiniMap: %s from %s: roads=%d buildings=%d doors=%d blob=%d bytes, saved %s."), *MapPath,
+		*FTMiniMapSource::Describe(Options),
 		static_cast<int32>(Model.roads.size()), static_cast<int32>(Model.buildings.size()), static_cast<int32>(Model.doors.size()),
 		Director->MiniMapBlob.Num(), *File);
 	return 0;

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 
 namespace ftcore {
 namespace minimap_detail {
@@ -257,7 +258,10 @@ bool mapIsBuildingKind(std::string_view kind) {
 
 namespace minimap_detail {
 
-bool readRoads(std::string_view csv, double side, MiniMapModel& m, std::string* error, const char* table) {
+// The kinds a table's rows had that the map leaves out, with their counts.
+using SkippedKinds = std::vector<std::pair<std::string, int>>;
+
+bool readRoads(std::string_view csv, double side, MiniMapModel& m, std::string* error, const char* table, SkippedKinds& skipped) {
     Table t;
     std::string err;
     const bool ok = eachRow(csv, t, [&](const Table& tb) {
@@ -284,9 +288,14 @@ bool readRoads(std::string_view csv, double side, MiniMapModel& m, std::string* 
             return true;
         }
         MapRoadClass cls{};
-        if (!mapRoadClass(kind, cls)) return true; // a kind the map leaves out
-        double width = 0.0;
-        if (!parseDouble(tb.at(cWidth), width) || width <= 0.0) {
+        if (!mapRoadClass(kind, cls)) { // a kind the map leaves out
+            auto it = std::find_if(skipped.begin(), skipped.end(), [&](const auto& k) { return k.first == kind; });
+            if (it == skipped.end()) skipped.emplace_back(std::string(kind), 1);
+            else ++it->second;
+            return true;
+        }
+        double width = kMapRoadDefaultWidth[static_cast<int>(cls)];
+        if (!trimView(tb.at(cWidth)).empty() && (!parseDouble(tb.at(cWidth), width) || width <= 0.0)) {
             err = std::string(table) + ": bad width_m on " + std::string(id);
             return false;
         }
@@ -309,18 +318,38 @@ bool readRoads(std::string_view csv, double side, MiniMapModel& m, std::string* 
 
 } // namespace minimap_detail
 
-bool buildMiniMap(const MiniMapSource& src, MiniMapModel& out, std::string* error) {
+bool buildMiniMap(const MiniMapSource& src, MiniMapModel& out, std::string* error, std::string* skipped) {
     out = MiniMapModel{};
-    if (!(src.side > 0.0) || !(src.areaX1 > src.areaX0) || !(src.areaY1 > src.areaY0))
-        return md::fail(error, "minimap: needs the plan side and an area");
+    if (skipped) skipped->clear();
+    if (!(src.side > 0.0)) return md::fail(error, "minimap: needs the plan side");
     const double side = src.side;
-    const Vec2 a = md::engine(side, src.areaX0, src.areaY1), b = md::engine(side, src.areaX1, src.areaY0);
-    out.minX = a.x;
-    out.minY = a.y;
-    out.maxX = b.x;
-    out.maxY = b.y;
-    if (!src.roads.empty() && !md::readRoads(src.roads, side, out, error, "roads")) return false;
-    if (!src.streets.empty() && !md::readRoads(src.streets, side, out, error, "streets")) return false;
+    md::SkippedKinds skippedKinds;
+    if (!src.roads.empty() && !md::readRoads(src.roads, side, out, error, "roads", skippedKinds)) return false;
+    if (!src.streets.empty() && !md::readRoads(src.streets, side, out, error, "streets", skippedKinds)) return false;
+    if (skipped) {
+        for (const auto& k : skippedKinds) {
+            if (!skipped->empty()) *skipped += ", ";
+            *skipped += k.first + " x" + std::to_string(k.second);
+        }
+    }
+    if (src.areaX1 > src.areaX0 && src.areaY1 > src.areaY0) {
+        const Vec2 a = md::engine(side, src.areaX0, src.areaY1), b = md::engine(side, src.areaX1, src.areaY0);
+        out.minX = a.x;
+        out.minY = a.y;
+        out.maxX = b.x;
+        out.maxY = b.y;
+    } else {
+        if (out.points.empty()) return md::fail(error, "minimap: needs an area, or roads or streets to take it from");
+        Vec2 lo = out.points[0], hi = out.points[0];
+        for (const Vec2& p : out.points) {
+            lo = {std::min(lo.x, p.x), std::min(lo.y, p.y)};
+            hi = {std::max(hi.x, p.x), std::max(hi.y, p.y)};
+        }
+        out.minX = lo.x - kMapAutoAreaPad;
+        out.minY = lo.y - kMapAutoAreaPad;
+        out.maxX = hi.x + kMapAutoAreaPad;
+        out.maxY = hi.y + kMapAutoAreaPad;
+    }
 
     auto inArea = [&](Vec2 p, float pad) {
         return p.x >= out.minX - pad && p.x <= out.maxX + pad && p.y >= out.minY - pad && p.y <= out.maxY + pad;
@@ -351,6 +380,8 @@ bool buildMiniMap(const MiniMapSource& src, MiniMapModel& out, std::string* erro
             if (tb.at(tb.col("kind")) == "landmark") {
                 out.hasLandmark = true;
                 out.landmark = c;
+            } else if (!inArea(c, 50.f)) {
+                return true; // a stand-in tower table covers the whole city
             }
             out.buildings.push_back({c.x, c.y, static_cast<float>(sx * 0.5), static_cast<float>(sy * 0.5),
                                      static_cast<float>(-rot) * md::kPi / 180.f});
@@ -571,6 +602,18 @@ void rasterMiniMap(const MiniMapModel& m, float mPerPx, MapImage& img, std::uint
             for (std::uint32_t k = 0; k + 1 < r.count; ++k)
                 md::drawCapsule(img, m.points[r.first + k], m.points[r.first + k + 1], radius, kMapRoadColor[cls]);
         }
+    }
+    // A ground ring around the area: a clamped texture repeats its edge texels, so a road crossing the edge would smear
+    // into a false street beyond the map.
+    const std::uint32_t cw = std::min(img.w, static_cast<std::uint32_t>(std::ceil(spanX / mpp)));
+    const std::uint32_t ch = std::min(img.h, static_cast<std::uint32_t>(std::ceil(spanY / mpp)));
+    for (std::uint32_t i = 0; i < cw; ++i) {
+        img.px[i] = kMapGround;
+        img.px[static_cast<std::size_t>(ch - 1) * img.w + i] = kMapGround;
+    }
+    for (std::uint32_t j = 0; j < ch; ++j) {
+        img.px[static_cast<std::size_t>(j) * img.w] = kMapGround;
+        img.px[static_cast<std::size_t>(j) * img.w + cw - 1] = kMapGround;
     }
 }
 

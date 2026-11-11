@@ -1,13 +1,15 @@
 #pragma once
 
-// Bakes a world map's HUD minimap model (ftcore/MiniMap.h) into the level's AFTExploreDirector::MiniMapBlob, so a run
-// needs no tables:
+// Re-bakes a saved world map's HUD minimap model (ftcore/MiniMap.h) into the level's AFTExploreDirector::MiniMapBlob,
+// so a run needs no tables. The world build (FTBuildMassingWorld) already bakes it from the tables it builds the map
+// from; this is for a map saved before that, and takes the same switches, so the build's table arguments paste in:
 //
 //   UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildMiniMap -Map=/Game/Maps/World_Solhaven_Strip
-//       -Tables=<layout table folder> -Area=x0,y0,x1,y1 [-Sea=<plan x>] [-Side=<m>] [-Rev=<n>] -unattended -nopause -nosplash
+//       -Roads=<csv> -Streets=<csv> [-Boxes=<csv>] [-StandInTowers=<csv>] [-RoadDoors=<csv>] [-Height=<json>]
+//       [-Sea=<plan x>] [-Side=<m>] [-MiniMapArea=x0,y0,x1,y1] -unattended -nopause -nosplash
 //
-// The folder holds one each of the roads, streets, boxes, towers and doors tables and one height map (.json + .r16);
-// -Side defaults to the director's PlanSide; of several revisions it takes the newest (at most -Rev). It saves the map in place.
+// -Side defaults to the director's PlanSide; without -MiniMapArea the map covers every road and street. It saves the map
+// in place.
 
 #include "CoreMinimal.h"
 #include "Commandlets/Commandlet.h"

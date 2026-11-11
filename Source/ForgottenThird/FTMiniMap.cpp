@@ -153,12 +153,15 @@ bool UFTMiniMap::Init(const AFTExploreDirector& Director)
 	if (FTMiniMapSource::ParseOptions(FCommandLine::Get(), TEXT("MiniMap"), Options))
 	{
 		From = TEXT("tables");
-		FString Error;
-		bOk = Options.Side > 0.0 && FTMiniMapSource::Build(Options, Model, Error);
+		FString Error, Skipped;
+		bOk = FTMiniMapSource::Build(Options, Model, Error, &Skipped);
 		if (!bOk)
 		{
-			UE_LOG(LogForgottenThird, Error, TEXT("MiniMap: the tables in %s: %s"), *Options.Dir,
-				Options.Side > 0.0 ? *Error : TEXT("needs -MiniMapSide= (the level has no plan side)"));
+			UE_LOG(LogForgottenThird, Error, TEXT("MiniMap: the tables %s: %s"), *FTMiniMapSource::Describe(Options), *Error);
+		}
+		else if (!Skipped.IsEmpty())
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("MiniMap: kinds left off the map: %s"), *Skipped);
 		}
 		PlanSide = Options.Side;
 	}
@@ -170,10 +173,6 @@ bool UFTMiniMap::Init(const AFTExploreDirector& Director)
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("MiniMap: the level's blob: %s"), UTF8_TO_TCHAR(Why.c_str()));
 		}
-	}
-	else if (FCString::Strifind(FCommandLine::Get(), TEXT("MiniMapTables=")))
-	{
-		UE_LOG(LogForgottenThird, Error, TEXT("MiniMap: -MiniMapTables= needs -MiniMapArea=x0,y0,x1,y1 too"));
 	}
 	else
 	{
@@ -460,8 +459,9 @@ void UFTMiniMap::DrawOverlay(AHUD& Hud, UCanvas& Canvas, float S)
 	Tile.BlendMode = SE_BLEND_Opaque;
 	Canvas.DrawItem(Tile);
 
+	// Markers off the map's area stay on its edge, so the player and the van are always on the overlay.
 	auto Screen = [&](const ftcore::Vec2 P) {
-		return Origin + FVector2D((P.x - Model.minX) / SpanX * W, (P.y - Model.minY) / SpanY * H);
+		return Origin + FVector2D(FMath::Clamp((P.x - Model.minX) / SpanX, 0.f, 1.f) * W, FMath::Clamp((P.y - Model.minY) / SpanY, 0.f, 1.f) * H);
 	};
 	auto Heading = [](double Yaw) { return FVector2D(FMath::Cos(FMath::DegreesToRadians(Yaw)), FMath::Sin(FMath::DegreesToRadians(Yaw))); };
 	MarkItem->TriangleList.Reset();
@@ -488,7 +488,10 @@ void UFTMiniMap::DrawOverlay(AHUD& Hud, UCanvas& Canvas, float S)
 		const AActor* Who = bInVan ? static_cast<const AActor*>(TheVan) : Pawn;
 		AddArrow(Screen(Metres(Who->GetActorLocation())), Heading(Who->GetActorRotation().Yaw), 10.f * S, bInVan ? kVanMark : kPlayer);
 	}
-	Canvas.DrawItem(*MarkItem);
+	if (MarkItem->TriangleList.Num() > 0) // the item asserts on an empty list
+	{
+		Canvas.DrawItem(*MarkItem);
+	}
 	UFont* Small = GEngine->GetSmallFont();
 	Hud.DrawText(kOverlayTitle, kLandmark, Origin.X + 10.f * S, Origin.Y + 8.f * S, GEngine->GetMediumFont(), S);
 	Hud.DrawText(kOverlayHint, kText, Origin.X + 10.f * S, Origin.Y + 34.f * S, Small, S);

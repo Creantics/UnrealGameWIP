@@ -4,8 +4,10 @@
 // live markers are drawn: the player's arrow, the other two leads, the party van (pinned to the rim with its distance
 // when off the map), doors on foot, the landmark, a north tick, and the street under the player as an id and class.
 //
-// The model comes from the level's AFTExploreDirector::MiniMapBlob (baked by FTBuildMiniMap), or, for a dev run, from
-// the layout tables: -MiniMapTables=<dir> -MiniMapArea=x0,y0,x1,y1 [-MiniMapSea=<x>] [-MiniMapSide=<m>] [-MiniMapRev=<n>].
+// The model comes from the level's AFTExploreDirector::MiniMapBlob (baked by the world build, FTBuildMassingWorld, from
+// the tables it built the map from; or re-baked by FTBuildMiniMap), or, for a dev run, from the layout tables named file
+// by file: -MiniMapRoads= -MiniMapStreets= [-MiniMapBoxes= -MiniMapStandInTowers= -MiniMapRoadDoors= -MiniMapHeight=
+// -MiniMapSea=<x> -MiniMapSide=<m> -MiniMapArea=x0,y0,x1,y1] (FTMiniMapSource.h).
 // Captures: -MiniMapShots=<path prefix> with -MiniMapAt=x:y;x:y (plan frame: a shot standing at each, then the overlay,
 // then quit) or -MiniMapShotTimes=<s>,<s> (shots at those seconds of play).
 #pragma once

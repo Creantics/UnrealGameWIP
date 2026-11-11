@@ -110,14 +110,54 @@ TEST_CASE("minimap: a bad table fails with a reason") {
     Fixture f;
     MiniMapModel m;
     std::string err;
-    f.src.roads = "id,kind,width_m,pts\nRD-1,road,,1:1;2:2\n";
+    f.src.roads = "id,kind,width_m,pts\nRD-1,road,wide,1:1;2:2\n";
     CHECK_FALSE(buildMiniMap(f.src, m, &err));
     CHECK(err.find("RD-1") != std::string::npos);
+    // A blank width takes the class's.
+    f.src.roads = "id,kind,width_m,pts\nRD-1,road,,901:430;930:430\n";
+    REQUIRE_MESSAGE(buildMiniMap(f.src, m, &err), err);
+    CHECK(m.roads[0].width == doctest::Approx(10.f));
     f.src.roads = "id,kind,pts\nRD-1,road,1:1;2:2\n";
     CHECK_FALSE(buildMiniMap(f.src, m, &err));
+    // No area and no roads or streets to take one from.
     f.src.roads = "";
+    f.src.streets = "";
     f.src.areaX1 = f.src.areaX0;
     CHECK_FALSE(buildMiniMap(f.src, m, &err));
+    f.src.side = 0.0;
+    CHECK_FALSE(buildMiniMap(f.src, m, &err));
+}
+
+TEST_CASE("minimap: no area given covers every road and street; left-out kinds are named") {
+    Fixture f;
+    f.src.areaX0 = f.src.areaX1 = 0.0;
+    f.src.streets = "id,kind,width_m,pts\n"
+                    "LN-1,alley,3,920:440;920:458\n"
+                    "XX-1,quay_edge,3,901:421;902:422\n"
+                    "XX-2,quay_edge,3,901:421;902:422\n"
+                    "XX-3,tunnel,3,901:421;902:422\n";
+    f.src.towers = "id,kind,cx,cy,z0,sx,sy,rot,floors,height_m,note\n"
+                   "T-1,landmark,926,452,0,4,4,0,0,80,placed\n"
+                   "T-2,glass,100,100,0,30,30,0,40,140,far off\n"
+                   "T-3,glass,920,450,0,10,10,0,40,140,near\n";
+    MiniMapModel m;
+    std::string err, skipped = "stale";
+    REQUIRE_MESSAGE(buildMiniMap(f.src, m, &err, &skipped), err);
+    CHECK(skipped == "quay_edge x2, tunnel x1");
+    // Road RD-1 runs plan x 905..935 on y 440 and the lane y 440..458 at x 920: engine x 405..435, y 42..60, padded.
+    CHECK(m.minX == doctest::Approx(405.f - kMapAutoAreaPad));
+    CHECK(m.maxX == doctest::Approx(435.f + kMapAutoAreaPad));
+    CHECK(m.minY == doctest::Approx(42.f - kMapAutoAreaPad));
+    CHECK(m.maxY == doctest::Approx(60.f + kMapAutoAreaPad));
+    REQUIRE(m.roads.size() == 2);
+    CHECK(m.roads[1].cls == MapRoadClass::Lane);
+    // The house, the landmark and the near tower; the far tower is off the map.
+    CHECK(m.buildings.size() == 3);
+    CHECK(m.hasLandmark);
+    // Nothing left out: the list comes back empty.
+    f.src.streets = "id,kind,width_m,pts\nLN-1,lane,3,920:440;920:458\n";
+    REQUIRE(buildMiniMap(f.src, m, &err, &skipped));
+    CHECK(skipped.empty());
 }
 
 TEST_CASE("minimap: the street under a point, main roads first, held at a junction") {
@@ -229,6 +269,9 @@ TEST_CASE("minimap: drawn once, water, blocks and roads in their colours") {
     CHECK(at(434.2f, 45.2f) == kMapWater);
     CHECK(at(410.2f, 50.2f) == kMapBuilding); // the tall house at plan (910, 450)
     CHECK(at(402.2f, 75.2f) == kMapGround);
+    // The edge ring is ground, so the clamped texture does not smear the sea (or a road) past the area.
+    CHECK(img.px[20 * 80 + 78] == kMapWater);
+    CHECK(img.px[20 * 80 + 79] == kMapGround);
     // Capped to maxSide: the scale grows to fit.
     rasterMiniMap(m, 0.01f, img, 64);
     CHECK(img.w <= 64);

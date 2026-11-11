@@ -26,6 +26,8 @@ inline constexpr int kMapRoadClasses = 4;
 // (canal: water, not a road) or doesn't know.
 FTCORE_API bool mapRoadClass(std::string_view kind, MapRoadClass& out);
 FTCORE_API const char* mapRoadClassName(MapRoadClass c);
+// A road or street row with width_m left blank takes its class's width (m); a width that isn't a positive number fails.
+inline constexpr double kMapRoadDefaultWidth[kMapRoadClasses] = {10.0, 6.0, 3.0, 2.0};
 // Whether a box kind is a building (drawn as a block): kit, box, slab, shrine, terrace.
 FTCORE_API bool mapIsBuildingKind(std::string_view kind);
 // Boxes lower than this (m, z1 - z0) aren't buildings on the map (kerbs, pads, low walls).
@@ -74,10 +76,16 @@ struct MiniMapSource {
     double spacing = 1.0, originX = 0.0, originY = 0.0; // plan frame, the south-west sample
     double seaFromX = 0.0;     // plan x from which ground under sea level is sea
     double side = 0.0;         // the plan's square (massingEnginePoint)
-    double areaX0 = 0.0, areaY0 = 0.0, areaX1 = 0.0, areaY1 = 0.0; // plan frame, the area shown
+    // Plan frame, the area shown. Left empty (x1 <= x0 or y1 <= y0): the roads' and streets' bounds, kMapAutoAreaPad
+    // around them, so the map covers every street the level was built with.
+    double areaX0 = 0.0, areaY0 = 0.0, areaX1 = 0.0, areaY1 = 0.0;
     float waterCell = 4.f;     // m
 };
-FTCORE_API bool buildMiniMap(const MiniMapSource& src, MiniMapModel& out, std::string* error = nullptr);
+inline constexpr float kMapAutoAreaPad = 50.f; // m
+// skipped, when given: the road and street kinds the map left out, as "kind xN" joined by ", " in first-seen order
+// (canals are water, not skipped), so a new kind in a table shows up in the build log instead of vanishing.
+FTCORE_API bool buildMiniMap(const MiniMapSource& src, MiniMapModel& out, std::string* error = nullptr,
+                             std::string* skipped = nullptr);
 // Rebuilds the lookup grid (gridCell m cells) from the roads.
 FTCORE_API void mapBuildGrid(MiniMapModel& m, float gridCell = 2.f);
 

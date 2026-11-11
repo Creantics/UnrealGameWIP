@@ -1,6 +1,7 @@
 #include "FTBuildMassingWorldCommandlet.h"
 #include "FTBuildRoads.h"
 #include "FTCellInstancer.h"
+#include "FTMiniMapSource.h"
 #include "FTNightLightData.h"
 #include "FTRoofDress.h"
 
@@ -2879,6 +2880,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 
 	// With -World, the director that plays the world's story steps and tours here, with the districts where the plan
 	// puts them.
+	bool bMiniMapFailed = false;
 	if (!Places.IsEmpty())
 	{
 		AFTExploreDirector* Director = World->SpawnActor<AFTExploreDirector>(FVector(0.0, 0.0, 200.0), FRotator::ZeroRotator, Spawn);
@@ -2906,6 +2908,48 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		Director->SeaLevel = 0.f; // the sea plane stands at the datum
 		Director->PlanSide = static_cast<float>(Side);
 		Director->SetActorLabel(TEXT("ExploreDirector"));
+
+		// The HUD minimap, baked from the very tables this map is built from (-Roads, -Streets, -Boxes, -StandInTowers,
+		// -RoadDoors, -Height, -Sea, -Side; -MiniMapArea to crop), so the two can't drift. -NoMiniMap leaves it out.
+		// The file names are the ones this build read above, not parsed a second time, so the two can't differ.
+		FTMiniMapSource::FOptions MiniMapOptions;
+		FTMiniMapSource::ParseOptions(*Params, TEXT(""), MiniMapOptions); // -StandInTowers and -MiniMapArea
+		MiniMapOptions.Roads = RoadOptions.RoadsFile;
+		MiniMapOptions.Streets = StreetsFile;
+		MiniMapOptions.Boxes = BoxesFile;
+		MiniMapOptions.Doors = RoadOptions.DoorsFile;
+		MiniMapOptions.Height = HeightFile;
+		MiniMapOptions.Side = Side;
+		MiniMapOptions.SeaFromX = bSea ? SeaWest : -1.0e9;
+		if (FParse::Param(*Params, TEXT("NoMiniMap")))
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: minimap left out (-NoMiniMap)."));
+		}
+		else if (MiniMapOptions.Roads.IsEmpty() && MiniMapOptions.Streets.IsEmpty())
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: no minimap: it needs -Roads= or -Streets= (or say -NoMiniMap)."));
+		}
+		else
+		{
+			ftcore::MiniMapModel MiniMap;
+			FString MiniMapError, MiniMapSkipped;
+			if (FTMiniMapSource::Build(MiniMapOptions, MiniMap, MiniMapError, &MiniMapSkipped))
+			{
+				std::vector<std::uint8_t> Blob;
+				ftcore::saveMiniMap(MiniMap, Blob);
+				Director->MiniMapBlob.SetNumUninitialized(static_cast<int32>(Blob.size()));
+				FMemory::Memcpy(Director->MiniMapBlob.GetData(), Blob.data(), Blob.size());
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: minimap from %s: roads=%d buildings=%d doors=%d blob=%d bytes%s%s"),
+					*FTMiniMapSource::Describe(MiniMapOptions), static_cast<int32>(MiniMap.roads.size()),
+					static_cast<int32>(MiniMap.buildings.size()), static_cast<int32>(MiniMap.doors.size()), Director->MiniMapBlob.Num(),
+					MiniMapSkipped.IsEmpty() ? TEXT("") : TEXT("; left off: "), *MiniMapSkipped);
+			}
+			else
+			{
+				bMiniMapFailed = true;
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: minimap: %s"), *MiniMapError);
+			}
+		}
 	}
 
 	// The cells' instances, every component made at once (their collision is what the navmesh reads next), and the
@@ -3063,7 +3107,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: dumped %d actors to %s."), DumpRows, *DumpFile);
 	}
 	const bool bShort = bNav && (Reached < Counted || SpawnsReached < Places.Num() || FootingHeld < Places.Num() || CoverageFails > 0);
-	return bStrict && (bShort || !bReadBackHeld) ? 1 : 0;
+	return bStrict && (bShort || !bReadBackHeld || bMiniMapFailed) ? 1 : 0;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld needs an editor build."));
 	return 1;
