@@ -10,8 +10,9 @@
 // * A step that is negative or not finite counts as 0, and one step is at most kMaxFightStep, so the clock can never
 //   jump far enough for a piece to refuse it (kMaxTimeJump).
 // * Events: tick() returns what each piece emitted since the last tick (calls between ticks buffer theirs).
-// * Glue: a blow judged on the count (OnCount, at once or when a held blow settles) is a shared blow on the boss
-//   script, or an offer of the shared-blow key to the session's own lock when there is no boss script. A change to
+// * Glue: a blow judged on the count (a shared outcome, at once or when a held blow settles) is a shared blow on the
+//   boss script, or an offer of the shared-blow key to the session's own lock when there is no boss script. A settle
+//   the count's full event buffer lost (droppedSettles) is not a shared blow. A change to
 //   the table setter's places re-checks the table's seats.
 // * Story: with a story state bound, every given gift is one press in it (storyCountPress): the side is the lead it
 //   went to (kLeadA 0, kLeadB 1), the kind is the gift (Heal 0, Guard 1, Count 2). A refused press writes nothing.
@@ -62,7 +63,7 @@ struct FightSessionDef {
     BossScriptDef boss{};
 };
 
-// What begin() refused (each refused piece keeps its defaults).
+// What begin() refused: each refused piece keeps its defaults, except a refused boss def, which leaves no boss script.
 struct FightSessionCheck {
     bool count = true;
     bool gift = true;
@@ -118,8 +119,10 @@ public:
         c.lock = lock_.reset(def_.lock, now_);
         if (!c.lock) lock_.reset(LockTuning{}, now_);
         refusal_ = HeldRefusal{};
-        hasBoss_ = def_.hasBoss;
-        c.boss = !hasBoss_ || boss_.reset(def_.boss, now_);
+        // A refused boss def leaves no boss script: the weak point follows the session's lock, as without one.
+        c.boss = !def_.hasBoss || boss_.reset(def_.boss, now_);
+        hasBoss_ = def_.hasBoss && c.boss;
+        lastStory_ = SetResult::Unchanged;
         tick_ = FightTick{};
         tick_.now = now_;
         tick_.count = &countOut_;
@@ -148,8 +151,7 @@ public:
         tick_.sharedBlows = 0;
         countOut_ = count_.update(now_);
         for (const CountEvent& e : countOut_)
-            if (e.type == CountEventType::BlowSettled && e.outcome == CountOutcome::OnCount && sharedBlow())
-                ++tick_.sharedBlows;
+            if (sharedBlow(e) && shareBlow()) ++tick_.sharedBlows;
         gift_.update(now_);
         tableOut_ = table_.update(now_);
         lock_.update(now_);
@@ -236,7 +238,7 @@ public:
     // A blow by `striker`, judged on the count before its damage; an OnCount blow is a shared blow at once.
     CountHit judgeBlow(FighterId striker) {
         const CountHit h = count_.judgeBlow(striker, now_);
-        if (h.outcome == CountOutcome::OnCount) sharedBlow();
+        if (sharedBlow(h)) shareBlow();
         return h;
     }
     // An unlock key offered to the session's own lock (no boss script; a boss script takes its keys itself).
@@ -267,13 +269,14 @@ public:
     const StrikeCount& strikeCount() const { return count_; }
     const GiftSlot& giftSlot() const { return gift_; }
     GiftSlot& giftSlot() { return gift_; } // setState, save and load
+    // A fighter's places (kLeadA's for an id that is not a fighter). The mutable one is for loads: call recheckTable after.
     const PlaceTable& places(FighterId who) const { return places_[isFighter(who) ? who : 0]; }
-    PlaceTable& places(FighterId who) { return places_[isFighter(who) ? who : 0]; } // loads; call recheckTable after
+    PlaceTable& places(FighterId who) { return places_[isFighter(who) ? who : 0]; }
     const TableSet& table() const { return table_; }
     const HeldRefusal& refusal() const { return refusal_; }
     const WeakPointLock& lock() const { return lock_; }
     bool hasBoss() const { return hasBoss_; }
-    const BossScript& boss() const { return boss_; }
+    const BossScript& boss() const { return boss_; } // meaningful only while hasBoss()
     const FightSessionDef& def() const { return def_; }
 
     // Re-checks the table's seats against its setter's places (after a host changed them directly).
@@ -288,7 +291,7 @@ private:
         if (e == PlaceError::None && who == table_.setter()) recheckTable();
         return e;
     }
-    bool sharedBlow() {
+    bool shareBlow() {
         if (hasBoss_) return boss_.sharedBlow(now_);
         if (!def_.locked) return false;
         const UnlockResult u = lock_.offer(kUnlockSharedBlow, now_);

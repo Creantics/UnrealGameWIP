@@ -114,7 +114,8 @@ TEST_CASE("fight session: begin reports a refused tuning and keeps the defaults"
     FightSessionDef d;
     d.count.bpm = 1000.0;
     d.gift.healShare = 2.0f;
-    d.seats = 99;
+    d.places.baseCarry = 0;
+    d.lock.keys = 0;
     d.table.minSeats = 0;
     d.hasBoss = true; // the default def has no moves
     const FightSessionCheck c = s.begin(d, 0.0);
@@ -123,11 +124,21 @@ TEST_CASE("fight session: begin reports a refused tuning and keeps the defaults"
     CHECK(!c.gift);
     CHECK(!c.table);
     CHECK(!c.boss);
-    CHECK(c.lock);
+    CHECK(!c.places);
+    CHECK(!c.lock);
+    CHECK(s.places(kLeadB).tuning().baseCarry == PlaceTuning{}.baseCarry);
+    CHECK(!s.hasBoss()); // a refused boss def leaves no boss script
     CHECK(s.strikeCount().tuning().bpm == CountTuning{}.bpm);
     CHECK(s.giftSlot().tuning().healShare == GiftTuning{}.healShare);
     CHECK(s.tick(kFrame).boss->empty());
     CHECK(s.counter(BossCounter::Guard, kLeadA) == BossInput::Ignored);
+    CHECK(s.weakPointOpen()); // no lock asked for: open, as without a boss
+    d.locked = true;
+    d.lock = LockTuning{};
+    CHECK(!s.begin(d, 0.0).boss);
+    CHECK(!s.weakPointOpen()); // the session's lock rules instead
+    CHECK(s.offerKey(kUnlockSharedBlow) == UnlockResult::Unlocked);
+    CHECK(s.weakPointOpen());
 }
 
 TEST_CASE("fight session: hit-stop (zero steps) expires nothing; real time then does") {
@@ -332,6 +343,16 @@ TEST_CASE("fight session: given gifts are presses in the story state") {
     for (int i = 0; i < 4; ++i) CHECK(s.giveGift(kLeadA).given);
     CHECK(wide("w_a0") == 3);
     CHECK(s.lastStoryWrite() == SetResult::Unchanged);
+    // A restart of the scene rolls the presses back; the retried fight counts afresh.
+    REQUIRE(storyRestartScene(story, reg));
+    CHECK(wide("w_a0") == 0);
+    CHECK(wide("w_a1") == 0);
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(s.lastStoryWrite() == SetResult::Unchanged);
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadA).given);
+    CHECK(s.lastStoryWrite() == SetResult::Ok);
+    CHECK(wide("w_a0") == 1);
     s.bindStory(nullptr, &reg);
     CHECK(s.giveGift(kLeadB).given);
     CHECK(wide("w_b0") == 0);
@@ -345,6 +366,7 @@ TEST_CASE("fight session: a fight's frames allocate nothing") {
     d.gift = freeGifts();
     REQUIRE(s.begin(d, 0.0).ok());
     REQUIRE(s.selectGift(Gift::Heal));
+    REQUIRE(ftcore_test::allocHookInstalled());
     const auto before = ftcore_test::allocStats().count;
     for (int i = 0; i < 3000; ++i) {
         const FightTick& t = s.tick(i % 7 == 0 ? 0.0 : kFrame);

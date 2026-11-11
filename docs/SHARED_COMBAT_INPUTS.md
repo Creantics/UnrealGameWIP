@@ -270,12 +270,13 @@ the pieces.
 * **Events.** `tick` returns a `FightTick`: the count's, the table's and the boss script's events
   since the last tick (a call between ticks buffers its events into the next one), the step taken,
   and how many settled count blows were shared blows.
-* **Glue.** A blow judged `OnCount` (at once in `judgeBlow`, or when a held blow settles) is a shared
-  blow: `BossScript::sharedBlow` with a boss script, else the shared-blow key offered to the session's
+* **Glue.** A blow judged a shared outcome (at once in `judgeBlow`, or when a held blow settles) is a
+  shared blow (a settle lost to a full count event buffer is not): `BossScript::sharedBlow` with a boss script, else the shared-blow key offered to the session's
   lock (`def.locked`). A refusal held to the end of its prompt (`endRefusal`) offers the refusal key to
   the session's lock. Every change to a fighter's places through the session re-checks the table when
   that fighter is its setter; after changing places directly (`places(who)` or a load), call
-  `recheckTable`. Without a lock and without a boss script the weak point is always open.
+  `recheckTable`. Without a lock and without a boss script the weak point is always open. A boss def
+  that `begin` refuses leaves no boss script (`hasBoss` false), so the session's lock rules instead.
 * **Presses.** `press(SharedAction, who, target)` maps a host's input action onto the session
   (`Count`, `Gift`, `RefuseDown`, `RefuseUp`, `LeaveOpen`; `SetTable` needs the setter's `Load`, so it
   goes through `setTable`). The host's binding table decides which of its actions make which press:
