@@ -108,8 +108,15 @@ TEST_CASE("fight session: one clock that starts anywhere and only moves by a cla
     CHECK(s.giftSlot().now() == s.now());
     const FightSessionCheck nan = s.begin(FightSessionDef{}, std::numeric_limits<double>::quiet_NaN());
     CHECK(!nan.start);
-    CHECK(!nan.ok());
+    CHECK(nan.ok()); // a moved start is reported, not refused: the fight began
     CHECK(s.now() == 0.0);
+    // An infinite start clamps to the bound on its side, like any start past it.
+    const FightSessionCheck inf = s.begin(FightSessionDef{}, std::numeric_limits<double>::infinity());
+    CHECK(!inf.start);
+    CHECK(inf.ok());
+    CHECK(s.now() == kMaxFightStart);
+    CHECK(!s.begin(FightSessionDef{}, -std::numeric_limits<double>::infinity()).start);
+    CHECK(s.now() == -kMaxFightStart);
     // A start past kMaxFightStart is clamped and reported; there a frame's step still moves the clock.
     CHECK(s.begin(FightSessionDef{}, kMaxFightStart).ok());
     const FightSessionCheck far = s.begin(FightSessionDef{}, 1.0e17);
@@ -354,7 +361,7 @@ TEST_CASE("fight session: a boss point of the read kind opens on its clause, not
 namespace {
 bool tickHas(FightSession& s, BossEventType type) {
     const FightTick& t = s.tick(kFrame);
-    for (int i = 0; i < t.boss->count; ++i)
+    for (std::size_t i = 0; i < t.boss->count; ++i)
         if (t.boss->items[i].type == type) return true;
     return false;
 }

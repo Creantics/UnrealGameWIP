@@ -31,6 +31,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace ftcore {
 
@@ -376,11 +377,38 @@ FTCORE_API bool storyEncode(StoryState& s, const FactRegistry& reg, std::span<st
 FTCORE_API StoryLoad storyDecode(std::span<const std::uint8_t> in, const FactRegistry& reg, StoryState& out,
                                  StoryStateLoadReport* report = nullptr);
 // A saved block, or a new game's state: out is the decoded state when storyDecode says Ok, else (an empty
-// block from a save made before it, or a refused one) storyReset's. Out is never left half decoded.
+// block from a save made before it, or a refused one) storyReset's, never the state it held before.
 FTCORE_API StoryLoad storyLoadOrNew(std::span<const std::uint8_t> in, const FactRegistry& reg, StoryState& out,
                                     StoryStateLoadReport* report = nullptr);
 // The result's name, for logs ("ok", "empty", "bad magic", ...).
 FTCORE_API const char* storyLoadName(StoryLoad r);
+
+// ---- The scene flow ----
+
+// One story-runner scene id and the registry scene it plays.
+struct StorySceneLink {
+    std::string scene;
+    std::uint8_t ordinal = kNoScene;
+};
+
+// The runner's scene ids to registry scene codes: a two-column csv, `scene,code` header, one link a line
+// (blank lines and lines starting with '#' skipped, spaces around a field trimmed). Load time (allocates).
+// False, with `error` naming the line, on a missing header, a line without exactly two fields, an empty
+// field, a code the registry does not list, or a scene id given twice; `out` is then empty.
+FTCORE_API bool importStorySceneMap(std::string_view csv, const FactRegistry& reg, std::vector<StorySceneLink>& out,
+                                    std::string* error = nullptr);
+
+// What entering a scene did.
+struct StorySceneStep {
+    bool committed = false; // the open scene was committed (the flow left it)
+    bool began = false;     // the scene began
+    bool restarted = false; // it was the open scene: back to its start (a retry or a reload inside it)
+    bool refused = false;   // a commit or begin Core refused (a scene not after the last committed one, ...)
+};
+
+// The runner reached `scene` (kNoScene: a scene with no registry code, or the story's end). The open scene,
+// when it is `scene`, restarts; else it is committed and `scene` (when not kNoScene) begins.
+FTCORE_API StorySceneStep storyEnterScene(StoryState& s, const FactRegistry& reg, std::uint8_t scene);
 
 static_assert(sizeof(StoryState) <= 4096, "the story state stays a small value");
 

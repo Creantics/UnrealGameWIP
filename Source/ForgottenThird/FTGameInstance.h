@@ -87,7 +87,7 @@ public:
 	// -AlphaFast: the alpha run's gameplay screens apply time dilation to their autopilot.
 	bool IsAlphaFast() const { return bAlphaFast; }
 
-	// Loads StoryDir again (after editing the story files).
+	// Loads StoryDir again (after editing the story files), the story state's registry with it.
 	UFUNCTION(BlueprintCallable, Category = "Story")
 	bool ReloadStory();
 

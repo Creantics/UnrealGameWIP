@@ -40,8 +40,8 @@ class FORGOTTENTHIRD_API UFTFightSession : public UObject
 public:
 	UFTFightSession();
 
-	// Starts a fight at StartSeconds on the fight clock; false (with a log line naming each piece) when a tuning was
-	// refused and that piece kept its defaults.
+	// Starts a fight at StartSeconds on the fight clock; it always begins. False (with a log line naming each piece)
+	// when a tuning was refused and that piece kept its defaults. A start moved into range is logged, not false.
 	bool Begin(const ftcore::FightSessionDef& Def, double StartSeconds);
 	// Moves the fight clock and every piece. FightDeltaSeconds is fight time: 0 during hit-stop.
 	const ftcore::FightTick& Tick(float FightDeltaSeconds);

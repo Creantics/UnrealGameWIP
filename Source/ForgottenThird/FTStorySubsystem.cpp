@@ -2,6 +2,7 @@
 
 #include "FTSettingsSubsystem.h"
 #include "FTStorySaveGame.h"
+#include "FTStoryStateSubsystem.h"
 #include "FTText.h"
 #include "Engine/GameInstance.h"
 #include "HAL/FileManager.h"
@@ -158,6 +159,10 @@ bool UFTStorySubsystem::StartStory(const FString& SceneId)
 	Backlog.clear(); // a new game (or a headless start): nothing shown yet
 	bPaused = false;
 	Party = ftcore::PartyProgress();
+	if (UFTStoryStateSubsystem* StoryState = GetGameInstance()->GetSubsystem<UFTStoryStateSubsystem>())
+	{
+		StoryState->NewGame(); // the story state starts over with the story
+	}
 	const bool bOk = Runner->start(FT::ToUtf8(SceneId));
 	if (const UFTSettingsSubsystem* SettingsSub = GetGameInstance()->GetSubsystem<UFTSettingsSubsystem>())
 	{

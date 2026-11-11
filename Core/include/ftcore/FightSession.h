@@ -77,13 +77,11 @@ struct FightSessionCheck {
     bool table = true;
     bool lock = true;
     bool boss = true;
-    bool start = true; // false: the start was past kMaxFightStart (clamped) or not finite (0)
-    bool ok() const { return count && gift && places && table && lock && boss && start; }
+    bool start = true; // false: the start was moved: past kMaxFightStart or infinite (clamped to it), or NaN (0)
+    // Every piece took its tuning. A moved start is reported in `start` but is not a refusal: the fight began.
+    bool ok() const { return count && gift && places && table && lock && boss; }
 };
 
-// What one tick emitted. The pointers stay valid until the next tick or begin.
-// One tick's results. The event buffers are the pieces' own (no copy): read them before the next session call,
-// which may refill them.
 // A held blow's settle above x1: the extra damage its enemy takes now (the blow itself landed at base).
 struct HeldBonus {
     std::uint8_t enemy = 0;
@@ -94,6 +92,8 @@ struct HeldBonus {
 // Held blows the session can wait on at once (judgeHeldBlow); one more lands at base with no bonus.
 inline constexpr std::size_t kMaxHeldBlows = 16;
 
+// One tick's results. The event buffers are the pieces' own (no copy): read them before the next session call,
+// which may refill them; the pointers stay valid until the next tick or begin.
 struct FightTick {
     double now = 0.0;
     double step = 0.0; // the fight time this tick added (0 during hit-stop)
@@ -121,8 +121,8 @@ public:
     FightSession(const FightSession&) = delete;
     FightSession& operator=(const FightSession&) = delete;
 
-    // Starts a fight at `start` on the fight clock (not bound by kMaxTimeJump; clamped to +-kMaxFightStart, a
-    // start that is not finite is 0).
+    // Starts a fight at `start` on the fight clock (not bound by kMaxTimeJump). A start past +-kMaxFightStart, or
+    // an infinite one, is clamped to +-kMaxFightStart; a NaN start is 0. Either way the fight begins (check.start).
     FightSessionCheck begin(const FightSessionDef& def, double start) {
         FightSessionCheck c;
         c.start = std::isfinite(start) && start >= -kMaxFightStart && start <= kMaxFightStart;

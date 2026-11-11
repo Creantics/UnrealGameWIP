@@ -98,9 +98,9 @@ scene or a stamp that is neither a scene nor 255. A mid-scene save with no room 
 for tag 1 is still written, without it, and counts in `StoryState::lostStampRecords`: that save
 restarts the open scene with the stamps as saved.
 
-Decode may fill part of its output before a late refusal, so a loader decodes into a temporary.
-`storyLoadOrNew` does that: the decoded state on Ok, a new game's state (`storyReset`) on any other
-result, never half of one. `storyLoadName` names a result for logs.
+Decode builds the state aside and writes its output only on Ok: every refusal, a late one in the
+extension included, leaves the output as it was. `storyLoadOrNew` is the loader's call: the decoded
+state on Ok, a new game's state (`storyReset`) on any other result, never the state from before. `storyLoadName` names a result for logs.
 
 ## Tests
 
@@ -125,3 +125,35 @@ The story save game keeps the block beside the story text (`StoryBlock`): captur
 loaded after the text with `storyLoadOrNew`, so a save from before the block loads as a new game's state.
 `-StoryStateCheck` runs headless: a block round trip and a new game, one `StoryState check:` log line,
 then the game exits; it never writes the save slot.
+
+`UFTGameInstance::ReloadStory` imports the registry again after the story reloads (a failed reload keeps
+both), so the two never part. A registry import resets the state to a new game's: its slots and scenes
+belong to the registry it was written against.
+
+### The scene flow
+
+A private `story_scene_map.csv` beside the registry links the story runner's scene ids to registry scene
+codes (`importStorySceneMap`):
+
+```
+scene,code
+r-one,s1
+r-two,s2
+```
+
+Blank lines and `#` lines are skipped; a missing header, a line without two fields, an empty field, a code
+the registry does not list or an id given twice refuses the whole file. With no map (or a refused one) the
+subsystem never touches the scene: hosts may call `BeginScene` and the rest themselves.
+
+With a map it follows `UFTStorySubsystem` through `storyEnterScene`:
+
+- a scene change commits the open scene and begins the new scene's code; a scene with no code, or the story's
+  end, only commits, so map every runner scene that plays inside a registry scene (an unmapped one between
+  two scenes of one code closes it, and the second is refused);
+- runner scenes in a row that share one code continue that registry scene; the same runner id entered again
+  restarts it;
+- a new story (`StartStory`) starts a new game's state;
+- a load decodes the block, then brings the state to the runner's scene: the open scene restarts when the
+  runner is in it (saves are taken at scene start), else it is committed and the runner's scene begins.
+
+A fight retry resets the fight, not the scene, so it calls nothing here.

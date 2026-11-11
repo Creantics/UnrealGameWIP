@@ -257,7 +257,8 @@ the pieces.
 
 * **One clock.** `begin(def, start)` resets every piece at `start`, clamped to +-`kMaxFightStart`
   (1e9 s; further out a double's spacing outgrows a frame's step and the clock would stop moving;
-  `FightSessionCheck::start` reports a clamp). `tick(fightDt)`
+  NaN starts at 0; `FightSessionCheck::start` reports either move, and the fight begins anyway, so `ok()`
+  leaves it out). `tick(fightDt)`
   is the only time input after that: it adds the step to the session's clock and updates every piece
   with it, every frame. No session call takes a time; presses and blows are stamped with `now()`.
   A step that is negative or not finite counts as 0, and one step is at most `kMaxFightStep`
