@@ -42,13 +42,18 @@
 // * Player actions. Idle/Move, Light, Heavy, Riposte, Release, Dodge, Guard, Heal; and the ones that happen to
 //   the player: Hitstun, GuardBreak, Downed.
 //   - A new action may start from Idle/Move, from an attack once `cancel` of its recovery has passed,
-//     from a dodge once `dodgeCancel` of it has passed, and from Guard at any time. An action pressed
+//     from a dodge once `dodgeCancel` of it has passed, and from Guard at any time. An attack may name its own
+//     cancel windows instead, each a share of the whole attack (startup + active + recovery) after which that
+//     action may cut in: cancelGuard (Guard, and a guard press there opens the parry window as anywhere),
+//     cancelRoll (Dodge) and cancelLight (the next light, the riposte and the aimed shot); below 0, the
+//     default, the `cancel` rule. Heavy, heal and Release always keep the `cancel` rule. An action pressed
 //     while it can't start is buffered for `bufferTime` (only the latest press is kept) and starts as
 //     soon as it can. Pressed in one tick, Release beats dodge, which beats heal, heavy and light.
 //   - Light: the chain's next attack when it starts during the previous light's recovery or within
 //     `chainGap` after it, else the first. The chain wraps after lightCount.
-//   - Every attack and the dodge cost stamina; an action needs stamina > 0 to start and may take it
-//     to 0 (StaminaEmpty). Stamina refills at staminaRegen per second once staminaDelay has passed
+//   - Every attack and the dodge cost their `stamina` (dodgeStamina); one that costs some needs stamina > 0
+//     to start and may take it to 0 (StaminaEmpty). One that costs 0 (a free light) starts whatever the
+//     stamina and never holds its refill back. Stamina refills at staminaRegen per second once staminaDelay has passed
 //     since the last spend.
 //   - Dodge: a roll of dodgeDistance over dodgeTime along the stick (straight back, away from the
 //     facing, when the stick is idle). Invulnerable from dodgeInvulnStart to dodgeInvulnEnd: an enemy
@@ -115,6 +120,30 @@
 //   `weight`, from the seeded RNG), or closes in to the nearest move's maxRange when none fits.
 //   Enemy poise works like the player's: poise damage beyond poise staggers, `armor` ignores a share
 //   of it during an attack's startup and active parts, and poise refills after poiseDelay.
+// * Hit pause. A blow that lands (a Hit on either side, not one the host vetoes) with hitStop > 0 pauses the
+//   body it lands on for hitStop seconds and its attacker for hitStop * hitStopSelf (0 for a shot: the
+//   shooter goes on); a parry pauses the player and the parried enemy for the fighter's parryStop. A paused
+//   body's own time stands still: its action or brain time, its move, its velocity (0) and, for the player,
+//   the age of a buffered press, so a press made in a pause still starts when it ends. Pauses that overlap
+//   end at the latest, never added up. A tick that a pause ends inside advances that body by the part of
+//   the tick after it, so the result doesn't hang on the step. Everything else runs on fight time: the
+//   fight's clock (time(), stats.time, every event's time), stamina and poise refill, cooldowns, attack
+//   tokens and attackDelay, the parry window, the pair window and the Read deal. So the host and anything
+//   it ticks beside the fight (the shared combat inputs) see fight time, which a pause never stops; a host
+//   that wants its figures to stop reads ArenaPlayerOut::stopLeft and ArenaEnemyOut::stopLeft.
+// * Flinch. An enemy kind with flinchTime > 0 flinches (Flinch, the Flinched event) when a player's blow
+//   of at least flinchPoise poise damage lands and its poise holds: in Approach, Strafe, Flinch (it
+//   starts again) or an attack's startup or recovery, never in its active part or while its `armor` is on.
+//   A flinch cuts the move short and gives the token back, as a stagger does; it is pushed flinchPush
+//   metres straight away from the player over the flinch, then walks again. A broken poise staggers
+//   instead. The host may forbid it for one enemy (setEnemyFlinch: a boss whose script allows it only in
+//   some phases); bosses leave flinchTime at 0.
+// * Break-out. An enemy kind with breakAt > 0 counts the player's blows that land on it while it is
+//   upright (Approach, Strafe, Attack, Flinch), the count going back to 0 after breakDecay with none, and
+//   on a stagger or a break-out. The blow that reaches breakAt, if it doesn't stagger it, starts its
+//   breakMove at once (BrokeOut, then AttackStarted): whatever the token count, its cooldown and the
+//   flinch, though never a move the host's move mask clears. That move should carry `armor`. A stagger,
+//   Open or Down never counts and never breaks out.
 // * Lock-on: `lock` locks the living enemy within lockRange with the best score of how close it is to
 //   the view direction and how near it is (the worker picks the weighting; nearest wins ties), or
 //   lets go when already locked. lockSwitch moves the lock to the next living enemy in range to the
@@ -238,6 +267,11 @@ struct ArenaAttack {
     float armor = 0.f;        // 0..1: share of incoming poise damage ignored during startup + active
     float stamina = 0.f;      // the player's cost; enemies have no stamina
     float cancel = 0.6f;      // the player's: share of recovery after which another action may start
+    float cancelGuard = -1.f; // the player's: share of the whole attack after which Guard may cut in; < 0: `cancel`
+    float cancelRoll = -1.f;  // ... a dodge; < 0: `cancel`
+    float cancelLight = -1.f; // ... the next light (a riposte, a shot); < 0: `cancel`
+    float hitStop = 0.f;      // s the body it lands on pauses (see Hit pause); 0: none
+    float hitStopSelf = 1.f;  // share of hitStop the attacker pauses too (0: a shot, the shooter goes on)
     std::uint8_t maxTargets = 0; // 0: connects with every target in range and arc; N: with at most N distinct
                                  // targets over its whole active part, the nearest first (the player's matter)
 
@@ -294,6 +328,7 @@ struct ArenaFighter {
     float guardBreakTime = 1.2f;
     float parryWindow = 0.15f;
     float parryRearm = 0.5f;
+    float parryStop = 0.f;      // s a parry pauses the player and the parried enemy (see Hit pause)
     float riposteReach = 2.2f;
 
     std::uint8_t healCharges = 3;
@@ -407,6 +442,12 @@ struct ArenaEnemyKind {
     bool passive = false;     // never asks for an attack token: a target dummy (arena.json's `dummy`); with its
                               // speeds at 0 it stands where it spawned and only takes blows
     ArenaEnemyLook look;      // the host's skinned figure for it, if any
+    float flinchTime = 0.f;   // > 0: a landed blow flinches it this long (see Flinch); 0: it never flinches
+    float flinchPoise = 0.f;  // the least poise damage a blow needs to flinch it
+    float flinchPush = 0.f;   // metres a flinch pushes it back
+    std::uint8_t breakAt = 0; // > 0: the blows in a row that make it break out (see Break-out); 0: never
+    float breakDecay = 1.5f;  // s without a blow after which the count goes back to 0
+    int breakMove = -1;       // the move it breaks out with; -1: none
 };
 
 // An enemy kind's standing height in metres: its `height` when set, else 1.75 m at the default body radius
@@ -514,7 +555,7 @@ enum class ArenaAction : std::uint8_t {
     Release, // appended
 };
 // An enemy's brain state (append only).
-enum class ArenaBrain : std::uint8_t { Approach, Strafe, Attack, Staggered, Open, Down, Dead };
+enum class ArenaBrain : std::uint8_t { Approach, Strafe, Attack, Staggered, Open, Down, Dead, Flinch /* appended */ };
 // Where an attack is.
 enum class ArenaPart : std::uint8_t { None, Startup, Active, Recovery };
 
@@ -536,6 +577,7 @@ struct ArenaPlayerOut {
     bool backstep = false;            // whether the current or last dodge is a backstep
     int load = 0;                     // the Load gauge, 0..kMaxLoad (beside stamina)
     bool overloaded = false;          // Load at kMaxLoad: light, heavy and heal are refused until a Release
+    float stopLeft = 0.f;             // s left in a hit pause (0: none); its action time and velocity stand still
 };
 
 struct ArenaEnemyOut {
@@ -546,8 +588,9 @@ struct ArenaEnemyOut {
     std::uint8_t move = 0;            // Attack: the move index
     float stateTime = 0.f;            // seconds in this brain state (Attack: in this move)
     float stateLength = 0.f;          // Staggered, Open, Down: the state's whole length, s (the host's hold while one
-                                      // runs; +infinity until a release); 0 in any other state
+                                      // runs; +infinity until a release); Flinch: flinchTime; 0 in any other state
     bool token = false;               // holds an attack token
+    float stopLeft = 0.f;             // s left in a hit pause (0: none); its state time and velocity stand still
 };
 
 enum class ArenaEventType : std::uint8_t { // append only
@@ -573,6 +616,8 @@ enum class ArenaEventType : std::uint8_t { // append only
     Read,           // the partner picked the right card for source's `move`: amount = the stacks now (appended)
     Misread,        // ... a decoy: the stacks are 0 and source regained `amount` poise (appended)
     ReadCounter,    // the partner's Read counter hit target for `amount` hp; move = the stacks (appended)
+    Flinched,       // the player's blow made target flinch (appended)
+    BrokeOut,       // source broke out of the player's blows with its move `move` (appended)
 };
 
 struct ArenaEvent {
@@ -614,6 +659,8 @@ struct ArenaStats {
     int evades = 0;
     int heals = 0;
     int staggers = 0;  // enemy poise breaks
+    int flinches = 0;  // enemy flinches
+    int breakOuts = 0; // enemy break-outs
     int guardBreaks = 0;
     int restarts = 0;
     int loadStored = 0;      // Load stored by parries
@@ -771,6 +818,11 @@ public:
     // restart() clear it. Nothing for an enemy out of range; enemyTurnHeld is then false.
     FTCORE_API void setEnemyTurnHeld(std::size_t i, bool held);
     FTCORE_API bool enemyTurnHeld(std::size_t i) const;
+    // While false, enemy i never flinches (a boss whose script allows it only in some phases); true, the default,
+    // leaves it to its kind's flinchTime. It applies from the next blow and never ends a flinch already running.
+    // begin() and restart() set it again. Nothing for an enemy out of range; enemyFlinch is then false.
+    FTCORE_API void setEnemyFlinch(std::size_t i, bool allowed);
+    FTCORE_API bool enemyFlinch(std::size_t i) const;
     // Turns enemy i to `facing` (made unit) now; the next tick works from it and reports it. Nothing for a zero
     // vector or an enemy out of range.
     FTCORE_API void setEnemyFacing(std::size_t i, Vec2 facing);
@@ -831,6 +883,7 @@ private:
         float pairParry = -1.0e9f;          // fight time of the last unpaired parry ...
         std::uint8_t pairFoe = kArenaNobody; // ... and the enemy it opened
         int readStacks = 0;                 // correct Reads in a row, 0..kMaxReadStacks
+        float stopUntil = -1.0e9f;          // fight time a hit pause ends
     };
 
     struct EnemyState {
@@ -860,6 +913,10 @@ private:
         std::uint32_t moveMask = 0xFFFFFFFFu; // the moves a pick may begin (bit m: move m)
         bool facingHeld = false;            // the host's hold: a move keeps the facing it began with
         bool turnHeld = false;              // the host's hold: Approach and Strafe keep the facing (the host turns it)
+        bool flinchAllowed = true;          // the host's: false, it never flinches
+        float stopUntil = -1.0e9f;          // fight time a hit pause ends
+        std::uint8_t breakHits = 0;         // the player's blows in a row toward a break-out
+        float lastBreakHit = -1.0e9f;       // fight time of the last of them
     };
 
     ArenaDef def_;

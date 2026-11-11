@@ -159,6 +159,7 @@ struct ArenaFightImpl {
     float attackSpeed = 0.f; // ArenaInput::attackSpeed / attackTurn this tick
     float attackTurn = 0.f;
     float t1 = 0.f; // ... and its end
+    float playerOwn = 0.f; // the player's own time this tick: dt less any hit pause
 
     explicit ArenaFightImpl(ArenaFight& f)
         : fight(f), pl(f.player_), foes(f.enemy_), def(f.def_), fi(f.def_.fighter), out(f.out_), stats(f.stats_),
@@ -201,9 +202,21 @@ struct ArenaFightImpl {
         }
     }
 
-    // A new action may start from Idle/Move, from an attack once `cancel` of its recovery has passed, from a dodge once
-    // `dodgeCancel` of it has passed, and from Guard at any time.
-    static bool canStart(const Player& p, const ArenaFighter& f) {
+    // What wants to cut into the current action: an attack's own cancel window for it, if it names one.
+    enum class Cut : std::uint8_t { Other, Guard, Roll, Light };
+    static Cut cutOf(Press what) {
+        switch (what) {
+        case Press::Light:
+        case Press::Shot: return Cut::Light;
+        case Press::Dodge: return Cut::Roll;
+        default: return Cut::Other;
+        }
+    }
+
+    // A new action may start from Idle/Move, from an attack once `cancel` of its recovery has passed (or its own
+    // window for that action, a share of the whole attack), from a dodge once `dodgeCancel` of it has passed, and
+    // from Guard at any time.
+    static bool canStart(const Player& p, const ArenaFighter& f, Cut cut = Cut::Other) {
         switch (p.action) {
         case ArenaAction::Idle:
         case ArenaAction::Move:
@@ -214,6 +227,11 @@ struct ArenaFightImpl {
         case ArenaAction::Riposte:
         case ArenaAction::Release: {
             const ArenaAttack& a = *attackOf(p, f);
+            const float own = cut == Cut::Guard  ? a.cancelGuard
+                              : cut == Cut::Roll  ? a.cancelRoll
+                              : cut == Cut::Light ? a.cancelLight
+                                                  : -1.f;
+            if (own >= 0.f) return p.actionTime >= own * a.total();
             return p.actionTime >= a.startup + a.active + a.cancel * a.recovery;
         }
         case ArenaAction::Dodge:
@@ -279,6 +297,7 @@ struct ArenaFightImpl {
         po.backstep = pl.backstep;
         po.load = pl.gauge.value;
         po.overloaded = pl.gauge.overloaded();
+        po.stopLeft = std::max(0.f, pl.stopUntil - fight.time_);
         for (std::size_t i = 0; i < kMaxArenaEnemies; ++i) {
             ArenaEnemyOut& eo = out.enemies[i];
             const Enemy& foe = foes[i];
@@ -290,6 +309,7 @@ struct ArenaFightImpl {
             eo.stateTime = foe.stateTime;
             eo.stateLength = i < n ? recoverLength(i) : 0.f;
             eo.token = foe.token;
+            eo.stopLeft = i < n ? std::max(0.f, foe.stopUntil - fight.time_) : 0.f;
             if (i < n && foe.brain == ArenaBrain::Attack) {
                 eo.part = arenaPartOf(def.enemies[i].moves[foe.move].attack, foe.stateTime);
                 eo.move = foe.move;
@@ -333,7 +353,7 @@ struct ArenaFightImpl {
     void endTick() {
         maintainLock();
         pl.parryLeft = std::max(0.f, pl.parryLeft - dt);
-        if (pl.buffered != Press::None) pl.bufferAge += dt;
+        if (pl.buffered != Press::None) pl.bufferAge += playerOwn; // a hit pause holds it
         // Every velocity is cut so the body stays inside the ring.
         pl.velocity = pl.hp > 0 ? arenaCutVelocity(fight.ring_, pl.pos, pl.velocity, dt, fi.bodyRadius) : Vec2{};
         for (std::size_t i = 0; i < n; ++i) {
@@ -509,10 +529,13 @@ struct ArenaFightImpl {
         emit(ArenaEventType::AttackStarted, kArenaPlayer, kArenaNobody, move, 0, pl.pos);
     }
 
+    // An attack that costs stamina needs some to start; a free one starts whatever the stamina.
+    bool affords(const ArenaAttack& a) const { return a.stamina <= 0.f || pl.stamina > 0.f; }
+
     bool startLight(const ArenaInput& in) {
-        if (pl.stamina <= 0.f) return false;
         const int riposteAt = riposteTarget();
         if (riposteAt >= 0) {
+            if (!affords(fi.riposte)) return false;
             pl.chainLive = false;
             pl.target = id(static_cast<std::size_t>(riposteAt));
             pl.facing = arenaUnit(arenaSub(foes[static_cast<std::size_t>(riposteAt)].pos, pl.pos), pl.facing);
@@ -522,6 +545,7 @@ struct ArenaFightImpl {
         // The chain's next attack when it starts during the previous light's recovery or within chainGap after it.
         const bool chained = pl.chainLive && (pl.action == ArenaAction::Light || t0 - pl.lightEnd <= fi.chainGap);
         const std::uint8_t index = chained ? pl.chainNext : static_cast<std::uint8_t>(0);
+        if (!affords(fi.light[index])) return false;
         pl.chainNext = static_cast<std::uint8_t>((index + 1u) % fi.lightCount);
         pl.chainLive = true;
         faceAtStart(in);
@@ -531,7 +555,7 @@ struct ArenaFightImpl {
 
     // A gun kit's aimed light: one round at the aim, no riposte (that stays the unaimed light's), and it ends a chain.
     bool startShot(const ArenaInput& in) {
-        if (pl.stamina <= 0.f) return false;
+        if (!affords(fi.shot)) return false;
         pl.chainLive = false;
         faceAtStart(in);
         beginAttack(ArenaAction::Light, kArenaShotMove, fi.shot);
@@ -539,7 +563,7 @@ struct ArenaFightImpl {
     }
 
     bool startHeavy(const ArenaInput& in) {
-        if (pl.stamina <= 0.f) return false;
+        if (!affords(fi.heavy)) return false;
         pl.chainLive = false;
         faceAtStart(in);
         beginAttack(ArenaAction::Heavy, kArenaHeavyMove, fi.heavy);
@@ -547,7 +571,7 @@ struct ArenaFightImpl {
     }
 
     bool startDodge(const ArenaInput& in) {
-        if (pl.stamina <= 0.f) return false;
+        if (fi.dodgeStamina > 0.f && pl.stamina <= 0.f) return false;
         const Vec2 stick = arenaClampLength(in.move, 1.f);
         if (arenaLength(stick) > kArenaEps) {
             pl.dodgeDir = arenaUnit(stick, pl.facing);
@@ -761,14 +785,41 @@ struct ArenaFightImpl {
             pl.buffered = Press::None;
         }
 
+        // Paused for the whole tick, nothing starts (a press waits in the buffer, which doesn't age) and the
+        // player stands still.
+        playerOwn = ownTime(pl.stopUntil);
+        if (!(playerOwn > 0.f)) {
+            pl.velocity = Vec2{};
+            return;
+        }
         bool began = false;
-        if (pl.buffered != Press::None && canStart(pl, fi) && startAction(pl.buffered, in)) {
+        if (pl.buffered != Press::None && canStart(pl, fi, cutOf(pl.buffered)) && startAction(pl.buffered, in)) {
             pl.buffered = Press::None;
             began = true;
         }
-        if (!began && in.guard && pl.action != ArenaAction::Guard && canStart(pl, fi)) startGuard();
+        if (!began && in.guard && pl.action != ArenaAction::Guard && canStart(pl, fi, Cut::Guard)) startGuard();
 
+        if (playerOwn >= dt) {
+            advancePlayer(in);
+            return;
+        }
+        // A pause ends inside the tick: the player moves on by the part after it.
+        const float whole = dt;
+        dt = playerOwn;
         advancePlayer(in);
+        dt = whole;
+        pl.velocity = arenaScaled(pl.velocity, playerOwn / whole);
+    }
+
+    // ---- the hit pause ----
+
+    // A body's own time this tick: dt less the part a hit pause ending at `until` covers.
+    float ownTime(float until) const { return until <= t0 ? dt : std::clamp(t1 - until, 0.f, dt); }
+
+    // Pauses a body for `seconds` from fight time `from` (the tick's start for one that hasn't moved this tick yet, its
+    // end for one that has); pauses that overlap end at the latest.
+    static void pause(float& until, float from, float seconds) {
+        if (seconds > 0.f) until = std::max(until, from + seconds);
     }
 
     // Outside attacks the player faces the lock target, else turns toward the stick at turnRate.
@@ -916,6 +967,7 @@ struct ArenaFightImpl {
     void staggerEnemy(std::size_t i) {
         Enemy& foe = foes[i];
         foe.poise = def.enemies[i].poise;
+        foe.breakHits = 0;
         interrupt(i, ArenaBrain::Staggered);
         ++stats.staggers;
         emit(ArenaEventType::Staggered, kArenaPlayer, id(i), 0, 0, foe.pos);
@@ -1012,9 +1064,7 @@ struct ArenaFightImpl {
     // parts; at 0 it staggers.
     void poiseHit(std::size_t i, float poise) {
         Enemy& foe = foes[i];
-        const bool upright = foe.brain == ArenaBrain::Approach || foe.brain == ArenaBrain::Strafe ||
-                             foe.brain == ArenaBrain::Attack;
-        if (poise <= 0.f || !upright) return;
+        if (poise <= 0.f || !upright(foe)) return;
         float share = 0.f;
         if (foe.brain == ArenaBrain::Attack) {
             const ArenaAttack& own = def.enemies[i].moves[foe.move].attack;
@@ -1070,6 +1120,9 @@ struct ArenaFightImpl {
             ++stats.hits;
             stats.damageDealt += amount;
             emit(ArenaEventType::Hit, kArenaPlayer, id(i), pl.move, amount, foe.pos);
+            // The pause: the player has moved this tick, the enemies not yet.
+            pause(pl.stopUntil, t1, a.hitStop * std::clamp(a.hitStopSelf, 0.f, 1.f));
+            pause(foe.stopUntil, t0, a.hitStop);
             if (foe.hp <= 0) {
                 killEnemy(i);
                 continue;
@@ -1081,8 +1134,64 @@ struct ArenaFightImpl {
                 ++stats.ripostes;
                 continue;
             }
-            poiseHit(i, scaledPoise(poise, r.poise));
+            const float dealt = scaledPoise(poise, r.poise);
+            countBlow(i);
+            poiseHit(i, dealt);
+            if (!alive(i) || !upright(foe)) continue; // staggered (or the read counter it brought ended it)
+            if (breakOut(i)) continue;
+            flinch(i, dealt);
         }
+    }
+
+    // On its feet: the states poise damage, a flinch and a break-out count in.
+    static bool upright(const Enemy& foe) {
+        return foe.brain == ArenaBrain::Approach || foe.brain == ArenaBrain::Strafe || foe.brain == ArenaBrain::Attack ||
+               foe.brain == ArenaBrain::Flinch;
+    }
+
+    // A player's blow landed on enemy i: one more toward its break-out, while it is upright and not in that move.
+    void countBlow(std::size_t i) {
+        Enemy& foe = foes[i];
+        const ArenaEnemyKind& k = def.enemies[i];
+        if (k.breakAt == 0 || !upright(foe)) return;
+        if (foe.brain == ArenaBrain::Attack && static_cast<int>(foe.move) == k.breakMove) return;
+        if (t1 - foe.lastBreakHit > k.breakDecay) foe.breakHits = 0;
+        if (foe.breakHits < 255) ++foe.breakHits;
+        foe.lastBreakHit = t1;
+    }
+
+    // The count reached breakAt: the break move starts at once, whatever the tokens and its cooldown.
+    bool breakOut(std::size_t i) {
+        Enemy& foe = foes[i];
+        const ArenaEnemyKind& k = def.enemies[i];
+        if (k.breakAt == 0 || foe.breakHits < k.breakAt) return false;
+        if (k.breakMove < 0 || k.breakMove >= static_cast<int>(k.moveCount) || ((foe.moveMask >> k.breakMove) & 1u) == 0u)
+            return false;
+        foe.breakHits = 0;
+        const std::uint8_t move = static_cast<std::uint8_t>(k.breakMove);
+        interrupt(i, ArenaBrain::Approach); // a move cut short gives its token back (and a read move brings its counter)
+        if (!alive(i) || foe.brain != ArenaBrain::Approach) return true;
+        foe.token = true;
+        ++stats.breakOuts;
+        emit(ArenaEventType::BrokeOut, id(i), kArenaPlayer, move, 0, foe.pos);
+        beginMove(i, move);
+        return true;
+    }
+
+    // A landed blow of at least flinchPoise flinches enemy i, unless its attack is active or armoured.
+    void flinch(std::size_t i, float poise) {
+        Enemy& foe = foes[i];
+        const ArenaEnemyKind& k = def.enemies[i];
+        if (!(k.flinchTime > 0.f) || !foe.flinchAllowed || poise < k.flinchPoise) return;
+        if (foe.brain == ArenaBrain::Attack) {
+            const ArenaAttack& own = k.moves[foe.move].attack;
+            const ArenaPart part = arenaPartOf(own, foe.stateTime);
+            if (part == ArenaPart::Active || (part == ArenaPart::Startup && own.armor > 0.f)) return;
+        }
+        interrupt(i, ArenaBrain::Flinch);
+        if (!alive(i) || foe.brain != ArenaBrain::Flinch) return; // the read counter it brought ended it
+        ++stats.flinches;
+        emit(ArenaEventType::Flinched, kArenaPlayer, id(i), 0, 0, foe.pos);
     }
 
     // ---- the enemies ----
@@ -1279,6 +1388,8 @@ struct ArenaFightImpl {
             emit(ArenaEventType::Parried, source, kArenaPlayer, foe.move, 0, pl.pos);
             const std::uint8_t move = foe.move;
             interrupt(i, ArenaBrain::Open);
+            pause(pl.stopUntil, t1, fi.parryStop);
+            pause(foe.stopUntil, t1, fi.parryStop);
             storeLoad(source, move, damage);
             pl.pairParry = t0;
             pl.pairFoe = source;
@@ -1306,6 +1417,8 @@ struct ArenaFightImpl {
         }
         ++stats.hitsTaken;
         damagePlayer(source, damage, foe.move);
+        pause(pl.stopUntil, t1, a.hitStop); // both have moved this tick
+        pause(foe.stopUntil, t1, a.hitStop * std::clamp(a.hitStopSelf, 0.f, 1.f));
         if (pl.hp <= 0) return;
         // Poise: a player in hitstun or guard break is already down; `armor` ignores a share of it during the player's
         // own attack's startup and active parts.
@@ -1439,11 +1552,12 @@ struct ArenaFightImpl {
         return arenaClampLength(want, k.strafeSpeed);
     }
 
-    // How long enemy i's Staggered, Open or Down lasts in all: the host's hold while one runs, else the kind's time.
-    // 0 in any other state.
+    // How long enemy i's Staggered, Open or Down lasts in all: the host's hold while one runs, else the kind's time;
+    // a Flinch, flinchTime. 0 in any other state.
     float recoverLength(std::size_t i) const {
         const Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
+        if (foe.brain == ArenaBrain::Flinch) return k.flinchTime;
         if (foe.brain != ArenaBrain::Staggered && foe.brain != ArenaBrain::Open && foe.brain != ArenaBrain::Down) return 0.f;
         return foe.holdFor >= 0.f                ? foe.holdFor // the host's hold
                : foe.brain == ArenaBrain::Staggered ? k.staggerTime
@@ -1495,6 +1609,15 @@ struct ArenaFightImpl {
         case ArenaBrain::Staggered:
         case ArenaBrain::Open:
         case ArenaBrain::Down: recover(i); break;
+        case ArenaBrain::Flinch: {
+            // Pushed straight away from the player over the flinch.
+            const ArenaEnemyKind& k = def.enemies[i];
+            const float length = std::max(k.flinchTime, kArenaEps);
+            const float moving = std::max(0.f, std::min(foe.stateTime + dt, length) - foe.stateTime);
+            vel = arenaScaled(Vec2{-dir.x, -dir.y}, k.flinchPush / length * moving / dt);
+            recover(i);
+            break;
+        }
         case ArenaBrain::Dead: break;
         }
         foe.velocity = vel;
@@ -1504,7 +1627,23 @@ struct ArenaFightImpl {
         for (std::size_t i = 0; i < n; ++i) enemyTimers(i);
         for (std::size_t i = 0; i < n; ++i) enemyStance(i);
         assignTokens();
-        for (std::size_t i = 0; i < n; ++i) enemyAct(i);
+        for (std::size_t i = 0; i < n; ++i) {
+            // A hit pause stops its own time: paused for the whole tick it does nothing and stands still; one that
+            // ends inside the tick moves it on by the part after.
+            Enemy& foe = foes[i];
+            const float own = ownTime(foe.stopUntil);
+            if (own >= dt || foe.brain == ArenaBrain::Dead) {
+                enemyAct(i);
+            } else if (own > 0.f) {
+                const float whole = dt;
+                dt = own;
+                enemyAct(i);
+                dt = whole;
+                foe.velocity = arenaScaled(foe.velocity, own / whole);
+            } else {
+                foe.velocity = Vec2{};
+            }
+        }
     }
 
     // ---- the autopilot ----
@@ -1795,6 +1934,10 @@ void ArenaFight::setEnemyTurnHeld(std::size_t i, bool held) {
     if (i < enemyCount_) enemy_[i].turnHeld = held;
 }
 bool ArenaFight::enemyTurnHeld(std::size_t i) const { return i < enemyCount_ && enemy_[i].turnHeld; }
+void ArenaFight::setEnemyFlinch(std::size_t i, bool allowed) {
+    if (i < enemyCount_) enemy_[i].flinchAllowed = allowed;
+}
+bool ArenaFight::enemyFlinch(std::size_t i) const { return i < enemyCount_ && enemy_[i].flinchAllowed; }
 void ArenaFight::setEnemyFacing(std::size_t i, Vec2 facing) {
     if (i < enemyCount_ && arenaLength(facing) > kArenaEps) enemy_[i].facing = arenaUnit(facing, enemy_[i].facing);
 }
@@ -1934,6 +2077,7 @@ const char* arenaBrainName(ArenaBrain b) {
     case ArenaBrain::Open: return "Open";
     case ArenaBrain::Down: return "Down";
     case ArenaBrain::Dead: return "Dead";
+    case ArenaBrain::Flinch: return "Flinch";
     }
     return "";
 }
@@ -2097,19 +2241,24 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             dodgeStamina 0..100000; dodgeCancel, guardAbsorb, guardMoveScale, healMoveScale 0..1;
 //             guardArcCos -1..1; riposteReach (0, 100]; healCharges 0..99; healAmount 0..100000;
 //             lockRange (0, 1000]; lockBreak (0, 1000] and at least lockRange; moveAccel, moveBrake 0..1000;
-//             loadShare 0..10; releasePoise 0..1000; pairWindow 0..1; pairHits 0..10; attacks a bool; release an attack;
+//             loadShare 0..10; releasePoise 0..1000; pairWindow 0..1; pairHits 0..10; parryStop 0..1;
+//             attacks a bool; release an attack;
 //             readPower 0..100; readStackPower 0..10; readPoise, readWrongPoise 0..100000
 //   bpm       (0, 300], optional; with it every move's startup is a whole number of beats, within
 //             kArenaBeatTolerance. An enemy may carry a bpm of its own, which its startups are checked against
 //             in place of the file's
 //   attack    startup, recovery 0..10; active (0, 10]; range (0, 100]; arcCos -1..1; damage, poiseDamage,
-//             guardDamage, stamina 0..100000; lunge, tracking 0..100; armor, cancel 0..1; maxTargets 0..6; width 0..20
+//             guardDamage, stamina 0..100000; lunge, tracking 0..100; armor, cancel 0..1; maxTargets 0..6; width 0..20;
+//             cancelGuard, cancelRoll, cancelLight -1..1 (below 0: `cancel`; the player's, an enemy's move ignores
+//             them, as it does stamina and cancel); hitStop, hitStopSelf 0..1
 //   enemy     hp 1..100000; poise (0, 100000]; poiseDelay, staggerTime, openTime, downTime, attackDelay 0..10;
 //             walkSpeed, runSpeed, strafeSpeed 0..50; turnRate (0, 100]; preferredRange (0, 100];
 //             runRange 0..100 and at least preferredRange; bodyRadius (0, 5]; height (0, 30] metres, optional
 //             (see arenaEnemyHeight); moves 1..kMaxArenaMoves; accel 0..1000; bpm (0, 300], optional (see above);
 //             look, optional, the host's skinned figure for it: { "clips": a path in Data/ of 1..95 characters,
 //             "hover" 0..30 m, "scale" (0, 100], "yawOffset" -360..360 degrees } (clips required)
+//             flinchTime 0..10; flinchPoise 0..100000; flinchPush 0..20; breakAt 0..255; breakDecay 0..60;
+//             breakMove -1 or one of its moves
 //             at most 254 kinds in the file (ArenaDef::enemyKind holds an index, kArenaNoKind is 255)
 //   move      the attack's keys; minRange 0..100; maxRange (0, 100] and at least minRange; cooldown 0..60;
 //             weight 0..1000 (0: only ever reached by a chain; at least one move needs more);
@@ -2127,7 +2276,8 @@ using ArenaStrings = std::vector<std::string>;
 
 constexpr std::string_view kArenaAttackKeys[] = {"startup", "active",      "recovery",    "range",  "arcCos",
                                                  "damage",  "poiseDamage", "guardDamage", "lunge",  "tracking",
-                                                 "armor",   "stamina",     "cancel",      "maxTargets", "width"};
+                                                 "armor",   "stamina",     "cancel",      "maxTargets", "width",
+                                                 "cancelGuard", "cancelRoll", "cancelLight", "hitStop", "hitStopSelf"};
 
 std::string arenaFormat(double v) {
     char buffer[32];
@@ -2208,6 +2358,11 @@ void arenaParseAttack(JsonValue j, const std::string& path, ArenaAttack& a, Aren
     arenaNum(j, "stamina", a.stamina, 0, 100000, false, path, errors);
     arenaNum(j, "cancel", a.cancel, 0, 1, false, path, errors);
     arenaByte(j, "maxTargets", a.maxTargets, 0, static_cast<int>(kMaxArenaEnemies), path, errors);
+    arenaNum(j, "cancelGuard", a.cancelGuard, -1, 1, false, path, errors);
+    arenaNum(j, "cancelRoll", a.cancelRoll, -1, 1, false, path, errors);
+    arenaNum(j, "cancelLight", a.cancelLight, -1, 1, false, path, errors);
+    arenaNum(j, "hitStop", a.hitStop, 0, 1, false, path, errors);
+    arenaNum(j, "hitStopSelf", a.hitStopSelf, 0, 1, false, path, errors);
 }
 
 // An attack object that is a value of its own (light entries, heavy, riposte, release).
@@ -2231,7 +2386,7 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
                       "parryRearm", "riposteReach", "healCharges", "healAmount", "healTime", "healRecovery",
                       "healMoveScale", "lockRange", "lockBreak", "moveAccel", "moveBrake", "loadShare", "release",
                       "releasePoise", "pairWindow", "pairHits", "readPower", "readStackPower", "readPoise",
-                      "readWrongPoise", "attacks", "shot"},
+                      "readWrongPoise", "attacks", "shot", "parryStop"},
                      false, warnings);
     if (const JsonValue wj = j["weapon"]; !wj.isAbsent()) {
         bool known = false;
@@ -2281,6 +2436,7 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
     arenaNum(j, "releasePoise", f.releasePoise, 0, 1000, false, path, errors);
     arenaNum(j, "pairWindow", f.pairWindow, 0, 1, false, path, errors);
     arenaByte(j, "pairHits", f.pairHits, 0, 10, path, errors);
+    arenaNum(j, "parryStop", f.parryStop, 0, 1, false, path, errors);
     arenaNum(j, "readPower", f.readPower, 0, 100, false, path, errors);
     arenaNum(j, "readStackPower", f.readStackPower, 0, 10, false, path, errors);
     arenaNum(j, "readPoise", f.readPoise, 0, 100000, false, path, errors);
@@ -2345,7 +2501,8 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     arenaUnknownKeys(j, path,
                      {"id", "hp", "poise", "poiseDelay", "staggerTime", "openTime", "downTime", "walkSpeed", "runSpeed",
                       "strafeSpeed", "turnRate", "preferredRange", "runRange", "attackDelay", "bodyRadius", "height", "moves",
-                      "accel", "bpm", "look", "passive"},
+                      "accel", "bpm", "look", "passive", "flinchTime", "flinchPoise", "flinchPush", "breakAt",
+                      "breakDecay", "breakMove"},
                      false, warnings);
     arenaInt(j, "hp", k.hp, 1, 100000, path, errors);
     arenaBool(j, "passive", k.passive, path, errors);
@@ -2365,6 +2522,12 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     arenaNum(j, "bodyRadius", k.bodyRadius, 0, 5, true, path, errors);
     arenaNum(j, "height", k.height, 0, 30, true, path, errors);
     arenaNum(j, "bpm", k.bpm, 0, 300, true, path, errors);
+    arenaNum(j, "flinchTime", k.flinchTime, 0, 10, false, path, errors);
+    arenaNum(j, "flinchPoise", k.flinchPoise, 0, 100000, false, path, errors);
+    arenaNum(j, "flinchPush", k.flinchPush, 0, 20, false, path, errors);
+    arenaByte(j, "breakAt", k.breakAt, 0, 255, path, errors);
+    arenaNum(j, "breakDecay", k.breakDecay, 0, 60, false, path, errors);
+    arenaInt(j, "breakMove", k.breakMove, -1, static_cast<int>(kMaxArenaMoves) - 1, path, errors);
     arenaParseLook(j["look"], path + ".look", k.look, errors, warnings);
     if (k.runRange < k.preferredRange) errors.push_back(path + ".runRange: expected at least preferredRange");
 
@@ -2442,6 +2605,8 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
             break;
         }
     }
+    if (k.breakMove >= static_cast<int>(k.moveCount))
+        errors.push_back(path + ".breakMove: expected -1 or one of its " + std::to_string(k.moveCount) + " moves");
     // A string may not loop: following the chain from any move must end within moveCount steps.
     for (std::uint32_t m = 0; m < k.moveCount; ++m) {
         const std::uint32_t most = k.moveCount;

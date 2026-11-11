@@ -14,6 +14,7 @@
 #include <initializer_list>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace ftcore;
@@ -5217,9 +5218,9 @@ TEST_CASE("arena hooks: a hold the hook asks while holds apply waits a tick, and
 }
 
 // The bigger move cap is fixed storage: these ceilings make the next bump a deliberate one (MSVC x64 now: ArenaDef
-// 17824 bytes, ArenaFight 23600).
-static_assert(sizeof(ArenaDef) <= 20 * 1024, "ArenaDef grew: check kMaxArenaMoves and the enemy kinds");
-static_assert(sizeof(ArenaFight) <= 28 * 1024, "ArenaFight grew: check kMaxArenaMoves and the Read pool");
+// 21100 bytes, ArenaFight 27072).
+static_assert(sizeof(ArenaDef) <= 24 * 1024, "ArenaDef grew: check kMaxArenaMoves and the enemy kinds");
+static_assert(sizeof(ArenaFight) <= 32 * 1024, "ArenaFight grew: check kMaxArenaMoves and the Read pool");
 
 TEST_CASE("arena hooks: a Release's spent Load is in the poise the hook sees and scales; no hold after a Defeat") {
     {   // 34 Load spent: 34 poise damage on the upright enemy, halved by the ruling
@@ -5594,4 +5595,379 @@ TEST_CASE("arena data: Duy's chain kicks and his round shoots from range, Devin'
         CHECK(devin.light[i].poiseDamage > t.fighter("default").light[0].poiseDamage);
     }
     CHECK(devin.heavy.range == doctest::Approx(2.2f));
+}
+
+// ---- the hit pause, flinch, cancel windows, free lights and the break-out ----
+
+namespace {
+
+// The fight time a player's light ends at, with the light's hitStop, ticked at `dt`.
+float lightEndsAt(float hitStop, float dt, int dummies = 1) {
+    ArenaFighter f = ruleFighter();
+    f.light[0].hitStop = hitStop;
+    Rig rig(f, {dummyKind(), dummyKind()});
+    rig.def.enemyCount = static_cast<std::uint8_t>(dummies);
+    rig.fight.begin(rig.def, ArenaRing{Vec2{0.f, 0.f}, 30.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    rig.put(0, 1.5f, 0.f);
+    rig.put(1, 1.5f, 0.3f);
+    rig.in.light = true;
+    rig.tick(dt);
+    for (int i = 0; i < 400; ++i) {
+        if (rig.tick(dt).player.action != ArenaAction::Light) return rig.fight.time();
+    }
+    return -1.f;
+}
+
+// Ticks while pressing light every tick, for `seconds`.
+void mash(Rig& rig, float seconds) {
+    const int n = static_cast<int>(std::lround(seconds / kDt));
+    for (int i = 0; i < n; ++i) {
+        rig.in.light = true;
+        rig.tick();
+    }
+}
+
+} // namespace
+
+TEST_CASE("arena hit pause: the attacker and the target stand still for hitStop; the fight's clock never stops") {
+    ArenaFighter f = ruleFighter();
+    f.light[0].hitStop = 0.1f;
+    Rig rig(f, {dummyKind()});
+    rig.put(0, 1.5f, 0.f);
+    rig.in.light = true;
+    bool paused = false, enemyPaused = false, frozenHeld = true;
+    float frozenAt = -1.f;
+    for (int i = 0; i < 30; ++i) {
+        const float before = rig.fight.time();
+        const ArenaOutput& out = rig.tick();
+        CHECK(rig.fight.time() == doctest::Approx(before + kDt)); // fight time: every tick, a pause or not
+        if (out.player.stopLeft > 0.f) {
+            if (!paused) frozenAt = out.player.actionTime;
+            else frozenHeld = frozenHeld && out.player.actionTime == frozenAt;
+            paused = true;
+            CHECK(out.player.velocity.x == 0.f);
+            CHECK(out.player.velocity.y == 0.f);
+        }
+        enemyPaused = enemyPaused || out.enemies[0].stopLeft > 0.f;
+    }
+    CHECK(paused);
+    CHECK(enemyPaused);
+    CHECK(frozenHeld);
+    CHECK(rig.fight.stats().time == doctest::Approx(30.f * kDt));
+    // The light lasts 0.1 s longer, whatever the step.
+    const float plain = lightEndsAt(0.f, kDt);
+    const float slow = lightEndsAt(0.1f, kDt);
+    const float fine = lightEndsAt(0.1f, kDt / 2.f);
+    CHECK(plain > 0.f);
+    CHECK(slow - plain == doctest::Approx(0.1f).epsilon(0.2));
+    CHECK(std::fabs(slow - fine) <= kDt + 1e-4f);
+    // Two targets at once: the pauses overlap, they don't add up.
+    CHECK(lightEndsAt(0.1f, kDt, 2) == doctest::Approx(slow));
+}
+
+TEST_CASE("arena hit pause: hitStopSelf, an enemy's blow, a parry, and a press that waits out the pause") {
+    {   // hitStopSelf 0: the target pauses, the attacker goes on
+        ArenaFighter f = ruleFighter();
+        f.light[0].hitStop = 0.2f;
+        f.light[0].hitStopSelf = 0.f;
+        Rig rig(f, {dummyKind()});
+        rig.put(0, 1.5f, 0.f);
+        rig.in.light = true;
+        bool playerPaused = false, enemyPaused = false;
+        for (int i = 0; i < 30; ++i) {
+            const ArenaOutput& out = rig.tick();
+            playerPaused = playerPaused || out.player.stopLeft > 0.f;
+            enemyPaused = enemyPaused || out.enemies[0].stopLeft > 0.f;
+        }
+        CHECK_FALSE(playerPaused);
+        CHECK(enemyPaused);
+    }
+    {   // an enemy's blow that lands pauses both
+        ArenaAttack hit = swing(0.2f, 0.1f, 0.5f, 2.f, 5);
+        hit.hitStop = 0.1f;
+        Rig rig(ruleFighter(), {hitterKind(hit)});
+        rig.put(0, 1.5f, 0.f);
+        bool both = false;
+        for (int i = 0; i < 40 && !both; ++i) {
+            const ArenaOutput& out = rig.tick();
+            both = out.player.stopLeft > 0.f && out.enemies[0].stopLeft > 0.f;
+        }
+        CHECK(both);
+        CHECK(rig.count(ArenaEventType::Hit) == 1);
+    }
+    {   // a parry pauses both for parryStop; none without it
+        const ArenaAttack hit = swing(0.3f, 0.1f, 0.5f, 2.f, 5);
+        for (const float stop : {0.f, 0.15f}) {
+            ArenaFighter f = ruleFighter();
+            f.parryStop = stop;
+            Rig rig(f, {hitterKind(hit)});
+            rig.put(0, 1.5f, 0.f);
+            bool paused = false;
+            for (int i = 0; i < 60; ++i) {
+                const Logged* started = rig.find(ArenaEventType::AttackStarted);
+                rig.in.guard = started && rig.ticks - started->tick >= 12; // pressed just before the active part
+                const ArenaOutput& out = rig.tick();
+                paused = paused || (out.player.stopLeft > 0.f && out.enemies[0].stopLeft > 0.f);
+            }
+            REQUIRE(rig.count(ArenaEventType::Parried) == 1);
+            CHECK(paused == (stop > 0.f));
+        }
+    }
+    {   // a press made in a pause longer than bufferTime still starts when it ends: the buffer ages on own time
+        ArenaFighter f = ruleFighter();
+        f.light[0].hitStop = 0.5f; // bufferTime is 0.2 s
+        f.light[0].cancelRoll = 0.f; // a roll may cut in at once, so only the pause holds it
+        Rig rig(f, {dummyKind()});
+        rig.put(0, 1.5f, 0.f);
+        rig.in.light = true;
+        for (int i = 0; i < 25 && rig.out().player.stopLeft <= 0.f; ++i) rig.tick();
+        REQUIRE(rig.out().player.stopLeft > 0.f);
+        rig.in.dodge = true;
+        rig.tick();
+        rig.runFor(0.4f);
+        CHECK(rig.out().player.action == ArenaAction::Light); // still paused: nothing started
+        bool dodged = false;
+        for (int i = 0; i < 12; ++i) dodged = dodged || rig.tick().player.action == ArenaAction::Dodge;
+        CHECK(dodged);
+    }
+}
+
+TEST_CASE("arena flinch: a landed blow flinches a kind with flinchTime, pushes it back, and it walks again") {
+    ArenaEnemyKind k = dummyKind();
+    k.flinchTime = 0.3f;
+    k.flinchPush = 0.6f;
+    {
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 1.5f, 0.f);
+        rig.in.light = true;
+        for (int i = 0; i < 30 && rig.count(ArenaEventType::Flinched) == 0; ++i) rig.tick();
+        REQUIRE(rig.count(ArenaEventType::Flinched) == 1);
+        CHECK(rig.find(ArenaEventType::Flinched)->event.target == 0);
+        CHECK(rig.fight.stats().flinches == 1);
+        CHECK(rig.out().enemies[0].brain == ArenaBrain::Flinch);
+        CHECK(rig.out().enemies[0].stateLength == doctest::Approx(0.3f));
+        rig.tick();
+        CHECK(rig.out().enemies[0].velocity.x > 0.f); // away from the player
+        CHECK(std::string(arenaBrainName(ArenaBrain::Flinch)) == "Flinch");
+        rig.runFor(0.35f);
+        CHECK(rig.out().enemies[0].brain != ArenaBrain::Flinch);
+    }
+    {   // below flinchPoise, a kind without flinchTime, or the host's veto: no flinch
+        ArenaEnemyKind hard = k;
+        hard.flinchPoise = 5.f; // the light deals 0 poise
+        ArenaEnemyKind none = k;
+        none.flinchTime = 0.f;
+        for (int c = 0; c < 3; ++c) {
+            Rig rig(ruleFighter(), {c == 0 ? hard : (c == 1 ? none : k)});
+            if (c == 2) rig.fight.setEnemyFlinch(0, false);
+            CHECK(rig.fight.enemyFlinch(0) == (c != 2));
+            rig.put(0, 1.5f, 0.f);
+            rig.in.light = true;
+            rig.run(30);
+            CHECK(rig.count(ArenaEventType::Hit) == 1);
+            CHECK(rig.count(ArenaEventType::Flinched) == 0);
+        }
+        Rig rig(ruleFighter(), {k});
+        CHECK_FALSE(rig.fight.enemyFlinch(5));
+    }
+    {   // a broken poise staggers instead
+        ArenaFighter f = ruleFighter();
+        f.light[0].poiseDamage = 40.f;
+        Rig rig(f, {k});
+        rig.put(0, 1.5f, 0.f);
+        rig.in.light = true;
+        rig.run(30);
+        CHECK(rig.count(ArenaEventType::Staggered) == 1);
+        CHECK(rig.count(ArenaEventType::Flinched) == 0);
+    }
+}
+
+TEST_CASE("arena flinch: it cuts a move's startup short and frees the token; armour in startup holds it") {
+    for (const float armor : {0.f, 0.5f}) {
+        ArenaAttack slow = swing(0.8f, 0.1f, 0.3f, 3.f, 5);
+        slow.armor = armor;
+        ArenaEnemyKind k = hitterKind(slow);
+        k.flinchTime = 0.3f;
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 1.5f, 0.f);
+        for (int i = 0; i < 30 && !rig.find(ArenaEventType::AttackStarted); ++i) rig.tick();
+        REQUIRE(rig.find(ArenaEventType::AttackStarted));
+        rig.in.light = true;
+        for (int i = 0; i < 25 && rig.count(ArenaEventType::Hit) == 0; ++i) rig.tick();
+        REQUIRE(rig.count(ArenaEventType::Hit) == 1); // the light lands inside the 0.8 s startup
+        if (armor > 0.f) {
+            CHECK(rig.count(ArenaEventType::Flinched) == 0);
+            CHECK(rig.out().enemies[0].brain == ArenaBrain::Attack);
+        } else {
+            CHECK(rig.count(ArenaEventType::Flinched) == 1);
+            CHECK(rig.out().enemies[0].brain == ArenaBrain::Flinch);
+            CHECK_FALSE(rig.out().enemies[0].token);
+        }
+    }
+}
+
+namespace {
+
+enum class Cut { Roll, Guard, Light };
+
+// The fight time the action `cut` starts at, pressed every tick from 0.1 s into a light.
+float cutAt(const ArenaFighter& f, Cut cut) {
+    Rig rig(f, {dummyKind()});
+    rig.put(0, 1.5f, 0.f);
+    rig.in.light = true;
+    rig.tick();
+    rig.runFor(0.1f);
+    for (int i = 0; i < 60; ++i) {
+        rig.in.dodge = cut == Cut::Roll;
+        rig.in.guard = cut == Cut::Guard;
+        rig.in.light = cut == Cut::Light;
+        const ArenaOutput& out = rig.tick();
+        if (cut == Cut::Roll && out.player.action == ArenaAction::Dodge) return rig.fight.time();
+        if (cut == Cut::Guard && out.player.action == ArenaAction::Guard) return out.player.parrying ? rig.fight.time() : -2.f;
+        if (cut == Cut::Light && rig.count(ArenaEventType::AttackStarted) == 2) return rig.fight.time();
+    }
+    return -1.f;
+}
+
+} // namespace
+
+TEST_CASE("arena cancels: an attack's own windows for guard, roll and the next light; the rest keep `cancel`") {
+    // ruleFighter's light: 0.2 + 0.1 + 0.3 s, `cancel` 0.5 of the recovery, so from 0.45 s.
+    const ArenaFighter plain = ruleFighter();
+    const float plainRoll = cutAt(plain, Cut::Roll);
+    const float plainLight = cutAt(plain, Cut::Light);
+    CHECK(plainRoll == doctest::Approx(0.45f).epsilon(0.08));
+    CHECK(plainLight == doctest::Approx(0.45f).epsilon(0.08));
+    ArenaFighter own = ruleFighter();
+    own.light[0].cancelRoll = 0.f;   // a roll from the first frame
+    own.light[0].cancelGuard = 0.f;  // a guard too, and the press opens the parry window
+    own.light[0].cancelLight = 0.5f; // the next light from 0.3 s
+    CHECK(cutAt(own, Cut::Roll) < 0.14f);
+    const float guard = cutAt(own, Cut::Guard);
+    CHECK(guard > 0.f); // guarding and parrying
+    CHECK(guard < 0.14f);
+    const float light = cutAt(own, Cut::Light);
+    CHECK(light == doctest::Approx(0.3f).epsilon(0.1));
+    CHECK(light < plainLight);
+}
+
+TEST_CASE("arena stamina: a light that costs 0 starts with none and never holds the refill back") {
+    ArenaFighter f = ruleFighter();
+    for (ArenaAttack& a : f.light) a.stamina = 0.f;
+    f.stamina = 20.f;
+    f.staminaDelay = 1.f;
+    const auto from = [&](bool light, bool heavy) {
+        Rig rig(f, {dummyKind()});
+        rig.put(0, 1.5f, 0.f);
+        rig.in.dodge = true; // 20: empty
+        rig.tick();
+        CHECK(rig.fight.stamina() == 0.f);
+        rig.runFor(0.5f); // past the dodge's cancel
+        rig.in.light = light;
+        rig.in.heavy = heavy;
+        rig.tick();
+        const ArenaAction action = rig.out().player.action;
+        rig.runFor(0.8f);
+        return std::make_pair(action, rig.fight.stamina());
+    };
+    const auto idle = from(false, false);
+    const auto light = from(true, false);
+    const auto heavy = from(false, true);
+    CHECK(light.first == ArenaAction::Light);
+    CHECK(idle.second > 0.f);
+    CHECK(light.second == doctest::Approx(idle.second)); // the free light spent nothing
+    CHECK(heavy.first != ArenaAction::Heavy);            // a heavy that costs still needs some
+}
+
+TEST_CASE("arena break-out: blows in a row make an upright enemy start its break move; decay, stagger and mask") {
+    ArenaAttack burst = swing(0.25f, 0.2f, 0.4f, 3.f, 5);
+    burst.armor = 1.f;
+    ArenaEnemyKind k = hitterKind(burst);
+    k.attackDelay = 1000.f; // never asks: only the break-out starts the move
+    k.breakAt = 3;
+    k.breakDecay = 1.5f;
+    k.breakMove = 0;
+    {
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 1.5f, 0.f);
+        mash(rig, 1.6f);
+        REQUIRE(rig.count(ArenaEventType::BrokeOut) == 1);
+        const Logged* out = rig.find(ArenaEventType::BrokeOut);
+        CHECK(out->event.source == 0);
+        CHECK(out->event.move == 0);
+        CHECK(rig.fight.stats().breakOuts == 1);
+        CHECK(rig.count(ArenaEventType::Hit) >= 3);
+        bool moveStarted = false;
+        for (const Logged& l : rig.log)
+            moveStarted = moveStarted || (l.event.type == ArenaEventType::AttackStarted && l.event.source == 0 &&
+                                          l.tick == out->tick);
+        CHECK(moveStarted);
+    }
+    {   // hits too far apart: the count decays
+        ArenaEnemyKind quick = k;
+        quick.breakDecay = 0.3f;
+        Rig rig(ruleFighter(), {quick});
+        rig.put(0, 1.5f, 0.f);
+        for (int hit = 0; hit < 4; ++hit) {
+            rig.in.light = true;
+            rig.runFor(1.f);
+        }
+        CHECK(rig.count(ArenaEventType::Hit) == 4);
+        CHECK(rig.count(ArenaEventType::BrokeOut) == 0);
+    }
+    {   // the host's move mask clears it: no break-out
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 1.5f, 0.f);
+        rig.fight.setEnemyMoveMask(0, 0u);
+        mash(rig, 1.6f);
+        CHECK(rig.count(ArenaEventType::Hit) >= 3);
+        CHECK(rig.count(ArenaEventType::BrokeOut) == 0);
+    }
+    {   // a stagger starts the count again
+        ArenaFighter f = ruleFighter();
+        f.light[1].poiseDamage = 40.f; // the second hit staggers
+        Rig rig(f, {k});
+        rig.put(0, 1.5f, 0.f);
+        mash(rig, 1.6f);
+        CHECK(rig.count(ArenaEventType::Staggered) == 1);
+        CHECK(rig.count(ArenaEventType::BrokeOut) == 0);
+    }
+}
+
+TEST_CASE("arena table: the pause, cancel, flinch and break-out keys load and are checked") {
+    ArenaTable t;
+    const std::string ok = loadError(
+        tableJson(R"([ { "id": "default", "parryStop": 0.1,
+                         "light": [ { "hitStop": 0.05, "hitStopSelf": 0.5, "cancelGuard": 0, "cancelRoll": 0.4,
+                                      "cancelLight": 0.5, "stamina": 0 } ] } ])",
+                  R"([ { "id": "dummy", "flinchTime": 0.3, "flinchPoise": 4, "flinchPush": 0.5, "breakAt": 5,
+                         "breakDecay": 2, "breakMove": 0, "moves": [ {} ] } ])"),
+        &t);
+    CHECK(ok.empty());
+    const ArenaFighter& f = t.fighter("default");
+    CHECK(f.parryStop == doctest::Approx(0.1f));
+    CHECK(f.light[0].hitStop == doctest::Approx(0.05f));
+    CHECK(f.light[0].hitStopSelf == doctest::Approx(0.5f));
+    CHECK(f.light[0].cancelGuard == 0.f);
+    CHECK(f.light[0].cancelRoll == doctest::Approx(0.4f));
+    CHECK(f.light[0].cancelLight == doctest::Approx(0.5f));
+    CHECK(f.heavy.cancelGuard < 0.f); // absent: the `cancel` rule
+    REQUIRE(t.enemies.size() == 1);
+    CHECK(t.enemies[0].flinchTime == doctest::Approx(0.3f));
+    CHECK(t.enemies[0].flinchPoise == doctest::Approx(4.f));
+    CHECK(t.enemies[0].flinchPush == doctest::Approx(0.5f));
+    CHECK(t.enemies[0].breakAt == 5);
+    CHECK(t.enemies[0].breakDecay == doctest::Approx(2.f));
+    CHECK(t.enemies[0].breakMove == 0);
+    CHECK(ArenaEnemyKind{}.flinchTime == 0.f);
+    CHECK(ArenaEnemyKind{}.breakAt == 0);
+    CHECK(contains(loadError(tableJson(R"([ { "id": "default", "light": [ { "hitStop": 2 } ] } ])", kEnemiesOk)),
+                   "fighters[0].light[0].hitStop"));
+    CHECK(contains(loadError(tableJson(R"([ { "id": "default", "light": [ { "cancelRoll": 1.5 } ] } ])", kEnemiesOk)),
+                   "cancelRoll"));
+    CHECK(contains(loadError(tableJson(R"([ { "id": "default", "parryStop": -1 } ])", kEnemiesOk)), "parryStop"));
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "breakMove": 3, "moves": [ {} ] } ])")),
+                   "breakMove"));
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "breakAt": 300 } ])")), "breakAt"));
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "flinchTime": -1 } ])")), "flinchTime"));
 }
