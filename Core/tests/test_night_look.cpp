@@ -74,9 +74,12 @@ TEST_CASE("nightFrame: full night is the spec, the same for the clock and a stil
     CHECK(still.sunScale == clock.sunScale);
     CHECK(still.skyScaleRealTime == clock.skyScaleRealTime);
     CHECK(still.fogGlow == clock.fogGlow);
-    // Warm glow, cool sky: the haze reads as the city's, the fill as the night's.
+    // Warm glow: the haze reads as the city's. The fill's tint leans against the captured sky's deep blue (the moon's
+    // own stays cool, above), and the fill is strong enough to show an unlit facade.
     CHECK(look.glow[0] > look.glow[2]);
-    CHECK(look.skyTint[2] > look.skyTint[0]);
+    CHECK(look.skyTint[0] > look.skyTint[2]);
+    CHECK(look.skyFill >= 0.5f);
+    CHECK(look.skyFill < 1.f);
 }
 
 TEST_CASE("nightFrame: exposure locks from half night; no allocation") {
@@ -209,20 +212,26 @@ TEST_CASE("heightShapeMask: ridge over 128, flat at 128, rows north first; no al
     CHECK(mask[0] == 128);
 }
 
-TEST_CASE("night look: teal ambient, orange lamps, warm glow") {
+TEST_CASE("night look: grey-blue ambient, orange lamps, warm glow") {
     const NightLook look;
-    // Teal-blue: green well over red in both fills, blue on top or near it.
-    CHECK(look.skyTint[1] > look.skyTint[0] + 0.2f);
-    CHECK(look.moonTint[1] > look.moonTint[0] + 0.15f);
+    // A pale blue moon (green between red and blue), no channel under 0.6: a grey-blue, not a cobalt.
+    CHECK(look.moonTint[1] > look.moonTint[0]);
+    CHECK(look.moonTint[2] > look.moonTint[1]);
+    CHECK(look.moonTint[0] >= 0.6f);
     CHECK(look.lampKelvin >= 2200.f);
     CHECK(look.lampKelvin <= 2700.f);
     CHECK(look.glow[0] > look.glow[1]);
     CHECK(look.glow[1] > look.glow[2]);
-    // The fill is a dim, muted teal (not one saturated blue): half the old share, no channel over 0.7, a narrow spread,
-    // so the warm lamps and shop spill carry the streets.
-    CHECK(look.skyFill <= 0.35f);
-    CHECK(look.skyTint[2] <= 0.7f);
-    CHECK(look.skyTint[2] - look.skyTint[0] < 0.35f);
+    // The fill shows an unlit facade (dark, not black) and stays under the day's, so the warm lamps and shop spill
+    // still carry the streets; its tint falls from red to blue, against the captured sky's blue.
+    CHECK(look.skyFill >= 0.5f);
+    CHECK(look.skyFill <= 0.75f);
+    CHECK(look.skyTint[0] >= look.skyTint[1]);
+    CHECK(look.skyTint[1] > look.skyTint[2]);
+    CHECK(look.skyTint[2] >= 0.4f);
+    // The camera's white balance sits under neutral but not far: the frame is not pushed blue.
+    CHECK(look.whiteKelvin >= 5400.f);
+    CHECK(look.whiteKelvin < 6500.f);
     CHECK(look.lampCandela > look.shopCandela);
 }
 

@@ -3,6 +3,7 @@
 
 #include "ftcore/RoadGraph.h"
 #include "ftcore/Roads.h"
+#include "ftcore/SurfaceWeather.h"
 
 #include <ostream>
 #include <doctest/doctest.h>
@@ -34,6 +35,13 @@ MassingFoot shrunk(MassingFoot f, double by) {
     f.hx = std::max(0.0, f.hx - by);
     f.hy = std::max(0.0, f.hy - by);
     return f;
+}
+
+// A box's top over a plan point (its tilt from its centre).
+double boxTop(const MassingBox& b, double x, double y) {
+    const double r = b.rot * 3.14159265358979323846 / 180.0, c = std::cos(r), sn = std::sin(r);
+    const double dx = x - b.cx, dy = y - b.cy;
+    return b.z1 + b.riseU * (dx * c + dy * sn) + b.riseW * (-dx * sn + dy * c);
 }
 
 MassingFoot solidFoot(const RoadSolid& s) {
@@ -530,6 +538,85 @@ TEST_CASE("road net: a scramble gets an all-walk phase and two diagonal zebras l
         CHECK(std::hypot(sd.box.cx - 89.8, sd.box.cy - 10.2) > kRoadCornerRadius);
     }
     CHECK(bars >= 40);
+    // Each bar is a skin 1 cm thick at most, tilted to the fill: over each of its corners the fill's top (the highest
+    // slab there) lies 6 mm to 2.5 cm under it, so no bar stands as a step. No two bars overlap: where the diagonals
+    // cross, only the first's show.
+    std::vector<const RoadSolid*> barList;
+    for (const RoadSolid& sd : b.solids)
+        if (sd.box.row == "JN-0001" && sd.box.kind == "mark") barList.push_back(&sd);
+    bool tilted = false;
+    for (const RoadSolid* bar : barList) {
+        const MassingBox& m = bar->box;
+        CHECK(m.z1 - m.z0 <= 0.01 + 1e-9);
+        tilted = tilted || std::fabs(m.riseU) > 1e-4 || std::fabs(m.riseW) > 1e-4;
+        const double r = m.rot * 3.14159265358979323846 / 180.0, c = std::cos(r), sn = std::sin(r);
+        for (int k = 0; k < 4; ++k) {
+            const double u = ((k & 1) ? 0.49 : -0.49) * m.sx, w = ((k & 2) ? 0.49 : -0.49) * m.sy;
+            const double px = m.cx + u * c - w * sn, py = m.cy + u * sn + w * c;
+            double under = -1e9;
+            for (const RoadSolid* fl : fill) {
+                const double fr = fl->box.rot * 3.14159265358979323846 / 180.0;
+                const double fx = px - fl->box.cx, fy = py - fl->box.cy;
+                const double fu = fx * std::cos(fr) + fy * std::sin(fr), fw = -fx * std::sin(fr) + fy * std::cos(fr);
+                if (fl->shape == RoadShape::Cylinder ? std::hypot(fx, fy) >= fl->box.sx * 0.5
+                                                     : (std::fabs(fu) >= fl->box.sx * 0.5 || std::fabs(fw) >= fl->box.sy * 0.5))
+                    continue;
+                under = std::max(under, boxTop(fl->box, px, py));
+            }
+            REQUIRE(under > -1e8);
+            CHECK(boxTop(m, px, py) - under >= 0.005);
+            CHECK(boxTop(m, px, py) - under <= 0.025);
+        }
+    }
+    CHECK(tilted);
+    int stacked = 0;
+    for (std::size_t i = 0; i < barList.size(); ++i)
+        for (std::size_t j = i + 1; j < barList.size(); ++j)
+            if (massingFeetOverlap(shrunk(solidFoot(*barList[i]), 0.01), shrunk(solidFoot(*barList[j]), 0.01), 0.0)) ++stacked;
+    CHECK(stacked == 0);
+    // No two crossings overlap in plan (the diagonals' own X apart); a doubled zebra is a reject of the road check.
+    CHECK(roadCrossingOverlaps(b).empty());
+    {
+        RoadBuild twice = b;
+        const RoadQuad* arm = nullptr; // an arm's zebra (the diagonals' own pair is exempt)
+        for (const RoadQuad& q : b.crossings)
+            if (arm == nullptr && q.id.find("-ZD") == std::string::npos) arm = &q;
+        REQUIRE(arm != nullptr);
+        RoadQuad again = *arm;
+        again.id += "-again";
+        for (RoadPoint& q : again.pts) q.x += 0.5;
+        twice.crossings.push_back(again);
+        const std::vector<RoadFace> over = roadCrossingOverlaps(twice);
+        REQUIRE(over.size() == 1);
+        CHECK(over[0].piece == arm->id);
+        CHECK(over[0].fault == "crossing " + again.id);
+        bool listed = false;
+        for (const RoadFace& fc : roadKerbFaces(twice, nullptr)) listed = listed || fc.fault == over[0].fault;
+        CHECK(listed);
+        // Side by side, touching: not an overlap.
+        RoadQuad beside = *arm;
+        beside.id += "-beside";
+        const double ex = beside.pts[1].x - beside.pts[0].x, ey = beside.pts[1].y - beside.pts[0].y;
+        for (RoadPoint& q : beside.pts) {
+            q.x += ex;
+            q.y += ey;
+        }
+        RoadBuild next;
+        next.crossings = {*arm, beside};
+        CHECK(roadCrossingOverlaps(next).empty());
+    }
+    // A corner's pavement pieces carry the depth the surface master reads (tiles on the world's grid); the straight
+    // pavements never do.
+    int cornerPave = 0, straightPave = 0;
+    for (const RoadSolid& sd : b.solids) {
+        if (sd.box.kind != "pavement") continue;
+        const bool corner = streetCornerSlab(static_cast<float>(sd.box.z1 - sd.box.z0), StreetSurfaceSpec{});
+        CHECK(corner == (sd.box.row == "JN-0001"));
+        (corner ? cornerPave : straightPave)++;
+    }
+    CHECK(cornerPave >= 4);
+    CHECK(straightPave >= 4);
+    CHECK(static_cast<double>(StreetSurfaceSpec{}.cornerSlabM) == doctest::Approx(kRoadCornerPaveDeep));
 
     RoadGraph g;
     roadGraphFromNet(s, b, g);
@@ -881,13 +968,29 @@ TEST_CASE("footways: kerbed lanes with drop kerbs at a mouth, an alley with boll
     REQUIRE(rep.alleyMouths.size() == 1);
     CHECK(rep.alleyMouths[0].street == "LN-A");
     CHECK(b.furniture.size() == 2);
-    std::size_t gutters = 0, kerbs = 0;
+    std::size_t gutters = 0, kerbs = 0, grates = 0, ramps = 0;
+    CHECK(roadTint(RoadTint::Gutter).roughness >= 0.8f); // matt: a glossy strip reads as a trench of metal
+    CHECK(roadTint(RoadTint::Drain).r < 0.08f);
     for (const RoadSolid& s : b.solids) {
         CHECK(s.instanced);
         if (s.box.kind == "gutter") {
             ++gutters;
             CHECK(s.tint == RoadTint::Gutter);
-            CHECK(s.box.z1 == doctest::Approx(4.0 + kRoadSurfaceLift));
+            // Flush with the lane (the ground): 12 mm over it, 0.3 m wide at most.
+            CHECK(s.box.z1 == doctest::Approx(4.012));
+            CHECK(s.box.sy <= 0.3 + 1e-9);
+        }
+        if (s.box.kind == "drain") {
+            ++grates;
+            CHECK(s.box.z1 == doctest::Approx(4.018)); // a skin on its gutter strip
+            CHECK(s.box.riseU == doctest::Approx(0.0));
+        }
+        if (s.box.id.find("-ramp-") != std::string::npos) {
+            ++ramps;
+            // A ramp, not a floating slab: its top falls from the kerb's top to the gutter, and its underside (the box
+            // is as deep all along) is under the ground at its high end too.
+            CHECK(std::fabs(s.box.riseU) * s.box.sx == doctest::Approx(kRoadKerbRise - 0.01));
+            CHECK(s.box.z0 + std::fabs(s.box.riseU) * s.box.sx * 0.5 < 4.0);
         }
         if (s.box.kind == "kerb") {
             ++kerbs;
@@ -896,7 +999,14 @@ TEST_CASE("footways: kerbed lanes with drop kerbs at a mouth, an alley with boll
         }
         CHECK(s.box.kind != "asphalt"); // nothing for the decals or the clash passes
     }
-    CHECK(gutters == kerbs);
+    // One gutter strip per kerb run on level ground, not one per piece.
+    CHECK(gutters == rep.gutters);
+    CHECK(gutters >= 4);
+    CHECK(gutters < kerbs);
+    CHECK(kerbs == rep.pieces);
+    CHECK(rep.hidden == 0);
+    CHECK(grates == rep.drains);
+    CHECK(ramps == rep.ramps);
     CHECK(roadFootRejects(rep, b).empty());
 
     // Skipping LN-B (a network row): no mouth on LN-A.

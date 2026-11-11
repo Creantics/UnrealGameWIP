@@ -28,9 +28,13 @@
 //
 // The day's shadow floor (FTDayShade, ftcore::DayShade): by full day the sky light is scaled up and the unbound priority-0
 // post-process volume's local exposure shadow contrast, Lumen diffuse colour boost and film toe move toward the day's,
-// so shaded lanes read at about a third of the sunlit value. Blended by ftcore::dayShadeAmount (0 at full night and full
+// so shaded lanes read at about a third of the sunlit value. So a shaded lane's far end keeps its colour, the day also
+// holds the auto exposure's floor (in a frame that is all shade the camera opens no further), pulls the highlights down
+// (local exposure highlight contrast), caps the height fog's opacity and dims the sky's share of its colour to a
+// grey-blue. Blended by ftcore::dayShadeAmount (0 at full night and full
 // dusk, which keep exactly what they had). Only in a world with a look (UFTLookSubsystem). Switches (read once):
 //   -NoDayShade  off;  -DayShadeSky=<scale>  -DayShadeContrast=<0..1>  -DayShadeBoost=<1..4>  -DayShadeToe=<0..1>
+//   -DayShadeHighlight=<0..1>  -DayShadeMinEV=<ev100>  -DayShadeFogCap=<0..1>  -DayShadeFogSky=<scale on the fog's sky share>
 // and r.FT.DayShade 0/1 at run time. A day world-eye still with no running clock gets the full day's (or
 // -WorldEyeSunHour's) shade from the look subsystem once the look is written (FTDayShade::StillAmount).
 
@@ -48,6 +52,7 @@
 class APostProcessVolume;
 class UExponentialHeightFogComponent;
 class UMaterialParameterCollectionInstance;
+class UWorld;
 class ULightComponent;
 class USkyLightComponent;
 
@@ -72,9 +77,12 @@ FORGOTTENTHIRD_API bool Enabled();
 FORGOTTENTHIRD_API ftcore::DayShadeBase BaseFor(const ftcore::SceneLook& WorldLook);
 // The day amount at a sky frame (0 when off).
 FORGOTTENTHIRD_API float AmountAt(const FTNight::FSkyFrame& Sky);
-// Writes the frame's shadow contrast, diffuse colour boost and film toe into World's unbound priority-0 post-process
-// volume (the look's). False when there is none.
-FORGOTTENTHIRD_API bool WritePost(UWorld& World, const ftcore::DayShadeFrame& Frame);
+// Writes the frame's shadow and highlight contrast, diffuse colour boost and film toe into World's unbound priority-0
+// post-process volume (the look's), and with bExposure its auto exposure floor (left alone while the night's exposure
+// range holds it). False when there is none.
+FORGOTTENTHIRD_API bool WritePost(UWorld& World, const ftcore::DayShadeFrame& Frame, bool bExposure = true);
+// Writes the frame's fog cap and the sky's share of the fog's colour into a height fog.
+FORGOTTENTHIRD_API void WriteFog(UExponentialHeightFogComponent& Fog, const ftcore::DayShadeFrame& Frame);
 // A world-eye day still with no running clock (-WorldEyeShot without -TimeOfDay, -WorldEyeNight or -WorldEyeDusk): the
 // day amount at the start hour or -WorldEyeSunHour. Negative when this run is no such still or the hour is not full day.
 FORGOTTENTHIRD_API float StillAmount();

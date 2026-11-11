@@ -51,6 +51,17 @@ ftcore::DayShadeLook ReadDayShade()
 	FParse::Value(Cmd, TEXT("DayShadeContrast="), Look.shadowContrast);
 	FParse::Value(Cmd, TEXT("DayShadeBoost="), Look.diffuseBoost);
 	FParse::Value(Cmd, TEXT("DayShadeToe="), Look.filmToe);
+	FParse::Value(Cmd, TEXT("DayShadeHighlight="), Look.highlightContrast);
+	FParse::Value(Cmd, TEXT("DayShadeMinEV="), Look.minEV100);
+	FParse::Value(Cmd, TEXT("DayShadeFogCap="), Look.fogMaxOpacity);
+	float FogSky = 1.f;
+	if (FParse::Value(Cmd, TEXT("DayShadeFogSky="), FogSky))
+	{
+		for (float& Channel : Look.fogSky)
+		{
+			Channel *= FMath::Max(FogSky, 0.f);
+		}
+	}
 	return Look;
 }
 } // namespace
@@ -73,6 +84,8 @@ ftcore::DayShadeBase FTDayShade::BaseFor(const ftcore::SceneLook& WorldLook)
 	Base.shadowContrast = WorldLook.localShadowContrast;
 	Base.diffuseBoost = 1.f;
 	Base.filmToe = WorldLook.filmToe;
+	Base.highlightContrast = WorldLook.localHighlightContrast;
+	Base.minEV100 = WorldLook.exposureMinEV100;
 	return Base;
 }
 
@@ -81,7 +94,13 @@ float FTDayShade::AmountAt(const FTNight::FSkyFrame& Sky)
 	return Enabled() ? ftcore::dayShadeAmount(Sky.NightAmount, Sky.Dusk.amount) : 0.f;
 }
 
-bool FTDayShade::WritePost(UWorld& World, const ftcore::DayShadeFrame& Frame)
+void FTDayShade::WriteFog(UExponentialHeightFogComponent& Fog, const ftcore::DayShadeFrame& Frame)
+{
+	Fog.SetFogMaxOpacity(Frame.fogMaxOpacity);
+	Fog.SetSkyAtmosphereAmbientContributionColorScale(FLinearColor(Frame.fogSky[0], Frame.fogSky[1], Frame.fogSky[2]));
+}
+
+bool FTDayShade::WritePost(UWorld& World, const ftcore::DayShadeFrame& Frame, bool bExposure)
 {
 	for (TActorIterator<APostProcessVolume> It(&World); It; ++It)
 	{
@@ -94,6 +113,13 @@ bool FTDayShade::WritePost(UWorld& World, const ftcore::DayShadeFrame& Frame)
 			S.LumenDiffuseColorBoost = Frame.diffuseBoost;
 			S.bOverride_FilmToe = true;
 			S.FilmToe = Frame.filmToe;
+			S.bOverride_LocalExposureHighlightContrastScale = true;
+			S.LocalExposureHighlightContrastScale = Frame.highlightContrast;
+			if (bExposure)
+			{
+				S.bOverride_AutoExposureMinBrightness = true;
+				S.AutoExposureMinBrightness = Frame.minEV100;
+			}
 			return true;
 		}
 	}
@@ -289,23 +315,12 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 			Fog->SetFogInscatteringColor(FTNight::FogColor(F.Color, Sky));
 		}
 	}
-	if (UWorld* World = GetWorld())
-	{
-		DuskScene.Apply(*World, Sky.Dusk, false);
-		// The day's shadow floor in the look's volume: written when its amount has moved a step or reached an end.
-		if (bShade && (bForce || AppliedDayShade < 0.f || FMath::Abs(ShadeAmount - AppliedDayShade) >= kDayShadeStep ||
-			(ShadeAmount != AppliedDayShade && (ShadeAmount == 0.f || ShadeAmount == 1.f))))
-		{
-			if (FTDayShade::WritePost(*World, Shade))
-			{
-				AppliedDayShade = ShadeAmount;
-			}
-		}
-	}
 	// The night's exposure range from half night on (as the night still's), the volumes' own settings back by day;
 	// written only when that changes.
+	bool bExposureWritten = false;
 	if (Frame.lockExposure != bExposureLocked || bForce)
 	{
+		bExposureWritten = true;
 		bExposureLocked = Frame.lockExposure;
 		for (const FExposure& E : Exposures)
 		{
@@ -316,6 +331,28 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 				S.bOverride_AutoExposureMaxBrightness = bExposureLocked || E.bMax;
 				S.AutoExposureMinBrightness = bExposureLocked ? Frame.exposureMinEV100 : E.Min;
 				S.AutoExposureMaxBrightness = bExposureLocked ? Frame.exposureMaxEV100 : E.Max;
+			}
+		}
+	}
+	if (UWorld* World = GetWorld())
+	{
+		DuskScene.Apply(*World, Sky.Dusk, false);
+		// The day's shadow floor in the look's volume and the fogs: written when its amount has moved a step or reached
+		// an end, and after the exposure range above has been written (the day's exposure floor goes over the volume's
+		// own, never over the night's range).
+		if (bShade && (bForce || bExposureWritten || AppliedDayShade < 0.f || FMath::Abs(ShadeAmount - AppliedDayShade) >= kDayShadeStep ||
+			(ShadeAmount != AppliedDayShade && (ShadeAmount == 0.f || ShadeAmount == 1.f))))
+		{
+			for (const FFog& F : Fogs)
+			{
+				if (UExponentialHeightFogComponent* Fog = F.Fog.Get())
+				{
+					FTDayShade::WriteFog(*Fog, Shade);
+				}
+			}
+			if (FTDayShade::WritePost(*World, Shade, !bExposureLocked))
+			{
+				AppliedDayShade = ShadeAmount;
 			}
 		}
 	}

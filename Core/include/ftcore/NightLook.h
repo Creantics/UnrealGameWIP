@@ -24,11 +24,11 @@ namespace ftcore {
 
 struct NightLook {
     float moonShare = 0.10f;       // the directional light at full night, as a share of its day intensity
-    float skyFill = 0.32f;         // the sky light at full night, as a share of its day intensity (net of the moon)
+    float skyFill = 0.60f;         // the sky light at full night, as a share of its day intensity (net of the moon)
     float fogKeep = 0.08f;         // the height fog's own inscattering colour kept at full night
     float exposureEV100 = -1.2f;   // the night exposure's centre, from NightAmount kExposureLockAt on ...
     float exposureRangeEV = 1.0f;  // ... and its half-width: auto exposure moves within centre +- this (0 = locked)
-    float whiteKelvin = 5000.f;    // the camera's white balance at full night (blended from the day's by NightAmount)
+    float whiteKelvin = 5600.f;    // the camera's white balance at full night (blended from the day's by NightAmount)
     float dayWetShare = 0.58f;     // the look's ground wetness by full day, as a share of its own (full at night):
                                    // Solhaven's 0.6 is about 0.35 by day
     float lampCandela = 24.f;      // warm-white street lamps
@@ -41,9 +41,11 @@ struct NightLook {
     float shopReachM = 9.f;
     float shopKelvin = 4000.f;
     std::array<float, 3> glow{0.030f, 0.019f, 0.010f};   // fog inscattering added at full night (linear luminance)
-    // The ambient is teal-blue, not plain blue (green well over red), so the warm lamps and the cool fill part clearly.
-    std::array<float, 3> moonTint{0.50f, 0.74f, 1.f};
-    std::array<float, 3> skyTint{0.34f, 0.58f, 0.64f};
+    // The moon is a pale blue. The sky light captures the atmosphere it lights, which is a far deeper blue than the
+    // moon itself, so the fill's tint leans the other way (red over blue): net, an unlit facade reads a grey-blue, dark
+    // but there, not a cobalt black.
+    std::array<float, 3> moonTint{0.70f, 0.82f, 1.f};
+    std::array<float, 3> skyTint{1.f, 0.72f, 0.46f};
     float capRadiusM = 15.f;       // lights within this of each other share their light
     float capShare = 0.2f;         // each neighbour within capRadiusM takes this much off (1 / (1 + capShare n))
     float capFloor = 0.4f;         // no light falls under this share of its candela

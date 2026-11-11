@@ -24,6 +24,7 @@
 #include "ftcore/MassingPlan.h"
 #include "ftcore/WindowInterior.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -64,10 +65,10 @@ struct WindowFacadeSpec {
     float baluster = 0.11f;       // m between its balusters
     float smallWidth = 0.6f, smallHeight = 0.6f;  // m: a small frosted window, at the head of the type's opening
     float grillePitch = 0.15f;    // m between a security grille's uprights (its rails twice that)
-    float litShare = 0.45f;       // the master's LitShare: the share of rooms lit at night on storeys 0 and 1
-    float upperLit = 1.0f;        // the top storey's lit share is LitShare * (1 + upperLit), the first storey's LitShare
+    float litShare = 0.68f;       // the master's LitShare: the share of rooms lit at night on storeys 0 and 1
+    float upperLit = 0.2f;        // the top storey's lit share is LitShare * (1 + upperLit), the first storey's LitShare
     float signGlow = 1.6f;        // the master's SignGlow: a lit shop sign's light at night (times the collection's NightGlow)
-    float litMax = 0.9f;          // the most any storey's lit share reaches
+    float litMax = 0.85f;         // the most any storey's lit share reaches (never a whole facade)
     float wallMax = 0.75f;        // the brightest a tinted wall's or roof's albedo gets (no glare under night lights)
     // Round 10 (motion sickness): a room is a box fixed in the wall's own frame, seen by the true view ray (no squash,
     // clamp or tilt), roomDepth deep; only roomShare of the non-shop windows show one. The rest are covered: frostShare
@@ -81,7 +82,70 @@ struct WindowFacadeSpec {
     float frostGlow = 0.8f;        // a lit frosted window: the tint times this, times GlowScale
     float shopDepth = 1.5f;        // m: a modelled shop interior's depth (at most shopDepthShare of the box's depth)
     float shopDepthShare = 0.4f;
+    // Round 11 (night glare): every night light of the facade is soft-capped (windowGlowSoftCap), so lit glass keeps
+    // its tint and what is behind it and never clips. Luminances in the engine's emissive units (cd/m2). Upper windows
+    // are lit in clusters (litCluster); a lit shop is full or dim, in one of kWindowShopTintRgb.
+    float glowScale = 0.5f;        // the master's GlowScale: a lit room's light at night
+    float glowCap = 0.2f;          // the master's GlowCap: no upper window's light passes this
+    float shopGlow = 0.6f;         // the master's ShopGlow (and the modelled interiors')
+    float shopGlowCap = 0.3f;      // the master's ShopGlowCap: no shop glass's light passes this
+    float signGlowCap = 0.35f;     // the master's SignGlowCap: no lit sign's
+    float lanternNight = 1.1f;     // a lantern's glow by night over its 0.4 by day
+    float shopDay = 0.9f;          // the master's ShopDay: a shop picture's own light by day
+    float shopModelDay = 0.7f;     // the modelled interiors' ShopDay: a piece's own light by day (it stands in a shut box)
+    float shopNightFloor = 0.02f;  // the modelled interiors' NightFloor: an unlit shop's pieces at night
+    float shopDimShare = 0.31f;    // the share of lit shops that are dim (about a quarter of all at ShopLit 0.8)
+    float shopDimLevel = 0.3f;     // a dim shop's light as a share of a full one's
+    float litCluster = 0.6f;       // a 3 bay x 2 storey cluster's lit share: the storey's times 1 -/+ this, by its hash
+    float shopModelShare = 0.5f;   // the share of kerbed buildings whose shops are modelled (the rest keep the picture)
 };
+
+// ---- Round 11: capped night light, shop lights, lit clusters ----
+
+// The factor a light of luminance `lum` is scaled by so it never passes `cap`: 1 / (1 + lum / cap). Small lights keep
+// nearly all of theirs; colour ratios (the tint) are kept at any level. No allocation.
+FTCORE_API float windowGlowSoftCap(float lum, float cap);
+
+// The shops' lights: warm whites, a neutral, a yellow, cool whites and, one in eight each, a green and a pink.
+inline constexpr std::uint32_t kWindowShopTints = 8;
+inline constexpr std::array<std::array<float, 3>, kWindowShopTints> kWindowShopTintRgb{{
+    {1.0f, 0.86f, 0.68f}, {1.0f, 0.80f, 0.58f},   // warm white
+    {1.0f, 0.96f, 0.90f},                           // neutral
+    {1.0f, 0.88f, 0.45f},                           // yellow
+    {0.82f, 0.92f, 1.0f}, {0.86f, 0.95f, 1.0f},   // cool
+    {0.62f, 1.0f, 0.72f},                           // green
+    {1.0f, 0.62f, 0.80f},                           // pink
+}};
+// The HLSL line declaring float3 shopTints[kWindowShopTints] (the window master and the modelled interiors' master).
+// Allocates: build time only.
+FTCORE_API std::string windowShopTintTableHlsl();
+
+// A shop bay's light at night: lit (windowShopLit), its level (1, or shopDimLevel on shopDimShare of the lit ones) and
+// its tint, from salted hashes of the bay (as the HLSL's). No allocation.
+struct WindowShopLight {
+    bool lit = false;
+    float level = 1.0f;
+    std::uint32_t tint = 0;  // kWindowShopTintRgb index
+};
+FTCORE_API WindowShopLight windowShopLight(const WindowFacadeSpec& spec, std::uint32_t seed, std::uint32_t column,
+                                           float shopLit);
+// The light as one float for an instance's custom data: 0 unlit, else 1 + tint, plus 0.5 when dim. The modelled
+// interiors' master reads it back (windowShopModelGlowHlsl). No allocation.
+FTCORE_API float windowShopLightCode(const WindowShopLight& light);
+// The modelled interiors' master's emissive (a Custom node's body). Inputs: Color (the piece's albedo), Code (the
+// custom data above), Night, NightGlow, ShopGlow, ShopGlowCap, DimLevel, ShopDay, NightFloor. By day Color * ShopDay (a
+// fixed interior ambient: the pieces stand in a shut box, so the sky never reaches them); by night the lit bay's pieces
+// in its tint at its level, soft-capped, over Color * NightFloor. Allocates: build time only.
+FTCORE_API std::string windowShopModelGlowHlsl();
+
+// The factor on a storey's lit share for the cell's cluster (3 bays x 2 storeys): 1 - litCluster .. 1 + litCluster by
+// the cluster's hash, so lit windows gather in groups and dark patches stay between them. No allocation.
+FTCORE_API float windowLitCluster(const WindowFacadeSpec& spec, std::uint32_t seed, std::uint32_t storey,
+                                  std::uint32_t column);
+
+// Whether a kerbed building's shops are modelled (FTBuildShopInteriors) or keep the master's flat picture: `share` of
+// the buildings, by the seed. No allocation.
+FTCORE_API bool windowShopModelled(std::uint32_t seed, float share);
 
 // ---- Round 10: rooms fixed in the wall, covered windows, shop interiors ----
 
@@ -112,6 +176,7 @@ struct WindowShopPiece {
     std::uint32_t colour = 0;  // windowShopColour index
     std::uint32_t column = 0;
     bool lit = false;          // the bay is lit at night (windowShopLit)
+    float light = 0.0f;        // windowShopLightCode: the bay's light (a face-long floor or ceiling: its first lit bay's, dim)
 };
 inline constexpr std::uint32_t kWindowShopPiecesPerBay = 14;
 inline constexpr std::uint32_t kWindowShopColourCount = 8;
@@ -123,6 +188,9 @@ FTCORE_API const WindowTint& windowShopColour(std::uint32_t index);
 // bays) shopDepth deep (at most shopDepthShare of boxDepth) and, by the bay's shop kind (ShopFront.h), shelves with
 // goods, a counter or a table. Written to out (at most capacity; kWindowShopPiecesPerBay a bay is enough); the count
 // written is returned. None when the face cuts no shop storey or bay. No allocation.
+// Round 11 (fewer instances): one floor and one ceiling a face, a back wall a bay (its own light), a wall at each bay
+// line; a shelf row is one box of goods (no board under it); a bay behind a shutter drawn all the way keeps only its
+// shell. 2 * bays + 3 shell pieces and at most 4 fittings a bay (round 10: 4 * bays + 1 and at most 7).
 FTCORE_API std::size_t windowShopInterior(const WindowFacadeSpec& spec, WindowType type, std::uint32_t seed,
                                           float faceWidth, float faceHeight, float boxDepth, float shopLit,
                                           WindowShopPiece* out, std::size_t capacity);

@@ -283,6 +283,11 @@ namespace {
 constexpr std::uint32_t kCoverSalt = 0x9e3779b9u;
 constexpr std::uint32_t kLitSaltR10 = 0x5bd1e995u;  // as WindowInterior's lit salt (the HLSL's)
 constexpr std::uint32_t kInteriorSalt = 0x7f4a7c15u;
+constexpr std::uint32_t kShopLightSalt = 0x2545f491u;  // round 11: a shop's level and tint
+constexpr std::uint32_t kClusterSalt = 0x61c88647u;    // round 11: the lit clusters
+constexpr std::uint32_t kModelSalt = 0x3243f6a8u;      // round 11: which kerbed buildings' shops are modelled
+constexpr std::uint32_t kClusterBays = 3u, kClusterStoreys = 2u;
+constexpr const char* kLumHlsl = "float3(0.2126, 0.7152, 0.0722)";
 constexpr double kPiD = 3.14159265358979323846;
 constexpr WindowTint kShopColours[kWindowShopColourCount] = {
     {0.62f, 0.60f, 0.55f, 1.0f, false},  // shell: pale wall
@@ -345,7 +350,7 @@ std::size_t windowShopInterior(const WindowFacadeSpec& spec, WindowType type, st
     constexpr float kInset = 0.03f;  // m: the shell's front edge behind the wall's face (no fight with the wall)
     std::size_t n = 0;
     const auto put = [&](float a0, float a1, float i0, float i1, float z0, float z1, WindowShopPart part,
-                         std::uint32_t colour, std::uint32_t column, bool lit) {
+                         std::uint32_t colour, std::uint32_t column, bool lit, float light) {
         if (n >= capacity) return;
         WindowShopPiece& p = out[n++];
         p.along0 = a0;
@@ -358,54 +363,117 @@ std::size_t windowShopInterior(const WindowFacadeSpec& spec, WindowType type, st
         p.colour = colour;
         p.column = column;
         p.lit = lit;
+        p.light = light;
     };
     const ShopFrontSpec fs{};
+    // One floor and one ceiling the face's length, in the first lit bay's light, dim (dark when no bay is lit).
+    const float f0 = spec.base.edge, f1 = spec.base.edge + static_cast<float>(grid.bays) * bw;
+    WindowShopLight faceLight;
+    std::uint32_t faceColumn = 0;
+    for (std::uint32_t c = 0; c < grid.bays && !faceLight.lit; ++c) {
+        faceLight = windowShopLight(spec, seed, c, shopLit);
+        faceColumn = c;
+    }
+    if (!faceLight.lit) faceColumn = 0;
+    faceLight.level = spec.shopDimLevel;
+    const float faceCode = windowShopLightCode(faceLight);
+    put(f0, f1, kInset, depth, -kSkin, 0.02f, WindowShopPart::Shell, 1u, faceColumn, faceLight.lit, faceCode);
+    put(f0, f1, kInset, depth, top, top + kSkin, WindowShopPart::Shell, 0u, faceColumn, faceLight.lit, faceCode);
     for (std::uint32_t c = 0; c < grid.bays; ++c) {
         const float a0 = spec.base.edge + static_cast<float>(c) * bw, a1 = a0 + bw;
-        const bool lit = windowShopLit(seed, c, shopLit);
+        const WindowShopLight light = windowShopLight(spec, seed, c, shopLit);
+        const bool lit = light.lit;
+        const float code = windowShopLightCode(light);
         const std::uint32_t h = windowHash(windowCellHash(seed, 0u, c) ^ kInteriorSalt);
-        // The shell: back, floor, ceiling and the wall on the bay's left (and right on the last bay).
-        put(a0, a1, depth, depth + kSkin, -kSkin, top + kSkin, WindowShopPart::Shell, 0u, c, lit);
-        put(a0, a1, kInset, depth, -kSkin, 0.02f, WindowShopPart::Shell, 1u, c, lit);
-        put(a0, a1, kInset, depth, top, top + kSkin, WindowShopPart::Shell, 0u, c, lit);
-        put(a0 - kSkin * 0.5f, a0 + kSkin * 0.5f, kInset, depth, 0.0f, top, WindowShopPart::Shell, 0u, c, lit);
+        // The bay's back wall (its own light) and the wall on its left (and right on the last bay).
+        put(a0, a1, depth, depth + kSkin, -kSkin, top + kSkin, WindowShopPart::Shell, 0u, c, lit, code);
+        put(a0 - kSkin * 0.5f, a0 + kSkin * 0.5f, kInset, depth, 0.0f, top, WindowShopPart::Shell, 0u, c, lit, code);
         if (c + 1u == grid.bays)
-            put(a1 - kSkin * 0.5f, a1 + kSkin * 0.5f, kInset, depth, 0.0f, top, WindowShopPart::Shell, 0u, c, lit);
-        const ShopFrontKind kind = shopFrontBay(fs, seed, c).kind;
+            put(a1 - kSkin * 0.5f, a1 + kSkin * 0.5f, kInset, depth, 0.0f, top, WindowShopPart::Shell, 0u, c, lit, code);
+        const ShopBay bay = shopFrontBay(fs, seed, c);
+        const ShopFrontKind kind = bay.kind;
+        // Behind a shutter drawn all the way nothing shows: the shell alone.
+        if (kind == ShopFrontKind::Shutter && bay.shutter >= 1.0f) continue;
         const float m0 = a0 + 0.15f, m1 = a1 - 0.15f;
         const bool shelves = kind == ShopFrontKind::Glazed || kind == ShopFrontKind::Shutter || kind == ShopFrontKind::Stall;
         if (shelves) {
-            // A shelf unit along the back: three boards, each with a run of goods on it.
-            const std::uint32_t frame = (h & 1u) != 0u ? 2u : 3u;
+            // A shelf unit along the back: three rows of goods (no boards: a row's shadow gap reads as its shelf).
             const float s0 = depth - 0.4f, s1 = depth - 0.02f;
             for (std::uint32_t b = 0; b < 3u; ++b) {
                 const float z = 0.45f + 0.5f * static_cast<float>(b);
                 if (z + 0.3f > top) break;
-                put(m0, m1, s0, s1, z, z + 0.03f, WindowShopPart::Shelf, frame, c, lit);
                 const std::uint32_t goods = 4u + ((h >> (4u + 2u * b)) & 3u);
-                put(m0 + 0.05f, m1 - 0.05f, s0 + 0.05f, s1 - 0.05f, z + 0.03f, z + 0.28f, WindowShopPart::Goods, goods, c, lit);
+                put(m0, m1, s0, s1, z, z + 0.3f, WindowShopPart::Goods, goods, c, lit, code);
             }
         }
         if (kind == ShopFrontKind::Cafe || kind == ShopFrontKind::Eatery) {
             // A counter along the back and a table by the glass.
-            put(m0, m1, depth - 0.6f, depth - 0.02f, 0.0f, 0.95f, WindowShopPart::Counter, 3u, c, lit);
+            put(m0, m1, depth - 0.6f, depth - 0.02f, 0.0f, 0.95f, WindowShopPart::Counter, 3u, c, lit, code);
             const float mid = 0.5f * (a0 + a1) + ((h & 2u) != 0u ? 0.3f : -0.3f) * bw * 0.5f;
-            put(mid - 0.35f, mid + 0.35f, 0.3f, 0.9f, 0.0f, 0.75f, WindowShopPart::Table, 3u, c, lit);
+            put(mid - 0.35f, mid + 0.35f, 0.3f, 0.9f, 0.0f, 0.75f, WindowShopPart::Table, 3u, c, lit, code);
         } else if (kind == ShopFrontKind::Clinic) {
             // A bench along the back wall and a desk to one side.
-            put(m0, m1, depth - 0.45f, depth - 0.02f, 0.0f, 0.45f, WindowShopPart::Counter, 2u, c, lit);
+            put(m0, m1, depth - 0.45f, depth - 0.02f, 0.0f, 0.45f, WindowShopPart::Counter, 2u, c, lit, code);
             const bool left = (h & 2u) != 0u;
-            put(left ? m0 : m1 - 0.9f, left ? m0 + 0.9f : m1, 0.3f, 0.8f, 0.0f, 0.75f, WindowShopPart::Table, 0u, c, lit);
+            put(left ? m0 : m1 - 0.9f, left ? m0 + 0.9f : m1, 0.3f, 0.8f, 0.0f, 0.75f, WindowShopPart::Table, 0u, c, lit,
+                code);
         } else {
             // A counter on one side, front to back.
             const bool left = (h & 2u) != 0u;
             const float cw = std::min(0.55f, 0.25f * bw);
             put(left ? m0 : m1 - cw, left ? m0 + cw : m1, 0.25f, std::max(depth - 0.5f, 0.6f), 0.0f, 0.95f,
-                WindowShopPart::Counter, (h & 4u) != 0u ? 3u : 2u, c, lit);
+                WindowShopPart::Counter, (h & 4u) != 0u ? 3u : 2u, c, lit, code);
         }
     }
     return n;
 }
+
+// ---- Round 11 ----
+
+float windowGlowSoftCap(float lum, float cap) { return 1.0f / (1.0f + std::max(lum, 0.0f) / std::max(cap, 1e-4f)); }
+
+std::string windowShopTintTableHlsl() {
+    std::string s = "float3 shopTints[" + std::to_string(kWindowShopTints) + "] = { ";
+    for (std::size_t i = 0; i < kWindowShopTintRgb.size(); ++i)
+        s += (i ? ", " : "") + rgb(kWindowShopTintRgb[i][0], kWindowShopTintRgb[i][1], kWindowShopTintRgb[i][2]);
+    return s + " };\n";
+}
+
+WindowShopLight windowShopLight(const WindowFacadeSpec& spec, std::uint32_t seed, std::uint32_t column, float shopLit) {
+    WindowShopLight l;
+    l.lit = windowShopLit(seed, column, shopLit);
+    const std::uint32_t h = windowHash(windowCellHash(seed, 0u, column) ^ kShopLightSalt);
+    l.level = share(h) < spec.shopDimShare ? spec.shopDimLevel : 1.0f;
+    l.tint = (h >> 16) % kWindowShopTints;
+    return l;
+}
+
+float windowShopLightCode(const WindowShopLight& light) {
+    if (!light.lit) return 0.0f;
+    return 1.0f + static_cast<float>(light.tint < kWindowShopTints ? light.tint : 0u) + (light.level < 1.0f ? 0.5f : 0.0f);
+}
+
+std::string windowShopModelGlowHlsl() {
+    std::string h;
+    h.reserve(1024);
+    h += windowShopTintTableHlsl();
+    h += "float on = Code > 0.5 ? 1.0 : 0.0;\n";
+    h += "uint t = (uint)clamp(floor(Code) - 1.0, 0.0, " + num(static_cast<float>(kWindowShopTints - 1)) + ");\n";
+    h += "float lvl = frac(Code) > 0.25 ? DimLevel : 1.0;\n";
+    h += "float3 glow = Color.rgb * shopTints[t] * (on * lvl * ShopGlow * NightGlow);\n";
+    h += "glow = glow / (1.0 + dot(glow, " + std::string(kLumHlsl) + ") / max(ShopGlowCap, 1e-4));\n";
+    h += "float3 night = glow + Color.rgb * NightFloor;\n";
+    h += "return lerp(Color.rgb * ShopDay, night, saturate(Night));\n";
+    return h;
+}
+
+float windowLitCluster(const WindowFacadeSpec& spec, std::uint32_t seed, std::uint32_t storey, std::uint32_t column) {
+    const std::uint32_t h = windowHash(windowHash(seed ^ kClusterSalt) +
+                                       windowHash((storey / kClusterStoreys) * 131u + column / kClusterBays));
+    return 1.0f - spec.litCluster + 2.0f * spec.litCluster * share(h);
+}
+
+bool windowShopModelled(std::uint32_t seed, float share01) { return share(windowHash(seed ^ kModelSalt)) < share01; }
 
 std::uint8_t windowKerbBits(const MassingBox& box, std::uint8_t streetBits, const std::vector<MassingStreet>& streets,
                             double sharedUpTo, double reach) {
@@ -643,8 +711,12 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     h += "bool mirror = (W.H(hh ^ " + unum(0x02e5be93u) + ") & 1u) != 0u;\n";
     h += "uint tint = W.H(hh ^ " + unum(0x967a889bu) + ") % " + unum(kWindowTints) + ";\n";
     // Upper storeys lit more often (windowLitShare).
+    // Round 11: in clusters of 3 bays x 2 storeys (windowLitCluster), so lit windows gather and dark patches stay.
+    h += "float clus = " + num(1.0f - spec.litCluster) + " + " + num(2.0f * spec.litCluster) + " * float(W.H(W.H(seed ^ " +
+         unum(kClusterSalt) + ") + W.H((st / " + unum(kClusterStoreys) + ") * 131u + col / " + unum(kClusterBays) +
+         ")) & 0xFFFFu) / 65536.0;\n";
     h += "float litP = shop ? ShopLit : (ty == 0u ? LitShare : min(LitShare * (1.0 + UpperLit * saturate((stF - 1.0) / "
-         "max(nst - 2.0, 1.0))), " + num(spec.litMax) + "));\n";
+         "max(nst - 2.0, 1.0))) * clus, " + num(spec.litMax) + "));\n";
     h += "bool lit = float(W.H(hh ^ " + unum(0x5bd1e995u) + ") & 0xFFFFu) / 65536.0 < litP;\n";
     h += "bool hasCurtain = !shop && float(W.H(hh ^ " + unum(0x1b873593u) + ") & 0xFFFFu) / 65536.0 < CurtainShare;\n";
     h += "uint curtain = W.H(hh ^ " + unum(0xcc9e2d51u) + ") % " + unum(kWindowCurtains) + ";\n";
@@ -694,19 +766,31 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     // A kerbed street face's shop glass is cut (the opacity mask) for its modelled interior.
     h += "Hole = (shop && Kerb > 0.5 && glass && nb >= 1.0) ? 1.0 : 0.0;\n";
     h += windowTintTableHlsl();
+    h += windowShopTintTableHlsl();
     h += "float on = (glass && lit) ? Night : 0.0;\n";
+    // Round 11 (windowShopLight): a lit shop is full or dim, in a shop tint; every night light is soft-capped
+    // (windowGlowSoftCap), so it keeps its tint and the picture and never clips.
+    h += "uint slh = W.H(hh ^ " + unum(kShopLightSalt) + ");\n";
+    h += "float shopLvl = float(slh & 0xFFFFu) / 65536.0 < " + num(spec.shopDimShare) + " ? " + num(spec.shopDimLevel) +
+         " : 1.0;\n";
+    h += "float3 lightTint = shop ? shopTints[(slh >> 16) % " + unum(kWindowShopTints) + "] * shopLvl : tints[tint];\n";
+    h += "float3 kLum = " + std::string(kLumHlsl) + ";\n";
+    h += "float capG = max(shop ? ShopGlowCap : GlowCap, 1e-4);\n";
     // By day the glass darkens toward its head, in the reveal's shade.
     h += "float hs = (ty > 0u && !shop) ? lerp(0.45, 1.0, saturate((v1 - gv) * sh / " + num(spec.headShadow) +
          ")) : 1.0;\n";
     h += "float3 day = seen * hs * (shop ? ShopDay : RoomDay) * (1.0 - Night);\n";
-    h += "float3 night = on * (seen + cc.rgb * ca * (cover == 1u ? ScreenGlow : CurtainGlow)) * tints[tint] * (shop ? "
+    h += "float3 night = on * (seen + cc.rgb * ca * (cover == 1u ? ScreenGlow : CurtainGlow)) * lightTint * (shop ? "
          "ShopGlow : GlowScale);\n";
+    h += "night = night / (1.0 + dot(night, kLum) / capG);\n";
     // A lit shop's sign panel glows at night (SignGlow, strong enough to show in a wet road); a lantern glows by day
     // and much more by night.
-    h += "float3 signGlow = (lit && part == 4.0) ? signLight * Night * SignGlow : float3(0.0, 0.0, 0.0);\n";
-    h += "float3 lanternGlow = float3(0.9, 0.25, 0.08) * (0.4 + 6.0 * Night);\n";
+    h += "float3 signGlow = (lit && part == 4.0) ? signLight * Night * SignGlow * shopLvl : float3(0.0, 0.0, 0.0);\n";
+    h += "signGlow = signGlow / (1.0 + dot(signGlow, kLum) / max(SignGlowCap, 1e-4));\n";
+    h += "float3 lanternGlow = float3(0.9, 0.25, 0.08) * (0.4 + " + num(spec.lanternNight) + " * Night);\n";
     h += "float3 frostGlow = (!shop && part == 13.0 && lit) ? (cover == 2u ? tints[tint] * " + num(spec.frostGlow) +
          " : float3(0.9, 0.85, 0.72) * 0.8) * Night * GlowScale : float3(0.0, 0.0, 0.0);\n";
+    h += "frostGlow = frostGlow / (1.0 + dot(frostGlow, kLum) / max(GlowCap, 1e-4));\n";
     h += "Emit = glass ? day + night : (part == 12.0 ? lanternGlow : (part == 13.0 && !shop ? frostGlow : signGlow));\n";
     h += "own = (!shop && part == 13.0) ? float3(0.7, 0.73, 0.73) : own;\n";
     h += "own = part == 17.0 ? float3(0.05, 0.05, 0.055) : (part == 18.0 ? float3(0.14, 0.14, 0.15) : own);\n";

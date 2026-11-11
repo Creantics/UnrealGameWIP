@@ -189,6 +189,61 @@ std::vector<BackdropBox> skylineBand(const SkylineSpec& spec) {
     return out;
 }
 
+std::size_t skylineSeat(const HeightField& field, const SkylineSeatSpec& spec, SkylineStrip* out) {
+    if (!out || !field.grid || field.samplesX == 0 || field.samplesY == 0 || !(spec.x1 > spec.x0)) {
+        return 0;
+    }
+    const double step = std::max(spec.sampleM, 0.5);
+    const double land = spec.seaLevelM + spec.minLandM;
+    const auto samples = static_cast<std::size_t>(std::floor((spec.x1 - spec.x0) / step)) + 1;
+    // The longest run of land along the edge.
+    std::size_t best0 = 0, bestN = 0, run0 = 0, runN = 0;
+    for (std::size_t i = 0; i < samples; ++i) {
+        if (field.at(spec.x0 + static_cast<double>(i) * step, spec.edgeY) >= land) {
+            run0 = runN == 0 ? i : run0;
+            ++runN;
+            if (runN > bestN) {
+                best0 = run0;
+                bestN = runN;
+            }
+        } else {
+            runN = 0;
+        }
+    }
+    if (bestN < 2) {
+        return 0;
+    }
+    const double lx0 = spec.x0 + static_cast<double>(best0) * step;
+    const double lx1 = spec.x0 + static_cast<double>(best0 + bestN - 1) * step;
+    const std::size_t most = std::clamp<std::size_t>(spec.maxStrips, 1, kSkylineStripMax);
+    const double want = std::ceil((lx1 - lx0) / std::max(spec.stripM, step));
+    const std::size_t count = want >= static_cast<double>(most) ? most : std::max<std::size_t>(static_cast<std::size_t>(want), 1);
+    const double width = (lx1 - lx0) / static_cast<double>(count);
+    for (std::size_t s = 0; s < count; ++s) {
+        const double a = lx0 + static_cast<double>(s) * width, b = s + 1 == count ? lx1 : a + width;
+        double low = std::min(field.at(a, spec.edgeY), field.at(b, spec.edgeY));
+        for (double x = a + step; x < b; x += step) {
+            low = std::min(low, field.at(x, spec.edgeY));
+        }
+        out[s].x0 = static_cast<float>(a);
+        out[s].x1 = static_cast<float>(b);
+        out[s].topM = static_cast<float>(low - spec.dropM);
+    }
+    return count;
+}
+
+float skylineSeatAt(const SkylineStrip* strips, std::size_t count, double x) {
+    if (!strips || count == 0) {
+        return 0.f;
+    }
+    for (std::size_t s = 0; s + 1 < count; ++s) {
+        if (x < static_cast<double>(strips[s].x1)) {
+            return strips[s].topM;
+        }
+    }
+    return strips[count - 1].topM;
+}
+
 void heightShapeMask(const HeightField& field, double centreX, double centreY, double sideM, std::size_t size, bool northUp, float ringM,
                      float fullPerMetre, std::uint8_t* out) {
     if (!out || size == 0) {

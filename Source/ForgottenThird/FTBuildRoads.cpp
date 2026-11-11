@@ -139,8 +139,8 @@ struct FRoadPainter
 		}
 		const bool bVehicle = Solid.tag.rfind("FTVehicle_", 0) == 0;
 		FFTCellOptions Options;
-		const bool bMarking = Which == ftcore::RoadTint::LineWhite || Which == ftcore::RoadTint::LineYellow || Which == ftcore::RoadTint::Tactile ||
-			Which == ftcore::RoadTint::Water || Which == ftcore::RoadTint::Drain;
+		// Lines and water are drawn at any distance; drain grates and tactile strips (small) to the props'.
+		const bool bMarking = Which == ftcore::RoadTint::LineWhite || Which == ftcore::RoadTint::LineYellow || Which == ftcore::RoadTint::Water;
 		Options.Cull = bVehicle ? EFTCellCull::Car : ((bGround || bMarking) ? EFTCellCull::None : EFTCellCull::Prop);
 		Options.bCastShadow = !bFlat;
 		Options.Tag = Solid.tag.empty() ? FName(TEXT("FTRoad")) : FName(RoadsUtf8(Solid.tag));

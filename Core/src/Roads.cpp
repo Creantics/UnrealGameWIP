@@ -14,7 +14,7 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kMarkLift = 0.006;  // m: a marking's top over its surface
-constexpr double kMarkDeep = 0.012;  // m: a marking's thickness
+constexpr double kMarkDeep = 0.008;  // m: a marking's thickness (its underside 2 mm under the surface)
 constexpr double kStubPavement = 2.0; // m: a stub arm's pavements
 constexpr double kShelterDeep = 1.4, kShelterLong = 4.2, kShelterHigh = 2.4;
 constexpr double kPoleHigh = 10.0;   // m: a utility pole over the pavement
@@ -105,6 +105,9 @@ struct Ctx {
         b.rot = fr.rot;
         top += fr.grade * (s0 + s1) * 0.5;
         if (depth >= kRoadSlabDepth - 1e-9) depth += deep;
+        // A straight pavement never takes a corner piece's depth (kRoadCornerPaveDeep, which the surface master reads).
+        if (std::string_view(kind) == "pavement" && depth > kRoadSlabDepth + 0.003 && depth < kRoadSlabDepth + 0.02)
+            depth = kRoadSlabDepth + 0.02;
         b.z1 = top;
         b.z0 = top - depth;
         b.riseU = riseU + fr.grade;
@@ -463,8 +466,8 @@ RoadColor roadTint(RoadTint tint) {
     case RoadTint::Tactile: return {0.75f, 0.55f, 0.08f, 0.6f};
     case RoadTint::Footway: return {0.30f, 0.29f, 0.27f, 0.8f};
     case RoadTint::Water: return {0.02f, 0.05f, 0.05f, 0.03f};
-    case RoadTint::Gutter: return {0.025f, 0.025f, 0.027f, 0.3f};
-    case RoadTint::Drain: return {0.12f, 0.12f, 0.13f, 0.45f};
+    case RoadTint::Gutter: return {0.035f, 0.035f, 0.037f, 0.9f};
+    case RoadTint::Drain: return {0.045f, 0.045f, 0.05f, 0.6f};
     case RoadTint::Count: break;
     }
     return {0.5f, 0.5f, 0.5f, -1.f};
@@ -1708,9 +1711,51 @@ std::vector<std::size_t> roadBoxClashes(const RoadBuild& build, const std::vecto
     return out;
 }
 
+std::vector<RoadFace> roadCrossingOverlaps(const RoadBuild& build) {
+    // Separating axes over two convex quads: they overlap when no edge normal of either parts them by `slack` or less.
+    constexpr double slack = 0.05;
+    const auto apart = [](const RoadQuad& a, const RoadQuad& b) {
+        for (std::size_t i = 0; i < 4; ++i) {
+            const RoadPoint p = a.pts[i], q = a.pts[(i + 1) % 4];
+            const double nx = q.y - p.y, ny = p.x - q.x, nl = std::hypot(nx, ny);
+            if (nl < 1e-9) continue;
+            double a0 = 1e30, a1 = -1e30, b0 = 1e30, b1 = -1e30;
+            for (std::size_t k = 0; k < 4; ++k) {
+                const double da = (a.pts[k].x * nx + a.pts[k].y * ny) / nl, db = (b.pts[k].x * nx + b.pts[k].y * ny) / nl;
+                a0 = std::min(a0, da);
+                a1 = std::max(a1, da);
+                b0 = std::min(b0, db);
+                b1 = std::max(b1, db);
+            }
+            if (std::min(a1, b1) - std::max(a0, b0) <= slack) return true;
+        }
+        return false;
+    };
+    std::vector<RoadFace> out;
+    for (std::size_t i = 0; i < build.crossings.size(); ++i)
+        for (std::size_t j = i + 1; j < build.crossings.size(); ++j) {
+            const RoadQuad& a = build.crossings[i];
+            const RoadQuad& b = build.crossings[j];
+            // A scramble's two diagonals cross by design (the second's bars stop at the first's band).
+            if (!a.junction.empty() && a.junction == b.junction && a.id.find("-ZD") != std::string::npos &&
+                b.id.find("-ZD") != std::string::npos)
+                continue;
+            if (apart(a, b) || apart(b, a)) continue;
+            RoadFace f;
+            f.piece = a.id;
+            for (std::size_t k = 0; k < 4; ++k) {
+                f.x += (a.pts[k].x + b.pts[k].x) * 0.125;
+                f.y += (a.pts[k].y + b.pts[k].y) * 0.125;
+            }
+            f.fault = "crossing " + b.id;
+            out.push_back(std::move(f));
+        }
+    return out;
+}
+
 std::vector<RoadFace> roadKerbFaces(const RoadBuild& build, const RoadGraph* graph) {
     const std::vector<const RoadSolid*> slabs = slabsOf(build);
-    std::vector<RoadFace> out;
+    std::vector<RoadFace> out = roadCrossingOverlaps(build);
     std::vector<std::size_t> pieces;
     for (std::size_t i = 0; i < build.solids.size(); ++i) {
         const RoadSolid& s = build.solids[i];
@@ -1845,8 +1890,9 @@ MassingBox netRing(Ctx& x, RoadPoint c, double a, double step, double r0, double
 // A scramble's diagonal zebras: walk points kRoadZebraWide/2 + 0.3 m off each inner corner's kerb arc and near each
 // arm's end of a straight or outer kerb's fill; pairs from different gaps 25-65 degrees to every arm, the shortest
 // first, each point used once, two at most; bars kRoadZebraBar along the walk and kRoadZebraWide across it in 1 m
-// pieces, each flat on the highest of this node's fill (its solids from solid0) under it; a piece off the fill (over a
-// kerb) is left out.
+// pieces, each tilted to this node's fill (its solids from solid0; the highest top under each corner) and kMarkLift
+// over it at its nearest, so the bars follow the arms' crowns without steps; a piece off the fill (over a kerb) is left
+// out, and so is a piece of the second diagonal in the first's band: where the two cross, one set of bars shows.
 void netScramble(Ctx& x, const NetNode& nd, std::size_t solid0) {
     struct Walk {
         RoadPoint p;
@@ -1891,6 +1937,8 @@ void netScramble(Ctx& x, const NetNode& nd, std::size_t solid0) {
         }
     std::sort(pairs.begin(), pairs.end(), [](const Pair& l, const Pair& r) { return l.len < r.len; });
     std::vector<char> used(walks.size(), 0);
+    std::vector<std::pair<Frame, double>> laid; // the diagonals already barred (frame, length): a later one's pieces
+                                                 // keep out of their bands
     int made = 0;
     for (const Pair& pr : pairs) {
         if (made >= 2) break;
@@ -1901,29 +1949,54 @@ void netScramble(Ctx& x, const NetNode& nd, std::size_t solid0) {
         const Frame f = frameOf(p0.x, p0.y, p1.x, p1.y);
         const int across = static_cast<int>(std::ceil(kRoadZebraWide - 1e-9));
         const double pw = kRoadZebraWide / across;
+        // The fill's top under a plan point (the highest of the node's slabs there); false off the fill.
+        auto surface = [&](RoadPoint q, double& top) {
+            bool hit = false;
+            top = -1e9;
+            for (std::size_t i = solid0; i < x.out.solids.size(); ++i) {
+                const RoadSolid& sl = x.out.solids[i];
+                if (!slabSolid(sl) || !slabHas(sl, q.x, q.y)) continue;
+                top = std::max(top, topAt(sl.box, q.x, q.y));
+                hit = true;
+            }
+            return hit;
+        };
         for (double s = 0.3; s + kRoadZebraBar <= pr.len - 0.3 + 1e-9; s += 2.0 * kRoadZebraBar) {
             for (int c = 0; c < across; ++c) {
                 const double t0 = -half + c * pw, t1 = t0 + pw;
-                double top = -1e9;
-                const RoadPoint probe[5] = {f.at(s, t0), f.at(s, t1), f.at(s + kRoadZebraBar, t0),
-                                            f.at(s + kRoadZebraBar, t1), f.at(s + kRoadZebraBar * 0.5, (t0 + t1) * 0.5)};
-                bool onFill = true; // a piece any of whose probes misses the fill (over a kerb) is left out
-                for (const RoadPoint& q : probe) {
-                    bool hit = false;
-                    for (std::size_t i = solid0; i < x.out.solids.size(); ++i) {
-                        const RoadSolid& sl = x.out.solids[i];
-                        if (!slabSolid(sl) || !slabHas(sl, q.x, q.y)) continue;
-                        top = std::max(top, topAt(sl.box, q.x, q.y));
-                        hit = true;
+                // Its corners (s then t), then the edges' middles and the centre.
+                const double sm = s + kRoadZebraBar * 0.5, tm = (t0 + t1) * 0.5;
+                const RoadPoint probe[9] = {f.at(s, t0),  f.at(s + kRoadZebraBar, t0), f.at(s, t1),
+                                            f.at(s + kRoadZebraBar, t1), f.at(sm, t0), f.at(sm, t1),
+                                            f.at(s, tm),  f.at(s + kRoadZebraBar, tm), f.at(sm, tm)};
+                double z[9] = {};
+                bool lay = true; // a piece any of whose probes misses the fill (over a kerb) is left out
+                for (int i = 0; i < 9 && lay; ++i) {
+                    lay = surface(probe[i], z[i]);
+                    for (const std::pair<Frame, double>& band : laid) {
+                        const Frame& e = band.first;
+                        const double ds = (probe[i].x - e.ox) * e.dx + (probe[i].y - e.oy) * e.dy;
+                        const double dt = -(probe[i].x - e.ox) * e.dy + (probe[i].y - e.oy) * e.dx;
+                        if (ds > -0.05 && ds < band.second + 0.05 && std::fabs(dt) < half + 0.05) lay = false;
                     }
-                    onFill = onFill && hit;
                 }
-                if (!onFill) continue;
-                x.add(x.box(f, s, s + kRoadZebraBar, t0, t1, top + kMarkLift, kMarkDeep, 0.0, 0.0, "mark"),
+                if (!lay) continue;
+                // The plane through its corners' mean and slopes, lifted clear of every probe.
+                const double riseU = ((z[1] + z[3]) - (z[0] + z[2])) * 0.5 / kRoadZebraBar;
+                const double riseW = ((z[2] + z[3]) - (z[0] + z[1])) * 0.5 / pw;
+                const double zc = (z[0] + z[1] + z[2] + z[3]) * 0.25;
+                double over = 0.0;
+                for (int i = 0; i < 9; ++i) {
+                    const double du = (i == 0 || i == 2 || i == 6) ? -0.5 : ((i == 1 || i == 3 || i == 7) ? 0.5 : 0.0);
+                    const double dw = (i == 0 || i == 1 || i == 4) ? -0.5 : ((i == 2 || i == 3 || i == 5) ? 0.5 : 0.0);
+                    over = std::max(over, z[i] - (zc + riseU * du * kRoadZebraBar + riseW * dw * pw));
+                }
+                x.add(x.box(f, s, s + kRoadZebraBar, t0, t1, zc + over + kMarkLift, kMarkDeep, riseU, riseW, "mark"),
                       RoadTint::LineWhite, false);
                 ++x.out.counts.markings;
             }
         }
+        laid.emplace_back(f, pr.len);
         RoadQuad q;
         q.id = nd.id + "-ZD" + std::to_string(made);
         q.junction = nd.id;
@@ -2441,7 +2514,7 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                     if (ui > 1e-6) rb = std::min(rb, (R - ai.pav) / ui);
                     if (uj > 1e-6) rb = std::min(rb, (R - aj.pav) / uj);
                     const MassingBox pb =
-                        netRing(x, c.c, a, step, std::max(0.0, rb), R - kRoadKerbWide, pv, kRoadSlabDepth, "pavement");
+                        netRing(x, c.c, a, step, std::max(0.0, rb), R - kRoadKerbWide, pv, kRoadCornerPaveDeep, "pavement");
                     x.add(pb, RoadTint::Pavement, true);
                     out.band.push_back(footOf(pb));
                 }
@@ -2464,7 +2537,7 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                             fits = gz <= pv - 0.02 && gz >= pv - kRoadSlabDepth + 0.02;
                         }
                         if (!fits) continue;
-                        x.add(x.at(mid, angleOf(ai.d), wide, wide, pv - kRoadSlabDepth, pv, "pavement"),
+                        x.add(x.at(mid, angleOf(ai.d), wide, wide, pv - kRoadCornerPaveDeep, pv, "pavement"),
                               RoadTint::Pavement, true);
                         ++rep.aprons;
                         break;
@@ -2492,7 +2565,8 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                     x.add(fb, RoadTint::Asphalt, true);
                     x.add(netRing(x, nd.p, a, step, hc, hc + kRoadKerbWide, pv, kRoadSlabDepth + 0.15, "kerb"),
                           RoadTint::Kerb, true);
-                    const MassingBox pb = netRing(x, nd.p, a, step, hc + kRoadKerbWide, w2, pv, kRoadSlabDepth, "pavement");
+                    const MassingBox pb =
+                        netRing(x, nd.p, a, step, hc + kRoadKerbWide, w2, pv, kRoadCornerPaveDeep, "pavement");
                     x.add(pb, RoadTint::Pavement, true);
                     out.band.push_back(footOf(pb));
                 }
@@ -3319,6 +3393,7 @@ constexpr double kFootReachEnd = 2.0;   // m: a street's carriageway reaches thi
 constexpr double kFootPaveLift = 0.05;  // m: an alley's paving over the ground
 constexpr double kFootUnder = 0.1;      // m: a piece reaches this far under its lowest ground
 constexpr double kFootSkin = 0.006;     // m: a drain or tactile strip's top over its surface
+constexpr double kFootGutterLift = 0.012; // m: a gutter strip's top over the highest ground under it, at least
 constexpr double kFootBollardIn = 0.4;  // m: an alley's bollards inside the other street's wall line
 constexpr double kFootMitreMax = 2.0;   // the tan(half turn) a bend's mitre takes at most
 constexpr std::size_t kFootNet = static_cast<std::size_t>(-1);
@@ -3597,6 +3672,14 @@ void roadFootways(const std::vector<MassingStreet>& streets, const std::vector<s
     const double lift = kRoadSurfaceLift + kRoadKerbRise;
     std::vector<double> zs;
     std::vector<FootGap> gs;
+    struct GutterLine {
+        double a0 = 0.0, a1 = 0.0, z0 = 0.0, grade = 0.0; // its top z0 at a0, rising grade per m
+    };
+    std::vector<GutterLine> gutters; // one run's gutter strips, for its drains
+    struct PieceSpan {
+        double a0 = 0.0, a1 = 0.0, ra = 0.0, rb = 0.0; // a kerb piece's stretch and its mitre reach at each end
+    };
+    std::vector<PieceSpan> spans; // one run's kerb pieces, for its gutter strips
     for (std::size_t i = 0; i < streets.size(); ++i) {
         const MassingStreet& st = streets[i];
         const double h = st.width * 0.5;
@@ -3683,17 +3766,28 @@ void roadFootways(const std::vector<MassingStreet>& streets, const std::vector<s
                             const double bottom = lo - kFootUnder;
                             fb.put(footBox(f, e0, e1, sLo, sHi, k0, k1, bottom, fb.id(st.id, "kerb"), st.id, "kerb"),
                                    RoadTint::Kerb, true, true);
-                            fb.put(footBox(f, e0, e1, wLo, wHi, k0, k1, bottom, fb.id(st.id, "fw"), st.id, "footway"),
-                                   RoadTint::Footway, true, true);
-                            const double g0 = k0 - kRoadKerbRise, g1 = k1 - kRoadKerbRise;
-                            fb.put(footBox(f, e0, e1, gLo, gHi, g0, g1, std::min(g0, g1) - 0.05, fb.id(st.id, "gut"),
-                                           st.id, "gutter"),
-                                   RoadTint::Gutter, false, false);
+                            // The slab, unless the ground hides all of it (its ends and middle, from just behind the
+                            // stone to the wall, 2 cm or more under the ground): the kerb stays.
+                            bool hidden = true;
+                            for (int q = 0; q < 9 && hidden; ++q) {
+                                const double s = a0 + (a1 - a0) * 0.5 * (q % 3);
+                                const double t = q < 3 ? tStone + (tWall - tStone) * 0.25 : (q < 6 ? tMid : tWall);
+                                const RoadPoint pq = f.at(s, t);
+                                hidden = fb.groundAt(pq.x, pq.y) >= za + grade * (s - a0) + lift + 0.02;
+                            }
+                            if (hidden)
+                                ++rep.hidden;
+                            else
+                                fb.put(footBox(f, e0, e1, wLo, wHi, k0, k1, bottom, fb.id(st.id, "fw"), st.id, "footway"),
+                                       RoadTint::Footway, true, true);
+                            spans.push_back({a0, a1, ra, rb});
                             ++rep.pieces;
                             rep.kerbM += e1 - e0;
                             rep.footM2 += (e1 - e0) * (tHi - tLo);
                             fs.kerbed[side] += e1 - e0;
                         };
+                        gutters.clear();
+                        spans.clear();
                         // Pieces over p0..p1, each the longest whose samples keep within kFootFit of its line.
                         for (double a0 = p0; a0 < p1 - 1e-6;) {
                             double a1 = std::min(p1, a0 + kFootLongest);
@@ -3710,6 +3804,44 @@ void roadFootways(const std::vector<MassingStreet>& streets, const std::vector<s
                             piece(a0, a1, a0 <= s0 + 1e-9 ? reachA : 0.0, a1 >= s1 - 1e-9 ? reachB : 0.0);
                             a0 = a1;
                         }
+                        // The gutter strips: flush with the lane (the ground), kFootGutterLift over the highest
+                        // ground under its two edges, kRoadSurfaceLift at most. One strip runs on over the next
+                        // pieces while the ground under it keeps within that and no more than kFootFit under it.
+                        for (std::size_t i0 = 0; i0 < spans.size();) {
+                            std::size_t i1 = i0;
+                            double up = 0.0, za = 0.0, zb = 0.0, grade = 0.0;
+                            auto fit = [&](std::size_t last, bool must) {
+                                const double a0 = spans[i0].a0, a1 = spans[last].a1;
+                                const double z0 = zAt(a0), z1 = zAt(a1);
+                                const double gr = (z1 - z0) / std::max(1e-6, a1 - a0);
+                                double hi = 0.0, lo = 0.0;
+                                for (double s = a0; s <= a1 + 1e-9; s += 0.5) {
+                                    const double line = z0 + gr * (s - a0);
+                                    const RoadPoint pk = f.at(s, tKerb), pg = f.at(s, tGut);
+                                    const double dk = fb.groundAt(pk.x, pk.y) - line, dg = fb.groundAt(pg.x, pg.y) - line;
+                                    hi = std::max({hi, dk, dg});
+                                    lo = std::min({lo, dk, dg});
+                                }
+                                if (!must && (hi + kFootGutterLift > kRoadSurfaceLift || hi - lo > kFootFit)) return false;
+                                up = hi;
+                                za = z0;
+                                zb = z1;
+                                grade = gr;
+                                return true;
+                            };
+                            fit(i0, true);
+                            while (i1 + 1 < spans.size() && fit(i1 + 1, false)) ++i1;
+                            const double ra = spans[i0].ra, rb = spans[i1].rb;
+                            const double e0 = spans[i0].a0 - ra, e1 = spans[i1].a1 + rb;
+                            const double gl = std::min(up + kFootGutterLift, kRoadSurfaceLift);
+                            const double g0 = za + gl - grade * ra, g1 = zb + gl + grade * rb;
+                            fb.put(footBox(f, e0, e1, gLo, gHi, g0, g1, std::min(g0, g1) - 0.05, fb.id(st.id, "gut"),
+                                           st.id, "gutter"),
+                                   RoadTint::Gutter, false, false);
+                            gutters.push_back({e0, e1, g0, grade});
+                            ++rep.gutters;
+                            i0 = i1 + 1;
+                        }
                         // Drop kerbs: a ramp the footway's width from the kerb's top down to the gutter at the
                         // mouth, a tactile strip over its last kFootTactile.
                         for (int r = 0; r < 2; ++r) {
@@ -3718,8 +3850,9 @@ void roadFootways(const std::vector<MassingStreet>& streets, const std::vector<s
                             const double zTop = zAt(r == 0 ? a1 : a0) + lift;
                             const double zFoot = zAt(r == 0 ? a0 : a1) + kRoadSurfaceLift + 0.01;
                             const double za = r == 0 ? zFoot : zTop, zb = r == 0 ? zTop : zFoot;
-                            fb.put(footBox(f, a0, a1, tLo, tHi, za, zb, lowest(a0, a1) - kFootUnder, fb.id(st.id, "ramp"),
-                                           st.id, "footway"),
+                            // Its underside under the ground at its high end too (the box is as deep all along).
+                            fb.put(footBox(f, a0, a1, tLo, tHi, za, zb, lowest(a0, a1) - kFootUnder - std::fabs(zb - za),
+                                           fb.id(st.id, "ramp"), st.id, "footway"),
                                    RoadTint::Footway, true, true);
                             ++rep.ramps;
                             const double c0 = r == 0 ? a0 : a1 - kFootTactile, c1 = r == 0 ? a0 + kFootTactile : a1;
@@ -3737,9 +3870,15 @@ void roadFootways(const std::vector<MassingStreet>& streets, const std::vector<s
                         for (double s = (std::floor(s0 / kFootDrainEvery) + 0.5) * kFootDrainEvery; s < s1 - 1.0;
                              s += kFootDrainEvery) {
                             if (s < s0 + 1.0) continue;
-                            const double z = zAt(s) + kRoadSurfaceLift + kFootSkin;
-                            fb.put(footBox(f, s - 0.3, s + 0.3, gLo, gHi, z, z, z - 0.03, fb.id(st.id, "drain"), st.id,
-                                           "drain"),
+                            // On its gutter strip's own line and grade (none there: a ramp's stretch, no grate).
+                            const GutterLine* gt = nullptr;
+                            for (const GutterLine& q : gutters)
+                                if (s - 0.3 >= q.a0 - 1e-9 && s + 0.3 <= q.a1 + 1e-9) gt = &q;
+                            if (gt == nullptr) continue;
+                            const double z = gt->z0 + gt->grade * (s - gt->a0) + kFootSkin;
+                            const double dz = gt->grade * 0.3;
+                            fb.put(footBox(f, s - 0.3, s + 0.3, gLo, gHi, z - dz, z + dz, z - std::fabs(dz) - 0.03,
+                                           fb.id(st.id, "drain"), st.id, "drain"),
                                    RoadTint::Drain, false, false);
                             ++rep.drains;
                         }

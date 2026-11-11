@@ -251,23 +251,216 @@ TEST_CASE("stand-ins: a house roof's halves meet at the ridge, pitched 25-35 deg
         }
         // A positive roll lifts a part's +y edge (its inner one on the y < 0 half), so that half falls outward.
         CHECK(left.roll > 0.f);
-        // The gable infill: a 45-degree cube whose top corner stays under the ridge.
+        // The gable infill: a prism from the eaves up to the ridge over the box's footprint, nothing of it under them.
         const StandInPart& gable = parts[2];
-        CHECK(gable.roll == doctest::Approx(45.0));
-        CHECK(gable.dz + gable.sz * std::sqrt(0.5) == doctest::Approx(rise).epsilon(1e-4));
+        CHECK(gable.shape == StandInShape::Gable);
+        CHECK(gable.roll == 0.f);
+        CHECK(gable.dz - 0.5 * gable.sz == doctest::Approx(0.0).epsilon(1e-4));
+        CHECK(gable.dz + 0.5 * gable.sz == doctest::Approx(rise).epsilon(1e-4));
         CHECK(gable.sx == doctest::Approx(p.len));
+        CHECK(gable.sy == doctest::Approx(p.wid));
     }
 }
 
-TEST_CASE("stand-ins: a back house is one 45-degree gable over the box's width") {
+TEST_CASE("stand-ins: a back house is one gable prism on its eaves, its ridge along the longer side") {
     StandInPoint p = at(StandInKind::HouseBack, 750, 600);
     p.len = 10.0;
     p.wid = 8.0;
+    p.pitch = 30.0;
     StandInPart parts[kStandInPartsMax];
     REQUIRE(standInParts(p, parts) == 1);
-    CHECK(parts[0].roll == doctest::Approx(45.0));
-    // Its diamond's half diagonal is half the width: the gable spans the box exactly.
-    CHECK(parts[0].sy * std::sqrt(0.5) == doctest::Approx(4.0));
+    CHECK(parts[0].shape == StandInShape::Gable);
+    CHECK(parts[0].roll == 0.f);
+    CHECK(parts[0].yaw == doctest::Approx(0.0));
+    CHECK(parts[0].sx == doctest::Approx(10.0));
+    CHECK(parts[0].sy == doctest::Approx(8.0));
+    CHECK(parts[0].sz == doctest::Approx(4.0 * std::tan(30.0 * kDeg)));
+    CHECK(parts[0].dz - 0.5 * parts[0].sz == doctest::Approx(0.0));
+
+    // The alley house of round 10 (6.1 m along its table ridge, 13.2 m across): the ridge turns to the long side, so
+    // the gable is 2 m over the eaves, not 6.6 m, and its footprint is still the box's.
+    StandInPoint narrow = at(StandInKind::HouseBack, 750.066, 446.25);
+    narrow.len = 6.133;
+    narrow.wid = 13.167;
+    narrow.pitch = 34.3;
+    REQUIRE(standInParts(narrow, parts) == 1);
+    CHECK(parts[0].yaw == doctest::Approx(90.0));
+    CHECK(parts[0].sx == doctest::Approx(13.167));
+    CHECK(parts[0].sy == doctest::Approx(6.133));
+    CHECK(parts[0].sz == doctest::Approx(0.5 * 6.133 * std::tan(34.3 * kDeg)));
+    CHECK(parts[0].sz < 2.2f);
+    const StandInBounds b = standInBounds(narrow, parts[0]);
+    CHECK(b.bottom == doctest::Approx(0.0));
+    // A steep table pitch is held at 40 degrees.
+    narrow.pitch = 60.0;
+    standInParts(narrow, parts);
+    CHECK(parts[0].sz == doctest::Approx(0.5 * 6.133 * std::tan(40.0 * kDeg)));
+}
+
+TEST_CASE("stand-ins: no roof part reaches under its eaves by more than the overhang") {
+    for (int i = 0; i < 60; ++i) {
+        StandInPoint p = at(i % 2 == 0 ? StandInKind::House : StandInKind::HouseBack, 700 + 3.7 * i, 400 + 5.1 * i);
+        p.len = 5.0 + 0.4 * i;
+        p.wid = 22.0 - 0.3 * i;
+        p.pitch = i % 3 == 0 ? 0.0 : 15.0 + 0.5 * i;
+        p.rot = 15.0 * i;
+        StandInPart parts[kStandInPartsMax];
+        const std::size_t n = standInParts(p, parts);
+        for (std::size_t k = 0; k < n; ++k) {
+            CAPTURE(i);
+            CAPTURE(k);
+            CHECK(standInBounds(p, parts[k]).bottom >= -kStandInEaveDrop);
+        }
+    }
+}
+
+TEST_CASE("stand-ins: the gable mesh is a closed prism in the unit box, wound outward") {
+    StandInCanopyMesh m;
+    standInGableMesh(m);
+    REQUIRE(m.positions.size() == 18);
+    REQUIRE(m.triangles.size() == 24);
+    REQUIRE(m.normals.size() == 24);
+    CHECK(m.slots.size() == 8);
+    CHECK(m.vertexNormals.empty());
+    double volume = 0.0;
+    for (std::size_t t = 0; t < m.triangles.size(); t += 3) {
+        const float* a = &m.positions[3 * m.triangles[t]];
+        const float* b = &m.positions[3 * m.triangles[t + 1]];
+        const float* c = &m.positions[3 * m.triangles[t + 2]];
+        // The signed volume under each face: positive in all when every face winds outward.
+        volume += (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0;
+        // Its normal turns away from the prism's middle (0, 0, -1/6).
+        const double mid[3] = {(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0, (a[2] + b[2] + c[2]) / 3.0 + 1.0 / 6.0};
+        CHECK(m.normals[t] * mid[0] + m.normals[t + 1] * mid[1] + m.normals[t + 2] * mid[2] > 0.0);
+    }
+    CHECK(volume == doctest::Approx(0.5)); // half the unit box
+    for (std::size_t i = 0; i < m.positions.size(); ++i) CHECK(std::abs(m.positions[i]) <= 0.5f);
+}
+
+TEST_CASE("stand-ins: a canopy's vertex normals are unit, outward and round each clump") {
+    for (std::size_t v = 0; v < kStandInCanopyVariants; ++v) {
+        StandInCanopyMesh m;
+        REQUIRE(standInCanopyMesh(v, m));
+        REQUIRE(m.vertexNormals.size() == m.positions.size());
+        for (std::size_t i = 0; i < m.vertexNormals.size(); i += 3) {
+            const double len = std::sqrt(m.vertexNormals[i] * m.vertexNormals[i] + m.vertexNormals[i + 1] * m.vertexNormals[i + 1] +
+                                         m.vertexNormals[i + 2] * m.vertexNormals[i + 2]);
+            CHECK(len == doctest::Approx(1.0).epsilon(1e-3));
+        }
+        // Each corner's normal leans the way its triangle faces, and differs from it somewhere (the shading is round).
+        std::size_t differ = 0;
+        for (std::size_t t = 0; t < m.triangles.size(); t += 3) {
+            for (std::size_t k = 0; k < 3; ++k) {
+                const float* n = &m.vertexNormals[3 * m.triangles[t + k]];
+                const double dot = n[0] * m.normals[t] + n[1] * m.normals[t + 1] + n[2] * m.normals[t + 2];
+                if (m.slots[t / 3] == 0) CHECK(dot > 0.3);
+                differ += dot < 0.999 ? 1 : 0;
+            }
+        }
+        CHECK(differ > m.triangles.size() / 2);
+    }
+}
+
+TEST_CASE("stand-ins: the corridor rule: nothing stands in a street's or an alley's clear way") {
+    // An alley 3 m wide up x 745.5 (no pavements: all of it is kept clear) and a 12 m street with 3 m pavements along y 400.
+    // The canal's row (no width, shorter than the header) is left out, as a road table's is.
+    const char* table =
+        "# streets\n"
+        "id,kind,width_m,pts,pavement_m,note\n"
+        "SP,alley,3.0,745.5:423.5;745.5:622.5,0,x\n"
+        "ST,street,12,700:400:8.5;760:400;800:440,3.0\n"
+        "CN,canal,,600:0;600:900\n"
+        "WET,canal,10,600:0;600:900,0\n";
+    std::vector<StandInCorridor> cor;
+    std::vector<std::string> ids;
+    std::string error;
+    REQUIRE(importStandInCorridors(table, cor, &ids, "canal", &error));
+    REQUIRE(cor.size() == 3);
+    REQUIRE(ids.size() == 3);
+    CHECK(ids[0] == "SP");
+    CHECK(ids[2] == "ST");
+    CHECK(cor[0].half == doctest::Approx(1.5));
+    CHECK(cor[1].half == doctest::Approx(3.0)); // the carriageway's half: the pavements may hold trees
+    CHECK(cor[2].street == 1);
+    CHECK(cor[2].bx == doctest::Approx(800.0));
+    std::vector<StandInCorridor> none;
+    CHECK_FALSE(importStandInCorridors("id,kind,pts\nA,lane,1:2;3:4\n", none, nullptr, {}, &error));
+    CHECK(error.find("line 1") != std::string::npos);
+    CHECK_FALSE(importStandInCorridors("id,width_m,pts\nA,4,1:2;x:4\n", none, nullptr, {}, &error));
+    CHECK(error.find("line 2") != std::string::npos);
+    CHECK_FALSE(importStandInCorridors("# nothing\n", none, nullptr, {}, &error));
+    CHECK(none.empty());
+    const StandInCorridorSpec spec;
+
+    // The back house on the alley's east side (its wall on the alley's edge, x 747): clear, with its eaves 4.2 m up.
+    std::vector<StandInPoint> pts;
+    StandInPoint house = at(StandInKind::HouseBack, 750.066, 446.25);
+    house.len = 6.133;
+    house.wid = 13.167;
+    house.z = 12.83;
+    house.hasZ = true;
+    pts.push_back(house);
+    std::vector<double> foot = {12.83 - 8.63};
+    StandInCorridorHit hits[8];
+    CHECK(standInCorridorCheck(pts.data(), foot.data(), pts.size(), cor.data(), cor.size(), spec, hits, 8) == 0);
+    // The same roof on the ground (a row whose eaves came out at the ground's height) and 1 m into the alley: rejected.
+    pts[0].x -= 1.0;
+    foot[0] = 0.0;
+    REQUIRE(standInCorridorCheck(pts.data(), foot.data(), pts.size(), cor.data(), cor.size(), spec, hits, 8) == 1);
+    CHECK(hits[0].point == 0);
+    CHECK(hits[0].corridor == 0);
+    CHECK(hits[0].depth == doctest::Approx(1.0).epsilon(0.01));
+    // Up on its eaves again it hangs clear, even over the alley.
+    foot[0] = 4.2;
+    CHECK(standInCorridorCheck(pts.data(), foot.data(), pts.size(), cor.data(), cor.size(), spec, hits, 8) == 0);
+
+    // Trees: on the street's pavement (4.5 m off its centre line) clear, though the crown spreads over the
+    // carriageway; in the carriageway, or in the alley, rejected by the trunk alone (one hit a tree).
+    pts.clear();
+    StandInPoint tree = at(StandInKind::StreetTree, 730.0, 404.5);
+    tree.canopy = 6.0;
+    pts.push_back(tree);
+    tree.y = 402.0;
+    pts.push_back(tree);
+    tree.x = 745.5;
+    tree.y = 500.0;
+    pts.push_back(tree);
+    tree.x = 600.0; // in the canal's row, which is left out
+    pts.push_back(tree);
+    REQUIRE(standInCorridorCheck(pts.data(), nullptr, pts.size(), cor.data(), cor.size(), spec, hits, 8) == 2);
+    CHECK(hits[0].point == 1);
+    CHECK(hits[0].part == 0);
+    CHECK(hits[0].corridor == 1);
+    CHECK(hits[1].point == 2);
+    CHECK(hits[1].corridor == 0);
+    // The count goes on past the room for hits; null hits only count.
+    CHECK(standInCorridorCheck(pts.data(), nullptr, pts.size(), cor.data(), cor.size(), spec, hits, 1) == 2);
+    CHECK(standInCorridorCheck(pts.data(), nullptr, pts.size(), cor.data(), cor.size(), spec, nullptr, 0) == 2);
+    CHECK(standInCorridorCheck(nullptr, nullptr, 0, cor.data(), cor.size(), spec, hits, 8) == 0);
+
+    // A glass tower whose corner crosses the street's diagonal leg, and one whose footprint holds an alley's end.
+    pts.clear();
+    StandInPoint tower = at(StandInKind::GlassTower, 795.0, 410.0);
+    tower.len = 30.0;
+    tower.wid = 30.0;
+    tower.floors = 30;
+    pts.push_back(tower);
+    CHECK(standInCorridorCheck(pts.data(), nullptr, pts.size(), cor.data(), cor.size(), spec, hits, 8) >= 1);
+    pts[0].x = 745.5;
+    pts[0].y = 520.0;
+    REQUIRE(standInCorridorCheck(pts.data(), nullptr, pts.size(), cor.data(), cor.size(), spec, hits, 8) >= 1);
+    CHECK(hits[0].depth == doctest::Approx(1.5)); // the centre line runs through it: the whole half width
+
+    // The depth itself: a 2 x 2 box turned 45 degrees, its corner 0.5 m short of the alley's centre line.
+    StandInBounds b;
+    b.cx = 745.5 + 0.5 + std::sqrt(2.0);
+    b.cy = 500.0;
+    b.hx = 1.0;
+    b.hy = 1.0;
+    b.yaw = 45.0;
+    CHECK(standInCorridorDepth(b, cor[0]) == doctest::Approx(1.0));
+    b.cx += 5.0;
+    CHECK(standInCorridorDepth(b, cor[0]) < 0.0);
 }
 
 TEST_CASE("stand-ins: glass towers are 30-50 floors on 30-45 m, landmark 250-300 m, slender") {

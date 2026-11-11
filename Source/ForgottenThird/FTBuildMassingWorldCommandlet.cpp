@@ -2,6 +2,7 @@
 #include "FTBuildRoads.h"
 #include "FTBuildBackdrop.h"
 #include "FTBuildStandIns.h"
+#include "FTMaterialCheck.h"
 #include "FTBuildPlinths.h"
 #include "FTBuildShopInteriors.h"
 #include "FTKitGlass.h"
@@ -83,7 +84,7 @@ namespace
 constexpr int32 kLandSubsections = 2;
 constexpr int32 kLandSubsectionQuads = 63;
 // The sea's plane reaches this far (m) east of its west edge, and as far each way along the square.
-constexpr double kSeaReach = 20000.0;
+constexpr double kSeaReach = 60000.0;
 // How far (cm) the entry and a goal may lie from the navmesh and still count as on it.
 const FVector kNavProjectExtent(300.0, 300.0, 600.0);
 // The material slot of a sloped box's mesh.
@@ -2251,7 +2252,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 	int32 Named = 0, Kit = 0, Sloped = 0, Nudged = 0, Skipped = 0, BoxesLeft = 0;
 	int32 NavObstacles = 0, NullStrips = 0;
-	// Every flat box, piece of dressing, placed mesh and road solid below is an instance of its 250 m cell
+	// Every flat box, piece of dressing, placed mesh and road solid below is an instance of its cell
 	// (FTCellInstancer.h), made at once before the navmesh; sloped boxes, the hidden walls and the sea stay actors.
 	FFTCellInstancer Cells(World, Spawn);
 	// The boxes wearing windows, by box (their instances): their data is set once the frontage has said which faces
@@ -2429,6 +2430,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 	const ftcore::MassingGround Ground{Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX), static_cast<size_t>(Field.SamplesY), Field.Spacing,
 		Field.OriginX, Field.OriginY};
+	Cells.SetGround(Ground, Side); // walked pieces lying on the ground cast no shadow (FTCellInstancer.h)
 	// The room the dressing takes: the frontage and the props keep out of it.
 	std::vector<ftcore::MassingFoot> Taken;
 	// A box of dressing as the engine's cube, wearing its surface and colliding as the boxes do, tilted to its grade when it
@@ -2884,7 +2886,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 
 	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, kMassingSun);
 	FTBackdrop::Haze(World);
-	FTBackdrop::Dress(Package, Cells, Base, Hill, Side, Boxes);
+	FTBackdrop::Dress(Package, Cells, Base, Hill, Side, Boxes, WindowLook[static_cast<int32>(ftcore::MassingLookSurface::BuildingC)]);
 	if (!FTStandIns::Place(Package, Cells, Base, Hill, Side))
 	{
 		return 1;
@@ -3048,6 +3050,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: Instancer: of the solid, %d hidden colliders under kit meshes; %d pieces fell back to "
 			"actors (their materials don't draw instanced); %d sloped boxes stay actors."), PerKind(EFTCellKind::Hidden), CellStats.FallbackActors,
 			Sloped);
+	}
+	if (!FTMaterialCheck::Run(World)) // -MaterialCheck: no null or default material on anything drawn, or no map
+	{
+		return 1;
 	}
 	if (!KitRows.IsEmpty())
 	{

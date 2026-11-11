@@ -30,6 +30,10 @@ inline constexpr double kRoadKerbWide = 0.15;       // m: the kerb stone's top
 inline constexpr double kRoadCrossfall = 0.02;      // the carriageway falls this much per m from its crown to each kerb
 inline constexpr double kRoadSurfaceLift = 0.03;    // m: the gutter over the road's ground (no z-fighting)
 inline constexpr double kRoadSlabDepth = 0.3;       // m: every surface slab's depth under its top
+// A junction corner's pavement pieces (the ring behind a rounded kerb, a bend's outer ring, the apron) are this deep:
+// the surface master tells them by it and lays their tiles on the world's grid, so the pieces of a fan share one square
+// grid (StreetSurfaceSpec::cornerSlabM). No straight pavement is within 8 mm of it.
+inline constexpr double kRoadCornerPaveDeep = kRoadSlabDepth + 0.011;
 inline constexpr double kRoadMaxGrade = 0.08;       // the steepest grade along a road
 inline constexpr double kRoadKerbClear = 0.5;       // m: nothing stands nearer the kerb face than this
 inline constexpr double kRoadCornerRadius = 6.0;    // m: a road-to-road corner's kerb radius, at least
@@ -350,7 +354,12 @@ struct RoadFace {
 //   - step: it overlaps another kerb or pavement piece by more than 15 cm with their tops more than kRoadFaceMax (and
 //     less than 2 m) apart there.
 // One row per piece and fault. Junction mouths and lane mouths cut the kerbs and pavements, so a built road has none.
+// Then roadCrossingOverlaps' rows, so the road check rejects them with the faces.
 FTCORE_API std::vector<RoadFace> roadKerbFaces(const RoadBuild& build, const RoadGraph* graph);
+// Two crossings (build.crossings) whose quads overlap in plan by more than 5 cm: one row per pair, piece the first's
+// id, fault "crossing <the other's id>", the point between their centres. A scramble's two diagonals (ids -ZD, the same
+// junction) cross by design and are not a pair: the second's bars stop at the first's band (roadNetBuild).
+FTCORE_API std::vector<RoadFace> roadCrossingOverlaps(const RoadBuild& build);
 // The boxes of `kerbs` (massingKerbs' pieces of the other streets) with a lane or carriageway fault against `build`:
 // -Kerbs leaves them out where those streets cross a road. Indices, in order.
 FTCORE_API std::vector<std::size_t> roadKerbsInCarriageway(const RoadBuild& build, const RoadGraph* graph,
@@ -431,7 +440,8 @@ struct RoadNetReport {
 // ground lets the slab sit (report: aprons).
 // A scramble (a signalised junction a street's `scramble` names): its pedestrian signals on phase W (all-walk) and up
 // to two diagonal zebras (ids <junction>-ZD<n>, kRoadZebraWide wide) between its corners and straight kerbs across the
-// fill, each 25-65 degrees to every arm, laid flat over the fill in pieces; kerbs as any junction's.
+// fill, each 25-65 degrees to every arm, in pieces tilted to the fill and 6 mm over it; where the two cross, the first's
+// bars show and the second's stop at its band; kerbs as any junction's.
 // Last, the kerb and pavement pieces roadKerbFaces would find across its own lanes or in its own carriageway (two
 // junctions close together) are left out (report: pruned).
 FTCORE_API void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround& ground, RoadBuild& out,
@@ -557,7 +567,9 @@ struct RoadFootStreet {
 };
 struct RoadFootReport {
     std::size_t vehicle = 0, pedestrian = 0, skipped = 0; // skipped: no-class rows and the road network's own rows
-    std::size_t pieces = 0;      // footway pieces (each with a kerb and a gutter)
+    std::size_t pieces = 0;      // footway pieces (each with a kerb)
+    std::size_t gutters = 0;     // gutter strips: one runs on under several pieces where the ground lets it
+    std::size_t hidden = 0;      // pieces whose slab is left out, the ground standing over all of it (the kerb stays)
     std::size_t ramps = 0, tactiles = 0, drains = 0, bollards = 0, paving = 0;
     std::size_t mouths = 0;      // gaps where another vehicle street's carriageway meets one (drop kerbs both sides)
     std::size_t buried = 0;      // footway pieces whose wall-side ground stands over their top by 5 cm or more
@@ -569,9 +581,10 @@ struct RoadFootReport {
 // Builds the footways (appends to `out`: solids, footways, laneWays, furniture for the bollards). `streets` is the
 // massing streets table; rows named in `skipIds` (the road network's own streets) are skipped; `net` (or null) is the
 // road network's build, whose bands the footways stop short of. Each vehicle street, segment by segment: on each side
-// with a footway (roadFootSection), a kerb stone kRoadKerbRise over the gutter (kinds kerb), the footway slab level
+// with a footway (roadFootSection), a kerb stone kRoadKerbRise + kRoadSurfaceLift over the ground (kinds kerb), the footway slab level
 // with the kerb's top back to the wall line (kind footway, tint Footway), a gutter strip kFootGutter wide in the
-// carriageway kRoadSurfaceLift over the ground (kind gutter, tint Gutter) with a drain grate every kFootDrainEvery,
+// carriageway flush with it (12 mm over the ground under it; kind gutter, tint Gutter, matt) with a drain grate every
+// kFootDrainEvery on its line,
 // all following the ground read along the kerb line every kFootStep in pieces fitted within kFootFit (kFootLongest at
 // most), outer corners of bends lapped, inner ones cut back. A sample is left out within another vehicle street's
 // carriageway (a mouth: the last kFootRamp of footway each side becomes a drop-kerb ramp down to the gutter, with a

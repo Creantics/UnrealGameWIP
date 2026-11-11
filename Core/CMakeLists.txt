@@ -204,6 +204,16 @@ else()
     target_compile_options(ftcore_pocketcheck PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
+# ftcore_standincheck: the stand-ins' corridor rule on the point and street tables (an offline build guard).
+add_executable(ftcore_standincheck tools/ftcore_standincheck.cpp)
+target_link_libraries(ftcore_standincheck PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_standincheck PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_standincheck PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_standincheck PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
 # ftcore_frontcount: counts what a frontage table places on a map's boxes (an offline budget estimate).
 add_executable(ftcore_frontcount tools/ftcore_frontcount.cpp)
 target_link_libraries(ftcore_frontcount PRIVATE ftcore ftcore_warnings)
@@ -264,6 +274,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_frame_stats.cpp
         tests/test_light_picker.cpp
         tests/test_night_look.cpp
+        tests/test_backdrop_seat.cpp
         tests/test_day_shade.cpp
         tests/test_shop_front.cpp
         tests/test_world_clock.cpp

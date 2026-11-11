@@ -268,7 +268,7 @@ TEST_CASE("lit share: rises up the building, capped, Legacy flat") {
     }
     CHECK(windowLitShare(spec, WindowType::Apartment, base, spec.upperLit, 1u, 12u) == doctest::Approx(base));
     CHECK(last == doctest::Approx(std::min(base * (1.0f + spec.upperLit), spec.litMax)));
-    CHECK(last > base * 1.5f);
+    CHECK(last > base * 1.1f);
     CHECK(windowLitShare(spec, WindowType::Apartment, 0.8f, 2.0f, 11u, 12u) == doctest::Approx(spec.litMax));
     CHECK(windowLitShare(spec, WindowType::Legacy, base, spec.upperLit, 11u, 12u) == base);
     // Two storeys or one: no rise.
@@ -423,9 +423,9 @@ TEST_CASE("r10 HLSL: true ray, covers, the Parallax switch and the shop hole are
     CHECK(win.find("rxMax") == std::string::npos);
     CHECK(win.find("viewMax") == std::string::npos);
     CHECK(windowFacadeFaceHlsl().find("KerbOut") != std::string::npos);
-    // Night tints and lit shares stay as round 8 set them.
+    // Night tints stay as round 8 set them; round 11 lights half as many rooms again.
     CHECK(win.find(windowTintTableHlsl()) != std::string::npos);
-    CHECK(WindowFacadeSpec{}.litShare == doctest::Approx(0.45f));
+    CHECK(WindowFacadeSpec{}.litShare == doctest::Approx(0.45f * 1.5f).epsilon(0.02));
 }
 
 TEST_CASE("r10 shop interiors: a shell and furniture behind every bay, shallow, within the face") {
@@ -439,7 +439,8 @@ TEST_CASE("r10 shop interiors: a shell and furniture behind every bay, shallow, 
             const WindowFaceGrid grid = windowFaceGrid(windowGridFor(spec, ty), fw, fh,
                                                        windowWidthFor(spec, ty, seed, spec.base.windowWidth));
             REQUIRE(grid.bays > 0u);
-            CHECK(n >= grid.bays * 5u);
+            CHECK(n >= grid.bays * 2u + 3u);
+            CHECK(n <= grid.bays * 6u + 3u);
             CHECK(n <= grid.bays * kWindowShopPiecesPerBay);
             std::uint32_t backs = 0;
             for (std::size_t i = 0; i < n; ++i) {
@@ -515,4 +516,135 @@ TEST_CASE("r10 kerbs and piece boxes: kerbed wide streets only; pieces sit insid
     const MassingBox s = windowShopPieceBox(t, 0, 3.0, p);
     CHECK(s.cx == doctest::Approx(-3.5));
     CHECK(s.cy == doctest::Approx(4.5));
+}
+
+// ---- Round 11: capped night light, shop lights, lit clusters, fewer shop pieces ----
+
+TEST_CASE("r11 soft cap: never over the cap, small lights nearly whole, order kept") {
+    const WindowFacadeSpec spec;
+    float last = 0.0f;
+    for (float lum = 0.0f; lum < 50.0f; lum += 0.01f + lum * 0.1f) {
+        const float out = lum * windowGlowSoftCap(lum, spec.shopGlowCap);
+        CHECK(out < spec.shopGlowCap);
+        CHECK(out >= last);
+        last = out;
+    }
+    CHECK(0.01f * windowGlowSoftCap(0.01f, spec.shopGlowCap) > 0.0095f);
+    CHECK(windowGlowSoftCap(1.0f, 0.0f) < 1e-3f);
+    // The brightest things a facade lights: white goods in a full shop, a frosted window, a sign.
+    CHECK(spec.shopGlowCap < 0.5f);
+    CHECK(spec.glowCap < spec.shopGlowCap);
+    CHECK(spec.signGlowCap < 0.5f);
+    CHECK(spec.shopGlow * windowGlowSoftCap(spec.shopGlow, spec.shopGlowCap) > 0.5f * spec.shopGlowCap);
+}
+
+TEST_CASE("r11 shop lights: about a fifth dark, a quarter dim, every tint used, green and pink few") {
+    const WindowFacadeSpec spec;
+    int dark = 0, dim = 0, all = 0;
+    int tints[kWindowShopTints] = {};
+    for (std::uint32_t seed = 1; seed < 60; ++seed)
+        for (std::uint32_t c = 0; c < 40; ++c) {
+            const WindowShopLight l = windowShopLight(spec, seed * 7919u, c, 0.8f);
+            CHECK(l.lit == windowShopLit(seed * 7919u, c, 0.8f));
+            CHECK(l.tint < kWindowShopTints);
+            ++all;
+            dark += l.lit ? 0 : 1;
+            dim += (l.lit && l.level < 1.0f) ? 1 : 0;
+            ++tints[l.tint];
+            const float code = windowShopLightCode(l);
+            if (!l.lit) {
+                CHECK(code == 0.0f);
+            } else {
+                // As the modelled interiors' master reads it back.
+                CHECK(code > 0.5f);
+                CHECK(static_cast<std::uint32_t>(std::floor(code) - 1.0f) == l.tint);
+                CHECK((code - std::floor(code) > 0.25f) == (l.level < 1.0f));
+            }
+        }
+    CHECK(static_cast<float>(dark) / static_cast<float>(all) == doctest::Approx(0.2f).epsilon(0.15));
+    CHECK(static_cast<float>(dim) / static_cast<float>(all) == doctest::Approx(0.25f).epsilon(0.15));
+    for (int n : tints) CHECK(n * static_cast<int>(kWindowShopTints) > all / 2);
+    // Green and pink: the last two, one in eight each; no tint a pure colour.
+    CHECK(kWindowShopTintRgb[6][1] > kWindowShopTintRgb[6][0]);
+    CHECK(kWindowShopTintRgb[7][0] > kWindowShopTintRgb[7][1]);
+    for (const auto& t : kWindowShopTintRgb)
+        for (float ch : t) {
+            CHECK(ch >= 0.4f);
+            CHECK(ch <= 1.0f);
+        }
+    CHECK(spec.shopDimLevel < 0.5f);
+}
+
+TEST_CASE("r11 lit clusters: one factor a 3 x 2 cluster, mean 1, never a whole facade") {
+    const WindowFacadeSpec spec;
+    double sum = 0.0;
+    int n = 0, low = 0, high = 0;
+    for (std::uint32_t seed = 1; seed < 80; ++seed)
+        for (std::uint32_t st = 0; st < 12; st += 2)
+            for (std::uint32_t c = 0; c < 30; c += 3) {
+                const float f = windowLitCluster(spec, seed * 977u, st, c);
+                CHECK(f >= 1.0f - spec.litCluster);
+                CHECK(f <= 1.0f + spec.litCluster);
+                CHECK(windowLitCluster(spec, seed * 977u, st + 1u, c + 2u) == f);
+                sum += static_cast<double>(f);
+                ++n;
+                low += f < 0.7f ? 1 : 0;
+                high += f > 1.3f ? 1 : 0;
+            }
+    CHECK(sum / n == doctest::Approx(1.0).epsilon(0.05));
+    CHECK(low * 6 > n);
+    CHECK(high * 6 > n);
+    CHECK(spec.litMax < 0.9f);
+    // The darkest cluster of the top storey still lights some windows; the brightest leaves some dark.
+    CHECK(spec.litShare * (1.0f - spec.litCluster) > 0.2f);
+    CHECK(std::min(spec.litShare * (1.0f + spec.upperLit) * (1.0f + spec.litCluster), spec.litMax) < 0.9f);
+}
+
+TEST_CASE("r11 HLSL: caps, shop lights and clusters are wired in both masters") {
+    const std::string win = windowFacadeHlsl(WindowFacadeSpec{});
+    for (const char* name : {"ShopGlowCap", "GlowCap", "SignGlowCap", "float3 lightTint =", "float clus =", "* clus,",
+                             "night = night / (1.0 + dot(night, kLum) / capG)", "signGlow = signGlow / (1.0 +",
+                             "frostGlow = frostGlow / (1.0 +"})
+        CHECK_MESSAGE(win.find(name) != std::string::npos, name);
+    CHECK(win.find(windowShopTintTableHlsl()) != std::string::npos);
+    CHECK(win.find("6.0 * Night") == std::string::npos);
+    const std::string model = windowShopModelGlowHlsl();
+    for (const char* name : {"Color.rgb * ShopDay", "NightFloor", "ShopGlowCap", "DimLevel", "shopTints[t]", "Code"})
+        CHECK_MESSAGE(model.find(name) != std::string::npos, name);
+    CHECK(model.find(windowShopTintTableHlsl()) == 0u);
+}
+
+TEST_CASE("r11 shop pieces: 2 bays + 3 of shell, a back wall a bay, fewer than round 10; half the buildings modelled") {
+    const WindowFacadeSpec spec;
+    WindowShopPiece buf[kWindowShopPiecesPerBay * 16];
+    std::size_t pieces = 0, bays = 0;
+    for (std::uint32_t t = 1; t < kWindowTypes; ++t)
+        for (std::uint32_t seed = 3; seed < 400; seed += 7) {
+            const WindowType ty = static_cast<WindowType>(t);
+            const std::size_t n = windowShopInterior(spec, ty, seed, 17.0f, 9.0f, 12.0f, 0.8f, buf, sizeof buf / sizeof buf[0]);
+            const WindowFaceGrid grid = windowFaceGrid(windowGridFor(spec, ty), 17.0f, 9.0f,
+                                                       windowWidthFor(spec, ty, seed, spec.base.windowWidth));
+            std::size_t shell = 0, faceLong = 0;
+            for (std::size_t i = 0; i < n; ++i) {
+                const WindowShopPiece& p = buf[i];
+                CHECK(p.part != WindowShopPart::Shelf);
+                shell += p.part == WindowShopPart::Shell ? 1u : 0u;
+                const bool wide = p.along1 - p.along0 > 1.5f * grid.bayWidth;
+                faceLong += wide ? 1u : 0u;
+                CHECK((p.light > 0.5f) == p.lit);
+                if (!wide && p.part == WindowShopPart::Shell)
+                    CHECK(p.light == windowShopLightCode(windowShopLight(spec, seed, p.column, 0.8f)));
+            }
+            CHECK(shell == 2u * grid.bays + 3u);
+            if (grid.bays > 1u) CHECK(faceLong == 2u);
+            pieces += n;
+            bays += grid.bays;
+        }
+    // Round 10 laid 4 shell pieces and about 4.5 fittings a bay.
+    CHECK(static_cast<double>(pieces) / static_cast<double>(bays) < 6.0);
+    int modelled = 0;
+    for (std::uint32_t seed = 0; seed < 4000; ++seed) modelled += windowShopModelled(seed * 31u + 5u, spec.shopModelShare) ? 1 : 0;
+    CHECK(modelled == doctest::Approx(4000.0 * spec.shopModelShare).epsilon(0.08));
+    CHECK(!windowShopModelled(17u, 0.0f));
+    CHECK(windowShopModelled(17u, 1.0f));
 }

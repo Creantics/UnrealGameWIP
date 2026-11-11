@@ -183,17 +183,22 @@ void houseRoof(Emit& e, const Seed& r) {
         const double zc = rise - 0.5 * run * t + 0.5 * thick / std::cos(pitch * kDeg);
         e.add(StandInShape::Cube, paint, StandInCollide::None, 0, yc, zc, len + 2.0 * over, slab, thick, 0.0, -side * pitch);
     }
-    // A cube rolled 45 degrees whose top corner reaches the ridge: the gables' infill, its lower half inside the box.
-    const double side45 = rise * std::sqrt(2.0);
-    e.add(StandInShape::Cube, StandInPaint::Concrete, StandInCollide::None, 0, 0, 0.0, len, side45, side45, 0.0, 45.0);
+    // The gables' infill: the prism under the halves, standing on the eaves (nothing of it under them, where a kit
+    // mesh smaller than its box would show it).
+    e.add(StandInShape::Gable, StandInPaint::Concrete, StandInCollide::None, 0, 0, 0.5 * rise, len, wid, rise);
 }
 
-// A back house: one cube rolled 45 degrees, its upper half a 45-degree gable over the box's full width.
+// A back house: one gable prism standing on the eaves over the box's footprint. Its ridge runs along the longer side
+// whatever the table says (so the gable spans the shorter one and stays low), pitched as the table gives (15-40 degrees)
+// or 25-35 by seed.
 void houseBack(Emit& e, const Seed& r) {
     const double len = e.p.len > 0.0 ? e.p.len : 9.0;
     const double wid = e.p.wid > 0.0 ? e.p.wid : 8.0;
-    const double side45 = 0.5 * wid * std::sqrt(2.0);
-    e.add(StandInShape::Cube, roofPaint(r.u(2)), StandInCollide::None, 0, 0, 0.0, len, side45, side45, 0.0, 45.0);
+    const double pitch = e.p.pitch > 0.0 ? std::clamp(e.p.pitch, 15.0, 40.0) : 25.0 + 10.0 * r.u(1);
+    const bool turn = wid > len;
+    const double ridge = turn ? wid : len, span = turn ? len : wid;
+    const double rise = 0.5 * span * std::tan(pitch * kDeg);
+    e.add(StandInShape::Gable, roofPaint(r.u(2)), StandInCollide::None, 0, 0, 0.5 * rise, ridge, span, rise, turn ? 90.0 : 0.0);
 }
 
 void glassTower(Emit& e, const Seed& r) {
@@ -723,6 +728,7 @@ bool standInCanopyMesh(std::size_t variant, StandInCanopyMesh& out) {
     out.slots = slots;
     out.triangles.reserve(tris.size());
     out.normals.reserve(tris.size());
+    std::vector<double> vn(pos.size(), 0.0); // per vertex: its triangles' outward normals, each weighted by its area
     for (std::size_t t = 0; t < tris.size(); t += 3) {
         const double* a = &pos[3 * tris[t]];
         const double* b = &pos[3 * tris[t + 1]];
@@ -741,8 +747,235 @@ bool standInCanopyMesh(std::size_t variant, StandInCanopyMesh& out) {
         out.triangles.push_back(flip ? tris[t + 1] : tris[t + 2]);
         const double sign = (flip ? -1.0 : 1.0) / (len > 0.0 ? len : 1.0);
         for (int k = 0; k < 3; ++k) out.normals.push_back(static_cast<float>(n[k] * sign));
+        for (std::size_t corner = 0; corner < 3; ++corner) {
+            for (std::size_t k = 0; k < 3; ++k) vn[3 * tris[t + corner] + k] += n[k] * (flip ? -1.0 : 1.0);
+        }
+    }
+    out.vertexNormals.clear();
+    out.vertexNormals.reserve(vn.size());
+    for (std::size_t i = 0; i < vn.size(); i += 3) {
+        const double len = std::sqrt(vn[i] * vn[i] + vn[i + 1] * vn[i + 1] + vn[i + 2] * vn[i + 2]);
+        // A vertex no triangle uses (none here) points up.
+        out.vertexNormals.push_back(static_cast<float>(len > 0.0 ? vn[i] / len : 0.0));
+        out.vertexNormals.push_back(static_cast<float>(len > 0.0 ? vn[i + 1] / len : 0.0));
+        out.vertexNormals.push_back(static_cast<float>(len > 0.0 ? vn[i + 2] / len : 1.0));
     }
     return true;
+}
+
+void standInGableMesh(StandInCanopyMesh& out) {
+    out.positions = {-0.5f, -0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f, 0.5f, -0.5f, -0.5f, 0.5f, -0.5f, // the floor: 0 1 2 3
+                     -0.5f, 0.f,   0.5f,  0.5f, 0.f,   0.5f};                                          // the ridge: 4 5
+    // Counter-clockwise seen from outside (right-handed).
+    out.triangles = {0, 1, 5, 0, 5, 4,  // the y < 0 slope
+                     2, 3, 4, 2, 4, 5,  // the y > 0 slope
+                     1, 2, 5,           // the +x gable
+                     3, 0, 4,           // the -x gable
+                     0, 3, 2, 0, 2, 1}; // the floor
+    out.slots.assign(out.triangles.size() / 3, 0);
+    out.vertexNormals.clear();
+    out.normals.clear();
+    for (std::size_t t = 0; t < out.triangles.size(); t += 3) {
+        const float* a = &out.positions[3 * out.triangles[t]];
+        const float* b = &out.positions[3 * out.triangles[t + 1]];
+        const float* q = &out.positions[3 * out.triangles[t + 2]];
+        const double u[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const double v[3] = {q[0] - a[0], q[1] - a[1], q[2] - a[2]};
+        const double n[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+        const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        for (double k : n) out.normals.push_back(static_cast<float>(k / len));
+    }
+}
+
+// ---- The corridor rule ----
+
+bool importStandInCorridors(std::string_view csv, std::vector<StandInCorridor>& out, std::vector<std::string>* ids, std::string_view skipKind,
+                            std::string* error) {
+    constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+    enum Col { Id, Kind, Width, Pts, Pavement, Count };
+    const char* const names[Count] = {"id", "kind", "width_m", "pts", "pavement_m"};
+    std::size_t col[Count];
+    std::fill(col, col + Count, kNone);
+    bool haveHeader = false;
+    std::vector<std::string_view> f;
+    std::uint32_t street = 0;
+    std::size_t lineNo = 0, pos = 0;
+    while (pos <= csv.size()) {
+        std::size_t end = csv.find('\n', pos);
+        if (end == std::string_view::npos) end = csv.size();
+        std::string_view line = csv.substr(pos, end - pos);
+        pos = end + 1;
+        ++lineNo;
+        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+        const std::string_view t = trimView(line);
+        if (t.empty() || t.front() == '#') continue;
+        splitLine(line, f);
+        if (!haveHeader) {
+            for (std::size_t k = 0; k < Count; ++k) {
+                for (std::size_t i = 0; i < f.size() && col[k] == kNone; ++i) {
+                    if (equalsNoCase(f[i], names[k])) col[k] = i;
+                }
+            }
+            if (col[Width] == kNone || col[Pts] == kNone) return fail(error, lineNo, "no width_m or pts column");
+            haveHeader = true;
+            continue;
+        }
+        const auto field = [&f, &col](Col k) { return col[k] != kNone && col[k] < f.size() ? f[col[k]] : std::string_view(); };
+        if (!skipKind.empty() && equalsNoCase(field(Kind), skipKind)) continue;
+        if (field(Width).empty()) continue;
+        double width = 0.0, pavement = 0.0;
+        if (!parseNum(field(Width), width) || width <= 0.0) return fail(error, lineNo, "bad width_m");
+        if (!field(Pavement).empty() && !parseNum(field(Pavement), pavement)) return fail(error, lineNo, "bad pavement_m");
+        const double clear = pavement > 0.0 && 2.0 * pavement < width ? width - 2.0 * pavement : width;
+        // The points: x:y[:z] joined by ';'.
+        const std::string_view pts = field(Pts);
+        double px = 0.0, py = 0.0;
+        bool havePrev = false;
+        for (std::size_t p = 0; p < pts.size();) {
+            std::size_t q = pts.find(';', p);
+            if (q == std::string_view::npos) q = pts.size();
+            const std::string_view one = trimView(pts.substr(p, q - p));
+            p = q + 1;
+            if (one.empty()) continue;
+            const std::size_t c1 = one.find(':');
+            if (c1 == std::string_view::npos) return fail(error, lineNo, "a point is x:y");
+            std::size_t c2 = one.find(':', c1 + 1);
+            if (c2 == std::string_view::npos) c2 = one.size();
+            double x = 0.0, y = 0.0;
+            if (!parseNum(one.substr(0, c1), x) || !parseNum(one.substr(c1 + 1, c2 - c1 - 1), y)) return fail(error, lineNo, "a bad point");
+            if (havePrev) {
+                StandInCorridor cor;
+                cor.ax = px;
+                cor.ay = py;
+                cor.bx = x;
+                cor.by = y;
+                cor.half = 0.5 * clear;
+                cor.street = street;
+                out.push_back(cor);
+                if (ids) ids->emplace_back(field(Id));
+            }
+            px = x;
+            py = y;
+            havePrev = true;
+        }
+        ++street;
+    }
+    if (!haveHeader) return fail(error, lineNo, "no header row");
+    return true;
+}
+
+StandInBounds standInBounds(const StandInPoint& p, const StandInPart& part) {
+    // The engine turns a part by its roll (about x), then its pitch (about y), then its yaw: the box round each turn.
+    const double cr = std::abs(std::cos(part.roll * kDeg)), sr = std::abs(std::sin(part.roll * kDeg));
+    const double cp = std::abs(std::cos(part.pitch * kDeg)), sp = std::abs(std::sin(part.pitch * kDeg));
+    const double hx0 = 0.5 * part.sx, hy0 = 0.5 * part.sy, hz0 = 0.5 * part.sz;
+    const double hy1 = hy0 * cr + hz0 * sr;
+    const double hz1 = hy0 * sr + hz0 * cr;
+    const double hz2 = hx0 * sp + hz1 * cp;
+    StandInBounds b;
+    b.cx = p.x + part.dx;
+    b.cy = p.y + part.dy;
+    b.hx = hx0 * cp + hz1 * sp;
+    b.hy = hy1;
+    b.yaw = part.yaw;
+    b.bottom = part.dz - hz2;
+    b.top = part.dz + hz2;
+    return b;
+}
+
+namespace {
+
+double pointToRect(double x, double y, double hx, double hy) {
+    const double dx = std::max(std::abs(x) - hx, 0.0), dy = std::max(std::abs(y) - hy, 0.0);
+    return std::sqrt(dx * dx + dy * dy);
+}
+
+double pointToSegment(double x, double y, double ax, double ay, double bx, double by) {
+    const double ux = bx - ax, uy = by - ay;
+    const double l2 = ux * ux + uy * uy;
+    const double t = l2 > 0.0 ? std::clamp(((x - ax) * ux + (y - ay) * uy) / l2, 0.0, 1.0) : 0.0;
+    const double dx = x - (ax + t * ux), dy = y - (ay + t * uy);
+    return std::sqrt(dx * dx + dy * dy);
+}
+
+// True when the segment a-b passes through the rectangle |x| <= hx, |y| <= hy (a slab clip on each axis).
+bool segmentInRect(double ax, double ay, double bx, double by, double hx, double hy) {
+    double t0 = 0.0, t1 = 1.0;
+    const double a[2] = {ax, ay}, d[2] = {bx - ax, by - ay}, h[2] = {hx, hy};
+    for (int k = 0; k < 2; ++k) {
+        if (std::abs(d[k]) < 1e-12) {
+            if (std::abs(a[k]) > h[k]) return false;
+            continue;
+        }
+        double u0 = (-h[k] - a[k]) / d[k], u1 = (h[k] - a[k]) / d[k];
+        if (u0 > u1) std::swap(u0, u1);
+        t0 = std::max(t0, u0);
+        t1 = std::min(t1, u1);
+        if (t0 > t1) return false;
+    }
+    return true;
+}
+
+} // namespace
+
+double standInCorridorDepth(const StandInBounds& b, const StandInCorridor& c) {
+    // The corridor's centre line in the rectangle's own frame.
+    const double co = std::cos(b.yaw * kDeg), si = std::sin(b.yaw * kDeg);
+    const auto local = [&b, co, si](double x, double y, double& lx, double& ly) {
+        const double dx = x - b.cx, dy = y - b.cy;
+        lx = dx * co + dy * si;
+        ly = -dx * si + dy * co;
+    };
+    double ax = 0.0, ay = 0.0, bx = 0.0, by = 0.0;
+    local(c.ax, c.ay, ax, ay);
+    local(c.bx, c.by, bx, by);
+    if (segmentInRect(ax, ay, bx, by, b.hx, b.hy)) return c.half;
+    double d = std::min(pointToRect(ax, ay, b.hx, b.hy), pointToRect(bx, by, b.hx, b.hy));
+    for (int k = 0; k < 4; ++k) {
+        d = std::min(d, pointToSegment((k & 1) ? b.hx : -b.hx, (k & 2) ? b.hy : -b.hy, ax, ay, bx, by));
+    }
+    return c.half - d;
+}
+
+std::size_t standInCorridorCheck(const StandInPoint* points, const double* footOverGround, std::size_t count, const StandInCorridor* corridors,
+                                 std::size_t corridorCount, const StandInCorridorSpec& spec, StandInCorridorHit* hits, std::size_t hitCap) {
+    if (!points || !corridors) return 0;
+    std::size_t found = 0;
+    StandInPart parts[kStandInPartsMax];
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::size_t n = standInParts(points[i], parts);
+        const double foot = footOverGround ? footOverGround[i] : 0.0;
+        for (std::size_t k = 0; k < n; ++k) {
+            if (parts[k].shape == StandInShape::Canopy) continue;
+            const StandInBounds b = standInBounds(points[i], parts[k]);
+            if (foot + b.bottom >= spec.clearance) continue;
+            const double reach = std::sqrt(b.hx * b.hx + b.hy * b.hy);
+            StandInCorridorHit hit;
+            hit.depth = spec.slack;
+            bool any = false;
+            for (std::size_t c = 0; c < corridorCount; ++c) {
+                const StandInCorridor& cor = corridors[c];
+                // Far off: the bounds' circle against the corridor's own box.
+                const double pad = reach + cor.half;
+                if (b.cx < std::min(cor.ax, cor.bx) - pad || b.cx > std::max(cor.ax, cor.bx) + pad || b.cy < std::min(cor.ay, cor.by) - pad ||
+                    b.cy > std::max(cor.ay, cor.by) + pad) {
+                    continue;
+                }
+                const double depth = standInCorridorDepth(b, cor);
+                if (depth > hit.depth) {
+                    hit.depth = depth;
+                    hit.corridor = c;
+                    any = true;
+                }
+            }
+            if (!any) continue;
+            hit.point = i;
+            hit.part = k;
+            if (hits && found < hitCap) hits[found] = hit;
+            ++found;
+        }
+    }
+    return found;
 }
 
 double standInCanopyForkShare(std::size_t variant) { return variant < kStandInCanopyVariants ? kCanopyForkShare[variant] : 0.0; }

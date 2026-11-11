@@ -180,7 +180,10 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\t}\n";
     // Pavements: tiles with sunk, grimy joints, a lower albedo, per-tile tone and porosity, stains and grit.
     h += "\telse if (SK == 2)\n\t{\n";
-    h += "\t\tfloat2 T = (Lm.xy + 0.5 * float2(Sx, Sy)) / " + num(st.tileM) + ";\n";
+    // A junction corner's pieces (told by their depth, cornerSlabM) lay their tiles on the world's grid: the wedges of a
+    // fan and the apron behind them share one square grid. The rest keep their own box's.
+    h += "\t\tbool CornerP = abs(Sz - " + num(st.cornerSlabM) + ") < 0.004;\n";
+    h += "\t\tfloat2 T = (CornerP ? Pw : Lm.xy + 0.5 * float2(Sx, Sy)) / " + num(st.tileM) + ";\n";
     h += "\t\tfloat2 Id = floor(T);\n";
     h += "\t\tfloat2 TF = frac(T) - 0.5;\n";
     h += "\t\tfloat2 Dd = (0.5 - abs(TF)) * " + num(st.tileM) + ";\n";
@@ -189,10 +192,12 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\t\tfloat Tt = saturate((TD - " + num(st.tileJointM) + ") / " + num(st.tileBevelM) + ");\n";
     h += "\t\tfloat Ht = Tt * Tt * (3.0 - 2.0 * Tt);\n";
     h += "\t\tfloat Dh = 6.0 * Tt * (1.0 - Tt) / " + num(st.tileBevelM) + ";\n";
-    h += "\t\tSlopeB += (NearX ? float2(-sign(TF.x), 0.0) : float2(0.0, -sign(TF.y))) * Dh * " + num(st.tileDepthM) + " * Fine;\n";
+    h += "\t\tfloat2 TSl = (NearX ? float2(-sign(TF.x), 0.0) : float2(0.0, -sign(TF.y))) * Dh * " + num(st.tileDepthM) + " * Fine;\n";
+    h += "\t\tif (CornerP) { SlopeW += TSl; } else { SlopeB += TSl; }\n";
     h += "\t\tfloat TJ = lerp(0.12, 1.0 - Ht, Mid);\n";  // joint share, its mean further out
     h += "\t\tTone *= " + num(kPaveAlbedo) + " * lerp(1.0, 0.45, TJ);\n";
-    h += "\t\tfloat Th = frac(sin(dot(Id + float2(round(Sx * 7.0), round(Sy * 13.0)), float2(12.9898, 78.233))) * 43758.5453);\n";
+    h += "\t\tfloat2 IdB = CornerP ? float2(0.0, 0.0) : float2(round(Sx * 7.0), round(Sy * 13.0));\n";
+    h += "\t\tfloat Th = frac(sin(dot(Id + IdB, float2(12.9898, 78.233))) * 43758.5453);\n";
     h += "\t\tTone *= 1.0 + " + num(st.tileTone) + " * 1.5 * (2.0 * Th - 1.0) * Mid;\n";
     h += "\t\tTone *= 1.0 + 0.16 * (SNz.N(Pw / 0.006 + 8.0) - 0.5) * Fine;\n";
     h += "\t\tfloat Stain = smoothstep(0.5, 0.78, SNz.F(Pw / 2.5 + 13.0));\n";
@@ -314,6 +319,8 @@ float streetJointDistance(float posM, float lengthM, const StreetSurfaceSpec& sp
 float streetPaintLeft(float fade, float wheel, float chip) {
     return smoothstep(-0.06f, 0.06f, 1.15f - 0.55f * fade - 0.65f * wheel - chip);
 }
+
+bool streetCornerSlab(float sz, const StreetSurfaceSpec& spec) { return std::fabs(sz - spec.cornerSlabM) < 0.004f; }
 
 float streetTileHeight(float dM, const StreetSurfaceSpec& spec) {
     return smoothstep(spec.tileJointM, spec.tileJointM + spec.tileBevelM, dM);

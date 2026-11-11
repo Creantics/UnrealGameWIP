@@ -92,6 +92,8 @@ struct StreetSurfaceSpec {
     float kerbStoneM = 0.9f;
     float paintAlbedo = 0.75f;           // a marking's brightest channel
     float laneSlabM = 3.6f;              // a lane's concrete panel
+    float cornerSlabM = 0.311f;          // a pavement box this thick (within 4 mm) is a junction corner's piece: its
+                                         // tiles lie on the world's grid, not the box's (Roads.h kRoadCornerPaveDeep)
 };
 
 // 0..1 wheel-path weight at fromLowM across a carriageway half from its low edge, the half sizeY across.
@@ -101,6 +103,8 @@ FTCORE_API float streetWheelPath(float fromLowM, float sizeY, const StreetSurfac
 FTCORE_API float streetJointDistance(float posM, float lengthM, const StreetSurfaceSpec& spec);
 // 0..1 paint left on a marking: fade noise 0..1, wheel 0..1 (how much a wheel path crosses there), chip noise 0..1.
 FTCORE_API float streetPaintLeft(float fade, float wheel, float chip);
+// Whether a pavement box sz thick (m) is a junction corner's piece (tiles on the world's grid).
+FTCORE_API bool streetCornerSlab(float sz, const StreetSurfaceSpec& spec);
 // A pavement tile's height, 0 (a joint's floor) to 1 (its face), dM from its nearest edge.
 FTCORE_API float streetTileHeight(float dM, const StreetSurfaceSpec& spec);
 // 1 when a box (thickness and plan sides, m) counts as a ground slab.

@@ -381,8 +381,10 @@ else if (Kd == 1)
 	Mask = 0.5 + In * 40.0;
 	Blend = smoothstep(0.0, 0.12, In);
 	float Inner = D.F(M * 4.0 + O + 11.0);
-	bool Oil = D.H(O + 7.7) < 0.66;
+	// On a pavement never oil, and never darker than a damp patch of the paving itself.
+	bool Oil = !Paved && D.H(O + 7.7) < 0.66;
 	C = Oil ? float3(0.018, 0.018, 0.02) * (0.7 + 0.6 * Inner) : float3(0.07, 0.062, 0.05) * (0.8 + 0.4 * Inner);
+	if (Paved) { C = Under * float3(0.78, 0.75, 0.7) * (0.85 + 0.15 * Inner); }
 	R = Oil ? lerp(0.25, 0.5, Inner) : 0.95;
 }
 else if (Kd == 2)

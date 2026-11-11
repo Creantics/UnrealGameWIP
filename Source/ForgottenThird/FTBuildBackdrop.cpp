@@ -9,6 +9,7 @@
 #include "FTCellInstancer.h"
 #include "FTSceneLook.h"
 #include "ForgottenThird.h"
+#include "ftcore/WindowFacade.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Misc/CommandLine.h"
 #include "Misc/PackageName.h"
@@ -28,13 +29,26 @@ constexpr float kPlantRampM = 8.f;
 // Planted up to this slope (rise over run), bare from the next: the ground master turns slopes from about 0.75 to rock.
 constexpr float kPlantSteepFrom = 0.55f;
 constexpr float kPlantSteepTo = 0.75f;
+// The ground master's RockAltitudeRunCm on the hill: the height over -HillRock's by which even ground has joined the rock.
+constexpr float kHillRockRunCm = 40000.f;
 
 // The aviation lamps' glow at night (the lamp head master's LampStrength; the street lamps' heads take 8).
 constexpr float kAviationStrength = 40.f;
 
-// The skyline: far blocks, how many a band, and the band's depth past the field's edge.
-constexpr int32 kSkylineSouth = 220;
-constexpr int32 kSkylineNorth = 150;
+// The skyline: far blocks and land plates, how many a band together (370 in all, as before the plates), past the field's
+// south and north edges. Each band starts kSkylineGapM past the edge and ends kSkylineDepthM past it; its land (strips
+// of about kSkylineStripM, ftcore::skylineSeat) runs from the edge itself, kSkylineMarginM further out than the blocks,
+// and down to kSkylinePlateFootM under the datum. A block's foot goes kSkylineFootM under its plate's top.
+constexpr int32 kSkylineSouth = 200;
+constexpr int32 kSkylineNorth = 170;
+constexpr double kSkylineGapM = 40.0;
+constexpr double kSkylineDepthM = 600.0;
+constexpr double kSkylineMarginM = 40.0;
+constexpr double kSkylineStripM = 220.0;
+constexpr double kSkylinePlateFootM = 5.0;
+constexpr double kSkylineFootM = 100.0;
+// A far block from this height wears the office grid, a lower one the apartment's.
+constexpr float kSkylineOfficeM = 45.f;
 
 bool Wants(const TCHAR* Switch)
 {
@@ -99,7 +113,12 @@ UMaterialInterface* FTBackdrop::HillGround(UPackage* Package, UMaterialInterface
 	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("CrestPale")), 0.15f);
 	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("MacroVariation")), 0.28f);
 	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("HueDrift")), 0.12f);
-	Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("RockTint")), FLinearColor(0.78f, 0.78f, 0.76f));
+	// The rock keeps to the steep faces and the high ridges: the altitude band's run is long (kHillRockRunCm), so even
+	// ground far over -HillRock's height stays planted and only a ridge (the shape mask) or a slope turns to stone. With
+	// the master's 40 m run every gentle slope over that height wore the rock and the hill read as bare sand.
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("RockAltitudeRunCm")), kHillRockRunCm);
+	// A cooler, greyer stone (the rock photo is ochre), which the cliff boxes' faces take too (RockFace reads it).
+	Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("RockTint")), FLinearColor(0.60f, 0.68f, 0.64f));
 	// Planted, never bare sand: the ground's tint is green, and the plant mask (ftcore::hillPlantMask) in the master's
 	// FlowMask slot takes the low ground (the wards) back toward the ground's own grey through WetRich, so only the hill
 	// is green. The master's wet darkening and smoothing stay off.
@@ -119,7 +138,8 @@ UMaterialInterface* FTBackdrop::HillGround(UPackage* Package, UMaterialInterface
 	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("WetRich")), -0.85f);
 	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("WetDarken")), 0.f);
 	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("WetSmooth")), 0.f);
-	Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("GroundTint")), FLinearColor(0.50f, 0.95f, 0.42f));
+	// A deeper scrub green than a lawn's, near the planting's own tints so the clumps read as thicker growth on it.
+	Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("GroundTint")), FLinearColor(0.36f, 0.66f, 0.27f));
 	Mic->PostEditChange();
 	UE_LOG(LogForgottenThird, Display, TEXT("Backdrop: -HillLook: %.1f%% of the mask planted (ground over %.0f m)."),
 		100.0 * Planted / Plant.Num(), static_cast<double>(kPlantFromM));
@@ -188,7 +208,7 @@ UMaterialInterface* FTBackdrop::RockFace(UPackage* Package, UMaterialInterface* 
 }
 
 void FTBackdrop::Dress(UPackage* Package, FFTCellInstancer& Cells, UMaterialInterface* Base, const ftcore::HeightField& Field, double Side,
-	const std::vector<ftcore::MassingBox>& Boxes)
+	const std::vector<ftcore::MassingBox>& Boxes, UMaterialInterface* SkylineFacade)
 {
 	const bool bDress = Wants(TEXT("HillDress"));
 	const bool bSkyline = Wants(TEXT("Skyline"));
@@ -209,12 +229,13 @@ void FTBackdrop::Dress(UPackage* Package, FFTCellInstancer& Cells, UMaterialInte
 
 	if (bDress)
 	{
-		// Planting tints, all green (ftcore::kBackdropScrubTints): canopy green, fresh mid green, cool blue-green; light
-		// enough to read as leaves in the sun, not dark discs. Trunks in a bark brown.
-		UMaterialInterface* const Scrub[ftcore::kBackdropScrubTints] = {
-			Paint(Package, Base, TEXT("MI_Backdrop_Scrub"), FLinearColor(0.06f, 0.13f, 0.035f), 0.85f),
-			Paint(Package, Base, TEXT("MI_Backdrop_ScrubDry"), FLinearColor(0.11f, 0.19f, 0.05f), 0.88f),
-			Paint(Package, Base, TEXT("MI_Backdrop_ScrubGrey"), FLinearColor(0.055f, 0.12f, 0.075f), 0.85f)};
+		// Planting tints, both green: canopy green and a fresh mid green, a step under the hill's ground green so a clump
+		// reads as thicker growth on it, not a dark dot on sand. Two materials, not one a tint of
+		// ftcore::kBackdropScrubTints: the third tint takes the first, which saves a component in every hill cell.
+		// Trunks in a bark brown.
+		UMaterialInterface* const ScrubA = Paint(Package, Base, TEXT("MI_Backdrop_Scrub"), FLinearColor(0.085f, 0.17f, 0.05f), 0.85f);
+		UMaterialInterface* const ScrubB = Paint(Package, Base, TEXT("MI_Backdrop_ScrubDry"), FLinearColor(0.13f, 0.23f, 0.065f), 0.88f);
+		UMaterialInterface* const Scrub[ftcore::kBackdropScrubTints] = {ScrubA, ScrubB, ScrubA};
 		UMaterialInterface* Bark = Paint(Package, Base, TEXT("MI_Backdrop_Bark"), FLinearColor(0.07f, 0.055f, 0.04f), 0.9f);
 		UMaterialInterface* Steel = Paint(Package, Base, TEXT("MI_Backdrop_Pylon"), FLinearColor(0.30f, 0.31f, 0.32f), 0.6f);
 		ftcore::HillDressSpec Spec;
@@ -260,54 +281,117 @@ void FTBackdrop::Dress(UPackage* Package, FFTCellInstancer& Cells, UMaterialInte
 
 	if (bSkyline)
 	{
-		UMaterialInterface* Mass = Paint(Package, Base, TEXT("MI_Backdrop_Skyline"), FLinearColor(0.10f, 0.11f, 0.13f), 0.85f);
-		UMaterialInterface* Plate = Paint(Package, Base, TEXT("MI_Backdrop_SkylineGround"), FLinearColor(0.08f, 0.08f, 0.08f), 0.95f);
+		// The far blocks wear the build's window instance (SkylineFacade: a grid of windows, some lit at night) when the
+		// build has one, else the plain dark mass (-SkylinePlain keeps the mass).
+		const bool bFacade = SkylineFacade && !FParse::Param(FCommandLine::Get(), TEXT("SkylinePlain"));
+		UMaterialInterface* Mass =
+			bFacade ? SkylineFacade : Paint(Package, Base, TEXT("MI_Backdrop_Skyline"), FLinearColor(0.10f, 0.11f, 0.13f), 0.85f);
+		// The land under them: paved grey where it's low, the hill's green from the planted height up.
+		UMaterialInterface* Plate = Paint(Package, Base, TEXT("MI_Backdrop_SkylineGround"), FLinearColor(0.17f, 0.17f, 0.16f), 0.95f);
+		UMaterialInterface* PlateHill = Paint(Package, Base, TEXT("MI_Backdrop_SkylineHill"), FLinearColor(0.12f, 0.21f, 0.09f), 0.95f);
 		UMaterialInterface* const M[] = {Mass};
-		UMaterialInterface* const G[] = {Plate};
 		const FFTCellOptions Options = Far(TEXT("Skyline"));
-		// Two bands past the field's south and north edges, over the strip's x, seen from the strip's middle; a dark plate
-		// under each at 2 m so their feet stand on ground, not on the sky.
+		// Two bands past the field's south and north edges, seen from the field's middle. Each stands on land plates that
+		// carry on from the field's own edge at the edge's height (ftcore::skylineSeat), over the reach of the edge that
+		// is land: no block and no plate stands in open water.
 		struct FBand
 		{
-			double X0, Y0, X1, Y1;
+			double EdgeY, Out; // the field's edge row, and the way out of the field along plan y (-1 south, +1 north)
 			int32 Count;
 			uint32 Seed;
 		};
 		const double MidX = 0.5 * (X0 + X1), MidY = 0.5 * (Y0 + Y1);
 		const FBand Bands[] = {
-			{200.0, Y0 - 1100.0, 1250.0, Y0 - 120.0, kSkylineSouth, 0x50u}, // x to the south coast
-			{0.0, Y1 + 120.0, 1300.0, Y1 + 900.0, kSkylineNorth, 0x40u},
+			{Y0, -1.0, kSkylineSouth, 0x50u},
+			{Y1, 1.0, kSkylineNorth, 0x40u},
 		};
-		int32 Blocks = 0;
+		int32 Blocks = 0, Plates = 0;
 		for (const FBand& B : Bands)
 		{
+			ftcore::SkylineSeatSpec Seat;
+			Seat.x0 = X0;
+			Seat.x1 = X1;
+			Seat.edgeY = B.EdgeY;
+			Seat.stripM = kSkylineStripM;
+			ftcore::SkylineStrip Strips[ftcore::kSkylineStripMax];
+			const std::size_t StripCount = ftcore::skylineSeat(Field, Seat, Strips);
+			if (StripCount == 0)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("Backdrop: -Skyline: no land along the field's edge at y %.0f; no band there."), B.EdgeY);
+				continue;
+			}
+			const double LandX0 = static_cast<double>(Strips[0].x0), LandX1 = static_cast<double>(Strips[StripCount - 1].x1);
+			const double PlateDepth = kSkylineDepthM + kSkylineMarginM;
+			float Lowest = Strips[0].topM, Highest = Strips[0].topM;
+			for (std::size_t S = 0; S < StripCount; ++S)
+			{
+				const ftcore::SkylineStrip& Strip = Strips[S];
+				const double Top = static_cast<double>(Strip.topM);
+				const double Thick = Top + kSkylinePlateFootM;
+				const double Width = static_cast<double>(Strip.x1) - static_cast<double>(Strip.x0);
+				const FVector Centre = EngineCm(Side, 0.5 * (static_cast<double>(Strip.x0) + static_cast<double>(Strip.x1)),
+					B.EdgeY + B.Out * 0.5 * PlateDepth, Top - 0.5 * Thick);
+				UMaterialInterface* const G[] = {Strip.topM >= kPlantFromM ? PlateHill : Plate};
+				Cells.Add(Cube, G, FTransform(FRotator::ZeroRotator, Centre, FVector(Width, PlateDepth, Thick)), NoData, EFTCellKind::NoCollide,
+					Options);
+				Lowest = FMath::Min(Lowest, Strip.topM);
+				Highest = FMath::Max(Highest, Strip.topM);
+				++Plates;
+			}
 			ftcore::SkylineSpec Spec;
-			Spec.x0 = B.X0;
-			Spec.y0 = B.Y0;
-			Spec.x1 = B.X1;
-			Spec.y1 = B.Y1;
+			Spec.x0 = LandX0;
+			Spec.x1 = LandX1;
+			Spec.y0 = FMath::Min(B.EdgeY + B.Out * kSkylineGapM, B.EdgeY + B.Out * kSkylineDepthM);
+			Spec.y1 = FMath::Max(B.EdgeY + B.Out * kSkylineGapM, B.EdgeY + B.Out * kSkylineDepthM);
 			Spec.nearX = MidX;
 			Spec.nearY = MidY;
-			Spec.count = static_cast<size_t>(B.Count);
+			// The plates come out of the band's count: the backdrop adds no instance.
+			Spec.count = static_cast<size_t>(FMath::Max(B.Count - static_cast<int32>(StripCount), 1));
 			Spec.minH = 18.f;
 			Spec.maxH = 110.f;
+			Spec.minW = 18.f;
+			Spec.maxW = 50.f;
 			Spec.seed = B.Seed;
-			const FVector Centre = EngineCm(Side, 0.5 * (B.X0 + B.X1), 0.5 * (B.Y0 + B.Y1), 0.0);
-			// 20 m thick, its top at 2 m.
-			Cells.Add(Cube, G, FTransform(FRotator::ZeroRotator, Centre + FVector(0, 0, 200.0 - 1000.0),
-				FVector((B.X1 - B.X0) + 40.0, (B.Y1 - B.Y0) + 40.0, 20.0)), NoData, EFTCellKind::NoCollide, Options);
+			uint32 Index = 0;
 			for (const ftcore::BackdropBox& Box : ftcore::skylineBand(Spec))
 			{
-				FarBlocks.push_back(Box);
-				// Feet 30 m down, so no block shows a base however the ground falls away.
-				const double Height = Box.h + 30.0;
-				const FVector At = EngineCm(Side, Box.cx, Box.cy, Box.h - 0.5 * Height);
-				Cells.Add(Cube, M, FTransform(FRotator(0.0, ftcore::massingEngineYaw(Box.rot), 0.0), At, FVector(Box.sx, Box.sy, Height)), NoData, EFTCellKind::NoCollide,
-					Options);
+				// On its plate, its foot kSkylineFootM under the plate's top: no base shows where the plates step.
+				const double Ground = static_cast<double>(ftcore::skylineSeatAt(Strips, StripCount, static_cast<double>(Box.cx)));
+				const double Height = static_cast<double>(Box.h) + kSkylineFootM;
+				const FVector At = EngineCm(Side, Box.cx, Box.cy, Ground + static_cast<double>(Box.h) - 0.5 * Height);
+				const FTransform Place(FRotator(0.0, ftcore::massingEngineYaw(Box.rot), 0.0), At, FVector(Box.sx, Box.sy, Height));
+				if (bFacade)
+				{
+					// The window master's custom data (FTScene::WindowData*): a seed under 2^24, no street face, each face's
+					// first storey at the plate's top, the window type, the wall as photographed, the first roof finish.
+					float Data[FTScene::WindowDataCountR5] = {};
+					Data[FTScene::WindowDataSeed] = static_cast<float>((B.Seed * 7919u + Index * 2671u + 17u) & 0xFFFFFFu);
+					Data[FTScene::WindowDataStreet] = 0.f;
+					for (int32 F = 0; F < 4; ++F)
+					{
+						Data[FTScene::WindowDataBase + F] = static_cast<float>(kSkylineFootM);
+					}
+					Data[FTScene::WindowDataType] =
+						static_cast<float>(Box.h >= kSkylineOfficeM ? ftcore::WindowType::Office : ftcore::WindowType::Apartment);
+					Cells.Add(Cube, M, Place, MakeArrayView(Data), EFTCellKind::NoCollide, Options);
+				}
+				else
+				{
+					Cells.Add(Cube, M, Place, NoData, EFTCellKind::NoCollide, Options);
+				}
+				// For the aviation lamps: the block's roof over the datum.
+				ftcore::BackdropBox Roof = Box;
+				Roof.h = static_cast<float>(Ground) + Box.h;
+				FarBlocks.push_back(Roof);
 				++Blocks;
+				++Index;
 			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Backdrop: -Skyline: band past y %.0f: land x %.0f to %.0f in %d plates (tops %.1f to %.1f m), %d blocks."),
+				B.EdgeY, LandX0, LandX1, static_cast<int32>(StripCount), static_cast<double>(Lowest), static_cast<double>(Highest),
+				static_cast<int32>(Index));
 		}
-		UE_LOG(LogForgottenThird, Display, TEXT("Backdrop: -Skyline: %d far blocks in 2 bands past the field's south and north edges."), Blocks);
+		UE_LOG(LogForgottenThird, Display, TEXT("Backdrop: -Skyline: %d far blocks on %d land plates in 2 bands past the field's south and north edges (%d instances), %s."),
+			Blocks, Plates, Blocks + Plates, bFacade ? *FString::Printf(TEXT("wearing %s"), *SkylineFacade->GetName()) : TEXT("plain mass"));
 	}
 
 	if (bAviation)

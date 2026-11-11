@@ -569,6 +569,81 @@ void skirtsOf(const MassingGround& ground, const std::vector<MassingBox>& boxes,
     }
 }
 
+// Skirts of different buildings that stand in one line, end to end, turned alike and as deep, their tops within
+// kPocketSkirtMerge, become one box (out[first..] are the skirts; the first of a run keeps its id). Its top is the
+// run's highest and its bottom the lowest, as a face's own runs join.
+void joinSkirts(std::vector<MassingBox>& out, std::size_t first, double band) {
+    struct Line {
+        std::int64_t turn = 0, offset = 0; // the long axis' direction (0.01 degrees, mod 180) and its line's offset (cm)
+        double t0 = 0.0, t1 = 0.0;         // along the direction, m
+        std::size_t at = 0;
+        bool alongW = false;
+    };
+    const std::size_t n = out.size() - first;
+    if (n < 2) return;
+    std::vector<Line> lines(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const MassingBox& b = out[first + i];
+        Line& l = lines[i];
+        l.at = first + i;
+        l.alongW = std::fabs(b.sx - band) < 1e-9 && std::fabs(b.sy - band) > 1e-9;
+        const double len = l.alongW ? b.sy : b.sx;
+        double deg = std::fmod(b.rot + (l.alongW ? 90.0 : 0.0), 180.0);
+        if (deg < 0.0) deg += 180.0;
+        l.turn = std::llround(deg * 100.0) % 18000;
+        const double a = static_cast<double>(l.turn) / 100.0 * kTpPi / 180.0;
+        const double dx = std::cos(a), dy = std::sin(a);
+        l.offset = std::llround((-b.cx * dy + b.cy * dx) * 100.0);
+        const double mid = b.cx * dx + b.cy * dy;
+        l.t0 = mid - 0.5 * len;
+        l.t1 = mid + 0.5 * len;
+    }
+    std::sort(lines.begin(), lines.end(), [](const Line& p, const Line& q) {
+        if (p.turn != q.turn) return p.turn < q.turn;
+        if (p.offset != q.offset) return p.offset < q.offset;
+        if (p.t0 != q.t0) return p.t0 < q.t0;
+        return p.at < q.at;
+    });
+    constexpr double kTouch = 0.02; // m: the ends this near meet
+    std::vector<bool> gone(out.size(), false);
+    for (std::size_t h = 0; h < n;) {
+        MassingBox& head = out[lines[h].at];
+        const double headDepth = lines[h].alongW ? head.sx : head.sy;
+        double lo = head.z1, hi = head.z1, bottom = head.z0, t1 = lines[h].t1;
+        std::size_t e = h + 1;
+        for (; e < n; ++e) {
+            const Line& l = lines[e];
+            const MassingBox& b = out[l.at];
+            if (l.turn != lines[h].turn || l.offset != lines[h].offset || std::fabs(l.t0 - t1) > kTouch) break;
+            if (std::fabs((l.alongW ? b.sx : b.sy) - headDepth) > 1e-9) break;
+            if (std::max(hi, b.z1) - std::min(lo, b.z1) > kPocketSkirtMerge) break;
+            lo = std::min(lo, b.z1);
+            hi = std::max(hi, b.z1);
+            bottom = std::min(bottom, b.z0);
+            t1 = l.t1;
+            gone[l.at] = true;
+        }
+        if (e > h + 1) {
+            const double a = static_cast<double>(lines[h].turn) / 100.0 * kTpPi / 180.0;
+            const double dx = std::cos(a), dy = std::sin(a);
+            const double shift = 0.5 * (lines[h].t0 + t1) - (head.cx * dx + head.cy * dy);
+            head.cx += shift * dx;
+            head.cy += shift * dy;
+            (lines[h].alongW ? head.sy : head.sx) = t1 - lines[h].t0;
+            head.z0 = bottom;
+            head.z1 = hi;
+        }
+        h = e;
+    }
+    std::size_t w = first;
+    for (std::size_t i = first; i < out.size(); ++i) {
+        if (gone[i]) continue;
+        if (w != i) out[w] = std::move(out[i]);
+        ++w;
+    }
+    out.resize(w);
+}
+
 // Grid-aligned fill boxes over a pocket's cells whose floor is under `level`.
 void fillsOf(const MassingGround& ground, const Grid& g, const std::vector<std::uint32_t>& cells, double level, double sink,
              std::vector<MassingBox>& out, std::size_t& counter, std::size_t& made) {
@@ -760,6 +835,7 @@ bool planPlinths(const MassingGround& ground, const std::vector<MassingBox>& box
             skirtsOf(ground, all, i, buckets, spec, out, skirtCounter, sloped);
             stats.slopedBuildings += sloped ? 1 : 0;
         }
+        if (spec.joinSkirts) joinSkirts(out, first, spec.band);
         stats.skirts = out.size() - first;
     }
     for (std::size_t i = first; i < out.size(); ++i) {

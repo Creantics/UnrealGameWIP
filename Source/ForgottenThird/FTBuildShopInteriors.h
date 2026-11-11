@@ -9,11 +9,16 @@
 // face's shop bays, ftcore::windowShopInterior's pieces (a shell, shelves with goods, a counter or a table) as cube
 // instances of the build's cells (FFTCellInstancer), no collision, no shadow, culled as props. Without -ShopHoles nothing
 // here changes the build. Every other shop keeps the master's flat lit picture.
+//
+// Round 11: -ShopModelShare=<0..1> (default ftcore::WindowFacadeSpec::shopModelShare) models only that share of the
+// kerbed buildings, picked by seed; the rest get no kerb bit and keep the picture. Each piece's custom data slot 0 is
+// its bay's night light (ftcore::windowShopLightCode: unlit, or tint and level), which the master lights it by.
 
 #include "CoreMinimal.h"
 
 #include "ftcore/MassingDress.h"
 #include "ftcore/MassingPlan.h"
+#include "ftcore/WindowFacade.h"
 
 #include <vector>
 
@@ -51,6 +56,8 @@ private:
 	FVector CubeSize = FVector(100.0);
 	FVector CubeCentre = FVector::ZeroVector;
 	TArray<UMaterialInterface*> Colours;
-	int32 Boxes = 0, Faces = 0, Pieces = 0, LitPieces = 0;
+	int32 Boxes = 0, Faces = 0, Pieces = 0, LitPieces = 0, Flat = 0;
+	// -ShopModelShare=<0..1>: the share of kerbed buildings whose shops are modelled (ftcore::windowShopModelled).
+	float ModelShare = ftcore::WindowFacadeSpec{}.shopModelShare;
 };
 } // namespace FTShopInteriors

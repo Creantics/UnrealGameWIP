@@ -25,6 +25,7 @@
 //           the wall more than maxStep under the ground further out), and nothing taller already stands there. Its top is
 //           level at the highest ground in it, its bottom `sink` under the lowest: a retaining plinth with no gap between
 //           the building's base and the bank. Runs of pieces whose tops are within kPocketSkirtMerge join.
+//           So do the skirts of different buildings standing in one line, end to end (PlinthSpec::joinSkirts).
 //   fills   then, up to fillPasses times, the check on the boxes and the plinths so far: each pocket no wider than
 //           narrowWidth (Pocket::width) whose spill level, the lowest floor of a cell next to it that still reaches a way
 //           out, stands no more than fillMaxRise over its lowest floor is raised to that level, as grid-aligned boxes
@@ -121,6 +122,7 @@ struct PlinthSpec {
     double stairRise = 0.3;   // m, a stair's riser (under maxStep)
     int fillPasses = 16;      // passes of fills and stairs
     bool skirts = true;
+    bool joinSkirts = true; // skirts of different buildings in one line, end to end, join as a face's own runs do
     bool fills = true;
     bool stairs = true;
 };

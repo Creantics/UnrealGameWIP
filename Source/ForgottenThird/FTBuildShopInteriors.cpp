@@ -36,6 +36,8 @@ FPlacer::FPlacer(UPackage* Package, const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -ShopHoles needs -FacadeR5; no shop interiors."));
 		return;
 	}
+	FParse::Value(*Params, TEXT("ShopModelShare="), ModelShare);
+	ModelShare = FMath::Clamp(ModelShare, 0.f, 1.f);
 	Cube = LoadObject<UStaticMesh>(nullptr, Impl::kCubePath, nullptr, LOAD_NoWarn | LOAD_Quiet);
 	UMaterialInterface* Master = LoadObject<UMaterialInterface>(nullptr,
 		*FString::Printf(TEXT("%s.%s"), ShopMaterial, *FPackageName::GetShortName(ShopMaterial)), nullptr, LOAD_NoWarn | LOAD_Quiet);
@@ -81,13 +83,20 @@ void FPlacer::Place(FFTCellInstancer& Cells, const FFTCellHandle& Piece, const f
 	{
 		return;
 	}
+	// Round 11: only ModelShare of the kerbed buildings are modelled; the rest keep no kerb bit, so the master shows
+	// their shops' flat lit picture (no hole, no instances).
+	if (!ftcore::windowShopModelled(Data.seed, ModelShare))
+	{
+		++Flat;
+		return;
+	}
 	Cells.SetCustomData(Piece, FTScene::WindowDataStreet, static_cast<float>(Data.streetBits | (Kerb << 4)));
 	++Boxes;
 
 	static std::array<ftcore::WindowShopPiece, Impl::kFacePieces> Out;
 	const ftcore::WindowFacadeSpec Spec;
 	FFTCellOptions Options;
-	Options.Cull = EFTCellCull::Prop;
+	Options.Cull = EFTCellCull::Interior;
 	Options.bCastShadow = false;
 	Options.Tag = TEXT("ShopInterior");
 	const double Height = Box.z1 - Box.z0;
@@ -118,7 +127,8 @@ void FPlacer::Place(FFTCellInstancer& Cells, const FFTCellHandle& Piece, const f
 			const FVector Scale = FVector(B.sx, B.sy, B.z1 - B.z0) * 100.0 / CubeSize;
 			const FVector Location = FVector(C.x, C.y, C.z) * 100.0 - Rot.RotateVector(CubeCentre * Scale);
 			UMaterialInterface* const M[] = {Colours[static_cast<int32>(FMath::Min(P.colour, ftcore::kWindowShopColourCount - 1))]};
-			const float Lit[] = {P.lit ? 1.f : 0.f};
+			// The bay's light for the master: unlit, or its tint and level (ftcore::windowShopLightCode).
+			const float Lit[] = {P.light};
 			Cells.Add(Cube, TArrayView<UMaterialInterface* const>(M, 1), FTransform(Rot, Location, Scale), TArrayView<const float>(Lit, 1),
 				EFTCellKind::NoCollide, Options);
 			++Pieces;
@@ -133,8 +143,9 @@ void FPlacer::Log() const
 	{
 		return;
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: shop interiors: %d boxes with kerbed shop faces, %d faces furnished, %d cube "
-		"instances (%d lit at night), no collision or shadow, culled as props; their StreetBits carry the kerb bits (4..7)."),
-		Boxes, Faces, Pieces, LitPieces);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: shop interiors: %d boxes with kerbed shop faces modelled (-ShopModelShare=%.2f; "
+		"%d more keep the flat picture), %d faces furnished, %d cube instances (%d lit at night), no collision or shadow, culled as props; "
+		"their StreetBits carry the kerb bits (4..7)."),
+		Boxes, ModelShare, Flat, Faces, Pieces, LitPieces);
 }
 } // namespace FTShopInteriors

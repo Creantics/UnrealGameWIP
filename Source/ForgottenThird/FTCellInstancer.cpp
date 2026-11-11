@@ -13,9 +13,13 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/CommandLine.h"
 #include "Misc/PackageName.h"
+#include "Misc/Parse.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
+
+#include "ftcore/MassingPlan.h"
 
 namespace FTCells
 {
@@ -29,6 +33,8 @@ int32 CullEnd(EFTCellCull Cull)
 		return DressingCull;
 	case EFTCellCull::Car:
 		return CarCull;
+	case EFTCellCull::Interior:
+		return InteriorCull;
 	default:
 		return 0;
 	}
@@ -82,11 +88,64 @@ FFTCellInstancer::FFTCellInstancer(UWorld* InWorld, const FActorSpawnParameters&
 	: World(InWorld)
 	, Spawn(&InSpawn)
 {
+	double CellM = 0.0;
+	if (FParse::Value(FCommandLine::Get(), TEXT("CellM="), CellM) && CellM >= 50.0)
+	{
+		CellSize = CellM * 100.0;
+	}
 }
 
-FIntPoint FFTCellInstancer::CellOf(const FVector& At)
+void FFTCellInstancer::SetGround(const ftcore::MassingGround& InGround, double InSide)
 {
-	return FIntPoint(FMath::FloorToInt32(At.X / FTCells::CellSize), FMath::FloorToInt32(At.Y / FTCells::CellSize));
+	Ground = InGround;
+	Side = InSide;
+}
+
+FIntPoint FFTCellInstancer::CellOf(const FVector& At) const
+{
+	return FIntPoint(FMath::FloorToInt32(At.X / CellSize), FMath::FloorToInt32(At.Y / CellSize));
+}
+
+bool FFTCellInstancer::GroundFlush(const UStaticMesh& Mesh, const FTransform& Transform) const
+{
+	if (!Ground.grid || Ground.samplesX < 2 || Ground.samplesY < 2)
+	{
+		return false;
+	}
+	const FBox Bounds = Mesh.GetBoundingBox();
+	const FVector Size = Bounds.GetSize();
+	const FVector Scale = Transform.GetScale3D().GetAbs();
+	if (Size.Z * Scale.Z > FTCells::FlushThick)
+	{
+		return false;
+	}
+	const FQuat Turn = Transform.GetRotation();
+	if (Turn.GetUpVector().Z < FTCells::FlushUpright)
+	{
+		return false;
+	}
+	// The top face: its middle, and its two half sides in the world.
+	const FVector Middle = Bounds.GetCenter();
+	const FVector Top = Transform.TransformPosition(FVector(Middle.X, Middle.Y, Bounds.Max.Z));
+	const FVector HalfX = Turn.GetForwardVector() * (0.5 * Size.X * Scale.X);
+	const FVector HalfY = Turn.GetRightVector() * (0.5 * Size.Y * Scale.Y);
+	const int32 CountX = FMath::Clamp(FMath::CeilToInt32(Size.X * Scale.X / FTCells::FlushSampleGap) + 1, 2, 9);
+	const int32 CountY = FMath::Clamp(FMath::CeilToInt32(Size.Y * Scale.Y / FTCells::FlushSampleGap) + 1, 2, 9);
+	for (int32 IX = 0; IX < CountX; ++IX)
+	{
+		for (int32 IY = 0; IY < CountY; ++IY)
+		{
+			const FVector At = Top + HalfX * (2.0 * IX / (CountX - 1) - 1.0) + HalfY * (2.0 * IY / (CountY - 1) - 1.0);
+			// The engine's point back in the plan (ftcore::massingEnginePoint's inverse).
+			const double GroundZ = ftcore::massingGroundAt(Ground.grid, Ground.samplesX, Ground.samplesY, Ground.spacing, Ground.originX,
+				Ground.originY, At.X / 100.0 + Side * 0.5, Side * 0.5 - At.Y / 100.0);
+			if (At.Z - GroundZ * 100.0 > FTCells::FlushRise)
+			{
+				return false;
+			}
+		}
+	}
+	return true;
 }
 
 AActor* FFTCellInstancer::CellAt(const FVector& At)
@@ -227,10 +286,15 @@ FFTCellHandle FFTCellInstancer::Add(UStaticMesh* Mesh, TArrayView<UMaterialInter
 	{
 		Key.Materials.Pop(EAllowShrinking::No);
 	}
-	Key.Kind = Kind;
+	// Solid and Walk collide alike (SetUpKind): one group for both.
+	Key.Kind = Kind == EFTCellKind::Walk ? EFTCellKind::Solid : Kind;
 	Key.Cull = Options.Cull;
 	Key.bCastShadow = Options.bCastShadow && Kind != EFTCellKind::Hidden;
-	Key.Tag = Options.Tag;
+	if (Key.bCastShadow && Kind == EFTCellKind::Walk && GroundFlush(*Mesh, Transform))
+	{
+		Key.bCastShadow = false;
+		++Totals.FlushNoShadow;
+	}
 	int32* Found = GroupOf.Find(Key);
 	const int32 G = Found ? *Found : Groups.Num();
 	if (!Found)
@@ -239,6 +303,11 @@ FFTCellHandle FFTCellInstancer::Add(UStaticMesh* Mesh, TArrayView<UMaterialInter
 		Groups.AddDefaulted_GetRef().Key = MoveTemp(Key);
 	}
 	FGroup& Group = Groups[G];
+	if (!Options.Tag.IsNone())
+	{
+		Group.Tags.AddUnique(Options.Tag);
+	}
+	Unmerged.Add(MakeTuple(G, static_cast<uint8>(Kind), Options.Tag));
 	Handle.Group = G;
 	Handle.Index = Group.Transforms.Add(Transform);
 	TArray<float>& Data = Group.Data.AddDefaulted_GetRef();
@@ -290,7 +359,7 @@ void FFTCellInstancer::Flush()
 		if (!Group.Component)
 		{
 			const FKey& Key = Group.Key;
-			AActor* Holder = CellAt(FVector((Key.Cell.X + 0.5) * FTCells::CellSize, (Key.Cell.Y + 0.5) * FTCells::CellSize, 0.0));
+			AActor* Holder = CellAt(FVector((Key.Cell.X + 0.5) * CellSize, (Key.Cell.Y + 0.5) * CellSize, 0.0));
 			if (!Holder)
 			{
 				continue;
@@ -313,9 +382,14 @@ void FFTCellInstancer::Flush()
 			{
 				Comp->SetCullDistances(FMath::RoundToInt32(CullTo * FTCells::CullFadeStart), CullTo);
 			}
-			if (!Key.Tag.IsNone())
+			// Small dressing: nothing a ray, a distance field or the bounce lighting needs to know of.
+			if (Key.Cull == EFTCellCull::Dressing || Key.Cull == EFTCellCull::Interior ||
+				(Key.Kind == EFTCellKind::NoCollide && !Key.bCastShadow))
 			{
-				Comp->ComponentTags.Add(Key.Tag);
+				Comp->SetVisibleInRayTracing(false);
+				Comp->SetAffectDistanceFieldLighting(false);
+				Comp->SetAffectDynamicIndirectLighting(false);
+				++Totals.LightComponents;
 			}
 			// Set before any instance goes in: setting it clears the instances' data.
 			Comp->SetNumCustomDataFloats(Floats);
@@ -332,6 +406,14 @@ void FFTCellInstancer::Flush()
 				*Group.Component->GetName(), Floats, Group.Component->NumCustomDataFloats);
 		}
 		UHierarchicalInstancedStaticMeshComponent* Comp = Group.Component;
+		for (const FName& Tag : Group.Tags)
+		{
+			Comp->ComponentTags.AddUnique(Tag);
+		}
+		if (!Comp->bVisibleInRayTracing)
+		{
+			Totals.LightInstances += Count;
+		}
 		const TArray<FTransform> Adding(Group.Transforms.GetData() + Group.Made, Count);
 		const TArray<int32> Indices = Comp->AddInstances(Adding, true, true);
 		const int32 Stride = Comp->NumCustomDataFloats;
@@ -354,6 +436,11 @@ void FFTCellInstancer::Flush()
 		Group.Made = Group.Transforms.Num();
 		Totals.Instances += Count;
 	}
+	Totals.UnmergedGroups = Unmerged.Num();
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: instancer: %.0f m cells; %d components (%d before Solid/Walk and tags shared "
+		"groups); %d light components of %d instances (no ray tracing, distance field or indirect lighting scene); %d ground-flush walked "
+		"pieces cast no shadow."), CellSize / 100.0, Totals.Components, Totals.UnmergedGroups, Totals.LightComponents, Totals.LightInstances,
+		Totals.FlushNoShadow);
 	// The census per cell: every instance and component made so far, one line a cell, west to east, then north to south.
 	{
 		TMap<FIntPoint, FIntPoint> PerCell; // X instances, Y components

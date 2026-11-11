@@ -1,6 +1,8 @@
 #include "FTLookSubsystem.h"
 
+#include "Components/ExponentialHeightFogComponent.h"
 #include "Components/SkyLightComponent.h"
+#include "Engine/ExponentialHeightFog.h"
 #include "Engine/SkyLight.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -259,10 +261,19 @@ void UFTLookSubsystem::ApplyStillDayShade()
 			break;
 		}
 	}
+	int32 Fogs = 0;
+	for (TActorIterator<AExponentialHeightFog> It(World); It; ++It)
+	{
+		if (UExponentialHeightFogComponent* Fog = It->GetComponent())
+		{
+			FTDayShade::WriteFog(*Fog, Shade);
+			++Fogs;
+		}
+	}
 	const bool bPost = FTDayShade::WritePost(*World, Shade);
-	UE_LOG(LogForgottenThird, Display, TEXT("Look: day shade %.2f for the still (sky light %.2f, shadow contrast %.2f, diffuse boost %.2f, toe %.2f%s)."),
-		Amount, Wanted.skyLight * Shade.skyScale, Shade.shadowContrast, Shade.diffuseBoost, Shade.filmToe,
-		bPost ? TEXT("") : TEXT("; no look volume"));
+	UE_LOG(LogForgottenThird, Display, TEXT("Look: day shade %.2f for the still (sky light %.2f, shadow contrast %.2f, highlight contrast %.2f, diffuse boost %.2f, toe %.2f, exposure floor EV %.2f%s; fog cap %.2f and sky share %.2f %.2f %.2f on %d fogs)."),
+		Amount, Wanted.skyLight * Shade.skyScale, Shade.shadowContrast, Shade.highlightContrast, Shade.diffuseBoost, Shade.filmToe,
+		Shade.minEV100, bPost ? TEXT("") : TEXT("; no look volume"), Shade.fogMaxOpacity, Shade.fogSky[0], Shade.fogSky[1], Shade.fogSky[2], Fogs);
 }
 
 TStatId UFTLookSubsystem::GetStatId() const

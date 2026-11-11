@@ -4,6 +4,7 @@
 #include "ftcore/WorldClock.h"
 #include "AllocCounter.h"
 
+#include <array>
 #include <cmath>
 #include <limits>
 
@@ -22,16 +23,48 @@ TEST_CASE("dayShadeAmount: full by day, none at night or full dusk") {
 }
 
 TEST_CASE("dayShadeFrame: the night keeps the world's own values exactly") {
-    const DayShadeBase base{1.f, 1.f, 0.62f};
+    DayShadeBase base;
+    base.filmToe = 0.62f;
+    base.highlightContrast = 0.9f;
+    base.minEV100 = -3.f;
     const DayShadeFrame f = dayShadeFrame(DayShadeLook{}, base, 0.f);
     CHECK(f.skyScale == 1.f);
     CHECK(f.shadowContrast == 1.f);
     CHECK(f.diffuseBoost == 1.f);
     CHECK(f.filmToe == 0.62f);
+    CHECK(f.highlightContrast == 0.9f);
+    CHECK(f.minEV100 == -3.f);
+    CHECK(f.fogMaxOpacity == 1.f);
+    CHECK(f.fogSky == std::array<float, 3>{1.f, 1.f, 1.f});
+}
+
+TEST_CASE("dayShadeFrame: full day holds the exposure's floor, the highlights and the fog") {
+    const DayShadeLook look;
+    DayShadeBase base;
+    const DayShadeFrame f = dayShadeFrame(look, base, 1.f);
+    CHECK(f.minEV100 == doctest::Approx(look.minEV100));
+    CHECK(f.highlightContrast == doctest::Approx(look.highlightContrast));
+    CHECK(f.highlightContrast < 1.f);
+    CHECK(f.fogMaxOpacity == doctest::Approx(look.fogMaxOpacity));
+    CHECK(f.fogMaxOpacity < 1.f);
+    // A dimmer haze that leans blue, never brighter than the sky gives it.
+    CHECK(f.fogSky[2] > f.fogSky[0]);
+    CHECK(f.fogSky[2] < 1.f);
+    // A world whose own floor is higher, or whose highlights are already pulled further, keeps them.
+    base.minEV100 = 0.f;
+    base.highlightContrast = 0.5f;
+    const DayShadeFrame dark = dayShadeFrame(look, base, 1.f);
+    CHECK(dark.minEV100 == 0.f);
+    CHECK(dark.highlightContrast == 0.5f);
+    // A NaN floor leaves the world's own.
+    DayShadeLook odd;
+    odd.minEV100 = std::numeric_limits<float>::quiet_NaN();
+    CHECK(dayShadeFrame(odd, DayShadeBase{}, 1.f).minEV100 == DayShadeBase{}.minEV100);
 }
 
 TEST_CASE("dayShadeFrame: full day lifts the shade") {
-    const DayShadeBase base{1.f, 1.f, 0.62f};
+    DayShadeBase base;
+    base.filmToe = 0.62f;
     const DayShadeFrame f = dayShadeFrame(DayShadeLook{}, base, 1.f);
     CHECK(f.skyScale > 1.f);
     CHECK(f.shadowContrast < 1.f);
@@ -42,7 +75,20 @@ TEST_CASE("dayShadeFrame: full day lifts the shade") {
 }
 
 TEST_CASE("dayShadeFrame: clamps to the engine's ranges") {
-    const DayShadeFrame f = dayShadeFrame(DayShadeLook{-1.f, 2.f, 9.f, -1.f}, DayShadeBase{}, 3.f);
+    DayShadeLook wild;
+    wild.skyScale = -1.f;
+    wild.shadowContrast = 2.f;
+    wild.diffuseBoost = 9.f;
+    wild.filmToe = -1.f;
+    wild.highlightContrast = -2.f;
+    wild.minEV100 = 99.f;
+    wild.fogMaxOpacity = 4.f;
+    wild.fogSky = {-1.f, 0.5f, 3.f};
+    const DayShadeFrame f = dayShadeFrame(wild, DayShadeBase{}, 3.f);
+    CHECK(f.highlightContrast == 0.f);
+    CHECK(f.minEV100 == 25.f);
+    CHECK(f.fogMaxOpacity == 1.f);
+    CHECK(f.fogSky == std::array<float, 3>{0.f, 0.5f, 1.f});
     CHECK(f.amount == 1.f);
     CHECK(f.skyScale == 0.f);
     CHECK(f.shadowContrast == 1.f);

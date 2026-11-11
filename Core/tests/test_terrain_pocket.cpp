@@ -5,6 +5,7 @@
 #include <ostream>
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -151,6 +152,51 @@ TEST_CASE("a trough between a facade and a steep bank gets a skirt and is closed
         }
     }
     CHECK(eastSkirt);
+}
+
+TEST_CASE("the skirts of two buildings in one line join into one box") {
+    // The trough above, with the building cut in two at y 30: each half's east skirt ends where the other's starts.
+    const Field f([](double x, double y) {
+        double h = 10.0;
+        if (x >= 22.0) h = 11.5;
+        if (y < 15.0 || y > 45.0) h = 11.5;
+        return h;
+    });
+    const std::vector<MassingBox> boxes = {building("A", 5, 15, 20, 30, 9.0, 20.0), building("B", 5, 30, 20, 45, 9.0, 20.0)};
+    const auto eastSkirts = [](const std::vector<MassingBox>& made, double& longest) {
+        int n = 0;
+        longest = 0.0;
+        for (const MassingBox& b : made) {
+            if (b.id.rfind("PL-S-", 0) != 0 || b.cx <= 20.0 || b.cx >= 22.5) continue;
+            ++n;
+            longest = std::max(longest, b.sy);
+            CHECK(b.sx == doctest::Approx(2.0));
+            CHECK(b.cx == doctest::Approx(21.0));
+            CHECK(b.z1 == doctest::Approx(11.5).epsilon(0.01));
+        }
+        return n;
+    };
+    PlinthSpec apart;
+    apart.joinSkirts = false;
+    std::vector<MassingBox> split, joined;
+    PlinthStats splitStats, joinedStats;
+    REQUIRE(planPlinths(f.ground, boxes, {true, true}, kRect, {}, apart, split, splitStats));
+    REQUIRE(planPlinths(f.ground, boxes, {true, true}, kRect, {}, PlinthSpec{}, joined, joinedStats));
+    double splitLongest = 0.0, joinedLongest = 0.0;
+    const int splitCount = eastSkirts(split, splitLongest), joinedCount = eastSkirts(joined, joinedLongest);
+    CHECK(splitCount >= 2);
+    CHECK(joinedCount < splitCount);
+    CHECK(joinedLongest > splitLongest);
+    CHECK(joinedLongest <= 30.0 + 1e-9);
+    CHECK(joinedStats.skirts < splitStats.skirts);
+    CHECK(joinedStats.pocketsAfter == 0);
+    // The joined boxes cover what the split ones covered: the same length of east skirt in all.
+    double splitSum = 0.0, joinedSum = 0.0;
+    for (const MassingBox& b : split)
+        if (b.id.rfind("PL-S-", 0) == 0 && b.cx > 20.0 && b.cx < 22.5) splitSum += b.sy;
+    for (const MassingBox& b : joined)
+        if (b.id.rfind("PL-S-", 0) == 0 && b.cx > 20.0 && b.cx < 22.5) joinedSum += b.sy;
+    CHECK(joinedSum == doctest::Approx(splitSum));
 }
 
 TEST_CASE("a wide pit gets a stair out, not a fill; an exempt rect drops it from the report") {

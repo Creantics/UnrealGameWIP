@@ -48,7 +48,8 @@ struct RoadDecal {
 struct RoadDecalSpec {
     double density = 1.0;
     double crackAsphalt = 0.5, crackPavement = 0.25;
-    double stainAsphalt = 0.35, stainPavement = 0.3;
+    double stainAsphalt = 0.35, stainPavement = 0.0; // none on the pavements: their tiles carry their own stains, and a
+                                                     // plate hides the tile joints under it
     double patchAsphalt = 0.12;
     double manholePer100m = 1.6;
     double grimeChance = 0.5;

@@ -75,6 +75,34 @@ struct SkylineSpec {
 // and a few towers), seeded.
 FTCORE_API std::vector<BackdropBox> skylineBand(const SkylineSpec& spec);
 
+// The land a skyline band stands on. The band lies past one edge of the field (the row edgeY, plan y) and reaches from
+// x0 to x1 along it. The seat is the longest run of that reach whose edge ground stands at least minLandM over the sea,
+// so no block or plate stands in open water, cut into strips of about stripM (at most maxStrips, never over
+// kSkylineStripMax). A strip's plate top is the lowest edge ground along it less dropM: the land past the edge carries
+// on from the field at the field's own height, a little under it, and steps down a hill by strips.
+struct SkylineSeatSpec {
+    double x0 = 0.0, x1 = 1.0; // the band's reach along the edge, plan metres
+    double edgeY = 0.0;        // the field's edge row
+    double seaLevelM = 0.0;
+    double minLandM = 1.0;     // ground under seaLevelM + minLandM is water
+    double sampleM = 5.0;      // the edge is read every this far
+    double stripM = 200.0;
+    double dropM = 0.5;
+    std::size_t maxStrips = 12;
+};
+struct SkylineStrip {
+    float x0 = 0.f, x1 = 0.f; // plan metres along the edge
+    float topM = 0.f;         // the plate's top over the datum
+};
+constexpr std::size_t kSkylineStripMax = 16;
+
+// Writes the seat's strips, west to east and touching, into out (room for kSkylineStripMax) and returns how many; 0
+// when the reach holds no land. No allocation.
+FTCORE_API std::size_t skylineSeat(const HeightField& field, const SkylineSeatSpec& spec, SkylineStrip* out);
+
+// The plate top under plan x: that of the strip holding x, the first or last strip's outside them; 0 with no strips.
+FTCORE_API float skylineSeatAt(const SkylineStrip* strips, std::size_t count, double x);
+
 // A shape mask the ground master reads (ShapeMask: 128 even ground, 255 the sharpest ridge, 0 the deepest hollow)
 // over a square sideM across centred on plan (centreX, centreY), size x size bytes, row iy then column ix; row 0 is
 // the square's north edge when northUp (the engine's -Y, where the material's V starts), else its south edge. Each

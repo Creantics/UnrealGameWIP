@@ -68,34 +68,34 @@ const FPaint kPaintLook[] = {
 };
 static_assert(UE_ARRAY_COUNT(kPaintLook) == static_cast<SIZE_T>(kPaints), "a look for every stand-in paint");
 
-// The engine's basic shapes; the canopy (the last shape) is built here (CanopyMesh).
+// The engine's basic shapes; the canopies and the gable (the last two shapes) are built here (BuiltMesh).
 constexpr int32 kBasicShapes = static_cast<int32>(ftcore::StandInShape::Canopy);
 const TCHAR* const kShapePaths[kBasicShapes] = {
 	TEXT("/Engine/BasicShapes/Cube.Cube"),
 	TEXT("/Engine/BasicShapes/Sphere.Sphere"),
 	TEXT("/Engine/BasicShapes/Cylinder.Cylinder"),
 };
-static_assert(kBasicShapes + 1 == kShapes, "every shape but the canopy is a basic shape");
+static_assert(kBasicShapes + 2 == kShapes && static_cast<int32>(ftcore::StandInShape::Gable) == kBasicShapes + 1,
+	"every shape but the canopy and the gable is a basic shape");
 
-// A tree canopy's mesh (ftcore::standInCanopyMesh) in Package: the unit box as a metre cube (100 cm a side) around its
-// fork at the origin's x and y, its foot at z -50; flat-shaded, slot 0 the leaves (Leaf), slot 1 the limbs (Bark), no
-// collision (the trunk's cylinder collides), no lightmap channel (lit by the look's dynamic lights, as the shapes are).
-// Its triangle count in Triangles. Null (logged) when the variant has no mesh.
-UStaticMesh* CanopyMesh(UPackage* Package, int32 Variant, UMaterialInterface* Leaf, UMaterialInterface* Bark, int32& Triangles)
+// A mesh of the stand-ins' own (ftcore::standInCanopyMesh, standInGableMesh) in Package: the unit box as a metre cube
+// (100 cm a side) centred on the origin (a canopy's fork at the origin's x and y, its foot at z -50); slot 0 is
+// Materials[0] (a canopy's leaves, the gable's roof), slot 1, where Materials has two, Materials[1] (the limbs' bark).
+// Shaded round by the source's vertex normals where it has them (a canopy's clumps and limbs; no more triangles), flat
+// by its triangles' where it has none (the gable). No collision (a tree's trunk cylinder collides), no lightmap channel
+// (lit by the look's dynamic lights, as the shapes are). Its triangle count in Triangles.
+UStaticMesh* BuiltMesh(UPackage* Package, const FString& Name, const ftcore::StandInCanopyMesh& Source,
+	TArrayView<UMaterialInterface* const> Materials, int32& Triangles)
 {
-	ftcore::StandInCanopyMesh Source;
-	if (!ftcore::standInCanopyMesh(static_cast<std::size_t>(Variant), Source))
-	{
-		UE_LOG(LogForgottenThird, Error, TEXT("StandIns: no canopy mesh %d."), Variant);
-		return nullptr;
-	}
-	UStaticMesh* Mesh = NewObject<UStaticMesh>(Package, *FString::Printf(TEXT("SM_StandIn_Canopy%d"), Variant), RF_Public);
+	UStaticMesh* Mesh = NewObject<UStaticMesh>(Package, *Name, RF_Public);
 	FMeshDescription Desc;
 	FStaticMeshAttributes Attributes(Desc);
 	Attributes.Register();
 	const FName SlotNames[2] = {FName(TEXT("Leaf")), FName(TEXT("Bark"))};
+	const int32 SlotCount = FMath::Clamp(Materials.Num(), 1, 2);
+	const bool bSmooth = Source.vertexNormals.size() == Source.positions.size();
 	FPolygonGroupID Groups[2];
-	for (int32 G = 0; G < 2; ++G)
+	for (int32 G = 0; G < SlotCount; ++G)
 	{
 		Groups[G] = Desc.CreatePolygonGroup();
 		Attributes.GetPolygonGroupMaterialSlotNames()[Groups[G]] = SlotNames[G];
@@ -130,22 +130,26 @@ UStaticMesh* CanopyMesh(UPackage* Package, int32 Variant, UMaterialInterface* Le
 		for (int32 K = 0; K < 3; ++K)
 		{
 			const FVertexInstanceID Inst = Desc.CreateVertexInstance(Verts[Index[K]]);
-			Normals[Inst] = Out;
+			Normals[Inst] = bSmooth
+				? FVector3f(Source.vertexNormals[3 * Index[K]], Source.vertexNormals[3 * Index[K] + 1], Source.vertexNormals[3 * Index[K] + 2])
+				: Out;
 			const FVector3f P = Positions[Verts[Index[K]]];
 			Uvs[Inst] = FVector2f(P.X, P.Y) / 100.f;
 			Corners[K] = Inst;
 		}
-		Desc.CreatePolygon(Groups[Source.slots[T] == 0 ? 0 : 1], TArrayView<const FVertexInstanceID>(Corners, 3));
+		Desc.CreatePolygon(Groups[Source.slots[T] == 0 || SlotCount < 2 ? 0 : 1], TArrayView<const FVertexInstanceID>(Corners, 3));
 	}
-	Mesh->GetStaticMaterials().Add(FStaticMaterial(Leaf, SlotNames[0], SlotNames[0]));
-	Mesh->GetStaticMaterials().Add(FStaticMaterial(Bark, SlotNames[1], SlotNames[1]));
+	for (int32 G = 0; G < SlotCount; ++G)
+	{
+		Mesh->GetStaticMaterials().Add(FStaticMaterial(Materials[G], SlotNames[G], SlotNames[G]));
+	}
 	FStaticMeshSourceModel& Model = Mesh->AddSourceModel();
 	Model.BuildSettings.bRecomputeNormals = false;
 	Model.BuildSettings.bRecomputeTangents = true;
 	Model.BuildSettings.bGenerateLightmapUVs = false;
 	Mesh->CreateMeshDescription(0, MoveTemp(Desc));
 	Mesh->CommitMeshDescription(0);
-	Mesh->CreateBodySetup(); // as the sloped boxes' meshes; the canopies' cell groups take no collision
+	Mesh->CreateBodySetup(); // as the sloped boxes' meshes; these meshes' cell groups take no collision
 	Mesh->Build(true);
 	Mesh->PostEditChange();
 	return Mesh;
@@ -217,6 +221,78 @@ bool LoadTables(const FSwitch& Switch, std::vector<ftcore::StandInPoint>& Points
 	}
 	return true;
 }
+
+// The corridor rule (ftcore::standInCorridorCheck): no part of a stand-in stands in the clear way of a street of
+// -Streets or a road of -Roads (a canal's row left out). Every part found in one is logged with its row's id, the street
+// and how far in it reaches; false then, unless -StandInCorridorWarn makes them warnings. True, with nothing checked,
+// without either table. Field: the ground the rows stand over.
+bool CheckCorridors(const std::vector<ftcore::StandInPoint>& Points, const ftcore::HeightField& Field)
+{
+	std::vector<ftcore::StandInCorridor> Corridors;
+	std::vector<std::string> Streets;
+	const TCHAR* const Names[] = {TEXT("Streets="), TEXT("Roads=")};
+	for (const TCHAR* const Name : Names)
+	{
+		FString File;
+		if (!FParse::Value(FCommandLine::Get(), Name, File, false) || File.IsEmpty())
+		{
+			continue;
+		}
+		TArray<uint8> Bytes;
+		if (!FFileHelper::LoadFileToArray(Bytes, *File))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("StandIns: corridors: couldn't read -%s'%s'."), Name, *File);
+			return false;
+		}
+		std::string Error;
+		const std::string_view Csv(reinterpret_cast<const char*>(Bytes.GetData()), static_cast<size_t>(Bytes.Num()));
+		if (!ftcore::importStandInCorridors(Csv, Corridors, &Streets, "canal", &Error))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("StandIns: corridors: %s: %s"), *File, UTF8_TO_TCHAR(Error.c_str()));
+			return false;
+		}
+	}
+	if (Corridors.empty() || Points.empty())
+	{
+		return true;
+	}
+	std::vector<double> Foot(Points.size(), 0.0);
+	for (size_t I = 0; I < Points.size(); ++I)
+	{
+		Foot[I] = Points[I].hasZ && Field.grid ? Points[I].z - Field.at(Points[I].x, Points[I].y) : 0.0;
+	}
+	constexpr int32 kListed = 40;
+	ftcore::StandInCorridorHit Hits[kListed];
+	const ftcore::StandInCorridorSpec Spec;
+	const int32 Found = static_cast<int32>(ftcore::standInCorridorCheck(Points.data(), Foot.data(), Points.size(), Corridors.data(),
+		Corridors.size(), Spec, Hits, static_cast<size_t>(kListed)));
+	const bool bWarn = FParse::Param(FCommandLine::Get(), TEXT("StandInCorridorWarn"));
+	for (int32 H = 0; H < FMath::Min(Found, kListed); ++H)
+	{
+		const ftcore::StandInPoint& Point = Points[Hits[H].point];
+		const FString Line = FString::Printf(TEXT("StandIns: corridors: %s '%s' at %.1f, %.1f: part %d reaches %.2f m into %s."),
+			UTF8_TO_TCHAR(ftcore::standInKindName(Point.kind)), UTF8_TO_TCHAR(Point.id.c_str()), Point.x, Point.y, static_cast<int32>(Hits[H].part),
+			Hits[H].depth, UTF8_TO_TCHAR(Streets[Hits[H].corridor].c_str()));
+		if (bWarn)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("%s"), *Line);
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("%s"), *Line);
+		}
+	}
+	if (Found > 0 && !bWarn)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("StandIns: corridors: FAILED: %d stand-in parts stand in a street's clear way (%d listed; under %.1f m "
+			"over the ground, over %.2f m in). Move or drop the rows, or pass -StandInCorridorWarn."), Found, FMath::Min(Found, kListed),
+			Spec.clearance, Spec.slack);
+		return false;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("StandIns: corridors: %d points against %d street segments: %d parts in a clear way%s."),
+		static_cast<int32>(Points.size()), static_cast<int32>(Corridors.size()), Found, Found > 0 ? TEXT(" (warned, not failed)") : TEXT(""));
+	return true;
+}
 } // namespace FTStandIns::Impl
 
 bool FTStandIns::Place(UPackage* Package, FFTCellInstancer& Cells, UMaterialInterface* Base, const ftcore::HeightField& Field, double Side)
@@ -234,6 +310,10 @@ bool FTStandIns::Place(UPackage* Package, FFTCellInstancer& Cells, UMaterialInte
 	if (Tables == 0)
 	{
 		return true;
+	}
+	if (!CheckCorridors(Points, Field))
+	{
+		return false;
 	}
 	if (!Base)
 	{
@@ -275,16 +355,31 @@ bool FTStandIns::Place(UPackage* Package, FFTCellInstancer& Cells, UMaterialInte
 	ShapeCentre[CanopyShape] = FVector::ZeroVector;
 	for (int32 V = 0; V < kCanopies; ++V)
 	{
-		Canopies[V] = CanopyMesh(Package, V, Paints[static_cast<int32>(ftcore::StandInPaint::Leaf)],
-			Paints[static_cast<int32>(ftcore::StandInPaint::Bark)], CanopyTriangles[V]);
-		if (!Canopies[V])
+		ftcore::StandInCanopyMesh Source;
+		if (!ftcore::standInCanopyMesh(static_cast<std::size_t>(V), Source))
 		{
+			UE_LOG(LogForgottenThird, Error, TEXT("StandIns: no canopy mesh %d."), V);
 			return false;
 		}
+		UMaterialInterface* const LeafBark[] = {Paints[static_cast<int32>(ftcore::StandInPaint::Leaf)],
+			Paints[static_cast<int32>(ftcore::StandInPaint::Bark)]};
+		Canopies[V] = BuiltMesh(Package, FString::Printf(TEXT("SM_StandIn_Canopy%d"), V), Source, LeafBark, CanopyTriangles[V]);
 	}
 	Shapes[CanopyShape] = Canopies[0];
-	UE_LOG(LogForgottenThird, Display, TEXT("StandIns: canopies of %d, %d, %d triangles (one instance a tree, over its trunk); the basic sphere %d, cylinder %d."),
-		CanopyTriangles[0], CanopyTriangles[1], CanopyTriangles[2], Shapes[static_cast<int32>(ftcore::StandInShape::Sphere)]->GetNumTriangles(0),
+	// The gable: a roof's prism, one instance a back house's roof and each house's gable infill.
+	constexpr int32 GableShape = static_cast<int32>(ftcore::StandInShape::Gable);
+	ShapeSize[GableShape] = FVector(100.0);
+	ShapeCentre[GableShape] = FVector::ZeroVector;
+	int32 GableTriangles = 0;
+	{
+		ftcore::StandInCanopyMesh Source;
+		ftcore::standInGableMesh(Source);
+		UMaterialInterface* const Roof[] = {Paints[static_cast<int32>(ftcore::StandInPaint::RoofTile)]};
+		Shapes[GableShape] = BuiltMesh(Package, TEXT("SM_StandIn_Gable"), Source, Roof, GableTriangles);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("StandIns: canopies of %d, %d, %d triangles (one instance a tree, over its trunk; round-shaded), the gable %d; "
+		"the basic sphere %d, cylinder %d."), CanopyTriangles[0], CanopyTriangles[1], CanopyTriangles[2], GableTriangles,
+		Shapes[static_cast<int32>(ftcore::StandInShape::Sphere)]->GetNumTriangles(0),
 		Shapes[static_cast<int32>(ftcore::StandInShape::Cylinder)]->GetNumTriangles(0));
 	FFTCellOptions Options[kKinds];
 	for (int32 K = 0; K < kKinds; ++K)

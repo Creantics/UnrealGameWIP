@@ -1,6 +1,7 @@
 #include "ftcore/DayShade.h"
 
 #include <algorithm>
+#include <cstddef>
 
 namespace ftcore {
 
@@ -25,6 +26,13 @@ DayShadeFrame dayShadeFrame(const DayShadeLook& look, const DayShadeBase& base, 
     f.shadowContrast = mix(base.shadowContrast, clamp01(look.shadowContrast), a);
     f.diffuseBoost = mix(base.diffuseBoost, std::clamp(look.diffuseBoost, 1.f, 4.f), a);
     f.filmToe = mix(base.filmToe, clamp01(look.filmToe), a);
+    f.highlightContrast = mix(base.highlightContrast, std::min(base.highlightContrast, clamp01(look.highlightContrast)), a);
+    const float minEV = (look.minEV100 == look.minEV100) ? std::clamp(look.minEV100, -15.f, 25.f) : base.minEV100;
+    f.minEV100 = mix(base.minEV100, std::max(base.minEV100, minEV), a);
+    f.fogMaxOpacity = mix(1.f, clamp01(look.fogMaxOpacity), a);
+    for (std::size_t i = 0; i < 3; ++i) {
+        f.fogSky[i] = mix(1.f, clamp01(look.fogSky[i]), a);
+    }
     return f;
 }
 

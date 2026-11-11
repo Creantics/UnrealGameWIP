@@ -10,8 +10,10 @@
 //              on its crests, and a pylon line along its ridge (ftcore::hillDress), kept off every box.
 //   -AviationLamps red obstruction lamps on the tallest roofs and far blocks (ftcore::aviationLamps), instanced
 //              emissive heads lit at night (needs FTBuildSurfaces -Windows' lamp head master).
-//   -Skyline   far blocks past the field's south and north edges on a dark plate each (ftcore::skylineBand), so a
-//              view out of the strip ends on a city, not the sky.
+//   -Skyline   far blocks past the field's south and north edges (ftcore::skylineBand), so a view out of the strip
+//              ends on a city, not the sky. They stand on land plates that carry on from the field's edge at its own
+//              height, only along the reach of the edge that is land (ftcore::skylineSeat): none in open water. They
+//              wear the build's window instance when Dress is given one; -SkylinePlain keeps the plain dark mass.
 //   -Haze[=<density>] a second height-fog layer low over the sea and the ground (default 0.02), so the horizon fades
 //              into haze instead of banding, and the night's city glow (FTNightLook.h) reads near it.
 //   -RockFaces the ground's faces among the built boxes (cliffs and terraces, ftcore::backdropRockFace) wear the ground's
@@ -42,9 +44,9 @@ FORGOTTENTHIRD_API UMaterialInterface* HillGround(UPackage* Package, UMaterialIn
 FORGOTTENTHIRD_API UMaterialInterface* RockFace(UPackage* Package, UMaterialInterface* Wear, const ftcore::MassingBox& Box, UMaterialInterface* Ground);
 
 // -HillDress, -Skyline and -AviationLamps: their instances into Cells (before its Flush). Base is the build's surface
-// material.
+// material. SkylineFacade: a window instance of the build (the r5 window master's, or null) for the far blocks.
 FORGOTTENTHIRD_API void Dress(UPackage* Package, FFTCellInstancer& Cells, UMaterialInterface* Base, const ftcore::HeightField& Field,
-	double Side, const std::vector<ftcore::MassingBox>& Boxes);
+	double Side, const std::vector<ftcore::MassingBox>& Boxes, UMaterialInterface* SkylineFacade = nullptr);
 
 // -Haze: the second fog layer on every height fog in World (after FTScene::SpawnLook).
 FORGOTTENTHIRD_API void Haze(UWorld* World);

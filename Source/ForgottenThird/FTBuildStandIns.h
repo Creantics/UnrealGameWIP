@@ -12,6 +12,12 @@
 //   -StandInTowers=<csv>  glass towers and the landmark (kind glass | landmark; z0 the base, height_m, floors)
 //   -QuayPoints=<csv>     the quay's railing spans, lamp masts and footbridge decks, landings, stairs and piers
 //
+// The corridor rule: with -Streets (and -Roads) on the command line no part of a stand-in may stand in a street's or an
+// alley's clear way (its carriageway where it has pavements, its whole width where it has none; a tree's crown and
+// anything 2.4 m over the ground hang clear: ftcore::standInCorridorCheck). Each offending row is logged as an Error
+// ("StandIns: corridors: ...") and the build fails; -StandInCorridorWarn logs them as warnings and builds on.
+// ftcore_standincheck runs the same rule on the tables offline.
+//
 // A row without z stands on the ground's height. The log gives each kind's points and instances, in all and per cell
 // ("StandIns: Cell_<i>_<j>: ..."), the census the frame budget is checked against. Without these switches nothing here
 // changes the build.
