@@ -121,7 +121,7 @@ inline constexpr std::size_t kMaxCountEvents = 64;
 struct CountEvents {
     std::array<CountEvent, kMaxCountEvents> items{};
     std::size_t count = 0;
-    std::size_t dropped = 0;        // events pushed out or turned away for want of room since the last update
+    std::size_t dropped = 0;        // events lost to a full buffer since the last update
     std::size_t droppedSettles = 0; // of those, BlowSettled events (the host applies its held blows at x1)
 
     const CountEvent* begin() const { return items.data(); }
