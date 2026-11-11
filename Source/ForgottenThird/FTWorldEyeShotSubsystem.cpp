@@ -35,7 +35,9 @@
 #include "Misc/CommandLine.h"
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
+#include "Misc/Paths.h"
 #include "ShaderCompiler.h"
+#include "UnrealClient.h"
 
 #include "ftcore/LookTable.h"
 #include "ftcore/MassingPlan.h"
@@ -120,6 +122,19 @@ void UFTWorldEyeShotSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	UCameraComponent* Camera = Eye->GetCameraComponent();
 	Camera->SetFieldOfView(static_cast<float>(Fov));
 	Camera->SetConstraintAspectRatio(false);
+	double WalkX = 0.0, WalkY = 0.0, WalkZ = 0.0;
+	if (ParseTriple(TEXT("WorldEyeWalkTo="), WalkX, WalkY, WalkZ))
+	{
+		float Speed = 1.4f, Fps = 60.f;
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeWalkSpeed="), Speed);
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeWalkFps="), Fps);
+		const ftcore::MassingVec WalkM = ftcore::massingEnginePoint(Side, WalkX, WalkY, WalkZ);
+		WalkFrom = From;
+		WalkTo = FVector(WalkM.x * 100.0, WalkM.y * 100.0, WalkM.z * 100.0);
+		WalkFrames = FMath::Clamp(FMath::CeilToInt32(FVector::Dist(WalkFrom, WalkTo) / 100.0 / FMath::Max(Speed, 0.05f) * FMath::Max(Fps, 1.f)), 1, 3600);
+		bWalk = true;
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: walk to engine %s at %.2f m/s, %d frames at %.0f a second."), *WalkTo.ToString(), Speed, WalkFrames, Fps);
+	}
 	// The same name again only proves the new still landed once the old one is gone.
 	IFileManager::Get().Delete(*File, false, true, true);
 	bActive = true;
@@ -200,6 +215,14 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: GPU %.3f ms a frame on average over %d frames (%.3f to %.3f) at %d x %d."),
 			GpuSumMs / GpuFrames, GpuFrames, GpuMinMs, GpuMaxMs, ViewSize.X, ViewSize.Y);
 	}
+	// The walk: one step and one frame a tick, then the still from the far end.
+	if (bWalk && Eye && WalkFrame < WalkFrames)
+	{
+		++WalkFrame;
+		Eye->SetActorLocation(FMath::Lerp(WalkFrom, WalkTo, static_cast<double>(WalkFrame) / WalkFrames));
+		FScreenshotRequest::RequestScreenshot(FString::Printf(TEXT("%s_f%04d.png"), *FPaths::ChangeExtension(File, TEXT("")), WalkFrame), false, false);
+		return;
+	}
 	// The game viewport handles HighResShot; the engine's own Exec doesn't.
 	UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr;
 	if (!Viewport)
@@ -270,6 +293,17 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		const float Wet = Look ? Look->GetLook().wetness * ftcore::nightFrame(FTNight::Look(), bWetNight ? 1.f : 0.f).wetShare : 0.f;
 		const bool bWet = Look && LookParams && LookParams->SetScalarParameterValue(TEXT("Wetness"), Wet);
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: wetness %.3f %s."), Wet, bWet ? TEXT("written") : TEXT("not written (no look or MPC_Look)"));
+		// -WindowParallax=<0..1>: 0 shows every room and shop display case flat, for a still alone.
+		float Parallax = -1.f;
+		if (FParse::Value(FCommandLine::Get(), TEXT("WindowParallax="), Parallax) && Parallax >= 0.f)
+		{
+			const FString WindowPath = FTScene::WindowCollection;
+			UMaterialParameterCollection* WindowCollection = LoadObject<UMaterialParameterCollection>(
+				nullptr, *(WindowPath + TEXT(".") + FPackageName::GetShortName(WindowPath)), nullptr, LOAD_NoWarn | LOAD_Quiet);
+			UMaterialParameterCollectionInstance* WindowParams = WindowCollection ? World.GetParameterCollectionInstance(WindowCollection) : nullptr;
+			const bool bSet = WindowParams && WindowParams->SetScalarParameterValue(TEXT("Parallax"), FMath::Clamp(Parallax, 0.f, 1.f));
+			UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: window parallax %.2f %s."), Parallax, bSet ? TEXT("written") : TEXT("not written"));
+		}
 	}
 	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyeNight")))
 	{

@@ -28,12 +28,12 @@
 namespace ftcore {
 
 struct DayShadeLook {
-    float skyScale = 1.6f;
-    float shadowContrast = 0.6f;
-    float diffuseBoost = 1.5f;
+    float skyScale = 2.6f;
+    float shadowContrast = 0.45f;
+    float diffuseBoost = 2.0f;
     float filmToe = 0.55f;
     float highlightContrast = 0.7f;
-    float minEV100 = -0.5f;
+    float minEV100 = -1.5f;
     float fogMaxOpacity = 0.6f;
     std::array<float, 3> fogSky{0.42f, 0.48f, 0.58f};
 };

@@ -648,3 +648,62 @@ TEST_CASE("r11 shop pieces: 2 bays + 3 of shell, a back wall a bay, fewer than r
     CHECK(!windowShopModelled(17u, 0.0f));
     CHECK(windowShopModelled(17u, 1.0f));
 }
+
+TEST_CASE("r12 shop display case: a box fixed behind the glass, the true ray; flat at parallax 0") {
+    const WindowFacadeSpec spec;
+    const float d = spec.shopCaseDepth, w = 2.0f, hgt = 2.2f;
+    // Straight on: the back wall behind the entry point.
+    WindowCaseHit hit = windowShopCaseHit(d, w, hgt, 0.7f, 1.1f, 0.0f, 0.0f, 1.0f, 1.0f);
+    CHECK(hit.face == 0);
+    CHECK(hit.x == doctest::Approx(0.7f));
+    CHECK(hit.y == doctest::Approx(1.1f));
+    CHECK(hit.in == doctest::Approx(d));
+    // 45 degrees along the wall: the back wall point is the case's depth further along, as real shelves that far
+    // behind the glass would be.
+    hit = windowShopCaseHit(d, w, hgt, 0.7f, 1.1f, 1.0f, 0.0f, 1.0f, 1.0f);
+    CHECK(hit.face == 0);
+    CHECK(hit.x == doctest::Approx(0.7f + d));
+    // Near the far jamb the same ray meets the side wall first, part of the way in.
+    hit = windowShopCaseHit(d, w, hgt, w - 0.1f, 1.1f, 1.0f, 0.0f, 1.0f, 1.0f);
+    CHECK(hit.face == 4);
+    CHECK(hit.in == doctest::Approx(0.1f));
+    CHECK(hit.x == doctest::Approx(w));
+    hit = windowShopCaseHit(d, w, hgt, 0.1f, 1.1f, -1.0f, 0.0f, 1.0f, 1.0f);
+    CHECK(hit.face == 3);
+    // Looking down from eye height near the foot: the floor; up near the head: the soffit.
+    hit = windowShopCaseHit(d, w, hgt, 1.0f, 0.1f, 0.0f, -1.0f, 1.0f, 1.0f);
+    CHECK(hit.face == 1);
+    CHECK(hit.y == doctest::Approx(0.0f));
+    hit = windowShopCaseHit(d, w, hgt, 1.0f, hgt - 0.1f, 0.0f, 1.0f, 1.0f, 1.0f);
+    CHECK(hit.face == 2);
+    // A point of the case is one place whatever the eye's: two rays to the same back wall point agree on it.
+    const WindowCaseHit a = windowShopCaseHit(d, w, hgt, 1.0f - 0.5f * d, 1.0f, 0.5f, 0.0f, 1.0f, 1.0f);
+    const WindowCaseHit b = windowShopCaseHit(d, w, hgt, 1.0f + 0.25f * d, 1.0f, -0.25f, 0.0f, 1.0f, 1.0f);
+    CHECK(a.x == doctest::Approx(b.x));
+    // Parallax 0: always the back wall straight behind, any ray (a flat picture that never moves).
+    for (float dx : {-3.0f, -0.5f, 0.0f, 2.0f})
+        for (float dy : {-2.0f, 0.0f, 1.5f}) {
+            hit = windowShopCaseHit(d, w, hgt, 0.05f, 0.05f, dx, dy, 1.0f, 0.0f);
+            CHECK(hit.face == 0);
+            CHECK(hit.x == doctest::Approx(0.05f));
+            CHECK(hit.y == doctest::Approx(0.05f));
+        }
+    // Shallow: a display case, not a room; mid-dark by day, under the upper rooms' cap by proportion.
+    CHECK(spec.shopCaseDepth <= 0.6f);
+    CHECK(spec.shopCaseDepth >= 0.3f);
+    CHECK(spec.shopDay <= 0.7f);
+    CHECK(spec.shopReveal >= 0.15f);
+    CHECK(spec.shopCaseBack < 1.0f);
+}
+
+TEST_CASE("r12 HLSL: the display case replaces a shop's photo; a lit window lights its reveal") {
+    const std::string win = windowFacadeHlsl(WindowFacadeSpec{});
+    for (const char* name : {"float dcPar = saturate(Parallax);", "float dcT = min(", "bool dcBack =", "kGoods[8]",
+                             "c = shop ? dcCol * dcShade : c;", "float3 spill =", "signGlow + spill", "ddx(Along)"})
+        CHECK_MESSAGE(win.find(name) != std::string::npos, name);
+    // The case is drawn after the atlas sample (which the upper rooms keep) and before the light.
+    CHECK(win.find("Texture2DSample(Rooms") < win.find("c = shop ? dcCol"));
+    CHECK(win.find("c = shop ? dcCol") < win.find("float3 day ="));
+    const WindowFacadeSpec spec;
+    CHECK(spec.revealSpill * spec.glowScale < spec.glowCap);
+}

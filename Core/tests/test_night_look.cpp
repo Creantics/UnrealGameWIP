@@ -79,7 +79,7 @@ TEST_CASE("nightFrame: full night is the spec, the same for the clock and a stil
     CHECK(look.glow[0] > look.glow[2]);
     CHECK(look.skyTint[0] > look.skyTint[2]);
     CHECK(look.skyFill >= 0.5f);
-    CHECK(look.skyFill < 1.f);
+    CHECK(look.skyFill <= 1.5f);
 }
 
 TEST_CASE("nightFrame: exposure locks from half night; no allocation") {
@@ -222,10 +222,12 @@ TEST_CASE("night look: grey-blue ambient, orange lamps, warm glow") {
     CHECK(look.lampKelvin <= 2700.f);
     CHECK(look.glow[0] > look.glow[1]);
     CHECK(look.glow[1] > look.glow[2]);
-    // The fill shows an unlit facade (dark, not black) and stays under the day's, so the warm lamps and shop spill
-    // still carry the streets; its tint falls from red to blue, against the captured sky's blue.
+    // The fill shows an unlit facade (dark, not black): the captured night sky is a deep blue that carries little
+    // luminance, so the share is over the day's; its tint falls from red to blue, against that blue.
     CHECK(look.skyFill >= 0.5f);
-    CHECK(look.skyFill <= 0.75f);
+    CHECK(look.skyFill <= 1.5f);
+    // A face turned from the moon stays within about two stops of a moonlit one: the fill is many times the moon.
+    CHECK(look.skyFill >= 10.f * look.moonShare);
     CHECK(look.skyTint[0] >= look.skyTint[1]);
     CHECK(look.skyTint[1] > look.skyTint[2]);
     CHECK(look.skyTint[2] >= 0.4f);

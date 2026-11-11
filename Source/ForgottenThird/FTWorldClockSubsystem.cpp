@@ -381,6 +381,17 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 	if (UMaterialParameterCollectionInstance* WindowParams = Windows.Get())
 	{
 		WindowParams->SetScalarParameterValue(TEXT("Night"), Night);
+		// -WindowParallax=<0..1> at run time: 0 shows every room and shop display case flat (no movement behind glass).
+		static const float Parallax = []
+		{
+			float Value = -1.f;
+			FParse::Value(FCommandLine::Get(), TEXT("WindowParallax="), Value);
+			return Value;
+		}();
+		if (Parallax >= 0.f)
+		{
+			WindowParams->SetScalarParameterValue(TEXT("Parallax"), FMath::Clamp(Parallax, 0.f, 1.f));
+		}
 	}
 	WetShare = Frame.wetShare;
 	WriteWetness();

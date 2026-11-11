@@ -58,7 +58,7 @@ struct WindowFacadeSpec {
     float lipHeight = 0.09f;      // m: a window's sill lip, under its opening
     float lipOut = 0.08f;         // m the lip runs past the opening each side
     float sillShadow = 0.14f;     // m: the lip's shadow on the wall under it (a darker strip)
-    float shopReveal = 0.08f;     // m: a shopfront's glass in from the wall
+    float shopReveal = 0.2f;      // m: a shopfront's glass in from the wall (deep enough that its jambs show the depth)
     float headShadow = 0.4f;      // m: by day the glass darkens toward its head over this height (the reveal's shade)
     float loggiaDepth = 1.1f;     // m: a recessed balcony's glass in from the wall
     float railHeight = 1.0f;      // m: its rail or parapet over its floor
@@ -91,7 +91,17 @@ struct WindowFacadeSpec {
     float shopGlowCap = 0.3f;      // the master's ShopGlowCap: no shop glass's light passes this
     float signGlowCap = 0.35f;     // the master's SignGlowCap: no lit sign's
     float lanternNight = 1.1f;     // a lantern's glow by night over its 0.4 by day
-    float shopDay = 0.9f;          // the master's ShopDay: a shop picture's own light by day
+    float shopDay = 0.6f;          // the master's ShopDay: a shop's display case by day (its own light: about a third
+                                   // of a sunlit wall's, so the glass's reflection of the street still shows over it)
+    // Round 12: a shop's glass shows a display case drawn in the shader (no photo, no modelled cubes): a box this deep
+    // behind the glass in the wall's own frame, seen by the true view ray times the collection's Parallax.
+    float shopCaseDepth = 0.45f;     // m
+    float shopCaseShelf = 0.36f;     // m between its shelf boards (a shop kind adds up to 0.08)
+    float shopCaseCabinet = 0.35f;   // m: the cabinet along the back wall's foot
+    float shopCaseHead = 0.3f;       // m: the plain strip at the back wall's head
+    float shopCaseBack = 0.7f;       // the light at the case's back as a share of that at the glass
+    float shopCaseHeadShade = 0.4f;  // the case darkens toward its head by this share
+    float revealSpill = 0.35f;     // a lit window's light on its own jambs, bottom and head, as a share of GlowScale
     float shopModelDay = 0.7f;     // the modelled interiors' ShopDay: a piece's own light by day (it stands in a shut box)
     float shopNightFloor = 0.02f;  // the modelled interiors' NightFloor: an unlit shop's pieces at night
     float shopDimShare = 0.31f;    // the share of lit shops that are dim (about a quarter of all at ShopLit 0.8)
@@ -162,6 +172,18 @@ FTCORE_API WindowCover windowCoverFor(const WindowFacadeSpec& spec, std::uint32_
 // room maps to one picture point whatever the eye's place. No allocation.
 FTCORE_API WindowRoomHit windowParallaxRoomHit(float depth, float bayWidth, float storeyHeight, float gu, float gv,
                                                float dAlong, float dUp, float dIn, float parallax);
+
+// Round 12: where a view ray ends in a shop's display case, a box width x height m behind the glass and `depth` deep,
+// fixed in the wall's frame: the ray enters at (x, y) m from the opening's lower corner, the true ray (dAlong, dUp
+// across and up the wall, dIn > 0 into it) times `parallax`. face 0 the back wall, 1 the floor, 2 the soffit, 3 and 4
+// the sides at x = 0 and x = width; (x, y) the point across and up, `in` how deep (m). At parallax 0, always the back
+// wall straight behind the entry point: a flat picture. The master's shop glass draws the same. No allocation.
+struct WindowCaseHit {
+    int face = 0;
+    float x = 0.0f, y = 0.0f, in = 0.0f;
+};
+FTCORE_API WindowCaseHit windowShopCaseHit(float depth, float width, float height, float x, float y, float dAlong,
+                                           float dUp, float dIn, float parallax);
 
 // Whether a shop bay is lit at night (the master's lit hash for storey 0 at ShopLit). No allocation.
 FTCORE_API bool windowShopLit(std::uint32_t seed, std::uint32_t column, float shopLit);

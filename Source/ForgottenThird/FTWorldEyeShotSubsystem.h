@@ -7,7 +7,8 @@
 //       [-WorldEyeSize=2560x1440] [-WorldEyeDelay=8] [-WorldEyeNight [-WorldEyeNightSun=<share>] [-WorldEyeNightSky=<share>]
 //       [-WorldEyeNightEV=<ev>] [-WorldEyeNightEVRange=<ev>] [-WorldEyeNightLamp=<cd>] [-WorldEyeNightLampRadius=<m>] [-WorldEyeNightShop=<cd>]
 //       [-WorldEyeNightShopRadius=<m>] [-WorldEyeNightGlow=1]] [-WorldEyeGpuMs=<frames>] [-WorldEyePlainWalls]
-//       [-WorldEyeSunHour=<hours>]
+//       [-WorldEyeSunHour=<hours>] [-WindowParallax=<0..1>]
+//       [-WorldEyeWalkTo=<x,y,z> [-WorldEyeWalkSpeed=1.4] [-WorldEyeWalkFps=60]]
 //
 // A day still of a Solhaven map turns the directional lights to the clock's sun at its start hour
 // (ftcore::kWorldClockStartHours), or at -WorldEyeSunHour on any map, unless a running clock (-TimeOfDay) lights it; a
@@ -30,6 +31,9 @@
 // 36 mm-wide frame, so 35 mm sees about 54.4 degrees across. The view is held on the eye with the HUD hidden while
 // every shader compiles and -WorldEyeDelay seconds pass, then the still is saved at -WorldEyeSize and the game
 // quits (1 if the still never arrives). It needs a renderer: a -NullRHI run draws nothing.
+// -WorldEyeWalkTo: once settled, the eye moves in a straight line to that point at -WorldEyeWalkSpeed metres a second,
+// facing as it started, one step and one frame (<file>_f0001.png ...) a tick at -WorldEyeWalkFps steps a second, so the
+// frames play back as a walk past whatever the machine's own frame rate was; the still is then saved from the far end.
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
@@ -72,4 +76,9 @@ private:
 	bool bLookApplied = false;
 	bool bActive = false;
 	bool bShot = false;
+	bool bWalk = false;
+	FVector WalkFrom = FVector::ZeroVector;
+	FVector WalkTo = FVector::ZeroVector;
+	int32 WalkFrames = 0;
+	int32 WalkFrame = 0;
 };

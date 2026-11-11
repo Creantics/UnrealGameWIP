@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <unordered_map>
 #include <utility>
 
 namespace ftcore {
@@ -14,6 +16,7 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kMarkLift = 0.006;  // m: a marking's top over its surface
+constexpr double kStopEdge = 0.4;   // m: a stop line stops this far short of the kerb, inside the edge line (0.25 m off the kerb, 0.15 wide)
 constexpr double kMarkDeep = 0.008;  // m: a marking's thickness (its underside 2 mm under the surface)
 constexpr double kStubPavement = 2.0; // m: a stub arm's pavements
 constexpr double kShelterDeep = 1.4, kShelterLong = 4.2, kShelterHigh = 2.4;
@@ -197,6 +200,9 @@ enum class Span : std::uint8_t { Normal, Bay, Mouth, Corner, Ramp, Bus };
 struct SideSpan {
     double s0 = 0.0, s1 = 0.0;
     Span type = Span::Normal;
+    bool cut0 = false, cut1 = false; // a network piece's clip of a longer span: that end is the piece's, not the span's
+    SideSpan() = default;
+    SideSpan(double a, double b, Span t, bool c0 = false, bool c1 = false) : s0(a), s1(b), type(t), cut0(c0), cut1(c1) {}
 };
 
 // A signal head facing `face`, centred at c (z its centre), on a phase.
@@ -326,9 +332,14 @@ void buildSide(Ctx& x, const Frame& fr, double sigma, double hc, double w2, doub
             run0 = -1.0;
         }
         if (i < spans.size() && spans[i].type == Span::Bay) {
-            for (const double e : {spans[i].s0, spans[i].s1})
+            // A bay's end line is shared with the next bay's start: laid once.
+            const bool shared = i > 0 && spans[i - 1].type == Span::Bay && std::fabs(spans[i - 1].s1 - spans[i].s0) < 1e-6;
+            for (const double e : {spans[i].s0, spans[i].s1}) {
+                if (shared && e == spans[i].s0) continue;
+                if (e == spans[i].s0 ? spans[i].cut0 : spans[i].cut1) continue;
                 x.mark(fr, e - kRoadLine * 0.5, e + kRoadLine * 0.5, tt(hc), tt(hc + kRoadBayDeep - 0.05),
                        RoadTint::LineWhite, g);
+            }
         }
     }
     // The guard rail along the back edge, over every span but the mouths and corners.
@@ -904,8 +915,8 @@ void roadBuild(const RoadSpec& road, RoadBuild& out) {
         zebraBars(f, j.zs0, j.zs1, hc, false);
         zebraBars(f, j.zn0, j.zn1, hc, false);
         // Stop lines: the +s way in the left lane before the south zebra, the -s way in the right lane past the north.
-        x.mark(f, j.zs0 - kRoadStopBack - kRoadStopLine, j.zs0 - kRoadStopBack, 0.0, hc, RoadTint::LineWhite);
-        x.mark(f, j.zn1 + kRoadStopBack, j.zn1 + kRoadStopBack + kRoadStopLine, -hc, 0.0, RoadTint::LineWhite);
+        x.mark(f, j.zs0 - kRoadStopBack - kRoadStopLine, j.zs0 - kRoadStopBack, 0.0, hc - kStopEdge, RoadTint::LineWhite);
+        x.mark(f, j.zn1 + kRoadStopBack, j.zn1 + kRoadStopBack + kRoadStopLine, -(hc - kStopEdge), 0.0, RoadTint::LineWhite);
         out.keepOut.push_back(footOf(x.box(f, j.zs0 - kRoadStopBack - kRoadStopLine, j.zs0, 0.0, hc, 0, 0, 0, 0, "foot")));
         out.keepOut.push_back(footOf(x.box(f, j.zn1, j.zn1 + kRoadStopBack + kRoadStopLine, -hc, 0.0, 0, 0, 0, 0, "foot")));
         RoadJunction rj;
@@ -936,7 +947,8 @@ void roadBuild(const RoadSpec& road, RoadBuild& out) {
         buildSide(x, sf, -1.0, stubHalf, sw2, sl2, sspans, true, false);
         zebraBars(sf, sz0, sz1, stubHalf, true);
         // Inbound (towards the road, -s of the stub) keeps to its left: the stub's t < 0.
-        x.mark(sf, sz1 + kRoadStopBack, sz1 + kRoadStopBack + kRoadStopLine, -stubHalf, 0.0, RoadTint::LineWhite, x.gutter);
+        x.mark(sf, sz1 + kRoadStopBack, sz1 + kRoadStopBack + kRoadStopLine, -(stubHalf - kStopEdge), 0.0, RoadTint::LineWhite,
+               x.gutter);
         x.mark(sf, sz1 + kRoadStopBack + kRoadStopLine + 1.0, sl2 - 2.0, -kRoadLine * 0.5, kRoadLine * 0.5,
                RoadTint::LineYellow, x.gutter);
         // Its end: a rail, a barrier and a no-entry sign facing the junction.
@@ -1117,7 +1129,7 @@ void roadBuild(const RoadSpec& road, RoadBuild& out) {
               RoadTint::Wood, false);
         out.furniture.push_back(footOf(x.box(f, s0, s1, tl(t0, t1), th(t0, t1), 0, 0, 0, 0, "foot")));
         // The stop's box on the carriageway.
-        x.mark(f, b.at - 8.0, b.at + 12.0, sg * (hc - 0.45), sg * (hc - 0.3), RoadTint::LineYellow);
+        x.mark(f, b.at - 8.0, b.at + 12.0, sg * (hc - 0.6), sg * (hc - 0.45), RoadTint::LineYellow);
         out.keepOut.push_back(footOf(x.box(f, b.at - kRoadBayKeepBus, b.at + kRoadBayKeepBus + 2.0, std::min(sg * hc, sg * (hc + kRoadBayDeep)),
                                            std::max(sg * hc, sg * (hc + kRoadBayDeep)), 0, 0, 0, 0, "foot")));
     }
@@ -1711,17 +1723,49 @@ std::vector<std::size_t> roadBoxClashes(const RoadBuild& build, const std::vecto
     return out;
 }
 
-std::vector<RoadFace> roadCrossingOverlaps(const RoadBuild& build) {
-    // Separating axes over two convex quads: they overlap when no edge normal of either parts them by `slack` or less.
-    constexpr double slack = 0.05;
-    const auto apart = [](const RoadQuad& a, const RoadQuad& b) {
+namespace {
+
+// The plan footprint of a box: centre, half sizes and the turn's cosine and sine.
+struct PlanRect {
+    double cx = 0.0, cy = 0.0, hx = 0.0, hy = 0.0, c = 1.0, s = 0.0;
+};
+PlanRect planRectOf(const MassingBox& b) {
+    PlanRect r;
+    r.cx = b.cx;
+    r.cy = b.cy;
+    r.hx = b.sx * 0.5;
+    r.hy = b.sy * 0.5;
+    r.c = std::cos(b.rot * kPi / 180.0);
+    r.s = std::sin(b.rot * kPi / 180.0);
+    return r;
+}
+// Two plan rectangles overlap when, on each of their four edge normals, their projections run into each other by more
+// than `depth` (abutting ones share an edge: depth 0).
+bool planRectsOverlap(const PlanRect& a, const PlanRect& b, double depth) {
+    const double dx = b.cx - a.cx, dy = b.cy - a.cy;
+    for (int pass = 0; pass < 2; ++pass) {
+        const PlanRect& m = pass == 0 ? a : b;
+        const PlanRect& o = pass == 0 ? b : a;
+        for (int k = 0; k < 2; ++k) {
+            const double ux = k == 0 ? m.c : -m.s, uy = k == 0 ? m.s : m.c;
+            const double mr = k == 0 ? m.hx : m.hy;
+            const double orad = o.hx * std::fabs(o.c * ux + o.s * uy) + o.hy * std::fabs(-o.s * ux + o.c * uy);
+            if (mr + orad - std::fabs(dx * ux + dy * uy) <= depth) return false;
+        }
+    }
+    return true;
+}
+bool markingSolid(const RoadSolid& s) { return s.tint == RoadTint::LineWhite || s.tint == RoadTint::LineYellow; }
+// Two convex plan quads overlap when no edge normal of either parts them by `slack` or less.
+bool quadsOverlap(const RoadQuad& a, const RoadQuad& b, double slack) {
+    const auto apart = [slack](const RoadQuad& p, const RoadQuad& q) {
         for (std::size_t i = 0; i < 4; ++i) {
-            const RoadPoint p = a.pts[i], q = a.pts[(i + 1) % 4];
-            const double nx = q.y - p.y, ny = p.x - q.x, nl = std::hypot(nx, ny);
+            const RoadPoint u = p.pts[i], v = p.pts[(i + 1) % 4];
+            const double nx = v.y - u.y, ny = u.x - v.x, nl = std::hypot(nx, ny);
             if (nl < 1e-9) continue;
             double a0 = 1e30, a1 = -1e30, b0 = 1e30, b1 = -1e30;
             for (std::size_t k = 0; k < 4; ++k) {
-                const double da = (a.pts[k].x * nx + a.pts[k].y * ny) / nl, db = (b.pts[k].x * nx + b.pts[k].y * ny) / nl;
+                const double da = (p.pts[k].x * nx + p.pts[k].y * ny) / nl, db = (q.pts[k].x * nx + q.pts[k].y * ny) / nl;
                 a0 = std::min(a0, da);
                 a1 = std::max(a1, da);
                 b0 = std::min(b0, db);
@@ -1731,16 +1775,76 @@ std::vector<RoadFace> roadCrossingOverlaps(const RoadBuild& build) {
         }
         return false;
     };
+    return !(apart(a, b) || apart(b, a));
+}
+constexpr double kMarkOverlap = 0.02; // m: two markings overlapping by more than this in plan are a fault
+constexpr double kMarkLevel = 1.0;    // m: markings whose tops differ by more than this where they cross lie on different
+                                      // levels (a deck over a road, a ramp over a street): not a pair
+
+// Every pair (i < j, indices into `solids`) of white or yellow marking solids on one level whose plan rectangles overlap
+// by more than kMarkOverlap, found through a uniform grid of 4 m cells over their footprints, in order of i then j.
+template <class Fn>
+void markingPairs(const std::vector<RoadSolid>& solids, Fn&& fn) {
+    constexpr double cell = 4.0;
+    std::vector<std::uint32_t> marks;
+    std::vector<PlanRect> rects;
+    for (std::size_t i = 0; i < solids.size(); ++i) {
+        if (!markingSolid(solids[i])) continue;
+        marks.push_back(static_cast<std::uint32_t>(i));
+        rects.push_back(planRectOf(solids[i].box));
+    }
+    const auto key = [](long long gx, long long gy) { return (gx << 32) ^ (gy & 0xffffffffLL); };
+    std::unordered_map<long long, std::vector<std::uint32_t>> grid;
+    grid.reserve(rects.size() * 2);
+    const auto span = [&](const PlanRect& r, long long& x0, long long& x1, long long& y0, long long& y1) {
+        const double ex = r.hx * std::fabs(r.c) + r.hy * std::fabs(r.s), ey = r.hx * std::fabs(r.s) + r.hy * std::fabs(r.c);
+        x0 = static_cast<long long>(std::floor((r.cx - ex) / cell));
+        x1 = static_cast<long long>(std::floor((r.cx + ex) / cell));
+        y0 = static_cast<long long>(std::floor((r.cy - ey) / cell));
+        y1 = static_cast<long long>(std::floor((r.cy + ey) / cell));
+    };
+    for (std::size_t i = 0; i < rects.size(); ++i) {
+        long long x0, x1, y0, y1;
+        span(rects[i], x0, x1, y0, y1);
+        for (long long gx = x0; gx <= x1; ++gx)
+            for (long long gy = y0; gy <= y1; ++gy) grid[key(gx, gy)].push_back(static_cast<std::uint32_t>(i));
+    }
+    std::vector<std::uint32_t> stamp(rects.size(), 0xffffffffU), hits;
+    for (std::size_t i = 0; i < rects.size(); ++i) {
+        long long x0, x1, y0, y1;
+        span(rects[i], x0, x1, y0, y1);
+        hits.clear();
+        for (long long gx = x0; gx <= x1; ++gx)
+            for (long long gy = y0; gy <= y1; ++gy) {
+                const auto it = grid.find(key(gx, gy));
+                if (it == grid.end()) continue;
+                for (const std::uint32_t j : it->second) {
+                    if (j <= i || stamp[j] == i) continue;
+                    stamp[j] = static_cast<std::uint32_t>(i);
+                    if (!planRectsOverlap(rects[i], rects[j], kMarkOverlap)) continue;
+                    // The level where they meet: the tops at the smaller one's centre.
+                    const MassingBox& a = solids[marks[i]].box;
+                    const MassingBox& b = solids[marks[j]].box;
+                    const MassingBox& sm = a.sx * a.sy <= b.sx * b.sy ? a : b;
+                    if (std::fabs(topAt(a, sm.cx, sm.cy) - topAt(b, sm.cx, sm.cy)) > kMarkLevel) continue;
+                    hits.push_back(j);
+                }
+            }
+        std::sort(hits.begin(), hits.end());
+        for (const std::uint32_t j : hits) fn(static_cast<std::size_t>(marks[i]), static_cast<std::size_t>(marks[j]));
+    }
+}
+
+} // namespace
+
+std::vector<RoadFace> roadCrossingOverlaps(const RoadBuild& build) {
+    constexpr double slack = 0.05;
     std::vector<RoadFace> out;
     for (std::size_t i = 0; i < build.crossings.size(); ++i)
         for (std::size_t j = i + 1; j < build.crossings.size(); ++j) {
             const RoadQuad& a = build.crossings[i];
             const RoadQuad& b = build.crossings[j];
-            // A scramble's two diagonals cross by design (the second's bars stop at the first's band).
-            if (!a.junction.empty() && a.junction == b.junction && a.id.find("-ZD") != std::string::npos &&
-                b.id.find("-ZD") != std::string::npos)
-                continue;
-            if (apart(a, b) || apart(b, a)) continue;
+            if (!quadsOverlap(a, b, slack)) continue;
             RoadFace f;
             f.piece = a.id;
             for (std::size_t k = 0; k < 4; ++k) {
@@ -1750,6 +1854,17 @@ std::vector<RoadFace> roadCrossingOverlaps(const RoadBuild& build) {
             f.fault = "crossing " + b.id;
             out.push_back(std::move(f));
         }
+    // Marking solids (white and yellow) laid over each other.
+    markingPairs(build.solids, [&](std::size_t i, std::size_t j) {
+        const MassingBox& a = build.solids[i].box;
+        const MassingBox& b = build.solids[j].box;
+        RoadFace f;
+        f.piece = a.id;
+        f.x = (a.cx + b.cx) * 0.5;
+        f.y = (a.cy + b.cy) * 0.5;
+        f.fault = "marking " + b.id;
+        out.push_back(std::move(f));
+    });
     return out;
 }
 
@@ -1804,6 +1919,7 @@ constexpr double kNetMaxDeep = 3.0;      // m: the deepest a slab grows over fal
 constexpr double kNetSample = 5.0;       // m: the ground's samples along an edge
 constexpr double kNetProfileTol = 0.1;   // m: a piece's line keeps this near the ground's samples
 constexpr double kNetBandLift = 0.5;     // m: the most a cross-slope lifts the road over the ground at its crown
+constexpr double kScrambleRun = 0.8;     // a diagonal lays at least this share of its bar rows, in one unbroken run
 constexpr std::size_t kNetNotes = 12;    // notes kept of each kind
 
 RoadPoint netSub(RoadPoint a, RoadPoint b) { return {a.x - b.x, a.y - b.y}; }
@@ -1889,11 +2005,16 @@ MassingBox netRing(Ctx& x, RoadPoint c, double a, double step, double r0, double
 
 // A scramble's diagonal zebras: walk points kRoadZebraWide/2 + 0.3 m off each inner corner's kerb arc and near each
 // arm's end of a straight or outer kerb's fill; pairs from different gaps 25-65 degrees to every arm, the shortest
-// first, each point used once, two at most; bars kRoadZebraBar along the walk and kRoadZebraWide across it in 1 m
-// pieces, each tilted to this node's fill (its solids from solid0; the highest top under each corner) and kMarkLift
-// over it at its nearest, so the bars follow the arms' crowns without steps; a piece off the fill (over a kerb) is left
-// out, and so is a piece of the second diagonal in the first's band: where the two cross, one set of bars shows.
-void netScramble(Ctx& x, const NetNode& nd, std::size_t solid0) {
+// first, each point used once, two diagonals at most; bars kRoadZebraBar along the walk and kRoadZebraWide across it in
+// 1 m pieces, each tilted to this node's fill (its solids [solid0, solid1); the highest top under each corner) and
+// kMarkLift over it at its nearest, so the bars follow the arms' crowns without steps. Run once the arms are built:
+//  - a candidate whose band would cross a diagonal already laid is skipped for the next pair;
+//  - a bar row is laid whole or not at all: a row with a piece off the fill (over a kerb), or over another white or
+//    yellow marking (an arm's edge, lane or stop line, or zebra bar), is left out; the rows on the fill must be one
+//    unbroken run covering at least kScrambleRun of the rows, and the marking test trims that run's ends only, else none of the
+//    diagonal is laid and no crossing registered;
+//  - the crossing registered spans exactly the bars laid.
+void netScramble(Ctx& x, const NetNode& nd, std::size_t solid0, std::size_t solid1) {
     struct Walk {
         RoadPoint p;
         std::size_t gap;
@@ -1936,32 +2057,54 @@ void netScramble(Ctx& x, const NetNode& nd, std::size_t solid0) {
             if (ok) pairs.push_back({a, b, len});
         }
     std::sort(pairs.begin(), pairs.end(), [](const Pair& l, const Pair& r) { return l.len < r.len; });
+    // The white and yellow markings near the node (the arms', then the diagonals laid here), as plan rectangles.
+    std::vector<PlanRect> marks;
+    for (const RoadSolid& sl : x.out.solids)
+        if (markingSolid(sl) && std::hypot(sl.box.cx - nd.p.x, sl.box.cy - nd.p.y) < 80.0)
+            marks.push_back(planRectOf(sl.box));
+    // The fill's top under a plan point (the highest of the node's slabs there); false off the fill.
+    const auto surface = [&](RoadPoint q, double& top) {
+        bool hit = false;
+        top = -1e9;
+        for (std::size_t i = solid0; i < solid1; ++i) {
+            const RoadSolid& sl = x.out.solids[i];
+            if (!slabSolid(sl) || !slabHas(sl, q.x, q.y)) continue;
+            top = std::max(top, topAt(sl.box, q.x, q.y));
+            hit = true;
+        }
+        return hit;
+    };
+    struct Piece {
+        double t0 = 0.0, t1 = 0.0, top = 0.0, riseU = 0.0, riseW = 0.0;
+        PlanRect rect;
+    };
+    struct Row {
+        double s = 0.0;
+        bool fill = true;   // every piece on the fill
+        bool clash = false; // some piece over another marking
+        std::vector<Piece> pieces;
+    };
     std::vector<char> used(walks.size(), 0);
-    std::vector<std::pair<Frame, double>> laid; // the diagonals already barred (frame, length): a later one's pieces
-                                                 // keep out of their bands
-    int made = 0;
+    std::vector<RoadQuad> laid; // the diagonals' crossings so far (their laid bars)
     for (const Pair& pr : pairs) {
-        if (made >= 2) break;
+        if (laid.size() >= 2) break;
         if (used[pr.a] || used[pr.b]) continue;
-        used[pr.a] = used[pr.b] = 1;
-        ++made;
         const RoadPoint p0 = walks[pr.a].p, p1 = walks[pr.b].p;
         const Frame f = frameOf(p0.x, p0.y, p1.x, p1.y);
         const int across = static_cast<int>(std::ceil(kRoadZebraWide - 1e-9));
         const double pw = kRoadZebraWide / across;
-        // The fill's top under a plan point (the highest of the node's slabs there); false off the fill.
-        auto surface = [&](RoadPoint q, double& top) {
-            bool hit = false;
-            top = -1e9;
-            for (std::size_t i = solid0; i < x.out.solids.size(); ++i) {
-                const RoadSolid& sl = x.out.solids[i];
-                if (!slabSolid(sl) || !slabHas(sl, q.x, q.y)) continue;
-                top = std::max(top, topAt(sl.box, q.x, q.y));
-                hit = true;
-            }
-            return hit;
-        };
+        // Its band against the diagonals laid: a crossing one is out (the road check's test, 5 cm slack).
+        {
+            RoadQuad band;
+            band.pts = {f.at(0.0, -half), f.at(pr.len, -half), f.at(pr.len, half), f.at(0.0, half)};
+            bool crosses = false;
+            for (const RoadQuad& other : laid) crosses = crosses || quadsOverlap(band, other, 0.05);
+            if (crosses) continue;
+        }
+        std::vector<Row> rows;
         for (double s = 0.3; s + kRoadZebraBar <= pr.len - 0.3 + 1e-9; s += 2.0 * kRoadZebraBar) {
+            Row row;
+            row.s = s;
             for (int c = 0; c < across; ++c) {
                 const double t0 = -half + c * pw, t1 = t0 + pw;
                 // Its corners (s then t), then the edges' middles and the centre.
@@ -1970,40 +2113,152 @@ void netScramble(Ctx& x, const NetNode& nd, std::size_t solid0) {
                                             f.at(s + kRoadZebraBar, t1), f.at(sm, t0), f.at(sm, t1),
                                             f.at(s, tm),  f.at(s + kRoadZebraBar, tm), f.at(sm, tm)};
                 double z[9] = {};
-                bool lay = true; // a piece any of whose probes misses the fill (over a kerb) is left out
-                for (int i = 0; i < 9 && lay; ++i) {
-                    lay = surface(probe[i], z[i]);
-                    for (const std::pair<Frame, double>& band : laid) {
-                        const Frame& e = band.first;
-                        const double ds = (probe[i].x - e.ox) * e.dx + (probe[i].y - e.oy) * e.dy;
-                        const double dt = -(probe[i].x - e.ox) * e.dy + (probe[i].y - e.oy) * e.dx;
-                        if (ds > -0.05 && ds < band.second + 0.05 && std::fabs(dt) < half + 0.05) lay = false;
+                for (int i = 0; i < 9 && row.fill; ++i) row.fill = surface(probe[i], z[i]);
+                Piece pc;
+                pc.t0 = t0;
+                pc.t1 = t1;
+                const RoadPoint cc = f.at(sm, tm);
+                pc.rect.cx = cc.x;
+                pc.rect.cy = cc.y;
+                pc.rect.hx = kRoadZebraBar * 0.5;
+                pc.rect.hy = pw * 0.5;
+                pc.rect.c = f.dx;
+                pc.rect.s = f.dy;
+                if (row.fill) {
+                    // The plane through its corners' mean and slopes, lifted clear of every probe.
+                    pc.riseU = ((z[1] + z[3]) - (z[0] + z[2])) * 0.5 / kRoadZebraBar;
+                    pc.riseW = ((z[2] + z[3]) - (z[0] + z[1])) * 0.5 / pw;
+                    const double zc = (z[0] + z[1] + z[2] + z[3]) * 0.25;
+                    double over = 0.0;
+                    for (int i = 0; i < 9; ++i) {
+                        const double du = (i == 0 || i == 2 || i == 6) ? -0.5 : ((i == 1 || i == 3 || i == 7) ? 0.5 : 0.0);
+                        const double dw = (i == 0 || i == 1 || i == 4) ? -0.5 : ((i == 2 || i == 3 || i == 5) ? 0.5 : 0.0);
+                        over = std::max(over, z[i] - (zc + pc.riseU * du * kRoadZebraBar + pc.riseW * dw * pw));
                     }
+                    pc.top = zc + over + kMarkLift;
+                    for (const PlanRect& m : marks) row.clash = row.clash || planRectsOverlap(pc.rect, m, kMarkOverlap);
                 }
-                if (!lay) continue;
-                // The plane through its corners' mean and slopes, lifted clear of every probe.
-                const double riseU = ((z[1] + z[3]) - (z[0] + z[2])) * 0.5 / kRoadZebraBar;
-                const double riseW = ((z[2] + z[3]) - (z[0] + z[1])) * 0.5 / pw;
-                const double zc = (z[0] + z[1] + z[2] + z[3]) * 0.25;
-                double over = 0.0;
-                for (int i = 0; i < 9; ++i) {
-                    const double du = (i == 0 || i == 2 || i == 6) ? -0.5 : ((i == 1 || i == 3 || i == 7) ? 0.5 : 0.0);
-                    const double dw = (i == 0 || i == 1 || i == 4) ? -0.5 : ((i == 2 || i == 3 || i == 5) ? 0.5 : 0.0);
-                    over = std::max(over, z[i] - (zc + riseU * du * kRoadZebraBar + riseW * dw * pw));
-                }
-                x.add(x.box(f, s, s + kRoadZebraBar, t0, t1, zc + over + kMarkLift, kMarkDeep, riseU, riseW, "mark"),
+                row.pieces.push_back(pc);
+            }
+            rows.push_back(std::move(row));
+        }
+        // The rows on the fill: one unbroken run of at least 90% of the rows, else none of the diagonal.
+        const int total = static_cast<int>(rows.size());
+        int first = total, last = -1, onFill = 0;
+        for (int i = 0; i < total; ++i)
+            if (rows[static_cast<std::size_t>(i)].fill) {
+                first = std::min(first, i);
+                last = i;
+                ++onFill;
+            }
+        if (onFill == 0 || onFill != last - first + 1 || onFill < total * kScrambleRun) continue;
+        // Over other markings: trim the run's ends; a clash inside it ends the diagonal.
+        while (first <= last && rows[static_cast<std::size_t>(first)].clash) ++first;
+        while (last >= first && rows[static_cast<std::size_t>(last)].clash) --last;
+        if (first > last || last - first + 1 < total * kScrambleRun) continue;
+        bool broken = false;
+        for (int i = first; i <= last; ++i) broken = broken || rows[static_cast<std::size_t>(i)].clash;
+        if (broken) continue;
+        for (int i = first; i <= last; ++i) {
+            const Row& row = rows[static_cast<std::size_t>(i)];
+            for (const Piece& pc : row.pieces) {
+                x.add(x.box(f, row.s, row.s + kRoadZebraBar, pc.t0, pc.t1, pc.top, kMarkDeep, pc.riseU, pc.riseW, "mark"),
                       RoadTint::LineWhite, false);
                 ++x.out.counts.markings;
+                marks.push_back(pc.rect);
             }
         }
-        laid.emplace_back(f, pr.len);
+        used[pr.a] = used[pr.b] = 1;
+        const double sa = rows[static_cast<std::size_t>(first)].s;
+        const double sb = rows[static_cast<std::size_t>(last)].s + kRoadZebraBar;
         RoadQuad q;
-        q.id = nd.id + "-ZD" + std::to_string(made);
+        q.id = nd.id + "-ZD" + std::to_string(laid.size() + 1);
         q.junction = nd.id;
-        q.pts = {f.at(0.0, -half), f.at(pr.len, -half), f.at(pr.len, half), f.at(0.0, half)};
+        q.pts = {f.at(sa, -half), f.at(sb, -half), f.at(sb, half), f.at(sa, half)};
+        laid.push_back(q);
         x.out.crossings.push_back(q);
-        x.out.keepOut.push_back(footOf(x.box(f, 0.0, pr.len, -half, half, 0, 0, 0, 0, "foot")));
+        x.out.keepOut.push_back(footOf(x.box(f, sa, sb, -half, half, 0, 0, 0, 0, "foot")));
         ++x.out.counts.zebras;
+    }
+}
+
+// White and yellow markings laid over each other (two streets meeting at a sharp angle run an arm's lines into the other's
+// bars, stop line and bay lines): per pair, the cheaper piece gives way. A line (0.2 m wide or less) is cut back at the end
+// nearer the other piece, or dropped when under 0.3 m is left; any other piece is dropped whole; the cost is the area lost.
+// Passes repeat until no pair is left (a cut line can meet a third piece).
+void netClearMarkings(RoadBuild& out) {
+    constexpr double gap = 0.03;    // m: a cut line stops this far short
+    constexpr double minLine = 0.3; // m
+    for (int pass = 0; pass < 8; ++pass) {
+        std::vector<std::pair<std::size_t, std::size_t>> pairs;
+        markingPairs(out.solids, [&](std::size_t i, std::size_t j) { pairs.emplace_back(i, j); });
+        if (pairs.empty()) return;
+        std::vector<char> touched(out.solids.size(), 0), drop(out.solids.size(), 0);
+        for (const auto& pr : pairs) {
+            if (touched[pr.first] || touched[pr.second]) continue; // the next pass sees it again
+            touched[pr.first] = touched[pr.second] = 1;
+            // What each side would lose to give way: the area, and for a line the cut (along its long axis).
+            struct Plan {
+                double cost = 1e30, keepLo = 0.0, keepHi = 0.0; // a line's kept span along its long axis
+                bool cut = false, alongU = true;
+            };
+            Plan plan[2];
+            for (int v = 0; v < 2; ++v) {
+                const MassingBox& me = out.solids[v == 0 ? pr.first : pr.second].box;
+                const MassingBox& ot = out.solids[v == 0 ? pr.second : pr.first].box;
+                Plan& pl = plan[v];
+                pl.cost = me.sx * me.sy;
+                const double wid = std::min(me.sx, me.sy), lng = std::max(me.sx, me.sy);
+                if (wid > 0.2 || lng < 2.0 * minLine) continue;
+                pl.alongU = me.sx >= me.sy;
+                const double r = me.rot * kPi / 180.0;
+                const double ux = pl.alongU ? std::cos(r) : -std::sin(r), uy = pl.alongU ? std::sin(r) : std::cos(r);
+                const PlanRect o = planRectOf(ot);
+                double lo = 1e30, hi = -1e30;
+                for (int k = 0; k < 4; ++k) {
+                    const double px = o.cx + ((k & 1) ? o.hx : -o.hx) * o.c - ((k & 2) ? o.hy : -o.hy) * o.s;
+                    const double py = o.cy + ((k & 1) ? o.hx : -o.hx) * o.s + ((k & 2) ? o.hy : -o.hy) * o.c;
+                    const double d = (px - me.cx) * ux + (py - me.cy) * uy;
+                    lo = std::min(lo, d);
+                    hi = std::max(hi, d);
+                }
+                const double h = lng * 0.5;
+                const bool highEnd = (lo + hi) * 0.5 >= 0.0;
+                pl.keepLo = highEnd ? -h : hi + gap;
+                pl.keepHi = highEnd ? lo - gap : h;
+                if (pl.keepHi - pl.keepLo < minLine) continue; // too little left: dropped whole
+                pl.cut = true;
+                pl.cost = (lng - (pl.keepHi - pl.keepLo)) * wid;
+            }
+            const int v = plan[0].cost < plan[1].cost ? 0 : 1;
+            const std::size_t at = v == 0 ? pr.first : pr.second;
+            RoadSolid& sd = out.solids[at];
+            if (!plan[v].cut) {
+                drop[at] = 1;
+                continue;
+            }
+            MassingBox& m = sd.box;
+            const double r = m.rot * kPi / 180.0;
+            const double ux = plan[v].alongU ? std::cos(r) : -std::sin(r), uy = plan[v].alongU ? std::sin(r) : std::cos(r);
+            const double mid = (plan[v].keepLo + plan[v].keepHi) * 0.5;
+            m.cx += ux * mid;
+            m.cy += uy * mid;
+            const double rise = plan[v].alongU ? m.riseU : m.riseW;
+            m.z1 += rise * mid;
+            m.z0 += rise * mid;
+            (plan[v].alongU ? m.sx : m.sy) = plan[v].keepHi - plan[v].keepLo;
+        }
+        std::size_t kept = 0;
+        for (std::size_t i = 0; i < out.solids.size(); ++i) {
+            if (drop[i]) {
+                --out.counts.solids;
+                --out.counts.markings;
+                continue;
+            }
+            if (kept != i) out.solids[kept] = std::move(out.solids[i]);
+            ++kept;
+        }
+        out.solids.resize(kept);
     }
 }
 
@@ -2426,6 +2681,10 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
     }
 
     // Each node of two arms or more: the level fill, its corners, a junction's record.
+    struct Scramble {
+        std::size_t node, solid0, solid1;
+    };
+    std::vector<Scramble> scrambles; // laid after the edges: their bars keep clear of the arms' markings
     for (std::size_t n = 0; n < nodes.size(); ++n) {
         const NetNode& nd = nodes[n];
         if (nd.arms.size() < 2) continue;
@@ -2572,7 +2831,7 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                 }
             }
         }
-        if (nd.scramble) netScramble(x, nd, solid0);
+        if (nd.scramble) scrambles.push_back({n, solid0, out.solids.size()});
         if (nd.signal) {
             RoadJunction rj;
             rj.id = nd.id;
@@ -2834,7 +3093,7 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                 std::vector<SideSpan> clip;
                 for (const SideSpan& sp : side == 0 ? spansL : spansR) {
                     const double a = std::max(sp.s0, pc.p0), b = std::min(sp.s1, pc.p1);
-                    if (b - a > 1e-6) clip.push_back({a - pc.p0, b - pc.p0, sp.type});
+                    if (b - a > 1e-6) clip.push_back({a - pc.p0, b - pc.p0, sp.type, a > sp.s0 + 1e-6, b < sp.s1 - 1e-6});
                 }
                 buildSide(x, pc.fr, side == 0 ? 1.0 : -1.0, hc, w2, lp, clip, false, st.deck);
             }
@@ -2908,7 +3167,8 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                 ++out.counts.zebras;
                 const double nearS = end == 0 ? z1 : z0;
                 const double l0 = nearS + away * kRoadStopBack, l1 = l0 + away * kRoadStopLine;
-                markAlong(std::min(l0, l1), std::max(l0, l1), std::min(0.0, ti * hc), std::max(0.0, ti * hc));
+                markAlong(std::min(l0, l1), std::max(l0, l1), std::min(0.0, ti * (hc - kStopEdge)),
+                         std::max(0.0, ti * (hc - kStopEdge)));
                 out.keepOut.push_back(footOf(x.box(f, std::min(nearS, l1), std::max(nearS, l1), std::min(0.0, ti * hc),
                                                    std::max(0.0, ti * hc), 0, 0, 0, 0, "foot")));
                 poleS = l1 + away * 0.5;
@@ -2972,6 +3232,18 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
             }
         }
     }
+    // The scrambles' diagonal zebras, now that the arms' markings are down.
+    for (const Scramble& sc : scrambles) {
+        RoadSpec spec;
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "NODE-%04zu", sc.node + 1);
+        spec.id = nodes[sc.node].id.empty() ? std::string(buf) : nodes[sc.node].id;
+        Ctx x(spec, out);
+        x.n = 1000000;
+        netScramble(x, nodes[sc.node], sc.solid0, sc.solid1);
+    }
+    // Streets meeting at a sharp angle run markings into each other's: the cheaper piece of each pair gives way.
+    netClearMarkings(out);
     // Kerb and pavement pieces in the way: crossed by a lane of the net where no slab lies flush with them, or lying in
     // a carriageway rectangle on their level (junctions near each other, a corner of one in the other's arm). They go:
     // the carriageway or the other junction's fill is there.

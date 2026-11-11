@@ -356,9 +356,12 @@ struct RoadFace {
 // One row per piece and fault. Junction mouths and lane mouths cut the kerbs and pavements, so a built road has none.
 // Then roadCrossingOverlaps' rows, so the road check rejects them with the faces.
 FTCORE_API std::vector<RoadFace> roadKerbFaces(const RoadBuild& build, const RoadGraph* graph);
-// Two crossings (build.crossings) whose quads overlap in plan by more than 5 cm: one row per pair, piece the first's
-// id, fault "crossing <the other's id>", the point between their centres. A scramble's two diagonals (ids -ZD, the same
-// junction) cross by design and are not a pair: the second's bars stop at the first's band (roadNetBuild).
+// Two faults, one row each. Crossings (build.crossings) whose quads overlap in plan by more than 5 cm: piece the first's
+// id, fault "crossing <the other's id>", the point between their centres (a scramble's diagonals are no exception: the
+// builder lays a second one only where its band clears the first's). Marking solids tinted LineWhite or LineYellow whose
+// plan rectangles overlap by more than 2 cm on every edge normal of both: piece the first's id, fault "marking <the
+// other's id>", the point between their centres. Pieces that abut (the bars and chunks of one run) share an edge and
+// are no pair. Found through a uniform grid, so a whole network's solids check in a moment.
 FTCORE_API std::vector<RoadFace> roadCrossingOverlaps(const RoadBuild& build);
 // The boxes of `kerbs` (massingKerbs' pieces of the other streets) with a lane or carriageway fault against `build`:
 // -Kerbs leaves them out where those streets cross a road. Indices, in order.
@@ -440,8 +443,12 @@ struct RoadNetReport {
 // ground lets the slab sit (report: aprons).
 // A scramble (a signalised junction a street's `scramble` names): its pedestrian signals on phase W (all-walk) and up
 // to two diagonal zebras (ids <junction>-ZD<n>, kRoadZebraWide wide) between its corners and straight kerbs across the
-// fill, each 25-65 degrees to every arm, in pieces tilted to the fill and 6 mm over it; where the two cross, the first's
-// bars show and the second's stop at its band; kerbs as any junction's.
+// fill, each 25-65 degrees to every arm, in pieces tilted to the fill and 6 mm over it. The diagonals are laid once the
+// arms' markings are down: a candidate whose band would cross one already laid is skipped for the next pair, so a
+// junction has one diagonal, or two that do not cross; a bar row is laid whole or not at all, never over an arm's edge,
+// lane or stop line or zebra bar; the rows on the fill must be one unbroken run covering kScrambleRun (80%) of the diagonal's rows
+// (the marking test trims its ends only), else none of it is laid; its crossing quad spans exactly the bars laid.
+// Kerbs as any junction's.
 // Last, the kerb and pavement pieces roadKerbFaces would find across its own lanes or in its own carriageway (two
 // junctions close together) are left out (report: pruned).
 FTCORE_API void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround& ground, RoadBuild& out,

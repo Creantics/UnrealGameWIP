@@ -299,6 +299,71 @@ constexpr WindowTint kShopColours[kWindowShopColourCount] = {
     {0.78f, 0.66f, 0.30f, 1.0f, false},  // yellow packets
     {0.25f, 0.50f, 0.30f, 1.0f, false},  // green packets
 };
+constexpr std::uint32_t kCaseSalt = 0x1f83d9abu;  // round 12: a display case's goods
+
+// Round 12: a shop's glass shows a display case drawn in the shader, not a photo: a box shopCaseDepth deep behind the
+// glass, fixed in the wall's own frame and hit by the true view ray times the collection's Parallax (so it moves on
+// screen exactly as shelves that far behind real glass would; at Parallax 0 it is its back wall, flat). The back wall
+// carries shelf boards with goods standing on them (widths, heights and colours by hash, gaps left), a cabinet along
+// its foot and a plain strip at its head; the floor is tiled, the sides and the soffit plain. Everything darkens with
+// its depth and toward the head, so the case reads as a mid-dark room behind glass, never a pale panel. Detail fades
+// to its mean colour as a pixel's footprint grows past the goods' size (no shimmer far down a street).
+// Reads shop, pick, hh, gu, gv, u0, u1, v0, v1, bw, sh, ViewT, dzv, Along, Up, W; writes c for a shop.
+std::string shopCaseHlsl(const WindowFacadeSpec& spec) {
+    std::string h;
+    h.reserve(4096);
+    const std::string d = num(spec.shopCaseDepth);
+    h += "float dcW = max((u1 - u0) * bw, 0.1);\n";
+    h += "float dcH = max((v1 - v0) * sh, 0.1);\n";
+    h += "float dcX = clamp((gu - u0) * bw, 0.0, dcW);\n";
+    h += "float dcY = clamp((gv - v0) * sh, 0.0, dcH);\n";
+    h += "float dcPar = saturate(Parallax);\n";
+    h += "float dcSx = dcPar * ViewT.x / dzv;\n";
+    h += "float dcSy = dcPar * ViewT.y / dzv;\n";
+    h += "float dcTx = dcSx > 0.0 ? (dcW - dcX) / dcSx : (dcSx < 0.0 ? -dcX / dcSx : 1e30);\n";
+    h += "float dcTy = dcSy > 0.0 ? (dcH - dcY) / dcSy : (dcSy < 0.0 ? -dcY / dcSy : 1e30);\n";
+    h += "float dcT = min(" + d + ", min(dcTx, dcTy));\n";
+    h += "bool dcBack = dcT >= " + d + " - 1e-4;\n";
+    h += "bool dcSide = !dcBack && dcTx <= dcTy;\n";
+    h += "float dcBx = dcX + dcT * dcSx;\n";
+    h += "float dcBy = dcY + dcT * dcSy;\n";
+    // The back wall: a cabinet, shelf rows of goods, a plain head.
+    h += "float dcPitch = " + num(spec.shopCaseShelf) + " + 0.04 * float(pick % 3u);\n";
+    h += "float dcItem = 0.14 + 0.03 * float((pick + 1u) % 3u);\n";
+    h += "float dcRy = (dcBy - " + num(spec.shopCaseCabinet) + ") / dcPitch;\n";
+    h += "float dcRow = floor(dcRy);\n";
+    h += "float dcFy = dcRy - dcRow;\n";
+    h += "float dcIx = floor(dcBx / dcItem);\n";
+    h += "float dcFx = dcBx / dcItem - dcIx;\n";
+    h += "uint dcHh = W.H(W.H(hh ^ " + unum(kCaseSalt) + ") + W.H((uint)(dcRow + 8.0) * 131u + (uint)(dcIx + 4.0)));\n";
+    h += "float dcR0 = float(dcHh & 0xFFu) / 256.0;\n";
+    h += "float dcR1 = float((dcHh >> 8) & 0xFFu) / 256.0;\n";
+    h += "float3 kGoods[8] = {float3(0.52, 0.17, 0.11), float3(0.15, 0.30, 0.44), float3(0.58, 0.48, 0.20), "
+         "float3(0.18, 0.36, 0.22), float3(0.50, 0.46, 0.40), float3(0.40, 0.24, 0.13), float3(0.56, 0.34, 0.14), "
+         "float3(0.30, 0.31, 0.34)};\n";
+    h += "float3 dcWall = float3(0.21, 0.20, 0.185);\n";
+    h += "float3 dcMean = float3(0.24, 0.215, 0.18);\n";
+    h += "bool dcCab = dcBy < " + num(spec.shopCaseCabinet) + ";\n";
+    h += "bool dcHead = dcBy > dcH - " + num(spec.shopCaseHead) + ";\n";
+    h += "bool dcBoard = dcFy < 0.07;\n";
+    h += "bool dcGood = !dcBoard && dcR0 > 0.14 && dcFx > 0.07 && dcFx < 0.93 && dcFy < 0.07 + 0.88 * (0.4 + 0.6 * dcR1);\n";
+    h += "float3 dcCol = dcCab ? float3(0.27, 0.18, 0.11) * (dcBy > " + num(spec.shopCaseCabinet) +
+         " - 0.04 ? 1.35 : 1.0) : (dcHead ? dcWall * 1.15 : (dcBoard ? float3(0.11, 0.10, 0.09) : (dcGood ? "
+         "kGoods[(dcHh >> 16) % 8u] * (0.8 + 0.4 * dcR0) : dcWall)));\n";
+    h += "float dcFw = abs(ddx(Along)) + abs(ddy(Along)) + abs(ddx(Up)) + abs(ddy(Up));\n";
+    h += "dcCol = lerp(dcMean, dcCol, saturate(1.6 - dcFw / (0.3 * dcItem)));\n";
+    // The floor (tiles), the soffit and the sides.
+    h += "float2 dcTile = floor(float2(dcBx, dcT) / 0.3);\n";
+    h += "float3 dcFloor = float3(0.17, 0.16, 0.15) * (frac(0.5 * (dcTile.x + dcTile.y)) < 0.25 ? 1.0 : 0.82);\n";
+    h += "dcFloor = lerp(float3(0.155, 0.145, 0.137), dcFloor, saturate(1.6 - dcFw / 0.09));\n";
+    h += "dcCol = dcBack ? dcCol : (dcSide ? dcWall * 0.85 : (dcSy < 0.0 ? dcFloor : float3(0.26, 0.25, 0.235)));\n";
+    // Depth: darker the deeper the ray ends (daylight falls off behind the glass) and toward the head (the soffit's shade).
+    h += "float dcYn = saturate(dcBy / dcH);\n";
+    h += "float dcShade = lerp(1.0, " + num(spec.shopCaseBack) + ", dcT / " + d + ") * (1.0 - " +
+         num(spec.shopCaseHeadShade) + " * dcYn * dcYn);\n";
+    h += "c = shop ? dcCol * dcShade : c;\n";
+    return h;
+}
 }  // namespace
 
 WindowCover windowCoverFor(const WindowFacadeSpec& spec, std::uint32_t seed, std::uint32_t storey,
@@ -324,6 +389,24 @@ WindowRoomHit windowParallaxRoomHit(float depth, float bayWidth, float storeyHei
     const float s = 1.0f / (1.0f + t);
     r.x = 0.5f + (gu + t * rx - 0.5f) * s;
     r.y = 0.5f + (gv + t * ry - 0.5f) * s;
+    return r;
+}
+
+WindowCaseHit windowShopCaseHit(float depth, float width, float height, float x, float y, float dAlong, float dUp,
+                                float dIn, float parallax) {
+    const float din = std::max(dIn, 1e-4f);
+    const float w = std::max(width, 0.1f), hgt = std::max(height, 0.1f);
+    const float x0 = std::clamp(x, 0.0f, w), y0 = std::clamp(y, 0.0f, hgt);
+    const float sx = parallax * dAlong / din, sy = parallax * dUp / din;
+    const float tx = sx > 0.0f ? (w - x0) / sx : (sx < 0.0f ? -x0 / sx : 1e30f);
+    const float ty = sy > 0.0f ? (hgt - y0) / sy : (sy < 0.0f ? -y0 / sy : 1e30f);
+    WindowCaseHit r;
+    r.in = std::min(depth, std::min(tx, ty));
+    if (r.in >= depth - 1e-4f) r.face = 0;
+    else if (tx <= ty) r.face = sx < 0.0f ? 3 : 4;
+    else r.face = sy < 0.0f ? 1 : 2;
+    r.x = x0 + r.in * sx;
+    r.y = y0 + r.in * sy;
     return r;
 }
 
@@ -749,6 +832,7 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     h += "float2 ruv = float2((float(room % " + unum(kWindowAtlasCols) + ") + px) / " + num(kWindowAtlasCols) +
          ", (float(room / " + unum(kWindowAtlasCols) + ") + 1.0 - py) / " + num(kWindowAtlasRows) + ");\n";
     h += "float3 c = Texture2DSample(Rooms, RoomsSampler, ruv).rgb;\n";
+    h += shopCaseHlsl(spec);
     h += "float tc = " + num(s.curtainDepth / spec.roomDepth) + ";\n";
     h += "float cx = saturate((gu + tc * rx - u0) / max(u1 - u0, 1e-4));\n";
     h += "float cy = saturate((gv + tc * ry - v0) / max(v1 - v0, 1e-4));\n";
@@ -791,7 +875,13 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     h += "float3 frostGlow = (!shop && part == 13.0 && lit) ? (cover == 2u ? tints[tint] * " + num(spec.frostGlow) +
          " : float3(0.9, 0.85, 0.72) * 0.8) * Night * GlowScale : float3(0.0, 0.0, 0.0);\n";
     h += "frostGlow = frostGlow / (1.0 + dot(frostGlow, kLum) / max(GlowCap, 1e-4));\n";
-    h += "Emit = glass ? day + night : (part == 12.0 ? lanternGlow : (part == 13.0 && !shop ? frostGlow : signGlow));\n";
+    // A lit window lights its own reveal (parts 5..8): along a lane, where the jamb hides the glass, the lit slot
+    // still reads, so a face turned from the moon is not one dark mass.
+    h += "float3 spill = (!shop && lit && part >= 5.0 && part <= 8.0) ? tints[tint] * (" + num(spec.revealSpill) +
+         " * Night) * GlowScale : float3(0.0, 0.0, 0.0);\n";
+    h += "spill = spill / (1.0 + dot(spill, kLum) / max(GlowCap, 1e-4));\n";
+    h += "Emit = glass ? day + night : (part == 12.0 ? lanternGlow : (part == 13.0 && !shop ? frostGlow : signGlow + "
+         "spill));\n";
     h += "own = (!shop && part == 13.0) ? float3(0.7, 0.73, 0.73) : own;\n";
     h += "own = part == 17.0 ? float3(0.05, 0.05, 0.055) : (part == 18.0 ? float3(0.14, 0.14, 0.15) : own);\n";
     h += "float3 rgbOut = glass ? seen * hs : (part == 3.0 ? bandRgb : (part == 4.0 || part == 16.0 ? fasciaRgb : (part == "

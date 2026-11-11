@@ -8,6 +8,7 @@
 #include <ostream>
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -482,7 +483,7 @@ TEST_CASE("road net: a square junction corner's pavement carries on into the blo
     CHECK(found == 2);
 }
 
-TEST_CASE("road net: a scramble gets an all-walk phase and two diagonal zebras laid on its fill") {
+TEST_CASE("road net: a scramble gets an all-walk phase and one diagonal zebra laid on its fill") {
     const char* const csv = "id,kind,width_m,pts,pavement_m,speed_kmh,one_way,deck_z,parking,scramble\n"
                             "ST-H,street,14,0:0;200:0,2.8,40,0,,0,100.5:0.5\n"
                             "ST-V,street,14,100:0;100:150,2.8,40,0,,0,\n";
@@ -493,7 +494,8 @@ TEST_CASE("road net: a scramble gets an all-walk phase and two diagonal zebras l
     roadNetBuild(s, MassingGround{}, b, &rep);
     CHECK(rep.junctions == 1);
     CHECK(rep.scrambles == 1);
-    CHECK(b.crossings.size() == 5);
+    // The three arms' zebras and one diagonal: the second candidate crosses the first's band and is not laid.
+    CHECK(b.crossings.size() == 4);
     int diag = 0;
     for (const RoadQuad& q : b.crossings) {
         if (q.id.find("-ZD") == std::string::npos) continue;
@@ -510,7 +512,7 @@ TEST_CASE("road net: a scramble gets an all-walk phase and two diagonal zebras l
             CHECK(std::hypot(p.x - 100.0, p.y) < 20.0);
         }
     }
-    CHECK(diag == 2);
+    CHECK(diag == 1);
     // Every pedestrian head on the all-walk phase; vehicle phases unchanged.
     int walk = 0, other = 0, vehicle = 0;
     for (const RoadSolid& sd : b.solids) {
@@ -537,7 +539,8 @@ TEST_CASE("road net: a scramble gets an all-walk phase and two diagonal zebras l
         CHECK(std::hypot(sd.box.cx - 110.2, sd.box.cy - 10.2) > kRoadCornerRadius);
         CHECK(std::hypot(sd.box.cx - 89.8, sd.box.cy - 10.2) > kRoadCornerRadius);
     }
-    CHECK(bars >= 40);
+    // 13 rows of four 1 m pieces: the bars the quad spans, nothing else.
+    CHECK(bars == 52);
     // Each bar is a skin 1 cm thick at most, tilted to the fill: over each of its corners the fill's top (the highest
     // slab there) lies 6 mm to 2.5 cm under it, so no bar stands as a step. No two bars overlap: where the diagonals
     // cross, only the first's show.
@@ -574,11 +577,12 @@ TEST_CASE("road net: a scramble gets an all-walk phase and two diagonal zebras l
         for (std::size_t j = i + 1; j < barList.size(); ++j)
             if (massingFeetOverlap(shrunk(solidFoot(*barList[i]), 0.01), shrunk(solidFoot(*barList[j]), 0.01), 0.0)) ++stacked;
     CHECK(stacked == 0);
-    // No two crossings overlap in plan (the diagonals' own X apart); a doubled zebra is a reject of the road check.
+    // No two crossings overlap in plan and no two markings lie over each other; a doubled zebra is a reject of the road
+    // check.
     CHECK(roadCrossingOverlaps(b).empty());
     {
         RoadBuild twice = b;
-        const RoadQuad* arm = nullptr; // an arm's zebra (the diagonals' own pair is exempt)
+        const RoadQuad* arm = nullptr; // an arm's zebra
         for (const RoadQuad& q : b.crossings)
             if (arm == nullptr && q.id.find("-ZD") == std::string::npos) arm = &q;
         REQUIRE(arm != nullptr);
@@ -622,7 +626,31 @@ TEST_CASE("road net: a scramble gets an all-walk phase and two diagonal zebras l
     roadGraphFromNet(s, b, g);
     REQUIRE(g.junctions.size() == 1);
     CHECK(g.junctions[0].phases.find(";W:all-walk") != std::string::npos);
-    CHECK(g.crossings.size() == 5);
+    CHECK(g.crossings.size() == 4);
+
+    // The diagonal's bars are one unbroken run: whole rows of four pieces 0.9 m apart from the quad's first end to its
+    // last, and the quad spans exactly them.
+    const RoadQuad* zd = nullptr;
+    for (const RoadQuad& q : b.crossings)
+        if (q.id == "JN-0001-ZD1") zd = &q;
+    REQUIRE(zd != nullptr);
+    {
+        const double ax = zd->pts[1].x - zd->pts[0].x, ay = zd->pts[1].y - zd->pts[0].y, al = std::hypot(ax, ay);
+        const double ux = ax / al, uy = ay / al;
+        std::vector<double> starts; // along the walk, the near end of each piece
+        for (const RoadSolid& sd : b.solids) {
+            if (sd.box.row != "JN-0001" || sd.box.kind != "mark") continue;
+            const double along = (sd.box.cx - zd->pts[0].x) * ux + (sd.box.cy - zd->pts[0].y) * uy;
+            starts.push_back(along - kRoadZebraBar * 0.5);
+        }
+        std::sort(starts.begin(), starts.end());
+        REQUIRE(starts.size() % 4 == 0);
+        const std::size_t rows = starts.size() / 4;
+        CHECK(rows == 13);
+        for (std::size_t r = 0; r < rows; ++r)
+            for (std::size_t c = 0; c < 4; ++c) CHECK(std::fabs(starts[r * 4 + c] - 0.9 * static_cast<double>(r)) < 1e-6);
+        CHECK(std::fabs(al - (0.9 * static_cast<double>(rows) - kRoadZebraBar)) < 1e-6);
+    }
 
     // Without the column: no all-walk phase, no diagonals.
     const std::vector<RoadNetStreet> plain = net(kTee);
@@ -1056,4 +1084,109 @@ TEST_CASE("footways: a bend laps its outer corner and the network's band stops a
     CHECK_FALSE(roadFootwayTop(b, 31.8, 34.0, top));
     CHECK(roadFootwayTop(b, 31.8, 30.0 - 4.0, top));
     CHECK(rep.ramps == 0);
+}
+
+namespace {
+
+RoadSolid markSolid(const char* id, RoadTint tint, double cx, double cy, double sx, double sy, double rot, double top) {
+    RoadSolid sd;
+    sd.tint = tint;
+    sd.box.id = id;
+    sd.box.row = "R";
+    sd.box.kind = "mark";
+    sd.box.cx = cx;
+    sd.box.cy = cy;
+    sd.box.sx = sx;
+    sd.box.sy = sy;
+    sd.box.rot = rot;
+    sd.box.z0 = top - 0.008;
+    sd.box.z1 = top;
+    return sd;
+}
+
+} // namespace
+
+TEST_CASE("road check: a second diagonal crossing the first is a reject") {
+    RoadQuad a, b;
+    a.id = "JN-0009-ZD1";
+    b.id = "JN-0009-ZD2";
+    a.junction = b.junction = "JN-0009";
+    // Two 12 m by 4 m bands crossing at their middles, 90 degrees apart.
+    a.pts = {RoadPoint{-6.0, -2.0}, RoadPoint{6.0, -2.0}, RoadPoint{6.0, 2.0}, RoadPoint{-6.0, 2.0}};
+    b.pts = {RoadPoint{2.0, -6.0}, RoadPoint{2.0, 6.0}, RoadPoint{-2.0, 6.0}, RoadPoint{-2.0, -6.0}};
+    RoadBuild bd;
+    bd.crossings = {a, b};
+    const std::vector<RoadFace> over = roadCrossingOverlaps(bd);
+    REQUIRE(over.size() == 1);
+    CHECK(over[0].piece == "JN-0009-ZD1");
+    CHECK(over[0].fault == "crossing JN-0009-ZD2");
+    // Apart, side by side: fine.
+    for (RoadPoint& q : b.pts) q.x += 20.0;
+    bd.crossings = {a, b};
+    CHECK(roadCrossingOverlaps(bd).empty());
+}
+
+TEST_CASE("road check: white and yellow markings laid over each other are a reject; abutting pieces are not") {
+    RoadBuild bd;
+    // A bar of three 1 m pieces end to end (abutting), then a line crossing the middle one.
+    bd.solids.push_back(markSolid("R-mark-1", RoadTint::LineWhite, 0.5, 0.0, 1.0, 0.45, 0.0, 4.0));
+    bd.solids.push_back(markSolid("R-mark-2", RoadTint::LineWhite, 1.5, 0.0, 1.0, 0.45, 0.0, 4.0));
+    bd.solids.push_back(markSolid("R-mark-3", RoadTint::LineWhite, 2.5, 0.0, 1.0, 0.45, 0.0, 4.0));
+    CHECK(roadCrossingOverlaps(bd).empty());
+    // Side by side across the run (abutting along t): no overlap either.
+    bd.solids.push_back(markSolid("R-mark-4", RoadTint::LineYellow, 1.5, 0.45, 3.0, 0.45, 0.0, 4.0));
+    CHECK(roadCrossingOverlaps(bd).empty());
+    // A yellow line across the middle piece and the yellow bar beside it: a row for each pair.
+    bd.solids.push_back(markSolid("R-mark-5", RoadTint::LineYellow, 1.5, 0.0, 0.15, 3.0, 0.0, 4.0));
+    std::vector<RoadFace> over = roadCrossingOverlaps(bd);
+    REQUIRE(over.size() == 2);
+    CHECK(over[0].piece == "R-mark-2");
+    CHECK(over[0].fault == "marking R-mark-5");
+    CHECK(over[0].x == doctest::Approx(1.5));
+    CHECK(over[0].y == doctest::Approx(0.0));
+    CHECK(over[1].piece == "R-mark-4");
+    CHECK(over[1].fault == "marking R-mark-5");
+    // The same pair on another level (a deck over a road): not a pair. Other tints are not markings.
+    bd.solids.back().box.z1 += 3.0;
+    bd.solids.back().box.z0 += 3.0;
+    CHECK(roadCrossingOverlaps(bd).empty());
+    bd.solids.back().box.z1 -= 3.0;
+    bd.solids.back().box.z0 -= 3.0;
+    bd.solids.back().tint = RoadTint::Asphalt;
+    CHECK(roadCrossingOverlaps(bd).empty());
+    // Turned pieces: identical ones overlap; one moved across by all but 1 cm of its width no longer does.
+    RoadBuild t;
+    t.solids.push_back(markSolid("T-1", RoadTint::LineWhite, 0.0, 0.0, 4.0, 0.15, 30.0, 4.0));
+    t.solids.push_back(markSolid("T-2", RoadTint::LineWhite, 0.0, 0.0, 4.0, 0.15, 30.0, 4.0));
+    CHECK(roadCrossingOverlaps(t).size() == 1);
+    const double turn = 30.0 * 3.14159265358979 / 180.0;
+    t.solids[1].box.cx += -std::sin(turn) * 0.14;
+    t.solids[1].box.cy += std::cos(turn) * 0.14;
+    CHECK(roadCrossingOverlaps(t).empty());
+}
+
+TEST_CASE("road check: a whole network's markings check in one sweep") {
+    // 20000 abutting bars in a plan grid and a line crossing it: the grid keeps it near linear.
+    RoadBuild bd;
+    for (int i = 0; i < 200; ++i)
+        for (int j = 0; j < 100; ++j) {
+            const std::string id = "G-" + std::to_string(i) + "-" + std::to_string(j);
+            bd.solids.push_back(markSolid(id.c_str(), RoadTint::LineWhite, i * 1.0 + 0.5, j * 5.0, 1.0, 0.45, 0.0, 4.0));
+        }
+    CHECK(roadCrossingOverlaps(bd).empty());
+    bd.solids.push_back(markSolid("G-line", RoadTint::LineWhite, 100.5, 247.5, 0.15, 5.0, 0.0, 4.0));
+    const std::vector<RoadFace> over = roadCrossingOverlaps(bd);
+    CHECK(over.size() == 2); // the line crosses the two bars it spans
+}
+
+TEST_CASE("road net: a built network's markings never lie over each other") {
+    // Parking streets and a cut across a bay: no doubled bay lines, stop lines clear of the edge lines.
+    const char* const csv = "id,kind,width_m,pts,pavement_m,parking\n"
+                            "ST-H,street,18,0:0;240:0,3.6,1\n"
+                            "ST-V,street,14,120:-150;120:150,2.8,0\n"
+                            "ST-B,street,14,0:0;-60:60;-60:200,2.8,0\n";
+    const std::vector<RoadNetStreet> s = net(csv);
+    RoadBuild b;
+    roadNetBuild(s, MassingGround{}, b);
+    CHECK(roadCrossingOverlaps(b).empty());
 }

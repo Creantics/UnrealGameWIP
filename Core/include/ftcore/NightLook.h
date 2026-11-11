@@ -23,8 +23,8 @@
 namespace ftcore {
 
 struct NightLook {
-    float moonShare = 0.10f;       // the directional light at full night, as a share of its day intensity
-    float skyFill = 0.60f;         // the sky light at full night, as a share of its day intensity (net of the moon)
+    float moonShare = 0.07f;       // the directional light at full night, as a share of its day intensity
+    float skyFill = 1.30f;         // the sky light at full night, as a share of its day intensity (net of the moon)
     float fogKeep = 0.08f;         // the height fog's own inscattering colour kept at full night
     float exposureEV100 = -1.2f;   // the night exposure's centre, from NightAmount kExposureLockAt on ...
     float exposureRangeEV = 1.0f;  // ... and its half-width: auto exposure moves within centre +- this (0 = locked)
