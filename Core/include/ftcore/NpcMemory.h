@@ -14,6 +14,22 @@
 // Expectation deeds never spread through the street crowd, only by hearsay.
 // Street hearsay: an unwitnessed deed waits for a checkpoint with a thick enough crowd; a thin
 // crowd only delays it, until its ring slot is reused.
+//
+// Pins: a deed type with pin set is pinned (never fades) when the NPC learns it first hand, as the
+// victim or a witness (a reveal counts as a witness); hearsay of it fades like any other memory.
+// Each NPC holds at most kPinnedMax pins.
+// - Release: a deed type with `releases` set (a mend releases a break) lets go of the pin on the
+//   NPC's memory of that type at the same place when it is learned first hand and is the later deed.
+//   The released memory stays and fades from then on; same_place not_since still reads it as
+//   redeemed while the releasing memory is held. A later deed of the released type pins it again.
+// - Full: a new pin over kPinnedMax unpins one other (it fades from then on): first the oldest
+//   pinned memory whose type releases another (a mend: its break is already settled), else the
+//   oldest pin of any type (by ts, then seq). A load first applies the release rule to pinned
+//   memories (a save may hold a break and its later mend both pinned), then unpins by this rule
+//   until at most kPinnedMax are left; both count in the load report's `clamped`.
+// - Store full: the weakest unpinned memory is dropped, except that a releasing memory is never
+//   dropped before an older unpinned memory of the type it released at its place (that one goes
+//   first), so a mend is not forgotten while the break it settled is still held.
 
 #include "ftcore/Api.h"
 #include "ftcore/WorldClock.h"
@@ -64,6 +80,8 @@ struct NpcDeedType {
     std::int8_t magnitude = 1;  // 1..5
     std::int8_t polarity = 0;   // -1 harm, 0 neutral, 1 benefit to the victim
     bool secret = false, pin = false, attributable = false;
+    // A deed type whose pin at the same place this one releases (kNoType: none); see Pins above.
+    std::uint16_t releases = kNoType;
 };
 
 struct NpcDef {
@@ -360,7 +378,8 @@ FTCORE_API std::uint32_t npcOnMeet(NpcMemoryWorld& w, const NpcTables& t, const 
 // Neighbourly deeds, each with the neighbour as the one dealt with (they learn it first hand, the lead in `at` is
 // remembered as the doer). A delivery handed over; a gift from the neighbour accepted or handed back (both pinned in
 // the shipped tables, so a line can ask about it at every later meeting); their gate broken, or mended later
-// (`place` should be the gate, so a second break reinforces the first). Return the seq, 0 when nothing was recorded.
+// (`place` should be the gate, so a second break reinforces the first; a mend releases the break's pin at that
+// place, so handled gates do not crowd out other pins). Return the seq, 0 when nothing was recorded.
 FTCORE_API std::uint32_t npcOnDelivery(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at,
                                        std::uint16_t recipient);
 FTCORE_API std::uint32_t npcOnGift(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at,
@@ -373,7 +392,8 @@ FTCORE_API void npcOnClock(NpcMemoryWorld& w, const NpcTables& t, const WorldClo
 
 // ---- Loading (allocates; once at load) ----
 // tags.csv, deeds.csv, npc_values.csv, ties.csv, consequences.csv, expectations.csv, schedule.csv,
-// memory_tuning.json. Any empty view is skipped. Header rows are required.
+// memory_tuning.json. Any empty view is skipped. Header rows are required. deeds.csv may carry an
+// optional `releases` column: another deed id (or empty / -), never the row's own.
 struct NpcTableSources {
     std::string_view tags, deeds, npcValues, ties, consequences, expectations, schedule, tuningJson;
 };
@@ -388,7 +408,8 @@ FTCORE_API bool importNpcTables(const NpcTableSources& src, NpcTables& out, std:
 // evicted no longer counts: pin the redeeming deed when the line must hold for good (and limit its
 // thanks with since_deed). `not_since:deed=X,deed=Y,same_place` asks it place by place: it holds while any place's
 // X has no Y there after it (one line for several gates). Pins share six slots per NPC; a seventh
-// unpins the oldest, so keep pinned deeds for what must be asked about at every meeting.
+// unpins one by the rule under Pins at the top of this file, so keep pinned deeds for what must be
+// asked about at every meeting, and give a redeeming deed `releases` so it frees its X's slot.
 FTCORE_API bool importNpcLines(std::string_view csv, const NpcTables& t, NpcLineTable& out, std::string* error = nullptr);
 
 // ---- Save (string ids, never indices) ----
