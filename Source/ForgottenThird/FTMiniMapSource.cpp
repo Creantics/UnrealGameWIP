@@ -138,7 +138,7 @@ bool FTMiniMapSource::ParseOptions(const TCHAR* Cmd, const TCHAR* Prefix, FOptio
 {
 	const FString P(Prefix);
 	FString Area;
-	if (!FParse::Value(Cmd, *(P + TEXT("Tables=")), Out.Dir) || !FParse::Value(Cmd, *(P + TEXT("Area=")), Area))
+	if (!FParse::Value(Cmd, *(P + TEXT("Tables=")), Out.Dir) || !FParse::Value(Cmd, *(P + TEXT("Area=")), Area, false))
 	{
 		return false;
 	}

@@ -171,6 +171,14 @@ bool UFTMiniMap::Init(const AFTExploreDirector& Director)
 			UE_LOG(LogForgottenThird, Error, TEXT("MiniMap: the level's blob: %s"), UTF8_TO_TCHAR(Why.c_str()));
 		}
 	}
+	else if (FCString::Strifind(FCommandLine::Get(), TEXT("MiniMapTables=")))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("MiniMap: -MiniMapTables= needs -MiniMapArea=x0,y0,x1,y1 too"));
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("MiniMap: this level has none (no baked blob)"));
+	}
 	if (!bOk)
 	{
 		return false;
@@ -199,7 +207,7 @@ bool UFTMiniMap::Init(const AFTExploreDirector& Director)
 	if (FParse::Value(FCommandLine::Get(), TEXT("MiniMapShots="), ShotPrefix))
 	{
 		FString List;
-		if (FParse::Value(FCommandLine::Get(), TEXT("MiniMapAt="), List))
+		if (FParse::Value(FCommandLine::Get(), TEXT("MiniMapAt="), List, false))
 		{
 			TArray<FString> Points;
 			List.ParseIntoArray(Points, TEXT(";"));
@@ -213,7 +221,7 @@ bool UFTMiniMap::Init(const AFTExploreDirector& Director)
 				}
 			}
 		}
-		if (FParse::Value(FCommandLine::Get(), TEXT("MiniMapShotTimes="), List))
+		if (FParse::Value(FCommandLine::Get(), TEXT("MiniMapShotTimes="), List, false))
 		{
 			TArray<FString> Times;
 			List.ParseIntoArray(Times, TEXT(","));
